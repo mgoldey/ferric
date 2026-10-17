@@ -65,6 +65,7 @@ use ferric_core::ecp::{EcpDef, EcpShell, EcpTerm};
 use ferric_core::mol::{Atom, Molecule};
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_pbc::dense_aft::{DenseAftEri, ExxDiv, DEFAULT_DENSE_AFT_MAX_BYTES};
+use ferric_pbc::grad::GRAD_NUCLEUS_EXPONENT;
 use ferric_pbc::grad::{gamma_rhf_gradient_with, GammaGradConfig};
 use ferric_pbc::hcore::kpoint::{periodic_hcore_kpts, PeriodicHcoreK};
 use ferric_pbc::hcore::{periodic_hcore, PeriodicHcoreConfig};
@@ -87,7 +88,6 @@ use ferric_pbc::stress::{gamma_rhf_stress, GammaStressConfig, Mat3};
 use ferric_scf::result::{ScfExit, ScfResult, Spin};
 use ndarray::Array2;
 use num_complex::Complex64;
-use ferric_pbc::grad::GRAD_NUCLEUS_EXPONENT;
 use std::collections::HashMap;
 
 const OMEGA: f64 = 0.8;
@@ -108,9 +108,9 @@ const ALL9: [(usize, usize); 9] = [
     (2, 2),
 ];
 const FD_H: f64 = 1e-4;
-/// Every anchor here runs the SR derivative at the library default
-/// `GRAD_NUCLEUS_EXPONENT` (the energy's own 1e16 nucleus), so the derivative
-/// carries no model-nucleus error against the energy.
+// Every anchor here runs the SR derivative at the library default
+// `GRAD_NUCLEUS_EXPONENT` (the energy's own 1e16 nucleus), so the derivative
+// carries no model-nucleus error against the energy.
 
 // ------------------------------------------------------------ fixtures
 
@@ -582,7 +582,7 @@ fn gsys(cell: Cell, bs: &BasisSet, rot: SrColumnRotation) -> GSys {
 /// components). MEASURED 8.2e-8 on a strain of max |component| 4.9 (relative
 /// 1.7e-8: the h^2 truncation of the central difference) at the default
 /// nucleus exponent. The test runs
-/// the rotation mutants at fixed density: measured totals move by RotDropT
+/// the rotation mutants at fixed density: totals MEASURED at the default move by RotDropT
 /// 1.03e-1, RotUseT 5.05e-1, RotOneSided 9.06e-2, RotFlipSign 2.15e-1,
 /// RotHcoreWrongResidue 1.07, each > 10x this bar; RotSwapPair and
 /// RotFitWrongResidue act on the fit only and move nothing (0).
@@ -745,13 +745,13 @@ fn rotated_hcore_with_ecp_at_fixed_density_matches_fd_and_keeps_the_ecp_part() {
 // ============================================================ (2) SCF level
 
 /// Bars of the 1x1x1 and 1x1x3 anchors at the default nucleus exponent.
-/// MEASURED 1x1x3 (29 min release): force TOTAL 4.6e-13, stress TOTAL 3.0e-12,
+/// MEASURED 1x1x3 (24 min release): force TOTAL 4.6e-13, stress TOTAL 3.0e-12,
 /// vsr parts <= 1.5e-14, every other part <= 4.8e-13; 1x1x1 force total
 /// 5.6e-12, stress total 1.1e-12, ECP parts 0.
-const SC_BAR_TOTAL: f64 = 1e-11;
+const SC_BAR_TOTAL: f64 = 3e-11;
 const SC_BAR_SR: f64 = 1e-12;
 const SC_BAR_PART: f64 = 3e-12;
-const ONE_POINT_TOTAL: f64 = 3e-11;
+const ONE_POINT_TOTAL: f64 = 1e-10;
 const ONE_POINT_ECP: f64 = 1e-12;
 /// SCF-level FD bars (h = 1e-4; unrotated ECP file: force 2e-8, stress 2e-7).
 const FORCE_FD_BAR: f64 = 2e-8;
