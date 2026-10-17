@@ -474,6 +474,26 @@ impl SymmetricRhf {
         &self.orbital_irreps
     }
 
+    /// Electrons per irrep in the converged state, as `(label, n)` in order of
+    /// first appearance among the MO columns, listing only occupied irreps
+    /// plus those with virtuals (count 0). Occupied columns come first, so
+    /// this counts two electrons for each of the first `nelec / 2` columns.
+    pub fn irrep_occupations(&self) -> Vec<(String, usize)> {
+        let nocc = self.molecule.nelec().max(0) as usize / 2;
+        let mut out: Vec<(String, usize)> = Vec::new();
+        for (k, lab) in self.orbital_irreps.iter().enumerate() {
+            if lab == "-" {
+                continue;
+            }
+            let add = if k < nocc { 2 } else { 0 };
+            match out.iter_mut().find(|(l, _)| l == lab) {
+                Some(e) => e.1 += add,
+                None => out.push((lab.clone(), add)),
+            }
+        }
+        out
+    }
+
     /// The molecule the integrals were built from: the reoriented, symmetrized
     /// geometry (the input molecule itself for C1).
     pub fn molecule(&self) -> &Molecule {

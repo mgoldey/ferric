@@ -754,8 +754,12 @@ pub fn run(args: Vec<String>) {
         // Same resolved kind that already selected `bounds`'s CSB table
         // above; see the comment there for why it is parsed once.
         screening: screening_kind,
-        irrep_nelec: None,
-        symmetry: false,
+        irrep_nelec: cfg.scf.irrep_nelec.as_ref().map(|m| {
+            m.iter()
+                .map(|(label, n)| (label.clone(), *n))
+                .collect::<Vec<_>>()
+        }),
+        symmetry: cfg.scf.symmetry,
     };
 
     // Advisory only (issue #410): a USER-SET `[scf] energy_conv` below the
@@ -903,6 +907,11 @@ pub fn run(args: Vec<String>) {
     // which starves rung 0 of iterations and walked the whole ladder to
     // MaxIter instead of converging) + the ksdft_ladder tests in
     // ferric-scf/src/ladder.rs.
+    if rhf_config.symmetry {
+        // `Config::validate_symmetry_keys` admitted only kind "rhf" + energy.
+        run_symmetric_rhf(&cfg, &ctx, &mol, &bs, &prep, op, &bounds, &rhf_config);
+        return;
+    }
     let result = if method == "rhf" || method == "ksdft" {
         // `[scf] df_guess` is not (yet) composed with the multi-rung
         // convergence ladder — the ladder's own escalation (level shift /
@@ -1356,6 +1365,77 @@ fn run_rhf(
     println!("  converged  = {}", result.converged);
     println!("  energy     = {:.10} Hartree", result.energy);
     print_cosx_final(result);
+}
+
+/// `[scf] symmetry = true`: closed-shell RHF blocked by point-group irrep
+/// (`ferric_scf::symmetric::solve_rhf_symmetric`). Prints the group, the
+/// symmetrization shift and the per-irrep occupations, then writes the
+/// terminal `run_end` record with the same fields. The energy is that of the
+/// SYMMETRIZED geometry; no vector quantity is produced, because the result
+/// lives in the reoriented frame.
+#[allow(clippy::too_many_arguments)]
+fn run_symmetric_rhf(
+    cfg: &Config,
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    bs: &BasisSet,
+    prep: &PreparedBasis,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    rhf_config: &RhfConfig,
+) {
+    let sym = ferric_scf::symmetric::solve_rhf_symmetric(ctx, mol, prep, op, bounds, rhf_config)
+        .unwrap_or_else(|e| {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        });
+    let scf = sym.scf_in_frame();
+    let occ = sym.irrep_occupations();
+    let occ_text = occ
+        .iter()
+        .map(|(l, n)| format!("{l}={n}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    println!(
+        "RHF/{} on {} (point-group blocked)",
+        bs.name, cfg.molecule.xyz
+    );
+    println!("  nbasis     = {}", prep.nbasis());
+    println!("  point group = {}", sym.group());
+    println!("  irrep electrons = {occ_text}");
+    println!(
+        "  symmetrization shift = {:.3e} Bohr (energy is for the symmetrized geometry)",
+        sym.max_symmetrization_shift()
+    );
+    println!("  iterations = {}", scf.iterations);
+    println!("  converged  = {}", scf.converged);
+    println!("  energy     = {:.10} Hartree", sym.energy());
+    if !scf.converged {
+        eprintln!("warning: SCF did not fully converge (exit {:?})", scf.exit);
+    }
+    if let Some(rl) = ferric_scf::runlog::log() {
+        let extra = serde_json::json!({
+            "method": cfg.method.kind,
+            "task": cfg.method.task,
+            "scf_iterations": scf.iterations,
+            "energy_is": "total",
+            "symmetry": {
+                "point_group": sym.group(),
+                "max_symmetrization_shift_bohr": sym.max_symmetrization_shift(),
+                "irrep_nelec": occ
+                    .iter()
+                    .map(|(l, n)| (l.clone(), serde_json::json!(n)))
+                    .collect::<serde_json::Map<_, _>>(),
+                "geometry": "symmetrized",
+            },
+        });
+        rl.run_end(
+            sym.energy(),
+            scf.converged,
+            &format!("{:?}", scf.exit),
+            extra,
+        );
+    }
 }
 
 /// `method.kind = "ksdft"`. Extracted verbatim from the former `main()`

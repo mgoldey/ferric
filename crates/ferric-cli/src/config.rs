@@ -2567,6 +2567,20 @@ pub struct ScfCfg {
     /// [`Config::validate_cli_wired_keys`]).
     #[serde(default)]
     pub stability_descent: bool,
+    /// Point-group-blocked closed-shell RHF (issue #294): detect the Abelian
+    /// subgroup, symmetrize and reorient the geometry, and block the Fock
+    /// diagonalization by irrep. Default `false` (byte-identical to today).
+    ///
+    /// SCOPE: `kind = "rhf"`, `task = "energy"`, singlet, no `[dft] functional`
+    /// (the Becke-Lebedev grid is not symmetric), no `[cell]`/`[qmmm]`. The
+    /// reported energy is that of the SYMMETRIZED geometry; the printout states
+    /// the symmetrization shift. Vector outputs are not produced in this mode.
+    #[serde(default)]
+    pub symmetry: bool,
+    /// Per-irrep electron counts, `{ A1 = 4, B2 = 2, ... }` (requires
+    /// `symmetry = true`): pins the occupation instead of aufbau across
+    /// irreps. Listed counts must be even; unlisted irreps follow aufbau.
+    pub irrep_nelec: Option<std::collections::BTreeMap<String, usize>>,
 }
 
 impl Default for ScfCfg {
@@ -2615,6 +2629,8 @@ impl Default for ScfCfg {
             df_increments_aux: None,
             check_stability: false,
             stability_descent: false,
+            symmetry: false,
+            irrep_nelec: None,
         }
     }
 }
@@ -2634,6 +2650,54 @@ impl CosxGridCfg {
     fn to_grid(&self, key: &str) -> Result<ferric_dft::grid::AtomicGridConfig, String> {
         ferric_scf::cosx_k::grid_from_parts(self.radial, self.angular, self.prune.as_deref())
             .map_err(|e| format!("[scf] {key}: {e}"))
+    }
+}
+
+impl Config {
+    /// `[scf] symmetry` / `irrep_nelec` scoping: only the closed-shell RHF
+    /// energy run is wired. Everything else is refused by name, because the
+    /// blocked solver works in a rotated frame and a consumer assuming the
+    /// input frame (gradient, optimizer, post-HF, properties) would be wrong.
+    pub fn validate_symmetry_keys(&self) -> Result<(), String> {
+        let s = &self.scf;
+        if !s.symmetry && s.irrep_nelec.is_none() {
+            return Ok(());
+        }
+        if !s.symmetry {
+            return Err("[scf] irrep_nelec requires [scf] symmetry = true".to_string());
+        }
+        let kind = self.method.kind.as_str();
+        let task = self.method.task.as_str();
+        let refuse = |why: String| Err(format!("[scf] symmetry = true: {why}"));
+        if kind != "rhf" || self.dft.functional.is_some() {
+            return refuse(format!(
+                "wired for method.kind = \"rhf\" (Hartree-Fock) only; got kind = \"{kind}\"{}. \
+                 Kohn-Sham needs a symmetric integration grid and post-HF/open-shell \
+                 drivers are not blocked. Remove the key.",
+                if self.dft.functional.is_some() {
+                    " with [dft] functional"
+                } else {
+                    ""
+                }
+            ));
+        }
+        if task != "energy" {
+            return refuse(format!(
+                "task = \"energy\" only (got \"{task}\"): the blocked SCF runs in a rotated, \
+                 symmetrized frame, so gradients, optimizers and frequencies would be \
+                 expressed in the wrong frame. Remove the key."
+            ));
+        }
+        if self.molecule.multiplicity != 1 {
+            return refuse(format!(
+                "closed-shell singlets only (multiplicity = {}); UHF/ROHF blocking is not implemented",
+                self.molecule.multiplicity
+            ));
+        }
+        if self.cell.is_some() || self.qmmm.is_some() {
+            return refuse("not available with [cell] or [qmmm]".to_string());
+        }
+        Ok(())
     }
 }
 
@@ -3508,6 +3572,7 @@ impl Config {
         }
 
         self.scf.validate_accelerators(kind, mult)?;
+        self.validate_symmetry_keys()?;
 
         if self.scf.stability_descent {
             if task != "energy" {
@@ -9653,6 +9718,39 @@ mod cli_wired_keys_tests {
         refused(&cfg("rhf", "optimize", 1, sd), "task = \"energy\" only");
         // Default off.
         assert!(!cfg("uhf", "energy", 3, "").scf.stability_descent);
+    }
+
+    // ---- [scf] symmetry / irrep_nelec ----
+
+    #[test]
+    fn symmetry_is_closed_shell_rhf_energy_only() {
+        let on = "[scf]\nsymmetry = true\nirrep_nelec = { A1 = 4, B2 = 2 }\n";
+        let c = cfg("rhf", "energy", 1, on);
+        c.validate_cli_wired_keys().unwrap();
+        assert_eq!(c.scf.irrep_nelec.as_ref().unwrap()["A1"], 4);
+        let sym = "[scf]\nsymmetry = true\n";
+        refused(&cfg("rhf", "optimize", 1, sym), "task = \"energy\" only");
+        refused(&cfg("rhf", "frequencies", 1, sym), "task = \"energy\" only");
+        refused(&cfg("uhf", "energy", 3, sym), "kind = \"rhf\"");
+        refused(&cfg("rimp2", "energy", 1, sym), "kind = \"rhf\"");
+        refused(&cfg("rhf", "energy", 3, sym), "closed-shell singlets");
+        refused(
+            &cfg(
+                "rhf",
+                "energy",
+                1,
+                "[scf]\nsymmetry = true\n[dft]\nfunctional = \"PBE\"\n",
+            ),
+            "[dft] functional",
+        );
+        refused(
+            &cfg("rhf", "energy", 1, "[scf]\nirrep_nelec = { A1 = 4 }\n"),
+            "requires [scf] symmetry",
+        );
+        // Default off: no refusal for any kind.
+        let off = cfg("uhf", "energy", 3, "");
+        off.validate_cli_wired_keys().unwrap();
+        assert!(!off.scf.symmetry && off.scf.irrep_nelec.is_none());
     }
 
     // ---- [scf] aurora / trah_trigger ----
