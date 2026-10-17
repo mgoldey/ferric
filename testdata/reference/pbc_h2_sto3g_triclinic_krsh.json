@@ -1,0 +1,139 @@
+{
+  "pyscf_version": "2.13.1",
+  "numpy_version": "1.26.4",
+  "date": "2026-10-17",
+  "generator": "scripts/gen_pyscf_pbc_krsh_refs.py",
+  "repo_sha_at_generation": "1f1eeed78454db48ec7ac29762d369e52da3899c",
+  "cell": "H2 STO-3G (PySCF digits), triclinic TRI_A lattice, atoms H2_ATOMS, Bohr",
+  "lattice": [
+    [
+      4.6,
+      0.0,
+      0.0
+    ],
+    [
+      0.9,
+      4.3,
+      0.0
+    ],
+    [
+      0.5,
+      0.7,
+      4.8
+    ]
+  ],
+  "atoms": [
+    [
+      0.3,
+      0.2,
+      0.1
+    ],
+    [
+      0.3,
+      0.2,
+      1.5
+    ]
+  ],
+  "setup": "KRKS, AFTDF, UniformGrids 41^3, gamma-centred kmesh, conv_tol 1e-12",
+  "rows": [
+    {
+      "functional": "HSE06",
+      "kmesh": [
+        1,
+        1,
+        1
+      ],
+      "exxdiv": "ewald",
+      "e_tot": -1.4252964830464558,
+      "runtime_s": 12.5
+    },
+    {
+      "functional": "HSE06",
+      "kmesh": [
+        1,
+        1,
+        1
+      ],
+      "exxdiv": "none",
+      "e_tot": -1.3007176904164157,
+      "runtime_s": 17.9
+    },
+    {
+      "functional": "CAM_B3LYP",
+      "kmesh": [
+        1,
+        1,
+        1
+      ],
+      "exxdiv": "ewald",
+      "e_tot": -1.4471449676140065,
+      "runtime_s": 20.6
+    },
+    {
+      "functional": "CAM_B3LYP",
+      "kmesh": [
+        1,
+        1,
+        1
+      ],
+      "exxdiv": "none",
+      "e_tot": -1.160109365720467,
+      "runtime_s": 16.3
+    },
+    {
+      "functional": "HSE06",
+      "kmesh": [
+        1,
+        2,
+        2
+      ],
+      "exxdiv": "ewald",
+      "e_tot": -1.2055210030525156,
+      "runtime_s": 53.1
+    },
+    {
+      "functional": "HSE06",
+      "kmesh": [
+        1,
+        2,
+        2
+      ],
+      "exxdiv": "none",
+      "e_tot": -1.1558180336241008,
+      "runtime_s": 50.7
+    },
+    {
+      "functional": "CAM_B3LYP",
+      "kmesh": [
+        2,
+        1,
+        2
+      ],
+      "exxdiv": "ewald",
+      "e_tot": -1.226833848564001,
+      "runtime_s": 48.7
+    },
+    {
+      "functional": "HSE06",
+      "kmesh": [
+        2,
+        2,
+        2
+      ],
+      "exxdiv": "ewald",
+      "e_tot": -1.1351364327614866,
+      "runtime_s": 77.9
+    },
+    {
+      "functional": "CAM_B3LYP",
+      "kmesh": [
+        2,
+        2,
+        2
+      ],
+      "exxdiv": "none",
+      "e_tot": -0.9572089082941064,
+      "runtime_s": 84.6
+    }
+  ]
+}
