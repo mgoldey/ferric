@@ -888,7 +888,16 @@ jobs:
               cargo test -p ferric-integrals --test tenno_table_edge --no-run
               for v in 1 170 2; do
                 echo "::group::MALLOC_PERTURB_=$v"
-                MALLOC_PERTURB_=$v cargo test -p ferric-integrals --test tenno_table_edge
+                # tenno_table_edge early-returns (and still PASSES) via
+                # skip_unpatched_272() when the 2.7.2 boys.h override was not
+                # compiled in. Capture output and fail on any SKIP so the
+                # job cannot go green without exercising the edge tests.
+                MALLOC_PERTURB_=$v cargo test -p ferric-integrals --test tenno_table_edge -- --nocapture 2>&1 | tee /tmp/perturb.log
+                if grep -q "SKIP:" /tmp/perturb.log; then
+                  echo "::error::tenno_table_edge skipped tests (override not active) -- the canary would pass vacuously"
+                  exit 1
+                fi
+                grep -Eq "test result: ok\. [1-9][0-9]* passed" /tmp/perturb.log
                 echo "::endgroup::"
               done
             '
