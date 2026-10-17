@@ -18,7 +18,9 @@ Run:  OPENBLAS_NUM_THREADS=1 python scripts/gen_pyscf_kks_shifted_refs.py CELL
 
 import json
 import os
+import subprocess
 import sys
+import time
 
 import numpy as np
 import pyscf
@@ -63,6 +65,19 @@ def make_cell(spec):
     return c
 
 
+def git_sha():
+    here = os.path.dirname(os.path.abspath(__file__))
+    return subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=here, text=True
+    ).strip()
+
+
+def libxc_version():
+    from pyscf.dft import libxc
+
+    return libxc.libxc_version()
+
+
 def main():
     name = sys.argv[1]
     spec = CELLS[name]
@@ -76,16 +91,22 @@ def main():
             mf.conv_tol = 1e-12
             mf.with_df = df.AFTDF(c, kpts=kp)
             mf.grids = dft.gen_grid.UniformGrids(c)
+            t0 = time.time()
             e = mf.kernel()
+            dt = time.time() - t0
             assert mf.converged
             print(name, n, xc, f"{e:.12f}", flush=True)
             rows.append(
-                dict(cell=name, mesh=list(n), xc=xc, energy=float(e), nk=len(kp))
+                dict(cell=name, mesh=list(n), xc=xc, energy=float(e), nk=len(kp), seconds=round(dt))
             )
     old = json.load(open(OUT))["rows"] if os.path.exists(OUT) else []
     rows = [r for r in old if r["cell"] != name] + rows
     meta = dict(
         pyscf=pyscf.__version__,
+        numpy=np.__version__,
+        libxc=libxc_version(),
+        date=time.strftime("%Y-%m-%d"),
+        generator_git_sha=git_sha(),
         setup="KRKS, AFTDF, UniformGrids, exxdiv=ewald, conv_tol=1e-12, "
         "make_kpts(n, with_gamma_point=False), STO-3G H, units Bohr/Hartree",
         cells={

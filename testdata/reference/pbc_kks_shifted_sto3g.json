@@ -167,5 +167,9 @@
    "energy": -1.3717307485111725,
    "nk": 4
   }
- ]
+ ],
+ "numpy": "1.26.4",
+ "date": "2026-10-17",
+ "libxc": "not recorded (the libxc bundled with pyscf 2.13.1)",
+ "generator_git_sha": "none: generated from the uncommitted working-tree version of scripts/gen_pyscf_kks_shifted_refs.py that was first committed with this file, before the provenance fields existed; per-row runtime not recorded"
 }

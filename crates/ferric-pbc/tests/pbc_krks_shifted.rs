@@ -13,14 +13,20 @@
 //! `2m+1-N` even), so there the two must agree to round-off.
 //! Artifact: if the shift were silently dropped, the shifted energies would
 //! equal the Gamma-centred ones (the `shift_is_not_dropped` guard asserts a gap
-//! of >= 1e-3 Ha, observed ~1e-2); if the time-reversal fill of the q-classes
+//! of >= 1e-3 Ha, observed 6.75e-2 for PBE 1x1x2); if the time-reversal fill of the q-classes
 //! were wrong at non-TRIM points, `NoTimeReversal` (build every class
 //! explicitly, NOT a defect) would differ from the default build.
 //!
 //! The RS-GDF build is compared with the dense-AFT build on the same grid;
 //! their gap is the aux fit error, bounded from both sides by measurement
-//! (see `FIT_BAR`): the genuine gap is <= 2e-4 Ha while the q-phase and
-//! split-kernel mutants move E by >= 1e-3 Ha.
+//! (see `FIT_BAR`): the genuine gap is <= 1.2e-4 Ha while the q-phase and
+//! G = 0 mutants move E by >= 1.4e-2 Ha.
+//!
+//! LIMIT (stated honestly): the even-shifted-mesh Madelung/ewald constant is
+//! validated only against PySCF's convention (the odd-N identity is bitwise 0
+//! by construction, since the meshes are the same points). A convention error
+//! shared with PySCF would pass every pin here; ferric has no independent
+//! twisted-boundary anchor (a Gamma supercell cannot carry a k-shift).
 
 mod common;
 
@@ -122,6 +128,18 @@ fn check_pins(cell_name: &str) {
     let j: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(REF_JSON).unwrap()).unwrap();
     let (cell, ngrid) = cell_of(cell_name);
+    let spec = &j["cells"][cell_name];
+    assert_eq!(spec["mesh"].as_u64().unwrap() as usize, ngrid, "grid");
+    for (i, a) in cell.lattice().iter().enumerate() {
+        for (d, x) in a.iter().enumerate() {
+            assert!((spec["a"][i][d].as_f64().unwrap() - x).abs() < 1e-12);
+        }
+    }
+    for (i, p) in cell.positions().iter().enumerate() {
+        for (d, x) in p.iter().enumerate() {
+            assert!((spec["atoms"][i][d].as_f64().unwrap() - x).abs() < 1e-12);
+        }
+    }
     let mut seen = 0;
     for row in j["rows"].as_array().unwrap() {
         if row["cell"].as_str().unwrap() != cell_name {
@@ -134,6 +152,8 @@ fn check_pins(cell_name: &str) {
             .map(|v| v.as_u64().unwrap() as usize)
             .collect();
         let f = row["xc"].as_str().unwrap();
+        let nk: usize = n.iter().product();
+        assert_eq!(row["nk"].as_u64().unwrap() as usize, nk, "nk");
         let e_ref = row["energy"].as_f64().unwrap();
         let mesh = KPointMesh::monkhorst_pack(&cell, [n[0], n[1], n[2]]).unwrap();
         let e = energy(&cell, &mesh, ngrid, f);
@@ -153,7 +173,6 @@ fn shifted_mesh_triclinic_krks_matches_pinned_pyscf() {
 }
 
 #[test]
-#[ignore = "heavy: 61^3 dense-AFT KS on 2 and 4 shifted k-points; run serially on a quiet box (minutes)"]
 fn shifted_mesh_cubic_krks_matches_pinned_pyscf() {
     check_pins("h2_cubic_a4");
 }
