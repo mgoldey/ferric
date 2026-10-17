@@ -53,8 +53,9 @@ def test_unsupported_combinations_are_refused_by_name(h2, h_atom, basis):
     # functional since the k-point meta-GGA forces landed).
     with pytest.raises(ValueError, match="meta-GGA"):
         ferric.run_uks_kpts(h_atom, lat, basis, "SCAN", (1, 1, 2))
+    # Open-shell range-separated hybrids stay refused on the dense J/K too.
     with pytest.raises(ValueError, match="range-separated"):
-        ferric.run_rks_kpts(h2, lat, basis, "HSE06", (1, 1, 2))
+        ferric.run_uks_kpts(h_atom, lat, basis, "HSE06", (1, 1, 2))
     # The k-point KS stress is wired (test_pbc_kpoint_open_shell_and_stress.py).
     r = ferric.run_rks_kpts(
         h2, lat, basis, "LDA", (1, 1, 2), omega=OMEGA, with_stress=True, **GRID
@@ -95,9 +96,7 @@ def test_range_separated_hybrid_runs_on_rsgdf_energy_only(h2, h_atom, basis):
     )
     assert abs(r.energy - p.energy) > 1e-4
     assert abs(r.madelung - p.madelung) > 1e-2
-    # Dense J/K, derivatives and the open-shell routes stay refused by name.
-    with pytest.raises(ValueError, match="range-separated"):
-        ferric.run_rks_kpts(h2, lat, basis, "HSE06", (1, 1, 2), omega=OMEGA, **GRID)
+    # Derivatives and the open-shell routes stay refused by name.
     for kw in ({"with_gradient": True}, {"with_stress": True}):
         with pytest.raises(ValueError, match="range-separated"):
             ferric.run_rks_kpts(
@@ -107,3 +106,29 @@ def test_range_separated_hybrid_runs_on_rsgdf_energy_only(h2, h_atom, basis):
         ferric.run_uks_kpts(
             h_atom, lat, basis, "HSE06", (1, 1, 2), omega=OMEGA, **RSGDF, **GRID
         )
+
+
+# Dense-AFT J/K (the default jk): the same functional, mesh, omega and grid as
+# HSE06_RSGDF_112. The two J/K builders differ by the aux-fit error only
+# (2.05e-4 Ha measured, bar 1e-3), so the dense energy is an independent
+# construction of the RS-GDF one. The exact value is this binding's own output
+# (a regression pin, not an external reference); the PySCF pins of the dense
+# kernel are crates/ferric-pbc/tests/pbc_krsh.rs and the CLI == library bit
+# anchor is crates/ferric-cli/tests/periodic_kpoint_ksdft.rs.
+HSE06_DENSE_112 = -1.3482880002
+
+
+def test_range_separated_hybrid_runs_on_dense_jk(h2, basis):
+    lat = _cubic()
+    d = ferric.run_rks_kpts(h2, lat, basis, "HSE06", (1, 1, 2), omega=OMEGA, **GRID)
+    assert d.converged
+    assert abs(d.energy - HSE06_RSGDF_112) < 1e-3, f"{d.energy!r}"
+    assert abs(d.energy - HSE06_DENSE_112) < 1e-8, f"{d.energy!r}"
+    p = ferric.run_rks_kpts(h2, lat, basis, "PBE0", (1, 1, 2), omega=OMEGA, **GRID)
+    assert abs(d.energy - p.energy) > 1e-4
+    assert abs(d.madelung - p.madelung) > 1e-2
+    for kw in ({"with_gradient": True}, {"with_stress": True}):
+        with pytest.raises(ValueError, match="range-separated"):
+            ferric.run_rks_kpts(
+                h2, lat, basis, "HSE06", (1, 1, 2), omega=OMEGA, **GRID, **kw
+            )

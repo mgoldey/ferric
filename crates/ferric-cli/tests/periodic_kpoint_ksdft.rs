@@ -3,8 +3,8 @@
 //! Anchor: the CLI energy (read at full precision from the JSON run log's
 //! `run_end` record, not the 10-decimal stdout line) equals the library
 //! `ferric_pbc::solve_krks` energy bit for bit on the same input. The
-//! unsupported combinations (open shell, meta-GGA, range-separated hybrids)
-//! are refused by name before any integral is built.
+//! unsupported combinations (open-shell meta-GGA, open-shell and force
+//! range-separated hybrids) are refused by name before any integral is built.
 
 use ferric_core::basis;
 use ferric_core::mol::Molecule;
@@ -156,7 +156,8 @@ fn unsupported_kpoint_ks_combinations_are_refused_by_name() {
     // Open-shell meta-GGA stays refused (UKS/ROKS meta-GGA has no tau term).
     let e = refusal("uks-meta", "ksdft", 3, "[dft]\nfunctional = \"SCAN\"", "");
     assert!(e.contains("meta-GGA"), "{e}");
-    let e = refusal("rsh", "ksdft", 1, "[dft]\nfunctional = \"HSE06\"", "");
+    // Open-shell range-separated hybrids stay refused on the dense J/K too.
+    let e = refusal("rsh-uks", "ksdft", 3, "[dft]\nfunctional = \"HSE06\"", "");
     assert!(e.contains("range-separated"), "{e}");
     // task = "optimize" keeps the range-separated refusal (closed-shell LDA /
     // GGA / global hybrid / SCAN forces are wired; periodic_kpoint_ks_optimize.rs).
@@ -169,9 +170,37 @@ fn unsupported_kpoint_ks_combinations_are_refused_by_name() {
     assert!(!out.status.success(), "opt-hse");
     let e = String::from_utf8_lossy(&out.stderr);
     assert!(
-        e.contains("[cell] kmesh with functional") && e.contains("range-separated"),
+        e.contains("method.task = \"optimize\"") && e.contains("range-separated"),
         "opt-hse: {e}"
     );
+}
+
+/// The CLI range-separated hybrid on the default dense-AFT J/K is the library
+/// `solve_krks` on the same J/K, bit for bit, and is not the global hybrid.
+#[test]
+fn cli_kpoint_rsh_dense_equals_library_solve_krks_bit_for_bit() {
+    for (tag, name) in [("hse", "HSE06"), ("cam", "HYB_GGA_XC_CAM_B3LYP")] {
+        let dft = format!("[dft]\nfunctional = \"{name}\"");
+        let toml = input(&format!("dense-{tag}"), "ksdft", 1, &dft, "");
+        let out = run(&toml);
+        assert!(
+            out.status.success(),
+            "{tag}:\n{}\n{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let cli = logged_energy(&toml);
+        let lib = library_energy(name);
+        assert_eq!(
+            cli.to_bits(),
+            lib.to_bits(),
+            "{tag}: CLI {cli:.15} vs library {lib:.15}"
+        );
+        assert!(
+            (cli - library_energy("PBE0")).abs() > 1e-4,
+            "{tag}: RSH equals PBE0?"
+        );
+    }
 }
 
 /// Library energy of `functional` on the RS-GDF J/K (cc-pVDZ-RI aux), the
@@ -248,7 +277,7 @@ fn cli_kpoint_rsh_rsgdf_equals_library_solve_krks() {
 }
 
 /// With `jk = "rsgdf"` the range-separated energy is accepted, but the rest of
-/// the surface stays refused by name: dense J/K (above), open-shell routes and
+/// the surface stays refused by name: open-shell routes and
 /// `task = "optimize"` (forces/stress are not implemented).
 #[test]
 fn cli_kpoint_rsh_rsgdf_keeps_forces_and_open_shell_refused() {

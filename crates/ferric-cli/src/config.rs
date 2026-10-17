@@ -4673,9 +4673,9 @@ impl PeriodicRoute {
     /// Energy gate: LDA, GGA and global hybrids on every Kohn-Sham route, the
     /// pure meta-GGAs SCAN / r2SCAN on the closed-shell route only (the
     /// spin-resolved XC has no tau term), and range-separated hybrids (HSE06,
-    /// CAM-B3LYP, wB97X) on the closed-shell route with `jk = "rsgdf"` only
-    /// (`rsgdf`; the force and optimize gates still refuse them by name).
-    pub fn check_kpoint_support(self, functional: Option<&str>, rsgdf: bool) -> Result<(), String> {
+    /// CAM-B3LYP, wB97X) on the closed-shell route with either J/K (the force
+    /// and optimize gates still refuse them by name).
+    pub fn check_kpoint_support(self, functional: Option<&str>) -> Result<(), String> {
         match self {
             PeriodicRoute::Rhf
             | PeriodicRoute::Uhf
@@ -4684,7 +4684,7 @@ impl PeriodicRoute {
             | PeriodicRoute::Drpa => Ok(()),
             PeriodicRoute::Rks | PeriodicRoute::Uks | PeriodicRoute::Roks => {
                 let f = functional.unwrap_or("LDA");
-                if self == PeriodicRoute::Rks && rsgdf && ferric_pbc::rsh::is_range_separated(f) {
+                if self == PeriodicRoute::Rks && ferric_pbc::rsh::is_range_separated(f) {
                     return Ok(());
                 }
                 let mgga_ok =
@@ -4702,7 +4702,7 @@ impl PeriodicRoute {
                                 " only (no meta-GGA)"
                             },
                             if self == PeriodicRoute::Rks {
-                                ", plus range-separated hybrids with jk = \"rsgdf\""
+                                ", plus range-separated hybrids"
                             } else {
                                 ""
                             }
@@ -5262,7 +5262,7 @@ pub fn periodic_plan(cfg: &Config, raw: &toml::Value) -> Result<Option<PeriodicP
             if n.contains(&0) {
                 return Err(format!("[cell] kmesh = {n:?}: every entry must be >= 1"));
             }
-            route.check_kpoint_support(functional.as_deref(), rsgdf)?;
+            route.check_kpoint_support(functional.as_deref())?;
             let centring = match c
                 .centring
                 .as_deref()
