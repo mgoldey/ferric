@@ -82,8 +82,8 @@ fn check_same_geometry(det: &SymmetryDetection, mol: &Molecule) -> Result<(), Fe
     } else {
         Err(FerricError::General(
             "AoRepresentation: the molecule is not the reoriented, symmetrized \
-             SymmetryDetection::molecule (atoms or coordinates differ); the AO \
-             representation is only valid in the symmetry frame"
+             SymmetryDetection::molecule (atoms or coordinates differ by more than 1e-12 Bohr; pass it \
+             unchanged); the AO representation is only valid in the symmetry frame"
                 .into(),
         ))
     }
@@ -107,7 +107,7 @@ impl AoRepresentation {
     /// Build the representation for `det.molecule` in basis `bs`.
     ///
     /// `mol` is the molecule the integrals will be built from. It must be
-    /// `det.molecule` (same atoms, same coordinates within `det.tol`): the
+    /// `det.molecule` (same atoms, same coordinates to 1e-12 Bohr, i.e. pass `det.molecule` unchanged): the
     /// representation is only valid in the symmetry frame, so a molecule in
     /// the original input frame is rejected.
     pub fn new(

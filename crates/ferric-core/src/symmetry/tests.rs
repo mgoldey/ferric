@@ -644,3 +644,16 @@ fn a_molecule_displaced_by_less_than_the_tolerance_is_still_rejected() {
     assert!(AoRepresentation::new(&det, &nudged, &bs).is_err());
     assert!(AoRepresentation::new(&det, &det.molecule.clone(), &bs).is_ok());
 }
+
+#[test]
+fn open_operation_sets_are_rejected_and_all_eight_groups_accepted() {
+    // C2(z)*sigma(xy) = i, and C2(z)*i = sigma(xy): neither set is a group.
+    for open in [&[0usize, 1, 5, 6][..], &[0, 1, 4, 6], &[0, 8], &[0, 1, 2]] {
+        assert!(AbelianGroup::from_ops(open).is_err(), "{open:?}");
+        assert!(irreps(open).is_err(), "{open:?}");
+    }
+    for (group, ops) in GROUP_OPS {
+        assert_eq!(AbelianGroup::from_ops(ops).unwrap(), group);
+        assert_eq!(irreps(ops).unwrap().len(), ops.len());
+    }
+}

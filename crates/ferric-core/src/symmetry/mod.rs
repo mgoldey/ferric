@@ -154,7 +154,20 @@ pub enum AbelianGroup {
 impl AbelianGroup {
     /// Identify the group formed by the D2h operation indices `ops`
     /// (ascending, containing the identity).
+    ///
+    /// The set must be a group: it must contain the identity, only D2h
+    /// indices, and be closed under [`compose`]. Open sets such as
+    /// `[0, 1, 5, 6]` are rejected.
     pub fn from_ops(ops: &[usize]) -> Result<Self, FerricError> {
+        let closed = ops.iter().all(|&a| a < 8)
+            && ops
+                .iter()
+                .all(|&a| ops.iter().all(|&b| ops.contains(&compose(a, b))));
+        if !closed {
+            return Err(FerricError::General(format!(
+                "operation set {ops:?} is not closed under composition (or has an index >= 8)"
+            )));
+        }
         let has = |i: usize| ops.contains(&i);
         let n_c2 = C2_OPS.iter().filter(|&&i| has(i)).count();
         let n_mirror = MIRROR_OPS.iter().filter(|&&i| has(i)).count();
