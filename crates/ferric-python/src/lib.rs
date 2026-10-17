@@ -1006,15 +1006,14 @@ fn run_rhf(
     solve_rhf_outcome(py, &ctx, &emol, &prep, op, &bounds, config)
 }
 
-/// A library refusal or validation error about symmetry/irrep settings is a
-/// bad argument combination (`ValueError` naming `symmetry=True`); anything
-/// else is a solver failure (`RuntimeError`).
-fn symmetry_err(e: impl std::fmt::Display) -> PyErr {
-    let msg = e.to_string();
-    if msg.contains("symmetry") || msg.contains("irrep") {
-        pyo3::exceptions::PyValueError::new_err(format!("run_rhf(symmetry=True): {msg}"))
+/// A refusal the library classifies as a bad symmetry request
+/// (`ferric_scf::symmetric::is_symmetry_refusal`) is a `ValueError` naming
+/// `symmetry=True`; anything else is a solver failure (`RuntimeError`).
+fn symmetry_err(e: ferric_core::error::FerricError) -> PyErr {
+    if ferric_scf::symmetric::is_symmetry_refusal(&e) {
+        pyo3::exceptions::PyValueError::new_err(format!("run_rhf(symmetry=True): {e}"))
     } else {
-        make_err(msg)
+        make_err(e)
     }
 }
 
@@ -1103,7 +1102,7 @@ struct PySymmetricRhfResult {
     symbols: Vec<String>,
     coords_angstrom: Vec<(f64, f64, f64)>,
     rotation: [[f64; 3]; 3],
-    origin_bohr: [f64; 3],
+    origin_angstrom: [f64; 3],
 }
 
 impl PySymmetricRhfResult {
@@ -1133,7 +1132,7 @@ impl PySymmetricRhfResult {
                 })
                 .collect(),
             rotation,
-            origin_bohr,
+            origin_angstrom: origin_bohr.map(|x| x / ANGSTROM_TO_BOHR),
         }
     }
 }
@@ -1166,10 +1165,12 @@ impl PySymmetricRhfResult {
     fn symmetrized_coords(&self) -> Vec<(f64, f64, f64)> {
         self.coords_angstrom.clone()
     }
-    /// `(R, origin)` with `r_sym = R @ (r_in - origin)`, `origin` in Bohr
-    /// (input-frame coordinates); identity and zero for C1.
+    /// `(R, origin)` with `r_sym = R @ (r_in - origin)`; `origin` is an
+    /// input-frame point in Angstrom (same units as `Molecule.coords()` and
+    /// `symmetrized_coords()`). Identity and zero for C1. The relation holds
+    /// to the symmetrization shift (`max_symmetrization_shift`).
     fn frame_transform(&self) -> ([[f64; 3]; 3], [f64; 3]) {
-        (self.rotation, self.origin_bohr)
+        (self.rotation, self.origin_angstrom)
     }
     /// Unavailable: the density is in the symmetry frame.
     fn density(&self) -> PyResult<()> {

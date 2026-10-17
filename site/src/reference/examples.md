@@ -52,6 +52,7 @@ See [SCF and DFT](../methods/scf.md).
 | `benzene-rhf-def2-rijk.toml` | benzene / def2-SVP | `rhf` | — | RI-JK. |
 | `decane-rhf.toml` | decane / STO-3G | `rhf` | — | `k_builder = "link"`. |
 | `water-rhf-cosx.toml` | H2O / cc-pVDZ | `rhf` | "E(COSX) − E(direct) is reported in crates/ferric-scf/tests/cosx_scf.rs" | COSX exchange. |
+| `water-rhf-symmetry.toml` | H2O / STO-3G | `rhf` + `[scf] symmetry` | — | Point-group-blocked RHF (C2v); `irrep_nelec` shown commented. |
 | `h_uhf.toml` | H atom / STO-3G, doublet | `uhf` | — | |
 | `h2_opt.toml` | stretched H2 / STO-3G | `rhf` / optimize | — | |
 | `water-frequencies.toml` | H2O / STO-3G | `rhf` / frequencies | — | Finite-difference Hessian (`hessian = "fd"`). Check `Hessian asymmetry`. |

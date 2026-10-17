@@ -218,6 +218,27 @@ fn unsupported_combinations_are_refused_by_name() {
             "requires [scf] symmetry",
         ),
         (
+            "ladder",
+            "rhf",
+            "energy",
+            "[scf]\nsymmetry = true\n[[scf.ladder]]\nmax_iter = 3\n",
+            "[[scf.ladder]]",
+        ),
+        (
+            "dfguess",
+            "rhf",
+            "energy",
+            "[scf]\nsymmetry = true\ndf_guess = true\n",
+            "df_guess",
+        ),
+        (
+            "cosx",
+            "rhf",
+            "energy",
+            "[scf]\nsymmetry = true\nk_builder = \"cosx\"\n",
+            "cosx",
+        ),
+        (
             "solvent",
             "rhf",
             "energy",

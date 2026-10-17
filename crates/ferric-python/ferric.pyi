@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Sequence, TypedDict
+from typing import Any, Literal, NoReturn, Sequence, TypedDict, overload
 
 import numpy as np
 from numpy.typing import NDArray
@@ -422,11 +422,12 @@ class SymmetricRhfResult:
         """Symmetrized geometry in the symmetry frame, Angstrom."""
         ...
     def frame_transform(self) -> tuple[list[list[float]], list[float]]:
-        """(R, origin_bohr): r_sym = R @ (r_in - origin)."""
+        """(R, origin), origin in Angstrom: r_sym = R @ (r_in - origin) maps input
+        coords (Molecule.coords(), Angstrom) onto symmetrized_coords()."""
         ...
-    def density(self) -> None: ...
-    def mo_coefficients(self) -> None: ...
-    def gradient(self) -> None: ...
+    def density(self) -> NoReturn: ...
+    def mo_coefficients(self) -> NoReturn: ...
+    def gradient(self) -> NoReturn: ...
 
 class RhfResult:
     """Result of a closed-shell RHF (or run_ksdft KS-DFT) calculation."""
@@ -2511,6 +2512,7 @@ def run_drpa_kpts(
     "second-order"; quad_points only with "quadrature"."""
     ...
 
+@overload
 def run_rhf(
     mol: Molecule,
     basis_set: BasisSet,
@@ -2541,9 +2543,9 @@ def run_rhf(
     cosx_overlap_fit: bool | None = None,
     aurora: bool | None = None,
     trah_trigger: float | None = None,
-    symmetry: bool = False,
-    irrep_nelec: dict[str, int] | None = None,
-) -> RhfResult | SymmetricRhfResult:
+    symmetry: Literal[False] = False,
+    irrep_nelec: None = None,
+) -> RhfResult:
     """Closed-shell Restricted Hartree-Fock.
 
     symmetry=True (default False; False is byte-identical to before): detect
@@ -2555,7 +2557,8 @@ def run_rhf(
     NotImplementedError). irrep_nelec={"A1": 4, "B2": 2}: pin electrons per
     irrep (even counts; requires symmetry=True, else ValueError). Closed-shell
     HF only: solvent, point_charges/external_field/smeared_charges, cosx,
-    stability_descent, soscf, aurora/trah_trigger and the like raise.
+    stability_descent, soscf, aurora/trah_trigger and the like raise ValueError.
+    The blocked SCF is one plain solve: no convergence-ladder escalation.
 
     SCF controls (defaults): max_iter 200 (the iteration cap, the Rust RhfConfig default; reaching it returns
     converged=False and emits a RuntimeWarning naming the unmet criteria),
@@ -2589,6 +2592,43 @@ def run_rhf(
     charges (Bohr / Hartree atomic units).
     """
     ...
+
+@overload
+def run_rhf(
+    mol: Molecule,
+    basis_set: BasisSet,
+    max_iter: int | None = None,
+    energy_conv: float | None = None,
+    density_conv: float | None = None,
+    diis_size: int | None = None,
+    integral_thresh: float | None = None,
+    k_builder: str | None = None,
+    df_j_aux: str | None = None,
+    df_k_aux: str | None = None,
+    level_shift: float | None = None,
+    mom_after_iter: int | None = None,
+    guess: str | None = None,
+    diis: str | None = None,
+    smearing_sigma: float | None = None,
+    soscf: bool | None = None,
+    point_charges: list[tuple[float, float, float, float]] | None = None,
+    external_field: tuple[float, float, float] | None = None,
+    smeared_charges: list[tuple[float, float, float, float, float]] | None = None,
+    memory_budget_gb: float | None = None,
+    solvent: float | str | None = None,
+    pcm_lebedev_order: int | None = None,
+    stability_descent: bool | None = None,
+    cosx_grid: tuple[int, int] | tuple[int, int, str] | None = None,
+    cosx_final_pass: bool | None = None,
+    cosx_final_grid: tuple[int, int] | tuple[int, int, str] | None = None,
+    cosx_overlap_fit: bool | None = None,
+    aurora: bool | None = None,
+    trah_trigger: float | None = None,
+    *,
+    symmetry: Literal[True],
+    irrep_nelec: dict[str, int] | None = None,
+) -> SymmetricRhfResult: ...
+
 
 def run_uhf(
     mol: Molecule,

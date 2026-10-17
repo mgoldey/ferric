@@ -2697,6 +2697,33 @@ impl Config {
         if self.cell.is_some() || self.qmmm.is_some() {
             return refuse("not available with [cell] or [qmmm]".to_string());
         }
+        // The blocked solve is a single plain SCF: no convergence ladder, no
+        // DF pre-stages, no second-order/orbital-Hessian steps, no COSX.
+        let unsupported = [
+            (!s.ladder.is_empty(), "[[scf.ladder]]"),
+            (s.df_guess == Some(true), "[scf] df_guess"),
+            (s.df_increments, "[scf] df_increments"),
+            (s.soscf, "[scf] soscf"),
+            (s.aurora, "[scf] aurora"),
+            (s.trah_trigger.is_some(), "[scf] trah_trigger"),
+            (
+                s.runs_stability_check(),
+                "[scf] check_stability / stability_descent",
+            ),
+            (s.smearing_sigma.is_some(), "[scf] smearing_sigma"),
+            (s.mom_after_iter > 0, "[scf] mom_after_iter"),
+            (
+                s.k_builder.as_deref() == Some("cosx"),
+                "[scf] k_builder = \"cosx\"",
+            ),
+        ];
+        if let Some((_, key)) = unsupported.iter().find(|(set, _)| *set) {
+            return refuse(format!(
+                "{key} is not supported: the blocked SCF is one plain solve with no \
+                 convergence-ladder escalation, DF pre-stage, second-order step or COSX. \
+                 Remove the key (or symmetry = true)."
+            ));
+        }
         Ok(())
     }
 }
@@ -9747,6 +9774,19 @@ mod cli_wired_keys_tests {
             &cfg("rhf", "energy", 1, "[scf]\nirrep_nelec = { A1 = 4 }\n"),
             "requires [scf] symmetry",
         );
+        for (extra, key) in [
+            ("df_guess = true\n", "df_guess"),
+            ("df_increments = true\n", "df_increments"),
+            ("soscf = true\n", "soscf"),
+            ("aurora = true\n", "aurora"),
+            ("stability_descent = true\n", "check_stability"),
+            ("mom_after_iter = 2\n", "mom_after_iter"),
+            ("k_builder = \"cosx\"\n", "cosx"),
+            ("[[scf.ladder]]\nmax_iter = 3\n", "[[scf.ladder]]"),
+        ] {
+            let src = format!("[scf]\nsymmetry = true\n{extra}");
+            refused(&cfg("rhf", "energy", 1, &src), key);
+        }
         // Default off: no refusal for any kind.
         let off = cfg("uhf", "energy", 3, "");
         off.validate_cli_wired_keys().unwrap();

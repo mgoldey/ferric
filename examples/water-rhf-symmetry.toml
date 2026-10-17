@@ -1,0 +1,18 @@
+# Point-group-blocked closed-shell RHF (C2v for water). The energy is that of
+# the SYMMETRIZED geometry; the printout and the JSON run log give the point
+# group, per-irrep electron counts and the symmetrization shift. Energy runs of
+# kind = "rhf" only (no gradients/optimizer/post-HF/DFT), and no ladder, DF
+# pre-stage, second-order step or COSX.
+[molecule]
+xyz = "testdata/molecules/water.xyz"
+
+[basis]
+name = "sto-3g"
+
+[method]
+kind = "rhf"
+
+[scf]
+symmetry = true
+# Pin an excited state instead of aufbau (even counts; unlisted irreps follow aufbau):
+#irrep_nelec = { A1 = 8, B1 = 0, B2 = 2 }
