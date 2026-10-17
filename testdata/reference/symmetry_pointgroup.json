@@ -14,7 +14,12 @@
     1,
     2,
     4
-   ]
+   ],
+   "irreps": {
+    "A1": 4,
+    "B1": 1,
+    "B2": 2
+   }
   },
   {
    "molecule": "water",
@@ -29,7 +34,13 @@
     4,
     7,
     11
-   ]
+   ],
+   "irreps": {
+    "A1": 11,
+    "A2": 2,
+    "B1": 4,
+    "B2": 7
+   }
   },
   {
    "molecule": "water",
@@ -44,7 +55,13 @@
     4,
     7,
     11
-   ]
+   ],
+   "irreps": {
+    "A1": 11,
+    "A2": 2,
+    "B1": 4,
+    "B2": 7
+   }
   },
   {
    "molecule": "water",
@@ -59,7 +76,13 @@
     4,
     7,
     12
-   ]
+   ],
+   "irreps": {
+    "A1": 12,
+    "A2": 2,
+    "B1": 4,
+    "B2": 7
+   }
   },
   {
    "molecule": "nh3",
@@ -72,7 +95,11 @@
    "irrep_dimensions": [
     2,
     6
-   ]
+   ],
+   "irreps": {
+    "A'": 6,
+    "A''": 2
+   }
   },
   {
    "molecule": "nh3",
@@ -85,7 +112,11 @@
    "irrep_dimensions": [
     10,
     19
-   ]
+   ],
+   "irreps": {
+    "A'": 19,
+    "A''": 10
+   }
   },
   {
    "molecule": "nh3",
@@ -98,7 +129,11 @@
    "irrep_dimensions": [
     10,
     19
-   ]
+   ],
+   "irreps": {
+    "A'": 19,
+    "A''": 10
+   }
   },
   {
    "molecule": "nh3",
@@ -111,7 +146,11 @@
    "irrep_dimensions": [
     10,
     20
-   ]
+   ],
+   "irreps": {
+    "A'": 20,
+    "A''": 10
+   }
   },
   {
    "molecule": "ethylene",
@@ -128,7 +167,15 @@
     2,
     4,
     4
-   ]
+   ],
+   "irreps": {
+    "Ag": 4,
+    "B2g": 1,
+    "B3g": 2,
+    "B1u": 4,
+    "B2u": 2,
+    "B3u": 1
+   }
   },
   {
    "molecule": "ethylene",
@@ -147,7 +194,17 @@
     7,
     11,
     11
-   ]
+   ],
+   "irreps": {
+    "Ag": 11,
+    "B1g": 2,
+    "B2g": 4,
+    "B3g": 7,
+    "Au": 2,
+    "B1u": 11,
+    "B2u": 7,
+    "B3u": 4
+   }
   },
   {
    "molecule": "ethylene",
@@ -166,7 +223,17 @@
     7,
     11,
     11
-   ]
+   ],
+   "irreps": {
+    "Ag": 11,
+    "B1g": 2,
+    "B2g": 4,
+    "B3g": 7,
+    "Au": 2,
+    "B1u": 11,
+    "B2u": 7,
+    "B3u": 4
+   }
   },
   {
    "molecule": "ethylene",
@@ -185,7 +252,17 @@
     7,
     12,
     12
-   ]
+   ],
+   "irreps": {
+    "Ag": 12,
+    "B1g": 2,
+    "B2g": 4,
+    "B3g": 7,
+    "Au": 2,
+    "B1u": 12,
+    "B2u": 7,
+    "B3u": 4
+   }
   },
   {
    "molecule": "methane",
@@ -200,7 +277,13 @@
     2,
     2,
     3
-   ]
+   ],
+   "irreps": {
+    "A": 3,
+    "B1": 2,
+    "B2": 2,
+    "B3": 2
+   }
   },
   {
    "molecule": "methane",
@@ -215,7 +298,13 @@
     8,
     8,
     10
-   ]
+   ],
+   "irreps": {
+    "A": 10,
+    "B1": 8,
+    "B2": 8,
+    "B3": 8
+   }
   },
   {
    "molecule": "methane",
@@ -230,7 +319,13 @@
     8,
     8,
     10
-   ]
+   ],
+   "irreps": {
+    "A": 10,
+    "B1": 8,
+    "B2": 8,
+    "B3": 8
+   }
   },
   {
    "molecule": "methane",
@@ -245,7 +340,13 @@
     8,
     8,
     11
-   ]
+   ],
+   "irreps": {
+    "A": 11,
+    "B1": 8,
+    "B2": 8,
+    "B3": 8
+   }
   },
   {
    "molecule": "h2",
@@ -258,7 +359,11 @@
    "irrep_dimensions": [
     1,
     1
-   ]
+   ],
+   "irreps": {
+    "Ag": 1,
+    "B1u": 1
+   }
   },
   {
    "molecule": "h2",
@@ -275,7 +380,15 @@
     1,
     3,
     3
-   ]
+   ],
+   "irreps": {
+    "Ag": 3,
+    "B2g": 1,
+    "B3g": 1,
+    "B1u": 3,
+    "B2u": 1,
+    "B3u": 1
+   }
   },
   {
    "molecule": "h2",
@@ -292,7 +405,15 @@
     1,
     3,
     3
-   ]
+   ],
+   "irreps": {
+    "Ag": 3,
+    "B2g": 1,
+    "B3g": 1,
+    "B1u": 3,
+    "B2u": 1,
+    "B3u": 1
+   }
   },
   {
    "molecule": "h2",
@@ -309,7 +430,15 @@
     1,
     3,
     3
-   ]
+   ],
+   "irreps": {
+    "Ag": 3,
+    "B2g": 1,
+    "B3g": 1,
+    "B1u": 3,
+    "B2u": 1,
+    "B3u": 1
+   }
   },
   {
    "molecule": "n2",
@@ -326,7 +455,15 @@
     1,
     3,
     3
-   ]
+   ],
+   "irreps": {
+    "Ag": 3,
+    "B2g": 1,
+    "B3g": 1,
+    "B1u": 3,
+    "B2u": 1,
+    "B3u": 1
+   }
   },
   {
    "molecule": "n2",
@@ -345,7 +482,17 @@
     3,
     7,
     7
-   ]
+   ],
+   "irreps": {
+    "Ag": 7,
+    "B1g": 1,
+    "B2g": 3,
+    "B3g": 3,
+    "Au": 1,
+    "B1u": 7,
+    "B2u": 3,
+    "B3u": 3
+   }
   },
   {
    "molecule": "n2",
@@ -364,7 +511,17 @@
     3,
     7,
     7
-   ]
+   ],
+   "irreps": {
+    "Ag": 7,
+    "B1g": 1,
+    "B2g": 3,
+    "B3g": 3,
+    "Au": 1,
+    "B1u": 7,
+    "B2u": 3,
+    "B3u": 3
+   }
   },
   {
    "molecule": "n2",
@@ -383,7 +540,17 @@
     3,
     8,
     8
-   ]
+   ],
+   "irreps": {
+    "Ag": 8,
+    "B1g": 1,
+    "B2g": 3,
+    "B3g": 3,
+    "Au": 1,
+    "B1u": 8,
+    "B2u": 3,
+    "B3u": 3
+   }
   },
   {
    "molecule": "hf",
@@ -397,7 +564,12 @@
     1,
     1,
     4
-   ]
+   ],
+   "irreps": {
+    "A1": 4,
+    "B1": 1,
+    "B2": 1
+   }
   },
   {
    "molecule": "hf",
@@ -412,7 +584,13 @@
     4,
     4,
     10
-   ]
+   ],
+   "irreps": {
+    "A1": 10,
+    "A2": 1,
+    "B1": 4,
+    "B2": 4
+   }
   },
   {
    "molecule": "hf",
@@ -427,7 +605,13 @@
     4,
     4,
     10
-   ]
+   ],
+   "irreps": {
+    "A1": 10,
+    "A2": 1,
+    "B1": 4,
+    "B2": 4
+   }
   },
   {
    "molecule": "hf",
@@ -442,7 +626,13 @@
     4,
     4,
     11
-   ]
+   ],
+   "irreps": {
+    "A1": 11,
+    "A2": 1,
+    "B1": 4,
+    "B2": 4
+   }
   },
   {
    "molecule": "benzene",
@@ -461,7 +651,17 @@
     6,
     9,
     9
-   ]
+   ],
+   "irreps": {
+    "Ag": 9,
+    "B1g": 6,
+    "B2g": 2,
+    "B3g": 1,
+    "Au": 1,
+    "B1u": 2,
+    "B2u": 6,
+    "B3u": 9
+   }
   },
   {
    "molecule": "benzene",
@@ -480,7 +680,17 @@
     18,
     24,
     24
-   ]
+   ],
+   "irreps": {
+    "Ag": 24,
+    "B1g": 18,
+    "B2g": 9,
+    "B3g": 6,
+    "Au": 6,
+    "B1u": 9,
+    "B2u": 18,
+    "B3u": 24
+   }
   },
   {
    "molecule": "benzene",
@@ -499,7 +709,17 @@
     18,
     24,
     24
-   ]
+   ],
+   "irreps": {
+    "Ag": 24,
+    "B1g": 18,
+    "B2g": 9,
+    "B3g": 6,
+    "Au": 6,
+    "B1u": 9,
+    "B2u": 18,
+    "B3u": 24
+   }
   },
   {
    "molecule": "benzene",
@@ -518,7 +738,17 @@
     19,
     26,
     26
-   ]
+   ],
+   "irreps": {
+    "Ag": 26,
+    "B1g": 19,
+    "B2g": 9,
+    "B3g": 6,
+    "Au": 6,
+    "B1u": 9,
+    "B2u": 19,
+    "B3u": 26
+   }
   },
   {
    "molecule": "asym",
@@ -530,7 +760,10 @@
    "abelian_group": "C1",
    "irrep_dimensions": [
     16
-   ]
+   ],
+   "irreps": {
+    "A": 16
+   }
   },
   {
    "molecule": "asym",
@@ -542,7 +775,10 @@
    "abelian_group": "C1",
    "irrep_dimensions": [
     47
-   ]
+   ],
+   "irreps": {
+    "A": 47
+   }
   },
   {
    "molecule": "asym",
@@ -554,7 +790,10 @@
    "abelian_group": "C1",
    "irrep_dimensions": [
     47
-   ]
+   ],
+   "irreps": {
+    "A": 47
+   }
   },
   {
    "molecule": "asym",
@@ -566,7 +805,230 @@
    "abelian_group": "C1",
    "irrep_dimensions": [
     50
-   ]
+   ],
+   "irreps": {
+    "A": 50
+   }
+  },
+  {
+   "molecule": "c2",
+   "xyz_angstrom": "O 0.7 0.1 0.3\nO -0.7 -0.1 0.3\nH 0.95 0.7 -0.3\nH -0.95 -0.7 -0.3",
+   "basis": "sto-3g",
+   "cartesian": false,
+   "nao": 12,
+   "pyscf_groupname": "C2",
+   "abelian_group": "C2",
+   "irrep_dimensions": [
+    6,
+    6
+   ],
+   "irreps": {
+    "A": 6,
+    "B": 6
+   }
+  },
+  {
+   "molecule": "c2",
+   "xyz_angstrom": "O 0.7 0.1 0.3\nO -0.7 -0.1 0.3\nH 0.95 0.7 -0.3\nH -0.95 -0.7 -0.3",
+   "basis": "cc-pvdz",
+   "cartesian": false,
+   "nao": 38,
+   "pyscf_groupname": "C2",
+   "abelian_group": "C2",
+   "irrep_dimensions": [
+    19,
+    19
+   ],
+   "irreps": {
+    "A": 19,
+    "B": 19
+   }
+  },
+  {
+   "molecule": "c2",
+   "xyz_angstrom": "O 0.7 0.1 0.3\nO -0.7 -0.1 0.3\nH 0.95 0.7 -0.3\nH -0.95 -0.7 -0.3",
+   "basis": "def2-svp",
+   "cartesian": false,
+   "nao": 38,
+   "pyscf_groupname": "C2",
+   "abelian_group": "C2",
+   "irrep_dimensions": [
+    19,
+    19
+   ],
+   "irreps": {
+    "A": 19,
+    "B": 19
+   }
+  },
+  {
+   "molecule": "c2",
+   "xyz_angstrom": "O 0.7 0.1 0.3\nO -0.7 -0.1 0.3\nH 0.95 0.7 -0.3\nH -0.95 -0.7 -0.3",
+   "basis": "cc-pvdz",
+   "cartesian": true,
+   "nao": 40,
+   "pyscf_groupname": "C2",
+   "abelian_group": "C2",
+   "irrep_dimensions": [
+    20,
+    20
+   ],
+   "irreps": {
+    "A": 20,
+    "B": 20
+   }
+  },
+  {
+   "molecule": "ci",
+   "xyz_angstrom": "C 0.7 0.1 0.2\nC -0.7 -0.1 -0.2\nF 1.4 1.1 -0.3\nF -1.4 -1.1 0.3\nH 0.9 -0.8 0.6\nH -0.9 0.8 -0.6",
+   "basis": "sto-3g",
+   "cartesian": false,
+   "nao": 22,
+   "pyscf_groupname": "Ci",
+   "abelian_group": "Ci",
+   "irrep_dimensions": [
+    11,
+    11
+   ],
+   "irreps": {
+    "Ag": 11,
+    "Au": 11
+   }
+  },
+  {
+   "molecule": "ci",
+   "xyz_angstrom": "C 0.7 0.1 0.2\nC -0.7 -0.1 -0.2\nF 1.4 1.1 -0.3\nF -1.4 -1.1 0.3\nH 0.9 -0.8 0.6\nH -0.9 0.8 -0.6",
+   "basis": "cc-pvdz",
+   "cartesian": false,
+   "nao": 66,
+   "pyscf_groupname": "Ci",
+   "abelian_group": "Ci",
+   "irrep_dimensions": [
+    33,
+    33
+   ],
+   "irreps": {
+    "Ag": 33,
+    "Au": 33
+   }
+  },
+  {
+   "molecule": "ci",
+   "xyz_angstrom": "C 0.7 0.1 0.2\nC -0.7 -0.1 -0.2\nF 1.4 1.1 -0.3\nF -1.4 -1.1 0.3\nH 0.9 -0.8 0.6\nH -0.9 0.8 -0.6",
+   "basis": "def2-svp",
+   "cartesian": false,
+   "nao": 66,
+   "pyscf_groupname": "Ci",
+   "abelian_group": "Ci",
+   "irrep_dimensions": [
+    33,
+    33
+   ],
+   "irreps": {
+    "Ag": 33,
+    "Au": 33
+   }
+  },
+  {
+   "molecule": "ci",
+   "xyz_angstrom": "C 0.7 0.1 0.2\nC -0.7 -0.1 -0.2\nF 1.4 1.1 -0.3\nF -1.4 -1.1 0.3\nH 0.9 -0.8 0.6\nH -0.9 0.8 -0.6",
+   "basis": "cc-pvdz",
+   "cartesian": true,
+   "nao": 70,
+   "pyscf_groupname": "Ci",
+   "abelian_group": "Ci",
+   "irrep_dimensions": [
+    35,
+    35
+   ],
+   "irreps": {
+    "Ag": 35,
+    "Au": 35
+   }
+  },
+  {
+   "molecule": "c2h",
+   "xyz_angstrom": "C 1.0 0.3 0.4\nC -1.0 -0.3 0.4\nC -1.0 -0.3 -0.4\nC 1.0 0.3 -0.4\nH 1.5 1.1 0.9\nH -1.5 -1.1 0.9\nH -1.5 -1.1 -0.9\nH 1.5 1.1 -0.9",
+   "basis": "sto-3g",
+   "cartesian": false,
+   "nao": 24,
+   "pyscf_groupname": "C2h",
+   "abelian_group": "C2h",
+   "irrep_dimensions": [
+    6,
+    6,
+    6,
+    6
+   ],
+   "irreps": {
+    "Ag": 6,
+    "Bg": 6,
+    "Au": 6,
+    "Bu": 6
+   }
+  },
+  {
+   "molecule": "c2h",
+   "xyz_angstrom": "C 1.0 0.3 0.4\nC -1.0 -0.3 0.4\nC -1.0 -0.3 -0.4\nC 1.0 0.3 -0.4\nH 1.5 1.1 0.9\nH -1.5 -1.1 0.9\nH -1.5 -1.1 -0.9\nH 1.5 1.1 -0.9",
+   "basis": "cc-pvdz",
+   "cartesian": false,
+   "nao": 76,
+   "pyscf_groupname": "C2h",
+   "abelian_group": "C2h",
+   "irrep_dimensions": [
+    19,
+    19,
+    19,
+    19
+   ],
+   "irreps": {
+    "Ag": 19,
+    "Bg": 19,
+    "Au": 19,
+    "Bu": 19
+   }
+  },
+  {
+   "molecule": "c2h",
+   "xyz_angstrom": "C 1.0 0.3 0.4\nC -1.0 -0.3 0.4\nC -1.0 -0.3 -0.4\nC 1.0 0.3 -0.4\nH 1.5 1.1 0.9\nH -1.5 -1.1 0.9\nH -1.5 -1.1 -0.9\nH 1.5 1.1 -0.9",
+   "basis": "def2-svp",
+   "cartesian": false,
+   "nao": 76,
+   "pyscf_groupname": "C2h",
+   "abelian_group": "C2h",
+   "irrep_dimensions": [
+    19,
+    19,
+    19,
+    19
+   ],
+   "irreps": {
+    "Ag": 19,
+    "Bg": 19,
+    "Au": 19,
+    "Bu": 19
+   }
+  },
+  {
+   "molecule": "c2h",
+   "xyz_angstrom": "C 1.0 0.3 0.4\nC -1.0 -0.3 0.4\nC -1.0 -0.3 -0.4\nC 1.0 0.3 -0.4\nH 1.5 1.1 0.9\nH -1.5 -1.1 0.9\nH -1.5 -1.1 -0.9\nH 1.5 1.1 -0.9",
+   "basis": "cc-pvdz",
+   "cartesian": true,
+   "nao": 80,
+   "pyscf_groupname": "C2h",
+   "abelian_group": "C2h",
+   "irrep_dimensions": [
+    20,
+    20,
+    20,
+    20
+   ],
+   "irreps": {
+    "Ag": 20,
+    "Bg": 20,
+    "Au": 20,
+    "Bu": 20
+   }
   }
  ]
 }

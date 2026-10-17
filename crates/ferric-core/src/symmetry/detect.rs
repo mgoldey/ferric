@@ -7,11 +7,16 @@ use crate::FerricError;
 type V3 = [f64; 3];
 type M3 = [V3; 3];
 
-/// Candidate-generating atoms are capped at this many (rarest species/shell
-/// classes first). A molecule with at most this many atoms is searched
-/// exhaustively; beyond it, axes and planes are proposed only from the
-/// rarest atom classes (every real symmetry element still permutes those).
+/// A molecule with at most this many atoms is searched exhaustively: axes and
+/// normals are proposed from every atom pair. Larger molecules use the
+/// class-based proposals described on `proposed_directions`.
 const CANDIDATE_ATOM_CAP: usize = 60;
+/// Within one atom class, all pairs are proposed up to this size; larger
+/// classes propose the first member against every other, plus neighbours.
+const CLASS_PAIR_CAP: usize = 24;
+/// At most this many classes (rarest first) contribute a representative to
+/// the cross-class proposals.
+const CLASS_REP_CAP: usize = 100;
 /// Two proposed directions closer than this (1 - |cos|) are one direction.
 const DIRECTION_MERGE: f64 = 5e-7;
 /// Two directions with |cos| below this are treated as orthogonal.
@@ -36,7 +41,11 @@ pub struct SymmetryDetection {
     /// `i` is carried onto.
     pub atom_perms: Vec<Vec<usize>>,
     /// Largest atom displacement (Bohr) made by symmetrizing the geometry.
+    /// Every accepted operation maps each atom within `tol` of its image, so
+    /// this never exceeds `tol`; [`detect`] returns an error if it does.
     pub max_symmetrization_shift: f64,
+    /// The tolerance (Bohr) the detection ran with.
+    pub tol: f64,
 }
 
 type AtomKey = (i32, bool, i32);
@@ -65,10 +74,17 @@ pub fn detect(mol: &Molecule, tol: f64) -> Result<SymmetryDetection, FerricError
     }
     let origin = charge_centroid(mol);
     let cloud = Cloud::new(mol, origin, tol);
+    cloud.check_resolvable(tol)?;
     let dirs = symmetry_directions(&cloud, tol);
-    let best = best_frame(&cloud, &dirs, tol);
+    let best = canonical_c2v(&cloud, best_frame(&cloud, &dirs, tol), tol);
     let group = AbelianGroup::from_ops(&best.ops)?;
     let (molecule, shift) = symmetrized_molecule(mol, &cloud, &best);
+    if shift > tol * (1.0 + 1e-9) {
+        return Err(FerricError::General(format!(
+            "symmetry detection: symmetrization moved an atom {shift:.3e} Bohr, more than the \
+             tolerance {tol:.1e}; this is a bug, not a user error"
+        )));
+    }
     Ok(SymmetryDetection {
         group,
         ops: best.ops,
@@ -77,6 +93,7 @@ pub fn detect(mol: &Molecule, tol: f64) -> Result<SymmetryDetection, FerricError
         origin,
         atom_perms: best.perms,
         max_symmetrization_shift: shift,
+        tol,
     })
 }
 
@@ -127,6 +144,25 @@ impl Cloud {
         }
     }
 
+    /// Same-species atoms closer than `2 tol` cannot be told apart by the
+    /// tolerance-ball matching, so the permutation would be ambiguous.
+    fn check_resolvable(&self, tol: f64) -> Result<(), FerricError> {
+        for i in 0..self.pts.len() {
+            for j in (i + 1)..self.pts.len() {
+                let d = dist(self.pts[i], self.pts[j]);
+                if self.keys[i] == self.keys[j] && d <= 2.0 * tol {
+                    return Err(FerricError::General(format!(
+                        "symmetry detection: atoms {i} and {j} are the same species and only {d:.2e} \
+                         Bohr apart (<= 2 tol = {:.1e}); the atom permutation would be ambiguous. \
+                         Reduce the tolerance or fix the geometry",
+                        2.0 * tol
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Atom permutation induced by the linear map `m`, if it is a symmetry.
     fn find_perm(&self, m: &M3, tol: f64) -> Option<Vec<usize>> {
         let n = self.pts.len();
@@ -170,25 +206,52 @@ fn symmetry_directions(cloud: &Cloud, tol: f64) -> Vec<V3> {
     accepted
 }
 
-/// Unit directions that any C2 axis or mirror normal must be among: inertia
-/// axes, atom vectors, and for the rarest atoms pair sums, differences and
-/// cross products.
+/// Unit directions that C2 axes and mirror normals must be among: inertia
+/// axes, atom vectors, and pair sums (C2 axis through a pair midpoint),
+/// differences (normal of the plane bisecting a pair) and cross products
+/// (normal of the plane through two atoms and the centre).
+///
+/// Up to `CANDIDATE_ATOM_CAP` atoms every pair is used (exhaustive). Beyond
+/// it a symmetry element is found whenever it moves two members of one atom
+/// class (all pairs within every class) or is visible to a pair of class
+/// representatives (their cross product). This is a heuristic, not a proof: a
+/// large molecule whose elements are revealed only by atom pairs that share no
+/// class and are not representatives can be missed.
 fn proposed_directions(cloud: &Cloud, tol: f64) -> Vec<V3> {
     let mut raw: Vec<V3> = inertia_axes(&cloud.pts, &cloud.keys).to_vec();
     raw.extend(cloud.pts.iter().copied());
-    let mut sel: Vec<usize> = Vec::new();
-    for c in &cloud.classes {
-        if sel.len() >= CANDIDATE_ATOM_CAP {
-            break;
+    let pts = &cloud.pts;
+    let mut pair = |i: usize, j: usize| {
+        let (p, q) = (pts[i], pts[j]);
+        raw.push(add(p, q));
+        raw.push(sub(p, q));
+        raw.push(cross(p, q));
+    };
+    if pts.len() <= CANDIDATE_ATOM_CAP {
+        for i in 0..pts.len() {
+            for j in (i + 1)..pts.len() {
+                pair(i, j);
+            }
         }
-        sel.extend(c.iter().copied());
-    }
-    for (a, &i) in sel.iter().enumerate() {
-        for &j in &sel[a + 1..] {
-            let (p, q) = (cloud.pts[i], cloud.pts[j]);
-            raw.push(add(p, q));
-            raw.push(sub(p, q));
-            raw.push(cross(p, q));
+    } else {
+        for c in &cloud.classes {
+            if c.len() <= CLASS_PAIR_CAP {
+                for (a, &i) in c.iter().enumerate() {
+                    c[a + 1..].iter().for_each(|&j| pair(i, j));
+                }
+            } else {
+                c[1..].iter().for_each(|&j| pair(c[0], j));
+                c.windows(2).for_each(|w| pair(w[0], w[1]));
+            }
+        }
+        let reps: Vec<usize> = cloud
+            .classes
+            .iter()
+            .take(CLASS_REP_CAP)
+            .map(|c| c[0])
+            .collect();
+        for (a, &i) in reps.iter().enumerate() {
+            reps[a + 1..].iter().for_each(|&j| pair(i, j));
         }
     }
     raw.into_iter()
@@ -237,6 +300,30 @@ fn arbitrary_perpendicular(z: V3) -> V3 {
     let mut e = [0.0; 3];
     e[k] = 1.0;
     e
+}
+
+/// Mulliken convention for C2v: put the plane that holds more atoms in yz
+/// (a planar molecule lies in yz), so B1 is symmetric under sigma(xz) and B2
+/// under sigma(yz) irrespective of the input orientation. When both planes
+/// hold the same number of atoms the labels B1/B2 are not determined by the
+/// geometry and the detection order decides.
+fn canonical_c2v(cloud: &Cloud, best: FrameResult, tol: f64) -> FrameResult {
+    if best.ops != [0, 1, 6, 7] {
+        return best;
+    }
+    let held = |k: usize| {
+        best.perms[k]
+            .iter()
+            .enumerate()
+            .filter(|(i, j)| i == *j)
+            .count()
+    };
+    if held(2) > held(3) {
+        // sigma(xz) is the richer plane: x' = y, y' = -x swaps xz <-> yz.
+        let a = best.axes;
+        return evaluate_frame(cloud, [a[1], scale(a[0], -1.0), a[2]], tol);
+    }
+    best
 }
 
 /// Highest-order frame built from the symmetry directions (first wins ties).

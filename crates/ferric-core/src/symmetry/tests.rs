@@ -349,7 +349,7 @@ fn representation_cases() -> Vec<(&'static str, Molecule, crate::basis::BasisSet
 fn ao_representation_is_an_orthogonal_representation_of_the_group() {
     for (name, mol, bs) in representation_cases() {
         let det = detect(&mol, DEFAULT_SYMMETRY_TOL).unwrap();
-        let rep = AoRepresentation::new(&det, &bs).unwrap();
+        let rep = AoRepresentation::new(&det, &det.molecule, &bs).unwrap();
         let n = rep.nao();
         let eye = ndarray::Array2::<f64>::eye(n);
         for (a, &g) in det.ops.iter().enumerate() {
@@ -371,7 +371,7 @@ fn ao_representation_is_an_orthogonal_representation_of_the_group() {
 fn irrep_dimensions_sum_to_nao_and_projectors_resolve_the_identity() {
     for (name, mol, bs) in representation_cases() {
         let det = detect(&mol, DEFAULT_SYMMETRY_TOL).unwrap();
-        let rep = AoRepresentation::new(&det, &bs).unwrap();
+        let rep = AoRepresentation::new(&det, &det.molecule, &bs).unwrap();
         let dims = rep.irrep_dimensions().unwrap();
         assert_eq!(dims.iter().map(|d| d.1).sum::<usize>(), rep.nao(), "{name}");
         let mut total = ndarray::Array2::<f64>::zeros((rep.nao(), rep.nao()));
@@ -408,7 +408,7 @@ fn irrep_dimensions_sum_to_nao_and_projectors_resolve_the_identity() {
 #[test]
 fn water_cc_pvdz_irrep_dimensions_are_11_2_4_7() {
     let det = detect(&xyz(WATER, 1), DEFAULT_SYMMETRY_TOL).unwrap();
-    let rep = AoRepresentation::new(&det, &bundled("cc-pvdz").unwrap()).unwrap();
+    let rep = AoRepresentation::new(&det, &det.molecule, &bundled("cc-pvdz").unwrap()).unwrap();
     let mut d: Vec<usize> = rep
         .irrep_dimensions()
         .unwrap()
@@ -417,4 +417,132 @@ fn water_cc_pvdz_irrep_dimensions_are_11_2_4_7() {
         .collect();
     d.sort_unstable();
     assert_eq!(d, [2, 4, 7, 11]);
+}
+
+/// `n_h` hydrogens on a C3 axis at distinct heights plus one generic C3v
+/// orbit of six carbons (expected group Cs: only the mirror survives the
+/// generic placement). Optionally moved by the test's rigid motion.
+fn axis_plus_generic_orbit(n_h: usize, moved: bool) -> Molecule {
+    let place = |p: [f64; 3]| if moved { rigid(p) } else { p };
+    let mut atoms: Vec<Atom> = (0..n_h)
+        .map(|i| atom(1, place([0.0, 0.0, 1.0 + 0.37 * i as f64])))
+        .collect();
+    let (rho, delta, h) = (1.3f64, 0.2f64, 0.5f64);
+    for k in 0..3 {
+        let a = 2.0 * std::f64::consts::PI * k as f64 / 3.0;
+        for s in [delta, -delta] {
+            atoms.push(atom(
+                6,
+                place([rho * (a + s).cos(), rho * (a + s).sin(), h]),
+            ));
+        }
+    }
+    mol_of(atoms)
+}
+
+#[test]
+fn large_molecules_find_mirrors_that_only_a_non_axial_class_reveals() {
+    // 66 atoms = 60 collinear H (each its own class) + a 6-atom C orbit:
+    // the case where proposing axes from the rarest classes alone fails.
+    // 56 atoms is the exhaustive control; unrotated is the lucky-inertia control.
+    for (n_h, moved) in [(60, true), (60, false), (50, true), (50, false)] {
+        let det = detect(&axis_plus_generic_orbit(n_h, moved), DEFAULT_SYMMETRY_TOL).unwrap();
+        assert_eq!(det.group, AbelianGroup::Cs, "n_h={n_h} moved={moved}");
+    }
+}
+
+fn labelled_dims(mol: &Molecule, bs: &str) -> Vec<(&'static str, usize)> {
+    let det = detect(mol, DEFAULT_SYMMETRY_TOL).unwrap();
+    let rep = AoRepresentation::new(&det, &det.molecule, &bundled(bs).unwrap()).unwrap();
+    let mut v: Vec<_> = rep
+        .irrep_dimensions()
+        .unwrap()
+        .iter()
+        .map(|(ir, d)| (ir.label, *d))
+        .collect();
+    v.sort_unstable();
+    v
+}
+
+#[test]
+fn c2v_labels_do_not_depend_on_the_input_orientation() {
+    let water = xyz(WATER, 1);
+    let permute = |f: fn([f64; 3]) -> [f64; 3], rot: bool| {
+        let mut m = water.clone();
+        for a in m.atoms.iter_mut() {
+            let mut p = f([a.x, a.y, a.zpos]);
+            if rot {
+                p = rigid(p);
+            }
+            (a.x, a.y, a.zpos) = (p[0], p[1], p[2]);
+        }
+        m
+    };
+    let want = labelled_dims(&water, "cc-pvdz");
+    assert_eq!(want, [("A1", 11), ("A2", 2), ("B1", 4), ("B2", 7)]);
+    let planes: [fn([f64; 3]) -> [f64; 3]; 3] = [
+        |p| [p[2], p[0], p[1]],
+        |p| [p[1], p[2], p[0]],
+        |p| [p[0], p[2], p[1]],
+    ];
+    for f in planes {
+        for rot in [false, true] {
+            assert_eq!(labelled_dims(&permute(f, rot), "cc-pvdz"), want);
+        }
+    }
+}
+
+#[test]
+fn ao_representation_rejects_a_molecule_that_is_not_the_symmetry_frame_geometry() {
+    let mol = xyz(WATER, 1);
+    let det = detect(&mol, DEFAULT_SYMMETRY_TOL).unwrap();
+    let bs = bundled("sto-3g").unwrap();
+    assert!(AoRepresentation::new(&det, &det.molecule, &bs).is_ok());
+    let mut moved = mol.clone();
+    for a in moved.atoms.iter_mut() {
+        let p = rigid([a.x, a.y, a.zpos]);
+        (a.x, a.y, a.zpos) = (p[0], p[1], p[2]);
+    }
+    assert!(
+        AoRepresentation::new(&det, &moved, &bs).is_err(),
+        "input frame"
+    );
+    let mut shifted = det.molecule.clone();
+    shifted.atoms[1].x += 10.0 * DEFAULT_SYMMETRY_TOL;
+    assert!(AoRepresentation::new(&det, &shifted, &bs).is_err());
+}
+
+#[test]
+fn an_external_potential_is_refused() {
+    use crate::external_potential::{ExternalPotential, PointCharge};
+    assert!(require_no_external_potential(None).is_ok());
+    assert!(require_no_external_potential(Some(&ExternalPotential::default())).is_ok());
+    let q = ExternalPotential {
+        point_charges: vec![PointCharge {
+            q: 0.1,
+            x: 1.0,
+            y: 2.0,
+            z: 3.0,
+        }],
+        ..Default::default()
+    };
+    assert!(require_no_external_potential(Some(&q)).is_err());
+    let field = ExternalPotential {
+        field: Some([0.0, 0.0, 1e-3]),
+        ..Default::default()
+    };
+    assert!(require_no_external_potential(Some(&field)).is_err());
+}
+
+#[test]
+fn same_species_atoms_closer_than_twice_the_tolerance_are_an_error() {
+    let mut mol = xyz(WATER, 1);
+    mol.atoms[2].x = mol.atoms[1].x + 1e-5;
+    mol.atoms[2].y = mol.atoms[1].y;
+    mol.atoms[2].zpos = mol.atoms[1].zpos;
+    assert!(detect(&mol, DEFAULT_SYMMETRY_TOL).is_err());
+    assert!(
+        detect(&mol, 1e-7).is_ok(),
+        "resolvable at a tighter tolerance"
+    );
 }

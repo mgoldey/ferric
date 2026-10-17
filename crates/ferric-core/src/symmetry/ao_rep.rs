@@ -15,6 +15,7 @@
 
 use super::{irreps, Irrep, SymmetryDetection, OP_SIGNS};
 use crate::basis::{num_functions, BasisSet};
+use crate::mol::Molecule;
 use crate::FerricError;
 use ndarray::Array2;
 
@@ -61,6 +62,25 @@ pub struct AoRepresentation {
 /// One AO's angular type: (l, index within shell, pure).
 type AoKind = (i32, usize, bool);
 
+fn check_same_geometry(det: &SymmetryDetection, mol: &Molecule) -> Result<(), FerricError> {
+    let reference = &det.molecule.atoms;
+    let ok = mol.atoms.len() == reference.len()
+        && mol.atoms.iter().zip(reference).all(|(a, b)| {
+            let d = ((a.x - b.x).powi(2) + (a.y - b.y).powi(2) + (a.zpos - b.zpos).powi(2)).sqrt();
+            a.z == b.z && a.ghost == b.ghost && a.n_core_ecp == b.n_core_ecp && d <= det.tol
+        });
+    if ok {
+        Ok(())
+    } else {
+        Err(FerricError::General(
+            "AoRepresentation: the molecule is not the reoriented, symmetrized \
+             SymmetryDetection::molecule (atoms or coordinates differ); the AO \
+             representation is only valid in the symmetry frame"
+                .into(),
+        ))
+    }
+}
+
 /// AO kinds of one atom, in order.
 fn atom_ao_kinds(bs: &BasisSet, z: i32) -> Result<Vec<AoKind>, FerricError> {
     let shells = bs
@@ -77,7 +97,17 @@ fn atom_ao_kinds(bs: &BasisSet, z: i32) -> Result<Vec<AoKind>, FerricError> {
 
 impl AoRepresentation {
     /// Build the representation for `det.molecule` in basis `bs`.
-    pub fn new(det: &SymmetryDetection, bs: &BasisSet) -> Result<Self, FerricError> {
+    ///
+    /// `mol` is the molecule the integrals will be built from. It must be
+    /// `det.molecule` (same atoms, same coordinates within `det.tol`): the
+    /// representation is only valid in the symmetry frame, so a molecule in
+    /// the original input frame is rejected.
+    pub fn new(
+        det: &SymmetryDetection,
+        mol: &Molecule,
+        bs: &BasisSet,
+    ) -> Result<Self, FerricError> {
+        check_same_geometry(det, mol)?;
         let kinds: Vec<Vec<AoKind>> = det
             .molecule
             .atoms

@@ -37,7 +37,7 @@ fn max_abs(a: &Array2<f64>) -> f64 {
 fn commutation_errors(det: &SymmetryDetection, bs: &BasisSet) -> (f64, f64) {
     let prep = PreparedBasis::new(&det.molecule, bs).unwrap();
     let (s, t, v) = (overlap(&prep), kinetic(&prep), nuclear(&prep));
-    let rep = AoRepresentation::new(det, bs).unwrap();
+    let rep = AoRepresentation::new(det, &det.molecule, bs).unwrap();
     let (mut commute, mut metric) = (0.0f64, 0.0f64);
     for k in 0..det.ops.len() {
         let r = rep.dense(k);
@@ -147,7 +147,15 @@ fn point_group_and_irrep_dimensions_match_pyscf() {
     let doc: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
     let cases = doc["cases"].as_array().unwrap();
-    assert!(cases.len() >= 30);
+    assert!(cases.len() >= 44);
+    let mut labelled_checked = 0;
+    let groups: std::collections::BTreeSet<_> = cases
+        .iter()
+        .map(|c| c["abelian_group"].as_str().unwrap())
+        .collect();
+    for g in ["C1", "Ci", "Cs", "C2", "C2v", "C2h", "D2", "D2h"] {
+        assert!(groups.contains(g), "reference set lacks {g}");
+    }
     for c in cases {
         let (name, basis) = (
             c["molecule"].as_str().unwrap(),
@@ -170,7 +178,7 @@ fn point_group_and_irrep_dimensions_match_pyscf() {
         } else {
             bundled(basis).unwrap()
         };
-        let rep = AoRepresentation::new(&det, &bs).unwrap();
+        let rep = AoRepresentation::new(&det, &det.molecule, &bs).unwrap();
         assert_eq!(rep.nao() as u64, c["nao"].as_u64().unwrap(), "{tag}: nao");
         let mut dims: Vec<u64> = rep
             .irrep_dimensions()
@@ -189,5 +197,31 @@ fn point_group_and_irrep_dimensions_match_pyscf() {
         want.retain(|&d| d > 0);
         want.sort_unstable();
         assert_eq!(dims, want, "{tag}: irrep dimensions");
+        // Labelled counts. D2 / D2h axis labels (B1g, B2u, ...) depend on how
+        // the axes are assigned, so only their dimension multiset is checked.
+        if !matches!(det.group.name(), "D2" | "D2h") {
+            let mut got: Vec<(String, u64)> = rep
+                .irrep_dimensions()
+                .unwrap()
+                .iter()
+                .filter(|d| d.1 > 0)
+                .map(|(ir, d)| (ir.label.to_string(), *d as u64))
+                .collect();
+            let mut want: Vec<(String, u64)> = c["irreps"]
+                .as_object()
+                .unwrap()
+                .iter()
+                .filter(|(_, v)| v.as_u64().unwrap() > 0)
+                .map(|(k, v)| (k.clone(), v.as_u64().unwrap()))
+                .collect();
+            got.sort();
+            want.sort();
+            assert_eq!(got, want, "{tag}: labelled irrep counts");
+            labelled_checked += 1;
+        }
     }
+    assert!(
+        labelled_checked >= 28,
+        "labelled comparison must cover the low-symmetry cases"
+    );
 }

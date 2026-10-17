@@ -18,6 +18,19 @@
 //! the mirror plane of Cs is xy, the mirrors of C2v are xz and yz, and the
 //! mirror of C2h is xy.
 //!
+//! * C2v follows the Mulliken convention: the plane holding more atoms is yz
+//!   (a planar C2v molecule lies in yz), so B1 is symmetric under sigma(xz)
+//!   and B2 under sigma(yz) whatever the input orientation. If both planes
+//!   hold the same number of atoms the geometry does not decide B1 vs B2.
+//! * D2 and D2h take their axes from the order in which candidate directions
+//!   are proposed (inertia axes first, then atom vectors in input order,
+//!   then pair-derived directions; the first order-8 frame wins). For
+//!   benzene (D6h) that selects the D2h subgroup whose z axis is the first
+//!   such candidate; the other choices are conjugate under the full group.
+//!   Labels B1g/B2g/B3g and B1u/B2u/B3u of D2/D2h therefore depend on the
+//!   input; per-irrep dimension multisets do not.
+//! * Cs (A', A''), C2 (A, B), Ci and C2h labels do not depend on the frame.
+//!
 //! # Operations
 //!
 //! The eight D2h operations are indexed `0..8` in the order of [`OP_NAMES`](crate::symmetry::OP_NAMES):
@@ -36,7 +49,25 @@
 //! # Species
 //!
 //! Two atoms are interchangeable only if they share `z`, ghost flag and
-//! `n_core_ecp`. The nuclear charge centroid is weighted by the physical `z`.
+//! `n_core_ecp`. Isotopes and masses are ignored (HDO is C2v: the electronic
+//! problem has that symmetry). The reference centre is the centroid weighted
+//! by the element's `z`; ghosts count with their element's `z`, which only
+//! fixes the centre (equivalent atoms always carry equal weight).
+//!
+//! # What detection does not see
+//!
+//! Only nuclei, species and the basis. External point charges, smeared
+//! charges, uniform fields, PCM/COSMO cavities, polarizable sites and QM/MM
+//! environments can break a symmetry detection reports. Code that wires
+//! symmetry into an SCF must refuse those inputs; use
+//! [`require_no_external_potential`](crate::symmetry::require_no_external_potential)
+//! and its counterparts for the other model terms.
+//!
+//! # Tolerance limits
+//!
+//! Atom matching uses a tolerance ball. Same-species atoms closer than
+//! `2 tol` make the permutation ambiguous, so [`detect`](crate::symmetry::detect) returns
+//! an error for them instead of guessing.
 
 mod ao_rep;
 mod detect;
@@ -44,7 +75,22 @@ mod detect;
 pub use ao_rep::{ao_function_parity, AoRepresentation};
 pub use detect::{detect, SymmetryDetection};
 
+use crate::external_potential::ExternalPotential;
 use crate::FerricError;
+
+/// Refuse a non-empty external potential: symmetry detection ignores it, so
+/// point-group blocking would be wrong for a field or charge set that breaks
+/// the symmetry of the nuclear frame.
+pub fn require_no_external_potential(ext: Option<&ExternalPotential>) -> Result<(), FerricError> {
+    match ext {
+        Some(e) if !e.is_empty() => Err(FerricError::General(
+            "point-group symmetry cannot be combined with an external potential \
+             (point charges, smeared charges or a field): detection ignores it"
+                .into(),
+        )),
+        _ => Ok(()),
+    }
+}
 
 /// Default symmetry-detection tolerance in Bohr.
 pub const DEFAULT_SYMMETRY_TOL: f64 = 1e-4;

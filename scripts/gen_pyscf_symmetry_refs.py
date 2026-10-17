@@ -47,6 +47,12 @@ MOLECULES = {
     "hf": "H 0 0 0\nF 0 0 0.917",
     "benzene": benzene(),
     "asym": "C 0 0 0\nO 1.2 0.1 0\nH -0.5 0.9 0.3\nF 0.2 -1.1 0.8",
+    # generic orbits: C2 (about z), Ci, C2h
+    "c2": "O 0.7 0.1 0.3\nO -0.7 -0.1 0.3\nH 0.95 0.7 -0.3\nH -0.95 -0.7 -0.3",
+    "ci": "C 0.7 0.1 0.2\nC -0.7 -0.1 -0.2\nF 1.4 1.1 -0.3\nF -1.4 -1.1 0.3\n"
+    "H 0.9 -0.8 0.6\nH -0.9 0.8 -0.6",
+    "c2h": "C 1.0 0.3 0.4\nC -1.0 -0.3 0.4\nC -1.0 -0.3 -0.4\nC 1.0 0.3 -0.4\n"
+    "H 1.5 1.1 0.9\nH -1.5 -1.1 0.9\nH -1.5 -1.1 -0.9\nH 1.5 1.1 -0.9",
 }
 BASES = [("sto-3g", False), ("cc-pvdz", False), ("def2-svp", False), ("cc-pvdz", True)]
 
@@ -82,6 +88,11 @@ def main() -> None:
                     "pyscf_groupname": groupname,
                     "abelian_group": abelian,
                     "irrep_dimensions": sorted(int(s.shape[1]) for s in mol.symm_orb),
+                    # PySCF's own labels; A" is written A'' to match ferric's.
+                    "irreps": {
+                        name.replace('"', "''"): int(orb.shape[1])
+                        for name, orb in zip(mol.irrep_name, mol.symm_orb)
+                    },
                 }
             )
     doc = {
