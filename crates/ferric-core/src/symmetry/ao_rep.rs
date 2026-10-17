@@ -62,12 +62,20 @@ pub struct AoRepresentation {
 /// One AO's angular type: (l, index within shell, pure).
 type AoKind = (i32, usize, bool);
 
+/// `det.molecule` is already the symmetrized geometry, so a correct caller
+/// passes it unchanged (distance 0). Anything farther than roundoff would make
+/// the atom permutations inexact symmetries of the integrals.
+const SAME_GEOMETRY_TOL: f64 = 1e-12;
+
 fn check_same_geometry(det: &SymmetryDetection, mol: &Molecule) -> Result<(), FerricError> {
     let reference = &det.molecule.atoms;
     let ok = mol.atoms.len() == reference.len()
         && mol.atoms.iter().zip(reference).all(|(a, b)| {
             let d = ((a.x - b.x).powi(2) + (a.y - b.y).powi(2) + (a.zpos - b.zpos).powi(2)).sqrt();
-            a.z == b.z && a.ghost == b.ghost && a.n_core_ecp == b.n_core_ecp && d <= det.tol
+            a.z == b.z
+                && a.ghost == b.ghost
+                && a.n_core_ecp == b.n_core_ecp
+                && d <= SAME_GEOMETRY_TOL
         });
     if ok {
         Ok(())
@@ -166,17 +174,43 @@ impl AoRepresentation {
     }
 
     /// Dense projector `P = (1/|G|) sum_g chi(g) R(g)` onto `irrep`.
-    pub fn projector(&self, irrep: &Irrep) -> Array2<f64> {
+    ///
+    /// `irrep` must be one of [`irreps`](crate::symmetry::irreps) of this
+    /// representation's operations (compared by label and characters); a
+    /// foreign irrep, such as one of another group or of a different order,
+    /// is an error. Taking the irrep by value from the representation's own
+    /// list would not stop a caller building a lookalike, so it is verified.
+    pub fn projector(&self, irrep: &Irrep) -> Result<Array2<f64>, FerricError> {
+        self.check_irrep(irrep)?;
         let mut p = Array2::zeros((self.nao, self.nao));
         for (k, &chi) in irrep.characters.iter().enumerate() {
             p.scaled_add(chi as f64, &self.dense(k));
         }
-        p / self.ops.len() as f64
+        Ok(p / self.ops.len() as f64)
+    }
+
+    fn check_irrep(&self, irrep: &Irrep) -> Result<(), FerricError> {
+        if irreps(&self.ops)?.contains(irrep) {
+            Ok(())
+        } else {
+            Err(FerricError::General(format!(
+                "irrep {} {:?} does not belong to this representation's group (operations {:?})",
+                irrep.label, irrep.characters, self.ops
+            )))
+        }
     }
 
     /// Orthonormal (Euclidean) irrep-adapted AO combinations: one column per
     /// AO orbit whose projection onto `irrep` is nonzero, shape `(nao, dim)`.
-    pub fn so_basis(&self, irrep: &Irrep) -> Array2<f64> {
+    ///
+    /// Errors for an `irrep` that is not one of this representation's own
+    /// (see [`projector`](Self::projector)).
+    pub fn so_basis(&self, irrep: &Irrep) -> Result<Array2<f64>, FerricError> {
+        self.check_irrep(irrep)?;
+        Ok(self.so_basis_unchecked(irrep))
+    }
+
+    fn so_basis_unchecked(&self, irrep: &Irrep) -> Array2<f64> {
         let mut visited = vec![false; self.nao];
         let mut cols: Vec<Vec<f64>> = Vec::new();
         for seed in 0..self.nao {
@@ -208,7 +242,7 @@ impl AoRepresentation {
         Ok(irreps(&self.ops)?
             .into_iter()
             .map(|ir| {
-                let d = self.so_basis(&ir).ncols();
+                let d = self.so_basis_unchecked(&ir).ncols();
                 (ir, d)
             })
             .collect())

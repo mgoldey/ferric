@@ -376,7 +376,7 @@ fn irrep_dimensions_sum_to_nao_and_projectors_resolve_the_identity() {
         assert_eq!(dims.iter().map(|d| d.1).sum::<usize>(), rep.nao(), "{name}");
         let mut total = ndarray::Array2::<f64>::zeros((rep.nao(), rep.nao()));
         for (ir, d) in &dims {
-            let p = rep.projector(ir);
+            let p = rep.projector(ir).unwrap();
             assert!(
                 (p.dot(&p) - &p).iter().all(|x| x.abs() < 1e-12),
                 "{name} {}: idempotent",
@@ -386,7 +386,7 @@ fn irrep_dimensions_sum_to_nao_and_projectors_resolve_the_identity() {
                 (p.diag().sum() - *d as f64).abs() < 1e-12,
                 "{name}: trace is the dimension"
             );
-            let u = rep.so_basis(ir);
+            let u = rep.so_basis(ir).unwrap();
             assert!((u.t().dot(&u) - ndarray::Array2::<f64>::eye(*d))
                 .iter()
                 .all(|x| x.abs() < 1e-12));
@@ -545,4 +545,102 @@ fn same_species_atoms_closer_than_twice_the_tolerance_are_an_error() {
         detect(&mol, 1e-7).is_ok(),
         "resolvable at a tighter tolerance"
     );
+}
+
+fn rotated(mol: &Molecule, axis: [f64; 3], angle: f64) -> Molecule {
+    let n = (axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2]).sqrt();
+    let k = [axis[0] / n, axis[1] / n, axis[2] / n];
+    let (c, s) = (angle.cos(), angle.sin());
+    let mut out = mol.clone();
+    for a in out.atoms.iter_mut() {
+        let p = [a.x, a.y, a.zpos];
+        let kxp = [
+            k[1] * p[2] - k[2] * p[1],
+            k[2] * p[0] - k[0] * p[2],
+            k[0] * p[1] - k[1] * p[0],
+        ];
+        let kdp = k[0] * p[0] + k[1] * p[1] + k[2] * p[2];
+        let q: Vec<f64> = (0..3)
+            .map(|i| p[i] * c + kxp[i] * s + k[i] * kdp * (1.0 - c))
+            .collect();
+        (a.x, a.y, a.zpos) = (q[0], q[1], q[2]);
+    }
+    out
+}
+
+const ROTATIONS: [([f64; 3], f64); 6] = [
+    ([1.0, 0.0, 0.0], 0.0),
+    ([0.3, -0.5, 0.8], 0.9),
+    ([1.0, 1.0, 0.0], 0.4),
+    ([0.0, 1.0, 1.0], 2.1),
+    ([-0.7, 0.2, 0.5], 1.3),
+    ([1.0, 2.0, 3.0], 0.7),
+];
+
+#[test]
+fn td_and_d2d_molecules_resolve_to_d2_in_every_orientation() {
+    // Td has order-4 subgroups D2, C2v and S4-containing ones; D2d likewise
+    // has D2 and C2v. The rule is D2 (more C2 axes), independent of the input.
+    let allene = xyz(
+        "7\n\nC 0 0 0\nC 0 0 1.31\nC 0 0 -1.31\nH 0.93 0 1.87\nH -0.93 0 1.87\nH 0 0.93 -1.87\nH 0 -0.93 -1.87\n",
+        1,
+    );
+    for base in [xyz(METHANE, 1), allene] {
+        for (ax, ang) in ROTATIONS {
+            let det = detect(&rotated(&base, ax, ang), DEFAULT_SYMMETRY_TOL).unwrap();
+            assert_eq!(det.group, AbelianGroup::D2, "axis {ax:?} angle {ang}");
+        }
+    }
+}
+
+fn some_irrep_of(ops: &[usize], skip_totally_symmetric: bool) -> Irrep {
+    let all = irreps(ops).unwrap();
+    all.into_iter()
+        .nth(usize::from(skip_totally_symmetric))
+        .unwrap()
+}
+
+#[test]
+fn a_foreign_irrep_is_rejected_by_projector_and_so_basis() {
+    let det = detect(&xyz(ETHYLENE, 1), DEFAULT_SYMMETRY_TOL).unwrap();
+    assert_eq!(det.ops.len(), 8);
+    let rep = AoRepresentation::new(&det, &det.molecule, &bundled("sto-3g").unwrap()).unwrap();
+    let own = some_irrep_of(&det.ops, true);
+    assert!(rep.projector(&own).is_ok() && rep.so_basis(&own).is_ok());
+    // order-1 irrep on an order-8 rep: would silently give I/8
+    let c1 = some_irrep_of(&[0], false);
+    // longer than the group: would index out of bounds
+    let long = Irrep {
+        label: "Ag",
+        characters: vec![1; 9],
+    };
+    // shorter: would silently drop operations
+    let short = Irrep {
+        label: "Ag",
+        characters: vec![1; 4],
+    };
+    // right length, wrong group (C2h irrep on a D2h rep of order 8 is the
+    // same length only for D2h itself, so test a lookalike with flipped signs)
+    let mut flipped = own.clone();
+    flipped.characters[1] = -flipped.characters[1];
+    for bad in [&c1, &long, &short, &flipped] {
+        assert!(rep.projector(bad).is_err(), "{:?}", bad.characters);
+        assert!(rep.so_basis(bad).is_err(), "{:?}", bad.characters);
+    }
+    // same length, different group: C2v irrep offered to a C2h representation
+    let water = detect(&xyz(WATER, 1), DEFAULT_SYMMETRY_TOL).unwrap();
+    let wrep = AoRepresentation::new(&water, &water.molecule, &bundled("sto-3g").unwrap()).unwrap();
+    let c2h_irrep = some_irrep_of(&[0, 1, 4, 5], true);
+    assert!(wrep.projector(&c2h_irrep).is_err());
+    assert!(wrep.so_basis(&c2h_irrep).is_err());
+}
+
+#[test]
+fn a_molecule_displaced_by_less_than_the_tolerance_is_still_rejected() {
+    let det = detect(&xyz(WATER, 1), DEFAULT_SYMMETRY_TOL).unwrap();
+    let bs = bundled("sto-3g").unwrap();
+    let mut nudged = det.molecule.clone();
+    nudged.atoms[1].y += 0.5 * DEFAULT_SYMMETRY_TOL;
+    assert!(AoRepresentation::new(&det, &nudged, &bs).is_err());
+    assert!(AoRepresentation::new(&det, &det.molecule.clone(), &bs).is_ok());
 }

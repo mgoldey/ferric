@@ -22,6 +22,8 @@
 //!   (a planar C2v molecule lies in yz), so B1 is symmetric under sigma(xz)
 //!   and B2 under sigma(yz) whatever the input orientation. If both planes
 //!   hold the same number of atoms the geometry does not decide B1 vs B2.
+//! * Among equal-order subgroups the one with more C2 axes wins, so Td and D2d
+//!   molecules resolve to D2 (not C2v) in every orientation.
 //! * D2 and D2h take their axes from the order in which candidate directions
 //!   are proposed (inertia axes first, then atom vectors in input order,
 //!   then pair-derived directions; the first order-8 frame wins). For

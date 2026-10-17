@@ -268,9 +268,17 @@ struct FrameResult {
 }
 
 impl FrameResult {
-    /// Ranking: more operations, then C2(z) present, then sigma(xy) present.
-    fn score(&self) -> (usize, bool, bool) {
-        (self.ops.len(), self.ops.contains(&1), self.ops.contains(&5))
+    /// Ranking: more operations; then more C2 axes (so D2 beats C2v and C2h
+    /// among equal-order subgroups of e.g. Td or D2d, whatever the input
+    /// orientation); then C2(z) present; then sigma(xy) present.
+    fn score(&self) -> (usize, usize, bool, bool) {
+        let n_c2 = self.ops.iter().filter(|k| (1..=3).contains(*k)).count();
+        (
+            self.ops.len(),
+            n_c2,
+            self.ops.contains(&1),
+            self.ops.contains(&5),
+        )
     }
 }
 
