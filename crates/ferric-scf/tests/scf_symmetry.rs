@@ -380,7 +380,21 @@ fn other_solvers_refuse_symmetry() {
         .map(|(n, _)| *n)
         .collect();
     assert!(survivors.is_empty(), "NOT refused: {survivors:?}");
-    assert!(errs[0].1.as_ref().unwrap().contains("solve_rhf_symmetric"));
+    // Each refusal names its own entry point and the way out.
+    for (i, who) in [
+        (0, "solve_rhf"),
+        (1, "solve_rhf"),
+        (2, "solve_uhf"),
+        (3, "solve_rohf"),
+        (4, "rhf_hessian"),
+    ] {
+        let msg = errs[i].1.as_ref().unwrap();
+        assert!(
+            msg.contains(who) && msg.contains("solve_rhf_symmetric"),
+            "{}: {msg}",
+            errs[i].0
+        );
+    }
     assert_eq!(errs[5].1.as_deref(), Some("symmetry"));
 }
 
@@ -412,6 +426,7 @@ fn rotated_translated_input_matches_unblocked_input_frame() {
         }
         let sym = run_sym(&mol, "sto-3g", &cfg(true)).unwrap();
         assert_ne!(sym.group(), "C1", "{xyz}");
+        assert!(sym.max_symmetrization_shift() < 1e-4, "{xyz}");
         let off = run_mol(&mol, "sto-3g", &cfg(false)).unwrap();
         assert!(
             (sym.energy() - off.energy).abs() < 1e-9,
@@ -528,4 +543,42 @@ fn matches_pyscf_symmetry_references() {
         }
     }
     eprintln!("max |E_ferric - E_pyscf| = {worst:e}");
+}
+
+/// A free-atom solve that reuses a symmetry config must not refuse (and so
+/// silently fall back to Slater proatoms): the provider clears the fields.
+#[test]
+fn proatom_provider_ignores_symmetry_fields() {
+    let bs = basis::bundled("sto-3g").unwrap();
+    let ctx = ParallelContext::default();
+    let op = Operator::coulomb();
+    let c = cfg(true);
+    let provider = ferric_scf::properties::scf_proatom_provider(&ctx, &bs, op, &c);
+    for z in [10, 8] {
+        // Ne takes the RHF path, O (triplet) the UHF path; both refuse symmetry.
+        assert!(provider(z, 0).is_some(), "Z={z}: SCF proatom fell back");
+    }
+}
+
+/// Species identity includes the ECP core count: an ECP molecule must detect,
+/// block and agree with the unblocked solve.
+#[test]
+fn ecp_molecule_blocked_matches_unblocked() {
+    let bs = basis::bundled("def2-svp").unwrap();
+    let mut mol = Molecule::parse_xyz("2\nHI\nI 0.3 0.2 0.1\nH 0.3 0.2 1.7\n", 0, 1).unwrap();
+    mol.apply_ecp(&bs);
+    assert!(mol.atoms[0].n_core_ecp > 0);
+    let prep = PreparedBasis::new(&mol, &bs).unwrap();
+    let op = Operator::coulomb();
+    let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+    let ctx = ParallelContext::default();
+    let sym = solve_rhf_symmetric(&ctx, &mol, &prep, op, &bounds, &cfg(true)).unwrap();
+    assert_eq!(sym.group(), "C2v");
+    let off = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg(false)).unwrap();
+    assert!(
+        (sym.energy() - off.energy).abs() < 1e-8,
+        "{} vs {}",
+        sym.energy(),
+        off.energy
+    );
 }

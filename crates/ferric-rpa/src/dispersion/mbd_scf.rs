@@ -196,6 +196,9 @@ pub fn live_free_atom_volume_with(
     free_cfg.pcm = None;
     free_cfg.polarizable = None;
     free_cfg.constraints.clear();
+    // A free atom is solved in the input frame, never point-group blocked.
+    free_cfg.symmetry = false;
+    free_cfg.irrep_nelec = None;
     free_cfg.mom_after_iter = if mult > 1 { 5 } else { 0 };
     free_cfg.max_iter = free_cfg.max_iter.max(200);
     if mult > 1 && free_cfg.xc.is_some() {

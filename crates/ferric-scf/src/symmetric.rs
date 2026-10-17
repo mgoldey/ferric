@@ -1,9 +1,10 @@
 //! Point-group-blocked closed-shell RHF (stage 2 of issue #294).
 //!
-//! `RhfConfig::symmetry = true` makes [`solve_rhf`](crate::rhf::solve_rhf)
-//! detect the highest Abelian subgroup of the molecule (`ferric_core::symmetry`),
-//! build every integral from the reoriented, symmetrized geometry, and replace
-//! the one global Fock diagonalization by one per irrep:
+//! [`solve_rhf_symmetric`] (with `RhfConfig::symmetry = true`) detects the
+//! highest Abelian subgroup of the molecule (`ferric_core::symmetry`), builds
+//! every integral from the reoriented, symmetrized geometry, and replaces the
+//! one global Fock diagonalization by one per irrep. [`solve_rhf`](crate::rhf::solve_rhf)
+//! itself refuses the symmetry fields:
 //!
 //! ```text
 //! F_h = U_hᵀ F U_h        U_h = AoRepresentation::so_basis(irrep h)
@@ -33,8 +34,15 @@
 //! [`SymmetricRhf`], not a bare [`ScfResult`]. Above C1 the SCF runs on the
 //! reoriented, symmetrized molecule (`ferric_core::symmetry::detect`), so every
 //! AO matrix of the result (MOs, density, Fock) lives in the AO basis of THAT
-//! geometry, not of the input. Energies and orbital energies are frame
-//! invariant; AO matrices are not.
+//! geometry, not of the input. Energies and orbital energies are invariant
+//! under the rigid rotation and translation, but they belong to the
+//! SYMMETRIZED geometry, which differs from the input by
+//! [`SymmetricRhf::max_symmetrization_shift`] (never more than the detection
+//! tolerance, 1e-4 Bohr; a geometry that is symmetric to rounding moves by
+//! about 1e-12). A distortion just under the tolerance is removed, not
+//! computed: water/6-31G with one O-H stretched by 9e-5 Bohr moves atoms by
+//! 4.6e-5 Bohr and the energy differs from the input geometry's by 1.2e-9 Ha.
+//! AO matrices are not frame-invariant at all.
 //!
 //! Why a separate type instead of a flag on `ScfResult`. About sixty public
 //! functions take `&ScfResult` (MP2, CC, RPA, GW, CI, TDDFT, properties,
@@ -49,10 +57,11 @@
 //! `RhfConfig::symmetry`, so no internal re-solve (Hessian, optimizer, ladder)
 //! can return a frame result either.
 //!
-//! Rotating the result back to the input frame was rejected. The symmetrized
-//! geometry differs from the input by up to the detection tolerance (1e-4
-//! Bohr), so rotated-back matrices would still not belong to the input
-//! geometry's integrals, only look as if they did; and ferric has no
+//! Rotating the result back to the input frame was rejected. Rotating back
+//! would be exact for the symmetrized geometry, but that geometry differs from
+//! the input by `max_symmetrization_shift`, so the rotated matrices would still
+//! not belong to the input geometry's integrals, only look as if they did (a
+//! quiet error of that order, unlike a loud refusal); and ferric has no
 //! rotated-AO (Wigner-D) machinery for real solid harmonics under an arbitrary
 //! rotation. Post-HF methods run on the frame molecule instead.
 //!
@@ -437,10 +446,19 @@ pub struct SymmetricRhf {
     molecule: Molecule,
     rotation: [[f64; 3]; 3],
     origin: [f64; 3],
+    max_symmetrization_shift: f64,
 }
 
 impl SymmetricRhf {
-    /// Total energy (frame invariant).
+    /// Largest atom displacement (Bohr) made by symmetrizing the input
+    /// geometry; 0 for C1, at most the detection tolerance otherwise.
+    pub fn max_symmetrization_shift(&self) -> f64 {
+        self.max_symmetrization_shift
+    }
+
+    /// Total energy of the SYMMETRIZED geometry ([`molecule`](Self::molecule)),
+    /// which differs from the input geometry's energy by the effect of
+    /// [`max_symmetrization_shift`](Self::max_symmetrization_shift).
     pub fn energy(&self) -> f64 {
         self.scf.energy
     }
@@ -524,6 +542,7 @@ pub fn solve_rhf_symmetric(
             molecule: mol.clone(),
             rotation: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
             origin: [0.0; 3],
+            max_symmetrization_shift: 0.0,
         });
     }
     let sym_mol = det.molecule.clone();
@@ -545,6 +564,7 @@ pub fn solve_rhf_symmetric(
         molecule: sym_mol,
         rotation: det.rotation,
         origin: det.origin,
+        max_symmetrization_shift: det.max_symmetrization_shift,
     })
 }
 
