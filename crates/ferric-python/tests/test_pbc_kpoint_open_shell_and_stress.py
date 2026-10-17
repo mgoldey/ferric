@@ -531,7 +531,8 @@ def test_open_shell_refusals_have_exact_wording(basis):
     with pytest.raises(
         ValueError,
         match=r'^run_rks_kpts: functional "HSE06": .*range-separated.*\. k-point RKS '
-        r"supports LDA, GGA, global-hybrid and SCAN / r2SCAN meta-GGA functionals only$",
+        r"supports LDA, GGA, global-hybrid and SCAN / r2SCAN meta-GGA functionals "
+        r"\(plus range-separated hybrids with jk=\"rsgdf\"\) only$",
     ):
         _rks(H2_ATOMS, basis, "HSE06", with_gradient=True)
 
