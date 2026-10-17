@@ -43,6 +43,8 @@ pub mod mol;
 pub mod orbitals;
 /// Parallelism context: thread pools, optional MPI world handle.
 pub mod parallel;
+/// Abelian point-group detection (D2h and subgroups), AO representation, SO bases.
+pub mod symmetry;
 /// Length units: the one Ångström ↔ Bohr conversion ([`units::ANGSTROM_TO_BOHR`]).
 pub mod units;
 
