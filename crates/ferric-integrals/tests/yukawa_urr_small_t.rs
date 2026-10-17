@@ -151,7 +151,7 @@ fn above_the_threshold_the_stock_recursion_is_unchanged() {
                 let want = stock_urr(t, u, mmax);
                 for m in 0..=mmax {
                     assert!(
-                        (got[m] - want[m]).abs() <= 1e-12 * want[m].abs().max(1e-300) + 1e-300,
+                        (got[m] - want[m]).abs() <= 2e-15 * want[m].abs().max(1e-300) + 1e-300,
                         "T={t:e} mmax={mmax} m={m}: {:e} vs {:e}",
                         got[m],
                         want[m]
@@ -202,6 +202,23 @@ fn untouched_region_hash() {
         }
     }
     eprintln!("UNTOUCHED_REGION_HASH n={n} h={h:016x}");
+    // Recorded with the fallback disabled (= stock libint) and with the fix:
+    // identical. Bit patterns depend on libm and the compiler, so a mismatch
+    // on another machine means re-record from a stock build before suspecting
+    // the dispatch (see README, Fifth change).
+    let (want_n, want_h) = match ferric_integrals::libint_version() {
+        "2.7.2" => (55579, 0xda40_0bb5_bddb_82a4_u64),
+        "2.13.1" => (168_859, 0x84f8_33f1_8f8c_180e_u64),
+        v => {
+            eprintln!("SKIP hash assertion: no recorded hash for libint {v}");
+            return;
+        }
+    };
+    assert_eq!(
+        (n, h),
+        (want_n, want_h),
+        "untouched-region values changed bits"
+    );
 }
 
 /// The reported blow-up: inf/NaN at m = 36, T ~ 1e-8, and T = 0 exactly.

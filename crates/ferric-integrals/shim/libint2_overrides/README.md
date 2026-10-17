@@ -244,13 +244,11 @@ override there are no new `throw`s (2.13.1 has its own fallback) and no index cl
   absolute error 1e-14 or better for `T >= 1` (FOR `m <= 6` ONLY), up to 2e-12 at `T = 0.5`, 6e-8 at 0.1, 0.2 at 0.01, 5e5 at 1e-3, 2e25 at 1e-6
   and 9e63 at 1e-12. `T == 0` exactly returns `false` from `eval_urr` and takes the Gaussian fit (3e-7 absolute error
   at `U = 1e-14`, 2e-12 at `U = 1e-8`); no assert fires at `T == 0` (non-NDEBUG, ASan) on 2.13.1. The Slater kernel
-  with `U < Umin` is routed to the Gaussian fit (accurate to 5e-14 there). Fixing the Yukawa case would need the
-  Gaussian fit (or a small-`T` series) for `U < Umin` and `T < ~1`; it was left alone to keep this change a pure
-  NaN fix. The error grows steeply with `m` (independent 600-digit check, `U` about 1e-14..1e-8, `T = 1`: 1e-15 for
+  with `U < Umin` is routed to the Gaussian fit (accurate to 5e-14 there). It was left alone in the #439 change; the Fifth change below (issue #443) fixes it. The error grows steeply with `m` (independent 600-digit check, `U` about 1e-14..1e-8, `T = 1`: 1e-15 for
   `m <= 6`, 6e-10 for `m <= 12`, 2.3 for `m <= 20`, 2e23 for `m <= 36`; `T = 3`: 1e-14 for `m <= 12`, 8e-9 for `m <= 20`;
   `T = 5`: 3e-13 for `m <= 20`, 0.3 for `m <= 36`; outputs violate `0 <= G_m <= 1/(2m+1)` up to `T` about 5.6 at high
   `m` and are inf/NaN at `T` about 1e-8, `m = 36`). d/f/g 4-centre derivative integrals reach `m` of 9 to 18, reachable
-  from the library with `zeta` below about 0.01 to 0.1 and tight core primitives or collinear pairs. Tracked in issue #443.
+  from the library with `zeta` below about 0.01 to 0.1 and tight core primitives or collinear pairs. Fixed by the Fifth change.
 * Not repaired in 2.13.1 (the 2.7.2 override does): the `T == 0` branch of `eval_G0_and_maybe_Gm1` loses precision
   for `U` in [704.6, 709], where `erfc(sqrt(U))` is subnormal: Slater `m = 0` abs 1.5e-12, rel 6e-8 at `U = 707.25`;
   Yukawa `m = 0` 5.7e-14 at `U = 692`. Documented only.
@@ -312,3 +310,7 @@ there (`U < Umin` with `T >= 0.5 mmax + 6`, or `T >= 1e-2` at `mmax == 0`, plus 
 Accuracy against 50-digit mpmath values (`U = 1e-14` and `1e-9`, `T` in 1e-8..20, `m <= 36`): at most 1e-15 absolute,
 and `0 <= G_m <= 1/(2m+1)` holds. The test also checks the `U -> 0` limit `G_m -> F_m(T)` (Boys function), and
 water/cc-pVDZ four-centre ERIs at `zeta = 1e-6` against Coulomb.
+
+Cost of the quadrature path (2.13.1, per `eval_yukawa` call): about 8 to 13 microseconds, against about 90 ns for the old
+recursion and 1 to 3.6 microseconds for the table. A small `zeta` (below about 0.07 for first-row cc-pVDZ) routes every
+quartet through it, roughly 3 to 4 times slower than the table path. No production caller uses the Yukawa operator today.

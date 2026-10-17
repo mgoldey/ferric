@@ -140,7 +140,7 @@ impl Operator {
     /// unusable at small `T` (issue #443, see SMALL `T` below); on a libint2 build
     /// with ferric's `boys.h` override that case, including the same-centre
     /// `T == 0` shell blocks that RI/3-center paths always contain, is evaluated
-    /// by quadrature of the defining integral instead (1e-14 absolute, tested
+    /// by quadrature of the defining integral instead (1e-15 absolute, tested
     /// against a 50-digit reference), so a near-zero `zeta` (e.g. 1e-6) gives the
     /// Coulomb limit to O(zeta). Without the override, libint 2.13.1 takes a
     /// Gaussian fit at `T == 0` (3e-7 absolute error at `U = 1e-14`, 2e-12 at
@@ -177,7 +177,10 @@ impl Operator {
     /// graded Gauss-Legendre quadrature of the defining integral: at most 1e-15
     /// absolute against 50-digit values for `m <= 36`, `T` in 1e-8..20,
     /// `U = 1e-14` and `1e-9`. From `T >= 0.5 mmax + 6` the stock recursion is kept
-    /// bit for bit. A libint2 build that gets no override still has the defect.
+    /// bit for bit. The quadrature costs about 8 to 13 microseconds per call (old
+    /// recursion about 90 ns, table 1 to 3.6 microseconds), so a small `zeta` (below
+    /// about 0.07 for first-row cc-pVDZ) makes every quartet 3 to 4 times slower than
+    /// the table path. A libint2 build that gets no override still has the defect.
     pub fn yukawa(zeta: f64) -> Self {
         debug_assert!(
             zeta > 0.0,
