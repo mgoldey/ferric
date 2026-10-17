@@ -392,6 +392,12 @@ impl FixedGridKs {
                 FunctionalFamily::Lda | FunctionalFamily::Gga | FunctionalFamily::HybridGga
             )
         };
+        if xc.is_double_hybrid() {
+            return Err(FerricError::General(format!(
+                "fixed-grid XC: '{xc_name}' is a double hybrid; its post-SCF MP2 term has no \
+                 fixed-grid Hessian here, so only the Kohn-Sham reference would be differentiated"
+            )));
+        }
         let supported = xc.funcs.iter().all(|f| semilocal(f.family()))
             && mix.omega == 0.0
             && mix.sr == mix.lr
@@ -940,8 +946,8 @@ pub fn rks_fixed_grid_gradient(
     Ok(grad)
 }
 
-/// Converge the closed-shell LDA SCF of `mol` with the XC on the frozen `grid`
-/// and exact four-centre J (the SCF at a displaced geometry whose energy
+/// Converge the closed-shell LDA/GGA SCF of `mol` with the XC on the frozen `grid`
+/// and exact four-centre J/K (the SCF at a displaced geometry whose energy
 /// surface the fixed-grid gradient and Hessian differentiate).
 ///
 /// `config` is the injected-path configuration (see

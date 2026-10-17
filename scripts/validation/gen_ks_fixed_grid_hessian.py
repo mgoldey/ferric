@@ -1,4 +1,4 @@
-"""PySCF references for the VALIDATION.md "Analytic fixed-grid KS-LDA Hessian" row.
+"""PySCF references for the VALIDATION.md "Analytic closed-shell KS Hessian on a fixed grid" row.
 
 Consumer: crates/ferric-scf/tests/validation_ks_fixed_grid_hessian.rs
 Output:   testdata/reference/validation/ks_fixed_grid_hessian/<system>_<basis>.json
@@ -16,7 +16,7 @@ approximate):
     default to False, i.e. the grid is not differentiated, which is the energy
     `E(R)` with the grid frozen in space that ferric differentiates;
   * the SAME basis (ferric's JSON through common.py) and geometry (Bohr, ferric's
-    constant), the same functional (`LDA_X,LDA_C_VWN`, both libxc), exact J, no
+    constant), the same functional (per case, both libxc), exact J, no
     density fitting, SCF converged to 1e-12 in energy;
   * masses = ferric's IUPAC-2013 weights for the frequencies.
 
@@ -161,7 +161,7 @@ def _run(system: str, basis_name: str, xc: str = XC, suffix: str = "") -> Path:
         flush=True,
     )
     payload = {
-        "row": "Analytic fixed-grid KS-LDA Hessian",
+        "row": "Analytic closed-shell KS Hessian on a fixed grid",
         "system": system,
         "basis": basis_name,
         "charge": 0,

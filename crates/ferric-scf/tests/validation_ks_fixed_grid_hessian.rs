@@ -1,4 +1,4 @@
-//! VALIDATION tier - VALIDATION.md row "Analytic fixed-grid KS-LDA Hessian".
+//! VALIDATION tier - VALIDATION.md row "Analytic closed-shell KS Hessian on a fixed grid".
 //!
 //! Runs only in the weekly `validation` CI job (and on demand):
 //!
@@ -11,12 +11,12 @@
 //! # What ferric computes
 //!
 //! `rks_fixed_grid_hessian_parts_with` on an SCF whose XC lives on a grid
-//! frozen in space (`ferric_scf::ks_fixed_grid`): exact four-centre J, pure
-//! LDA (`LDA_X` + `LDA_C_VWN`), no weight response.
+//! frozen in space (`ferric_scf::ks_fixed_grid`): exact four-centre J/K,
+//! LDA, hybrid LDA, GGA or hybrid GGA (see `CASES`), no weight response.
 //!
 //! # Reference (`scripts/validation/gen_ks_fixed_grid_hessian.py`)
 //!
-//! PySCF `dft.RKS(xc="LDA_X,LDA_C_VWN")` with ferric's own basis JSON, Bohr
+//! PySCF `dft.RKS` with the case's functional (`CASES`) and ferric's own basis JSON, Bohr
 //! geometry and masses, and **ferric's grid**: the 30 radial x 50 angular
 //! Becke-Lebedev points and weights ferric builds for the reference geometry
 //! are written to `h2o_distorted_grid.f64` (rows of `x y z w`, little-endian
@@ -196,7 +196,9 @@ const CASES: [Case; 6] = [
         basis: "6-31g",
         xc: "B3LYP",
         suffix: "_b3lyp",
-        tol_energy: 1e-9,
+        // Measured 7.1e-10 (libxc B3LYP definition vs PySCF's); every other case
+        // is at <= 1.2e-11, and a different functional definition moves it by mHa.
+        tol_energy: 5e-9,
         tol_hessian: 5e-7,
         tol_freq: 1e-3,
     },
@@ -293,13 +295,13 @@ fn run_case(case: &Case) {
 }
 
 #[test]
-#[ignore = "validation: analytic fixed-grid KS-LDA Hessian vs PySCF"]
+#[ignore = "validation: analytic fixed-grid KS Hessian vs PySCF"]
 fn fixed_grid_lda_hessian_6_31g_matches_pyscf_on_the_same_grid() {
     run_case(&CASES[0]);
 }
 
 #[test]
-#[ignore = "validation: analytic fixed-grid KS-LDA Hessian vs PySCF"]
+#[ignore = "validation: analytic fixed-grid KS Hessian vs PySCF"]
 fn fixed_grid_lda_hessian_cc_pvdz_matches_pyscf_on_the_same_grid() {
     run_case(&CASES[1]);
 }

@@ -691,6 +691,8 @@ fn unsupported_configurations_are_refused_naming_the_next_unit() {
         ("HSE06", "range-separated"),
         ("wB97X-V", "VV10"),
         ("SCAN", "meta-GGA"),
+        ("B2PLYP", "double hybrid"),
+        ("DSD-PBEP86", "double hybrid"),
     ] {
         let msg = refusal_with(&with_xc(xc), &r, res);
         eprintln!("{xc}: {msg}");
@@ -782,15 +784,34 @@ fn hessian_with_d_functions_matches_the_fixed_grid_gradient_difference() {
     if !has_deriv2() {
         return;
     }
-    let r = reference("cc-pvdz");
-    let an = analytic(&r, &KsFixedGridMutants::default());
-    let fd = fd_hessian_of_gradient(&r, 2.5e-4);
-    let diff = max_abs_diff(&an, &fd);
-    eprintln!(
-        "cc-pvdz: |H_analytic - FD(g_fixed)| = {diff:.3e} (max |H| {:.3e})",
-        max_abs(&an)
-    );
-    assert!(diff < TOL_HESS_FD, "{diff:.3e}");
+    // PBE at h = 5e-4, 2.5e-4, 1.25e-4 misses by 2.3e-6, 1.4e-7, 9.3e-9: pure h^4
+    // stencil truncation (ratio 15.5), so the analytic Hessian is the limit and
+    // PBE needs the smaller step for the same bar.
+    for (xc, h) in [("LDA", 2.5e-4), ("PBE", 1.25e-4)] {
+        let r = reference_for("cc-pvdz", xc);
+        let an = analytic(&r, &KsFixedGridMutants::default());
+        let fd = fd_hessian_of_gradient(&r, h);
+        let diff = max_abs_diff(&an, &fd);
+        eprintln!(
+            "{xc} cc-pvdz: |H_analytic - FD(g_fixed)| = {diff:.3e} (max |H| {:.3e})",
+            max_abs(&an)
+        );
+        assert!(diff < TOL_HESS_FD, "{xc}: {diff:.3e}");
+    }
+}
+
+/// Double hybrids (SCF half only in the functional definition) are refused at
+/// construction too, not differentiated without their MP2 term.
+#[test]
+fn double_hybrids_are_refused_by_the_grid_constructor() {
+    let mol = water();
+    for xc in ["B2PLYP", "DSD-PBEP86"] {
+        let msg = FixedGridKs::new(&mol, xc, &grid_cfg())
+            .err()
+            .expect("must be refused")
+            .to_string();
+        assert!(msg.contains("double hybrid"), "{xc}: {msg}");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -882,7 +903,7 @@ fn a_result_of_another_energy_is_refused_by_the_fock_consistency_guard() {
         let msg = refusal_with(&hessian_config(), &r, &res);
         eprintln!("{label}: residual {resid:.2e}");
         assert!(
-            msg.contains("not a converged closed-shell exact-J LDA"),
+            msg.contains("not a converged closed-shell exact-J/K Kohn-Sham"),
             "{label}: {msg}"
         );
         assert!(resid > 100.0 * legit_prod.max(legit_inj), "{label}");

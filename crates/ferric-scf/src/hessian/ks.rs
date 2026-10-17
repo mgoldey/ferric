@@ -147,6 +147,12 @@ fn functional_refusal(name: &str, xc: &ferric_dft::libxc::XcDef) -> Result<(), F
             "VV10 response kernel",
         ));
     }
+    if xc.is_double_hybrid() {
+        return Err(unsupported(
+            &format!("a double hybrid ('{name}'): its MP2 term is not differentiated"),
+            "double-hybrid MP2 Hessian",
+        ));
+    }
     if mix.omega > 0.0 {
         return Err(unsupported(
             &format!("a range-separated hybrid ('{name}')"),

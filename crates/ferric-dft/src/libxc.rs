@@ -1143,6 +1143,16 @@ pub struct XcDef {
     pub weights: Option<Vec<f64>>,
 }
 
+impl XcDef {
+    /// Whether this is the SCF half of a double hybrid (B2PLYP, DSD-PBEP86):
+    /// the only definitions that carry per-component `weights`. Its energy and
+    /// derivatives also contain a post-SCF MP2 term that the definition does
+    /// not.
+    pub fn is_double_hybrid(&self) -> bool {
+        self.weights.is_some()
+    }
+}
+
 /// Derive the exact-exchange mixing coefficients from an XC definition.
 ///
 /// For CAM/RSH functionals: uses the short-range/long-range/omega split.
