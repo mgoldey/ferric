@@ -18,8 +18,8 @@
 //!   NoGga, NoHessian 4.6e-3 = smallest, NoStrainMoment), WrongFactor,
 //!   ExchUnscaled (1.2), ExchScaledTwice (3.0e-1), MadelungUnscaled, CrossSpinK,
 //!   NoPulay: all in `mutants_are_caught_by_the_gamma_roks_anchor` (ROKS PBE0).
-//!   BLIND to `RoWUhfForm` (identity, 5.8e-14) and to `SwapSpinFock` (acts only
-//!   on the unrestricted assembly; asserted an identity).
+//!   BLIND to `RoWUhfForm` (identity, 5.8e-14). `SwapSpinFock` acts only on the
+//!   unrestricted assembly and is not in the RO mutant lists.
 //! * the orbital-gradient gate: the defects that tamper with F (PulayFockSwap,
 //!   PulayKSwap, PulayJOneSpin, PulayNoVxcBeta, PulayNoVxc, KWrongDensity) skip
 //!   the Fock guard by construction and are REFUSED by the gate, not measured
@@ -1385,23 +1385,7 @@ fn mutants_are_caught_by_the_gamma_roks_anchor() {
         "PulayNoVxc",
         stress_with(&fx, &fx.res.scf, &scfg(Some(X::PulayNoVxc), None, None)),
     );
-    for hm in [
-        S::MadelungUnscaled,
-        S::CrossSpinK,
-        S::SwapSpinFock,
-        S::NoPulay,
-    ] {
-        // SwapSpinFock acts only on the Unrestricted variant (an identity for
-        // the restricted-open assembly): asserted, not counted.
-        if hm == S::SwapSpinFock {
-            let d = mdiff(
-                &stress_mut(&fx, None, None, Some(hm)).de_deps,
-                &base.de_deps,
-            );
-            eprintln!("SwapSpinFock on the RO assembly: {d:.2e} (identity)");
-            assert!(d < 1e-14, "{d:e}");
-            continue;
-        }
+    for hm in [S::MadelungUnscaled, S::CrossSpinK, S::NoPulay] {
         check(format!("{hm:?}"), stress_mut(&fx, None, None, Some(hm)));
     }
     // The unrestricted-form W is an identity at convergence: reported, not counted.

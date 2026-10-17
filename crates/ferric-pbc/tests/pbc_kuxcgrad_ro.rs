@@ -9,12 +9,12 @@
 //! same reference); central FD of the ROHF and ROKS energies (fresh SCF per
 //! displacement, explicit shared neighbour cutoff); the orbital-gradient gate
 //! from both sides (a loose state is refused with the gate message and is
-//! wrong by far more than the FD bar with the gate off); a short MO set and an
-//! RS-GDF source are typed refusals; the unrestricted-form `W` is an IDENTITY
+//! wrong by far more than the FD bar with the gate off); a short MO set is a
+//! typed refusal (RS-GDF: `pbc_kuxcstress_ro_rsgdf.rs`); the unrestricted-form `W` is an IDENTITY
 //! at convergence and asserted as such.
 //!
 //! NOT covered: the supercell identity (the Gamma ROHF high-spin supercell is
-//! not converged here), RS-GDF (refused), shifted meshes, p/d shells, stress.
+//! not converged here), RS-GDF (see above), shifted meshes, p/d shells, stress.
 
 mod common;
 

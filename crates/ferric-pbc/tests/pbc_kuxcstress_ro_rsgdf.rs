@@ -31,7 +31,9 @@ use ferric_pbc::kgrad::{
     kpoint_rhf_gradient, KGradConfig, KGradJk, KGradMutation, KRsGdfGradSource,
 };
 use ferric_pbc::kpts::KPointMesh;
-use ferric_pbc::kroks::{solve_krohf, solve_kroks, KRohfConfig, KRoksConfig, KRoksResult};
+use ferric_pbc::kroks::{
+    solve_krohf, solve_krohf_keep, solve_kroks, KRohfConfig, KRoksConfig, KRoksResult,
+};
 use ferric_pbc::kscf::{solve_krhf, KJkKind, KRhfConfig};
 use ferric_pbc::kstress::{kpoint_rhf_stress, KStressConfig, KStressJk, KStressMutation};
 use ferric_pbc::kuxcgrad::{
@@ -50,6 +52,22 @@ use ferric_pbc::stress::Mat3;
 use std::collections::HashMap;
 
 const OMEGA: f64 = 0.8;
+
+thread_local! {
+    /// `true`: the orbital basis is cc-pVDZ H (s contraction sharing primitives
+    /// with an s singlet, plus a p shell), so the default SR column rotation of
+    /// the RS-GDF / hcore builds is ACTIVE (it does nothing on STO-3G). Set per
+    /// test thread.
+    static POLARIZED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+fn orbital_basis() -> BasisSet {
+    if POLARIZED.with(|p| p.get()) {
+        ferric_core::basis::bundled("cc-pvdz").expect("cc-pvdz")
+    } else {
+        pyscf_sto3g_h()
+    }
+}
 const AMPLE: usize = 1 << 31;
 const CUTOFF: f64 = 14.0;
 const H3: [[f64; 3]; 3] = [[0.3, 0.2, 0.1], [0.35, 0.12, 1.5], [0.3, 1.9, 0.4]];
@@ -135,7 +153,7 @@ fn rohf_cfg(cell: &Cell, exxdiv: ExxDiv) -> KRohfConfig {
 }
 
 fn scf_on(cell: &Cell, n: [usize; 3], f: Option<&str>, exxdiv: ExxDiv) -> KRoksResult {
-    let prep = prep_for(cell, &pyscf_sto3g_h());
+    let prep = prep_for(cell, &orbital_basis());
     let aux = prep_for(cell, &et_sp_aux());
     let mesh = mesh_of(cell, n);
     let rc = rohf_cfg(cell, exxdiv);
@@ -165,7 +183,7 @@ fn stress_of(
     hm: Option<KStressMutation>,
     sm: Option<KUStressMutation>,
 ) -> KUksStress {
-    let prep = prep_for(cell, &pyscf_sto3g_h());
+    let prep = prep_for(cell, &orbital_basis());
     let aux = prep_for(cell, &et_sp_aux());
     let mesh = mesh_of(cell, n);
     let hcfg = PeriodicHcoreConfig::with_omega(OMEGA);
@@ -298,7 +316,7 @@ fn rsgdf_closed_shell_rohf_equals_rhf() {
     let res = scf_on(&cell, n, None, exxdiv);
     assert_eq!(res.scf.nalpha, res.scf.nbeta);
     let ro = stress_of(&cell, n, None, exxdiv, &res, None, None);
-    let prep = prep_for(&cell, &pyscf_sto3g_h());
+    let prep = prep_for(&cell, &orbital_basis());
     let aux = prep_for(&cell, &et_sp_aux());
     let mesh = mesh_of(&cell, n);
     let hcfg = PeriodicHcoreConfig::with_omega(OMEGA);
@@ -401,7 +419,7 @@ fn force_of(
     gm: Option<KGradMutation>,
     sm: Option<KUSpinMutation>,
 ) -> KUksGradient {
-    let prep = prep_for(cell, &pyscf_sto3g_h());
+    let prep = prep_for(cell, &orbital_basis());
     let aux = prep_for(cell, &et_sp_aux());
     let mesh = mesh_of(cell, n);
     let hcfg = PeriodicHcoreConfig::with_omega(OMEGA);
@@ -483,7 +501,7 @@ fn rsgdf_closed_shell_rohf_force_equals_rhf() {
     let exxdiv = ExxDiv::Ewald;
     let res = scf_on(&cell, n, None, exxdiv);
     let ro = force_of(&cell, n, None, exxdiv, &res, None, None);
-    let prep = prep_for(&cell, &pyscf_sto3g_h());
+    let prep = prep_for(&cell, &orbital_basis());
     let aux = prep_for(&cell, &et_sp_aux());
     let mesh = mesh_of(&cell, n);
     let hcfg = PeriodicHcoreConfig::with_omega(OMEGA);
@@ -573,4 +591,121 @@ fn rsgdf_ro_force_mutants_are_caught() {
     ));
     eprintln!("force RoWDropCross: {d:.2e}");
     assert!(d > 1e-5);
+}
+
+// ------------------------------------------------- default ROKS (non-ignored)
+
+/// ROKS PBE RS-GDF force on a 1x1x3 mesh (where the phase slips ConjD / WrongQ
+/// are not exact identities, unlike 1x1x2), in the default set so CI covers a
+/// Kohn-Sham RS-GDF open-shell path.
+#[test]
+fn rsgdf_roks_pbe_force_matches_fd_1x1x3() {
+    let n = [1, 1, 3];
+    let cell = cell_of(&H3);
+    let res = scf_on(&cell, n, Some("PBE"), ExxDiv::None);
+    let g = force_of(&cell, n, Some("PBE"), ExxDiv::None, &res, None, None);
+    let e = |p: &[[f64; 3]]| scf_on(&cell_of(p), n, Some("PBE"), ExxDiv::None).scf.energy;
+    let fd = (e(&moved(&H3, 2, 1, FD_H_F)) - e(&moved(&H3, 2, 1, -FD_H_F))) / (2.0 * FD_H_F);
+    let miss = (g.grad[(2, 1)] - fd).abs();
+    eprintln!("ROKS PBE RS-GDF 1x1x3 force (2,1): miss {miss:.2e}");
+    assert!(miss < FD_BAR_F, "{miss:e}");
+}
+
+// --------------------------------------------- rotated (p-shell) fixture
+
+/// Step and bars of the rotating-basis test. cc-pVDZ energies carry ~1e-12 of
+/// SCF/screening noise, so the FD miss is noise-dominated and FALLS with h
+/// (force probe, (0,2)/(2,1): 3.3e-8/6.2e-8 at h = 2.5e-5, 1.4e-8/4.2e-8 at
+/// 5e-5, 3.1e-9/7.9e-9 at 1e-4, 6.9e-9/6.0e-9 at 2e-4 where h^2 truncation
+/// starts); stress (2,2) at h = 1.25e-5 .. 2e-4: 2.3e-7, 1.4e-7, 8.4e-8, 3.9e-7, 1.6e-6 (noise
+/// below, h^2 truncation above; (0,2) <= 4.5e-9 from 5e-5). So force h = 1e-4 with
+/// bar 5e-8 and stress h = 5e-5 with bar 3e-7, still >= 3 orders below any mutant.
+const ROT_H: f64 = 1e-4;
+const ROT_HS: f64 = 5e-5;
+const ROT_BAR_F: f64 = 5e-8;
+const ROT_BAR_S: f64 = 3e-7;
+
+/// cc-pVDZ H (s + p): the default SR column rotation runs the ROTATED
+/// walks (asserted via the kept hcore's rotated-column count).
+#[test]
+#[ignore = "rotating-basis (cc-pVDZ) RS-GDF ROHF: force FD + 2 stress components on 1x1x2; measured 190 s"]
+fn rsgdf_rohf_with_a_rotating_basis_force_and_stress_match_fd() {
+    POLARIZED.with(|p| p.set(true));
+    let n = [1, 1, 2];
+    let exxdiv = ExxDiv::Ewald;
+    let cell = cell_of(&H3);
+    {
+        let prep = prep_for(&cell, &orbital_basis());
+        let aux = prep_for(&cell, &et_sp_aux());
+        let mesh = mesh_of(&cell, n);
+        let (_, kept) =
+            solve_krohf_keep(&cell, &prep, Some(&aux), &mesh, &rohf_cfg(&cell, exxdiv)).unwrap();
+        assert!(kept.hk.sr_rotated_columns > 0, "rotation inactive");
+    }
+    let res = scf_on(&cell, n, None, exxdiv);
+    let g = force_of(&cell, n, None, exxdiv, &res, None, None);
+    let s = stress_of(&cell, n, None, exxdiv, &res, None, None);
+    let e = |p: &[[f64; 3]]| scf_on(&cell_of(p), n, None, exxdiv).scf.energy;
+    let mut worst_f = 0.0_f64;
+    for (a, x) in [(0, 2), (2, 1)] {
+        let fd = (e(&moved(&H3, a, x, ROT_H)) - e(&moved(&H3, a, x, -ROT_H))) / (2.0 * ROT_H);
+        worst_f = worst_f.max((g.grad[(a, x)] - fd).abs());
+    }
+    let mut worst_s = 0.0_f64;
+    for (i, j) in [(2, 2), (0, 2)] {
+        let ep = scf_on(&strained(&cell, i, j, ROT_HS), n, None, exxdiv)
+            .scf
+            .energy;
+        let em = scf_on(&strained(&cell, i, j, -ROT_HS), n, None, exxdiv)
+            .scf
+            .energy;
+        worst_s = worst_s.max((s.de_deps[i][j] - (ep - em) / (2.0 * ROT_HS)).abs());
+    }
+    eprintln!("rotating-basis (cc-pVDZ) RS-GDF ROHF: force FD miss {worst_f:.2e}, stress FD miss {worst_s:.2e}");
+    assert!(worst_f < ROT_BAR_F, "force {worst_f:e}");
+    assert!(worst_s < ROT_BAR_S, "stress {worst_s:e}");
+}
+
+// ----------------------------------------------------------------- refusals
+
+/// A range-split RS-GDF build is a typed refusal for the RO force (the stress
+/// refuses it through `refuse_unsupported`).
+#[test]
+fn rsgdf_range_split_is_refused_for_the_ro_force() {
+    use ferric_pbc::rsgdf::RangeSplit;
+    let n = [1, 1, 2];
+    let cell = cell_of(&H3);
+    let res = scf_on(&cell, n, None, ExxDiv::Ewald);
+    let prep = prep_for(&cell, &orbital_basis());
+    let aux = prep_for(&cell, &et_sp_aux());
+    let mesh = mesh_of(&cell, n);
+    let hcfg = PeriodicHcoreConfig::with_omega(OMEGA);
+    let hk = periodic_hcore_kpts(&cell, &prep, &mesh, &hcfg).unwrap();
+    let mut kc = kgdf_cfg();
+    kc.gdf.range_split = Some(RangeSplit::new(1.0));
+    let gdf = KRsGdf::build(&cell, &prep, &aux, &mesh, &hk.s, &kc)
+        .unwrap()
+        .with_exxdiv(ExxDiv::Ewald);
+    let src = KRsGdfGradSource {
+        gdf: &gdf,
+        cfg: &kc,
+        aux: &aux,
+    };
+    let e = kpoint_rohf_gradient(
+        &cell,
+        &prep,
+        &mesh,
+        &hcfg,
+        &hk,
+        KGradJk::RsGdf(src),
+        &res.scf,
+        ExxDiv::Ewald,
+        &KUksGradConfig::default(),
+    )
+    .expect_err("split force")
+    .to_string();
+    assert!(
+        e.contains("kpoint_rohf_gradient: a range-split RS-GDF build is not supported"),
+        "{e}"
+    );
 }

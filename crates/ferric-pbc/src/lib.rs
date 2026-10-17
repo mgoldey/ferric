@@ -131,7 +131,7 @@
 //!   gate in place of the commutator gate; dense-AFT or RS-GDF J/K
 //!   (unsplit; anchored by FD in `tests/pbc_kuxcstress_ro_rsgdf.rs`). The gate is loose: at its tolerance (1e-5) the stress
 //!   error can reach about 4e-5 to 5e-5 Ha per cell (~18 MPa on the 64 Bohr³
-//!   test cell; measured on H3 and H5 STO-3G at 1x1x1, not a general bound),
+//!   test cell; measured on H3 and H5 STO-3G at 1x1x1 on the DENSE-AFT J/K only, not on RS-GDF and not a general bound),
 //!   so it refuses an unconverged state without certifying the stress to the
 //!   anchors' accuracy. The k gate applies the tolerance to the spectral norm of
 //!   the blocks, which is at least the largest element the Gamma entry points

@@ -122,7 +122,7 @@
 //! force error near 7e-6 Ha/Bohr on that system. The tolerance is unchanged but a state that passed
 //! the earlier gate may now be refused. The MOs must be one set per k-point (a
 //! short set is a typed error). ROHF/ROKS take the dense-AFT or the
-//! RS-GDF J/K (the fit pass is generic over `KSpins`; `W_RO` enters only as the
+//! UNSPLIT RS-GDF J/K (a range-split build is a typed refusal, as for the stress) (the fit pass is generic over `KSpins`; `W_RO` enters only as the
 //! overlap weight; anchors in `tests/pbc_kuxcstress_ro_rsgdf.rs`).
 //!
 //! # Stationarity of UKS
@@ -850,6 +850,20 @@ impl KUXcResponse for GridXcPol<'_> {
     }
 }
 
+/// The restricted-open-shell forces are anchored on unsplit RS-GDF only (as
+/// the stress): a range-split build or config is a typed refusal.
+fn refuse_range_split(who: &str, jk: &KGradJk<'_>) -> Result<(), FerricError> {
+    if let KGradJk::RsGdf(src) = jk {
+        if src.cfg.gdf.range_split.is_some() || !src.gdf.stats().split_counters.is_empty() {
+            return Err(FerricError::General(format!(
+                "{who}: a range-split RS-GDF build is not supported by the restricted-open-shell \
+                 force (anchored on the unsplit RS-GDF and dense-AFT J/K only)"
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn grid_response<'a>(
     cell: &'a Cell,
     prep: &'a PreparedBasis,
@@ -952,6 +966,7 @@ pub fn kpoint_roks_gradient(
     functional: &str,
     cfg: &KUksGradConfig,
 ) -> Result<KUksGradient, FerricError> {
+    refuse_range_split("kpoint_roks_gradient", &jk)?;
     let (resp, exch) = grid_response(cell, prep, mesh, functional, cfg)?;
     uks_gradient_with(
         "kpoint_roks_gradient",
@@ -983,6 +998,7 @@ pub fn kpoint_rohf_gradient(
     exxdiv: ExxDiv,
     cfg: &KUksGradConfig,
 ) -> Result<KUksGradient, FerricError> {
+    refuse_range_split("kpoint_rohf_gradient", &jk)?;
     let mut c = cfg.clone();
     c.base.exxdiv = Some(exxdiv);
     uks_gradient_with(
