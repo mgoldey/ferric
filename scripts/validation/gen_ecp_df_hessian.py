@@ -98,7 +98,9 @@ def _run(system: str) -> Path:
     h_ex, _ = gd._analytic_standard(mf_ex)
     gap = float(np.max(np.abs(h_fd - h_an)))
     fit = float(np.max(np.abs(h_ex - h_an)))
-    print(f"{system}: E {mf.e_tot:.10f} PySCF FD-vs-analytic {gap:.2e}; exact-vs-RIJK {fit:.2e}")
+    print(
+        f"{system}: E {mf.e_tot:.10f} PySCF FD-vs-analytic {gap:.2e}; exact-vs-RIJK {fit:.2e}"
+    )
     if fit < 5e-6:
         raise RuntimeError("fitting signal vanishes: vacuous negative control")
     payload = {
@@ -124,7 +126,11 @@ def _run(system: str) -> Path:
         "provenance": common.provenance(
             code="PySCF",
             version=pyscf.__version__,
-            keywords={"method": "rhf", "eri": f"density_fit({AUX}) J+K", "ecp": "ferric def2-ecp"},
+            keywords={
+                "method": "rhf",
+                "eri": f"density_fit({AUX}) J+K",
+                "ecp": "ferric def2-ecp",
+            },
             basis_name=BASIS,
             xyz_path=xyz,
             coords_bohr=mol.atom_coords(unit="Bohr").tolist(),
