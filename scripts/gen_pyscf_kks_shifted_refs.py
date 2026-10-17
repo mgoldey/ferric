@@ -97,7 +97,14 @@ def main():
             assert mf.converged
             print(name, n, xc, f"{e:.12f}", flush=True)
             rows.append(
-                dict(cell=name, mesh=list(n), xc=xc, energy=float(e), nk=len(kp), seconds=round(dt))
+                dict(
+                    cell=name,
+                    mesh=list(n),
+                    xc=xc,
+                    energy=float(e),
+                    nk=len(kp),
+                    seconds=round(dt),
+                )
             )
     old = json.load(open(OUT))["rows"] if os.path.exists(OUT) else []
     rows = [r for r in old if r["cell"] != name] + rows
