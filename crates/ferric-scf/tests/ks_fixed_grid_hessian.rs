@@ -184,11 +184,17 @@ struct Ref {
     bounds: SchwarzBounds,
     grid: FixedGridLda,
     fixed: Pt,
+    xc: String,
 }
 
 fn reference(basis_name: &str) -> Ref {
+    reference_for(basis_name, "LDA")
+}
+
+/// [`reference`] for the functional `xc` (pure LDA or a global-hybrid LDA).
+fn reference_for(basis_name: &str, xc: &str) -> Ref {
     let mol = water();
-    let grid = FixedGridLda::new(&mol, "LDA", &grid_cfg()).unwrap();
+    let grid = FixedGridLda::new(&mol, xc, &grid_cfg()).unwrap();
     let bs = basis::bundled(basis_name).unwrap();
     let prep = PreparedBasis::new(&mol, &bs).unwrap();
     let bounds = SchwarzBounds::compute(Operator::coulomb(), &prep).unwrap();
@@ -200,6 +206,7 @@ fn reference(basis_name: &str) -> Ref {
         bounds,
         grid,
         fixed,
+        xc: xc.to_string(),
     }
 }
 
@@ -245,7 +252,10 @@ fn fd_gradient_of_energy(r: &Ref, h: f64) -> Array2<f64> {
 }
 
 fn analytic(r: &Ref, m: &KsFixedGridMutants) -> Array2<f64> {
-    let cfg = hessian_config();
+    let cfg = RhfConfig {
+        xc: Some(r.xc.clone()),
+        ..hessian_config()
+    };
     rks_lda_fixed_grid_hessian_parts_with(
         &ParallelContext::default(),
         &r.mol,
@@ -914,4 +924,84 @@ fn point_charges_in_the_configuration_are_refused() {
         msg.contains("external potential") && msg.contains("issue #407"),
         "{msg}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Global-hybrid LDA (libxc HYB_LDA_XC_LDA0, a = 0.25): a-scaled exact exchange
+// ---------------------------------------------------------------------------
+
+const HYBRID: &str = "HYB_LDA_XC_LDA0";
+
+/// The hybrid grid carries its libxc exchange fraction, and the pure LDA has 0.
+#[test]
+fn the_grid_reports_the_exact_exchange_fraction() {
+    let mol = water();
+    let hyb = FixedGridLda::new(&mol, HYBRID, &grid_cfg()).unwrap();
+    assert!((hyb.exact_exchange() - 0.25).abs() < 1e-12);
+    let pure = FixedGridLda::new(&mol, "LDA", &grid_cfg()).unwrap();
+    assert_eq!(pure.exact_exchange(), 0.0);
+}
+
+#[test]
+fn hybrid_gradient_matches_central_difference_of_the_fixed_grid_energy() {
+    for basis_name in ["sto-3g", "6-31g"] {
+        let r = reference_for(basis_name, HYBRID);
+        let an = gradient_at(&r, &r.fixed);
+        let fd = fd_gradient_of_energy(&r, H_FROZEN);
+        let diff = max_abs_diff(&an, &fd);
+        eprintln!("hybrid {basis_name}: |grad - FD(E)| = {diff:.3e}");
+        assert!(diff < TOL_GRAD_FD, "{basis_name}: {diff:.3e}");
+    }
+}
+
+#[test]
+fn hybrid_hessian_matches_central_difference_of_the_fixed_grid_gradient() {
+    if !has_deriv2() {
+        return;
+    }
+    for basis_name in ["sto-3g", "6-31g"] {
+        let r = reference_for(basis_name, HYBRID);
+        let an = analytic(&r, &KsFixedGridMutants::default());
+        let fd = fd_hessian_of_gradient(&r, H_FROZEN);
+        let diff = max_abs_diff(&an, &fd);
+        eprintln!("hybrid {basis_name}: |H - FD(g)| = {diff:.3e}");
+        assert!(diff < TOL_HESS_FD, "{basis_name}: {diff:.3e}");
+    }
+}
+
+/// Each exact-exchange scaling site, dropped or doubled, fails the FD anchor.
+#[test]
+fn hybrid_exchange_mutants_each_fail_the_hessian_anchor() {
+    if !has_deriv2() {
+        return;
+    }
+    let r = reference_for("6-31g", HYBRID);
+    let fd = fd_hessian_of_gradient(&r, H_FROZEN);
+    let good = max_abs_diff(&analytic(&r, &KsFixedGridMutants::default()), &fd);
+    assert!(good < TOL_HESS_FD, "production {good:.3e}");
+    let m = |f: fn(&mut KsFixedGridMutants)| {
+        let mut m = KsFixedGridMutants::default();
+        f(&mut m);
+        m
+    };
+    let cases: Vec<(&str, KsFixedGridMutants)> = vec![
+        (
+            "hybrid as pure in the skeleton",
+            m(|m| m.skeleton_exx = 0.0),
+        ),
+        ("hybrid as pure in F^x", m(|m| m.fock_exx = 0.0)),
+        ("hybrid as pure in the CPHF G", m(|m| m.response_exx = 0.0)),
+        ("exchange in the CPHF G x2", m(|m| m.response_exx = 2.0)),
+    ];
+    for (name, mutant) in cases {
+        let miss = max_abs_diff(&analytic(&r, &mutant), &fd);
+        eprintln!(
+            "mutant [{name}]: misses by {miss:.3e} ({:.1e} x bar)",
+            miss / TOL_HESS_FD
+        );
+        assert!(
+            miss >= MUTANT_FACTOR * TOL_HESS_FD,
+            "[{name}] only {miss:.3e}"
+        );
+    }
 }

@@ -22,8 +22,9 @@
 //! carries the weight-response term; the two differ by the grid's
 //! translation error and the weight derivatives (see `crate::hessian`).
 //!
-//! Only the pure-LDA, closed-shell case is implemented: libxc's `v2rho2` is
-//! the whole kernel, and the highest AO derivative is the second one.
+//! Only the closed-shell LDA case (pure, or a global hybrid whose exact-exchange
+//! fraction `a` enters the Fock matrix as `−(a/2)K`) is implemented: libxc's
+//! `v2rho2` is the whole kernel, and the highest AO derivative is the second one.
 
 use crate::rhf::XcBuilder;
 use ferric_core::basis::BasisSet;
@@ -116,6 +117,8 @@ impl<'a> XcGeometry<'a> {
 /// A frozen LDA grid with its functional.
 pub struct FixedGridLda {
     xc: XcDef,
+    /// Global-hybrid fraction of exact exchange `a` (0 for a pure functional).
+    exx: f64,
     pts: Vec<[f64; 3]>,
     w: Vec<f64>,
 }
@@ -187,7 +190,7 @@ fn scale_cols(m: &Array2<f64>, v: &Array1<f64>) -> Array2<f64> {
 
 impl FixedGridLda {
     /// Build the grid of `mol` (the reference geometry) with `cfg`. A
-    /// functional that is not pure LDA is a typed error.
+    /// functional that is not pure or global-hybrid LDA is a typed error.
     pub fn new(mol: &Molecule, xc_name: &str, cfg: &AtomicGridConfig) -> Result<Self, FerricError> {
         if cfg.prune.is_some() {
             return Err(FerricError::General(
@@ -227,16 +230,26 @@ impl FixedGridLda {
         let xc = xc_def_from_name(xc_name)
             .map_err(|e| FerricError::General(format!("fixed-grid XC: libxc: {e:?}")))?;
         let mix = k_mix_from_xc_def(&xc);
-        let pure_lda = xc.funcs.iter().all(|f| f.family() == FunctionalFamily::Lda)
-            && mix.sr == 0.0
-            && mix.lr == 0.0
+        let global_lda = xc.funcs.iter().all(|f| f.family() == FunctionalFamily::Lda)
+            && mix.omega == 0.0
+            && mix.sr == mix.lr
             && xc.vv10.is_none();
-        if !pure_lda {
+        if !global_lda {
             return Err(FerricError::General(format!(
-                "fixed-grid XC: '{xc_name}' is not a pure LDA functional"
+                "fixed-grid XC: '{xc_name}' is not a pure or global-hybrid LDA functional"
             )));
         }
-        Ok(FixedGridLda { xc, pts, w })
+        Ok(FixedGridLda {
+            xc,
+            exx: mix.sr,
+            pts,
+            w,
+        })
+    }
+
+    /// The global-hybrid fraction `a` of exact exchange (0 for a pure functional).
+    pub fn exact_exchange(&self) -> f64 {
+        self.exx
     }
 
     /// Number of grid points.
@@ -482,7 +495,7 @@ impl LdaResponse {
 }
 
 /// [`FixedGridLda`] at one geometry as the SCF's [`XcBuilder`] (global-hybrid
-/// fraction 0), for the injected SCF that the finite-difference anchors run at
+/// fraction `a` of the grid's functional), for the injected SCF that the finite-difference anchors run at
 /// displaced nuclei on the reference grid.
 pub struct FixedGridXc<'a> {
     /// The frozen grid.
@@ -497,7 +510,7 @@ impl XcBuilder for FixedGridXc<'_> {
     }
 
     fn exact_exchange_fraction(&self) -> f64 {
-        0.0
+        self.grid.exact_exchange()
     }
 }
 
@@ -517,7 +530,13 @@ pub fn rks_lda_fixed_grid_gradient(
     let d = rks.density_r();
     let w = crate::gradient::build_energy_weighted_density(rks, nocc);
     let mut grad = crate::gradient::oneelectron_gradient(mol, prep, d, &w, None)?;
-    grad += &crate::ks_gradient::twoelectron_gradient_scaled_k(prep, op, bounds, d, 0.0)?;
+    grad += &crate::ks_gradient::twoelectron_gradient_scaled_k(
+        prep,
+        op,
+        bounds,
+        d,
+        grid.exact_exchange(),
+    )?;
     grad += &grid.gradient(&XcGeometry::new(mol, prep)?, d)?;
     Ok(grad)
 }

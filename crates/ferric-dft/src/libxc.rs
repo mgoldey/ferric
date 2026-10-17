@@ -1520,7 +1520,14 @@ pub fn xc_def_from_name_nspin(name: &str, nspin: u32) -> Result<XcDef, LibxcErro
         } else {
             let mix = f.exact_exchange_mix();
             if mix != 0.0 {
-                f.set_family(FunctionalFamily::HybridGga);
+                // A raw global hybrid keeps libxc's own family: `HYB_LDA_*` is a
+                // density-only functional (no gradient dependence), everything
+                // else is treated as a hybrid GGA.
+                f.set_family(if upper.starts_with("HYB_LDA") {
+                    FunctionalFamily::Lda
+                } else {
+                    FunctionalFamily::HybridGga
+                });
                 Ok(XcDef {
                     funcs: vec![f],
                     cam: None,
@@ -1580,6 +1587,24 @@ mod tests {
             "PBE0 exact-exchange fraction should be 0.25, got {mix}"
         );
         assert!(def.cam.is_none(), "PBE0 is not range-separated");
+    }
+
+    /// A raw `HYB_LDA_*` global hybrid is density-only (family Lda) and carries
+    /// its exact-exchange fraction; a raw hybrid GGA stays a hybrid GGA.
+    #[test]
+    fn raw_hybrid_lda_keeps_the_lda_family() {
+        let def = xc_def_from_name("HYB_LDA_XC_LDA0").expect("LDA0 resolves");
+        assert!(def
+            .funcs
+            .iter()
+            .all(|f| f.family() == FunctionalFamily::Lda));
+        let mix = k_mix_from_xc_def(&def);
+        assert!((mix.sr - 0.25).abs() < 1e-12 && mix.sr == mix.lr && mix.omega == 0.0);
+        let gga = xc_def_from_name("HYB_GGA_XC_B3LYP").expect("B3LYP resolves");
+        assert!(gga
+            .funcs
+            .iter()
+            .all(|f| f.family() == FunctionalFamily::HybridGga));
     }
 
     /// Common friendly names should all resolve to evaluable (LDA/GGA/hybrid)

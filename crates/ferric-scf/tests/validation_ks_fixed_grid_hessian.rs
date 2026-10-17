@@ -136,6 +136,9 @@ fn max_abs_diff(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
 
 struct Case {
     basis: &'static str,
+    /// Functional name (ferric's) and the reference file suffix.
+    xc: &'static str,
+    suffix: &'static str,
     /// Energy vs PySCF, Hartree.
     tol_energy: f64,
     /// Hessian vs PySCF's analytic Hessian, Hartree/Bohr^2.
@@ -145,18 +148,32 @@ struct Case {
 }
 
 /// Bars: ~10x the maxima measured on the first run (see the VALIDATION row).
-const CASES: [Case; 2] = [
+const CASES: [Case; 3] = [
     Case {
         basis: "6-31g",
+        xc: "LDA",
+        suffix: "",
         tol_energy: 1e-9,
         tol_hessian: 5e-7,
         tol_freq: 1e-3,
     },
     Case {
         basis: "cc-pvdz",
+        xc: "LDA",
+        suffix: "",
         tol_energy: 1e-9,
         tol_hessian: 1e-5,
         tol_freq: 3e-2,
+    },
+    // Global-hybrid LDA (a = 0.25): the a-scaled exact exchange of the skeleton,
+    // first-order Fock and CPHF against PySCF's own hybrid Hessian.
+    Case {
+        basis: "6-31g",
+        xc: "HYB_LDA_XC_LDA0",
+        suffix: "_hyb",
+        tol_energy: 1e-9,
+        tol_hessian: 5e-7,
+        tol_freq: 1e-3,
     },
 ];
 
@@ -166,8 +183,8 @@ fn run_case(case: &Case) {
         return;
     }
     let path = repo_root().join(format!(
-        "testdata/reference/validation/ks_fixed_grid_hessian/h2o_distorted_{}.json",
-        case.basis
+        "testdata/reference/validation/ks_fixed_grid_hessian/h2o_distorted_{}{}.json",
+        case.basis, case.suffix
     ));
     let text = std::fs::read_to_string(&path).unwrap();
     let r: Value = serde_json::from_str(&text).unwrap();
@@ -179,7 +196,7 @@ fn run_case(case: &Case) {
     let ctx = ParallelContext::default();
     let (pts, w) = load_grid();
     assert_eq!(pts.len() as u64, r["npts"].as_u64().unwrap());
-    let grid = FixedGridLda::from_points("LDA", pts, w).unwrap();
+    let grid = FixedGridLda::from_points(case.xc, pts, w).unwrap();
 
     let enuc = (mol.nuclear_repulsion() - r["nuclear_repulsion"].as_f64().unwrap()).abs();
     assert!(
@@ -204,7 +221,7 @@ fn run_case(case: &Case) {
     );
 
     let hess_cfg = RhfConfig {
-        xc: Some("LDA".into()),
+        xc: Some(case.xc.into()),
         df_j_aux: Some(String::new()),
         df_k_aux: Some(String::new()),
         ..Default::default()
@@ -260,4 +277,10 @@ fn fixed_grid_lda_hessian_6_31g_matches_pyscf_on_the_same_grid() {
 #[ignore = "validation: analytic fixed-grid KS-LDA Hessian vs PySCF"]
 fn fixed_grid_lda_hessian_cc_pvdz_matches_pyscf_on_the_same_grid() {
     run_case(&CASES[1]);
+}
+
+#[test]
+#[ignore = "validation: analytic fixed-grid KS hybrid-LDA Hessian vs PySCF"]
+fn fixed_grid_hybrid_lda_hessian_6_31g_matches_pyscf_on_the_same_grid() {
+    run_case(&CASES[2]);
 }
