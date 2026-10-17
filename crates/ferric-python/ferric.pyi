@@ -2628,8 +2628,6 @@ def run_rhf(
     symmetry: Literal[True],
     irrep_nelec: dict[str, int] | None = None,
 ) -> SymmetricRhfResult: ...
-
-
 def run_uhf(
     mol: Molecule,
     basis_set: BasisSet,
