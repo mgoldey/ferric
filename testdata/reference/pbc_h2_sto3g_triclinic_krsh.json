@@ -1,0 +1,168 @@
+{
+  "pyscf_version": "2.13.1",
+  "numpy_version": "1.26.4",
+  "date": "2026-10-17",
+  "generator": "scripts/gen_pyscf_pbc_krsh_refs.py",
+  "repo_sha_at_generation": "c561f1d453f1ea4688d9fe0931c4929dfb47eaa3",
+  "repo_sha_note": "HEAD of the worktree when the script ran: the PARENT of the commit that adds/changes this script, not the commit containing it",
+  "libxc_version": "7.0.0",
+  "xc_names": {
+    "HSE06": {
+      "pyscf": "HSE06",
+      "ferric": "HSE06",
+      "pyscf_rsh_coeff_omega_clr_csr_minus_clr": [
+        0.11,
+        0.0,
+        0.25
+      ],
+      "omega_bohr_inv": 0.11,
+      "c_lr": 0.0,
+      "c_sr": 0.25
+    },
+    "CAM_B3LYP": {
+      "pyscf": "CAMB3LYP",
+      "ferric": "HYB_GGA_XC_CAM_B3LYP",
+      "pyscf_rsh_coeff_omega_clr_csr_minus_clr": [
+        0.33,
+        0.65,
+        -0.46
+      ],
+      "omega_bohr_inv": 0.33,
+      "c_lr": 0.65,
+      "c_sr": 0.19
+    }
+  },
+  "grids": "XC grid (KNumInt UniformGrids) and AFTDF mesh are both 41^3; cell.precision 1e-11",
+  "cell": "H2 STO-3G (PySCF digits), triclinic TRI_A lattice, atoms H2_ATOMS, Bohr",
+  "lattice": [
+    [
+      4.6,
+      0.0,
+      0.0
+    ],
+    [
+      0.9,
+      4.3,
+      0.0
+    ],
+    [
+      0.5,
+      0.7,
+      4.8
+    ]
+  ],
+  "atoms": [
+    [
+      0.3,
+      0.2,
+      0.1
+    ],
+    [
+      0.3,
+      0.2,
+      1.5
+    ]
+  ],
+  "setup": "KRKS, AFTDF, UniformGrids 41^3, gamma-centred kmesh, conv_tol 1e-12, mf.grids default (uniform, = cell.mesh)",
+  "rows": [
+    {
+      "functional": "HSE06",
+      "kmesh": [
+        1,
+        1,
+        1
+      ],
+      "exxdiv": "ewald",
+      "e_tot": -1.4252964832002344,
+      "runtime_s": 12.4
+    },
+    {
+      "functional": "HSE06",
+      "kmesh": [
+        1,
+        1,
+        1
+      ],
+      "exxdiv": "none",
+      "e_tot": -1.3007176905487914,
+      "runtime_s": 11.0
+    },
+    {
+      "functional": "CAM_B3LYP",
+      "kmesh": [
+        1,
+        1,
+        1
+      ],
+      "exxdiv": "ewald",
+      "e_tot": -1.4471449677955406,
+      "runtime_s": 17.5
+    },
+    {
+      "functional": "CAM_B3LYP",
+      "kmesh": [
+        1,
+        1,
+        1
+      ],
+      "exxdiv": "none",
+      "e_tot": -1.1601093658526864,
+      "runtime_s": 21.6
+    },
+    {
+      "functional": "HSE06",
+      "kmesh": [
+        1,
+        2,
+        2
+      ],
+      "exxdiv": "ewald",
+      "e_tot": -1.2055210030503722,
+      "runtime_s": 54.5
+    },
+    {
+      "functional": "HSE06",
+      "kmesh": [
+        1,
+        2,
+        2
+      ],
+      "exxdiv": "none",
+      "e_tot": -1.155818033621013,
+      "runtime_s": 44.0
+    },
+    {
+      "functional": "CAM_B3LYP",
+      "kmesh": [
+        2,
+        1,
+        2
+      ],
+      "exxdiv": "ewald",
+      "e_tot": -1.2268338485796795,
+      "runtime_s": 55.9
+    },
+    {
+      "functional": "HSE06",
+      "kmesh": [
+        2,
+        2,
+        2
+      ],
+      "exxdiv": "ewald",
+      "e_tot": -1.1351364327613047,
+      "runtime_s": 70.9
+    },
+    {
+      "functional": "CAM_B3LYP",
+      "kmesh": [
+        2,
+        2,
+        2
+      ],
+      "exxdiv": "none",
+      "e_tot": -0.9572089082943124,
+      "runtime_s": 91.0
+    }
+  ]
+}

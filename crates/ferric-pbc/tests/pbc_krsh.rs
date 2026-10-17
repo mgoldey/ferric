@@ -13,6 +13,8 @@
 //!   are what differ), for HSE06 (`c_lr = 0`) and CAM-B3LYP (mixed).
 //! * `rsh_krks_matches_pinned_pyscf` — PySCF 2.13 `pbc.dft.KRKS`
 //!   (AFTDF, UniformGrids 61³, exxdiv ewald) for HSE06, CAM-B3LYP, wB97X.
+//! * `pbc_krsh_more.rs` (separate file) — triclinic cell, exxdiv ewald and
+//!   none, meshes up to 2x2x2, PySCF pins at 1e-10.
 //! * `rsh_mutations_break_the_anchors` — the wrong (primitive-cell)
 //!   Madelung constant and a dropped range-separation factor each break the
 //!   supercell anchor.
