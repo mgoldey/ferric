@@ -3069,6 +3069,7 @@ fn run_scs_mp2_2terfc(
 /// reserved for kinds that are not Proven.
 fn mp2v_parameterization_notices(
     frozen_core: usize,
+    fitted_frozen_core: usize,
     basis: Option<&str>,
     terfc: bool,
 ) -> Vec<String> {
@@ -3079,9 +3080,16 @@ fn mp2v_parameterization_notices(
              approximation; an all-electron run is unparameterized extrapolation."
                 .to_string(),
         );
+    } else if frozen_core != fitted_frozen_core {
+        out.push(format!(
+            "MP2-V with frozen_core = {frozen_core}: (r0, b, C) were fitted with the standard \
+             frozen core of {fitted_frozen_core} orbital(s) for this molecule; a different count \
+             is unparameterized extrapolation."
+        ));
     }
-    let atz_class = basis.is_some_and(|b| b.to_ascii_lowercase().starts_with("aug-cc-pvtz"));
-    if !atz_class {
+    // Exactly aug-cc-pVTZ: aug-cc-pVTZ-PP / -DK etc. are different bases.
+    let atz = basis.is_some_and(|b| b.eq_ignore_ascii_case("aug-cc-pvtz"));
+    if !atz {
         out.push(format!(
             "MP2-V in basis {}: (r0, b, C) were fitted for aug-cc-pVTZ, no counterpoise; \
              another basis is unparameterized extrapolation.",
@@ -3161,6 +3169,7 @@ fn run_mp2_v(
 
     for line in mp2v_parameterization_notices(
         att_cfg.frozen_core,
+        mol.auto_frozen_core(),
         cfg.basis.name.as_deref(),
         att_cfg.attenuator == AttVv10Attenuator::Terfc,
     ) {
@@ -6385,22 +6394,38 @@ mod mp2v_notice_tests {
 
     #[test]
     fn published_setting_is_silent() {
-        assert!(notices(1, Some("aug-cc-pVTZ"), true).is_empty());
+        assert!(notices(1, 1, Some("aug-cc-pVTZ"), true).is_empty());
+    }
+
+    #[test]
+    fn nonzero_mismatch_warns() {
+        let n = notices(2, 1, Some("aug-cc-pvtz"), true);
+        assert_eq!(n.len(), 1);
+        assert!(n[0].contains("frozen_core = 2") && n[0].contains("of 1"));
+    }
+
+    #[test]
+    fn pp_and_dk_variants_warn() {
+        for b in ["aug-cc-pvtz-pp", "aug-cc-pVTZ-DK"] {
+            let n = notices(1, 1, Some(b), true);
+            assert_eq!(n.len(), 1, "{b}");
+            assert!(n[0].contains(b));
+        }
     }
 
     #[test]
     fn all_electron_warns() {
-        let n = notices(0, Some("aug-cc-pvtz"), true);
+        let n = notices(0, 1, Some("aug-cc-pvtz"), true);
         assert_eq!(n.len(), 1);
         assert!(n[0].contains("frozen_core = 0"));
     }
 
     #[test]
     fn other_basis_and_erfc_warn() {
-        let n = notices(1, Some("cc-pvdz"), false);
+        let n = notices(1, 1, Some("cc-pvdz"), false);
         assert_eq!(n.len(), 2);
         assert!(n[0].contains("cc-pvdz") && n[1].contains("erfc"));
-        assert!(notices(1, None, true)[0].contains("<custom path>"));
+        assert!(notices(1, 1, None, true)[0].contains("<custom path>"));
     }
 }
 
