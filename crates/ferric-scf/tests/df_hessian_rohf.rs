@@ -763,7 +763,7 @@ fn ri_is_accepted_and_the_remaining_refusals_are_typed() {
         .unwrap_err()
         .to_string();
     assert!(e.contains("external potential"), "{e}");
-    // Kohn-Sham, COSX and an ECP stay refused.
+    // Kohn-Sham stays refused; an ECP is accepted (#406).
     let mut ks = cfg.clone();
     ks.xc = Some("pbe".into());
     assert!(rohf_hessian_preflight(op, &ks).is_err());
@@ -771,10 +771,11 @@ fn ri_is_accepted_and_the_remaining_refusals_are_typed() {
     let mut hi = Molecule::parse_xyz("2\nHI\nH 0 0 0\nI 0 0 1.75\n", 0, 1).unwrap();
     hi.apply_ecp(&svp);
     let hi_prep = PreparedBasis::new(&hi, &svp).unwrap();
-    let e = analytic_rohf_hessian_available(&hi, &hi_prep, op, &cfg)
-        .unwrap_err()
-        .to_string();
-    assert!(e.contains("effective core potential"), "{e}");
+    // (the RI-K metric of HI/jkfit may be refused for its conditioning; that is
+    // not the ECP.)
+    if let Err(e) = analytic_rohf_hessian_available(&hi, &hi_prep, op, &cfg) {
+        assert!(!e.to_string().contains("effective core potential"), "{e}");
+    }
     // A route whose fitting basis differs from the configuration's.
     let s = setup(NH2_DISTORTED, 2, "sto-3g", "def2-universal-jkfit", "");
     let other = scf_config("cc-pvdz-ri", "");
