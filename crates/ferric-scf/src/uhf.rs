@@ -492,6 +492,7 @@ fn solve_uhf_impl(
     fock_mod: Option<UhfFockMod>,
     inj: Option<PeriodicInjection<'_>>,
 ) -> Result<ScfResult, FerricError> {
+    crate::symmetric::require_symmetry_off(config, "solve_uhf")?;
     use ferric_dft::ks::KsXcUks;
     use ferric_dft::xc_trait::{KMix, UksXcContribution};
 
