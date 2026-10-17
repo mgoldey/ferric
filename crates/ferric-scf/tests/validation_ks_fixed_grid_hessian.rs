@@ -53,7 +53,7 @@ use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_scf::frequencies::{atom_masses, frequencies_from_cartesian_hessian};
 use ferric_scf::hessian::{rks_fixed_grid_hessian_parts_with, KsFixedGridMutants};
-use ferric_scf::ks_fixed_grid::{solve_rks_fixed_grid, FixedGridKs};
+use ferric_scf::ks_fixed_grid::{solve_rks_fixed_grid_df, FixedGridKs};
 use ferric_scf::rhf::RhfConfig;
 use ferric_scf::screening::SchwarzBounds;
 use ndarray::Array2;
@@ -145,10 +145,12 @@ struct Case {
     tol_hessian: f64,
     /// Frequencies vs PySCF's, cm^-1.
     tol_freq: f64,
+    /// RI-J auxiliary basis (PySCF `density_fit(only_dfj=True)`), or exact J.
+    aux: Option<&'static str>,
 }
 
 /// Bars: ~10x the maxima measured on the first run (see the VALIDATION row).
-const CASES: [Case; 6] = [
+const CASES: [Case; 8] = [
     Case {
         basis: "6-31g",
         xc: "LDA",
@@ -156,6 +158,7 @@ const CASES: [Case; 6] = [
         tol_energy: 1e-9,
         tol_hessian: 5e-7,
         tol_freq: 1e-3,
+        aux: None,
     },
     Case {
         basis: "cc-pvdz",
@@ -164,6 +167,7 @@ const CASES: [Case; 6] = [
         tol_energy: 1e-9,
         tol_hessian: 1e-5,
         tol_freq: 3e-2,
+        aux: None,
     },
     // Global-hybrid LDA (a = 0.25): the a-scaled exact exchange of the skeleton,
     // first-order Fock and CPHF against PySCF's own hybrid Hessian.
@@ -174,6 +178,7 @@ const CASES: [Case; 6] = [
         tol_energy: 1e-9,
         tol_hessian: 5e-7,
         tol_freq: 1e-3,
+        aux: None,
     },
     // GGA and hybrid GGA: third AO derivatives and the sigma kernel.
     Case {
@@ -183,6 +188,7 @@ const CASES: [Case; 6] = [
         tol_energy: 1e-9,
         tol_hessian: 5e-7,
         tol_freq: 1e-3,
+        aux: None,
     },
     Case {
         basis: "cc-pvdz",
@@ -191,6 +197,7 @@ const CASES: [Case; 6] = [
         tol_energy: 1e-9,
         tol_hessian: 1e-5,
         tol_freq: 3e-2,
+        aux: None,
     },
     Case {
         basis: "6-31g",
@@ -201,6 +208,29 @@ const CASES: [Case; 6] = [
         tol_energy: 5e-9,
         tol_hessian: 5e-7,
         tol_freq: 1e-3,
+        aux: None,
+    },
+    // RI-J (def2-universal-jkfit, exact K): PySCF `density_fit(only_dfj=True)`
+    // Hessian with the full auxiliary-basis response, on the same grid.
+    Case {
+        basis: "6-31g",
+        xc: "LDA",
+        suffix: "_rij",
+        tol_energy: 1e-10,
+        tol_hessian: 5e-7,
+        tol_freq: 1e-3,
+        aux: Some("def2-universal-jkfit"),
+    },
+    Case {
+        basis: "6-31g",
+        xc: "PBE",
+        suffix: "_pbe_rij",
+        tol_energy: 1e-10,
+        // PySCF's own analytic PBE DF-J Hessian is 4.3e-6 from the FD of its own
+        // gradient and 9e-7 asymmetric: the bar is set by the reference.
+        tol_hessian: 8e-6,
+        tol_freq: 1e-2,
+        aux: Some("def2-universal-jkfit"),
     },
 ];
 
@@ -238,7 +268,20 @@ fn run_case(case: &Case) {
         density_conv: 1e-11,
         ..Default::default()
     };
-    let res = solve_rks_fixed_grid(&ctx, &mol, &prep, op, &bounds, &grid, &scf_cfg).unwrap();
+    let dfbs = case
+        .aux
+        .map(|a| PreparedBasis::new(&mol, &basis::bundled(a).unwrap()).unwrap());
+    let res = solve_rks_fixed_grid_df(
+        &ctx,
+        &mol,
+        &prep,
+        op,
+        &bounds,
+        &grid,
+        dfbs.as_ref(),
+        &scf_cfg,
+    )
+    .unwrap();
     assert!(res.converged);
     let de = (res.energy - r["energy"].as_f64().unwrap()).abs();
     eprintln!("{}: |E_ferric - E_PySCF| = {de:.3e} Ha", case.basis);
@@ -249,7 +292,7 @@ fn run_case(case: &Case) {
 
     let hess_cfg = RhfConfig {
         xc: Some(case.xc.into()),
-        df_j_aux: Some(String::new()),
+        df_j_aux: Some(case.aux.unwrap_or_default().into()),
         df_k_aux: Some(String::new()),
         ..Default::default()
     };
@@ -328,4 +371,16 @@ fn fixed_grid_pbe_hessian_cc_pvdz_matches_pyscf_on_the_same_grid() {
 #[ignore = "validation: analytic fixed-grid KS B3LYP Hessian vs PySCF"]
 fn fixed_grid_b3lyp_hessian_6_31g_matches_pyscf_on_the_same_grid() {
     run_case(&CASES[5]);
+}
+
+#[test]
+#[ignore = "validation: analytic fixed-grid KS RI-J Hessian (LDA) vs PySCF density_fit(only_dfj)"]
+fn fixed_grid_lda_rij_hessian_6_31g_matches_pyscf_on_the_same_grid() {
+    run_case(&CASES[6]);
+}
+
+#[test]
+#[ignore = "validation: analytic fixed-grid KS RI-J Hessian (PBE) vs PySCF density_fit(only_dfj)"]
+fn fixed_grid_pbe_rij_hessian_6_31g_matches_pyscf_on_the_same_grid() {
+    run_case(&CASES[7]);
 }

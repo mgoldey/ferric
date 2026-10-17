@@ -16,8 +16,10 @@ approximate):
     default to False, i.e. the grid is not differentiated, which is the energy
     `E(R)` with the grid frozen in space that ferric differentiates;
   * the SAME basis (ferric's JSON through common.py) and geometry (Bohr, ferric's
-    constant), the same functional (per case, both libxc), exact J, no
-    density fitting, SCF converged to 1e-12 in energy;
+    constant), the same functional (per case, both libxc), exact J (no density
+    fitting) except the `_rij` cases: `density_fit(auxbasis, only_dfj=True)`
+    over ferric's def2-universal-jkfit with the full auxiliary response
+    (`auxbasis_response = 2`), pure functionals only; SCF converged to 1e-12;
   * masses = ferric's IUPAC-2013 weights for the frequencies.
 
 Stored: PySCF's total energy (the grid check: it must agree with ferric's to
