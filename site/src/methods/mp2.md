@@ -93,11 +93,12 @@ defaults are Grimme's c<sub>OS</sub> = 1.2, c<sub>SS</sub> = 0.333.
 
 **Accuracy.** `att-rimp2`, `scs-mp2` and `scs-mp2-2terfc` are Proven (the erfc
 energy is pinned against PySCF/libcint in
-`testdata/reference/h2o_cc-pvdz_attenuated-rimp2-erfc0p420.json`). `mp2-v` is
-Smoke: its VV10 half is bit-identical to the ωB97X-V code path, but there is no
-published MP2-V total energy to compare with, and ferric evaluates the VV10 term
-on the converged HF density (the post-HF variant) on its own 50×50 grid rather
-than SG-1. Read the header of `examples/water-mp2v.toml` before quoting a number.
+`testdata/reference/h2o_cc-pvdz_attenuated-rimp2-erfc0p420.json`). `mp2-v`'s
+implementation is Proven (narrow): the damped VV10 half, the terfc-attenuated MP2
+half and the erfc control each match an independent PySCF/numpy reference. Its
+parameterization is unbenchmarked: there is no published MP2-V total energy to
+compare with, no S66 run, and ferric evaluates the VV10 term on the converged HF
+density (the post-HF variant) on its own 50×50 grid rather than SG-1. Read the header of `examples/water-mp2v.toml` before quoting a number.
 
 **Robust fitting.** When the RI metric differs from the operator in the
 integrals, as it does for attenuated operators, robust (Dunlap) density fitting

@@ -53,8 +53,10 @@ WHAT THIS SCRIPT WRITES, AND WHY EACH PIECE IS INDEPENDENT (OR NOT)
    the paper (1 per first-row heavy atom). Assembly checked against PySCF
    DFMP2 (Coulomb, same frozen core) before writing.
 8. The terfc-attenuated E_c is NOT computed here. Its independent reference is
-   the row-119 terfc generator (#275), which this row reuses rather than
-   duplicating; it was not on main when this script was written.
+   the row-119 terfc generator (gen_terfc_integrals.py, k-space terfc
+   integrals), which validation_mp2_v.rs reads directly (H2O, NH3; r0 = 1.00 A,
+   frozen core 1) instead of duplicating it. The water dimer has no terfc
+   reference.
 
 Run (inside the box-wide slot):
     scripts/validation/run_slot.sh -- \\
@@ -386,8 +388,7 @@ def run_case(system, xyz, basis, auxbasis_name, nfc):
             "coulomb_e_corr": coul["e_corr"],
             "numpy_vs_pyscf_dfmp2_coulomb_abs": d_assembly,
         },
-        "mp2_terfc": "not computed here: the independent terfc reference is the "
-        "row-119 generator (#275), not on main when this file was written",
+        "mp2_terfc": terfc_reference_note(system, basis),
         "provenance": common.provenance(
             code="PySCF (RHF, AO values, _vv10nlc, integrals, DFMP2 anchor) + numpy "
             "(VV10 from Vydrov & Van Voorhis 2010, damped per MP2-V Eq. 11; RI-MP2 assembly)",
@@ -413,6 +414,17 @@ def run_case(system, xyz, basis, auxbasis_name, nfc):
             extra={"basis_self_check": basis_check},
         ),
     }
+
+
+def terfc_reference_note(system: str, basis: str) -> str:
+    """Where the terfc E_c reference for this case lives, or that none exists."""
+    rel = f"testdata/reference/validation/scs_mp2_2terfc/{system}_{basis}.json"
+    if (common.ROOT / rel).is_file():
+        return (
+            f"not stored here: the terfc E_c reference is the row-119 file {rel} "
+            "(gen_terfc_integrals.py), read by validation_mp2_v.rs"
+        )
+    return "not available: no terfc reference for this system"
 
 
 def main() -> int:
