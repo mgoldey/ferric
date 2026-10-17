@@ -32,7 +32,8 @@
 //!   mutant's full-Hessian miss, 1.3e-1 to 1.4e-1, is a one-time measurement).
 //! * `empty_environment_is_bit_identical_*` / `zero_charge_limit_*`: the
 //!   no-charge limit of the ECP+environment route.
-//! * `ecp_with_ri_and_environment_is_refused_by_the_probe`: typed refusal.
+//! * `ecp_with_ri_and_environment_is_refused_by_the_probe`: typed refusal (RI + ECP
+//!   alone is lifted: `ecp_df_hessian.rs`).
 //!
 //! NOT covered: the synthetic Br table is iodine's scaled (same shells and
 //! `n_core` = 28; the real H-Ag-I also has `n_core` 28 on both), so
@@ -555,9 +556,9 @@ fn empty_environment_is_bit_identical_to_none_and_zero_charge_is_1e10() {
 
 #[test]
 fn ecp_with_ri_and_environment_is_refused_by_the_probe() {
-    // RI J/K + external potential is refused ("untested") before any SCF, and
-    // RI + ECP is refused too; both reasons must reach the caller as typed
-    // errors so `Auto` frequencies fall back to FD.
+    // RI J/K + external potential is still refused ("untested") before any SCF,
+    // as a typed error so `Auto` frequencies fall back to FD. RI + ECP alone
+    // is analytic (`ecp_df_hessian.rs`).
     let bs = basis::bundled("def2-svp").unwrap();
     let mol = ecp_mol(HOI, 0, 1, &bs);
     let prep = PreparedBasis::new(&mol, &bs).unwrap();
@@ -574,20 +575,6 @@ fn ecp_with_ri_and_environment_is_refused_by_the_probe() {
     assert!(
         err.to_string()
             .contains("combined with an external potential"),
-        "{err}"
-    );
-
-    // RI + ECP alone (RHF): the ECP reason itself.
-    let cfg = RhfConfig {
-        external_potential: None,
-        ..cfg
-    };
-    let err =
-        ferric_scf::hessian::analytic_hessian_available(&mol, &prep, Operator::coulomb(), &cfg)
-            .expect_err("RHF RI + ECP must be refused");
-    eprintln!("probe: {err}");
-    assert!(
-        err.to_string().contains("effective core potential"),
         "{err}"
     );
 }

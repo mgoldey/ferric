@@ -70,7 +70,7 @@ through `[basis] path` as a Gaussian-94 file (orbital basis only).
 ## When nothing here fits
 
 - **Analytic Hessians** cover RHF, UHF and ROHF (exact J/K or RI-J / RI-K, basis up to f
-  functions; ROHF without an ECP or external potential); KS-DFT (ROKS
+  functions; ROHF without an external potential); KS-DFT (ROKS
   included) and correlated methods' frequencies are by finite differences of
   the analytic gradient.
 - **Open-shell coupled cluster and open-shell TS search** are not available
