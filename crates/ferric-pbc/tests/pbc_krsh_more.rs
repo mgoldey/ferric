@@ -12,11 +12,26 @@
 //! # Tolerance, derived from both sides
 //!
 //! The agreement is a dense-AFT-vs-AFTDF identity on the same grid (no aux
-//! fit), so the bar is `PIN_TOL` = 1e-9 Ha, the bar `pbc_krsh.rs` holds on
-//! the cubic rows. The defects this must see: a primitive-cell Madelung
-//! constant (the `exxdiv` bookkeeping) moves E by `MIN_DEFECT_SHIFT`, an
-//! ewald/none mix-up by the ewald-minus-none pin gap; both are checked below
-//! to be >= 1e5 times the bar.
+//! fit). PySCF runs at `cell.precision` 1e-11 (its default 1e-8 leaves a
+//! -1.5e-10 lattice-sum offset at the 1x1x1 mesh, which is why the generator
+//! sets it). Measured |E - pin| over the nine rows is <= 5e-13, so the bar
+//! `PIN_TOL` = 1e-10 Ha has a 200x margin on the agreeing side.
+//!
+//! On the defect side (all against the first row, HSE06 1x1x1 ewald, or the
+//! 1x2x2 row for the test-only mutants), each shift is a measurement:
+//!
+//! * PRODUCTION mutants, applied as scratch edits to `rsh.rs`
+//!   `RshParams::from_cam` and reverted: omega * 1.01 gives dE = +3.10e-4;
+//!   `c_lr` set to `c_sr` (attenuated K dropped) gives -3.10e-2; `c_sr` *
+//!   0.99 gives +1.44e-3. All fail `PIN_TOL` by >= 3e6.
+//! * test-only `KMutation` toggles (checked in
+//!   `rsh_triclinic_pins_see_the_exxdiv_defects`): `PrimitiveMadelung`
+//!   -7.49e-2, `KernelAtG` +5.36e-2 (1x2x2).
+//! * an ewald/none mix-up equals the ewald-minus-none pin gap (>= 4.9e-2 on
+//!   every pair), also asserted.
+//!
+//! `MIN_DEFECT_SHIFT` is a lower bound the mutant shifts must exceed, not
+//! their value.
 
 mod common;
 
@@ -31,35 +46,35 @@ use ferric_pbc::lattice::Cell;
 
 const OMEGA: f64 = 0.8;
 const MESH: usize = 41;
-const PIN_TOL: f64 = 1e-9;
-/// A wrong-Madelung defect must exceed the pin bar by far more than 1e3.
+const PIN_TOL: f64 = 1e-10;
+/// Lower bound a Madelung/kernel defect's shift must exceed (1e6 x `PIN_TOL`).
 const MIN_DEFECT_SHIFT: f64 = 1e-4;
 
 /// (functional, k-mesh, exxdiv, PySCF E_tot).
 type Row = (&'static str, [usize; 3], ExxDiv, f64);
 
 const PINS: [Row; 9] = [
-    ("HSE06", [1, 1, 1], ExxDiv::Ewald, -1.425296483046),
-    ("HSE06", [1, 1, 1], ExxDiv::None, -1.300717690416),
+    ("HSE06", [1, 1, 1], ExxDiv::Ewald, -1.425296483200),
+    ("HSE06", [1, 1, 1], ExxDiv::None, -1.300717690549),
     (
         "HYB_GGA_XC_CAM_B3LYP",
         [1, 1, 1],
         ExxDiv::Ewald,
-        -1.447144967614,
+        -1.447144967796,
     ),
     (
         "HYB_GGA_XC_CAM_B3LYP",
         [1, 1, 1],
         ExxDiv::None,
-        -1.160109365720,
+        -1.160109365853,
     ),
-    ("HSE06", [1, 2, 2], ExxDiv::Ewald, -1.205521003053),
-    ("HSE06", [1, 2, 2], ExxDiv::None, -1.155818033624),
+    ("HSE06", [1, 2, 2], ExxDiv::Ewald, -1.205521003050),
+    ("HSE06", [1, 2, 2], ExxDiv::None, -1.155818033621),
     (
         "HYB_GGA_XC_CAM_B3LYP",
         [2, 1, 2],
         ExxDiv::Ewald,
-        -1.226833848564,
+        -1.226833848580,
     ),
     ("HSE06", [2, 2, 2], ExxDiv::Ewald, -1.135136432761),
     (
@@ -110,7 +125,7 @@ fn rsh_krks_triclinic_matches_pinned_pyscf() {
 fn rsh_triclinic_pins_see_the_exxdiv_defects() {
     let (f, n, _, e_ewald) = PINS[4];
     let e_none = PINS[5].3;
-    assert!((e_ewald - e_none).abs() > 1e5 * PIN_TOL);
+    assert!((e_ewald - e_none).abs() > 1e6 * PIN_TOL);
     let e = energy(f, n, ExxDiv::Ewald, Some(KMutation::PrimitiveMadelung));
     eprintln!(
         "PrimitiveMadelung HSE06 {n:?}: dE vs pin {:.2e}",

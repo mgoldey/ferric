@@ -25,6 +25,7 @@ import time
 
 import numpy as np
 import pyscf
+from pyscf.dft import libxc
 from pyscf.pbc import df, dft, gto
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -36,7 +37,10 @@ STO3G_H = [
     [0, [3.42525091, 0.15432897], [0.62391373, 0.53532814], [0.1688554, 0.44463454]]
 ]
 MESH = 41
+# PySCF default 1e-8 leaves a -1.5e-10 offset at the 1x1x1 mesh (lattice-sum cutoff)
+PRECISION = 1e-11
 FUNCTIONALS = {"HSE06": "HSE06", "CAM_B3LYP": "CAMB3LYP"}
+FERRIC_NAMES = {"HSE06": "HSE06", "CAM_B3LYP": "HYB_GGA_XC_CAM_B3LYP"}
 # (functional, kmesh, exxdiv)
 ROWS = [
     ("HSE06", (1, 1, 1), "ewald"),
@@ -58,6 +62,7 @@ def make_cell():
     c.unit = "B"
     c.basis = {"H": STO3G_H}
     c.mesh = [MESH] * 3
+    c.precision = PRECISION
     c.verbose = 0
     c.build()
     return c
@@ -107,10 +112,26 @@ def main():
         "date": datetime.date.today().isoformat(),
         "generator": "scripts/gen_pyscf_pbc_krsh_refs.py",
         "repo_sha_at_generation": git_sha(),
+        "repo_sha_note": "HEAD of the worktree when the script ran: the PARENT of the "
+        "commit that adds/changes this script, not the commit containing it",
+        "libxc_version": libxc.libxc_version(),
+        "xc_names": {
+            k: {
+                "pyscf": v,
+                "ferric": FERRIC_NAMES[k],
+                "pyscf_rsh_coeff_omega_clr_csr_minus_clr": list(libxc.rsh_coeff(v)),
+                "omega_bohr_inv": libxc.rsh_coeff(v)[0],
+                "c_lr": libxc.rsh_coeff(v)[1],
+                "c_sr": libxc.rsh_coeff(v)[1] + libxc.rsh_coeff(v)[2],
+            }
+            for k, v in FUNCTIONALS.items()
+        },
+        "grids": f"XC grid (KNumInt UniformGrids) and AFTDF mesh are both {MESH}^3; "
+        f"cell.precision {PRECISION}",
         "cell": "H2 STO-3G (PySCF digits), triclinic TRI_A lattice, atoms H2_ATOMS, Bohr",
         "lattice": LATTICE,
         "atoms": ATOMS,
-        "setup": f"KRKS, AFTDF, UniformGrids {MESH}^3, gamma-centred kmesh, conv_tol 1e-12",
+        "setup": f"KRKS, AFTDF, UniformGrids {MESH}^3, gamma-centred kmesh, conv_tol 1e-12, mf.grids default (uniform, = cell.mesh)",
         "rows": rows,
     }
     if only:
