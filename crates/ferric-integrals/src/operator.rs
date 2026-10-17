@@ -135,17 +135,17 @@ impl Operator {
     /// Limit: zeta -> 0 gives exp(0)/r = 1/r = Coulomb (approached from below).
     ///
     /// SUPPORTED RANGE: `zeta > 0`. libint2's TennoGmEval interpolates only for
-    /// `U = zeta²/(4ρ) ∈ [1e-7, 1e3]` (ρ = reduced bra/ket exponent); outside it
-    /// (Yukawa, `U < 1e-7`) it uses an upward recursion that is unstable at small
-    /// `T` (see below). On the same-center `T == 0` shell blocks that
-    /// RI/3-center paths always contain, the behaviour depends on the libint2
-    /// version: libint 2.13.1 takes a Gaussian fit there (3e-7 absolute error at
-    /// `U = 1e-14`, 2e-12 at `U = 1e-8`; no assert fires), while libint 2.7.2's
-    /// recursion is undefined and ABORTS the process in an `assert`-enabled
-    /// build such as ferric's shim (garbage otherwise). In practice a physically meaningful `zeta` (≈ 0.1 – a few Bohr⁻¹) stays in
-    /// domain for ordinary Gaussian exponents. Do NOT pass a near-zero `zeta`
-    /// (e.g. 1e-6) expecting a clean Coulomb limit on RI paths -- that regime is
-    /// out of the kernel's table domain.
+    /// `U = zeta²/(4ρ) ∈ [1e-7, 1e3]` (ρ = reduced bra/ket exponent). Below it
+    /// (Yukawa, `U < 1e-7`) stock libint uses an upward recursion in `m` that is
+    /// unusable at small `T` (issue #443, see SMALL `T` below); on a libint2 build
+    /// with ferric's `boys.h` override that case, including the same-centre
+    /// `T == 0` shell blocks that RI/3-center paths always contain, is evaluated
+    /// by quadrature of the defining integral instead (1e-14 absolute, tested
+    /// against a 50-digit reference), so a near-zero `zeta` (e.g. 1e-6) gives the
+    /// Coulomb limit to O(zeta). Without the override, libint 2.13.1 takes a
+    /// Gaussian fit at `T == 0` (3e-7 absolute error at `U = 1e-14`, 2e-12 at
+    /// `U = 1e-8`), and libint 2.7.2's recursion at `T == 0` is undefined and
+    /// ABORTS in an `assert`-enabled build.
     ///
     /// UPPER EDGE: `U > 1e3` (`zeta²` more than 4000 times `rho`) with `T <= 1024` is
     /// outside the table. On a libint 2.7.2 build with ferric's `boys.h` override
@@ -165,17 +165,19 @@ impl Operator {
     /// 1e-200); a libint2 build that gets neither override (see build.rs warning)
     /// still returns NaN there.
     ///
-    /// SMALL `T` WITH `U < 1e-7` (Yukawa only): evaluated by the upward recursion,
-    /// which is unstable at small `T`. Measured error against a 400-digit reference
-    /// on libint 2.13.1, `zeta = 1`, for output orders `m <= 6` ONLY: 2e-14 for
-    /// `T >= 1`, up to 2e-12 at `T = 0.5`, 6e-8 at `T = 0.1`, 0.2 at `T = 0.01`, 5e5
-    /// at `T = 1e-3`, and up to 9e63 at `T = 1e-12`. It is much worse at higher `m`
-    /// (independent 600-digit check, `U` about 1e-14..1e-8, `T = 1`: 1e-15 for
-    /// `m <= 6`, 6e-10 for `m <= 12`, 2.3 for `m <= 20`, 2e23 for `m <= 36`; bound
-    /// violations up to `T` about 5.6 and inf/NaN at `T` about 1e-8, `m = 36`), and
-    /// derivative integrals of d/f/g shells reach `m` of 9 to 18. Not addressed by the
-    /// overrides; tracked in issue #443. (`T == 0` exactly takes the Gaussian fit
-    /// instead, 3e-7 abs. error at `U = 1e-14`.)
+    /// SMALL `T` WITH `U < 1e-7` (Yukawa only): stock libint evaluates this by an
+    /// upward recursion whose rounding error grows like `prod (2m+1)/(2T)`,
+    /// independent of `U`: against a 600-digit reference, `U` about 1e-14..1e-8,
+    /// `T = 1`, the absolute error is 1e-15 for `m <= 6`, 6e-10 for `m <= 12`, 2.3
+    /// for `m <= 20`, 2e23 for `m <= 36`; results leave the analytic bounds
+    /// `0 <= G_m <= 1/(2m+1)` up to `T` about 5.6, and are inf/NaN at `T` about
+    /// 1e-8, `m = 36` (derivative integrals of d/f/g shells reach `m` of 9 to
+    /// 18). The `boys.h` overrides (issue #443) send `U < Umin` with `T < 0.5
+    /// mmax + 6` (`T < 1e-2` at `mmax == 0`, where only the closed form of `G_0` cancels) to a
+    /// graded Gauss-Legendre quadrature of the defining integral: at most 1e-15
+    /// absolute against 50-digit values for `m <= 36`, `T` in 1e-8..20,
+    /// `U = 1e-14` and `1e-9`. From `T >= 0.5 mmax + 6` the stock recursion is kept
+    /// bit for bit. A libint2 build that gets no override still has the defect.
     pub fn yukawa(zeta: f64) -> Self {
         debug_assert!(
             zeta > 0.0,
