@@ -55,3 +55,27 @@ with open(sys.argv[1], "w") as f:
             )
         f.write("    ]),\n")
     f.write("];\n")
+
+# U >= Umin (interpolation-table region), m <= 20 (the 2.7.2 table limit).
+TUs = [1.5e-7, 1e-3, 0.5, 20.0]
+TTs = [0.0, 1e-8, 1e-3, 0.5, 2.0, 10.0]
+TM = 20
+rows = []
+for U0 in TUs:
+    z = 2 * math.sqrt(U0)
+    U = 0.25 * z * z
+    for T in TTs:
+        rows.append((z, T, U, [ref(m, T, U) for m in range(TM + 1)]))
+with open(sys.argv[1], "a") as f:
+    f.write(
+        "\n// Interpolation-table region (U >= Umin = 1e-7): rows (zeta, T, U, G_0..G_20).\n"
+    )
+    f.write("pub const REF_TABLE: &[(f64, f64, f64, [f64; 21])] = &[\n")
+    for z, T, U, v in rows:
+        f.write("    (%r, %r, %r, [\n" % (z, T, U))
+        for i in range(0, 21, 3):
+            f.write(
+                "        " + ", ".join(mp.nstr(x, 21) for x in v[i : i + 3]) + ",\n"
+            )
+        f.write("    ]),\n")
+    f.write("];\n")

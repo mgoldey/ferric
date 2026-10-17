@@ -302,9 +302,11 @@ The override adds `yukawa_urr_unusable(T, U, mmax)` (`U < Umin` and `T < 0.5 mma
 `eval_yukawa_quadrature`, which evaluates `G_m = int_0^1 t^{2m} exp(U(1-t^-2) - T t^2) dt` by 24-point Gauss-Legendre
 on graded panels (a ratio-4 ladder from `max(0.01 sqrt(U), 1e-20)` to 1e-3 for the `exp(-U/t^2)` boundary layer at
 `t ~ sqrt(U)`, then 12 panels up to 1). Every term is positive, so there is no cancellation. Everywhere else
-`eval_yukawa` is unchanged: `crates/ferric-integrals/tests/yukawa_urr_small_t.rs` hashes the bits of 168859 values
-there (`U < Umin` with `T >= 0.5 mmax + 6`, or `T >= 1e-2` at `mmax == 0`, plus `U >= Umin` at small `T`); the hash is
-`84f833f18f8c180e` before and after on 2.13.1 (`da400bb5bddb82a4` on 2.7.2, whose Tenno table stops at `mmax` 20, so its sweep has 55579 values). `eval_slater` is untouched (2.7.2 still throws for
+`eval_yukawa` is unchanged: `crates/ferric-integrals/tests/yukawa_urr_small_t.rs` compares the library with an in-binary port of the stock
+recursion to 2e-15 relative on `U < Umin`, `T >= 0.5 mmax + 6` (or `T >= 1e-2` at `mmax == 0`), and checks the `U >= Umin` table region against
+50-digit values and the bounds `0 <= G_m <= 1/(2m+1)`. Those gate CI. A bit-level golden (FNV-1a of the same grid: `84f833f18f8c180e`, n=168859 on
+2.13.1; `da400bb5bddb82a4`, n=55579 on 2.7.2, whose Tenno table stops at `mmax` 20) is `#[ignore]`d because libm and compiler
+contraction change low bits on other machines; it was identical with the fallback disabled and enabled on the dev box. `eval_slater` is untouched (2.7.2 still throws for
 `U < Umin`, `T <= Tmax`; 2.13.1 goes to its Gaussian fit).
 
 Accuracy against 50-digit mpmath values (`U = 1e-14` and `1e-9`, `T` in 1e-8..20, `m <= 36`): at most 1e-15 absolute,
