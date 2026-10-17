@@ -120,8 +120,9 @@
 //! function of the final densities alone; the stored `rohf_spin_focks` (from
 //! the last SCF iteration's density) are only compared with them and refused
 //! if they differ by more than `FOCK_TRUST_TOL` (a ROKS, COSX or otherwise
-//! different Hamiltonian). COSX-converged results, external potentials
-//! (point charges, smeared charges, a field) and ECPs are refused: no ROHF
+//! different Hamiltonian); `h` carries `V_ECP`, so an ECP system rebuilds the
+//! Focks of its own Hamiltonian. COSX-converged results and external
+//! potentials (point charges, smeared charges, a field) are refused: no ROHF
 //! Hessian validation covers them.
 //!
 //! # Assembly
@@ -610,7 +611,7 @@ fn fock_energy_weighted_density(
     0.5 * (&w + &w.t())
 }
 
-/// The spin Focks `h + J(D) − K(D_σ)` rebuilt from the final densities. The
+/// The spin Focks `h + J(D) − K(D_σ)` (`h` with `V_ECP`) rebuilt from the final densities. The
 /// stored `rohf_spin_focks` are accepted only if they agree with these to
 /// [`FOCK_TRUST_TOL`] (they are refused for a result converged with another
 /// Hamiltonian: ROKS, COSX, a different operator, ...), and the REBUILT ones
@@ -619,6 +620,7 @@ fn fock_energy_weighted_density(
 /// tolerance).
 fn trusted_focks(
     g: &TwoElectronBuilder<'_>,
+    mol: &Molecule,
     prep: &PreparedBasis,
     rohf: &ScfResult,
     dens: &super::rohf_support::RohfSkeletonDensities,
@@ -628,7 +630,9 @@ fn trusted_focks(
         .rohf_spin_focks
         .as_ref()
         .ok_or_else(|| FerricError::General("analytic ROHF Hessian: no spin Focks".into()))?;
-    let h = ferric_integrals::oneelectron::hcore(prep);
+    // V_ECP is part of the core Hamiltonian the SCF converged with (identical
+    // to `hcore` without an ECP).
+    let h = ferric_integrals::oneelectron::hcore_ecp(prep, mol, prep.basis_set());
     let v = g.g_uhf(&[dens.d_alpha.clone(), dens.d_beta.clone()])?;
     let rebuilt = [&h + &v[0], &h + &v[1]];
     let dev = max_abs(&(&rebuilt[0] - sa)).max(max_abs(&(&rebuilt[1] - sb)));
@@ -652,7 +656,7 @@ fn trusted_focks(
 /// `bounds` is the Schwarz table for `op` on `prep`; `config` is the
 /// configuration the SCF was converged with, read to refuse what the Hessian
 /// does not implement: Kohn-Sham, COSX, solvation, an external potential,
-/// an ECP, range-separated RI-K, non-Coulomb operators. See `hessian::rohf` (module doc) for the
+/// range-separated RI-K, non-Coulomb operators. See `hessian::rohf` (module doc) for the
 /// equations and [`analytic_rohf_hessian_available`](super::analytic_rohf_hessian_available)
 /// for the pre-SCF probe.
 pub fn rohf_hessian(
@@ -776,7 +780,7 @@ pub fn rohf_hessian_parts_df_mutated(
         fitted_first = Some((f.first, f._cphf_charge));
     }
     let dens = &skel.densities;
-    let focks = trusted_focks(&g, prep, rohf, dens, mutation)?;
+    let focks = trusted_focks(&g, mol, prep, rohf, dens, mutation)?;
     if mutation != RohfMutation::UseStoredFocks {
         // W of the rebuilt Focks, so the whole Hessian is a function of the
         // final densities alone.

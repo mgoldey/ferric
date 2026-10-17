@@ -131,14 +131,16 @@
 //! (derivation and closed-shell limit in `crate::hessian_df_k`).
 //!
 //! Scope: closed-shell RHF and UHF (any multiplicity) with exact four-centre
-//! J/K, RI-J, RI-K or both fitted with the Coulomb operator, no ECP and no
-//! external potential for the fitted routes; ROHF with exact four-centre
+//! J/K, RI-J, RI-K or both fitted with the Coulomb operator, no external
+//! potential for the fitted routes (an ECP composes with them: it lives in the
+//! core Hamiltonian, so its skeleton and `∂V_ECP/∂x` enter the fitted route
+//! through the same shared code); ROHF with exact four-centre
 //! Coulomb J/K, or RI-J / RI-K / both (same fitting restrictions, and no
-//! external potential or ECP at all). Everything else — Kohn-Sham (ROKS
+//! external potential; an ECP is supported). Everything else — Kohn-Sham (ROKS
 //! included; the one exception is the opt-in entry point described below),
-//! range-separated RI-K, RI combined with an external potential or an ECP, COSX, ghost
+//! range-separated RI-K, RI combined with an external potential, COSX, ghost
 //! atoms, solvation, polarizable embedding, fractional occupations, cDFT,
-//! non-Coulomb operators, and for ROHF also external potentials and ECPs
+//! non-Coulomb operators, and for ROHF also external potentials
 //! (validated for RHF/UHF only) — is refused with a typed error naming the
 //! feature (the FD Hessian in [`crate::frequencies::harmonic_frequencies`]
 //! covers those).
@@ -965,7 +967,7 @@ fn check_supported(
     if let Some(what) = system_refusal(reference, mol, prep) {
         return Err(refusal(reference, what));
     }
-    if let Some(what) = df_route_refusal(mol, prep, res, config) {
+    if let Some(what) = df_route_refusal(res, config) {
         return Err(refusal(reference, &what));
     }
     match state_refusal(reference, mol, res) {
@@ -976,13 +978,8 @@ fn check_supported(
 
 /// Why `res`'s density-fitting route is refused (`None` = exact SCF, or the
 /// supported RI-J and/or RI-K for closed-shell RHF, UHF and ROHF, consistent with the
-/// configuration and without an ECP).
-fn df_route_refusal(
-    mol: &Molecule,
-    prep: &PreparedBasis,
-    res: &ScfResult,
-    config: &RhfConfig,
-) -> Option<String> {
+/// configuration; an ECP composes, see the module docs).
+fn df_route_refusal(res: &ScfResult, config: &RhfConfig) -> Option<String> {
     let route = crate::gradient::active_df_route(res)?;
     let clean = |s: &Option<String>| s.clone().filter(|v| !v.is_empty());
     if route.rsh_k.is_some() {
@@ -1003,8 +1000,7 @@ fn df_route_refusal(
             route.k_aux, config.df_k_aux
         ));
     }
-    has_ecp(mol, prep.basis_set())
-        .then(|| "density-fitted J/K (RI) combined with an effective core potential".into())
+    None
 }
 
 /// Why the RHF/UHF entry points refuse an ROHF result.
@@ -1179,7 +1175,7 @@ fn available(
 /// so that `Auto` falls back to finite differences instead of failing after the
 /// SCF. The first-derivative three- and two-centre engines for each named
 /// fitting basis must exist (the second derivatives are a stencil of their
-/// blocks); an ECP system is refused (untested); and the metric must have no
+/// blocks); and the metric must have no
 /// eigenvalue below the DF-K cut (it depends on the geometry and the fitting
 /// basis only): for RI-J the full inverse is numerically singular there, for
 /// RI-K those are the modes `DfK` drops and the truncated energy's second
@@ -1195,12 +1191,6 @@ fn ri_engine_check(
     let (j_name, k_name) = (named(&config.df_j_aux), named(&config.df_k_aux));
     if j_name.is_none() && k_name.is_none() {
         return Ok(());
-    }
-    if has_ecp(mol, prep.basis_set()) {
-        return Err(refusal(
-            reference,
-            "density-fitted J/K (RI) combined with an effective core potential",
-        ));
     }
     for (name, label, exchange) in [(j_name, "RI-J", false), (k_name, "RI-K", true)] {
         let Some(name) = name else { continue };
@@ -1374,10 +1364,6 @@ fn system_refusal(
         (
             reference == Reference::Rhf && mol.nelec() % 2 != 0,
             "an odd electron count",
-        ),
-        (
-            reference == Reference::Rohf && has_ecp(mol, prep.basis_set()),
-            "an effective core potential (the ROHF Hessian is validated without one)",
         ),
         (
             prep.atoms().len() != mol.atoms.len(),
