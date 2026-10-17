@@ -137,6 +137,145 @@
 //! measured directly). So the closed-shell test also
 //! asserts the decline counter, which does not depend on that sign.
 //!
+//! # EXPERIMENT (2026-09-18): can AURORA's cheap auxiliary curvature replace
+//! the exact Hessian matvec? 2026-09-18 measurement (STO-3G aux, archived
+//! numbers); the 2026-10-17 re-measurement with an anchor and a rich aux is in
+//! the UPDATE below and supersedes the interpretation.
+//!
+//! TRAH wins iterations everywhere and loses wall time everywhere, because
+//! every Davidson iteration of the alpha search costs a full-basis J/K build.
+//! AURORA's premise is that curvature does not need the target basis, so its
+//! STO-3G auxiliary operator was substituted for
+//! [`crate::rhf_newton::hessian_matvec`] behind
+//! [`crate::trah::TrahConfig`]'s `aux_curvature`, changing nothing else. The falsification
+//! criterion agreed in advance was rho: the trust region only works if the
+//! model predicts the real energy change.
+//!
+//! MEASUREMENT (water/cc-pVDZ RHF, `tests/trah_aux_rho.rs`; the rho series is
+//! in SCF-iteration order):
+//!
+//! ```text
+//!   curvature   iters  matvecs   rho series
+//!   exact           8      219   [0.9933 0.9928 0.9895]
+//!   aux            12      497   [0.8870 0.8210 0.7823 0.7496 0.7309 0.7229 0.7143]
+//! ```
+//!
+//! Both reach the same energy (4.4e-13 Ha apart), so the fixed point is
+//! untouched; it is the MODEL that is worse. Two independent things go wrong:
+//!
+//! 1. **rho is biased, not noisy.** Every auxiliary rho lies below every exact
+//!    rho, and the series decreases monotonically. The exact path's own spread
+//!    is sd = 0.0017, so the 0.22 mean bias is ~130x the scatter. The sign is
+//!    the one the physics predicts: STO-3G has 7 fitting functions for a 24x24
+//!    orbital-product space, so the model UNDERSTATES the Coulomb response,
+//!    believes the surface is flatter than it is, promises more energy than it
+//!    delivers, and lands rho below 1.
+//! 2. **The matvec count goes UP, not down** -- 497 versus 219. The cheap
+//!    operator does not converge the augmented-Hessian eigenproblem as fast,
+//!    so the alpha search spends more Davidson iterations, and TRAH needs more
+//!    macro iterations (12 vs 8) on top. Any per-matvec saving is being spent
+//!    before it reaches wall time, and the naive "18x-100x cheaper matvec"
+//!    sizing does not survive contact with the iteration count. The pattern
+//!    holds on every system measured (`matvec_and_iteration_counts`):
+//!
+//! ```text
+//!   system                  it_exact  mv_exact   it_aux   mv_aux   it_DIIS
+//!   water/cc-pVDZ RHF              8       219       12      497        12
+//!   water/cc-pVDZ B3LYP            7       118       10      190        57
+//!   benzene/STO-3G RHF             6       179        9      380        10
+//! ```
+//!
+//!    Auxiliary TRAH needs ~1.5x the macro iterations and ~2x the matvecs of
+//!    exact TRAH, consistently. On water/cc-pVDZ RHF it also loses its
+//!    iteration advantage over DIIS entirely (12 vs 12).
+//!
+//! On DFT references the picture is worse and the two risks compound. The
+//! auxiliary model carries NO XC curvature (`D_k^xc` is named but never defined
+//! in the paper, and the reference implementation omits it -- see
+//! [`crate::aurora`]), so on B3LYP (a_x = 0.20, the model IN regime) rho
+//! reaches +7620, and on PBE (a_x = 0, the model OUT of regime by AURORA's own
+//! [`crate::aurora::MIN_VALIDATED_EXCHANGE_FRACTION`]) it reaches -63.7. Those
+//! excursions are NOT purely an auxiliary-curvature artifact: the exact path
+//! shows the same failure mode on the same rows (+137.3 on B3LYP, +57.8 on
+//! PBE), because a near-converged gradient makes rho a ratio of two vanishing
+//! numbers. The auxiliary model makes an existing DFT defect more frequent, it
+//! does not create it.
+//!
+//! VERDICT (2026-09-18, STO-3G aux only; SUPERSEDED in part by the UPDATE below): a bare
+//! auxiliary-curvature substitution does not pay for itself. AURORA's
+//! transported L-BFGS mismatch correction is LOAD-BEARING -- it exists exactly
+//! to absorb the bias measured above -- and wiring it into a trust region means
+//! reconciling two different step-length controls (L-BFGS history versus the
+//! alpha/level-shift search), which is a redesign, not a substitution. The flag
+//! is retained, defaulting off, so the measurement is reproducible.
+//!
+//! UPDATE (2026-10-17, issue #279; the interpretation is PROVISIONAL).
+//!
+//! MEASUREMENT 1, anchor (`tests/trah_aux_response_anchor.rs`, water/cc-pVDZ
+//! RHF, worst of 3 random kappa, error of the aux operator relative to the norm
+//! of the exact two-electron part of H*kappa):
+//!
+//! ```text
+//!   aux                    canonical point   non-canonical (|k|max 0.1)
+//!   def2-universal-jkfit        2.1e-3            2.5e-3   (vs exact + FULL gap)
+//!   cc-pvdz-ri                  1.3e-3             -
+//!   sto-3g                      0.26               -
+//! ```
+//!
+//! The total-matvec error (gap term included) is 1.4e-4 / 7.5e-5 at the
+//! canonical point; the 2e-part figure is the stricter one. Note the 2e-part
+//! error is ~2e-3, about 10x the ~1e-4 the issue guessed; the guess was for the
+//! total. Mutants (K dropped, one exchange contraction dropped, exchange term 2
+//! replaced by term 1) all fail the anchor (`scripts/queue/trah_aux_mutations.sh`).
+//!
+//! CONFOUND found in review: `rhf_newton::hessian_matvec` uses the DIAGONAL gap
+//! `(F_aa - F_ii) k`, the aux operator the FULL `F_vv K - K F_oo`. They agree
+//! only at canonical orbitals; at a point rotated by |k|max 0.1 they differ by
+//! 0.53 of the 2e response norm (aux vs diagonal-gap matvec: 0.53; aux vs
+//! full-gap exact: 2.5e-3). The control arm `TrahConfig::exact_full_gap` (exact
+//! 2e response + full gap) separates the two effects.
+//!
+//! MEASUREMENT 2 (`trah_aux_rho.rs::rho_vs_aux_basis_table`; 3 repeats per row
+//! were run and are bit-identical -- the runs are deterministic, so the repeats
+//! carry no scatter information). Columns: SCF iterations / TRAH matvecs, then
+//! the rho series.
+//!
+//! ```text
+//!   system       curvature            it/mv     rho series
+//!   water RHF    exact (diag gap)     8/219     .993 .993 1.031
+//!   water RHF    exact + full gap     7/170     .999 1.000
+//!   water RHF    aux sto-3g          14/620     .887 .821 .782 .750 .731 .725 .718
+//!   water RHF    aux cc-pvdz-ri       7/170     .999 1.000
+//!   water RHF    aux def2-univ-jkfit  7/170     .999 1.000
+//!   water B3LYP  exact (diag gap)     8/157     1.000 .997
+//!   water B3LYP  exact + full gap     7/119     1.000 .997
+//!   water B3LYP  aux sto-3g          11/268     1.033 .985 .895 .846
+//!   water B3LYP  aux cc-pvdz-ri      11/293     1.062 1.077 1.099 1.119
+//!   water B3LYP  aux def2-univ-jkfit 11/293     1.062 1.077 1.099 1.121
+//!   benzene/STO-3G RHF exact (diag)   8/351     1.000
+//!   benzene/STO-3G RHF exact+fullgap  6/178     1.000
+//!   benzene/STO-3G RHF aux sto-3g     9/470     .994 .927 .938
+//!   benzene/STO-3G RHF aux cc-pvdz-ri 6/178     1.000
+//!   benzene/STO-3G RHF aux def2-univ  6/178     1.000
+//! ```
+//!
+//! All arms converge to the same energy. The 2026-09-18 numbers (sto-3g water
+//! 12/497) differ from the sto-3g row here (14/620) because main's TRAH has
+//! changed since the archive branch.
+//!
+//! INTERPRETATION (provisional). (a) Once the full-gap exact control is in, a
+//! rich aux does NOT beat exact TRAH: it ties it (identical iterations,
+//! matvecs and rho to the printed digits on RHF). The earlier "matches or beats
+//! exact" was the diagonal-vs-full gap difference, not AURORA. (b) The response
+//! construction is correct at the density-fitting level, and the STO-3G rho bias
+//! tracks aux size (sto-3g .72-.89, rich ~1.00). (c) Side observation, outside
+//! this issue: on these three systems the full-gap exact matvec is cheaper than
+//! `hessian_matvec`'s diagonal gap (219->170, 157->119, 351->178 matvecs) once
+//! TRAH has taken Cayley steps; not pursued. (d) B3LYP with a rich aux is NOT
+//! rescued (11/293, rho 1.06-1.12, versus 7/119 exact). The aux model carries
+//! no XC curvature; that this explains the B3LYP rho is UNTESTED. The cost
+//! question (rich-aux matvec vs J/K build) was not measured.
+//!
 //! # Scope
 //!
 //! The solver here is deliberately method-agnostic: it works on a flat
@@ -219,10 +358,44 @@ static LAST_RHO_RHF: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64
 /// [`LAST_RHO_RHF`].
 static LAST_RHO_UHF: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+/// Every ρ formed on a closed-shell TRAH step since the last
+/// [`reset_rho_log`], in order.
+///
+/// [`last_rho_rhf`] keeps only the most recent value, which is enough to catch
+/// a scale error but NOT enough to answer "is ρ near 1?" -- that is a question
+/// about a DISTRIBUTION. A single ρ cannot distinguish a model that is right on
+/// average from one that alternates wildly, and it cannot show the repeated
+/// constant that is this module's documented fingerprint of arithmetic rather
+/// than measurement (see the `predicted_min` history above). So the whole
+/// series is recorded.
+static RHO_LOG_RHF: std::sync::Mutex<Vec<f64>> = std::sync::Mutex::new(Vec::new());
+
+/// Clear the ρ log and start recording afresh. Tests that read the log must
+/// serialize, since it is process-global.
+pub fn reset_rho_log() {
+    if let Ok(mut v) = RHO_LOG_RHF.lock() {
+        v.clear();
+    }
+}
+
+/// Every closed-shell ρ recorded since [`reset_rho_log`].
+pub fn rho_log_rhf() -> Vec<f64> {
+    RHO_LOG_RHF.lock().map(|v| v.clone()).unwrap_or_default()
+}
+
 /// Publish the ρ just formed on a closed-shell step.
 pub fn note_rho_rhf(rho: f64) {
     LAST_RHO_RHF.store(rho.to_bits(), std::sync::atomic::Ordering::Relaxed);
 }
+
+/// Append `rho` to the series read by [`rho_log_rhf`]. Called alongside
+/// [`note_rho_rhf`] on every closed-shell step.
+pub fn log_rho_rhf(rho: f64) {
+    if let Ok(mut v) = RHO_LOG_RHF.lock() {
+        v.push(rho);
+    }
+}
+
 /// Publish the ρ just formed on an open-shell step.
 pub fn note_rho_uhf(rho: f64) {
     LAST_RHO_UHF.store(rho.to_bits(), std::sync::atomic::Ordering::Relaxed);
@@ -329,6 +502,35 @@ pub struct TrahConfig {
     /// trust radius is itself a heuristic, so landing within a few percent of
     /// the boundary is ample and saves Davidson solves.
     pub step_tol: f64,
+    /// **EXPERIMENTAL.** Take the Hessian matvec from AURORA's auxiliary
+    /// curvature model (basis `RhfConfig::aurora.auxbasis`, default STO-3G)
+    /// instead of the exact full-basis [`crate::rhf_newton::hessian_matvec`].
+    /// Default `false`, which leaves the exact path bit-identical
+    /// (`tests/trah_aux_curvature.rs::trah_aux_off_is_bit_identical`).
+    ///
+    /// # What this is testing
+    ///
+    /// TRAH wins iterations everywhere and loses wall time everywhere because
+    /// every Davidson iteration of the α search costs a FULL-BASIS J/K build.
+    /// AURORA's premise is that curvature does not need the target basis. If
+    /// that holds here, the matvec gets ~18-100x cheaper and TRAH's iteration
+    /// win survives into wall time.
+    ///
+    /// The criterion is ρ. The trust region only works if the model predicts
+    /// the real energy change, so ρ must stay near 1. See
+    /// [`crate::trah::rhf_trah_step_aux`] for the measured behaviour.
+    ///
+    /// Closed-shell (RHF/RKS) only — [`crate::trah::uhf_trah_step`] ignores it,
+    /// because AURORA implements no open-shell tangent blocks.
+    pub aux_curvature: bool,
+    /// **RESEARCH CONTROL (#279), default `false`.** Add the off-diagonal part
+    /// of the one-electron Fock-gap term to the exact matvec:
+    /// `F_vv K - K F_oo` instead of `rhf_newton::hessian_matvec`'s diagonal
+    /// `(F_aa - F_ii) K`. The two agree only at canonical orbitals; after a
+    /// Cayley step they differ. The auxiliary operator uses the FULL blocks, so
+    /// this arm isolates the 2e (density-fitting) difference from that
+    /// one-electron difference. Closed-shell only; ignored by the aux path.
+    pub exact_full_gap: bool,
 }
 
 impl Default for TrahConfig {
@@ -347,6 +549,8 @@ impl Default for TrahConfig {
             davidson_max_vecs: 50,
             max_shift_iter: 20,
             step_tol: 5e-2,
+            aux_curvature: false,
+            exact_full_gap: false,
         }
     }
 }
@@ -1015,6 +1219,40 @@ fn ov_block(m: &Array2<f64>, nocc: usize, n: usize) -> Array2<f64> {
     out
 }
 
+/// `(F_vv K - K F_oo) - diag-gap K`: what the full one-electron Fock-gap term
+/// adds to `rhf_newton::hessian_matvec`'s diagonal-gap term (zero at canonical
+/// orbitals). TRAH-convention scale (no factor 2). See
+/// [`TrahConfig::exact_full_gap`].
+pub fn offdiag_gap_correction(f_mo: &Array2<f64>, k: &Array2<f64>, nocc: usize) -> Array2<f64> {
+    let n = f_mo.nrows();
+    let f_vv = f_mo.slice(ndarray::s![nocc.., nocc..]);
+    let f_oo = f_mo.slice(ndarray::s![..nocc, ..nocc]);
+    let mut out = f_vv.dot(k) - k.dot(&f_oo);
+    for (ir, a) in (nocc..n).enumerate() {
+        for i in 0..nocc {
+            out[(ir, i)] -= (f_mo[(a, a)] - f_mo[(i, i)]) * k[(ir, i)];
+        }
+    }
+    out
+}
+
+/// `rhf_newton::hessian_matvec`, plus the [`TrahConfig::exact_full_gap`]
+/// research control when it is on (identity otherwise).
+fn exact_hk(
+    ctx: &ParallelContext,
+    inp: &crate::rhf_newton::RhfNewtonInputs,
+    cfg: &TrahConfig,
+    k: &Array2<f64>,
+    pool: &EnginePool,
+) -> Result<Array2<f64>, FerricError> {
+    let hk = crate::rhf_newton::hessian_matvec(ctx, inp, k, pool)?;
+    Ok(if cfg.exact_full_gap {
+        hk + offdiag_gap_correction(inp.f_mo, k, inp.nocc)
+    } else {
+        hk
+    })
+}
+
 /// Orbital-energy-gap preconditioner diagonal, floored away from zero.
 ///
 /// Matches `rhf_newton`/`uhf_newton`'s `build_gap` exactly (including the 1e-6
@@ -1133,9 +1371,10 @@ pub fn rhf_trah_step(
     )?;
 
     let matvec = |v: &[f64]| -> Result<Vec<f64>, FerricError> {
+        EXACT_MATVECS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let k = Array2::from_shape_vec((nv, no), v.to_vec())
             .map_err(|e| FerricError::General(format!("TRAH RHF matvec reshape: {e}")))?;
-        let hk = crate::rhf_newton::hessian_matvec(ctx, inp, &k, &pool)?;
+        let hk = exact_hk(ctx, inp, cfg, &k, &pool)?;
         Ok(hk.iter().copied().collect())
     };
 
@@ -1148,6 +1387,195 @@ pub fn rhf_trah_step(
         .map_err(|e| FerricError::General(format!("TRAH RHF step reshape: {e}")))?;
     let c_new = apply_cayley(inp.c, &k, no, n)?;
     Ok((c_new, step))
+}
+
+/// Ratio between AURORA's base curvature operator and TRAH's Hessian matvec.
+///
+/// The two operators describe the same physics in DIFFERENT scale conventions,
+/// and the difference is a clean factor of 2 in EVERY term:
+///
+/// | term     | `rhf_newton::hessian_matvec`      | `AuxCurvature::base_apply_ref`       |
+/// |----------|-----------------------------------|--------------------------------------|
+/// | Fock gap | `(F_aa - F_ii) k`                 | `2 (F_vv X - X F_oo)`                |
+/// | Coulomb  | `4 (ai|bj)`                       | `8 (ai|bj)`                          |
+/// | exchange | `-2 a_x (...)`                    | `-4 a_x (...)`                       |
+///
+/// (The Coulomb 4 is `dD = 2*dD_single` times the two kappa corners of the
+/// symmetric MO perturbation.)
+///
+/// AURORA works in the convention where the gradient is `g = 2 F_vo`; TRAH's
+/// [`crate::rhf_newton`] uses `g = F_vo` and drops the matching prefactor from
+/// the Hessian (its doc comment says so). So dividing AURORA's operator by 2
+/// puts it in TRAH's convention and leaves `RHF_ENERGY_SCALE` -- the factor
+/// that makes rho order unity -- correct and UNCHANGED.
+///
+/// This constant is NOT decorative. rho = dE_act/dE_pred is not invariant under
+/// a rescaling of H (see `RHF_ENERGY_SCALE` in this module, where exactly this class of
+/// error put rho at 3.999 instead of 1). Getting it wrong would produce a
+/// clean, repeatable, WRONG rho that looks like a physics result. It is pinned
+/// independently of any SCF run by
+/// `tests/trah_aux_curvature.rs::aux_and_exact_curvature_share_one_scale`,
+/// which compares the two operators directly on the same vector.
+///
+/// # Why this is `pub`
+///
+/// It is public ONLY so that anchor can reference the real value. The first
+/// version of the test hardcoded `0.5` in its own arithmetic, and a mutation
+/// changing this constant to 1.0 SURVIVED -- the test was comparing the aux
+/// operator against a private copy of the number it was supposed to be
+/// checking, so it could not see the constant change at all. That is the
+/// "mutation below the observable" failure this repo's protocol warns about.
+/// The test now multiplies by this symbol.
+pub const AURORA_TO_TRAH_CURVATURE: f64 = 0.5;
+
+/// One TRAH step on RHF/RKS orbitals using AURORA's **auxiliary** curvature.
+///
+/// Identical to [`rhf_trah_step`] in every respect except the matvec: the
+/// gradient, the alpha search, the trust region, the rho test and
+/// `RHF_ENERGY_SCALE` are the same code. Only `H*kappa` changes, from a
+/// full-basis J/K build to a contraction against the STO-3G auxiliary tensor.
+///
+/// `aux` must already be built at the CURRENT orbitals (the caller refreshes
+/// it), and `f_vv`/`f_oo` are the virtual and occupied blocks of the MO Fock.
+///
+/// # Measured behaviour
+///
+/// With the default STO-3G auxiliary basis rho is biased low; with a rich
+/// auxiliary basis (`aurora.auxbasis`) on closed-shell HF it equals the
+/// full-gap exact path. See the module-level `# EXPERIMENT` section for the
+/// dated tables and their provisional interpretation.
+pub fn rhf_trah_step_aux(
+    inp: &crate::rhf_newton::RhfNewtonInputs,
+    aux: &crate::aurora::AuxCurvature,
+    radius: f64,
+    cfg: &TrahConfig,
+) -> Result<(Array2<f64>, TrahStep), FerricError> {
+    let n = inp.c.nrows();
+    let no = inp.nocc;
+    let nv = n - no;
+
+    // Gradient and preconditioner are UNCHANGED from the exact path: they come
+    // from the target Hamiltonian, exactly as AURORA specifies (energy and
+    // gradient from the real operator, curvature only from the model).
+    let g_mat = ov_block(inp.f_mo, no, n);
+    let g: Vec<f64> = g_mat.iter().copied().collect();
+    let f_diag: Vec<f64> = (0..n).map(|i| inp.f_mo[(i, i)]).collect();
+    let diag = gap_diag(&f_diag, no, n);
+
+    // The virt/virt and occ/occ Fock blocks the auxiliary operator needs.
+    let mut f_vv = Array2::<f64>::zeros((nv, nv));
+    for (ir, a) in (no..n).enumerate() {
+        for (ic, b) in (no..n).enumerate() {
+            f_vv[(ir, ic)] = inp.f_mo[(a, b)];
+        }
+    }
+    let mut f_oo = Array2::<f64>::zeros((no, no));
+    for i in 0..no {
+        for j in 0..no {
+            f_oo[(i, j)] = inp.f_mo[(i, j)];
+        }
+    }
+
+    // The substitution. No J/K build, no EnginePool, no integrals at all --
+    // just a contraction against the STO-3G auxiliary tensor, rescaled into
+    // TRAH's convention. Every aux matvec is counted so the comparison against
+    // the exact path is on load-immune integers, not seconds.
+    let matvec = |v: &[f64]| -> Result<Vec<f64>, FerricError> {
+        AUX_MATVECS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let x = Array2::from_shape_vec((nv, no), v.to_vec())
+            .map_err(|e| FerricError::General(format!("TRAH aux matvec reshape: {e}")))?;
+        let y = aux.base_apply_ref(x.view(), &f_vv, &f_oo, 0.0);
+        Ok(y.iter().map(|v| v * AURORA_TO_TRAH_CURVATURE).collect())
+    };
+
+    let mut step = solve_trust_region(&g, &matvec, &diag, radius, cfg)?;
+    step.predicted *= RHF_ENERGY_SCALE;
+    step.predicted_cheap *= RHF_ENERGY_SCALE;
+    let k = Array2::from_shape_vec((nv, no), step.kappa.clone())
+        .map_err(|e| FerricError::General(format!("TRAH aux step reshape: {e}")))?;
+    let c_new = apply_cayley(inp.c, &k, no, n)?;
+    Ok((c_new, step))
+}
+
+/// One closed-shell TRAH step: exact curvature, or (opt-in
+/// `config.trah.aux_curvature`) AURORA's auxiliary curvature.
+///
+/// `xc_k_mix` is `Some(c_HF)` for a KS reference (exchange fraction of the
+/// curvature model) and `None` for plain HF (fraction 1).
+pub fn rhf_trah_step_dispatch(
+    ctx: &ferric_core::parallel::ParallelContext,
+    slot: &mut Option<crate::aurora::AuxCurvature>,
+    geom: (
+        &ferric_core::mol::Molecule,
+        &ferric_integrals::basis_bridge::PreparedBasis,
+        ndarray::ArrayView2<f64>,
+        usize,
+    ),
+    cfg: (&crate::rhf::RhfConfig, Option<f64>),
+    inp: &crate::rhf_newton::RhfNewtonInputs,
+    radius: f64,
+) -> Result<(Array2<f64>, TrahStep), FerricError> {
+    let (config, xc_k_mix) = cfg;
+    if !config.trah.aux_curvature {
+        return rhf_trah_step(ctx, inp, radius, &config.trah);
+    }
+    let (mol, prep, c, nocc) = geom;
+    let ax = xc_k_mix.unwrap_or(1.0);
+    rhf_trah_step_aux_cached(slot, (mol, prep, c, nocc, ax), config, inp, radius)
+}
+
+/// Build (lazily, once) and refresh the AURORA auxiliary curvature model at the
+/// current orbitals, then take one auxiliary-curvature TRAH step.
+///
+/// `slot` persists across SCF iterations so the (fixed) dressed AO tensor is
+/// built once; only the MO transform is refreshed each step, because the
+/// tangent space moved with the last step. `geom` is
+/// `(mol, prep, c, nocc, exchange_scale)`.
+pub fn rhf_trah_step_aux_cached(
+    slot: &mut Option<crate::aurora::AuxCurvature>,
+    geom: (
+        &ferric_core::mol::Molecule,
+        &ferric_integrals::basis_bridge::PreparedBasis,
+        ndarray::ArrayView2<f64>,
+        usize,
+        f64,
+    ),
+    config: &crate::rhf::RhfConfig,
+    inp: &crate::rhf_newton::RhfNewtonInputs,
+    radius: f64,
+) -> Result<(Array2<f64>, TrahStep), FerricError> {
+    let (mol, prep, c, nocc, ax) = geom;
+    if slot.is_none() {
+        *slot = Some(crate::aurora::AuxCurvature::new(
+            mol,
+            prep,
+            c,
+            nocc,
+            ax,
+            &config.aurora,
+        )?);
+    }
+    let aux = slot.as_mut().expect("aux slot just set");
+    aux.refresh_orbitals(c)?;
+    rhf_trah_step_aux(inp, aux, radius, &config.trah)
+}
+
+/// Count of AUXILIARY-curvature matvecs, process-wide. See
+/// [`TRAH_STEPS_TAKEN`] for why a counter rather than an energy comparison is
+/// the observable that makes the path's use provable.
+pub static AUX_MATVECS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Read the auxiliary-matvec count.
+pub fn aux_matvecs() -> usize {
+    AUX_MATVECS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Count of EXACT full-basis curvature matvecs taken on a TRAH step.
+pub static EXACT_MATVECS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Read the exact-matvec count.
+pub fn exact_matvecs() -> usize {
+    EXACT_MATVECS.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// One TRAH step on UHF/UKS orbitals.

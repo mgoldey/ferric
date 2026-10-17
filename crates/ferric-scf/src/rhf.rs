@@ -1899,6 +1899,12 @@ fn solve_rhf_impl(
         .trah_trigger
         .map(|_| crate::trah::TrahState::new(config.trah));
     let mut trah_undo: Option<(Array2<f64>, Array2<f64>)> = None;
+    // EXPERIMENTAL auxiliary-curvature TRAH (`config.trah.aux_curvature`).
+    // Built lazily on the first armed TRAH iteration and refreshed to the
+    // current orbitals every step, so that with the flag off (the default)
+    // no auxiliary integrals are ever computed and the exact path is
+    // bit-identical -- see `tests/trah_aux_curvature.rs::trah_aux_off_is_bit_identical`.
+    let mut trah_aux: Option<crate::aurora::AuxCurvature> = None;
     // AURORA accelerator state. Built lazily at the first accelerated step (it
     // needs converged-enough MOs and costs an auxiliary integral build), and
     // never constructed at all when `config.aurora.enabled` is false.
@@ -2620,6 +2626,7 @@ fn solve_rhf_impl(
                 trah_state.as_mut().and_then(|st| st.assess(energy));
             if let (Some(_), Some(rho)) = (verdict, trah_state.as_ref().and_then(|s| s.last_rho)) {
                 crate::trah::note_rho_rhf(rho);
+                crate::trah::log_rho_rhf(rho);
             }
             if scf_trace() {
                 if let (Some(v), Some(rho)) =
@@ -2718,7 +2725,14 @@ fn solve_rhf_impl(
                     .as_ref()
                     .map(|s| s.radius())
                     .expect("trah_state is Some inside the armed branch");
-                let (c_new, step) = crate::trah::rhf_trah_step(ctx, &inputs, radius, &config.trah)?;
+                let (c_new, step) = crate::trah::rhf_trah_step_dispatch(
+                    ctx,
+                    &mut trah_aux,
+                    (mol, prep, c_cur.view(), nocc),
+                    (config, xc_contrib.is_some().then_some(k_mix.sr)),
+                    &inputs,
+                    radius,
+                )?;
                 // Decline a step the model says is worthless. Once the orbital
                 // gradient is converged the quadratic model predicts a change
                 // below what the energy can resolve, and rho becomes numerical
