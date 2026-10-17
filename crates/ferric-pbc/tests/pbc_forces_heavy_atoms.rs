@@ -119,9 +119,8 @@ const STRESS_P_ANTISYM_BAR: f64 = 1e-12;
 /// (none / ewald); bar 4x. Antisymmetric part MEASURED 4.0e-12; bar 5x.
 const STRESS_D_BAR: f64 = 1.5e-8;
 const STRESS_D_ANTISYM_BAR: f64 = 2e-11;
-/// ΣF: H cells reach 1e-13 (bar 1e-10). Loose for heavy atoms: set when the
-/// SR derivative's rounding noise was not translation-invariant term by term
-/// (#434 removed that); not re-measured.
+/// ΣF: H cells reach 1e-13 (bar 1e-10). MEASURED CO 8.8e-13, OH 8.5e-14, LiH
+/// 1.4e-13; the bar is looser than these (set before #434).
 const NET_FORCE_BAR: f64 = 1e-8;
 /// F(ewald) vs F(none) from two independent SCFs (H cells 6.6e-12, bar
 /// 1e-10); SCF-convergence limited, so looser with core orbitals.

@@ -87,6 +87,7 @@ use ferric_pbc::stress::{gamma_rhf_stress, GammaStressConfig, Mat3};
 use ferric_scf::result::{ScfExit, ScfResult, Spin};
 use ndarray::Array2;
 use num_complex::Complex64;
+use ferric_pbc::grad::GRAD_NUCLEUS_EXPONENT;
 use std::collections::HashMap;
 
 const OMEGA: f64 = 0.8;
@@ -107,21 +108,9 @@ const ALL9: [(usize, usize); 9] = [
     (2, 2),
 ];
 const FD_H: f64 = 1e-4;
-/// Gaussian-nucleus exponent of the SR derivative in the FD anchors. This is
-/// a deliberate pin, not the default (`pbc_kpoint_ecp.rs` uses the default):
-/// the slow rotated anchors below (the ~90 min FD test among them) were
-/// calibrated with it and are not re-run here, so they carry the 1e8
-/// model-nucleus error against the energy's 1e16 nucleus (falls as 1/zeta,
-/// about 1e-9 on a force) on top of the FD truncation.
-const FD_NUCLEUS_EXPONENT: f64 = 1e8;
-/// Exponent of the supercell anchor. STILL PINNED at the pre-#434 value 1e7:
-/// that test takes ~29 min in release, so it was not re-run without the pin.
-/// The pin's reason (coordinate-dependent rounding in the SR derivative that
-/// did not cancel between the mesh and the supercell) is fixed, and the same
-/// anchor in `pbc_kpoint_ecp.rs` (same walks, unrotated) is at roundoff at the
-/// default exponent, so the pin and the loose `SC_BAR_TOTAL` / `SC_BAR_SR`
-/// below can be dropped once a 29 min run at the default confirms it.
-const SC_NUCLEUS_EXPONENT: f64 = 1e7;
+/// Every anchor here runs the SR derivative at the library default
+/// `GRAD_NUCLEUS_EXPONENT` (the energy's own 1e16 nucleus), so the derivative
+/// carries no model-nucleus error against the energy.
 
 // ------------------------------------------------------------ fixtures
 
@@ -590,12 +579,9 @@ fn gsys(cell: Cell, bs: &BasisSet, rot: SrColumnRotation) -> GSys {
 // ============================================================ (1) fixed D
 
 /// Bar of the fixed-density hcore FD gate (central FD, h = 1e-4, all nine
-/// components). MEASURED 8.5e-8 on a strain of max |component| 4.9 (relative
-/// 1.7e-8: the h^2 truncation of the central difference). The Richardson
-/// residual rises to 2.8e-8 / 3.7e-8 at nucleus exponent 1e7 / 1e9 (measured
-/// before #434, not re-measured; the 1e9 value included SR-derivative
-/// rounding noise, the 1e7 one is nucleus-width model error), so the floor is
-/// not purely h^2. The test runs
+/// components). MEASURED 8.2e-8 on a strain of max |component| 4.9 (relative
+/// 1.7e-8: the h^2 truncation of the central difference) at the default
+/// nucleus exponent. The test runs
 /// the rotation mutants at fixed density: measured totals move by RotDropT
 /// 1.03e-1, RotUseT 5.05e-1, RotOneSided 9.06e-2, RotFlipSign 2.15e-1,
 /// RotHcoreWrongResidue 1.07, each > 10x this bar; RotSwapPair and
@@ -657,7 +643,7 @@ fn rotating_ecp_basis_rotates_and_leaves_the_ecp_untouched() {
 /// walks, so a weight slip in the rotated SR strain walk or an ECP weight
 /// that picked up T shows here before any SCF is involved.
 #[test]
-#[ignore = "slow (~70 s release): 18 strained rotated k hcore builds at precision 1e-14 with an ECP"]
+#[ignore = "slow (~73 s release): 18 strained rotated k hcore builds at precision 1e-14 with an ECP"]
 fn rotated_hcore_with_ecp_at_fixed_density_matches_fd_and_keeps_the_ecp_part() {
     let bs = rot_basis();
     let n = [1, 1, 3];
@@ -665,7 +651,7 @@ fn rotated_hcore_with_ecp_at_fixed_density_matches_fd_and_keeps_the_ecp_part() {
     let ks = ksys(cell.clone(), &bs, n, on());
     let off = ksys(cell.clone(), &bs, n, SrColumnRotation::Off);
     let dk = fixed_dk(&ks.mesh, ks.prep.nbasis());
-    let kcfg = scfg(None, FD_NUCLEUS_EXPONENT);
+    let kcfg = scfg(None, GRAD_NUCLEUS_EXPONENT);
     let s_on =
         kpoint_hcore_stress_fixed_d(&ks.cell, &ks.prep, &ks.mesh, &ks.hcfg, &ks.hk, &dk, &kcfg)
             .unwrap();
@@ -740,7 +726,7 @@ fn rotated_hcore_with_ecp_at_fixed_density_matches_fd_and_keeps_the_ecp_part() {
             &ks.hcfg,
             &ks.hk,
             &dk,
-            &scfg(Some(m), FD_NUCLEUS_EXPONENT),
+            &scfg(Some(m), GRAD_NUCLEUS_EXPONENT),
         )
         .unwrap();
         let moved = max_mat(&sm.hcore_total(), &tot);
@@ -758,14 +744,14 @@ fn rotated_hcore_with_ecp_at_fixed_density_matches_fd_and_keeps_the_ecp_part() {
 
 // ============================================================ (2) SCF level
 
-/// Bars of the 1x1x1 and 1x1x3 anchors, copied from the unrotated ECP file as
-/// it stood before #434 (there the totals are now 3e-12; here they are
-/// unchanged, see `SC_NUCLEUS_EXPONENT`): totals 2e-9 / SR parts 5e-9 at zeta
-/// = 1e7, every other part 3e-12; 1x1x1 totals 1e-9, ECP parts 1e-12.
-const SC_BAR_TOTAL: f64 = 2e-9;
-const SC_BAR_SR: f64 = 5e-9;
+/// Bars of the 1x1x1 and 1x1x3 anchors at the default nucleus exponent.
+/// MEASURED 1x1x3 (29 min release): force TOTAL 4.6e-13, stress TOTAL 3.0e-12,
+/// vsr parts <= 1.5e-14, every other part <= 4.8e-13; 1x1x1 force total
+/// 5.6e-12, stress total 1.1e-12, ECP parts 0.
+const SC_BAR_TOTAL: f64 = 1e-11;
+const SC_BAR_SR: f64 = 1e-12;
 const SC_BAR_PART: f64 = 3e-12;
-const ONE_POINT_TOTAL: f64 = 1e-9;
+const ONE_POINT_TOTAL: f64 = 3e-11;
 const ONE_POINT_ECP: f64 = 1e-12;
 /// SCF-level FD bars (h = 1e-4; unrotated ECP file: force 2e-8, stress 2e-7).
 const FORCE_FD_BAR: f64 = 2e-8;
@@ -861,7 +847,7 @@ fn gamma_stress(g: &GSys, scf: &ScfResult, zeta: f64) -> ferric_pbc::stress::Gam
 /// 1x1x3 anchor below carries those; what this adds is that the rotated ECP
 /// cell's total and ECP parts match the independent real Gamma code.
 #[test]
-#[ignore = "slow (~145 s release, 3 threads): rotated HI 1x1x1 k SCF + Gamma hcore/dense AFT/force/stress"]
+#[ignore = "slow (~131 s release): rotated HI 1x1x1 k SCF + Gamma hcore/dense AFT/force/stress"]
 fn rotated_ecp_one_point_mesh_force_and_stress_are_the_gamma_ones() {
     let bs = rot_basis();
     let cell = hi_cell(&MOVED, &bs);
@@ -870,10 +856,10 @@ fn rotated_ecp_one_point_mesh_force_and_stress_are_the_gamma_ones() {
     let g = gsys(cell, &bs, on());
     assert_eq!(g.hc.sr_rotated_columns, 3);
     let gscf = gamma_restricted(real_of(&r.scf.densities[0]));
-    let gf = gamma_force(&g, &gscf, FD_NUCLEUS_EXPONENT);
-    let gs = gamma_stress(&g, &gscf, FD_NUCLEUS_EXPONENT);
-    let kf = r.force(None, FD_NUCLEUS_EXPONENT);
-    let ks = r.stress(None, FD_NUCLEUS_EXPONENT);
+    let gf = gamma_force(&g, &gscf, GRAD_NUCLEUS_EXPONENT);
+    let gs = gamma_stress(&g, &gscf, GRAD_NUCLEUS_EXPONENT);
+    let kf = r.force(None, GRAD_NUCLEUS_EXPONENT);
+    let ks = r.stress(None, GRAD_NUCLEUS_EXPONENT);
     assert_eq!(kf.hcore_rotated_columns, 3);
     assert_eq!(ks.hcore_rotated_columns, 3);
     let (f_ecp, f_tot) = (
@@ -922,7 +908,7 @@ fn sc_miss(gk: &Array2<f64>, gsc: &Array2<f64>) -> f64 {
 /// on 3x the columns). A rotated-walk weight that mixed images, or an ECP
 /// weight that picked up T, would not reproduce it on the NON-TRIM mesh.
 #[test]
-#[ignore = "slow (~29 min release at load 10): rotated HI 1x1x3 k SCF + 3-cell Gamma supercell hcore/dense AFT/force/stress"]
+#[ignore = "slow (~24 min release, quiet box): rotated HI 1x1x3 k SCF + 3-cell Gamma supercell hcore/dense AFT/force/stress"]
 fn rotated_ecp_1x1x3_force_and_stress_are_the_supercell_ones_per_cell() {
     let bs = rot_basis();
     let r = run(hi_cell(&MOVED, &bs), &bs, [1, 1, 3], on());
@@ -930,7 +916,7 @@ fn rotated_ecp_1x1x3_force_and_stress_are_the_supercell_ones_per_cell() {
     let g = gsys(hi_supercell(&MOVED, 3, &bs), &bs, on());
     assert_eq!(g.hc.sr_rotated_columns, 9);
     let gscf = gamma_restricted(unfold_z(&r.ks.mesh, &r.scf.densities));
-    let zeta = SC_NUCLEUS_EXPONENT;
+    let zeta = GRAD_NUCLEUS_EXPONENT;
     let gf = gamma_force(&g, &gscf, zeta);
     let gs = gamma_stress(&g, &gscf, zeta);
     let kf = r.force(None, zeta);
@@ -1020,7 +1006,7 @@ fn eps_cell(cell: &Cell, i: usize, j: usize, h: f64) -> Cell {
 /// fit pair, so with the dense source they cannot move anything: they are
 /// asserted to leave the dense total UNCHANGED (a no-op by construction).
 #[test]
-#[ignore = "slow (~90 min release on a box at load 10; each ECP stress evaluation is minutes): 1 + 10 rotated k pipelines, 2 analytic pipelines, 12 mutant evaluations"]
+#[ignore = "slow (~106 min release, quiet box; each ECP stress evaluation is minutes; MEASURED force 3.3e-9, stress 2.2e-8): 1 + 10 rotated k pipelines, 2 analytic pipelines, 12 mutant evaluations"]
 fn rotated_ecp_force_and_stress_match_fd_of_the_rotated_k_energy() {
     let bs = rot_basis();
     let n = [1, 1, 3];
@@ -1043,7 +1029,7 @@ fn rotated_ecp_force_and_stress_match_fd_of_the_rotated_k_energy() {
     let r = run(cell.clone(), &bs, n, on());
     let off = run(cell, &bs, n, SrColumnRotation::Off);
     assert_eq!(r.ks.hk.sr_rotated_columns, 3);
-    let zeta = FD_NUCLEUS_EXPONENT;
+    let zeta = GRAD_NUCLEUS_EXPONENT;
     let f = r.force(None, zeta);
     let s = r.stress(None, zeta);
     let fo = off.force(None, zeta);
@@ -1229,7 +1215,7 @@ fn k_fit_energy(cell: &Cell, bs: &BasisSet, n: [usize; 3], rot: SrColumnRotation
 /// allocator-independent now (see the module doc). The FD and mutant parts use
 /// only the rotated fit.
 #[test]
-#[ignore = "slow (~3 min release, 6 threads, quiet box): 1 + 8 rotated RS-GDF k pipelines, HI 1x1x3, + one unrotated pipeline"]
+#[ignore = "slow (~168 s release, quiet box): 1 + 8 rotated RS-GDF k pipelines, HI 1x1x3, + one unrotated pipeline"]
 fn rotated_ecp_rsgdf_force_and_stress_match_fd_of_the_rotated_fitted_energy() {
     let bs = rot_basis();
     let n = [1, 1, 3];
@@ -1254,7 +1240,7 @@ fn rotated_ecp_rsgdf_force_and_stress_match_fd_of_the_rotated_fitted_energy() {
         r.gdf.stats().sr_rotated_columns > 0,
         "the fit did not rotate"
     );
-    let zeta = FD_NUCLEUS_EXPONENT;
+    let zeta = GRAD_NUCLEUS_EXPONENT;
     let force = |fr: &FitRun| {
         kpoint_rhf_gradient(
             &fr.ks.cell,
@@ -1359,7 +1345,7 @@ fn rotated_ecp_rsgdf_force_and_stress_match_fd_of_the_rotated_fitted_energy() {
 /// and keeps the Fock consistency guard (mismatch < 1e-8) with `V_ECP` in
 /// the rebuilt `F`.
 #[test]
-#[ignore = "slow (~2 min release, 3 threads): two HI 1x1x1 k SCFs (rotated and unrotated) + 6 derivative calls"]
+#[ignore = "slow (~104 s release): two HI 1x1x1 k SCFs (rotated and unrotated) + 6 derivative calls"]
 fn ecp_derivative_with_a_mismatched_rotation_config_is_refused() {
     let bs = rot_basis();
     let cell = hi_cell(&MOVED, &bs);
@@ -1376,7 +1362,7 @@ fn ecp_derivative_with_a_mismatched_rotation_config_is_refused() {
             KGradJk::Dense(&r.eri),
             &r.scf,
             ExxDiv::None,
-            &gcfg(None, FD_NUCLEUS_EXPONENT),
+            &gcfg(None, GRAD_NUCLEUS_EXPONENT),
         );
         let s = kpoint_rhf_stress(
             &r.ks.cell,
@@ -1387,7 +1373,7 @@ fn ecp_derivative_with_a_mismatched_rotation_config_is_refused() {
             KStressJk::Dense(&r.eri),
             &r.scf,
             ExxDiv::None,
-            &scfg(None, FD_NUCLEUS_EXPONENT),
+            &scfg(None, GRAD_NUCLEUS_EXPONENT),
         );
         (f, s)
     };
