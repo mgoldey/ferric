@@ -17,9 +17,9 @@ Cells:
   hi_ecp        HI, H STO-3G + I LANL2DZ (explicit digits) + LANL2DZ ECP
                 (46 core electrons), diag(6, 6, 7) Bohr, H (0.3,0.2,0.4),
                 I (0.3,0.2,3.44), mesh 45^3, KRKS PBE and PBE0, 1x1x2 shifted.
-                NOTE PySCF's own periodic ECP integral differs from ferric's
-                (libecpint-derived) one at ~1e-6 in hcore (see pbc_ecp.rs), so
-                this row is a pin to ~1e-5 Ha, not 1e-8.
+                NOTE PySCF's periodic ECP integral is only converged at cell.precision
+                1e-12 (default 1e-8: 2.25e-6 max-element error); the remaining
+                ferric-PySCF gap is ~1e-6 Ha (see pbc_kks_open_ecp.rs).
 
 Output: testdata/reference/pbc_kks_open_ecp_sto3g.json (with provenance); one
 cell per invocation, rows of the other cell are kept.
@@ -69,6 +69,10 @@ CELLS = {
         methods=("KRKS",),
     ),
 }
+# cell.precision drives PySCF's AFTDF cutoff AND its periodic ECP lattice sum
+# (default 1e-8 leaves the ECP integral 2.25e-6 off its converged value).
+# 1e-12 and 1e-14 agree (see the NOTE above), so 1e-12 is the converged oracle.
+PRECISION = 1e-12
 OUT = os.path.join(
     os.path.dirname(os.path.abspath(__file__)),
     "..",
@@ -87,6 +91,7 @@ def make_cell(spec):
     if any(s == "I" for s, _ in spec["atoms"]):
         c.ecp = {"I": "lanl2dz"}
     c.spin = spec["spin"]
+    c.precision = PRECISION
     c.mesh = [spec["mesh"]] * 3
     c.verbose = 0
     c.build()
@@ -155,7 +160,7 @@ def main():
         libxc=libxc.libxc_version(),
         date=time.strftime("%Y-%m-%d"),
         generator_git_sha=git_sha(),
-        setup="AFTDF, UniformGrids, exxdiv=ewald, conv_tol=1e-12, "
+        setup=f"AFTDF, UniformGrids, exxdiv=ewald, conv_tol=1e-12, cell.precision={PRECISION}, "
         "make_kpts(n, with_gamma_point=False), STO-3G H, units Bohr/Hartree",
         cells={
             k: dict(a=v["a"], atoms=v["atoms"], mesh=v["mesh"], spin=v["spin"])
