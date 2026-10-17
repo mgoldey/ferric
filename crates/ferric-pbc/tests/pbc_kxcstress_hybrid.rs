@@ -73,22 +73,24 @@ const ALL9: [(usize, usize); 9] = [
 const CUTOFF: f64 = 14.0;
 const ANCHOR_PRECISION: f64 = 1e-12;
 const MUTANT_BAR: f64 = 1e-5;
-/// Pure-PBE stress values recorded from `kpoint_rks_stress` at origin/main
-/// a12a526f (before the hybrid change), same fixture (H2/STO-3G, 1x1x3, atom
-/// grid (20, 50), cutoff 14, SCF conv 1e-14/1e-12), row-major dE/de or part.
+/// Pure-PBE stress values from `kpoint_rks_stress` on the pre-hybrid code path
+/// (fixture H2/STO-3G, 1x1x3, atom grid (20, 50), cutoff 14, SCF conv
+/// 1e-14/1e-12), row-major dE/de or part. The `de_deps` and `vsr` entries are
+/// recorded at the 1e16 gradient nucleus exponent (the default); all other
+/// entries are independent of it.
 const RECORDED_PBE: [(&str, [f64; 9]); 20] = [
     (
         "Dense.de_deps",
         [
-            4.010711307399635e-1,
-            4.4902724466232616e-4,
-            -2.9462120889361433e-4,
-            4.636342200861118e-4,
-            4.003980158558805e-1,
-            6.720738539802175e-4,
-            -4.968238943049473e-3,
-            7.962698114706809e-3,
-            -1.5803056463435128e-1,
+            0.4010711309622501,
+            0.00044902724343724146,
+            -0.00029462118610887496,
+            0.0004636342188610221,
+            0.40039801607959064,
+            0.0006720738175284939,
+            -0.004968238920264741,
+            0.007962698078255072,
+            -0.15803056399790671,
         ],
     ),
     (
@@ -164,15 +166,15 @@ const RECORDED_PBE: [(&str, [f64; 9]); 20] = [
     (
         "Dense.vsr",
         [
-            4.8875263830674864e-1,
-            -1.2101954834874264e-3,
-            2.0412972954399266e-2,
-            -1.2101954834874281e-3,
-            4.90403326258911e-1,
-            -3.2654987367694586e-2,
-            2.0412972954399287e-2,
-            -3.265498736769458e-2,
-            8.223528041955592e-1,
+            0.4887526385290353,
+            -0.001210195484712511,
+            0.020412972977184005,
+            -0.0012101954847125178,
+            0.4904033264826211,
+            -0.03265498740414631,
+            0.02041297297718402,
+            -0.03265498740414632,
+            0.8223528048320038,
         ],
     ),
     (
@@ -200,15 +202,15 @@ const RECORDED_PBE: [(&str, [f64; 9]); 20] = [
     (
         "Gdf.de_deps",
         [
-            4.0100722809308875e-1,
-            4.490366677818646e-4,
-            -2.890504864758955e-4,
-            4.636436029263199e-4,
-            4.0032724730760794e-1,
-            6.646061002407852e-4,
-            -4.962591082831434e-3,
-            7.955104562427418e-3,
-            -1.5805840994317638e-1,
+            0.40100722831537605,
+            0.00044903666655673785,
+            -0.00028905046369039284,
+            0.0004636436017011981,
+            0.4003272475313183,
+            0.0006646060637859391,
+            -0.004962591060045911,
+            0.007955104525972544,
+            -0.15805840930672038,
         ],
     ),
     (
@@ -271,15 +273,15 @@ const RECORDED_PBE: [(&str, [f64; 9]); 20] = [
     (
         "Gdf.vsr",
         [
-            4.8875369483799697e-1,
-            -1.2102201689441466e-3,
-            2.041381005283408e-2,
-            -1.2102201689441455e-3,
-            4.9040440912489913e-1,
-            -3.265632627504214e-2,
-            2.0413810052834082e-2,
-            -3.265632627504213e-2,
-            8.22346865751531e-1,
+            0.4887536950602841,
+            -0.0012102201701692733,
+            0.02041381007561958,
+            -0.0012102201701692673,
+            0.49040440934860957,
+            -0.03265632631149699,
+            0.020413810075619605,
+            -0.032656326311497,
+            0.822346866387987,
         ],
     ),
     (
@@ -870,9 +872,8 @@ fn a_equal_one_case(jk: Jk) {
 }
 
 /// (2) a = 0 REPRODUCES THE RECORDED PURE-GGA STRESS. The PBE stress of the
-/// pre-change `kpoint_rks_stress` (origin/main a12a526f, same fixture) was
-/// recorded to full precision (`RECORDED_PBE`: total dE/de, xc_ao, xc_weight and
-/// the overlap, coulomb, kinetic, vsr, vlr and (RS-GDF) fit parts); the current
+/// pre-hybrid `kpoint_rks_stress` (same fixture) was recorded to full precision
+/// (`RECORDED_PBE`: total dE/de, xc_ao, xc_weight and the overlap, coulomb, kinetic, vsr, vlr and (RS-GDF) fit parts); the current
 /// code, with the hybrid machinery armed (`exxdiv` configured), must reproduce
 /// each. Prediction 1e-12 or better (same arithmetic, same SCF); MEASURED 0.0
 /// (bit-identical, dense and RS-GDF, 20 comparisons each); bar 1e-10: the
