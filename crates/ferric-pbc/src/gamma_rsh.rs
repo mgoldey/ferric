@@ -167,6 +167,14 @@ impl GammaRshExchange {
         Ok(())
     }
 
+    /// `K[d]` (fractions and Madelung term included) for a real density `d`.
+    /// Exposed so tests can compare two exchange sources as MATRICES.
+    pub fn k_matrix(&self, d: &Array2<f64>) -> Result<Array2<f64>, FerricError> {
+        let mut k = Array2::<f64>::zeros(d.dim());
+        self.k_builder().build(d, &mut k)?;
+        Ok(k)
+    }
+
     /// The real K builder (fractions and Madelung term included).
     pub fn k_builder(&self) -> GammaRshK<'_> {
         let jk: Box<dyn KPointJk + '_> = match &self.src {
@@ -238,6 +246,7 @@ impl GammaRshExchange {
     ) -> Result<Self, FerricError> {
         match aux {
             None => {
+                check_dense_budget(prep.nbasis(), sizing.max_eri_bytes)?;
                 let cfg = KDenseAftConfig {
                     max_bytes: sizing.max_eri_bytes,
                     budget_bytes: sizing.budget_bytes,
@@ -274,16 +283,8 @@ pub fn gamma_rks_any(
     sizing: GammaRshSizing,
     cfg: &crate::dft::GammaRksConfig,
 ) -> Result<crate::dft::GammaRksResult, FerricError> {
+    check_range_split(&cfg.functional, sizing.range_split)?;
     match crate::rsh::resolve_periodic_functional_rsh(&cfg.functional)?.2 {
-        Some(_) if sizing.range_split => Err(crate::dft::PeriodicDftError::Unsupported {
-            feature: "range_split with a range-separated hybrid",
-            reason: format!(
-                "{}: range_split would shape only the Gamma J, never the attenuated K; \
-                 drop range_split for a range-separated functional",
-                cfg.functional
-            ),
-        }
-        .into()),
         Some(rsh) => {
             let ex = GammaRshExchange::build_for_binding(
                 cell, prep, aux, &hc.s, cfg.exxdiv, sizing, rsh,
@@ -292,4 +293,45 @@ pub fn gamma_rks_any(
         }
         None => crate::dft::gamma_rks(cell, prep, hc, ints, cfg),
     }
+}
+
+/// Refuse `range_split` with a range-separated functional at Gamma: the split
+/// shapes only the Gamma J, never the attenuated K, so honouring it would be a
+/// silent partial behaviour. Called at plan / preflight time by the bindings
+/// and again by [`gamma_rks_any`]. Any other functional, or no split, is fine.
+pub fn check_range_split(functional: &str, range_split: bool) -> Result<(), FerricError> {
+    if range_split && is_range_separated(functional) {
+        return Err(crate::dft::PeriodicDftError::Unsupported {
+            feature: "range_split with a range-separated hybrid",
+            reason: format!(
+                "{functional}: range_split would shape only the Gamma J, never the attenuated \
+                 K; drop range_split for a range-separated functional"
+            ),
+        }
+        .into());
+    }
+    Ok(())
+}
+
+/// Bytes of dense-AFT tensors a Gamma run holds: the `8 nao^4` Gamma ERI, plus
+/// for a range-separated hybrid the k = 0 exchange's two complex kernels
+/// (`2 x 16 nao^4`, [`crate::kdense_aft`]).
+pub fn gamma_dense_bytes(nao: usize, range_separated: bool) -> u128 {
+    let n4 = (nao as u128).pow(4);
+    n4 * if range_separated { 8 + 32 } else { 8 }
+}
+
+/// Refuse a dense Gamma RSH run whose TOTAL tensors ([`gamma_dense_bytes`])
+/// exceed `cap_bytes`, before any is built.
+pub fn check_dense_budget(nao: usize, cap_bytes: usize) -> Result<(), FerricError> {
+    let need = gamma_dense_bytes(nao, true);
+    if need > cap_bytes as u128 {
+        return Err(FerricError::General(format!(
+            "the dense AFT tensors of a range-separated hybrid need {need} bytes (nao = {nao}: \
+             8 nao^4 for the Gamma ERI + 32 nao^4 for the attenuated exchange) > max_eri_gb cap \
+             {cap_bytes} bytes. This path is a toy-scale oracle; use jk=\"rsgdf\" with an \
+             auxbasis for larger cells."
+        )));
+    }
+    Ok(())
 }

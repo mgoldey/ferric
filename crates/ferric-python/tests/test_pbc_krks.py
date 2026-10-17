@@ -213,3 +213,23 @@ def test_gamma_range_separated_hybrid_refuses_range_split(h2, basis):
         ferric.run_rks_gamma(
             h2, _cubic(), basis, "HSE06", omega=OMEGA, range_split=True, **RSGDF, **GRID
         )
+
+
+def test_gamma_range_separated_hybrid_roks_is_refused_and_dense_budget_counts_rsh(
+    h2, h_atom, basis
+):
+    lat = _cubic()
+    with pytest.raises(ValueError, match="range-separated"):
+        ferric.run_roks_gamma(h_atom, lat, basis, "HSE06", omega=OMEGA, **GRID)
+    # H2/STO-3G: nao = 2, plain dense tensor 8 nao^4 = 128 B, RSH 40 nao^4 =
+    # 640 B. A 322 B cap passes the plain hybrid and refuses the RSH one
+    # BEFORE any tensor is built.
+    cap = 3e-7
+    r = ferric.run_rks_gamma(
+        h2, lat, basis, "PBE0", omega=OMEGA, max_eri_gb=cap, **GRID
+    )
+    assert r.converged
+    with pytest.raises(ValueError, match=r"dense AFT ERI tensors need 640 bytes"):
+        ferric.run_rks_gamma(
+            h2, lat, basis, "HSE06", omega=OMEGA, max_eri_gb=cap, **GRID
+        )

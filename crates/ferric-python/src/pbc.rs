@@ -480,15 +480,24 @@ impl GammaSystem {
 
 /// Refuse an oversize dense cell before any lattice sum (the Rust builder
 /// re-checks the same bound after hcore).
-fn gamma_dense_preflight(s: &PbcSetup) -> PyResult<()> {
+/// Pre-integral checks of `run_rks_gamma` beyond the functional gate:
+/// `range_split` with a range-separated hybrid (it would shape only the Gamma
+/// J) and the dense tensor budget, which counts the attenuated tensors.
+fn gamma_rks_preflight(s: &PbcSetup, functional: &str) -> PyResult<()> {
+    ferric_pbc::gamma_rsh::check_range_split(functional, s.range_split.is_some())
+        .map_err(|e| val_err(format!("{}: {e}", s.fname)))?;
+    gamma_dense_preflight(s, ferric_pbc::rsh::is_range_separated(functional))
+}
+
+fn gamma_dense_preflight(s: &PbcSetup, range_separated: bool) -> PyResult<()> {
     if s.aux.is_some() {
         return Ok(());
     }
     let nao = s.prep.nbasis();
-    let need = 8u128 * (nao as u128).pow(4);
+    let need = ferric_pbc::gamma_rsh::gamma_dense_bytes(nao, range_separated);
     if need > s.max_eri_bytes as u128 {
         return Err(val_err(format!(
-            "{}: the dense AFT ERI tensor needs {need} bytes (nao = {nao}) > max_eri_gb \
+            "{}: the dense AFT ERI tensors need {need} bytes (nao = {nao}) > max_eri_gb \
              cap {} bytes. This path is a toy-scale oracle; use jk=\"rsgdf\" with an \
              auxbasis for larger cells.",
             s.fname, s.max_eri_bytes
@@ -1119,7 +1128,7 @@ fn run_open_shell(
     o: OpenOpts,
     ewald_start: Option<String>,
 ) -> PyResult<PyGammaOpenShellResult> {
-    gamma_dense_preflight(&s)?;
+    gamma_dense_preflight(&s, false)?;
     check_deriv_request(
         &s,
         matches!(o.method, OpenMethod::Rohf | OpenMethod::Roks(_)),
@@ -1667,7 +1676,7 @@ fn run_rks_gamma(
     };
     s.set_sr_knobs(range_split, sr_column_rotation)?;
     let grid = periodic_grid(fname, n_radial, n_angular, neighbour_cutoff)?;
-    gamma_dense_preflight(&s)?;
+    gamma_rks_preflight(&s, functional)?;
     let scf = gamma_scf_config(max_iter, density_conv);
     let (r, derivs, e_nuc, timings_data) = py
         .allow_threads(|| rks_driver(&s, functional, grid, scf))
@@ -1870,7 +1879,7 @@ fn run_gamma_corr(
     o: CorrOpts,
     denominators: &str,
 ) -> PyResult<PyGammaCorrelationResult> {
-    gamma_dense_preflight(&s)?;
+    gamma_dense_preflight(&s, false)?;
     let (rhf, c, timings_data) = py
         .allow_threads(|| gamma_corr_driver(&s, &o))
         .map_err(pbc_err(s.fname))?;

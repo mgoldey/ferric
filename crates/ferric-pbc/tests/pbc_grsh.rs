@@ -417,9 +417,13 @@ fn gamma_rsh_refusals_are_typed() {
         .unwrap_err();
     assert!(format!("{e}").contains("range-separated"), "{e}");
     // A global hybrid through the RSH entry; wrong parameters; wrong exxdiv.
-    assert!(go("PBE0", &build(ExxDiv::Ewald), ExxDiv::Ewald).is_err());
-    assert!(go("HYB_GGA_XC_CAM_B3LYP", &build(ExxDiv::Ewald), ExxDiv::Ewald).is_err());
-    assert!(go("HSE06", &build(ExxDiv::None), ExxDiv::Ewald).is_err());
+    let msg = |f: &str, ex: &GammaRshExchange, x: ExxDiv| format!("{}", go(f, ex, x).unwrap_err());
+    let e = msg("PBE0", &build(ExxDiv::Ewald), ExxDiv::Ewald);
+    assert!(e.contains("not a range-separated hybrid"), "{e}");
+    let e = msg("HYB_GGA_XC_CAM_B3LYP", &build(ExxDiv::Ewald), ExxDiv::Ewald);
+    assert!(e.contains("exchange was built for"), "{e}");
+    let e = msg("HSE06", &build(ExxDiv::None), ExxDiv::Ewald);
+    assert!(e.contains("exxdiv") && e.contains("differs"), "{e}");
 }
 
 /// `range_split` would shape only the Gamma J, so with an RSH functional it is
@@ -461,4 +465,179 @@ fn gamma_rsh_refuses_range_split() {
     };
     let e = go("HSE06").unwrap_err();
     assert!(format!("{e}").contains("range_split"), "{e}");
+    // A global hybrid with range_split is fine (the split shapes the Gamma J).
+    let mut cfg = GammaRksConfig::new("PBE0");
+    cfg.grid = ferric_pbc::dft::PeriodicGridConfig::with_size(20, 50);
+    let r = gamma_rks_any(
+        &cell,
+        &prep,
+        &hc,
+        GammaUhfIntegrals::DenseAft(&eri),
+        None,
+        sizing,
+        &cfg,
+    )
+    .expect("global hybrid + range_split must run");
+    assert!(r.scf.converged);
+}
+
+/// Dense budget accounting: an RSH run holds 8 + 32 = 40 nao^4 bytes, not 8.
+#[test]
+fn gamma_rsh_dense_budget_counts_the_attenuated_tensors() {
+    use ferric_pbc::gamma_rsh::{check_dense_budget, gamma_dense_bytes};
+    assert_eq!(gamma_dense_bytes(2, false), 8 * 16);
+    assert_eq!(gamma_dense_bytes(2, true), 40 * 16);
+    // Between 8 nao^4 and 40 nao^4: the plain tensor fits, the RSH pair does not.
+    let cap = 400;
+    assert!(gamma_dense_bytes(2, false) <= cap as u128);
+    let e = check_dense_budget(2, cap).unwrap_err();
+    assert!(format!("{e}").contains("32 nao^4"), "{e}");
+    assert!(check_dense_budget(2, 1000).is_ok());
+}
+
+/// Unsupported Gamma surfaces stay refused BY NAME at the library level.
+#[test]
+fn gamma_rsh_derivatives_and_open_shell_are_refused_in_the_library() {
+    use ferric_pbc::dft::{gamma_uks, GammaUksConfig};
+    use ferric_pbc::rohf::{gamma_roks, GammaRoksConfig};
+    let cell = cell_of(Lat::Triclinic);
+    let bs = pyscf_sto3g_h();
+    let prep = prep_for(&cell, &bs);
+    let hcfg = PeriodicHcoreConfig::with_omega(OMEGA);
+    let hc = periodic_hcore(&cell, &prep, &hcfg).unwrap();
+    let eri = DenseAftEri::build(
+        &cell,
+        &prep,
+        &hc.s,
+        ExxDiv::Ewald,
+        DEFAULT_DENSE_AFT_PRECISION,
+        DEFAULT_DENSE_AFT_MAX_BYTES,
+    )
+    .unwrap();
+    let ints = || GammaUhfIntegrals::DenseAft(&eri);
+    let named = |e: ferric_core::FerricError| {
+        let m = format!("{e}");
+        assert!(m.contains("range-separated"), "{m}");
+    };
+    named(gamma_uks(&cell, &prep, &hc, ints(), &GammaUksConfig::new("HSE06")).unwrap_err());
+    named(gamma_roks(&cell, &prep, &hc, ints(), &GammaRoksConfig::new("HSE06")).unwrap_err());
+    // Gradient and stress differentiate a converged SCF; hand them one (the
+    // RSH SCF itself) and the RSH config: both refuse before any derivative.
+    let mut cfg = GammaRksConfig::new("HSE06");
+    cfg.grid = ferric_pbc::dft::PeriodicGridConfig::with_size(20, 50);
+    let scf = ferric_pbc::gamma_rsh::gamma_rks_any(
+        &cell,
+        &prep,
+        &hc,
+        ints(),
+        None,
+        ferric_pbc::gamma_rsh::GammaRshSizing {
+            rsgdf_omega: OMEGA,
+            budget_bytes: None,
+            max_eri_bytes: DEFAULT_DENSE_AFT_MAX_BYTES,
+            range_split: false,
+        },
+        &cfg,
+    )
+    .unwrap()
+    .scf;
+    named(
+        ferric_pbc::grad::gamma_rks_gradient(&cell, &prep, &hcfg, &hc, &eri, &scf, &cfg)
+            .unwrap_err(),
+    );
+    named(
+        ferric_pbc::stress::gamma_rks_stress(
+            &cell,
+            &prep,
+            &hcfg,
+            &hc,
+            &eri,
+            &scf,
+            &cfg,
+            &ferric_pbc::stress::GammaStressConfig::default(),
+        )
+        .unwrap_err(),
+    );
+}
+
+/// Max |K_rsgdf - K_dense| of the k = 0 exchange MATRIX at a fixed density,
+/// for range-separation parameters `rsh` (exxdiv none, so only the fitted
+/// kernels differ) and RS-GDF aux basis `aux`; `omega_fit_scale` perturbs the
+/// attenuation seen by the RS-GDF side only (a K-fit defect).
+fn k_matrix_gap(aux: &str, rsh: RshParams, omega_fit_scale: f64) -> f64 {
+    let cell = cell_of(Lat::Cubic4);
+    let bs = pyscf_sto3g_h();
+    let prep = prep_for(&cell, &bs);
+    let hc = periodic_hcore(&cell, &prep, &PeriodicHcoreConfig::with_omega(OMEGA)).unwrap();
+    let a = PreparedBasis::new(cell.mol(), &basis::bundled(aux).unwrap()).unwrap();
+    let dense = GammaRshExchange::build_dense(
+        &cell,
+        &prep,
+        &hc.s,
+        ExxDiv::None,
+        &KDenseAftConfig::default(),
+        rsh,
+    )
+    .unwrap();
+    let kcfg = KRsGdfConfig {
+        gdf: RsGdfConfig {
+            omega: OMEGA,
+            exxdiv: ExxDiv::None,
+            budget_bytes: Some(AMPLE),
+            ..Default::default()
+        },
+        mutation: None,
+    };
+    let fit_rsh = RshParams {
+        omega: rsh.omega * omega_fit_scale,
+        ..rsh
+    };
+    let fit = GammaRshExchange::build_rsgdf(&cell, &prep, &a, &hc.s, ExxDiv::None, &kcfg, fit_rsh)
+        .unwrap();
+    let n = prep.nbasis();
+    let d = ndarray::Array2::from_shape_fn((n, n), |(i, j)| {
+        0.5 * (-((i as f64) - (j as f64)).abs()).exp()
+    });
+    let (kd, kf) = (dense.k_matrix(&d).unwrap(), fit.k_matrix(&d).unwrap());
+    max_abs_diff(&kd, &kf)
+}
+
+/// The attenuated-K fit, resolved as a MATRIX (the energy gap of
+/// `gamma_rsgdf_rsh_is_dense_to_the_fit_error` is dominated by the J and
+/// full-Coulomb fits, ~1e-6 Ha, and cannot see a small K-fit defect).
+///
+/// NOTE the cell: at a = 4 Bohr the smallest G is 2 pi / a = 1.57, past the
+/// Gaussian cut of HSE06 (omega 0.11: 2 omega sqrt(18 ln 10) = 1.42), so
+/// HSE06's erf piece is EMPTY here and only CAM-B3LYP (omega 0.33) exercises
+/// the attenuated fit. Measured (H2/STO-3G, a = 4, CAM-B3LYP omega, fixed
+/// density, exxdiv none): pure-erf K gap RS-GDF - dense 4.4e-14 (cc-pVDZ-RI)
+/// and 2.1e-13 (def2-universal-jkfit) against 1.4e-5 / 5.4e-5 for the
+/// full-Coulomb kernel; an omega error of 1e-3 (relative) in the fit alone
+/// moves it to 7.1e-6. So the test resolves an attenuated-K fit defect down
+/// to ~1e-11 absolute (omega-equivalent ~1e-6 relative).
+#[test]
+fn gamma_attenuated_k_fit_is_resolved_as_a_matrix() {
+    let r = rsh_of("CAM_B3LYP");
+    let erf = RshParams {
+        c_sr: 0.0,
+        c_lr: 1.0,
+        ..r
+    };
+    let full = RshParams {
+        c_sr: 1.0,
+        c_lr: 1.0,
+        ..r
+    };
+    for aux in ["cc-pvdz-ri", "def2-universal-jkfit"] {
+        let g_erf = k_matrix_gap(aux, erf, 1.0);
+        let g_full = k_matrix_gap(aux, full, 1.0);
+        eprintln!("{aux}: erf K gap {g_erf:.2e}, full-Coulomb K gap {g_full:.2e}");
+        assert!(g_erf < 1e-11, "{aux}: attenuated K fit gap {g_erf:e}");
+        // The scale the erf gap is meant to be far below (it is not vacuous).
+        assert!(g_full > 1e-6, "{aux}: full-Coulomb K gap {g_full:e}");
+        // Mutant: the fit sees omega x1.001 (the dense side does not).
+        let g_mut = k_matrix_gap(aux, erf, 1.001);
+        eprintln!("{aux}: omega x1.001 in the fit: {g_mut:.2e}");
+        assert!(g_mut > 1e-6, "{aux}: fit-omega mutant not seen: {g_mut:e}");
+    }
 }

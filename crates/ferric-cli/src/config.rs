@@ -5139,8 +5139,20 @@ fn check_gamma_rsh_optimize(
 }
 
 /// Gamma-point meta-GGA: closed-shell RKS, SCAN / r2SCAN only (plan time).
-fn check_gamma_meta_gga(route: PeriodicRoute, functional: Option<&str>) -> Result<(), String> {
+fn check_gamma_meta_gga(
+    route: PeriodicRoute,
+    functional: Option<&str>,
+    range_split: Option<RangeSplitKey>,
+) -> Result<(), String> {
+    let split = matches!(
+        range_split,
+        Some(RangeSplitKey::Flag(true) | RangeSplitKey::Lambda(_))
+    );
     match functional {
+        Some(f) if route == PeriodicRoute::Rks && split => {
+            ferric_pbc::gamma_rsh::check_range_split(f, true)
+                .map_err(|e| format!("[cell] range_split at the Gamma point: {e}"))
+        }
         Some(f) if route == PeriodicRoute::Rks && ferric_pbc::dft::is_meta_gga_name(f) => {
             ferric_pbc::dft::resolve_gamma_rks_functional(f)
                 .map(|_| ())
@@ -5284,7 +5296,7 @@ pub fn periodic_plan(cfg: &Config, raw: &toml::Value) -> Result<Option<PeriodicP
                      would ignore it"
                 ));
             }
-            check_gamma_meta_gga(route, functional.as_deref())?;
+            check_gamma_meta_gga(route, functional.as_deref(), c.range_split)?;
             None
         }
         Some(n) => {

@@ -384,4 +384,34 @@ fn cli_gamma_rsh_equals_the_one_point_mesh_and_keeps_derivatives_refused() {
         e.contains("range_split") && e.contains("attenuated K"),
         "gam-split: {e}"
     );
+    // ROKS (kind = "rohf" with a functional, triplet) with RSH at Gamma.
+    let out = run(&gamma_input("gam-roks", "rohf", 3, hse));
+    assert!(!out.status.success(), "gam-roks must be refused");
+    let e = String::from_utf8_lossy(&out.stderr);
+    assert!(e.contains("range-separated"), "gam-roks: {e}");
+    // The dense preflight counts the attenuated tensors: nao = 2, plain 128 B,
+    // RSH 640 B; a 322 B cap runs PBE0 and refuses HSE06 before any build.
+    let capped = |name: &str| {
+        let dft = format!("[dft]\nfunctional = \"{name}\"");
+        let toml = input(
+            &format!("gam-cap-{name}"),
+            "ksdft",
+            1,
+            &dft,
+            "max_eri_gb = 3e-7",
+        );
+        let src = std::fs::read_to_string(&toml)
+            .unwrap()
+            .replace("kmesh = [1, 1, 2]\n", "");
+        std::fs::write(&toml, src).unwrap();
+        run(&toml)
+    };
+    assert!(capped("PBE0").status.success(), "plain hybrid fits the cap");
+    let out = capped("HSE06");
+    assert!(!out.status.success(), "RSH must exceed the cap");
+    let e = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        e.contains("dense AFT ERI tensors need 640 bytes"),
+        "gam-cap: {e}"
+    );
 }

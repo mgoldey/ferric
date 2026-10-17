@@ -1,4 +1,5 @@
-//! Range-separated exact exchange for the periodic k-point KS-DFT path.
+//! Range-separated exact exchange for the periodic KS-DFT paths (k-point,
+//! and the Gamma point through [`crate::gamma_rsh`]).
 //!
 //! ferric-dft describes a range-separated hybrid by [`CamCoeffs`]: the
 //! exact-exchange operator is `c_sr` at short range and `c_lr` at long range,

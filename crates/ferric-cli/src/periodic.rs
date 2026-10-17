@@ -221,10 +221,15 @@ fn setup(cfg: &Config, plan: &PeriodicPlan) -> Setup {
             // size and check their own kernels.
             if plan.kmesh.is_none() {
                 let nao = prep.nbasis();
-                let need = 8u128 * (nao as u128).pow(4);
+                let rsh = plan.route == PeriodicRoute::Rks
+                    && plan
+                        .functional
+                        .as_deref()
+                        .is_some_and(ferric_pbc::rsh::is_range_separated);
+                let need = ferric_pbc::gamma_rsh::gamma_dense_bytes(nao, rsh);
                 if need > *max_eri_bytes as u128 {
                     die(format!(
-                        "[cell]: the dense AFT ERI tensor needs {need} bytes (nao = {nao}) > \
+                        "[cell]: the dense AFT ERI tensors need {need} bytes (nao = {nao}) > \
                          max_eri_gb cap {max_eri_bytes} bytes. This path is a toy-scale \
                          oracle; use jk = \"rsgdf\" with an auxbasis for larger cells."
                     ));
