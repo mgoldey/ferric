@@ -834,6 +834,74 @@ jobs:
           path: dist/*.whl
           if-no-files-found: error
 
+  # Allocator-perturbation canary in the RELEASE toolchain (#433 item 4).
+  # ci.yml's malloc-perturb job runs on ubuntu-22.04 against libint2 2.13.1
+  # built there; the 2.7.2-specific TennoGmEval table-edge tests (#440) and the
+  # manylinux_2_28 glibc/compiler/-O flags are only exercised here. Runs
+  # `cargo test -p ferric-integrals --test tenno_table_edge` inside the same
+  # digest-pinned manylinux image, against the same build-native-deps
+  # artifact the wheels link, with MALLOC_PERTURB_ 1, 170 and 2 (255 fills
+  # 0x00 and tests nothing). Deliberately NOT in any `needs:` edge of
+  # smoke-test/publish: it is a canary and must not be able to wedge a
+  # release on an image/toolchain hiccup; read it on every run.
+  perturb-canary:
+    needs: build-native-deps
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Download native deps
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: native-deps
+          path: native-deps-cache
+
+      - name: Run tenno_table_edge under MALLOC_PERTURB_ (manylinux_2_28 container)
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            -v "$PWD:/io" -w /io \
+            -e EIGEN_VERSION="${{ env.EIGEN_VERSION }}" \
+            quay.io/pypa/manylinux_2_28_x86_64@sha256:${{ env.MANYLINUX_DIGEST }} \
+            bash -euo pipefail -c '
+              # Same placement build-wheels does: Eigen headers into this
+              # fresh container (build.rs hardcodes /usr/include/eigen3), and
+              # the downloaded native prefix on every search path.
+              curl -sSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable >/dev/null
+              export PATH="$HOME/.cargo/bin:$PATH"
+              cd /tmp
+              curl -sSLo eigen.tar.gz "https://gitlab.com/libeigen/eigen/-/archive/${EIGEN_VERSION}/eigen-${EIGEN_VERSION}.tar.gz"
+              tar xzf eigen.tar.gz
+              mkdir -p /usr/include/eigen3
+              cp -r "eigen-${EIGEN_VERSION}/Eigen" "eigen-${EIGEN_VERSION}/unsupported" /usr/include/eigen3/
+              cd /io
+              NATIVE_PREFIX=/io/native-deps-cache
+              export LIBINT2_PREFIX="$NATIVE_PREFIX"
+              export PKG_CONFIG_PATH="$NATIVE_PREFIX/lib/pkgconfig:$NATIVE_PREFIX/lib64/pkgconfig"
+              export LD_LIBRARY_PATH="$NATIVE_PREFIX/lib:$NATIVE_PREFIX/lib64"
+              export LIBRARY_PATH="$NATIVE_PREFIX/lib:$NATIVE_PREFIX/lib64"
+              export CPATH="$NATIVE_PREFIX/include"
+              export OPENBLAS_NUM_THREADS=1
+              # Build once unperturbed, then run the binary three times:
+              # perturbing the COMPILE would only slow rustc down.
+              cargo test -p ferric-integrals --test tenno_table_edge --no-run
+              for v in 1 170 2; do
+                echo "::group::MALLOC_PERTURB_=$v"
+                # tenno_table_edge early-returns (and still PASSES) via
+                # skip_unpatched_272() when the 2.7.2 boys.h override was not
+                # compiled in. Capture output and fail on any SKIP so the
+                # job cannot go green without exercising the edge tests.
+                MALLOC_PERTURB_=$v cargo test -p ferric-integrals --test tenno_table_edge -- --nocapture 2>&1 | tee /tmp/perturb.log
+                if grep -q "SKIP:" /tmp/perturb.log; then
+                  echo "::error::tenno_table_edge skipped tests (override not active) -- the canary would pass vacuously"
+                  exit 1
+                fi
+                grep -Eq "test result: ok\. [1-9][0-9]* passed" /tmp/perturb.log
+                echo "::endgroup::"
+              done
+            '
+
   # Source distribution. NOT a self-contained build: it carries ferric's own
   # sources (the whole Cargo workspace, Cargo.lock and the vendored libecpint)
   # but NOT libint2, which build.rs links from an external install
