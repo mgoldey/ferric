@@ -712,6 +712,41 @@ impl XcFunctional {
         }
     }
 
+    /// GGA second derivatives, unpolarized (nspin=1), of `f = ρ ε_xc` in the
+    /// variables `(ρ, σ = |∇ρ|²)`: one value per point,
+    /// `v2rho2 = ∂²f/∂ρ²`, `v2rhosigma = ∂²f/∂ρ∂σ`, `v2sigma2 = ∂²f/∂σ²`.
+    pub fn eval_gga_fxc_unpolarized(
+        &self,
+        rho: &[f64],
+        sigma: &[f64],
+        v2rho2: &mut [f64],
+        v2rhosigma: &mut [f64],
+        v2sigma2: &mut [f64],
+    ) {
+        debug_assert!(self.nspin == 1, "eval_gga_fxc_unpolarized requires nspin=1");
+        let n = rho.len();
+        assert_eq!(sigma.len(), n, "sigma buffer must match rho.len()");
+        assert_eq!(v2rho2.len(), n, "v2rho2 buffer must match rho.len()");
+        assert_eq!(
+            v2rhosigma.len(),
+            n,
+            "v2rhosigma buffer must match rho.len()"
+        );
+        assert_eq!(v2sigma2.len(), n, "v2sigma2 buffer must match rho.len()");
+        // SAFETY: handle is non-null + fully initialised; lengths verified.
+        unsafe {
+            ffi::xc_gga_fxc(
+                self.ptr as *const _,
+                n,
+                rho.as_ptr(),
+                sigma.as_ptr(),
+                v2rho2.as_mut_ptr(),
+                v2rhosigma.as_mut_ptr(),
+                v2sigma2.as_mut_ptr(),
+            );
+        }
+    }
+
     /// GGA second derivatives, polarized (nspin=2). Inputs interleaved as in
     /// `eval_gga_polarized`:
     ///   `rho[2g+0]   = ρ_α`,  `rho[2g+1]   = ρ_β`
@@ -1106,6 +1141,16 @@ pub struct XcDef {
     /// hybrids where 0.47*B88 + 0.73*LYP). `None` means all weights are 1.0.
     /// When `Some`, length must equal `funcs.len()`.
     pub weights: Option<Vec<f64>>,
+}
+
+impl XcDef {
+    /// Whether this is the SCF half of a double hybrid (B2PLYP, DSD-PBEP86):
+    /// the only definitions that carry per-component `weights`. Its energy and
+    /// derivatives also contain a post-SCF MP2 term that the definition does
+    /// not.
+    pub fn is_double_hybrid(&self) -> bool {
+        self.weights.is_some()
+    }
 }
 
 /// Derive the exact-exchange mixing coefficients from an XC definition.
@@ -1520,7 +1565,14 @@ pub fn xc_def_from_name_nspin(name: &str, nspin: u32) -> Result<XcDef, LibxcErro
         } else {
             let mix = f.exact_exchange_mix();
             if mix != 0.0 {
-                f.set_family(FunctionalFamily::HybridGga);
+                // A raw global hybrid keeps libxc's own family: `HYB_LDA_*` is a
+                // density-only functional (no gradient dependence), everything
+                // else is treated as a hybrid GGA.
+                f.set_family(if upper.starts_with("HYB_LDA") {
+                    FunctionalFamily::Lda
+                } else {
+                    FunctionalFamily::HybridGga
+                });
                 Ok(XcDef {
                     funcs: vec![f],
                     cam: None,
@@ -1580,6 +1632,24 @@ mod tests {
             "PBE0 exact-exchange fraction should be 0.25, got {mix}"
         );
         assert!(def.cam.is_none(), "PBE0 is not range-separated");
+    }
+
+    /// A raw `HYB_LDA_*` global hybrid is density-only (family Lda) and carries
+    /// its exact-exchange fraction; a raw hybrid GGA stays a hybrid GGA.
+    #[test]
+    fn raw_hybrid_lda_keeps_the_lda_family() {
+        let def = xc_def_from_name("HYB_LDA_XC_LDA0").expect("LDA0 resolves");
+        assert!(def
+            .funcs
+            .iter()
+            .all(|f| f.family() == FunctionalFamily::Lda));
+        let mix = k_mix_from_xc_def(&def);
+        assert!((mix.sr - 0.25).abs() < 1e-12 && mix.sr == mix.lr && mix.omega == 0.0);
+        let gga = xc_def_from_name("HYB_GGA_XC_B3LYP").expect("B3LYP resolves");
+        assert!(gga
+            .funcs
+            .iter()
+            .all(|f| f.family() == FunctionalFamily::HybridGga));
     }
 
     /// Common friendly names should all resolve to evaluable (LDA/GGA/hybrid)

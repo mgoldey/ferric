@@ -1,13 +1,15 @@
-//! Opt-in analytic Hessian of closed-shell Kohn-Sham LDA with exact
-//! four-centre J on a grid FIXED IN SPACE (unit 1 of issue #407).
+//! Opt-in analytic Hessian of closed-shell Kohn-Sham LDA/GGA, pure or global
+//! hybrid, with exact four-centre J/K on a grid FIXED IN SPACE (issue #407).
 //!
 //! The energy differentiated is
 //!
 //! ```text
-//!   E = V_nn + Tr[D h] + ½ Tr[D J(D)] + Σ_g w_g f(ρ(r_g)),   D = 2 C_occ C_occᵀ,
+//!   E = V_nn + Tr[D h] + ½ Tr[D J(D)] − (a/4) Tr[D K(D)] + Σ_g w_g f(ρ(r_g), σ(r_g)),
+//!   D = 2 C_occ C_occᵀ,
 //! ```
 //!
-//! with the grid points and weights frozen at the reference geometry (PySCF
+//! with `a` the exact-exchange fraction (0 for a pure functional) and the grid
+//! points and weights frozen at the reference geometry (PySCF
 //! `grid_response=False`; see [`crate::ks_fixed_grid`]). It is NOT the
 //! derivative of the energy the production KS SCF minimizes on an atom-following
 //! grid: that gradient carries the Becke weight response, which this Hessian
@@ -17,17 +19,20 @@
 //! [`HessianMethod::Analytic`] never reach them.
 //!
 //! The Hessian is the RHF one with `G(D) = J(D) − ½K(D)` replaced by
-//! `G(D) = J(D) + V1_xc[D]`:
+//! `G(D) = J(D) − (a/2)K(D) + V1_xc[D]`:
 //!
-//! * skeleton: the RHF terms with `Γ_J = ½ D D` only, plus the XC second
-//!   derivative at fixed `D` ([`FixedGridLda::skeleton_hessian`]);
-//! * `F^x` gains `∂V_xc/∂x|_D` ([`FixedGridLda::first_order_fock`]);
+//! * skeleton: the RHF terms with `Γ = ½ D D − (a/4) D D`, plus the XC second
+//!   derivative at fixed `D` ([`FixedGridKs::skeleton_hessian`]);
+//! * `F^x` gains `∂V_xc/∂x|_D` ([`FixedGridKs::first_order_fock`]) and the
+//!   exchange of `F^x` is scaled by `a`;
 //! * the CPHF `G` (right-hand side, matrix-vector product and the first-order
-//!   orbital energies) gains the kernel response `V1_xc[D1] = Σ_g w f'' ρ1 χ χ`.
+//!   orbital energies) gains the XC kernel response `V1_xc[D1]`
+//!   ([`crate::ks_fixed_grid::XcResponse`]; for a GGA it includes the `σ`
+//!   couplings) and carries the exchange scaled by `a`.
 //!
-//! Refused with a typed error naming the next unit: GGA, meta-GGA, VV10,
-//! global and range-separated hybrids, density fitting, open-shell references,
-//! ECPs and external potentials.
+//! Refused with a typed error naming the next unit: meta-GGA, VV10,
+//! range-separated hybrids, density fitting, open-shell references, ECPs and
+//! external potentials.
 //!
 //! [`HessianMethod::Auto`]: crate::frequencies::HessianMethod::Auto
 //! [`HessianMethod::Analytic`]: crate::frequencies::HessianMethod::Analytic
@@ -38,7 +43,7 @@ use super::{
     Reference, RhfHessianParts, TwoElectronBuilder,
 };
 use crate::gradient::build_energy_weighted_density;
-use crate::ks_fixed_grid::{FixedGridLda, XcGeometry, XcMutants};
+use crate::ks_fixed_grid::{FixedGridKs, XcGeometry, XcMutants};
 use crate::result::{ScfResult, Spin};
 use crate::rhf::RhfConfig;
 use crate::screening::SchwarzBounds;
@@ -58,6 +63,17 @@ pub struct KsFixedGridMutants {
     pub xc: XcMutants,
     /// Scale factor on the kernel response inside the CPHF (0 drops it).
     pub response_fxc: f64,
+    /// Scale factor on the exact-exchange fraction `a` in the four-centre
+    /// skeleton `Γ_K` (0 treats the hybrid as pure, 1 is production).
+    pub skeleton_exx: f64,
+    /// The same for the exact-exchange part of the fixed-density first-order
+    /// Fock matrix.
+    pub fock_exx: f64,
+    /// The same for the exact-exchange part of the CPHF `G`.
+    pub response_exx: f64,
+    /// Scale on the gradient-dependent kernel derivatives (`f_σ`, `f_ρσ`,
+    /// `f_σσ`) inside the CPHF `G` (0 treats a GGA kernel as an LDA one).
+    pub response_gradient: f64,
 }
 
 impl Default for KsFixedGridMutants {
@@ -65,6 +81,10 @@ impl Default for KsFixedGridMutants {
         KsFixedGridMutants {
             xc: XcMutants::default(),
             response_fxc: 1.0,
+            skeleton_exx: 1.0,
+            fock_exx: 1.0,
+            response_exx: 1.0,
+            response_gradient: 1.0,
         }
     }
 }
@@ -76,7 +96,7 @@ fn unsupported(what: &str, next: &str) -> FerricError {
     ))
 }
 
-/// Typed refusals for everything outside closed-shell pure-LDA exact-J.
+/// Typed refusals for everything outside closed-shell exact-J/K LDA/GGA (pure or global hybrid).
 fn ks_refusal(
     mol: &Molecule,
     prep: &PreparedBasis,
@@ -127,6 +147,12 @@ fn functional_refusal(name: &str, xc: &ferric_dft::libxc::XcDef) -> Result<(), F
             "VV10 response kernel",
         ));
     }
+    if xc.is_double_hybrid() {
+        return Err(unsupported(
+            &format!("a double hybrid ('{name}'): its MP2 term is not differentiated"),
+            "double-hybrid MP2 Hessian",
+        ));
+    }
     if mix.omega > 0.0 {
         return Err(unsupported(
             &format!("a range-separated hybrid ('{name}')"),
@@ -143,16 +169,10 @@ fn functional_refusal(name: &str, xc: &ferric_dft::libxc::XcDef) -> Result<(), F
             "tau-dependent XC kernel",
         ));
     }
-    if xc.funcs.iter().any(|f| f.family() != FunctionalFamily::Lda) {
+    if mix.sr != mix.lr {
         return Err(unsupported(
-            &format!("a GGA or hybrid-GGA XC kernel ('{name}')"),
-            "GGA XC kernel (needs third AO derivatives) and hybrid exchange scaling",
-        ));
-    }
-    if mix.sr != 0.0 || mix.lr != 0.0 {
-        return Err(unsupported(
-            &format!("a global hybrid ('{name}')"),
-            "hybrid exchange scaling a in the skeleton and CPHF",
+            &format!("a functional with unequal short- and long-range exchange ('{name}')"),
+            "range-separated exchange (erfc/erf pair) in the CPHF",
         ));
     }
     Ok(())
@@ -168,8 +188,8 @@ fn functional_refusal(name: &str, xc: &ferric_dft::libxc::XcDef) -> Result<(), F
 /// of 0.5 the configuration lacks), 0.17 (a PBE result) and 2.0 (an HF result).
 const FOCK_CONSISTENCY_TOL: f64 = 1e-8;
 
-/// The Fock matrix rebuilt from `rks.density_r()` with the exact-J, fixed-grid
-/// LDA energy this Hessian differentiates must reproduce `rks.fock_r()`. The
+/// The Fock matrix rebuilt from `rks.density_r()` with the exact-J/K, fixed-grid
+/// KS energy this Hessian differentiates must reproduce `rks.fock_r()`. The
 /// configuration only names the functional, so an HF result, a result of
 /// another functional, or one converged with an external potential or field
 /// that `config` does not carry would otherwise return a silently wrong Hessian.
@@ -179,12 +199,12 @@ fn fock_consistency(
     prep: &PreparedBasis,
     bounds: &SchwarzBounds,
     rks: &ScfResult,
-    grid: &FixedGridLda,
+    grid: &FixedGridKs,
 ) -> Result<(), FerricError> {
-    let diff = rks_lda_fixed_grid_fock_residual(ctx, mol, prep, bounds, rks, grid)?;
+    let diff = rks_fixed_grid_fock_residual(ctx, mol, prep, bounds, rks, grid)?;
     if diff > FOCK_CONSISTENCY_TOL {
         return Err(FerricError::General(format!(
-            "the SCF result is not a converged closed-shell exact-J LDA Kohn-Sham solution \
+            "the SCF result is not a converged closed-shell exact-J/K Kohn-Sham solution \
              of the molecule, basis and functional passed (the Fock matrix rebuilt at its \
              density differs from the stored one by {diff:.2e} Ha > {FOCK_CONSISTENCY_TOL:.0e}): \
              a Hartree-Fock or other-functional result, a missing external potential, or an \
@@ -196,13 +216,13 @@ fn fock_consistency(
 
 /// `max |F_rebuilt(D) − F_scf|` of [`fock_consistency`], Hartree.
 #[doc(hidden)]
-pub fn rks_lda_fixed_grid_fock_residual(
+pub fn rks_fixed_grid_fock_residual(
     ctx: &ParallelContext,
     mol: &Molecule,
     prep: &PreparedBasis,
     bounds: &SchwarzBounds,
     rks: &ScfResult,
-    grid: &FixedGridLda,
+    grid: &FixedGridKs,
 ) -> Result<f64, FerricError> {
     let d = rks.density_r();
     let mut j = Array2::<f64>::zeros(d.dim());
@@ -211,12 +231,13 @@ pub fn rks_lda_fixed_grid_fock_residual(
     let h =
         ferric_integrals::oneelectron::hcore_ecp_with_external(prep, mol, prep.basis_set(), None)?;
     let (_exc, v) = grid.energy_vxc(&XcGeometry::new(mol, prep)?, d)?;
-    Ok(max_abs(&(h + j + v - rks.fock_r())))
+    let f = h + j + v - &(0.5 * grid.exact_exchange() * &k);
+    Ok(max_abs(&(f - rks.fock_r())))
 }
 
-/// The analytic Hessian of the fixed-grid closed-shell LDA energy, (3N, 3N).
+/// The analytic Hessian of the fixed-grid closed-shell KS energy, (3N, 3N).
 /// See the module doc for what it is and is not the Hessian of.
-pub fn rks_lda_fixed_grid_hessian(
+pub fn rks_fixed_grid_hessian(
     ctx: &ParallelContext,
     mol: &Molecule,
     prep: &PreparedBasis,
@@ -225,12 +246,12 @@ pub fn rks_lda_fixed_grid_hessian(
     rks: &ScfResult,
     config: &RhfConfig,
 ) -> Result<Array2<f64>, FerricError> {
-    Ok(rks_lda_fixed_grid_hessian_parts(ctx, mol, prep, op, bounds, rks, config)?.total())
+    Ok(rks_fixed_grid_hessian_parts(ctx, mol, prep, op, bounds, rks, config)?.total())
 }
 
-/// [`rks_lda_fixed_grid_hessian`] with the per-term breakdown. The XC second
+/// [`rks_fixed_grid_hessian`] with the per-term breakdown. The XC second
 /// derivative is reported in `two_electron`.
-pub fn rks_lda_fixed_grid_hessian_parts(
+pub fn rks_fixed_grid_hessian_parts(
     ctx: &ParallelContext,
     mol: &Molecule,
     prep: &PreparedBasis,
@@ -242,8 +263,8 @@ pub fn rks_lda_fixed_grid_hessian_parts(
     ks_refusal(mol, prep, rks, config)?;
     let name = config.xc.as_deref().unwrap_or_default();
     let cfg = config.dft_grid.clone().unwrap_or_default();
-    let grid = FixedGridLda::new(mol, name, &cfg)?;
-    rks_lda_fixed_grid_hessian_parts_with(
+    let grid = FixedGridKs::new(mol, name, &cfg)?;
+    rks_fixed_grid_hessian_parts_with(
         ctx,
         mol,
         prep,
@@ -256,11 +277,11 @@ pub fn rks_lda_fixed_grid_hessian_parts(
     )
 }
 
-/// [`rks_lda_fixed_grid_hessian_parts`] on a caller-built grid and with
+/// [`rks_fixed_grid_hessian_parts`] on a caller-built grid and with
 /// deliberately broken constructions (mutation tests).
 #[doc(hidden)]
 #[allow(clippy::too_many_arguments)]
-pub fn rks_lda_fixed_grid_hessian_parts_with(
+pub fn rks_fixed_grid_hessian_parts_with(
     ctx: &ParallelContext,
     mol: &Molecule,
     prep: &PreparedBasis,
@@ -268,7 +289,7 @@ pub fn rks_lda_fixed_grid_hessian_parts_with(
     bounds: &SchwarzBounds,
     rks: &ScfResult,
     config: &RhfConfig,
-    grid: &FixedGridLda,
+    grid: &FixedGridKs,
     mutants: &KsFixedGridMutants,
 ) -> Result<RhfHessianParts, FerricError> {
     ks_refusal(mol, prep, rks, config)?;
@@ -289,14 +310,17 @@ pub fn rks_lda_fixed_grid_hessian_parts_with(
     let nuclear = nuclear_term(mol, config);
     let one_electron = skeleton_hess_1e(prep, natoms, &[], d)?;
     let overlap = skeleton_hess_overlap(prep, natoms, &w)?;
-    let gam_j = |mu: usize, nu: usize, la: usize, sg: usize| 0.5 * d[(mu, nu)] * d[(la, sg)];
+    let a_skel = grid.exact_exchange() * mutants.skeleton_exx;
+    let gam_j = |mu: usize, nu: usize, la: usize, sg: usize| {
+        0.5 * d[(mu, nu)] * d[(la, sg)] - 0.25 * a_skel * d[(mu, la)] * d[(nu, sg)]
+    };
     let mut two_electron = skeleton_hess_2e(prep, op, bounds, natoms, max_abs(d), &gam_j)?;
     two_electron += &grid.skeleton_hessian(&geo, d, &mutants.xc)?;
 
     let spec = FockSpec {
         coulomb: d,
         exchange: d,
-        k_scale: 0.0,
+        k_scale: 0.5 * grid.exact_exchange() * mutants.fock_exx,
     };
     let mut first = first_order_ao(prep, op, bounds, natoms, &[], &[spec])?;
     for (f, v) in first.f1[0]
@@ -305,9 +329,12 @@ pub fn rks_lda_fixed_grid_hessian_parts_with(
     {
         *f += &v;
     }
-    let kernel = grid.response(&geo, d, mutants.response_fxc)?;
+    let kernel = grid.response(&geo, d, mutants.response_fxc, mutants.response_gradient)?;
     let kernel_fn = |d1: &Array2<f64>| kernel.apply(d1);
-    let g = TwoElectronBuilder::new(ctx, prep, bounds)?.with_xc_response(Some(&kernel_fn));
+    let g = TwoElectronBuilder::new(ctx, prep, bounds)?.with_xc_response(
+        Some(&kernel_fn),
+        grid.exact_exchange() * mutants.response_exx,
+    );
     let resp = cpks_response_with(&g, rks, nocc, &first)?;
     Ok(parts_from_terms(
         [nuclear, one_electron, overlap, two_electron],

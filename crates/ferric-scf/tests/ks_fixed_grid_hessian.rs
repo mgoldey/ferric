@@ -1,5 +1,5 @@
 //! Opt-in analytic Hessian of closed-shell Kohn-Sham LDA with exact J on a grid
-//! FIXED IN SPACE (`ferric_scf::hessian::rks_lda_fixed_grid_hessian`, unit 1 of
+//! FIXED IN SPACE (`ferric_scf::hessian::rks_fixed_grid_hessian`, unit 1 of
 //! issue #407).
 //!
 //! ```text
@@ -14,7 +14,7 @@
 //! response.
 //!
 //! * XC pieces at a FROZEN density (no SCF anywhere): the XC skeleton vs a
-//!   central difference of `FixedGridLda::gradient`; the first-order XC Fock
+//!   central difference of `FixedGridKs::gradient`; the first-order XC Fock
 //!   matrix vs a central difference of `V_xc` built at displaced nuclei; the
 //!   kernel response vs a central difference of `V_xc` in the density.
 //! * The gradient vs a central difference of the fixed-grid ENERGY from SCFs
@@ -50,10 +50,10 @@ use ferric_dft::grid::AtomicGridConfig;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_scf::hessian::{
-    rks_lda_fixed_grid_hessian, rks_lda_fixed_grid_hessian_parts_with, KsFixedGridMutants,
+    rks_fixed_grid_hessian, rks_fixed_grid_hessian_parts_with, KsFixedGridMutants,
 };
 use ferric_scf::ks_fixed_grid::{
-    rks_lda_fixed_grid_gradient, solve_rks_fixed_grid, FixedGridLda, XcGeometry, XcMutants,
+    rks_fixed_grid_gradient, solve_rks_fixed_grid, FixedGridKs, XcGeometry, XcMutants,
 };
 use ferric_scf::result::ScfResult;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
@@ -118,7 +118,7 @@ struct Pt {
 }
 
 /// SCF at `mol` whose XC lives on the reference `grid` (frozen in space).
-fn fixed_grid_scf(grid: &FixedGridLda, mol: &Molecule, basis_name: &str) -> Pt {
+fn fixed_grid_scf(grid: &FixedGridKs, mol: &Molecule, basis_name: &str) -> Pt {
     let ctx = ParallelContext::default();
     let bs = basis::bundled(basis_name).unwrap();
     let prep = PreparedBasis::new(mol, &bs).unwrap();
@@ -182,13 +182,19 @@ struct Ref {
     bs_name: String,
     prep: PreparedBasis,
     bounds: SchwarzBounds,
-    grid: FixedGridLda,
+    grid: FixedGridKs,
     fixed: Pt,
+    xc: String,
 }
 
 fn reference(basis_name: &str) -> Ref {
+    reference_for(basis_name, "LDA")
+}
+
+/// [`reference`] for the functional `xc` (pure LDA or a global-hybrid LDA).
+fn reference_for(basis_name: &str, xc: &str) -> Ref {
     let mol = water();
-    let grid = FixedGridLda::new(&mol, "LDA", &grid_cfg()).unwrap();
+    let grid = FixedGridKs::new(&mol, xc, &grid_cfg()).unwrap();
     let bs = basis::bundled(basis_name).unwrap();
     let prep = PreparedBasis::new(&mol, &bs).unwrap();
     let bounds = SchwarzBounds::compute(Operator::coulomb(), &prep).unwrap();
@@ -200,12 +206,13 @@ fn reference(basis_name: &str) -> Ref {
         bounds,
         grid,
         fixed,
+        xc: xc.to_string(),
     }
 }
 
 /// The fixed-grid energy gradient at the reference geometry, (natoms, 3).
 fn gradient_at(r: &Ref, pt: &Pt) -> Array2<f64> {
-    rks_lda_fixed_grid_gradient(
+    rks_fixed_grid_gradient(
         &pt.mol,
         &pt.prep,
         Operator::coulomb(),
@@ -245,8 +252,16 @@ fn fd_gradient_of_energy(r: &Ref, h: f64) -> Array2<f64> {
 }
 
 fn analytic(r: &Ref, m: &KsFixedGridMutants) -> Array2<f64> {
-    let cfg = hessian_config();
-    rks_lda_fixed_grid_hessian_parts_with(
+    analytic_on(r, &r.grid, m)
+}
+
+/// [`analytic`] on a caller-built `grid` (same SCF, same functional name).
+fn analytic_on(r: &Ref, grid: &FixedGridKs, m: &KsFixedGridMutants) -> Array2<f64> {
+    let cfg = RhfConfig {
+        xc: Some(r.xc.clone()),
+        ..hessian_config()
+    };
+    rks_fixed_grid_hessian_parts_with(
         &ParallelContext::default(),
         &r.mol,
         &r.fixed.prep,
@@ -254,7 +269,7 @@ fn analytic(r: &Ref, m: &KsFixedGridMutants) -> Array2<f64> {
         &r.fixed.bounds,
         &r.fixed.res,
         &cfg,
-        &r.grid,
+        grid,
         m,
     )
     .unwrap()
@@ -274,8 +289,14 @@ const H_FROZEN: f64 = 5e-4;
 
 #[test]
 fn xc_pieces_match_frozen_density_differences() {
+    frozen_pieces("LDA");
+}
+
+/// The XC skeleton and first-order Fock matrix of functional `xc` against
+/// differences at a frozen density (no CPHF, no SCF displacement).
+fn frozen_pieces(xc: &str) {
     for basis_name in ["sto-3g", "6-31g"] {
-        let r = reference(basis_name);
+        let r = reference_for(basis_name, xc);
         let d = r.fixed.res.density_r().clone();
         let geo = XcGeometry::new(&r.mol, &r.prep).unwrap();
         let n3 = 3 * r.mol.atoms.len();
@@ -308,7 +329,7 @@ fn xc_pieces_match_frozen_density_differences() {
             worst_fock = worst_fock.max(max_abs_diff(&fock[b], &v));
         }
         eprintln!(
-            "{basis_name}: XC skeleton vs FD of frozen-D gradient {worst_skel:.3e}; first-order \
+            "{xc} {basis_name}: XC skeleton vs FD of frozen-D gradient {worst_skel:.3e}; first-order \
              Fock vs FD of V_xc {worst_fock:.3e} (max |skeleton| {:.3e})",
             max_abs(&skel)
         );
@@ -329,7 +350,12 @@ fn xc_pieces_match_frozen_density_differences() {
 /// miss, independent of the step) cannot do.
 #[test]
 fn xc_skeleton_difference_error_is_truncation_that_scales_with_the_step() {
-    let r = reference("6-31g");
+    skeleton_truncation_scales("LDA");
+    skeleton_truncation_scales("PBE");
+}
+
+fn skeleton_truncation_scales(xc: &str) {
+    let r = reference_for("6-31g", xc);
     let d = r.fixed.res.density_r().clone();
     let geo = XcGeometry::new(&r.mol, &r.prep).unwrap();
     let bs = basis::bundled("6-31g").unwrap();
@@ -352,7 +378,7 @@ fn xc_skeleton_difference_error_is_truncation_that_scales_with_the_step() {
         worst
     };
     let e = [4e-3, 2e-3, 1e-3, 5e-4].map(err);
-    eprintln!("skeleton error at h = 4e-3, 2e-3, 1e-3, 5e-4: {e:?}");
+    eprintln!("{xc} skeleton error at h = 4e-3, 2e-3, 1e-3, 5e-4: {e:?}");
     for k in 0..3 {
         let ratio = e[k] / e[k + 1];
         assert!(
@@ -364,7 +390,12 @@ fn xc_skeleton_difference_error_is_truncation_that_scales_with_the_step() {
 
 #[test]
 fn xc_kernel_response_matches_difference_of_vxc_in_the_density() {
-    let r = reference("6-31g");
+    kernel_response("LDA");
+}
+
+/// The kernel response of `xc` against a difference of `V_xc` in the density.
+fn kernel_response(xc: &str) {
+    let r = reference_for("6-31g", xc);
     let d = r.fixed.res.density_r().clone();
     let geo = XcGeometry::new(&r.mol, &r.prep).unwrap();
     let n = d.nrows();
@@ -374,7 +405,7 @@ fn xc_kernel_response_matches_difference_of_vxc_in_the_density() {
         let (a, b) = (i.min(j) as f64, i.max(j) as f64);
         (0.37 * a + 0.11 * b + 0.5).sin() * 0.1
     });
-    let kernel = r.grid.response(&geo, &d, 1.0).unwrap();
+    let kernel = r.grid.response(&geo, &d, 1.0, 1.0).unwrap();
     let an = kernel.apply(&delta);
     let fd = rich(H_FROZEN, |s| {
         let dd = &d + &(s * &delta);
@@ -475,7 +506,7 @@ fn production_scf_result_gives_the_same_hessian() {
         &production_config(Some(grid_cfg())),
     )
     .unwrap();
-    let from_prod = rks_lda_fixed_grid_hessian(
+    let from_prod = rks_fixed_grid_hessian(
         &ctx,
         &r.mol,
         &r.prep,
@@ -589,7 +620,7 @@ fn production_gradient_difference_differs_by_the_weight_response_scale() {
         (prep, bounds, res)
     };
     let (prep, bounds, res) = setup(&mol);
-    let fixed = rks_lda_fixed_grid_hessian(
+    let fixed = rks_fixed_grid_hessian(
         &ctx,
         &mol,
         &prep,
@@ -635,7 +666,7 @@ fn production_gradient_difference_differs_by_the_weight_response_scale() {
 // ---------------------------------------------------------------------------
 
 fn refusal_with(config: &RhfConfig, r: &Ref, res: &ScfResult) -> String {
-    let err = rks_lda_fixed_grid_hessian(
+    let err = rks_fixed_grid_hessian(
         &ParallelContext::default(),
         &r.mol,
         &r.fixed.prep,
@@ -657,12 +688,11 @@ fn unsupported_configurations_are_refused_naming_the_next_unit() {
         ..hessian_config()
     };
     for (xc, needle) in [
-        ("PBE", "GGA"),
-        ("PBE0", "GGA"),
-        ("B3LYP", "GGA"),
         ("HSE06", "range-separated"),
         ("wB97X-V", "VV10"),
         ("SCAN", "meta-GGA"),
+        ("B2PLYP", "double hybrid"),
+        ("DSD-PBEP86", "double hybrid"),
     ] {
         let msg = refusal_with(&with_xc(xc), &r, res);
         eprintln!("{xc}: {msg}");
@@ -734,7 +764,7 @@ fn without_second_derivative_integrals_the_hessian_is_a_typed_error() {
         return;
     }
     let r = reference("sto-3g");
-    let out = rks_lda_fixed_grid_hessian(
+    let out = rks_fixed_grid_hessian(
         &ParallelContext::default(),
         &r.mol,
         &r.fixed.prep,
@@ -754,15 +784,34 @@ fn hessian_with_d_functions_matches_the_fixed_grid_gradient_difference() {
     if !has_deriv2() {
         return;
     }
-    let r = reference("cc-pvdz");
-    let an = analytic(&r, &KsFixedGridMutants::default());
-    let fd = fd_hessian_of_gradient(&r, 2.5e-4);
-    let diff = max_abs_diff(&an, &fd);
-    eprintln!(
-        "cc-pvdz: |H_analytic - FD(g_fixed)| = {diff:.3e} (max |H| {:.3e})",
-        max_abs(&an)
-    );
-    assert!(diff < TOL_HESS_FD, "{diff:.3e}");
+    // PBE at h = 5e-4, 2.5e-4, 1.25e-4 misses by 2.3e-6, 1.4e-7, 9.3e-9: pure h^4
+    // stencil truncation (ratio 15.5), so the analytic Hessian is the limit and
+    // PBE needs the smaller step for the same bar.
+    for (xc, h) in [("LDA", 2.5e-4), ("PBE", 1.25e-4)] {
+        let r = reference_for("cc-pvdz", xc);
+        let an = analytic(&r, &KsFixedGridMutants::default());
+        let fd = fd_hessian_of_gradient(&r, h);
+        let diff = max_abs_diff(&an, &fd);
+        eprintln!(
+            "{xc} cc-pvdz: |H_analytic - FD(g_fixed)| = {diff:.3e} (max |H| {:.3e})",
+            max_abs(&an)
+        );
+        assert!(diff < TOL_HESS_FD, "{xc}: {diff:.3e}");
+    }
+}
+
+/// Double hybrids (SCF half only in the functional definition) are refused at
+/// construction too, not differentiated without their MP2 term.
+#[test]
+fn double_hybrids_are_refused_by_the_grid_constructor() {
+    let mol = water();
+    for xc in ["B2PLYP", "DSD-PBEP86"] {
+        let msg = FixedGridKs::new(&mol, xc, &grid_cfg())
+            .err()
+            .expect("must be refused")
+            .to_string();
+        assert!(msg.contains("double hybrid"), "{xc}: {msg}");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -776,7 +825,7 @@ fn a_pruned_grid_is_refused_not_silently_flattened() {
         prune: Some(ferric_dft::prune::PruneScheme::NwchemLike),
         ..grid_cfg()
     };
-    let msg = FixedGridLda::new(&mol, "LDA", &cfg)
+    let msg = FixedGridKs::new(&mol, "LDA", &cfg)
         .err()
         .expect("a pruned grid must be refused")
         .to_string();
@@ -794,7 +843,7 @@ fn a_pruned_grid_is_refused_not_silently_flattened() {
 #[test]
 fn a_result_of_another_energy_is_refused_by_the_fock_consistency_guard() {
     use ferric_core::external_potential::{ExternalPotential, PointCharge};
-    use ferric_scf::hessian::rks_lda_fixed_grid_fock_residual;
+    use ferric_scf::hessian::rks_fixed_grid_fock_residual;
     let r = reference("sto-3g");
     let ctx = ParallelContext::default();
     let op = Operator::coulomb();
@@ -814,9 +863,9 @@ fn a_result_of_another_energy_is_refused_by_the_fock_consistency_guard() {
         ..Default::default()
     };
     let legit_inj =
-        rks_lda_fixed_grid_fock_residual(&ctx, &r.mol, &r.prep, &r.bounds, &r.fixed.res, &r.grid)
+        rks_fixed_grid_fock_residual(&ctx, &r.mol, &r.prep, &r.bounds, &r.fixed.res, &r.grid)
             .unwrap();
-    let legit_prod = rks_lda_fixed_grid_fock_residual(
+    let legit_prod = rks_fixed_grid_fock_residual(
         &ctx,
         &r.mol,
         &r.prep,
@@ -835,8 +884,7 @@ fn a_result_of_another_energy_is_refused_by_the_fock_consistency_guard() {
         ..exact(Some("LDA"), None)
     });
     let legit_loose =
-        rks_lda_fixed_grid_fock_residual(&ctx, &r.mol, &r.prep, &r.bounds, &loose, &r.grid)
-            .unwrap();
+        rks_fixed_grid_fock_residual(&ctx, &r.mol, &r.prep, &r.bounds, &loose, &r.grid).unwrap();
     eprintln!("legitimate residual at the default (loose) convergence: {legit_loose:.2e}");
     assert!(legit_loose < 1e-10, "{legit_loose:.2e}");
     for (label, res) in [
@@ -851,12 +899,11 @@ fn a_result_of_another_energy_is_refused_by_the_fock_consistency_guard() {
         ),
     ] {
         let resid =
-            rks_lda_fixed_grid_fock_residual(&ctx, &r.mol, &r.prep, &r.bounds, &res, &r.grid)
-                .unwrap();
+            rks_fixed_grid_fock_residual(&ctx, &r.mol, &r.prep, &r.bounds, &res, &r.grid).unwrap();
         let msg = refusal_with(&hessian_config(), &r, &res);
         eprintln!("{label}: residual {resid:.2e}");
         assert!(
-            msg.contains("not a converged closed-shell exact-J LDA"),
+            msg.contains("not a converged closed-shell exact-J/K Kohn-Sham"),
             "{label}: {msg}"
         );
         assert!(resid > 100.0 * legit_prod.max(legit_inj), "{label}");
@@ -876,7 +923,7 @@ fn an_ecp_system_is_refused() {
     mol.apply_ecp(&bs);
     let prep = PreparedBasis::new(&mol, &bs).unwrap();
     let bounds = SchwarzBounds::compute(Operator::coulomb(), &prep).unwrap();
-    let err = rks_lda_fixed_grid_hessian(
+    let err = rks_fixed_grid_hessian(
         &ParallelContext::default(),
         &mol,
         &prep,
@@ -914,4 +961,240 @@ fn point_charges_in_the_configuration_are_refused() {
         msg.contains("external potential") && msg.contains("issue #407"),
         "{msg}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Global-hybrid LDA (libxc HYB_LDA_XC_LDA0, a = 0.25): a-scaled exact exchange
+// ---------------------------------------------------------------------------
+
+const HYBRID: &str = "HYB_LDA_XC_LDA0";
+
+/// The hybrid grid carries its libxc exchange fraction, and the pure LDA has 0.
+#[test]
+fn the_grid_reports_the_exact_exchange_fraction() {
+    let mol = water();
+    let hyb = FixedGridKs::new(&mol, HYBRID, &grid_cfg()).unwrap();
+    assert!((hyb.exact_exchange() - 0.25).abs() < 1e-12);
+    let pure = FixedGridKs::new(&mol, "LDA", &grid_cfg()).unwrap();
+    assert_eq!(pure.exact_exchange(), 0.0);
+}
+
+#[test]
+fn hybrid_gradient_matches_central_difference_of_the_fixed_grid_energy() {
+    for basis_name in ["sto-3g", "6-31g"] {
+        let r = reference_for(basis_name, HYBRID);
+        let an = gradient_at(&r, &r.fixed);
+        let fd = fd_gradient_of_energy(&r, H_FROZEN);
+        let diff = max_abs_diff(&an, &fd);
+        eprintln!("hybrid {basis_name}: |grad - FD(E)| = {diff:.3e}");
+        assert!(diff < TOL_GRAD_FD, "{basis_name}: {diff:.3e}");
+    }
+}
+
+#[test]
+fn hybrid_hessian_matches_central_difference_of_the_fixed_grid_gradient() {
+    if !has_deriv2() {
+        return;
+    }
+    for basis_name in ["sto-3g", "6-31g"] {
+        let r = reference_for(basis_name, HYBRID);
+        let an = analytic(&r, &KsFixedGridMutants::default());
+        let fd = fd_hessian_of_gradient(&r, H_FROZEN);
+        let diff = max_abs_diff(&an, &fd);
+        eprintln!("hybrid {basis_name}: |H - FD(g)| = {diff:.3e}");
+        assert!(diff < TOL_HESS_FD, "{basis_name}: {diff:.3e}");
+    }
+}
+
+/// Each exact-exchange scaling site, dropped or doubled, fails the FD anchor.
+#[test]
+fn hybrid_exchange_mutants_each_fail_the_hessian_anchor() {
+    if !has_deriv2() {
+        return;
+    }
+    let r = reference_for("6-31g", HYBRID);
+    let fd = fd_hessian_of_gradient(&r, H_FROZEN);
+    let good = max_abs_diff(&analytic(&r, &KsFixedGridMutants::default()), &fd);
+    assert!(good < TOL_HESS_FD, "production {good:.3e}");
+    let m = |f: fn(&mut KsFixedGridMutants)| {
+        let mut m = KsFixedGridMutants::default();
+        f(&mut m);
+        m
+    };
+    let cases: Vec<(&str, KsFixedGridMutants)> = vec![
+        (
+            "hybrid as pure in the skeleton",
+            m(|m| m.skeleton_exx = 0.0),
+        ),
+        ("hybrid as pure in F^x", m(|m| m.fock_exx = 0.0)),
+        ("hybrid as pure in the CPHF G", m(|m| m.response_exx = 0.0)),
+        ("exchange in the CPHF G x2", m(|m| m.response_exx = 2.0)),
+    ];
+    for (name, mutant) in cases {
+        let miss = max_abs_diff(&analytic(&r, &mutant), &fd);
+        eprintln!(
+            "mutant [{name}]: misses by {miss:.3e} ({:.1e} x bar)",
+            miss / TOL_HESS_FD
+        );
+        assert!(
+            miss >= MUTANT_FACTOR * TOL_HESS_FD,
+            "[{name}] only {miss:.3e}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// GGA and hybrid-GGA (PBE, PBE0, B3LYP): third AO derivatives, the sigma kernel
+// ---------------------------------------------------------------------------
+
+#[test]
+fn gga_xc_pieces_match_frozen_density_differences() {
+    frozen_pieces("PBE0");
+    frozen_pieces("PBE");
+}
+
+#[test]
+fn gga_kernel_response_matches_difference_of_vxc_in_the_density() {
+    kernel_response("PBE0");
+    kernel_response("PBE");
+}
+
+#[test]
+fn gga_gradient_matches_central_difference_of_the_fixed_grid_energy() {
+    for basis_name in ["sto-3g", "6-31g"] {
+        let r = reference_for(basis_name, "PBE0");
+        let an = gradient_at(&r, &r.fixed);
+        let fd = fd_gradient_of_energy(&r, H_FROZEN);
+        let diff = max_abs_diff(&an, &fd);
+        eprintln!("PBE0 {basis_name}: |grad - FD(E)| = {diff:.3e}");
+        assert!(diff < TOL_GRAD_FD, "{basis_name}: {diff:.3e}");
+    }
+}
+
+/// The injected fixed-grid SCF and the production SCF are the same energy
+/// surface for a GGA too.
+#[test]
+fn gga_fixed_grid_scf_reproduces_the_production_energy() {
+    let r = reference_for("6-31g", "PBE0");
+    let prod = solve_rhf(
+        &ParallelContext::default(),
+        &r.mol,
+        &r.prep,
+        Operator::coulomb(),
+        &r.bounds,
+        &RhfConfig {
+            xc: Some("PBE0".into()),
+            ..production_config(Some(grid_cfg()))
+        },
+    )
+    .unwrap();
+    let de = (prod.energy - r.fixed.res.energy).abs();
+    eprintln!("PBE0 production vs injected fixed-grid SCF energy: {de:.3e}");
+    assert!(de < 1e-8, "{de:.3e}");
+}
+
+#[test]
+fn gga_hessian_matches_central_difference_of_the_fixed_grid_gradient() {
+    if !has_deriv2() {
+        return;
+    }
+    for (xc, basis_name) in [
+        ("PBE0", "sto-3g"),
+        ("PBE0", "6-31g"),
+        ("PBE", "sto-3g"),
+        ("B3LYP", "sto-3g"),
+    ] {
+        let r = reference_for(basis_name, xc);
+        let an = analytic(&r, &KsFixedGridMutants::default());
+        let fd = fd_hessian_of_gradient(&r, H_FROZEN);
+        let diff = max_abs_diff(&an, &fd);
+        eprintln!("{xc} {basis_name}: |H - FD(g)| = {diff:.3e}");
+        assert!(diff < TOL_HESS_FD, "{xc} {basis_name}: {diff:.3e}");
+    }
+}
+
+/// Exactness anchor: an LDA pushed through the gradient-dependent assembly
+/// (`f_sigma = f_rho_sigma = f_sigma_sigma = 0`) gives the LDA Hessian.
+#[test]
+fn lda_through_the_gradient_path_equals_the_lda_path() {
+    if !has_deriv2() {
+        return;
+    }
+    for xc in ["LDA", HYBRID] {
+        let r = reference_for("6-31g", xc);
+        let forced = FixedGridKs::from_points(
+            xc,
+            r.grid.points_and_weights().0.to_vec(),
+            r.grid.points_and_weights().1.to_vec(),
+        )
+        .unwrap()
+        .with_forced_gradient_path();
+        assert!(forced.is_gradient_dependent() && !r.grid.is_gradient_dependent());
+        let plain = analytic(&r, &KsFixedGridMutants::default());
+        let through = analytic_on(&r, &forced, &KsFixedGridMutants::default());
+        let diff = max_abs_diff(&plain, &through);
+        eprintln!("{xc}: LDA path vs LDA through the gradient path: {diff:.3e}");
+        assert!(diff < 1e-10, "{xc}: {diff:.3e}");
+    }
+}
+
+/// Each GGA-specific and exchange site, dropped or distorted, fails the FD
+/// anchor on a hybrid GGA.
+#[test]
+fn gga_mutants_each_fail_the_hessian_anchor() {
+    if !has_deriv2() {
+        return;
+    }
+    let r = reference_for("6-31g", "PBE0");
+    let fd = fd_hessian_of_gradient(&r, H_FROZEN);
+    let good = max_abs_diff(&analytic(&r, &KsFixedGridMutants::default()), &fd);
+    assert!(good < TOL_HESS_FD, "production {good:.3e}");
+    let xc = |f: fn(&mut XcMutants)| {
+        let mut m = KsFixedGridMutants::default();
+        f(&mut m.xc);
+        m
+    };
+    let top = |f: fn(&mut KsFixedGridMutants)| {
+        let mut m = KsFixedGridMutants::default();
+        f(&mut m);
+        m
+    };
+    let cases: Vec<(&str, KsFixedGridMutants)> = vec![
+        ("skeleton kernel part dropped", xc(|m| m.skeleton_fxc = 0.0)),
+        (
+            "skeleton f' rho_xy / G.g_xy dropped",
+            xc(|m| m.skeleton_vxc = 0.0),
+        ),
+        (
+            "skeleton f' rho_xy / G.g_xy x2",
+            xc(|m| m.skeleton_vxc = 2.0),
+        ),
+        ("F^x kernel part dropped", xc(|m| m.fock_fxc = 0.0)),
+        ("F^x AO-derivative part dropped", xc(|m| m.fock_vxc = 0.0)),
+        (
+            "gradient terms dropped in skeleton and F^x",
+            xc(|m| m.gradient_terms = 0.0),
+        ),
+        ("CPHF kernel dropped", top(|m| m.response_fxc = 0.0)),
+        (
+            "CPHF gradient terms dropped",
+            top(|m| m.response_gradient = 0.0),
+        ),
+        (
+            "exchange in the skeleton dropped",
+            top(|m| m.skeleton_exx = 0.0),
+        ),
+        ("exchange in the CPHF G x2", top(|m| m.response_exx = 2.0)),
+    ];
+    for (name, mutant) in cases {
+        let miss = max_abs_diff(&analytic(&r, &mutant), &fd);
+        eprintln!(
+            "mutant [{name}]: misses by {miss:.3e} ({:.1e} x bar)",
+            miss / TOL_HESS_FD
+        );
+        assert!(
+            miss >= MUTANT_FACTOR * TOL_HESS_FD,
+            "[{name}] only {miss:.3e}"
+        );
+    }
 }

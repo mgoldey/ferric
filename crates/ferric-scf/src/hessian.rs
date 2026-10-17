@@ -146,7 +146,7 @@
 //! The refusal of Kohn-Sham above applies to [`crate::hessian::rhf_hessian`],
 //! `Auto` and `Analytic`. The only analytic KS Hessian is an explicit library
 //! entry point,
-//! [`crate::hessian::rks_lda_fixed_grid_hessian`]: closed-shell pure LDA, exact J, on a grid
+//! [`crate::hessian::rks_fixed_grid_hessian`]: closed-shell LDA or GGA (pure or global hybrid), exact J/K, on a grid
 //! frozen in space (no Becke weight response, so it is not the surface the
 //! production KS gradient differentiates; see the `ks` module).
 //!
@@ -187,10 +187,8 @@ mod rohf;
 pub use rohf::{rohf_hessian, rohf_hessian_parts};
 mod ks;
 #[doc(hidden)]
-pub use ks::{
-    rks_lda_fixed_grid_fock_residual, rks_lda_fixed_grid_hessian_parts_with, KsFixedGridMutants,
-};
-pub use ks::{rks_lda_fixed_grid_hessian, rks_lda_fixed_grid_hessian_parts};
+pub use ks::{rks_fixed_grid_fock_residual, rks_fixed_grid_hessian_parts_with, KsFixedGridMutants};
+pub use ks::{rks_fixed_grid_hessian, rks_fixed_grid_hessian_parts};
 mod uhf_df;
 use uhf_df::{
     open_shell_two_electron, rohf_occupied_factors, uhf_hessian_parts_with, OpenShellDensities,
@@ -2224,6 +2222,9 @@ struct RhfG<'a> {
     /// Kohn-Sham: the exchange-correlation kernel response `V1_xc[D1]` added to
     /// the RHF `G(D1)`; `None` for every Hartree-Fock path.
     xc: Option<&'a XcResponseFn<'a>>,
+    /// Kohn-Sham global-hybrid fraction `a` of exact exchange: the Kohn-Sham
+    /// `G(D) = J(D) − (a/2)K(D) + V1_xc[D]`. Read only when `xc` is set.
+    exx: f64,
 }
 
 /// The XC potential response to a symmetric AO density change.
@@ -2252,10 +2253,11 @@ impl<'a> TwoElectronBuilder<'a> {
         })
     }
 
-    /// Add the Kohn-Sham XC kernel response to the RHF `G`, which is then pure
-    /// Coulomb plus that response (a pure functional has no exchange).
-    fn with_xc_response(mut self, xc: Option<&'a XcResponseFn<'a>>) -> Self {
+    /// Add the Kohn-Sham XC kernel response to the RHF `G`, which is then
+    /// Coulomb, `−(exx/2)·K` (`exx` = 0 for a pure functional) and that response.
+    fn with_xc_response(mut self, xc: Option<&'a XcResponseFn<'a>>, exx: f64) -> Self {
         self.rhf_g.xc = xc;
+        self.rhf_g.exx = exx;
         self
     }
 
@@ -2315,7 +2317,10 @@ impl<'a> TwoElectronBuilder<'a> {
     fn g_rhf(&self, d: &Array2<f64>) -> Result<Array2<f64>, FerricError> {
         use crate::fock::{JBuilder, KBuilder};
         if let Some(xc) = self.rhf_g.xc {
-            let (mut j, _k) = self.jk(d)?;
+            let (mut j, k) = self.jk(d)?;
+            if self.rhf_g.exx != 0.0 {
+                j.scaled_add(-0.5 * self.rhf_g.exx, &k);
+            }
             j += &xc(d);
             return Ok(j);
         }

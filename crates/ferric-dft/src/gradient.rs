@@ -413,6 +413,7 @@ fn xc_gradient_plan(
             AoGridKind::ValueOnly => "chi",
             AoGridKind::ValueAndGrad => "chi + dchi",
             AoGridKind::ValueGradHess => "chi + dchi + ddchi",
+            AoGridKind::Third => "third AO derivatives",
         },
         kind.planes().saturating_mul(plane),
         Lifetime::Resident,

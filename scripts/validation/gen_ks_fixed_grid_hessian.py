@@ -1,4 +1,4 @@
-"""PySCF references for the VALIDATION.md "Analytic fixed-grid KS-LDA Hessian" row.
+"""PySCF references for the VALIDATION.md "Analytic closed-shell KS Hessian on a fixed grid" row.
 
 Consumer: crates/ferric-scf/tests/validation_ks_fixed_grid_hessian.rs
 Output:   testdata/reference/validation/ks_fixed_grid_hessian/<system>_<basis>.json
@@ -16,7 +16,7 @@ approximate):
     default to False, i.e. the grid is not differentiated, which is the energy
     `E(R)` with the grid frozen in space that ferric differentiates;
   * the SAME basis (ferric's JSON through common.py) and geometry (Bohr, ferric's
-    constant), the same functional (`LDA_X,LDA_C_VWN`, both libxc), exact J, no
+    constant), the same functional (per case, both libxc), exact J, no
     density fitting, SCF converged to 1e-12 in energy;
   * masses = ferric's IUPAC-2013 weights for the frequencies.
 
@@ -42,10 +42,19 @@ import common
 
 ROW = "ks_fixed_grid_hessian"
 XC = "LDA_X,LDA_C_VWN"
+# (system, basis, xc, file suffix): the pure-LDA files keep their original names.
+HYBRID_XC = "HYB_LDA_XC_LDA0"
 CONV_TOL = 1e-12
 FD_STEP = 5.0e-4
 FERRIC_MASSES = {"H": 1.008, "C": 12.011, "N": 14.007, "O": 15.999}
-SYSTEMS = (("h2o_distorted", "6-31g"), ("h2o_distorted", "cc-pvdz"))
+SYSTEMS = (
+    ("h2o_distorted", "6-31g", XC, ""),
+    ("h2o_distorted", "cc-pvdz", XC, ""),
+    ("h2o_distorted", "6-31g", HYBRID_XC, "_hyb"),
+    ("h2o_distorted", "6-31g", "PBE0", "_pbe0"),
+    ("h2o_distorted", "cc-pvdz", "PBE", "_pbe"),
+    ("h2o_distorted", "6-31g", "B3LYP", "_b3lyp"),
+)
 
 
 def _grid(system: str):
@@ -56,11 +65,11 @@ def _grid(system: str):
     return rows[:, :3].copy(), rows[:, 3].copy()
 
 
-def _rks(mol, pts, w):
+def _rks(mol, pts, w, xc=XC):
     from pyscf import dft
 
     mf = dft.RKS(mol)
-    mf.xc = XC
+    mf.xc = xc
     mf.grids.coords = pts
     mf.grids.weights = w
     mf.conv_tol = CONV_TOL
@@ -89,13 +98,13 @@ def _analytic(mf):
     return 0.5 * (raw + raw.T), float(np.max(np.abs(raw - raw.T)))
 
 
-def _grad(mol, pts, w):
-    g = _rks(mol, pts, w).nuc_grad_method()
+def _grad(mol, pts, w, xc=XC):
+    g = _rks(mol, pts, w, xc).nuc_grad_method()
     g.grid_response = False
     return g.kernel().ravel()
 
 
-def _fd(mol, pts, w):
+def _fd(mol, pts, w, xc=XC):
     import numpy as np
 
     n = 3 * mol.natm
@@ -108,7 +117,7 @@ def _fd(mol, pts, w):
             x[b // 3, b % 3] += sgn * step
             m = mol.copy()
             m.set_geom_(x, unit="Bohr")
-            out.append(_grad(m, pts, w))
+            out.append(_grad(m, pts, w, xc))
         return (out[0] - out[1]) / (2.0 * step)
 
     h = np.zeros((n, n))
@@ -129,7 +138,7 @@ def _frequencies(mol, h, masses):
     return sorted(float(v) for v in np.asarray(res["freq_wavenumber"]).real)
 
 
-def _run(system: str, basis_name: str) -> Path:
+def _run(system: str, basis_name: str, xc: str = XC, suffix: str = "") -> Path:
     import numpy as np
     import pyscf
 
@@ -140,9 +149,9 @@ def _run(system: str, basis_name: str) -> Path:
     pts, w = _grid(system)
     masses = [FERRIC_MASSES[s.capitalize()] for s in symbols]
 
-    mf = _rks(mol, pts, w)
+    mf = _rks(mol, pts, w, xc)
     h_an, asym = _analytic(mf)
-    h_fd, fd_asym = _fd(mol, pts, w)
+    h_fd, fd_asym = _fd(mol, pts, w, xc)
     gap = float(np.max(np.abs(h_an - h_fd)))
     f_an = _frequencies(mol, h_an, masses)
     f_fd = _frequencies(mol, h_fd, masses)
@@ -152,12 +161,12 @@ def _run(system: str, basis_name: str) -> Path:
         flush=True,
     )
     payload = {
-        "row": "Analytic fixed-grid KS-LDA Hessian",
+        "row": "Analytic closed-shell KS Hessian on a fixed grid",
         "system": system,
         "basis": basis_name,
         "charge": 0,
         "multiplicity": 1,
-        "xc": XC,
+        "xc": xc,
         "npts": len(pts),
         "nuclear_repulsion": float(mol.energy_nuc()),
         "energy": float(mf.e_tot),
@@ -175,7 +184,7 @@ def _run(system: str, basis_name: str) -> Path:
             code="PySCF",
             version=pyscf.__version__,
             keywords={
-                "xc": XC,
+                "xc": xc,
                 "grid": "ferric 30x50 Becke-Lebedev points/weights, frozen",
                 "grid_response": False,
                 "conv_tol": CONV_TOL,
@@ -192,6 +201,7 @@ def _run(system: str, basis_name: str) -> Path:
         ),
     }
     path = common.reference_path(ROW, system, basis_name)
+    path = path.with_name(path.stem + suffix + path.suffix)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, separators=(",", ":")) + "\n")
     return path
@@ -199,7 +209,9 @@ def _run(system: str, basis_name: str) -> Path:
 
 def main() -> int:
     only = set(sys.argv[1:])
-    written = [_run(s, b) for s, b in SYSTEMS if not only or b in only]
+    written = [
+        _run(s, b, x, sfx) for s, b, x, sfx in SYSTEMS if not only or b + sfx in only
+    ]
     for p in written:
         print(f"  {p.relative_to(common.ROOT)} ({p.stat().st_size} bytes)")
     print(f"GEN_KS_FIXED_GRID_HESSIAN_DONE written={len(written)}")
