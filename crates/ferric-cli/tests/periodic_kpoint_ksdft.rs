@@ -157,8 +157,14 @@ fn unsupported_kpoint_ks_combinations_are_refused_by_name() {
     let e = refusal("uks-meta", "ksdft", 3, "[dft]\nfunctional = \"SCAN\"", "");
     assert!(e.contains("meta-GGA"), "{e}");
     // Open-shell range-separated hybrids stay refused on the dense J/K too.
-    let e = refusal("rsh-uks", "ksdft", 3, "[dft]\nfunctional = \"HSE06\"", "");
-    assert!(e.contains("range-separated"), "{e}");
+    // The early gate (config.rs), not a later library refusal, names it.
+    for (tag, kind) in [("rsh-uks", "uhf"), ("rsh-roks", "rohf")] {
+        let e = refusal(tag, kind, 3, "[dft]\nfunctional = \"HSE06\"", "");
+        assert!(
+            e.contains("[cell] kmesh with functional \"HSE06\"") && e.contains("range-separated"),
+            "{tag}: {e}"
+        );
+    }
     // task = "optimize" keeps the range-separated refusal (closed-shell LDA /
     // GGA / global hybrid / SCAN forces are wired; periodic_kpoint_ks_optimize.rs).
     let toml = input("opt-hse", "ksdft", 1, "[dft]\nfunctional = \"HSE06\"", "");
@@ -283,7 +289,10 @@ fn cli_kpoint_rsh_rsgdf_equals_library_solve_krks() {
 fn cli_kpoint_rsh_rsgdf_keeps_forces_and_open_shell_refused() {
     let hse = "[dft]\nfunctional = \"HSE06\"";
     let e = refusal("rsgdf-uks", "ksdft", 3, hse, RSGDF_CELL);
-    assert!(e.contains("range-separated"), "{e}");
+    assert!(
+        e.contains("[cell] kmesh with functional \"HSE06\"") && e.contains("range-separated"),
+        "{e}"
+    );
     let toml = input("rsgdf-opt", "ksdft", 1, hse, RSGDF_CELL);
     let src = std::fs::read_to_string(&toml)
         .unwrap()

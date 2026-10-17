@@ -1568,8 +1568,8 @@ pub fn resolve_periodic_functional_mgga(
             feature: "range-separated hybrid",
             reason: format!(
                 "{name} needs the attenuated (erf/erfc) periodic exchange, which this entry \
-                 point does not build: only the closed-shell k-point RKS builds it (jk = \
-                 \"rsgdf\", or the dense-AFT library path). Use a global hybrid (e.g. PBE0) or \
+                 point does not build: only the closed-shell k-point RKS builds it (dense-AFT \
+                 or RS-GDF J/K). Use a global hybrid (e.g. PBE0) or \
                  a semilocal functional here"
             ),
         }

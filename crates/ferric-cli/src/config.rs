@@ -5614,9 +5614,18 @@ kind = "ccsd"
         ("uhf", SCAN, false, &["kmesh", "meta-GGA", "no meta-GGA"]),
         ("rohf", SCAN, false, &["kmesh", "meta-GGA", "no meta-GGA"]),
         ("ksdft", SCAN, true, &["UKS", "meta-GGA", "no meta-GGA"]),
-        ("ksdft", HSE, false, &["range-separated"]),
-        ("uhf", HSE, false, &["range-separated"]),
-        ("rohf", HSE, false, &["range-separated"]),
+        (
+            "uhf",
+            HSE,
+            false,
+            &["kmesh with functional", "range-separated"],
+        ),
+        (
+            "rohf",
+            HSE,
+            false,
+            &["kmesh with functional", "range-separated"],
+        ),
     ];
 
     /// Error text for a k-mesh run of `kind` with `extra` TOML.
@@ -5664,6 +5673,7 @@ kind = "ccsd"
             ("ksdft", ""),
             ("ksdft", "[dft]\nfunctional = \"PBE0\""),
             ("rhf", "[dft]\nfunctional = \"PBE\""),
+            ("ksdft", HSE),
         ] {
             let p = ok(&h2(kind, "kmesh = [1, 1, 2]", extra));
             assert_eq!(p.route, PeriodicRoute::Rks, "{kind} {extra}");

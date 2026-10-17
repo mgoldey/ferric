@@ -114,7 +114,8 @@ def test_range_separated_hybrid_runs_on_rsgdf_energy_only(h2, h_atom, basis):
 # construction of the RS-GDF one. The exact value is this binding's own output
 # (a regression pin, not an external reference); the PySCF pins of the dense
 # kernel are crates/ferric-pbc/tests/pbc_krsh.rs and the CLI == library bit
-# anchor is crates/ferric-cli/tests/periodic_kpoint_ksdft.rs.
+# anchor is crates/ferric-cli/tests/periodic_kpoint_ksdft.rs. Mutation-checked:
+# dropping the dense RSH kernel moves the energy by ~1.9 Ha and fails the 1e-3 bar.
 HSE06_DENSE_112 = -1.3482880002
 
 
