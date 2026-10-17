@@ -1,0 +1,267 @@
+{
+ "pyscf": "2.13.0",
+ "numpy": "2.4.6",
+ "libxc": "7.0.0",
+ "date": "2026-10-17",
+ "generator_git_sha": "32b55fe17eee421594856071987f396793e5909b",
+ "setup": "AFTDF, UniformGrids, exxdiv=ewald, conv_tol=1e-12, make_kpts(n, with_gamma_point=False), STO-3G H, units Bohr/Hartree",
+ "cells": {
+  "h3_triclinic": {
+   "a": [
+    [
+     4.6,
+     0.0,
+     0.0
+    ],
+    [
+     0.9,
+     4.3,
+     0.0
+    ],
+    [
+     0.5,
+     0.7,
+     4.8
+    ]
+   ],
+   "atoms": [
+    [
+     "H",
+     [
+      0.1,
+      0.2,
+      0.3
+     ]
+    ],
+    [
+     "H",
+     [
+      0.1,
+      0.2,
+      1.7
+     ]
+    ],
+    [
+     "H",
+     [
+      2.4,
+      2.5,
+      2.2
+     ]
+    ]
+   ],
+   "mesh": 31,
+   "spin": 1
+  },
+  "hi_ecp": {
+   "a": [
+    [
+     6.0,
+     0.0,
+     0.0
+    ],
+    [
+     0.0,
+     6.0,
+     0.0
+    ],
+    [
+     0.0,
+     0.0,
+     7.0
+    ]
+   ],
+   "atoms": [
+    [
+     "H",
+     [
+      0.3,
+      0.2,
+      0.4
+     ]
+    ],
+    [
+     "I",
+     [
+      0.3,
+      0.2,
+      3.44
+     ]
+    ]
+   ],
+   "mesh": 45,
+   "spin": 0
+  }
+ },
+ "script": "scripts/gen_pyscf_kks_open_ecp_refs.py",
+ "rows": [
+  {
+   "cell": "h3_triclinic",
+   "mesh": [
+    1,
+    1,
+    2
+   ],
+   "method": "KROHF",
+   "xc": "HF",
+   "energy": -1.7382170262135084,
+   "converged": true,
+   "nk": 2,
+   "seconds": 106
+  },
+  {
+   "cell": "h3_triclinic",
+   "mesh": [
+    1,
+    1,
+    2
+   ],
+   "method": "KROKS",
+   "xc": "PBE",
+   "energy": -1.7310636148276743,
+   "converged": true,
+   "nk": 2,
+   "seconds": 30
+  },
+  {
+   "cell": "h3_triclinic",
+   "mesh": [
+    1,
+    1,
+    2
+   ],
+   "method": "KROKS",
+   "xc": "PBE0",
+   "energy": -1.7520094215528905,
+   "converged": true,
+   "nk": 2,
+   "seconds": 84
+  },
+  {
+   "cell": "h3_triclinic",
+   "mesh": [
+    1,
+    1,
+    2
+   ],
+   "method": "KUKS",
+   "xc": "PBE",
+   "energy": -1.732343998103767,
+   "converged": true,
+   "nk": 2,
+   "seconds": 47
+  },
+  {
+   "cell": "h3_triclinic",
+   "mesh": [
+    1,
+    1,
+    2
+   ],
+   "method": "KUKS",
+   "xc": "PBE0",
+   "energy": -1.7539799746700928,
+   "converged": true,
+   "nk": 2,
+   "seconds": 92
+  },
+  {
+   "cell": "h3_triclinic",
+   "mesh": [
+    1,
+    1,
+    4
+   ],
+   "method": "KROHF",
+   "xc": "HF",
+   "energy": -1.6866313383068314,
+   "converged": true,
+   "nk": 4,
+   "seconds": 334
+  },
+  {
+   "cell": "h3_triclinic",
+   "mesh": [
+    1,
+    1,
+    4
+   ],
+   "method": "KROKS",
+   "xc": "PBE",
+   "energy": -1.731402816204868,
+   "converged": true,
+   "nk": 4,
+   "seconds": 56
+  },
+  {
+   "cell": "h3_triclinic",
+   "mesh": [
+    1,
+    1,
+    4
+   ],
+   "method": "KROKS",
+   "xc": "PBE0",
+   "energy": -1.7381005503766804,
+   "converged": true,
+   "nk": 4,
+   "seconds": 210
+  },
+  {
+   "cell": "h3_triclinic",
+   "mesh": [
+    1,
+    1,
+    4
+   ],
+   "method": "KUKS",
+   "xc": "PBE",
+   "energy": -1.7327348672116458,
+   "converged": true,
+   "nk": 4,
+   "seconds": 34
+  },
+  {
+   "cell": "h3_triclinic",
+   "mesh": [
+    1,
+    1,
+    4
+   ],
+   "method": "KUKS",
+   "xc": "PBE0",
+   "energy": -1.7405851961233936,
+   "converged": true,
+   "nk": 4,
+   "seconds": 133
+  },
+  {
+   "cell": "hi_ecp",
+   "mesh": [
+    1,
+    1,
+    2
+   ],
+   "method": "KRKS",
+   "xc": "PBE",
+   "energy": -11.633069230348674,
+   "converged": true,
+   "nk": 2,
+   "seconds": 250
+  },
+  {
+   "cell": "hi_ecp",
+   "mesh": [
+    1,
+    1,
+    2
+   ],
+   "method": "KRKS",
+   "xc": "PBE0",
+   "energy": -11.647666216199955,
+   "converged": true,
+   "nk": 2,
+   "seconds": 444
+  }
+ ]
+}
