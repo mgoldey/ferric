@@ -328,10 +328,16 @@ pub fn rho_log_rhf() -> Vec<f64> {
 /// Publish the ρ just formed on a closed-shell step.
 pub fn note_rho_rhf(rho: f64) {
     LAST_RHO_RHF.store(rho.to_bits(), std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Append `rho` to the series read by [`rho_log_rhf`]. Called alongside
+/// [`note_rho_rhf`] on every closed-shell step.
+pub fn log_rho_rhf(rho: f64) {
     if let Ok(mut v) = RHO_LOG_RHF.lock() {
         v.push(rho);
     }
 }
+
 /// Publish the ρ just formed on an open-shell step.
 pub fn note_rho_uhf(rho: f64) {
     LAST_RHO_UHF.store(rho.to_bits(), std::sync::atomic::Ordering::Relaxed);
@@ -1384,6 +1390,69 @@ pub fn rhf_trah_step_aux(
         .map_err(|e| FerricError::General(format!("TRAH aux step reshape: {e}")))?;
     let c_new = apply_cayley(inp.c, &k, no, n)?;
     Ok((c_new, step))
+}
+
+/// One closed-shell TRAH step: exact curvature, or (opt-in
+/// `config.trah.aux_curvature`) AURORA's auxiliary curvature.
+///
+/// `xc_k_mix` is `Some(c_HF)` for a KS reference (exchange fraction of the
+/// curvature model) and `None` for plain HF (fraction 1).
+pub fn rhf_trah_step_dispatch(
+    ctx: &ferric_core::parallel::ParallelContext,
+    slot: &mut Option<crate::aurora::AuxCurvature>,
+    geom: (
+        &ferric_core::mol::Molecule,
+        &ferric_integrals::basis_bridge::PreparedBasis,
+        ndarray::ArrayView2<f64>,
+        usize,
+    ),
+    cfg: (&crate::rhf::RhfConfig, Option<f64>),
+    inp: &crate::rhf_newton::RhfNewtonInputs,
+    radius: f64,
+) -> Result<(Array2<f64>, TrahStep), FerricError> {
+    let (config, xc_k_mix) = cfg;
+    if !config.trah.aux_curvature {
+        return rhf_trah_step(ctx, inp, radius, &config.trah);
+    }
+    let (mol, prep, c, nocc) = geom;
+    let ax = xc_k_mix.unwrap_or(1.0);
+    rhf_trah_step_aux_cached(slot, (mol, prep, c, nocc, ax), config, inp, radius)
+}
+
+/// Build (lazily, once) and refresh the AURORA auxiliary curvature model at the
+/// current orbitals, then take one auxiliary-curvature TRAH step.
+///
+/// `slot` persists across SCF iterations so the (fixed) dressed AO tensor is
+/// built once; only the MO transform is refreshed each step, because the
+/// tangent space moved with the last step. `geom` is
+/// `(mol, prep, c, nocc, exchange_scale)`.
+pub fn rhf_trah_step_aux_cached(
+    slot: &mut Option<crate::aurora::AuxCurvature>,
+    geom: (
+        &ferric_core::mol::Molecule,
+        &ferric_integrals::basis_bridge::PreparedBasis,
+        ndarray::ArrayView2<f64>,
+        usize,
+        f64,
+    ),
+    config: &crate::rhf::RhfConfig,
+    inp: &crate::rhf_newton::RhfNewtonInputs,
+    radius: f64,
+) -> Result<(Array2<f64>, TrahStep), FerricError> {
+    let (mol, prep, c, nocc, ax) = geom;
+    if slot.is_none() {
+        *slot = Some(crate::aurora::AuxCurvature::new(
+            mol,
+            prep,
+            c,
+            nocc,
+            ax,
+            &config.aurora,
+        )?);
+    }
+    let aux = slot.as_mut().expect("aux slot just set");
+    aux.refresh_orbitals(c)?;
+    rhf_trah_step_aux(inp, aux, radius, &config.trah)
 }
 
 /// Count of AUXILIARY-curvature matvecs, process-wide. See

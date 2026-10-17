@@ -1903,7 +1903,7 @@ fn solve_rhf_impl(
     // Built lazily on the first armed TRAH iteration and refreshed to the
     // current orbitals every step, so that with the flag off (the default)
     // no auxiliary integrals are ever computed and the exact path is
-    // bit-identical -- see `tests/trah_aux_off_is_bit_identical.rs`.
+    // bit-identical -- see `tests/trah_aux_curvature.rs::trah_aux_off_is_bit_identical`.
     let mut trah_aux: Option<crate::aurora::AuxCurvature> = None;
     // AURORA accelerator state. Built lazily at the first accelerated step (it
     // needs converged-enough MOs and costs an auxiliary integral build), and
@@ -2626,6 +2626,7 @@ fn solve_rhf_impl(
                 trah_state.as_mut().and_then(|st| st.assess(energy));
             if let (Some(_), Some(rho)) = (verdict, trah_state.as_ref().and_then(|s| s.last_rho)) {
                 crate::trah::note_rho_rhf(rho);
+                crate::trah::log_rho_rhf(rho);
             }
             if scf_trace() {
                 if let (Some(v), Some(rho)) =
@@ -2724,30 +2725,14 @@ fn solve_rhf_impl(
                     .as_ref()
                     .map(|s| s.radius())
                     .expect("trah_state is Some inside the armed branch");
-                let (c_new, step) = if config.trah.aux_curvature {
-                    // Curvature from AURORA's STO-3G auxiliary model instead of
-                    // a full-basis J/K build. Energy, gradient and every
-                    // convergence decision still come from the target
-                    // Hamiltonian -- only `H*kappa` changes.
-                    let ax = if xc_contrib.is_some() { k_mix.sr } else { 1.0 };
-                    if trah_aux.is_none() {
-                        trah_aux = Some(crate::aurora::AuxCurvature::new(
-                            mol,
-                            prep,
-                            c_cur.view(),
-                            nocc,
-                            ax,
-                            &config.aurora,
-                        )?);
-                    }
-                    let aux = trah_aux.as_mut().expect("trah_aux just set");
-                    // The tangent space moved with the last step; re-transform
-                    // the (fixed) dressed AO tensor into the current MO basis.
-                    aux.refresh_orbitals(c_cur.view())?;
-                    crate::trah::rhf_trah_step_aux(&inputs, aux, radius, &config.trah)?
-                } else {
-                    crate::trah::rhf_trah_step(ctx, &inputs, radius, &config.trah)?
-                };
+                let (c_new, step) = crate::trah::rhf_trah_step_dispatch(
+                    ctx,
+                    &mut trah_aux,
+                    (mol, prep, c_cur.view(), nocc),
+                    (config, xc_contrib.is_some().then_some(k_mix.sr)),
+                    &inputs,
+                    radius,
+                )?;
                 // Decline a step the model says is worthless. Once the orbital
                 // gradient is converged the quadratic model predicts a change
                 // below what the energy can resolve, and rho becomes numerical
