@@ -712,6 +712,41 @@ impl XcFunctional {
         }
     }
 
+    /// GGA second derivatives, unpolarized (nspin=1), of `f = ρ ε_xc` in the
+    /// variables `(ρ, σ = |∇ρ|²)`: one value per point,
+    /// `v2rho2 = ∂²f/∂ρ²`, `v2rhosigma = ∂²f/∂ρ∂σ`, `v2sigma2 = ∂²f/∂σ²`.
+    pub fn eval_gga_fxc_unpolarized(
+        &self,
+        rho: &[f64],
+        sigma: &[f64],
+        v2rho2: &mut [f64],
+        v2rhosigma: &mut [f64],
+        v2sigma2: &mut [f64],
+    ) {
+        debug_assert!(self.nspin == 1, "eval_gga_fxc_unpolarized requires nspin=1");
+        let n = rho.len();
+        assert_eq!(sigma.len(), n, "sigma buffer must match rho.len()");
+        assert_eq!(v2rho2.len(), n, "v2rho2 buffer must match rho.len()");
+        assert_eq!(
+            v2rhosigma.len(),
+            n,
+            "v2rhosigma buffer must match rho.len()"
+        );
+        assert_eq!(v2sigma2.len(), n, "v2sigma2 buffer must match rho.len()");
+        // SAFETY: handle is non-null + fully initialised; lengths verified.
+        unsafe {
+            ffi::xc_gga_fxc(
+                self.ptr as *const _,
+                n,
+                rho.as_ptr(),
+                sigma.as_ptr(),
+                v2rho2.as_mut_ptr(),
+                v2rhosigma.as_mut_ptr(),
+                v2sigma2.as_mut_ptr(),
+            );
+        }
+    }
+
     /// GGA second derivatives, polarized (nspin=2). Inputs interleaved as in
     /// `eval_gga_polarized`:
     ///   `rho[2g+0]   = ρ_α`,  `rho[2g+1]   = ρ_β`

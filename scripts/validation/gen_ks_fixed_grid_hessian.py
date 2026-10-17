@@ -51,6 +51,9 @@ SYSTEMS = (
     ("h2o_distorted", "6-31g", XC, ""),
     ("h2o_distorted", "cc-pvdz", XC, ""),
     ("h2o_distorted", "6-31g", HYBRID_XC, "_hyb"),
+    ("h2o_distorted", "6-31g", "PBE0", "_pbe0"),
+    ("h2o_distorted", "cc-pvdz", "PBE", "_pbe"),
+    ("h2o_distorted", "6-31g", "B3LYP", "_b3lyp"),
 )
 
 
@@ -206,7 +209,9 @@ def _run(system: str, basis_name: str, xc: str = XC, suffix: str = "") -> Path:
 
 def main() -> int:
     only = set(sys.argv[1:])
-    written = [_run(s, b, x, sfx) for s, b, x, sfx in SYSTEMS if not only or b + sfx in only]
+    written = [
+        _run(s, b, x, sfx) for s, b, x, sfx in SYSTEMS if not only or b + sfx in only
+    ]
     for p in written:
         print(f"  {p.relative_to(common.ROOT)} ({p.stat().st_size} bytes)")
     print(f"GEN_KS_FIXED_GRID_HESSIAN_DONE written={len(written)}")

@@ -10,7 +10,7 @@
 //!
 //! # What ferric computes
 //!
-//! `rks_lda_fixed_grid_hessian_parts_with` on an SCF whose XC lives on a grid
+//! `rks_fixed_grid_hessian_parts_with` on an SCF whose XC lives on a grid
 //! frozen in space (`ferric_scf::ks_fixed_grid`): exact four-centre J, pure
 //! LDA (`LDA_X` + `LDA_C_VWN`), no weight response.
 //!
@@ -52,8 +52,8 @@ use ferric_dft::grid::AtomicGridConfig;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_scf::frequencies::{atom_masses, frequencies_from_cartesian_hessian};
-use ferric_scf::hessian::{rks_lda_fixed_grid_hessian_parts_with, KsFixedGridMutants};
-use ferric_scf::ks_fixed_grid::{solve_rks_fixed_grid, FixedGridLda};
+use ferric_scf::hessian::{rks_fixed_grid_hessian_parts_with, KsFixedGridMutants};
+use ferric_scf::ks_fixed_grid::{solve_rks_fixed_grid, FixedGridKs};
 use ferric_scf::rhf::RhfConfig;
 use ferric_scf::screening::SchwarzBounds;
 use ndarray::Array2;
@@ -86,7 +86,7 @@ fn reference_grid_matches_the_grid_ferric_builds() {
         n_angular: 50,
         prune: None,
     };
-    let grid = ferric_scf::ks_fixed_grid::FixedGridLda::new(&mol, "LDA", &cfg).unwrap();
+    let grid = ferric_scf::ks_fixed_grid::FixedGridKs::new(&mol, "LDA", &cfg).unwrap();
     let (pts, w) = grid.points_and_weights();
     let mut bytes = Vec::with_capacity(32 * pts.len());
     for (p, wg) in pts.iter().zip(w) {
@@ -148,7 +148,7 @@ struct Case {
 }
 
 /// Bars: ~10x the maxima measured on the first run (see the VALIDATION row).
-const CASES: [Case; 3] = [
+const CASES: [Case; 6] = [
     Case {
         basis: "6-31g",
         xc: "LDA",
@@ -175,6 +175,31 @@ const CASES: [Case; 3] = [
         tol_hessian: 5e-7,
         tol_freq: 1e-3,
     },
+    // GGA and hybrid GGA: third AO derivatives and the sigma kernel.
+    Case {
+        basis: "6-31g",
+        xc: "PBE0",
+        suffix: "_pbe0",
+        tol_energy: 1e-9,
+        tol_hessian: 5e-7,
+        tol_freq: 1e-3,
+    },
+    Case {
+        basis: "cc-pvdz",
+        xc: "PBE",
+        suffix: "_pbe",
+        tol_energy: 1e-9,
+        tol_hessian: 1e-5,
+        tol_freq: 3e-2,
+    },
+    Case {
+        basis: "6-31g",
+        xc: "B3LYP",
+        suffix: "_b3lyp",
+        tol_energy: 1e-9,
+        tol_hessian: 5e-7,
+        tol_freq: 1e-3,
+    },
 ];
 
 fn run_case(case: &Case) {
@@ -196,7 +221,7 @@ fn run_case(case: &Case) {
     let ctx = ParallelContext::default();
     let (pts, w) = load_grid();
     assert_eq!(pts.len() as u64, r["npts"].as_u64().unwrap());
-    let grid = FixedGridLda::from_points(case.xc, pts, w).unwrap();
+    let grid = FixedGridKs::from_points(case.xc, pts, w).unwrap();
 
     let enuc = (mol.nuclear_repulsion() - r["nuclear_repulsion"].as_f64().unwrap()).abs();
     assert!(
@@ -226,7 +251,7 @@ fn run_case(case: &Case) {
         df_k_aux: Some(String::new()),
         ..Default::default()
     };
-    let h = rks_lda_fixed_grid_hessian_parts_with(
+    let h = rks_fixed_grid_hessian_parts_with(
         &ctx,
         &mol,
         &prep,
@@ -283,4 +308,22 @@ fn fixed_grid_lda_hessian_cc_pvdz_matches_pyscf_on_the_same_grid() {
 #[ignore = "validation: analytic fixed-grid KS hybrid-LDA Hessian vs PySCF"]
 fn fixed_grid_hybrid_lda_hessian_6_31g_matches_pyscf_on_the_same_grid() {
     run_case(&CASES[2]);
+}
+
+#[test]
+#[ignore = "validation: analytic fixed-grid KS hybrid-GGA Hessian vs PySCF"]
+fn fixed_grid_pbe0_hessian_6_31g_matches_pyscf_on_the_same_grid() {
+    run_case(&CASES[3]);
+}
+
+#[test]
+#[ignore = "validation: analytic fixed-grid KS GGA Hessian (d functions) vs PySCF"]
+fn fixed_grid_pbe_hessian_cc_pvdz_matches_pyscf_on_the_same_grid() {
+    run_case(&CASES[4]);
+}
+
+#[test]
+#[ignore = "validation: analytic fixed-grid KS B3LYP Hessian vs PySCF"]
+fn fixed_grid_b3lyp_hessian_6_31g_matches_pyscf_on_the_same_grid() {
+    run_case(&CASES[5]);
 }

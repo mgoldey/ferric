@@ -14,6 +14,8 @@
 
 /// GTO basis-function evaluation on real-space grids (Cartesian, Becke-Lebedev, etc.).
 pub mod ao_grid;
+/// Third AO derivatives on points (fixed-grid GGA Hessian).
+pub mod ao_grid_third;
 /// [`PreparedBasis`](basis_bridge::PreparedBasis): Rust↔libint2 basis handle and shell metadata.
 pub mod basis_bridge;
 /// BLAS thread-count guard (re-exported from ferric-core for convenience).

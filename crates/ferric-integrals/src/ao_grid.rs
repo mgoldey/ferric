@@ -51,6 +51,9 @@ pub enum AoGridKind {
     ValueAndGrad,
     /// `chi` + `dchi` + `ddchi` (full, non-deduplicated 3×3 Hessian).
     ValueGradHess,
+    /// The ten unique third derivatives of the AOs
+    /// ([`crate::ao_grid_third::eval_basis_third_on_points`]).
+    Third,
 }
 
 impl AoGridKind {
@@ -62,6 +65,7 @@ impl AoGridKind {
             AoGridKind::ValueOnly => 1,
             AoGridKind::ValueAndGrad => 4,
             AoGridKind::ValueGradHess => 13,
+            AoGridKind::Third => 10,
         }
     }
 }

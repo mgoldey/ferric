@@ -146,7 +146,7 @@
 //! The refusal of Kohn-Sham above applies to [`crate::hessian::rhf_hessian`],
 //! `Auto` and `Analytic`. The only analytic KS Hessian is an explicit library
 //! entry point,
-//! [`crate::hessian::rks_lda_fixed_grid_hessian`]: closed-shell LDA (pure or global hybrid), exact J/K, on a grid
+//! [`crate::hessian::rks_fixed_grid_hessian`]: closed-shell LDA or GGA (pure or global hybrid), exact J/K, on a grid
 //! frozen in space (no Becke weight response, so it is not the surface the
 //! production KS gradient differentiates; see the `ks` module).
 //!
@@ -187,10 +187,8 @@ mod rohf;
 pub use rohf::{rohf_hessian, rohf_hessian_parts};
 mod ks;
 #[doc(hidden)]
-pub use ks::{
-    rks_lda_fixed_grid_fock_residual, rks_lda_fixed_grid_hessian_parts_with, KsFixedGridMutants,
-};
-pub use ks::{rks_lda_fixed_grid_hessian, rks_lda_fixed_grid_hessian_parts};
+pub use ks::{rks_fixed_grid_fock_residual, rks_fixed_grid_hessian_parts_with, KsFixedGridMutants};
+pub use ks::{rks_fixed_grid_hessian, rks_fixed_grid_hessian_parts};
 mod uhf_df;
 use uhf_df::{
     open_shell_two_electron, rohf_occupied_factors, uhf_hessian_parts_with, OpenShellDensities,

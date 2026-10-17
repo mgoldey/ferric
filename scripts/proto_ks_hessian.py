@@ -40,7 +40,18 @@ from pyscf.hessian import rks as rks_hess
 # index of electron derivatives in pyscf eval_ao(deriv=3): [0]=1, [1:4]=x,y,z, 4:10 = xx.., 10:20 = xxx..
 D1 = {0: 1, 1: 2, 2: 3}
 _D2 = {(0, 0): 4, (0, 1): 5, (0, 2): 6, (1, 1): 7, (1, 2): 8, (2, 2): 9}
-_D3_LIST = [(0, 0, 0), (0, 0, 1), (0, 0, 2), (0, 1, 1), (0, 1, 2), (0, 2, 2), (1, 1, 1), (1, 1, 2), (1, 2, 2), (2, 2, 2)]
+_D3_LIST = [
+    (0, 0, 0),
+    (0, 0, 1),
+    (0, 0, 2),
+    (0, 1, 1),
+    (0, 1, 2),
+    (0, 2, 2),
+    (1, 1, 1),
+    (1, 1, 2),
+    (1, 2, 2),
+    (2, 2, 2),
+]
 D3 = {k: 10 + i for i, k in enumerate(_D3_LIST)}
 
 
@@ -60,7 +71,6 @@ class Xc:
         self.gga = numint.NumInt()._xc_type(name) != "LDA"
 
     def eval(self, rho, grad):
-        sig = np.einsum("gx,gx->g", grad, grad) if self.gga else np.zeros_like(rho)
         r4 = np.vstack([rho, grad.T]) if self.gga else rho
         exc, vxc, fxc, _ = libxc.eval_xc(self.name, r4, spin=0, deriv=2)
         e = exc * rho  # per volume
@@ -99,7 +109,14 @@ class Pieces:
         if not self.gga:
             fs = frs = fss = np.zeros_like(fr)
             self.g = np.zeros_like(self.g)
-        self.e, self.fr, self.fs, self.frr, self.frs, self.fss = e, fr, fs, frr, frs, fss
+        self.e, self.fr, self.fs, self.frr, self.frs, self.fss = (
+            e,
+            fr,
+            fs,
+            frr,
+            frs,
+            fss,
+        )
         self.F = w * fr
         self.G = 2 * w * fs * self.g  # (3, ng)
 
@@ -109,7 +126,14 @@ class Pieces:
         w = self.w
         gg1 = np.einsum("cg,...cg->...g", self.g, g1)
         dF = w * (self.frr * rho1 + 2 * self.frs * gg1)
-        dG = 2 * w * ((self.frs * rho1 + 2 * self.fss * gg1)[..., None, :] * self.g + self.fs * g1)
+        dG = (
+            2
+            * w
+            * (
+                (self.frs * rho1 + 2 * self.fss * gg1)[..., None, :] * self.g
+                + self.fs * g1
+            )
+        )
         return dF, dG
 
     def vmat(self, F, G):
@@ -142,7 +166,7 @@ class Pieces:
         return out
 
     def skeleton(self):
-        A, dm, nat, w = self.ao, self.dm, self.natm, self.w
+        A, dm, nat = self.ao, self.dm, self.natm
         n3 = 3 * nat
         rx = self.rho_x().reshape(n3, -1)
         gx = self.g_x().reshape(n3, 3, -1)
@@ -157,16 +181,43 @@ class Pieces:
                     for b in range(3):
                         val = 0.0
                         if B == C:
-                            val += 2 * np.einsum("mg,mg,g->", A[d2(a, b)][sB], self.P[sB], self.F)
-                        val += 2 * np.einsum("mg,mg,g->", A[D1[a]][sB], (dm[sB][:, sC] @ A[D1[b]][sC]), self.F)
+                            val += 2 * np.einsum(
+                                "mg,mg,g->", A[d2(a, b)][sB], self.P[sB], self.F
+                            )
+                        val += 2 * np.einsum(
+                            "mg,mg,g->",
+                            A[D1[a]][sB],
+                            (dm[sB][:, sC] @ A[D1[b]][sC]),
+                            self.F,
+                        )
                         if self.gga:
                             for gam in range(3):
                                 Gg = self.G[gam]
                                 if B == C:
-                                    val += 2 * np.einsum("mg,mg,g->", A[d3(gam, a, b)][sB], self.P[sB], Gg)
-                                    val += 2 * np.einsum("mg,mg,g->", A[d2(a, b)][sB], self.Q[gam][sB], Gg)
-                                val += 2 * np.einsum("mg,mg,g->", A[d2(gam, a)][sB], dm[sB][:, sC] @ A[D1[b]][sC], Gg)
-                                val += 2 * np.einsum("mg,mg,g->", A[D1[a]][sB], dm[sB][:, sC] @ A[d2(gam, b)][sC], Gg)
+                                    val += 2 * np.einsum(
+                                        "mg,mg,g->",
+                                        A[d3(gam, a, b)][sB],
+                                        self.P[sB],
+                                        Gg,
+                                    )
+                                    val += 2 * np.einsum(
+                                        "mg,mg,g->",
+                                        A[d2(a, b)][sB],
+                                        self.Q[gam][sB],
+                                        Gg,
+                                    )
+                                val += 2 * np.einsum(
+                                    "mg,mg,g->",
+                                    A[d2(gam, a)][sB],
+                                    dm[sB][:, sC] @ A[D1[b]][sC],
+                                    Gg,
+                                )
+                                val += 2 * np.einsum(
+                                    "mg,mg,g->",
+                                    A[D1[a]][sB],
+                                    dm[sB][:, sC] @ A[d2(gam, b)][sC],
+                                    Gg,
+                                )
                         H[3 * B + a, 3 * C + b] += val
         return H
 
@@ -184,7 +235,9 @@ class Pieces:
             T = (A[D1[a]] * self.F) @ A[0].T
             if self.gga:
                 for gam in range(3):
-                    T += (A[d2(gam, a)] * self.G[gam]) @ A[0].T + (A[D1[a]] * self.G[gam]) @ A[D1[gam]].T
+                    T += (A[d2(gam, a)] * self.G[gam]) @ A[0].T + (
+                        A[D1[a]] * self.G[gam]
+                    ) @ A[D1[gam]].T
             for mu in range(self.nao):
                 B = self.ao_atom[mu]
                 out[B, a, mu, :] -= T[mu]
@@ -194,7 +247,11 @@ class Pieces:
     def kernel(self, d1):
         A = self.ao
         rho1 = np.einsum("mg,mg->g", A[0], d1 @ A[0])
-        g1 = 2 * np.stack([np.einsum("mg,mg->g", A[D1[c]], d1 @ A[0]) for c in range(3)]) if self.gga else np.zeros((3, len(self.w)))
+        g1 = (
+            2 * np.stack([np.einsum("mg,mg->g", A[D1[c]], d1 @ A[0]) for c in range(3)])
+            if self.gga
+            else np.zeros((3, len(self.w)))
+        )
         dF, dG = self.dweights(rho1, g1)
         return self.vmat(dF, dG)
 
@@ -215,7 +272,12 @@ def mol_at(atoms, basis, disp=None):
     if disp is not None:
         c = m.atom_coords().copy()
         c[disp[0], disp[1]] += disp[2]
-        m = gto.M(atom=[(m.atom_symbol(i), tuple(c[i])) for i in range(m.natm)], basis=basis, unit="Bohr", verbose=0)
+        m = gto.M(
+            atom=[(m.atom_symbol(i), tuple(c[i])) for i in range(m.natm)],
+            basis=basis,
+            unit="Bohr",
+            verbose=0,
+        )
     return m
 
 
@@ -262,27 +324,38 @@ def run(xcname, basis="sto-3g", force_gga=False):
             em, vm = vxc_at(B, a, -h)
             fd_fo[B, a] = (vp - vm) / (2 * h)
             fd_g[B, a] = (ep - em) / (2 * h)
+
     # skeleton = d/dy of dE/dx at fixed D: FD the analytic gradient
     def grad_at(B, a, s):
         m = mol_at(atoms, basis, (B, a, s))
         Pm = Pieces(m, pts, w, dm, xc, force_gga)
         rx = Pm.rho_x()
         gx = Pm.g_x()
-        return (np.einsum("xag,g->xa", rx, Pm.F) + np.einsum("xacg,cg->xa", gx, Pm.G)).reshape(-1)
+        return (
+            np.einsum("xag,g->xa", rx, Pm.F) + np.einsum("xacg,cg->xa", gx, Pm.G)
+        ).reshape(-1)
 
-    gan = (np.einsum("xag,g->xa", P.rho_x(), P.F) + np.einsum("xacg,cg->xa", P.g_x(), P.G))
+    gan = np.einsum("xag,g->xa", P.rho_x(), P.F) + np.einsum(
+        "xacg,cg->xa", P.g_x(), P.G
+    )
     ok &= check("gradient analytic vs FD(E)", abs(gan - fd_g).max(), 1e-7)
     for B in range(nat):
         for a in range(3):
             fd_skel[3 * B + a] = (grad_at(B, a, h) - grad_at(B, a, -h)) / (2 * h)
-    ok &= check("skeleton vs FD(analytic gradient at fixed D)", abs(skel - fd_skel).max(), 1e-5)  # FD stencil floor; pyscf agreement below is the authority
+    ok &= check(
+        "skeleton vs FD(analytic gradient at fixed D)", abs(skel - fd_skel).max(), 1e-5
+    )  # FD stencil floor; pyscf agreement below is the authority
     ok &= check("first-order Fock vs FD(Vxc)", abs(fo - fd_fo).max(), 1e-7)
     d1 = np.random.default_rng(1).standard_normal(dm.shape) * 1e-2
     d1 = d1 + d1.T
     eps = 1e-5
     Pp = Pieces(mol, pts, w, dm + eps * d1, xc, force_gga).energy_vxc()[1]
     Pm_ = Pieces(mol, pts, w, dm - eps * d1, xc, force_gga).energy_vxc()[1]
-    ok &= check("kernel vs FD(Vxc along D1)", abs(P.kernel(d1) - (Pp - Pm_) / (2 * eps)).max(), 1e-7)
+    ok &= check(
+        "kernel vs FD(Vxc along D1)",
+        abs(P.kernel(d1) - (Pp - Pm_) / (2 * eps)).max(),
+        1e-7,
+    )
 
     # (iii) against PySCF analytic pieces, grid_response=False
     hobj = mf.Hessian()
@@ -297,18 +370,30 @@ def run(xcname, basis="sto-3g", force_gga=False):
     ref_xc = np.zeros((nat, nat, 3, 3))
     for i0 in range(nat):
         p0, p1 = mol.aoslice_by_atom()[i0][2:]
-        ref_xc[i0, i0] += np.einsum("xypq,pq->xy", veff_diag[:, :, p0:p1], dm0[p0:p1]) * 2
+        ref_xc[i0, i0] += (
+            np.einsum("xypq,pq->xy", veff_diag[:, :, p0:p1], dm0[p0:p1]) * 2
+        )
         for j0 in range(i0 + 1):
             q0, q1 = mol.aoslice_by_atom()[j0][2:]
-            ref_xc[i0, j0] += np.einsum("xypq,pq->xy", vxc2[i0][:, :, q0:q1], dm0[q0:q1]) * 2
+            ref_xc[i0, j0] += (
+                np.einsum("xypq,pq->xy", vxc2[i0][:, :, q0:q1], dm0[q0:q1]) * 2
+            )
         for j0 in range(i0):
             ref_xc[j0, i0] = ref_xc[i0, j0].T
-    ok &= check("XC skeleton vs pyscf (_get_vxc_diag+_get_vxc_deriv2)", abs(mine - ref_xc).max(), 1e-8)
+    ok &= check(
+        "XC skeleton vs pyscf (_get_vxc_diag+_get_vxc_deriv2)",
+        abs(mine - ref_xc).max(),
+        1e-8,
+    )
     vind = mf.gen_response(mo_c, mo_o, hermi=1)
     hyb = mf._numint.rsh_and_hybrid_coeff(xcname, spin=0)[2]
     j, k = mf.get_jk(mol, d1)
     ref_kernel = vind(d1) - (j - 0.5 * hyb * k)
-    ok &= check("kernel vs pyscf gen_response (minus J,aK)", abs(P.kernel(d1) - ref_kernel).max(), 1e-8)
+    ok &= check(
+        "kernel vs pyscf gen_response (minus J,aK)",
+        abs(P.kernel(d1) - ref_kernel).max(),
+        1e-8,
+    )
 
     # total Hessian: pyscf with its XC skeleton zeroed + mine, V^x swapped for mine
     ref_total = hobj.kernel()
@@ -321,8 +406,14 @@ def run(xcname, basis="sto-3g", force_gga=False):
         h2.grid_response = False
         patched = h2.kernel() + mine
     finally:
-        rks_hess._get_vxc_diag, rks_hess._get_vxc_deriv2, rks_hess._get_vxc_deriv1 = keep
-    ok &= check(f"total Hessian (hyb a={hyb:.2f}): my skeleton+Vx vs pyscf", abs(patched - ref_total).max(), 1e-8)
+        rks_hess._get_vxc_diag, rks_hess._get_vxc_deriv2, rks_hess._get_vxc_deriv1 = (
+            keep
+        )
+    ok &= check(
+        f"total Hessian (hyb a={hyb:.2f}): my skeleton+Vx vs pyscf",
+        abs(patched - ref_total).max(),
+        1e-8,
+    )
     return ok
 
 
