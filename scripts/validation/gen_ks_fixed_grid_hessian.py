@@ -47,6 +47,15 @@ HYBRID_XC = "HYB_LDA_XC_LDA0"
 CONV_TOL = 1e-12
 FD_STEP = 5.0e-4
 FERRIC_MASSES = {"H": 1.008, "C": 12.011, "N": 14.007, "O": 15.999}
+# RI-J cases: (system, basis, xc, suffix, auxiliary basis). Pure functionals only:
+# PySCF has no analytic RI-J + exact-K Hessian, and a pure functional never
+# builds K, so `density_fit(only_dfj=True)` IS the RI-J surface ferric
+# differentiates. Hybrids are anchored by ferric's own FD of its DF-J gradient.
+AUX = "def2-universal-jkfit"
+RIJ_SYSTEMS = (
+    ("h2o_distorted", "6-31g", "PBE", "_pbe_rij", AUX),
+    ("h2o_distorted", "6-31g", XC, "_rij", AUX),
+)
 SYSTEMS = (
     ("h2o_distorted", "6-31g", XC, ""),
     ("h2o_distorted", "cc-pvdz", XC, ""),
@@ -65,11 +74,13 @@ def _grid(system: str):
     return rows[:, :3].copy(), rows[:, 3].copy()
 
 
-def _rks(mol, pts, w, xc=XC):
+def _rks(mol, pts, w, xc=XC, aux=None):
     from pyscf import dft
 
     mf = dft.RKS(mol)
     mf.xc = xc
+    if aux is not None:
+        mf = mf.density_fit(auxbasis=aux, only_dfj=True)
     mf.grids.coords = pts
     mf.grids.weights = w
     mf.conv_tol = CONV_TOL
@@ -93,18 +104,20 @@ def _analytic(mf):
 
     hobj = mf.Hessian()
     hobj.grid_response = False
+    if hasattr(hobj, "auxbasis_response"):
+        hobj.auxbasis_response = 2
     hobj.max_cycle = 100
     raw = _as_3n(hobj.kernel(), mf.mol.natm)
     return 0.5 * (raw + raw.T), float(np.max(np.abs(raw - raw.T)))
 
 
-def _grad(mol, pts, w, xc=XC):
-    g = _rks(mol, pts, w, xc).nuc_grad_method()
+def _grad(mol, pts, w, xc=XC, aux=None):
+    g = _rks(mol, pts, w, xc, aux).nuc_grad_method()
     g.grid_response = False
     return g.kernel().ravel()
 
 
-def _fd(mol, pts, w, xc=XC):
+def _fd(mol, pts, w, xc=XC, aux=None):
     import numpy as np
 
     n = 3 * mol.natm
@@ -117,7 +130,7 @@ def _fd(mol, pts, w, xc=XC):
             x[b // 3, b % 3] += sgn * step
             m = mol.copy()
             m.set_geom_(x, unit="Bohr")
-            out.append(_grad(m, pts, w, xc))
+            out.append(_grad(m, pts, w, xc, aux))
         return (out[0] - out[1]) / (2.0 * step)
 
     h = np.zeros((n, n))
@@ -138,7 +151,13 @@ def _frequencies(mol, h, masses):
     return sorted(float(v) for v in np.asarray(res["freq_wavenumber"]).real)
 
 
-def _run(system: str, basis_name: str, xc: str = XC, suffix: str = "") -> Path:
+def _run(
+    system: str,
+    basis_name: str,
+    xc: str = XC,
+    suffix: str = "",
+    aux_name: str | None = None,
+) -> Path:
     import numpy as np
     import pyscf
 
@@ -149,9 +168,11 @@ def _run(system: str, basis_name: str, xc: str = XC, suffix: str = "") -> Path:
     pts, w = _grid(system)
     masses = [FERRIC_MASSES[s.capitalize()] for s in symbols]
 
-    mf = _rks(mol, pts, w, xc)
+    aux = common.pyscf_basis(aux_name, symbols)[0] if aux_name else None
+    mf = _rks(mol, pts, w, xc, aux)
     h_an, asym = _analytic(mf)
-    h_fd, fd_asym = _fd(mol, pts, w, xc)
+    h_fd, fd_asym = _fd(mol, pts, w, xc, aux)
+    e_exact = _rks(mol, pts, w, xc).e_tot if aux is not None else None
     gap = float(np.max(np.abs(h_an - h_fd)))
     f_an = _frequencies(mol, h_an, masses)
     f_fd = _frequencies(mol, h_fd, masses)
@@ -170,6 +191,8 @@ def _run(system: str, basis_name: str, xc: str = XC, suffix: str = "") -> Path:
         "npts": len(pts),
         "nuclear_repulsion": float(mol.energy_nuc()),
         "energy": float(mf.e_tot),
+        "aux_basis": aux_name,
+        "energy_exact_j": e_exact,
         "hessian_analytic": h_an.tolist(),
         "hessian_analytic_asymmetry": asym,
         "hessian_fd": h_fd.tolist(),
@@ -188,7 +211,7 @@ def _run(system: str, basis_name: str, xc: str = XC, suffix: str = "") -> Path:
                 "grid": "ferric 30x50 Becke-Lebedev points/weights, frozen",
                 "grid_response": False,
                 "conv_tol": CONV_TOL,
-                "density_fit": False,
+                "density_fit": ("only_dfj " + aux_name) if aux_name else False,
             },
             basis_name=basis_name,
             xyz_path=xyz,
@@ -197,6 +220,7 @@ def _run(system: str, basis_name: str, xc: str = XC, suffix: str = "") -> Path:
             grid="ferric 30x50 (testdata/reference/validation/"
             f"{ROW}/{system}_grid.f64)",
             scf_conv=CONV_TOL,
+            aux=aux_name,
             generator="scripts/validation/gen_ks_fixed_grid_hessian.py",
         ),
     }
@@ -211,6 +235,10 @@ def main() -> int:
     only = set(sys.argv[1:])
     written = [
         _run(s, b, x, sfx) for s, b, x, sfx in SYSTEMS if not only or b + sfx in only
+    ] + [
+        _run(s, b, x, sfx, a)
+        for s, b, x, sfx, a in RIJ_SYSTEMS
+        if not only or b + sfx in only
     ]
     for p in written:
         print(f"  {p.relative_to(common.ROOT)} ({p.stat().st_size} bytes)")
