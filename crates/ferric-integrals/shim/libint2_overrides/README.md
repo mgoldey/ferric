@@ -101,6 +101,16 @@ uninitialised memory; build.rs warns that the fix is NOT applied.
   only 3 were measured afterwards (per test: 39 tests, 0 hits); **9 timed-out binaries remain unmeasured**. The one
   known real hit is the #421 ECP k-point test (80 evaluations at 117.0 per run; failing under `MALLOC_PERTURB_` 1 and
   170 before the fix, passing after).
+- Perturbed re-run of ferric-pbc test binaries (#433 item "impact survey", measured 2026-10-17, PROVISIONAL, in
+  progress). The original 9 unmeasured binaries are not named anywhere in the issue, so they were not identifiable;
+  this survey covers a SUPERSET: 22 ferric-pbc binaries exercising RS-GDF / SR-LR / kstress / kgrad / kxc* / kuxc* /
+  hcore paths (skipped: pbc_kkeep, pbc_kkeep_ks = k-point selection, no integral far-field path; the three binaries
+  already in the CI malloc-perturb job). Method: release build, OPENBLAS_NUM_THREADS=1, `--include-ignored
+  --test-threads=1`, `MALLOC_PERTURB_=170`, judged only by exit status against each test's existing bars; no unset
+  or other-value run was repeated here. Batch 1 (8 binaries, all exit 0, 0 failures), wall seconds: pbc_krsgdf 23,
+  pbc_grad_ecp 128, pbc_grad_open 144, pbc_grad 165, pbc_kxcgrad_mgga 277, pbc_kuxcgrad_ro 347,
+  pbc_grad_ecp_nucleus_scan 529, pbc_kxcstress_mgga 574. Remaining binaries and the MALLOC_PERTURB_=1 pass are
+  pending. This records what was run; it is not a claim that no uninitialised reads exist.
 - Not checked: aarch64 and FMA-contracting builds (whether a given geometry lands on exactly 117.0 depends on
   rounding, which is why the integer-geometry test exists).
 
