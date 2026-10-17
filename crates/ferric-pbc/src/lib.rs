@@ -128,8 +128,8 @@
 //!   `kpoint_rohf_stress` (the restricted-open-shell energies of [`kroks`]):
 //!   the same assembly on the ROHF spin densities with the orthonormality
 //!   Lagrangian `W_RO` as the overlap weight and the ROHF orbital-gradient
-//!   gate in place of the commutator gate; dense-AFT J/K only (an RS-GDF
-//!   source is refused). The gate is loose: at its tolerance (1e-5) the stress
+//!   gate in place of the commutator gate; dense-AFT or RS-GDF J/K
+//!   (unsplit; anchored by FD in `tests/pbc_kuxcstress_ro_rsgdf.rs`). The gate is loose: at its tolerance (1e-5) the stress
 //!   error can reach about 4e-5 to 5e-5 Ha per cell (~18 MPa on the 64 Bohr³
 //!   test cell; measured on H3 and H5 STO-3G at 1x1x1, not a general bound),
 //!   so it refuses an unconverged state without certifying the stress to the

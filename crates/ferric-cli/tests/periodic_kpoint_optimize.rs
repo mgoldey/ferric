@@ -323,25 +323,6 @@ fn k_point_optimize_converges_and_the_final_force_is_the_library_force() {
     assert!(max_diff(&g, &lib) < 5e-7, "{g:?} vs {lib:?}");
 }
 
-#[test]
-fn k_point_rohf_rsgdf_optimize_is_refused() {
-    // Dense-AFT ROHF forces are wired (periodic_kpoint_open_shell.rs); the
-    // restricted-open-shell force is not anchored on RS-GDF J/K.
-    let o = run_with(
-        "refuse",
-        &xyz(&H2_OFFAXIS),
-        "rohf",
-        1,
-        "[1, 1, 2]",
-        LOOSE,
-        "sto-3g",
-        "jk = \"rsgdf\"\nauxbasis = \"cc-pvdz-ri\"",
-    );
-    assert!(!o.status.success());
-    let err = String::from_utf8_lossy(&o.stderr);
-    assert!(err.contains("dense-AFT J/K only"), "{err}");
-}
-
 /// Library RS-GDF RHF force with the configs the CLI builds for
 /// `jk = "rsgdf"`, `auxbasis = "cc-pvdz-ri"` (default column rotation ON and
 /// default RS-GDF omega); also returns the rotated hcore column count.

@@ -5022,14 +5022,11 @@ fn jk_with_sr_knobs(jk: PeriodicJk, range_split: Option<f64>, auto: bool) -> Per
 /// has its own functional allowlist, independent of the energy gate, so
 /// widening the k-point energy path cannot silently enable an optimize: the
 /// closed-shell route takes `check_force_functional` (LDA / GGA / global hybrid
-/// / SCAN, r2SCAN), the open-shell ones `check_open_shell_force_functional`;
-/// the restricted-open-shell force (ROKS, ROHF) is anchored on the dense-AFT
-/// J/K only.
+/// / SCAN, r2SCAN), the open-shell ones `check_open_shell_force_functional`.
 fn check_kpoint_optimize_gate(
     route: PeriodicRoute,
     functional: Option<&str>,
     kpoints: bool,
-    rsgdf: bool,
 ) -> Result<(), String> {
     if !kpoints {
         if route == PeriodicRoute::Rks {
@@ -5049,12 +5046,6 @@ fn check_kpoint_optimize_gate(
             ferric_pbc::kxcgrad::check_open_shell_force_functional(f)
         };
         allow.map_err(|e| prefix(e.to_string()))?;
-    }
-    if rsgdf && matches!(route, PeriodicRoute::Roks | PeriodicRoute::Rohf) {
-        return Err(prefix(format!(
-            "the k-point {} force is anchored on the dense-AFT J/K only; use jk = \"dense\"",
-            route.label()
-        )));
     }
     Ok(())
 }
@@ -5436,7 +5427,7 @@ pub fn periodic_plan(cfg: &Config, raw: &toml::Value) -> Result<Option<PeriodicP
                     route.label()
                 ));
             }
-            check_kpoint_optimize_gate(route, functional.as_deref(), kpoints, rsgdf)?;
+            check_kpoint_optimize_gate(route, functional.as_deref(), kpoints)?;
             if let Some(s) = cfg.optimize.coordinates.as_deref() {
                 if parse_coord_system(s)? != ferric_scf::optimize::CoordSystem::Cartesian {
                     return Err(
@@ -5973,10 +5964,9 @@ kind = "ccsd"
             assert!(p.optimize && p.kmesh.is_some(), "{kind} {dft}");
             assert_eq!(p.route, route);
         }
-        // The restricted-open-shell force is dense-AFT only; UKS keeps RS-GDF.
+        // ROHF/ROKS and UKS all take RS-GDF forces.
         let rsgdf = "jk = \"rsgdf\"\nauxbasis = \"cc-pvdz-ri\"\nkmesh = [1, 1, 2]";
-        let e = err(&opt("rohf", rsgdf, ""));
-        assert!(e.contains("dense-AFT J/K only"), "{e}");
+        assert!(ok(&opt("rohf", rsgdf, "")).optimize);
         assert!(ok(&opt("uhf", rsgdf, "[dft]\nfunctional = \"PBE\"")).optimize);
         // A range split stays refused with optimize at a mesh.
         let rs = "jk = \"rsgdf\"\nauxbasis = \"cc-pvdz-ri\"\nkmesh = [1, 1, 2]\nrange_split = true";

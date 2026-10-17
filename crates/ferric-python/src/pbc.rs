@@ -2718,15 +2718,9 @@ fn check_kpoint_ks_support(
 }
 
 /// The refusals that depend on the J/K route and the cell, after the setup:
-/// meta-GGA stress is anchored on the dense-AFT J only; the restricted
-/// open-shell derivatives are dense-AFT only; ECP cells with KS derivatives
+/// meta-GGA stress is anchored on the dense-AFT J only; ECP cells with KS derivatives
 /// are not validated.
-fn check_kpoint_ks_derivs(
-    fname: &str,
-    s: &PbcSetup,
-    functional: Option<&str>,
-    restricted_open: bool,
-) -> PyResult<()> {
+fn check_kpoint_ks_derivs(fname: &str, s: &PbcSetup, functional: Option<&str>) -> PyResult<()> {
     if !s.derivs.any() {
         return Ok(());
     }
@@ -2736,13 +2730,6 @@ fn check_kpoint_ks_derivs(
             "{fname}: k-point {what} forces and stress with ECPs are not validated \
              (with_gradient / with_stress on a cell whose basis carries an ECP; the energy \
              without them runs)"
-        )));
-    }
-    if s.aux.is_some() && restricted_open {
-        return Err(val_err(format!(
-            "{fname}: the restricted-open-shell (ROKS / ROHF) k-point force and stress are \
-             anchored on the dense-AFT J/K only; use jk=\"dense\" with with_gradient / \
-             with_stress"
         )));
     }
     let mgga = functional.is_some_and(ferric_pbc::kxcgrad::is_validated_mgga);
@@ -2955,7 +2942,7 @@ fn run_rks_kpts(
         gradient: with_gradient,
         stress: with_stress,
     };
-    check_kpoint_ks_derivs(fname, &s, Some(functional), false)?;
+    check_kpoint_ks_derivs(fname, &s, Some(functional))?;
     s.range_split = parse_range_split(fname, range_split, s.aux.is_some(), s.derivs)?;
     let m = k_mesh(&s, mesh, centring)?;
     let grid = periodic_grid(fname, n_radial, n_angular, neighbour_cutoff)?;
@@ -3186,7 +3173,7 @@ fn run_uks_kpts(
         gradient: with_gradient,
         stress: with_stress,
     };
-    check_kpoint_ks_derivs(fname, &s, Some(functional), false)?;
+    check_kpoint_ks_derivs(fname, &s, Some(functional))?;
     s.range_split = parse_range_split(fname, range_split, s.aux.is_some(), s.derivs)?;
     let m = k_mesh(&s, mesh, centring)?;
     let grid = periodic_grid(fname, n_radial, n_angular, neighbour_cutoff)?;
@@ -3249,7 +3236,7 @@ fn run_ro_kpts(
     }
     let mut s = pbc_setup(a)?;
     s.derivs = derivs;
-    check_kpoint_ks_derivs(fname, &s, functional, true)?;
+    check_kpoint_ks_derivs(fname, &s, functional)?;
     s.range_split = parse_range_split(fname, range_split, s.aux.is_some(), s.derivs)?;
     let m = k_mesh(&s, mesh, centring)?;
     let grid = periodic_grid(fname, grid.0, grid.1, grid.2)?;
@@ -3296,8 +3283,8 @@ fn run_ro_kpts(
 /// **k-point ROKS** (restricted open-shell Kohn-Sham; LDA / GGA / global
 /// hybrids; Roothaan effective Fock) on a k-mesh. Arguments and result as
 /// `run_uks_kpts`; `mo_energy` / `mo_energy_beta` are `c† F_σ c` per k in the
-/// Roothaan orbital order. The derivatives are anchored on the dense-AFT J/K
-/// only: `with_gradient` / `with_stress` with `jk="rsgdf"` is a ValueError. The
+/// Roothaan orbital order. The derivatives run on the dense-AFT and the
+/// unsplit RS-GDF J/K. The
 /// stress gate is the ROHF orbital gradient (converge `grad_conv` well below
 /// 1e-5).
 #[pyfunction]

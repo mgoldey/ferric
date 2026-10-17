@@ -121,8 +121,9 @@
 //! about 0.74 `g` (and at least 0.11 `g`) there, so the tolerance 1e-5 caps the
 //! force error near 7e-6 Ha/Bohr on that system. The tolerance is unchanged but a state that passed
 //! the earlier gate may now be refused. The MOs must be one set per k-point (a
-//! short set is a typed error). ROHF/ROKS are anchored on the dense-AFT J/K
-//! only; an RS-GDF source is refused.
+//! short set is a typed error). ROHF/ROKS take the dense-AFT or the
+//! RS-GDF J/K (the fit pass is generic over `KSpins`; `W_RO` enters only as the
+//! overlap weight; anchors in `tests/pbc_kuxcstress_ro_rsgdf.rs`).
 //!
 //! # Stationarity of UKS
 //!
@@ -849,17 +850,6 @@ impl KUXcResponse for GridXcPol<'_> {
     }
 }
 
-/// The restricted-open-shell forces are anchored on the dense-AFT J/K only.
-fn refuse_rsgdf(who: &str, jk: &KGradJk<'_>) -> Result<(), FerricError> {
-    if matches!(jk, KGradJk::RsGdf(_)) {
-        return Err(FerricError::General(format!(
-            "{who}: RS-GDF J/K is not supported by the restricted-open-shell force (no anchor \
-             against FD or Gamma exists for it); use the dense-AFT J/K"
-        )));
-    }
-    Ok(())
-}
-
 fn grid_response<'a>(
     cell: &'a Cell,
     prep: &'a PreparedBasis,
@@ -962,7 +952,6 @@ pub fn kpoint_roks_gradient(
     functional: &str,
     cfg: &KUksGradConfig,
 ) -> Result<KUksGradient, FerricError> {
-    refuse_rsgdf("kpoint_roks_gradient", &jk)?;
     let (resp, exch) = grid_response(cell, prep, mesh, functional, cfg)?;
     uks_gradient_with(
         "kpoint_roks_gradient",
@@ -994,7 +983,6 @@ pub fn kpoint_rohf_gradient(
     exxdiv: ExxDiv,
     cfg: &KUksGradConfig,
 ) -> Result<KUksGradient, FerricError> {
-    refuse_rsgdf("kpoint_rohf_gradient", &jk)?;
     let mut c = cfg.clone();
     c.base.exxdiv = Some(exxdiv);
     uks_gradient_with(

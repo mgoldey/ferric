@@ -48,7 +48,9 @@
 //! sweeps: all are ignored tests that must be run before trusting a change to
 //! the XC strain or the exchange scaling.
 //!
-//! NOT covered: RS-GDF (refused), p/d shells and heavy atoms / ECP (every
+//! RS-GDF J/K: `pbc_kuxcstress_ro_rsgdf.rs`.
+//!
+//! NOT covered: p/d shells and heavy atoms / ECP (every
 //! fixture is H/STO-3G), range-separated hybrids / meta-GGA / VV10 (refused),
 //! the production (75, 302) grid, degenerate open shells (the gate's occupation
 //! check rejects them), no external (PySCF) anchor.
@@ -56,7 +58,6 @@
 mod common;
 
 use common::*;
-use ferric_core::basis::{BasisSet, Shell};
 use ferric_pbc::dense_aft::ExxDiv;
 use ferric_pbc::dense_aft::{DenseAftEri, DEFAULT_DENSE_AFT_MAX_BYTES};
 use ferric_pbc::dft::PeriodicGridConfig;
@@ -65,7 +66,6 @@ use ferric_pbc::hcore::periodic_hcore;
 use ferric_pbc::hcore::PeriodicHcoreConfig;
 use ferric_pbc::kdense_aft::KDenseAftEri;
 use ferric_pbc::kdft::{solve_krks, KRksConfig};
-use ferric_pbc::kgrad::KRsGdfGradSource;
 use ferric_pbc::kpts::KPointMesh;
 use ferric_pbc::kroks::{
     solve_krohf, solve_kroks, solve_kroks_injected, KRoScfResult, KRohfConfig, KRoksConfig,
@@ -82,14 +82,11 @@ use ferric_pbc::kxcgrad::KXcGrid;
 use ferric_pbc::kxcstress::{kpoint_rks_stress, KRksStressConfig, KXcStressMutation};
 use ferric_pbc::lattice::Cell;
 use ferric_pbc::rohf::{gamma_rohf, gamma_roks, GammaRohfConfig, GammaRoksConfig};
-use ferric_pbc::rsgdf::kpoint::{KRsGdf, KRsGdfConfig};
-use ferric_pbc::rsgdf::RsGdfConfig;
 use ferric_pbc::stress::{
     gamma_rohf_stress, gamma_roks_stress, GammaStress, GammaStressConfig, Mat3,
 };
 use ferric_pbc::uhf::GammaUhfIntegrals;
 use num_complex::Complex64;
-use std::collections::HashMap;
 
 const OMEGA: f64 = 0.8;
 const AMPLE: usize = 1 << 31;
@@ -216,7 +213,6 @@ fn energy_on(cell: &Cell, m: Mesh, f: Option<&str>, exxdiv: ExxDiv) -> f64 {
 struct Fx {
     cell: Cell,
     prep: ferric_integrals::basis_bridge::PreparedBasis,
-    aux: ferric_integrals::basis_bridge::PreparedBasis,
     mesh: KPointMesh,
     hk: PeriodicHcoreK,
     res: KRoksResult,
@@ -230,11 +226,9 @@ fn fixture_cell(cell: Cell, m: Mesh, functional: Option<&str>, exxdiv: ExxDiv) -
     let res = scf_on(&cell, m, functional, exxdiv);
     let hk =
         periodic_hcore_kpts(&cell, &prep, &mesh, &PeriodicHcoreConfig::with_omega(OMEGA)).unwrap();
-    let aux = prep_for(&cell, &et_sp_aux());
     Fx {
         cell,
         prep,
-        aux,
         mesh,
         hk,
         res,
@@ -392,33 +386,6 @@ fn fd_components(
             (ep - em) / (2.0 * h)
         })
         .collect()
-}
-
-fn et_sp_aux() -> BasisSet {
-    let mut shells = Vec::new();
-    for a in [4.7, 1.9, 0.75, 0.3] {
-        shells.push(Shell {
-            l: 0,
-            pure: false,
-            exponents: vec![a],
-            coefficients: vec![1.0],
-        });
-    }
-    for a in [1.25, 0.5] {
-        shells.push(Shell {
-            l: 1,
-            pure: false,
-            exponents: vec![a],
-            coefficients: vec![1.0],
-        });
-    }
-    let mut m = HashMap::new();
-    m.insert(1, shells);
-    BasisSet {
-        name: "et-sp-aux-H".into(),
-        shells: m,
-        ecps: HashMap::new(),
-    }
 }
 
 // ------------------------------------------------------------------ (2)
@@ -934,7 +901,7 @@ fn ro_stress_gate_probe_rank2() {
 
 /// Typed refusals (exact wording) of the ROKS/ROHF entries: unsupported
 /// functionals, a hybrid without exxdiv, the per-spin Fock guard from every
-/// side, a short MO set, an unconverged SCF and an RS-GDF source.
+/// side, a short MO set and an unconverged SCF.
 #[test]
 fn refusals_and_the_fock_guard() {
     let fx = fixture(&H3, G111, Some("PBE"), ExxDiv::None);
@@ -1024,63 +991,6 @@ fn refusals_and_the_fock_guard() {
     assert!(
         e.contains(
             "kpoint_roks_stress: the SCF did not converge; a gradient needs a stationary density"
-        ),
-        "{e}"
-    );
-    // RS-GDF source (refused before any use of the SCF result).
-    let kc = KRsGdfConfig {
-        gdf: RsGdfConfig {
-            omega: 1.0,
-            exxdiv: ExxDiv::None,
-            budget_bytes: Some(AMPLE),
-            ..Default::default()
-        },
-        mutation: None,
-    };
-    let gdf = KRsGdf::build(&fx.cell, &fx.prep, &fx.aux, &fx.mesh, &fx.hk.s, &kc).unwrap();
-    let src = || {
-        KStressJk::RsGdf(KRsGdfGradSource {
-            gdf: &gdf,
-            cfg: &kc,
-            aux: &fx.aux,
-        })
-    };
-    let hcfg = PeriodicHcoreConfig::with_omega(OMEGA);
-    let e = kpoint_roks_stress(
-        &fx.cell,
-        &fx.prep,
-        &fx.mesh,
-        &hcfg,
-        &fx.hk,
-        src(),
-        &fx.res.scf,
-        "PBE",
-        &ok_cfg,
-    )
-    .expect_err("roks rsgdf")
-    .to_string();
-    assert!(
-        e.contains(
-            "kpoint_roks_stress: RS-GDF J/K is not supported by the restricted-open-shell stress"
-        ),
-        "{e}"
-    );
-    let e = kpoint_rohf_stress(
-        &fx.cell,
-        &fx.prep,
-        &fx.mesh,
-        &hcfg,
-        &fx.hk,
-        src(),
-        &fx.res.scf,
-        ExxDiv::Ewald,
-        &ok_cfg,
-    )
-    .expect_err("rohf rsgdf")
-    .to_string();
-    assert!(
-        e.contains(
-            "kpoint_rohf_stress: RS-GDF J/K is not supported by the restricted-open-shell stress"
         ),
         "{e}"
     );

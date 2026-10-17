@@ -144,9 +144,13 @@
 //! certify the stress to the anchors' accuracy. The unrestricted-form `W` is no
 //! remedy off stationarity (comparable error at the same state).
 //!
-//! The ROHF/ROKS stress is anchored on the dense-AFT J/K only: an RS-GDF source
-//! is refused (`RS-GDF J/K is not supported by the restricted-open-shell
-//! stress`), as for the force.
+//! The ROHF/ROKS stress takes the dense-AFT or the (unsplit) RS-GDF J/K: the
+//! fit pass of [`crate::kstress`] is generic over `KSpins` (`Unrestricted` and
+//! `RestrictedOpen` pair `D_alpha`, `D_beta` identically) and `W_RO` enters only
+//! as the overlap weight (including the fit's `M_g0 dS` term). Anchors
+//! (`tests/pbc_kuxcstress_ro_rsgdf.rs`): closed-shell limit vs the RHF RS-GDF
+//! stress, FD of the strained RS-GDF energy on all nine components (ROHF,
+//! ROKS PBE0), and the RS-GDF / `W_RO` mutants.
 //!
 //! # Scope
 //!
@@ -744,17 +748,6 @@ pub fn kpoint_uks_stress(
     )
 }
 
-/// The restricted-open-shell stresses are anchored on the dense-AFT J/K only.
-fn refuse_rsgdf(who: &str, jk: &KStressJk<'_>) -> Result<(), FerricError> {
-    if matches!(jk, KStressJk::RsGdf(_)) {
-        return Err(FerricError::General(format!(
-            "{who}: RS-GDF J/K is not supported by the restricted-open-shell stress (no anchor \
-             against FD or Gamma exists for it); use the dense-AFT J/K"
-        )));
-    }
-    Ok(())
-}
-
 /// k-point ROKS stress of a converged [`crate::kroks::solve_kroks`] result
 /// (`KRoksResult::scf`): the open-shell assembly of [`kpoint_uks_stress`] on
 /// the ROHF spin densities and spin Focks with the orthonormality Lagrangian
@@ -763,7 +756,7 @@ fn refuse_rsgdf(who: &str, jk: &KStressJk<'_>) -> Result<(), FerricError> {
 /// stationarity gate is the ROHF orbital gradient (a state whose closed-open
 /// `f_β`, open-virtual `f_α` or closed-virtual `f_α + f_β` block, at any k,
 /// exceeds [`crate::grad::RO_ORBITAL_GRADIENT_TOL`] is refused), the MO set
-/// must be one per k-point, and an RS-GDF J/K source is refused.
+/// must be one per k-point.
 ///
 /// GATE LOOSENESS (module doc "Calibration of the ROHF gate"): the orbital
 /// gradient is refused above [`crate::grad::RO_ORBITAL_GRADIENT_TOL`] = 1e-5,
@@ -785,7 +778,6 @@ pub fn kpoint_roks_stress(
     functional: &str,
     cfg: &KUksStressConfig,
 ) -> Result<KUksStress, FerricError> {
-    refuse_rsgdf("kpoint_roks_stress", &jk)?;
     let (resp, exch) = grid_response(cell, prep, mesh, functional, cfg)?;
     uks_stress_with(
         "kpoint_roks_stress",
@@ -818,7 +810,6 @@ pub fn kpoint_rohf_stress(
     exxdiv: ExxDiv,
     cfg: &KUksStressConfig,
 ) -> Result<KUksStress, FerricError> {
-    refuse_rsgdf("kpoint_rohf_stress", &jk)?;
     let mut c = cfg.clone();
     c.base.exxdiv = Some(exxdiv);
     uks_stress_with(
@@ -854,7 +845,6 @@ pub fn kpoint_null_xc_roks_stress(
     exch: f64,
     cfg: &KUksStressConfig,
 ) -> Result<KUksStress, FerricError> {
-    refuse_rsgdf("kpoint_null_xc_roks_stress", &jk)?;
     uks_stress_with(
         "kpoint_null_xc_roks_stress",
         cell,

@@ -14,7 +14,7 @@
 //!   DIFFERENT method, mesh or functional misses the printed force by far more
 //!   than the bar, i.e. the anchors could tell a mis-routed run apart.
 //! * Refusals with exact wording: open-shell meta-GGA, range-separated
-//!   hybrids, RS-GDF with the restricted-open-shell force.
+//!   hybrids.
 
 use ferric_core::basis;
 use ferric_core::mol::Molecule;
@@ -508,14 +508,6 @@ fn open_shell_refusals_have_exact_messages() {
     );
     assert!(
         e.contains("[cell] kmesh with functional \"HSE06\"") && e.contains("range-separated"),
-        "{e}"
-    );
-    // The restricted-open-shell force is dense-AFT only.
-    let mut i = input("roks-rsgdf", Method::Roks, "PBE", "optimize");
-    i.jk = "jk = \"rsgdf\"\nauxbasis = \"cc-pvdz-ri\"";
-    let e = refused(&run(&i), "roks-rsgdf");
-    assert!(
-        e.contains("the k-point ROKS force is anchored on the dense-AFT J/K only"),
         "{e}"
     );
 }
