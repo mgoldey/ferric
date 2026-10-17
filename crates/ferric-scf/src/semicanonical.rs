@@ -405,6 +405,7 @@ impl SemicanonicalOrbitals {
             cosx_final: rohf.cosx_final,
             cosx_schedule: rohf.cosx_schedule.clone(),
             convergence: rohf.convergence,
+            symmetry: None,
         }
     }
 }

@@ -389,6 +389,7 @@ pub fn rhf_gradient(
     result: &ScfResult,
     ext: Option<&ferric_core::external_potential::ExternalPotential>,
 ) -> Result<Array2<f64>, FerricError> {
+    result.require_input_frame("rhf_gradient")?;
     if mol.atoms.iter().any(|a| a.ghost) {
         return Err(FerricError::Libint(
             "rhf_gradient is not implemented for molecules containing ghost atoms \
@@ -463,6 +464,7 @@ pub fn rhf_gradient_cosx_with_q(
     cosx: &crate::cosx_k::CosxConfig,
     q: crate::cosx_gradient::FitQ,
 ) -> Result<Array2<f64>, FerricError> {
+    result.require_input_frame("rhf_gradient_cosx")?;
     crate::cosx_gradient::check_gradient_supported(cosx)?;
     if mol.atoms.iter().any(|a| a.ghost) {
         return Err(FerricError::Libint(

@@ -492,6 +492,7 @@ fn solve_uhf_impl(
     fock_mod: Option<UhfFockMod>,
     inj: Option<PeriodicInjection<'_>>,
 ) -> Result<ScfResult, FerricError> {
+    crate::symmetric::require_symmetry_off(config, "solve_uhf")?;
     use ferric_dft::ks::KsXcUks;
     use ferric_dft::xc_trait::{KMix, UksXcContribution};
 
@@ -1392,6 +1393,7 @@ fn solve_uhf_impl(
                 cosx_final,
                 cosx_schedule: crate::cosx_schedule::record(&cosx_sched),
                 convergence: last_report,
+                symmetry: None,
             });
         }
         mon.note_energy(energy);
@@ -1859,6 +1861,7 @@ fn solve_uhf_impl(
         cosx_final: None,
         cosx_schedule: crate::cosx_schedule::record(&cosx_sched),
         convergence: last_report,
+        symmetry: None,
     })
 }
 
