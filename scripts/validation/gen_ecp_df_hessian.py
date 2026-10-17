@@ -64,7 +64,7 @@ def _rhf(mol, aux=None, dm0=None, method="rhf"):
     mf.verbose = 0
     mf.kernel(dm0=dm0)
     if not mf.converged:
-        raise RuntimeError("RHF did not converge")
+        raise RuntimeError(f"{method.upper()} did not converge")
     return mf
 
 
@@ -152,7 +152,7 @@ def _run(system: str) -> Path:
             code="PySCF",
             version=pyscf.__version__,
             keywords={
-                "method": "rhf",
+                "method": method,
                 "eri": f"density_fit({aux_name}) J+K",
                 "ecp": "ferric def2-ecp",
             },
