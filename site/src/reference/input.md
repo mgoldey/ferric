@@ -401,7 +401,7 @@ charge is an error.
 
 | Key | Type | Default | Allowed values | Notes |
 |---|---|---|---|---|
-| `point_charges` | array of `{ q, x, y, z, width }` | `[]` | q in e; x, y, z in **Bohr**; `width` in **Bohr**, finite and > 0 | Written as `[[external_potential.point_charges]]` tables. `width` is optional: with it the charge is Gaussian-smeared, density ∝ exp(−r²/width²) and potential q·erf(r/width)/r (the Python `smeared_charges=`); without it the charge is a point. See `examples/water-rhf-smeared-charge.toml`. |
+| `point_charges` | array of `{ q, x, y, z, width }` | `[]` | q in e; x, y, z in **Bohr**; `width` in **Bohr**, finite and > 0 | Written as `[[external_potential.point_charges]]` tables. `width` is optional: with it the charge is Gaussian-smeared, density ∝ exp(−r²/width²) and potential q·erf(r/width)/r (the Python `smeared_charges=`); without it the charge is a point. See `examples/water-rhf-smeared-charge.toml`. The order of the list changes the one-electron potential only by summation roundoff (reordering 6458 charges: 3e-15 to 1e-14 relative) and ferric does not reorder it; a different SCF iteration count was seen only for the closed-shell direct-J/K path, on rc7 and, on main, with `FERRIC_SCF_INCREMENTAL=1` below the incremental noise floor (see Sharp bits, "`energy_conv` is a sanity bound"). |
 | `field` | `[Ex, Ey, Ez]` | none | atomic units | Uniform electric field. |
 
 With both empty, the run is identical to a vacuum run.
