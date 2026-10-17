@@ -220,12 +220,15 @@ const GRID_N: usize = 31;
 /// Dense-AFT energies reproduce the PySCF pin to 2.3e-10 (measured, all 10
 /// open-shell rows: a constant offset, not noise).
 const PIN_BAR: f64 = 1e-8;
-/// PySCF's own periodic ECP integral is 3.8e-6 off ferric's libecpint-derived
-/// one in hcore (pbc_ecp.rs); measured energy gap 7.5e-7 (PBE) / 7.8e-7 (PBE0).
-/// No ECP defect is expressible through the production config (the image
-/// caps / `EcpMutation` live below `PeriodicHcoreConfig`), so the bar is
-/// bounded below by PySCF's own ECP error and above only by the bare-Z
-/// refusal and `pbc_ecp.rs`'s mutants.
+/// PySCF's own periodic ECP integral is ~3.8e-6 off ferric's libecpint-derived
+/// one in hcore (pbc_ecp.rs). Measured energy gap: 7.5e-7 (PBE), 7.8e-7
+/// (PBE0). Bar derivation: below, it must exceed the measured gap with margin
+/// (6.4x); above, it is capped by PySCF's own ECP error (~4e-6 in hcore), the
+/// largest discrepancy that is NOT a ferric defect. LIMIT: this pin cannot
+/// catch an ECP defect smaller than ~5e-6 Ha. No ECP mutant is expressible
+/// through the production config (image caps / `EcpMutation` sit below
+/// `PeriodicHcoreConfig`), so none was run here; ECP-internal mutants live in
+/// `pbc_ecp.rs`, and only the bare-Z refusal is exercised in this file.
 const ECP_BAR: f64 = 5e-6;
 /// RS-GDF-vs-dense gap (the cc-pVDZ-RI fit error) bar, and the smallest
 /// movement a q-phase / G = 0 mutant must make (measured values in the
@@ -563,7 +566,6 @@ fn ecp_cell_without_apply_ecp_is_refused() {
     let mut cfg = KRksConfig::new(&cell, ExxDiv::Ewald, "PBE");
     cfg.krhf.hcore.omega = OMEGA;
     let e = solve_krks_on_grid(&cell, &prep, None, &mesh, &grid, &cfg)
-        .err()
-        .expect("bare-Z cell must be refused");
+        .expect_err("bare-Z cell must be refused");
     assert!(format!("{e}").to_lowercase().contains("ecp"), "{e}");
 }

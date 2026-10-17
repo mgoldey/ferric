@@ -263,5 +263,6 @@
    "nk": 2,
    "seconds": 444
   }
- ]
+ ],
+ "note": "sha patched post-commit; generator not re-run at this SHA (script content unchanged since the run)"
 }
