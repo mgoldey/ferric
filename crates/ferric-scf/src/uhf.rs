@@ -1393,7 +1393,6 @@ fn solve_uhf_impl(
                 cosx_final,
                 cosx_schedule: crate::cosx_schedule::record(&cosx_sched),
                 convergence: last_report,
-                symmetry: None,
             });
         }
         mon.note_energy(energy);
@@ -1861,7 +1860,6 @@ fn solve_uhf_impl(
         cosx_final: None,
         cosx_schedule: crate::cosx_schedule::record(&cosx_sched),
         convergence: last_report,
-        symmetry: None,
     })
 }
 

@@ -981,7 +981,6 @@ pub fn solve_rohf_injected_second_order<'a>(
         cosx_schedule: None,
         convergence: None,
         rohf_spin_focks: Some((pt.f_a.clone(), pt.f_b.clone())),
-        symmetry: None,
     };
     Ok((result, info))
 }

@@ -1,6 +1,5 @@
 //! Spin-aware SCF result container.
 
-use ferric_core::FerricError;
 use ferric_integrals::operator::Operator;
 use ndarray::Array2;
 use serde::{Deserialize, Serialize};
@@ -153,78 +152,6 @@ pub struct ScfResult {
     /// hand-built results. Purely a report: nothing reads it back, so
     /// energies and iteration counts are bit-identical with or without it.
     pub convergence: Option<ConvergenceReport>,
-    /// Point-group blocking record, `Some` only for a result produced with
-    /// [`RhfConfig::symmetry`](crate::rhf::RhfConfig::symmetry) set. `None`
-    /// means the SCF ran in the input frame with no orbital symmetry labels.
-    /// See [`SymmetryInfo`] for the frame the AO matrices are expressed in.
-    pub symmetry: Option<SymmetryInfo>,
-}
-
-/// Where a symmetry-blocked result lives and how its orbitals are labelled.
-///
-/// # Frame
-///
-/// For any group above C1 the SCF ran on the reoriented, symmetrized molecule
-/// [`SymmetryFrame::molecule`] (see `ferric_core::symmetry`), so every AO
-/// matrix on the [`ScfResult`] (`mos_alpha`, densities, Fock) is expressed in
-/// the AO basis of THAT geometry. Energies and orbital energies are
-/// frame-invariant. Anything that needs the AO matrices (post-HF methods,
-/// properties) must build its integrals from `symmetry.molecule`, not from the
-/// input geometry; vector-valued quantities come out in that frame too, with
-/// `r_sym = rotation * (r_in - origin)`. The analytic gradients refuse such a
-/// result with a typed error ([`ScfResult::require_input_frame`]) rather than
-/// pair frame-rotated orbitals with input-frame integrals.
-///
-/// For C1 the SCF runs in the input frame untouched (bit-identical to
-/// `symmetry = false`), `frame` is `None` and every label is `"A"`.
-#[derive(Debug, Clone)]
-pub struct SymmetryInfo {
-    /// Schoenflies symbol of the Abelian group used for blocking.
-    pub group: String,
-    /// Irrep label of each MO column of `mos_alpha` / entry of `eps_alpha`.
-    /// Columns beyond the linearly independent set (sentinel energy 1e6) are
-    /// labelled `"-"`.
-    pub orbital_irreps: Vec<String>,
-    /// The frame the AO matrices are in; `None` for C1 (input frame).
-    pub frame: Option<SymmetryFrame>,
-}
-
-/// The reoriented geometry a symmetry-blocked result is expressed in.
-#[derive(Debug, Clone)]
-pub struct SymmetryFrame {
-    /// The molecule the integrals were built from (`SymmetryDetection::molecule`).
-    pub molecule: ferric_core::mol::Molecule,
-    /// Rows are the symmetry-frame axes in the input frame:
-    /// `r_sym = rotation * (r_in - origin)`.
-    pub rotation: [[f64; 3]; 3],
-    /// Nuclear-charge centroid of the input geometry (Bohr, input frame).
-    pub origin: [f64; 3],
-}
-
-impl ScfResult {
-    /// Irrep label of each MO column, when the SCF was symmetry-blocked.
-    pub fn orbital_irreps(&self) -> Option<&[String]> {
-        self.symmetry.as_ref().map(|s| s.orbital_irreps.as_slice())
-    }
-
-    /// Point-group symbol, when the SCF was symmetry-blocked.
-    pub fn symmetry_group(&self) -> Option<&str> {
-        self.symmetry.as_ref().map(|s| s.group.as_str())
-    }
-
-    /// Error unless the AO matrices are in the caller's input frame (always
-    /// true except for a symmetry-blocked result above C1). `who` names the
-    /// consumer for the message.
-    pub fn require_input_frame(&self, who: &str) -> Result<(), FerricError> {
-        match self.symmetry.as_ref().and_then(|s| s.frame.as_ref()) {
-            None => Ok(()),
-            Some(_) => Err(FerricError::General(format!(
-                "{who}: this result was computed with point-group symmetry, so its orbitals and \
-                 densities live in the reoriented symmetry frame (ScfResult::symmetry); \
-                 rebuild integrals from that molecule or rerun with symmetry = false"
-            ))),
-        }
-    }
 }
 
 /// The convergence signals the gate judged at the final iteration, plus the thresholds in force

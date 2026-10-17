@@ -381,8 +381,8 @@ pub struct RhfConfig {
     /// detects the highest Abelian subgroup, runs the SCF in its symmetry
     /// frame, diagonalizes the Fock matrix per irrep and fills orbitals by
     /// aufbau across irreps (or per [`irrep_nelec`](Self::irrep_nelec)). A C1
-    /// molecule runs untouched. See [`crate::symmetric`] for the contract
-    /// (frame, refused features, result labels).
+    /// molecule runs untouched. Use [`crate::symmetric::solve_rhf_symmetric`] (`solve_rhf` refuses it); see [`crate::symmetric`] for the contract
+    /// (entry point, frame, refused features).
     pub symmetry: bool,
     /// Electrons per irrep, e.g. `[("A1", 8), ("B2", 2), ("B1", 0)]`, used only
     /// with [`symmetry`](Self::symmetry). Each count must be even. Listed irreps
@@ -1025,9 +1025,7 @@ pub fn solve_rhf(
     bounds: &SchwarzBounds,
     config: &RhfConfig,
 ) -> Result<ScfResult, FerricError> {
-    if config.symmetry || config.irrep_nelec.is_some() {
-        return crate::symmetric::solve_rhf_symmetric(ctx, mol, prep, op, bounds, config);
-    }
+    crate::symmetric::require_symmetry_off(config, "solve_rhf")?;
     let first = solve_rhf_once(ctx, mol, prep, op, bounds, config)?;
     if !config.scf_stability_descent {
         // Knob off (the default): the single solve, returned untouched.
@@ -2011,7 +2009,6 @@ fn solve_rhf_impl(
             cosx_final: None,
             cosx_schedule,
             convergence,
-            symmetry: None,
         }
     };
 
@@ -2586,7 +2583,6 @@ fn solve_rhf_impl(
                     cosx_final,
                     cosx_schedule: crate::cosx_schedule::record(&cosx_sched),
                     convergence: last_report,
-                    symmetry: None,
                 });
             }
         }

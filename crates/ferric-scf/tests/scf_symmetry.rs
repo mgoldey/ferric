@@ -19,6 +19,7 @@ use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
+use ferric_scf::symmetric::{solve_rhf_symmetric, SymmetricRhf};
 use ferric_scf::ScfResult;
 use ndarray::Array2;
 use std::collections::BTreeMap;
@@ -47,6 +48,15 @@ fn run_mol(mol: &Molecule, basis_name: &str, cfg: &RhfConfig) -> Result<ScfResul
     solve_rhf(&ParallelContext::default(), mol, &prep, op, &bounds, cfg).map_err(|e| e.to_string())
 }
 
+fn run_sym(mol: &Molecule, basis_name: &str, cfg: &RhfConfig) -> Result<SymmetricRhf, String> {
+    let bs = basis::bundled(basis_name).unwrap();
+    let prep = PreparedBasis::new(mol, &bs).unwrap();
+    let op = Operator::coulomb();
+    let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+    solve_rhf_symmetric(&ParallelContext::default(), mol, &prep, op, &bounds, cfg)
+        .map_err(|e| e.to_string())
+}
+
 fn cfg(symmetry: bool) -> RhfConfig {
     RhfConfig {
         symmetry,
@@ -58,9 +68,9 @@ fn cfg(symmetry: bool) -> RhfConfig {
 }
 
 /// Occupied-orbital count per irrep label of a blocked result.
-fn occupation(r: &ScfResult, nocc: usize) -> BTreeMap<String, usize> {
+fn occupation(r: &SymmetricRhf, nocc: usize) -> BTreeMap<String, usize> {
     let mut out = BTreeMap::new();
-    for l in &r.orbital_irreps().unwrap()[..nocc] {
+    for l in &r.orbital_irreps()[..nocc] {
         *out.entry(l.clone()).or_insert(0) += 1;
     }
     out
@@ -79,14 +89,13 @@ fn c1_molecule_is_bit_identical_with_symmetry_on() {
     mol.atoms[1].y -= 0.07;
     mol.atoms[1].zpos += 0.05;
     let off = run_mol(&mol, "sto-3g", &cfg(false)).unwrap();
-    let on = run_mol(&mol, "sto-3g", &cfg(true)).unwrap();
-    assert_eq!(on.symmetry_group(), Some("C1"));
-    assert!(on.symmetry.as_ref().unwrap().frame.is_none());
+    let sym = run_sym(&mol, "sto-3g", &cfg(true)).unwrap();
+    assert_eq!(sym.group(), "C1");
+    let on = sym.scf_in_frame();
     assert_eq!(off.energy.to_bits(), on.energy.to_bits());
     assert_eq!(off.mos_alpha, on.mos_alpha);
     assert_eq!(off.eps_alpha, on.eps_alpha);
     assert_eq!(off.iterations, on.iterations);
-    assert!(off.symmetry.is_none());
 }
 
 // ---------------------------------------------------------------- anchor (b)
@@ -130,12 +139,12 @@ fn max_noncommutation(rep: &AoRepresentation, nops: usize, x: &Array2<f64>) -> f
 fn blocked_matches_unblocked_and_fock_commutes() {
     for c in CASES {
         let mol = load(c.xyz);
-        let on = run_mol(&mol, "sto-3g", &cfg(true)).unwrap();
-        assert_eq!(on.symmetry_group(), Some(c.group), "{}", c.xyz);
+        let sym = run_sym(&mol, "sto-3g", &cfg(true)).unwrap();
+        assert_eq!(sym.group(), c.group, "{}", c.xyz);
+        let on = sym.scf_in_frame();
         assert!(on.converged, "{}", c.xyz);
         // Unblocked reference in the SAME frame (the symmetric geometry).
-        let frame = on.symmetry.as_ref().unwrap().frame.as_ref().unwrap();
-        let off = run_mol(&frame.molecule, "sto-3g", &cfg(false)).unwrap();
+        let off = run_mol(sym.molecule(), "sto-3g", &cfg(false)).unwrap();
         assert!(
             (on.energy - off.energy).abs() < 1e-10,
             "{}: blocked {} vs unblocked {}",
@@ -154,7 +163,7 @@ fn blocked_matches_unblocked_and_fock_commutes() {
         let rep = AoRepresentation::new(&det, &det.molecule, &bs).unwrap();
         let prep = PreparedBasis::new(&det.molecule, &bs).unwrap();
         let s = ferric_integrals::oneelectron::overlap(&prep);
-        let blocked_occ = occupation(&on, nocc(&mol));
+        let blocked_occ = occupation(&sym, nocc(&mol));
         for ir in irreps(&det.ops).unwrap() {
             let p = rep.projector(&ir).unwrap();
             let n_h = 2.0 * p.dot(&off.density_alpha).dot(&s).diag().sum();
@@ -189,24 +198,24 @@ fn water_excited_nelec() -> Vec<(String, usize)> {
 #[test]
 fn irrep_nelec_reaches_the_excited_water_occupation() {
     let mol = load("water.xyz");
-    let ground = run_mol(&mol, "sto-3g", &cfg(true)).unwrap();
+    let ground = run_sym(&mol, "sto-3g", &cfg(true)).unwrap();
     assert_eq!(
         occupation(&ground, 5),
         BTreeMap::from([("A1".into(), 3), ("B1".into(), 1), ("B2".into(), 1)])
     );
     let mut c = cfg(true);
     c.irrep_nelec = Some(water_excited_nelec());
-    let ex = run_mol(&mol, "sto-3g", &c).unwrap();
-    assert!(ex.converged);
+    let ex = run_sym(&mol, "sto-3g", &c).unwrap();
+    assert!(ex.scf_in_frame().converged);
     assert_eq!(
         occupation(&ex, 5),
         BTreeMap::from([("A1".into(), 4), ("B2".into(), 1)])
     );
     // The excited determinant is not the aufbau state, and it is higher.
     assert!(
-        ex.energy - ground.energy > 0.5,
+        ex.energy() - ground.energy() > 0.5,
         "{}",
-        ex.energy - ground.energy
+        ex.energy() - ground.energy()
     );
 }
 
@@ -240,21 +249,66 @@ fn unsupported_combinations_are_typed_errors() {
                 })
             }),
         ),
+        ("aurora", Box::new(|c| c.aurora.enabled = true)),
+        ("ah", Box::new(|c| c.ah_trigger = 1e-2)),
+        (
+            "fractional occupation",
+            Box::new(|c| c.fractional_occ = true),
+        ),
+        (
+            "stability descent",
+            Box::new(|c| c.scf_stability_descent = true),
+        ),
+        (
+            "constraints",
+            Box::new(|c| {
+                c.constraints = vec![ferric_dft::cdft::Constraint {
+                    fragment: vec![0],
+                    spin: ferric_dft::cdft::SpinChannel::Total,
+                    target: 8.0,
+                }]
+            }),
+        ),
+        (
+            "cosmo",
+            Box::new(|c| c.cosmo = Some(ferric_scf::CosmoConfig::default())),
+        ),
+        (
+            "polarizable",
+            Box::new(|c| {
+                c.polarizable = Some(ferric_scf::polarizable::PolarizableSites {
+                    sites: vec![ferric_scf::polarizable::PolarizableSite {
+                        x: 6.0,
+                        y: 0.0,
+                        z: 0.0,
+                        alpha: 1.0,
+                    }],
+                    thole_a: None,
+                    exclusions: vec![],
+                    dipole_zeta: 1e6,
+                    max_sites_dense: 100,
+                })
+            }),
+        ),
         (
             "guess density",
             Box::new(|c| c.init_guess_density = Some(Array2::zeros((7, 7)))),
         ),
     ];
+    let mut survivors = Vec::new();
     for (name, tweak) in cases {
         let mut c = cfg(true);
         tweak(&mut c);
-        let err = run_mol(&mol, "sto-3g", &c).unwrap_err();
-        assert!(err.contains("symmetry"), "{name}: {err}");
+        match run_sym(&mol, "sto-3g", &c) {
+            Err(err) if err.contains("cannot be combined") => {}
+            other => survivors.push(format!("{name}: {:?}", other.map(|r| r.energy()))),
+        }
     }
+    assert!(survivors.is_empty(), "NOT refused: {survivors:#?}");
     // irrep_nelec without symmetry, and bad requests.
     let mut c = cfg(false);
     c.irrep_nelec = Some(vec![("A1".into(), 10)]);
-    assert!(run_mol(&mol, "sto-3g", &c).is_err());
+    assert!(run_sym(&mol, "sto-3g", &c).is_err());
     for bad in [
         vec![("Z9".to_string(), 2)],
         vec![("A1".to_string(), 3)],
@@ -263,19 +317,109 @@ fn unsupported_combinations_are_typed_errors() {
     ] {
         let mut c = cfg(true);
         c.irrep_nelec = Some(bad.clone());
-        assert!(run_mol(&mol, "sto-3g", &c).is_err(), "{bad:?}");
+        assert!(run_sym(&mol, "sto-3g", &c).is_err(), "{bad:?}");
     }
 }
 
+/// Every other solver that reads `RhfConfig` refuses the symmetry fields, and
+/// the plain `solve_rhf` points at the typed entry point instead of returning a
+/// frame-rotated `ScfResult` that other crates could misuse.
 #[test]
-fn gradient_refuses_a_symmetry_frame_result() {
+fn other_solvers_refuse_symmetry() {
     let mol = load("water.xyz");
-    let r = run_mol(&mol, "sto-3g", &cfg(true)).unwrap();
-    let e = r
-        .require_input_frame("rhf_gradient")
-        .unwrap_err()
-        .to_string();
-    assert!(e.contains("symmetry frame"), "{e}");
+    let bs = basis::bundled("sto-3g").unwrap();
+    let prep = PreparedBasis::new(&mol, &bs).unwrap();
+    let op = Operator::coulomb();
+    let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+    let ctx = ParallelContext::default();
+    let c = cfg(true);
+    let mut only_nelec = cfg(false);
+    only_nelec.irrep_nelec = Some(vec![("A1".into(), 10)]);
+    let plain = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg(false)).unwrap();
+    let errs: Vec<(&str, Option<String>)> = vec![
+        (
+            "solve_rhf",
+            solve_rhf(&ctx, &mol, &prep, op, &bounds, &c)
+                .err()
+                .map(|e| e.to_string()),
+        ),
+        (
+            "solve_rhf irrep_nelec only",
+            solve_rhf(&ctx, &mol, &prep, op, &bounds, &only_nelec)
+                .err()
+                .map(|e| e.to_string()),
+        ),
+        (
+            "solve_uhf",
+            ferric_scf::uhf::solve_uhf(&ctx, &mol, &prep, &bounds, &c)
+                .err()
+                .map(|e| e.to_string()),
+        ),
+        (
+            "solve_rohf",
+            ferric_scf::rohf::solve_rohf(&ctx, &mol, &prep, op, &bounds, &c)
+                .err()
+                .map(|e| e.to_string()),
+        ),
+        (
+            "rhf_hessian",
+            ferric_scf::hessian::rhf_hessian(&ctx, &mol, &prep, op, &bounds, &plain, &c)
+                .err()
+                .map(|e| e.to_string()),
+        ),
+        (
+            "validate_injected",
+            ferric_scf::rhf::validate_injected(&c)
+                .err()
+                .map(|e| e.field.to_string()),
+        ),
+    ];
+    let survivors: Vec<_> = errs
+        .iter()
+        .filter(|(_, e)| e.is_none())
+        .map(|(n, _)| *n)
+        .collect();
+    assert!(survivors.is_empty(), "NOT refused: {survivors:?}");
+    assert!(errs[0].1.as_ref().unwrap().contains("solve_rhf_symmetric"));
+    assert_eq!(errs[5].1.as_deref(), Some("symmetry"));
+}
+
+/// The input geometry is rotated and translated: detection must reorient, and
+/// the blocked energy must equal the unblocked energy of the input frame.
+#[test]
+fn rotated_translated_input_matches_unblocked_input_frame() {
+    // Rodrigues rotation about (1, 2, 3)/|.| by 0.7 rad, then a shift.
+    let (ax, ang) = ([1.0f64, 2.0, 3.0], 0.7f64);
+    let n = (ax.iter().map(|v| v * v).sum::<f64>()).sqrt();
+    let k = [ax[0] / n, ax[1] / n, ax[2] / n];
+    let (c, s) = (ang.cos(), ang.sin());
+    for xyz in ["water.xyz", "nh3.xyz", "c2h4.xyz"] {
+        let mut mol = load(xyz);
+        for a in &mut mol.atoms {
+            let v = [a.x, a.y, a.zpos];
+            let kv = k[0] * v[0] + k[1] * v[1] + k[2] * v[2];
+            let cr = [
+                k[1] * v[2] - k[2] * v[1],
+                k[2] * v[0] - k[0] * v[2],
+                k[0] * v[1] - k[1] * v[0],
+            ];
+            let r: Vec<f64> = (0..3)
+                .map(|i| v[i] * c + cr[i] * s + k[i] * kv * (1.0 - c))
+                .collect();
+            a.x = r[0] + 1.3;
+            a.y = r[1] - 0.8;
+            a.zpos = r[2] + 2.1;
+        }
+        let sym = run_sym(&mol, "sto-3g", &cfg(true)).unwrap();
+        assert_ne!(sym.group(), "C1", "{xyz}");
+        let off = run_mol(&mol, "sto-3g", &cfg(false)).unwrap();
+        assert!(
+            (sym.energy() - off.energy).abs() < 1e-9,
+            "{xyz}: {} vs {}",
+            sym.energy(),
+            off.energy
+        );
+    }
 }
 
 // ---------------------------------------------------------------- anchor (d)
@@ -302,16 +446,16 @@ fn stretched_h2_needs_symmetry_to_reach_sigma_g_squared() {
         let want = reference(file)["sigma_g2"]["energy"].as_f64().unwrap();
         let mut on = cfg(true);
         on.irrep_nelec = Some(vec![("Ag".into(), 2)]);
-        let blocked = run_mol(&mol, "cc-pvdz", &on).unwrap();
+        let blocked = run_sym(&mol, "cc-pvdz", &on).unwrap();
         assert!(
-            (blocked.energy - want).abs() < 1e-7,
+            (blocked.energy() - want).abs() < 1e-7,
             "R={r}: {} vs {want}",
-            blocked.energy
+            blocked.energy()
         );
         let plain = run_mol(&mol, "cc-pvdz", &cfg(false));
         eprintln!(
             "H2 R={r}: blocked {:.10} (ref {want:.10}); unblocked {:?}",
-            blocked.energy,
+            blocked.energy(),
             plain.as_ref().map(|p| (p.energy, p.converged))
         );
         // A failed (non-converged) unblocked run is also a miss.
@@ -340,13 +484,13 @@ fn matches_pyscf_symmetry_references() {
         for bas in ["sto-3g", "6-31g"] {
             let want = reference(&format!("{sys}_{bas}.json"));
             let mol = load(xyz);
-            let r = run_mol(&mol, bas, &cfg(true)).unwrap();
+            let r = run_sym(&mol, bas, &cfg(true)).unwrap();
             let e = want["ground"]["energy"].as_f64().unwrap();
-            worst = worst.max((r.energy - e).abs());
+            worst = worst.max((r.energy() - e).abs());
             assert!(
-                (r.energy - e).abs() < 1e-8,
+                (r.energy() - e).abs() < 1e-8,
                 "{sys}/{bas}: {} vs {e}",
-                r.energy
+                r.energy()
             );
             // Per-irrep occupations: labels for C2v/Cs, multiset for D2h.
             let ours = occupation(&r, nocc(&mol));
@@ -356,7 +500,7 @@ fn matches_pyscf_symmetry_references() {
                 .iter()
                 .map(|(k, v)| (k.replace('"', "''"), v.as_u64().unwrap() as usize))
                 .collect();
-            if r.symmetry_group() == Some("D2h") {
+            if r.group() == "D2h" {
                 let mut a: Vec<_> = ours.values().copied().collect();
                 let mut b: Vec<_> = theirs.values().copied().filter(|&n| n > 0).collect();
                 a.sort();
@@ -372,13 +516,13 @@ fn matches_pyscf_symmetry_references() {
                 let want = reference(&format!("h2o_{bas}.json"));
                 let mut c = cfg(true);
                 c.irrep_nelec = Some(water_excited_nelec());
-                let r = run_mol(&load("water.xyz"), bas, &c).unwrap();
+                let r = run_sym(&load("water.xyz"), bas, &c).unwrap();
                 let e = want["excited"]["energy"].as_f64().unwrap();
-                worst = worst.max((r.energy - e).abs());
+                worst = worst.max((r.energy() - e).abs());
                 assert!(
-                    (r.energy - e).abs() < 1e-8,
+                    (r.energy() - e).abs() < 1e-8,
                     "excited {bas}: {} vs {e}",
-                    r.energy
+                    r.energy()
                 );
             }
         }

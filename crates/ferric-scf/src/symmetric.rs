@@ -27,16 +27,48 @@
 //! electrons by aufbau. Occupied columns come first in the merged list, so the
 //! level shift's virtual projector and the density build see the chosen state.
 //!
-//! # Frame
+//! # Entry point and frame
 //!
-//! Above C1 every AO matrix on the result is in the symmetry frame of
-//! [`SymmetryInfo::frame`](crate::result::SymmetryInfo): `molecule` is the
-//! geometry the integrals were built from and `r_sym = rotation * (r_in -
-//! origin)`. Energies and orbital energies are frame-invariant. The analytic
-//! gradients refuse such a result ([`ScfResult::require_input_frame`](crate::ScfResult::require_input_frame)); post-HF
-//! consumers must build their integrals from `symmetry.frame.molecule`.
-//! C1 runs the original solver on the original inputs: bit-identical to
-//! `symmetry = false`.
+//! The only entry point is [`solve_rhf_symmetric`], which returns a
+//! [`SymmetricRhf`], not a bare [`ScfResult`]. Above C1 the SCF runs on the
+//! reoriented, symmetrized molecule (`ferric_core::symmetry::detect`), so every
+//! AO matrix of the result (MOs, density, Fock) lives in the AO basis of THAT
+//! geometry, not of the input. Energies and orbital energies are frame
+//! invariant; AO matrices are not.
+//!
+//! Why a separate type instead of a flag on `ScfResult`. About sixty public
+//! functions take `&ScfResult` (MP2, CC, RPA, GW, CI, TDDFT, properties,
+//! gradients, Hessians) together with the caller's molecule and basis. A
+//! frame-rotated result passed to any of them with the input-frame molecule is
+//! a silent wrong answer (RI-MP2 on a blocked NH3 gave -7.89 Ha of correlation
+//! instead of -0.189), and a guard would have to be hand-added to each one and
+//! to every future one. With a distinct type none of them can receive it by
+//! accident: obtaining the plain result takes the explicit
+//! [`SymmetricRhf::scf_in_frame`], whose documentation names the molecule to
+//! pair it with ([`SymmetricRhf::molecule`]), and `solve_rhf` itself refuses
+//! `RhfConfig::symmetry`, so no internal re-solve (Hessian, optimizer, ladder)
+//! can return a frame result either.
+//!
+//! Rotating the result back to the input frame was rejected. The symmetrized
+//! geometry differs from the input by up to the detection tolerance (1e-4
+//! Bohr), so rotated-back matrices would still not belong to the input
+//! geometry's integrals, only look as if they did; and ferric has no
+//! rotated-AO (Wigner-D) machinery for real solid harmonics under an arbitrary
+//! rotation. Post-HF methods run on the frame molecule instead.
+//!
+//! C1 runs the original solver on the original inputs (bit-identical to
+//! `solve_rhf`), and its [`SymmetricRhf::molecule`] is the input molecule.
+//!
+//! # Degenerate orbitals across irreps
+//!
+//! Orbital energies closer than 1e-10 Ha form a cluster ordered by irrep
+//! (totally symmetric first), so the order is deterministic. Aufbau stops
+//! inside a cluster only if the shell is partially filled (for example an E
+//! pair split into two 1-dimensional irreps of an Abelian subgroup, with one
+//! electron pair): the pair goes to the first irrep of the cluster and the
+//! density is then not the symmetric average of the degenerate shell. That is
+//! a symmetry-broken-in-labelling state, the same choice other Abelian-subgroup
+//! codes make; use `irrep_nelec` to choose explicitly.
 //!
 //! # Refused (typed error, never silently ignored)
 //!
@@ -54,7 +86,7 @@
 //! (`Molecule::apply_ecp`) when detection runs: species identity includes the
 //! ECP core count.
 
-use crate::result::{SymmetryFrame, SymmetryInfo};
+use crate::result::ScfResult;
 use crate::rhf::{canonical_orthogonalizer, RhfConfig};
 use crate::screening::SchwarzBounds;
 use ferric_core::parallel::ParallelContext;
@@ -274,6 +306,19 @@ pub(crate) fn occupation_order(
     if request.iter().all(Option::is_none) {
         return Ok(sorted_clusters(eps, irrep, all));
     }
+    // Each listed irrep must keep at least n/2 eigenpairs after its own
+    // linear-dependence filter; otherwise the requested state does not exist.
+    for (h, req) in request.iter().enumerate() {
+        let have = irrep.iter().filter(|&&g| g == h).count();
+        if let Some(n) = req {
+            if n / 2 > have {
+                return Err(FerricError::General(format!(
+                    "irrep_nelec asks for {n} electrons in irrep index {h}, but only {have} \
+                     linearly independent functions survive in that block"
+                )));
+            }
+        }
+    }
     let mut rank_in_irrep = vec![0usize; request.len()];
     let mut occupied = vec![false; eps.len()];
     let mut pool = Vec::new();
@@ -383,35 +428,103 @@ pub(crate) fn validate_config(config: &RhfConfig) -> Result<(), FerricError> {
     require_no_external_potential(config.external_potential.as_ref())
 }
 
+/// A symmetry-blocked RHF solution and the frame its AO matrices live in.
+#[derive(Debug, Clone)]
+pub struct SymmetricRhf {
+    scf: ScfResult,
+    group: String,
+    orbital_irreps: Vec<String>,
+    molecule: Molecule,
+    rotation: [[f64; 3]; 3],
+    origin: [f64; 3],
+}
+
+impl SymmetricRhf {
+    /// Total energy (frame invariant).
+    pub fn energy(&self) -> f64 {
+        self.scf.energy
+    }
+
+    /// Schoenflies symbol of the Abelian group used for blocking.
+    pub fn group(&self) -> &str {
+        &self.group
+    }
+
+    /// Irrep label of each MO column (`"-"` for padded, linearly dependent
+    /// columns).
+    pub fn orbital_irreps(&self) -> &[String] {
+        &self.orbital_irreps
+    }
+
+    /// The molecule the integrals were built from: the reoriented, symmetrized
+    /// geometry (the input molecule itself for C1).
+    pub fn molecule(&self) -> &Molecule {
+        &self.molecule
+    }
+
+    /// `r_sym = rotation * (r_in - origin)`; identity and zero for C1.
+    pub fn frame_transform(&self) -> ([[f64; 3]; 3], [f64; 3]) {
+        (self.rotation, self.origin)
+    }
+
+    /// The plain SCF result, whose AO matrices are expressed in the basis of
+    /// [`molecule`](Self::molecule). Pass that molecule (and a `PreparedBasis`
+    /// built from it) to every consumer; the input geometry will give wrong
+    /// answers.
+    pub fn scf_in_frame(&self) -> &ScfResult {
+        &self.scf
+    }
+
+    /// Consume into the plain result; see [`scf_in_frame`](Self::scf_in_frame).
+    pub fn into_scf_in_frame(self) -> ScfResult {
+        self.scf
+    }
+}
+
 /// Refuse `RhfConfig.symmetry` in solvers that do not implement it.
 pub(crate) fn require_symmetry_off(config: &RhfConfig, solver: &str) -> Result<(), FerricError> {
     if config.symmetry || config.irrep_nelec.is_some() {
         return Err(FerricError::General(format!(
-            "{solver}: point-group symmetry (RhfConfig.symmetry / irrep_nelec) is implemented \
-             for closed-shell RHF only"
+            "{solver}: point-group symmetry (RhfConfig.symmetry / irrep_nelec) is only available \
+             through ferric_scf::symmetric::solve_rhf_symmetric (closed-shell RHF); its result \
+             lives in the symmetry frame and has a distinct type"
         )));
     }
     Ok(())
 }
 
-/// `solve_rhf` with `config.symmetry` set. `mol` must carry its ECP assignment.
-pub(crate) fn solve_rhf_symmetric(
+/// Closed-shell RHF with point-group blocking (`config.symmetry` must be set).
+/// `mol` must carry its ECP assignment. See the module docs for the frame.
+pub fn solve_rhf_symmetric(
     ctx: &ParallelContext,
     mol: &Molecule,
     prep: &PreparedBasis,
     op: Operator,
     bounds: &SchwarzBounds,
     config: &RhfConfig,
-) -> Result<crate::result::ScfResult, FerricError> {
+) -> Result<SymmetricRhf, FerricError> {
     if !config.symmetry {
         return Err(FerricError::General(
-            "RhfConfig.irrep_nelec requires RhfConfig.symmetry = true".into(),
+            "solve_rhf_symmetric needs RhfConfig.symmetry = true (irrep_nelec requires it)".into(),
         ));
     }
     validate_config(config)?;
     let det = symmetry::detect(mol, DEFAULT_SYMMETRY_TOL)?;
     if det.group == AbelianGroup::C1 {
-        return solve_c1(ctx, mol, prep, op, bounds, config);
+        let scf = solve_c1(ctx, mol, prep, op, bounds, config)?;
+        let labels = scf
+            .eps_alpha
+            .iter()
+            .map(|&e| if e >= 1e5 { "-" } else { "A" }.to_string())
+            .collect();
+        return Ok(SymmetricRhf {
+            scf,
+            group: "C1".into(),
+            orbital_irreps: labels,
+            molecule: mol.clone(),
+            rotation: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+            origin: [0.0; 3],
+        });
     }
     let sym_mol = det.molecule.clone();
     let prep_sym = PreparedBasis::new(&sym_mol, prep.basis_set())?;
@@ -423,18 +536,16 @@ pub(crate) fn solve_rhf_symmetric(
         config.irrep_nelec.as_deref(),
         sym_mol.nelec().max(0) as usize,
     )?;
-    let mut result =
+    let scf =
         crate::rhf::solve_rhf_blocked(ctx, &sym_mol, &prep_sym, op, &bounds_sym, config, &spec)?;
-    result.symmetry = Some(SymmetryInfo {
+    Ok(SymmetricRhf {
+        scf,
         group: det.group.name().to_string(),
         orbital_irreps: spec.column_labels(),
-        frame: Some(SymmetryFrame {
-            molecule: sym_mol,
-            rotation: det.rotation,
-            origin: det.origin,
-        }),
-    });
-    Ok(result)
+        molecule: sym_mol,
+        rotation: det.rotation,
+        origin: det.origin,
+    })
 }
 
 /// C1: the unmodified solver on the unmodified inputs.
@@ -445,7 +556,7 @@ fn solve_c1(
     op: Operator,
     bounds: &SchwarzBounds,
     config: &RhfConfig,
-) -> Result<crate::result::ScfResult, FerricError> {
+) -> Result<ScfResult, FerricError> {
     if let Some(req) = config.irrep_nelec.as_deref() {
         let n = mol.nelec().max(0) as usize;
         if req.len() != 1 || req[0].0 != "A" || req[0].1 != n {
@@ -454,18 +565,7 @@ fn solve_c1(
             )));
         }
     }
-    let mut r = crate::rhf::solve_rhf_once(ctx, mol, prep, op, bounds, config)?;
-    let labels = r
-        .eps_alpha
-        .iter()
-        .map(|&e| if e >= 1e5 { "-" } else { "A" }.to_string())
-        .collect();
-    r.symmetry = Some(SymmetryInfo {
-        group: "C1".into(),
-        orbital_irreps: labels,
-        frame: None,
-    });
-    Ok(r)
+    crate::rhf::solve_rhf_once(ctx, mol, prep, op, bounds, config)
 }
 
 #[cfg(test)]
@@ -520,5 +620,16 @@ mod tests {
         // A forced pair in irrep 1 plus aufbau in the unlisted irrep 0.
         let order = occupation_order(&eps, &irrep, &[None, Some(2)], 2).unwrap();
         assert_eq!(&order[..2], &[0, 2]);
+    }
+
+    #[test]
+    fn request_exceeding_surviving_block_dimension_is_an_error() {
+        // Irrep 1 lost functions to linear dependence: 1 eigenpair, 4 electrons asked.
+        let eps = [-3.0, -2.0, 0.0];
+        let irrep = [0, 0, 1];
+        let err = occupation_order(&eps, &irrep, &[None, Some(4)], 3).unwrap_err();
+        assert!(err.to_string().contains("linearly independent"), "{err}");
+        // The same request within the surviving dimension is fine.
+        assert!(occupation_order(&eps, &irrep, &[None, Some(2)], 2).is_ok());
     }
 }

@@ -467,7 +467,6 @@ pub fn solve_rhf_with_df_increments(
                 cosx_final: None,
                 cosx_schedule: None,
                 convergence: None,
-                symmetry: None,
             };
             return Ok(DfIncrementsResult {
                 result,
@@ -509,7 +508,6 @@ pub fn solve_rhf_with_df_increments(
                 cosx_final: None,
                 cosx_schedule: None,
                 convergence: None,
-                symmetry: None,
             };
             return Ok(DfIncrementsResult {
                 result,

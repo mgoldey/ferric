@@ -1182,7 +1182,6 @@ fn solve_rohf_impl(
                 cosx_final: None,
                 cosx_schedule: None,
                 convergence: None,
-                symmetry: None,
             };
             // Swap witness (F6): returned now, or held while its best
             // single-swap neighbours are evaluated on the next passes.
@@ -1425,7 +1424,6 @@ fn solve_rohf_impl(
         cosx_final: None,
         cosx_schedule: None,
         convergence: None,
-        symmetry: None,
     })
 }
 
