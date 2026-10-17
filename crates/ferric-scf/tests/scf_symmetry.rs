@@ -157,7 +157,7 @@ fn blocked_matches_unblocked_and_fock_commutes() {
         let blocked_occ = occupation(&on, nocc(&mol));
         for ir in irreps(&det.ops).unwrap() {
             let p = rep.projector(&ir).unwrap();
-            let n_h = 2.0 * (&p.dot(&off.density_alpha).dot(&s)).diag().sum();
+            let n_h = 2.0 * p.dot(&off.density_alpha).dot(&s).diag().sum();
             let expect = 2 * blocked_occ.get(ir.label).copied().unwrap_or(0);
             assert!(
                 (n_h - expect as f64).abs() < 1e-6,
@@ -170,6 +170,11 @@ fn blocked_matches_unblocked_and_fock_commutes() {
         let nops = det.ops.len();
         let ncomm = max_noncommutation(&rep, nops, &on.fock_alpha);
         let dcomm = max_noncommutation(&rep, nops, &on.density_total);
+        eprintln!(
+            "{}: |dE| = {:.1e}, max [R,F] = {ncomm:.1e}, max [R,D] = {dcomm:.1e}",
+            c.xyz,
+            (on.energy - off.energy).abs()
+        );
         assert!(ncomm < 1e-10, "{}: [R,F] = {ncomm:e}", c.xyz);
         assert!(dcomm < 1e-10, "{}: [R,D] = {dcomm:e}", c.xyz);
     }
@@ -309,13 +314,13 @@ fn stretched_h2_needs_symmetry_to_reach_sigma_g_squared() {
             blocked.energy,
             plain.as_ref().map(|p| (p.energy, p.converged))
         );
-        match plain {
-            Ok(p) => assert!(
+        // A failed (non-converged) unblocked run is also a miss.
+        if let Ok(p) = plain {
+            assert!(
                 (p.energy - want).abs() > 1e-3,
                 "R={r}: unblocked reached sigma_g^2 ({} vs {want}); the negative control fails",
                 p.energy
-            ),
-            Err(_) => {} // non-convergence is also a miss
+            );
         }
     }
 }

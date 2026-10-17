@@ -754,6 +754,8 @@ pub fn run(args: Vec<String>) {
         // Same resolved kind that already selected `bounds`'s CSB table
         // above; see the comment there for why it is parsed once.
         screening: screening_kind,
+        irrep_nelec: None,
+        symmetry: false,
     };
 
     // Advisory only (issue #410): a USER-SET `[scf] energy_conv` below the

@@ -1025,13 +1025,8 @@ pub fn solve_rhf(
     bounds: &SchwarzBounds,
     config: &RhfConfig,
 ) -> Result<ScfResult, FerricError> {
-    if config.symmetry {
+    if config.symmetry || config.irrep_nelec.is_some() {
         return crate::symmetric::solve_rhf_symmetric(ctx, mol, prep, op, bounds, config);
-    }
-    if config.irrep_nelec.is_some() {
-        return Err(FerricError::General(
-            "RhfConfig.irrep_nelec requires RhfConfig.symmetry = true".into(),
-        ));
     }
     let first = solve_rhf_once(ctx, mol, prep, op, bounds, config)?;
     if !config.scf_stability_descent {
@@ -1924,14 +1919,8 @@ fn solve_rhf_impl(
     // For well-conditioned S, m == n and X reproduces existing energies; see
     // canonical_orthogonalizer / diagonalize for the padding-back-to-n convention.
     let x = canonical_orthogonalizer(&s)?;
-    // Point-group blocking (None = the historical global diagonalization).
-    let blocked = sym
-        .map(|sp| crate::symmetric::BlockedDiag::new(sp, &s, nocc))
-        .transpose()?;
-    let diag_fock = |f_mat: &Array2<f64>| match blocked.as_ref() {
-        Some(b) => b.diagonalize(f_mat),
-        None => diagonalize(f_mat, &x),
-    };
+    // Fock diagonalizer: global by default, per-irrep under point-group blocking.
+    let diag = crate::symmetric::FockDiag::new(sym, &s, &x, nocc)?;
 
     // Previous-iteration MO coefficients, needed to build the virtual-block level
     // shift (a projector onto the prior virtuals). None before the first solve.
@@ -2526,7 +2515,7 @@ fn solve_rhf_impl(
                         );
                     }
                 }
-                let (orb_e, c) = diag_fock(&f)?;
+                let (orb_e, c) = diag.run(&f)?;
                 let density_alpha = 0.5 * &d;
                 crate::driver::warn_if_rss_over_at_stage("RHF", "converged", ooc_budget);
 
@@ -3059,7 +3048,7 @@ fn solve_rhf_impl(
             }
         }
 
-        let (eps, mut c) = diag_fock(&f_new)?;
+        let (eps, mut c) = diag.run(&f_new)?;
         last_eps = eps;
         // Only retain C across iterations when the level shift needs it; the
         // default (shift = 0) path skips the clone entirely.
@@ -3371,7 +3360,7 @@ fn lindep_thresh() -> f64 {
 /// For a well-conditioned S, m == n and no mode is dropped (regression-safe).
 ///
 /// X is NOT symmetric (even when m == n) — callers must use the rectangular
-/// transform Fʹ = Xᵀ F X, C = X Vʹ (see [`diagonalize`]).
+/// transform Fʹ = Xᵀ F X, C = X Vʹ (see `crate::driver::diagonalize_rect`).
 pub(crate) fn canonical_orthogonalizer(s: &Array2<f64>) -> Result<Array2<f64>, FerricError> {
     let n = s.nrows();
     // Runs once at SCF setup, serially (called before the iteration loop, no
@@ -3396,17 +3385,6 @@ pub(crate) fn canonical_orthogonalizer(s: &Array2<f64>) -> Result<Array2<f64>, F
         }
     }
     Ok(x)
-}
-
-/// Diagonalize the Fock matrix in the canonical-orthogonal basis.
-///
-/// With X (n × m) rectangular: Fʹ = Xᵀ F X is (m × m), its eigenvectors Vʹ are
-/// (m × m), and C_kept = X Vʹ is (n × m). The result is PADDED back to (n × n)
-/// by appending (n − m) zero MO columns with sentinel energy 1e6, so every
-/// downstream consumer (GW, RPA, density build) sees the historical (n × n) /
-/// length-n shapes while the near-singular directions are inert virtuals.
-fn diagonalize(f: &Array2<f64>, x: &Array2<f64>) -> Result<(Vec<f64>, Array2<f64>), FerricError> {
-    crate::driver::diagonalize_rect(f, x)
 }
 
 #[cfg(test)]

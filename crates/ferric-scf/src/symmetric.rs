@@ -33,7 +33,7 @@
 //! [`SymmetryInfo::frame`](crate::result::SymmetryInfo): `molecule` is the
 //! geometry the integrals were built from and `r_sym = rotation * (r_in -
 //! origin)`. Energies and orbital energies are frame-invariant. The analytic
-//! gradients refuse such a result ([`ScfResult::require_input_frame`]); post-HF
+//! gradients refuse such a result ([`ScfResult::require_input_frame`](crate::ScfResult::require_input_frame)); post-HF
 //! consumers must build their integrals from `symmetry.frame.molecule`.
 //! C1 runs the original solver on the original inputs: bit-identical to
 //! `symmetry = false`.
@@ -162,6 +162,32 @@ fn resolve_irrep_nelec(
         )));
     }
     Ok(out)
+}
+
+/// The SCF's Fock diagonalizer: the historical global canonical-orthogonal
+/// diagonalization, or the per-irrep blocked one.
+pub(crate) struct FockDiag<'a> {
+    x: &'a Array2<f64>,
+    blocked: Option<BlockedDiag<'a>>,
+}
+
+impl<'a> FockDiag<'a> {
+    pub(crate) fn new(
+        sym: Option<&'a SymmetrySpec>,
+        s: &Array2<f64>,
+        x: &'a Array2<f64>,
+        nocc: usize,
+    ) -> Result<Self, FerricError> {
+        let blocked = sym.map(|sp| BlockedDiag::new(sp, s, nocc)).transpose()?;
+        Ok(Self { x, blocked })
+    }
+
+    pub(crate) fn run(&self, f: &Array2<f64>) -> Result<(Vec<f64>, Array2<f64>), FerricError> {
+        match &self.blocked {
+            Some(b) => b.diagonalize(f),
+            None => crate::driver::diagonalize_rect(f, self.x),
+        }
+    }
 }
 
 /// Per-iteration blocked diagonalizer: the per-irrep `U_h X_h` transforms
@@ -377,6 +403,11 @@ pub(crate) fn solve_rhf_symmetric(
     bounds: &SchwarzBounds,
     config: &RhfConfig,
 ) -> Result<crate::result::ScfResult, FerricError> {
+    if !config.symmetry {
+        return Err(FerricError::General(
+            "RhfConfig.irrep_nelec requires RhfConfig.symmetry = true".into(),
+        ));
+    }
     validate_config(config)?;
     let det = symmetry::detect(mol, DEFAULT_SYMMETRY_TOL)?;
     if det.group == AbelianGroup::C1 {

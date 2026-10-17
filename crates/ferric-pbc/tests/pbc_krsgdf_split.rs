@@ -314,6 +314,7 @@ fn gamma_restricted(d: Array2<f64>) -> ScfResult {
         cosx_schedule: None,
         convergence: None,
         rohf_spin_focks: None,
+        symmetry: None,
     }
 }
 
@@ -343,6 +344,7 @@ fn gamma_unrestricted(da: Array2<f64>, db: Array2<f64>) -> ScfResult {
         cosx_schedule: None,
         convergence: None,
         rohf_spin_focks: None,
+        symmetry: None,
     }
 }
 

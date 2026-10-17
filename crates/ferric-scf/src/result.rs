@@ -165,7 +165,7 @@ pub struct ScfResult {
 /// # Frame
 ///
 /// For any group above C1 the SCF ran on the reoriented, symmetrized molecule
-/// [`SymmetryInfo::molecule`] (see `ferric_core::symmetry`), so every AO
+/// [`SymmetryFrame::molecule`] (see `ferric_core::symmetry`), so every AO
 /// matrix on the [`ScfResult`] (`mos_alpha`, densities, Fock) is expressed in
 /// the AO basis of THAT geometry. Energies and orbital energies are
 /// frame-invariant. Anything that needs the AO matrices (post-HF methods,
