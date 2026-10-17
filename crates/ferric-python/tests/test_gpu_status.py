@@ -328,7 +328,7 @@ def test_configure_gpu_unknown_values_are_value_errors_naming_the_key():
     msg = _refusal("import ferric; ferric.configure_gpu(mixed_kernels=['nope'])")
     assert msg == (
         '[gpu] mixed_kernels: unknown mixed-precision kernel "nope" '
-        "(valid: rimp2-energy, ccsd-amplitudes, dfk-occ, cosx-kern)"
+        "(valid: rimp2-energy, ccsd-amplitudes, dfk-occ, cosx-kern, dfj-pack)"
     )
 
 
@@ -445,7 +445,7 @@ def test_configure_gpu_a_comma_inside_a_kernel_item_is_refused():
 def test_configure_gpu_empty_kernel_list_keeps_the_core_refusal():
     assert _refusal("import ferric; ferric.configure_gpu(mixed_kernels=[])") == (
         '[gpu] mixed_kernels: unknown mixed-precision kernel "" '
-        "(valid: rimp2-energy, ccsd-amplitudes, dfk-occ, cosx-kern)"
+        "(valid: rimp2-energy, ccsd-amplitudes, dfk-occ, cosx-kern, dfj-pack)"
     )
 
 
