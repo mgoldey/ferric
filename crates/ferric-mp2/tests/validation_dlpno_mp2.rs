@@ -52,8 +52,24 @@
 //!   `pair_retention` stays ~1.0 at every useful `t_cut_pairs` on C4-C8
 //!   because canonical pairs are delocalized, and any "recovery" gap against
 //!   ORCA measures the localization difference, not the PNO code.
-//! * The two are distinguishable: the physics hypothesis predicts a smooth
-//!   `t_cut_pairs` dial; the artifact hypothesis predicts a flat one.
+//! * OUTCOME FOR THE PAIR SCREEN: NOT DISTINGUISHABLE here. At C4-C8 (below
+//!   the locality onset) BOTH hypotheses predict ~100% pair retention: the
+//!   canonical pair energies are exact (`estimate_pair_energies_from_b_ov`)
+//!   and average ~E_corr/npairs ~ 4e-3 Eh, far above 1e-4, and ORCA with
+//!   Boys-localized occupieds also keeps (nearly) every pair (153/153, 91/91,
+//!   323/325, 190/190, 551/561, 325/325). A flat pair dial is therefore
+//!   uninformative at these sizes. Only the PNO (virtual) screen is
+//!   exercised meaningfully.
+//!
+//! # All-electron columns are lopsided against ORCA
+//!
+//! With the cores correlated ORCA uses a separate, tighter `TCutPNO (core)`
+//! (1e-10 against 1e-8 for valence at NormalPNO, observed in its output for
+//! n-butane), while ferric applies one flat `t_cut_pno` to every pair, so
+//! ferric's core pairs drag its all-electron recovery (n-butane at 1e-8:
+//! 99.9957% frozen-core against 99.977% all-electron). Compare the
+//! frozen-core rows for the cleaner side-by-side. The `tcut_pre` key in the
+//! JSON is ORCA's printed `TCutPre` pair prescreen (ORCA prints no TCutPairs).
 //!
 //! # Exactness anchor (asserted first)
 //!
@@ -69,8 +85,8 @@
 //!
 //! # Mutation ledger
 //!
-//! See [`MUTATIONS`]: each mutant was applied to `dlpno_mp2.rs`, the anchor
-//! was run, and it failed.
+//! See [`MUTATIONS`]: each mutant was applied, the test was run, and it
+//! failed.
 //!
 //! A missing reference JSON is a HARD failure, never a skip.
 
@@ -124,9 +140,13 @@ const T_CUT_PAIRS: [f64; 3] = [0.0, 1e-5, 1e-4];
 ///    anchor FAILS.
 /// 3. test-side: `t_cut_pno` ignored by `cfg_of` (screen silently dead): the
 ///    negative control FAILS (|d| 1.3e-11, virtual retention 1.0).
+/// 4. `build_domains_for` ignoring `t_cut_pairs` (always the distance builder):
+///    the all-electron pair-screen assertion FAILS (see the ledger result in
+///    the commit message).
 const MUTATIONS: &str = "(1) no semicanonicalization -> anchor fails (2.9e-2 Ha); \
      (2) fac 2/1 swapped -> anchor fails (1.9e-1 Ha); \
-     (3) t_cut_pno ignored -> negative control fails";
+     (3) t_cut_pno ignored -> negative control fails; \
+     (4) build_domains_for ignores t_cut_pairs -> pair-screen assertion fails";
 
 fn workspace_root() -> PathBuf {
     let looks_like_root = |p: &Path| {
@@ -226,7 +246,8 @@ fn cfg_of(t_pno: f64, t_pairs: f64) -> DlpnoConfig {
     }
 }
 
-fn run_system(system: &str) {
+/// `variant`: 0 = all electrons correlated, 1 = one frozen 1s per carbon.
+fn run_system(system: &str, variants_wanted: &[usize]) {
     let r = reference(system);
     let ctx0 = system.to_string();
     let xyz = workspace_root().join(MOL_DIR).join(format!("{system}.xyz"));
@@ -278,7 +299,8 @@ fn run_system(system: &str) {
         2,
         "{ctx0}: expected fc = 0 and fc = n_heavy"
     );
-    for v in variants {
+    for &vi in variants_wanted {
+        let v = &variants[vi];
         let fc = v["frozen_core"].as_u64().unwrap() as usize;
         let ctx = format!("{system}/fc={fc}");
         let e_pyscf = num(v, "/pyscf_dfmp2/e_corr", &ctx);
@@ -388,15 +410,34 @@ fn run_system(system: &str) {
             }
         }
 
-        // ---- MEASURED OBSERVATION (provisional; C4-C8 are below the locality
-        // onset): with the 1s cores frozen, the canonical-pair energy screen
-        // retains EVERY valence pair even at t_cut_pairs = 1e-4, so the pair
-        // dial is flat. With all electrons correlated it only removes
-        // core pairs (13% / 21% / 30% of pairs at 1e-4 for C4 / C6 / C8, costing
-        // 0.22% / 0.44% / 0.82% of E_corr).
-        // This supports the ARTIFACT hypothesis for the pair screen only; the
-        // PNO screen (t_cut_pno) is live and smooth. ----
-        if fc > 0 {
+        // ---- PAIR SCREEN (t_cut_pairs): live, but INFORMATION-FREE about the
+        // physics at C4-C8. All-electron, the screen removes the core pairs
+        // (counts below, measured); frozen-core, canonical valence pairs are all
+        // above 1e-4 (their mean estimated energy is ~E_corr/npairs ~ 6e-3 Eh),
+        // so the dial is flat by arithmetic. ORCA with Boys-localized occupieds
+        // also keeps nearly every pair here. Both hypotheses predict ~100% pair
+        // retention, so this cannot tell them apart; it is below the locality
+        // onset and is not evidence for either. ----
+        if fc == 0 {
+            let (n5, n4) = expected_pairs_all_electron(system);
+            let (e4, d4) = dlpno(&row, &cfg_of(0.0, 1e-4));
+            let (_, d5) = dlpno(&row, &cfg_of(0.0, 1e-5));
+            assert!(
+                d4.pair_retention < 1.0,
+                "{ctx}: t_cut_pairs = 1e-4 removed no pair (screen dead?)"
+            );
+            assert!(
+                d4.n_pairs.abs_diff(n4) <= 3 && d5.n_pairs.abs_diff(n5) <= 3,
+                "{ctx}: pair counts {}/{} (1e-4/1e-5) outside +-3 of measured {n4}/{n5}",
+                d4.n_pairs,
+                d5.n_pairs
+            );
+            let p4 = pct(e4);
+            assert!(
+                (98.5..99.95).contains(&p4),
+                "{ctx}: recovery {p4:.4}% at t_cut_pairs = 1e-4 outside the measured band"
+            );
+        } else {
             let (_, d) = dlpno(&row, &cfg_of(0.0, 1e-4));
             assert_eq!(
                 d.pair_retention, 1.0,
@@ -413,20 +454,44 @@ fn run_system(system: &str) {
     }
 }
 
+/// Measured pair counts with all electrons correlated, (t_cut_pairs = 1e-5,
+/// 1e-4): C4 153/133 of 153, C6 325/256 of 325, C8 551/391 of 561.
+fn expected_pairs_all_electron(system: &str) -> (usize, usize) {
+    match system {
+        "alkane_4" => (153, 133),
+        "alkane_6" => (325, 256),
+        "alkane_8" => (551, 391),
+        _ => panic!("no measured pair counts for {system}"),
+    }
+}
+
+// Octane is split by frozen-core variant and the others are not, because
+// the reviewer-measured wall time under the validation profile was butane 51 s,
+// hexane 293 s, octane (both variants) 809 s: octane alone is ~70% of the
+// file. Two independent tests let `test-threads = 2` run the halves in
+// parallel and keep each under the per-test slow-timeout (see the override in
+// .config/nextest.toml for these two).
+
 #[test]
 #[ignore = "validation: DLPNO (MP2 / CCSD / CCSD(T) / RPA)"]
 fn dlpno_mp2_butane() {
-    run_system("alkane_4");
+    run_system("alkane_4", &[0, 1]);
 }
 
 #[test]
 #[ignore = "validation: DLPNO (MP2 / CCSD / CCSD(T) / RPA)"]
 fn dlpno_mp2_hexane() {
-    run_system("alkane_6");
+    run_system("alkane_6", &[0, 1]);
 }
 
 #[test]
 #[ignore = "validation: DLPNO (MP2 / CCSD / CCSD(T) / RPA)"]
-fn dlpno_mp2_octane() {
-    run_system("alkane_8");
+fn dlpno_mp2_octane_all_electron() {
+    run_system("alkane_8", &[0]);
+}
+
+#[test]
+#[ignore = "validation: DLPNO (MP2 / CCSD / CCSD(T) / RPA)"]
+fn dlpno_mp2_octane_frozen_core() {
+    run_system("alkane_8", &[1]);
 }

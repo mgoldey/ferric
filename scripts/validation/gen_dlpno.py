@@ -32,7 +32,9 @@ Run (the ORCA part takes the slot):
 
 from __future__ import annotations
 
+import datetime as _dt
 import json
+import re
 import sys
 import tempfile
 from pathlib import Path
@@ -73,6 +75,11 @@ CC_RUNS = {
 }
 
 _EXTRA = dict(lm._ORCA_EXTRA)
+# ORCA prints no "TCutPairs"; the printed pair prescreen is TCutPre. Name the
+# key for what it is.
+_EXTRA["tcut_pre"] = _EXTRA.pop("tcut_pairs")
+# Printed only when core orbitals are correlated: a separate, tighter value.
+_EXTRA["tcut_pno_core"] = re.compile(r"TCutPNO \(core\)\s+=\s+(\S+)")
 
 
 def n_heavy(symbols) -> int:
@@ -147,7 +154,13 @@ def run_mp2_block(xyz, symbols, mf, naux, py_row) -> dict:
             "version": r.get("version"),
             "input": r["input"],
         }
-        for k in ("tcut_pno", "tcut_pairs", "pairs_included", "avg_pnos_per_pair"):
+        for k in (
+            "tcut_pno",
+            "tcut_pno_core",
+            "tcut_pre",
+            "pairs_included",
+            "avg_pnos_per_pair",
+        ):
             if k in r:
                 row[k] = r[k]
         runs[tag] = row
@@ -179,6 +192,7 @@ def run_cc_block(xyz, symbols, e_rhf: float) -> dict:
             r = orca_job(xyz, kw, symbols, Path(td))
         runs[tag] = {
             "keywords": kw,
+            "version": r.get("version"),
             "e_scf": r["e_scf"],
             "e_corr": r["energy"] - r["e_scf"],
             "e_rhf_vs_pyscf_abs_diff": abs(r["e_scf"] - e_rhf),
@@ -199,6 +213,9 @@ def main() -> int:
     args = sys.argv[1:]
     do_cc = "--ccsdt" in args
     cc_only = "--cc-only" in args  # add the CC context to an existing JSON
+    bad_flags = {a for a in args if a.startswith("--")} - {"--ccsdt", "--cc-only"}
+    if bad_flags:
+        raise SystemExit(f"unknown flags {sorted(bad_flags)}")
     only = {a for a in args if not a.startswith("--")}
     unknown = only - set(SYSTEMS)
     if unknown:
@@ -213,7 +230,14 @@ def main() -> int:
             payload["context_ccsd_t_fc0"] = run_cc_block(
                 xyz, common.read_xyz(xyz)[0], payload["e_rhf"]
             )
-            payload["provenance"]["keywords"]["orca_cc_context"] = CC_RUNS
+            prov = payload["provenance"]
+            prov["keywords"]["orca_cc_context"] = CC_RUNS
+            # The MP2 block keeps its own generated_utc / git_head; the CC
+            # context was produced later, possibly from another commit.
+            prov["cc_context_git_head"] = common.git_head()
+            prov["cc_context_generated_utc"] = _dt.datetime.now(
+                _dt.timezone.utc
+            ).isoformat(timespec="seconds")
             path.write_text(json.dumps(payload, indent=2) + "\n")
             print(f"updated {path}", flush=True)
             continue
@@ -238,7 +262,16 @@ def main() -> int:
                 "NOT like-for-like for DLPNO: ORCA localizes the occupieds "
                 "(Foster-Boys) and truncates PAO domains / PNOs / pairs by its own "
                 "thresholds; ferric's DLPNO-MP2 consumes CANONICAL occupieds. The "
-                "only like-for-like pair is ORCA RI-MP2 vs PySCF DFMP2."
+                "only like-for-like pair is ORCA RI-MP2 vs PySCF DFMP2. ORCA's pair "
+                "prescreen is TCutPre (printed; ORCA prints no TCutPairs). With the "
+                "cores correlated ORCA applies a separate, tighter 'TCutPNO (core)' "
+                "(1e-10 against 1e-8 for valence at NormalPNO, observed in the "
+                "alkane_4 NormalPNO output), whereas ferric applies one flat "
+                "t_cut_pno to all pairs, so the all-electron columns are lopsided; "
+                "compare the frozen-core rows for the cleaner side-by-side. Both a "
+                "canonical and a localized treatment keep nearly every pair at "
+                "C4-C8 (ORCA 'pairs_included' vs n(n+1)/2), so a flat pair-screen "
+                "dial is uninformative there."
             ),
         }
         if do_cc:

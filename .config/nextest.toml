@@ -142,3 +142,12 @@ slow-timeout = { period = "300s", terminate-after = 6 }
 
 [profile.validation.junit]
 path = "junit-validation.xml"
+
+# DLPNO-MP2 octane halves (validation_dlpno_mp2.rs): the reviewer measured 809 s
+# for both variants together under this profile while sharing the box; each half
+# is now its own test. Runners are slower than the dev box, so allow 60 min
+# (300 s x 12) instead of the profile's 30 min, rather than dropping the
+# all-electron half (the only variant that exercises the pair screen).
+[[profile.validation.overrides]]
+filter = 'test(/^dlpno_mp2_octane_/)'
+slow-timeout = { period = "300s", terminate-after = 12 }
