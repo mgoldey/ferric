@@ -9,17 +9,16 @@
 //! same reference); central FD of the ROHF and ROKS energies (fresh SCF per
 //! displacement, explicit shared neighbour cutoff); the orbital-gradient gate
 //! from both sides (a loose state is refused with the gate message and is
-//! wrong by far more than the FD bar with the gate off); a short MO set and an
-//! RS-GDF source are typed refusals; the unrestricted-form `W` is an IDENTITY
+//! wrong by far more than the FD bar with the gate off); a short MO set is a
+//! typed refusal (RS-GDF: `pbc_kuxcstress_ro_rsgdf.rs`); the unrestricted-form `W` is an IDENTITY
 //! at convergence and asserted as such.
 //!
 //! NOT covered: the supercell identity (the Gamma ROHF high-spin supercell is
-//! not converged here), RS-GDF (refused), shifted meshes, p/d shells, stress.
+//! not converged here), RS-GDF (see above), shifted meshes, p/d shells, stress.
 
 mod common;
 
 use common::*;
-use ferric_core::basis::{BasisSet, Shell};
 use ferric_pbc::dense_aft::ExxDiv;
 use ferric_pbc::dense_aft::{DenseAftEri, DEFAULT_DENSE_AFT_MAX_BYTES};
 use ferric_pbc::dft::PeriodicGridConfig;
@@ -30,7 +29,7 @@ use ferric_pbc::hcore::kpoint::{periodic_hcore_kpts, PeriodicHcoreK};
 use ferric_pbc::hcore::periodic_hcore;
 use ferric_pbc::hcore::PeriodicHcoreConfig;
 use ferric_pbc::kdense_aft::KDenseAftEri;
-use ferric_pbc::kgrad::{KGradConfig, KGradJk, KRsGdfGradSource};
+use ferric_pbc::kgrad::{KGradConfig, KGradJk};
 use ferric_pbc::kpts::KPointMesh;
 use ferric_pbc::kroks::{solve_krohf, solve_kroks, KRohfConfig, KRoksConfig, KRoksResult};
 use ferric_pbc::kuxcgrad::RO_GATE_N2_ARRAYS;
@@ -40,11 +39,8 @@ use ferric_pbc::kuxcgrad::{
 use ferric_pbc::kxcgrad::{KRksGradConfig, KXcGrid, KXcMutation};
 use ferric_pbc::lattice::Cell;
 use ferric_pbc::rohf::{gamma_rohf, gamma_roks, GammaRohfConfig, GammaRoksConfig};
-use ferric_pbc::rsgdf::kpoint::{KRsGdf, KRsGdfConfig};
-use ferric_pbc::rsgdf::RsGdfConfig;
 use ferric_pbc::uhf::GammaUhfIntegrals;
 use ndarray::Array2;
-use std::collections::HashMap;
 
 const OMEGA: f64 = 0.8;
 const AMPLE: usize = 1 << 31;
@@ -577,9 +573,9 @@ fn ro_gate_probe() {
     }
 }
 
-/// A short MO set and an RS-GDF J/K source are typed refusals.
+/// A short MO set is a typed refusal.
 #[test]
-fn short_mos_and_rsgdf_are_refused() {
+fn short_mos_are_refused() {
     let fx = fixture(&H3, [1, 1, 1], Some("PBE"), ExxDiv::None);
     let mut t = fx.res.scf.clone();
     t.mos.pop();
@@ -592,86 +588,4 @@ fn short_mos_and_rsgdf_are_refused() {
         e.contains("kpoint_roks_gradient:") && e.contains("MO sets for 1 k-points"),
         "{e}"
     );
-    // RS-GDF source (refused before any use of the SCF result).
-    let aux = prep_for(&fx.cell, &et_sp_aux());
-    let kc = KRsGdfConfig {
-        gdf: RsGdfConfig {
-            omega: 1.0,
-            exxdiv: ExxDiv::None,
-            budget_bytes: Some(AMPLE),
-            ..Default::default()
-        },
-        mutation: None,
-    };
-    let gdf = KRsGdf::build(&fx.cell, &fx.prep, &aux, &fx.mesh, &fx.hk.s, &kc).unwrap();
-    let hcfg = PeriodicHcoreConfig::with_omega(OMEGA);
-    let src = || {
-        KGradJk::RsGdf(KRsGdfGradSource {
-            gdf: &gdf,
-            cfg: &kc,
-            aux: &aux,
-        })
-    };
-    let cfg = gcfg(None, None);
-    let e = kpoint_roks_gradient(
-        &fx.cell,
-        &fx.prep,
-        &fx.mesh,
-        &hcfg,
-        &fx.hk,
-        src(),
-        &fx.res.scf,
-        "PBE",
-        &cfg,
-    )
-    .expect_err("roks rsgdf")
-    .to_string();
-    assert!(
-        e.contains("kpoint_roks_gradient: RS-GDF J/K is not supported"),
-        "{e}"
-    );
-    let e = kpoint_rohf_gradient(
-        &fx.cell,
-        &fx.prep,
-        &fx.mesh,
-        &hcfg,
-        &fx.hk,
-        src(),
-        &fx.res.scf,
-        ExxDiv::None,
-        &cfg,
-    )
-    .expect_err("rohf rsgdf")
-    .to_string();
-    assert!(
-        e.contains("kpoint_rohf_gradient: RS-GDF J/K is not supported"),
-        "{e}"
-    );
-}
-
-fn et_sp_aux() -> BasisSet {
-    let mut shells = Vec::new();
-    for a in [4.7, 1.9, 0.75, 0.3] {
-        shells.push(Shell {
-            l: 0,
-            pure: false,
-            exponents: vec![a],
-            coefficients: vec![1.0],
-        });
-    }
-    for a in [1.25, 0.5] {
-        shells.push(Shell {
-            l: 1,
-            pure: false,
-            exponents: vec![a],
-            coefficients: vec![1.0],
-        });
-    }
-    let mut m = HashMap::new();
-    m.insert(1, shells);
-    BasisSet {
-        name: "et-sp-aux-H".into(),
-        shells: m,
-        ecps: HashMap::new(),
-    }
 }

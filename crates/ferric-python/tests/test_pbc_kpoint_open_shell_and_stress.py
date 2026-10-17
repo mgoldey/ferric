@@ -536,22 +536,14 @@ def test_open_shell_refusals_have_exact_wording(basis):
         _rks(H2_ATOMS, basis, "HSE06", with_gradient=True)
 
 
-def test_restricted_open_shell_derivatives_are_dense_only(basis):
+def test_restricted_open_shell_derivatives_run_on_rsgdf(basis):
+    # RS-GDF ROKS / ROHF forces and stress are anchored in the library by FD
+    # (tests/pbc_kuxcstress_ro_rsgdf.rs); here only that the wiring accepts them.
     kw = dict(jk="rsgdf", auxbasis="cc-pvdz-ri")
-    msg = (
-        r"anchored on the dense-AFT J/K only; use jk=\"dense\" with with_gradient / "
-        r"with_stress$"
-    )
-    with pytest.raises(
-        ValueError, match=r"^run_roks_kpts: the restricted-open-shell .*" + msg
-    ):
-        _roks(H3_ATOMS, basis, with_gradient=True, **kw)
-    with pytest.raises(
-        ValueError, match=r"^run_rohf_kpts: the restricted-open-shell .*" + msg
-    ):
-        _rohf(H3_ATOMS, basis, with_stress=True, **kw)
-    # The ROKS energy itself runs on RS-GDF.
-    assert _roks(H3_ATOMS, basis, **kw).converged
+    r = _roks(H3_ATOMS, basis, with_gradient=True, **kw)
+    assert r.converged and np.isfinite(r.gradient()).all()
+    r = _rohf(H3_ATOMS, basis, with_stress=True, **kw)
+    assert r.converged and np.isfinite(r.stress()).all()
 
 
 def test_range_split_with_derivatives_is_refused(basis):

@@ -1490,7 +1490,7 @@ fn k_force_uks(x: &KForceCtx<'_>) -> Result<(f64, ndarray::Array2<f64>), FerricE
     Ok((r.scf.energy, g.grad))
 }
 
-/// ROKS (`plan.functional` set) and ROHF forces (dense-AFT J/K).
+/// ROKS (`plan.functional` set) and ROHF forces (dense-AFT and RS-GDF J/K).
 fn k_force_ro(x: &KForceCtx<'_>) -> Result<(f64, ndarray::Array2<f64>), FerricError> {
     let (plan, s) = (x.plan, x.s);
     let aux = s.aux.as_ref();
