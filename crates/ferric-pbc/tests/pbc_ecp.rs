@@ -33,8 +33,10 @@
 //!   images (the neighbours leave the orbital range). Slow → ignored.
 //! * (e) pin: full LANL2DZ 1×1×2 k-RHF energies of the prototype's own
 //!   J/K/hcore construction (PySCF KRHF with THAT hcore agreed 7.9e-11;
-//!   PySCF 2.13's own `pbc.gto.ecp.ecp_int` is 3.8e-6 off and is NOT a
-//!   reference). Slow → ignored.
+//!   PySCF 2.13's own `pbc.gto.ecp.ecp_int` at its DEFAULT cell.precision
+//!   1e-8 moves by 2.25e-6 (max matrix element) when converged to 1e-12, so
+//!   it is NOT a reference at that setting; the converged-precision energy
+//!   pin lives in `pbc_kks_open_ecp.rs`). Slow → ignored.
 //! * (f) the `apply_ecp` guard: typed error naming the atom; mutation
 //!   "bare Z" = the same cell without `apply_ecp`.
 //!
@@ -931,7 +933,8 @@ fn box_limit_a3_coefficient_includes_the_zeff_dipole() {
 /// Full LANL2DZ HI 1×1×2 k-RHF: the prototype's own (pure-AFT hcore +
 /// Bloch-summed V_ECP + AFT J/K) energies, which PySCF KRHF reproduced to
 /// 7.9e-11 when fed that hcore (FINDINGS Iteration 14 "oracle"). NOT PySCF's
-/// own periodic ECP hcore (ecp_int, 3.8e-6 off). Bar 1e-8: the prototype's
+/// own periodic ECP hcore (ecp_int at its default precision 1e-8: 2.25e-6
+/// max-element error). Bar 1e-8: the prototype's
 /// 3.4e-10 G = 0 calibration floor plus the SR/LR vs pure-AFT V_ne split.
 #[test]
 #[ignore = "slow: full LANL2DZ 1x1x2 at a 1e-14 AFT sphere (prototype ~2 min)"]
