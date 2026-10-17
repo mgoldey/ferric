@@ -256,6 +256,19 @@ fn trah_aux_off_is_bit_identical() {
         r1.iterations, r2.iterations,
         "iteration count must also be identical with the flag off"
     );
+    // Golden recorded from origin/main 39cd044f (a build WITHOUT this feature),
+    // same config: iterations 8, E = -76.026767997377
+    // (bits 0xc05301b6911e53fa on the recording machine). Default-vs-explicit
+    // comparison alone cannot see a change that alters BOTH arms; this can.
+    // Iterations are pinned exactly; the energy to 1e-12 rather than bitwise
+    // because last-ulp results differ across machines (cf. CI experience).
+    assert_eq!(r1.iterations, 8, "iteration count drifted from origin/main");
+    assert!(
+        (r1.energy - (-76.026767997377)).abs() < 1e-12,
+        "energy drifted from the origin/main golden: {:.15}",
+        r1.energy
+    );
+    eprintln!("golden bits now: {:#018x}", r1.energy.to_bits());
     assert_eq!(
         a1 - a0,
         0,

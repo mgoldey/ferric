@@ -36,16 +36,58 @@ use ferric_scf::aurora::{AuroraConfig, AuxCurvature};
 use ferric_scf::rhf::{build_jk, solve_rhf, RhfConfig};
 use ferric_scf::rhf_newton::{hessian_matvec, RhfNewtonInputs};
 use ferric_scf::screening::SchwarzBounds;
-use ferric_scf::trah::AURORA_TO_TRAH_CURVATURE;
+use ferric_scf::trah::{offdiag_gap_correction, AURORA_TO_TRAH_CURVATURE};
 use ndarray::{s, Array2};
 
 fn fro(a: &Array2<f64>) -> f64 {
     a.iter().map(|x| x * x).sum::<f64>().sqrt()
 }
 
-/// Relative error of the auxiliary 2e response vs the exact one, worst over
-/// `seeds` random kappa. Returns (worst 2e rel err, worst total rel err).
-fn two_e_error(auxbasis: &str, seeds: &[u64]) -> (f64, f64) {
+/// Cayley rotation of `c` by a random occ->virt kappa scaled to max |kappa| = `size`.
+fn rotate_c(c: &Array2<f64>, nocc: usize, size: f64) -> Array2<f64> {
+    use ndarray_linalg::Solve;
+    let n = c.nrows();
+    let mut kap = Array2::<f64>::zeros((n, n));
+    let mut st = 0xC0FF_EE11_u64;
+    let mut mx = 0.0f64;
+    for a in nocc..n {
+        for i in 0..nocc {
+            st ^= st << 13;
+            st ^= st >> 7;
+            st ^= st << 17;
+            let v = ((st >> 11) as f64) / ((1u64 << 53) as f64) * 2.0 - 1.0;
+            kap[(a, i)] = v;
+            kap[(i, a)] = -v;
+            mx = mx.max(v.abs());
+        }
+    }
+    kap.mapv_inplace(|v| v * size / mx);
+    let half = 0.5 * &kap;
+    let eye = Array2::<f64>::eye(n);
+    let (am, bm) = (&eye - &half, &eye + &half);
+    let mut u = Array2::<f64>::zeros((n, n));
+    for col in 0..n {
+        let sol = am.solve(&bm.column(col).to_owned()).unwrap();
+        u.column_mut(col).assign(&sol);
+    }
+    c.dot(&u)
+}
+
+/// Errors of the auxiliary operator, all relative to the exact 2e response norm.
+struct AnchorErr {
+    /// aux vs exact with the FULL Fock-gap term (the like-for-like control).
+    vs_full_gap: f64,
+    /// aux vs `rhf_newton::hessian_matvec` as shipped (diagonal gap only).
+    vs_diag_gap: f64,
+    /// size of the one-electron diag-vs-full difference itself.
+    gap_mismatch: f64,
+    /// aux vs `hessian_matvec`, relative to the TOTAL matvec norm.
+    total: f64,
+}
+
+/// Worst over `seeds` random kappa, at the converged point (`rot = 0`) or at a
+/// non-canonical point rotated by max |kappa| = `rot`.
+fn anchor_err(auxbasis: &str, seeds: &[u64], rot: f64) -> AnchorErr {
     let mol = Molecule::load_xyz("../../testdata/molecules/water.xyz").unwrap();
     let bs = basis::bundled("cc-pvdz").unwrap();
     let prep = PreparedBasis::new(&mol, &bs).unwrap();
@@ -63,7 +105,11 @@ fn two_e_error(auxbasis: &str, seeds: &[u64]) -> (f64, f64) {
     let n = prep.nbasis();
     let nocc = mol.nelec() as usize / 2;
     let nv = n - nocc;
-    let c = res.mos_alpha.clone();
+    let c = if rot > 0.0 {
+        rotate_c(&res.mos_alpha, nocc, rot)
+    } else {
+        res.mos_alpha.clone()
+    };
 
     let h = oneelectron::hcore(&prep);
     let cocc = c.slice(s![.., ..nocc]);
@@ -95,7 +141,12 @@ fn two_e_error(auxbasis: &str, seeds: &[u64]) -> (f64, f64) {
     let f_vv = f_mo.slice(s![nocc.., nocc..]).to_owned();
     let f_oo = f_mo.slice(s![..nocc, ..nocc]).to_owned();
 
-    let (mut worst2, mut worst_t) = (0.0f64, 0.0f64);
+    let mut w = AnchorErr {
+        vs_full_gap: 0.0,
+        vs_diag_gap: 0.0,
+        gap_mismatch: 0.0,
+        total: 0.0,
+    };
     for &seed in seeds {
         let mut st = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
         let mut x = Array2::<f64>::zeros((nv, nocc));
@@ -105,44 +156,74 @@ fn two_e_error(auxbasis: &str, seeds: &[u64]) -> (f64, f64) {
             st ^= st << 17;
             *v = ((st >> 11) as f64) / ((1u64 << 53) as f64) * 2.0 - 1.0;
         }
-        let exact = hessian_matvec(&ctx, &inputs, &x, &pool).unwrap();
+        let exact_diag = hessian_matvec(&ctx, &inputs, &x, &pool).unwrap();
+        let corr = offdiag_gap_correction(&f_mo, &x, nocc);
+        let exact_full = &exact_diag + &corr;
         let y = aux.base_apply_ref(x.view(), &f_vv, &f_oo, 0.0) * AURORA_TO_TRAH_CURVATURE;
-        // Shared Fock-gap term, subtracted from both to isolate the 2e part.
-        let mut gap = Array2::<f64>::zeros((nv, nocc));
-        for a in 0..nv {
-            for i in 0..nocc {
-                gap[(a, i)] = (f_mo[(nocc + a, nocc + a)] - f_mo[(i, i)]) * x[(a, i)];
-            }
-        }
-        let e2 = fro(&(&exact - &gap));
+        // 2e part of the exact response = full matvec minus the full gap term.
+        let gap_full = f_vv.dot(&x) - x.dot(&f_oo);
+        let e2 = fro(&(&exact_full - &gap_full));
         assert!(e2 > 1e-3, "inert anchor: exact 2e response ~0 ({e2:.3e})");
-        worst2 = worst2.max(fro(&(&y - &exact)) / e2);
-        worst_t = worst_t.max(fro(&(&y - &exact)) / fro(&exact));
+        w.vs_full_gap = w.vs_full_gap.max(fro(&(&y - &exact_full)) / e2);
+        w.vs_diag_gap = w.vs_diag_gap.max(fro(&(&y - &exact_diag)) / e2);
+        w.gap_mismatch = w.gap_mismatch.max(fro(&corr) / e2);
+        w.total = w.total.max(fro(&(&y - &exact_diag)) / fro(&exact_diag));
     }
-    (worst2, worst_t)
+    w
 }
 
-/// Rich-aux anchor. Bar = ~10x the measured value (2e-3 .. 3e-3 across seeds).
+/// Rich-aux anchor at the converged (canonical) point. Bar = ~10x measured.
 #[test]
 fn rich_aux_response_matches_exact_hessian_matvec() {
     for (aux, bar) in [("def2-universal-jkfit", 3e-2), ("cc-pvdz-ri", 2e-2)] {
-        let (e2, et) = two_e_error(aux, &[1, 2, 3]);
-        eprintln!("ANCHOR aux={aux:22} 2e_rel_err={e2:.3e} total_rel_err={et:.3e} bar={bar:.0e}");
+        let e = anchor_err(aux, &[1, 2, 3], 0.0);
+        eprintln!(
+            "ANCHOR canonical aux={aux:22} vs_full={:.3e} vs_diag={:.3e} gap_mismatch={:.1e} total={:.3e} bar={bar:.0e}",
+            e.vs_full_gap, e.vs_diag_gap, e.gap_mismatch, e.total
+        );
         assert!(
-            e2 < bar,
-            "{aux}: 2e response rel err {e2:.3e} >= bar {bar:.0e}"
+            e.vs_full_gap < bar,
+            "{aux}: rel err {:.3e} >= bar {bar:.0e}",
+            e.vs_full_gap
         );
     }
+}
+
+/// The same anchor at a NON-canonical point (max |kappa| = 0.1), where the
+/// diagonal-gap `hessian_matvec` and the full-gap aux operator differ in the
+/// one-electron term. Against the like-for-like full-gap exact control the aux
+/// error must stay at the fitting level; against the diagonal-gap matvec it is
+/// contaminated by the one-electron mismatch, and this test pins that too.
+#[test]
+fn rich_aux_matches_full_gap_exact_at_noncanonical_point() {
+    let e = anchor_err("def2-universal-jkfit", &[1, 2, 3], 0.1);
+    eprintln!(
+        "ANCHOR rot=0.1 def2-universal-jkfit vs_full={:.3e} vs_diag={:.3e} gap_mismatch={:.3e} total={:.3e}",
+        e.vs_full_gap, e.vs_diag_gap, e.gap_mismatch, e.total
+    );
+    assert!(
+        e.vs_full_gap < 3e-2,
+        "vs full-gap exact: {:.3e}",
+        e.vs_full_gap
+    );
+    // The anchor can SEE the confound: the diag-gap comparison is worse by the
+    // mismatch, and the mismatch is a resolvable fraction of the 2e response.
+    assert!(
+        e.gap_mismatch > 1e-3 && e.vs_diag_gap > e.vs_full_gap,
+        "non-canonical point should expose the diag-vs-full gap mismatch: {:.3e}",
+        e.gap_mismatch
+    );
 }
 
 /// Negative control: STO-3G must miss by far more than the rich-aux bar, or the
 /// anchor cannot see aux quality.
 #[test]
 fn sto3g_aux_misses_the_exact_matvec() {
-    let (e2, et) = two_e_error("sto-3g", &[1, 2, 3]);
-    eprintln!("ANCHOR aux=sto-3g                 2e_rel_err={e2:.3e} total_rel_err={et:.3e}");
+    let e = anchor_err("sto-3g", &[1, 2, 3], 0.0);
+    eprintln!("ANCHOR canonical aux=sto-3g vs_full={:.3e}", e.vs_full_gap);
     assert!(
-        e2 > 0.1,
-        "sto-3g 2e error {e2:.3e} should exceed 0.1 (10x the rich bar scale)"
+        e.vs_full_gap > 0.1,
+        "sto-3g 2e error {:.3e} should exceed 0.1",
+        e.vs_full_gap
     );
 }

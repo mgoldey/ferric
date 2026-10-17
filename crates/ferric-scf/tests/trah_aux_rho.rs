@@ -56,11 +56,18 @@ struct Run {
 }
 
 fn run(xyz: &str, bas: &str, xc: Option<&str>, aux: bool) -> Run {
-    run_with_aux(xyz, bas, xc, aux, None)
+    run_with_aux(xyz, bas, xc, aux, None, false)
 }
 
 /// As [`run`], with the AURORA auxiliary basis overridden (default sto-3g).
-fn run_with_aux(xyz: &str, bas: &str, xc: Option<&str>, aux: bool, auxbasis: Option<&str>) -> Run {
+fn run_with_aux(
+    xyz: &str,
+    bas: &str,
+    xc: Option<&str>,
+    aux: bool,
+    auxbasis: Option<&str>,
+    full_gap: bool,
+) -> Run {
     let mol = Molecule::load_xyz(xyz).expect("xyz");
     let bs = basis::bundled(bas).expect("basis");
     let prep = PreparedBasis::new(&mol, &bs).expect("prep");
@@ -76,6 +83,7 @@ fn run_with_aux(xyz: &str, bas: &str, xc: Option<&str>, aux: bool, auxbasis: Opt
         trah_trigger: Some(1e-2),
         trah: TrahConfig {
             aux_curvature: aux,
+            exact_full_gap: full_gap,
             ..Default::default()
         },
         aurora: match auxbasis {
@@ -418,13 +426,16 @@ fn rho_vs_aux_basis_table() {
     ];
     println!("\nsystem | curvature | rep | iters | matvecs | converged | E | rho series");
     for (name, xyz, bas, xc) in systems {
-        let mut arms: Vec<(&str, bool, Option<&str>)> = vec![("exact", false, None)];
+        let mut arms: Vec<(&str, bool, Option<&str>, bool)> = vec![
+            ("exact", false, None, false),
+            ("exact+fullgap", false, None, true),
+        ];
         for a in ["sto-3g", "cc-pvdz-ri", "def2-universal-jkfit"] {
-            arms.push((a, true, Some(a)));
+            arms.push((a, true, Some(a), false));
         }
-        for (tag, aux, ab) in arms {
+        for (tag, aux, ab, fg) in arms {
             for rep in 0..3 {
-                let r = run_with_aux(xyz, bas, *xc, aux, ab);
+                let r = run_with_aux(xyz, bas, *xc, aux, ab, fg);
                 let rhos: Vec<String> = r.rhos.iter().map(|x| format!("{x:+.4}")).collect();
                 println!(
                     "{name} | {tag} | {rep} | {} | {} | {} | {:.10} | [{}]",
