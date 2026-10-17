@@ -107,9 +107,12 @@ const ALL9: [(usize, usize); 9] = [
     (2, 2),
 ];
 const FD_H: f64 = 1e-4;
-/// Gaussian-nucleus exponent of the SR derivative in the FD anchors (see
-/// `pbc_kpoint_ecp.rs`: against the energy's 1e16 nucleus the remaining
-/// difference is the model-nucleus error, which falls as 1/zeta).
+/// Gaussian-nucleus exponent of the SR derivative in the FD anchors. This is
+/// a deliberate pin, not the default (`pbc_kpoint_ecp.rs` uses the default):
+/// the slow rotated anchors below (the ~90 min FD test among them) were
+/// calibrated with it and are not re-run here, so they carry the 1e8
+/// model-nucleus error against the energy's 1e16 nucleus (falls as 1/zeta,
+/// about 1e-9 on a force) on top of the FD truncation.
 const FD_NUCLEUS_EXPONENT: f64 = 1e8;
 /// Exponent of the supercell anchor. STILL PINNED at the pre-#434 value 1e7:
 /// that test takes ~29 min in release, so it was not re-run without the pin.

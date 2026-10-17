@@ -37,19 +37,17 @@
 //! * SCF FD ANCHOR (slow, #[ignore]): analytic RHF force vs central FD (h =
 //!   1e-4) of ferric's OWN Gamma energy, both exxdiv, every displaced SCF
 //!   seeded from the reference density. Prototype (Python, frozen image
-//!   sets, pure AFT): 1.49e-9 none / 1.50e-9 ewald. The Rust SR attraction
-//!   derivative carried coordinate-dependent rounding at the 1e9 gradient
-//!   nucleus exponent (6.4e-9 on the H s+p cell; Z = 7 here; removed by #434,
-//!   after which the H s+p cell reaches 2.5e-9) and the ECP term
-//!   libecpint's jitter. MEASURED 2026-09-27 (compact HI, pre-#434, not
-//!   re-measured since): 2.52e-7 for both
-//!   exxdiv → bar 5e-7; ΣF 1.9e-11 (all of it the dense-AFT `eri` part at
+//!   sets, pure AFT): 1.49e-9 none / 1.50e-9 ewald. The SR attraction
+//!   derivative is evaluated at the energy's own 1e16 nucleus. MEASURED
+//!   (release): compact HI 3.1e-10 (both exxdiv), full HI/LANL2DZ 1.5e-9
+//!   (both exxdiv; 1.4e-9 with the derivative's nucleus at 1e9) → bar 5e-9;
+//!   ΣF 1.9e-11 (all of it the dense-AFT `eri` part at
 //!   precision 1e-10; ECP part 3e-16) → bar 1e-9. Mutants, measured (compact;
 //!   prototype full-LANL2DZ values in brackets): `EcpNoCentre` 0.495 [3.1e-1]
 //!   and `EcpCentreSign` 0.989 [6.3e-1] (ΣF sees both); `EcpL0Only` 2.5e-2
 //!   [1.6e-2] and `EcpM0Only` 2.4e-2 [4.2e-3] (ΣF BLIND — only this FD
 //!   anchor catches them). Each must miss by > 10x the bar; ΣF visibility
-//!   is asserted on the ECP part. The full-LANL2DZ case is not yet measured.
+//!   is asserted on the ECP part.
 //!
 //! Not pinned to PySCF: 2.13's `ECPscalar_ipnuc` is 1.1e-7 off on off-centre
 //! elements and its periodic `ecp_int` 3.8e-6 off (FINDINGS 14, 22).
@@ -95,8 +93,10 @@ const HI_A: [[f64; 3]; 3] = [[6.0, 0.0, 0.0], [0.0, 6.0, 0.0], [0.0, 0.0, 7.0]];
 const MOVED: [[f64; 3]; 2] = [[0.3, 0.2, 0.4], [0.9, -0.4, 3.3]];
 const FD_H: f64 = 1e-4;
 const TERM_FD_BAR: f64 = 1e-7;
-/// Measured 2026-09-27 (compact HI, release): 2.52e-7 for both exxdiv.
-const SCF_FD_BAR: f64 = 5e-7;
+/// Measured (release, derivative at the energy's 1e16 nucleus): compact HI
+/// 3.1e-10, full HI/LANL2DZ 1.5e-9, both exxdiv; the smallest mutant misses
+/// 4.2e-3 (`EcpM0Only`, LANL2DZ), 6 orders above the bar.
+const SCF_FD_BAR: f64 = 5e-9;
 /// ΣF of the TOTAL force. Measured 1.9e-11 at AFT precision 1e-10; the
 /// per-part printout put all of it in `eri` (dense-AFT pair screening), the
 /// ECP part at 3e-16.
@@ -619,8 +619,9 @@ fn ecp_strain_term_matches_fd_of_its_energy_at_fixed_density() {
 }
 
 /// Bar for the total RHF stress vs FD of the SCF energy. MEASURED 2026-10-09
-/// (compact HI, release): 6.3e-8 (the forces' SCF anchor floor is 2.5e-7,
-/// libecpint/libint jitter); the ECP-strain mutants miss by >= 0.11.
+/// (compact HI, release): 6.3e-8, 5.8e-8 with the derivative's nucleus at the
+/// energy's 1e16 (the FD h truncation, not the nucleus); the ECP-strain
+/// mutants miss by >= 0.11.
 const STRESS_FD_BAR: f64 = 5e-7;
 
 /// Total RHF stress `dE/dε` of the compact HI cell vs central FD (h = 1e-4)

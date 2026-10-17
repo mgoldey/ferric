@@ -26,28 +26,19 @@
 //! the lindep worst case), and the RS-GDF aux-metric drop count is the SAME
 //! at every displaced geometry (a count change makes E(R) discontinuous).
 //!
-//! Bars (START from the known floors, FINDINGS Iterations 16-20):
-//! * s-only H cells reach ≤ 1e-8 (bar 1e-7). With p shells the SR attraction
-//!   derivative used to carry coordinate-dependent rounding (1.85e-7
-//!   Ha/Bohr on the triclinic 4H s+p cell at a gradient nucleus exponent of
-//!   1e10; bar 5e-7), which an earlier revision of this note called
-//!   libint2's tight-Gaussian-nucleus floor. #434 removed it (each SR
-//!   derivative triplet is evaluated in the frame of its nucleus): that cell
-//!   now reaches 2.5e-9 at the default 1e9. The bars below ([`P_BAR`] and
-//!   the stress bars) were set from the OLD floor and have NOT been
-//!   re-measured on the heavy-atom cells (the tests are slow); they are
-//!   loose, not wrong. The printed nucleus-exponent scan separates the
-//!   remaining model-nucleus error (falls as 1/zeta) from a missing term.
-//! * d shells: UNKNOWN. [`D_BAR`] = 1e-5 is PROVISIONAL UNTIL MEASURED;
-//!   tighten after the first run (every test prints its residual, and the
-//!   HF force tests print the residual at gradient nucleus exponents
-//!   1e8/1e9/1e11 too, which separates the model-nucleus error — it moves
-//!   with the exponent — from a missing term, which does not).
+//! Bars (set from the measurements below, the derivative at the energy's own
+//! 1e16 nucleus; every mutant misses by > 1e-4, so each bar sits 4+ decades
+//! under the smallest mutant):
+//! * s-only H cells reach <= 1e-8 (bar 1e-7). With p shells the triclinic 4H
+//!   s+p cell reaches 3.5e-9 (the h = 1e-4 FD truncation); Li p shells reach
+//!   <= 1.9e-10 ([`P_BAR`]); d shells (CO, OH) <= 2.8e-9 ([`D_BAR`]). The
+//!   printed nucleus-exponent scan separates the remaining model-nucleus
+//!   error of a smaller derivative exponent (falls as 1/zeta; CO 1.7e-8 at
+//!   1e9, 1.5e-7 at 1e8) from a missing term.
 //! * KS on the atom grid: FD h = 5e-5 (the hard neighbour mask; Iteration 17).
 //! * Stress: all nine components, Richardson `(4 FD(h/2) − FD(h))/3` (the
 //!   p-shell rule of Iteration 19); the antisymmetric part of an HF stress is
-//!   reported (5.4e-8 on the triclinic s+p cell before #434, 2.3e-11 after:
-//!   it was SR-derivative rounding).
+//!   reported (1.4e-13 on the triclinic s+p cell).
 //!
 //! Mutants (the anchor CAN fail on heavy atoms): `GradMutation::FitNoMetric`
 //! and `WSign` on CO/cc-pVDZ + jkfit, `WSign` on dense-AFT LiH, `XcNoAo` on
@@ -110,25 +101,24 @@ const FD_H: f64 = 1e-4;
 /// Atom-grid KS step (Iteration 17: the hard neighbour mask needs ≤ 5e-5).
 const FD_H_KS: f64 = 5e-5;
 
-/// Li p shells (STO-3G / 6-31G): the H-derived p-shell bar of the pre-#434
-/// floor (module doc); loose now, not re-measured for Z = 3.
-const P_BAR: f64 = 5e-7;
-/// d shells in the orbital basis. Provisional until measured; tighten after
-/// the first run.
-const D_BAR: f64 = 1e-5;
-/// KS PBE with d shells on the atom grid, h = 5e-5. Provisional until
-/// measured; tighten after the first run.
+/// Li p shells (STO-3G / 6-31G / cc-pVDZ): MEASURED <= 1.9e-10 (LiH, both
+/// exxdiv, dense and RS-GDF); bar 5x.
+const P_BAR: f64 = 1e-9;
+/// d shells in the orbital basis: MEASURED CO cc-pVDZ/jkfit 2.8e-9, OH UHF
+/// 8.4e-10; bar 3.5x the worst.
+const D_BAR: f64 = 1e-8;
+/// KS PBE with d shells on the atom grid, h = 5e-5: MEASURED CO 2.0e-6 (grid
+/// limited), OH 8.6e-10; the bar is unchanged.
 const KS_D_BAR: f64 = 1e-5;
-/// Stress, p shells: the triclinic s+p bar (Richardson), Iteration 19.
-const STRESS_P_BAR: f64 = 5e-6;
-/// Stress antisymmetric part, p shells: the pre-#434 triclinic s+p bar
-/// (5.4e-8 measured there at Z = 1, 2.3e-11 since #434). Loose, not
-/// re-measured for Z = 3.
-const STRESS_P_ANTISYM_BAR: f64 = 5e-7;
-/// Stress with d shells (FD and antisymmetric part). Provisional until
-/// measured; tighten after the first run.
-const STRESS_D_BAR: f64 = 1e-5;
-const STRESS_D_ANTISYM_BAR: f64 = 1e-5;
+/// Stress, p shells (Richardson): MEASURED LiH 6-31G 4.1e-10 / 3.9e-10
+/// (none / ewald); bar 5x.
+const STRESS_P_BAR: f64 = 2e-9;
+/// Stress antisymmetric part, p shells: MEASURED 1.5e-14; bar 1e-12.
+const STRESS_P_ANTISYM_BAR: f64 = 1e-12;
+/// Stress with d shells (Richardson): MEASURED CO cc-pVDZ/jkfit 3.2e-9 / 3.7e-9
+/// (none / ewald); bar 4x. Antisymmetric part MEASURED 4.0e-12; bar 5x.
+const STRESS_D_BAR: f64 = 1.5e-8;
+const STRESS_D_ANTISYM_BAR: f64 = 2e-11;
 /// ΣF: H cells reach 1e-13 (bar 1e-10). Loose for heavy atoms: set when the
 /// SR derivative's rounding noise was not translation-invariant term by term
 /// (#434 removed that); not re-measured.
