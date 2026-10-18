@@ -56,21 +56,39 @@
 //! covered in `pbc_sr_rotation_kderiv.rs` (without an ECP).
 //!
 //! Section 4 measured errors and mutant ledger (release, quiet box):
-//! 1x1x1 vs Gamma: ECP parts 0 (bitwise), force total 9.8e-13, stress total
+//! 1x1x1 vs Gamma: ECP parts 0 (bitwise; EXPECTED, not evidence: both sides
+//! call the same ECP strain kernel at one point, so the anchor sees the k
+//! wrapper only; the independent kernel check on the skew cell is the FD
+//! test), force total 9.8e-13, stress total
 //! 1.0e-12, antisymmetry 2e-14, |S| 7.6e-1, off-diagonal 2.5e-1 (ECP part
 //! 7.3e-2); stress mutants NoEcp 4.6e-1, EcpNoCentre 9.8e-1, EcpCentreSign
 //! 1.95, EcpNoKetImage 1.19, EcpUnitPairVector 3.5e-1 (bar 1e-4, ECP 1e-12).
 //! A transposed stress is NOT a mutant: the stress is symmetric (miss
 //! 5.0e-12). 1x1x2 vs supercell/N: force total 4.7e-13, stress total 2.3e-12,
-//! every part <= 4.6e-13 / 5.9e-14; test mutation (supercell translated along
-//! z instead of a3) fails at force kinetic 1.1e-2. FD at 1x1x1: force 7.5e-9,
+//! worst part force eri 4.55e-13 (bar 5e-12, 11x), stress vlr 5.9e-14; the
+//! mesh is TRIM, so it checks only the k wrapper (the supercell shares
+//! `ecp_strain_image`). Test mutation (a HAND EDIT of `tri_shifts`: translate
+//! along z instead of a3) fails at force kinetic 1.1e-2. FD at 1x1x1: force 7.5e-9,
 //! stress 3.3e-8 (zz, xy, yz, xz); RotDropT 1.96 and EcpUnitPairVector 3.5e-1.
+//!
+//! Skew sensitivity (MEASURED, same MOVED positions, 1x1x1): the orthorhombic
+//! cell already has off-diagonal stress 3.5e-1 (ECP part 1.95e-1; |S| 8.2e-1)
+//! against 2.5e-1 (7.3e-2; 7.6e-1) triclinic, so TRI_OFFDIAG_FLOOR is a
+//! vacuity guard, not skew evidence. Off-diagonal miss of ECP stress mutants
+//! (orthorhombic / triclinic): EcpNoKetImage 3.6e-2 / 2.3e-1, EcpCentreSign
+//! 1.44 / 6.3e-1, EcpUnitPairVector 9.0e-1 / 3.5e-1. Every mutant is visible
+//! on both cells, so NO skew-specific mutant exists and detection of a
+//! skew-only ECP defect is NOT shown; the only skew-sensitive check is the
+//! supercell translation (hand-edit mutation above).
 //!
 //! NOT tested: range-split source with an ECP, several ECP atoms, a NON-TRIM
 //! mesh (1x1x3) or an FD of the 1x1x2 mesh on the triclinic ECP cell (the
 //! orthorhombic 1x1x3 supercell anchor alone is 24 min; the triclinic 1x1x2
-//! one is 10 min), k-specific ECP mutants (`EcpWrongResidue`,
-//! `EcpMeshCountModuli`) on the triclinic cell, a shifted mesh with an ECP,
+//! one is 10 min), a shifted mesh with an ECP, skew-SPECIFIC detection (no
+//! mutant is shown to be visible only on a skewed cell; see the comparison
+//! test), k-specific ECP mutants on the triclinic cell (`EcpWrongResidue` is a
+//! no-op on a 1x1x2 mesh because -L mod 2 == L mod 2, so it is unrunnable
+//! there; `EcpMeshCountModuli` is a no-op on every Gamma-centred mesh),
 //! the fit-acting FORCE mutants (`RotFitWrongResidue`,
 //! `RotSwapPair`) with an ECP (the dense force loop only asserts that they
 //! are no-ops; the RS-GDF loop is stress-only; their stress versions are run
@@ -766,7 +784,8 @@ fn rotated_hcore_with_ecp_at_fixed_density_matches_fd_and_keeps_the_ecp_part() {
 /// Bars of the 1x1x1 and 1x1x3 anchors at the default nucleus exponent.
 /// MEASURED 1x1x3 (24 min release): force TOTAL 4.6e-13, stress TOTAL 3.0e-12,
 /// vsr parts <= 1.5e-14, every other part <= 4.8e-13; 1x1x1 force total
-/// 5.6e-12, stress total 1.1e-12, ECP parts 0.
+/// 5.6e-12, stress total 1.1e-12, ECP parts 0 (expected, not evidence: both
+/// sides call the same ECP kernel at one point; see the section 4 note).
 const SC_BAR_TOTAL: f64 = 3e-11;
 const SC_BAR_SR: f64 = 1e-12;
 const SC_BAR_PART: f64 = 3e-12;
@@ -1542,9 +1561,21 @@ fn far_field_contracted_s_blocks_do_not_read_uninitialised_memory() {
 // coordinates in a pair vector, a missing off-diagonal row of the strain
 // map, d(a_i)/d(eps) applied to the wrong row) is invisible on diag(6, 6, 7)
 // and shows on a skewed cell as an off-diagonal stress error. So the
-// off-diagonal stress components must be non-negligible (asserted against a
-// floor derived from the measured size) and a TRANSPOSED stress must miss
-// the Gamma anchor by that size.
+// off-diagonal stress components must be non-negligible (a vacuity guard, not
+// skew evidence: see the orthorhombic comparison test below). REFUTED part of
+// this hypothesis: "a TRANSPOSED stress must miss the Gamma anchor". dE/de of a
+// rotation-invariant energy is symmetric (measured miss 5e-12), so transposition
+// is not a mutant; the antisymmetry check replaces it.
+//
+// WHAT EACH ANCHOR CAN SEE. At 1x1x1 the k side calls `periodic_ecp_strain_weighted`
+// with `EcpWeights::Residue` (moduli [1,1,1]) and the Gamma side the same kernel
+// with `EcpWeights::Gamma`, so "ECP parts 0 (bitwise)" is EXPECTED, not
+// evidence about the kernel; the five ECP mutants act on the k side only and
+// show the mutants are live, not that the anchor detects kernel defects. The
+// 1x1x2 supercell test shares `ecp_strain_image` with the Gamma side and so
+// independently checks only the k-specific part (residue lookup through the
+// reciprocal lattice, moduli [1,1,2]). The ONLY independent check of the ECP
+// strain kernel on the skewed cell is the 1x1x1 FD test.
 
 const TRI_HI: [[f64; 3]; 3] = [[6.0, 0.0, 0.0], [1.0, 6.0, 0.0], [1.2, -0.8, 7.0]];
 
@@ -1600,7 +1631,11 @@ fn offdiag_max(m: &Mat3) -> f64 {
 const TRI_ONE_POINT_ECP: f64 = 1e-12;
 const TRI_ONE_POINT_TOTAL: f64 = 1e-10;
 const TRI_SC_BAR_TOTAL: f64 = 3e-11;
-const TRI_SC_BAR_PART: f64 = 3e-12;
+/// The worst part is force `eri` (4.55e-13): bar 11x above it; the next are
+/// stress vlr 5.9e-14 (85x) and force ecp 6.6e-15. `SC_BAR_SR` (1e-12, the
+/// orthorhombic file's constant, unchanged) vs force vsr_basis 3.8e-15 and
+/// stress vsr 1.8e-14: 260x / 56x.
+const TRI_SC_BAR_PART: f64 = 5e-12;
 /// The stress of the skewed cell must have off-diagonal weight at least this
 /// (MEASURED total 2.5e-1, ECP part 7.3e-2), so the anchors are not diagonal-only.
 const TRI_OFFDIAG_FLOOR: f64 = 1e-2;
@@ -1804,5 +1839,54 @@ fn triclinic_rotated_ecp_force_and_stress_match_fd_of_the_rotated_k_energy() {
         let w = miss_s(&r.stress(Some(m), zeta));
         eprintln!("  stress mutant {m:?}: FD miss {w:.2e}");
         assert!(w > MUTANT_FLOOR, "{m:?} escaped the FD: {w:e}");
+    }
+}
+
+/// MEASUREMENT (no skew claim asserted beyond vacuity): the same MOVED
+/// positions in the orthorhombic and the triclinic cell at 1x1x1. MOVED tilts
+/// the H-I bond, so the orthorhombic cell already carries off-diagonal stress;
+/// this reports its size next to the triclinic one and the off-diagonal miss
+/// of three ECP stress mutants (vs the unmutated analytic stress, which the FD
+/// test pins on the triclinic cell) on both. A mutant that is visible only on
+/// the skewed cell would have a ~0 orthorhombic off-diagonal miss and a large
+/// triclinic one; see the printed table.
+#[test]
+#[ignore = "slow (~10 min release, quiet box): two HI 1x1x1 k SCFs + 2 stresses + 6 ECP mutant stresses"]
+fn ecp_stress_offdiagonal_size_and_mutant_misses_orthorhombic_vs_triclinic() {
+    let bs = rot_basis();
+    let zeta = GRAD_NUCLEUS_EXPONENT;
+    for (name, cell) in [
+        ("orthorhombic", hi_cell(&MOVED, &bs)),
+        ("triclinic", tri_cell(&MOVED, &bs)),
+    ] {
+        let r = run(cell, &bs, [1, 1, 1], on());
+        let s0 = r.stress(None, zeta);
+        eprintln!(
+            "{name}: offdiag total {:.2e}, ECP part {:.2e} (max |S| {:.2e})",
+            offdiag_max(&s0.de_deps),
+            offdiag_max(&s0.parts.ecp),
+            mat_max(&s0.de_deps)
+        );
+        assert!(offdiag_max(&s0.parts.ecp) > 1e-3, "{name}: vacuous");
+        for m in [
+            KStressMutation::EcpNoKetImage,
+            KStressMutation::EcpCentreSign,
+            KStressMutation::EcpUnitPairVector,
+        ] {
+            let sm = r.stress(Some(m), zeta);
+            let mut off = 0.0_f64;
+            let mut diag = 0.0_f64;
+            for i in 0..3 {
+                for j in 0..3 {
+                    let d = (sm.de_deps[i][j] - s0.de_deps[i][j]).abs();
+                    if i == j {
+                        diag = diag.max(d);
+                    } else {
+                        off = off.max(d);
+                    }
+                }
+            }
+            eprintln!("  {name} mutant {m:?}: offdiag miss {off:.2e}, diagonal miss {diag:.2e}");
+        }
     }
 }

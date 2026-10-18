@@ -30,7 +30,8 @@
 //!     mutants of the ECP walk against the supercell anchor of the ECP part.
 //!
 //! NOT tested (safe by construction per review, but unmeasured): more than one
-//! ECP atom per cell, triclinic or non-orthogonal cells, a pure-d (l = 2)
+//! ECP atom per cell, triclinic or non-orthogonal cells here (a rotated triclinic
+//! ECP cell is in `pbc_kpoint_ecp_rotation.rs` section 4), a pure-d (l = 2)
 //! orbital shell on the ECP element, an ECP with a range-split RS-GDF source
 //! (the ECP call in `one_electron_pass` is source-independent), a non-I ECP.
 //!

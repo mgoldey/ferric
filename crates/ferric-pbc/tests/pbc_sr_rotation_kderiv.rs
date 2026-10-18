@@ -30,6 +30,9 @@
 //!     the derivative walks unrotated (`RotOff`).
 //! (g) Refusals: a rotated build over an `Off` config, an explicit `On` over
 //!     an unrotated build, a rotation mutant in the config.
+//! (h) Shifted (Monkhorst-Pack) 1x1x2 mesh with rotation: walks vs unrotated
+//!     walks, and FD of the rotated k energy with the full mutant sweep (the
+//!     last section of this file).
 //!
 //! Artifact hypothesis, stated before measuring. Correct: (a) at the
 //! screening precision (measured at the default screen 1e-9/1e-10: force
@@ -1383,24 +1386,29 @@ fn rotated_k_force_and_stress_match_fd_on_2x2x1_triclinic() {
 // size (4 vs 2 along z).
 //
 // ARTIFACT hypothesis (before measuring). If correct: rotated-vs-unrotated
-// walks agree at the screen (D_BAR), analytic == FD at the FD floor
-// (FD_F_BAR / FD_S_BAR) and every Rot* mutant misses by >= MUTANT_FLOOR. If
-// the rotated weights were binned with the mesh size (2) instead of the
-// residue modulus (4), or the phases were Gamma-centred, the analytic would
-// miss the FD by O(0.01..1) on the rotated columns while the rotated-vs-
-// unrotated anchor stays at the screen only if BOTH walks share the slip
-// (the FD is the discriminating one).
+// walks agree at the screen (D_BAR), analytic == FD at the FD floor and every
+// Rot* mutant misses by >= MUTANT_FLOOR. A residue-binning slip in the
+// rotated weights would show as a large FD miss; the nearest real mutants are
+// `RotFitWrongResidue` / `RotHcoreWrongResidue` (reversed bin order), and the
+// phase slips `NoPhase` / `ConjD`. There is NO mutant that bins by the mesh
+// size instead of the residue modulus, so that specific slip is untested. The
+// rotated-vs-unrotated anchor passes if both walks share a slip; the FD is the
+// discriminating test.
 
 // MEASURED (release): rotated vs unrotated walks on MP 1x1x2: force total
 // 3.0e-10, stress total 8.9e-9 (D_BAR 1e-7, 11x). FD (h = 1e-4): force 2.35e-9
-// (bar 2.5e-8, 10.6x), stress 5.5e-9 (bar 5e-8, 9.1x). FD misses of the
+// (bar 2.5e-8, 10.6x), stress 5.5e-9 (bar 1e-7, 18x). FD misses of the
 // mutants (force / stress): RotDropT 3.3e-1 / 4.3e-1, RotUseT 3.2e-1 / 4.4e-1,
 // RotOneSided 1.5e-1 / 1.9e-1, RotFlipSign 3.9e-1 / 5.3e-1, RotSwapPair
 // 2.3e-3 / 9.3e-3, RotFitWrongResidue 7.1e-2 / 1.3e-1, RotHcoreWrongResidue
 // 5.5e-1 / 7.8e-1, NoPhase 1.5e-2 / 2.4e-1, ConjD 1.1e-2 / 2.2e-2 (floor
 // MUTANT_FLOOR 1e-6, smallest 2.3e-3). RotOff is BLIND by design at the
 // default screen (see (a)). Test mutation: rotation Off in `mp_cell_run`
-// fails `assert_rotates` ("hcore did not rotate").
+// fails `assert_rotates` ("hcore did not rotate"); this was a HAND EDIT, not a
+// committed mutant. Both-side ratios: stress bar 1e-7 is 18x above the measured
+// 5.5e-9 and the smallest stress mutant miss (9.3e-3) is 9.3e4x above the bar;
+// force bar 2.5e-8 is 10.6x above 2.35e-9 and the smallest force miss (2.3e-3)
+// is 9.2e4x above it.
 
 fn mp_cell_run() -> Run {
     run_c(
@@ -1527,4 +1535,4 @@ fn rotated_mp_mesh_force_and_stress_match_fd_of_the_rotated_k_energy() {
 }
 
 const MP_FD_F_BAR: f64 = 2.5e-8;
-const MP_FD_S_BAR: f64 = 5e-8;
+const MP_FD_S_BAR: f64 = 1e-7;
