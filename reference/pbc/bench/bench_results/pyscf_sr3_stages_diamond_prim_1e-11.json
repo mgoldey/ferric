@@ -1,0 +1,128 @@
+{
+ "code": "pyscf",
+ "pyscf_version": "2.13.1",
+ "cell": "diamond_prim",
+ "args": {
+  "cell": "diamond_prim",
+  "basis": "cc-pvdz",
+  "aux": "cc-pvdz-ri",
+  "basis_repr": "general",
+  "threads": 1,
+  "precision": 1e-11,
+  "lindep_aux": 1e-10,
+  "max_memory": 8000,
+  "count": "none",
+  "no_build": false,
+  "selftest": false,
+  "verbose": 0,
+  "out": "/tmp/claude-1000/sr3_diamond.json"
+ },
+ "threads": 1,
+ "precision": 1e-11,
+ "omega": 0.41694898389174173,
+ "mesh": [
+  9,
+  9,
+  9
+ ],
+ "ke_cutoff": 13.901951423144903,
+ "nao": 28,
+ "naux": 112,
+ "cell_rcut": 21.97213427211275,
+ "rs_cell_bas_types": {
+  "steep": 2,
+  "local": 6,
+  "smooth": 0
+ },
+ "exclude_dd_block": true,
+ "exclude_d_aux": true,
+ "stages": {
+  "setup (omega, rs_cell, supmol)": {
+   "wall_s": 0.011462265974842012,
+   "cpu_s": 0.011462437999999964,
+   "calls": 1
+  },
+  "SR dd block (FFT)": {
+   "wall_s": 8.55129910632968e-05,
+   "cpu_s": 8.500799999999753e-05,
+   "calls": 1
+  },
+  "SR int3c init (q_cond, cintopt)": {
+   "wall_s": 0.10084309795638546,
+   "cpu_s": 0.10070792799999995,
+   "calls": 1
+  },
+  "SR int3c libcint (PBCfill_nr3c)": {
+   "wall_s": 37.257511446019635,
+   "cpu_s": 37.253581712,
+   "calls": 1
+  },
+  "SR j3c total (pass 1)": {
+   "wall_s": 37.36153021705104,
+   "cpu_s": 37.357464355,
+   "calls": 1
+  },
+  "j2c (get_2c2e)": {
+   "wall_s": 0.16663560701999813,
+   "cpu_s": 0.16662594499999983,
+   "calls": 1
+  },
+  "j2c decompose": {
+   "wall_s": 0.003618357004597783,
+   "cpu_s": 0.0036193109999942408,
+   "calls": 1
+  },
+  "LR aux FT (weighted_ft_ao)": {
+   "wall_s": 0.0026841610088013113,
+   "cpu_s": 0.0026851619999987975,
+   "calls": 1
+  },
+  "LR pair FT (ft kernel)": {
+   "wall_s": 1.727711737039499,
+   "cpu_s": 1.727597609,
+   "calls": 1
+  },
+  "LR GEMM (add_ft_j3c)": {
+   "wall_s": 0.004510578000918031,
+   "cpu_s": 0.004511745000002065,
+   "calls": 1
+  },
+  "solve_cderi": {
+   "wall_s": 0.00038613402284681797,
+   "cpu_s": 0.00038641200000455456,
+   "calls": 1
+  },
+  "make_j3c total": {
+   "wall_s": 39.33430208801292,
+   "cpu_s": 39.330189843,
+   "calls": 1
+  },
+  "df_build total": {
+   "wall_s": 39.33907180395909,
+   "cpu_s": 39.334958426,
+   "calls": 1
+  },
+  "rest (df_build - listed top-level)": {
+   "wall_s": 0.06053274683654308,
+   "cpu_s": 0.06060544900000053,
+   "calls": 1
+  },
+  "SR rest (h5 swap, merge_dd)": {
+   "wall_s": 0.0030901600839570165,
+   "cpu_s": 0.0030897070000008853,
+   "calls": 1
+  }
+ },
+ "sr3": null,
+ "loadavg_start": [
+  1.36474609375,
+  1.49951171875,
+  1.779296875
+ ],
+ "loadavg_end": [
+  1.23876953125,
+  1.451171875,
+  1.75
+ ],
+ "peak_rss_bytes": 170213376
+}
