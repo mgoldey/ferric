@@ -8,9 +8,9 @@
 //! # Formulation
 //!
 //! Rotate the occupieds, `C_loc = C_occ U`. The RI tensor rotates exactly,
-//! `B'^P_{i'a} = sum_i U_{i i'} B^P_{ia}` ([`rotate_b_ov_occupied`]), and the
+//! `B'^P_{i'a} = sum_i U_{i i'} B^P_{ia}` ([`crate::dlpno_localized::rotate_b_ov_occupied`]), and the
 //! occupied Fock block becomes the NON-diagonal `f = U^T diag(eps_occ) U`
-//! ([`localized_occupied_fock`]). Virtuals stay canonical (`eps_vir`). The
+//! ([`crate::dlpno_localized::localized_occupied_fock`]). Virtuals stay canonical (`eps_vir`). The
 //! first-order amplitudes then satisfy
 //!
 //! ```text
@@ -32,7 +32,7 @@
 //!   here: the coupling sums amplitude blocks of different pairs, which needs
 //!   one shared virtual basis. Virtuals are the full canonical set.
 //! * Memory: `K` and `T` blocks (`nvir^2` each) are held for every retained
-//!   pair (plus a Jacobi copy); [`localized_working_bytes`] is checked against
+//!   pair (plus a Jacobi copy); [`crate::dlpno_localized::localized_working_bytes`] is checked against
 //!   `memory_budget_bytes` before anything is allocated.
 //! * Closed shell, library only. No speedup is claimed.
 //!
@@ -58,7 +58,7 @@ pub struct LocalizedMp2Config {
     pub conv_thresh: f64,
     /// Iteration cap; non-convergence is a hard error.
     pub max_iter: usize,
-    /// Optional cap on the working set ([`localized_working_bytes`]).
+    /// Optional cap on the working set ([`crate::dlpno_localized::localized_working_bytes`]).
     pub memory_budget_bytes: Option<usize>,
 }
 
