@@ -6,17 +6,17 @@ canonical, and the RI-MP2 amplitude equation is
 
   K_ij^ab + (e_a+e_b) T_ij^ab - sum_k f_ik T_kj^ab - sum_k f_kj T_ik^ab = 0
 
-solved by Jacobi on the f off-diagonal with DIIS, over the retained pair set
+solved by plain Jacobi on the f off-diagonal (no DIIS), over the retained pair set
 only. Energy E = sum_ij sum_ab K_ij^ab (2 T_ij^ab - T_ij^ba) (full i,j sum).
 
 Hypotheses (written BEFORE measuring pair retention):
   X (physics): localized occupieds give spatially compact pair energies, so
       the diagonal-f estimate |e_ij| of distant pairs falls below t_cut_pairs
       and pair retention < 1 at C6/C8 for a loose-enough t_cut_pairs.
-  Y (artifact): the estimate is rotation-covariant only through the diagonal
-      of f_loc; if the estimator or solve were broken, untruncated energy would
-      differ from canonical (anchor) -- and retention would equal the canonical
-      value regardless of U.
+  Y (artifact): a broken solve would miss the canonical energy when every pair
+      is kept (the anchor, printed as e_loc_full vs e_can).
+Note: the retention printed here divides by nocc**2 ordered pairs and does not
+always keep diagonals, so it is NOT comparable to the Rust number.
 Usage: proto_dlpno_loc_occ.py <xyz> <basis> [aux]
 """
 

@@ -7,12 +7,13 @@
 //!   diagonal-f estimate drops them and pair retention falls below 1 at a
 //!   useful `t_cut_pairs` on C6/C8, with a one-sided (less negative) error that
 //!   grows monotonically with the threshold.
-//! * ARTIFACT: if the Fock-coupled solve, the transpose bookkeeping or the pair
-//!   weighting were wrong, the UNTRUNCATED energy would miss canonical RI-MP2
-//!   (the anchor below), and a screen that only looked effective because the
-//!   solve drops coupling would show retention < 1 with an error that does NOT
-//!   vanish as `t_cut_pairs -> 0`. The anchor and the monotone-to-zero error
-//!   discriminate the two.
+//! * ARTIFACT: a wrong coupled solve, transpose bookkeeping or pair weighting
+//!   would miss canonical RI-MP2 in the untruncated anchor; a wrong pair
+//!   estimator would not change the anchor at all (every pair is kept at
+//!   `t_cut_pairs = 0`, so the error reaches the anchor floor by construction
+//!   and is NOT a discriminator). The real discriminators are the anchor (solve),
+//!   the independent-estimate test (screen), and, in the validation file,
+//!   retention falling with chain length.
 //!
 //! # Exactness anchor
 //!
@@ -37,8 +38,8 @@ use ndarray::Array2;
 
 const WATER: &str = "../../testdata/molecules/water.xyz";
 
-/// Measured anchor error (water/cc-pVDZ, all electron / frozen core) is
-/// MEASURED_PLACEHOLDER; the bar is >= 10x that.
+/// Measured anchor error (water/cc-pVDZ, all electron and frozen core) is
+/// 3.2e-12 Ha; the bar is >= 10x that.
 const ANCHOR_BAR: f64 = 1e-10;
 
 /// Mutation ledger (water/cc-pVDZ, all electron; each mutant was applied to
@@ -233,6 +234,23 @@ fn screen_is_live_one_sided_and_vanishes_with_the_threshold() {
 /// The screen must use the diagonal-f estimate of the LOCALIZED pair energies.
 /// Recomputed here independently (plain loops from `b_loc`), the retained
 /// count and the discarded estimated energy must match the library's.
+#[test]
+fn ample_memory_budget_runs_unchanged() {
+    let fx = load(WATER, "cc-pvdz", "cc-pvdz-ri", false);
+    let base =
+        dlpno_mp2_localized_from_b_ov(&fx.b_loc, &fx.f_loc, &fx.eps_vir, &fx.centers, &exact_cfg())
+            .unwrap()
+            .0;
+    let cfg = LocalizedMp2Config {
+        memory_budget_bytes: Some(1 << 34),
+        ..exact_cfg()
+    };
+    let got = dlpno_mp2_localized_from_b_ov(&fx.b_loc, &fx.f_loc, &fx.eps_vir, &fx.centers, &cfg)
+        .unwrap()
+        .0;
+    assert_eq!(got.e_total.to_bits(), base.e_total.to_bits());
+}
+
 #[test]
 fn pair_screen_matches_an_independent_diagonal_f_estimate() {
     let fx = load(WATER, "cc-pvdz", "cc-pvdz-ri", false);

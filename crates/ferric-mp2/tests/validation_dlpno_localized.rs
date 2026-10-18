@@ -23,10 +23,11 @@
 //!   the error is one-sided (E_loc >= E_canonical) and shrinks monotonically
 //!   with the threshold.
 //! * ARTIFACT: a solve that ignores coupling or mis-handles transposed pairs
-//!   would fail the `t_cut_pairs = 0` anchor (asserted first, per system); a
-//!   screen that is only an artifact of the estimator would not shrink the
-//!   error to the anchor floor as the threshold goes to 0. The two are
-//!   distinguished by the anchor and the monotone error.
+//!   would fail the `t_cut_pairs = 0` anchor (asserted first, per system). The
+//!   error reaching the anchor floor as the threshold goes to 0 is true by
+//!   construction (every pair kept) and does NOT discriminate. The real
+//!   discriminators are the anchor, the independent-estimate test in
+//!   `dlpno_localized_occupied.rs`, and retention falling with chain length.
 //!
 //! # Limits
 //!
@@ -97,7 +98,7 @@ fn sweep(name: &str, frozen: bool) -> Vec<(f64, f64, f64)> {
 }
 
 /// Anchor floor measured 3.2e-12 (water) and 1.9e-12 / 3.9e-12 / 5.9e-12 (C4 / C6 / C8);
-/// bar >= 17x the largest.
+/// bar ~17x the largest.
 const ANCHOR_BAR: f64 = 1e-10;
 
 #[test]

@@ -52,7 +52,7 @@ pub fn load(xyz: &str, obs_name: &str, aux_name: &str, frozen_core: bool) -> Loc
     };
     let (sc, b_ov) = ri_mp2_spin_components(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap();
     let nocc_total = mol.nelec() as usize / 2;
-    let nocc = nocc_total - fc;
+    let nocc = ferric_mp2::rimp2::active_occ(nocc_total, fc).unwrap();
     let nvir = obs.nbasis() - nocc_total;
     assert_eq!(b_ov.ncols(), nocc * nvir);
 

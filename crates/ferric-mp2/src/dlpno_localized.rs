@@ -23,8 +23,8 @@
 //! the localization and silently reproduce the canonical result).
 //! `E = sum_ij sum_ab K_ij^ab (2 T_ij^ab - T_ij^ba)`.
 //!
-//! The pair screen estimates `e_ij` from the diagonal of `f` (the usual
-//! DLPNO estimate), then retains pairs with `|e_ij| >= t_cut_pairs`.
+//! The pair screen estimates `e_ij` from the diagonal of `f` (the semicanonical
+//! diagonal-f full-virtual pair energy), then retains pairs with `|e_ij| >= t_cut_pairs`.
 //!
 //! # Scope (honest limits)
 //!
@@ -34,6 +34,7 @@
 //! * Memory: `K` and `T` blocks (`nvir^2` each) are held for every retained
 //!   pair (plus a Jacobi copy); [`crate::dlpno_localized::localized_working_bytes`] is checked against
 //!   `memory_budget_bytes` before anything is allocated.
+//! * The screen itself costs O(no^2 nv^2 naux), the same as canonical MP2.
 //! * Closed shell, library only. No speedup is claimed.
 //!
 //! # Exactness anchor
