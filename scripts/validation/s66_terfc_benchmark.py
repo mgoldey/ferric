@@ -216,13 +216,15 @@ def compute(method: str, xyz: str, nfc: int, basis: str, aux: str, mem_gb: float
     return e, rhf, time.perf_counter() - t0, extra
 
 
-def load_done(path: Path, basis: str | None = None) -> dict:
+def load_done(path: Path, basis: str | None = None, aux: str | None = None) -> dict:
     done = {}
     if path.exists():
         for ln in path.read_text().splitlines():
             if ln.strip():
                 r = json.loads(ln)
                 if basis is not None and r.get("basis") != basis:
+                    continue
+                if aux is not None and r.get("aux") != aux:
                     continue
                 done[(r["dimer"], r["calc"], r["method"])] = r
     return done
@@ -240,7 +242,7 @@ def cmd_run(a) -> None:
     methods = a.methods.split(",")
     calcs = a.calcs.split(",")
     out = Path(a.out)
-    done = load_done(out, a.basis)
+    done = load_done(out, a.basis, a.aux)
     gi = git_info()
     for k in dimers:
         atoms = read_atoms(files[k])
@@ -283,7 +285,7 @@ def stats(errs: list[float]) -> dict:
 
 
 def cmd_report(a) -> None:
-    done = load_done(Path(a.out), a.basis)
+    done = load_done(Path(a.out), a.basis, a.aux)
     ref = json.loads(REF_JSON.read_text())
     files = s66_files()
     rows, per = {}, {m: {"cp": [], "uncp": []} for m in METHODS}
@@ -297,9 +299,10 @@ def cmd_report(a) -> None:
         for m in METHODS:
             g = lambda c: done.get((k, c, m), {}).get("energy")  # noqa: E731
             es = {c: g(c) for c in CALCS}
-            row["wall_s"][m] = sum(
-                done[(k, c, m)]["wall_s"] for c in CALCS if (k, c, m) in done
-            )
+            if any((k, c, m) in done for c in CALCS):
+                row["wall_s"][m] = sum(
+                    done[(k, c, m)]["wall_s"] for c in CALCS if (k, c, m) in done
+                )
             if es["AB"] is not None and es["A"] is not None and es["B"] is not None:
                 row[f"{m}_uncp"] = (es["AB"] - es["A"] - es["B"]) * HARTREE_TO_KCAL
                 per[m]["uncp"].append(row[f"{m}_uncp"] - row["ref"])
@@ -313,11 +316,15 @@ def cmd_report(a) -> None:
                 ) * HARTREE_TO_KCAL
                 per[m]["cp"].append(row[f"{m}_cp"] - row["ref"])
         rows[k] = row
+    present = [m for m in METHODS if any(mm == m for _, _, mm in done)]
+    complete = len(rows) == 66 and all(
+        f"{m}_uncp" in r and f"{m}_cp" in r for r in rows.values() for m in present
+    )
     summ = {m: {c: stats(v) for c, v in per[m].items() if v} for m in METHODS}
     res = {
         "dimers_done": sorted(rows),
         "n_dimers": len(rows),
-        "full_set": len(rows) == 66,
+        "full_set": complete,
         "basis": a.basis,
         "aux": a.aux,
         "units": "kcal/mol",
@@ -354,9 +361,28 @@ def cmd_report(a) -> None:
                 for m in METHODS
             )
             + "  t="
-            + "/".join(f"{r['wall_s'][m]:.0f}" for m in METHODS)
+            + "/".join(f"{r['wall_s'][m]:.0f}" for m in METHODS if m in r["wall_s"])
             + "s"
         )
+
+
+def cmd_unit(a) -> None:
+    """No-ferric check that records for another basis/aux are never reused."""
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as d:
+        f = Path(d) / "x.jsonl"
+        base = {"dimer": 1, "calc": "AB", "method": "mp2", "basis": "b", "aux": "x"}
+        f.write_text(
+            json.dumps(base)
+            + "\n"
+            + json.dumps({**base, "calc": "A", "aux": "y"})
+            + "\n"
+        )
+        assert set(load_done(f, "b", "x")) == {(1, "AB", "mp2")}
+        assert set(load_done(f, "b", "y")) == {(1, "A", "mp2")}
+        assert load_done(f, "other", "x") == {}
+    print("UNIT OK")
 
 
 def cmd_selftest(a) -> None:
@@ -423,6 +449,7 @@ def main() -> None:
     p = argparse.ArgumentParser()
     sub = p.add_subparsers(dest="cmd", required=True)
     sub.add_parser("selftest")
+    sub.add_parser("unit")
     c = sub.add_parser("check-split")
     c.add_argument("--dimers", default=",".join(str(i) for i in range(1, 67)))
     for name in ("run", "report"):
@@ -438,7 +465,9 @@ def main() -> None:
         else:
             s.add_argument("--json", required=True)
     a = p.parse_args()
-    if a.cmd == "selftest":
+    if a.cmd == "unit":
+        cmd_unit(a)
+    elif a.cmd == "selftest":
         cmd_selftest(a)
     elif a.cmd == "check-split":
         sys.exit(0 if check_split([int(x) for x in a.dimers.split(",")]) else 1)

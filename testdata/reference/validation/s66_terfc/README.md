@@ -4,7 +4,7 @@ Driver: `scripts/validation/s66_terfc_benchmark.py`. Raw records: `*.jsonl`
 (one line per dimer x calculation x method, with wall time and build id);
 aggregate: `results.json` (from `report`).
 
-## Pre-registered before any S66 number was seen
+## Pre-registered (but see the pilot caveat under "Other caveats": a dimer-01 number may have been seen first)
 
 Pass condition ("matches"): on the FULL 66-dimer set, uncorrected (no-CP, the
 fitting convention) RMSD against CCSD(T)/CBS within 2x of the published
@@ -15,7 +15,7 @@ never called "matches".
 If the pipeline is right: uncorrected SCS-MP2(2terfc) and MP2-V errors are small
 and not systematically signed; plain RI-MP2 (control) is more overbound than the
 two fitted methods on dispersion-bound dimers.
-**Outcome (added after the run): the "not systematically signed" prediction was MISSED.** All 5 uncorrected errors are negative for all three methods (every method overbinds every dimer). n=5 from one chemistry class, so weak evidence either way. The plain-MP2 dispersion control could not be tested (no dispersion-class dimer was run).
+**Outcome (added after the run): the "not systematically signed" prediction was MISSED.** All 5 uncorrected errors are negative for all three methods (every method overbinds every dimer). n=5 (3 H-bonded: 01, 02, 08; 2 mixed: 51 ethyne dimer, 59 ethyne-water; no dispersion-class dimer), so weak evidence either way. The plain-MP2 dispersion control could not be tested (no dispersion-class dimer was run).
 If the pipeline is broken I expect: (a) ghost atoms carrying no basis -> CP
 energy identical to uncorrected to ~1e-9 Ha (checked per row); (b) frozen core
 omitted -> shifts of ~0.05-0.2 kcal/mol on every dimer; (c) CP applied to a
