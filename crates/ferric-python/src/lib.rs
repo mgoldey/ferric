@@ -897,7 +897,7 @@ fn warn_rhf_not_converged(py: Python<'_>, r: &ferric_scf::result::ScfResult, con
     memory_budget_gb=None, solvent=None, pcm_lebedev_order=None,
     stability_descent=None,
     cosx_grid=None, cosx_final_pass=None, cosx_final_grid=None, cosx_overlap_fit=None,
-    aurora=None, trah_trigger=None,
+    aurora=None, trah_trigger=None, symmetry=false, irrep_nelec=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_rhf(
@@ -931,7 +931,9 @@ fn run_rhf(
     cosx_overlap_fit: Option<bool>,
     aurora: Option<bool>,
     trah_trigger: Option<f64>,
-) -> PyResult<PyRhfResult> {
+    symmetry: bool,
+    irrep_nelec: Option<std::collections::BTreeMap<String, usize>>,
+) -> PyResult<PyObject> {
     // The descent needs a stability verdict to act on, so the kwarg turns on
     // both halves (as run_uhf does).
     let descent = stability_descent.unwrap_or(false);
@@ -978,6 +980,8 @@ fn run_rhf(
         three_index_budget_bytes: budget_bytes_from_gb(memory_budget_gb).unwrap_or(0),
         check_stability: descent,
         scf_stability_descent: descent,
+        symmetry,
+        irrep_nelec: irrep_nelec.map(|m| m.into_iter().collect()),
         ..Default::default()
     };
     apply_accelerators(&mut config, aurora, trah_trigger)?;
@@ -999,11 +1003,51 @@ fn run_rhf(
         &prep,
         &config,
     );
+    solve_rhf_outcome(py, &ctx, &emol, &prep, op, &bounds, config)
+}
+
+/// A refusal the library classifies as a bad symmetry request
+/// (`ferric_scf::symmetric::is_symmetry_refusal`) is a `ValueError` naming
+/// `symmetry=True`; anything else is a solver failure (`RuntimeError`).
+fn symmetry_err(e: ferric_core::error::FerricError) -> PyErr {
+    if ferric_scf::symmetric::is_symmetry_refusal(&e) {
+        pyo3::exceptions::PyValueError::new_err(format!("run_rhf(symmetry=True): {e}"))
+    } else {
+        make_err(e)
+    }
+}
+
+/// Solve and wrap: the plain `RhfResult` path (unchanged), or with
+/// `config.symmetry` the blocked solve returned as the distinct frame-aware
+/// `SymmetricRhfResult`.
+fn solve_rhf_outcome(
+    py: Python<'_>,
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    config: RhfConfig,
+) -> PyResult<PyObject> {
+    if config.irrep_nelec.is_some() && !config.symmetry {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "run_rhf: irrep_nelec requires symmetry=True",
+        ));
+    }
+    if config.symmetry {
+        let sym = py
+            .allow_threads(|| {
+                ferric_scf::symmetric::solve_rhf_symmetric(ctx, mol, prep, op, bounds, &config)
+            })
+            .map_err(symmetry_err)?;
+        warn_rhf_not_converged(py, sym.scf_in_frame(), &config);
+        return Ok(Py::new(py, PySymmetricRhfResult::from_solution(sym))?.into_any());
+    }
     let r = py
-        .allow_threads(|| solve_rhf(&ctx, &emol, &prep, op, &bounds, &config))
+        .allow_threads(|| solve_rhf(ctx, mol, prep, op, bounds, &config))
         .map_err(make_err)?;
     warn_rhf_not_converged(py, &r, &config);
-    Ok(PyRhfResult {
+    let result = PyRhfResult {
         energy: r.energy,
         converged: r.converged,
         iterations: r.iterations,
@@ -1012,7 +1056,140 @@ fn run_rhf(
         orbital_energies_data: r.eps_alpha.clone(),
         scf_data: r,
         scf_config: config,
-    })
+    };
+    Ok(Py::new(py, result)?.into_any())
+}
+
+/// Register the two `run_rhf` result types.
+fn add_rhf_result_classes(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_class::<PyRhfResult>()?;
+    m.add_class::<PySymmetricRhfResult>()
+}
+
+/// Result of `run_rhf(..., symmetry=True)`: point-group-blocked closed-shell RHF.
+///
+/// A distinct type from `RhfResult` on purpose. The SCF ran on the
+/// reoriented, SYMMETRIZED geometry, so `energy` belongs to that geometry
+/// (it differs from the input geometry's energy by the effect of
+/// `max_symmetrization_shift`, at most 1e-4 Bohr) and every AO-basis matrix
+/// (density, MO coefficients) would live in a rotated frame. Those accessors
+/// raise instead of returning matrices that look like input-frame data, and
+/// no function that takes an `RhfResult` (gradients, post-HF, Hirshfeld,
+/// properties) accepts this object.
+#[pyclass]
+#[pyo3(name = "SymmetricRhfResult")]
+struct PySymmetricRhfResult {
+    /// Total SCF energy (Hartree) of the symmetrized geometry.
+    #[pyo3(get)]
+    energy: f64,
+    /// Whether the SCF met both convergence thresholds.
+    #[pyo3(get)]
+    converged: bool,
+    /// Number of SCF iterations run.
+    #[pyo3(get)]
+    iterations: usize,
+    /// Schoenflies symbol of the Abelian group used for blocking ("C1" if none).
+    #[pyo3(get)]
+    point_group: String,
+    /// Irrep label of each MO column ("-" for padded linearly dependent columns).
+    #[pyo3(get)]
+    orbital_irreps: Vec<String>,
+    /// Largest atom displacement (Bohr) made by symmetrizing the input geometry.
+    #[pyo3(get)]
+    max_symmetrization_shift: f64,
+    orbital_energies_data: Vec<f64>,
+    irrep_occupations: Vec<(String, usize)>,
+    symbols: Vec<String>,
+    coords_angstrom: Vec<(f64, f64, f64)>,
+    rotation: [[f64; 3]; 3],
+    origin_angstrom: [f64; 3],
+}
+
+impl PySymmetricRhfResult {
+    fn from_solution(sym: ferric_scf::symmetric::SymmetricRhf) -> Self {
+        let mol = sym.molecule();
+        let (rotation, origin_bohr) = sym.frame_transform();
+        let scf = sym.scf_in_frame();
+        PySymmetricRhfResult {
+            energy: sym.energy(),
+            converged: scf.converged,
+            iterations: scf.iterations,
+            point_group: sym.group().to_string(),
+            orbital_irreps: sym.orbital_irreps().to_vec(),
+            max_symmetrization_shift: sym.max_symmetrization_shift(),
+            orbital_energies_data: scf.eps_alpha.clone(),
+            irrep_occupations: sym.irrep_occupations(),
+            symbols: mol.atoms.iter().map(|a| a.symbol.clone()).collect(),
+            coords_angstrom: mol
+                .atoms
+                .iter()
+                .map(|a| {
+                    (
+                        a.x / ANGSTROM_TO_BOHR,
+                        a.y / ANGSTROM_TO_BOHR,
+                        a.zpos / ANGSTROM_TO_BOHR,
+                    )
+                })
+                .collect(),
+            rotation,
+            origin_angstrom: origin_bohr.map(|x| x / ANGSTROM_TO_BOHR),
+        }
+    }
+}
+
+const SYMMETRIC_FRAME_MSG: &str =
+    "not available for a symmetry=True result: the AO matrices live in the \
+reoriented, symmetrized frame (see frame_transform()), not the input frame. Run with \
+symmetry=False for density/MO coefficients/gradients.";
+
+#[pymethods]
+impl PySymmetricRhfResult {
+    /// Orbital energies (Hartree) in MO-column order, aligned with
+    /// `orbital_irreps`. Occupied columns come first (energy-ordered), then
+    /// the virtuals, so with `irrep_nelec` the list need not be globally
+    /// ascending. Padded linearly dependent columns carry 1e6.
+    fn orbital_energies<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        PyArray1::from_vec(py, self.orbital_energies_data.clone())
+    }
+    /// Electrons per irrep of the converged state, `{label: n}` (virtual-only
+    /// irreps are listed with 0).
+    fn irrep_occupations(&self) -> std::collections::BTreeMap<String, usize> {
+        self.irrep_occupations.iter().cloned().collect()
+    }
+    /// Element symbols of the symmetrized geometry, in input atom order.
+    fn symbols(&self) -> Vec<String> {
+        self.symbols.clone()
+    }
+    /// The symmetrized, reoriented geometry the energy belongs to (Angstrom,
+    /// the symmetry frame), in input atom order.
+    fn symmetrized_coords(&self) -> Vec<(f64, f64, f64)> {
+        self.coords_angstrom.clone()
+    }
+    /// `(R, origin)` with `r_sym = R @ (r_in - origin)`; `origin` is an
+    /// input-frame point in Angstrom (same units as `Molecule.coords()` and
+    /// `symmetrized_coords()`). Identity and zero for C1. The relation holds
+    /// to the symmetrization shift (`max_symmetrization_shift`).
+    fn frame_transform(&self) -> ([[f64; 3]; 3], [f64; 3]) {
+        (self.rotation, self.origin_angstrom)
+    }
+    /// Unavailable: the density is in the symmetry frame.
+    fn density(&self) -> PyResult<()> {
+        Err(pyo3::exceptions::PyNotImplementedError::new_err(format!(
+            "density(): {SYMMETRIC_FRAME_MSG}"
+        )))
+    }
+    /// Unavailable: the MO coefficients are in the symmetry frame.
+    fn mo_coefficients(&self) -> PyResult<()> {
+        Err(pyo3::exceptions::PyNotImplementedError::new_err(format!(
+            "mo_coefficients(): {SYMMETRIC_FRAME_MSG}"
+        )))
+    }
+    /// Unavailable: no gradient is defined in the symmetry frame.
+    fn gradient(&self) -> PyResult<()> {
+        Err(pyo3::exceptions::PyNotImplementedError::new_err(format!(
+            "gradient(): {SYMMETRIC_FRAME_MSG}"
+        )))
+    }
 }
 
 // ── Periodic (Gamma-point) RHF ──
@@ -10870,7 +11047,7 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
 
     m.add_class::<PyMolecule>()?;
     m.add_class::<PyBasisSet>()?;
-    m.add_class::<PyRhfResult>()?;
+    add_rhf_result_classes(m)?;
     m.add_class::<PyUhfResult>()?;
     m.add_class::<PyCdftConstraint>()?;
     m.add_class::<PyCdftResult>()?;

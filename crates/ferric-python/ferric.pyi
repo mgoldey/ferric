@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Sequence, TypedDict
+from typing import Any, Literal, NoReturn, Sequence, TypedDict, overload
 
 import numpy as np
 from numpy.typing import NDArray
@@ -395,6 +395,39 @@ class BasisSet:
     def from_bse_json(path: str) -> BasisSet:
         """Load a Basis Set Exchange JSON file (contractions renormalised)."""
         ...
+
+class SymmetricRhfResult:
+    """Result of run_rhf(symmetry=True): point-group-blocked closed-shell RHF.
+
+    A distinct type: the SCF ran on the reoriented, symmetrized geometry, so
+    `energy` belongs to that geometry and AO matrices would be in a rotated
+    frame. density(), mo_coefficients() and gradient() raise
+    NotImplementedError; no function that takes an RhfResult accepts this."""
+
+    energy: float
+    converged: bool
+    iterations: int
+    point_group: str
+    orbital_irreps: list[str]
+    max_symmetrization_shift: float
+
+    def orbital_energies(self) -> NDArray[np.float64]:
+        """MO-column order (occupied first), aligned with orbital_irreps."""
+        ...
+    def irrep_occupations(self) -> dict[str, int]:
+        """Electrons per irrep of the converged state."""
+        ...
+    def symbols(self) -> list[str]: ...
+    def symmetrized_coords(self) -> list[tuple[float, float, float]]:
+        """Symmetrized geometry in the symmetry frame, Angstrom."""
+        ...
+    def frame_transform(self) -> tuple[list[list[float]], list[float]]:
+        """(R, origin), origin in Angstrom: r_sym = R @ (r_in - origin) maps input
+        coords (Molecule.coords(), Angstrom) onto symmetrized_coords()."""
+        ...
+    def density(self) -> NoReturn: ...
+    def mo_coefficients(self) -> NoReturn: ...
+    def gradient(self) -> NoReturn: ...
 
 class RhfResult:
     """Result of a closed-shell RHF (or run_ksdft KS-DFT) calculation."""
@@ -2479,6 +2512,7 @@ def run_drpa_kpts(
     "second-order"; quad_points only with "quadrature"."""
     ...
 
+@overload
 def run_rhf(
     mol: Molecule,
     basis_set: BasisSet,
@@ -2509,8 +2543,22 @@ def run_rhf(
     cosx_overlap_fit: bool | None = None,
     aurora: bool | None = None,
     trah_trigger: float | None = None,
+    symmetry: Literal[False] = False,
+    irrep_nelec: None = None,
 ) -> RhfResult:
     """Closed-shell Restricted Hartree-Fock.
+
+    symmetry=True (default False; False is byte-identical to before): detect
+    the highest Abelian point group, symmetrize and reorient the geometry, and
+    block the Fock diagonalization by irrep. Returns a SymmetricRhfResult (NOT
+    an RhfResult) whose energy belongs to the SYMMETRIZED geometry (shift in
+    max_symmetrization_shift, <= 1e-4 Bohr) and which has no density/MO
+    matrices (they would be in the rotated frame; those accessors raise
+    NotImplementedError). irrep_nelec={"A1": 4, "B2": 2}: pin electrons per
+    irrep (even counts; requires symmetry=True, else ValueError). Closed-shell
+    HF only: solvent, point_charges/external_field/smeared_charges, cosx,
+    stability_descent, soscf, aurora/trah_trigger and the like raise ValueError.
+    The blocked SCF is one plain solve: no convergence-ladder escalation.
 
     SCF controls (defaults): max_iter 200 (the iteration cap, the Rust RhfConfig default; reaching it returns
     converged=False and emits a RuntimeWarning naming the unmet criteria),
@@ -2545,6 +2593,41 @@ def run_rhf(
     """
     ...
 
+@overload
+def run_rhf(
+    mol: Molecule,
+    basis_set: BasisSet,
+    max_iter: int | None = None,
+    energy_conv: float | None = None,
+    density_conv: float | None = None,
+    diis_size: int | None = None,
+    integral_thresh: float | None = None,
+    k_builder: str | None = None,
+    df_j_aux: str | None = None,
+    df_k_aux: str | None = None,
+    level_shift: float | None = None,
+    mom_after_iter: int | None = None,
+    guess: str | None = None,
+    diis: str | None = None,
+    smearing_sigma: float | None = None,
+    soscf: bool | None = None,
+    point_charges: list[tuple[float, float, float, float]] | None = None,
+    external_field: tuple[float, float, float] | None = None,
+    smeared_charges: list[tuple[float, float, float, float, float]] | None = None,
+    memory_budget_gb: float | None = None,
+    solvent: float | str | None = None,
+    pcm_lebedev_order: int | None = None,
+    stability_descent: bool | None = None,
+    cosx_grid: tuple[int, int] | tuple[int, int, str] | None = None,
+    cosx_final_pass: bool | None = None,
+    cosx_final_grid: tuple[int, int] | tuple[int, int, str] | None = None,
+    cosx_overlap_fit: bool | None = None,
+    aurora: bool | None = None,
+    trah_trigger: float | None = None,
+    *,
+    symmetry: Literal[True],
+    irrep_nelec: dict[str, int] | None = None,
+) -> SymmetricRhfResult: ...
 def run_uhf(
     mol: Molecule,
     basis_set: BasisSet,

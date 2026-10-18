@@ -382,6 +382,23 @@ fn sorted_clusters(eps: &[f64], irrep: &[usize], mut ids: Vec<usize>) -> Vec<usi
     ids
 }
 
+/// Message prefixes of every `FerricError::General` that `solve_rhf_symmetric`
+/// raises for a bad symmetry request (unsupported feature combination or an
+/// invalid `irrep_nelec`), as opposed to a numerical failure. Bindings use
+/// [`is_symmetry_refusal`] to classify them as argument errors; every
+/// refusal constructed in this module must start with one of these.
+pub const SYMMETRY_REFUSAL_PREFIXES: [&str; 3] = [
+    "RhfConfig.symmetry",
+    "irrep_nelec",
+    "solve_rhf_symmetric needs",
+];
+
+/// Whether `e` is a symmetry-request refusal (see [`SYMMETRY_REFUSAL_PREFIXES`]).
+pub fn is_symmetry_refusal(e: &FerricError) -> bool {
+    matches!(e, FerricError::General(m)
+        if SYMMETRY_REFUSAL_PREFIXES.iter().any(|p| m.starts_with(p)))
+}
+
 /// Typed refusal of every feature the blocked solver does not support.
 pub(crate) fn validate_config(config: &RhfConfig) -> Result<(), FerricError> {
     let no = |what: &str, why: &str| -> Result<(), FerricError> {
@@ -391,6 +408,12 @@ pub(crate) fn validate_config(config: &RhfConfig) -> Result<(), FerricError> {
     };
     if config.mom_after_iter > 0 {
         return no("MOM", "it pins orbitals by overlap, not by irrep");
+    }
+    if config.k_builder.as_deref() == Some("cosx") {
+        return no(
+            "COSX exchange",
+            "the seminumerical exchange grid and its final-grid pass are not wired to the symmetry frame",
+        );
     }
     if config.smearing_sigma.is_some() || config.fractional_occ {
         return no("fractional occupation", "occupations are integer per irrep");
@@ -435,6 +458,7 @@ pub(crate) fn validate_config(config: &RhfConfig) -> Result<(), FerricError> {
         );
     }
     require_no_external_potential(config.external_potential.as_ref())
+        .map_err(|e| FerricError::General(format!("RhfConfig.symmetry: {e}")))
 }
 
 /// A symmetry-blocked RHF solution and the frame its AO matrices live in.
@@ -472,6 +496,26 @@ impl SymmetricRhf {
     /// columns).
     pub fn orbital_irreps(&self) -> &[String] {
         &self.orbital_irreps
+    }
+
+    /// Electrons per irrep in the converged state, as `(label, n)` in order of
+    /// first appearance among the MO columns, listing only occupied irreps
+    /// plus those with virtuals (count 0). Occupied columns come first, so
+    /// this counts two electrons for each of the first `nelec / 2` columns.
+    pub fn irrep_occupations(&self) -> Vec<(String, usize)> {
+        let nocc = self.molecule.nelec().max(0) as usize / 2;
+        let mut out: Vec<(String, usize)> = Vec::new();
+        for (k, lab) in self.orbital_irreps.iter().enumerate() {
+            if lab == "-" {
+                continue;
+            }
+            let add = if k < nocc { 2 } else { 0 };
+            match out.iter_mut().find(|(l, _)| l == lab) {
+                Some(e) => e.1 += add,
+                None => out.push((lab.clone(), add)),
+            }
+        }
+        out
     }
 
     /// The molecule the integrals were built from: the reoriented, symmetrized
@@ -637,6 +681,26 @@ mod tests {
             let out = frame_bounds(op, &prep, &input).unwrap();
             assert_eq!(screening_kind_of(&out), kind, "{kind:?} was dropped");
         }
+    }
+
+    #[test]
+    fn refusals_are_classified_and_numerical_errors_are_not() {
+        let cfg = RhfConfig {
+            symmetry: true,
+            k_builder: Some("cosx".into()),
+            ..Default::default()
+        };
+        let e = validate_config(&cfg).unwrap_err();
+        assert!(is_symmetry_refusal(&e), "{e}");
+        assert!(is_symmetry_refusal(&FerricError::General(
+            "irrep_nelec: unknown irrep".into()
+        )));
+        assert!(!is_symmetry_refusal(&FerricError::General(
+            "SCF blew up".into()
+        )));
+        assert!(!is_symmetry_refusal(&FerricError::Lapack(
+            "irrep_nelec".into()
+        )));
     }
 
     #[test]

@@ -173,6 +173,16 @@ A water/STO-3G RHF run, abridged:
 {"record":"run_end","seq":15,"t":0.019,"energy":-74.9631468000391,"converged":true,"exit":"Converged","wall_s":0.0189,"cpu_s":0.05,"peak_rss_bytes":128815104,"extra":{"method":"rhf","task":"energy","scf_iterations":9,"energy_is":"total"}}
 ```
 
+## Point-group-blocked runs
+
+With `[scf] symmetry = true` the terminal record carries
+`extra.symmetry = {point_group, max_symmetrization_shift_bohr, irrep_nelec, geometry}`.
+`irrep_nelec` maps each irrep to its electron count in the converged state,
+`geometry` is `"symmetrized"`, and `run_end.energy` is the energy of that
+symmetrized geometry (it differs from the input geometry's by the effect of
+`max_symmetrization_shift_bohr`, at most 1e-4 Bohr). Without the key there is
+no `symmetry` field.
+
 ## Does it change the answer?
 
 No, and that is a regression test, not a claim: SCF energies are bit-identical
