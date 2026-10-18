@@ -872,10 +872,12 @@ jobs:
   # RS-GDF+ECP+rotation test that first failed under perturbation
   # (far_field_contracted_s_blocks_do_not_read_uninitialised_memory, which
   # itself re-execs its #[ignore]d helper with --include-ignored). It is a
-  # canary, not the survey. Added from the 2026-10-17 #433 survey (README in
-  # crates/ferric-integrals/shim/libint2_overrides): pbc_krsgdf, pbc_krsgdf_split,
-  # pbc_grad_ecp (RS-GDF / ECP-gradient paths; 23/98/128 s wall at 170 INCLUDING
-  # their #[ignore]d tests, so the non-ignored CI run is no longer).
+  # canary, not the survey. It also runs pbc_krsgdf, pbc_krsgdf_split and
+  # pbc_grad_ecp (RS-GDF / ECP-gradient paths). Local release-build wall times
+  # at MALLOC_PERTURB_=1, non-ignored tests only: 13 / 53 / 29 s. These are
+  # local measurements, not CI-runner ones (CI builds at a lower opt-level, so
+  # expect longer); the full survey record is in the README in
+  # crates/ferric-integrals/shim/libint2_overrides.
   malloc-perturb:
     needs: build-tests
     runs-on: ubuntu-22.04
@@ -937,7 +939,7 @@ jobs:
             EXTRACT=$(mktemp -d)
             # One nextest run PER BINARY with --no-tests=fail, so a renamed
             # or filtered-away binary fails the job instead of leaving the
-            # other two to pass it vacuously.
+            # remaining binaries to pass it vacuously.
             # --retries 0: a pass-on-retry would hide an allocator-dependent
             # failure, the exact thing under test. Profile ci (not default) so
             # the ferric-pbc 960 s slow-timeout override applies.
