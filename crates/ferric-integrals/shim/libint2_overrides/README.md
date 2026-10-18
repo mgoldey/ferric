@@ -95,14 +95,64 @@ uninitialised memory; build.rs warns that the fix is NOT applied.
 - Tests: `crates/ferric-integrals/tests/boys_chebyshev_table_edge.rs` (direct evaluator pin via `scf_boys_fm`,
   exact-integer-geometry reproducer, point-site reproducer, allocator-fill sweep). `tests/boys_chebyshev_manifest.rs`
   is a PRINT-ONLY helper for before/after bit comparisons by hand, not a guard.
-- Survey of existing tests (an instrumented STOCK 2.13.1 build counting evaluations at exactly 117.0, default
-  allocator, 400 s timeout per binary): 256 test binaries of ferric-integrals, ferric-pbc, ferric-mp2, ferric-rpa;
-  218 passed, 26 failed with 0 hits (environmental: 25 re-run serially all pass, 0 hits), 12 timed out. Of those 12,
-  only 3 were measured afterwards (per test: 39 tests, 0 hits); **9 timed-out binaries remain unmeasured**. The one
-  known real hit is the #421 ECP k-point test (80 evaluations at 117.0 per run; failing under `MALLOC_PERTURB_` 1 and
-  170 before the fix, passing after).
-- Not checked: aarch64 and FMA-contracting builds (whether a given geometry lands on exactly 117.0 depends on
-  rounding, which is why the integer-geometry test exists).
+- Hit-count survey of existing tests (2026-10-16; an instrumented STOCK 2.13.1 build counting evaluations at exactly
+  117.0, default allocator, 400 s timeout per binary): 256 test binaries of ferric-integrals, ferric-pbc, ferric-mp2,
+  ferric-rpa; 218 passed, 26 failed with 0 hits (environmental: 25 re-run serially all pass, 0 hits), 12 timed out
+  (rc=124): hirshfeld_symmetry, pbc_grad_rsgdf, pbc_kgrad, pbc_kpair_symmetry, pbc_krsh_rsgdf, pbc_kstress,
+  pbc_kuxcstress, pbc_kxcgrad_hybrid, pbc_kxcstress, pbc_kxcstress_mgga, pbc_parallel_bitwise, pbc_sr_rotation. Of
+  those 12, 3 were measured afterwards (per test: 39 tests, 0 hits); the issue does not name which. The one known real
+  hit is the #421 ECP k-point test (80 evaluations at 117.0 per run; failing under `MALLOC_PERTURB_` 1 and 170 before
+  the fix, passing after).
+- Perturbed-allocator survey (#433 "impact survey"; 2026-10-17/18; VERDICT PROVISIONAL). It measures exit status
+  under `MALLOC_PERTURB_` against each test's existing bars. It does NOT count evaluations at 117.0, so it does not
+  show that any run evaluated a Boys argument at exactly 117.0, and it does not replace the hit-count measurement: the
+  hit counts of 9 of the 12 timed-out binaries above remain unmeasured (UNMET, #433).
+  - Scope: 26 ferric-pbc binaries (of 69 test binaries) plus ferric-rpa `hirshfeld_symmetry`. The 12 timed-out
+    binaries are all covered at `MALLOC_PERTURB_=170` in some mode below. Not perturbed by this survey (40 ferric-pbc
+    binaries, not examined for whether they reach an integral far-field path): pbc_auto_omega pbc_dense_aft_scf
+    pbc_drpa pbc_ecp pbc_forces_heavy_atoms pbc_grsh pbc_hcore pbc_kcorr pbc_kks_open_ecp pbc_kpoint_ecp pbc_krhf
+    pbc_krks pbc_krks_shifted pbc_kroks pbc_krsh pbc_krsh_more pbc_kuhf pbc_kuks pbc_kuxcstress_ro_rsgdf pbc_lindep
+    pbc_lmp2 pbc_lr_force_bitwise pbc_memory_gates pbc_molecular_limit pbc_mp2 pbc_pair_symmetry pbc_rks pbc_rohf
+    pbc_rsgdf pbc_rsgdf_split pbc_shifted_overlap pbc_sr_deriv_frame pbc_sr_rotation_k pbc_sr_rotation_kderiv
+    pbc_sr_screening pbc_stage0 pbc_timings pbc_ucorr pbc_uhf pbc_uks. Also not perturbed: `pbc_kkeep`, `pbc_kkeep_ks`
+    (k-point selection). `pbc_kpoint_ecp_rotation` (ferric-pbc) and the ferric-integrals `boys_chebyshev_table_edge` and
+    `tenno_table_edge` are covered by the CI `malloc-perturb` job (1, 170, 2). Observed on CI: each `nextest run --archive-file` invocation
+    costs ~3.5-4 min of archive extraction regardless of the tests run; a per-binary loop (6 binaries x 3 values = 18
+    invocations) was cancelled at the 60 min job limit, and the 3-binary version (9 invocations) took ~38 min. The job
+    now makes 3 invocations (one per value, union filterset, per-binary PASS check); its wall time is an estimate
+    (~25-30 min), not yet measured.
+  - Harness A, `MALLOC_PERTURB_=170`, whole binaries with `--include-ignored` (libtest-style, `--test-threads=1`), 1800 s
+    cap, release build, OPENBLAS_NUM_THREADS=1, 22 ferric-pbc binaries: the 15 + `pbc_kxcstress` listed under Harness D
+    plus `pbc_grad_ecp_nucleus_scan`, `pbc_kuxcstress`, `pbc_kuxcstress_ro`, `pbc_kxcgrad`, `pbc_kxcstress_hybrid` and
+    `pbc_kstress`. Result: 20 of 22 exit 0, 2 exit 124 (`pbc_kxcstress_hybrid`, `pbc_kstress`; inconclusive as whole
+    binaries). The raw per-binary logs of this run are not retained, so its wall seconds are UNRECORDED / approximate and
+    are not repeated here (the longest were roughly 25-28 min, unverified).
+  - Harness B, `MALLOC_PERTURB_=170`, nextest, release build, non-ignored tests only, one test process at a time,
+    1200 s cap per test: `pbc_kstress` (33 tests) and `pbc_kxcstress_hybrid` (11 tests), all 44 exit 0 (1-102 s and
+    7-52 s per test; 670 s and 232 s totals). Their `#[ignore]`d tests were not run in this mode.
+  - Harness C, `MALLOC_PERTURB_=170`, nextest, release build, non-ignored tests only (these binaries have no
+    `#[ignore]`), `--test-threads 1`, 1200 s cap per binary: pbc_kpair_symmetry (10 tests, 214 s), pbc_krsh_rsgdf
+    (13, 175 s), pbc_parallel_bitwise (25, 739 s), pbc_sr_rotation (15, 505 s), ferric-rpa hirshfeld_symmetry (4,
+    161 s); all pass, rc=0.
+  - Harness D, `MALLOC_PERTURB_=1`, nextest, release build, non-ignored tests only, `--test-threads 1`, 1200 s cap per
+    binary: 15 of the 22 exit 0 (nextest summary, all tests passed): pbc_krsgdf (13 s), pbc_krsgdf_split (53),
+    pbc_grad_ecp (29), pbc_grad_open (146), pbc_grad (20), pbc_grad_rsgdf_split (89), pbc_grad_ro (217),
+    pbc_kxcgrad_mgga (96), pbc_stress (52), pbc_grad_rsgdf (214), pbc_kxcgrad_hybrid (373), pbc_kuxcgrad_ro (54),
+    pbc_kgrad (524), pbc_kxcstress_mgga (1000), pbc_kuxcgrad (684). `pbc_kxcstress`: nextest summary "18 tests run: 18
+    passed" after 717 s; the runner process was killed afterwards, so no exit status was recorded for it.
+    All elapsed times in harnesses A-D are local wall-clock on one developer box, not CI-runner measurements.
+    Not run at `=1`: `pbc_grad_ecp_nucleus_scan` (every test is `#[ignore]`d) and `pbc_kuxcstress`, `pbc_kuxcstress_ro`,
+    `pbc_kxcgrad`, `pbc_kxcstress_hybrid`, `pbc_kstress` (time budget); these 6 have `=170` results only. Harness D's
+    `pbc_kxcstress_mgga` at 1000 s versus the 574 s of the earlier Harness A run is a different harness and box load,
+    not a comparison.
+  - Interpretation (provisional): no allocator-dependent failure was seen in the runs that completed. Exit 0 against
+    each test's existing bars is not proof of no uninitialised reads: the tests may not reach the table edge, and a
+    perturbation-insensitive wrong answer inside a loose bar would pass.
+  - Unmet (#433 item 2): the existing PBC suites were not run at `=1` and a second value across the board (see above),
+    and the attenuated-MP2 suites were not run under `MALLOC_PERTURB_` at all.
+- Not checked (unmet, #433): aarch64 and FMA-contracting builds (whether a given geometry lands on exactly 117.0
+  depends on rounding, which is why the integer-geometry test exists).
+- Not done (maintainer-owned): notifying upstream libint.
 
 ### Sibling defect: see the third change below (issue #436)
 
