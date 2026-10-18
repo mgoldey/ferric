@@ -11,7 +11,7 @@ import sys
 mp.mp.dps = 50
 
 
-def ref(m, T, U):
+def ref(m, T, U, peak=False):
     T = mp.mpf(T)
     U = mp.mpf(U)
 
@@ -26,6 +26,18 @@ def ref(m, T, U):
         + [s * k for k in (0.01, 0.1, 1, 10, 100, 1000, 1e4) if s * k < 1]
         + [mp.mpf(1)]
     )
+    if peak:
+        # Large-T integrands are narrow (peak at t = sqrt(m/T)) and a coarse
+        # panel set silently loses 1e-4..1e-8 relative at T = 1000 (checked
+        # against the perturbative series): use 80 uniform panels to 8 peaks.
+        c = mp.sqrt(mp.mpf(max(m, 1)) / T)
+        top = min(mp.mpf(1), 8 * c)
+        pts = sorted(set(pts + [top * i / 80 for i in range(81)]))
+    if peak:
+        # tanh-sinh with these panels is only good to ~1e-12 relative at
+        # T = 1000 (its error estimate is useless there); Gauss-Legendre on
+        # the same panels agrees with the perturbative series to 1e-19.
+        return mp.quad(f, pts, method="gauss-legendre", maxdegree=6)
     return mp.quad(f, pts, maxdegree=10)
 
 
@@ -74,6 +86,51 @@ with open(sys.argv[1], "a") as f:
     for z, T, U, v in rows:
         f.write("    (%r, %r, %r, [\n" % (z, T, U))
         for i in range(0, 21, 3):
+            f.write(
+                "        " + ", ".join(mp.nstr(x, 21) for x in v[i : i + 3]) + ",\n"
+            )
+        f.write("    ]),\n")
+    f.write("];\n")
+
+# Stock region (U < Umin, T >= the override threshold): the part of the Yukawa
+# dispatch the override leaves on libint's own recursion. The in-Rust gating test
+# compares it only to a port of that recursion; these rows are an independent
+# truth anchor out to T = 1000, plus a band just BELOW the threshold (0.7-0.95x)
+# that the quadrature fallback must serve (a lowered threshold hands it to the
+# recursion). Rows: (zeta, T, U, mmax, G_0..G_mmax).
+SMs = [1, 6, 12, 20, 36]
+SUs = [1e-14, 1e-9, 9e-8]
+rows = []
+for mm in SMs:
+    ts = 0.5 * mm + 6.0
+    Tl = sorted(
+        {
+            ts * 0.7,
+            ts * 0.85,
+            ts * 0.95,
+            ts,
+            ts * 1.05,
+            ts * 1.5,
+            ts * 3,
+            ts * 10,
+            50.0,
+            200.0,
+            1000.0,
+        }
+    )
+    for U0 in SUs:
+        z = 2 * math.sqrt(U0)
+        U = 0.25 * z * z
+        for T in Tl:
+            rows.append((z, T, U, mm, [ref(m, T, U, peak=True) for m in range(mm + 1)]))
+with open(sys.argv[1], "a") as f:
+    f.write(
+        "\n// Stock region (U < Umin, T from 0.7x to 1000 around the 0.5 mmax + 6 threshold): rows (zeta, T, U, mmax, G_0..G_mmax).\n"
+    )
+    f.write("pub const REF_STOCK: &[(f64, f64, f64, usize, &[f64])] = &[\n")
+    for z, T, U, mm, v in rows:
+        f.write("    (%r, %r, %r, %d, &[\n" % (z, T, U, mm))
+        for i in range(0, mm + 1, 3):
             f.write(
                 "        " + ", ".join(mp.nstr(x, 21) for x in v[i : i + 3]) + ",\n"
             )
