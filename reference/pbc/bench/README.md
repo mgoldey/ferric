@@ -105,10 +105,11 @@ setting in toml/) N=1 140.36 [140.33-141.32] s, N=6 26.82 [26.45-27.09] s.  `gdf
 invalid) vs 92.47 s at the default 1.0, same energy.  PySCF auto omegas: 0.417 (diamond_prim), 0.330 (dryice).
 Peak RSS: PySCF 0.17 GB / 2.95 GB (N=1; cderi file 0.37 MB / 76 MB); ferric dryice 0.41 GB (one
 /usr/bin/time run); ferric RSS was not recorded by the driver for the other rows.
-Discarded runs: loadavg gate (own ~1.0 load + 1.5 limit leaves 0.5 slack): 8 of 13 N=1 discards are
-within 1% of the valid walls (loadavg inflated by our own previous run), ONE dryice PySCF run
-saw load 5.9 from a foreign job (rep 4 attempt 0, wall unchanged at 137.2 s).  PySCF dryice rep 2
-(N=1) exhausted its 3 attempts with no valid run -> n=4 not 5.  dryice N=6 PySCF max 36.2 s is
+Discarded runs (13 of 31 at N=1): the loadavg gate has only 0.5 slack above our own ~1.0 load.
+12 of the 13 have walls within 1.3% of the valid median (their loadavg was inflated by the previous
+run's tail); one (ferric diamond_prim rep 2) was +8% with 2.2 cores of foreign CPU (a real
+perturbation); one (PySCF dryice rep 4) saw a foreign load spike to 5.9 yet its wall moved -0.8%.
+PySCF dryice rep 2 (N=1) exhausted its 3 attempts with no valid run -> n=4 not 5.  The dryice N=6 PySCF max 36.2 s is
 one run 14% above the others (ambient, not flagged by the gate); median unaffected.
 
 ## Statements the data supports (same cell, same N, same stage definition)
@@ -121,7 +122,7 @@ one run 14% above the others (ambient, not flagged by the gate); median unaffect
   N=1, different algorithms: PySCF nuclear attraction on the FFT mesh at precision 1e-11).
 - s/iteration: ferric faster, but iteration counts differ (stopping rules, below).
 - Parallel scaling N=1 -> 6: ferric 5.2x (diamond_prim), 4.6x (dryice); PySCF 4.1x, 4.3x.
-- ferric default vs its own unrotated baseline: 3.6x on diamond_prim at N=1 (5.0x at N=6).  Without SR
+- ferric default vs its own unrotated baseline: 3.6x on diamond_prim at N=1 (5.2x at N=6).  Without SR
   column rotation ferric diamond_prim (140 s) is 3.0x SLOWER than PySCF (47 s).
 
 ## Mismatches that remain (read before quoting any ratio)
