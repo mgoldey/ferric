@@ -122,9 +122,10 @@ const TOL_S: f64 = 1e-12;
 /// ∫ρ on ferric's NLC grid vs the numpy replica (electrons). Measured max
 /// 1.10e-13 (H2O / cc-pVDZ) over 4 systems; the bar is about 10x that (9.1x).
 /// Defect side: an error dD_mn in the density moves ∫ρ by dD_mm S_mm
-/// (diagonal) or 2 dD_mn S_mn (off-diagonal); no ∫ρ mutant has been run. Any
-/// grid or weight defect also hits `TOL_VV10` on E_nl, which is about 400x more
-/// sensitive (5e-15 Ha on E_nl ~ 0.02-0.06 Ha).
+/// (diagonal) or 2 dD_mn S_mn (off-diagonal); no ∫ρ mutant has been run. A grid
+/// or weight defect also shows on E_nl at its own scale (dropping the grid
+/// weight in the E_nl sum misses by 2.8e2 Ha in the mutation ledger); that is a
+/// different quantity from this bar and is not a same-defect sensitivity ratio.
 const TOL_GRID: f64 = 1e-12;
 /// Σw on the grid, RELATIVE. Measured max 1.8e-14 relative (3.6e-10 abs on
 /// Σw = 19641, water dimer).
