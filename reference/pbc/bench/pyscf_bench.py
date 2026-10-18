@@ -40,17 +40,25 @@ def read_cell(name):
     for ln in lines[2 : 2 + n]:
         t = ln.split()
         atoms.append((t[0], tuple(float(v) / BOHR for v in t[1:4])))
-    lat = [[float(v) for v in r.split()] for r in open(base + ".lattice").read().split("\n") if r.strip()]
+    lat = [
+        [float(v) for v in r.split()]
+        for r in open(base + ".lattice").read().split("\n")
+        if r.strip()
+    ]
     return atoms, lat
 
 
 def ferric_basis_pyscf(name, symbols, repr_="general"):
     """ferric's bundled BSE JSON -> PySCF basis dict (general contractions kept as one block)."""
     if repr_ != "general":
-        raise NotImplementedError("only the general-contraction representation is built here")
+        raise NotImplementedError(
+            "only the general-contraction representation is built here"
+        )
     from pyscf.data.elements import _symbol
 
-    d = json.load(open(os.path.join(ROOT, "crates/ferric-core/src/basis/bundled", name + ".json")))
+    d = json.load(
+        open(os.path.join(ROOT, "crates/ferric-core/src/basis/bundled", name + ".json"))
+    )
     out = {}
     for sym in sorted(set(symbols)):
         z = None
@@ -65,7 +73,9 @@ def ferric_basis_pyscf(name, symbols, repr_="general"):
             for k, l in enumerate(ls):
                 # fused SP-type shells: one coefficient row per angular momentum
                 cc = [cols[k]] if len(ls) > 1 else cols
-                blocks.append([l] + [[ex[i]] + [c[i] for c in cc] for i in range(len(ex))])
+                blocks.append(
+                    [l] + [[ex[i]] + [c[i] for c in cc] for i in range(len(ex))]
+                )
         out[sym] = blocks
     return out
 
@@ -169,7 +179,11 @@ def main(argv=None):
     df.build()
     t_df = time.perf_counter() - w0
     c_df = time.process_time() - c0
-    cderi_bytes = os.path.getsize(df._cderi_to_save) if os.path.exists(df._cderi_to_save) else None
+    cderi_bytes = (
+        os.path.getsize(df._cderi_to_save)
+        if os.path.exists(df._cderi_to_save)
+        else None
+    )
     rss_after_df = peak_rss_bytes()
 
     tt = {}

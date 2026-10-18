@@ -47,7 +47,11 @@ def parse_ferric(out):
         m = re.search(pat, out)
         rec[key] = cast(m.group(1)) if m else None
     m = re.search(r"naux (\d+), kept (\d+), dropped (\d+)", out)
-    rec["aux"] = dict(naux=int(m.group(1)), kept=int(m.group(2)), dropped=int(m.group(3))) if m else None
+    rec["aux"] = (
+        dict(naux=int(m.group(1)), kept=int(m.group(2)), dropped=int(m.group(3)))
+        if m
+        else None
+    )
     st = {}
     for ln in out.split("\n"):
         m = re.match(r"\s{4}(\S.*?)\s{2,}([\d.]+)\s+([\d.]+)\s+(\d+)\s*$", ln)
@@ -56,11 +60,15 @@ def parse_ferric(out):
         m = re.match(r"\s{4}(total)\s+([\d.]+)\s+([\d.]+)\s*$", ln)
         if m:
             st["total"] = float(m.group(2))
-        m = re.match(r"\s{4}(other \(SCF linear algebra, bookkeeping\))\s+([\d.]+)\s*$", ln)
+        m = re.match(
+            r"\s{4}(other \(SCF linear algebra, bookkeeping\))\s+([\d.]+)\s*$", ln
+        )
         if m:
             st[m.group(1)] = float(m.group(2))
     rec["stages"] = st
-    scf = sum(v for k, v in st.items() if k.startswith("scf ") or k.startswith("other ("))
+    scf = sum(
+        v for k, v in st.items() if k.startswith("scf ") or k.startswith("other (")
+    )
     tot = st.get("total")
     rec["t_scf_s"] = scf
     rec["t_setup_s"] = None if tot is None else tot - scf
@@ -98,14 +106,30 @@ def run_cmd(cmd, env, threads):
         valid = ok_before and l0 < 1.5 and l1 < 1.5
     else:
         valid = ok_before and (other / (wall * NCPU) < 0.12)
-    return p, dict(wall=wall, load_start=l0, load_end=l1, other_cpu_s=other, cpu_s=mine, valid=bool(valid))
+    return p, dict(
+        wall=wall,
+        load_start=l0,
+        load_end=l1,
+        other_cpu_s=other,
+        cpu_s=mine,
+        valid=bool(valid),
+    )
 
 
 def run_ferric(cell, threads, binary, toml_dir, tag=""):
     toml = os.path.join(toml_dir, f"{cell}_rhf{tag}.toml")
-    env = dict(OPENBLAS_NUM_THREADS="1", OMP_NUM_THREADS="1", RAYON_NUM_THREADS=str(threads))
+    env = dict(
+        OPENBLAS_NUM_THREADS="1", OMP_NUM_THREADS="1", RAYON_NUM_THREADS=str(threads)
+    )
     p, g = run_cmd([binary, toml], env, threads)
-    rec = dict(code="ferric", cell=cell, threads=threads, toml=os.path.relpath(toml, ROOT), exit=p.returncode, **g)
+    rec = dict(
+        code="ferric",
+        cell=cell,
+        threads=threads,
+        toml=os.path.relpath(toml, ROOT),
+        exit=p.returncode,
+        **g,
+    )
     rec.update(parse_ferric(p.stdout))
     if p.returncode:
         rec["stderr"] = p.stderr[-500:]
@@ -114,9 +138,26 @@ def run_ferric(cell, threads, binary, toml_dir, tag=""):
 
 def run_pyscf(cell, threads, precision, method="rhf"):
     env = dict(OPENBLAS_NUM_THREADS=str(threads), OMP_NUM_THREADS=str(threads))
-    cmd = [PY, os.path.join(HERE, "pyscf_bench.py"), cell, "--threads", str(threads), "--precision", str(precision), "--method", method]
+    cmd = [
+        PY,
+        os.path.join(HERE, "pyscf_bench.py"),
+        cell,
+        "--threads",
+        str(threads),
+        "--precision",
+        str(precision),
+        "--method",
+        method,
+    ]
     p, g = run_cmd(cmd, env, threads)
-    rec = dict(code="pyscf", cell=cell, threads=threads, exit=p.returncode, precision=precision, **g)
+    rec = dict(
+        code="pyscf",
+        cell=cell,
+        threads=threads,
+        exit=p.returncode,
+        precision=precision,
+        **g,
+    )
     try:
         inner = json.loads(p.stdout.strip().split("\n")[-1])
         rec["energy"] = inner["energy"]
@@ -146,7 +187,9 @@ def main():
     ap.add_argument("--precision", type=float, default=1e-11)
     ap.add_argument("--bin", default=os.path.join(ROOT, "target/release/ferric"))
     ap.add_argument("--toml-dir", default=os.path.join(HERE, "toml_ri"))
-    ap.add_argument("--ferric-tag", default="", help="e.g. _unrot to time <cell>_rhf_unrot.toml")
+    ap.add_argument(
+        "--ferric-tag", default="", help="e.g. _unrot to time <cell>_rhf_unrot.toml"
+    )
     ap.add_argument("--only", choices=["ferric", "pyscf", "both"], default="both")
     a = ap.parse_args()
     for cell in a.cells:
@@ -160,13 +203,22 @@ def main():
                         if code == "ferric"
                         else run_pyscf(cell, a.threads, a.precision)
                     )
-                    rec.update(rep=rep, attempt=attempt, session=os.path.basename(a.out))
+                    rec.update(
+                        rep=rep, attempt=attempt, session=os.path.basename(a.out)
+                    )
                     with open(a.out, "a") as f:
                         f.write(json.dumps(rec) + "\n")
                     print(
-                        code, cell, f"N={a.threads}", rep, attempt, f"wall {rec['wall']:.1f}s",
+                        code,
+                        cell,
+                        f"N={a.threads}",
+                        rep,
+                        attempt,
+                        f"wall {rec['wall']:.1f}s",
                         f"load {rec['load_start']:.2f}->{rec['load_end']:.2f}",
-                        "valid" if rec["valid"] else "INVALID", rec.get("energy"), flush=True,
+                        "valid" if rec["valid"] else "INVALID",
+                        rec.get("energy"),
+                        flush=True,
                     )
                     if rec["valid"] and rec["exit"] == 0:
                         break
