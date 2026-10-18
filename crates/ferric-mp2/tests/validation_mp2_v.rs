@@ -119,8 +119,12 @@ const ROW_DIR: &str = "testdata/reference/validation/mp2_v";
 const TOL_ENUC: f64 = 1e-9;
 /// PySCF overlap in ferric AO order vs ferric's overlap. Measured max 1.3e-15.
 const TOL_S: f64 = 1e-12;
-/// ∫ρ on ferric's NLC grid vs the numpy replica. Measured max 1.2e-13.
-const TOL_GRID: f64 = 1e-12;
+/// ∫ρ on ferric's NLC grid vs the numpy replica. Measured max 1.10e-13 (H2O /
+/// cc-pVDZ) over 4 systems: the bar is 18x that. Defect side: a 1e-9 error in
+/// one density element moves ∫ρ by ~1e-9 (500x the bar), and a wrong grid or
+/// AO order moves it by orders more (the grid control below misses E_nl by
+/// >= 6.8e-7).
+const TOL_GRID: f64 = 2e-12;
 /// Σw on the grid, RELATIVE. Measured max 1.8e-14 relative (3.6e-10 abs on
 /// Σw = 19641, water dimer).
 const TOL_GRID_REL: f64 = 2e-13;
@@ -135,10 +139,12 @@ const TOL_RHF: f64 = 1e-10;
 /// erfc E_c vs numpy RI-MP2. Measured max 7.0e-12 (water dimer).
 const TOL_CORR: f64 = 1e-10;
 /// E_nl on ferric's OWN RHF density vs the reference (carries the SCF density
-/// error). Measured max 1.1e-13.
-const TOL_VV10_CHAIN: f64 = 1e-12;
+/// error). Measured max 1.12e-13 (H2O / cc-pVDZ) over 4 systems: the bar is
+/// 18x that. Defect side: the smallest ledger mutant (damping disabled) moves
+/// it by 4.7e-4, i.e. 2e8x the bar.
+const TOL_VV10_CHAIN: f64 = 2e-12;
 /// UHF-singlet path vs the references (E_c and E_nl; the SCF collapse floor).
-/// Measured max 7.5e-12 (E_c, H2O) and 1.3e-13 (E_nl).
+/// Measured max 7.5e-12 (E_c, H2O) and 1.33e-13 (E_nl).
 const TOL_UHF: f64 = 1e-10;
 /// A control must miss by at least this much: 100× the loosest bar it is
 /// set against (TOL_CORR) and 2e6× TOL_VV10. Smallest measured miss: the
