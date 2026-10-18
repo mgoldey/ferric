@@ -23,8 +23,7 @@
 //! The Ewald trap of the k-UHF (see [`crate::kuscf`]) applies to hybrids with
 //! `exxdiv = ewald`: for `a > 0` the default start is staged (none, then
 //! ewald from that density) and the per-spin gaps are checked against
-//! `a·v_M`. Range-separated hybrids, VV10 and double hybrids are refused
-//! exactly as at Gamma.
+//! `a·v_M`.
 //!
 //! Meta-GGA (issue #355): ONLY the pure SCAN / r2SCAN on the dense-AFT J/K
 //! (any other meta-GGA, a meta-GGA hybrid and RS-GDF are refused by name). The
@@ -34,6 +33,14 @@
 //! polarized libxc kernel as `(τ_α, τ_β)`, and each spin gets its own
 //! `V^τ_σ(k) = Σ_g ½ w v_τσ Σ_ax (∂φ_μ)* ∂φ_ν`. Forces and stress stay
 //! refused ([`crate::kxcgrad::check_open_shell_force_functional`]).
+//!
+//! Range-separated hybrids (HSE06, CAM-B3LYP validated against PySCF, wB97X unpinned; mgoldey/ferric#354) take
+//! the closed-shell attenuated K unchanged ([`crate::rsh`], dense AFT or
+//! `KRsGdf::build_rsh`): the K builder is linear in the density and the
+//! fractions and the MIXED Madelung constant are inside it, so the open-shell
+//! step is `K_σ = K[D_σ]` per spin scaled by 1 (`a = 1`; the reported fraction
+//! is `c_sr`). ENERGY only: forces and stress refuse RSH. Range-separated
+//! meta-GGAs, VV10 and double hybrids are refused as at Gamma.
 
 use crate::dense_aft::ExxDiv;
 use crate::dft::{
@@ -87,7 +94,15 @@ pub enum KUksMggaMutation {
 /// [`resolve_periodic_functional`] accepts, plus ONLY the pure SCAN / r2SCAN
 /// meta-GGAs (the spin-resolved tau term is validated for those alone).
 pub fn resolve_kuks_functional(name: &str) -> Result<(), FerricError> {
-    if crate::dft::is_meta_gga_name(name) {
+    // A range-separated hybrid goes through the RSH resolver (it refuses
+    // range-separated meta-GGA, VV10 and double hybrids); the meta-GGA gate
+    // below is for the global functionals only.
+    let range_separated = ferric_dft::libxc::xc_def_from_name(name)
+        .map(|d| d.cam.is_some())
+        .unwrap_or(false);
+    if range_separated {
+        crate::rsh::resolve_periodic_functional_rsh(name)?;
+    } else if crate::dft::is_meta_gga_name(name) {
         if !crate::kxcgrad::is_validated_mgga(name) {
             return Err(PeriodicDftError::Unsupported {
                 feature: "meta-GGA",
@@ -113,9 +128,6 @@ impl std::fmt::Debug for KPeriodicXcPolarized {
 impl KPeriodicXcPolarized {
     /// Wrap an already built Bloch AO cache.
     pub fn from_closed(inner: KPeriodicXc) -> Result<Self, FerricError> {
-        // The spin-resolved tau path exists for the pure SCAN / r2SCAN only;
-        // every other meta-GGA is refused for every construction path
-        // (including `solve_kuks_on_grid`).
         resolve_kuks_functional(&inner.name)?;
         let xc_pol = xc_def_from_name_nspin(&inner.name, 2).map_err(|e| {
             FerricError::General(format!(
@@ -155,9 +167,15 @@ impl KPeriodicXcPolarized {
         Self::from_closed(KPeriodicXc::new(cell, bs, functional, grid, mesh, cfg)?)
     }
 
-    /// The functional's global exact-exchange fraction.
+    /// The functional's global exact-exchange fraction (`0` for a
+    /// range-separated hybrid: see [`Self::rsh`]).
     pub fn exact_exchange_fraction(&self) -> f64 {
         self.inner.exact_exchange_fraction()
+    }
+
+    /// Range-separation parameters if the functional is a CAM hybrid.
+    pub fn rsh(&self) -> Option<crate::rsh::RshParams> {
+        self.inner.rsh()
     }
 
     fn check(&self, d: &[Array2<Complex64>]) -> Result<(), FerricError> {
@@ -593,7 +611,14 @@ pub fn solve_kuks_on_grid_keep(
         }
         .into());
     }
-    let a = pxc.exact_exchange_fraction();
+    // Range-separated hybrid: fractions and the mixed Madelung constant live
+    // INSIDE the attenuated K, which the SCF scales by 1 (see `kdft`).
+    let rsh = pxc.rsh();
+    let a = if rsh.is_some() {
+        1.0
+    } else {
+        pxc.exact_exchange_fraction()
+    };
     if !(a.is_finite() && (0.0..=1.0).contains(&a)) {
         return Err(PeriodicDftError::Unsupported {
             feature: "exact-exchange fraction",
@@ -605,7 +630,37 @@ pub fn solve_kuks_on_grid_keep(
     let hk = periodic_hcore_kpts(cell, prep, mesh, &kc.hcore)?;
     timings.stop("k hcore", &clock);
     hk.record_stats(&mut timings);
-    let v_m = mesh.madelung(cell)?;
+    let clock = StageClock::start();
+    let ints = match aux {
+        None => {
+            let mut dense = kc.dense;
+            dense.rsh = rsh;
+            KInts::Dense(KDenseAftEri::build(
+                cell,
+                prep,
+                mesh,
+                &hk.s,
+                ExxDiv::None,
+                &dense,
+            )?)
+        }
+        Some(aux) => KInts::RsGdf(match rsh {
+            Some(r) => KRsGdf::build_rsh(cell, prep, aux, mesh, &hk.s, &kc.rsgdf, r)?,
+            None => KRsGdf::build(cell, prep, aux, mesh, &hk.s, &kc.rsgdf)?,
+        }),
+    };
+    // The exxdiv constant the K applies: the mesh Madelung constant, or for
+    // a range-separated hybrid the mixed one the attenuated K was built with.
+    let v_m = match (&ints, rsh) {
+        (KInts::Dense(e), Some(_)) => e.madelung_ewald(),
+        (KInts::RsGdf(g), Some(_)) => g.madelung_ewald(),
+        _ => mesh.madelung(cell)?,
+    };
+    let v_m = if rsh.is_some() && kc.mutation == Some(KUhfMutation::PlainMadelungForRsh) {
+        mesh.madelung(cell)?
+    } else {
+        v_m
+    };
     let applied = match kc.exxdiv {
         ExxDiv::None => 0.0,
         ExxDiv::Ewald => v_m,
@@ -614,18 +669,6 @@ pub fn solve_kuks_on_grid_keep(
         0.5 * applied
     } else {
         applied
-    };
-    let clock = StageClock::start();
-    let ints = match aux {
-        None => KInts::Dense(KDenseAftEri::build(
-            cell,
-            prep,
-            mesh,
-            &hk.s,
-            ExxDiv::None,
-            &kc.dense,
-        )?),
-        Some(aux) => KInts::RsGdf(KRsGdf::build(cell, prep, aux, mesh, &hk.s, &kc.rsgdf)?),
     };
     timings.stop("k J/K build", &clock);
     if let KInts::RsGdf(g) = &ints {
@@ -695,7 +738,7 @@ pub fn solve_kuks_on_grid_keep(
     };
     let res = KUksResult {
         e_xc,
-        exact_exchange_fraction: a,
+        exact_exchange_fraction: rsh.map_or(a, |r| r.c_sr),
         n_grid_points: grid.len(),
         electrons_on_grid,
         madelung: v_m,

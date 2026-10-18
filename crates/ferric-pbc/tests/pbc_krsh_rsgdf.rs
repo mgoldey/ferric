@@ -644,12 +644,11 @@ fn rsh_rsgdf_forces_and_stress_are_refused_not_silently_wrong() {
     );
 }
 
-/// The spin-resolved k-point solvers refuse a range-separated functional on
-/// the RS-GDF J/K as well (they have no attenuated K on either J/K).
+/// k-point ROKS refuses a range-separated functional on the RS-GDF J/K as
+/// well (k-point UKS accepts it: `pbc_oshell_rsh.rs`).
 #[test]
-fn open_shell_rsgdf_solvers_refuse_rsh() {
+fn roks_rsgdf_solver_refuses_rsh() {
     use ferric_pbc::kroks::{solve_kroks_on_grid, KRoksConfig};
-    use ferric_pbc::kuks::{solve_kuks_on_grid, KUksConfig};
     let cell = h2_cell(4.0);
     let bs = pyscf_sto3g_h();
     let prep = prep_for(&cell, &bs);
@@ -659,9 +658,6 @@ fn open_shell_rsgdf_solvers_refuse_rsh() {
     let mut roks = KRoksConfig::new(&cell, ExxDiv::Ewald, "HSE06");
     roks.rohf.jk = KJkKind::RsGdf;
     assert!(solve_kroks_on_grid(&cell, &prep, Some(&aux), &mesh, &grid, &roks).is_err());
-    let mut uks = KUksConfig::new(&cell, ExxDiv::Ewald, "HSE06");
-    uks.kuhf.jk = KJkKind::RsGdf;
-    assert!(solve_kuks_on_grid(&cell, &prep, Some(&aux), &mesh, &grid, &uks).is_err());
 }
 
 /// Cross-surface pin shared with `test_pbc_krks.py::

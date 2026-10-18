@@ -1,0 +1,212 @@
+{
+  "pyscf_version": "2.13.1",
+  "numpy_version": "1.26.4",
+  "date": "2026-10-18",
+  "generator": "scripts/gen_pyscf_oshell_rsh_refs.py",
+  "repo_sha_at_generation": "9bf76fbcd9de4d00214ad604989088b25db7a251",
+  "repo_sha_note": "HEAD of the worktree when the script ran: the PARENT of the commit that adds/changes this script, not the commit containing it",
+  "libxc_version": "7.0.0",
+  "xc_names": {
+    "HSE06": {
+      "pyscf": "HSE06",
+      "ferric": "HSE06",
+      "omega_bohr_inv": 0.11,
+      "c_lr": 0.0,
+      "c_sr": 0.25
+    },
+    "CAM_B3LYP": {
+      "pyscf": "CAMB3LYP",
+      "ferric": "HYB_GGA_XC_CAM_B3LYP",
+      "omega_bohr_inv": 0.33,
+      "c_lr": 0.65,
+      "c_sr": 0.19
+    }
+  },
+  "grids": "XC grid (NumInt UniformGrids) and AFTDF mesh are both 41^3; cell.precision 1e-11",
+  "cell": "H STO-3G (PySCF digits), Bohr, TRICLINIC lattice; h3d doublet, h4t triplet",
+  "lattice": [
+    [
+      4.6,
+      0.0,
+      0.0
+    ],
+    [
+      0.9,
+      4.3,
+      0.0
+    ],
+    [
+      0.5,
+      0.7,
+      4.8
+    ]
+  ],
+  "cells": {
+    "h3d": {
+      "atoms": [
+        [
+          0.3,
+          0.2,
+          0.1
+        ],
+        [
+          0.3,
+          0.2,
+          1.5
+        ],
+        [
+          0.3,
+          0.2,
+          2.9
+        ]
+      ],
+      "nab": [
+        2,
+        1
+      ]
+    },
+    "h4t": {
+      "atoms": [
+        [
+          0.3,
+          0.2,
+          0.1
+        ],
+        [
+          0.3,
+          0.2,
+          1.5
+        ],
+        [
+          1.6,
+          1.1,
+          2.9
+        ],
+        [
+          1.6,
+          1.1,
+          4.1
+        ]
+      ],
+      "nab": [
+        3,
+        1
+      ]
+    }
+  },
+  "setup": "pbc.dft.UKS (Gamma) / KUKS (nelec=(Na*Nk, Nb*Nk)), AFTDF, UniformGrids 41^3, conv_tol 1e-12",
+  "rows": [
+    {
+      "cell": "h3d",
+      "functional": "HSE06",
+      "kmesh": [
+        1,
+        1,
+        1
+      ],
+      "exxdiv": "ewald",
+      "e_tot": -1.5422693490941852,
+      "runtime_s": 56.0,
+      "e_pbe0": -1.5422451368080061
+    },
+    {
+      "cell": "h3d",
+      "functional": "HSE06",
+      "kmesh": [
+        1,
+        1,
+        1
+      ],
+      "exxdiv": "none",
+      "e_tot": -1.3554011601169942,
+      "runtime_s": 63.1
+    },
+    {
+      "cell": "h3d",
+      "functional": "CAM_B3LYP",
+      "kmesh": [
+        1,
+        1,
+        1
+      ],
+      "exxdiv": "ewald",
+      "e_tot": -1.5724933181342036,
+      "runtime_s": 41.6
+    },
+    {
+      "cell": "h3d",
+      "functional": "HSE06",
+      "kmesh": [
+        1,
+        1,
+        2
+      ],
+      "exxdiv": "ewald",
+      "e_tot": -1.656598223288747,
+      "runtime_s": 119.7,
+      "e_pbe0": -1.6564381270028483
+    },
+    {
+      "cell": "h3d",
+      "functional": "CAM_B3LYP",
+      "kmesh": [
+        1,
+        1,
+        2
+      ],
+      "exxdiv": "ewald",
+      "e_tot": -1.6649308565765881,
+      "runtime_s": 210.5
+    },
+    {
+      "cell": "h3d",
+      "functional": "HSE06",
+      "kmesh": [
+        1,
+        1,
+        2
+      ],
+      "exxdiv": "none",
+      "e_tot": -1.5644765214842058,
+      "runtime_s": 136.3
+    },
+    {
+      "cell": "h4t",
+      "functional": "HSE06",
+      "kmesh": [
+        1,
+        1,
+        1
+      ],
+      "exxdiv": "ewald",
+      "e_tot": -1.7120314150201619,
+      "runtime_s": 88.0,
+      "e_pbe0": -1.7120314860629626
+    },
+    {
+      "cell": "h4t",
+      "functional": "CAM_B3LYP",
+      "kmesh": [
+        1,
+        1,
+        1
+      ],
+      "exxdiv": "ewald",
+      "e_tot": -1.7478246177766161,
+      "runtime_s": 93.2
+    },
+    {
+      "cell": "h4t",
+      "functional": "HSE06",
+      "kmesh": [
+        1,
+        1,
+        2
+      ],
+      "exxdiv": "ewald",
+      "e_tot": -1.5355248992273376,
+      "runtime_s": 258.7,
+      "e_pbe0": -1.534814404137736
+    }
+  ]
+}

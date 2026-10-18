@@ -495,9 +495,11 @@ fn gamma_rsh_dense_budget_counts_the_attenuated_tensors() {
     assert!(check_dense_budget(2, 1000).is_ok());
 }
 
-/// Unsupported Gamma surfaces stay refused BY NAME at the library level.
+/// Unsupported Gamma surfaces stay refused BY NAME at the library level: the
+/// global-hybrid `gamma_uks` / `gamma_roks` entries (open-shell RSH is
+/// `gamma_uks_rsh`, `pbc_oshell_rsh.rs`) and the RSH derivatives.
 #[test]
-fn gamma_rsh_derivatives_and_open_shell_are_refused_in_the_library() {
+fn gamma_global_hybrid_open_shell_entries_and_rsh_derivatives_refuse_by_name() {
     use ferric_pbc::dft::{gamma_uks, GammaUksConfig};
     use ferric_pbc::rohf::{gamma_roks, GammaRoksConfig};
     let cell = cell_of(Lat::Triclinic);

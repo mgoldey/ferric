@@ -234,9 +234,9 @@ pub mod uhf;
 pub use dense_aft::{DenseAftEri, ExxDiv};
 pub use dft::{
     covering_radius_bound, gamma_rks, gamma_rks_rsh, gamma_rks_rsh_on_grid, gamma_uks,
-    gamma_uks_with_xc, GammaRksConfig, GammaRksResult, GammaUksConfig, GammaUksGridInfo,
-    GammaUksResult, PeriodicDftError, PeriodicGrid, PeriodicGridConfig, PeriodicXc,
-    PeriodicXcConfig,
+    gamma_uks_rsh, gamma_uks_rsh_on_grid, gamma_uks_with_xc, GammaRksConfig, GammaRksResult,
+    GammaUksConfig, GammaUksGridInfo, GammaUksResult, PeriodicDftError, PeriodicGrid,
+    PeriodicGridConfig, PeriodicXc, PeriodicXcConfig,
 };
 pub use drpa::{gamma_drpa, GammaDrpaConfig, GammaDrpaIntegrals, GammaDrpaResult};
 pub use ecp::{
