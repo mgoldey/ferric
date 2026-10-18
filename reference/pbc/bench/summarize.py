@@ -43,8 +43,11 @@ def main(paths):
     print(
         "cell N code (input) n_valid n_discarded | metric: median [min-max] IQR | energy spread | load range"
     )
-    for k in sorted(g):
+    for k in sorted(set(g) | set(bad)):
         rs = g[k]
+        if not rs:
+            print(k, f"n=0 bad={bad[k]} | no valid runs")
+            continue
         out = []
         for key, nm in KEYS:
             v = [r[key] for r in rs if r.get(key) is not None]
@@ -53,13 +56,14 @@ def main(paths):
                     f"{nm} {statistics.median(v):.3f} [{min(v):.3f}-{max(v):.3f}] IQR {q(v):.3f}"
                 )
         e = [r["energy"] for r in rs if r.get("energy") is not None]
+        e_txt = f"E {e[0]:.10f} spread {max(e) - min(e):.1e}" if e else "E missing"
         lo = min(min(r["load_start"], r["load_end"]) for r in rs)
         hi = max(max(r["load_start"], r["load_end"]) for r in rs)
         print(
             k,
             f"n={len(rs)} bad={bad[k]} |",
             " | ".join(out),
-            f"| E {e[0]:.10f} spread {max(e) - min(e):.1e} | load {lo:.2f}-{hi:.2f}",
+            f"| {e_txt} | load {lo:.2f}-{hi:.2f}",
         )
 
 

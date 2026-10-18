@@ -32,7 +32,7 @@ ROOT = os.path.abspath(os.path.join(HERE, "..", "..", ".."))
 sys.path.insert(0, HERE)
 from omega_sweep import cpu_jiffies, load1, wait_quiet  # noqa: E402
 
-PY = os.environ.get("PYSCF_PY", "/home/matt/qc/ferric/.venv/bin/python")
+PY = os.environ.get("PYSCF_PY", sys.executable)
 NCPU = os.cpu_count() or 12
 
 
@@ -206,6 +206,9 @@ def main():
                     rec.update(
                         rep=rep, attempt=attempt, session=os.path.basename(a.out)
                     )
+                    # A run without a parsed energy cannot pass the energy gate.
+                    if rec.get("energy") is None or "parse_error" in rec:
+                        rec["valid"] = False
                     with open(a.out, "a") as f:
                         f.write(json.dumps(rec) + "\n")
                     print(

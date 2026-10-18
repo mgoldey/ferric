@@ -78,7 +78,7 @@ All runs in `bench_results/*.jsonl` (`valid` field; invalid ones are kept, not u
 | cell | ferric | PySCF p=1e-12 | dE (bar 1e-8) | PySCF 1e-8 vs its 1e-12 (must FAIL) | 1e-10 | 1e-11 (timed) |
 |---|---|---|---|---|---|---|
 | diamond_prim | -74.9757090071 | -74.97570900706793 | ~3e-11 (ferric prints 10 dp) PASS | 1.8e-6 FAIL (gate discriminates) | 1.6e-8 FAIL | 3.5e-10 PASS |
-| dryice | -750.8211184382 | -750.821118438013 | 1.9e-10 PASS (true value in ~[1.4e-10,2.4e-10]: ferric prints 10 dp) | 2.2e-6 FAIL | 7.3e-8 FAIL | 6.6e-11 PASS |
+| dryice | -750.8211184382 | -750.821118438013 | 1.9e-10 PASS (true value in ~[1.4e-10,2.4e-10]: ferric prints 10 dp) | 2.2e-6 FAIL | 7.3e-8 FAIL | 1.3e-10 PASS |
 Matched PySCF precision = 1e-11 for both cells (the loosest tested value inside the gate; 1e-9 was
 not tested).  Also pre-checked at STO-3G/cc-pvdz-ri: diamond_prim
 dE 3.3e-10, dryice 1.1e-9.  jkfit: drop counts DIFFER (see Deviation) so no jkfit rows exist.
@@ -132,7 +132,7 @@ one run 14% above the others (ambient, not flagged by the gate); median unaffect
 2. Stopping rules: ferric 10/20 iterations, PySCF 7/13 (same hcore guess, DIIS defaults of each
    code); PySCF conv_tol 1e-10 + grad 1e-6 vs ferric density rms 1e-10.  Iteration counts within 2x.
 3. omega: ferric default fixed 1.0 Bohr^-1; PySCF auto 0.417 / 0.330 (ferric `auto`: 1.0 / 0.5).
-4. hcore: different algorithms (see above); the hcore stage is 64% of PySCF's dryice setup.
+4. hcore: different algorithms (see above); the hcore stage is 62% of PySCF's dryice setup (73.2 of 118.20 s at N=1; 59% at N=6).
 5. Aux: cc-pvdz-ri instead of the toml's jkfit (deviation above).  Same JSON, 0 dropped both.
 6. Exchange: ferric K is the RS-GDF dense-D loop; PySCF uses the occupied-orbital path with the cderi
    read from disk (HDF5); PySCF DF build also writes that file (negligible: SR rest 0.003 s on
