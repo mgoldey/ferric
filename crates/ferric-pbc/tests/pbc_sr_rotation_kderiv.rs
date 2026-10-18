@@ -30,6 +30,9 @@
 //!     the derivative walks unrotated (`RotOff`).
 //! (g) Refusals: a rotated build over an `Off` config, an explicit `On` over
 //!     an unrotated build, a rotation mutant in the config.
+//! (h) Shifted (Monkhorst-Pack) 1x1x2 mesh with rotation: walks vs unrotated
+//!     walks, and FD of the rotated k energy with the full mutant sweep (the
+//!     last section of this file).
 //!
 //! Artifact hypothesis, stated before measuring. Correct: (a) at the
 //! screening precision (measured at the default screen 1e-9/1e-10: force
@@ -55,7 +58,7 @@ use ferric_pbc::kgrad::{
     kpoint_rhf_gradient, kpoint_uhf_gradient, KGradConfig, KGradJk, KGradMutation, KGradient,
     KRsGdfGradSource,
 };
-use ferric_pbc::kpts::KPointMesh;
+use ferric_pbc::kpts::{KPointMesh, MeshCentring};
 use ferric_pbc::kscf::{solve_krhf_injected, KPointInjection, KScfConfig, KScfResult};
 use ferric_pbc::kstress::{
     kpoint_rhf_stress, kpoint_uhf_stress, KStress, KStressConfig, KStressJk, KStressMutation,
@@ -137,11 +140,22 @@ fn run(
     n: [usize; 3],
     split: Option<RangeSplit>,
     rot: SrColumnRotation,
+    prec: (f64, f64),
+) -> Run {
+    run_c(cell, n, MeshCentring::Gamma, split, rot, prec)
+}
+
+fn run_c(
+    cell: Cell,
+    n: [usize; 3],
+    centring: MeshCentring,
+    split: Option<RangeSplit>,
+    rot: SrColumnRotation,
     (hp, gp): (f64, f64),
 ) -> Run {
     let prep = prep_for(&cell, &bset("cc-pvdz"));
     let aux = prep_for(&cell, &bset("cc-pvdz-ri"));
-    let mesh = KPointMesh::gamma_centred(&cell, n).expect("mesh");
+    let mesh = KPointMesh::new(&cell, n, centring).expect("mesh");
     let hcfg = hcfg(rot, hp);
     let hk = periodic_hcore_kpts(&cell, &prep, &mesh, &hcfg).expect("hcore(k)");
     let gcfg = gcfg(split, rot, gp);
@@ -1361,3 +1375,164 @@ fn rotated_k_force_and_stress_match_fd_on_2x2x1_triclinic() {
         );
     }
 }
+
+// ------------------------------------- (#421 B) shifted (Monkhorst-Pack) mesh
+//
+// A Monkhorst-Pack even mesh (1x1x2: k = +-b3/4, residue modulus 4) is a
+// twisted-boundary supercell, so there is NO explicit-supercell anchor; the
+// rotated energy's own FD is the physics anchor. Untested combination before
+// this section: the rotation (residue bins of `Tt W[r] T`, indexed through the
+// mesh's residue modulus) on a mesh whose residue modulus is NOT the mesh
+// size (4 vs 2 along z).
+//
+// ARTIFACT hypothesis (before measuring). If correct: rotated-vs-unrotated
+// walks agree at the screen (D_BAR), analytic == FD at the FD floor and every
+// Rot* mutant misses by >= MUTANT_FLOOR. A residue-binning slip in the
+// rotated weights would show as a large FD miss; the nearest real mutants are
+// `RotFitWrongResidue` / `RotHcoreWrongResidue` (reversed bin order), and the
+// phase slips `NoPhase` / `ConjD`. There is NO mutant that bins by the mesh
+// size instead of the residue modulus, so that specific slip is untested. The
+// rotated-vs-unrotated anchor passes if both walks share a slip; the FD is the
+// discriminating test.
+
+// MEASURED (release): rotated vs unrotated walks on MP 1x1x2: force total
+// 3.0e-10, stress total 8.9e-9 (D_BAR 1e-7, 11x). FD (h = 1e-4): force 2.35e-9
+// (bar 2.5e-8, 10.6x), stress 5.5e-9 (bar 1e-7, 18x). FD misses of the
+// mutants (force / stress): RotDropT 3.3e-1 / 4.3e-1, RotUseT 3.2e-1 / 4.4e-1,
+// RotOneSided 1.5e-1 / 1.9e-1, RotFlipSign 3.9e-1 / 5.3e-1, RotSwapPair
+// 2.3e-3 / 9.3e-3, RotFitWrongResidue 7.1e-2 / 1.3e-1, RotHcoreWrongResidue
+// 5.5e-1 / 7.8e-1, NoPhase 1.5e-2 / 2.4e-1, ConjD 1.1e-2 / 2.2e-2 (floor
+// MUTANT_FLOOR 1e-6, smallest 2.3e-3). RotOff is BLIND by design at the
+// default screen (see (a)). Test mutation: rotation Off in `mp_cell_run`
+// fails `assert_rotates` ("hcore did not rotate"); this was a HAND EDIT, not a
+// committed mutant. Both-side ratios: stress bar 1e-7 is 18x above the measured
+// 5.5e-9 and the smallest stress mutant miss (9.3e-3) is 9.3e4x above the bar;
+// force bar 2.5e-8 is 10.6x above 2.35e-9 and the smallest force miss (2.3e-3)
+// is 9.2e4x above it.
+
+fn mp_cell_run() -> Run {
+    run_c(
+        cell_h2(&H2_ATOMS),
+        [1, 1, 2],
+        MeshCentring::MonkhorstPack,
+        None,
+        on(),
+        DEFAULT_PREC,
+    )
+}
+
+fn mp_energy(pos: &[[f64; 3]], strain: Option<&Mat3>) -> f64 {
+    let mut cell = cell_h2(pos);
+    if let Some(e) = strain {
+        cell = cell.strained(e).expect("strained");
+    }
+    run_c(
+        cell,
+        [1, 1, 2],
+        MeshCentring::MonkhorstPack,
+        None,
+        on(),
+        DEFAULT_PREC,
+    )
+    .scf(ExxDiv::None)
+    .energy
+}
+
+/// Anchor (exactness, run first): the rotated walks equal the unrotated ones
+/// of the same energy and density on the MP mesh, force and stress, per part.
+#[test]
+fn mp_mesh_rotated_walks_equal_the_unrotated_walks() {
+    let r = mp_cell_run();
+    r.assert_rotates("MP 1x1x2");
+    assert_eq!(r.mesh.residue_moduli(), [1, 1, 4], "not a shifted mesh");
+    let scf = r.scf(ExxDiv::None);
+    let f_on = r.force(&scf, ExxDiv::None, None);
+    let f_off = r.force(&scf, ExxDiv::None, Some(KGradMutation::RotOff));
+    let s_on = r.stress(&scf, ExxDiv::None, None);
+    let s_off = r.stress(&scf, ExxDiv::None, Some(KStressMutation::RotOff));
+    let hc = |f: &KGradient| msum(&f.parts.vsr_basis, &f.parts.vsr_nuc);
+    let d = [
+        max_abs_diff(&f_on.grad, &f_off.grad),
+        max_abs_diff(&hc(&f_on), &hc(&f_off)),
+        max_abs_diff(&f_on.parts.fit_orb_sr, &f_off.parts.fit_orb_sr),
+        mdiff(&s_on.de_deps, &s_off.de_deps),
+        mdiff(&s_on.parts.vsr, &s_off.parts.vsr),
+        mdiff(&s_on.parts.fit_j3_sr, &s_off.parts.fit_j3_sr),
+    ];
+    eprintln!(
+        "MP 1x1x2 rotated vs unrotated walks (F tot, hcore, fit; S tot, hcore, fit): {:?}",
+        d.map(|x| format!("{x:.2e}"))
+    );
+    assert!(d.iter().all(|x| *x < D_BAR), "{d:?}");
+    assert!(max_abs(&f_off.parts.fit_orb_sr) > 1e-3 && max_abs(&hc(&f_off)) > 1e-3);
+    assert!(mmax(&s_off.parts.vsr) > 1e-3 && mmax(&s_off.parts.fit_j3_sr) > 1e-3);
+}
+
+/// Physics: rotated analytic force and stress on the MP 1x1x2 mesh == central
+/// FD of the rotated MP k energy (rotation on in every displaced build); every
+/// production-wired rotation mutant, and the mesh-sensitive `NoPhase` and
+/// `ConjD` (NOT identities on a non-TRIM mesh), must miss the FD.
+#[test]
+#[ignore = "slow (~3 min release): 1 + 14 rotated MP k pipelines, 16 mutant evaluations"]
+fn rotated_mp_mesh_force_and_stress_match_fd_of_the_rotated_k_energy() {
+    let comps_f = [(0usize, 0usize), (0, 2), (1, 1)];
+    let comps_s = [(0usize, 0usize), (2, 2), (0, 2), (1, 2)];
+    let fd_f: Vec<f64> = comps_f
+        .iter()
+        .map(|&(a, x)| {
+            let mut p = H2_ATOMS;
+            p[a][x] += FD_H;
+            let ep = mp_energy(&p, None);
+            p[a][x] -= 2.0 * FD_H;
+            (ep - mp_energy(&p, None)) / (2.0 * FD_H)
+        })
+        .collect();
+    let fd_s: Vec<f64> = comps_s
+        .iter()
+        .map(|&(i, j)| {
+            let mut e = [[0.0; 3]; 3];
+            e[i][j] = FD_H;
+            let ep = mp_energy(&H2_ATOMS, Some(&e));
+            e[i][j] = -FD_H;
+            (ep - mp_energy(&H2_ATOMS, Some(&e))) / (2.0 * FD_H)
+        })
+        .collect();
+    let r = mp_cell_run();
+    r.assert_rotates("MP 1x1x2");
+    assert_eq!(r.mesh.residue_moduli(), [1, 1, 4]);
+    let scf = r.scf(ExxDiv::None);
+    let f = r.force(&scf, ExxDiv::None, None);
+    let s = r.stress(&scf, ExxDiv::None, None);
+    let miss_f = |g: &KGradient| {
+        comps_f.iter().zip(&fd_f).fold(0.0_f64, |w, (&(a, x), fd)| {
+            w.max((g.grad[(a, x)] - fd).abs())
+        })
+    };
+    let miss_s = |g: &KStress| {
+        comps_s.iter().zip(&fd_s).fold(0.0_f64, |w, (&(i, j), fd)| {
+            w.max((g.de_deps[i][j] - fd).abs())
+        })
+    };
+    let (wf, ws) = (miss_f(&f), miss_s(&s));
+    eprintln!("MP 1x1x2 rotated: |analytic - FD| force {wf:.2e}, stress {ws:.2e}");
+    assert!(wf.is_finite() && ws.is_finite());
+    assert!(wf < MP_FD_F_BAR, "force FD {wf:e}");
+    assert!(ws < MP_FD_S_BAR, "stress FD {ws:e}");
+    let mut fm: Vec<KGradMutation> = FORCE_MUTANTS.to_vec();
+    fm.extend([KGradMutation::NoPhase, KGradMutation::ConjD]);
+    for m in fm {
+        let w = miss_f(&r.force(&scf, ExxDiv::None, Some(m)));
+        eprintln!("  force mutant {m:?}: FD miss {w:.2e}");
+        assert!(w > MUTANT_FLOOR, "{m:?} escaped the FD: {w:e}");
+    }
+    let mut sm: Vec<KStressMutation> = STRESS_MUTANTS.to_vec();
+    sm.extend([KStressMutation::NoPhase, KStressMutation::ConjD]);
+    for m in sm {
+        let w = miss_s(&r.stress(&scf, ExxDiv::None, Some(m)));
+        eprintln!("  stress mutant {m:?}: FD miss {w:.2e}");
+        assert!(w > MUTANT_FLOOR, "{m:?} escaped the FD: {w:e}");
+    }
+}
+
+const MP_FD_F_BAR: f64 = 2.5e-8;
+const MP_FD_S_BAR: f64 = 1e-7;
