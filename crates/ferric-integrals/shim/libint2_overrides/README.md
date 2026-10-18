@@ -136,6 +136,7 @@ uninitialised memory; build.rs warns that the fix is NOT applied.
     pbc_kxcgrad_mgga (96), pbc_stress (52), pbc_grad_rsgdf (214), pbc_kxcgrad_hybrid (373), pbc_kuxcgrad_ro (54),
     pbc_kgrad (524), pbc_kxcstress_mgga (1000), pbc_kuxcgrad (684). `pbc_kxcstress`: nextest summary "18 tests run: 18
     passed" after 717 s; the runner process was killed afterwards, so no exit status was recorded for it.
+    All elapsed times in harnesses A-D are local wall-clock on one developer box, not CI-runner measurements.
     Not run at `=1`: `pbc_grad_ecp_nucleus_scan` (every test is `#[ignore]`d) and `pbc_kuxcstress`, `pbc_kuxcstress_ro`,
     `pbc_kxcgrad`, `pbc_kxcstress_hybrid`, `pbc_kstress` (time budget); these 6 have `=170` results only. Harness D's
     `pbc_kxcstress_mgga` at 1000 s versus the 574 s of the earlier Harness A run is a different harness and box load,
