@@ -44,8 +44,10 @@ def read_cell(name):
     return atoms, lat
 
 
-def ferric_basis_pyscf(name, symbols):
+def ferric_basis_pyscf(name, symbols, repr_="general"):
     """ferric's bundled BSE JSON -> PySCF basis dict (general contractions kept as one block)."""
+    if repr_ != "general":
+        raise NotImplementedError("only the general-contraction representation is built here")
     from pyscf.data.elements import _symbol
 
     d = json.load(open(os.path.join(ROOT, "crates/ferric-core/src/basis/bundled", name + ".json")))

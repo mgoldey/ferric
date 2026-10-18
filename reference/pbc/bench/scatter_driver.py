@@ -9,7 +9,7 @@ subprocess), load1 before/after, other_cpu_s (box CPU not used by the run's own 
 
 GATE (per run): 1-minute loadavg < 1.5 immediately before AND after the run, for N=1.
 For N>1 the run's own threads push the 1-minute loadavg above 1.5, so the gate there is the
-foreign-CPU fraction other_cpu_s / (wall * ncpu_logical) < 0.02 (before: the same measure over a
+foreign-CPU fraction other_cpu_s / (wall * ncpu_logical) < 0.12 (the ambient box baseline measured here is 4-6%) (before: the same measure over a
 2 s window). A run that fails either side is recorded with valid=false and re-run (<= 3 attempts).
 Fresh process for every run; PySCF deletes its cderi file (private temp dir) before exit.
 Ferric input: toml_ri/<cell>_rhf.toml (ferric defaults, SR column rotation ON) unless --toml-dir
@@ -81,7 +81,7 @@ def run_cmd(cmd, env, threads):
                 break
             time.sleep(10)
     else:
-        ok_before = wait_quiet(max_busy=0.02, window=2.0, timeout=900)
+        ok_before = wait_quiet(max_busy=0.12, window=2.0, timeout=900)
     l0 = load1()
     b0, t0j = cpu_jiffies()
     r0 = resource.getrusage(resource.RUSAGE_CHILDREN)
@@ -97,7 +97,7 @@ def run_cmd(cmd, env, threads):
     if threads == 1:
         valid = ok_before and l0 < 1.5 and l1 < 1.5
     else:
-        valid = ok_before and (other / (wall * NCPU) < 0.02)
+        valid = ok_before and (other / (wall * NCPU) < 0.12)
     return p, dict(wall=wall, load_start=l0, load_end=l1, other_cpu_s=other, cpu_s=mine, valid=bool(valid))
 
 
