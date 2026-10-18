@@ -46,6 +46,21 @@ use num_complex::Complex64 as C64;
 /// density (the AOs are real, so it is rounding only).
 const IMAG_TOL: f64 = 1e-9;
 
+/// TEST ONLY: a deliberately wrong per-spin exchange of the open-shell
+/// [`crate::dft::gamma_uks_rsh`] (the SCF calls K once per spin, alpha first).
+/// Each is invisible in the closed-shell limit and moves a polarized energy.
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GammaSpinMutant {
+    /// The beta call returns the alpha result.
+    AlphaOnBeta,
+    /// The beta call returns zero.
+    DropBeta,
+    /// The Madelung term applied per spin is halved (RHF's D/2 bookkeeping
+    /// wrongly carried over to a spin density).
+    MadelungHalf,
+}
+
 enum Source {
     Dense(KDenseAftEri),
     RsGdf(KRsGdf),
@@ -60,6 +75,8 @@ pub struct GammaRshExchange {
     /// TEST ONLY: skip the functional / exxdiv consistency checks so a test
     /// can inject a deliberately wrong exchange (a mutant).
     unchecked: bool,
+    /// TEST ONLY: see [`GammaSpinMutant`].
+    spin_mutant: Option<GammaSpinMutant>,
 }
 
 impl GammaRshExchange {
@@ -84,6 +101,7 @@ impl GammaRshExchange {
             exxdiv,
             madelung,
             unchecked: false,
+            spin_mutant: None,
         })
     }
 
@@ -108,6 +126,7 @@ impl GammaRshExchange {
             exxdiv,
             madelung,
             unchecked: false,
+            spin_mutant: None,
         })
     }
 
@@ -117,6 +136,14 @@ impl GammaRshExchange {
     #[doc(hidden)]
     pub fn unchecked_for_mutation_tests(mut self) -> Self {
         self.unchecked = true;
+        self
+    }
+
+    /// TEST ONLY: make the open-shell K wrong in the way `m` says (implies
+    /// the unchecked mode is NOT needed: the functional / exxdiv still match).
+    #[doc(hidden)]
+    pub fn with_spin_mutant_for_mutation_tests(mut self, m: GammaSpinMutant) -> Self {
+        self.spin_mutant = Some(m);
         self
     }
 
@@ -139,27 +166,37 @@ impl GammaRshExchange {
         functional: &str,
         exxdiv: ExxDiv,
     ) -> Result<(), FerricError> {
+        self.check_for("gamma_rks_rsh", functional, exxdiv)
+    }
+
+    /// [`Self::check_for_rks`] naming the calling entry point `who`.
+    pub(crate) fn check_for(
+        &self,
+        who: &str,
+        functional: &str,
+        exxdiv: ExxDiv,
+    ) -> Result<(), FerricError> {
         if self.unchecked {
             return Ok(());
         }
         if !is_range_separated(functional) {
             return Err(FerricError::General(format!(
-                "gamma_rks_rsh: functional {functional:?} is not a range-separated hybrid \
-                 (use gamma_rks)"
+                "{who}: functional {functional:?} is not a range-separated hybrid \
+                 (use the global-hybrid entry point)"
             )));
         }
         let want = crate::rsh::resolve_periodic_functional_rsh(functional)?
             .2
-            .ok_or_else(|| FerricError::General("gamma_rks_rsh: no CAM parameters".into()))?;
+            .ok_or_else(|| FerricError::General(format!("{who}: no CAM parameters")))?;
         if want != self.rsh {
             return Err(FerricError::General(format!(
-                "gamma_rks_rsh: the exchange was built for {:?} but {functional:?} has {want:?}",
+                "{who}: the exchange was built for {:?} but {functional:?} has {want:?}",
                 self.rsh
             )));
         }
         if exxdiv != self.exxdiv {
             return Err(FerricError::General(format!(
-                "gamma_rks_rsh: exxdiv {exxdiv:?} differs from the one the exchange was built \
+                "{who}: exxdiv {exxdiv:?} differs from the one the exchange was built \
                  with ({:?})",
                 self.exxdiv
             )));
@@ -181,7 +218,22 @@ impl GammaRshExchange {
             Source::Dense(e) => Box::new(e.jk_builder()),
             Source::RsGdf(g) => Box::new(g.jk_builder()),
         };
-        GammaRshK { jk }
+        GammaRshK::new(jk, None)
+    }
+
+    /// [`Self::k_builder`] with an explicit Madelung term `madelung` (0 =
+    /// `exxdiv = none`), for the staged ewald start of an open-shell run.
+    pub fn k_builder_with_madelung(&self, madelung: f64) -> GammaRshK<'_> {
+        let madelung = if self.spin_mutant == Some(GammaSpinMutant::MadelungHalf) {
+            0.5 * madelung
+        } else {
+            madelung
+        };
+        let jk: Box<dyn KPointJk + '_> = match &self.src {
+            Source::Dense(e) => Box::new(e.jk_builder_with_madelung(madelung)),
+            Source::RsGdf(g) => Box::new(g.jk_builder_with_madelung(madelung)),
+        };
+        GammaRshK::new(jk, self.spin_mutant)
     }
 }
 
@@ -192,6 +244,39 @@ fn to_complex(m: &Array2<f64>) -> Array2<C64> {
 /// Real [`KBuilder`] over the `k = 0` complex exchange.
 pub struct GammaRshK<'a> {
     jk: Box<dyn KPointJk + 'a>,
+    mutant: Option<GammaSpinMutant>,
+    /// Calls so far / the last result (only the spin mutants read them).
+    calls: usize,
+    last: Option<Array2<f64>>,
+}
+
+impl<'a> GammaRshK<'a> {
+    fn new(jk: Box<dyn KPointJk + 'a>, mutant: Option<GammaSpinMutant>) -> Self {
+        Self {
+            jk,
+            mutant,
+            calls: 0,
+            last: None,
+        }
+    }
+
+    /// The beta-call (odd-call) spin mutants of [`GammaSpinMutant`].
+    fn apply_spin_mutant(&mut self, k: &mut Array2<f64>) {
+        let beta_call = self.calls % 2 == 1;
+        match self.mutant {
+            Some(GammaSpinMutant::AlphaOnBeta) if beta_call => {
+                if let Some(prev) = &self.last {
+                    k.assign(prev);
+                }
+            }
+            Some(GammaSpinMutant::DropBeta) if beta_call => k.fill(0.0),
+            _ => {}
+        }
+        if self.mutant == Some(GammaSpinMutant::AlphaOnBeta) && !beta_call {
+            self.last = Some(k.clone());
+        }
+        self.calls += 1;
+    }
 }
 
 impl KBuilder for GammaRshK<'_> {
@@ -208,6 +293,9 @@ impl KBuilder for GammaRshK<'_> {
             )));
         }
         *k = kc[0].mapv(|z| z.re);
+        if self.mutant.is_some() {
+            self.apply_spin_mutant(k);
+        }
         Ok(0)
     }
 

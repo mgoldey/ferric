@@ -84,6 +84,18 @@ pub enum KUhfMutation {
     /// `N_σ` lowest levels at EVERY k (molecule-style per-k aufbau):
     /// zchain 1×1×2 +0.2412 Ha/cell; 0 wherever global aufbau is uniform.
     PerKAufbau,
+    /// K_β := K[D_α] (the α exchange applied to the β Fock; J_β still from
+    /// D_β). Closed shell: invisible (D_α = D_β); polarized: wrong by
+    /// the α/β exchange difference.
+    KAlphaOnBeta,
+    /// K_α := K[D_β], K_β := K[D_α] (spin swap in the exchange build).
+    KSwapSpin,
+    /// K_β := 0 (the β exchange term, attenuated or not, is dropped).
+    KDropBeta,
+    /// Range-separated hybrids only: apply the plain full-Coulomb mesh
+    /// Madelung constant instead of the mixed `c_sr v_M + (c_lr − c_sr)
+    /// v_M(ω)` one (the closed-shell RKS path applies the mixed one).
+    PlainMadelungForRsh,
 }
 
 /// Spin-polarized semilocal exchange-correlation for the k-point open-shell
@@ -647,6 +659,20 @@ fn build_spin_jk(
         inj.jk.build(da, ja, ka)?;
         if nb > 0 {
             inj.jk.build(db, jb, kb)?;
+            match mutation {
+                Some(KUhfMutation::KAlphaOnBeta) => {
+                    for k in 0..nk {
+                        kb[k].assign(&ka[k]);
+                    }
+                }
+                Some(KUhfMutation::KSwapSpin) => std::mem::swap(ka, kb),
+                Some(KUhfMutation::KDropBeta) => {
+                    for k in 0..nk {
+                        kb[k].fill(Complex64::new(0.0, 0.0));
+                    }
+                }
+                _ => {}
+            }
         } else {
             for k in 0..nk {
                 jb[k].fill(Complex64::new(0.0, 0.0));

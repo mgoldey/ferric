@@ -72,7 +72,7 @@
 //! ROHF has no injected path).
 //!
 //! Refused by name: range-separated hybrids in every entry but closed-shell
-//! [`gamma_rks_rsh`] (the attenuated K is the k = 0 of the 1x1x1 k-point machinery, [`crate::gamma_rsh`]; UKS, ROKS, forces and stress refuse them),
+//! [`gamma_rks_rsh`] (the attenuated K is the k = 0 of the 1x1x1 k-point machinery, [`crate::gamma_rsh`]; open-shell [`gamma_uks_rsh`] takes the same exchange per spin; ROKS, forces and stress refuse them),
 //! meta-GGA except the validated SCAN / r2SCAN in closed-shell [`gamma_rks`] ENERGY (tau from D and ∇χ^Γ, anchored to the 1x1x1 k-mesh and PySCF; Gamma forces, stress, UKS, ROKS refuse it), VV10 / double hybrids, grid pruning, Newton /
 //! TRAH / stability (they rebuild molecular J/K and the f_xc kernel on the
 //! molecular grid — rejected by `validate_injected`), the molecular grid knobs
@@ -1644,8 +1644,9 @@ pub fn resolve_periodic_functional_mgga(
             feature: "range-separated hybrid",
             reason: format!(
                 "{name} needs the attenuated (erf/erfc) periodic exchange, which this entry \
-                 point does not build: only closed-shell RKS builds it (k-point, or the \
-                 Gamma-point gamma_rks_rsh / run_rks_gamma). Use a global hybrid (e.g. \
+                 point does not build: it is built by closed-shell RKS (k-point, or the \
+                 Gamma-point gamma_rks_rsh / run_rks_gamma) and, in the library only, by \
+                 open-shell UKS (solve_kuks, gamma_uks_rsh). Use a global hybrid (e.g. \
                  PBE0) or a semilocal functional here"
             ),
         }
@@ -2510,6 +2511,85 @@ pub fn gamma_uks_with_xc(
     xc: &mut dyn XcBuilder,
     cfg: &GammaUksConfig,
 ) -> Result<GammaUksResult, FerricError> {
+    gamma_uks_core(cell, prep, hc, ints, xc, cfg, None)
+}
+
+/// [`gamma_uks`] for a range-separated hybrid (HSE06, CAM-B3LYP, wB97X): J
+/// from `ints`, the attenuated K of each spin from `rsh_k` (the Gamma =
+/// 1x1x1-mesh exchange of [`crate::gamma_rsh`], whose exxdiv must equal
+/// `cfg.exxdiv`). `K_σ = K[D_σ]` with the fractions and the MIXED Madelung
+/// constant inside, so the SCF scales it by 1. `cfg.functional` must be
+/// range-separated. ENERGY only (forces and stress refuse RSH).
+pub fn gamma_uks_rsh(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    hc: &PeriodicHcore,
+    ints: GammaUhfIntegrals<'_>,
+    rsh_k: &crate::gamma_rsh::GammaRshExchange,
+    cfg: &GammaUksConfig,
+) -> Result<GammaUksResult, FerricError> {
+    gamma_uks_rsh_impl(cell, prep, hc, ints, rsh_k, None, cfg)
+}
+
+/// [`gamma_uks_rsh`] on a caller-supplied XC grid (`cfg.grid` is ignored).
+pub fn gamma_uks_rsh_on_grid(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    hc: &PeriodicHcore,
+    ints: GammaUhfIntegrals<'_>,
+    rsh_k: &crate::gamma_rsh::GammaRshExchange,
+    grid: &PeriodicGrid,
+    cfg: &GammaUksConfig,
+) -> Result<GammaUksResult, FerricError> {
+    gamma_uks_rsh_impl(cell, prep, hc, ints, rsh_k, Some(grid), cfg)
+}
+
+fn gamma_uks_rsh_impl(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    hc: &PeriodicHcore,
+    ints: GammaUhfIntegrals<'_>,
+    rsh_k: &crate::gamma_rsh::GammaRshExchange,
+    grid_override: Option<&PeriodicGrid>,
+    cfg: &GammaUksConfig,
+) -> Result<GammaUksResult, FerricError> {
+    ferric_scf::uhf::validate_injected_uhf(&cfg.scf).map_err(FerricError::from)?;
+    refuse_molecular_grid_knobs(&cfg.scf)?;
+    nocc_ab(cell.mol())?;
+    // Cheap name checks before the grid is built.
+    rsh_k.check_for("gamma_uks_rsh", &cfg.functional, cfg.exxdiv)?;
+    let total = StageClock::start();
+    let (grid, mut pxc, mut timings) = gated_grid_and_xc(
+        cell,
+        prep,
+        &cfg.functional,
+        GridSource::new(&cfg.grid, grid_override),
+        &cfg.xc,
+        false,
+        true,
+    )?;
+    let mut out = gamma_uks_core(cell, prep, hc, ints, &mut pxc, cfg, Some(rsh_k))?;
+    let electrons_on_grid = pxc.integrate_density(&out.scf.density_total)?;
+    out.grid = Some(GammaUksGridInfo {
+        n_grid_points: grid.len(),
+        neighbour_cutoff: grid.neighbour_cutoff(),
+        electrons_on_grid,
+    });
+    timings.add_stage(&pxc.eval_timing());
+    timings.finish(&total);
+    out.timings = timings;
+    Ok(out)
+}
+
+fn gamma_uks_core(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    hc: &PeriodicHcore,
+    ints: GammaUhfIntegrals<'_>,
+    xc: &mut dyn XcBuilder,
+    cfg: &GammaUksConfig,
+    rsh_k: Option<&crate::gamma_rsh::GammaRshExchange>,
+) -> Result<GammaUksResult, FerricError> {
     ferric_scf::uhf::validate_injected_uhf(&cfg.scf).map_err(FerricError::from)?;
     refuse_molecular_grid_knobs(&cfg.scf)?;
     if !xc.supports_polarized() {
@@ -2528,7 +2608,12 @@ pub fn gamma_uks_with_xc(
             "gamma_uks: exact-exchange fraction must be in [0, 1], got {a}"
         )));
     }
-    let v_m = madelung_constant(cell)?;
+    // A range-separated K carries the MIXED constant c_sr v_M + (c_lr - c_sr)
+    // v_M(omega) (gamma_rsh); everything else the full-Coulomb one.
+    let v_m = match rsh_k {
+        Some(ex) => ex.mixed_madelung(),
+        None => madelung_constant(cell)?,
+    };
     let applied = match cfg.exxdiv {
         ExxDiv::None => 0.0,
         ExxDiv::Ewald => v_m,
@@ -2537,7 +2622,11 @@ pub fn gamma_uks_with_xc(
     // Required by the solver signature; never read for integrals here.
     let bounds = SchwarzBounds::compute(Operator::coulomb(), prep)?;
     let mut run = |vm: f64, init: Option<(&Array2<f64>, &Array2<f64>)>| {
-        let (j, k) = crate::uhf::builders(ints, vm);
+        let (j, mut k) = crate::uhf::builders(ints, vm);
+        if let Some(ex) = rsh_k {
+            // Called once per spin on D_sigma; fractions are inside it.
+            k = Box::new(ex.k_builder_with_madelung(vm));
+        }
         let inj = PeriodicInjection {
             s: hc.s.clone(),
             h: hc.h.clone(),
@@ -2579,7 +2668,7 @@ pub fn gamma_uks_with_xc(
     let (e_xc, _, _) = xc.build_polarized(&scf.density_alpha, d_b)?;
     Ok(GammaUksResult {
         madelung: v_m,
-        exact_exchange_fraction: a,
+        exact_exchange_fraction: rsh_k.map_or(a, |ex| ex.params().c_sr),
         nocc: (na, nb),
         s2,
         gaps,

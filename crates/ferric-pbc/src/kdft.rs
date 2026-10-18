@@ -34,9 +34,10 @@
 //! the dense-AFT J/K ([`crate::rsh`]) and the RS-GDF J/K (`KRsGdf::build_rsh`:
 //! full-Coulomb fit plus a G-space fit of the erf-attenuated kernel), energy
 //! only: forces and stress refuse them. The Gamma-point [`crate::gamma_rsh`]
-//! reuses this exchange at k = 0. Range-separated meta-GGAs, VV10 and
-//! double hybrids are refused here; open-shell (k-UKS) SCAN / r2SCAN energies
-//! live in [`crate::kuks`] (spin-resolved tau). Time reversal is NOT used
+//! reuses this exchange at k = 0, and the open-shell [`crate::kuks`] (KUKS)
+//! takes it per spin (with SCAN / r2SCAN open-shell energies there too,
+//! spin-resolved tau). Range-separated meta-GGAs, VV10 and double hybrids are
+//! refused. Time reversal is NOT used
 //! to halve the XC work (every k gets its own Bloch AO cache).
 
 use crate::budget::{bytes_of, Ledger};
