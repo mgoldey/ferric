@@ -7,9 +7,10 @@ interleaved driver, load gate), `toml_ri/` (ferric inputs, see "Deviation"), `be
 ## Written BEFORE the timing session (the pass condition and hypotheses)
 
 Disclosure: the energy anchors below were run first and printed wall times as a side effect (ferric
-diamond_prim ~40 s and dryice ~92 s at 1 thread; PySCF 1e-12 builds of ~1-2.5 min).  Those are single
-unrepeated, partly loaded runs; the hypotheses below were written after seeing them and are NOT
-blind to that.
+diamond_prim ~40 s and dryice ~92 s at 1 thread; PySCF 1e-12 builds of ~1-2.5 min).  The committed
+PySCF 1e-11 anchors (`bench_results/anchor_pyscf.jsonl`, commit 4b7a028f: totals 46.4 s / 138.9 s,
+dryice hcore 75.6 s) predate the hypotheses, so the N=1 total ratios were KNOWN IN ADVANCE; only the
+N=6 rows were unseen.  The hypotheses below are therefore NOT blind for N=1.
 
 ### Matching (what is held equal)
 cc-pVDZ (spherical, ferric's bundled BSE JSON), aux cc-pvdz-ri (ferric's bundled JSON, same file to
@@ -77,9 +78,9 @@ All runs in `bench_results/*.jsonl` (`valid` field; invalid ones are kept, not u
 | cell | ferric | PySCF p=1e-12 | dE (bar 1e-8) | PySCF 1e-8 vs its 1e-12 (must FAIL) | 1e-10 | 1e-11 (timed) |
 |---|---|---|---|---|---|---|
 | diamond_prim | -74.9757090071 | -74.97570900706793 | ~3e-11 (ferric prints 10 dp) PASS | 1.8e-6 FAIL (gate discriminates) | 1.6e-8 FAIL | 3.5e-10 PASS |
-| dryice | -750.8211184382 | -750.821118438013 | 2.5e-10 PASS | 2.2e-6 FAIL | 7.3e-8 FAIL | 6.6e-11 PASS |
-Matched PySCF precision = 1e-11 for both cells (the loosest tested value inside the gate; 1e-9 and
-1e-11 intermediates untested other than 1e-11).  Also pre-checked at STO-3G/cc-pvdz-ri: diamond_prim
+| dryice | -750.8211184382 | -750.821118438013 | 1.9e-10 PASS (true value in ~[1.4e-10,2.4e-10]: ferric prints 10 dp) | 2.2e-6 FAIL | 7.3e-8 FAIL | 6.6e-11 PASS |
+Matched PySCF precision = 1e-11 for both cells (the loosest tested value inside the gate; 1e-9 was
+not tested).  Also pre-checked at STO-3G/cc-pvdz-ri: diamond_prim
 dE 3.3e-10, dryice 1.1e-9.  jkfit: drop counts DIFFER (see Deviation) so no jkfit rows exist.
 Every timed run's energy is within the gate of the anchor (ferric rep-to-rep spread 0; PySCF 1e-13).
 
@@ -97,19 +98,20 @@ ON, gdf_omega 1.0), `OPENBLAS_NUM_THREADS=1 RAYON_NUM_THREADS=N`.  PySCF: precis
 | diamond_prim | 6 | ferric | 3 | 7.60 [7.47-7.82] IQR 0.17 | 7.56 | 6.7 / 0.84 | 0.018 | 10 | 0.002 |
 | diamond_prim | 6 | PySCF | 3 | 11.43 [11.24-11.48] IQR 0.12 | 10.67 | 9.1 / 1.6 | 0.207 | 7 | 0.012 |
 | dryice | 6 | ferric | 3 | 19.89 [19.80-20.01] IQR 0.10 | 17.97 | 16.2 / 1.8 | 1.89 | 20 | 0.094 |
-| dryice | 6 | PySCF | 3 | 31.89 [31.64-36.23] IQR 2.30 | 26.19 | 10.7 / 15.5 | 5.13 | 13 | 0.195 |
+| dryice | 6 | PySCF | 3 | 31.89 [31.64-36.23] IQR 2.30 | 26.19 | 10.7 / 15.4 | 5.13 | 13 | 0.195 |
 Extra ferric-only rows (diamond_prim, 3 reps): `_unrot` baseline (sr_column_rotation=false, the
 setting in toml/) N=1 140.36 [140.33-141.32] s, N=6 26.82 [26.45-27.09] s.  `gdf_omega = "auto"`
 (ferric's own cost-model choice; NOT a sweep for the best omega) N=1: diamond_prim picks 1.0
 (40.31 [40.23-40.44] s, identical to default); dryice picks 0.5: 53.34 [53.20-53.42] s (n=3, 1 extra
 invalid) vs 92.47 s at the default 1.0, same energy.  PySCF auto omegas: 0.417 (diamond_prim), 0.330 (dryice).
-Peak RSS: PySCF 0.17 GB / 2.95 GB (N=1; cderi file 0.37 MB / 76 MB); ferric dryice 0.41 GB (one
-/usr/bin/time run); ferric RSS was not recorded by the driver for the other rows.
+Peak RSS: PySCF 0.17 GB / 2.95 GB (N=1; cderi file 0.37 MB / 76 MB); ferric dryice 0.41 GB came from one
+interactive `/usr/bin/time -f %M` run whose raw output was NOT committed (unrecorded; treat as
+anecdotal); ferric RSS was not recorded by the driver for any row.
 Discarded runs (13 of 31 at N=1): the loadavg gate has only 0.5 slack above our own ~1.0 load.
 12 of the 13 have walls within 1.3% of the valid median (their loadavg was inflated by the previous
 run's tail); one (ferric diamond_prim rep 2) was +8% with 2.2 cores of foreign CPU (a real
 perturbation); one (PySCF dryice rep 4) saw a foreign load spike to 5.9 yet its wall moved -0.8%.
-PySCF dryice rep 2 (N=1) exhausted its 3 attempts with no valid run -> n=4 not 5.  The dryice N=6 PySCF max 36.2 s is
+PySCF dryice rep 2 AND PySCF diamond_prim rep 1 (N=1) each exhausted 3 attempts with no valid run -> n=4 not 5.  The diamond_prim rep-1 attempts had ~0.75 cores of foreign CPU against ~0.45 ambient, so that discard is partly a real perturbation, not only loadavg tail.  The dryice N=6 PySCF max 36.2 s is
 one run 14% above the others (ambient, not flagged by the gate); median unaffected.
 
 ## Statements the data supports (same cell, same N, same stage definition)
@@ -122,7 +124,7 @@ one run 14% above the others (ambient, not flagged by the gate); median unaffect
   N=1, different algorithms: PySCF nuclear attraction on the FFT mesh at precision 1e-11).
 - s/iteration: ferric faster, but iteration counts differ (stopping rules, below).
 - Parallel scaling N=1 -> 6: ferric 5.2x (diamond_prim), 4.6x (dryice); PySCF 4.1x, 4.3x.
-- ferric default vs its own unrotated baseline: 3.6x on diamond_prim at N=1 (5.2x at N=6).  Without SR
+- ferric default vs its own unrotated baseline: 3.6x on diamond_prim at N=1 (3.5x at N=6: 26.82 s vs 7.60 s; the 5.2x is the unrotated build's own N=1->6 scaling).  Without SR
   column rotation ferric diamond_prim (140 s) is 3.0x SLOWER than PySCF (47 s).
 
 ## Mismatches that remain (read before quoting any ratio)
@@ -137,10 +139,37 @@ one run 14% above the others (ambient, not flagged by the gate); median unaffect
    diamond_prim, see `pyscf_sr3_stages_diamond_prim_1e-11.json`).
 7. Process overhead: harness wall includes python/pyscf import (~1.5 s) for PySCF only.
 8. Load gate: N=1 uses 1-min loadavg < 1.5 (tight because our own run contributes ~1); N=6 uses
-   foreign-CPU fraction < 12% (ambient was 4-6%).
+   foreign-CPU fraction < 12% (ambient was 4-6%).  SEE THE DEVIATION SECTION BELOW: this N=6 gate is
+   not the pre-registered one.
+9a. Run order is fixed ferric-then-PySCF within each rep, so PySCF's load gate absorbs ferric's
+    loadavg tail: PySCF was discarded 9 times at N=1, ferric 4.  Discarded PySCF runs were slightly
+    slower than kept ones, so excluding them lowers the PySCF median by ~0.5-1% (conservative for the
+    "ferric faster" statement).
+9b. Ferric convergence is not checked by the driver (the CLI only warns, exit 0); "converged" is
+    implied only by the energy matching the anchor.  PySCF `converged` is recorded.
+9c. Binary provenance: `target/release/ferric --version` reports commit a50e9964502fa604c3b79b8bed88ce1e1d38fdd0,
+    dirty false (checked after the session, same binary, not rebuilt); it was not recorded per run.
+9d. PySCF `max_memory` 8000 MB.
 9. Basis conversion: ferric's BSE JSON (general contractions kept as one PySCF block) vs ferric's
    column-per-shell; same functions.  cart=False.
 10. PySCF drop count is read from the returned metric rank; ferric's from its own printout.
+
+## Deviation: the N>1 validity gate was relaxed after pre-registration
+Pre-registered (commit 4b7a028f): N>1 valid iff foreign CPU < 2% of the box.  Changed to < 12%
+(scatter_driver.py, between 4b7a028f and f9f48ba6) because the ambient foreign load is 4-6% (measured
+3.2-5.8% on all 15 N=6 runs), so NO N=6 run passes the pre-registered gate.  The first N=6 launch under
+the 2% gate never started a run (it sat in the quiet-wait for ~13 min and I killed it; its empty output
+file was deleted), so no N=6 run was taken under 0.02 and then dropped.  The N=6 rows are therefore
+reported under the relaxed gate and should be read as "ambient-load" numbers.
+
+## Verdicts on the pre-registered hypotheses
+- H1 (ferric slower than PySCF in the SR 3-centre build at N=1): REFUTED on diamond_prim, ferric SR
+  3-centre 34.0 s vs libcint 37.3 s, but only with SR column rotation on; unrotated it is 125.8 s, so
+  H1 holds for the old path.  Untested on dryice (PySCF not stage-split there).  DF-only diamond_prim:
+  35.2 vs 39.5 s = 0.89 (N=1).
+- A1 (ferric faster at 1 thread is suspicious): triggered and audited, see item 6 below.
+- H2 (only pair FT parallel): REFUTED.  A2 (iteration counts >2x apart): not triggered.  A3 (RSS below
+  8*naux*nao^2): not testable from recorded data.
 
 ## Audit of the FINDINGS "surprises" list
 1. RHF wall falls with RAYON_NUM_THREADS: HAPPENED (5.2x / 4.6x with OPENBLAS=1).  Not an artifact:
@@ -149,11 +178,11 @@ one run 14% above the others (ambient, not flagged by the gate); median unaffect
    "whole RHF build is SERIAL" reading is out of date for this commit; H2 (only pair FT parallel) is REFUTED.
 2. Build time vs SR3 count 1:4:8: NOT TESTED (diamond_conv/prim222/dryice_112 not run).  Observed only
    that dryice is not SR3-dominated (SR 3-centre 14.2 s, LR pair FT 37.0 s, LR GEMM 24.5 s at N=1).
-3. RSS: ferric dryice 0.41 GB = 16*naux*nao^2 build peak (0.30) + 0.11 baseline: no anomaly (one run).
-4. |dE| > 1e-7: no (3e-11, 2.5e-10).  E(prim222)/8 vs k222: NOT RUN.
+3. RSS: ferric dryice 0.41 GB (unrecorded one-off, see above) is consistent with 16*naux*nao^2 = 0.30 GB plus a ~0.11 GB baseline; the baseline is a post-hoc FINDINGS figure, so this is weak evidence only.
+4. |dE| > 1e-7: no (3e-11, 1.9e-10).  E(prim222)/8 vs k222: NOT RUN.
 5. Iteration counts differ >2x: no (1.4x, 1.5x).
 6. ferric FASTER than PySCF at 1 thread: HAPPENED on the totals.  Audited: PySCF cpu/wall = 1.00 (one
-   thread); precision gated and looser than ferric's; fresh cderi each run (file size recorded; df
+   thread); precision gated and looser than ferric's; fresh cderi temp dir each run, deleted at exit (file size recorded only in the anchor runs, not the timed rows; df
    build is 95% libcint SR int3c on diamond_prim: 37.3 of 39.3 s); the gap on dryice is the hcore
    algorithm, the df-build is faster in PySCF there; and the ferric result relies on SR column
    rotation (default on).  Not found to be a PySCF mis-setup; it remains a statement about these
