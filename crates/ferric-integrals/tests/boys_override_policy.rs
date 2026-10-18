@@ -6,7 +6,7 @@
 //!
 //! Mutation ledger (each mutant applied to a copy of
 //! build_support/boys_policy.rs and this file compiled standalone with
-//! rustc; the named tests failed, the unmutated copy passed 9/9):
+//! rustc; the named tests failed, the unmutated copy passed 10/10):
 //! - `if env.require && !env.allow_unpatched` -> `if env.require`:
 //!   `allow_downgrades_the_refusal_to_a_warning` fails.
 //! - `if env.require && ...` -> `if false && ...`: all three
@@ -20,6 +20,11 @@
 //!   `env_flag_parses_off_values_as_false` fails.
 //! - Refuse message without the opt-out variable name:
 //!   `require_refuses_an_unknown_header` fails.
+//! - hash lookup moved BEFORE the `force_stock` check (a stock header then
+//!   wins over FERRIC_LIBINT2_STOCK_BOYS):
+//!   `forced_stock_wins_over_a_real_stock_header` fails.
+//! - the LIBINT2_PREFIX remedy used for the forced-stock reason too:
+//!   `forced_stock_wins_over_a_real_stock_header` fails.
 
 #[allow(dead_code)]
 mod policy {
@@ -130,6 +135,7 @@ fn require_refuses_an_unknown_header() {
     assert!(msg.contains("2.13.1 = 0x0f6f0c23194e18ad"), "{msg}");
     assert!(msg.contains(ALLOW_VAR), "{msg}");
     assert!(msg.contains(REQUIRE_VAR), "{msg}");
+    assert!(msg.contains("LIBINT2_PREFIX"), "{msg}");
 }
 
 #[test]
@@ -151,6 +157,34 @@ fn require_refuses_forced_stock() {
     };
     let out = boys_outcome(PATH, Ok(b"x"), env);
     assert!(matches!(out, BoysOutcome::Refuse(ref m) if m.contains(STOCK_VAR)));
+}
+
+#[test]
+fn forced_stock_wins_over_a_real_stock_header() {
+    // FERRIC_LIBINT2_STOCK_BOYS must suppress the override even when the
+    // prefix's boys.h IS stock (the A/B case it exists for).
+    let stock = stock_boys_h("2.13.1");
+    let forced = BoysEnv {
+        force_stock: true,
+        ..BoysEnv::default()
+    };
+    let out = boys_outcome(PATH, Ok(&stock), forced);
+    assert!(
+        matches!(out, BoysOutcome::Unpatched(ref m) if m.contains(STOCK_VAR)),
+        "{out:?}"
+    );
+    let required = BoysEnv {
+        require: true,
+        ..forced
+    };
+    let BoysOutcome::Refuse(msg) = boys_outcome(PATH, Ok(&stock), required) else {
+        panic!("expected a refusal");
+    };
+    // The remedy fits the reason: unset the forcing variable, not "point
+    // LIBINT2_PREFIX at a stock libint2" (it already is one).
+    assert!(msg.contains(&format!("Unset {STOCK_VAR}")), "{msg}");
+    assert!(msg.contains(ALLOW_VAR), "{msg}");
+    assert!(!msg.contains("LIBINT2_PREFIX"), "{msg}");
 }
 
 #[test]

@@ -9,10 +9,11 @@
 /// `shim/libint2_overrides/<version>/libint2/boys.h` holds a patched copy.
 /// - 2.7.2: mpqc4 tarball `libint-2.7.2-mpqc4.tgz` and the wheels' export
 ///   `libint-2.7.2-ferric-small-1.tgz`, whose `boys.h` is byte-identical
-///   (sha256 880592b9026352c871c96877a43788edd22edb0b1057ab5a73657c40b3a61505).
+///   (sha256 of that stock boys.h:
+///   880592b9026352c871c96877a43788edd22edb0b1057ab5a73657c40b3a61505).
 /// - 2.13.1: conda-forge `libint-2.13.1-h83f5b4b_0.conda` as installed by
-///   scripts/install-libint.sh
-///   (sha256 890ab0261a2be2517d3d4cedfd7d07e2a1c6be7b6f057dc7ea2ea418e17067c1).
+///   scripts/install-libint.sh (sha256 of its stock boys.h, not of the
+///   package: 890ab0261a2be2517d3d4cedfd7d07e2a1c6be7b6f057dc7ea2ea418e17067c1).
 pub const STOCK_BOYS_H_FNV1A64: [(&str, u64); 2] = [
     ("2.7.2", 0x1d51_ac52_f207_6ad8),
     ("2.13.1", 0x0f6f_0c23_194e_18ad),
@@ -81,21 +82,28 @@ fn known_hashes() -> String {
 /// Decide the override for the `boys.h` at `path`, whose bytes are
 /// `contents` (`Err` carries the read error).
 pub fn boys_outcome(path: &str, contents: Result<&[u8], String>, env: BoysEnv) -> BoysOutcome {
-    let reason = if env.force_stock {
-        format!("{STOCK_VAR} is set")
+    let (reason, remedy) = if env.force_stock {
+        (
+            format!("{STOCK_VAR} is set (checked for presence only, so {STOCK_VAR}=0 also forces stock)"),
+            format!("Unset {STOCK_VAR}"),
+        )
     } else {
+        let remedy =
+            "Point LIBINT2_PREFIX at a stock libint2 2.7.2 or 2.13.1 (scripts/install-libint.sh)"
+                .to_string();
         match contents {
-            Err(e) => format!("cannot read {path} ({e})"),
+            Err(e) => (format!("cannot read {path} ({e})"), remedy),
             Ok(bytes) => {
                 let hash = fnv1a64(bytes);
-                if let Some((version, _)) =
-                    STOCK_BOYS_H_FNV1A64.iter().find(|(_, h)| *h == hash)
-                {
+                if let Some((version, _)) = STOCK_BOYS_H_FNV1A64.iter().find(|(_, h)| *h == hash) {
                     return BoysOutcome::Override(version);
                 }
-                format!(
-                    "{path} (FNV-1a 64 {hash:#018x}) is not a stock libint2 boys.h ferric has an override for (known stock hashes: {})",
-                    known_hashes()
+                (
+                    format!(
+                        "{path} (FNV-1a 64 {hash:#018x}) is not a stock libint2 boys.h ferric has an override for (known stock hashes: {})",
+                        known_hashes()
+                    ),
+                    remedy,
                 )
             }
         }
@@ -103,8 +111,7 @@ pub fn boys_outcome(path: &str, contents: Result<&[u8], String>, env: BoysEnv) -
     if env.require && !env.allow_unpatched {
         return BoysOutcome::Refuse(format!(
             "{reason}, so the {FIXES} would NOT be applied, and {REQUIRE_VAR} is set. \
-             Point LIBINT2_PREFIX at a stock libint2 2.7.2 or 2.13.1 (scripts/install-libint.sh), \
-             or set {ALLOW_VAR}=1 to build without the fixes \
+             {remedy}, or set {ALLOW_VAR}=1 to build without the fixes \
              (see crates/ferric-integrals/shim/libint2_overrides/README.md)."
         ));
     }
