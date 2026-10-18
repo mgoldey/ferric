@@ -4171,7 +4171,7 @@ impl PyFrequencyResult {
 ///
 /// `hessian`: "auto" (default) uses the analytic Hessian for RHF (closed
 /// shell) or UHF (any multiplicity) with exact J/K, with or without an ECP,
-/// or ROHF with exact J/K and no ECP or external potential,
+/// or ROHF with exact J/K and no external potential (an ECP is analytic for all three, also with RI-J / RI-K),
 /// and a basis up to f functions and fixed external point charges or a uniform field (QM/MM, RHF and UHF only,
 /// QM-QM block; this binding takes `point_charges=` / `external_field=` only,
 /// the Gaussian-smeared charges the Hessian also covers are reachable from the

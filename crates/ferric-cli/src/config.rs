@@ -801,8 +801,9 @@ pub struct FrequenciesCfg {
     /// `"auto"` (default): analytic Hessian for RHF (closed shell), UHF (any
     /// multiplicity) or ROHF with exact J/K (RHF, UHF and ROHF also with RI-J
     /// and/or RI-K) and a basis up to f functions (RHF
-    /// and UHF also with an optional ECP, external charges or field; ROHF with
-    /// none of those), finite differences otherwise (always for ROKS and the
+    /// and UHF also with optional external charges or field; an ECP is analytic
+    /// for all three, with RI-J/RI-K too, but not together with an external
+    /// potential on the fitted routes), finite differences otherwise (always for ROKS and the
     /// other KS references). An error raised by the analytic path after the SCF
     /// (a stored-versus-rebuilt Fock mismatch, a non-converged or
     /// non-positive-curvature response, a very large first-order rotation) is

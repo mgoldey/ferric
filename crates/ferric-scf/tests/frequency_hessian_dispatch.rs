@@ -459,51 +459,27 @@ fn density_fitting_is_analytic_and_matches_fd(reference: FrequencyReference) {
 }
 
 #[test]
-fn uhf_density_fitting_falls_back_before_the_scf_for_ecp() {
-    // UHF/ROHF RI combined with an ECP is refused by the probe (needs only
-    // the molecule and the basis).
+fn density_fitting_with_an_ecp_passes_the_probe_for_every_reference() {
+    // RI-J combined with an ECP is analytic for RHF, UHF and ROHF (#406; the
+    // numerics are in `ecp_df_hessian.rs`). RI-K is not used here: the jkfit
+    // exchange metric of an iodine system has cond ~1e9, which the probe
+    // refuses for that (unrelated) reason.
     if !has_deriv2() {
         return;
     }
     let scf = RhfConfig {
         df_j_aux: Some("def2-universal-jkfit".into()),
-        df_k_aux: Some("def2-universal-jkfit".into()),
         ..Default::default()
     };
     let svp = basis::bundled("def2-svp").unwrap();
     let mut hi = Molecule::parse_xyz("2\nHI\nH 0 0 0\nI 0 0 1.75\n", 0, 1).unwrap();
     hi.apply_ecp(&svp);
     let hi_prep = PreparedBasis::new(&hi, &svp).unwrap();
-    let e = analytic_uhf_hessian_available(&hi, &hi_prep, Operator::coulomb(), &scf)
-        .expect_err("UHF RI + ECP must be refused by the probe")
-        .to_string();
-    assert!(e.contains("effective core potential"), "{e}");
-
-    let e = analytic_rohf_hessian_available(&hi, &hi_prep, Operator::coulomb(), &scf)
-        .expect_err("ROHF RI + ECP must be refused by the probe")
-        .to_string();
-    assert!(e.contains("effective core potential"), "{e}");
-
-    // Auto runs the probe BEFORE the SCF and falls back to finite differences
-    // of the DF gradient (no error); Analytic stays an error.
-    let run_hi = |hessian| {
-        harmonic_frequencies(
-            &ParallelContext::default(),
-            &hi,
-            "def2-svp",
-            Operator::coulomb(),
-            &scf,
-            &FrequencyConfig {
-                reference: FrequencyReference::Uhf,
-                hessian,
-                ..Default::default()
-            },
-        )
-    };
-    let auto = run_hi(HessianMethod::Auto).expect("Auto must fall back for UHF RI + ECP");
-    assert_eq!(auto.hessian_source, HessianSource::FiniteDifference);
-    assert_eq!(auto.n_gradient_evaluations, 12);
-    assert!(run_hi(HessianMethod::Analytic).is_err());
+    let op = Operator::coulomb();
+    ferric_scf::hessian::analytic_hessian_available(&hi, &hi_prep, op, &scf)
+        .expect("RHF RI-J + ECP is analytic");
+    analytic_uhf_hessian_available(&hi, &hi_prep, op, &scf).expect("UHF RI-J + ECP is analytic");
+    analytic_rohf_hessian_available(&hi, &hi_prep, op, &scf).expect("ROHF RI-J + ECP is analytic");
 }
 
 #[test]
@@ -616,19 +592,13 @@ fn rohf_probe_refuses_what_the_hessian_does_not_cover() {
         eprintln!("ROHF probe, {what}: {err}");
         assert!(err.to_string().contains("ROHF"), "{what}: {err}");
     }
-    // An ECP molecule with its core charge applied: analytic for RHF/UHF, but
-    // not validated for ROHF.
+    // An ECP molecule with its core charge applied is analytic for ROHF too.
     let svp = basis::bundled("def2-svp").unwrap();
     let mut hi = Molecule::parse_xyz("2\nHI\nH 0 0 0\nI 0 0 1.61\n", 0, 3).unwrap();
     hi.apply_ecp(&svp);
     let hi_prep = PreparedBasis::new(&hi, &svp).unwrap();
-    let err = analytic_rohf_hessian_available(&hi, &hi_prep, op, &RhfConfig::default())
-        .expect_err("an ECP must be refused by the ROHF probe");
-    eprintln!("ROHF probe, ECP: {err}");
-    assert!(
-        err.to_string().contains("effective core potential"),
-        "{err}"
-    );
+    analytic_rohf_hessian_available(&hi, &hi_prep, op, &RhfConfig::default())
+        .expect("an ECP is analytic for ROHF");
 }
 
 /// A semicanonicalized ROHF result (`Spin::Unrestricted` with the ROHF spin
@@ -688,32 +658,6 @@ fn semicanonicalized_result_gives_the_rohf_hessian_and_uhf_is_refused() {
     }
 }
 
-/// The ROHF frequency driver runs the full availability probe BEFORE the SCF:
-/// an ECP molecule is refused without solving anything.
-#[test]
-fn rohf_frequency_driver_refuses_an_ecp_before_the_scf() {
-    let svp = basis::bundled("def2-svp").unwrap();
-    let mut hi = Molecule::parse_xyz("2\nHI\nH 0 0 0\nI 0 0 1.61\n", 0, 3).unwrap();
-    hi.apply_ecp(&svp);
-    let t0 = std::time::Instant::now();
-    let err = ferric_scf::frequencies::harmonic_frequencies_analytic_rohf(
-        &ParallelContext::default(),
-        &hi,
-        "def2-svp",
-        Operator::coulomb(),
-        &RhfConfig::default(),
-    )
-    .expect_err("ROHF analytic frequencies with an ECP must be refused");
-    assert!(
-        err.to_string().contains("effective core potential"),
-        "{err}"
-    );
-    assert!(
-        t0.elapsed().as_secs_f64() < 5.0,
-        "refusal came after an SCF"
-    );
-}
-
 #[test]
 fn probe_refuses_g_functions_and_unapplied_ecps_without_an_scf() {
     if !has_deriv2() {
@@ -753,12 +697,9 @@ fn probe_refuses_g_functions_and_unapplied_ecps_without_an_scf() {
 }
 
 #[test]
-fn ri_j_with_an_ecp_falls_back_before_the_scf() {
-    // RI-J combined with an ECP is refused by the PRE-SCF probe (it needs only
-    // the molecule and the basis), so Auto runs finite differences of the DF
-    // gradient instead of failing after the SCF, and Analytic is an error.
-    // Hypothesis: the probe refuses -> Auto = FD with 12 gradients; had the
-    // refusal been post-SCF, Auto would return the error instead.
+fn ri_j_with_an_ecp_is_analytic_and_matches_fd() {
+    // RI-J combined with an ECP is analytic (#406): Auto takes the analytic
+    // Hessian, and it agrees with the finite difference of the DF gradient.
     if !has_deriv2() {
         return;
     }
@@ -772,10 +713,7 @@ fn ri_j_with_an_ecp_falls_back_before_the_scf() {
     };
     let prep = PreparedBasis::new(&hi, &svp).unwrap();
     let probe = analytic_hessian_available(&hi, &prep, Operator::coulomb(), &scf);
-    let msg = probe
-        .expect_err("RI-J + ECP must be refused by the probe")
-        .to_string();
-    assert!(msg.contains("effective core potential"), "{msg}");
+    probe.expect("RI-J + ECP is analytic");
     let run = |hessian| {
         harmonic_frequencies(
             &ParallelContext::default(),
@@ -789,10 +727,20 @@ fn ri_j_with_an_ecp_falls_back_before_the_scf() {
             },
         )
     };
-    let auto = run(HessianMethod::Auto).expect("Auto must fall back, not fail");
-    assert_eq!(auto.hessian_source, HessianSource::FiniteDifference);
-    assert_eq!(auto.n_gradient_evaluations, 12);
-    assert!(run(HessianMethod::Analytic).is_err());
+    let auto = run(HessianMethod::Auto).expect("Auto");
+    assert_eq!(auto.hessian_source, HessianSource::Analytic);
+    assert_eq!(auto.n_gradient_evaluations, 0);
+    let fd = run(HessianMethod::FiniteDifference).expect("FD");
+    assert_eq!(fd.hessian_source, HessianSource::FiniteDifference);
+    let dev = (auto.frequencies[0] - fd.frequencies[0]).abs();
+    eprintln!(
+        "HI RI-J/def2-SVP analytic {:.3} vs FD {:.3} cm^-1",
+        auto.frequencies[0], fd.frequencies[0]
+    );
+    assert!(
+        dev < 0.5,
+        "analytic and FD frequencies differ by {dev} cm^-1"
+    );
 }
 
 #[test]

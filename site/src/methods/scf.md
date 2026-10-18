@@ -243,21 +243,22 @@ translations and rotations projected out. The Hessian is:
 
 - **Analytic** for closed-shell RHF and for UHF of any multiplicity, with
   exact four-centre J/K or with density-fitted J and/or K (`df_j_aux` /
-  `df_k_aux`, Coulomb operator, no ECP or external potential on the fitted
+  `df_k_aux`, Coulomb operator, no external potential on the fitted
   routes, a well-conditioned fitting metric), no solvent or polarizable
-  embedding, and a basis up to f functions (with exact J/K, RHF and UHF also
-  with an ECP, fixed external point or smeared charges, or a uniform field),
-  and for ROHF with exact four-centre J/K or RI-J / RI-K, no
-  ECP, no external potential and a basis up to f functions:
+  embedding, and a basis up to f functions (RHF and UHF also with an ECP, on
+  the fitted routes too, and with exact J/K also with fixed external point or
+  smeared charges, or a uniform field),
+  and for ROHF with exact four-centre J/K or RI-J / RI-K, an ECP allowed, no
+  external potential and a basis up to f functions:
   one SCF plus a coupled-perturbed HF solve per nuclear coordinate (for UHF,
   one solve coupling the α and β orbital rotations; for ROHF, one solve over
   the closed-virtual, open-virtual and closed-open rotations). This
   needs a libint2 with second derivatives (the build
   `scripts/install-libint.sh` installs).
 - **Central finite differences of the analytic gradient** everywhere else
-  (ROKS and every other KS-DFT reference, RI J/K with an ECP or
+  (ROKS and every other KS-DFT reference, RI J/K with an
   external potential or an ill-conditioned fitting metric, solvent, polarizable
-  embedding, g functions, ROHF with an ECP or external potential): 6N gradient
+  embedding, g functions, ROHF with an external potential): 6N gradient
   evaluations. The displacement `[frequencies] delta` (default 5e-3 Bohr) is a
   real accuracy knob; the printed Hessian asymmetry, zero in exact arithmetic,
   is the check that it and the SCF thresholds suit the system.
