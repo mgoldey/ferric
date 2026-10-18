@@ -151,9 +151,9 @@
  ],
  "provenance": {
   "git": {
-   "head": "e5a04e322c77b192d942fbc46e62f4e96a80779b",
+   "head": "018755d88975b2f42ee1966a6b981fbd5fab559b",
    "script_blob": "1fdc5a81891a2139555198f3fe66324103c212ae",
-   "dirty_script": false
+   "dirty_script": true
   },
   "python": "3.11.9",
   "host": "blacktea",
@@ -163,6 +163,10 @@
    "dirty": false
   },
   "reference": "S66x8 CCSD(T)/CBS CP, BEGDB, testdata/reference/c9_refs/s66x8_ccsdt_cbs.json",
-  "settings": "RI aux aug-cc-pvtz-rifit; frozen core 1/heavy atom; published default params; SCF default k_builder"
+  "settings": "RI aux aug-cc-pvtz-rifit; frozen core 1/heavy atom; published default params; SCF default k_builder; counterpoise: uncorrected and full CP both reported; VV10 NLC grid = library default (n_nlc_points per record)",
+  "counterpoise": [
+   "uncp",
+   "cp"
+  ]
  }
 }

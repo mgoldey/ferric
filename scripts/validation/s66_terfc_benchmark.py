@@ -17,9 +17,10 @@ convention-mismatch/negative-control column and must never be ranked alone.
 Fragment split: the first `a_size` atoms are fragment A, with `a_size` parsed
 from S66_FRAGA in benchmarks/harness/examples/c9_driver.rs and VERIFIED against
 the independent monomer nuclear repulsion energies in benchmarks/grid/S66.py
-(monomers match to <1e-8 for all 66; the S66x8 1.00 dimer NRE differs from the original S66 by 1e-4..1e-2 relative,
-so its intermolecular geometry is the x8 one)
-(Psi4 database; never a connectivity heuristic).
+(Psi4 database; never a connectivity heuristic). Monomers match to <1e-8 for
+all 66. The S66x8 1.00 dimer nuclear repulsion differs from the original S66 by
+1e-4..1e-2 relative, so the intermolecular geometry (and the reference table)
+is the BEGDB S66x8 one, not the original S66 one.
 
 Usage (from the repo root, through scripts/ferric-limited):
     python scripts/validation/s66_terfc_benchmark.py selftest
@@ -215,12 +216,14 @@ def compute(method: str, xyz: str, nfc: int, basis: str, aux: str, mem_gb: float
     return e, rhf, time.perf_counter() - t0, extra
 
 
-def load_done(path: Path) -> dict:
+def load_done(path: Path, basis: str | None = None) -> dict:
     done = {}
     if path.exists():
         for ln in path.read_text().splitlines():
             if ln.strip():
                 r = json.loads(ln)
+                if basis is not None and r.get("basis") != basis:
+                    continue
                 done[(r["dimer"], r["calc"], r["method"])] = r
     return done
 
@@ -237,7 +240,7 @@ def cmd_run(a) -> None:
     methods = a.methods.split(",")
     calcs = a.calcs.split(",")
     out = Path(a.out)
-    done = load_done(out)
+    done = load_done(out, a.basis)
     gi = git_info()
     for k in dimers:
         atoms = read_atoms(files[k])
@@ -280,7 +283,7 @@ def stats(errs: list[float]) -> dict:
 
 
 def cmd_report(a) -> None:
-    done = load_done(Path(a.out))
+    done = load_done(Path(a.out), a.basis)
     ref = json.loads(REF_JSON.read_text())
     files = s66_files()
     rows, per = {}, {m: {"cp": [], "uncp": []} for m in METHODS}
@@ -328,7 +331,9 @@ def cmd_report(a) -> None:
             "hartree_to_kcal": HARTREE_TO_KCAL,
             "ferric_build": next((r["ferric_build"] for r in done.values()), None),
             "reference": "S66x8 CCSD(T)/CBS CP, BEGDB, testdata/reference/c9_refs/s66x8_ccsdt_cbs.json",
-            "settings": "RI aux aug-cc-pvtz-rifit; frozen core 1/heavy atom; published default params; SCF default k_builder",
+            "settings": "RI aux aug-cc-pvtz-rifit; frozen core 1/heavy atom; published default params; SCF default k_builder; "
+            "counterpoise: uncorrected and full CP both reported; VV10 NLC grid = library default (n_nlc_points per record)",
+            "counterpoise": ["uncp", "cp"],
         },
     }
     Path(a.json).write_text(json.dumps(res, indent=1))
