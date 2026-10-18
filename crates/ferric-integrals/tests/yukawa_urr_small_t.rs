@@ -23,6 +23,60 @@
 //!
 //! References: `data/yukawa_urr_ref.rs`, mpmath (50 digits) quadrature of the
 //! defining integral. The exactness anchor is `U -> 0 => F_m(T)`.
+//!
+//! STOCK-REGION ANCHOR (`REF_STOCK`, `scripts/gen_yukawa_urr_refs.py`). The
+//! region the override leaves alone (T >= 0.5 mmax + 6) used to be compared
+//! only with an in-binary port of the stock recursion; the mpmath grid stopped
+//! at T = 20. `REF_STOCK` adds references (50-digit working precision) for mmax in {1,6,12,20,36},
+//! U in {1e-14,1e-9,9e-8}, T from 0.7x the threshold (the fallback side) to
+//! 1000. Reference quality: Gauss-Legendre on 80 panels, checked against the
+//! independent perturbative series `G_m = e^U sum_n (-U)^n/n! F_{m-n}(T)`:
+//! 2603 of 2640 values match to <= 4e-21; 37 (T = 1000, m = 17-20, worst
+//! 2.64e-15 at m = 20; T = 240, m = 36, 1.35e-18) deviate, so the stock rows
+//! are good to ~3e-15 absolute worst case, ~4000x below the bar (the tanh-sinh `mp.quad` used for the older rows is
+//! only good to ~1e-12 at T = 1000 and was rejected here after it produced
+//! phantom 3e-4 "library errors").
+//!
+//! MEASURED (libint 2.13.1 override, 2640 values): worst abs 3.7e-15; worst
+//! rel 6.3e-13, which sits exactly at the threshold for mmax = 36
+//! (m = 34..36; 8.4e-14 at 1.05x, 1.5e-14 at 1.5x, 5e-15 at T = 50), as the
+//! amplification hypothesis predicts. A second, smaller trend is rel 1.3e-13
+//! at T = 1000 for every mmax (rounding in `kappa*kappa - T`, the erfc_k exponent; erfc_l underflows there); that is absolute
+//! ~1e-70 and irrelevant to any integral. The fallback band (0.7-0.95x) is
+//! 1.8e-15 relative.
+//! Bars: abs 1e-13 (27x measured), rel 1e-11 (16x measured at the threshold;
+//! 20x BELOW the 2.0e-10 the lowered-threshold mutant produces). The
+//! threshold margin at mmax = 36 is therefore 16x on the passing side and
+//! 20x on the failing side of the bar: adequate but not generous, and the
+//! override threshold was NOT changed.
+//!
+//! LIBINT 2.7.2: the `mmax > max_m()` skip (max_m = 20) means the threshold and
+//! the m = 36 thin point are NOT exercised there; mutant (a) survives on 2.7.2.
+//! CI installs 2.13.1 via `scripts/install-libint.sh`, so CI exercises them.
+//!
+//! MUTANT LEDGER (real shim rebuilds, 2.13.1 override boys.h; each restored):
+//!   (a) threshold 0.3 mmax + 6   -> stock-region test: worst rel 2.0e-10
+//!       (T = 0.7x, mmax = 36), abs 7.5e-16 (abs bar blind; the rel bar kills
+//!       it). No other test sees it: the older grid has no point between
+//!       0.3 mmax + 6 and 0.5 mmax + 6 at mmax = 36 where stock is bad.
+//!       SCOPE: this kill is NOT a general threshold guard. It relies on
+//!       0.7 * 24 == 0.3 * 36 + 6 as the same double (16.799999999999997) with
+//!       the strict `T < thr`, so only the 0.7x row reaches the recursion. A
+//!       lowering to 0.35 or 0.4 mmax + 6 (threshold in (16.8, 20.4] at
+//!       mmax = 36) puts only the 0.85x row there (<= 3e-12 relative) and
+//!       PASSES the 1e-11 bar. The test detects a lowering of >= 30%, not
+//!       15-30%; the undetected range costs <= 3e-12 relative (a detection
+//!       floor, not a correctness hole).
+//!   (b) fallback panels halved (12 -> 6, ratio sqrt 10) -> SURVIVES: worst
+//!       errors identical to rounding (1.7e-16). 12 -> 3 panels also survives
+//!       (4.5e-15); 12 -> 2 panels gives abs 5.0e-11 and is killed by the
+//!       abs 1e-13 bars. The panel count has >= 4x headroom; that is
+//!       over-provisioning, not a test gap.
+//!   (c) fallback disabled (predicate false) -> four tests fail (mpmath grid,
+//!       no-inf/NaN, u->0 Boys anchor, engine-vs-Coulomb), stock-region rel
+//!       2.0e-10 as in (a).
+//!   (d) boundary-layer ladder removed -> abs 1.65e-7 (mpmath grid) and the
+//!       stock-region band abs 1.65e-7 / rel 8.9e-7: killed by both.
 
 use ferric_core::basis;
 use ferric_core::mol::Molecule;
@@ -52,6 +106,10 @@ fn max_m() -> usize {
         36
     }
 }
+
+/// Bars for the stock-region test (derivation in the header ledger).
+const STOCK_ABS_BAR: f64 = 1e-13;
+const STOCK_REL_BAR: f64 = 1e-11;
 
 extern "C" {
     fn erfc(x: f64) -> f64;
@@ -182,6 +240,58 @@ fn above_the_threshold_the_stock_recursion_is_unchanged() {
             );
         }
     }
+}
+
+/// INDEPENDENT ANCHOR for the region the override leaves alone. Artifact
+/// hypothesis (written before measuring): the stock recursion multiplies the
+/// rounding error of `G_0` by `prod (2m+1)/(2T)`, independent of U, so its
+/// error is largest at the dispatch threshold `T = 0.5 mmax + 6` for the
+/// largest `mmax` and falls as T grows; an unsafe (lowered) threshold shows as
+/// a jump there. Physics hypothesis: `G_m -> F_m(T)`, `0 <= G_m <= 1/(2m+1)`.
+/// Rows are 50-digit mpmath values (`REF_STOCK`, T from 0.7x the threshold to 1000,
+/// U in {1e-14, 1e-9, 9e-8}); the library output must match in both abs and
+/// relative error (relative matters: for U -> 0, G_m -> F_m(T) ~ Gamma(m+1/2) / (2 T^(m+1/2)) at large T, which is tiny at T=1000 and falls with m).
+#[test]
+fn stock_region_matches_mpmath_to_the_derived_bar() {
+    let (mut worst_abs, mut worst_rel) = (0.0f64, 0.0f64);
+    let (mut at_thr, mut band) = ((0.0f64, 0.0f64), (0.0f64, 0.0f64));
+    let mut n = 0usize;
+    for &(zeta, t, u, mmax, want) in reference::REF_STOCK {
+        if mmax > max_m() {
+            continue;
+        }
+        assert!(
+            u < 1e-7 && t >= 0.69 * t_safe(mmax),
+            "row is outside the grid"
+        );
+        let below = t < t_safe(mmax) * (1.0 - 1e-12);
+        let got = tenno_gm(TennoKind::Yukawa, 1.0, t, mmax, zeta).expect("evaluates");
+        for m in 0..=mmax {
+            let (abs, rel) = ((got[m] - want[m]).abs(), (got[m] - want[m]).abs() / want[m]);
+            worst_abs = worst_abs.max(abs);
+            worst_rel = worst_rel.max(rel);
+            if below {
+                band = (band.0.max(abs), band.1.max(rel));
+            } else if (t / t_safe(mmax) - 1.0).abs() < 1e-9 {
+                at_thr = (at_thr.0.max(abs), at_thr.1.max(rel));
+            }
+            n += 1;
+            assert!(
+                abs <= STOCK_ABS_BAR && rel <= STOCK_REL_BAR,
+                "T={t:e} U={u:e} mmax={mmax} m={m}: got {:e} want {:e} abs {abs:e} rel {rel:e}",
+                got[m],
+                want[m]
+            );
+        }
+    }
+    let want_n = if max_m() == 36 { 2640 } else { 1419 };
+    assert_eq!(n, want_n, "REF_STOCK emptied or filtered: vacuous pass");
+    eprintln!(
+        "stock region: {n} values, worst abs {worst_abs:e}, worst rel {worst_rel:e}; \
+         at threshold abs {:e} rel {:e}; \
+         fallback band 0.7-0.95x abs {:e} rel {:e}",
+        at_thr.0, at_thr.1, band.0, band.1
+    );
 }
 
 /// GATING. The `U >= Umin` table region is not touched by the override: it
