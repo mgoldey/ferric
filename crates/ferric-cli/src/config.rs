@@ -5153,6 +5153,10 @@ fn check_kpoint_optimize_gate(
     Ok(())
 }
 
+/// The remedy named by the meta-GGA-stress-on-RS-GDF refusal (CLI spelling).
+pub const STRESS_DENSE_HINT: &str = "set [cell] jk = \"dense\" (the SCAN / r2SCAN stress is not \
+     available with jk = \"rsgdf\"; task = \"optimize\" forces are)";
+
 /// `[cell] stress`: the k-point analytic stress of a `task = "energy"` run.
 /// Every refusal names the key. The functional and meta-GGA/J-K gates are the
 /// ones the Python `with_stress` path runs (`ferric_pbc::kxcgrad::
@@ -5208,7 +5212,7 @@ fn resolve_stress(
         true,
         false,
         matches!(jk, PeriodicJk::RsGdf { .. }),
-        (what, what),
+        (what, STRESS_DENSE_HINT),
     )?;
     Ok(true)
 }
@@ -6222,9 +6226,11 @@ kind = "ccsd"
             &format!("{rs}\n{km}"),
             "[dft]\nfunctional = \"SCAN\"",
         ));
-        assert!(
-            e.contains("dense-AFT J only") && e.contains("[cell] stress = true"),
-            "{e}"
+        assert_eq!(
+            e,
+            "the k-point meta-GGA stress is anchored on the dense-AFT J only; set [cell] jk = \
+             \"dense\" (the SCAN / r2SCAN stress is not available with jk = \"rsgdf\"; \
+             task = \"optimize\" forces are)"
         );
         // Split RS-GDF, Gamma point, optimize, correlated routes.
         let e = err(&h2("rhf", &format!("{rs}\n{km}\nrange_split = true"), ""));

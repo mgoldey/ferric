@@ -682,7 +682,7 @@ pub fn solve_krks_keep_on_grid(
     timings.stop("k SCF", &clock);
     scf.timings = timings;
     if !scf.converged {
-        return Err(FerricError::General(format!(
+        return Err(FerricError::Convergence(format!(
             "solve_krks: {} SCF did not converge in {} iterations (last E = {})",
             cfg.functional, scf.iterations, scf.energy
         )));

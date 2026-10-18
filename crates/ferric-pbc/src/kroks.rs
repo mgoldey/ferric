@@ -644,7 +644,7 @@ fn drive(
             cfg.mutation,
         )?;
         if !r.converged {
-            return Err(FerricError::General(format!(
+            return Err(FerricError::Convergence(format!(
                 "{who}: SCF (v_M {vm:.6}) not converged in {} iterations (max error {:.2e})",
                 r.iterations, r.max_error
             )));

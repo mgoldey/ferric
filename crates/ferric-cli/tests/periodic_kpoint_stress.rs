@@ -737,32 +737,36 @@ fn ecp_cells_are_refused_before_the_scf() {
     }
 }
 
-/// A non-converged SCF closes the run log with `not_converged` and the
-/// iteration count, and carries no stress tensor.
+/// A non-converged SCF (RHF reports it as a result, the Kohn-Sham and
+/// open-shell retained solvers as an error) closes the run log with
+/// `exit = "not_converged"` and carries no stress tensor; the process exits 0.
 #[test]
 fn unconverged_scf_logs_not_converged_without_a_tensor() {
-    let toml = write_input(
-        CASES[0],
-        SMALL,
-        "unconv",
-        "kmesh = [1, 1, 2]\nstress = true\n[scf]\nmax_iter = 1",
-        "",
-        "rhf",
-    );
-    let out = run(&toml);
-    let line = run_end_line(&toml);
-    assert!(line.contains("\"converged\":false"), "{line}");
-    assert!(line.contains("\"stress_requested\":true"), "{line}");
-    assert!(!line.contains("stress_hartree_per_bohr3"), "{line}");
-    assert!(
-        line.contains("\"exit\":\"not_converged\"") || line.contains("\"exit\":\"error\""),
-        "{line}"
-    );
-    if line.contains("not_converged") {
-        assert!(
-            out.status.success() && line.contains("\"scf_iterations\":1"),
-            "{line}"
+    for c in [CASES[0], CASES[1], CASES[4], CASES[5]] {
+        let tag = format!("unconv-{}", c.tag);
+        let toml = write_input(
+            c,
+            SMALL,
+            &tag,
+            "kmesh = [1, 1, 2]\nstress = true\n[scf]\nmax_iter = 1",
+            "",
+            kind_of(c),
         );
+        let out = run(&toml);
+        let line = run_end_line(&toml);
+        let msg = format!(
+            "{}: {line}\n{}",
+            c.tag,
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(out.status.success(), "{msg}");
+        assert!(line.contains("\"converged\":false"), "{msg}");
+        assert!(line.contains("\"exit\":\"not_converged\""), "{msg}");
+        assert!(line.contains("\"stress_requested\":true"), "{msg}");
+        assert!(!line.contains("stress_hartree_per_bohr3"), "{msg}");
+        if c.route == Route::Rhf {
+            assert!(line.contains("\"scf_iterations\":1"), "{msg}");
+        }
+        let _ = std::fs::remove_dir_all(toml.parent().unwrap());
     }
-    let _ = std::fs::remove_dir_all(toml.parent().unwrap());
 }

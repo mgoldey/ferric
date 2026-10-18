@@ -975,14 +975,15 @@ pub fn check_kpoint_deriv_functional(
 /// the meta-GGA stress is anchored on the dense-AFT J only. `functional` is
 /// `Some` on a Kohn-Sham route. `what` names the whole derivative request in the
 /// caller's vocabulary (as in [`check_kpoint_deriv_functional`]) and
-/// `what_stress` its stress part alone; `stress` is whether the stress is among
+/// `dense_hint` the remedy for the meta-GGA-on-RS-GDF stress refusal, in the
+/// caller's vocabulary (its Python and TOML spellings differ); `stress` is whether the stress is among
 /// the requested derivatives.
 pub fn check_kpoint_deriv_cell(
     functional: Option<&str>,
     stress: bool,
     has_ecp: bool,
     rsgdf: bool,
-    (what, what_stress): (&str, &str),
+    (what, dense_hint): (&str, &str),
 ) -> Result<(), String> {
     if has_ecp {
         let route = if functional.is_some() { "KS" } else { "ROHF" };
@@ -993,8 +994,7 @@ pub fn check_kpoint_deriv_cell(
     }
     if stress && rsgdf && functional.is_some_and(is_validated_mgga) {
         return Err(format!(
-            "the k-point meta-GGA stress is anchored on the dense-AFT J only; use \
-             jk=\"dense\" with {what_stress} (with_gradient supports RS-GDF)"
+            "the k-point meta-GGA stress is anchored on the dense-AFT J only; {dense_hint}"
         ));
     }
     Ok(())

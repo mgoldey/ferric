@@ -1429,7 +1429,7 @@ type Mat3 = [[f64; 3]; 3];
 /// when the SCF did not converge) and the SCF iteration count.
 struct StressInfo {
     sigma: Option<Mat3>,
-    iterations: usize,
+    iterations: Option<usize>,
 }
 
 /// A stress in GPa (the Hartree/Bohr^3 -> GPa factor of `ferric_core::units`).
@@ -1441,7 +1441,9 @@ fn stress_gpa(sigma: &Mat3) -> Mat3 {
 struct KStressRun {
     label: &'static str,
     energy: f64,
-    iterations: usize,
+    /// `None` when the library reported the non-convergence as an error
+    /// (the Kohn-Sham and open-shell retained solvers), which carries no count.
+    iterations: Option<usize>,
     converged: bool,
     /// `None` when the SCF did not converge (no stress at a non-stationary
     /// density; the run still reports iterations and `not_converged`).
@@ -1453,7 +1455,7 @@ impl KStressRun {
         KStressRun {
             label,
             energy,
-            iterations,
+            iterations: Some(iterations),
             converged: false,
             sigma: None,
         }
@@ -1525,7 +1527,7 @@ fn k_stress_rhf(x: &KStressCtx<'_>) -> Result<KStressRun, FerricError> {
     Ok(KStressRun {
         label: "k-point RHF",
         energy: r.energy,
-        iterations: r.iterations,
+        iterations: Some(r.iterations),
         converged: r.converged,
         sigma: Some(sigma),
     })
@@ -1558,7 +1560,7 @@ fn k_stress_uhf(x: &KStressCtx<'_>) -> Result<KStressRun, FerricError> {
     Ok(KStressRun {
         label: "k-point UHF",
         energy: r.scf.energy,
-        iterations: r.scf.iterations,
+        iterations: Some(r.scf.iterations),
         converged: r.scf.converged,
         sigma: Some(sigma),
     })
@@ -1591,7 +1593,7 @@ fn k_stress_rks(x: &KStressCtx<'_>) -> Result<KStressRun, FerricError> {
     Ok(KStressRun {
         label: "k-point RKS",
         energy: r.scf.energy,
-        iterations: r.scf.iterations,
+        iterations: Some(r.scf.iterations),
         converged: r.scf.converged,
         sigma: Some(sigma),
     })
@@ -1624,7 +1626,7 @@ fn k_stress_uks(x: &KStressCtx<'_>) -> Result<KStressRun, FerricError> {
     Ok(KStressRun {
         label: "k-point UKS",
         energy: r.scf.energy,
-        iterations: r.scf.iterations,
+        iterations: Some(r.scf.iterations),
         converged: r.scf.converged,
         sigma: Some(sigma),
     })
@@ -1660,7 +1662,7 @@ fn k_stress_ro(x: &KStressCtx<'_>) -> Result<KStressRun, FerricError> {
         return Ok(KStressRun {
             label: "k-point ROKS",
             energy: r.scf.energy,
-            iterations: r.scf.iterations,
+            iterations: Some(r.scf.iterations),
             converged: r.scf.converged,
             sigma: Some(sigma),
         });
@@ -1697,7 +1699,7 @@ fn k_stress_ro(x: &KStressCtx<'_>) -> Result<KStressRun, FerricError> {
     Ok(KStressRun {
         label: "k-point ROHF",
         energy: r.scf.energy,
-        iterations: r.scf.iterations,
+        iterations: Some(r.scf.iterations),
         converged: r.scf.converged,
         sigma: Some(sigma),
     })
@@ -1720,7 +1722,7 @@ fn check_kstress_cell(plan: &PeriodicPlan, s: &Setup) -> Result<(), FerricError>
         true,
         s.cell.mol().atoms.iter().any(|a| a.n_core_ecp > 0),
         s.aux.is_some(),
-        ("[cell] stress = true", "[cell] stress = true"),
+        ("[cell] stress = true", crate::config::STRESS_DENSE_HINT),
     )
     .map_err(FerricError::General)
 }
@@ -1737,7 +1739,7 @@ fn k_stress(plan: &PeriodicPlan, s: &Setup) -> Result<KStressRun, FerricError> {
         s,
         mesh: KPointMesh::new(&s.cell, n, c)?,
     };
-    match plan.route {
+    let run = match plan.route {
         PeriodicRoute::Rhf => k_stress_rhf(&x),
         PeriodicRoute::Uhf => k_stress_uhf(&x),
         PeriodicRoute::Rks => k_stress_rks(&x),
@@ -1747,6 +1749,23 @@ fn k_stress(plan: &PeriodicPlan, s: &Setup) -> Result<KStressRun, FerricError> {
             "internal: k-point {} has no analytic stress",
             other.label()
         ))),
+    };
+    // The Kohn-Sham and open-shell retained solvers report a non-converged
+    // SCF as `FerricError::Convergence` (the only way that variant reaches
+    // here); it is a not_converged run, not a failure. Every other error
+    // propagates.
+    match run {
+        Err(FerricError::Convergence(msg)) => {
+            eprintln!("warning: {msg}");
+            Ok(KStressRun {
+                label: plan.route.label(),
+                energy: f64::NAN,
+                iterations: None,
+                converged: false,
+                sigma: None,
+            })
+        }
+        other => other,
     }
 }
 
@@ -1777,7 +1796,9 @@ fn run_kstress(cfg: &Config, plan: &PeriodicPlan, s: &Setup) -> (Outcome, Stress
         }
     };
     println!("  task       = energy + analytic {} stress", r.label);
-    println!("  iterations = {}", r.iterations);
+    if let Some(it) = r.iterations {
+        println!("  iterations = {it}");
+    }
     println!("  converged  = {}", r.converged);
     println!("  energy     = {:.10} Hartree/cell", r.energy);
     match &r.sigma {
@@ -1791,7 +1812,11 @@ fn run_kstress(cfg: &Config, plan: &PeriodicPlan, s: &Setup) -> (Outcome, Stress
                 println!("    {:+.8e} {:+.8e} {:+.8e}", row[0], row[1], row[2]);
             }
         }
-        None => warn_unconverged(r.label, r.iterations),
+        None => {
+            if let Some(it) = r.iterations {
+                warn_unconverged(r.label, it);
+            }
+        }
     }
     let out = Outcome {
         energy: r.energy,

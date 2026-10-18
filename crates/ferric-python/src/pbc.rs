@@ -2772,7 +2772,10 @@ fn check_kpoint_ks_derivs(fname: &str, s: &PbcSetup, functional: Option<&str>) -
         s.derivs.stress,
         s.cell.mol().atoms.iter().any(|a| a.n_core_ecp > 0),
         s.aux.is_some(),
-        ("with_gradient / with_stress", "with_stress"),
+        (
+            "with_gradient / with_stress",
+            "use jk=\"dense\" with with_stress (with_gradient supports RS-GDF)",
+        ),
     )
     .map_err(|e| val_err(format!("{fname}: {e}")))
 }

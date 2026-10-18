@@ -496,7 +496,7 @@ pub fn solve_kuks_on_grid_keep(
             Some((&mut pxc as &mut dyn KPointXcPolarized, a)),
         )?;
         if !r.converged {
-            return Err(FerricError::General(format!(
+            return Err(FerricError::Convergence(format!(
                 "solve_kuks: {} SCF (v_M {vm:.6}) not converged in {} iterations (max error \
                  {:.2e})",
                 cfg.functional, r.iterations, r.max_error
