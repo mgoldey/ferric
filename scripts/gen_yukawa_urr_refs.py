@@ -1,7 +1,11 @@
 """Regenerate crates/ferric-integrals/tests/data/yukawa_urr_ref.rs (issue #443).
 
-Usage: python3 scripts/gen_yukawa_urr_refs.py crates/ferric-integrals/tests/data/yukawa_urr_ref.rs
-Needs mpmath. 50-digit quadrature of the defining Yukawa core integral.
+Usage: uv run --no-sync --with mpmath python scripts/gen_yukawa_urr_refs.py \
+    crates/ferric-integrals/tests/data/yukawa_urr_ref.rs
+then `rustfmt --edition 2021` that file: the committed data file is generator
+output piped through rustfmt.
+Needs mpmath. 50-digit working precision; the stock rows (REF_STOCK) are good to
+~3e-15 absolute worst case (see the comment in ref()).
 """
 
 import mpmath as mp
@@ -36,7 +40,10 @@ def ref(m, T, U, peak=False):
     if peak:
         # tanh-sinh with these panels is only good to ~1e-12 relative at
         # T = 1000 (its error estimate is useless there); Gauss-Legendre on
-        # the same panels agrees with the perturbative series to 1e-19.
+        # the same panels agrees with the perturbative series to <=4e-21 relative for
+        # 2603 of the 2640 stock values; the other 37 (T = 1000, m = 17-20, worst
+        # 2.64e-15 at m = 20; T = 240, m = 36 at 1.35e-18) are off by that much.
+        # Worst case ~3e-15, ~4000x below the test's bars. Cause not chased.
         return mp.quad(f, pts, method="gauss-legendre", maxdegree=6)
     return mp.quad(f, pts, maxdegree=10)
 
