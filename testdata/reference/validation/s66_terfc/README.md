@@ -30,3 +30,37 @@ Python run_* use the library-default SCF (density_conv 1e-6), the Rust tests use
 `check-split` verifies all 66 fragment sizes (S66_FRAGA from c9_driver.rs)
 against the independent monomer nuclear repulsion in benchmarks/grid/S66.py (all
 66 monomers agree to < 1e-8 relative).
+
+## Measurement (5 of 66 dimers: S66-01, 02, 08, 51, 59; kcal/mol; NOT the full set)
+Run through `ferric-limited`, RAYON_NUM_THREADS=3, on a box with load average 13-22
+(timings are upper bounds). Build 330d3013 (clean), script at 823f6155. Raw table:
+`results.json`; records: `s66_atz.jsonl`.
+
+| method | conv | MSE | MAE | RMSD | max |
+|---|---|---|---|---|---|
+| RI-MP2 | no CP | -0.314 | 0.314 | 0.320 | 0.413 |
+| RI-MP2 | CP | +0.134 | 0.155 | 0.167 | 0.221 |
+| SCS-MP2(2terfc) | no CP | -0.244 | 0.244 | 0.255 | 0.319 |
+| SCS-MP2(2terfc) | CP | +0.266 | 0.266 | 0.270 | 0.311 |
+| MP2-V | no CP | -0.148 | 0.148 | 0.173 | 0.250 |
+| MP2-V | CP | +0.303 | 0.303 | 0.307 | 0.355 |
+
+Wall time per dimer (3 methods x 5 calcs): 01 ~710 s, 59 ~1450 s, 02 ~2050 s,
+51 ~2400 s, 08 ~2460 s. Water dimer energies reproduced to 1e-10 Ha across two
+independent runs (pilot and main).
+
+## Interpretation (provisional)
+* Subset, 4 H-bonded/mixed dimers plus ethyne dimer: no pi-stack, so the MP2
+  pi-stack overbinding control from the issue is NOT exercised.
+* Uncorrected RMSD 0.255 (SCS-2terfc) and 0.173 (MP2-V) vs the published full-set
+  0.228 for SCS-2terfc: different sets, no "matches" claim. The pre-registered
+  criterion needs the full 66.
+* CP moves the fitted methods from slight overbinding to underbinding: MP2-V
+  clearly worse with CP (MAE 0.148 -> 0.303), SCS-2terfc marginally (0.244 -> 0.266),
+  consistent with the fit being a no-CP one; CP != uncorrected in every row, so
+  ghost atoms do carry basis.
+* Not done: plain RI-MP2 interaction energies vs PySCF dfmp2 (issue anchor, <=1e-6
+  kcal/mol); only the aDZ selftest anchors above were run.
+* Cost: ~12-41 min per dimer under load for 6-10 atom dimers; three methods repeat
+  the SCF (no shared-SCF Python entry point). Full 66 (up to 24 heavy atoms) is
+  infeasible on this box at this cost without a shared-SCF API and RI-JK.

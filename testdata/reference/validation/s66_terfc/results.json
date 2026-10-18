@@ -1,0 +1,168 @@
+{
+ "dimers_done": [
+  1,
+  2,
+  8,
+  51,
+  59
+ ],
+ "n_dimers": 5,
+ "full_set": false,
+ "basis": "aug-cc-pvtz",
+ "aux": "aug-cc-pvtz-rifit",
+ "units": "kcal/mol",
+ "published": {
+  "scs2terfc": {
+   "rmsd_kcal": 0.228,
+   "set": "full S66, aTZ, no CP, fitted"
+  }
+ },
+ "summary": {
+  "mp2": {
+   "cp": {
+    "n": 5,
+    "mean_signed": 0.1342509818146469,
+    "mae": 0.1545437366548484,
+    "rmsd": 0.16738137467164987,
+    "max_abs": 0.2212959390034559
+   },
+   "uncp": {
+    "n": 5,
+    "mean_signed": -0.31351041678071,
+    "mae": 0.31351041678071,
+    "rmsd": 0.31956483276136294,
+    "max_abs": 0.4128029724059441
+   }
+  },
+  "scs2terfc": {
+   "cp": {
+    "n": 5,
+    "mean_signed": 0.26602995227766846,
+    "mae": 0.26602995227766846,
+    "rmsd": 0.27009153443889344,
+    "max_abs": 0.31099166060712413
+   },
+   "uncp": {
+    "n": 5,
+    "mean_signed": -0.24446480590090314,
+    "mae": 0.24446480590090314,
+    "rmsd": 0.25522458262191866,
+    "max_abs": 0.3185510281160564
+   }
+  },
+  "mp2v": {
+   "cp": {
+    "n": 5,
+    "mean_signed": 0.30258685409860236,
+    "mae": 0.30258685409860236,
+    "rmsd": 0.3067265381963899,
+    "max_abs": 0.35488872818725903
+   },
+   "uncp": {
+    "n": 5,
+    "mean_signed": -0.1484205163916089,
+    "mae": 0.1484205163916089,
+    "rmsd": 0.17321352150366548,
+    "max_abs": 0.25031655543554177
+   }
+  }
+ },
+ "rows": [
+  {
+   "dimer": 1,
+   "name": "s66_01_waterwater_1.00.xyz",
+   "ref": -4.89,
+   "wall_s": {
+    "mp2": 161.65705611591693,
+    "scs2terfc": 263.0718684390886,
+    "mp2v": 285.6339336920646
+   },
+   "mp2_uncp": -5.125420112773431,
+   "mp2_cp": -4.6899989911371875,
+   "scs2terfc_uncp": -5.208551028116056,
+   "scs2terfc_cp": -4.702968250582825,
+   "mp2v_uncp": -5.116125018746853,
+   "mp2v_cp": -4.678554749569898
+  },
+  {
+   "dimer": 2,
+   "name": "s66_02_watermeoh_1.00.xyz",
+   "ref": -5.57,
+   "wall_s": {
+    "mp2": 655.567407748953,
+    "scs2terfc": 681.9784585239831,
+    "mp2v": 709.9923446620232
+   },
+   "mp2_uncp": -5.916988512222222,
+   "mp2_cp": -5.3788542795125585,
+   "scs2terfc_uncp": -5.8800812043271975,
+   "scs2terfc_cp": -5.266330480786399,
+   "mp2v_uncp": -5.820316555435542,
+   "mp2v_cp": -5.279211079702599
+  },
+  {
+   "dimer": 8,
+   "name": "s66_08_meohwater_1.00.xyz",
+   "ref": -5.0,
+   "wall_s": {
+    "mp2": 712.0018760049134,
+    "scs2terfc": 874.8515967081767,
+    "mp2v": 875.6812355120201
+   },
+   "mp2_uncp": -5.268970762085624,
+   "mp2_cp": -4.778704060996544,
+   "scs2terfc_uncp": -5.252464586728672,
+   "scs2terfc_cp": -4.689008339392876,
+   "mp2v_uncp": -5.1717241804009175,
+   "mp2v_cp": -4.68070445742941
+  },
+  {
+   "dimer": 51,
+   "name": "s66_51_ethyneethynets_1.00.xyz",
+   "ref": -1.52,
+   "wall_s": {
+    "mp2": 708.9134799580206,
+    "scs2terfc": 876.7670230170479,
+    "mp2v": 808.0079838398378
+   },
+   "mp2_uncp": -1.9328029724059441,
+   "mp2_cp": -1.5707318871005038,
+   "scs2terfc_uncp": -1.6353123619881287,
+   "scs2terfc_cp": -1.2312562010204242,
+   "mp2v_uncp": -1.5328915870514943,
+   "mp2v_cp": -1.165111271812741
+  },
+  {
+   "dimer": 59,
+   "name": "s66_59_ethynewatercho_1.00.xyz",
+   "ref": -2.85,
+   "wall_s": {
+    "mp2": 393.26983101293445,
+    "scs2terfc": 550.3439276590361,
+    "mp2v": 512.538407791988
+   },
+   "mp2_uncp": -3.1533697244163292,
+   "mp2_cp": -2.7404558721799717,
+   "scs2terfc_uncp": -3.075914848344462,
+   "scs2terfc_cp": -2.6102869668291335,
+   "mp2v_uncp": -2.9310452403232374,
+   "mp2v_cp": -2.51348417099234
+  }
+ ],
+ "provenance": {
+  "git": {
+   "head": "e5a04e322c77b192d942fbc46e62f4e96a80779b",
+   "script_blob": "1fdc5a81891a2139555198f3fe66324103c212ae",
+   "dirty_script": false
+  },
+  "python": "3.11.9",
+  "host": "blacktea",
+  "hartree_to_kcal": 627.5094740631,
+  "ferric_build": {
+   "git_sha": "330d3013eefd5e93256ced3d0b80fba49fd9bf32",
+   "dirty": false
+  },
+  "reference": "S66x8 CCSD(T)/CBS CP, BEGDB, testdata/reference/c9_refs/s66x8_ccsdt_cbs.json",
+  "settings": "RI aux aug-cc-pvtz-rifit; frozen core 1/heavy atom; published default params; SCF default k_builder"
+ }
+}
