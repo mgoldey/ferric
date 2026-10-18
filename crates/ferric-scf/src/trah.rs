@@ -305,7 +305,7 @@
 //! built at the canonical orbitals and refreshed by the step. kappa relative
 //! difference 1.5e-4, predicted-energy difference 1.1e-5. Mutants: `f_oo` read
 //! from the virtual block 0.55, `refresh_orbitals` removed 0.10; bar 2e-3. This
-//! closes the two survivors of the earlier mutation ledger (12 of 12 caught).
+//! closes the two survivors of the earlier mutation ledger (10 of 12 were caught in the PR #458 run; these two now are too).
 //!
 //! PRE-REGISTRATION NOTE. The criterion registered before the run was "a rich
 //! aux gives rho ~ 0.99, i.e. approaches the exact rho". After the run the

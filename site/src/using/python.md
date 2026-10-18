@@ -92,7 +92,7 @@ available (`cc-pvdz-rifit` is also accepted, as an alias of `cc-pvdz-ri`):
 | Orbital with ECP (heavy elements) | `aug-cc-pvdz-pp`, `aug-cc-pvtz-pp` |
 | Explicitly correlated (F12) | `cc-pvdz-f12` (orbital), `cc-pvdz-f12-optri` (OptRI auxiliary) |
 | RI (MP2/RPA/CC fitting) | `cc-pvdz-ri`, `cc-pvtz-rifit`, `aug-cc-pvdz-rifit`, `aug-cc-pvtz-rifit`, `aug-cc-pvqz-rifit`, `def2-svp-rifit`, `def2-tzvp-rifit`, `def2-tzvpp-rifit`, `def2-qzvp-rifit`, `def2-qzvpp-rifit` |
-| JK (SCF fitting) | `def2-universal-jkfit` |
+| JK (SCF fitting) | `def2-universal-jkfit`, `cc-pvtz-jkfit`, `cc-pvqz-jkfit` |
 
 The list comes from the `bundled()` match in `crates/ferric-core/src/basis.rs`.
 The source records two coverage gaps: `cc-pvtz` lacks K, and `cc-pvtz-rifit`
