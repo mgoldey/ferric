@@ -1,6 +1,6 @@
 //! k-point restricted open-shell HF / Kohn-Sham (`solve_krohf`,
 //! `solve_kroks`): the k-mesh analogue of [`crate::rohf::gamma_roks`], with
-//! LDA, GGA and global-hybrid functionals.
+//! LDA, GGA, global-hybrid and range-separated-hybrid functionals.
 //!
 //! One spatial orbital set per k with closed (2), open (1) and virtual (0)
 //! levels; the per-spin Focks of the k-point UHF/UKS,
@@ -45,6 +45,18 @@
 //! Semilocal XC uses the Bloch AO cache of [`crate::kdft::KPeriodicXc`] with
 //! the spin-polarized libxc kernel (`V_σ = ∂E_xc/∂D_σ(k)`, no `1/N_k`).
 //!
+//! # Range-separated hybrids
+//!
+//! HSE06 and CAM-B3LYP (validated against PySCF `pbc.dft.KROKS`; wB97X runs
+//! the same code unpinned), mgoldey/ferric#354: the per-spin Focks take the
+//! closed-shell attenuated K unchanged ([`crate::rsh`] dense AFT, or
+//! `KRsGdf::build_rsh`), `K_σ = K[D_σ]` scaled by 1 (`a = 1`; the fractions
+//! and the MIXED Madelung constant `c_sr v_M + (c_lr − c_sr) v_M(ω)` are
+//! inside it), exactly as [`crate::kuks`] does; the Roothaan combination is
+//! unchanged. The reported fraction is `c_sr`. ENERGY only: forces and stress
+//! refuse RSH ([`crate::kxcgrad::check_open_shell_force_functional`]).
+//! Meta-GGA (no tau term here), VV10 and double hybrids are refused.
+//!
 //! Units: Bohr and Hartree.
 
 use crate::budget::{bytes_of, Ledger};
@@ -61,6 +73,7 @@ use crate::kscf::{
 };
 use crate::lattice::Cell;
 use crate::rsgdf::kpoint::{KRsGdf, KRsGdfConfig};
+use crate::rsh::RshParams;
 use crate::timing::{PbcTimings, StageClock};
 use crate::uhf::{nocc_ab, EwaldStart, SpinGapReport};
 use ferric_core::FerricError;
@@ -83,6 +96,18 @@ pub enum KRohfMutation {
     PerKAufbau,
     /// Exact exchange not scaled by `a` (full K in a hybrid).
     UnscaledExchange,
+    /// `K_β := K[D_α]` (the α exchange in the β Fock; J from both spins).
+    /// Invisible in the closed-shell limit.
+    KAlphaOnBeta,
+    /// `K_β := 0` (the β exchange term, attenuated or not, is dropped).
+    KDropBeta,
+    /// Range-separated hybrids only: apply the plain full-Coulomb mesh
+    /// Madelung constant instead of the mixed `c_sr v_M + (c_lr − c_sr)
+    /// v_M(ω)` one the attenuated K was built with.
+    PlainMadelungForRsh,
+    /// Range-separated hybrids only: scale the attenuated K by `c_sr` (the
+    /// fractions applied twice) instead of 1.
+    RshScaledBySr,
 }
 
 /// How the `(N_α − N_β) N_k` open orbitals are chosen among the levels above
@@ -404,7 +429,8 @@ impl KRohfConfig {
 pub struct KRoksConfig {
     /// SCF, J/K source, exxdiv and one-electron settings.
     pub rohf: KRohfConfig,
-    /// LDA / GGA / global-hybrid name.
+    /// LDA / GGA / global- or range-separated-hybrid name
+    /// ([`resolve_kroks_functional`]).
     pub functional: String,
     /// The periodic grid.
     pub grid: PeriodicGridConfig,
@@ -432,9 +458,12 @@ pub struct KRoksResult {
     pub scf: KRoScfResult,
     /// The `exxdiv = none` first stage, when the staged start ran.
     pub none_stage: Option<KRoScfResult>,
-    /// The mesh (supercell) `v_M`, applied (times `a`) iff `exxdiv = ewald`.
+    /// The mesh (supercell) `v_M`, applied (times `a`) iff `exxdiv = ewald`;
+    /// for a range-separated hybrid the mixed constant the attenuated K
+    /// applies (`a = 1`).
     pub madelung: f64,
-    /// The functional's global exact-exchange fraction (1 for ROHF).
+    /// The functional's global exact-exchange fraction (1 for ROHF; `c_sr`
+    /// for a range-separated hybrid).
     pub exact_exchange_fraction: f64,
     /// `(N_α, N_β)` per cell.
     pub nocc: (usize, usize),
@@ -484,7 +513,7 @@ pub fn solve_krohf_keep(
     mesh: &KPointMesh,
     cfg: &KRohfConfig,
 ) -> Result<(KRoksResult, KRetained), FerricError> {
-    drive("solve_krohf", cell, prep, aux, mesh, cfg, None)
+    drive("solve_krohf", cell, prep, aux, mesh, cfg, None, None)
 }
 
 /// k-point ROKS on the atom-centred periodic grid built from `cfg.grid`.
@@ -506,9 +535,26 @@ pub fn solve_kroks_keep(
     mesh: &KPointMesh,
     cfg: &KRoksConfig,
 ) -> Result<(KRoksResult, KRetained), FerricError> {
-    resolve_periodic_functional(&cfg.functional)?;
+    resolve_kroks_functional(&cfg.functional)?;
     let grid = PeriodicGrid::build(cell, &cfg.grid)?;
     solve_kroks_on_grid_keep(cell, prep, aux, mesh, &grid, cfg)
+}
+
+/// The functional gate of [`solve_kroks`]: LDA, GGA, global hybrids
+/// ([`resolve_periodic_functional`]) and range-separated hybrids
+/// ([`crate::rsh::resolve_periodic_functional_rsh`]: no range-separated
+/// meta-GGA, VV10 or double hybrid). Meta-GGA is refused: the spin-resolved
+/// XC here has no tau term.
+pub fn resolve_kroks_functional(name: &str) -> Result<(), FerricError> {
+    let range_separated = ferric_dft::libxc::xc_def_from_name(name)
+        .map(|d| d.cam.is_some())
+        .unwrap_or(false);
+    if range_separated {
+        crate::rsh::resolve_periodic_functional_rsh(name)?;
+    } else {
+        resolve_periodic_functional(name)?;
+    }
+    Ok(())
 }
 
 /// [`solve_kroks`] on a caller-supplied grid (`cfg.grid` is ignored).
@@ -535,9 +581,16 @@ pub fn solve_kroks_on_grid_keep(
     // KPeriodicXc accepts meta-GGA for the closed-shell solver, but the
     // spin-resolved XC here has no tau term: refuse it on this entry point
     // too, not only in `solve_kroks`.
-    resolve_periodic_functional(&cfg.functional)?;
+    resolve_kroks_functional(&cfg.functional)?;
     let mut pxc = KPeriodicXc::new(cell, prep.basis_set(), &cfg.functional, grid, mesh, &cfg.xc)?;
-    let a = pxc.exact_exchange_fraction();
+    // Range-separated hybrid: the fractions and the mixed Madelung constant
+    // live INSIDE the attenuated K, which the SCF scales by 1 (as k-UKS).
+    let rsh = pxc.rsh();
+    let a = if rsh.is_some() {
+        1.0
+    } else {
+        pxc.exact_exchange_fraction()
+    };
     let (mut r, kept) = drive(
         "solve_kroks",
         cell,
@@ -546,6 +599,7 @@ pub fn solve_kroks_on_grid_keep(
         mesh,
         &cfg.rohf,
         Some((&mut pxc, a)),
+        rsh,
     )?;
     let da = &r.scf.density_alpha;
     let tot: Vec<Array2<Complex64>> = da
@@ -566,6 +620,7 @@ fn drive(
     mesh: &KPointMesh,
     cfg: &KRohfConfig,
     mut xc: Option<(&mut KPeriodicXc, f64)>,
+    rsh: Option<RshParams>,
 ) -> Result<(KRoksResult, KRetained), FerricError> {
     match (cfg.jk, aux) {
         (KJkKind::Dense, Some(_)) => {
@@ -593,24 +648,43 @@ fn drive(
     let hk = periodic_hcore_kpts(cell, prep, mesh, &cfg.hcore)?;
     timings.stop("k hcore", &clock);
     hk.record_stats(&mut timings);
-    let v_m = mesh.madelung(cell)?;
+    let clock = StageClock::start();
+    let ints = match aux {
+        None => {
+            let mut dense = cfg.dense;
+            dense.rsh = rsh;
+            KInts::Dense(KDenseAftEri::build(
+                cell,
+                prep,
+                mesh,
+                &hk.s,
+                ExxDiv::None,
+                &dense,
+            )?)
+        }
+        Some(aux) => KInts::RsGdf(match rsh {
+            Some(r) => KRsGdf::build_rsh(cell, prep, aux, mesh, &hk.s, &cfg.rsgdf, r)?,
+            None => KRsGdf::build(cell, prep, aux, mesh, &hk.s, &cfg.rsgdf)?,
+        }),
+    };
+    timings.stop("k J/K build", &clock);
+    // The exxdiv constant the K applies: the mesh Madelung constant, or for a
+    // range-separated hybrid the mixed one the attenuated K was built with.
+    let plain_for_rsh = cfg.mutation == Some(KRohfMutation::PlainMadelungForRsh);
+    let v_m = match (&ints, rsh.is_some() && !plain_for_rsh) {
+        (KInts::Dense(e), true) => e.madelung_ewald(),
+        (KInts::RsGdf(g), true) => g.madelung_ewald(),
+        _ => mesh.madelung(cell)?,
+    };
     let applied = match cfg.exxdiv {
         ExxDiv::None => 0.0,
         ExxDiv::Ewald => v_m,
     };
-    let clock = StageClock::start();
-    let ints = match aux {
-        None => KInts::Dense(KDenseAftEri::build(
-            cell,
-            prep,
-            mesh,
-            &hk.s,
-            ExxDiv::None,
-            &cfg.dense,
-        )?),
-        Some(aux) => KInts::RsGdf(KRsGdf::build(cell, prep, aux, mesh, &hk.s, &cfg.rsgdf)?),
+    // TEST ONLY: the fractions applied twice (attenuated K scaled by c_sr).
+    let a_scf = match (rsh, cfg.mutation) {
+        (Some(r), Some(KRohfMutation::RshScaledBySr)) => r.c_sr,
+        _ => a,
     };
-    timings.stop("k J/K build", &clock);
     if let KInts::RsGdf(g) = &ints {
         crate::rsgdf::kpoint::record_stats(&mut timings, g.stats());
     }
@@ -635,7 +709,7 @@ fn drive(
             inj,
             na,
             nb,
-            a,
+            a_scf,
             xc_dyn,
             guess,
             cfg.open_rule,
@@ -686,7 +760,7 @@ fn drive(
         scf,
         none_stage,
         madelung: v_m,
-        exact_exchange_fraction: a,
+        exact_exchange_fraction: rsh.map_or(a, |r| r.c_sr),
         nocc: (na, nb),
         gaps,
         n_grid_points: 0,
@@ -992,6 +1066,19 @@ fn run_kroks(
         inj.jk.build(&da, &mut ja, &mut ka)?;
         if nb > 0 {
             inj.jk.build(&db, &mut jb, &mut kb)?;
+            match mutation {
+                Some(KRohfMutation::KAlphaOnBeta) => {
+                    for k in 0..nk {
+                        kb[k].assign(&ka[k]);
+                    }
+                }
+                Some(KRohfMutation::KDropBeta) => {
+                    for k in 0..nk {
+                        kb[k].fill(Complex64::new(0.0, 0.0));
+                    }
+                }
+                _ => {}
+            }
         } else {
             for k in 0..nk {
                 jb[k].fill(Complex64::new(0.0, 0.0));

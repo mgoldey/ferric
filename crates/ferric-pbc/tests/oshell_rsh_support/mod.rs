@@ -394,3 +394,91 @@ pub fn pbe0_pin() -> f64 {
 pub fn cell_h4_singlet() -> Cell {
     triclinic_cell()
 }
+
+// ------------------------------------------------ restricted open shell (ROKS)
+
+/// Gamma ROKS (`gamma_roks_rsh_on_grid`) on the same exchange, J source,
+/// hcore and grid as [`gamma_uks`] (`GammaRoksConfig::new`: DIIS with the
+/// hybrid level shift, ramped to 0 at convergence).
+pub fn gamma_roks(
+    cell: &Cell,
+    f: &str,
+    exxdiv: ExxDiv,
+    run: GRun,
+) -> ferric_pbc::rohf::GammaRoksResult {
+    let s = GSetup::new(cell, f, exxdiv, run);
+    gamma_roks_on(cell, f, exxdiv, &s, &s.grid)
+}
+
+/// [`gamma_roks`] on a prepared setup and grid (the supercell anchor).
+pub fn gamma_roks_on(
+    cell: &Cell,
+    f: &str,
+    exxdiv: ExxDiv,
+    s: &GSetup,
+    grid: &PeriodicGrid,
+) -> ferric_pbc::rohf::GammaRoksResult {
+    let mut cfg = ferric_pbc::rohf::GammaRoksConfig::new(name_of(f));
+    cfg.exxdiv = exxdiv;
+    cfg.scf.density_conv = 1e-11;
+    cfg.scf.energy_conv = 1e-12;
+    let r =
+        ferric_pbc::rohf::gamma_roks_rsh_on_grid(cell, &s.prep, &s.hc, s.ints(), &s.ex, grid, &cfg)
+            .unwrap_or_else(|e| panic!("gamma_roks_rsh {f} {exxdiv:?}: {e}"));
+    assert!(r.scf.converged);
+    r
+}
+
+/// k-point ROKS (`solve_kroks_on_grid`): dense AFT, or RS-GDF on `AUX`;
+/// level shift 0.05 / 600 iterations as the hybrid KROKS tests use.
+pub fn kroks_run(
+    cell: &Cell,
+    f: &str,
+    n: [usize; 3],
+    exxdiv: ExxDiv,
+    rsgdf: bool,
+    mutation: Option<ferric_pbc::kroks::KRohfMutation>,
+) -> ferric_pbc::kroks::KRoksResult {
+    let bs = pyscf_sto3g_h();
+    let prep = prep_for(cell, &bs);
+    let grid = PeriodicGrid::uniform(cell, [MESH; 3]).unwrap();
+    let mesh = KPointMesh::gamma_centred(cell, n).unwrap();
+    let mut cfg = ferric_pbc::kroks::KRoksConfig::new(cell, exxdiv, name_of(f));
+    cfg.rohf.hcore = PeriodicHcoreConfig::with_omega(OMEGA_HCORE);
+    cfg.rohf.scf.energy_conv = 1e-12;
+    cfg.rohf.scf.grad_conv = 1e-9;
+    cfg.rohf.scf.max_iter = 600;
+    cfg.rohf.level_shift = 0.05;
+    cfg.rohf.mutation = mutation;
+    let aux = rsgdf.then(|| aux_of(cell));
+    if rsgdf {
+        cfg.rohf.jk = KJkKind::RsGdf;
+        cfg.rohf.rsgdf = rsgdf_cfg(exxdiv);
+    }
+    ferric_pbc::kroks::solve_kroks_on_grid(cell, &prep, aux.as_ref(), &mesh, &grid, &cfg)
+        .unwrap_or_else(|e| panic!("solve_kroks {f} {n:?} {exxdiv:?}: {e}"))
+}
+
+const ROKS_PIN_JSON: &str = include_str!("../../../../testdata/reference/pbc_roks_sto3g_rsh.json");
+
+/// PySCF 2.13.1 `pbc.dft.ROKS` (Gamma) / `KROKS` (`mf.nelec = (N_a N_k,
+/// N_b N_k)`) total energy per cell, same setup as [`pin`]
+/// (`scripts/gen_pyscf_roks_rsh_refs.py`). `None` when PySCF itself did not
+/// converge that row.
+pub fn roks_pin(cell: &str, f: &str, n: [usize; 3], x: ExxDiv) -> Option<f64> {
+    let v: serde_json::Value = serde_json::from_str(ROKS_PIN_JSON).expect("ROKS pin JSON");
+    let xs = if x == ExxDiv::Ewald { "ewald" } else { "none" };
+    let row = v["rows"]
+        .as_array()
+        .expect("rows")
+        .iter()
+        .find(|r| {
+            r["cell"] == cell
+                && r["functional"] == f
+                && r["exxdiv"] == xs
+                && r["kmesh"] == serde_json::json!(n)
+        })
+        .unwrap_or_else(|| panic!("no ROKS pin row {cell} {f} {n:?} {x:?}"))
+        .clone();
+    row["e_tot"].as_f64()
+}
