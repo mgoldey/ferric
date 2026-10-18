@@ -872,7 +872,10 @@ jobs:
   # RS-GDF+ECP+rotation test that first failed under perturbation
   # (far_field_contracted_s_blocks_do_not_read_uninitialised_memory, which
   # itself re-execs its #[ignore]d helper with --include-ignored). It is a
-  # canary, not the survey (9 timed-out binaries remain unmeasured under #433).
+  # canary, not the survey. Added from the 2026-10-17 #433 survey (README in
+  # crates/ferric-integrals/shim/libint2_overrides): pbc_krsgdf, pbc_krsgdf_split,
+  # pbc_grad_ecp (RS-GDF / ECP-gradient paths; 23/98/128 s wall at 170 INCLUDING
+  # their #[ignore]d tests, so the non-ignored CI run is no longer).
   malloc-perturb:
     needs: build-tests
     runs-on: ubuntu-22.04
@@ -938,7 +941,8 @@ jobs:
             # --retries 0: a pass-on-retry would hide an allocator-dependent
             # failure, the exact thing under test. Profile ci (not default) so
             # the ferric-pbc 960 s slow-timeout override applies.
-            for b in boys_chebyshev_table_edge tenno_table_edge pbc_kpoint_ecp_rotation; do
+            for b in boys_chebyshev_table_edge tenno_table_edge pbc_kpoint_ecp_rotation \
+                       pbc_krsgdf pbc_krsgdf_split pbc_grad_ecp; do
               MALLOC_PERTURB_=$v cargo nextest run \
                 --profile ci --retries 0 --no-tests=fail \
                 --archive-file /tmp/nextest-archive.tar.zst \
