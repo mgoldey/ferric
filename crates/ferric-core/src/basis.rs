@@ -460,9 +460,9 @@ pub fn bundled(name: &str) -> Result<BasisSet, FerricError> {
         "def2-universal-jkfit" => include_str!("basis/bundled/def2-universal-jkfit.json"),
         // Turbomole 7.3 cc-pVXZ-JKFIT. Registered for the #279 aux-basis
         // enrichment ladder (def2-universal-jkfit -> cc-pvtz-jkfit ->
-        // cc-pvqz-jkfit) of the AURORA response anchor; H-Kr coverage is
-        // whatever the upstream JSON carries (a missing element errors at
-        // lookup, it is not patched).
+        // cc-pvqz-jkfit) of the AURORA response anchor. Coverage of BOTH JSONs is
+        // only H, B-F, Al-Cl, Ga-Br (no He, Li, Be, Ne, Na, Mg, Ar, K-Zn,
+        // Kr); a missing element errors at lookup, it is not patched.
         "cc-pvtz-jkfit" => include_str!("basis/bundled/cc-pvtz-jkfit.json"),
         "cc-pvqz-jkfit" => include_str!("basis/bundled/cc-pvqz-jkfit.json"),
         _ => return Err(FerricError::Basis(format!("unknown bundled basis: {name}"))),

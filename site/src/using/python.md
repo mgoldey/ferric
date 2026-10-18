@@ -83,7 +83,7 @@ QM/MM accessors.
 ### Bundled basis sets
 
 `BasisSet.bundled(name)` loads a basis compiled into the library. Names are
-case-insensitive. An unknown name raises `ValueError`. These 25 sets are
+case-insensitive. An unknown name raises `ValueError`. These 27 sets are
 available (`cc-pvdz-rifit` is also accepted, as an alias of `cc-pvdz-ri`):
 
 | Kind | Names |
@@ -96,7 +96,8 @@ available (`cc-pvdz-rifit` is also accepted, as an alias of `cc-pvdz-ri`):
 
 The list comes from the `bundled()` match in `crates/ferric-core/src/basis.rs`.
 The source records two coverage gaps: `cc-pvtz` lacks K, and `cc-pvtz-rifit`
-lacks K and Ca. An RI run on a missing element errors; it is not silently
+lacks K and Ca. `cc-pvtz-jkfit` and `cc-pvqz-jkfit` carry only H, B-F, Al-Cl and
+Ga-Br (no He, Li, Be, Ne, Na, Mg, Ar, K-Zn, Kr). An RI run on a missing element errors; it is not silently
 patched. The Python API has no loader for basis files on disk; the Rust
 library parses BSE-JSON and Gaussian-94 files (see the
 [Rust API](../reference/api.md)).

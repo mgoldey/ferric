@@ -304,7 +304,7 @@ fn sto3g_aux_misses_the_exact_matvec() {
 /// aux-independent and sets a FLOOR. So (1) the error must fall monotonically
 /// def2-universal-jkfit -> cc-pvtz-jkfit -> cc-pvqz-jkfit, and (2) the qz error
 /// must sit under an absolute bar. What it can resolve: a defect of relative
-/// size >= the bar (about 4x the worst measured qz error, 2.7e-4) in the 2e response; a
+/// size >= the bar (about 2x the worst measured qz error, 2.7e-4) in the 2e response; a
 /// smaller one hides under the qz fitting error. Mutation: Coulomb prefactor
 /// 8 -> 8.04 (0.5 % of the Coulomb term) is below the def2 error but above the
 /// qz floor, so only this test (not the 3e-2 bars above) can see it.
@@ -329,15 +329,15 @@ fn aux_error_falls_with_aux_enrichment_to_a_derived_floor() {
     }
 }
 
-/// Upper bound on the qz-jkfit 2e-response error (about 4x the worst measured, 2.7e-4).
-const QZ_FLOOR_BAR: f64 = 1e-3;
+/// Upper bound on the qz-jkfit 2e-response error (about 2x the worst measured, 2.7e-4, and 1.4x the independent PySCF DF error 3.6e-4).
+const QZ_FLOOR_BAR: f64 = 5e-4;
 
 /// Relative differences between the aux TRAH step and the full-gap exact TRAH
 /// step taken from the same non-canonical point.
 struct StepDiff {
     kappa: f64,
     predicted: f64,
-    grad: f64,
+    exact_kappa_norm: f64,
 }
 
 /// One TRAH step each way from a point rotated by `rot`. The aux model is built
@@ -367,7 +367,7 @@ fn step_diff(auxbasis: &str, rot: f64, radius: f64) -> StepDiff {
     StepDiff {
         kappa: norm(&dk) / norm(&ex.kappa),
         predicted: (ex.predicted - ax.predicted).abs() / ex.predicted.abs(),
-        grad: norm(&ex.kappa),
+        exact_kappa_norm: norm(&ex.kappa),
     }
 }
 
@@ -382,9 +382,13 @@ fn aux_trah_step_matches_full_gap_exact_step_off_canonical() {
     let d = step_diff("def2-universal-jkfit", 0.1, 0.3);
     eprintln!(
         "STEP rot=0.1 radius=0.3 |kappa|={:.3e} dkappa_rel={:.3e} dpred_rel={:.3e}",
-        d.grad, d.kappa, d.predicted
+        d.exact_kappa_norm, d.kappa, d.predicted
     );
-    assert!(d.grad > 1e-3, "inert step test: |kappa| = {:.3e}", d.grad);
+    assert!(
+        d.exact_kappa_norm > 1e-3,
+        "inert step test: |kappa| = {:.3e}",
+        d.exact_kappa_norm
+    );
     assert!(d.kappa < STEP_KAPPA_BAR, "kappa rel diff {:.3e}", d.kappa);
     assert!(
         d.predicted < STEP_PRED_BAR,
