@@ -97,7 +97,7 @@ energy is pinned against PySCF/libcint in
 implementation is Proven (narrow): the damped VV10 half, the terfc-attenuated MP2
 half and the erfc control each match an independent PySCF/numpy reference. Its
 parameterization is unbenchmarked: there is no published MP2-V total energy to
-compare with, no S66 run, and ferric evaluates the VV10 term on the converged HF
+compare with, only an aug-cc-pVTZ S66 subset run (n=5, H-bonded/mixed, S66x8 geometry, no CP-anchored reference), and ferric evaluates the VV10 term on the converged HF
 density (the post-HF variant) on its own 50×50 grid rather than SG-1. Read the header of `examples/water-mp2v.toml` before quoting a number.
 
 **Robust fitting.** When the RI metric differs from the operator in the
