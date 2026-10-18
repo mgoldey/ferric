@@ -230,7 +230,8 @@ pub fn solve_rohf_best_effort(
     bounds: &SchwarzBounds,
     config: &RohfConfig,
 ) -> Result<ScfResult, FerricError> {
-    solve_rohf_impl(ctx, mol, prep, bounds, config, None, None)
+    crate::symmetric::require_symmetry_off(config, "solve_rohf")?;
+    solve_rohf_impl(ctx, mol, prep, bounds, config, None, None, None)
 }
 
 /// Reject every `RohfConfig` feature [`solve_rohf_injected`] cannot honour,
@@ -327,7 +328,28 @@ pub fn solve_rohf_injected<'a>(
             ));
         }
     }
-    let r = solve_rohf_impl(ctx, mol, prep, bounds, config, initial_mos, Some(inj))?;
+    let r = solve_rohf_impl(ctx, mol, prep, bounds, config, initial_mos, Some(inj), None)?;
+    if r.converged {
+        Ok(r)
+    } else {
+        Err(FerricError::ScfConvergence {
+            iterations: r.iterations,
+            last_energy: r.energy,
+        })
+    }
+}
+
+/// The blocked solve of [`crate::symmetric_open::solve_rohf_symmetric`]: `mol`,
+/// `prep` and `bounds` are already in the symmetry frame.
+pub(crate) fn solve_rohf_blocked(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    bounds: &SchwarzBounds,
+    config: &RohfConfig,
+    spec: &crate::symmetric::SymmetrySpec,
+) -> Result<ScfResult, FerricError> {
+    let r = solve_rohf_impl(ctx, mol, prep, bounds, config, None, None, Some(spec))?;
     if r.converged {
         Ok(r)
     } else {
@@ -351,8 +373,8 @@ fn solve_rohf_impl(
     config: &RohfConfig,
     initial_mos: Option<&Array2<f64>>,
     inj: Option<PeriodicInjection<'_>>,
+    sym: Option<&crate::symmetric::SymmetrySpec>,
 ) -> Result<ScfResult, FerricError> {
-    crate::symmetric::require_symmetry_off(config, "solve_rohf")?;
     use ferric_dft::ks::KsXcUks;
     use ferric_dft::xc_trait::{KMix, UksXcContribution};
 
@@ -507,6 +529,12 @@ fn solve_rohf_impl(
         }
     }
     let s_inv_sqrt = u_scaled.dot(&s_evecs.t());
+    // Fock diagonalizer: global by default, per-irrep under point-group blocking.
+    let diag = crate::symmetric::FockDiag::new(
+        sym,
+        &s,
+        crate::symmetric::PlainDiag::InvSqrt(&s_inv_sqrt),
+    )?;
 
     // Initial guess MOs: the CONFIGURED density guess (MINAO by default), else
     // hcore.
@@ -607,7 +635,7 @@ fn solve_rohf_impl(
             config,
             &h,
             &s,
-            &s_inv_sqrt,
+            &diag,
             nocc_double,
             nocc_open,
         )? {
@@ -616,11 +644,7 @@ fn solve_rohf_impl(
                 // hcore guess: diagonalize bare h, exactly as this path did
                 // unconditionally before.
                 let _ = hcore_guess(&s, &h, nocc_a.max(1))?; // sanity check it succeeds
-                let h_prime = s_inv_sqrt.dot(&h).dot(&s_inv_sqrt);
-                let (_, c_prime) = h_prime
-                    .eigh(ndarray_linalg::UPLO::Upper)
-                    .map_err(|e| FerricError::Lapack(format!("H' diag: {e}")))?;
-                s_inv_sqrt.dot(&c_prime)
+                diag.run(&h)?.1
             }
         }
     };
@@ -1137,7 +1161,7 @@ fn solve_rohf_impl(
         // Gradient guard (F6): a stagnated DIIS extrapolation settles ΔP and ΔE
         // without being a stationary point (OH ROKS/PBE on CI, 0.58 Ha high).
         if iter > 1 && guard.accept(converged, err_max, iter, &mut diis, ctx.is_root()) {
-            let (eps, c_f) = diagonalize(&f_eff, &s_inv_sqrt)?;
+            let (eps, c_f) = diag.run(&f_eff)?;
             let (eps, c_f) = guard.relabel(&c, eps, c_f, &s);
             let (d_a_f, d_b_f) = build_rohf_densities(&c_f, nocc_double, nocc_open);
             let density_total = &d_a_f + &d_b_f;
@@ -1356,7 +1380,7 @@ fn solve_rohf_impl(
                     f_new += &shift_term;
                 }
             }
-            let (eps_new, c_new) = diagonalize(&f_new, &s_inv_sqrt)?;
+            let (eps_new, c_new) = diag.run(&f_new)?;
             // F6 hole-swap lock (see crate::rohf_occupation): a no-op (the same
             // `c_new`) unless the open shell has swapped several iterations
             // running, after which the labels follow orbital continuity.
@@ -1584,7 +1608,7 @@ fn rohf_guess_mos(
     config: &RohfConfig,
     h: &Array2<f64>,
     s: &Array2<f64>,
-    s_inv_sqrt: &Array2<f64>,
+    diag: &crate::symmetric::FockDiag<'_>,
     nocc_double: usize,
     nocc_open: usize,
 ) -> Result<Option<Array2<f64>>, FerricError> {
@@ -1678,7 +1702,7 @@ fn rohf_guess_mos(
     // ONE MO set, from the Roothaan effective Fock — the same combination the
     // SCF loop below uses.
     let f_eff = roothaan_fock(&f_a, &f_b, &d_a, &d_b, s);
-    match diagonalize(&f_eff, s_inv_sqrt) {
+    match diag.run(&f_eff) {
         Ok((_, c)) => Ok(Some(c)),
         Err(e) => {
             if crate::rhf::scf_trace() {
@@ -1763,7 +1787,7 @@ pub(crate) fn roothaan_fock(
     f_sym
 }
 
-fn diagonalize(
+pub(crate) fn diagonalize(
     f: &Array2<f64>,
     s_inv_sqrt: &Array2<f64>,
 ) -> Result<(Vec<f64>, Array2<f64>), FerricError> {
