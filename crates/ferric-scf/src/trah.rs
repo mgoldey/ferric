@@ -276,6 +276,53 @@
 //! no XC curvature; that this explains the B3LYP rho is UNTESTED. The cost
 //! question (rich-aux matvec vs J/K build) was not measured.
 //!
+//! UPDATE 2 (2026-10-17, issue #279 closing pass; PROVISIONAL).
+//!
+//! MEASUREMENT 3, aux-enrichment ladder (`tests/trah_aux_response_anchor.rs::
+//! aux_error_falls_with_aux_enrichment_to_a_derived_floor`). There is no exact-B
+//! route to a full-rank limit (the aux tensor is a fit by construction), so the
+//! full-rank anchor is a CONVERGENCE one. 2e-part relative error of the aux
+//! operator against the full-gap exact matvec, worst of 3 random kappa:
+//!
+//! ```text
+//!   aux                   canonical    rot 0.1
+//!   sto-3g                 0.26          -        (negative control)
+//!   def2-universal-jkfit   2.1e-3       2.5e-3
+//!   cc-pvtz-jkfit          5.2e-4       8.2e-4
+//!   cc-pvqz-jkfit          2.3e-4       2.7e-4
+//! ```
+//!
+//! Monotone along the family; floor bar 1e-3 (about 4x the worst qz value). A
+//! construction defect is aux-independent, so it would set a floor the
+//! enrichment cannot go under; the test resolves defects >= ~1e-3 of the 2e
+//! response (a 0.5% Coulomb-prefactor mutant is caught) and says nothing about
+//! smaller ones. Whether the qz error keeps falling toward zero is NOT shown
+//! (three points).
+//!
+//! MEASUREMENT 4, step-level anchor
+//! (`aux_trah_step_matches_full_gap_exact_step_off_canonical`): one TRAH step
+//! each way from a point rotated by |kappa|max 0.1, radius 0.3, the aux model
+//! built at the canonical orbitals and refreshed by the step. kappa relative
+//! difference 1.5e-4, predicted-energy difference 1.1e-5. Mutants: `f_oo` read
+//! from the virtual block 0.55, `refresh_orbitals` removed 0.10; bar 2e-3. This
+//! closes the two survivors of the earlier mutation ledger (12 of 12 caught).
+//!
+//! PRE-REGISTRATION NOTE. The criterion registered before the run was "a rich
+//! aux gives rho ~ 0.99, i.e. approaches the exact rho". After the run the
+//! criterion was REFRAMED to "a rich aux ties the full-gap exact path", because
+//! review found the exact matvec used only the diagonal Fock gap. That is a
+//! post-hoc rewrite of the hypothesis: the reframed claim was fitted to the
+//! data in hand and is supported by the control arm, but was not predicted. It
+//! matters because the tie (identical iterations, matvecs, rho to the printed
+//! digits) is also what a rich aux would give if it is exact, and the original
+//! wording cannot be scored against rho ~ 0.99 (the full-gap exact rho is
+//! .999-1.000, the diagonal-gap exact .993-1.031).
+//!
+//! STILL OPEN: the B3LYP shortfall (aux model has no XC curvature) is
+//! untested; the cost of a rich-aux matvec against a J/K build is unmeasured
+//! (counts only); the 3 repeats are bit-identical so there is no scatter
+//! estimate.
+//!
 //! # Scope
 //!
 //! The solver here is deliberately method-agnostic: it works on a flat
