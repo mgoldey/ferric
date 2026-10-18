@@ -14,6 +14,8 @@
 
 /// Boys localization of occupied orbitals.
 pub mod boys;
+/// DLPNO-MP2 pair screening on localized occupieds (Fock-coupled amplitude solve).
+pub mod dlpno_localized;
 /// DLPNO-MP2 (domain-based local pair natural orbital MP2).
 pub mod dlpno_mp2;
 /// Direct RPA amplitude doubles (ring-CCD) from RI intermediates.

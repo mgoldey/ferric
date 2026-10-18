@@ -30,11 +30,11 @@
 //! TCutPNO / TCutPairs / TCutDO. The two "% of canonical correlation
 //! recovered" columns therefore measure DIFFERENT approximations. They are
 //! printed side by side and are never ranked, and no bar below compares a
-//! ferric DLPNO number to an ORCA DLPNO number. The Boys-localized variant
-//! (acceptance item (c)) is NOT done: `dlpno_mp2_from_b_ov` divides by a
-//! diagonal `eps`, so a non-canonical (Fock-coupled) occupied block cannot be
-//! passed to it, and faking it by rotating `b_ov` while keeping diagonal
-//! denominators would not be MP2.
+//! ferric DLPNO number to an ORCA DLPNO number. This file's PNO path stays
+//! canonical (`dlpno_mp2_from_b_ov` divides by a diagonal `eps`). The
+//! Boys-localized, Fock-coupled PAIR screen (acceptance item (c)) lives in
+//! `dlpno_localized.rs` and is measured in `validation_dlpno_localized.rs`;
+//! it has no PNO truncation.
 //!
 //! Also NOT claimed: any speedup, any statement about DLPNO-CCSD / (T) in
 //! ferric (no end-to-end driver exists; ORCA's CCSD(T) numbers in the JSON are
@@ -60,6 +60,8 @@
 //!   323/325, 190/190, 551/561, 325/325). A flat pair dial is therefore
 //!   uninformative at these sizes. Only the PNO (virtual) screen is
 //!   exercised meaningfully.
+//!   (This is the CANONICAL screen. With Boys-localized occupieds ferric's pair
+//!   screen is informative: see `validation_dlpno_localized.rs`.)
 //!
 //! # All-electron columns are lopsided against ORCA
 //!
