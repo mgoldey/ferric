@@ -250,7 +250,7 @@ fn above_the_threshold_the_stock_recursion_is_unchanged() {
 /// a jump there. Physics hypothesis: `G_m -> F_m(T)`, `0 <= G_m <= 1/(2m+1)`.
 /// Rows are 50-digit mpmath values (`REF_STOCK`, T from 0.7x the threshold to 1000,
 /// U in {1e-14, 1e-9, 9e-8}); the library output must match in both abs and
-/// relative error (relative matters: G_m ~ sqrt(pi/T)/2^(m+1) is tiny at T=1000).
+/// relative error (relative matters: for U -> 0, G_m -> F_m(T) ~ Gamma(m+1/2) / (2 T^(m+1/2)) at large T, which is tiny at T=1000 and falls with m).
 #[test]
 fn stock_region_matches_mpmath_to_the_derived_bar() {
     let (mut worst_abs, mut worst_rel) = (0.0f64, 0.0f64);
