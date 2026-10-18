@@ -4799,7 +4799,8 @@ impl PeriodicRoute {
                             if self == PeriodicRoute::Rks {
                                 " and the SCAN / r2SCAN meta-GGAs"
                             } else {
-                                " only (no meta-GGA)"
+                                " only (no meta-GGA on this route; the library k-point UKS has SCAN / r2SCAN \
+                                   energies, not wired here yet)"
                             },
                             if self == PeriodicRoute::Rks {
                                 ", plus range-separated hybrids"
@@ -5829,7 +5830,8 @@ kind = "ccsd"
     const SCAN: &str = "[dft]\nfunctional = \"SCAN\"";
     const HSE: &str = "[dft]\nfunctional = \"HSE06\"";
     const KMESH_REFUSALS: &[KmeshRefusal] = &[
-        // Open-shell routes have a k-point driver but no meta-GGA (no tau term).
+        // Open-shell CLI routes have a k-point driver but no meta-GGA wiring (the
+        // library k-UKS has SCAN / r2SCAN energies; the CLI is not wired to it).
         ("uhf", SCAN, false, &["kmesh", "meta-GGA", "no meta-GGA"]),
         ("rohf", SCAN, false, &["kmesh", "meta-GGA", "no meta-GGA"]),
         ("ksdft", SCAN, true, &["UKS", "meta-GGA", "no meta-GGA"]),
@@ -6151,7 +6153,7 @@ kind = "ccsd"
             "[dft]\nfunctional = \"HSE06\"",
         ));
         assert!(e.contains("range-separated") && e.contains("kmesh"), "{e}");
-        // Open-shell KS: no meta-GGA at a mesh.
+        // Open-shell KS: no meta-GGA at a mesh (not wired, see the message).
         for kind in ["rohf", "uhf"] {
             let e = err(&opt(
                 kind,

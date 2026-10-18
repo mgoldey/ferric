@@ -49,8 +49,8 @@ def test_unsupported_combinations_are_refused_by_name(h2, h_atom, basis):
     lat = _cubic()
     with pytest.raises(ValueError, match="multiplicity 2"):
         ferric.run_rks_kpts(h_atom, lat, basis, "LDA", (1, 1, 2))
-    # Open-shell meta-GGA stays refused (SCAN itself is a validated closed-shell
-    # functional since the k-point meta-GGA forces landed).
+    # Open-shell meta-GGA is not wired in Python (the Rust solve_kuks has SCAN /
+    # r2SCAN energies, run_uks_kpts is not routed to them yet).
     with pytest.raises(ValueError, match="meta-GGA"):
         ferric.run_uks_kpts(h_atom, lat, basis, "SCAN", (1, 1, 2))
     # Open-shell range-separated hybrids stay refused on the dense J/K too.

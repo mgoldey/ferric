@@ -1918,13 +1918,14 @@ impl PeriodicXc {
         out
     }
 
-    /// The spin-resolved path has no tau term: error on a meta-GGA.
+    /// The Gamma-point spin-resolved path has no tau term: error on a meta-GGA
+    /// (the k-point UKS has one, see `crate::kuks`).
     fn refuse_if_mgga(&self) -> Result<(), FerricError> {
         if self.mgga {
             return Err(PeriodicDftError::Unsupported {
                 feature: "meta-GGA",
                 reason: format!(
-                    "{}: the spin-resolved periodic XC has no tau term",
+                    "{}: the Gamma-point spin-resolved periodic XC has no tau term",
                     self.name
                 ),
             }

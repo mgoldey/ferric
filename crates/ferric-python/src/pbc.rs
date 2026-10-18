@@ -2738,7 +2738,8 @@ fn check_kpoint_ks_support(
             "LDA, GGA, global-hybrid and SCAN / r2SCAN meta-GGA functionals (plus \
                  range-separated hybrids) only"
         } else {
-            "LDA, GGA and global-hybrid functionals only (no meta-GGA)"
+            "LDA, GGA and global-hybrid functionals only (no meta-GGA on this route; the \
+                 library k-point UKS has SCAN / r2SCAN energies, not wired here yet)"
         };
         val_err(format!(
             "{fname}: functional {functional:?}: {e}. k-point {} supports {what}",

@@ -27,7 +27,18 @@
 //!   density at a time (checks each spin's `V^tau` separately, no SCF).
 //! * `polarized_k_mesh_is_the_supercell`: polarized mesh energy / cell
 //!   against the same code at 1x1x1 on the explicit supercell.
-//! * `uniform_grid_kuks_mgga_matches_pinned_pyscf`: PySCF `KUKS` pins.
+//! * `h3_scan_matches_pinned_pyscf` (always on) and, in
+//!   `validation_pbc_kuks_mgga.rs` (weekly validation job), the full table of
+//!   eight PySCF `KUKS` pins plus the mutant-versus-pin checks.
+//!
+//! Caveat on the singlet anchor: `chunk_tau` is shared by both of its sides
+//! (k-RKS and k-UKS), so a tau-FORMULA bug cancels there; that is covered by
+//! the closed-shell PySCF pins of `pbc_krks.rs`. Meshes with a 1/3 component
+//! (complex Bloch AOs) are included so a missing complex conjugate shows.
+//!
+//! No SCF level shift was needed: every SCF converged in 7 to 12 iterations,
+//! but only on these 3 to 4 orbital minimal-basis cells (no evidence for
+//! larger or near-degenerate cells).
 
 mod common;
 
@@ -107,15 +118,16 @@ fn kuks_on(
 // ------------------------------------------------------------ the anchors
 
 /// EXACTNESS ANCHOR (run before any PySCF number): at `N_alpha == N_beta` the
-/// open-shell code must reproduce k-RKS, on the 1x1x2 and 2x2x2 meshes.
+/// open-shell code must reproduce k-RKS, on the 1x1x2, 1x1x3 (complex Bloch
+/// AOs) and 2x2x2 meshes.
 /// Blind to a tau/spin-channel error by construction (module doc), so it is
 /// necessary, not sufficient.
 #[test]
 fn singlet_k_uks_is_k_rks() {
     let bs = pyscf_sto3g_h();
     for (label, cell, meshes) in [
-        ("H2", h2_cell(4.0), vec![[1, 1, 2], [2, 2, 2]]),
-        ("H4 tri", triclinic_cell(), vec![[1, 1, 2]]),
+        ("H2", h2_cell(4.0), vec![[1, 1, 2], [1, 1, 3], [2, 2, 2]]),
+        ("H4 tri", triclinic_cell(), vec![[1, 1, 2], [1, 1, 3]]),
     ] {
         let prep = prep_for(&cell, &bs);
         let grid = PeriodicGrid::build(&cell, &grid_cfg(40, 110)).unwrap();
@@ -191,88 +203,127 @@ fn one_point_mesh_singlet_is_gamma_rks() {
 
 // ------------------------------------------------- polarized V = dE/dD
 
-/// `V_sigma(k)` is the derivative of `E_xc` w.r.t. `D_sigma(k)`: central
-/// finite difference of `E_xc` along a Hermitian perturbation of ONE spin
-/// density (the other fixed) against `Re Tr(V_sigma Delta)`, at a polarized
-/// converged state. Each spin's `V^tau` is checked on its own, so a dropped
-/// beta `V^tau` or a swapped channel fails here without any SCF.
+/// Worst relative miss, over the two spins, between a central finite
+/// difference of `E_xc` along a Hermitian perturbation of ONE spin density
+/// (the other fixed) and `Re Tr(V_sigma Delta) / N_k` of `pxc` itself.
+fn fd_vs_v_worst_rel(
+    pxc: &mut KPeriodicXcPolarized,
+    mesh: &KPointMesh,
+    da: &[Array2<Complex64>],
+    db: &[Array2<Complex64>],
+    label: &str,
+) -> f64 {
+    let (_, va, vb) = pxc.build_polarized(da, db).unwrap();
+    let delta: Vec<Array2<Complex64>> = da
+        .iter()
+        .enumerate()
+        .map(|(k, d)| {
+            let n = d.nrows();
+            let mut m = Array2::<Complex64>::zeros((n, n));
+            for i in 0..n {
+                for j in 0..n {
+                    let a = ((i * 7 + j * 3 + k * 5) % 11) as f64 - 5.0;
+                    let b = ((i * 5 + j * 2 + k * 3) % 7) as f64 - 3.0;
+                    m[(i, j)] = Complex64::new(a, b) * 1e-2;
+                }
+            }
+            let h = m.mapv(|z| z.conj()).t().to_owned();
+            (&m + &h).mapv(|z| z * 0.5)
+        })
+        .collect();
+    let h = 1e-4;
+    let mut worst = 0.0_f64;
+    for spin in 0..2 {
+        let shift = |s: f64| -> Vec<Array2<Complex64>> {
+            let base = if spin == 0 { da } else { db };
+            base.iter()
+                .zip(&delta)
+                .map(|(d, x)| d + &x.mapv(|z| z * s))
+                .collect()
+        };
+        let mut e_at = |s: f64| {
+            if spin == 0 {
+                pxc.build_polarized(&shift(s), db).unwrap().0
+            } else {
+                pxc.build_polarized(da, &shift(s)).unwrap().0
+            }
+        };
+        let fd = (e_at(h) - e_at(-h)) / (2.0 * h);
+        let v = if spin == 0 { &va } else { &vb };
+        let an: f64 = v
+            .iter()
+            .zip(&delta)
+            .map(|(vk, dk)| {
+                vk.iter()
+                    .zip(dk.t().iter())
+                    .map(|(a, b)| (a * b).re)
+                    .sum::<f64>()
+            })
+            .sum::<f64>()
+            / mesh.nk() as f64;
+        let rel = (fd - an).abs() / fd.abs().max(1e-12);
+        eprintln!("{label} spin {spin}: FD {fd:.10} analytic {an:.10} rel {rel:.2e}");
+        worst = worst.max(rel);
+    }
+    worst
+}
+
+/// `V_sigma(k)` is the derivative of `E_xc` w.r.t. `D_sigma(k)`, at a
+/// polarized converged state, on the real-AO meshes 1x1x2 and the complex-AO
+/// mesh 1x1x3 (a missing conjugate in `V^tau` or `chunk_tau(D_sigma)` is
+/// invisible at k = 0, 1/2). Measured worst correct relative miss 4.2e-9
+/// (1x1x2) and 1.2e-8 (1x1x3); bar 2e-7 (16x). Under the mutants the miss is
+/// 5.5e-4 / 9.3e-4 (`DropBetaVtau`) and 1.8e-2 (`SwapTau`) at 1x1x2, and 3.7
+/// / 5.0 (`DropBetaVtau`) and 1.1 to 1.5 (`SwapTau`) at 1x1x3 (SCAN / r2SCAN
+/// ranges merged), required > 1e-5.
+///
+/// The same check must FAIL under `DropBetaVtau` and `SwapTau` (no 61^3 SCF
+/// needed): energy pins are inherently weak for Fock-only errors (dropping
+/// beta `V^tau` is second order in the energy, 2.0e-5 at 1x1x1 and 2.1e-6 at
+/// 1x1x2), the FD check is first order.
 #[test]
 fn polarized_vxc_is_the_derivative_of_exc() {
     let cell = h3_doublet();
     let bs = pyscf_sto3g_h();
-    let mesh = KPointMesh::gamma_centred(&cell, [1, 1, 2]).unwrap();
     let grid = PeriodicGrid::build(&cell, &grid_cfg(30, 110)).unwrap();
-    for functional in ["SCAN", "R2SCAN"] {
-        let r = kuks_on(&cell, &bs, &mesh, &grid, functional);
-        let mut pxc = KPeriodicXcPolarized::new(
-            &cell,
-            &bs,
-            functional,
-            &grid,
-            &mesh,
-            &PeriodicXcConfig::default(),
-        )
-        .unwrap();
-        let (da, db) = (r.scf.density_alpha.clone(), r.scf.density_beta.clone());
-        let (_, va, vb) = pxc.build_polarized(&da, &db).unwrap();
-        let delta: Vec<Array2<Complex64>> = da
-            .iter()
-            .enumerate()
-            .map(|(k, d)| {
-                let n = d.nrows();
-                let mut m = Array2::<Complex64>::zeros((n, n));
-                for i in 0..n {
-                    for j in 0..n {
-                        let a = ((i * 7 + j * 3 + k * 5) % 11) as f64 - 5.0;
-                        let b = ((i * 5 + j * 2 + k * 3) % 7) as f64 - 3.0;
-                        m[(i, j)] = Complex64::new(a, b) * 1e-2;
-                    }
-                }
-                let h = m.mapv(|z| z.conj()).t().to_owned();
-                (&m + &h).mapv(|z| z * 0.5)
-            })
-            .collect();
-        let h = 1e-4;
-        for spin in 0..2 {
-            let shift = |s: f64| -> Vec<Array2<Complex64>> {
-                let base = if spin == 0 { &da } else { &db };
-                base.iter()
-                    .zip(&delta)
-                    .map(|(d, x)| d + &x.mapv(|z| z * s))
-                    .collect()
+    for n in [[1, 1, 2], [1, 1, 3]] {
+        let mesh = KPointMesh::gamma_centred(&cell, n).unwrap();
+        for functional in ["SCAN", "R2SCAN"] {
+            let r = kuks_on(&cell, &bs, &mesh, &grid, functional);
+            let (da, db) = (r.scf.density_alpha.clone(), r.scf.density_beta.clone());
+            let new_pxc = || {
+                KPeriodicXcPolarized::new(
+                    &cell,
+                    &bs,
+                    functional,
+                    &grid,
+                    &mesh,
+                    &PeriodicXcConfig::default(),
+                )
+                .unwrap()
             };
-            let (ep, _, _) = if spin == 0 {
-                pxc.build_polarized(&shift(h), &db).unwrap()
-            } else {
-                pxc.build_polarized(&da, &shift(h)).unwrap()
-            };
-            let (em, _, _) = if spin == 0 {
-                pxc.build_polarized(&shift(-h), &db).unwrap()
-            } else {
-                pxc.build_polarized(&da, &shift(-h)).unwrap()
-            };
-            let fd = (ep - em) / (2.0 * h);
-            let v = if spin == 0 { &va } else { &vb };
-            let nk = mesh.nk() as f64;
-            let an: f64 = v
-                .iter()
-                .zip(&delta)
-                .map(|(vk, dk)| {
-                    vk.iter()
-                        .zip(dk.t().iter())
-                        .map(|(a, b)| (a * b).re)
-                        .sum::<f64>()
-                })
-                .sum::<f64>()
-                / nk;
-            eprintln!(
-                "{functional} spin {spin}: FD {fd:.10} analytic {an:.10} rel {:.2e}",
-                (fd - an).abs() / fd.abs().max(1e-12)
+            let ok = fd_vs_v_worst_rel(
+                &mut new_pxc(),
+                &mesh,
+                &da,
+                &db,
+                &format!("{functional} {n:?}"),
             );
-            assert!(
-                (fd - an).abs() < 1e-7 * fd.abs(),
-                "{functional} spin {spin}: {fd} vs {an}"
-            );
+            assert!(ok < 2e-7, "{functional} {n:?}: worst rel {ok:.2e}");
+            for m in [KUksMggaMutation::DropBetaVtau, KUksMggaMutation::SwapTau] {
+                let bad = fd_vs_v_worst_rel(
+                    &mut new_pxc().with_mgga_mutation(m),
+                    &mesh,
+                    &da,
+                    &db,
+                    &format!("{functional} {n:?} {m:?}"),
+                );
+                eprintln!("{functional} {n:?} {m:?}: FD miss {bad:.2e} (correct {ok:.2e})");
+                assert!(
+                    bad > 1e-5,
+                    "{functional} {n:?} {m:?} not detected: {bad:.2e}"
+                );
+            }
         }
     }
 }
@@ -343,8 +394,6 @@ fn polarized_k_mesh_is_the_supercell() {
     }
 }
 
-// ------------------------------------------------------------- PySCF pins
-
 fn pin_cell(name: &str) -> Cell {
     match name {
         "h3" => h3_doublet(),
@@ -369,96 +418,42 @@ fn kuks_uniform(
         .unwrap_or_else(|e| panic!("solve_kuks {functional} {n:?}: {e}"))
 }
 
-/// PySCF 2.13.1 `pbc.dft.KUKS` (AFTDF + UniformGrids 61^3, exxdiv ewald,
-/// conv_tol 1e-12, `cell.precision` 1e-12, STO-3G, `mf.nelec = (N_a N_k,
-/// N_b N_k)`), generated by `scripts/gen_pyscf_kuks_mgga_refs.py`
-/// (2026-10-18; the script's PBE control row reproduces the existing
-/// `pbc_kuks.rs` pin to 9e-12). System, functional, mesh, E/cell.
-const PYSCF: &[(&str, &str, [usize; 3], f64)] = &[
-    ("h3", "SCAN", [1, 1, 1], -1.524551950364),
-    ("h3", "R2SCAN", [1, 1, 1], -1.523392968513),
-    ("h3", "SCAN", [1, 1, 2], -1.613699448896),
-    ("h3", "R2SCAN", [1, 1, 2], -1.611529707848),
-    ("h4t", "SCAN", [1, 1, 1], -1.676171388791),
-    ("h4t", "R2SCAN", [1, 1, 1], -1.673910059973),
-    ("h4t", "SCAN", [1, 1, 2], -1.748364159384),
-    ("h4t", "R2SCAN", [1, 1, 2], -1.745764402810),
-];
-
-// Bar derivation (tolerance 1e-9): measured worst miss 7.4e-13 (>= 1000x
-// headroom for platform rounding). The other side: the weakest mutant
-// (`DropBetaVtau`) misses these same pins by 2.1e-6 (H3 1x1x2 SCAN) to 1.1e-4,
-// >= 2000x the bar; the SCAN - r2SCAN gaps are 1.2e-3 (H3 1x1x1) and 2.3e-3
-// (H4 triplet 1x1x1), >= 1e6x the bar.
-
+/// ONE polarized PySCF pin that runs on every commit (`h3` SCAN 1x1x1, the
+/// cheapest; PySCF 2.13.1 `KUKS`, setup in
+/// `scripts/gen_pyscf_kuks_mgga_refs.py`). The other seven pins and the
+/// mutant-versus-pin checks live in `validation_pbc_kuks_mgga.rs` (weekly).
+/// Measured miss 4.0e-13; bar 1e-9.
 #[test]
-#[ignore = "heavy: ~2 min release (eight 61^3 polarized SCFs); run with --ignored"]
-fn uniform_grid_kuks_mgga_matches_pinned_pyscf() {
-    let mut e = std::collections::HashMap::new();
-    for &(sys, functional, n, e_ref) in PYSCF {
-        let cell = pin_cell(sys);
-        let r = kuks_uniform(&cell, n, functional, None);
-        eprintln!(
-            "{sys} {functional} {n:?}: {:.12} PySCF {e_ref:.12} dE {:.2e} ({} it, S2 {:.4})",
-            r.scf.energy,
-            r.scf.energy - e_ref,
-            r.scf.iterations,
-            r.scf.s2
-        );
-        assert!(
-            (r.scf.energy - e_ref).abs() < 1e-9,
-            "{sys} {functional} {n:?}: {} vs {e_ref}",
-            r.scf.energy
-        );
-        e.insert((sys, functional, n), r.scf.energy);
-    }
-    // SCAN and r2SCAN must be told apart by these pins (they are identical on
-    // the one-orbital-per-spin cells where alpha = 0).
-    for sys in ["h3", "h4t"] {
-        let gap = e[&(sys, "SCAN", [1, 1, 1])] - e[&(sys, "R2SCAN", [1, 1, 1])];
-        assert!(gap.abs() > 1e-3, "{sys}: SCAN - r2SCAN = {gap:.3e}");
-    }
+fn h3_scan_matches_pinned_pyscf() {
+    let cell = pin_cell("h3");
+    let r = kuks_uniform(&cell, [1, 1, 1], "SCAN", None);
+    let e_ref = -1.524551950364;
+    eprintln!(
+        "h3 SCAN 1x1x1: {:.12} dE {:.2e}",
+        r.scf.energy,
+        r.scf.energy - e_ref
+    );
+    assert!((r.scf.energy - e_ref).abs() < 1e-9, "{}", r.scf.energy);
 }
 
-/// Mutation ledger (measured 2026-10-18 against the pins above, 61^3 grid; dE
-/// = E_mutant - E_correct, Ha):
-///
-/// ```text
-///                        H3 SCAN 1x1x1   H3 r2SCAN 1x1x1  H4 trip SCAN 1x1x1  H4 trip r2SCAN 1x1x1
-/// SwapTau                -2.093e-2       -2.201e-2        -6.659e-2           -6.899e-2
-/// DropBetaVtau            2.024e-5        2.509e-5         9.523e-5            1.144e-4
-/// TotalTauBothChannels    4.916e-2        5.091e-2         4.536e-2            4.756e-2
-/// UnpolarizedEvaluator    8.138e-2        8.215e-2         1.471e-1            1.479e-1
-/// ```
-///
-/// (H3 1x1x2: SwapTau -2.0e-2, DropBetaVtau 2.1e-6 (SCAN) / 2.7e-6 (r2SCAN),
-/// TotalTau 5.6e-2, Unpolarized 5.5e-2; H4 triplet 1x1x2 DropBetaVtau 5.4e-5.)
-/// Every mutant is far outside the 1e-9 pin bar; this test requires >= 1e-6
-/// (the smallest measured miss is 2.0e-5 on the cells run here, 20x above
-/// the requirement and 1000x above the pin bar). None of them is visible in
-/// the singlet limit (`singlet_k_uks_is_k_rks` cannot see them: `tau_a ==
-/// tau_b`), which is why they are run on the POLARIZED cells.
+/// A one-electron doublet (`N_beta = 0`, an empty beta channel): documented
+/// behaviour is refuse-or-finite. The code errors on a non-finite E_xc / V_xc
+/// instead of returning one, so the outcome is either a finite energy or a
+/// typed error; it must never be NaN.
 #[test]
-#[ignore = "heavy: ~4 min release (sixteen 61^3 polarized SCFs); run with --ignored"]
-fn tau_mutants_fail_the_polarized_pins() {
-    for &(sys, functional, n, e_ref) in PYSCF {
-        if n != [1, 1, 1] {
-            continue;
-        }
-        let cell = pin_cell(sys);
-        for m in [
-            KUksMggaMutation::SwapTau,
-            KUksMggaMutation::DropBetaVtau,
-            KUksMggaMutation::TotalTauBothChannels,
-            KUksMggaMutation::UnpolarizedEvaluator,
-        ] {
-            let r = kuks_uniform(&cell, n, functional, Some(m));
-            let miss = (r.scf.energy - e_ref).abs();
-            eprintln!("{sys} {functional} {n:?} {m:?}: miss {miss:.3e}");
-            assert!(
-                miss > 1e-6,
-                "{sys} {functional} {m:?} not detected: {miss:.3e}"
-            );
+fn empty_beta_channel_is_finite_or_refused() {
+    let cell = cell_mult(&[[0.3, 0.2, 0.1]], cubic(4.0), 2);
+    let bs = pyscf_sto3g_h();
+    let mesh = KPointMesh::gamma_centred(&cell, [1, 1, 1]).unwrap();
+    let grid = PeriodicGrid::build(&cell, &grid_cfg(30, 110)).unwrap();
+    let prep = prep_for(&cell, &bs);
+    for f in ["SCAN", "R2SCAN"] {
+        match solve_kuks_on_grid(&cell, &prep, None, &mesh, &grid, &kuks_cfg(&cell, f)) {
+            Ok(r) => {
+                eprintln!("H atom {f}: finite E {:.10}", r.scf.energy);
+                assert!(r.scf.energy.is_finite() && r.e_xc.is_finite(), "{f}");
+            }
+            Err(e) => eprintln!("H atom {f}: refused ({e})"),
         }
     }
 }

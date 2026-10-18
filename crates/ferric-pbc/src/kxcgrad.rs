@@ -1009,7 +1009,8 @@ pub fn is_validated_mgga(functional: &str) -> bool {
 
 /// The open-shell (UKS, ROKS, ROHF) force and stress allowlist: LDA, GGA and
 /// GLOBAL hybrid functionals only. Meta-GGA, range-separated hybrids, VV10 and
-/// double hybrids are refused (the spin-resolved XC has no tau term).
+/// double hybrids are refused: the open-shell force and stress have no tau terms
+/// (the k-point UKS ENERGY does support SCAN / r2SCAN, see [`crate::kuks`]).
 pub fn check_open_shell_force_functional(functional: &str) -> Result<(), FerricError> {
     let (xc, _exx, rsh) = resolve_periodic_functional_rsh(functional)?;
     if force_covers(&xc, rsh.is_some()) {

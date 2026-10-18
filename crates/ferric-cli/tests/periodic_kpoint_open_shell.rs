@@ -491,13 +491,13 @@ fn printed_energy_equals_the_library_energy_on_a_monkhorst_pack_mesh() {
 
 #[test]
 fn open_shell_refusals_have_exact_messages() {
-    // Open-shell meta-GGA: the spin-resolved XC has no tau term.
+    // Open-shell meta-GGA: not wired on the CLI route (the library k-UKS has it).
     for (tag, method) in [("uks-scan", Method::Uks), ("roks-scan", Method::Roks)] {
         let e = refused(&run(&input(tag, method, "SCAN", "energy")), tag);
         assert!(
             e.contains("[cell] kmesh with functional \"SCAN\"")
                 && e.contains("meta-GGA")
-                && e.contains("only (no meta-GGA)"),
+                && e.contains("only (no meta-GGA on this route"),
             "{tag}: {e}"
         );
     }
