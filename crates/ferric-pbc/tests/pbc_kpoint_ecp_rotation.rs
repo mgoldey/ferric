@@ -50,9 +50,28 @@
 //! FD force/stress, refusal guard) were NOT rerun after #437. The 2.7.2
 //! override hunk of #437 was never compiled by the independent reviewer.
 //!
-//! NOT tested: range-split source with an ECP, several ECP atoms, triclinic
-//! cells with an ECP (see `pbc_sr_rotation_kderiv.rs` for triclinic rotation
-//! without one), the fit-acting FORCE mutants (`RotFitWrongResidue`,
+//! Triclinic ECP cell (section 4, lattice rows (6,0,0), (1,6,0), (1.2,-0.8,7)):
+//! 1x1x1 vs Gamma, Gamma-centred 1x1x2 vs the 2-cell supercell, and FD of the
+//! rotated k energy at 1x1x1. A shifted (Monkhorst-Pack) mesh with rotation is
+//! covered in `pbc_sr_rotation_kderiv.rs` (without an ECP).
+//!
+//! Section 4 measured errors and mutant ledger (release, quiet box):
+//! 1x1x1 vs Gamma: ECP parts 0 (bitwise), force total 9.8e-13, stress total
+//! 1.0e-12, antisymmetry 2e-14, |S| 7.6e-1, off-diagonal 2.5e-1 (ECP part
+//! 7.3e-2); stress mutants NoEcp 4.6e-1, EcpNoCentre 9.8e-1, EcpCentreSign
+//! 1.95, EcpNoKetImage 1.19, EcpUnitPairVector 3.5e-1 (bar 1e-4, ECP 1e-12).
+//! A transposed stress is NOT a mutant: the stress is symmetric (miss
+//! 5.0e-12). 1x1x2 vs supercell/N: force total 4.7e-13, stress total 2.3e-12,
+//! every part <= 4.6e-13 / 5.9e-14; test mutation (supercell translated along
+//! z instead of a3) fails at force kinetic 1.1e-2. FD at 1x1x1: force 7.5e-9,
+//! stress 3.3e-8 (zz, xy, yz, xz); RotDropT 1.96 and EcpUnitPairVector 3.5e-1.
+//!
+//! NOT tested: range-split source with an ECP, several ECP atoms, a NON-TRIM
+//! mesh (1x1x3) or an FD of the 1x1x2 mesh on the triclinic ECP cell (the
+//! orthorhombic 1x1x3 supercell anchor alone is 24 min; the triclinic 1x1x2
+//! one is 10 min), k-specific ECP mutants (`EcpWrongResidue`,
+//! `EcpMeshCountModuli`) on the triclinic cell, a shifted mesh with an ECP,
+//! the fit-acting FORCE mutants (`RotFitWrongResidue`,
 //! `RotSwapPair`) with an ECP (the dense force loop only asserts that they
 //! are no-ops; the RS-GDF loop is stress-only; their stress versions are run
 //! there: 6.97e-1 and 1.12e-1).
@@ -1505,5 +1524,285 @@ fn far_field_contracted_s_blocks_do_not_read_uninitialised_memory() {
             out.status.success() && stdout.contains("1 passed"),
             "MALLOC_PERTURB_={perturb} run failed:\n{stdout}"
         );
+    }
+}
+
+// ============================================================ (4) triclinic
+
+// (#421 A) The anchors above are orthorhombic diag(6, 6, 7). Untested
+// combination before this section: a periodic ECP image sum (pair vectors,
+// centre images, residue weights) and the rotated SR walks on a cell whose
+// lattice rows are NOT along the Cartesian axes.
+//
+// ARTIFACT hypothesis (written before measuring). Correct: 1x1x1 equals the
+// Gamma code to the orthorhombic bars; the 1x1x2 mesh equals the 2-cell
+// supercell per cell; central FD of the rotated k energy equals the analytic
+// force and ALL stress components. Defect: an ECP image sum or strain term
+// that uses the lattice rows as if orthogonal (Cartesian vs lattice
+// coordinates in a pair vector, a missing off-diagonal row of the strain
+// map, d(a_i)/d(eps) applied to the wrong row) is invisible on diag(6, 6, 7)
+// and shows on a skewed cell as an off-diagonal stress error. So the
+// off-diagonal stress components must be non-negligible (asserted against a
+// floor derived from the measured size) and a TRANSPOSED stress must miss
+// the Gamma anchor by that size.
+
+const TRI_HI: [[f64; 3]; 3] = [[6.0, 0.0, 0.0], [1.0, 6.0, 0.0], [1.2, -0.8, 7.0]];
+
+fn tri_lattice(n: usize) -> [[f64; 3]; 3] {
+    let mut lat = TRI_HI;
+    for v in lat[2].iter_mut() {
+        *v *= n as f64;
+    }
+    lat
+}
+
+fn tri_shifts(n: usize) -> Vec<[f64; 3]> {
+    (0..n).map(|m| TRI_HI[2].map(|v| v * m as f64)).collect()
+}
+
+fn tri_cell(pos: &[[f64; 3]], bs: &BasisSet) -> Cell {
+    let dot = |a: &[f64; 3], b: &[f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    assert!(
+        dot(&TRI_HI[0], &TRI_HI[1]).abs() > 1.0 && dot(&TRI_HI[0], &TRI_HI[2]).abs() > 1.0,
+        "the triclinic fixture is not skewed"
+    );
+    ecp_cell(pos, &[[0.0; 3]], TRI_HI, bs)
+}
+
+fn tri_supercell(pos: &[[f64; 3]], n: usize, bs: &BasisSet) -> Cell {
+    ecp_cell(pos, &tri_shifts(n), tri_lattice(n), bs)
+}
+
+fn transposed(m: &Mat3) -> Mat3 {
+    let mut o = [[0.0; 3]; 3];
+    for (i, row) in o.iter_mut().enumerate() {
+        for (j, v) in row.iter_mut().enumerate() {
+            *v = m[j][i];
+        }
+    }
+    o
+}
+
+/// max |off-diagonal| of a stress.
+fn offdiag_max(m: &Mat3) -> f64 {
+    let mut w = 0.0_f64;
+    for i in 0..3 {
+        for j in 0..3 {
+            if i != j {
+                w = w.max(m[i][j].abs());
+            }
+        }
+    }
+    w
+}
+
+/// Triclinic bars: see the measured values in the test docs.
+const TRI_ONE_POINT_ECP: f64 = 1e-12;
+const TRI_ONE_POINT_TOTAL: f64 = 1e-10;
+const TRI_SC_BAR_TOTAL: f64 = 3e-11;
+const TRI_SC_BAR_PART: f64 = 3e-12;
+/// The stress of the skewed cell must have off-diagonal weight at least this
+/// (MEASURED total 2.5e-1, ECP part 7.3e-2), so the anchors are not diagonal-only.
+const TRI_OFFDIAG_FLOOR: f64 = 1e-2;
+/// Triclinic 1x1x1 FD bars. MEASURED force 7.5e-9, stress 3.3e-8 (central FD,
+/// h = 1e-4, |S| up to 7.6e-1; the orthorhombic 1x1x3 file bars are 2e-8 /
+/// 2e-7 on measured 3.3e-9 / 2.2e-8). 13x / 12x above; the smallest mutant
+/// miss is 3.5e-1 (EcpUnitPairVector), > 1e6x the bars.
+const TRI_FD_F_BAR: f64 = 1e-7;
+const TRI_FD_S_BAR: f64 = 4e-7;
+/// ECP-acting stress mutants must move the triclinic total by at least this.
+const TRI_ECP_MUTANT_FLOOR: f64 = 1e-4;
+
+/// Anchor (exactness, run first): 1x1x1 mesh == Gamma on the triclinic ECP
+/// cell, rotation on in both; ECP-acting stress mutants and a transposed
+/// stress must miss it.
+#[test]
+#[ignore = "slow (~7.5 min release, quiet box): triclinic rotated HI 1x1x1 k SCF + Gamma hcore/dense AFT/force/stress + 5 ECP stress mutants"]
+fn triclinic_rotated_ecp_one_point_mesh_is_the_gamma_one() {
+    let bs = rot_basis();
+    let cell = tri_cell(&MOVED, &bs);
+    let r = run(cell.clone(), &bs, [1, 1, 1], on());
+    assert_eq!(r.ks.hk.sr_rotated_columns, 3);
+    let g = gsys(cell, &bs, on());
+    assert_eq!(g.hc.sr_rotated_columns, 3);
+    let gscf = gamma_restricted(real_of(&r.scf.densities[0]));
+    let zeta = GRAD_NUCLEUS_EXPONENT;
+    let gf = gamma_force(&g, &gscf, zeta);
+    let gs = gamma_stress(&g, &gscf, zeta);
+    let kf = r.force(None, zeta);
+    let ks = r.stress(None, zeta);
+    let (f_ecp, f_tot) = (
+        grad_miss(&kf.parts.ecp, &gf.parts.ecp),
+        grad_miss(&kf.grad, &gf.grad),
+    );
+    let (s_ecp, s_tot) = (
+        max_mat(&ks.parts.ecp, &gs.parts.ecp),
+        max_mat(&ks.de_deps, &gs.de_deps),
+    );
+    let off = offdiag_max(&ks.de_deps);
+    let off_ecp = offdiag_max(&ks.parts.ecp);
+    let t_miss = max_mat(&transposed(&ks.de_deps), &gs.de_deps);
+    eprintln!(
+        "triclinic rotated 1x1x1 vs Gamma: force ecp {f_ecp:.2e} total {f_tot:.2e}; \
+         stress ecp {s_ecp:.2e} total {s_tot:.2e}; |S| {:.2e}, offdiag {off:.2e} \
+         (ECP part offdiag {off_ecp:.2e}); antisym {:.2e}; transposed-stress miss {t_miss:.2e}",
+        mat_max(&ks.de_deps),
+        ks.antisymmetry()
+    );
+    assert!(amax(&kf.parts.ecp) > 1e-3 && mat_max(&ks.parts.ecp) > 1e-3);
+    assert!(f_ecp < TRI_ONE_POINT_ECP && s_ecp < TRI_ONE_POINT_ECP);
+    assert!(f_tot < TRI_ONE_POINT_TOTAL && s_tot < TRI_ONE_POINT_TOTAL);
+    assert!(off > TRI_OFFDIAG_FLOOR && off_ecp > TRI_OFFDIAG_FLOOR);
+    // dE/de of a rotation-invariant energy is symmetric, so a transposed
+    // stress is NOT a mutant (measured miss 5.0e-12, the anchor floor); the
+    // symmetry itself is the physics check.
+    assert!(
+        ks.antisymmetry() < TRI_ONE_POINT_TOTAL,
+        "{:e}",
+        ks.antisymmetry()
+    );
+    assert!(t_miss < TRI_ONE_POINT_TOTAL, "{t_miss:e}");
+    for m in [
+        KStressMutation::NoEcp,
+        KStressMutation::EcpNoCentre,
+        KStressMutation::EcpCentreSign,
+        KStressMutation::EcpNoKetImage,
+        KStressMutation::EcpUnitPairVector,
+    ] {
+        let miss = max_mat(&r.stress(Some(m), zeta).de_deps, &gs.de_deps);
+        eprintln!("  triclinic 1x1x1 stress mutant {m:?}: miss {miss:.2e}");
+        assert!(miss > TRI_ECP_MUTANT_FLOOR, "{m:?} escaped: {miss:e}");
+    }
+}
+
+/// PHYSICS: the Gamma-centred 1x1x2 mesh of the triclinic ECP cell IS the
+/// 2-cell supercell (rows a1, a2, 2 a3) per cell, rotation on both sides.
+/// 1x1x3 (non-TRIM) was not run: the orthorhombic 1x1x3 supercell anchor
+/// takes 24 min.
+#[test]
+#[ignore = "slow (~10 min release, quiet box): triclinic rotated HI 1x1x2 k SCF + 2-cell Gamma supercell hcore/dense AFT/force/stress"]
+fn triclinic_rotated_ecp_1x1x2_force_and_stress_are_the_supercell_ones_per_cell() {
+    let bs = rot_basis();
+    let r = run(tri_cell(&MOVED, &bs), &bs, [1, 1, 2], on());
+    assert_eq!(r.ks.hk.sr_rotated_columns, 3);
+    let g = gsys(tri_supercell(&MOVED, 2, &bs), &bs, on());
+    assert_eq!(g.hc.sr_rotated_columns, 6);
+    let gscf = gamma_restricted(unfold_z(&r.ks.mesh, &r.scf.densities));
+    let zeta = GRAD_NUCLEUS_EXPONENT;
+    let gf = gamma_force(&g, &gscf, zeta);
+    let gs = gamma_stress(&g, &gscf, zeta);
+    let kf = r.force(None, zeta);
+    let ks = r.stress(None, zeta);
+    let half = |m: &Mat3| mat_scaled(m, 0.5);
+    let (kp, gp) = (&kf.parts, &gf.parts);
+    let eri_k = &kp.coulomb + &kp.exchange;
+    let force = [
+        (
+            "kinetic",
+            sc_miss(&kp.kinetic, &gp.kinetic),
+            TRI_SC_BAR_PART,
+        ),
+        ("ecp", sc_miss(&kp.ecp, &gp.ecp), TRI_SC_BAR_PART),
+        (
+            "vsr_basis",
+            sc_miss(&kp.vsr_basis, &gp.vsr_basis),
+            SC_BAR_SR,
+        ),
+        ("eri", sc_miss(&eri_k, &gp.eri), TRI_SC_BAR_PART),
+        ("TOTAL", sc_miss(&kf.grad, &gf.grad), TRI_SC_BAR_TOTAL),
+    ];
+    let (sk, sg) = (&ks.parts, &gs.parts);
+    let stress = [
+        (
+            "kinetic",
+            max_mat(&sk.kinetic, &half(&sg.kinetic)),
+            TRI_SC_BAR_PART,
+        ),
+        ("ecp", max_mat(&sk.ecp, &half(&sg.ecp)), TRI_SC_BAR_PART),
+        ("vsr", max_mat(&sk.vsr, &half(&sg.vsr)), SC_BAR_SR),
+        ("vlr", max_mat(&sk.vlr, &half(&sg.vlr)), TRI_SC_BAR_PART),
+        (
+            "TOTAL",
+            max_mat(&ks.de_deps, &half(&gs.de_deps)),
+            TRI_SC_BAR_TOTAL,
+        ),
+    ];
+    for (kind, parts) in [("force", &force[..]), ("stress", &stress[..])] {
+        for (name, miss, bar) in parts {
+            eprintln!("  triclinic rotated+ECP 1x1x2 {kind} {name}: {miss:.2e} (bar {bar:.0e})");
+            assert!(miss < bar, "{kind} {name} {miss:e} >= {bar:e}");
+        }
+    }
+    let off = offdiag_max(&ks.de_deps);
+    eprintln!(
+        "  triclinic 1x1x2 offdiag |S| {off:.2e}; antisym {:.2e}",
+        ks.antisymmetry()
+    );
+    assert!(off > TRI_OFFDIAG_FLOOR);
+    assert!(ks.antisymmetry() < TRI_SC_BAR_TOTAL);
+    assert!(
+        amax(&kp.ecp) > 1e-3 && mat_max(&sk.ecp) > 1e-3,
+        "vacuous ECP"
+    );
+}
+
+/// PHYSICS (independent of every derivative walk and of the Gamma code):
+/// analytic force (I x, H z) and stress (zz, xy, yz, xz: three off-diagonal
+/// components of a skewed cell) of the triclinic rotated ECP cell at the
+/// 1x1x1 mesh vs central FD of the ROTATED k energy (rotation on in every
+/// displaced / strained build). Rotation and ECP stress mutants must move
+/// the total.
+#[test]
+#[ignore = "slow (~6 min release, quiet box): 1 + 12 rotated triclinic 1x1x1 k pipelines, 1 analytic force + stress, 2 mutant stresses"]
+fn triclinic_rotated_ecp_force_and_stress_match_fd_of_the_rotated_k_energy() {
+    let bs = rot_basis();
+    let n = [1, 1, 1];
+    let cell = tri_cell(&MOVED, &bs);
+    let forces = [(1usize, 0usize), (0, 2)];
+    let strains = [(2usize, 2usize), (0, 1), (1, 2), (0, 2)];
+    let mut fd_f = Vec::new();
+    for &(a, x) in &forces {
+        let ep = k_energy(&tri_cell(&moved(&MOVED, a, x, FD_H), &bs), &bs, n, on());
+        let em = k_energy(&tri_cell(&moved(&MOVED, a, x, -FD_H), &bs), &bs, n, on());
+        fd_f.push((ep - em) / (2.0 * FD_H));
+    }
+    let mut fd_s = Vec::new();
+    for &(i, j) in &strains {
+        let ep = k_energy(&eps_cell(&cell, i, j, FD_H), &bs, n, on());
+        let em = k_energy(&eps_cell(&cell, i, j, -FD_H), &bs, n, on());
+        fd_s.push((ep - em) / (2.0 * FD_H));
+    }
+    let r = run(cell, &bs, n, on());
+    assert_eq!(r.ks.hk.sr_rotated_columns, 3);
+    let zeta = GRAD_NUCLEUS_EXPONENT;
+    let f = r.force(None, zeta);
+    let s = r.stress(None, zeta);
+    let miss_f = |g: &KGradient| {
+        forces.iter().zip(&fd_f).fold(0.0_f64, |w, (&(a, x), fd)| {
+            w.max((g.grad[(a, x)] - fd).abs())
+        })
+    };
+    let miss_s = |g: &KStress| {
+        strains.iter().zip(&fd_s).fold(0.0_f64, |w, (&(i, j), fd)| {
+            w.max((g.de_deps[i][j] - fd).abs())
+        })
+    };
+    let (wf, ws) = (miss_f(&f), miss_s(&s));
+    eprintln!("triclinic rotated+ECP 1x1x1 vs FD: force {wf:.2e}, stress {ws:.2e}");
+    for (&(i, j), fd) in strains.iter().zip(&fd_s) {
+        eprintln!(
+            "  stress [{i}][{j}] analytic {:+.8e} FD {fd:+.8e}",
+            s.de_deps[i][j]
+        );
+    }
+    assert!(wf.is_finite() && ws.is_finite());
+    assert!(wf < TRI_FD_F_BAR && ws < TRI_FD_S_BAR);
+    for m in [
+        KStressMutation::RotDropT,
+        KStressMutation::EcpUnitPairVector,
+    ] {
+        let w = miss_s(&r.stress(Some(m), zeta));
+        eprintln!("  stress mutant {m:?}: FD miss {w:.2e}");
+        assert!(w > MUTANT_FLOOR, "{m:?} escaped the FD: {w:e}");
     }
 }
