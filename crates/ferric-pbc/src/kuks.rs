@@ -34,7 +34,7 @@
 //! `V^τ_σ(k) = Σ_g ½ w v_τσ Σ_ax (∂φ_μ)* ∂φ_ν`. Forces and stress stay
 //! refused ([`crate::kxcgrad::check_open_shell_force_functional`]).
 //!
-//! Range-separated hybrids (HSE06, CAM-B3LYP, wB97X; mgoldey/ferric#354) take
+//! Range-separated hybrids (HSE06, CAM-B3LYP validated against PySCF, wB97X unpinned; mgoldey/ferric#354) take
 //! the closed-shell attenuated K unchanged ([`crate::rsh`], dense AFT or
 //! `KRsGdf::build_rsh`): the K builder is linear in the density and the
 //! fractions and the MIXED Madelung constant are inside it, so the open-shell

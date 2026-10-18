@@ -2514,7 +2514,7 @@ pub fn gamma_uks_with_xc(
     gamma_uks_core(cell, prep, hc, ints, xc, cfg, None)
 }
 
-/// [`gamma_uks`] for a range-separated hybrid (HSE06, CAM-B3LYP, wB97X): J
+/// [`gamma_uks`] for a range-separated hybrid (HSE06, CAM-B3LYP validated against PySCF; wB97X runs the same code but has no open-shell pin): J
 /// from `ints`, the attenuated K of each spin from `rsh_k` (the Gamma =
 /// 1x1x1-mesh exchange of [`crate::gamma_rsh`], whose exxdiv must equal
 /// `cfg.exxdiv`). `K_σ = K[D_σ]` with the fractions and the MIXED Madelung

@@ -1,5 +1,6 @@
 """PySCF references for the OPEN-SHELL range-separated-hybrid pins
-(crates/ferric-pbc/tests/validation_oshell_rsh.rs), mgoldey/ferric#354.
+(crates/ferric-pbc/tests/pbc_oshell_rsh.rs and validation_oshell_rsh.rs, via
+tests/oshell_rsh_support), mgoldey/ferric#354.
 
 PySCF 2.13 pbc.dft.UKS (Gamma) and pbc.dft.KUKS (1x1x2 mesh) with AFTDF (the
 attenuated K is only on AFTDF), UniformGrids MESH^3, conv_tol 1e-12,
@@ -9,13 +10,13 @@ digit for digit (common::pyscf_sto3g_h).
 
 Cells (TRICLINIC TRI_A lattice of tests/common, NON-degenerate polarized):
   h3d: three H on the c axis, doublet (N_a, N_b) = (2, 1)
-  h4t: the four H of TRI_ATOMS, triplet (N_a, N_b) = (3, 1)
+  h4t: the four H listed in CELLS (NOT common::TRI_ATOMS), triplet (N_a, N_b) = (3, 1)
 For a k-mesh with N_k points `mf.nelec` is set to (N_a N_k, N_b N_k) (global
 aufbau, the giant-determinant spin state; cell.spin cannot say this).
 
-Each row also stores the S^2-free diagnostics PySCF reports (converged flag)
-and the RSH-vs-PBE0 energy difference of the same cell as a check that the
-long-range piece is not negligible there.
+Each HSE06 ewald row also stores `e_pbe0`, the global-hybrid PBE0 energy of the
+same run (the polarized PBE0 pin and the HSE06 != PBE0 check). Rows store only the
+total energy and runtime; no gaps, <S^2> or occupations.
 
 Output: testdata/reference/pbc_oshell_sto3g_rsh.json.
 
