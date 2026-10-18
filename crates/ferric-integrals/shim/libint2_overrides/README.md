@@ -116,7 +116,11 @@ uninitialised memory; build.rs warns that the fix is NOT applied.
     pbc_rsgdf pbc_rsgdf_split pbc_shifted_overlap pbc_sr_deriv_frame pbc_sr_rotation_k pbc_sr_rotation_kderiv
     pbc_sr_screening pbc_stage0 pbc_timings pbc_ucorr pbc_uhf pbc_uks. Also not perturbed: `pbc_kkeep`, `pbc_kkeep_ks`
     (k-point selection). `pbc_kpoint_ecp_rotation` (ferric-pbc) and the ferric-integrals `boys_chebyshev_table_edge` and
-    `tenno_table_edge` are covered by the CI `malloc-perturb` job (1, 170, 2).
+    `tenno_table_edge` are covered by the CI `malloc-perturb` job (1, 170, 2). Observed on CI: each `nextest run --archive-file` invocation
+    costs ~3.5-4 min of archive extraction regardless of the tests run; a per-binary loop (6 binaries x 3 values = 18
+    invocations) was cancelled at the 60 min job limit, and the 3-binary version (9 invocations) took ~38 min. The job
+    now makes 3 invocations (one per value, union filterset, per-binary PASS check); its wall time is an estimate
+    (~25-30 min), not yet measured.
   - Harness A, `MALLOC_PERTURB_=170`, whole binaries with `--include-ignored` (libtest-style, `--test-threads=1`), 1800 s
     cap, release build, OPENBLAS_NUM_THREADS=1, 22 ferric-pbc binaries: the 15 + `pbc_kxcstress` listed under Harness D
     plus `pbc_grad_ecp_nucleus_scan`, `pbc_kuxcstress`, `pbc_kuxcstress_ro`, `pbc_kxcgrad`, `pbc_kxcstress_hybrid` and

@@ -878,6 +878,14 @@ jobs:
   # local measurements, not CI-runner ones (CI builds at a lower opt-level, so
   # expect longer); the full survey record is in the README in
   # crates/ferric-integrals/shim/libint2_overrides.
+  # Time: each `nextest run --archive-file` invocation costs ~3.5-4 min of
+  # fixed archive-extraction overhead (MEASURED from CI job logs; the archive
+  # holds ~760 binaries), independent of the tests it runs. A per-binary loop
+  # (6 binaries x 3 values = 18 invocations) was cancelled at the 60 min limit;
+  # the 3-binary version (9 invocations) took ~38 min. So the job runs ONE
+  # invocation per MALLOC_PERTURB_ value (3 total). Expected wall time
+  # (ESTIMATE, not yet measured): 3 x (~4 min extraction + test time of the 6
+  # binaries, a few minutes) ~ 25-30 min.
   malloc-perturb:
     needs: build-tests
     runs-on: ubuntu-22.04
@@ -932,27 +940,49 @@ jobs:
             echo "::error::the nextest archive is missing or corrupt -- an ARTIFACT DOWNLOAD failure, not a test failure. Re-run this job."
             exit 1
           fi
+          # Canary binaries as nextest binary ids (crate::binary).
+          CANARY_IDS=(
+            ferric-integrals::boys_chebyshev_table_edge
+            ferric-integrals::tenno_table_edge
+            ferric-pbc::pbc_kpoint_ecp_rotation
+            ferric-pbc::pbc_krsgdf
+            ferric-pbc::pbc_krsgdf_split
+            ferric-pbc::pbc_grad_ecp
+          )
+          FILTER=""
+          for id in "${CANARY_IDS[@]}"; do
+            FILTER="${FILTER:+$FILTER | }binary_id(=$id)"
+          done
           for v in 1 170 2; do
             echo "::group::MALLOC_PERTURB_=$v"
-            # One extraction per pass, deleted afterwards (the archive holds
-            # every test binary: GBs on a disk the runner has little of).
+            # ONE extraction and ONE nextest invocation per value: each
+            # `--archive-file` invocation costs ~4 min of extraction
+            # regardless of what it runs. Extracted dir deleted afterwards
+            # (the archive holds every test binary: GBs on a disk the runner
+            # has little of).
             EXTRACT=$(mktemp -d)
-            # One nextest run PER BINARY with --no-tests=fail, so a renamed
-            # or filtered-away binary fails the job instead of leaving the
-            # remaining binaries to pass it vacuously.
+            LOG=$(mktemp)
             # --retries 0: a pass-on-retry would hide an allocator-dependent
             # failure, the exact thing under test. Profile ci (not default) so
             # the ferric-pbc 960 s slow-timeout override applies.
-            for b in boys_chebyshev_table_edge tenno_table_edge pbc_kpoint_ecp_rotation \
-                       pbc_krsgdf pbc_krsgdf_split pbc_grad_ecp; do
-              MALLOC_PERTURB_=$v cargo nextest run \
-                --profile ci --retries 0 --no-tests=fail \
-                --archive-file /tmp/nextest-archive.tar.zst \
-                --extract-to "$EXTRACT" --extract-overwrite \
-                --workspace-remap . \
-                -E "binary($b)"
+            # --no-tests=fail alone is NOT a per-binary guard under a union
+            # filter, so the check below requires a PASS line from EVERY
+            # canary binary.
+            MALLOC_PERTURB_=$v cargo nextest run \
+              --profile ci --retries 0 --no-tests=fail \
+              --archive-file /tmp/nextest-archive.tar.zst \
+              --extract-to "$EXTRACT" --extract-overwrite \
+              --workspace-remap . \
+              -E "$FILTER" 2>&1 | tee "$LOG"
+            # CARGO_TERM_COLOR=always: strip ANSI colour codes before matching.
+            sed 's/\x1b\[[0-9;]*m//g' "$LOG" > "$LOG.plain"
+            for id in "${CANARY_IDS[@]}"; do
+              if ! grep -Eq "PASS .* ${id} " "$LOG.plain"; then
+                echo "::error::canary binary ${id} ran no passing test under MALLOC_PERTURB_=$v (renamed, filtered away, or all ignored)"
+                exit 1
+              fi
             done
-            rm -rf "$EXTRACT"
+            rm -rf "$EXTRACT" "$LOG" "$LOG.plain"
             echo "::endgroup::"
           done
 
