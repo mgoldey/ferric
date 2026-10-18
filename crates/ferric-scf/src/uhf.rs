@@ -2052,9 +2052,10 @@ pub fn fxc_kernel_duplicate_bytes(
 
 /// For a "forced" UHF on a closed-shell occupation (`nocc_a == nocc_b`), mix the
 /// beta HOMO and LUMO by a small angle so the solver can leave the restricted
-/// saddle. Skipped under point-group blocking: the beta orbitals there are
-/// pure irreps, a mix across irreps would break the symmetry the blocking
-/// enforces, and the restricted determinant is the intended symmetric state.
+/// saddle. Skipped under point-group blocking: a blocked closed-shell UHF has
+/// identical alpha and beta blocks and cannot leave `alpha = beta`, so the mix
+/// would only be projected away (symmetry-broken solutions are outside the
+/// blocked space by construction).
 fn mix_beta_homo_lumo(c_b: &mut Array2<f64>, nocc_a: usize, nocc_b: usize, blocked: bool) {
     let n = c_b.nrows();
     if blocked || nocc_a != nocc_b || nocc_a == 0 || nocc_a >= n {

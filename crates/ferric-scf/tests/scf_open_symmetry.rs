@@ -211,7 +211,22 @@ fn c1_molecule_is_bit_identical_with_symmetry_on() {
     assert_eq!(off.mos_beta, on.mos_beta);
     assert_eq!(off.iterations, on.iterations);
 
-    let off = rohf_off(&mol, "sto-3g");
+    // Like with like: the symmetric entry point runs with the F6 guard off
+    // (guard-on is refused, see the refusal test), so compare against guard off.
+    let (prep, bounds) = setup(&mol, "sto-3g");
+    let guard_off = RhfConfig {
+        rohf_occupation_guard: false,
+        ..cfg(false, true)
+    };
+    let off = solve_rohf(
+        &ParallelContext::default(),
+        &mol,
+        &prep,
+        Operator::coulomb(),
+        &bounds,
+        &guard_off,
+    )
+    .unwrap();
     let sym = rohf_on(&mol, "sto-3g", None).unwrap();
     assert_eq!(sym.group(), "C1");
     assert_eq!(off.energy.to_bits(), sym.scf_in_frame().energy.to_bits());
@@ -556,6 +571,23 @@ fn unsupported_combinations_are_typed_errors() {
             Box::new(|c| c.pcm = Some(ferric_pcm::PcmConfig::water())),
         ),
         (
+            "polarizable",
+            Box::new(|c| {
+                c.polarizable = Some(ferric_scf::polarizable::PolarizableSites {
+                    sites: vec![ferric_scf::polarizable::PolarizableSite {
+                        x: 6.0,
+                        y: 0.0,
+                        z: 0.0,
+                        alpha: 1.0,
+                    }],
+                    thole_a: None,
+                    exclusions: vec![],
+                    dipole_zeta: 1e6,
+                    max_sites_dense: 100,
+                })
+            }),
+        ),
+        (
             "external potential",
             Box::new(|c| {
                 c.external_potential = Some(ferric_core::external_potential::ExternalPotential {
@@ -657,6 +689,22 @@ fn bad_irrep_requests_are_errors() {
     for (what, req) in &bad {
         assert!(uhf_on(&mol, "sto-3g", Some(req)).is_err(), "uhf {what}");
         assert!(rohf_on(&mol, "sto-3g", Some(req)).is_err(), "rohf {what}");
+    }
+    // Exceeds only the irrep's own dimension (2 <= the molecule's 5 alpha electrons).
+    let small = vec![("A2".to_string(), (2, 0))];
+    for e in [
+        uhf_on(&mol, "sto-3g", Some(&small)).err().unwrap(),
+        rohf_on(&mol, "sto-3g", Some(&small)).err().unwrap(),
+    ] {
+        assert!(e.contains("A2") && e.contains("basis functions"), "{e}");
+    }
+    // An empty request is an error on C1 and non-C1 alike.
+    let c1 = distorted("validation/ch3.xyz", 0, 2);
+    for m in [&mol, &c1] {
+        let e = uhf_on(m, "sto-3g", Some(&[])).err().unwrap();
+        assert!(e.contains("empty"), "{e}");
+        let e = rohf_on(m, "sto-3g", Some(&[])).err().unwrap();
+        assert!(e.contains("empty"), "{e}");
     }
     // ROHF cannot hold more beta than alpha in an irrep.
     let inverted = vec![("A1".into(), (2, 3)), ("B1".into(), (2, 0))];

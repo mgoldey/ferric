@@ -43,9 +43,16 @@
 //! `rohf_occupation_guard = true`: its swap witness and hole-swap lock move
 //! electrons between orbitals of different irreps, which the blocking fixes.
 //! Set it to `false` (the pre-F6 loop). UHF's usual `HOMO/LUMO` mix of the
-//! beta orbitals on a closed-shell occupation is skipped, since the mix would
-//! cross irreps: a closed-shell UHF with blocking is the restricted
-//! determinant of the chosen occupation.
+//! beta orbitals on a closed-shell occupation is skipped. The reason is not
+//! that the mix would cross irreps (HOMO and LUMO can share one), but that a
+//! blocked closed-shell UHF can never leave `alpha = beta`: its two spin
+//! blocks are identical, so it returns the restricted determinant. Spin- and
+//! spatial-symmetry-broken UHF solutions lie by construction outside the
+//! blocked space (the unblocked solver can find them, see the stretched-H2
+//! negative control in the tests).
+//!
+//! An empty `irrep_nelec` request is an error everywhere (pass `None` for
+//! plain aufbau), C1 included.
 
 use crate::result::ScfResult;
 use crate::rhf::RhfConfig;
@@ -320,6 +327,17 @@ fn spec_from_detection(
     Ok((rep, irreps(&det.ops)?))
 }
 
+/// An empty request is ambiguous (no constraint, or zero electrons everywhere);
+/// refuse it uniformly, whatever the point group.
+fn require_nonempty(request: Option<&[IrrepSpinCount]>, who: &str) -> Result<(), FerricError> {
+    match request {
+        Some([]) => Err(FerricError::General(format!(
+            "{who}: irrep_nelec is empty; pass None for plain aufbau"
+        ))),
+        _ => Ok(()),
+    }
+}
+
 fn c1_request_fits(
     request: Option<&[IrrepSpinCount]>,
     counts: (usize, usize),
@@ -353,6 +371,7 @@ pub fn solve_uhf_symmetric(
     irrep_nelec: Option<&[IrrepSpinCount]>,
 ) -> Result<SymmetricUhf, FerricError> {
     validate_open(config, "solve_uhf_symmetric", false)?;
+    require_nonempty(irrep_nelec, "solve_uhf_symmetric")?;
     let det = symmetry::detect(mol, DEFAULT_SYMMETRY_TOL)?;
     if det.group == AbelianGroup::C1 {
         c1_request_fits(irrep_nelec, spin_counts(mol)?)?;
@@ -413,6 +432,7 @@ pub fn solve_rohf_symmetric(
     irrep_nelec: Option<&[IrrepSpinCount]>,
 ) -> Result<SymmetricRohf, FerricError> {
     validate_open(config, "solve_rohf_symmetric", true)?;
+    require_nonempty(irrep_nelec, "solve_rohf_symmetric")?;
     let det = symmetry::detect(mol, DEFAULT_SYMMETRY_TOL)?;
     if det.group == AbelianGroup::C1 {
         let (na, nb) = spin_counts(mol)?;
