@@ -520,7 +520,8 @@ def test_open_shell_refusals_have_exact_wording(basis):
             with pytest.raises(
                 ValueError,
                 match=rf'^{tag}: functional "{f}": .*meta-GGA.*\. k-point open-shell KS '
-                r"supports LDA, GGA and global-hybrid functionals only \(no meta-GGA\)$",
+                r"supports LDA, GGA and global-hybrid functionals only \(no meta-GGA on this route; "
+                r"the library k-point UKS has SCAN / r2SCAN energies, not wired here yet\)$",
             ):
                 fn(H3_ATOMS, basis, f)
         with pytest.raises(

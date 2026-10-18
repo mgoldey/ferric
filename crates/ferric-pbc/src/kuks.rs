@@ -1,4 +1,5 @@
-//! k-point open-shell Kohn-Sham DFT (`solve_kuks`: LDA, GGA, global hybrids):
+//! k-point open-shell Kohn-Sham DFT (`solve_kuks`: LDA, GGA, global hybrids,
+//! and the pure SCAN / r2SCAN meta-GGAs, energy only):
 //! the spin-polarized generalization of [`crate::kdft`] on the SCF skeleton
 //! of [`crate::kuscf`] (k-point UHF).
 //!
@@ -22,13 +23,22 @@
 //! The Ewald trap of the k-UHF (see [`crate::kuscf`]) applies to hybrids with
 //! `exxdiv = ewald`: for `a > 0` the default start is staged (none, then
 //! ewald from that density) and the per-spin gaps are checked against
-//! `a·v_M`. Range-separated hybrids, meta-GGA, VV10 and double hybrids are
-//! refused exactly as at Gamma.
+//! `a·v_M`. Range-separated hybrids, VV10 and double hybrids are refused
+//! exactly as at Gamma.
+//!
+//! Meta-GGA (issue #355): ONLY the pure SCAN / r2SCAN on the dense-AFT J/K
+//! (any other meta-GGA, a meta-GGA hybrid and RS-GDF are refused by name). The
+//! per-spin kinetic-energy density is
+//! `τ_σ = (1/N_k) Σ_k ½ Σ_ax Re Σ D_σ(k)_{μν} ∂φ_μ (∂φ_ν)*` (libxc's `½`
+//! convention, `KPeriodicXc::chunk_tau` applied to `D_σ`), fed to the
+//! polarized libxc kernel as `(τ_α, τ_β)`, and each spin gets its own
+//! `V^τ_σ(k) = Σ_g ½ w v_τσ Σ_ax (∂φ_μ)* ∂φ_ν`. Forces and stress stay
+//! refused ([`crate::kxcgrad::check_open_shell_force_functional`]).
 
 use crate::dense_aft::ExxDiv;
 use crate::dft::{
-    resolve_periodic_functional, PeriodicDftError, PeriodicGrid, PeriodicGridConfig,
-    PeriodicXcConfig,
+    resolve_periodic_functional, resolve_periodic_functional_mgga, PeriodicDftError, PeriodicGrid,
+    PeriodicGridConfig, PeriodicXcConfig,
 };
 use crate::hcore::kpoint::periodic_hcore_kpts;
 use crate::kdense_aft::KDenseAftEri;
@@ -55,6 +65,41 @@ pub struct KPeriodicXcPolarized {
     inner: KPeriodicXc,
     /// The functional on `nspin = 2` libxc handles.
     xc_pol: XcDef,
+    mutation: Option<KUksMggaMutation>,
+}
+
+/// Deliberate spin-resolved tau defects, for the mutation tests of
+/// `tests/pbc_kuks_mgga.rs`. Each must be caught by a genuinely POLARIZED pin.
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KUksMggaMutation {
+    /// `(τ_α, τ_β)` handed to libxc swapped.
+    SwapTau,
+    /// `V^τ_β` dropped (the β Fock gets no tau term).
+    DropBetaVtau,
+    /// The TOTAL `τ_α + τ_β` handed to libxc for both channels.
+    TotalTauBothChannels,
+    /// The spin-summed evaluator: `ρ/2`, `∇ρ/2`, `τ/2` in both channels.
+    UnpolarizedEvaluator,
+}
+
+/// The functional gate of [`solve_kuks`]: everything
+/// [`resolve_periodic_functional`] accepts, plus ONLY the pure SCAN / r2SCAN
+/// meta-GGAs (the spin-resolved tau term is validated for those alone).
+pub fn resolve_kuks_functional(name: &str) -> Result<(), FerricError> {
+    if crate::dft::is_meta_gga_name(name) {
+        if !crate::kxcgrad::is_validated_mgga(name) {
+            return Err(PeriodicDftError::Unsupported {
+                feature: "meta-GGA",
+                reason: format!("{name}: k-point UKS supports only the pure SCAN / r2SCAN"),
+            }
+            .into());
+        }
+        resolve_periodic_functional_mgga(name, true)?;
+    } else {
+        resolve_periodic_functional(name)?;
+    }
+    Ok(())
 }
 
 impl std::fmt::Debug for KPeriodicXcPolarized {
@@ -68,17 +113,33 @@ impl std::fmt::Debug for KPeriodicXcPolarized {
 impl KPeriodicXcPolarized {
     /// Wrap an already built Bloch AO cache.
     pub fn from_closed(inner: KPeriodicXc) -> Result<Self, FerricError> {
-        // KPeriodicXc may accept meta-GGA for the closed-shell solver; the
-        // spin-resolved XC here has no tau term, so refuse it for every
-        // construction path (including `solve_kuks_on_grid`).
-        resolve_periodic_functional(&inner.name)?;
+        // The spin-resolved tau path exists for the pure SCAN / r2SCAN only;
+        // every other meta-GGA is refused for every construction path
+        // (including `solve_kuks_on_grid`).
+        resolve_kuks_functional(&inner.name)?;
         let xc_pol = xc_def_from_name_nspin(&inner.name, 2).map_err(|e| {
             FerricError::General(format!(
                 "periodic DFT: functional {:?} (spin-polarized): {e:?}",
                 inner.name
             ))
         })?;
-        Ok(Self { inner, xc_pol })
+        Ok(Self {
+            inner,
+            xc_pol,
+            mutation: None,
+        })
+    }
+
+    /// Whether the functional is a meta-GGA (the tau term is active).
+    pub fn is_meta_gga(&self) -> bool {
+        self.inner.mgga
+    }
+
+    /// Test hook: inject a deliberate tau defect (see [`KUksMggaMutation`]).
+    #[doc(hidden)]
+    pub fn with_mgga_mutation(mut self, m: KUksMggaMutation) -> Self {
+        self.mutation = Some(m);
+        self
     }
 
     /// Resolve `functional` and build the Bloch AO cache (see
@@ -191,6 +252,52 @@ impl KPeriodicXcPolarized {
     }
 }
 
+impl KPeriodicXcPolarized {
+    /// The density and per-spin tau the libxc kernel is evaluated on: the
+    /// physical ones, except under a [`KUksMggaMutation`].
+    #[allow(clippy::type_complexity)]
+    fn kernel_inputs(
+        &self,
+        dens: UksDensityGrid,
+        tau: Option<(Array1<f64>, Array1<f64>)>,
+    ) -> (UksDensityGrid, Option<(Array1<f64>, Array1<f64>)>) {
+        match (self.mutation, tau) {
+            (Some(KUksMggaMutation::SwapTau), Some((ta, tb))) => (dens, Some((tb, ta))),
+            (Some(KUksMggaMutation::TotalTauBothChannels), Some((ta, tb))) => {
+                let t = &ta + &tb;
+                (dens, Some((t.clone(), t)))
+            }
+            (Some(KUksMggaMutation::UnpolarizedEvaluator), tau) => {
+                let rho = (&dens.rho_a + &dens.rho_b) * 0.5;
+                let grad = (&dens.grad_a + &dens.grad_b) * 0.5;
+                let np = rho.len();
+                let mut sigma = Array2::<f64>::zeros((3, np));
+                for g in 0..np {
+                    let s: f64 = (0..3).map(|ax| grad[(ax, g)] * grad[(ax, g)]).sum();
+                    sigma[(0, g)] = s;
+                    sigma[(1, g)] = s;
+                    sigma[(2, g)] = s;
+                }
+                let tau = tau.map(|(ta, tb)| {
+                    let t = (&ta + &tb) * 0.5;
+                    (t.clone(), t)
+                });
+                (
+                    UksDensityGrid {
+                        rho_a: rho.clone(),
+                        rho_b: rho,
+                        grad_a: grad.clone(),
+                        grad_b: grad,
+                        sigma,
+                    },
+                    tau,
+                )
+            }
+            (_, tau) => (dens, tau),
+        }
+    }
+}
+
 impl KPointXcPolarized for KPeriodicXcPolarized {
     fn build_polarized(
         &mut self,
@@ -206,13 +313,19 @@ impl KPointXcPolarized for KPeriodicXcPolarized {
                 .map(|_| Array2::<Complex64>::zeros((n, n)))
                 .collect()
         };
+        let drop_beta_vtau = self.mutation == Some(KUksMggaMutation::DropBetaVtau);
         let mut e = 0.0;
         let mut va = zeros();
         let mut vb = zeros();
         for c in &x.chunks {
             let dens = self.chunk_density(c, da, db);
-            let kern = polarized_kernel(&dens, None, &self.xc_pol);
             let np = c.points.len();
+            // Per-spin tau of THIS chunk (libxc's 1/2 convention), and the
+            // density the libxc kernel sees (only the unpolarized-evaluator
+            // mutant alters it).
+            let tau = x.mgga.then(|| (x.chunk_tau(c, da), x.chunk_tau(c, db)));
+            let (dens, tau_in) = self.kernel_inputs(dens, tau);
+            let kern = polarized_kernel(&dens, tau_in.as_ref().map(|(a, b)| (a, b)), &self.xc_pol);
             for g in 0..np {
                 e += c.points[g].weight * (dens.rho_a[g] + dens.rho_b[g]) * kern.exc[g];
             }
@@ -264,6 +377,24 @@ impl KPointXcPolarized for KPeriodicXcPolarized {
                 } else {
                     Vec::new()
                 };
+                let f_tau: Vec<f64> = if x.mgga && !(spin == 1 && drop_beta_vtau) {
+                    let vtau = if spin == 0 {
+                        &kern.vtau_a
+                    } else {
+                        &kern.vtau_b
+                    };
+                    (0..np)
+                        .map(|g| {
+                            if rho[g] > DENSITY_FLOOR {
+                                0.5 * c.points[g].weight * vtau[g]
+                            } else {
+                                0.0
+                            }
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                };
                 for k in 0..x.nk {
                     let scale = |fac: &[f64]| {
                         let mut m = conj(&c.chi[k]);
@@ -273,6 +404,17 @@ impl KPointXcPolarized for KPeriodicXcPolarized {
                         m
                     };
                     v[k] += &scale(&a).dot(&c.chi[k].t());
+                    if !f_tau.is_empty() {
+                        // V^tau_s(k)_{mn} = sum_g 1/2 w v_tau_s sum_ax (d phi_m)* d phi_n
+                        for ax in 0..3 {
+                            let d_ax = c.dchi[k].index_axis(ndarray::Axis(0), ax).to_owned();
+                            let mut m = conj(&d_ax);
+                            for g in 0..np {
+                                m.column_mut(g).mapv_inplace(|z| z * f_tau[g]);
+                            }
+                            v[k] += &m.dot(&d_ax.t());
+                        }
+                    }
                     if x.gga {
                         for ax in 0..3 {
                             let d_ax = c.dchi[k].index_axis(ndarray::Axis(0), ax);
@@ -315,6 +457,9 @@ pub struct KUksConfig {
     pub grid: PeriodicGridConfig,
     /// AO truncation / budget of the Bloch AO cache.
     pub xc: PeriodicXcConfig,
+    /// Test hook: a deliberate spin-resolved tau defect (meta-GGA only).
+    #[doc(hidden)]
+    pub mgga_mutation: Option<KUksMggaMutation>,
 }
 
 impl KUksConfig {
@@ -325,6 +470,7 @@ impl KUksConfig {
             functional: functional.to_string(),
             grid: PeriodicGridConfig::default(),
             xc: PeriodicXcConfig::default(),
+            mgga_mutation: None,
         }
     }
 }
@@ -378,7 +524,7 @@ pub fn solve_kuks_keep(
     mesh: &KPointMesh,
     cfg: &KUksConfig,
 ) -> Result<(KUksResult, KRetained), FerricError> {
-    resolve_periodic_functional(&cfg.functional)?;
+    resolve_kuks_functional(&cfg.functional)?;
     let grid = PeriodicGrid::build(cell, &cfg.grid)?;
     solve_kuks_on_grid_keep(cell, prep, aux, mesh, &grid, cfg)
 }
@@ -435,6 +581,18 @@ pub fn solve_kuks_on_grid_keep(
     let mut timings = PbcTimings::default();
     let mut pxc =
         KPeriodicXcPolarized::new(cell, prep.basis_set(), &cfg.functional, grid, mesh, &cfg.xc)?;
+    pxc.mutation = cfg.mgga_mutation;
+    if pxc.is_meta_gga() && aux.is_some() {
+        return Err(PeriodicDftError::Unsupported {
+            feature: "meta-GGA with RS-GDF",
+            reason: format!(
+                "{}: the open-shell k-point meta-GGA is validated on the dense-AFT J/K only \
+                 (jk = dense)",
+                cfg.functional
+            ),
+        }
+        .into());
+    }
     let a = pxc.exact_exchange_fraction();
     if !(a.is_finite() && (0.0..=1.0).contains(&a)) {
         return Err(PeriodicDftError::Unsupported {

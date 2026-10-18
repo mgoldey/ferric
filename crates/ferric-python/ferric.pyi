@@ -2408,7 +2408,9 @@ def run_uks_kpts(
     """k-point UKS (LDA / GGA / global hybrids; spin state from the Molecule's
     multiplicity, electrons per cell). Mesh, ewald_start and jk as
     run_uhf_kpts, functional and grid as run_rks_kpts. Meta-GGA,
-    range-separated hybrids and VV10 raise ValueError. with_gradient /
+    range-separated hybrids and VV10 raise ValueError (the Rust library's
+    solve_kuks has SCAN / r2SCAN energies, but this binding is not wired to
+    them yet). with_gradient /
     with_stress as run_rks_kpts (dense or RS-GDF J/K)."""
     ...
 

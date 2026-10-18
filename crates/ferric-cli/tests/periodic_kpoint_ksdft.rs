@@ -153,7 +153,8 @@ fn refusal(tag: &str, kind: &str, mult: usize, dft: &str, cell: &str) -> String 
 
 #[test]
 fn unsupported_kpoint_ks_combinations_are_refused_by_name() {
-    // Open-shell meta-GGA stays refused (UKS/ROKS meta-GGA has no tau term).
+    // Open-shell meta-GGA stays refused on the CLI (UKS is not wired to the
+    // library's SCAN / r2SCAN energy; k-ROKS has no tau term).
     let e = refusal("uks-meta", "ksdft", 3, "[dft]\nfunctional = \"SCAN\"", "");
     assert!(e.contains("meta-GGA"), "{e}");
     // Open-shell range-separated hybrids stay refused on the dense J/K too.
