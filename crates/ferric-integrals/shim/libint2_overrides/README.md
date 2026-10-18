@@ -98,24 +98,40 @@ uninitialised memory; build.rs warns that the fix is NOT applied.
 - Survey of existing tests (an instrumented STOCK 2.13.1 build counting evaluations at exactly 117.0, default
   allocator, 400 s timeout per binary): 256 test binaries of ferric-integrals, ferric-pbc, ferric-mp2, ferric-rpa;
   218 passed, 26 failed with 0 hits (environmental: 25 re-run serially all pass, 0 hits), 12 timed out. Of those 12,
-  only 3 were measured afterwards (per test: 39 tests, 0 hits); **9 timed-out binaries remain unmeasured**. The one
-  known real hit is the #421 ECP k-point test (80 evaluations at 117.0 per run; failing under `MALLOC_PERTURB_` 1 and
-  170 before the fix, passing after).
-- Perturbed re-run of ferric-pbc test binaries (#433 item "impact survey", measured 2026-10-17, PROVISIONAL, in
-  progress). The original 9 unmeasured binaries are not named anywhere in the issue, so they were not identifiable;
-  this survey covers a SUPERSET: 22 ferric-pbc binaries exercising RS-GDF / SR-LR / kstress / kgrad / kxc* / kuxc* /
-  hcore paths (skipped: pbc_kkeep, pbc_kkeep_ks = k-point selection, no integral far-field path; the three binaries
-  already in the CI malloc-perturb job). Method: release build, OPENBLAS_NUM_THREADS=1, `--include-ignored
-  --test-threads=1`, `MALLOC_PERTURB_=170`, judged only by exit status against each test's existing bars; no unset
-  or other-value run was repeated here. Result at MALLOC_PERTURB_=170: 20 of 22 binaries exit 0 (0 failures), 2 hit the 30 min per-binary cap
-  (exit 124, INCONCLUSIVE: neither clean nor failing). Exit-0 wall seconds: pbc_krsgdf 23, pbc_krsgdf_split 98,
-  pbc_grad_ecp 128, pbc_grad_open 144, pbc_grad 165, pbc_grad_rsgdf_split 168, pbc_grad_ro 169, pbc_kxcgrad_mgga 277,
-  pbc_stress 278, pbc_grad_rsgdf 307, pbc_kxcgrad_hybrid 330, pbc_kuxcgrad_ro 347, pbc_kgrad 529,
-  pbc_grad_ecp_nucleus_scan 529, pbc_kxcstress_mgga 574, pbc_kuxcgrad 821, pbc_kxcstress 846, pbc_kuxcstress 1473,
-  pbc_kuxcstress_ro 1544, pbc_kxcgrad 1682. Capped (1800 s): pbc_kxcstress_hybrid, pbc_kstress; per-test follow-up
-  and the MALLOC_PERTURB_=1 pass for the <10 min binaries are pending. This records what was run; it is not a claim that no uninitialised reads exist.
-- Not checked: aarch64 and FMA-contracting builds (whether a given geometry lands on exactly 117.0 depends on
-  rounding, which is why the integer-geometry test exists).
+  only 3 were measured afterwards (per test: 39 tests, 0 hits). The other 9 are not named in the issue and were not
+  identifiable; the perturbed ferric-pbc survey below covers a superset of the k-point stress/gradient binaries instead
+  of counting hits. The one known real hit is the #421 ECP k-point test (80 evaluations at 117.0 per run; failing under
+  `MALLOC_PERTURB_` 1 and 170 before the fix, passing after).
+- Perturbed ferric-pbc survey (#433 "impact survey"; measured 2026-10-17/18; VERDICT PROVISIONAL). Scope: 22
+  ferric-pbc binaries on the RS-GDF / SR-LR / kstress / kgrad / kxc* / kuxc* / hcore paths. Not surveyed:
+  `pbc_kkeep`, `pbc_kkeep_ks` (k-point selection, no integral far-field path) and the three binaries already in the CI
+  `malloc-perturb` job. Method: release build, OPENBLAS_NUM_THREADS=1, one test process at a time, judged only by exit
+  status against each test's existing bars. No hit counter was attached, so this does not show whether any run
+  evaluated a Boys argument at exactly 117.0.
+  - `MALLOC_PERTURB_=170`, whole binaries with `--include-ignored`, 1800 s cap: 20 of 22 exit 0 (0 failures).
+    Wall seconds: pbc_krsgdf 23, pbc_krsgdf_split 98, pbc_grad_ecp 128, pbc_grad_open 144, pbc_grad 165,
+    pbc_grad_rsgdf_split 168, pbc_grad_ro 169, pbc_kxcgrad_mgga 277, pbc_stress 278, pbc_grad_rsgdf 307,
+    pbc_kxcgrad_hybrid 330, pbc_kuxcgrad_ro 347, pbc_kgrad 529, pbc_grad_ecp_nucleus_scan 529, pbc_kxcstress_mgga 574,
+    pbc_kuxcgrad 821, pbc_kxcstress 846, pbc_kuxcstress 1473, pbc_kuxcstress_ro 1544, pbc_kxcgrad 1682.
+    `pbc_kxcstress_hybrid` and `pbc_kstress` hit the cap (exit 124): inconclusive as whole binaries.
+  - `MALLOC_PERTURB_=170`, those two binaries per test (non-ignored tests only, one process each, 1200 s cap per test):
+    all 44 exit 0 (`pbc_kstress` 33 tests, 1-102 s each, 670 s total; `pbc_kxcstress_hybrid` 11 tests, 7-52 s each,
+    232 s total). Their `#[ignore]`d tests (several documented at 2-20 min) were NOT run under
+    perturbation in either mode, so those paths have no clean result.
+  - `MALLOC_PERTURB_=1`, whole binaries, non-ignored tests only (`--test-threads 1`, 1200 s cap per binary): 16 of 22
+    exit 0 (0 failures): pbc_krsgdf, pbc_krsgdf_split, pbc_grad_ecp, pbc_grad_open, pbc_grad, pbc_grad_rsgdf_split,
+    pbc_grad_ro, pbc_kxcgrad_mgga, pbc_stress, pbc_grad_rsgdf, pbc_kxcgrad_hybrid, pbc_kuxcgrad_ro, pbc_kgrad,
+    pbc_kxcstress_mgga, pbc_kuxcgrad, pbc_kxcstress (largest: pbc_kxcstress_mgga 1000 s). Not run at 1:
+    `pbc_grad_ecp_nucleus_scan` (every test is `#[ignore]`d), and `pbc_kuxcstress`, `pbc_kuxcstress_ro`,
+    `pbc_kxcgrad`, `pbc_kxcstress_hybrid`, `pbc_kstress` (time budget). `pbc_kuxcstress`, `pbc_kuxcstress_ro` and
+    `pbc_kxcgrad` therefore have a 170 result only, and `pbc_kxcstress_hybrid` / `pbc_kstress` have a per-test 170
+    result only.
+  - Interpretation (provisional): no allocator-dependent failure was seen in the runs that completed. Exit 0 against
+    each test's existing bars is not proof of no uninitialised reads: the tests may not reach the table edge, and a
+    perturbation-insensitive wrong answer inside a loose bar would pass.
+- Not checked (unmet, #433): aarch64 and FMA-contracting builds (whether a given geometry lands on exactly 117.0
+  depends on rounding, which is why the integer-geometry test exists).
+- Not done (maintainer-owned): notifying upstream libint.
 
 ### Sibling defect: see the third change below (issue #436)
 
