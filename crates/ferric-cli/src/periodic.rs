@@ -1652,8 +1652,9 @@ fn check_kstress_cell(plan: &PeriodicPlan, s: &Setup) -> Result<(), FerricError>
         true,
         s.cell.mol().atoms.iter().any(|a| a.n_core_ecp > 0),
         s.aux.is_some(),
-        "[cell] stress = true",
+        ("[cell] stress = true", "[cell] stress = true"),
     )
+    .map_err(FerricError::General)
 }
 
 fn k_stress(plan: &PeriodicPlan, s: &Setup) -> Result<KStressRun, FerricError> {

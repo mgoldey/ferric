@@ -961,39 +961,41 @@ pub fn check_kpoint_deriv_functional(
     open_shell: bool,
     functional: &str,
     what: &str,
-) -> Result<(), FerricError> {
+) -> Result<(), String> {
     let allow = if open_shell {
         check_open_shell_force_functional(functional)
     } else {
         check_force_functional(functional)
     };
-    allow.map_err(|e| FerricError::General(format!("{what}: {e}")))
+    allow.map_err(|e| format!("{what}: {e}"))
 }
 
 /// Stage 2 of the shared k-point derivative gate (after the cell and J/K are
 /// resolved): ECP cells with KS or ROHF derivatives are not validated, and
 /// the meta-GGA stress is anchored on the dense-AFT J only. `functional` is
-/// `Some` on a Kohn-Sham route. `what` as in [`check_kpoint_deriv_functional`];
-/// `stress` is whether the stress is among the requested derivatives.
+/// `Some` on a Kohn-Sham route. `what` names the whole derivative request in the
+/// caller's vocabulary (as in [`check_kpoint_deriv_functional`]) and
+/// `what_stress` its stress part alone; `stress` is whether the stress is among
+/// the requested derivatives.
 pub fn check_kpoint_deriv_cell(
     functional: Option<&str>,
     stress: bool,
     has_ecp: bool,
     rsgdf: bool,
-    what: &str,
-) -> Result<(), FerricError> {
+    (what, what_stress): (&str, &str),
+) -> Result<(), String> {
     if has_ecp {
         let route = if functional.is_some() { "KS" } else { "ROHF" };
-        return Err(FerricError::General(format!(
+        return Err(format!(
             "k-point {route} forces and stress with ECPs are not validated \
              ({what} on a cell whose basis carries an ECP; the energy without them runs)"
-        )));
+        ));
     }
     if stress && rsgdf && functional.is_some_and(is_validated_mgga) {
-        return Err(FerricError::General(format!(
+        return Err(format!(
             "the k-point meta-GGA stress is anchored on the dense-AFT J only; use \
-             jk=\"dense\" with {what} (with_gradient supports RS-GDF)"
-        )));
+             jk=\"dense\" with {what_stress} (with_gradient supports RS-GDF)"
+        ));
     }
     Ok(())
 }

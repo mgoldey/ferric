@@ -5199,17 +5199,15 @@ fn resolve_stress(
     }
     if route.kohn_sham() {
         let f = functional.unwrap_or("LDA");
-        ferric_pbc::kxcgrad::check_kpoint_deriv_functional(route != PeriodicRoute::Rks, f, what)
-            .map_err(|e| e.to_string())?;
+        ferric_pbc::kxcgrad::check_kpoint_deriv_functional(route != PeriodicRoute::Rks, f, what)?;
     }
     ferric_pbc::kxcgrad::check_kpoint_deriv_cell(
         route.kohn_sham().then(|| functional.unwrap_or("LDA")),
         true,
         false,
         matches!(jk, PeriodicJk::RsGdf { .. }),
-        what,
-    )
-    .map_err(|e| e.to_string())?;
+        (what, what),
+    )?;
     Ok(true)
 }
 

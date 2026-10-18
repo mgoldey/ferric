@@ -2772,13 +2772,7 @@ fn check_kpoint_ks_derivs(fname: &str, s: &PbcSetup, functional: Option<&str>) -
         s.derivs.stress,
         s.cell.mol().atoms.iter().any(|a| a.n_core_ecp > 0),
         s.aux.is_some(),
-        if s.derivs.stress && !s.derivs.gradient {
-            "with_stress"
-        } else if s.derivs.gradient && !s.derivs.stress {
-            "with_gradient"
-        } else {
-            "with_gradient / with_stress"
-        },
+        ("with_gradient / with_stress", "with_stress"),
     )
     .map_err(|e| val_err(format!("{fname}: {e}")))
 }
