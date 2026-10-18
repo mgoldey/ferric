@@ -169,6 +169,7 @@ pub fn solve_uhf_injected<'a>(
         initial_mos,
         None,
         Some(inj),
+        None,
     )?)
 }
 
@@ -474,7 +475,58 @@ pub fn solve_uhf_fockmod(
     initial_mos: Option<(&Array2<f64>, &Array2<f64>)>,
     fock_mod: Option<UhfFockMod>,
 ) -> Result<ScfResult, FerricError> {
-    solve_uhf_impl(ctx, mol, prep, bounds, config, initial_mos, fock_mod, None)
+    solve_uhf_molecular(ctx, mol, prep, bounds, config, initial_mos, fock_mod)
+}
+
+/// The molecular (non-injected, unblocked) solver: refuses the symmetry fields,
+/// which only [`solve_uhf_blocked`] honours.
+fn solve_uhf_molecular(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    bounds: &SchwarzBounds,
+    config: &UhfConfig,
+    initial_mos: Option<(&Array2<f64>, &Array2<f64>)>,
+    fock_mod: Option<UhfFockMod>,
+) -> Result<ScfResult, FerricError> {
+    crate::symmetric::require_symmetry_off(config, "solve_uhf")?;
+    solve_uhf_impl(
+        ctx,
+        mol,
+        prep,
+        bounds,
+        config,
+        initial_mos,
+        fock_mod,
+        None,
+        None,
+    )
+}
+
+/// The blocked solve of [`crate::symmetric_open::solve_uhf_symmetric`]: `mol`,
+/// `prep` and `bounds` are already in the symmetry frame, one spec per spin.
+pub(crate) fn solve_uhf_blocked(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    bounds: &SchwarzBounds,
+    config: &UhfConfig,
+    specs: (
+        &crate::symmetric::SymmetrySpec,
+        &crate::symmetric::SymmetrySpec,
+    ),
+) -> Result<ScfResult, FerricError> {
+    err_if_unconverged(solve_uhf_impl(
+        ctx,
+        mol,
+        prep,
+        bounds,
+        config,
+        None,
+        None,
+        None,
+        Some(specs),
+    )?)
 }
 
 /// Shared body of [`solve_uhf_fockmod`] (`inj = None`: the molecular solver,
@@ -491,8 +543,11 @@ fn solve_uhf_impl(
     initial_mos: Option<(&Array2<f64>, &Array2<f64>)>,
     fock_mod: Option<UhfFockMod>,
     inj: Option<PeriodicInjection<'_>>,
+    sym: Option<(
+        &crate::symmetric::SymmetrySpec,
+        &crate::symmetric::SymmetrySpec,
+    )>,
 ) -> Result<ScfResult, FerricError> {
-    crate::symmetric::require_symmetry_off(config, "solve_uhf")?;
     use ferric_dft::ks::KsXcUks;
     use ferric_dft::xc_trait::{KMix, UksXcContribution};
 
@@ -646,6 +701,11 @@ fn solve_uhf_impl(
     // LINDEP_THRESH to handle near-linear-dependent basis sets (Na clusters in
     // aug-cc-pVDZ). m == n for well-conditioned S. See crate::rhf for details.
     let x = crate::rhf::canonical_orthogonalizer(&s)?;
+    // Per-spin Fock diagonalizers: global by default, per-irrep under
+    // point-group blocking (each spin has its own occupation request).
+    let plain = crate::symmetric::PlainDiag::Rect(&x);
+    let diag_a = crate::symmetric::FockDiag::new(sym.map(|p| p.0), &s, plain)?;
+    let diag_b = crate::symmetric::FockDiag::new(sym.map(|p| p.1), &s, plain)?;
 
     // Initial guess: caller-supplied MOs if provided, else the configured
     // density guess (MINAO/SAD by default), else hcore.
@@ -701,31 +761,21 @@ fn solve_uhf_impl(
                 (c.clone(), c)
             }
         }
-    } else if let Some((ga, gb)) = uhf_guess_mos(ctx, mol, prep, bounds, config, &h, &x)? {
+    } else if let Some((ga, gb)) =
+        uhf_guess_mos(ctx, mol, prep, bounds, config, &h, (&diag_a, &diag_b))?
+    {
         (ga, gb)
     } else {
         // hcore guess: get MO coefficients from H' = Xᵀ H X (canonical-orthog).
         // diagonalize() pads to (n × n), keeping the guess shape historical.
         let _ = hcore_guess(&s, &h, nocc_a.max(1))?; // sanity check it succeeds
-        let (_, c) = diagonalize(&h, &x)?;
-        (c.clone(), c)
+        (diag_a.run(&h)?.1, diag_b.run(&h)?.1)
     };
 
     // For genuine open shell (nocc_a > nocc_b), occupying the lowest nocc_σ
     // orbitals per spin is already symmetry-broken. For "forced" UHF on a
     // closed-shell, mix HOMO/LUMO in β with a small angle to break symmetry.
-    if nocc_a == nocc_b && nocc_a > 0 && nocc_a < n {
-        let theta = 0.1f64;
-        let (cs, sn) = (theta.cos(), theta.sin());
-        let homo = nocc_b - 1;
-        let lumo = nocc_b;
-        for mu in 0..n {
-            let h_val = c_b[(mu, homo)];
-            let l_val = c_b[(mu, lumo)];
-            c_b[(mu, homo)] = cs * h_val + sn * l_val;
-            c_b[(mu, lumo)] = -sn * h_val + cs * l_val;
-        }
-    }
+    mix_beta_homo_lumo(&mut c_b, nocc_a, nocc_b, sym.is_some());
 
     let mut d_a = density(&c_a, nocc_a);
     let mut d_b = density(&c_b, nocc_b);
@@ -1303,8 +1353,8 @@ fn solve_uhf_impl(
         }
 
         if iter > 1 && conv_exit.is_some() {
-            let (eps_a, c_a_f) = diagonalize(&f_a, &x)?;
-            let (eps_b, c_b_f) = diagonalize(&f_b, &x)?;
+            let (eps_a, c_a_f) = diag_a.run(&f_a)?;
+            let (eps_b, c_b_f) = diag_b.run(&f_b)?;
             // ⟨S²⟩ diagnostic
             let s2 = expectation_s_squared(&c_a_f, &c_b_f, &s, nocc_a, nocc_b);
             let s_true = 0.5 * (nocc_a as f64 - nocc_b as f64);
@@ -1773,8 +1823,8 @@ fn solve_uhf_impl(
                 f_b_new += &(shift_eff * s.dot(&p_bv).dot(&s));
             }
         }
-        let (eps_a_new, mut c_a_new) = diagonalize(&f_a_new, &x)?;
-        let (eps_b_new, mut c_b_new) = diagonalize(&f_b_new, &x)?;
+        let (eps_a_new, mut c_a_new) = diag_a.run(&f_a_new)?;
+        let (eps_b_new, mut c_b_new) = diag_b.run(&f_b_new)?;
 
         // MOM occupied-orbital selection (per spin) from iter mom_after_iter+1.
         if config.mom_after_iter > 0 && iter > config.mom_after_iter {
@@ -2000,6 +2050,29 @@ pub fn fxc_kernel_duplicate_bytes(
         .saturating_mul(std::mem::size_of::<f64>())
 }
 
+/// For a "forced" UHF on a closed-shell occupation (`nocc_a == nocc_b`), mix the
+/// beta HOMO and LUMO by a small angle so the solver can leave the restricted
+/// saddle. Skipped under point-group blocking: a blocked closed-shell UHF has
+/// identical alpha and beta blocks and cannot leave `alpha = beta`, so the mix
+/// would only be projected away (symmetry-broken solutions are outside the
+/// blocked space by construction).
+fn mix_beta_homo_lumo(c_b: &mut Array2<f64>, nocc_a: usize, nocc_b: usize, blocked: bool) {
+    let n = c_b.nrows();
+    if blocked || nocc_a != nocc_b || nocc_a == 0 || nocc_a >= n {
+        return;
+    }
+    let theta = 0.1f64;
+    let (cs, sn) = (theta.cos(), theta.sin());
+    let homo = nocc_b - 1;
+    let lumo = nocc_b;
+    for mu in 0..n {
+        let h_val = c_b[(mu, homo)];
+        let l_val = c_b[(mu, lumo)];
+        c_b[(mu, homo)] = cs * h_val + sn * l_val;
+        c_b[(mu, lumo)] = -sn * h_val + cs * l_val;
+    }
+}
+
 fn density(c: &Array2<f64>, nocc: usize) -> Array2<f64> {
     let n = c.nrows();
     if nocc == 0 {
@@ -2128,7 +2201,10 @@ fn uhf_guess_mos(
     bounds: &SchwarzBounds,
     config: &UhfConfig,
     h: &Array2<f64>,
-    x: &Array2<f64>,
+    diags: (
+        &crate::symmetric::FockDiag<'_>,
+        &crate::symmetric::FockDiag<'_>,
+    ),
 ) -> Result<Option<(Array2<f64>, Array2<f64>)>, FerricError> {
     let n = prep.nbasis();
 
@@ -2193,9 +2269,9 @@ fn uhf_guess_mos(
     // The UHF Fock convention, matching this file's own assembly below:
     //   F_σ = h + J[D_α + D_β] − K[D_σ].
     let f_guess = h + &j - &k_spin;
-    match diagonalize(&f_guess, x) {
-        Ok((_, c)) => Ok(Some((c.clone(), c))),
-        Err(e) => {
+    match (diags.0.run(&f_guess), diags.1.run(&f_guess)) {
+        (Ok((_, ca)), Ok((_, cb))) => Ok(Some((ca, cb))),
+        (Err(e), _) | (_, Err(e)) => {
             if crate::rhf::scf_trace() {
                 eprintln!("UHF guess: diagonalizing the guess Fock failed ({e:?}); using hcore");
             }

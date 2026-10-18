@@ -136,6 +136,7 @@ pub mod rhf_newton;
 /// Fermi-smearing (fractional occupation) for metallic/near-degenerate systems.
 pub mod smearing;
 pub mod symmetric;
+pub mod symmetric_open;
 /// Unrestricted Hartree-Fock solver (α/β spin channels).
 pub mod uhf;
 pub use uhf::{solve_uhf, solve_uhf_fockmod, UhfConfig};

@@ -86,7 +86,9 @@
 //! initial density (it would be in the input frame), Kohn-Sham functionals
 //! (the Becke-Lebedev grid is not symmetric, a maintainer decision pending),
 //! external potentials, COSMO, PCM, polarizable embedding, the periodic
-//! injected path, and UHF / ROHF. Compatible: DIIS, level shift, damping,
+//! injected path. Open shells have their own entry points
+//! ([`crate::symmetric_open`]), which share this module's frame, blocking and
+//! refusals. Compatible: DIIS, level shift, damping,
 //! direct J/K, LinK, density-fitted J/K and COSX (whose grid breaks symmetry
 //! only at grid-error level; off-block elements of F are dropped by the
 //! blocking).
@@ -120,15 +122,24 @@ const PAD_IRREP: usize = usize::MAX;
 /// Symmetry data one SCF run needs: the AO representation, the irreps, the
 /// occupation request, and a slot where the solver records the irrep of each
 /// MO column of its latest diagonalization.
+///
+/// Occupied orbitals are organized in ORDERED GROUPS whose sizes are `totals`:
+/// closed-shell RHF and each UHF spin have one group (the occupied set), ROHF
+/// has two (core, then open). A request fixes, per irrep, how many orbitals of
+/// each group live there.
 pub(crate) struct SymmetrySpec {
-    rep: AoRepresentation,
-    irreps: Vec<Irrep>,
-    /// Requested electrons per irrep (index-aligned with `irreps`).
-    nelec: Vec<Option<usize>>,
+    pub(crate) rep: AoRepresentation,
+    pub(crate) irreps: Vec<Irrep>,
+    /// Orbitals per occupied group.
+    totals: Vec<usize>,
+    /// Requested orbitals per group, per irrep (index-aligned with `irreps`).
+    request: Vec<Option<Vec<usize>>>,
     last_labels: RefCell<Vec<usize>>,
 }
 
 impl SymmetrySpec {
+    /// Closed-shell RHF: one group of `total_nelec / 2` orbitals; the request
+    /// counts ELECTRONS (even) per irrep.
     pub(crate) fn new(
         rep: AoRepresentation,
         ops: &[usize],
@@ -137,12 +148,25 @@ impl SymmetrySpec {
     ) -> Result<Self, FerricError> {
         let irreps = irreps(ops)?;
         let nelec = resolve_irrep_nelec(&rep, &irreps, irrep_nelec, total_nelec)?;
-        Ok(Self {
+        let request = nelec.iter().map(|n| n.map(|n| vec![n / 2])).collect();
+        Ok(Self::open(rep, irreps, vec![total_nelec / 2], request))
+    }
+
+    /// General constructor: ordered occupied groups and an already-validated
+    /// per-irrep request (orbital counts per group).
+    pub(crate) fn open(
+        rep: AoRepresentation,
+        irreps: Vec<Irrep>,
+        totals: Vec<usize>,
+        request: Vec<Option<Vec<usize>>>,
+    ) -> Self {
+        Self {
             rep,
             irreps,
-            nelec,
+            totals,
+            request,
             last_labels: RefCell::new(Vec::new()),
-        })
+        }
     }
 
     /// Irrep label of each MO column of the latest diagonalization.
@@ -205,10 +229,20 @@ fn resolve_irrep_nelec(
     Ok(out)
 }
 
+/// How the unblocked diagonalization is done (kept bit-identical to each
+/// solver's historical code).
+#[derive(Clone, Copy)]
+pub(crate) enum PlainDiag<'a> {
+    /// Canonical orthogonalizer `X` (`n x m`): RHF and UHF.
+    Rect(&'a Array2<f64>),
+    /// Symmetric `S^{-1/2}`: ROHF.
+    InvSqrt(&'a Array2<f64>),
+}
+
 /// The SCF's Fock diagonalizer: the historical global canonical-orthogonal
 /// diagonalization, or the per-irrep blocked one.
 pub(crate) struct FockDiag<'a> {
-    x: &'a Array2<f64>,
+    plain: PlainDiag<'a>,
     blocked: Option<BlockedDiag<'a>>,
 }
 
@@ -216,17 +250,17 @@ impl<'a> FockDiag<'a> {
     pub(crate) fn new(
         sym: Option<&'a SymmetrySpec>,
         s: &Array2<f64>,
-        x: &'a Array2<f64>,
-        nocc: usize,
+        plain: PlainDiag<'a>,
     ) -> Result<Self, FerricError> {
-        let blocked = sym.map(|sp| BlockedDiag::new(sp, s, nocc)).transpose()?;
-        Ok(Self { x, blocked })
+        let blocked = sym.map(|sp| BlockedDiag::new(sp, s)).transpose()?;
+        Ok(Self { plain, blocked })
     }
 
     pub(crate) fn run(&self, f: &Array2<f64>) -> Result<(Vec<f64>, Array2<f64>), FerricError> {
-        match &self.blocked {
-            Some(b) => b.diagonalize(f),
-            None => crate::driver::diagonalize_rect(f, self.x),
+        match (&self.blocked, self.plain) {
+            (Some(b), _) => b.diagonalize(f),
+            (None, PlainDiag::Rect(x)) => crate::driver::diagonalize_rect(f, x),
+            (None, PlainDiag::InvSqrt(x)) => crate::rohf::diagonalize(f, x),
         }
     }
 }
@@ -237,15 +271,10 @@ pub(crate) struct BlockedDiag<'a> {
     spec: &'a SymmetrySpec,
     /// `U_h X_h`, shape `(nao, m_h)`; `m_h` may be 0.
     xu: Vec<Array2<f64>>,
-    nocc: usize,
 }
 
 impl<'a> BlockedDiag<'a> {
-    pub(crate) fn new(
-        spec: &'a SymmetrySpec,
-        s: &Array2<f64>,
-        nocc: usize,
-    ) -> Result<Self, FerricError> {
+    pub(crate) fn new(spec: &'a SymmetrySpec, s: &Array2<f64>) -> Result<Self, FerricError> {
         let mut xu = Vec::with_capacity(spec.irreps.len());
         for ir in &spec.irreps {
             let u = spec.rep.so_basis(ir)?;
@@ -257,7 +286,7 @@ impl<'a> BlockedDiag<'a> {
             let x_h = canonical_orthogonalizer(&s_h)?;
             xu.push(u.dot(&x_h));
         }
-        Ok(Self { spec, xu, nocc })
+        Ok(Self { spec, xu })
     }
 
     /// Same contract as `rhf::diagonalize`: `(eps, C)` with `C` of shape
@@ -287,7 +316,7 @@ impl<'a> BlockedDiag<'a> {
                 origin.push((cols.len() - 1, k));
             }
         }
-        let order = occupation_order(&eps_all, &irrep_all, &self.spec.nelec, self.nocc)?;
+        let order = grouped_order(&eps_all, &irrep_all, &self.spec.request, &self.spec.totals)?;
         let mut eps = vec![1e6; nao];
         let mut c = Array2::<f64>::zeros((nao, nao));
         let mut labels = vec![PAD_IRREP; nao];
@@ -303,52 +332,70 @@ impl<'a> BlockedDiag<'a> {
 }
 
 /// Indices into the merged eigenpair list in MO-column order: the occupied
-/// orbitals (per the irrep request, else lowest `nocc` overall) in energy
-/// order, then the virtuals in energy order. `eps` ascends within each irrep.
-pub(crate) fn occupation_order(
+/// groups in order (each in energy order), then the virtuals in energy order.
+/// `eps` ascends within each irrep.
+///
+/// Without a request this is the global energy sort, whose first `totals[0]`
+/// entries are group 0, the next `totals[1]` group 1, and so on. A request
+/// lists, per irrep, how many orbitals of each group it holds (the lowest
+/// ones of that irrep, whatever their energy relative to other irreps);
+/// unlisted irreps share the remaining slots of each group by aufbau.
+pub(crate) fn grouped_order(
     eps: &[f64],
     irrep: &[usize],
-    request: &[Option<usize>],
-    nocc: usize,
+    request: &[Option<Vec<usize>>],
+    totals: &[usize],
 ) -> Result<Vec<usize>, FerricError> {
     let all: Vec<usize> = (0..eps.len()).collect();
     if request.iter().all(Option::is_none) {
         return Ok(sorted_clusters(eps, irrep, all));
     }
-    // Each listed irrep must keep at least n/2 eigenpairs after its own
+    let ngroups = totals.len();
+    // Each listed irrep must keep enough eigenpairs after its own
     // linear-dependence filter; otherwise the requested state does not exist.
     for (h, req) in request.iter().enumerate() {
         let have = irrep.iter().filter(|&&g| g == h).count();
-        if let Some(n) = req {
-            if n / 2 > have {
+        if let Some(counts) = req {
+            let want: usize = counts.iter().sum();
+            if want > have {
                 return Err(FerricError::General(format!(
-                    "irrep_nelec asks for {n} electrons in irrep index {h}, but only {have} \
+                    "irrep_nelec asks for {want} orbitals in irrep index {h}, but only {have} \
                      linearly independent functions survive in that block"
                 )));
             }
         }
     }
     let mut rank_in_irrep = vec![0usize; request.len()];
-    let mut occupied = vec![false; eps.len()];
+    // Some(g): forced into group g; None: forced virtual or left to the pool.
+    let mut group_of: Vec<Option<usize>> = vec![None; eps.len()];
+    let mut forced = vec![0usize; ngroups];
     let mut pool = Vec::new();
-    let mut n_forced = 0;
     for i in 0..eps.len() {
         let h = irrep[i];
         let r = rank_in_irrep[h];
         rank_in_irrep[h] += 1;
-        match request[h] {
-            Some(n) if r < n / 2 => {
-                occupied[i] = true;
-                n_forced += 1;
+        let Some(counts) = &request[h] else {
+            pool.push(i);
+            continue;
+        };
+        let mut upto = 0;
+        for (g, &c) in counts.iter().enumerate() {
+            upto += c;
+            if r < upto {
+                group_of[i] = Some(g);
+                forced[g] += 1;
+                break;
             }
-            Some(_) => {}
-            None => pool.push(i),
         }
     }
-    let n_free = nocc.checked_sub(n_forced).ok_or_else(|| {
-        FerricError::General("irrep_nelec requests more electrons than the molecule has".into())
-    })?;
+    let mut free = Vec::with_capacity(ngroups);
+    for g in 0..ngroups {
+        free.push(totals[g].checked_sub(forced[g]).ok_or_else(|| {
+            FerricError::General("irrep_nelec requests more electrons than the molecule has".into())
+        })?);
+    }
     let pool = sorted_clusters(eps, irrep, pool);
+    let n_free: usize = free.iter().sum();
     if n_free > pool.len() {
         return Err(FerricError::General(format!(
             "irrep_nelec leaves {n_free} orbitals to fill by aufbau but the unlisted irreps \
@@ -356,11 +403,23 @@ pub(crate) fn occupation_order(
             pool.len()
         )));
     }
-    for &i in &pool[..n_free] {
-        occupied[i] = true;
+    let mut next = 0;
+    for (g, &f) in free.iter().enumerate() {
+        for &i in &pool[next..next + f] {
+            group_of[i] = Some(g);
+        }
+        next += f;
     }
-    let (occ, virt): (Vec<usize>, Vec<usize>) = all.into_iter().partition(|&i| occupied[i]);
-    let mut out = sorted_clusters(eps, irrep, occ);
+    let mut out = Vec::with_capacity(eps.len());
+    for g in 0..ngroups {
+        let members: Vec<usize> = all
+            .iter()
+            .copied()
+            .filter(|&i| group_of[i] == Some(g))
+            .collect();
+        out.extend(sorted_clusters(eps, irrep, members));
+    }
+    let virt: Vec<usize> = all.into_iter().filter(|&i| group_of[i].is_none()).collect();
     out.extend(sorted_clusters(eps, irrep, virt));
     Ok(out)
 }
@@ -548,8 +607,10 @@ pub(crate) fn require_symmetry_off(config: &RhfConfig, solver: &str) -> Result<(
     if config.symmetry || config.irrep_nelec.is_some() {
         return Err(FerricError::General(format!(
             "{solver}: point-group symmetry (RhfConfig.symmetry / irrep_nelec) is only available \
-             through ferric_scf::symmetric::solve_rhf_symmetric (closed-shell RHF); its result \
-             lives in the symmetry frame and has a distinct type"
+             through ferric_scf::symmetric::solve_rhf_symmetric (closed-shell RHF), \
+             ferric_scf::symmetric_open::solve_uhf_symmetric (UHF) and \
+             ferric_scf::symmetric_open::solve_rohf_symmetric (ROHF); their results live in the \
+             symmetry frame and have distinct types"
         )));
     }
     Ok(())
@@ -708,7 +769,7 @@ mod tests {
         let eps = [0.3, -1.0, 0.1, -0.5];
         let irrep = [0, 1, 0, 1];
         assert_eq!(
-            occupation_order(&eps, &irrep, &[None, None], 2).unwrap(),
+            grouped_order(&eps, &irrep, &[None, None], &[2]).unwrap(),
             vec![1, 3, 2, 0]
         );
     }
@@ -720,13 +781,13 @@ mod tests {
         let eps = [0.5, 0.5 + 5e-11, 2.0];
         let irrep = [1, 0, 0];
         assert_eq!(
-            occupation_order(&eps, &irrep, &[None, None], 1).unwrap(),
+            grouped_order(&eps, &irrep, &[None, None], &[1]).unwrap(),
             vec![1, 0, 2]
         );
         // Beyond the tolerance the energy decides.
         let eps = [0.5, 0.5 + 5e-9, 2.0];
         assert_eq!(
-            occupation_order(&eps, &irrep, &[None, None], 1).unwrap(),
+            grouped_order(&eps, &irrep, &[None, None], &[1]).unwrap(),
             vec![0, 1, 2]
         );
     }
@@ -736,7 +797,7 @@ mod tests {
         // Irrep 0 has the lowest orbital but irrep 1 holds two below irrep 0's second.
         let eps = [-2.0, 4.0, -1.0, -0.5];
         let irrep = [0, 0, 1, 1];
-        let order = occupation_order(&eps, &irrep, &[None, None], 3).unwrap();
+        let order = grouped_order(&eps, &irrep, &[None, None], &[3]).unwrap();
         assert_eq!(&order[..3], &[0, 2, 3]);
     }
 
@@ -746,10 +807,10 @@ mod tests {
         // the occupation into irrep 1 and the (low) irrep-0 orbitals to virtual.
         let eps = [-3.0, -2.0, 0.0, 1.0];
         let irrep = [0, 0, 1, 1];
-        let order = occupation_order(&eps, &irrep, &[Some(0), None], 2).unwrap();
+        let order = grouped_order(&eps, &irrep, &[Some(vec![0]), None], &[2]).unwrap();
         assert_eq!(order, vec![2, 3, 0, 1]);
         // A forced pair in irrep 1 plus aufbau in the unlisted irrep 0.
-        let order = occupation_order(&eps, &irrep, &[None, Some(2)], 2).unwrap();
+        let order = grouped_order(&eps, &irrep, &[None, Some(vec![1])], &[2]).unwrap();
         assert_eq!(&order[..2], &[0, 2]);
     }
 
@@ -758,9 +819,9 @@ mod tests {
         // Irrep 1 lost functions to linear dependence: 1 eigenpair, 4 electrons asked.
         let eps = [-3.0, -2.0, 0.0];
         let irrep = [0, 0, 1];
-        let err = occupation_order(&eps, &irrep, &[None, Some(4)], 3).unwrap_err();
+        let err = grouped_order(&eps, &irrep, &[None, Some(vec![2])], &[3]).unwrap_err();
         assert!(err.to_string().contains("linearly independent"), "{err}");
         // The same request within the surviving dimension is fine.
-        assert!(occupation_order(&eps, &irrep, &[None, Some(2)], 2).is_ok());
+        assert!(grouped_order(&eps, &irrep, &[None, Some(vec![1])], &[2]).is_ok());
     }
 }

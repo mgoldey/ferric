@@ -1,0 +1,123 @@
+{
+  "provenance": {
+    "code": "pyscf",
+    "version": "2.13.1",
+    "keywords": {
+      "method": "UHF/ROHF",
+      "symmetry": true,
+      "charge": 0,
+      "multiplicity": 2,
+      "conv_tol": 1e-12,
+      "conv_tol_grad": 1e-08,
+      "max_cycle": 300
+    },
+    "grid": "none",
+    "aux_basis": "none",
+    "frozen_core": "none",
+    "scf_convergence": {
+      "conv_tol": 1e-12,
+      "conv_tol_grad": 1e-08,
+      "max_cycle": 300
+    },
+    "stability": null,
+    "basis": "6-31g",
+    "basis_json": "crates/ferric-core/src/basis/bundled/6-31g.json",
+    "basis_sha256": "1ae9712168e449cee8ee656810f9dc2619083fc9a78f0b8e8dac77c5dbcfa7ef",
+    "ecp_json": "none",
+    "ecp_sha256": "none",
+    "geometry_xyz": "testdata/molecules/validation/ch3.xyz",
+    "geometry_xyz_sha256": "fc8c828780c55c04a8951156772d4336f64688ba91151b16777b4437c54abbcd",
+    "geometry_bohr": [
+      [
+        "C",
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        "H",
+        0.0,
+        2.0390144884057015,
+        0.0
+      ],
+      [
+        "H",
+        1.7658383443524122,
+        -1.0195072442028508,
+        0.0
+      ],
+      [
+        "H",
+        -1.7658383443524122,
+        -1.0195072442028508,
+        0.0
+      ]
+    ],
+    "bohr_in_angstrom": 0.52917721092,
+    "generator": "scripts/validation/gen_uhf_symmetry.py",
+    "git_head": "259bdeb4f3770d0df29db273877fcc35e1eec623",
+    "generated_utc": "2026-10-18T00:39:37+00:00"
+  },
+  "uhf": {
+    "unblocked": {
+      "energy": -39.54654752408865,
+      "s_squared": 0.7619325405740174
+    },
+    "blocked": {
+      "energy": -39.54654752408866,
+      "group": "C2v",
+      "irreps": [
+        "A1",
+        "B1",
+        "B2"
+      ],
+      "occ_per_irrep": {
+        "A1": [
+          3,
+          3
+        ],
+        "B1": [
+          1,
+          1
+        ],
+        "B2": [
+          1,
+          0
+        ]
+      },
+      "s_squared": 0.7619325405740209,
+      "nuclear_repulsion": 9.677248948933595
+    }
+  },
+  "rohf": {
+    "unblocked": {
+      "energy": -39.543358918524035,
+      "s_squared": 0.75
+    },
+    "blocked": {
+      "energy": -39.54335891852397,
+      "group": "C2v",
+      "irreps": [
+        "A1",
+        "B1",
+        "B2"
+      ],
+      "occ_per_irrep": {
+        "A1": [
+          3,
+          3
+        ],
+        "B1": [
+          1,
+          1
+        ],
+        "B2": [
+          1,
+          0
+        ]
+      },
+      "s_squared": 0.75,
+      "nuclear_repulsion": 9.677248948933595
+    }
+  }
+}

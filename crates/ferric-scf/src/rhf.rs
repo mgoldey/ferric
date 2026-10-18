@@ -376,16 +376,22 @@ pub struct RhfConfig {
     /// are likewise skipped with a reason (see
     /// [`crate::stability::ks_reference_is_analysable`]).
     pub check_stability: bool,
-    /// Opt-in point-group symmetry blocking (closed-shell RHF only). `false`
+    /// Opt-in point-group symmetry blocking (closed-shell RHF, UHF and ROHF;
+    /// no Kohn-Sham). `false`
     /// (default) is bit-identical to a build without symmetry support. `true`
     /// detects the highest Abelian subgroup, runs the SCF in its symmetry
     /// frame, diagonalizes the Fock matrix per irrep and fills orbitals by
     /// aufbau across irreps (or per [`irrep_nelec`](Self::irrep_nelec)). A C1
-    /// molecule runs untouched. Use [`crate::symmetric::solve_rhf_symmetric`] (`solve_rhf` refuses it); see [`crate::symmetric`] for the contract
+    /// molecule runs untouched. Use [`crate::symmetric::solve_rhf_symmetric`],
+    /// [`crate::symmetric_open::solve_uhf_symmetric`] or
+    /// [`crate::symmetric_open::solve_rohf_symmetric`] (`solve_rhf`, `solve_uhf`
+    /// and `solve_rohf` refuse it); see [`crate::symmetric`] for the contract
     /// (entry point, frame, refused features).
     pub symmetry: bool,
     /// Electrons per irrep, e.g. `[("A1", 8), ("B2", 2), ("B1", 0)]`, used only
-    /// with [`symmetry`](Self::symmetry). Each count must be even. Listed irreps
+    /// with [`symmetry`](Self::symmetry) by `solve_rhf_symmetric` (the open-shell
+    /// entry points take `(n_alpha, n_beta)` per irrep as an argument and refuse
+    /// this field). Each count must be even. Listed irreps
     /// hold exactly that many electrons (lowest orbitals of the irrep); unlisted
     /// irreps share the remaining electrons by aufbau. `None` = plain aufbau.
     pub irrep_nelec: Option<Vec<(String, usize)>>,
@@ -1918,7 +1924,7 @@ fn solve_rhf_impl(
     // canonical_orthogonalizer / diagonalize for the padding-back-to-n convention.
     let x = canonical_orthogonalizer(&s)?;
     // Fock diagonalizer: global by default, per-irrep under point-group blocking.
-    let diag = crate::symmetric::FockDiag::new(sym, &s, &x, nocc)?;
+    let diag = crate::symmetric::FockDiag::new(sym, &s, crate::symmetric::PlainDiag::Rect(&x))?;
 
     // Previous-iteration MO coefficients, needed to build the virtual-block level
     // shift (a projector onto the prior virtuals). None before the first solve.
