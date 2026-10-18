@@ -475,6 +475,20 @@ pub fn solve_uhf_fockmod(
     initial_mos: Option<(&Array2<f64>, &Array2<f64>)>,
     fock_mod: Option<UhfFockMod>,
 ) -> Result<ScfResult, FerricError> {
+    solve_uhf_molecular(ctx, mol, prep, bounds, config, initial_mos, fock_mod)
+}
+
+/// The molecular (non-injected, unblocked) solver: refuses the symmetry fields,
+/// which only [`solve_uhf_blocked`] honours.
+fn solve_uhf_molecular(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    bounds: &SchwarzBounds,
+    config: &UhfConfig,
+    initial_mos: Option<(&Array2<f64>, &Array2<f64>)>,
+    fock_mod: Option<UhfFockMod>,
+) -> Result<ScfResult, FerricError> {
     crate::symmetric::require_symmetry_off(config, "solve_uhf")?;
     solve_uhf_impl(
         ctx,
