@@ -1,0 +1,141 @@
+{
+  "provenance": {
+    "code": "pyscf",
+    "version": "2.13.1",
+    "keywords": {
+      "method": "UHF/ROHF",
+      "symmetry": true,
+      "charge": 0,
+      "multiplicity": 3,
+      "conv_tol": 1e-12,
+      "conv_tol_grad": 1e-08,
+      "max_cycle": 300
+    },
+    "grid": "none",
+    "aux_basis": "none",
+    "frozen_core": "none",
+    "scf_convergence": {
+      "conv_tol": 1e-12,
+      "conv_tol_grad": 1e-08,
+      "max_cycle": 300
+    },
+    "stability": null,
+    "basis": "sto-3g",
+    "basis_json": "crates/ferric-core/src/basis/bundled/sto-3g.json",
+    "basis_sha256": "138c7b6b356329ea6167660296b231f1c80e5ec84ce7097900146b57ec8a4f39",
+    "ecp_json": "none",
+    "ecp_sha256": "none",
+    "geometry_xyz": "testdata/molecules/o2.xyz",
+    "geometry_xyz_sha256": "15d7dc7d53f41b050d79961371a5f0ad72f1aa8e90be9f4a77447c4ce32c93e4",
+    "geometry_bohr": [
+      [
+        "O",
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        "O",
+        0.0,
+        0.0,
+        2.2827891584745945
+      ]
+    ],
+    "bohr_in_angstrom": 0.52917721092,
+    "generator": "scripts/validation/gen_uhf_symmetry.py",
+    "git_head": "259bdeb4f3770d0df29db273877fcc35e1eec623",
+    "generated_utc": "2026-10-18T00:39:37+00:00"
+  },
+  "uhf": {
+    "unblocked": {
+      "energy": -147.6339696433499,
+      "s_squared": 2.0034109034951815
+    },
+    "blocked": {
+      "energy": -147.63396964334981,
+      "group": "Dooh",
+      "irreps": [
+        "A1g",
+        "E1gx",
+        "E1gy",
+        "A1u",
+        "E1uy",
+        "E1ux"
+      ],
+      "occ_per_irrep": {
+        "A1g": [
+          3,
+          3
+        ],
+        "E1gx": [
+          1,
+          0
+        ],
+        "E1gy": [
+          1,
+          0
+        ],
+        "A1u": [
+          2,
+          2
+        ],
+        "E1uy": [
+          1,
+          1
+        ],
+        "E1ux": [
+          1,
+          1
+        ]
+      },
+      "s_squared": 2.0034109034951815,
+      "nuclear_repulsion": 28.035878724238415
+    }
+  },
+  "rohf": {
+    "unblocked": {
+      "energy": -147.6321910362317,
+      "s_squared": 2.0
+    },
+    "blocked": {
+      "energy": -147.63219103623166,
+      "group": "Dooh",
+      "irreps": [
+        "A1g",
+        "E1gx",
+        "E1gy",
+        "A1u",
+        "E1uy",
+        "E1ux"
+      ],
+      "occ_per_irrep": {
+        "A1g": [
+          3,
+          3
+        ],
+        "E1gx": [
+          1,
+          0
+        ],
+        "E1gy": [
+          1,
+          0
+        ],
+        "A1u": [
+          2,
+          2
+        ],
+        "E1uy": [
+          1,
+          1
+        ],
+        "E1ux": [
+          1,
+          1
+        ]
+      },
+      "s_squared": 2.0,
+      "nuclear_repulsion": 28.035878724238415
+    }
+  }
+}

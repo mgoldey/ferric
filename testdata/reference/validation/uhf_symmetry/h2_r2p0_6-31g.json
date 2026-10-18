@@ -1,0 +1,73 @@
+{
+  "provenance": {
+    "code": "pyscf",
+    "version": "2.13.1",
+    "keywords": {
+      "method": "UHF/ROHF",
+      "symmetry": true,
+      "charge": 0,
+      "multiplicity": 1,
+      "conv_tol": 1e-12,
+      "conv_tol_grad": 1e-08,
+      "max_cycle": 300
+    },
+    "grid": "none",
+    "aux_basis": "none",
+    "frozen_core": "none",
+    "scf_convergence": {
+      "conv_tol": 1e-12,
+      "conv_tol_grad": 1e-08,
+      "max_cycle": 300
+    },
+    "stability": null,
+    "basis": "6-31g",
+    "basis_json": "crates/ferric-core/src/basis/bundled/6-31g.json",
+    "basis_sha256": "1ae9712168e449cee8ee656810f9dc2619083fc9a78f0b8e8dac77c5dbcfa7ef",
+    "ecp_json": "none",
+    "ecp_sha256": "none",
+    "geometry_xyz": "testdata/molecules/validation/h2_r2p0.xyz",
+    "geometry_xyz_sha256": "00e03160d942bf9115b20eed324f28f4a3cb29364b488902e28d4570064cd848",
+    "geometry_bohr": [
+      [
+        "H",
+        0.0,
+        0.0,
+        -1.8897261245650618
+      ],
+      [
+        "H",
+        0.0,
+        0.0,
+        1.8897261245650618
+      ]
+    ],
+    "bohr_in_angstrom": 0.52917721092,
+    "generator": "scripts/validation/gen_uhf_symmetry.py",
+    "git_head": "259bdeb4f3770d0df29db273877fcc35e1eec623",
+    "generated_utc": "2026-10-18T00:39:39+00:00"
+  },
+  "unblocked": {
+    "energy": -1.0009352373204445,
+    "s_squared": 0.9061375433606347
+  },
+  "blocked": {
+    "energy": -0.9162712603629461,
+    "group": "Dooh",
+    "irreps": [
+      "A1g",
+      "A1u"
+    ],
+    "occ_per_irrep": {
+      "A1g": [
+        1,
+        1
+      ],
+      "A1u": [
+        0,
+        0
+      ]
+    },
+    "s_squared": 4.440892098500626e-16,
+    "nuclear_repulsion": 0.26458860546
+  }
+}
