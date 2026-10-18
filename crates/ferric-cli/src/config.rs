@@ -5212,9 +5212,40 @@ fn periodic_raw_key_check(
     Ok(())
 }
 
-/// Gamma-point meta-GGA: closed-shell RKS, SCAN / r2SCAN only (plan time).
-fn check_gamma_meta_gga(route: PeriodicRoute, functional: Option<&str>) -> Result<(), String> {
+/// Gamma-point `task = "optimize"` with a range-separated hybrid: the
+/// attenuated exchange has no analytic derivative, so refuse before any SCF.
+fn check_gamma_rsh_optimize(
+    route: PeriodicRoute,
+    kpoints: bool,
+    functional: Option<&str>,
+) -> Result<(), String> {
     match functional {
+        Some(f) if !kpoints && route == PeriodicRoute::Rks => {
+            if !ferric_pbc::rsh::is_range_separated(f) {
+                return Ok(());
+            }
+            ferric_pbc::dft::check_gamma_rks_request(f, true)
+                .map_err(|e| format!("method.task = \"optimize\" with [cell]: {e}"))
+        }
+        _ => Ok(()),
+    }
+}
+
+/// Gamma-point meta-GGA: closed-shell RKS, SCAN / r2SCAN only (plan time).
+fn check_gamma_meta_gga(
+    route: PeriodicRoute,
+    functional: Option<&str>,
+    range_split: Option<RangeSplitKey>,
+) -> Result<(), String> {
+    let split = matches!(
+        range_split,
+        Some(RangeSplitKey::Flag(true) | RangeSplitKey::Lambda(_))
+    );
+    match functional {
+        Some(f) if route == PeriodicRoute::Rks && split => {
+            ferric_pbc::gamma_rsh::check_range_split(f, true)
+                .map_err(|e| format!("[cell] range_split at the Gamma point: {e}"))
+        }
         Some(f) if route == PeriodicRoute::Rks && ferric_pbc::dft::is_meta_gga_name(f) => {
             ferric_pbc::dft::resolve_gamma_rks_functional(f)
                 .map(|_| ())
@@ -5358,7 +5389,7 @@ pub fn periodic_plan(cfg: &Config, raw: &toml::Value) -> Result<Option<PeriodicP
                      would ignore it"
                 ));
             }
-            check_gamma_meta_gga(route, functional.as_deref())?;
+            check_gamma_meta_gga(route, functional.as_deref(), c.range_split)?;
             None
         }
         Some(n) => {
@@ -5521,6 +5552,7 @@ pub fn periodic_plan(cfg: &Config, raw: &toml::Value) -> Result<Option<PeriodicP
                 ));
             }
             check_kpoint_optimize_gate(route, functional.as_deref(), kpoints)?;
+            check_gamma_rsh_optimize(route, kpoints, functional.as_deref())?;
             if let Some(s) = cfg.optimize.coordinates.as_deref() {
                 if parse_coord_system(s)? != ferric_scf::optimize::CoordSystem::Cartesian {
                     return Err(

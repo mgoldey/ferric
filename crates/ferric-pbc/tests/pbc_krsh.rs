@@ -1,6 +1,7 @@
 //! Range-separated hybrids in the k-point KS-DFT (`ferric_pbc::rsh`, dense
-//! AFT J/K). There is no Gamma-point periodic RSH to mirror (`gamma_rks`
-//! refuses CAM functionals), so the anchors are:
+//! AFT J/K). The Gamma-point RSH (`gamma_rks_rsh`, `pbc_grsh.rs`) is built
+//! FROM this k-point kernel at k = 0, so it is not an independent mirror; the
+//! anchors here are:
 //!
 //! * `madelung_lr_matches_pinned_pyscf` — the mixed-kernel G = 0 constants
 //!   (`tools.pbc.madelung(cell, kpts, omega=±ω)`), supercell lattices.

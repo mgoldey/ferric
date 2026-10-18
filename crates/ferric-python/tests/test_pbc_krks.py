@@ -165,3 +165,71 @@ def test_gamma_meta_gga_refusals_are_early_and_exact(h2, basis):
             ferric.run_rks_gamma(
                 h2, lat, basis, "SCAN", omega=OMEGA, **{kw: True}, **GRID
             )
+
+
+# ── Gamma-point range-separated hybrids (issue #354) ──
+# Library anchors (PySCF Gamma pins to 6e-13, Gamma == 1x1x1 mesh to 3e-15,
+# mutants) are in crates/ferric-pbc/tests/pbc_grsh.rs; here the binding must
+# reach the same driver and keep the unsupported combinations refused.
+
+
+@pytest.mark.parametrize("jk", [{}, RSGDF], ids=["dense", "rsgdf"])
+@pytest.mark.parametrize("functional", ["HSE06", "HYB_GGA_XC_CAM_B3LYP"])
+def test_gamma_range_separated_hybrid_equals_the_one_point_mesh(
+    h2, basis, functional, jk
+):
+    g = ferric.run_rks_gamma(h2, _cubic(), basis, functional, omega=OMEGA, **jk, **GRID)
+    k = ferric.run_rks_kpts(
+        h2, _cubic(), basis, functional, (1, 1, 1), omega=OMEGA, **jk, **GRID
+    )
+    assert g.converged and k.converged
+    assert abs(k.energy - g.energy) < 1e-8, f"{k.energy!r} vs {g.energy!r}"
+    # c_sr is reported, and the mixed (applied) Madelung constant, as the mesh.
+    assert g.exact_exchange_fraction == k.exact_exchange_fraction
+    assert abs(g.madelung - k.madelung) < 1e-12
+    p = ferric.run_rks_gamma(h2, _cubic(), basis, "PBE0", omega=OMEGA, **jk, **GRID)
+    assert abs(g.energy - p.energy) > 1e-4
+
+
+def test_gamma_range_separated_hybrid_refusals(h2, h_atom, basis):
+    lat = _cubic()
+    for kw in ({"with_gradient": True}, {"with_stress": True}):
+        with pytest.raises(
+            ValueError,
+            match=r"^run_rks_gamma: functional \"HSE06\": .*range-separated hybrid "
+            r"gradient / stress.*energy only",
+        ):
+            ferric.run_rks_gamma(h2, lat, basis, "HSE06", omega=OMEGA, **kw, **GRID)
+    # Open shell and VV10 stay refused by name.
+    with pytest.raises(ValueError, match="range-separated"):
+        ferric.run_uks_gamma(h_atom, lat, basis, "HSE06", omega=OMEGA, **GRID)
+    with pytest.raises(ValueError, match="VV10"):
+        ferric.run_rks_gamma(h2, lat, basis, "wB97X-V", omega=OMEGA, **GRID)
+
+
+def test_gamma_range_separated_hybrid_refuses_range_split(h2, basis):
+    # range_split would shape only the Gamma J, never the attenuated K.
+    with pytest.raises(ValueError, match=r"range_split.*attenuated K"):
+        ferric.run_rks_gamma(
+            h2, _cubic(), basis, "HSE06", omega=OMEGA, range_split=True, **RSGDF, **GRID
+        )
+
+
+def test_gamma_range_separated_hybrid_roks_is_refused_and_dense_budget_counts_rsh(
+    h2, h_atom, basis
+):
+    lat = _cubic()
+    with pytest.raises(ValueError, match="range-separated"):
+        ferric.run_roks_gamma(h_atom, lat, basis, "HSE06", omega=OMEGA, **GRID)
+    # H2/STO-3G: nao = 2, plain dense tensor 8 nao^4 = 128 B, RSH 40 nao^4 =
+    # 640 B. A 322 B cap passes the plain hybrid and refuses the RSH one
+    # BEFORE any tensor is built.
+    cap = 3e-7
+    r = ferric.run_rks_gamma(
+        h2, lat, basis, "PBE0", omega=OMEGA, max_eri_gb=cap, **GRID
+    )
+    assert r.converged
+    with pytest.raises(ValueError, match=r"dense AFT ERI tensors need 640 bytes"):
+        ferric.run_rks_gamma(
+            h2, lat, basis, "HSE06", omega=OMEGA, max_eri_gb=cap, **GRID
+        )

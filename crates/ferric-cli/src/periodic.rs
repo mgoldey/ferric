@@ -221,10 +221,15 @@ fn setup(cfg: &Config, plan: &PeriodicPlan) -> Setup {
             // size and check their own kernels.
             if plan.kmesh.is_none() {
                 let nao = prep.nbasis();
-                let need = 8u128 * (nao as u128).pow(4);
+                let rsh = plan.route == PeriodicRoute::Rks
+                    && plan
+                        .functional
+                        .as_deref()
+                        .is_some_and(ferric_pbc::rsh::is_range_separated);
+                let need = ferric_pbc::gamma_rsh::gamma_dense_bytes(nao, rsh);
                 if need > *max_eri_bytes as u128 {
                     die(format!(
-                        "[cell]: the dense AFT ERI tensor needs {need} bytes (nao = {nao}) > \
+                        "[cell]: the dense AFT ERI tensors need {need} bytes (nao = {nao}) > \
                          max_eri_gb cap {max_eri_bytes} bytes. This path is a toy-scale \
                          oracle; use jk = \"rsgdf\" with an auxbasis for larger cells."
                     ));
@@ -808,6 +813,36 @@ fn roks_config(plan: &PeriodicPlan) -> GammaRoksConfig {
     c
 }
 
+/// Sizing of the Gamma range-separated exchange: the plan's own knobs.
+fn rsh_sizing(plan: &PeriodicPlan) -> ferric_pbc::gamma_rsh::GammaRshSizing {
+    ferric_pbc::gamma_rsh::GammaRshSizing {
+        rsgdf_omega: rsgdf_config(plan).omega,
+        budget_bytes: budget_bytes(plan),
+        max_eri_bytes: max_eri_bytes(plan),
+        range_split: range_split_lambda(plan).is_some(),
+    }
+}
+
+/// Gamma RKS on `sys`: a range-separated hybrid takes the attenuated K of the
+/// k = 0 exchange (energy only; `task = "optimize"` was refused at plan time),
+/// any other functional the plain Gamma K.
+fn gamma_rks_for(
+    plan: &PeriodicPlan,
+    s: &Setup,
+    sys: &GammaSystem,
+    c: &GammaRksConfig,
+) -> Result<ferric_pbc::GammaRksResult, FerricError> {
+    ferric_pbc::gamma_rsh::gamma_rks_any(
+        &s.cell,
+        &s.prep,
+        &sys.hc,
+        sys.ints.scf(),
+        s.aux.as_ref(),
+        rsh_sizing(plan),
+        c,
+    )
+}
+
 /// Gamma RKS: `(result, E_nn, stage timings)`.
 fn gamma_rks_driver(
     plan: &PeriodicPlan,
@@ -816,7 +851,7 @@ fn gamma_rks_driver(
     let total = StageClock::start();
     let sys = gamma_system(plan, s, false)?;
     let c = rks_config(plan);
-    let r = gamma_rks(&s.cell, &s.prep, &sys.hc, sys.ints.scf(), &c)?;
+    let r = gamma_rks_for(plan, s, &sys, &c)?;
     let t = sys.timings(&[&r.timings], &total);
     Ok((r, sys.hc.enn, t))
 }

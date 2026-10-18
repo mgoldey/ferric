@@ -416,7 +416,7 @@ reference cell (in Å, like every XYZ). Energies are Hartree per cell.
 
 `method.kind` must be `rhf`, `uhf`, `rohf`, `ksdft`, `rimp2` (periodic MP2)
 or `pdep-rpa` (periodic dRPA). `rhf`/`uhf`/`rohf` with `[dft] functional` run
-RKS/UKS/ROKS. Any other kind is an error. `task = "optimize"` works at the
+RKS/UKS/ROKS. Any other kind is an error. At the Gamma point (no `kmesh`) closed-shell RKS also runs the range-separated hybrids HSE06, CAM-B3LYP and wB97X, energy only, with either `jk` (the attenuated exchange is the `k = 0` point of the k-point range-separated exchange; PySCF Gamma pins agree to 1e-12; with `jk = "rsgdf"` the full-Coulomb fit is built twice, once for the Gamma J and once inside the attenuated exchange, so the build costs about 1.9× a plain Gamma run, and the exchange also contracts a J it discards every iteration; with `jk = "dense"` the tensors take 40 nao⁴ bytes, not 8, and `max_eri_gb` counts all of them); `range_split`, open-shell use and `task = "optimize"` with a range-separated hybrid are errors. `task = "optimize"` works at the
 Gamma point for the SCF routes (RHF, UHF, ROHF, RKS, UKS, ROKS) with either
 `jk`: it moves the atoms at a fixed lattice using the analytic periodic
 force, and prints the final gradient (Hartree/Bohr per cell). With `kmesh` it

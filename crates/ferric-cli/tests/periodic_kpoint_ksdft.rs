@@ -306,3 +306,112 @@ fn cli_kpoint_rsh_rsgdf_keeps_forces_and_open_shell_refused() {
         "rsgdf-opt: {e}"
     );
 }
+
+/// `input` without `kmesh`: the same cell at the Gamma point.
+fn gamma_input(tag: &str, kind: &str, mult: usize, dft: &str) -> PathBuf {
+    let toml = input(tag, kind, mult, dft, "");
+    let src = std::fs::read_to_string(&toml)
+        .unwrap()
+        .replace("kmesh = [1, 1, 2]\n", "");
+    std::fs::write(&toml, src).unwrap();
+    toml
+}
+
+/// Gamma-point range-separated hybrids (issue #354): the CLI energy equals the
+/// 1x1x1 mesh of the same input (Gamma J/XC/SCF vs the k-point driver; the
+/// library anchors are `pbc_grsh.rs`), and the surface that does not exist
+/// (forces, open shell) is refused by name.
+#[test]
+fn cli_gamma_rsh_equals_the_one_point_mesh_and_keeps_derivatives_refused() {
+    for (tag, name) in [("hse", "HSE06"), ("cam", "HYB_GGA_XC_CAM_B3LYP")] {
+        let dft = format!("[dft]\nfunctional = \"{name}\"");
+        let g = gamma_input(&format!("gam-{tag}"), "ksdft", 1, &dft);
+        let k = input(&format!("gam-k111-{tag}"), "ksdft", 1, &dft, "");
+        let src = std::fs::read_to_string(&k)
+            .unwrap()
+            .replace("kmesh = [1, 1, 2]", "kmesh = [1, 1, 1]");
+        std::fs::write(&k, src).unwrap();
+        for t in [&g, &k] {
+            let out = run(t);
+            assert!(
+                out.status.success(),
+                "{tag}:\n{}\n{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+        let (eg, ek) = (logged_energy(&g), logged_energy(&k));
+        assert!(
+            (eg - ek).abs() < 1e-8,
+            "{tag}: Gamma {eg:.12} vs 1x1x1 {ek:.12}"
+        );
+    }
+    let hse = "[dft]\nfunctional = \"HSE06\"";
+    // task = "optimize" is refused at plan time, before any integral.
+    let toml = gamma_input("gam-opt", "ksdft", 1, hse);
+    let src = std::fs::read_to_string(&toml)
+        .unwrap()
+        .replace("kind = \"ksdft\"", "task = \"optimize\"\nkind = \"ksdft\"");
+    std::fs::write(&toml, src).unwrap();
+    let out = run(&toml);
+    assert!(!out.status.success(), "gam-opt must be refused");
+    let e = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        e.contains("method.task = \"optimize\"") && e.contains("range-separated"),
+        "gam-opt: {e}"
+    );
+    // Open shell at Gamma stays refused by name.
+    let out = run(&gamma_input("gam-uks", "ksdft", 3, hse));
+    assert!(!out.status.success(), "gam-uks must be refused");
+    let e = String::from_utf8_lossy(&out.stderr);
+    assert!(e.contains("range-separated"), "gam-uks: {e}");
+    // range_split would shape only the Gamma J, never the attenuated K.
+    let toml = input(
+        "gam-split",
+        "ksdft",
+        1,
+        hse,
+        &format!("{RSGDF_CELL}\nrange_split = true"),
+    );
+    let src = std::fs::read_to_string(&toml)
+        .unwrap()
+        .replace("kmesh = [1, 1, 2]\n", "");
+    std::fs::write(&toml, src).unwrap();
+    let out = run(&toml);
+    assert!(!out.status.success(), "gam-split must be refused");
+    let e = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        e.contains("range_split") && e.contains("attenuated K"),
+        "gam-split: {e}"
+    );
+    // ROKS (kind = "rohf" with a functional, triplet) with RSH at Gamma.
+    let out = run(&gamma_input("gam-roks", "rohf", 3, hse));
+    assert!(!out.status.success(), "gam-roks must be refused");
+    let e = String::from_utf8_lossy(&out.stderr);
+    assert!(e.contains("range-separated"), "gam-roks: {e}");
+    // The dense preflight counts the attenuated tensors: nao = 2, plain 128 B,
+    // RSH 640 B; a 322 B cap runs PBE0 and refuses HSE06 before any build.
+    let capped = |name: &str| {
+        let dft = format!("[dft]\nfunctional = \"{name}\"");
+        let toml = input(
+            &format!("gam-cap-{name}"),
+            "ksdft",
+            1,
+            &dft,
+            "max_eri_gb = 3e-7",
+        );
+        let src = std::fs::read_to_string(&toml)
+            .unwrap()
+            .replace("kmesh = [1, 1, 2]\n", "");
+        std::fs::write(&toml, src).unwrap();
+        run(&toml)
+    };
+    assert!(capped("PBE0").status.success(), "plain hybrid fits the cap");
+    let out = capped("HSE06");
+    assert!(!out.status.success(), "RSH must exceed the cap");
+    let e = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        e.contains("dense AFT ERI tensors need 640 bytes"),
+        "gam-cap: {e}"
+    );
+}

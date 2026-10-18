@@ -33,15 +33,15 @@ use ferric_pbc::rsgdf::auto_omega::auto_rsgdf_omega;
 use ferric_pbc::rsgdf::{DEFAULT_RANGE_SPLIT_LAMBDA, DEFAULT_RSGDF_OMEGA};
 use ferric_pbc::SrColumnRotation;
 use ferric_pbc::{
-    gamma_drpa, gamma_mp2, gamma_rks, gamma_rohf, gamma_roks, gamma_uhf, gamma_uks, kpoint_drpa,
-    kpoint_mp2, periodic_hcore, periodic_hcore_kpts, solve_krhf_injected, Cell, DenseAftEri,
-    EwaldStart, ExxDiv, GammaDrpaConfig, GammaDrpaIntegrals, GammaMp2Config, GammaMp2Integrals,
-    GammaRksConfig, GammaRohfConfig, GammaRoksConfig, GammaUhfConfig, GammaUhfIntegrals,
-    GammaUksConfig, GammaUksGridInfo, KCorrIntegrals, KDenseAftConfig, KDenseAftEri,
-    KDenseAftPairs, KDrpaConfig, KDrpaEnergy, KJkKind, KMp2Config, KPointInjection, KPointMesh,
-    KRhfConfig, KRsGdf, KRsGdfConfig, KScfConfig, KScfResult, KUhfConfig, LindepReport,
-    MeshCentring, Mp2Denominators, PbcTimings, PeriodicGridConfig, PeriodicHcore,
-    PeriodicHcoreConfig, RangeSplit, RsGdf, RsGdfConfig, SpinGapReport, StageClock,
+    gamma_drpa, gamma_mp2, gamma_rohf, gamma_roks, gamma_uhf, gamma_uks, kpoint_drpa, kpoint_mp2,
+    periodic_hcore, periodic_hcore_kpts, solve_krhf_injected, Cell, DenseAftEri, EwaldStart,
+    ExxDiv, GammaDrpaConfig, GammaDrpaIntegrals, GammaMp2Config, GammaMp2Integrals, GammaRksConfig,
+    GammaRohfConfig, GammaRoksConfig, GammaUhfConfig, GammaUhfIntegrals, GammaUksConfig,
+    GammaUksGridInfo, KCorrIntegrals, KDenseAftConfig, KDenseAftEri, KDenseAftPairs, KDrpaConfig,
+    KDrpaEnergy, KJkKind, KMp2Config, KPointInjection, KPointMesh, KRhfConfig, KRsGdf,
+    KRsGdfConfig, KScfConfig, KScfResult, KUhfConfig, LindepReport, MeshCentring, Mp2Denominators,
+    PbcTimings, PeriodicGridConfig, PeriodicHcore, PeriodicHcoreConfig, RangeSplit, RsGdf,
+    RsGdfConfig, SpinGapReport, StageClock,
 };
 use ferric_pbc::{
     gamma_rhf_gradient_rsgdf, gamma_rhf_gradient_with, gamma_rhf_stress, gamma_rhf_stress_rsgdf,
@@ -307,6 +307,16 @@ impl PbcSetup {
         if self.aux.is_some() { "rsgdf" } else { "dense" }.into()
     }
 
+    /// Sizing of the Gamma range-separated exchange: this call's own knobs.
+    fn rsh_sizing(&self) -> ferric_pbc::gamma_rsh::GammaRshSizing {
+        ferric_pbc::gamma_rsh::GammaRshSizing {
+            rsgdf_omega: self.rsgdf_omega(),
+            budget_bytes: self.budget_bytes,
+            max_eri_bytes: self.max_eri_bytes,
+            range_split: self.range_split.is_some(),
+        }
+    }
+
     /// The RS-GDF Ewald split every build of this call uses (Bohr⁻¹).
     fn rsgdf_omega(&self) -> f64 {
         self.gdf_omega_bohr.unwrap_or(DEFAULT_RSGDF_OMEGA)
@@ -470,15 +480,24 @@ impl GammaSystem {
 
 /// Refuse an oversize dense cell before any lattice sum (the Rust builder
 /// re-checks the same bound after hcore).
-fn gamma_dense_preflight(s: &PbcSetup) -> PyResult<()> {
+/// Pre-integral checks of `run_rks_gamma` beyond the functional gate:
+/// `range_split` with a range-separated hybrid (it would shape only the Gamma
+/// J) and the dense tensor budget, which counts the attenuated tensors.
+fn gamma_rks_preflight(s: &PbcSetup, functional: &str) -> PyResult<()> {
+    ferric_pbc::gamma_rsh::check_range_split(functional, s.range_split.is_some())
+        .map_err(|e| val_err(format!("{}: {e}", s.fname)))?;
+    gamma_dense_preflight(s, ferric_pbc::rsh::is_range_separated(functional))
+}
+
+fn gamma_dense_preflight(s: &PbcSetup, range_separated: bool) -> PyResult<()> {
     if s.aux.is_some() {
         return Ok(());
     }
     let nao = s.prep.nbasis();
-    let need = 8u128 * (nao as u128).pow(4);
+    let need = ferric_pbc::gamma_rsh::gamma_dense_bytes(nao, range_separated);
     if need > s.max_eri_bytes as u128 {
         return Err(val_err(format!(
-            "{}: the dense AFT ERI tensor needs {need} bytes (nao = {nao}) > max_eri_gb \
+            "{}: the dense AFT ERI tensors need {need} bytes (nao = {nao}) > max_eri_gb \
              cap {} bytes. This path is a toy-scale oracle; use jk=\"rsgdf\" with an \
              auxbasis for larger cells.",
             s.fname, s.max_eri_bytes
@@ -1109,7 +1128,7 @@ fn run_open_shell(
     o: OpenOpts,
     ewald_start: Option<String>,
 ) -> PyResult<PyGammaOpenShellResult> {
-    gamma_dense_preflight(&s)?;
+    gamma_dense_preflight(&s, false)?;
     check_deriv_request(
         &s,
         matches!(o.method, OpenMethod::Rohf | OpenMethod::Roks(_)),
@@ -1538,6 +1557,25 @@ impl PyGammaRksResult {
     }
 }
 
+/// Gamma RKS on `sys`: a range-separated hybrid takes the attenuated K of the
+/// k = 0 exchange (its forces / stress were refused up front), any other
+/// functional the plain Gamma K.
+fn gamma_rks_for(
+    s: &PbcSetup,
+    sys: &GammaSystem,
+    cfg: &GammaRksConfig,
+) -> Result<ferric_pbc::GammaRksResult, FerricError> {
+    ferric_pbc::gamma_rsh::gamma_rks_any(
+        &s.cell,
+        &s.prep,
+        &sys.hc,
+        sys.ints.scf(),
+        s.aux.as_ref(),
+        s.rsh_sizing(),
+        cfg,
+    )
+}
+
 fn rks_driver(
     s: &PbcSetup,
     functional: &str,
@@ -1548,7 +1586,7 @@ fn rks_driver(
     let sys = gamma_system(s)?;
     let mut cfg = GammaRksConfig::new(functional);
     (cfg.grid, cfg.exxdiv, cfg.scf) = (grid, s.exx, scf);
-    let r = gamma_rks(&s.cell, &s.prep, &sys.hc, sys.ints.scf(), &cfg)?;
+    let r = gamma_rks_for(s, &sys, &cfg)?;
     let derivs = system_derivatives(s, &sys, &r.scf, DerivMethod::Rks(&cfg))?;
     let t = sys.timings(&[&r.timings], &total);
     Ok((r, derivs, sys.hc.enn, t))
@@ -1569,6 +1607,14 @@ fn rks_driver(
 ///
 /// Meta-GGA: only the pure SCAN / r2SCAN (energy; with_gradient / with_stress
 /// with a meta-GGA is a ValueError, use `run_rks_kpts` on a [1,1,1] mesh).
+///
+/// Range-separated hybrids (HSE06, CAM-B3LYP, wB97X; energy only): J from
+/// the Gamma J/K, the attenuated K from the k = 0 point of the k-point
+/// range-separated exchange (dense AFT or an RS-GDF fit on `auxbasis`);
+/// `with_gradient` / `with_stress` are ValueErrors (`range_split` with an RSH functional is a ValueError: it would shape the Gamma J only), and the
+/// result's `exact_exchange_fraction` is the short-range `c_sr`, `madelung`
+/// the mixed `c_sr v_M + (c_lr - c_sr) v_M^LR(omega)` constant. wB97X-V stays
+/// refused (VV10).
 ///
 /// Validated vs crates/ferric-pbc/tests/pbc_rks.rs: H2 / STO-3G (PySCF
 /// digits), a = 4 Bohr, SSF 75x302 D = 10 Bohr, ewald: LDA -1.521871150768,
@@ -1630,7 +1676,7 @@ fn run_rks_gamma(
     };
     s.set_sr_knobs(range_split, sr_column_rotation)?;
     let grid = periodic_grid(fname, n_radial, n_angular, neighbour_cutoff)?;
-    gamma_dense_preflight(&s)?;
+    gamma_rks_preflight(&s, functional)?;
     let scf = gamma_scf_config(max_iter, density_conv);
     let (r, derivs, e_nuc, timings_data) = py
         .allow_threads(|| rks_driver(&s, functional, grid, scf))
@@ -1833,7 +1879,7 @@ fn run_gamma_corr(
     o: CorrOpts,
     denominators: &str,
 ) -> PyResult<PyGammaCorrelationResult> {
-    gamma_dense_preflight(&s)?;
+    gamma_dense_preflight(&s, false)?;
     let (rhf, c, timings_data) = py
         .allow_threads(|| gamma_corr_driver(&s, &o))
         .map_err(pbc_err(s.fname))?;

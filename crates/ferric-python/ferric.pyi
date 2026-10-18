@@ -2235,7 +2235,10 @@ def run_rks_gamma(
     sr_column_rotation: bool | None = None,
 ) -> GammaRksResult:
     """Closed-shell Gamma-point periodic RKS; open shells raise ValueError.
-    Meta-GGA: only SCAN / r2SCAN, energy only (with_gradient / with_stress raise)."""
+    Meta-GGA: only SCAN / r2SCAN, energy only (with_gradient / with_stress raise).
+    Range-separated hybrids (HSE06, CAM-B3LYP, wB97X): energy only, attenuated K
+    via the k = 0 point of the k-point RSH exchange (dense or RS-GDF);
+    with_gradient / with_stress raise."""
     ...
 
 def run_mp2_gamma(

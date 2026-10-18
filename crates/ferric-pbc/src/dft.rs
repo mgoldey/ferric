@@ -71,7 +71,8 @@
 //! ([`crate::uhf::occupation_gaps`]). ROKS is NOT implemented (ferric-scf's
 //! ROHF has no injected path).
 //!
-//! Refused by name: range-separated hybrids (need an attenuated periodic K),
+//! Refused by name: range-separated hybrids in every entry but closed-shell
+//! [`gamma_rks_rsh`] (the attenuated K is the k = 0 of the 1x1x1 k-point machinery, [`crate::gamma_rsh`]; UKS, ROKS, forces and stress refuse them),
 //! meta-GGA except the validated SCAN / r2SCAN in closed-shell [`gamma_rks`] ENERGY (tau from D and ∇χ^Γ, anchored to the 1x1x1 k-mesh and PySCF; Gamma forces, stress, UKS, ROKS refuse it), VV10 / double hybrids, grid pruning, Newton /
 //! TRAH / stability (they rebuild molecular J/K and the f_xc kernel on the
 //! molecular grid — rejected by `validate_injected`), the molecular grid knobs
@@ -1579,6 +1580,19 @@ pub fn resolve_gamma_rks_functional(name: &str) -> Result<(XcDef, f64), FerricEr
 /// [`check_gamma_derivs_functional`] when a gradient, stress or optimization
 /// is requested. Plain (non-meta-GGA) names pass untouched.
 pub fn check_gamma_rks_request(name: &str, derivs: bool) -> Result<(), FerricError> {
+    if crate::rsh::is_range_separated(name) {
+        if derivs {
+            return Err(PeriodicDftError::Unsupported {
+                feature: "range-separated hybrid gradient / stress",
+                reason: format!(
+                    "{name}: the attenuated exchange has no nuclear or lattice derivative \
+                     (energy only)"
+                ),
+            }
+            .into());
+        }
+        return Ok(());
+    }
     if !is_meta_gga_name(name) {
         return Ok(());
     }
@@ -1630,9 +1644,9 @@ pub fn resolve_periodic_functional_mgga(
             feature: "range-separated hybrid",
             reason: format!(
                 "{name} needs the attenuated (erf/erfc) periodic exchange, which this entry \
-                 point does not build: only the closed-shell k-point RKS builds it (dense-AFT \
-                 or RS-GDF J/K). Use a global hybrid (e.g. PBE0) or \
-                 a semilocal functional here"
+                 point does not build: only closed-shell RKS builds it (k-point, or the \
+                 Gamma-point gamma_rks_rsh / run_rks_gamma). Use a global hybrid (e.g. \
+                 PBE0) or a semilocal functional here"
             ),
         }
         .into());
@@ -1718,7 +1732,7 @@ impl PeriodicXc {
         grid: &PeriodicGrid,
         cfg: &PeriodicXcConfig,
     ) -> Result<Self, FerricError> {
-        Self::build_xc(cell, bs, functional, grid, cfg, false)
+        Self::build_xc(cell, bs, functional, grid, cfg, false, false)
     }
 
     /// [`PeriodicXc::new`] with the meta-GGA refusal lifted for the CLOSED-shell
@@ -1731,7 +1745,7 @@ impl PeriodicXc {
         grid: &PeriodicGrid,
         cfg: &PeriodicXcConfig,
     ) -> Result<Self, FerricError> {
-        Self::build_xc(cell, bs, functional, grid, cfg, true)
+        Self::build_xc(cell, bs, functional, grid, cfg, true, false)
     }
 
     pub(crate) fn build_xc(
@@ -1741,8 +1755,17 @@ impl PeriodicXc {
         grid: &PeriodicGrid,
         cfg: &PeriodicXcConfig,
         allow_mgga: bool,
+        allow_rsh: bool,
     ) -> Result<Self, FerricError> {
-        let (xc, exx) = resolve_periodic_functional_mgga(functional, allow_mgga)?;
+        // A range-separated hybrid (closed-shell Gamma RKS only) keeps its
+        // exact-exchange fractions INSIDE the K kernel, so the SCF scales K
+        // by 1, as the k-point path does (`kdft::solve_krks_on_grid`).
+        let (xc, exx) = if allow_rsh {
+            let (xc, a, rsh) = crate::rsh::resolve_periodic_functional_rsh(functional)?;
+            (xc, if rsh.is_some() { 1.0 } else { a })
+        } else {
+            resolve_periodic_functional_mgga(functional, allow_mgga)?
+        };
         let mgga = xc
             .funcs
             .iter()
@@ -2105,6 +2128,50 @@ pub fn gamma_rks(
     ints: GammaUhfIntegrals<'_>,
     cfg: &GammaRksConfig,
 ) -> Result<GammaRksResult, FerricError> {
+    gamma_rks_impl(cell, prep, hc, ints, cfg, None, None)
+}
+
+/// [`gamma_rks`] for a range-separated hybrid (HSE06, CAM-B3LYP, wB97X):
+/// J from `ints`, the attenuated K from `rsh_k` (the Gamma = 1x1x1-mesh
+/// exchange of [`crate::gamma_rsh`], whose exxdiv must equal `cfg.exxdiv`).
+/// `cfg.functional` must be range-separated; the global-hybrid and semilocal
+/// functionals go through [`gamma_rks`]. The returned `madelung` is the MIXED
+/// constant the K applied and `exact_exchange_fraction` is `c_sr`.
+pub fn gamma_rks_rsh(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    hc: &PeriodicHcore,
+    ints: GammaUhfIntegrals<'_>,
+    rsh_k: &crate::gamma_rsh::GammaRshExchange,
+    cfg: &GammaRksConfig,
+) -> Result<GammaRksResult, FerricError> {
+    gamma_rks_impl(cell, prep, hc, ints, cfg, Some(rsh_k), None)
+}
+
+/// [`gamma_rks_rsh`] on a caller-supplied XC grid (e.g. a
+/// [`PeriodicGrid::uniform`] one, to match a PySCF `UniformGrids` reference);
+/// `cfg.grid` is ignored.
+pub fn gamma_rks_rsh_on_grid(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    hc: &PeriodicHcore,
+    ints: GammaUhfIntegrals<'_>,
+    rsh_k: &crate::gamma_rsh::GammaRshExchange,
+    grid: &PeriodicGrid,
+    cfg: &GammaRksConfig,
+) -> Result<GammaRksResult, FerricError> {
+    gamma_rks_impl(cell, prep, hc, ints, cfg, Some(rsh_k), Some(grid))
+}
+
+fn gamma_rks_impl(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    hc: &PeriodicHcore,
+    ints: GammaUhfIntegrals<'_>,
+    cfg: &GammaRksConfig,
+    rsh_k: Option<&crate::gamma_rsh::GammaRshExchange>,
+    grid_override: Option<&PeriodicGrid>,
+) -> Result<GammaRksResult, FerricError> {
     validate_injected(&cfg.scf)?;
     let refuse = |feature: &'static str, reason: &str| -> Result<(), FerricError> {
         Err(PeriodicDftError::Unsupported {
@@ -2136,11 +2203,25 @@ pub fn gamma_rks(
         )?;
     }
     // Cheap name checks before the grid is built.
-    resolve_gamma_rks_functional(&cfg.functional)?;
+    if let Some(ex) = rsh_k {
+        ex.check_for_rks(&cfg.functional, cfg.exxdiv)?;
+    } else {
+        resolve_gamma_rks_functional(&cfg.functional)?;
+    }
     let total = StageClock::start();
-    let (grid, mut pxc, mut timings) =
-        gated_grid_and_xc(cell, prep, &cfg.functional, &cfg.grid, &cfg.xc, true)?;
-    let v_m = madelung_constant(cell)?;
+    let (grid, mut pxc, mut timings) = gated_grid_and_xc(
+        cell,
+        prep,
+        &cfg.functional,
+        GridSource::new(&cfg.grid, grid_override),
+        &cfg.xc,
+        true,
+        rsh_k.is_some(),
+    )?;
+    let v_m = match rsh_k {
+        Some(ex) => ex.mixed_madelung(),
+        None => madelung_constant(cell)?,
+    };
     let applied = match cfg.exxdiv {
         ExxDiv::None => 0.0,
         ExxDiv::Ewald => v_m,
@@ -2148,7 +2229,12 @@ pub fn gamma_rks(
     let ctx = ParallelContext::default();
     // Required by the solver signature; never read for integrals here.
     let bounds = SchwarzBounds::compute(Operator::coulomb(), prep)?;
-    let (j, k) = crate::uhf::builders(ints, applied);
+    let (j, mut k) = crate::uhf::builders(ints, applied);
+    // The range-separated K replaces the Coulomb K wholesale (fractions and
+    // the mixed Madelung term are inside it; the SCF scales it by 1).
+    if let Some(ex) = rsh_k {
+        k = Box::new(ex.k_builder());
+    }
     let scf = {
         let inj = PeriodicInjection {
             s: hc.s.clone(),
@@ -2172,7 +2258,7 @@ pub fn gamma_rks(
     timings.finish(&total);
     Ok(GammaRksResult {
         madelung: v_m,
-        exact_exchange_fraction: pxc.exx,
+        exact_exchange_fraction: rsh_k.map_or(pxc.exx, |ex| ex.params().c_sr),
         n_grid_points: grid.len(),
         neighbour_cutoff: grid.neighbour_cutoff(),
         electrons_on_grid,
@@ -2277,22 +2363,55 @@ pub(crate) fn ks_grid_and_xc(
     grid_cfg: &PeriodicGridConfig,
     xc_cfg: &PeriodicXcConfig,
 ) -> Result<(PeriodicGrid, PeriodicXc, PbcTimings), FerricError> {
-    gated_grid_and_xc(cell, prep, functional, grid_cfg, xc_cfg, false)
+    gated_grid_and_xc(
+        cell,
+        prep,
+        functional,
+        GridSource::config(grid_cfg),
+        xc_cfg,
+        false,
+        false,
+    )
 }
 
 /// [`ks_grid_and_xc`] with the meta-GGA refusal optional (closed-shell
 /// [`gamma_rks`] only, after its own allowlist).
+/// Where the XC grid comes from: built from a config, or supplied.
+#[derive(Clone, Copy)]
+pub(crate) struct GridSource<'a> {
+    cfg: &'a PeriodicGridConfig,
+    given: Option<&'a PeriodicGrid>,
+}
+
+impl<'a> GridSource<'a> {
+    pub(crate) fn new(cfg: &'a PeriodicGridConfig, given: Option<&'a PeriodicGrid>) -> Self {
+        Self { cfg, given }
+    }
+
+    pub(crate) fn config(cfg: &'a PeriodicGridConfig) -> Self {
+        Self { cfg, given: None }
+    }
+
+    fn resolve(self, cell: &Cell) -> Result<PeriodicGrid, FerricError> {
+        match self.given {
+            Some(g) => Ok(g.clone()),
+            None => PeriodicGrid::build(cell, self.cfg),
+        }
+    }
+}
+
 pub(crate) fn gated_grid_and_xc(
     cell: &Cell,
     prep: &PreparedBasis,
     functional: &str,
-    grid_cfg: &PeriodicGridConfig,
+    grid_src: GridSource<'_>,
     xc_cfg: &PeriodicXcConfig,
     allow_mgga: bool,
+    allow_rsh: bool,
 ) -> Result<(PeriodicGrid, PeriodicXc, PbcTimings), FerricError> {
     let mut timings = PbcTimings::default();
     let clock = StageClock::start();
-    let grid = PeriodicGrid::build(cell, grid_cfg)?;
+    let grid = grid_src.resolve(cell)?;
     timings.stop("xc grid build", &clock);
     let clock = StageClock::start();
     let pxc = PeriodicXc::build_xc(
@@ -2302,6 +2421,7 @@ pub(crate) fn gated_grid_and_xc(
         &grid,
         xc_cfg,
         allow_mgga,
+        allow_rsh,
     )?;
     timings.stop("xc AO cache", &clock);
     timings.set_counter("xc grid points", grid.len() as u64);
