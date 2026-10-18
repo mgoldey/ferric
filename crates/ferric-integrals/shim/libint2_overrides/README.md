@@ -107,10 +107,13 @@ uninitialised memory; build.rs warns that the fix is NOT applied.
   hcore paths (skipped: pbc_kkeep, pbc_kkeep_ks = k-point selection, no integral far-field path; the three binaries
   already in the CI malloc-perturb job). Method: release build, OPENBLAS_NUM_THREADS=1, `--include-ignored
   --test-threads=1`, `MALLOC_PERTURB_=170`, judged only by exit status against each test's existing bars; no unset
-  or other-value run was repeated here. Batch 1 (8 binaries, all exit 0, 0 failures), wall seconds: pbc_krsgdf 23,
-  pbc_grad_ecp 128, pbc_grad_open 144, pbc_grad 165, pbc_kxcgrad_mgga 277, pbc_kuxcgrad_ro 347,
-  pbc_grad_ecp_nucleus_scan 529, pbc_kxcstress_mgga 574. Remaining binaries and the MALLOC_PERTURB_=1 pass are
-  pending. This records what was run; it is not a claim that no uninitialised reads exist.
+  or other-value run was repeated here. Result at MALLOC_PERTURB_=170: 20 of 22 binaries exit 0 (0 failures), 2 hit the 30 min per-binary cap
+  (exit 124, INCONCLUSIVE: neither clean nor failing). Exit-0 wall seconds: pbc_krsgdf 23, pbc_krsgdf_split 98,
+  pbc_grad_ecp 128, pbc_grad_open 144, pbc_grad 165, pbc_grad_rsgdf_split 168, pbc_grad_ro 169, pbc_kxcgrad_mgga 277,
+  pbc_stress 278, pbc_grad_rsgdf 307, pbc_kxcgrad_hybrid 330, pbc_kuxcgrad_ro 347, pbc_kgrad 529,
+  pbc_grad_ecp_nucleus_scan 529, pbc_kxcstress_mgga 574, pbc_kuxcgrad 821, pbc_kxcstress 846, pbc_kuxcstress 1473,
+  pbc_kuxcstress_ro 1544, pbc_kxcgrad 1682. Capped (1800 s): pbc_kxcstress_hybrid, pbc_kstress; per-test follow-up
+  and the MALLOC_PERTURB_=1 pass for the <10 min binaries are pending. This records what was run; it is not a claim that no uninitialised reads exist.
 - Not checked: aarch64 and FMA-contracting builds (whether a given geometry lands on exactly 117.0 depends on
   rounding, which is why the integer-geometry test exists).
 
