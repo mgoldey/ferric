@@ -343,6 +343,31 @@ fn blocked_rohf_matches_unblocked_and_commutes() {
     }
 }
 
+/// d functions (cc-pVDZ) exercise the pure-harmonic parity table that the
+/// s/p-only STO-3G anchors cannot see (p shells are Cartesian-equivalent).
+#[test]
+fn d_functions_blocked_matches_unblocked() {
+    for case in [&CASES[0], &CASES[2]] {
+        let mol = load(case.xyz, case.charge, case.mult);
+        let u = uhf_on(&mol, "cc-pvdz", None).unwrap();
+        let e_off = uhf_off(u.molecule(), "cc-pvdz").energy;
+        assert!(
+            (u.energy() - e_off).abs() < 1e-9,
+            "UHF {}: {} vs {e_off}",
+            case.xyz,
+            u.energy()
+        );
+        let r = rohf_on(&mol, "cc-pvdz", None).unwrap();
+        let e_off = rohf_off(r.molecule(), "cc-pvdz").energy;
+        assert!(
+            (r.energy() - e_off).abs() < 1e-9,
+            "ROHF {}: {} vs {e_off}",
+            case.xyz,
+            r.energy()
+        );
+    }
+}
+
 /// The input geometry is rotated and translated: detection must reorient, and
 /// the blocked energy must equal the unblocked energy of the INPUT frame.
 #[test]
