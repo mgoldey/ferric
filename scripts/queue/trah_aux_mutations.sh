@@ -34,6 +34,8 @@ pass=0; surv=0
 # $1 label | $2 file | $3 sed expr | $4 grep-proof of the MUTATED text | $5 test filter | $6 extra cargo args
 mutate() {
   local label=$1 file=$2 expr=$3 proof=$4 filter=$5; shift 5
+  # MUT_ONLY=<substring> runs just the mutations whose label contains it.
+  if [ -n "${MUT_ONLY:-}" ] && [[ "$label" != *"$MUT_ONLY"* ]]; then return; fi
   echo "=============================================================="
   echo "MUTATION: $label"
   restore
@@ -49,7 +51,7 @@ mutate() {
     echo "  VANISHED before build. INVALID."
     surv=$((surv+1)); restore; return
   fi
-  local out; out=$(cargo test --release -p ferric-scf "$@" -- --test-threads=1 --include-ignored "$filter" 2>&1)
+  local out; out=$(cargo test --release -j 3 -p ferric-scf "$@" -- --test-threads=1 --include-ignored "$filter" 2>&1)
   local rc=$?
   # And once more after: proves the tested binary was built from mutated source.
   if ! grep -qF "$proof" "$file"; then
@@ -58,7 +60,7 @@ mutate() {
   fi
   if [ $rc -ne 0 ]; then
     echo "  CAUGHT by $filter"
-    echo "$out" | grep -E '^test .*(FAILED|ok)|panicked at|assertion|must |expected ' | head -6
+    echo "$out" | grep -A1 -E '^test .*(FAILED|ok)|panicked at|assertion|must |expected |rel diff|floor bar|monotone' | head -8
     pass=$((pass+1))
   else
     echo "  *** SURVIVOR *** $filter did not notice"
@@ -85,24 +87,24 @@ mutate "gate inverted: aux path runs when the flag is FALSE (dispatch in trah.rs
   --test trah_aux_curvature
 
 # 3. Wrong Fock block: f_oo built from the virtual corner. Breaks the gap term.
-#    LEDGER 2026-10-17 (post-dispatch-refactor, main TRAH): SURVIVOR. The fixed
-#    point test cannot see it (only the path to the same fixed point changes);
-#    the operator anchors do not exercise this step-level wiring. Open gap.
-#    Mutation 4 below is the documented survivor (stale_aux_tangent_space_...).
+#    LEDGER 2026-10-17: was a SURVIVOR (the fixed-point test only sees the path
+#    to the same fixed point; the operator anchors skip step-level wiring).
+#    Now caught by the step-level anchor, which compares a full aux TRAH step
+#    with the full-gap exact step from a non-canonical start (#279).
 mutate "f_oo read from the VIRTUAL block of F_mo" \
   "$TRAH" \
   's/            f_oo\[(i, j)\] = inp.f_mo\[(i, j)\];/            f_oo[(i, j)] = inp.f_mo[(no + i, no + j)];/' \
   'f_oo[(i, j)] = inp.f_mo[(no + i, no + j)];' \
-  'trah_aux_reaches_the_same_fixed_point' \
-  --test trah_aux_curvature
+  'aux_trah_step_matches_full_gap_exact_step_off_canonical' \
+  --test trah_aux_response_anchor
 
 # 4. Stale tangent space: never refresh the aux model onto current orbitals.
 mutate "refresh_orbitals removed (aux tensor frozen at the first geometry)" \
   "$TRAH" \
   's/^    aux.refresh_orbitals(c)?;/    \/\/ MUTANT: refresh removed/' \
   '// MUTANT: refresh removed' \
-  'trah_aux_reaches_the_same_fixed_point' \
-  --test trah_aux_curvature
+  'aux_trah_step_matches_full_gap_exact_step_off_canonical' \
+  --test trah_aux_response_anchor
 
 # 5. The rho log. If note_rho_rhf stops recording, the central measurement is empty.
 mutate "note_rho_rhf no longer appends to the log" \
@@ -150,6 +152,15 @@ mutate "aux response: Coulomb prefactor 8 -> 4" \
   's/y.scaled_add(8.0 \* scalar, &bp);/y.scaled_add(4.0 * scalar, \&bp);/' \
   'y.scaled_add(4.0 * scalar, &bp);' \
   'rich_aux_response_matches_exact_hessian_matvec' \
+  --test trah_aux_response_anchor
+
+# Small construction defect: 0.5% on the Coulomb term. Below the def2 fitting
+# error, above the qz-jkfit floor, so only the aux-enrichment ladder sees it.
+mutate "aux response: Coulomb prefactor 8 -> 8.04 (0.5% defect)" \
+  "$AUR" \
+  's/y.scaled_add(8.0 \* scalar, &bp);/y.scaled_add(8.04 * scalar, \&bp);/' \
+  'y.scaled_add(8.04 * scalar, &bp);' \
+  'aux_error_falls_with_aux_enrichment_to_a_derived_floor' \
   --test trah_aux_response_anchor
 
 # The non-canonical anchor must see the one-electron gap confound: zeroing the

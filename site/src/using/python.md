@@ -83,7 +83,7 @@ QM/MM accessors.
 ### Bundled basis sets
 
 `BasisSet.bundled(name)` loads a basis compiled into the library. Names are
-case-insensitive. An unknown name raises `ValueError`. These 25 sets are
+case-insensitive. An unknown name raises `ValueError`. These 27 sets are
 available (`cc-pvdz-rifit` is also accepted, as an alias of `cc-pvdz-ri`):
 
 | Kind | Names |
@@ -92,11 +92,12 @@ available (`cc-pvdz-rifit` is also accepted, as an alias of `cc-pvdz-ri`):
 | Orbital with ECP (heavy elements) | `aug-cc-pvdz-pp`, `aug-cc-pvtz-pp` |
 | Explicitly correlated (F12) | `cc-pvdz-f12` (orbital), `cc-pvdz-f12-optri` (OptRI auxiliary) |
 | RI (MP2/RPA/CC fitting) | `cc-pvdz-ri`, `cc-pvtz-rifit`, `aug-cc-pvdz-rifit`, `aug-cc-pvtz-rifit`, `aug-cc-pvqz-rifit`, `def2-svp-rifit`, `def2-tzvp-rifit`, `def2-tzvpp-rifit`, `def2-qzvp-rifit`, `def2-qzvpp-rifit` |
-| JK (SCF fitting) | `def2-universal-jkfit` |
+| JK (SCF fitting) | `def2-universal-jkfit`, `cc-pvtz-jkfit`, `cc-pvqz-jkfit` |
 
 The list comes from the `bundled()` match in `crates/ferric-core/src/basis.rs`.
 The source records two coverage gaps: `cc-pvtz` lacks K, and `cc-pvtz-rifit`
-lacks K and Ca. An RI run on a missing element errors; it is not silently
+lacks K and Ca. `cc-pvtz-jkfit` and `cc-pvqz-jkfit` carry only H, B-F, Al-Cl and
+Ga-Br (no He, Li, Be, Ne, Na, Mg, Ar, K-Zn, Kr). An RI run on a missing element errors; it is not silently
 patched. The Python API has no loader for basis files on disk; the Rust
 library parses BSE-JSON and Gaussian-94 files (see the
 [Rust API](../reference/api.md)).

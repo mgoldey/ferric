@@ -56,7 +56,8 @@ auxbasis = "cc-pvdz-ri"
 Auxiliary basis names used elsewhere (`auxbasis`, `df_*_aux`) come from the
 same table: `cc-pvdz-ri`, `cc-pvtz-rifit`, `aug-cc-pv{d,t,q}z-rifit`,
 `def2-svp-rifit`, `def2-tzvp-rifit`, `def2-tzvpp-rifit`, `def2-qzvp-rifit`,
-`def2-qzvpp-rifit`, `def2-universal-jkfit`, `cc-pvdz-f12-optri`.
+`def2-qzvpp-rifit`, `def2-universal-jkfit`, `cc-pvtz-jkfit`, `cc-pvqz-jkfit`,
+`cc-pvdz-f12-optri`.
 `cc-pvdz-rifit` is an alias of `cc-pvdz-ri`; both names load the same set.
 
 ## `[method]` (required)
