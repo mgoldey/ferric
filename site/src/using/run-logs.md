@@ -180,7 +180,10 @@ A periodic `[cell]` run with `kmesh` and `stress = true` adds
 σ = (1/Ω) dE/dε of the converged SCF, rows and columns in the Cartesian x, y, z
 of the lattice frame, full f64 precision), `extra.stress_gpa` (the same tensor
 in GPa) and `extra.stress_unit = "hartree_per_bohr3"`. `run_end.energy` is the
-total energy per cell.
+total energy per cell. `run_start.config.stress` records the request; `run_end.extra`
+also carries `stress_requested` and `scf_iterations`. If the SCF does not converge
+the tensor is absent and `run_end` has `converged = false`, `exit = "not_converged"`;
+a library error closes the log with `exit = "error"` and `extra.error`.
 
 ## Point-group-blocked runs
 

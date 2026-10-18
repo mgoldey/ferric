@@ -439,7 +439,8 @@ full precision; see [run logs](../using/run-logs.md)). It equals the Python
 `with_stress=True` tensor bit for bit (Python: `run_rhf_kpts`, `run_uhf_kpts`,
 `run_rks_kpts`, `run_uks_kpts`, `run_roks_kpts`, `run_rohf_kpts`), with both
 gates shared: the meta-GGA stress needs `jk = "dense"` (an error with
-`jk = "rsgdf"`), and so does every restricted-open-shell derivative. The k-point
+`jk = "rsgdf"`); the open-shell and restricted-open-shell stress also runs with
+`jk = "rsgdf"` (unsplit). The k-point
 force and stress use an explicit
 functional allowlist that is separate from the energy gate
 (`ferric_pbc::kxcgrad::check_force_functional` for the closed-shell route,
@@ -472,7 +473,7 @@ or key is an error. A charged cell is an error.
 | `quad_points` | integer | `40` | ≥ 1 | `pdep-rpa` only. Gamma point needs `jk = "rsgdf"`. |
 | `drpa_energy` | string | `"quadrature"` | `quadrature` `plasmon` `second-order` | `pdep-rpa` with `kmesh` only. |
 | `grad_conv` | float | `1e-9` | > 0 | k-point SCF orbital-gradient threshold. Requires `kmesh`. |
-| `stress` | bool | `false` | `true` `false` | Compute and print the analytic stress σ = (1/Ω) dE/dε of the converged k-point SCF (Hartree/Bohr³ and GPa) and write it to the `run_end` record. Requires `kmesh` and `task = "energy"`; `rhf`, `uhf`, `rohf`, `ksdft` and the `[dft] functional` routes. An error, naming `[cell] stress = true`, with the Gamma point, `task = "optimize"`, `rimp2`/`pdep-rpa`, `range_split`, range-separated hybrids, open-shell meta-GGA, hybrid meta-GGA, SCAN/r2SCAN with `jk = "rsgdf"`, and ECP cells with Kohn-Sham or ROHF. The run does one SCF through the retained hcore and J/K (the iteration printout of the plain energy run is replaced by the iteration count, energy and stress). The SCF must converge (the stress gate for restricted open shell is loose, 1e-5 in the orbital gradient: keep `grad_conv` well below it). |
+| `stress` | bool | `false` | `true` `false` | Compute and print the analytic stress σ = (1/Ω) dE/dε of the converged k-point SCF (Hartree/Bohr³ and GPa) and write it to the `run_end` record. Requires `kmesh` and `task = "energy"`; `rhf`, `uhf`, `rohf`, `ksdft` and the `[dft] functional` routes. An error, naming `[cell] stress = true`, with the Gamma point, `task = "optimize"`, `rimp2`/`pdep-rpa`, `range_split`, closed-shell range-separated hybrids, SCAN/r2SCAN with `jk = "rsgdf"`, and (at run time, before the SCF) ECP cells with Kohn-Sham or ROHF. Open-shell range-separated hybrids, open-shell meta-GGA and hybrid meta-GGA are refused earlier by the k-point energy gate (`[cell] kmesh with functional ...`), which does not name `stress`. The run does one SCF through the retained hcore and J/K (the iteration printout of the plain energy run is replaced by the iteration count, energy and stress). The SCF must converge (the stress gate for restricted open shell is loose, 1e-5 in the orbital gradient: keep `grad_conv` well below it). |
 | `n_radial` | integer | `75` | | Periodic XC grid. Kohn-Sham only. |
 | `n_angular` | integer | `302` | Lebedev order | Periodic XC grid. Kohn-Sham only. |
 | `neighbour_cutoff` | float | max(10 Bohr, covering-radius bound) | > 0, in `unit` | Periodic XC grid image cutoff. Kohn-Sham only. The XC energy has a hard cutoff: the default depends on the atom positions in a large sparse cell, and the analytic force omits that dependence, so set it explicitly for `task = "optimize"` and for finite-difference checks (a value above the default also avoids one-step energy discontinuities of ~1e-10 Ha under a displacement). |

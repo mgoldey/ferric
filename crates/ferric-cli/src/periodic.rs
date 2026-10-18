@@ -115,6 +115,7 @@ pub fn run_periodic(cfg: &Config) {
                 "sr_column_rotation": plan.sr_column_rotation,
                 "sr_column_rotation_note": plan.sr_column_rotation_note,
                 "max_iter": effective_max_iter(plan),
+                "stress": plan.stress,
             }),
             serde_json::json!({
                 "path": cfg.molecule.xyz,
@@ -126,12 +127,12 @@ pub fn run_periodic(cfg: &Config) {
             }),
         );
     }
-    let mut stress = None;
+    let mut stress: Option<StressInfo> = None;
     let out = if plan.optimize {
         run_periodic_optimize(cfg, plan, &s)
     } else if plan.stress {
-        let (o, sigma) = run_kstress(cfg, plan, &s);
-        stress = Some(sigma);
+        let (o, info) = run_kstress(cfg, plan, &s);
+        stress = Some(info);
         o
     } else if plan.kmesh.is_some() {
         match plan.route {
@@ -169,7 +170,7 @@ pub fn run_periodic(cfg: &Config) {
 /// The `run_end` record's `extra`; a `[cell] stress = true` run adds the
 /// tensor (rows/columns Cartesian x, y, z of the lattice frame) in
 /// Hartree/Bohr^3 and GPa.
-fn run_end_extra(cfg: &Config, out: &Outcome, stress: Option<&Mat3>) -> serde_json::Value {
+fn run_end_extra(cfg: &Config, out: &Outcome, stress: Option<&StressInfo>) -> serde_json::Value {
     let mut extra = serde_json::json!({
         "method": cfg.method.kind,
         "task": cfg.method.task,
@@ -177,7 +178,11 @@ fn run_end_extra(cfg: &Config, out: &Outcome, stress: Option<&Mat3>) -> serde_js
         "energy_is": out.energy_is,
         "energy_unit": "hartree_per_cell",
     });
-    if let Some(sigma) = stress {
+    if let Some(info) = stress {
+        extra["stress_requested"] = serde_json::json!(true);
+        extra["scf_iterations"] = serde_json::json!(info.iterations);
+    }
+    if let Some(sigma) = stress.and_then(|i| i.sigma.as_ref()) {
         extra["stress_hartree_per_bohr3"] = serde_json::json!(sigma);
         extra["stress_gpa"] = serde_json::json!(stress_gpa(sigma));
         extra["stress_unit"] = serde_json::json!("hartree_per_bohr3");
@@ -1420,6 +1425,13 @@ fn kuhf_driver(
 
 type Mat3 = [[f64; 3]; 3];
 
+/// What a `[cell] stress = true` run adds to the run log: the tensor (absent
+/// when the SCF did not converge) and the SCF iteration count.
+struct StressInfo {
+    sigma: Option<Mat3>,
+    iterations: usize,
+}
+
 /// A stress in GPa (the Hartree/Bohr^3 -> GPa factor of `ferric_core::units`).
 fn stress_gpa(sigma: &Mat3) -> Mat3 {
     sigma.map(|row| row.map(|v| v * ferric_core::units::HARTREE_PER_BOHR3_TO_GPA))
@@ -1431,7 +1443,21 @@ struct KStressRun {
     energy: f64,
     iterations: usize,
     converged: bool,
-    sigma: Mat3,
+    /// `None` when the SCF did not converge (no stress at a non-stationary
+    /// density; the run still reports iterations and `not_converged`).
+    sigma: Option<Mat3>,
+}
+
+impl KStressRun {
+    fn unconverged(label: &'static str, energy: f64, iterations: usize) -> Self {
+        KStressRun {
+            label,
+            energy,
+            iterations,
+            converged: false,
+            sigma: None,
+        }
+    }
 }
 
 /// The k-point mesh, plan and stress budget of one stress evaluation.
@@ -1476,6 +1502,13 @@ fn k_stress_rhf(x: &KStressCtx<'_>) -> Result<KStressRun, FerricError> {
     let (plan, s) = (x.plan, x.s);
     let c = krhf_config(plan, s);
     let (r, kept) = solve_krhf_keep(&s.cell, &s.prep, s.aux.as_ref(), &x.mesh, &c)?;
+    if !r.converged {
+        return Ok(KStressRun::unconverged(
+            "k-point RHF",
+            r.energy,
+            r.iterations,
+        ));
+    }
     let jk = kept.stress_jk(s.aux.as_ref(), &c.rsgdf)?;
     let sigma = kpoint_rhf_stress(
         &s.cell,
@@ -1494,7 +1527,7 @@ fn k_stress_rhf(x: &KStressCtx<'_>) -> Result<KStressRun, FerricError> {
         energy: r.energy,
         iterations: r.iterations,
         converged: r.converged,
-        sigma,
+        sigma: Some(sigma),
     })
 }
 
@@ -1502,6 +1535,13 @@ fn k_stress_uhf(x: &KStressCtx<'_>) -> Result<KStressRun, FerricError> {
     let (plan, s) = (x.plan, x.s);
     let c = kuhf_config(plan, s);
     let (r, kept) = solve_kuhf_keep(&s.cell, &s.prep, s.aux.as_ref(), &x.mesh, &c)?;
+    if !r.scf.converged {
+        return Ok(KStressRun::unconverged(
+            "k-point UHF",
+            r.scf.energy,
+            r.scf.iterations,
+        ));
+    }
     let jk = kept.stress_jk(s.aux.as_ref(), &c.rsgdf)?;
     let sigma = kpoint_uhf_stress(
         &s.cell,
@@ -1520,7 +1560,7 @@ fn k_stress_uhf(x: &KStressCtx<'_>) -> Result<KStressRun, FerricError> {
         energy: r.scf.energy,
         iterations: r.scf.iterations,
         converged: r.scf.converged,
-        sigma,
+        sigma: Some(sigma),
     })
 }
 
@@ -1528,6 +1568,13 @@ fn k_stress_rks(x: &KStressCtx<'_>) -> Result<KStressRun, FerricError> {
     let (plan, s) = (x.plan, x.s);
     let c = krks_config(plan, s);
     let (r, kept) = solve_krks_keep(&s.cell, &s.prep, s.aux.as_ref(), &x.mesh, &c)?;
+    if !r.scf.converged {
+        return Ok(KStressRun::unconverged(
+            "k-point RKS",
+            r.scf.energy,
+            r.scf.iterations,
+        ));
+    }
     let jk = kept.stress_jk(s.aux.as_ref(), &c.krhf.rsgdf)?;
     let sigma = kpoint_rks_stress(
         &s.cell,
@@ -1546,7 +1593,7 @@ fn k_stress_rks(x: &KStressCtx<'_>) -> Result<KStressRun, FerricError> {
         energy: r.scf.energy,
         iterations: r.scf.iterations,
         converged: r.scf.converged,
-        sigma,
+        sigma: Some(sigma),
     })
 }
 
@@ -1554,6 +1601,13 @@ fn k_stress_uks(x: &KStressCtx<'_>) -> Result<KStressRun, FerricError> {
     let (plan, s) = (x.plan, x.s);
     let c = kuks_config(plan, s);
     let (r, kept) = solve_kuks_keep(&s.cell, &s.prep, s.aux.as_ref(), &x.mesh, &c)?;
+    if !r.scf.converged {
+        return Ok(KStressRun::unconverged(
+            "k-point UKS",
+            r.scf.energy,
+            r.scf.iterations,
+        ));
+    }
     let jk = kept.stress_jk(s.aux.as_ref(), &c.kuhf.rsgdf)?;
     let sigma = kpoint_uks_stress(
         &s.cell,
@@ -1572,7 +1626,7 @@ fn k_stress_uks(x: &KStressCtx<'_>) -> Result<KStressRun, FerricError> {
         energy: r.scf.energy,
         iterations: r.scf.iterations,
         converged: r.scf.converged,
-        sigma,
+        sigma: Some(sigma),
     })
 }
 
@@ -1583,6 +1637,13 @@ fn k_stress_ro(x: &KStressCtx<'_>) -> Result<KStressRun, FerricError> {
     if plan.route == PeriodicRoute::Roks {
         let c = kroks_config(plan, s);
         let (r, kept) = solve_kroks_keep(&s.cell, &s.prep, aux, &x.mesh, &c)?;
+        if !r.scf.converged {
+            return Ok(KStressRun::unconverged(
+                "k-point ROKS",
+                r.scf.energy,
+                r.scf.iterations,
+            ));
+        }
         let jk = kept.stress_jk(aux, &c.rohf.rsgdf)?;
         let sigma = kpoint_roks_stress(
             &s.cell,
@@ -1601,11 +1662,18 @@ fn k_stress_ro(x: &KStressCtx<'_>) -> Result<KStressRun, FerricError> {
             energy: r.scf.energy,
             iterations: r.scf.iterations,
             converged: r.scf.converged,
-            sigma,
+            sigma: Some(sigma),
         });
     }
     let c = krohf_config(plan, s);
     let (r, kept) = solve_krohf_keep(&s.cell, &s.prep, aux, &x.mesh, &c)?;
+    if !r.scf.converged {
+        return Ok(KStressRun::unconverged(
+            "k-point ROHF",
+            r.scf.energy,
+            r.scf.iterations,
+        ));
+    }
     let jk = kept.stress_jk(aux, &c.rsgdf)?;
     let gc = KUksStressConfig {
         base: KRksStressConfig {
@@ -1631,7 +1699,7 @@ fn k_stress_ro(x: &KStressCtx<'_>) -> Result<KStressRun, FerricError> {
         energy: r.scf.energy,
         iterations: r.scf.iterations,
         converged: r.scf.converged,
-        sigma,
+        sigma: Some(sigma),
     })
 }
 
@@ -1685,27 +1753,58 @@ fn k_stress(plan: &PeriodicPlan, s: &Setup) -> Result<KStressRun, FerricError> {
 /// `[cell] stress = true`: the k-point SCF through the retained hcore / J/K
 /// and its analytic stress tensor, printed in Hartree/Bohr^3 and GPa. The
 /// SCF must converge (the library refuses a non-converged state).
-fn run_kstress(cfg: &Config, plan: &PeriodicPlan, s: &Setup) -> (Outcome, Mat3) {
+fn run_kstress(cfg: &Config, plan: &PeriodicPlan, s: &Setup) -> (Outcome, StressInfo) {
     print_header(cfg, plan, s);
-    let r = k_stress(plan, s).unwrap_or_else(|e| die(e));
+    let r = match k_stress(plan, s) {
+        Ok(r) => r,
+        Err(e) => {
+            // A refusal or library error still closes the run log.
+            if let Some(rl) = ferric_scf::runlog::log() {
+                rl.run_end(
+                    f64::NAN,
+                    false,
+                    "error",
+                    serde_json::json!({
+                        "method": cfg.method.kind,
+                        "task": cfg.method.task,
+                        "periodic": true,
+                        "stress_requested": true,
+                        "error": e.to_string(),
+                    }),
+                );
+            }
+            die(e)
+        }
+    };
     println!("  task       = energy + analytic {} stress", r.label);
     println!("  iterations = {}", r.iterations);
     println!("  converged  = {}", r.converged);
     println!("  energy     = {:.10} Hartree/cell", r.energy);
-    println!("  stress sigma = (1/Omega) dE/d(strain), Hartree/Bohr^3 (rows x, y, z):");
-    for row in &r.sigma {
-        println!("    {:+.12e} {:+.12e} {:+.12e}", row[0], row[1], row[2]);
-    }
-    println!("  stress (GPa):");
-    for row in &stress_gpa(&r.sigma) {
-        println!("    {:+.8e} {:+.8e} {:+.8e}", row[0], row[1], row[2]);
+    match &r.sigma {
+        Some(sigma) => {
+            println!("  stress sigma = (1/Omega) dE/d(strain), Hartree/Bohr^3 (rows x, y, z):");
+            for row in sigma {
+                println!("    {:+.12e} {:+.12e} {:+.12e}", row[0], row[1], row[2]);
+            }
+            println!("  stress (GPa):");
+            for row in &stress_gpa(sigma) {
+                println!("    {:+.8e} {:+.8e} {:+.8e}", row[0], row[1], row[2]);
+            }
+        }
+        None => warn_unconverged(r.label, r.iterations),
     }
     let out = Outcome {
         energy: r.energy,
         converged: r.converged,
         energy_is: "total",
     };
-    (out, r.sigma)
+    (
+        out,
+        StressInfo {
+            sigma: r.sigma,
+            iterations: r.iterations,
+        },
+    )
 }
 
 /// The k-point mesh and derivative budget of one force evaluation.

@@ -6,17 +6,30 @@
 //!   `ferric_pbc::kpoint_*_stress` of the SAME cell, mesh, grid and configs
 //!   BIT FOR BIT, for RHF, UHF, ROHF, RKS (PBE, PBE0), UKS and ROKS on a
 //!   Gamma-centred AND a shifted (Monkhorst-Pack, `centring = "mp"`) 1x1x2
-//!   mesh. The library side is the same call sequence the Python
-//!   `run_*_kpts(..., with_stress=True)` makes (checked by hand against the
-//!   built extension; see the commit message).
+//!   mesh (H2 / H3 doublet, STO-3G, dense J/K, small XC grid), plus an RKS-PBE
+//!   run with EVERYTHING at its default (omega, XC grid 75x302, cutoff) and a
+//!   ROKS-PBE0 run on `jk = "rsgdf"` (cc-pVDZ-RI).
+//! * Python cross-check (done by hand against the extension built from this
+//!   branch, `run_{rhf,rks,uhf,uks,roks,rohf}_kpts(..., with_stress=True)`
+//!   fed the same cell in Angstrom): the CLI tensor equals the Python one bit
+//!   for bit in all 14 (route x centring) cases above. The coordinator's
+//!   review repeated it for the RS-GDF and all-defaults runs.
 //! * The GPa tensor is `sigma * ferric_core::units::HARTREE_PER_BOHR3_TO_GPA`
 //!   bit for bit.
-//! * Refusals (range-separated hybrid, open-shell meta-GGA, the Gamma point,
-//!   `task = "optimize"`, a correlated route) are TOML-level errors naming
-//!   `[cell] stress = true`.
-//! * Mutants of this wiring (tensor rows reversed, GPa factor wrong, tensor
-//!   not logged) are in the commit message; the in-test mutant checks assert
-//!   the anchors can tell a reversed or rescaled tensor apart.
+//! * Refusals are TOML-level errors: the stress gate names `[cell] stress =
+//!   true` (closed-shell HSE06, Gamma point, optimize, correlated route,
+//!   split RS-GDF, SCAN on RS-GDF); open-shell range-separated and
+//!   open-shell / hybrid meta-GGA are refused earlier by the k-point ENERGY
+//!   gate (`[cell] kmesh with functional ...`), which does not name the key.
+//!   An ECP cell (HI / def2-SVP, RKS-PBE and ROHF) is refused at run time,
+//!   before any SCF, by the shared `check_kpoint_deriv_cell`.
+//! * Mutants run against `rhf_shifted` and the others (all KILLED): rows
+//!   reversed / tensor transposed, GPa factor 29421.0, sign flip, default XC
+//!   grid in place of the configured one, `exxdiv = none` in the stress call,
+//!   stress dropped from the JSON; skipping `check_kstress_cell` is killed by
+//!   the ECP test. SURVIVED (equivalent for these fixtures): the stress
+//!   `budget_bytes` wiring (it only sets blocking; no fixture is big enough
+//!   to block differently).
 
 use ferric_core::basis;
 use ferric_core::mol::Molecule;
@@ -42,6 +55,23 @@ const N_ANGULAR: usize = 50;
 const CUTOFF_BOHR: f64 = 14.0;
 const H2: [[f64; 3]; 2] = [[0.3, 0.2, 0.1], [0.3, 0.2, 1.6]];
 const H3: [[f64; 3]; 3] = [[0.3, 0.2, 0.1], [0.35, 0.12, 1.5], [0.3, 1.9, 0.4]];
+
+/// What the run leaves at the CLI / library defaults.
+#[derive(Clone, Copy)]
+struct V {
+    /// Small XC grid (20x50, 14 Bohr cutoff) instead of the defaults (75x302).
+    small_grid: bool,
+    /// Leave `omega` unset (the cell-derived hcore split).
+    default_omega: bool,
+    /// `jk = "rsgdf"` with cc-pVDZ-RI (default gdf_omega, rotation on).
+    rsgdf: bool,
+}
+
+const SMALL: V = V {
+    small_grid: true,
+    default_omega: false,
+    rsgdf: false,
+};
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum Route {
@@ -141,8 +171,13 @@ fn workspace_root() -> PathBuf {
         .to_path_buf()
 }
 
+fn scratch_path(tag: &str) -> PathBuf {
+    std::env::temp_dir().join(format!("ferric-kstress-{}-{tag}", std::process::id()))
+}
+
 fn scratch(tag: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("ferric-kstress-{}-{tag}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     dir
 }
@@ -157,7 +192,14 @@ fn xyz(atoms_bohr: &[[f64; 3]]) -> String {
 }
 
 /// Write the input; `cell_extra` / `method_extra` are appended verbatim.
-fn write_input(c: Case, tag: &str, cell_extra: &str, method_extra: &str, kind: &str) -> PathBuf {
+fn write_input(
+    c: Case,
+    v: V,
+    tag: &str,
+    cell_extra: &str,
+    method_extra: &str,
+    kind: &str,
+) -> PathBuf {
     let dir = scratch(tag);
     let xyz_path = dir.join("m.xyz");
     std::fs::write(&xyz_path, xyz(c.atoms())).unwrap();
@@ -166,10 +208,20 @@ fn write_input(c: Case, tag: &str, cell_extra: &str, method_extra: &str, kind: &
     } else {
         String::new()
     };
-    let grid = if c.ks() {
+    let grid = if c.ks() && v.small_grid {
         format!("n_radial = {N_RADIAL}\nn_angular = {N_ANGULAR}\nneighbour_cutoff = {CUTOFF_BOHR}")
     } else {
         String::new()
+    };
+    let omega = if v.default_omega {
+        String::new()
+    } else {
+        format!("omega = {OMEGA}")
+    };
+    let jk = if v.rsgdf {
+        "jk = \"rsgdf\"\nauxbasis = \"cc-pvdz-ri\""
+    } else {
+        ""
     };
     let toml = dir.join("in.toml");
     std::fs::write(
@@ -190,7 +242,8 @@ json = "{json}"
 unit = "bohr"
 lattice = [[{a}, 0.0, 0.0], [0.0, {a}, 0.0], [0.0, 0.0, {a}]]
 exxdiv = "ewald"
-omega = {OMEGA}
+{omega}
+{jk}
 {grid}
 {cell_extra}
 "#,
@@ -266,7 +319,10 @@ fn scf() -> KScfConfig {
     }
 }
 
-fn grid() -> PeriodicGridConfig {
+fn grid(v: V) -> PeriodicGridConfig {
+    if !v.small_grid {
+        return PeriodicGridConfig::with_size(75, 302);
+    }
     let mut g = PeriodicGridConfig::with_size(N_RADIAL, N_ANGULAR);
     g.neighbour_cutoff = Some(CUTOFF_BOHR);
     g
@@ -282,10 +338,10 @@ fn sconf(kept: &ferric_pbc::KRetained) -> KStressConfig {
     }
 }
 
-fn xc_cfg(kept: &ferric_pbc::KRetained, ao: f64) -> KRksStressConfig {
+fn xc_cfg(v: V, kept: &ferric_pbc::KRetained, ao: f64) -> KRksStressConfig {
     KRksStressConfig {
         stress: sconf(kept),
-        grid: KXcGrid::Atom(grid()),
+        grid: KXcGrid::Atom(grid(v)),
         ao_threshold: ao,
         exxdiv: Some(ExxDiv::Ewald),
         ..Default::default()
@@ -294,8 +350,8 @@ fn xc_cfg(kept: &ferric_pbc::KRetained, ao: f64) -> KRksStressConfig {
 
 /// Library stress of the case: the Python `with_stress` call sequence
 /// (`solve_k*_keep`, then `kpoint_*_stress` through the retained hcore / J/K).
-fn library(c: Case, centring: MeshCentring) -> [[f64; 3]; 3] {
-    let dir = scratch("lib");
+fn library(c: Case, v: V, centring: MeshCentring, tag: &str) -> [[f64; 3]; 3] {
+    let dir = scratch(&format!("lib-{tag}"));
     let p = dir.join("l.xyz");
     std::fs::write(&p, xyz(c.atoms())).unwrap();
     let mol = Molecule::load_xyz_with_charge(p.to_str().unwrap(), 0, c.multiplicity()).unwrap();
@@ -305,16 +361,38 @@ fn library(c: Case, centring: MeshCentring) -> [[f64; 3]; 3] {
     let prep = PreparedBasis::new(cell.mol(), &bs).unwrap();
     let mesh = KPointMesh::new(&cell, [1, 1, 2], centring).unwrap();
     // As the CLI and the Python bindings: the dense oracle stays unrotated.
-    let hcfg = PeriodicHcoreConfig::with_omega(OMEGA)
-        .with_sr_column_rotation(ferric_pbc::SrColumnRotation::Off);
+    let omega = if v.default_omega {
+        PeriodicHcoreConfig::for_cell_and_gdf_omega(&cell, None).omega
+    } else {
+        OMEGA
+    };
+    let rot = if v.rsgdf {
+        ferric_pbc::SrColumnRotation::on()
+    } else {
+        ferric_pbc::SrColumnRotation::Off
+    };
+    let hcfg = PeriodicHcoreConfig::with_omega(omega).with_sr_column_rotation(rot);
+    let aux_prep = v
+        .rsgdf
+        .then(|| PreparedBasis::new(cell.mol(), &basis::bundled("cc-pvdz-ri").unwrap()).unwrap());
+    let aux = aux_prep.as_ref();
+    let rs = ferric_pbc::KRsGdfConfig {
+        gdf: ferric_pbc::RsGdfConfig {
+            omega: ferric_pbc::rsgdf::DEFAULT_RSGDF_OMEGA,
+            sr_column_rotation: rot,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
     let f = c.functional;
     let open = |kept: &ferric_pbc::KRetained, ao: f64| KUksStressConfig {
-        base: xc_cfg(kept, ao),
+        base: xc_cfg(v, kept, ao),
         ..Default::default()
     };
     match c.route {
         Route::Rhf => {
             let mut k = KRhfConfig::for_cell(&cell, ExxDiv::Ewald);
+            assert!(!v.rsgdf);
             (k.scf, k.hcore) = (scf(), hcfg);
             let (r, kept) = solve_krhf_keep(&cell, &prep, None, &mesh, &k).unwrap();
             let jk = kept.stress_jk(None, &k.rsgdf).unwrap();
@@ -334,6 +412,7 @@ fn library(c: Case, centring: MeshCentring) -> [[f64; 3]; 3] {
         }
         Route::Uhf => {
             let mut k = KUhfConfig::for_cell(&cell, ExxDiv::Ewald);
+            assert!(!v.rsgdf);
             (k.scf, k.hcore) = (scf(), hcfg);
             let (r, kept) = solve_kuhf_keep(&cell, &prep, None, &mesh, &k).unwrap();
             let jk = kept.stress_jk(None, &k.rsgdf).unwrap();
@@ -353,10 +432,11 @@ fn library(c: Case, centring: MeshCentring) -> [[f64; 3]; 3] {
         }
         Route::Rks => {
             let mut k = KRksConfig::new(&cell, ExxDiv::Ewald, f);
-            (k.krhf.scf, k.krhf.hcore, k.grid) = (scf(), hcfg, grid());
+            assert!(!v.rsgdf, "RS-GDF is anchored on ROKS only");
+            (k.krhf.scf, k.krhf.hcore, k.grid) = (scf(), hcfg, grid(v));
             let (r, kept) = solve_krks_keep(&cell, &prep, None, &mesh, &k).unwrap();
             let jk = kept.stress_jk(None, &k.krhf.rsgdf).unwrap();
-            let x = xc_cfg(&kept, k.xc.ao_threshold);
+            let x = xc_cfg(v, &kept, k.xc.ao_threshold);
             kpoint_rks_stress(
                 &cell,
                 &prep,
@@ -372,8 +452,9 @@ fn library(c: Case, centring: MeshCentring) -> [[f64; 3]; 3] {
             .sigma
         }
         Route::Uks => {
+            assert!(!v.rsgdf);
             let mut k = KUksConfig::new(&cell, ExxDiv::Ewald, f);
-            (k.kuhf.scf, k.kuhf.hcore, k.grid) = (scf(), hcfg, grid());
+            (k.kuhf.scf, k.kuhf.hcore, k.grid) = (scf(), hcfg, grid(v));
             let (r, kept) = solve_kuks_keep(&cell, &prep, None, &mesh, &k).unwrap();
             let jk = kept.stress_jk(None, &k.kuhf.rsgdf).unwrap();
             let x = open(&kept, k.xc.ao_threshold);
@@ -393,9 +474,12 @@ fn library(c: Case, centring: MeshCentring) -> [[f64; 3]; 3] {
         }
         Route::Roks => {
             let mut k = KRoksConfig::new(&cell, ExxDiv::Ewald, f);
-            (k.rohf.scf, k.rohf.hcore, k.grid) = (scf(), hcfg, grid());
-            let (r, kept) = solve_kroks_keep(&cell, &prep, None, &mesh, &k).unwrap();
-            let jk = kept.stress_jk(None, &k.rohf.rsgdf).unwrap();
+            (k.rohf.scf, k.rohf.hcore, k.grid) = (scf(), hcfg, grid(v));
+            if v.rsgdf {
+                (k.rohf.jk, k.rohf.rsgdf) = (ferric_pbc::KJkKind::RsGdf, rs);
+            }
+            let (r, kept) = solve_kroks_keep(&cell, &prep, aux, &mesh, &k).unwrap();
+            let jk = kept.stress_jk(aux, &k.rohf.rsgdf).unwrap();
             let x = open(&kept, k.xc.ao_threshold);
             kpoint_roks_stress(
                 &cell,
@@ -413,6 +497,7 @@ fn library(c: Case, centring: MeshCentring) -> [[f64; 3]; 3] {
         }
         Route::Rohf => {
             let mut k = KRohfConfig::for_cell(&cell, ExxDiv::Ewald);
+            assert!(!v.rsgdf);
             (k.scf, k.hcore) = (scf(), hcfg);
             let (r, kept) = solve_krohf_keep(&cell, &prep, None, &mesh, &k).unwrap();
             let jk = kept.stress_jk(None, &k.rsgdf).unwrap();
@@ -444,10 +529,14 @@ fn bits(m: &[[f64; 3]; 3]) -> Vec<u64> {
     m.iter().flatten().map(|v| v.to_bits()).collect()
 }
 
-fn check_case(c: Case, centring_key: &str, centring: MeshCentring) {
-    let tag = format!("{}-{centring_key}", c.tag);
+fn check_case(c: Case, v: V, centring_key: &str, centring: MeshCentring) {
+    let tag = format!(
+        "{}-{centring_key}-g{}o{}r{}",
+        c.tag, v.small_grid as u8, v.default_omega as u8, v.rsgdf as u8
+    );
     let toml = write_input(
         c,
+        v,
         &tag,
         &format!("kmesh = [1, 1, 2]\ncentring = \"{centring_key}\"\nstress = true"),
         "",
@@ -462,7 +551,7 @@ fn check_case(c: Case, centring_key: &str, centring: MeshCentring) {
     );
     let line = run_end_line(&toml);
     let cli = mat(&line, "stress_hartree_per_bohr3");
-    let lib = library(c, centring);
+    let lib = library(c, v, centring, &tag);
     assert_eq!(
         bits(&cli),
         bits(&lib),
@@ -487,15 +576,8 @@ fn check_case(c: Case, centring_key: &str, centring: MeshCentring) {
         (lib[0][0] - lib[2][2]).abs() > 1e-7,
         "{tag}: sigma_xx == sigma_zz, row order would be untestable: {lib:?}"
     );
-    // Mutant checks: the anchor distinguishes a reversed tensor and a wrong
-    // unit factor.
-    let reversed = [lib[2], lib[1], lib[0]];
-    assert_ne!(bits(&cli), bits(&reversed), "{tag}: reversed rows");
-    assert_ne!(
-        bits(&gpa),
-        bits(&lib.map(|r| r.map(|v| v * 29421.0))),
-        "{tag}: rounded GPa factor"
-    );
+    let _ = std::fs::remove_dir_all(toml.parent().unwrap());
+    let _ = std::fs::remove_dir_all(scratch_path(&format!("lib-{tag}")));
 }
 
 /// One test per (route, centring): each is a CLI run plus a library run, so
@@ -504,7 +586,7 @@ macro_rules! anchor {
     ($name:ident, $case:expr, $key:literal, $centring:expr) => {
         #[test]
         fn $name() {
-            check_case(CASES[$case], $key, $centring);
+            check_case(CASES[$case], SMALL, $key, $centring);
         }
     };
 }
@@ -529,14 +611,14 @@ anchor!(rohf_shifted, 6, "mp", MeshCentring::MonkhorstPack);
 #[test]
 fn shifted_mesh_stress_differs_from_gamma_centred() {
     let c = CASES[3];
-    let g = library(c, MeshCentring::Gamma);
-    let m = library(c, MeshCentring::MonkhorstPack);
+    let g = library(c, SMALL, MeshCentring::Gamma, "diff-g");
+    let m = library(c, SMALL, MeshCentring::MonkhorstPack, "diff-m");
     assert_ne!(bits(&g), bits(&m));
     assert!((g[2][2] - m[2][2]).abs() > 1e-8, "{g:?} vs {m:?}");
 }
 
 fn refused(c: Case, tag: &str, kind: &str, cell: &str, method: &str) -> String {
-    let out = run(&write_input(c, tag, cell, method, kind));
+    let out = run(&write_input(c, SMALL, tag, cell, method, kind));
     assert!(!out.status.success(), "{tag} must be refused");
     String::from_utf8_lossy(&out.stderr).into_owned()
 }
@@ -559,8 +641,12 @@ fn stress_refusals_name_the_toml_key() {
         route: Route::Uks,
         functional: "SCAN",
     };
+    // Refused by the k-point ENERGY gate before the stress gate is reached.
     let e = refused(scan_open, "scan-uks", "uhf", km, "");
-    assert!(e.contains("meta-GGA"), "{e}");
+    assert!(
+        e.contains("[cell] kmesh with functional \"SCAN\"") && e.contains("meta-GGA"),
+        "{e}"
+    );
     let rhf = CASES[0];
     let e = refused(rhf, "gamma", "rhf", "stress = true", "");
     assert!(
@@ -583,4 +669,100 @@ fn stress_refusals_name_the_toml_key() {
         e.contains("[cell] stress = true") && e.contains("no analytic stress"),
         "{e}"
     );
+}
+
+const ROKS_PBE0: Case = Case {
+    tag: "roks-pbe0",
+    route: Route::Roks,
+    functional: "PBE0",
+};
+
+/// Everything at its default: omega, XC grid (75x302), neighbour cutoff.
+#[test]
+fn rks_pbe_all_defaults_equals_library() {
+    let v = V {
+        small_grid: false,
+        default_omega: true,
+        rsgdf: false,
+    };
+    check_case(CASES[1], v, "gamma", MeshCentring::Gamma);
+}
+
+/// Open-shell hybrid stress on the unsplit RS-GDF J/K with default omegas.
+#[test]
+fn roks_pbe0_rsgdf_equals_library() {
+    let v = V {
+        small_grid: true,
+        default_omega: true,
+        rsgdf: true,
+    };
+    check_case(ROKS_PBE0, v, "mp", MeshCentring::MonkhorstPack);
+}
+
+/// An ECP cell (HI / def2-SVP) is refused at run time, before any SCF, for
+/// Kohn-Sham and for ROHF; the message names the key and the ECP.
+#[test]
+fn ecp_cells_are_refused_before_the_scf() {
+    for (tag, kind, dft, mult) in [
+        ("ecp-rks", "rhf", "[dft]\nfunctional = \"PBE\"", 1),
+        ("ecp-rohf", "rohf", "", 3),
+    ] {
+        let dir = scratch(tag);
+        std::fs::write(dir.join("hi.xyz"), "2\nHI\nH 0 0 0\nI 0 0 1.61\n").unwrap();
+        let toml = dir.join("in.toml");
+        std::fs::write(
+            &toml,
+            format!(
+                "[molecule]\nxyz = \"{}\"\nmultiplicity = {mult}\n[basis]\nname = \"def2-svp\"\n\
+                 [method]\nkind = \"{kind}\"\n{dft}\n[output]\njson = false\n[cell]\n\
+                 unit = \"bohr\"\nlattice = [[12.0, 0.0, 0.0], [0.0, 12.0, 0.0], [0.0, 0.0, 12.0]]\n\
+                 kmesh = [1, 1, 2]\nstress = true\n",
+                dir.join("hi.xyz").display()
+            ),
+        )
+        .unwrap();
+        let out = run(&toml);
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let e = String::from_utf8_lossy(&out.stderr);
+        assert!(!out.status.success(), "{tag} must be refused:\n{stdout}");
+        assert!(
+            e.contains("with ECPs are not validated") && e.contains("[cell] stress = true"),
+            "{tag}: {e}"
+        );
+        assert!(
+            !stdout.contains("iterations ="),
+            "{tag}: SCF ran:\n{stdout}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// A non-converged SCF closes the run log with `not_converged` and the
+/// iteration count, and carries no stress tensor.
+#[test]
+fn unconverged_scf_logs_not_converged_without_a_tensor() {
+    let toml = write_input(
+        CASES[0],
+        SMALL,
+        "unconv",
+        "kmesh = [1, 1, 2]\nstress = true\n[scf]\nmax_iter = 1",
+        "",
+        "rhf",
+    );
+    let out = run(&toml);
+    let line = run_end_line(&toml);
+    assert!(line.contains("\"converged\":false"), "{line}");
+    assert!(line.contains("\"stress_requested\":true"), "{line}");
+    assert!(!line.contains("stress_hartree_per_bohr3"), "{line}");
+    assert!(
+        line.contains("\"exit\":\"not_converged\"") || line.contains("\"exit\":\"error\""),
+        "{line}"
+    );
+    if line.contains("not_converged") {
+        assert!(
+            out.status.success() && line.contains("\"scf_iterations\":1"),
+            "{line}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(toml.parent().unwrap());
 }

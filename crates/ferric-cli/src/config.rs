@@ -5172,13 +5172,15 @@ fn resolve_stress(
     let what = "[cell] stress = true";
     if route.correlated() {
         return Err(format!(
-            "{what}: periodic {} has no analytic stress (rhf, uhf, rohf, ksdft at a k-point              mesh only)",
+            "{what}: periodic {} has no analytic stress (rhf, uhf, rohf, ksdft at a k-point \
+             mesh only)",
             route.label()
         ));
     }
     if !kpoints {
         return Err(format!(
-            "{what} needs [cell] kmesh: the CLI wires the k-point stress only (the Gamma-point              stress is available from the Python run_*_gamma with_stress)"
+            "{what} needs [cell] kmesh: the CLI wires the k-point stress only (the Gamma-point \
+             stress is available from the Python run_*_gamma with_stress)"
         ));
     }
     if optimize {
@@ -6206,8 +6208,13 @@ kind = "ccsd"
             e.contains("[cell] stress = true") && e.contains("range-separated"),
             "{e}"
         );
+        // Open-shell meta-GGA is refused by the k-point ENERGY gate, which
+        // runs before the stress gate and does not name the key.
         let e = err(&h2("uhf", km, "[dft]\nfunctional = \"SCAN\""));
-        assert!(e.contains("meta-GGA"), "{e}");
+        assert!(
+            e.contains("[cell] kmesh with functional \"SCAN\"") && e.contains("meta-GGA"),
+            "{e}"
+        );
         // SCAN stress on RS-GDF is anchored on the dense J only.
         let rs = "jk = \"rsgdf\"\nauxbasis = \"cc-pvdz-ri\"";
         let e = err(&h2(
@@ -6226,9 +6233,10 @@ kind = "ccsd"
             "{e}"
         );
         let e = err(&h2("rhf", "stress = true", ""));
-        assert!(
-            e.contains("[cell] stress = true") && e.contains("kmesh"),
-            "{e}"
+        assert_eq!(
+            e,
+            "[cell] stress = true needs [cell] kmesh: the CLI wires the k-point stress only \
+             (the Gamma-point stress is available from the Python run_*_gamma with_stress)"
         );
         let e = err(&opt("rhf", km, ""));
         assert!(
@@ -6240,9 +6248,10 @@ kind = "ccsd"
             &format!("{km}\ndenominators = \"shifted\""),
             "",
         ));
-        assert!(
-            e.contains("[cell] stress = true") && e.contains("no analytic stress"),
-            "{e}"
+        assert_eq!(
+            e,
+            "[cell] stress = true: periodic MP2 has no analytic stress (rhf, uhf, rohf, \
+             ksdft at a k-point mesh only)"
         );
     }
 
