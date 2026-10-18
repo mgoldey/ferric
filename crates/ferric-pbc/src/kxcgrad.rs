@@ -951,6 +951,53 @@ pub fn check_force_functional(functional: &str) -> Result<(), FerricError> {
     }
 }
 
+/// The k-point derivative request gate shared by the Python bindings and the
+/// CLI (so the two cannot diverge), stage 1 (before any integral is built):
+/// the force / stress functional allowlist of the route. `open_shell` selects
+/// [`check_open_shell_force_functional`] (UKS, ROKS) over
+/// [`check_force_functional`] (RKS). `what` names the request in the
+/// caller's vocabulary (`"with_stress"`, `"[cell] stress = true"`).
+pub fn check_kpoint_deriv_functional(
+    open_shell: bool,
+    functional: &str,
+    what: &str,
+) -> Result<(), FerricError> {
+    let allow = if open_shell {
+        check_open_shell_force_functional(functional)
+    } else {
+        check_force_functional(functional)
+    };
+    allow.map_err(|e| FerricError::General(format!("{what}: {e}")))
+}
+
+/// Stage 2 of the shared k-point derivative gate (after the cell and J/K are
+/// resolved): ECP cells with KS or ROHF derivatives are not validated, and
+/// the meta-GGA stress is anchored on the dense-AFT J only. `functional` is
+/// `Some` on a Kohn-Sham route. `what` as in [`check_kpoint_deriv_functional`];
+/// `stress` is whether the stress is among the requested derivatives.
+pub fn check_kpoint_deriv_cell(
+    functional: Option<&str>,
+    stress: bool,
+    has_ecp: bool,
+    rsgdf: bool,
+    what: &str,
+) -> Result<(), FerricError> {
+    if has_ecp {
+        let route = if functional.is_some() { "KS" } else { "ROHF" };
+        return Err(FerricError::General(format!(
+            "k-point {route} forces and stress with ECPs are not validated \
+             ({what} on a cell whose basis carries an ECP; the energy without them runs)"
+        )));
+    }
+    if stress && rsgdf && functional.is_some_and(is_validated_mgga) {
+        return Err(FerricError::General(format!(
+            "the k-point meta-GGA stress is anchored on the dense-AFT J only; use \
+             jk=\"dense\" with {what} (with_gradient supports RS-GDF)"
+        )));
+    }
+    Ok(())
+}
+
 /// SCAN and r2SCAN: the meta-GGAs whose k-point SCF, force and stress are
 /// validated end to end (TPSS resolves only as raw component names, with no
 /// SCF).

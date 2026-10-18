@@ -4617,6 +4617,12 @@ pub struct CellCfg {
     pub drpa_energy: Option<String>,
     /// k-point SCF orbital-gradient threshold (`kmesh` only; default 1e-9).
     pub grad_conv: Option<f64>,
+    /// Print the analytic 3x3 stress tensor of the converged k-point SCF
+    /// (Hartree/Bohr^3 and GPa) and write it to the run log's `run_end`
+    /// record. `kmesh` with `task = "energy"` on rhf / uhf / rohf / ksdft
+    /// only; the same functional and J/K allowlists as the Python bindings'
+    /// `with_stress`. Default false.
+    pub stress: Option<bool>,
     /// Periodic XC grid radial points (Kohn-Sham routes only; default 75).
     pub n_radial: Option<usize>,
     /// Periodic XC grid Lebedev points (Kohn-Sham routes only; default 302).
@@ -4874,6 +4880,10 @@ pub struct PeriodicPlan {
     /// `method.task = "optimize"`: Gamma-point SCF routes (RHF/UHF/ROHF/RKS/
     /// UKS/ROKS) and k-point RHF/UHF, either J/K, atoms only at a fixed lattice.
     pub optimize: bool,
+    /// `[cell] stress = true`: a k-point `task = "energy"` run also computes
+    /// and prints the analytic stress tensor (the gates of the Python
+    /// `with_stress` path, `ferric_pbc::kxcgrad::check_kpoint_deriv_*`).
+    pub stress: bool,
 }
 
 /// The method kinds `[cell]` accepts.
@@ -5141,6 +5151,66 @@ fn check_kpoint_optimize_gate(
         allow.map_err(|e| prefix(e.to_string()))?;
     }
     Ok(())
+}
+
+/// `[cell] stress`: the k-point analytic stress of a `task = "energy"` run.
+/// Every refusal names the key. The functional and meta-GGA/J-K gates are the
+/// ones the Python `with_stress` path runs (`ferric_pbc::kxcgrad::
+/// check_kpoint_deriv_functional` / `_cell`), so the two cannot diverge; the
+/// ECP refusal needs the basis and runs in `crate::periodic`.
+fn resolve_stress(
+    key: Option<bool>,
+    route: PeriodicRoute,
+    functional: Option<&str>,
+    kpoints: bool,
+    optimize: bool,
+    jk: &PeriodicJk,
+) -> Result<bool, String> {
+    if key != Some(true) {
+        return Ok(false);
+    }
+    let what = "[cell] stress = true";
+    if route.correlated() {
+        return Err(format!(
+            "{what}: periodic {} has no analytic stress (rhf, uhf, rohf, ksdft at a k-point              mesh only)",
+            route.label()
+        ));
+    }
+    if !kpoints {
+        return Err(format!(
+            "{what} needs [cell] kmesh: the CLI wires the k-point stress only (the Gamma-point              stress is available from the Python run_*_gamma with_stress)"
+        ));
+    }
+    if optimize {
+        return Err(format!(
+            "{what} is not available with method.task = \"optimize\" (fixed lattice, no \
+             stress relaxation); use task = \"energy\""
+        ));
+    }
+    if let PeriodicJk::RsGdf {
+        range_split: Some(_),
+        ..
+    } = jk
+    {
+        return Err(format!(
+            "{what} is not available with [cell] range_split: the split RS-GDF stress is not \
+             wired; remove range_split"
+        ));
+    }
+    if route.kohn_sham() {
+        let f = functional.unwrap_or("LDA");
+        ferric_pbc::kxcgrad::check_kpoint_deriv_functional(route != PeriodicRoute::Rks, f, what)
+            .map_err(|e| e.to_string())?;
+    }
+    ferric_pbc::kxcgrad::check_kpoint_deriv_cell(
+        route.kohn_sham().then(|| functional.unwrap_or("LDA")),
+        true,
+        false,
+        matches!(jk, PeriodicJk::RsGdf { .. }),
+        what,
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(true)
 }
 
 /// Refuse every section and key the periodic path would not read. The
@@ -5574,6 +5644,14 @@ pub fn periodic_plan(cfg: &Config, raw: &toml::Value) -> Result<Option<PeriodicP
     let (jk, (sr_column_rotation, sr_column_rotation_note)) =
         resolve_sr_knobs(c, jk, rsgdf, kpoints, optimize)?;
     periodic_raw_key_check(raw, route, kpoints, rsgdf, optimize)?;
+    let stress = resolve_stress(
+        c.stress,
+        route,
+        functional.as_deref(),
+        kpoints,
+        optimize,
+        &jk,
+    )?;
     let written = raw_keys(raw, "scf");
     let max_iter_explicit = written.contains(&"max_iter");
     let max_iter = if max_iter_explicit {
@@ -5617,6 +5695,7 @@ pub fn periodic_plan(cfg: &Config, raw: &toml::Value) -> Result<Option<PeriodicP
         sr_column_rotation,
         sr_column_rotation_note,
         optimize,
+        stress,
     }))
 }
 
@@ -6098,6 +6177,77 @@ kind = "ccsd"
         assert!(err(&opt("rhf", rs, "")).contains("optimize"));
     }
 
+    /// `[cell] stress = true` (issue #357): the k-point analytic stress of a
+    /// `task = "energy"` run. Accepted on every SCF route with a mesh; every
+    /// refusal names the key.
+    #[test]
+    fn stress_key_gates() {
+        let km = "kmesh = [1, 1, 2]\nstress = true";
+        let pbe = "[dft]\nfunctional = \"PBE\"";
+        for (kind, extra) in [
+            ("rhf", ""),
+            ("uhf", ""),
+            ("rohf", ""),
+            ("ksdft", ""),
+            ("rhf", pbe),
+            ("uhf", pbe),
+            ("rohf", pbe),
+        ] {
+            assert!(ok(&h2(kind, km, extra)).stress, "{kind} {extra}");
+        }
+        // Absent / false is the default, with or without a mesh.
+        assert!(!ok(&h2("rhf", "kmesh = [1, 1, 2]", "")).stress);
+        assert!(!ok(&h2("rhf", "stress = false", "")).stress);
+        // Range-separated hybrids, open-shell meta-GGA: the library allowlist.
+        let e = err(&h2(
+            "ksdft",
+            "kmesh = [1, 1, 2]\nstress = true",
+            "[dft]\nfunctional = \"HSE06\"",
+        ));
+        assert!(
+            e.contains("[cell] stress = true") && e.contains("range-separated"),
+            "{e}"
+        );
+        let e = err(&h2("uhf", km, "[dft]\nfunctional = \"SCAN\""));
+        assert!(e.contains("meta-GGA"), "{e}");
+        // SCAN stress on RS-GDF is anchored on the dense J only.
+        let rs = "jk = \"rsgdf\"\nauxbasis = \"cc-pvdz-ri\"";
+        let e = err(&h2(
+            "ksdft",
+            &format!("{rs}\n{km}"),
+            "[dft]\nfunctional = \"SCAN\"",
+        ));
+        assert!(
+            e.contains("dense-AFT J only") && e.contains("[cell] stress = true"),
+            "{e}"
+        );
+        // Split RS-GDF, Gamma point, optimize, correlated routes.
+        let e = err(&h2("rhf", &format!("{rs}\n{km}\nrange_split = true"), ""));
+        assert!(
+            e.contains("[cell] stress = true") && e.contains("range_split"),
+            "{e}"
+        );
+        let e = err(&h2("rhf", "stress = true", ""));
+        assert!(
+            e.contains("[cell] stress = true") && e.contains("kmesh"),
+            "{e}"
+        );
+        let e = err(&opt("rhf", km, ""));
+        assert!(
+            e.contains("[cell] stress = true") && e.contains("optimize"),
+            "{e}"
+        );
+        let e = err(&h2(
+            "rimp2",
+            &format!("{km}\ndenominators = \"shifted\""),
+            "",
+        ));
+        assert!(
+            e.contains("[cell] stress = true") && e.contains("no analytic stress"),
+            "{e}"
+        );
+    }
+
     #[test]
     fn optimize_is_refused_for_correlated_routes_and_frequencies() {
         for kind in ["rimp2", "pdep-rpa"] {
@@ -6131,6 +6281,19 @@ kind = "ccsd"
         let p = shipped_plan(name);
         assert_eq!(p.route, PeriodicRoute::Rhf, "{name}");
         assert!(p.optimize && p.kmesh.is_some(), "{name}");
+    }
+
+    #[test]
+    fn shipped_k_point_stress_example_resolves() {
+        let name = "h2-cell-kpts-rhf-stress.toml";
+        let p = shipped_plan(name);
+        assert_eq!(p.route, PeriodicRoute::Rhf, "{name}");
+        assert!(p.stress && !p.optimize, "{name}");
+        assert_eq!(
+            p.kmesh.map(|(_, c)| c),
+            Some(ferric_pbc::MeshCentring::MonkhorstPack),
+            "{name}"
+        );
     }
 
     #[test]

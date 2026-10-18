@@ -2749,16 +2749,13 @@ fn check_kpoint_ks_support(
         ))
     })?;
     if with_gradient || with_stress {
-        let allow = match kind {
-            KKsKind::Closed => ferric_pbc::kxcgrad::check_force_functional(functional),
-            KKsKind::Open => ferric_pbc::kxcgrad::check_open_shell_force_functional(functional),
-        };
         let what = if with_gradient {
             "with_gradient"
         } else {
             "with_stress"
         };
-        allow.map_err(|e| val_err(format!("{fname}: {what}: {e}")))?;
+        ferric_pbc::kxcgrad::check_kpoint_deriv_functional(kind == KKsKind::Open, functional, what)
+            .map_err(|e| val_err(format!("{fname}: {e}")))?;
     }
     Ok(())
 }
@@ -2770,22 +2767,20 @@ fn check_kpoint_ks_derivs(fname: &str, s: &PbcSetup, functional: Option<&str>) -
     if !s.derivs.any() {
         return Ok(());
     }
-    if s.cell.mol().atoms.iter().any(|a| a.n_core_ecp > 0) {
-        let what = if functional.is_some() { "KS" } else { "ROHF" };
-        return Err(val_err(format!(
-            "{fname}: k-point {what} forces and stress with ECPs are not validated \
-             (with_gradient / with_stress on a cell whose basis carries an ECP; the energy \
-             without them runs)"
-        )));
-    }
-    let mgga = functional.is_some_and(ferric_pbc::kxcgrad::is_validated_mgga);
-    if s.derivs.stress && mgga && s.aux.is_some() {
-        return Err(val_err(format!(
-            "{fname}: the k-point meta-GGA stress is anchored on the dense-AFT J only; use \
-             jk=\"dense\" with with_stress (with_gradient supports RS-GDF)"
-        )));
-    }
-    Ok(())
+    ferric_pbc::kxcgrad::check_kpoint_deriv_cell(
+        functional,
+        s.derivs.stress,
+        s.cell.mol().atoms.iter().any(|a| a.n_core_ecp > 0),
+        s.aux.is_some(),
+        if s.derivs.stress && !s.derivs.gradient {
+            "with_stress"
+        } else if s.derivs.gradient && !s.derivs.stress {
+            "with_gradient"
+        } else {
+            "with_gradient / with_stress"
+        },
+    )
+    .map_err(|e| val_err(format!("{fname}: {e}")))
 }
 
 /// Result of `run_rks_kpts`. Energies per cell, Hartree.

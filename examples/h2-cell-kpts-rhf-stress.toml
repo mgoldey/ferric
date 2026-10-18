@@ -1,0 +1,30 @@
+# Periodic k-point RHF analytic stress: H2 / STO-3G in a 4 Bohr simple-cubic
+# cell on a 1x1x2 shifted (Monkhorst-Pack) k-mesh, task = "energy" with
+# [cell] stress = true.
+#
+# The run prints the 3x3 stress tensor sigma = (1/Omega) dE/d(strain) in
+# Hartree/Bohr^3 and in GPa, and writes both to the JSON run log's run_end
+# record (extra.stress_hartree_per_bohr3, extra.stress_gpa; the log is written
+# next to this file by default, or pass --json PATH). It is the tensor
+# the Python run_rhf_kpts(..., with_stress=True) returns, bit for bit.
+# centring = "gamma" (the default) is the Gamma-centred mesh; "mp" shifts it.
+#
+#   OPENBLAS_NUM_THREADS=1 cargo run --release --bin ferric -- examples/h2-cell-kpts-rhf-stress.toml
+
+[molecule]
+xyz = "testdata/molecules/h2.xyz"
+
+[basis]
+name = "sto-3g"
+
+[method]
+kind = "rhf"
+
+[cell]
+unit = "bohr"
+lattice = [[4.0, 0.0, 0.0], [0.0, 4.0, 0.0], [0.0, 0.0, 4.0]]
+kmesh = [1, 1, 2]
+centring = "mp"
+exxdiv = "ewald"
+jk = "dense"
+stress = true

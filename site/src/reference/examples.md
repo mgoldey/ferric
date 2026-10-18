@@ -71,6 +71,7 @@ See [SCF and DFT](../methods/scf.md).
 | `h2-cell-rhf.toml` | H2 / STO-3G, 4 Bohr cubic cell | `rhf` + `[cell]`, Gamma point | — | Periodic, dense J/K, `exxdiv = "ewald"`. |
 | `h2-cell-kpts-rhf.toml` | H2 / STO-3G, 4 Bohr cubic cell | `rhf` + `[cell]`, 2×2×2 k-mesh | — | Periodic k-point RHF, dense J/K. |
 | `h2-cell-kpts-ksdft.toml` | H2 / STO-3G, 4 Bohr cubic cell | `ksdft` + `[cell]`, 1×1×2 k-mesh | PBE0 | Periodic k-point closed-shell KS-DFT, dense J/K. |
+| `h2-cell-kpts-rhf-stress.toml` | H2 / STO-3G, 4 Bohr cubic cell | `rhf` + `[cell]`, 1×1×2 shifted (`centring = "mp"`) k-mesh, `stress = true` | — | Analytic k-point stress (Hartree/Bohr³ and GPa, also in the run log's `run_end`), dense J/K. |
 | `h2-cell-kpts-rhf-opt.toml` | stretched H2 / STO-3G, 4 Å cubic cell | `rhf` + `[cell]` 1×1×3 k-mesh / optimize | — | k-point atom relaxation at a fixed lattice, analytic k-point force, dense J/K. |
 | `h2-cell-kpts-rks-opt.toml` | stretched H2 / STO-3G, 4 Å cubic cell | `ksdft` + `[cell]` 1×1×3 k-mesh / optimize | PBE0 | k-point atom relaxation at a fixed lattice, analytic k-point Kohn-Sham force (global hybrid), dense J/K. |
 | `h-cell-kpts-uks.toml` | H atom doublet / STO-3G, 4 Bohr cubic cell | `uhf` + `[dft]` + `[cell]`, 1×1×2 k-mesh | PBE | Periodic k-point open-shell Kohn-Sham (UKS), dense J/K; `rohf` gives ROKS/ROHF at a mesh. |
