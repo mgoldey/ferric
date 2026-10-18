@@ -27,15 +27,16 @@
 //!   [`crate::kscf::solve_krks_injected`]).
 //!
 //! Meta-GGA (SCAN / r2SCAN): `τ = (1/N_k) Σ_k ½ Σ_ax Re Σ D(k) ∂φ^k_μ (∂φ^k_ν)*`
-//! and `V^τ(k)_{μν} = Σ_g ½ w v_τ Σ_ax (∂_ax φ^k_μ)* ∂_ax φ^k_ν` (the Gamma
-//! periodic path has no meta-GGA; the molecular `semilocal_vxc` is mirrored).
+//! and `V^τ(k)_{μν} = Σ_g ½ w v_τ Σ_ax (∂_ax φ^k_μ)* ∂_ax φ^k_ν`
+//! (the molecular `semilocal_vxc` is mirrored).
 //!
 //! Range-separated hybrids (HSE06, CAM-B3LYP, wB97X, ...) are supported with
 //! the dense-AFT J/K ([`crate::rsh`]) and the RS-GDF J/K (`KRsGdf::build_rsh`:
 //! full-Coulomb fit plus a G-space fit of the erf-attenuated kernel), energy
 //! only: forces and stress refuse them. The Gamma-point [`crate::gamma_rsh`]
-//! reuses this exchange at k = 0. Open shell (KUKS), range-separated
-//! meta-GGAs, VV10 and double hybrids are refused. Time reversal is NOT used
+//! reuses this exchange at k = 0. Range-separated meta-GGAs, VV10 and
+//! double hybrids are refused here; open-shell (k-UKS) SCAN / r2SCAN energies
+//! live in [`crate::kuks`] (spin-resolved tau). Time reversal is NOT used
 //! to halve the XC work (every k gets its own Bloch AO cache).
 
 use crate::budget::{bytes_of, Ledger};
@@ -90,7 +91,7 @@ pub struct KPeriodicXc {
     pub(crate) gga: bool,
     rsh: Option<RshParams>,
     /// Meta-GGA: tau (and its Vxc term) is evaluated from `dchi`.
-    mgga: bool,
+    pub(crate) mgga: bool,
 }
 
 impl std::fmt::Debug for KPeriodicXc {
@@ -365,7 +366,7 @@ impl KPeriodicXc {
 
     /// Total kinetic-energy density of one chunk,
     /// `τ = (1/N_k) Σ_k ½ Σ_ax Re Σ_{μν} D(k)_{μν} ∂_ax φ^k_μ (∂_ax φ^k_ν)*`.
-    fn chunk_tau(&self, c: &KAoChunk, dm: &[Array2<Complex64>]) -> Array1<f64> {
+    pub(crate) fn chunk_tau(&self, c: &KAoChunk, dm: &[Array2<Complex64>]) -> Array1<f64> {
         let np = c.points.len();
         let w = 0.5 / self.nk as f64;
         let mut tau = Array1::<f64>::zeros(np);
