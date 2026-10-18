@@ -30,11 +30,11 @@
 //! TCutPNO / TCutPairs / TCutDO. The two "% of canonical correlation
 //! recovered" columns therefore measure DIFFERENT approximations. They are
 //! printed side by side and are never ranked, and no bar below compares a
-//! ferric DLPNO number to an ORCA DLPNO number. The Boys-localized variant
-//! (acceptance item (c)) is NOT done: `dlpno_mp2_from_b_ov` divides by a
-//! diagonal `eps`, so a non-canonical (Fock-coupled) occupied block cannot be
-//! passed to it, and faking it by rotating `b_ov` while keeping diagonal
-//! denominators would not be MP2.
+//! ferric DLPNO number to an ORCA DLPNO number. This file's PNO path stays
+//! canonical (`dlpno_mp2_from_b_ov` divides by a diagonal `eps`). The
+//! Boys-localized, Fock-coupled PAIR screen (acceptance item (c)) lives in
+//! `dlpno_localized.rs` and is measured in `validation_dlpno_localized.rs`;
+//! it has no PNO truncation.
 //!
 //! Also NOT claimed: any speedup, any statement about DLPNO-CCSD / (T) in
 //! ferric (no end-to-end driver exists; ORCA's CCSD(T) numbers in the JSON are
@@ -52,14 +52,18 @@
 //!   `pair_retention` stays ~1.0 at every useful `t_cut_pairs` on C4-C8
 //!   because canonical pairs are delocalized, and any "recovery" gap against
 //!   ORCA measures the localization difference, not the PNO code.
-//! * OUTCOME FOR THE PAIR SCREEN: NOT DISTINGUISHABLE here. At C4-C8 (below
-//!   the locality onset) BOTH hypotheses predict ~100% pair retention: the
-//!   canonical pair energies are exact (`estimate_pair_energies_from_b_ov`)
-//!   and average ~E_corr/npairs ~ 4e-3 Eh, far above 1e-4, and ORCA with
-//!   Boys-localized occupieds also keeps (nearly) every pair (153/153, 91/91,
-//!   323/325, 190/190, 551/561, 325/325). A flat pair dial is therefore
-//!   uninformative at these sizes. Only the PNO (virtual) screen is
+//! * OUTCOME FOR THE CANONICAL PAIR SCREEN: uninformative at C4-C8 (below
+//!   the locality onset): the canonical pair energies are exact
+//!   (`estimate_pair_energies_from_b_ov`) and average ~E_corr/npairs ~ 4e-3 Eh,
+//!   far above 1e-4. ORCA's pair counts (153/153, 91/91, 323/325, 190/190,
+//!   551/561, 325/325) are at its TCutPre prescreen and are NOT comparable to
+//!   `t_cut_pairs` = 1e-4; they do not predict ferric's localized retention
+//!   (measured 0.585 frozen-core at C8 in `validation_dlpno_localized.rs`).
+//!   The `note` field in the committed JSON (from `gen_dlpno.py`) predates
+//!   that measurement and is superseded by it. Only the PNO (virtual) screen is
 //!   exercised meaningfully.
+//!   (This is the CANONICAL screen. With Boys-localized occupieds ferric's pair
+//!   screen is informative: see `validation_dlpno_localized.rs`.)
 //!
 //! # All-electron columns are lopsided against ORCA
 //!
@@ -414,10 +418,9 @@ fn run_system(system: &str, variants_wanted: &[usize]) {
         // physics at C4-C8. All-electron, the screen removes the core pairs
         // (counts below, measured); frozen-core, canonical valence pairs are all
         // above 1e-4 (their mean estimated energy is ~E_corr/npairs ~ 6e-3 Eh),
-        // so the dial is flat by arithmetic. ORCA with Boys-localized occupieds
-        // also keeps nearly every pair here. Both hypotheses predict ~100% pair
-        // retention, so this cannot tell them apart; it is below the locality
-        // onset and is not evidence for either. ----
+        // so the dial is flat by arithmetic. This is the CANONICAL screen only;
+        // ORCA's counts are at its TCutPre prescreen, not comparable. Localized
+        // occupieds are measured in `validation_dlpno_localized.rs`. ----
         if fc == 0 {
             let (n5, n4) = expected_pairs_all_electron(system);
             let (e4, d4) = dlpno(&row, &cfg_of(0.0, 1e-4));
