@@ -2438,8 +2438,8 @@ def run_roks_kpts(
     gdf_omega: float | None = None,
 ) -> KpointScfResult:
     """k-point ROKS (restricted open-shell Kohn-Sham, Roothaan effective Fock)
-    with the arguments of run_uks_kpts. with_gradient / with_stress need
-    jk="dense" (ValueError with RS-GDF); converge grad_conv well below 1e-5
+    with the arguments of run_uks_kpts. with_gradient / with_stress run with
+    jk="dense" or the unsplit jk="rsgdf"; converge grad_conv well below 1e-5
     for the stress (the ROHF orbital-gradient gate)."""
     ...
 
@@ -2465,7 +2465,7 @@ def run_rohf_kpts(
     gdf_omega: float | None = None,
 ) -> KpointScfResult:
     """k-point ROHF: run_roks_kpts without a functional (no XC result fields).
-    Derivatives need jk="dense"."""
+    Forces and stress run with jk="dense" or the unsplit jk="rsgdf"."""
     ...
 
 def run_mp2_kpts(

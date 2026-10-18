@@ -23,6 +23,17 @@ pub const ANGSTROM_TO_BOHR: f64 = 1.0 / BOHR_RADIUS_ANGSTROM;
 /// inverse length in Å⁻¹ (e.g. a range-separation ω) times this is Bohr⁻¹.
 pub const BOHR_TO_ANGSTROM: f64 = BOHR_RADIUS_ANGSTROM;
 
+/// The Hartree in joules (CODATA 2010, the set the Bohr radius above comes from).
+pub const HARTREE_JOULE: f64 = 4.359_744_34e-18;
+
+/// 1 Hartree/Bohr^3 in GPa: multiply a stress (or pressure) in Hartree/Bohr^3
+/// by this to get gigapascals. Built from [`BOHR_RADIUS_ANGSTROM`] so the
+/// length unit cannot disagree with the geometry's.
+pub const HARTREE_PER_BOHR3_TO_GPA: f64 = {
+    let a0_m = BOHR_RADIUS_ANGSTROM * 1.0e-10;
+    HARTREE_JOULE / (a0_m * a0_m * a0_m) * 1.0e-9
+};
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -40,6 +51,17 @@ mod tests {
         // Not inverted: 1 Å is about 1.89 Bohr, not 0.53.
         const { assert!(ANGSTROM_TO_BOHR > 1.889 && ANGSTROM_TO_BOHR < 1.890) };
         assert!((ANGSTROM_TO_BOHR * BOHR_TO_ANGSTROM - 1.0).abs() < 4.0 * f64::EPSILON);
+    }
+
+    /// Hartree/Bohr^3 -> GPa is about 29421 (the textbook 29421.0 GPa), and a
+    /// stress converts to a pressure of the SAME magnitude (not inverted, not
+    /// kbar or eV/A^3).
+    #[test]
+    fn hartree_per_bohr3_is_29421_gpa() {
+        assert!((HARTREE_PER_BOHR3_TO_GPA - 29421.02).abs() < 0.05);
+        // Cross-check from eV/A^3 = 160.2177 GPa, Hartree = 27.211386 eV.
+        let from_ev = 27.211_386 / (BOHR_RADIUS_ANGSTROM.powi(3)) * 160.217_66;
+        assert!((HARTREE_PER_BOHR3_TO_GPA / from_ev - 1.0).abs() < 1e-6);
     }
 
     /// XYZ coordinates are bit-identical to what the prior private factor in
