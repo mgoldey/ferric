@@ -81,18 +81,24 @@
 //! skew-only ECP defect is NOT shown; the only skew-sensitive check is the
 //! supercell translation (hand-edit mutation above).
 //!
-//! NOT tested: range-split source with an ECP, several ECP atoms, a NON-TRIM
-//! mesh (1x1x3) or an FD of the 1x1x2 mesh on the triclinic ECP cell (the
-//! orthorhombic 1x1x3 supercell anchor alone is 24 min; the triclinic 1x1x2
-//! one is 10 min), a shifted mesh with an ECP, skew-SPECIFIC detection (no
-//! mutant is shown to be visible only on a skewed cell; see the comparison
-//! test), k-specific ECP mutants on the triclinic cell (`EcpWrongResidue` is a
-//! no-op on a 1x1x2 mesh because -L mod 2 == L mod 2, so it is unrunnable
-//! there; `EcpMeshCountModuli` is a no-op on every Gamma-centred mesh),
-//! the fit-acting FORCE mutants (`RotFitWrongResidue`,
-//! `RotSwapPair`) with an ECP (the dense force loop only asserts that they
-//! are no-ops; the RS-GDF loop is stress-only; their stress versions are run
-//! there: 6.97e-1 and 1.12e-1).
+//! Covered in `validation_kstress_followups.rs` (section C, this cell and
+//! basis, RS-GDF): the range-split source with an ECP (split vs unsplit, FD
+//! of the split energy, split mutants), the fit-acting FORCE mutants
+//! (`RotFitWrongResidue`, `RotSwapPair`, `FitAuxPhase`, ...) against an
+//! FD-anchored fitted force, and a shifted (MP 1x1x2) mesh with the ECP,
+//! where `EcpWrongResidue` and `EcpMeshCountModuli` act.
+//!
+//! NOT tested: several ECP atoms, a NON-TRIM mesh (1x1x3) or an FD of the
+//! 1x1x2 mesh on the triclinic ECP cell (the orthorhombic 1x1x3 supercell
+//! anchor alone is 24 min; the triclinic 1x1x2 one is 10 min), a shifted or
+//! range-split ECP anchor on the dense source or on a triclinic cell,
+//! skew-SPECIFIC detection (no mutant is shown to be visible only on a
+//! skewed cell; see the comparison test), k-specific ECP mutants on the
+//! triclinic cell (`EcpWrongResidue` is a no-op on a 1x1x2 mesh because
+//! -L mod 2 == L mod 2, so it is unrunnable there; `EcpMeshCountModuli` is a
+//! no-op on every Gamma-centred mesh). The dense force loop below only
+//! asserts that the fit-acting force mutants are no-ops; the RS-GDF loop
+//! here is stress-only (6.97e-1 and 1.12e-1).
 
 mod common;
 
