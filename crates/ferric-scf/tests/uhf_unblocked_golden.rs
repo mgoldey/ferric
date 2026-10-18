@@ -3,10 +3,14 @@
 //! count of a doublet and a triplet, recorded from an origin/main build
 //! (merge-base 236db4ed) with the same test body.
 //!
-//! The iteration count is pinned exactly and the energy to 1e-12 Ha: bitwise
-//! equality can move by an ulp across machines (BLAS dispatch). On the
-//! recording machine the bits of the refactored and the origin/main builds
-//! were identical.
+//! The iteration count is pinned to the recorded value within +-1 and the
+//! energy to 1e-12 Ha: bitwise equality can move by an ulp across machines
+//! (BLAS dispatch), and that roundoff can change which iteration passes the
+//! convergence gate while leaving the final energy within 1e-12 Ha. The
+//! iteration check stays because it detects trajectory regressions (a changed
+//! guess, damping or DIIS path moves the count by far more than one). On the
+//! recording machine the bits and the counts of the refactored and the
+//! origin/main builds were identical.
 
 use ferric_core::basis;
 use ferric_core::mol::Molecule;
@@ -51,7 +55,10 @@ const RECORDED: [(&str, usize, u64, usize); 2] = [
 fn unblocked_uhf_matches_the_origin_main_golden() {
     let got: Vec<_> = RECORDED.iter().map(|r| run(r.0, r.1)).collect();
     for ((rel, _, bits, iters), (b, n)) in RECORDED.iter().zip(got) {
-        assert_eq!(n, *iters, "{rel}: iteration count");
+        assert!(
+            n.abs_diff(*iters) <= 1,
+            "{rel}: iteration count {n} vs recorded {iters} (cross-machine tolerance is +-1)"
+        );
         let (e, e0) = (f64::from_bits(b), f64::from_bits(*bits));
         assert!((e - e0).abs() < 1e-12, "{rel}: {e} vs {e0}");
     }
