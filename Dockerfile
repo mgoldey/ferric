@@ -16,6 +16,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY scripts/install-libint.sh /tmp/install-libint.sh
 RUN /tmp/install-libint.sh /opt/libint2
 ENV LIBINT2_PREFIX=/opt/libint2
+# The pinned 2.13.1 boys.h is stock, so ferric's boys.h override must apply;
+# fail the build if it cannot (crates/ferric-integrals/shim/libint2_overrides).
+ENV FERRIC_REQUIRE_PATCHED_BOYS=1
 
 # Install Rust
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable

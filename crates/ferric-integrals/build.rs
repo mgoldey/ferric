@@ -28,11 +28,13 @@ fn main() {
     let libint_root = libint_root(&local_prefix);
     println!("cargo:warning=libint2 headers and library from {libint_root}");
 
+    // --- libint2 header override (GmEval per-call copy fix) ---
+    // Decided first: under FERRIC_REQUIRE_PATCHED_BOYS an unknown boys.h
+    // fails here, before the libecpint and shim compiles.
+    let boys_override = libint2_boys_override(&libint_root);
+
     // --- libecpint: configure + build the vendored static library via CMake ---
     let (ecpint_lib_dir, ecpint_include_dirs) = build_libecpint();
-
-    // --- libint2 header override (GmEval per-call copy fix) ---
-    let boys_override = libint2_boys_override(&libint_root);
 
     // --- libint2 shim ---
     let mut shim_build = cc::Build::new();
@@ -108,10 +110,13 @@ fn main() {
 
     println!("cargo:rerun-if-env-changed=LIBINT2_PREFIX");
     println!("cargo:rerun-if-changed={libint_root}/include/libint2/config.h");
-    println!("cargo:rerun-if-env-changed=FERRIC_LIBINT2_STOCK_BOYS");
+    for var in [STOCK_VAR, REQUIRE_VAR, ALLOW_VAR] {
+        println!("cargo:rerun-if-env-changed={var}");
+    }
     for (version, _) in STOCK_BOYS_H_FNV1A64 {
         println!("cargo:rerun-if-changed=shim/libint2_overrides/{version}/libint2/boys.h");
     }
+    println!("cargo:rerun-if-changed=build_support/boys_policy.rs");
     println!("cargo:rerun-if-changed=shim/shim.h");
     println!("cargo:rerun-if-changed=shim/shim.cc");
     println!("cargo:rerun-if-changed=shim/ecp_shim.h");
@@ -145,26 +150,9 @@ fn libint_root(prefix: &str) -> String {
     );
 }
 
-/// FNV-1a 64 of each STOCK libint2 `include/libint2/boys.h` for which
-/// `shim/libint2_overrides/<version>/libint2/boys.h` holds a patched copy.
-/// - 2.7.2: mpqc4 tarball `libint-2.7.2-mpqc4.tgz`
-///   (sha256 880592b9026352c871c96877a43788edd22edb0b1057ab5a73657c40b3a61505).
-/// - 2.13.1: conda-forge `libint-2.13.1-h83f5b4b_0.conda` as installed by
-///   scripts/install-libint.sh
-///   (sha256 890ab0261a2be2517d3d4cedfd7d07e2a1c6be7b6f057dc7ea2ea418e17067c1).
-const STOCK_BOYS_H_FNV1A64: [(&str, u64); 2] = [
-    ("2.7.2", 0x1d51_ac52_f207_6ad8),
-    ("2.13.1", 0x0f6f_0c23_194e_18ad),
-];
-
-fn fnv1a64(bytes: &[u8]) -> u64 {
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for &b in bytes {
-        h ^= u64::from(b);
-        h = h.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    h
-}
+// STOCK_BOYS_H_FNV1A64, the env-var names and the pure decision
+// `boys_outcome` (shared with tests/boys_override_policy.rs).
+include!("build_support/boys_policy.rs");
 
 /// Decide whether to put `shim/libint2_overrides/<version>` first on the
 /// shim's include path. Each such directory holds a patched copy of that
@@ -178,39 +166,31 @@ fn fnv1a64(bytes: &[u8]) -> u64 {
 /// and then the override made from THAT version is used. Any other libint2
 /// (another version, the terf-patched prefix, a distro build) gets its own
 /// header untouched plus a warning: silently shadowing a different version's
-/// boys.h would be far worse than the slowdown.
-/// `FERRIC_LIBINT2_STOCK_BOYS=1` forces the stock header (A/B runs).
+/// boys.h would be far worse than the slowdown. With
+/// `FERRIC_REQUIRE_PATCHED_BOYS=1` (set by CI, the wheel builds and the
+/// Dockerfile) that case is a build error instead, unless
+/// `FERRIC_ALLOW_UNPATCHED_BOYS=1`. `FERRIC_LIBINT2_STOCK_BOYS=1` forces the
+/// stock header (A/B runs).
 fn libint2_boys_override(libint_root: &str) -> Option<PathBuf> {
-    if std::env::var_os("FERRIC_LIBINT2_STOCK_BOYS").is_some() {
-        println!(
-            "cargo:warning=FERRIC_LIBINT2_STOCK_BOYS set: libint2 GmEval copy fix, Boys T_crit table-edge fix (#433) and Yukawa/Slater table-edge and overflow fixes (#436, #439, #443) NOT applied"
-        );
-        return None;
-    }
+    let env = BoysEnv {
+        force_stock: std::env::var_os(STOCK_VAR).is_some(),
+        require: env_flag(std::env::var(REQUIRE_VAR).ok().as_deref()),
+        allow_unpatched: env_flag(std::env::var(ALLOW_VAR).ok().as_deref()),
+    };
     let found = PathBuf::from(format!("{libint_root}/include/libint2/boys.h"));
     println!("cargo:rerun-if-changed={}", found.display());
-    let bytes = match std::fs::read(&found) {
-        Ok(b) => b,
-        Err(e) => {
-            println!(
-                "cargo:warning=cannot read {} ({e}); libint2 GmEval copy fix, Boys T_crit table-edge fix (#433) and Yukawa/Slater table-edge and overflow fixes (#436, #439, #443) NOT applied",
-                found.display()
-            );
+    let read = std::fs::read(&found).map_err(|e| e.to_string());
+    let version = match boys_outcome(
+        &found.display().to_string(),
+        read.as_deref().map_err(Clone::clone),
+        env,
+    ) {
+        BoysOutcome::Override(version) => version,
+        BoysOutcome::Unpatched(warning) => {
+            println!("cargo:warning={warning}");
             return None;
         }
-    };
-    let hash = fnv1a64(&bytes);
-    let Some((version, _)) = STOCK_BOYS_H_FNV1A64.iter().find(|(_, h)| *h == hash) else {
-        println!(
-            "cargo:warning={} (FNV-1a 64 {hash:#018x}) is not a stock libint2 boys.h ferric has an override for ({}); libint2 GmEval copy fix, Boys T_crit table-edge fix (#433) and Yukawa/Slater table-edge and overflow fixes (#436, #439, #443) NOT applied (erf/erfc integrals scale poorly across threads; a Boys argument of exactly 117.0 MAY read uninitialised memory if this libint2 still has the stock table-edge defect, issue #433; and Yukawa/Slater-geminal integrals with T == 1024 or U == 1000 exactly MAY read out of range, and with U above ~700 (2.7.2) or U + 2 sqrt(U T) above ~709 with T above 1024 (2.7.2 and 2.13.1) return NaN, if this libint2 still has the stock TennoGmEval defects, issues #436 and #439)",
-            found.display(),
-            STOCK_BOYS_H_FNV1A64
-                .iter()
-                .map(|(v, _)| *v)
-                .collect::<Vec<_>>()
-                .join(", ")
-        );
-        return None;
+        BoysOutcome::Refuse(message) => panic!("{message}"),
     };
     let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
     let dir = manifest_dir.join(format!("shim/libint2_overrides/{version}"));
@@ -225,7 +205,7 @@ fn libint2_boys_override(libint_root: &str) -> Option<PathBuf> {
     }
     println!(
         "cargo:warning=libint2 {version} boys.h override applied ({})",
-        if *version == "2.7.2" {
+        if version == "2.7.2" {
             "GmEval copy fix + Boys T_crit table-edge fix #433 + Yukawa/Slater table-edge and eval_urr overflow fixes #436 + small-T Yukawa quadrature #443"
         } else {
             "GmEval copy fix + Boys T_crit table-edge fix #433 + eval_urr overflow fix #439 + small-T Yukawa quadrature #443"
