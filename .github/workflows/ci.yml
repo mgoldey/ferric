@@ -101,6 +101,12 @@ env:
   # active BLAS/LAPACK alternatives so the next such drift is diagnosable.
   OPENBLAS_CORETYPE: Haswell
   LIBINT2_PREFIX: /home/runner/libint2
+  # Every job installs the sha256-pinned stock libint2 2.13.1
+  # (scripts/install-libint.sh), whose boys.h ferric overrides (GmEval copy,
+  # Boys/Tenno table-edge and overflow fixes; shim/libint2_overrides/). Make
+  # a boys.h that is not a known stock file a BUILD ERROR here instead of a
+  # warning, so a new libint pin or a stale cache cannot silently drop them.
+  FERRIC_REQUIRE_PATCHED_BOYS: "1"
 
 jobs:
   lint:

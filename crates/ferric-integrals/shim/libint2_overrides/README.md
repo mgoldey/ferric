@@ -4,7 +4,7 @@ Each `<version>/libint2/boys.h` here is a patched copy of that libint2 version's
 `<version>/libint2-<version>-gmeval-no-copy.patch` is the exact diff from stock to that copy. `patch -p1` applied
 inside an install prefix of that version reproduces the file byte for byte.
 
-| Directory | Upstream | Stock `boys.h` sha256 | FNV-1a 64 (build.rs) |
+| Directory | Upstream | Stock `boys.h` sha256 | FNV-1a 64 (`build_support/boys_policy.rs`) |
 |-----------|----------|-----------------------|----------------------|
 | `2.7.2/` | `libint-2.7.2-mpqc4.tgz` | `880592b9026352c871c96877a43788edd22edb0b1057ab5a73657c40b3a61505` | `0x1d51ac52f2076ad8` |
 | `2.13.1/` | conda-forge `libint-2.13.1-h83f5b4b_0.conda` (`scripts/install-libint.sh`) | `890ab0261a2be2517d3d4cedfd7d07e2a1c6be7b6f057dc7ea2ea418e17067c1` | `0x0f6f0c23194e18ad` |
@@ -88,7 +88,7 @@ that quartet's contribution was about 1e-17, so a coarse precision screened it a
 
 This is a libint2 defect (upstream `boys.h`, every version that ships `boys_cheb7_v2.h`: both 2.7.2 and 2.13.1 are
 confirmed). A prefix whose `boys.h` is not one of the stock files above gets no override and MAY still read
-uninitialised memory; build.rs warns that the fix is NOT applied.
+uninitialised memory; build.rs warns that the fix is NOT applied, or fails under `FERRIC_REQUIRE_PATCHED_BOYS=1`.
 
 ### Evidence and its limits
 
@@ -314,7 +314,8 @@ override there are no new `throw`s (2.13.1 has its own fallback) and no index cl
   (`wheels.yml`, libint 2.7.2) are unaffected by this change. A conda-forge package build of ferric is not in this
   checkout (no `conda/` directory), so its path was not checked; if it compiles the shim against the same stock
   2.13.1 `boys.h` the override is selected the same way. A prefix whose `boys.h` is not byte-identical to a pinned stock file
-  (distro libint, terf-patched build) gets no override and keeps the NaN; build.rs prints a warning.
+  (distro libint, terf-patched build) gets no override and keeps the NaN; build.rs prints a warning, or fails
+  under `FERRIC_REQUIRE_PATCHED_BOYS=1` (see "How it is wired in").
 
 ## Only header code is affected
 
@@ -331,7 +332,21 @@ directory (`2.7.2/` or `2.13.1/`) **first** on the shim's include path, ahead of
 `engine.impl.h` includes `<libint2/boys.h>`, and the first `-I` wins. The override is a whole-file replacement, so
 any other header gets no override. That covers other versions, the terf-patched prefix from
 `wiki/perf-tasks/patches/libint2-terf-*.patch`, and distro builds. In those cases the stock header is used and cargo
-prints a warning. Setting `FERRIC_LIBINT2_STOCK_BOYS=1` forces the stock header for A/B timing.
+prints a warning. Setting `FERRIC_LIBINT2_STOCK_BOYS=1` forces the stock header for A/B timing. That variable is checked
+for presence only: any value, including `0`, forces the stock header.
+
+`FERRIC_REQUIRE_PATCHED_BOYS=1` turns every case where the override is not applied (unknown hash, unreadable
+`boys.h`, or `FERRIC_LIBINT2_STOCK_BOYS`) into a build error. The message names the reason (for an unknown header, the
+hash found and the known stock hashes), a remedy that fits it (point `LIBINT2_PREFIX` at a stock libint2, or unset
+`FERRIC_LIBINT2_STOCK_BOYS`), and the opt-out. `FERRIC_ALLOW_UNPATCHED_BOYS=1` is that opt-out: it downgrades the error back to the warning. `ci.yml` (every
+job), `wheels.yml` (both wheel builds and the `MALLOC_PERTURB_` job) and the `Dockerfile` set
+`FERRIC_REQUIRE_PATCHED_BOYS=1`, because each installs a sha256-pinned libint2 whose `boys.h` is stock (conda-forge
+2.13.1, or the `libint-2.7.2-ferric-small-1` export, whose `boys.h` has the stock 2.7.2 sha256 above). A new libint2
+pin or a stale cache there therefore fails the build instead of silently dropping the fixes. A plain local or sdist
+build does not set it, so a libint2 the table does not list (another version, a distro or from-source build, the
+terf-patched prefix) still builds with the warning. The decision is `build_support/boys_policy.rs`, shared by
+`build.rs` and `tests/boys_override_policy.rs`; the test rebuilds each stock `boys.h` by reverse-applying the
+committed `.patch` and checks it selects its override.
 
 The terf patch adds `terf_gm_eval`, which also goes through `GenericGmEval` with `CoreEvalScratch`. So it has the
 same per-call copy, and this override does not fix it.
