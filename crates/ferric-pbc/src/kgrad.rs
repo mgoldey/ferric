@@ -240,6 +240,14 @@ pub enum KGradMutation {
     /// M-term instead of the mixed one the SCF's K carried (blind for
     /// `exxdiv = none`).
     RshPlainMadelung,
+    /// Range separation: `ω × 1.01` in the derivative's kernel.
+    RshOmegaScaled,
+    /// Range separation: the attenuated (erf) piece dropped from the
+    /// derivative's kernel (factor `c_sr` at every K).
+    RshNoErfPiece,
+    /// Range separation: the Madelung part of the M-term dropped (blind for
+    /// `exxdiv = none`).
+    RshNoMadelungTerm,
 }
 
 /// The hcore SR derivative walk's rotation and forward-transformed image
@@ -1045,8 +1053,14 @@ fn rsh_and_m_term_vm(
         KGradJk::Dense(e) => e.rsh(),
         KGradJk::RsGdf(_) => None,
     };
-    let plain = rsh.is_some() && vm != 0.0 && mutation == Some(KGradMutation::RshPlainMadelung);
-    let vm_used = if plain { mesh.madelung(cell)? } else { vm };
+    let defect = |m: KGradMutation| rsh.is_some() && vm != 0.0 && mutation == Some(m);
+    let vm_used = if defect(KGradMutation::RshPlainMadelung) {
+        mesh.madelung(cell)?
+    } else if defect(KGradMutation::RshNoMadelungTerm) {
+        0.0
+    } else {
+        vm
+    };
     Ok((rsh, vm_used))
 }
 
@@ -1859,6 +1873,11 @@ fn rsh_kernel(rsh: Option<RshParams>, mutation: Option<KGradMutation>) -> RshKer
             c_lr: r.c_sr,
             ..r
         }),
+        (Some(r), Some(M::RshOmegaScaled)) => Some(RshParams {
+            omega: 1.01 * r.omega,
+            ..r
+        }),
+        (Some(r), Some(M::RshNoErfPiece)) => Some(RshParams { c_lr: r.c_sr, ..r }),
         (r, _) => r,
     };
     RshKernel {

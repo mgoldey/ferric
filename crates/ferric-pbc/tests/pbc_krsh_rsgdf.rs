@@ -637,6 +637,29 @@ fn rsh_rsgdf_forces_and_stress_are_refused_not_silently_wrong() {
     );
     let e = kgrad.expect_err("KS force on an RSH RS-GDF SCF must be refused");
     assert!(e.to_string().contains("range-separated"), "{e}");
+    // The KS entry WITH the range-separated name (the force covers it on dense
+    // AFT) is refused on RS-GDF by the source check, naming RS-GDF.
+    let kgrad = ferric_pbc::kxcgrad::kpoint_rks_gradient(
+        &cell,
+        &prep,
+        &mesh,
+        &cfg.krhf.hcore,
+        &kept.hk,
+        kept.grad_jk(Some(&aux), &cfg.krhf.rsgdf).unwrap(),
+        &r.scf,
+        "HSE06",
+        &ferric_pbc::kxcgrad::KRksGradConfig {
+            exxdiv: Some(ExxDiv::Ewald),
+            ..Default::default()
+        },
+    );
+    let e = kgrad
+        .expect_err("RSH KS force on RS-GDF must be refused")
+        .to_string();
+    assert!(
+        e.contains("RS-GDF") && e.contains("dense-AFT J/K only"),
+        "{e}"
+    );
     // By name: the force allowlist refuses the functional itself.
     assert!(ferric_pbc::kxcgrad::check_force_functional("HSE06").is_err());
     assert!(

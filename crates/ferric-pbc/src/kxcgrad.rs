@@ -80,7 +80,8 @@
 //!
 //! # Range-separated hybrids
 //!
-//! A CAM functional (HSE06, CAM-B3LYP, wB97X) puts its exchange fractions
+//! A CAM functional (HSE06, CAM-B3LYP force-tested; wB97X accepted, not
+//! exercised by a force test) puts its exchange fractions
 //! INSIDE the dense-AFT exchange kernel ([`crate::rsh`]):
 //! `v(K) = 4π/K² f(K)`, `f(K) = c_sr + (c_lr − c_sr) e^{−K²/4ω²}`, and the
 //! `exxdiv = ewald` shift is the mixed constant `c_sr v_M + (c_lr − c_sr)
@@ -1107,7 +1108,8 @@ pub(crate) fn resolve_global_or_rsh(
 /// * `scf` — `KRksResult::scf`.
 /// * `cfg.grid`/`cfg.ao_threshold` — the grid and AO truncation of the energy.
 ///
-/// A range-separated hybrid (HSE06, CAM-B3LYP, wB97X; module doc
+/// A range-separated hybrid (HSE06 and CAM-B3LYP force-tested; wB97X and other
+/// CAM functionals accepted but not exercised by a force test; module doc
 /// "Range-separated hybrids") needs the dense-AFT J/K built with the
 /// functional's [`RshParams`] (as [`crate::kdft::solve_krks`] builds them);
 /// its exact exchange enters with fraction 1 (the fractions are inside the

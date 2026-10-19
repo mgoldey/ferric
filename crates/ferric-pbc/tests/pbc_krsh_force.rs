@@ -19,20 +19,26 @@
 //!    (separate SCFs, Gamma J / hcore / grid vs the k ones).
 //!
 //! MUTATION LEDGER (production-wired `KGradMutation::Rsh*`), measured
-//! 2026-10-18; miss = max |F_mutant - F_ref| in Hartree/Bohr, FD bar 1e-7
-//! (the FD-validated production force agrees with FD to 2.9e-9):
+//! 2026-10-18 (and reproduced by an independent review); miss = max
+//! |F_mutant - F_ref| in Hartree/Bohr against the FD-validated production
+//! force (1x1x3, ewald; it agrees with FD to 2.9e-9), FD bar 1e-7:
 //!
-//! | mutant            | vs FD-validated force (CAM-B3LYP 1x1x3 ewald) | equal-fraction anchor (ewald / none) |
-//! |-------------------|-----------------------------------------------|--------------------------------------|
-//! | RshNoKernelFactor | 1.48e-1                                       | 1.23e-1 / 1.23e-1                    |
-//! | RshKernelOnJ      | 1.01e-1                                       | 6.91e-2 / 6.91e-2                    |
-//! | RshSwapFractions  | 3.00e-2                                       | blind (c_sr = c_lr)                  |
-//! | RshPlainMadelung  | 3.40e-2                                       | 3.14e-2 / blind (no Madelung)        |
+//! | mutant            | CAM-B3LYP | HSE06   | equal-fraction anchor (ewald / none) |
+//! |-------------------|-----------|---------|--------------------------------------|
+//! | RshNoKernelFactor | 1.48e-1   | 1.64e-1 | 1.23e-1 / 1.23e-1                    |
+//! | RshKernelOnJ      | 1.01e-1   | 9.03e-2 | 6.91e-2 / 6.91e-2                    |
+//! | RshSwapFractions  | 3.00e-2   | 5.44e-2 | blind (c_sr = c_lr)                  |
+//! | RshPlainMadelung  | 3.40e-2   | 5.27e-2 | 3.14e-2 / blind (no Madelung)        |
+//! | RshOmegaScaled    | 5.20e-4   | 1.45e-5 | not run                              |
+//! | RshNoErfPiece     | 3.77e-2   | 1.22e-4 | not run                              |
+//! | RshNoMadelungTerm | 2.79e-2   | 5.12e-3 | not run                              |
 //!
-//! The erf (attenuated) piece is live on the CAM-B3LYP fixture: the largest
-//! `|c_lr - c_sr| e^{-K^2/4w^2}` over the 1x1x3 exchange K set is 0.245; for
-//! HSE06 (w = 0.11) it is 8.7e-4, so HSE06 exercises the attenuated part
-//! mostly through the mixed Madelung constant and the semilocal w.
+//! The erf (attenuated) piece is exercised by both functionals: the largest
+//! `|c_lr - c_sr| e^{-K^2/4w^2}` over the 1x1x3 exchange K set is 0.245 for
+//! CAM-B3LYP and 8.7e-4 for HSE06 (w = 0.11), yet dropping HSE06's erf piece
+//! from the derivative misses by 1.2e-4 (1200 FD bars) and w x 1.01 by
+//! 1.45e-5 (145 bars): the small-K (q != 0) terms carry it. Bars asserted:
+//! 1e-5 (CAM-B3LYP), 1e-6 (HSE06, 10 FD bars).
 //!
 //! Anchor numbers (measured): equal fractions vs the global hybrid 5.6e-17
 //! (energy difference 0); 1x1x3 vs supercell 1.0e-14 (HSE06), 1.1e-14
@@ -328,7 +334,61 @@ fn gamma_force(f: &str, exxdiv: ExxDiv) -> KRksGradient {
         .expect_err("another grid accepted")
         .to_string();
     assert!(e.contains("differs from the SCF's stored fock"), "{e}");
+    if f == "HSE06" && exxdiv == ExxDiv::Ewald {
+        gamma_refusals(&cell, &prep, &hc.s, &hcfg, &r.scf, &gc, &kc, f);
+    }
     gamma_rks_rsh_gradient(&cell, &prep, &hcfg, &r.scf, &gc, &ex, &kc).unwrap()
+}
+
+/// Typed refusals of the routed Gamma force: an RS-GDF exchange (the
+/// attenuated fit has no derivative) and an open-shell result (here the
+/// restricted result relabelled `Spin::Unrestricted`, which must be refused by
+/// the spin check, not differentiated as closed shell).
+#[allow(clippy::too_many_arguments)]
+fn gamma_refusals(
+    cell: &Cell,
+    prep: &ferric_integrals::basis_bridge::PreparedBasis,
+    s: &Array2<f64>,
+    hcfg: &PeriodicHcoreConfig,
+    scf: &ferric_scf::result::ScfResult,
+    gc: &GammaRksConfig,
+    kc: &KGradConfig,
+    f: &str,
+) {
+    let aux = ferric_integrals::basis_bridge::PreparedBasis::new(
+        cell.mol(),
+        &ferric_core::basis::bundled("cc-pvdz-ri").unwrap(),
+    )
+    .unwrap();
+    let rcfg = ferric_pbc::rsgdf::kpoint::KRsGdfConfig {
+        gdf: ferric_pbc::rsgdf::RsGdfConfig {
+            omega: 1.0,
+            exxdiv: gc.exxdiv,
+            budget_bytes: Some(AMPLE),
+            ..Default::default()
+        },
+        mutation: None,
+    };
+    let ex_gdf =
+        GammaRshExchange::build_rsgdf(cell, prep, &aux, s, gc.exxdiv, &rcfg, rsh_of(f)).unwrap();
+    let e = gamma_rks_rsh_gradient(cell, prep, hcfg, scf, gc, &ex_gdf, kc)
+        .expect_err("RS-GDF Gamma exchange accepted")
+        .to_string();
+    eprintln!("Gamma RS-GDF refusal: {e}");
+    assert!(e.contains("RS-GDF") && e.contains("no derivative"), "{e}");
+    let dc = KDenseAftConfig {
+        precision: PRECISION,
+        budget_bytes: Some(AMPLE),
+        ..Default::default()
+    };
+    let ex = GammaRshExchange::build_dense(cell, prep, s, gc.exxdiv, &dc, rsh_of(f)).unwrap();
+    let mut open = scf.clone();
+    open.spin = ferric_scf::result::Spin::Unrestricted;
+    let e = gamma_rks_rsh_gradient(cell, prep, hcfg, &open, gc, &ex, kc)
+        .expect_err("open-shell result accepted")
+        .to_string();
+    eprintln!("Gamma open-shell refusal: {e}");
+    assert!(e.contains("closed-shell (restricted) results only"), "{e}");
 }
 
 /// (4) GAMMA == 1x1x1: the Gamma RSH force (Gamma SCF, Gamma J and hcore,
@@ -369,27 +429,37 @@ fn rsh_mutants_are_caught() {
         );
     }
     assert!(max_erf_weight(&cell, &mesh, rsh_of(CAM)) > 0.1);
-    let fx = fixture(&H2, [1, 1, 3], CAM, ExxDiv::Ewald);
-    let base = force(&fx);
-    for m in [
-        KGradMutation::RshNoKernelFactor,
-        KGradMutation::RshKernelOnJ,
-        KGradMutation::RshSwapFractions,
-        KGradMutation::RshPlainMadelung,
-    ] {
-        let miss = diff(&force_m(&fx, Some(m)).unwrap().grad, &base.grad);
-        eprintln!(
-            "CAM-B3LYP 1x1x3 ewald: {m:?} miss {miss:.2e} ({:.0} FD bars)",
-            miss / FD_BAR
-        );
-        assert!(miss > 1e-5, "{m:?}: {miss:e}");
+    // Each functional's production force is FD-validated (FD_BAR) in
+    // `validation_krsh_force.rs` (and CAM-B3LYP per commit above), so a miss
+    // against it is a miss against FD to within 2.9e-9.
+    for (f, bar) in [(CAM, 1e-5), ("HSE06", 10.0 * FD_BAR)] {
+        let fx = fixture(&H2, [1, 1, 3], f, ExxDiv::Ewald);
+        let base = force(&fx);
+        for m in [
+            KGradMutation::RshNoKernelFactor,
+            KGradMutation::RshKernelOnJ,
+            KGradMutation::RshSwapFractions,
+            KGradMutation::RshPlainMadelung,
+            KGradMutation::RshOmegaScaled,
+            KGradMutation::RshNoErfPiece,
+            KGradMutation::RshNoMadelungTerm,
+        ] {
+            let miss = diff(&force_m(&fx, Some(m)).unwrap().grad, &base.grad);
+            eprintln!(
+                "{f} 1x1x3 ewald: {m:?} miss {miss:.2e} ({:.0} FD bars)",
+                miss / FD_BAR
+            );
+            assert!(miss > bar, "{f} {m:?}: {miss:e}");
+        }
     }
 }
 
 // --------------------------------------------------------------- refusals
 
 /// Typed refusals: kernels without the functional's range separation, with
-/// other parameters, an RS-GDF Gamma exchange, and the open-shell allowlist.
+/// other parameters, and the open-shell allowlist (the routed Gamma force's
+/// RS-GDF and open-shell refusals are in `gamma_refusals`; the k-point RS-GDF
+/// refusal with a range-separated name is in `pbc_krsh_rsgdf.rs`).
 #[test]
 fn rsh_force_refusals() {
     let fx = fixture(&H2, [1, 1, 1], "HSE06", ExxDiv::Ewald);
