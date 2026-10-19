@@ -44,7 +44,18 @@
 //!     invisible on Gamma-centred meshes, an O(|F_ecp|) miss here.
 //!
 //! MEASURED ERRORS AND MUTANT LEDGER: see the constants and the per-test
-//! docs (filled from the runs; release build, RAYON 4, loaded box).
+//! docs (filled from the runs; release build, RAYON 4, loaded box). One
+//! pre-stated prediction failed: the (A) supercell anchor was predicted at
+//! <= ~1e-11 and the H4 triplet measured 8.2e-11 (~8x over); its bar (1e-9)
+//! was set AFTER that measurement (see `OS_FIT_SC_BAR`).
+//!
+//! SHARED CODE (what the RS-GDF anchors cannot see): the k-point fitted
+//! derivative (`rsgdf/kpoint/kderiv.rs`) imports the Gamma SR walks
+//! (`sr2_force`, `sr3_force`, `sr2_strain_with`, `sr3_strain_with`) and
+//! `aux_ft_strain_shells`, so 1x1x1 = Gamma and k = supercell/N check only
+//! the LR part and the phase / residue binning independently. The shared SR
+//! derivative kernel is anchored by FD only on the H2 triplet (section A);
+//! the H4 RS-GDF anchors have no FD.
 
 mod common;
 
@@ -653,7 +664,17 @@ fn fit_parts_g(p: &ferric_pbc::stress::GammaStressParts) -> [Mat3; 7] {
 /// conditioning of the larger 4-H aux metric rather than a k defect, but
 /// that attribution is NOT tested. Smallest mutant miss against these
 /// anchors: 3.1e-2 (stress, FitAuxPhase on H4) and 8.7e-3 (force,
-/// FitAuxPhase on H4), >= 8.7e6x the 1e-9 bar.
+/// FitAuxPhase on H4), >= 87x MUTANT_BAR (1e-4).
+///
+/// Mutant ledger (miss vs the anchor, exxdiv none):
+/// 1x1x1 vs Gamma, stress: FitCrossSpin 5.33e-1 (H2) / 1.98e-1 (H4),
+/// SwapSpinFock 6.47e-1 / 1.62e-1.
+/// 1x1x3 vs supercell/3, stress (H2 / H4): NoPhase 3.10e-1 / 2.01e-1, ConjD
+/// 5.61e-1 / 3.50e-1, NoInvNk 1.10 / 3.14, FitAuxPhase 6.03e-2 / 3.10e-2,
+/// FitLrWrongQ 2.45e-1 / 1.69e-1, FitCrossSpin 1.48 / 6.26e-1, SwapSpinFock
+/// 1.04 / 2.91e-1; force (H2 / H4): NoPhase 7.81e-2 / 4.28e-2, ConjD 4.04e-1
+/// / 1.25e-1, NoInvNk 7.21e-2 / 1.15, FitAuxPhase 3.75e-2 / 8.72e-3,
+/// FitNoMetric 2.78e-1 / 2.19e-1, FitNoG0 2.49e-2 / 2.11e-2.
 const OS_FIT_GAMMA_BAR: f64 = 1e-11;
 const OS_FIT_GAMMA_PART_BAR: f64 = 1e-10;
 const OS_FIT_SC_BAR: f64 = 1e-9;
@@ -663,8 +684,10 @@ const OS_FIT_SC_BAR: f64 = 1e-9;
 /// triplet (empty beta) and the H4 triplet (both sectors populated).
 /// ARTIFACT: blind to phases, 1/N_k and q != 0 (the supercell anchors carry
 /// those); what this adds is the spin-unbalanced s+p density through the
-/// fitted J/K (independent constructions: half-sphere real LR / one Y vs
-/// full-sphere complex per-q LR / per-(l, t) bins). The spin mutants
+/// fitted J/K (independent in the LR part and the binning: half-sphere real
+/// LR / one Y vs full-sphere complex per-q LR / per-(l, t) bins; the SR
+/// derivative walks are SHARED with the Gamma code, see the module doc, and
+/// are anchored only by the H2 triplet FD). The spin mutants
 /// `FitCrossSpin` and `SwapSpinFock` are NOT k-specific and must miss here.
 #[test]
 #[ignore = "validation: k-point force/stress #421 follow-ups (RS-GDF open shell s+p, 1x1x1 vs Gamma)"]
@@ -728,8 +751,11 @@ fn rsgdf_open_shell_sp_one_point_mesh_is_the_gamma_one() {
 /// PHYSICS: the Gamma-centred 1x1x3 (non-TRIM) k-UHF RS-GDF force and stress
 /// per cell equal the explicit 3-cell supercell's Gamma-UHF RS-GDF force (on
 /// every copy) and stress / 3, both exxdiv, per fitted part, with the k-,
-/// fit- and spin-specific mutants missing. ARTIFACT: independent
-/// construction (explicit supercell, real Gamma walks); a wrong phase, q
+/// fit- and spin-specific mutants missing. ARTIFACT: independent in the
+/// supercell geometry, the LR part and the phase / residue binning; the SR
+/// derivative walks are the SAME Gamma functions on both sides (module
+/// doc), so an SR-kernel defect is not visible here (only the H2 triplet FD
+/// covers it; H4 has no FD). A wrong phase, q
 /// sign, conjugated density or a p-shell aux-image vector would not
 /// reproduce it on the non-TRIM mesh.
 fn open_shell_fit_supercell(sys: OpenShell, led: &mut Ledger) {
@@ -828,9 +854,10 @@ fn rsgdf_open_shell_h4_triplet_sp_1x1x3_is_the_supercell_per_cell() {
 /// FD bars of the fitted open-shell s+p energy (h = 1e-4). MEASURED (both
 /// exxdiv, release, 111 s): stress all nine 2.53e-8 (2h: 1.02e-7, ratio
 /// 4.04, the h^2 truncation), force (H1 x, H2 z) 2.52e-9; bars 12x. Mutants
-/// vs FD: FitCrossSpin 1.48, SwapSpinFock 1.04 (none) / 1.34 (ewald), and
-/// the fit-error-sized `NoAuxFt` 3.38e-5 (asserted > 1e-5, 33x the stress
-/// bar; the supercell anchor cannot see it, both sides carry the same fit).
+/// vs FD (none / ewald): FitCrossSpin 1.48 / 1.48, SwapSpinFock 1.04 / 1.34,
+/// and the fit-error-sized `NoAuxFt` 3.38e-5 / 3.38e-5 (asserted > 1e-5, 33x
+/// the stress bar; the smallest mutant miss in this file, visible to the FD
+/// only: the supercell anchor cannot see it, both sides carry the same fit).
 const OS_FIT_FD_S_BAR: f64 = 3e-7;
 const OS_FIT_FD_F_BAR: f64 = 3e-8;
 
@@ -1413,10 +1440,12 @@ fn fd_miss_s(s: &KStress, comps: &[(usize, usize)], fd: &[f64]) -> f64 {
 /// stress 2.73e-8 (C1 split: zz, xz). Bars >= 11x the measurement.
 const HI_FD_F_BAR: f64 = 4e-8;
 const HI_FD_S_BAR: f64 = 3e-7;
-/// Smallest total movement a production-wired mutant must make: 33x the
-/// stress FD bar and 250x the force one, so every mover is a defect the FD
-/// anchor would also catch. The smallest measured mover is 2.13e-4
-/// (`SplitGammaKernel`, force, C1), 21x above the floor.
+/// Smallest movement of the analytic total (ALL components) a production-wired
+/// mutant must make: 33x the stress FD bar and 250x the force one. The FD
+/// anchors cover only the components listed per test (force I x, H z, plus
+/// I y in C2; stress zz, xz, plus xx in C3), so a mover is NOT shown to be
+/// caught by the FD on those components. The smallest measured mover is
+/// 2.13e-4 (`SplitGammaKernel`, force, C1), 21x above the floor.
 const HI_MUTANT_FLOOR: f64 = 1e-5;
 /// Split vs unsplit k force / stress on HI (each at its own density).
 /// MEASURED force 5.2e-14, stress 1.27e-12 (energies 2.3e-14 apart; ECP
@@ -1562,9 +1591,9 @@ fn rotated_ecp_split_rsgdf_force_and_stress_match_the_unsplit_and_fd() {
 /// basis (Gamma-centred 1x1x3, unsplit): the dense ECP anchors could only
 /// assert that the fit-acting ones are no-ops. PHYSICS: the analytic force
 /// (I x, I y, H z) matches central FD of the rotated fitted energy; then
-/// every production-wired mutant that can act here moves the total by more
-/// than `HI_MUTANT_FLOOR` (>= 33x the FD bars, so the FD anchor would catch
-/// it). Mutants that are identities BY CONSTRUCTION on this system are
+/// every production-wired mutant that can act here moves the analytic total
+/// (all components) by more than `HI_MUTANT_FLOOR`; the FD anchor covers I x,
+/// I y and H z only. Mutants that are identities BY CONSTRUCTION on this system are
 /// asserted to leave the total unchanged: `EcpMeshCountModuli` (Gamma-centred
 /// mesh), `WrongQ` (dense exchange only), `GammaMadelung` (exxdiv none).
 ///
@@ -1581,7 +1610,7 @@ fn rotated_ecp_split_rsgdf_force_and_stress_match_the_unsplit_and_fd() {
 /// `pbc_sr_rotation_kderiv.rs`).
 #[test]
 #[ignore = "validation: k-point force/stress #421 follow-ups (fit-acting force mutants with an ECP)"]
-fn rotated_ecp_rsgdf_force_mutants_miss_the_fd_anchored_force() {
+fn rotated_ecp_rsgdf_force_mutants_move_the_fd_anchored_force() {
     let bs = rot_basis();
     let sp = HiSpec {
         n: [1, 1, 3],
