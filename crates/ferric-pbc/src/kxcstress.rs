@@ -143,8 +143,8 @@
 //! guard skipped, there being no TPSS SCF) and global hybrids; range-separated
 //! hybrids, VV10/double hybrids and meta-GGA on the RS-GDF J route keep typed
 //! errors (the dense kernels carrying an attenuated exchange are refused by the
-//! HF assembly). The open-shell (UKS) twin is [`crate::kuxcstress`], which
-//! still refuses meta-GGA.
+//! HF assembly). The open-shell (UKS) twin is [`crate::kuxcstress`] (SCAN and
+//! r2SCAN on the dense-AFT J; ROKS refuses meta-GGA).
 
 use crate::budget::{bytes_of, Ledger};
 use crate::dense_aft::ExxDiv;
@@ -722,10 +722,22 @@ impl KXcStressResponse for GridXc<'_> {
 }
 
 /// Resolve the functional and its global exact-exchange fraction `a`; refuse
-/// what the OPEN-SHELL stress does not cover (range-separated hybrids,
-/// meta-GGA, VV10 and double hybrids). The closed-shell entry point uses
-/// [`resolve_global_mgga_stress`].
+/// what the RESTRICTED-OPEN-SHELL (ROKS) stress does not cover
+/// (range-separated hybrids, meta-GGA, VV10 and double hybrids). The
+/// closed-shell entry point uses [`resolve_global_mgga_stress`], the UKS one
+/// `crate::kuxcgrad::resolve_open_shell`.
 pub(crate) fn resolve_global(functional: &str) -> Result<(XcDef, f64), FerricError> {
+    resolve_open_stress(functional, false)
+}
+
+/// [`resolve_global`] with the meta-GGA refusal lifted when `allow_mgga` (the
+/// UKS stress, which narrows meta-GGA further in
+/// `crate::kuxcgrad::resolve_open_shell`); the range-separated refusal keeps
+/// its stress wording.
+pub(crate) fn resolve_open_stress(
+    functional: &str,
+    allow_mgga: bool,
+) -> Result<(XcDef, f64), FerricError> {
     let (xc, exx, rsh) = resolve_periodic_functional_rsh(functional)?;
     if rsh.is_some() {
         return Err(PeriodicDftError::Unsupported {
@@ -742,16 +754,17 @@ pub(crate) fn resolve_global(functional: &str) -> Result<(XcDef, f64), FerricErr
             "{functional}: exact-exchange fraction {exx} outside [0, 1]"
         )));
     }
-    if xc
-        .funcs
-        .iter()
-        .any(|f| matches!(f.family(), FunctionalFamily::MetaGga))
+    if !allow_mgga
+        && xc
+            .funcs
+            .iter()
+            .any(|f| matches!(f.family(), FunctionalFamily::MetaGga))
     {
         return Err(PeriodicDftError::Unsupported {
             feature: "meta-GGA stress at k",
             reason: format!(
-                "{functional}: the tau strain term is implemented for the closed-shell \
-                 stress only (open-shell meta-GGA stress is not implemented)"
+                "{functional}: the restricted-open-shell (ROKS) k-point SCF has no meta-GGA; \
+                 the k-point meta-GGA stress covers RKS and UKS only"
             ),
         }
         .into());

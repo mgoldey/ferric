@@ -459,8 +459,10 @@ fn empty_beta_channel_is_finite_or_refused() {
 }
 
 /// Everything outside the validated envelope is refused BY NAME: other
-/// meta-GGAs (raw TPSS), meta-GGA with RS-GDF J/K, and (library gates the
-/// Python / CLI bindings share) open-shell forces and stress.
+/// meta-GGAs (raw TPSS), meta-GGA with RS-GDF J/K, and (the library gates the
+/// Python / CLI bindings share) open-shell meta-GGA forces and stress, which
+/// exist in the library (`pbc_kuxc_mgga.rs`) but are not wired to the
+/// bindings.
 #[test]
 fn unvalidated_meta_gga_requests_are_refused() {
     let cell = h3_doublet();
@@ -483,7 +485,7 @@ fn unvalidated_meta_gga_requests_are_refused() {
         e.to_string().contains("meta-GGA with RS-GDF") && e.to_string().contains("dense"),
         "{e}"
     );
-    // Forces / stress: the open-shell allowlist has no meta-GGA.
+    // Forces / stress: the Python / CLI open-shell allowlist has no meta-GGA.
     for f in ["SCAN", "R2SCAN"] {
         let e = ferric_pbc::kxcgrad::check_open_shell_force_functional(f).expect_err(f);
         assert!(e.to_string().contains("no meta-GGA"), "{f}: {e}");

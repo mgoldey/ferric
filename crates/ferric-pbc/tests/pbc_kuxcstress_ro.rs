@@ -927,7 +927,7 @@ fn refusals_and_the_fock_guard() {
         ),
         (
             "SCAN",
-            "meta-GGA stress at k is not supported: SCAN: the tau strain term is implemented for the closed-shell stress only (open-shell meta-GGA stress is not implemented)",
+            "meta-GGA stress at k is not supported: SCAN: the restricted-open-shell (ROKS) k-point SCF has no meta-GGA; the k-point meta-GGA stress covers RKS and UKS only",
         ),
         ("wB97X-V", "VV10"),
         ("B2PLYP", "double hybrid"),

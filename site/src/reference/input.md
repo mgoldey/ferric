@@ -429,7 +429,7 @@ GGA and global hybrids such as PBE0 and B3LYP on every Kohn-Sham route, plus
 the pure meta-GGAs SCAN and r2SCAN on the closed-shell route only; the force
 differentiates the energy's own XC grid (`n_radial`/`n_angular`/`neighbour_cutoff`)
 and, for a hybrid, its `exxdiv`. It is an error for range-separated hybrids,
-VV10 functionals, hybrid and open-shell meta-GGA (the k-point UKS has SCAN / r2SCAN energies, but no force), ECP cells with Kohn-Sham or
+VV10 functionals, hybrid and open-shell meta-GGA (the k-point UKS has SCAN / r2SCAN energies here; the library also has their forces and stress on the dense-AFT J/K, but the CLI does not expose them), ECP cells with Kohn-Sham or
 ROHF, and for `rimp2`/`pdep-rpa`. The lattice is fixed in `task = "optimize"` (no
 stress relaxation). The analytic stress of a k-point SCF is printed by a
 `task = "energy"` run with `stress = true` (see the key below): `rhf`, `uhf`,

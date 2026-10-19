@@ -1024,10 +1024,13 @@ pub fn is_validated_mgga(functional: &str) -> bool {
     functional.eq_ignore_ascii_case("SCAN") || functional.eq_ignore_ascii_case("r2SCAN")
 }
 
-/// The open-shell (UKS, ROKS, ROHF) force and stress allowlist: LDA, GGA and
-/// GLOBAL hybrid functionals only. Meta-GGA, range-separated hybrids, VV10 and
-/// double hybrids are refused: the open-shell force and stress have no tau terms
-/// (the k-point UKS ENERGY does support SCAN / r2SCAN, see [`crate::kuks`]).
+/// The open-shell (UKS, ROKS, ROHF) force and stress allowlist of the Python
+/// and CLI entry points: LDA, GGA and GLOBAL hybrid functionals only.
+/// Meta-GGA, range-separated hybrids, VV10 and double hybrids are refused. The
+/// library k-point UKS force and stress ([`crate::kuxcgrad::kpoint_uks_gradient`],
+/// [`crate::kuxcstress::kpoint_uks_stress`]) also cover SCAN / r2SCAN on the
+/// dense-AFT J/K, but that route is not wired to Python or the CLI; the
+/// k-point ROKS SCF has no meta-GGA at all.
 pub fn check_open_shell_force_functional(functional: &str) -> Result<(), FerricError> {
     let (xc, _exx, rsh) = resolve_periodic_functional_rsh(functional)?;
     if force_covers(&xc, rsh.is_some()) {
@@ -1043,9 +1046,9 @@ pub fn check_open_shell_force_functional(functional: &str) -> Result<(), FerricE
 
 /// Resolve the functional and its global exact-exchange fraction `a`; refuse
 /// what the force does not cover (range-separated hybrids, meta-GGA, VV10 and
-/// double hybrids). Meta-GGA is refused here on purpose: the closed-shell
-/// entry point uses [`resolve_global_mgga`]; a caller without the tau terms
-/// (an unrestricted force) must keep this refusal.
+/// double hybrids). Meta-GGA is refused here on purpose: the closed-shell and
+/// UKS entry points use [`resolve_global_mgga`]; the restricted-open-shell
+/// (ROKS) force, whose SCF has no tau term, keeps this refusal.
 pub(crate) fn resolve_global(functional: &str) -> Result<(XcDef, f64), FerricError> {
     let (xc, exx) = resolve_global_mgga(functional)?;
     if xc
@@ -1056,7 +1059,8 @@ pub(crate) fn resolve_global(functional: &str) -> Result<(XcDef, f64), FerricErr
         return Err(PeriodicDftError::Unsupported {
             feature: "meta-GGA force at k",
             reason: format!(
-                "{functional}: the tau derivative (AO Hessian terms) is not implemented"
+                "{functional}: the restricted-open-shell (ROKS) k-point SCF has no meta-GGA; \
+                 the k-point meta-GGA force covers RKS and UKS only"
             ),
         }
         .into());
@@ -1441,9 +1445,9 @@ pub fn kpoint_hartree_gradient(
 mod tests {
     use super::*;
 
-    /// `resolve_global` (shared with force entry points that carry no tau
-    /// terms) keeps refusing meta-GGA with its original feature and message,
-    /// while the closed-shell resolver accepts the same names.
+    /// `resolve_global` (the ROKS force, whose SCF has no tau term) keeps
+    /// refusing meta-GGA with its feature name, while the closed-shell / UKS
+    /// resolver accepts the same names.
     #[test]
     fn resolve_global_still_refuses_meta_gga() {
         for name in ["SCAN", "R2SCAN"] {
@@ -1452,7 +1456,7 @@ mod tests {
             assert!(msg.contains("meta-GGA force at k"), "{msg}");
             assert!(
                 msg.contains(&format!(
-                    "{name}: the tau derivative (AO Hessian terms) is not implemented"
+                    "{name}: the restricted-open-shell (ROKS) k-point SCF has no meta-GGA"
                 )),
                 "{msg}"
             );
