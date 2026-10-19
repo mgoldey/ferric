@@ -107,20 +107,17 @@ uninitialised memory; build.rs warns that the fix is NOT applied, or fails under
   under `MALLOC_PERTURB_` against each test's existing bars. It does NOT count evaluations at 117.0, so it does not
   show that any run evaluated a Boys argument at exactly 117.0, and it does not replace the hit-count measurement: the
   hit counts of 9 of the 12 timed-out binaries above remain unmeasured (UNMET, #433).
-  - Scope: 28 ferric-pbc binaries (of 69 test binaries), ferric-rpa `hirshfeld_symmetry`, and the molecular files of
-    harnesses F and G. The 12 timed-out binaries are all covered at `MALLOC_PERTURB_=170` in some mode below. Not perturbed by this survey (40 ferric-pbc
-    binaries, not examined for whether they reach an integral far-field path): pbc_auto_omega pbc_dense_aft_scf
-    pbc_drpa pbc_ecp pbc_forces_heavy_atoms pbc_grsh pbc_hcore pbc_kcorr pbc_kks_open_ecp pbc_kpoint_ecp pbc_krhf
-    pbc_krks pbc_krks_shifted pbc_kroks pbc_krsh pbc_krsh_more pbc_kuhf pbc_kuks pbc_kuxcstress_ro_rsgdf pbc_lindep
-    pbc_lmp2 pbc_lr_force_bitwise pbc_memory_gates pbc_molecular_limit pbc_mp2 pbc_pair_symmetry pbc_rks pbc_rohf
-    pbc_rsgdf pbc_rsgdf_split pbc_shifted_overlap pbc_sr_deriv_frame pbc_sr_rotation_k pbc_sr_rotation_kderiv
-    pbc_sr_screening pbc_stage0 pbc_timings pbc_ucorr pbc_uhf pbc_uks. `pbc_kkeep` and `pbc_kkeep_ks` (k-point
-    selection) are perturbed in harness G. `pbc_kpoint_ecp_rotation` (ferric-pbc) and the ferric-integrals
-    `boys_chebyshev_table_edge` and `tenno_table_edge` are covered by the CI `malloc-perturb` job (1, 170, 2). Observed
-    on CI: each `nextest run --archive-file` invocation costs ~3.5-4 min of archive extraction regardless of the tests run; a per-binary loop (6 binaries x 3 values = 18
-    invocations) was cancelled at the 60 min job limit, and the 3-binary version (9 invocations) took ~38 min. The job
-    now makes 3 invocations (one per value, union filterset, per-binary PASS check); measured job wall time 35m46s
-    (run 39199767707) and 31m07s (run 39233925174).
+  - Scope: 72 of the 78 ferric-pbc test binaries (harnesses A-E, G, H), ferric-rpa `hirshfeld_symmetry`, and the
+    molecular files of harnesses F and G. The 12 timed-out binaries are all covered at `MALLOC_PERTURB_=170` in some
+    mode below. Of the other 6 ferric-pbc binaries, `pbc_kpoint_ecp_rotation` is covered by CI (next sentence) and the
+    five `validation_*` files added after the survey began (krsh_force, kstress_followups, oshell_rsh, pbc_kuks_mgga,
+    roks_rsh) contain only `#[ignore]`d tests and were not run. `pbc_kpoint_ecp_rotation` (ferric-pbc) and the
+    ferric-integrals `boys_chebyshev_table_edge` and `tenno_table_edge` are covered by the CI `malloc-perturb` job (1,
+    170, 2). Observed on CI: each `nextest run --archive-file` invocation costs ~3.5-4 min of archive extraction
+    regardless of the tests run; a per-binary loop (6 binaries x 3 values = 18 invocations) was cancelled at the 60
+    min job limit, and the 3-binary version (9 invocations) took ~38 min. The job now makes 3 invocations (one per
+    value, union filterset, per-binary PASS check); measured job wall time 35m46s (run 39199767707) and 31m07s (run
+    39233925174).
   - Harness A, `MALLOC_PERTURB_=170`, whole binaries with `--include-ignored` (libtest-style, `--test-threads=1`), 1800 s
     cap, release build, OPENBLAS_NUM_THREADS=1, 22 ferric-pbc binaries: the 15 under Harness D plus `pbc_kxcstress`,
     `pbc_grad_ecp_nucleus_scan`, `pbc_kuxcstress`, `pbc_kuxcstress_ro`, `pbc_kxcgrad`, `pbc_kxcstress_hybrid` and
@@ -171,22 +168,26 @@ uninitialised memory; build.rs warns that the fix is NOT applied, or fails under
     pbc_pair_symmetry (4, 48/49), pbc_kcorr (8, 6/6), pbc_rohf (13, 75/74), pbc_krsh (6, 43/44), pbc_hcore (9, 4/4),
     pbc_krsh_force (6, 82/80), pbc_grsh (9, 71/73), pbc_kuxcstress_ro_rsgdf (6, 78/81), pbc_rks (10, 34/34),
     pbc_oshell_rsh (7, 47/47), pbc_stage0 (6, 0/0), pbc_dense_aft_scf (5, 2/2), pbc_sr_rotation_k (11, 66/66),
-    pbc_kroks (7, 71/71), pbc_sr_rotation_kderiv (12, 149/147), pbc_lindep (5, 2/2), pbc_shifted_overlap (1, 0/0). Not
-    yet run: pbc_roks_rsh, pbc_kuks, pbc_timings, pbc_memory_gates, pbc_uks, pbc_drpa, pbc_sr_deriv_frame, pbc_mp2,
-    pbc_krsh_more, pbc_ecp, pbc_sr_screening, pbc_kuks_mgga, pbc_uhf, pbc_kpoint_ecp, pbc_krks, pbc_kuhf, pbc_rsgdf,
-    pbc_lmp2, pbc_forces_heavy_atoms, pbc_auto_omega, pbc_krhf, pbc_kks_open_ecp, pbc_krks_shifted,
-    pbc_molecular_limit, pbc_lr_force_bitwise, pbc_rsgdf_split, pbc_ucorr.
+    pbc_kroks (7, 71/71), pbc_sr_rotation_kderiv (12, 149/147), pbc_lindep (5, 2/2), pbc_shifted_overlap (1, 0/0),
+    pbc_roks_rsh (6, 59/60), pbc_kuks (6, 91/87), pbc_timings (2, 2/2), pbc_memory_gates (7, 5/5), pbc_uks (7, 51/53),
+    pbc_drpa (8, 7/6), pbc_sr_deriv_frame (1, 0/0), pbc_mp2 (7, 6/6), pbc_krsh_more (2, 25/25), pbc_ecp (5, 3/3),
+    pbc_sr_screening (2, 9/7), pbc_kuks_mgga (7, 67/61), pbc_uhf (9, 5/5), pbc_kpoint_ecp (9, 91/86), pbc_krks (10,
+    149/156), pbc_kuhf (8, 12/12), pbc_rsgdf (9, 6/6), pbc_lmp2 (9, 3/2), pbc_forces_heavy_atoms (0: every test is
+    `#[ignore]`d, 1/0), pbc_auto_omega (7, 7/7), pbc_krhf (14, 18/18), pbc_kks_open_ecp (9, 76/78), pbc_krks_shifted
+    (6, 84/83), pbc_molecular_limit (1, 10/4), pbc_lr_force_bitwise (3, 40/30), pbc_rsgdf_split (7, 8/8), pbc_ucorr
+    (9, 10/7). Totals: 44 binaries, 295 non-ignored tests passed at each value, 0 failed, 0 timed out.
     All elapsed times in harnesses A-H are local wall-clock on one developer box, not CI-runner measurements.
   - Interpretation (provisional): no allocator-dependent failure was seen in any run. Exit 0 against each test's
     existing bars is not proof of no uninitialised reads: the tests may not reach the table edge, and a
     perturbation-insensitive wrong answer inside a loose bar would pass.
-  - Not perturbed (not exhaustive): the 40 ferric-pbc binaries listed under Scope; `gpu_rimp2_mixed_attenuated` (needs
-    the `gpu` feature); the `#[ignore]`d tests of the harness G files; the fully `#[ignore]`d molecular files
-    `validation_scs_mp2_2terfc`, `attenuated_alpha_c6_probe`, `erfc_vs_terfc_timing` and the ferric-mp2 `terfc_*`
-    scratch probes.
-  - Status of #433 item 2: met for the 22 binaries of harnesses A-E, the harness C binaries, `pbc_kkeep`,
-    `pbc_kkeep_ks` and the molecular attenuated suites listed in F and G (non-ignored tests at `=1` and `=170`); not
-    met for the 40 unperturbed ferric-pbc binaries listed under Scope.
+  - Not perturbed (not exhaustive): every `#[ignore]`d test outside harness A and pbc_grad_ecp_nucleus_scan
+    (harness E), including all of `pbc_forces_heavy_atoms` (0 non-ignored tests) and the five ferric-pbc
+    `validation_*` files named under Scope; `gpu_rimp2_mixed_attenuated` (needs the `gpu` feature); the fully
+    `#[ignore]`d molecular files `validation_scs_mp2_2terfc`, `attenuated_alpha_c6_probe`, `erfc_vs_terfc_timing` and
+    the ferric-mp2 `terfc_*` scratch probes.
+  - Status of #433 item 2: met for every non-ignored test of every ferric-pbc test binary (exit 0 at `MALLOC_PERTURB_`
+    1 and 170; `pbc_kpoint_ecp_rotation` at 1, 170 and 2 in CI), for ferric-rpa `hirshfeld_symmetry`, and for the
+    molecular attenuated suites of harnesses F and G. `#[ignore]`d tests are covered only as stated above.
 - Not checked (unmet, #433): aarch64 and FMA-contracting builds (whether a given geometry lands on exactly 117.0
   depends on rounding, which is why the integer-geometry test exists).
 - Not done (maintainer-owned): notifying upstream libint.
