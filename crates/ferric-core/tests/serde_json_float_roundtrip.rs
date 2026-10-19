@@ -3,8 +3,9 @@
 //!
 //! Without it serde_json's fast path can land one ulp off the nearest double,
 //! so a CLI test that compares a JSON-parsed energy to the in-process library
-//! energy with `to_bits()` fails falsely, and bundled basis-set JSON is read
-//! with exponents/coefficients that are not the nearest doubles to the text.
+//! energy with `to_bits()` fails falsely. Only number-typed JSON values are
+//! affected (test reference files, run-log energies read back by tests); the
+//! basis-set and ECP loaders read numbers as strings and were never affected.
 //!
 //! Mutation ledger: removing `float_roundtrip` from the workspace
 //! `serde_json` dependency makes `parses_the_cli_log_energy_correctly_rounded`
