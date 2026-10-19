@@ -948,38 +948,63 @@ pub fn rks_fixed_grid_gradient_df(
     rks: &crate::result::ScfResult,
     dfbs: Option<&PreparedBasis>,
 ) -> Result<Array2<f64>, FerricError> {
+    rks_fixed_grid_gradient_dfjk(mol, prep, op, bounds, grid, rks, dfbs, None)
+}
+
+/// [`rks_fixed_grid_gradient_df`] with the exchange of a hybrid fitted too:
+/// `k_dfbs` is the RI-K (`DfK`) auxiliary basis at THIS geometry, and the
+/// exchange term is the fitted `−(a/4) dE_K^DF/dR`
+/// ([`crate::df_gradient::df_jk_gradient`], one closed-shell channel). `None`
+/// for both is exactly [`rks_fixed_grid_gradient`]; a pure functional has no
+/// exchange term whatever `k_dfbs` says.
+#[allow(clippy::too_many_arguments)]
+pub fn rks_fixed_grid_gradient_dfjk(
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    op: ferric_integrals::operator::Operator,
+    bounds: &crate::screening::SchwarzBounds,
+    grid: &FixedGridKs,
+    rks: &crate::result::ScfResult,
+    j_dfbs: Option<&PreparedBasis>,
+    k_dfbs: Option<&PreparedBasis>,
+) -> Result<Array2<f64>, FerricError> {
     let nocc = (mol.nelec() / 2) as usize;
+    let natoms = mol.atoms.len();
     let d = rks.density_r();
+    let a = grid.exact_exchange();
     let w = crate::gradient::build_energy_weighted_density(rks, nocc);
     let mut grad = crate::gradient::oneelectron_gradient(mol, prep, d, &w, None)?;
-    match dfbs {
-        None => {
-            grad += &crate::ks_gradient::twoelectron_gradient_scaled_k(
-                prep,
-                op,
-                bounds,
-                d,
-                grid.exact_exchange(),
-            )?;
+    let k_dfbs = k_dfbs.filter(|_| a != 0.0);
+    match (j_dfbs, k_dfbs) {
+        (None, None) => {
+            grad += &crate::ks_gradient::twoelectron_gradient_scaled_k(prep, op, bounds, d, a)?;
         }
-        Some(aux) => {
-            grad += &crate::df_gradient::df_jk_gradient(
-                mol.atoms.len(),
-                prep,
-                aux,
-                op,
-                Some(d),
-                &[],
-                usize::MAX,
-            )?;
-            grad += &crate::ks_gradient::twoelectron_k_gradient(
-                prep,
-                op,
-                bounds,
-                d,
-                grid.exact_exchange(),
-            )?;
+        (None, Some(_)) => {
+            grad += &crate::ks_gradient::twoelectron_gradient_scaled_k(prep, op, bounds, d, 0.0)?;
         }
+        (Some(_), None) => {
+            grad += &crate::ks_gradient::twoelectron_k_gradient(prep, op, bounds, d, a)?;
+        }
+        (Some(_), Some(_)) => {}
+    }
+    if let Some(aux) = j_dfbs {
+        grad +=
+            &crate::df_gradient::df_jk_gradient(natoms, prep, aux, op, Some(d), &[], usize::MAX)?;
+    }
+    if let Some(aux) = k_dfbs {
+        let channel = crate::df_gradient::DfKChannel {
+            density: d,
+            alpha: -0.25 * a,
+        };
+        grad += &crate::df_gradient::df_jk_gradient(
+            natoms,
+            prep,
+            aux,
+            op,
+            None,
+            &[channel],
+            usize::MAX,
+        )?;
     }
     grad += &grid.gradient(&XcGeometry::new(mol, prep)?, d)?;
     Ok(grad)
@@ -1019,9 +1044,50 @@ pub fn solve_rks_fixed_grid_df(
     dfbs: Option<&PreparedBasis>,
     config: &crate::rhf::RhfConfig,
 ) -> Result<crate::result::ScfResult, FerricError> {
+    solve_rks_fixed_grid_dfjk(ctx, mol, prep, op, bounds, grid, dfbs, None, config)
+}
+
+/// [`solve_rks_fixed_grid_df`] with the exchange fitted too: the SCF's K is
+/// `DfK` over `k_dfbs` (scaled by the hybrid fraction like the exact one).
+/// `None` for `k_dfbs` is exactly [`solve_rks_fixed_grid_df`]. The result
+/// carries no `df_jk` route (injected path); the Hessian takes the auxiliary
+/// bases from its caller.
+#[allow(clippy::too_many_arguments)]
+pub fn solve_rks_fixed_grid_dfjk(
+    ctx: &ferric_core::parallel::ParallelContext,
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    op: ferric_integrals::operator::Operator,
+    bounds: &crate::screening::SchwarzBounds,
+    grid: &FixedGridKs,
+    j_dfbs: Option<&PreparedBasis>,
+    k_dfbs: Option<&PreparedBasis>,
+    config: &crate::rhf::RhfConfig,
+) -> Result<crate::result::ScfResult, FerricError> {
+    use crate::fock::{JBuilder, KBuilder};
     use crate::rhf::{resolve_three_index_budget, solve_rhf_injected, PeriodicInjection};
     let budget = resolve_three_index_budget(config.three_index_budget_bytes);
     let geo = XcGeometry::new(mol, prep)?;
+    let j: Box<dyn JBuilder + '_> = match j_dfbs {
+        Some(aux) => Box::new(crate::df_j::DfJ::new(op, prep, aux, budget)?),
+        None => Box::new(crate::direct_j::DirectJ::new(
+            ctx,
+            prep,
+            bounds,
+            config.integral_thresh,
+            budget,
+        )),
+    };
+    let k: Box<dyn KBuilder + '_> = match k_dfbs {
+        Some(aux) => Box::new(crate::df_k::DfK::new(op, prep, aux, budget)?),
+        None => Box::new(crate::direct_k::DirectK::new(
+            ctx,
+            prep,
+            bounds,
+            config.integral_thresh,
+            budget,
+        )),
+    };
     let inj = PeriodicInjection {
         s: ferric_integrals::oneelectron::overlap(prep),
         h: ferric_integrals::oneelectron::hcore_ecp_with_external(
@@ -1031,23 +1097,8 @@ pub fn solve_rks_fixed_grid_df(
             None,
         )?,
         vnn: mol.nuclear_repulsion(),
-        j: match dfbs {
-            Some(aux) => Box::new(crate::df_j::DfJ::new(op, prep, aux, budget)?),
-            None => Box::new(crate::direct_j::DirectJ::new(
-                ctx,
-                prep,
-                bounds,
-                config.integral_thresh,
-                budget,
-            )),
-        },
-        k: Box::new(crate::direct_k::DirectK::new(
-            ctx,
-            prep,
-            bounds,
-            config.integral_thresh,
-            budget,
-        )),
+        j,
+        k,
         xc: Some(Box::new(FixedGridXc { grid, geo: &geo })),
     };
     solve_rhf_injected(ctx, mol, prep, op, bounds, config, inj)

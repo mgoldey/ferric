@@ -697,7 +697,7 @@ fn unsupported_configurations_are_refused_naming_the_next_unit() {
         let msg = refusal_with(&with_xc(xc), &r, res);
         eprintln!("{xc}: {msg}");
         assert!(
-            msg.contains(needle) && msg.contains("issue #407"),
+            msg.contains(needle) && msg.contains("next unit:"),
             "{xc}: {msg}"
         );
     }
@@ -710,15 +710,30 @@ fn unsupported_configurations_are_refused_naming_the_next_unit() {
         res,
     );
     assert!(msg.contains("Kohn-Sham configuration"), "{msg}");
-    let msg = refusal_with(
-        &RhfConfig {
-            df_k_aux: Some("def2-universal-jkfit".into()),
-            ..hessian_config()
-        },
-        &r,
-        res,
+    // A named RI-K basis is inert for a pure functional (the SCF never builds
+    // K), so it is accepted and changes nothing; RI-K for hybrids is tested in
+    // ks_rik_fixed_grid_hessian.rs.
+    let run = |cfg: &RhfConfig| {
+        rks_fixed_grid_hessian(
+            &ParallelContext::default(),
+            &r.mol,
+            &r.fixed.prep,
+            Operator::coulomb(),
+            &r.fixed.bounds,
+            res,
+            cfg,
+        )
+        .unwrap()
+    };
+    let inert = run(&RhfConfig {
+        df_k_aux: Some("def2-universal-jkfit".into()),
+        ..hessian_config()
+    });
+    let d = max_abs_diff(&inert, &run(&hessian_config()));
+    assert!(
+        d < 1e-12,
+        "named df_k_aux changed a pure-functional Hessian by {d:.3e}"
     );
-    assert!(msg.contains("RI-K") && msg.contains("issue #407"), "{msg}");
     // An exact-J SCF presented as an RI-J one: the rebuilt Fock matrix differs
     // by the fitting error (RI-J itself is supported: ks_rij_fixed_grid_hessian.rs).
     let msg = refusal_with(
@@ -758,7 +773,7 @@ fn an_open_shell_reference_is_refused() {
     let msg = refusal_with(&hessian_config(), &r, &uks);
     eprintln!("{msg}");
     assert!(
-        msg.contains("open-shell") && msg.contains("issue #407"),
+        msg.contains("open-shell") && msg.contains("next unit:"),
         "{msg}"
     );
 }
@@ -851,7 +866,7 @@ fn a_pruned_grid_is_refused_not_silently_flattened() {
 #[test]
 fn a_result_of_another_energy_is_refused_by_the_fock_consistency_guard() {
     use ferric_core::external_potential::{ExternalPotential, PointCharge};
-    use ferric_scf::hessian::rks_fixed_grid_fock_residual;
+    use ferric_scf::hessian::{rks_fixed_grid_fock_residual, KsFits};
     let r = reference("sto-3g");
     let ctx = ParallelContext::default();
     let op = Operator::coulomb();
@@ -877,7 +892,7 @@ fn a_result_of_another_energy_is_refused_by_the_fock_consistency_guard() {
         &r.bounds,
         &r.fixed.res,
         &r.grid,
-        None,
+        KsFits::default(),
     )
     .unwrap();
     let legit_prod = rks_fixed_grid_fock_residual(
@@ -887,7 +902,7 @@ fn a_result_of_another_energy_is_refused_by_the_fock_consistency_guard() {
         &r.bounds,
         &solve(&exact(Some("LDA"), None)),
         &r.grid,
-        None,
+        KsFits::default(),
     )
     .unwrap();
     eprintln!("legitimate residuals: injected {legit_inj:.2e}, production {legit_prod:.2e}");
@@ -899,9 +914,16 @@ fn a_result_of_another_energy_is_refused_by_the_fock_consistency_guard() {
         energy_conv: RhfConfig::default().energy_conv,
         ..exact(Some("LDA"), None)
     });
-    let legit_loose =
-        rks_fixed_grid_fock_residual(&ctx, &r.mol, &r.prep, &r.bounds, &loose, &r.grid, None)
-            .unwrap();
+    let legit_loose = rks_fixed_grid_fock_residual(
+        &ctx,
+        &r.mol,
+        &r.prep,
+        &r.bounds,
+        &loose,
+        &r.grid,
+        KsFits::default(),
+    )
+    .unwrap();
     eprintln!("legitimate residual at the default (loose) convergence: {legit_loose:.2e}");
     assert!(legit_loose < 1e-10, "{legit_loose:.2e}");
     for (label, res) in [
@@ -915,9 +937,16 @@ fn a_result_of_another_energy_is_refused_by_the_fock_consistency_guard() {
             solve(&exact(Some("LDA"), Some(charges.clone()))),
         ),
     ] {
-        let resid =
-            rks_fixed_grid_fock_residual(&ctx, &r.mol, &r.prep, &r.bounds, &res, &r.grid, None)
-                .unwrap();
+        let resid = rks_fixed_grid_fock_residual(
+            &ctx,
+            &r.mol,
+            &r.prep,
+            &r.bounds,
+            &res,
+            &r.grid,
+            KsFits::default(),
+        )
+        .unwrap();
         let msg = refusal_with(&hessian_config(), &r, &res);
         eprintln!("{label}: residual {resid:.2e}");
         assert!(
@@ -952,7 +981,7 @@ fn an_ecp_system_is_refused() {
     )
     .expect_err("an ECP system must be refused");
     let msg = err.to_string();
-    assert!(msg.contains("ECP") && msg.contains("issue #407"), "{msg}");
+    assert!(msg.contains("ECP") && msg.contains("next unit:"), "{msg}");
 }
 
 #[test]
@@ -976,7 +1005,7 @@ fn point_charges_in_the_configuration_are_refused() {
         &r.fixed.res,
     );
     assert!(
-        msg.contains("external potential") && msg.contains("issue #407"),
+        msg.contains("external potential") && msg.contains("next unit:"),
         "{msg}"
     );
 }
