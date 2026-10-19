@@ -5997,6 +5997,32 @@ Decisive, not yet run: E3d at n = 5 for z. n^-3 predicts (E3d - E_inf) x n^3 = -
 2. The ERI head removes ~100% of the 1/N_k coefficient against a molecular prediction of 78%. The residual may be the
    Fock-head share over-correcting, not a missing degree-0 term. Not distinguished by anything measured so far.
 
+### Addendum 2026-10-19: n = 5 E3d experiment, PRE-REGISTRATION (issue #230)
+
+Written and committed before any n = 5 E3d number existed. Full statement, anchors and decision rule:
+`prototypes/pbc/kmp2_head/e3d_n5.py` (module docstring).
+
+- Question: is the E3d residual (z, a = 6) a genuine n^-3 term (r ~ -5.5e-5 x n^-3), or an n^-5 tail read through a
+  mis-extrapolated E_inf?
+- E3d is the FIXED-k estimator of `bloch_head.py`. Re-run from the saved npz: n = 3 / 4 give -1.3359193576e-2 /
+  -1.3358003359e-2, Delta_34 = -1.190e-6.
+- Correction to the PR #461 criterion. PR #461 said "n^-5 predicts (E3d - E_inf) x n^3 of about -3.5e-5". That number
+  assumes E3d - E_inf34 decays as n^-5, which the flat n = 3, 4 values already exclude. Fitting a pure n^-5 model
+  through n = 3, 4 instead gives -7.69e-5 against E_inf34. So the stated pair (-5.5e-5 vs -3.5e-5) does not separate
+  the two models. The criterion used here does not depend on E_inf.
+- Predictions: Delta_45 = E3d(4) - E3d(5) = -4.24e-7 for pure n^-3 and -2.49e-7 for pure n^-5. The ratio
+  rho = Delta_45 / Delta_34 is 0.356 for n^-3 and 0.209 for n^-5.
+- Decision rule, from the exact fit E_inf + c3 n^-3 + c5 n^-5 on n = 3..5:
+  - SUPPORTED if c3 is in [-7e-5, -4e-5].
+  - REFUTED if |c3| <= 1.5e-5.
+  - UNDETERMINED otherwise, or if the fit's E_inf lies more than 1.8e-6 outside the range of the shifted-S series
+    limits.
+- What SUPPORTED would mean: the residual is a real 1/N_k term. It would NOT say what causes it.
+- Anchors before the result is read:
+  - n = 5 rows sh and cub1 must reproduce the independent Iteration-12 n = 5 run to 1e-11.
+  - The A2/A4 anchors, exact quadratic dependence on the head scale, and the bloch_head MO-vector anchor must hold.
+  - n = 3, 4 must be re-derived by the same code.
+
 ## Full timing series on libint 2.13.1: MWE, baseline, ω sweep, column rotation (measured 2026-09-30 16:25-16:55, head 24c53e63)
 
 The box had desktop load (Chrome), so the gate was relaxed to a 1-minute load below 2.5. Start loads were 1.6-2.5.
