@@ -1344,8 +1344,9 @@ fn run_rohf_gamma(
 }
 
 /// Gamma-point periodic **UKS**. `functional`: LDA/GGA/global hybrids
-/// (e.g. "LDA", "PBE", "PBE0") and range-separated hybrids (HSE06,
-/// CAM-B3LYP, wB97X; energy only: J from the Gamma J/K, the attenuated K
+/// (e.g. "LDA", "PBE", "PBE0") and range-separated (CAM) GGA hybrids (any
+/// libxc one is accepted; "HSE06" and "HYB_GGA_XC_CAM_B3LYP" are pinned,
+/// open-shell "HYB_GGA_XC_WB97X" is accepted, not pinned; energy only: J from the Gamma J/K, the attenuated K
 /// per spin from the k = 0 point of the k-point range-separated exchange,
 /// dense AFT or an RS-GDF fit on `auxbasis`; `with_gradient` / `with_stress`
 /// and `range_split` are ValueErrors; `exact_exchange_fraction` is the
@@ -3183,8 +3184,9 @@ fn kroks_driver(
 }
 
 /// **k-point UKS** (LDA / GGA / global hybrids, plus ENERGY-only SCAN /
-/// r2SCAN on `jk="dense"` and range-separated hybrids (HSE06, CAM-B3LYP,
-/// wB97X) on either J/K; spin state from the
+/// r2SCAN on `jk="dense"` and range-separated (CAM) GGA hybrids on either
+/// J/K (any libxc one is accepted; "HSE06" and "HYB_GGA_XC_CAM_B3LYP" are
+/// pinned, open-shell "HYB_GGA_XC_WB97X" is accepted, not pinned); spin state from the
 /// Molecule's multiplicity, electrons per cell) on a `mesh = (n1, n2, n3)`
 /// k-mesh. Mesh/centring/jk/SCF-threshold contract as `run_uhf_kpts`
 /// (`ewald_start` too); functional and grid (`n_radial`, `n_angular`,
@@ -3261,6 +3263,14 @@ fn run_uks_kpts(
         stress: with_stress,
     };
     check_kpoint_ks_derivs(fname, &s, Some(functional))?;
+    if s.aux.is_some() && ferric_pbc::dft::is_meta_gga_name(functional) {
+        // The CLI refuses the same at plan time; `solve_kuks` re-checks.
+        return Err(val_err(format!(
+            "{fname}: functional {functional:?}: meta-GGA with RS-GDF is not supported: \
+             the open-shell k-point meta-GGA is validated on the dense-AFT J/K only; use \
+             jk=\"dense\""
+        )));
+    }
     s.range_split = parse_range_split(fname, range_split, s.aux.is_some(), s.derivs)?;
     let m = k_mesh(&s, mesh, centring)?;
     let grid = periodic_grid(fname, n_radial, n_angular, neighbour_cutoff)?;

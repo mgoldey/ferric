@@ -191,7 +191,10 @@ def test_rsgdf_energy_runs_and_meta_gga_needs_dense(basis):
     d = _uks(H3D_ATOMS, _tri(), basis, "HSE06", (1, 1, 2))
     print(f"HSE06 1x1x2 RS-GDF - dense: {r.energy - d.energy:.2e}")
     assert r.converged and abs(r.energy - d.energy) < 1e-3
-    with pytest.raises(ValueError, match="meta-GGA with RS-GDF"):
+    with pytest.raises(
+        ValueError,
+        match=r"^run_uks_kpts: functional \"SCAN\": meta-GGA with RS-GDF.*use jk=\"dense\"$",
+    ):
         _uks(H3D_ATOMS, _tri(), basis, "SCAN", (1, 1, 2), **rs)
     g = ferric.run_uks_gamma(
         _mol(H3D_ATOMS, 2),

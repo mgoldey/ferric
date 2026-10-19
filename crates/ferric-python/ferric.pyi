@@ -2180,7 +2180,9 @@ def run_uks_gamma(
     sr_column_rotation: bool | None = None,
 ) -> GammaOpenShellResult:
     """Gamma-point periodic UKS (LDA/GGA/global hybrids, and range-separated
-    hybrids HSE06 / CAM-B3LYP / wB97X as an energy: dense or RS-GDF, with_gradient /
+    (CAM) GGA hybrids as an energy: any libxc one is accepted, "HSE06" and
+    "HYB_GGA_XC_CAM_B3LYP" are pinned (open-shell "HYB_GGA_XC_WB97X": accepted,
+    not pinned); dense or RS-GDF, with_gradient /
     with_stress / range_split raise). Meta-GGA raises (use run_uks_kpts with
     mesh (1, 1, 1)); VV10 raises. neighbour_cutoff in Angstrom (None = max(10
     Bohr, covering bound))."""
@@ -2410,8 +2412,9 @@ def run_uks_kpts(
     """k-point UKS (LDA / GGA / global hybrids; spin state from the Molecule's
     multiplicity, electrons per cell). Mesh, ewald_start and jk as
     run_uhf_kpts, functional and grid as run_rks_kpts. SCAN / r2SCAN
-    (jk="dense") and the range-separated hybrids HSE06, CAM-B3LYP and wB97X
-    (either J/K) run as an energy only; with_gradient / with_stress with them,
+    (jk="dense") and the range-separated (CAM) GGA hybrids (either J/K; any
+    libxc one is accepted, "HSE06" and "HYB_GGA_XC_CAM_B3LYP" are pinned,
+    open-shell "HYB_GGA_XC_WB97X" is accepted, not pinned) run as an energy only; with_gradient / with_stress with them,
     other meta-GGAs, a meta-GGA with jk="rsgdf" and VV10 raise ValueError.
     with_gradient / with_stress as run_rks_kpts (dense or RS-GDF J/K) for
     LDA / GGA / global hybrids."""

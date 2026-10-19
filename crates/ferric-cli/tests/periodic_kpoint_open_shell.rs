@@ -16,9 +16,9 @@
 //! * Open-shell SCAN and HSE06 ENERGIES (issue #357): the CLI energy, read
 //!   at full precision from the JSON run log, equals the library `solve_kuks`
 //!   (Gamma-centred and Monkhorst-Pack 1x1x2) and, with no kmesh, the
-//!   library `gamma_uks_any` to 1e-12 (measured 0, or 1 ulp for the k-point
-//!   HSE06 energy, which jitters by 1 ulp run to run); the Gamma HSE06 run
-//!   also equals the CLI 1x1x1 run to SCF precision.
+//!   library `gamma_uks_any` to 1e-12 (the run log holds exactly the library
+//!   value; see [`SAME_ARITHMETIC`]); the Gamma HSE06 run also equals the CLI
+//!   1x1x1 run to SCF precision.
 //!   Mutation ledger (run 2026-10-18, then reverted): the CLI Gamma UKS with
 //!   `exxdiv = none` forced into its config: KILLED (CLI -1.3319 vs library
 //!   -1.5513); the CLI Gamma UKS with a direct Ewald start and density_conv
@@ -626,11 +626,12 @@ fn energy_input<'a>(tag: &'a str, functional: &'a str, kmesh: &'a str) -> Input<
     }
 }
 
-/// CLI vs library bar for the same arithmetic in two processes. Measured: 0
-/// for SCAN (every run) and HSE06 at Gamma; the k-point HSE06 energy itself
-/// jitters by 1 ulp (2.2e-16) from run to run (CLI -1.6224626688847699 in 3
-/// runs, -1.62246266888477 in 2; the library in-process 5/5 the former), so
-/// `==` would be flaky. 1e-12 is far below every mutant (>= 2.3e-4).
+/// CLI vs library bar for the same arithmetic in two processes. The run log
+/// holds exactly the library value (k-point HSE06: -1.6224626688847699 in the
+/// file on every run); the test reads it back through serde_json, which is
+/// built without `float_roundtrip` and parses that literal 1 ulp off
+/// (-1.62246266888477, deterministically). `==` would fail on that parse
+/// artifact, so the bar is 1e-12, far below every mutant (>= 2.3e-4).
 const SAME_ARITHMETIC: f64 = 1e-12;
 
 /// Open-shell SCAN and HSE06 (issue #357; library PRs #479 / #480): the CLI

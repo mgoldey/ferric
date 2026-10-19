@@ -195,8 +195,9 @@
 //!
 //! Units: Bohr and Hartree throughout; G vectors in Bohr⁻¹.
 //!
-//! Not wired into the CLI or the Python bindings yet — see
-//! `reference/pbc/stage1-design.md` for the staging plan.
+//! Bound by the Python bindings (`ferric-python`, `src/pbc.rs`) and the CLI
+//! (`ferric-cli`, the `[cell]` path); `reference/pbc/stage1-design.md` holds
+//! the staging plan.
 
 pub mod budget;
 pub mod dense_aft;
