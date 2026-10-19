@@ -68,7 +68,7 @@
 //! derivative algebra: it is the closed-shell kernel per spin (which is why
 //! the singlet UKS force reproduces the RKS one, and why that anchor is blind
 //! to every α/β mix-up; the polarized anchors are in
-//! `tests/pbc_kuxcgrad_mgga.rs`). ROKS refuses meta-GGA (its SCF has no tau
+//! `tests/pbc_kuxc_mgga.rs`). ROKS refuses meta-GGA (its SCF has no tau
 //! term), and so does the RS-GDF J route (the open-shell meta-GGA energy is
 //! refused there).
 //!

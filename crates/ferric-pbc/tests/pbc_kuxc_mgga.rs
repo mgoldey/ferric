@@ -17,41 +17,13 @@
 //!   in the singlet limit (there `τ_α = τ_β`, `v_τα = v_τβ`), so (1) can only
 //!   say "no gross break"; every spin mutant must fail the POLARIZED (2), on
 //!   the H3 doublet, the #479 cell, and on the non-TRIM 1x1x3 mesh (complex
-//!   Bloch AOs, so a missing conjugate shows).
+//!   Bloch AOs, so a missing conjugate shows). The mutant runs themselves
+//!   (and their ledger) are in `validation_pbc_kuxc_mgga.rs`, on every
+//!   component; here only the production values and the Fock-guard refusal of
+//!   a missing `V^τ` run per commit.
 //!
-//! The Pulay-only tau defects (`V^τ` missing from a Fock) do not touch the
-//! fixed-density XC part; they are shown to move the force/stress here and
-//! are measured against FD of the SCF energy in the validation file. The guard
-//! refuses them when it is on.
-//!
-//! Cost: five tests, 247 s wall in the test profile on a shared box under
-//! load (four test threads), above the 90 s guideline and below the 480 s
-//! kill; the full-component and two-functional versions are weekly.
-//!
-//! # Mutation ledger (H3 doublet 1x1x3, measured; production in brackets)
-//!
-//! Fixed-density XC part vs its FD, all components (validation file; the
-//! per-commit subset gives the same order): force [6.5e-10 SCAN, 5.4e-10
-//! r2SCAN at h = 1e-4], stress [3.5e-9 / 3.2e-9 at h = 2.5e-5].
-//!
-//! | defect                                   | force SCAN / r2SCAN | stress SCAN / r2SCAN |
-//! |------------------------------------------|---------------------|----------------------|
-//! | tau term dropped (`TauNoAo`/`NoTauStrain`) | 6.9e-3 / 6.7e-3   | 4.8e-2 / 5.0e-2      |
-//! | tau prefactor doubled (`TauDoubled`)     | 6.9e-3 / 6.7e-3     | 4.8e-2 / 5.0e-2      |
-//! | `v_τα` <-> `v_τβ` swapped (`TauSpinSwap`) | 3.4e-3 / 1.95e-3   | 1.3e-2 / 1.0e-2      |
-//! | β tau term dropped (`TauDropBeta`)       | 4.4e-3 / 4.8e-3     | 2.0e-2 / 2.1e-2      |
-//! | total τ in both channels                 | 2.75e-3 / 2.8e-3    | 1.9e-2 / 1.9e-2      |
-//! | all spin kernels swapped (`XcSpinSwap`)  | 9.5e-2 / 9.8e-2     | 9.8e-2 / 9.9e-2      |
-//!
-//! Against FD of the SCF energy (validation file, every component): the same
-//! XC-side misses, plus the Pulay side: β `V^τ` dropped (`TauNoVxcBeta`,
-//! guard skipped) 2.1e-3 / 2.2e-3 (force), 1.4e-2 / 1.5e-2 (stress); `V^τ`
-//! dropped in both spins 2.6e-2 / 2.6e-2 (force), 7.5e-2 / 7.6e-2 (stress);
-//! the spin-averaged closed-shell form 4.8e-2 / 4.9e-2 (force), 4.9e-2 /
-//! 5.0e-2 (stress). Smallest miss 1.8e-3, 180x `MUTANT_BAR` and 2e4x the
-//! largest production residual. The guard (on) refuses `V^τ` missing from the
-//! Fock (`TauNoVxc`). Every spin mutant is invisible in the singlet anchor by
-//! construction.
+//! Cost: five tests, 95 s wall in the test profile (four test threads,
+//! shared box).
 
 mod common;
 #[path = "kuxc_mgga_support/mod.rs"]
@@ -64,8 +36,8 @@ use ferric_pbc::hcore::PeriodicHcoreConfig;
 use ferric_pbc::kgrad::{KGradJk, KRsGdfGradSource};
 use ferric_pbc::kroks::{solve_kroks, KRoksConfig};
 use ferric_pbc::kstress::KStressJk;
-use ferric_pbc::kuxcgrad::{kpoint_roks_gradient, kpoint_uks_gradient, KUSpinMutation};
-use ferric_pbc::kuxcstress::{kpoint_roks_stress, kpoint_uks_stress, KUStressMutation};
+use ferric_pbc::kuxcgrad::{kpoint_roks_gradient, kpoint_uks_gradient};
+use ferric_pbc::kuxcstress::{kpoint_roks_stress, kpoint_uks_stress};
 use ferric_pbc::kxcgrad::KXcMutation;
 use ferric_pbc::kxcstress::KXcStressMutation;
 use ferric_pbc::rsgdf::kpoint::{KRsGdf, KRsGdfConfig};
@@ -82,10 +54,6 @@ const BAR_SINGLET: f64 = 1e-11;
 /// h = 1e-4, which is the stencil's h^2 truncation (|dE_xc/deps| ~ 1), so the
 /// stress uses h = 2.5e-5 (h sweep in `validation_pbc_kuxc_mgga.rs`).
 const BAR_FIXED_D: f64 = 1e-7;
-/// What a defect must miss by; the smallest XC-side miss measured here is
-/// 1.95e-3 (force `TauSpinSwap`, r2SCAN), the smallest Pulay-side move 2.2e-3
-/// (force `TauNoVxcBeta`).
-const MUTANT_BAR: f64 = 1e-5;
 const FORCE_H: f64 = 1e-4;
 const STRESS_H: f64 = 2.5e-5;
 /// Per-commit subsets (every component, both functionals, in the validation
@@ -136,8 +104,7 @@ fn null_tau_path_reproduces_the_pbe_force_and_stress_exactly() {
 // ------------------------------------------------ polarized fixed-D anchors
 
 /// (2) Force: X1 + X3 + X4 against the central FD of the fixed-density
-/// `E_xc[D_α, D_β]`, H3 doublet 1x1x3, r2SCAN, one component per atom. The
-/// XC-side spin and tau defects must each miss the same FD.
+/// `E_xc[D_α, D_β]`, H3 doublet 1x1x3, r2SCAN, one component per atom.
 #[test]
 fn polarized_fixed_density_xc_force_matches_fd() {
     let fx = fixture(h3(&H3), [1, 1, 3], "R2SCAN", atom_grid());
@@ -145,13 +112,9 @@ fn polarized_fixed_density_xc_force_matches_fd() {
     let (ok, scale, fd) = fixed_d_force_check(&h3, &H3, &fx, FORCE_H, &FORCE_COMPS);
     eprintln!("R2SCAN H3 1x1x3 XC force vs fixed-D FD: {ok:.2e} (|xc| max {scale:.2e})");
     assert!(ok < BAR_FIXED_D, "{ok:e}");
-    for (name, miss) in force_xc_mutant_misses(&fx, &fd, &FORCE_COMPS) {
-        eprintln!("  R2SCAN force {name}: |xc - FD| {miss:.2e}");
-        assert!(miss > MUTANT_BAR, "{name} survives: {miss:e}");
-    }
-    // Pulay side: `V^tau` missing from a Fock is refused by the guard; with
-    // the guard skipped a dropped beta `V^tau` moves the force (its miss
-    // against FD of the SCF energy is in the validation ledger).
+    assert!(fd.iter().any(|x| x.abs() > 1e-2), "vacuous FD");
+    // Pulay side: `V^tau` missing from a Fock is refused by the guard (the
+    // guard-skipped variants are measured in the weekly ledger).
     let e = try_force_as(
         &fx,
         "R2SCAN",
@@ -160,14 +123,6 @@ fn polarized_fixed_density_xc_force_matches_fd() {
     .expect_err("the guard must refuse a Fock without V^tau")
     .to_string();
     assert!(e.contains("differs"), "{e}");
-    let g0 = force(&fx, None, None);
-    assert!(g0.hf.fock_mismatch < 1e-12);
-    let d = diff(
-        &force(&fx, None, Some(KUSpinMutation::TauNoVxcBeta)).grad,
-        &g0.grad,
-    );
-    eprintln!("  R2SCAN force TauNoVxcBeta (Pulay side) moves the force by {d:.2e}");
-    assert!(d > MUTANT_BAR, "TauNoVxcBeta: {d:e}");
 }
 
 /// (2) Stress: `xc_ao + xc_weight` against the central FD of the
@@ -182,18 +137,6 @@ fn polarized_fixed_density_xc_stress_matches_fd() {
         mmax(&fd)
     );
     assert!(ok < BAR_FIXED_D, "{ok:e}");
-    for (name, miss) in stress_xc_mutant_misses(&fx, &fd, &STRAIN_COMPS) {
-        eprintln!("  SCAN stress {name}: |xc - FD| {miss:.2e}");
-        assert!(miss > MUTANT_BAR, "{name} survives: {miss:e}");
-    }
-    let s0 = stress(&fx, None, None);
-    assert!(s0.hf.fock_mismatch < 1e-12);
-    let d = mdiff(
-        &stress(&fx, None, Some(KUStressMutation::TauNoVxcBeta)).de_deps,
-        &s0.de_deps,
-    );
-    eprintln!("  SCAN stress TauNoVxcBeta (Pulay side) moves dE/deps by {d:.2e}");
-    assert!(d > MUTANT_BAR, "TauNoVxcBeta: {d:e}");
 }
 
 // ------------------------------------------------------------ refusals

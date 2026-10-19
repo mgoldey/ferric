@@ -502,6 +502,7 @@ pub fn stress_xc_mutant_misses(fx: &Fx, fd: &Mat3, comps: &[(usize, usize)]) -> 
     let xm = [
         KXcStressMutation::NoTauStrain,
         KXcStressMutation::TauDoubled,
+        KXcStressMutation::TauTranspose,
     ];
     let sm = [
         U::TauSpinSwap,

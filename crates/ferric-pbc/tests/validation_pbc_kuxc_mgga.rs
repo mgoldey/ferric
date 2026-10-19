@@ -14,6 +14,33 @@
 //!   SCAN / r2SCAN on the H3 doublet (`scripts/gen_pyscf_kuks_mgga_stress_refs.py`,
 //!   `testdata/reference/pbc_h3_sto3g_kuks_stress_mgga.json`). PySCF's k-point
 //!   UKS FORCE refuses meta-GGA, so the force has no external pin.
+//!
+//! # Mutation ledger (H3 doublet 1x1x3, measured; production in brackets)
+//!
+//! Fixed-density XC part vs its FD, all components (the per-commit
+//! subset in `pbc_kuxc_mgga.rs` gives the same order): force [6.5e-10 SCAN, 5.4e-10
+//! r2SCAN at h = 1e-4], stress [3.5e-9 / 3.2e-9 at h = 2.5e-5].
+//!
+//! | defect                                   | force SCAN / r2SCAN | stress SCAN / r2SCAN |
+//! |------------------------------------------|---------------------|----------------------|
+//! | tau term dropped (`TauNoAo`/`NoTauStrain`) | 6.9e-3 / 6.7e-3   | 4.8e-2 / 5.0e-2      |
+//! | tau prefactor doubled (`TauDoubled`)     | 6.9e-3 / 6.7e-3     | 4.8e-2 / 5.0e-2      |
+//! | `v_τα` <-> `v_τβ` swapped (`TauSpinSwap`) | 3.4e-3 / 1.95e-3   | 1.3e-2 / 1.0e-2      |
+//! | β tau term dropped (`TauDropBeta`)       | 4.4e-3 / 4.8e-3     | 2.0e-2 / 2.1e-2      |
+//! | total τ in both channels                 | 2.75e-3 / 2.8e-3    | 1.9e-2 / 1.9e-2      |
+//! | all spin kernels swapped (`XcSpinSwap`)  | 9.5e-2 / 9.8e-2     | 9.8e-2 / 9.9e-2      |
+//! | strain indices transposed (`TauTranspose`) | n/a               | 1.4e-3 / 6.8e-4      |
+//!
+//! Against FD of the SCF energy (every component): the same
+//! XC-side misses, plus the Pulay side: β `V^τ` dropped (`TauNoVxcBeta`,
+//! guard skipped) 2.1e-3 / 2.2e-3 (force), 1.4e-2 / 1.5e-2 (stress); `V^τ`
+//! dropped in both spins 2.6e-2 / 2.6e-2 (force), 7.5e-2 / 7.6e-2 (stress);
+//! the spin-averaged closed-shell form 4.8e-2 / 4.9e-2 (force), 4.9e-2 /
+//! 5.0e-2 (stress). Smallest miss 6.8e-4 (`TauTranspose`, r2SCAN, s-only
+//! cubic cell), 68x `MUTANT_BAR` and 7e4x the largest production residual.
+//! The guard (on) refuses `V^τ` missing from the
+//! Fock (`TauNoVxc`). Every spin mutant is invisible in the singlet anchor by
+//! construction.
 
 mod common;
 #[path = "kuxc_mgga_support/mod.rs"]
@@ -90,6 +117,7 @@ fn stress_ledger(fx: &Fx, fd: &[[f64; 3]; 3], label: &str) {
     let xm = [
         KXcStressMutation::NoTauStrain,
         KXcStressMutation::TauDoubled,
+        KXcStressMutation::TauTranspose,
         KXcStressMutation::TauNoVxc,
     ];
     let sm = [
@@ -169,9 +197,10 @@ fn h4_triplet_force_matches_fd_of_the_scf_energy() {
 /// doublet 1x1x3; then the ledger against the smallest-h FD. The strain FD
 /// carries an h^2 stencil error that is NOT negligible at h = 2e-4 (|dE/deps|
 /// ~ 1; the fixed-density stress alone shows 2.2e-7 there, the SCF FD
-/// 2.6e-7), so the sweep is h = 1e-4 .. 2.5e-5 and the test also asserts that
-/// the residual falls by > 2.5x per halving of h from 1e-4 (the stencil, not
-/// the analytic stress, carries it).
+/// 2.6e-7), so the sweep is h = 1e-4 .. 2.5e-5 (measured 6.4e-8 / 1.5e-8 /
+/// 5.3e-9), `FD_BAR` is asserted at h = 2.5e-5 only, and the residual must
+/// fall by > 2.5x per halving from h = 1e-4 (the stencil, not the analytic
+/// stress, carries it).
 #[test]
 #[ignore = "validation: k-UKS meta-GGA stress vs FD of the strained SCF energy (H3 doublet 1x1x3, 9 components x 3 steps x 2 functionals) plus the mutation ledger"]
 fn h3_stress_matches_fd_of_the_scf_energy_with_h_sweep() {
@@ -188,10 +217,13 @@ fn h3_stress_matches_fd_of_the_scf_energy_with_h_sweep() {
             );
             let d = mdiff(&s.de_deps, &fd);
             eprintln!("{f} H3 1x1x3 dE/deps vs SCF FD, h = {h:.1e}: {d:.2e}");
-            assert!(d < FD_BAR, "{f} h {h}: {d:e}");
             res.push(d);
             last = Some(fd);
         }
+        // The bar at the smallest h only (the larger steps carry the h^2
+        // stencil error: 6.4e-8 at h = 1e-4 is too close to the bar for the
+        // no-retry weekly tier); the stencil check covers the sweep.
+        assert!(res[2] < FD_BAR, "{f} h {}: {:e}", STRESS_SWEEP[2], res[2]);
         assert!(res[0] / res[1] > 2.5, "{f}: not stencil-dominated {res:?}");
         eprintln!(
             "{f} |dE/deps| max {:.3e}, antisymmetry {:.2e}",
@@ -382,10 +414,16 @@ fn uniform_grid_stress_matches_pyscf_kuks_stress() {
     }
 }
 
-/// Measured 5.8e-11 (SCAN) / 7.7e-11 (r2SCAN), the closed-shell anchor's
-/// order; the tau/spin mutants miss by 1.9e-4 to 1.4e-3.
+/// Bar on `sigma` (Hartree/Bohr^3, PySCF's `kuks_stress.kernel` is
+/// `(1/Omega) dE/d eps`). Measured 5.8e-11 (SCAN) / 7.7e-11 (r2SCAN)
+/// Ha/Bohr^3, i.e. 3.7e-9 / 4.9e-9 Ha per 64 Bohr^3 cell; the tau/spin
+/// mutants miss by 1.9e-4 to 1.4e-3 Ha/Bohr^3. PySCF's own analytic sigma vs
+/// the central FD of its own strained energy (`--fd`, h = 1e-4) is 1.3e-9 /
+/// 1.4e-9 Ha/Bohr^3 (stored as `pyscf_analytic_vs_fd`), so the pin agrees
+/// better than PySCF's own FD check resolves.
 const PYSCF_BAR: f64 = 1e-9;
-/// The fixed-density XC part is compared at each code's OWN converged
-/// density (a ferric density cannot be fed to PySCF's `get_vxc` here), so it
-/// carries the density difference: measured 3.7e-9 / 5.1e-9.
+/// Bar on the fixed-density XC part `dE_xc/d eps` (Hartree per cell: PySCF's
+/// `get_vxc` and ferric's `xc_ao + xc_weight` are not divided by the
+/// volume). Measured 3.7e-9 / 5.1e-9 Ha: the XC part accounts for
+/// essentially all of the sigma residual above.
 const PYSCF_XC_BAR: f64 = 1e-7;
