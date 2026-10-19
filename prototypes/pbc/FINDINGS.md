@@ -6023,6 +6023,70 @@ Written and committed before any n = 5 E3d number existed. Full statement, ancho
   - The A2/A4 anchors, exact quadratic dependence on the head scale, and the bloch_head MO-vector anchor must hold.
   - n = 3, 4 must be re-derived by the same code.
 
+### Addendum 2026-10-19: n = 5 E3d experiment, RESULT (issue #230)
+
+Run: `e3d_n5.py gen 5` took 4226 s (SCF 1380 s, aft_ov 2660 s, 3 threads). Its data file
+`head_anomaly_a6_n5.npz` is in the ferric-pbc data dir, which is untracked. `e3d_n5.py analyze` took about 1 min.
+
+**Anchors (all pass)**
+- N1: n = 5 sh = -1.333924912240e-2 and cub1 = -1.335689898244e-2. Both match the independent Iteration-12 run to
+  2.4e-12, which is that run's print precision.
+- N2: A4 3.8e-13; A2 1.4e-15 without the head and 1.7e-15 with it; the energy is exactly quadratic in the head scale
+  (relative error 3.3e-12).
+- N3: |S_lat - P0| = 3.8e-13; fixed-k E1 from the MO vectors minus cub1 = 3.5e-18.
+- N4: n = 3 and 4 E3d are reproduced to 5e-16.
+
+**Measured** (per-cell MP2, H2/STO-3G, a = 6, bond along z)
+
+| n | S | E1 (cubic head) | E3d (fixed-k) | E3d (true, H5) | (E3d - E1) x n^3 |
+|---|---|---|---|---|---|
+| 3 | -1.327517942157e-2 | -1.3356869412022e-2 | -1.3359193576461e-2 | -1.3358373552117e-2 | -6.2752e-5 |
+| 4 | -1.332256186404e-2 | -1.3357033892537e-2 | -1.3358003359331e-2 | -1.3357718935328e-2 | -6.2046e-5 |
+| 5 | -1.333924912240e-2 | -1.3356898982439e-2 | -1.3357400948654e-2 | -1.3357251018598e-2 | -6.2746e-5 |
+| 6 | -1.334680512359e-2 | -1.335701919192e-2 (Iteration 12) | not run | not run | |
+
+| quantity | measured | pure n^-3 | pure n^-5 |
+|---|---|---|---|
+| Delta_34 = E3d(3) - E3d(4) | -1.19022e-6 | (input) | (input) |
+| Delta_45 = E3d(4) - E3d(5) | -6.02411e-7 | -4.24e-7 | -2.49e-7 |
+| rho = Delta_45 / Delta_34 | 0.5061 | 0.3561 | 0.2092 |
+| (E3d - E_inf34) x n^3 at n = 3 / 4 / 5 | -5.548e-5 / -5.533e-5 / -3.277e-5 | | |
+
+Fits:
+- Exact fit of E3d with E_inf + c3 n^-3 + c5 n^-5 on n = 3..5: E_inf = -1.3356626e-2, c3 = -1.124e-4,
+  c5 = +3.87e-4.
+- The (3,4) diagnostic fit gives c3 = -1.56e-4 and c4 = +2.55e-4.
+- Shifted-S limits over five fit forms range from -1.33574290e-2 to -1.33569246e-2 (spread 5.0e-7). The E3d-fit E_inf
+  lies 3.0e-7 outside that range, inside the 1.8e-6 consistency bar.
+
+**Pre-registered verdict: UNDETERMINED.** c3 = -1.12e-4 lies between the two bands. More to the point,
+rho = 0.506 lies outside the range that ANY E_inf + c3 n^-3 + c5 n^-5 model with the residual's sign can produce
+(0.209..0.356). Neither the n^-3 nor the n^-5 reading describes n = 3..5. The hypothesis is not supported and the
+alternative is not supported.
+
+Do not reuse PR #461's wording here. Its "n^-5 predicts about -3.5e-5" is close to the measured -3.28e-5 at n = 5.
+That closeness confirms nothing: the pre-registration showed that prediction comes from a model already excluded by
+n = 3, 4, and the self-consistent pure-n^-5 value is -7.69e-5.
+
+**Post-hoc observations (not pre-registered; interpretation is provisional)**
+- E3d - E1 is (Qlat - Qcub) + F. It is a clean n^-3 term by construction: -6.28 / -6.20 / -6.27e-5 x n^-3. So every
+  irregularity in E3d is E1's.
+- E1 is not smooth in n. It alternates with mesh parity:
+  - odd-n average minus even-n average = +1.42e-7 (odd n = 3, 5; even n = 4, 6);
+  - within one parity it is flat: E1(3) - E1(5) = +2.96e-8 and E1(4) - E1(6) = -1.47e-8, i.e. |c3| <= 1.4e-6 from
+    either parity alone.
+  - (E3d - E1) x n^3 shows the same odd/even split at the 1% level.
+- Reading: a parity term of about 1.4e-7 contaminates every smooth power-law fit through mixed-parity points. That
+  includes the earlier "(3,4) E_inf" and the S-series E_inf spread, which mixes parities too. Candidate source, untested:
+  a Gamma-centred mesh with even n samples the zone-boundary TRIM points (k = pi/a) and one with odd n does not.
+- If E1 is taken as flat within each parity, the E3d residual is about -6.2e-5 x n^-3 (2.8% of R) and genuine. That
+  conclusion rests on an alternation model fitted to two points per parity, so it is a lead, not a measurement.
+
+**What would decide it:** same-parity data. E3d at n = 6 needs a full npz at n = 6 (the Iteration-12 n = 6 run kept
+no V/C/A; about 8 h). E3d at n = 7 would add an odd point; its cost is not measured and is expected to be several
+times n = 6. Alternatively, a direct test of the parity hypothesis: an even-n mesh shifted off the TRIM points, or
+E1 at n = 2 vs 3 on the a = 10 cell, where the bands are flatter.
+
 ## Full timing series on libint 2.13.1: MWE, baseline, ω sweep, column rotation (measured 2026-09-30 16:25-16:55, head 24c53e63)
 
 The box had desktop load (Chrome), so the gate was relaxed to a 1-minute load below 2.5. Start loads were 1.6-2.5.
