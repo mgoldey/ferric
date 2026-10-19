@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate ferric meta-GGA (SCAN / r2SCAN) reference energies from PySCF.
+"""Generate ferric meta-GGA (SCAN / r2SCAN / TPSS) reference energies from PySCF.
 
 This is the FIRST meta-GGA reference in the ferric test suite (Phase A:
 SCF single-point energy only — no gradients). It mirrors
@@ -13,9 +13,10 @@ The exact PySCF call is captured in `run_one` below; each JSON records
 e_total, e_nuc, grids, and convergence.
 
 Usage:
-    python scripts/gen_pyscf_mgga_refs.py            # SCAN + r2SCAN
+    python scripts/gen_pyscf_mgga_refs.py            # SCAN + r2SCAN + TPSS
     python scripts/gen_pyscf_mgga_refs.py scan       # just SCAN
     python scripts/gen_pyscf_mgga_refs.py r2scan     # just r2SCAN
+    python scripts/gen_pyscf_mgga_refs.py tpss       # just TPSS
 """
 
 import json
@@ -56,11 +57,13 @@ MOLECULES = {
 MAIN_GRID = (75, 110)
 
 # libxc functional strings. SCAN = MGGA_X_SCAN + MGGA_C_SCAN;
-# r2SCAN = MGGA_X_R2SCAN + MGGA_C_R2SCAN — the same component pairs ferric's
-# friendly-name resolver maps "SCAN" / "r2SCAN" to.
+# r2SCAN = MGGA_X_R2SCAN + MGGA_C_R2SCAN; TPSS = MGGA_X_TPSS + MGGA_C_TPSS —
+# the same component pairs ferric's friendly-name resolver maps "SCAN" /
+# "r2SCAN" / "TPSS" to.
 PYSCF_XC = {
     "scan": "SCAN",
     "r2scan": "R2SCAN",
+    "tpss": "TPSS",
 }
 
 

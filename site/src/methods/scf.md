@@ -33,8 +33,8 @@ energy change draws a warning (see [sharp bits](../using/sharp-bits.md)).
 
 **What it is.** Kohn–Sham DFT through **libxc**: LDA, GGA, hybrid and
 range-separated hybrid functionals (for example PBE, B3LYP, ωB97X-V), **VV10**
-nonlocal correlation, and the **SCAN / r2SCAN** meta-GGAs (τ-dependent; no
-density Laplacian). The solvers cover RKS, UKS and ROKS.
+nonlocal correlation, and the **SCAN / r2SCAN / TPSS** meta-GGAs (τ-dependent;
+no density Laplacian). The solvers cover RKS, UKS and ROKS.
 
 **Run it.** `method.kind = "ksdft"` with `[dft] functional = "PBE"`
 (`examples/water-wb97xv.toml`, `examples/benzene-dfb3lyp.toml`); Python
@@ -65,9 +65,10 @@ multiplicity > 1), and in Python through
   at convergence) when you set none, because τ amplifies grid noise and plain
   DIIS limit-cycles.
 
-**Accuracy.** `ksdft` is Proven. SCAN/r2SCAN energies are pinned against PySCF
-(`ferric-scf/tests/dft_scan.rs`); their closed-shell gradients against PySCF
-with grid response (`dft_gradient_mgga.rs`). Other meta-GGA variants
+**Accuracy.** `ksdft` is Proven. SCAN/r2SCAN/TPSS energies are pinned against PySCF
+(`ferric-scf/tests/dft_scan.rs`); the SCAN/r2SCAN closed-shell gradients against
+PySCF with grid response (`dft_gradient_mgga.rs`). TPSS gradients have no
+PySCF pin. Other meta-GGA variants
 (deorbitalized, +VV10, hybrid meta-GGA) are refused, not approximated.
 
 ## Dispersion correction: D3(BJ)

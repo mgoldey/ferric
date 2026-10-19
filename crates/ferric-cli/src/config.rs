@@ -4773,9 +4773,10 @@ impl PeriodicRoute {
     /// pure meta-GGAs SCAN / r2SCAN and the range-separated hybrids (HSE06,
     /// CAM-B3LYP, wB97X) on the RKS and UKS routes (UKS through the library
     /// `resolve_kuks_functional`; its meta-GGA needs `jk = "dense"`, checked
-    /// in [`periodic_plan`]). The force, optimize and stress gates are
-    /// separate allowlists and still refuse range-separated hybrids, and
-    /// meta-GGA on the open-shell routes, by name.
+    /// in [`periodic_plan`]); TPSS on the RKS route only (energy only). The
+    /// force, optimize and stress gates are separate allowlists and still
+    /// refuse range-separated hybrids, TPSS, and meta-GGA on the open-shell
+    /// routes, by name.
     pub fn check_kpoint_support(self, functional: Option<&str>) -> Result<(), String> {
         match self {
             PeriodicRoute::Rhf
@@ -4789,7 +4790,7 @@ impl PeriodicRoute {
                     PeriodicRoute::Rks if ferric_pbc::rsh::is_range_separated(f) => Ok(()),
                     PeriodicRoute::Rks => ferric_pbc::dft::resolve_periodic_functional_mgga(
                         f,
-                        ferric_pbc::kxcgrad::is_validated_mgga(f),
+                        ferric_pbc::kxcgrad::is_validated_mgga_energy(f),
                     )
                     .map(|_| ()),
                     PeriodicRoute::Uks => ferric_pbc::kuks::resolve_kuks_functional(f),
@@ -4804,6 +4805,9 @@ impl PeriodicRoute {
                              range-separated hybrid for ROKS; the UKS route, method.kind = \
                              \"uhf\" with a functional or \"ksdft\" with multiplicity > 1, \
                              has SCAN / r2SCAN and range-separated hybrid energies)"
+                        } else if self == PeriodicRoute::Rks {
+                            "LDA, GGA and global-hybrid functionals, the SCAN / r2SCAN / \
+                             TPSS meta-GGAs and range-separated hybrids"
                         } else {
                             "LDA, GGA and global-hybrid functionals, the SCAN / r2SCAN \
                              meta-GGAs and range-separated hybrids"
@@ -5372,7 +5376,7 @@ fn check_gamma_rsh_optimize(
     }
 }
 
-/// Gamma-point meta-GGA: closed-shell RKS, SCAN / r2SCAN only; the UKS
+/// Gamma-point meta-GGA: closed-shell RKS, SCAN / r2SCAN / TPSS only; the UKS
 /// route refuses every meta-GGA by name (no Gamma tau term; the 1x1x1 mesh
 /// has it). `range_split` with a range-separated hybrid (RKS, UKS) is refused
 /// too. Plan time.
@@ -5871,6 +5875,7 @@ kind = "ccsd"
     const PBE: &str = "[dft]\nfunctional = \"PBE\"";
     const SCAN: &str = "[dft]\nfunctional = \"SCAN\"";
     const HSE: &str = "[dft]\nfunctional = \"HSE06\"";
+    const TPSS: &str = "[dft]\nfunctional = \"TPSS\"";
     const KMESH_REFUSALS: &[KmeshRefusal] = &[
         (
             "rohf",
@@ -5891,6 +5896,25 @@ kind = "ccsd"
             false,
             &["kmesh", "meta-GGA", "SCAN / r2SCAN"],
         ),
+        // TPSS is a closed-shell (RKS) energy only: the UKS routes refuse it
+        // and their supported list does not name it.
+        (
+            "uhf",
+            TPSS,
+            false,
+            &[
+                "kmesh",
+                "k-point UKS supports only the pure SCAN / r2SCAN",
+                "the SCAN / r2SCAN meta-GGAs",
+            ],
+        ),
+        (
+            "ksdft",
+            TPSS,
+            true,
+            &["kmesh", "k-point UKS supports only the pure SCAN / r2SCAN"],
+        ),
+        ("rohf", TPSS, false, &["kmesh", "meta-GGA", "for ROKS"]),
     ];
 
     /// Error text for a k-mesh run of `kind` with `extra` TOML.
@@ -5921,6 +5945,7 @@ kind = "ccsd"
             ("rohf", PBE, false, PeriodicRoute::Roks),
             ("ksdft", PBE, true, PeriodicRoute::Uks),
             ("ksdft", SCAN, false, PeriodicRoute::Rks),
+            ("ksdft", TPSS, false, PeriodicRoute::Rks),
             // Open-shell SCAN / r2SCAN and range-separated hybrid ENERGIES.
             ("uhf", SCAN, false, PeriodicRoute::Uks),
             ("ksdft", SCAN, true, PeriodicRoute::Uks),
@@ -6077,12 +6102,13 @@ kind = "ccsd"
         h2(kind, cell, extra).replace("kind = ", "task = \"optimize\"\nkind = ")
     }
 
-    /// Gamma-point meta-GGA (issue #355): SCAN / r2SCAN energies resolve, any
-    /// other meta-GGA is refused at plan time, and optimize with a meta-GGA is
-    /// refused before any SCF (the Gamma XC gradient has no tau term).
+    /// Gamma-point meta-GGA (issue #355): SCAN / r2SCAN / TPSS energies
+    /// resolve, any other meta-GGA is refused at plan time, and optimize with a
+    /// meta-GGA is refused before any SCF (the Gamma XC gradient has no tau
+    /// term).
     #[test]
     fn gamma_meta_gga_gates() {
-        for f in ["SCAN", "r2SCAN"] {
+        for f in ["SCAN", "r2SCAN", "TPSS"] {
             let dft = format!("[dft]\nfunctional = \"{f}\"");
             assert_eq!(ok(&h2("ksdft", "", &dft)).route, PeriodicRoute::Rks, "{f}");
             let e = err(&opt("ksdft", "", &dft));
@@ -6095,7 +6121,7 @@ kind = "ccsd"
         }
         let e = err(&h2("ksdft", "", "[dft]\nfunctional = \"MGGA_X_TPSS\""));
         assert!(
-            e.contains("Gamma point") && e.contains("only the validated SCAN / r2SCAN"),
+            e.contains("Gamma point") && e.contains("only the validated SCAN / r2SCAN / TPSS"),
             "{e}"
         );
         // GGA optimize is untouched.
@@ -6212,8 +6238,8 @@ kind = "ccsd"
         // with_stress) consult `check_force_functional` (closed shell) and
         // `check_open_shell_force_functional`, not the energy resolver: LDA, GGA,
         // global hybrids and (closed shell only) the pure SCAN / r2SCAN pass, so
-        // widening the energy gate cannot silently enable a range-separated or
-        // hybrid-meta-GGA force.
+        // widening the energy gate cannot silently enable a range-separated,
+        // hybrid-meta-GGA or TPSS (energy-only) force.
         for f in ["LDA", "PBE", "BLYP", "PBE0", "B3LYP", "SCAN", "r2SCAN"] {
             ferric_pbc::kxcgrad::check_force_functional(f).unwrap_or_else(|e| panic!("{f}: {e}"));
         }
@@ -6221,7 +6247,14 @@ kind = "ccsd"
             ferric_pbc::kxcgrad::check_open_shell_force_functional(f)
                 .unwrap_or_else(|e| panic!("{f}: {e}"));
         }
-        for f in ["HSE06", "wB97X-V", "wB97X-L-V", "B2PLYP", "MGGA_X_TPSS"] {
+        for f in [
+            "HSE06",
+            "wB97X-V",
+            "wB97X-L-V",
+            "B2PLYP",
+            "MGGA_X_TPSS",
+            "TPSS",
+        ] {
             assert!(
                 ferric_pbc::kxcgrad::check_force_functional(f).is_err(),
                 "{f} must not pass the closed-shell force allowlist"

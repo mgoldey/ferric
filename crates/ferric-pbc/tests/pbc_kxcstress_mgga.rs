@@ -34,7 +34,8 @@
 //! hybrid meta-GGAs (refused), open-shell meta-GGA stress (UKS/ROKS keep their
 //! typed refusal), RS-GDF J (typed refusal, tested), d shells, ECPs, heavy atoms,
 //! metals. TPSS is anchored only as its raw X/C components on a PBE density with
-//! the Fock guard skipped (no TPSS SCF).
+//! the Fock guard skipped (the TPSS SCF exists, energy only; its stress is not
+//! validated).
 
 mod common;
 
@@ -505,9 +506,8 @@ fn fixed_density_xc_stress_matches_fd_on_the_uniform_grid() {
     }
 }
 
-/// TPSS through its raw component names on a PBE density (there is no TPSS
-/// SCF; `GuardSkippedOnly` skips only the Fock guard, which the XC parts do
-/// not read).
+/// TPSS through its raw component names on a PBE density (`GuardSkippedOnly`
+/// skips only the Fock guard, which the XC parts do not read).
 #[test]
 fn tpss_components_xc_stress_matches_fd_of_exc() {
     let grid = atom_grid(20, 50, Some(CUTOFF));

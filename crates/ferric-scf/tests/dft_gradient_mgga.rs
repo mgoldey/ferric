@@ -202,6 +202,19 @@ fn r2scan_gradient_h2o_sto3g_vs_fd() {
     );
 }
 
+/// TPSS (friendly name, MGGA_X_TPSS + MGGA_C_TPSS): the molecular gradient is
+/// reachable from the CLI and Python, so it is FD-checked like SCAN / r2SCAN.
+#[test]
+fn tpss_gradient_h2o_sto3g_vs_fd() {
+    run_closed(
+        "H2O/sto-3g",
+        "3\nH2O\nO 0 0 0\nH 0 0.7572 0.5868\nH 0 -0.7572 0.5868\n",
+        "sto-3g",
+        "TPSS",
+        3e-4,
+    );
+}
+
 #[test]
 fn scan_gradient_h2o_631g_vs_fd() {
     run_closed(
