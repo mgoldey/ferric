@@ -40,11 +40,25 @@
 //! [`crate::hessian_df::rij_terms`] (3c, 2c-metric and fit-response pieces),
 //! `J^x` of `F^x` by the fitted one (including the auxiliary-fit part), and the
 //! CPHF `G` takes the SCF's own `DfJ` for its Coulomb part. The XC, exact-K
-//! and kernel pieces are the exact-J ones, untouched. RI-K is refused.
+//! and kernel pieces are the exact-J ones, untouched.
+//!
+//! # RI-K (global hybrids)
+//!
+//! When the SCF's exchange matrix is the fitted one (`df_k_aux` named or
+//! auto-defaulted for a hybrid, or a recorded RI-K route), the exchange energy is
+//! `−(a/4) Tr[D K_DF(D)]`, i.e. the one closed-shell channel of
+//! [`crate::hessian_df_k`] with weight `α = −a/4` (the Hartree-Fock `−¼`
+//! scaled by `a`) and `X = √2 C_occ`. Every RI-K piece is linear in `α` at fixed
+//! `X`, so the HF RI-K terms are reused unchanged with that weight: the
+//! four-centre `Γ_K` skeleton is replaced by the RI-K skeleton (3c, 2c-metric
+//! and fit-response pieces), the exchange of `F^x` by `2α K^x_DF = −(a/2)K^x_DF`,
+//! and the CPHF `G` takes the SCF's own `DfK` (scaled by `a/2`) for its exchange
+//! part. A pure functional (`a = 0`) never builds K, so a named `df_k_aux` is
+//! inert there, as in the SCF. RI-K composes with exact or RI-J Coulomb.
 //!
 //! Refused with a typed error naming the next unit: meta-GGA, VV10,
-//! range-separated hybrids, RI-K, open-shell references, ECPs and
-//! external potentials.
+//! range-separated hybrids (and so range-separated RI-K), open-shell
+//! references, ECPs and external potentials.
 //!
 //! [`HessianMethod::Auto`]: crate::frequencies::HessianMethod::Auto
 //! [`HessianMethod::Analytic`]: crate::frequencies::HessianMethod::Analytic
@@ -56,6 +70,7 @@ use super::{
 };
 use crate::gradient::build_energy_weighted_density;
 use crate::hessian_df::RijMutants;
+use crate::hessian_df_k::RikMutants;
 use crate::ks_fixed_grid::{FixedGridKs, XcGeometry, XcMutants};
 use crate::result::{ScfResult, Spin};
 use crate::rhf::RhfConfig;
@@ -95,6 +110,18 @@ pub struct KsFixedGridMutants {
     pub exact_j_first_order: bool,
     /// RI-J: CPHF Coulomb from the exact four-centre `J` instead of the SCF's `DfJ`.
     pub exact_j_response: bool,
+    /// RI-K constructions broken one at a time (see [`RikMutants`]; its
+    /// `cphf_*` fields act only on the Hartree-Fock path).
+    pub rik: RikMutants,
+    /// RI-K: keep the exact four-centre `Γ_K` skeleton instead of the fitted one.
+    pub exact_k_skeleton: bool,
+    /// RI-K: build the exchange of the first-order Fock matrix from exact integrals.
+    pub exact_k_first_order: bool,
+    /// RI-K: CPHF exchange from the exact four-centre `K` instead of the SCF's `DfK`.
+    pub exact_k_response: bool,
+    /// RI-K: the fitted skeleton and `K^x` with the Hartree-Fock weight `−¼`
+    /// instead of `−a/4` (the exact-exchange fraction forgotten).
+    pub rik_alpha_ignores_exx: bool,
 }
 
 impl Default for KsFixedGridMutants {
@@ -110,6 +137,11 @@ impl Default for KsFixedGridMutants {
             exact_j_skeleton: false,
             exact_j_first_order: false,
             exact_j_response: false,
+            rik: RikMutants::default(),
+            exact_k_skeleton: false,
+            exact_k_first_order: false,
+            exact_k_response: false,
+            rik_alpha_ignores_exx: false,
         }
     }
 }
@@ -122,7 +154,7 @@ fn unsupported(what: &str, next: &str) -> FerricError {
 }
 
 /// Typed refusals for everything outside closed-shell LDA/GGA (pure or global hybrid)
-/// with exact or RI-J Coulomb and exact K.
+/// with exact or RI-J Coulomb and exact or RI-K exchange.
 fn ks_refusal(
     mol: &Molecule,
     prep: &PreparedBasis,
@@ -145,16 +177,11 @@ fn ks_refusal(
             "spin-polarized XC kernel",
         ));
     }
-    let named = |s: &Option<String>| s.as_deref().is_some_and(|v| !v.is_empty());
     let route = crate::gradient::active_df_route(rks);
-    if named(&config.df_k_aux)
-        || route.is_some_and(|r| r.k_aux.is_some())
-        || route.is_some_and(|r| r.rsh_k.is_some())
-    {
+    if route.is_some_and(|r| r.rsh_k.is_some()) {
         return Err(unsupported(
-            "density-fitted exchange (RI-K); converge the SCF with exact K \
-             (df_k_aux = Some(\"\"), a hybrid's K is exact by default)",
-            "RI-K skeleton and CPHF with the XC kernel",
+            "range-separated density-fitted exchange",
+            "range-separated exchange (erfc/erf pair) in the CPHF",
         ));
     }
     if has_ecp(mol, prep.basis_set()) || config.external_potential.is_some() {
@@ -210,43 +237,75 @@ fn functional_refusal(name: &str, xc: &ferric_dft::libxc::XcDef) -> Result<(), F
 /// over the default basis), so the SAME `RhfConfig` serves the SCF and the
 /// Hessian. A stated basis that differs from the recorded route is refused here
 /// with a Kohn-Sham message.
-fn checklist_config(rks: &ScfResult, config: &RhfConfig) -> Result<RhfConfig, FerricError> {
+fn checklist_config(
+    rks: &ScfResult,
+    config: &RhfConfig,
+    exx: f64,
+) -> Result<RhfConfig, FerricError> {
     let mut hf = RhfConfig {
         xc: None,
         ..config.clone()
     };
+    // A pure functional never builds K (the SCF's consumption gate), so a named
+    // `df_k_aux` is inert for it and the route records no exchange fit.
+    if exx == 0.0 {
+        hf.df_k_aux = Some(String::new());
+    }
     let Some(route) = crate::gradient::active_df_route(rks) else {
         return Ok(hf);
     };
-    if hf.df_j_aux.is_none() && route.j_aux.as_deref() == Some(crate::fock_assembly::DEFAULT_JK_AUX)
-    {
+    let default = Some(crate::fock_assembly::DEFAULT_JK_AUX);
+    if hf.df_j_aux.is_none() && route.j_aux.as_deref() == default {
         hf.df_j_aux = route.j_aux.clone();
     }
-    let stated = hf.df_j_aux.clone().filter(|v| !v.is_empty());
-    if stated != route.j_aux {
-        return Err(FerricError::General(format!(
-            "the fixed-grid Kohn-Sham Hessian: the SCF fitted J over {:?} but the configuration \
-             states df_j_aux = {:?}. Pass the RhfConfig the SCF ran with (df_j_aux = None means \
-             the default {:?}, as in solve_rhf; Some(\"\") means exact J). Do not fall back to \
-             harmonic_frequencies for a KS result: it differentiates the moving-grid surface \
-             (with the Becke weight response), a different one.",
-            route.j_aux,
-            config.df_j_aux,
-            crate::fock_assembly::DEFAULT_JK_AUX
-        )));
+    if hf.df_k_aux.is_none() && route.k_aux.as_deref() == default {
+        hf.df_k_aux = route.k_aux.clone();
+    }
+    for (what, stated, recorded, named) in [
+        ("J", &hf.df_j_aux, &route.j_aux, &config.df_j_aux),
+        ("K", &hf.df_k_aux, &route.k_aux, &config.df_k_aux),
+    ] {
+        if stated.clone().filter(|v| !v.is_empty()) != *recorded {
+            let key = if what == "J" { "df_j_aux" } else { "df_k_aux" };
+            return Err(FerricError::General(format!(
+                "the fixed-grid Kohn-Sham Hessian: the SCF fitted {what} over {recorded:?} but the \
+                 configuration states {key} = {named:?}. Pass the RhfConfig the SCF ran with \
+                 ({key} = None means the default {:?} where the SCF fits {what}, as in \
+                 solve_rhf; Some(\"\") means exact {what}). Do not fall back to \
+                 harmonic_frequencies for a KS result: it differentiates the moving-grid surface \
+                 (with the Becke weight response), a different one.",
+                crate::fock_assembly::DEFAULT_JK_AUX
+            )));
+        }
     }
     Ok(hf)
 }
 
-/// The RI-J fit of the SCF being differentiated: a factory for its auxiliary
-/// basis (called once per consumer; the basis is cheap to prepare) and the
-/// three-index budget. NOT public API beyond the exactness anchors.
+/// One density fit (RI-J or RI-K) of the SCF being differentiated: a factory
+/// for its auxiliary basis (called once per consumer; the basis is cheap to
+/// prepare) and the three-index budget. NOT public API beyond the exactness
+/// anchors.
 #[doc(hidden)]
-pub struct KsJFit<'a> {
+pub struct KsFit<'a> {
     /// Prepares the auxiliary basis at the reference geometry.
     pub aux: &'a dyn Fn() -> Result<PreparedBasis, FerricError>,
     /// Resident three-index budget handed to the fitters, bytes.
     pub budget_bytes: usize,
+}
+
+/// The RI-J fit (the same type as the RI-K one).
+#[doc(hidden)]
+pub type KsJFit<'a> = KsFit<'a>;
+
+/// The fits of the SCF: Coulomb (`None` = exact J) and exchange (`None` =
+/// exact K, or a pure functional, which has no K).
+#[doc(hidden)]
+#[derive(Clone, Copy, Default)]
+pub struct KsFits<'a> {
+    /// RI-J.
+    pub j: Option<&'a KsFit<'a>>,
+    /// RI-K.
+    pub k: Option<&'a KsFit<'a>>,
 }
 
 /// The RI-J auxiliary basis name and budget of the SCF, or `None` for exact J:
@@ -263,6 +322,22 @@ fn resolve_j_fit(rks: &ScfResult, config: &RhfConfig) -> Option<(String, usize)>
     ))
 }
 
+/// [`resolve_j_fit`] for the exchange: `None` for exact K and for a pure
+/// functional (`exx = 0`, whose SCF never builds K).
+fn resolve_k_fit(rks: &ScfResult, config: &RhfConfig, exx: f64) -> Option<(String, usize)> {
+    if exx == 0.0 {
+        return None;
+    }
+    if let Some(r) = crate::gradient::active_df_route(rks) {
+        return r.k_aux.clone().map(|n| (n, r.budget_bytes));
+    }
+    let name = config.df_k_aux.clone().filter(|v| !v.is_empty())?;
+    Some((
+        name,
+        crate::rhf::resolve_three_index_budget(config.three_index_budget_bytes),
+    ))
+}
+
 /// Largest `|F_rebuilt − F_scf|` (Hartree) for which `rks` is accepted as a
 /// converged SCF of the energy this Hessian differentiates. The SCF stores the
 /// Fock matrix built from its FINAL density, so for the right energy the
@@ -273,11 +348,12 @@ fn resolve_j_fit(rks: &ScfResult, config: &RhfConfig) -> Option<(String, usize)>
 /// of 0.5 the configuration lacks), 0.17 (a PBE result) and 2.0 (an HF result).
 const FOCK_CONSISTENCY_TOL: f64 = 1e-8;
 
-/// The Fock matrix rebuilt from `rks.density_r()` with the (exact or RI-J) J, exact K, fixed-grid
-/// KS energy this Hessian differentiates must reproduce `rks.fock_r()`. The
-/// configuration only names the functional, so an HF result, a result of
-/// another functional, or one converged with an external potential or field
-/// that `config` does not carry would otherwise return a silently wrong Hessian.
+/// The Fock matrix rebuilt from `rks.density_r()` with the (exact or RI-J) J,
+/// (exact or RI-K) K and fixed-grid KS energy this Hessian differentiates must
+/// reproduce `rks.fock_r()`. The configuration only names the functional, so an
+/// HF result, a result of another functional, or one converged with an external
+/// potential or field that `config` does not carry would otherwise return a
+/// silently wrong Hessian.
 fn fock_consistency(
     ctx: &ParallelContext,
     mol: &Molecule,
@@ -285,23 +361,23 @@ fn fock_consistency(
     bounds: &SchwarzBounds,
     rks: &ScfResult,
     grid: &FixedGridKs,
-    fit: Option<&KsJFit<'_>>,
+    fits: KsFits<'_>,
 ) -> Result<(), FerricError> {
-    let diff = rks_fixed_grid_fock_residual(ctx, mol, prep, bounds, rks, grid, fit)?;
+    let diff = rks_fixed_grid_fock_residual(ctx, mol, prep, bounds, rks, grid, fits)?;
     if diff > FOCK_CONSISTENCY_TOL {
         return Err(FerricError::General(format!(
-            "the SCF result is not a converged closed-shell Kohn-Sham solution (with the Coulomb matrix the fit states) \
-             of the molecule, basis and functional passed (the Fock matrix rebuilt at its \
-             density differs from the stored one by {diff:.2e} Ha > {FOCK_CONSISTENCY_TOL:.0e}): \
-             a Hartree-Fock or other-functional result, a missing external potential, or an \
-             unconverged SCF"
+            "the SCF result is not a converged closed-shell Kohn-Sham solution (with the Coulomb \
+             and exchange matrices the fits state) of the molecule, basis and functional passed \
+             (the Fock matrix rebuilt at its density differs from the stored one by {diff:.2e} \
+             Ha > {FOCK_CONSISTENCY_TOL:.0e}): a Hartree-Fock or other-functional result, a \
+             missing external potential, or an unconverged SCF"
         )));
     }
     Ok(())
 }
 
-/// `max |F_rebuilt(D) − F_scf|` of [`fock_consistency`], Hartree. With `fit`
-/// the Coulomb matrix is the fitted one.
+/// `max |F_rebuilt(D) − F_scf|` of [`fock_consistency`], Hartree. With
+/// `fits.j` the Coulomb matrix is the fitted one, with `fits.k` the exchange.
 #[doc(hidden)]
 pub fn rks_fixed_grid_fock_residual(
     ctx: &ParallelContext,
@@ -310,17 +386,22 @@ pub fn rks_fixed_grid_fock_residual(
     bounds: &SchwarzBounds,
     rks: &ScfResult,
     grid: &FixedGridKs,
-    fit: Option<&KsJFit<'_>>,
+    fits: KsFits<'_>,
 ) -> Result<f64, FerricError> {
-    use crate::fock::JBuilder;
+    use crate::fock::{JBuilder, KBuilder};
     let d = rks.density_r();
     let mut j = Array2::<f64>::zeros(d.dim());
     let mut k = Array2::<f64>::zeros(d.dim());
     crate::rhf::build_jk(ctx, prep, bounds, 1e-14, d, &mut j, &mut k)?;
-    if let Some(fit) = fit {
+    if let Some(fit) = fits.j {
         j.fill(0.0);
         let dfbs = (fit.aux)()?;
         crate::df_j::DfJ::new(bounds.op, prep, &dfbs, fit.budget_bytes)?.build(d, &mut j)?;
+    }
+    if let Some(fit) = fits.k {
+        k.fill(0.0);
+        let dfbs = (fit.aux)()?;
+        crate::df_k::DfK::new(bounds.op, prep, &dfbs, fit.budget_bytes)?.build(d, &mut k)?;
     }
     let h =
         ferric_integrals::oneelectron::hcore_ecp_with_external(prep, mol, prep.basis_set(), None)?;
@@ -388,41 +469,42 @@ pub fn rks_fixed_grid_hessian_parts_with(
 ) -> Result<RhfHessianParts, FerricError> {
     ks_refusal(mol, prep, rks, config)?;
     // Everything but the functional is the closed-shell checklist; a stated or
-    // recorded RI-J basis goes through the same engine and metric probes as RHF.
+    // recorded RI-J / RI-K basis goes through the same engine and metric probes
+    // as RHF.
+    let exx = grid.exact_exchange();
     let j_fit = resolve_j_fit(rks, config);
-    let hf_config = checklist_config(rks, config)?;
+    let k_fit = resolve_k_fit(rks, config, exx);
+    let hf_config = checklist_config(rks, config, exx)?;
     check_supported(Reference::Rhf, mol, prep, op, bounds, rks, &hf_config)?;
     let aux = |name: String| move || crate::df_gradient::aux_basis(mol, &name);
-    match j_fit {
-        None => rks_fixed_grid_hessian_core(
-            ctx, mol, prep, op, bounds, rks, config, grid, None, mutants,
-        ),
-        Some((name, budget_bytes)) => {
-            let factory = aux(name);
-            let fit = KsJFit {
-                aux: &factory,
-                budget_bytes,
-            };
-            rks_fixed_grid_hessian_core(
-                ctx,
-                mol,
-                prep,
-                op,
-                bounds,
-                rks,
-                config,
-                grid,
-                Some(&fit),
-                mutants,
-            )
-        }
-    }
+    let j_factory = j_fit.clone().map(|(n, _)| aux(n));
+    let k_factory = k_fit.clone().map(|(n, _)| aux(n));
+    let jf = j_factory
+        .as_ref()
+        .zip(j_fit)
+        .map(|(f, (_, budget_bytes))| KsFit {
+            aux: f,
+            budget_bytes,
+        });
+    let kf = k_factory
+        .as_ref()
+        .zip(k_fit)
+        .map(|(f, (_, budget_bytes))| KsFit {
+            aux: f,
+            budget_bytes,
+        });
+    let fits = KsFits {
+        j: jf.as_ref(),
+        k: kf.as_ref(),
+    };
+    rks_fixed_grid_hessian_core(ctx, mol, prep, op, bounds, rks, config, grid, fits, mutants)
 }
 
-/// [`rks_fixed_grid_hessian_parts_with`] for an SCF whose Coulomb matrix is the
-/// RI-J one over the caller's auxiliary basis (exactness anchors: a basis that
-/// spans the density's products, a richer basis, a mutated fit). The caller
-/// owns the checks `check_supported` would run for a named basis.
+/// [`rks_fixed_grid_hessian_parts_with`] for an SCF whose Coulomb and/or
+/// exchange matrices are fitted over the caller's auxiliary bases (exactness
+/// anchors: a basis that spans the density's products, a richer basis, a
+/// mutated fit). The caller owns the checks `check_supported` would run for a
+/// named basis.
 #[doc(hidden)]
 #[allow(clippy::too_many_arguments)]
 pub fn rks_fixed_grid_hessian_parts_with_aux(
@@ -434,28 +516,148 @@ pub fn rks_fixed_grid_hessian_parts_with_aux(
     rks: &ScfResult,
     config: &RhfConfig,
     grid: &FixedGridKs,
-    fit: &KsJFit<'_>,
+    fits: KsFits<'_>,
     mutants: &KsFixedGridMutants,
 ) -> Result<RhfHessianParts, FerricError> {
     ks_refusal(mol, prep, rks, config)?;
     let hf_config = RhfConfig {
         xc: None,
         df_j_aux: None,
+        df_k_aux: None,
         ..config.clone()
     };
     check_supported(Reference::Rhf, mol, prep, op, bounds, rks, &hf_config)?;
-    rks_fixed_grid_hessian_core(
-        ctx,
-        mol,
-        prep,
-        op,
-        bounds,
-        rks,
-        config,
-        grid,
-        Some(fit),
-        mutants,
-    )
+    rks_fixed_grid_hessian_core(ctx, mol, prep, op, bounds, rks, config, grid, fits, mutants)
+}
+
+/// The fitted Coulomb and exchange pieces of the skeleton and of `F^x`.
+struct FittedTerms {
+    /// Sum of the RI-J and RI-K skeletons (zero when nothing is fitted).
+    skeleton: Array2<f64>,
+    /// Fitted `J^x` and `−(a/2) K^x_DF` added to the fixed-density `F^x`.
+    first_order: Vec<Array2<f64>>,
+    /// The global-pool charge of the first-order Fock / CPHF phase that
+    /// follows the RI-K terms (held until the Hessian returns).
+    _cphf_charge: Option<ferric_core::memory::pool::Reservation>,
+}
+
+/// RI-J (`rij_terms_with_aux`) and RI-K (`rik_channel_terms_with_aux`, the one
+/// closed-shell channel `X = √2 C_occ` with weight `α = −a/4`) pieces. The RI-K
+/// pieces are linear in `α` at fixed `X`, so the exact-exchange mutants scale
+/// the skeleton and `K^x` separately exactly as a scaled `α` would.
+#[allow(clippy::too_many_arguments)]
+fn fitted_terms(
+    natoms: usize,
+    prep: &PreparedBasis,
+    op: Operator,
+    rks: &ScfResult,
+    nocc: usize,
+    exx: f64,
+    fits: KsFits<'_>,
+    mutants: &KsFixedGridMutants,
+) -> Result<FittedTerms, FerricError> {
+    let d = rks.density_r();
+    let n3 = 3 * natoms;
+    let mut skeleton = Array2::<f64>::zeros((n3, n3));
+    let mut first_order = vec![Array2::<f64>::zeros(d.dim()); n3];
+    if let Some(fit) = fits.j {
+        let rij = crate::hessian_df::rij_terms_with_aux(
+            natoms,
+            prep,
+            (fit.aux)()?,
+            op,
+            fit.budget_bytes,
+            d,
+            &mutants.rij,
+        )?;
+        if !mutants.exact_j_skeleton {
+            skeleton += &rij.skeleton;
+        }
+        if !mutants.exact_j_first_order {
+            for (f, j) in first_order.iter_mut().zip(&rij.first_order_j) {
+                *f += j;
+            }
+        }
+    }
+    let mut cphf_charge = None;
+    if let Some(fit) = fits.k {
+        let x = super::rik_occupied_factor(rks, nocc, d)?;
+        let channel = crate::hessian_df_k::RikChannel {
+            x: &x,
+            alpha: crate::hessian_df_k::RIK_ALPHA
+                * if mutants.rik_alpha_ignores_exx {
+                    1.0
+                } else {
+                    exx
+                },
+        };
+        let dfbs = (fit.aux)()?;
+        let naux = dfbs.nbasis();
+        let mut rik = crate::hessian_df_k::rik_channel_terms_with_aux(
+            natoms,
+            prep,
+            dfbs,
+            op,
+            fit.budget_bytes,
+            &[channel],
+            &mutants.rik,
+        )?;
+        cphf_charge = Some(crate::hessian_df_k::reserve_cphf_phase(
+            natoms,
+            prep.nbasis(),
+            &[nocc],
+            naux,
+        )?);
+        if !mutants.exact_k_skeleton {
+            skeleton.scaled_add(mutants.skeleton_exx, &rik.skeleton);
+        }
+        if !mutants.exact_k_first_order {
+            let kx = rik.channels.remove(0).first_order_fock;
+            for (f, k) in first_order.iter_mut().zip(&kx) {
+                f.scaled_add(mutants.fock_exx, k);
+            }
+        }
+    }
+    Ok(FittedTerms {
+        skeleton,
+        first_order,
+        _cphf_charge: cphf_charge,
+    })
+}
+
+/// The fitters the CPHF `G` uses: the SCF's own `DfJ` / `DfK` (the mutants
+/// swap in the exact four-centre matrices).
+fn cphf_fitters(
+    prep: &PreparedBasis,
+    op: Operator,
+    fits: KsFits<'_>,
+    mutants: &KsFixedGridMutants,
+) -> Result<
+    (
+        Option<crate::df_j::DfJ<'static>>,
+        Option<crate::df_k::DfK<'static>>,
+    ),
+    FerricError,
+> {
+    let df_j = match fits.j {
+        Some(fit) if !mutants.exact_j_response => Some(crate::df_j::DfJ::new(
+            op,
+            prep,
+            &(fit.aux)()?,
+            fit.budget_bytes,
+        )?),
+        _ => None,
+    };
+    let df_k = match fits.k {
+        Some(fit) if !mutants.exact_k_response => Some(crate::df_k::DfK::new(
+            op,
+            prep,
+            &(fit.aux)()?,
+            fit.budget_bytes,
+        )?),
+        _ => None,
+    };
+    Ok((df_j, df_k))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -468,60 +670,54 @@ fn rks_fixed_grid_hessian_core(
     rks: &ScfResult,
     config: &RhfConfig,
     grid: &FixedGridKs,
-    fit: Option<&KsJFit<'_>>,
+    fits: KsFits<'_>,
     mutants: &KsFixedGridMutants,
 ) -> Result<RhfHessianParts, FerricError> {
-    fock_consistency(ctx, mol, prep, bounds, rks, grid, fit)?;
+    fock_consistency(ctx, mol, prep, bounds, rks, grid, fits)?;
 
     let natoms = mol.atoms.len();
     let nocc = (mol.nelec() / 2) as usize;
     let d = rks.density_r();
     let w = build_energy_weighted_density(rks, nocc);
     let geo = XcGeometry::new(mol, prep)?;
+    let exx = grid.exact_exchange();
 
     let nuclear = nuclear_term(mol, config);
     let one_electron = skeleton_hess_1e(prep, natoms, &[], d)?;
     let overlap = skeleton_hess_overlap(prep, natoms, &w)?;
-    let a_skel = grid.exact_exchange() * mutants.skeleton_exx;
-    // A fitted Coulomb term replaces the four-centre Gamma_J (the mutant keeps it).
-    let keep_gamma_j = if fit.is_some() && !mutants.exact_j_skeleton {
-        0.0
+    let fitted = fitted_terms(natoms, prep, op, rks, nocc, exx, fits, mutants)?;
+    // A fitted Coulomb (exchange) term replaces the four-centre Gamma_J
+    // (Gamma_K); the mutants keep the exact one.
+    let keep_j = fits.j.is_none() || mutants.exact_j_skeleton;
+    let keep_k = fits.k.is_none() || mutants.exact_k_skeleton;
+    let c_j = if keep_j { 0.5 } else { 0.0 };
+    let c_k = if keep_k {
+        -0.25 * exx * mutants.skeleton_exx
     } else {
-        1.0
+        0.0
     };
-    let gam_j = |mu: usize, nu: usize, la: usize, sg: usize| {
-        keep_gamma_j * 0.5 * d[(mu, nu)] * d[(la, sg)] - 0.25 * a_skel * d[(mu, la)] * d[(nu, sg)]
+    let mut two_electron = if c_j == 0.0 && c_k == 0.0 {
+        Array2::<f64>::zeros((3 * natoms, 3 * natoms))
+    } else {
+        let gam = |mu: usize, nu: usize, la: usize, sg: usize| {
+            c_j * d[(mu, nu)] * d[(la, sg)] + c_k * d[(mu, la)] * d[(nu, sg)]
+        };
+        skeleton_hess_2e(prep, op, bounds, natoms, max_abs(d), &gam)?
     };
-    let mut two_electron = skeleton_hess_2e(prep, op, bounds, natoms, max_abs(d), &gam_j)?;
     two_electron += &grid.skeleton_hessian(&geo, d, &mutants.xc)?;
-    let rij = match fit {
-        Some(fit) => Some(crate::hessian_df::rij_terms_with_aux(
-            natoms,
-            prep,
-            (fit.aux)()?,
-            op,
-            fit.budget_bytes,
-            d,
-            &mutants.rij,
-        )?),
-        None => None,
-    };
-    if let Some(rij) = &rij {
-        two_electron += &rij.skeleton;
-    }
+    two_electron += &fitted.skeleton;
 
     let no_density = Array2::<f64>::zeros(d.dim());
-    let fitted_first = rij.is_some() && !mutants.exact_j_first_order;
+    let fitted_j_first = fits.j.is_some() && !mutants.exact_j_first_order;
+    let fitted_k_first = fits.k.is_some() && !mutants.exact_k_first_order;
     let spec = FockSpec {
-        coulomb: if fitted_first { &no_density } else { d },
-        exchange: d,
-        k_scale: 0.5 * grid.exact_exchange() * mutants.fock_exx,
+        coulomb: if fitted_j_first { &no_density } else { d },
+        exchange: if fitted_k_first { &no_density } else { d },
+        k_scale: 0.5 * exx * mutants.fock_exx,
     };
     let mut first = first_order_ao(prep, op, bounds, natoms, &[], &[spec])?;
-    if let (Some(rij), true) = (&rij, fitted_first) {
-        for (f, j) in first.f1[0].iter_mut().zip(&rij.first_order_j) {
-            *f += j;
-        }
+    for (f, g) in first.f1[0].iter_mut().zip(&fitted.first_order) {
+        *f += g;
     }
     for (f, v) in first.f1[0]
         .iter_mut()
@@ -531,21 +727,10 @@ fn rks_fixed_grid_hessian_core(
     }
     let kernel = grid.response(&geo, d, mutants.response_fxc, mutants.response_gradient)?;
     let kernel_fn = |d1: &Array2<f64>| kernel.apply(d1);
-    let df_j = match fit {
-        Some(fit) if !mutants.exact_j_response => Some(crate::df_j::DfJ::new(
-            op,
-            prep,
-            &(fit.aux)()?,
-            fit.budget_bytes,
-        )?),
-        _ => None,
-    };
+    let (df_j, df_k) = cphf_fitters(prep, op, fits, mutants)?;
     let g = TwoElectronBuilder::new(ctx, prep, bounds)?
-        .fitted(df_j, None, false)
-        .with_xc_response(
-            Some(&kernel_fn),
-            grid.exact_exchange() * mutants.response_exx,
-        );
+        .fitted(df_j, df_k, false)
+        .with_xc_response(Some(&kernel_fn), exx * mutants.response_exx);
     let resp = cpks_response_with(&g, rks, nocc, &first)?;
     Ok(parts_from_terms(
         [nuclear, one_electron, overlap, two_electron],

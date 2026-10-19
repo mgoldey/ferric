@@ -19,7 +19,9 @@ approximate):
     constant), the same functional (per case, both libxc), exact J (no density
     fitting) except the `_rij` cases: `density_fit(auxbasis, only_dfj=True)`
     over ferric's def2-universal-jkfit with the full auxiliary response
-    (`auxbasis_response = 2`), pure functionals only; SCF converged to 1e-12;
+    (`auxbasis_response = 2`), pure functionals only, and the `_rijk` cases:
+    `density_fit(auxbasis)` (J AND the hybrid's K fitted over that one basis,
+    same auxiliary response), global hybrids; SCF converged to 1e-12;
   * masses = ferric's IUPAC-2013 weights for the frequencies.
 
 Stored: PySCF's total energy (the grid check: it must agree with ferric's to
@@ -58,6 +60,13 @@ RIJ_SYSTEMS = (
     ("h2o_distorted", "6-31g", "PBE", "_pbe_rij", AUX),
     ("h2o_distorted", "6-31g", XC, "_rij", AUX),
 )
+# RI-J + RI-K cases (global hybrids): `density_fit(auxbasis)` fits BOTH J and
+# the a-scaled K over the one auxiliary basis, which is ferric's RI-J + RI-K
+# surface with `df_j_aux = df_k_aux`.
+RIJK_SYSTEMS = (
+    ("h2o_distorted", "6-31g", "PBE0", "_pbe0_rijk", AUX),
+    ("h2o_distorted", "6-31g", "B3LYP", "_b3lyp_rijk", AUX),
+)
 SYSTEMS = (
     ("h2o_distorted", "6-31g", XC, ""),
     ("h2o_distorted", "cc-pvdz", XC, ""),
@@ -76,13 +85,13 @@ def _grid(system: str):
     return rows[:, :3].copy(), rows[:, 3].copy()
 
 
-def _rks(mol, pts, w, xc=XC, aux=None):
+def _rks(mol, pts, w, xc=XC, aux=None, only_dfj=True):
     from pyscf import dft
 
     mf = dft.RKS(mol)
     mf.xc = xc
     if aux is not None:
-        mf = mf.density_fit(auxbasis=aux, only_dfj=True)
+        mf = mf.density_fit(auxbasis=aux, only_dfj=only_dfj)
     mf.grids.coords = pts
     mf.grids.weights = w
     mf.conv_tol = CONV_TOL
@@ -113,13 +122,13 @@ def _analytic(mf):
     return 0.5 * (raw + raw.T), float(np.max(np.abs(raw - raw.T)))
 
 
-def _grad(mol, pts, w, xc=XC, aux=None):
-    g = _rks(mol, pts, w, xc, aux).nuc_grad_method()
+def _grad(mol, pts, w, xc=XC, aux=None, only_dfj=True):
+    g = _rks(mol, pts, w, xc, aux, only_dfj).nuc_grad_method()
     g.grid_response = False
     return g.kernel().ravel()
 
 
-def _fd(mol, pts, w, xc=XC, aux=None):
+def _fd(mol, pts, w, xc=XC, aux=None, only_dfj=True):
     import numpy as np
 
     n = 3 * mol.natm
@@ -132,7 +141,7 @@ def _fd(mol, pts, w, xc=XC, aux=None):
             x[b // 3, b % 3] += sgn * step
             m = mol.copy()
             m.set_geom_(x, unit="Bohr")
-            out.append(_grad(m, pts, w, xc, aux))
+            out.append(_grad(m, pts, w, xc, aux, only_dfj))
         return (out[0] - out[1]) / (2.0 * step)
 
     h = np.zeros((n, n))
@@ -159,6 +168,7 @@ def _run(
     xc: str = XC,
     suffix: str = "",
     aux_name: str | None = None,
+    only_dfj: bool = True,
 ) -> Path:
     import numpy as np
     import pyscf
@@ -171,9 +181,9 @@ def _run(
     masses = [FERRIC_MASSES[s.capitalize()] for s in symbols]
 
     aux = common.pyscf_basis(aux_name, symbols)[0] if aux_name else None
-    mf = _rks(mol, pts, w, xc, aux)
+    mf = _rks(mol, pts, w, xc, aux, only_dfj)
     h_an, asym = _analytic(mf)
-    h_fd, fd_asym = _fd(mol, pts, w, xc, aux)
+    h_fd, fd_asym = _fd(mol, pts, w, xc, aux, only_dfj)
     e_exact = _rks(mol, pts, w, xc).e_tot if aux is not None else None
     gap = float(np.max(np.abs(h_an - h_fd)))
     f_an = _frequencies(mol, h_an, masses)
@@ -213,7 +223,9 @@ def _run(
                 "grid": "ferric 30x50 Becke-Lebedev points/weights, frozen",
                 "grid_response": False,
                 "conv_tol": CONV_TOL,
-                "density_fit": ("only_dfj " + aux_name) if aux_name else False,
+                "density_fit": (("only_dfj " if only_dfj else "J+K ") + aux_name)
+                if aux_name
+                else False,
             },
             basis_name=basis_name,
             xyz_path=xyz,
@@ -235,13 +247,19 @@ def _run(
 
 def main() -> int:
     only = set(sys.argv[1:])
-    written = [
-        _run(s, b, x, sfx) for s, b, x, sfx in SYSTEMS if not only or b + sfx in only
-    ] + [
-        _run(s, b, x, sfx, a)
-        for s, b, x, sfx, a in RIJ_SYSTEMS
-        if not only or b + sfx in only
-    ]
+    written = (
+        [_run(s, b, x, sfx) for s, b, x, sfx in SYSTEMS if not only or b + sfx in only]
+        + [
+            _run(s, b, x, sfx, a)
+            for s, b, x, sfx, a in RIJ_SYSTEMS
+            if not only or b + sfx in only
+        ]
+        + [
+            _run(s, b, x, sfx, a, only_dfj=False)
+            for s, b, x, sfx, a in RIJK_SYSTEMS
+            if not only or b + sfx in only
+        ]
+    )
     for p in written:
         print(f"  {p.relative_to(common.ROOT)} ({p.stat().st_size} bytes)")
     print(f"GEN_KS_FIXED_GRID_HESSIAN_DONE written={len(written)}")

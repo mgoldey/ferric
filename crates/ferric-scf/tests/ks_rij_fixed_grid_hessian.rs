@@ -23,6 +23,8 @@
 //!   energy-level DF error and shrinking with a richer auxiliary basis.
 //! * Production-wired mutants (every RI-J piece, and each exact-J fallback).
 //!
+//! RI-K (fitted exchange of a hybrid) is `ks_rik_fixed_grid_hessian.rs`.
+//!
 //! # Hypotheses
 //!
 //! Physics (RI-J Hessian is right): Hessian == FD of the DF-J gradient at the
@@ -456,7 +458,7 @@ fn production_ri_j_scf_result_gives_the_same_hessian() {
 }
 
 #[test]
-fn ri_k_and_inconsistent_fits_are_refused() {
+fn inconsistent_fits_are_refused() {
     if !has_deriv2() {
         return;
     }
@@ -475,7 +477,9 @@ fn ri_k_and_inconsistent_fits_are_refused() {
         .unwrap_err()
         .to_string()
     };
-    // RI-K named in the configuration.
+    // An exact-K SCF presented as an RI-K one (RI-K itself is supported:
+    // ks_rik_fixed_grid_hessian.rs): the rebuilt Fock matrix differs by the
+    // exchange fitting error.
     let msg = run(
         &RhfConfig {
             df_k_aux: Some(AUX.into()),
@@ -483,28 +487,7 @@ fn ri_k_and_inconsistent_fits_are_refused() {
         },
         &r.pt.res,
     );
-    assert!(msg.contains("RI-K") && msg.contains("issue #407"), "{msg}");
-    // A production SCF that fitted K.
-    let prod = solve_rhf(
-        &ctx,
-        &r.mol,
-        &r.pt.prep,
-        Operator::coulomb(),
-        &r.pt.bounds,
-        &RhfConfig {
-            df_k_aux: Some(AUX.into()),
-            ..hessian_config("PBE0", Some(AUX))
-        },
-    )
-    .unwrap();
-    let msg = run(
-        &RhfConfig {
-            df_k_aux: Some(AUX.into()),
-            ..hessian_config("PBE0", Some(AUX))
-        },
-        &prod,
-    );
-    assert!(msg.contains("RI-K") && msg.contains("issue #407"), "{msg}");
+    assert!(msg.contains("not a converged"), "{msg}");
     // A fitted SCF presented as exact J, and an exact SCF presented as fitted:
     // the Fock matrix rebuilt with the stated Coulomb matrix does not match.
     let msg = run(&hessian_config("PBE0", None), &r.pt.res);
