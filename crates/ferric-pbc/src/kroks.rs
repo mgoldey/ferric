@@ -47,8 +47,8 @@
 //!
 //! # Range-separated hybrids
 //!
-//! HSE06 and CAM-B3LYP (validated against PySCF `pbc.dft.KROKS`; wB97X runs
-//! the same code unpinned), mgoldey/ferric#354: the per-spin Focks take the
+//! HSE06 and CAM-B3LYP (validated against PySCF `pbc.dft.KROKS`; wB97X is
+//! accepted but not exercised by any test), mgoldey/ferric#354: the per-spin Focks take the
 //! closed-shell attenuated K unchanged ([`crate::rsh`] dense AFT, or
 //! `KRsGdf::build_rsh`), `K_σ = K[D_σ]` scaled by 1 (`a = 1`; the fractions
 //! and the MIXED Madelung constant `c_sr v_M + (c_lr − c_sr) v_M(ω)` are
@@ -439,7 +439,11 @@ pub struct KRoksConfig {
 }
 
 impl KRoksConfig {
-    /// Defaults (dense J/K, grid (75, 302) SSF) for `functional`.
+    /// Defaults (dense J/K, grid (75, 302) SSF) for `functional`. Unlike
+    /// [`crate::rohf::GammaRoksConfig::new`], no level shift or iteration
+    /// default is set for a hybrid (global or range-separated): the hybrid
+    /// KROKS tests set `rohf.level_shift = 0.05` and `rohf.scf.max_iter = 600`
+    /// themselves.
     pub fn new(cell: &Cell, exxdiv: ExxDiv, functional: &str) -> Self {
         Self {
             rohf: KRohfConfig::for_cell(cell, exxdiv),

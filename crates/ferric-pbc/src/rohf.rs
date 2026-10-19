@@ -620,7 +620,7 @@ pub fn gamma_roks_with_xc(
 }
 
 /// [`gamma_roks`] for a range-separated hybrid (HSE06 and CAM-B3LYP validated
-/// against PySCF `pbc.dft.ROKS`; wB97X runs the same code unpinned): J from
+/// against PySCF `pbc.dft.ROKS`; wB97X is accepted but not exercised by any test): J from
 /// `ints`, the attenuated K of each spin from `rsh_k` (the Gamma = 1x1x1-mesh
 /// exchange of [`crate::gamma_rsh`], whose exxdiv must equal `cfg.exxdiv`).
 /// The per-spin Focks take `K_σ = K[D_σ]` with the fractions and the MIXED

@@ -15,8 +15,8 @@ For a k-mesh with N_k points `mf.nelec` is set to (N_a N_k, N_b N_k) (global
 aufbau, the giant-determinant spin state).
 
 A row whose PySCF SCF does not converge is stored with `converged: false` and
-NO energy (PySCF KROHF.get_occ can cycle on these cells); the tests then use
-the Gamma supercell anchor instead of a pin.
+NO energy (PySCF KROHF.get_occ can cycle on these cells); the validation test skips
+that row. (Every row converged when the committed JSON was generated.)
 
 Output: testdata/reference/pbc_roks_sto3g_rsh.json.
 
