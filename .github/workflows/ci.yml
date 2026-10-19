@@ -45,14 +45,26 @@ concurrency:
   # 170 minutes on a disk-constrained runner, and there is no reason to let a
   # push-3-commits-ago build keep occupying a runner once push-4 has arrived.
   #
-  # NEVER cancels a run on `main` or a `schedule` run:
-  #   - `cancel-in-progress` is gated on `github.event_name == 'pull_request'`,
-  #     so a `push` to main (event_name `push`) and the nightly `schedule` run
-  #     are never eligible for cancellation, regardless of the group key.
-  #   - The group key itself still separates main/schedule/dispatch runs from
-  #     PR runs (it falls back to `github.ref`, which differs across event
-  #     types), so even if the flag above were ever loosened, a main push and
-  #     a schedule run would still never group with each other.
+  # A `schedule` or `workflow_dispatch` run is NEVER cancelled, because it is
+  # ALONE in its group: the key ends in `github.run_id` for those events.
+  # Two mechanisms cancel a run in a shared group, and `cancel-in-progress`
+  # controls only the first:
+  #   - cancel-in-progress: a new run cancels the RUNNING one. Gated on
+  #     `pull_request` below, so a running main or schedule run is never hit.
+  #   - pending replacement: a group holds at most ONE pending run, and a newer
+  #     arrival cancels the older PENDING one REGARDLESS of cancel-in-progress.
+  # `github.ref` is `refs/heads/main` for a main push AND for the nightly
+  # schedule run, so a key built from the ref alone put them in ONE group. A
+  # schedule run that queued behind a running main push was then cancelled,
+  # with no jobs, by the next push: runs 38045594810, 38133256076,
+  # 39018001505 and 39112980617 (2026-10-10/11/17/18) each ended `cancelled`
+  # within seconds of a push being created, and two of those were the Sunday
+  # run, so the weekly validation job did not run for two weeks.
+  # crates/ferric-cli/tests/ci_validation_tier_guard.rs pins this key.
+  #
+  # Main pushes still share `<workflow>-push-refs/heads/main`: a pending push
+  # run is superseded by a newer push (the newest main commit is tested), and a
+  # RUNNING one is never cancelled.
   #
   # Interaction with the cache-poisoning guard below ("Save cargo cache"): a
   # run GitHub cancels because a newer PR run superseded it is, from the
@@ -62,7 +74,7 @@ concurrency:
   # run IS `cancelled()`), so it is skipped exactly as it already is for a
   # manual cancellation. Auto-cancellation opens no new path to the
   # truncated/208-byte-cache failure mode those guards exist to prevent.
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || (github.event_name == 'push' && github.ref) || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
@@ -1087,10 +1099,28 @@ jobs:
   # `cargo nextest run --workspace` would build all ~300 test binaries for a
   # handful of tests, on a runner whose binding constraint is disk.
   validation:
-    name: validation (weekly, external references)
+    name: validation (weekly, external references, shard ${{ matrix.partition }}/3)
     if: github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && github.event.schedule == '17 4 * * 0')
     runs-on: ubuntu-22.04
     timeout-minutes: 170
+    # SHARDED, because one runner no longer fits the tier. The last run that
+    # executed (37195768020, 2026-10-04) spent 133 of its 170 minutes in the
+    # Rust test step for 367 tests at test-threads = 2; the tier has grown
+    # from 55 to 80 validation_*.rs files since, so a single job would now
+    # time out and report NOTHING for the tests it never reached. nextest's
+    # `count:` partition is applied AFTER the filter and deals each binary's
+    # selected tests out round-robin, so the heavy neighbours inside one binary
+    # (validation_ecp_gradient, validation_tddft's h2co trio) land on
+    # different shards, which `hash:` does not guarantee; the union of the
+    # three shards is the whole tier (checked with nextest 0.9.145 on a
+    # three-binary toy crate). Every shard builds the same binaries
+    # (~4 min) and runs a disjoint third of the tests; the Python half runs on
+    # shard 1 only. fail-fast off: one shard's failure must not cancel the
+    # others' results.
+    strategy:
+      fail-fast: false
+      matrix:
+        partition: [1, 2, 3]
     # Builds and runs third-party build scripts and proc-macros, pushes
     # nothing and only RESTORES caches: read-only token, not persisted in the
     # checkout's .git/config.
@@ -1167,36 +1197,38 @@ jobs:
           fi
           echo "validation binaries: ${ARGS[*]}"
           cargo nextest run --profile validation --locked "${ARGS[@]}" \
+            --partition "count:${{ matrix.partition }}/3" \
             --run-ignored only -E 'binary(/^validation_/)'
 
       # ── Python half of the tier: `@pytest.mark.validation` tests ──────────
       # Excluded everywhere else by pyproject's `addopts = -m "not validation"`
       # (a later `-m` on the command line overrides it). These drive the
       # compiled extension (and, for the NPZ row, the CLI through it), so the
-      # job builds ferric-python in release. `!cancelled()` so a Rust-tier
-      # failure still reports the Python half. The pytest path list below is
+      # job builds ferric-python in release, on shard 1 only (it is not
+      # partitioned). `!cancelled()` so a Rust-tier failure still reports the
+      # Python half. The pytest path list below is
       # checked by ci_validation_tier_guard.rs against every file that carries
       # the marker, so a validation pytest outside it fails a normal PR.
       - name: Free the validation test binaries before the release build
         # The debug test binaries above and the release extension below are
         # two full builds; the runner's binding constraint is disk.
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && matrix.partition == 1 }}
         run: rm -rf target/debug
 
       - name: Install uv
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && matrix.partition == 1 }}
         run: pip install uv
 
       - name: uv sync (dev + build extras)
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && matrix.partition == 1 }}
         run: uv sync --extra dev --extra build --no-install-project
 
       - name: Build ferric-python extension (release)
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && matrix.partition == 1 }}
         run: uv run maturin develop --release --locked
 
       - name: Run Python validation tests
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && matrix.partition == 1 }}
         run: |
           set -euo pipefail
           # conftest.py turns a failed `import ferric` into a whole-suite SKIP
