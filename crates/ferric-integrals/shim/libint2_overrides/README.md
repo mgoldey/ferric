@@ -168,13 +168,14 @@ uninitialised memory; build.rs warns that the fix is NOT applied, or fails under
     val/perturb-433-pbc40, test binaries run directly (cwd crates/ferric-pbc, RUST_TEST_THREADS=3,
     OPENBLAS_NUM_THREADS=1), one binary at a time, 960 s cap per run, MALLOC_PERTURB_ 1 and 170. Entries are name
     (tests passed, wall seconds at =1/=170); every listed run exits 0 with the same pass count at both values:
-    pbc_pair_symmetry (4, 48/49), pbc_kcorr (8, 6/6), pbc_rohf (13, 75/74). Not yet run: pbc_krsh, pbc_hcore,
-    pbc_krsh_force, pbc_grsh, pbc_kuxcstress_ro_rsgdf, pbc_rks, pbc_oshell_rsh, pbc_stage0, pbc_dense_aft_scf,
-    pbc_sr_rotation_k, pbc_kroks, pbc_sr_rotation_kderiv, pbc_lindep, pbc_shifted_overlap, pbc_roks_rsh, pbc_kuks,
-    pbc_timings, pbc_memory_gates, pbc_uks, pbc_drpa, pbc_sr_deriv_frame, pbc_mp2, pbc_krsh_more, pbc_ecp,
-    pbc_sr_screening, pbc_kuks_mgga, pbc_uhf, pbc_kpoint_ecp, pbc_krks, pbc_kuhf, pbc_rsgdf, pbc_lmp2,
-    pbc_forces_heavy_atoms, pbc_auto_omega, pbc_krhf, pbc_kks_open_ecp, pbc_krks_shifted, pbc_molecular_limit,
-    pbc_lr_force_bitwise, pbc_rsgdf_split, pbc_ucorr.
+    pbc_pair_symmetry (4, 48/49), pbc_kcorr (8, 6/6), pbc_rohf (13, 75/74), pbc_krsh (6, 43/44), pbc_hcore (9, 4/4),
+    pbc_krsh_force (6, 82/80), pbc_grsh (9, 71/73), pbc_kuxcstress_ro_rsgdf (6, 78/81), pbc_rks (10, 34/34),
+    pbc_oshell_rsh (7, 47/47), pbc_stage0 (6, 0/0), pbc_dense_aft_scf (5, 2/2), pbc_sr_rotation_k (11, 66/66),
+    pbc_kroks (7, 71/71), pbc_sr_rotation_kderiv (12, 149/147), pbc_lindep (5, 2/2), pbc_shifted_overlap (1, 0/0). Not
+    yet run: pbc_roks_rsh, pbc_kuks, pbc_timings, pbc_memory_gates, pbc_uks, pbc_drpa, pbc_sr_deriv_frame, pbc_mp2,
+    pbc_krsh_more, pbc_ecp, pbc_sr_screening, pbc_kuks_mgga, pbc_uhf, pbc_kpoint_ecp, pbc_krks, pbc_kuhf, pbc_rsgdf,
+    pbc_lmp2, pbc_forces_heavy_atoms, pbc_auto_omega, pbc_krhf, pbc_kks_open_ecp, pbc_krks_shifted,
+    pbc_molecular_limit, pbc_lr_force_bitwise, pbc_rsgdf_split, pbc_ucorr.
     All elapsed times in harnesses A-H are local wall-clock on one developer box, not CI-runner measurements.
   - Interpretation (provisional): no allocator-dependent failure was seen in any run. Exit 0 against each test's
     existing bars is not proof of no uninitialised reads: the tests may not reach the table edge, and a
