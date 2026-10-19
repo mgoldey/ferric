@@ -1176,8 +1176,9 @@ fn loose_screen_hcore_side_gap_rotated_vs_unrotated_vs_fd() {
 // asserted (> 1e-4 on 2x2x1, > 1e-3 on the triclinic 1x1x3 supercell test).
 // Also caught by `rotation_mutants_miss_the_rotated_force` (cubic 1x1x2,
 // default), `..._stress` (cubic 1x1x3, ignored) and the ECP RS-GDF stress
-// loop (1.12e-1). NOT covered: the triclinic 1x1x1 anchor runs only RotDropT;
-// fit-acting FORCE mutants with an ECP are never run.
+// loop (1.12e-1). NOT covered: the triclinic 1x1x1 anchor runs only RotDropT.
+// The fit-acting FORCE mutants with an ECP run in
+// `validation_kstress_followups.rs` (RotSwapPair 2.49e-2 on HI 1x1x3).
 
 fn cell_tri() -> Cell {
     Cell::new(hydrogens(&H2_ATOMS), TRI_A).expect("triclinic cell")
