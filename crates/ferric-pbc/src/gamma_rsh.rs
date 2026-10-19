@@ -47,8 +47,8 @@ use num_complex::Complex64 as C64;
 const IMAG_TOL: f64 = 1e-9;
 
 /// TEST ONLY: a deliberately wrong per-spin exchange of the open-shell
-/// [`crate::dft::gamma_uks_rsh`] (the SCF calls K once per spin, alpha first).
-/// Each is invisible in the closed-shell limit and moves a polarized energy.
+/// [`crate::dft::gamma_uks_rsh`] and [`crate::rohf::gamma_roks_rsh`] (the SCF
+/// calls K once per spin, alpha first). Each moves a polarized energy.
 #[doc(hidden)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GammaSpinMutant {

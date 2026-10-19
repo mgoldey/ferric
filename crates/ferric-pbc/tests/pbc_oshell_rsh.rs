@@ -57,8 +57,9 @@
 //!
 //! Runs in every shard (~45 s): closed-shell H2 and H4 limits, Gamma pins
 //! (H3 HSE06 and CAM-B3LYP), the CAM-B3LYP 1x1x2 pin, the Gamma spin mutants,
-//! 1x1x1 == Gamma, and the by-name refusals (ROKS; gradient and stress of a
-//! real open-shell RSH SCF, Gamma and k).
+//! 1x1x1 == Gamma, and the by-name refusals (gradient and stress of a real
+//! open-shell RSH SCF, Gamma and k). ROKS with these functionals is
+//! `pbc_roks_rsh.rs`.
 
 mod common;
 #[path = "oshell_rsh_support/mod.rs"]
@@ -181,9 +182,10 @@ fn one_point_mesh_is_gamma_uks_rsh() {
 
 // ------------------------------------------------ refusals
 
-/// ROKS, and the derivatives of a REAL open-shell RSH SCF, refuse by name.
+/// The derivatives of a REAL open-shell RSH SCF refuse by name (and so does
+/// the plain global-hybrid ROKS entry; ROKS RSH is `gamma_roks_rsh`).
 #[test]
-fn roks_and_open_shell_rsh_derivatives_refuse_by_name() {
+fn open_shell_rsh_derivatives_refuse_by_name() {
     use ferric_pbc::kdense_aft::KDenseAftEri;
     use ferric_pbc::kgrad::KGradJk;
     use ferric_pbc::kscf::KRetainedJk;
@@ -232,8 +234,9 @@ fn roks_and_open_shell_rsh_derivatives_refuse_by_name() {
         .unwrap_err()
         .to_string(),
     );
-    // ROKS: the Gamma entry resolves the functional with the global-hybrid
-    // gate before any grid or integral is built.
+    // The plain global-hybrid ROKS entry resolves the functional with the
+    // global-hybrid gate before any grid or integral is built (RSH ROKS is
+    // gamma_roks_rsh, pbc_roks_rsh.rs).
     let rcfg = ferric_pbc::rohf::GammaRoksConfig::new("HSE06");
     named(
         ferric_pbc::rohf::gamma_roks(&cell, &s.prep, &s.hc, s.ints(), &rcfg)

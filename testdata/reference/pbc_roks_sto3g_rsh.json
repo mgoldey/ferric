@@ -1,0 +1,243 @@
+{
+  "pyscf_version": "2.13.1",
+  "numpy_version": "1.26.4",
+  "date": "2026-10-18",
+  "generator": "scripts/gen_pyscf_roks_rsh_refs.py",
+  "repo_sha_at_generation": "5bc32bee1231dbe221b1d2185c66cd38591da16d",
+  "repo_sha_note": "HEAD of the worktree when the script ran: the PARENT of the commit that adds/changes this script, not the commit containing it",
+  "libxc_version": "7.0.0",
+  "xc_names": {
+    "HSE06": {
+      "pyscf": "HSE06",
+      "ferric": "HSE06",
+      "omega_bohr_inv": 0.11,
+      "c_lr": 0.0,
+      "c_sr": 0.25
+    },
+    "CAM_B3LYP": {
+      "pyscf": "CAMB3LYP",
+      "ferric": "HYB_GGA_XC_CAM_B3LYP",
+      "omega_bohr_inv": 0.33,
+      "c_lr": 0.65,
+      "c_sr": 0.19
+    }
+  },
+  "grids": "XC grid (NumInt UniformGrids) and AFTDF mesh are both 41^3; cell.precision 1e-11",
+  "cell": "H STO-3G (PySCF digits), Bohr, TRICLINIC lattice; h3d doublet, h4t triplet",
+  "lattice": [
+    [
+      4.6,
+      0.0,
+      0.0
+    ],
+    [
+      0.9,
+      4.3,
+      0.0
+    ],
+    [
+      0.5,
+      0.7,
+      4.8
+    ]
+  ],
+  "cells": {
+    "h3d": {
+      "atoms": [
+        [
+          0.3,
+          0.2,
+          0.1
+        ],
+        [
+          0.3,
+          0.2,
+          1.5
+        ],
+        [
+          0.3,
+          0.2,
+          2.9
+        ]
+      ],
+      "nab": [
+        2,
+        1
+      ]
+    },
+    "h4t": {
+      "atoms": [
+        [
+          0.3,
+          0.2,
+          0.1
+        ],
+        [
+          0.3,
+          0.2,
+          1.5
+        ],
+        [
+          1.6,
+          1.1,
+          2.9
+        ],
+        [
+          1.6,
+          1.1,
+          4.1
+        ]
+      ],
+      "nab": [
+        3,
+        1
+      ]
+    }
+  },
+  "setup": "pbc.dft.ROKS (Gamma) / KROKS (nelec=(Na*Nk, Nb*Nk)), AFTDF, UniformGrids 41^3, conv_tol 1e-12, max_cycle 300",
+  "rows": [
+    {
+      "cell": "h3d",
+      "functional": "HSE06",
+      "kmesh": [
+        1,
+        1,
+        1
+      ],
+      "exxdiv": "ewald",
+      "converged": true,
+      "runtime_s": 22.5,
+      "e_tot": -1.5408085215683913
+    },
+    {
+      "cell": "h3d",
+      "functional": "HSE06",
+      "kmesh": [
+        1,
+        1,
+        1
+      ],
+      "exxdiv": "none",
+      "converged": true,
+      "runtime_s": 22.1,
+      "e_tot": -1.353940332591216
+    },
+    {
+      "cell": "h3d",
+      "functional": "CAM_B3LYP",
+      "kmesh": [
+        1,
+        1,
+        1
+      ],
+      "exxdiv": "ewald",
+      "converged": true,
+      "runtime_s": 21.9,
+      "e_tot": -1.571407630739611
+    },
+    {
+      "cell": "h3d",
+      "functional": "CAM_B3LYP",
+      "kmesh": [
+        1,
+        1,
+        1
+      ],
+      "exxdiv": "none",
+      "converged": true,
+      "runtime_s": 21.9,
+      "e_tot": -1.1408542278252816
+    },
+    {
+      "cell": "h4t",
+      "functional": "HSE06",
+      "kmesh": [
+        1,
+        1,
+        1
+      ],
+      "exxdiv": "ewald",
+      "converged": true,
+      "runtime_s": 51.9,
+      "e_tot": -1.7120232511360882
+    },
+    {
+      "cell": "h4t",
+      "functional": "CAM_B3LYP",
+      "kmesh": [
+        1,
+        1,
+        1
+      ],
+      "exxdiv": "ewald",
+      "converged": true,
+      "runtime_s": 47.7,
+      "e_tot": -1.747819503331805
+    },
+    {
+      "cell": "h3d",
+      "functional": "HSE06",
+      "kmesh": [
+        1,
+        1,
+        2
+      ],
+      "exxdiv": "ewald",
+      "converged": true,
+      "runtime_s": 62.4,
+      "e_tot": -1.6536166584392606
+    },
+    {
+      "cell": "h3d",
+      "functional": "HSE06",
+      "kmesh": [
+        1,
+        1,
+        2
+      ],
+      "exxdiv": "none",
+      "converged": true,
+      "runtime_s": 54.2,
+      "e_tot": -1.561494956634719
+    },
+    {
+      "cell": "h3d",
+      "functional": "CAM_B3LYP",
+      "kmesh": [
+        1,
+        1,
+        2
+      ],
+      "exxdiv": "ewald",
+      "converged": true,
+      "runtime_s": 187.1,
+      "e_tot": -1.6618738898527738
+    },
+    {
+      "cell": "h4t",
+      "functional": "HSE06",
+      "kmesh": [
+        1,
+        1,
+        2
+      ],
+      "exxdiv": "ewald",
+      "converged": true,
+      "runtime_s": 121.1,
+      "e_tot": -1.5353043378093063
+    },
+    {
+      "cell": "h4t",
+      "functional": "CAM_B3LYP",
+      "kmesh": [
+        1,
+        1,
+        2
+      ],
+      "exxdiv": "ewald",
+      "converged": true,
+      "runtime_s": 197.6,
+      "e_tot": -1.5464434470068502
+    }
+  ]
+}

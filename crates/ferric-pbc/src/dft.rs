@@ -68,11 +68,11 @@
 //! For `a > 0` and `exxdiv = ewald` the default start is
 //! [`EwaldStart::Staged`] (none, then ewald from those MOs), and the
 //! OCCUPATION-AWARE per-spin gap is checked against `a·v_M`
-//! ([`crate::uhf::occupation_gaps`]). ROKS is NOT implemented (ferric-scf's
-//! ROHF has no injected path).
+//! ([`crate::uhf::occupation_gaps`]). ROKS is [`crate::rohf`] (`gamma_roks`,
+//! and `gamma_roks_rsh` for range-separated hybrids).
 //!
 //! Refused by name: range-separated hybrids in every entry but closed-shell
-//! [`gamma_rks_rsh`] (the attenuated K is the k = 0 of the 1x1x1 k-point machinery, [`crate::gamma_rsh`]; open-shell [`gamma_uks_rsh`] takes the same exchange per spin; ROKS and stress refuse them; the closed-shell dense-AFT force is [`crate::gamma_rsh::gamma_rks_rsh_gradient`], library only),
+//! [`gamma_rks_rsh`] (the attenuated K is the k = 0 of the 1x1x1 k-point machinery, [`crate::gamma_rsh`]; open-shell [`gamma_uks_rsh`] and [`crate::rohf::gamma_roks_rsh`] take the same exchange per spin; stress refuses them; the closed-shell dense-AFT force is [`crate::gamma_rsh::gamma_rks_rsh_gradient`], library only),
 //! meta-GGA except the validated SCAN / r2SCAN in closed-shell [`gamma_rks`] ENERGY (tau from D and ∇χ^Γ, anchored to the 1x1x1 k-mesh and PySCF; Gamma forces, stress, UKS, ROKS refuse it), VV10 / double hybrids, grid pruning, Newton /
 //! TRAH / stability (they rebuild molecular J/K and the f_xc kernel on the
 //! molecular grid — rejected by `validate_injected`), the molecular grid knobs
@@ -1648,7 +1648,8 @@ pub fn resolve_periodic_functional_mgga(
                 "{name} needs the attenuated (erf/erfc) periodic exchange, which this entry \
                  point does not build: it is built by closed-shell RKS (k-point, or the \
                  Gamma-point gamma_rks_rsh / run_rks_gamma) and, in the library only, by \
-                 open-shell UKS (solve_kuks, gamma_uks_rsh). Use a global hybrid (e.g. \
+                 open-shell UKS (solve_kuks, gamma_uks_rsh) and ROKS (solve_kroks, \
+                 gamma_roks_rsh). Use a global hybrid (e.g. \
                  PBE0) or a semilocal functional here"
             ),
         }

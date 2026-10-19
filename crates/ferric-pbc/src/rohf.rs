@@ -12,7 +12,10 @@
 //! ```
 //!
 //! with `a = 1`, `V_σ = 0` for ROHF and `a` = the functional's global
-//! exact-exchange fraction for ROKS. The Madelung term lives in the injected
+//! exact-exchange fraction for ROKS. A range-separated hybrid
+//! ([`gamma_roks_rsh`], energy only) replaces `a·K` by the attenuated
+//! `K[D_σ]` of [`crate::gamma_rsh`] (fractions and the mixed Madelung
+//! constant inside, `a = 1`), exactly as open-shell UKS does. The Madelung term lives in the injected
 //! K builder (linear in D_σ: coefficient 1 per spin, FINDINGS Iteration 6)
 //! and so rides on the exact-exchange part only (Iteration 8). At the same
 //! density `E_ewald − E_none = −a v_M (N_α + N_β)/2`.
@@ -38,10 +41,12 @@
 
 use crate::dense_aft::ExxDiv;
 use crate::dft::{
-    refuse_molecular_grid_knobs, resolve_periodic_functional, DynXcRef, GammaUksConfig,
-    GammaUksGridInfo, PeriodicDftError, PeriodicGridConfig, PeriodicXcConfig,
+    gated_grid_and_xc, refuse_molecular_grid_knobs, resolve_periodic_functional, DynXcRef,
+    GammaUksConfig, GammaUksGridInfo, GridSource, PeriodicDftError, PeriodicGrid,
+    PeriodicGridConfig, PeriodicXcConfig,
 };
 use crate::ewald::madelung_constant;
+use crate::gamma_rsh::GammaRshExchange;
 use crate::hcore::PeriodicHcore;
 use crate::lattice::Cell;
 use crate::uhf::{nocc_ab, EwaldStart, GammaUhfIntegrals, SpinGapReport};
@@ -50,6 +55,7 @@ use ferric_core::parallel::ParallelContext;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
+use ferric_scf::fock::{JBuilder, KBuilder};
 use ferric_scf::result::ScfResult;
 use ferric_scf::rhf::{PeriodicInjection, RhfConfig, XcBuilder};
 use ferric_scf::rohf::{solve_rohf_injected, validate_injected_rohf};
@@ -201,7 +207,7 @@ impl GammaRoksConfig {
     ///
     /// When `functional` resolves ([`resolve_periodic_functional`], the same
     /// name check [`gamma_roks`] runs) to an exact-exchange fraction
-    /// `a > 0`, `scf.level_shift` = [`ROKS_HYBRID_LEVEL_SHIFT`] (0.05 Ha) and
+    /// `a > 0`, or is a range-separated hybrid ([`gamma_roks_rsh`]), `scf.level_shift` = [`ROKS_HYBRID_LEVEL_SHIFT`] (0.05 Ha) and
     /// `scf.max_iter` = [`ROKS_HYBRID_MAX_ITER`] (600). `a = 0` (LDA/GGA)
     /// keeps the [`GammaUksConfig::new`] SCF defaults (shift 0, 200
     /// iterations), and so does a name that does not resolve (`gamma_roks`
@@ -236,9 +242,10 @@ impl GammaRoksConfig {
     pub fn new(functional: &str) -> Self {
         let u = GammaUksConfig::new(functional);
         let mut scf = u.scf;
-        let hybrid = resolve_periodic_functional(functional)
-            .map(|(_, a)| a > 0.0)
-            .unwrap_or(false);
+        let hybrid = crate::rsh::is_range_separated(functional)
+            || resolve_periodic_functional(functional)
+                .map(|(_, a)| a > 0.0)
+                .unwrap_or(false);
         if hybrid {
             scf.level_shift = ROKS_HYBRID_LEVEL_SHIFT;
             scf.max_iter = ROKS_HYBRID_MAX_ITER;
@@ -264,9 +271,12 @@ pub struct GammaRoksResult {
     pub scf: ScfResult,
     /// The `exxdiv = none` first stage, when the staged start ran.
     pub none_stage: Option<ScfResult>,
-    /// `v_M` of the cell (applied, times `a`, iff `exxdiv = ewald`).
+    /// `v_M` of the cell (applied, times `a`, iff `exxdiv = ewald`); for a
+    /// range-separated hybrid ([`gamma_roks_rsh`]) the MIXED constant
+    /// `c_sr v_M + (c_lr − c_sr) v_M(ω)` the attenuated K applies (`a = 1`).
     pub madelung: f64,
-    /// The functional's global exact-exchange fraction `a`.
+    /// The functional's global exact-exchange fraction `a` (`c_sr` for a
+    /// range-separated hybrid).
     pub exact_exchange_fraction: f64,
     /// `(N_α, N_β)`.
     pub nocc: (usize, usize),
@@ -400,6 +410,22 @@ fn solve_stage(
     }
 }
 
+/// J and K of one stage at Madelung term `vm`: the plain builders of `ints`,
+/// or for a range-separated hybrid the attenuated K of `rsh_k`, called once
+/// per spin on `D_σ` (the per-spin Focks the Roothaan combination couples;
+/// the fractions are inside it).
+fn stage_builders<'a>(
+    ints: GammaUhfIntegrals<'a>,
+    rsh_k: Option<&'a GammaRshExchange>,
+    vm: f64,
+) -> (Box<dyn JBuilder + 'a>, Box<dyn KBuilder + 'a>) {
+    let (j, k) = crate::uhf::builders(ints, vm);
+    match rsh_k {
+        Some(ex) => (j, Box::new(ex.k_builder_with_madelung(vm))),
+        None => (j, k),
+    }
+}
+
 /// Shared body of [`gamma_rohf`] (`xc = None`, `a = 1`) and
 /// [`gamma_roks_with_xc`]: the injected ROHF/ROKS, staged for ewald when
 /// `a > 0`, then `⟨S²⟩` and the occupation-aware gap check.
@@ -416,6 +442,7 @@ fn run_staged(
     scf_cfg: &RhfConfig,
     initial_mos: Option<&Array2<f64>>,
     solver: &RohfSolver,
+    rsh_k: Option<&GammaRshExchange>,
 ) -> Result<Staged, FerricError> {
     validate_injected_rohf(scf_cfg).map_err(FerricError::from)?;
     let mol = cell.mol();
@@ -440,7 +467,12 @@ fn run_staged(
             "{who}: exact-exchange fraction must be in [0, 1], got {a}"
         )));
     }
-    let v_m = madelung_constant(cell)?;
+    // A range-separated K carries the MIXED constant c_sr v_M + (c_lr - c_sr)
+    // v_M(omega) (crate::gamma_rsh); everything else the full-Coulomb one.
+    let v_m = match rsh_k {
+        Some(ex) => ex.mixed_madelung(),
+        None => madelung_constant(cell)?,
+    };
     let applied = match exxdiv {
         ExxDiv::None => 0.0,
         ExxDiv::Ewald => v_m,
@@ -449,7 +481,7 @@ fn run_staged(
     // Required by the solver signature; never read for integrals here.
     let bounds = SchwarzBounds::compute(Operator::coulomb(), prep)?;
     let mut run = |vm: f64, init: Option<&Array2<f64>>| {
-        let (j, k) = crate::uhf::builders(ints, vm);
+        let (j, k) = stage_builders(ints, rsh_k, vm);
         let inj = PeriodicInjection {
             s: hc.s.clone(),
             h: hc.h.clone(),
@@ -524,6 +556,7 @@ pub fn gamma_rohf(
         &cfg.scf,
         cfg.initial_mos.as_ref(),
         &cfg.solver,
+        None,
     )?;
     Ok(GammaRohfResult {
         scf: r.scf,
@@ -539,8 +572,8 @@ pub fn gamma_rohf(
 /// Gamma-point ROKS with [`crate::dft::PeriodicXc`] built from `cfg.functional` on
 /// `cfg.grid` (spin-polarized evaluation, as [`crate::dft::gamma_uks`]).
 ///
-/// Errors (by name) on refused functionals (RSH / meta-GGA / VV10 / double
-/// hybrids), molecular-grid knobs (`scf.xc_omega`, `scf.dft_grid`,
+/// Errors (by name) on refused functionals (range-separated hybrids, which
+/// take [`gamma_roks_rsh`]; meta-GGA / VV10 / double hybrids), molecular-grid knobs (`scf.xc_omega`, `scf.dft_grid`,
 /// `scf.nlc_grid`), SCF features `validate_injected_rohf` refuses, a
 /// neighbour cutoff below the covering bound, budget overruns and a
 /// non-converged SCF stage.
@@ -583,6 +616,88 @@ pub fn gamma_roks_with_xc(
     xc: &mut dyn XcBuilder,
     cfg: &GammaRoksConfig,
 ) -> Result<GammaRoksResult, FerricError> {
+    gamma_roks_core(cell, prep, hc, ints, xc, cfg, None)
+}
+
+/// [`gamma_roks`] for a range-separated hybrid (HSE06 and CAM-B3LYP validated
+/// against PySCF `pbc.dft.ROKS`; wB97X is accepted but not exercised by any test): J from
+/// `ints`, the attenuated K of each spin from `rsh_k` (the Gamma = 1x1x1-mesh
+/// exchange of [`crate::gamma_rsh`], whose exxdiv must equal `cfg.exxdiv`).
+/// The per-spin Focks take `K_σ = K[D_σ]` with the fractions and the MIXED
+/// Madelung constant inside (scaled by 1, as in [`crate::dft::gamma_uks_rsh`])
+/// and are combined into the Roothaan effective Fock unchanged.
+/// `cfg.functional` must be range-separated. ENERGY only (forces and stress
+/// refuse RSH).
+pub fn gamma_roks_rsh(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    hc: &PeriodicHcore,
+    ints: GammaUhfIntegrals<'_>,
+    rsh_k: &GammaRshExchange,
+    cfg: &GammaRoksConfig,
+) -> Result<GammaRoksResult, FerricError> {
+    gamma_roks_rsh_impl(cell, prep, hc, ints, rsh_k, None, cfg)
+}
+
+/// [`gamma_roks_rsh`] on a caller-supplied XC grid (`cfg.grid` is ignored).
+pub fn gamma_roks_rsh_on_grid(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    hc: &PeriodicHcore,
+    ints: GammaUhfIntegrals<'_>,
+    rsh_k: &GammaRshExchange,
+    grid: &PeriodicGrid,
+    cfg: &GammaRoksConfig,
+) -> Result<GammaRoksResult, FerricError> {
+    gamma_roks_rsh_impl(cell, prep, hc, ints, rsh_k, Some(grid), cfg)
+}
+
+fn gamma_roks_rsh_impl(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    hc: &PeriodicHcore,
+    ints: GammaUhfIntegrals<'_>,
+    rsh_k: &GammaRshExchange,
+    grid_override: Option<&PeriodicGrid>,
+    cfg: &GammaRoksConfig,
+) -> Result<GammaRoksResult, FerricError> {
+    validate_injected_rohf(&cfg.scf).map_err(FerricError::from)?;
+    refuse_molecular_grid_knobs(&cfg.scf)?;
+    nocc_ab(cell.mol())?;
+    // Cheap name checks before the grid is built.
+    rsh_k.check_for("gamma_roks_rsh", &cfg.functional, cfg.exxdiv)?;
+    let total = crate::timing::StageClock::start();
+    let (grid, mut pxc, mut timings) = gated_grid_and_xc(
+        cell,
+        prep,
+        &cfg.functional,
+        GridSource::new(&cfg.grid, grid_override),
+        &cfg.xc,
+        false,
+        true,
+    )?;
+    let mut out = gamma_roks_core(cell, prep, hc, ints, &mut pxc, cfg, Some(rsh_k))?;
+    let electrons_on_grid = pxc.integrate_density(&out.scf.density_total)?;
+    out.grid = Some(GammaUksGridInfo {
+        n_grid_points: grid.len(),
+        neighbour_cutoff: grid.neighbour_cutoff(),
+        electrons_on_grid,
+    });
+    timings.add_stage(&pxc.eval_timing());
+    timings.finish(&total);
+    out.timings = timings;
+    Ok(out)
+}
+
+fn gamma_roks_core(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    hc: &PeriodicHcore,
+    ints: GammaUhfIntegrals<'_>,
+    xc: &mut dyn XcBuilder,
+    cfg: &GammaRoksConfig,
+    rsh_k: Option<&GammaRshExchange>,
+) -> Result<GammaRoksResult, FerricError> {
     refuse_molecular_grid_knobs(&cfg.scf)?;
     let r = run_staged(
         "gamma_roks",
@@ -596,6 +711,7 @@ pub fn gamma_roks_with_xc(
         &cfg.scf,
         cfg.initial_mos.as_ref(),
         &cfg.solver,
+        rsh_k,
     )?;
     let d_b = r.scf.density_beta.as_ref().ok_or_else(|| {
         FerricError::General("gamma_roks: the SCF returned no beta density".into())
@@ -603,7 +719,7 @@ pub fn gamma_roks_with_xc(
     let (e_xc, _, _) = xc.build_polarized(&r.scf.density_alpha, d_b)?;
     Ok(GammaRoksResult {
         madelung: r.v_m,
-        exact_exchange_fraction: r.a,
+        exact_exchange_fraction: rsh_k.map_or(r.a, |ex| ex.params().c_sr),
         nocc: r.nocc,
         s2: r.s2,
         gaps: r.gaps,

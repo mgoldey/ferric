@@ -52,7 +52,8 @@
 //!   injected into `solve_uhf_injected` (`F_σ = h + J − a·K_inj(D_σ) + V_σ`),
 //!   staged ewald start for hybrids, occupation-aware gap check against
 //!   `a·v_M`.
-//! * [`rohf`] — Stage 5b: Gamma ROHF / ROKS (`gamma_rohf`, `gamma_roks`) via
+//! * [`rohf`] — Stage 5b: Gamma ROHF / ROKS (`gamma_rohf`, `gamma_roks`,
+//!   `gamma_roks_rsh` for range-separated hybrids, energy only) via
 //!   `ferric_scf::rohf::solve_rohf_injected`: the UHF/UKS per-spin Fock
 //!   (`F_σ = h + J − a·K_inj(D_σ) + V_σ`) Roothaan-combined on one MO set,
 //!   staged ewald start for `a > 0`, per-spin gaps from the actual
@@ -308,9 +309,9 @@ pub use lmp2::{
 pub use mp2::{gamma_mp2, GammaMp2Config, GammaMp2Integrals, GammaMp2Result, Mp2Denominators};
 pub use pair_ft::pair_ft;
 pub use rohf::{
-    gamma_rohf, gamma_roks, gamma_roks_with_xc, rohf_occupation_gaps, GammaRohfConfig,
-    GammaRohfResult, GammaRoksConfig, GammaRoksResult, RohfSecondOrderInfo, RohfSolver,
-    RohfTrahConfig,
+    gamma_rohf, gamma_roks, gamma_roks_rsh, gamma_roks_rsh_on_grid, gamma_roks_with_xc,
+    rohf_occupation_gaps, GammaRohfConfig, GammaRohfResult, GammaRoksConfig, GammaRoksResult,
+    RohfSecondOrderInfo, RohfSolver, RohfTrahConfig,
 };
 pub use rsgdf::kpoint::{KRsGdf, KRsGdfConfig, KRsGdfJk, KRsGdfQStats, KRsGdfStats};
 pub use rsgdf::{PeriodicFitParts, RsGdf, RsGdfConfig, RsGdfFitDiagnostics};

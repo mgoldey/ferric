@@ -36,8 +36,8 @@
 //! nuclear force covers the dense-AFT J/K ([`crate::kxcgrad`]); the RS-GDF
 //! force and the stress refuse them. The Gamma-point [`crate::gamma_rsh`]
 //! reuses this exchange at k = 0, and the open-shell [`crate::kuks`] (KUKS)
-//! takes it per spin (with SCAN / r2SCAN open-shell energies there too,
-//! spin-resolved tau). Range-separated meta-GGAs, VV10 and double hybrids are
+//! and [`crate::kroks`] (KROKS) take it per spin (with SCAN / r2SCAN
+//! open-shell energies in KUKS too, spin-resolved tau). Range-separated meta-GGAs, VV10 and double hybrids are
 //! refused. Time reversal is NOT used
 //! to halve the XC work (every k gets its own Bloch AO cache).
 

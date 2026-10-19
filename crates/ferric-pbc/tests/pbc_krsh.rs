@@ -279,19 +279,29 @@ fn rsh_krks_matches_pinned_pyscf() {
     }
 }
 
-/// k-point ROKS has no range-separated exchange (k-point UKS does, see
-/// `pbc_oshell_rsh.rs`): it must refuse HSE06, not run it as a global hybrid.
+/// k-point ROKS takes the attenuated K per spin (mgoldey/ferric#354; the
+/// polarized pins are in `pbc_roks_rsh.rs`): in the closed-shell limit it
+/// must be the RKS energy (not HSE06 run as a global hybrid, which would
+/// differ by the screened exchange).
 #[test]
-fn roks_solver_refuses_rsh() {
+fn roks_closed_shell_rsh_is_krks() {
     use ferric_pbc::kroks::{solve_kroks_on_grid, KRoksConfig};
     let cell = h2_cell(4.0);
     let bs = pyscf_sto3g_h();
     let prep = prep_for(&cell, &bs);
-    let mesh = KPointMesh::gamma_centred(&cell, [1, 1, 1]).unwrap();
+    let mesh = KPointMesh::gamma_centred(&cell, [1, 1, 2]).unwrap();
     let grid = PeriodicGrid::uniform(&cell, [24; 3]).unwrap();
-    let roks = KRoksConfig::new(&cell, ExxDiv::Ewald, "HSE06");
-    assert!(
-        solve_kroks_on_grid(&cell, &prep, None, &mesh, &grid, &roks).is_err(),
-        "solve_kroks_on_grid accepted HSE06"
-    );
+    let mut roks = KRoksConfig::new(&cell, ExxDiv::Ewald, "HSE06");
+    roks.rohf.hcore = PeriodicHcoreConfig::with_omega(OMEGA);
+    roks.rohf.scf.energy_conv = 1e-12;
+    roks.rohf.scf.grad_conv = 1e-9;
+    let ro = solve_kroks_on_grid(&cell, &prep, None, &mesh, &grid, &roks)
+        .unwrap()
+        .scf
+        .energy;
+    let r = run(&cell, &bs, &mesh, &grid, &krks_cfg(&cell, "HSE06"))
+        .scf
+        .energy;
+    eprintln!("closed-shell HSE06 1x1x2: KROKS - KRKS {:.2e}", ro - r);
+    assert!((ro - r).abs() < 1e-11, "{:.2e}", ro - r);
 }

@@ -667,10 +667,11 @@ fn rsh_rsgdf_forces_and_stress_are_refused_not_silently_wrong() {
     );
 }
 
-/// k-point ROKS refuses a range-separated functional on the RS-GDF J/K as
-/// well (k-point UKS accepts it: `pbc_oshell_rsh.rs`).
+/// k-point ROKS takes the attenuated RS-GDF K per spin as well
+/// (mgoldey/ferric#354): in the closed-shell limit it must be the RKS energy
+/// on the same fit.
 #[test]
-fn roks_rsgdf_solver_refuses_rsh() {
+fn roks_rsgdf_closed_shell_rsh_is_krks() {
     use ferric_pbc::kroks::{solve_kroks_on_grid, KRoksConfig};
     let cell = h2_cell(4.0);
     let bs = pyscf_sto3g_h();
@@ -678,9 +679,22 @@ fn roks_rsgdf_solver_refuses_rsh() {
     let aux = PreparedBasis::new(cell.mol(), &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
     let mesh = KPointMesh::gamma_centred(&cell, [1, 1, 1]).unwrap();
     let grid = PeriodicGrid::uniform(&cell, [24; 3]).unwrap();
+    let k = krks_cfg(&cell, "HSE06", true, None);
     let mut roks = KRoksConfig::new(&cell, ExxDiv::Ewald, "HSE06");
+    roks.rohf.hcore = k.krhf.hcore;
+    roks.rohf.scf.energy_conv = 1e-12;
+    roks.rohf.scf.grad_conv = 1e-9;
     roks.rohf.jk = KJkKind::RsGdf;
-    assert!(solve_kroks_on_grid(&cell, &prep, Some(&aux), &mesh, &grid, &roks).is_err());
+    roks.rohf.rsgdf = k.krhf.rsgdf;
+    let ro = solve_kroks_on_grid(&cell, &prep, Some(&aux), &mesh, &grid, &roks)
+        .unwrap()
+        .scf
+        .energy;
+    let r = run(&cell, &bs, Some("cc-pvdz-ri"), &mesh, &grid, "HSE06", None)
+        .scf
+        .energy;
+    eprintln!("closed-shell HSE06 RS-GDF: KROKS - KRKS {:.2e}", ro - r);
+    assert!((ro - r).abs() < 1e-11, "{:.2e}", ro - r);
 }
 
 /// Cross-surface pin shared with `test_pbc_krks.py::
