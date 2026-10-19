@@ -247,7 +247,7 @@ fn setup(cfg: &Config, plan: &PeriodicPlan) -> Setup {
             // size and check their own kernels.
             if plan.kmesh.is_none() {
                 let nao = prep.nbasis();
-                let rsh = plan.route == PeriodicRoute::Rks
+                let rsh = matches!(plan.route, PeriodicRoute::Rks | PeriodicRoute::Uks)
                     && plan
                         .functional
                         .as_deref()
@@ -967,8 +967,19 @@ fn gamma_open_driver(
             }
         }
         PeriodicRoute::Uks => {
+            // A range-separated hybrid takes the attenuated K of the k = 0
+            // exchange (energy only; `task = "optimize"` was refused at plan
+            // time), any other functional the plain Gamma K.
             let c = uks_config(plan);
-            let r = gamma_uks(&s.cell, &s.prep, &sys.hc, ints, &c)?;
+            let r = ferric_pbc::gamma_rsh::gamma_uks_any(
+                &s.cell,
+                &s.prep,
+                &sys.hc,
+                ints,
+                s.aux.as_ref(),
+                rsh_sizing(plan),
+                &c,
+            )?;
             OpenParts {
                 ks_timings: r.timings,
                 gap_alpha: r.gaps.gap_alpha,

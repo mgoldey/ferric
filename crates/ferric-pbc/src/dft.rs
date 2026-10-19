@@ -1605,6 +1605,29 @@ pub fn check_gamma_rks_request(name: &str, derivs: bool) -> Result<(), FerricErr
     Ok(())
 }
 
+/// The Gamma UKS request gate, one call for the bindings (Python, CLI): a
+/// range-separated hybrid runs as an energy ([`crate::gamma_rsh::gamma_uks_any`])
+/// and is refused with a gradient, stress or optimization; a meta-GGA is
+/// refused by name (the Gamma UKS has no tau term), pointing at the k-point
+/// UKS on a 1x1x1 mesh, which is the Gamma point and has SCAN / r2SCAN.
+/// Everything else passes to [`gamma_uks`]'s own functional check.
+pub fn check_gamma_uks_request(name: &str, derivs: bool) -> Result<(), FerricError> {
+    if crate::rsh::is_range_separated(name) {
+        return check_gamma_rks_request(name, derivs);
+    }
+    if is_meta_gga_name(name) {
+        return Err(PeriodicDftError::Unsupported {
+            feature: "meta-GGA",
+            reason: format!(
+                "{name}: the Gamma-point UKS has no tau term; the k-point UKS on a 1x1x1 \
+                 mesh (the Gamma point) has SCAN / r2SCAN energies"
+            ),
+        }
+        .into());
+    }
+    Ok(())
+}
+
 /// The refusal for a Gamma-point nuclear gradient, stress or geometry
 /// optimization with a meta-GGA (the Gamma XC derivatives have no tau term;
 /// the k-point path does). Checked before any SCF.

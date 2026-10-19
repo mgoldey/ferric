@@ -515,21 +515,33 @@ def test_monkhorst_pack_full_stress_tensor_matches_fd(basis, route):
 
 
 def test_open_shell_refusals_have_exact_wording(basis):
-    for fn, tag in ((_uks, "run_uks_kpts"), (_roks, "run_roks_kpts")):
-        for f in ("SCAN", "r2SCAN"):
-            with pytest.raises(
-                ValueError,
-                match=rf'^{tag}: functional "{f}": .*meta-GGA.*\. k-point open-shell KS '
-                r"supports LDA, GGA and global-hybrid functionals only \(no meta-GGA on this route; "
-                r"the library k-point UKS has SCAN / r2SCAN energies, not wired here yet\)$",
-            ):
-                fn(H3_ATOMS, basis, f)
+    # k-point ROKS: no meta-GGA or range-separated hybrid (UKS has the energies,
+    # test_pbc_open_shell_mgga_rsh.py).
+    for f in ("SCAN", "r2SCAN"):
         with pytest.raises(
             ValueError,
-            match=rf'^{tag}: functional "HSE06": .*range-separated.*\. k-point '
-            r"open-shell KS supports",
+            match=rf'^run_roks_kpts: functional "{f}": .*meta-GGA.*\. k-point ROKS '
+            r"supports LDA, GGA and global-hybrid functionals only \(no meta-GGA or "
+            r"range-separated hybrid for k-point ROKS; run_uks_kpts has SCAN / r2SCAN "
+            r"and range-separated hybrid energies\)$",
         ):
-            fn(H3_ATOMS, basis, "HSE06")
+            _roks(H3_ATOMS, basis, f)
+    with pytest.raises(
+        ValueError,
+        match=r'^run_roks_kpts: functional "HSE06": .*range-separated.*\. k-point '
+        r"ROKS supports",
+    ):
+        _roks(H3_ATOMS, basis, "HSE06")
+    # UKS meta-GGA / range-separated hybrid: energy only.
+    for f in ("SCAN", "HSE06"):
+        with pytest.raises(
+            ValueError,
+            match=rf"^run_uks_kpts: with_gradient: General error: {f}: the k-point "
+            r"Kohn-Sham force and stress cover LDA, GGA and global-hybrid functionals "
+            r"only \(no meta-GGA, range-separated hybrid, VV10 or double hybrid for "
+            r"this method\)$",
+        ):
+            _uks(H3_ATOMS, basis, f, with_gradient=True)
     with pytest.raises(
         ValueError,
         match=r"^run_rks_kpts: with_gradient: .*HSE06.*range-separated",

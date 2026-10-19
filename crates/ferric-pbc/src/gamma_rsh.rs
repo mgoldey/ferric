@@ -484,6 +484,32 @@ pub fn gamma_rks_any(
     }
 }
 
+/// Open-shell Gamma UKS for ANY supported functional: the [`gamma_rks_any`]
+/// routing for [`crate::dft::gamma_uks_rsh`] (range-separated hybrid, ENERGY
+/// only) or [`crate::dft::gamma_uks`] (everything else). The one entry the
+/// Python and CLI bindings share. Meta-GGAs stay refused here (the Gamma UKS
+/// has no tau term; the k-point `solve_kuks` on a 1x1x1 mesh has).
+pub fn gamma_uks_any(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    hc: &crate::hcore::PeriodicHcore,
+    ints: crate::uhf::GammaUhfIntegrals<'_>,
+    aux: Option<&PreparedBasis>,
+    sizing: GammaRshSizing,
+    cfg: &crate::dft::GammaUksConfig,
+) -> Result<crate::dft::GammaUksResult, FerricError> {
+    check_range_split(&cfg.functional, sizing.range_split)?;
+    match crate::rsh::resolve_periodic_functional_rsh(&cfg.functional)?.2 {
+        Some(rsh) => {
+            let ex = GammaRshExchange::build_for_binding(
+                cell, prep, aux, &hc.s, cfg.exxdiv, sizing, rsh,
+            )?;
+            crate::dft::gamma_uks_rsh(cell, prep, hc, ints, &ex, cfg)
+        }
+        None => crate::dft::gamma_uks(cell, prep, hc, ints, cfg),
+    }
+}
+
 /// Refuse `range_split` with a range-separated functional at Gamma: the split
 /// shapes only the Gamma J, never the attenuated K, so honouring it would be a
 /// silent partial behaviour. Called at plan / preflight time by the bindings

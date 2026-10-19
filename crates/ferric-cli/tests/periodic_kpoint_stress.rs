@@ -18,9 +18,10 @@
 //!   bit for bit.
 //! * Refusals are TOML-level errors: the stress gate names `[cell] stress =
 //!   true` (closed-shell HSE06, Gamma point, optimize, correlated route,
-//!   split RS-GDF, SCAN on RS-GDF); open-shell range-separated and
-//!   open-shell / hybrid meta-GGA are refused earlier by the k-point ENERGY
-//!   gate (`[cell] kmesh with functional ...`), which does not name the key.
+//!   split RS-GDF, SCAN on RS-GDF, open-shell SCAN); hybrid meta-GGA (and
+//!   ROKS meta-GGA / range-separated hybrids) are refused earlier by the
+//!   k-point ENERGY gate (`[cell] kmesh with functional ...`), which does not
+//!   name the key.
 //!   An ECP cell (HI / def2-SVP, RKS-PBE and ROHF) is refused at run time,
 //!   before any SCF, by the shared `check_kpoint_deriv_cell`.
 //! * Mutants run against `rhf_shifted` and the others (all KILLED): rows
@@ -641,10 +642,11 @@ fn stress_refusals_name_the_toml_key() {
         route: Route::Uks,
         functional: "SCAN",
     };
-    // Refused by the k-point ENERGY gate before the stress gate is reached.
+    // The open-shell SCAN energy runs; its stress is refused by the stress
+    // gate, which names the key.
     let e = refused(scan_open, "scan-uks", "uhf", km, "");
     assert!(
-        e.contains("[cell] kmesh with functional \"SCAN\"") && e.contains("meta-GGA"),
+        e.contains("[cell] stress = true") && e.contains("SCAN") && e.contains("no meta-GGA"),
         "{e}"
     );
     let rhf = CASES[0];

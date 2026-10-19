@@ -3,7 +3,7 @@
 //! Anchor: the CLI energy (read at full precision from the JSON run log's
 //! `run_end` record, not the 10-decimal stdout line) equals the library
 //! `ferric_pbc::solve_krks` energy bit for bit on the same input. The
-//! unsupported combinations (open-shell meta-GGA, open-shell and force
+//! unsupported combinations (ROKS meta-GGA and range-separated hybrids, force
 //! range-separated hybrids) are refused by name before any integral is built.
 
 use ferric_core::basis;
@@ -153,19 +153,16 @@ fn refusal(tag: &str, kind: &str, mult: usize, dft: &str, cell: &str) -> String 
 
 #[test]
 fn unsupported_kpoint_ks_combinations_are_refused_by_name() {
-    // Open-shell meta-GGA stays refused on the CLI (UKS is not wired to the
-    // library's SCAN / r2SCAN energy; k-ROKS has no tau term).
-    let e = refusal("uks-meta", "ksdft", 3, "[dft]\nfunctional = \"SCAN\"", "");
-    assert!(e.contains("meta-GGA"), "{e}");
-    // Open-shell range-separated hybrids stay refused on the dense J/K too.
-    // The early gate (config.rs), not a later library refusal, names it.
-    for (tag, kind) in [("rsh-uks", "uhf"), ("rsh-roks", "rohf")] {
-        let e = refusal(tag, kind, 3, "[dft]\nfunctional = \"HSE06\"", "");
-        assert!(
-            e.contains("[cell] kmesh with functional \"HSE06\"") && e.contains("range-separated"),
-            "{tag}: {e}"
-        );
-    }
+    // k-point ROKS has no meta-GGA (no tau term) and no range-separated hybrid;
+    // the early gate (config.rs), not a later library refusal, names it. The
+    // UKS energies run (periodic_kpoint_open_shell.rs).
+    let e = refusal("roks-meta", "rohf", 3, "[dft]\nfunctional = \"SCAN\"", "");
+    assert!(e.contains("meta-GGA") && e.contains("for ROKS"), "{e}");
+    let e = refusal("rsh-roks", "rohf", 3, "[dft]\nfunctional = \"HSE06\"", "");
+    assert!(
+        e.contains("[cell] kmesh with functional \"HSE06\"") && e.contains("range-separated"),
+        "{e}"
+    );
     // task = "optimize" keeps the range-separated refusal (closed-shell LDA /
     // GGA / global hybrid / SCAN forces are wired; periodic_kpoint_ks_optimize.rs).
     let toml = input("opt-hse", "ksdft", 1, "[dft]\nfunctional = \"HSE06\"", "");
@@ -283,13 +280,13 @@ fn cli_kpoint_rsh_rsgdf_equals_library_solve_krks() {
     }
 }
 
-/// With `jk = "rsgdf"` the range-separated energy is accepted, but the rest of
-/// the surface stays refused by name: open-shell routes and
-/// `task = "optimize"` (forces/stress are not implemented).
+/// With `jk = "rsgdf"` the range-separated energy is accepted (RKS, and UKS:
+/// periodic_kpoint_open_shell.rs), but the rest of the surface stays refused
+/// by name: ROKS and `task = "optimize"` (forces/stress are not implemented).
 #[test]
 fn cli_kpoint_rsh_rsgdf_keeps_forces_and_open_shell_refused() {
     let hse = "[dft]\nfunctional = \"HSE06\"";
-    let e = refusal("rsgdf-uks", "ksdft", 3, hse, RSGDF_CELL);
+    let e = refusal("rsgdf-roks", "rohf", 3, hse, RSGDF_CELL);
     assert!(
         e.contains("[cell] kmesh with functional \"HSE06\"") && e.contains("range-separated"),
         "{e}"
@@ -361,11 +358,20 @@ fn cli_gamma_rsh_equals_the_one_point_mesh_and_keeps_derivatives_refused() {
         e.contains("method.task = \"optimize\"") && e.contains("range-separated"),
         "gam-opt: {e}"
     );
-    // Open shell at Gamma stays refused by name.
-    let out = run(&gamma_input("gam-uks", "ksdft", 3, hse));
-    assert!(!out.status.success(), "gam-uks must be refused");
+    // The open-shell (UKS) energy at Gamma runs (periodic_kpoint_open_shell.rs);
+    // its optimize is refused at plan time.
+    let toml = gamma_input("gam-uks-opt", "ksdft", 3, hse);
+    let src = std::fs::read_to_string(&toml)
+        .unwrap()
+        .replace("kind = \"ksdft\"", "task = \"optimize\"\nkind = \"ksdft\"");
+    std::fs::write(&toml, src).unwrap();
+    let out = run(&toml);
+    assert!(!out.status.success(), "gam-uks-opt must be refused");
     let e = String::from_utf8_lossy(&out.stderr);
-    assert!(e.contains("range-separated"), "gam-uks: {e}");
+    assert!(
+        e.contains("method.task = \"optimize\"") && e.contains("range-separated"),
+        "gam-uks-opt: {e}"
+    );
     // range_split would shape only the Gamma J, never the attenuated K.
     let toml = input(
         "gam-split",

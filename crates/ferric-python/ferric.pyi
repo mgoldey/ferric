@@ -2179,9 +2179,11 @@ def run_uks_gamma(
     gdf_omega: float | None = None,
     sr_column_rotation: bool | None = None,
 ) -> GammaOpenShellResult:
-    """Gamma-point periodic UKS (LDA/GGA/global hybrids; RSH/meta-GGA/VV10
-    refused). neighbour_cutoff in Angstrom (None = max(10 Bohr, covering
-    bound))."""
+    """Gamma-point periodic UKS (LDA/GGA/global hybrids, and range-separated
+    hybrids HSE06 / CAM-B3LYP / wB97X as an energy: dense or RS-GDF, with_gradient /
+    with_stress / range_split raise). Meta-GGA raises (use run_uks_kpts with
+    mesh (1, 1, 1)); VV10 raises. neighbour_cutoff in Angstrom (None = max(10
+    Bohr, covering bound))."""
     ...
 
 def run_roks_gamma(
@@ -2207,8 +2209,8 @@ def run_roks_gamma(
     gdf_omega: float | None = None,
     sr_column_rotation: bool | None = None,
 ) -> GammaOpenShellResult:
-    """Gamma-point periodic ROKS (functional/grid contract of run_uks_gamma).
-    max_iter=None: 600 with a 0.05 Ha ramped level shift for a hybrid (a > 0),
+    """Gamma-point periodic ROKS (functional/grid contract of run_uks_gamma,
+    but range-separated hybrids and meta-GGA raise). max_iter=None: 600 with a 0.05 Ha ramped level shift for a hybrid (a > 0),
     else 200 and no shift."""
     ...
 
@@ -2407,11 +2409,12 @@ def run_uks_kpts(
 ) -> KpointScfResult:
     """k-point UKS (LDA / GGA / global hybrids; spin state from the Molecule's
     multiplicity, electrons per cell). Mesh, ewald_start and jk as
-    run_uhf_kpts, functional and grid as run_rks_kpts. Meta-GGA,
-    range-separated hybrids and VV10 raise ValueError (the Rust library's
-    solve_kuks has SCAN / r2SCAN energies, but this binding is not wired to
-    them yet). with_gradient /
-    with_stress as run_rks_kpts (dense or RS-GDF J/K)."""
+    run_uhf_kpts, functional and grid as run_rks_kpts. SCAN / r2SCAN
+    (jk="dense") and the range-separated hybrids HSE06, CAM-B3LYP and wB97X
+    (either J/K) run as an energy only; with_gradient / with_stress with them,
+    other meta-GGAs, a meta-GGA with jk="rsgdf" and VV10 raise ValueError.
+    with_gradient / with_stress as run_rks_kpts (dense or RS-GDF J/K) for
+    LDA / GGA / global hybrids."""
     ...
 
 def run_roks_kpts(
@@ -2440,7 +2443,8 @@ def run_roks_kpts(
     gdf_omega: float | None = None,
 ) -> KpointScfResult:
     """k-point ROKS (restricted open-shell Kohn-Sham, Roothaan effective Fock)
-    with the arguments of run_uks_kpts. with_gradient / with_stress run with
+    with the arguments of run_uks_kpts; LDA / GGA / global hybrids only
+    (meta-GGA and range-separated hybrids raise). with_gradient / with_stress run with
     jk="dense" or the unsplit jk="rsgdf"; converge grad_conv well below 1e-5
     for the stress (the ROHF orbital-gradient gate)."""
     ...
