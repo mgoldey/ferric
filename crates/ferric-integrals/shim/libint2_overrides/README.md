@@ -163,7 +163,19 @@ uninitialised memory; build.rs warns that the fix is NOT applied, or fails under
     `gpu` and `test-seams` features and compiled to 0 tests in this build, so it is NOT exercised. At `=1`, the
     harness C binaries, all exit 0: pbc_kpair_symmetry (10 passed, 145 s), pbc_krsh_rsgdf (13, 175), pbc_parallel_bitwise
     (25, 366), pbc_sr_rotation (15, 364), ferric-rpa hirshfeld_symmetry (4, 184).
-    All elapsed times in harnesses A-G are local wall-clock on one developer box, not CI-runner measurements.
+  - Harness H, the remaining ferric-pbc binaries (the 40 listed under Scope plus pbc_krsh_force, pbc_kuks_mgga,
+    pbc_oshell_rsh and pbc_roks_rsh, added after the survey began), non-ignored tests, release build of
+    val/perturb-433-pbc40, test binaries run directly (cwd crates/ferric-pbc, RUST_TEST_THREADS=3,
+    OPENBLAS_NUM_THREADS=1), one binary at a time, 960 s cap per run, MALLOC_PERTURB_ 1 and 170. Entries are name
+    (tests passed, wall seconds at =1/=170); every listed run exits 0 with the same pass count at both values:
+    pbc_pair_symmetry (4, 48/49), pbc_kcorr (8, 6/6), pbc_rohf (13, 75/74). Not yet run: pbc_krsh, pbc_hcore,
+    pbc_krsh_force, pbc_grsh, pbc_kuxcstress_ro_rsgdf, pbc_rks, pbc_oshell_rsh, pbc_stage0, pbc_dense_aft_scf,
+    pbc_sr_rotation_k, pbc_kroks, pbc_sr_rotation_kderiv, pbc_lindep, pbc_shifted_overlap, pbc_roks_rsh, pbc_kuks,
+    pbc_timings, pbc_memory_gates, pbc_uks, pbc_drpa, pbc_sr_deriv_frame, pbc_mp2, pbc_krsh_more, pbc_ecp,
+    pbc_sr_screening, pbc_kuks_mgga, pbc_uhf, pbc_kpoint_ecp, pbc_krks, pbc_kuhf, pbc_rsgdf, pbc_lmp2,
+    pbc_forces_heavy_atoms, pbc_auto_omega, pbc_krhf, pbc_kks_open_ecp, pbc_krks_shifted, pbc_molecular_limit,
+    pbc_lr_force_bitwise, pbc_rsgdf_split, pbc_ucorr.
+    All elapsed times in harnesses A-H are local wall-clock on one developer box, not CI-runner measurements.
   - Interpretation (provisional): no allocator-dependent failure was seen in any run. Exit 0 against each test's
     existing bars is not proof of no uninitialised reads: the tests may not reach the table edge, and a
     perturbation-insensitive wrong answer inside a loose bar would pass.
