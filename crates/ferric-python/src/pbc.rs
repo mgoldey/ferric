@@ -2748,8 +2748,9 @@ impl KKsKind {
 
 /// Capability check for the k-point Kohn-Sham bindings: the one place that
 /// names what k-point KS-DFT does not support yet. Widen it together with the
-/// driver (ROKS meta-GGA / range-separated hybrids, hybrid meta-GGA, ECP
-/// cells are the known gaps). Called before any integral is built.
+/// driver (ROKS meta-GGA / range-separated hybrids, hybrid meta-GGA, and
+/// derivatives of range-separated hybrids and open-shell meta-GGA are the
+/// known gaps). Called before any integral is built.
 ///
 /// Energy gate: LDA, GGA, global hybrids everywhere; the pure meta-GGAs SCAN /
 /// r2SCAN and range-separated hybrids on RKS and UKS (the UKS one is the
@@ -2805,9 +2806,8 @@ fn check_kpoint_ks_support(
     Ok(())
 }
 
-/// The refusals that depend on the J/K route and the cell, after the setup:
-/// meta-GGA stress is anchored on the dense-AFT J only; ECP cells with KS derivatives
-/// are not validated.
+/// The refusal that depends on the J/K route, after the setup: the meta-GGA
+/// stress is anchored on the dense-AFT J only.
 fn check_kpoint_ks_derivs(fname: &str, s: &PbcSetup, functional: Option<&str>) -> PyResult<()> {
     if !s.derivs.any() {
         return Ok(());
@@ -2815,12 +2815,8 @@ fn check_kpoint_ks_derivs(fname: &str, s: &PbcSetup, functional: Option<&str>) -
     ferric_pbc::kxcgrad::check_kpoint_deriv_cell(
         functional,
         s.derivs.stress,
-        s.cell.mol().atoms.iter().any(|a| a.n_core_ecp > 0),
         s.aux.is_some(),
-        (
-            "with_gradient / with_stress",
-            "use jk=\"dense\" with with_stress (with_gradient supports RS-GDF)",
-        ),
+        "use jk=\"dense\" with with_stress (with_gradient supports RS-GDF)",
     )
     .map_err(|e| val_err(format!("{fname}: {e}")))
 }
@@ -2962,7 +2958,7 @@ fn krks_driver(
 /// ran on; `range_split` with it is a ValueError. With `with_gradient` (and
 /// for finite-difference checks) set `neighbour_cutoff` (Å) explicitly: the
 /// default depends on the atom positions in a large sparse cell and the force
-/// omits that dependence. ECP cells with `with_gradient` are refused. A 1x1x1 Gamma mesh equals
+/// omits that dependence. ECP cells are supported, derivatives included. A 1x1x1 Gamma mesh equals
 /// `run_rks_gamma` and an N-point mesh equals the N-fold supercell / N.
 ///
 /// Validated vs crates/ferric-pbc/tests/pbc_krks.rs (PySCF 2.13 KRKS).
@@ -3199,9 +3195,10 @@ fn kroks_driver(
 /// for finite-difference checks. Refused with a ValueError naming the gap:
 /// `with_gradient` / `with_stress` with a meta-GGA or a range-separated
 /// hybrid (energy only), a meta-GGA with `jk="rsgdf"`, other meta-GGAs,
-/// VV10 / double hybrids, ECP cells with derivatives, and `range_split`
-/// with derivatives. For a range-separated hybrid `exact_exchange_fraction`
-/// is the short-range `c_sr` and `madelung` the mixed constant.
+/// VV10 / double hybrids, and `range_split` with derivatives. ECP cells are
+/// supported, derivatives included. For a range-separated hybrid
+/// `exact_exchange_fraction` is the short-range `c_sr` and `madelung` the
+/// mixed constant.
 #[pyfunction]
 #[pyo3(signature = (
     mol, lattice, basis_set, functional, mesh, exxdiv="ewald", centring="gamma",

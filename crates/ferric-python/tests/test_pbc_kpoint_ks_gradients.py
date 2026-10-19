@@ -23,7 +23,7 @@ the energy jump by one step under a displacement).
 * Monkhorst-Pack mesh, a hybrid, RS-GDF J/K against FD.
 * Flags off: gradient() is None and the energy is bit-identical with the flag.
 * Refusals with exact wording: range_split with a force, unvalidated meta-GGA,
-  range-separated hybrids, ECP cells.
+  range-separated hybrids. (ECP cells: test_pbc_kpoint_open_shell_and_stress.py.)
 """
 
 from __future__ import annotations
@@ -43,8 +43,6 @@ from test_pbc_kpoint_gradients import (  # noqa: E402,F401  (fixtures re-exporte
     _mol,
     basis,
 )
-
-from test_pbc_bindings import _hi_lattice, _hi_xyz, hi_basis  # noqa: E402,F401
 
 FD_H = 1e-4
 FD_BAR = 2e-8
@@ -233,17 +231,4 @@ def test_refusals_have_exact_wording(basis):
             jk="rsgdf",
             auxbasis="cc-pvdz-ri",
             with_gradient=True,
-        )
-
-
-def test_ecp_cell_force_is_refused(hi_basis):
-    cell = ferric.Molecule.from_xyz_string(_hi_xyz(1))
-    with pytest.raises(
-        ValueError,
-        match=r"^run_rks_kpts: k-point KS forces and stress with ECPs are not validated "
-        r"\(with_gradient / with_stress on a cell whose basis carries an ECP; the "
-        r"energy without them runs\)$",
-    ):
-        ferric.run_rks_kpts(
-            cell, _hi_lattice(1), hi_basis, "PBE", (1, 1, 2), with_gradient=True
         )

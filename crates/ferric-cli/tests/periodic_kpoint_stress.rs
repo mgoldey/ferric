@@ -22,13 +22,13 @@
 //!   ROKS meta-GGA / range-separated hybrids) are refused earlier by the
 //!   k-point ENERGY gate (`[cell] kmesh with functional ...`), which does not
 //!   name the key.
-//!   An ECP cell (HI / def2-SVP, RKS-PBE and ROHF) is refused at run time,
-//!   before any SCF, by the shared `check_kpoint_deriv_cell`.
+//!   An ECP cell (HI / def2-SVP, RKS-PBE and ROHF) passes the gate and
+//!   reaches the SCF (the ECP derivatives are validated in the library,
+//!   `ferric-pbc/tests/validation_kks_ecp_derivs.rs`).
 //! * Mutants run against `rhf_shifted` and the others (all KILLED): rows
 //!   reversed / tensor transposed, GPa factor 29421.0, sign flip, default XC
 //!   grid in place of the configured one, `exxdiv = none` in the stress call,
-//!   stress dropped from the JSON; skipping `check_kstress_cell` is killed by
-//!   the ECP test. SURVIVED (equivalent for these fixtures): the stress
+//!   stress dropped from the JSON. SURVIVED (equivalent for these fixtures): the stress
 //!   `budget_bytes` wiring (it only sets blocking; no fixture is big enough
 //!   to block differently).
 
@@ -701,40 +701,47 @@ fn roks_pbe0_rsgdf_equals_library() {
     check_case(ROKS_PBE0, v, "mp", MeshCentring::MonkhorstPack);
 }
 
-/// An ECP cell (HI / def2-SVP) is refused at run time, before any SCF, for
-/// Kohn-Sham and for ROHF; the message names the key and the ECP.
+/// An ECP cell (HI / def2-SVP, the def2 ECP on I) passes the stress
+/// gate for Kohn-Sham and for ROHF and reaches the SCF (validated in the
+/// library: `crates/ferric-pbc/tests/validation_kks_ecp_derivs.rs`). The SCF is
+/// capped at one iteration so the test stays cheap: the run must end
+/// `not_converged` with the stress requested, not with a refusal. RS-GDF: the
+/// dense AFT of iodine's tight primitives exceeds the G-vector cap.
 #[test]
-fn ecp_cells_are_refused_before_the_scf() {
+fn ecp_cells_pass_the_stress_gate_and_reach_the_scf() {
     for (tag, kind, dft, mult) in [
         ("ecp-rks", "rhf", "[dft]\nfunctional = \"PBE\"", 1),
         ("ecp-rohf", "rohf", "", 3),
     ] {
         let dir = scratch(tag);
         std::fs::write(dir.join("hi.xyz"), "2\nHI\nH 0 0 0\nI 0 0 1.61\n").unwrap();
+        let grid = if dft.is_empty() {
+            String::new()
+        } else {
+            format!("n_radial = {N_RADIAL}\nn_angular = {N_ANGULAR}\n")
+        };
         let toml = dir.join("in.toml");
         std::fs::write(
             &toml,
             format!(
                 "[molecule]\nxyz = \"{}\"\nmultiplicity = {mult}\n[basis]\nname = \"def2-svp\"\n\
-                 [method]\nkind = \"{kind}\"\n{dft}\n[output]\njson = false\n[cell]\n\
+                 [method]\nkind = \"{kind}\"\n{dft}\n[output]\njson = \"{}\"\n[cell]\n\
                  unit = \"bohr\"\nlattice = [[12.0, 0.0, 0.0], [0.0, 12.0, 0.0], [0.0, 0.0, 12.0]]\n\
-                 kmesh = [1, 1, 2]\nstress = true\n",
-                dir.join("hi.xyz").display()
+                 kmesh = [1, 1, 2]\nstress = true\n{grid}\
+                 jk = \"rsgdf\"\nauxbasis = \"def2-svp-rifit\"\n\
+                 [scf]\nmax_iter = 1\n",
+                dir.join("hi.xyz").display(),
+                dir.join("run.jsonl").display(),
             ),
         )
         .unwrap();
         let out = run(&toml);
-        let stdout = String::from_utf8_lossy(&out.stdout);
         let e = String::from_utf8_lossy(&out.stderr);
-        assert!(!out.status.success(), "{tag} must be refused:\n{stdout}");
-        assert!(
-            e.contains("with ECPs are not validated") && e.contains("[cell] stress = true"),
-            "{tag}: {e}"
-        );
-        assert!(
-            !stdout.contains("iterations ="),
-            "{tag}: SCF ran:\n{stdout}"
-        );
+        assert!(out.status.success(), "{tag}: {e}");
+        assert!(!e.contains("not validated"), "{tag}: {e}");
+        let line = run_end_line(&toml);
+        assert!(line.contains("\"exit\":\"not_converged\""), "{tag}: {line}");
+        assert!(line.contains("\"stress_requested\":true"), "{tag}: {line}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

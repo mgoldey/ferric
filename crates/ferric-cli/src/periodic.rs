@@ -1716,35 +1716,12 @@ fn k_stress_ro(x: &KStressCtx<'_>) -> Result<KStressRun, FerricError> {
     })
 }
 
-/// Refusals that need the built cell (`config::resolve_stress` has the rest):
-/// ECP cells with KS / ROHF derivatives are not validated, exactly as the
-/// Python `with_stress` path and the k-point KS optimize gate say.
-fn check_kstress_cell(plan: &PeriodicPlan, s: &Setup) -> Result<(), FerricError> {
-    if !matches!(
-        plan.route,
-        PeriodicRoute::Rks | PeriodicRoute::Uks | PeriodicRoute::Roks | PeriodicRoute::Rohf
-    ) {
-        return Ok(());
-    }
-    ferric_pbc::kxcgrad::check_kpoint_deriv_cell(
-        plan.route
-            .kohn_sham()
-            .then(|| plan.functional.as_deref().unwrap_or("LDA")),
-        true,
-        s.cell.mol().atoms.iter().any(|a| a.n_core_ecp > 0),
-        s.aux.is_some(),
-        ("[cell] stress = true", crate::config::STRESS_DENSE_HINT),
-    )
-    .map_err(FerricError::General)
-}
-
 fn k_stress(plan: &PeriodicPlan, s: &Setup) -> Result<KStressRun, FerricError> {
     let Some((n, c)) = plan.kmesh else {
         return Err(FerricError::General(
             "internal: k-point stress without kmesh".into(),
         ));
     };
-    check_kstress_cell(plan, s)?;
     let x = KStressCtx {
         plan,
         s,
@@ -2658,23 +2635,6 @@ fn run_periodic_optimize(cfg: &Config, plan: &PeriodicPlan, s: &Setup) -> Outcom
         // Cartesian only; `periodic_plan` refused anything else.
         coord_system: CoordSystem::Cartesian,
     };
-    if plan.kmesh.is_some()
-        && matches!(
-            plan.route,
-            PeriodicRoute::Rks | PeriodicRoute::Uks | PeriodicRoute::Roks | PeriodicRoute::Rohf
-        )
-        && s.cell.mol().atoms.iter().any(|a| a.n_core_ecp > 0)
-    {
-        die(format!(
-            "method.task = \"optimize\" with [cell] kmesh: k-point {} forces with ECPs are \
-             not validated (the basis carries an ECP); use rhf/uhf at a kmesh, or no ECP",
-            if plan.route == PeriodicRoute::Rohf {
-                "ROHF"
-            } else {
-                "KS"
-            }
-        ));
-    }
     let base = s.cell.mol().clone();
     let x0: Vec<f64> = base.atoms.iter().flat_map(|a| [a.x, a.y, a.zpos]).collect();
     let at = |x: &[f64]| -> Molecule {

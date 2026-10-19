@@ -5163,8 +5163,7 @@ pub const STRESS_DENSE_HINT: &str = "set [cell] jk = \"dense\" (the SCAN / r2SCA
 /// `[cell] stress`: the k-point analytic stress of a `task = "energy"` run.
 /// Every refusal names the key. The functional and meta-GGA/J-K gates are the
 /// ones the Python `with_stress` path runs (`ferric_pbc::kxcgrad::
-/// check_kpoint_deriv_functional` / `_cell`), so the two cannot diverge; the
-/// ECP refusal needs the basis and runs in `crate::periodic`.
+/// check_kpoint_deriv_functional` / `_cell`), so the two cannot diverge.
 fn resolve_stress(
     key: Option<bool>,
     route: PeriodicRoute,
@@ -5213,9 +5212,8 @@ fn resolve_stress(
     ferric_pbc::kxcgrad::check_kpoint_deriv_cell(
         route.kohn_sham().then(|| functional.unwrap_or("LDA")),
         true,
-        false,
         matches!(jk, PeriodicJk::RsGdf { .. }),
-        (what, STRESS_DENSE_HINT),
+        STRESS_DENSE_HINT,
     )?;
     Ok(true)
 }

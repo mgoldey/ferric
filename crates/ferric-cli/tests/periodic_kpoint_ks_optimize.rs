@@ -262,6 +262,7 @@ const LOOSE: &str = "g_max_thresh = 1.0\ng_rms_thresh = 1.0\ne_conv = 1.0\nmax_s
 const H2_OFFAXIS: [[f64; 3]; 2] = [[0.3, 0.2, 0.1], [0.35, 0.12, 1.5]];
 const DENSE: &str = "jk = \"dense\"";
 const RSGDF: &str = "jk = \"rsgdf\"\nauxbasis = \"cc-pvdz-ri\"";
+const ECP_RSGDF: &str = "jk = \"rsgdf\"\nauxbasis = \"def2-svp-rifit\"";
 
 fn printed_gradient(stdout: &str, n: usize) -> Vec<f64> {
     rows(stdout, "final gradient", n)
@@ -524,18 +525,20 @@ fn a_non_converging_scf_step_is_a_typed_error_not_a_force() {
 }
 
 #[test]
-fn an_ecp_cell_is_refused_for_the_k_point_kohn_sham_force() {
-    // Xe carries an ECP in aug-cc-pvdz-pp: the energy path accepts ECPs at k,
-    // the Kohn-Sham force has no ECP validation and is refused before any SCF.
-    let mut i = loose_input("ecp", "PBE", "[1, 1, 2]", DENSE);
-    i.xyz = "1\nXe\nXe 0.0 0.0 0.0\n".to_string();
-    i.basis = "aug-cc-pvdz-pp";
+fn an_ecp_cell_passes_the_k_point_kohn_sham_force_gate() {
+    // I carries the def2 ECP in def2-svp. The k-point KS force with an ECP is
+    // validated in the library (ferric-pbc/tests/validation_kks_ecp_derivs.rs);
+    // here the optimize must get past the gate to the SCF, which is capped at
+    // two iterations so the test stays cheap (RS-GDF: the dense AFT of iodine's
+    // tight primitives in this box exceeds the G-vector cap).
+    let mut i = loose_input("ecp", "PBE", "[1, 1, 2]", ECP_RSGDF);
+    i.xyz = "2\nHI\nH 0.0 0.0 0.0\nI 0.0 0.0 1.61\n".to_string();
+    i.basis = "def2-svp";
+    i.optimize = "max_steps = 3\n[scf]\nmax_iter = 2";
     let e = refused(&run(&i), "ecp");
+    assert!(!e.contains("not validated"), "{e}");
     assert!(
-        e.contains(
-            "method.task = \"optimize\" with [cell] kmesh: k-point KS forces with ECPs are \
-             not validated (the basis carries an ECP); use rhf/uhf at a kmesh, or no ECP"
-        ),
+        e.contains("solve_krks: PBE SCF did not converge in 2 iterations"),
         "{e}"
     );
 }
