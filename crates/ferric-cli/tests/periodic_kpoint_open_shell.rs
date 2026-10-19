@@ -745,8 +745,9 @@ fn open_shell_refusals_have_exact_messages() {
             "{tag}: {e}"
         );
     }
-    // UKS SCAN / HSE06 have an energy but no force: optimize is refused by the
-    // open-shell force allowlist, before any integral.
+    // UKS SCAN / HSE06 have an energy here but no CLI force (the SCAN force is
+    // library-only): optimize is refused by the open-shell force allowlist,
+    // before any integral.
     for f in ["SCAN", "HSE06"] {
         let tag = format!("uks-opt-{f}");
         let e = refused(&run(&input(&tag, Method::Uks, f, "optimize")), &tag);
