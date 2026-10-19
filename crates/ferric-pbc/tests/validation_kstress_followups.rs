@@ -54,8 +54,8 @@
 //! (`sr2_force`, `sr3_force`, `sr2_strain_with`, `sr3_strain_with`) and
 //! `aux_ft_strain_shells`, so 1x1x1 = Gamma and k = supercell/N check only
 //! the LR part and the phase / residue binning independently. The shared SR
-//! derivative kernel is anchored by FD only on the H2 triplet (section A);
-//! the H4 RS-GDF anchors have no FD.
+//! derivative kernel is anchored by FD on the H2 triplet (both exxdiv) and
+//! on the H4 triplet (exxdiv none), section A.
 
 mod common;
 
@@ -379,6 +379,20 @@ fn h4_triplet() -> OpenShell {
     }
 }
 
+/// H3 s+p QUARTET: 3 alpha / 0 beta (empty beta set), the highest
+/// multiplicity three H atoms allow (#421 "quartet or other multiplicities").
+const H3_ATOMS: [[f64; 3]; 3] = [[0.3, 0.2, 0.1], [0.35, 0.12, 1.5], [1.6, 0.9, 0.7]];
+const H3_A: f64 = 4.5;
+
+fn h3_quartet() -> OpenShell {
+    OpenShell {
+        name: "H3 quartet s+p",
+        cell: cell_at(&H3_ATOMS, cubic(H3_A), 4),
+        na: 3,
+        nb: 0,
+    }
+}
+
 struct HSys {
     cell: Cell,
     prep: PreparedBasis,
@@ -657,6 +671,11 @@ fn fit_parts_g(p: &ferric_pbc::stress::GammaStressParts) -> [Mat3; 7] {
 /// | 1x1x3 force total    | 1.6e-12             | 3.0e-11             | 1e-9  |
 /// | 1x1x3 worst part     | 5.4e-12 (J2 SR)     | 4.3e-11 (J2 LR)     | 1e-9  |
 ///
+/// H3 QUARTET (3 alpha / 0 beta, 1x1x1 only): stress total 1.12e-12 (bar
+/// 1e-11, 9x: the tightest margin in this table), force 4.23e-13, worst
+/// part 9.8e-13 (J2 G0 volume, ewald); FitCrossSpin 2.73e-1, SwapSpinFock
+/// 2.59e-1.
+///
 /// The per-part 1x1x1 misses cancel between J2 SR and the J2 G0 volume in
 /// the total (the same cancellation `pbc_kstress.rs` measured for H2 RHF:
 /// worst part 1.1e-12, total 6.5e-14). The H4 supercell floor is 16x the H2
@@ -687,14 +706,14 @@ const OS_FIT_SC_BAR: f64 = 1e-9;
 /// fitted J/K (independent in the LR part and the binning: half-sphere real
 /// LR / one Y vs full-sphere complex per-q LR / per-(l, t) bins; the SR
 /// derivative walks are SHARED with the Gamma code, see the module doc, and
-/// are anchored only by the H2 triplet FD). The spin mutants
+/// are anchored by the H2 and H4 triplet FD). The spin mutants
 /// `FitCrossSpin` and `SwapSpinFock` are NOT k-specific and must miss here.
 #[test]
 #[ignore = "validation: k-point force/stress #421 follow-ups (RS-GDF open shell s+p, 1x1x1 vs Gamma)"]
 fn rsgdf_open_shell_sp_one_point_mesh_is_the_gamma_one() {
     let bs = sp_basis_h();
     let mut led = Ledger::default();
-    for sys in [h2_triplet(), h4_triplet()] {
+    for sys in [h2_triplet(), h4_triplet(), h3_quartet()] {
         let ks = hsys(sys.cell.clone(), &bs, [1, 1, 1]);
         let fs = hfit(&ks);
         let scfs = fit_uscfs(&ks, &fs, sys.na, sys.nb);
@@ -754,8 +773,8 @@ fn rsgdf_open_shell_sp_one_point_mesh_is_the_gamma_one() {
 /// fit- and spin-specific mutants missing. ARTIFACT: independent in the
 /// supercell geometry, the LR part and the phase / residue binning; the SR
 /// derivative walks are the SAME Gamma functions on both sides (module
-/// doc), so an SR-kernel defect is not visible here (only the H2 triplet FD
-/// covers it; H4 has no FD). A wrong phase, q
+/// doc), so an SR-kernel defect is not visible here (the H2 and H4 triplet
+/// FD anchors cover it). A wrong phase, q
 /// sign, conjugated density or a p-shell aux-image vector would not
 /// reproduce it on the non-TRIM mesh.
 fn open_shell_fit_supercell(sys: OpenShell, led: &mut Ledger) {
@@ -869,9 +888,129 @@ const OS_FIT_FD_F_BAR: f64 = 3e-8;
 #[test]
 #[ignore = "validation: k-point force/stress #421 follow-ups (RS-GDF H2 triplet s+p, FD of the k energy)"]
 fn rsgdf_open_shell_h2_triplet_sp_1x1x3_matches_fd_of_own_k_energy() {
+    open_shell_fit_fd(
+        h2_triplet(),
+        FdSpec {
+            pos: &H2_ATOMS,
+            a: OS_A,
+            exxs: &EXX,
+            strains: &ALL9,
+            ratio: &ALL9,
+            s_bar: OS_FIT_FD_S_BAR,
+            f_bar: OS_FIT_FD_F_BAR,
+        },
+    );
+}
+
+/// FD bars of the H4 triplet fitted energy (h = 1e-4, exxdiv none).
+/// MEASURED (release, 272 s): stress all nine 7.17e-8 (zz; FD(2h)/FD(h)
+/// 3.78 there, 3.85 on xy, 4.28 on xz: the h^2 truncation), force (H1 x,
+/// H2 z) 7.51e-10; bars 14x / 40x. The H4 stress floor is 2.8x the H2
+/// one (larger stress, 4 p-carrying centres), so the H2 bar (3e-7, 4x
+/// here) is not reused. Mutants vs FD: FitCrossSpin 6.26e-1, SwapSpinFock
+/// 2.91e-1, NoAuxFt 1.44e-4 (asserted > 1e-5; 144x the stress bar).
+const OS_FIT_FD_H4_S_BAR: f64 = 1e-6;
+const OS_FIT_FD_H4_F_BAR: f64 = 3e-8;
+
+/// PHYSICS: the SHARED short-range fitted derivative kernel (`sr2_force`,
+/// `sr3_force`, `sr2_strain_with`, `sr3_strain_with`, imported by the k
+/// path from the Gamma code, so the 1x1x1 and supercell anchors cannot see
+/// it) on the H4 triplet (3 alpha / 1 beta, both spin sectors populated,
+/// four p-carrying centres: 6 aux shells each, the 16x larger supercell
+/// floor of `OS_FIT_SC_BAR`): all nine strain components and two force
+/// components vs central FD of the k-UHF RS-GDF energy (exxdiv none; the
+/// SR kernel does not depend on exxdiv, the ewald part is anchored on H2),
+/// with the h-halving ratio on zz, xy and xz. ARTIFACT: an SR-kernel slip
+/// that cancels on the 2-centre H2 triplet (e.g. an aux-centre / AO-pair
+/// vector swap that is symmetric for two atoms) misses here; `NoAuxFt`
+/// (the fit-error-sized mutant) must stay visible.
+#[test]
+#[ignore = "validation: k-point force/stress #421 follow-ups (RS-GDF H4 triplet s+p, FD of the k energy)"]
+fn rsgdf_open_shell_h4_triplet_sp_1x1x3_matches_fd_of_own_k_energy() {
+    open_shell_fit_fd(
+        h4_triplet(),
+        FdSpec {
+            pos: &H4_ATOMS,
+            a: H4_A,
+            exxs: &[ExxDiv::None],
+            strains: &ALL9,
+            ratio: &[(2, 2), (0, 1), (0, 2)],
+            s_bar: OS_FIT_FD_H4_S_BAR,
+            f_bar: OS_FIT_FD_H4_F_BAR,
+        },
+    );
+}
+
+/// Shared body of the fitted open-shell FD anchors: all nine strains at h,
+/// the strains `ratio` also at 2h (FD(2h)/FD(h) must be ~4), forces (atom
+/// 0 x, atom 1 z), for every `exxs`.
+/// FD bars of the H3 quartet fitted energy (h = 1e-4, exxdiv none).
+/// MEASURED (release; this test plus the 1x1x1 anchor 480 s): stress (zz,
+/// xx, xy, xz) 4.49e-8 (zz FD(2h)/FD(h) 3.86), force 2.55e-9; bars 22x /
+/// 12x. Mutants vs FD: FitCrossSpin 1.30, SwapSpinFock 5.70e-1, NoAuxFt
+/// 6.89e-4.
+const OS_FIT_FD_Q_S_BAR: f64 = 1e-6;
+const OS_FIT_FD_Q_F_BAR: f64 = 3e-8;
+
+/// PHYSICS: the k-UHF RS-GDF stress (zz, xx, xy, xz) and force of the s+p
+/// H3 QUARTET (3 alpha, empty beta) on the Gamma-centred 1x1x3 mesh vs
+/// central FD of its own energy (exxdiv none; zz also at 2h). The 1x1x1 =
+/// Gamma anchor of this system is in
+/// `rsgdf_open_shell_sp_one_point_mesh_is_the_gamma_one`. ARTIFACT: a spin
+/// slip that only cancels for N_a - N_b <= 2 misses here.
+#[test]
+#[ignore = "validation: k-point force/stress #421 follow-ups (RS-GDF H3 quartet s+p, FD of the k energy)"]
+fn rsgdf_open_shell_h3_quartet_sp_1x1x3_matches_fd_of_own_k_energy() {
+    open_shell_fit_fd(
+        h3_quartet(),
+        FdSpec {
+            pos: &H3_ATOMS,
+            a: H3_A,
+            exxs: &[ExxDiv::None],
+            strains: &[(2, 2), (0, 0), (0, 1), (0, 2)],
+            ratio: &[(2, 2)],
+            s_bar: OS_FIT_FD_Q_S_BAR,
+            f_bar: OS_FIT_FD_Q_F_BAR,
+        },
+    );
+}
+
+/// What an open-shell fitted FD anchor differentiates and its bars.
+struct FdSpec<'a> {
+    /// Cell positions (Bohr) of `sys` (the force FD moves atom 0 x, atom 1 z).
+    pos: &'a [[f64; 3]],
+    /// Cubic edge (Bohr).
+    a: f64,
+    exxs: &'a [ExxDiv],
+    /// Strain components differentiated at h.
+    strains: &'a [(usize, usize)],
+    /// Strain components ALSO at 2h (subset of `strains`).
+    ratio: &'a [(usize, usize)],
+    s_bar: f64,
+    f_bar: f64,
+}
+
+/// `max |a_ij - b_ij|` over `comps` only.
+fn miss_on(a: &Mat3, b: &Mat3, comps: &[(usize, usize)]) -> f64 {
+    comps
+        .iter()
+        .fold(0.0_f64, |w, &(i, j)| w.max((a[i][j] - b[i][j]).abs()))
+}
+
+fn open_shell_fit_fd(sys: OpenShell, spec: FdSpec<'_>) {
+    let FdSpec {
+        pos,
+        a,
+        exxs,
+        strains,
+        ratio,
+        s_bar,
+        f_bar,
+    } = spec;
+    assert!(ratio.iter().all(|c| strains.contains(c)));
     let bs = sp_basis_h();
-    let sys = h2_triplet();
     let n = [1, 1, 3];
+    let mult = sys.cell.mol().multiplicity;
     let ks = hsys(sys.cell.clone(), &bs, n);
     let fs = hfit(&ks);
     let kept0 = fs.kept();
@@ -879,12 +1018,18 @@ fn rsgdf_open_shell_h2_triplet_sp_1x1x3_matches_fd_of_own_k_energy() {
         let k2 = hsys(c.clone(), &bs, n);
         let f2 = hfit(&k2);
         assert_eq!(f2.kept(), kept0, "the metric cut changed (E piecewise)");
-        let s = fit_uscfs(&k2, &f2, sys.na, sys.nb);
-        [s[0].energy, s[1].energy]
+        let mut e = [f64::NAN; 2];
+        for &x in exxs {
+            e[exx_idx(x)] = kuhf(&k2, f2.jk(&k2, x), sys.na, sys.nb).energy;
+        }
+        e
     };
     let mut fd = [[ZERO; 2]; 2];
-    for (hi, h) in [FD_H, 2.0 * FD_H].into_iter().enumerate() {
-        for (i, j) in ALL9 {
+    for &(i, j) in strains {
+        for (hi, h) in [FD_H, 2.0 * FD_H].into_iter().enumerate() {
+            if hi == 1 && !ratio.contains(&(i, j)) {
+                continue;
+            }
             let ep = energies(&strained(&sys.cell, i, j, h));
             let em = energies(&strained(&sys.cell, i, j, -h));
             for x in 0..2 {
@@ -894,46 +1039,70 @@ fn rsgdf_open_shell_h2_triplet_sp_1x1x3_matches_fd_of_own_k_energy() {
     }
     let forces = [(0usize, 0usize), (1, 2)];
     let mut fd_f = [[0.0_f64; 2]; 2];
-    for (c, &(a, x)) in forces.iter().enumerate() {
-        let at = |h: f64| {
-            let mut p = H2_ATOMS;
-            p[a][x] += h;
-            energies(&cell_at(&p, cubic(OS_A), 3))
+    for (c, &(at, x)) in forces.iter().enumerate() {
+        let shifted = |h: f64| {
+            let mut p = pos.to_vec();
+            p[at][x] += h;
+            energies(&cell_at(&p, cubic(a), mult))
         };
-        let (ep, em) = (at(FD_H), at(-FD_H));
+        let (ep, em) = (shifted(FD_H), shifted(-FD_H));
         for e in 0..2 {
             fd_f[c][e] = (ep[e] - em[e]) / (2.0 * FD_H);
         }
     }
-    let scfs = fit_uscfs(&ks, &fs, sys.na, sys.nb);
-    assert_spin_polarised(&sys, &scfs[0]);
     let mut led = Ledger::default();
-    for exx in EXX {
+    for &exx in exxs {
         let x = exx_idx(exx);
-        let s = k_uhf_fit_stress(&ks, &fs, &scfs[x], exx, None);
-        let (m1, m2) = (
-            max_mat(&s.de_deps, &fd[0][x]),
-            max_mat(&s.de_deps, &fd[1][x]),
-        );
+        let scf = kuhf(&ks, fs.jk(&ks, exx), sys.na, sys.nb);
+        assert_spin_polarised(&sys, &scf);
+        let s = k_uhf_fit_stress(&ks, &fs, &scf, exx, None);
+        let m1 = miss_on(&s.de_deps, &fd[0][x], strains);
         let tag = format!("{} 1x1x3 {exx:?}", sys.name);
-        led.below(&format!("{tag} stress vs FD (h)"), m1, OS_FIT_FD_S_BAR);
-        eprintln!("  {tag}: FD 2h {m2:.2e}, ratio {:.2}", m2 / m1);
         led.below(
-            &format!("{tag} |ratio - 4| (h^2)"),
-            (m2 / m1 - 4.0).abs(),
+            &format!("{tag} stress vs FD (h, {} strains)", strains.len()),
+            m1,
+            s_bar,
+        );
+        for &(i, j) in ratio {
+            let (e1, e2) = (
+                (s.de_deps[i][j] - fd[0][x][i][j]).abs(),
+                (s.de_deps[i][j] - fd[1][x][i][j]).abs(),
+            );
+            eprintln!(
+                "  {tag} ({i},{j}): FD h {e1:.2e}, 2h {e2:.2e}, ratio {:.2}",
+                e2 / e1
+            );
+        }
+        // The h^2 ratio on the worst ratio component (the others can sit
+        // at the SCF-noise floor, where the ratio is meaningless).
+        let (wi, wj) = *ratio
+            .iter()
+            .max_by(|p, q| {
+                let d = |&(i, j): &(usize, usize)| (s.de_deps[i][j] - fd[0][x][i][j]).abs();
+                d(p).total_cmp(&d(q))
+            })
+            .expect("ratio components");
+        let r = (s.de_deps[wi][wj] - fd[1][x][wi][wj]).abs()
+            / (s.de_deps[wi][wj] - fd[0][x][wi][wj]).abs();
+        led.below(
+            &format!("{tag} |ratio - 4| ({wi},{wj}) (h^2)"),
+            (r - 4.0).abs(),
             1.0,
         );
-        let f = k_uhf_fit_force(&ks, &fs, &scfs[x], exx, None);
-        let wf = forces.iter().enumerate().fold(0.0_f64, |w, (c, &(a, xx))| {
-            w.max((f.grad[(a, xx)] - fd_f[c][x]).abs())
-        });
-        led.below(&format!("{tag} force vs FD"), wf, OS_FIT_FD_F_BAR);
+        let f = k_uhf_fit_force(&ks, &fs, &scf, exx, None);
+        let wf = forces
+            .iter()
+            .enumerate()
+            .fold(0.0_f64, |w, (c, &(at, xx))| {
+                w.max((f.grad[(at, xx)] - fd_f[c][x]).abs())
+            });
+        led.below(&format!("{tag} force vs FD"), wf, f_bar);
         for m in [
             KStressMutation::FitCrossSpin,
             KStressMutation::SwapSpinFock,
             KStressMutation::NoAuxFt,
         ] {
-            let sm = k_uhf_fit_stress(&ks, &fs, &scfs[x], exx, Some(m));
+            let sm = k_uhf_fit_stress(&ks, &fs, &scf, exx, Some(m));
             let bar = if m == KStressMutation::NoAuxFt {
                 1e-5
             } else {
@@ -941,7 +1110,7 @@ fn rsgdf_open_shell_h2_triplet_sp_1x1x3_matches_fd_of_own_k_energy() {
             };
             led.above(
                 &format!("{tag} stress mutant {m:?} vs FD"),
-                max_mat(&sm.de_deps, &fd[0][x]),
+                miss_on(&sm.de_deps, &fd[0][x], strains),
                 bar,
             );
         }
