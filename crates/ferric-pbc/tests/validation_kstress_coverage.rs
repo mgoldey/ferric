@@ -35,10 +35,10 @@
 //!     1x1x3 is anchored as an exact identity with the Gamma-centred 1x1x3
 //!     (a genuinely shifted odd mesh does not exist in this convention).
 //! (H) EXTERNAL CODE: dense-AFT k-point RHF/UHF energies and FORCES vs PySCF
-//!     2.13 `pbc.grad.krhf` / `pbc.grad.kuhf` (FFTDF, all-electron gate
+//!     2.13.1 `pbc.grad.krhf` / `pbc.grad.kuhf` (FFTDF, all-electron gate
 //!     lifted, `scripts/gen_pyscf_kforce_pins.py`), and the ECP-cell
 //!     ENERGIES vs PySCF AFTDF with PySCF's `lanl2dz`. No external STRESS
-//!     exists: PySCF 2.13 has no k-point HF stress (`krks_stress` /
+//!     exists: PySCF 2.13.1 has no k-point HF stress (`krks_stress` /
 //!     `kuks_stress` are FFTDF pure-DFT only and refuse hybrids).
 //!
 //! ARTIFACT hypotheses (stated before measuring):
@@ -1142,7 +1142,7 @@ fn two_ecp_element_septet_one_point_mesh_is_the_gamma_one() {
 
 /// PHYSICS: the Gamma-centred 1x1x3 (non-TRIM) k-UHF RS-GDF force (every
 /// copy) and stress / 3 of the AsSb septet equal the explicit 3-cell
-/// supercell's (6 ECP atoms, multiplicity 13) Gamma-UHF ones, total and ECP
+/// supercell's (6 ECP atoms, multiplicity 19) Gamma-UHF ones, total and ECP
 /// part; the k, ECP-residue, rotation-residue and spin mutants miss.
 /// MEASURED: force total 9.6e-14 (ECP part 1.7e-17), stress total 1.5e-12
 /// (ECP 7.7e-16). Mutant misses (force): NoPhase 3.7e-3, ConjD 2.0e-3,
@@ -1609,7 +1609,7 @@ fn orthorhombic_ecp_mp_1x1x3_is_the_gamma_centred_1x1x3() {
 /// pbc_grad.rs GRAD_H2_ATOMS (Bohr), cubic edge 4.
 const PY_H2_ATOMS: [[f64; 3]; 2] = [[0.3, 0.2, 0.1], [0.35, 0.12, 1.5]];
 
-// PINS: PySCF 2.13 KRHF/KUHF + FFTDF (mesh 41^3, cell.precision 1e-12,
+// PINS: PySCF 2.13.1 KRHF/KUHF + FFTDF (mesh 41^3, cell.precision 1e-12,
 // cart, conv_tol 1e-12) and its `pbc.grad.krhf` / `pbc.grad.kuhf` gradient
 // with the ONE gate lifted that makes it refuse an all-electron cell (see
 // `scripts/gen_pyscf_kforce_pins.py`). The patched gradient is checked
@@ -1805,7 +1805,7 @@ fn ferric_dense_h2(p: &PyPin, muts: &[KGradMutation]) -> (f64, Array2<f64>, Vec<
 /// pure-AFT J/K. ARTIFACT: a common-mode error of ferric's force AND energy
 /// (invisible to every FD anchor, which differentiates ferric's own energy)
 /// shows as an energy miss; a force-only error as a force miss. STRESS has
-/// no external anchor: PySCF 2.13 has no k-point HF stress (its
+/// no external anchor: PySCF 2.13.1 has no k-point HF stress (its
 /// `krks_stress` is FFTDF pure-DFT only, refusing hybrids).
 /// MEASURED (energy / force): RHF 1x1x3 none 3.5e-13 / 1.4e-12, ewald
 /// 3.5e-13 / 1.8e-11, MP 1x1x2 6.1e-13 / 2.0e-13, UHF triplet 5.2e-13 /
@@ -1859,7 +1859,7 @@ fn dense_k_forces_match_pyscf_pbc_grad() {
     led.finish();
 }
 
-/// PySCF 2.13 Gamma RHF / UHF + AFTDF (exxdiv none, cell.precision 1e-12,
+/// PySCF 2.13.1 Gamma RHF / UHF + AFTDF (exxdiv none, cell.precision 1e-12,
 /// conv_tol 1e-11) with PySCF's `lanl2dz` ECPs and the `rot_basis` sets
 /// (`scripts/gen_pyscf_kforce_pins.py ecp`).
 const PY_HI_GAMMA_E: f64 = -6.279012426132294;
@@ -1897,7 +1897,7 @@ fn ecp_cell_dense_energies_match_pyscf() {
             &hk.s,
             ExxDiv::None,
             &KDenseAftConfig {
-                precision: 1e-10,
+                precision: 1e-12,
                 ..Default::default()
             },
         )
@@ -1910,16 +1910,25 @@ fn ecp_cell_dense_energies_match_pyscf() {
         };
         let e = match fx.spin {
             None => {
-                solve_krhf_injected(&cell, &mesh, &kscf_cfg(), inj)
-                    .expect("k-RHF")
-                    .energy
+                let r = solve_krhf_injected(&cell, &mesh, &kscf_cfg(), inj).expect("k-RHF");
+                assert!(r.converged, "k-RHF not converged ({} it)", r.iterations);
+                r.energy
             }
             Some((na, nb)) => {
-                solve_kuhf_injected(&cell, &mesh, &kscf_cfg(), inj, na, nb)
-                    .expect("k-UHF")
-                    .energy
+                let r = solve_kuhf_injected(&cell, &mesh, &kscf_cfg(), inj, na, nb).expect("k-UHF");
+                assert!(r.converged, "k-UHF not converged ({} it)", r.iterations);
+                r.energy
             }
         };
+        // The RS-GDF energy the D-F anchors differentiate, against the exact
+        // (dense) one: its fit error with these small aux sets (recorded;
+        // the guard only catches a fit that has stopped fitting).
+        let fit = krun(&fx, fx.cell(&bs), &bs, gamma_mesh([1, 1, 1]));
+        led.below(
+            &format!("{} RS-GDF - dense energy (fit error, recorded)", fx.name),
+            (fit.scf.energy() - e).abs(),
+            0.1,
+        );
         led.below(
             &format!("{} dense energy vs PySCF", fx.name),
             (e - e_ref).abs(),

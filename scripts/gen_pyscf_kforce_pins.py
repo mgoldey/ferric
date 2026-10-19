@@ -1,6 +1,6 @@
 """PySCF k-point HF FORCE pins for ferric's k-point forces (issue #421).
 
-PySCF 2.13 has k-point RHF/UHF nuclear gradients (`pbc.grad.krhf`,
+PySCF 2.13.1 has k-point RHF/UHF nuclear gradients (`pbc.grad.krhf`,
 `pbc.grad.kuhf`) but no k-point HF stress. Two limits of those gradients:
 
 * the J/K derivative (`with_df.get_jk_e1`) exists only for FFTDF;
@@ -33,6 +33,7 @@ Prints the pins pasted into crates/ferric-pbc/tests/validation_kstress_coverage.
 import sys
 
 import numpy as np
+import pyscf
 from pyscf.pbc import df, gto, scf, tools
 from pyscf.pbc.dft.numint import eval_ao_kpts
 from pyscf.pbc.grad import krhf as gkrhf
@@ -53,6 +54,11 @@ def get_hcore_all_electron(cell, kpts):
     return h1
 
 
+# `get_hcore_all_electron` copies PySCF internals (the pseudo branch of
+# `pbc.grad.krhf.get_hcore`); re-read them before trusting another version.
+assert pyscf.__version__ == "2.13.1", (
+    f"pins were generated with PySCF 2.13.1, not {pyscf.__version__}"
+)
 gkrhf.get_hcore = get_hcore_all_electron
 
 # PySCF's sto-3g for H (crates/ferric-pbc/tests/common: pyscf_sto3g_h) and the

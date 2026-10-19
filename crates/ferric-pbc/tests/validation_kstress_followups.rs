@@ -379,6 +379,20 @@ fn h4_triplet() -> OpenShell {
     }
 }
 
+/// H3 s+p QUARTET: 3 alpha / 0 beta (empty beta set), the highest
+/// multiplicity three H atoms allow (#421 "quartet or other multiplicities").
+const H3_ATOMS: [[f64; 3]; 3] = [[0.3, 0.2, 0.1], [0.35, 0.12, 1.5], [1.6, 0.9, 0.7]];
+const H3_A: f64 = 4.5;
+
+fn h3_quartet() -> OpenShell {
+    OpenShell {
+        name: "H3 quartet s+p",
+        cell: cell_at(&H3_ATOMS, cubic(H3_A), 4),
+        na: 3,
+        nb: 0,
+    }
+}
+
 struct HSys {
     cell: Cell,
     prep: PreparedBasis,
@@ -657,6 +671,11 @@ fn fit_parts_g(p: &ferric_pbc::stress::GammaStressParts) -> [Mat3; 7] {
 /// | 1x1x3 force total    | 1.6e-12             | 3.0e-11             | 1e-9  |
 /// | 1x1x3 worst part     | 5.4e-12 (J2 SR)     | 4.3e-11 (J2 LR)     | 1e-9  |
 ///
+/// H3 QUARTET (3 alpha / 0 beta, 1x1x1 only): stress total 1.12e-12 (bar
+/// 1e-11, 9x: the tightest margin in this table), force 4.23e-13, worst
+/// part 9.8e-13 (J2 G0 volume, ewald); FitCrossSpin 2.73e-1, SwapSpinFock
+/// 2.59e-1.
+///
 /// The per-part 1x1x1 misses cancel between J2 SR and the J2 G0 volume in
 /// the total (the same cancellation `pbc_kstress.rs` measured for H2 RHF:
 /// worst part 1.1e-12, total 6.5e-14). The H4 supercell floor is 16x the H2
@@ -694,7 +713,7 @@ const OS_FIT_SC_BAR: f64 = 1e-9;
 fn rsgdf_open_shell_sp_one_point_mesh_is_the_gamma_one() {
     let bs = sp_basis_h();
     let mut led = Ledger::default();
-    for sys in [h2_triplet(), h4_triplet()] {
+    for sys in [h2_triplet(), h4_triplet(), h3_quartet()] {
         let ks = hsys(sys.cell.clone(), &bs, [1, 1, 1]);
         let fs = hfit(&ks);
         let scfs = fit_uscfs(&ks, &fs, sys.na, sys.nb);
@@ -869,7 +888,18 @@ const OS_FIT_FD_F_BAR: f64 = 3e-8;
 #[test]
 #[ignore = "validation: k-point force/stress #421 follow-ups (RS-GDF H2 triplet s+p, FD of the k energy)"]
 fn rsgdf_open_shell_h2_triplet_sp_1x1x3_matches_fd_of_own_k_energy() {
-    open_shell_fit_fd(h2_triplet(), &H2_ATOMS, OS_A, &EXX, &ALL9);
+    open_shell_fit_fd(
+        h2_triplet(),
+        FdSpec {
+            pos: &H2_ATOMS,
+            a: OS_A,
+            exxs: &EXX,
+            strains: &ALL9,
+            ratio: &ALL9,
+            s_bar: OS_FIT_FD_S_BAR,
+            f_bar: OS_FIT_FD_F_BAR,
+        },
+    );
 }
 
 /// FD bars of the H4 triplet fitted energy (h = 1e-4, exxdiv none).
@@ -899,26 +929,88 @@ const OS_FIT_FD_H4_F_BAR: f64 = 3e-8;
 fn rsgdf_open_shell_h4_triplet_sp_1x1x3_matches_fd_of_own_k_energy() {
     open_shell_fit_fd(
         h4_triplet(),
-        &H4_ATOMS,
-        H4_A,
-        &[ExxDiv::None],
-        &[(2, 2), (0, 1), (0, 2)],
+        FdSpec {
+            pos: &H4_ATOMS,
+            a: H4_A,
+            exxs: &[ExxDiv::None],
+            strains: &ALL9,
+            ratio: &[(2, 2), (0, 1), (0, 2)],
+            s_bar: OS_FIT_FD_H4_S_BAR,
+            f_bar: OS_FIT_FD_H4_F_BAR,
+        },
     );
 }
 
 /// Shared body of the fitted open-shell FD anchors: all nine strains at h,
 /// the strains `ratio` also at 2h (FD(2h)/FD(h) must be ~4), forces (atom
 /// 0 x, atom 1 z), for every `exxs`.
-fn open_shell_fit_fd(
-    sys: OpenShell,
-    pos: &[[f64; 3]],
+/// FD bars of the H3 quartet fitted energy (h = 1e-4, exxdiv none).
+/// MEASURED (release; this test plus the 1x1x1 anchor 480 s): stress (zz,
+/// xx, xy, xz) 4.49e-8 (zz FD(2h)/FD(h) 3.86), force 2.55e-9; bars 22x /
+/// 12x. Mutants vs FD: FitCrossSpin 1.30, SwapSpinFock 5.70e-1, NoAuxFt
+/// 6.89e-4.
+const OS_FIT_FD_Q_S_BAR: f64 = 1e-6;
+const OS_FIT_FD_Q_F_BAR: f64 = 3e-8;
+
+/// PHYSICS: the k-UHF RS-GDF stress (zz, xx, xy, xz) and force of the s+p
+/// H3 QUARTET (3 alpha, empty beta) on the Gamma-centred 1x1x3 mesh vs
+/// central FD of its own energy (exxdiv none; zz also at 2h). The 1x1x1 =
+/// Gamma anchor of this system is in
+/// `rsgdf_open_shell_sp_one_point_mesh_is_the_gamma_one`. ARTIFACT: a spin
+/// slip that only cancels for N_a - N_b <= 2 misses here.
+#[test]
+#[ignore = "validation: k-point force/stress #421 follow-ups (RS-GDF H3 quartet s+p, FD of the k energy)"]
+fn rsgdf_open_shell_h3_quartet_sp_1x1x3_matches_fd_of_own_k_energy() {
+    open_shell_fit_fd(
+        h3_quartet(),
+        FdSpec {
+            pos: &H3_ATOMS,
+            a: H3_A,
+            exxs: &[ExxDiv::None],
+            strains: &[(2, 2), (0, 0), (0, 1), (0, 2)],
+            ratio: &[(2, 2)],
+            s_bar: OS_FIT_FD_Q_S_BAR,
+            f_bar: OS_FIT_FD_Q_F_BAR,
+        },
+    );
+}
+
+/// What an open-shell fitted FD anchor differentiates and its bars.
+struct FdSpec<'a> {
+    /// Cell positions (Bohr) of `sys` (the force FD moves atom 0 x, atom 1 z).
+    pos: &'a [[f64; 3]],
+    /// Cubic edge (Bohr).
     a: f64,
-    exxs: &[ExxDiv],
-    ratio: &[(usize, usize)],
-) {
+    exxs: &'a [ExxDiv],
+    /// Strain components differentiated at h.
+    strains: &'a [(usize, usize)],
+    /// Strain components ALSO at 2h (subset of `strains`).
+    ratio: &'a [(usize, usize)],
+    s_bar: f64,
+    f_bar: f64,
+}
+
+/// `max |a_ij - b_ij|` over `comps` only.
+fn miss_on(a: &Mat3, b: &Mat3, comps: &[(usize, usize)]) -> f64 {
+    comps
+        .iter()
+        .fold(0.0_f64, |w, &(i, j)| w.max((a[i][j] - b[i][j]).abs()))
+}
+
+fn open_shell_fit_fd(sys: OpenShell, spec: FdSpec<'_>) {
+    let FdSpec {
+        pos,
+        a,
+        exxs,
+        strains,
+        ratio,
+        s_bar,
+        f_bar,
+    } = spec;
+    assert!(ratio.iter().all(|c| strains.contains(c)));
     let bs = sp_basis_h();
     let n = [1, 1, 3];
-    let mult = 3;
+    let mult = sys.cell.mol().multiplicity;
     let ks = hsys(sys.cell.clone(), &bs, n);
     let fs = hfit(&ks);
     let kept0 = fs.kept();
@@ -933,7 +1025,7 @@ fn open_shell_fit_fd(
         e
     };
     let mut fd = [[ZERO; 2]; 2];
-    for (i, j) in ALL9 {
+    for &(i, j) in strains {
         for (hi, h) in [FD_H, 2.0 * FD_H].into_iter().enumerate() {
             if hi == 1 && !ratio.contains(&(i, j)) {
                 continue;
@@ -958,20 +1050,19 @@ fn open_shell_fit_fd(
             fd_f[c][e] = (ep[e] - em[e]) / (2.0 * FD_H);
         }
     }
-    let (s_bar, f_bar) = if sys.na + sys.nb > 2 {
-        (OS_FIT_FD_H4_S_BAR, OS_FIT_FD_H4_F_BAR)
-    } else {
-        (OS_FIT_FD_S_BAR, OS_FIT_FD_F_BAR)
-    };
     let mut led = Ledger::default();
     for &exx in exxs {
         let x = exx_idx(exx);
         let scf = kuhf(&ks, fs.jk(&ks, exx), sys.na, sys.nb);
         assert_spin_polarised(&sys, &scf);
         let s = k_uhf_fit_stress(&ks, &fs, &scf, exx, None);
-        let m1 = max_mat(&s.de_deps, &fd[0][x]);
+        let m1 = miss_on(&s.de_deps, &fd[0][x], strains);
         let tag = format!("{} 1x1x3 {exx:?}", sys.name);
-        led.below(&format!("{tag} stress vs FD (h, all nine)"), m1, s_bar);
+        led.below(
+            &format!("{tag} stress vs FD (h, {} strains)", strains.len()),
+            m1,
+            s_bar,
+        );
         for &(i, j) in ratio {
             let (e1, e2) = (
                 (s.de_deps[i][j] - fd[0][x][i][j]).abs(),
@@ -1019,7 +1110,7 @@ fn open_shell_fit_fd(
             };
             led.above(
                 &format!("{tag} stress mutant {m:?} vs FD"),
-                max_mat(&sm.de_deps, &fd[0][x]),
+                miss_on(&sm.de_deps, &fd[0][x], strains),
                 bar,
             );
         }
