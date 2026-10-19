@@ -1,4 +1,4 @@
-//! Meta-GGA (SCAN / r2SCAN) SCF energy validation against PySCF references.
+//! Meta-GGA (SCAN / r2SCAN / TPSS) SCF energy validation against PySCF references.
 //!
 //! Phase A: single-point energy only. Exercises the τ (kinetic-energy density)
 //! path through `KsXc` — `eval_tau_closed`, the meta-GGA libxc evaluation
@@ -132,6 +132,18 @@ fn r2scan_methane() {
     run_case("CH4", CH4, "r2SCAN", "methane_cc-pvdz_r2scan.json");
 }
 
+/// TPSS (friendly name = `MGGA_X_TPSS` + `MGGA_C_TPSS`): a third tau kernel
+/// through the same path, so a SCAN-specific shortcut cannot pass.
+#[test]
+fn tpss_water() {
+    run_case("H2O", H2O, "TPSS", "h2o_cc-pvdz_tpss.json");
+}
+
+#[test]
+fn tpss_methane() {
+    run_case("CH4", CH4, "TPSS", "methane_cc-pvdz_tpss.json");
+}
+
 // ── Open shell (UKS): the SPIN-POLARIZED meta-GGA energy ──────────────────
 //
 // Added 2026-07-27. The closed-shell cases above exercise
@@ -223,6 +235,11 @@ fn r2scan_ch3_uks() {
 #[test]
 fn r2scan_o2_triplet_uks() {
     run_uks_case("O2", O2, 3, "r2SCAN", "o2_cc-pvdz_r2scan.json");
+}
+
+#[test]
+fn tpss_nh2_uks() {
+    run_uks_case("NH2", NH2, 2, "TPSS", "nh2_cc-pvdz_tpss.json");
 }
 
 /// Meta-GGA nuclear gradients ARE implemented (the τ-dependent AO-derivative and

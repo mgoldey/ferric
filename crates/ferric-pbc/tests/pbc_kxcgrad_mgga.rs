@@ -21,14 +21,14 @@
 //!   gates, refusals and the Fock guard, and production-wired mutants.
 //!
 //! Also covered: TPSS through its raw single-component names
-//! (`tpss_components_xc_force_matches_fd_of_exc`, fixed-D XC force; there is no
-//! combined TPSS functional and no TPSS SCF), p/d shells on a triclinic cell
+//! (`tpss_components_xc_force_matches_fd_of_exc`, fixed-D XC force; the TPSS
+//! SCF is validated for the energy only), p/d shells on a triclinic cell
 //! (`spd_triclinic_xc_force_matches_fd_of_exc`, ignored, fixed-D XC force) and
 //! the RS-GDF J route by ONE ignored test, one force component of a SCAN SCF
 //! (`rsgdf_scan_force_component_matches_fd`).
 //!
 //! NOT covered: hybrid meta-GGAs (none resolve), range-separated and VV10
-//! meta-GGAs (refused), a TPSS SCF, RS-GDF beyond that one component and the
+//! meta-GGAs (refused), the TPSS force at a TPSS SCF, RS-GDF beyond that one component and the
 //! range-split fit, heavy atoms/ECPs, shifted meshes, metals, open shell,
 //! stress, SCAN's alpha ~ 1 region (the H2 fixtures reach alpha ~ 0 only), and
 //! the default (75, 302) grid.
@@ -555,9 +555,9 @@ fn mutants_are_caught() {
 
 // ------------------------------------------------- TPSS, p/d shells, RS-GDF
 
-/// TPSS exists only as the raw single-component names (no combined
-/// functional): each is checked as its own `E_xc` (exchange-only,
-/// correlation-only), which exercises TPSS's tau kernels without a TPSS SCF.
+/// TPSS through its raw single-component names: each is checked as its own
+/// `E_xc` (exchange-only, correlation-only), which exercises TPSS's tau
+/// kernels without a TPSS SCF.
 #[test]
 fn tpss_components_xc_force_matches_fd_of_exc() {
     let bs = pyscf_sto3g_h();

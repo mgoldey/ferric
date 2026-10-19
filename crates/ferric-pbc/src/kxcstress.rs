@@ -140,7 +140,8 @@
 //!
 //! LDA, GGA, meta-GGA (SCAN, r2SCAN on the dense-AFT J route; TPSS only as its
 //! raw X and C component names, FD-anchored on a fixed density with the Fock
-//! guard skipped, there being no TPSS SCF) and global hybrids; range-separated
+//! guard skipped: the TPSS SCF energy is validated, its stress is not, and the
+//! bindings refuse it) and global hybrids; range-separated
 //! hybrids, VV10/double hybrids and meta-GGA on the RS-GDF J route keep typed
 //! errors (the dense kernels carrying an attenuated exchange are refused by the
 //! HF assembly). The open-shell (UKS) twin is [`crate::kuxcstress`] (SCAN and
@@ -797,7 +798,10 @@ pub(crate) fn resolve_global_mgga_stress(functional: &str) -> Result<(XcDef, f64
 /// * `scf` — `KRksResult::scf`.
 /// * `cfg.grid`/`cfg.ao_threshold` — the grid and AO truncation of the energy.
 ///
-/// Also meta-GGA (SCAN, r2SCAN) on the dense-AFT J route.
+/// Also meta-GGA (SCAN, r2SCAN) on the dense-AFT J route. This library entry
+/// also accepts TPSS UNVALIDATED (only its raw components are FD-anchored on a
+/// fixed density); the Python and CLI bindings refuse it through
+/// [`crate::kxcgrad::check_force_functional`].
 ///
 /// Refuses (typed errors) range-separated hybrids, VV10/double
 /// hybrids, meta-GGA with RS-GDF J, a hybrid without `cfg.exxdiv`, and an SCF whose Fock the rebuilt

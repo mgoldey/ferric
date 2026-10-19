@@ -2239,7 +2239,7 @@ def run_rks_gamma(
     sr_column_rotation: bool | None = None,
 ) -> GammaRksResult:
     """Closed-shell Gamma-point periodic RKS; open shells raise ValueError.
-    Meta-GGA: only SCAN / r2SCAN, energy only (with_gradient / with_stress raise).
+    Meta-GGA: only SCAN / r2SCAN / TPSS, energy only (with_gradient / with_stress raise).
     Range-separated hybrids (HSE06, CAM-B3LYP, wB97X): energy only, attenuated K
     via the k = 0 point of the k-point RSH exchange (dense or RS-GDF);
     with_gradient / with_stress raise."""
@@ -2372,7 +2372,7 @@ def run_rks_kpts(
     gdf_omega: float | None = None,
 ) -> KpointRksResult:
     """Closed-shell k-point RKS (LDA / GGA / global hybrids and the pure
-    meta-GGAs SCAN / r2SCAN, and the range-separated hybrids HSE06,
+    meta-GGAs SCAN / r2SCAN / TPSS (TPSS energy only), and the range-separated hybrids HSE06,
     CAM-B3LYP and wB97X with either J/K, energy only). VV10, hybrid meta-GGAs
     and range-separated hybrids with with_gradient / with_stress raise
     ValueError naming the unsupported feature; ECP cells are supported,

@@ -1210,6 +1210,7 @@ fn friendly_to_libxc(name: &str) -> Option<&'static [&'static str]> {
         // --- pure meta-GGA (exchange + correlation pair; need τ) ---
         "SCAN" => &["MGGA_X_SCAN", "MGGA_C_SCAN"],
         "R2SCAN" => &["MGGA_X_R2SCAN", "MGGA_C_R2SCAN"],
+        "TPSS" => &["MGGA_X_TPSS", "MGGA_C_TPSS"],
         // --- hybrid / RSH (single combined identifier) ---
         // PBE0 is libxc's HYB_GGA_XC_PBEH ("PBE hybrid") — HYB_GGA_XC_PBE0
         // does not exist in libxc.
@@ -1227,9 +1228,10 @@ fn friendly_to_libxc(name: &str) -> Option<&'static [&'static str]> {
 /// closed-shell, nspin=2 for spin-polarized (UKS / ROKS).
 ///
 /// Recognized friendly names: `LDA`/`SVWN`, `PBE`, `PBEsol`, `BLYP`, `BP86`,
-/// `PBE0`, `B3LYP`, `HSE06`, `wB97X-V` (case/separator-insensitive). Any other name is
-/// passed to libxc verbatim, so canonical identifiers (e.g. `HYB_GGA_XC_PBEH`)
-/// also work. Meta-GGA functionals are rejected — ferric has no mGGA kernel.
+/// `PBE0`, `B3LYP`, `HSE06`, `wB97X-V`, and the pure meta-GGAs `SCAN`, `r2SCAN`,
+/// `TPSS` (case/separator-insensitive). Any other name is passed to libxc
+/// verbatim, so canonical identifiers (e.g. `HYB_GGA_XC_PBEH`) also work; raw
+/// meta-GGA identifiers are limited to the SCAN / r2SCAN / TPSS components.
 pub fn xc_def_from_name(name: &str) -> Result<XcDef, LibxcError> {
     xc_def_from_name_nspin(name, 1)
 }
@@ -1681,11 +1683,11 @@ mod tests {
         }
     }
 
-    /// SCAN / r2SCAN friendly names resolve to a two-component meta-GGA pair,
-    /// both tagged `FunctionalFamily::MetaGga`, with no exact exchange.
+    /// SCAN / r2SCAN / TPSS friendly names resolve to a two-component meta-GGA
+    /// pair, both tagged `FunctionalFamily::MetaGga`, with no exact exchange.
     #[test]
     fn scan_and_r2scan_resolve_as_metagga() {
-        for name in ["SCAN", "r2SCAN", "R2SCAN"] {
+        for name in ["SCAN", "r2SCAN", "R2SCAN", "TPSS", "tpss"] {
             let def = xc_def_from_name(name)
                 .unwrap_or_else(|e| panic!("{name} should resolve as meta-GGA, got {e:?}"));
             assert_eq!(def.funcs.len(), 2, "{name}: X + C pair");

@@ -1629,8 +1629,9 @@ fn rks_driver(
 /// built with its gradient pieces). Each is `None` when not requested. The
 /// SCF must converge (a derivative at a non-stationary density is refused).
 ///
-/// Meta-GGA: only the pure SCAN / r2SCAN (energy; with_gradient / with_stress
-/// with a meta-GGA is a ValueError, use `run_rks_kpts` on a [1,1,1] mesh).
+/// Meta-GGA: only the pure SCAN / r2SCAN / TPSS (energy; with_gradient /
+/// with_stress with a meta-GGA is a ValueError, use `run_rks_kpts` on a
+/// [1,1,1] mesh for SCAN / r2SCAN forces).
 ///
 /// Range-separated hybrids (HSE06, CAM-B3LYP, wB97X; energy only): J from
 /// the Gamma J/K, the attenuated K from the k = 0 point of the k-point
@@ -1677,7 +1678,7 @@ fn run_rks_gamma(
     sr_column_rotation: Option<bool>,
 ) -> PyResult<PyGammaRksResult> {
     let fname = "run_rks_gamma";
-    // Before any integral is built (SCAN / r2SCAN only; no force or stress).
+    // Before any integral is built (SCAN / r2SCAN / TPSS only; no force or stress).
     ferric_pbc::dft::check_gamma_rks_request(functional, with_gradient || with_stress)
         .map_err(|e| val_err(format!("{fname}: functional {functional:?}: {e}")))?;
     let mut s = pbc_setup(&PbcArgs {
@@ -2755,10 +2756,11 @@ impl KKsKind {
 /// Energy gate: LDA, GGA, global hybrids everywhere; the pure meta-GGAs SCAN /
 /// r2SCAN and range-separated hybrids on RKS and UKS (the UKS one is the
 /// library `resolve_kuks_functional`; its meta-GGA needs the dense-AFT J/K,
-/// which `solve_kuks` checks). The force and stress gate is the library
-/// allowlist of the same name, independent of the energy gate, so widening
-/// the energy path cannot silently enable a derivative (it refuses
-/// range-separated hybrids, and open-shell meta-GGA).
+/// which `solve_kuks` checks); TPSS on RKS only (energy only). The force and
+/// stress gate is the library allowlist of the same name, independent of the
+/// energy gate, so widening the energy path cannot silently enable a
+/// derivative (it refuses range-separated hybrids, TPSS, and open-shell
+/// meta-GGA).
 fn check_kpoint_ks_support(
     fname: &str,
     functional: &str,
@@ -2769,7 +2771,7 @@ fn check_kpoint_ks_support(
         KKsKind::Closed if ferric_pbc::rsh::is_range_separated(functional) => Ok(()),
         KKsKind::Closed => ferric_pbc::dft::resolve_periodic_functional_mgga(
             functional,
-            ferric_pbc::kxcgrad::is_validated_mgga(functional),
+            ferric_pbc::kxcgrad::is_validated_mgga_energy(functional),
         )
         .map(|_| ()),
         KKsKind::Unrestricted => ferric_pbc::kuks::resolve_kuks_functional(functional),
@@ -2784,7 +2786,11 @@ fn check_kpoint_ks_support(
                  hybrid for k-point ROKS; run_uks_kpts has SCAN / r2SCAN and range-separated \
                  hybrid energies)"
             }
-            _ => {
+            KKsKind::Closed => {
+                "LDA, GGA, global-hybrid and SCAN / r2SCAN / TPSS meta-GGA functionals (plus \
+                 range-separated hybrids) only"
+            }
+            KKsKind::Unrestricted => {
                 "LDA, GGA, global-hybrid and SCAN / r2SCAN meta-GGA functionals (plus \
                  range-separated hybrids) only"
             }

@@ -142,7 +142,7 @@ def test_range_separated_hybrid_runs_on_dense_jk(h2, basis):
             )
 
 
-@pytest.mark.parametrize("functional", ["SCAN", "r2SCAN"])
+@pytest.mark.parametrize("functional", ["SCAN", "r2SCAN", "TPSS"])
 def test_gamma_meta_gga_energy_equals_the_one_point_mesh(h2, basis, functional):
     # Gamma meta-GGA (issue #355): closed-shell energy, anchored to the 1x1x1
     # k-mesh on the same grid (pbc_krks.rs pins both against PySCF).
@@ -156,11 +156,11 @@ def test_gamma_meta_gga_energy_equals_the_one_point_mesh(h2, basis, functional):
 
 def test_gamma_meta_gga_refusals_are_early_and_exact(h2, basis):
     lat = _cubic()
-    # Any meta-GGA other than SCAN / r2SCAN is refused by name at Gamma.
+    # Any meta-GGA other than SCAN / r2SCAN / TPSS is refused by name at Gamma.
     with pytest.raises(
         ValueError,
         match=r"^run_rks_gamma: functional \"MGGA_X_TPSS\": .*"
-        r"Gamma-point RKS supports only the validated SCAN / r2SCAN meta-GGAs",
+        r"Gamma-point RKS supports only the validated SCAN / r2SCAN / TPSS meta-GGAs",
     ):
         ferric.run_rks_gamma(h2, lat, basis, "MGGA_X_TPSS", omega=OMEGA, **GRID)
     # Forces / stress with a meta-GGA at Gamma are refused before any SCF.

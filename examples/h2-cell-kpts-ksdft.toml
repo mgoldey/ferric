@@ -1,6 +1,6 @@
 # Periodic k-point closed-shell KS-DFT: H2 / STO-3G in a 4 Bohr simple-cubic
 # cell on a 1x1x2 Gamma-centred k-mesh, PBE0 (LDA, GGA and global hybrids are
-# supported with kmesh, plus SCAN / r2SCAN; closed-shell range-separated
+# supported with kmesh, plus SCAN / r2SCAN / TPSS; closed-shell range-separated
 # hybrids (HSE06, CAM-B3LYP, wB97X) run too, energy only; see examples/h2-cell-kpts-rks-opt.toml for the
 # k-point force). The energy is ferric_pbc::solve_krks bit for bit. Energies
 # are Hartree PER CELL.

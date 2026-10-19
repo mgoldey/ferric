@@ -202,14 +202,22 @@ def test_refusals_have_exact_wording(basis):
             range_split=True,
             with_gradient=True,
         )
-    # Meta-GGAs other than the pure SCAN / r2SCAN keep the library's refusal
-    # (the raw TPSS component name is not a validated k-point SCF).
+    # Meta-GGAs other than the pure SCAN / r2SCAN / TPSS keep the library's
+    # refusal (the raw TPSS component name is not a validated k-point SCF).
     with pytest.raises(
         ValueError,
         match=r'^run_rks_kpts: functional "MGGA_X_TPSS": .*meta-GGA.*\. k-point RKS supports '
-        r"LDA, GGA, global-hybrid and SCAN / r2SCAN meta-GGA functionals \(plus range-separated hybrids\) only$",
+        r"LDA, GGA, global-hybrid and SCAN / r2SCAN / TPSS meta-GGA functionals \(plus range-separated hybrids\) only$",
     ):
         _krks(H2_ATOMS, basis, "MGGA_X_TPSS", with_gradient=True)
+    # TPSS passes the ENERGY gate but has no validated force or stress.
+    for kw in ("with_gradient", "with_stress"):
+        with pytest.raises(
+            ValueError,
+            match=rf"^run_rks_kpts: {kw}: General error: TPSS: closed-shell energy only; "
+            r"the k-point meta-GGA force and stress cover SCAN / r2SCAN$",
+        ):
+            _krks(H2_ATOMS, basis, "TPSS", **{kw: True})
     with pytest.raises(
         ValueError,
         match=r"^run_rks_kpts: with_gradient: .*HSE06.*range-separated",

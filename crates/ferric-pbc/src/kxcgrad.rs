@@ -168,10 +168,10 @@
 //! fixed-`D` central difference of the
 //! XC energy (no SCF noise), FD of the SCF energy, and the explicit
 //! supercell identity on a non-TRIM mesh (`tests/pbc_kxcgrad_mgga.rs`).
-//! SCAN and r2SCAN are validated end to end. TPSS resolves only as the raw
-//! single-component names `MGGA_X_TPSS` / `MGGA_C_TPSS` (no combined TPSS
-//! functional exists), so its tau kernels are checked by the fixed-`D`
-//! finite difference on those components alone. No hybrid
+//! SCAN and r2SCAN are validated end to end. TPSS has a validated closed-shell
+//! energy but no force or stress: its tau kernels are checked here only by the
+//! fixed-`D` finite difference on the raw components `MGGA_X_TPSS` /
+//! `MGGA_C_TPSS`, and [`check_force_functional`] refuses it. No hybrid
 //! meta-GGA resolves ([`ferric_dft::libxc::xc_def_from_name`] rejects
 //! `HYB_MGGA_*`), so there is nothing for the exchange fraction to compose
 //! with.
@@ -952,6 +952,12 @@ fn force_covers(xc: &XcDef, has_rsh: bool) -> bool {
 /// enable a force. The open-shell twin is
 /// [`check_open_shell_force_functional`] (no meta-GGA).
 pub fn check_force_functional(functional: &str) -> Result<(), FerricError> {
+    if is_validated_mgga_energy(functional) && !is_validated_mgga(functional) {
+        return Err(FerricError::General(format!(
+            "{functional}: closed-shell energy only; the k-point meta-GGA force and stress \
+             cover SCAN / r2SCAN"
+        )));
+    }
     if !is_validated_mgga(functional) {
         return check_open_shell_force_functional(functional);
     }
@@ -1016,10 +1022,19 @@ pub fn check_kpoint_deriv_cell(
 }
 
 /// SCAN and r2SCAN: the meta-GGAs whose k-point SCF, force and stress are
-/// validated end to end (TPSS resolves only as raw component names, with no
-/// SCF).
+/// validated end to end. TPSS is validated for the closed-shell ENERGY only
+/// ([`is_validated_mgga_energy`]); this force / stress / open-shell allowlist
+/// excludes it.
 pub fn is_validated_mgga(functional: &str) -> bool {
     functional.eq_ignore_ascii_case("SCAN") || functional.eq_ignore_ascii_case("r2SCAN")
+}
+
+/// The meta-GGAs whose closed-shell k-point and Gamma-point ENERGY is pinned
+/// to PySCF: [`is_validated_mgga`] plus TPSS (the friendly name, i.e.
+/// `MGGA_X_TPSS` + `MGGA_C_TPSS`). Forces, stress and open shell keep the
+/// narrower [`is_validated_mgga`].
+pub fn is_validated_mgga_energy(functional: &str) -> bool {
+    is_validated_mgga(functional) || functional.eq_ignore_ascii_case("TPSS")
 }
 
 /// The open-shell (UKS, ROKS, ROHF) force and stress allowlist of the Python
@@ -1119,6 +1134,10 @@ pub(crate) fn resolve_global_or_rsh(
 ///
 /// Refuses (typed errors) range-separated hybrids on RS-GDF J/K, VV10/double hybrids, a hybrid without `cfg.exxdiv`, and an SCF whose Fock the rebuilt
 /// `h + J − (a/2) K + V_xc` does not reproduce.
+///
+/// The meta-GGA force is validated for SCAN / r2SCAN only. This library entry
+/// also accepts TPSS (and its raw components) UNVALIDATED; the Python and CLI
+/// bindings gate it out with [`check_force_functional`].
 #[allow(clippy::too_many_arguments)]
 pub fn kpoint_rks_gradient(
     cell: &Cell,

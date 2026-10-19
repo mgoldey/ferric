@@ -468,12 +468,23 @@ fn unsupported_kohn_sham_routes_are_refused_with_exact_messages() {
             && e.contains("range-separated"),
         "{e}"
     );
-    // Hybrid meta-GGA and the unvalidated TPSS-family names stay refused: only
-    // the pure SCAN / r2SCAN meta-GGAs pass the energy and force gates.
+    // Hybrid meta-GGA and the raw TPSS component names stay refused by the
+    // energy gate; TPSS passes the energy gate (closed-shell energy only) and
+    // is refused by the force gate: only the pure SCAN / r2SCAN have a force.
     for f in ["TPSSh", "MGGA_X_TPSS", "wB97X-V"] {
         let e = refused(&run(&loose_input("mgga-ref", f, "[1, 1, 2]", DENSE)), f);
         assert!(e.contains("[cell] kmesh with functional"), "{f}: {e}");
     }
+    let e = refused(
+        &run(&loose_input("tpss", "TPSS", "[1, 1, 2]", DENSE)),
+        "tpss",
+    );
+    assert!(
+        e.contains(
+            "TPSS: closed-shell energy only; the k-point meta-GGA force and stress cover SCAN / r2SCAN"
+        ),
+        "{e}"
+    );
     // Open-shell Kohn-Sham with a meta-GGA (ksdft with multiplicity > 1 is
     // UKS): the CLI k-point UKS has the SCAN energy but no force (the SCAN
     // force is library-only), so the open-shell force allowlist names it.

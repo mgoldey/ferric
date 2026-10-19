@@ -73,7 +73,7 @@
 //!
 //! Refused by name: range-separated hybrids in every entry but closed-shell
 //! [`gamma_rks_rsh`] (the attenuated K is the k = 0 of the 1x1x1 k-point machinery, [`crate::gamma_rsh`]; open-shell [`gamma_uks_rsh`] and [`crate::rohf::gamma_roks_rsh`] take the same exchange per spin; stress refuses them; the closed-shell dense-AFT force is [`crate::gamma_rsh::gamma_rks_rsh_gradient`], library only),
-//! meta-GGA except the validated SCAN / r2SCAN in closed-shell [`gamma_rks`] ENERGY (tau from D and ∇χ^Γ, anchored to the 1x1x1 k-mesh and PySCF; Gamma forces, stress, UKS, ROKS refuse it), VV10 / double hybrids, grid pruning, Newton /
+//! meta-GGA except the validated SCAN / r2SCAN / TPSS in closed-shell [`gamma_rks`] ENERGY (tau from D and ∇χ^Γ, anchored to the 1x1x1 k-mesh and PySCF; Gamma forces, stress, UKS, ROKS refuse it), VV10 / double hybrids, grid pruning, Newton /
 //! TRAH / stability (they rebuild molecular J/K and the f_xc kernel on the
 //! molecular grid — rejected by `validate_injected`), the molecular grid knobs
 //! `RhfConfig.{xc, xc_omega, dft_grid, nlc_grid}`. Nuclear gradients (with
@@ -1558,16 +1558,17 @@ pub fn is_meta_gga_name(name: &str) -> bool {
 
 /// The functional gate of the closed-shell Gamma [`gamma_rks`]: everything
 /// [`resolve_periodic_functional`] accepts, plus ONLY the validated pure
-/// meta-GGAs SCAN / r2SCAN ([`crate::kxcgrad::is_validated_mgga`]); any other
-/// meta-GGA (raw `MGGA_*` names, TPSS) is refused by name. Shared by
+/// meta-GGAs SCAN / r2SCAN / TPSS ([`crate::kxcgrad::is_validated_mgga_energy`]);
+/// any other meta-GGA (raw `MGGA_*` names) is refused by name. Shared by
 /// [`gamma_rks`] and the Python / CLI bindings so they cannot drift.
 pub fn resolve_gamma_rks_functional(name: &str) -> Result<(XcDef, f64), FerricError> {
-    let validated = crate::kxcgrad::is_validated_mgga(name);
+    let validated = crate::kxcgrad::is_validated_mgga_energy(name);
     if is_meta_gga_name(name) && !validated {
         return Err(PeriodicDftError::Unsupported {
             feature: "meta-GGA",
             reason: format!(
-                "{name}: Gamma-point RKS supports only the validated SCAN / r2SCAN meta-GGAs"
+                "{name}: Gamma-point RKS supports only the validated SCAN / r2SCAN / TPSS \
+                 meta-GGAs"
             ),
         }
         .into());
@@ -2083,7 +2084,7 @@ impl XcBuilder for DynXcRef<'_, '_> {
 pub struct GammaRksConfig {
     /// LDA / GGA / global-hybrid name (ferric-dft friendly names or libxc
     /// identifiers), e.g. `"LDA"` (= PySCF `"LDA,VWN"`), `"PBE"`, `"PBE0"`, or
-    /// the pure meta-GGAs `"SCAN"` / `"r2SCAN"` (energy only: Gamma forces and
+    /// the pure meta-GGAs `"SCAN"` / `"r2SCAN"` / `"TPSS"` (energy only: Gamma forces and
     /// stress refuse meta-GGA; other meta-GGAs are refused by name).
     pub functional: String,
     /// The periodic grid.
