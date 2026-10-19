@@ -323,6 +323,92 @@ fn no_other_job_runs_ignored_tests() {
     );
 }
 
+/// The workflow-level `concurrency: group:` expression.
+fn concurrency_group(ci: &str) -> String {
+    let lines: Vec<&str> = ci.lines().collect();
+    let start = lines
+        .iter()
+        .position(|l| l.trim_end() == "concurrency:")
+        .expect("ci.yml has no top-level `concurrency:` block");
+    lines[start + 1..]
+        .iter()
+        .take_while(|l| l.is_empty() || l.starts_with(' '))
+        .find_map(|l| l.trim_start().strip_prefix("group:"))
+        .expect("`concurrency:` block has no `group:`")
+        .trim()
+        .to_string()
+}
+
+/// The scheduled run must be alone in its concurrency group.
+///
+/// GitHub keeps at most ONE pending run per group and cancels the older
+/// pending one when a newer run arrives, whatever `cancel-in-progress` says.
+/// A key of `github.ref` alone is `refs/heads/main` for both a main push and
+/// the nightly schedule run, so a schedule run queued behind a push was
+/// cancelled (with no jobs) by the next push — four times in 2026-10-10..18,
+/// including both Sunday runs, so the weekly validation job never ran.
+///
+/// MUTATION: restore the old key
+/// `${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}`
+/// → this test fails (no `github.run_id`, unguarded `github.ref`).
+#[test]
+fn scheduled_runs_never_share_a_concurrency_group_with_pushes() {
+    let group = concurrency_group(&ci_yml());
+    assert!(
+        group.contains("github.event_name"),
+        "concurrency group must include github.event_name so a schedule run never shares a \
+         group with a push to the same ref: {group}"
+    );
+    assert!(
+        group.contains("github.run_id"),
+        "concurrency group must fall back to github.run_id so a schedule/dispatch run is alone \
+         in its group (a newer arrival cancels an older PENDING run regardless of \
+         cancel-in-progress): {group}"
+    );
+    let unguarded_ref = group
+        .replace("github.event_name == 'push' && github.ref", "")
+        .contains("github.ref");
+    assert!(
+        !unguarded_ref,
+        "github.ref in the concurrency group must be reached only for `push` events; for a \
+         schedule run it is refs/heads/main, the same key a main push uses: {group}"
+    );
+}
+
+/// The validation job's matrix and its nextest `--partition count:K/N` must
+/// agree: matrix `[1, 2]` against `/3` would silently never run a third of
+/// the tier, and every shard would still be green.
+///
+/// MUTATION: change the matrix to `partition: [1, 2]` → this test fails.
+#[test]
+fn validation_shards_cover_every_partition() {
+    let job = validation_job(&ci_yml());
+    let key = "--partition \"count:${{ matrix.partition }}/";
+    let at = job
+        .find(key)
+        .unwrap_or_else(|| panic!("validation job must partition with `{key}N\"`"));
+    let rest = &job[at + key.len()..];
+    let n: usize = rest[..rest.find('"').expect("unterminated --partition")]
+        .parse()
+        .expect("partition total is not an integer");
+    let matrix_line = job
+        .lines()
+        .map(str::trim)
+        .find_map(|l| l.strip_prefix("partition: "))
+        .expect("validation job has no `partition:` matrix");
+    let shards: Vec<usize> = matrix_line
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .split(',')
+        .map(|t| t.trim().parse().expect("non-integer matrix partition"))
+        .collect();
+    assert_eq!(
+        shards,
+        (1..=n).collect::<Vec<_>>(),
+        "validation matrix partitions {shards:?} must be exactly 1..={n} to cover count:K/{n}"
+    );
+}
+
 // ── Python half of the tier: `@pytest.mark.validation` ──────────────────────
 //
 // pyproject's `addopts = -m "not validation"` excludes these from every
