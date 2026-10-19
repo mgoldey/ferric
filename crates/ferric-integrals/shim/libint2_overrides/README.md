@@ -138,18 +138,28 @@ uninitialised memory; build.rs warns that the fix is NOT applied, or fails under
     binary: 15 of the 22 exit 0 (nextest summary, all tests passed): pbc_krsgdf (13 s), pbc_krsgdf_split (53),
     pbc_grad_ecp (29), pbc_grad_open (146), pbc_grad (20), pbc_grad_rsgdf_split (89), pbc_grad_ro (217),
     pbc_kxcgrad_mgga (96), pbc_stress (52), pbc_grad_rsgdf (214), pbc_kxcgrad_hybrid (373), pbc_kuxcgrad_ro (54),
-    pbc_kgrad (524), pbc_kxcstress_mgga (1000), pbc_kuxcgrad (684). `pbc_kxcstress`: nextest summary "18 tests run: 18
-    passed" after 717 s; the runner process was killed afterwards, so no exit status was recorded for it.
-    All elapsed times in harnesses A-D are local wall-clock on one developer box, not CI-runner measurements.
-    Not run at `=1`: `pbc_grad_ecp_nucleus_scan` (every test is `#[ignore]`d) and `pbc_kuxcstress`, `pbc_kuxcstress_ro`,
-    `pbc_kxcgrad`, `pbc_kxcstress_hybrid`, `pbc_kstress` (time budget); these 6 have `=170` results only. Harness D's
-    `pbc_kxcstress_mgga` at 1000 s versus the 574 s of the earlier Harness A run is a different harness and box load,
-    not a comparison.
-  - Interpretation (provisional): no allocator-dependent failure was seen in the runs that completed. Exit 0 against
-    each test's existing bars is not proof of no uninitialised reads: the tests may not reach the table edge, and a
+    pbc_kgrad (524), pbc_kxcstress_mgga (1000), pbc_kuxcgrad (684). Harness D's `pbc_kxcstress_mgga` at 1000 s versus
+    the 574 s of the earlier Harness A run is a different harness and box load, not a comparison.
+  - Harness E, `MALLOC_PERTURB_=1`, `cargo test --release` (libtest, `RUST_TEST_THREADS=3`, `OPENBLAS_NUM_THREADS=1`),
+    build of origin/main d3be28fc, the remaining 7 of the 22 binaries, non-ignored tests only unless stated; every
+    binary exit 0 (libtest "test result: ok", 0 failed). Seconds are libtest's "finished in": pbc_kxcstress_hybrid (11
+    passed, 123 s), pbc_kuxcstress_ro (7, 71), pbc_kuxcstress (7, 160), pbc_kxcgrad (13, 115), pbc_kxcstress (18, 212),
+    pbc_kstress (33, 322), pbc_grad_ecp_nucleus_scan (both `#[ignore]`d diagnostics run with `--ignored
+    --test-threads=1`: 2 passed, 418 s). With harness D, all 22 binaries now have an exit-0 run at both `=1` and
+    `=170`. `#[ignore]`d tests: run only at `=170` (harness A), and not completely for pbc_kstress and
+    pbc_kxcstress_hybrid (harness A timed out on both; harness B ran their non-ignored tests only).
+  - Harness F, molecular attenuated (erfc) paths, same build and settings as E, `MALLOC_PERTURB_` 1 and 170, all exit 0
+    with identical pass counts at both values: ferric-mp2 `--lib attenuated` (7 passed; the 2 `#[ignore]`d decane
+    timing benchmarks not run), ferric-mp2 `validation_attenuated_mp2 --include-ignored` (3 passed, PySCF anchors +
+    trivial-limit anchor), ferric-rpa `--lib rs_mp2_rpa` (9 passed), ferric-rpa `validation_rs_mp2_rpa
+    --include-ignored` (3 passed), ferric-rpa `validation_attenuated_rpa --include-ignored` (4 passed); each under
+    9 s.
+    All elapsed times in harnesses A-F are local wall-clock on one developer box, not CI-runner measurements.
+  - Interpretation (provisional): no allocator-dependent failure was seen in any run. Exit 0 against each test's
+    existing bars is not proof of no uninitialised reads: the tests may not reach the table edge, and a
     perturbation-insensitive wrong answer inside a loose bar would pass.
-  - Unmet (#433 item 2): the existing PBC suites were not run at `=1` and a second value across the board (see above),
-    and the attenuated-MP2 suites were not run under `MALLOC_PERTURB_` at all.
+  - Not perturbed: the 40 ferric-pbc binaries listed under Scope, and the ferric-mp2 terfc probes (`terfc_*`, which are
+    scratch diagnostics).
 - Not checked (unmet, #433): aarch64 and FMA-contracting builds (whether a given geometry lands on exactly 117.0
   depends on rounding, which is why the integer-geometry test exists).
 - Not done (maintainer-owned): notifying upstream libint.
