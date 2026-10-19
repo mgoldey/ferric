@@ -6252,7 +6252,8 @@ kind = "ccsd"
         ));
         assert!(e.contains("range-separated") && e.contains("kmesh"), "{e}");
         // Open-shell KS: ROKS has no meta-GGA at a mesh (energy gate); UKS has
-        // the energy but no force, so optimize is refused by the force gate.
+        // the energy, but its force is library-only (not wired here), so
+        // optimize is refused by the force gate.
         let e = err(&opt("rohf", "kmesh = [1, 1, 2]", SCAN));
         assert!(
             e.contains("meta-GGA") && e.contains("for ROKS"),

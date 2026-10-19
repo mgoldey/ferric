@@ -12,7 +12,7 @@
 //! guard; typed refusals; production-wired spin-specific mutants.
 //!
 //! NOT covered: p/d shells and heavy atoms / ECP, shifted meshes, metals,
-//! range-separated hybrids / meta-GGA / VV10 (refused), the production
+//! range-separated hybrids / VV10 (refused), meta-GGA (`pbc_kuxc_mgga.rs`), the production
 //! (75, 302) grid (a (40, 110) FD is in the ignored tier), stress.
 
 mod common;
@@ -889,7 +889,9 @@ fn refusals_and_the_per_spin_fock_guard() {
     for (name, key) in [
         ("HSE06", "range-separated hybrid force at k"),
         ("wB97X-V", "VV10"),
-        ("SCAN", "meta-GGA force at k"),
+        // SCAN is covered (`pbc_kuxc_mgga.rs`): a PBE0 state handed in as
+        // SCAN is refused by the Fock guard.
+        ("SCAN", "differs from the SCF's stored fock_alpha"),
     ] {
         let e = run(name, &fx.res.scf, &ok_cfg)
             .err()

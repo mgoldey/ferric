@@ -1,6 +1,7 @@
 //! Analytic nuclear forces of the k-point open-shell KS-DFT energy
 //! ([`crate::kuks::solve_kuks`]) for LDA, GGA and GLOBAL HYBRID functionals
-//! (exact-exchange fraction `a`, `0 ≤ a ≤ 1`), dense-AFT and RS-GDF J/K.
+//! (exact-exchange fraction `a`, `0 ≤ a ≤ 1`), dense-AFT and RS-GDF J/K, and
+//! for the pure meta-GGAs SCAN / r2SCAN (UKS, dense-AFT J/K only).
 //!
 //! The closed-shell derivation ([`crate::kxcgrad`]: AO motion X1, grid-point
 //! motion X3, weight response X4, the Madelung and exchange-fraction
@@ -46,6 +47,30 @@
 //! In the closed-shell limit `D_α = D_β = D/2`: `ρ_σ = ρ/2`, and the sum over
 //! spins of the terms above is the closed-shell AO term to roundoff
 //! (`tests/pbc_kuxcgrad.rs` asserts it per part).
+//!
+//! # Meta-GGA (UKS): the per-spin tau term
+//!
+//! The energy ([`crate::kuks`]) evaluates the polarized libxc kernel on the
+//! per-spin `τ_σ = (1/N_k) Σ_k ½ Σ_i Re Σ_μν D_σ(k)_μν ∂_iφ_μ (∂_iφ_ν)*` and
+//! gives each spin `V^τ_σ(k)_μν = Σ_g ½ w_g v_τσ Σ_i (∂_iφ_μ)* ∂_iφ_ν`. `τ_σ` is
+//! LINEAR in `D_σ` alone, so its fixed-density derivative is the closed-shell
+//! one of [`crate::kxcgrad`] ("Meta-GGA: the tau term") applied to `D_σ`, and
+//! the spin sum carries `v_τσ = ∂(ρε)/∂τ_σ`:
+//!
+//! ```text
+//! a^τ_{g,A,j} = −(w_g / N_k) Σ_σ v_τσ Σ_k Re Σ_{μ∈A,i} ∂_j∂_iφ^k_μ m^{σ,k,i}_μ
+//! ```
+//!
+//! (the `½` of `τ` cancels the `μ↔ν` doubling: half the density-like `−2`).
+//! `v_τσ` is gated on `ρ_σ > DENSITY_FLOOR` like the energy's `V^τ_σ`. `a^τ`
+//! joins `a` in X1 and therefore in the point motion X3; X4 carries `ε` with
+//! `(τ_α, τ_β)` unchanged; the Fock guard rebuilds `F_σ` with `V^τ_σ`. No new
+//! derivative algebra: it is the closed-shell kernel per spin (which is why
+//! the singlet UKS force reproduces the RKS one, and why that anchor is blind
+//! to every α/β mix-up; the polarized anchors are in
+//! `tests/pbc_kuxc_mgga.rs`). ROKS refuses meta-GGA (its SCF has no tau
+//! term), and so does the RS-GDF J route (the open-shell meta-GGA energy is
+//! refused there).
 //!
 //! # Exact exchange and the Pulay term
 //!
@@ -143,13 +168,16 @@
 //!
 //! # Scope
 //!
-//! LDA, GGA and global hybrids. Range-separated hybrids, meta-GGA, VV10 and
-//! double hybrids are refused with the typed errors of [`crate::kxcgrad`]
-//! (`resolve_global`).
+//! LDA, GGA and global hybrids; for UKS also SCAN / r2SCAN on the dense-AFT
+//! J/K (any other meta-GGA, meta-GGA on RS-GDF and meta-GGA ROKS/ROHF are
+//! refused). Range-separated hybrids, VV10 and double hybrids are refused with
+//! the typed errors of [`crate::kxcgrad`].
 
 use crate::budget::{bytes_of, Ledger};
 use crate::dense_aft::ExxDiv;
-use crate::dft::{build_response_grid, BlochAoHess, BlochPhase, LatticeAoHess, PeriodicGrid};
+use crate::dft::{
+    build_response_grid, BlochAoHess, BlochPhase, LatticeAoHess, PeriodicDftError, PeriodicGrid,
+};
 use crate::grad::ao_atoms;
 use crate::grad::RO_ORBITAL_GRADIENT_TOL;
 use crate::hcore::kpoint::PeriodicHcoreK;
@@ -159,17 +187,18 @@ use crate::kpts::KPointMesh;
 use crate::kroks::KRoScfResult;
 use crate::kuscf::KUScfResult;
 use crate::kxcgrad::{
-    chunk_density, conj, hermitize, resolve_global, KRksGradConfig, KRksGradient, KXcGrid,
-    KXcMutation, AO_PLANES, CHUNK_TARGET_BYTES, KS_REMEDY, MAX_CHUNK, MIN_CHUNK,
+    add_vtau, chunk_density, chunk_tau, chunk_vxc, conj, hermitize, resolve_global,
+    resolve_global_mgga, KRksGradConfig, KRksGradient, KXcGrid, KXcMutation, AO_PLANES,
+    CHUNK_TARGET_BYTES, KS_REMEDY, MAX_CHUNK, MIN_CHUNK,
 };
 use crate::lattice::Cell;
 use ferric_core::FerricError;
 use ferric_dft::density_on_grid::UksDensityGrid;
 use ferric_dft::grid::GridPoint;
 use ferric_dft::libxc::{xc_def_from_name_nspin, FunctionalFamily, XcDef};
-use ferric_dft::vxc::{polarized_kernel, DENSITY_FLOOR};
+use ferric_dft::vxc::{polarized_kernel, PolarizedKernel, DENSITY_FLOOR};
 use ferric_integrals::basis_bridge::PreparedBasis;
-use ndarray::{Array2, Array3, Axis};
+use ndarray::{Array1, Array2, Array3, Axis};
 use num_complex::Complex64 as C64;
 use rayon::prelude::*;
 
@@ -220,6 +249,18 @@ pub enum KUSpinMutation {
     RoGateOff,
     /// UKS: the stationarity gate (`max |F D S − S D F|`) skipped.
     StationarityGateOff,
+    /// Meta-GGA: the tau force term of spin `σ` uses `v_τσ̄` (the other
+    /// spin's); `V^τ_σ` and every non-tau term keep their own spin.
+    TauSpinSwap,
+    /// Meta-GGA: the β tau force term dropped (`V^τ_β` kept).
+    TauDropBeta,
+    /// Meta-GGA: the tau force term uses `v_τσ` of a libxc kernel evaluated
+    /// with the TOTAL `τ_α + τ_β` in both channels (`V^τ_σ` keeps the true
+    /// kernel).
+    TauTotalBothChannels,
+    /// Meta-GGA: `V^τ_β` missing from the β Fock of the Pulay term. The Fock
+    /// guard is skipped.
+    TauNoVxcBeta,
 }
 
 /// Refusal threshold on `max_{σ,k} |F_σ D_σ S − S D_σ F_σ|` (Hartree) of the
@@ -481,6 +522,8 @@ struct GridXcPol<'a> {
     prep: &'a PreparedBasis,
     xc: XcDef,
     gga: bool,
+    /// Meta-GGA: per-spin tau, `V^τ_σ` and the tau force term are evaluated.
+    mgga: bool,
     kpts: Vec<[f64; 3]>,
     aoat: Vec<usize>,
     grid: &'a KXcGrid,
@@ -500,10 +543,207 @@ struct ChunkPol {
     weight: Array2<f64>,
 }
 
-/// One spin's gated kernel vectors on a chunk: `v_ρσ` and `c^σ_i`.
-struct SpinKernel {
-    vr: Vec<f64>,
-    c: Array2<f64>,
+/// One spin's gated kernel vectors on a chunk: `v_ρσ`, `c^σ_i` and `v_τσ`
+/// (zeros for LDA/GGA). Shared with the open-shell stress.
+pub(crate) struct SpinKernel {
+    pub(crate) vr: Vec<f64>,
+    pub(crate) c: Array2<f64>,
+    pub(crate) vt: Vec<f64>,
+}
+
+/// Which gradient feeds the `v_σαβ` cross term of `c^σ`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Cross {
+    /// The other spin's gradient (production).
+    Other,
+    /// No cross term (mutant).
+    Dropped,
+    /// The spin's own gradient (mutant).
+    Own,
+}
+
+/// Spin `s`'s gated `v_ρσ`, `c^σ` and `v_τσ` (the energy's gates: each spin
+/// on its own density, [`crate::kuks::KPeriodicXcPolarized`]). `vtau` is the
+/// `(v_τα, v_τβ)` pair the tau term reads (the true kernel's, or a mutant's);
+/// `None` (LDA/GGA) gives zeros.
+pub(crate) fn spin_kernel(
+    s: usize,
+    cross: Cross,
+    dens: &UksDensityGrid,
+    kern: &PolarizedKernel,
+    gga: bool,
+    vtau: Option<(&Array1<f64>, &Array1<f64>)>,
+) -> SpinKernel {
+    let np = dens.rho_a.len();
+    let (rho, vrho, vss, gself, gother) = if s == 0 {
+        (
+            &dens.rho_a,
+            &kern.vrho_a,
+            &kern.vsigma_aa,
+            &dens.grad_a,
+            &dens.grad_b,
+        )
+    } else {
+        (
+            &dens.rho_b,
+            &kern.vrho_b,
+            &kern.vsigma_bb,
+            &dens.grad_b,
+            &dens.grad_a,
+        )
+    };
+    let live = |g: usize| rho[g] > DENSITY_FLOOR;
+    let vr = (0..np)
+        .map(|g| if live(g) { vrho[g] } else { 0.0 })
+        .collect();
+    let c = Array2::from_shape_fn((3, np), |(i, g)| {
+        if gga && live(g) {
+            let x = match cross {
+                Cross::Other => kern.vsigma_ab[g] * gother[(i, g)],
+                Cross::Dropped => 0.0,
+                Cross::Own => kern.vsigma_ab[g] * gself[(i, g)],
+            };
+            2.0 * vss[g] * gself[(i, g)] + x
+        } else {
+            0.0
+        }
+    });
+    let vt = match vtau {
+        Some((ta, tb)) => {
+            let v = if s == 0 { ta } else { tb };
+            (0..np).map(|g| if live(g) { v[g] } else { 0.0 }).collect()
+        }
+        None => vec![0.0; np],
+    };
+    SpinKernel { vr, c, vt }
+}
+
+/// The per-spin kinetic-energy densities `(τ_α, τ_β)` of a chunk (libxc's ½
+/// convention, [`chunk_tau`] of each spin density), and the `(v_τα, v_τβ)`
+/// the tau FORCE/STRAIN terms read: the true kernel's, or under
+/// `total_tau` those of a kernel evaluated with `τ_α + τ_β` in both channels
+/// (a test defect). Shared with the open-shell stress.
+pub(crate) fn tau_force_vtau(
+    dens: &UksDensityGrid,
+    tau: &(Array1<f64>, Array1<f64>),
+    kern: &PolarizedKernel,
+    xc: &XcDef,
+    total_tau: bool,
+) -> (Array1<f64>, Array1<f64>) {
+    if total_tau {
+        let t = &tau.0 + &tau.1;
+        let k2 = polarized_kernel(dens, Some((&t, &t)), xc);
+        (k2.vtau_a, k2.vtau_b)
+    } else {
+        (kern.vtau_a.clone(), kern.vtau_b.clone())
+    }
+}
+
+/// The (density, kernel vectors) pairs of the force passes, with the spin
+/// defects of `smut` applied (production: `[(D_α, k_α), (D_β, k_β)]`).
+/// `vtau` is what the tau term reads ([`tau_force_vtau`]).
+#[allow(clippy::too_many_arguments)]
+fn force_passes<'b>(
+    da: &'b [Array2<C64>],
+    db: &'b [Array2<C64>],
+    dsum: Option<&'b [Array2<C64>]>,
+    dens: &UksDensityGrid,
+    kern: &PolarizedKernel,
+    gga: bool,
+    vtau: Option<(&Array1<f64>, &Array1<f64>)>,
+    smut: Option<KUSpinMutation>,
+) -> Vec<(&'b [Array2<C64>], SpinKernel)> {
+    let cross = match smut {
+        Some(KUSpinMutation::XcCrossDropped) => Cross::Dropped,
+        Some(KUSpinMutation::XcCrossOwn) => Cross::Own,
+        _ => Cross::Other,
+    };
+    let mut fka = spin_kernel(0, cross, dens, kern, gga, vtau);
+    let mut fkb = spin_kernel(1, cross, dens, kern, gga, vtau);
+    match smut {
+        Some(KUSpinMutation::TauSpinSwap) => std::mem::swap(&mut fka.vt, &mut fkb.vt),
+        Some(KUSpinMutation::TauDropBeta) => fkb.vt.iter_mut().for_each(|x| *x = 0.0),
+        _ => {}
+    }
+    match smut {
+        Some(KUSpinMutation::XcSpinSwap) => vec![(da, fkb), (db, fka)],
+        Some(KUSpinMutation::XcDropBeta) => vec![(da, fka)],
+        Some(KUSpinMutation::XcSpinAveraged) => {
+            let np = fka.vr.len();
+            let avg = |x: &[f64], y: &[f64]| -> Vec<f64> {
+                x.iter().zip(y).map(|(a, b)| 0.5 * (a + b)).collect()
+            };
+            let mean = SpinKernel {
+                vr: avg(&fka.vr, &fkb.vr),
+                c: Array2::from_shape_fn((3, np), |(i, g)| 0.5 * (fka.c[(i, g)] + fkb.c[(i, g)])),
+                vt: avg(&fka.vt, &fkb.vt),
+            };
+            vec![(dsum.expect("dsum for XcSpinAveraged"), mean)]
+        }
+        _ => vec![(da, fka), (db, fkb)],
+    }
+}
+
+/// Switches of the force contraction (production values unless a mutant).
+struct ForceOpts {
+    use_gga: bool,
+    tau_term: bool,
+    hessian: bool,
+    pref: f64,
+    tau_pref: f64,
+    kscale: f64,
+}
+
+/// One spin's AO-motion term `a[g, A, j]` (module doc, spin-resolved X1 plus
+/// the tau term), added to `a_pt`.
+fn ao_force_pass(
+    dm: &[Array2<C64>],
+    sk: &SpinKernel,
+    fb: &BlochAoHess,
+    w: &[f64],
+    aoat: &[usize],
+    o: &ForceOpts,
+    a_pt: &mut Array3<f64>,
+) {
+    let nbf = dm[0].nrows();
+    let np = w.len();
+    for (k, dk) in dm.iter().enumerate() {
+        let p = dk.dot(&conj(&fb.chi[k]));
+        let md: Option<[Array2<C64>; 3]> = (o.use_gga || o.tau_term).then(|| {
+            std::array::from_fn(|i| dk.dot(&conj(&fb.dchi[k].index_axis(Axis(0), i).to_owned())))
+        });
+        for g in 0..np {
+            let wg = o.pref * w[g] * o.kscale;
+            let wt = o.tau_pref * w[g] * o.kscale * sk.vt[g];
+            for mu in 0..nbf {
+                let at = aoat[mu];
+                let pm = p[(mu, g)];
+                for j in 0..3 {
+                    let dj = fb.dchi[k][(j, mu, g)];
+                    let mut t = dj * pm * sk.vr[g];
+                    if let (Some(md), true) = (md.as_ref(), o.use_gga) {
+                        for i in 0..3 {
+                            let mut inner = dj * md[i][(mu, g)];
+                            if o.hessian {
+                                inner += fb.ddchi[k][(j, i, mu, g)] * pm;
+                            }
+                            t += inner * sk.c[(i, g)];
+                        }
+                    }
+                    a_pt[(g, at, j)] += wg * t.re;
+                    // dτ_σ/dR_{A,j} = −(1/N_k) Re Σ_{μ∈A,i} ∂_i∂_jφ_μ md^{σ,i}_μ:
+                    // the ½ of τ cancels the μ↔ν doubling (prefactor `pref/2`).
+                    if let (Some(md), true) = (md.as_ref(), o.tau_term) {
+                        let mut tt = C64::new(0.0, 0.0);
+                        for i in 0..3 {
+                            tt += fb.ddchi[k][(j, i, mu, g)] * md[i][(mu, g)];
+                        }
+                        a_pt[(g, at, j)] += wt * tt.re;
+                    }
+                }
+            }
+        }
+    }
 }
 
 impl KUXcResponse for GridXcPol<'_> {
@@ -570,8 +810,27 @@ impl KUXcResponse for GridXcPol<'_> {
             per_chunk.saturating_mul(par),
         )?;
         let chunks = LatticeAoHess::chunks(&points, chunk_points);
-        let inv_nk = 1.0 / nk as f64;
-        let use_gga = self.gga && mutation != Some(KXcMutation::NoGga);
+        let pref = if mutation == Some(KXcMutation::WrongFactor) {
+            -1.0
+        } else {
+            -2.0
+        };
+        let opts = ForceOpts {
+            use_gga: self.gga && mutation != Some(KXcMutation::NoGga),
+            tau_term: self.mgga && mutation != Some(KXcMutation::TauNoAo),
+            hessian: mutation != Some(KXcMutation::NoHessian),
+            pref,
+            tau_pref: if mutation == Some(KXcMutation::TauDoubled) {
+                pref
+            } else {
+                0.5 * pref
+            },
+            kscale: if mutation == Some(KXcMutation::NoInvNk) {
+                1.0
+            } else {
+                1.0 / nk as f64
+            },
+        };
         let alt_phase = match mutation {
             Some(KXcMutation::NoPhase) => Some(BlochPhase::None),
             Some(KXcMutation::ConjPhase) => Some(BlochPhase::Conj),
@@ -603,7 +862,11 @@ impl KUXcResponse for GridXcPol<'_> {
                 grad_b: denb.grad,
                 sigma,
             };
-            let kern = polarized_kernel(&dens, None, &self.xc);
+            // Per-spin tau of THIS chunk (the energy's `chunk_tau` of `D_σ`).
+            let tau = self
+                .mgga
+                .then(|| (chunk_tau(da, &bl.dchi), chunk_tau(db, &bl.dchi)));
+            let kern = polarized_kernel(&dens, tau.as_ref().map(|(a, b)| (a, b)), &self.xc);
             let mut e = 0.0;
             let mut ne = 0.0;
             for g in 0..np {
@@ -611,146 +874,51 @@ impl KUXcResponse for GridXcPol<'_> {
                 e += pts[g].weight * rt * kern.exc[g];
                 ne += pts[g].weight * rt;
             }
-            // Gated kernel vectors per spin (the energy's gates: each spin on
-            // its own density). `cross_other` selects which gradient feeds the
-            // v_σαβ term.
-            let spin_kernel = |s: usize, cross_mode: u8| -> SpinKernel {
-                let (rho, vrho, vss, gself, gother) = if s == 0 {
-                    (
-                        &dens.rho_a,
-                        &kern.vrho_a,
-                        &kern.vsigma_aa,
-                        &dens.grad_a,
-                        &dens.grad_b,
-                    )
-                } else {
-                    (
-                        &dens.rho_b,
-                        &kern.vrho_b,
-                        &kern.vsigma_bb,
-                        &dens.grad_b,
-                        &dens.grad_a,
-                    )
-                };
-                let vr = (0..np)
-                    .map(|g| if rho[g] > DENSITY_FLOOR { vrho[g] } else { 0.0 })
-                    .collect();
-                let c = Array2::from_shape_fn((3, np), |(i, g)| {
-                    if self.gga && rho[g] > DENSITY_FLOOR {
-                        let cross = match cross_mode {
-                            0 => kern.vsigma_ab[g] * gother[(i, g)],
-                            1 => 0.0,
-                            _ => kern.vsigma_ab[g] * gself[(i, g)],
-                        };
-                        2.0 * vss[g] * gself[(i, g)] + cross
-                    } else {
-                        0.0
-                    }
-                });
-                SpinKernel { vr, c }
-            };
-            let ka = spin_kernel(0, 0);
-            let kb = spin_kernel(1, 0);
-            // --- V_xc,σ(k) with the TRUE kernel vectors.
-            let mut vout: [Vec<Array2<C64>>; 2] = [Vec::with_capacity(nk), Vec::with_capacity(nk)];
-            for (s, sk) in [&ka, &kb].into_iter().enumerate() {
-                let a: Vec<f64> = (0..np).map(|g| pts[g].weight * sk.vr[g]).collect();
-                for k in 0..nk {
-                    let scale = |fac: &[f64]| {
-                        let mut m = conj(&bl.chi[k]);
-                        for g in 0..np {
-                            m.column_mut(g).mapv_inplace(|z| z * fac[g]);
-                        }
-                        m
-                    };
-                    let mut vk = scale(&a).dot(&bl.chi[k].t());
-                    if self.gga {
-                        for ax in 0..3 {
-                            let f: Vec<f64> =
-                                (0..np).map(|g| pts[g].weight * sk.c[(ax, g)]).collect();
-                            let d_ax = bl.dchi[k].index_axis(Axis(0), ax);
-                            let m = scale(&f).dot(&d_ax.t());
-                            let mh = conj(&m).t().to_owned();
-                            vk += &m;
-                            vk += &mh;
-                        }
-                    }
-                    vout[s].push(vk);
+            let true_vtau = self.mgga.then_some((&kern.vtau_a, &kern.vtau_b));
+            let wts: Vec<f64> = pts.iter().map(|p| p.weight).collect();
+            // --- V_xc,σ(k) with the TRUE kernel vectors (V^τ_σ included).
+            let potential = |s: usize| -> Vec<Array2<C64>> {
+                let sk = spin_kernel(s, Cross::Other, &dens, &kern, self.gga, true_vtau);
+                let mut v = chunk_vxc(&bl.chi, &bl.dchi, &wts, &sk.vr, &sk.c, self.gga);
+                let drop_tau = matches!(
+                    mutation,
+                    Some(KXcMutation::TauNoVxc) | Some(KXcMutation::TauNoVxcUnguarded)
+                ) || (s == 1 && smut == Some(KUSpinMutation::TauNoVxcBeta));
+                if self.mgga && !drop_tau {
+                    add_vtau(&mut v, &bl.dchi, &wts, &sk.vt);
                 }
-            }
-            let [va, vb] = vout;
+                v
+            };
+            let va = potential(0);
+            let vb = potential(1);
             // --- Force vectors (possibly mutated).
-            let cross_mode = match smut {
-                Some(KUSpinMutation::XcCrossDropped) => 1,
-                Some(KUSpinMutation::XcCrossOwn) => 2,
-                _ => 0,
-            };
-            let (fka, fkb) = if cross_mode == 0 {
-                (spin_kernel(0, 0), spin_kernel(1, 0))
-            } else {
-                (spin_kernel(0, cross_mode), spin_kernel(1, cross_mode))
-            };
-            // (spin density used, kernel vectors used) per force pass.
-            let passes: Vec<(&[Array2<C64>], SpinKernel)> = match smut {
-                Some(KUSpinMutation::XcSpinSwap) => vec![(da, fkb), (db, fka)],
-                Some(KUSpinMutation::XcDropBeta) => vec![(da, fka)],
-                Some(KUSpinMutation::XcSpinAveraged) => {
-                    let avg = SpinKernel {
-                        vr: (0..np).map(|g| 0.5 * (fka.vr[g] + fkb.vr[g])).collect(),
-                        c: Array2::from_shape_fn((3, np), |(i, g)| {
-                            0.5 * (fka.c[(i, g)] + fkb.c[(i, g)])
-                        }),
-                    };
-                    vec![(dsum.as_deref().expect("dsum for XcSpinAveraged"), avg)]
-                }
-                _ => vec![(da, fka), (db, fkb)],
-            };
+            let force_vtau = tau.as_ref().map(|t| {
+                tau_force_vtau(
+                    &dens,
+                    t,
+                    &kern,
+                    &self.xc,
+                    smut == Some(KUSpinMutation::TauTotalBothChannels),
+                )
+            });
+            let passes = force_passes(
+                da,
+                db,
+                dsum.as_deref(),
+                &dens,
+                &kern,
+                self.gga,
+                force_vtau.as_ref().map(|(a, b)| (a, b)),
+                smut,
+            );
             let alt: Option<BlochAoHess> = alt_phase
                 .map(|ph| ev.eval_bloch(&xyz, &self.kpts, ph, self.gga))
                 .transpose()?;
             let fb: &BlochAoHess = alt.as_ref().unwrap_or(&bl);
-            let pref = if mutation == Some(KXcMutation::WrongFactor) {
-                -1.0
-            } else {
-                -2.0
-            };
-            let kscale = if mutation == Some(KXcMutation::NoInvNk) {
-                1.0
-            } else {
-                inv_nk
-            };
             let mut a_pt = Array3::<f64>::zeros((np, natoms, 3));
             if mutation != Some(KXcMutation::NoAo) {
                 for (dm, sk) in &passes {
-                    for k in 0..nk {
-                        let p = dm[k].dot(&conj(&fb.chi[k]));
-                        let md: Option<[Array2<C64>; 3]> = use_gga.then(|| {
-                            std::array::from_fn(|i| {
-                                dm[k].dot(&conj(&fb.dchi[k].index_axis(Axis(0), i).to_owned()))
-                            })
-                        });
-                        for g in 0..np {
-                            let wg = pref * pts[g].weight * kscale;
-                            for mu in 0..nbf {
-                                let at = self.aoat[mu];
-                                let pm = p[(mu, g)];
-                                for j in 0..3 {
-                                    let dj = fb.dchi[k][(j, mu, g)];
-                                    let mut t = dj * pm * sk.vr[g];
-                                    if let Some(md) = md.as_ref() {
-                                        for i in 0..3 {
-                                            let mut inner = dj * md[i][(mu, g)];
-                                            if mutation != Some(KXcMutation::NoHessian) {
-                                                inner += fb.ddchi[k][(j, i, mu, g)] * pm;
-                                            }
-                                            t += inner * sk.c[(i, g)];
-                                        }
-                                    }
-                                    a_pt[(g, at, j)] += wg * t.re;
-                                }
-                            }
-                        }
-                    }
+                    ao_force_pass(dm, sk, fb, &wts, &self.aoat, &opts, &mut a_pt);
                 }
             }
             let mut ao = Array2::<f64>::zeros((natoms, 3));
@@ -864,14 +1032,67 @@ fn refuse_range_split(who: &str, jk: &KGradJk<'_>) -> Result<(), FerricError> {
     Ok(())
 }
 
+/// Resolve an open-shell derivative's functional and exact-exchange fraction.
+/// `allow_mgga` (UKS) lets the validated pure meta-GGAs SCAN / r2SCAN through
+/// on the dense-AFT J only (`rsgdf`: the open-shell meta-GGA energy is refused
+/// there, so nothing anchors it); ROKS/ROHF keep [`resolve_global`]'s
+/// refusal (the k-point ROKS SCF has no tau term). `base` is the force's or
+/// the stress's own resolver (their refusal wordings differ). Returns `(a, mgga)`;
+/// shared with the open-shell stress. `who` names the entry point.
+pub(crate) fn resolve_open_shell(
+    who: &str,
+    functional: &str,
+    (allow_mgga, rsgdf): (bool, bool),
+    base: &dyn Fn(&str) -> Result<(XcDef, f64), FerricError>,
+) -> Result<(f64, bool), FerricError> {
+    if !allow_mgga {
+        return Ok((resolve_global(functional)?.1, false));
+    }
+    let (xc, exch) = base(functional)?;
+    let mgga = xc
+        .funcs
+        .iter()
+        .any(|f| matches!(f.family(), FunctionalFamily::MetaGga));
+    if mgga && !crate::kxcgrad::is_validated_mgga(functional) {
+        return Err(PeriodicDftError::Unsupported {
+            feature: "open-shell meta-GGA derivative at k",
+            reason: format!(
+                "{functional}: the k-point UKS force and stress cover the pure SCAN and r2SCAN \
+                 meta-GGAs only (those the k-point UKS SCF accepts)"
+            ),
+        }
+        .into());
+    }
+    if mgga && (xc.vv10.is_some() || xc.weights.is_some()) {
+        return Err(PeriodicDftError::Unsupported {
+            feature: "VV10/double-hybrid derivative at k",
+            reason: format!("{functional}: VV10 and mixing weights are not covered"),
+        }
+        .into());
+    }
+    if mgga && rsgdf {
+        return Err(PeriodicDftError::Unsupported {
+            feature: "open-shell meta-GGA derivative at k with RS-GDF J",
+            reason: format!(
+                "{who}: {functional}: the open-shell k-point meta-GGA (energy, force and stress) \
+                 is validated on the dense-AFT J/K only (jk = dense)"
+            ),
+        }
+        .into());
+    }
+    Ok((exch, mgga))
+}
+
 fn grid_response<'a>(
     cell: &'a Cell,
     prep: &'a PreparedBasis,
     mesh: &KPointMesh,
     functional: &str,
     cfg: &'a KUksGradConfig,
+    (who, allow_mgga, rsgdf): (&str, bool, bool),
 ) -> Result<(GridXcPol<'a>, f64), FerricError> {
-    let (_xc1, exch) = resolve_global(functional)?;
+    let (exch, is_mgga) =
+        resolve_open_shell(who, functional, (allow_mgga, rsgdf), &resolve_global_mgga)?;
     let mut name = functional.to_string();
     if cfg.base.mutation == Some(KXcMutation::WrongRemainder) {
         name = match functional.to_ascii_uppercase().as_str() {
@@ -885,18 +1106,31 @@ fn grid_response<'a>(
         }
         .to_string();
     }
+    if cfg.base.mutation == Some(KXcMutation::TauNoPoint) {
+        return Err(FerricError::General(
+            "TauNoPoint mutant: wired for the closed-shell force only".into(),
+        ));
+    }
     let xc = xc_def_from_name_nspin(&name, 2)
         .map_err(|e| FerricError::General(format!("{functional}: spin-polarized: {e:?}")))?;
     let gga = xc
         .funcs
         .iter()
         .any(|f| !matches!(f.family(), FunctionalFamily::Lda));
+    let force_tau = cfg.base.mutation == Some(KXcMutation::ForceTauPath);
+    if force_tau && !gga {
+        return Err(FerricError::General(
+            "ForceTauPath mutant: needs a GGA functional (the AO Hessian is evaluated only for GGA)"
+                .into(),
+        ));
+    }
     Ok((
         GridXcPol {
             cell,
             prep,
             xc,
             gga,
+            mgga: is_mgga || force_tau,
             kpts: mesh.kpts().to_vec(),
             aoat: ao_atoms(prep),
             grid: &cfg.base.grid,
@@ -915,9 +1149,13 @@ fn grid_response<'a>(
 /// [`KRksGradConfig::exxdiv`], here `cfg.base.exxdiv`). Arguments as
 /// [`crate::kxcgrad::kpoint_rks_gradient`], with the SCF a [`KUScfResult`].
 ///
-/// Refuses (typed errors) range-separated hybrids, meta-GGA, VV10/double
-/// hybrids, a hybrid without `cfg.base.exxdiv`, and an SCF whose spin Focks
-/// the rebuilt `h + J − a K_σ + V_xc,σ` do not reproduce.
+/// Also the pure meta-GGAs SCAN / r2SCAN on the dense-AFT J/K (module doc,
+/// "Meta-GGA (UKS)").
+///
+/// Refuses (typed errors) range-separated hybrids, any other meta-GGA,
+/// meta-GGA with RS-GDF J/K, VV10/double hybrids, a hybrid without
+/// `cfg.base.exxdiv`, and an SCF whose spin Focks the rebuilt
+/// `h + J − a K_σ + V_xc,σ` do not reproduce.
 #[allow(clippy::too_many_arguments)]
 pub fn kpoint_uks_gradient(
     cell: &Cell,
@@ -930,7 +1168,15 @@ pub fn kpoint_uks_gradient(
     functional: &str,
     cfg: &KUksGradConfig,
 ) -> Result<KUksGradient, FerricError> {
-    let (resp, exch) = grid_response(cell, prep, mesh, functional, cfg)?;
+    let rsgdf = matches!(jk, KGradJk::RsGdf(_));
+    let (resp, exch) = grid_response(
+        cell,
+        prep,
+        mesh,
+        functional,
+        cfg,
+        ("kpoint_uks_gradient", true, rsgdf),
+    )?;
     uks_gradient_with(
         "kpoint_uks_gradient",
         cell,
@@ -967,7 +1213,14 @@ pub fn kpoint_roks_gradient(
     cfg: &KUksGradConfig,
 ) -> Result<KUksGradient, FerricError> {
     refuse_range_split("kpoint_roks_gradient", &jk)?;
-    let (resp, exch) = grid_response(cell, prep, mesh, functional, cfg)?;
+    let (resp, exch) = grid_response(
+        cell,
+        prep,
+        mesh,
+        functional,
+        cfg,
+        ("kpoint_roks_gradient", false, false),
+    )?;
     uks_gradient_with(
         "kpoint_roks_gradient",
         cell,
@@ -1179,12 +1432,14 @@ fn uks_gradient_with(
                 | KUSpinMutation::PulayKSwap
                 | KUSpinMutation::PulayJOneSpin
                 | KUSpinMutation::PulayNoVxcBeta
+                | KUSpinMutation::TauNoVxcBeta
         )
     }) && !matches!(
         mutation,
         Some(KXcMutation::PulayNoVxc)
             | Some(KXcMutation::WrongRemainder)
             | Some(KXcMutation::GuardSkippedOnly)
+            | Some(KXcMutation::TauNoVxcUnguarded)
     );
     let mismatch = if guard {
         let ma = check_fock(who, "fock_alpha", &fa, inp.fa, KS_REMEDY)?;

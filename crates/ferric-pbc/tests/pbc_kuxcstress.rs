@@ -20,7 +20,7 @@
 //! * (5) the trace against isotropic scaling.
 //!
 //! NOT covered: p/d shells and heavy atoms / ECP (every fixture is H/STO-3G),
-//! ROKS/ROHF (see `pbc_kuxcstress_ro.rs`), range-separated hybrids / meta-GGA / VV10 (refused),
+//! ROKS/ROHF (see `pbc_kuxcstress_ro.rs`), range-separated hybrids / VV10 (refused), meta-GGA (`pbc_kuxc_mgga.rs`),
 //! shifted meshes except one ignored FD row, the production (75, 302) grid,
 //! no external (PySCF) anchor (its k stress refuses open-shell hybrids).
 
@@ -1054,10 +1054,9 @@ fn refusals_and_the_per_spin_fock_guard() {
             "HSE06",
             "range-separated hybrid stress at k is not supported: HSE06: the k-point XC stress covers LDA, GGA and GLOBAL hybrid functionals; the screened-exchange strain is not implemented",
         ),
-        (
-            "SCAN",
-            "meta-GGA stress at k is not supported: SCAN: the tau strain term is implemented for the closed-shell stress only (open-shell meta-GGA stress is not implemented)",
-        ),
+        // SCAN is covered (`pbc_kuxc_mgga.rs`): a PBE0 state handed in as
+        // SCAN is refused by the Fock guard.
+        ("SCAN", "differs from the SCF's stored fock_alpha"),
         ("wB97X-V", "VV10"),
         ("B2PLYP", "double hybrid"),
     ] {

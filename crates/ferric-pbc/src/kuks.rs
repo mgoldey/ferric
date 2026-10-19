@@ -31,8 +31,10 @@
 //! `τ_σ = (1/N_k) Σ_k ½ Σ_ax Re Σ D_σ(k)_{μν} ∂φ_μ (∂φ_ν)*` (libxc's `½`
 //! convention, `KPeriodicXc::chunk_tau` applied to `D_σ`), fed to the
 //! polarized libxc kernel as `(τ_α, τ_β)`, and each spin gets its own
-//! `V^τ_σ(k) = Σ_g ½ w v_τσ Σ_ax (∂φ_μ)* ∂φ_ν`. Forces and stress stay
-//! refused ([`crate::kxcgrad::check_open_shell_force_functional`]).
+//! `V^τ_σ(k) = Σ_g ½ w v_τσ Σ_ax (∂φ_μ)* ∂φ_ν`. The library force and stress
+//! are [`crate::kuxcgrad::kpoint_uks_gradient`] and
+//! [`crate::kuxcstress::kpoint_uks_stress`]; the Python / CLI derivative gate
+//! ([`crate::kxcgrad::check_open_shell_force_functional`]) still refuses them.
 //!
 //! Range-separated hybrids (HSE06, CAM-B3LYP validated against PySCF, wB97X unpinned; mgoldey/ferric#354) take
 //! the closed-shell attenuated K unchanged ([`crate::rsh`], dense AFT or
