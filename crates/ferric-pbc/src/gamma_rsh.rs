@@ -304,6 +304,107 @@ impl KBuilder for GammaRshK<'_> {
     fn reset(&mut self) {}
 }
 
+/// Closed-shell Gamma RKS nuclear gradient of a range-separated hybrid
+/// (`scf` from [`crate::dft::gamma_rks_rsh`] with the dense-AFT exchange
+/// `rsh_k` and dense-AFT Gamma J), routed through the 1x1x1 k-point force
+/// ([`crate::kxcgrad::kpoint_rks_gradient`]): the Gamma point IS the 1x1x1
+/// mesh, so the Gamma density, Fock and MOs are the `k = 0` ones, and the
+/// k-point force differentiates the attenuated kernel of `rsh_k` (its dense
+/// J kernel is the same G sphere as the Gamma J at equal precision).
+///
+/// * `hcore_cfg` — the hcore config of the energy (the 1x1x1 hcore is
+///   rebuilt from it).
+/// * `dft` — the SAME config the SCF ran with: functional, `grid` (the
+///   atom-centred grid is rebuilt from it; a run on a caller-supplied grid,
+///   `gamma_rks_rsh_on_grid`, is not covered), `xc.ao_threshold`, `exxdiv`.
+/// * `cfg` — the HF-part settings (budget).
+///
+/// The k-point Fock guard compares the rebuilt `h + J + V_xc − K` with the
+/// SCF's stored Fock, so a Gamma J from another source (RS-GDF) or a
+/// different grid is refused, not silently differentiated. Refuses an
+/// RS-GDF `rsh_k` (the attenuated fit has no derivative) and an open-shell
+/// result.
+pub fn gamma_rks_rsh_gradient(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    hcore_cfg: &crate::hcore::PeriodicHcoreConfig,
+    scf: &ferric_scf::result::ScfResult,
+    dft: &crate::dft::GammaRksConfig,
+    rsh_k: &GammaRshExchange,
+    cfg: &crate::kgrad::KGradConfig,
+) -> Result<crate::kxcgrad::KRksGradient, FerricError> {
+    let who = "gamma_rks_rsh_gradient";
+    rsh_k.check_for(who, &dft.functional, dft.exxdiv)?;
+    let Source::Dense(eri) = &rsh_k.src else {
+        return Err(FerricError::General(format!(
+            "{who}: the range-separated exchange was built on RS-GDF; the attenuated fit has \
+             no derivative (build it with GammaRshExchange::build_dense, jk = dense)"
+        )));
+    };
+    if scf.spin != ferric_scf::result::Spin::Restricted {
+        return Err(FerricError::General(format!(
+            "{who}: closed-shell (restricted) results only; open-shell range-separated forces \
+             are not implemented"
+        )));
+    }
+    let mesh = KPointMesh::gamma_centred(cell, [1, 1, 1])?;
+    let hk = crate::hcore::kpoint::periodic_hcore_kpts(cell, prep, &mesh, hcore_cfg)?;
+    let kscf = gamma_as_one_point(scf, &mesh, hk.enn, cell.mol().nelec().max(0) as usize / 2);
+    let kcfg = crate::kxcgrad::KRksGradConfig {
+        grad: *cfg,
+        grid: crate::kxcgrad::KXcGrid::Atom(dft.grid.clone()),
+        ao_threshold: dft.xc.ao_threshold,
+        exxdiv: Some(dft.exxdiv),
+        ..Default::default()
+    };
+    crate::kxcgrad::kpoint_rks_gradient(
+        cell,
+        prep,
+        &mesh,
+        hcore_cfg,
+        &hk,
+        crate::kgrad::KGradJk::Dense(eri),
+        &kscf,
+        &dft.functional,
+        &kcfg,
+    )
+}
+
+/// A restricted Gamma result as the 1x1x1 k-point result (`k = 0`, complex
+/// copies of the real matrices; `nocc` doubly occupied levels). The force
+/// reads the density, the Fock, the convergence flag and the k-point.
+fn gamma_as_one_point(
+    scf: &ferric_scf::result::ScfResult,
+    mesh: &KPointMesh,
+    e_nuc: f64,
+    nocc: usize,
+) -> crate::kscf::KScfResult {
+    let eps = scf.eps_alpha.clone();
+    let occ: Vec<f64> = (0..eps.len())
+        .map(|i| if i < nocc { 2.0 } else { 0.0 })
+        .collect();
+    let homo = nocc.checked_sub(1).map_or(f64::NEG_INFINITY, |i| eps[i]);
+    let lumo = eps.get(nocc).copied().unwrap_or(f64::INFINITY);
+    crate::kscf::KScfResult {
+        energy: scf.energy,
+        e_nuc,
+        eps: vec![eps],
+        mos: vec![to_complex(&scf.mos_alpha)],
+        densities: vec![to_complex(&scf.density_total)],
+        fock: vec![to_complex(&scf.fock_alpha)],
+        occupations: vec![occ],
+        nocc_per_k: vec![nocc],
+        homo,
+        lumo,
+        converged: scf.converged,
+        iterations: scf.iterations,
+        max_error: 0.0,
+        kpts: mesh.kpts().to_vec(),
+        lindep: Default::default(),
+        timings: Default::default(),
+    }
+}
+
 /// How the bindings (Python, CLI) size the Gamma RSH exchange: the same
 /// knobs their Gamma J/K already uses.
 #[derive(Debug, Clone, Copy)]

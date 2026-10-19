@@ -110,8 +110,12 @@
 //!   on the dense-AFT or RS-GDF (unsplit or range-split) J/K: the k-point HF
 //!   force assembly with the exact-exchange fraction `a` plus the XC
 //!   AO-derivative, grid-point-motion and weight-response terms on Bloch
-//!   AOs, with the tau term on the AO Hessian for a meta-GGA;
-//!   range-separated hybrids and VV10 are refused.
+//!   AOs, with the tau term on the AO Hessian for a meta-GGA; range-separated
+//!   hybrids on the dense-AFT J/K only (HSE06, CAM-B3LYP force-tested; wB97X
+//!   accepted, not exercised by a force test; the
+//!   exchange walks weighted by the attenuated kernel, the mixed Madelung
+//!   constant; the Gamma point through `gamma_rsh::gamma_rks_rsh_gradient` on
+//!   the 1x1x1 mesh); range-separated hybrids on RS-GDF and VV10 are refused.
 //! * [`kxcstress`] — the stress of the same energy (`kpoint_rks_stress`): the
 //!   k HF stress with the exact-exchange fraction `a` (dense K walks, the
 //!   RS-GDF fit's exchange pieces and the Madelung term scaled by `a`) plus

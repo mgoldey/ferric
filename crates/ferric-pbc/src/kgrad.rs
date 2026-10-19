@@ -81,7 +81,11 @@
 //! # Scope
 //!
 //! HF here (no ROHF at k); pure LDA/GGA RKS reuses this assembly with the
-//! exchange fraction 0 plus the XC terms ([`crate::kxcgrad`]). RS-GDF aux on the
+//! exchange fraction 0 plus the XC terms ([`crate::kxcgrad`]). Dense kernels
+//! built with a range separation ([`crate::rsh`]) are differentiated with the
+//! exchange walks weighted by the kernel factor `f(|K|)` (J bare) for the
+//! closed-shell RKS force only (`check_inputs_rsh`); every other entry, and
+//! RS-GDF with an attenuated fit, refuses them. RS-GDF aux on the
 //! cell's atoms (no ghost sites). A scalar periodic ECP is differentiated by the Gamma ECP walk
 //! ([`crate::ecp::periodic_ecp_gradient`]) with the SR walk's image weight
 //! `Re Δ_nm(L)` in place of the density (`parts.ecp`; derivation in the
@@ -116,6 +120,7 @@ use crate::rsgdf::kpoint::kderiv::{
     kpoint_fit_gradient, rotate_hcore_weights, KFitGrad, KFitMutation, KRotKind,
 };
 use crate::rsgdf::kpoint::{KRsGdf, KRsGdfConfig};
+use crate::rsh::RshParams;
 use crate::sr_rotation::RotatedBasis;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
@@ -223,6 +228,26 @@ pub enum KGradMutation {
     /// Hybrid scale: a closed-shell spin-factor slip on the exchange
     /// coefficients (`D_s X D_s` weight 1 instead of ½).
     ExchSpinFactor,
+    /// Range separation: the dense K derivative walks with the bare `4π/K²`
+    /// (the kernel factor `c_sr + (c_lr − c_sr) e^{−K²/4ω²}` dropped).
+    RshNoKernelFactor,
+    /// Range separation: the kernel factor also applied to the Coulomb (J)
+    /// derivative.
+    RshKernelOnJ,
+    /// Range separation: `c_sr` and `c_lr` swapped in the derivative's kernel.
+    RshSwapFractions,
+    /// Range separation: the plain full-Coulomb mesh Madelung constant in the
+    /// M-term instead of the mixed one the SCF's K carried (blind for
+    /// `exxdiv = none`).
+    RshPlainMadelung,
+    /// Range separation: `ω × 1.01` in the derivative's kernel.
+    RshOmegaScaled,
+    /// Range separation: the attenuated (erf) piece dropped from the
+    /// derivative's kernel (factor `c_sr` at every K).
+    RshNoErfPiece,
+    /// Range separation: the Madelung part of the M-term dropped (blind for
+    /// `exxdiv = none`).
+    RshNoMadelungTerm,
 }
 
 /// The hcore SR derivative walk's rotation and forward-transformed image
@@ -698,6 +723,30 @@ pub(crate) fn check_inputs(
     converged: bool,
     kpts: &[[f64; 3]],
 ) -> Result<(), FerricError> {
+    check_inputs_rsh(
+        who, cell, prep, mesh, hcore_cfg, hk, jk, dens, converged, kpts, None,
+    )
+}
+
+/// [`check_inputs`] for an entry that differentiates a range-separated
+/// exchange: `rsh` is the functional's range separation (`None` for every
+/// entry but the closed-shell RKS force). A dense source must carry exactly
+/// these parameters (and none when `rsh` is `None`); an RS-GDF source must
+/// carry none and `rsh` must be `None` (the attenuated fit has no derivative).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn check_inputs_rsh(
+    who: &str,
+    cell: &Cell,
+    prep: &PreparedBasis,
+    mesh: &KPointMesh,
+    hcore_cfg: &PeriodicHcoreConfig,
+    hk: &PeriodicHcoreK,
+    jk: &KGradJk<'_>,
+    dens: &[&[Array2<C64>]],
+    converged: bool,
+    kpts: &[[f64; 3]],
+    rsh: Option<RshParams>,
+) -> Result<(), FerricError> {
     let n = prep.nbasis();
     let nk = mesh.nk();
     if !converged {
@@ -739,13 +788,7 @@ pub(crate) fn check_inputs(
     }
     match jk {
         KGradJk::Dense(e) => {
-            if e.rsh().is_some() {
-                return Err(FerricError::General(format!(
-                    "{who}: the dense kernels carry an attenuated (range-separated) exchange \
-                     (rsh); the K derivative walks use the bare 4π/k² kernel, so the force \
-                     would be wrong. Range-separated hybrids have no k-point force."
-                )));
-            }
+            check_dense_rsh(who, e.rsh(), rsh)?;
             if e.nk() != nk {
                 return Err(FerricError::General(format!(
                     "{who}: dense kernels have {} k-points, the mesh {nk}",
@@ -754,11 +797,12 @@ pub(crate) fn check_inputs(
             }
         }
         KGradJk::RsGdf(s) => {
-            if s.gdf.rsh().is_some() {
+            if s.gdf.rsh().is_some() || rsh.is_some() {
                 return Err(FerricError::General(format!(
-                    "{who}: the RS-GDF tensors carry an attenuated (range-separated) exchange \
-                     (KRsGdf::build_rsh); the K derivative walks use the bare 4π/k² kernel, so \
-                     the force would be wrong. Range-separated hybrids have no k-point force."
+                    "{who}: range-separated exchange on RS-GDF J/K (KRsGdf::build_rsh) has no \
+                     derivative here (the attenuated fit is not differentiated, so the force \
+                     would be wrong); the range-separated k-point force covers closed-shell RKS \
+                     (kpoint_rks_gradient) on dense-AFT J/K only"
                 )));
             }
             if s.gdf.nk() != nk {
@@ -771,6 +815,34 @@ pub(crate) fn check_inputs(
         }
     }
     Ok(())
+}
+
+/// The range-separation consistency of a dense source: the kernels' `have`
+/// against the entry's `want` (module doc of [`check_inputs_rsh`]).
+fn check_dense_rsh(
+    who: &str,
+    have: Option<RshParams>,
+    want: Option<RshParams>,
+) -> Result<(), FerricError> {
+    match (have, want) {
+        (None, None) => Ok(()),
+        (Some(h), Some(w)) if h == w => Ok(()),
+        (Some(h), Some(w)) => Err(FerricError::General(format!(
+            "{who}: the dense kernels carry a range-separated exchange {h:?} but the \
+             functional's is {w:?}; build the J/K with the functional's own parameters"
+        ))),
+        (Some(_), None) => Err(FerricError::General(format!(
+            "{who}: the dense kernels carry an attenuated (range-separated) exchange (rsh); \
+             this entry point does not differentiate it (the range-separated k-point force \
+             covers closed-shell RKS, kpoint_rks_gradient with a range-separated functional, \
+             on dense-AFT J/K only)"
+        ))),
+        (None, Some(w)) => Err(FerricError::General(format!(
+            "{who}: the functional is range-separated ({w:?}) but the dense kernels carry the \
+             bare Coulomb exchange; build the J/K with KDenseAftConfig::rsh set (as solve_krks \
+             does)"
+        ))),
+    }
 }
 
 /// Open the memory ledger and reserve the per-k matrices, residue-folded weights and
@@ -966,6 +1038,32 @@ fn m_term_madelung(
     Ok(exch_scale * base)
 }
 
+/// The range separation of a dense source (`check_inputs_rsh` admits it on
+/// the closed-shell RKS force only) and the `v_M` the M-term uses: the SCF's
+/// (mixed, for a range-separated K) `vm`, or the plain mesh constant under
+/// the [`KGradMutation::RshPlainMadelung`] defect.
+fn rsh_and_m_term_vm(
+    jk: &KGradJk<'_>,
+    cell: &Cell,
+    mesh: &KPointMesh,
+    vm: f64,
+    mutation: Option<KGradMutation>,
+) -> Result<(Option<RshParams>, f64), FerricError> {
+    let rsh = match jk {
+        KGradJk::Dense(e) => e.rsh(),
+        KGradJk::RsGdf(_) => None,
+    };
+    let defect = |m: KGradMutation| rsh.is_some() && vm != 0.0 && mutation == Some(m);
+    let vm_used = if defect(KGradMutation::RshPlainMadelung) {
+        mesh.madelung(cell)?
+    } else if defect(KGradMutation::RshNoMadelungTerm) {
+        0.0
+    } else {
+        vm
+    };
+    Ok((rsh, vm_used))
+}
+
 /// The scale each exchange-bearing piece of [`assemble`] carries: the
 /// exchange fraction `a` everywhere, except where a test defect leaves one
 /// piece wrong (`KGradMutation::Exch*`).
@@ -1084,7 +1182,8 @@ pub(crate) fn assemble(
     let vol = cell.volume();
     let c0 = PI / (omega * omega * vol);
     let sc = ExchScales::of(exch_scale, mutation);
-    let vm_m = m_term_madelung(cell, vm, sc.madelung, mutation)?;
+    let (rsh, vm_used) = rsh_and_m_term_vm(jk, cell, mesh, vm, mutation)?;
+    let vm_m = m_term_madelung(cell, vm_used, sc.madelung, mutation)?;
     // The exchange coefficients, scaled by the exact-exchange fraction. The
     // dense walks and the RS-GDF fit take them separately so a test defect can
     // leave exactly one of the two unscaled.
@@ -1290,6 +1389,7 @@ pub(crate) fn assemble(
                 mesh,
                 eri,
                 &exch_dense,
+                rsh_kernel(rsh, mutation),
                 j_scale,
                 &delta,
                 &delta_true,
@@ -1737,8 +1837,60 @@ fn smooth_g0_force(
     )
 }
 
+/// The range-separation kernel the dense derivative walks apply: the
+/// exchange kernel factor ([`RshParams::kernel_factor`]) and whether J
+/// carries it too (only under [`KGradMutation::RshKernelOnJ`]).
+#[derive(Clone, Copy)]
+struct RshKernel {
+    params: Option<RshParams>,
+    on_j: bool,
+}
+
+impl RshKernel {
+    /// Multiplier of the exchange `4π/K²` at `|K|² = k2` (1 without range separation).
+    fn exchange(&self, k2: f64) -> f64 {
+        self.params.map_or(1.0, |r| r.kernel_factor(k2))
+    }
+
+    /// Multiplier of the Coulomb `4π/K²` (1 in production).
+    fn coulomb(&self, k2: f64) -> f64 {
+        if self.on_j {
+            self.exchange(k2)
+        } else {
+            1.0
+        }
+    }
+}
+
+/// The derivative's [`RshKernel`] for the source's `rsh`, with the
+/// `Rsh*` test defects applied.
+fn rsh_kernel(rsh: Option<RshParams>, mutation: Option<KGradMutation>) -> RshKernel {
+    use KGradMutation as M;
+    let params = match (rsh, mutation) {
+        (Some(_), Some(M::RshNoKernelFactor)) => None,
+        (Some(r), Some(M::RshSwapFractions)) => Some(RshParams {
+            c_sr: r.c_lr,
+            c_lr: r.c_sr,
+            ..r
+        }),
+        (Some(r), Some(M::RshOmegaScaled)) => Some(RshParams {
+            omega: 1.01 * r.omega,
+            ..r
+        }),
+        (Some(r), Some(M::RshNoErfPiece)) => Some(RshParams { c_lr: r.c_sr, ..r }),
+        (r, _) => r,
+    };
+    RshKernel {
+        params,
+        on_j: rsh.is_some() && mutation == Some(M::RshKernelOnJ),
+    }
+}
+
 /// AO-resolved Coulomb and exchange forces of the dense pure-AFT kernels,
-/// every q class (module doc). Returns `(J per AO, K per AO, chunks, K count)`.
+/// every q class (module doc). The exchange kernel is `4π/K²` times the
+/// range-separation factor of `kern` (the factor depends on `|K|` only, so
+/// the pair-FT derivative is unchanged); J keeps the bare kernel. Returns
+/// `(J per AO, K per AO, chunks, K count)`.
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn dense_two_electron(
     cell: &Cell,
@@ -1746,6 +1898,7 @@ fn dense_two_electron(
     mesh: &KPointMesh,
     eri: &KDenseAftEri,
     exch: &[(f64, &[Array2<C64>])],
+    kern: RshKernel,
     j_scale: f64,
     delta: &[Array2<C64>],
     delta_true: &[Array2<C64>],
@@ -1824,7 +1977,7 @@ fn dense_two_electron(
                             p,
                             qd,
                             delta,
-                            rho.conj() * (v / vol * j_scale),
+                            rho.conj() * (v * kern.coulomb(k2) / vol * j_scale),
                         );
                     }
                     if exch.is_empty() {
@@ -1850,7 +2003,8 @@ fn dense_two_electron(
                             ytr.scaled_add(ph_d[j][r], &y);
                         }
                     }
-                    contract_pair_deriv(&mut kao, kvec, gi, p, qd, &yt, cr(cx_base * v));
+                    let vx = v * kern.exchange(k2);
+                    contract_pair_deriv(&mut kao, kvec, gi, p, qd, &yt, cr(cx_base * vx));
                 }
                 Ok(())
             },
