@@ -697,7 +697,7 @@ fn unsupported_configurations_are_refused_naming_the_next_unit() {
         let msg = refusal_with(&with_xc(xc), &r, res);
         eprintln!("{xc}: {msg}");
         assert!(
-            msg.contains(needle) && msg.contains("issue #407"),
+            msg.contains(needle) && msg.contains("next unit:"),
             "{xc}: {msg}"
         );
     }
@@ -773,7 +773,7 @@ fn an_open_shell_reference_is_refused() {
     let msg = refusal_with(&hessian_config(), &r, &uks);
     eprintln!("{msg}");
     assert!(
-        msg.contains("open-shell") && msg.contains("issue #407"),
+        msg.contains("open-shell") && msg.contains("next unit:"),
         "{msg}"
     );
 }
@@ -981,7 +981,7 @@ fn an_ecp_system_is_refused() {
     )
     .expect_err("an ECP system must be refused");
     let msg = err.to_string();
-    assert!(msg.contains("ECP") && msg.contains("issue #407"), "{msg}");
+    assert!(msg.contains("ECP") && msg.contains("next unit:"), "{msg}");
 }
 
 #[test]
@@ -1005,7 +1005,7 @@ fn point_charges_in_the_configuration_are_refused() {
         &r.fixed.res,
     );
     assert!(
-        msg.contains("external potential") && msg.contains("issue #407"),
+        msg.contains("external potential") && msg.contains("next unit:"),
         "{msg}"
     );
 }

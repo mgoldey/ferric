@@ -61,6 +61,18 @@
 //! | exchange dropped from the skeleton / `F^x` / CPHF | 0.17 / 0.14 / 5.5e-2 |
 //! | exact-K Hessian vs FD of the RI-K gradient (negative control) | 2.3e-5 |
 //!
+//! With distinct J and K bases (PBE0/STO-3G, def2-universal-jkfit for J,
+//! cc-pVTZ-JKFIT for K; production 5.9e-11, bar 1e-9,
+//! `rik_hessian_with_distinct_j_and_k_bases_and_its_mutants`):
+//!
+//! | mutant | miss (Ha/Bohr^2) |
+//! |---|---|
+//! | RI-K skeleton and `K^x` over the J basis | 3.4e-5 |
+//! | CPHF `DfK` over the J basis | 3.1e-7 (the closest, 310x) |
+//! | exact four-centre `Γ_K` skeleton | 3.2e-6 |
+//! | exact four-centre `K^x` | 3.5e-6 |
+//! | exact K in the CPHF | 1.3e-6 |
+//!
 //! The `a = 0` anchor (`ri_k_adds_nothing_to_a_pure_functional`, measured 0)
 //! has its own mutant: the RI-K weight ignoring `a` misses it by 2.9.
 
@@ -329,28 +341,105 @@ fn rik_gradient_matches_central_difference_of_the_fixed_grid_energy() {
     }
 }
 
+/// Hessian vs FD of the RI-K gradient for one system, returning the reference
+/// and the FD Hessian for the mutant legs.
+fn fd_case(basis_name: &str, xc: &str, j: Option<&str>, k: &str, tol: f64) -> (Ref, Array2<f64>) {
+    let r = reference(basis_name, xc, j, Some(k));
+    let an = analytic(&r, &KsFixedGridMutants::default());
+    let fd = fd_hessian_of_gradient(&r, H_FD);
+    let diff = max_abs_diff(&an, &fd);
+    eprintln!(
+        "{basis_name} {xc} RI-J {j:?} + RI-K {k}: |H - FD(g_DF)| = {diff:.3e} (max |H| {:.3e})",
+        max_abs(&an)
+    );
+    assert!(diff < tol, "{basis_name} {xc}: {diff:.3e}");
+    (r, fd)
+}
+
 #[test]
-fn rik_hessian_matches_central_difference_of_the_df_gradient() {
+fn rik_hessian_matches_fd_pbe0_sto3g_rij() {
+    if has_deriv2() {
+        fd_case("sto-3g", "PBE0", Some(AUX), AUX, TOL_HESS_FD);
+    }
+}
+
+#[test]
+fn rik_hessian_matches_fd_pbe0_sto3g_exact_j() {
+    if has_deriv2() {
+        fd_case("sto-3g", "PBE0", None, AUX, TOL_HESS_FD);
+    }
+}
+
+#[test]
+fn rik_hessian_matches_fd_b3lyp_sto3g_rij() {
+    if has_deriv2() {
+        fd_case("sto-3g", "B3LYP", Some(AUX), AUX, TOL_HESS_FD);
+    }
+}
+
+#[test]
+fn rik_hessian_matches_fd_hybrid_lda_631g_rij() {
+    if has_deriv2() {
+        fd_case("6-31g", "HYB_LDA_XC_LDA0", Some(AUX), AUX, TOL_HESS_FD);
+    }
+}
+
+/// STO-3G bar: the FD of the gradient there is not limited by the XC
+/// truncation (measured 5.7e-11 to 8.9e-11), so the response-side mutants are
+/// measured against 1e-9 instead of the 6-31G 5e-7.
+const TOL_HESS_FD_STO3G: f64 = 1e-9;
+
+/// J and K fitted over DIFFERENT auxiliary bases (def2-universal-jkfit for J,
+/// cc-pVTZ-JKFIT for K): every fitted piece must take its own basis. The
+/// mutants fit the RI-K skeleton / `K^x`, or the CPHF `DfK`, over the J basis,
+/// and the response-side exact-K fallbacks are measured here against the
+/// tighter STO-3G bar.
+#[test]
+fn rik_hessian_with_distinct_j_and_k_bases_and_its_mutants() {
     if !has_deriv2() {
         return;
     }
-    for (basis_name, xc, j) in [
-        ("sto-3g", "PBE0", Some(AUX)),
-        ("sto-3g", "PBE0", None),
-        ("sto-3g", "B3LYP", Some(AUX)),
-        ("6-31g", "HYB_LDA_XC_LDA0", Some(AUX)),
-        ("6-31g", "PBE0", None),
-    ] {
-        let r = reference(basis_name, xc, j, Some(AUX));
-        let an = analytic(&r, &KsFixedGridMutants::default());
-        let fd = fd_hessian_of_gradient(&r, H_FD);
-        let diff = max_abs_diff(&an, &fd);
+    let (r, fd) = fd_case(
+        "sto-3g",
+        "PBE0",
+        Some(AUX),
+        "cc-pvtz-jkfit",
+        TOL_HESS_FD_STO3G,
+    );
+    let ks = |f: fn(&mut KsFixedGridMutants)| {
+        let mut m = KsFixedGridMutants::default();
+        f(&mut m);
+        m
+    };
+    let cases: Vec<(&str, KsFixedGridMutants)> = vec![
+        (
+            "RI-K skeleton and K^x over the J basis",
+            ks(|m| m.rik_terms_from_j_aux = true),
+        ),
+        (
+            "CPHF DfK over the J basis",
+            ks(|m| m.cphf_dfk_from_j_aux = true),
+        ),
+        (
+            "exact four-centre K skeleton",
+            ks(|m| m.exact_k_skeleton = true),
+        ),
+        (
+            "exact four-centre K^x",
+            ks(|m| m.exact_k_first_order = true),
+        ),
+        ("exact K in the CPHF", ks(|m| m.exact_k_response = true)),
+    ];
+    for (name, m) in cases {
+        let miss = max_abs_diff(&analytic(&r, &m), &fd);
         eprintln!(
-            "{basis_name} {xc} RI-J {:?} + RI-K: |H - FD(g_DF)| = {diff:.3e} (max |H| {:.3e})",
-            j.is_some(),
-            max_abs(&an)
+            "STO-3G mutant [{name}]: {miss:.3e} ({:.1e} x bar)",
+            miss / TOL_HESS_FD_STO3G
         );
-        assert!(diff < TOL_HESS_FD, "{basis_name} {xc}: {diff:.3e}");
+        assert!(
+            miss >= MUTANT_FACTOR * TOL_HESS_FD_STO3G,
+            "mutant [{name}] misses by only {miss:.3e}"
+        );
     }
 }
 

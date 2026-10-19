@@ -122,6 +122,12 @@ pub struct KsFixedGridMutants {
     /// RI-K: the fitted skeleton and `K^x` with the Hartree-Fock weight `−¼`
     /// instead of `−a/4` (the exact-exchange fraction forgotten).
     pub rik_alpha_ignores_exx: bool,
+    /// RI-K: the skeleton and `K^x` fitted over the RI-J auxiliary basis
+    /// instead of the exchange one (visible only when the two differ).
+    pub rik_terms_from_j_aux: bool,
+    /// RI-K: the CPHF `DfK` built over the RI-J auxiliary basis instead of
+    /// the exchange one (visible only when the two differ).
+    pub cphf_dfk_from_j_aux: bool,
 }
 
 impl Default for KsFixedGridMutants {
@@ -142,14 +148,16 @@ impl Default for KsFixedGridMutants {
             exact_k_first_order: false,
             exact_k_response: false,
             rik_alpha_ignores_exx: false,
+            rik_terms_from_j_aux: false,
+            cphf_dfk_from_j_aux: false,
         }
     }
 }
 
 fn unsupported(what: &str, next: &str) -> FerricError {
     FerricError::General(format!(
-        "the fixed-grid analytic Kohn-Sham Hessian does not support {what} (next unit of \
-         issue #407: {next}); use the finite-difference Hessian"
+        "the fixed-grid analytic Kohn-Sham Hessian does not support {what} (not yet \
+         implemented; next unit: {next}); use the finite-difference Hessian"
     ))
 }
 
@@ -685,7 +693,24 @@ fn rks_fixed_grid_hessian_core(
     let nuclear = nuclear_term(mol, config);
     let one_electron = skeleton_hess_1e(prep, natoms, &[], d)?;
     let overlap = skeleton_hess_overlap(prep, natoms, &w)?;
-    let fitted = fitted_terms(natoms, prep, op, rks, nocc, exx, fits, mutants)?;
+    // Mutants: the RI-K pieces or the CPHF DfK fitted over the RI-J basis.
+    let j_for_k = |on: bool| match (on, fits.j, fits.k) {
+        (true, Some(j), Some(_)) => KsFits {
+            j: fits.j,
+            k: Some(j),
+        },
+        _ => fits,
+    };
+    let fitted = fitted_terms(
+        natoms,
+        prep,
+        op,
+        rks,
+        nocc,
+        exx,
+        j_for_k(mutants.rik_terms_from_j_aux),
+        mutants,
+    )?;
     // A fitted Coulomb (exchange) term replaces the four-centre Gamma_J
     // (Gamma_K); the mutants keep the exact one.
     let keep_j = fits.j.is_none() || mutants.exact_j_skeleton;
@@ -727,7 +752,7 @@ fn rks_fixed_grid_hessian_core(
     }
     let kernel = grid.response(&geo, d, mutants.response_fxc, mutants.response_gradient)?;
     let kernel_fn = |d1: &Array2<f64>| kernel.apply(d1);
-    let (df_j, df_k) = cphf_fitters(prep, op, fits, mutants)?;
+    let (df_j, df_k) = cphf_fitters(prep, op, j_for_k(mutants.cphf_dfk_from_j_aux), mutants)?;
     let g = TwoElectronBuilder::new(ctx, prep, bounds)?
         .fitted(df_j, df_k, false)
         .with_xc_response(Some(&kernel_fn), exx * mutants.response_exx);
