@@ -4550,7 +4550,7 @@ pub const ANGSTROM_TO_BOHR: f64 = ferric_core::units::ANGSTROM_TO_BOHR;
 pub struct CellCfg {
     /// Lattice vectors as ROWS, `[[ax,ay,az],[bx,by,bz],[cx,cy,cz]]`, in `unit`.
     pub lattice: [[f64; 3]; 3],
-    /// Unit of `lattice`, `omega` (its inverse) and `neighbour_cutoff`:
+    /// Unit of `lattice`, `omega` (its inverse), `neighbour_cutoff` and `neighbour_switch`:
     /// `"angstrom"` (default) or `"bohr"`.
     pub unit: Option<String>,
     /// k-point mesh `[n1, n2, n3]`. Absent = the Gamma point only (the Gamma
@@ -4630,6 +4630,9 @@ pub struct CellCfg {
     /// Periodic XC grid image cutoff in `unit` (Kohn-Sham routes only; absent
     /// = max(10 Bohr, covering-radius bound)).
     pub neighbour_cutoff: Option<f64>,
+    /// Width (in `unit`) of the smooth taper on the XC grid's neighbour mask
+    /// (Kohn-Sham routes only; absent or 0 = the hard cutoff).
+    pub neighbour_switch: Option<f64>,
 }
 
 /// The raw `[cell] gdf_omega` value: a positive number (in `unit`⁻¹) or the
@@ -4877,6 +4880,8 @@ pub struct PeriodicPlan {
     pub n_radial: usize,
     pub n_angular: usize,
     pub neighbour_cutoff_bohr: Option<f64>,
+    /// `[cell] neighbour_switch` in Bohr (0 = hard cutoff).
+    pub neighbour_switch_bohr: f64,
     /// The resolved `[cell] sr_column_rotation`: the hcore and RS-GDF builds
     /// run their SR walks column-rotated. Only ever `true` with `jk =
     /// "rsgdf"` (the default there).
@@ -5639,10 +5644,14 @@ pub fn periodic_plan(cfg: &Config, raw: &toml::Value) -> Result<Option<PeriodicP
 
     // Kohn-Sham grid knobs.
     if !route.kohn_sham()
-        && (c.n_radial.is_some() || c.n_angular.is_some() || c.neighbour_cutoff.is_some())
+        && (c.n_radial.is_some()
+            || c.n_angular.is_some()
+            || c.neighbour_cutoff.is_some()
+            || c.neighbour_switch.is_some())
     {
         return Err(format!(
-            "[cell] n_radial / n_angular / neighbour_cutoff set the periodic XC grid and are \
+            "[cell] n_radial / n_angular / neighbour_cutoff / neighbour_switch set the periodic \
+             XC grid and are \
              read by Kohn-Sham routes only; the {} route would ignore them",
             route.label()
         ));
@@ -5650,6 +5659,15 @@ pub fn periodic_plan(cfg: &Config, raw: &toml::Value) -> Result<Option<PeriodicP
     let neighbour_cutoff_bohr = match c.neighbour_cutoff {
         None => None,
         Some(d) => Some(cell_positive("neighbour_cutoff", d)? * to_bohr),
+    };
+    let neighbour_switch_bohr = match c.neighbour_switch {
+        None => 0.0,
+        Some(w) if w.is_finite() && w >= 0.0 => w * to_bohr,
+        Some(w) => {
+            return Err(format!(
+                "[cell] neighbour_switch must be finite and >= 0, got {w}"
+            ))
+        }
     };
 
     // SCF thresholds: the user's value where WRITTEN, else the periodic default.
@@ -5744,6 +5762,7 @@ pub fn periodic_plan(cfg: &Config, raw: &toml::Value) -> Result<Option<PeriodicP
         n_radial: c.n_radial.unwrap_or(75),
         n_angular: c.n_angular.unwrap_or(302),
         neighbour_cutoff_bohr,
+        neighbour_switch_bohr,
         sr_column_rotation,
         sr_column_rotation_note,
         optimize,
@@ -5985,6 +6004,21 @@ kind = "ccsd"
                 "{kind}: {e}"
             );
         }
+    }
+
+    /// `[cell] neighbour_switch`: absent = 0 (hard cutoff), converted from
+    /// `unit`, refused when negative/non-finite and on non-KS routes.
+    #[test]
+    fn neighbour_switch_resolves_and_is_refused_where_unread() {
+        assert_eq!(ok(&h2("ksdft", "", "")).neighbour_switch_bohr, 0.0);
+        let p = ok(&h2("ksdft", "neighbour_switch = 1.5", ""));
+        assert_eq!(p.neighbour_switch_bohr, 1.5);
+        let ang = h2("ksdft", "neighbour_switch = 1.0", "").replace("unit = \"bohr\"\n", "");
+        assert!(
+            (ok(&ang).neighbour_switch_bohr - ferric_core::units::ANGSTROM_TO_BOHR).abs() < 1e-12
+        );
+        assert!(err(&h2("ksdft", "neighbour_switch = -1.0", "")).contains("neighbour_switch"));
+        assert!(err(&h2("rhf", "neighbour_switch = 1.0", "")).contains("neighbour_switch"));
     }
 
     #[test]

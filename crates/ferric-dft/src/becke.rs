@@ -659,6 +659,271 @@ pub fn partition_weight_over_and_grad(
     (w, dw)
 }
 
+/// Smooth replacement for the hard "image atom within `cutoff` of the point"
+/// mask of a periodic neighbour list: atom `C` at distance `d` from the point
+/// takes part with presence
+///
+/// ```text
+/// f(d) = 1                               d <= cutoff − width
+/// f(d) = t³(10 − 15t + 6t²),  t = (cutoff − d)/width
+/// f(d) = 0                               d >= cutoff
+/// ```
+///
+/// (quintic smoothstep: `f`, `f'` and `f''` continuous at both ends).
+/// [`partition_weight_over_switched`] uses it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NeighbourSwitch {
+    /// Distance (Bohr) at and beyond which an atom is absent.
+    pub cutoff: f64,
+    /// Taper width (Bohr), `0 < width < cutoff`.
+    pub width: f64,
+}
+
+impl NeighbourSwitch {
+    /// `(f(d), df/dd)`.
+    pub fn value_and_slope(&self, d: f64) -> (f64, f64) {
+        if d <= self.cutoff - self.width {
+            return (1.0, 0.0);
+        }
+        if d >= self.cutoff {
+            return (0.0, 0.0);
+        }
+        let t = (self.cutoff - d) / self.width;
+        let omt = 1.0 - t;
+        let f = t * t * t * (10.0 + t * (-15.0 + 6.0 * t));
+        let fp = -30.0 * t * t * omt * omt / self.width;
+        (f, fp)
+    }
+}
+
+/// [`partition_weight_over`] with the neighbour list's hard distance mask
+/// replaced by the smooth presence `f_k = f(|r − X_k|)` of
+/// [`NeighbourSwitch`] (the home atom included):
+///
+/// ```text
+/// t_BC = 1 − f_C (1 − s_BC),   P_B = f_B Π_{C ≠ B} t_BC,   w = P_home / Σ_B P_B
+/// ```
+///
+/// An atom with `f = 1` enters exactly as in [`partition_weight_over`]; one
+/// with `f = 0` drops out (its own `P` is 0 and every factor it contributes
+/// is 1), so the weight is continuous as an image crosses `cutoff`. The list
+/// is still the same for every home at a given `r`, so the weights remain an
+/// exact partition of unity wherever some atom has `f = 1` and `P > 0` (the
+/// periodic grid guarantees it by requiring `cutoff − width ≥` the covering
+/// radius). With every `f = 1` the weight equals [`partition_weight_over`]'s
+/// up to rounding (`1 − (1 − s)` is not bitwise `s`), which is why the
+/// periodic grid calls the unswitched kernel when the width is 0.
+pub fn partition_weight_over_switched(
+    scheme: PartitionScheme,
+    atoms: &[NeighbourAtom],
+    home: usize,
+    r: [f64; 3],
+    switch: NeighbourSwitch,
+) -> f64 {
+    switched_weight(scheme, atoms, home, r, switch, false).0
+}
+
+/// [`partition_weight_over_switched`] and its derivative with respect to
+/// every listed atom at fixed `r` (the same contract as
+/// [`partition_weight_over_and_grad`]; `w` is bit-identical to
+/// [`partition_weight_over_switched`]). Beyond that function's terms, the
+/// presence derivatives `∂f_k/∂X_k = −f'(d_k) u_k` enter as
+///
+/// ```text
+/// ∂t_BC/∂X = f_C ∂s_BC/∂X − (1 − s_BC) ∂f_C/∂X
+/// ∂P_B/∂X  = (∂f_B/∂X) Π_C t_BC + f_B Σ_C (Π_{C'≠C} t_BC') ∂t_BC/∂X
+/// ```
+pub fn partition_weight_over_switched_and_grad(
+    scheme: PartitionScheme,
+    atoms: &[NeighbourAtom],
+    home: usize,
+    r: [f64; 3],
+    switch: NeighbourSwitch,
+) -> (f64, Vec<[f64; 3]>) {
+    switched_weight(scheme, atoms, home, r, switch, true)
+}
+
+/// Per-pair cell-function quantities of `(B, C)` for the switched kernel.
+struct PairTerm {
+    /// `t_BC = 1 − f_C (1 − s_BC)`.
+    t: f64,
+    /// `∂t_BC/∂μ_BC = f_C ∂s_BC/∂μ`.
+    dt_dmu: f64,
+    /// `μ_BC`.
+    mu: f64,
+    /// `R_BC`.
+    r_bc: f64,
+    /// `1 − s_BC` (multiplies `−∂f_C/∂X`).
+    one_minus_s: f64,
+}
+
+/// One cell function's pair term (`None` when C is absent or coincides with B).
+#[allow(clippy::too_many_arguments)]
+fn switched_pair(
+    scheme: PartitionScheme,
+    atoms: &[NeighbourAtom],
+    r_d: &[f64],
+    radii: &[f64],
+    f: &[f64],
+    b: usize,
+    c: usize,
+) -> Option<PairTerm> {
+    if b == c || f[c] == 0.0 {
+        return None;
+    }
+    let dx = atoms[b].xyz[0] - atoms[c].xyz[0];
+    let dy = atoms[b].xyz[1] - atoms[c].xyz[1];
+    let dz = atoms[b].xyz[2] - atoms[c].xyz[2];
+    let r_bc = (dx * dx + dy * dy + dz * dz).sqrt();
+    if r_bc < 1e-12 {
+        return None; // degenerate; skip (as partition_weight_over)
+    }
+    let mu = (r_d[b] - r_d[c]) / r_bc;
+    let chi = radii[b] / radii[c];
+    let uu = (chi - 1.0) / (chi + 1.0);
+    let a_corr = (uu / (uu * uu - 1.0)).clamp(-0.5, 0.5);
+    let nu = mu + a_corr * (1.0 - mu * mu);
+    let (g, gp) = smoothing_and_slope(scheme, nu);
+    let s = 0.5 * (1.0 - g);
+    let one_minus_s = 1.0 - s;
+    Some(PairTerm {
+        t: 1.0 - f[c] * one_minus_s,
+        dt_dmu: f[c] * (-0.5 * gp * (1.0 - 2.0 * a_corr * mu)),
+        mu,
+        r_bc,
+        one_minus_s,
+    })
+}
+
+/// Shared body of the switched kernels (one code path, so the value-only and
+/// the gradient entry points return the bit-identical weight).
+fn switched_weight(
+    scheme: PartitionScheme,
+    atoms: &[NeighbourAtom],
+    home: usize,
+    r: [f64; 3],
+    switch: NeighbourSwitch,
+    want_grad: bool,
+) -> (f64, Vec<[f64; 3]>) {
+    let n = atoms.len();
+    let mut dw = vec![[0.0_f64; 3]; if want_grad { n } else { 0 }];
+    if home >= n {
+        return (0.0, dw);
+    }
+    let r_d: Vec<f64> = atoms
+        .iter()
+        .map(|a| {
+            let dx = r[0] - a.xyz[0];
+            let dy = r[1] - a.xyz[1];
+            let dz = r[2] - a.xyz[2];
+            (dx * dx + dy * dy + dz * dz).sqrt()
+        })
+        .collect();
+    let (f, fp): (Vec<f64>, Vec<f64>) = r_d.iter().map(|&d| switch.value_and_slope(d)).unzip();
+    let u: Vec<[f64; 3]> = atoms
+        .iter()
+        .zip(&r_d)
+        .map(|(a, &d)| {
+            let inv = if d > 0.0 { 1.0 / d } else { 0.0 };
+            [
+                (r[0] - a.xyz[0]) * inv,
+                (r[1] - a.xyz[1]) * inv,
+                (r[2] - a.xyz[2]) * inv,
+            ]
+        })
+        .collect();
+    let radii: Vec<f64> = atoms.iter().map(|a| bragg_slater_bohr(a.z)).collect();
+    let mut p_cell = vec![0.0_f64; n];
+    let mut dsum = vec![[0.0_f64; 3]; if want_grad { n } else { 0 }];
+    let mut dhome = vec![[0.0_f64; 3]; if want_grad { n } else { 0 }];
+    let mut terms: Vec<Option<PairTerm>> = Vec::with_capacity(n);
+    let mut pre = vec![1.0_f64; n];
+    for b in 0..n {
+        if f[b] == 0.0 {
+            continue; // absent: P_B = 0 and (f' = 0 there) no derivative
+        }
+        terms.clear();
+        let mut prod = 1.0_f64;
+        let mut n_zero = 0usize;
+        for c in 0..n {
+            let term = switched_pair(scheme, atoms, &r_d, &radii, &f, b, c);
+            if let Some(tm) = &term {
+                prod *= tm.t;
+                if tm.t == 0.0 {
+                    n_zero += 1;
+                }
+            }
+            terms.push(term);
+        }
+        p_cell[b] = f[b] * prod;
+        if !want_grad {
+            continue;
+        }
+        // Presence of B itself: ∂P_B/∂X_B += f'(d_B)(−u_B) Π_C t_BC.
+        let mut acc_b = [0.0_f64; 3];
+        if fp[b] != 0.0 && prod != 0.0 {
+            for k in 0..3 {
+                acc_b[k] -= fp[b] * u[b][k] * prod;
+            }
+        }
+        // Two or more exact zeros: every excluded product vanishes.
+        if n_zero < 2 {
+            let mut acc = 1.0_f64;
+            for (c, tm) in terms.iter().enumerate() {
+                pre[c] = acc;
+                if let Some(tm) = tm {
+                    acc *= tm.t;
+                }
+            }
+            let mut suf = 1.0_f64;
+            for c in (0..n).rev() {
+                let Some(tm) = &terms[c] else { continue };
+                let excl = pre[c] * suf;
+                suf *= tm.t;
+                if excl == 0.0 {
+                    continue;
+                }
+                let coef = f[b] * excl;
+                let cmu = coef * tm.dt_dmu / tm.r_bc;
+                let cf = coef * tm.one_minus_s * fp[c];
+                let inv = 1.0 / tm.r_bc;
+                let mut d_c = [0.0_f64; 3];
+                for k in 0..3 {
+                    let me = tm.mu * (atoms[b].xyz[k] - atoms[c].xyz[k]) * inv;
+                    acc_b[k] -= cmu * (u[b][k] + me);
+                    // −(1 − s) ∂f_C/∂X_C = (1 − s) f'(d_C) u_C
+                    d_c[k] = cmu * (u[c][k] + me) + cf * u[c][k];
+                }
+                for k in 0..3 {
+                    dsum[c][k] += d_c[k];
+                    if b == home {
+                        dhome[c][k] += d_c[k];
+                    }
+                }
+            }
+        }
+        for k in 0..3 {
+            dsum[b][k] += acc_b[k];
+            if b == home {
+                dhome[b][k] += acc_b[k];
+            }
+        }
+    }
+    let total: f64 = p_cell.iter().sum();
+    if total < 1e-30 {
+        return (0.0, vec![[0.0_f64; 3]; if want_grad { n } else { 0 }]);
+    }
+    let w = p_cell[home] / total;
+    if want_grad {
+        for d in 0..n {
+            for k in 0..3 {
+                dw[d][k] = (dhome[d][k] - w * dsum[d][k]) / total;
+            }
+        }
+    }
+    (w, dw)
+}
+
 #[cfg(test)]
 mod tests {
     /// Spot values of PySCF's `radii.BRAGG` in Å (`BRAGG[z] * BOHR`), mostly
@@ -1064,5 +1329,243 @@ mod partition_over_tests {
             PartitionScheme::Becke
         );
         assert!(PartitionScheme::parse_config_str("hirshfeld").is_err());
+    }
+
+    // ── switched neighbour mask (#495) ──────────────────────────────────────
+    //
+    // Mutation ledger (each applied to `switched_weight`, all ten
+    // `partition_over_tests` run, then reverted; measured):
+    //   M1 drop the presence derivative of C (`cf = 0`)        → derivative FD miss 5.6e-4
+    //   M2 drop the presence derivative of B itself             → derivative FD miss 9.2e-7
+    //   M3 wrong sign on the C presence term                    → derivative FD miss 1.1e-3
+    //   M4 `t = 1 − f_C s` instead of `1 − f_C (1 − s)`         → anchor fails, FD miss 1.4
+    //   M5 `P_B` without its own `f_B` factor                   → derivative FD miss 3.3e-5
+    // (unmutated floor 2.6e-10; bar 1e-8.)
+
+    /// Mixed-Z cluster around the origin: two atoms deep inside, the rest
+    /// spread so that at `r` some fall in the switch zone `[D − W, D]`.
+    fn switch_cluster() -> (Vec<NeighbourAtom>, [f64; 3]) {
+        let atoms = vec![
+            NeighbourAtom {
+                xyz: [0.0, 0.0, 0.0],
+                z: 3,
+            },
+            NeighbourAtom {
+                xyz: [1.9, 0.4, -0.3],
+                z: 1,
+            },
+            NeighbourAtom {
+                xyz: [-1.2, 1.7, 0.8],
+                z: 6,
+            },
+            NeighbourAtom {
+                xyz: [3.6, -1.1, 0.9],
+                z: 1,
+            },
+            NeighbourAtom {
+                xyz: [-2.9, -2.4, 1.6],
+                z: 3,
+            },
+            NeighbourAtom {
+                xyz: [0.7, 3.8, -2.2],
+                z: 1,
+            },
+        ];
+        (atoms, [0.6, 0.5, -0.2])
+    }
+
+    fn dist(a: [f64; 3], b: [f64; 3]) -> f64 {
+        ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
+    }
+
+    /// The quintic taper: endpoints, value/derivative continuity, and the
+    /// analytic slope against FD.
+    #[test]
+    fn neighbour_switch_is_a_c2_taper() {
+        let sw = NeighbourSwitch {
+            cutoff: 5.0,
+            width: 1.5,
+        };
+        assert_eq!(sw.value_and_slope(3.5), (1.0, 0.0));
+        assert_eq!(sw.value_and_slope(5.0), (0.0, 0.0));
+        let (f_in, fp_in) = sw.value_and_slope(3.5 + 1e-9);
+        let (f_out, fp_out) = sw.value_and_slope(5.0 - 1e-9);
+        assert!((f_in - 1.0).abs() < 1e-20 && fp_in.abs() < 1e-15);
+        assert!(f_out.abs() < 1e-20 && fp_out.abs() < 1e-15);
+        let mut worst = 0.0_f64;
+        for i in 1..30 {
+            let d = 3.5 + 1.5 * i as f64 / 30.0;
+            let h = 1e-6;
+            let fd = (sw.value_and_slope(d + h).0 - sw.value_and_slope(d - h).0) / (2.0 * h);
+            worst = worst.max((fd - sw.value_and_slope(d).1).abs());
+        }
+        assert!(worst < 1e-8, "{worst:e}");
+    }
+
+    /// EXACTNESS ANCHOR: with every atom fully present (cutoff far beyond the
+    /// cluster) the switched kernel IS the unswitched one, value and
+    /// derivative, to rounding.
+    #[test]
+    fn switched_kernel_matches_unswitched_when_every_atom_is_fully_present() {
+        let (atoms, r) = switch_cluster();
+        let sw = NeighbourSwitch {
+            cutoff: 100.0,
+            width: 2.0,
+        };
+        for scheme in [PartitionScheme::Ssf, PartitionScheme::Becke] {
+            for home in 0..atoms.len() {
+                let (w0, d0) = partition_weight_over_and_grad(scheme, &atoms, home, r);
+                let (w1, d1) = partition_weight_over_switched_and_grad(scheme, &atoms, home, r, sw);
+                assert!(
+                    (w0 - w1).abs() < 1e-14,
+                    "{scheme:?} home {home}: {w0} vs {w1}"
+                );
+                for (a, b) in d0.iter().zip(&d1) {
+                    for k in 0..3 {
+                        assert!((a[k] - b[k]).abs() < 1e-13, "{scheme:?} {a:?} vs {b:?}");
+                    }
+                }
+            }
+        }
+    }
+
+    /// Partition of unity over the homes that are present (f > 0), with atoms
+    /// in the switch zone; and the value-only entry equals the gradient
+    /// entry's weight bit for bit.
+    #[test]
+    fn switched_weights_are_a_partition_of_unity() {
+        let (atoms, r) = switch_cluster();
+        let ds: Vec<f64> = atoms.iter().map(|a| dist(a.xyz, r)).collect();
+        let sw = NeighbourSwitch {
+            cutoff: 4.2,
+            width: 1.5,
+        };
+        let partial = ds
+            .iter()
+            .filter(|&&d| d > sw.cutoff - sw.width && d < sw.cutoff)
+            .count();
+        assert!(partial >= 2, "probe needs atoms in the switch zone: {ds:?}");
+        for scheme in [PartitionScheme::Ssf, PartitionScheme::Becke] {
+            let mut sum = 0.0;
+            for home in 0..atoms.len() {
+                let w = partition_weight_over_switched(scheme, &atoms, home, r, sw);
+                let (wg, _) = partition_weight_over_switched_and_grad(scheme, &atoms, home, r, sw);
+                assert_eq!(w.to_bits(), wg.to_bits());
+                if ds[home] >= sw.cutoff {
+                    assert_eq!(w, 0.0);
+                }
+                sum += w;
+            }
+            assert!((sum - 1.0).abs() < 1e-14, "{scheme:?}: {sum}");
+        }
+    }
+
+    /// Analytic derivative (atoms in the switch zone, so the presence terms
+    /// are live) against central FD of the atom positions and of the point.
+    /// Measured worst 2.6e-10 (h = 1e-5); the bar 1e-8 sits between that and
+    /// the smallest mutant miss (M2, 9.2e-7).
+    #[test]
+    fn switched_partition_derivative_matches_fd() {
+        let (atoms, r0) = switch_cluster();
+        let sw = NeighbourSwitch {
+            cutoff: 4.2,
+            width: 1.5,
+        };
+        let h = 1e-5;
+        let mut worst = 0.0_f64;
+        let mut live_switch = 0.0_f64;
+        for scheme in [PartitionScheme::Ssf, PartitionScheme::Becke] {
+            for r in [r0, [0.2, -0.4, 0.3], [1.0, 0.9, -0.6]] {
+                for home in 0..atoms.len() {
+                    let (_, dw) =
+                        partition_weight_over_switched_and_grad(scheme, &atoms, home, r, sw);
+                    let mut dr = [0.0_f64; 3];
+                    for (k, dk) in dw.iter().enumerate() {
+                        let d = dist(atoms[k].xyz, r);
+                        if d > sw.cutoff - sw.width && d < sw.cutoff {
+                            live_switch =
+                                live_switch.max(dk.iter().fold(0.0, |m, x| m.max(x.abs())));
+                        }
+                        for x in 0..3 {
+                            dr[x] -= dk[x];
+                            let (mut p, mut m) = (atoms.clone(), atoms.clone());
+                            p[k].xyz[x] += h;
+                            m[k].xyz[x] -= h;
+                            let fd = (partition_weight_over_switched(scheme, &p, home, r, sw)
+                                - partition_weight_over_switched(scheme, &m, home, r, sw))
+                                / (2.0 * h);
+                            worst = worst.max((fd - dk[x]).abs());
+                        }
+                    }
+                    for x in 0..3 {
+                        let (mut rp, mut rm) = (r, r);
+                        rp[x] += h;
+                        rm[x] -= h;
+                        let fd = (partition_weight_over_switched(scheme, &atoms, home, rp, sw)
+                            - partition_weight_over_switched(scheme, &atoms, home, rm, sw))
+                            / (2.0 * h);
+                        worst = worst.max((fd - dr[x]).abs());
+                    }
+                }
+            }
+        }
+        eprintln!(
+            "switched derivative vs FD: {worst:.2e} (max |dw| on a tapered atom {live_switch:.2e})"
+        );
+        assert!(
+            live_switch > 1e-3,
+            "an atom in the taper must carry a derivative"
+        );
+        assert!(worst < 1e-8, "{worst:e}");
+    }
+
+    /// Continuity across the cutoff, the defect this switch removes: an atom
+    /// just beyond `D` gives EXACTLY the weight of the list without it, and
+    /// just inside it moves the weight by O(ε³) (the hard mask jumps by the
+    /// atom's full effect).
+    #[test]
+    fn crossing_the_cutoff_is_continuous() {
+        let (mut atoms, r) = switch_cluster();
+        let sw = NeighbourSwitch {
+            cutoff: 3.0,
+            width: 1.5,
+        };
+        // Keep only atoms fully present, then add one that we slide across D.
+        atoms.retain(|a| dist(a.xyz, r) <= sw.cutoff - sw.width);
+        let dir = [0.6, -0.48, 0.64];
+        let at = |d: f64| NeighbourAtom {
+            xyz: [r[0] + d * dir[0], r[1] + d * dir[1], r[2] + d * dir[2]],
+            z: 1,
+        };
+        for scheme in [PartitionScheme::Ssf, PartitionScheme::Becke] {
+            let base = partition_weight_over_switched(scheme, &atoms, 0, r, sw);
+            let mut with = atoms.clone();
+            with.push(at(sw.cutoff + 1e-9));
+            assert_eq!(
+                partition_weight_over_switched(scheme, &with, 0, r, sw).to_bits(),
+                base.to_bits()
+            );
+            let eps = 1e-3;
+            with.pop();
+            with.push(at(sw.cutoff - eps));
+            let w_in = partition_weight_over_switched(scheme, &with, 0, r, sw);
+            assert!(
+                (w_in - base).abs() < 1e-7,
+                "{scheme:?}: {:e}",
+                (w_in - base).abs()
+            );
+            // The hard mask: the same atom just inside changes w by its full effect.
+            let hard = partition_weight_over(scheme, &with, 0, r);
+            let hard_base = partition_weight_over(scheme, &atoms, 0, r);
+            eprintln!(
+                "{scheme:?}: hard-mask jump {:.2e}, switched change at D - 1e-3: {:.2e}",
+                (hard - hard_base).abs(),
+                (w_in - base).abs()
+            );
+            if scheme == PartitionScheme::Becke {
+                // Measured 9.3e-8: the hard mask really jumps here.
+                assert!((hard - hard_base).abs() > 1e-8);
+            }
+        }
     }
 }
