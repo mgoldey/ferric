@@ -2373,9 +2373,10 @@ def run_rks_kpts(
 ) -> KpointRksResult:
     """Closed-shell k-point RKS (LDA / GGA / global hybrids and the pure
     meta-GGAs SCAN / r2SCAN, and the range-separated hybrids HSE06,
-    CAM-B3LYP and wB97X with either J/K, energy only). VV10, hybrid meta-GGAs,
-    range-separated hybrids with with_gradient / with_stress, and (for
-    derivatives) ECP cells raise ValueError naming the unsupported feature. with_gradient=True gives result.gradient() (the
+    CAM-B3LYP and wB97X with either J/K, energy only). VV10, hybrid meta-GGAs
+    and range-separated hybrids with with_gradient / with_stress raise
+    ValueError naming the unsupported feature; ECP cells are supported,
+    derivatives included. with_gradient=True gives result.gradient() (the
     analytic force, Hartree/Bohr per cell) and with_stress=True result.stress()
     (Hartree/Bohr^3); range_split with either is a ValueError, and the
     meta-GGA stress needs jk="dense". Set neighbour_cutoff (Angstrom)

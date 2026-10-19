@@ -240,6 +240,12 @@
 //! the open-shell k-point KS (`solve_kuks`, `solve_kroks`) forces are in
 //! [`crate::kuxcgrad`].
 //!
+//! A scalar periodic ECP needs nothing KS-specific: it is a one-electron term,
+//! differentiated inside the HF assembly on the total density, and the Fock
+//! guard rebuilds `F` from `hk.h ⊃ V_ECP`. The KS and ROHF forces and stress on
+//! ECP cells are anchored against FD of the energy for every route
+//! (`tests/validation_kks_ecp_derivs.rs`).
+//!
 //! # Cost and budget notes
 //!
 //! * `jk_build` computes a full `K` and discards it for a pure functional (an
@@ -988,27 +994,19 @@ pub fn check_kpoint_deriv_functional(
 }
 
 /// Stage 2 of the shared k-point derivative gate (after the cell and J/K are
-/// resolved): ECP cells with KS or ROHF derivatives are not validated, and
-/// the meta-GGA stress is anchored on the dense-AFT J only. `functional` is
-/// `Some` on a Kohn-Sham route. `what` names the whole derivative request in the
-/// caller's vocabulary (as in [`check_kpoint_deriv_functional`]) and
-/// `dense_hint` the remedy for the meta-GGA-on-RS-GDF stress refusal, in the
-/// caller's vocabulary (its Python and TOML spellings differ); `stress` is whether the stress is among
-/// the requested derivatives.
+/// resolved): the meta-GGA stress is anchored on the dense-AFT J only.
+/// `functional` is `Some` on a Kohn-Sham route. `dense_hint` is the remedy for
+/// the meta-GGA-on-RS-GDF stress refusal, in the caller's vocabulary (its
+/// Python and TOML spellings differ); `stress` is whether the stress is among
+/// the requested derivatives. ECP cells pass: the KS and ROHF forces and stress
+/// carry the periodic-ECP term of the HF assembly on the total density
+/// (`tests/validation_kks_ecp_derivs.rs`).
 pub fn check_kpoint_deriv_cell(
     functional: Option<&str>,
     stress: bool,
-    has_ecp: bool,
     rsgdf: bool,
-    (what, dense_hint): (&str, &str),
+    dense_hint: &str,
 ) -> Result<(), String> {
-    if has_ecp {
-        let route = if functional.is_some() { "KS" } else { "ROHF" };
-        return Err(format!(
-            "k-point {route} forces and stress with ECPs are not validated \
-             ({what} on a cell whose basis carries an ECP; the energy without them runs)"
-        ));
-    }
     if stress && rsgdf && functional.is_some_and(is_validated_mgga) {
         return Err(format!(
             "the k-point meta-GGA stress is anchored on the dense-AFT J only; {dense_hint}"

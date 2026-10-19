@@ -19,6 +19,8 @@ ONE explicit `neighbour_cutoff` (see test_pbc_kpoint_ks_gradients.py).
   - a 1x1x1 mesh equals the Gamma binding's force and stress;
   - a closed-shell molecule through run_uks_kpts equals run_rks_kpts.
 * Flags off: gradient() / stress() are None and the energy is not moved.
+* ECP cells (HI, H2I with the LANL2DZ ECP on I): force and two strain
+  components against FD of the binding's own energies, all four routes.
 * Refusals with exact wording.
 """
 
@@ -42,7 +44,7 @@ from test_pbc_kpoint_gradients import (  # noqa: E402,F401  (fixtures re-exporte
     basis,
 )
 
-from test_pbc_bindings import _hi_lattice, _hi_xyz, hi_basis  # noqa: E402,F401
+from test_pbc_bindings import hi_basis  # noqa: E402,F401
 
 FD_H = 1e-4
 FORCE_BAR = 2e-8
@@ -571,31 +573,89 @@ def test_range_split_with_derivatives_is_refused(basis):
         )
 
 
-def test_rohf_ecp_cell_derivatives_are_refused_with_rohf_wording(hi_basis):
-    # HI plus one extra H atom: a neutral odd-electron cell (a charged periodic
-    # cell is refused earlier) whose basis carries the iodine ECP.
-    lines = _hi_xyz(1).splitlines()
-    lines[0] = str(int(lines[0]) + 1)
-    lines.append("H 0.5 1.5 2.5")
-    cell = ferric.Molecule.from_xyz_string("\n".join(lines) + "\n", multiplicity=2)
-    with pytest.raises(
-        ValueError,
-        match=r"^run_rohf_kpts: k-point ROHF forces and stress with ECPs are not "
-        r"validated \(with_gradient / with_stress on a cell whose basis carries an "
-        r"ECP; the energy without them runs\)$",
-    ):
-        ferric.run_rohf_kpts(
-            cell, _hi_lattice(1), hi_basis, (1, 1, 2), with_gradient=True
+# ──────────────────────────────────────────────────── ECP cells ──
+
+# HI (closed shell) and the H2I doublet (5 alpha / 4 beta valence) in
+# diag(6, 6, 7) Bohr with the LANL2DZ ECP on I (`tests/kks_ecp_support` in
+# ferric-pbc, where the per-route FD anchors and ECP mutants live). Here: the
+# binding's force and two strain components against central FD of its own
+# energies. h = 2.5e-5: at 1e-4 the strain FD carries an h^2 residual of
+# ~6e-8 and an open-shell neighbour-mask jump of 1e-6 (library probe).
+ECP_H = 2.5e-5
+ECP_HI = [("H", (0.3, 0.2, 0.4)), ("I", (0.9, -0.4, 3.3))]
+ECP_H2I = [("H", (0.3, 0.2, 0.4)), ("H", (2.0, 0.6, 1.0)), ("I", (0.9, -0.4, 3.3))]
+ECP_A = np.diag([6.0, 6.0, 7.0])
+# Library floor at h = 2.5e-5: force <= 3.1e-10, dE/deps <= 3.4e-9; the ECP
+# parts are 6e-2 (force) and 1.5e-1 (dE/deps), so a dropped ECP term misses
+# by ~1e7 x these bars.
+ECP_FORCE_BAR = 3e-9
+ECP_STRESS_BAR = 3e-8
+# 16 Bohr, not 14: on this cell a 14 Bohr neighbour mask puts a one-step
+# energy jump inside the xx / yy strain FD at h = 2.5e-5 (library probe).
+ECP_GRID = dict(GRID, neighbour_cutoff=16.0 * BOHR_IN_ANGSTROM)
+
+
+def _ecp_cell(atoms, lat_bohr):
+    lines = [str(len(atoms)), "periodic HI / H2I (Angstrom)"]
+    for sym, p in atoms:
+        x, y, z = (c * BOHR_IN_ANGSTROM for c in p)
+        lines.append(f"{sym} {x!r} {y!r} {z!r}")
+    mol = ferric.Molecule.from_xyz_string(
+        "\n".join(lines) + "\n", multiplicity=1 if len(atoms) == 2 else 2
+    )
+    return mol, (np.asarray(lat_bohr) * BOHR_IN_ANGSTROM).tolist()
+
+
+def _ecp_run(method, atoms, lat_bohr, hi_basis, **kw):
+    mol, lat = _ecp_cell(atoms, lat_bohr)
+    args = dict(omega=OMEGA, **SCF, **kw)
+    if method == "rohf":
+        return ferric.run_rohf_kpts(mol, lat, hi_basis, (1, 1, 2), **args)
+    run = {
+        "rks": ferric.run_rks_kpts,
+        "uks": ferric.run_uks_kpts,
+        "roks": ferric.run_roks_kpts,
+    }[method]
+    f = "PBE0" if method == "uks" else "PBE"
+    return run(mol, lat, hi_basis, f, (1, 1, 2), **ECP_GRID, **args)
+
+
+@pytest.mark.parametrize("method", ["rks", "uks", "roks", "rohf"])
+def test_ecp_cell_force_and_stress_match_fd(hi_basis, method):
+    atoms = ECP_HI if method == "rks" else ECP_H2I
+    r = _ecp_run(method, atoms, ECP_A, hi_basis, with_gradient=True, with_stress=True)
+    assert r.converged
+    g, sigma = r.gradient(), r.stress()
+    assert g.shape == (len(atoms), 3) and np.isfinite(g).all()
+
+    def energy_at(at, lat=ECP_A):
+        return _ecp_run(method, at, lat, hi_basis).energy
+
+    def moved(i, x, h):
+        out = [(sym, list(p)) for sym, p in atoms]
+        out[i][1][x] += h
+        return out
+
+    ia = len(atoms) - 1
+    fmiss = 0.0
+    for i, x in ((ia, 0), (0, 2)):
+        fd = (energy_at(moved(i, x, ECP_H)) - energy_at(moved(i, x, -ECP_H))) / (
+            2.0 * ECP_H
         )
-
-
-def test_ecp_cell_derivatives_are_refused(hi_basis):
-    cell = ferric.Molecule.from_xyz_string(_hi_xyz(1))
-    for kw in ({"with_gradient": True}, {"with_stress": True}):
-        with pytest.raises(
-            ValueError,
-            match=r"^run_rks_kpts: k-point KS forces and stress with ECPs are not "
-            r"validated \(with_gradient / with_stress on a cell whose basis carries an "
-            r"ECP; the energy without them runs\)$",
-        ):
-            ferric.run_rks_kpts(cell, _hi_lattice(1), hi_basis, "PBE", (1, 1, 2), **kw)
+        fmiss = max(fmiss, abs(g[i, x] - fd))
+    vol = np.linalg.det(ECP_A)
+    smiss = 0.0
+    for i, j in ((2, 2), (0, 2)):
+        fd = 0.0
+        for sgn in (1.0, -1.0):
+            e = np.zeros((3, 3))
+            e[i, j] = e[j, i] = sgn * ECP_H
+            f = np.eye(3) + e
+            at = [(sym, tuple(f @ np.array(p))) for sym, p in atoms]
+            fd += sgn * energy_at(at, ECP_A @ f.T)
+        fd /= 2.0 * ECP_H
+        an = vol * (sigma[i, j] if i == j else sigma[i, j] + sigma[j, i])
+        smiss = max(smiss, abs(an - fd))
+    print(f"ECP {method}: force vs FD {fmiss:.2e}, stress vs FD {smiss:.2e}")
+    assert fmiss < ECP_FORCE_BAR, f"{method}: force {fmiss:.3e}"
+    assert smiss < ECP_STRESS_BAR, f"{method}: stress {smiss:.3e}"

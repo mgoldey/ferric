@@ -445,7 +445,9 @@ impl Cell {
         }
         if count > MAX_ENUMERATED {
             return Err(FerricError::General(format!(
-                "Cell::gvectors: gcut {gcut} would enumerate {count} lattice triples (cap {MAX_ENUMERATED})"
+                "Cell::gvectors: gcut {gcut} would enumerate {count} lattice triples (cap \
+                 {MAX_ENUMERATED}); if this is the dense-AFT J/K, tight primitives (heavy atoms) \
+                 need RS-GDF instead (jk = \"rsgdf\")"
             )));
         }
         Ok((nmax, count))
