@@ -4765,16 +4765,17 @@ impl PeriodicRoute {
     /// Single k-point capability check: `Ok(())` when a `[cell] kmesh` run
     /// of this route (with `functional` on a Kohn-Sham route) has a driver,
     /// else a typed refusal naming what is not yet supported. This is the
-    /// one place to widen when a k-point driver lands (range-separated
-    /// hybrids, hybrid and open-shell meta-GGA, ...); the dispatcher in
+    /// one place to widen when a k-point driver lands (ROKS meta-GGA and
+    /// range-separated hybrids, hybrid meta-GGA, ...); the dispatcher in
     /// `periodic.rs` must gain the matching arm.
     ///
-    /// Energy gate: LDA, GGA and global hybrids on every Kohn-Sham route, the
-    /// pure meta-GGAs SCAN / r2SCAN on the closed-shell route only (the
-    /// library `solve_kuks` has SCAN / r2SCAN energies, but the open-shell CLI
-    /// routes are not wired to it), and range-separated hybrids (HSE06,
-    /// CAM-B3LYP, wB97X) on the closed-shell route with either J/K (the force
-    /// and optimize gates still refuse them by name).
+    /// Energy gate: LDA, GGA and global hybrids on every Kohn-Sham route; the
+    /// pure meta-GGAs SCAN / r2SCAN and the range-separated hybrids (HSE06,
+    /// CAM-B3LYP, wB97X) on the RKS and UKS routes (UKS through the library
+    /// `resolve_kuks_functional`; its meta-GGA needs `jk = "dense"`, checked
+    /// in [`periodic_plan`]). The force, optimize and stress gates are
+    /// separate allowlists and still refuse range-separated hybrids, and
+    /// meta-GGA on the open-shell routes, by name.
     pub fn check_kpoint_support(self, functional: Option<&str>) -> Result<(), String> {
         match self {
             PeriodicRoute::Rhf
@@ -4784,31 +4785,31 @@ impl PeriodicRoute {
             | PeriodicRoute::Drpa => Ok(()),
             PeriodicRoute::Rks | PeriodicRoute::Uks | PeriodicRoute::Roks => {
                 let f = functional.unwrap_or("LDA");
-                if self == PeriodicRoute::Rks && ferric_pbc::rsh::is_range_separated(f) {
-                    return Ok(());
-                }
-                let mgga_ok =
-                    self == PeriodicRoute::Rks && ferric_pbc::kxcgrad::is_validated_mgga(f);
-                ferric_pbc::dft::resolve_periodic_functional_mgga(f, mgga_ok)
-                    .map(|_| ())
-                    .map_err(|e| {
-                        format!(
-                            "[cell] kmesh with functional {f:?}: {e}. k-point {} supports \
-                             LDA, GGA and global-hybrid functionals{}{}",
-                            self.label(),
-                            if self == PeriodicRoute::Rks {
-                                " and the SCAN / r2SCAN meta-GGAs"
-                            } else {
-                                " only (no meta-GGA on this route; the library k-point UKS has SCAN / r2SCAN \
-                                   energies, not wired here yet)"
-                            },
-                            if self == PeriodicRoute::Rks {
-                                ", plus range-separated hybrids"
-                            } else {
-                                ""
-                            }
-                        )
-                    })
+                let energy = match self {
+                    PeriodicRoute::Rks if ferric_pbc::rsh::is_range_separated(f) => Ok(()),
+                    PeriodicRoute::Rks => ferric_pbc::dft::resolve_periodic_functional_mgga(
+                        f,
+                        ferric_pbc::kxcgrad::is_validated_mgga(f),
+                    )
+                    .map(|_| ()),
+                    PeriodicRoute::Uks => ferric_pbc::kuks::resolve_kuks_functional(f),
+                    _ => ferric_pbc::dft::resolve_periodic_functional(f).map(|_| ()),
+                };
+                energy.map_err(|e| {
+                    format!(
+                        "[cell] kmesh with functional {f:?}: {e}. k-point {} supports {}",
+                        self.label(),
+                        if self == PeriodicRoute::Roks {
+                            "LDA, GGA and global-hybrid functionals only (no meta-GGA or \
+                             range-separated hybrid for ROKS; the UKS route, method.kind = \
+                             \"uhf\" with a functional or \"ksdft\" with multiplicity > 1, \
+                             has SCAN / r2SCAN and range-separated hybrid energies)"
+                        } else {
+                            "LDA, GGA and global-hybrid functionals, the SCAN / r2SCAN \
+                             meta-GGAs and range-separated hybrids"
+                        }
+                    )
+                })
             }
         }
     }
@@ -5288,15 +5289,81 @@ fn periodic_raw_key_check(
     Ok(())
 }
 
-/// Gamma-point `task = "optimize"` with a range-separated hybrid: the
-/// attenuated exchange has no analytic derivative, so refuse before any SCF.
+/// `[cell] kmesh` / `centring` with the functional gates of the route: the
+/// Gamma point (`None`) runs the Gamma gates, a mesh the k-point ones.
+fn resolve_kmesh(
+    c: &CellCfg,
+    route: PeriodicRoute,
+    functional: Option<&str>,
+    jk: &PeriodicJk,
+) -> Result<Option<([usize; 3], ferric_pbc::MeshCentring)>, String> {
+    let Some(n) = c.kmesh else {
+        if let Some(ce) = &c.centring {
+            return Err(format!(
+                "[cell] centring = {ce:?} only applies with kmesh; the Gamma-point run \
+                 would ignore it"
+            ));
+        }
+        check_gamma_meta_gga(route, functional, c.range_split)?;
+        return Ok(None);
+    };
+    if n.contains(&0) {
+        return Err(format!("[cell] kmesh = {n:?}: every entry must be >= 1"));
+    }
+    route.check_kpoint_support(functional)?;
+    check_kpoint_uks_mgga_jk(route, functional, jk)?;
+    let centring = match c
+        .centring
+        .as_deref()
+        .unwrap_or("gamma")
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "gamma" => ferric_pbc::MeshCentring::Gamma,
+        "mp" => ferric_pbc::MeshCentring::MonkhorstPack,
+        other => {
+            return Err(format!(
+                "[cell] centring must be \"gamma\" or \"mp\", got {other:?}"
+            ))
+        }
+    };
+    Ok(Some((n, centring)))
+}
+
+/// The open-shell k-point meta-GGA is validated on the dense-AFT J/K only
+/// (the library `solve_kuks` refuses RS-GDF too; this names the key at plan
+/// time).
+fn check_kpoint_uks_mgga_jk(
+    route: PeriodicRoute,
+    functional: Option<&str>,
+    jk: &PeriodicJk,
+) -> Result<(), String> {
+    match functional {
+        Some(f)
+            if route == PeriodicRoute::Uks
+                && ferric_pbc::dft::is_meta_gga_name(f)
+                && matches!(jk, PeriodicJk::RsGdf { .. }) =>
+        {
+            Err(format!(
+                "[cell] kmesh with functional {f:?} and jk = \"rsgdf\": the open-shell \
+                 k-point meta-GGA (UKS) is validated on the dense-AFT J/K only; set [cell] \
+                 jk = \"dense\""
+            ))
+        }
+        _ => Ok(()),
+    }
+}
+
+/// Gamma-point `task = "optimize"` with a range-separated hybrid (RKS or
+/// UKS): the attenuated exchange has no analytic derivative, so refuse before
+/// any SCF.
 fn check_gamma_rsh_optimize(
     route: PeriodicRoute,
     kpoints: bool,
     functional: Option<&str>,
 ) -> Result<(), String> {
     match functional {
-        Some(f) if !kpoints && route == PeriodicRoute::Rks => {
+        Some(f) if !kpoints && matches!(route, PeriodicRoute::Rks | PeriodicRoute::Uks) => {
             if !ferric_pbc::rsh::is_range_separated(f) {
                 return Ok(());
             }
@@ -5307,7 +5374,10 @@ fn check_gamma_rsh_optimize(
     }
 }
 
-/// Gamma-point meta-GGA: closed-shell RKS, SCAN / r2SCAN only (plan time).
+/// Gamma-point meta-GGA: closed-shell RKS, SCAN / r2SCAN only; the UKS
+/// route refuses every meta-GGA by name (no Gamma tau term; the 1x1x1 mesh
+/// has it). `range_split` with a range-separated hybrid (RKS, UKS) is refused
+/// too. Plan time.
 fn check_gamma_meta_gga(
     route: PeriodicRoute,
     functional: Option<&str>,
@@ -5317,11 +5387,18 @@ fn check_gamma_meta_gga(
         range_split,
         Some(RangeSplitKey::Flag(true) | RangeSplitKey::Lambda(_))
     );
+    let rks_or_uks = matches!(route, PeriodicRoute::Rks | PeriodicRoute::Uks);
     match functional {
-        Some(f) if route == PeriodicRoute::Rks && split => {
-            ferric_pbc::gamma_rsh::check_range_split(f, true)
-                .map_err(|e| format!("[cell] range_split at the Gamma point: {e}"))
+        Some(f) if route == PeriodicRoute::Uks && ferric_pbc::dft::is_meta_gga_name(f) => {
+            ferric_pbc::dft::check_gamma_uks_request(f, false).map_err(|e| {
+                format!(
+                    "[dft] functional {f:?} at the Gamma point: {e} (set [cell] kmesh = \
+                     [1, 1, 1])"
+                )
+            })
         }
+        Some(f) if rks_or_uks && split => ferric_pbc::gamma_rsh::check_range_split(f, true)
+            .map_err(|e| format!("[cell] range_split at the Gamma point: {e}")),
         Some(f) if route == PeriodicRoute::Rks && ferric_pbc::dft::is_meta_gga_name(f) => {
             ferric_pbc::dft::resolve_gamma_rks_functional(f)
                 .map(|_| ())
@@ -5338,7 +5415,7 @@ fn check_gamma_meta_gga(
 /// iterations, density_conv 1e-10, energy_conv 1e-12), which differ from the
 /// molecular `[scf]` defaults.
 pub fn periodic_plan(cfg: &Config, raw: &toml::Value) -> Result<Option<PeriodicPlan>, String> {
-    use ferric_pbc::{EwaldStart, ExxDiv, KDrpaEnergy, MeshCentring, Mp2Denominators};
+    use ferric_pbc::{EwaldStart, ExxDiv, KDrpaEnergy, Mp2Denominators};
     let Some(c) = cfg.cell.as_ref() else {
         return Ok(None);
     };
@@ -5457,40 +5534,7 @@ pub fn periodic_plan(cfg: &Config, raw: &toml::Value) -> Result<Option<PeriodicP
     };
 
     // k-point mesh.
-    let kmesh = match c.kmesh {
-        None => {
-            if let Some(ce) = &c.centring {
-                return Err(format!(
-                    "[cell] centring = {ce:?} only applies with kmesh; the Gamma-point run \
-                     would ignore it"
-                ));
-            }
-            check_gamma_meta_gga(route, functional.as_deref(), c.range_split)?;
-            None
-        }
-        Some(n) => {
-            if n.contains(&0) {
-                return Err(format!("[cell] kmesh = {n:?}: every entry must be >= 1"));
-            }
-            route.check_kpoint_support(functional.as_deref())?;
-            let centring = match c
-                .centring
-                .as_deref()
-                .unwrap_or("gamma")
-                .to_ascii_lowercase()
-                .as_str()
-            {
-                "gamma" => MeshCentring::Gamma,
-                "mp" => MeshCentring::MonkhorstPack,
-                other => {
-                    return Err(format!(
-                        "[cell] centring must be \"gamma\" or \"mp\", got {other:?}"
-                    ))
-                }
-            };
-            Some((n, centring))
-        }
-    };
+    let kmesh = resolve_kmesh(c, route, functional.as_deref(), &jk)?;
     let kpoints = kmesh.is_some();
 
     // Open-shell Ewald start.
@@ -5823,29 +5867,31 @@ kind = "ccsd"
     }
 
     /// (kind, extra TOML, triplet?, fragments the refusal must contain).
-    /// The triplet ksdft row is open-shell -> UKS, refused by name; SCAN /
-    /// HSE06 are refused by name as meta-GGA / range-separated.
+    /// k-point ROKS has no meta-GGA or range-separated hybrid: SCAN / HSE06
+    /// are refused by name, pointing at the UKS route that has them.
     type KmeshRefusal = (&'static str, &'static str, bool, &'static [&'static str]);
     const PBE: &str = "[dft]\nfunctional = \"PBE\"";
     const SCAN: &str = "[dft]\nfunctional = \"SCAN\"";
     const HSE: &str = "[dft]\nfunctional = \"HSE06\"";
     const KMESH_REFUSALS: &[KmeshRefusal] = &[
-        // Open-shell CLI routes have a k-point driver but no meta-GGA wiring (the
-        // library k-UKS has SCAN / r2SCAN energies; the CLI is not wired to it).
-        ("uhf", SCAN, false, &["kmesh", "meta-GGA", "no meta-GGA"]),
-        ("rohf", SCAN, false, &["kmesh", "meta-GGA", "no meta-GGA"]),
-        ("ksdft", SCAN, true, &["UKS", "meta-GGA", "no meta-GGA"]),
         (
-            "uhf",
-            HSE,
+            "rohf",
+            SCAN,
             false,
-            &["kmesh with functional", "range-separated"],
+            &["kmesh", "meta-GGA", "for ROKS", "the UKS route"],
         ),
         (
             "rohf",
             HSE,
             false,
-            &["kmesh with functional", "range-separated"],
+            &["kmesh with functional", "range-separated", "for ROKS"],
+        ),
+        // Other meta-GGAs stay refused on the UKS route.
+        (
+            "uhf",
+            "[dft]\nfunctional = \"MGGA_X_TPSS\"",
+            false,
+            &["kmesh", "meta-GGA", "SCAN / r2SCAN"],
         ),
     ];
 
@@ -5877,6 +5923,11 @@ kind = "ccsd"
             ("rohf", PBE, false, PeriodicRoute::Roks),
             ("ksdft", PBE, true, PeriodicRoute::Uks),
             ("ksdft", SCAN, false, PeriodicRoute::Rks),
+            // Open-shell SCAN / r2SCAN and range-separated hybrid ENERGIES.
+            ("uhf", SCAN, false, PeriodicRoute::Uks),
+            ("ksdft", SCAN, true, PeriodicRoute::Uks),
+            ("uhf", HSE, false, PeriodicRoute::Uks),
+            ("ksdft", HSE, true, PeriodicRoute::Uks),
         ] {
             let mut src = h2(kind, "kmesh = [1, 1, 2]", extra);
             if triplet {
@@ -6051,6 +6102,53 @@ kind = "ccsd"
         );
         // GGA optimize is untouched.
         assert!(ok(&opt("ksdft", "", "[dft]\nfunctional = \"PBE\"")).optimize);
+        // Open-shell (UKS) Gamma meta-GGA: refused by name, pointing at the
+        // 1x1x1 mesh that has it; ROKS is left to the library refusal.
+        for kind in ["uhf", "ksdft"] {
+            let mut src = h2(kind, "", SCAN);
+            if kind == "ksdft" {
+                src = src.replace("[molecule]\n", "[molecule]\nmultiplicity = 3\n");
+            }
+            let e = err(&src);
+            assert!(
+                e.contains("Gamma point") && e.contains("kmesh = [1, 1, 1]"),
+                "{kind}: {e}"
+            );
+        }
+    }
+
+    /// Gamma-point open-shell range-separated hybrids: the UKS energy resolves;
+    /// optimize and `range_split` are refused by name at plan time.
+    #[test]
+    fn gamma_uks_rsh_gates() {
+        let p = ok(&h2("uhf", "", HSE));
+        assert!(p.route == PeriodicRoute::Uks && p.kmesh.is_none());
+        let rsgdf = "jk = \"rsgdf\"\nauxbasis = \"cc-pvdz-ri\"";
+        assert_eq!(ok(&h2("uhf", rsgdf, HSE)).route, PeriodicRoute::Uks);
+        let e = err(&opt("uhf", "", HSE));
+        assert!(
+            e.contains("method.task = \"optimize\" with [cell]") && e.contains("range-separated"),
+            "{e}"
+        );
+        let e = err(&h2("uhf", &format!("{rsgdf}\nrange_split = true"), HSE));
+        assert!(
+            e.contains("range_split") && e.contains("attenuated K"),
+            "{e}"
+        );
+    }
+
+    /// The open-shell k-point meta-GGA runs on the dense-AFT J/K only.
+    #[test]
+    fn kmesh_uks_meta_gga_needs_dense_jk() {
+        let rsgdf = "jk = \"rsgdf\"\nauxbasis = \"cc-pvdz-ri\"\nkmesh = [1, 1, 2]";
+        let e = err(&h2("uhf", rsgdf, SCAN));
+        assert!(
+            e.contains("jk = \"rsgdf\"") && e.contains("dense-AFT J/K only"),
+            "{e}"
+        );
+        // The closed-shell route and the UKS range-separated hybrid are not affected.
+        assert_eq!(ok(&h2("ksdft", rsgdf, SCAN)).route, PeriodicRoute::Rks);
+        assert_eq!(ok(&h2("uhf", rsgdf, HSE)).route, PeriodicRoute::Uks);
     }
 
     #[test]
@@ -6153,16 +6251,19 @@ kind = "ccsd"
             "[dft]\nfunctional = \"HSE06\"",
         ));
         assert!(e.contains("range-separated") && e.contains("kmesh"), "{e}");
-        // Open-shell KS: no meta-GGA at a mesh (not wired, see the message).
-        for kind in ["rohf", "uhf"] {
-            let e = err(&opt(
-                kind,
-                "kmesh = [1, 1, 2]",
-                "[dft]\nfunctional = \"SCAN\"",
-            ));
+        // Open-shell KS: ROKS has no meta-GGA at a mesh (energy gate); UKS has
+        // the energy but no force, so optimize is refused by the force gate.
+        let e = err(&opt("rohf", "kmesh = [1, 1, 2]", SCAN));
+        assert!(
+            e.contains("meta-GGA") && e.contains("for ROKS"),
+            "rohf: {e}"
+        );
+        for dft in [SCAN, HSE] {
+            let e = err(&opt("uhf", "kmesh = [1, 1, 2]", dft));
             assert!(
-                e.contains("meta-GGA") && e.contains("no meta-GGA"),
-                "{kind}: {e}"
+                e.contains("method.task = \"optimize\" with [cell] kmesh")
+                    && e.contains("no meta-GGA, range-separated hybrid"),
+                "uhf {dft}: {e}"
             );
         }
         // UKS, ROKS and ROHF resolve at a mesh with optimize (dense J/K).
@@ -6215,13 +6316,16 @@ kind = "ccsd"
             e.contains("[cell] stress = true") && e.contains("range-separated"),
             "{e}"
         );
-        // Open-shell meta-GGA is refused by the k-point ENERGY gate, which
-        // runs before the stress gate and does not name the key.
-        let e = err(&h2("uhf", km, "[dft]\nfunctional = \"SCAN\""));
-        assert!(
-            e.contains("[cell] kmesh with functional \"SCAN\"") && e.contains("meta-GGA"),
-            "{e}"
-        );
+        // Open-shell SCAN and range-separated hybrids have a k-point energy
+        // but no stress: the stress gate names the key.
+        for dft in [SCAN, HSE] {
+            let e = err(&h2("uhf", km, dft));
+            assert!(
+                e.contains("[cell] stress = true")
+                    && e.contains("no meta-GGA, range-separated hybrid"),
+                "{dft}: {e}"
+            );
+        }
         // SCAN stress on RS-GDF is anchored on the dense J only.
         let rs = "jk = \"rsgdf\"\nauxbasis = \"cc-pvdz-ri\"";
         let e = err(&h2(

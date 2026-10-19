@@ -13,20 +13,39 @@
 //!   this file; the in-test mutants assert that the library force of a
 //!   DIFFERENT method, mesh or functional misses the printed force by far more
 //!   than the bar, i.e. the anchors could tell a mis-routed run apart.
-//! * Refusals with exact wording: open-shell meta-GGA, range-separated
-//!   hybrids.
+//! * Open-shell SCAN and HSE06 ENERGIES (issue #357): the CLI energy, read
+//!   at full precision from the JSON run log, equals the library `solve_kuks`
+//!   (Gamma-centred and Monkhorst-Pack 1x1x2) and, with no kmesh, the
+//!   library `gamma_uks_any` to 1e-12 (the run log holds exactly the library
+//!   value; see [`SAME_ARITHMETIC`]); the Gamma HSE06 run also equals the CLI
+//!   1x1x1 run to SCF precision.
+//!   Mutation ledger (run 2026-10-18, then reverted): the CLI Gamma UKS with
+//!   `exxdiv = none` forced into its config: KILLED (CLI -1.3319 vs library
+//!   -1.5513); the CLI Gamma UKS with a direct Ewald start and density_conv
+//!   1e-6: SURVIVED (moved E by 2.2e-16; this 3-orbital cell converges to the
+//!   same state either way, an equivalent mutant here). In-test mutants:
+//!   the sibling global functional misses by >= 2.3e-4 (HSE06 vs PBE0) /
+//!   2.5e-2 (SCAN vs PBE), the other centring by >= 1.7e-2.
+//! * Refusals with exact wording: ROKS meta-GGA and range-separated hybrids,
+//!   open-shell SCAN / HSE06 forces, UKS meta-GGA on RS-GDF and at Gamma.
 
 use ferric_core::basis;
 use ferric_core::mol::Molecule;
 use ferric_core::units::BOHR_RADIUS_ANGSTROM;
 use ferric_integrals::basis_bridge::PreparedBasis;
+use ferric_pbc::dense_aft::DEFAULT_DENSE_AFT_PRECISION;
+use ferric_pbc::gamma_rsh::{gamma_uks_any, GammaRshSizing};
 use ferric_pbc::kroks::{KRohfConfig, KRoksConfig};
 use ferric_pbc::kxcgrad::{KRksGradConfig, KXcGrid};
+use ferric_pbc::rsgdf::DEFAULT_RSGDF_OMEGA;
 use ferric_pbc::{
-    kpoint_rohf_gradient, kpoint_roks_gradient, kpoint_uks_gradient, solve_krohf_keep,
-    solve_kroks_keep, solve_kuks_keep, Cell, ExxDiv, KGradConfig, KPointMesh, KUksConfig,
-    KUksGradConfig, MeshCentring, PeriodicGridConfig, PeriodicHcoreConfig,
+    kpoint_rohf_gradient, kpoint_roks_gradient, kpoint_uks_gradient, periodic_hcore,
+    solve_krohf_keep, solve_kroks_keep, solve_kuks, solve_kuks_keep, Cell, DenseAftEri, ExxDiv,
+    GammaUhfIntegrals, GammaUksConfig, KDenseAftConfig, KGradConfig, KJkKind, KPointMesh,
+    KScfConfig, KUksConfig, KUksGradConfig, MeshCentring, PeriodicGridConfig, PeriodicHcoreConfig,
+    SrColumnRotation,
 };
+use ferric_scf::rhf::RhfConfig;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -118,7 +137,7 @@ task = "{task}"
 [cell]
 unit = "bohr"
 lattice = [[{a}, 0.0, 0.0], [0.0, {a}, 0.0], [0.0, 0.0, {a}]]
-kmesh = {kmesh}
+{kmesh}
 exxdiv = "ewald"
 omega = {OMEGA}
 {grid}
@@ -134,12 +153,17 @@ omega = {OMEGA}
                     "n_radial = {N_RADIAL}\nn_angular = {N_ANGULAR}\nneighbour_cutoff = {CUTOFF_BOHR}"
                 )
             },
-            kmesh = i.kmesh,
+            // An empty `kmesh` is a Gamma-point run.
+            kmesh = if i.kmesh.is_empty() {
+                String::new()
+            } else {
+                format!("kmesh = {}", i.kmesh)
+            },
             jk = i.jk,
             optimize = if i.task == "optimize" {
                 format!("[optimize]\n{}", i.optimize)
             } else {
-                String::new()
+                format!("[output]\njson = \"{}\"", dir.join("run.jsonl").display())
             },
             a = A_BOHR,
         ),
@@ -489,25 +513,258 @@ fn printed_energy_equals_the_library_energy_on_a_monkhorst_pack_mesh() {
     }
 }
 
+/// `run_end.energy` from the JSON run log of a `task = "energy"` input, as
+/// the exact f64 (the stdout line has 10 decimals).
+fn logged_energy(tag: &str) -> f64 {
+    let log = std::fs::read_to_string(scratch(tag).join("run.jsonl")).expect("run log");
+    for line in log.lines() {
+        let v: serde_json::Value = serde_json::from_str(line).unwrap();
+        if v.get("record").and_then(|r| r.as_str()) == Some("run_end") {
+            return v["energy"]
+                .as_f64()
+                .unwrap_or_else(|| panic!("no energy in {line}"));
+        }
+    }
+    panic!("no run_end record in:\n{log}");
+}
+
+/// The H3 doublet cell of [`library`] (same xyz round trip as the CLI).
+fn h3_cell() -> (Cell, PreparedBasis) {
+    // One file per call: the tests of this binary run in parallel.
+    static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let p = scratch("lib-e").join(format!("l{n}.xyz"));
+    std::fs::write(&p, xyz(&H3)).unwrap();
+    let mol = Molecule::load_xyz_with_charge(p.to_str().unwrap(), 0, 2).expect("xyz");
+    let lat = [[A_BOHR, 0.0, 0.0], [0.0, A_BOHR, 0.0], [0.0, 0.0, A_BOHR]];
+    let cell = Cell::new(mol, lat).expect("cell");
+    let prep = PreparedBasis::new(cell.mol(), &basis::bundled("sto-3g").unwrap()).unwrap();
+    (cell, prep)
+}
+
+/// The CLI's dense-AFT cap (`[cell] max_eri_gb` default 0.5).
+fn cli_max_eri_bytes() -> usize {
+    ferric_core::memory::gib_to_bytes(0.5)
+}
+
+/// Library k-point UKS energy on the dense-AFT J/K with the CLI's configs
+/// restated field by field (`crate::periodic::kuks_config`), so the two runs
+/// are the same arithmetic.
+fn library_kuks_energy(functional: &str, mesh: [usize; 3], centring: MeshCentring) -> f64 {
+    let (cell, prep) = h3_cell();
+    let mesh = KPointMesh::new(&cell, mesh, centring).unwrap();
+    let mut c = KUksConfig::new(&cell, ExxDiv::Ewald, functional);
+    c.kuhf.scf = KScfConfig {
+        max_iter: 200,
+        energy_conv: 1e-12,
+        grad_conv: 1e-9,
+        ..Default::default()
+    };
+    c.kuhf.hcore =
+        PeriodicHcoreConfig::with_omega(OMEGA).with_sr_column_rotation(SrColumnRotation::Off);
+    c.kuhf.dense = KDenseAftConfig {
+        max_bytes: cli_max_eri_bytes(),
+        ..Default::default()
+    };
+    c.grid = grid();
+    solve_kuks(&cell, &prep, None, &mesh, &c)
+        .unwrap_or_else(|e| panic!("solve_kuks {functional}: {e}"))
+        .scf
+        .energy
+}
+
+/// Library Gamma UKS energy (dense AFT) through the bindings' shared entry
+/// `gamma_uks_any`, with the CLI's Gamma configs restated.
+fn library_gamma_uks_energy(functional: &str) -> f64 {
+    let (cell, prep) = h3_cell();
+    let hcfg = PeriodicHcoreConfig {
+        sr_column_rotation: SrColumnRotation::Off,
+        ..PeriodicHcoreConfig::with_omega(OMEGA)
+    };
+    let hc = periodic_hcore(&cell, &prep, &hcfg).unwrap();
+    let eri = DenseAftEri::build(
+        &cell,
+        &prep,
+        &hc.s,
+        ExxDiv::Ewald,
+        DEFAULT_DENSE_AFT_PRECISION,
+        cli_max_eri_bytes(),
+    )
+    .unwrap();
+    let mut c = GammaUksConfig::new(functional);
+    (c.grid, c.exxdiv) = (grid(), ExxDiv::Ewald);
+    c.scf = RhfConfig {
+        use_sad_guess: false,
+        density_conv: 1e-10,
+        max_iter: 200,
+        ..Default::default()
+    };
+    let sizing = GammaRshSizing {
+        rsgdf_omega: DEFAULT_RSGDF_OMEGA,
+        budget_bytes: None,
+        max_eri_bytes: cli_max_eri_bytes(),
+        range_split: false,
+    };
+    gamma_uks_any(
+        &cell,
+        &prep,
+        &hc,
+        GammaUhfIntegrals::DenseAft(&eri),
+        None,
+        sizing,
+        &c,
+    )
+    .unwrap_or_else(|e| panic!("gamma_uks_any {functional}: {e}"))
+    .scf
+    .energy
+}
+
+fn energy_input<'a>(tag: &'a str, functional: &'a str, kmesh: &'a str) -> Input<'a> {
+    Input {
+        kmesh,
+        ..input(tag, Method::Uks, functional, "energy")
+    }
+}
+
+/// CLI vs library bar for the same arithmetic in two processes. The run log
+/// holds exactly the library value (k-point HSE06: -1.6224626688847699 in the
+/// file on every run); the test reads it back through serde_json, which is
+/// built without `float_roundtrip` and parses that literal 1 ulp off
+/// (-1.62246266888477, deterministically). `==` would fail on that parse
+/// artifact, so the bar is 1e-12, far below every mutant (>= 2.3e-4).
+const SAME_ARITHMETIC: f64 = 1e-12;
+
+/// Open-shell SCAN and HSE06 (issue #357; library PRs #479 / #480): the CLI
+/// UKS energy on a k-mesh (Gamma-centred 1x1x2 and Monkhorst-Pack 1x1x2) is
+/// the library `solve_kuks` energy (read at full precision from the JSON run
+/// log) to [`SAME_ARITHMETIC`]. MUTANTS the anchor must tell apart: the global
+/// functional of the same family (PBE for SCAN, PBE0 for HSE06) and the other
+/// mesh centring.
+#[test]
+fn cli_open_shell_scan_and_hse06_equal_library_solve_kuks() {
+    for (f, sibling) in [("SCAN", "PBE"), ("HSE06", "PBE0")] {
+        for (kmesh, centring, ctag) in [
+            ("[1, 1, 2]", MeshCentring::Gamma, "g"),
+            (
+                "[1, 1, 2]\ncentring = \"mp\"",
+                MeshCentring::MonkhorstPack,
+                "mp",
+            ),
+        ] {
+            let tag = format!("bits-{f}-{ctag}");
+            let out = ok(&run(&energy_input(&tag, f, kmesh)), &tag);
+            assert_eq!(value(&out, "converged"), "true", "{out}");
+            let cli = logged_energy(&tag);
+            let lib = library_kuks_energy(f, [1, 1, 2], centring);
+            eprintln!("{tag}: CLI {cli:?} library {lib:?}");
+            assert!(
+                (cli - lib).abs() <= SAME_ARITHMETIC,
+                "{tag}: {cli:?} vs {lib:?}"
+            );
+            let other = match centring {
+                MeshCentring::Gamma => MeshCentring::MonkhorstPack,
+                MeshCentring::MonkhorstPack => MeshCentring::Gamma,
+            };
+            let d_mesh = (cli - library_kuks_energy(f, [1, 1, 2], other)).abs();
+            let d_f = (cli - library_kuks_energy(sibling, [1, 1, 2], centring)).abs();
+            eprintln!("{tag}: centring mutant {d_mesh:.2e}, {sibling} mutant {d_f:.2e}");
+            assert!(
+                d_mesh > 1e-6 && d_f > 1e-4,
+                "{tag}: a mutant was not detected"
+            );
+        }
+    }
+}
+
+/// Gamma-point UKS HSE06 (no kmesh): the CLI energy is the library
+/// `gamma_uks_any` (Gamma J/XC/SCF + the k = 0 attenuated K) to
+/// [`SAME_ARITHMETIC`] (measured 0), and
+/// agrees with the CLI's 1x1x1 k-point UKS (a different J, XC and SCF code
+/// over the same cell) to SCF precision. MUTANT: PBE0 on the same cell.
+#[test]
+fn cli_gamma_uks_hse06_equals_library_and_the_one_point_mesh() {
+    let out = ok(&run(&energy_input("gam-hse", "HSE06", "")), "gam-hse");
+    assert_eq!(value(&out, "converged"), "true", "{out}");
+    let cli = logged_energy("gam-hse");
+    let lib = library_gamma_uks_energy("HSE06");
+    eprintln!("gam-hse: CLI {cli:?} library {lib:?}");
+    assert!((cli - lib).abs() <= SAME_ARITHMETIC, "{cli:?} vs {lib:?}");
+    ok(
+        &run(&energy_input("k111-hse", "HSE06", "[1, 1, 1]")),
+        "k111-hse",
+    );
+    let k111 = logged_energy("k111-hse");
+    eprintln!("Gamma - 1x1x1: {:.2e}", cli - k111);
+    assert!((cli - k111).abs() < 1e-8, "{cli:.12} vs {k111:.12}");
+    let pbe0 = library_gamma_uks_energy("PBE0");
+    assert!((cli - pbe0).abs() > 1e-4, "PBE0 mutant not detected");
+}
+
+/// HSE06 on the RS-GDF J/K at a k-mesh: the CLI energy is the library
+/// `solve_kuks` with the same aux, within the SR-column-rotation screening
+/// difference of the CLI's fit (bar 1e-8, as the closed-shell RS-GDF anchor),
+/// and differs from the dense-AFT energy by the fit error only.
+#[test]
+fn cli_open_shell_hse06_rsgdf_equals_library_solve_kuks() {
+    let mut i = energy_input("rsgdf-hse", "HSE06", "[1, 1, 2]");
+    i.jk = "jk = \"rsgdf\"\nauxbasis = \"cc-pvdz-ri\"";
+    ok(&run(&i), "rsgdf-hse");
+    let cli = logged_energy("rsgdf-hse");
+    let (cell, prep) = h3_cell();
+    let aux = PreparedBasis::new(cell.mol(), &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
+    let mesh = KPointMesh::new(&cell, [1, 1, 2], MeshCentring::Gamma).unwrap();
+    let mut c = KUksConfig::new(&cell, ExxDiv::Ewald, "HSE06");
+    c.kuhf.jk = KJkKind::RsGdf;
+    c.kuhf.scf.max_iter = 200;
+    c.kuhf.hcore = PeriodicHcoreConfig::with_omega(OMEGA);
+    c.grid = grid();
+    let lib = solve_kuks(&cell, &prep, Some(&aux), &mesh, &c)
+        .unwrap()
+        .scf
+        .energy;
+    let dense = library_kuks_energy("HSE06", [1, 1, 2], MeshCentring::Gamma);
+    eprintln!(
+        "rsgdf-hse: CLI - library {:.2e}, CLI - dense {:.2e}",
+        cli - lib,
+        cli - dense
+    );
+    assert!((cli - lib).abs() < 1e-8, "{cli:.12} vs {lib:.12}");
+    assert!((cli - dense).abs() < 1e-3, "{cli:.12} vs dense {dense:.12}");
+}
+
 #[test]
 fn open_shell_refusals_have_exact_messages() {
-    // Open-shell meta-GGA: not wired on the CLI route (the library k-UKS has it).
-    for (tag, method) in [("uks-scan", Method::Uks), ("roks-scan", Method::Roks)] {
-        let e = refused(&run(&input(tag, method, "SCAN", "energy")), tag);
+    // k-point ROKS has no meta-GGA or range-separated hybrid (the UKS route has
+    // the energies).
+    for f in ["SCAN", "HSE06"] {
+        let tag = format!("roks-{f}");
+        let e = refused(&run(&input(&tag, Method::Roks, f, "energy")), &tag);
         assert!(
-            e.contains("[cell] kmesh with functional \"SCAN\"")
-                && e.contains("meta-GGA")
-                && e.contains("only (no meta-GGA on this route"),
+            e.contains(&format!("[cell] kmesh with functional \"{f}\""))
+                && e.contains("for ROKS; the UKS route"),
             "{tag}: {e}"
         );
     }
-    // Range-separated hybrid.
-    let e = refused(
-        &run(&input("uks-hse", Method::Uks, "HSE06", "energy")),
-        "hse",
-    );
+    // UKS SCAN / HSE06 have an energy but no force: optimize is refused by the
+    // open-shell force allowlist, before any integral.
+    for f in ["SCAN", "HSE06"] {
+        let tag = format!("uks-opt-{f}");
+        let e = refused(&run(&input(&tag, Method::Uks, f, "optimize")), &tag);
+        assert!(
+            e.contains("method.task = \"optimize\" with [cell] kmesh")
+                && e.contains("no meta-GGA, range-separated hybrid"),
+            "{tag}: {e}"
+        );
+    }
+    // Open-shell meta-GGA needs the dense-AFT J/K.
+    let mut i = input("uks-scan-rsgdf", Method::Uks, "SCAN", "energy");
+    i.jk = "jk = \"rsgdf\"\nauxbasis = \"cc-pvdz-ri\"";
+    let e = refused(&run(&i), "uks-scan-rsgdf");
+    assert!(e.contains("dense-AFT J/K only"), "{e}");
+    // Gamma-point UKS meta-GGA: no tau term at Gamma; the 1x1x1 mesh has it.
+    let e = refused(&run(&energy_input("gam-scan", "SCAN", "")), "gam-scan");
     assert!(
-        e.contains("[cell] kmesh with functional \"HSE06\"") && e.contains("range-separated"),
+        e.contains("Gamma point") && e.contains("kmesh = [1, 1, 1]"),
         "{e}"
     );
 }

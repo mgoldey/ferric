@@ -474,15 +474,17 @@ fn unsupported_kohn_sham_routes_are_refused_with_exact_messages() {
         assert!(e.contains("[cell] kmesh with functional"), "{f}: {e}");
     }
     // Open-shell Kohn-Sham with a meta-GGA (ksdft with multiplicity > 1 is
-    // UKS): not wired on the CLI route (the library k-UKS has SCAN / r2SCAN energy).
+    // UKS): the k-point UKS has the SCAN energy but no force, so the
+    // open-shell force allowlist names it.
     let mut i = loose_input("uks-scan", "SCAN", "[1, 1, 2]", DENSE);
     i.xyz = xyz(&[[0.0, 0.0, 0.0]]);
     i.mult = 2;
     let e = refused(&run(&i), "uks-scan");
     assert!(
-        e.contains("[cell] kmesh with functional \"SCAN\"")
+        e.contains("method.task = \"optimize\" with [cell] kmesh")
             && e.contains(
-                "k-point UKS supports LDA, GGA and global-hybrid functionals only (no meta-GGA on this route"
+                "SCAN: the k-point Kohn-Sham force and stress cover LDA, GGA and global-hybrid \
+                 functionals only (no meta-GGA"
             ),
         "{e}"
     );

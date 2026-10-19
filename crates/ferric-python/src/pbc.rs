@@ -33,7 +33,7 @@ use ferric_pbc::rsgdf::auto_omega::auto_rsgdf_omega;
 use ferric_pbc::rsgdf::{DEFAULT_RANGE_SPLIT_LAMBDA, DEFAULT_RSGDF_OMEGA};
 use ferric_pbc::SrColumnRotation;
 use ferric_pbc::{
-    gamma_drpa, gamma_mp2, gamma_rohf, gamma_roks, gamma_uhf, gamma_uks, kpoint_drpa, kpoint_mp2,
+    gamma_drpa, gamma_mp2, gamma_rohf, gamma_roks, gamma_uhf, kpoint_drpa, kpoint_mp2,
     periodic_hcore, periodic_hcore_kpts, solve_krhf_injected, Cell, DenseAftEri, EwaldStart,
     ExxDiv, GammaDrpaConfig, GammaDrpaIntegrals, GammaMp2Config, GammaMp2Integrals, GammaRksConfig,
     GammaRohfConfig, GammaRoksConfig, GammaUhfConfig, GammaUhfIntegrals, GammaUksConfig,
@@ -480,7 +480,8 @@ impl GammaSystem {
 
 /// Refuse an oversize dense cell before any lattice sum (the Rust builder
 /// re-checks the same bound after hcore).
-/// Pre-integral checks of `run_rks_gamma` beyond the functional gate:
+/// Pre-integral checks of `run_rks_gamma` / `run_uks_gamma` beyond the
+/// functional gate:
 /// `range_split` with a range-separated hybrid (it would shape only the Gamma
 /// J) and the dense tensor budget, which counts the attenuated tensors.
 fn gamma_rks_preflight(s: &PbcSetup, functional: &str) -> PyResult<()> {
@@ -1025,7 +1026,17 @@ fn run_open_ks(s: &PbcSetup, sys: &GammaSystem, o: &OpenOpts) -> Result<OpenPart
             let mut cfg = GammaUksConfig::new(f);
             (cfg.grid, cfg.exxdiv, cfg.ewald_start) = (o.grid.clone(), s.exx, o.start);
             cfg.scf = o.scf.clone();
-            let r = gamma_uks(&s.cell, &s.prep, &sys.hc, ints, &cfg)?;
+            // A range-separated hybrid takes the attenuated K of the k = 0
+            // exchange (its forces / stress were refused up front).
+            let r = ferric_pbc::gamma_rsh::gamma_uks_any(
+                &s.cell,
+                &s.prep,
+                &sys.hc,
+                ints,
+                s.aux.as_ref(),
+                s.rsh_sizing(),
+                &cfg,
+            )?;
             let derivs = system_derivatives(s, sys, &r.scf, DerivMethod::Uks(&cfg))?;
             Ok(OpenParts {
                 derivs,
@@ -1128,7 +1139,10 @@ fn run_open_shell(
     o: OpenOpts,
     ewald_start: Option<String>,
 ) -> PyResult<PyGammaOpenShellResult> {
-    gamma_dense_preflight(&s, false)?;
+    match &o.method {
+        OpenMethod::Uks(f) => gamma_rks_preflight(&s, f)?,
+        _ => gamma_dense_preflight(&s, false)?,
+    }
     check_deriv_request(
         &s,
         matches!(o.method, OpenMethod::Rohf | OpenMethod::Roks(_)),
@@ -1330,8 +1344,15 @@ fn run_rohf_gamma(
 }
 
 /// Gamma-point periodic **UKS**. `functional`: LDA/GGA/global hybrids
-/// (e.g. "LDA", "PBE", "PBE0"); range-separated, meta-GGA, VV10 and double
-/// hybrids are refused (ValueError). Grid: Treutler-Ahlrichs `n_radial` x
+/// (e.g. "LDA", "PBE", "PBE0") and range-separated (CAM) GGA hybrids (any
+/// libxc one is accepted; "HSE06" and "HYB_GGA_XC_CAM_B3LYP" are pinned,
+/// open-shell "HYB_GGA_XC_WB97X" is accepted, not pinned; energy only: J from the Gamma J/K, the attenuated K
+/// per spin from the k = 0 point of the k-point range-separated exchange,
+/// dense AFT or an RS-GDF fit on `auxbasis`; `with_gradient` / `with_stress`
+/// and `range_split` are ValueErrors; `exact_exchange_fraction` is the
+/// short-range `c_sr`, `madelung` the mixed constant). Meta-GGA is a
+/// ValueError (no tau term at Gamma; `run_uks_kpts` on a (1, 1, 1) mesh has
+/// SCAN / r2SCAN energies); VV10 and double hybrids are refused. Grid: Treutler-Ahlrichs `n_radial` x
 /// Lebedev `n_angular` per atom with SSF partitioning over periodic images
 /// within `neighbour_cutoff` (Å; None = max(10 Bohr, covering-radius
 /// bound)). Otherwise the `run_uhf_gamma` contract (ewald_start, jk, units).
@@ -1373,6 +1394,9 @@ fn run_uks_gamma(
     sr_column_rotation: Option<bool>,
 ) -> PyResult<PyGammaOpenShellResult> {
     let fname = "run_uks_gamma";
+    // Before any integral is built: RSH energy only, no Gamma meta-GGA.
+    ferric_pbc::dft::check_gamma_uks_request(functional, with_gradient || with_stress)
+        .map_err(|e| val_err(format!("{fname}: functional {functional:?}: {e}")))?;
     let mut s = pbc_setup(&PbcArgs {
         fname,
         mol,
@@ -2700,54 +2724,73 @@ fn run_uhf_kpts(
 // ─────────────────────────────────────────────────── k-point RKS ──
 
 /// Which k-point Kohn-Sham driver a binding runs: the functional families
-/// each supports differ (the closed-shell driver is wired for the meta-GGAs;
-/// the Rust `solve_kuks` also has SCAN / r2SCAN energies, but the open-shell
-/// bindings do not expose them yet).
+/// each supports differ (RKS and UKS take the pure meta-GGAs SCAN / r2SCAN and
+/// range-separated hybrids; k-point ROKS has neither).
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum KKsKind {
     Closed,
-    Open,
+    Unrestricted,
+    RestrictedOpen,
+}
+
+impl KKsKind {
+    fn open_shell(self) -> bool {
+        self != KKsKind::Closed
+    }
+    fn label(self) -> &'static str {
+        match self {
+            KKsKind::Closed => "RKS",
+            KKsKind::Unrestricted => "UKS",
+            KKsKind::RestrictedOpen => "ROKS",
+        }
+    }
 }
 
 /// Capability check for the k-point Kohn-Sham bindings: the one place that
 /// names what k-point KS-DFT does not support yet. Widen it together with the
-/// driver (range-separated hybrids, hybrid and open-shell meta-GGA, ECP cells
-/// are the known gaps). Called before any integral is built.
+/// driver (ROKS meta-GGA / range-separated hybrids, hybrid meta-GGA, ECP
+/// cells are the known gaps). Called before any integral is built.
 ///
-/// Energy gate: LDA, GGA, global hybrids, (closed shell only) the pure
-/// meta-GGAs SCAN / r2SCAN, and (closed shell, either J/K)
-/// range-separated hybrids. The force and stress gate is the library
+/// Energy gate: LDA, GGA, global hybrids everywhere; the pure meta-GGAs SCAN /
+/// r2SCAN and range-separated hybrids on RKS and UKS (the UKS one is the
+/// library `resolve_kuks_functional`; its meta-GGA needs the dense-AFT J/K,
+/// which `solve_kuks` checks). The force and stress gate is the library
 /// allowlist of the same name, independent of the energy gate, so widening
 /// the energy path cannot silently enable a derivative (it refuses
-/// range-separated hybrids).
+/// range-separated hybrids, and open-shell meta-GGA).
 fn check_kpoint_ks_support(
     fname: &str,
     functional: &str,
     kind: KKsKind,
     (with_gradient, with_stress): (bool, bool),
 ) -> PyResult<()> {
-    let rsh_ok = kind == KKsKind::Closed && ferric_pbc::rsh::is_range_separated(functional);
-    let mgga_ok = kind == KKsKind::Closed && ferric_pbc::kxcgrad::is_validated_mgga(functional);
-    let energy = if rsh_ok {
-        Ok(())
-    } else {
-        ferric_pbc::dft::resolve_periodic_functional_mgga(functional, mgga_ok).map(|_| ())
+    let energy = match kind {
+        KKsKind::Closed if ferric_pbc::rsh::is_range_separated(functional) => Ok(()),
+        KKsKind::Closed => ferric_pbc::dft::resolve_periodic_functional_mgga(
+            functional,
+            ferric_pbc::kxcgrad::is_validated_mgga(functional),
+        )
+        .map(|_| ()),
+        KKsKind::Unrestricted => ferric_pbc::kuks::resolve_kuks_functional(functional),
+        KKsKind::RestrictedOpen => {
+            ferric_pbc::dft::resolve_periodic_functional(functional).map(|_| ())
+        }
     };
     energy.map_err(|e| {
-        let what = if kind == KKsKind::Closed {
-            "LDA, GGA, global-hybrid and SCAN / r2SCAN meta-GGA functionals (plus \
+        let what = match kind {
+            KKsKind::RestrictedOpen => {
+                "LDA, GGA and global-hybrid functionals only (no meta-GGA or range-separated \
+                 hybrid for k-point ROKS; run_uks_kpts has SCAN / r2SCAN and range-separated \
+                 hybrid energies)"
+            }
+            _ => {
+                "LDA, GGA, global-hybrid and SCAN / r2SCAN meta-GGA functionals (plus \
                  range-separated hybrids) only"
-        } else {
-            "LDA, GGA and global-hybrid functionals only (no meta-GGA on this route; the \
-                 library k-point UKS has SCAN / r2SCAN energies, not wired here yet)"
+            }
         };
         val_err(format!(
             "{fname}: functional {functional:?}: {e}. k-point {} supports {what}",
-            if kind == KKsKind::Closed {
-                "RKS"
-            } else {
-                "open-shell KS"
-            }
+            kind.label()
         ))
     })?;
     if with_gradient || with_stress {
@@ -2756,7 +2799,7 @@ fn check_kpoint_ks_support(
         } else {
             "with_stress"
         };
-        ferric_pbc::kxcgrad::check_kpoint_deriv_functional(kind == KKsKind::Open, functional, what)
+        ferric_pbc::kxcgrad::check_kpoint_deriv_functional(kind.open_shell(), functional, what)
             .map_err(|e| val_err(format!("{fname}: {e}")))?;
     }
     Ok(())
@@ -3140,7 +3183,10 @@ fn kroks_driver(
     Ok((r, derivs))
 }
 
-/// **k-point UKS** (LDA / GGA / global hybrids; spin state from the
+/// **k-point UKS** (LDA / GGA / global hybrids, plus ENERGY-only SCAN /
+/// r2SCAN on `jk="dense"` and range-separated (CAM) GGA hybrids on either
+/// J/K (any libxc one is accepted; "HSE06" and "HYB_GGA_XC_CAM_B3LYP" are
+/// pinned, open-shell "HYB_GGA_XC_WB97X" is accepted, not pinned); spin state from the
 /// Molecule's multiplicity, electrons per cell) on a `mesh = (n1, n2, n3)`
 /// k-mesh. Mesh/centring/jk/SCF-threshold contract as `run_uhf_kpts`
 /// (`ewald_start` too); functional and grid (`n_radial`, `n_angular`,
@@ -3151,8 +3197,11 @@ fn kroks_driver(
 /// (`result.stress()`, 3 x 3, Hartree/Bohr³) of the converged SCF on the J/K
 /// it ran on, XC on the energy's own grid; set `neighbour_cutoff` explicitly
 /// for finite-difference checks. Refused with a ValueError naming the gap:
-/// meta-GGA, range-separated hybrids, VV10 / double hybrids, ECP cells with
-/// derivatives, and `range_split` with derivatives.
+/// `with_gradient` / `with_stress` with a meta-GGA or a range-separated
+/// hybrid (energy only), a meta-GGA with `jk="rsgdf"`, other meta-GGAs,
+/// VV10 / double hybrids, ECP cells with derivatives, and `range_split`
+/// with derivatives. For a range-separated hybrid `exact_exchange_fraction`
+/// is the short-range `c_sr` and `madelung` the mixed constant.
 #[pyfunction]
 #[pyo3(signature = (
     mol, lattice, basis_set, functional, mesh, exxdiv="ewald", centring="gamma",
@@ -3192,7 +3241,7 @@ fn run_uks_kpts(
     check_kpoint_ks_support(
         fname,
         functional,
-        KKsKind::Open,
+        KKsKind::Unrestricted,
         (with_gradient, with_stress),
     )?;
     let mut s = pbc_setup(&PbcArgs {
@@ -3214,6 +3263,14 @@ fn run_uks_kpts(
         stress: with_stress,
     };
     check_kpoint_ks_derivs(fname, &s, Some(functional))?;
+    if s.aux.is_some() && ferric_pbc::dft::is_meta_gga_name(functional) {
+        // The CLI refuses the same at plan time; `solve_kuks` re-checks.
+        return Err(val_err(format!(
+            "{fname}: functional {functional:?}: meta-GGA with RS-GDF is not supported: \
+             the open-shell k-point meta-GGA is validated on the dense-AFT J/K only; use \
+             jk=\"dense\""
+        )));
+    }
     s.range_split = parse_range_split(fname, range_split, s.aux.is_some(), s.derivs)?;
     let m = k_mesh(&s, mesh, centring)?;
     let grid = periodic_grid(fname, n_radial, n_angular, neighbour_cutoff)?;
@@ -3270,7 +3327,7 @@ fn run_ro_kpts(
     derivs: DerivRequest,
     range_split: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<PyKpointScfResult> {
-    let kind = KKsKind::Open;
+    let kind = KKsKind::RestrictedOpen;
     if let Some(f) = functional {
         check_kpoint_ks_support(fname, f, kind, (derivs.gradient, derivs.stress))?;
     }
@@ -3321,7 +3378,8 @@ fn run_ro_kpts(
 }
 
 /// **k-point ROKS** (restricted open-shell Kohn-Sham; LDA / GGA / global
-/// hybrids; Roothaan effective Fock) on a k-mesh. Arguments and result as
+/// hybrids; no meta-GGA or range-separated hybrid, use `run_uks_kpts`;
+/// Roothaan effective Fock) on a k-mesh. Arguments and result as
 /// `run_uks_kpts`; `mo_energy` / `mo_energy_beta` are `c† F_σ c` per k in the
 /// Roothaan orbital order. The derivatives run on the dense-AFT and the
 /// unsplit RS-GDF J/K. The
