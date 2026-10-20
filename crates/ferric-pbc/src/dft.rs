@@ -3038,10 +3038,6 @@ mod switch_tests {
         assert!(worst < 1e-8, "{worst:e}");
     }
 
-    /// The strain grid's weight derivative plus the anchored point motion
-    /// `dr/dε_ab = e_a O_b` reproduces the FD of `Σ W F` under
-    /// `Cell::strained`, all nine components, taper live, SSF and Becke.
-    /// Measured worst 2.3e-10; mutants in the module ledger.
     /// A SPARSE cell (Li–H, a = 9 Bohr) with the tightest legal cutoff
     /// `D = bound + W`: near the covering-radius holes the nearest image is
     /// barely fully present and the next ones sit in the taper with
@@ -3109,6 +3105,10 @@ mod switch_tests {
         assert!(miss < 1e-8, "{miss:e}");
     }
 
+    /// The strain grid's weight derivative plus the anchored point motion
+    /// `dr/dε_ab = e_a O_b` reproduces the FD of `Σ W F` under
+    /// `Cell::strained`, all nine components, taper live, SSF and Becke.
+    /// Measured worst 2.3e-10; mutants in the module ledger.
     #[test]
     fn switched_strain_grid_matches_fd_of_the_grid_functional() {
         let cell = lih([0.0; 3]);
