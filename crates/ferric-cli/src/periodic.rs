@@ -786,6 +786,7 @@ fn run_gamma_rhf(cfg: &Config, plan: &PeriodicPlan, s: &Setup) -> Outcome {
 fn periodic_grid(plan: &PeriodicPlan) -> PeriodicGridConfig {
     PeriodicGridConfig {
         neighbour_cutoff: plan.neighbour_cutoff_bohr,
+        neighbour_switch: plan.neighbour_switch_bohr,
         ..PeriodicGridConfig::with_size(plan.n_radial, plan.n_angular)
     }
 }
