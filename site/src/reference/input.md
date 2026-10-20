@@ -423,8 +423,8 @@ Gamma point for the SCF routes (RHF, UHF, ROHF, RKS, UKS, ROKS) with either
 force, and prints the final gradient (Hartree/Bohr per cell). With `kmesh` it
 works for `rhf`, `uhf` and `rohf` (no functional) and for Kohn-Sham (`ksdft`,
 or `rhf`/`uhf`/`rohf` with `[dft] functional`: RKS, UKS, ROKS) using the analytic
-k-point force, with either `jk` (the restricted-open-shell ROKS/ROHF force needs
-`jk = "dense"`; the CLI refuses `jk = "rsgdf"` with it). The functionals are LDA,
+k-point force, with either `jk` on every route (unsplit RS-GDF: `range_split`
+with `task = "optimize"` is an error). The functionals are LDA,
 GGA and global hybrids such as PBE0 and B3LYP on every Kohn-Sham route, plus
 the pure meta-GGAs SCAN and r2SCAN on the closed-shell route only; the force
 differentiates the energy's own XC grid (`n_radial`/`n_angular`/`neighbour_cutoff`)
@@ -439,15 +439,15 @@ the 3×3 tensor in Hartree/Bohr³ and in GPa, and the same two tensors in the
 run log's `run_end` record (`extra.stress_hartree_per_bohr3`, `extra.stress_gpa`,
 full precision; see [run logs](../using/run-logs.md)). It equals the Python
 `with_stress=True` tensor bit for bit (Python: `run_rhf_kpts`, `run_uhf_kpts`,
-`run_rks_kpts`, `run_uks_kpts`, `run_roks_kpts`, `run_rohf_kpts`), with both
-gates shared: the meta-GGA stress needs `jk = "dense"` (an error with
-`jk = "rsgdf"`); the open-shell and restricted-open-shell stress also runs with
-`jk = "rsgdf"` (unsplit). The k-point
+`run_rks_kpts`, `run_uks_kpts`, `run_roks_kpts`, `run_rohf_kpts`), with the
+gate shared: every route, the closed-shell SCAN / r2SCAN stress included,
+runs with either `jk` (unsplit RS-GDF: `range_split` with `stress = true` is
+an error). The k-point
 force and stress use an explicit
 functional allowlist that is separate from the energy gate
 (`ferric_pbc::kxcgrad::check_force_functional` for the closed-shell route,
 `check_open_shell_force_functional` for UKS/ROKS/ROHF, wrapped by
-`check_kpoint_deriv_functional` / `check_kpoint_deriv_cell`, which the Python
+`check_kpoint_deriv_functional`, which the Python
 bindings call too). `solve_krks` (every k-point Kohn-Sham energy run, `run_rks_kpts` and the CLI included) clones `S(k)` and `h(k)` transiently during the SCF (`2 N_k n² × 16` bytes, not charged to the budget); the periodic XC Bloch AO cache of the SCF does not follow `[memory] budget_gb`. Each optimizer step runs a fresh SCF from the core guess; at a k-point mesh with `uhf` it can land in a different spin solution between steps, which shows as a visible jump in the step energies (nothing is hidden). The force is taken through the hcore and J/K objects the SCF built, which stay in memory for the force: their bytes are charged against the same memory budget (`[memory] budget_gb` with `jk = "rsgdf"`), and with `jk = "dense"` the kernels count against `max_eri_gb` while they exist. `task = "frequencies"` is an error.
 
 The periodic run reads only `[cell]`, `[scf]` `max_iter`, `[scf]`
@@ -475,7 +475,7 @@ or key is an error. A charged cell is an error.
 | `quad_points` | integer | `40` | ≥ 1 | `pdep-rpa` only. Gamma point needs `jk = "rsgdf"`. |
 | `drpa_energy` | string | `"quadrature"` | `quadrature` `plasmon` `second-order` | `pdep-rpa` with `kmesh` only. |
 | `grad_conv` | float | `1e-9` | > 0 | k-point SCF orbital-gradient threshold. Requires `kmesh`. |
-| `stress` | bool | `false` | `true` `false` | Compute and print the analytic stress σ = (1/Ω) dE/dε of the converged k-point SCF (Hartree/Bohr³ and GPa) and write it to the `run_end` record. Requires `kmesh` and `task = "energy"`; `rhf`, `uhf`, `rohf`, `ksdft` and the `[dft] functional` routes. An error, naming `[cell] stress = true`, with the Gamma point, `task = "optimize"`, `rimp2`/`pdep-rpa`, `range_split`, range-separated hybrids, TPSS, open-shell SCAN/r2SCAN, and SCAN/r2SCAN with `jk = "rsgdf"`. ECP cells are supported. ROKS meta-GGA and range-separated hybrids and hybrid meta-GGA are refused earlier by the k-point energy gate (`[cell] kmesh with functional ...`), which does not name `stress`. The run does one SCF through the retained hcore and J/K (the iteration printout of the plain energy run is replaced by the iteration count, energy and stress). The SCF must converge (the stress gate for restricted open shell is loose, 1e-5 in the orbital gradient: keep `grad_conv` well below it). |
+| `stress` | bool | `false` | `true` `false` | Compute and print the analytic stress σ = (1/Ω) dE/dε of the converged k-point SCF (Hartree/Bohr³ and GPa) and write it to the `run_end` record. Requires `kmesh` and `task = "energy"`; `rhf`, `uhf`, `rohf`, `ksdft` and the `[dft] functional` routes. An error, naming `[cell] stress = true`, with the Gamma point, `task = "optimize"`, `rimp2`/`pdep-rpa`, `range_split`, range-separated hybrids, TPSS and open-shell SCAN/r2SCAN. ECP cells are supported. ROKS meta-GGA and range-separated hybrids and hybrid meta-GGA are refused earlier by the k-point energy gate (`[cell] kmesh with functional ...`), which does not name `stress`. The run does one SCF through the retained hcore and J/K (the iteration printout of the plain energy run is replaced by the iteration count, energy and stress). The SCF must converge (the stress gate for restricted open shell is loose, 1e-5 in the orbital gradient: keep `grad_conv` well below it). |
 | `n_radial` | integer | `75` | | Periodic XC grid. Kohn-Sham only. |
 | `n_angular` | integer | `302` | Lebedev order | Periodic XC grid. Kohn-Sham only. |
 | `neighbour_cutoff` | float | max(10 Bohr, covering-radius bound) | > 0, in `unit` | Periodic XC grid image cutoff. Kohn-Sham only. The XC energy has a hard cutoff: the default depends on the atom positions in a large sparse cell, and the analytic force omits that dependence, so set it explicitly for `task = "optimize"` and for finite-difference checks. Whatever its value, the cutoff is hard: the energy jumps by 1e-11 to 1e-9 Ha wherever a neighbour atom crosses it under a displacement or strain, so a finite-difference step that straddles a crossing is wrong by far more than the derivative's error (larger cutoffs have more crossings, not fewer). |

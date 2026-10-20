@@ -28,11 +28,16 @@
 //!   of the converged SCF energy (uniform grid, three components);
 //! * `supercell_identity_per_part` -- the 1x1x3 stress equals the explicit
 //!   3-cell supercell at 1x1x1 (same code; checks the k sum and phases);
+//! * RS-GDF J: `rsgdf_meta_gga_stress_matches_fd_of_the_scf_energy` (FD of the
+//!   SCAN RS-GDF SCF energy, tau defects on that route must miss; all nine
+//!   components SCAN + r2SCAN ignored) and
+//!   `rsgdf_minus_dense_stress_transfers_from_pbe_to_scan` (the route
+//!   difference is the fit error, the same for SCAN as for PBE);
 //! * refusals, the Fock guard, production-wired mutants.
 //!
 //! NOT covered: a Gamma tau stress (Gamma meta-GGA is energy-only; the energy anchor is in pbc_krks.rs), hybrid meta-GGAs (none resolve), range-separated / VV10 / double
 //! hybrid meta-GGAs (refused), open-shell meta-GGA stress (UKS/ROKS keep their
-//! typed refusal), RS-GDF J (typed refusal, tested), d shells, ECPs, heavy atoms,
+//! typed refusal), the range-split RS-GDF build, d shells, ECPs, heavy atoms,
 //! metals. TPSS is anchored only as its raw X/C components on a PBE density with
 //! the Fock guard skipped (the TPSS SCF exists, energy only; its stress is not
 //! validated).
@@ -794,19 +799,134 @@ fn uniform_grid_stress_matches_pyscf_fftdf_krks_stress_r2scan() {
     pyscf_mgga_case("R2SCAN", "R2SCAN");
 }
 
-// ------------------------------------------------------ RS-GDF refusal
+// ------------------------------------------------------------- RS-GDF J
 
-/// Meta-GGA on the RS-GDF J route is refused with a typed error (no anchor
-/// exists for it); the refusal precedes the Fock guard, so a PBE RS-GDF SCF
-/// handed in as SCAN exercises it. The same SCF is accepted as PBE.
+// The tau strain term lives in the grid XC response (`GridXc`), which never
+// sees the J route; RS-GDF changes only the HF assembly (the fit's Coulomb
+// pieces), anchored for PBE in `pbc_kxcstress.rs`. PHYSICS hypothesis: the
+// SCAN RS-GDF stress is the derivative of the SCAN RS-GDF energy (FD at the
+// dense-route floor), and the route difference (RS-GDF - dense) of the
+// stress is the fit error, nearly the same for SCAN as for PBE on the same
+// cell/aux. ARTIFACT hypotheses: a route-dependent tau defect (e.g. V^tau
+// missing from the Pulay Fock on the fit route) misses FD by the size of the
+// tau term and breaks the transfer by the same amount; a "pass" because the
+// dense code ran is excluded by asserting the RS-GDF stress differs from the
+// dense one by more than the transfer gap.
+
+/// Total dE/d eps of a SCAN RS-GDF SCF against FD of its energy (uniform grid,
+/// the dense test's step and bar), with the tau defects on the RS-GDF route
+/// missing the same FD. Measured: (2,2) 1.1e-8, (0,2) 2.0e-10 (bar 5e-7);
+/// all nine (ignored) worst 1.1e-8 SCAN and r2SCAN. Mutants against the same
+/// FD: NoTauStrain 6.0e-2, TauDoubled 6.0e-2, TauNoVxc 5.6e-4.
 #[test]
-fn meta_gga_on_rs_gdf_is_refused() {
-    let mut fx = fixture(&H2, [1, 1, 3], "PBE", Jk::Gdf, KXcGrid::Uniform([24; 3]));
-    stress(&fx, None);
-    fx.functional = "SCAN".to_string();
-    let e = try_stress_cfg(&fx, &scfg(&fx.grid, None))
-        .expect_err("must refuse")
-        .to_string();
-    eprintln!("SCAN on RS-GDF: {e}");
-    assert!(e.contains("RS-GDF"), "{e}");
+fn rsgdf_meta_gga_stress_matches_fd_of_the_scf_energy() {
+    rsgdf_scf_fd_case("SCAN", &[(2, 2), (0, 2)], true);
 }
+
+/// All nine components, SCAN and r2SCAN, on RS-GDF.
+#[test]
+#[ignore = "SCAN + r2SCAN RS-GDF all-nine FD: 2 x 18 strained SCFs on a 24^3 uniform grid"]
+fn rsgdf_meta_gga_stress_matches_fd_all_nine() {
+    for f in ["SCAN", "R2SCAN"] {
+        rsgdf_scf_fd_case(f, &ALL9, false);
+    }
+}
+
+/// FD step and bar of the SCF-energy FD on the uniform grid (the dense
+/// `meta_gga_stress_matches_fd_of_the_scf_energy` values).
+const SCF_FD_H: f64 = 1e-4;
+const SCF_FD_BAR: f64 = 5e-7;
+
+fn rsgdf_scf_fd_case(f: &str, comps: &[(usize, usize)], mutants: bool) {
+    let grid = KXcGrid::Uniform([24, 24, 24]);
+    let fx = fixture(&H2, [1, 1, 3], f, Jk::Gdf, grid.clone());
+    let s = stress(&fx, None);
+    let mut fds = Vec::new();
+    let mut worst = 0.0_f64;
+    for &(i, j) in comps {
+        let ep = energy_on(
+            &strained(&fx.cell, i, j, SCF_FD_H),
+            [1, 1, 3],
+            f,
+            Jk::Gdf,
+            &grid,
+        );
+        let em = energy_on(
+            &strained(&fx.cell, i, j, -SCF_FD_H),
+            [1, 1, 3],
+            f,
+            Jk::Gdf,
+            &grid,
+        );
+        let fd = (ep - em) / (2.0 * SCF_FD_H);
+        let miss = (s.de_deps[i][j] - fd).abs();
+        eprintln!(
+            "{f} RS-GDF uniform 24^3 eps({i},{j}): analytic {:.9e} FD {fd:.9e} miss {miss:.2e}",
+            s.de_deps[i][j]
+        );
+        worst = worst.max(miss);
+        fds.push(((i, j), fd));
+    }
+    eprintln!("{f} RS-GDF: |analytic - FD of SCF energy| {worst:.2e}");
+    assert!(worst < SCF_FD_BAR, "{f}: {worst:e}");
+    if !mutants {
+        return;
+    }
+    for m in [
+        KXcStressMutation::NoTauStrain,
+        KXcStressMutation::TauDoubled,
+        KXcStressMutation::TauNoVxc,
+    ] {
+        let t = stress(&fx, Some(m));
+        let mm = fds.iter().fold(0.0_f64, |w, &((i, j), fd)| {
+            w.max((t.de_deps[i][j] - fd).abs())
+        });
+        eprintln!("  {f} RS-GDF {m:?}: FD miss {mm:.2e}");
+        assert!(mm > MUTANT_BAR, "{f} RS-GDF {m:?} survives the FD: {mm:e}");
+    }
+}
+
+/// Fit-error transfer: `(sigma_RSGDF - sigma_dense)` for SCAN equals the same
+/// difference for PBE on the same cell, aux and grid, up to the (small)
+/// density dependence of the fit error. Bar: `TRANSFER_BAR` (measured below);
+/// a tau defect on the RS-GDF route alone must break it. A tau defect common
+/// to BOTH routes cancels in the difference: this test sees only
+/// route-dependent defects, and the FD test above is the load-bearing anchor.
+#[test]
+fn rsgdf_minus_dense_stress_transfers_from_pbe_to_scan() {
+    let grid = atom_grid(20, 50, Some(CUTOFF));
+    let route_diff = |f: &str, m: Option<KXcStressMutation>| {
+        let g = stress(&fixture(&H2, [1, 1, 3], f, Jk::Gdf, grid.clone()), m);
+        let d = stress(&fixture(&H2, [1, 1, 3], f, Jk::Dense, grid.clone()), None);
+        let mut o = g.de_deps;
+        for i in 0..3 {
+            for j in 0..3 {
+                o[i][j] -= d.de_deps[i][j];
+            }
+        }
+        o
+    };
+    let pbe = route_diff("PBE", None);
+    let scan = route_diff("SCAN", None);
+    let gap = mdiff(&scan, &pbe);
+    eprintln!(
+        "RS-GDF - dense: |PBE| {:.3e}, |SCAN| {:.3e}, |SCAN - PBE| {gap:.2e}",
+        mmax(&pbe),
+        mmax(&scan)
+    );
+    // The route difference is resolved (the RS-GDF route really ran) and the
+    // transfer holds far below it.
+    assert!(mmax(&pbe) > 10.0 * TRANSFER_BAR, "{:e}", mmax(&pbe));
+    assert!(gap < TRANSFER_BAR, "{gap:e}");
+    for m in [KXcStressMutation::NoTauStrain, KXcStressMutation::TauNoVxc] {
+        let mm = mdiff(&route_diff("SCAN", Some(m)), &pbe);
+        eprintln!("  RS-GDF-only {m:?}: |SCAN - PBE| {mm:.2e}");
+        assert!(mm > MUTANT_BAR, "{m:?} survives the transfer: {mm:e}");
+    }
+}
+
+/// Measured (H2/STO-3G, 1x1x3, atom grid (20, 50), et-sp aux, omega = 1):
+/// route difference max |RS-GDF - dense| 7.08e-5 (PBE) / 7.10e-5 (SCAN),
+/// |SCAN - PBE| 3.0e-7; RS-GDF-only mutants NoTauStrain 5.2e-2, TauNoVxc
+/// 2.4e-2. Bar 10x the measured gap, 8000x below the smallest mutant.
+const TRANSFER_BAR: f64 = 3e-6;

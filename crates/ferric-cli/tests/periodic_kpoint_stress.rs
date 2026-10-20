@@ -18,7 +18,7 @@
 //!   bit for bit.
 //! * Refusals are TOML-level errors: the stress gate names `[cell] stress =
 //!   true` (closed-shell HSE06, Gamma point, optimize, correlated route,
-//!   split RS-GDF, SCAN on RS-GDF, open-shell SCAN); hybrid meta-GGA (and
+//!   split RS-GDF, open-shell SCAN); hybrid meta-GGA (and
 //!   ROKS meta-GGA / range-separated hybrids) are refused earlier by the
 //!   k-point ENERGY gate (`[cell] kmesh with functional ...`), which does not
 //!   name the key.

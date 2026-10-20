@@ -2378,8 +2378,8 @@ def run_rks_kpts(
     ValueError naming the unsupported feature; ECP cells are supported,
     derivatives included. with_gradient=True gives result.gradient() (the
     analytic force, Hartree/Bohr per cell) and with_stress=True result.stress()
-    (Hartree/Bohr^3); range_split with either is a ValueError, and the
-    meta-GGA stress needs jk="dense". Set neighbour_cutoff (Angstrom)
+    (Hartree/Bohr^3), with either jk; range_split with either is a
+    ValueError. Set neighbour_cutoff (Angstrom)
     explicitly with with_gradient / with_stress or finite differences: the
     default depends on the atom positions in a large sparse cell and the
     derivative omits that."""

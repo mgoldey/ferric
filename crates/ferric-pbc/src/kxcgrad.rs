@@ -981,8 +981,8 @@ pub fn check_force_functional(functional: &str) -> Result<(), FerricError> {
 }
 
 /// The k-point derivative request gate shared by the Python bindings and the
-/// CLI (so the two cannot diverge), stage 1 (before any integral is built):
-/// the force / stress functional allowlist of the route. `open_shell` selects
+/// CLI (so the two cannot diverge), run before any integral is built: the
+/// force / stress functional allowlist of the route. `open_shell` selects
 /// [`check_open_shell_force_functional`] (UKS, ROKS) over
 /// [`check_force_functional`] (RKS). `what` names the request in the
 /// caller's vocabulary (`"with_stress"`, `"[cell] stress = true"`).
@@ -997,28 +997,6 @@ pub fn check_kpoint_deriv_functional(
         check_force_functional(functional)
     };
     allow.map_err(|e| format!("{what}: {e}"))
-}
-
-/// Stage 2 of the shared k-point derivative gate (after the cell and J/K are
-/// resolved): the meta-GGA stress is anchored on the dense-AFT J only.
-/// `functional` is `Some` on a Kohn-Sham route. `dense_hint` is the remedy for
-/// the meta-GGA-on-RS-GDF stress refusal, in the caller's vocabulary (its
-/// Python and TOML spellings differ); `stress` is whether the stress is among
-/// the requested derivatives. ECP cells pass: the KS and ROHF forces and stress
-/// carry the periodic-ECP term of the HF assembly on the total density
-/// (`tests/validation_kks_ecp_derivs.rs`).
-pub fn check_kpoint_deriv_cell(
-    functional: Option<&str>,
-    stress: bool,
-    rsgdf: bool,
-    dense_hint: &str,
-) -> Result<(), String> {
-    if stress && rsgdf && functional.is_some_and(is_validated_mgga) {
-        return Err(format!(
-            "the k-point meta-GGA stress is anchored on the dense-AFT J only; {dense_hint}"
-        ));
-    }
-    Ok(())
 }
 
 /// SCAN and r2SCAN: the meta-GGAs whose k-point SCF, force and stress are

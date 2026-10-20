@@ -138,14 +138,14 @@
 //!
 //! # Scope
 //!
-//! LDA, GGA, meta-GGA (SCAN, r2SCAN on the dense-AFT J route; TPSS only as its
-//! raw X and C component names, FD-anchored on a fixed density with the Fock
-//! guard skipped: the TPSS SCF energy is validated, its stress is not, and the
-//! bindings refuse it) and global hybrids; range-separated
-//! hybrids, VV10/double hybrids and meta-GGA on the RS-GDF J route keep typed
-//! errors (the dense kernels carrying an attenuated exchange are refused by the
-//! HF assembly). The open-shell (UKS) twin is [`crate::kuxcstress`] (SCAN and
-//! r2SCAN on the dense-AFT J; ROKS refuses meta-GGA).
+//! LDA, GGA, meta-GGA (SCAN, r2SCAN on the dense-AFT and RS-GDF J routes; TPSS
+//! only as its raw X and C component names, FD-anchored on a fixed density with
+//! the Fock guard skipped: the TPSS SCF energy is validated, its stress is not,
+//! and the bindings refuse it) and global hybrids; range-separated hybrids and
+//! VV10/double hybrids keep typed errors (the dense kernels carrying an
+//! attenuated exchange are refused by the HF assembly). The open-shell (UKS)
+//! twin is [`crate::kuxcstress`] (SCAN and r2SCAN on the dense-AFT J; ROKS
+//! refuses meta-GGA).
 
 use crate::budget::{bytes_of, Ledger};
 use crate::dense_aft::ExxDiv;
@@ -798,13 +798,14 @@ pub(crate) fn resolve_global_mgga_stress(functional: &str) -> Result<(XcDef, f64
 /// * `scf` — `KRksResult::scf`.
 /// * `cfg.grid`/`cfg.ao_threshold` — the grid and AO truncation of the energy.
 ///
-/// Also meta-GGA (SCAN, r2SCAN) on the dense-AFT J route. This library entry
-/// also accepts TPSS UNVALIDATED (only its raw components are FD-anchored on a
-/// fixed density); the Python and CLI bindings refuse it through
+/// Also meta-GGA (SCAN, r2SCAN) on either J route (the tau strain term is
+/// part of the grid XC response, which does not see the J route). This library
+/// entry also accepts TPSS UNVALIDATED (only its raw components are FD-anchored
+/// on a fixed density); the Python and CLI bindings refuse it through
 /// [`crate::kxcgrad::check_force_functional`].
 ///
 /// Refuses (typed errors) range-separated hybrids, VV10/double
-/// hybrids, meta-GGA with RS-GDF J, a hybrid without `cfg.exxdiv`, and an SCF whose Fock the rebuilt
+/// hybrids, a hybrid without `cfg.exxdiv`, and an SCF whose Fock the rebuilt
 /// `h + J - (a/2) K + V_xc` does not reproduce.
 #[allow(clippy::too_many_arguments)]
 pub fn kpoint_rks_stress(
@@ -835,15 +836,6 @@ pub fn kpoint_rks_stress(
             .funcs
             .iter()
             .any(|f| matches!(f.family(), FunctionalFamily::MetaGga));
-    if mgga && matches!(jk, KStressJk::RsGdf(_)) {
-        return Err(PeriodicDftError::Unsupported {
-            feature: "meta-GGA stress at k with RS-GDF J",
-            reason: format!(
-                "{functional}: the meta-GGA stress is anchored on the dense-AFT J route only"
-            ),
-        }
-        .into());
-    }
     let resp = GridXc {
         cell,
         prep,

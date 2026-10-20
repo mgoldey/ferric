@@ -7,7 +7,7 @@
 # ferric_pbc::solve_kuks. Energies are Hartree PER CELL.
 #
 # task = "optimize" with kmesh works for these routes too (analytic k-point
-# force at a fixed lattice); the restricted-open-shell force needs jk = "dense".
+# force at a fixed lattice), with either jk (no range_split).
 #
 #   OPENBLAS_NUM_THREADS=1 cargo run --release --bin ferric -- examples/h-cell-kpts-uks.toml
 

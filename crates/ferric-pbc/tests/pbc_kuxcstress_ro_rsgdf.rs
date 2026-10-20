@@ -59,6 +59,9 @@ thread_local! {
     /// the RS-GDF / hcore builds is ACTIVE (it does nothing on STO-3G). Set per
     /// test thread.
     static POLARIZED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// `Some(lambda)`: every RS-GDF build and config of this test thread (SCF,
+    /// force, stress) runs the range split at `lambda`. Set per test thread.
+    static SPLIT: std::cell::Cell<Option<f64>> = const { std::cell::Cell::new(None) };
 }
 
 fn orbital_basis() -> BasisSet {
@@ -108,6 +111,9 @@ fn kgdf_cfg() -> KRsGdfConfig {
             omega: 1.0,
             exxdiv: ExxDiv::None,
             budget_bytes: Some(AMPLE),
+            range_split: SPLIT
+                .with(|s| s.get())
+                .map(ferric_pbc::rsgdf::RangeSplit::new),
             ..Default::default()
         },
         mutation: None,
@@ -666,46 +672,284 @@ fn rsgdf_rohf_with_a_rotating_basis_force_and_stress_match_fd() {
     assert!(worst_s < ROT_BAR_S, "stress {worst_s:e}");
 }
 
-// ----------------------------------------------------------------- refusals
+// ------------------------------------------- range-split RS-GDF (lambda = 1)
+//
+// The RO force and stress run the same fit pass (`kpoint_fit_gradient`,
+// `kstress::assemble`) as the RHF/UKS ones, which differentiate a range-split
+// build along its partition. PHYSICS hypothesis: the RO split force/stress is
+// the derivative of the split energy (FD at the unsplit floor) and its
+// closed-shell limit is the RHF split result to round-off. ARTIFACT
+// hypotheses: (1) "split passes because the unsplit code ran" -- guarded by
+// `assert_split_ran` (moved primitives on both sides) and by the split-only
+// mutants, which delete only split terms and must miss FD; (2) "an RO-specific
+// split term is missing" -- the closed-shell limit is blind to `W_RO`, so the
+// open-shell H3 FD carries it.
 
-/// A range-split RS-GDF build is a typed refusal for the RO force (the stress
-/// refuses it through `refuse_unsupported`).
+/// lambda = 1 at omega = 1 moves the aux primitives s(0.75), s(0.3), p(0.5)
+/// and the STO-3G orbital primitive 0.1689 (as `pbc_kstress.rs`).
+const SPLIT_LAMBDA: f64 = 1.0;
+
+/// Panics unless this thread's RS-GDF build runs the range split and moves
+/// orbital and aux primitives.
+fn assert_split_ran(cell: &Cell, n: [usize; 3]) {
+    let prep = prep_for(cell, &orbital_basis());
+    let aux = prep_for(cell, &et_sp_aux());
+    let mesh = mesh_of(cell, n);
+    let hk =
+        periodic_hcore_kpts(cell, &prep, &mesh, &PeriodicHcoreConfig::with_omega(OMEGA)).unwrap();
+    let kc = kgdf_cfg();
+    assert!(kc.gdf.range_split.is_some(), "SPLIT not set on this thread");
+    let gdf = KRsGdf::build(cell, &prep, &aux, &mesh, &hk.s, &kc).unwrap();
+    let moved = |name: &str| {
+        gdf.stats()
+            .split_counters
+            .iter()
+            .find(|(c, _)| *c == name)
+            .map_or(0, |&(_, v)| v)
+    };
+    let (o, a) = (
+        moved("rsgdf split orbital prims smooth"),
+        moved("rsgdf split aux prims smooth"),
+    );
+    eprintln!("split build: moved orbital {o}, aux {a}");
+    assert!(o > 0 && a > 0, "split path did not move primitives");
+}
+
+/// The split-only stress terms (deleting one changes only the split build).
+const SPLIT_STRESS_MUTANTS: [KStressMutation; 6] = [
+    KStressMutation::SplitNoSrKernelStrain,
+    KStressMutation::SplitNoSmoothPair,
+    KStressMutation::SplitFullG0,
+    KStressMutation::SplitNoSmoothOverlap,
+    KStressMutation::SplitFlipSrSlope,
+    KStressMutation::SplitNoSmoothVolume,
+];
+
+/// The split-only force terms.
+const SPLIT_FORCE_MUTANTS: [KGradMutation; 3] = [
+    KGradMutation::SplitGammaKernel,
+    KGradMutation::SplitNoSmoothOverlap,
+    KGradMutation::SplitFullG0,
+];
+
+/// Range-split RS-GDF ROHF (H3 doublet, 1x1x2, Ewald): the force and stress
+/// against FD of the split SCF energy, and every split-only mutant missing
+/// the same FD. Measured (release): stress FD miss 2.4e-9 (2,2) / 3.0e-10
+/// (0,2) (bar 3e-8), force (0,2) 2.1e-10 (bar 1e-8). Mutation ledger (miss
+/// against the same FD): stress SplitNoSrKernelStrain 5.6e-3,
+/// SplitNoSmoothPair 6.5e-3, SplitFullG0 1.7e-3, SplitNoSmoothOverlap 1.6e-2,
+/// SplitFlipSrSlope 1.1e-2, SplitNoSmoothVolume 3.6e-3; force SplitGammaKernel
+/// 4.6e-5 (smallest; 1x1x2 is near its blind 1x1x1 limit), SplitNoSmoothOverlap
+/// 5.3e-4, SplitFullG0 8.2e-3. Closed-shell ROHF vs RHF on the split build:
+/// stress 3.3e-13, force 2.3e-13 (bar 1e-11); split mutant 1.0e-2 / 1.5e-3.
+/// ROKS PBE0 1x1x3 (ignored): stress 1.3e-9, force 3.7e-10.
 #[test]
-fn rsgdf_range_split_is_refused_for_the_ro_force() {
-    use ferric_pbc::rsgdf::RangeSplit;
+fn rsgdf_range_split_rohf_force_and_stress_match_fd() {
+    SPLIT.with(|s| s.set(Some(SPLIT_LAMBDA)));
     let n = [1, 1, 2];
+    let exxdiv = ExxDiv::Ewald;
     let cell = cell_of(&H3);
-    let res = scf_on(&cell, n, None, ExxDiv::Ewald);
+    assert_split_ran(&cell, n);
+    let res = scf_on(&cell, n, None, exxdiv);
+    let s = stress_of(&cell, n, None, exxdiv, &res, None, None);
+    let g = force_of(&cell, n, None, exxdiv, &res, None, None);
+    let e = |c: &Cell| scf_on(c, n, None, exxdiv).scf.energy;
+    let mut fd_s = Vec::new();
+    let mut worst_s = 0.0_f64;
+    for (i, j) in [(2, 2), (0, 2)] {
+        let fd =
+            (e(&strained(&cell, i, j, FD_H)) - e(&strained(&cell, i, j, -FD_H))) / (2.0 * FD_H);
+        let miss = (s.de_deps[i][j] - fd).abs();
+        eprintln!(
+            "split ROHF stress ({i},{j}): analytic {:.9e} FD {fd:.9e} miss {miss:.2e}",
+            s.de_deps[i][j]
+        );
+        worst_s = worst_s.max(miss);
+        fd_s.push(((i, j), fd));
+    }
+    let (a, x) = (0, 2);
+    let fd_f = (e(&cell_of(&moved(&H3, a, x, FD_H_F))) - e(&cell_of(&moved(&H3, a, x, -FD_H_F))))
+        / (2.0 * FD_H_F);
+    let miss_f = (g.grad[(a, x)] - fd_f).abs();
+    eprintln!(
+        "split ROHF force ({a},{x}): analytic {:.9e} FD {fd_f:.9e} miss {miss_f:.2e}",
+        g.grad[(a, x)]
+    );
+    assert!(worst_s < FD_BAR, "split stress {worst_s:e}");
+    assert!(miss_f < FD_BAR_F, "split force {miss_f:e}");
+    for m in SPLIT_STRESS_MUTANTS {
+        let t = stress_of(&cell, n, None, exxdiv, &res, Some(m), None);
+        let mm = fd_s.iter().fold(0.0_f64, |w, &((i, j), fd)| {
+            w.max((t.de_deps[i][j] - fd).abs())
+        });
+        eprintln!("  split stress mutant {m:?}: FD miss {mm:.2e}");
+        assert!(mm > 1e-5, "{m:?} survives the split FD: {mm:e}");
+    }
+    for m in SPLIT_FORCE_MUTANTS {
+        let t = force_of(&cell, n, None, exxdiv, &res, Some(m), None);
+        let mm = (t.grad[(a, x)] - fd_f).abs();
+        eprintln!("  split force mutant {m:?}: FD miss {mm:.2e}");
+        assert!(mm > 1e-5, "{m:?} survives the split FD: {mm:e}");
+    }
+}
+
+/// Closed-shell ROHF on the range-split build equals the k-RHF split force
+/// and stress (the RHF split paths are anchored in `pbc_kstress.rs` /
+/// `pbc_kxcgrad_hybrid.rs`).
+#[test]
+fn rsgdf_range_split_closed_shell_rohf_equals_rhf() {
+    SPLIT.with(|s| s.set(Some(SPLIT_LAMBDA)));
+    let n = [1, 1, 2];
+    let cell = cell_of(&H2);
+    let exxdiv = ExxDiv::Ewald;
+    assert_split_ran(&cell, n);
+    let res = scf_on(&cell, n, None, exxdiv);
+    assert_eq!(res.scf.nalpha, res.scf.nbeta);
+    let ro_s = stress_of(&cell, n, None, exxdiv, &res, None, None);
+    let ro_g = force_of(&cell, n, None, exxdiv, &res, None, None);
     let prep = prep_for(&cell, &orbital_basis());
     let aux = prep_for(&cell, &et_sp_aux());
     let mesh = mesh_of(&cell, n);
     let hcfg = PeriodicHcoreConfig::with_omega(OMEGA);
+    let mut rc = KRhfConfig::for_cell(&cell, exxdiv);
+    rc.hcore = hcfg;
+    rc.scf.energy_conv = 1e-14;
+    rc.scf.grad_conv = 1e-12;
+    rc.scf.max_iter = 300;
+    rc.jk = KJkKind::RsGdf;
+    rc.rsgdf = kgdf_cfg();
+    let r = solve_krhf(&cell, &prep, Some(&aux), &mesh, &rc).unwrap();
     let hk = periodic_hcore_kpts(&cell, &prep, &mesh, &hcfg).unwrap();
-    let mut kc = kgdf_cfg();
-    kc.gdf.range_split = Some(RangeSplit::new(1.0));
+    let kc = kgdf_cfg();
     let gdf = KRsGdf::build(&cell, &prep, &aux, &mesh, &hk.s, &kc)
         .unwrap()
-        .with_exxdiv(ExxDiv::Ewald);
-    let src = KRsGdfGradSource {
+        .with_exxdiv(exxdiv);
+    let src = || KRsGdfGradSource {
         gdf: &gdf,
         cfg: &kc,
         aux: &aux,
     };
-    let e = kpoint_rohf_gradient(
+    let rhf_s = kpoint_rhf_stress(
         &cell,
         &prep,
         &mesh,
         &hcfg,
         &hk,
-        KGradJk::RsGdf(src),
-        &res.scf,
-        ExxDiv::Ewald,
-        &KUksGradConfig::default(),
+        KStressJk::RsGdf(src()),
+        &r,
+        exxdiv,
+        &KStressConfig {
+            budget_bytes: Some(AMPLE),
+            ..Default::default()
+        },
     )
-    .expect_err("split force")
-    .to_string();
-    assert!(
-        e.contains("kpoint_rohf_gradient: a range-split RS-GDF build is not supported"),
-        "{e}"
+    .unwrap();
+    let rhf_g = kpoint_rhf_gradient(
+        &cell,
+        &prep,
+        &mesh,
+        &hcfg,
+        &hk,
+        KGradJk::RsGdf(src()),
+        &r,
+        exxdiv,
+        &KGradConfig {
+            budget_bytes: Some(AMPLE),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let ds = mdiff(&ro_s.de_deps, &rhf_s.de_deps);
+    let dg = (&ro_g.grad - &rhf_g.grad)
+        .iter()
+        .fold(0.0_f64, |m, x| m.max(x.abs()));
+    eprintln!("split closed-shell ROHF vs RHF: stress {ds:.2e}, force {dg:.2e}");
+    assert!(ds < 1e-11, "stress {ds:e}");
+    assert!(dg < 1e-11, "force {dg:e}");
+    // Both sides: a split-only defect on the RO side misses the RHF reference.
+    let m = stress_of(
+        &cell,
+        n,
+        None,
+        exxdiv,
+        &res,
+        Some(KStressMutation::SplitNoSmoothOverlap),
+        None,
     );
+    let dm = mdiff(&m.de_deps, &rhf_s.de_deps);
+    let mg = force_of(
+        &cell,
+        n,
+        None,
+        exxdiv,
+        &res,
+        Some(KGradMutation::SplitNoSmoothOverlap),
+        None,
+    );
+    let dmg = (&mg.grad - &rhf_g.grad)
+        .iter()
+        .fold(0.0_f64, |m, x| m.max(x.abs()));
+    eprintln!("closed-shell split mutant visible: stress {dm:.2e}, force {dmg:.2e}");
+    assert!(dm > 1e-5 && dmg > 1e-5, "{dm:e} {dmg:e}");
+}
+
+/// `SplitGammaKernel` (the moved blocks' weights with the Gamma kernel) is
+/// blind at 1x1x1 and only weakly visible at 1x1x2 (4.6e-5 above): on a 1x1x3
+/// mesh (non-TRIM q) the split ROHF force against FD of the split energy, and
+/// the mutant against the same FD.
+#[test]
+fn rsgdf_range_split_rohf_force_1x1x3_sees_the_gamma_kernel_mutant() {
+    SPLIT.with(|s| s.set(Some(SPLIT_LAMBDA)));
+    let n = [1, 1, 3];
+    let exxdiv = ExxDiv::Ewald;
+    let cell = cell_of(&H3);
+    assert_split_ran(&cell, n);
+    let res = scf_on(&cell, n, None, exxdiv);
+    let g = force_of(&cell, n, None, exxdiv, &res, None, None);
+    let (a, x) = (0, 2);
+    let e = |p: &[[f64; 3]]| scf_on(&cell_of(p), n, None, exxdiv).scf.energy;
+    let fd = (e(&moved(&H3, a, x, FD_H_F)) - e(&moved(&H3, a, x, -FD_H_F))) / (2.0 * FD_H_F);
+    let miss = (g.grad[(a, x)] - fd).abs();
+    let m = force_of(
+        &cell,
+        n,
+        None,
+        exxdiv,
+        &res,
+        Some(KGradMutation::SplitGammaKernel),
+        None,
+    );
+    let mm = (m.grad[(a, x)] - fd).abs();
+    eprintln!("split ROHF 1x1x3 force ({a},{x}): FD miss {miss:.2e}; SplitGammaKernel {mm:.2e}");
+    assert!(miss < FD_BAR_F, "{miss:e}");
+    assert!(mm > 1e-5, "SplitGammaKernel survives at 1x1x3: {mm:e}");
+}
+
+/// Range-split ROKS PBE0 (Ewald) on the 1x1x3 mesh: force and stress against
+/// FD of the split SCF energy (the Kohn-Sham + exchange-scale path).
+#[test]
+#[ignore = "split RS-GDF ROKS PBE0 1x1x3: 1 SCF + 6 FD SCFs on a 20x50 atom grid"]
+fn rsgdf_range_split_roks_pbe0_force_and_stress_match_fd() {
+    SPLIT.with(|s| s.set(Some(SPLIT_LAMBDA)));
+    let n = [1, 1, 3];
+    let f = Some("PBE0");
+    let exxdiv = ExxDiv::Ewald;
+    let cell = cell_of(&H3);
+    assert_split_ran(&cell, n);
+    let res = scf_on(&cell, n, f, exxdiv);
+    let s = stress_of(&cell, n, f, exxdiv, &res, None, None);
+    let g = force_of(&cell, n, f, exxdiv, &res, None, None);
+    let e = |c: &Cell| scf_on(c, n, f, exxdiv).scf.energy;
+    let mut worst_s = 0.0_f64;
+    for (i, j) in [(2, 2), (0, 2)] {
+        let fd =
+            (e(&strained(&cell, i, j, FD_H)) - e(&strained(&cell, i, j, -FD_H))) / (2.0 * FD_H);
+        worst_s = worst_s.max((s.de_deps[i][j] - fd).abs());
+    }
+    let fd_f = (e(&cell_of(&moved(&H3, 2, 1, FD_H_F))) - e(&cell_of(&moved(&H3, 2, 1, -FD_H_F))))
+        / (2.0 * FD_H_F);
+    let miss_f = (g.grad[(2, 1)] - fd_f).abs();
+    eprintln!("split ROKS PBE0 1x1x3: stress FD miss {worst_s:.2e}, force FD miss {miss_f:.2e}");
+    assert!(worst_s < FD_BAR, "stress {worst_s:e}");
+    assert!(miss_f < FD_BAR_F, "force {miss_f:e}");
 }
