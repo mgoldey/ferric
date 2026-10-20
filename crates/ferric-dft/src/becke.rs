@@ -854,6 +854,13 @@ fn switched_weight(
                 }
             }
             terms.push(term);
+            // P_B is already exactly 0; every further factor is finite. The
+            // gradient still needs the full row while one zero factor's
+            // excluded product can be nonzero (n_zero < 2), and `terms` is
+            // only indexed in that case.
+            if prod == 0.0 && (!want_grad || n_zero >= 2) {
+                break;
+            }
         }
         p_cell[b] = f[b] * prod;
         if !want_grad {

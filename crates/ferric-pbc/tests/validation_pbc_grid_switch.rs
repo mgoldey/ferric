@@ -2,8 +2,10 @@
 //! grid (`PeriodicGridConfig::neighbour_switch`, issue #495).
 //!
 //! The hard neighbour mask (image atoms within `D` of a grid point enter the
-//! partition) makes `E(R, ε)` jump by ~1e-11..1e-9 Ha wherever an image
-//! crosses `D`; the analytic force and stress cannot see the jumps, so a
+//! partition) makes `E(R, ε)` jump wherever an image crosses `D` (measured
+//! here up to 2.2e-7 Ha on the (20, 50) grid at D = 10, and a 3.6e-5 Ha jump
+//! on an s+p triclinic cell at D = 10 in `pbc_kxcstress_mgga.rs`; the size
+//! is grid- and cell-dependent); the analytic force and stress cannot see the jumps, so a
 //! central FD whose step straddles one misses by `J / 2h`. The switch tapers
 //! each image's presence over `[D − W, D]` and differentiates the taper.
 //!
@@ -341,7 +343,8 @@ fn differences(e: &[f64], thresh: f64) -> (f64, f64, usize) {
 
 /// Jump threshold on `|Δ⁴E|` at δ = 1e-4: the smooth part `E⁗ δ⁴` is far
 /// below roundoff and the SCF noise (energy_conv 1e-13) gives `|Δ⁴E|` of a
-/// few 1e-13; the issue's jumps are 1e-11..1e-9.
+/// few 1e-13; the hard-mask jumps on this cell are up to 2.2e-7 (measured
+/// below), and the smallest worth catching are ~1e-11.
 const JUMP: f64 = 1e-11;
 
 /// (i) Dense scans on the 1x1x3 mesh: strain ε_11 over ±3e-3 and the
@@ -381,16 +384,16 @@ fn kmesh_dense_scans_have_no_jumps_with_the_switch() {
 }
 
 /// The energy cost of the taper, against the cutoff convergence it rides on:
-/// Gamma energies for the hard mask at D = 8, 10, 12, 14, 20 and the switch
-/// (W = 2) at D = 10, 12, 14, 22. The switch at (D, W) removes presence
-/// between D − W and D, so its energy is expected between the hard ones at
-/// D − W and D. MEASURED (E − E(hard, D = 20)): hard D = 8 / 10 / 12 / 14:
+/// Gamma energies for the hard mask at D = 8, 10, 12, 14, 20, 22 and the
+/// switch (W = 2) at D = 10, 12, 14, 22. The switch at (D, W) keeps full
+/// presence to D − W and partial presence to D, so its energy is ASSERTED to
+/// lie between the hard ones at D − W and D (within SCF noise). MEASURED (E − E(hard, D = 20)): hard D = 8 / 10 / 12 / 14:
 /// +4.1e-5 / +3.9e-6 / −4.8e-8 / +6.6e-12; switched D = 10 / 12 / 14 / 22:
 /// +1.1e-5 / +1.7e-7 / −3.8e-9 / 0. On this (20, 50) H2 cell the cutoff
 /// itself converges slowly (D = 10 is 3.9e-6 off), and each switched energy
 /// lands between the hard ones at D − W and D, as constructed.
 #[test]
-#[ignore = "validation: 9 Gamma SCFs (H2 PBE); measured 54 s release"]
+#[ignore = "validation: 10 Gamma SCFs (H2 PBE); measured 3.5 s"]
 fn energy_shift_of_the_switch_against_cutoff_convergence() {
     let cell = cell_of(&H2);
     let e = |d: f64, w: f64| {
@@ -413,20 +416,29 @@ fn energy_shift_of_the_switch_against_cutoff_convergence() {
             .scf
             .energy
     };
+    // Hard energies at every D the switched cases bracket, relative to D = 20.
     let reference = e(20.0, 0.0);
-    for (d, w) in [
-        (8.0, 0.0),
-        (10.0, 0.0),
-        (12.0, 0.0),
-        (14.0, 0.0),
-        (10.0, WIDTH),
-        (12.0, WIDTH),
-        (14.0, WIDTH),
-        (22.0, WIDTH),
-    ] {
+    let mut hard = std::collections::BTreeMap::new();
+    for d in [8, 10, 12, 14, 20, 22] {
+        let v = if d == 20 {
+            0.0
+        } else {
+            e(d as f64, 0.0) - reference
+        };
+        eprintln!("Gamma D={d} W=0: E - E(hard, D=20) = {v:+.3e}");
+        hard.insert(d, v);
+    }
+    // SCF noise allowance (energy_conv 1e-13 on both sides of each difference).
+    let tol = 1e-11;
+    for d in [10, 12, 14, 22] {
+        let v = e(d as f64, WIDTH) - reference;
+        let (lo, hi) = (hard[&(d - 2)], hard[&d]);
         eprintln!(
-            "Gamma D={d} W={w}: E - E(hard, D=20) = {:+.3e}",
-            e(d, w) - reference
+            "Gamma D={d} W={WIDTH}: E - E(hard, D=20) = {v:+.3e} (hard D-W {lo:+.3e}, D {hi:+.3e})"
+        );
+        assert!(
+            v >= lo.min(hi) - tol && v <= lo.max(hi) + tol,
+            "switched D={d} outside [hard D-W, hard D]: {v:e} vs [{lo:e}, {hi:e}]"
         );
     }
 }

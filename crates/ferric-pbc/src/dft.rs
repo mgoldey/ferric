@@ -141,13 +141,15 @@ pub(crate) const SORT_BOX: f64 = 2.0;
 /// A Stage-2 periodic-DFT refusal or grid-construction error, by name.
 #[derive(Debug, Clone, PartialEq)]
 pub enum PeriodicDftError {
-    /// `D` is below the covering-radius bound: some point of space would have
-    /// no atom within `D`, so the partition would be empty there and that
-    /// region's integrand silently lost.
+    /// `D` is below the covering-radius bound plus the neighbour switch
+    /// width: some point of space would have no fully present atom, so the
+    /// partition could be empty there and that region's integrand silently
+    /// lost.
     NeighbourCutoffTooSmall {
         /// The requested cutoff (Bohr).
         cutoff: f64,
-        /// [`covering_radius_bound`] of the cell (Bohr).
+        /// [`covering_radius_bound`] of the cell plus
+        /// `PeriodicGridConfig::neighbour_switch` (Bohr).
         required: f64,
     },
     /// A feature Stage 2 does not implement.
@@ -172,9 +174,10 @@ impl std::fmt::Display for PeriodicDftError {
             Self::NeighbourCutoffTooSmall { cutoff, required } => write!(
                 f,
                 "periodic DFT grid: neighbour_cutoff D = {cutoff} Bohr is below the \
-                 covering-radius bound {required:.6} Bohr (the largest point-to-nearest-atom \
-                 distance); points with no atom within D would get zero weight. Use \
-                 neighbour_cutoff >= {required:.6} (or None for the automatic value)"
+                 covering-radius bound + neighbour_switch = {required:.6} Bohr (the bound is the \
+                 largest point-to-nearest-atom distance); points with no fully present atom \
+                 would get zero weight. Use neighbour_cutoff >= {required:.6} (or None for the \
+                 automatic value)"
             ),
             Self::Unsupported { feature, reason } => {
                 write!(f, "periodic DFT: {feature} is not supported: {reason}")
@@ -316,7 +319,12 @@ pub struct PeriodicGridConfig {
     /// fully-present zone is the hard default's `D`) and an explicit `D` must
     /// satisfy `D − W >= covering_radius_bound`. The taper's energy cost is
     /// that of a cutoff between `D − W` and `D` (measured,
-    /// `tests/validation_pbc_grid_switch.rs`).
+    /// `tests/validation_pbc_grid_switch.rs`). Build cost: the switched
+    /// kernel at the same `D` is ~1.6x the hard one, and the automatic `D`
+    /// grows by `W`, so the neighbour count rises ~`(1 + W/D)³` (measured
+    /// Li–H, cubic 4 Bohr, (75, 302), 3 threads: hard D = 10 0.29 s, 133
+    /// neighbours/point; switched D = 10, W = 2 0.46 s; automatic D = 12,
+    /// W = 2 0.87 s, 232 neighbours/point; hard D = 12 0.52 s).
     pub neighbour_switch: f64,
     /// Angular pruning: must be `None` (refused by name — the pruning tables
     /// are molecular and unvalidated periodically).
@@ -2791,10 +2799,14 @@ fn gamma_uks_core(
 /// dependence is exactly the grid's (weights and point motion). The SCF-level
 /// FD and scans are `tests/validation_pbc_grid_switch.rs`.
 ///
-/// Mutation ledger (measured; each applied, these six tests run, reverted):
+/// Mutation ledger (measured; each applied, these tests run, reverted):
 /// * kernel drops the neighbour's presence derivative (`ferric_dft` M1):
-///   force FD miss 9.8e-3, stress 0.23;
-/// * kernel flips its sign (M3): force 2.0e-2, stress 0.46;
+///   dense-cell force FD miss 9.8e-3 (SSF) / 1.2e-2 (Becke), stress 0.23 / 0.36;
+/// * kernel flips its sign (M3): force 2.0e-2 / 2.3e-2, stress 0.46 / 0.72;
+/// * kernel drops a tapered atom's OWN presence derivative (M2) or its own
+///   `f_B` factor (M5): invisible in the dense cell (2.3e-10, the floor: a
+///   tapered atom's `P_B` is 0 or negligible there); the sparse-cell test
+///   misses by 1.03 (M2) and 0.30 (M5);
 /// * switch never selected (`PartitionKernel::new` returns the hard
 ///   kernel): force 2.4e-4, stress 2.6e-3, and the scan shows the hard jumps.
 #[cfg(test)]
@@ -2837,9 +2849,14 @@ mod switch_tests {
     }
 
     fn cfg(width: f64) -> PeriodicGridConfig {
+        cfg_with(PartitionScheme::Ssf, width)
+    }
+
+    fn cfg_with(scheme: PartitionScheme, width: f64) -> PeriodicGridConfig {
         PeriodicGridConfig {
             neighbour_cutoff: Some(CUT),
             neighbour_switch: width,
+            partition: scheme,
             ..PeriodicGridConfig::with_size(12, 26)
         }
     }
@@ -2853,7 +2870,11 @@ mod switch_tests {
     }
 
     fn functional(cell: &Cell, width: f64) -> f64 {
-        let g = PeriodicGrid::build(cell, &cfg(width)).unwrap();
+        functional_with(cell, PartitionScheme::Ssf, width)
+    }
+
+    fn functional_with(cell: &Cell, scheme: PartitionScheme, width: f64) -> f64 {
+        let g = PeriodicGrid::build(cell, &cfg_with(scheme, width)).unwrap();
         g.points()
             .iter()
             .map(|p| p.weight * f_and_grad(p.xyz).0)
@@ -2894,6 +2915,54 @@ mod switch_tests {
         }
     }
 
+    /// REGRESSION GUARD for the default (W = 0) grid: an FNV-style hash of every
+    /// point's weight and coordinates (bits), triclinic Li–H at (20, 50),
+    /// pinned to the values measured on main before the switch existed
+    /// (auto D, D = 6.5, D = 12). A change to the hard path's arithmetic —
+    /// not only to the switch — fails here. Libm-sensitive inputs (radial
+    /// grid logs) are part of the hash: a different platform libm can move
+    /// it, which is a re-pin, not a defect, once the in-process anchor above
+    /// still holds. Seen failing: `DEFAULT_NEIGHBOUR_CUTOFF` 10 → 10.5 moves
+    /// the auto-D hash.
+    #[test]
+    fn default_grid_weights_match_the_pre_switch_hashes() {
+        let mol = Molecule {
+            atoms: vec![
+                atom("Li", 3, [0.1, -0.05, 0.02]),
+                atom("H", 1, [2.07, 1.96, 2.04]),
+            ],
+            charge: 0,
+            multiplicity: 1,
+        };
+        let cell = Cell::new(mol, [[4.0, 0.0, 0.0], [0.3, 4.2, 0.0], [0.0, 0.1, 3.9]]).unwrap();
+        for (d, want) in [
+            (None, 0x4ce1_c320_01a9_51e7_u64),
+            (Some(6.5), 0xc291_1dff_6c16_959f),
+            (Some(12.0), 0xc944_8985_25c5_ac3f),
+        ] {
+            let cfg = PeriodicGridConfig {
+                neighbour_cutoff: d,
+                ..PeriodicGridConfig::with_size(20, 50)
+            };
+            let g = PeriodicGrid::build(&cell, &cfg).unwrap();
+            // The probe's offset basis (not the standard FNV one; kept so the
+            // pinned values stay comparable with the main-branch measurement).
+            let mut h: u64 = 1_469_598_103_934_665_603;
+            for p in g.points() {
+                for v in [
+                    p.weight.to_bits(),
+                    p.xyz[0].to_bits(),
+                    p.xyz[1].to_bits(),
+                    p.xyz[2].to_bits(),
+                ] {
+                    h ^= v;
+                    h = h.wrapping_mul(0x0100_0000_01b3);
+                }
+            }
+            assert_eq!(h, want, "D = {d:?}: {h:016x}");
+        }
+    }
+
     /// With the switch on, the response and strain grids carry exactly the
     /// energy grid's weights, and Σ w misses the cell volume by about the
     /// hard grid's partition error (this deliberately coarse (12, 26) grid:
@@ -2922,12 +2991,92 @@ mod switch_tests {
 
     /// The response grid's weight derivative (images folded onto cell atoms
     /// plus the home point's motion) reproduces the FD of `Σ W F` with the
-    /// taper live. Measured worst 2.3e-10 (fourth-order FD, h = 2e-4,
-    /// roundoff-limited); the smallest mutant (above) misses by 2.4e-4.
+    /// taper live, for SSF and Becke. SSF alone cannot see the derivative of
+    /// a non-home atom's OWN presence `f_B` (a tapered atom's `P_B` is
+    /// exactly 0 under SSF here); Becke's nonzero tails can. Measured worst
+    /// 2.3e-10 (fourth-order FD, h = 2e-4, roundoff-limited); mutants in the
+    /// module ledger.
     #[test]
     fn switched_response_grid_matches_fd_of_the_grid_functional() {
         let cell = lih([0.0; 3]);
-        let rg = build_response_grid(&cell, &cfg(WIDTH), &mut ledger()).unwrap();
+        let mut worst = 0.0_f64;
+        for scheme in [PartitionScheme::Ssf, PartitionScheme::Becke] {
+            let rg = build_response_grid(&cell, &cfg_with(scheme, WIDTH), &mut ledger()).unwrap();
+            let n = rg.natoms;
+            let mut an = [[0.0_f64; 3]; 2];
+            for (g, p) in rg.points.iter().enumerate() {
+                let (f, df) = f_and_grad(p.xyz);
+                for (a, row) in an.iter_mut().enumerate() {
+                    for x in 0..3 {
+                        row[x] += rg.dweight[g * n + a][x] * f;
+                        if a == p.home_atom {
+                            row[x] += p.weight * df[x];
+                        }
+                    }
+                }
+            }
+            let h = 2e-4;
+            let mut miss = 0.0_f64;
+            for (a, row) in an.iter().enumerate() {
+                for x in 0..3 {
+                    let shift = |s: f64| {
+                        let mut pos = cell.positions();
+                        pos[a][x] += s;
+                        let mut mol = cell.mol().clone();
+                        for (at, p) in mol.atoms.iter_mut().zip(&pos) {
+                            (at.x, at.y, at.zpos) = (p[0], p[1], p[2]);
+                        }
+                        Cell::new(mol, *cell.lattice()).unwrap()
+                    };
+                    let fd = fd4(h, |s| functional_with(&shift(s), scheme, WIDTH));
+                    miss = miss.max((fd - row[x]).abs());
+                }
+            }
+            eprintln!("{scheme:?}: switched grid force vs FD: {miss:.2e}");
+            worst = worst.max(miss);
+        }
+        assert!(worst < 1e-8, "{worst:e}");
+    }
+
+    /// The strain grid's weight derivative plus the anchored point motion
+    /// `dr/dε_ab = e_a O_b` reproduces the FD of `Σ W F` under
+    /// `Cell::strained`, all nine components, taper live, SSF and Becke.
+    /// Measured worst 2.3e-10; mutants in the module ledger.
+    /// A SPARSE cell (Li–H, a = 9 Bohr) with the tightest legal cutoff
+    /// `D = bound + W`: near the covering-radius holes the nearest image is
+    /// barely fully present and the next ones sit in the taper with
+    /// non-negligible cell functions, so the derivative of a tapered atom's
+    /// OWN presence `f_B` (invisible in the dense cell above) reaches the
+    /// force. Becke partition (its tails keep those `P_B` nonzero).
+    #[test]
+    fn sparse_cell_force_sees_the_own_presence_derivative() {
+        let mol = Molecule {
+            atoms: vec![
+                atom("Li", 3, [0.1, -0.05, 0.02]),
+                atom("H", 1, [2.07, 1.96, 2.04]),
+            ],
+            charge: 0,
+            multiplicity: 1,
+        };
+        let lat = [[9.0, 0.0, 0.0], [0.0, 9.0, 0.0], [0.0, 0.0, 9.0]];
+        let cell = Cell::new(mol, lat).unwrap();
+        let w = 1.5;
+        let c = PeriodicGridConfig {
+            // + 0.05: the FD displacements move the covering bound slightly.
+            neighbour_cutoff: Some(covering_radius_bound(&cell) + w + 0.05),
+            neighbour_switch: w,
+            partition: PartitionScheme::Becke,
+            ..PeriodicGridConfig::with_size(12, 26)
+        };
+        let e = |cl: &Cell| -> f64 {
+            PeriodicGrid::build(cl, &c)
+                .unwrap()
+                .points()
+                .iter()
+                .map(|p| p.weight * f_and_grad(p.xyz).0)
+                .sum()
+        };
+        let rg = build_response_grid(&cell, &c, &mut ledger()).unwrap();
         let n = rg.natoms;
         let mut an = [[0.0_f64; 3]; 2];
         for (g, p) in rg.points.iter().enumerate() {
@@ -2941,59 +3090,56 @@ mod switch_tests {
                 }
             }
         }
-        let h = 2e-4;
-        let mut worst = 0.0_f64;
+        let mut miss = 0.0_f64;
         for (a, row) in an.iter().enumerate() {
             for x in 0..3 {
                 let shift = |s: f64| {
-                    let mut pos = cell.positions();
-                    pos[a][x] += s;
                     let mut mol = cell.mol().clone();
-                    for (at, p) in mol.atoms.iter_mut().zip(&pos) {
-                        (at.x, at.y, at.zpos) = (p[0], p[1], p[2]);
+                    match x {
+                        0 => mol.atoms[a].x += s,
+                        1 => mol.atoms[a].y += s,
+                        _ => mol.atoms[a].zpos += s,
                     }
-                    Cell::new(mol, *cell.lattice()).unwrap()
+                    Cell::new(mol, lat).unwrap()
                 };
-                let fd = fd4(h, |s| functional(&shift(s), WIDTH));
-                worst = worst.max((fd - row[x]).abs());
+                miss = miss.max((fd4(2e-4, |s| e(&shift(s))) - row[x]).abs());
             }
         }
-        eprintln!("switched grid force vs FD: {worst:.2e} (|dE/dX| {an:?})");
-        assert!(worst < 1e-8, "{worst:e}");
+        eprintln!("sparse Becke: switched grid force vs FD: {miss:.2e}");
+        assert!(miss < 1e-8, "{miss:e}");
     }
 
-    /// The strain grid's weight derivative plus the anchored point motion
-    /// `dr/dε_ab = e_a O_b` reproduces the FD of `Σ W F` under
-    /// `Cell::strained`, all nine components, taper live. Measured worst
-    /// 2.3e-10; the smallest mutant misses by 2.6e-3.
     #[test]
     fn switched_strain_grid_matches_fd_of_the_grid_functional() {
         let cell = lih([0.0; 3]);
-        let sg = build_strain_grid(&cell, &cfg(WIDTH), &mut ledger()).unwrap();
-        let mut an = [[0.0_f64; 3]; 3];
-        for (g, p) in sg.points.iter().enumerate() {
-            let (f, df) = f_and_grad(p.xyz);
-            let o = sg.anchors[g];
-            for a in 0..3 {
-                for b in 0..3 {
-                    an[a][b] += sg.dweight[g][a][b] * f + p.weight * df[a] * o[b];
+        let mut worst = 0.0_f64;
+        for scheme in [PartitionScheme::Ssf, PartitionScheme::Becke] {
+            let sg = build_strain_grid(&cell, &cfg_with(scheme, WIDTH), &mut ledger()).unwrap();
+            let mut an = [[0.0_f64; 3]; 3];
+            for (g, p) in sg.points.iter().enumerate() {
+                let (f, df) = f_and_grad(p.xyz);
+                let o = sg.anchors[g];
+                for a in 0..3 {
+                    for b in 0..3 {
+                        an[a][b] += sg.dweight[g][a][b] * f + p.weight * df[a] * o[b];
+                    }
                 }
             }
-        }
-        let h = 2e-4;
-        let mut worst = 0.0_f64;
-        for a in 0..3 {
-            for b in 0..3 {
-                let at = |s: f64| {
-                    let mut e = [[0.0; 3]; 3];
-                    e[a][b] = s;
-                    functional(&cell.strained(&e).unwrap(), WIDTH)
-                };
-                let fd = fd4(h, at);
-                worst = worst.max((fd - an[a][b]).abs());
+            let h = 2e-4;
+            let mut miss = 0.0_f64;
+            for a in 0..3 {
+                for b in 0..3 {
+                    let at = |s: f64| {
+                        let mut e = [[0.0; 3]; 3];
+                        e[a][b] = s;
+                        functional_with(&cell.strained(&e).unwrap(), scheme, WIDTH)
+                    };
+                    miss = miss.max((fd4(h, at) - an[a][b]).abs());
+                }
             }
+            eprintln!("{scheme:?}: switched grid stress vs FD: {miss:.2e}");
+            worst = worst.max(miss);
         }
-        eprintln!("switched grid stress vs FD: {worst:.2e}");
         assert!(worst < 1e-8, "{worst:e}");
     }
 
