@@ -261,6 +261,7 @@ def run_pyscf(cell, threads, precision, method="rhf", grid=None):
         rec["conv_tol"] = inner.get("conv_tol")
         rec["conv_tol_grad"] = inner.get("conv_tol_grad")
         rec["grid"] = inner.get("grid")
+        rec["n_grid_points"] = inner.get("n_grid_points")
     except Exception as e:  # noqa: BLE001
         rec["parse_error"] = repr(e)
         rec["stderr"] = p.stderr[-500:]
