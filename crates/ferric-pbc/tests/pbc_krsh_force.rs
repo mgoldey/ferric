@@ -52,7 +52,8 @@
 //! The full FD matrix (both functionals x both exxdiv) and the FD floor sweep
 //! are in `validation_krsh_force.rs`; this file runs one FD row.
 //!
-//! NOT covered: RS-GDF (refused), open shell (refused), p/d
+//! NOT covered: RS-GDF (refused), open shell (UKS: `pbc_kuks_rsh_force.rs`;
+//! ROKS refused), p/d
 //! shells (H2/STO-3G only), shifted meshes, a PySCF force pin, Python / CLI
 //! (the shared derivative gates still refuse range-separated hybrids).
 
@@ -397,7 +398,8 @@ fn rsh_force_refusals() {
     let e = call(&other, "HSE06").unwrap_err();
     assert!(e.contains("functional's is"), "{e}");
     assert!(call(&eri_of(&fx, Some(rsh_of("HSE06"))), "HSE06").is_ok());
-    // The open-shell force keeps refusing range separation (the stress is
-    // `pbc_krsh_stress.rs`).
+    // The Python / CLI open-shell derivative gate keeps refusing range
+    // separation (the library UKS force is `pbc_kuks_rsh_force.rs`, the
+    // closed-shell stress `pbc_krsh_stress.rs`).
     assert!(ferric_pbc::kxcgrad::check_open_shell_force_functional("HSE06").is_err());
 }

@@ -53,8 +53,9 @@
 //! `KRsGdf::build_rsh`), `K_σ = K[D_σ]` scaled by 1 (`a = 1`; the fractions
 //! and the MIXED Madelung constant `c_sr v_M + (c_lr − c_sr) v_M(ω)` are
 //! inside it), exactly as [`crate::kuks`] does; the Roothaan combination is
-//! unchanged. The reported fraction is `c_sr`. ENERGY only: forces and stress
-//! refuse RSH ([`crate::kxcgrad::check_open_shell_force_functional`]).
+//! unchanged. The reported fraction is `c_sr`. ENERGY only: the ROKS force and
+//! stress refuse RSH (the open-shell RSH force is UKS only,
+//! [`crate::kuxcgrad::kpoint_uks_gradient`]).
 //! Meta-GGA (no tau term here), VV10 and double hybrids are refused.
 //!
 //! Units: Bohr and Hartree.

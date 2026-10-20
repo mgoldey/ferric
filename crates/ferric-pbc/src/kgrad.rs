@@ -84,9 +84,11 @@
 //! exchange fraction 0 plus the XC terms ([`crate::kxcgrad`]). Dense kernels
 //! built with a range separation ([`crate::rsh`]) are differentiated with the
 //! exchange walks weighted by the kernel factor `f(|K|)` (J bare) for the
-//! closed-shell RKS force only (`check_inputs_rsh`; the closed-shell RKS
-//! stress, [`crate::kstress`], admits them the same way); every other entry,
-//! and RS-GDF with an attenuated fit, refuses them. RS-GDF aux on the
+//! closed-shell RKS force and stress and the open-shell UKS force only
+//! (`check_inputs_rsh`; the closed-shell RKS stress, [`crate::kstress`],
+//! admits them the same way; the UKS exchange terms `(1, D_α), (1, D_β)` take
+//! the same factor, the M-term `Σ_σ D_σ S D_σ` the same mixed constant);
+//! every other entry, and RS-GDF with an attenuated fit, refuses them. RS-GDF aux on the
 //! cell's atoms (no ghost sites). A scalar periodic ECP is differentiated by the Gamma ECP walk
 //! ([`crate::ecp::periodic_ecp_gradient`]) with the SR walk's image weight
 //! `Re Δ_nm(L)` in place of the density (`parts.ecp`; derivation in the
@@ -249,6 +251,17 @@ pub enum KGradMutation {
     /// Range separation: the Madelung part of the M-term dropped (blind for
     /// `exxdiv = none`).
     RshNoMadelungTerm,
+    /// Open shell: the β exchange term of the derivative walks (dense and
+    /// fit) pairs with `D_α` (`(1, D_α), (1, D_α)`). A no-op on a restricted
+    /// state; invisible on a singlet (`D_α = D_β`).
+    ExchBetaUsesAlpha,
+    /// Open shell: the β exchange term dropped from the derivative walks.
+    /// A no-op on a restricted state.
+    ExchDropBeta,
+    /// Open shell: the Madelung M-term in the closed-shell form
+    /// `½ D S D` on the TOTAL density instead of `Σ_σ D_σ S D_σ`. A no-op on
+    /// a restricted state; invisible on a singlet; blind for `exxdiv = none`.
+    MTermTotalDensity,
 }
 
 /// The hcore SR derivative walk's rotation and forward-transformed image
@@ -731,7 +744,7 @@ pub(crate) fn check_inputs(
 
 /// [`check_inputs`] for an entry that differentiates a range-separated
 /// exchange: `rsh` is the functional's range separation (`None` for every
-/// entry but the closed-shell RKS force and stress). A dense source must carry exactly
+/// entry but the RKS force and stress and the UKS force). A dense source must carry exactly
 /// these parameters (and none when `rsh` is `None`); an RS-GDF source must
 /// carry none and `rsh` must be `None` (the attenuated fit has no derivative).
 #[allow(clippy::too_many_arguments)]
@@ -802,9 +815,9 @@ pub(crate) fn check_inputs_rsh(
                 return Err(FerricError::General(format!(
                     "{who}: range-separated exchange on RS-GDF J/K (KRsGdf::build_rsh) has no \
                      derivative here (the attenuated fit is not differentiated, so the force \
-                     would be wrong); the range-separated k-point force and stress cover \
-                     closed-shell RKS (kpoint_rks_gradient, kpoint_rks_stress) on dense-AFT J/K \
-                     only"
+                     would be wrong); the range-separated k-point derivatives cover the RKS \
+                     force and stress and the UKS force (kpoint_rks_gradient, kpoint_rks_stress, \
+                     kpoint_uks_gradient) on dense-AFT J/K only"
                 )));
             }
             if s.gdf.nk() != nk {
@@ -836,8 +849,9 @@ fn check_dense_rsh(
         (Some(_), None) => Err(FerricError::General(format!(
             "{who}: the dense kernels carry an attenuated (range-separated) exchange (rsh); \
              this entry point does not differentiate it (the range-separated k-point force \
-             and stress cover closed-shell RKS, kpoint_rks_gradient / kpoint_rks_stress with \
-             a range-separated functional, on dense-AFT J/K only)"
+             and stress cover RKS (kpoint_rks_gradient / kpoint_rks_stress) and the UKS \
+             force (kpoint_uks_gradient), with a range-separated functional, on dense-AFT J/K \
+             only)"
         ))),
         (None, Some(w)) => Err(FerricError::General(format!(
             "{who}: the functional is range-separated ({w:?}) but the dense kernels carry the \
@@ -1041,7 +1055,7 @@ fn m_term_madelung(
 }
 
 /// The range separation of a dense source (`check_inputs_rsh` admits it on
-/// the closed-shell RKS force only) and the `v_M` the M-term uses: the SCF's
+/// the RKS and UKS forces only) and the `v_M` the M-term uses: the SCF's
 /// (mixed, for a range-separated K) `vm`, or the plain mesh constant under
 /// the [`KGradMutation::RshPlainMadelung`] defect.
 fn rsh_and_m_term_vm(
@@ -1126,6 +1140,42 @@ pub(crate) fn scaled_exch_terms(spins: &KSpins, exch_scale: f64) -> Vec<(f64, &[
         .collect()
 }
 
+/// The Madelung M-term density sandwich `Σ_σ D_σ S D_σ` at `k` (restricted:
+/// `½ D S D`), or the total-density form under the
+/// [`KGradMutation::MTermTotalDensity`] defect.
+fn m_term_sandwich(
+    spins: &KSpins,
+    k: usize,
+    s: &Array2<C64>,
+    mutation: Option<KGradMutation>,
+) -> Array2<C64> {
+    if mutation == Some(KGradMutation::MTermTotalDensity) {
+        let d = spins.total(k);
+        d.dot(s).dot(&d).mapv(|z| z * 0.5)
+    } else {
+        spins.sandwich(k, s)
+    }
+}
+
+/// The open-shell exchange-term defects ([`KGradMutation::ExchBetaUsesAlpha`],
+/// [`KGradMutation::ExchDropBeta`]) applied to the `(c_α, D_α), (c_β, D_β)`
+/// terms; anything else (and a restricted, single-term list) unchanged.
+fn spin_mutated(
+    mut terms: Vec<(f64, &[Array2<C64>])>,
+    mutation: Option<KGradMutation>,
+) -> Vec<(f64, &[Array2<C64>])> {
+    if terms.len() == 2 {
+        match mutation {
+            Some(KGradMutation::ExchBetaUsesAlpha) => terms[1].1 = terms[0].1,
+            Some(KGradMutation::ExchDropBeta) => {
+                terms.pop();
+            }
+            _ => {}
+        }
+    }
+    terms
+}
+
 /// Assemble the k-point gradient from the per-spin `D(k)`/`F(k)`, hcore and J/K derivative
 /// pieces; `vm` is the Madelung shift and `exch_scale` the exact-exchange
 /// fraction `a` of the energy (`1` = Hartree-Fock, bitwise the unscaled
@@ -1189,15 +1239,15 @@ pub(crate) fn assemble(
     // The exchange coefficients, scaled by the exact-exchange fraction. The
     // dense walks and the RS-GDF fit take them separately so a test defect can
     // leave exactly one of the two unscaled.
-    let exch_dense = scaled_exch_terms(&spins, sc.dense);
-    let exch_fit = scaled_exch_terms(&spins, sc.fit);
+    let exch_dense = spin_mutated(scaled_exch_terms(&spins, sc.dense), mutation);
+    let exch_fit = spin_mutated(scaled_exch_terms(&spins, sc.fit), mutation);
     let j_scale = sc.coulomb;
     let mk: Vec<Array2<C64>> = (0..nk)
         .map(|k| {
             let mut m = spins.energy_weighted(k).mapv(|z| -z);
             m.scaled_add(cr(c0 * ztot), &dtot[k]);
             if vm_m != 0.0 {
-                m.scaled_add(cr(-vm_m), &spins.sandwich(k, &s_k[k]));
+                m.scaled_add(cr(-vm_m), &m_term_sandwich(&spins, k, &s_k[k], mutation));
             }
             m
         })

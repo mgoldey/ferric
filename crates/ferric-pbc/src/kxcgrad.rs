@@ -91,9 +91,11 @@
 //! (`J` keeps the bare kernel) and the M-term carrying the SCF's mixed
 //! constant (the same cancellation as above makes the force independent of
 //! it). The semilocal remainder is libxc's for the CAM functional, as in the
-//! energy. Covered: closed shell, dense AFT (the stress likewise,
-//! [`crate::kxcstress`]); refused: RS-GDF (the attenuated fit is not
-//! differentiated), open shell.
+//! energy. Covered: closed shell here (the stress likewise,
+//! [`crate::kxcstress`]) and the open-shell UKS force
+//! ([`crate::kuxcgrad::kpoint_uks_gradient`], `K_σ = K[D_σ]` per spin with the
+//! same kernel and constant), dense AFT; refused: RS-GDF (the attenuated fit
+//! is not differentiated), ROKS / ROHF, the open-shell stress.
 //!
 //! # What is new relative to the k-point HF force ([`crate::kgrad`])
 //!
@@ -1021,8 +1023,10 @@ pub fn is_validated_mgga_energy(functional: &str) -> bool {
 /// Meta-GGA, range-separated hybrids, VV10 and double hybrids are refused. The
 /// library k-point UKS force and stress ([`crate::kuxcgrad::kpoint_uks_gradient`],
 /// [`crate::kuxcstress::kpoint_uks_stress`]) also cover SCAN / r2SCAN on the
-/// dense-AFT J/K, but that route is not wired to Python or the CLI; the
-/// k-point ROKS SCF has no meta-GGA at all.
+/// dense-AFT J/K, and the library UKS FORCE (not the stress) covers
+/// range-separated hybrids on the dense-AFT J/K (also at Gamma,
+/// [`crate::gamma_rsh::gamma_uks_rsh_gradient`]); neither route is wired to
+/// Python or the CLI; the k-point ROKS SCF has no meta-GGA at all.
 pub fn check_open_shell_force_functional(functional: &str) -> Result<(), FerricError> {
     let (xc, _exx, rsh) = resolve_periodic_functional_rsh(functional)?;
     if force_covers(&xc, rsh.is_some()) {
@@ -1070,8 +1074,9 @@ pub(crate) fn resolve_global_mgga(functional: &str) -> Result<(XcDef, f64), Ferr
             feature: "range-separated hybrid force at k",
             reason: format!(
                 "{functional}: the attenuated-exchange derivative covers the closed-shell RKS \
-                 force and stress on dense-AFT J/K only (kpoint_rks_gradient, \
-                 kpoint_rks_stress); not this route (open-shell force)"
+                 force and stress and the open-shell UKS force on dense-AFT J/K only \
+                 (kpoint_rks_gradient, kpoint_rks_stress, kpoint_uks_gradient); not this route \
+                 (ROKS / ROHF force, open-shell stress)"
             ),
         }
         .into());
@@ -1248,6 +1253,39 @@ pub fn kpoint_null_xc_gradient_rsh(
     )
 }
 
+/// The Madelung shift `v_M` the SCF's K carried (0 for a pure functional:
+/// no K): the mesh constant under `exxdiv = ewald`, or for a range-separated
+/// K (`rsh`) the mixed constant of [`crate::rsh`]; 0 under `none`. A hybrid
+/// (`exch != 0`) without `exxdiv` is a typed error. Shared by the closed- and
+/// open-shell forces.
+pub(crate) fn hybrid_madelung(
+    who: &str,
+    cell: &Cell,
+    mesh: &KPointMesh,
+    exch: f64,
+    exxdiv: Option<ExxDiv>,
+    rsh: Option<RshParams>,
+) -> Result<f64, FerricError> {
+    if exch == 0.0 {
+        return Ok(0.0);
+    }
+    let exxdiv = exxdiv.ok_or_else(|| {
+        FerricError::General(format!(
+            "{who}: a hybrid functional (exact exchange {exch}) needs \
+             KRksGradConfig::exxdiv, the treatment the SCF ran (its K carries the \
+             Madelung shift)"
+        ))
+    })?;
+    Ok(match (exxdiv, rsh) {
+        (ExxDiv::None, _) => 0.0,
+        (ExxDiv::Ewald, None) => mesh.madelung(cell)?,
+        // The mixed constant of the range-separated K (crate::rsh).
+        (ExxDiv::Ewald, Some(r)) => {
+            r.madelung(&Cell::new(cell.mol().clone(), mesh.supercell_lattice())?)?
+        }
+    })
+}
+
 /// The shared body: XC response, Fock guard, exchange-free HF assembly.
 #[allow(clippy::too_many_arguments)]
 fn rks_gradient_with(
@@ -1284,26 +1322,7 @@ fn rks_gradient_with(
     }
     let natoms = cell.positions().len();
     let nk = mesh.nk();
-    // The Madelung shift of the SCF's K (0 for a pure functional: no K).
-    let vm = if exch == 0.0 {
-        0.0
-    } else {
-        let exxdiv = cfg.exxdiv.ok_or_else(|| {
-            FerricError::General(format!(
-                "{who}: a hybrid functional (exact exchange {exch}) needs \
-                 KRksGradConfig::exxdiv, the treatment the SCF ran (its K carries the \
-                 Madelung shift)"
-            ))
-        })?;
-        match (exxdiv, rsh) {
-            (ExxDiv::None, _) => 0.0,
-            (ExxDiv::Ewald, None) => mesh.madelung(cell)?,
-            // The mixed constant of the range-separated K (crate::rsh).
-            (ExxDiv::Ewald, Some(r)) => {
-                r.madelung(&Cell::new(cell.mol().clone(), mesh.supercell_lattice())?)?
-            }
-        }
-    };
+    let vm = hybrid_madelung(who, cell, mesh, exch, cfg.exxdiv, rsh)?;
     let mut ledger = open_ledger(cell, prep, mesh, &cfg.grad, false)?;
     let d = scf.densities.clone();
     let mut xo = xc.evaluate(&d, &ledger)?;
