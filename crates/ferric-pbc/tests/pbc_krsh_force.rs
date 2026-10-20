@@ -52,7 +52,7 @@
 //! The full FD matrix (both functionals x both exxdiv) and the FD floor sweep
 //! are in `validation_krsh_force.rs`; this file runs one FD row.
 //!
-//! NOT covered: RS-GDF (refused), open shell (refused), stress (refused), p/d
+//! NOT covered: RS-GDF (refused), open shell (refused), p/d
 //! shells (H2/STO-3G only), shifted meshes, a PySCF force pin, Python / CLI
 //! (the shared derivative gates still refuse range-separated hybrids).
 
@@ -64,19 +64,16 @@ use common::*;
 use ferric_pbc::dense_aft::{DenseAftEri, ExxDiv, DEFAULT_DENSE_AFT_MAX_BYTES};
 use ferric_pbc::dft::{gamma_rks_rsh, GammaRksConfig, PeriodicGridConfig};
 use ferric_pbc::gamma_rsh::{gamma_rks_rsh_gradient, GammaRshExchange};
-use ferric_pbc::hcore::kpoint::periodic_hcore_kpts;
 use ferric_pbc::hcore::{periodic_hcore, PeriodicHcoreConfig};
 use ferric_pbc::kdense_aft::{KDenseAftConfig, KDenseAftEri};
-use ferric_pbc::kdft::KRksResult;
 use ferric_pbc::kgrad::{KGradConfig, KGradJk, KGradMutation};
 use ferric_pbc::kpts::KPointMesh;
-use ferric_pbc::kscf::{solve_krks_injected, KPointInjection, KPointXc, KScfResult};
+use ferric_pbc::kscf::KScfResult;
 use ferric_pbc::kxcgrad::{kpoint_null_xc_gradient_rsh, kpoint_rks_gradient, KRksGradient};
 use ferric_pbc::lattice::Cell;
 use ferric_pbc::rsh::RshParams;
 use ferric_pbc::uhf::GammaUhfIntegrals;
 use ndarray::Array2;
-use num_complex::Complex64;
 use support::*;
 
 /// (1, per-commit row) Central FD of the CAM-B3LYP energy (fresh SCF per
@@ -100,68 +97,6 @@ fn cam_b3lyp_force_matches_fd() {
 }
 
 // ---------------------------------------------------- equal fractions anchor
-
-struct ZeroXc(usize);
-impl KPointXc for ZeroXc {
-    fn build(
-        &mut self,
-        dm: &[Array2<Complex64>],
-    ) -> Result<(f64, Vec<Array2<Complex64>>), ferric_core::FerricError> {
-        Ok((
-            0.0,
-            dm.iter().map(|_| Array2::zeros((self.0, self.0))).collect(),
-        ))
-    }
-}
-
-/// Zero-XC k SCF on dense kernels with range separation `rsh` and exchange
-/// scale `a`; returns (fixture pieces, SCF, kernels).
-fn zero_xc(exxdiv: ExxDiv, rsh: Option<RshParams>, a: f64) -> (Fx, KScfResult, KDenseAftEri) {
-    let cell = cell_of(&H2);
-    let prep = prep_for(&cell, &pyscf_sto3g_h());
-    let mesh = KPointMesh::gamma_centred(&cell, [1, 1, 3]).unwrap();
-    let hk =
-        periodic_hcore_kpts(&cell, &prep, &mesh, &PeriodicHcoreConfig::with_omega(OMEGA)).unwrap();
-    let dc = KDenseAftConfig {
-        precision: PRECISION,
-        budget_bytes: Some(AMPLE),
-        rsh,
-        ..Default::default()
-    };
-    let eri = KDenseAftEri::build(&cell, &prep, &mesh, &hk.s, exxdiv, &dc).unwrap();
-    let mut sc = ferric_pbc::kscf::KScfConfig::default();
-    sc.energy_conv = 1e-13;
-    sc.grad_conv = 1e-10;
-    sc.max_iter = 200;
-    let inj = KPointInjection {
-        s: hk.s.clone(),
-        h: hk.h.clone(),
-        vnn: hk.enn,
-        jk: Box::new(eri.jk_builder()),
-    };
-    let scf = solve_krks_injected(&cell, &mesh, &sc, inj, &mut ZeroXc(prep.nbasis()), a).unwrap();
-    assert!(scf.converged);
-    let dummy = KRksResult {
-        e_xc: 0.0,
-        exact_exchange_fraction: a,
-        n_grid_points: 0,
-        electrons_on_grid: 0.0,
-        scf: scf.clone(),
-    };
-    (
-        Fx {
-            cell,
-            prep,
-            mesh,
-            hk,
-            res: dummy,
-            f: String::new(),
-            exxdiv,
-        },
-        scf,
-        eri,
-    )
-}
 
 fn null_force(
     fx: &Fx,
@@ -233,29 +168,6 @@ fn rsh_with_equal_fractions_is_the_global_hybrid_force() {
 }
 
 // ------------------------------------------------------------ supercell
-
-fn supercell(pos: &[[f64; 3]], n: [usize; 3]) -> Cell {
-    let mut atoms = Vec::new();
-    for m0 in 0..n[0] {
-        for m1 in 0..n[1] {
-            for m2 in 0..n[2] {
-                for p in pos {
-                    atoms.push([
-                        p[0] + m0 as f64 * A,
-                        p[1] + m1 as f64 * A,
-                        p[2] + m2 as f64 * A,
-                    ]);
-                }
-            }
-        }
-    }
-    let lat = [
-        [A * n[0] as f64, 0.0, 0.0],
-        [0.0, A * n[1] as f64, 0.0],
-        [0.0, 0.0, A * n[2] as f64],
-    ];
-    Cell::new(hydrogens(&atoms), lat).unwrap()
-}
 
 /// (3) SUPERCELL: the 1x1x3 mesh force on atom A is the force on ONE copy of A
 /// in the explicit 3-cell supercell (1-point mesh: no q classes, the
@@ -485,6 +397,7 @@ fn rsh_force_refusals() {
     let e = call(&other, "HSE06").unwrap_err();
     assert!(e.contains("functional's is"), "{e}");
     assert!(call(&eri_of(&fx, Some(rsh_of("HSE06"))), "HSE06").is_ok());
-    // Open-shell force and the stress keep refusing range separation.
+    // The open-shell force keeps refusing range separation (the stress is
+    // `pbc_krsh_stress.rs`).
     assert!(ferric_pbc::kxcgrad::check_open_shell_force_functional("HSE06").is_err());
 }

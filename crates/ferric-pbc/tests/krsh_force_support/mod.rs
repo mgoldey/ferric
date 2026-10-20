@@ -1,5 +1,6 @@
-//! Shared fixtures of the range-separated k-point force tests
-//! (`pbc_krsh_force.rs` per commit, `validation_krsh_force.rs` weekly).
+//! Shared fixtures of the range-separated k-point force and stress tests
+//! (`pbc_krsh_force.rs` / `pbc_krsh_stress.rs` per commit,
+//! `validation_krsh_force.rs` / `validation_krsh_stress.rs` weekly).
 #![allow(dead_code)]
 
 use super::common::*;
@@ -11,10 +12,12 @@ use ferric_pbc::kdense_aft::{KDenseAftConfig, KDenseAftEri};
 use ferric_pbc::kdft::{solve_krks, KRksConfig, KRksResult};
 use ferric_pbc::kgrad::{KGradConfig, KGradJk, KGradMutation};
 use ferric_pbc::kpts::KPointMesh;
+use ferric_pbc::kscf::{solve_krks_injected, KPointInjection, KPointXc, KScfResult};
 use ferric_pbc::kxcgrad::{kpoint_rks_gradient, KRksGradConfig, KRksGradient, KXcGrid};
 use ferric_pbc::lattice::Cell;
 use ferric_pbc::rsh::{resolve_periodic_functional_rsh, RshParams};
 use ndarray::Array2;
+use num_complex::Complex64;
 
 /// libxc name of CAM-B3LYP (the friendly spelling does not resolve).
 pub const CAM: &str = "HYB_GGA_XC_CAM_B3LYP";
@@ -186,4 +189,92 @@ pub fn max_erf_weight(cell: &Cell, mesh: &KPointMesh, r: RshParams) -> f64 {
         }
     }
     w
+}
+
+/// A zero XC (`E_xc = 0`, `V_xc = 0`) for the equal-fraction anchors.
+pub struct ZeroXc(pub usize);
+impl KPointXc for ZeroXc {
+    fn build(
+        &mut self,
+        dm: &[Array2<Complex64>],
+    ) -> Result<(f64, Vec<Array2<Complex64>>), ferric_core::FerricError> {
+        Ok((
+            0.0,
+            dm.iter().map(|_| Array2::zeros((self.0, self.0))).collect(),
+        ))
+    }
+}
+
+/// Zero-XC k SCF on dense kernels with range separation `rsh` and exchange
+/// scale `a`; returns (fixture pieces, SCF, kernels).
+pub fn zero_xc(exxdiv: ExxDiv, rsh: Option<RshParams>, a: f64) -> (Fx, KScfResult, KDenseAftEri) {
+    let cell = cell_of(&H2);
+    let prep = prep_for(&cell, &pyscf_sto3g_h());
+    let mesh = KPointMesh::gamma_centred(&cell, [1, 1, 3]).unwrap();
+    let hk =
+        periodic_hcore_kpts(&cell, &prep, &mesh, &PeriodicHcoreConfig::with_omega(OMEGA)).unwrap();
+    let dc = KDenseAftConfig {
+        precision: PRECISION,
+        budget_bytes: Some(AMPLE),
+        rsh,
+        ..Default::default()
+    };
+    let eri = KDenseAftEri::build(&cell, &prep, &mesh, &hk.s, exxdiv, &dc).unwrap();
+    let mut sc = ferric_pbc::kscf::KScfConfig::default();
+    sc.energy_conv = 1e-13;
+    sc.grad_conv = 1e-10;
+    sc.max_iter = 200;
+    let inj = KPointInjection {
+        s: hk.s.clone(),
+        h: hk.h.clone(),
+        vnn: hk.enn,
+        jk: Box::new(eri.jk_builder()),
+    };
+    let scf = solve_krks_injected(&cell, &mesh, &sc, inj, &mut ZeroXc(prep.nbasis()), a).unwrap();
+    assert!(scf.converged);
+    let dummy = KRksResult {
+        e_xc: 0.0,
+        exact_exchange_fraction: a,
+        n_grid_points: 0,
+        electrons_on_grid: 0.0,
+        scf: scf.clone(),
+    };
+    (
+        Fx {
+            cell,
+            prep,
+            mesh,
+            hk,
+            res: dummy,
+            f: String::new(),
+            exxdiv,
+        },
+        scf,
+        eri,
+    )
+}
+
+/// The explicit diag(n) supercell of `pos` in the `A` cube (copy-major,
+/// copy 0 first).
+pub fn supercell(pos: &[[f64; 3]], n: [usize; 3]) -> Cell {
+    let mut atoms = Vec::new();
+    for m0 in 0..n[0] {
+        for m1 in 0..n[1] {
+            for m2 in 0..n[2] {
+                for p in pos {
+                    atoms.push([
+                        p[0] + m0 as f64 * A,
+                        p[1] + m1 as f64 * A,
+                        p[2] + m2 as f64 * A,
+                    ]);
+                }
+            }
+        }
+    }
+    let lat = [
+        [A * n[0] as f64, 0.0, 0.0],
+        [0.0, A * n[1] as f64, 0.0],
+        [0.0, 0.0, A * n[2] as f64],
+    ];
+    Cell::new(hydrogens(&atoms), lat).unwrap()
 }

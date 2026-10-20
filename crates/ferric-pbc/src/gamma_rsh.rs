@@ -334,22 +334,7 @@ pub fn gamma_rks_rsh_gradient(
     cfg: &crate::kgrad::KGradConfig,
 ) -> Result<crate::kxcgrad::KRksGradient, FerricError> {
     let who = "gamma_rks_rsh_gradient";
-    rsh_k.check_for(who, &dft.functional, dft.exxdiv)?;
-    let Source::Dense(eri) = &rsh_k.src else {
-        return Err(FerricError::General(format!(
-            "{who}: the range-separated exchange was built on RS-GDF; the attenuated fit has \
-             no derivative (build it with GammaRshExchange::build_dense, jk = dense)"
-        )));
-    };
-    if scf.spin != ferric_scf::result::Spin::Restricted {
-        return Err(FerricError::General(format!(
-            "{who}: closed-shell (restricted) results only; open-shell range-separated forces \
-             are not implemented"
-        )));
-    }
-    let mesh = KPointMesh::gamma_centred(cell, [1, 1, 1])?;
-    let hk = crate::hcore::kpoint::periodic_hcore_kpts(cell, prep, &mesh, hcore_cfg)?;
-    let kscf = gamma_as_one_point(scf, &mesh, hk.enn, cell.mol().nelec().max(0) as usize / 2);
+    let (eri, mesh, hk, kscf) = gamma_route(who, cell, prep, hcore_cfg, scf, dft, rsh_k)?;
     let kcfg = crate::kxcgrad::KRksGradConfig {
         grad: *cfg,
         grid: crate::kxcgrad::KXcGrid::Atom(dft.grid.clone()),
@@ -368,6 +353,83 @@ pub fn gamma_rks_rsh_gradient(
         &dft.functional,
         &kcfg,
     )
+}
+
+/// Closed-shell Gamma RKS STRESS of a range-separated hybrid, routed through
+/// the 1x1x1 k-point stress ([`crate::kxcstress::kpoint_rks_stress`]) exactly
+/// as [`gamma_rks_rsh_gradient`] routes the force: same arguments, same
+/// refusals (RS-GDF `rsh_k`, open-shell result, a config or Gamma J that is
+/// not the SCF's, caught by the routed Fock guard). `σ` is returned
+/// unsymmetrised (the atom-centred grid is not rotation invariant; see
+/// [`crate::kxcstress`]).
+pub fn gamma_rks_rsh_stress(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    hcore_cfg: &crate::hcore::PeriodicHcoreConfig,
+    scf: &ferric_scf::result::ScfResult,
+    dft: &crate::dft::GammaRksConfig,
+    rsh_k: &GammaRshExchange,
+    cfg: &crate::kstress::KStressConfig,
+) -> Result<crate::kxcstress::KRksStress, FerricError> {
+    let who = "gamma_rks_rsh_stress";
+    let (eri, mesh, hk, kscf) = gamma_route(who, cell, prep, hcore_cfg, scf, dft, rsh_k)?;
+    let kcfg = crate::kxcstress::KRksStressConfig {
+        stress: *cfg,
+        grid: crate::kxcgrad::KXcGrid::Atom(dft.grid.clone()),
+        ao_threshold: dft.xc.ao_threshold,
+        exxdiv: Some(dft.exxdiv),
+        ..Default::default()
+    };
+    crate::kxcstress::kpoint_rks_stress(
+        cell,
+        prep,
+        &mesh,
+        hcore_cfg,
+        &hk,
+        crate::kstress::KStressJk::Dense(eri),
+        &kscf,
+        &dft.functional,
+        &kcfg,
+    )
+}
+
+/// The shared checks and 1x1x1 inputs of the routed Gamma RSH derivatives:
+/// the dense kernels, the mesh, its hcore and the Gamma result as the 1x1x1
+/// k-point result.
+fn gamma_route<'a>(
+    who: &str,
+    cell: &Cell,
+    prep: &PreparedBasis,
+    hcore_cfg: &crate::hcore::PeriodicHcoreConfig,
+    scf: &ferric_scf::result::ScfResult,
+    dft: &crate::dft::GammaRksConfig,
+    rsh_k: &'a GammaRshExchange,
+) -> Result<
+    (
+        &'a crate::kdense_aft::KDenseAftEri,
+        KPointMesh,
+        crate::hcore::kpoint::PeriodicHcoreK,
+        crate::kscf::KScfResult,
+    ),
+    FerricError,
+> {
+    rsh_k.check_for(who, &dft.functional, dft.exxdiv)?;
+    let Source::Dense(eri) = &rsh_k.src else {
+        return Err(FerricError::General(format!(
+            "{who}: the range-separated exchange was built on RS-GDF; the attenuated fit has \
+             no derivative (build it with GammaRshExchange::build_dense, jk = dense)"
+        )));
+    };
+    if scf.spin != ferric_scf::result::Spin::Restricted {
+        return Err(FerricError::General(format!(
+            "{who}: closed-shell (restricted) results only; open-shell range-separated \
+             derivatives are not implemented"
+        )));
+    }
+    let mesh = KPointMesh::gamma_centred(cell, [1, 1, 1])?;
+    let hk = crate::hcore::kpoint::periodic_hcore_kpts(cell, prep, &mesh, hcore_cfg)?;
+    let kscf = gamma_as_one_point(scf, &mesh, hk.enn, cell.mol().nelec().max(0) as usize / 2);
+    Ok((eri, mesh, hk, kscf))
 }
 
 /// A restricted Gamma result as the 1x1x1 k-point result (`k = 0`, complex

@@ -91,8 +91,9 @@
 //! (`J` keeps the bare kernel) and the M-term carrying the SCF's mixed
 //! constant (the same cancellation as above makes the force independent of
 //! it). The semilocal remainder is libxc's for the CAM functional, as in the
-//! energy. Covered: closed shell, dense AFT; refused: RS-GDF (the attenuated
-//! fit is not differentiated), open shell, stress.
+//! energy. Covered: closed shell, dense AFT (the stress likewise,
+//! [`crate::kxcstress`]); refused: RS-GDF (the attenuated fit is not
+//! differentiated), open shell.
 //!
 //! # What is new relative to the k-point HF force ([`crate::kgrad`])
 //!
@@ -1069,8 +1070,8 @@ pub(crate) fn resolve_global_mgga(functional: &str) -> Result<(XcDef, f64), Ferr
             feature: "range-separated hybrid force at k",
             reason: format!(
                 "{functional}: the attenuated-exchange derivative covers the closed-shell RKS \
-                 force on dense-AFT J/K only (kpoint_rks_gradient); not this route (open-shell \
-                 force, stress)"
+                 force and stress on dense-AFT J/K only (kpoint_rks_gradient, \
+                 kpoint_rks_stress); not this route (open-shell force)"
             ),
         }
         .into());

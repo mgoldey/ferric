@@ -122,9 +122,12 @@
 //!   RS-GDF fit's exchange pieces and the Madelung term scaled by `a`) plus
 //!   the XC strain terms on Bloch AOs (AO strain with point motion, the
 //!   partition-weight response on an atom grid or the volume term on a
-//!   uniform grid). LDA, GGA, meta-GGA (SCAN, r2SCAN; dense-AFT or RS-GDF J) and
-//!   global hybrids (a hybrid needs `KRksStressConfig::exxdiv`);
-//!   range-separated hybrids and VV10 are refused (open shell: see [`kuxcstress`]). The stress is
+//!   uniform grid). LDA, GGA, meta-GGA (SCAN, r2SCAN; dense-AFT or RS-GDF J),
+//!   global hybrids (a hybrid needs `KRksStressConfig::exxdiv`) and
+//!   range-separated (CAM) GGA hybrids on dense-AFT J/K (the attenuated kernel's
+//!   strain and the mixed Madelung strain; Gamma through the 1×1×1 mesh,
+//!   `gamma_rsh::gamma_rks_rsh_stress`); range-separated hybrids on RS-GDF and
+//!   VV10 are refused (open shell: see [`kuxcstress`]). The stress is
 //!   returned unsymmetrised (the Gamma convention).
 //! * [`kuxcstress`] — the open-shell twin (`kpoint_uks_stress`, k-point UKS
 //!   from [`kuks`]): per-spin Pulay/exchange/Madelung assembly and the

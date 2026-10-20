@@ -72,7 +72,7 @@
 //! and `gamma_roks_rsh` for range-separated hybrids).
 //!
 //! Refused by name: range-separated hybrids in every entry but closed-shell
-//! [`gamma_rks_rsh`] (the attenuated K is the k = 0 of the 1x1x1 k-point machinery, [`crate::gamma_rsh`]; open-shell [`gamma_uks_rsh`] and [`crate::rohf::gamma_roks_rsh`] take the same exchange per spin; stress refuses them; the closed-shell dense-AFT force is [`crate::gamma_rsh::gamma_rks_rsh_gradient`], library only),
+//! [`gamma_rks_rsh`] (the attenuated K is the k = 0 of the 1x1x1 k-point machinery, [`crate::gamma_rsh`]; open-shell [`gamma_uks_rsh`] and [`crate::rohf::gamma_roks_rsh`] take the same exchange per spin; the closed-shell dense-AFT force and stress are [`crate::gamma_rsh::gamma_rks_rsh_gradient`] and [`crate::gamma_rsh::gamma_rks_rsh_stress`], library only; open-shell derivatives refuse them),
 //! meta-GGA except the validated SCAN / r2SCAN / TPSS in closed-shell [`gamma_rks`] ENERGY (tau from D and ∇χ^Γ, anchored to the 1x1x1 k-mesh and PySCF; Gamma forces, stress, UKS, ROKS refuse it), VV10 / double hybrids, grid pruning, Newton /
 //! TRAH / stability (they rebuild molecular J/K and the f_xc kernel on the
 //! molecular grid — rejected by `validate_injected`), the molecular grid knobs
@@ -1674,9 +1674,10 @@ pub fn check_gamma_rks_request(name: &str, derivs: bool) -> Result<(), FerricErr
                 feature: "range-separated hybrid gradient / stress",
                 reason: format!(
                     "{name}: this route is energy only (the closed-shell range-separated \
-                     nuclear force exists as the library entries gamma_rsh::gamma_rks_rsh_gradient \
-                     and kxcgrad::kpoint_rks_gradient on dense-AFT J/K, not wired here; there is \
-                     no lattice derivative)"
+                     nuclear force and stress exist as the library entries \
+                     gamma_rsh::gamma_rks_rsh_gradient / gamma_rks_rsh_stress and \
+                     kxcgrad::kpoint_rks_gradient / kxcstress::kpoint_rks_stress on dense-AFT \
+                     J/K, not wired here)"
                 ),
             }
             .into());

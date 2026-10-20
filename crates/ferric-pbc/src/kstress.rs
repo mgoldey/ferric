@@ -64,8 +64,15 @@
 //! # Scope
 //!
 //! Dense pure-AFT and RS-GDF (unsplit or range-split) J/K, HF, RHF and UHF,
-//! with or without a scalar periodic ECP. A range-separated dense source is
-//! refused with a typed error naming the missing piece. The SR column rotation is
+//! with or without a scalar periodic ECP. A dense source built with a
+//! range-separated exchange ([`crate::rsh`]) is differentiated for the
+//! closed-shell RKS stress only ([`crate::kxcstress::kpoint_rks_stress`]):
+//! the exchange walks use `v(K) = 4π f(K²)/K²` and its slope
+//! [`crate::rsh::RshParams::kernel_slope`] (J keeps the bare kernel), and the
+//! Madelung strain is the mixed [`crate::rsh::RshParams::madelung_strain`] of
+//! the supercell. Every other entry refuses such a source (typed, via the
+//! shared input check), and an RS-GDF source carrying a range separation is
+//! refused everywhere. The SR column rotation is
 //! differentiated: when the energy builds ran the rotated SR walks (hcore and
 //! fit) the strain walks run on the rotated shells with `Tᵀ W T` residue
 //! weights, so the stress follows the walk the SCF's energy ran (the config
@@ -109,8 +116,8 @@
 //! another aux basis than the SCF's would otherwise give a finite but wrong
 //! σ (the RS-GDF energy is ω-independent: a fit at another ω reproduces the
 //! Fock to 1e-14 and the stress to 2.6e-12 on H2 1×1×3, so another ω is not
-//! an inconsistency). A dense source built with a range-separated K kernel is
-//! refused outright. Anchored meshes: Gamma-centred (explicit supercell and
+//! an inconsistency). A dense source whose range separation is not the
+//! entry's (none for HF and the open-shell entries) is refused. Anchored meshes: Gamma-centred (explicit supercell and
 //! FD) and Monkhorst-Pack (FD only; an even MP mesh is a twisted supercell).
 //!
 //! # Supercell mapping
@@ -155,6 +162,7 @@ use crate::pair_ft::PairFtStrainTerms;
 use crate::rsgdf::kpoint::kderiv::{
     kpoint_fit_strain, rotate_hcore_weights, KFitMutation, KFitStrain, KFitStrainTerms, KRotKind,
 };
+use crate::rsh::RshParams;
 use crate::stress::{add_into, add_pair_virial, diag, scaled, Mat3, ZERO3};
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
@@ -304,6 +312,21 @@ pub enum KStressMutation {
     /// ECP: the image weight's residue taken modulo the mesh counts instead
     /// of the residue moduli (identity on a Gamma-centred mesh).
     EcpMeshCountModuli,
+    /// Range separation: the `f'(K²)` part of the exchange kernel slope
+    /// dropped (`dv/dK² = −v/K²`, the bare-kernel shape on `v = 4π f/K²`).
+    RshNoKernelSlope,
+    /// Range separation: the kernel factor (value and slope) also applied to
+    /// the Coulomb (J) strain.
+    RshKernelOnJ,
+    /// Range separation: `c_sr` and `c_lr` swapped in the strain's kernel and
+    /// Madelung strain (the M-term keeps the SCF's mixed `v_M`).
+    RshSwapFractions,
+    /// Range separation: the plain full-Coulomb supercell `dv_M/dε` in place
+    /// of the mixed one (blind for `exxdiv = none`).
+    RshPlainMadelungStrain,
+    /// Range separation: the `v_M^LR(ω)` strain dropped from the mixed
+    /// Madelung strain (`c_sr dv_M^full/dε` only; blind for `exxdiv = none`).
+    RshNoLrMadelungStrain,
 }
 
 /// Settings for the k-point stress entry points.
@@ -843,7 +866,8 @@ pub fn kpoint_hcore_stress_fixed_d(
 /// Where the k-point J/K come from.
 #[derive(Clone, Copy)]
 pub enum KStressJk<'a> {
-    /// Dense pure-AFT oracle (bare `4π/K²` kernels).
+    /// Dense pure-AFT oracle (bare `4π/K²` kernels; the closed-shell RKS
+    /// stress also takes kernels built with a range-separated exchange).
     Dense(&'a KDenseAftEri),
     /// k-point RS-GDF, unsplit or range-split with `lambda <= 1` (a split with
     /// `lambda > 1`, or a config that disagrees with the build about the split,
@@ -1045,24 +1069,19 @@ pub(crate) fn grad_jk<'a>(jk: &KStressJk<'a>) -> KGradJk<'a> {
     }
 }
 
-/// The typed refusals shared by every entry point: a range-separated dense
-/// kernel and an inconsistent range split (a range-split RS-GDF build is
-/// supported; so is an ECP).
+/// The typed refusals shared by every entry point: a range-separated RS-GDF
+/// source and an inconsistent range split (a range-split RS-GDF build is
+/// supported; so is an ECP). A range-separated DENSE source is checked
+/// against the entry's own range separation by the shared input check
+/// (`kgrad::check_inputs_rsh`): only the closed-shell RKS stress accepts one.
 pub(crate) fn refuse_unsupported(who: &str, jk: &KStressJk<'_>) -> Result<(), FerricError> {
-    if let KStressJk::Dense(e) = jk {
-        if e.rsh().is_some() {
-            return Err(FerricError::General(format!(
-                "{who}: the dense source was built with a range-separated exchange kernel \
-                 (KDenseAftConfig::rsh); its strain (screened kernel at K = G + q) is not \
-                 implemented"
-            )));
-        }
-    }
     if let KStressJk::RsGdf(src) = jk {
         if src.gdf.rsh().is_some() {
             return Err(FerricError::General(format!(
                 "{who}: the RS-GDF source carries a range-separated exchange \
-                 (KRsGdf::build_rsh); its strain is not implemented"
+                 (KRsGdf::build_rsh); its strain is not implemented (the attenuated fit is \
+                 not differentiated; the range-separated k-point stress covers closed-shell \
+                 RKS on dense-AFT J/K, kpoint_rks_stress)"
             )));
         }
         refuse_split_mismatch(who, src)?;
@@ -1277,6 +1296,23 @@ pub(crate) fn assemble(
         } else {
             vm
         };
+    // The range separation of a dense source (admitted by the input check on
+    // the closed-shell RKS stress only), with the `Rsh*` test defects.
+    let rsh = match jk {
+        KGradJk::Dense(e) => e.rsh(),
+        KGradJk::RsGdf(_) => None,
+    };
+    let rsh_d = rsh.map(|r| {
+        if is(KStressMutation::RshSwapFractions) {
+            RshParams {
+                c_sr: r.c_lr,
+                c_lr: r.c_sr,
+                ..r
+            }
+        } else {
+            r
+        }
+    });
 
     // --- The forces' overlap weights M(k), split into its three pieces.
     let w_pulay = fold_real(
@@ -1376,6 +1412,7 @@ pub(crate) fn assemble(
             &ph,
             ft_terms,
             exch_scale,
+            rsh_d,
             mutation,
             ledger,
         )?;
@@ -1437,13 +1474,15 @@ pub(crate) fn assemble(
     }
 
     // --- Madelung: −½ (1/N_k) Σ_s Σ_k tr[D_s S D_s S] dv_M/dε, the strain of
-    // the diag(N) SUPERCELL lattice's Madelung constant.
+    // the diag(N) SUPERCELL lattice's Madelung constant (the mixed one of a
+    // range-separated K).
     let sc_cell = Cell::new(cell.mol().clone(), mesh.supercell_lattice())?;
-    let vm_strain = if is(KStressMutation::GammaMadelungStrain) {
-        madelung_strain(cell)?
+    let m_cell = if is(KStressMutation::GammaMadelungStrain) {
+        cell
     } else {
-        madelung_strain(&sc_cell)?
+        &sc_cell
     };
+    let vm_strain = madelung_strain_of(m_cell, rsh_d, mutation)?;
     let mut t_m = 0.0_f64;
     for k in 0..nk {
         let sd = spins.sandwich(k, &s_k[k]);
@@ -1493,6 +1532,25 @@ pub(crate) fn assemble(
         fit_dropped_max,
         fit_checks,
     })
+}
+
+/// `dv_M/dε` of the lattice of `m_cell`: the plain Ewald strain, or for a
+/// range-separated K the mixed [`RshParams::madelung_strain`] (with the
+/// `Rsh*Madelung*` test defects).
+fn madelung_strain_of(
+    m_cell: &Cell,
+    rsh: Option<RshParams>,
+    mutation: Option<KStressMutation>,
+) -> Result<Mat3, FerricError> {
+    match (rsh, mutation) {
+        (None, _) | (Some(_), Some(KStressMutation::RshPlainMadelungStrain)) => {
+            madelung_strain(m_cell)
+        }
+        (Some(r), Some(KStressMutation::RshNoLrMadelungStrain)) => {
+            Ok(scaled(&madelung_strain(m_cell)?, r.c_sr))
+        }
+        (Some(r), _) => r.madelung_strain(m_cell),
+    }
 }
 
 /// The RS-GDF strain pass of [`assemble`] (the fitted `Z`, `Wm`, phase bins).
@@ -1565,7 +1623,9 @@ struct DenseStrain {
 /// ```
 ///
 /// with `dv = v'(K²)(−2 K_a K_b)` (the G shape; frozen Miller index) and the
-/// force's `Y`, `Yt_r`.
+/// force's `Y`, `Yt_r`. With a range separation `rsh` the exchange kernel is
+/// `v = 4π f(K²)/K²` with slope [`RshParams::kernel_slope`]; J keeps the bare
+/// `4π/K²`.
 #[allow(clippy::too_many_arguments)]
 fn dense_two_electron_strain(
     cell: &Cell,
@@ -1578,9 +1638,11 @@ fn dense_two_electron_strain(
     ph: &Phases,
     terms: PairFtStrainTerms,
     exch_scale: f64,
+    rsh: Option<RshParams>,
     mutation: Option<KStressMutation>,
     ledger: &mut Ledger,
 ) -> Result<DenseStrain, FerricError> {
+    let kern = StrainKernel { rsh, mutation };
     let n = prep.nbasis();
     let nk = mesh.nk();
     let moduli = ph.moduli;
@@ -1647,9 +1709,7 @@ fn dense_two_electron_strain(
             |_k0, kv, p, dp| {
                 for (gi, kvec) in kv.iter().enumerate() {
                     let k2 = kvec[0] * kvec[0] + kvec[1] * kvec[1] + kvec[2] * kvec[2];
-                    let v = 4.0 * PI / k2;
-                    let dvdk2 = -v / k2;
-                    let dv = |a: usize, b: usize| {
+                    let shape = |dvdk2: f64, a: usize, b: usize| {
                         if terms.g_shape {
                             dvdk2 * (-2.0 * kvec[a] * kvec[b])
                         } else {
@@ -1657,6 +1717,8 @@ fn dense_two_electron_strain(
                         }
                     };
                     if is_q0 {
+                        let (v, dvdk2) = kern.coulomb(k2);
+                        let dv = |a: usize, b: usize| shape(dvdk2, a, b);
                         let rho = residue_trace(p, gi, delta_true);
                         let rho2 = rho.norm_sqr();
                         out.e_j += 0.5 / vol * v * rho2;
@@ -1671,6 +1733,8 @@ fn dense_two_electron_strain(
                     if exch.is_empty() {
                         continue;
                     }
+                    let (v, dvdk2) = kern.exchange(k2);
+                    let dv = |a: usize, b: usize| shape(dvdk2, a, b);
                     // Exchange: Yt_r = Σ_k' e^{ik'·t_r} Σ_s D_s(k') P^{k'H} D_s(k'−q).
                     let mut yt: Vec<Array2<C64>> = (0..nr).map(|_| Array2::zeros((n, n))).collect();
                     let mut phi = 0.0_f64;
@@ -1721,4 +1785,42 @@ fn dense_two_electron_strain(
         )?;
     }
     Ok(out)
+}
+
+/// The `(v, dv/dK²)` kernels of the dense strain walks: bare `4π/K²` for J,
+/// and for K the range-separated `4π f(K²)/K²` when `rsh` is set (with the
+/// `Rsh*` kernel defects).
+struct StrainKernel {
+    rsh: Option<RshParams>,
+    mutation: Option<KStressMutation>,
+}
+
+impl StrainKernel {
+    fn bare(k2: f64) -> (f64, f64) {
+        let v = 4.0 * PI / k2;
+        (v, -v / k2)
+    }
+
+    fn exchange(&self, k2: f64) -> (f64, f64) {
+        match self.rsh {
+            None => Self::bare(k2),
+            Some(r) => {
+                let v = 4.0 * PI / k2 * r.kernel_factor(k2);
+                let slope = if self.mutation == Some(KStressMutation::RshNoKernelSlope) {
+                    -v / k2
+                } else {
+                    r.kernel_slope(k2)
+                };
+                (v, slope)
+            }
+        }
+    }
+
+    fn coulomb(&self, k2: f64) -> (f64, f64) {
+        if self.rsh.is_some() && self.mutation == Some(KStressMutation::RshKernelOnJ) {
+            self.exchange(k2)
+        } else {
+            Self::bare(k2)
+        }
+    }
 }
