@@ -2812,21 +2812,6 @@ fn check_kpoint_ks_support(
     Ok(())
 }
 
-/// The refusal that depends on the J/K route, after the setup: the meta-GGA
-/// stress is anchored on the dense-AFT J only.
-fn check_kpoint_ks_derivs(fname: &str, s: &PbcSetup, functional: Option<&str>) -> PyResult<()> {
-    if !s.derivs.any() {
-        return Ok(());
-    }
-    ferric_pbc::kxcgrad::check_kpoint_deriv_cell(
-        functional,
-        s.derivs.stress,
-        s.aux.is_some(),
-        "use jk=\"dense\" with with_stress (with_gradient supports RS-GDF)",
-    )
-    .map_err(|e| val_err(format!("{fname}: {e}")))
-}
-
 /// Result of `run_rks_kpts`. Energies per cell, Hartree.
 #[pyclass]
 #[pyo3(name = "KpointRksResult")]
@@ -3027,7 +3012,6 @@ fn run_rks_kpts(
         gradient: with_gradient,
         stress: with_stress,
     };
-    check_kpoint_ks_derivs(fname, &s, Some(functional))?;
     s.range_split = parse_range_split(fname, range_split, s.aux.is_some(), s.derivs)?;
     let m = k_mesh(&s, mesh, centring)?;
     let grid = periodic_grid(fname, n_radial, n_angular, neighbour_cutoff)?;
@@ -3265,7 +3249,6 @@ fn run_uks_kpts(
         gradient: with_gradient,
         stress: with_stress,
     };
-    check_kpoint_ks_derivs(fname, &s, Some(functional))?;
     if s.aux.is_some() && ferric_pbc::dft::is_meta_gga_name(functional) {
         // The CLI refuses the same at plan time; `solve_kuks` re-checks.
         return Err(val_err(format!(
@@ -3336,7 +3319,6 @@ fn run_ro_kpts(
     }
     let mut s = pbc_setup(a)?;
     s.derivs = derivs;
-    check_kpoint_ks_derivs(fname, &s, functional)?;
     s.range_split = parse_range_split(fname, range_split, s.aux.is_some(), s.derivs)?;
     let m = k_mesh(&s, mesh, centring)?;
     let grid = periodic_grid(fname, grid.0, grid.1, grid.2)?;

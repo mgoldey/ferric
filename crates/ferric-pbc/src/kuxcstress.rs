@@ -157,13 +157,15 @@
 //! certify the stress to the anchors' accuracy. The unrestricted-form `W` is no
 //! remedy off stationarity (comparable error at the same state).
 //!
-//! The ROHF/ROKS stress takes the dense-AFT or the (unsplit) RS-GDF J/K: the
+//! The ROHF/ROKS stress takes the dense-AFT or the RS-GDF J/K (unsplit, or
+//! range-split at `lambda <= 1` as for every k stress): the
 //! fit pass of [`crate::kstress`] is generic over `KSpins` (`Unrestricted` and
 //! `RestrictedOpen` pair `D_alpha`, `D_beta` identically) and `W_RO` enters only
 //! as the overlap weight (including the fit's `M_g0 dS` term). Anchors
 //! (`tests/pbc_kuxcstress_ro_rsgdf.rs`): closed-shell limit vs the RHF RS-GDF
 //! stress, FD of the strained RS-GDF energy on all nine components (ROHF,
-//! ROKS PBE0), and the RS-GDF / `W_RO` mutants.
+//! ROKS PBE0), and the RS-GDF / `W_RO` mutants; on the range-split build the
+//! closed-shell limit (force and stress) and FD of the split energy.
 //!
 //! # Scope
 //!

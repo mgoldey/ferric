@@ -254,7 +254,7 @@ def test_meta_gga_force_matches_fd_of_own_energy(basis, functional):
     print(f"RKS {functional} force vs FD: {worst:.2e}")
 
 
-def test_meta_gga_rsgdf_force_is_available_and_stress_is_refused(basis):
+def test_meta_gga_rsgdf_force_and_stress_are_available(basis):
     kw = dict(mesh=(1, 1, 2), jk="rsgdf", auxbasis="cc-pvdz-ri")
     r = _rks(H2_ATOMS, basis, "SCAN", with_gradient=True, **kw)
     assert r.jk == "rsgdf"
@@ -266,13 +266,21 @@ def test_meta_gga_rsgdf_force_is_available_and_stress_is_refused(basis):
         comps=((0, 0), (1, 2)),
     )
     print(f"SCAN RS-GDF force vs FD: {worst:.2e}")
-    with pytest.raises(
-        ValueError,
-        match=r"^run_rks_kpts: the k-point meta-GGA stress is anchored on the dense-AFT J "
-        r'only; use jk="dense" with with_stress \(with_gradient supports RS-GDF\)$',
-    ):
-        _rks(H2_ATOMS, basis, "SCAN", with_stress=True, **kw)
-    # A GGA RS-GDF stress is not refused.
+    # The SCAN RS-GDF stress runs (library anchors: FD of the SCAN RS-GDF
+    # energy and the PBE-to-SCAN fit-error transfer, pbc_kxcstress_mgga.rs) and
+    # differs from the dense-J stress only by the fit error.
+    s = np.asarray(_rks(H2_ATOMS, basis, "SCAN", with_stress=True, **kw).stress())
+    d = np.asarray(
+        _rks(H2_ATOMS, basis, "SCAN", with_stress=True, mesh=(1, 1, 2)).stress()
+    )
+    assert s.shape == (3, 3) and np.all(np.isfinite(s))
+    print(
+        f"SCAN stress rsgdf - dense: {np.abs(s - d).max():.2e} (|sigma| {np.abs(d).max():.2e})"
+    )
+    # Measured 1.5e-6 of |sigma| 6.6e-3 (2.3e-4 relative); bar ~9x that.
+    assert np.abs(s - d).max() < 2e-3 * np.abs(d).max()
+    # ...and is resolved, so the RS-GDF route really ran.
+    assert np.abs(s - d).max() > 1e-8
     assert _rks(H2_ATOMS, basis, "PBE", with_stress=True, **kw).stress() is not None
 
 

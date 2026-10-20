@@ -845,7 +845,9 @@ pub fn kpoint_hcore_stress_fixed_d(
 pub enum KStressJk<'a> {
     /// Dense pure-AFT oracle (bare `4π/K²` kernels).
     Dense(&'a KDenseAftEri),
-    /// k-point RS-GDF (UNSPLIT builds; a range split is refused with a typed error).
+    /// k-point RS-GDF, unsplit or range-split with `lambda <= 1` (a split with
+    /// `lambda > 1`, or a config that disagrees with the build about the split,
+    /// is refused with a typed error).
     RsGdf(KRsGdfGradSource<'a>),
 }
 

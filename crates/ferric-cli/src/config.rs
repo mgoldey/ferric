@@ -5160,10 +5160,6 @@ fn check_kpoint_optimize_gate(
     Ok(())
 }
 
-/// The remedy named by the meta-GGA-stress-on-RS-GDF refusal (CLI spelling).
-pub const STRESS_DENSE_HINT: &str = "set [cell] jk = \"dense\" (the SCAN / r2SCAN stress is not \
-     available with jk = \"rsgdf\"; task = \"optimize\" forces are)";
-
 /// `[cell] stress`: the k-point analytic stress of a `task = "energy"` run.
 /// Every refusal names the key. The functional and meta-GGA/J-K gates are the
 /// ones the Python `with_stress` path runs (`ferric_pbc::kxcgrad::
@@ -5213,12 +5209,6 @@ fn resolve_stress(
         let f = functional.unwrap_or("LDA");
         ferric_pbc::kxcgrad::check_kpoint_deriv_functional(route != PeriodicRoute::Rks, f, what)?;
     }
-    ferric_pbc::kxcgrad::check_kpoint_deriv_cell(
-        route.kohn_sham().then(|| functional.unwrap_or("LDA")),
-        true,
-        matches!(jk, PeriodicJk::RsGdf { .. }),
-        STRESS_DENSE_HINT,
-    )?;
     Ok(true)
 }
 
@@ -6358,19 +6348,12 @@ kind = "ccsd"
                 "{dft}: {e}"
             );
         }
-        // SCAN stress on RS-GDF is anchored on the dense J only.
+        // The SCAN / r2SCAN stress runs on RS-GDF as on dense J.
         let rs = "jk = \"rsgdf\"\nauxbasis = \"cc-pvdz-ri\"";
-        let e = err(&h2(
-            "ksdft",
-            &format!("{rs}\n{km}"),
-            "[dft]\nfunctional = \"SCAN\"",
-        ));
-        assert_eq!(
-            e,
-            "the k-point meta-GGA stress is anchored on the dense-AFT J only; set [cell] jk = \
-             \"dense\" (the SCAN / r2SCAN stress is not available with jk = \"rsgdf\"; \
-             task = \"optimize\" forces are)"
-        );
+        for f in ["SCAN", "r2SCAN"] {
+            let dft = format!("[dft]\nfunctional = \"{f}\"");
+            assert!(ok(&h2("ksdft", &format!("{rs}\n{km}"), &dft)).stress, "{f}");
+        }
         // Split RS-GDF, Gamma point, optimize, correlated routes.
         let e = err(&h2("rhf", &format!("{rs}\n{km}\nrange_split = true"), ""));
         assert!(
