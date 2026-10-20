@@ -97,14 +97,27 @@ def main(argv=None):
     ap.add_argument("--threads", type=int, default=1)
     ap.add_argument("--precision", type=float, default=1e-12)
     ap.add_argument("--lindep-aux", type=float, default=1e-10)
-    ap.add_argument("--conv-tol", type=float, default=1e-10)
-    ap.add_argument("--conv-tol-grad", type=float, default=1e-6)
+    ap.add_argument(
+        "--kmesh",
+        type=int,
+        nargs=3,
+        default=None,
+        help="Gamma-centred k-mesh (KRHF); omit = Gamma point",
+    )
+    # Defaults: Gamma 1e-10 / 1e-6; k-mesh 1e-12 / 1e-9 (ferric's k-point stopping rule).
+    ap.add_argument("--conv-tol", type=float, default=None)
+    ap.add_argument("--conv-tol-grad", type=float, default=None)
     ap.add_argument("--max-cycle", type=int, default=100)
     ap.add_argument("--max-memory", type=int, default=8000)
     ap.add_argument("--grid", type=int, nargs=2, default=[75, 302])
     ap.add_argument("--tag", default="")
     ap.add_argument("--out", default=None)
     a = ap.parse_args(argv)
+    kpt_run = a.kmesh is not None
+    if a.conv_tol is None:
+        a.conv_tol = 1e-12 if kpt_run else 1e-10
+    if a.conv_tol_grad is None:
+        a.conv_tol_grad = 1e-9 if kpt_run else 1e-6
     for v in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
         os.environ[v] = str(a.threads)
 
@@ -158,12 +171,23 @@ def main(argv=None):
 
     Builder.build = wb
 
+    kpts = cell.make_kpts(a.kmesh) if kpt_run else None
     if a.method == "rhf":
-        mf = pscf.RHF(cell, exxdiv="ewald")
+        if kpt_run:
+            mf = pscf.KRHF(cell, kpts, exxdiv="ewald")
+        else:
+            mf = pscf.RHF(cell, exxdiv="ewald")
     else:
+        if kpt_run:
+            sys.exit("k-point PBE is not part of this benchmark")
         mf = pdft.RKS(cell, exxdiv="ewald")
         mf.xc = "PBE"
+        # pbc BeckeGrids (atom grids on image atoms, cut to the cell, original Becke
+        # partition), unpruned. The pbc RKS default is UniformGrids, on which atom_grid
+        # has NO effect (issue #228 addendum).
+        mf.grids = pdft.gen_grid.BeckeGrids(cell)
         mf.grids.atom_grid = tuple(a.grid)
+        mf.grids.prune = None
     mf = mf.density_fit(auxbasis=aux)
     df = mf.with_df
     df.linear_dep_threshold = a.lindep_aux
@@ -193,6 +217,7 @@ def main(argv=None):
         w = time.perf_counter()
         r = orig_hcore(*args, **kw)
         tt["hcore"] = tt.get("hcore", 0.0) + time.perf_counter() - w
+        tt["hcore_calls"] = tt.get("hcore_calls", 0) + 1
         return r
 
     mf.get_hcore = gh
@@ -226,6 +251,12 @@ def main(argv=None):
         t_df_build_s=t_df,
         cpu_df_build_s=c_df,
         t_hcore_s=tt.get("hcore"),
+        hcore_calls=tt.get("hcore_calls", 0),
+        kmesh=a.kmesh,
+        conv_tol=a.conv_tol,
+        conv_tol_grad=a.conv_tol_grad,
+        grid=a.grid if a.method == "pbe" else None,
+        n_grid_points=int(mf.grids.weights.size) if a.method == "pbe" else None,
         t_kernel_s=t_kernel,
         cpu_kernel_s=c_kernel,
         t_scf_excl_hcore_s=t_kernel - tt.get("hcore", 0.0),
