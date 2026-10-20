@@ -84,8 +84,9 @@
 //! exchange fraction 0 plus the XC terms ([`crate::kxcgrad`]). Dense kernels
 //! built with a range separation ([`crate::rsh`]) are differentiated with the
 //! exchange walks weighted by the kernel factor `f(|K|)` (J bare) for the
-//! closed-shell RKS force only (`check_inputs_rsh`); every other entry, and
-//! RS-GDF with an attenuated fit, refuses them. RS-GDF aux on the
+//! closed-shell RKS force only (`check_inputs_rsh`; the closed-shell RKS
+//! stress, [`crate::kstress`], admits them the same way); every other entry,
+//! and RS-GDF with an attenuated fit, refuses them. RS-GDF aux on the
 //! cell's atoms (no ghost sites). A scalar periodic ECP is differentiated by the Gamma ECP walk
 //! ([`crate::ecp::periodic_ecp_gradient`]) with the SR walk's image weight
 //! `Re Δ_nm(L)` in place of the density (`parts.ecp`; derivation in the
@@ -730,7 +731,7 @@ pub(crate) fn check_inputs(
 
 /// [`check_inputs`] for an entry that differentiates a range-separated
 /// exchange: `rsh` is the functional's range separation (`None` for every
-/// entry but the closed-shell RKS force). A dense source must carry exactly
+/// entry but the closed-shell RKS force and stress). A dense source must carry exactly
 /// these parameters (and none when `rsh` is `None`); an RS-GDF source must
 /// carry none and `rsh` must be `None` (the attenuated fit has no derivative).
 #[allow(clippy::too_many_arguments)]
@@ -801,8 +802,9 @@ pub(crate) fn check_inputs_rsh(
                 return Err(FerricError::General(format!(
                     "{who}: range-separated exchange on RS-GDF J/K (KRsGdf::build_rsh) has no \
                      derivative here (the attenuated fit is not differentiated, so the force \
-                     would be wrong); the range-separated k-point force covers closed-shell RKS \
-                     (kpoint_rks_gradient) on dense-AFT J/K only"
+                     would be wrong); the range-separated k-point force and stress cover \
+                     closed-shell RKS (kpoint_rks_gradient, kpoint_rks_stress) on dense-AFT J/K \
+                     only"
                 )));
             }
             if s.gdf.nk() != nk {
@@ -834,8 +836,8 @@ fn check_dense_rsh(
         (Some(_), None) => Err(FerricError::General(format!(
             "{who}: the dense kernels carry an attenuated (range-separated) exchange (rsh); \
              this entry point does not differentiate it (the range-separated k-point force \
-             covers closed-shell RKS, kpoint_rks_gradient with a range-separated functional, \
-             on dense-AFT J/K only)"
+             and stress cover closed-shell RKS, kpoint_rks_gradient / kpoint_rks_stress with \
+             a range-separated functional, on dense-AFT J/K only)"
         ))),
         (None, Some(w)) => Err(FerricError::General(format!(
             "{who}: the functional is range-separated ({w:?}) but the dense kernels carry the \

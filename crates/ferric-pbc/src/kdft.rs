@@ -35,8 +35,9 @@
 //! Range-separated hybrids (HSE06, CAM-B3LYP, wB97X, ...) are supported with
 //! the dense-AFT J/K ([`crate::rsh`]) and the RS-GDF J/K (`KRsGdf::build_rsh`:
 //! full-Coulomb fit plus a G-space fit of the erf-attenuated kernel). The
-//! nuclear force covers the dense-AFT J/K ([`crate::kxcgrad`]); the RS-GDF
-//! force and the stress refuse them. The Gamma-point [`crate::gamma_rsh`]
+//! closed-shell nuclear force and stress cover the dense-AFT J/K
+//! ([`crate::kxcgrad`], [`crate::kxcstress`]); the RS-GDF and open-shell
+//! derivatives refuse them. The Gamma-point [`crate::gamma_rsh`]
 //! reuses this exchange at k = 0, and the open-shell [`crate::kuks`] (KUKS)
 //! and [`crate::kroks`] (KROKS) take it per spin (with SCAN / r2SCAN
 //! open-shell energies in KUKS too, spin-resolved tau). Range-separated meta-GGAs, VV10 and double hybrids are

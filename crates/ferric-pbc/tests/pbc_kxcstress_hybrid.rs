@@ -16,7 +16,7 @@
 //! gate, and production-wired mutants.
 //!
 //! NOT covered: p/d shells on the hybrid K walks (every fixture is H2/STO-3G),
-//! range-separated hybrids / VV10 (refused; meta-GGA is covered by pbc_kxcstress_mgga.rs), heavy atoms / ECP with a
+//! range-separated hybrids (pbc_krsh_stress.rs), VV10 (refused; meta-GGA is covered by pbc_kxcstress_mgga.rs), heavy atoms / ECP with a
 //! hybrid, open shell, range-split RS-GDF above lambda = 1, no external (PySCF)
 //! anchor (its k stress refuses hybrids).
 

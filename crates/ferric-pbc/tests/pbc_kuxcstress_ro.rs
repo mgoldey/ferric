@@ -923,7 +923,7 @@ fn refusals_and_the_fock_guard() {
     for (name, key) in [
         (
             "HSE06",
-            "range-separated hybrid stress at k is not supported: HSE06: the k-point XC stress covers LDA, GGA and GLOBAL hybrid functionals; the screened-exchange strain is not implemented",
+            "range-separated hybrid stress at k is not supported: HSE06: the open-shell k-point XC stress covers LDA, GGA and GLOBAL hybrid functionals (the range-separated stress is closed-shell RKS on dense-AFT J/K only, kpoint_rks_stress)",
         ),
         (
             "SCAN",
