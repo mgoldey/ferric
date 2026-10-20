@@ -38,6 +38,12 @@ pub const AMPLE: usize = 1 << 31;
 /// the geometry would put steps into the FD energies).
 pub const CUTOFF: f64 = 14.0;
 pub const PRECISION: f64 = 1e-12;
+/// Anchor bar (singlet, equal fractions, supercell, Gamma): the measured
+/// values are <= 2.3e-13 (singlet, per part), 1.7e-16 (equal fractions),
+/// 7.2e-15 (supercell), 8.5e-14 (Gamma); >= 1e4 x below the smallest
+/// asserted mutant (1e-5).
+pub const ANCHOR_TOL: f64 = 1e-9;
+
 /// FD bar (as the closed-shell RSH force, `krsh_force_support::FD_BAR`).
 pub const FD_BAR: f64 = 1e-7;
 
@@ -567,4 +573,49 @@ pub fn mesh_vs_supercell(f: &str) -> f64 {
         ExxDiv::Ewald,
     ));
     diff(&k.grad, &sc.grad.slice(ndarray::s![0..3, ..]).to_owned())
+}
+
+/// The equal-fraction anchor (`pbc_kuks_rsh_force.rs` (3)) under `exxdiv`.
+pub fn equal_fraction_case(exxdiv: ExxDiv) {
+    let c = 0.4;
+    let eq = RshParams {
+        omega: 0.33,
+        c_sr: c,
+        c_lr: c,
+    };
+    let zr = zero_xc(&H3D, 2, [1, 1, 2], exxdiv, Some(eq), 1.0);
+    let zg = zero_xc(&H3D, 2, [1, 1, 2], exxdiv, None, c);
+    let de = (zr.scf.energy - zg.scf.energy).abs();
+    let gr = null_force(&zr, None);
+    let gg = null_force(&zg, None);
+    let d = diff(&gr.grad, &gg.grad);
+    eprintln!(
+        "{exxdiv:?}: equal fractions vs global c={c}: |dE| {de:.1e} force {d:.2e} \
+         K part {:.2e}",
+        diff(&gr.hf.parts.exchange, &gg.hf.parts.exchange)
+    );
+    assert!(spin_asymmetry(&zr.scf) > 0.1, "polarized");
+    assert!(de < 1e-11, "{de:e}");
+    assert!(d < ANCHOR_TOL, "{exxdiv:?}: {d:e}");
+    assert!(max_abs(&gg.hf.parts.exchange) > 1e-4);
+    for m in [
+        KGradMutation::RshNoKernelFactor,
+        KGradMutation::RshKernelOnJ,
+        KGradMutation::RshPlainMadelung,
+        KGradMutation::MTermTotalDensity,
+        KGradMutation::ExchBetaUsesAlpha,
+    ] {
+        let miss = diff(&null_force(&zr, Some(m)).grad, &gg.grad);
+        eprintln!("  {exxdiv:?} equal-fraction anchor vs {m:?}: miss {miss:.2e}");
+        let blind = exxdiv == ExxDiv::None
+            && matches!(
+                m,
+                KGradMutation::RshPlainMadelung | KGradMutation::MTermTotalDensity
+            );
+        if blind {
+            assert!(miss < ANCHOR_TOL, "blind by construction under exxdiv none");
+        } else {
+            assert!(miss > 1e-3, "{m:?} {exxdiv:?}: {miss:e}");
+        }
+    }
 }

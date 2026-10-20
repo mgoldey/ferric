@@ -153,6 +153,14 @@ fn gamma_uks_rsh_force_is_the_one_point_mesh_force_all_cases() {
     }
 }
 
+/// (3) The equal-fraction anchor under exxdiv none (ewald runs per commit):
+/// the Madelung defects are blind there by construction (asserted).
+#[test]
+#[ignore = "validation: equal-fraction anchor, exxdiv none (2 zero-XC k-UKS SCFs)"]
+fn equal_fractions_is_the_global_hybrid_uks_force_exxdiv_none() {
+    equal_fraction_case(ExxDiv::None);
+}
+
 /// (1) The HSE06 singlet anchor (CAM-B3LYP runs per commit).
 #[test]
 #[ignore = "validation: HSE06 singlet UKS vs RKS (2 SCFs)"]

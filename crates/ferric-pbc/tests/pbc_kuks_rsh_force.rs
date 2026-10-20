@@ -16,7 +16,10 @@
 //!    component of the H3 doublet and the H4 triplet for both functionals,
 //!    the h sweep and ewald vs none in `validation_kuks_rsh_force.rs`;
 //! 3. `c_sr == c_lr == c` reproduces the global-hybrid UKS force with fraction
-//!    `c` (zero XC, two SCFs, polarized H3);
+//!    `c` (zero XC, two SCFs, polarized H3; ewald here, none weekly). Both
+//!    sides share the M-term density sandwich (`Σ_σ D_σ S D_σ`), so this
+//!    anchor cannot see an M-term SPIN error; only FD does (a reviewer's
+//!    cross-spin M-term mutant missed FD by 2.3e-2);
 //! 4. the 1x1x2 mesh force equals the force on one copy in the explicit 2-cell
 //!    supercell (weekly file);
 //! 5. Gamma (`gamma_uks_rsh` + `gamma_uks_rsh_gradient`) equals the 1x1x1 mesh
@@ -62,16 +65,9 @@ mod support;
 
 use common::*;
 use ferric_pbc::dense_aft::ExxDiv;
-use ferric_pbc::kgrad::{KGradJk, KGradMutation};
+use ferric_pbc::kgrad::KGradJk;
 use ferric_pbc::kpts::KPointMesh;
-use ferric_pbc::rsh::RshParams;
 use support::*;
-
-/// Anchor bar (singlet, equal fractions, supercell, Gamma): the measured
-/// values are <= 2.3e-13 (singlet, per part), 1.7e-16 (equal fractions),
-/// 7.2e-15 (supercell), 8.5e-14 (Gamma); >= 1e4 x below the smallest
-/// asserted mutant (1e-5).
-const ANCHOR_TOL: f64 = 1e-9;
 
 // ------------------------------------------------------- (1) singlet limit
 
@@ -149,49 +145,8 @@ fn cam_b3lyp_polarized_force_matches_fd() {
 /// under exxdiv none by construction).
 #[test]
 fn equal_fractions_is_the_global_hybrid_uks_force() {
-    let c = 0.4;
-    let eq = RshParams {
-        omega: 0.33,
-        c_sr: c,
-        c_lr: c,
-    };
-    for exxdiv in [ExxDiv::Ewald, ExxDiv::None] {
-        let zr = zero_xc(&H3D, 2, [1, 1, 2], exxdiv, Some(eq), 1.0);
-        let zg = zero_xc(&H3D, 2, [1, 1, 2], exxdiv, None, c);
-        let de = (zr.scf.energy - zg.scf.energy).abs();
-        let gr = null_force(&zr, None);
-        let gg = null_force(&zg, None);
-        let d = diff(&gr.grad, &gg.grad);
-        eprintln!(
-            "{exxdiv:?}: equal fractions vs global c={c}: |dE| {de:.1e} force {d:.2e} \
-             K part {:.2e}",
-            diff(&gr.hf.parts.exchange, &gg.hf.parts.exchange)
-        );
-        assert!(spin_asymmetry(&zr.scf) > 0.1, "polarized");
-        assert!(de < 1e-11, "{de:e}");
-        assert!(d < ANCHOR_TOL, "{exxdiv:?}: {d:e}");
-        assert!(max_abs(&gg.hf.parts.exchange) > 1e-4);
-        for m in [
-            KGradMutation::RshNoKernelFactor,
-            KGradMutation::RshKernelOnJ,
-            KGradMutation::RshPlainMadelung,
-            KGradMutation::MTermTotalDensity,
-            KGradMutation::ExchBetaUsesAlpha,
-        ] {
-            let miss = diff(&null_force(&zr, Some(m)).grad, &gg.grad);
-            eprintln!("  {exxdiv:?} equal-fraction anchor vs {m:?}: miss {miss:.2e}");
-            let blind = exxdiv == ExxDiv::None
-                && matches!(
-                    m,
-                    KGradMutation::RshPlainMadelung | KGradMutation::MTermTotalDensity
-                );
-            if blind {
-                assert!(miss < ANCHOR_TOL, "blind by construction under exxdiv none");
-            } else {
-                assert!(miss > 1e-3, "{m:?} {exxdiv:?}: {miss:e}");
-            }
-        }
-    }
+    // exxdiv none (where the Madelung defects are blind) runs weekly.
+    equal_fraction_case(ExxDiv::Ewald);
 }
 
 // ----------------------------------------------------------- (5) Gamma
@@ -236,6 +191,40 @@ fn gamma_uks_rsh_force_is_the_one_point_mesh_force() {
     .expect_err("restricted result accepted")
     .to_string();
     assert!(e.contains("unrestricted (UKS) results only"), "{e}");
+    // An RS-GDF exchange is refused (the attenuated fit has no derivative).
+    let hc = ferric_pbc::hcore::periodic_hcore(&g.cell, &g.prep, &g.hcfg).unwrap();
+    let aux = prep_for(&g.cell, &ferric_core::basis::bundled("cc-pvdz-ri").unwrap());
+    let rcfg = ferric_pbc::rsgdf::kpoint::KRsGdfConfig {
+        gdf: ferric_pbc::rsgdf::RsGdfConfig {
+            omega: 1.0,
+            exxdiv: ExxDiv::Ewald,
+            budget_bytes: Some(AMPLE),
+            ..Default::default()
+        },
+        mutation: None,
+    };
+    let ex_gdf = ferric_pbc::gamma_rsh::GammaRshExchange::build_rsgdf(
+        &g.cell,
+        &g.prep,
+        &aux,
+        &hc.s,
+        ExxDiv::Ewald,
+        &rcfg,
+        rsh_of(CAM),
+    )
+    .unwrap();
+    let e = ferric_pbc::gamma_rsh::gamma_uks_rsh_gradient(
+        &g.cell,
+        &g.prep,
+        &g.hcfg,
+        &g.scf,
+        &g.gc,
+        &ex_gdf,
+        &kgrad_cfg(),
+    )
+    .expect_err("RS-GDF Gamma exchange accepted")
+    .to_string();
+    assert!(e.contains("RS-GDF") && e.contains("no derivative"), "{e}");
     let gf = gamma_force(&g).unwrap();
     let k = force(&fixture(Kind::Tri(2), &H3D, [1, 1, 1], CAM, ExxDiv::Ewald));
     let d = diff(&gf.grad, &k.grad);

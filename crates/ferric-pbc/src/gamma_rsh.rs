@@ -1,5 +1,8 @@
-//! Range-separated exact exchange for the closed-shell Gamma-point RKS
-//! ([`crate::dft::gamma_rks_rsh`]; mgoldey/ferric#354).
+//! Range-separated exact exchange at the Gamma point: the RKS, UKS and ROKS
+//! energies ([`crate::dft::gamma_rks_rsh`], [`crate::dft::gamma_uks_rsh`],
+//! [`crate::rohf::gamma_roks_rsh`]; mgoldey/ferric#354) and the dense-AFT
+//! nuclear forces routed through the 1x1x1 mesh ([`gamma_rks_rsh_gradient`],
+//! [`gamma_uks_rsh_gradient`]).
 //!
 //! # Route
 //!
