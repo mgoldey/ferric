@@ -189,6 +189,13 @@ def main(argv=None):
         mf.grids.atom_grid = tuple(a.grid)
         mf.grids.prune = None
     mf = mf.density_fit(auxbasis=aux)
+    if a.method == "pbe":
+        # density_fit() rebuilds the grids object with DEFAULT settings (atom_grid {},
+        # pruning back on): measured in the second #228 session, where the PySCF PBE
+        # energy did not move between 75x302 and 150x974.  Set them again here.
+        mf.grids.atom_grid = tuple(a.grid)
+        mf.grids.prune = None
+        assert isinstance(mf.grids, pdft.gen_grid.BeckeGrids), type(mf.grids)
     df = mf.with_df
     df.linear_dep_threshold = a.lindep_aux
     tmpdir = tempfile.mkdtemp(prefix="pyscf228_", dir=os.environ.get("TMPDIR"))

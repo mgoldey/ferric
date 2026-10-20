@@ -45,10 +45,18 @@ from omega_sweep import cpu_jiffies, load1, wait_quiet  # noqa: E402
 PY = os.environ.get("PYSCF_PY", sys.executable)
 NCPU = os.cpu_count() or 12
 # The machine-wide heavy-slot lock files of the cargo shim (a convention, not a temp file).
+# N=1 end-of-run gate: "load" = 1-min loadavg < 1.5 after the run (first session, pre-registered);
+# "foreign" = foreign-CPU fraction < 0.12 (the N>1 rule).  The start gate (loadavg < 1.5) is kept in both.
+N1_GATE = os.environ.get("N1_GATE", "load")
 LOCKS = (
     "/tmp/ferric-compile.lock",  # nosec B108
     "/tmp/ferric-compile.2.lock",  # nosec B108
 )
+
+
+def is_scf_stage(name):
+    """ferric stage rows counted as SCF (Gamma: "scf J/K ...", k-mesh: "k SCF")."""
+    return name.startswith(("scf ", "k SCF", "other ("))
 
 
 def parse_ferric(out):
@@ -85,9 +93,7 @@ def parse_ferric(out):
         if m:
             st[m.group(1)] = float(m.group(2))
     rec["stages"] = st
-    scf = sum(
-        v for k, v in st.items() if k.startswith("scf ") or k.startswith("other (")
-    )
+    scf = sum(v for k, v in st.items() if is_scf_stage(k))
     tot = st.get("total")
     rec["t_scf_s"] = scf
     rec["t_setup_s"] = None if tot is None else tot - scf
@@ -156,13 +162,16 @@ def _run_cmd_locked(cmd, env, threads, lock_wait):
     hz = os.sysconf("SC_CLK_TCK")
     mine = (r1.ru_utime + r1.ru_stime) - (r0.ru_utime + r0.ru_stime)
     other = (b1 - b0) / hz - mine
-    if threads == 1:
+    if threads == 1 and N1_GATE == "foreign":
+        valid = ok_before and l0 < 1.5 and (other / (wall * NCPU) < 0.12)
+    elif threads == 1:
         valid = ok_before and l0 < 1.5 and l1 < 1.5
     else:
         valid = ok_before and (other / (wall * NCPU) < 0.12)
     p = subprocess.CompletedProcess(cmd, rc, out, err)
     return p, dict(
         wall=wall,
+        n1_gate=N1_GATE if threads == 1 else None,
         lock_wait_s=lock_wait,
         foreign_cpu_frac=other / (wall * NCPU),
         child_peak_rss_bytes=rss,
@@ -207,7 +216,7 @@ def split_kmesh(cell):
     return (m.group(1), [m.group(2), m.group(3), m.group(4)]) if m else (cell, None)
 
 
-def run_pyscf(cell, threads, precision, method="rhf"):
+def run_pyscf(cell, threads, precision, method="rhf", grid=None):
     env = dict(OPENBLAS_NUM_THREADS=str(threads), OMP_NUM_THREADS=str(threads))
     base, kmesh = split_kmesh(cell)
     cmd = [
@@ -221,6 +230,8 @@ def run_pyscf(cell, threads, precision, method="rhf"):
         "--method",
         method,
     ] + (["--kmesh"] + kmesh if kmesh else [])
+    if grid:
+        cmd += ["--grid", str(grid[0]), str(grid[1])]
     p, g = run_cmd(cmd, env, threads)
     rec = dict(
         code="pyscf",
@@ -249,6 +260,7 @@ def run_pyscf(cell, threads, precision, method="rhf"):
         rec["pyscf_version"] = inner.get("pyscf_version")
         rec["conv_tol"] = inner.get("conv_tol")
         rec["conv_tol_grad"] = inner.get("conv_tol_grad")
+        rec["grid"] = inner.get("grid")
     except Exception as e:  # noqa: BLE001
         rec["parse_error"] = repr(e)
         rec["stderr"] = p.stderr[-500:]
@@ -269,6 +281,7 @@ def main():
     )
     ap.add_argument("--only", choices=["ferric", "pyscf", "both"], default="both")
     ap.add_argument("--method", choices=["rhf", "pbe"], default="rhf")
+    ap.add_argument("--pyscf-grid", type=int, nargs=2, default=None)
     ap.add_argument(
         "--fixed-order",
         action="store_true",
@@ -289,7 +302,9 @@ def main():
                             cell, a.threads, a.bin, a.toml_dir, a.ferric_tag, a.method
                         )
                         if code == "ferric"
-                        else run_pyscf(cell, a.threads, a.precision, a.method)
+                        else run_pyscf(
+                            cell, a.threads, a.precision, a.method, a.pyscf_grid
+                        )
                     )
                     rec.update(
                         rep=rep, attempt=attempt, session=os.path.basename(a.out)

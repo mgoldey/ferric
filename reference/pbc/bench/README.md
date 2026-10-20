@@ -278,3 +278,131 @@ jkfit rows: NOT run (aux-drop mismatch, first-session Deviation section; unchang
 - A4 (artifact, PySCF hcore): if `hcore_calls` > 1, the first session's PySCF hcore column was a
   SUM over calls; totals are unaffected (PySCF really does that work by default) but any per-call
   "algorithm" statement must divide by the call count.
+
+# RESULTS of the second session (written after the runs)
+
+Box: 12 logical / 6 physical cores; ambient foreign CPU 4-9% of the box on every run (0.5-1.1 cores;
+other agents and desktop).  Binary: `target/release/ferric` built once from 654087b4 (= this
+branch's base; the session commits touch only this directory), `--version` recorded on every
+ferric run: commit 654087b422f4, dirty false, libint 2.13.1.  PySCF 2.13.1.  Every timed run held
+both heavy slots.  All runs (valid and invalid) are in `bench_results/anchor2*.jsonl` and
+`bench_results/timing2_*.jsonl`.  Session wall: 02:58-06:10 (anchors ~40 min, timing ~2.5 h).
+
+## Deviations from the pre-registration (read first)
+1. **N=1 end-of-run gate.**  Under the pre-registered N=1 gate (loadavg < 1.5 before AND after), the
+   k222 N=1 row produced 1 valid ferric run (1 attempt) and 0 valid PySCF runs in 5 attempts
+   (`timing2_k222_n1.jsonl`, kept): our own run (1.0) plus the ambient 0.6-0.8 cores puts the
+   end-of-run loadavg at 1.5-2.7 for any run longer than ~60 s, while the PySCF walls were 89.1-89.6 s
+   (0.6% spread) and the foreign CPU 5-7%.  I stopped that row and re-ran it with `N1_GATE=foreign`
+   (start gate loadavg < 1.5 kept; end gate = foreign-CPU fraction < 0.12, the N>1 rule)
+   (`timing2_k222_n1_fgate.jsonl`, 5 + 5 valid).  Only 1 of those 10 runs would also pass the old end
+   gate.  The N=1 row is therefore an "ambient-load" number like the N=6 rows.
+2. **PBE rows NOT timed.**  Gate part (b) could not be evaluated: ferric's periodic grid implements
+   Lebedev orders up to 302 only (`invalid n_angular: 974`), so there is no ferric 150x974 run; and the
+   PySCF PBE energies were IDENTICAL at 75x302 and 150x974 (diamond_prim -75.04944411759554 vs
+   ...534; dryice -753.6935121493115 vs ...111).  That non-movement is the artifact signature the gate
+   was built to catch: `mf.density_fit()` rebuilds the grids with DEFAULT settings (`atom_grid` {} and
+   pruning on), so every PySCF PBE number from `pyscf_bench.py` up to this commit ran on PySCF's
+   default pruned grid, not on 75x302 unpruned (diagnosed on diamond_prim/STO-3G: 26425 points for
+   both requested grids; after the fix 43141 at 75x302 and 287667 at 150x974).  The fix (grid set again
+   after `density_fit`, plus an assert) is in this commit; the PBE anchors were NOT re-run with it.
+   Recorded only (untimed, NOT comparable): ferric 75x302 vs PySCF default grid differs by 1.5e-4
+   (diamond_prim) and 1.1e-5 Ha/cell (dryice).
+3. Order: the omega sweep ran before the (cancelled) PBE timing slot, not after it.
+4. Harness edits after the pre-registration commit, all mechanical: `--pyscf-grid` passthrough,
+   `N1_GATE`, k-point SCF stage accounting (`k SCF` counted as SCF; `summarize.py` recomputes it from
+   the stored stages), the grid fix of item 2.
+
+## Energy anchors (untimed, N=6; walls disclosed: ferric k222 13 s, conv 34 s, prim222 94 s,
+## dryice_112 315 s; PySCF 1e-12 runs 32 / 58 / 216 / 174 s)
+cc-pVDZ / cc-pvdz-ri, 0 aux dropped in both codes for every cell (k222: every q class).  Ha per cell.
+| cell | ferric | PySCF 1e-12 | dE (bar 1e-8) | PySCF 1e-11 vs own 1e-12 | 1e-10 | 1e-8 (must FAIL) |
+|---|---|---|---|---|---|---|
+| diamond_prim_k222 | -75.6961792415 | -75.69617924177923 | 2.8e-10 PASS | 7.5e-10 PASS | 3.7e-8 FAIL | 2.6e-6 FAIL |
+| diamond_conv | -302.8758854144 | -302.87588540931 | 5.1e-10 PASS | 1.3e-10 PASS | not run | 2.6e-6 FAIL |
+| diamond_prim222 | -605.5694339323 | -605.5694339369 | 4.6e-9 PASS | 9.2e-9 PASS (near the bar) | not run | 2.5e-5 FAIL |
+| dryice_112 | -1501.4642014457 | -1501.4642014448 | 9.3e-10 PASS | 1.2e-9 PASS | not run | 7.1e-5 FAIL |
+Timed PySCF precision = 1e-11 for every cell (1e-10 tested only on k222, where it fails; for the
+Gamma cells 1e-10 was not tested, so 1e-11 is the loosest TESTED passing value, not proven loosest).
+Supercell identity: ferric E(prim222)/8 - E(k222) = -75.69617924154 - (-75.6961792415) = |.| < 1e-10
+(10 printed decimals) PASS (bar 1e-9); PySCF at 1e-12: E(prim222)/8 - E(k222) = 3.3e-10 PASS (bar 1e-8).
+Every timed run: converged, energy spread 0 (ferric) / <= 2.7e-12 (PySCF), within the gate of its anchor.
+
+## Timing, seconds, valid runs only (median [min-max] IQR); n = 5 per row, 0 discarded unless noted
+Total = harness wall around the whole process.  Setup: ferric = every stage except SCF (k: `k hcore` +
+`k J/K build`); PySCF = df build + hcore (sum over its 2 hcore calls, see A4).  RSS = the run's own peak.
+| cell | N | code | total | setup | of which df-build / hcore | SCF | iters | s/iter | RSS GiB |
+|---|---|---|---|---|---|---|---|---|---|
+| diamond_prim_k222 | 1 | ferric | 54.36 [54.23-54.71] IQR 0.42 | 53.16 | 47.35 / 5.85 | 1.13 | 10 | 0.113 | 0.22 |
+| diamond_prim_k222 | 1 | PySCF | 89.44 [88.81-89.71] IQR 0.53 | 85.06 | 78.04 / 7.06 | 3.89 | 10 | 0.313 | 0.26 |
+| diamond_prim_k222 | 6 | ferric | 13.03 [12.20-13.18] IQR 0.60 | 12.57 | 10.81 / 1.80 | 0.47 | 10 | 0.046 | 0.24 |
+| diamond_prim_k222 | 6 | PySCF | 23.58 [23.40-23.89] IQR 0.28 | 19.63 | 17.84 / 1.76 | 3.41 | 10 | 0.280 | 0.38 |
+| diamond_prim | 6 | ferric | 7.48 [7.41-7.82] IQR 0.20 | 7.44 | 6.59 / 0.81 | 0.020 | 10 | 0.002 | 0.10 |
+| diamond_prim | 6 | PySCF | 11.65 [11.35-11.94] IQR 0.27 | 10.89 | 9.23 / 1.67 | 0.22 | 7 | 0.014 | 0.21 |
+| dryice | 6 | ferric | 20.41 [20.25-21.19] IQR 0.18 | 18.44 | 16.54 / 1.89 | 1.95 | 20 | 0.097 | 0.39 |
+| dryice | 6 | PySCF | 35.35 [34.82-36.01] IQR 0.52 | 29.63 | 8.31 / 21.32 | 5.04 | 13 | 0.196 | 2.79 |
+| diamond_conv | 6 | ferric | 33.45 [32.66-34.20] IQR 0.70 | 33.05 | 28.29 / 4.40 | 0.39 | 11 | 0.036 | 0.16 |
+| diamond_conv | 6 | PySCF | 42.98 [42.55-43.72] IQR 0.37 | 41.04 | 32.09 / 8.90 | 1.33 | 7 | 0.100 | 0.54 |
+| diamond_prim222 | 6 | ferric | 92.69 [91.67-93.40] IQR 1.20 | 89.65 | 78.73 / 10.98 | 2.96 | 11 | 0.269 | 0.87 |
+| diamond_prim222 | 6 | PySCF | 171.44 [169.70-171.78] IQR 1.57 | 157.57 | 91.80 / 65.25 | 12.22 | 7 | 0.528 | 5.17 |
+| dryice_112 | 6 | ferric | 314.12 [314.00-315.32] IQR 1.27 | 290.98 | 285.50 / 5.52 | 23.14 | 21 | 1.102 | 2.49 |
+| dryice_112 | 6 | PySCF | 142.94 [141.77-147.20] IQR 2.82 | 123.43 | 37.99 / 85.94 | 18.79 | 15 | 1.087 | 6.04 |
+No row is noisy (every IQR/median < 3%).  ferric CPU/wall at N=6: 4.65 (k222), 5.2-5.8 (Gamma).
+ferric stage split at N=6 (SR 3-centre / LR pair FT + aux FT/GEMM): diamond_prim 6.30 / 0.27,
+diamond_conv 24.25 / 3.83, prim222 49.43 / 26.04, dryice 2.76 / 12.56, dryice_112 6.23 / 266.17.
+N=1 rows for diamond_conv / prim222 / dryice_112: NOT run (budget; projected ~4 h with the N=1 gate).
+
+### omega (ferric only, N=6, 3 reps each, `timing2_omega_n6.jsonl`, 0 discarded)
+| cell | 0.3 | 0.5 | 0.7 | 1.0 (default) | best admissible | max |dE| vs default |
+|---|---|---|---|---|---|---|
+| diamond_prim | 27.24 | 12.78 | 9.45 | 7.91 | 1.0 | 1.5e-9 (0.3) |
+| dryice | 16.44 | 11.69 | 13.10 | 20.30 | 0.5 (1.74x faster than default) | < 1e-10 |
+PySCF's automatic omega (rows above, labelled): 0.417 (diamond_prim) / 0.330 (dryice).  At N=6 on
+dryice: ferric best omega 11.69 s (this sweep) vs ferric default 20.41 s vs PySCF auto-omega 35.35 s
+(different sub-sessions; same box, same gate).
+
+## Statements the data supports (same cell, same N, same stage definition; mismatches below)
+- Total wall ferric/PySCF: k222 0.61 (N=1), 0.55 (N=6); diamond_prim 0.64, dryice 0.58, diamond_conv
+  0.78, prim222 0.54 (N=6): ferric faster.  **dryice_112: 2.20, ferric SLOWER** (N=6).
+- DF build only: ferric/PySCF = 0.61 (k222 N=1), 0.61 (k222 N=6), 0.71 (diamond_prim), 0.88 (conv),
+  0.86 (prim222), but 2.0 (dryice) and **7.5 (dryice_112)**.  ferric's LR part (pair FT + GEMM) is the
+  cause: 12.6 s -> 266 s from dryice to dryice_112 (21x for 2x the cell), while its SR 3-centre went
+  2.8 -> 6.2 s.  ferric's totals on the diamond cells and dryice are carried by the hcore stage
+  (PySCF's FFT-mesh hcore, evaluated twice per run, A4) and the cheaper DF build on dense cells.
+- SCF per iteration: ferric faster on every cell except dryice_112 (1.10 vs 1.09 s, equal).
+- Peak RSS: ferric 0.10-2.49 GiB, PySCF 0.21-6.04 GiB (PySCF's in-memory hcore/FFT work; its cderi is on
+  disk).
+
+## Verdicts on the pre-registered hypotheses
+- H3 (k222 ratio in [0.5, 2]): HOLDS (0.61 / 0.55).  No artifact signature: ferric k222 (54.4 s) is 1.4x
+  its own Gamma diamond_prim (39.3 s, first session, N=1); drop counts equal.
+- H4 (DF build follows SR3 1:4:8 within +-30%): diamond_prim : conv : prim222 = 1 : 4.3 : 11.9, so it
+  holds for conv and FAILS for prim222 (my prediction "fails" was right for prim222, wrong for conv).
+  Post hoc: the SR 3-centre stage alone is 1 : 3.85 : 7.85, i.e. the FINDINGS triplet model holds for
+  the stage it models; the LR part breaks proportionality.  dryice : dryice_112 SR part = 1 : 2.26 (holds).
+- H5 (dryice PySCF DF-build advantage does not shrink on dryice_112): HOLDS, it grows (2.0x -> 7.5x).
+- H6 (N=6 medians move < 5% vs the 3-rep first session): HOLDS for ferric (diamond_prim -1.6%, dryice
+  +2.6%) and PySCF diamond_prim (+1.9%); FAILS for PySCF dryice (31.89 -> 35.35 s, +10.8%, mostly its
+  hcore stage 15.4 -> 21.3 s).  Not explained here; ambient load was higher this session (1-min
+  loadavg 4-8 incl. own runs vs first session) and PySCF's hcore is the most memory-bound stage.
+- H7 (omega): HOLDS: dryice best 0.5 (1.74x vs default), diamond_prim best 1.0; all tested omegas are
+  admissible (energy within 1.5e-9 of the default).
+- A4 (PySCF hcore calls): TRIGGERED: `hcore_calls` = 2 on all 40 timed PySCF runs (init_guess='hcore'
+  plus the kernel).  The first session's PySCF hcore column was a sum over 2 calls; per call the dryice
+  N=1 hcore was ~36.6 s, not 73.2 s.  Totals stand (PySCF does this work by default).
+
+## Mismatches that remain (in addition to the first session's list, items 1-10, which all still apply)
+11. N=1 gate deviation (Deviation 1); N=6 gate is the relaxed foreign-CPU < 12% (first session).
+12. k-mesh stopping rules: ferric dE < 1e-12 + max orbital-gradient element < 1e-9; PySCF conv_tol 1e-12
+    + conv_tol_grad 1e-9 (a norm, not a max element).  Same iteration count (10) on k222.
+13. ferric's k-point stage table has no df/hcore sub-split beyond `k hcore` / `k J/K build`; PySCF's k
+    "df" is GDF.build only.
+14. Gamma 1e-10 was not tested on the new Gamma cells (Energy anchors note).
+15. dryice_112 ferric runs saw 8.8-9.3% foreign CPU (higher than the other rows' 4-7%, still < 12%).
+
+## Open items of #228 after this session
+PBE rows (needs either a ferric Lebedev order > 302 or a grid-refinement gate redesigned around 302,
+and a re-run of the PySCF PBE anchors with the grid fix); N=1 rows for diamond_conv / prim222 /
+dryice_112; jkfit rows (aux-drop mismatch, unchanged); k-meshes beyond 2x2x2; why PySCF's dryice hcore
+moved +38% between sessions; ferric's LR build scaling at dryice_112 (a performance lead, not a
+benchmark item).
