@@ -26,8 +26,8 @@ use support::*;
 /// (2) Central FD (h = 1e-4) of the polarized k-UKS energy on every
 /// component: H3 doublet (9) and H4 triplet (12), 1x1x2, exxdiv ewald, HSE06
 /// and CAM-B3LYP. Physics: the h^2 floor (~4e-9); artifact: every ledger
-/// mutant misses by >= 5.1e-7 (HSE06 w x 1.01), 2.7e-6 (HSE06 erf piece), all
-/// others by >= 2.5e-3.
+/// mutant misses by >= 5.1e-7 (HSE06 w x 1.01), 2.7e-6 (HSE06 erf piece),
+/// 2.7e-4 (CAM-B3LYP w x 1.01), all others by >= 2.5e-3.
 #[test]
 #[ignore = "validation: every force component of H3 doublet + H4 triplet x HSE06/CAM-B3LYP by central FD, 84 fresh k-UKS SCFs"]
 fn rsh_uks_force_matches_fd_every_component() {
