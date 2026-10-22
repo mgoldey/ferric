@@ -37,7 +37,8 @@
 //!   `w_C(r) chi chi` over all points. Both are quadratures of the same
 //!   integral. On LiH (diffuse Li functions) this gives the largest residual:
 //!   ferric's own lambda moves by 4.4e-6 between 99 and 250 radial points at
-//!   302 angular, and ferric's Lebedev table stops at 302. The test therefore
+//!   302 angular, and ferric's Lebedev table stopped at 302 when this was
+//!   written (it now ships 434 and 590; the cDFT default is 302). The test therefore
 //!   compares against NWChem at its GRID LIMIT (300 x 974, "converged"), and
 //!   compares `E(N) - E_unconstrained` rather than `E(N)`, which cancels the XC
 //!   grid offset. The matched-grid (99 x 302) NWChem numbers are printed.

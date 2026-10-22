@@ -13,6 +13,9 @@
 //!   A2/SSF numbers (`pbc_dft.PeriodicGrid(scheme="ssf", D=10)`, same TA-M4 +
 //!   Lebedev-302 points): pins the whole grid construction (point count
 //!   included) to an independent numpy implementation.
+//! * `lebedev_590_partition_of_unity_is_no_worse_than_302` and
+//!   `larger_lebedev_orders_refine_the_periodic_energy` — the refinement
+//!   orders (434 / 590) against the 302 default and the uniform pin.
 //! * `pbe0_box_limit_is_hyb_times_the_hf_madelung_term` — ferric's MOLECULAR
 //!   KS on the identical grid rules (independent of every periodic piece).
 //!
@@ -249,11 +252,44 @@ fn grid_integrates_lattice_density_and_overlap() {
 /// image separation (prototype: an H point 8.7 Bohr out saw a Li image 51
 /// Bohr away at a = 60). Prototype: 9.7e-17 at a = 30.
 ///
+/// Run at Lebedev 110 (the original anchor) and at the refinement orders 434
+/// and 590: the molecular reference takes its points from `lebedev(n_ang)`
+/// directly, so a periodic build that accepted 590 but generated a different
+/// sphere would leave every reference point unmatched (weight 0 vs a
+/// positive molecular weight).
+///
 /// Control: the SAME comparison with Becke partitions on both sides is NOT
 /// exact at a = 30 (polynomial tails see the images: prototype 4.7e-7), so
 /// the test can see an image atom when one matters.
+///
+/// Measured: SSF max|dw| 0 (bit-identical) at 110, 434 and 590 over
+/// 3875 / 15239 / 20719 near points; Becke control 2.4e-6 / 5.6e-7 / 4.0e-7.
+///
+/// Mutation ledger (measured 2026-10-22): `lebedev(302)` fed to the periodic
+/// build while the config says 590 (the `lebedev(cfg.n_angular)` call in
+/// `dft.rs`): SSF max|dw| at 590 becomes 1.0e-1 (unmatched reference points)
+/// and the test fails; 110 and 434 stay at 0.
 #[test]
 fn periodic_ssf_grid_is_the_molecular_grid_in_a_huge_box() {
+    for n_ang in [110, 434, 590] {
+        let (worst, n_near) = huge_box_worst_weight_error(n_ang);
+        assert!(n_near > 500, "{n_ang}: only {n_near} points within 0.08a");
+        assert!(
+            worst[0] < 1e-14,
+            "{n_ang}: SSF periodic vs molecular: {:.3e}",
+            worst[0]
+        );
+        assert!(
+            worst[1] > 1e-10,
+            "{n_ang}: Becke control saw no image: {:.3e}",
+            worst[1]
+        );
+    }
+}
+
+/// `([max|dw| SSF, max|dw| Becke], points compared)` for the LiH a = 30 box at
+/// TA-M4 30 × Lebedev `n_ang` (see the test above).
+fn huge_box_worst_weight_error(n_ang: usize) -> ([f64; 2], usize) {
     let a = 30.0;
     let (r_li, r_h) = ([0.3, 0.2, 0.1], [0.3, 0.2, 3.1]);
     let mol = Molecule {
@@ -271,7 +307,7 @@ fn periodic_ssf_grid_is_the_molecular_grid_in_a_huge_box() {
         })
         .collect();
     let cen = [0.3, 0.2, 1.6];
-    let (n_rad, n_ang) = (30, 110);
+    let n_rad = 30;
     // Unpartitioned molecular points, keyed by (home, exact xyz bits).
     let (leb, lw) = lebedev(n_ang);
     let mut w_rl = std::collections::HashMap::new();
@@ -316,25 +352,15 @@ fn periodic_ssf_grid_is_the_molecular_grid_in_a_huge_box() {
             n_near += 1;
         }
         eprintln!(
-            "LiH a={a} {scheme:?}: D {} (covering bound {:.3}), npts {}, near {n_near}, \
-             max|dw| {:.2e}",
+            "LiH a={a} 30x{n_ang} {scheme:?}: D {} (covering bound {:.3}), npts {}, \
+             near {n_near}, max|dw| {:.2e}",
             grid.neighbour_cutoff(),
             grid.covering_bound(),
             grid.len(),
             worst[k]
         );
     }
-    assert!(n_near > 500, "only {n_near} points within 0.08a");
-    assert!(
-        worst[0] < 1e-14,
-        "SSF periodic vs molecular: {:.3e}",
-        worst[0]
-    );
-    assert!(
-        worst[1] > 1e-10,
-        "Becke control saw no image: {:.3e}",
-        worst[1]
-    );
+    (worst, n_near)
 }
 
 // ──────────────────────────────────────────────── (3) PySCF + prototype pins
@@ -450,6 +476,120 @@ fn ssf_grid_rks_matches_the_prototype_construction() {
     assert!((def.scf.energy - lda).abs() < 1e-12);
 }
 
+// ───────────────────────────────────── (3b) refinement orders 434 / 590
+
+/// Partition of unity on the lattice at the refinement order: the grid's
+/// `|∫ρ − N|` and `max|S_grid − S_latt|` for the flat probe density (the same
+/// anchors as `grid_integrates_lattice_density_and_overlap`) at 75×590 and
+/// 100×590 are no worse than at the 75×302 default.
+///
+/// Measured (2026-10-22): 75×302 |dN| 9.50e-4, max|dS| 1.66e-3; 75×590
+/// 1.35e-4 / 2.30e-4; 100×590 1.34e-4 / 2.29e-4, so the 590/302 ratio is
+/// 0.14 for both anchors. "No worse" alone would pass a mutant whose 590 is
+/// secretly 302 (75×"590" is then the IDENTICAL grid, ratio exactly 1), so the
+/// ratio is also held below `PARTITION_RATIO_BAR` = 0.4: ~3x the measured
+/// 0.14 and 2.5x below the mutant's 1.0.
+///
+/// Mutation ledger (measured 2026-10-22): `lebedev(302)` behind a 590 label:
+/// 75×590 |dN| 9.5006e-4 (identical to 302), 100×590 9.5101e-4 (ratio 1.001)
+/// — the test fails.
+#[test]
+fn lebedev_590_partition_of_unity_is_no_worse_than_302() {
+    let su = h2_setup(4.0);
+    let mut out = Vec::new();
+    for (nr, na) in [(75, 302), (75, 590), (100, 590)] {
+        let grid = PeriodicGrid::build(&su.cell, &ssf_grid(nr, na, 10.0)).unwrap();
+        let (dn, ds) = anchors(&su, &grid);
+        eprintln!(
+            "H2 a=4 SSF {nr}x{na}: npts {} |dN| {dn:.4e} max|dS| {ds:.4e}",
+            grid.len()
+        );
+        out.push((dn, ds));
+    }
+    const PARTITION_RATIO_BAR: f64 = 0.4;
+    let (dn302, ds302) = out[0];
+    for &(dn, ds) in &out[1..] {
+        assert!(dn <= dn302, "|dN| {dn:.3e} at 590 vs {dn302:.3e} at 302");
+        assert!(ds <= ds302, "max|dS| {ds:.3e} at 590 vs {ds302:.3e} at 302");
+        assert!(
+            dn / dn302 < PARTITION_RATIO_BAR && ds / ds302 < PARTITION_RATIO_BAR,
+            "590/302 ratios |dN| {:.3} max|dS| {:.3}",
+            dn / dn302,
+            ds / ds302
+        );
+    }
+}
+
+/// Refinement: the H2 a = 4 LDA energy on 75×302 → 100×590 → 150×590 against
+/// the spectrally converged uniform energy (PySCF UniformGrids pin, which
+/// ferric's own uniform grid reproduces to 1e-8 in
+/// `uniform_grid_rks_matches_pinned_pyscf_uniform`). Asserted: the error
+/// magnitude shrinks at each step, the step-to-step energy change shrinks,
+/// and the first (angular) step removes most of the error (ratio bar below).
+///
+/// Measured (2026-10-22): errors −3.790e-4 (75×302, 36234 points),
+/// −5.189e-5 (100×590, 94192), −5.184e-5 (150×590, 141162); steps 3.27e-4
+/// then 5.5e-8. The 150-shell step is small because the residual is
+/// angular-limited (the prototype's finding), but it is still a decrease.
+///
+/// Ratio bar: measured |e(100×590)| / |e(75×302)| = 0.137; with the 590
+/// sphere replaced by the 302 one (the mutant below) it is 1.001, because the
+/// error is angular-limited. `REFINE_RATIO_BAR` = 0.4 sits ~3x above the
+/// measured value and 2.5x below the mutant.
+///
+/// Mutation ledger (measured 2026-10-22): `lebedev(302)` behind a 590 label:
+/// errors −3.790e-4 / −3.793e-4 / −3.793e-4 (ratio 1.001), the first
+/// monotonicity assert fails (the ratio bar would too).
+#[test]
+fn larger_lebedev_orders_refine_the_periodic_energy() {
+    let su = h2_setup(4.0);
+    let mut e = Vec::new();
+    for (nr, na) in [(75, 302), (100, 590), (150, 590)] {
+        let r = rks(&su, "LDA", ssf_grid(nr, na, 10.0));
+        let err = r.scf.energy - H2_PYSCF_UNIFORM_LDA;
+        eprintln!(
+            "H2 a=4 SSF {nr}x{na} LDA: {:.12} err {err:.4e} npts {}",
+            r.scf.energy, r.n_grid_points
+        );
+        e.push((r.scf.energy, err));
+    }
+    let step1 = (e[1].0 - e[0].0).abs();
+    let step2 = (e[2].0 - e[1].0).abs();
+    let ratio = e[1].1.abs() / e[0].1.abs();
+    eprintln!("steps {step1:.4e} -> {step2:.4e}, |e(100x590)|/|e(75x302)| {ratio:.4}");
+    assert!(e[1].1.abs() < e[0].1.abs(), "{e:?}");
+    // Margin ~5e-8, the size of the uniform pin's own agreement: this is a
+    // deterministic ordering check, not evidence that the radial step helps.
+    // The refinement claim is step2 < step1 and the angular ratio below.
+    assert!(e[2].1.abs() < e[1].1.abs(), "{e:?}");
+    assert!(step2 < step1, "steps {step1:.3e} {step2:.3e}");
+    const REFINE_RATIO_BAR: f64 = 0.4;
+    assert!(ratio < REFINE_RATIO_BAR, "590/302 error ratio {ratio:.4}");
+}
+
+/// Orders outside ferric's Lebedev table (974 included, the order the #228
+/// bench README first asked for) are a typed `InvalidGrid`, and pruning is
+/// still refused, at every refinement order.
+#[test]
+fn unsupported_lebedev_orders_are_invalid_grid() {
+    let cell = h2_cell(4.0);
+    for n_ang in [0, 7, 38, 146, 974, 5810] {
+        let e = PeriodicGrid::build(&cell, &PeriodicGridConfig::with_size(75, n_ang))
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("invalid n_angular"), "{n_ang}: {e}");
+        assert!(e.contains(&n_ang.to_string()), "{n_ang}: {e}");
+    }
+    for n_ang in [302, 434, 590] {
+        let pruned = PeriodicGridConfig {
+            prune: Some(PruneScheme::NwchemLike),
+            ..PeriodicGridConfig::with_size(75, n_ang)
+        };
+        let e = PeriodicGrid::build(&cell, &pruned).unwrap_err().to_string();
+        assert!(e.contains("prune is not supported"), "{n_ang}: {e}");
+    }
+}
+
 // ─────────────────────────────────────────────── (4) hybrid box limit (a⁻³)
 
 /// H2/STO-3G in a 16 Bohr box vs ferric's MOLECULAR RKS on the identical grid
@@ -556,7 +696,7 @@ fn unsupported_functionals_and_grid_knobs_are_refused_by_name() {
     };
     let e = PeriodicGrid::build(&cell, &pruned).unwrap_err().to_string();
     assert!(e.contains("prune is not supported"), "{e}");
-    let e = PeriodicGrid::build(&cell, &PeriodicGridConfig::with_size(75, 590))
+    let e = PeriodicGrid::build(&cell, &PeriodicGridConfig::with_size(75, 974))
         .unwrap_err()
         .to_string();
     assert!(e.contains("invalid n_angular"), "{e}");

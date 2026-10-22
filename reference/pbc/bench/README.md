@@ -449,3 +449,19 @@ The first session's text above is left as written; these corrections apply to it
   stands because the mismatch favours PySCF.
 - The PBE path of that session's `pyscf_bench.py` ran on default pruned BeckeGrids (Deviation 2 of the
   second session), not on UniformGrids as the addendum says; no PBE number was reported in either session.
+
+# Addendum 2026-10-22: PBE refinement grid is 150x590
+The pre-registered PBE gate above (section "Energy gates", parts (a) and (b)) names 150x974 as the
+refinement grid.  974 is not a Lebedev order in ferric's table (6/14/26/50/110/194/302/434/590,
+`ferric_dft::prune::SUPPORTED_LEBEDEV_ORDERS`), and the periodic grid refused everything above 302
+until this commit, which is why the second session recorded `invalid n_angular: 974`.  The periodic
+grid now validates against that shared list, so the refinement grid of the gate is **150x590** for
+both codes (PySCF accepts `--grid 150 590`; 590 is in its Lebedev ladder).  The gate is otherwise
+unchanged: eps_c = |E_c(75x302) - E_c(150x590)|, and parts (a) and (b) read with 150x590 in place of
+150x974.  Inputs: `toml_ri/dryice_pbe_150x590.toml` and `toml_ri/diamond_prim_pbe_150x590.toml`
+(the timed cc-pvdz-ri inputs), and `toml/dryice_pbe_150x590.toml` (def2-universal-jkfit).  The
+`*_g150.toml` files are left at 974 as the inputs of the recorded failed runs.  No 150x590 PBE anchor
+has been run yet; the PySCF PBE anchors also still need the re-run with the grid fix (Deviation 2).
+Evidence that ferric's 590 grid is wired correctly (H-only toys, not the bench cells):
+`crates/ferric-pbc/tests/pbc_rks.rs` (huge-box SSF anchor exact at 434/590; H2 a = 4 LDA error vs the
+uniform reference -3.79e-4 at 75x302, -5.19e-5 at 100x590, -5.18e-5 at 150x590).
