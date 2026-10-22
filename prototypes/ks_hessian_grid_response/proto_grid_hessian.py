@@ -164,7 +164,6 @@ def moving_weights(R, z, home, u, scale, m, ride=True):
 
 
 def build_grid(mol):
-    R = mol.atom_coords()
     home, u, scale = [], [], []
     for ia, c, w in atomic_quadrature(mol):
         home += [ia] * len(w)
