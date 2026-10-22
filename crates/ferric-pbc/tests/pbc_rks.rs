@@ -558,6 +558,9 @@ fn larger_lebedev_orders_refine_the_periodic_energy() {
     let ratio = e[1].1.abs() / e[0].1.abs();
     eprintln!("steps {step1:.4e} -> {step2:.4e}, |e(100x590)|/|e(75x302)| {ratio:.4}");
     assert!(e[1].1.abs() < e[0].1.abs(), "{e:?}");
+    // Margin ~5e-8, the size of the uniform pin's own agreement: this is a
+    // deterministic ordering check, not evidence that the radial step helps.
+    // The refinement claim is step2 < step1 and the angular ratio below.
     assert!(e[2].1.abs() < e[1].1.abs(), "{e:?}");
     assert!(step2 < step1, "steps {step1:.3e} {step2:.3e}");
     const REFINE_RATIO_BAR: f64 = 0.4;

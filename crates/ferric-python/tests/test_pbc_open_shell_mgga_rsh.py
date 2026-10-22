@@ -65,8 +65,8 @@ H3D_ATOMS = [(0.3, 0.2, 0.1), (0.3, 0.2, 1.5), (0.3, 0.2, 2.9)]
 TRI_A_BOHR = [[4.6, 0.0, 0.0], [0.9, 4.3, 0.0], [0.5, 0.7, 4.8]]
 PYSCF_H3D_CAM_GAMMA = -1.5724933181342036
 # Measured binding - PySCF pin on the 75x302 grid: SCAN -1.63e-4 (radially
-# converged: -1.65e-4 at 150x302 and 250x302; 302 is the largest Lebedev order
-# the periodic grid has), CAM-B3LYP 2.3e-7. SCAN is grid-sensitive, so its bar
+# converged: -1.65e-4 at 150x302 and 250x302; 75x302 is the periodic
+# default), CAM-B3LYP 2.3e-7. SCAN is grid-sensitive, so its bar
 # (1e-3) resolves only gross errors (PBE in its place: 3.8e-2); the tau
 # mutants of the library (>= 2e-5) are below it and are caught by the library
 # pins and by LIB_H3_112 above, not here. CAM-B3LYP's bar is 2e-6 (~10x).

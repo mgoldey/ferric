@@ -53,7 +53,8 @@ LIKE-FOR-LIKE (what was matched, from the NWChem 7.2.2 source):
   ~1e-6 quadrature difference. Two NWChem grids are therefore recorded:
     matched   : 99 radial x 302 angular (ferric's cDFT default grid)
     converged : 300 radial x 974 angular (NWChem's grid limit; ferric's
-                Lebedev table stops at 302)
+                Lebedev table stopped at 302 when this was written and
+                now ends at 590)
 * Integrals: `direct`, `tolerances tight`; no density fitting.
 * SCF: odft (UKS) for every system; `convergence energy 1e-11 density 1e-9`;
   cdft multiplier convergence 1e-10.
