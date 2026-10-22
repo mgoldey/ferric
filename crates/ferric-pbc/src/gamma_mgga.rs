@@ -27,7 +27,10 @@
 //!
 //! The 1x1x1 dense kernels are complex, `2 nao^4 x 16` bytes (4x the real
 //! Gamma tensor, which stays resident in a binding), capped by
-//! [`GammaMggaDerivConfig::kdense`]`.max_bytes`.
+//! [`GammaMggaDerivConfig::kdense`]`.max_bytes`. A pure meta-GGA needs only
+//! the J kernel, but [`KDenseAftEri::build`] always builds both J and K
+//! (there is no J-only mode), so half of it is unused here; adding one is a
+//! change to `kdense_aft`, left out.
 
 use crate::dft::GammaRksConfig;
 use crate::hcore::PeriodicHcoreConfig;
@@ -191,8 +194,7 @@ fn route(
             dft.functional
         )));
     }
-    let (mesh, hk, kscf) =
-        crate::gamma_rsh::one_point_inputs(
+    let (mesh, hk, kscf) = crate::gamma_rsh::one_point_inputs(
         who,
         "open-shell meta-GGA derivatives are not implemented",
         cell,

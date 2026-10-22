@@ -42,7 +42,7 @@
 //!
 //! NOT covered: hybrid meta-GGAs (none resolve), range-separated / VV10 /
 //! double hybrid meta-GGAs (refused), open-shell meta-GGA stress (UKS/ROKS
-//! keep their typed refusal; open-shell TPSS is refused), TPSS on RS-GDF, the
+//! keep their typed refusal; open-shell TPSS is refused), TPSS on RS-GDF (refused by the bindings), the
 //! range-split RS-GDF build, d shells, ECPs, heavy atoms, metals. The
 //! Gamma-point meta-GGA stress is this code on the 1x1x1 mesh
 //! (`pbc_gamma_mgga_derivs.rs`).

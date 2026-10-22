@@ -55,6 +55,7 @@ use ferric_pbc::kgrad::KGradJk;
 use ferric_pbc::kpts::KPointMesh;
 use ferric_pbc::kxcgrad::{kpoint_rks_gradient, KRksGradConfig, KXcGrid, KXcMutation};
 use ferric_pbc::kxcstress::KXcStressMutation;
+use ferric_pbc::lattice::Cell;
 use ferric_pbc::rsgdf::{RsGdf, RsGdfConfig};
 use ferric_pbc::stress::{gamma_rks_stress, GammaStressConfig};
 use ferric_pbc::uhf::GammaUhfIntegrals;
@@ -65,6 +66,9 @@ use support::*;
 /// the h sweeps are in `validation_pbc_mgga_derivs.rs`).
 const FORCE_ROW: [(usize, usize); 2] = [(0, 2), (1, 1)];
 const STRAIN_ROW: [(usize, usize); 2] = [(0, 0), (2, 2)];
+/// Gamma vs 1x1x1 on the two-orbital cell (two separately converged SCFs):
+/// measured 1.7e-12 (2026-10-22); the SCAN vs r2SCAN force gap there is 1.5e-3.
+const H4_GLUE_BAR: f64 = 1e-10;
 
 // ------------------------------------------------------------------ FD oracles
 
@@ -198,50 +202,85 @@ fn gamma_mgga_force_is_the_one_point_mesh_force() {
     for f in ["SCAN", "TPSS"] {
         let g = gamma(cell_of(&H2), f);
         let routed = force(&g, None);
-        let mesh = KPointMesh::gamma_centred(&g.cell, [1, 1, 1]).unwrap();
-        let mut kc = KRksConfig::new(&g.cell, ExxDiv::Ewald, f);
-        kc.krhf.hcore = hcfg();
-        kc.krhf.scf.energy_conv = 1e-13;
-        kc.krhf.scf.grad_conv = 1e-10;
-        kc.krhf.scf.max_iter = 300;
-        kc.grid = grid();
-        let k = solve_krks(&g.cell, &g.prep, None, &mesh, &kc).unwrap();
-        let hk = ferric_pbc::hcore::kpoint::periodic_hcore_kpts(&g.cell, &g.prep, &mesh, &hcfg())
-            .unwrap();
-        let eri = KDenseAftEri::build(
-            &g.cell,
-            &g.prep,
-            &mesh,
-            &hk.s,
-            ExxDiv::Ewald,
-            &Default::default(),
-        )
-        .unwrap();
-        let kg = kpoint_rks_gradient(
-            &g.cell,
-            &g.prep,
-            &mesh,
-            &hcfg(),
-            &hk,
-            KGradJk::Dense(&eri),
-            &k.scf,
-            f,
-            &KRksGradConfig {
-                grad: dcfg().grad,
-                grid: KXcGrid::Atom(grid()),
-                exxdiv: Some(ExxDiv::Ewald),
-                ..Default::default()
-            },
-        )
-        .unwrap();
+        let (kg, ek) = one_point_force(&g, f);
         let d = diff(&routed.grad, &kg.grad);
         eprintln!(
             "{f}: Gamma vs 1x1x1 force {d:.2e}; E {:.2e}; routed Fock guard {:.1e}",
-            g.scf.energy - k.scf.energy,
+            g.scf.energy - ek,
             routed.hf.fock_mismatch
         );
         assert!(d < GLUE_BAR, "{f}: {d:e}");
     }
+}
+
+/// `solve_krks` + `kpoint_rks_gradient` at 1x1x1 on `g`'s cell, grid and
+/// hcore: `(force, energy)`.
+fn one_point_force(g: &G, f: &str) -> (ferric_pbc::kxcgrad::KRksGradient, f64) {
+    let mesh = KPointMesh::gamma_centred(&g.cell, [1, 1, 1]).unwrap();
+    let mut kc = KRksConfig::new(&g.cell, ExxDiv::Ewald, f);
+    kc.krhf.hcore = hcfg();
+    kc.krhf.scf.energy_conv = 1e-13;
+    kc.krhf.scf.grad_conv = 1e-10;
+    kc.krhf.scf.max_iter = 300;
+    kc.grid = grid();
+    let k = solve_krks(&g.cell, &g.prep, None, &mesh, &kc).unwrap();
+    let hk =
+        ferric_pbc::hcore::kpoint::periodic_hcore_kpts(&g.cell, &g.prep, &mesh, &hcfg()).unwrap();
+    let eri = KDenseAftEri::build(
+        &g.cell,
+        &g.prep,
+        &mesh,
+        &hk.s,
+        ExxDiv::Ewald,
+        &Default::default(),
+    )
+    .unwrap();
+    let kg = kpoint_rks_gradient(
+        &g.cell,
+        &g.prep,
+        &mesh,
+        &hcfg(),
+        &hk,
+        KGradJk::Dense(&eri),
+        &k.scf,
+        f,
+        &KRksGradConfig {
+            grad: dcfg().grad,
+            grid: KXcGrid::Atom(grid()),
+            exxdiv: Some(ExxDiv::Ewald),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    (kg, k.scf.energy)
+}
+
+/// The two-orbital H4 triclinic cell, where alpha != 0 and SCAN and r2SCAN
+/// DIFFER (on the one-orbital H2 cell they coincide exactly, so a SCAN /
+/// r2SCAN swap anywhere in the Gamma derivative path passes every H2 test).
+/// The routed Gamma r2SCAN force equals the 1x1x1 one; the SCAN force on the
+/// same cell differs by far more than the glue bar; and a SCAN config on the
+/// r2SCAN Gamma SCF is refused by the Fock guard (on H2 it would be accepted).
+#[test]
+fn r2scan_and_scan_are_distinguished_on_the_two_orbital_cell() {
+    let tri = Cell::new(hydrogens(&TRI_ATOMS), TRI_A).expect("triclinic cell");
+    let g = gamma(tri.clone(), "R2SCAN");
+    let routed = force(&g, None);
+    let (kg, ek) = one_point_force(&g, "R2SCAN");
+    let d = diff(&routed.grad, &kg.grad);
+    eprintln!(
+        "H4 tri r2SCAN: Gamma vs 1x1x1 force {d:.2e}; E {:.2e}",
+        g.scf.energy - ek
+    );
+    assert!(d < H4_GLUE_BAR, "{d:e}");
+    let scan = force(&gamma(tri, "SCAN"), None);
+    let gap = diff(&routed.grad, &scan.grad);
+    eprintln!("H4 tri Gamma SCAN vs r2SCAN force {gap:.2e}");
+    assert!(gap > MUTANT_BAR, "{gap:e}");
+    let e = try_force(&g, &rks_cfg("SCAN"), &g.scf, &dcfg())
+        .expect_err("SCAN config on the r2SCAN SCF accepted")
+        .to_string();
+    assert!(e.contains("differs"), "{e}");
 }
 
 // ------------------------------------------------------ refusals and guard
@@ -377,7 +416,9 @@ fn binding_gates() {
     assert!(e.contains("dense-AFT J only"), "{e}");
     // The request gate the bindings call carries the same J/K refusal.
     for f in ["SCAN", "r2SCAN", "TPSS"] {
-        let e = check_gamma_rks_request(f, true, true).unwrap_err().to_string();
+        let e = check_gamma_rks_request(f, true, true)
+            .unwrap_err()
+            .to_string();
         assert!(e.contains("dense-AFT J only"), "{f}: {e}");
         check_gamma_rks_request(f, false, true).unwrap_or_else(|e| panic!("{f}: {e}"));
     }

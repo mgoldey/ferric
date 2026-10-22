@@ -141,10 +141,10 @@
 //!
 //! LDA, GGA, meta-GGA (SCAN, r2SCAN on the dense-AFT and RS-GDF J routes;
 //! TPSS on the dense-AFT route, pinned to PySCF `krks_stress` and FD of its
-//! SCF energy; the RS-GDF route shares the grid XC strain response and is
-//! exercised with SCAN / r2SCAN), global hybrids, and range-separated (CAM) GGA
-//! hybrids on the dense-AFT or RS-GDF J/K (below); VV10/double hybrids keep
-//! typed errors.
+//! SCF energy; the bindings refuse TPSS on RS-GDF J, which shares the grid
+//! XC strain response and is exercised with SCAN / r2SCAN), global hybrids,
+//! and range-separated (CAM) GGA hybrids on the dense-AFT or RS-GDF J/K
+//! (below); VV10/double hybrids keep typed errors.
 //!
 //! # Range-separated hybrids
 //!

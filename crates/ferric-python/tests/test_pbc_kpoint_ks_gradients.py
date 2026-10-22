@@ -213,6 +213,16 @@ def test_refusals_have_exact_wording(basis):
     # TPSS has a validated closed-shell force and stress (issue #492).
     t = _krks(H2_ATOMS, basis, "TPSS", with_gradient=True, with_stress=True)
     assert np.isfinite(t.gradient()).all() and np.isfinite(t.stress()).all()
+    # ... on the dense J only: RS-GDF is refused by name before the SCF.
+    for kw in ("with_gradient", "with_stress"):
+        with pytest.raises(
+            ValueError,
+            match=r"^run_rks_kpts: .*TPSS: the k-point TPSS force and "
+            r"stress are validated on the dense-AFT J only",
+        ):
+            _krks(
+                H2_ATOMS, basis, "TPSS", jk="rsgdf", auxbasis="cc-pvdz-ri", **{kw: True}
+            )
     # Range-separated hybrids: the dense-AFT force runs
     # (test_pbc_rsh_open_mgga_derivs.py); the force/stress allowlist is
     # independent of the energy gate and refuses them on RS-GDF.

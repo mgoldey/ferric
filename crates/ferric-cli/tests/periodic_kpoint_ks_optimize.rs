@@ -16,7 +16,9 @@
 //! * Gamma point (no kmesh), meta-GGA (issue #492): the printed final force of
 //!   a TPSS optimize equals the routed library force
 //!   (`gamma_mgga::gamma_rks_mgga_gradient` on `gamma_rks`), same bar; a
-//!   meta-GGA optimize on `jk = "rsgdf"` is refused before any SCF.
+//!   meta-GGA optimize on `jk = "rsgdf"` is refused before any SCF, and the
+//!   pre-SCF dense cap counts the routed force's 1x1x1 kernels. A k-point
+//!   TPSS optimize on `jk = "rsgdf"` is refused by name.
 //!
 //! The explicit `neighbour_cutoff` is shared by the CLI input and the library
 //! grid: the XC energy has a hard cutoff and the default depends on the cell.
@@ -480,6 +482,20 @@ fn unsupported_kohn_sham_routes_are_refused_with_exact_messages() {
         let e = refused(&run(&loose_input("mgga-ref", f, "[1, 1, 2]", DENSE)), f);
         assert!(e.contains("[cell] kmesh with functional"), "{f}: {e}");
     }
+    // TPSS derivatives are validated on the dense J only: RS-GDF is refused
+    // by name (SCAN / r2SCAN on RS-GDF stay accepted: the meta-GGA test).
+    let e = refused(
+        &run(&loose_input("tpss-gdf", "TPSS", "[1, 1, 2]", RSGDF)),
+        "tpss-gdf",
+    );
+    assert!(
+        e.contains("method.task = \"optimize\" with [cell] kmesh")
+            && e.contains(
+                "TPSS: the k-point TPSS force and stress are validated on the \
+                 dense-AFT J only"
+            ),
+        "{e}"
+    );
     // Open-shell Kohn-Sham with a meta-GGA (ksdft with multiplicity > 1 is
     // UKS): the force runs on the dense-AFT J/K (periodic_rsh_open_mgga_derivs.rs);
     // on RS-GDF the energy gate already names the J/K.
@@ -710,4 +726,16 @@ fn gamma_printed_force_equals_the_routed_library_force_for_tpss() {
         e.contains("method.task = \"optimize\" with [cell]") && e.contains("dense-AFT J only"),
         "{e}"
     );
+}
+
+/// The Gamma pre-SCF dense budget counts the routed force's 1x1x1 kernels
+/// (32 nao^4 bytes) for a meta-GGA optimize, as the Python preflight does:
+/// nao = 2, so plain 128 B and meta-GGA optimize 640 B; a 322 B cap runs the
+/// PBE optimize and refuses the TPSS one before any SCF.
+#[test]
+fn gamma_meta_gga_optimize_counts_the_one_point_kernels_in_the_dense_cap() {
+    let cap = "jk = \"dense\"\nmax_eri_gb = 3e-7";
+    ok(&run_gamma("gamma-cap-pbe", "PBE", cap), "gamma-cap-pbe");
+    let e = refused(&run_gamma("gamma-cap-tpss", "TPSS", cap), "gamma-cap-tpss");
+    assert!(e.contains("dense AFT ERI tensors need 640 bytes"), "{e}");
 }

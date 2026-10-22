@@ -5890,8 +5890,8 @@ kind = "ccsd"
             false,
             &["kmesh", "meta-GGA", "SCAN / r2SCAN"],
         ),
-        // TPSS is a closed-shell (RKS) energy only: the UKS routes refuse it
-        // and their supported list does not name it.
+        // TPSS is closed-shell (RKS) only: the UKS routes refuse it and their
+        // supported list does not name it.
         (
             "uhf",
             TPSS,

@@ -423,7 +423,8 @@ Gamma point for the SCF routes (RHF, UHF, ROHF, RKS, UKS, ROKS) with either
 force, and prints the final gradient (Hartree/Bohr per cell). A Gamma-point
 RKS with SCAN / r2SCAN / TPSS optimizes too, with `jk = "dense"` only (the
 force is the 1×1×1 k-point force fed the Gamma SCF; it builds the 1×1×1
-dense kernels, 32 nao⁴ bytes, each tensor capped by `max_eri_gb`);
+dense kernels, 32 nao⁴ bytes on top of the 8 nao⁴ Gamma ERI, and `max_eri_gb`
+counts all of them before the SCF);
 `jk = "rsgdf"` with a meta-GGA and `task = "optimize"` is an error. With `kmesh` it
 works for `rhf`, `uhf` and `rohf` (no functional) and for Kohn-Sham (`ksdft`,
 or `rhf`/`uhf`/`rohf` with `[dft] functional`: RKS, UKS, ROKS) using the analytic

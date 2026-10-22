@@ -697,6 +697,23 @@ fn stress_refusals_name_the_toml_key() {
             && e.contains("UKS range-separated hybrid force and stress are not wired"),
         "{e}"
     );
+    // TPSS stress on RS-GDF J: refused by name (validated on the dense J).
+    let tpss = Case {
+        tag: "t",
+        route: Route::Rks,
+        functional: "TPSS",
+    };
+    let e = refused(
+        tpss,
+        "tpss-gdf",
+        "rhf",
+        &format!("{km}\njk = \"rsgdf\"\nauxbasis = \"cc-pvdz-ri\""),
+        "",
+    );
+    assert!(
+        e.contains("[cell] stress = true") && e.contains("dense-AFT J only"),
+        "{e}"
+    );
     let rhf = CASES[0];
     let e = refused(rhf, "gamma", "rhf", "stress = true", "");
     assert!(

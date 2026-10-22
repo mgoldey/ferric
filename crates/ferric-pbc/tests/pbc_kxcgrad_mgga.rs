@@ -33,7 +33,7 @@
 //! is this code on the 1x1x1 mesh (`pbc_gamma_mgga_derivs.rs`).
 //!
 //! NOT covered: hybrid meta-GGAs (none resolve), range-separated and VV10
-//! meta-GGAs (refused), TPSS on RS-GDF, RS-GDF beyond that one component and the
+//! meta-GGAs (refused), TPSS on RS-GDF (refused by the bindings), RS-GDF beyond that one component and the
 //! range-split fit, heavy atoms/ECPs, shifted meshes, metals, open shell
 //! (TPSS refused there), SCAN's alpha ~ 1 region (the H2 fixtures reach
 //! alpha ~ 0 only), and the default (75, 302) grid.

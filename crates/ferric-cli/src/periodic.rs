@@ -269,14 +269,18 @@ fn setup(cfg: &Config, plan: &PeriodicPlan) -> Setup {
             // size and check their own kernels.
             if plan.kmesh.is_none() {
                 let nao = prep.nbasis();
+                let f = plan.functional.as_deref();
                 let rsh = matches!(
                     plan.route,
                     PeriodicRoute::Rks | PeriodicRoute::Uks | PeriodicRoute::Roks
-                ) && plan
-                    .functional
-                    .as_deref()
-                    .is_some_and(ferric_pbc::rsh::is_range_separated);
-                let need = ferric_pbc::gamma_rsh::gamma_dense_bytes(nao, rsh);
+                ) && f.is_some_and(ferric_pbc::rsh::is_range_separated);
+                // A Gamma meta-GGA optimize builds the 1x1x1 complex kernels
+                // of the routed force (`gamma_mgga`), the same 32 nao^4 bytes
+                // as the attenuated exchange (as the Python preflight counts).
+                let mgga_force = plan.optimize
+                    && plan.route == PeriodicRoute::Rks
+                    && f.is_some_and(ferric_pbc::dft::is_meta_gga_name);
+                let need = ferric_pbc::gamma_rsh::gamma_dense_bytes(nao, rsh || mgga_force);
                 if need > *max_eri_bytes as u128 {
                     die(format!(
                         "[cell]: the dense AFT ERI tensors need {need} bytes (nao = {nao}) > \
