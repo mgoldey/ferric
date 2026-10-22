@@ -146,11 +146,15 @@
 //! covers those).
 //!
 //! The refusal of Kohn-Sham above applies to [`crate::hessian::rhf_hessian`],
-//! `Auto` and `Analytic`. The only analytic KS Hessian is an explicit library
-//! entry point,
-//! [`crate::hessian::rks_fixed_grid_hessian`]: closed-shell LDA or GGA (pure or global hybrid), exact or RI-J
-//! Coulomb with exact or RI-K exchange, on a grid frozen in space (no Becke weight response, so it is not the surface the
-//! production KS gradient differentiates; see the `ks` module).
+//! `Auto` and `Analytic`. The analytic KS Hessians are explicit library entry
+//! points for closed-shell LDA or GGA (pure or global hybrid), exact or RI-J
+//! Coulomb with exact or RI-K exchange:
+//! [`crate::hessian::rks_fixed_grid_hessian`], on a grid frozen in space (no
+//! Becke weight response, so not the surface the production KS gradient
+//! differentiates), and the opt-in moving-grid variant
+//! [`crate::hessian::rks_moving_grid_hessian`], on the production grid with
+//! the Becke weight response (the derivative of the production KS gradient).
+//! `Auto` is unchanged: neither is reached from it; see the `ks` module.
 //!
 //! Second-derivative integrals need libint2 generated with
 //! `LIBINT2_MAX_DERIV_ORDER >= 2` (conda-forge 2.13.1: AM ≤ 3, i.e. up to f
@@ -191,9 +195,13 @@ mod ks;
 #[doc(hidden)]
 pub use ks::{
     rks_fixed_grid_fock_residual, rks_fixed_grid_hessian_parts_with,
-    rks_fixed_grid_hessian_parts_with_aux, KsFit, KsFits, KsFixedGridMutants, KsJFit,
+    rks_fixed_grid_hessian_parts_with_aux, rks_moving_grid_hessian_parts_with, KsFit, KsFits,
+    KsFixedGridMutants, KsJFit,
 };
-pub use ks::{rks_fixed_grid_hessian, rks_fixed_grid_hessian_parts};
+pub use ks::{
+    rks_fixed_grid_hessian, rks_fixed_grid_hessian_parts, rks_moving_grid_hessian,
+    rks_moving_grid_hessian_parts,
+};
 mod uhf_df;
 use uhf_df::{
     open_shell_two_electron, rohf_occupied_factors, uhf_hessian_parts_with, OpenShellDensities,

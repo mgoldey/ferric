@@ -177,23 +177,7 @@ impl AtomicGridConfig {
 /// to the old serial loop regardless of thread count — no reduction, so no
 /// nondeterminism to guard against.
 pub fn build_atomic_grid(mol: &Molecule, cfg: &AtomicGridConfig) -> Vec<GridPoint> {
-    let (lebedev_pts, lebedev_w) = lebedev(cfg.n_angular);
-    let mut pre: Vec<(usize, [f64; 3], f64)> =
-        Vec::with_capacity(mol.atoms.len() * cfg.n_radial * lebedev_pts.len());
-
-    for (a_idx, atom) in mol.atoms.iter().enumerate() {
-        let (rs, ws) = treutler_ahlrichs_m4(atom.z, cfg.n_radial);
-        for (r, w_r) in rs.iter().zip(ws.iter()) {
-            for (pt, w_l) in lebedev_pts.iter().zip(lebedev_w.iter()) {
-                let xyz = [
-                    atom.x + r * pt[0],
-                    atom.y + r * pt[1],
-                    atom.zpos + r * pt[2],
-                ];
-                pre.push((a_idx, xyz, w_r * w_l));
-            }
-        }
-    }
+    let pre = atomic_quadrature_points(mol, cfg);
 
     let build_point = |&(a_idx, xyz, w_rl): &(usize, [f64; 3], f64)| -> GridPoint {
         let becke = becke_weights_all(mol, xyz);
@@ -210,6 +194,34 @@ pub fn build_atomic_grid(mol: &Molecule, cfg: &AtomicGridConfig) -> Vec<GridPoin
     } else {
         pre.iter().map(build_point).collect()
     }
+}
+
+/// The un-partitioned points of the flat grid [`build_atomic_grid`] builds:
+/// `(home atom, xyz, w_r · w_l)` in its order (atom-major, then radial, then
+/// angular), before the Becke weight of the home atom multiplies the last
+/// entry. Each point rides its home atom (`xyz = R_home + r · Ω`), which is
+/// what the moving-grid Hessian differentiates.
+pub fn atomic_quadrature_points(
+    mol: &Molecule,
+    cfg: &AtomicGridConfig,
+) -> Vec<(usize, [f64; 3], f64)> {
+    let (lebedev_pts, lebedev_w) = lebedev(cfg.n_angular);
+    let mut pre: Vec<(usize, [f64; 3], f64)> =
+        Vec::with_capacity(mol.atoms.len() * cfg.n_radial * lebedev_pts.len());
+    for (a_idx, atom) in mol.atoms.iter().enumerate() {
+        let (rs, ws) = treutler_ahlrichs_m4(atom.z, cfg.n_radial);
+        for (r, w_r) in rs.iter().zip(ws.iter()) {
+            for (pt, w_l) in lebedev_pts.iter().zip(lebedev_w.iter()) {
+                let xyz = [
+                    atom.x + r * pt[0],
+                    atom.y + r * pt[1],
+                    atom.zpos + r * pt[2],
+                ];
+                pre.push((a_idx, xyz, w_r * w_l));
+            }
+        }
+    }
+    pre
 }
 
 /// Build the molecular grid with **opt-in angular pruning**.

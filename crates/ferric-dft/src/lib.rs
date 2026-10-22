@@ -34,6 +34,8 @@
 pub mod ao_grid;
 /// Becke fuzzy-cell atomic partitioning and its nuclear gradient.
 pub mod becke;
+/// Second nuclear derivatives of a Becke home-cell weight at a fixed point.
+pub mod becke_hessian;
 /// Grid-Becke weight operator for constrained DFT fragment populations.
 pub mod cdft;
 /// Electron density ρ, gradient ∇ρ, and kinetic-energy density τ on grid points.

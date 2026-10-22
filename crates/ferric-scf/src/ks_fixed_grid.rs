@@ -39,6 +39,29 @@
 //! carries the weight-response term; the two differ by the grid's
 //! translation error and the weight derivatives (see `crate::hessian`).
 //!
+//! # Moving grid (opt-in, issue #490)
+//!
+//! [`crate::ks_fixed_grid::FixedGridKs::skeleton_hessian_moving`] and
+//! [`crate::ks_fixed_grid::FixedGridKs::first_order_fock_moving`] differentiate instead the energy
+//! of the production grid, whose points ride their home atom `h`
+//! (`r_g = R_h + u_g`) and whose weights are `W_g = s_g w^h(r_g; R)` (Becke).
+//! Because `E_g` then depends only on `R_B − R_h`, the Hessian of the points of
+//! home `h` is `T_h G_h T_hᵀ`: `G_h` is the point-FIXED second derivative over
+//! the atoms `B, C ≠ h`,
+//!
+//! ```text
+//! G_h = Σ_{g∈h} [W ∂²f + W' (∂f)ᵀ + ∂f W'ᵀ + W'' f]     (point fixed)
+//! ```
+//!
+//! (the fixed-grid skeleton plus the Becke weight terms with the point held
+//! fixed, [`ferric_dft::becke_hessian`]), and the `h` rows and columns are
+//! filled by translation invariance, `H[h,·] = −Σ_{B≠h} H[B,·]`. The
+//! first-order Fock matrix is filled the same way, `V^h = −Σ_{B≠h} V^B`, after
+//! gaining the weight term `V[W'_x f_ρ, 2 W'_x f_σ ∇ρ]`. The kernel response is
+//! unchanged (the weights do not depend on the density). Batches never cross a
+//! home-atom boundary, and no per-point weight Hessian is stored (each is
+//! contracted with `s_g f_g` as it is made).
+//!
 //! Implemented: closed-shell LDA, GGA and global-hybrid versions of both (the
 //! hybrid exchange fraction is carried here, its Fock/Hessian terms live in
 //! `crate::hessian`). The highest AO derivative is the third one, for the
@@ -48,7 +71,9 @@ use crate::rhf::XcBuilder;
 use ferric_core::basis::BasisSet;
 use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
-use ferric_dft::grid::{build_atomic_grid, AtomicGridConfig};
+use ferric_dft::becke::becke_weights_and_grad;
+use ferric_dft::becke_hessian::becke_home_weight_hess;
+use ferric_dft::grid::{atomic_quadrature_points, build_atomic_grid, AtomicGridConfig};
 use ferric_dft::libxc::{k_mix_from_xc_def, xc_def_from_name, FunctionalFamily, XcDef};
 use ferric_dft::vxc::DENSITY_FLOOR;
 use ferric_integrals::ao_grid::{
@@ -56,11 +81,17 @@ use ferric_integrals::ao_grid::{
 };
 use ferric_integrals::ao_grid_third::{eval_basis_third_on_points, THIRD_ORDER};
 use ferric_integrals::basis_bridge::PreparedBasis;
-use ndarray::{s, Array1, Array2, Array3, Array4, Axis};
+use ndarray::{s, Array1, Array2, Array3, Array4, ArrayView2, Axis};
+use rayon::prelude::*;
 
 /// Grid points per batch (AO planes are `nbf × BATCH`; the Hessian-level
 /// planes are 13 of them, the third-derivative level 23).
 const BATCH: usize = 2048;
+
+/// Points per parallel task of the Becke weight derivatives (each task sums
+/// its own weight-Hessian contraction; the task sums are added in order, so
+/// the result does not depend on the thread count).
+const WEIGHT_CHUNK: usize = 64;
 
 /// Largest `χ` table (bytes) the response kernel keeps resident for the CPHF
 /// matrix-vector products; a larger system is a typed error, not a silent
@@ -84,6 +115,8 @@ pub struct XcMutants {
     /// `f_ρσ`, `f_σσ`) inside the skeleton and first-order Fock matrix: 0
     /// treats a GGA as an LDA there.
     pub gradient_terms: f64,
+    /// The moving-grid constructions (read only by the `*_moving` entry points).
+    pub moving: MovingMutants,
 }
 
 impl Default for XcMutants {
@@ -94,6 +127,42 @@ impl Default for XcMutants {
             fock_fxc: 1.0,
             fock_vxc: 1.0,
             gradient_terms: 1.0,
+            moving: MovingMutants::default(),
+        }
+    }
+}
+
+/// Deliberately broken moving-grid constructions for the mutation tests;
+/// `Default` is production.
+#[derive(Debug, Clone, Copy)]
+pub struct MovingMutants {
+    /// Scale on `Σ_g W''_g f_g` in the skeleton.
+    pub weight_hess: f64,
+    /// Scale on the cross terms `W' (∂f)ᵀ + ∂f W'ᵀ` in the skeleton.
+    pub weight_cross: f64,
+    /// Scale on the weight term `V[W'_x f_ρ, 2 W'_x f_σ ∇ρ]` of `F^x`.
+    pub fock_weight: f64,
+    /// Coefficient of the translation fill of the home rows and columns:
+    /// −1 is production, 0 skips the fill, +1 flips its sign.
+    pub fill: f64,
+    /// Build the cross terms from the RIDING weight derivatives (the
+    /// gradient's `weight1`, home translation included) over every coordinate
+    /// and add them unfilled, instead of the point-fixed ones filled.
+    pub riding_cross: bool,
+    /// Batch without splitting at home-atom boundaries and give each batch the
+    /// home of its first point (the points past a boundary get the wrong home).
+    pub unsplit_batches: bool,
+}
+
+impl Default for MovingMutants {
+    fn default() -> Self {
+        MovingMutants {
+            weight_hess: 1.0,
+            weight_cross: 1.0,
+            fock_weight: 1.0,
+            fill: -1.0,
+            riding_cross: false,
+            unsplit_batches: false,
         }
     }
 }
@@ -139,6 +208,18 @@ impl<'a> XcGeometry<'a> {
     }
 }
 
+/// Which energy surface the XC derivatives differentiate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum GridMode {
+    /// Grid frozen in space at the reference geometry (PySCF
+    /// `grid_response=False`).
+    #[default]
+    Fixed,
+    /// The production grid: points ride their home atom and the Becke weights
+    /// move with the nuclei (the surface `ks_gradient_closed` differentiates).
+    Moving,
+}
+
 /// A frozen XC grid with its functional (closed-shell LDA or GGA, pure or
 /// global hybrid).
 pub struct FixedGridKs {
@@ -149,6 +230,18 @@ pub struct FixedGridKs {
     gga: bool,
     pts: Vec<[f64; 3]>,
     w: Vec<f64>,
+    /// How each point rides its atom (grids built by [`FixedGridKs::new`]
+    /// only; the moving-grid derivatives need it).
+    riding: Option<Riding>,
+}
+
+/// The atom-following construction of a grid: point `g` sits at
+/// `R_home[g] + u_g` with weight `scale[g] · w^home(r_g)` (Becke).
+struct Riding {
+    home: Vec<usize>,
+    scale: Vec<f64>,
+    /// The nuclei the grid was built at (Bohr).
+    centres: Vec<[f64; 3]>,
 }
 
 /// Which AO derivative planes a batch needs.
@@ -357,11 +450,22 @@ impl FixedGridKs {
             ));
         }
         let grid = build_atomic_grid(mol, cfg);
-        Self::from_points(
+        let quad = atomic_quadrature_points(mol, cfg);
+        debug_assert!(grid
+            .iter()
+            .zip(&quad)
+            .all(|(g, q)| g.home_atom == q.0 && g.xyz == q.1));
+        let mut ks = Self::from_points(
             xc_name,
             grid.iter().map(|g| g.xyz).collect(),
             grid.iter().map(|g| g.weight).collect(),
-        )
+        )?;
+        ks.riding = Some(Riding {
+            home: quad.iter().map(|q| q.0).collect(),
+            scale: quad.iter().map(|q| q.2).collect(),
+            centres: mol.atoms.iter().map(|a| [a.x, a.y, a.zpos]).collect(),
+        });
+        Ok(ks)
     }
 
     /// The grid points (Bohr) and weights.
@@ -414,6 +518,7 @@ impl FixedGridKs {
             gga,
             pts,
             w,
+            riding: None,
         })
     }
 
@@ -639,15 +744,28 @@ impl FixedGridKs {
         let mut h = Array2::<f64>::zeros((n3, n3));
         for range in self.ranges() {
             let b = self.batch(geo, d, range, Level::Third, true, m.gradient_terms)?;
-            h.scaled_add(m.skeleton_fxc, &Self::kernel_part(geo, &b));
-            let mut second = Array2::<f64>::zeros((n3, n3));
-            Self::add_same_centre(geo, &b, &mut second);
-            for (c, &(lo, hi)) in geo.ranges.iter().enumerate() {
-                Self::add_cross_centre(geo, d, &b, (c, lo, hi), &mut second);
-            }
-            h.scaled_add(m.skeleton_vxc, &second);
+            h += &Self::batch_skeleton(geo, d, &b, m);
         }
         Ok(h)
+    }
+
+    /// The fixed-grid skeleton `Σ_g [ρ_x dF[y] + g_x·dG[y]] + [F ρ_xy + G·g_xy]`
+    /// of one batch (points fixed).
+    fn batch_skeleton(
+        geo: &XcGeometry<'_>,
+        d: &Array2<f64>,
+        b: &Batch,
+        m: &XcMutants,
+    ) -> Array2<f64> {
+        let n3 = 3 * geo.natoms();
+        let mut h = m.skeleton_fxc * Self::kernel_part(geo, b);
+        let mut second = Array2::<f64>::zeros((n3, n3));
+        Self::add_same_centre(geo, b, &mut second);
+        for (c, &(lo, hi)) in geo.ranges.iter().enumerate() {
+            Self::add_cross_centre(geo, d, b, (c, lo, hi), &mut second);
+        }
+        h.scaled_add(m.skeleton_vxc, &second);
+        h
     }
 
     /// `Σ_g [ρ_x dF[y] + g_x·dG[y]]` of one batch.
@@ -785,14 +903,23 @@ impl FixedGridKs {
                 );
                 *vx += &(m.fock_fxc * vmat(&b.ao, &df, dg.as_ref()));
             }
-            Self::add_ao_derivative_fock(geo, &b, m.fock_vxc, &mut v);
+            Self::add_ao_derivative_fock(geo, &b, m.fock_vxc, None, &mut v);
         }
         Ok(v)
     }
 
     /// The rows and columns of `V[F, G]` whose AO moves with the nucleus:
     /// `−T_μ` with `T_μν = Σ_g F ∂αχ_μ χ_ν + G_γ (∂γ∂αχ_μ χ_ν + ∂αχ_μ ∂γχ_ν)`.
-    fn add_ao_derivative_fock(geo: &XcGeometry<'_>, b: &Batch, scale: f64, v: &mut [Array2<f64>]) {
+    /// With `fill = Some((h, c))` (a moving-grid batch of home `h`) the rows of
+    /// `h`'s functions are skipped and every other row is also added, times
+    /// `c`, to the `h` coordinate (the translation fill).
+    fn add_ao_derivative_fock(
+        geo: &XcGeometry<'_>,
+        b: &Batch,
+        scale: f64,
+        fill: Option<(usize, f64)>,
+        v: &mut [Array2<f64>],
+    ) {
         let (chi, dchi) = (&b.ao.chi, b.ao.dchi());
         for alpha in 0..3 {
             let da = dchi.index_axis(Axis(0), alpha);
@@ -805,11 +932,189 @@ impl FixedGridKs {
                 }
             }
             for (mu, &atom) in geo.ao_atom.iter().enumerate() {
-                let vx = &mut v[3 * atom + alpha];
-                vx.row_mut(mu).scaled_add(-scale, &t.row(mu));
-                vx.column_mut(mu).scaled_add(-scale, &t.row(mu));
+                let targets = match fill {
+                    None => [(atom, -scale), (atom, 0.0)],
+                    Some((h, _)) if h == atom => continue,
+                    Some((h, c)) => [(atom, -scale), (h, -scale * c)],
+                };
+                for (a, coef) in targets.into_iter().filter(|t| t.1 != 0.0) {
+                    let vx = &mut v[3 * a + alpha];
+                    vx.row_mut(mu).scaled_add(coef, &t.row(mu));
+                    vx.column_mut(mu).scaled_add(coef, &t.row(mu));
+                }
             }
         }
+    }
+
+    /// [`Self::skeleton_hessian`] or [`Self::skeleton_hessian_moving`].
+    pub fn skeleton_hessian_for(
+        &self,
+        mode: GridMode,
+        geo: &XcGeometry<'_>,
+        d: &Array2<f64>,
+        m: &XcMutants,
+    ) -> Result<Array2<f64>, FerricError> {
+        match mode {
+            GridMode::Fixed => self.skeleton_hessian(geo, d, m),
+            GridMode::Moving => self.skeleton_hessian_moving(geo, d, m),
+        }
+    }
+
+    /// [`Self::first_order_fock`] or [`Self::first_order_fock_moving`].
+    pub fn first_order_fock_for(
+        &self,
+        mode: GridMode,
+        geo: &XcGeometry<'_>,
+        d: &Array2<f64>,
+        m: &XcMutants,
+    ) -> Result<Vec<Array2<f64>>, FerricError> {
+        match mode {
+            GridMode::Fixed => self.first_order_fock(geo, d, m),
+            GridMode::Moving => self.first_order_fock_moving(geo, d, m),
+        }
+    }
+
+    /// The atom-following construction of this grid, checked against the
+    /// nuclei of `geo` (the moving-grid derivatives are taken at the geometry
+    /// the grid was built at).
+    fn riding_for(&self, geo: &XcGeometry<'_>) -> Result<&Riding, FerricError> {
+        let riding = self.riding.as_ref().ok_or_else(|| {
+            FerricError::General(
+                "moving-grid XC derivatives need a grid built by FixedGridKs::new (a grid from \
+                 explicit points carries no home atoms)"
+                    .into(),
+            )
+        })?;
+        let same = riding.centres.len() == geo.natoms()
+            && riding.centres.iter().zip(&geo.mol.atoms).all(|(c, a)| {
+                (c[0] - a.x).abs() < 1e-12
+                    && (c[1] - a.y).abs() < 1e-12
+                    && (c[2] - a.zpos).abs() < 1e-12
+            });
+        if !same {
+            return Err(FerricError::General(
+                "moving-grid XC derivatives: the grid was built at a different geometry".into(),
+            ));
+        }
+        Ok(riding)
+    }
+
+    /// Batches `(g0, g1, home)` that never cross a home-atom boundary (the
+    /// `unsplit` mutant keeps the plain batches and the home of their first point).
+    fn home_ranges(&self, riding: &Riding, unsplit: bool) -> Vec<(usize, usize, usize)> {
+        if unsplit {
+            return self.ranges().map(|(a, b)| (a, b, riding.home[a])).collect();
+        }
+        let n = self.pts.len();
+        let mut out = Vec::new();
+        let mut g0 = 0;
+        while g0 < n {
+            let h = riding.home[g0];
+            let g1 = (g0..n.min(g0 + BATCH))
+                .find(|&g| riding.home[g] != h)
+                .unwrap_or(n.min(g0 + BATCH));
+            out.push((g0, g1, h));
+            g0 = g1;
+        }
+        out
+    }
+
+    /// Point-fixed nuclear derivatives of `f = ρ ε_xc` at every point of a
+    /// batch, `(3N, npts)` (unweighted).
+    fn f_derivative(geo: &XcGeometry<'_>, b: &Batch) -> Array2<f64> {
+        let mut df = Self::rho_derivative(geo, b) * b.k.fr.view().insert_axis(Axis(0));
+        if let Some(gp) = &b.grad {
+            let gx = Self::grad_rho_derivative(geo, b);
+            for gam in 0..3 {
+                let coef = 2.0 * &(&b.k.fs * &gp.g.row(gam));
+                df += &(&gx.index_axis(Axis(1), gam) * &coef.insert_axis(Axis(0)));
+            }
+        }
+        df
+    }
+
+    /// The second nuclear derivative of `E_xc` at fixed density on the MOVING
+    /// grid (points riding their home atom, Becke weights differentiated),
+    /// `(3N, 3N)`. See the module doc.
+    pub fn skeleton_hessian_moving(
+        &self,
+        geo: &XcGeometry<'_>,
+        d: &Array2<f64>,
+        m: &XcMutants,
+    ) -> Result<Array2<f64>, FerricError> {
+        let riding = self.riding_for(geo)?;
+        let mm = &m.moving;
+        let n3 = 3 * geo.natoms();
+        let mut h = Array2::<f64>::zeros((n3, n3));
+        for (g0, g1, home) in self.home_ranges(riding, mm.unsplit_batches) {
+            let b = self.batch(geo, d, (g0, g1), Level::Third, true, m.gradient_terms)?;
+            let mut g = Self::batch_skeleton(geo, d, &b, m);
+            let f = &b.rho * &b.k.exc;
+            let wd = weight_derivatives(geo.mol, riding, (g0, g1), &self.pts, home, Some(&f));
+            if let Some(w2f) = &wd.hess_f {
+                g.scaled_add(mm.weight_hess, w2f);
+            }
+            let df = Self::f_derivative(geo, &b);
+            if mm.riding_cross {
+                let c = riding_derivatives(&wd.grad, home).dot(&df.t());
+                h.scaled_add(mm.weight_cross, &(&c + &c.t()));
+            } else {
+                let c = wd.grad.dot(&df.t());
+                g.scaled_add(mm.weight_cross, &(&c + &c.t()));
+            }
+            h += &translation_fill(g.view(), home, mm.fill);
+        }
+        Ok(h)
+    }
+
+    /// `∂V_xc/∂R_x` at fixed density on the MOVING grid for every coordinate
+    /// `x = 3·atom + axis` (symmetric, `nbf × nbf` each). See the module doc.
+    pub fn first_order_fock_moving(
+        &self,
+        geo: &XcGeometry<'_>,
+        d: &Array2<f64>,
+        m: &XcMutants,
+    ) -> Result<Vec<Array2<f64>>, FerricError> {
+        let riding = self.riding_for(geo)?;
+        let mm = &m.moving;
+        let nbf = d.nrows();
+        let n3 = 3 * geo.natoms();
+        let mut v = vec![Array2::<f64>::zeros((nbf, nbf)); n3];
+        for (g0, g1, home) in self.home_ranges(riding, mm.unsplit_batches) {
+            let b = self.batch(geo, d, (g0, g1), Level::Hess, true, m.gradient_terms)?;
+            let rx = Self::rho_derivative(geo, &b);
+            let gx = b.grad.as_ref().map(|_| Self::grad_rho_derivative(geo, &b));
+            let w1 = weight_derivatives(geo.mol, riding, (g0, g1), &self.pts, home, None).grad;
+            for x in (0..n3).filter(|x| x / 3 != home) {
+                let g1x = gx.as_ref().map(|gx| gx.index_axis(Axis(0), x).to_owned());
+                let (df, dg) = weights_response(
+                    &b.k,
+                    &b.w,
+                    b.grad.as_ref().map(|g| &g.g),
+                    &rx.row(x).to_owned(),
+                    g1x.as_ref(),
+                );
+                let mut c = m.fock_fxc * vmat(&b.ao, &df, dg.as_ref());
+                c.scaled_add(
+                    mm.fock_weight,
+                    &Self::weight_fock(&b, &w1.row(x).to_owned()),
+                );
+                v[x] += &c;
+                v[3 * home + x % 3].scaled_add(mm.fill, &c);
+            }
+            Self::add_ao_derivative_fock(geo, &b, m.fock_vxc, Some((home, mm.fill)), &mut v);
+        }
+        Ok(v)
+    }
+
+    /// `V[W'_x f_ρ, 2 W'_x f_σ ∇ρ]` of a batch for the weight derivative `wx`.
+    fn weight_fock(b: &Batch, wx: &Array1<f64>) -> Array2<f64> {
+        let fw = wx * &b.k.fr;
+        let gw = b.grad.as_ref().map(|gp| {
+            let coef = 2.0 * &(wx * &b.k.fs);
+            &gp.g * &coef.insert_axis(Axis(0))
+        });
+        vmat(&b.ao, &fw, gw.as_ref())
     }
 
     /// The kernel `D1 ↦ V1[D1]` of the response, with the AOs and the
@@ -859,6 +1164,100 @@ impl FixedGridKs {
         }
         Ok(resp)
     }
+}
+
+/// Point-fixed Becke weight derivatives of one batch.
+struct WeightDerivs {
+    /// `∂W_g/∂R_x`, `(3N, npts)` (quadrature scale included).
+    grad: Array2<f64>,
+    /// `Σ_g W''_g f_g`, `(3N, 3N)`, when the per-point `f` was given.
+    hess_f: Option<Array2<f64>>,
+}
+
+/// The weights `W_g = scale_g w^home(r_g)` of the points `g0..g1` (all of home
+/// `home`) differentiated with the points held fixed; with `f`, also the
+/// contraction `Σ_g f_g ∂²W_g` (no per-point Hessian is kept). Parallel over
+/// fixed chunks whose sums are added in order.
+fn weight_derivatives(
+    mol: &Molecule,
+    riding: &Riding,
+    (g0, g1): (usize, usize),
+    pts: &[[f64; 3]],
+    home: usize,
+    f: Option<&Array1<f64>>,
+) -> WeightDerivs {
+    let n3 = 3 * mol.atoms.len();
+    let npts = g1 - g0;
+    let chunks: Vec<(Vec<f64>, Option<Array2<f64>>)> = (0..npts)
+        .step_by(WEIGHT_CHUNK)
+        .collect::<Vec<_>>()
+        .into_par_iter()
+        .map(|c0| {
+            let c1 = (c0 + WEIGHT_CHUNK).min(npts);
+            let mut cols = Vec::with_capacity((c1 - c0) * n3);
+            let mut hs = f.map(|_| Array2::<f64>::zeros((n3, n3)));
+            for i in c0..c1 {
+                let g = g0 + i;
+                let scale = riding.scale[g];
+                match (hs.as_mut(), f) {
+                    (Some(hs), Some(f)) => {
+                        let dw = becke_home_weight_hess(mol, pts[g], home);
+                        cols.extend(dw.grad.iter().map(|x| scale * x));
+                        let c = scale * f[i];
+                        if c != 0.0 {
+                            let hv = ArrayView2::from_shape((n3, n3), &dw.hess).expect("n3 x n3");
+                            hs.scaled_add(c, &hv);
+                        }
+                    }
+                    _ => {
+                        let (_, dw) = becke_weights_and_grad(mol, pts[g]);
+                        cols.extend(dw[home].iter().flatten().map(|x| scale * x));
+                    }
+                }
+            }
+            (cols, hs)
+        })
+        .collect();
+    let mut grad = Array2::<f64>::zeros((n3, npts));
+    let mut hess_f = f.map(|_| Array2::<f64>::zeros((n3, n3)));
+    let mut col = 0;
+    for (cols, hs) in chunks {
+        for point in cols.chunks(n3) {
+            grad.column_mut(col).assign(&Array1::from(point.to_vec()));
+            col += 1;
+        }
+        if let (Some(total), Some(hs)) = (hess_f.as_mut(), hs) {
+            *total += &hs;
+        }
+    }
+    WeightDerivs { grad, hess_f }
+}
+
+/// The riding derivatives (`weight1`: the point moves with `home`) from the
+/// point-fixed ones: the home rows gain `−Σ_c` of the point-fixed rows.
+fn riding_derivatives(fixed: &Array2<f64>, home: usize) -> Array2<f64> {
+    let mut out = fixed.clone();
+    for alpha in 0..3 {
+        let mut sum = Array1::<f64>::zeros(fixed.ncols());
+        for x in (alpha..fixed.nrows()).step_by(3) {
+            sum += &fixed.row(x);
+        }
+        out.row_mut(3 * home + alpha).scaled_add(-1.0, &sum);
+    }
+    out
+}
+
+/// `T G Tᵀ` for a batch of home `h`: the block of `g` on the atoms `≠ h` kept,
+/// and the `h` rows and columns filled with `fill` (−1 in production) times
+/// the sums over the other atoms (translation invariance).
+fn translation_fill(g: ArrayView2<'_, f64>, home: usize, fill: f64) -> Array2<f64> {
+    let n3 = g.nrows();
+    let mut t = Array2::<f64>::zeros((n3, n3));
+    for x in (0..n3).filter(|x| x / 3 != home) {
+        t[(x, x)] = 1.0;
+        t[(3 * home + x % 3, x)] = fill;
+    }
+    t.dot(&g).dot(&t.t())
 }
 
 /// `V1[D1] = V[dF[ρ1, g1], dG[ρ1, g1]]` for a symmetric response density `D1`.
