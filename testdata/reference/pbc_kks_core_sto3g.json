@@ -1,0 +1,64 @@
+{
+ "pyscf": "2.13.1",
+ "numpy": "1.26.4",
+ "libxc": "7.0.0",
+ "date": "2026-10-19",
+ "generator_git_sha": "8eb9ec6a25719a753e4d2a829a57484199f2d870",
+ "setup": "KRKS, AFTDF, UniformGrids, exxdiv=ewald, conv_tol=1e-12, cell.precision=1e-10, PySCF sto-3g Li/H (all electron), Bohr/Hartree; AFT J mesh 80^3, XC UniformGrids 35^3",
+ "cells": {
+  "lih_core": {
+   "a": [
+    [
+     5.0,
+     0.0,
+     0.0
+    ],
+    [
+     0.0,
+     5.0,
+     0.0
+    ],
+    [
+     0.4,
+     0.3,
+     6.0
+    ]
+   ],
+   "atoms": [
+    [
+     "Li",
+     [
+      0.3,
+      0.2,
+      0.4
+     ]
+    ],
+    [
+     "H",
+     [
+      0.3,
+      0.2,
+      3.4
+     ]
+    ]
+   ],
+   "mesh": 35
+  }
+ },
+ "script": "scripts/gen_pyscf_kks_core_refs.py",
+ "rows": [
+  {
+   "cell": "lih_core",
+   "mesh": [
+    1,
+    1,
+    1
+   ],
+   "gamma_centred": true,
+   "xc": "PBE",
+   "energy": -8.152384368267,
+   "nk": 1,
+   "seconds": 1941
+  }
+ ]
+}

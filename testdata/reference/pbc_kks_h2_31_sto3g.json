@@ -1,0 +1,59 @@
+{
+ "pyscf": "2.13.1",
+ "numpy": "1.26.4",
+ "libxc": "7.0.0",
+ "date": "2026-10-19",
+ "generator_git_sha": "d3be28fc4fe622c29c2ba74aae08d5d449ca63c5",
+ "setup": "AFTDF, UniformGrids 31^3, exxdiv=ewald, conv_tol=1e-12, cell.precision=1e-10, PySCF-digit STO-3G H, a=4 Bohr cubic; KRKS rows only (KUKS 31^3 re-pin dropped: PySCF LDA converged to another SCF state)",
+ "script": "scripts/gen_pyscf_kks_h2_31_refs.py",
+ "rows": [
+  {
+   "method": "KRKS",
+   "system": "H2s",
+   "xc": "PBE",
+   "mesh": [
+    2,
+    2,
+    1
+   ],
+   "gamma_centred": true,
+   "energy": -1.2725025913051613
+  },
+  {
+   "method": "KRKS",
+   "system": "H2s",
+   "xc": "PBE",
+   "mesh": [
+    2,
+    2,
+    1
+   ],
+   "gamma_centred": false,
+   "energy": -1.315507250956581
+  },
+  {
+   "method": "KRKS",
+   "system": "H2s",
+   "xc": "PBE0",
+   "mesh": [
+    2,
+    2,
+    1
+   ],
+   "gamma_centred": true,
+   "energy": -1.2895432808140932
+  },
+  {
+   "method": "KRKS",
+   "system": "H2s",
+   "xc": "PBE0",
+   "mesh": [
+    2,
+    2,
+    1
+   ],
+   "gamma_centred": false,
+   "energy": -1.333994032257564
+  }
+ ]
+}
