@@ -626,8 +626,9 @@ pub fn gamma_roks_with_xc(
 /// The per-spin Focks take `K_σ = K[D_σ]` with the fractions and the MIXED
 /// Madelung constant inside (scaled by 1, as in [`crate::dft::gamma_uks_rsh`])
 /// and are combined into the Roothaan effective Fock unchanged.
-/// `cfg.functional` must be range-separated. ENERGY only (forces and stress
-/// refuse RSH).
+/// `cfg.functional` must be range-separated. ENERGY only (the ROKS forces and
+/// stress refuse RSH; the open-shell RSH force is UKS,
+/// [`crate::gamma_rsh::gamma_uks_rsh_gradient`]).
 pub fn gamma_roks_rsh(
     cell: &Cell,
     prep: &PreparedBasis,

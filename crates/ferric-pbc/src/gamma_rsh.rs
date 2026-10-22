@@ -1,5 +1,8 @@
-//! Range-separated exact exchange for the closed-shell Gamma-point RKS
-//! ([`crate::dft::gamma_rks_rsh`]; mgoldey/ferric#354).
+//! Range-separated exact exchange at the Gamma point: the RKS, UKS and ROKS
+//! energies ([`crate::dft::gamma_rks_rsh`], [`crate::dft::gamma_uks_rsh`],
+//! [`crate::rohf::gamma_roks_rsh`]; mgoldey/ferric#354) and the dense-AFT
+//! nuclear forces routed through the 1x1x1 mesh ([`gamma_rks_rsh_gradient`],
+//! [`gamma_uks_rsh_gradient`]).
 //!
 //! # Route
 //!
@@ -237,6 +240,20 @@ impl GammaRshExchange {
     }
 }
 
+impl GammaRshExchange {
+    /// The dense k = 0 kernels a routed Gamma force differentiates; an RS-GDF
+    /// exchange is refused (the attenuated fit has no derivative).
+    fn dense_for_force(&self, who: &str) -> Result<&KDenseAftEri, FerricError> {
+        match &self.src {
+            Source::Dense(eri) => Ok(eri),
+            Source::RsGdf(_) => Err(FerricError::General(format!(
+                "{who}: the range-separated exchange was built on RS-GDF; the attenuated fit \
+                 has no derivative (build it with GammaRshExchange::build_dense, jk = dense)"
+            ))),
+        }
+    }
+}
+
 fn to_complex(m: &Array2<f64>) -> Array2<C64> {
     m.mapv(|x| C64::new(x, 0.0))
 }
@@ -323,7 +340,7 @@ impl KBuilder for GammaRshK<'_> {
 /// SCF's stored Fock, so a Gamma J from another source (RS-GDF) or a
 /// different grid is refused, not silently differentiated. Refuses an
 /// RS-GDF `rsh_k` (the attenuated fit has no derivative) and an open-shell
-/// result.
+/// result (the UKS twin is [`gamma_uks_rsh_gradient`]).
 pub fn gamma_rks_rsh_gradient(
     cell: &Cell,
     prep: &PreparedBasis,
@@ -414,22 +431,119 @@ fn gamma_route<'a>(
     FerricError,
 > {
     rsh_k.check_for(who, &dft.functional, dft.exxdiv)?;
-    let Source::Dense(eri) = &rsh_k.src else {
-        return Err(FerricError::General(format!(
-            "{who}: the range-separated exchange was built on RS-GDF; the attenuated fit has \
-             no derivative (build it with GammaRshExchange::build_dense, jk = dense)"
-        )));
-    };
+    let eri = rsh_k.dense_for_force(who)?;
     if scf.spin != ferric_scf::result::Spin::Restricted {
         return Err(FerricError::General(format!(
-            "{who}: closed-shell (restricted) results only; open-shell range-separated \
-             derivatives are not implemented"
+            "{who}: closed-shell (restricted) results only; an unrestricted result's force \
+             takes gamma_uks_rsh_gradient (the open-shell stress and restricted-open-shell \
+             range-separated derivatives are not implemented)"
         )));
     }
     let mesh = KPointMesh::gamma_centred(cell, [1, 1, 1])?;
     let hk = crate::hcore::kpoint::periodic_hcore_kpts(cell, prep, &mesh, hcore_cfg)?;
     let kscf = gamma_as_one_point(scf, &mesh, hk.enn, cell.mol().nelec().max(0) as usize / 2);
     Ok((eri, mesh, hk, kscf))
+}
+
+/// Open-shell Gamma UKS nuclear gradient of a range-separated hybrid (`scf`
+/// from [`crate::dft::gamma_uks_rsh`] with the dense-AFT exchange `rsh_k` and
+/// dense-AFT Gamma J), routed through the 1x1x1 k-point UKS force
+/// ([`crate::kuxcgrad::kpoint_uks_gradient`]) exactly as
+/// [`gamma_rks_rsh_gradient`] routes the closed shell: the Gamma spin
+/// densities and spin Focks are the `k = 0` ones, `K_σ = K[D_σ]` with the
+/// kernel and mixed Madelung constant of `rsh_k`.
+///
+/// Arguments as [`gamma_rks_rsh_gradient`] with `dft` the
+/// [`crate::dft::GammaUksConfig`] of the SCF (functional, `grid` rebuilt as
+/// an atom-centred grid, `xc.ao_threshold`, `exxdiv`; a run on a
+/// caller-supplied grid is not covered). Both spin Focks pass the k-point
+/// Fock guard and the UKS stationarity gate. Refuses an RS-GDF `rsh_k`, a
+/// restricted or restricted-open-shell result.
+pub fn gamma_uks_rsh_gradient(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    hcore_cfg: &crate::hcore::PeriodicHcoreConfig,
+    scf: &ferric_scf::result::ScfResult,
+    dft: &crate::dft::GammaUksConfig,
+    rsh_k: &GammaRshExchange,
+    cfg: &crate::kgrad::KGradConfig,
+) -> Result<crate::kuxcgrad::KUksGradient, FerricError> {
+    let who = "gamma_uks_rsh_gradient";
+    rsh_k.check_for(who, &dft.functional, dft.exxdiv)?;
+    let eri = rsh_k.dense_for_force(who)?;
+    if scf.spin != ferric_scf::result::Spin::Unrestricted {
+        return Err(FerricError::General(format!(
+            "{who}: unrestricted (UKS) results only, got {:?} (restricted: \
+             gamma_rks_rsh_gradient; restricted-open-shell range-separated forces are not \
+             implemented)",
+            scf.spin
+        )));
+    }
+    let (Some(db), Some(fb), Some(cb), Some(eb)) = (
+        &scf.density_beta,
+        &scf.fock_beta,
+        &scf.mos_beta,
+        &scf.eps_beta,
+    ) else {
+        return Err(FerricError::General(format!(
+            "{who}: the unrestricted result lacks its beta density, Fock, MOs or energies"
+        )));
+    };
+    let (na, nb) = crate::uhf::nocc_ab(cell.mol())?;
+    let mesh = KPointMesh::gamma_centred(cell, [1, 1, 1])?;
+    let hk = crate::hcore::kpoint::periodic_hcore_kpts(cell, prep, &mesh, hcore_cfg)?;
+    let occ = |eps: &[f64], n: usize| -> Vec<f64> {
+        (0..eps.len())
+            .map(|i| if i < n { 1.0 } else { 0.0 })
+            .collect()
+    };
+    let kscf = crate::kuscf::KUScfResult {
+        energy: scf.energy,
+        e_nuc: hk.enn,
+        nalpha: na,
+        nbeta: nb,
+        eps_alpha: vec![scf.eps_alpha.clone()],
+        eps_beta: vec![eb.clone()],
+        mos_alpha: vec![to_complex(&scf.mos_alpha)],
+        mos_beta: vec![to_complex(cb)],
+        density_alpha: vec![to_complex(&scf.density_alpha)],
+        density_beta: vec![to_complex(db)],
+        fock_alpha: vec![to_complex(&scf.fock_alpha)],
+        fock_beta: vec![to_complex(fb)],
+        occ_alpha: vec![occ(&scf.eps_alpha, na)],
+        occ_beta: vec![occ(eb, nb)],
+        nocc_per_k_alpha: vec![na],
+        nocc_per_k_beta: vec![nb],
+        gap_alpha: None,
+        gap_beta: None,
+        s2: 0.0,
+        converged: scf.converged,
+        iterations: scf.iterations,
+        max_error: 0.0,
+        kpts: mesh.kpts().to_vec(),
+        lindep: Default::default(),
+    };
+    let kcfg = crate::kuxcgrad::KUksGradConfig {
+        base: crate::kxcgrad::KRksGradConfig {
+            grad: *cfg,
+            grid: crate::kxcgrad::KXcGrid::Atom(dft.grid.clone()),
+            ao_threshold: dft.xc.ao_threshold,
+            exxdiv: Some(dft.exxdiv),
+            ..Default::default()
+        },
+        spin_mutation: None,
+    };
+    crate::kuxcgrad::kpoint_uks_gradient(
+        cell,
+        prep,
+        &mesh,
+        hcore_cfg,
+        &hk,
+        crate::kgrad::KGradJk::Dense(eri),
+        &kscf,
+        &dft.functional,
+        &kcfg,
+    )
 }
 
 /// A restricted Gamma result as the 1x1x1 k-point result (`k = 0`, complex

@@ -183,7 +183,10 @@ fn one_point_mesh_is_gamma_uks_rsh() {
 // ------------------------------------------------ refusals
 
 /// The derivatives of a REAL open-shell RSH SCF refuse by name (and so does
-/// the plain global-hybrid ROKS entry; ROKS RSH is `gamma_roks_rsh`).
+/// the plain global-hybrid ROKS entry; ROKS RSH is `gamma_roks_rsh`), except
+/// the k-point UKS force, which covers RSH on dense-AFT J/K
+/// (`pbc_kuks_rsh_force.rs`): it refuses a missing exxdiv and runs on the
+/// SCF's own exxdiv and grid.
 #[test]
 fn open_shell_rsh_derivatives_refuse_by_name() {
     use ferric_pbc::kdense_aft::KDenseAftEri;
@@ -259,7 +262,11 @@ fn open_shell_rsh_derivatives_refuse_by_name() {
         base: Default::default(),
         spin_mutation: None,
     };
-    named(
+    // The k-point UKS FORCE covers range-separated hybrids on dense-AFT J/K
+    // (validated in `pbc_kuks_rsh_force.rs`): without the SCF's exxdiv it is
+    // a typed refusal; with it and the SCF's own grid it differentiates this
+    // real CAM-B3LYP state (Fock guard and stationarity gate passed).
+    let call = |g: &KUksGradConfig| {
         kpoint_uks_gradient(
             &cell,
             &prep,
@@ -269,11 +276,16 @@ fn open_shell_rsh_derivatives_refuse_by_name() {
             KGradJk::Dense(e),
             &kr.scf,
             "HYB_GGA_XC_CAM_B3LYP",
-            &grad,
+            g,
         )
-        .unwrap_err()
-        .to_string(),
-    );
+    };
+    let ge = call(&grad).unwrap_err().to_string();
+    assert!(ge.contains("needs KRksGradConfig::exxdiv"), "{ge}");
+    let mut ok = grad.clone();
+    ok.base.exxdiv = Some(ExxDiv::Ewald);
+    ok.base.grid = ferric_pbc::kxcgrad::KXcGrid::Uniform([MESH; 3]);
+    let g = call(&ok).unwrap_or_else(|e| panic!("UKS RSH force on the SCF's own state: {e}"));
+    assert!(g.grad.iter().all(|v| v.is_finite()) && g.hf.fock_mismatch < 1e-8);
     named(
         kpoint_uks_stress(
             &cell,

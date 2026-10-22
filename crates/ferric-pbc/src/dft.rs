@@ -75,7 +75,7 @@
 //! and `gamma_roks_rsh` for range-separated hybrids).
 //!
 //! Refused by name: range-separated hybrids in every entry but closed-shell
-//! [`gamma_rks_rsh`] (the attenuated K is the k = 0 of the 1x1x1 k-point machinery, [`crate::gamma_rsh`]; open-shell [`gamma_uks_rsh`] and [`crate::rohf::gamma_roks_rsh`] take the same exchange per spin; the closed-shell dense-AFT force and stress are [`crate::gamma_rsh::gamma_rks_rsh_gradient`] and [`crate::gamma_rsh::gamma_rks_rsh_stress`], library only; open-shell derivatives refuse them),
+//! [`gamma_rks_rsh`] (the attenuated K is the k = 0 of the 1x1x1 k-point machinery, [`crate::gamma_rsh`]; open-shell [`gamma_uks_rsh`] and [`crate::rohf::gamma_roks_rsh`] take the same exchange per spin; the closed-shell dense-AFT force and stress are [`crate::gamma_rsh::gamma_rks_rsh_gradient`] and [`crate::gamma_rsh::gamma_rks_rsh_stress`], the open-shell UKS dense-AFT force is [`crate::gamma_rsh::gamma_uks_rsh_gradient`], library only; the open-shell stress and ROKS derivatives refuse them),
 //! meta-GGA except the validated SCAN / r2SCAN / TPSS in closed-shell [`gamma_rks`] ENERGY (tau from D and ∇χ^Γ, anchored to the 1x1x1 k-mesh and PySCF; Gamma forces, stress, UKS, ROKS refuse it), VV10 / double hybrids, grid pruning, Newton /
 //! TRAH / stability (they rebuild molecular J/K and the f_xc kernel on the
 //! molecular grid — rejected by `validate_injected`), the molecular grid knobs
@@ -1677,11 +1677,12 @@ pub fn check_gamma_rks_request(name: &str, derivs: bool) -> Result<(), FerricErr
             return Err(PeriodicDftError::Unsupported {
                 feature: "range-separated hybrid gradient / stress",
                 reason: format!(
-                    "{name}: this route is energy only (the closed-shell range-separated \
-                     nuclear force and stress exist as the library entries \
-                     gamma_rsh::gamma_rks_rsh_gradient / gamma_rks_rsh_stress and \
-                     kxcgrad::kpoint_rks_gradient / kxcstress::kpoint_rks_stress on dense-AFT \
-                     J/K, not wired here)"
+                    "{name}: this route is energy only (the range-separated nuclear force \
+                     and stress exist as the library entries gamma_rsh::gamma_rks_rsh_gradient / \
+                     gamma_rks_rsh_stress and kxcgrad::kpoint_rks_gradient / \
+                     kxcstress::kpoint_rks_stress (closed shell), and the UKS force as \
+                     gamma_rsh::gamma_uks_rsh_gradient / kuxcgrad::kpoint_uks_gradient, on \
+                     dense-AFT J/K, not wired here)"
                 ),
             }
             .into());
@@ -2638,7 +2639,8 @@ pub fn gamma_uks_with_xc(
 /// 1x1x1-mesh exchange of [`crate::gamma_rsh`], whose exxdiv must equal
 /// `cfg.exxdiv`). `K_σ = K[D_σ]` with the fractions and the MIXED Madelung
 /// constant inside, so the SCF scales it by 1. `cfg.functional` must be
-/// range-separated. ENERGY only (the open-shell forces and stress refuse RSH).
+/// range-separated. The dense-AFT nuclear force (library only) is
+/// [`crate::gamma_rsh::gamma_uks_rsh_gradient`]; the stress refuses RSH.
 pub fn gamma_uks_rsh(
     cell: &Cell,
     prep: &PreparedBasis,

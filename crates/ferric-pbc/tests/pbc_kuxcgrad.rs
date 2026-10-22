@@ -887,7 +887,9 @@ fn refusals_and_the_per_spin_fock_guard() {
     let run = |f: &str, s: &KUScfResult, cfg: &KUksGradConfig| force_with(&fx, f, s, cfg);
     // Typed refusals, entry-point specific.
     for (name, key) in [
-        ("HSE06", "range-separated hybrid force at k"),
+        // HSE06 is covered on kernels built with its range separation
+        // (`pbc_kuks_rsh_force.rs`); these PBE0 kernels are bare: refused.
+        ("HSE06", "bare Coulomb exchange"),
         ("wB97X-V", "VV10"),
         // SCAN is covered (`pbc_kuxc_mgga.rs`): a PBE0 state handed in as
         // SCAN is refused by the Fock guard.

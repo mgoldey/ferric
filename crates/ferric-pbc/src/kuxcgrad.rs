@@ -1,7 +1,8 @@
 //! Analytic nuclear forces of the k-point open-shell KS-DFT energy
 //! ([`crate::kuks::solve_kuks`]) for LDA, GGA and GLOBAL HYBRID functionals
-//! (exact-exchange fraction `a`, `0 ≤ a ≤ 1`), dense-AFT and RS-GDF J/K, and
-//! for the pure meta-GGAs SCAN / r2SCAN (UKS, dense-AFT J/K only).
+//! (exact-exchange fraction `a`, `0 ≤ a ≤ 1`), dense-AFT and RS-GDF J/K, for
+//! the pure meta-GGAs SCAN / r2SCAN (UKS, dense-AFT J/K only), and for
+//! RANGE-SEPARATED hybrids (UKS, dense-AFT J/K only).
 //!
 //! The closed-shell derivation ([`crate::kxcgrad`]: AO motion X1, grid-point
 //! motion X3, weight response X4, the Madelung and exchange-fraction
@@ -81,6 +82,25 @@
 //! `−a v_M Σ_σ D_σ S D_σ` and the fitted-exchange weights are scaled the same
 //! way ([`crate::kxcgrad`] "Global hybrids"). The energy-weighted Pulay term is
 //! `W = Σ_σ D_σ F_σ D_σ` with `F_σ = h + J[D_α+D_β] − a K[D_σ] + V_xc,σ`.
+//!
+//! # Range-separated hybrids (UKS)
+//!
+//! The open-shell RSH energy ([`crate::kuks`]) takes the closed-shell
+//! attenuated K ([`crate::rsh`]) per spin, `K_σ = K[D_σ]` scaled by 1: the
+//! fractions sit inside the kernel `v(K) = 4π/K² f(K)`,
+//! `f(K) = c_sr + (c_lr − c_sr) e^{−K²/4ω²}`, and the `exxdiv = ewald` shift
+//! is the mixed constant `c_sr v_M + (c_lr − c_sr) v_M^{LR}(ω)` applied to
+//! each spin's K. `f` depends on `|K|` only, so the force is the UHF assembly
+//! above with `a = 1`, the exchange walks of BOTH spin terms `(1, D_α),
+//! (1, D_β)` weighted by `f(K)` (`J[D_α + D_β]` keeps the bare kernel), and
+//! the M-term `−v_M^{mix} Σ_σ D_σ S D_σ` (per spin, unit occupation: no ½).
+//! The derivative kernel is the closed-shell one of [`crate::kxcgrad`]
+//! ("Range-separated hybrids"); nothing new is differentiated, only the spin
+//! bookkeeping of the exchange coefficients and of the M-term, which the
+//! singlet anchor cannot see (`tests/pbc_kuks_rsh_force.rs` tests them on the
+//! polarized cells). The dense kernels must carry the functional's
+//! [`crate::rsh::RshParams`] (as `solve_kuks` builds them). Refused: RS-GDF
+//! (the attenuated fit has no derivative), ROKS / ROHF, the stress.
 //!
 //! # Fock guard
 //!
@@ -171,10 +191,11 @@
 //!
 //! # Scope
 //!
-//! LDA, GGA and global hybrids; for UKS also SCAN / r2SCAN on the dense-AFT
-//! J/K (any other meta-GGA, meta-GGA on RS-GDF and meta-GGA ROKS/ROHF are
-//! refused). Range-separated hybrids, VV10 and double hybrids are refused with
-//! the typed errors of [`crate::kxcgrad`].
+//! LDA, GGA and global hybrids; for UKS also SCAN / r2SCAN and
+//! range-separated hybrids on the dense-AFT J/K (any other meta-GGA, meta-GGA
+//! or a range-separated hybrid on RS-GDF, and meta-GGA or range-separated
+//! ROKS/ROHF are refused). VV10 and double hybrids are refused with the typed
+//! errors of [`crate::kxcgrad`].
 
 use crate::budget::{bytes_of, Ledger};
 use crate::dense_aft::ExxDiv;
@@ -185,16 +206,19 @@ use crate::grad::ao_atoms;
 use crate::grad::RO_ORBITAL_GRADIENT_TOL;
 use crate::hcore::kpoint::PeriodicHcoreK;
 use crate::hcore::PeriodicHcoreConfig;
-use crate::kgrad::{assemble, check_fock, check_inputs, jk_build, open_ledger, KGradJk, KSpins};
+use crate::kgrad::{
+    assemble, check_fock, check_inputs_rsh, jk_build, open_ledger, KGradJk, KSpins,
+};
 use crate::kpts::KPointMesh;
 use crate::kroks::KRoScfResult;
 use crate::kuscf::KUScfResult;
 use crate::kxcgrad::{
-    add_vtau, chunk_density, chunk_tau, chunk_vxc, conj, hermitize, resolve_global,
-    resolve_global_mgga, KRksGradConfig, KRksGradient, KXcGrid, KXcMutation, AO_PLANES,
-    CHUNK_TARGET_BYTES, KS_REMEDY, MAX_CHUNK, MIN_CHUNK,
+    add_vtau, chunk_density, chunk_tau, chunk_vxc, conj, hermitize, hybrid_madelung,
+    resolve_global, resolve_global_mgga, resolve_global_or_rsh, KRksGradConfig, KRksGradient,
+    KXcGrid, KXcMutation, AO_PLANES, CHUNK_TARGET_BYTES, KS_REMEDY, MAX_CHUNK, MIN_CHUNK,
 };
 use crate::lattice::Cell;
+use crate::rsh::RshParams;
 use ferric_core::FerricError;
 use ferric_dft::density_on_grid::UksDensityGrid;
 use ferric_dft::grid::GridPoint;
@@ -1072,6 +1096,11 @@ pub(crate) fn resolve_open_shell(
     Ok((exch, mgga))
 }
 
+/// The polarized XC response of an open-shell force, the exchange scale and
+/// the range separation. `allow_mgga` marks the UKS force, which also takes a
+/// range-separated hybrid (exchange scale 1, its fractions inside the
+/// kernel; the RS-GDF refusal is `check_inputs_rsh`'s); ROKS/ROHF keep
+/// [`resolve_global`]'s refusal.
 fn grid_response<'a>(
     cell: &'a Cell,
     prep: &'a PreparedBasis,
@@ -1079,9 +1108,19 @@ fn grid_response<'a>(
     functional: &str,
     cfg: &'a KUksGradConfig,
     (who, allow_mgga, rsgdf): (&str, bool, bool),
-) -> Result<(GridXcPol<'a>, f64), FerricError> {
-    let (exch, is_mgga) =
-        resolve_open_shell(who, functional, (allow_mgga, rsgdf), &resolve_global_mgga)?;
+) -> Result<(GridXcPol<'a>, f64, Option<RshParams>), FerricError> {
+    let rsh = if allow_mgga {
+        resolve_global_or_rsh(functional)?.2
+    } else {
+        None
+    };
+    let (exch, is_mgga) = if rsh.is_some() {
+        let base = |f: &str| resolve_global_or_rsh(f).map(|(xc, a, _)| (xc, a));
+        let (_, m) = resolve_open_shell(who, functional, (allow_mgga, rsgdf), &base)?;
+        (1.0, m)
+    } else {
+        resolve_open_shell(who, functional, (allow_mgga, rsgdf), &resolve_global_mgga)?
+    };
     let mut name = functional.to_string();
     if cfg.base.mutation == Some(KXcMutation::WrongRemainder) {
         name = match functional.to_ascii_uppercase().as_str() {
@@ -1129,6 +1168,7 @@ fn grid_response<'a>(
             spin_mutation: cfg.spin_mutation,
         },
         exch,
+        rsh,
     ))
 }
 
@@ -1141,8 +1181,14 @@ fn grid_response<'a>(
 /// Also the pure meta-GGAs SCAN / r2SCAN on the dense-AFT J/K (module doc,
 /// "Meta-GGA (UKS)").
 ///
-/// Refuses (typed errors) range-separated hybrids, any other meta-GGA,
-/// meta-GGA with RS-GDF J/K, VV10/double hybrids, a hybrid without
+/// Also range-separated hybrids (HSE06 and CAM-B3LYP force-tested; wB97X and
+/// other CAM GGA hybrids accepted, not exercised by a force test) on the
+/// dense-AFT J/K built with the functional's [`RshParams`] (as `solve_kuks`
+/// builds them): `K_σ` with scale 1 and the mixed Madelung constant (module
+/// doc, "Range-separated hybrids (UKS)").
+///
+/// Refuses (typed errors) any other meta-GGA, meta-GGA or a range-separated
+/// hybrid with RS-GDF J/K, VV10/double hybrids, a hybrid without
 /// `cfg.base.exxdiv`, and an SCF whose spin Focks the rebuilt
 /// `h + J − a K_σ + V_xc,σ` do not reproduce.
 #[allow(clippy::too_many_arguments)]
@@ -1158,7 +1204,7 @@ pub fn kpoint_uks_gradient(
     cfg: &KUksGradConfig,
 ) -> Result<KUksGradient, FerricError> {
     let rsgdf = matches!(jk, KGradJk::RsGdf(_));
-    let (resp, exch) = grid_response(
+    let (resp, exch, rsh) = grid_response(
         cell,
         prep,
         mesh,
@@ -1176,7 +1222,7 @@ pub fn kpoint_uks_gradient(
         jk,
         &uks_input(scf),
         &resp,
-        exch,
+        (exch, rsh),
         cfg,
     )
 }
@@ -1201,7 +1247,7 @@ pub fn kpoint_roks_gradient(
     functional: &str,
     cfg: &KUksGradConfig,
 ) -> Result<KUksGradient, FerricError> {
-    let (resp, exch) = grid_response(
+    let (resp, exch, _) = grid_response(
         cell,
         prep,
         mesh,
@@ -1219,7 +1265,7 @@ pub fn kpoint_roks_gradient(
         jk,
         &ro_input(scf),
         &resp,
-        exch,
+        (exch, None),
         cfg,
     )
 }
@@ -1251,7 +1297,7 @@ pub fn kpoint_rohf_gradient(
         jk,
         &ro_input(scf),
         &NullXcPol,
-        1.0,
+        (1.0, None),
         &c,
     )
 }
@@ -1274,6 +1320,28 @@ pub fn kpoint_null_xc_uks_gradient(
     exch: f64,
     cfg: &KUksGradConfig,
 ) -> Result<KUksGradient, FerricError> {
+    kpoint_null_xc_uks_gradient_rsh(cell, prep, mesh, hcore_cfg, hk, jk, scf, exch, None, cfg)
+}
+
+/// TEST/DIAGNOSTIC: [`kpoint_null_xc_uks_gradient`] on dense kernels that
+/// carry the range separation `rsh` (any `ω`, `c_sr`, `c_lr`), with the
+/// exchange scale `exch` (1 for a range-separated K) and, under
+/// `exxdiv = ewald`, the mixed Madelung constant of `rsh`. The open-shell
+/// anchor entry for `c_sr = c_lr = c` (the global hybrid with fraction `c`).
+#[doc(hidden)]
+#[allow(clippy::too_many_arguments)]
+pub fn kpoint_null_xc_uks_gradient_rsh(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    mesh: &KPointMesh,
+    hcore_cfg: &PeriodicHcoreConfig,
+    hk: &PeriodicHcoreK,
+    jk: KGradJk<'_>,
+    scf: &KUScfResult,
+    exch: f64,
+    rsh: Option<RshParams>,
+    cfg: &KUksGradConfig,
+) -> Result<KUksGradient, FerricError> {
     uks_gradient_with(
         "kpoint_null_xc_uks_gradient",
         cell,
@@ -1284,7 +1352,7 @@ pub fn kpoint_null_xc_uks_gradient(
         jk,
         &uks_input(scf),
         &NullXcPol,
-        exch,
+        (exch, rsh),
         cfg,
     )
 }
@@ -1324,11 +1392,11 @@ fn uks_gradient_with(
     jk: KGradJk<'_>,
     inp: &SpinInput<'_>,
     xc: &dyn KUXcResponse,
-    exch: f64,
+    (exch, rsh): (f64, Option<RshParams>),
     cfg: &KUksGradConfig,
 ) -> Result<KUksGradient, FerricError> {
     let ro = inp.mos.is_some();
-    check_inputs(
+    check_inputs_rsh(
         who,
         cell,
         prep,
@@ -1339,6 +1407,7 @@ fn uks_gradient_with(
         &[inp.da, inp.db],
         inp.converged,
         inp.kpts,
+        rsh,
     )?;
     if !(0.0..=1.0).contains(&exch) {
         return Err(FerricError::General(format!(
@@ -1347,21 +1416,8 @@ fn uks_gradient_with(
     }
     let natoms = cell.positions().len();
     let nk = mesh.nk();
-    let vm = if exch == 0.0 {
-        0.0
-    } else {
-        let exxdiv = cfg.base.exxdiv.ok_or_else(|| {
-            FerricError::General(format!(
-                "{who}: a hybrid functional (exact exchange {exch}) needs \
-                 KRksGradConfig::exxdiv, the treatment the SCF ran (its K carries the \
-                 Madelung shift)"
-            ))
-        })?;
-        match exxdiv {
-            ExxDiv::None => 0.0,
-            ExxDiv::Ewald => mesh.madelung(cell)?,
-        }
-    };
+    // The SCF's K shift: mesh v_M, or the mixed constant of a range-separated K.
+    let vm = hybrid_madelung(who, cell, mesh, exch, cfg.base.exxdiv, rsh)?;
     let mut ledger = open_ledger(cell, prep, mesh, &cfg.base.grad, true)?;
     let da = inp.da.to_vec();
     let db = inp.db.to_vec();

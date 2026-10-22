@@ -152,8 +152,11 @@
 //!   H3/STO-3G at 1x1x1, not a general bound): the same assembly with two spin channels, spin-resolved
 //!   `v_xc` (`σ_αα`, `σ_αβ`, `σ_ββ` contractions), per-spin exchange and a
 //!   per-spin Fock guard; closed-shell densities reproduce [`kxcgrad`] per
-//!   part. Meta-GGA, range-separated hybrids and VV10 are refused here (the
-//!   tau terms exist for the closed-shell force only).
+//!   part. UKS also takes SCAN / r2SCAN (per-spin tau terms) and
+//!   range-separated hybrids (`K_σ = K[D_σ]` on the attenuated kernel, the
+//!   mixed Madelung constant; the Gamma point through
+//!   `gamma_rsh::gamma_uks_rsh_gradient`), both on the dense-AFT J/K only;
+//!   ROKS/ROHF refuse both, and VV10 is refused.
 //! * [`kstress`] — the k-point RHF / UHF stress tensor
 //!   (`kpoint_rhf_stress`, `kpoint_uhf_stress`) on the dense-AFT and the
 //!   unsplit RS-GDF J/K:
