@@ -1789,7 +1789,9 @@ fn lr_extra_bytes_per_g(n: usize, naux: usize) -> usize {
 /// `G_CHUNK_BYTES / LR_GEMM_MIN_K`, and never above `remaining` (the
 /// ledger's unreserved budget). Below that size (every cell up to nao ≈
 /// 170 at cc-pVDZ) it is exactly `remaining.min(G_CHUNK_BYTES)`, so those
-/// builds keep their chunks and their bits.
+/// builds keep their chunks and their bits. Above it the transient chunk
+/// buffer grows past 64 MiB (about 236 MB on dryice_112); when `remaining`
+/// binds, k drops below `LR_GEMM_MIN_K` again (#507).
 pub(crate) fn lr_chunk_budget(remaining: usize, obs: &PreparedBasis, naux: usize) -> usize {
     let n = obs.nbasis();
     let per_g = crate::pair_ft::pair_ft_bytes_per_g(n, crate::pair_ft::basis_lmax(obs))

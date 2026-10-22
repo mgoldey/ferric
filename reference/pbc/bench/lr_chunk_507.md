@@ -69,6 +69,12 @@ vectors fit in 64 MiB (nao up to about 170 at cc-pVDZ, dryice included) the budg
 is unchanged, and so are the chunks and the bits. dryice_112 now runs 417 chunks
 (k = 64).
 
+Memory: the fix trades memory for GEMM width. On dryice_112 the transient LR chunk
+buffer grows from 64 MiB to about 236 MB (64 G vectors at its per-G size). Peak RSS
+was not measured. The raised budget is still capped by the ledger's unreserved
+budget, so when that cap binds the chunk falls back below k = 64 and the stage is
+memory-bound again.
+
 Fix vs main, 3 interleaved reps each (medians, wall s):
 
 | cell | binary | total | LR pair FT | LR aux FT + GEMM | GEMMs | energy (Ha/cell) |
@@ -96,6 +102,7 @@ fix total 65.4 s (pair FT 1.66, aux FT + GEMM 3.57 at 18 chunks, k 63). Energy
 
 ## Not changed (open)
 
-The same 64 MiB `G_CHUNK_BYTES` cap feeds the k-point RS-GDF LR stage (`rsgdf/kpoint.rs`,
-`kpoint/klr.rs`) and the gradient and stress builds (`rsgdf/deriv.rs`, `rsgdf/strain.rs`,
-`kpoint/kderiv.rs`). Those builds were not measured here.
+The same 64 MiB `G_CHUNK_BYTES` cap feeds the k-point RS-GDF LR stage (`crates/ferric-pbc/src/rsgdf/kpoint.rs`,
+`crates/ferric-pbc/src/rsgdf/kpoint/klr.rs`) and the gradient and stress builds
+(`crates/ferric-pbc/src/rsgdf/deriv.rs`, `crates/ferric-pbc/src/rsgdf/strain.rs`,
+`crates/ferric-pbc/src/rsgdf/kpoint/kderiv.rs`). Those builds were not measured here.
