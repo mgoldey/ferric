@@ -23,7 +23,7 @@ the energy jump by one step under a displacement).
 * Monkhorst-Pack mesh, a hybrid, RS-GDF J/K against FD.
 * Flags off: gradient() is None and the energy is bit-identical with the flag.
 * Refusals with exact wording: range_split with a force, unvalidated meta-GGA,
-  range-separated hybrids. (ECP cells: test_pbc_kpoint_open_shell_and_stress.py.)
+  range-separated hybrids on RS-GDF. (ECP cells: test_pbc_kpoint_open_shell_and_stress.py.)
 """
 
 from __future__ import annotations
@@ -218,19 +218,15 @@ def test_refusals_have_exact_wording(basis):
             r"the k-point meta-GGA force and stress cover SCAN / r2SCAN$",
         ):
             _krks(H2_ATOMS, basis, "TPSS", **{kw: True})
+    # Range-separated hybrids: the dense-AFT force runs
+    # (test_pbc_rsh_open_mgga_derivs.py); the force/stress allowlist is
+    # independent of the energy gate and refuses them on RS-GDF.
     with pytest.raises(
         ValueError,
-        match=r"^run_rks_kpts: with_gradient: .*HSE06.*range-separated",
-    ):
-        _krks(H2_ATOMS, basis, "HSE06", with_gradient=True)
-    # The energy gate now admits range-separated hybrids on jk="rsgdf"; the
-    # force/stress allowlist is independent and must still refuse them.
-    with pytest.raises(
-        ValueError,
-        match=r"^run_rks_kpts: with_gradient: General error: HSE06: the k-point "
-        r"Kohn-Sham force and stress cover LDA, GGA and global-hybrid functionals "
-        r"only \(no meta-GGA, range-separated hybrid, VV10 or double hybrid for "
-        r"this method\)$",
+        match=r"^run_rks_kpts: with_gradient: General error: HSE06: the range-separated "
+        r"hybrid force and stress on the RS-GDF J/K are not wired to the bindings yet "
+        r"\(the library has it: kpoint_rks_gradient / kpoint_rks_stress on RS-GDF, "
+        r'closed shell\); use jk = "dense"$',
     ):
         _krks(
             H2_ATOMS,

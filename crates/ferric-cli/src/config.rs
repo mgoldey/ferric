@@ -4772,14 +4772,14 @@ impl PeriodicRoute {
     /// range-separated hybrids, hybrid meta-GGA, ...); the dispatcher in
     /// `periodic.rs` must gain the matching arm.
     ///
-    /// Energy gate: LDA, GGA and global hybrids on every Kohn-Sham route; the
-    /// pure meta-GGAs SCAN / r2SCAN and the range-separated hybrids (HSE06,
-    /// CAM-B3LYP, wB97X) on the RKS and UKS routes (UKS through the library
+    /// Energy gate: LDA, GGA, global hybrids and the range-separated hybrids
+    /// (HSE06, CAM-B3LYP, wB97X) on every Kohn-Sham route (ROKS through the
+    /// library `resolve_kroks_functional`); the pure meta-GGAs SCAN / r2SCAN
+    /// on the RKS and UKS routes (UKS through the library
     /// `resolve_kuks_functional`; its meta-GGA needs `jk = "dense"`, checked
     /// in [`periodic_plan`]); TPSS on the RKS route only (energy only). The
-    /// force, optimize and stress gates are separate allowlists and still
-    /// refuse range-separated hybrids, TPSS, and meta-GGA on the open-shell
-    /// routes, by name.
+    /// force, optimize and stress gates are the separate library allowlist
+    /// `ferric_pbc::kxcgrad::check_deriv_functional`.
     pub fn check_kpoint_support(self, functional: Option<&str>) -> Result<(), String> {
         match self {
             PeriodicRoute::Rhf
@@ -4797,17 +4797,17 @@ impl PeriodicRoute {
                     )
                     .map(|_| ()),
                     PeriodicRoute::Uks => ferric_pbc::kuks::resolve_kuks_functional(f),
-                    _ => ferric_pbc::dft::resolve_periodic_functional(f).map(|_| ()),
+                    _ => ferric_pbc::kroks::resolve_kroks_functional(f),
                 };
                 energy.map_err(|e| {
                     format!(
                         "[cell] kmesh with functional {f:?}: {e}. k-point {} supports {}",
                         self.label(),
                         if self == PeriodicRoute::Roks {
-                            "LDA, GGA and global-hybrid functionals only (no meta-GGA or \
-                             range-separated hybrid for ROKS; the UKS route, method.kind = \
-                             \"uhf\" with a functional or \"ksdft\" with multiplicity > 1, \
-                             has SCAN / r2SCAN and range-separated hybrid energies)"
+                            "LDA, GGA, global-hybrid and range-separated hybrid functionals \
+                             only (no meta-GGA for ROKS; the UKS route, method.kind = \"uhf\" \
+                             with a functional or \"ksdft\" with multiplicity > 1, has SCAN / \
+                             r2SCAN)"
                         } else if self == PeriodicRoute::Rks {
                             "LDA, GGA and global-hybrid functionals, the SCAN / r2SCAN / \
                              TPSS meta-GGAs and range-separated hybrids"
@@ -5132,37 +5132,45 @@ fn jk_with_sr_knobs(jk: PeriodicJk, range_split: Option<f64>, auto: bool) -> Per
     }
 }
 
-/// The k-point `task = "optimize"` gates beyond the energy gate
+/// The binding derivative family of a Kohn-Sham route.
+fn deriv_spin(route: PeriodicRoute) -> ferric_pbc::kxcgrad::DerivSpin {
+    use ferric_pbc::kxcgrad::DerivSpin;
+    match route {
+        PeriodicRoute::Rks => DerivSpin::Restricted,
+        PeriodicRoute::Uks => DerivSpin::Unrestricted,
+        _ => DerivSpin::RestrictedOpen,
+    }
+}
+
+/// The `task = "optimize"` gates beyond the energy gate
 /// (`check_kpoint_support`; correlated routes are refused earlier). The force
 /// has its own functional allowlist, independent of the energy gate, so
-/// widening the k-point energy path cannot silently enable an optimize: the
-/// closed-shell route takes `check_force_functional` (LDA / GGA / global hybrid
-/// / SCAN, r2SCAN), the open-shell ones `check_open_shell_force_functional`.
-fn check_kpoint_optimize_gate(
+/// widening the energy path cannot silently enable an optimize: at a k-point
+/// mesh the library `ferric_pbc::kxcgrad::check_deriv_functional` (per route
+/// and J/K, `rsgdf`); at the Gamma point the library request gates
+/// (`check_gamma_rks_request`: no meta-GGA force, range-separated hybrids on
+/// the dense-AFT J/K only; `check_gamma_uks_request` /
+/// `check_gamma_roks_request`: no open-shell range-separated force).
+fn check_optimize_gate(
     route: PeriodicRoute,
     functional: Option<&str>,
     kpoints: bool,
+    rsgdf: bool,
 ) -> Result<(), String> {
-    if !kpoints {
-        if route == PeriodicRoute::Rks {
-            if let Some(f) = functional {
-                ferric_pbc::dft::check_gamma_derivs_functional(f)
-                    .map_err(|e| format!("method.task = \"optimize\" with [cell]: {e}"))?;
-            }
-        }
+    if !route.kohn_sham() {
         return Ok(());
     }
-    let prefix = |e: String| format!("method.task = \"optimize\" with [cell] kmesh: {e}");
-    if route.kohn_sham() {
-        let f = functional.unwrap_or("LDA");
-        let allow = if route == PeriodicRoute::Rks {
-            ferric_pbc::kxcgrad::check_force_functional(f)
-        } else {
-            ferric_pbc::kxcgrad::check_open_shell_force_functional(f)
+    let f = functional.unwrap_or("LDA");
+    if !kpoints {
+        let gate = match route {
+            PeriodicRoute::Rks => ferric_pbc::dft::check_gamma_rks_request(f, true, rsgdf),
+            PeriodicRoute::Uks => ferric_pbc::dft::check_gamma_uks_request(f, true),
+            _ => ferric_pbc::dft::check_gamma_roks_request(f, true),
         };
-        allow.map_err(|e| prefix(e.to_string()))?;
+        return gate.map_err(|e| format!("method.task = \"optimize\" with [cell]: {e}"));
     }
-    Ok(())
+    ferric_pbc::kxcgrad::check_deriv_functional(deriv_spin(route), rsgdf, f)
+        .map_err(|e| format!("method.task = \"optimize\" with [cell] kmesh: {e}"))
 }
 
 /// `[cell] stress`: the k-point analytic stress of a `task = "energy"` run.
@@ -5212,7 +5220,8 @@ fn resolve_stress(
     }
     if route.kohn_sham() {
         let f = functional.unwrap_or("LDA");
-        ferric_pbc::kxcgrad::check_kpoint_deriv_functional(route != PeriodicRoute::Rks, f, what)?;
+        let rsgdf = matches!(jk, PeriodicJk::RsGdf { .. });
+        ferric_pbc::kxcgrad::check_kpoint_deriv_functional(deriv_spin(route), rsgdf, f, what)?;
     }
     Ok(true)
 }
@@ -5351,26 +5360,6 @@ fn check_kpoint_uks_mgga_jk(
     }
 }
 
-/// Gamma-point `task = "optimize"` with a range-separated hybrid (RKS or
-/// UKS): the attenuated exchange has no analytic derivative, so refuse before
-/// any SCF.
-fn check_gamma_rsh_optimize(
-    route: PeriodicRoute,
-    kpoints: bool,
-    functional: Option<&str>,
-) -> Result<(), String> {
-    match functional {
-        Some(f) if !kpoints && matches!(route, PeriodicRoute::Rks | PeriodicRoute::Uks) => {
-            if !ferric_pbc::rsh::is_range_separated(f) {
-                return Ok(());
-            }
-            ferric_pbc::dft::check_gamma_rks_request(f, true)
-                .map_err(|e| format!("method.task = \"optimize\" with [cell]: {e}"))
-        }
-        _ => Ok(()),
-    }
-}
-
 /// Gamma-point meta-GGA: closed-shell RKS, SCAN / r2SCAN / TPSS only; the UKS
 /// route refuses every meta-GGA by name (no Gamma tau term; the 1x1x1 mesh
 /// has it). `range_split` with a range-separated hybrid (RKS, UKS) is refused
@@ -5384,7 +5373,10 @@ fn check_gamma_meta_gga(
         range_split,
         Some(RangeSplitKey::Flag(true) | RangeSplitKey::Lambda(_))
     );
-    let rks_or_uks = matches!(route, PeriodicRoute::Rks | PeriodicRoute::Uks);
+    let ks = matches!(
+        route,
+        PeriodicRoute::Rks | PeriodicRoute::Uks | PeriodicRoute::Roks
+    );
     match functional {
         Some(f) if route == PeriodicRoute::Uks && ferric_pbc::dft::is_meta_gga_name(f) => {
             ferric_pbc::dft::check_gamma_uks_request(f, false).map_err(|e| {
@@ -5394,7 +5386,7 @@ fn check_gamma_meta_gga(
                 )
             })
         }
-        Some(f) if rks_or_uks && split => ferric_pbc::gamma_rsh::check_range_split(f, true)
+        Some(f) if ks && split => ferric_pbc::gamma_rsh::check_range_split(f, true)
             .map_err(|e| format!("[cell] range_split at the Gamma point: {e}")),
         Some(f) if route == PeriodicRoute::Rks && ferric_pbc::dft::is_meta_gga_name(f) => {
             ferric_pbc::dft::resolve_gamma_rks_functional(f)
@@ -5681,8 +5673,7 @@ pub fn periodic_plan(cfg: &Config, raw: &toml::Value) -> Result<Option<PeriodicP
                     route.label()
                 ));
             }
-            check_kpoint_optimize_gate(route, functional.as_deref(), kpoints)?;
-            check_gamma_rsh_optimize(route, kpoints, functional.as_deref())?;
+            check_optimize_gate(route, functional.as_deref(), kpoints, rsgdf)?;
             if let Some(s) = cfg.optimize.coordinates.as_deref() {
                 if parse_coord_system(s)? != ferric_scf::optimize::CoordSystem::Cartesian {
                     return Err(
@@ -5878,8 +5869,8 @@ kind = "ccsd"
     }
 
     /// (kind, extra TOML, triplet?, fragments the refusal must contain).
-    /// k-point ROKS has no meta-GGA or range-separated hybrid: SCAN / HSE06
-    /// are refused by name, pointing at the UKS route that has them.
+    /// k-point ROKS has no meta-GGA: SCAN is refused by name, pointing at the
+    /// UKS route that has it.
     type KmeshRefusal = (&'static str, &'static str, bool, &'static [&'static str]);
     const PBE: &str = "[dft]\nfunctional = \"PBE\"";
     const SCAN: &str = "[dft]\nfunctional = \"SCAN\"";
@@ -5891,12 +5882,6 @@ kind = "ccsd"
             SCAN,
             false,
             &["kmesh", "meta-GGA", "for ROKS", "the UKS route"],
-        ),
-        (
-            "rohf",
-            HSE,
-            false,
-            &["kmesh with functional", "range-separated", "for ROKS"],
         ),
         // Other meta-GGAs stay refused on the UKS route.
         (
@@ -5960,6 +5945,8 @@ kind = "ccsd"
             ("ksdft", SCAN, true, PeriodicRoute::Uks),
             ("uhf", HSE, false, PeriodicRoute::Uks),
             ("ksdft", HSE, true, PeriodicRoute::Uks),
+            // ROKS range-separated hybrid ENERGY (issue #498).
+            ("rohf", HSE, false, PeriodicRoute::Roks),
         ] {
             let mut src = h2(kind, "kmesh = [1, 1, 2]", extra);
             if triplet {
@@ -6165,22 +6152,39 @@ kind = "ccsd"
         }
     }
 
-    /// Gamma-point open-shell range-separated hybrids: the UKS energy resolves;
-    /// optimize and `range_split` are refused by name at plan time.
+    /// Gamma-point open-shell range-separated hybrids: the UKS and ROKS
+    /// energies resolve; optimize and `range_split` are refused by name at
+    /// plan time. The closed-shell optimize runs on the dense-AFT J/K and is
+    /// refused on RS-GDF.
     #[test]
-    fn gamma_uks_rsh_gates() {
-        let p = ok(&h2("uhf", "", HSE));
-        assert!(p.route == PeriodicRoute::Uks && p.kmesh.is_none());
+    fn gamma_open_shell_rsh_gates() {
         let rsgdf = "jk = \"rsgdf\"\nauxbasis = \"cc-pvdz-ri\"";
-        assert_eq!(ok(&h2("uhf", rsgdf, HSE)).route, PeriodicRoute::Uks);
-        let e = err(&opt("uhf", "", HSE));
+        for (kind, route, label) in [
+            ("uhf", PeriodicRoute::Uks, "UKS"),
+            ("rohf", PeriodicRoute::Roks, "ROKS"),
+        ] {
+            let p = ok(&h2(kind, "", HSE));
+            assert!(p.route == route && p.kmesh.is_none(), "{kind}");
+            assert_eq!(ok(&h2(kind, rsgdf, HSE)).route, route, "{kind}");
+            let e = err(&opt(kind, "", HSE));
+            assert!(
+                e.contains("method.task = \"optimize\" with [cell]")
+                    && e.contains(&format!(
+                        "the Gamma-point {label} with a range-separated hybrid is energy only"
+                    )),
+                "{kind}: {e}"
+            );
+            let e = err(&h2(kind, &format!("{rsgdf}\nrange_split = true"), HSE));
+            assert!(
+                e.contains("range_split") && e.contains("attenuated K"),
+                "{kind}: {e}"
+            );
+        }
+        assert!(ok(&opt("ksdft", "", HSE)).optimize);
+        let e = err(&opt("ksdft", rsgdf, HSE));
         assert!(
-            e.contains("method.task = \"optimize\" with [cell]") && e.contains("range-separated"),
-            "{e}"
-        );
-        let e = err(&h2("uhf", &format!("{rsgdf}\nrange_split = true"), HSE));
-        assert!(
-            e.contains("range_split") && e.contains("attenuated K"),
+            e.contains("method.task = \"optimize\" with [cell]: ")
+                && e.contains("dense-AFT J/K only"),
             "{e}"
         );
     }
@@ -6258,37 +6262,43 @@ kind = "ccsd"
 
     #[test]
     fn k_point_force_allowlist_is_independent_of_the_energy_gate() {
-        // The force entry points (CLI optimize gate, Python with_gradient /
-        // with_stress) consult `check_force_functional` (closed shell) and
-        // `check_open_shell_force_functional`, not the energy resolver: LDA, GGA,
-        // global hybrids and (closed shell only) the pure SCAN / r2SCAN pass, so
-        // widening the energy gate cannot silently enable a range-separated,
-        // hybrid-meta-GGA or TPSS (energy-only) force.
-        for f in ["LDA", "PBE", "BLYP", "PBE0", "B3LYP", "SCAN", "r2SCAN"] {
-            ferric_pbc::kxcgrad::check_force_functional(f).unwrap_or_else(|e| panic!("{f}: {e}"));
-        }
-        for f in ["LDA", "PBE", "BLYP", "PBE0", "B3LYP"] {
-            ferric_pbc::kxcgrad::check_open_shell_force_functional(f)
-                .unwrap_or_else(|e| panic!("{f}: {e}"));
-        }
-        for f in [
-            "HSE06",
-            "wB97X-V",
-            "wB97X-L-V",
-            "B2PLYP",
-            "MGGA_X_TPSS",
-            "TPSS",
+        // The force entry points (CLI optimize / stress gates, Python
+        // with_gradient / with_stress) consult the library
+        // `check_deriv_functional`, not the energy resolver, so widening the
+        // energy gate cannot silently enable a derivative.
+        use ferric_pbc::kxcgrad::{check_deriv_functional, DerivSpin};
+        let common = ["LDA", "PBE", "BLYP", "PBE0", "B3LYP"];
+        for spin in [
+            DerivSpin::Restricted,
+            DerivSpin::Unrestricted,
+            DerivSpin::RestrictedOpen,
         ] {
-            assert!(
-                ferric_pbc::kxcgrad::check_force_functional(f).is_err(),
-                "{f} must not pass the closed-shell force allowlist"
-            );
+            for rsgdf in [false, true] {
+                for f in common {
+                    check_deriv_functional(spin, rsgdf, f)
+                        .unwrap_or_else(|e| panic!("{spin:?} {rsgdf} {f}: {e}"));
+                }
+                for f in ["wB97X-V", "wB97X-L-V", "B2PLYP", "MGGA_X_TPSS", "TPSS"] {
+                    assert!(
+                        check_deriv_functional(spin, rsgdf, f).is_err(),
+                        "{spin:?} {rsgdf} {f} must not pass the derivative allowlist"
+                    );
+                }
+            }
         }
-        for f in ["SCAN", "r2SCAN", "HSE06", "wB97X-V", "B2PLYP"] {
-            assert!(
-                ferric_pbc::kxcgrad::check_open_shell_force_functional(f).is_err(),
-                "{f} must not pass the open-shell force allowlist"
-            );
+        // Range-separated hybrids: closed shell on the dense-AFT J/K only.
+        for f in ["HSE06", "HYB_GGA_XC_CAM_B3LYP"] {
+            check_deriv_functional(DerivSpin::Restricted, false, f).unwrap();
+            assert!(check_deriv_functional(DerivSpin::Restricted, true, f).is_err());
+            assert!(check_deriv_functional(DerivSpin::Unrestricted, false, f).is_err());
+            assert!(check_deriv_functional(DerivSpin::RestrictedOpen, false, f).is_err());
+        }
+        // SCAN / r2SCAN: closed shell on either J/K, UKS on dense only, no ROKS.
+        for f in ["SCAN", "r2SCAN"] {
+            check_deriv_functional(DerivSpin::Restricted, true, f).unwrap();
+            check_deriv_functional(DerivSpin::Unrestricted, false, f).unwrap();
+            assert!(check_deriv_functional(DerivSpin::Unrestricted, true, f).is_err());
+            assert!(check_deriv_functional(DerivSpin::RestrictedOpen, false, f).is_err());
         }
     }
 
@@ -6299,27 +6309,33 @@ kind = "ccsd"
             let dft = format!("[dft]\nfunctional = \"{f}\"");
             assert!(ok(&opt("ksdft", "kmesh = [1, 1, 2]", &dft)).optimize, "{f}");
         }
-        // Range-separated hybrids keep their energy-level refusal under optimize.
-        let e = err(&opt(
-            "ksdft",
-            "kmesh = [1, 1, 2]",
-            "[dft]\nfunctional = \"HSE06\"",
-        ));
-        assert!(e.contains("range-separated") && e.contains("kmesh"), "{e}");
-        // Open-shell KS: ROKS has no meta-GGA at a mesh (energy gate); UKS has
-        // the energy, but its force is library-only (not wired here), so
-        // optimize is refused by the force gate.
+        // Range-separated hybrids: the closed-shell force runs on the
+        // dense-AFT J/K and is refused on RS-GDF.
+        let rsgdf = "jk = \"rsgdf\"\nauxbasis = \"cc-pvdz-ri\"\nkmesh = [1, 1, 2]";
+        assert!(ok(&opt("ksdft", "kmesh = [1, 1, 2]", HSE)).optimize);
+        let e = err(&opt("ksdft", rsgdf, HSE));
+        assert!(
+            e.contains("method.task = \"optimize\" with [cell] kmesh")
+                && e.contains("not wired to the bindings yet"),
+            "{e}"
+        );
+        // Open-shell KS: ROKS has no meta-GGA at a mesh (energy gate); the UKS
+        // SCAN force runs (dense J/K); open-shell RSH forces are refused by
+        // the force gate.
         let e = err(&opt("rohf", "kmesh = [1, 1, 2]", SCAN));
         assert!(
             e.contains("meta-GGA") && e.contains("for ROKS"),
             "rohf: {e}"
         );
-        for dft in [SCAN, HSE] {
-            let e = err(&opt("uhf", "kmesh = [1, 1, 2]", dft));
+        assert!(ok(&opt("uhf", "kmesh = [1, 1, 2]", SCAN)).optimize);
+        for (kind, label) in [("uhf", "UKS"), ("rohf", "ROKS")] {
+            let e = err(&opt(kind, "kmesh = [1, 1, 2]", HSE));
             assert!(
                 e.contains("method.task = \"optimize\" with [cell] kmesh")
-                    && e.contains("no meta-GGA, range-separated hybrid"),
-                "uhf {dft}: {e}"
+                    && e.contains(&format!(
+                        "the k-point {label} range-separated hybrid force and stress are not wired"
+                    )),
+                "{kind}: {e}"
             );
         }
         // UKS, ROKS and ROHF resolve at a mesh with optimize (dense J/K).
@@ -6333,7 +6349,6 @@ kind = "ccsd"
             assert_eq!(p.route, route);
         }
         // ROHF/ROKS and UKS all take RS-GDF forces.
-        let rsgdf = "jk = \"rsgdf\"\nauxbasis = \"cc-pvdz-ri\"\nkmesh = [1, 1, 2]";
         assert!(ok(&opt("rohf", rsgdf, "")).optimize);
         assert!(ok(&opt("uhf", rsgdf, "[dft]\nfunctional = \"PBE\"")).optimize);
         // A range split stays refused with optimize at a mesh.
@@ -6362,28 +6377,30 @@ kind = "ccsd"
         // Absent / false is the default, with or without a mesh.
         assert!(!ok(&h2("rhf", "kmesh = [1, 1, 2]", "")).stress);
         assert!(!ok(&h2("rhf", "stress = false", "")).stress);
-        // Range-separated hybrids, open-shell meta-GGA: the library allowlist.
-        let e = err(&h2(
-            "ksdft",
-            "kmesh = [1, 1, 2]\nstress = true",
-            "[dft]\nfunctional = \"HSE06\"",
-        ));
+        // Range-separated hybrids: the closed-shell stress runs on the
+        // dense-AFT J/K; on RS-GDF the library allowlist refuses it.
+        let rs = "jk = \"rsgdf\"\nauxbasis = \"cc-pvdz-ri\"";
+        assert!(ok(&h2("ksdft", km, HSE)).stress);
+        let e = err(&h2("ksdft", &format!("{rs}\n{km}"), HSE));
         assert!(
-            e.contains("[cell] stress = true") && e.contains("range-separated"),
+            e.contains("[cell] stress = true") && e.contains("not wired to the bindings yet"),
             "{e}"
         );
-        // Open-shell SCAN and range-separated hybrids have a k-point energy
-        // but no stress: the stress gate names the key.
-        for dft in [SCAN, HSE] {
-            let e = err(&h2("uhf", km, dft));
+        // Open-shell SCAN has a dense-AFT stress; open-shell range-separated
+        // hybrids have a k-point energy but no stress: the stress gate names
+        // the key.
+        assert!(ok(&h2("uhf", km, SCAN)).stress);
+        for (kind, label) in [("uhf", "UKS"), ("rohf", "ROKS")] {
+            let e = err(&h2(kind, km, HSE));
             assert!(
                 e.contains("[cell] stress = true")
-                    && e.contains("no meta-GGA, range-separated hybrid"),
-                "{dft}: {e}"
+                    && e.contains(&format!(
+                        "the k-point {label} range-separated hybrid force and stress are not wired"
+                    )),
+                "{kind}: {e}"
             );
         }
-        // The SCAN / r2SCAN stress runs on RS-GDF as on dense J.
-        let rs = "jk = \"rsgdf\"\nauxbasis = \"cc-pvdz-ri\"";
+        // The SCAN / r2SCAN stress runs on RS-GDF as on dense J (closed shell).
         for f in ["SCAN", "r2SCAN"] {
             let dft = format!("[dft]\nfunctional = \"{f}\"");
             assert!(ok(&h2("ksdft", &format!("{rs}\n{km}"), &dft)).stress, "{f}");

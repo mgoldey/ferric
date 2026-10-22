@@ -3,8 +3,8 @@
 //! Anchor: the CLI energy (read at full precision from the JSON run log's
 //! `run_end` record, not the 10-decimal stdout line) equals the library
 //! `ferric_pbc::solve_krks` energy bit for bit on the same input. The
-//! unsupported combinations (ROKS meta-GGA and range-separated hybrids, force
-//! range-separated hybrids) are refused by name before any integral is built.
+//! unsupported combinations (ROKS meta-GGA, range-separated hybrid forces on
+//! RS-GDF) are refused by name before any integral is built.
 
 use ferric_core::basis;
 use ferric_core::mol::Molecule;
@@ -153,19 +153,21 @@ fn refusal(tag: &str, kind: &str, mult: usize, dft: &str, cell: &str) -> String 
 
 #[test]
 fn unsupported_kpoint_ks_combinations_are_refused_by_name() {
-    // k-point ROKS has no meta-GGA (no tau term) and no range-separated hybrid;
-    // the early gate (config.rs), not a later library refusal, names it. The
-    // UKS energies run (periodic_kpoint_open_shell.rs).
+    // k-point ROKS has no meta-GGA (no tau term); the early gate (config.rs),
+    // not a later library refusal, names it. The UKS energies run
+    // (periodic_kpoint_open_shell.rs), and so does the ROKS range-separated
+    // hybrid energy (periodic_rsh_open_mgga_derivs.rs).
     let e = refusal("roks-meta", "rohf", 3, "[dft]\nfunctional = \"SCAN\"", "");
     assert!(e.contains("meta-GGA") && e.contains("for ROKS"), "{e}");
-    let e = refusal("rsh-roks", "rohf", 3, "[dft]\nfunctional = \"HSE06\"", "");
-    assert!(
-        e.contains("[cell] kmesh with functional \"HSE06\"") && e.contains("range-separated"),
-        "{e}"
+    // task = "optimize" with a range-separated hybrid runs on the dense-AFT
+    // J/K (periodic_rsh_open_mgga_derivs.rs) and is refused on RS-GDF.
+    let toml = input(
+        "opt-hse",
+        "ksdft",
+        1,
+        "[dft]\nfunctional = \"HSE06\"",
+        RSGDF_CELL,
     );
-    // task = "optimize" keeps the range-separated refusal (closed-shell LDA /
-    // GGA / global hybrid / SCAN forces are wired; periodic_kpoint_ks_optimize.rs).
-    let toml = input("opt-hse", "ksdft", 1, "[dft]\nfunctional = \"HSE06\"", "");
     let src = std::fs::read_to_string(&toml)
         .unwrap()
         .replace("kind = \"ksdft\"", "task = \"optimize\"\nkind = \"ksdft\"");
@@ -174,7 +176,7 @@ fn unsupported_kpoint_ks_combinations_are_refused_by_name() {
     assert!(!out.status.success(), "opt-hse");
     let e = String::from_utf8_lossy(&out.stderr);
     assert!(
-        e.contains("method.task = \"optimize\"") && e.contains("range-separated"),
+        e.contains("method.task = \"optimize\"") && e.contains("not wired to the bindings yet"),
         "opt-hse: {e}"
     );
 }
@@ -280,16 +282,17 @@ fn cli_kpoint_rsh_rsgdf_equals_library_solve_krks() {
     }
 }
 
-/// With `jk = "rsgdf"` the range-separated energy is accepted (RKS, and UKS:
-/// periodic_kpoint_open_shell.rs), but the rest of the surface stays refused
-/// by name: ROKS and `task = "optimize"` (forces/stress are not implemented).
+/// With `jk = "rsgdf"` the range-separated energy is accepted (RKS, ROKS, and
+/// UKS: periodic_kpoint_open_shell.rs), but `task = "optimize"` stays refused
+/// by name (the library RS-GDF derivative is not wired to the bindings yet).
 #[test]
-fn cli_kpoint_rsh_rsgdf_keeps_forces_and_open_shell_refused() {
+fn cli_kpoint_rsh_rsgdf_runs_roks_and_keeps_forces_refused() {
     let hse = "[dft]\nfunctional = \"HSE06\"";
-    let e = refusal("rsgdf-roks", "rohf", 3, hse, RSGDF_CELL);
+    let out = run(&input("rsgdf-roks", "rohf", 3, hse, RSGDF_CELL));
     assert!(
-        e.contains("[cell] kmesh with functional \"HSE06\"") && e.contains("range-separated"),
-        "{e}"
+        out.status.success(),
+        "rsgdf-roks:\n{}",
+        String::from_utf8_lossy(&out.stderr)
     );
     let toml = input("rsgdf-opt", "ksdft", 1, hse, RSGDF_CELL);
     let src = std::fs::read_to_string(&toml)
@@ -300,7 +303,7 @@ fn cli_kpoint_rsh_rsgdf_keeps_forces_and_open_shell_refused() {
     assert!(!out.status.success(), "rsgdf-opt must be refused");
     let e = String::from_utf8_lossy(&out.stderr);
     assert!(
-        e.contains("method.task = \"optimize\"") && e.contains("range-separated"),
+        e.contains("method.task = \"optimize\"") && e.contains("not wired to the bindings yet"),
         "rsgdf-opt: {e}"
     );
 }
@@ -318,7 +321,7 @@ fn gamma_input(tag: &str, kind: &str, mult: usize, dft: &str) -> PathBuf {
 /// Gamma-point range-separated hybrids (issue #354): the CLI energy equals the
 /// 1x1x1 mesh of the same input (Gamma J/XC/SCF vs the k-point driver; the
 /// library anchors are `pbc_grsh.rs`), and the surface that does not exist
-/// (forces, open shell) is refused by name.
+/// (forces on RS-GDF, open-shell forces) is refused by name.
 #[test]
 fn cli_gamma_rsh_equals_the_one_point_mesh_and_keeps_derivatives_refused() {
     for (tag, name) in [("hse", "HSE06"), ("cam", "HYB_GGA_XC_CAM_B3LYP")] {
@@ -345,17 +348,19 @@ fn cli_gamma_rsh_equals_the_one_point_mesh_and_keeps_derivatives_refused() {
         );
     }
     let hse = "[dft]\nfunctional = \"HSE06\"";
-    // task = "optimize" is refused at plan time, before any integral.
-    let toml = gamma_input("gam-opt", "ksdft", 1, hse);
+    // task = "optimize" runs on the dense-AFT J/K (periodic_rsh_open_mgga_derivs.rs)
+    // and is refused at plan time on RS-GDF, before any integral.
+    let toml = input("gam-opt", "ksdft", 1, hse, RSGDF_CELL);
     let src = std::fs::read_to_string(&toml)
         .unwrap()
+        .replace("kmesh = [1, 1, 2]\n", "")
         .replace("kind = \"ksdft\"", "task = \"optimize\"\nkind = \"ksdft\"");
     std::fs::write(&toml, src).unwrap();
     let out = run(&toml);
     assert!(!out.status.success(), "gam-opt must be refused");
     let e = String::from_utf8_lossy(&out.stderr);
     assert!(
-        e.contains("method.task = \"optimize\"") && e.contains("range-separated"),
+        e.contains("method.task = \"optimize\"") && e.contains("dense-AFT J/K only"),
         "gam-opt: {e}"
     );
     // The open-shell (UKS) energy at Gamma runs (periodic_kpoint_open_shell.rs);
@@ -391,11 +396,28 @@ fn cli_gamma_rsh_equals_the_one_point_mesh_and_keeps_derivatives_refused() {
         e.contains("range_split") && e.contains("attenuated K"),
         "gam-split: {e}"
     );
-    // ROKS (kind = "rohf" with a functional, triplet) with RSH at Gamma.
-    let out = run(&gamma_input("gam-roks", "rohf", 3, hse));
-    assert!(!out.status.success(), "gam-roks must be refused");
-    let e = String::from_utf8_lossy(&out.stderr);
-    assert!(e.contains("range-separated"), "gam-roks: {e}");
+    // ROKS (kind = "rohf" with a functional, triplet) with RSH at Gamma runs
+    // (bit anchor vs the library: periodic_rsh_open_mgga_derivs.rs) and equals
+    // the 1x1x1 mesh of the same input.
+    let g = gamma_input("gam-roks", "rohf", 3, hse);
+    let k = input("gam-k111-roks", "rohf", 3, hse, "");
+    let src = std::fs::read_to_string(&k)
+        .unwrap()
+        .replace("kmesh = [1, 1, 2]", "kmesh = [1, 1, 1]");
+    std::fs::write(&k, src).unwrap();
+    for t in [&g, &k] {
+        let out = run(t);
+        assert!(
+            out.status.success(),
+            "gam-roks:\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    let (eg, ek) = (logged_energy(&g), logged_energy(&k));
+    assert!(
+        (eg - ek).abs() < 1e-8,
+        "ROKS HSE06: Gamma {eg:.12} vs 1x1x1 {ek:.12}"
+    );
     // The dense preflight counts the attenuated tensors: nao = 2, plain 128 B,
     // RSH 640 B; a 322 B cap runs PBE0 and refuses HSE06 before any build.
     let capped = |name: &str| {

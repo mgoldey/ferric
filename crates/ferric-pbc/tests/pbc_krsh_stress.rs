@@ -516,5 +516,10 @@ fn rsh_stress_refusals() {
     // Open shell keeps refusing range separation (the UKS / ROKS stress entry
     // with HSE06 is asserted word for word in pbc_kuxcstress.rs and
     // pbc_kuxcstress_ro.rs).
-    assert!(ferric_pbc::kxcgrad::check_open_shell_force_functional("HSE06").is_err());
+    for spin in [
+        ferric_pbc::kxcgrad::DerivSpin::Unrestricted,
+        ferric_pbc::kxcgrad::DerivSpin::RestrictedOpen,
+    ] {
+        assert!(ferric_pbc::kxcgrad::check_deriv_functional(spin, false, "HSE06").is_err());
+    }
 }

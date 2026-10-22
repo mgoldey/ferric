@@ -6,7 +6,9 @@
 //!   `ferric_pbc::kpoint_*_stress` of the SAME cell, mesh, grid and configs
 //!   BIT FOR BIT, for RHF, UHF, ROHF, RKS (PBE, PBE0), UKS and ROKS on a
 //!   Gamma-centred AND a shifted (Monkhorst-Pack, `centring = "mp"`) 1x1x2
-//!   mesh (H2 / H3 doublet, STO-3G, dense J/K, small XC grid), plus an RKS-PBE
+//!   mesh (H2 / H3 doublet, STO-3G, dense J/K, small XC grid), the
+//!   range-separated RKS-HSE06 and the open-shell UKS-SCAN / r2SCAN stress
+//!   (dense J/K; issue #498), plus an RKS-PBE
 //!   run with EVERYTHING at its default (omega, XC grid 75x302, cutoff) and a
 //!   ROKS-PBE0 run on `jk = "rsgdf"` (cc-pVDZ-RI).
 //! * Python cross-check (done by hand against the extension built from this
@@ -17,9 +19,9 @@
 //! * The GPa tensor is `sigma * ferric_core::units::HARTREE_PER_BOHR3_TO_GPA`
 //!   bit for bit.
 //! * Refusals are TOML-level errors: the stress gate names `[cell] stress =
-//!   true` (closed-shell HSE06, Gamma point, optimize, correlated route,
-//!   split RS-GDF, open-shell SCAN); hybrid meta-GGA (and
-//!   ROKS meta-GGA / range-separated hybrids) are refused earlier by the
+//!   true` (closed-shell HSE06 on RS-GDF, open-shell HSE06, Gamma point,
+//!   optimize, correlated route, split RS-GDF, open-shell SCAN on RS-GDF);
+//!   hybrid meta-GGA (and ROKS meta-GGA) are refused earlier by the
 //!   k-point ENERGY gate (`[cell] kmesh with functional ...`), which does not
 //!   name the key.
 //!   An ECP cell (HI / def2-SVP, RKS-PBE and ROHF) passes the gate and
@@ -91,7 +93,7 @@ struct Case {
     functional: &'static str,
 }
 
-const CASES: [Case; 7] = [
+const CASES: [Case; 10] = [
     Case {
         tag: "rhf",
         route: Route::Rhf,
@@ -126,6 +128,23 @@ const CASES: [Case; 7] = [
         tag: "rohf",
         route: Route::Rohf,
         functional: "",
+    },
+    // Issue #498: the closed-shell range-separated hybrid stress (dense-AFT
+    // J/K) and the open-shell UKS meta-GGA stress (dense-AFT J/K).
+    Case {
+        tag: "rks-hse06",
+        route: Route::Rks,
+        functional: "HSE06",
+    },
+    Case {
+        tag: "uks-scan",
+        route: Route::Uks,
+        functional: "SCAN",
+    },
+    Case {
+        tag: "uks-r2scan",
+        route: Route::Uks,
+        functional: "r2SCAN",
     },
 ];
 
@@ -606,6 +625,32 @@ anchor!(roks_pbe_gamma_centred, 5, "gamma", MeshCentring::Gamma);
 anchor!(roks_pbe_shifted, 5, "mp", MeshCentring::MonkhorstPack);
 anchor!(rohf_gamma_centred, 6, "gamma", MeshCentring::Gamma);
 anchor!(rohf_shifted, 6, "mp", MeshCentring::MonkhorstPack);
+anchor!(rks_hse06_gamma_centred, 7, "gamma", MeshCentring::Gamma);
+anchor!(rks_hse06_shifted, 7, "mp", MeshCentring::MonkhorstPack);
+anchor!(uks_scan_gamma_centred, 8, "gamma", MeshCentring::Gamma);
+anchor!(uks_r2scan_shifted, 9, "mp", MeshCentring::MonkhorstPack);
+
+/// The issue #498 stress routes are not their global siblings: HSE06 vs PBE0
+/// and SCAN vs PBE move the library tensor by far more than one ulp, so the
+/// bit-equal anchors above cannot pass on a mis-routed run.
+#[test]
+fn rsh_and_open_shell_mgga_stress_differ_from_their_siblings() {
+    let pairs = [(7, 2), (8, 4)];
+    for (a, b) in pairs {
+        let x = library(CASES[a], SMALL, MeshCentring::Gamma, &format!("sib-{a}"));
+        let y = library(CASES[b], SMALL, MeshCentring::Gamma, &format!("sib-{b}"));
+        let d = x
+            .iter()
+            .flatten()
+            .zip(y.iter().flatten())
+            .fold(0.0_f64, |m, (p, q)| m.max((p - q).abs()));
+        eprintln!(
+            "{} vs {}: max |d sigma| {d:.2e}",
+            CASES[a].tag, CASES[b].tag
+        );
+        assert!(d > 1e-7, "{} vs {}: {d:e}", CASES[a].tag, CASES[b].tag);
+    }
+}
 
 /// The shifted mesh is a different mesh: its stress is not the Gamma-centred
 /// one (so the `mp` runs above are not silently Gamma-centred).
@@ -632,21 +677,23 @@ fn stress_refusals_name_the_toml_key() {
         route: Route::Rks,
         functional: "HSE06",
     };
-    let e = refused(hse, "hse", "rhf", km, "");
+    // The dense-AFT HSE06 stress runs (anchored above); on RS-GDF and open
+    // shell it is refused by the stress gate, which names the key.
+    let rs = format!("{km}\njk = \"rsgdf\"\nauxbasis = \"cc-pvdz-ri\"");
+    let e = refused(hse, "hse-rsgdf", "rhf", &rs, "");
     assert!(
-        e.contains("[cell] stress = true") && e.contains("range-separated"),
+        e.contains("[cell] stress = true") && e.contains("not wired to the bindings yet"),
         "{e}"
     );
-    let scan_open = Case {
-        tag: "s",
+    let hse_open = Case {
+        tag: "ho",
         route: Route::Uks,
-        functional: "SCAN",
+        functional: "HSE06",
     };
-    // The open-shell SCAN energy runs; its stress is refused by the stress
-    // gate, which names the key.
-    let e = refused(scan_open, "scan-uks", "uhf", km, "");
+    let e = refused(hse_open, "hse-uks", "uhf", km, "");
     assert!(
-        e.contains("[cell] stress = true") && e.contains("SCAN") && e.contains("no meta-GGA"),
+        e.contains("[cell] stress = true")
+            && e.contains("UKS range-separated hybrid force and stress are not wired"),
         "{e}"
     );
     let rhf = CASES[0];

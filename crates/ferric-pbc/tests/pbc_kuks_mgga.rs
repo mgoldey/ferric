@@ -485,12 +485,17 @@ fn unvalidated_meta_gga_requests_are_refused() {
         e.to_string().contains("meta-GGA with RS-GDF") && e.to_string().contains("dense"),
         "{e}"
     );
-    // Forces / stress: the Python / CLI open-shell allowlist has no meta-GGA.
+    // Forces / stress: the Python / CLI derivative gate takes the UKS
+    // meta-GGA on the dense-AFT J/K only, and ROKS never.
+    use ferric_pbc::kxcgrad::{check_kpoint_deriv_functional, DerivSpin};
     for f in ["SCAN", "R2SCAN"] {
-        let e = ferric_pbc::kxcgrad::check_open_shell_force_functional(f).expect_err(f);
-        assert!(e.to_string().contains("no meta-GGA"), "{f}: {e}");
-        let e = ferric_pbc::kxcgrad::check_kpoint_deriv_functional(true, f, "with_gradient")
+        check_kpoint_deriv_functional(DerivSpin::Unrestricted, false, f, "with_gradient")
+            .unwrap_or_else(|e| panic!("{f}: {e}"));
+        let e = check_kpoint_deriv_functional(DerivSpin::Unrestricted, true, f, "with_gradient")
             .expect_err(f);
-        assert!(e.contains("no meta-GGA"), "{f}: {e}");
+        assert!(e.contains("run on the dense-AFT J/K only"), "{f}: {e}");
+        let e = check_kpoint_deriv_functional(DerivSpin::RestrictedOpen, false, f, "with_stress")
+            .expect_err(f);
+        assert!(e.contains("ROKS has no meta-GGA"), "{f}: {e}");
     }
 }

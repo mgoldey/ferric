@@ -55,7 +55,8 @@
 //! inside it), exactly as [`crate::kuks`] does; the Roothaan combination is
 //! unchanged. The reported fraction is `c_sr`. ENERGY only: the ROKS force and
 //! stress refuse RSH (the open-shell RSH force is UKS only,
-//! [`crate::kuxcgrad::kpoint_uks_gradient`]).
+//! [`crate::kuxcgrad::kpoint_uks_gradient`]; the binding gate is
+//! [`crate::kxcgrad::check_deriv_functional`]).
 //! Meta-GGA (no tau term here), VV10 and double hybrids are refused.
 //!
 //! Units: Bohr and Hartree.

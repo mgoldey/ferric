@@ -33,9 +33,9 @@ use ferric_pbc::rsgdf::auto_omega::auto_rsgdf_omega;
 use ferric_pbc::rsgdf::{DEFAULT_RANGE_SPLIT_LAMBDA, DEFAULT_RSGDF_OMEGA};
 use ferric_pbc::SrColumnRotation;
 use ferric_pbc::{
-    gamma_drpa, gamma_mp2, gamma_rohf, gamma_roks, gamma_uhf, kpoint_drpa, kpoint_mp2,
-    periodic_hcore, periodic_hcore_kpts, solve_krhf_injected, Cell, DenseAftEri, EwaldStart,
-    ExxDiv, GammaDrpaConfig, GammaDrpaIntegrals, GammaMp2Config, GammaMp2Integrals, GammaRksConfig,
+    gamma_drpa, gamma_mp2, gamma_rohf, gamma_uhf, kpoint_drpa, kpoint_mp2, periodic_hcore,
+    periodic_hcore_kpts, solve_krhf_injected, Cell, DenseAftEri, EwaldStart, ExxDiv,
+    GammaDrpaConfig, GammaDrpaIntegrals, GammaMp2Config, GammaMp2Integrals, GammaRksConfig,
     GammaRohfConfig, GammaRoksConfig, GammaUhfConfig, GammaUhfIntegrals, GammaUksConfig,
     GammaUksGridInfo, KCorrIntegrals, KDenseAftConfig, KDenseAftEri, KDenseAftPairs, KDrpaConfig,
     KDrpaEnergy, KJkKind, KMp2Config, KPointInjection, KPointMesh, KRhfConfig, KRsGdf,
@@ -1019,61 +1019,49 @@ struct OpenOpts {
     grid: PeriodicGridConfig,
 }
 
+/// The [`OpenParts`] of a Gamma UKS / ROKS result (the two result types
+/// share these field names).
+macro_rules! ks_open_parts {
+    ($r:expr, $derivs:expr) => {{
+        let r = $r;
+        OpenParts {
+            derivs: $derivs,
+            ks_timings: r.timings,
+            e_xc: Some(r.e_xc),
+            a_x: Some(r.exact_exchange_fraction),
+            grid: r.grid,
+            scf: r.scf,
+            none_stage: r.none_stage,
+            madelung: r.madelung,
+            nocc: r.nocc,
+            s2: r.s2,
+            gaps: r.gaps,
+        }
+    }};
+}
+
+/// Gamma UKS / ROKS through the bindings' shared library entries
+/// (`gamma_rsh::gamma_uks_any` / `gamma_roks_any`): a range-separated hybrid
+/// takes the attenuated K of the k = 0 exchange (its forces / stress were
+/// refused up front).
 fn run_open_ks(s: &PbcSetup, sys: &GammaSystem, o: &OpenOpts) -> Result<OpenParts, FerricError> {
-    let ints = sys.ints.scf();
-    match &o.method {
-        OpenMethod::Uks(f) => {
-            let mut cfg = GammaUksConfig::new(f);
-            (cfg.grid, cfg.exxdiv, cfg.ewald_start) = (o.grid.clone(), s.exx, o.start);
-            cfg.scf = o.scf.clone();
-            // A range-separated hybrid takes the attenuated K of the k = 0
-            // exchange (its forces / stress were refused up front).
-            let r = ferric_pbc::gamma_rsh::gamma_uks_any(
-                &s.cell,
-                &s.prep,
-                &sys.hc,
-                ints,
-                s.aux.as_ref(),
-                s.rsh_sizing(),
-                &cfg,
-            )?;
-            let derivs = system_derivatives(s, sys, &r.scf, DerivMethod::Uks(&cfg))?;
-            Ok(OpenParts {
-                derivs,
-                ks_timings: r.timings,
-                e_xc: Some(r.e_xc),
-                a_x: Some(r.exact_exchange_fraction),
-                grid: r.grid,
-                scf: r.scf,
-                none_stage: r.none_stage,
-                madelung: r.madelung,
-                nocc: r.nocc,
-                s2: r.s2,
-                gaps: r.gaps,
-            })
-        }
-        _ => {
-            let f = o.method.functional().unwrap_or_default();
-            let mut cfg = GammaRoksConfig::new(&f);
-            (cfg.grid, cfg.exxdiv, cfg.ewald_start) = (o.grid.clone(), s.exx, o.start);
-            cfg.scf = o.scf.clone();
-            let r = gamma_roks(&s.cell, &s.prep, &sys.hc, ints, &cfg)?;
-            let derivs = system_derivatives(s, sys, &r.scf, DerivMethod::Roks(&cfg))?;
-            Ok(OpenParts {
-                derivs,
-                ks_timings: r.timings,
-                e_xc: Some(r.e_xc),
-                a_x: Some(r.exact_exchange_fraction),
-                grid: r.grid,
-                scf: r.scf,
-                none_stage: r.none_stage,
-                madelung: r.madelung,
-                nocc: r.nocc,
-                s2: r.s2,
-                gaps: r.gaps,
-            })
-        }
+    use ferric_pbc::gamma_rsh::{gamma_roks_any, gamma_uks_any};
+    let (ints, aux, sizing) = (sys.ints.scf(), s.aux.as_ref(), s.rsh_sizing());
+    let (cell, prep, hc) = (&s.cell, &s.prep, &sys.hc);
+    if let OpenMethod::Uks(f) = &o.method {
+        let mut cfg = GammaUksConfig::new(f);
+        (cfg.grid, cfg.exxdiv, cfg.ewald_start) = (o.grid.clone(), s.exx, o.start);
+        cfg.scf = o.scf.clone();
+        let r = gamma_uks_any(cell, prep, hc, ints, aux, sizing, &cfg)?;
+        let derivs = system_derivatives(s, sys, &r.scf, DerivMethod::Uks(&cfg))?;
+        return Ok(ks_open_parts!(r, derivs));
     }
+    let mut cfg = GammaRoksConfig::new(&o.method.functional().unwrap_or_default());
+    (cfg.grid, cfg.exxdiv, cfg.ewald_start) = (o.grid.clone(), s.exx, o.start);
+    cfg.scf = o.scf.clone();
+    let r = gamma_roks_any(cell, prep, hc, ints, aux, sizing, &cfg)?;
+    let derivs = system_derivatives(s, sys, &r.scf, DerivMethod::Roks(&cfg))?;
+    Ok(ks_open_parts!(r, derivs))
 }
 
 fn run_open_hf(s: &PbcSetup, sys: &GammaSystem, o: &OpenOpts) -> Result<OpenParts, FerricError> {
@@ -1140,7 +1128,7 @@ fn run_open_shell(
     ewald_start: Option<String>,
 ) -> PyResult<PyGammaOpenShellResult> {
     match &o.method {
-        OpenMethod::Uks(f) => gamma_rks_preflight(&s, f)?,
+        OpenMethod::Uks(f) | OpenMethod::Roks(f) => gamma_rks_preflight(&s, f)?,
         _ => gamma_dense_preflight(&s, false)?,
     }
     check_deriv_request(
@@ -1427,8 +1415,10 @@ fn run_uks_gamma(
 }
 
 /// Gamma-point periodic **ROKS** (spin-polarized XC, Roothaan coupling on
-/// one MO set). Same functional/grid contract as `run_uks_gamma`;
-/// `with_stress=True` with jk="rsgdf" is a ValueError, as for ROHF.
+/// one MO set). Same functional/grid contract as `run_uks_gamma`, range-
+/// separated hybrids included (energy only, `ferric_pbc::gamma_rsh::
+/// gamma_roks_any`); `with_stress=True` with jk="rsgdf" is a ValueError, as
+/// for ROHF.
 ///
 /// KNOWN LIMITATION (shared with `run_rohf_gamma`): the zero-XC ROHF limit
 /// does not converge on the triclinic 4H s+p triplet; ROKS with a real
@@ -1476,6 +1466,9 @@ fn run_roks_gamma(
     sr_column_rotation: Option<bool>,
 ) -> PyResult<PyGammaOpenShellResult> {
     let fname = "run_roks_gamma";
+    // Before any integral is built: RSH energy only.
+    ferric_pbc::dft::check_gamma_roks_request(functional, with_gradient || with_stress)
+        .map_err(|e| val_err(format!("{fname}: functional {functional:?}: {e}")))?;
     let mut s = pbc_setup(&PbcArgs {
         fname,
         mol,
@@ -1581,23 +1574,24 @@ impl PyGammaRksResult {
     }
 }
 
-/// Gamma RKS on `sys`: a range-separated hybrid takes the attenuated K of the
-/// k = 0 exchange (its forces / stress were refused up front), any other
-/// functional the plain Gamma K.
+/// Gamma RKS on `sys` and its requested derivatives: a range-separated hybrid
+/// takes the attenuated K of the k = 0 exchange (and, for a force or stress,
+/// [`gamma_rsh_derivatives`] on that exchange), any other functional the
+/// plain Gamma K.
 fn gamma_rks_for(
     s: &PbcSetup,
     sys: &GammaSystem,
     cfg: &GammaRksConfig,
-) -> Result<ferric_pbc::GammaRksResult, FerricError> {
-    ferric_pbc::gamma_rsh::gamma_rks_any(
-        &s.cell,
-        &s.prep,
-        &sys.hc,
-        sys.ints.scf(),
-        s.aux.as_ref(),
-        s.rsh_sizing(),
-        cfg,
-    )
+) -> Result<(ferric_pbc::GammaRksResult, Derivs), FerricError> {
+    let (ints, aux, sizing) = (sys.ints.scf(), s.aux.as_ref(), s.rsh_sizing());
+    let (r, rsh_k) = ferric_pbc::gamma_rsh::gamma_rks_any_keep(
+        &s.cell, &s.prep, &sys.hc, ints, aux, sizing, cfg,
+    )?;
+    let derivs = match &rsh_k {
+        Some(ex) => gamma_rsh_derivatives(s, sys, &r.scf, cfg, ex)?,
+        None => system_derivatives(s, sys, &r.scf, DerivMethod::Rks(cfg))?,
+    };
+    Ok((r, derivs))
 }
 
 fn rks_driver(
@@ -1610,10 +1604,41 @@ fn rks_driver(
     let sys = gamma_system(s)?;
     let mut cfg = GammaRksConfig::new(functional);
     (cfg.grid, cfg.exxdiv, cfg.scf) = (grid, s.exx, scf);
-    let r = gamma_rks_for(s, &sys, &cfg)?;
-    let derivs = system_derivatives(s, &sys, &r.scf, DerivMethod::Rks(&cfg))?;
+    let (r, derivs) = gamma_rks_for(s, &sys, &cfg)?;
     let t = sys.timings(&[&r.timings], &total);
     Ok((r, derivs, sys.hc.enn, t))
+}
+
+/// Closed-shell Gamma RKS force / stress of a range-separated hybrid
+/// (`ferric_pbc::gamma_rsh::gamma_rks_rsh_gradient` / `_stress`): the 1x1x1
+/// k-point derivative on the dense-AFT exchange the SCF ran on (RS-GDF was
+/// refused up front; the library's Fock guard re-checks the Gamma J).
+fn gamma_rsh_derivatives(
+    s: &PbcSetup,
+    sys: &GammaSystem,
+    scf: &ScfResult,
+    cfg: &GammaRksConfig,
+    ex: &ferric_pbc::gamma_rsh::GammaRshExchange,
+) -> Result<Derivs, FerricError> {
+    use ferric_pbc::gamma_rsh::{gamma_rks_rsh_gradient, gamma_rks_rsh_stress};
+    let mut out = Derivs::default();
+    if s.derivs.gradient {
+        let gcfg = KGradConfig {
+            budget_bytes: s.budget_bytes,
+            ..Default::default()
+        };
+        let g = gamma_rks_rsh_gradient(&s.cell, &s.prep, &sys.hcfg, scf, cfg, ex, &gcfg)?;
+        out.gradient = Some(g.grad);
+    }
+    if s.derivs.stress {
+        let scfg = KStressConfig {
+            budget_bytes: s.budget_bytes,
+            ..Default::default()
+        };
+        let st = gamma_rks_rsh_stress(&s.cell, &s.prep, &sys.hcfg, scf, cfg, ex, &scfg)?;
+        out.stress = Some(Array2::from_shape_fn((3, 3), |(a, b)| st.sigma[a][b]));
+    }
+    Ok(out)
 }
 
 /// Closed-shell Gamma-point periodic **RKS**. Functional and grid contract
@@ -1633,10 +1658,14 @@ fn rks_driver(
 /// with_stress with a meta-GGA is a ValueError, use `run_rks_kpts` on a
 /// [1,1,1] mesh for SCAN / r2SCAN forces).
 ///
-/// Range-separated hybrids (HSE06, CAM-B3LYP, wB97X; energy only): J from
-/// the Gamma J/K, the attenuated K from the k = 0 point of the k-point
-/// range-separated exchange (dense AFT or an RS-GDF fit on `auxbasis`);
-/// `with_gradient` / `with_stress` are ValueErrors (`range_split` with an RSH functional is a ValueError: it would shape the Gamma J only), and the
+/// Range-separated hybrids (HSE06, CAM-B3LYP, wB97X): J from the Gamma J/K,
+/// the attenuated K from the k = 0 point of the k-point range-separated
+/// exchange (dense AFT or an RS-GDF fit on `auxbasis`). `with_gradient` /
+/// `with_stress` run on `jk="dense"` (`ferric_pbc::gamma_rsh::
+/// gamma_rks_rsh_gradient` / `_stress`: the 1x1x1 k-point force and stress
+/// on the SCF's own exchange) and are ValueErrors with `jk="rsgdf"` (the
+/// Gamma route has no RS-GDF exchange derivative). `range_split` with an RSH functional
+/// is a ValueError (it would shape the Gamma J only), and the
 /// result's `exact_exchange_fraction` is the short-range `c_sr`, `madelung`
 /// the mixed `c_sr v_M + (c_lr - c_sr) v_M^LR(omega)` constant. wB97X-V stays
 /// refused (VV10).
@@ -1678,9 +1707,6 @@ fn run_rks_gamma(
     sr_column_rotation: Option<bool>,
 ) -> PyResult<PyGammaRksResult> {
     let fname = "run_rks_gamma";
-    // Before any integral is built (SCAN / r2SCAN / TPSS only; no force or stress).
-    ferric_pbc::dft::check_gamma_rks_request(functional, with_gradient || with_stress)
-        .map_err(|e| val_err(format!("{fname}: functional {functional:?}: {e}")))?;
     let mut s = pbc_setup(&PbcArgs {
         fname,
         mol,
@@ -1699,6 +1725,11 @@ fn run_rks_gamma(
         gradient: with_gradient,
         stress: with_stress,
     };
+    // Before any integral is built: the meta-GGA allowlist (SCAN / r2SCAN /
+    // TPSS energy, no Gamma meta-GGA force or stress) and the range-separated
+    // derivative J/K (dense AFT only).
+    ferric_pbc::dft::check_gamma_rks_request(functional, s.derivs.any(), s.aux.is_some())
+        .map_err(|e| val_err(format!("{fname}: functional {functional:?}: {e}")))?;
     s.set_sr_knobs(range_split, sr_column_rotation)?;
     let grid = periodic_grid(fname, n_radial, n_angular, neighbour_cutoff)?;
     gamma_rks_preflight(&s, functional)?;
@@ -2735,8 +2766,13 @@ enum KKsKind {
 }
 
 impl KKsKind {
-    fn open_shell(self) -> bool {
-        self != KKsKind::Closed
+    fn deriv_spin(self) -> ferric_pbc::kxcgrad::DerivSpin {
+        use ferric_pbc::kxcgrad::DerivSpin;
+        match self {
+            KKsKind::Closed => DerivSpin::Restricted,
+            KKsKind::Unrestricted => DerivSpin::Unrestricted,
+            KKsKind::RestrictedOpen => DerivSpin::RestrictedOpen,
+        }
     }
     fn label(self) -> &'static str {
         match self {
@@ -2749,23 +2785,22 @@ impl KKsKind {
 
 /// Capability check for the k-point Kohn-Sham bindings: the one place that
 /// names what k-point KS-DFT does not support yet. Widen it together with the
-/// driver (ROKS meta-GGA / range-separated hybrids, hybrid meta-GGA, and
-/// derivatives of range-separated hybrids and open-shell meta-GGA are the
-/// known gaps). Called before any integral is built.
+/// driver. Called after `pbc_setup` (which builds no integral) so the
+/// derivative gate sees the J/K (`s.aux`) and the request (`s.derivs`).
 ///
-/// Energy gate: LDA, GGA, global hybrids everywhere; the pure meta-GGAs SCAN /
-/// r2SCAN and range-separated hybrids on RKS and UKS (the UKS one is the
-/// library `resolve_kuks_functional`; its meta-GGA needs the dense-AFT J/K,
-/// which `solve_kuks` checks); TPSS on RKS only (energy only). The force and
-/// stress gate is the library allowlist of the same name, independent of the
-/// energy gate, so widening the energy path cannot silently enable a
-/// derivative (it refuses range-separated hybrids, TPSS, and open-shell
-/// meta-GGA).
+/// Energy gate: LDA, GGA, global hybrids and range-separated hybrids
+/// everywhere (ROKS through the library `resolve_kroks_functional`); the pure
+/// meta-GGAs SCAN / r2SCAN on RKS and UKS (the UKS one is the library
+/// `resolve_kuks_functional`; its meta-GGA needs the dense-AFT J/K, which
+/// `solve_kuks` checks); TPSS on RKS only (energy only). The force and stress
+/// gate is the library allowlist `ferric_pbc::kxcgrad::check_deriv_functional`,
+/// independent of the energy gate, so widening the energy path cannot
+/// silently enable a derivative.
 fn check_kpoint_ks_support(
     fname: &str,
     functional: &str,
     kind: KKsKind,
-    (with_gradient, with_stress): (bool, bool),
+    s: &PbcSetup,
 ) -> PyResult<()> {
     let energy = match kind {
         KKsKind::Closed if ferric_pbc::rsh::is_range_separated(functional) => Ok(()),
@@ -2775,16 +2810,13 @@ fn check_kpoint_ks_support(
         )
         .map(|_| ()),
         KKsKind::Unrestricted => ferric_pbc::kuks::resolve_kuks_functional(functional),
-        KKsKind::RestrictedOpen => {
-            ferric_pbc::dft::resolve_periodic_functional(functional).map(|_| ())
-        }
+        KKsKind::RestrictedOpen => ferric_pbc::kroks::resolve_kroks_functional(functional),
     };
     energy.map_err(|e| {
         let what = match kind {
             KKsKind::RestrictedOpen => {
-                "LDA, GGA and global-hybrid functionals only (no meta-GGA or range-separated \
-                 hybrid for k-point ROKS; run_uks_kpts has SCAN / r2SCAN and range-separated \
-                 hybrid energies)"
+                "LDA, GGA, global-hybrid and range-separated hybrid functionals only (no \
+                 meta-GGA for k-point ROKS; run_uks_kpts has SCAN / r2SCAN)"
             }
             KKsKind::Closed => {
                 "LDA, GGA, global-hybrid and SCAN / r2SCAN / TPSS meta-GGA functionals (plus \
@@ -2800,14 +2832,19 @@ fn check_kpoint_ks_support(
             kind.label()
         ))
     })?;
-    if with_gradient || with_stress {
-        let what = if with_gradient {
+    if s.derivs.any() {
+        let what = if s.derivs.gradient {
             "with_gradient"
         } else {
             "with_stress"
         };
-        ferric_pbc::kxcgrad::check_kpoint_deriv_functional(kind.open_shell(), functional, what)
-            .map_err(|e| val_err(format!("{fname}: {e}")))?;
+        ferric_pbc::kxcgrad::check_kpoint_deriv_functional(
+            kind.deriv_spin(),
+            s.aux.is_some(),
+            functional,
+            what,
+        )
+        .map_err(|e| val_err(format!("{fname}: {e}")))?;
     }
     Ok(())
 }
@@ -2932,17 +2969,17 @@ fn krks_driver(
     Ok((r, madelung, derivs))
 }
 
-/// Closed-shell **k-point RKS** (LDA / GGA / global hybrids) on a
-/// `mesh = (n1, n2, n3)` k-mesh. Mesh/centring/jk/SCF-threshold contract as
-/// `run_rhf_kpts`; functional and grid (`n_radial`, `n_angular`,
+/// Closed-shell **k-point RKS** (LDA / GGA / global hybrids, the pure
+/// meta-GGAs SCAN / r2SCAN / TPSS (TPSS energy only) and range-separated
+/// hybrids) on a `mesh = (n1, n2, n3)` k-mesh. Mesh/centring/jk/SCF-threshold
+/// contract as `run_rhf_kpts`; functional and grid (`n_radial`, `n_angular`,
 /// `neighbour_cutoff` in Å) as `run_rks_gamma`. Refused with a ValueError
-/// naming the gap: open shell (k-point UKS/ROKS not implemented),
-/// meta-GGA, VV10 and `with_stress` (the library has
-/// the k-point KS stress, the binding does not call it yet). Range-separated
-/// hybrids (HSE06, CAM-B3LYP, wB97X; `ferric_pbc::rsh`) run as an energy with
-/// `jk="rsgdf"` only (the attenuated K is fitted in G-space on the RS-GDF
-/// aux; `jk="dense"`, `with_gradient` and `with_stress` refuse them).
-/// `with_gradient=True` computes the analytic
+/// naming the gap: an open shell (use `run_uks_kpts` / `run_roks_kpts`),
+/// other meta-GGAs, VV10, TPSS derivatives. Range-separated hybrids (HSE06,
+/// CAM-B3LYP, wB97X; `ferric_pbc::rsh`) run on either J/K; their
+/// `with_gradient` / `with_stress` run on `jk="dense"` only (the attenuated
+/// library's RS-GDF derivative is not wired to the bindings yet). `with_stress=True` computes the analytic
+/// stress (`result.stress()`, Hartree/Bohr³), `with_gradient=True` the analytic
 /// nuclear gradient (`result.gradient()`, natoms x 3, dE/dR in Hartree/Bohr
 /// per cell, the force on ONE copy of each atom of the mesh's supercell; XC on
 /// the energy's own grid; a hybrid uses the SCF's exxdiv) on the J/K the SCF
@@ -2988,12 +3025,6 @@ fn run_rks_kpts(
     gdf_omega: Option<f64>,
 ) -> PyResult<PyKpointRksResult> {
     let fname = "run_rks_kpts";
-    check_kpoint_ks_support(
-        fname,
-        functional,
-        KKsKind::Closed,
-        (with_gradient, with_stress),
-    )?;
     let mut s = pbc_setup(&PbcArgs {
         fname,
         mol,
@@ -3012,6 +3043,7 @@ fn run_rks_kpts(
         gradient: with_gradient,
         stress: with_stress,
     };
+    check_kpoint_ks_support(fname, functional, KKsKind::Closed, &s)?;
     s.range_split = parse_range_split(fname, range_split, s.aux.is_some(), s.derivs)?;
     let m = k_mesh(&s, mesh, centring)?;
     let grid = periodic_grid(fname, n_radial, n_angular, neighbour_cutoff)?;
@@ -3169,10 +3201,11 @@ fn kroks_driver(
     Ok((r, derivs))
 }
 
-/// **k-point UKS** (LDA / GGA / global hybrids, plus ENERGY-only SCAN /
-/// r2SCAN on `jk="dense"` and range-separated (CAM) GGA hybrids on either
-/// J/K (any libxc one is accepted; "HSE06" and "HYB_GGA_XC_CAM_B3LYP" are
-/// pinned, open-shell "HYB_GGA_XC_WB97X" is accepted, not pinned); spin state from the
+/// **k-point UKS** (LDA / GGA / global hybrids, plus SCAN / r2SCAN on
+/// `jk="dense"` (energy, force and stress) and ENERGY-only range-separated
+/// (CAM) GGA hybrids on either J/K (any libxc one is accepted; "HSE06" and
+/// "HYB_GGA_XC_CAM_B3LYP" are pinned, open-shell "HYB_GGA_XC_WB97X" is
+/// accepted, not pinned); spin state from the
 /// Molecule's multiplicity, electrons per cell) on a `mesh = (n1, n2, n3)`
 /// k-mesh. Mesh/centring/jk/SCF-threshold contract as `run_uhf_kpts`
 /// (`ewald_start` too); functional and grid (`n_radial`, `n_angular`,
@@ -3183,9 +3216,9 @@ fn kroks_driver(
 /// (`result.stress()`, 3 x 3, Hartree/Bohr³) of the converged SCF on the J/K
 /// it ran on, XC on the energy's own grid; set `neighbour_cutoff` explicitly
 /// for finite-difference checks. Refused with a ValueError naming the gap:
-/// `with_gradient` / `with_stress` with a meta-GGA or a range-separated
-/// hybrid (energy only), a meta-GGA with `jk="rsgdf"`, other meta-GGAs,
-/// VV10 / double hybrids, and `range_split` with derivatives. ECP cells are
+/// `with_gradient` / `with_stress` with a range-separated hybrid (energy
+/// only), a meta-GGA with `jk="rsgdf"`, other meta-GGAs, VV10 / double
+/// hybrids, and `range_split` with derivatives. ECP cells are
 /// supported, derivatives included. For a range-separated hybrid
 /// `exact_exchange_fraction` is the short-range `c_sr` and `madelung` the
 /// mixed constant.
@@ -3225,12 +3258,6 @@ fn run_uks_kpts(
     gdf_omega: Option<f64>,
 ) -> PyResult<PyKpointScfResult> {
     let fname = "run_uks_kpts";
-    check_kpoint_ks_support(
-        fname,
-        functional,
-        KKsKind::Unrestricted,
-        (with_gradient, with_stress),
-    )?;
     let mut s = pbc_setup(&PbcArgs {
         fname,
         mol,
@@ -3249,6 +3276,7 @@ fn run_uks_kpts(
         gradient: with_gradient,
         stress: with_stress,
     };
+    check_kpoint_ks_support(fname, functional, KKsKind::Unrestricted, &s)?;
     if s.aux.is_some() && ferric_pbc::dft::is_meta_gga_name(functional) {
         // The CLI refuses the same at plan time; `solve_kuks` re-checks.
         return Err(val_err(format!(
@@ -3313,12 +3341,11 @@ fn run_ro_kpts(
     derivs: DerivRequest,
     range_split: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<PyKpointScfResult> {
-    let kind = KKsKind::RestrictedOpen;
-    if let Some(f) = functional {
-        check_kpoint_ks_support(fname, f, kind, (derivs.gradient, derivs.stress))?;
-    }
     let mut s = pbc_setup(a)?;
     s.derivs = derivs;
+    if let Some(f) = functional {
+        check_kpoint_ks_support(fname, f, KKsKind::RestrictedOpen, &s)?;
+    }
     s.range_split = parse_range_split(fname, range_split, s.aux.is_some(), s.derivs)?;
     let m = k_mesh(&s, mesh, centring)?;
     let grid = periodic_grid(fname, grid.0, grid.1, grid.2)?;
@@ -3363,11 +3390,12 @@ fn run_ro_kpts(
 }
 
 /// **k-point ROKS** (restricted open-shell Kohn-Sham; LDA / GGA / global
-/// hybrids; no meta-GGA or range-separated hybrid, use `run_uks_kpts`;
+/// hybrids, and range-separated (CAM) GGA hybrids as an ENERGY on either J/K
+/// (`ferric_pbc::kroks::solve_kroks`); no meta-GGA, use `run_uks_kpts`;
 /// Roothaan effective Fock) on a k-mesh. Arguments and result as
 /// `run_uks_kpts`; `mo_energy` / `mo_energy_beta` are `c† F_σ c` per k in the
-/// Roothaan orbital order. The derivatives run on the dense-AFT and the
-/// unsplit RS-GDF J/K. The
+/// Roothaan orbital order. The derivatives (not for a range-separated
+/// hybrid) run on the dense-AFT and the unsplit RS-GDF J/K. The
 /// stress gate is the ROHF orbital gradient (converge `grad_conv` well below
 /// 1e-5).
 #[pyfunction]

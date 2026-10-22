@@ -1,8 +1,10 @@
 """Open-shell SCAN / r2SCAN and range-separated hybrid ENERGIES through the
 bindings (issue #357; library PRs #479 / #480): `run_uks_kpts` (SCAN /
 r2SCAN on jk="dense"; HSE06 / CAM-B3LYP on either J/K) and `run_uks_gamma`
-(range-separated hybrids). Forces, stress, ROKS and the Gamma meta-GGA stay
-refused by name.
+(range-separated hybrids). Open-shell range-separated derivatives, ROKS
+meta-GGA and the Gamma meta-GGA stay refused by name; the UKS SCAN / r2SCAN
+forces and stress and the ROKS range-separated energies are anchored in
+test_pbc_rsh_open_mgga_derivs.py.
 
 Anchors, each an independent construction or an external number:
 
@@ -211,23 +213,24 @@ def test_rsgdf_energy_runs_and_meta_gga_needs_dense(basis):
 
 def test_derivatives_roks_and_gamma_meta_gga_stay_refused(basis):
     lat = _lat(4.0)
-    for f in ("SCAN", "HSE06"):
-        for kw in ({"with_gradient": True}, {"with_stress": True}):
-            with pytest.raises(
-                ValueError,
-                match=rf"^run_uks_kpts: with_(gradient|stress): .*{f}.*no meta-GGA, "
-                r"range-separated hybrid",
-            ):
-                _uks(H3_SCAN_ATOMS, lat, basis, f, (1, 1, 2), **kw)
+    for kw in ({"with_gradient": True}, {"with_stress": True}):
         with pytest.raises(
             ValueError,
-            match=rf'^run_roks_kpts: functional "{f}": .*\. k-point ROKS supports '
-            r"LDA, GGA and global-hybrid functionals only",
+            match=r"^run_uks_kpts: with_(gradient|stress): .*HSE06.*UKS range-separated "
+            r"hybrid force and stress are not wired",
         ):
-            ferric.run_roks_kpts(
-                _mol(H3_SCAN_ATOMS, 2), lat, basis, f, (1, 1, 2), omega=OMEGA
-            )
-    with pytest.raises(ValueError, match="range-separated hybrid gradient / stress"):
+            _uks(H3_SCAN_ATOMS, lat, basis, "HSE06", (1, 1, 2), **kw)
+    with pytest.raises(
+        ValueError,
+        match=r'^run_roks_kpts: functional "SCAN": .*\. k-point ROKS supports '
+        r"LDA, GGA, global-hybrid and range-separated hybrid functionals only",
+    ):
+        ferric.run_roks_kpts(
+            _mol(H3_SCAN_ATOMS, 2), lat, basis, "SCAN", (1, 1, 2), omega=OMEGA
+        )
+    with pytest.raises(
+        ValueError, match="open-shell range-separated hybrid gradient / stress"
+    ):
         ferric.run_uks_gamma(
             _mol(H3_SCAN_ATOMS, 2), lat, basis, "HSE06", omega=OMEGA, with_gradient=True
         )
@@ -244,5 +247,9 @@ def test_derivatives_roks_and_gamma_meta_gga_stay_refused(basis):
             auxbasis="cc-pvdz-ri",
             range_split=True,
         )
-    with pytest.raises(ValueError, match="range-separated"):
-        ferric.run_roks_gamma(_mol(H3_SCAN_ATOMS, 2), lat, basis, "HSE06", omega=OMEGA)
+    with pytest.raises(
+        ValueError, match="open-shell range-separated hybrid gradient / stress"
+    ):
+        ferric.run_roks_gamma(
+            _mol(H3_SCAN_ATOMS, 2), lat, basis, "HSE06", omega=OMEGA, with_stress=True
+        )
