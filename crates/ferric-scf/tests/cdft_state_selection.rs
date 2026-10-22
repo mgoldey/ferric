@@ -537,9 +537,18 @@ fn driver_run(
 /// A bare λ-Newton loop (FD Jacobian, ±1 clamp, no bracket or other
 /// safeguards) with every inner solve started from `guess`, kept ONLY because
 /// it records `dc/dλ` at every outer step — the saturation observable of
-/// `constraint_jacobian_does_not_collapse_at_the_integer_target` — and as the
-/// fixed route to state B for the λ ≠ 0 gradient checks. It is NOT the driver:
-/// convergence from a given start is measured with [`driver_run`].
+/// `constraint_jacobian_does_not_collapse_at_the_integer_target`. It is NOT the
+/// driver: convergence from a given start is measured with [`driver_run`].
+///
+/// It is deliberately NOT the route to state B for the λ ≠ 0 gradient checks.
+/// Its FD Jacobian differences two cold-started inner solves 1e-3 apart in λ,
+/// and c(λ) is discontinuous near state B: on the CI runners (nightly
+/// `slow-tests`, every run from 2026-10-07) λ and λ + 1e-3 land on different
+/// UHF states (⟨S²⟩ 1.7521 vs uncontaminated), the Jacobian is dominated by
+/// that jump, and the loop stalls at one λ until it hits `cdft_max_outer`. This
+/// box converges in 5 outer steps from the same start. The library driver
+/// (bracketed, safeguarded) reaches the same state B from the same hcore start
+/// on both machines; `descent_off_reproduces_the_old_saddle` pins that.
 fn constrained_run(
     sys: &Sys,
     cfg: &RhfConfig,
@@ -1370,7 +1379,10 @@ fn augmented_gradient_matches_fd_at_large_negative_lambda() {
     let sys = build_sys();
     let w = weight_matrix(&sys, &[0]);
     let h = oneelectron::hcore(&sys.prep);
-    let r0 = constrained_run(&sys, &cfg_with_target(2.0), &w, None).unwrap();
+    // State B via the library driver, not `constrained_run`: see that
+    // function's doc for why the bare λ-Newton loop stalls on CI. The subject
+    // here is the gradient at state B's λ, not how λ was found.
+    let r0 = driver_run(&sys, &cfg_with_target(2.0), &w, None).unwrap();
     let r = off_stationary_orbitals(&sys, &r0);
     let lam = r.lambda;
     assert!(
@@ -1418,7 +1430,8 @@ fn lambda_nonzero_fd_check_rejects_a_doubled_constraint_term() {
     let sys = build_sys();
     let w = weight_matrix(&sys, &[0]);
     let h = oneelectron::hcore(&sys.prep);
-    let r0 = constrained_run(&sys, &cfg_with_target(2.0), &w, None).unwrap();
+    // Same state B, same route, as the test whose reachability this pins.
+    let r0 = driver_run(&sys, &cfg_with_target(2.0), &w, None).unwrap();
     let r = off_stationary_orbitals(&sys, &r0);
     let lam = r.lambda;
 
