@@ -542,13 +542,15 @@ fn driver_run(
 ///
 /// It is deliberately NOT the route to state B for the λ ≠ 0 gradient checks.
 /// Its FD Jacobian differences two cold-started inner solves 1e-3 apart in λ,
-/// and c(λ) is discontinuous near state B: on the CI runners (nightly
-/// `slow-tests`, every run from 2026-10-07) λ and λ + 1e-3 land on different
-/// UHF states (⟨S²⟩ 1.7521 vs uncontaminated), the Jacobian is dominated by
-/// that jump, and the loop stalls at one λ until it hits `cdft_max_outer`. This
-/// box converges in 5 outer steps from the same start. The library driver
-/// (bracketed, safeguarded) reaches the same state B from the same hcore start
-/// on both machines; `descent_off_reproduces_the_old_saddle` pins that.
+/// and c(λ) is discontinuous near state B. Observed on the CI runners (nightly
+/// `slow-tests`, every run from 2026-10-07, #513): the loop stalls until it
+/// hits `cdft_max_outer`. In one failing test's log (run 39755438902) 72 of the
+/// inner solves reported ⟨S²⟩ = 1.7521, consistent with λ and λ + 1e-3 landing
+/// on different UHF states so that the Jacobian measures the jump (hypothesis);
+/// the sibling test failed in the same binary without that signature. Both
+/// pass locally. The library driver (bracketed, safeguarded) reaches the same
+/// state B from the same hcore start on CI and locally;
+/// `descent_off_reproduces_the_old_saddle` pins that.
 fn constrained_run(
     sys: &Sys,
     cfg: &RhfConfig,
@@ -1383,6 +1385,13 @@ fn augmented_gradient_matches_fd_at_large_negative_lambda() {
     // function's doc for why the bare λ-Newton loop stalls on CI. The subject
     // here is the gradient at state B's λ, not how λ was found.
     let r0 = driver_run(&sys, &cfg_with_target(2.0), &w, None).unwrap();
+    // Pin the state: a drift to another λ must fail loudly here rather than
+    // check the gradient somewhere else (same bar as the descent-off pin).
+    assert!(
+        (r0.lambda - (-2.753_70)).abs() < 1e-3,
+        "expected state B (λ = -2.75370); got λ = {:+.6}",
+        r0.lambda
+    );
     let r = off_stationary_orbitals(&sys, &r0);
     let lam = r.lambda;
     assert!(
@@ -1432,6 +1441,13 @@ fn lambda_nonzero_fd_check_rejects_a_doubled_constraint_term() {
     let h = oneelectron::hcore(&sys.prep);
     // Same state B, same route, as the test whose reachability this pins.
     let r0 = driver_run(&sys, &cfg_with_target(2.0), &w, None).unwrap();
+    // Pin the state: a drift to another λ must fail loudly here rather than
+    // check the gradient somewhere else (same bar as the descent-off pin).
+    assert!(
+        (r0.lambda - (-2.753_70)).abs() < 1e-3,
+        "expected state B (λ = -2.75370); got λ = {:+.6}",
+        r0.lambda
+    );
     let r = off_stationary_orbitals(&sys, &r0);
     let lam = r.lambda;
 
