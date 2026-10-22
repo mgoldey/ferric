@@ -1789,6 +1789,49 @@ fn lr_per_g_bound(prep: &PreparedBasis, aux: &PreparedBasis, lmax: usize) -> usi
 /// tight bound.
 const LR_J3_REL_TOL: f64 = 1e-10;
 
+/// J3_LR between two G chunkings, relative to `max |J3_LR|`: a chunking
+/// changes only the k-ranges of the accumulating GEMMs (issue #507 sizes
+/// the chunk by `nao`). Measured 8.4e-16 (J3) and 1.3e-15 (J2) on this
+/// cell (8 chunks vs one). Dropping every chunk after the first moves J3 by
+/// 7.9e-7 relative (those chunks hold the small high-|G| tail), 6e6x above
+/// this bar.
+const LR_CHUNKING_REL_TOL: f64 = 1e-13;
+
+/// Issue #507 anchor: the production LR sums do not depend on how the G
+/// list is chunked (beyond GEMM summation order). Mutation ledger: a sink
+/// that skips every chunk after the first (`_g0 > 0 => return` in
+/// `Stage::lr_accumulate`'s sink) fails (J3 off by 4.2e-7 absolute).
+#[test]
+fn rsgdf_lr_sums_are_invariant_to_the_g_chunking() {
+    let cell = triclinic_cell();
+    let prep = prep_for(&cell, &spd_basis_h());
+    let aux = prep_for(&cell, &basis::bundled("cc-pvdz-ri").unwrap());
+    let n_g = RsGdf::build(&cell, &prep, &aux, &Array2::eye(prep.nbasis()), &gdf_cfg())
+        .expect("rsgdf")
+        .stats()
+        .n_g_half;
+    let per_g = lr_per_g_bound(&prep, &aux, 2);
+    let cfg = lr_cfg(None, AMPLE);
+    let run = |budget: usize| {
+        let [(j2, j3, c), _] =
+            lr_sums_parallel_and_serial(&cell, &prep, &aux, &cfg, budget).expect("LR");
+        (j2, j3, c)
+    };
+    let (j2m, j3m, cm) = run(per_g * (n_g / 8).max(1));
+    let (j2o, j3o, co) = run(per_g * (n_g + 1));
+    assert!(cm >= 8 && co == 1, "chunk counts {cm} / {co}");
+    assert!(nonzero(&j3o) && nonzero(&j2o), "vacuous LR sums");
+    for (name, a, b) in [("J3", &j3m, &j3o), ("J2", &j2m, &j2o)] {
+        let amax = b.iter().fold(0.0_f64, |m, x| m.max(x.abs()));
+        let d = max_abs_diff(a, b);
+        eprintln!("{name}_LR {cm} chunks vs 1: max diff {d:.3e} (max {amax:.3e})");
+        assert!(
+            d <= LR_CHUNKING_REL_TOL * amax,
+            "{name}_LR: {cm} chunks vs 1 differ by {d:.3e} > {LR_CHUNKING_REL_TOL:.0e} x {amax:.3e}"
+        );
+    }
+}
+
 #[test]
 fn rsgdf_lr_sums_match_frozen_serial_across_threads() {
     // The triclinic cell of `pbc_rsgdf_split.rs` (the split moves the

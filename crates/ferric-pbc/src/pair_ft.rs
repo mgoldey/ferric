@@ -251,7 +251,7 @@ fn max_gnorm(gvecs: &[[f64; 3]]) -> f64 {
 }
 
 /// Largest shell angular momentum of `prep` (`0` for an empty basis).
-fn basis_lmax(prep: &PreparedBasis) -> usize {
+pub(crate) fn basis_lmax(prep: &PreparedBasis) -> usize {
     prep.located_shells()
         .iter()
         .map(|s| s.l.max(0) as usize)

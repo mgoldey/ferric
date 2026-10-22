@@ -1670,15 +1670,10 @@ impl Stage<'_> {
         sub: &mut PbcTimings,
     ) -> Result<(usize, f64, Option<f64>), FerricError> {
         let n = self.obs.nbasis();
-        let n2 = n * n;
         let naux = self.aux.nbasis();
         let vol = self.cell.volume();
         let omega = self.omega;
-        // pr, pi (n² reals each) + X (naux complex) + xr, xi, xrw, xiw.
-        let extra_per_g = n2
-            .saturating_mul(16)
-            .saturating_add(naux.saturating_mul(48))
-            .saturating_add(64);
+        let extra_per_g = lr_extra_bytes_per_g(n, naux);
         let pair_ft_thresh = (0.01 * self.thresh).min(crate::pair_ft::DEFAULT_PAIR_FT_THRESH);
         let aux_sh = &self.aux_sh;
         let (mut sink_wall, mut sink_cpu) = (0.0_f64, None::<f64>);
@@ -1770,6 +1765,44 @@ pub(crate) enum LrKernel {
 /// must never depend on the thread count or the budget (it decides which
 /// GEMM call a J3 row belongs to, never the k-summation of an element).
 const LR_GEMM_ROW_BLOCK: usize = 512;
+
+/// Smallest G-vector count per LR chunk the Gamma build sizes its chunk
+/// budget for: the `k` of every J3 GEMM ([`lr_gemm_acc`]). Each chunk
+/// re-reads and re-writes all of J3 (`nao² × naux`), so a `k` that shrinks
+/// with `nao` turns the GEMMs memory-bound (issue #507: at the fixed
+/// [`G_CHUNK_BYTES`] cap, dryice_112 ran `k` = 18 and its GEMMs 43x
+/// dryice's for 16x the flops; at `k` ≈ 64-72 the ratio is 15x). A
+/// CONSTANT, never derived from the thread count.
+pub(crate) const LR_GEMM_MIN_K: usize = 64;
+
+/// Bytes per G vector of the Gamma LR sink beyond the pair FT itself:
+/// `pr`, `pi` (`n²` reals each) + X (`naux` complex) + xr, xi, xrw, xiw.
+fn lr_extra_bytes_per_g(n: usize, naux: usize) -> usize {
+    n.saturating_mul(n)
+        .saturating_mul(16)
+        .saturating_add(naux.saturating_mul(48))
+        .saturating_add(64)
+}
+
+/// Chunk budget of the Gamma RS-GDF LR stage: [`G_CHUNK_BYTES`], raised to
+/// [`LR_GEMM_MIN_K`] G vectors' worth when one G vector is larger than
+/// `G_CHUNK_BYTES / LR_GEMM_MIN_K`, and never above `remaining` (the
+/// ledger's unreserved budget). Below that size (every cell up to nao ≈
+/// 170 at cc-pVDZ) it is exactly `remaining.min(G_CHUNK_BYTES)`, so those
+/// builds keep their chunks and their bits. Above it the transient chunk
+/// buffer grows past 64 MiB (about 236 MB on dryice_112); when `remaining`
+/// binds, k drops below `LR_GEMM_MIN_K` again (#507).
+pub(crate) fn lr_chunk_budget(remaining: usize, obs: &PreparedBasis, naux: usize) -> usize {
+    let n = obs.nbasis();
+    let per_g = crate::pair_ft::pair_ft_bytes_per_g(n, crate::pair_ft::basis_lmax(obs))
+        .saturating_add(lr_extra_bytes_per_g(n, naux));
+    lr_chunk_budget_for(remaining, per_g)
+}
+
+/// [`lr_chunk_budget`] for a known per-G byte count.
+fn lr_chunk_budget_for(remaining: usize, per_g: usize) -> usize {
+    remaining.min(G_CHUNK_BYTES.max(per_g.saturating_mul(LR_GEMM_MIN_K)))
+}
 
 /// Sub-stage: the aux FTs of one LR chunk (inside "rsgdf LR aux FT + GEMM").
 pub(crate) const SUB_AUX_FT: &str = "LR sink: aux FT";
@@ -2748,7 +2781,7 @@ impl RsGdf {
         // stage below as it was, bit for bit.
         let (plan, rotation) = sr_plans(&st, cfg, &images, &mut ledger, pair_sym, &mut timings)?;
         let resident_bytes = ledger.resident();
-        let chunk_budget = ledger.remaining().min(G_CHUNK_BYTES);
+        let chunk_budget = lr_chunk_budget(ledger.remaining(), obs, naux);
         timings.stop("rsgdf setup (shells, pair images, G list)", &clock);
 
         // --- SR (real space), LR (G ≠ 0), then the G = 0 term.
@@ -3346,6 +3379,30 @@ mod tests {
             assert!((x1[(p, 0)] - x0[(p, 0)] * f).norm() < 1e-14);
             assert!(x0[(p, 0)].norm() > 1e-3, "vacuous");
         }
+    }
+
+    /// The #507 chunk rule. Mutation ledger (each fails this test):
+    /// `G_CHUNK_BYTES.max(..)` -> `.min(..)` (small cells shrink: case 1);
+    /// dropping the `remaining.min` cap (case 3); `LR_GEMM_MIN_K` -> 1
+    /// (case 2 back at the fixed cap).
+    #[test]
+    fn lr_chunk_budget_keeps_small_cells_and_raises_k_for_large_ones() {
+        let cap = G_CHUNK_BYTES;
+        // 1. per-G below cap / K: exactly the old `remaining.min(cap)`.
+        let small = cap / LR_GEMM_MIN_K - 1;
+        assert_eq!(lr_chunk_budget_for(usize::MAX, small), cap);
+        assert_eq!(lr_chunk_budget_for(cap / 2, small), cap / 2);
+        // 2. dryice_112-sized per-G (~3.7 MB): LR_GEMM_MIN_K G vectors fit.
+        let big = 3_700_000;
+        let b = lr_chunk_budget_for(usize::MAX, big);
+        assert_eq!(b / big, LR_GEMM_MIN_K);
+        assert!(
+            cap / big < LR_GEMM_MIN_K / 2,
+            "old cap gave k = {}",
+            cap / big
+        );
+        // 3. never above the unreserved budget.
+        assert_eq!(lr_chunk_budget_for(10 * big, big), 10 * big);
     }
 
     #[test]
