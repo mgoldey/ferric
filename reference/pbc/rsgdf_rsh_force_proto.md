@@ -81,9 +81,10 @@ on this small cell is about 1e-5.
 | madelung_scaled (c_sr · v_M^mix) | 1.5e-2 | 5.0e-2 |
 
 The floors are about 3e-8 (CAM) and 1e-9 (HSE). Every mutant clears them by more than
-1e3 except two HSE06 entries. On this cell keep_c0 cannot be detected under HSE06, and
-no_scale moves the HSE06 force by only 1.7e-5. Both mutants must therefore be pinned on
-a CAM-type ω, or on a cell longer than 2π/(2ω√ln(1/ε)) ≈ 5.2 Bohr at ω = 0.11.
+1e3 except HSE06 keep_c0, which is exactly 0 on this cell (the q = 0 class has no K
+vectors). HSE06 no_scale (1.7e-5) clears the HSE floor by ~1.7e4, but the Rust plan's
+mutant bar (1e-5, item 5d) by only 1.7x. Both mutants must therefore be pinned on a
+CAM-type ω, or on a cell longer than 2π/(2ω√ln(1/ε)) ≈ 5.2 Bohr at ω = 0.11.
 
 ## Rust change plan
 
