@@ -15,9 +15,17 @@
 //! derivative of the energy the production KS SCF minimizes on an atom-following
 //! grid: that gradient carries the Becke weight response, which this Hessian
 //! omits, so the two differ by the grid's translation error and weight
-//! derivatives (measured in `tests/ks_fixed_grid_hessian.rs`). That is why the
-//! entry points here are explicit and [`HessianMethod::Auto`] and
-//! [`HessianMethod::Analytic`] never reach them.
+//! derivatives (measured in `tests/ks_fixed_grid_hessian.rs`).
+//!
+//! The opt-in moving-grid variant [`rks_moving_grid_hessian`] (issue #490)
+//! differentiates that production energy instead: the same Hessian with the
+//! XC skeleton and first-order Fock matrix replaced by their moving-grid
+//! versions (points riding their home atom, Becke weights differentiated with
+//! the point fixed, home rows filled by translation invariance; see
+//! [`crate::ks_fixed_grid`]), everything else shared. It matches central
+//! differences of the production gradient (`tests/ks_moving_grid_hessian.rs`).
+//! Both entry points are explicit: [`HessianMethod::Auto`] and
+//! [`HessianMethod::Analytic`] reach neither.
 //!
 //! The Hessian is the RHF one with `G(D) = J(D) − ½K(D)` replaced by
 //! `G(D) = J(D) − (a/2)K(D) + V1_xc[D]`:
@@ -71,7 +79,7 @@ use super::{
 use crate::gradient::build_energy_weighted_density;
 use crate::hessian_df::RijMutants;
 use crate::hessian_df_k::RikMutants;
-use crate::ks_fixed_grid::{FixedGridKs, XcGeometry, XcMutants};
+use crate::ks_fixed_grid::{FixedGridKs, GridMode, XcGeometry, XcMutants};
 use crate::result::{ScfResult, Spin};
 use crate::rhf::RhfConfig;
 use crate::screening::SchwarzBounds;
@@ -156,7 +164,7 @@ impl Default for KsFixedGridMutants {
 
 fn unsupported(what: &str, next: &str) -> FerricError {
     FerricError::General(format!(
-        "the fixed-grid analytic Kohn-Sham Hessian does not support {what} (not yet \
+        "the analytic Kohn-Sham Hessian (fixed or moving grid) does not support {what} (not yet \
          implemented; next unit: {next}); use the finite-difference Hessian"
     ))
 }
@@ -171,7 +179,7 @@ fn ks_refusal(
 ) -> Result<(), FerricError> {
     let name = config.xc.as_deref().ok_or_else(|| {
         FerricError::General(
-            "the fixed-grid analytic Kohn-Sham Hessian needs a Kohn-Sham configuration \
+            "the analytic Kohn-Sham Hessian needs a Kohn-Sham configuration \
              (RhfConfig::xc is unset); use rhf_hessian for Hartree-Fock"
                 .into(),
         )
@@ -276,12 +284,13 @@ fn checklist_config(
         if stated.clone().filter(|v| !v.is_empty()) != *recorded {
             let key = if what == "J" { "df_j_aux" } else { "df_k_aux" };
             return Err(FerricError::General(format!(
-                "the fixed-grid Kohn-Sham Hessian: the SCF fitted {what} over {recorded:?} but the \
+                "the analytic Kohn-Sham Hessian: the SCF fitted {what} over {recorded:?} but the \
                  configuration states {key} = {named:?}. Pass the RhfConfig the SCF ran with \
                  ({key} = None means the default {:?} where the SCF fits {what}, as in \
                  solve_rhf; Some(\"\") means exact {what}). Do not fall back to \
                  harmonic_frequencies for a KS result: it differentiates the moving-grid surface \
-                 (with the Becke weight response), a different one.",
+                 (with the Becke weight response), a different one; rks_moving_grid_hessian is \
+                 the analytic Hessian of that surface.",
                 crate::fock_assembly::DEFAULT_JK_AUX
             )));
         }
@@ -475,6 +484,110 @@ pub fn rks_fixed_grid_hessian_parts_with(
     grid: &FixedGridKs,
     mutants: &KsFixedGridMutants,
 ) -> Result<RhfHessianParts, FerricError> {
+    ks_hessian_parts_in_mode(
+        ctx,
+        mol,
+        prep,
+        op,
+        bounds,
+        rks,
+        config,
+        grid,
+        mutants,
+        GridMode::Fixed,
+    )
+}
+
+/// The analytic Hessian of the closed-shell KS energy on the PRODUCTION
+/// (moving) grid, (3N, 3N): the surface `ks_gradient_closed` differentiates,
+/// with the Becke weight response (issue #490). Opt-in: `HessianMethod::Auto`
+/// and `Analytic` do not reach it. Same functionals, fits and refusals as
+/// [`rks_fixed_grid_hessian`]; the XC skeleton and first-order Fock matrix are
+/// the moving-grid ones ([`FixedGridKs::skeleton_hessian_moving`],
+/// [`FixedGridKs::first_order_fock_moving`]) and everything else is shared.
+pub fn rks_moving_grid_hessian(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    rks: &ScfResult,
+    config: &RhfConfig,
+) -> Result<Array2<f64>, FerricError> {
+    Ok(rks_moving_grid_hessian_parts(ctx, mol, prep, op, bounds, rks, config)?.total())
+}
+
+/// [`rks_moving_grid_hessian`] with the per-term breakdown (the XC second
+/// derivative is reported in `two_electron`).
+pub fn rks_moving_grid_hessian_parts(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    rks: &ScfResult,
+    config: &RhfConfig,
+) -> Result<RhfHessianParts, FerricError> {
+    ks_refusal(mol, prep, rks, config)?;
+    let name = config.xc.as_deref().unwrap_or_default();
+    let cfg = config.dft_grid.clone().unwrap_or_default();
+    let grid = FixedGridKs::new(mol, name, &cfg)?;
+    rks_moving_grid_hessian_parts_with(
+        ctx,
+        mol,
+        prep,
+        op,
+        bounds,
+        rks,
+        config,
+        &grid,
+        &KsFixedGridMutants::default(),
+    )
+}
+
+/// [`rks_moving_grid_hessian_parts`] on a caller-built grid (built by
+/// [`FixedGridKs::new`] at this geometry) and with deliberately broken
+/// constructions (mutation tests).
+#[doc(hidden)]
+#[allow(clippy::too_many_arguments)]
+pub fn rks_moving_grid_hessian_parts_with(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    rks: &ScfResult,
+    config: &RhfConfig,
+    grid: &FixedGridKs,
+    mutants: &KsFixedGridMutants,
+) -> Result<RhfHessianParts, FerricError> {
+    ks_hessian_parts_in_mode(
+        ctx,
+        mol,
+        prep,
+        op,
+        bounds,
+        rks,
+        config,
+        grid,
+        mutants,
+        GridMode::Moving,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn ks_hessian_parts_in_mode(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    rks: &ScfResult,
+    config: &RhfConfig,
+    grid: &FixedGridKs,
+    mutants: &KsFixedGridMutants,
+    mode: GridMode,
+) -> Result<RhfHessianParts, FerricError> {
     ks_refusal(mol, prep, rks, config)?;
     // Everything but the functional is the closed-shell checklist; a stated or
     // recorded RI-J / RI-K basis goes through the same engine and metric probes
@@ -505,7 +618,18 @@ pub fn rks_fixed_grid_hessian_parts_with(
         j: jf.as_ref(),
         k: kf.as_ref(),
     };
-    rks_fixed_grid_hessian_core(ctx, mol, prep, op, bounds, rks, config, grid, fits, mutants)
+    rks_fixed_grid_hessian_core(
+        ctx,
+        mol,
+        prep,
+        op,
+        bounds,
+        rks,
+        config,
+        (grid, mode),
+        fits,
+        mutants,
+    )
 }
 
 /// [`rks_fixed_grid_hessian_parts_with`] for an SCF whose Coulomb and/or
@@ -535,7 +659,18 @@ pub fn rks_fixed_grid_hessian_parts_with_aux(
         ..config.clone()
     };
     check_supported(Reference::Rhf, mol, prep, op, bounds, rks, &hf_config)?;
-    rks_fixed_grid_hessian_core(ctx, mol, prep, op, bounds, rks, config, grid, fits, mutants)
+    rks_fixed_grid_hessian_core(
+        ctx,
+        mol,
+        prep,
+        op,
+        bounds,
+        rks,
+        config,
+        (grid, GridMode::Fixed),
+        fits,
+        mutants,
+    )
 }
 
 /// The fitted Coulomb and exchange pieces of the skeleton and of `F^x`.
@@ -677,7 +812,7 @@ fn rks_fixed_grid_hessian_core(
     bounds: &SchwarzBounds,
     rks: &ScfResult,
     config: &RhfConfig,
-    grid: &FixedGridKs,
+    (grid, mode): (&FixedGridKs, GridMode),
     fits: KsFits<'_>,
     mutants: &KsFixedGridMutants,
 ) -> Result<RhfHessianParts, FerricError> {
@@ -729,7 +864,7 @@ fn rks_fixed_grid_hessian_core(
         };
         skeleton_hess_2e(prep, op, bounds, natoms, max_abs(d), &gam)?
     };
-    two_electron += &grid.skeleton_hessian(&geo, d, &mutants.xc)?;
+    two_electron += &grid.skeleton_hessian_for(mode, &geo, d, &mutants.xc)?;
     two_electron += &fitted.skeleton;
 
     let no_density = Array2::<f64>::zeros(d.dim());
@@ -744,9 +879,10 @@ fn rks_fixed_grid_hessian_core(
     for (f, g) in first.f1[0].iter_mut().zip(&fitted.first_order) {
         *f += g;
     }
-    for (f, v) in first.f1[0]
-        .iter_mut()
-        .zip(grid.first_order_fock(&geo, d, &mutants.xc)?)
+    for (f, v) in
+        first.f1[0]
+            .iter_mut()
+            .zip(grid.first_order_fock_for(mode, &geo, d, &mutants.xc)?)
     {
         *f += &v;
     }

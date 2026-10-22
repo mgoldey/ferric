@@ -593,7 +593,10 @@ fn production_wired_mutants_each_fail_the_hessian_anchor() {
 /// gradient carries the Becke weight response. Differencing THAT gradient must
 /// disagree with the fixed-grid analytic Hessian by the weight-response scale,
 /// far above the fixed-grid agreement bar: the fixed-grid Hessian is a
-/// different (and, for frequencies, not the production) surface.
+/// different (and, for frequencies, not the production) surface. Its
+/// moving-grid counterpart,
+/// `ks_moving_grid_hessian.rs::production_gradient_difference_matches_the_moving_grid_hessian`,
+/// matches this same reference (1.7e-10 Ha/Bohr²).
 ///
 /// Runs on the DEFAULT grid on purpose: the plain `ks_gradient_closed` entry
 /// point differentiates `AtomicGridConfig::default()` by design (the
