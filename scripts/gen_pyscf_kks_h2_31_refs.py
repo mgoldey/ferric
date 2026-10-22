@@ -1,7 +1,7 @@
-"""PySCF k-point KS pins on the H2 / H cubic cells (a = 4 Bohr, atoms
-(0.3, 0.2, 0.1) [+ (0.3, 0.2, 1.5)], STO-3G) on a 31^3 UniformGrids mesh,
-for crates/ferric-pbc/tests/pbc_krks_2x2x1.rs (KRKS singlet H2 on 2x2x1,
-Gamma-centred and shifted, PBE/PBE0).  AFTDF, exxdiv ewald, conv_tol 1e-12,
+"""PySCF KRKS pins for H2 (atoms (0.3, 0.2, 0.1), (0.3, 0.2, 1.5), STO-3G) on a
+31^3 UniformGrids mesh, 2x2x1 meshes, Gamma-centred and shifted, for
+crates/ferric-pbc/tests/pbc_krks_2x2x1.rs: cubic a = 4 Bohr (PBE, PBE0) and
+orthorhombic 4.0 x 4.4 x 4.0 (PBE; a != b so an a<->b axis swap is visible).  AFTDF, exxdiv ewald, conv_tol 1e-12,
 cell.precision 1e-10 (matches the 31^3 mesh of pbc_kks_open_ecp.rs).
 Output: testdata/reference/pbc_kks_h2_31_sto3g.json.
 
@@ -29,23 +29,21 @@ OUT = os.path.join(
     "reference",
     "pbc_kks_h2_31_sto3g.json",
 )
-SYSTEMS = {
-    "H2t": ([[0.3, 0.2, 0.1], [0.3, 0.2, 1.5]], 2),
-    "Hd": ([[0.3, 0.2, 0.1]], 1),
-    "H2s": ([[0.3, 0.2, 0.1], [0.3, 0.2, 1.5]], 0),
+CELLS = {
+    "H2s": [4.0, 4.0, 4.0],
+    "H2ortho": [4.0, 4.4, 4.0],
 }
-KUKS_ROWS = []  # dropped: 31^3 PySCF LDA reached another SCF state
+ATOMS = [[0.3, 0.2, 0.1], [0.3, 0.2, 1.5]]
 KRKS_ROWS = [("H2s", xc, (2, 2, 1), g) for xc in ("PBE", "PBE0") for g in (True, False)]
+KRKS_ROWS += [("H2ortho", "PBE", (2, 2, 1), g) for g in (True, False)]
 
 
-def cell_of(sys_, nk=1):
-    atoms, spin = SYSTEMS[sys_]
+def cell_of(sys_):
     c = gto.Cell()
-    c.atom = [["H", tuple(x)] for x in atoms]
-    c.a = np.eye(3) * 4.0
+    c.atom = [["H", tuple(x)] for x in ATOMS]
+    c.a = np.diag(CELLS[sys_])
     c.unit = "B"
     c.basis = {"H": STO3G_H}
-    c.spin = spin * nk  # total over the mesh (PySCF), 2S = (na-nb)*nk
     c.precision = 1e-10
     c.mesh = [N] * 3
     c.verbose = 0
@@ -68,19 +66,6 @@ def kernel(cls, c, n, gamma, xc):
 
 def main():
     rows = []
-    for s, xc, m in KUKS_ROWS:
-        e = kernel(dft.KUKS, cell_of(s, int(np.prod(m))), m, True, xc)
-        print("KUKS", s, xc, m, f"{e:.12f}", flush=True)
-        rows.append(
-            dict(
-                method="KUKS",
-                system=s,
-                xc=xc,
-                mesh=list(m),
-                gamma_centred=True,
-                energy=e,
-            )
-        )
     for s, xc, m, g in KRKS_ROWS:
         e = kernel(dft.KRKS, cell_of(s), m, g, xc)
         print("KRKS", s, xc, m, g, f"{e:.12f}", flush=True)
@@ -98,7 +83,8 @@ def main():
         generator_git_sha=subprocess.check_output(
             ["git", "rev-parse", "HEAD"], cwd=here, text=True
         ).strip(),
-        setup=f"AFTDF, UniformGrids {N}^3, exxdiv=ewald, conv_tol=1e-12, cell.precision=1e-10, PySCF-digit STO-3G H, a=4 Bohr cubic",
+        setup=f"AFTDF, UniformGrids {N}^3, exxdiv=ewald, conv_tol=1e-12, cell.precision=1e-10, PySCF-digit STO-3G H, lattices CELLS",
+        cells=CELLS,
         script="scripts/gen_pyscf_kks_h2_31_refs.py",
         rows=rows,
     )

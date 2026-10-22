@@ -1,10 +1,10 @@
 """Reference energies of PySCF's k-point RKS on an ALL-ELECTRON cell with a
 1s core (LiH, STO-3G, no ECP), for the ferric pins in
-crates/ferric-pbc/tests/pbc_kks_core.rs.
+crates/ferric-pbc/tests/validation_pbc_kks_core.rs.
 
 Setup (matches gen_pyscf_kks_shifted_refs.py): AFTDF, UniformGrids mesh^3,
-exxdiv ewald, conv_tol 1e-12, cell.precision 1e-10. Meshes: Gamma-centred
-and shifted (Monkhorst-Pack, with_gamma_point=False). The Li 1s primitive
+exxdiv ewald, conv_tol 1e-12, cell.precision 1e-10. Mesh: Gamma-centred 1x1x1
+only (an 80^3 AFT J mesh makes each row ~30 min; see DF_MESH). The Li 1s primitive
 (alpha = 16.1) is the sharpest function in any pin of this series.
 Output: testdata/reference/pbc_kks_core_sto3g.json (with provenance).
 

@@ -17,7 +17,7 @@
 //! and is identical on every mesh; a mesh-handling defect (dropped shift,
 //! Madelung) would instead differ between Gamma-centred and shifted rows.
 //! Both would break the pin (only Gamma PBE is pinned: PySCF at the 80^3 J mesh
-//! it needs costs ~32 min per row, so no shifted or PBE0 LiH row exists); the guards below (`shift_is_not_dropped`,
+//! it needs costs ~32 min per row, so no shifted or PBE0 LiH row exists); the sensitivity checks below (`shift_is_not_dropped`,
 //! `wrong_madelung_is_detected`) show these tests can fail.
 //!
 //! LIMIT: no all-electron cell heavier than Li is pinned (Mg STO-3G has
@@ -172,7 +172,7 @@ fn row_mesh(row: &serde_json::Value) -> [usize; 3] {
 /// is 4.8e-3 Ha off, see the generator); the XC grid is the shared 35^3.
 /// Measured ferric - PySCF: see `PIN_BAR`.
 #[test]
-#[ignore = "validation: PBC k-point RKS on an all-electron LiH cell vs PySCF KRKS; ~40 s release"]
+#[ignore = "validation: PBC k-point RKS on an all-electron LiH cell vs PySCF KRKS; ~95 s release"]
 fn core_electron_cell_krks_matches_pinned_pyscf() {
     let cell = lih_cell();
     let rows = rows();
@@ -188,10 +188,11 @@ fn core_electron_cell_krks_matches_pinned_pyscf() {
     assert!((e - e_ref).abs() < PIN_BAR, "LiH PBE dE {:e}", e - e_ref);
 }
 
-/// Artifact guard: the shifted 1x1x2 mesh must differ from the Gamma-centred
+/// Sensitivity check (no LiH pin covers a shifted mesh; compares ferric with
+/// ferric): the shifted 1x1x2 mesh must differ from the Gamma-centred
 /// one by far more than the pin bar (measured 3.3e-3 PBE).
 #[test]
-#[ignore = "validation: LiH shifted-vs-Gamma-centred mesh mutant guard; ~40 s release"]
+#[ignore = "validation: LiH shifted-vs-Gamma-centred mesh sensitivity check; ~95 s release"]
 fn shift_is_not_dropped() {
     let cell = lih_cell();
     let g = energy(
@@ -210,10 +211,10 @@ fn shift_is_not_dropped() {
     assert!((s - g).abs() > MUTANT_MIN);
 }
 
-/// Mutant guard: PBE0 with the exxdiv/Madelung term dropped moves the energy
+/// Sensitivity check (no LiH PBE0 pin; compares ferric with ferric): PBE0 with the exxdiv/Madelung term dropped moves the energy
 /// by 2.6e-1 Ha, >> `MUTANT_MIN`, so the PBE0-capable path would not hide it.
 #[test]
-#[ignore = "validation: LiH dropped-exxdiv mutant guard; ~40 s release"]
+#[ignore = "validation: LiH dropped-exxdiv sensitivity check; ~95 s release"]
 fn wrong_madelung_is_detected() {
     let cell = lih_cell();
     let mesh = mesh_of(&cell, [1, 1, 1], true);
