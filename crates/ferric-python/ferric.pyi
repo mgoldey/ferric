@@ -3208,7 +3208,7 @@ def run_dft(
 
     `grid_radial` / `grid_angular` / `grid_prune` set the main XC grid. All
     `None` (the default) is the 75x110 unpruned grid, unchanged. `grid_angular`
-    must be a supported Lebedev order (6, 14, 26, 50, 110, 302).
+    must be a supported Lebedev order (6, 14, 26, 50, 110, 194, 302, 434, 590).
     `grid_prune="nwchem"` applies NWChem-style radial-region angular pruning
     (~23% fewer points at 75x110, ~1e-10 Ha); `"none"` is the flat grid, and
     any other value raises ValueError. Pruning has no table at

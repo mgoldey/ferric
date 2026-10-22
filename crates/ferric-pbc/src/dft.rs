@@ -36,10 +36,13 @@
 //! triclinic 4H s+p: −2.0e-4 / −2.9e-5 / −3.9e-6. The dominant error is the
 //! partition in a dense lattice and it is ANGULAR-limited (100×302 ≈ 75×302).
 //! ferric's molecular default (75, 110) has `|∫ρ − N|` 1.9e-3 on H2 a = 4.
-//! 590 would be the next step, but ferric's Lebedev table stops at 302
-//! (6/14/26/50/110/302), so the default is the finest angular order available
-//! with 75 radial shells. PROVISIONAL: both cells are H-only toys; a real solid
-//! with core electrons has not been swept (FINDINGS says so explicitly).
+//! The default stays at 302; 434 and 590 (and every other order in
+//! [`SUPPORTED_LEBEDEV_ORDERS`], the one list `ferric_dft::prune` owns) are
+//! accepted as refinement grids. ferric on H2 a = 4 LDA reproduces the
+//! prototype's trend (`tests/pbc_rks.rs::
+//! larger_lebedev_orders_refine_the_periodic_energy`). PROVISIONAL: both cells
+//! are H-only toys; a real solid with core electrons has not been swept
+//! (FINDINGS says so explicitly).
 //!
 //! # AOs
 //!
@@ -122,7 +125,7 @@ use rayon::prelude::*;
 
 /// Default radial shells (see the module doc's table).
 pub const DEFAULT_PERIODIC_N_RADIAL: usize = 75;
-/// Default Lebedev order: the finest in ferric's table (module doc).
+/// Default Lebedev order (module doc); 434 / 590 are refinement grids.
 pub const DEFAULT_PERIODIC_N_ANGULAR: usize = 302;
 /// Floor of the automatic neighbour cutoff `D` (Bohr): the prototype's value
 /// for H2 a = 4 (`D = 10` and `14` gave identical grids there).
@@ -131,8 +134,9 @@ pub const DEFAULT_NEIGHBOUR_CUTOFF: f64 = 10.0;
 /// is below this at a point is skipped (prototype `ao_thresh`).
 pub const DEFAULT_AO_THRESHOLD: f64 = 1e-15;
 /// Lebedev orders ferric's table implements (`lebedev()` panics otherwise,
-/// so the config is checked against this list first).
-pub const SUPPORTED_LEBEDEV_ORDERS: [usize; 6] = [6, 14, 26, 50, 110, 302];
+/// so the config is checked against this list first). Re-exported from
+/// `ferric_dft::prune`, the single list every grid consumer validates against.
+pub use ferric_dft::prune::SUPPORTED_LEBEDEV_ORDERS;
 /// Points per AO/XC chunk.
 pub(crate) const CHUNK: usize = 512;
 /// Spatial sort box edge (Bohr) that groups points into compact chunks.
