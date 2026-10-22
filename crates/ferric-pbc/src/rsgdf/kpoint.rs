@@ -169,6 +169,7 @@ use std::sync::Mutex;
 /// k-point RS-GDF force pieces ([`crate::kgrad`]; FINDINGS "Iteration 21").
 pub(crate) mod kderiv;
 mod klr;
+pub(crate) use klr::attenuated_gcut;
 pub use klr::KRshMutant;
 
 /// Default hard cap for [`KRsGdf::fitted_kernels`] (test/diagnostic

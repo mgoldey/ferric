@@ -191,7 +191,7 @@ fn gamma_uks_rsh_force_is_the_one_point_mesh_force() {
     .expect_err("restricted result accepted")
     .to_string();
     assert!(e.contains("unrestricted (UKS) results only"), "{e}");
-    // An RS-GDF exchange is refused (the attenuated fit has no derivative).
+    // An RS-GDF exchange is refused (the Gamma routes differentiate dense AFT only).
     let hc = ferric_pbc::hcore::periodic_hcore(&g.cell, &g.prep, &g.hcfg).unwrap();
     let aux = prep_for(&g.cell, &ferric_core::basis::bundled("cc-pvdz-ri").unwrap());
     let rcfg = ferric_pbc::rsgdf::kpoint::KRsGdfConfig {
@@ -311,6 +311,28 @@ fn oshell_rsh_force_refusals() {
     };
     let e = call(KGradJk::RsGdf(src), "HSE06");
     assert!(e.contains("RS-GDF") && e.contains("no derivative"), "{e}");
+    // An RS-GDF source that carries the functional's own range separation
+    // (the closed-shell RKS force differentiates it) is refused for UKS too.
+    let gdf_rsh = ferric_pbc::rsgdf::kpoint::KRsGdf::build_rsh(
+        &fx.cell,
+        &fx.prep,
+        &aux,
+        &fx.mesh,
+        &fx.hk.s,
+        &kc,
+        rsh_of("HSE06"),
+    )
+    .unwrap();
+    let src = ferric_pbc::kgrad::KRsGdfGradSource {
+        gdf: &gdf_rsh,
+        cfg: &kc,
+        aux: &aux,
+    };
+    let e = call(KGradJk::RsGdf(src), "HSE06");
+    assert!(
+        e.contains("RS-GDF") && e.contains("open-shell state"),
+        "{e}"
+    );
     let e = kpoint_uks_stress(
         &fx.cell,
         &fx.prep,

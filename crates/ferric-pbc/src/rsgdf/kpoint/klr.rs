@@ -39,9 +39,15 @@
 //! The erf piece is skipped (zero to the build precision) when no q class has
 //! a K vector inside the Gaussian cut, e.g. `ω → 0`.
 //!
-//! Derivatives (forces, stress) of the attenuated exchange are NOT
-//! implemented; the force and stress entry points refuse a [`KRsGdf`] that
-//! carries it ([`KRsGdf::rsh`]).
+//! # Derivatives
+//!
+//! At a fixed density the attenuated fit is differentiated by the plain fit's
+//! LR and metric passes with `v_LR → v_ω` and nothing else
+//! (`kderiv::FitMode::Attenuated`): it has no SR real-space walks, no column
+//! rotation, no range split and no `c0` G = 0 terms. [`KRsGdf::rsh_derivative`]
+//! hands the closed-shell RKS force ([`crate::kxcgrad::kpoint_rks_gradient`])
+//! and stress ([`crate::kxcstress::kpoint_rks_stress`]) the fit, `ω`, the
+//! Gaussian cut and the coefficient `c_lr − c_sr`.
 
 use super::{
     hermitize_pairs, lr_accumulate_q, lr_kvectors, sat_prod, KRsGdf, KRsGdfConfig, KRsGdfMutation,
@@ -95,6 +101,32 @@ pub(super) fn attenuated_budget(total: usize, resident: usize) -> usize {
     total.saturating_sub(resident).max(1)
 }
 
+/// The Gaussian cut `2ω√ln(1/ε)` of the attenuated fit's K set (`ε` the build
+/// precision): the build and its derivative use this one formula.
+pub(crate) fn attenuated_gcut(omega: f64, precision: f64) -> f64 {
+    2.0 * omega * (1.0 / precision).ln().sqrt()
+}
+
+/// What the derivative of a range-separated [`KRsGdf`] needs
+/// ([`KRsGdf::rsh_derivative`]).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct RshDerivative<'a> {
+    /// Coefficient of the full-Coulomb fit's exchange, `c_sr`.
+    pub(crate) c_full: f64,
+    /// The attenuated piece: `None` when the build found it zero to its
+    /// precision (no q class has a K vector inside the cut).
+    pub(crate) attenuated: Option<AttenuatedPiece<'a>>,
+}
+
+/// The attenuated fit, its `ω`, Gaussian cut and coefficient `c_lr − c_sr`.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct AttenuatedPiece<'a> {
+    pub(crate) fit: &'a KRsGdf,
+    pub(crate) omega: f64,
+    pub(crate) gcut: f64,
+    pub(crate) coeff: f64,
+}
+
 impl RshAttached {
     /// `(coefficient of K[1/r], coefficient of K[erf(ωr)/r])`.
     pub(super) fn coefficients(&self) -> (f64, f64) {
@@ -140,7 +172,8 @@ impl KRsGdf {
                 Some(KRshMutant::OmegaUnits) => rsh.omega * ferric_core::units::ANGSTROM_TO_BOHR,
                 _ => rsh.omega,
             };
-            Self::build_attenuated(cell, obs, aux, mesh, s_k, cfg, (w, budget), mutant)?
+            let gcut = attenuated_gcut(w, cfg.gdf.precision);
+            Self::build_attenuated(cell, obs, aux, mesh, s_k, cfg, (w, gcut, budget), mutant)?
         } else {
             None
         };
@@ -210,6 +243,60 @@ impl KRsGdf {
         self.rsh.as_ref().map(|r| r.params)
     }
 
+    /// The pieces the derivatives differentiate (module doc, "Derivatives"):
+    /// `Ok(None)` without a range separation. The `SwappedRoles` test build
+    /// (a deliberately wrong energy) is refused. `precision` is the build
+    /// config's (it sets the Gaussian cut).
+    pub(crate) fn rsh_derivative(
+        &self,
+        precision: f64,
+    ) -> Result<Option<RshDerivative<'_>>, FerricError> {
+        let Some(r) = &self.rsh else {
+            return Ok(None);
+        };
+        if r.swapped {
+            return Err(FerricError::General(
+                "KRsGdf: the build carries the SwappedRoles test mutant (erf and erfc roles \
+                 swapped); a deliberately wrong energy has no derivative"
+                    .into(),
+            ));
+        }
+        let (c_full, c_lr) = r.coefficients();
+        let omega = r.params.omega;
+        Ok(Some(RshDerivative {
+            c_full,
+            attenuated: r.lr.as_ref().map(|fit| AttenuatedPiece {
+                fit,
+                omega,
+                gcut: attenuated_gcut(omega, precision),
+                coeff: c_lr,
+            }),
+        }))
+    }
+
+    /// TEST/DIAGNOSTIC: the attenuated fit of `erf(ωr)/r` alone
+    /// (`KRsGdf::build_attenuated`) at the Gaussian cut `gcut` (`None`: the
+    /// production `2ω√ln(1/ε)`), on the resolved `cfg.gdf.budget_bytes`. A
+    /// large `ω` with a finite explicit cut is the `ω → ∞` exactness anchor of
+    /// the derivative (the plain Coulomb fit with `K = 0` dropped). `None` when
+    /// no q class has a K vector inside the cut.
+    #[doc(hidden)]
+    #[allow(clippy::too_many_arguments)]
+    pub fn build_attenuated_only(
+        cell: &Cell,
+        obs: &PreparedBasis,
+        aux: &PreparedBasis,
+        mesh: &KPointMesh,
+        s_k: &[Array2<C64>],
+        cfg: &KRsGdfConfig,
+        omega: f64,
+        gcut: Option<f64>,
+    ) -> Result<Option<Self>, FerricError> {
+        let budget = crate::budget::resolve(cfg.gdf.budget_bytes);
+        let gcut = gcut.unwrap_or_else(|| attenuated_gcut(omega, cfg.gdf.precision));
+        Self::build_attenuated(cell, obs, aux, mesh, s_k, cfg, (omega, gcut, budget), None)
+    }
+
     /// Fit of the erf-attenuated Coulomb kernel `erf(ωr)/r` with the `K = 0`
     /// term dropped (module doc), in the same `B(k,k')` layout as
     /// [`KRsGdf::build`]. `None` when no q class has a K vector inside the
@@ -222,7 +309,7 @@ impl KRsGdf {
         mesh: &KPointMesh,
         s_k: &[Array2<C64>],
         cfg: &KRsGdfConfig,
-        (omega, budget): (f64, usize),
+        (omega, gcut, budget): (f64, f64, usize),
         mutant: Option<KRshMutant>,
     ) -> Result<Option<Self>, FerricError> {
         let g = &cfg.gdf;
@@ -245,9 +332,14 @@ impl KRsGdf {
             )));
         }
         check_obs_on_cell(cell, obs)?;
-        // The cut is set by the TRUE omega; the NoAttenuation mutant removes the
-        // Gaussian damping by evaluating the weights at a huge omega.
-        let gcut = 2.0 * omega * (1.0 / g.precision).ln().sqrt();
+        if !(gcut > 0.0 && gcut.is_finite()) {
+            return Err(FerricError::General(format!(
+                "KRsGdf attenuated exchange: the Gaussian cut must be finite and > 0, got {gcut}"
+            )));
+        }
+        // The cut is set by the TRUE omega (the caller's `attenuated_gcut`);
+        // the NoAttenuation mutant removes the Gaussian damping by evaluating
+        // the weights at a huge omega.
         let w_eval = if mutant == Some(KRshMutant::NoAttenuation) {
             1e6
         } else {

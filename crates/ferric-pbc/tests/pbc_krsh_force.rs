@@ -52,8 +52,10 @@
 //! The full FD matrix (both functionals x both exxdiv) and the FD floor sweep
 //! are in `validation_krsh_force.rs`; this file runs one FD row.
 //!
-//! NOT covered: RS-GDF (refused), open shell (UKS: `pbc_kuks_rsh_force.rs`;
-//! ROKS refused), p/d
+//! NOT covered here: RS-GDF (`pbc_krsh_rsgdf_force.rs`,
+//! `validation_krsh_rsgdf_force.rs`; closed-shell RKS only, the Gamma route
+//! refuses it), open shell (UKS on dense AFT: `pbc_kuks_rsh_force.rs`; ROKS
+//! refused), p/d
 //! shells (H2/STO-3G only), shifted meshes, a PySCF force pin, Python / CLI
 //! (the shared derivative gates still refuse range-separated hybrids).
 
@@ -253,8 +255,8 @@ fn gamma_force(f: &str, exxdiv: ExxDiv) -> KRksGradient {
     gamma_rks_rsh_gradient(&cell, &prep, &hcfg, &r.scf, &gc, &ex, &kc).unwrap()
 }
 
-/// Typed refusals of the routed Gamma force: an RS-GDF exchange (the
-/// attenuated fit has no derivative) and an open-shell result (here the
+/// Typed refusals of the routed Gamma force: an RS-GDF exchange (the Gamma
+/// route differentiates the dense one only; the k force covers RS-GDF) and an open-shell result (here the
 /// restricted result relabelled `Spin::Unrestricted`, which must be refused by
 /// the spin check, not differentiated as closed shell).
 #[allow(clippy::too_many_arguments)]
@@ -372,7 +374,7 @@ fn rsh_mutants_are_caught() {
 /// Typed refusals: kernels without the functional's range separation, with
 /// other parameters, and the open-shell allowlist (the routed Gamma force's
 /// RS-GDF and open-shell refusals are in `gamma_refusals`; the k-point RS-GDF
-/// refusal with a range-separated name is in `pbc_krsh_rsgdf.rs`).
+/// source checks are in `pbc_krsh_rsgdf.rs`).
 #[test]
 fn rsh_force_refusals() {
     let fx = fixture(&H2, [1, 1, 1], "HSE06", ExxDiv::Ewald);

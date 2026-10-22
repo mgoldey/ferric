@@ -36,7 +36,9 @@
 //! * `rsgdf_rsh_k_mesh_is_the_supercell` — 1×1×3 mesh E/cell vs the Gamma
 //!   energy of the 3-cell supercell / 3 (both RS-GDF).
 //! * `rsgdf_rsh_matches_pinned_pyscf` — PySCF 2.13 KRKS pins of `pbc_krsh`.
-//! * `rsgdf_rsh_mutations_break_the_anchors`, refusals.
+//! * `rsgdf_rsh_mutations_break_the_anchors`, the derivative source checks
+//!   (the force and stress themselves: `pbc_krsh_rsgdf_force.rs`,
+//!   `validation_krsh_rsgdf_force.rs`).
 
 mod common;
 
@@ -577,10 +579,12 @@ fn rsgdf_rsh_matches_pinned_pyscf_to_the_fit_error() {
     }
 }
 
-/// Forces and stress of a range-separated RS-GDF SCF are refused (typed), on
-/// the retained J/K and by functional name; energies only.
+/// Forces and stress of a range-separated RS-GDF SCF: the HF entries and a KS
+/// entry with another functional refuse the attenuated J/K (typed); the
+/// closed-shell RKS force and stress with the functional's own range
+/// separation run on them. The Python / CLI allowlist still refuses the name.
 #[test]
-fn rsh_rsgdf_forces_and_stress_are_refused_not_silently_wrong() {
+fn rsh_rsgdf_derivatives_need_the_rks_entry_with_the_functionals_rsh() {
     use ferric_pbc::kdft::solve_krks_keep_on_grid;
     use ferric_pbc::kgrad::{kpoint_rhf_gradient, KGradConfig};
     use ferric_pbc::kstress::{kpoint_rhf_stress, KStressConfig};
@@ -637,8 +641,9 @@ fn rsh_rsgdf_forces_and_stress_are_refused_not_silently_wrong() {
     );
     let e = kgrad.expect_err("KS force on an RSH RS-GDF SCF must be refused");
     assert!(e.to_string().contains("range-separated"), "{e}");
-    // The KS entry WITH the range-separated name (the force covers it on dense
-    // AFT) is refused on RS-GDF by the source check, naming RS-GDF.
+    // The KS entry WITH the range-separated name runs on the RS-GDF RSH J/K
+    // (the Fock guard passes: it is the SCF's own source); the forces sum to
+    // zero. Its FD validation is validation_krsh_rsgdf_force.rs.
     let kgrad = ferric_pbc::kxcgrad::kpoint_rks_gradient(
         &cell,
         &prep,
@@ -650,16 +655,47 @@ fn rsh_rsgdf_forces_and_stress_are_refused_not_silently_wrong() {
         "HSE06",
         &ferric_pbc::kxcgrad::KRksGradConfig {
             exxdiv: Some(ExxDiv::Ewald),
+            grid: ferric_pbc::kxcgrad::KXcGrid::Uniform([24; 3]),
             ..Default::default()
         },
     );
-    let e = kgrad
-        .expect_err("RSH KS force on RS-GDF must be refused")
-        .to_string();
-    assert!(
-        e.contains("RS-GDF") && e.contains("dense-AFT J/K only"),
-        "{e}"
+    let g = kgrad.expect("HSE06 KS force on its own RS-GDF RSH J/K");
+    assert!(g.hf.net_force < 1e-10, "{:e}", g.hf.net_force);
+    assert!(g.hf.fock_mismatch < 1e-8, "{:e}", g.hf.fock_mismatch);
+    let st = ferric_pbc::kxcstress::kpoint_rks_stress(
+        &cell,
+        &prep,
+        &mesh,
+        &cfg.krhf.hcore,
+        &kept.hk,
+        kept.stress_jk(Some(&aux), &cfg.krhf.rsgdf).unwrap(),
+        &r.scf,
+        "HSE06",
+        &ferric_pbc::kxcstress::KRksStressConfig {
+            exxdiv: Some(ExxDiv::Ewald),
+            grid: ferric_pbc::kxcgrad::KXcGrid::Uniform([24; 3]),
+            ..Default::default()
+        },
     );
+    assert!(st.is_ok(), "{:?}", st.err());
+    // Another range separation than the build's is refused.
+    let e = ferric_pbc::kxcgrad::kpoint_rks_gradient(
+        &cell,
+        &prep,
+        &mesh,
+        &cfg.krhf.hcore,
+        &kept.hk,
+        kept.grad_jk(Some(&aux), &cfg.krhf.rsgdf).unwrap(),
+        &r.scf,
+        "HYB_GGA_XC_CAM_B3LYP",
+        &ferric_pbc::kxcgrad::KRksGradConfig {
+            exxdiv: Some(ExxDiv::Ewald),
+            ..Default::default()
+        },
+    )
+    .expect_err("CAM-B3LYP on HSE06 J/K must be refused")
+    .to_string();
+    assert!(e.contains("functional's"), "{e}");
     // By name: the force allowlist refuses the functional itself.
     assert!(ferric_pbc::kxcgrad::check_force_functional("HSE06").is_err());
     assert!(
