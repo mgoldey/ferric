@@ -70,9 +70,14 @@
 //! the exchange walks use `v(K) = 4π f(K²)/K²` and its slope
 //! [`crate::rsh::RshParams::kernel_slope`] (J keeps the bare kernel), and the
 //! Madelung strain is the mixed [`crate::rsh::RshParams::madelung_strain`] of
-//! the supercell. Every other entry refuses such a source (typed, via the
-//! shared input check), and an RS-GDF source carrying a range separation is
-//! refused everywhere. The SR column rotation is
+//! the supercell. An RS-GDF source built with a range separation
+//! (`KRsGdf::build_rsh`) is differentiated for the same closed-shell RKS
+//! stress: the plain fit's exchange pieces scaled by `c_sr`, the attenuated
+//! fit's LR strain passes (`kderiv`'s "Attenuated fit": no SR walks, no G = 0
+//! volume terms) scaled by `c_lr − c_sr` ([`KStressParts::fit_attenuated`]),
+//! and the same mixed Madelung strain. Every other entry refuses a
+//! range-separated source of either kind (typed, via the shared input check).
+//! The SR column rotation is
 //! differentiated: when the energy builds ran the rotated SR walks (hcore and
 //! fit) the strain walks run on the rotated shells with `Tᵀ W T` residue
 //! weights, so the stress follows the walk the SCF's energy ran (the config
@@ -160,7 +165,8 @@ use crate::lattice::Cell;
 use crate::pair_ft::residues::{pair_ft_strain_residues_chunked, residue_coords, residue_index};
 use crate::pair_ft::PairFtStrainTerms;
 use crate::rsgdf::kpoint::kderiv::{
-    kpoint_fit_strain, rotate_hcore_weights, KFitMutation, KFitStrain, KFitStrainTerms, KRotKind,
+    kpoint_fit_strain, rotate_hcore_weights, FitMode, KFitGrad, KFitMutation, KFitStrain,
+    KFitStrainTerms, KRotKind,
 };
 use crate::rsh::RshParams;
 use crate::stress::{add_into, add_pair_virial, diag, scaled, Mat3, ZERO3};
@@ -327,6 +333,12 @@ pub enum KStressMutation {
     /// Range separation: the `v_M^LR(ω)` strain dropped from the mixed
     /// Madelung strain (`c_sr dv_M^full/dε` only; blind for `exxdiv = none`).
     RshNoLrMadelungStrain,
+    /// Range separation on RS-GDF: the attenuated fit's strain with
+    /// coefficient 1 instead of `c_lr − c_sr`.
+    RshFitNoScale,
+    /// Range separation on RS-GDF: the attenuated fit's strain dropped (the
+    /// plain fit's exchange still scaled by `c_sr`).
+    RshFitNoAttenuated,
 }
 
 /// Settings for the k-point stress entry points.
@@ -915,10 +927,13 @@ pub struct KStressParts {
     /// RS-GDF `−δ E_g0` and `+δ c0 qᵀ Wm(0) q`.
     pub fit_j3_g0_volume: Mat3,
     pub fit_j2_g0_volume: Mat3,
+    /// RS-GDF range separation: the attenuated fit's `J3` and `J2` LR strain
+    /// (with their volume terms, coefficient `c_lr − c_sr`); zero otherwise.
+    pub fit_attenuated: Mat3,
 }
 
 impl KStressParts {
-    fn all(&self) -> [&Mat3; 21] {
+    fn all(&self) -> [&Mat3; 22] {
         [
             &self.overlap_pulay,
             &self.overlap_c0,
@@ -941,6 +956,7 @@ impl KStressParts {
             &self.fit_g0_overlap,
             &self.fit_j3_g0_volume,
             &self.fit_j2_g0_volume,
+            &self.fit_attenuated,
         ]
     }
 
@@ -1069,21 +1085,13 @@ pub(crate) fn grad_jk<'a>(jk: &KStressJk<'a>) -> KGradJk<'a> {
     }
 }
 
-/// The typed refusals shared by every entry point: a range-separated RS-GDF
-/// source and an inconsistent range split (a range-split RS-GDF build is
-/// supported; so is an ECP). A range-separated DENSE source is checked
-/// against the entry's own range separation by the shared input check
-/// (`kgrad::check_inputs_rsh`): only the closed-shell RKS stress accepts one.
+/// The typed refusal shared by every entry point: an inconsistent range split
+/// (a range-split RS-GDF build is supported; so is an ECP). A
+/// range-separated source (dense or RS-GDF) is checked against the entry's
+/// own range separation by the shared input check (`kgrad::check_inputs_rsh`):
+/// only the closed-shell RKS stress accepts one.
 pub(crate) fn refuse_unsupported(who: &str, jk: &KStressJk<'_>) -> Result<(), FerricError> {
     if let KStressJk::RsGdf(src) = jk {
-        if src.gdf.rsh().is_some() {
-            return Err(FerricError::General(format!(
-                "{who}: the RS-GDF source carries a range-separated exchange \
-                 (KRsGdf::build_rsh); its strain is not implemented (the attenuated fit is \
-                 not differentiated; the range-separated k-point stress covers closed-shell \
-                 RKS on dense-AFT J/K, kpoint_rks_stress)"
-            )));
-        }
         refuse_split_mismatch(who, src)?;
     }
     Ok(())
@@ -1296,11 +1304,11 @@ pub(crate) fn assemble(
         } else {
             vm
         };
-    // The range separation of a dense source (admitted by the input check on
-    // the closed-shell RKS stress only), with the `Rsh*` test defects.
+    // The range separation of the source (admitted by the input check on the
+    // closed-shell RKS stress only), with the `Rsh*` test defects.
     let rsh = match jk {
         KGradJk::Dense(e) => e.rsh(),
-        KGradJk::RsGdf(_) => None,
+        KGradJk::RsGdf(s) => s.gdf.rsh(),
     };
     let rsh_d = rsh.map(|r| {
         if is(KStressMutation::RshSwapFractions) {
@@ -1343,11 +1351,14 @@ pub(crate) fn assemble(
         nrm1,
     );
     // --- RS-GDF fitted strain pieces first (M_g0 enters the dS pass).
-    let fit = match jk {
-        KGradJk::Dense(_) => None,
-        KGradJk::RsGdf(src) => Some(fit_pass(
-            src, cell, prep, mesh, s_k, &dtot, &spins, exch_scale, cfg, ledger,
-        )?),
+    let (fit, fit_att) = match jk {
+        KGradJk::Dense(_) => (None, None),
+        KGradJk::RsGdf(src) => {
+            let (f, a) = fit_pass(
+                src, cell, prep, mesh, s_k, &dtot, &spins, exch_scale, cfg, ledger,
+            )?;
+            (Some(f), a)
+        }
     };
     let w_g0 = fit.as_ref().map(|f| fold_real(&f.mg0, &ph.d, 1.0));
     let mut sets: Vec<&[Array2<f64>]> = vec![&w_pulay, &w_c0, &w_mad];
@@ -1434,6 +1445,12 @@ pub(crate) fn assemble(
         parts.fit_j3_g0_volume = fs.j3_g0_volume;
         parts.fit_j2_g0_volume = fs.j2_g0_volume;
         parts.fit_g0_overlap = one.overlap[3];
+        if let Some(a) = fit_att.as_ref().and_then(|a| a.strain.as_ref()) {
+            add_into(&mut parts.fit_attenuated, &a.j3_lr, 1.0);
+            if !is(KStressMutation::NoMetric) {
+                add_into(&mut parts.fit_attenuated, &a.j2_lr, 1.0);
+            }
+        }
         // Range split: J3 -= c0 (S - S_ss) q_c, so the smooth-piece overlap
         // virial (over the build's pair images, residue-weighted by M_g0) is
         // SUBTRACTED; none unsplit and under the two mutants.
@@ -1464,9 +1481,16 @@ pub(crate) fn assemble(
         }
         two.n_chunks = f.n_chunks;
         two.n_kv = f.n_k_lr;
-        fit_dropped_max = Some(f.n_dropped_max);
+        let (mut dropped, mut mism) = (f.n_dropped_max, f.b_norm_mismatch);
+        if let Some(a) = &fit_att {
+            two.n_chunks += a.n_chunks;
+            two.n_kv += a.n_k_lr;
+            dropped = dropped.max(a.n_dropped_max);
+            mism = mism.max(a.b_norm_mismatch);
+        }
+        fit_dropped_max = Some(dropped);
         fit_checks = Some(KFitChecks {
-            b_norm_mismatch: f.b_norm_mismatch,
+            b_norm_mismatch: mism,
             n_sr3: f.n_sr3,
             n_sr2: f.n_sr2,
             rotated_columns: f.rotated_columns,
@@ -1553,7 +1577,12 @@ fn madelung_strain_of(
     }
 }
 
-/// The RS-GDF strain pass of [`assemble`] (the fitted `Z`, `Wm`, phase bins).
+/// The RS-GDF strain passes of [`assemble`] (the fitted `Z`, `Wm`, phase
+/// bins): the plain fit (exchange scaled by `exch_scale`, and by `c_sr` for a
+/// range-separated build) and, for a range-separated build with an attenuated
+/// piece, the attenuated fit's strain (exchange scaled by `c_lr − c_sr`; run
+/// on a clone of the ledger as it was before the plain pass, so the plain
+/// pass's live output, the small `KFitGrad`, is not counted in it).
 #[allow(clippy::too_many_arguments)]
 fn fit_pass(
     src: &KRsGdfGradSource<'_>,
@@ -1566,12 +1595,14 @@ fn fit_pass(
     exch_scale: f64,
     cfg: &KStressConfig,
     ledger: &mut Ledger,
-) -> Result<crate::rsgdf::kpoint::kderiv::KFitGrad, FerricError> {
+) -> Result<(KFitGrad, Option<KFitGrad>), FerricError> {
     let is = |m: KStressMutation| cfg.mutation == Some(m);
+    let rsh = src.gdf.rsh_derivative(src.cfg.gdf.precision)?;
+    let c_full = rsh.map_or(1.0, |r| r.c_full);
     let exch = if is(KStressMutation::FitExchangeDropped) {
         Vec::new()
     } else {
-        scaled_exch_terms(spins, exch_scale)
+        scaled_exch_terms(spins, exch_scale * c_full)
     };
     let fm = KFitMutation {
         rot: KRotKind::defect(rot_kind(cfg.mutation)),
@@ -1599,9 +1630,59 @@ fn fit_pass(
         flip_slope: is(KStressMutation::SplitFlipSrSlope),
         smooth_volume: !is(KStressMutation::SplitNoSmoothVolume),
     };
-    kpoint_fit_strain(
-        src.gdf, src.cfg, cell, prep, src.aux, mesh, s_k, dtot, &exch, fm, terms, ledger,
-    )
+    let base = ledger.clone();
+    let fit = kpoint_fit_strain(
+        src.gdf,
+        src.cfg,
+        cell,
+        prep,
+        src.aux,
+        mesh,
+        s_k,
+        dtot,
+        &exch,
+        (FitMode::Coulomb, fm),
+        terms,
+        ledger,
+    )?;
+    let att = match rsh.and_then(|r| r.attenuated) {
+        Some(a) if !is(KStressMutation::RshFitNoAttenuated) => a,
+        _ => return Ok((fit, None)),
+    };
+    let coeff = if is(KStressMutation::RshFitNoScale) {
+        1.0
+    } else {
+        att.coeff
+    };
+    let exch_att = scaled_exch_terms(spins, exch_scale * coeff);
+    let fa = KFitMutation {
+        no_metric: fm.no_metric,
+        lr_wrong_q: fm.lr_wrong_q,
+        no_loewner_kd: fm.no_loewner_kd,
+        ..Default::default()
+    };
+    let mut l2 = base;
+    let a = kpoint_fit_strain(
+        att.fit,
+        src.cfg,
+        cell,
+        prep,
+        src.aux,
+        mesh,
+        s_k,
+        dtot,
+        &exch_att,
+        (
+            FitMode::Attenuated {
+                omega: att.omega,
+                gcut: att.gcut,
+            },
+            fa,
+        ),
+        terms,
+        &mut l2,
+    )?;
+    Ok((fit, Some(a)))
 }
 
 /// Dense-AFT J and K strain (before the `−δ E` volume terms) and the energies.

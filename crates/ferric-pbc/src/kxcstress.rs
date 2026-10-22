@@ -143,8 +143,8 @@
 //! only as its raw X and C component names, FD-anchored on a fixed density with
 //! the Fock guard skipped: the TPSS SCF energy is validated, its stress is not,
 //! and the bindings refuse it), global hybrids, and range-separated (CAM) GGA
-//! hybrids on the dense-AFT J/K (below); range-separated hybrids on RS-GDF and
-//! VV10/double hybrids keep typed errors.
+//! hybrids on the dense-AFT or RS-GDF J/K (below); VV10/double hybrids keep
+//! typed errors.
 //!
 //! # Range-separated hybrids
 //!
@@ -161,7 +161,13 @@
 //! ferric's own energy, `c_sr = c_lr` == the global hybrid, the 1×1×3 mesh ==
 //! the explicit supercell, Gamma == 1×1×1
 //! ([`crate::gamma_rsh::gamma_rks_rsh_stress`]); see
-//! `tests/pbc_krsh_stress.rs`. The open-shell (UKS) twin is
+//! `tests/pbc_krsh_stress.rs`. On RS-GDF J/K (`KRsGdf::build_rsh`) the
+//! exchange is `c_sr K[plain fit] + (c_lr − c_sr) K[attenuated fit]`: the
+//! plain fit's strain pieces scaled by `c_sr` and the attenuated fit's LR
+//! strain passes scaled by `c_lr − c_sr` ([`crate::kstress`] scope), with the
+//! same mixed Madelung strain; validated against FD of the zero-XC
+//! range-separated energy (`tests/validation_krsh_rsgdf_force.rs`). The
+//! open-shell (UKS) twin is
 //! [`crate::kuxcstress`] (SCAN and r2SCAN on the dense-AFT J; ROKS refuses
 //! meta-GGA).
 
@@ -763,8 +769,8 @@ pub(crate) fn resolve_open_stress(
             feature: "range-separated hybrid stress at k",
             reason: format!(
                 "{functional}: the open-shell k-point XC stress covers LDA, GGA and GLOBAL \
-                 hybrid functionals (the range-separated stress is closed-shell RKS on \
-                 dense-AFT J/K only, kpoint_rks_stress)"
+                 hybrid functionals (the range-separated stress is closed-shell RKS only, \
+                 kpoint_rks_stress)"
             ),
         }
         .into());
@@ -825,8 +831,8 @@ pub(crate) fn resolve_global_mgga_stress(
 /// Also meta-GGA (SCAN, r2SCAN) on either J route (the tau strain term is part
 /// of the grid XC response, which does not see the J route), and range-separated
 /// hybrids (HSE06 and CAM-B3LYP stress-tested; other CAM GGA hybrids such as
-/// wB97X accepted, not exercised) on the dense-AFT J/K built with the
-/// functional's [`RshParams`] (as [`crate::kdft::solve_krks`] builds them):
+/// wB97X accepted, not exercised) on the dense-AFT or RS-GDF J/K built with
+/// the functional's [`RshParams`] (as [`crate::kdft::solve_krks`] builds them):
 /// the exact exchange enters with fraction 1 (the fractions are inside the
 /// kernel), the exchange walks strain `4π f(K²)/K²` (module doc of
 /// [`crate::rsh`], "Strain"), and the Madelung shift and its strain are the
@@ -835,9 +841,8 @@ pub(crate) fn resolve_global_mgga_stress(
 /// are FD-anchored on a fixed density); the Python and CLI bindings refuse it
 /// through [`crate::kxcgrad::check_force_functional`].
 ///
-/// Refuses (typed errors) range-separated hybrids on RS-GDF J/K, VV10/double
-/// hybrids, a hybrid without `cfg.exxdiv`, dense
-/// kernels whose range separation is not the functional's, and an SCF whose
+/// Refuses (typed errors) VV10/double hybrids, a hybrid without `cfg.exxdiv`,
+/// J/K whose range separation is not the functional's, and an SCF whose
 /// Fock the rebuilt `h + J - (a/2) K + V_xc` does not reproduce.
 #[allow(clippy::too_many_arguments)]
 pub fn kpoint_rks_stress(

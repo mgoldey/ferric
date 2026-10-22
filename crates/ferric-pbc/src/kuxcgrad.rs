@@ -100,7 +100,8 @@
 //! singlet anchor cannot see (`tests/pbc_kuks_rsh_force.rs` tests them on the
 //! polarized cells). The dense kernels must carry the functional's
 //! [`crate::rsh::RshParams`] (as `solve_kuks` builds them). Refused: RS-GDF
-//! (the attenuated fit has no derivative), ROKS / ROHF, the stress.
+//! (its attenuated fit is differentiated for the closed-shell RKS force and
+//! stress only, [`crate::kxcgrad`]), ROKS / ROHF, the stress.
 //!
 //! # Fock guard
 //!

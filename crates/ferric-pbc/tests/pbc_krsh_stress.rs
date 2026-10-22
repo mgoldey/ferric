@@ -30,7 +30,7 @@
 //! MUTATION LEDGER (production-wired `KStressMutation::Rsh*`): see the table
 //! in `rsh_stress_mutants_are_caught`.
 //!
-//! NOT covered: RS-GDF (refused), open shell (refused), p/d shells (H2/STO-3G
+//! NOT covered: RS-GDF (`validation_krsh_rsgdf_force.rs`), open shell (refused), p/d shells (H2/STO-3G
 //! only), shifted meshes, Python / CLI (they still refuse range-separated
 //! derivatives), wB97X (accepted, not exercised).
 
@@ -458,7 +458,8 @@ fn rsh_stress_refusals() {
     .expect_err("HF stress on RSH kernels")
     .to_string();
     assert!(e.contains("does not differentiate it"), "{e}");
-    // RS-GDF with a range-separated name: refused by the source check.
+    // RS-GDF without a range separation, range-separated name: refused by the
+    // source check.
     let aux = ferric_integrals::basis_bridge::PreparedBasis::new(
         fx.cell.mol(),
         &ferric_core::basis::bundled("cc-pvdz-ri").unwrap(),
@@ -484,11 +485,12 @@ fn rsh_stress_refusals() {
     };
     let e = call(KStressJk::RsGdf(src), "HSE06").unwrap_err();
     assert!(
-        e.contains("RS-GDF") && e.contains("kpoint_rks_stress"),
+        e.contains("RS-GDF") && e.contains("bare Coulomb exchange"),
         "{e}"
     );
-    // An RS-GDF source that carries the attenuated fit (build_rsh): refused by
-    // `refuse_unsupported` before any input check.
+    // An RS-GDF source that carries the attenuated fit (build_rsh) is admitted
+    // for the closed-shell RKS stress (validation_krsh_rsgdf_force.rs); this
+    // SCF ran on the dense kernels, so the Fock guard refuses it.
     let gdf_rsh = ferric_pbc::rsgdf::kpoint::KRsGdf::build_rsh(
         &fx.cell,
         &fx.prep,
@@ -506,9 +508,9 @@ fn rsh_stress_refusals() {
         aux: &aux,
     };
     let e = call(KStressJk::RsGdf(src), "HSE06").unwrap_err();
-    eprintln!("RS-GDF build_rsh refusal: {e}");
+    eprintln!("RS-GDF build_rsh on a dense SCF: {e}");
     assert!(
-        e.contains("KRsGdf::build_rsh") && e.contains("its strain is not implemented"),
+        e.contains("rebuilt from the density and the J/K source"),
         "{e}"
     );
     // Open shell keeps refusing range separation (the UKS / ROKS stress entry

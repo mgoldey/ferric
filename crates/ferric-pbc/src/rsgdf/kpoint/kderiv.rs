@@ -98,6 +98,21 @@
 //! typed errors. A basis with nothing to rotate is the unrotated code bit for
 //! bit.
 //!
+//! # Attenuated fit
+//!
+//! [`FitMode::Attenuated`] differentiates the range-separated build's
+//! attenuated fit of `erf(ωr)/r` (`klr`'s `build_attenuated`): the same per-q
+//! passes with the Stage at `ω` and the K set `|K| <= 2ω√ln(1/ε)`, and
+//! nothing else. It has no SR bins or walks, no column rotation, no range
+//! split, no `c0` G = 0 terms (`M_g0 = 0`, no `qᵀ Wm q` volume term) and no
+//! Coulomb part (the attenuated fit carries exchange only); at q = 0 `Z` is
+//! still Hermitised (the energy's `J3` Hermitisation). A q class the build
+//! left empty (no K vector inside the cut, or every metric eigenvalue under
+//! lindep with negligible kernel weights, `klr`'s `fit_block`) contributes
+//! exactly zero and is skipped. The rebuilt `B` is checked against the
+//! attenuated fit as for the plain one, so a derivative staged at another `ω`
+//! or cut is refused.
+//!
 //! # Scope
 //!
 //! Aux centres must be the cell's atoms (no `aux_jac`); the energy build must
@@ -257,6 +272,20 @@ pub(crate) struct KFitMutation {
     /// `ρ ρ^H` part of `H`, the `c` part of `Z`, hence `M_g0`) multiplied by
     /// this factor (production: `None`).
     pub(crate) coulomb_scale: Option<f64>,
+    /// Attenuated mode only: the plain fit's `J3` G = 0 term kept in the
+    /// derivative (`M_g0 = −c0(ω) Σ_P q_P Z_P`; the attenuated energy has no
+    /// `c0`).
+    pub(crate) keep_c0: bool,
+}
+
+/// Which fit a derivative differentiates (module doc, "Attenuated fit").
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum FitMode {
+    /// The plain full-Coulomb RS-GDF fit ([`super::KRsGdf::build`]).
+    Coulomb,
+    /// The attenuated fit of `erf(ωr)/r` at `omega` with the Gaussian cut
+    /// `gcut` the build used.
+    Attenuated { omega: f64, gcut: f64 },
 }
 
 /// `3 × 3` strain tensor.
@@ -473,11 +502,18 @@ pub(crate) fn kpoint_fit_gradient(
     s_k: &[Array2<C64>],
     d_total: &[Array2<C64>],
     exch: &[(f64, &[Array2<C64>])],
-    mutation: KFitMutation,
+    (mode, mutation): (FitMode, KFitMutation),
     ledger: &mut Ledger,
 ) -> Result<KFitGrad, FerricError> {
     kpoint_fit_core(
-        gdf, cfg, cell, obs, aux, mesh, s_k, d_total, exch, mutation, None, ledger,
+        gdf,
+        cfg,
+        (cell, obs, aux, mesh),
+        s_k,
+        (d_total, exch),
+        (mode, mutation),
+        None,
+        ledger,
     )
 }
 
@@ -496,38 +532,38 @@ pub(crate) fn kpoint_fit_strain(
     s_k: &[Array2<C64>],
     d_total: &[Array2<C64>],
     exch: &[(f64, &[Array2<C64>])],
-    mutation: KFitMutation,
+    (mode, mutation): (FitMode, KFitMutation),
     terms: KFitStrainTerms,
     ledger: &mut Ledger,
 ) -> Result<KFitGrad, FerricError> {
     kpoint_fit_core(
         gdf,
         cfg,
-        cell,
-        obs,
-        aux,
-        mesh,
+        (cell, obs, aux, mesh),
         s_k,
-        d_total,
-        exch,
-        mutation,
+        (d_total, exch),
+        (mode, mutation),
         Some(terms),
         ledger,
     )
 }
 
+/// The geometry of a fit derivative: cell, orbital and aux bases, mesh.
+type FitGeom<'a> = (
+    &'a Cell,
+    &'a PreparedBasis,
+    &'a PreparedBasis,
+    &'a KPointMesh,
+);
+
 #[allow(clippy::too_many_arguments)]
 fn kpoint_fit_core(
     gdf: &KRsGdf,
     cfg: &KRsGdfConfig,
-    cell: &Cell,
-    obs: &PreparedBasis,
-    aux: &PreparedBasis,
-    mesh: &KPointMesh,
+    (cell, obs, aux, mesh): FitGeom<'_>,
     s_k: &[Array2<C64>],
-    d_total: &[Array2<C64>],
-    exch: &[(f64, &[Array2<C64>])],
-    mutation: KFitMutation,
+    (d_total, exch): (&[Array2<C64>], &[(f64, &[Array2<C64>])]),
+    (mode, mutation): (FitMode, KFitMutation),
     strain: Option<KFitStrainTerms>,
     ledger: &mut Ledger,
 ) -> Result<KFitGrad, FerricError> {
@@ -538,6 +574,18 @@ fn kpoint_fit_core(
     };
     let g = &cfg.gdf;
     check_fit_inputs(gdf, cfg, cell, obs, aux, mesh, s_k, d_total, exch)?;
+    if let FitMode::Attenuated { omega, gcut } = mode {
+        let geom = (cell, obs, aux, mesh);
+        return attenuated_fit_core(
+            gdf,
+            g,
+            geom,
+            (s_k, d_total, exch),
+            (omega, gcut),
+            (mutation, strain),
+            ledger,
+        );
+    }
     // The config / build rotation consistency is checked BEFORE any pass.
     let rotation = fit_rotation(gdf, g, (cell, obs, aux), mutation.rot.off, who)?;
     let n = obs.nbasis();
@@ -648,6 +696,7 @@ fn kpoint_fit_core(
         strain,
         gcut,
         c0: PI / (g.omega * g.omega * cell.volume()),
+        mode: FitMode::Coulomb,
     };
     let mut acc = FitAcc {
         zbin: (0..rl * rt).map(|_| Array2::zeros((n2, naux))).collect(),
@@ -781,6 +830,162 @@ fn kpoint_fit_core(
     })
 }
 
+/// [`kpoint_fit_core`] for [`FitMode::Attenuated`] (module doc, "Attenuated
+/// fit"): the per-q LR and metric passes at `ω` on `|K| <= gcut`, nothing
+/// else.
+#[allow(clippy::too_many_arguments)]
+fn attenuated_fit_core(
+    gdf: &KRsGdf,
+    g: &RsGdfConfig,
+    (cell, obs, aux, mesh): FitGeom<'_>,
+    (s_k, d_total, exch): (&[Array2<C64>], &[Array2<C64>], &[(f64, &[Array2<C64>])]),
+    (omega, gcut): (f64, f64),
+    (mutation, strain): (KFitMutation, Option<KFitStrainTerms>),
+    ledger: &mut Ledger,
+) -> Result<KFitGrad, FerricError> {
+    let who = "k-point RS-GDF attenuated-fit derivative";
+    if !(omega > 0.0 && omega.is_finite() && gcut > 0.0 && gcut.is_finite()) {
+        return Err(FerricError::General(format!(
+            "{who}: omega {omega} and the Gaussian cut {gcut} must be finite and > 0"
+        )));
+    }
+    let (n, naux, nk) = (obs.nbasis(), aux.nbasis(), mesh.nk());
+    let n2 = n * n;
+    let st = Stage {
+        cell,
+        obs,
+        aux,
+        obs_sh: gshells(obs, "k-point RS-GDF orbital basis")?,
+        aux_sh: gshells(aux, "k-point RS-GDF aux basis")?,
+        omega,
+        thresh: g.precision,
+        sr_screen: g.sr_screen,
+        walker: LatticeWalker::new(cell),
+    };
+    let mod_l = mesh.residue_moduli();
+    let rl = mod_l[0] * mod_l[1] * mod_l[2];
+    let sat = |xs: &[usize]| xs.iter().fold(1u64, |a, &x| a.saturating_mul(x as u64));
+    ledger.reserve(
+        &format!("{who}: per-q working set (J3, T, Z per k' (N_k = {nk}), R_L = {rl} folds)"),
+        bytes_of(
+            sat(&[3, nk, n2, naux])
+                .saturating_add(sat(&[2, rl, n2, naux]))
+                .saturating_add(sat(&[8, naux, naux])),
+            16,
+        ),
+    )?;
+    let qmax = (0..nk)
+        .map(|iq| {
+            let q = mesh.q_class(iq).0;
+            dot3(&q, &q).sqrt()
+        })
+        .fold(0.0_f64, f64::max);
+    ledger.reserve(
+        &format!("{who}: K list (|K| <= {gcut:.3}, |q| <= {qmax:.3})"),
+        gvector_list_bytes(cell, gcut + qmax)?.saturating_mul(3),
+    )?;
+    // The attenuated energy has no c0; the KeepC0 test defect puts the plain
+    // fit's G = 0 term (at ω) back into the derivative.
+    let (q_g0, c0) = if mutation.keep_c0 {
+        (aux_charges(&st), PI / (omega * omega * cell.volume()))
+    } else {
+        (Vec::new(), 0.0)
+    };
+    let phk: Vec<Vec<C64>> = (0..nk)
+        .map(|k| {
+            (0..rl)
+                .map(|r| mesh.phase(k, residue_coords(r, mod_l)))
+                .collect()
+        })
+        .collect();
+    let ctx = FitCtx {
+        st: &st,
+        gdf,
+        g,
+        mesh,
+        plan: None,
+        j2res: &[],
+        j3res: &[],
+        qv: &[],
+        q_g0: &q_g0,
+        s_g0: s_k,
+        s_full: s_k,
+        phk: &phk,
+        d_total,
+        exch,
+        mutation,
+        strain,
+        gcut,
+        c0,
+        mode: FitMode::Attenuated { omega, gcut },
+    };
+    let mut acc = FitAcc {
+        zbin: Vec::new(),
+        wmbin: Vec::new(),
+        lr: KLrForce::zeros(n, naux),
+        lr_strain: LrStrainAcc::default(),
+        qwq: 0.0,
+        mg0: (0..nk).map(|_| Array2::zeros((n, n))).collect(),
+        n_dropped_max: 0,
+        b_norm_mismatch: 0.0,
+        n_chunks: 0,
+        n_k_lr: 0,
+    };
+    for iq in 0..nk {
+        q_class_pass(&ctx, iq, ledger, &mut acc)?;
+    }
+    let natoms = cell.positions().len();
+    let strain_out = match strain {
+        Some(terms) => {
+            let bins = KSrBins {
+                recip: cell.reciprocal(),
+                mod_l,
+                mod_t: mesh.n(),
+                zbin: &[],
+                wmbin: &[],
+            };
+            let budget = window_budget(ledger.remaining());
+            Some(finish_strain(&ctx, &acc, &bins, (&st, None), &[], terms, budget)?.0)
+        }
+        None => None,
+    };
+    let aoat = crate::grad::ao_atoms(obs);
+    let mut orb_lr = Array2::<f64>::zeros((natoms, 3));
+    for (mu, gv) in acc.lr.orb_ao.iter().enumerate() {
+        for x in 0..3 {
+            orb_lr[(aoat[mu], x)] += gv[x];
+        }
+    }
+    let (aux_lr, metric_lr) = (acc.lr.aux, acc.lr.metric);
+    if [&orb_lr, &aux_lr, &metric_lr]
+        .iter()
+        .any(|a| a.iter().any(|v| !v.is_finite()))
+    {
+        return Err(FerricError::General(format!(
+            "{who}: non-finite derivative contraction"
+        )));
+    }
+    let zaux = || Array2::<f64>::zeros((naux, 3));
+    Ok(KFitGrad {
+        orb_sr: Array2::zeros((natoms, 3)),
+        orb_lr,
+        aux_sr: zaux(),
+        aux_lr,
+        metric_sr: zaux(),
+        metric_lr,
+        mg0: acc.mg0,
+        n_dropped_max: acc.n_dropped_max,
+        b_norm_mismatch: acc.b_norm_mismatch,
+        n_sr3: 0,
+        n_sr2: 0,
+        rotated_columns: 0,
+        n_chunks: acc.n_chunks,
+        n_k_lr: acc.n_k_lr,
+        smooth_g0: None,
+        strain: strain_out,
+    })
+}
+
 /// The column rotation the fit derivative differentiates (module doc,
 /// "Column rotation"): the one `gdf`'s energy walk ran
 /// (`stats().sr_rotated_columns`). `Ok(None)` for an unrotated build. Typed
@@ -909,6 +1114,7 @@ struct FitCtx<'a> {
     strain: Option<KFitStrainTerms>,
     gcut: f64,
     c0: f64,
+    mode: FitMode,
 }
 
 /// What the per-q passes accumulate.
@@ -953,16 +1159,20 @@ fn rebuild_q(
     let (q, mq) = mesh.q_class(iq);
     let trim = mesh.q_minus(iq) == iq;
     let is_q0 = mq == [0, 0, 0];
+    let coulomb = ctx.mode == FitMode::Coulomb;
     let mut j2 = Array2::<C64>::zeros((naux, naux));
     for (bin, ph) in ctx.j2res.iter().zip(php) {
         j2.zip_mut_with(bin, |z, &x| *z += *ph * x);
     }
+    // SR residue bins: the plain fit only (the attenuated fit has none).
     let mut acc: Vec<Array2<C64>> = (0..rl)
         .map(|r_l| {
             let mut a = Array2::<C64>::zeros((n2, naux));
-            for (r_t, ph) in php.iter().enumerate() {
-                let ph = ph.conj();
-                a.zip_mut_with(&ctx.j3res[r_l * rt + r_t], |z, &x| *z += ph * x);
+            if coulomb {
+                for (r_t, ph) in php.iter().enumerate() {
+                    let ph = ph.conj();
+                    a.zip_mut_with(&ctx.j3res[r_l * rt + r_t], |z, &x| *z += ph * x);
+                }
             }
             a
         })
@@ -980,7 +1190,7 @@ fn rebuild_q(
         false,
     )?;
     drop(kv);
-    if is_q0 {
+    if is_q0 && coulomb {
         let mut re = j2.mapv(|z| z.re);
         let mut no_j3 = Array2::<f64>::zeros((0, naux));
         subtract_g0(&mut re, &mut no_j3, &[], ctx.qv, ctx.c0, g.g0);
@@ -994,7 +1204,9 @@ fn rebuild_q(
             x.zip_mut_with(a, |z, &y| *z += *ph * y);
         }
         if is_q0 {
-            subtract_g0_three_index(&mut x, &ctx.s_g0[j], ctx.qv, ctx.c0, g.g0);
+            if coulomb {
+                subtract_g0_three_index(&mut x, &ctx.s_g0[j], ctx.qv, ctx.c0, g.g0);
+            }
             hermitize_pairs(&mut x, n);
         }
         j3.push(x);
@@ -1091,8 +1303,9 @@ fn exchange_h_and_z(
     (hq, zt)
 }
 
-/// The q = 0 Coulomb parts of `H` and `Z`, the Hermitisation of `Z`, and
-/// `M_g0(k) = −c0 Σ_P q_P Z^k_P` (unless the `no_g0` mutant).
+/// The q = 0 terms: the Coulomb parts of `H` and `Z` (plain fit only), the
+/// Hermitisation of `Z`, and `M_g0(k) = −c0 Σ_P q_P Z^k_P` (unless the `no_g0`
+/// mutant; none for the attenuated fit, whose `c0` is 0).
 fn coulomb_q0(
     ctx: &FitCtx<'_>,
     j3: &[Array2<C64>],
@@ -1101,10 +1314,40 @@ fn coulomb_q0(
     zt: &mut [Array2<C64>],
     mg0: &mut [Array2<C64>],
 ) {
+    if ctx.mode == FitMode::Coulomb {
+        coulomb_density_q0(ctx, j3, jinv, hq, zt);
+    }
+    let n = ctx.st.obs.nbasis();
+    let zero = C64::new(0.0, 0.0);
+    for (j, z) in zt.iter_mut().enumerate() {
+        hermitize_pairs(z, n);
+        if !ctx.mutation.no_g0 && ctx.c0 != 0.0 {
+            let mg = &mut mg0[j];
+            for m in 0..n {
+                for l in 0..n {
+                    let mut a = zero;
+                    for (p, qp) in ctx.q_g0.iter().enumerate() {
+                        a += z[(m * n + l, p)] * *qp;
+                    }
+                    mg[(l, m)] += a * (-ctx.c0);
+                }
+            }
+        }
+    }
+}
+
+/// The q = 0 Coulomb parts of `H` (`½ ρ ρ^H`) and `Z` (`conj(c_P) D/N_k`) of
+/// the plain fit.
+fn coulomb_density_q0(
+    ctx: &FitCtx<'_>,
+    j3: &[Array2<C64>],
+    jinv: &Array2<C64>,
+    hq: &mut Array2<C64>,
+    zt: &mut [Array2<C64>],
+) {
     let n = ctx.st.obs.nbasis();
     let naux = ctx.st.aux.nbasis();
     let inv_nk = 1.0 / ctx.mesh.nk() as f64;
-    let zero = C64::new(0.0, 0.0);
     let mut rho = Array1::<C64>::zeros(naux);
     for (j, x) in j3.iter().enumerate() {
         let d = &ctx.d_total[j];
@@ -1127,19 +1370,6 @@ fn coulomb_q0(
                 let dv = d[(l, m)] * inv_nk;
                 for p in 0..naux {
                     z[(m * n + l, p)] += cvec[p].conj() * dv;
-                }
-            }
-        }
-        hermitize_pairs(z, n);
-        if !ctx.mutation.no_g0 {
-            let mg = &mut mg0[j];
-            for m in 0..n {
-                for l in 0..n {
-                    let mut a = zero;
-                    for (p, qp) in ctx.q_g0.iter().enumerate() {
-                        a += z[(m * n + l, p)] * *qp;
-                    }
-                    mg[(l, m)] += a * (-ctx.c0);
                 }
             }
         }
@@ -1174,14 +1404,21 @@ fn q_class_pass(
     let s: Vec<f64> = evals.to_vec();
     let keep: Vec<bool> = s.iter().map(|&x| x > g.lindep).collect();
     let nkeep = keep.iter().filter(|&&b| b).count();
+    let kept_build = ctx.gdf.stats().per_q[iq].naux_kept;
     if nkeep == 0 {
+        // The attenuated build keeps a class with no K vector in the cut, or
+        // with every eigenvalue under lindep and negligible kernel weights,
+        // as zero-row B (klr `fit_block`): its energy is exactly 0, so is its
+        // derivative.
+        if ctx.mode != FitMode::Coulomb && kept_build == 0 {
+            return Ok(());
+        }
         return Err(FerricError::General(format!(
             "{who}: every metric eigenvalue at q class {iq} is <= lindep {:e}",
             g.lindep
         )));
     }
     acc.n_dropped_max = acc.n_dropped_max.max(naux - nkeep);
-    let kept_build = ctx.gdf.stats().per_q[iq].naux_kept;
     if kept_build != nkeep {
         return Err(FerricError::General(format!(
             "{who}: q class {iq} keeps {nkeep} metric eigenvectors here but {kept_build} in the \
@@ -1231,7 +1468,6 @@ fn q_class_pass(
 
     // --- Residue folds: Zr[r_L] = Σ_k' e^{ik'·t_rL} Z^{k'}; SR bins.
     let rl = ctx.phk[0].len();
-    let rt = php.len();
     let mut zr: Vec<Array2<C64>> = (0..rl).map(|_| Array2::zeros((n2, naux))).collect();
     for (j, z) in zt.iter().enumerate() {
         for (r_l, a) in zr.iter_mut().enumerate() {
@@ -1240,6 +1476,33 @@ fn q_class_pass(
         }
     }
     drop(zt);
+    if ctx.mode == FitMode::Coulomb {
+        fold_sr_bins(ctx, &zr, &php, &wm, acc);
+    }
+
+    if is_q0 {
+        acc.qwq += qwq_of(ctx.q_g0, &wm);
+    }
+
+    // --- LR on the FULL {G + q} set.
+    let kfull = lr_full_set(ctx, q)?;
+    acc.n_k_lr += kfull.len();
+    let chunk_budget = ledger.remaining().min(G_CHUNK_BYTES);
+    acc.n_chunks += k_lr_q(ctx, &kfull, q, (&zr, &wm), chunk_budget, acc)?;
+    Ok(())
+}
+
+/// The SR derivative weights of one q class (plain fit): `Zbin[r_L, r_T] +=
+/// Re e^{−iq·t_rT} Zr[r_L]` and `Wmbin[r_T] += Re e^{iq·t_rT} Wmᵀ`.
+fn fold_sr_bins(
+    ctx: &FitCtx<'_>,
+    zr: &[Array2<C64>],
+    php: &[C64],
+    wm: &Array2<C64>,
+    acc: &mut FitAcc,
+) {
+    let naux = ctx.st.aux.nbasis();
+    let rt = php.len();
     for (r_l, a) in zr.iter().enumerate() {
         for (r_t, pt) in php.iter().enumerate() {
             let ph = if ctx.mutation.aux_phase {
@@ -1258,17 +1521,6 @@ fn q_class_pass(
             }
         }
     }
-
-    if is_q0 {
-        acc.qwq += qwq_of(ctx.q_g0, &wm);
-    }
-
-    // --- LR on the FULL {G + q} set.
-    let kfull = lr_full_set(ctx, q)?;
-    acc.n_k_lr += kfull.len();
-    let chunk_budget = ledger.remaining().min(G_CHUNK_BYTES);
-    acc.n_chunks += k_lr_q(ctx, &kfull, q, (&zr, &wm), chunk_budget, acc)?;
-    Ok(())
 }
 
 /// `Re qᵀ Wm q` (the J2 G = 0 volume term's contraction).
@@ -1494,16 +1746,11 @@ fn finish_strain(
     terms: KFitStrainTerms,
     budget: usize,
 ) -> Result<(KFitStrain, usize, usize), FerricError> {
-    let imgs = if terms.images { 1.0 } else { 0.0 };
-    let z = |l: [f64; 3], t: [f64; 3]| Y3::PairMajor(bins.z(l, t));
-    let (j3_sr, n_sr3) = match plan3 {
-        Some(p) => p.sr3_strain_with(st3, images, imgs, budget, z)?,
-        None => sr3_strain_with(st3, images, imgs, budget, z)?,
-    };
-    let (j2_sr, n_sr2) = match (ctx.mutation.no_metric, ctx.plan) {
-        (true, _) => ([[0.0; 3]; 3], 0),
-        (false, Some(p)) => p.sr2_strain_with(ctx.st, imgs, budget, |t| bins.wm(t))?,
-        (false, None) => sr2_strain_with(ctx.st, imgs, budget, |t| bins.wm(t))?,
+    let ((j3_sr, n_sr3), (j2_sr, n_sr2)) = if ctx.mode == FitMode::Coulomb {
+        sr_strain_walks(ctx, bins, (st3, plan3), images, terms, budget)?
+    } else {
+        // The attenuated fit has no SR part.
+        (([[0.0; 3]; 3], 0), ([[0.0; 3]; 3], 0))
     };
     let (mut j3_lr, mut j2_lr) = (acc.lr_strain.s3, acc.lr_strain.s2);
     if terms.volume {
@@ -1541,6 +1788,30 @@ fn finish_strain(
         ));
     }
     Ok((fs, n_sr3, n_sr2))
+}
+
+/// The SR strain walks of the plain fit: `((J3 SR, triplets), (J2 SR, pairs))`.
+#[allow(clippy::type_complexity)]
+fn sr_strain_walks(
+    ctx: &FitCtx<'_>,
+    bins: &KSrBins<'_>,
+    (st3, plan3): (&Stage<'_>, Option<&SplitPlan>),
+    images: &[[f64; 3]],
+    terms: KFitStrainTerms,
+    budget: usize,
+) -> Result<((Mat3, usize), (Mat3, usize)), FerricError> {
+    let imgs = if terms.images { 1.0 } else { 0.0 };
+    let z = |l: [f64; 3], t: [f64; 3]| Y3::PairMajor(bins.z(l, t));
+    let sr3 = match plan3 {
+        Some(p) => p.sr3_strain_with(st3, images, imgs, budget, z)?,
+        None => sr3_strain_with(st3, images, imgs, budget, z)?,
+    };
+    let sr2 = match (ctx.mutation.no_metric, ctx.plan) {
+        (true, _) => ([[0.0; 3]; 3], 0),
+        (false, Some(p)) => p.sr2_strain_with(ctx.st, imgs, budget, |t| bins.wm(t))?,
+        (false, None) => sr2_strain_with(ctx.st, imgs, budget, |t| bins.wm(t))?,
+    };
+    Ok((sr3, sr2))
 }
 
 /// Per-K strain contraction of the `J3` LR term at FIXED `Z`:

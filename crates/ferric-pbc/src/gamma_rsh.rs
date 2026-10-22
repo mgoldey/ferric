@@ -242,13 +242,15 @@ impl GammaRshExchange {
 
 impl GammaRshExchange {
     /// The dense k = 0 kernels a routed Gamma force differentiates; an RS-GDF
-    /// exchange is refused (the attenuated fit has no derivative).
+    /// exchange is refused (the Gamma routes have no derivative for it).
     fn dense_for_force(&self, who: &str) -> Result<&KDenseAftEri, FerricError> {
         match &self.src {
             Source::Dense(eri) => Ok(eri),
             Source::RsGdf(_) => Err(FerricError::General(format!(
-                "{who}: the range-separated exchange was built on RS-GDF; the attenuated fit \
-                 has no derivative (build it with GammaRshExchange::build_dense, jk = dense)"
+                "{who}: the range-separated exchange was built on RS-GDF; this Gamma route \
+                 has no derivative for it (build it with GammaRshExchange::build_dense, jk = \
+                 dense; the closed-shell k-point force kpoint_rks_gradient differentiates the \
+                 RS-GDF one on a 1x1x1 mesh)"
             ))),
         }
     }
@@ -339,7 +341,9 @@ impl KBuilder for GammaRshK<'_> {
 /// The k-point Fock guard compares the rebuilt `h + J + V_xc − K` with the
 /// SCF's stored Fock, so a Gamma J from another source (RS-GDF) or a
 /// different grid is refused, not silently differentiated. Refuses an
-/// RS-GDF `rsh_k` (the attenuated fit has no derivative) and an open-shell
+/// RS-GDF `rsh_k` (this Gamma route has no derivative for it; the closed-shell
+/// k-point force differentiates an RS-GDF range-separated exchange,
+/// [`crate::kxcgrad::kpoint_rks_gradient`] on a 1x1x1 mesh) and an open-shell
 /// result (the UKS twin is [`gamma_uks_rsh_gradient`]).
 pub fn gamma_rks_rsh_gradient(
     cell: &Cell,

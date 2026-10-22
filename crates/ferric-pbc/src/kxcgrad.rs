@@ -91,11 +91,14 @@
 //! (`J` keeps the bare kernel) and the M-term carrying the SCF's mixed
 //! constant (the same cancellation as above makes the force independent of
 //! it). The semilocal remainder is libxc's for the CAM functional, as in the
-//! energy. Covered: closed shell here (the stress likewise,
+//! energy. On RS-GDF J/K (`KRsGdf::build_rsh`) the closed-shell assembly
+//! takes the plain fit's exchange pieces scaled by `c_sr` plus the attenuated
+//! fit's derivative scaled by `c_lr − c_sr` ([`crate::kgrad`] scope).
+//! Covered: closed shell on dense AFT and RS-GDF (the stress likewise,
 //! [`crate::kxcstress`]) and the open-shell UKS force
 //! ([`crate::kuxcgrad::kpoint_uks_gradient`], `K_σ = K[D_σ]` per spin with the
-//! same kernel and constant), dense AFT; refused: RS-GDF (the attenuated fit
-//! is not differentiated), ROKS / ROHF, the open-shell stress.
+//! same kernel and constant) on dense AFT only; refused: the UKS force on
+//! RS-GDF, ROKS / ROHF, the open-shell stress.
 //!
 //! # What is new relative to the k-point HF force ([`crate::kgrad`])
 //!
@@ -1074,9 +1077,9 @@ pub(crate) fn resolve_global_mgga(functional: &str) -> Result<(XcDef, f64), Ferr
             feature: "range-separated hybrid force at k",
             reason: format!(
                 "{functional}: the attenuated-exchange derivative covers the closed-shell RKS \
-                 force and stress and the open-shell UKS force on dense-AFT J/K only \
-                 (kpoint_rks_gradient, kpoint_rks_stress, kpoint_uks_gradient); not this route \
-                 (ROKS / ROHF force, open-shell stress)"
+                 force and stress (dense-AFT or RS-GDF J/K) and the open-shell UKS force \
+                 (dense-AFT J/K) only (kpoint_rks_gradient, kpoint_rks_stress, \
+                 kpoint_uks_gradient); not this route (ROKS / ROHF force, open-shell stress)"
             ),
         }
         .into());
@@ -1111,12 +1114,12 @@ pub(crate) fn resolve_global_or_rsh(
 ///
 /// A range-separated hybrid (HSE06 and CAM-B3LYP force-tested; wB97X and other
 /// CAM functionals accepted but not exercised by a force test; module doc
-/// "Range-separated hybrids") needs the dense-AFT J/K built with the
+/// "Range-separated hybrids") needs the dense-AFT or RS-GDF J/K built with the
 /// functional's [`RshParams`] (as [`crate::kdft::solve_krks`] builds them);
 /// its exact exchange enters with fraction 1 (the fractions are inside the
 /// kernel) and the Madelung shift is the mixed constant.
 ///
-/// Refuses (typed errors) range-separated hybrids on RS-GDF J/K, VV10/double hybrids, a hybrid without `cfg.exxdiv`, and an SCF whose Fock the rebuilt
+/// Refuses (typed errors) J/K whose range separation is not the functional's, VV10/double hybrids, a hybrid without `cfg.exxdiv`, and an SCF whose Fock the rebuilt
 /// `h + J − (a/2) K + V_xc` does not reproduce.
 ///
 /// The meta-GGA force is validated for SCAN / r2SCAN only. This library entry

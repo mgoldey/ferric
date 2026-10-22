@@ -88,7 +88,15 @@
 //! (`check_inputs_rsh`; the closed-shell RKS stress, [`crate::kstress`],
 //! admits them the same way; the UKS exchange terms `(1, D_α), (1, D_β)` take
 //! the same factor, the M-term `Σ_σ D_σ S D_σ` the same mixed constant);
-//! every other entry, and RS-GDF with an attenuated fit, refuses them. RS-GDF aux on the
+//! every other entry refuses them. An RS-GDF build with a range separation
+//! (`KRsGdf::build_rsh`, `K = c_sr K[1/r] + (c_lr − c_sr) K[erf] + v_M^{mix}
+//! S D S`) is differentiated for the closed-shell RKS force only (the UKS
+//! force refuses it): the plain fit's exchange pieces scaled by `c_sr`, plus
+//! the attenuated fit's LR and metric passes scaled by `c_lr − c_sr`
+//! (`kderiv`'s module doc, "Attenuated fit"; [`KGradParts::fit_attenuated`]),
+//! and the M-term carrying the SCF's mixed constant (not scaled again: the
+//! exchange scale of a range-separated K is 1); the closed-shell RKS stress
+//! admits it the same way ([`crate::kstress`]). RS-GDF aux on the
 //! cell's atoms (no ghost sites). A scalar periodic ECP is differentiated by the Gamma ECP walk
 //! ([`crate::ecp::periodic_ecp_gradient`]) with the SR walk's image weight
 //! `Re Δ_nm(L)` in place of the density (`parts.ecp`; derivation in the
@@ -120,7 +128,7 @@ use crate::lattice::Cell;
 use crate::pair_ft::residues::{pair_ft_deriv_residues_chunked, residue_coords, residue_index};
 use crate::rsgdf::deriv::{check_aux_map, fold_aux};
 use crate::rsgdf::kpoint::kderiv::{
-    kpoint_fit_gradient, rotate_hcore_weights, KFitGrad, KFitMutation, KRotKind,
+    kpoint_fit_gradient, rotate_hcore_weights, FitMode, KFitGrad, KFitMutation, KRotKind,
 };
 use crate::rsgdf::kpoint::{KRsGdf, KRsGdfConfig};
 use crate::rsh::RshParams;
@@ -262,6 +270,25 @@ pub enum KGradMutation {
     /// `½ D S D` on the TOTAL density instead of `Σ_σ D_σ S D_σ`. A no-op on
     /// a restricted state; invisible on a singlet; blind for `exxdiv = none`.
     MTermTotalDensity,
+    /// Range separation on RS-GDF: the plain fit's `J3` G = 0 term (`c0` at
+    /// `ω`) kept in the attenuated fit's derivative.
+    RshFitKeepC0,
+    /// Range separation on RS-GDF: the attenuated fit differentiated at the
+    /// plain fit's Ewald split `ω_0` (and its cut) instead of the RSH `ω`
+    /// (the rebuilt-B check refuses it).
+    RshFitOmega0,
+    /// Range separation on RS-GDF: the attenuated piece with coefficient 1
+    /// instead of `c_lr − c_sr`.
+    RshFitNoScale,
+    /// Range separation: the M-term's constant `c_sr v_M` (the LR Madelung
+    /// piece left out; blind for `exxdiv = none`).
+    RshMadelungUnmixed,
+    /// Range separation: the M-term's LR piece with the full constant,
+    /// `c_lr v_M` (blind for `exxdiv = none`).
+    RshMadelungFullLr,
+    /// Range separation: the (already mixed) M-term constant scaled again by
+    /// `c_sr` (blind for `exxdiv = none`).
+    RshMadelungScaled,
 }
 
 /// The hcore SR derivative walk's rotation and forward-transformed image
@@ -376,6 +403,9 @@ pub struct KGradParts {
     pub fit_metric_lr: Array2<f64>,
     /// RS-GDF `J3` G = 0 term through `dS`.
     pub fit_g0: Array2<f64>,
+    /// RS-GDF range separation: the attenuated fit's exchange (orbital, aux
+    /// and metric LR passes, coefficient `c_lr − c_sr`); zeros otherwise.
+    pub fit_attenuated: Array2<f64>,
     /// Periodic ECP (`Σ_L W_L ∘ dV_L`, [`crate::ecp`]); zeros without an ECP.
     pub ecp: Array2<f64>,
 }
@@ -744,9 +774,11 @@ pub(crate) fn check_inputs(
 
 /// [`check_inputs`] for an entry that differentiates a range-separated
 /// exchange: `rsh` is the functional's range separation (`None` for every
-/// entry but the RKS force and stress and the UKS force). A dense source must carry exactly
-/// these parameters (and none when `rsh` is `None`); an RS-GDF source must
-/// carry none and `rsh` must be `None` (the attenuated fit has no derivative).
+/// entry but the RKS force and stress and the UKS force). A dense source must
+/// carry exactly these parameters (and none when `rsh` is `None`). An RS-GDF
+/// source must too, and is admitted with a range separation only for a
+/// closed-shell entry (one density per k, the RKS force and stress): the
+/// attenuated fit's derivative is not wired into the open-shell assembly.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn check_inputs_rsh(
     who: &str,
@@ -811,15 +843,15 @@ pub(crate) fn check_inputs_rsh(
             }
         }
         KGradJk::RsGdf(s) => {
-            if s.gdf.rsh().is_some() || rsh.is_some() {
+            if dens.len() != 1 && (s.gdf.rsh().is_some() || rsh.is_some()) {
                 return Err(FerricError::General(format!(
                     "{who}: range-separated exchange on RS-GDF J/K (KRsGdf::build_rsh) has no \
-                     derivative here (the attenuated fit is not differentiated, so the force \
-                     would be wrong); the range-separated k-point derivatives cover the RKS \
-                     force and stress and the UKS force (kpoint_rks_gradient, kpoint_rks_stress, \
-                     kpoint_uks_gradient) on dense-AFT J/K only"
+                     derivative for an open-shell state (the attenuated fit is differentiated for \
+                     the closed-shell RKS force and stress only); the open-shell UKS force \
+                     (kpoint_uks_gradient) covers range separation on dense-AFT J/K only"
                 )));
             }
+            check_rsgdf_rsh(who, s.gdf.rsh(), rsh)?;
             if s.gdf.nk() != nk {
                 return Err(FerricError::General(format!(
                     "{who}: KRsGdf has {} k-points, the mesh {nk}",
@@ -849,14 +881,41 @@ fn check_dense_rsh(
         (Some(_), None) => Err(FerricError::General(format!(
             "{who}: the dense kernels carry an attenuated (range-separated) exchange (rsh); \
              this entry point does not differentiate it (the range-separated k-point force \
-             and stress cover RKS (kpoint_rks_gradient / kpoint_rks_stress) and the UKS \
-             force (kpoint_uks_gradient), with a range-separated functional, on dense-AFT J/K \
-             only)"
+             and stress cover RKS (kpoint_rks_gradient / kpoint_rks_stress, dense-AFT or \
+             RS-GDF J/K) and the UKS force (kpoint_uks_gradient, dense-AFT J/K), with a \
+             range-separated functional)"
         ))),
         (None, Some(w)) => Err(FerricError::General(format!(
             "{who}: the functional is range-separated ({w:?}) but the dense kernels carry the \
              bare Coulomb exchange; build the J/K with KDenseAftConfig::rsh set (as solve_krks \
              does)"
+        ))),
+    }
+}
+
+/// The range-separation consistency of an RS-GDF source (the twin of
+/// [`check_dense_rsh`]).
+fn check_rsgdf_rsh(
+    who: &str,
+    have: Option<RshParams>,
+    want: Option<RshParams>,
+) -> Result<(), FerricError> {
+    match (have, want) {
+        (None, None) => Ok(()),
+        (Some(h), Some(w)) if h == w => Ok(()),
+        (Some(h), Some(w)) => Err(FerricError::General(format!(
+            "{who}: the RS-GDF J/K carry a range-separated exchange {h:?} but the functional's \
+             is {w:?}; build the J/K with the functional's own parameters"
+        ))),
+        (Some(_), None) => Err(FerricError::General(format!(
+            "{who}: the RS-GDF J/K carry an attenuated (range-separated) exchange \
+             (KRsGdf::build_rsh); this entry point does not differentiate it (the \
+             range-separated k-point force and stress cover closed-shell RKS, \
+             kpoint_rks_gradient / kpoint_rks_stress with a range-separated functional)"
+        ))),
+        (None, Some(w)) => Err(FerricError::General(format!(
+            "{who}: the functional is range-separated ({w:?}) but the RS-GDF J/K carry the \
+             bare Coulomb exchange; build them with KRsGdf::build_rsh (as solve_krks does)"
         ))),
     }
 }
@@ -1054,10 +1113,12 @@ fn m_term_madelung(
     Ok(exch_scale * base)
 }
 
-/// The range separation of a dense source (`check_inputs_rsh` admits it on
-/// the RKS and UKS forces only) and the `v_M` the M-term uses: the SCF's
-/// (mixed, for a range-separated K) `vm`, or the plain mesh constant under
-/// the [`KGradMutation::RshPlainMadelung`] defect.
+/// The range separation of the source (`check_inputs_rsh` admits a dense one
+/// on the RKS and UKS forces, an RS-GDF one on the closed-shell RKS force
+/// only) and the `v_M` the M-term uses: the SCF's (mixed, for a
+/// range-separated K) `vm`, never scaled again by `c_sr`, or a wrong constant
+/// under the `RshPlainMadelung`, `RshNoMadelungTerm` and `RshMadelung*`
+/// defects.
 fn rsh_and_m_term_vm(
     jk: &KGradJk<'_>,
     cell: &Cell,
@@ -1065,17 +1126,21 @@ fn rsh_and_m_term_vm(
     vm: f64,
     mutation: Option<KGradMutation>,
 ) -> Result<(Option<RshParams>, f64), FerricError> {
+    use KGradMutation as M;
     let rsh = match jk {
         KGradJk::Dense(e) => e.rsh(),
-        KGradJk::RsGdf(_) => None,
+        KGradJk::RsGdf(s) => s.gdf.rsh(),
     };
-    let defect = |m: KGradMutation| rsh.is_some() && vm != 0.0 && mutation == Some(m);
-    let vm_used = if defect(KGradMutation::RshPlainMadelung) {
-        mesh.madelung(cell)?
-    } else if defect(KGradMutation::RshNoMadelungTerm) {
-        0.0
-    } else {
-        vm
+    let (Some(r), Some(m)) = (rsh, mutation.filter(|_| vm != 0.0)) else {
+        return Ok((rsh, vm));
+    };
+    let vm_used = match m {
+        M::RshPlainMadelung => mesh.madelung(cell)?,
+        M::RshNoMadelungTerm => 0.0,
+        M::RshMadelungUnmixed => r.c_sr * mesh.madelung(cell)?,
+        M::RshMadelungFullLr => r.c_lr * mesh.madelung(cell)?,
+        M::RshMadelungScaled => r.c_sr * vm,
+        _ => vm,
     };
     Ok((rsh, vm_used))
 }
@@ -1176,6 +1241,109 @@ fn spin_mutated(
     terms
 }
 
+/// The k geometry of a fit pass: cell, orbital basis, mesh, `S(k)`.
+type KGeom<'a> = (
+    &'a Cell,
+    &'a PreparedBasis,
+    &'a KPointMesh,
+    &'a [Array2<C64>],
+);
+
+/// The RS-GDF fitted two-electron pieces of [`assemble`]: the plain fit (its
+/// exchange coefficients scaled by `sc.fit`, and by `c_sr` for a
+/// range-separated build) and, for a range-separated build with an attenuated
+/// piece, the attenuated fit's derivative (exchange coefficients scaled by
+/// `c_lr − c_sr`). The attenuated pass's `M_g0` (nonzero only under a test
+/// defect), counters and checks are merged into the plain fit's; its force
+/// arrays are returned separately. The attenuated pass runs on a clone of the
+/// ledger as it was before the plain pass: its transient working set is
+/// charged against the same base, but the plain pass's live output (its
+/// `KFitGrad`, `n × n` per k plus `natoms`/`naux` × 3 arrays) is not counted
+/// in it.
+fn rsgdf_fit_pieces(
+    src: &KRsGdfGradSource<'_>,
+    (cell, prep, mesh, s_k): KGeom<'_>,
+    (dtot, spins): (&[Array2<C64>], &KSpins),
+    sc: &ExchScales,
+    mutation: Option<KGradMutation>,
+    ledger: &mut Ledger,
+) -> Result<(KFitGrad, Option<KFitGrad>), FerricError> {
+    use KGradMutation as M;
+    let fm = KFitMutation {
+        rot: KRotKind::defect(rot_kind(mutation)),
+        aux_phase: mutation == Some(M::FitAuxPhase),
+        no_metric: mutation == Some(M::FitNoMetric),
+        no_g0: mutation == Some(M::FitNoG0),
+        serial_sr: mutation == Some(M::SerialDerivWalks),
+        split_gamma_kernel: mutation == Some(M::SplitGammaKernel),
+        split_full_g0: mutation == Some(M::SplitFullG0),
+        coulomb_scale: (sc.coulomb != 1.0).then_some(sc.coulomb),
+        ..Default::default()
+    };
+    let rsh = src.gdf.rsh_derivative(src.cfg.gdf.precision)?;
+    let c_full = rsh.map_or(1.0, |r| r.c_full);
+    let base = ledger.clone();
+    let exch_fit = spin_mutated(scaled_exch_terms(spins, sc.fit * c_full), mutation);
+    let mut fit = kpoint_fit_gradient(
+        src.gdf,
+        src.cfg,
+        cell,
+        prep,
+        src.aux,
+        mesh,
+        s_k,
+        dtot,
+        &exch_fit,
+        (FitMode::Coulomb, fm),
+        ledger,
+    )?;
+    let Some(att) = rsh.and_then(|r| r.attenuated) else {
+        return Ok((fit, None));
+    };
+    let coeff = if mutation == Some(M::RshFitNoScale) {
+        1.0
+    } else {
+        att.coeff
+    };
+    let (omega, gcut) = if mutation == Some(M::RshFitOmega0) {
+        let w0 = src.cfg.gdf.omega;
+        (
+            w0,
+            crate::rsgdf::kpoint::attenuated_gcut(w0, src.cfg.gdf.precision),
+        )
+    } else {
+        (att.omega, att.gcut)
+    };
+    let fa = KFitMutation {
+        keep_c0: mutation == Some(M::RshFitKeepC0),
+        no_metric: fm.no_metric,
+        ..Default::default()
+    };
+    let exch_att = spin_mutated(scaled_exch_terms(spins, sc.fit * coeff), mutation);
+    let mut l2 = base;
+    let a = kpoint_fit_gradient(
+        att.fit,
+        src.cfg,
+        cell,
+        prep,
+        src.aux,
+        mesh,
+        s_k,
+        dtot,
+        &exch_att,
+        (FitMode::Attenuated { omega, gcut }, fa),
+        &mut l2,
+    )?;
+    for (m, x) in fit.mg0.iter_mut().zip(&a.mg0) {
+        *m += x;
+    }
+    fit.n_dropped_max = fit.n_dropped_max.max(a.n_dropped_max);
+    fit.b_norm_mismatch = fit.b_norm_mismatch.max(a.b_norm_mismatch);
+    fit.n_chunks += a.n_chunks;
+    fit.n_k_lr += a.n_k_lr;
+    Ok((fit, Some(a)))
+}
+
 /// Assemble the k-point gradient from the per-spin `D(k)`/`F(k)`, hcore and J/K derivative
 /// pieces; `vm` is the Madelung shift and `exch_scale` the exact-exchange
 /// fraction `a` of the energy (`1` = Hartree-Fock, bitwise the unscaled
@@ -1240,7 +1408,6 @@ pub(crate) fn assemble(
     // dense walks and the RS-GDF fit take them separately so a test defect can
     // leave exactly one of the two unscaled.
     let exch_dense = spin_mutated(scaled_exch_terms(&spins, sc.dense), mutation);
-    let exch_fit = spin_mutated(scaled_exch_terms(&spins, sc.fit), mutation);
     let j_scale = sc.coulomb;
     let mk: Vec<Array2<C64>> = (0..nk)
         .map(|k| {
@@ -1265,25 +1432,18 @@ pub(crate) fn assemble(
     drop(mk);
 
     // --- RS-GDF fitted two-electron pieces first (M_g0 enters the dS pass).
-    let fit = match jk {
-        KGradJk::Dense(_) => None,
+    let (fit, fit_att) = match jk {
+        KGradJk::Dense(_) => (None, None),
         KGradJk::RsGdf(src) => {
-            let fm = KFitMutation {
-                rot: KRotKind::defect(rot_kind(mutation)),
-                aux_phase: mutation == Some(KGradMutation::FitAuxPhase),
-                no_metric: mutation == Some(KGradMutation::FitNoMetric),
-                no_g0: mutation == Some(KGradMutation::FitNoG0),
-                serial_sr: mutation == Some(KGradMutation::SerialDerivWalks),
-                split_gamma_kernel: mutation == Some(KGradMutation::SplitGammaKernel),
-                split_full_g0: mutation == Some(KGradMutation::SplitFullG0),
-                lr_wrong_q: false,
-                no_loewner_kd: false,
-                cross_spin: false,
-                coulomb_scale: (sc.coulomb != 1.0).then_some(sc.coulomb),
-            };
-            Some(kpoint_fit_gradient(
-                src.gdf, src.cfg, cell, prep, src.aux, mesh, s_k, &dtot, &exch_fit, fm, ledger,
-            )?)
+            let (f, a) = rsgdf_fit_pieces(
+                src,
+                (cell, prep, mesh, s_k),
+                (&dtot, &spins),
+                &sc,
+                mutation,
+                ledger,
+            )?;
+            (Some(f), a)
         }
     };
     let w_g0 = fit.as_ref().map(|f| fold_real(&f.mg0, &ph_d, 1.0));
@@ -1431,6 +1591,7 @@ pub(crate) fn assemble(
     let (mut g_j, mut g_k) = (zeros(), zeros());
     let n_k_eri: usize;
     let mut fit_parts = [zeros(), zeros(), zeros(), zeros(), zeros(), zeros()];
+    let mut g_fit_att = zeros();
     let mut fit_dropped_max = None;
     let mut fit_checks = None;
     match jk {
@@ -1460,6 +1621,9 @@ pub(crate) fn assemble(
                 FerricError::General("k gradient: RS-GDF pieces missing (internal)".into())
             })?;
             let fold = |x: &Array2<f64>| fold_aux(x, src.aux, None, natoms);
+            if let Some(a) = &fit_att {
+                g_fit_att = &(&a.orb_lr + &fold(&a.aux_lr)) + &fold(&a.metric_lr);
+            }
             fit_parts = [
                 f.orb_sr.clone(),
                 f.orb_lr.clone(),
@@ -1505,6 +1669,7 @@ pub(crate) fn assemble(
         + &f_aux_lr
         + &f_met_sr
         + &f_met_lr
+        + &g_fit_att
         + &g_fit_g0;
     if grad.iter().any(|v| !v.is_finite()) {
         return Err(FerricError::General("k gradient: non-finite force".into()));
@@ -1533,6 +1698,7 @@ pub(crate) fn assemble(
             fit_metric_sr: f_met_sr,
             fit_metric_lr: f_met_lr,
             fit_g0: g_fit_g0,
+            fit_attenuated: g_fit_att,
             ecp: g_ecp,
         },
         commutator,
@@ -1770,6 +1936,98 @@ fn ecp_force_walk(
         ecp_mut,
         ledger,
     )
+}
+
+/// TEST/DIAGNOSTIC: the force of the fitted closed-shell exchange energy
+/// `E_x = −(1/4N_k) Σ_k Re tr[D(k) K(k)]` (no Madelung term) of ONE RS-GDF
+/// fit at FIXED total densities `dtot` (Hermitian, one per mesh point): the
+/// fit derivative alone, no SCF. `attenuated = None`: `src.gdf` is a plain
+/// (unsplit) [`KRsGdf::build`] fit, its `J3` G = 0 term through `dS` over the
+/// hcore pair images of `hcore_cfg`. `Some((ω, gcut))`: `src.gdf` is
+/// [`KRsGdf::build_attenuated_only`] at that `ω` and cut. The anchors of the
+/// attenuated derivative (the `ω → ∞` plain-fit limit, FD of the fixed-density
+/// energy) run on this entry.
+#[doc(hidden)]
+#[allow(clippy::too_many_arguments)]
+pub fn kpoint_fit_exchange_gradient_fixed_d(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    mesh: &KPointMesh,
+    hcore_cfg: &PeriodicHcoreConfig,
+    s_k: &[Array2<C64>],
+    src: KRsGdfGradSource<'_>,
+    dtot: &[Array2<C64>],
+    attenuated: Option<(f64, f64)>,
+) -> Result<Array2<f64>, FerricError> {
+    let n = prep.nbasis();
+    let nk = mesh.nk();
+    if dtot.len() != nk || dtot.iter().any(|d| d.dim() != (n, n)) {
+        return Err(FerricError::General(format!(
+            "kpoint_fit_exchange_gradient_fixed_d: expected {nk} density matrices of {n}×{n}"
+        )));
+    }
+    check_aux_map(cell, src.aux, None)?;
+    let natoms = cell.positions().len();
+    let mut ledger = Ledger::new(crate::budget::resolve(src.cfg.gdf.budget_bytes));
+    let mode = match attenuated {
+        None => FitMode::Coulomb,
+        Some((omega, gcut)) => FitMode::Attenuated { omega, gcut },
+    };
+    // Exchange only: the Coulomb density term vanishes with a zero total.
+    let zero: Vec<Array2<C64>> = (0..nk).map(|_| Array2::zeros((n, n))).collect();
+    let f = kpoint_fit_gradient(
+        src.gdf,
+        src.cfg,
+        cell,
+        prep,
+        src.aux,
+        mesh,
+        s_k,
+        &zero,
+        &[(0.5, dtot)],
+        (mode, KFitMutation::default()),
+        &mut ledger,
+    )?;
+    let fold = |x: &Array2<f64>| fold_aux(x, src.aux, None, natoms);
+    let mut g = &(&f.orb_sr + &f.orb_lr)
+        + &fold(&(&(&f.aux_sr + &f.aux_lr) + &(&f.metric_sr + &f.metric_lr)));
+    if f.smooth_g0.is_some() {
+        return Err(FerricError::General(
+            "kpoint_fit_exchange_gradient_fixed_d: a range-split build is not supported here"
+                .into(),
+        ));
+    }
+    if f.mg0.iter().any(|m| m.iter().any(|z| z.norm() != 0.0)) {
+        let moduli = mesh.residue_moduli();
+        let nr = moduli[0] * moduli[1] * moduli[2];
+        let ph: Vec<Vec<C64>> = (0..nk)
+            .map(|k| {
+                (0..nr)
+                    .map(|r| mesh.phase(k, residue_coords(r, moduli)))
+                    .collect()
+            })
+            .collect();
+        let w = fold_real(&f.mg0, &ph, 1.0);
+        let images = hcore_pair_images(cell, prep, hcore_cfg.precision, &mut ledger)?;
+        let b = cell.reciprocal();
+        let (sh2at, dims, offs) = (
+            prep.shell_to_atom().to_vec(),
+            prep.shell_dims().to_vec(),
+            prep.shell_offsets().to_vec(),
+        );
+        let mut eng = Engine::new_1e_deriv(ffi::OP_OVERLAP, prep, ONE_E_ENGINE_PRECISION)?;
+        for l in &images {
+            let wr = &w[residue_index(lattice_coords(&b, l), moduli)];
+            for s1 in 0..prep.nshells() {
+                for s2 in 0..prep.nshells() {
+                    if let Some(blk) = eng.compute_1e_deriv_block_shifted(prep, s1, s2, *l)? {
+                        add_pair_deriv(&mut g, blk, wr, &dims, &offs, &sh2at, s1, s2);
+                    }
+                }
+            }
+        }
+    }
+    Ok(g)
 }
 
 /// TEST/DIAGNOSTIC: the periodic-ECP force of the k energy `(1/N_k) Σ_k
