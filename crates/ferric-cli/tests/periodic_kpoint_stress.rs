@@ -4,7 +4,8 @@
 //! * EXACTNESS ANCHOR: the 3x3 tensor read from `run_end.extra` (full f64
 //!   precision, not the printed digits) equals the library
 //!   `ferric_pbc::kpoint_*_stress` of the SAME cell, mesh, grid and configs
-//!   BIT FOR BIT, for RHF, UHF, ROHF, RKS (PBE, PBE0), UKS and ROKS on a
+//!   BIT FOR BIT, for RHF, UHF, ROHF, RKS (PBE, PBE0; TPSS Gamma-centred
+//!   only), UKS and ROKS on a
 //!   Gamma-centred AND a shifted (Monkhorst-Pack, `centring = "mp"`) 1x1x2
 //!   mesh (H2 / H3 doublet, STO-3G, dense J/K, small XC grid), the
 //!   range-separated RKS-HSE06 and the open-shell UKS-SCAN / r2SCAN stress
@@ -718,6 +719,18 @@ fn stress_refusals_name_the_toml_key() {
         e.contains("[cell] stress = true") && e.contains("no analytic stress"),
         "{e}"
     );
+}
+
+/// Closed-shell TPSS (issue #492): its stress passes the stress gate and the
+/// CLI tensor equals the library `kpoint_rks_stress` bit for bit.
+#[test]
+fn rks_tpss_gamma_centred() {
+    let tpss = Case {
+        tag: "rks-tpss",
+        route: Route::Rks,
+        functional: "TPSS",
+    };
+    check_case(tpss, SMALL, "gamma", MeshCentring::Gamma);
 }
 
 const ROKS_PBE0: Case = Case {

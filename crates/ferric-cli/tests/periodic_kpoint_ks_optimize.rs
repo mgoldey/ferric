@@ -13,6 +13,10 @@
 //!   gradient equals the library force at the printed final geometry.
 //! * Refusals with exact wording: meta-GGA, range-separated hybrid on RS-GDF,
 //!   open-shell meta-GGA on RS-GDF, range_split, `gdf_omega = "auto"`.
+//! * Gamma point (no kmesh), meta-GGA (issue #492): the printed final force of
+//!   a TPSS optimize equals the routed library force
+//!   (`gamma_mgga::gamma_rks_mgga_gradient` on `gamma_rks`), same bar; a
+//!   meta-GGA optimize on `jk = "rsgdf"` is refused before any SCF.
 //!
 //! The explicit `neighbour_cutoff` is shared by the CLI input and the library
 //! grid: the XC energy has a hard cutoff and the default depends on the cell.
@@ -471,22 +475,11 @@ fn unsupported_kohn_sham_routes_are_refused_with_exact_messages() {
         "{e}"
     );
     // Hybrid meta-GGA and the raw TPSS component names stay refused by the
-    // energy gate; TPSS passes the energy gate (closed-shell energy only) and
-    // is refused by the force gate: only the pure SCAN / r2SCAN have a force.
+    // energy gate (TPSS itself has a force: `printed_force_equals_the_library_force_for_meta_gga`).
     for f in ["TPSSh", "MGGA_X_TPSS", "wB97X-V"] {
         let e = refused(&run(&loose_input("mgga-ref", f, "[1, 1, 2]", DENSE)), f);
         assert!(e.contains("[cell] kmesh with functional"), "{f}: {e}");
     }
-    let e = refused(
-        &run(&loose_input("tpss", "TPSS", "[1, 1, 2]", DENSE)),
-        "tpss",
-    );
-    assert!(
-        e.contains(
-            "TPSS: closed-shell energy only; the k-point meta-GGA force and stress cover SCAN / r2SCAN"
-        ),
-        "{e}"
-    );
     // Open-shell Kohn-Sham with a meta-GGA (ksdft with multiplicity > 1 is
     // UKS): the force runs on the dense-AFT J/K (periodic_rsh_open_mgga_derivs.rs);
     // on RS-GDF the energy gate already names the J/K.
@@ -549,13 +542,15 @@ fn an_ecp_cell_passes_the_k_point_kohn_sham_force_gate() {
     );
 }
 
-/// Pure meta-GGAs (SCAN, r2SCAN) pass the energy and force gates: the printed
-/// final force equals `kpoint_rks_gradient` on the same cell, dense and RS-GDF.
+/// Pure meta-GGAs (SCAN, r2SCAN, TPSS) pass the energy and force gates: the
+/// printed final force equals `kpoint_rks_gradient` on the same cell, dense
+/// and RS-GDF.
 #[test]
 fn printed_force_equals_the_library_force_for_meta_gga() {
     for (tag, f, kmesh, jk, rsgdf) in [
         ("scan", "SCAN", "[1, 1, 3]", DENSE, false),
         ("r2scan", "r2SCAN", "[1, 1, 2]", RSGDF, true),
+        ("tpss", "TPSS", "[1, 1, 2]", DENSE, false),
     ] {
         let o = run(&loose_input(tag, f, kmesh, jk));
         let out = ok(&o, tag);
@@ -564,7 +559,10 @@ fn printed_force_equals_the_library_force_for_meta_gga() {
         let at = printed_atoms(&out, 2);
         let lib = Lib {
             functional: f,
-            mesh: if rsgdf { [1, 1, 2] } else { [1, 1, 3] },
+            mesh: match kmesh {
+                "[1, 1, 3]" => [1, 1, 3],
+                _ => [1, 1, 2],
+            },
             exxdiv_scf: ExxDiv::Ewald,
             rsgdf,
             cutoff: true,
@@ -590,4 +588,126 @@ fn printed_force_equals_the_library_force_for_meta_gga() {
             "{f}: functional mutant not detected"
         );
     }
+}
+
+// ------------------------------------------------- Gamma point, meta-GGA
+
+/// A Gamma-point (no kmesh) RKS optimize input, otherwise as [`run`].
+fn run_gamma(tag: &str, functional: &str, jk: &str) -> Output {
+    let dir = scratch(tag);
+    let xyz_path = dir.join("m.xyz");
+    std::fs::write(&xyz_path, xyz(&H2_OFFAXIS)).unwrap();
+    let toml = dir.join("in.toml");
+    std::fs::write(
+        &toml,
+        format!(
+            r#"[molecule]
+xyz = "{xyz}"
+[basis]
+name = "sto-3g"
+[method]
+kind = "ksdft"
+task = "optimize"
+[dft]
+functional = "{functional}"
+[cell]
+unit = "bohr"
+lattice = [[{a}, 0.0, 0.0], [0.0, {a}, 0.0], [0.0, 0.0, {a}]]
+exxdiv = "ewald"
+omega = {OMEGA}
+n_radial = {N_RADIAL}
+n_angular = {N_ANGULAR}
+neighbour_cutoff = {CUTOFF_BOHR}
+{jk}
+[optimize]
+{LOOSE}
+"#,
+            xyz = xyz_path.display(),
+            a = A_BOHR,
+        ),
+    )
+    .unwrap();
+    Command::new(ferric_cli_bin())
+        .arg(&toml)
+        .current_dir(workspace_root())
+        .env("OPENBLAS_NUM_THREADS", "1")
+        .output()
+        .expect("run ferric-cli")
+}
+
+/// The routed Gamma meta-GGA force (`gamma_rks` + `gamma_rks_mgga_gradient`)
+/// at `atoms_bohr`, with the CLI's configs restated.
+fn gamma_library_gradient(atoms_bohr: &[[f64; 3]], functional: &str) -> Vec<f64> {
+    use ferric_pbc::dense_aft::{
+        DenseAftEri, DEFAULT_DENSE_AFT_MAX_BYTES, DEFAULT_DENSE_AFT_PRECISION,
+    };
+    use ferric_pbc::gamma_mgga::{gamma_rks_mgga_gradient, GammaMggaDerivConfig};
+    let dir = scratch("glib");
+    let p = dir.join("l.xyz");
+    std::fs::write(&p, xyz(atoms_bohr)).unwrap();
+    let mol = Molecule::load_xyz_with_charge(p.to_str().unwrap(), 0, 1).expect("xyz");
+    let bs = basis::bundled("sto-3g").unwrap();
+    let lat = [[A_BOHR, 0.0, 0.0], [0.0, A_BOHR, 0.0], [0.0, 0.0, A_BOHR]];
+    let cell = Cell::new(mol, lat).expect("cell");
+    let prep = PreparedBasis::new(cell.mol(), &bs).unwrap();
+    let hcfg = PeriodicHcoreConfig::with_omega(OMEGA);
+    let hc = ferric_pbc::hcore::periodic_hcore(&cell, &prep, &hcfg).unwrap();
+    let eri = DenseAftEri::build(
+        &cell,
+        &prep,
+        &hc.s,
+        ExxDiv::Ewald,
+        DEFAULT_DENSE_AFT_PRECISION,
+        DEFAULT_DENSE_AFT_MAX_BYTES,
+    )
+    .unwrap();
+    let mut c = ferric_pbc::dft::GammaRksConfig::new(functional);
+    c.grid = PeriodicGridConfig::with_size(N_RADIAL, N_ANGULAR);
+    c.grid.neighbour_cutoff = Some(CUTOFF_BOHR);
+    c.exxdiv = ExxDiv::Ewald;
+    c.scf.use_sad_guess = false;
+    let r = ferric_pbc::dft::gamma_rks(
+        &cell,
+        &prep,
+        &hc,
+        ferric_pbc::uhf::GammaUhfIntegrals::DenseAft(&eri),
+        &c,
+    )
+    .expect("gamma_rks");
+    assert!(r.scf.converged);
+    let cfg = GammaMggaDerivConfig::for_binding(DEFAULT_DENSE_AFT_MAX_BYTES, None);
+    gamma_rks_mgga_gradient(&cell, &prep, &hcfg, &r.scf, &c, &cfg)
+        .expect("gamma_rks_mgga_gradient")
+        .grad
+        .iter()
+        .copied()
+        .collect()
+}
+
+/// Gamma-point TPSS optimize (issue #492): the printed final force equals the
+/// routed library force at the printed geometry (bar as the k-point rows);
+/// MUTANT: the SCAN force at the same geometry misses it. A meta-GGA optimize
+/// on RS-GDF is refused before any SCF.
+#[test]
+fn gamma_printed_force_equals_the_routed_library_force_for_tpss() {
+    let out = ok(&run_gamma("gamma-tpss", "TPSS", DENSE), "gamma-tpss");
+    let g = printed_gradient(&out, 2);
+    let at = printed_atoms(&out, 2);
+    assert!(
+        g.iter().fold(0.0_f64, |m, v| m.max(v.abs())) > 1e-3,
+        "trivial"
+    );
+    let d = max_diff(&g, &gamma_library_gradient(&at, "TPSS"));
+    eprintln!("Gamma TPSS CLI vs routed library force: {d:.2e}");
+    assert!(d < BAR, "{d:e}");
+    let bad = gamma_library_gradient(&at, "SCAN");
+    assert!(max_diff(&g, &bad) > 1e-4, "functional mutant not detected");
+    let e = refused(
+        &run_gamma("gamma-tpss-gdf", "TPSS", RSGDF),
+        "gamma-tpss-gdf",
+    );
+    assert!(
+        e.contains("method.task = \"optimize\" with [cell]") && e.contains("dense-AFT J only"),
+        "{e}"
+    );
 }

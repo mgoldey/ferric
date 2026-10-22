@@ -483,11 +483,17 @@ impl GammaSystem {
 /// Pre-integral checks of `run_rks_gamma` / `run_uks_gamma` beyond the
 /// functional gate:
 /// `range_split` with a range-separated hybrid (it would shape only the Gamma
-/// J) and the dense tensor budget, which counts the attenuated tensors.
+/// J) and the dense tensor budget, which counts the attenuated tensors (and
+/// the 1x1x1 kernels of a meta-GGA force / stress; the RS-GDF refusal of
+/// that force is `check_gamma_rks_request`'s).
 fn gamma_rks_preflight(s: &PbcSetup, functional: &str) -> PyResult<()> {
     ferric_pbc::gamma_rsh::check_range_split(functional, s.range_split.is_some())
         .map_err(|e| val_err(format!("{}: {e}", s.fname)))?;
-    gamma_dense_preflight(s, ferric_pbc::rsh::is_range_separated(functional))
+    // A routed meta-GGA derivative builds the same 1x1x1 complex kernels as
+    // the attenuated exchange (32 nao^4 bytes on top of the Gamma ERI).
+    let extra = ferric_pbc::rsh::is_range_separated(functional)
+        || (s.derivs.any() && ferric_pbc::dft::is_meta_gga_name(functional));
+    gamma_dense_preflight(s, extra)
 }
 
 fn gamma_dense_preflight(s: &PbcSetup, range_separated: bool) -> PyResult<()> {
@@ -670,6 +676,9 @@ pub(crate) struct DerivCtx<'a> {
     pub(crate) scf: &'a ScfResult,
     /// Derivative memory budget (`None` = ferric's unified budget).
     pub(crate) budget_bytes: Option<usize>,
+    /// Dense-AFT cap (`max_eri_gb`) of the extra 1x1x1 kernels a routed
+    /// meta-GGA derivative builds (`ferric_pbc::gamma_mgga`).
+    pub(crate) max_eri_bytes: usize,
 }
 
 /// `dE/dR` (natoms x 3, Hartree/Bohr per cell) and `σ = (1/Ω) dE/dε`
@@ -706,6 +715,11 @@ pub(crate) fn gamma_derivatives(
         ..Default::default()
     };
     let (cell, prep, hcfg, hc, scf) = (c.cell, c.prep, c.hcfg, c.hc, c.scf);
+    if let M::Rks(d) = m {
+        if ferric_pbc::dft::is_meta_gga_name(&d.functional) {
+            return gamma_mgga_derivatives(c, d, want);
+        }
+    }
     let mut out = Derivs::default();
     if want.gradient {
         let g = match c.jk {
@@ -753,6 +767,32 @@ pub(crate) fn gamma_derivatives(
     Ok(out)
 }
 
+/// The closed-shell Gamma meta-GGA force / stress: the Gamma SCF routed
+/// through the 1x1x1 k-point derivatives (`ferric_pbc::gamma_mgga`, dense-AFT
+/// J only; the request gate refuses RS-GDF before the SCF and the routed Fock
+/// guard refuses it after).
+fn gamma_mgga_derivatives(
+    c: &DerivCtx<'_>,
+    d: &GammaRksConfig,
+    want: DerivRequest,
+) -> Result<Derivs, FerricError> {
+    use ferric_pbc::gamma_mgga::{gamma_rks_mgga_gradient, gamma_rks_mgga_stress};
+    if let DerivJk::Fit(_) = c.jk {
+        ferric_pbc::dft::check_gamma_mgga_deriv_jk(&d.functional, true)?;
+    }
+    let cfg =
+        ferric_pbc::gamma_mgga::GammaMggaDerivConfig::for_binding(c.max_eri_bytes, c.budget_bytes);
+    let mut out = Derivs::default();
+    if want.gradient {
+        out.gradient = Some(gamma_rks_mgga_gradient(c.cell, c.prep, c.hcfg, c.scf, d, &cfg)?.grad);
+    }
+    if want.stress {
+        let st = gamma_rks_mgga_stress(c.cell, c.prep, c.hcfg, c.scf, d, &cfg)?;
+        out.stress = Some(Array2::from_shape_fn((3, 3), |(a, b)| st.sigma[a][b]));
+    }
+    Ok(out)
+}
+
 /// [`gamma_derivatives`] on a [`GammaSystem`] built by [`gamma_system`].
 fn system_derivatives(
     s: &PbcSetup,
@@ -781,6 +821,7 @@ fn system_derivatives(
         jk,
         scf,
         budget_bytes: s.budget_bytes,
+        max_eri_bytes: s.max_eri_bytes,
     };
     gamma_derivatives(&ctx, m, s.derivs)
 }
@@ -1654,9 +1695,11 @@ fn gamma_rsh_derivatives(
 /// built with its gradient pieces). Each is `None` when not requested. The
 /// SCF must converge (a derivative at a non-stationary density is refused).
 ///
-/// Meta-GGA: only the pure SCAN / r2SCAN / TPSS (energy; with_gradient /
-/// with_stress with a meta-GGA is a ValueError, use `run_rks_kpts` on a
-/// [1,1,1] mesh for SCAN / r2SCAN forces).
+/// Meta-GGA: only the pure SCAN / r2SCAN / TPSS. Their with_gradient /
+/// with_stress route the Gamma SCF through the 1x1x1 k-point force / stress
+/// (`ferric_pbc::gamma_mgga`) on the dense-AFT J; with jk="rsgdf" they are a
+/// ValueError. The extra 1x1x1 kernels (32 nao^4 bytes) count against
+/// `max_eri_gb`.
 ///
 /// Range-separated hybrids (HSE06, CAM-B3LYP, wB97X): J from the Gamma J/K,
 /// the attenuated K from the k = 0 point of the k-point range-separated
@@ -1726,8 +1769,8 @@ fn run_rks_gamma(
         stress: with_stress,
     };
     // Before any integral is built: the meta-GGA allowlist (SCAN / r2SCAN /
-    // TPSS energy, no Gamma meta-GGA force or stress) and the range-separated
-    // derivative J/K (dense AFT only).
+    // TPSS; their force / stress is the 1x1x1 route) and the meta-GGA and
+    // range-separated derivative J/K (dense AFT only).
     ferric_pbc::dft::check_gamma_rks_request(functional, s.derivs.any(), s.aux.is_some())
         .map_err(|e| val_err(format!("{fname}: functional {functional:?}: {e}")))?;
     s.set_sr_knobs(range_split, sr_column_rotation)?;
@@ -2792,7 +2835,7 @@ impl KKsKind {
 /// everywhere (ROKS through the library `resolve_kroks_functional`); the pure
 /// meta-GGAs SCAN / r2SCAN on RKS and UKS (the UKS one is the library
 /// `resolve_kuks_functional`; its meta-GGA needs the dense-AFT J/K, which
-/// `solve_kuks` checks); TPSS on RKS only (energy only). The force and stress
+/// `solve_kuks` checks); TPSS on RKS only. The force and stress
 /// gate is the library allowlist `ferric_pbc::kxcgrad::check_deriv_functional`,
 /// independent of the energy gate, so widening the energy path cannot
 /// silently enable a derivative.

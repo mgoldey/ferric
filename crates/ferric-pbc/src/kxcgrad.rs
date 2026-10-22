@@ -169,15 +169,15 @@
 //! evaluated with τ, unchanged. The GGA `σ` contraction is independent of the
 //! tau term (both use `m^i`; the force keeps them as separate sums).
 //!
-//! The Gamma periodic path has meta-GGA only for the closed-shell energy
-//! (`gamma_rks`; no Gamma tau force or stress), so the force anchors are the
-//! fixed-`D` central difference of the
-//! XC energy (no SCF noise), FD of the SCF energy, and the explicit
-//! supercell identity on a non-TRIM mesh (`tests/pbc_kxcgrad_mgga.rs`).
-//! SCAN and r2SCAN are validated end to end. TPSS has a validated closed-shell
-//! energy but no force or stress: its tau kernels are checked here only by the
-//! fixed-`D` finite difference on the raw components `MGGA_X_TPSS` /
-//! `MGGA_C_TPSS`, and [`check_deriv_functional`] refuses it. No hybrid
+//! The Gamma-point meta-GGA force and stress are THIS code on the 1x1x1 mesh
+//! ([`crate::gamma_mgga`]), so they are not an independent oracle; the force
+//! anchors are the fixed-`D` central difference of the XC energy (no SCF
+//! noise), FD of the SCF energy, and the explicit supercell identity on a
+//! non-TRIM mesh (`tests/pbc_kxcgrad_mgga.rs`).
+//! SCAN, r2SCAN and TPSS are validated end to end for the closed shell
+//! (TPSS: FD of the TPSS SCF energy and the 1x1x1 = Gamma-route anchor, plus
+//! the fixed-`D` finite difference on its raw components `MGGA_X_TPSS` /
+//! `MGGA_C_TPSS`); open-shell TPSS is refused by the UKS gates. No hybrid
 //! meta-GGA resolves ([`ferric_dft::libxc::xc_def_from_name`] rejects
 //! `HYB_MGGA_*`), so there is nothing for the exchange fraction to compose
 //! with.
@@ -978,7 +978,8 @@ impl DerivSpin {
 /// * Every family: LDA, GGA and GLOBAL hybrid functionals (every component a
 ///   `Lda`, `Gga` or `HybridGga` libxc family, no VV10, no mixing weights such
 ///   as a double hybrid's), on either J/K.
-/// * RKS: the pure meta-GGAs SCAN and r2SCAN (either J/K), and the
+/// * RKS: the pure meta-GGAs SCAN and r2SCAN (either J/K) and TPSS (dense-AFT
+///   J/K only; [`is_validated_mgga_deriv`]), and the
 ///   validated range-separated hybrids ([`is_validated_rsh_deriv`]: HSE06,
 ///   CAM-B3LYP) on the dense-AFT J/K
 ///   ([`kpoint_rks_gradient`], [`crate::kxcstress::kpoint_rks_stress`]; the
@@ -989,7 +990,7 @@ impl DerivSpin {
 ///   [`crate::kuxcstress::kpoint_uks_stress`]).
 /// * ROKS: nothing beyond the common set (its SCF has no tau term).
 ///
-/// Refused by name: TPSS (closed-shell energy only), hybrid meta-GGA,
+/// Refused by name: TPSS on RS-GDF and on UKS / ROKS, hybrid meta-GGA,
 /// open-shell range-separated hybrids, range-separated hybrids on RS-GDF (not
 /// wired yet).
 /// The open-shell refusal is a binding decision, not a library gap for the
@@ -1004,12 +1005,6 @@ pub fn check_deriv_functional(
     functional: &str,
 ) -> Result<(), FerricError> {
     let err = |m: String| Err(FerricError::General(format!("{functional}: {m}")));
-    if is_validated_mgga_energy(functional) && !is_validated_mgga(functional) {
-        return err(
-            "closed-shell energy only; the k-point meta-GGA force and stress cover SCAN / r2SCAN"
-                .into(),
-        );
-    }
     let (xc, exx, rsh) = resolve_periodic_functional_rsh(functional)?;
     if rsh.is_some() {
         return match (spin, rsgdf) {
@@ -1027,7 +1022,7 @@ pub fn check_deriv_functional(
             )),
         };
     }
-    if is_validated_mgga(functional) {
+    if is_validated_mgga_deriv(functional) {
         let pure = exx == 0.0
             && xc.vv10.is_none()
             && xc.weights.is_none()
@@ -1035,13 +1030,28 @@ pub fn check_deriv_functional(
                 .funcs
                 .iter()
                 .all(|f| matches!(f.family(), FunctionalFamily::MetaGga));
+        // SCAN / r2SCAN: closed and open shell, either J/K (UKS: dense only).
+        // TPSS: closed shell, dense-AFT J only.
+        let scan_family = is_validated_mgga(functional);
         return match (spin, rsgdf) {
             _ if !pure => err(
-                "the k-point meta-GGA force and stress cover the pure SCAN and r2SCAN \
+                "the k-point meta-GGA force and stress cover the pure SCAN, r2SCAN and TPSS \
                  functionals only"
                     .into(),
             ),
-            (DerivSpin::Restricted, _) | (DerivSpin::Unrestricted, false) => Ok(()),
+            (DerivSpin::Restricted, false) => Ok(()),
+            (DerivSpin::Restricted, true) if scan_family => Ok(()),
+            (DerivSpin::Restricted, true) => err(format!(
+                "the k-point {functional} force and stress are validated on the dense-AFT J \
+                 only (jk = \"dense\"); on jk = \"rsgdf\" only SCAN / r2SCAN have meta-GGA \
+                 derivatives"
+            )),
+            (DerivSpin::Unrestricted, _) if !scan_family => err(
+                "the open-shell (UKS) meta-GGA force and stress cover SCAN / r2SCAN only \
+                 (TPSS is closed-shell only)"
+                    .into(),
+            ),
+            (DerivSpin::Unrestricted, false) => Ok(()),
             (DerivSpin::Unrestricted, true) => err(
                 "the open-shell (UKS) meta-GGA force and stress run on the dense-AFT J/K only; \
                  use jk = \"dense\""
@@ -1062,8 +1072,8 @@ pub fn check_deriv_functional(
         spin.label(),
         match spin {
             DerivSpin::Restricted => {
-                "LDA, GGA, global-hybrid, SCAN / r2SCAN and range-separated hybrid (dense-AFT \
-                 J/K) functionals only (no VV10, double hybrid or other meta-GGA)"
+                "LDA, GGA, global-hybrid, SCAN / r2SCAN / TPSS and range-separated hybrid \
+                 (dense-AFT J/K) functionals only (no VV10, double hybrid or other meta-GGA)"
             }
             DerivSpin::Unrestricted => {
                 "LDA, GGA, global-hybrid and SCAN / r2SCAN (dense-AFT J/K) functionals only (no \
@@ -1113,18 +1123,31 @@ pub fn check_kpoint_deriv_functional(
 }
 
 /// SCAN and r2SCAN: the meta-GGAs whose k-point SCF, force and stress are
-/// validated end to end. TPSS is validated for the closed-shell ENERGY only
-/// ([`is_validated_mgga_energy`]); the derivative allowlist excludes it.
+/// validated end to end for BOTH closed and open shell (the k-point UKS SCF,
+/// force and stress gates use this). TPSS is closed-shell only
+/// ([`is_validated_mgga_energy`], [`is_validated_mgga_deriv`]).
 pub fn is_validated_mgga(functional: &str) -> bool {
     functional.eq_ignore_ascii_case("SCAN") || functional.eq_ignore_ascii_case("r2SCAN")
 }
 
 /// The meta-GGAs whose closed-shell k-point and Gamma-point ENERGY is pinned
 /// to PySCF: [`is_validated_mgga`] plus TPSS (the friendly name, i.e.
-/// `MGGA_X_TPSS` + `MGGA_C_TPSS`). Forces, stress and open shell keep the
-/// narrower [`is_validated_mgga`].
+/// `MGGA_X_TPSS` + `MGGA_C_TPSS`). Open shell keeps the narrower
+/// [`is_validated_mgga`].
 pub fn is_validated_mgga_energy(functional: &str) -> bool {
     is_validated_mgga(functional) || functional.eq_ignore_ascii_case("TPSS")
+}
+
+/// The meta-GGAs whose CLOSED-SHELL force and stress (k-point RKS, and the
+/// Gamma-point RKS routed through the 1x1x1 mesh, [`crate::gamma_mgga`]) are
+/// validated: SCAN, r2SCAN and TPSS (`tests/pbc_kxcgrad_mgga.rs`,
+/// `tests/pbc_kxcstress_mgga.rs`, `tests/pbc_gamma_mgga_derivs.rs`). Listed
+/// on its own so the derivative allowlist cannot widen with the energy one;
+/// open shell keeps [`is_validated_mgga`].
+pub fn is_validated_mgga_deriv(functional: &str) -> bool {
+    ["SCAN", "r2SCAN", "TPSS"]
+        .iter()
+        .any(|f| functional.eq_ignore_ascii_case(f))
 }
 
 /// Resolve the functional and its global exact-exchange fraction `a`; refuse
@@ -1206,9 +1229,10 @@ pub(crate) fn resolve_global_or_rsh(
 /// Refuses (typed errors) J/K whose range separation is not the functional's, VV10/double hybrids, a hybrid without `cfg.exxdiv`, and an SCF whose Fock the rebuilt
 /// `h + J − (a/2) K + V_xc` does not reproduce.
 ///
-/// The meta-GGA force is validated for SCAN / r2SCAN only. This library entry
-/// also accepts TPSS (and its raw components) UNVALIDATED; the Python and CLI
-/// bindings gate it out with [`check_deriv_functional`].
+/// The meta-GGA force is validated for SCAN / r2SCAN / TPSS
+/// ([`is_validated_mgga_deriv`]). This library entry also accepts other pure
+/// meta-GGAs (e.g. raw `MGGA_*` component names) UNVALIDATED; the Python and
+/// CLI bindings gate them out with [`check_deriv_functional`].
 #[allow(clippy::too_many_arguments)]
 pub fn kpoint_rks_gradient(
     cell: &Cell,

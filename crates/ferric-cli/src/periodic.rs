@@ -1947,8 +1947,8 @@ fn k_force_uhf(x: &KForceCtx<'_>) -> Result<(f64, ndarray::Array2<f64>), FerricE
 fn k_force_rks(x: &KForceCtx<'_>) -> Result<(f64, ndarray::Array2<f64>), FerricError> {
     let (plan, s) = (x.plan, x.s);
     let c = krks_config(plan, s);
-    // The force's own allowlist (LDA / GGA / global hybrid / SCAN, r2SCAN /
-    // range-separated hybrid on dense J/K), independent of the energy gate in
+    // The force's own allowlist (LDA / GGA / global hybrid / SCAN, r2SCAN,
+    // TPSS / range-separated hybrid on dense J/K), independent of the energy gate in
     // `check_kpoint_support`.
     x.check_functional(DerivSpin::Restricted)?;
     let (r, kept) = solve_krks_keep(&s.cell, &s.prep, s.aux.as_ref(), &x.mesh, &c)?;
@@ -2625,6 +2625,18 @@ fn gamma_energy_and_gradient(
                 };
                 let g = ferric_pbc::gamma_rsh::gamma_rks_rsh_gradient(
                     cell, prep, hcfg, scf, &c, ex, &kg,
+                )?;
+                return Ok((scf.energy, g.grad));
+            }
+            if ferric_pbc::dft::is_meta_gga_name(&c.functional) {
+                // The Gamma meta-GGA force is the 1x1x1 k-point route (dense
+                // J only; `periodic_plan` refused RS-GDF).
+                let mcfg = ferric_pbc::gamma_mgga::GammaMggaDerivConfig::for_binding(
+                    max_eri_bytes(plan),
+                    budget_bytes(plan),
+                );
+                let g = ferric_pbc::gamma_mgga::gamma_rks_mgga_gradient(
+                    cell, prep, hcfg, scf, &c, &mcfg,
                 )?;
                 return Ok((scf.energy, g.grad));
             }

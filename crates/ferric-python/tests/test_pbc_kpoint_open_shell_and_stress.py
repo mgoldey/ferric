@@ -207,10 +207,11 @@ def test_rks_stress_trace_matches_isotropic_strain(basis, functional):
     print(f"RKS {functional} stress trace vs FD: {miss:.2e}")
 
 
-# Gamma meta-GGA (run_rks_gamma) is energy-only (forces and stress refuse it), so
-# SCAN has no 1x1x1 force/stress comparator here (its anchors are the FD tests
-# and the Rust suites).
-@pytest.mark.parametrize("functional", ["PBE", "PBE0"])
+# The Gamma meta-GGA force / stress (issue #492) are the Gamma SCF routed
+# through the 1x1x1 k-point derivatives, so the 1x1x1 binding is their glue
+# comparator here (independent anchors: FD of the Gamma energy in
+# crates/ferric-pbc/tests/pbc_gamma_mgga_derivs.rs).
+@pytest.mark.parametrize("functional", ["PBE", "PBE0", "SCAN", "TPSS"])
 def test_rks_one_point_mesh_equals_the_gamma_binding_force_and_stress(
     basis, functional
 ):
@@ -240,7 +241,7 @@ def test_rks_one_point_mesh_equals_the_gamma_binding_force_and_stress(
     assert dg < GAMMA_BAR and ds < GAMMA_BAR
 
 
-@pytest.mark.parametrize("functional", ["SCAN", "r2SCAN"])
+@pytest.mark.parametrize("functional", ["SCAN", "r2SCAN", "TPSS"])
 def test_meta_gga_force_matches_fd_of_own_energy(basis, functional):
     r = _rks(H2_ATOMS, basis, functional, with_gradient=True)
     assert r.converged and r.functional == functional

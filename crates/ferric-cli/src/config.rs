@@ -4777,7 +4777,7 @@ impl PeriodicRoute {
     /// library `resolve_kroks_functional`); the pure meta-GGAs SCAN / r2SCAN
     /// on the RKS and UKS routes (UKS through the library
     /// `resolve_kuks_functional`; its meta-GGA needs `jk = "dense"`, checked
-    /// in [`periodic_plan`]); TPSS on the RKS route only (energy only). The
+    /// in [`periodic_plan`]); TPSS on the RKS route only. The
     /// force, optimize and stress gates are the separate library allowlist
     /// `ferric_pbc::kxcgrad::check_deriv_functional`.
     pub fn check_kpoint_support(self, functional: Option<&str>) -> Result<(), String> {
@@ -5148,8 +5148,8 @@ fn deriv_spin(route: PeriodicRoute) -> ferric_pbc::kxcgrad::DerivSpin {
 /// widening the energy path cannot silently enable an optimize: at a k-point
 /// mesh the library `ferric_pbc::kxcgrad::check_deriv_functional` (per route
 /// and J/K, `rsgdf`); at the Gamma point the library request gates
-/// (`check_gamma_rks_request`: no meta-GGA force, range-separated hybrids on
-/// the dense-AFT J/K only; `check_gamma_uks_request` /
+/// (`check_gamma_rks_request`: the SCAN / r2SCAN / TPSS force through the
+/// 1x1x1 route and range-separated hybrids, both on the dense-AFT J/K only; `check_gamma_uks_request` /
 /// `check_gamma_roks_request`: no open-shell range-separated force).
 fn check_optimize_gate(
     route: PeriodicRoute,
@@ -6113,19 +6113,21 @@ kind = "ccsd"
         h2(kind, cell, extra).replace("kind = ", "task = \"optimize\"\nkind = ")
     }
 
-    /// Gamma-point meta-GGA (issue #355): SCAN / r2SCAN / TPSS energies
-    /// resolve, any other meta-GGA is refused at plan time, and optimize with a
-    /// meta-GGA is refused before any SCF (the Gamma XC gradient has no tau
-    /// term).
+    /// Gamma-point meta-GGA (issues #355, #492): SCAN / r2SCAN / TPSS energies
+    /// resolve and optimize passes the plan on the dense J (the force is the
+    /// 1x1x1 route), optimize with `jk = "rsgdf"` is refused before any SCF,
+    /// and any other meta-GGA is refused at plan time.
     #[test]
     fn gamma_meta_gga_gates() {
+        let rsgdf = "jk = \"rsgdf\"\nauxbasis = \"cc-pvdz-ri\"";
         for f in ["SCAN", "r2SCAN", "TPSS"] {
             let dft = format!("[dft]\nfunctional = \"{f}\"");
             assert_eq!(ok(&h2("ksdft", "", &dft)).route, PeriodicRoute::Rks, "{f}");
-            let e = err(&opt("ksdft", "", &dft));
+            assert!(ok(&opt("ksdft", "", &dft)).optimize, "{f}");
+            let e = err(&opt("ksdft", rsgdf, &dft));
             assert!(
                 e.contains("method.task = \"optimize\" with [cell]: ")
-                    && e.contains("no tau term")
+                    && e.contains("dense-AFT J only")
                     && e.contains(f),
                 "{f}: {e}"
             );
@@ -6278,7 +6280,7 @@ kind = "ccsd"
                     check_deriv_functional(spin, rsgdf, f)
                         .unwrap_or_else(|e| panic!("{spin:?} {rsgdf} {f}: {e}"));
                 }
-                for f in ["wB97X-V", "wB97X-L-V", "B2PLYP", "MGGA_X_TPSS", "TPSS"] {
+                for f in ["wB97X-V", "wB97X-L-V", "B2PLYP", "MGGA_X_TPSS"] {
                     assert!(
                         check_deriv_functional(spin, rsgdf, f).is_err(),
                         "{spin:?} {rsgdf} {f} must not pass the derivative allowlist"
@@ -6300,12 +6302,25 @@ kind = "ccsd"
             assert!(check_deriv_functional(DerivSpin::Unrestricted, true, f).is_err());
             assert!(check_deriv_functional(DerivSpin::RestrictedOpen, false, f).is_err());
         }
+        // TPSS: closed shell on the dense-AFT J/K only.
+        check_deriv_functional(DerivSpin::Restricted, false, "TPSS").unwrap();
+        for (spin, rsgdf) in [
+            (DerivSpin::Restricted, true),
+            (DerivSpin::Unrestricted, false),
+            (DerivSpin::Unrestricted, true),
+            (DerivSpin::RestrictedOpen, false),
+        ] {
+            assert!(
+                check_deriv_functional(spin, rsgdf, "TPSS").is_err(),
+                "{spin:?} {rsgdf} TPSS"
+            );
+        }
     }
 
     #[test]
     fn k_point_optimize_gates() {
         // Pure meta-GGAs now resolve at a mesh with optimize (closed shell).
-        for f in ["SCAN", "r2SCAN"] {
+        for f in ["SCAN", "r2SCAN", "TPSS"] {
             let dft = format!("[dft]\nfunctional = \"{f}\"");
             assert!(ok(&opt("ksdft", "kmesh = [1, 1, 2]", &dft)).optimize, "{f}");
         }

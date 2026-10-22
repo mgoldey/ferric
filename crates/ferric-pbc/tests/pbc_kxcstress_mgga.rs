@@ -1,5 +1,5 @@
 //! Analytic stress of the k-point closed-shell RKS energy for META-GGA
-//! functionals (SCAN, r2SCAN; `ferric_pbc::kxcstress`, tau strain term).
+//! functionals (SCAN, r2SCAN, TPSS; `ferric_pbc::kxcstress`, tau strain term).
 //!
 //! Derivation (the new piece). At fixed `D`, `tau = (1/2N_k) sum_k sum_i sum_{mu nu}
 //! D_{mu nu} d_i phi_mu (d_i phi_nu)^*`, and `d(d_i phi)/d eps_ab = m2[3i+a, b]`
@@ -33,14 +33,19 @@
 //!   components SCAN + r2SCAN ignored) and
 //!   `rsgdf_minus_dense_stress_transfers_from_pbe_to_scan` (the route
 //!   difference is the fit error, the same for SCAN as for PBE);
-//! * refusals, the Fock guard, production-wired mutants.
+//! * refusals, the Fock guard, production-wired mutants;
+//! * TPSS (issue #492): `uniform_grid_stress_matches_pyscf_fftdf_krks_stress_tpss`
+//!   (PySCF `krks_stress` accepts TPSS) and
+//!   `tpss_stress_matches_fd_of_the_scf_energy` (FD of the TPSS SCF energy,
+//!   with the tau mutants); the H4 triclinic cell and the TPSS k-mesh ==
+//!   supercell identity are weekly (`validation_pbc_mgga_derivs.rs`).
 //!
-//! NOT covered: a Gamma tau stress (Gamma meta-GGA is energy-only; the energy anchor is in pbc_krks.rs), hybrid meta-GGAs (none resolve), range-separated / VV10 / double
-//! hybrid meta-GGAs (refused), open-shell meta-GGA stress (UKS/ROKS keep their
-//! typed refusal), the range-split RS-GDF build, d shells, ECPs, heavy atoms,
-//! metals. TPSS is anchored only as its raw X/C components on a PBE density with
-//! the Fock guard skipped (the TPSS SCF exists, energy only; its stress is not
-//! validated).
+//! NOT covered: hybrid meta-GGAs (none resolve), range-separated / VV10 /
+//! double hybrid meta-GGAs (refused), open-shell meta-GGA stress (UKS/ROKS
+//! keep their typed refusal; open-shell TPSS is refused), TPSS on RS-GDF, the
+//! range-split RS-GDF build, d shells, ECPs, heavy atoms, metals. The
+//! Gamma-point meta-GGA stress is this code on the 1x1x1 mesh
+//! (`pbc_gamma_mgga_derivs.rs`).
 
 mod common;
 
@@ -797,6 +802,78 @@ fn uniform_grid_stress_matches_pyscf_fftdf_krks_stress_scan() {
 #[ignore = "second 61^3 PySCF-anchor row (r2SCAN); one SCF plus two stresses on a 61^3 grid, measured about the SCAN row's time"]
 fn uniform_grid_stress_matches_pyscf_fftdf_krks_stress_r2scan() {
     pyscf_mgga_case("R2SCAN", "R2SCAN");
+}
+
+/// TPSS row of the PySCF anchor (issue #492). PySCF's own TPSS analytic
+/// stress agrees with the central FD of its energy to 2.3e-10 (h = 1e-4,
+/// xx / yy / zz / xz, run by hand with the generator's cell); its xx and yy
+/// differ by 4.1e-8 and its xz is -3.4e-9 in BOTH the analytic tensor and the
+/// FD (the uniform-grid egg-box effect, larger for TPSS than for SCAN), so
+/// they are part of the reference, not noise. MEASURED (2026-10-22): ferric
+/// vs PySCF 7.5e-11 (bar 1e-9); `NoTauStrain` misses by 6.5e-4. The source
+/// mutant this pin exists for, `TPSS` mapped to the SCAN pair in the libxc
+/// name table (run and reverted), misses by 7.8e-5: FD of ferric's own
+/// energy cannot see it.
+#[test]
+fn uniform_grid_stress_matches_pyscf_fftdf_krks_stress_tpss() {
+    pyscf_mgga_case("TPSS", "TPSS");
+}
+
+/// TPSS dE/d eps against FD of the converged TPSS SCF energy (uniform 24^3,
+/// two components), and the tau defects against the same FD. Physics: the
+/// FD floor (SCAN's on this fixture is in `meta_gga_stress_matches_fd_of_the_scf_energy`).
+/// Artifact: a dropped / doubled tau strain term or V^tau missing from the
+/// Pulay Fock misses by >= 1e-4. MEASURED (2026-10-22): correct 1.1e-8 (bar
+/// 5e-7, shared with the SCAN row); misses `NoTauStrain` 5.0e-2, `TauDoubled`
+/// 5.0e-2, `TauNoVxc` 2.3e-2, `NoPointMotion` 5.2e-1. `StressTauPath` (take
+/// the tau path) is an EQUIVALENT mutant on a meta-GGA (the path is already
+/// taken): measured 0, asserted.
+#[test]
+fn tpss_stress_matches_fd_of_the_scf_energy() {
+    let grid = KXcGrid::Uniform([24, 24, 24]);
+    let f = "TPSS";
+    let fx = fixture(&H2, [1, 1, 3], f, Jk::Dense, grid.clone());
+    let s = stress(&fx, None);
+    let h = 1e-4;
+    let comps = [(0, 0), (2, 2)];
+    let fd: Vec<f64> = comps
+        .iter()
+        .map(|&(i, j)| {
+            (energy_on(&strained(&fx.cell, i, j, h), [1, 1, 3], f, Jk::Dense, &grid)
+                - energy_on(
+                    &strained(&fx.cell, i, j, -h),
+                    [1, 1, 3],
+                    f,
+                    Jk::Dense,
+                    &grid,
+                ))
+                / (2.0 * h)
+        })
+        .collect();
+    let miss = |t: &KRksStress| {
+        comps.iter().zip(&fd).fold(0.0_f64, |m, (&(i, j), v)| {
+            m.max((t.de_deps[i][j] - v).abs())
+        })
+    };
+    let worst = miss(&s);
+    eprintln!("TPSS uniform 24^3: |analytic - FD of SCF energy| {worst:.2e}");
+    assert!(worst < 5e-7, "{worst:e}");
+    for m in [
+        KXcStressMutation::NoTauStrain,
+        KXcStressMutation::TauDoubled,
+        KXcStressMutation::TauNoVxc,
+        KXcStressMutation::NoPointMotion,
+    ] {
+        let d = miss(&stress(&fx, Some(m)));
+        eprintln!("  TPSS {m:?}: miss vs FD {d:.2e}");
+        assert!(d > MUTANT_BAR, "{m:?} survives: {d:e}");
+    }
+    let d = mdiff(
+        &stress(&fx, Some(KXcStressMutation::StressTauPath)).de_deps,
+        &s.de_deps,
+    );
+    eprintln!("  TPSS StressTauPath (identity on a meta-GGA): {d:.2e}");
+    assert!(d < 1e-12, "{d:e}");
 }
 
 // ------------------------------------------------------------- RS-GDF J

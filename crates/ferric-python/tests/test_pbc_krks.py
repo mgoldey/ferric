@@ -177,14 +177,15 @@ def test_gamma_meta_gga_refusals_are_early_and_exact(h2, basis):
         r"Gamma-point RKS supports only the validated SCAN / r2SCAN / TPSS meta-GGAs",
     ):
         ferric.run_rks_gamma(h2, lat, basis, "MGGA_X_TPSS", omega=OMEGA, **GRID)
-    # Forces / stress with a meta-GGA at Gamma are refused before any SCF.
+    # Forces / stress with a meta-GGA at Gamma are the 1x1x1 route on the
+    # dense-AFT J (issue #492); on RS-GDF they are refused before any SCF.
     for kw in ("with_gradient", "with_stress"):
         with pytest.raises(
             ValueError,
-            match=r"^run_rks_gamma: functional \"SCAN\": .*no tau term.*SCAN",
+            match=r"^run_rks_gamma: functional \"SCAN\": .*dense-AFT J only",
         ):
             ferric.run_rks_gamma(
-                h2, lat, basis, "SCAN", omega=OMEGA, **{kw: True}, **GRID
+                h2, lat, basis, "SCAN", omega=OMEGA, **{kw: True}, **GRID, **RSGDF
             )
 
 

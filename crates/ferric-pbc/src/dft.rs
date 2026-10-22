@@ -1669,8 +1669,9 @@ pub fn resolve_gamma_rks_functional(name: &str) -> Result<(XcDef, f64), FerricEr
 
 /// The whole Gamma RKS request gate, one call for the bindings: the
 /// [`resolve_gamma_rks_functional`] allowlist for a meta-GGA, plus
-/// [`check_gamma_derivs_functional`] when a gradient, stress or optimization
-/// is requested (`derivs`). A range-separated hybrid runs as an energy on
+/// [`check_gamma_derivs_functional`] and [`check_gamma_mgga_deriv_jk`] (a
+/// meta-GGA force / stress is the 1x1x1 route, dense-AFT J only) when a
+/// gradient, stress or optimization is requested (`derivs`). A range-separated hybrid runs as an energy on
 /// either J/K and with derivatives on the dense-AFT J/K only (`rsgdf` = the
 /// RS-GDF fit; [`crate::gamma_rsh::gamma_rks_rsh_gradient`] /
 /// [`crate::gamma_rsh::gamma_rks_rsh_stress`]). Plain (non-meta-GGA) names
@@ -1700,6 +1701,7 @@ pub fn check_gamma_rks_request(name: &str, derivs: bool, rsgdf: bool) -> Result<
     resolve_gamma_rks_functional(name)?;
     if derivs {
         check_gamma_derivs_functional(name)?;
+        check_gamma_mgga_deriv_jk(name, rsgdf)?;
     }
     Ok(())
 }
@@ -1754,16 +1756,36 @@ pub fn check_gamma_roks_request(name: &str, derivs: bool) -> Result<(), FerricEr
     check_gamma_open_rsh(name, derivs, "ROKS")
 }
 
-/// The refusal for a Gamma-point nuclear gradient, stress or geometry
-/// optimization with a meta-GGA (the Gamma XC derivatives have no tau term;
-/// the k-point path does). Checked before any SCF.
+/// The meta-GGA gate of a closed-shell Gamma-point nuclear gradient, stress
+/// or geometry optimization: a meta-GGA must be one of the validated pure
+/// SCAN / r2SCAN / TPSS ([`crate::kxcgrad::is_validated_mgga_deriv`]), whose
+/// derivatives are routed through the 1x1x1 k-point force and stress on the
+/// dense-AFT J ([`crate::gamma_mgga`]). Checked before any SCF.
 pub fn check_gamma_derivs_functional(name: &str) -> Result<(), FerricError> {
-    if is_meta_gga_name(name) {
+    if is_meta_gga_name(name) && !crate::kxcgrad::is_validated_mgga_deriv(name) {
         return Err(PeriodicDftError::Unsupported {
             feature: "meta-GGA gradient / stress",
             reason: format!(
-                "{name}: the Gamma-point XC gradient and stress have no tau term; use a \
-                 k-point mesh (kmesh [1,1,1] is the Gamma point) for SCAN / r2SCAN forces"
+                "{name}: the Gamma-point meta-GGA gradient and stress cover the pure SCAN / \
+                 r2SCAN / TPSS only"
+            ),
+        }
+        .into());
+    }
+    Ok(())
+}
+
+/// The J/K gate of a Gamma-point meta-GGA gradient, stress or optimization:
+/// the routed derivative ([`crate::gamma_mgga`]) rebuilds the Fock with the
+/// dense-AFT J, so an RS-GDF Gamma SCF (`rsgdf = true`) is refused before
+/// any SCF instead of by the Fock guard after it. Plain functionals pass.
+pub fn check_gamma_mgga_deriv_jk(name: &str, rsgdf: bool) -> Result<(), FerricError> {
+    if rsgdf && is_meta_gga_name(name) {
+        return Err(PeriodicDftError::Unsupported {
+            feature: "meta-GGA gradient / stress on RS-GDF",
+            reason: format!(
+                "{name}: the Gamma-point meta-GGA gradient and stress run on the dense-AFT J \
+                 only (jk = \"dense\"); the RS-GDF route is not wired"
             ),
         }
         .into());

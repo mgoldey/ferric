@@ -808,10 +808,12 @@ fn uhf_injected_refuses_a_closed_shell_only_xc_builder() {
     );
 }
 
-/// Gamma meta-GGA is closed-shell ENERGY only (issue #355): SCAN / r2SCAN run;
-/// forces, stress, UKS, other meta-GGAs and the spin-resolved XC refuse by name.
+/// Gamma meta-GGA (issues #355, #492): the SCAN energy runs; the NATIVE Gamma
+/// force and stress entries refuse it and name the routed 1x1x1 entries
+/// (`gamma_mgga`, validated in `pbc_gamma_mgga_derivs.rs`); UKS, other
+/// meta-GGAs and the spin-resolved XC refuse by name.
 #[test]
-fn gamma_meta_gga_is_closed_shell_energy_only() {
+fn gamma_meta_gga_native_derivatives_point_at_the_routed_entries() {
     use ferric_pbc::{gamma_rks_gradient_with, GammaGradConfig};
     use ferric_pbc::{gamma_rks_stress, GammaStressConfig};
     use ferric_pbc::{gamma_uks, GammaUksConfig};
@@ -834,7 +836,10 @@ fn gamma_meta_gga_is_closed_shell_energy_only() {
     )
     .unwrap_err()
     .to_string();
-    assert!(e.contains("meta-GGA"), "gradient: {e}");
+    assert!(
+        e.contains("meta-GGA") && e.contains("gamma_rks_mgga_gradient"),
+        "gradient: {e}"
+    );
     let e = gamma_rks_stress(
         &su.cell,
         &su.prep,
@@ -847,7 +852,10 @@ fn gamma_meta_gga_is_closed_shell_energy_only() {
     )
     .unwrap_err()
     .to_string();
-    assert!(e.contains("meta-GGA"), "stress: {e}");
+    assert!(
+        e.contains("meta-GGA") && e.contains("gamma_rks_mgga_stress"),
+        "stress: {e}"
+    );
 
     // Other meta-GGAs: refused by gamma_rks itself, before any grid is built.
     let mut tpss = GammaRksConfig::new("MGGA_X_TPSS");

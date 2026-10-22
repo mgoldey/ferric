@@ -441,8 +441,9 @@ fn tpss_krks_and_gamma_match_pinned_pyscf() {
 }
 
 /// Gamma-point meta-GGA (`gamma_rks`, lattice-summed real AOs) against the
-/// 1x1x1 k-mesh (complex Bloch AOs) on the same grid: the anchor the
-/// k-point meta-GGA lacked while Gamma refused tau (issue #355).
+/// 1x1x1 k-mesh (complex Bloch AOs) on the same grid (issue #355): two
+/// independent energy constructions (the Gamma meta-GGA force and stress are
+/// the k-point code routed through 1x1x1, `pbc_gamma_mgga_derivs.rs`).
 #[test]
 fn mgga_one_point_mesh_is_gamma_rks() {
     let cell = triclinic_cell();
@@ -481,7 +482,7 @@ fn mgga_one_point_mesh_is_gamma_rks() {
 
 /// Meta-GGA k-mesh == supercell / N: the supercell is solved by the same
 /// k-point code at a 1x1x1 mesh on the replicated grid (the Gamma meta-GGA
-/// is closed-shell energy only; see `mgga_one_point_mesh_is_gamma_rks`).
+/// comparison is `mgga_one_point_mesh_is_gamma_rks`).
 #[test]
 fn mgga_k_mesh_is_the_supercell() {
     let cell = h2_cell(4.0);

@@ -816,6 +816,7 @@ fn ks_stress(
     cfg: &GammaStressConfig,
 ) -> Result<GammaStress, FerricError> {
     check_inputs(who, cell, prep, hcore_cfg, hc, &jk, scf, ks.spin)?;
+    crate::gamma_mgga::refuse_native_mgga(who, ks.functional)?;
     let (_, alpha) = resolve_periodic_functional(ks.functional)?;
     let unrestricted = ks.spin != Spin::Restricted;
     let mut ledger = open_ledger(prep, cfg, unrestricted)?;

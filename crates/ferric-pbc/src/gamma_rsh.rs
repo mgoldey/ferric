@@ -414,6 +414,11 @@ pub fn gamma_rks_rsh_stress(
     )
 }
 
+/// The open-shell tail of the routed RSH derivatives' restricted-only refusal.
+const RSH_OPEN_SHELL_NOTE: &str = "an unrestricted result's force takes \
+     gamma_uks_rsh_gradient (the open-shell stress and restricted-open-shell \
+     range-separated derivatives are not implemented)";
+
 /// The shared checks and 1x1x1 inputs of the routed Gamma RSH derivatives:
 /// the dense kernels, the mesh, its hcore and the Gamma result as the 1x1x1
 /// k-point result.
@@ -436,17 +441,38 @@ fn gamma_route<'a>(
 > {
     rsh_k.check_for(who, &dft.functional, dft.exxdiv)?;
     let eri = rsh_k.dense_for_force(who)?;
+    let (mesh, hk, kscf) = one_point_inputs(who, RSH_OPEN_SHELL_NOTE, cell, prep, hcore_cfg, scf)?;
+    Ok((eri, mesh, hk, kscf))
+}
+
+/// The 1x1x1 inputs of a routed closed-shell Gamma derivative: the mesh,
+/// its hcore (rebuilt from `hcore_cfg`) and the restricted Gamma `scf` as the
+/// 1x1x1 k-point result. Refuses an open-shell result (`open_shell_note`
+/// ends the message: where an open-shell derivative lives, if anywhere).
+pub(crate) fn one_point_inputs(
+    who: &str,
+    open_shell_note: &str,
+    cell: &Cell,
+    prep: &PreparedBasis,
+    hcore_cfg: &crate::hcore::PeriodicHcoreConfig,
+    scf: &ferric_scf::result::ScfResult,
+) -> Result<
+    (
+        KPointMesh,
+        crate::hcore::kpoint::PeriodicHcoreK,
+        crate::kscf::KScfResult,
+    ),
+    FerricError,
+> {
     if scf.spin != ferric_scf::result::Spin::Restricted {
         return Err(FerricError::General(format!(
-            "{who}: closed-shell (restricted) results only; an unrestricted result's force \
-             takes gamma_uks_rsh_gradient (the open-shell stress and restricted-open-shell \
-             range-separated derivatives are not implemented)"
+            "{who}: closed-shell (restricted) results only; {open_shell_note}"
         )));
     }
     let mesh = KPointMesh::gamma_centred(cell, [1, 1, 1])?;
     let hk = crate::hcore::kpoint::periodic_hcore_kpts(cell, prep, &mesh, hcore_cfg)?;
     let kscf = gamma_as_one_point(scf, &mesh, hk.enn, cell.mol().nelec().max(0) as usize / 2);
-    Ok((eri, mesh, hk, kscf))
+    Ok((mesh, hk, kscf))
 }
 
 /// Open-shell Gamma UKS nuclear gradient of a range-separated hybrid (`scf`
