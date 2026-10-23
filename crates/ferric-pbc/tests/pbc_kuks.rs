@@ -325,6 +325,10 @@ fn uniform_grid_kuks_matches_pinned_pyscf() {
             _ => unreachable!(),
         };
         // 61^3: the 40^3 grid is under-converged for the PBE triplet (1.2e-5).
+        // Issue #356 re-checked 31^3 (measured 2026-10-22): ferric at 31^3
+        // misses these 61^3 pins by 3.8e-8 (H2t PBE 1x1x1; LDA <= 9e-10), over
+        // the 1e-8 bar, and a same-grid PySCF 31^3 KUKS LDA re-pin converged to
+        // a DIFFERENT SCF state (-0.2078 vs -0.2612 Ha), so no 31^3 pin exists.
         let mesh = KPointMesh::gamma_centred(&cell, n).unwrap();
         let grid = PeriodicGrid::uniform(&cell, [61; 3]).unwrap();
         let r = kuks_on(&cell, &bs, &mesh, &grid, functional);

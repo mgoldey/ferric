@@ -1,0 +1,95 @@
+{
+ "pyscf": "2.13.1",
+ "numpy": "1.26.4",
+ "libxc": "7.0.0",
+ "date": "2026-10-22",
+ "generator_git_sha": "cb2748a88f0c6d376547592eb4c5a426a6e755de",
+ "setup": "AFTDF, UniformGrids 31^3, exxdiv=ewald, conv_tol=1e-12, cell.precision=1e-10, PySCF-digit STO-3G H, lattices CELLS",
+ "cells": {
+  "H2s": [
+   4.0,
+   4.0,
+   4.0
+  ],
+  "H2ortho": [
+   4.0,
+   4.4,
+   4.0
+  ]
+ },
+ "script": "scripts/gen_pyscf_kks_h2_31_refs.py",
+ "rows": [
+  {
+   "method": "KRKS",
+   "system": "H2s",
+   "xc": "PBE",
+   "mesh": [
+    2,
+    2,
+    1
+   ],
+   "gamma_centred": true,
+   "energy": -1.2725025913051613
+  },
+  {
+   "method": "KRKS",
+   "system": "H2s",
+   "xc": "PBE",
+   "mesh": [
+    2,
+    2,
+    1
+   ],
+   "gamma_centred": false,
+   "energy": -1.315507250956581
+  },
+  {
+   "method": "KRKS",
+   "system": "H2s",
+   "xc": "PBE0",
+   "mesh": [
+    2,
+    2,
+    1
+   ],
+   "gamma_centred": true,
+   "energy": -1.2895432808140932
+  },
+  {
+   "method": "KRKS",
+   "system": "H2s",
+   "xc": "PBE0",
+   "mesh": [
+    2,
+    2,
+    1
+   ],
+   "gamma_centred": false,
+   "energy": -1.333994032257564
+  },
+  {
+   "method": "KRKS",
+   "system": "H2ortho",
+   "xc": "PBE",
+   "mesh": [
+    2,
+    2,
+    1
+   ],
+   "gamma_centred": true,
+   "energy": -1.2812528366581586
+  },
+  {
+   "method": "KRKS",
+   "system": "H2ortho",
+   "xc": "PBE",
+   "mesh": [
+    2,
+    2,
+    1
+   ],
+   "gamma_centred": false,
+   "energy": -1.3140778901270957
+  }
+ ]
+}
