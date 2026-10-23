@@ -1272,11 +1272,12 @@ jobs:
     name: validation (weekly, external references, Cr(CO)6 SCF ladder)
     if: github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && github.event.schedule == '17 4 * * 0')
     runs-on: ubuntu-22.04
-    # 250: nextest terminates the test at 225 min (.config/nextest.toml, 2x
+    # 270: nextest terminates the test at 225 min (.config/nextest.toml, 2x
     # the expected ~111 min CI time), plus ~15-20 min of setup and the build
-    # of one test binary. At the 1.6x run-to-run spread seen on the shards
-    # the test takes ~178 min. Under GitHub's 360-min cap.
-    timeout-minutes: 250
+    # of one test binary, so nextest fires first with ~25 min to spare. At the
+    # 1.6x run-to-run spread seen on the shards the test takes ~178 min.
+    # Under GitHub's 360-min cap.
+    timeout-minutes: 270
     permissions:
       contents: read
     steps:
