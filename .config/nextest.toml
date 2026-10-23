@@ -151,3 +151,30 @@ path = "junit-validation.xml"
 [[profile.validation.overrides]]
 filter = 'test(/^dlpno_mp2_octane_/)'
 slow-timeout = { period = "300s", terminate-after = 12 }
+
+# The two longest validation tests. Each was terminated at the profile's 30 min
+# in every CI run that reached it and had never finished there. They are SLOW,
+# not stuck (measured 2026-10-23, this profile, OPENBLAS_NUM_THREADS=1):
+#
+# * ecp_gradient_ch2i_uhf: 17 UHF SCFs (+ stability) per basis, def2-SVP and
+#   def2-TZVP (93 AOs). Every SCF converges (16-31 iterations; energies match
+#   PySCF to 2e-12 / 2e-13 Ha). Local, 3 rayon threads: PASS in 5134 s; each
+#   TZVP SCF takes ~280 s. CI runs at the same pace: in all three CI runs the
+#   1800 s termination landed just after TZVP's first FD coordinate, which the
+#   local 3-thread run reached at 1838 s. Expected on CI: ~5.0e3 s. Bound: 2x,
+#   35 x 300 s = 10500 s.
+# * ag2_augccpvdzpp (analytic ECP Hessian, Ag2/aug-cc-pVDZ-PP): local, 1 rayon
+#   thread: 5149 s. CI/local scale, taken from ecp_gradient_ch2i_uks_pbe in the
+#   same local run (1390 s) against its three CI passes (645-885 s): 0.46-0.64.
+#   Expected on CI: 2.4e3-3.3e3 s. Bound: 2x the upper end, 22 x 300 s = 6600 s.
+#
+# 2x leaves room for the ~1.6x spread in wall time between CI runs of the same
+# shard (7474 s vs 4688 s for shard 2). Both bounds fit inside the job's
+# timeout-minutes (ci.yml), which is set from them.
+[[profile.validation.overrides]]
+filter = 'binary_id(=ferric-scf::validation_ecp_gradient) and test(=ecp_gradient_ch2i_uhf)'
+slow-timeout = { period = "300s", terminate-after = 35 }
+
+[[profile.validation.overrides]]
+filter = 'binary_id(=ferric-scf::validation_ecp_hessian) and test(=ag2_augccpvdzpp)'
+slow-timeout = { period = "300s", terminate-after = 22 }
