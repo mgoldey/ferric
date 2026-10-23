@@ -84,14 +84,15 @@
 //! exchange fraction 0 plus the XC terms ([`crate::kxcgrad`]). Dense kernels
 //! built with a range separation ([`crate::rsh`]) are differentiated with the
 //! exchange walks weighted by the kernel factor `f(|K|)` (J bare) for the
-//! closed-shell RKS force and stress and the open-shell UKS force only
-//! (`check_inputs_rsh`; the closed-shell RKS stress, [`crate::kstress`],
-//! admits them the same way; the UKS exchange terms `(1, D_α), (1, D_β)` take
-//! the same factor, the M-term `Σ_σ D_σ S D_σ` the same mixed constant);
+//! closed-shell RKS force and stress and the open-shell UKS and ROKS forces
+//! only (`check_inputs_rsh`; the closed-shell RKS stress, [`crate::kstress`],
+//! admits them the same way; the open-shell exchange terms `(1, D_α),
+//! (1, D_β)` take the same factor, the M-term `Σ_σ D_σ S D_σ` the same mixed
+//! constant);
 //! every other entry refuses them. An RS-GDF build with a range separation
 //! (`KRsGdf::build_rsh`, `K = c_sr K[1/r] + (c_lr − c_sr) K[erf] + v_M^{mix}
-//! S D S`) is differentiated for the closed-shell RKS force only (the UKS
-//! force refuses it): the plain fit's exchange pieces scaled by `c_sr`, plus
+//! S D S`) is differentiated for the closed-shell RKS force only (the
+//! open-shell forces refuse it): the plain fit's exchange pieces scaled by `c_sr`, plus
 //! the attenuated fit's LR and metric passes scaled by `c_lr − c_sr`
 //! (`kderiv`'s module doc, "Attenuated fit"; [`KGradParts::fit_attenuated`]),
 //! and the M-term carrying the SCF's mixed constant (not scaled again: the
@@ -774,7 +775,7 @@ pub(crate) fn check_inputs(
 
 /// [`check_inputs`] for an entry that differentiates a range-separated
 /// exchange: `rsh` is the functional's range separation (`None` for every
-/// entry but the RKS force and stress and the UKS force). A dense source must
+/// entry but the RKS force and stress and the UKS and ROKS forces). A dense source must
 /// carry exactly these parameters (and none when `rsh` is `None`). An RS-GDF
 /// source must too, and is admitted with a range separation only for a
 /// closed-shell entry (one density per k, the RKS force and stress): the
@@ -847,8 +848,9 @@ pub(crate) fn check_inputs_rsh(
                 return Err(FerricError::General(format!(
                     "{who}: range-separated exchange on RS-GDF J/K (KRsGdf::build_rsh) has no \
                      derivative for an open-shell state (the attenuated fit is differentiated for \
-                     the closed-shell RKS force and stress only); the open-shell UKS force \
-                     (kpoint_uks_gradient) covers range separation on dense-AFT J/K only"
+                     the closed-shell RKS force and stress only); the open-shell UKS and ROKS \
+                     forces (kpoint_uks_gradient, kpoint_roks_gradient) cover range separation on \
+                     dense-AFT J/K only"
                 )));
             }
             check_rsgdf_rsh(who, s.gdf.rsh(), rsh)?;
@@ -882,8 +884,8 @@ fn check_dense_rsh(
             "{who}: the dense kernels carry an attenuated (range-separated) exchange (rsh); \
              this entry point does not differentiate it (the range-separated k-point force \
              and stress cover RKS (kpoint_rks_gradient / kpoint_rks_stress, dense-AFT or \
-             RS-GDF J/K) and the UKS force (kpoint_uks_gradient, dense-AFT J/K), with a \
-             range-separated functional)"
+             RS-GDF J/K) and the UKS and ROKS forces (kpoint_uks_gradient / \
+             kpoint_roks_gradient, dense-AFT J/K), with a range-separated functional)"
         ))),
         (None, Some(w)) => Err(FerricError::General(format!(
             "{who}: the functional is range-separated ({w:?}) but the dense kernels carry the \
@@ -1114,7 +1116,7 @@ fn m_term_madelung(
 }
 
 /// The range separation of the source (`check_inputs_rsh` admits a dense one
-/// on the RKS and UKS forces, an RS-GDF one on the closed-shell RKS force
+/// on the RKS, UKS and ROKS forces, an RS-GDF one on the closed-shell RKS force
 /// only) and the `v_M` the M-term uses: the SCF's (mixed, for a
 /// range-separated K) `vm`, never scaled again by `c_sr`, or a wrong constant
 /// under the `RshPlainMadelung`, `RshNoMadelungTerm` and `RshMadelung*`

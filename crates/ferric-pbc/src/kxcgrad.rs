@@ -95,10 +95,11 @@
 //! takes the plain fit's exchange pieces scaled by `c_sr` plus the attenuated
 //! fit's derivative scaled by `c_lr − c_sr` ([`crate::kgrad`] scope).
 //! Covered: closed shell on dense AFT and RS-GDF (the stress likewise,
-//! [`crate::kxcstress`]) and the open-shell UKS force
-//! ([`crate::kuxcgrad::kpoint_uks_gradient`], `K_σ = K[D_σ]` per spin with the
-//! same kernel and constant) on dense AFT only; refused: the UKS force on
-//! RS-GDF, ROKS / ROHF, the open-shell stress.
+//! [`crate::kxcstress`]) and the open-shell UKS and ROKS forces
+//! ([`crate::kuxcgrad::kpoint_uks_gradient`],
+//! [`crate::kuxcgrad::kpoint_roks_gradient`], `K_σ = K[D_σ]` per spin with the
+//! same kernel and constant) on dense AFT only; refused: the open-shell forces
+//! on RS-GDF, the open-shell stress.
 //!
 //! # What is new relative to the k-point HF force ([`crate::kgrad`])
 //!
@@ -1006,7 +1007,11 @@ pub enum Deriv {
 /// range-separated hybrids (wB97X, ...), the UKS range-separated STRESS (the
 /// UKS stress has no range-separated term) and the UKS range-separated force
 /// on RS-GDF (the library UKS force refuses an RS-GDF attenuated fit), and
-/// every ROKS range-separated derivative (the library has none).
+/// every ROKS range-separated derivative: the ROKS STRESS has no
+/// range-separated term, and the ROKS FORCE is library only (a binding
+/// decision: [`crate::kuxcgrad::kpoint_roks_gradient`] /
+/// [`crate::gamma_rsh::gamma_roks_rsh_gradient`] differentiate a dense-AFT
+/// range-separated ROKS SCF, but no binding anchor carries it yet).
 pub fn check_deriv_functional(
     spin: DerivSpin,
     deriv: Deriv,
@@ -1110,8 +1115,9 @@ fn check_rsh_deriv(
         ),
         (DerivSpin::RestrictedOpen, _, _) => refuse(
             "the k-point ROKS range-separated hybrid force and stress are not implemented \
-             (the ROKS derivatives have no range-separated term); the UKS force is available \
-             on the dense-AFT J/K",
+             in the bindings (the library has the dense-AFT ROKS force, kpoint_roks_gradient, \
+             unwired; the ROKS stress has no range-separated term); the UKS force is \
+             available on the dense-AFT J/K",
         ),
     }
 }
@@ -1216,9 +1222,9 @@ pub(crate) fn resolve_global_mgga(functional: &str) -> Result<(XcDef, f64), Ferr
             feature: "range-separated hybrid force at k",
             reason: format!(
                 "{functional}: the attenuated-exchange derivative covers the closed-shell RKS \
-                 force and stress (dense-AFT or RS-GDF J/K) and the open-shell UKS force \
-                 (dense-AFT J/K) only (kpoint_rks_gradient, kpoint_rks_stress, \
-                 kpoint_uks_gradient); not this route (ROKS / ROHF force, open-shell stress)"
+                 force and stress (dense-AFT or RS-GDF J/K) and the open-shell UKS and ROKS \
+                 forces (dense-AFT J/K) only (kpoint_rks_gradient, kpoint_rks_stress, \
+                 kpoint_uks_gradient, kpoint_roks_gradient); not this route"
             ),
         }
         .into());

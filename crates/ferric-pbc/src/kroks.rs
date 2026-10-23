@@ -53,10 +53,11 @@
 //! `KRsGdf::build_rsh`), `K_σ = K[D_σ]` scaled by 1 (`a = 1`; the fractions
 //! and the MIXED Madelung constant `c_sr v_M + (c_lr − c_sr) v_M(ω)` are
 //! inside it), exactly as [`crate::kuks`] does; the Roothaan combination is
-//! unchanged. The reported fraction is `c_sr`. ENERGY only: the ROKS force and
-//! stress refuse RSH (the open-shell RSH force is UKS only,
-//! [`crate::kuxcgrad::kpoint_uks_gradient`]; the binding gate is
-//! [`crate::kxcgrad::check_deriv_functional`]).
+//! unchanged. The reported fraction is `c_sr`. The library nuclear force on
+//! the dense-AFT J/K is [`crate::kuxcgrad::kpoint_roks_gradient`] (at Gamma
+//! [`crate::gamma_rsh::gamma_roks_rsh_gradient`]); the RS-GDF force, the
+//! stress and the binding gate ([`crate::kxcgrad::check_deriv_functional`])
+//! refuse RSH.
 //! Meta-GGA (no tau term here), VV10 and double hybrids are refused.
 //!
 //! Units: Bohr and Hartree.

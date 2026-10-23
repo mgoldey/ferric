@@ -212,7 +212,12 @@ fn roks_mutants_fail_the_polarized_cam_pin() {
 
 /// The plain global-hybrid ROKS entry (`gamma_roks`) still refuses a
 /// range-separated name (it would otherwise run it with no attenuated K), and
-/// the derivatives of a REAL ROKS RSH SCF refuse by name (Gamma and k).
+/// so do the plain Gamma ROKS force and stress and the k-point ROKS stress on
+/// a REAL ROKS RSH SCF. The k-point ROKS FORCE covers RSH on dense-AFT J/K
+/// (`pbc_kroks_rsh_force.rs`; at Gamma `gamma_rsh::gamma_roks_rsh_gradient`):
+/// without the SCF's exxdiv it is a typed refusal, with it and the SCF's own
+/// grid it differentiates this state (Fock guard and orbital-gradient gate
+/// passed).
 #[test]
 fn plain_gamma_roks_and_roks_rsh_derivatives_refuse_by_name() {
     use ferric_pbc::kgrad::KGradJk;
@@ -269,7 +274,7 @@ fn plain_gamma_roks_and_roks_rsh_derivatives_refuse_by_name() {
         base: Default::default(),
         spin_mutation: None,
     };
-    named(
+    let call = |g: &KUksGradConfig| {
         kpoint_roks_gradient(
             &cell,
             &prep,
@@ -279,11 +284,16 @@ fn plain_gamma_roks_and_roks_rsh_derivatives_refuse_by_name() {
             KGradJk::Dense(e),
             &kr.scf,
             "HYB_GGA_XC_CAM_B3LYP",
-            &grad,
+            g,
         )
-        .unwrap_err()
-        .to_string(),
-    );
+    };
+    let ge = call(&grad).unwrap_err().to_string();
+    assert!(ge.contains("needs KRksGradConfig::exxdiv"), "{ge}");
+    let mut ok = grad.clone();
+    ok.base.exxdiv = Some(ExxDiv::Ewald);
+    ok.base.grid = ferric_pbc::kxcgrad::KXcGrid::Uniform([MESH; 3]);
+    let g = call(&ok).unwrap_or_else(|e| panic!("ROKS RSH force on the SCF's own state: {e}"));
+    assert!(g.grad.iter().all(|v| v.is_finite()) && g.hf.fock_mismatch < 1e-8);
     named(
         kpoint_roks_stress(
             &cell,

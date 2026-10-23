@@ -13,7 +13,8 @@
 //!
 //! with `a = 1`, `V_σ = 0` for ROHF and `a` = the functional's global
 //! exact-exchange fraction for ROKS. A range-separated hybrid
-//! ([`gamma_roks_rsh`], energy only) replaces `a·K` by the attenuated
+//! ([`gamma_roks_rsh`]; dense-AFT force
+//! [`crate::gamma_rsh::gamma_roks_rsh_gradient`]) replaces `a·K` by the attenuated
 //! `K[D_σ]` of [`crate::gamma_rsh`] (fractions and the mixed Madelung
 //! constant inside, `a = 1`), exactly as open-shell UKS does. The Madelung term lives in the injected
 //! K builder (linear in D_σ: coefficient 1 per spin, FINDINGS Iteration 6)
@@ -626,9 +627,9 @@ pub fn gamma_roks_with_xc(
 /// The per-spin Focks take `K_σ = K[D_σ]` with the fractions and the MIXED
 /// Madelung constant inside (scaled by 1, as in [`crate::dft::gamma_uks_rsh`])
 /// and are combined into the Roothaan effective Fock unchanged.
-/// `cfg.functional` must be range-separated. ENERGY only (the ROKS forces and
-/// stress refuse RSH; the open-shell RSH force is UKS,
-/// [`crate::gamma_rsh::gamma_uks_rsh_gradient`]).
+/// `cfg.functional` must be range-separated. The dense-AFT nuclear force
+/// (library only) is [`crate::gamma_rsh::gamma_roks_rsh_gradient`]; the
+/// plain [`crate::grad::gamma_roks_gradient`] and the stress refuse RSH.
 pub fn gamma_roks_rsh(
     cell: &Cell,
     prep: &PreparedBasis,

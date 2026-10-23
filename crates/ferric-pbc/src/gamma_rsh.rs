@@ -2,7 +2,7 @@
 //! energies ([`crate::dft::gamma_rks_rsh`], [`crate::dft::gamma_uks_rsh`],
 //! [`crate::rohf::gamma_roks_rsh`]; mgoldey/ferric#354) and the dense-AFT
 //! nuclear forces routed through the 1x1x1 mesh ([`gamma_rks_rsh_gradient`],
-//! [`gamma_uks_rsh_gradient`]).
+//! [`gamma_uks_rsh_gradient`], [`gamma_roks_rsh_gradient`]).
 //!
 //! # Route
 //!
@@ -416,8 +416,8 @@ pub fn gamma_rks_rsh_stress(
 
 /// The open-shell tail of the routed RSH derivatives' restricted-only refusal.
 const RSH_OPEN_SHELL_NOTE: &str = "an unrestricted result's force takes \
-     gamma_uks_rsh_gradient (the open-shell stress and restricted-open-shell \
-     range-separated derivatives are not implemented)";
+     gamma_uks_rsh_gradient, a restricted-open-shell one gamma_roks_rsh_gradient (the \
+     open-shell range-separated stress is not implemented)";
 
 /// The shared checks and 1x1x1 inputs of the routed Gamma RSH derivatives:
 /// the dense kernels, the mesh, its hcore and the Gamma result as the 1x1x1
@@ -488,7 +488,8 @@ pub(crate) fn one_point_inputs(
 /// an atom-centred grid, `xc.ao_threshold`, `exxdiv`; a run on a
 /// caller-supplied grid is not covered). Both spin Focks pass the k-point
 /// Fock guard and the UKS stationarity gate. Refuses an RS-GDF `rsh_k`, a
-/// restricted or restricted-open-shell result.
+/// restricted or restricted-open-shell result (the ROKS twin is
+/// [`gamma_roks_rsh_gradient`]).
 pub fn gamma_uks_rsh_gradient(
     cell: &Cell,
     prep: &PreparedBasis,
@@ -504,8 +505,7 @@ pub fn gamma_uks_rsh_gradient(
     if scf.spin != ferric_scf::result::Spin::Unrestricted {
         return Err(FerricError::General(format!(
             "{who}: unrestricted (UKS) results only, got {:?} (restricted: \
-             gamma_rks_rsh_gradient; restricted-open-shell range-separated forces are not \
-             implemented)",
+             gamma_rks_rsh_gradient; restricted-open-shell: gamma_roks_rsh_gradient)",
             scf.spin
         )));
     }
@@ -553,16 +553,7 @@ pub fn gamma_uks_rsh_gradient(
         kpts: mesh.kpts().to_vec(),
         lindep: Default::default(),
     };
-    let kcfg = crate::kuxcgrad::KUksGradConfig {
-        base: crate::kxcgrad::KRksGradConfig {
-            grad: *cfg,
-            grid: crate::kxcgrad::KXcGrid::Atom(dft.grid.clone()),
-            ao_threshold: dft.xc.ao_threshold,
-            exxdiv: Some(dft.exxdiv),
-            ..Default::default()
-        },
-        spin_mutation: None,
-    };
+    let kcfg = open_shell_kcfg(&dft.grid, dft.xc.ao_threshold, dft.exxdiv, cfg);
     crate::kuxcgrad::kpoint_uks_gradient(
         cell,
         prep,
@@ -573,6 +564,102 @@ pub fn gamma_uks_rsh_gradient(
         &kscf,
         &dft.functional,
         &kcfg,
+    )
+}
+
+/// The 1x1x1 open-shell force settings of a routed Gamma force: the SCF's
+/// grid (rebuilt as an atom-centred grid), AO threshold and `exxdiv`.
+fn open_shell_kcfg(
+    grid: &crate::dft::PeriodicGridConfig,
+    ao_threshold: f64,
+    exxdiv: ExxDiv,
+    cfg: &crate::kgrad::KGradConfig,
+) -> crate::kuxcgrad::KUksGradConfig {
+    crate::kuxcgrad::KUksGradConfig {
+        base: crate::kxcgrad::KRksGradConfig {
+            grad: *cfg,
+            grid: crate::kxcgrad::KXcGrid::Atom(grid.clone()),
+            ao_threshold,
+            exxdiv: Some(exxdiv),
+            ..Default::default()
+        },
+        spin_mutation: None,
+    }
+}
+
+/// Restricted-open-shell Gamma ROKS nuclear gradient of a range-separated
+/// hybrid (`scf` from [`crate::rohf::gamma_roks_rsh`] with the dense-AFT
+/// exchange `rsh_k` and dense-AFT Gamma J), routed through the 1x1x1 k-point
+/// ROKS force ([`crate::kuxcgrad::kpoint_roks_gradient`]) as
+/// [`gamma_uks_rsh_gradient`] routes UKS: the Gamma ROHF spin densities and
+/// the one MO set are the `k = 0` ones, the spin Focks are rebuilt from them
+/// (`K_σ = K[D_σ]` with the kernel and mixed Madelung constant of `rsh_k`),
+/// `W = W_RO`, and the ROHF orbital-gradient gate applies.
+///
+/// The routed Fock guard compares the rebuilt spin Focks with the SCF's
+/// (`ScfResult::rohf_spin_focks`, [`crate::kgrad::FOCK_CONSISTENCY_BAR`]), as
+/// the UKS route does: a different grid, J source, functional or `exxdiv` is
+/// refused. A result without spin Focks (hand-built) falls back to comparing
+/// the Roothaan `F_eff` of the rebuilt spin Focks with `fock_alpha` (the
+/// stored `F_eff`), which is blind to equal-and-opposite spin changes on its
+/// diagonal blocks.
+///
+/// Arguments as [`gamma_uks_rsh_gradient`] with `dft` the
+/// [`crate::rohf::GammaRoksConfig`] of the SCF (functional, `grid` rebuilt as
+/// an atom-centred grid, `xc.ao_threshold`, `exxdiv`; a run on a
+/// caller-supplied grid, `gamma_roks_rsh_on_grid`, is not covered). Refuses
+/// an RS-GDF `rsh_k` and a restricted or unrestricted result.
+pub fn gamma_roks_rsh_gradient(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    hcore_cfg: &crate::hcore::PeriodicHcoreConfig,
+    scf: &ferric_scf::result::ScfResult,
+    dft: &crate::rohf::GammaRoksConfig,
+    rsh_k: &GammaRshExchange,
+    cfg: &crate::kgrad::KGradConfig,
+) -> Result<crate::kuxcgrad::KUksGradient, FerricError> {
+    let who = "gamma_roks_rsh_gradient";
+    rsh_k.check_for(who, &dft.functional, dft.exxdiv)?;
+    let eri = rsh_k.dense_for_force(who)?;
+    let db = match (&scf.spin, &scf.density_beta) {
+        (ferric_scf::result::Spin::RestrictedOpen, Some(db)) => db,
+        _ => {
+            return Err(FerricError::General(format!(
+                "{who}: restricted-open-shell (ROKS) results with a beta density only, got {:?} \
+                 (restricted: gamma_rks_rsh_gradient; unrestricted: gamma_uks_rsh_gradient)",
+                scf.spin
+            )))
+        }
+    };
+    let mesh = KPointMesh::gamma_centred(cell, [1, 1, 1])?;
+    let hk = crate::hcore::kpoint::periodic_hcore_kpts(cell, prep, &mesh, hcore_cfg)?;
+    let (da, db) = ([to_complex(&scf.density_alpha)], [to_complex(db)]);
+    let mos = [to_complex(&scf.mos_alpha)];
+    let feff = [to_complex(&scf.fock_alpha)];
+    let spin = scf
+        .rohf_spin_focks
+        .as_ref()
+        .map(|(fa, fb)| ([to_complex(fa)], [to_complex(fb)]));
+    let fock = match &spin {
+        Some((fa, fb)) => crate::kuxcgrad::StoredFock::Spin(fa, fb),
+        None => crate::kuxcgrad::StoredFock::Roothaan(&feff),
+    };
+    let kpts = mesh.kpts().to_vec();
+    let inp =
+        crate::kuxcgrad::SpinInput::restricted_open((&da, &db), fock, &mos, scf.converged, &kpts);
+    let parts = crate::kuxcgrad::RoParts {
+        cell,
+        prep,
+        mesh: &mesh,
+        hcore_cfg,
+        hk: &hk,
+    };
+    parts.roks_gradient(
+        who,
+        crate::kgrad::KGradJk::Dense(eri),
+        &inp,
+        &dft.functional,
+        &open_shell_kcfg(&dft.grid, dft.xc.ao_threshold, dft.exxdiv, cfg),
     )
 }
 

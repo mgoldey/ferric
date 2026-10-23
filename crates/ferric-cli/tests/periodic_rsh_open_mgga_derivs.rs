@@ -817,8 +817,9 @@ fn refusals_have_exact_wording() {
         "{e}"
     );
     let roks_k = "General error: HSE06: the k-point ROKS range-separated hybrid force and \
-                  stress are not implemented (the ROKS derivatives have no range-separated \
-                  term); the UKS force is available on the dense-AFT J/K";
+                  stress are not implemented in the bindings (the library has the dense-AFT \
+                  ROKS force, kpoint_roks_gradient, unwired; the ROKS stress has no \
+                  range-separated term); the UKS force is available on the dense-AFT J/K";
     let ro = Input {
         tag: "",
         kind: "rohf",
@@ -852,7 +853,9 @@ fn refusals_have_exact_wording() {
     assert!(
         e.contains(
             "HSE06: the Gamma-point ROKS range-separated hybrid force and stress are not \
-             implemented (energy only); the UKS force is available on the dense-AFT J/K"
+             implemented in the bindings (energy only; the library has the dense-AFT ROKS \
+             force, gamma_roks_rsh_gradient, unwired); the UKS force is available on the \
+             dense-AFT J/K"
         ),
         "{e}"
     );
