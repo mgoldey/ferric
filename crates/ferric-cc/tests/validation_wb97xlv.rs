@@ -79,9 +79,18 @@
 //!   Rust constant) — that is `ferric-dft/tests/wb97x_l_v_published_params.rs`.
 //! * Harness broken (geometry, basis, AO order): E_nuc / nao / overlap fail
 //!   before any energy is examined.
-//! * OH: the reference ROKS spread over six starts is 5.3e-7 Ha (π-hole
-//!   orientation on the Lebedev grid; selected start max|g| 3.2e-6), so the
-//!   OH E_KS bar cannot go below ~1e-6.
+//! * OH: the π-hole orientation is a near-zero mode on the (75,110) grid, and
+//!   ROKS has several stationary orientations within 1.1e-6 Ha. Measured
+//!   (2026-10-22, issue #516), PySCF at max|g| ≤ 1e-8 vs ferric converged
+//!   from rotated starts, state by state: −75.6874263142 / −75.6874263148,
+//!   −75.6874259854 / −75.6874259861, −75.6874253791 / −75.6874253797,
+//!   −75.6874252327 / −75.6874252333 — the same 6–7e-10 offset on every
+//!   state, so each code finds the other's states. The reference is the
+//!   LOWEST (the generator restarts every start rotated about the bond axis);
+//!   the state ferric's default start lands in is decided by perturbations
+//!   far below any physics (the 1e-14 → 1e-20 ERI-precision change moved it
+//!   from the second state to the first). Landing in another state misses
+//!   the 1e-8 bar by ≥ 3.3e-7, so the bar also checks state selection.
 //! * OH in a different state (σ hole): ≥ 0.1 Ha, far outside every bar; the
 //!   generator refuses a non-π SOMO.
 //!

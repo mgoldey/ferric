@@ -77,7 +77,7 @@ ANCHORS asserted HERE before anything is written
   construction λ·E_hh(λ=1) is recorded as a negative-control value, together
   with |λ·E_hh(λ=1) − E_hh(λ)|.
 
-Run (light; water ~1 min, OH ~3 min on a quiet box -- its six-start ROKS dominates):
+Run (water ~1 min; OH ~25 min on a quiet box -- its 6 + 30 rotated ROKS starts dominate):
     scripts/validation/run_slot.sh --light -- \\
         uv run --no-sync python scripts/validation/gen_wb97xlv.py [h2o|oh]
 """
@@ -118,14 +118,21 @@ MAIN_GRID = (75, 110)
 NLC_GRID = (50, 50)
 CONV_TOL = 1e-11
 CONV_TOL_GRAD = 1e-8
-# OH ROKS multi-start (gen_roks_energies.py recipe).
+# OH ROKS multi-start (gen_roks_energies.py recipe), then PI-HOLE ROTATIONS.
 GUESSES = ("minao", "atom", "huckel")
 LEVEL_SHIFTS = (0.0, 0.5)
-# MEASURED 2026-10-01: PySCF's Newton polish of OH ROKS/wB97X-L-V stalls at
-# max|g| 3.2e-6 .. 8.4e-5 over the six starts (the response omits VV10, and the
-# pi-hole orientation is a near-zero mode on the 4-fold Lebedev grid), with a
-# 5.3e-7 Ha spread between starts; the selected (lowest) start has 3.2e-6. Accepting at 1e-4 and recording gmax + spread; E_c is
-# compared on INJECTED orbitals, so this only enters the E_KS / own-orbital bars.
+# MEASURED 2026-10-22 (issue #516): OH 2Pi ROKS/wB97X-L-V on the (75,110)
+# grid has several stationary pi-hole orientations within 1.1e-6 Ha (the grid
+# is not rotationally invariant about the bond). Converged to max|g| <= 1e-8 by
+# plain DIIS from the selected start's orbitals rotated about the bond axis:
+# -75.6874263142 (lowest), -75.6874259854, -75.6874253791, -75.6874252327.
+# The six guess/level-shift starts alone reach none of them tightly (PySCF's
+# Newton polish omits the VV10 kernel and stalls at max|g| 3e-6 .. 8e-5) and
+# their lowest point sat near the -75.6874259854 state, 3.3e-7 above the
+# minimum. So every start's DIIS endpoint is ALSO restarted from its orbitals
+# rotated by ROTATION_DEG about z (DIIS, no level shift), and the lowest
+# accepted point over all of them is the reference.
+ROTATION_DEG = (10.0, 30.0, 45.0, 60.0, 80.0)
 ACCEPT_GMAX = 1e-4
 
 TOL_ANCHOR = 1e-12
@@ -312,38 +319,86 @@ def run_rks(mol, j_mode: str):
     return mf, {"energy": float(mf.e_tot), "max_orbital_gradient": g}
 
 
+def rotation_about_z(mol, angle: float):
+    """AO matrix U with C' = U C rotating every orbital by `angle` about z.
+
+    PySCF orders p as (x, y, z) and real spherical d as m = -2..2, so the
+    (cos m*phi, sin m*phi) pairs are p (x, y), d (m=+1, m=-1) and d (m=+2,
+    m=-2). Valid only when every atom is on the z axis (asserted)."""
+    if np.abs(mol.atom_coords()[:, :2]).max() > 1e-12:
+        raise RuntimeError("rotation_about_z: molecule is not on the z axis")
+    u = np.eye(mol.nao_nr())
+    loc = mol.ao_loc_nr()
+
+    def pair(c, s_, m):
+        co, si = np.cos(m * angle), np.sin(m * angle)
+        u[c, c], u[s_, c], u[s_, s_], u[c, s_] = co, si, co, -si
+
+    for b in range(mol.nbas):
+        ang = mol.bas_angular(b)
+        for k in range(mol.bas_nctr(b)):
+            o = loc[b] + k * (2 * ang + 1)
+            if ang == 1:
+                pair(o, o + 1, 1.0)
+            elif ang == 2:
+                pair(o + 3, o + 1, 1.0)
+                pair(o + 4, o, 2.0)
+            elif ang > 2:
+                raise RuntimeError("rotation_about_z: l > 2 not implemented")
+    return u
+
+
+def _roks_start(mol, guess, ls, dm0=None, label=None):
+    mf = make_ks(mol, "roks", "exact")
+    mf.init_guess = guess
+    mf.level_shift = ls
+    mf.kernel(dm0=dm0)
+    e_diis, diis_conv = float(mf.e_tot), bool(mf.converged)
+    nt = mf.newton()
+    nt.conv_tol = CONV_TOL
+    nt.conv_tol_grad = CONV_TOL_GRAD
+    nt.max_cycle = 100
+    nt.verbose = 0
+    nt.kernel(mf.mo_coeff, mf.mo_occ)
+    gmax = float(np.abs(nt.get_grad(nt.mo_coeff, nt.mo_occ)).max())
+    entry = {
+        "guess": label or guess,
+        "level_shift": ls,
+        "diis_converged": diis_conv,
+        "energy_diis": e_diis,
+        "newton_converged": bool(nt.converged),
+        "energy": float(nt.e_tot),
+        "max_orbital_gradient": gmax,
+        "accepted": gmax <= ACCEPT_GMAX,
+    }
+    print(
+        f"  ROKS start {entry['guess']:22s} ls={ls}: {entry['energy']:.12f} g={gmax:.1e}",
+        flush=True,
+    )
+    return mf, nt, entry
+
+
 def run_roks(mol):
-    """Multi-start ROKS + Newton polish, lowest accepted, internally stable."""
-    scan, best = [], None
+    """Multi-start ROKS (+ pi-hole rotations) + Newton polish, lowest accepted,
+    internally stable."""
+    scan, best, endpoints = [], None, []
     for guess in GUESSES:
         for ls in LEVEL_SHIFTS:
-            mf = make_ks(mol, "roks", "exact")
-            mf.init_guess = guess
-            mf.level_shift = ls
-            mf.kernel()
-            e_diis, diis_conv = float(mf.e_tot), bool(mf.converged)
-            nt = mf.newton()
-            nt.conv_tol = CONV_TOL
-            nt.conv_tol_grad = CONV_TOL_GRAD
-            nt.max_cycle = 100
-            nt.verbose = 0
-            nt.kernel(mf.mo_coeff, mf.mo_occ)
-            gmax = float(np.abs(nt.get_grad(nt.mo_coeff, nt.mo_occ)).max())
-            entry = {
-                "guess": guess,
-                "level_shift": ls,
-                "diis_converged": diis_conv,
-                "energy_diis": e_diis,
-                "newton_converged": bool(nt.converged),
-                "energy": float(nt.e_tot),
-                "max_orbital_gradient": gmax,
-                "accepted": gmax <= ACCEPT_GMAX,
-            }
+            mf, nt, entry = _roks_start(mol, guess, ls)
+            endpoints.append((f"{guess}/ls{ls}", mf.mo_coeff, mf.mo_occ))
             scan.append(entry)
-            print(
-                f"  ROKS start {guess:6s} ls={ls}: {entry['energy']:.12f} g={gmax:.1e}",
-                flush=True,
+            if entry["accepted"] and (best is None or nt.e_tot < best[0].e_tot):
+                best = (nt, entry)
+    for name, mo, occ in endpoints:
+        for deg in ROTATION_DEG:
+            u = rotation_about_z(mol, np.radians(deg))
+            mf0 = make_ks(mol, "roks", "exact")
+            dm0 = mf0.make_rdm1(u @ mo, occ)
+            _mf, nt, entry = _roks_start(
+                mol, "minao", 0.0, dm0=dm0, label=f"{name}@rot{deg:g}"
             )
+            entry["rotation_deg"] = deg
+            scan.append(entry)
             if entry["accepted"] and (best is None or nt.e_tot < best[0].e_tot):
                 best = (nt, entry)
     if best is None:

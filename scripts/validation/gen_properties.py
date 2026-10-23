@@ -159,15 +159,16 @@ CONV_TOL_GRAD = 1e-9
 FERRIC_GRID = (75, 110)
 DENSE_GRID = (200, 590)
 
-# crates/ferric-dft/src/becke.rs::bragg_slater_bohr, VERBATIM (Angstrom, and
-# ferric's own Angstrom->Bohr factor in that function, which differs from
-# ANGSTROM_TO_BOHR in mol.rs in the 11th digit — reproduced, not "fixed").
+# crates/ferric-dft/src/becke.rs::bragg_slater_bohr, VERBATIM (Angstrom; the
+# function converts with ferric_core::units::ANGSTROM_TO_BOHR, mirrored by
+# common.ANGSTROM_TO_BOHR). The radii enter the Becke size adjustment only as
+# the ratio chi = R_A / R_B, so the conversion factor cancels.
 _BRAGG_SLATER_ANG = {
     1: 0.35, 2: 0.30, 3: 1.45, 4: 1.05, 5: 0.85, 6: 0.70, 7: 0.65, 8: 0.60,
     9: 0.50, 10: 0.45, 11: 1.80, 12: 1.50, 13: 1.25, 14: 1.10, 15: 1.00,
     16: 1.00, 17: 1.00, 18: 0.71,
 }  # fmt: skip
-_BECKE_RS_ANG_TO_BOHR = 1.8897259886
+_BECKE_RS_ANG_TO_BOHR = common.ANGSTROM_TO_BOHR
 
 FD_STEP = 1e-4  # Bohr, rinv-origin central difference for the field self-check
 FD_FIELD_TOL = 1e-6

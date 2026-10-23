@@ -1367,6 +1367,19 @@ fn uks_pbe_config() -> RhfConfig {
 }
 
 /// UKS/PBE on the reference's stable state (same fallback as `uhf`).
+///
+/// The reference is the LOWEST stable state over three PySCF starts
+/// (`common.run_open_shell`), so ferric also tries more than one start. OH ²Π
+/// needs that: on the (75,110) grid the π-hole orientation is a near-zero mode
+/// with more than one stationary state. Measured (ferric, cc-pVDZ, 2026-10-22):
+/// two internally STABLE states, −75.6448989187 (λ_min +1.23e-4, the
+/// reference) and −75.6448984257 (λ_min +9.0e-5, 4.93e-7 higher, which
+/// PySCF's own `minao` start reaches to < 1e-10: `guess_scan` in the JSON),
+/// and an UNSTABLE one at −75.6448978044 (λ_min −9.6e-5; the hole turned 45°).
+/// Which basin the MINAO start falls into is decided by perturbations far below
+/// any physics: the libint ERI precision change 1e-14 → 1e-20 (8d1961c32,
+/// which moves E_J by ~1e-9) moved it from the first to the second (issue
+/// #516). The core-Hamiltonian start reaches the reference state there.
 fn uks_pbe(sys: &Sys) -> ScfResult {
     let e_ref = num(&sys.r, "/u_g0w0_uks_pbe/uks/energy", &sys.label);
     let steered = RhfConfig {
@@ -1374,10 +1387,15 @@ fn uks_pbe(sys: &Sys) -> ScfResult {
         mom_after_iter: 5,
         ..uks_pbe_config()
     };
+    let hcore = RhfConfig {
+        use_sad_guess: false,
+        ..uks_pbe_config()
+    };
     let mut tried = Vec::new();
     for (name, cfg) in [
         ("stability-descent", uks_pbe_config()),
         ("ls0.5+MOM5", steered),
+        ("hcore guess", hcore),
     ] {
         let res = solve_uhf(&sys.ctx, &sys.mol, &sys.obs, &sys.bounds, &cfg)
             .unwrap_or_else(|e| panic!("{}: UKS solve_uhf failed: {e:?}", sys.label));

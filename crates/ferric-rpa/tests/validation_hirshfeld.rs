@@ -29,7 +29,12 @@
 //!   MOM after iteration 5 otherwise, for an HF molecular config); or
 //! * `None` — `ferric.hirshfeld_charges(..., proatom="slater")`: a
 //!   single normalized Slater exponential Z ξ³/π e^{−2ξr}, ξ = 1/R(Z) from
-//!   `slater_xi_for_z`.
+//!   `slater_xi_for_z`, R(Z) converted with `ferric_core::units::
+//!   ANGSTROM_TO_BOHR` = 1/0.52917721092 (the generator uses the same
+//!   `common.ANGSTROM_TO_BOHR`). The Slater rows resolve the constant: the
+//!   pre-#337 factor 1.8897259886 (7.2e-8 relative away) misses the
+//!   same-density charge bar by 4–11e-8 e and the free-atom volume bar by
+//!   9.6e-10 relative (issue #516).
 //!
 //! `atomic_effective_volumes_hirshfeld` integrates Σ_g w_g ρ w_A |r − R_A|³
 //! with the same weight on the SAME atom-centred Becke–Lebedev grid, with no
