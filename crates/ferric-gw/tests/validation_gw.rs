@@ -1369,7 +1369,8 @@ fn uks_pbe_config() -> RhfConfig {
 /// UKS/PBE on the reference's stable state (same fallback as `uhf`).
 ///
 /// The reference is the LOWEST stable state over three PySCF starts
-/// (`common.run_open_shell`), so ferric also tries more than one start. OH ²Π
+/// (`common.run_open_shell`), so ferric runs three starts too and applies the
+/// same rule ([`select_lowest_stable`]). OH ²Π
 /// needs that: on the (75,110) grid the π-hole orientation is a near-zero mode
 /// with more than one stationary state. Measured (ferric, cc-pVDZ, 2026-10-22):
 /// two internally STABLE states, −75.6448989187 (λ_min +1.23e-4, the
@@ -1380,6 +1381,9 @@ fn uks_pbe_config() -> RhfConfig {
 /// any physics: the libint ERI precision change 1e-14 → 1e-20 (8d1961c32,
 /// which moves E_J by ~1e-9) moved it from the first to the second (issue
 /// #516). The core-Hamiltonian start reaches the reference state there.
+/// Mutation-checked: shifting the MINAO start's energy to e_ref − 2e-9 fails
+/// the "none below the reference" assert; dropping the core-Hamiltonian
+/// start fails the "lowest is the reference" assert (lowest 4.93e-7 off).
 fn uks_pbe(sys: &Sys) -> ScfResult {
     let e_ref = num(&sys.r, "/u_g0w0_uks_pbe/uks/energy", &sys.label);
     let steered = RhfConfig {
@@ -1391,7 +1395,7 @@ fn uks_pbe(sys: &Sys) -> ScfResult {
         use_sad_guess: false,
         ..uks_pbe_config()
     };
-    let mut tried = Vec::new();
+    let mut runs = Vec::new();
     for (name, cfg) in [
         ("stability-descent", uks_pbe_config()),
         ("ls0.5+MOM5", steered),
@@ -1399,29 +1403,69 @@ fn uks_pbe(sys: &Sys) -> ScfResult {
     ] {
         let res = solve_uhf(&sys.ctx, &sys.mol, &sys.obs, &sys.bounds, &cfg)
             .unwrap_or_else(|e| panic!("{}: UKS solve_uhf failed: {e:?}", sys.label));
-        let d = (res.energy - e_ref).abs();
-        tried.push(format!("{name}: E {:.10} |d| {d:.2e}", res.energy));
-        if res.converged && d < TOL_E_SCF {
-            eprintln!("{}: UKS/PBE state reached with {name}", sys.label);
-            if let Some(st) = res.stability.as_ref() {
-                assert!(
-                    matches!(
-                        st.verdict(),
-                        StabilityVerdict::Stable | StabilityVerdict::Marginal
-                    ),
-                    "{}: ferric UKS state not stable: {}",
-                    sys.label,
-                    st.summary()
-                );
-            }
-            check_close(&sys.label, "E_UKS", res.energy, e_ref, TOL_E_SCF);
-            return res;
-        }
+        let stable = res.stability.as_ref().is_none_or(|st| {
+            matches!(
+                st.verdict(),
+                StabilityVerdict::Stable | StabilityVerdict::Marginal
+            )
+        });
+        runs.push((name, res, stable));
     }
-    panic!(
-        "{}: ferric did not reach the reference UKS/PBE state {e_ref:.10}: {tried:?}",
-        sys.label
+    let candidates: Vec<(&str, f64, bool, bool)> = runs
+        .iter()
+        .map(|(n, r, st)| (*n, r.energy, r.converged, *st))
+        .collect();
+    let k = select_lowest_stable(&sys.label, "UKS/PBE", &candidates, e_ref, TOL_E_SCF);
+    let res = runs.swap_remove(k).1;
+    check_close(&sys.label, "E_UKS", res.energy, e_ref, TOL_E_SCF);
+    res
+}
+
+/// The state selection `common.run_open_shell` applies to the reference, on
+/// ferric's side: the LOWEST converged, internally stable start must be the
+/// reference state (|E − e_ref| < `tol`), and no converged start may land
+/// below `e_ref − tol` (that would mean the reference is not the lowest state
+/// and the row compares two different states). `candidates` are
+/// (name, energy, converged, stable); returns the index of the selected one.
+fn select_lowest_stable(
+    ctx: &str,
+    what: &str,
+    candidates: &[(&str, f64, bool, bool)],
+    e_ref: f64,
+    tol: f64,
+) -> usize {
+    let tried: Vec<String> = candidates
+        .iter()
+        .map(|(n, e, c, st)| {
+            format!(
+                "{n}: E {e:.10} |d| {:.2e} converged {c} stable {st}",
+                (e - e_ref).abs()
+            )
+        })
+        .collect();
+    eprintln!("{ctx}: {what} starts: {tried:?}");
+    for (n, e, c, _) in candidates {
+        assert!(
+            !(*c && *e < e_ref - tol),
+            "{ctx}: {what} start {n} converged BELOW the reference state \
+             ({e:.10} < {e_ref:.10} − {tol:.0e}); the reference is not the lowest: {tried:?}"
+        );
+    }
+    let k = candidates
+        .iter()
+        .enumerate()
+        .filter(|(_, (_, _, c, st))| *c && *st)
+        .min_by(|a, b| a.1 .1.total_cmp(&b.1 .1))
+        .map(|(k, _)| k)
+        .unwrap_or_else(|| panic!("{ctx}: no {what} start converged to a stable state: {tried:?}"));
+    let (n, e, _, _) = candidates[k];
+    assert!(
+        (e - e_ref).abs() < tol,
+        "{ctx}: ferric's lowest stable {what} state ({n}, {e:.10}) is not the reference \
+         state {e_ref:.10}: {tried:?}"
     );
+    eprintln!("{ctx}: {what} reference state = lowest stable start ({n})");
+    k
 }
 
 /// ferric's open-shell G0W0@UKS exactly as the CLI's `run_gw` open-shell

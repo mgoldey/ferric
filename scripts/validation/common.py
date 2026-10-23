@@ -542,7 +542,7 @@ def run_open_shell(
     conv_tol_grad: float = 1e-8,
     max_stab_rounds: int = 10,
     guesses: tuple[str, ...] = ("minao", "atom", "huckel"),
-    distinct_tol: float = 1e-6,
+    distinct_tol: float = 1e-8,
     mf_factory=None,
     return_mf: bool = False,
 ):
@@ -570,7 +570,11 @@ def run_open_shell(
     `multiple_stable_minima` flags when two stable solutions differ by more
     than `distinct_tol` — a reviewer then knows the state is multi-valued and
     ferric landing on the higher one would be a state-selection difference,
-    not an integral one.
+    not an integral one. `distinct_tol` must sit BELOW the consumers' energy
+    bars (1e-9..1e-8): at the former 1e-6, OH 2Pi UKS/PBE (gen_gw.py), whose
+    two stable states are 4.93e-7 apart, was written with the flag false
+    (issue #516). References written before this default changed keep the
+    old flag until they are regenerated.
     """
     from pyscf import scf
 

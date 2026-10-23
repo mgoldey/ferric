@@ -94,16 +94,19 @@
 //! * OH in a different state (σ hole): ≥ 0.1 Ha, far outside every bar; the
 //!   generator refuses a non-π SOMO.
 //!
-//! # TOLERANCES (measured 2026-10-01, release, water and OH / def2-SVP)
+//! # TOLERANCES (measured 2026-10-01, release, water and OH / def2-SVP; OH
+//! re-measured 2026-10-22, debug, after the reference was moved to the lowest
+//! ROKS state, issue #516)
 //!
 //! | quantity | measured max | bar |
 //! |---|---:|---:|
 //! | AO overlap | 6.7e-16 | 1e-10 |
-//! | E_KS (exact J, RI-J, ROKS) | 1.05e-9 | 1e-8 |
+//! | E_KS (exact J, RI-J; water) | 1.05e-9 | 1e-8 |
+//! | E_KS (ROKS; OH, lowest of three starts) | 6.2e-10 | 1e-8 |
 //! | λ·E_c and DriversOnly on injected orbitals | 7.2e-14 | 1e-11 |
 //! | DriversOnly vs λ² × ferric SR-MP2 | 1.4e-17 | 1e-12 |
-//! | λ·E_c on ferric's own orbitals | 1.06e-7 | 5e-7 |
-//! | total, own orbitals | 1.07e-7 | 5e-7 |
+//! | λ·E_c on ferric's own orbitals (water / OH) | 1.06e-7 / 3.4e-8 | 5e-7 |
+//! | total, own orbitals (water / OH) | 1.07e-7 / 3.4e-8 | 5e-7 |
 //! | OH semicanonical orbital energies | 3.3e-5 | 1e-4 |
 //!
 //! Every bar sits below the smallest defect it must catch: RI-J vs exact-J
@@ -241,6 +244,50 @@ fn check_close(ctx: &str, what: &str, got: f64, want: f64, tol: f64) {
         d < tol,
         "{ctx}: {what} {got:.13} vs reference {want:.13} (|d| {d:.2e} >= {tol:.0e})"
     );
+}
+
+/// The generator's ROKS state selection on ferric's side: the LOWEST converged
+/// start must be the reference state (|E − e_ref| < `tol`), and no converged
+/// start may land below `e_ref − tol` (the reference would then not be the
+/// lowest state). `candidates` are (name, energy, converged); returns the
+/// index of the selected one. ferric's ROKS has no stability analysis, so
+/// unlike the GW row's UKS selection there is no stability filter.
+/// Mutation-checked: shifting the minao start to e_ref − 2e-8 fails the first
+/// assert; keeping only the core-Hamiltonian start (which lands 9.35e-7 above)
+/// fails the second.
+fn select_lowest(
+    ctx: &str,
+    what: &str,
+    candidates: &[(&str, f64, bool)],
+    e_ref: f64,
+    tol: f64,
+) -> usize {
+    let tried: Vec<String> = candidates
+        .iter()
+        .map(|(n, e, c)| format!("{n}: E {e:.10} |d| {:.2e} converged {c}", (e - e_ref).abs()))
+        .collect();
+    eprintln!("{ctx}: {what} starts: {tried:?}");
+    for (n, e, c) in candidates {
+        assert!(
+            !(*c && *e < e_ref - tol),
+            "{ctx}: {what} start {n} converged BELOW the reference state \
+             ({e:.10} < {e_ref:.10} − {tol:.0e}); the reference is not the lowest: {tried:?}"
+        );
+    }
+    let k = candidates
+        .iter()
+        .enumerate()
+        .filter(|(_, (_, _, c))| *c)
+        .min_by(|a, b| a.1 .1.total_cmp(&b.1 .1))
+        .map(|(k, _)| k)
+        .unwrap_or_else(|| panic!("{ctx}: no {what} start converged: {tried:?}"));
+    let (n, e, _) = candidates[k];
+    assert!(
+        (e - e_ref).abs() < tol,
+        "{ctx}: ferric's lowest {what} state ({n}, {e:.10}) is not the reference \
+         state {e_ref:.10}: {tried:?}"
+    );
+    k
 }
 
 fn check_miss(ctx: &str, what: &str, got: f64, want: f64) {
@@ -599,26 +646,49 @@ fn wb97xlv_oh_def2svp_components_vs_pyscf() {
     let pctx = ParallelContext::default();
 
     // ---- E_KS (ROKS; J exact by construction for an RSH functional) ----
-    let roks = solve_rohf(
-        &pctx,
-        &sys.mol,
-        &sys.obs,
-        Operator::coulomb(),
-        &sys.bounds,
-        &ks_config(false),
-    )
-    .unwrap_or_else(|e| panic!("{ctx}: ROKS failed: {e:?}"));
+    // Lowest of several starts, as the generator selects the reference: the
+    // π-hole basin a single start falls into flips under sub-1e-9 changes.
+    let e_ks_ref = num(r, "/ks/energy", ctx);
+    let mut runs = Vec::new();
+    for (name, cfg) in [
+        ("minao", ks_config(false)),
+        (
+            "minao ls0.5",
+            RhfConfig {
+                level_shift: 0.5,
+                ..ks_config(false)
+            },
+        ),
+        (
+            "hcore",
+            RhfConfig {
+                use_sad_guess: false,
+                ..ks_config(false)
+            },
+        ),
+    ] {
+        let res = solve_rohf(
+            &pctx,
+            &sys.mol,
+            &sys.obs,
+            Operator::coulomb(),
+            &sys.bounds,
+            &cfg,
+        )
+        .unwrap_or_else(|e| panic!("{ctx}: ROKS ({name}) failed: {e:?}"));
+        runs.push((name, res));
+    }
+    let candidates: Vec<(&str, f64, bool)> = runs
+        .iter()
+        .map(|(n, r)| (*n, r.energy, r.converged))
+        .collect();
+    let k = select_lowest(ctx, "ROKS", &candidates, e_ks_ref, TOL_E_KS);
+    let roks = runs.swap_remove(k).1;
     assert!(roks.converged, "{ctx}: ROKS not converged");
     assert!(matches!(roks.spin, Spin::RestrictedOpen), "{ctx}: not ROKS");
     let spread = num(r, "/ks/accepted_spread", ctx);
     eprintln!("{ctx}: reference ROKS accepted-start spread {spread:.2e} (pi-hole orientation)");
-    check_close(
-        ctx,
-        "E_KS (ROKS)",
-        roks.energy,
-        num(r, "/ks/energy", ctx),
-        TOL_E_KS,
-    );
+    check_close(ctx, "E_KS (ROKS)", roks.energy, e_ks_ref, TOL_E_KS);
     check_miss(
         ctx,
         "E_KS vs exact ROHF",

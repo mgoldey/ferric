@@ -134,6 +134,10 @@ LEVEL_SHIFTS = (0.0, 0.5)
 # accepted point over all of them is the reference.
 ROTATION_DEG = (10.0, 30.0, 45.0, 60.0, 80.0)
 ACCEPT_GMAX = 1e-4
+# Only a point converged to max|g| <= SELECT_GMAX may be SELECTED as the
+# reference (looser accepted points are recorded and enter the spread only).
+# The selected OH point has 1.1e-9 (2026-10-22).
+SELECT_GMAX = 1e-8
 
 TOL_ANCHOR = 1e-12
 
@@ -387,7 +391,9 @@ def run_roks(mol):
             mf, nt, entry = _roks_start(mol, guess, ls)
             endpoints.append((f"{guess}/ls{ls}", mf.mo_coeff, mf.mo_occ))
             scan.append(entry)
-            if entry["accepted"] and (best is None or nt.e_tot < best[0].e_tot):
+            if entry["max_orbital_gradient"] <= SELECT_GMAX and (
+                best is None or nt.e_tot < best[0].e_tot
+            ):
                 best = (nt, entry)
     for name, mo, occ in endpoints:
         for deg in ROTATION_DEG:
@@ -399,10 +405,12 @@ def run_roks(mol):
             )
             entry["rotation_deg"] = deg
             scan.append(entry)
-            if entry["accepted"] and (best is None or nt.e_tot < best[0].e_tot):
+            if entry["max_orbital_gradient"] <= SELECT_GMAX and (
+                best is None or nt.e_tot < best[0].e_tot
+            ):
                 best = (nt, entry)
     if best is None:
-        raise RuntimeError(f"ROKS: no start reached max|g| <= {ACCEPT_GMAX}")
+        raise RuntimeError(f"ROKS: no start reached max|g| <= {SELECT_GMAX}")
     mf, entry = best
     _mo, stable = common._stability_status(mf)
     if not stable:
