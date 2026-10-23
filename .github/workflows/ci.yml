@@ -1099,28 +1099,43 @@ jobs:
   # `cargo nextest run --workspace` would build all ~300 test binaries for a
   # handful of tests, on a runner whose binding constraint is disk.
   validation:
-    name: validation (weekly, external references, shard ${{ matrix.partition }}/3)
+    name: validation (weekly, external references, shard ${{ matrix.partition }}/4)
     if: github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && github.event.schedule == '17 4 * * 0')
     runs-on: ubuntu-22.04
-    timeout-minutes: 170
-    # SHARDED, because one runner no longer fits the tier. The last run that
-    # executed (37195768020, 2026-10-04) spent 133 of its 170 minutes in the
-    # Rust test step for 367 tests at test-threads = 2; the tier has grown
-    # from 55 to 80 validation_*.rs files since, so a single job would now
-    # time out and report NOTHING for the tests it never reached. nextest's
+    # 300, not 170: no shard has ever finished inside 170. Shard 2 holds
+    # ecp_gradient_ch2i_uhf, ~85 min on CI by itself (.config/nextest.toml
+    # gives the measurement); with the tests scheduled before it, shard 2 is
+    # modelled at ~150 min of tests (per-test CI durations from the three
+    # October 2026 dispatches, dealt out as `count:K/4` deals them) plus up
+    # to 17 min of setup, and CI wall time for the same shard has varied 1.6x
+    # between runs: ~150 x 1.6 + 17 = ~254 of 300 min at the worst spread
+    # seen, under GitHub's 360-min cap. Adding a heavy test to shard 2 eats
+    # that headroom; the fallback is moving ecp_gradient_ch2i_uhf to its own
+    # single-test job (or running its stability analysis only on the
+    # undisplaced SCF). Hung tests are bounded per test by nextest's
+    # terminate-after, so this is a backstop, not the hang guard.
+    timeout-minutes: 300
+    # SHARDED, because one runner no longer fits the tier (~566 tests, ~13 h
+    # of summed per-test time on CI, run at test-threads = 2). nextest's
     # `count:` partition is applied AFTER the filter and deals each binary's
-    # selected tests out round-robin, so the heavy neighbours inside one binary
-    # (validation_ecp_gradient, validation_tddft's h2co trio) land on
-    # different shards, which `hash:` does not guarantee; the union of the
-    # three shards is the whole tier (checked with nextest 0.9.145 on a
-    # three-binary toy crate). Every shard builds the same binaries
-    # (~4 min) and runs a disjoint third of the tests; the Python half runs on
-    # shard 1 only. fail-fast off: one shard's failure must not cancel the
-    # others' results.
+    # selected tests out round-robin in NAME order: test i of a binary goes
+    # to shard (i mod 4) + 1, counting i from 0. Two consequences:
+    # * it separates NAME-ADJACENT tests of one binary, which is why
+    #   ecp_gradient_ch2i_uhf (shard 2) and ecp_gradient_ch2i_uks_pbe
+    #   (shard 3) do not share a runner; it does NOT spread heavy tests in
+    #   general (that would need per-test weights nextest does not take);
+    # * every binary's alphabetically first test lands on shard 1, so shard 1
+    #   carries the most tests (180 of ~566) and, with ag2_augccpvdzpp, the
+    #   second-heaviest load. The Python half therefore runs on the LAST
+    #   shard, the lightest one.
+    # The union of the shards is the whole tier (checked with nextest 0.9.145
+    # on a three-binary toy crate). Every shard builds the same binaries
+    # (~4 min) and runs a disjoint quarter of the tests. fail-fast off: one
+    # shard's failure must not cancel the others' results.
     strategy:
       fail-fast: false
       matrix:
-        partition: [1, 2, 3]
+        partition: [1, 2, 3, 4]
     # Builds and runs third-party build scripts and proc-macros, pushes
     # nothing and only RESTORES caches: read-only token, not persisted in the
     # checkout's .git/config.
@@ -1197,38 +1212,38 @@ jobs:
           fi
           echo "validation binaries: ${ARGS[*]}"
           cargo nextest run --profile validation --locked "${ARGS[@]}" \
-            --partition "count:${{ matrix.partition }}/3" \
+            --partition "count:${{ matrix.partition }}/4" \
             --run-ignored only -E 'binary(/^validation_/)'
 
       # ── Python half of the tier: `@pytest.mark.validation` tests ──────────
       # Excluded everywhere else by pyproject's `addopts = -m "not validation"`
       # (a later `-m` on the command line overrides it). These drive the
       # compiled extension (and, for the NPZ row, the CLI through it), so the
-      # job builds ferric-python in release, on shard 1 only (it is not
-      # partitioned). `!cancelled()` so a Rust-tier failure still reports the
+      # job builds ferric-python in release, on shard 4 only (the lightest
+      # shard; it is not partitioned). `!cancelled()` so a Rust-tier failure still reports the
       # Python half. The pytest path list below is
       # checked by ci_validation_tier_guard.rs against every file that carries
       # the marker, so a validation pytest outside it fails a normal PR.
       - name: Free the validation test binaries before the release build
         # The debug test binaries above and the release extension below are
         # two full builds; the runner's binding constraint is disk.
-        if: ${{ !cancelled() && matrix.partition == 1 }}
+        if: ${{ !cancelled() && matrix.partition == 4 }}
         run: rm -rf target/debug
 
       - name: Install uv
-        if: ${{ !cancelled() && matrix.partition == 1 }}
+        if: ${{ !cancelled() && matrix.partition == 4 }}
         run: pip install uv
 
       - name: uv sync (dev + build extras)
-        if: ${{ !cancelled() && matrix.partition == 1 }}
+        if: ${{ !cancelled() && matrix.partition == 4 }}
         run: uv sync --extra dev --extra build --no-install-project
 
       - name: Build ferric-python extension (release)
-        if: ${{ !cancelled() && matrix.partition == 1 }}
+        if: ${{ !cancelled() && matrix.partition == 4 }}
         run: uv run maturin develop --release --locked
 
       - name: Run Python validation tests
-        if: ${{ !cancelled() && matrix.partition == 1 }}
+        if: ${{ !cancelled() && matrix.partition == 4 }}
         run: |
           set -euo pipefail
           # conftest.py turns a failed `import ferric` into a whole-suite SKIP

@@ -407,6 +407,38 @@ fn validation_shards_cover_every_partition() {
         (1..=n).collect::<Vec<_>>(),
         "validation matrix partitions {shards:?} must be exactly 1..={n} to cover count:K/{n}"
     );
+    // The Python half is pinned to one shard by `matrix.partition == K`. A K
+    // outside 1..=N (e.g. the shard count lowered under it) skips every one of
+    // those steps on every shard, and the job is still green.
+    // MUTATION: change one `matrix.partition == 4` to `== 5` → this fails.
+    let pins: Vec<usize> = job
+        .match_indices("matrix.partition == ")
+        .map(|(at, m)| {
+            let rest = &job[at + m.len()..];
+            let end = rest
+                .find(|c: char| !c.is_ascii_digit())
+                .unwrap_or(rest.len());
+            rest[..end]
+                .parse()
+                .expect("non-integer `matrix.partition ==` shard")
+        })
+        .collect();
+    assert!(
+        !pins.is_empty(),
+        "validation job pins no step to a shard; the Python half must run on exactly one"
+    );
+    for k in &pins {
+        assert!(
+            (1..=n).contains(k),
+            "a validation step is pinned to shard {k}, outside 1..={n}: it never runs"
+        );
+    }
+    // The Python half's setup (uv / maturin) and its pytest must share a runner.
+    // MUTATION: pin one of those steps to a different shard → this fails.
+    assert!(
+        pins.windows(2).all(|w| w[0] == w[1]),
+        "the Python-half steps are pinned to different shards {pins:?}; they must share one runner"
+    );
 }
 
 // ── Python half of the tier: `@pytest.mark.validation` ──────────────────────
