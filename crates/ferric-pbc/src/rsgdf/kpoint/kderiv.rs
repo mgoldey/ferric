@@ -113,6 +113,24 @@
 //! attenuated fit as for the plain one, so a derivative staged at another `ω`
 //! or cut is refused.
 //!
+//! # Conditioning
+//!
+//! `f(J2)` is never formed as a matrix. Kept metric eigenvalues just above
+//! lindep (`s_min` ~ 1e-10) make `U diag(f) U^H` carry `1/s_min` in every
+//! entry, and its rounding (`ε/s_min`) then leaks into the well-conditioned
+//! directions of `Z` and `c`; forming `H` in the aux basis and rotating it
+//! afterwards loses `ε‖H‖` to cancellation in the near-null rows, which the
+//! Loewner factor `f_i f_j` amplifies by `1/s_min²`. Both make the force
+//! roundoff-limited while the energy (built from `B = s^{-1/2} U^H J3`) is
+//! not (#512). So `J3` and `T` are rotated into the eigenbasis first, `U^H H
+//! U` is accumulated there, `Z = ((T U) ∘ f) U^H` and `c = U (f ∘ U^H ρ)`:
+//! the same function, with the near-null error confined to the near-null
+//! directions, where `dJ` is small. The Gamma-point path (`rsgdf::deriv`)
+//! already has this form (`W = U s^{-1/2}`). Prototype
+//! `prototypes/pbc/kgrad_conditioning.py` (exact-integral s-only model): the
+//! error against the exact-arithmetic gradient falls from 1.0e-5 to 8.5e-10
+//! at `s_min` 9e-11, the floor set by rounding the integrals themselves.
+//!
 //! # Scope
 //!
 //! Aux centres must be the cell's atoms (no `aux_jac`); the energy build must
@@ -625,10 +643,12 @@ fn kpoint_fit_core(
     )?;
     ledger.reserve(
         &format!(
-            "{who}: per-q working set (J3, T, Z per k' (N_k = {nk}), R_L residue folds, metric)"
+            "{who}: per-q working set (J3, T, Z per k' (N_k = {nk}), rotated T and J3, R_L \
+             residue folds, metric)"
         ),
         bytes_of(
             sat(&[3, nk, n2, naux])
+                .saturating_add(sat(&[2, n2, naux]))
                 .saturating_add(sat(&[2, rl, n2, naux]))
                 .saturating_add(sat(&[8, naux, naux])),
             16,
@@ -866,9 +886,13 @@ fn attenuated_fit_core(
     let rl = mod_l[0] * mod_l[1] * mod_l[2];
     let sat = |xs: &[usize]| xs.iter().fold(1u64, |a, &x| a.saturating_mul(x as u64));
     ledger.reserve(
-        &format!("{who}: per-q working set (J3, T, Z per k' (N_k = {nk}), R_L = {rl} folds)"),
+        &format!(
+            "{who}: per-q working set (J3, T, Z per k' (N_k = {nk}), rotated T and J3, R_L = {rl} \
+             folds)"
+        ),
         bytes_of(
             sat(&[3, nk, n2, naux])
+                .saturating_add(sat(&[2, n2, naux]))
                 .saturating_add(sat(&[2, rl, n2, naux]))
                 .saturating_add(sat(&[8, naux, naux])),
             16,
@@ -1267,19 +1291,45 @@ fn exch_pair_term(ctx: &FitCtx<'_>, j: usize, k: usize, jqh: &Array2<C64>) -> Ar
     t
 }
 
-/// `H(q)` (exchange part) and `Z^{k'}` for every `k'` (module doc).
+/// The metric eigenbasis of one q class: `U` (columns = eigenvectors), `U^H`
+/// and `f` (`1/s` kept, 0 dropped). `f(J2) = U diag(f) U^H` is APPLIED in
+/// this basis and never formed (module doc "Conditioning").
+struct MetricEig<'a> {
+    u: &'a Array2<C64>,
+    uh: Array2<C64>,
+    f: &'a [f64],
+}
+
+impl MetricEig<'_> {
+    /// `x f(J2) = ((x U) ∘ f) U^H` from the ALREADY ROTATED `xu = x U`.
+    fn apply_rotated(&self, mut xu: Array2<C64>) -> Array2<C64> {
+        for (col, fv) in xu.columns_mut().into_iter().zip(self.f) {
+            let fv = *fv;
+            for z in col {
+                *z *= fv;
+            }
+        }
+        xu.dot(&self.uh)
+    }
+}
+
+/// `U^H H(q) U` (exchange part, in the metric eigenbasis) and `Z^{k'}` for
+/// every `k'` (module doc). Both `J3` and `T` are rotated BEFORE they are
+/// multiplied, so the near-null columns carry `ε‖J3‖` absolute error rather
+/// than `ε‖H‖` (module doc "Conditioning").
 fn exchange_h_and_z(
     ctx: &FitCtx<'_>,
     j3: &[Array2<C64>],
     kof: &[usize],
-    jinv: &Array2<C64>,
+    me: &MetricEig<'_>,
 ) -> (Array2<C64>, Vec<Array2<C64>>) {
     let n = ctx.st.obs.nbasis();
     let naux = ctx.st.aux.nbasis();
     let nk = ctx.mesh.nk();
     let inv_nk = 1.0 / nk as f64;
     let inv_nk2 = inv_nk * inv_nk;
-    let mut hq = Array2::<C64>::zeros((naux, naux));
+    let uc = me.u.mapv(|z| z.conj());
+    let mut ht = Array2::<C64>::zeros((naux, naux));
     let mut zt: Vec<Array2<C64>> = Vec::with_capacity(nk);
     for j in 0..nk {
         let k = kof[j];
@@ -1293,14 +1343,16 @@ fn exchange_h_and_z(
                 }
             }
         }
-        // H += −(1/2N_k²) J3ᵀ Tt ; Z = −(1/N_k²) Tt f
-        let h_j = j3[j].t().dot(&tt);
-        hq.scaled_add(C64::new(-0.5 * inv_nk2, 0.0), &h_j);
-        let mut z = tt.dot(jinv);
+        // U^H H U += −(1/2N_k²) (J3 conj U)ᵀ (Tt U) ; Z = −(1/N_k²) ((Tt U) ∘ f) U^H
+        let ttu = tt.dot(me.u);
+        drop(tt);
+        let h_j = j3[j].dot(&uc).t().dot(&ttu);
+        ht.scaled_add(C64::new(-0.5 * inv_nk2, 0.0), &h_j);
+        let mut z = me.apply_rotated(ttu);
         z.mapv_inplace(|v| v * (-inv_nk2));
         zt.push(z);
     }
-    (hq, zt)
+    (ht, zt)
 }
 
 /// The q = 0 terms: the Coulomb parts of `H` and `Z` (plain fit only), the
@@ -1309,13 +1361,13 @@ fn exchange_h_and_z(
 fn coulomb_q0(
     ctx: &FitCtx<'_>,
     j3: &[Array2<C64>],
-    jinv: &Array2<C64>,
-    hq: &mut Array2<C64>,
+    me: &MetricEig<'_>,
+    ht: &mut Array2<C64>,
     zt: &mut [Array2<C64>],
     mg0: &mut [Array2<C64>],
 ) {
     if ctx.mode == FitMode::Coulomb {
-        coulomb_density_q0(ctx, j3, jinv, hq, zt);
+        coulomb_density_q0(ctx, j3, me, ht, zt);
     }
     let n = ctx.st.obs.nbasis();
     let zero = C64::new(0.0, 0.0);
@@ -1336,13 +1388,13 @@ fn coulomb_q0(
     }
 }
 
-/// The q = 0 Coulomb parts of `H` (`½ ρ ρ^H`) and `Z` (`conj(c_P) D/N_k`) of
-/// the plain fit.
+/// The q = 0 Coulomb parts of `U^H H U` (`½ ρ̃ ρ̃^H`, `ρ̃ = U^H ρ`) and `Z`
+/// (`conj(c_P) D/N_k`, `c = U (f ∘ ρ̃)`) of the plain fit.
 fn coulomb_density_q0(
     ctx: &FitCtx<'_>,
     j3: &[Array2<C64>],
-    jinv: &Array2<C64>,
-    hq: &mut Array2<C64>,
+    me: &MetricEig<'_>,
+    ht: &mut Array2<C64>,
     zt: &mut [Array2<C64>],
 ) {
     let n = ctx.st.obs.nbasis();
@@ -1355,12 +1407,14 @@ fn coulomb_density_q0(
         rho += &x.t().dot(&v);
     }
     rho.mapv_inplace(|z| z * inv_nk);
-    let mut cvec = jinv.dot(&rho);
+    let rho_t = me.uh.dot(&rho);
+    let frho = Array1::from_shape_fn(naux, |i| rho_t[i] * me.f[i]);
+    let mut cvec = me.u.dot(&frho);
     let js = ctx.mutation.coulomb_scale.unwrap_or(1.0);
     cvec.mapv_inplace(|z| z * js);
     for p in 0..naux {
         for qq in 0..naux {
-            hq[(p, qq)] += rho[p] * rho[qq].conj() * (0.5 * js);
+            ht[(p, qq)] += rho_t[p] * rho_t[qq].conj() * (0.5 * js);
         }
     }
     for (j, z) in zt.iter_mut().enumerate() {
@@ -1440,18 +1494,15 @@ fn q_class_pass(
 
     // --- f(J2), T, H, Z.
     let (f, lo) = loewner(&s, &keep, ctx.mutation.no_loewner_kd);
-    let mut uf = u.clone();
-    for (col, fv) in uf.columns_mut().into_iter().zip(&f) {
-        let fv = *fv;
-        for z in col {
-            *z *= fv;
-        }
-    }
-    let jinv = uf.dot(&herm(&u)); // U f U^H
-    drop(uf);
-    let (mut hq, mut zt) = exchange_h_and_z(ctx, &j3, &kof, &jinv);
+    let me = MetricEig {
+        u: &u,
+        uh: herm(&u),
+        f: &f,
+    };
+    // `ht` = U^H H U, accumulated in the eigenbasis (module doc "Conditioning").
+    let (mut ht, mut zt) = exchange_h_and_z(ctx, &j3, &kof, &me);
     if is_q0 {
-        coulomb_q0(ctx, &j3, &jinv, &mut hq, &mut zt, &mut acc.mg0);
+        coulomb_q0(ctx, &j3, &me, &mut ht, &mut zt, &mut acc.mg0);
     }
     drop(j3);
 
@@ -1459,12 +1510,11 @@ fn q_class_pass(
     let wm = if ctx.mutation.no_metric {
         Array2::<C64>::zeros((naux, naux))
     } else {
-        let a = herm(&u).dot(&hq).dot(&u);
-        let b = Array2::from_shape_fn((naux, naux), |(i, j)| a[(i, j)] * lo[(i, j)]);
-        let w = u.dot(&b).dot(&herm(&u));
+        let b = Array2::from_shape_fn((naux, naux), |(i, j)| ht[(i, j)] * lo[(i, j)]);
+        let w = u.dot(&b).dot(&me.uh);
         (&w + &herm(&w)).mapv(|z| z * 0.5)
     };
-    drop(hq);
+    drop(ht);
 
     // --- Residue folds: Zr[r_L] = Σ_k' e^{ik'·t_rL} Z^{k'}; SR bins.
     let rl = ctx.phk[0].len();

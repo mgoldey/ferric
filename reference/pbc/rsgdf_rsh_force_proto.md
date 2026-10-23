@@ -59,11 +59,11 @@ lindep 1e-10. At lindep 1e-8 the change is 2.3e-9 (E) and 1.5e-9 (F); at 1e-6 it
 1.6e-11 and 1.5e-11. Moving from lindep 1e-10 to 1e-6 changes E by 4.9e-8 and F by
 2.2e-8. These are the Python prototype's numbers. The Rust energy does not carry this
 noise: re-chunking its K sum and a rigid translation move `E_K[erf]` by at most 7e-17 at
-lindep 1e-10, 1e-8 and 1e-6. In Rust it is the analytic FORCE that is roundoff-limited
-when eigenvalues near 1e-11 are kept: a rigid translation of 1e-3 at fixed density moves
-it by 3.7e-8 / 2.9e-9 / 4.6e-12 at lindep 1e-10 / 1e-8 / 1e-6, and the plain Coulomb
-RS-GDF force shows the same limit with a near-duplicate aux shell
-(`crates/ferric-pbc/tests/validation_krsh_rsgdf_force.rs`; see #512).
+lindep 1e-10, 1e-8 and 1e-6. The Rust force applies `f(J2)` in the metric eigenbasis
+(kderiv.rs "Conditioning", #512): a rigid translation of 1e-3 at fixed density moves it by
+3.6e-11 / 4.1e-11 / 3.6e-13 at lindep 1e-10 / 1e-8 / 1e-6, and at lindep 1e-10 it matches
+FD to the h^2 truncation (`crates/ferric-pbc/tests/validation_krsh_rsgdf_force.rs`,
+`pbc_kfit_force_conditioning.rs`; prototype `prototypes/pbc/kgrad_conditioning.py`).
 
 At ω = 0.11 the q = 0 class has no K vectors, because |G|min ≈ 1.3 is greater than the
 cut of 1.2. The q ≠ 0 class has 2 K vectors. As a result the attenuated piece of HSE06
