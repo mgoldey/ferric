@@ -1499,6 +1499,8 @@ fn gamma_rhf_driver(
             jk,
             scf,
             budget_bytes,
+            // Read only by a meta-GGA RKS derivative; this is RHF.
+            max_eri_bytes: ferric_pbc::dense_aft::DEFAULT_DENSE_AFT_MAX_BYTES,
         };
         pbc::gamma_derivatives(&ctx, pbc::DerivMethod::Rhf(exx), want)
     };

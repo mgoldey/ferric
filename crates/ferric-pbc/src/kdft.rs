@@ -29,8 +29,9 @@
 //! Meta-GGA (SCAN / r2SCAN / TPSS): `τ = (1/N_k) Σ_k ½ Σ_ax Re Σ D(k) ∂φ^k_μ (∂φ^k_ν)*`
 //! and `V^τ(k)_{μν} = Σ_g ½ w v_τ Σ_ax (∂_ax φ^k_μ)* ∂_ax φ^k_ν`
 //! (the molecular `semilocal_vxc` is mirrored). The energy is validated with
-//! the dense-AFT and RS-GDF J/K; forces and stress cover SCAN / r2SCAN only
-//! ([`crate::kxcgrad::is_validated_mgga`]).
+//! the dense-AFT and RS-GDF J/K; the closed-shell forces and stress cover
+//! SCAN / r2SCAN / TPSS ([`crate::kxcgrad::is_validated_mgga_deriv`]), the
+//! open-shell ones SCAN / r2SCAN ([`crate::kxcgrad::is_validated_mgga`]).
 //!
 //! Range-separated hybrids (HSE06, CAM-B3LYP, wB97X, ...) are supported with
 //! the dense-AFT J/K ([`crate::rsh`]) and the RS-GDF J/K (`KRsGdf::build_rsh`:

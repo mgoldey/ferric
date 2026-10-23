@@ -1,9 +1,9 @@
 //! Analytic forces of the k-point closed-shell RKS energy for meta-GGA
-//! functionals (SCAN, r2SCAN; `ferric_pbc::kxcgrad`, section "Meta-GGA: the
-//! tau term").
+//! functionals (SCAN, r2SCAN, TPSS; `ferric_pbc::kxcgrad`, section "Meta-GGA:
+//! the tau term").
 //!
-//! The Gamma periodic path has meta-GGA for the closed-shell energy only (no
-//! Gamma tau force), so the force anchors are:
+//! The Gamma meta-GGA force is this code routed through the 1x1x1 mesh, so it
+//! is not an independent oracle; the force anchors are:
 //! * `null_tau_path_reproduces_the_gga_force_exactly` — the meta-GGA code path
 //!   (tau, V^tau, the tau force term) taken for PBE (`v_tau = 0`) is the PBE
 //!   force bit for bit;
@@ -20,18 +20,23 @@
 //! * the uniform grid (X3/X4 absent), thread/chunk bit-identity, the budget
 //!   gates, refusals and the Fock guard, and production-wired mutants.
 //!
-//! Also covered: TPSS through its raw single-component names
-//! (`tpss_components_xc_force_matches_fd_of_exc`, fixed-D XC force; the TPSS
-//! SCF is validated for the energy only), p/d shells on a triclinic cell
+//! Also covered: TPSS (issue #492): the force at a TPSS SCF against FD of
+//! its SCF energy with the tau / grid-response mutants
+//! (`tpss_force_matches_fd_of_the_scf_energy`; the H4 triclinic cell, where
+//! TPSS is 1.4e-2 Ha from SCAN, and the TPSS k-mesh == supercell identity are
+//! weekly in `validation_pbc_mgga_derivs.rs`), and its raw single-component
+//! names (`tpss_components_xc_force_matches_fd_of_exc`, fixed-D XC force);
+//! p/d shells on a triclinic cell
 //! (`spd_triclinic_xc_force_matches_fd_of_exc`, ignored, fixed-D XC force) and
 //! the RS-GDF J route by ONE ignored test, one force component of a SCAN SCF
-//! (`rsgdf_scan_force_component_matches_fd`).
+//! (`rsgdf_scan_force_component_matches_fd`). The Gamma-point meta-GGA force
+//! is this code on the 1x1x1 mesh (`pbc_gamma_mgga_derivs.rs`).
 //!
 //! NOT covered: hybrid meta-GGAs (none resolve), range-separated and VV10
-//! meta-GGAs (refused), the TPSS force at a TPSS SCF, RS-GDF beyond that one component and the
-//! range-split fit, heavy atoms/ECPs, shifted meshes, metals, open shell,
-//! stress, SCAN's alpha ~ 1 region (the H2 fixtures reach alpha ~ 0 only), and
-//! the default (75, 302) grid.
+//! meta-GGAs (refused), TPSS on RS-GDF (refused by the bindings), RS-GDF beyond that one component and the
+//! range-split fit, heavy atoms/ECPs, shifted meshes, metals, open shell
+//! (TPSS refused there), SCAN's alpha ~ 1 region (the H2 fixtures reach
+//! alpha ~ 0 only), and the default (75, 302) grid.
 //!
 //! Bars. `FD_BAR = 1e-7`: the largest correct residual measured here is
 //! 2.2e-9 (SCF-energy FD, r2SCAN), 2.3e-9 (uniform grid), 4.5e-10 (fixed-D,
@@ -576,6 +581,81 @@ fn tpss_components_xc_force_matches_fd_of_exc() {
         eprintln!("{f}: XC force vs fixed-D FD worst {worst:.2e} (|xc| max {scale:.2e})");
         assert!(worst < FD_BAR, "{f}: {worst:e}");
     }
+}
+
+/// TPSS force at a TPSS SCF (issue #492) against FD of the converged TPSS
+/// SCF energy (two components, h = 1e-4), and the defects against the same
+/// FD. Physics: the h^2 floor (2.3e-9 for SCAN / r2SCAN on this fixture).
+/// Artifact: a dropped / doubled tau term, tau left out of the point motion,
+/// V^tau missing from the Pulay Fock, or the weight response dropped miss
+/// by >= 1e-4.
+///
+/// MEASURED (2026-10-22): correct 2.7e-9 (bar `FD_BAR` 1e-7, 37x).
+/// MUTATION LEDGER (miss = max |F_mut - FD| over the two components):
+/// `TauNoAo` 1.7e-2, `TauNoPoint` 3.5e-3, `TauNoVxcUnguarded` (V^tau zeroed
+/// in the Pulay Fock) 5.8e-3, `NoWeightDeriv` (grid response dropped)
+/// 1.9e-1, all asserted `> MUTANT_BAR`; `TauNoVxc` (guard on) and a SCAN or
+/// PBE config on the TPSS SCF are refused by the Fock guard; the SCAN force
+/// on a SCAN SCF misses this FD by 8.2e-3 (the functionals differ here).
+/// Source mutant `TPSS` -> the SCAN pair in the libxc name table (run and
+/// reverted): FD is BLIND to it (2.5e-9, both sides move); this test fails it
+/// at the guard check (the SCAN config is then accepted on the "TPSS" SCF),
+/// and the PySCF stress pin misses by 7.8e-5 (`pbc_kxcstress_mgga.rs`).
+#[test]
+fn tpss_force_matches_fd_of_the_scf_energy() {
+    let grid = atom_grid(20, 50);
+    let fx = fixture(&H2, [1, 1, 3], "TPSS", grid.clone());
+    let g = force(&fx, None);
+    let h = 1e-4;
+    let comps = [(0, 2), (1, 1)];
+    let fd: Vec<f64> = comps
+        .iter()
+        .map(|&(a, x)| {
+            (scf_energy(&moved(&H2, a, x, h), [1, 1, 3], "TPSS", &grid)
+                - scf_energy(&moved(&H2, a, x, -h), [1, 1, 3], "TPSS", &grid))
+                / (2.0 * h)
+        })
+        .collect();
+    let miss = |f: &KRksGradient| {
+        comps
+            .iter()
+            .zip(&fd)
+            .fold(0.0_f64, |m, (&(a, x), v)| m.max((f.grad[(a, x)] - v).abs()))
+    };
+    let worst = miss(&g);
+    eprintln!("TPSS: analytic vs FD of the SCF energy worst {worst:.2e}");
+    assert!(worst < FD_BAR, "{worst:e}");
+    for m in [
+        KXcMutation::TauNoAo,
+        KXcMutation::TauNoPoint,
+        KXcMutation::TauNoVxcUnguarded,
+        KXcMutation::NoWeightDeriv,
+    ] {
+        let d = miss(&force(&fx, Some(m)));
+        eprintln!("  TPSS {m:?}: miss vs FD {d:.2e}");
+        assert!(d > MUTANT_BAR, "{m:?} survives: {d:e}");
+    }
+    let cfg = gcfg(&fx.grid, None);
+    for other in ["SCAN", "PBE"] {
+        let e = force_with(&fx, other, &fx.res.scf, &cfg)
+            .err()
+            .unwrap_or_else(|| panic!("{other} on a TPSS result accepted"))
+            .to_string();
+        assert!(e.contains("differs"), "{other}: {e}");
+    }
+    let e = force_with(
+        &fx,
+        "TPSS",
+        &fx.res.scf,
+        &gcfg(&fx.grid, Some(KXcMutation::TauNoVxc)),
+    )
+    .expect_err("guard must refuse a Fock without V^tau")
+    .to_string();
+    assert!(e.contains("differs"), "{e}");
+    let scan = force(&fixture(&H2, [1, 1, 3], "SCAN", grid), None);
+    let gap = miss(&scan);
+    eprintln!("SCAN force vs the TPSS FD {gap:.2e}");
+    assert!(gap > MUTANT_BAR, "{gap:e}");
 }
 
 fn spd_basis_h() -> BasisSet {

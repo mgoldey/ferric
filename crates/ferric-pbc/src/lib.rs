@@ -106,7 +106,7 @@
 //!   overlap weight; equals the Gamma force on ONE copy of each atom in the
 //!   diag(N) supercell. FINDINGS "Iteration 21".
 //! * [`kxcgrad`] — analytic nuclear forces of the k-point closed-shell RKS
-//!   energy for LDA/GGA, meta-GGA (SCAN, r2SCAN) and global-hybrid
+//!   energy for LDA/GGA, meta-GGA (SCAN, r2SCAN, TPSS) and global-hybrid
 //!   functionals (`kpoint_rks_gradient`)
 //!   on the dense-AFT or RS-GDF (unsplit or range-split) J/K: the k-point HF
 //!   force assembly with the exact-exchange fraction `a` plus the XC
@@ -117,12 +117,14 @@
 //!   exchange walks weighted by the attenuated kernel, the mixed Madelung
 //!   constant; the Gamma point through `gamma_rsh::gamma_rks_rsh_gradient` on
 //!   the 1x1x1 mesh, dense AFT only); VV10 is refused.
+//!   The Gamma-point meta-GGA force and stress route through the same 1x1x1
+//!   code ([`gamma_mgga`], dense-AFT J).
 //! * [`kxcstress`] — the stress of the same energy (`kpoint_rks_stress`): the
 //!   k HF stress with the exact-exchange fraction `a` (dense K walks, the
 //!   RS-GDF fit's exchange pieces and the Madelung term scaled by `a`) plus
 //!   the XC strain terms on Bloch AOs (AO strain with point motion, the
 //!   partition-weight response on an atom grid or the volume term on a
-//!   uniform grid). LDA, GGA, meta-GGA (SCAN, r2SCAN; dense-AFT or RS-GDF J),
+//!   uniform grid). LDA, GGA, meta-GGA (SCAN, r2SCAN, TPSS; dense-AFT or RS-GDF J),
 //!   global hybrids (a hybrid needs `KRksStressConfig::exxdiv`) and
 //!   range-separated (CAM) GGA hybrids on dense-AFT or RS-GDF J/K (the attenuated
 //!   kernel's or fit's strain and the mixed Madelung strain; Gamma through the
@@ -211,6 +213,7 @@ pub mod dft;
 pub mod drpa;
 pub mod ecp;
 pub mod ewald;
+pub mod gamma_mgga;
 pub mod gamma_rsh;
 pub mod grad;
 pub mod hcore;

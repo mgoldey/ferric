@@ -989,6 +989,7 @@ fn rks_gradient(
     cfg: &GammaGradConfig,
 ) -> Result<GammaGradient, FerricError> {
     check_inputs(who, cell, prep, hcore_cfg, hc, &jk, scf, Spin::Restricted)?;
+    crate::gamma_mgga::refuse_native_mgga(who, &dft.functional)?;
     let (_, alpha) = resolve_periodic_functional(&dft.functional)?;
     let mut ledger = open_ledger(cell, prep, cfg, false)?;
     let d = scf.density_total.clone();

@@ -1,6 +1,6 @@
 //! Analytic stress tensor of the k-point closed-shell KS-DFT energy
-//! ([`crate::kdft::solve_krks`]) for LDA, GGA, meta-GGA (SCAN, r2SCAN, TPSS
-//! components), GLOBAL hybrid functionals (exact-exchange fraction `a`),
+//! ([`crate::kdft::solve_krks`]) for LDA, GGA, meta-GGA (SCAN, r2SCAN,
+//! TPSS), GLOBAL hybrid functionals (exact-exchange fraction `a`),
 //! dense-AFT and RS-GDF J/K, and range-separated (CAM) GGA hybrids on the
 //! dense-AFT J/K ("Range-separated hybrids" below): the strain twin of
 //! [`crate::kxcgrad`] and the k-point twin of the Gamma XC stress
@@ -139,12 +139,12 @@
 //!
 //! # Scope
 //!
-//! LDA, GGA, meta-GGA (SCAN, r2SCAN on the dense-AFT and RS-GDF J routes; TPSS
-//! only as its raw X and C component names, FD-anchored on a fixed density with
-//! the Fock guard skipped: the TPSS SCF energy is validated, its stress is not,
-//! and the bindings refuse it), global hybrids, and range-separated (CAM) GGA
-//! hybrids on the dense-AFT or RS-GDF J/K (below); VV10/double hybrids keep
-//! typed errors.
+//! LDA, GGA, meta-GGA (SCAN, r2SCAN on the dense-AFT and RS-GDF J routes;
+//! TPSS on the dense-AFT route, pinned to PySCF `krks_stress` and FD of its
+//! SCF energy; the bindings refuse TPSS on RS-GDF J, which shares the grid
+//! XC strain response and is exercised with SCAN / r2SCAN), global hybrids,
+//! and range-separated (CAM) GGA hybrids on the dense-AFT or RS-GDF J/K
+//! (below); VV10/double hybrids keep typed errors.
 //!
 //! # Range-separated hybrids
 //!
@@ -828,8 +828,9 @@ pub(crate) fn resolve_global_mgga_stress(
 /// * `scf` — `KRksResult::scf`.
 /// * `cfg.grid`/`cfg.ao_threshold` — the grid and AO truncation of the energy.
 ///
-/// Also meta-GGA (SCAN, r2SCAN) on either J route (the tau strain term is part
-/// of the grid XC response, which does not see the J route), and range-separated
+/// Also meta-GGA (SCAN and r2SCAN on either J route; TPSS is validated on the
+/// dense-AFT J only, and the bindings refuse it on RS-GDF. The tau strain term is
+/// part of the grid XC response, which does not see the J route), and range-separated
 /// hybrids (HSE06 and CAM-B3LYP stress-tested; other CAM GGA hybrids such as
 /// wB97X accepted, not exercised) on the dense-AFT or RS-GDF J/K built with
 /// the functional's [`RshParams`] (as [`crate::kdft::solve_krks`] builds them):
@@ -837,8 +838,8 @@ pub(crate) fn resolve_global_mgga_stress(
 /// kernel), the exchange walks strain `4π f(K²)/K²` (module doc of
 /// [`crate::rsh`], "Strain"), and the Madelung shift and its strain are the
 /// mixed constant's.
-/// This library entry also accepts TPSS UNVALIDATED (only its raw components
-/// are FD-anchored on a fixed density); the Python and CLI bindings refuse it
+/// This library entry also accepts other pure meta-GGAs (e.g. raw `MGGA_*`
+/// component names) UNVALIDATED; the Python and CLI bindings refuse them
 /// through [`crate::kxcgrad::check_deriv_functional`].
 ///
 /// Refuses (typed errors) VV10/double hybrids, a hybrid without `cfg.exxdiv`,

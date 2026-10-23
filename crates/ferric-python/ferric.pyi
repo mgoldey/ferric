@@ -2241,7 +2241,8 @@ def run_rks_gamma(
     sr_column_rotation: bool | None = None,
 ) -> GammaRksResult:
     """Closed-shell Gamma-point periodic RKS; open shells raise ValueError.
-    Meta-GGA: only SCAN / r2SCAN / TPSS, energy only (with_gradient / with_stress raise).
+    Meta-GGA: only SCAN / r2SCAN / TPSS; with_gradient / with_stress route the
+    Gamma SCF through the 1x1x1 k-point force / stress (jk="dense" only).
     Range-separated hybrids (HSE06, CAM-B3LYP, wB97X): attenuated K via the
     k = 0 point of the k-point RSH exchange (dense or RS-GDF); with_gradient /
     with_stress run for HSE06 and CAM-B3LYP on jk="dense" (the 1x1x1 k-point
@@ -2376,15 +2377,15 @@ def run_rks_kpts(
     gdf_omega: float | None = None,
 ) -> KpointRksResult:
     """Closed-shell k-point RKS (LDA / GGA / global hybrids and the pure
-    meta-GGAs SCAN / r2SCAN / TPSS (TPSS energy only), and the range-separated
+    meta-GGAs SCAN / r2SCAN / TPSS, and the range-separated
     hybrids HSE06, CAM-B3LYP and wB97X with either J/K; with_gradient /
     with_stress run for HSE06 and CAM-B3LYP on jk="dense" only, wB97X is
-    energy only). VV10, hybrid meta-GGAs, TPSS
-    derivatives and range-separated derivatives on jk="rsgdf" raise
+    energy only). VV10, hybrid meta-GGAs, and TPSS and range-separated
+    derivatives on jk="rsgdf" raise
     ValueError naming the unsupported feature; ECP cells are supported,
     derivatives included. with_gradient=True gives result.gradient() (the
     analytic force, Hartree/Bohr per cell) and with_stress=True result.stress()
-    (Hartree/Bohr^3), with either jk; range_split with either is a
+    (Hartree/Bohr^3), with either jk (TPSS: jk="dense" only); range_split with either is a
     ValueError. Set neighbour_cutoff (Angstrom)
     explicitly with with_gradient / with_stress or finite differences: the
     default depends on the atom positions in a large sparse cell and the

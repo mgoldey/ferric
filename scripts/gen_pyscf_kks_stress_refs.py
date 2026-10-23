@@ -8,7 +8,7 @@ The printed tensor is sigma = (1/Omega) dE/d(strain) in Hartree/Bohr^3; with
 --fd the analytic value is also checked against the central finite difference
 of PySCF's own energy under cell strain (atoms strained with the lattice).
 
-The meta-GGA rows (SCAN, r2SCAN; pbc_kxcstress_mgga.rs) are also written, in
+The meta-GGA rows (SCAN, r2SCAN, TPSS; pbc_kxcstress_mgga.rs) are also written, in
 full (3x3 sigma, E_tot), to testdata/reference/pbc_h2_sto3g_kks_stress_mgga.json.
 
 Run:  python scripts/gen_pyscf_kks_stress_refs.py [--fd]
@@ -58,7 +58,7 @@ PYSCF_VERSION = "2.13.1"  # the version cited by tests/pbc_kxcstress.rs
 # ferric's "LDA" functional is SVWN (LDA_X + LDA_C_VWN) = PySCF "LDA,VWN"
 # (PySCF's bare "LDA" is exchange only).
 ROWS = (("LDA", "LDA,VWN"), ("PBE", "PBE"))
-MGGA_ROWS = (("SCAN", "SCAN"), ("R2SCAN", "R2SCAN"))
+MGGA_ROWS = (("SCAN", "SCAN"), ("R2SCAN", "R2SCAN"), ("TPSS", "TPSS"))
 MGGA_JSON = os.path.join(
     os.path.dirname(os.path.abspath(__file__)),
     "..",
