@@ -83,9 +83,9 @@
 //! way ([`crate::kxcgrad`] "Global hybrids"). The energy-weighted Pulay term is
 //! `W = Σ_σ D_σ F_σ D_σ` with `F_σ = h + J[D_α+D_β] − a K[D_σ] + V_xc,σ`.
 //!
-//! # Range-separated hybrids (UKS)
+//! # Range-separated hybrids (UKS, ROKS)
 //!
-//! The open-shell RSH energy ([`crate::kuks`]) takes the closed-shell
+//! The open-shell RSH energies ([`crate::kuks`], [`crate::kroks`]) take the closed-shell
 //! attenuated K ([`crate::rsh`]) per spin, `K_σ = K[D_σ]` scaled by 1: the
 //! fractions sit inside the kernel `v(K) = 4π/K² f(K)`,
 //! `f(K) = c_sr + (c_lr − c_sr) e^{−K²/4ω²}`, and the `exxdiv = ewald` shift
@@ -99,9 +99,13 @@
 //! bookkeeping of the exchange coefficients and of the M-term, which the
 //! singlet anchor cannot see (`tests/pbc_kuks_rsh_force.rs` tests them on the
 //! polarized cells). The dense kernels must carry the functional's
-//! [`crate::rsh::RshParams`] (as `solve_kuks` builds them). Refused: RS-GDF
-//! (its attenuated fit is differentiated for the closed-shell RKS force and
-//! stress only, [`crate::kxcgrad`]), ROKS / ROHF, the stress.
+//! [`crate::rsh::RshParams`] (as `solve_kuks` builds them). ROKS
+//! ([`kpoint_roks_gradient`]) builds the SAME per-spin Focks before the
+//! Roothaan coupling, so its force is this assembly on the ROHF spin densities
+//! with `W_RO` and the orbital-gradient gate of "ROHF / ROKS" below, nothing
+//! else changed (`tests/pbc_kroks_rsh_force.rs`). Refused: RS-GDF (its
+//! attenuated fit is differentiated for the closed-shell RKS force and stress
+//! only, [`crate::kxcgrad`]), the open-shell stress.
 //!
 //! # Fock guard
 //!
@@ -109,7 +113,12 @@
 //! stored (non-extrapolated) `fock_alpha`, `fock_beta` against
 //! [`crate::kgrad::FOCK_CONSISTENCY_BAR`], with no Madelung-shift allowance
 //! (the shift is rebuilt from [`KRksGradConfig::exxdiv`]). Another functional,
-//! grid, J/K route or `exxdiv` is a typed refusal.
+//! grid, J/K route or `exxdiv` is a typed refusal. The routed Gamma ROKS force
+//! ([`crate::gamma_rsh::gamma_roks_rsh_gradient`]) compares with the Gamma
+//! result's spin Focks (`ScfResult::rohf_spin_focks`); only a result without
+//! them falls back to comparing the Roothaan `F_eff` of the rebuilt spin
+//! Focks with the stored `F_eff` (same bar, blind to equal-and-opposite spin
+//! changes on its diagonal blocks).
 //!
 //! # ROHF / ROKS ([`kpoint_roks_gradient`], [`kpoint_rohf_gradient`])
 //!
@@ -192,11 +201,11 @@
 //!
 //! # Scope
 //!
-//! LDA, GGA and global hybrids; for UKS also SCAN / r2SCAN and
-//! range-separated hybrids on the dense-AFT J/K (any other meta-GGA, meta-GGA
-//! or a range-separated hybrid on RS-GDF, and meta-GGA or range-separated
-//! ROKS/ROHF are refused). VV10 and double hybrids are refused with the typed
-//! errors of [`crate::kxcgrad`].
+//! LDA, GGA and global hybrids; range-separated hybrids for UKS and ROKS on
+//! the dense-AFT J/K; for UKS also SCAN / r2SCAN on the dense-AFT J/K (any
+//! other meta-GGA, meta-GGA or a range-separated hybrid on RS-GDF, and
+//! meta-GGA ROKS are refused). VV10 and double hybrids are refused with the
+//! typed errors of [`crate::kxcgrad`].
 
 use crate::budget::{bytes_of, Ledger};
 use crate::dense_aft::ExxDiv;
@@ -265,8 +274,8 @@ pub enum KUSpinMutation {
     /// ROHF/ROKS: the energy-weighted matrix in the UNRESTRICTED form
     /// `Σ_σ D_σ F_σ D_σ`. An IDENTITY at a converged ROHF state (it differs
     /// from `W_RO` by ½ the closed-open β orbital gradient): the tests assert
-    /// that it moves the converged force by < 1e-8 and do not exercise it off
-    /// stationarity.
+    /// that it moves the converged force by < 1e-8; off stationarity the gate
+    /// refuses it (measured with [`Self::RoWUhfFormGateOff`]).
     RoWUhfForm,
     /// ROHF/ROKS: `W = D_α F_α D_α` (the `D_α F_β D_β` cross term dropped).
     RoWDropCross,
@@ -275,6 +284,9 @@ pub enum KUSpinMutation {
     /// return a force that is wrong by an amount the tests assert exceeds the
     /// FD bar (`tests/pbc_kuxcgrad_ro.rs`).
     RoGateOff,
+    /// ROHF/ROKS: [`Self::RoWUhfForm`] with the gate skipped (one mutation
+    /// slot): what the unrestricted-form `W` costs off stationarity.
+    RoWUhfFormGateOff,
     /// UKS: the stationarity gate (`max |F D S − S D F|`) skipped.
     StationarityGateOff,
     /// Meta-GGA: the tau force term of spin `σ` uses `v_τσ̄` (the other
@@ -317,12 +329,71 @@ pub struct KUksGradConfig {
 pub(crate) struct SpinInput<'a> {
     da: &'a [Array2<C64>],
     db: &'a [Array2<C64>],
-    fa: &'a [Array2<C64>],
-    fb: &'a [Array2<C64>],
+    fock: StoredFock<'a>,
     converged: bool,
     kpts: &'a [[f64; 3]],
     /// ROHF/ROKS: the one orthonormal MO set per k.
     mos: Option<&'a [Array2<C64>]>,
+}
+
+/// The SCF Fock(s) the force's Fock guard compares the rebuilt spin Focks
+/// with (module doc "Fock guard").
+#[derive(Clone, Copy)]
+pub(crate) enum StoredFock<'a> {
+    /// The SCF's spin Focks `F_α(k)`, `F_β(k)` (k-point UKS / ROKS / ROHF, and
+    /// a Gamma ROKS result's `rohf_spin_focks`).
+    Spin(&'a [Array2<C64>], &'a [Array2<C64>]),
+    /// Only the Roothaan effective Fock `F_eff(k)` (FALLBACK for a Gamma ROKS
+    /// result without `rohf_spin_focks`): compared with the Roothaan `F_eff`
+    /// of the rebuilt spin Focks. Weaker than [`Self::Spin`]: `F_eff` carries
+    /// only `½(δF_α + δF_β)` on its diagonal blocks, so an equal-and-opposite
+    /// spin change there is invisible to it.
+    Roothaan(&'a [Array2<C64>]),
+}
+
+impl<'a> SpinInput<'a> {
+    /// A restricted-open-shell state (the Gamma ROKS result as the 1x1x1
+    /// one) with the stored Fock(s) `fock` its guard compares against.
+    pub(crate) fn restricted_open(
+        (da, db): (&'a [Array2<C64>], &'a [Array2<C64>]),
+        fock: StoredFock<'a>,
+        mos: &'a [Array2<C64>],
+        converged: bool,
+        kpts: &'a [[f64; 3]],
+    ) -> Self {
+        Self {
+            da,
+            db,
+            fock,
+            converged,
+            kpts,
+            mos: Some(mos),
+        }
+    }
+}
+
+/// The Fock guard: the largest deviation of the rebuilt spin Focks (or of
+/// their Roothaan `F_eff`) from the SCF's stored one(s), refused above
+/// [`crate::kgrad::FOCK_CONSISTENCY_BAR`].
+fn stored_fock_mismatch(
+    who: &str,
+    stored: StoredFock<'_>,
+    (fa, fb): (&[Array2<C64>], &[Array2<C64>]),
+    (da, db): (&[Array2<C64>], &[Array2<C64>]),
+    s: &[Array2<C64>],
+) -> Result<f64, FerricError> {
+    match stored {
+        StoredFock::Spin(sa, sb) => {
+            let ma = check_fock(who, "fock_alpha", fa, sa, KS_REMEDY)?;
+            Ok(ma.max(check_fock(who, "fock_beta", fb, sb, KS_REMEDY)?))
+        }
+        StoredFock::Roothaan(se) => {
+            let feff: Vec<Array2<C64>> = (0..fa.len())
+                .map(|k| crate::kroks::roothaan_fock_k(&fa[k], &fb[k], &da[k], &db[k], &s[k]))
+                .collect();
+            check_fock(who, "Roothaan fock_eff", &feff, se, KS_REMEDY)
+        }
+    }
 }
 
 /// Number of `n²` complex arrays the orbital-gradient gate holds at its peak
@@ -1098,10 +1169,12 @@ pub(crate) fn resolve_open_shell(
 }
 
 /// The polarized XC response of an open-shell force, the exchange scale and
-/// the range separation. `allow_mgga` marks the UKS force, which also takes a
-/// range-separated hybrid (exchange scale 1, its fractions inside the
-/// kernel; the RS-GDF refusal is `check_inputs_rsh`'s); ROKS/ROHF keep
-/// [`resolve_global`]'s refusal.
+/// the range separation. Both the UKS and the ROKS force take a
+/// range-separated hybrid (exchange scale 1, its fractions inside the kernel;
+/// [`resolve_global_or_rsh`] refuses a range-separated meta-GGA, VV10 or
+/// double hybrid, and the RS-GDF refusal is `check_inputs_rsh`'s).
+/// `allow_mgga` marks the UKS force (SCAN / r2SCAN); ROKS keeps
+/// [`resolve_global`]'s meta-GGA refusal.
 fn grid_response<'a>(
     cell: &'a Cell,
     prep: &'a PreparedBasis,
@@ -1110,15 +1183,9 @@ fn grid_response<'a>(
     cfg: &'a KUksGradConfig,
     (who, allow_mgga, rsgdf): (&str, bool, bool),
 ) -> Result<(GridXcPol<'a>, f64, Option<RshParams>), FerricError> {
-    let rsh = if allow_mgga {
-        resolve_global_or_rsh(functional)?.2
-    } else {
-        None
-    };
+    let rsh = resolve_global_or_rsh(functional)?.2;
     let (exch, is_mgga) = if rsh.is_some() {
-        let base = |f: &str| resolve_global_or_rsh(f).map(|(xc, a, _)| (xc, a));
-        let (_, m) = resolve_open_shell(who, functional, (allow_mgga, rsgdf), &base)?;
-        (1.0, m)
+        (1.0, false)
     } else {
         resolve_open_shell(who, functional, (allow_mgga, rsgdf), &resolve_global_mgga)?
     };
@@ -1233,9 +1300,13 @@ pub fn kpoint_uks_gradient(
 /// assembly on the ROHF spin densities `D_α, D_β` and spin Focks, with the
 /// orthonormality-Lagrangian `W_RO = sym(D_α F_α D_α + D_α F_β D_β)` at each k
 /// (module doc "ROHF / ROKS"). Arguments and refusals as
-/// [`kpoint_uks_gradient`], plus: a state whose ROHF orbital gradient
-/// (closed-open `f_β`, open-virtual `f_α`, closed-virtual `f_α + f_β`, any k)
-/// exceeds [`crate::grad::RO_ORBITAL_GRADIENT_TOL`] is refused.
+/// [`kpoint_uks_gradient`] (range-separated hybrids included, on the
+/// dense-AFT J/K built with the functional's [`RshParams`], as `solve_kroks`
+/// builds them; module doc "Range-separated hybrids (UKS, ROKS)"), except
+/// meta-GGA (the k-point ROKS SCF has no tau term), plus: a state whose ROHF
+/// orbital gradient (closed-open `f_β`, open-virtual `f_α`, closed-virtual
+/// `f_α + f_β`, any k) exceeds [`crate::grad::RO_ORBITAL_GRADIENT_TOL`] is
+/// refused.
 #[allow(clippy::too_many_arguments)]
 pub fn kpoint_roks_gradient(
     cell: &Cell,
@@ -1248,27 +1319,58 @@ pub fn kpoint_roks_gradient(
     functional: &str,
     cfg: &KUksGradConfig,
 ) -> Result<KUksGradient, FerricError> {
-    let (resp, exch, _) = grid_response(
-        cell,
-        prep,
-        mesh,
-        functional,
-        cfg,
-        ("kpoint_roks_gradient", false, false),
-    )?;
-    uks_gradient_with(
-        "kpoint_roks_gradient",
+    let parts = RoParts {
         cell,
         prep,
         mesh,
         hcore_cfg,
         hk,
-        jk,
-        &ro_input(scf),
-        &resp,
-        (exch, None),
-        cfg,
-    )
+    };
+    parts.roks_gradient("kpoint_roks_gradient", jk, &ro_input(scf), functional, cfg)
+}
+
+/// The cell, basis, mesh and hcore of a ROKS force (the arguments
+/// [`kpoint_roks_gradient`] and the routed Gamma ROKS force share).
+pub(crate) struct RoParts<'a> {
+    pub(crate) cell: &'a Cell,
+    pub(crate) prep: &'a PreparedBasis,
+    pub(crate) mesh: &'a KPointMesh,
+    pub(crate) hcore_cfg: &'a PeriodicHcoreConfig,
+    pub(crate) hk: &'a PeriodicHcoreK,
+}
+
+impl RoParts<'_> {
+    /// The ROKS force of the spin state `inp` (module doc "ROHF / ROKS").
+    pub(crate) fn roks_gradient(
+        &self,
+        who: &str,
+        jk: KGradJk<'_>,
+        inp: &SpinInput<'_>,
+        functional: &str,
+        cfg: &KUksGradConfig,
+    ) -> Result<KUksGradient, FerricError> {
+        let (resp, exch, rsh) = grid_response(
+            self.cell,
+            self.prep,
+            self.mesh,
+            functional,
+            cfg,
+            (who, false, false),
+        )?;
+        uks_gradient_with(
+            who,
+            self.cell,
+            self.prep,
+            self.mesh,
+            self.hcore_cfg,
+            self.hk,
+            jk,
+            inp,
+            &resp,
+            (exch, rsh),
+            cfg,
+        )
+    }
 }
 
 /// k-point ROHF nuclear gradient of a converged
@@ -1358,12 +1460,45 @@ pub fn kpoint_null_xc_uks_gradient_rsh(
     )
 }
 
+/// TEST/DIAGNOSTIC: the k-point ROKS force with a zero XC, exchange scale
+/// `exch` and the range separation `rsh` of the dense kernels (Madelung shift
+/// as [`kpoint_null_xc_uks_gradient_rsh`]), on an SCF from
+/// [`crate::kroks::solve_kroks_injected`] without XC and the same `exch`. The
+/// restricted-open-shell anchor entry for `c_sr = c_lr = c`.
+#[doc(hidden)]
+#[allow(clippy::too_many_arguments)]
+pub fn kpoint_null_xc_roks_gradient_rsh(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    mesh: &KPointMesh,
+    hcore_cfg: &PeriodicHcoreConfig,
+    hk: &PeriodicHcoreK,
+    jk: KGradJk<'_>,
+    scf: &KRoScfResult,
+    exch: f64,
+    rsh: Option<RshParams>,
+    cfg: &KUksGradConfig,
+) -> Result<KUksGradient, FerricError> {
+    uks_gradient_with(
+        "kpoint_null_xc_roks_gradient",
+        cell,
+        prep,
+        mesh,
+        hcore_cfg,
+        hk,
+        jk,
+        &ro_input(scf),
+        &NullXcPol,
+        (exch, rsh),
+        cfg,
+    )
+}
+
 fn uks_input(scf: &KUScfResult) -> SpinInput<'_> {
     SpinInput {
         da: &scf.density_alpha,
         db: &scf.density_beta,
-        fa: &scf.fock_alpha,
-        fb: &scf.fock_beta,
+        fock: StoredFock::Spin(&scf.fock_alpha, &scf.fock_beta),
         converged: scf.converged,
         kpts: &scf.kpts,
         mos: None,
@@ -1374,8 +1509,7 @@ fn ro_input(scf: &KRoScfResult) -> SpinInput<'_> {
     SpinInput {
         da: &scf.density_alpha,
         db: &scf.density_beta,
-        fa: &scf.fock_alpha,
-        fb: &scf.fock_beta,
+        fock: StoredFock::Spin(&scf.fock_alpha, &scf.fock_beta),
         converged: scf.converged,
         kpts: &scf.kpts,
         mos: Some(&scf.mos),
@@ -1486,9 +1620,7 @@ fn uks_gradient_with(
             | Some(KXcMutation::TauNoVxcUnguarded)
     );
     let mismatch = if guard {
-        let ma = check_fock(who, "fock_alpha", &fa, inp.fa, KS_REMEDY)?;
-        let mb = check_fock(who, "fock_beta", &fb, inp.fb, KS_REMEDY)?;
-        ma.max(mb)
+        stored_fock_mismatch(who, inp.fock, (&fa, &fb), (&da, &db), &hk.s)?
     } else {
         0.0
     };
@@ -1507,7 +1639,10 @@ fn uks_gradient_with(
                 ro_gate_scratch_bytes(prep.nbasis()),
             )?;
             let g = ro_orbital_gradient_k(who, mos, &hk.s, &da, &db, &fa, &fb)?;
-            let gate_on = smut != Some(KUSpinMutation::RoGateOff);
+            let gate_on = !matches!(
+                smut,
+                Some(KUSpinMutation::RoGateOff) | Some(KUSpinMutation::RoWUhfFormGateOff)
+            );
             if gate_on && (g.is_nan() || g > RO_ORBITAL_GRADIENT_TOL) {
                 return Err(FerricError::General(format!(
                     "{who}: ROHF orbital gradient {g:.3e} exceeds {RO_ORBITAL_GRADIENT_TOL:.0e}: not \
@@ -1519,7 +1654,11 @@ fn uks_gradient_with(
         }
         _ => None,
     };
-    let spins = if !ro || smut == Some(KUSpinMutation::RoWUhfForm) {
+    let uhf_w = matches!(
+        smut,
+        Some(KUSpinMutation::RoWUhfForm) | Some(KUSpinMutation::RoWUhfFormGateOff)
+    );
+    let spins = if !ro || uhf_w {
         KSpins::Unrestricted { da, db, fa, fb }
     } else if smut == Some(KUSpinMutation::RoWDropCross) {
         let zb = fb.iter().map(|m| Array2::zeros(m.dim())).collect();

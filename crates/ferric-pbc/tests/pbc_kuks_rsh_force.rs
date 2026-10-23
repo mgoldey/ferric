@@ -54,10 +54,10 @@
 //! those two HSE06 rows; per commit the spin defects and the erf piece on
 //! CAM-B3LYP.
 //!
-//! NOT covered: RS-GDF (refused), ROKS / ROHF (refused), the stress
-//! (refused), wB97X (accepted, not force-tested), p/d shells (H/STO-3G only),
-//! shifted meshes, a PySCF force pin, Python / CLI (the shared open-shell
-//! derivative gate still refuses range-separated hybrids).
+//! NOT covered: RS-GDF (refused), the stress (refused), ROKS (its own file,
+//! `pbc_kroks_rsh_force.rs`), wB97X (accepted, not force-tested), p/d shells (H/STO-3G only),
+//! shifted meshes, a PySCF force pin (the Python / CLI wiring of this force
+//! is tested in the binding suites).
 
 mod common;
 #[path = "kuks_rsh_force_support/mod.rs"]
@@ -262,9 +262,10 @@ fn polarized_spin_and_erf_mutants_are_caught() {
 
 /// Typed refusals: bare kernels with a range-separated name, kernels of
 /// another functional, a global-hybrid name on range-separated kernels,
-/// RS-GDF J/K with a range-separated name (UKS force), the ROKS force and the
-/// open-shell stress with a range-separated name, and the Python / CLI
-/// open-shell derivative gate (unchanged).
+/// RS-GDF J/K with a range-separated name (UKS force), the open-shell stress
+/// with a range-separated name, and the Python / CLI derivative gate (UKS
+/// force wired on dense AFT; the UKS stress, the UKS force on RS-GDF and every
+/// ROKS derivative refused).
 #[test]
 fn oshell_rsh_force_refusals() {
     use ferric_pbc::kuxcstress::{kpoint_uks_stress, KUksStressConfig};
@@ -347,23 +348,10 @@ fn oshell_rsh_force_refusals() {
     .unwrap_err()
     .to_string();
     assert!(e.contains("range-separated"), "{e}");
-    let e = ferric_pbc::kuxcgrad::kpoint_roks_gradient(
-        &fx.cell,
-        &fx.prep,
-        &fx.mesh,
-        &ferric_pbc::hcore::PeriodicHcoreConfig::with_omega(OMEGA),
-        &fx.hk,
-        KGradJk::Dense(&fx.eri),
-        &roks_shaped(&fx),
-        "HSE06",
-        &cfg,
-    )
-    .unwrap_err()
-    .to_string();
-    assert!(e.contains("ROKS / ROHF force"), "{e}");
     // The binding derivative gate: the UKS force on the dense-AFT J/K is
     // wired; the UKS stress, the UKS force on RS-GDF and every ROKS
-    // derivative stay refused.
+    // derivative stay refused (the library ROKS force is
+    // `pbc_kroks_rsh_force.rs`, unwired).
     use ferric_pbc::kxcgrad::{check_deriv_functional, Deriv, DerivSpin};
     for f in FUNCTIONALS {
         check_deriv_functional(DerivSpin::Unrestricted, Deriv::Force, false, f)
@@ -379,39 +367,5 @@ fn oshell_rsh_force_refusals() {
                 "{spin:?} {d:?} {g} {f}"
             );
         }
-    }
-}
-
-/// The UKS state in the ROKS result shape. Only the refusal is exercised: the
-/// ROKS force checks the functional before it reads any density, so this
-/// relabelled state is never differentiated.
-fn roks_shaped(fx: &Fx) -> ferric_pbc::kroks::KRoScfResult {
-    let s = &fx.res.scf;
-    ferric_pbc::kroks::KRoScfResult {
-        energy: s.energy,
-        e_nuc: s.e_nuc,
-        e_xc: 0.0,
-        nalpha: s.nalpha,
-        nbeta: s.nbeta,
-        eps: s.eps_alpha.clone(),
-        eps_alpha: s.eps_alpha.clone(),
-        eps_beta: s.eps_beta.clone(),
-        mos: s.mos_alpha.clone(),
-        density_alpha: s.density_alpha.clone(),
-        density_beta: s.density_beta.clone(),
-        fock_alpha: s.fock_alpha.clone(),
-        fock_beta: s.fock_beta.clone(),
-        fock_eff: s.fock_alpha.clone(),
-        occupations: s.occ_alpha.clone(),
-        nclosed_per_k: s.nocc_per_k_beta.clone(),
-        nopen_per_k: vec![1; s.kpts.len()],
-        gap_alpha: None,
-        gap_beta: None,
-        s2: s.s2,
-        converged: s.converged,
-        iterations: s.iterations,
-        max_error: 0.0,
-        kpts: s.kpts.clone(),
-        lindep: Default::default(),
     }
 }

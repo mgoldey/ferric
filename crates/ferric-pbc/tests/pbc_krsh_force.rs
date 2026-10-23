@@ -401,9 +401,9 @@ fn rsh_force_refusals() {
     assert!(e.contains("functional's is"), "{e}");
     assert!(call(&eri_of(&fx, Some(rsh_of("HSE06"))), "HSE06").is_ok());
     // The Python / CLI derivative gate: the ROKS force keeps refusing range
-    // separation; the UKS force is wired on the dense-AFT J/K (the library
-    // UKS force is `pbc_kuks_rsh_force.rs`, the closed-shell stress
-    // `pbc_krsh_stress.rs`).
+    // separation (the library ROKS force is `pbc_kroks_rsh_force.rs`); the
+    // UKS force is wired on the dense-AFT J/K (the library UKS force is
+    // `pbc_kuks_rsh_force.rs`, the closed-shell stress `pbc_krsh_stress.rs`).
     use ferric_pbc::kxcgrad::{check_deriv_functional, Deriv, DerivSpin};
     assert!(
         check_deriv_functional(DerivSpin::RestrictedOpen, Deriv::Force, false, "HSE06").is_err()

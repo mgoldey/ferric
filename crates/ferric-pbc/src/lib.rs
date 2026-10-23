@@ -53,7 +53,8 @@
 //!   staged ewald start for hybrids, occupation-aware gap check against
 //!   `a·v_M`.
 //! * [`rohf`] — Stage 5b: Gamma ROHF / ROKS (`gamma_rohf`, `gamma_roks`,
-//!   `gamma_roks_rsh` for range-separated hybrids, energy only) via
+//!   `gamma_roks_rsh` for range-separated hybrids; its dense-AFT force is
+//!   the library-only `gamma_rsh::gamma_roks_rsh_gradient`) via
 //!   `ferric_scf::rohf::solve_rohf_injected`: the UHF/UKS per-spin Fock
 //!   (`F_σ = h + J − a·K_inj(D_σ) + V_σ`) Roothaan-combined on one MO set,
 //!   staged ewald start for `a > 0`, per-spin gaps from the actual
@@ -154,11 +155,11 @@
 //!   H3/STO-3G at 1x1x1, not a general bound): the same assembly with two spin channels, spin-resolved
 //!   `v_xc` (`σ_αα`, `σ_αβ`, `σ_ββ` contractions), per-spin exchange and a
 //!   per-spin Fock guard; closed-shell densities reproduce [`kxcgrad`] per
-//!   part. UKS also takes SCAN / r2SCAN (per-spin tau terms) and
-//!   range-separated hybrids (`K_σ = K[D_σ]` on the attenuated kernel, the
-//!   mixed Madelung constant; the Gamma point through
-//!   `gamma_rsh::gamma_uks_rsh_gradient`), both on the dense-AFT J/K only;
-//!   ROKS/ROHF refuse both, and VV10 is refused.
+//!   part. UKS and ROKS take range-separated hybrids (`K_σ = K[D_σ]` on the
+//!   attenuated kernel, the mixed Madelung constant; the Gamma point through
+//!   `gamma_rsh::gamma_uks_rsh_gradient` / `gamma_roks_rsh_gradient`) and UKS
+//!   also SCAN / r2SCAN (per-spin tau terms), both on the dense-AFT J/K only;
+//!   ROKS/ROHF refuse meta-GGA, and VV10 is refused.
 //! * [`kstress`] — the k-point RHF / UHF stress tensor
 //!   (`kpoint_rhf_stress`, `kpoint_uhf_stress`) on the dense-AFT and the
 //!   unsplit RS-GDF J/K:

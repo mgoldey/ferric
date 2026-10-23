@@ -43,8 +43,8 @@
 //! step is `K_σ = K[D_σ]` per spin scaled by 1 (`a = 1`; the reported fraction
 //! is `c_sr`). The library nuclear force on the dense-AFT J/K is
 //! [`crate::kuxcgrad::kpoint_uks_gradient`] (at Gamma
-//! [`crate::gamma_rsh::gamma_uks_rsh_gradient`]); the RS-GDF force, the stress
-//! and the Python / CLI derivative gate refuse RSH. Range-separated
+//! [`crate::gamma_rsh::gamma_uks_rsh_gradient`]), wired to Python / CLI on the
+//! dense-AFT J/K; the RS-GDF force and the stress refuse RSH. Range-separated
 //! meta-GGAs, VV10 and double hybrids are refused as at Gamma.
 
 use crate::dense_aft::ExxDiv;
