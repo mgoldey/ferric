@@ -463,16 +463,22 @@ fn a_real_optimization_converges_and_the_final_force_is_the_library_force() {
 
 #[test]
 fn unsupported_kohn_sham_routes_are_refused_with_exact_messages() {
-    // Range-separated hybrids: the dense-AFT force runs
-    // (periodic_rsh_open_mgga_derivs.rs); on RS-GDF the force allowlist names
-    // them.
+    // Range-separated hybrids: the HSE06 / CAM-B3LYP force runs on either
+    // J/K (periodic_rsh_open_mgga_derivs.rs); the force allowlist names the
+    // unvalidated ones.
     let e = refused(
-        &run(&loose_input("hse", "HSE06", "[1, 1, 2]", RSGDF)),
-        "hse",
+        &run(&loose_input(
+            "wb97x",
+            "HYB_GGA_XC_WB97X",
+            "[1, 1, 2]",
+            RSGDF,
+        )),
+        "wb97x",
     );
     assert!(
         e.contains(
-            "HSE06: the range-separated hybrid force and stress on the RS-GDF J/K are not wired to the bindings yet"
+            "HYB_GGA_XC_WB97X: the range-separated hybrid force and stress are validated for \
+             HSE06 / CAM-B3LYP (HYB_GGA_XC_CAM_B3LYP) only"
         ),
         "{e}"
     );

@@ -2182,9 +2182,11 @@ def run_uks_gamma(
     """Gamma-point periodic UKS (LDA/GGA/global hybrids, and range-separated
     (CAM) GGA hybrids as an energy: any libxc one is accepted, "HSE06" and
     "HYB_GGA_XC_CAM_B3LYP" are pinned (open-shell "HYB_GGA_XC_WB97X": accepted,
-    not pinned); dense or RS-GDF, with_gradient /
-    with_stress / range_split raise). Meta-GGA raises (use run_uks_kpts with
-    mesh (1, 1, 1)); VV10 raises. neighbour_cutoff in Angstrom (None = max(10
+    not pinned); dense or RS-GDF. Their with_gradient runs for HSE06 and
+    CAM-B3LYP on jk="dense" (the 1x1x1 k-point UKS force on the SCF's
+    exchange); with_stress, with_gradient on jk="rsgdf" or for wB97X, and
+    range_split raise). Meta-GGA raises (use run_uks_kpts with mesh
+    (1, 1, 1)); VV10 raises. neighbour_cutoff in Angstrom (None = max(10
     Bohr, covering bound))."""
     ...
 
@@ -2379,9 +2381,9 @@ def run_rks_kpts(
     """Closed-shell k-point RKS (LDA / GGA / global hybrids and the pure
     meta-GGAs SCAN / r2SCAN / TPSS, and the range-separated
     hybrids HSE06, CAM-B3LYP and wB97X with either J/K; with_gradient /
-    with_stress run for HSE06 and CAM-B3LYP on jk="dense" only, wB97X is
-    energy only). VV10, hybrid meta-GGAs, and TPSS and range-separated
-    derivatives on jk="rsgdf" raise
+    with_stress run for HSE06 and CAM-B3LYP on either J/K, wB97X is
+    energy only). VV10, hybrid meta-GGAs, and TPSS derivatives on jk="rsgdf"
+    raise
     ValueError naming the unsupported feature; ECP cells are supported,
     derivatives included. with_gradient=True gives result.gradient() (the
     analytic force, Hartree/Bohr per cell) and with_stress=True result.stress()
@@ -2421,11 +2423,13 @@ def run_uks_kpts(
     multiplicity, electrons per cell). Mesh, ewald_start and jk as
     run_uhf_kpts, functional and grid as run_rks_kpts. SCAN / r2SCAN
     (jk="dense", energy, with_gradient and with_stress) and the range-separated
-    (CAM) GGA hybrids (either J/K, energy only; any libxc one is accepted,
+    (CAM) GGA hybrids (energy on either J/K; any libxc one is accepted,
     "HSE06" and "HYB_GGA_XC_CAM_B3LYP" are pinned, open-shell
-    "HYB_GGA_XC_WB97X" is accepted, not pinned). with_gradient / with_stress
-    with a range-separated hybrid, other meta-GGAs, a meta-GGA with
-    jk="rsgdf" and VV10 raise ValueError. with_gradient / with_stress as
+    "HYB_GGA_XC_WB97X" is accepted, not pinned; with_gradient for HSE06 and
+    CAM-B3LYP on jk="dense"). with_stress with a range-separated hybrid (no
+    range-separated UKS stress term), its with_gradient on jk="rsgdf" or for
+    wB97X, other meta-GGAs, a meta-GGA with jk="rsgdf" and VV10 raise
+    ValueError. with_gradient / with_stress as
     run_rks_kpts (dense or RS-GDF J/K) for LDA / GGA / global hybrids."""
     ...
 

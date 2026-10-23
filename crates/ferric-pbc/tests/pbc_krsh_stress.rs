@@ -513,13 +513,14 @@ fn rsh_stress_refusals() {
         e.contains("rebuilt from the density and the J/K source"),
         "{e}"
     );
-    // Open shell keeps refusing range separation (the UKS / ROKS stress entry
-    // with HSE06 is asserted word for word in pbc_kuxcstress.rs and
-    // pbc_kuxcstress_ro.rs).
+    // The open-shell STRESS keeps refusing range separation (the UKS / ROKS
+    // stress entry with HSE06 is asserted word for word in pbc_kuxcstress.rs
+    // and pbc_kuxcstress_ro.rs).
     for spin in [
         ferric_pbc::kxcgrad::DerivSpin::Unrestricted,
         ferric_pbc::kxcgrad::DerivSpin::RestrictedOpen,
     ] {
-        assert!(ferric_pbc::kxcgrad::check_deriv_functional(spin, false, "HSE06").is_err());
+        let stress = ferric_pbc::kxcgrad::Deriv::Stress;
+        assert!(ferric_pbc::kxcgrad::check_deriv_functional(spin, stress, false, "HSE06").is_err());
     }
 }

@@ -537,15 +537,40 @@ def test_open_shell_refusals_have_exact_wording(basis):
             r"only \(no meta-GGA for k-point ROKS; run_uks_kpts has SCAN / r2SCAN\)$",
         ):
             _roks(H3_ATOMS, basis, f)
-    # Open-shell range-separated hybrids: energy only (UKS and ROKS).
-    for run, tag in ((_uks, "UKS"), (_roks, "ROKS")):
-        with pytest.raises(
-            ValueError,
-            match=rf"^run_{tag.lower()}_kpts: with_gradient: General error: HSE06: the "
-            rf"k-point {tag} range-separated hybrid force and stress are not wired to "
-            r"the bindings \(the closed-shell RKS ones are, on the dense-AFT J/K\)$",
-        ):
-            run(H3_ATOMS, basis, "HSE06", with_gradient=True)
+    # Open-shell range-separated hybrids: the UKS force runs on the dense-AFT
+    # J/K (test_pbc_rsh_open_mgga_derivs.py); the UKS stress, the UKS force on
+    # RS-GDF and every ROKS derivative are refused by name.
+    for run, kw, want in (
+        (
+            _uks,
+            {"with_stress": True},
+            r"^run_uks_kpts: with_stress: General error: HSE06: the k-point UKS "
+            r"range-separated hybrid stress is not implemented \(the UKS stress has no "
+            r"range-separated term\); the UKS force is available on the dense-AFT J/K$",
+        ),
+        (
+            _uks,
+            {"with_gradient": True, "jk": "rsgdf", "auxbasis": "cc-pvdz-ri"},
+            r"^run_uks_kpts: with_gradient: General error: HSE06: the k-point UKS "
+            r"range-separated hybrid force runs on the dense-AFT J/K only \(the library "
+            r"UKS force has no derivative of the RS-GDF attenuated fit\); use jk = "
+            r'"dense"$',
+        ),
+        (
+            _roks,
+            {"with_gradient": True},
+            r"^run_roks_kpts: with_gradient: General error: HSE06: the k-point ROKS "
+            r"range-separated hybrid force and stress are not implemented \(the ROKS "
+            r"derivatives have no range-separated term\); the UKS force is available on "
+            r"the dense-AFT J/K$",
+        ),
+    ):
+        with pytest.raises(ValueError, match=want):
+            run(H3_ATOMS, basis, "HSE06", **kw)
+    # Both derivatives requested: each is gated (the stress refusal names
+    # with_stress even though the force alone would run).
+    with pytest.raises(ValueError, match=r"^run_uks_kpts: with_stress: "):
+        _uks(H3_ATOMS, basis, "HSE06", with_gradient=True, with_stress=True)
     # UKS meta-GGA derivatives: dense-AFT J/K only.
     with pytest.raises(
         ValueError,
@@ -556,19 +581,18 @@ def test_open_shell_refusals_have_exact_wording(basis):
         _uks(
             H3_ATOMS, basis, "SCAN", with_stress=True, jk="rsgdf", auxbasis="cc-pvdz-ri"
         )
-    # Closed-shell range-separated hybrid derivatives: dense-AFT J/K only.
+    # Closed-shell range-separated hybrid derivatives: validated functionals
+    # only (on either J/K).
     with pytest.raises(
         ValueError,
-        match=r"^run_rks_kpts: with_gradient: General error: HSE06: the range-separated "
-        r"hybrid force and stress on the RS-GDF J/K are not wired to the bindings yet "
-        r"\(the library has it: kpoint_rks_gradient / kpoint_rks_stress on RS-GDF, "
-        r'closed shell\); use jk = "dense"$',
+        match=r"^run_rks_kpts: with_stress: General error: HYB_GGA_XC_WB97X: the "
+        r"range-separated hybrid force and stress are validated for HSE06 / CAM-B3LYP",
     ):
         _rks(
             H2_ATOMS,
             basis,
-            "HSE06",
-            with_gradient=True,
+            "HYB_GGA_XC_WB97X",
+            with_stress=True,
             jk="rsgdf",
             auxbasis="cc-pvdz-ri",
         )

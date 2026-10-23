@@ -970,57 +970,53 @@ impl DerivSpin {
     }
 }
 
+/// Which analytic derivative a binding requests: the allowlists of
+/// [`check_deriv_functional`] differ between the force and the stress (the
+/// open-shell UKS stress has no range-separated term).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Deriv {
+    /// Nuclear gradient (`with_gradient`, `task = "optimize"`).
+    Force,
+    /// Strain derivative (`with_stress`, `[cell] stress = true`).
+    Stress,
+}
+
 /// The explicit k-point Kohn-Sham force and stress allowlist of the Python and
-/// CLI entry points, per SCF family and J/K (`rsgdf` = the RS-GDF fit, else
-/// the dense-AFT oracle). Independent of what the ENERGY gate accepts, so
-/// widening the energy path cannot silently enable a derivative.
+/// CLI entry points, per SCF family, derivative and J/K (`rsgdf` = the RS-GDF
+/// fit, else the dense-AFT oracle). Independent of what the ENERGY gate
+/// accepts, so widening the energy path cannot silently enable a derivative.
 ///
 /// * Every family: LDA, GGA and GLOBAL hybrid functionals (every component a
 ///   `Lda`, `Gga` or `HybridGga` libxc family, no VV10, no mixing weights such
-///   as a double hybrid's), on either J/K.
+///   as a double hybrid's), force and stress, on either J/K.
 /// * RKS: the pure meta-GGAs SCAN and r2SCAN (either J/K) and TPSS (dense-AFT
-///   J/K only; [`is_validated_mgga_deriv`]), and the
-///   validated range-separated hybrids ([`is_validated_rsh_deriv`]: HSE06,
-///   CAM-B3LYP) on the dense-AFT J/K
-///   ([`kpoint_rks_gradient`], [`crate::kxcstress::kpoint_rks_stress`]; the
-///   library also differentiates them on RS-GDF, which is not wired to the
-///   bindings yet).
-/// * UKS: SCAN and r2SCAN on the dense-AFT J/K
+///   J/K only; [`is_validated_mgga_deriv`]), and the validated
+///   range-separated hybrids ([`is_validated_rsh_deriv`]: HSE06, CAM-B3LYP),
+///   force and stress on either J/K ([`kpoint_rks_gradient`],
+///   [`crate::kxcstress::kpoint_rks_stress`]; RS-GDF through the attenuated
+///   fit of `KRsGdf::build_rsh`).
+/// * UKS: SCAN and r2SCAN force and stress on the dense-AFT J/K
 ///   ([`crate::kuxcgrad::kpoint_uks_gradient`],
-///   [`crate::kuxcstress::kpoint_uks_stress`]).
+///   [`crate::kuxcstress::kpoint_uks_stress`]), and the FORCE of the validated
+///   range-separated hybrids on the dense-AFT J/K
+///   ([`crate::kuxcgrad::kpoint_uks_gradient`]).
 /// * ROKS: nothing beyond the common set (its SCF has no tau term).
 ///
-/// Refused by name: TPSS on RS-GDF and on UKS / ROKS, hybrid meta-GGA,
-/// open-shell range-separated hybrids, range-separated hybrids on RS-GDF (not
-/// wired yet).
-/// The open-shell refusal is a binding decision, not a library gap for the
-/// UKS FORCE: [`crate::kuxcgrad::kpoint_uks_gradient`] (and
-/// [`crate::gamma_rsh::gamma_uks_rsh_gradient`]) differentiate a dense-AFT
-/// range-separated UKS SCF, but this gate has no force/stress split (the UKS
-/// stress has no range-separated term) and the bindings carry no anchor for
-/// it, so it stays unwired.
+/// Refused by name: TPSS on RS-GDF and on UKS / ROKS, hybrid meta-GGA, other
+/// range-separated hybrids (wB97X, ...), the UKS range-separated STRESS (the
+/// UKS stress has no range-separated term) and the UKS range-separated force
+/// on RS-GDF (the library UKS force refuses an RS-GDF attenuated fit), and
+/// every ROKS range-separated derivative (the library has none).
 pub fn check_deriv_functional(
     spin: DerivSpin,
+    deriv: Deriv,
     rsgdf: bool,
     functional: &str,
 ) -> Result<(), FerricError> {
     let err = |m: String| Err(FerricError::General(format!("{functional}: {m}")));
     let (xc, exx, rsh) = resolve_periodic_functional_rsh(functional)?;
     if rsh.is_some() {
-        return match (spin, rsgdf) {
-            (DerivSpin::Restricted, false) => check_validated_rsh_deriv(functional),
-            (DerivSpin::Restricted, true) => err(
-                "the range-separated hybrid force and stress on the RS-GDF J/K are not wired to \
-                 the bindings yet (the library has it: kpoint_rks_gradient / kpoint_rks_stress \
-                 on RS-GDF, closed shell); use jk = \"dense\""
-                    .into(),
-            ),
-            _ => err(format!(
-                "the k-point {} range-separated hybrid force and stress are not wired to the \
-                 bindings (the closed-shell RKS ones are, on the dense-AFT J/K)",
-                spin.label()
-            )),
-        };
+        return check_rsh_deriv(spin, deriv, rsgdf, functional);
     }
     if is_validated_mgga_deriv(functional) {
         let pure = exx == 0.0
@@ -1073,11 +1069,12 @@ pub fn check_deriv_functional(
         match spin {
             DerivSpin::Restricted => {
                 "LDA, GGA, global-hybrid, SCAN / r2SCAN / TPSS and range-separated hybrid \
-                 (dense-AFT J/K) functionals only (no VV10, double hybrid or other meta-GGA)"
+                 functionals only (no VV10, double hybrid or other meta-GGA)"
             }
             DerivSpin::Unrestricted => {
-                "LDA, GGA, global-hybrid and SCAN / r2SCAN (dense-AFT J/K) functionals only (no \
-                 range-separated hybrid, VV10, double hybrid or other meta-GGA)"
+                "LDA, GGA, global-hybrid, SCAN / r2SCAN (dense-AFT J/K) and range-separated \
+                 hybrid (force only, dense-AFT J/K) functionals only (no VV10, double hybrid or \
+                 other meta-GGA)"
             }
             DerivSpin::RestrictedOpen => {
                 "LDA, GGA and global-hybrid functionals only (no meta-GGA, range-separated \
@@ -1087,10 +1084,44 @@ pub fn check_deriv_functional(
     ))
 }
 
-/// The range-separated hybrids whose closed-shell force and stress are
-/// validated (FD, equal-fraction and supercell anchors in
-/// `tests/pbc_krsh_force.rs` / `pbc_krsh_stress.rs`): HSE06 and CAM-B3LYP.
-/// Other libxc CAM GGA hybrids (wB97X, ...) run as energies only.
+/// The range-separated branch of [`check_deriv_functional`]: RKS force and
+/// stress on either J/K, the UKS force on the dense-AFT J/K, each for the
+/// validated functionals ([`check_validated_rsh_deriv`]); everything else is
+/// refused by name.
+fn check_rsh_deriv(
+    spin: DerivSpin,
+    deriv: Deriv,
+    rsgdf: bool,
+    functional: &str,
+) -> Result<(), FerricError> {
+    let refuse = |m: &str| Err(FerricError::General(format!("{functional}: {m}")));
+    match (spin, deriv, rsgdf) {
+        (DerivSpin::Restricted, _, _) | (DerivSpin::Unrestricted, Deriv::Force, false) => {
+            check_validated_rsh_deriv(functional)
+        }
+        (DerivSpin::Unrestricted, Deriv::Force, true) => refuse(
+            "the k-point UKS range-separated hybrid force runs on the dense-AFT J/K only (the \
+             library UKS force has no derivative of the RS-GDF attenuated fit); use jk = \
+             \"dense\"",
+        ),
+        (DerivSpin::Unrestricted, Deriv::Stress, _) => refuse(
+            "the k-point UKS range-separated hybrid stress is not implemented (the UKS stress \
+             has no range-separated term); the UKS force is available on the dense-AFT J/K",
+        ),
+        (DerivSpin::RestrictedOpen, _, _) => refuse(
+            "the k-point ROKS range-separated hybrid force and stress are not implemented \
+             (the ROKS derivatives have no range-separated term); the UKS force is available \
+             on the dense-AFT J/K",
+        ),
+    }
+}
+
+/// The range-separated hybrids whose force (closed shell and UKS) and
+/// closed-shell stress are validated (FD, equal-fraction and supercell
+/// anchors in `tests/pbc_krsh_force.rs`, `pbc_krsh_stress.rs`,
+/// `validation_krsh_rsgdf_force.rs`, `validation_kuks_rsh_force.rs`): HSE06
+/// and CAM-B3LYP. Other libxc CAM GGA hybrids (wB97X, ...) run as energies
+/// only.
 pub fn is_validated_rsh_deriv(functional: &str) -> bool {
     ["HSE06", "HYB_GGA_XC_HSE06", "HYB_GGA_XC_CAM_B3LYP"]
         .iter()
@@ -1115,11 +1146,12 @@ pub fn check_validated_rsh_deriv(functional: &str) -> Result<(), FerricError> {
 /// vocabulary (`what`: `"with_stress"`, `"[cell] stress = true"`).
 pub fn check_kpoint_deriv_functional(
     spin: DerivSpin,
+    deriv: Deriv,
     rsgdf: bool,
     functional: &str,
     what: &str,
 ) -> Result<(), String> {
-    check_deriv_functional(spin, rsgdf, functional).map_err(|e| format!("{what}: {e}"))
+    check_deriv_functional(spin, deriv, rsgdf, functional).map_err(|e| format!("{what}: {e}"))
 }
 
 /// SCAN and r2SCAN: the meta-GGAs whose k-point SCF, force and stress are
@@ -1599,7 +1631,7 @@ mod tests {
 
 #[cfg(test)]
 mod force_allowlist_tests {
-    use super::{check_deriv_functional, force_covers, DerivSpin};
+    use super::{check_deriv_functional, force_covers, Deriv, DerivSpin};
     use ferric_dft::libxc::xc_def_from_name;
 
     /// The resolver already refuses most unsupported names before the
@@ -1625,62 +1657,145 @@ mod force_allowlist_tests {
         );
     }
 
-    /// The full (family x J/K x functional) acceptance table of the binding
-    /// derivative gate: every validated route accepted, every other refused.
+    /// The full (family x derivative x J/K x functional) acceptance table of
+    /// the binding derivative gate: every validated route accepted, every
+    /// other refused. Mutation-tested: dropping the `Deriv::Force` guard of
+    /// the UKS arm (UKS stress accepted), admitting `rsgdf` for UKS, or
+    /// routing ROKS to the validated check each fail a row below.
     #[test]
     fn derivative_gate_accepts_exactly_the_validated_routes() {
+        use Deriv::{Force as F, Stress as S};
         use DerivSpin::{Restricted as R, RestrictedOpen as O, Unrestricted as U};
         let cam = "HYB_GGA_XC_CAM_B3LYP";
-        let ok: &[(DerivSpin, bool, &str)] = &[
-            (R, false, "PBE0"),
-            (R, true, "PBE0"),
-            (U, true, "PBE"),
-            (O, true, "B3LYP"),
-            (R, false, "SCAN"),
-            (R, true, "r2SCAN"),
-            (U, false, "SCAN"),
-            (U, false, "R2SCAN"),
-            (R, false, "TPSS"),
-            (R, false, "HSE06"),
-            (R, false, cam),
-        ];
-        for &(s, g, f) in ok {
-            check_deriv_functional(s, g, f).unwrap_or_else(|e| panic!("{s:?} {g} {f}: {e}"));
+        let mut ok: Vec<(DerivSpin, Deriv, bool, &str)> = Vec::new();
+        for d in [F, S] {
+            ok.extend([
+                (R, d, false, "PBE0"),
+                (R, d, true, "PBE0"),
+                (U, d, true, "PBE"),
+                (O, d, true, "B3LYP"),
+                (R, d, false, "SCAN"),
+                (R, d, true, "r2SCAN"),
+                (U, d, false, "SCAN"),
+                (U, d, false, "R2SCAN"),
+                (R, d, false, "TPSS"),
+                (R, d, false, "HSE06"),
+                (R, d, false, cam),
+                (R, d, true, "HSE06"),
+                (R, d, true, cam),
+            ]);
         }
-        let refused: &[(DerivSpin, bool, &str, &str)] = &[
-            (R, true, "HSE06", "not wired to the bindings yet"),
+        ok.extend([(U, F, false, "HSE06"), (U, F, false, cam)]);
+        for &(s, d, g, f) in &ok {
+            check_deriv_functional(s, d, g, f)
+                .unwrap_or_else(|e| panic!("{s:?} {d:?} {g} {f}: {e}"));
+        }
+        let wb = "HYB_GGA_XC_WB97X";
+        let refused: &[(DerivSpin, Deriv, bool, &str, &str)] = &[
+            (R, F, false, wb, "validated for HSE06 / CAM-B3LYP"),
+            (R, S, true, wb, "validated for HSE06 / CAM-B3LYP"),
+            (U, F, false, wb, "validated for HSE06 / CAM-B3LYP"),
             (
-                R,
-                false,
-                "HYB_GGA_XC_WB97X",
-                "validated for HSE06 / CAM-B3LYP",
+                U,
+                F,
+                true,
+                "HSE06",
+                "UKS range-separated hybrid force runs on the dense-AFT J/K only",
             ),
             (
                 U,
+                S,
                 false,
                 "HSE06",
-                "k-point UKS range-separated hybrid force and stress are not wired",
+                "UKS range-separated hybrid stress is not implemented",
+            ),
+            (
+                U,
+                S,
+                true,
+                cam,
+                "UKS range-separated hybrid stress is not implemented",
             ),
             (
                 O,
+                F,
                 false,
                 cam,
-                "k-point ROKS range-separated hybrid force and stress are not wired",
+                "ROKS range-separated hybrid force and stress are not implemented",
+            ),
+            (
+                O,
+                S,
+                false,
+                "HSE06",
+                "ROKS range-separated hybrid force and stress are not implemented",
             ),
             (
                 U,
+                F,
                 true,
                 "SCAN",
                 "UKS) meta-GGA force and stress run on the dense-AFT",
             ),
-            (O, false, "SCAN", "ROKS has no meta-GGA"),
-            (R, true, "TPSS", "validated on the dense-AFT J only"),
-            (U, false, "TPSS", "TPSS is closed-shell only"),
-            (O, false, "TPSS", "ROKS has no meta-GGA"),
+            (O, F, false, "SCAN", "ROKS has no meta-GGA"),
+            (R, S, true, "TPSS", "validated on the dense-AFT J only"),
+            (U, F, false, "TPSS", "TPSS is closed-shell only"),
+            (O, S, false, "TPSS", "ROKS has no meta-GGA"),
         ];
-        for &(s, g, f, msg) in refused {
-            let e = check_deriv_functional(s, g, f).expect_err(f).to_string();
-            assert!(e.contains(msg), "{s:?} {g} {f}: {e}");
+        for &(s, d, g, f, msg) in refused {
+            let e = check_deriv_functional(s, d, g, f).expect_err(f).to_string();
+            assert!(e.contains(msg), "{s:?} {d:?} {g} {f}: {e}");
         }
+    }
+
+    /// The Gamma-point open-shell request gates: the UKS range-separated
+    /// FORCE on the dense-AFT J/K for the validated functionals; the UKS
+    /// stress, the UKS force on RS-GDF, wB97X and every ROKS derivative are
+    /// refused by name; energies (no derivative) always pass. Mutation-tested:
+    /// checking `rsgdf` before the stress, or dropping the validated check,
+    /// fails a row below.
+    #[test]
+    fn gamma_open_shell_gates_split_force_from_stress() {
+        use crate::dft::{check_gamma_roks_request as roks, check_gamma_uks_request as uks};
+        use Deriv::{Force as F, Stress as S};
+        let cam = "HYB_GGA_XC_CAM_B3LYP";
+        for f in ["HSE06", cam] {
+            uks(f, &[F], false).unwrap_or_else(|e| panic!("{f}: {e}"));
+            uks(f, &[], true).unwrap();
+            roks(f, false).unwrap();
+            for (d, g, msg) in [
+                (
+                    &[S][..],
+                    false,
+                    "UKS range-separated hybrid stress is not implemented",
+                ),
+                (
+                    &[F, S][..],
+                    true,
+                    "UKS range-separated hybrid stress is not implemented",
+                ),
+                (
+                    &[F][..],
+                    true,
+                    "UKS range-separated hybrid force runs on the dense-AFT",
+                ),
+            ] {
+                let e = uks(f, d, g).expect_err(f).to_string();
+                assert!(e.contains(msg), "{f} {d:?} {g}: {e}");
+            }
+            let e = roks(f, true).expect_err(f).to_string();
+            assert!(
+                e.contains("ROKS range-separated hybrid force and stress are not implemented"),
+                "{e}"
+            );
+        }
+        let e = uks("HYB_GGA_XC_WB97X", &[F], false)
+            .expect_err("wB97X")
+            .to_string();
+        assert!(e.contains("validated for HSE06 / CAM-B3LYP"), "{e}");
+        // Non-RSH names keep their own gates: PBE0 passes, SCAN names the tau gap.
+        uks("PBE0", &[F, S], true).unwrap();
+        let e = uks("SCAN", &[F], false).expect_err("SCAN").to_string();
+        assert!(e.contains("no tau term"), "{e}");
     }
 }

@@ -9,7 +9,9 @@
 //!   Gamma-centred AND a shifted (Monkhorst-Pack, `centring = "mp"`) 1x1x2
 //!   mesh (H2 / H3 doublet, STO-3G, dense J/K, small XC grid), the
 //!   range-separated RKS-HSE06 and the open-shell UKS-SCAN / r2SCAN stress
-//!   (dense J/K; issue #498), plus an RKS-PBE
+//!   (dense J/K; issue #498), the RKS-CAM-B3LYP stress on `jk = "rsgdf"`
+//!   (cc-pVDZ-RI; issue #498: B3LYP on the same fit differs by 5.7e-4, the
+//!   dense-AFT CAM-B3LYP stress by 2.8e-6), plus an RKS-PBE
 //!   run with EVERYTHING at its default (omega, XC grid 75x302, cutoff) and a
 //!   ROKS-PBE0 run on `jk = "rsgdf"` (cc-pVDZ-RI).
 //! * Python cross-check (done by hand against the extension built from this
@@ -20,7 +22,7 @@
 //! * The GPa tensor is `sigma * ferric_core::units::HARTREE_PER_BOHR3_TO_GPA`
 //!   bit for bit.
 //! * Refusals are TOML-level errors: the stress gate names `[cell] stress =
-//!   true` (closed-shell HSE06 on RS-GDF, open-shell HSE06, Gamma point,
+//!   true` (open-shell HSE06: UKS and ROKS, Gamma point,
 //!   optimize, correlated route, split RS-GDF, open-shell SCAN on RS-GDF);
 //!   hybrid meta-GGA (and ROKS meta-GGA) are refused earlier by the
 //!   k-point ENERGY gate (`[cell] kmesh with functional ...`), which does not
@@ -453,10 +455,12 @@ fn library(c: Case, v: V, centring: MeshCentring, tag: &str) -> [[f64; 3]; 3] {
         }
         Route::Rks => {
             let mut k = KRksConfig::new(&cell, ExxDiv::Ewald, f);
-            assert!(!v.rsgdf, "RS-GDF is anchored on ROKS only");
             (k.krhf.scf, k.krhf.hcore, k.grid) = (scf(), hcfg, grid(v));
-            let (r, kept) = solve_krks_keep(&cell, &prep, None, &mesh, &k).unwrap();
-            let jk = kept.stress_jk(None, &k.krhf.rsgdf).unwrap();
+            if v.rsgdf {
+                (k.krhf.jk, k.krhf.rsgdf) = (ferric_pbc::KJkKind::RsGdf, rs);
+            }
+            let (r, kept) = solve_krks_keep(&cell, &prep, aux, &mesh, &k).unwrap();
+            let jk = kept.stress_jk(aux, &k.krhf.rsgdf).unwrap();
             let x = xc_cfg(v, &kept, k.xc.ao_threshold);
             kpoint_rks_stress(
                 &cell,
@@ -673,30 +677,33 @@ fn refused(c: Case, tag: &str, kind: &str, cell: &str, method: &str) -> String {
 #[test]
 fn stress_refusals_name_the_toml_key() {
     let km = "kmesh = [1, 1, 2]\nstress = true";
-    let hse = Case {
-        tag: "h",
-        route: Route::Rks,
-        functional: "HSE06",
-    };
-    // The dense-AFT HSE06 stress runs (anchored above); on RS-GDF and open
-    // shell it is refused by the stress gate, which names the key.
-    let rs = format!("{km}\njk = \"rsgdf\"\nauxbasis = \"cc-pvdz-ri\"");
-    let e = refused(hse, "hse-rsgdf", "rhf", &rs, "");
-    assert!(
-        e.contains("[cell] stress = true") && e.contains("not wired to the bindings yet"),
-        "{e}"
-    );
-    let hse_open = Case {
-        tag: "ho",
-        route: Route::Uks,
-        functional: "HSE06",
-    };
-    let e = refused(hse_open, "hse-uks", "uhf", km, "");
-    assert!(
-        e.contains("[cell] stress = true")
-            && e.contains("UKS range-separated hybrid force and stress are not wired"),
-        "{e}"
-    );
+    // The closed-shell HSE06 / CAM-B3LYP stress runs on either J/K (anchored
+    // above); the open-shell range-separated stress is refused by the stress
+    // gate, which names the key (UKS: no range-separated stress term; ROKS:
+    // no range-separated derivative at all).
+    for (route, kind, want) in [
+        (
+            Route::Uks,
+            "uhf",
+            "UKS range-separated hybrid stress is not implemented",
+        ),
+        (
+            Route::Roks,
+            "rohf",
+            "ROKS range-separated hybrid force and stress are not implemented",
+        ),
+    ] {
+        let c = Case {
+            tag: "ho",
+            route,
+            functional: "HSE06",
+        };
+        let e = refused(c, &format!("hse-{kind}"), kind, km, "");
+        assert!(
+            e.contains("[cell] stress = true") && e.contains(want),
+            "{kind}: {e}"
+        );
+    }
     // TPSS stress on RS-GDF J: refused by name (validated on the dense J).
     let tpss = Case {
         tag: "t",
@@ -755,6 +762,52 @@ const ROKS_PBE0: Case = Case {
     route: Route::Roks,
     functional: "PBE0",
 };
+
+/// The closed-shell range-separated stress on the RS-GDF J/K (issue #498;
+/// library `kpoint_rks_stress` on a `KRsGdf::build_rsh` source): CAM-B3LYP,
+/// whose attenuated fit carries a non-negligible erf piece on this cell.
+const RKS_CAM_RSGDF: Case = Case {
+    tag: "rks-cam-gdf",
+    route: Route::Rks,
+    functional: "HYB_GGA_XC_CAM_B3LYP",
+};
+
+const RSGDF_SMALL: V = V {
+    small_grid: true,
+    default_omega: false,
+    rsgdf: true,
+};
+
+#[test]
+fn rks_cam_b3lyp_rsgdf_equals_library() {
+    check_case(RKS_CAM_RSGDF, RSGDF_SMALL, "gamma", MeshCentring::Gamma);
+}
+
+/// The RS-GDF CAM-B3LYP stress is not its global sibling B3LYP on the same
+/// fit, nor the dense-AFT CAM-B3LYP stress (so a run that dropped the
+/// attenuated fit, or silently fell back to the dense J/K, cannot pass the
+/// bit-equal anchor above).
+#[test]
+fn rks_cam_b3lyp_rsgdf_stress_differs_from_its_siblings() {
+    let x = library(RKS_CAM_RSGDF, RSGDF_SMALL, MeshCentring::Gamma, "sib-cam");
+    let b3 = Case {
+        tag: "rks-b3lyp-gdf",
+        route: Route::Rks,
+        functional: "B3LYP",
+    };
+    let y = library(b3, RSGDF_SMALL, MeshCentring::Gamma, "sib-b3");
+    let z = library(RKS_CAM_RSGDF, SMALL, MeshCentring::Gamma, "sib-cam-dense");
+    let gap = |p: &[[f64; 3]; 3], q: &[[f64; 3]; 3]| {
+        p.iter()
+            .flatten()
+            .zip(q.iter().flatten())
+            .fold(0.0_f64, |m, (a, b)| m.max((a - b).abs()))
+    };
+    let (d_b3, d_dense) = (gap(&x, &y), gap(&x, &z));
+    eprintln!("CAM-B3LYP RS-GDF vs B3LYP RS-GDF {d_b3:.2e}, vs CAM-B3LYP dense {d_dense:.2e}");
+    assert!(d_b3 > 1e-7, "B3LYP sibling too close: {d_b3:e}");
+    assert!(d_dense > 1e-7, "dense sibling too close: {d_dense:e}");
+}
 
 /// Everything at its default: omega, XC grid (75x302), neighbour cutoff.
 #[test]
