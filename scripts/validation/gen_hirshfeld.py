@@ -127,14 +127,18 @@ PYSCF_GRID_LEVEL = 9  # PySCF-native grid, an independent quadrature cross-check
 LATTICE_SPACING = 0.20
 LATTICE_MARGIN = 6.0
 
-# ferric-scf/src/properties.rs::slater_xi_for_z, VERBATIM (Angstrom, and the
-# conversion factor that function uses).
+# ferric-scf/src/properties.rs::slater_xi_for_z, VERBATIM (Angstrom). That
+# function converts with ferric_core::units::ANGSTROM_TO_BOHR = 1/0.52917721092
+# (CODATA 2010, the geometry constant), which common.ANGSTROM_TO_BOHR mirrors.
+# The Slater charges and free-atom volumes are compared to 1e-10 / 1e-11, so a
+# different factor here (the pre-#337 1.8897259886, 7.2e-8 relative away) is a
+# 4e-8 e / 1e-9 rel miss: measured, issue #516.
 _SLATER_R_ANG = {
     1: 0.25, 2: 0.30, 3: 1.45, 4: 1.05, 5: 0.85, 6: 0.70, 7: 0.65, 8: 0.60,
     9: 0.50, 10: 0.45, 11: 1.80, 12: 1.50, 13: 1.25, 14: 1.10, 15: 1.00,
     16: 1.00, 17: 1.00, 18: 0.71,
 }  # fmt: skip
-_SLATER_ANG_TO_BOHR = 1.8897259886
+_SLATER_ANG_TO_BOHR = common.ANGSTROM_TO_BOHR
 
 CHUNK = 40_000
 

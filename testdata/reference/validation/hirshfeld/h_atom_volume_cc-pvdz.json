@@ -134,12 +134,12 @@
       0.0
     ]
   ],
-  "volume_ferric_none_lattice": 7.291495432503318,
+  "volume_ferric_none_lattice": 7.2914954395173925,
   "volume_weight_one_lattice": 7.297685404181981,
   "volume_dense_grid": 7.303957026154419,
   "measurements": {
-    "floor_loss_rel": 0.0008482102661092606,
-    "lattice_vs_dense_rel": -0.0017061427944438342
+    "floor_loss_rel": 0.0008482093049723704,
+    "lattice_vs_dense_rel": -0.0017061418341322348
   },
   "provenance": {
     "code": "PySCF + numpy",
@@ -188,8 +188,8 @@
     ],
     "bohr_in_angstrom": 0.52917721092,
     "generator": "scripts/validation/gen_hirshfeld.py",
-    "git_head": "761d5507dc118c34d7a666217e5830da10c123eb",
-    "generated_utc": "2026-10-02T00:58:21+00:00",
+    "git_head": "830599fb08dc031ef6c953c3b24d2b811716c83b",
+    "generated_utc": "2026-10-22T22:48:34+00:00",
     "basis_self_check": {
       "nao": 5,
       "replica_self_overlap_max_dev": 2.220446049250313e-16,
