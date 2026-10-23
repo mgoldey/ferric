@@ -53,7 +53,9 @@ Total RSH exchange force against finite differences:
 
 The CAM rows at lindep 1e-10 grow as 1/h. That is energy noise, not an error in the
 derivative. At ω = 0.33 the attenuated metric (72–78 K vectors against 20 aux
-functions) keeps eigenvalues of 1.2e-11, 2.1e-11 and 3.9e-10, just above the cut.
+functions) has small eigenvalues of 1.2e-11, 2.1e-11 and 3.9e-10 around the
+(absolute) cut: the first two are dropped at lindep 1e-10, and 3.9e-10 is kept just
+above it (it is dropped too at lindep 1e-8).
 Reversing the order of the K summation changes `E_K[erf]` by 4.6e-8 and F by 2.2e-8 at
 lindep 1e-10. At lindep 1e-8 the change is 2.3e-9 (E) and 1.5e-9 (F); at 1e-6 it is
 1.6e-11 and 1.5e-11. Moving from lindep 1e-10 to 1e-6 changes E by 4.9e-8 and F by
