@@ -16,9 +16,12 @@
 //! pair density) would show as a gap that grows with the core sharpness
 //! and is identical on every mesh; a mesh-handling defect (dropped shift,
 //! Madelung) would instead differ between Gamma-centred and shifted rows.
-//! Both would break the pin (only Gamma PBE is pinned: PySCF at the 80^3 J mesh
-//! it needs costs ~32 min per row, so no shifted or PBE0 LiH row exists); the sensitivity checks below (`shift_is_not_dropped`,
-//! `wrong_madelung_is_detected`) show these tests can fail.
+//! The PySCF pin covers only Gamma PBE (PySCF at the 80^3 J mesh it needs
+//! costs ~32 min per row, so no shifted or PBE0 LiH row exists): it can catch
+//! a core-specific defect, but not a shift or Madelung defect. Those are
+//! covered only by the ferric-against-ferric sensitivity checks below
+//! (`shift_is_not_dropped`, `wrong_madelung_is_detected`), which show the
+//! energy responds to them, not that it matches a reference.
 //!
 //! LIMIT: no all-electron cell heavier than Li is pinned (Mg STO-3G has
 //! alpha ~ 300; its PySCF/ferric G-set comparison was not attempted), the
