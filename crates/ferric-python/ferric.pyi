@@ -2380,9 +2380,8 @@ def run_rks_kpts(
     meta-GGAs SCAN / r2SCAN / TPSS, and the range-separated
     hybrids HSE06, CAM-B3LYP and wB97X with either J/K; with_gradient /
     with_stress run for HSE06 and CAM-B3LYP on jk="dense" only, wB97X is
-    energy only). VV10, hybrid meta-GGAs, TPSS
-    derivatives on UKS / ROKS and TPSS and range-separated derivatives on
-    jk="rsgdf" raise
+    energy only). VV10, hybrid meta-GGAs, and TPSS and range-separated
+    derivatives on jk="rsgdf" raise
     ValueError naming the unsupported feature; ECP cells are supported,
     derivatives included. with_gradient=True gives result.gradient() (the
     analytic force, Hartree/Bohr per cell) and with_stress=True result.stress()

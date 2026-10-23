@@ -828,8 +828,9 @@ pub(crate) fn resolve_global_mgga_stress(
 /// * `scf` — `KRksResult::scf`.
 /// * `cfg.grid`/`cfg.ao_threshold` — the grid and AO truncation of the energy.
 ///
-/// Also meta-GGA (SCAN, r2SCAN, TPSS) on either J route (the tau strain term is part
-/// of the grid XC response, which does not see the J route), and range-separated
+/// Also meta-GGA (SCAN and r2SCAN on either J route; TPSS is validated on the
+/// dense-AFT J only, and the bindings refuse it on RS-GDF. The tau strain term is
+/// part of the grid XC response, which does not see the J route), and range-separated
 /// hybrids (HSE06 and CAM-B3LYP stress-tested; other CAM GGA hybrids such as
 /// wB97X accepted, not exercised) on the dense-AFT or RS-GDF J/K built with
 /// the functional's [`RshParams`] (as [`crate::kdft::solve_krks`] builds them):
