@@ -465,3 +465,75 @@ has been run yet; the PySCF PBE anchors also still need the re-run with the grid
 Evidence that ferric's 590 grid is wired correctly (H-only toys, not the bench cells):
 `crates/ferric-pbc/tests/pbc_rks.rs` (huge-box SSF anchor exact at 434/590; H2 a = 4 LDA error vs the
 uniform reference -3.79e-4 at 75x302, -5.19e-5 at 100x590, -5.18e-5 at 150x590).
+
+# ADDENDUM 2026-10-23: third session, Gamma PBE rows, PRE-REGISTERED
+
+Written and committed BEFORE any anchor or timed run of this session (branch val/pbc-bench-pbe-228,
+base origin/main d5436758, which contains the 150x590 periodic grid and the dryice long-range GEMM
+fix).  Same matching rules (cc-pVDZ / cc-pvdz-ri from ferric's bundled JSON, exxdiv=ewald, hcore guess,
+aux metric cut 1e-10, orbital lindep 1e-6, fresh process and fresh cderi dir per run), same reporting
+rules (median, min-max, IQR; IQR/median > 10% labelled noisy; ratios only for the same cell, same N,
+same stage definition, with the mismatch list next to them) as the sessions above unless stated here.
+Disclosure (not blind): the second session's ANCHOR runs printed PBE walls at N=6 on an older binary
+(654087b4) with PySCF on its default PRUNED grid: ferric diamond_prim 12.5 s, dryice 59.5 s; PySCF
+18.7 s / 133.8 s (`anchor2_pbe.jsonl`).  Those PySCF numbers are on a different grid and are not reused.
+
+## Rows
+Cells `diamond_prim` and `dryice`, Gamma, PBE, ferric inputs `toml_ri/<cell>_pbe.toml` (75x302) and
+`toml_ri/<cell>_pbe_150x590.toml` (refinement, anchors only).  Timed grid: 75x302 (the production
+default of ferric's periodic grid) in BOTH codes; PySCF `--method pbe --grid 75 302` (pbc
+BeckeGrids, unpruned, with the post-`density_fit` grid fix).
+1. Anchors (untimed, N=6, one run each): ferric 75x302 and 150x590; PySCF 75x302 and 150x590 at
+   precision 1e-11, plus PySCF 75x302 at 1e-12 (precision check below).
+2. Timed N=6: 5 valid reps per (cell, code).
+3. Timed N=1: 3 valid reps per (cell, code).
+Order within each rep alternates F P (even reps) / P F (odd reps), `scatter_driver.py` default.
+
+## Settings
+- ferric: release binary built from this branch's base, `OPENBLAS_NUM_THREADS=1 RAYON_NUM_THREADS=N`,
+  `ferric --version` recorded per run; default `gdf_omega` 1.0 Bohr^-1 (NOT tuned); SCF stop rule
+  density rms 1e-10 (Gamma default).  PySCF 2.13.1: `OMP/OPENBLAS=N`, conv_tol 1e-10 /
+  conv_tol_grad 1e-6, `max_memory` 8000 MB, GDF omega = PySCF's AUTOMATIC choice (labelled as such
+  in the table; expected 0.417 diamond_prim / 0.330 dryice from the RHF sessions).
+- PySCF precision: 1e-11 (the gated RHF value for these two cells).  PBE check: |E_P(75x302, 1e-11) -
+  E_P(75x302, 1e-12)| <= 1e-8 Ha/cell, else the timed rows run at 1e-12 (labelled).
+- Gates: every timed run holds BOTH heavy slots from before the quiet-wait until it exits.  N=6 valid
+  iff foreign-CPU fraction < 0.12 (the relaxed gate of the first session, used again in the second).
+  N=1: `N1_GATE=foreign` from the start (start loadavg < 1.5 AND foreign-CPU < 0.12; the second
+  session's Deviation 1 adopted up front, not post hoc).  Invalid runs are kept in the jsonl and
+  re-run (<= 3 attempts).  If the box is not quiet, the driver waits; no run is recorded noisy-by-choice.
+- Every timed run must be converged and within 1e-8 Ha/cell of its own code's 75x302 anchor.
+
+## Energy gate (unchanged from "Energy gates" + the 2026-10-22 addendum, 150x590 refinement)
+eps_c = |E_c(75x302) - E_c(150x590)| per code c on the same cell.  A cell's PBE timing rows are
+reportable iff (a) |E_f(75x302) - E_P(75x302)| <= eps_f + eps_P + 1e-8 AND (b) |E_f(150x590) -
+E_P(150x590)| < |E_f(75x302) - E_P(75x302)|.  Additional artifact STOP: PySCF `n_grid_points` must
+differ between its 75x302 and 150x590 anchors (the second session's grid-not-applied defect), and
+ferric's 150x590 anchor must differ from its 75x302 one.
+Artifact vs physics: if the 75x302 difference is a grid (partition/quadrature) effect it shrinks on
+refinement and (b) passes; if it comes from a non-grid defect (functional, density, hcore, DF) it does
+not shrink and (b) fails -> no timing row for that cell, investigate instead.  If (a) or (b) fails, the
+timed rows are NOT run for that cell (or, if already run, not reported as a comparison).
+
+## Hypotheses (stated before any number of this session)
+- H8: both gate parts pass on both cells, and the 150x590 difference is at least 3x smaller than the
+  75x302 one (the dominant 75x302 error is the angular partition error, per the ferric module doc).
+- H9: ferric/PySCF total wall for PBE lies in [0.3, 1.0] at N=6 on both cells (the RHF Gamma ratios
+  were 0.58-0.64 and the extra XC work is grid-bound in both).  Artifact signatures: a ferric PBE total
+  BELOW its own RHF total on the same cell and N (RHF has exchange; PBE should cost J + XC, so this is
+  possible, not a signature by itself) is checked against the stage table: a ferric XC stage that does
+  not grow with grid size between its two anchors means the grid was not applied.
+- H10: N=1 -> N=6 speedup of ferric PBE >= 4x on both cells (RHF: 4.6-5.2x); a smaller value points at
+  a serial XC stage.
+
+## Mismatches known before running (listed next to every ratio)
+1. Grid construction: ferric atom-centred TA-M4 x Lebedev on the CELL atoms with the full (uncut)
+   atomic grids, SSF partition with Bragg-Slater size adjustment over image atoms within a covering
+   cutoff; PySCF pbc BeckeGrids: TA (same `treutler` radial rule, `radi.treutler_ahlrichs`) x Lebedev
+   on EVERY image atom, points cut to the unit cell (boundary weights halved), ORIGINAL Becke
+   partition with NO size adjustment (null radii table in `get_becke_grids`) over the image atoms
+   that keep points.  Same (n_rad, n_ang) labels, different point sets and point counts.
+2. Pruning: none in either code (ferric's periodic grid refuses pruning; PySCF `prune = None`).
+3. omega: ferric fixed 1.0 vs PySCF automatic.
+4. Precision/stopping rules/aux/process overhead: the first session's items 1, 2, 5, 7, 9d, plus 16
+   (s/iter definitions).
