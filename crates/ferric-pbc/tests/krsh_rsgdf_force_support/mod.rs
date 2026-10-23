@@ -64,6 +64,20 @@ pub fn et_sp_aux() -> BasisSet {
     }
 }
 
+/// [`et_sp_aux`] plus a near-duplicate s shell of exponent `0.75 (1 + delta)`
+/// (the #512 near-singular metric fixture).
+pub fn et_sp_dup_aux(delta: f64) -> BasisSet {
+    let mut b = et_sp_aux();
+    b.name = format!("et-sp-aux-H+dup{delta:e}");
+    b.shells.get_mut(&1).unwrap().push(Shell {
+        l: 0,
+        pure: false,
+        exponents: vec![0.75 * (1.0 + delta)],
+        coefficients: vec![1.0],
+    });
+    b
+}
+
 pub fn hcore_cfg() -> PeriodicHcoreConfig {
     PeriodicHcoreConfig::with_omega(OMEGA_HCORE)
 }
@@ -116,8 +130,13 @@ pub struct Sys {
 }
 
 pub fn sys(cell: Cell) -> Sys {
+    sys_aux(cell, &et_sp_aux())
+}
+
+/// [`sys`] with another aux basis.
+pub fn sys_aux(cell: Cell, aux_bs: &BasisSet) -> Sys {
     let prep = prep_for(&cell, &pyscf_sto3g_h());
-    let aux = PreparedBasis::new(cell.mol(), &et_sp_aux()).unwrap();
+    let aux = PreparedBasis::new(cell.mol(), aux_bs).unwrap();
     let mesh = KPointMesh::gamma_centred(&cell, MESH).unwrap();
     let hk = periodic_hcore_kpts(&cell, &prep, &mesh, &hcore_cfg()).unwrap();
     Sys {

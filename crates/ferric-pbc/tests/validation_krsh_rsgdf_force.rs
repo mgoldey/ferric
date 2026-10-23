@@ -21,30 +21,26 @@
 //! * Attenuated fit alone vs FD of its fixed-density energy, `ω = 0.33`,
 //!   lindep 1e-6: 5.8e-9 / 5.2e-11 / 9.0e-12 at h = 1e-3 / 1e-4 / 1e-5
 //!   (`max|F|` 4.6e-2). Bar 1e-9 at h = 1e-4.
-//! * Default lindep (1e-10) characterisation of the same fit. The ENERGY is
-//!   clean: re-chunking the build's K sum (2, 4, 10 GEMM chunks) and a rigid
-//!   translation move E by <= 7e-17 at lindep 1e-10, 1e-8 and 1e-6 (the
-//!   prototype's ~5e-8 summation-order noise does not occur in Rust). The
-//!   analytic FORCE is roundoff-limited when metric eigenvalues near 1e-11
-//!   are kept: at fixed density a rigid translation of 1e-3 moves it by
-//!   3.7e-8 / 2.9e-9 / 4.6e-12 at lindep 1e-10 / 1e-8 / 1e-6 (it must not
-//!   move at all), and its miss against FD of the energy is flat in h at
-//!   lindep 1e-10 (1.67e-8, 1.69e-8, 1.69e-8 at h = 1e-3, 1e-4, 1e-5),
-//!   2.1e-9 at 1e-8, the h^2 floor at 1e-6. So the attenuated force at the
-//!   default lindep is accurate to about 4e-8 for the CAM-type fit; on the
-//!   total CAM-type force this is a 3.8e-9 floor (below). The production
-//!   default is unchanged.
-//! * EXISTING LIMIT, not specific to the attenuated fit (independent review):
-//!   the plain Coulomb RS-GDF force shows the same thing. The ET-sp aux plus
-//!   a near-duplicate s shell (kept eigenvalues 1.4e-11, lindep 1e-10) gives
-//!   a flat FD miss of ~4e-6 at h = 1e-3 / 1e-4 / 1e-5, dropping to the h^2
-//!   floor at lindep 1e-6. The kderiv near-null-mode conditioning is tracked
-//!   separately: see #512.
+//! * Default lindep (1e-10) characterisation of the same fit, whose metric
+//!   has eigenvalues of 1.2e-11..3.9e-10 straddling the cut (the cut is
+//!   absolute: those <= 1e-10 are dropped, those above it are kept, so the
+//!   smallest KEPT modes sit just above 1e-10). The ENERGY:
+//!   re-chunking the build's K sum (2, 4, 10 GEMM chunks) and a rigid
+//!   translation move E by <= 7e-17 at lindep 1e-10, 1e-8 and 1e-6. The
+//!   FORCE: at fixed density a rigid translation of 1e-3 moves it by 3.6e-11
+//!   / 4.1e-11 / 3.6e-13 at lindep 1e-10 / 1e-8 / 1e-6 (bar 5e-10), and at
+//!   lindep 1e-10 it matches FD of the energy at 5.8e-9 / 6.8e-11 / 7.8e-12
+//!   for h = 1e-3 / 1e-4 / 1e-5, the h^2 truncation (bars 1e-9 at h = 1e-4,
+//!   ratio > 30 between h = 1e-3 and 1e-4). The near-null modes are handled
+//!   by kderiv's eigenbasis form ("Conditioning", #512); the per-commit
+//!   translation anchor, with a near-duplicate aux shell in the plain fit
+//!   too, is `pbc_kfit_force_conditioning.rs`.
 //! * Zero-XC total force vs central FD (fresh build + SCF per point), three
 //!   components: CAM-type TRI2 (lindep 1e-6) 1.11e-8 / 2.78e-9 / 6.60e-10
 //!   and HSE-type a = 6.5 (lindep 1e-10) 9.71e-9 / 2.44e-9 / 6.25e-10 at
 //!   h = 2e-4 / 1e-4 / 5e-5 (ratio 4.0 per halving: the h^2 truncation).
-//!   CAM-type at lindep 1e-10: 7.5e-9 / 3.8e-9 / 3.9e-9 (the bias floor).
+//!   CAM-type at the production lindep 1e-10: 1.11e-8 / 2.74e-9 / 6.21e-10
+//!   (the same h^2 truncation; measured once, the row runs at 1e-6).
 //!   Bars: 1e-8 at h = 5e-5 (15x) and a 3..6 ratio between h = 2e-4 and
 //!   1e-4. `Σ_A F_A` <= 1.2e-15 (bar 1e-12).
 //! * KS (CAM-B3LYP lindep 1e-6, HSE06 lindep 1e-10), 4 Bohr cube vs FD of
@@ -170,15 +166,14 @@ fn attenuated_fit_force_matches_fd() {
 /// Characterisation of the attenuated fit at the PRODUCTION metric cut and
 /// two tighter ones (header). ENERGY checks: re-chunking the build's K sum
 /// and a rigid translation move E at roundoff (these do not test the
-/// derivative: the force's own rebuild keeps one chunking). FORCE check: a
-/// rigid translation of 1e-3 must leave the fixed-density force unchanged;
-/// it does to roundoff at lindep 1e-6 and moves by the analytic force's
-/// conditioning error at 1e-10 / 1e-8 (asserted below the measured accuracy
-/// bound, not a pass condition to tighten). The flat FD miss at lindep 1e-10
-/// is that same error.
+/// derivative: the force's own rebuild keeps one chunking). FORCE checks: a
+/// rigid translation of 1e-3 leaves the fixed-density force unchanged at
+/// every cut, and at the production cut the force matches FD of the energy
+/// down to the h^2 truncation (the near-null eigenvalues kept there no
+/// longer leave an h-independent offset, #512).
 #[test]
-#[ignore = "validation: default-lindep characterisation of the attenuated fit (chunking, translation, FD offset)"]
-fn attenuated_fit_default_lindep_noise_and_offset() {
+#[ignore = "validation: default-lindep characterisation of the attenuated fit (chunking, translation, FD)"]
+fn attenuated_fit_default_lindep_noise_and_fd() {
     let w = 0.33;
     let s = sys(tri2(&TRI2_ATOMS));
     for lindep in [LINDEP_DEFAULT, 1e-8, LINDEP_FD] {
@@ -215,28 +210,22 @@ fn attenuated_fit_default_lindep_noise_and_offset() {
             assert!(de.abs() < 1e-14, "{de:e}");
         }
         // The derivative check: the fixed-density force is translation
-        // invariant.
+        // invariant (kderiv "Conditioning", #512).
         let t = 1e-3;
         let st = sys(tri2(&translated(&TRI2_ATOMS, [t, 0.7 * t, -0.4 * t])));
         let at = att_fit(&st, &cfg, w, None);
         let df = diff(&g0, &fit_force(&st, &at, &cfg, &d, gc).unwrap());
         eprintln!("lindep {lindep:e}: rigid translation {t:e}: dF {df:.2e}");
-        if lindep == LINDEP_FD {
-            assert!(df < 1e-10, "{df:e}");
-        }
-        assert!(df < 3e-7, "{df:e}");
+        assert!(df < 5e-10, "{df:e}");
     }
     let cfg = gdf_cfg(LINDEP_DEFAULT, ExxDiv::None);
-    let (m3, m5) = (
-        att_fd_miss(&s, &cfg, w, 1e-3),
-        att_fd_miss(&s, &cfg, w, 1e-5),
-    );
-    eprintln!("lindep 1e-10: analytic - FD offset {m3:.2e} (h = 1e-3), {m5:.2e} (h = 1e-5)");
-    assert!(m5 < 1e-7, "{m5:e}");
-    assert!(
-        (m3 / m5 - 1.0).abs() < 0.25,
-        "offset not h-independent: {m3:e} {m5:e}"
-    );
+    let m: Vec<f64> = [1e-3, 1e-4, 1e-5]
+        .iter()
+        .map(|&h| att_fd_miss(&s, &cfg, w, h))
+        .collect();
+    eprintln!("lindep 1e-10: analytic - FD at h = 1e-3 / 1e-4 / 1e-5: {m:?}");
+    assert!(m[1] < 1e-9, "{:e}", m[1]);
+    assert!(m[0] / m[1] > 30.0, "not the h^2 truncation: {m:?}");
 }
 
 /// Zero-XC total RSH force vs central FD of ferric's own energy (fresh build

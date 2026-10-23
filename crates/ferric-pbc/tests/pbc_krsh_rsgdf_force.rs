@@ -43,10 +43,10 @@
 //! `validation_krsh_rsgdf_force.rs`.
 //!
 //! The FD rows of the total force and stress, the default-lindep
-//! characterisation (the analytic force is roundoff-limited when metric
-//! eigenvalues near 1e-11 are kept, in the plain fit too; see #512) and the
-//! full mutation ledger are weekly
-//! (`validation_krsh_rsgdf_force.rs`).
+//! characterisation and the full mutation ledger are weekly
+//! (`validation_krsh_rsgdf_force.rs`); the per-commit translation-invariance
+//! anchor with near-null metric eigenvalues kept is
+//! `pbc_kfit_force_conditioning.rs`.
 
 mod common;
 #[path = "krsh_rsgdf_force_support/mod.rs"]
