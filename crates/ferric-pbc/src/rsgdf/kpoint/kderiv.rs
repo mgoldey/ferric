@@ -125,7 +125,9 @@
 //! not (#512). So `J3` and `T` are rotated into the eigenbasis first, `U^H H
 //! U` is accumulated there, `Z = ((T U) ∘ f) U^H` and `c = U (f ∘ U^H ρ)`:
 //! the same function, with the near-null error confined to the near-null
-//! directions, where `dJ` is small. The Gamma-point path (`rsgdf::deriv`)
+//! directions, where `dJ` is small. It costs 4 instead of 2 `n² naux²` GEMMs
+//! per `(q, k')` (TRI2 fixed-density fit force: 1.64 vs 1.63 s plain, within
+//! run-to-run noise). The Gamma-point path (`rsgdf::deriv`)
 //! already has this form (`W = U s^{-1/2}`). Prototype
 //! `prototypes/pbc/kgrad_conditioning.py` (exact-integral s-only model): the
 //! error against the exact-arithmetic gradient falls from 1.0e-5 to 8.5e-10
@@ -641,6 +643,9 @@ fn kpoint_fit_core(
             8,
         ),
     )?;
+    // `2 n² naux` for the rotated `T U` and `J3 conj(U)` is a conservative
+    // upper bound: the live set per k' is still two n² × naux arrays at a time.
+    // Cost: 4 instead of 2 n² naux² GEMMs per (q, k') (module doc "Conditioning").
     ledger.reserve(
         &format!(
             "{who}: per-q working set (J3, T, Z per k' (N_k = {nk}), rotated T and J3, R_L \
@@ -885,6 +890,9 @@ fn attenuated_fit_core(
     let mod_l = mesh.residue_moduli();
     let rl = mod_l[0] * mod_l[1] * mod_l[2];
     let sat = |xs: &[usize]| xs.iter().fold(1u64, |a, &x| a.saturating_mul(x as u64));
+    // `2 n² naux` for the rotated `T U` and `J3 conj(U)` is a conservative
+    // upper bound: the live set per k' is still two n² × naux arrays at a time.
+    // Cost: 4 instead of 2 n² naux² GEMMs per (q, k') (module doc "Conditioning").
     ledger.reserve(
         &format!(
             "{who}: per-q working set (J3, T, Z per k' (N_k = {nk}), rotated T and J3, R_L = {rl} \

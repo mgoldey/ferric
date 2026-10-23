@@ -34,11 +34,40 @@
 //! | near-duplicate, attenuated | 1.05e-7 | 1.8e-10 | 2e-9 |
 //! | ET-sp, attenuated | 3.7e-8 | 3.6e-11 | 5e-10 |
 //!
-//! At lindep 1e-6 (near-null modes dropped) the same drifts are 1e-15..8e-13
-//! before and after. The near-duplicate residual (1.3e-10 / 1.8e-10, kept
-//! `s_min` 1.3e-10) is the integral-roundoff floor of the fit itself: with a
-//! slightly better conditioned duplicate (`1 + 1e-3`, `s_min` 1.4e-9) it is
-//! 9.6e-12 / 6.4e-11 (before: 4.7e-8 / 2.0e-8).
+//! #512's acceptance target (translation drift <= 1e-10 at the default
+//! lindep) is MET on the ET-sp attenuated row and NOT MET on the
+//! near-duplicate fixture: 1.29e-10 (plain) / 1.79e-10 (attenuated). That
+//! fixture's ENERGY also moves under the same translation (dE = 5.4e-11, the
+//! same before and after: the derivative code cannot touch it), and FD of the
+//! plain fit grows as 1/h (6.06e-8 / 5.47e-7 / 4.92e-6 at h = 1e-3 / 1e-4 /
+//! 1e-5; before: 6.20e-7 / 6.30e-7 / 4.91e-6), so FD cannot check this force
+//! below ~5e-8. Reading the residual as the integral-roundoff floor of the
+//! near-singular fit is PROVISIONAL for Rust: it rests on the exact-integral
+//! Python model (whose floor at `s_min` 9e-11 is 7e-10) plus the moving
+//! energy, not on an exact-integral Rust reference. With a better conditioned
+//! duplicate (`1 + 1e-3`, kept `s_min` 1.4e-9) the drift is 9.6e-12 / 6.4e-11
+//! (before: 4.7e-8 / 2.0e-8). At lindep 1e-6 (near-null modes dropped) the
+//! drifts are 1e-15..8e-13 before and after.
+//!
+//! The #512 report's own control (ET-sp plus `0.75 (1 + 1e-4)`, smallest
+//! metric eigenvalue 1.42e-11 / 3.19e-11 at q = 0 / 1, DROPPED at lindep
+//! 1e-10, 2 dropped per class), measured through this file's exchange-only
+//! fixed-density entry point (not a per-commit row):
+//!
+//! | fit | translation drift before / now | FD miss h = 1e-3 / 1e-4 / 1e-5, before | now |
+//! |---|---|---|---|
+//! | plain | 4.8e-14 / 8.6e-16 | 2.30e-8 / 2.29e-10 / 2.51e-11 | the same |
+//! | attenuated | 2.10e-8 / 4.9e-11 | 3.29e-8 / 3.86e-8 / 3.87e-8 (flat) | 5.72e-9 / 1.90e-11 / 7.8e-11 |
+//!
+//! (energy translation drift 1.1e-16 both). The report's flat ~4e-6 FD miss
+//! of the PLAIN fit is therefore not reproduced on this path, before or
+//! after: its exchange-only force was already clean. Which path produced the
+//! report's number is not recorded; this entry point zeroes the q = 0
+//! Coulomb `ρρ^H` term, and that term's conditioning is not re-measured here.
+//!
+//! Complex q: both classes of this 1×1×2 mesh are time-reversal invariant
+//! (real metric), so a dropped or misplaced conjugation is invisible here;
+//! it is guarded by `pbc_kgrad.rs`'s 1×1×3 RS-GDF rows.
 //!
 //! MUTATION CHECKS (each run once against a deliberately broken build, then
 //! reverted; rows near-duplicate plain / attenuated / ET-sp attenuated): the
