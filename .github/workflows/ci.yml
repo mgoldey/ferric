@@ -1108,7 +1108,11 @@ jobs:
     # modelled at ~150 min of tests (per-test CI durations from the three
     # October 2026 dispatches, dealt out as `count:K/4` deals them) plus up
     # to 17 min of setup, and CI wall time for the same shard has varied 1.6x
-    # between runs. Hung tests are bounded per test by nextest's
+    # between runs: ~150 x 1.6 + 17 = ~254 of 300 min at the worst spread
+    # seen, under GitHub's 360-min cap. Adding a heavy test to shard 2 eats
+    # that headroom; the fallback is moving ecp_gradient_ch2i_uhf to its own
+    # single-test job (or running its stability analysis only on the
+    # undisplaced SCF). Hung tests are bounded per test by nextest's
     # terminate-after, so this is a backstop, not the hang guard.
     timeout-minutes: 300
     # SHARDED, because one runner no longer fits the tier (~566 tests, ~13 h

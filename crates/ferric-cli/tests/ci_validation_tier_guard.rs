@@ -433,6 +433,12 @@ fn validation_shards_cover_every_partition() {
             "a validation step is pinned to shard {k}, outside 1..={n}: it never runs"
         );
     }
+    // The Python half's setup (uv / maturin) and its pytest must share a runner.
+    // MUTATION: pin one of those steps to a different shard → this fails.
+    assert!(
+        pins.windows(2).all(|w| w[0] == w[1]),
+        "the Python-half steps are pinned to different shards {pins:?}; they must share one runner"
+    );
 }
 
 // ── Python half of the tier: `@pytest.mark.validation` ──────────────────────
