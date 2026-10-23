@@ -652,15 +652,32 @@ pub fn gamma_rks_any(
     sizing: GammaRshSizing,
     cfg: &crate::dft::GammaRksConfig,
 ) -> Result<crate::dft::GammaRksResult, FerricError> {
+    Ok(gamma_rks_any_keep(cell, prep, hc, ints, aux, sizing, cfg)?.0)
+}
+
+/// [`gamma_rks_any`] that also returns the range-separated exchange the SCF
+/// ran on (`None` for any other functional), so a binding can hand it to
+/// [`gamma_rks_rsh_gradient`] / [`gamma_rks_rsh_stress`] without rebuilding
+/// it.
+pub fn gamma_rks_any_keep(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    hc: &crate::hcore::PeriodicHcore,
+    ints: crate::uhf::GammaUhfIntegrals<'_>,
+    aux: Option<&PreparedBasis>,
+    sizing: GammaRshSizing,
+    cfg: &crate::dft::GammaRksConfig,
+) -> Result<(crate::dft::GammaRksResult, Option<GammaRshExchange>), FerricError> {
     check_range_split(&cfg.functional, sizing.range_split)?;
     match crate::rsh::resolve_periodic_functional_rsh(&cfg.functional)?.2 {
         Some(rsh) => {
             let ex = GammaRshExchange::build_for_binding(
                 cell, prep, aux, &hc.s, cfg.exxdiv, sizing, rsh,
             )?;
-            crate::dft::gamma_rks_rsh(cell, prep, hc, ints, &ex, cfg)
+            let r = crate::dft::gamma_rks_rsh(cell, prep, hc, ints, &ex, cfg)?;
+            Ok((r, Some(ex)))
         }
-        None => crate::dft::gamma_rks(cell, prep, hc, ints, cfg),
+        None => Ok((crate::dft::gamma_rks(cell, prep, hc, ints, cfg)?, None)),
     }
 }
 
@@ -687,6 +704,31 @@ pub fn gamma_uks_any(
             crate::dft::gamma_uks_rsh(cell, prep, hc, ints, &ex, cfg)
         }
         None => crate::dft::gamma_uks(cell, prep, hc, ints, cfg),
+    }
+}
+
+/// Open-shell Gamma ROKS for ANY supported functional: the [`gamma_uks_any`]
+/// routing for [`crate::rohf::gamma_roks_rsh`] (range-separated hybrid,
+/// ENERGY only) or [`crate::rohf::gamma_roks`] (LDA, GGA, global hybrids).
+/// The one entry the Python and CLI bindings share.
+pub fn gamma_roks_any(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    hc: &crate::hcore::PeriodicHcore,
+    ints: crate::uhf::GammaUhfIntegrals<'_>,
+    aux: Option<&PreparedBasis>,
+    sizing: GammaRshSizing,
+    cfg: &crate::rohf::GammaRoksConfig,
+) -> Result<crate::rohf::GammaRoksResult, FerricError> {
+    check_range_split(&cfg.functional, sizing.range_split)?;
+    match crate::rsh::resolve_periodic_functional_rsh(&cfg.functional)?.2 {
+        Some(rsh) => {
+            let ex = GammaRshExchange::build_for_binding(
+                cell, prep, aux, &hc.s, cfg.exxdiv, sizing, rsh,
+            )?;
+            crate::rohf::gamma_roks_rsh(cell, prep, hc, ints, &ex, cfg)
+        }
+        None => crate::rohf::gamma_roks(cell, prep, hc, ints, cfg),
     }
 }
 

@@ -839,7 +839,7 @@ pub(crate) fn resolve_global_mgga_stress(
 /// mixed constant's.
 /// This library entry also accepts TPSS UNVALIDATED (only its raw components
 /// are FD-anchored on a fixed density); the Python and CLI bindings refuse it
-/// through [`crate::kxcgrad::check_force_functional`].
+/// through [`crate::kxcgrad::check_deriv_functional`].
 ///
 /// Refuses (typed errors) VV10/double hybrids, a hybrid without `cfg.exxdiv`,
 /// J/K whose range separation is not the functional's, and an SCF whose

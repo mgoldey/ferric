@@ -33,8 +33,8 @@
 //! polarized libxc kernel as `(τ_α, τ_β)`, and each spin gets its own
 //! `V^τ_σ(k) = Σ_g ½ w v_τσ Σ_ax (∂φ_μ)* ∂φ_ν`. The library force and stress
 //! are [`crate::kuxcgrad::kpoint_uks_gradient`] and
-//! [`crate::kuxcstress::kpoint_uks_stress`]; the Python / CLI derivative gate
-//! ([`crate::kxcgrad::check_open_shell_force_functional`]) still refuses them.
+//! [`crate::kuxcstress::kpoint_uks_stress`] (dense-AFT J/K), accepted by the
+//! Python / CLI derivative gate ([`crate::kxcgrad::check_deriv_functional`]).
 //!
 //! Range-separated hybrids (HSE06, CAM-B3LYP validated against PySCF, wB97X unpinned; mgoldey/ferric#354) take
 //! the closed-shell attenuated K unchanged ([`crate::rsh`], dense AFT or

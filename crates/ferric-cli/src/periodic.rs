@@ -24,15 +24,15 @@ use ferric_pbc::drpa::DEFAULT_GAMMA_DRPA_QUAD_POINTS;
 use ferric_pbc::kcorr::DEFAULT_KDRPA_QUAD_POINTS;
 use ferric_pbc::kroks::{KRohfConfig, KRoksConfig};
 use ferric_pbc::kstress::{kpoint_rhf_stress, kpoint_uhf_stress, KStressConfig};
-use ferric_pbc::kxcgrad::{kpoint_rks_gradient, KRksGradConfig, KXcGrid};
+use ferric_pbc::kxcgrad::{kpoint_rks_gradient, DerivSpin, KRksGradConfig, KXcGrid};
 use ferric_pbc::kxcstress::{kpoint_rks_stress, KRksStressConfig};
 use ferric_pbc::rsgdf::auto_omega::auto_rsgdf_omega;
 use ferric_pbc::rsgdf::DEFAULT_RSGDF_OMEGA;
 use ferric_pbc::SrColumnRotation;
 use ferric_pbc::{
-    gamma_drpa, gamma_mp2, gamma_rks, gamma_rohf, gamma_roks, gamma_uhf, gamma_uks, kpoint_drpa,
-    kpoint_mp2, periodic_hcore, periodic_hcore_kpts, solve_krhf, solve_krhf_injected, solve_krks,
-    solve_kuhf, Cell, DenseAftEri, ExxDiv, GammaDrpaConfig, GammaDrpaIntegrals, GammaMp2Config,
+    gamma_drpa, gamma_mp2, gamma_rohf, gamma_roks, gamma_uhf, gamma_uks, kpoint_drpa, kpoint_mp2,
+    periodic_hcore, periodic_hcore_kpts, solve_krhf, solve_krhf_injected, solve_krks, solve_kuhf,
+    Cell, DenseAftEri, ExxDiv, GammaDrpaConfig, GammaDrpaIntegrals, GammaMp2Config,
     GammaMp2Integrals, GammaRksConfig, GammaRohfConfig, GammaRoksConfig, GammaUhfConfig,
     GammaUhfIntegrals, GammaUksConfig, KCorrIntegrals, KDenseAftConfig, KDenseAftEri,
     KDenseAftPairs, KDrpaConfig, KDrpaEnergy, KJkKind, KMp2Config, KPointInjection, KPointMesh,
@@ -128,8 +128,11 @@ pub fn run_periodic(cfg: &Config) {
         );
     }
     let mut stress: Option<StressInfo> = None;
+    let mut opt: Option<OptimizeInfo> = None;
     let out = if plan.optimize {
-        run_periodic_optimize(cfg, plan, &s)
+        let (o, info) = run_periodic_optimize(cfg, plan, &s);
+        opt = info;
+        o
     } else if plan.stress {
         let (o, info) = run_kstress(cfg, plan, &s);
         stress = Some(info);
@@ -162,15 +165,22 @@ pub fn run_periodic(cfg: &Config) {
             } else {
                 "not_converged"
             },
-            run_end_extra(cfg, &out, stress.as_ref()),
+            run_end_extra(cfg, &out, stress.as_ref(), opt.as_ref()),
         );
     }
 }
 
 /// The `run_end` record's `extra`; a `[cell] stress = true` run adds the
 /// tensor (rows/columns Cartesian x, y, z of the lattice frame) in
-/// Hartree/Bohr^3 and GPa.
-fn run_end_extra(cfg: &Config, out: &Outcome, stress: Option<&StressInfo>) -> serde_json::Value {
+/// Hartree/Bohr^3 and GPa; a `task = "optimize"` run adds the returned
+/// geometry (Bohr) and the analytic gradient evaluated there (Hartree/Bohr
+/// per cell), full precision.
+fn run_end_extra(
+    cfg: &Config,
+    out: &Outcome,
+    stress: Option<&StressInfo>,
+    opt: Option<&OptimizeInfo>,
+) -> serde_json::Value {
     let mut extra = serde_json::json!({
         "method": cfg.method.kind,
         "task": cfg.method.task,
@@ -187,7 +197,19 @@ fn run_end_extra(cfg: &Config, out: &Outcome, stress: Option<&StressInfo>) -> se
         extra["stress_gpa"] = serde_json::json!(stress_gpa(sigma));
         extra["stress_unit"] = serde_json::json!("hartree_per_bohr3");
     }
+    if let Some(o) = opt {
+        extra["final_geometry_bohr"] = serde_json::json!(o.geometry_bohr);
+        extra["final_gradient_hartree_per_bohr"] = serde_json::json!(o.gradient);
+    }
     extra
+}
+
+/// What a `task = "optimize"` run adds to the run log: the returned geometry
+/// (Bohr, flat `[x0, y0, z0, x1, ...]`) and the analytic gradient evaluated at
+/// exactly that geometry (same layout, Hartree/Bohr per cell).
+struct OptimizeInfo {
+    geometry_bohr: Vec<f64>,
+    gradient: Vec<f64>,
 }
 
 // ───────────────────────────────────────────────────────────────── setup ──
@@ -247,11 +269,13 @@ fn setup(cfg: &Config, plan: &PeriodicPlan) -> Setup {
             // size and check their own kernels.
             if plan.kmesh.is_none() {
                 let nao = prep.nbasis();
-                let rsh = matches!(plan.route, PeriodicRoute::Rks | PeriodicRoute::Uks)
-                    && plan
-                        .functional
-                        .as_deref()
-                        .is_some_and(ferric_pbc::rsh::is_range_separated);
+                let rsh = matches!(
+                    plan.route,
+                    PeriodicRoute::Rks | PeriodicRoute::Uks | PeriodicRoute::Roks
+                ) && plan
+                    .functional
+                    .as_deref()
+                    .is_some_and(ferric_pbc::rsh::is_range_separated);
                 let need = ferric_pbc::gamma_rsh::gamma_dense_bytes(nao, rsh);
                 if need > *max_eri_bytes as u128 {
                     die(format!(
@@ -1001,8 +1025,19 @@ fn gamma_open_driver(
             }
         }
         PeriodicRoute::Roks => {
+            // A range-separated hybrid takes the attenuated K of the k = 0
+            // exchange (energy only; `task = "optimize"` was refused at plan
+            // time), any other functional the plain Gamma K.
             let c = roks_config(plan);
-            let r = gamma_roks(&s.cell, &s.prep, &sys.hc, ints, &c)?;
+            let r = ferric_pbc::gamma_rsh::gamma_roks_any(
+                &s.cell,
+                &s.prep,
+                &sys.hc,
+                ints,
+                s.aux.as_ref(),
+                rsh_sizing(plan),
+                &c,
+            )?;
             OpenParts {
                 ks_timings: r.timings,
                 gap_alpha: r.gaps.gap_alpha,
@@ -1849,6 +1884,11 @@ impl KForceCtx<'_> {
         }
     }
 
+    /// The binding derivative allowlist of this route on its J/K.
+    fn check_functional(&self, spin: DerivSpin) -> Result<(), FerricError> {
+        ferric_pbc::kxcgrad::check_deriv_functional(spin, self.s.aux.is_some(), self.functional())
+    }
+
     fn not_converged(&self, it: usize, e: f64) -> FerricError {
         FerricError::Convergence(format!(
             "the k-point {} SCF did not converge in {it} iterations during the optimization \
@@ -1907,9 +1947,10 @@ fn k_force_uhf(x: &KForceCtx<'_>) -> Result<(f64, ndarray::Array2<f64>), FerricE
 fn k_force_rks(x: &KForceCtx<'_>) -> Result<(f64, ndarray::Array2<f64>), FerricError> {
     let (plan, s) = (x.plan, x.s);
     let c = krks_config(plan, s);
-    // The force's own allowlist (LDA / GGA / global hybrid / SCAN, r2SCAN),
-    // independent of the energy gate in `check_kpoint_support`.
-    ferric_pbc::kxcgrad::check_force_functional(x.functional())?;
+    // The force's own allowlist (LDA / GGA / global hybrid / SCAN, r2SCAN /
+    // range-separated hybrid on dense J/K), independent of the energy gate in
+    // `check_kpoint_support`.
+    x.check_functional(DerivSpin::Restricted)?;
     let (r, kept) = solve_krks_keep(&s.cell, &s.prep, s.aux.as_ref(), &x.mesh, &c)?;
     // `solve_krks_keep` itself errors on a non-converged SCF.
     let rcfg = x.xc_cfg(&kept, &c.grid, c.xc.ao_threshold);
@@ -1930,7 +1971,7 @@ fn k_force_rks(x: &KForceCtx<'_>) -> Result<(f64, ndarray::Array2<f64>), FerricE
 fn k_force_uks(x: &KForceCtx<'_>) -> Result<(f64, ndarray::Array2<f64>), FerricError> {
     let (plan, s) = (x.plan, x.s);
     let c = kuks_config(plan, s);
-    ferric_pbc::kxcgrad::check_open_shell_force_functional(x.functional())?;
+    x.check_functional(DerivSpin::Unrestricted)?;
     let (r, kept) = solve_kuks_keep(&s.cell, &s.prep, s.aux.as_ref(), &x.mesh, &c)?;
     // `solve_kuks_keep` itself errors on a non-converged SCF.
     let gc = KUksGradConfig {
@@ -1956,7 +1997,7 @@ fn k_force_ro(x: &KForceCtx<'_>) -> Result<(f64, ndarray::Array2<f64>), FerricEr
     let (plan, s) = (x.plan, x.s);
     let aux = s.aux.as_ref();
     let (energy, grad) = if plan.route == PeriodicRoute::Roks {
-        ferric_pbc::kxcgrad::check_open_shell_force_functional(x.functional())?;
+        x.check_functional(DerivSpin::RestrictedOpen)?;
         let c = kroks_config(plan, s);
         let (r, kept) = solve_kroks_keep(&s.cell, &s.prep, aux, &x.mesh, &c)?;
         let gc = KUksGradConfig {
@@ -2564,9 +2605,29 @@ fn gamma_energy_and_gradient(
         }
         PeriodicRoute::Rks => {
             let c = rks_config(plan);
-            let r = gamma_rks(cell, prep, hc, ints, &c)?;
+            let (r, rsh_k) = ferric_pbc::gamma_rsh::gamma_rks_any_keep(
+                cell,
+                prep,
+                hc,
+                ints,
+                s.aux.as_ref(),
+                rsh_sizing(plan),
+                &c,
+            )?;
             require_converged(plan, &r.scf)?;
             let scf = &r.scf;
+            if let Some(ex) = &rsh_k {
+                // Range-separated hybrid (dense-AFT J/K; RS-GDF was refused at
+                // plan time): the 1x1x1 k-point force on the SCF's exchange.
+                let kg = KGradConfig {
+                    budget_bytes: budget_bytes(plan),
+                    ..Default::default()
+                };
+                let g = ferric_pbc::gamma_rsh::gamma_rks_rsh_gradient(
+                    cell, prep, hcfg, scf, &c, ex, &kg,
+                )?;
+                return Ok((scf.energy, g.grad));
+            }
             let g = match &jk {
                 GradJk::Dense(e) => {
                     gamma_rks_gradient_with(cell, prep, hcfg, hc, e, scf, &c, &gcfg)?
@@ -2625,7 +2686,11 @@ fn gamma_energy_and_gradient(
 /// rebuilds the cell, basis, hcore and J/K at the new positions and runs a
 /// fresh SCF, which must converge. `periodic_plan` refuses every route without
 /// an analytic force at the requested point (k-point UKS/ROKS/ROHF, correlation).
-fn run_periodic_optimize(cfg: &Config, plan: &PeriodicPlan, s: &Setup) -> Outcome {
+fn run_periodic_optimize(
+    cfg: &Config,
+    plan: &PeriodicPlan,
+    s: &Setup,
+) -> (Outcome, Option<OptimizeInfo>) {
     use ferric_scf::optimize::{optimize_coordinates, CoordSystem, OptimizeConfig};
     let opt_config = OptimizeConfig {
         max_steps: cfg.optimize.max_steps.unwrap_or(100),
@@ -2685,7 +2750,8 @@ fn run_periodic_optimize(cfg: &Config, plan: &PeriodicPlan, s: &Setup) -> Outcom
             a.zpos / ANGSTROM_TO_BOHR
         );
     }
-    if let Some((_, g)) = evaluated.iter().rev().find(|(xe, _)| *xe == x) {
+    let at_x = evaluated.iter().rev().find(|(xe, _)| *xe == x);
+    if let Some((_, g)) = at_x {
         let gmax = g.iter().fold(0.0_f64, |m, v| m.max(v.abs()));
         println!("  final gradient dE/dR (Hartree/Bohr per cell), max |g| = {gmax:.3e}:");
         for (a, row) in fin.atoms.iter().zip(g.chunks(3)) {
@@ -2698,9 +2764,16 @@ fn run_periodic_optimize(cfg: &Config, plan: &PeriodicPlan, s: &Setup) -> Outcom
     if !converged {
         eprintln!("warning: the periodic geometry optimization did not converge in {steps} steps");
     }
-    Outcome {
-        energy,
-        converged,
-        energy_is: "total",
-    }
+    let info = at_x.map(|(xe, g)| OptimizeInfo {
+        geometry_bohr: xe.clone(),
+        gradient: g.clone(),
+    });
+    (
+        Outcome {
+            energy,
+            converged,
+            energy_is: "total",
+        },
+        info,
+    )
 }

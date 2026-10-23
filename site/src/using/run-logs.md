@@ -116,9 +116,12 @@ For a post-SCF method the `energy` is the **SCF reference**, not the method's
 total. `extra.energy_is` says which. Per-iteration records for MP2/RPA/CC/GW
 are not implemented yet.
 
-**Only `task = "energy"` writes `run_end`.** `task = "optimize"` and
-`task = "frequencies"` currently write `run_start` and the SCF iteration
-records, but no `run_end`, `ladder_rung` or `result`. Read the final geometry
+**Only `task = "energy"` and periodic `task = "optimize"` write `run_end`.**
+A molecular `task = "optimize"` and `task = "frequencies"` currently write
+`run_start` and the SCF iteration records, but no `run_end`, `ladder_rung` or
+`result`. A periodic `[cell]` optimization writes `run_end` (see below), also
+when it stops at `max_steps` without converging; it writes none when it ends
+in an error. Read the final geometry
 and energy from stdout for those tasks. A missing `run_end` in such a log
 doesn't mean the run failed (MEASURED on `examples/h2-lda-opt.toml`,
 2026-09-23).
@@ -184,6 +187,18 @@ total energy per cell. `run_start.config.stress` records the request; `run_end.e
 also carries `stress_requested` and `scf_iterations`. If the SCF does not converge
 the tensor is absent and `run_end` has `converged = false`, `exit = "not_converged"`;
 a library error closes the log with `exit = "error"` and `extra.error`.
+
+## Periodic geometry optimization
+
+A periodic `[cell]` run with `task = "optimize"` (Gamma point or `kmesh`) adds
+`extra.final_geometry_bohr` (the returned Cartesian positions in Bohr, flat
+`[x0, y0, z0, x1, ...]`, full f64 precision) and
+`extra.final_gradient_hartree_per_bohr` (the analytic gradient dE/dR per cell
+evaluated at exactly that geometry, same layout). `run_end.energy` is the
+energy per cell at that geometry. When the optimization ends in an error (a refusal or a non-converged SCF
+step) the run exits with the error and writes no `run_end` record, so neither
+key exists; an optimization that stops at `max_steps` without converging
+still writes both (`run_end.converged = false`).
 
 ## Point-group-blocked runs
 

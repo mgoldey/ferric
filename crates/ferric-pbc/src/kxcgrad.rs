@@ -177,7 +177,7 @@
 //! SCAN and r2SCAN are validated end to end. TPSS has a validated closed-shell
 //! energy but no force or stress: its tau kernels are checked here only by the
 //! fixed-`D` finite difference on the raw components `MGGA_X_TPSS` /
-//! `MGGA_C_TPSS`, and [`check_force_functional`] refuses it. No hybrid
+//! `MGGA_C_TPSS`, and [`check_deriv_functional`] refuses it. No hybrid
 //! meta-GGA resolves ([`ferric_dft::libxc::xc_def_from_name`] rejects
 //! `HYB_MGGA_*`), so there is nothing for the exchange fraction to compose
 //! with.
@@ -934,12 +934,11 @@ pub(crate) fn hermitize(m: &Array2<C64>) -> Array2<C64> {
     (m + &h).mapv(|z| z * 0.5)
 }
 
-/// The allowlist predicate of [`check_force_functional`], on a resolved
-/// definition: no range separation, no VV10, no mixing weights (double
+/// The family-independent part of [`check_deriv_functional`], on a resolved
+/// non-range-separated definition: no VV10, no mixing weights (double
 /// hybrids), and every component an LDA, GGA or global-hybrid GGA.
-fn force_covers(xc: &XcDef, has_rsh: bool) -> bool {
-    !has_rsh
-        && xc.vv10.is_none()
+fn force_covers(xc: &XcDef) -> bool {
+    xc.vv10.is_none()
         && xc.weights.is_none()
         && xc.funcs.iter().all(|f| {
             matches!(
@@ -949,66 +948,173 @@ fn force_covers(xc: &XcDef, has_rsh: bool) -> bool {
         })
 }
 
-/// The explicit closed-shell force and stress allowlist of the Python and CLI
-/// entry points: LDA, GGA and GLOBAL hybrid functionals (every component a
-/// `Lda`, `Gga` or `HybridGga` libxc family, no range separation, no VV10, no
-/// mixing weights such as a double hybrid's) plus the PURE meta-GGAs SCAN and
-/// r2SCAN (no exact exchange: a hybrid meta-GGA is refused). Independent of
-/// what the ENERGY gate accepts, so widening the energy path cannot silently
-/// enable a force. The open-shell twin is
-/// [`check_open_shell_force_functional`] (no meta-GGA).
-pub fn check_force_functional(functional: &str) -> Result<(), FerricError> {
-    if is_validated_mgga_energy(functional) && !is_validated_mgga(functional) {
-        return Err(FerricError::General(format!(
-            "{functional}: closed-shell energy only; the k-point meta-GGA force and stress \
-             cover SCAN / r2SCAN"
-        )));
-    }
-    if !is_validated_mgga(functional) {
-        return check_open_shell_force_functional(functional);
-    }
-    let (xc, exx, rsh) = resolve_periodic_functional_rsh(functional)?;
-    let pure_mgga = rsh.is_none()
-        && exx == 0.0
-        && xc.vv10.is_none()
-        && xc.weights.is_none()
-        && xc
-            .funcs
-            .iter()
-            .all(|f| matches!(f.family(), FunctionalFamily::MetaGga));
-    if pure_mgga {
-        Ok(())
-    } else {
-        Err(FerricError::General(format!(
-            "{functional}: the k-point meta-GGA force and stress cover the pure SCAN and \
-             r2SCAN functionals only"
-        )))
+/// The SCF a binding force / stress differentiates (the functional
+/// allowlists of [`check_deriv_functional`] differ per family).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DerivSpin {
+    /// Closed-shell RKS.
+    Restricted,
+    /// Open-shell UKS.
+    Unrestricted,
+    /// Restricted open-shell ROKS.
+    RestrictedOpen,
+}
+
+impl DerivSpin {
+    fn label(self) -> &'static str {
+        match self {
+            DerivSpin::Restricted => "RKS",
+            DerivSpin::Unrestricted => "UKS",
+            DerivSpin::RestrictedOpen => "ROKS",
+        }
     }
 }
 
+/// The explicit k-point Kohn-Sham force and stress allowlist of the Python and
+/// CLI entry points, per SCF family and J/K (`rsgdf` = the RS-GDF fit, else
+/// the dense-AFT oracle). Independent of what the ENERGY gate accepts, so
+/// widening the energy path cannot silently enable a derivative.
+///
+/// * Every family: LDA, GGA and GLOBAL hybrid functionals (every component a
+///   `Lda`, `Gga` or `HybridGga` libxc family, no VV10, no mixing weights such
+///   as a double hybrid's), on either J/K.
+/// * RKS: the pure meta-GGAs SCAN and r2SCAN (either J/K), and the
+///   validated range-separated hybrids ([`is_validated_rsh_deriv`]: HSE06,
+///   CAM-B3LYP) on the dense-AFT J/K
+///   ([`kpoint_rks_gradient`], [`crate::kxcstress::kpoint_rks_stress`]; the
+///   library also differentiates them on RS-GDF, which is not wired to the
+///   bindings yet).
+/// * UKS: SCAN and r2SCAN on the dense-AFT J/K
+///   ([`crate::kuxcgrad::kpoint_uks_gradient`],
+///   [`crate::kuxcstress::kpoint_uks_stress`]).
+/// * ROKS: nothing beyond the common set (its SCF has no tau term).
+///
+/// Refused by name: TPSS (closed-shell energy only), hybrid meta-GGA,
+/// open-shell range-separated hybrids, range-separated hybrids on RS-GDF (not
+/// wired yet).
+/// The open-shell refusal is a binding decision, not a library gap for the
+/// UKS FORCE: [`crate::kuxcgrad::kpoint_uks_gradient`] (and
+/// [`crate::gamma_rsh::gamma_uks_rsh_gradient`]) differentiate a dense-AFT
+/// range-separated UKS SCF, but this gate has no force/stress split (the UKS
+/// stress has no range-separated term) and the bindings carry no anchor for
+/// it, so it stays unwired.
+pub fn check_deriv_functional(
+    spin: DerivSpin,
+    rsgdf: bool,
+    functional: &str,
+) -> Result<(), FerricError> {
+    let err = |m: String| Err(FerricError::General(format!("{functional}: {m}")));
+    if is_validated_mgga_energy(functional) && !is_validated_mgga(functional) {
+        return err(
+            "closed-shell energy only; the k-point meta-GGA force and stress cover SCAN / r2SCAN"
+                .into(),
+        );
+    }
+    let (xc, exx, rsh) = resolve_periodic_functional_rsh(functional)?;
+    if rsh.is_some() {
+        return match (spin, rsgdf) {
+            (DerivSpin::Restricted, false) => check_validated_rsh_deriv(functional),
+            (DerivSpin::Restricted, true) => err(
+                "the range-separated hybrid force and stress on the RS-GDF J/K are not wired to \
+                 the bindings yet (the library has it: kpoint_rks_gradient / kpoint_rks_stress \
+                 on RS-GDF, closed shell); use jk = \"dense\""
+                    .into(),
+            ),
+            _ => err(format!(
+                "the k-point {} range-separated hybrid force and stress are not wired to the \
+                 bindings (the closed-shell RKS ones are, on the dense-AFT J/K)",
+                spin.label()
+            )),
+        };
+    }
+    if is_validated_mgga(functional) {
+        let pure = exx == 0.0
+            && xc.vv10.is_none()
+            && xc.weights.is_none()
+            && xc
+                .funcs
+                .iter()
+                .all(|f| matches!(f.family(), FunctionalFamily::MetaGga));
+        return match (spin, rsgdf) {
+            _ if !pure => err(
+                "the k-point meta-GGA force and stress cover the pure SCAN and r2SCAN \
+                 functionals only"
+                    .into(),
+            ),
+            (DerivSpin::Restricted, _) | (DerivSpin::Unrestricted, false) => Ok(()),
+            (DerivSpin::Unrestricted, true) => err(
+                "the open-shell (UKS) meta-GGA force and stress run on the dense-AFT J/K only; \
+                 use jk = \"dense\""
+                    .into(),
+            ),
+            (DerivSpin::RestrictedOpen, _) => err(
+                "the k-point ROKS has no meta-GGA (no tau term); the UKS force and stress \
+                 cover SCAN / r2SCAN on the dense-AFT J/K"
+                    .into(),
+            ),
+        };
+    }
+    if force_covers(&xc) {
+        return Ok(());
+    }
+    err(format!(
+        "the k-point {} force and stress cover {}",
+        spin.label(),
+        match spin {
+            DerivSpin::Restricted => {
+                "LDA, GGA, global-hybrid, SCAN / r2SCAN and range-separated hybrid (dense-AFT \
+                 J/K) functionals only (no VV10, double hybrid or other meta-GGA)"
+            }
+            DerivSpin::Unrestricted => {
+                "LDA, GGA, global-hybrid and SCAN / r2SCAN (dense-AFT J/K) functionals only (no \
+                 range-separated hybrid, VV10, double hybrid or other meta-GGA)"
+            }
+            DerivSpin::RestrictedOpen => {
+                "LDA, GGA and global-hybrid functionals only (no meta-GGA, range-separated \
+                 hybrid, VV10 or double hybrid)"
+            }
+        }
+    ))
+}
+
+/// The range-separated hybrids whose closed-shell force and stress are
+/// validated (FD, equal-fraction and supercell anchors in
+/// `tests/pbc_krsh_force.rs` / `pbc_krsh_stress.rs`): HSE06 and CAM-B3LYP.
+/// Other libxc CAM GGA hybrids (wB97X, ...) run as energies only.
+pub fn is_validated_rsh_deriv(functional: &str) -> bool {
+    ["HSE06", "HYB_GGA_XC_HSE06", "HYB_GGA_XC_CAM_B3LYP"]
+        .iter()
+        .any(|v| functional.eq_ignore_ascii_case(v))
+}
+
+/// Refuse, by name, a range-separated derivative of a functional outside
+/// [`is_validated_rsh_deriv`] (Python, CLI; k-point and Gamma).
+pub fn check_validated_rsh_deriv(functional: &str) -> Result<(), FerricError> {
+    if is_validated_rsh_deriv(functional) {
+        return Ok(());
+    }
+    Err(FerricError::General(format!(
+        "{functional}: the range-separated hybrid force and stress are validated for HSE06 / \
+         CAM-B3LYP (HYB_GGA_XC_CAM_B3LYP) only; {functional} runs as an energy"
+    )))
+}
+
 /// The k-point derivative request gate shared by the Python bindings and the
-/// CLI (so the two cannot diverge), run before any integral is built: the
-/// force / stress functional allowlist of the route. `open_shell` selects
-/// [`check_open_shell_force_functional`] (UKS, ROKS) over
-/// [`check_force_functional`] (RKS). `what` names the request in the
-/// caller's vocabulary (`"with_stress"`, `"[cell] stress = true"`).
+/// CLI (so the two cannot diverge), run before any integral is built:
+/// [`check_deriv_functional`] with the request named in the caller's
+/// vocabulary (`what`: `"with_stress"`, `"[cell] stress = true"`).
 pub fn check_kpoint_deriv_functional(
-    open_shell: bool,
+    spin: DerivSpin,
+    rsgdf: bool,
     functional: &str,
     what: &str,
 ) -> Result<(), String> {
-    let allow = if open_shell {
-        check_open_shell_force_functional(functional)
-    } else {
-        check_force_functional(functional)
-    };
-    allow.map_err(|e| format!("{what}: {e}"))
+    check_deriv_functional(spin, rsgdf, functional).map_err(|e| format!("{what}: {e}"))
 }
 
 /// SCAN and r2SCAN: the meta-GGAs whose k-point SCF, force and stress are
 /// validated end to end. TPSS is validated for the closed-shell ENERGY only
-/// ([`is_validated_mgga_energy`]); this force / stress / open-shell allowlist
-/// excludes it.
+/// ([`is_validated_mgga_energy`]); the derivative allowlist excludes it.
 pub fn is_validated_mgga(functional: &str) -> bool {
     functional.eq_ignore_ascii_case("SCAN") || functional.eq_ignore_ascii_case("r2SCAN")
 }
@@ -1019,28 +1125,6 @@ pub fn is_validated_mgga(functional: &str) -> bool {
 /// narrower [`is_validated_mgga`].
 pub fn is_validated_mgga_energy(functional: &str) -> bool {
     is_validated_mgga(functional) || functional.eq_ignore_ascii_case("TPSS")
-}
-
-/// The open-shell (UKS, ROKS, ROHF) force and stress allowlist of the Python
-/// and CLI entry points: LDA, GGA and GLOBAL hybrid functionals only.
-/// Meta-GGA, range-separated hybrids, VV10 and double hybrids are refused. The
-/// library k-point UKS force and stress ([`crate::kuxcgrad::kpoint_uks_gradient`],
-/// [`crate::kuxcstress::kpoint_uks_stress`]) also cover SCAN / r2SCAN on the
-/// dense-AFT J/K, and the library UKS FORCE (not the stress) covers
-/// range-separated hybrids on the dense-AFT J/K (also at Gamma,
-/// [`crate::gamma_rsh::gamma_uks_rsh_gradient`]); neither route is wired to
-/// Python or the CLI; the k-point ROKS SCF has no meta-GGA at all.
-pub fn check_open_shell_force_functional(functional: &str) -> Result<(), FerricError> {
-    let (xc, _exx, rsh) = resolve_periodic_functional_rsh(functional)?;
-    if force_covers(&xc, rsh.is_some()) {
-        Ok(())
-    } else {
-        Err(FerricError::General(format!(
-            "{functional}: the k-point Kohn-Sham force and stress cover LDA, GGA and \
-             global-hybrid functionals only (no meta-GGA, range-separated hybrid, VV10 or \
-             double hybrid for this method)"
-        )))
-    }
 }
 
 /// Resolve the functional and its global exact-exchange fraction `a`; refuse
@@ -1124,7 +1208,7 @@ pub(crate) fn resolve_global_or_rsh(
 ///
 /// The meta-GGA force is validated for SCAN / r2SCAN only. This library entry
 /// also accepts TPSS (and its raw components) UNVALIDATED; the Python and CLI
-/// bindings gate it out with [`check_force_functional`].
+/// bindings gate it out with [`check_deriv_functional`].
 #[allow(clippy::too_many_arguments)]
 pub fn kpoint_rks_gradient(
     cell: &Cell,
@@ -1491,7 +1575,7 @@ mod tests {
 
 #[cfg(test)]
 mod force_allowlist_tests {
-    use super::force_covers;
+    use super::{check_deriv_functional, force_covers, DerivSpin};
     use ferric_dft::libxc::xc_def_from_name;
 
     /// The resolver already refuses most unsupported names before the
@@ -1500,20 +1584,77 @@ mod force_allowlist_tests {
     #[test]
     fn each_clause_of_the_force_allowlist_rejects_its_own_case() {
         let pbe0 = xc_def_from_name("PBE0").unwrap();
-        assert!(force_covers(&pbe0, false));
-        assert!(!force_covers(&pbe0, true), "range separation");
+        assert!(force_covers(&pbe0));
         let mut weighted = xc_def_from_name("PBE0").unwrap();
         let n = weighted.funcs.len();
         weighted.weights = Some(vec![1.0; n]);
-        assert!(!force_covers(&weighted, false), "mixing weights");
+        assert!(!force_covers(&weighted), "mixing weights");
         let vv10 = xc_def_from_name("wB97X-V").unwrap();
         assert!(vv10.vv10.is_some());
-        assert!(
-            !force_covers(&vv10, false),
-            "VV10 (and its meta/RSH family)"
-        );
+        assert!(!force_covers(&vv10), "VV10 (and its meta/RSH family)");
         let mut nlc = xc_def_from_name("PBE").unwrap();
         nlc.vv10 = xc_def_from_name("wB97X-V").unwrap().vv10;
-        assert!(!force_covers(&nlc, false), "VV10 alone");
+        assert!(!force_covers(&nlc), "VV10 alone");
+        assert!(
+            !force_covers(&xc_def_from_name("SCAN").unwrap()),
+            "meta-GGA"
+        );
+    }
+
+    /// The full (family x J/K x functional) acceptance table of the binding
+    /// derivative gate: every validated route accepted, every other refused.
+    #[test]
+    fn derivative_gate_accepts_exactly_the_validated_routes() {
+        use DerivSpin::{Restricted as R, RestrictedOpen as O, Unrestricted as U};
+        let cam = "HYB_GGA_XC_CAM_B3LYP";
+        let ok: &[(DerivSpin, bool, &str)] = &[
+            (R, false, "PBE0"),
+            (R, true, "PBE0"),
+            (U, true, "PBE"),
+            (O, true, "B3LYP"),
+            (R, false, "SCAN"),
+            (R, true, "r2SCAN"),
+            (U, false, "SCAN"),
+            (U, false, "R2SCAN"),
+            (R, false, "HSE06"),
+            (R, false, cam),
+        ];
+        for &(s, g, f) in ok {
+            check_deriv_functional(s, g, f).unwrap_or_else(|e| panic!("{s:?} {g} {f}: {e}"));
+        }
+        let refused: &[(DerivSpin, bool, &str, &str)] = &[
+            (R, true, "HSE06", "not wired to the bindings yet"),
+            (
+                R,
+                false,
+                "HYB_GGA_XC_WB97X",
+                "validated for HSE06 / CAM-B3LYP",
+            ),
+            (
+                U,
+                false,
+                "HSE06",
+                "k-point UKS range-separated hybrid force and stress are not wired",
+            ),
+            (
+                O,
+                false,
+                cam,
+                "k-point ROKS range-separated hybrid force and stress are not wired",
+            ),
+            (
+                U,
+                true,
+                "SCAN",
+                "UKS) meta-GGA force and stress run on the dense-AFT",
+            ),
+            (O, false, "SCAN", "ROKS has no meta-GGA"),
+            (R, false, "TPSS", "closed-shell energy only"),
+            (U, false, "TPSS", "closed-shell energy only"),
+        ];
+        for &(s, g, f, msg) in refused {
+            let e = check_deriv_functional(s, g, f).expect_err(f).to_string();
+            assert!(e.contains(msg), "{s:?} {g} {f}: {e}");
+        }
     }
 }

@@ -11,8 +11,8 @@
 //! * A real optimization (stretched H2, PBE0, 1x1x3) converges to the
 //!   optimizer's thresholds, contracts the bond, and the printed final
 //!   gradient equals the library force at the printed final geometry.
-//! * Refusals with exact wording: meta-GGA, range-separated hybrid, open-shell
-//!   Kohn-Sham, range_split, `gdf_omega = "auto"`.
+//! * Refusals with exact wording: meta-GGA, range-separated hybrid on RS-GDF,
+//!   open-shell meta-GGA on RS-GDF, range_split, `gdf_omega = "auto"`.
 //!
 //! The explicit `neighbour_cutoff` is shared by the CLI input and the library
 //! grid: the XC energy has a hard cutoff and the default depends on the cell.
@@ -457,15 +457,17 @@ fn a_real_optimization_converges_and_the_final_force_is_the_library_force() {
 
 #[test]
 fn unsupported_kohn_sham_routes_are_refused_with_exact_messages() {
-    // Range-separated hybrids pass the dense energy gate; the force allowlist
-    // names them.
+    // Range-separated hybrids: the dense-AFT force runs
+    // (periodic_rsh_open_mgga_derivs.rs); on RS-GDF the force allowlist names
+    // them.
     let e = refused(
-        &run(&loose_input("hse", "HSE06", "[1, 1, 2]", DENSE)),
+        &run(&loose_input("hse", "HSE06", "[1, 1, 2]", RSGDF)),
         "hse",
     );
     assert!(
-        e.contains("HSE06: the k-point Kohn-Sham force and stress cover LDA, GGA and global-hybrid functionals only")
-            && e.contains("range-separated"),
+        e.contains(
+            "HSE06: the range-separated hybrid force and stress on the RS-GDF J/K are not wired to the bindings yet"
+        ),
         "{e}"
     );
     // Hybrid meta-GGA and the raw TPSS component names stay refused by the
@@ -486,20 +488,13 @@ fn unsupported_kohn_sham_routes_are_refused_with_exact_messages() {
         "{e}"
     );
     // Open-shell Kohn-Sham with a meta-GGA (ksdft with multiplicity > 1 is
-    // UKS): the CLI k-point UKS has the SCAN energy but no force (the SCAN
-    // force is library-only), so the open-shell force allowlist names it.
-    let mut i = loose_input("uks-scan", "SCAN", "[1, 1, 2]", DENSE);
+    // UKS): the force runs on the dense-AFT J/K (periodic_rsh_open_mgga_derivs.rs);
+    // on RS-GDF the energy gate already names the J/K.
+    let mut i = loose_input("uks-scan", "SCAN", "[1, 1, 2]", RSGDF);
     i.xyz = xyz(&[[0.0, 0.0, 0.0]]);
     i.mult = 2;
     let e = refused(&run(&i), "uks-scan");
-    assert!(
-        e.contains("method.task = \"optimize\" with [cell] kmesh")
-            && e.contains(
-                "SCAN: the k-point Kohn-Sham force and stress cover LDA, GGA and global-hybrid \
-                 functionals only (no meta-GGA"
-            ),
-        "{e}"
-    );
+    assert!(e.contains("dense-AFT J/K only"), "{e}");
     // The range split and the automatic RS-GDF omega are energy-only.
     let split = "jk = \"rsgdf\"\nauxbasis = \"cc-pvdz-ri\"\nrange_split = true";
     let e = refused(

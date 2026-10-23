@@ -403,5 +403,10 @@ fn rsh_force_refusals() {
     // The Python / CLI open-shell derivative gate keeps refusing range
     // separation (the library UKS force is `pbc_kuks_rsh_force.rs`, the
     // closed-shell stress `pbc_krsh_stress.rs`).
-    assert!(ferric_pbc::kxcgrad::check_open_shell_force_functional("HSE06").is_err());
+    for spin in [
+        ferric_pbc::kxcgrad::DerivSpin::Unrestricted,
+        ferric_pbc::kxcgrad::DerivSpin::RestrictedOpen,
+    ] {
+        assert!(ferric_pbc::kxcgrad::check_deriv_functional(spin, false, "HSE06").is_err());
+    }
 }

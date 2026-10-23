@@ -696,10 +696,13 @@ fn rsh_rsgdf_derivatives_need_the_rks_entry_with_the_functionals_rsh() {
     .expect_err("CAM-B3LYP on HSE06 J/K must be refused")
     .to_string();
     assert!(e.contains("functional's"), "{e}");
-    // By name: the force allowlist refuses the functional itself.
-    assert!(ferric_pbc::kxcgrad::check_force_functional("HSE06").is_err());
+    // The binding derivative gate refuses RSH on RS-GDF before any SCF (the
+    // library has it, above; not wired to the bindings yet), and open-shell
+    // RSH on either J/K.
+    use ferric_pbc::kxcgrad::{check_deriv_functional, DerivSpin};
+    assert!(check_deriv_functional(DerivSpin::Restricted, true, "HSE06").is_err());
     assert!(
-        ferric_pbc::kxcgrad::check_open_shell_force_functional("HYB_GGA_XC_CAM_B3LYP").is_err()
+        check_deriv_functional(DerivSpin::Unrestricted, false, "HYB_GGA_XC_CAM_B3LYP").is_err()
     );
 }
 

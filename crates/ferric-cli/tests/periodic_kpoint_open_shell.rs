@@ -26,8 +26,8 @@
 //!   same state either way, an equivalent mutant here). In-test mutants:
 //!   the sibling global functional misses by >= 2.3e-4 (HSE06 vs PBE0) /
 //!   2.5e-2 (SCAN vs PBE), the other centring by >= 1.7e-2.
-//! * Refusals with exact wording: ROKS meta-GGA and range-separated hybrids,
-//!   open-shell SCAN / HSE06 forces, UKS meta-GGA on RS-GDF and at Gamma.
+//! * Refusals with exact wording: ROKS meta-GGA, open-shell HSE06 forces, UKS
+//!   meta-GGA on RS-GDF and at Gamma.
 
 use ferric_core::basis;
 use ferric_core::mol::Molecule;
@@ -734,29 +734,25 @@ fn cli_open_shell_hse06_rsgdf_equals_library_solve_kuks() {
 
 #[test]
 fn open_shell_refusals_have_exact_messages() {
-    // k-point ROKS has no meta-GGA or range-separated hybrid (the UKS route has
-    // the energies).
-    for f in ["SCAN", "HSE06"] {
-        let tag = format!("roks-{f}");
-        let e = refused(&run(&input(&tag, Method::Roks, f, "energy")), &tag);
-        assert!(
-            e.contains(&format!("[cell] kmesh with functional \"{f}\""))
-                && e.contains("for ROKS; the UKS route"),
-            "{tag}: {e}"
-        );
-    }
-    // UKS SCAN / HSE06 have an energy here but no CLI force (the SCAN force is
-    // library-only): optimize is refused by the open-shell force allowlist,
-    // before any integral.
-    for f in ["SCAN", "HSE06"] {
-        let tag = format!("uks-opt-{f}");
-        let e = refused(&run(&input(&tag, Method::Uks, f, "optimize")), &tag);
-        assert!(
-            e.contains("method.task = \"optimize\" with [cell] kmesh")
-                && e.contains("no meta-GGA, range-separated hybrid"),
-            "{tag}: {e}"
-        );
-    }
+    // k-point ROKS has no meta-GGA (the UKS route has it; the ROKS
+    // range-separated hybrid energy runs: periodic_rsh_open_mgga_derivs.rs).
+    let tag = "roks-SCAN";
+    let e = refused(&run(&input(tag, Method::Roks, "SCAN", "energy")), tag);
+    assert!(
+        e.contains("[cell] kmesh with functional \"SCAN\"")
+            && e.contains("no meta-GGA for ROKS; the UKS route"),
+        "{tag}: {e}"
+    );
+    // UKS HSE06 has an energy here but no force: optimize is refused by the
+    // derivative allowlist, before any integral (the UKS SCAN force runs:
+    // periodic_rsh_open_mgga_derivs.rs).
+    let tag = "uks-opt-HSE06";
+    let e = refused(&run(&input(tag, Method::Uks, "HSE06", "optimize")), tag);
+    assert!(
+        e.contains("method.task = \"optimize\" with [cell] kmesh")
+            && e.contains("UKS range-separated hybrid force and stress are not wired"),
+        "{tag}: {e}"
+    );
     // Open-shell meta-GGA needs the dense-AFT J/K.
     let mut i = input("uks-scan-rsgdf", Method::Uks, "SCAN", "energy");
     i.jk = "jk = \"rsgdf\"\nauxbasis = \"cc-pvdz-ri\"";

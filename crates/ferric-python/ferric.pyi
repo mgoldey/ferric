@@ -2211,8 +2211,10 @@ def run_roks_gamma(
     gdf_omega: float | None = None,
     sr_column_rotation: bool | None = None,
 ) -> GammaOpenShellResult:
-    """Gamma-point periodic ROKS (functional/grid contract of run_uks_gamma,
-    but range-separated hybrids and meta-GGA raise). max_iter=None: 600 with a 0.05 Ha ramped level shift for a hybrid (a > 0),
+    """Gamma-point periodic ROKS (functional/grid contract of run_uks_gamma:
+    range-separated hybrids run as an energy, dense or RS-GDF, and raise with
+    with_gradient / with_stress / range_split; meta-GGA raises). max_iter=None:
+    600 with a 0.05 Ha ramped level shift for a hybrid (a > 0 or range-separated),
     else 200 and no shift."""
     ...
 
@@ -2240,9 +2242,11 @@ def run_rks_gamma(
 ) -> GammaRksResult:
     """Closed-shell Gamma-point periodic RKS; open shells raise ValueError.
     Meta-GGA: only SCAN / r2SCAN / TPSS, energy only (with_gradient / with_stress raise).
-    Range-separated hybrids (HSE06, CAM-B3LYP, wB97X): energy only, attenuated K
-    via the k = 0 point of the k-point RSH exchange (dense or RS-GDF);
-    with_gradient / with_stress raise."""
+    Range-separated hybrids (HSE06, CAM-B3LYP, wB97X): attenuated K via the
+    k = 0 point of the k-point RSH exchange (dense or RS-GDF); with_gradient /
+    with_stress run for HSE06 and CAM-B3LYP on jk="dense" (the 1x1x1 k-point
+    force and stress on the SCF's exchange) and raise with jk="rsgdf" or any
+    other range-separated hybrid (wB97X: energy only)."""
     ...
 
 def run_mp2_gamma(
@@ -2372,9 +2376,11 @@ def run_rks_kpts(
     gdf_omega: float | None = None,
 ) -> KpointRksResult:
     """Closed-shell k-point RKS (LDA / GGA / global hybrids and the pure
-    meta-GGAs SCAN / r2SCAN / TPSS (TPSS energy only), and the range-separated hybrids HSE06,
-    CAM-B3LYP and wB97X with either J/K, energy only). VV10, hybrid meta-GGAs
-    and range-separated hybrids with with_gradient / with_stress raise
+    meta-GGAs SCAN / r2SCAN / TPSS (TPSS energy only), and the range-separated
+    hybrids HSE06, CAM-B3LYP and wB97X with either J/K; with_gradient /
+    with_stress run for HSE06 and CAM-B3LYP on jk="dense" only, wB97X is
+    energy only). VV10, hybrid meta-GGAs, TPSS
+    derivatives and range-separated derivatives on jk="rsgdf" raise
     ValueError naming the unsupported feature; ECP cells are supported,
     derivatives included. with_gradient=True gives result.gradient() (the
     analytic force, Hartree/Bohr per cell) and with_stress=True result.stress()
@@ -2413,12 +2419,13 @@ def run_uks_kpts(
     """k-point UKS (LDA / GGA / global hybrids; spin state from the Molecule's
     multiplicity, electrons per cell). Mesh, ewald_start and jk as
     run_uhf_kpts, functional and grid as run_rks_kpts. SCAN / r2SCAN
-    (jk="dense") and the range-separated (CAM) GGA hybrids (either J/K; any
-    libxc one is accepted, "HSE06" and "HYB_GGA_XC_CAM_B3LYP" are pinned,
-    open-shell "HYB_GGA_XC_WB97X" is accepted, not pinned) run as an energy only; with_gradient / with_stress with them,
-    other meta-GGAs, a meta-GGA with jk="rsgdf" and VV10 raise ValueError.
-    with_gradient / with_stress as run_rks_kpts (dense or RS-GDF J/K) for
-    LDA / GGA / global hybrids."""
+    (jk="dense", energy, with_gradient and with_stress) and the range-separated
+    (CAM) GGA hybrids (either J/K, energy only; any libxc one is accepted,
+    "HSE06" and "HYB_GGA_XC_CAM_B3LYP" are pinned, open-shell
+    "HYB_GGA_XC_WB97X" is accepted, not pinned). with_gradient / with_stress
+    with a range-separated hybrid, other meta-GGAs, a meta-GGA with
+    jk="rsgdf" and VV10 raise ValueError. with_gradient / with_stress as
+    run_rks_kpts (dense or RS-GDF J/K) for LDA / GGA / global hybrids."""
     ...
 
 def run_roks_kpts(
@@ -2447,10 +2454,12 @@ def run_roks_kpts(
     gdf_omega: float | None = None,
 ) -> KpointScfResult:
     """k-point ROKS (restricted open-shell Kohn-Sham, Roothaan effective Fock)
-    with the arguments of run_uks_kpts; LDA / GGA / global hybrids only
-    (meta-GGA and range-separated hybrids raise). with_gradient / with_stress run with
-    jk="dense" or the unsplit jk="rsgdf"; converge grad_conv well below 1e-5
-    for the stress (the ROHF orbital-gradient gate)."""
+    with the arguments of run_uks_kpts; LDA / GGA / global hybrids, and the
+    range-separated (CAM) GGA hybrids as an energy (either J/K); meta-GGA
+    raises. with_gradient / with_stress run with jk="dense" or the unsplit
+    jk="rsgdf" (not with a range-separated hybrid, which raises); converge
+    grad_conv well below 1e-5 for the stress (the ROHF orbital-gradient
+    gate)."""
     ...
 
 def run_rohf_kpts(

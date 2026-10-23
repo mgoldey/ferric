@@ -197,9 +197,19 @@ fn open_shell_rsh_derivatives_refuse_by_name() {
     use ferric_pbc::kuxcgrad::{kpoint_uks_gradient, KUksGradConfig};
     use ferric_pbc::kuxcstress::{kpoint_uks_stress, KUksStressConfig};
     let named = |m: String| assert!(m.contains("range-separated"), "{m}");
-    let e = ferric_pbc::kxcgrad::check_kpoint_deriv_functional(true, "HSE06", "with_gradient")
+    for spin in [
+        ferric_pbc::kxcgrad::DerivSpin::Unrestricted,
+        ferric_pbc::kxcgrad::DerivSpin::RestrictedOpen,
+    ] {
+        let e = ferric_pbc::kxcgrad::check_kpoint_deriv_functional(
+            spin,
+            false,
+            "HSE06",
+            "with_gradient",
+        )
         .unwrap_err();
-    named(e);
+        named(e);
+    }
     let cell = cell_named("h3d");
     let hcfg = PeriodicHcoreConfig::with_omega(OMEGA_HCORE);
 
