@@ -771,7 +771,12 @@ class FrequencyResult:
 
     @property
     def hessian_source(self) -> str:
-        """\"analytic\" or \"finite-difference\": which construction produced the Hessian."""
+        """\"analytic\", \"analytic-moving-grid\" or \"finite-difference\": which construction produced the Hessian."""
+        ...
+
+    @property
+    def cartesian_hessian(self) -> list[list[float]]:
+        """Cartesian Hessian before mass-weighting (Hartree/Bohr^2), 3N x 3N, ordered [x0, y0, z0, x1, ...]."""
         ...
 
     @property
@@ -2807,6 +2812,15 @@ def run_frequencies(
     loose convergence threshold, a non-converging response, non-positive
     curvature) is raised, not retried with finite differences; `"analytic"` raises if it does not apply;
     `"fd"` always differences gradients. `.hessian_source` says which ran.
+
+    `hessian="analytic-moving-grid"` (opt-in; `"auto"` never selects it) is
+    the analytic closed-shell Kohn-Sham Hessian on the production (moving)
+    grid, Becke weight response included: the Hessian of the surface the KS
+    gradient differentiates, so it agrees with `"fd"` to the finite-difference
+    error. It needs `xc` (LDA/GGA, pure or global hybrid) and
+    `reference="rhf"`, and raises before the SCF for Hartree-Fock,
+    `"uhf"`/`"rohf"`, meta-GGA, VV10, range-separated hybrids, ECPs,
+    `point_charges` / `external_field` and `dispersion`.
 
     `point_charges` ((q, x, y, z) in Bohr) and `external_field` embed the QM
     region in an MM field, the same way `run_optimize` does.

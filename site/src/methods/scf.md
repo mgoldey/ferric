@@ -269,6 +269,16 @@ analytic where it applies), `"analytic"` (an error where it does not) or
 `"fd"`. The output names the one that ran (`Hessian = analytic`; Python
 `.hessian_source`).
 
+For closed-shell Kohn-Sham, `"analytic-moving-grid"` is an explicit opt-in
+(`"auto"` never selects it, so KS frequencies stay finite differences by
+default): the analytic Hessian on the production grid, Becke weight response
+included, for LDA and GGA functionals, pure or global hybrid, with exact or
+density-fitted J and K. It is the Hessian of the surface the KS gradient
+differentiates, so it agrees with `"fd"` up to the finite-difference error,
+for one SCF plus a coupled-perturbed KS solve instead of 6N gradients.
+Open-shell KS, meta-GGA, VV10, range-separated hybrids, ECPs, external
+potentials, pruned grids and `[dft] dispersion` are refused before the SCF.
+
 The choice is made before the SCF. An error the analytic path raises after the
 SCF (for ROHF: the stored spin Fock matrices differing from those rebuilt from
 the final densities by more than 1e-4 Ha, which a loose `density_conv` can

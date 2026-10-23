@@ -154,7 +154,10 @@
 //! differentiates), and the opt-in moving-grid variant
 //! [`crate::hessian::rks_moving_grid_hessian`], on the production grid with
 //! the Becke weight response (the derivative of the production KS gradient).
-//! `Auto` is unchanged: neither is reached from it; see the `ks` module.
+//! `Auto` is unchanged: neither is reached from it; see the `ks` module. The
+//! moving-grid one is reached from `harmonic_frequencies` only through the
+//! explicit [`crate::frequencies::HessianMethod::AnalyticMovingGrid`] (CLI
+//! and Python `"analytic-moving-grid"`).
 //!
 //! Second-derivative integrals need libint2 generated with
 //! `LIBINT2_MAX_DERIV_ORDER >= 2` (conda-forge 2.13.1: AM ≤ 3, i.e. up to f
@@ -200,7 +203,7 @@ pub use ks::{
 };
 pub use ks::{
     rks_fixed_grid_hessian, rks_fixed_grid_hessian_parts, rks_moving_grid_hessian,
-    rks_moving_grid_hessian_parts,
+    rks_moving_grid_hessian_parts, rks_moving_grid_hessian_preflight,
 };
 mod uhf_df;
 use uhf_df::{
@@ -2807,6 +2810,27 @@ pub fn analytic_frequencies_uhf(
     let masses = super::frequencies::atom_masses(mol)?;
     let parts = uhf_hessian_parts(ctx, mol, prep, op, bounds, uhf, config)?;
     frequencies_from_parts(mol, &parts, &masses, uhf.energy)
+}
+
+/// [`analytic_frequencies`] from [`rks_moving_grid_hessian`] at a converged
+/// closed-shell KS SCF; `hessian_source` is
+/// [`super::frequencies::HessianSource::AnalyticMovingGrid`]. The driver that
+/// also runs the SCF is
+/// [`super::frequencies::harmonic_frequencies_ks_moving_grid`].
+pub fn analytic_frequencies_ks_moving_grid(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    rks: &ScfResult,
+    config: &RhfConfig,
+) -> Result<super::frequencies::FrequencyResult, FerricError> {
+    let masses = super::frequencies::atom_masses(mol)?;
+    let parts = rks_moving_grid_hessian_parts(ctx, mol, prep, op, bounds, rks, config)?;
+    let mut result = frequencies_from_parts(mol, &parts, &masses, rks.energy)?;
+    result.hessian_source = super::frequencies::HessianSource::AnalyticMovingGrid;
+    Ok(result)
 }
 
 fn frequencies_from_parts(

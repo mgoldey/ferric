@@ -122,7 +122,12 @@ A molecular `task = "optimize"` and `task = "frequencies"` currently write
 `result`. A periodic `[cell]` optimization writes `run_end` (see below), also
 when it stops at `max_steps` without converging; it writes none when it ends
 in an error. Read the final geometry
-and energy from stdout for those tasks. A missing `run_end` in such a log
+and energy of an optimization from stdout. A finished `task = "frequencies"`
+writes one `frequencies` record: `hessian_source` (`analytic`,
+`analytic-moving-grid` or `finite-difference`), `energy`, `frequencies_cm1`,
+`trans_rot_frequencies_cm1`, `asymmetry`, `n_gradient_evaluations` and
+`cartesian_hessian` (row-major, Hartree/Bohr²), all at full
+precision. A missing `run_end` in such a log
 doesn't mean the run failed (MEASURED on `examples/h2-lda-opt.toml`,
 2026-09-23).
 

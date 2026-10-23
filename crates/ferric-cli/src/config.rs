@@ -810,6 +810,14 @@ pub struct FrequenciesCfg {
     /// returned, never retried with finite differences; a loose
     /// `density_conv` can trigger the Fock check. `"analytic"`: error if the
     /// analytic Hessian does not apply. `"fd"`: always finite differences.
+    /// `"analytic-moving-grid"` (opt-in, never chosen by `"auto"`): the
+    /// analytic closed-shell KS Hessian on the production (moving) grid, Becke
+    /// weight response included, i.e. the Hessian of the surface the KS
+    /// gradient differentiates. `method.kind = "ksdft"` (or `rhf` with a
+    /// functional) on a closed shell, LDA/GGA pure or global hybrid, exact or
+    /// RI-J/RI-K; refused before the SCF for Hartree-Fock, UKS/ROKS, meta-GGA,
+    /// VV10, range-separated hybrids, ECPs, external potentials, `[dft]
+    /// grid_prune` and `[dft] dispersion`.
     pub hessian: Option<String>,
     /// Central-difference displacement in Bohr, finite-difference Hessians only.
     ///

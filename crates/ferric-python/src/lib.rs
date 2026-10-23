@@ -4119,10 +4119,15 @@ struct PyFrequencyResult {
     asymmetry: f64,
     #[pyo3(get)]
     n_gradient_evaluations: usize,
-    /// `"analytic"` or `"finite-difference"`: which construction produced
-    /// the Hessian.
+    /// `"analytic"`, `"analytic-moving-grid"` or `"finite-difference"`: which
+    /// construction produced the Hessian.
     #[pyo3(get)]
     hessian_source: String,
+    /// The Cartesian Hessian before mass-weighting, Hartree/Bohr^2,
+    /// `3N x 3N`, rows and columns ordered `[x0,y0,z0,x1,...]` like
+    /// `normal_modes`.
+    #[pyo3(get)]
+    cartesian_hessian: Vec<Vec<f64>>,
     /// Electronic energy at the undisplaced geometry. With `dispersion=` it is
     /// the CORRECTED total, KS + dispersion.
     #[pyo3(get)]
@@ -4184,6 +4189,14 @@ impl PyFrequencyResult {
 /// loose convergence threshold, a non-converging response, non-positive
 /// curvature) is raised, not retried with finite differences; "analytic" raises if the analytic Hessian does not apply; "fd"
 /// always differences gradients. `.hessian_source` says which ran.
+/// "analytic-moving-grid" (opt-in; "auto" never selects it) is the analytic
+/// closed-shell Kohn-Sham Hessian on the production (moving) grid, Becke
+/// weight response included: the Hessian of the surface the KS gradient
+/// differentiates, so it agrees with "fd" to the finite-difference error.
+/// It needs `xc=` (LDA/GGA, pure or global hybrid) and `reference="rhf"`, and
+/// raises before the SCF for Hartree-Fock, "uhf"/"rohf", meta-GGA, VV10,
+/// range-separated hybrids, ECPs, `point_charges=`/`external_field=` and
+/// `dispersion=`.
 ///
 /// `reference` selects the SCF: "rhf" (default), "uhf", or "rohf". Setting
 /// `xc` promotes it to the matching KS variant (RKS/UKS/ROKS).
@@ -4275,6 +4288,12 @@ fn run_frequencies(
         asymmetry: r.asymmetry,
         n_gradient_evaluations: r.n_gradient_evaluations,
         hessian_source: r.hessian_source.label().to_string(),
+        cartesian_hessian: r
+            .cartesian_hessian
+            .rows()
+            .into_iter()
+            .map(|row| row.to_vec())
+            .collect(),
         energy: r.energy,
         e_dispersion,
         // Array2 -> Vec<Vec<f64>>, one row per mode. `.rows()` preserves the
@@ -10606,6 +10625,12 @@ fn parse_saddle_hessian(
     use ferric_scf::frequencies::HessianMethod;
     let method = HessianMethod::parse_config_str(hessian)
         .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+    if method == HessianMethod::AnalyticMovingGrid {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "hessian=\"analytic-moving-grid\" is not available in run_saddle (it is wired \
+             for run_frequencies only); use \"fd\", \"auto\" or \"analytic\"",
+        ));
+    }
     if delta.is_some() && method != HessianMethod::FiniteDifference {
         return Err(pyo3::exceptions::PyValueError::new_err(format!(
             "delta= is the finite-difference displacement and is ignored by an \

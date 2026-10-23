@@ -25,7 +25,10 @@
 //! [`crate::ks_fixed_grid`]), everything else shared. It matches central
 //! differences of the production gradient (`tests/ks_moving_grid_hessian.rs`).
 //! Both entry points are explicit: [`HessianMethod::Auto`] and
-//! [`HessianMethod::Analytic`] reach neither.
+//! [`HessianMethod::Analytic`] reach neither. The moving-grid one is the
+//! opt-in [`HessianMethod::AnalyticMovingGrid`] of `harmonic_frequencies`
+//! (CLI `[frequencies] hessian = "analytic-moving-grid"`, Python
+//! `run_frequencies(hessian="analytic-moving-grid")`).
 //!
 //! The Hessian is the RHF one with `G(D) = J(D) − ½K(D)` replaced by
 //! `G(D) = J(D) − (a/2)K(D) + V1_xc[D]`:
@@ -70,6 +73,7 @@
 //!
 //! [`HessianMethod::Auto`]: crate::frequencies::HessianMethod::Auto
 //! [`HessianMethod::Analytic`]: crate::frequencies::HessianMethod::Analytic
+//! [`HessianMethod::AnalyticMovingGrid`]: crate::frequencies::HessianMethod::AnalyticMovingGrid
 
 use super::{
     check_supported, cpks_response_with, first_order_ao, has_ecp, max_abs, nuclear_term,
@@ -83,6 +87,7 @@ use crate::ks_fixed_grid::{FixedGridKs, GridMode, XcGeometry, XcMutants};
 use crate::result::{ScfResult, Spin};
 use crate::rhf::RhfConfig;
 use crate::screening::SchwarzBounds;
+use ferric_core::basis::BasisSet;
 use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
 use ferric_core::FerricError;
@@ -200,10 +205,52 @@ fn ks_refusal(
             "range-separated exchange (erfc/erf pair) in the CPHF",
         ));
     }
-    if has_ecp(mol, prep.basis_set()) || config.external_potential.is_some() {
+    ecp_or_embedding_refusal(mol, prep.basis_set(), config)
+}
+
+fn ecp_or_embedding_refusal(
+    mol: &Molecule,
+    bs: &BasisSet,
+    config: &RhfConfig,
+) -> Result<(), FerricError> {
+    if has_ecp(mol, bs) || config.external_potential.is_some() {
         return Err(unsupported(
             "an ECP or an external potential",
             "ECP and embedding terms with the XC kernel",
+        ));
+    }
+    Ok(())
+}
+
+/// The refusals of [`rks_moving_grid_hessian`] that need no SCF, so a driver
+/// can refuse an unsupported request before paying for one: no functional
+/// (Hartree-Fock has no XC grid), meta-GGA, VV10, range-separated or double
+/// hybrids, an ECP, an external potential, and an angular-pruned grid
+/// (`AtomicGridConfig::prune`). The production SCF grid is always the
+/// atom-centred one, so an explicit-point grid cannot reach this route. The
+/// checks that need the SCF (open shell, the recorded fitting route, Fock
+/// consistency) stay in the Hessian itself.
+pub fn rks_moving_grid_hessian_preflight(
+    mol: &Molecule,
+    bs: &BasisSet,
+    config: &RhfConfig,
+) -> Result<(), FerricError> {
+    let name = config.xc.as_deref().ok_or_else(|| {
+        FerricError::General(
+            "the analytic moving-grid Kohn-Sham Hessian needs a Kohn-Sham functional \
+             (RhfConfig::xc is unset): Hartree-Fock has no XC grid; use the analytic RHF \
+             Hessian (hessian = \"analytic\" or \"auto\")"
+                .into(),
+        )
+    })?;
+    let xc = xc_def_from_name(name)
+        .map_err(|e| FerricError::General(format!("moving-grid KS Hessian: libxc: {e:?}")))?;
+    functional_refusal(name, &xc)?;
+    ecp_or_embedding_refusal(mol, bs, config)?;
+    if config.dft_grid.as_ref().is_some_and(|g| g.prune.is_some()) {
+        return Err(unsupported(
+            "an angular-pruned XC grid (AtomicGridConfig::prune, [dft] grid_prune)",
+            "the pruned grid's weight response",
         ));
     }
     Ok(())
@@ -501,8 +548,9 @@ pub fn rks_fixed_grid_hessian_parts_with(
 /// The analytic Hessian of the closed-shell KS energy on the PRODUCTION
 /// (moving) grid, (3N, 3N): the surface `ks_gradient_closed` differentiates,
 /// with the Becke weight response (issue #490). Opt-in: `HessianMethod::Auto`
-/// and `Analytic` do not reach it. Same functionals, fits and refusals as
-/// [`rks_fixed_grid_hessian`]; the XC skeleton and first-order Fock matrix are
+/// and `Analytic` do not reach it; `HessianMethod::AnalyticMovingGrid` does.
+/// Same functionals, fits and refusals as [`rks_fixed_grid_hessian`] (the
+/// SCF-free ones also in [`rks_moving_grid_hessian_preflight`]); the XC skeleton and first-order Fock matrix are
 /// the moving-grid ones ([`FixedGridKs::skeleton_hessian_moving`],
 /// [`FixedGridKs::first_order_fock_moving`]) and everything else is shared.
 pub fn rks_moving_grid_hessian(
