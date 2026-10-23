@@ -1640,6 +1640,7 @@ mod force_allowlist_tests {
             (R, true, "r2SCAN"),
             (U, false, "SCAN"),
             (U, false, "R2SCAN"),
+            (R, false, "TPSS"),
             (R, false, "HSE06"),
             (R, false, cam),
         ];
@@ -1673,8 +1674,9 @@ mod force_allowlist_tests {
                 "UKS) meta-GGA force and stress run on the dense-AFT",
             ),
             (O, false, "SCAN", "ROKS has no meta-GGA"),
-            (R, false, "TPSS", "closed-shell energy only"),
-            (U, false, "TPSS", "closed-shell energy only"),
+            (R, true, "TPSS", "validated on the dense-AFT J only"),
+            (U, false, "TPSS", "TPSS is closed-shell only"),
+            (O, false, "TPSS", "ROKS has no meta-GGA"),
         ];
         for &(s, g, f, msg) in refused {
             let e = check_deriv_functional(s, g, f).expect_err(f).to_string();

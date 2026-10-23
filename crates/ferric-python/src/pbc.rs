@@ -1423,7 +1423,7 @@ fn run_uks_gamma(
     sr_column_rotation: Option<bool>,
 ) -> PyResult<PyGammaOpenShellResult> {
     let fname = "run_uks_gamma";
-    // Before any integral is built: RSH energy only, no Gamma meta-GGA.
+    // Before any integral is built: RSH energy only, no Gamma UKS meta-GGA.
     ferric_pbc::dft::check_gamma_uks_request(functional, with_gradient || with_stress)
         .map_err(|e| val_err(format!("{fname}: functional {functional:?}: {e}")))?;
     let mut s = pbc_setup(&PbcArgs {
@@ -3013,12 +3013,12 @@ fn krks_driver(
 }
 
 /// Closed-shell **k-point RKS** (LDA / GGA / global hybrids, the pure
-/// meta-GGAs SCAN / r2SCAN / TPSS (TPSS energy only) and range-separated
+/// meta-GGAs SCAN / r2SCAN / TPSS and range-separated
 /// hybrids) on a `mesh = (n1, n2, n3)` k-mesh. Mesh/centring/jk/SCF-threshold
 /// contract as `run_rhf_kpts`; functional and grid (`n_radial`, `n_angular`,
 /// `neighbour_cutoff` in Å) as `run_rks_gamma`. Refused with a ValueError
 /// naming the gap: an open shell (use `run_uks_kpts` / `run_roks_kpts`),
-/// other meta-GGAs, VV10, TPSS derivatives. Range-separated hybrids (HSE06,
+/// other meta-GGAs, VV10, TPSS derivatives on `jk="rsgdf"`. Range-separated hybrids (HSE06,
 /// CAM-B3LYP, wB97X; `ferric_pbc::rsh`) run on either J/K; their
 /// `with_gradient` / `with_stress` run on `jk="dense"` only (the attenuated
 /// library's RS-GDF derivative is not wired to the bindings yet). `with_stress=True` computes the analytic

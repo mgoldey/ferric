@@ -2540,6 +2540,38 @@ fn require_converged(plan: &PeriodicPlan, scf: &ScfResult) -> Result<(), FerricE
     )))
 }
 
+/// The Gamma RKS gradients routed through the 1x1x1 k-point force: a
+/// range-separated hybrid on the SCF's dense-AFT exchange (RS-GDF was refused
+/// at plan time) and a meta-GGA (`ferric_pbc::gamma_mgga`, dense J only).
+/// `None` = the native Gamma force applies.
+fn routed_rks_gradient(
+    plan: &PeriodicPlan,
+    s: &Setup,
+    sys: &GammaSystem,
+    scf: &ScfResult,
+    c: &GammaRksConfig,
+    rsh_k: Option<&ferric_pbc::gamma_rsh::GammaRshExchange>,
+) -> Result<Option<ndarray::Array2<f64>>, FerricError> {
+    let (cell, prep, hcfg) = (&s.cell, &s.prep, &sys.hcfg);
+    if let Some(ex) = rsh_k {
+        let kg = KGradConfig {
+            budget_bytes: budget_bytes(plan),
+            ..Default::default()
+        };
+        let g = ferric_pbc::gamma_rsh::gamma_rks_rsh_gradient(cell, prep, hcfg, scf, c, ex, &kg)?;
+        return Ok(Some(g.grad));
+    }
+    if ferric_pbc::dft::is_meta_gga_name(&c.functional) {
+        let mcfg = ferric_pbc::gamma_mgga::GammaMggaDerivConfig::for_binding(
+            max_eri_bytes(plan),
+            budget_bytes(plan),
+        );
+        let g = ferric_pbc::gamma_mgga::gamma_rks_mgga_gradient(cell, prep, hcfg, scf, c, &mcfg)?;
+        return Ok(Some(g.grad));
+    }
+    Ok(None)
+}
+
 /// The route's Gamma SCF on `sys` (built with `for_gradient = true`) and its
 /// analytic nuclear gradient (`ferric_pbc::grad`, dense AFT or RS-GDF J/K):
 /// `(E per cell, dE/dR natoms x 3 in Hartree/Bohr)`. The driver configs are
@@ -2620,29 +2652,8 @@ fn gamma_energy_and_gradient(
             )?;
             require_converged(plan, &r.scf)?;
             let scf = &r.scf;
-            if let Some(ex) = &rsh_k {
-                // Range-separated hybrid (dense-AFT J/K; RS-GDF was refused at
-                // plan time): the 1x1x1 k-point force on the SCF's exchange.
-                let kg = KGradConfig {
-                    budget_bytes: budget_bytes(plan),
-                    ..Default::default()
-                };
-                let g = ferric_pbc::gamma_rsh::gamma_rks_rsh_gradient(
-                    cell, prep, hcfg, scf, &c, ex, &kg,
-                )?;
-                return Ok((scf.energy, g.grad));
-            }
-            if ferric_pbc::dft::is_meta_gga_name(&c.functional) {
-                // The Gamma meta-GGA force is the 1x1x1 k-point route (dense
-                // J only; `periodic_plan` refused RS-GDF).
-                let mcfg = ferric_pbc::gamma_mgga::GammaMggaDerivConfig::for_binding(
-                    max_eri_bytes(plan),
-                    budget_bytes(plan),
-                );
-                let g = ferric_pbc::gamma_mgga::gamma_rks_mgga_gradient(
-                    cell, prep, hcfg, scf, &c, &mcfg,
-                )?;
-                return Ok((scf.energy, g.grad));
+            if let Some(g) = routed_rks_gradient(plan, s, sys, scf, &c, rsh_k.as_ref())? {
+                return Ok((scf.energy, g));
             }
             let g = match &jk {
                 GradJk::Dense(e) => {
