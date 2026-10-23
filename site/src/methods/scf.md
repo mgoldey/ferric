@@ -277,7 +277,8 @@ density-fitted J and K. It is the Hessian of the surface the KS gradient
 differentiates, so it agrees with `"fd"` up to the finite-difference error,
 for one SCF plus a coupled-perturbed KS solve instead of 6N gradients.
 Open-shell KS, meta-GGA, VV10, range-separated hybrids, ECPs, external
-potentials, pruned grids and `[dft] dispersion` are refused before the SCF.
+potentials, pruned grids, `[dft] dispersion`, COSX, implicit solvent,
+fractional occupations and MOM are refused before the SCF.
 
 The choice is made before the SCF. An error the analytic path raises after the
 SCF (for ROHF: the stored spin Fock matrices differing from those rebuilt from

@@ -6,12 +6,13 @@ validated in the library (`crates/ferric-scf/tests/ks_moving_grid_hessian.rs`)
 and its CLI wiring in `crates/ferric-cli/tests/ks_moving_grid_frequencies.rs`
 (CLI == library bit for bit). These tests pin the Python surface:
 
-* `test_python_equals_the_cli_bit_for_bit`: the binding's Hessian and
-  wavenumbers equal the CLI's (which equal the library's) bit for bit. It needs
-  the `ferric-cli` binary of the same tree (`target/release/ferric-cli`, or
-  `FERRIC_CLI`) and skips without it.
+* `test_python_equals_the_cli_bit_for_bit` (validation tier): the binding's
+  Hessian and wavenumbers equal the CLI's (which equal the library's) bit for
+  bit. It needs the `ferric-cli` binary of the same tree: `FERRIC_CLI` (set by
+  the weekly validation job, which builds it; the test FAILS if that path is
+  missing), else `target/release/ferric-cli` (skips if absent).
 * `test_moving_grid_matches_fd` (validation tier): against the binding's own
-  finite-difference Hessian, Richardson-extrapolated.
+  finite-difference Hessian, Richardson-extrapolated, at a tight SCF.
 * `test_auto_is_still_finite_differences_for_ks`: the default is unchanged.
 * the refusals, each named.
 
@@ -61,23 +62,33 @@ def test_moving_grid_reports_its_source():
 
 
 def _cli_binary():
+    """The CLI of this tree. `FERRIC_CLI` set but missing is a hard error (CI
+    builds it and must not silently skip); unset, the local release build or
+    `None`."""
     env = os.environ.get("FERRIC_CLI")
-    path = pathlib.Path(env) if env else ROOT / "target" / "release" / "ferric-cli"
+    if env:
+        assert pathlib.Path(env).is_file(), f"FERRIC_CLI={env} does not exist"
+        return pathlib.Path(env)
+    path = ROOT / "target" / "release" / "ferric-cli"
     return path if path.is_file() else None
 
 
+# Tight SCF for the comparisons below (the run_frequencies kwargs).
+TIGHT = {"max_iter": 200, "energy_conv": 1e-13, "density_conv": 1e-11}
+
+
+@pytest.mark.validation
 def test_python_equals_the_cli_bit_for_bit(tmp_path):
     cli = _cli_binary()
     if cli is None:
         pytest.skip("no ferric-cli binary (build it, or set FERRIC_CLI)")
-    # The SCF settings of `run_frequencies` (RhfConfig::default() + xc). The CLI
-    # states the default RI-J/RI-K basis that `solve_rhf` resolves an unset
-    # one to for a Kohn-Sham SCF.
+    # The same SCF on both sides. The CLI states the default RI-J/RI-K basis
+    # that `solve_rhf` resolves an unset one to for a Kohn-Sham SCF.
     toml = tmp_path / "freq.toml"
     toml.write_text(
         f'[molecule]\nxyz = "{ROOT / WATER}"\n\n[basis]\nname = "sto-3g"\n\n'
         '[method]\nkind = "ksdft"\ntask = "frequencies"\n\n'
-        "[scf]\nmax_iter = 200\nenergy_conv = 1e-3\ndensity_conv = 1e-6\n"
+        "[scf]\nmax_iter = 200\nenergy_conv = 1e-13\ndensity_conv = 1e-11\n"
         "df_guess = false\n\n"
         '[dft]\nfunctional = "PBE"\n\n'
         f'[frequencies]\nhessian = "{MOVING}"\n'
@@ -100,30 +111,35 @@ def test_python_equals_the_cli_bit_for_bit(tmp_path):
     rec = [r for r in recs if r.get("record") == "frequencies"]
     assert len(rec) == 1
     rec = rec[0]
-    py = ferric.run_frequencies(_mol(WATER), "sto-3g", xc="PBE", hessian=MOVING)
+    py = ferric.run_frequencies(
+        _mol(WATER), "sto-3g", xc="PBE", hessian=MOVING, **TIGHT
+    )
     assert rec["hessian_source"] == py.hessian_source == MOVING
     assert rec["energy"] == py.energy
     assert rec["frequencies_cm1"] == py.frequencies
     assert rec["cartesian_hessian"] == [x for row in py.cartesian_hessian for x in row]
 
 
-# Measured (water / STO-3G, the default SCF of run_frequencies, density_conv
-# 1e-6, h = 5e-3 and 2.5e-3, 2026-10-23): max |d nu| 2.66e-3 (LDA) and
-# 2.68e-3 (PBE) cm^-1 against the Richardson FD (1.8e-2 against plain FD at
-# h/2): the loose default SCF limits it, the CLI validation test reaches
-# 2.1e-7 at density_conv 1e-11. The bar is 11x that; the fixed-grid mutant
-# misses by 4.63 (LDA) and 2.34 (PBE) cm^-1, 78 bars or more.
-FD_TOL_CM1 = 0.03
+# Measured (water / STO-3G, TIGHT SCF, h = 5e-4 and 2.5e-4, 2026-10-23): max
+# |d nu| 7.3e-8 (LDA) and 2.1e-7 (PBE) cm^-1, the same numbers as the CLI
+# validation test (plain FD at h/2: 1.8e-4). The bar is 14x the larger. The
+# fixed-grid mutant misses by 4.63 (LDA) and 2.34 (PBE) cm^-1 (measured with
+# the earlier version of this test: default SCF, h = 5e-3).
+FD_TOL_CM1 = 3e-6
 
 
 @pytest.mark.validation
 @pytest.mark.parametrize("xc", ["LDA", "PBE"])
 def test_moving_grid_matches_fd(xc):
     mol = _mol(WATER)
-    moving = ferric.run_frequencies(mol, "sto-3g", xc=xc, hessian=MOVING)
-    h = 5e-3
-    coarse = ferric.run_frequencies(mol, "sto-3g", xc=xc, hessian="fd", delta=h)
-    fine = ferric.run_frequencies(mol, "sto-3g", xc=xc, hessian="fd", delta=0.5 * h)
+    moving = ferric.run_frequencies(mol, "sto-3g", xc=xc, hessian=MOVING, **TIGHT)
+    h = 5e-4
+    coarse = ferric.run_frequencies(
+        mol, "sto-3g", xc=xc, hessian="fd", delta=h, **TIGHT
+    )
+    fine = ferric.run_frequencies(
+        mol, "sto-3g", xc=xc, hessian="fd", delta=0.5 * h, **TIGHT
+    )
     rich = [(4.0 * f - c) / 3.0 for f, c in zip(fine.frequencies, coarse.frequencies)]
     miss = _max_abs_diff(moving.frequencies, rich)
     print(

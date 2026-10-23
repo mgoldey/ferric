@@ -733,9 +733,11 @@ pub fn harmonic_frequencies_analytic_rohf(
 /// [`FrequencyReference::Rhf`] (UKS/ROKS), and everything
 /// [`crate::hessian::rks_moving_grid_hessian_preflight`] refuses (no `xc`,
 /// meta-GGA, VV10, range-separated or double hybrids, ECPs, external
-/// potentials, angular-pruned grids). The checks that need the SCF (the
-/// recorded density-fitting route, Fock consistency) fire after it, inside
-/// the Hessian. `hessian_source` is [`HessianSource::AnalyticMovingGrid`],
+/// potentials, angular-pruned grids, and the closed-shell RHF Hessian's
+/// configuration refusals: non-Coulomb operator, COSX, solvation, polarizable
+/// embedding, fractional occupations, cDFT, MOM). The checks that need the
+/// SCF (the recorded density-fitting route, Fock consistency) fire after it,
+/// inside the Hessian. `hessian_source` is [`HessianSource::AnalyticMovingGrid`],
 /// `n_gradient_evaluations` 0.
 pub fn harmonic_frequencies_ks_moving_grid(
     ctx: &ParallelContext,
@@ -759,7 +761,7 @@ pub fn harmonic_frequencies_ks_moving_grid(
         )));
     }
     let bs = ferric_core::basis::bundled(basis_name)?;
-    crate::hessian::rks_moving_grid_hessian_preflight(mol, &bs, scf_config)?;
+    crate::hessian::rks_moving_grid_hessian_preflight(mol, &bs, op, scf_config)?;
     atom_masses(mol)?;
     let prep = PreparedBasis::new(mol, &bs)?;
     let bounds = SchwarzBounds::compute(op, &prep)?;

@@ -4184,7 +4184,7 @@ impl PyFrequencyResult {
 /// the Gaussian-smeared charges the Hessian also covers are reachable from the
 /// CLI and Rust API) (one SCF plus CPHF), and a finite difference of the ANALYTIC
 /// gradient (6N gradient evaluations) otherwise, including every KS
-/// reference (ROKS included). The choice is made before the SCF; an error the
+/// reference (ROKS included) unless "analytic-moving-grid" is asked for. The choice is made before the SCF; an error the
 /// analytic path raises after it (for ROHF a Fock-consistency failure from a
 /// loose convergence threshold, a non-converging response, non-positive
 /// curvature) is raised, not retried with finite differences; "analytic" raises if the analytic Hessian does not apply; "fd"
@@ -4201,6 +4201,10 @@ impl PyFrequencyResult {
 /// `reference` selects the SCF: "rhf" (default), "uhf", or "rohf". Setting
 /// `xc` promotes it to the matching KS variant (RKS/UKS/ROKS).
 ///
+/// `max_iter`, `energy_conv`, `density_conv`: SCF controls of every SCF the
+/// run does (defaults 200, 1e-3, 1e-6, as in `run_rhf`). A finite-difference
+/// Hessian differentiates SCF gradients, so its noise floor is the SCF's.
+///
 /// `delta` is the central-difference displacement in Bohr (default 5e-3). It is
 /// a real accuracy knob that degrades silently -- too large adds truncation
 /// error, too small amplifies SCF noise. Check `.asymmetry` rather than
@@ -4211,7 +4215,8 @@ impl PyFrequencyResult {
 /// reference ("rhf", "uhf", "rohf", i.e. RKS, UKS or ROKS). The Hessian is
 /// then the central difference of the corrected analytic gradient
 /// (KS + dispersion), each from the SCF converged at that displaced geometry,
-/// so `hessian="analytic"` raises and "auto" runs finite differences. MBD@rsSCS
+/// so `hessian="analytic"` and "analytic-moving-grid" raise and "auto" runs
+/// finite differences. MBD@rsSCS
 /// enters through its exact gradient, including the orbital relaxation of its
 /// Hirshfeld volumes (the reference's own Z-vector: RKS, UKS or ROKS). `.energy` is then the corrected total and
 /// `.e_dispersion` the dispersion part.
@@ -4219,6 +4224,7 @@ impl PyFrequencyResult {
 #[pyo3(signature = (
     mol, basis_name, reference=None, xc=None, delta=None, multiplicity=None,
     point_charges=None, external_field=None, hessian="auto", dispersion=None,
+    max_iter=None, energy_conv=None, density_conv=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_frequencies(
@@ -4232,6 +4238,9 @@ fn run_frequencies(
     external_field: Option<(f64, f64, f64)>,
     hessian: &str,
     dispersion: Option<&str>,
+    max_iter: Option<usize>,
+    energy_conv: Option<f64>,
+    density_conv: Option<f64>,
 ) -> PyResult<PyFrequencyResult> {
     use ferric_scf::frequencies::{FrequencyConfig, FrequencyReference, HessianMethod};
 
@@ -4264,11 +4273,15 @@ fn run_frequencies(
     // Hessian needs no new machinery -- only a way to ask for one. Without
     // this, CONFIRMING an embedded saddle (exactly one imaginary frequency)
     // had to be done in vacuum, against a Hessian from a different surface.
-    let scf_cfg = RhfConfig {
+    let mut scf_cfg = RhfConfig {
         xc: xc.map(|s| s.to_string()),
         external_potential: build_external_potential(point_charges, external_field),
         ..Default::default()
     };
+    // Unset keeps the RhfConfig defaults (200, 1e-3, 1e-6), as before.
+    scf_cfg.max_iter = max_iter.unwrap_or(scf_cfg.max_iter);
+    scf_cfg.energy_conv = energy_conv.unwrap_or(scf_cfg.energy_conv);
+    scf_cfg.density_conv = density_conv.unwrap_or(scf_cfg.density_conv);
     let mut fcfg = FrequencyConfig {
         reference: refr,
         hessian: HessianMethod::parse_config_str(hessian)

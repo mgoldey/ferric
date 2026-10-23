@@ -22,8 +22,12 @@
 //! * `cli_refusals_are_named`: every refusal names what it refuses, and
 //!   fires before the SCF (no SCF iteration in the run log).
 //!
-//! The moving-grid vs finite-difference agreement through the CLI (LDA and
-//! PBE, H2O) is `validation_ks_moving_grid_frequencies.rs`.
+//! The bit-for-bit test cannot catch a wrong ROUTE (library and CLI both
+//! carry it); the per-commit routing check is
+//! `ferric-scf/tests/ks_moving_grid_frequencies.rs` (routed Hessian == direct
+//! `rks_moving_grid_hessian` call). The moving-grid vs finite-difference
+//! agreement through the CLI (LDA and PBE, H2O) is
+//! `validation_ks_moving_grid_frequencies.rs`.
 //!
 //! # Mutation ledger (each measured to fail)
 //!

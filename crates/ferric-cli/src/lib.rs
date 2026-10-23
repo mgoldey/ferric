@@ -5902,20 +5902,26 @@ fn run_frequencies(
 
 /// The `frequencies` record of the JSON run log: the full-precision numbers
 /// the printout rounds (wavenumbers to 0.01 cm^-1), so a consumer or a test
-/// can compare a run with the library. `cartesian_hessian` is row-major,
-/// Hartree/Bohr^2. No-op without a log.
+/// can compare a run with the library. `energy` is the total the printout
+/// reports (with `[dft] dispersion`, KS + dispersion; `correction_energy` is
+/// the dispersion part, 0 without one). `cartesian_hessian` is row-major,
+/// Hartree/Bohr^2. Floats use the run log's non-finite convention
+/// ([`ferric_scf::runlog::json_f64`]). No-op without a log.
 fn log_frequencies(res: &ferric_scf::frequencies::FrequencyResult) {
+    use ferric_scf::runlog::json_f64;
+    let floats = |v: &mut dyn Iterator<Item = f64>| v.map(json_f64).collect::<Vec<_>>();
     if let Some(rl) = ferric_scf::runlog::log() {
         rl.note(
             "frequencies",
             serde_json::json!({
                 "hessian_source": res.hessian_source.label(),
-                "energy": res.energy,
-                "frequencies_cm1": res.frequencies,
-                "trans_rot_frequencies_cm1": res.trans_rot_frequencies,
-                "asymmetry": res.asymmetry,
+                "energy": json_f64(res.energy),
+                "correction_energy": json_f64(res.correction_energy),
+                "frequencies_cm1": floats(&mut res.frequencies.iter().copied()),
+                "trans_rot_frequencies_cm1": floats(&mut res.trans_rot_frequencies.iter().copied()),
+                "asymmetry": json_f64(res.asymmetry),
                 "n_gradient_evaluations": res.n_gradient_evaluations,
-                "cartesian_hessian": res.cartesian_hessian.iter().copied().collect::<Vec<f64>>(),
+                "cartesian_hessian": floats(&mut res.cartesian_hessian.iter().copied()),
             }),
         );
     }

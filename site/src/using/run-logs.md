@@ -123,13 +123,29 @@ A molecular `task = "optimize"` and `task = "frequencies"` currently write
 when it stops at `max_steps` without converging; it writes none when it ends
 in an error. Read the final geometry
 and energy of an optimization from stdout. A finished `task = "frequencies"`
-writes one `frequencies` record: `hessian_source` (`analytic`,
-`analytic-moving-grid` or `finite-difference`), `energy`, `frequencies_cm1`,
-`trans_rot_frequencies_cm1`, `asymmetry`, `n_gradient_evaluations` and
-`cartesian_hessian` (row-major, Hartree/Bohr²), all at full
-precision. A missing `run_end` in such a log
+writes one `frequencies` record instead (below). A missing `run_end` in such a log
 doesn't mean the run failed (MEASURED on `examples/h2-lda-opt.toml`,
 2026-09-23).
+
+### `frequencies`
+
+Written once by a finished `task = "frequencies"` run, which writes no
+`run_end` or `result`. It carries the numbers the printout rounds, at full
+precision:
+
+| field | meaning |
+|---|---|
+| `hessian_source` | `analytic`, `analytic-moving-grid` or `finite-difference` |
+| `energy` | energy at the input geometry, Hartree; with `[dft] dispersion` the corrected total, KS + dispersion |
+| `correction_energy` | the dispersion part of `energy` (0 without `[dft] dispersion`) |
+| `frequencies_cm1` | vibrational wavenumbers, cm⁻¹, ascending; negative = imaginary |
+| `trans_rot_frequencies_cm1` | the projected-out translation/rotation modes (≈ 0, a diagnostic) |
+| `asymmetry` | largest \|H_ij − H_ji\| of the raw Hessian, Hartree/Bohr² |
+| `n_gradient_evaluations` | gradients the finite-difference Hessian took (0 when analytic) |
+| `cartesian_hessian` | the Cartesian Hessian before mass-weighting, row-major 3N × 3N, Hartree/Bohr² |
+
+Non-finite floats are written as the strings `"NaN"`, `"inf"`, `"-inf"`, as
+everywhere in the log.
 
 ### `result`
 

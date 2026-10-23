@@ -225,14 +225,18 @@ fn ecp_or_embedding_refusal(
 /// The refusals of [`rks_moving_grid_hessian`] that need no SCF, so a driver
 /// can refuse an unsupported request before paying for one: no functional
 /// (Hartree-Fock has no XC grid), meta-GGA, VV10, range-separated or double
-/// hybrids, an ECP, an external potential, and an angular-pruned grid
-/// (`AtomicGridConfig::prune`). The production SCF grid is always the
-/// atom-centred one, so an explicit-point grid cannot reach this route. The
+/// hybrids, an ECP, an external potential, an angular-pruned grid
+/// (`AtomicGridConfig::prune`), and everything the closed-shell RHF Hessian
+/// refuses before its SCF (a non-Coulomb operator, COSX, implicit solvation,
+/// polarizable embedding, fractional occupations, cDFT, MOM). The production
+/// SCF grid is always the atom-centred one, so an explicit-point grid cannot
+/// reach this route. The
 /// checks that need the SCF (open shell, the recorded fitting route, Fock
 /// consistency) stay in the Hessian itself.
 pub fn rks_moving_grid_hessian_preflight(
     mol: &Molecule,
     bs: &BasisSet,
+    op: Operator,
     config: &RhfConfig,
 ) -> Result<(), FerricError> {
     let name = config.xc.as_deref().ok_or_else(|| {
@@ -251,6 +255,19 @@ pub fn rks_moving_grid_hessian_preflight(
         return Err(unsupported(
             "an angular-pruned XC grid (AtomicGridConfig::prune, [dft] grid_prune)",
             "the pruned grid's weight response",
+        ));
+    }
+    // Everything but the functional is the closed-shell checklist (operator,
+    // COSX, solvation, embedding, fractional occupations, cDFT, MOM), which
+    // the Hessian runs again after the SCF.
+    let hf = RhfConfig {
+        xc: None,
+        ..config.clone()
+    };
+    if let Some(what) = super::preflight_problem(Reference::Rhf, op, &hf)? {
+        return Err(unsupported(
+            &what,
+            "support for it in the closed-shell analytic Hessian",
         ));
     }
     Ok(())

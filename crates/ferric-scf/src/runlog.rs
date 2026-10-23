@@ -505,8 +505,9 @@ impl RunLog {
 ///
 /// `dp_rms`/`dp_max` are genuinely `+inf` on SCF iteration 1 (the density
 /// monitor has no previous density yet), so this is a routine path, not an
-/// error path.
-fn json_f64(v: f64) -> serde_json::Value {
+/// error path. Public so a record built outside this module (e.g. the CLI's
+/// `frequencies` record) follows the same convention.
+pub fn json_f64(v: f64) -> serde_json::Value {
     if v.is_nan() {
         serde_json::Value::from("NaN")
     } else if v.is_infinite() {

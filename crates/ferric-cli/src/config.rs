@@ -804,7 +804,7 @@ pub struct FrequenciesCfg {
     /// and UHF also with optional external charges or field; an ECP is analytic
     /// for all three, with RI-J/RI-K too, but not together with an external
     /// potential on the fitted routes), finite differences otherwise (always for ROKS and the
-    /// other KS references). An error raised by the analytic path after the SCF
+    /// other KS references; closed-shell KS can opt in to `"analytic-moving-grid"` below). An error raised by the analytic path after the SCF
     /// (a stored-versus-rebuilt Fock mismatch, a non-converged or
     /// non-positive-curvature response, a very large first-order rotation) is
     /// returned, never retried with finite differences; a loose
