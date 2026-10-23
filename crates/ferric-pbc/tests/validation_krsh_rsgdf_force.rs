@@ -21,8 +21,10 @@
 //! * Attenuated fit alone vs FD of its fixed-density energy, `ω = 0.33`,
 //!   lindep 1e-6: 5.8e-9 / 5.2e-11 / 9.0e-12 at h = 1e-3 / 1e-4 / 1e-5
 //!   (`max|F|` 4.6e-2). Bar 1e-9 at h = 1e-4.
-//! * Default lindep (1e-10) characterisation of the same fit, which keeps
-//!   metric eigenvalues of 1.2e-11..3.9e-10 just above the cut. The ENERGY:
+//! * Default lindep (1e-10) characterisation of the same fit, whose metric
+//!   has eigenvalues of 1.2e-11..3.9e-10 straddling the cut (the cut is
+//!   absolute: those <= 1e-10 are dropped, those above it are kept, so the
+//!   smallest KEPT modes sit just above 1e-10). The ENERGY:
 //!   re-chunking the build's K sum (2, 4, 10 GEMM chunks) and a rigid
 //!   translation move E by <= 7e-17 at lindep 1e-10, 1e-8 and 1e-6. The
 //!   FORCE: at fixed density a rigid translation of 1e-3 moves it by 3.6e-11
