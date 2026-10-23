@@ -7,7 +7,13 @@
 //!   `gamma_rsh::gamma_rks_rsh_gradient`) at a k-mesh and at the Gamma point.
 //! * Open-shell UKS SCAN / r2SCAN forces on the dense-AFT J/K
 //!   (`kpoint_uks_gradient`). The matching STRESS anchors (closed-shell
-//!   HSE06, UKS SCAN) are cases of `periodic_kpoint_stress.rs`.
+//!   HSE06, UKS SCAN, closed-shell CAM-B3LYP on RS-GDF) are cases of
+//!   `periodic_kpoint_stress.rs`.
+//! * Open-shell UKS range-separated hybrid FORCES on the dense-AFT J/K
+//!   (`kpoint_uks_gradient` at a k-mesh, `gamma_rsh::gamma_uks_rsh_gradient`
+//!   through `gamma_uks_any_keep` at the Gamma point).
+//! * Closed-shell range-separated hybrid FORCES on the k-point RS-GDF J/K
+//!   (`kpoint_rks_gradient` on the `KRsGdf::build_rsh` source the SCF kept).
 //!
 //! EXACTNESS ANCHOR (CLI vs library, BIT FOR BIT): the CLI energy, and for an
 //! optimize run the returned geometry and the gradient evaluated there, are
@@ -24,10 +30,12 @@
 //! for SCAN): those differ by far more than one ulp, so a bit-equal pass
 //! cannot come from the wrong route.
 //!
-//! Measured (2026-10-20): every anchor bit-equal. Siblings at the same
-//! geometry: k ROKS HSE06 vs PBE0 2.5e-4 Ha, Gamma ROKS CAM-B3LYP vs B3LYP
-//! 2.5e-2 Ha; force k HSE06 vs PBE0 5.1e-4, Gamma CAM-B3LYP vs HSE06 2.0e-3,
-//! UKS SCAN vs PBE 4.9e-3, r2SCAN vs SCAN 1.4e-3 Ha/Bohr.
+//! Measured (2026-10-20, the UKS RSH and RS-GDF rows 2026-10-23): every
+//! anchor bit-equal. Siblings at the same geometry: k ROKS HSE06 vs PBE0
+//! 2.5e-4 Ha, Gamma ROKS CAM-B3LYP vs B3LYP 2.5e-2 Ha; force k HSE06 vs PBE0
+//! 5.1e-4, Gamma CAM-B3LYP vs HSE06 2.0e-3, UKS SCAN vs PBE 4.9e-3, r2SCAN vs
+//! SCAN 1.4e-3, k UKS HSE06 vs PBE0 4.2e-4, Gamma UKS CAM-B3LYP vs HSE06
+//! 3.6e-3, k RKS CAM-B3LYP vs B3LYP on RS-GDF 5.7e-4 Ha/Bohr.
 //!
 //! Mutation ledger (applied to the CLI source, rebuilt, this file run, then
 //! reverted), all KILLED:
@@ -40,13 +48,21 @@
 //! * The run log reporting the FIRST evaluated gradient instead of the one at
 //!   the returned geometry: all four force anchors fail on the bits (e.g. k
 //!   HSE06 z-force -1.74e-2 vs +5.2e-3).
+//! * (2026-10-23) the Gamma UKS range-separated force given a config with
+//!   `n_radial + 1`: the CLI run fails (the routed k-point Fock guard refuses
+//!   it, fock_alpha off by 1.17e-3); the k-point UKS force run with the
+//!   K-swap spin defect (`KUSpinMutation::PulayKSwap`): the HSE06 anchor fails
+//!   on the bits (z-force of atom 0 0.142 vs 0.107).
 //! * (periodic_kpoint_stress.rs) the k-point stress XC config with `exxdiv =
 //!   none`: the HSE06 stress anchors fail (the CLI run errors); the SCAN /
 //!   r2SCAN ones pass (no exact exchange: an equivalent mutant there).
 //!
-//! Refusals with exact wording: range-separated derivatives on RS-GDF (k and
-//! Gamma), derivatives of an unvalidated range-separated hybrid (wB97X), open-shell range-separated derivatives (UKS, ROKS; k and Gamma),
-//! ROKS meta-GGA, UKS meta-GGA derivatives on RS-GDF.
+//! Refusals with exact wording: the Gamma RKS range-separated derivatives on
+//! RS-GDF, derivatives of an unvalidated range-separated hybrid (wB97X; RKS
+//! and UKS, k and Gamma), the UKS range-separated stress, the UKS
+//! range-separated force on RS-GDF (k and Gamma), every ROKS range-separated
+//! derivative (k force and stress, Gamma force), ROKS meta-GGA, UKS meta-GGA
+//! derivatives on RS-GDF.
 
 use ferric_core::basis;
 use ferric_core::mol::Molecule;
@@ -54,7 +70,8 @@ use ferric_core::units::BOHR_RADIUS_ANGSTROM;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_pbc::dense_aft::DEFAULT_DENSE_AFT_PRECISION;
 use ferric_pbc::gamma_rsh::{
-    gamma_rks_any_keep, gamma_rks_rsh_gradient, gamma_roks_any, GammaRshSizing,
+    gamma_rks_any_keep, gamma_rks_rsh_gradient, gamma_roks_any, gamma_uks_any_keep,
+    gamma_uks_rsh_gradient, GammaRshSizing,
 };
 use ferric_pbc::kroks::{KRohfConfig, KRoksConfig};
 use ferric_pbc::kxcgrad::{kpoint_rks_gradient, KRksGradConfig, KXcGrid};
@@ -62,9 +79,10 @@ use ferric_pbc::rohf::GammaRoksConfig;
 use ferric_pbc::rsgdf::DEFAULT_RSGDF_OMEGA;
 use ferric_pbc::{
     kpoint_uks_gradient, periodic_hcore, solve_krks_keep, solve_kroks, solve_kuks_keep, Cell,
-    DenseAftEri, ExxDiv, GammaRksConfig, GammaUhfIntegrals, KDenseAftConfig, KGradConfig,
-    KPointMesh, KRksConfig, KScfConfig, KUksConfig, KUksGradConfig, MeshCentring,
-    PeriodicGridConfig, PeriodicHcoreConfig, SrColumnRotation,
+    DenseAftEri, ExxDiv, GammaRksConfig, GammaUhfIntegrals, GammaUksConfig, KDenseAftConfig,
+    KGradConfig, KJkKind, KPointMesh, KRksConfig, KRsGdfConfig, KScfConfig, KUksConfig,
+    KUksGradConfig, MeshCentring, PeriodicGridConfig, PeriodicHcoreConfig, RsGdfConfig,
+    SrColumnRotation,
 };
 use ferric_scf::rhf::RhfConfig;
 use std::path::{Path, PathBuf};
@@ -404,13 +422,24 @@ fn gamma_roks_cam_b3lyp_energy_equals_the_library_bit_for_bit() {
 
 /// The optimize run's `(final energy, geometry Bohr, gradient)` from `run_end`.
 fn optimize(tag: &str, kind: &str, f: &str, kmesh: &str) -> (f64, Vec<f64>, Vec<f64>) {
+    optimize_on(tag, kind, f, kmesh, "")
+}
+
+/// [`optimize`] with `cell_extra` appended to `[cell]` (e.g. the RS-GDF J/K).
+fn optimize_on(
+    tag: &str,
+    kind: &str,
+    f: &str,
+    kmesh: &str,
+    cell_extra: &str,
+) -> (f64, Vec<f64>, Vec<f64>) {
     let i = Input {
         tag,
         kind,
         functional: f,
         task: "optimize",
         kmesh,
-        cell_extra: "",
+        cell_extra,
     };
     let v = ok(&write(&i), tag);
     let e = v["energy"].as_f64().expect("energy");
@@ -421,13 +450,40 @@ fn optimize(tag: &str, kind: &str, f: &str, kmesh: &str) -> (f64, Vec<f64>, Vec<
 }
 
 /// Library k-point RKS `(E, dE/dR)` at `x` (`crate::periodic::krks_config`
-/// and `KForceCtx::xc_cfg`).
+/// and `KForceCtx::xc_cfg`) on the dense-AFT J/K.
 fn lib_krks_force(f: &str, x: &[f64]) -> (f64, Vec<f64>) {
+    lib_krks_force_jk(f, x, false)
+}
+
+/// [`lib_krks_force`] on the RS-GDF J/K (`[cell] jk = "rsgdf"`, cc-pVDZ-RI,
+/// default gdf_omega): the plan turns the SR column rotation on for the hcore
+/// and the fit.
+fn lib_krks_force_rsgdf(f: &str, x: &[f64]) -> (f64, Vec<f64>) {
+    lib_krks_force_jk(f, x, true)
+}
+
+fn lib_krks_force_jk(f: &str, x: &[f64], rsgdf: bool) -> (f64, Vec<f64>) {
     let (cell, prep) = cell_at(&H2, 1, Some(x));
     let mesh = KPointMesh::new(&cell, [1, 1, 2], MeshCentring::Gamma).unwrap();
     let mut c = KRksConfig::new(&cell, ExxDiv::Ewald, f);
     (c.krhf.scf, c.krhf.hcore, c.krhf.dense, c.grid) = (kscf(), hcore_cfg(), kdense(), grid());
-    let (r, kept) = solve_krks_keep(&cell, &prep, None, &mesh, &c).expect("scf");
+    let aux_prep = rsgdf
+        .then(|| PreparedBasis::new(cell.mol(), &basis::bundled("cc-pvdz-ri").unwrap()).unwrap());
+    if rsgdf {
+        let rot = SrColumnRotation::on();
+        c.krhf.hcore = PeriodicHcoreConfig::with_omega(OMEGA).with_sr_column_rotation(rot);
+        c.krhf.jk = KJkKind::RsGdf;
+        c.krhf.rsgdf = KRsGdfConfig {
+            gdf: RsGdfConfig {
+                omega: DEFAULT_RSGDF_OMEGA,
+                sr_column_rotation: rot,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+    }
+    let aux = aux_prep.as_ref();
+    let (r, kept) = solve_krks_keep(&cell, &prep, aux, &mesh, &c).expect("scf");
     let gc = KRksGradConfig {
         grad: KGradConfig {
             budget_bytes: Some(kept.derivative_budget(None)),
@@ -438,7 +494,7 @@ fn lib_krks_force(f: &str, x: &[f64]) -> (f64, Vec<f64>) {
         exxdiv: Some(ExxDiv::Ewald),
         ..Default::default()
     };
-    let jk = kept.grad_jk(None, &c.krhf.rsgdf).unwrap();
+    let jk = kept.grad_jk(aux, &c.krhf.rsgdf).unwrap();
     let g = kpoint_rks_gradient(
         &cell,
         &prep,
@@ -528,6 +584,44 @@ fn lib_gamma_rks_rsh_force(f: &str, x: &[f64]) -> (f64, Vec<f64>) {
     (r.scf.energy, g.grad.iter().copied().collect())
 }
 
+/// Library Gamma UKS `(E, dE/dR)` of a range-separated hybrid at `x`
+/// (`crate::periodic::uks_config` with `[scf]` unwritten, `gamma_system` with
+/// `for_gradient`, `gamma_uks_any_keep`, `gamma_uks_rsh_gradient`).
+fn lib_gamma_uks_rsh_force(f: &str, x: &[f64]) -> (f64, Vec<f64>) {
+    let (cell, prep) = cell_at(&H3, 2, Some(x));
+    let (hc, eri) = gamma_ints(&cell, &prep);
+    let mut c = GammaUksConfig::new(f);
+    (c.grid, c.exxdiv, c.ewald_start) = (grid(), ExxDiv::Ewald, ferric_pbc::EwaldStart::Staged);
+    c.scf = RhfConfig {
+        use_sad_guess: false,
+        density_conv: 1e-10,
+        max_iter: 200,
+        ..Default::default()
+    };
+    let (r, ex) = gamma_uks_any_keep(
+        &cell,
+        &prep,
+        &hc,
+        GammaUhfIntegrals::DenseAft(&eri),
+        None,
+        sizing(),
+        &c,
+    )
+    .expect("scf");
+    let ex = ex.expect("a range-separated hybrid keeps its exchange");
+    let g = gamma_uks_rsh_gradient(
+        &cell,
+        &prep,
+        &hcore_cfg(),
+        &r.scf,
+        &c,
+        &ex,
+        &KGradConfig::default(),
+    )
+    .expect("force");
+    (r.scf.energy, g.grad.iter().copied().collect())
+}
+
 /// CLI `(E, x, g)` equals the library at `x` bit for bit; the library force
 /// of `sibling` at the same `x` differs (the anchor can see a mis-route).
 fn force_anchor(
@@ -577,57 +671,50 @@ fn kpoint_uks_r2scan_force_equals_the_library_bit_for_bit() {
     force_anchor("kuks-r2scan-opt", cli, lib_kuks_force, "r2SCAN", "SCAN");
 }
 
+#[test]
+fn kpoint_uks_hse06_force_equals_the_library_bit_for_bit() {
+    let cli = optimize("kuks-hse-opt", "uhf", "HSE06", "[1, 1, 2]");
+    force_anchor("kuks-hse-opt", cli, lib_kuks_force, "HSE06", "PBE0");
+}
+
+#[test]
+fn gamma_uks_cam_b3lyp_force_equals_the_library_bit_for_bit() {
+    let cli = optimize("guks-cam-opt", "uhf", CAM, "");
+    force_anchor("guks-cam-opt", cli, lib_gamma_uks_rsh_force, CAM, "HSE06");
+}
+
+#[test]
+fn kpoint_rks_cam_b3lyp_rsgdf_force_equals_the_library_bit_for_bit() {
+    let cli = optimize_on("krks-cam-gdf-opt", "rhf", CAM, "[1, 1, 2]", RSGDF);
+    force_anchor("krks-cam-gdf-opt", cli, lib_krks_force_rsgdf, CAM, "B3LYP");
+}
+
 // ────────────────────────────────────────────────────────────── refusals ──
 
 const RSGDF: &str = "jk = \"rsgdf\"\nauxbasis = \"cc-pvdz-ri\"";
 
 #[test]
 fn refusals_have_exact_wording() {
-    let rsgdf_rsh = "the range-separated hybrid force and stress on the RS-GDF J/K are not \
-                     wired to the bindings yet (the library has it: kpoint_rks_gradient / \
-                     kpoint_rks_stress on RS-GDF, closed shell); use jk = \"dense\"";
-    // Closed-shell RSH derivatives on RS-GDF: k-point optimize / stress and
-    // Gamma optimize.
+    // Closed-shell RSH derivatives: on RS-GDF the k-point force and stress
+    // are wired (anchored above and in periodic_kpoint_stress.rs); the Gamma
+    // RS-GDF optimize stays refused (the Gamma route has no RS-GDF exchange
+    // derivative).
     let base = Input {
         tag: "",
         kind: "rhf",
         functional: "HSE06",
         task: "optimize",
-        kmesh: "[1, 1, 2]",
+        kmesh: "",
         cell_extra: RSGDF,
     };
     let e = refused(&Input {
-        tag: "r-k-opt",
-        ..base
-    });
-    assert!(
-        e.contains(&format!(
-            "method.task = \"optimize\" with [cell] kmesh: General error: HSE06: {rsgdf_rsh}"
-        )),
-        "{e}"
-    );
-    let stress = format!("{RSGDF}\nstress = true");
-    let e = refused(&Input {
-        tag: "r-k-stress",
-        task: "energy",
-        cell_extra: &stress,
-        ..base
-    });
-    assert!(
-        e.contains(&format!(
-            "[cell] stress = true: General error: HSE06: {rsgdf_rsh}"
-        )),
-        "{e}"
-    );
-    let e = refused(&Input {
         tag: "r-g-opt",
-        kmesh: "",
         ..base
     });
     assert!(
         e.contains("method.task = \"optimize\" with [cell]: ")
             && e.contains(
-                "HSE06: the Gamma-point range-separated hybrid force and stress run on \
+                "HSE06: the Gamma-point RKS range-separated hybrid force and stress run on \
                  the dense-AFT J/K only (the Gamma route has no RS-GDF exchange derivative"
             ),
         "{e}"
@@ -657,6 +744,7 @@ fn refusals_have_exact_wording() {
         tag: "wb-k-stress",
         functional: "HYB_GGA_XC_WB97X",
         task: "energy",
+        kmesh: "[1, 1, 2]",
         cell_extra: "stress = true",
         ..base
     });
@@ -664,53 +752,110 @@ fn refusals_have_exact_wording() {
         e.contains("[cell] stress = true: ") && e.contains(wb),
         "{e}"
     );
-    // Open-shell RSH derivatives (k-point UKS / ROKS force and stress; Gamma
-    // UKS / ROKS force).
-    for (kind, label) in [("uhf", "UKS"), ("rohf", "ROKS")] {
-        let open = Input {
-            tag: "",
-            kind,
-            functional: "HSE06",
-            task: "optimize",
-            kmesh: "[1, 1, 2]",
+    // ... and for the open-shell UKS force (k-point and Gamma).
+    for (tag, kmesh) in [("wb-uks-k-opt", "[1, 1, 2]"), ("wb-uks-g-opt", "")] {
+        let e = refused(&Input {
+            tag,
+            kind: "uhf",
+            functional: "HYB_GGA_XC_WB97X",
+            kmesh,
             cell_extra: "",
-        };
-        let want = format!(
-            "General error: HSE06: the k-point {label} range-separated hybrid force and \
-             stress are not wired to the bindings (the closed-shell RKS ones are, on the \
-             dense-AFT J/K)"
-        );
-        let e = refused(&Input {
-            tag: &format!("o-k-opt-{kind}"),
-            ..open
+            ..base
         });
-        assert!(
-            e.contains(&format!(
-                "method.task = \"optimize\" with [cell] kmesh: {want}"
-            )),
-            "{e}"
-        );
-        let e = refused(&Input {
-            tag: &format!("o-k-stress-{kind}"),
-            task: "energy",
-            cell_extra: "stress = true",
-            ..open
-        });
-        assert!(e.contains(&format!("[cell] stress = true: {want}")), "{e}");
-        let e = refused(&Input {
-            tag: &format!("o-g-opt-{kind}"),
-            kmesh: "",
-            ..open
-        });
-        assert!(
-            e.contains(&format!(
-                "the Gamma-point {label} with a range-separated hybrid is energy only in the \
-                 bindings (the closed-shell RKS force and stress are wired, on the dense-AFT \
-                 J/K)"
-            )),
-            "{e}"
-        );
+        assert!(e.contains("optimize") && e.contains(wb), "{tag}: {e}");
     }
+    // Open-shell RSH derivatives that stay refused: the UKS stress (k-point;
+    // the CLI has no Gamma stress), the UKS force on RS-GDF (k and Gamma) and
+    // every ROKS derivative (k-point force and stress, Gamma force).
+    let open = Input {
+        tag: "",
+        kind: "uhf",
+        functional: "HSE06",
+        task: "optimize",
+        kmesh: "[1, 1, 2]",
+        cell_extra: "",
+    };
+    let e = refused(&Input {
+        tag: "o-k-stress-uks",
+        task: "energy",
+        cell_extra: "stress = true",
+        ..open
+    });
+    assert!(
+        e.contains(
+            "[cell] stress = true: General error: HSE06: the k-point UKS range-separated hybrid \
+             stress is not implemented (the UKS stress has no range-separated term); the UKS \
+             force is available on the dense-AFT J/K"
+        ),
+        "{e}"
+    );
+    let e = refused(&Input {
+        tag: "o-k-opt-uks-gdf",
+        cell_extra: RSGDF,
+        ..open
+    });
+    assert!(
+        e.contains(
+            "method.task = \"optimize\" with [cell] kmesh: General error: HSE06: the k-point \
+             UKS range-separated hybrid force runs on the dense-AFT J/K only (the library UKS \
+             force has no derivative of the RS-GDF attenuated fit); use jk = \"dense\""
+        ),
+        "{e}"
+    );
+    let e = refused(&Input {
+        tag: "o-g-opt-uks-gdf",
+        kmesh: "",
+        cell_extra: RSGDF,
+        ..open
+    });
+    assert!(
+        e.contains("method.task = \"optimize\" with [cell]: ")
+            && e.contains(
+                "HSE06: the Gamma-point UKS range-separated hybrid force runs on the dense-AFT \
+                 J/K only (the Gamma route has no RS-GDF exchange derivative"
+            ),
+        "{e}"
+    );
+    let roks_k = "General error: HSE06: the k-point ROKS range-separated hybrid force and \
+                  stress are not implemented (the ROKS derivatives have no range-separated \
+                  term); the UKS force is available on the dense-AFT J/K";
+    let ro = Input {
+        tag: "",
+        kind: "rohf",
+        ..open
+    };
+    let e = refused(&Input {
+        tag: "o-k-opt-roks",
+        ..ro
+    });
+    assert!(
+        e.contains(&format!(
+            "method.task = \"optimize\" with [cell] kmesh: {roks_k}"
+        )),
+        "{e}"
+    );
+    let e = refused(&Input {
+        tag: "o-k-stress-roks",
+        task: "energy",
+        cell_extra: "stress = true",
+        ..ro
+    });
+    assert!(
+        e.contains(&format!("[cell] stress = true: {roks_k}")),
+        "{e}"
+    );
+    let e = refused(&Input {
+        tag: "o-g-opt-roks",
+        kmesh: "",
+        ..ro
+    });
+    assert!(
+        e.contains(
+            "HSE06: the Gamma-point ROKS range-separated hybrid force and stress are not \
+             implemented (energy only); the UKS force is available on the dense-AFT J/K"
+        ),
+        "{e}"
+    );
     // ROKS meta-GGA (energy gate) and UKS meta-GGA derivatives on RS-GDF (the
     // energy gate already names the J/K).
     let e = refused(&Input {

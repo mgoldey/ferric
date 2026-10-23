@@ -197,17 +197,16 @@ fn open_shell_rsh_derivatives_refuse_by_name() {
     use ferric_pbc::kuxcgrad::{kpoint_uks_gradient, KUksGradConfig};
     use ferric_pbc::kuxcstress::{kpoint_uks_stress, KUksStressConfig};
     let named = |m: String| assert!(m.contains("range-separated"), "{m}");
-    for spin in [
-        ferric_pbc::kxcgrad::DerivSpin::Unrestricted,
-        ferric_pbc::kxcgrad::DerivSpin::RestrictedOpen,
+    // The binding gate: the UKS stress and every ROKS derivative stay refused
+    // (the UKS force is wired, `pbc_kuks_rsh_force.rs`).
+    use ferric_pbc::kxcgrad::{Deriv, DerivSpin};
+    for (spin, d, what) in [
+        (DerivSpin::Unrestricted, Deriv::Stress, "with_stress"),
+        (DerivSpin::RestrictedOpen, Deriv::Force, "with_gradient"),
+        (DerivSpin::RestrictedOpen, Deriv::Stress, "with_stress"),
     ] {
-        let e = ferric_pbc::kxcgrad::check_kpoint_deriv_functional(
-            spin,
-            false,
-            "HSE06",
-            "with_gradient",
-        )
-        .unwrap_err();
+        let e = ferric_pbc::kxcgrad::check_kpoint_deriv_functional(spin, d, false, "HSE06", what)
+            .unwrap_err();
         named(e);
     }
     let cell = cell_named("h3d");

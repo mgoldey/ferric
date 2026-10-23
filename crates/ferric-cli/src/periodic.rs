@@ -30,7 +30,7 @@ use ferric_pbc::rsgdf::auto_omega::auto_rsgdf_omega;
 use ferric_pbc::rsgdf::DEFAULT_RSGDF_OMEGA;
 use ferric_pbc::SrColumnRotation;
 use ferric_pbc::{
-    gamma_drpa, gamma_mp2, gamma_rohf, gamma_roks, gamma_uhf, gamma_uks, kpoint_drpa, kpoint_mp2,
+    gamma_drpa, gamma_mp2, gamma_rohf, gamma_roks, gamma_uhf, kpoint_drpa, kpoint_mp2,
     periodic_hcore, periodic_hcore_kpts, solve_krhf, solve_krhf_injected, solve_krks, solve_kuhf,
     Cell, DenseAftEri, ExxDiv, GammaDrpaConfig, GammaDrpaIntegrals, GammaMp2Config,
     GammaMp2Integrals, GammaRksConfig, GammaRohfConfig, GammaRoksConfig, GammaUhfConfig,
@@ -1888,9 +1888,14 @@ impl KForceCtx<'_> {
         }
     }
 
-    /// The binding derivative allowlist of this route on its J/K.
+    /// The binding force allowlist of this route on its J/K.
     fn check_functional(&self, spin: DerivSpin) -> Result<(), FerricError> {
-        ferric_pbc::kxcgrad::check_deriv_functional(spin, self.s.aux.is_some(), self.functional())
+        ferric_pbc::kxcgrad::check_deriv_functional(
+            spin,
+            ferric_pbc::kxcgrad::Deriv::Force,
+            self.s.aux.is_some(),
+            self.functional(),
+        )
     }
 
     fn not_converged(&self, it: usize, e: f64) -> FerricError {
@@ -2665,21 +2670,7 @@ fn gamma_energy_and_gradient(
             };
             (scf.energy, g)
         }
-        PeriodicRoute::Uks => {
-            let c = uks_config(plan);
-            let r = gamma_uks(cell, prep, hc, ints, &c)?;
-            require_converged(plan, &r.scf)?;
-            let scf = &r.scf;
-            let g = match &jk {
-                GradJk::Dense(e) => {
-                    gamma_uks_gradient_with(cell, prep, hcfg, hc, e, scf, &c, &gcfg)?
-                }
-                GradJk::Fit(f) => {
-                    gamma_uks_gradient_rsgdf(cell, prep, hcfg, hc, f, scf, &c, &gcfg)?
-                }
-            };
-            (scf.energy, g)
-        }
+        PeriodicRoute::Uks => return gamma_uks_energy_and_gradient(plan, s, sys, &jk, &gcfg),
         PeriodicRoute::Roks => {
             let c = roks_config(plan);
             let r = gamma_roks(cell, prep, hc, ints, &c)?;
@@ -2704,6 +2695,49 @@ fn gamma_energy_and_gradient(
         }
     };
     Ok((energy, g.grad))
+}
+
+/// The Gamma UKS SCF of [`gamma_energy_and_gradient`] through the bindings'
+/// shared entry (`gamma_uks_any_keep`) and its force: a range-separated
+/// hybrid routed through the 1x1x1 k-point UKS force on the SCF's own
+/// dense-AFT exchange (`gamma_uks_rsh_gradient`; RS-GDF was refused at plan
+/// time), anything else the native Gamma UKS force on `jk`.
+fn gamma_uks_energy_and_gradient(
+    plan: &PeriodicPlan,
+    s: &Setup,
+    sys: &GammaSystem,
+    jk: &GradJk<'_>,
+    gcfg: &GammaGradConfig,
+) -> Result<(f64, ndarray::Array2<f64>), FerricError> {
+    let (cell, prep, hcfg, hc) = (&s.cell, &s.prep, &sys.hcfg, &sys.hc);
+    let c = uks_config(plan);
+    let (r, rsh_k) = ferric_pbc::gamma_rsh::gamma_uks_any_keep(
+        cell,
+        prep,
+        hc,
+        sys.ints.scf(),
+        s.aux.as_ref(),
+        rsh_sizing(plan),
+        &c,
+    )?;
+    require_converged(plan, &r.scf)?;
+    let scf = &r.scf;
+    let g = match (rsh_k.as_ref(), jk) {
+        (Some(ex), _) => {
+            let kg = KGradConfig {
+                budget_bytes: budget_bytes(plan),
+                ..Default::default()
+            };
+            ferric_pbc::gamma_rsh::gamma_uks_rsh_gradient(cell, prep, hcfg, scf, &c, ex, &kg)?.grad
+        }
+        (None, GradJk::Dense(e)) => {
+            gamma_uks_gradient_with(cell, prep, hcfg, hc, e, scf, &c, gcfg)?.grad
+        }
+        (None, GradJk::Fit(f)) => {
+            gamma_uks_gradient_rsgdf(cell, prep, hcfg, hc, f, scf, &c, gcfg)?.grad
+        }
+    };
+    Ok((scf.energy, g))
 }
 
 /// `task = "optimize"`: at the Gamma point the analytic periodic force of the

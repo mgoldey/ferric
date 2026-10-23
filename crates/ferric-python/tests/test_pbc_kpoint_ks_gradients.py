@@ -223,20 +223,19 @@ def test_refusals_have_exact_wording(basis):
             _krks(
                 H2_ATOMS, basis, "TPSS", jk="rsgdf", auxbasis="cc-pvdz-ri", **{kw: True}
             )
-    # Range-separated hybrids: the dense-AFT force runs
+    # Range-separated hybrids: the HSE06 / CAM-B3LYP force runs on either J/K
     # (test_pbc_rsh_open_mgga_derivs.py); the force/stress allowlist is
-    # independent of the energy gate and refuses them on RS-GDF.
+    # independent of the energy gate and refuses the unvalidated ones by name.
     with pytest.raises(
         ValueError,
-        match=r"^run_rks_kpts: with_gradient: General error: HSE06: the range-separated "
-        r"hybrid force and stress on the RS-GDF J/K are not wired to the bindings yet "
-        r"\(the library has it: kpoint_rks_gradient / kpoint_rks_stress on RS-GDF, "
-        r'closed shell\); use jk = "dense"$',
+        match=r"^run_rks_kpts: with_gradient: General error: HYB_GGA_XC_WB97X: the "
+        r"range-separated hybrid force and stress are validated for HSE06 / CAM-B3LYP "
+        r"\(HYB_GGA_XC_CAM_B3LYP\) only; HYB_GGA_XC_WB97X runs as an energy$",
     ):
         _krks(
             H2_ATOMS,
             basis,
-            "HSE06",
+            "HYB_GGA_XC_WB97X",
             jk="rsgdf",
             auxbasis="cc-pvdz-ri",
             with_gradient=True,

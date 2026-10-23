@@ -460,9 +460,9 @@ fn empty_beta_channel_is_finite_or_refused() {
 
 /// Everything outside the validated envelope is refused BY NAME: other
 /// meta-GGAs (raw TPSS), meta-GGA with RS-GDF J/K, and (the library gates the
-/// Python / CLI bindings share) open-shell meta-GGA forces and stress, which
-/// exist in the library (`pbc_kuxc_mgga.rs`) but are not wired to the
-/// bindings.
+/// Python / CLI bindings share) the open-shell meta-GGA forces and stress
+/// outside the wired UKS SCAN / r2SCAN on the dense-AFT J/K: UKS on RS-GDF
+/// and every ROKS meta-GGA derivative.
 #[test]
 fn unvalidated_meta_gga_requests_are_refused() {
     let cell = h3_doublet();
@@ -487,15 +487,33 @@ fn unvalidated_meta_gga_requests_are_refused() {
     );
     // Forces / stress: the Python / CLI derivative gate takes the UKS
     // meta-GGA on the dense-AFT J/K only, and ROKS never.
-    use ferric_pbc::kxcgrad::{check_kpoint_deriv_functional, DerivSpin};
+    use ferric_pbc::kxcgrad::{check_kpoint_deriv_functional, Deriv, DerivSpin};
     for f in ["SCAN", "R2SCAN"] {
-        check_kpoint_deriv_functional(DerivSpin::Unrestricted, false, f, "with_gradient")
-            .unwrap_or_else(|e| panic!("{f}: {e}"));
-        let e = check_kpoint_deriv_functional(DerivSpin::Unrestricted, true, f, "with_gradient")
-            .expect_err(f);
+        check_kpoint_deriv_functional(
+            DerivSpin::Unrestricted,
+            Deriv::Force,
+            false,
+            f,
+            "with_gradient",
+        )
+        .unwrap_or_else(|e| panic!("{f}: {e}"));
+        let e = check_kpoint_deriv_functional(
+            DerivSpin::Unrestricted,
+            Deriv::Force,
+            true,
+            f,
+            "with_gradient",
+        )
+        .expect_err(f);
         assert!(e.contains("run on the dense-AFT J/K only"), "{f}: {e}");
-        let e = check_kpoint_deriv_functional(DerivSpin::RestrictedOpen, false, f, "with_stress")
-            .expect_err(f);
+        let e = check_kpoint_deriv_functional(
+            DerivSpin::RestrictedOpen,
+            Deriv::Stress,
+            false,
+            f,
+            "with_stress",
+        )
+        .expect_err(f);
         assert!(e.contains("ROKS has no meta-GGA"), "{f}: {e}");
     }
 }

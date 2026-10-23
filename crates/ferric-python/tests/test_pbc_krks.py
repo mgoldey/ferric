@@ -8,6 +8,7 @@ Reuses the H2 / cubic a = 4 Bohr fixtures of test_pbc_bindings.py.
 
 from __future__ import annotations
 
+import numpy as np
 import pytest
 
 ferric = pytest.importorskip("ferric", reason="the compiled extension is not built")
@@ -80,7 +81,7 @@ RSGDF = {"jk": "rsgdf", "auxbasis": "cc-pvdz-ri"}
 HSE06_RSGDF_112 = -1.3484931727
 
 
-def test_range_separated_hybrid_runs_on_rsgdf_energy_only(h2, h_atom, basis):
+def test_range_separated_hybrid_runs_on_rsgdf(h2, h_atom, basis):
     lat = _cubic()
     r = ferric.run_rks_kpts(
         h2, lat, basis, "HSE06", (1, 1, 2), omega=OMEGA, **RSGDF, **GRID
@@ -94,17 +95,27 @@ def test_range_separated_hybrid_runs_on_rsgdf_energy_only(h2, h_atom, basis):
     )
     assert abs(r.energy - p.energy) > 1e-4
     assert abs(r.madelung - p.madelung) > 1e-2
-    # Derivatives on RS-GDF stay refused by name (the attenuated fit has no
-    # derivative; the dense-AFT ones run: test_pbc_rsh_open_mgga_derivs.py),
-    # and so do the open-shell ones (the open-shell energy runs:
-    # test_pbc_open_shell_mgga_rsh.py).
-    for kw in ({"with_gradient": True}, {"with_stress": True}):
-        with pytest.raises(ValueError, match="not wired to the bindings yet"):
-            ferric.run_rks_kpts(
-                h2, lat, basis, "HSE06", (1, 1, 2), omega=OMEGA, **RSGDF, **GRID, **kw
-            )
+    # The closed-shell force and stress run on RS-GDF (the library value is
+    # anchored in test_pbc_rsh_open_mgga_derivs.py) and differentiate the SAME
+    # SCF the energy-only call ran.
+    d = ferric.run_rks_kpts(
+        h2,
+        lat,
+        basis,
+        "HSE06",
+        (1, 1, 2),
+        omega=OMEGA,
+        with_gradient=True,
+        with_stress=True,
+        **RSGDF,
+        **GRID,
+    )
+    assert d.energy == r.energy
+    assert np.isfinite(d.gradient()).all() and np.isfinite(d.stress()).all()
+    # The open-shell UKS stress stays refused (no range-separated term; the
+    # UKS force runs on the dense-AFT J/K: test_pbc_rsh_open_mgga_derivs.py).
     with pytest.raises(
-        ValueError, match="range-separated hybrid force and stress are not wired"
+        ValueError, match="UKS range-separated hybrid stress is not implemented"
     ):
         ferric.run_uks_kpts(
             h_atom,
@@ -113,7 +124,7 @@ def test_range_separated_hybrid_runs_on_rsgdf_energy_only(h2, h_atom, basis):
             "HSE06",
             (1, 1, 2),
             omega=OMEGA,
-            with_gradient=True,
+            with_stress=True,
             **RSGDF,
             **GRID,
         )
@@ -227,15 +238,24 @@ def test_gamma_range_separated_hybrid_refusals(h2, h_atom, basis):
                 h2, lat, basis, "HSE06", omega=OMEGA, **kw, **RSGDF, **GRID
             )
     # The open-shell (UKS, ROKS) energies run (test_pbc_open_shell_mgga_rsh.py,
-    # test_pbc_rsh_open_mgga_derivs.py); their derivatives and VV10 stay
-    # refused by name.
-    for run, tag in ((ferric.run_uks_gamma, "UKS"), (ferric.run_roks_gamma, "ROKS")):
-        with pytest.raises(
-            ValueError,
-            match=rf"open-shell range-separated hybrid gradient / stress.*Gamma-point "
-            rf"{tag} with a range-separated hybrid is energy only",
-        ):
-            run(h_atom, lat, basis, "HSE06", omega=OMEGA, with_gradient=True, **GRID)
+    # test_pbc_rsh_open_mgga_derivs.py), and so does the dense-AFT UKS force;
+    # the UKS stress, every ROKS derivative and VV10 stay refused by name.
+    with pytest.raises(
+        ValueError,
+        match=r"open-shell range-separated hybrid stress.*Gamma-point UKS "
+        r"range-separated hybrid stress is not implemented",
+    ):
+        ferric.run_uks_gamma(
+            h_atom, lat, basis, "HSE06", omega=OMEGA, with_stress=True, **GRID
+        )
+    with pytest.raises(
+        ValueError,
+        match=r"restricted-open-shell range-separated hybrid gradient / stress.*"
+        r"Gamma-point ROKS range-separated hybrid force and stress are not implemented",
+    ):
+        ferric.run_roks_gamma(
+            h_atom, lat, basis, "HSE06", omega=OMEGA, with_gradient=True, **GRID
+        )
     with pytest.raises(ValueError, match="VV10"):
         ferric.run_rks_gamma(h2, lat, basis, "wB97X-V", omega=OMEGA, **GRID)
 

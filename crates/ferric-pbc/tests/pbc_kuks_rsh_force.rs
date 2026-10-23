@@ -361,13 +361,22 @@ fn oshell_rsh_force_refusals() {
     .unwrap_err()
     .to_string();
     assert!(e.contains("ROKS / ROHF force"), "{e}");
-    // The binding derivative gate keeps refusing open-shell range separation.
-    use ferric_pbc::kxcgrad::{check_deriv_functional, DerivSpin};
+    // The binding derivative gate: the UKS force on the dense-AFT J/K is
+    // wired; the UKS stress, the UKS force on RS-GDF and every ROKS
+    // derivative stay refused.
+    use ferric_pbc::kxcgrad::{check_deriv_functional, Deriv, DerivSpin};
     for f in FUNCTIONALS {
-        for spin in [DerivSpin::Unrestricted, DerivSpin::RestrictedOpen] {
+        check_deriv_functional(DerivSpin::Unrestricted, Deriv::Force, false, f)
+            .unwrap_or_else(|e| panic!("{f}: {e}"));
+        for (spin, d, g) in [
+            (DerivSpin::Unrestricted, Deriv::Stress, false),
+            (DerivSpin::Unrestricted, Deriv::Force, true),
+            (DerivSpin::RestrictedOpen, Deriv::Force, false),
+            (DerivSpin::RestrictedOpen, Deriv::Stress, false),
+        ] {
             assert!(
-                check_deriv_functional(spin, false, f).is_err(),
-                "{spin:?} {f}"
+                check_deriv_functional(spin, d, g, f).is_err(),
+                "{spin:?} {d:?} {g} {f}"
             );
         }
     }

@@ -708,10 +708,10 @@ pub fn gamma_rks_any_keep(
 }
 
 /// Open-shell Gamma UKS for ANY supported functional: the [`gamma_rks_any`]
-/// routing for [`crate::dft::gamma_uks_rsh`] (range-separated hybrid, ENERGY
-/// only) or [`crate::dft::gamma_uks`] (everything else). The one entry the
-/// Python and CLI bindings share. Meta-GGAs stay refused here (the Gamma UKS
-/// has no tau term; the k-point `solve_kuks` on a 1x1x1 mesh has).
+/// routing for [`crate::dft::gamma_uks_rsh`] (range-separated hybrid) or
+/// [`crate::dft::gamma_uks`] (everything else). The one entry the Python and
+/// CLI bindings share. Meta-GGAs stay refused here (the Gamma UKS has no tau
+/// term; the k-point `solve_kuks` on a 1x1x1 mesh has).
 pub fn gamma_uks_any(
     cell: &Cell,
     prep: &PreparedBasis,
@@ -721,15 +721,33 @@ pub fn gamma_uks_any(
     sizing: GammaRshSizing,
     cfg: &crate::dft::GammaUksConfig,
 ) -> Result<crate::dft::GammaUksResult, FerricError> {
+    Ok(gamma_uks_any_keep(cell, prep, hc, ints, aux, sizing, cfg)?.0)
+}
+
+/// [`gamma_uks_any`] that also returns the range-separated exchange the SCF
+/// ran on (`None` for any other functional), so a binding can hand it to
+/// [`gamma_uks_rsh_gradient`] without rebuilding it (the [`gamma_rks_any_keep`]
+/// twin). The exchange stays resident through the force: on the dense AFT
+/// its two complex k = 0 kernels, `32 nao^4` bytes ([`gamma_dense_bytes`]).
+pub fn gamma_uks_any_keep(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    hc: &crate::hcore::PeriodicHcore,
+    ints: crate::uhf::GammaUhfIntegrals<'_>,
+    aux: Option<&PreparedBasis>,
+    sizing: GammaRshSizing,
+    cfg: &crate::dft::GammaUksConfig,
+) -> Result<(crate::dft::GammaUksResult, Option<GammaRshExchange>), FerricError> {
     check_range_split(&cfg.functional, sizing.range_split)?;
     match crate::rsh::resolve_periodic_functional_rsh(&cfg.functional)?.2 {
         Some(rsh) => {
             let ex = GammaRshExchange::build_for_binding(
                 cell, prep, aux, &hc.s, cfg.exxdiv, sizing, rsh,
             )?;
-            crate::dft::gamma_uks_rsh(cell, prep, hc, ints, &ex, cfg)
+            let r = crate::dft::gamma_uks_rsh(cell, prep, hc, ints, &ex, cfg)?;
+            Ok((r, Some(ex)))
         }
-        None => crate::dft::gamma_uks(cell, prep, hc, ints, cfg),
+        None => Ok((crate::dft::gamma_uks(cell, prep, hc, ints, cfg)?, None)),
     }
 }
 

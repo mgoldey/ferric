@@ -213,13 +213,12 @@ def test_rsgdf_energy_runs_and_meta_gga_needs_dense(basis):
 
 def test_derivatives_roks_and_gamma_meta_gga_stay_refused(basis):
     lat = _lat(4.0)
-    for kw in ({"with_gradient": True}, {"with_stress": True}):
-        with pytest.raises(
-            ValueError,
-            match=r"^run_uks_kpts: with_(gradient|stress): .*HSE06.*UKS range-separated "
-            r"hybrid force and stress are not wired",
-        ):
-            _uks(H3_SCAN_ATOMS, lat, basis, "HSE06", (1, 1, 2), **kw)
+    with pytest.raises(
+        ValueError,
+        match=r"^run_uks_kpts: with_stress: .*HSE06.*UKS range-separated "
+        r"hybrid stress is not implemented",
+    ):
+        _uks(H3_SCAN_ATOMS, lat, basis, "HSE06", (1, 1, 2), with_stress=True)
     with pytest.raises(
         ValueError,
         match=r'^run_roks_kpts: functional "SCAN": .*\. k-point ROKS supports '
@@ -228,11 +227,9 @@ def test_derivatives_roks_and_gamma_meta_gga_stay_refused(basis):
         ferric.run_roks_kpts(
             _mol(H3_SCAN_ATOMS, 2), lat, basis, "SCAN", (1, 1, 2), omega=OMEGA
         )
-    with pytest.raises(
-        ValueError, match="open-shell range-separated hybrid gradient / stress"
-    ):
+    with pytest.raises(ValueError, match="open-shell range-separated hybrid stress"):
         ferric.run_uks_gamma(
-            _mol(H3_SCAN_ATOMS, 2), lat, basis, "HSE06", omega=OMEGA, with_gradient=True
+            _mol(H3_SCAN_ATOMS, 2), lat, basis, "HSE06", omega=OMEGA, with_stress=True
         )
     with pytest.raises(ValueError, match=r"no tau term.*1x1x1"):
         ferric.run_uks_gamma(_mol(H3_SCAN_ATOMS, 2), lat, basis, "SCAN", omega=OMEGA)
@@ -248,7 +245,8 @@ def test_derivatives_roks_and_gamma_meta_gga_stay_refused(basis):
             range_split=True,
         )
     with pytest.raises(
-        ValueError, match="open-shell range-separated hybrid gradient / stress"
+        ValueError,
+        match="restricted-open-shell range-separated hybrid gradient / stress",
     ):
         ferric.run_roks_gamma(
             _mol(H3_SCAN_ATOMS, 2), lat, basis, "HSE06", omega=OMEGA, with_stress=True
