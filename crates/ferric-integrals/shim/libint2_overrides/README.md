@@ -10,7 +10,7 @@ inside an install prefix of that version reproduces the file byte for byte.
 | `2.13.1/` | conda-forge `libint-2.13.1-h83f5b4b_0.conda` (`scripts/install-libint.sh`) | `890ab0261a2be2517d3d4cedfd7d07e2a1c6be7b6f057dc7ea2ea418e17067c1` | `0x0f6f0c23194e18ad` |
 
 Override sha256 (what `patch -p1` of the committed `.patch` onto the stock file reproduces): 2.7.2
-`8f5140d5b4e4132e0f90cfe3fee03bdae7971aee4b14dffc7292e09463854dc5`, 2.13.1
+`749c96f3042412a03d0d5efc68be12c75d48552d1c81315fdc25a105b89df43a`, 2.13.1
 `14c8bdfd4d8fb41e0c4e5091de1c45e84fe5f5840c6cdcfb1c40419a368f343e`.
 
 The #433 fix is the same in both. The sections below describe it with the 2.7.2 names. The `TennoGmEval` table-edge
@@ -372,7 +372,7 @@ override there are no new `throw`s (2.13.1 has its own fallback) and no index cl
   (`wheels.yml`, libint 2.7.2) are unaffected by this change. A conda-forge package build of ferric is not in this
   checkout (no `conda/` directory), so its path was not checked; if it compiles the shim against the same stock
   2.13.1 `boys.h` the override is selected the same way. A prefix whose `boys.h` is not byte-identical to a pinned stock file
-  (distro libint, terf-patched build) gets no override and keeps the NaN; build.rs prints a warning, or fails
+  (distro libint, an unrecognised patched build) gets no override and keeps the NaN; build.rs prints a warning, or fails
   under `FERRIC_REQUIRE_PATCHED_BOYS=1` (see "How it is wired in").
 
 ## Only header code is affected
@@ -388,9 +388,10 @@ so **the libint2 library does not need a rebuild**. Recompiling the shim picks t
 compiles and links against. If the hash matches one of the stock files in the table, build.rs puts that version's
 directory (`2.7.2/` or `2.13.1/`) **first** on the shim's include path, ahead of `<libint_root>/include`.
 `engine.impl.h` includes `<libint2/boys.h>`, and the first `-I` wins. The override is a whole-file replacement, so
-any other header gets no override. That covers other versions, the terf-patched prefix from
-`wiki/perf-tasks/patches/libint2-terf-*.patch`, and distro builds. In those cases the stock header is used and cargo
-prints a warning. Setting `FERRIC_LIBINT2_STOCK_BOYS=1` forces the stock header for A/B timing. That variable is checked
+any other header gets no override. That covers other versions, differently patched prefixes, and distro builds. In
+those cases the prefix's own header is used and cargo prints a warning. The one exception is the terf-patched 2.7.2
+prefix (see "Sixth change"): its `boys.h` hash is listed separately (`TERF_BOYS_H_FNV1A64`) and it gets the 2.7.2
+override with `-DFERRIC_LIBINT2_TERF_BOYS`. Setting `FERRIC_LIBINT2_STOCK_BOYS=1` forces the stock header for A/B timing. That variable is checked
 for presence only: any value, including `0`, forces the stock header.
 
 `FERRIC_REQUIRE_PATCHED_BOYS=1` turns every case where the override is not applied (unknown hash, unreadable
@@ -401,17 +402,16 @@ job), `wheels.yml` (both wheel builds and the `MALLOC_PERTURB_` job) and the `Do
 `FERRIC_REQUIRE_PATCHED_BOYS=1`, because each installs a sha256-pinned libint2 whose `boys.h` is stock (conda-forge
 2.13.1, or the `libint-2.7.2-ferric-small-1` export, whose `boys.h` has the stock 2.7.2 sha256 above). A new libint2
 pin or a stale cache there therefore fails the build instead of silently dropping the fixes. A plain local or sdist
-build does not set it, so a libint2 the table does not list (another version, a distro or from-source build, the
-terf-patched prefix) still builds with the warning. The decision is `build_support/boys_policy.rs`, shared by
+build does not set it, so a libint2 the table does not list (another version, a distro or from-source build, a
+patched prefix other than the terf one) still builds with the warning. The decision is `build_support/boys_policy.rs`, shared by
 `build.rs` and `tests/boys_override_policy.rs`; the test rebuilds each stock `boys.h` by reverse-applying the
 committed `.patch` and checks it selects its override.
 
-The terf patch adds `terf_gm_eval`, which also goes through `GenericGmEval` with `CoreEvalScratch`. So it has the
-same per-call copy, and this override does not fix it. It has no S/s table-edge read: `terf_gm_eval` only calls a
+The terf patch adds `terf_gm_eval`, which also goes through `GenericGmEval`. Its evaluator in the 2.7.2 override (see
+"Sixth change") is on the no-copy path. It has no S/s table-edge read: `terf_gm_eval` only calls a
 hook into ferric's own `terf_aux` (`shim/shim.cc`), whose Lagrange window is clamped to `[0, N-K]`, so no read passes
-the table end at `S == S_max` or `s == s_max`. That says nothing about the m axis: the hook path does not check
-`mmax < TERFC_DIMM` (only ferric's own quartet path does), see issue #234. A terf-patched prefix is never
-hash-matched, so it is built without the override.
+the table end at `S == S_max` or `s == s_max`. The m axis is guarded in ferric, not here: `scf_engine_create_terf_libint2`
+refuses a `max_L` whose `mmax` would reach `TERFC_DIMM`, and the hook throws on such an `mmax` (#234, PR #547).
 
 `tests/boys_override_ci_config.rs` pins the CI side: ci.yml's workflow-level `env:`, each wheels.yml script that
 exports `LIBINT2_PREFIX`, and the Dockerfile must set `FERRIC_REQUIRE_PATCHED_BOYS=1`, and none of them may set
@@ -450,3 +450,83 @@ water/cc-pVDZ four-centre ERIs at `zeta = 1e-6` against Coulomb.
 Cost of the quadrature path (2.13.1, per `eval_yukawa` call): about 8 to 13 microseconds, against about 90 ns for the old
 recursion and 1 to 3.6 microseconds for the table. A small `zeta` (below about 0.07 for first-row cc-pVDZ) routes every
 quartet through it, roughly 3 to 4 times slower than the table path. No production caller uses the Yukawa operator today.
+
+## Sixth change (2.7.2, terf-patched prefixes only): `terf_gm_eval` without the per-call copy (issue #234)
+
+A `FERRIC_LIBINT2_TERF` build uses a libint 2.7.2 prefix with ferric's terf patches applied
+(`wiki/perf-tasks/patches/libint2-terf-*.patch`). The `boys.h` part of that patch adds `os_core_ints::terf_gm_eval`, which
+derived from a `CoreEvalScratch` holding a `std::vector` (never used: the hook fills `Gm` directly) and had a
+non-`const` `operator()`. Stock `GenericGmEval::eval` copied it per primitive quartet, i.e. one heap allocation and free
+per call, and the prefix's `boys.h` was not hash-matched, so the override (and with it the erf/erfc copy fix and the
+#433/#436/#443 fixes) was not applied either.
+
+The change:
+
+* `build_support/boys_policy.rs` lists the terf-patched 2.7.2 `boys.h` (stock 2.7.2 plus `2.7.2/libint2-terf-boys.h.patch`,
+  a byte-identical copy of the wiki's `libint2-terf-boys.h.patch`; FNV-1a 64 `0xb793aeae3c7decd3`, sha256
+  `fd1748b349c1d3b41924d11f5c85cdcf6c6bba2c004881645bb138a463e0dafd`) as `TERF_BOYS_H_FNV1A64`. For it build.rs puts
+  `2.7.2/` first on the include path, like for stock 2.7.2, and also defines `FERRIC_LIBINT2_TERF_BOYS`.
+* The 2.7.2 override defines `terf_gm_eval` only under `FERRIC_LIBINT2_TERF_BOYS` (three guarded blocks: `<array>`, the
+  `gm_eval_call_by_const_ref` specialization, the evaluator). The evaluator is the terf patch's with no
+  `CoreEvalScratch` base and a `const` `operator()`, and it is marked `gm_eval_call_by_const_ref`, so it is called
+  through a const reference like erf/erfc. The hook signature and `hook()` are unchanged, so `shim.cc` needs no change.
+  Without the define the guarded code is absent, so stock 2.7.2 builds compile the same code as before.
+* The prefix's other terf headers (`engine.h`, `engine.impl.h`, `boys_fwd.h`) are used as installed; none of them
+  depends on `CoreEvalScratch<terf_gm_eval>`.
+
+The upstream fix for the copy (evaleev/libint PR #436, merged as 5e0dbeb7, fixing evaleev/libint#431) calls every
+`GenericGmEval` evaluator through a const reference and moves the Boys scratch of the others to the stack
+(`detail::FmStackScratch`). This override keeps its opt-in trait for 2.7.2 (stock 2.7.2 is frozen, so the override
+cannot be dropped for it); the terf evaluator is `const` and stateless, so it also works unchanged under the upstream
+scheme when the terf patch is rebased onto a libint that contains #436.
+
+### Evidence and its limits
+
+Builds compared (all `FERRIC_LIBINT2_TERF=1 --features libint2_terf`, release, same tree): **B0** the terf prefix with
+its own header (`FERRIC_LIBINT2_STOCK_BOYS=1`, i.e. what every terf build got before this change); **B1** a copy of the
+prefix whose `boys.h` is stock 2.7.2 + the terf evaluator + a plain backport of upstream #436 (unconditional const-ref
+call, `FmStackScratch`), built without any override; **B2** the unmodified terf prefix with this override.
+
+* Bit-identity. `terf_gm_eval_mapping` (3024 samples, 0 mismatches), `terf_libint2_vs_md` (132 blocks, worst rel
+  2.870e-12, the same number in all three), `terf_libint2_max_l_guard` (9) and `terf_libint2_error_routing` (1) pass
+  on B0, B1 and B2. The 10 `boys_chebyshev_manifest` hashes (erf/erfc/Coulomb 3-centre, metrics, lattice-shifted erfc
+  hcore blocks) are identical on B0, B1, B2 and on stock 2.7.2 + this override (B3). The thread-scaling bench below
+  hashes every integral of each sweep: Coulomb, erfc and terf hashes are identical on B0, B1 and B2 and across thread
+  counts. `tenno_table_edge`'s `SWEEP_HASH` (edge `4fcc6a6048c00315`, engine `09af80b725d50a8c`) is the same on B2 and
+  B3. A standalone probe of the erf, erfc, `r12_xx_K<1>` and terf (dummy hook) evaluators over mmax 0..24, five rho,
+  five omega and nine T (117.0 itself excluded) gives the same hash with and without the B1 change; at exactly
+  `T == 117.0` the unpatched header gave run-to-run different values (the #433 read), which is why it was excluded.
+* #433 on terf prefixes: `boys_chebyshev_table_edge` crashes on B0 and B1 (stack overflow / SIGSEGV from the
+  table-edge read; the test has no stock-header skip) and passes 6/6 on B2, as on stock 2.7.2 + override.
+* Thread scaling (`tests/terf_libint2_thread_scaling.rs`, benzene cc-pVDZ / cc-pVDZ-RI, 54 x 144 shells, full
+  `(P|mn)` sweep, every thread its own engine and the same work, 4 sweeps per thread, best of 3, B0/B1/B2 interleaved,
+  two rounds, both heavy slots held, 2026-10-24). Inflation = per-thread time at n threads / at 1 thread (1.00 is
+  perfect scaling), first round / second round:
+
+  | op | build | 1 thread s/sweep | 2 | 4 | 6 threads |
+  |----|-------|------------------|---|---|-----------|
+  | Coulomb (control) | B0 | 0.280 / 0.282 | 1.03 / 1.02 | 1.05 / 1.03 | 1.09 / 1.06 |
+  | Coulomb (control) | B2 | 0.280 / 0.276 | 1.03 / 1.05 | 1.03 / 1.05 | 1.13 / 1.12 |
+  | erfc | B0 | 0.404 / 0.418 | 1.38 / 1.29 | 2.29 / 2.21 | **3.36 / 3.24** |
+  | erfc | B1 | 0.343 / 0.341 | 1.01 / 1.03 | 1.03 / 1.03 | 1.09 / 1.06 |
+  | erfc | B2 | 0.338 / 0.335 | 1.02 / 1.04 | 1.04 / 1.05 | 1.09 / 1.09 |
+  | terf | B0 | 1.470 / 1.475 | 1.19 / 1.18 | 1.30 / 1.30 | 1.43 / 1.44 |
+  | terf | B1 | 1.418 / 1.413 | 1.17 / 1.16 | 1.28 / 1.29 | 1.41 / 1.42 |
+  | terf | B2 | 1.410 / 1.402 | 1.16 / 1.16 | 1.26 / 1.27 | 1.42 / 1.40 |
+
+  erfc on a terf prefix had the full copy defect (3.3x at 6 threads, 1.8x aggregate speed-up) because no override was
+  applied; B1 and B2 bring it to the Coulomb control. For terf the copy was NOT what limits scaling: removing it gains
+  about 4% single-thread time and leaves the 6-thread inflation at ~1.4x. B1 (upstream-style) and B2 (this override)
+  are indistinguishable on every row.
+* What does limit terf (ferric-side, NOT fixed here): an experimental build B4 = B2 with `shim.cc`'s two per-call
+  `__atomic_fetch_add` on the process-global `g_terf_tab` / `g_terf_ser` counters in `terf_aux` removed AND the hook's
+  per-call `shared_ptr` copy of `g_terfc_tables` replaced by `.get()`. Interleaved with B2 (two more rounds, same
+  settings): terf inflation at 2/4/6 threads 1.02-1.03 / 1.03-1.04 / **1.09** (B2: 1.16-1.17 / 1.26 / 1.38-1.39),
+  1-thread 1.354-1.372 s vs 1.411 s, same integral hash. The two changes were made together, so their shares are not
+  separated.
+* `tests/boys_override_policy.rs` pins the selection (`terf_prefix_selects_the_2_7_2_override_with_the_terf_define`),
+  that the terf hash collides with no stock or override hash, and that no terf code is compiled outside the guarded
+  blocks. Mutants (terf branch returning `Override`, one digit of the terf hash, the evaluator's `#ifdef` removed) each
+  fail exactly one of them; the unmutated file passes 13/13.
+* Not checked: a CI job (CI has no terf prefix, so `FERRIC_LIBINT2_TERF` builds are local only), and other molecules or
+  bases for the scaling table.

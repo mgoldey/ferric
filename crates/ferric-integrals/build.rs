@@ -39,10 +39,15 @@ fn main() {
     // --- libint2 shim ---
     let mut shim_build = cc::Build::new();
     shim_build.cpp(true).file("shim/shim.cc");
-    if let Some(dir) = &boys_override {
+    if let Some((dir, terf)) = &boys_override {
         // MUST precede every libint2 include dir: shim.cc reaches boys.h via
         // engine.impl.h's `#include <libint2/boys.h>`, and the first -I wins.
         shim_build.include(dir);
+        if *terf {
+            // The prefix's engine.h names os_core_ints::terf_gm_eval, which
+            // the override defines only under this symbol (issue #234).
+            shim_build.define(TERF_DEFINE, None);
+        }
     }
     shim_build
         .include(format!("{libint_root}/include"))
@@ -165,16 +170,21 @@ include!("build_support/boys_policy.rs");
 ///
 /// The override is a whole-file replacement, so it is applied ONLY when the
 /// boys.h under `libint_root` (the one root the shim compiles against) is
-/// byte-identical to one of the stock files listed in `STOCK_BOYS_H_FNV1A64`,
-/// and then the override made from THAT version is used. Any other libint2
-/// (another version, the terf-patched prefix, a distro build) gets its own
+/// byte-identical to one of the stock files listed in `STOCK_BOYS_H_FNV1A64`
+/// (or to the terf-patched 2.7.2 file, below), and then the override made
+/// from THAT version is used. Any other libint2
+/// (another version, a differently patched prefix, a distro build) gets its own
 /// header untouched plus a warning: silently shadowing a different version's
 /// boys.h would be far worse than the slowdown. With
 /// `FERRIC_REQUIRE_PATCHED_BOYS=1` (set by CI, the wheel builds and the
 /// Dockerfile) that case is a build error instead, unless
 /// `FERRIC_ALLOW_UNPATCHED_BOYS=1`. `FERRIC_LIBINT2_STOCK_BOYS=1` forces the
 /// stock header (A/B runs).
-fn libint2_boys_override(libint_root: &str) -> Option<PathBuf> {
+///
+/// A terf-patched 2.7.2 prefix (`TERF_BOYS_H_FNV1A64`) gets the 2.7.2
+/// override too, with `TERF_DEFINE` (the bool returned) so that the override
+/// also defines the terf evaluator, on the same no-copy call path (#234).
+fn libint2_boys_override(libint_root: &str) -> Option<(PathBuf, bool)> {
     let env = BoysEnv {
         force_stock: std::env::var_os(STOCK_VAR).is_some(),
         require: env_flag(std::env::var(REQUIRE_VAR).ok().as_deref()),
@@ -183,12 +193,13 @@ fn libint2_boys_override(libint_root: &str) -> Option<PathBuf> {
     let found = PathBuf::from(format!("{libint_root}/include/libint2/boys.h"));
     println!("cargo:rerun-if-changed={}", found.display());
     let read = std::fs::read(&found).map_err(|e| e.to_string());
-    let version = match boys_outcome(
+    let (version, terf) = match boys_outcome(
         &found.display().to_string(),
         read.as_deref().map_err(Clone::clone),
         env,
     ) {
-        BoysOutcome::Override(version) => version,
+        BoysOutcome::Override(version) => (version, false),
+        BoysOutcome::OverrideTerf(version) => (version, true),
         BoysOutcome::Unpatched(warning) => {
             println!("cargo:warning={warning}");
             return None;
@@ -207,8 +218,11 @@ fn libint2_boys_override(libint_root: &str) -> Option<PathBuf> {
         );
     }
     println!(
-        "cargo:warning=libint2 {version} boys.h override applied ({})",
-        if version == "2.7.2" {
+        "cargo:warning=libint2 {version}{} boys.h override applied ({})",
+        if terf { " (terf-patched prefix)" } else { "" },
+        if terf {
+            "GmEval copy fix incl. terf_gm_eval #234 + Boys T_crit table-edge fix #433 + Yukawa/Slater table-edge and eval_urr overflow fixes #436 + small-T Yukawa quadrature #443"
+        } else if version == "2.7.2" {
             "GmEval copy fix + Boys T_crit table-edge fix #433 + Yukawa/Slater table-edge and eval_urr overflow fixes #436 + small-T Yukawa quadrature #443"
         } else {
             "GmEval copy fix + Boys T_crit table-edge fix #433 + eval_urr overflow fix #439 + small-T Yukawa quadrature #443"
@@ -217,7 +231,7 @@ fn libint2_boys_override(libint_root: &str) -> Option<PathBuf> {
     // Lets the integration tests tell a patched header from a stock one (the
     // table-edge tests can only be asserted when the fix is compiled in).
     println!("cargo:rustc-env=FERRIC_LIBINT2_BOYS_OVERRIDE={version}");
-    Some(dir)
+    Some((dir, terf))
 }
 
 /// Configure and build the vendored libecpint static library with CMake.

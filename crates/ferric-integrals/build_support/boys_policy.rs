@@ -19,6 +19,20 @@ pub const STOCK_BOYS_H_FNV1A64: [(&str, u64); 2] = [
     ("2.13.1", 0x0f6f_0c23_194e_18ad),
 ];
 
+/// FNV-1a 64 of a STOCK `boys.h` above with ferric's terf patch applied: the
+/// `boys.h` of a terf-patched prefix (`FERRIC_LIBINT2_TERF`, issue #234).
+/// `shim/libint2_overrides/2.7.2/libint2-terf-boys.h.patch` is that patch (a
+/// byte-identical copy of `wiki/perf-tasks/patches/libint2-terf-boys.h.patch`,
+/// kept here so the hash is reproducible from tracked files). Such a prefix
+/// gets the same version's override, compiled with `TERF_DEFINE` so that it
+/// also carries the terf evaluator (on the no-copy call path); the prefix's
+/// other terf headers (`engine.h`, `engine.impl.h`, `boys_fwd.h`) are used
+/// as installed.
+pub const TERF_BOYS_H_FNV1A64: [(&str, u64); 1] = [("2.7.2", 0xb793_aeae_3c7d_ecd3)];
+
+/// Preprocessor symbol that compiles the terf evaluator into the override.
+pub const TERF_DEFINE: &str = "FERRIC_LIBINT2_TERF_BOYS";
+
 /// Environment variable that turns "no override applied" into a build error.
 /// CI, the wheel builds and the Dockerfile set it: each installs a
 /// sha256-pinned stock libint2, so an unknown `boys.h` there means the pin or
@@ -65,6 +79,8 @@ pub fn env_flag(value: Option<&str>) -> bool {
 pub enum BoysOutcome {
     /// Put `shim/libint2_overrides/<version>` first on the include path.
     Override(&'static str),
+    /// As `Override`, for a terf-patched prefix: also define `TERF_DEFINE`.
+    OverrideTerf(&'static str),
     /// Build against the prefix's own `boys.h`; print this as a cargo warning.
     Unpatched(String),
     /// Fail the build with this message.
@@ -75,6 +91,11 @@ fn known_hashes() -> String {
     STOCK_BOYS_H_FNV1A64
         .iter()
         .map(|(v, h)| format!("{v} = {h:#018x}"))
+        .chain(
+            TERF_BOYS_H_FNV1A64
+                .iter()
+                .map(|(v, h)| format!("{v} + terf patch = {h:#018x}")),
+        )
         .collect::<Vec<_>>()
         .join(", ")
 }
@@ -89,7 +110,7 @@ pub fn boys_outcome(path: &str, contents: Result<&[u8], String>, env: BoysEnv) -
         )
     } else {
         let remedy =
-            "Point LIBINT2_PREFIX at a stock libint2 2.7.2 or 2.13.1 (scripts/install-libint.sh)"
+            "Point LIBINT2_PREFIX at a stock libint2 2.7.2 or 2.13.1 (scripts/install-libint.sh), or at a 2.7.2 with only ferric's terf patch applied"
                 .to_string();
         match contents {
             Err(e) => (format!("cannot read {path} ({e})"), remedy),
@@ -98,9 +119,12 @@ pub fn boys_outcome(path: &str, contents: Result<&[u8], String>, env: BoysEnv) -
                 if let Some((version, _)) = STOCK_BOYS_H_FNV1A64.iter().find(|(_, h)| *h == hash) {
                     return BoysOutcome::Override(version);
                 }
+                if let Some((version, _)) = TERF_BOYS_H_FNV1A64.iter().find(|(_, h)| *h == hash) {
+                    return BoysOutcome::OverrideTerf(version);
+                }
                 (
                     format!(
-                        "{path} (FNV-1a 64 {hash:#018x}) is not a stock libint2 boys.h ferric has an override for (known stock hashes: {})",
+                        "{path} (FNV-1a 64 {hash:#018x}) is not a libint2 boys.h ferric has an override for (known hashes: {})",
                         known_hashes()
                     ),
                     remedy,

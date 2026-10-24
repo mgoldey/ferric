@@ -1,0 +1,73 @@
+--- /tmp/claude-1000/boys.h.stock	2026-09-15 13:26:10.754181321 -0400
++++ boys.h	2026-09-15 13:26:31.325239644 -0400
+@@ -1604,6 +1604,7 @@
+   namespace os_core_ints {
+   template <typename Real, int K> struct r12_xx_K_gm_eval;
+   template <typename Real> struct erfc_coulomb_gm_eval;
++  template <typename Real> struct terf_gm_eval;
+   }
+ 
+   namespace detail {
+@@ -1616,6 +1617,15 @@
+     // need to store Fm(T) for m = 0 .. mmax+1
+     explicit CoreEvalScratch(int mmax) { Fm_.resize(mmax+2); }
+   };
++  /// terf_gm_eval needs extra scratch: the terf table path fills Gm directly,
++  /// but terfc = Coulomb - terf needs a Boys buffer, same shape as erfc's.
++  template <typename Real>
++  struct CoreEvalScratch<os_core_ints::terf_gm_eval<Real>> {
++    std::vector<Real> Fm_;
++    CoreEvalScratch(const CoreEvalScratch&) = default;
++    CoreEvalScratch(CoreEvalScratch&&) = default;
++    explicit CoreEvalScratch(int mmax) { Fm_.resize(mmax + 2); }
++  };
+   /// erfc_coulomb_gm_eval needs extra scratch data
+   template <typename Real>
+   struct CoreEvalScratch<os_core_ints::erfc_coulomb_gm_eval<Real>> {
+@@ -1764,6 +1774,46 @@
+       std::shared_ptr<const FmEvalType> fm_eval_;  // need for odd K
+   };
+ 
++
++  /// core integral evaluator for the terf kernel, terf(r,r0)/r
++  /// (Dutoi & Head-Gordon, JPCA 112, 2110 (2008); tables per Goldey's thesis App. B).
++  ///
++  /// Unlike the other evaluators here, the kernel is not closed-form: it comes
++  /// from a 2D interpolation table indexed by the reduced variables (S, s).
++  /// libint2 supplies (rho, T); the mapping back is
++  ///     phi2 = rho*w^2/(rho + w^2),  PQ2 = T/rho,  S = phi2*PQ2,  s = phi2*r0^2
++  /// and the returned values carry the sqrt(phi2/rho) prefactor.  The table
++  /// lookup itself lives OUTSIDE libint2 (it owns multi-MB data files), so this
++  /// evaluator calls a host-provided hook.  The host must install it before any
++  /// terf engine is constructed; see libint2_terf_set_hook().
++  ///
++  /// Hook contract: (rho, T, mmax, omega, r0, Gm) -> bool. Returns false only
++  /// if the tables are unavailable, in which case the engine must not be used.
++  template <typename Real>
++  struct terf_gm_eval : private detail::CoreEvalScratch<terf_gm_eval<Real>> {
++    typedef detail::CoreEvalScratch<terf_gm_eval<Real>> base_type;
++    typedef Real value_type;
++
++    typedef bool (*hook_type)(double rho, double T, int mmax, double omega,
++                              double r0, double* Gm);
++
++    /// installed by the host (ferric's shim) before any terf engine exists
++    static hook_type& hook() { static hook_type h = nullptr; return h; }
++
++    terf_gm_eval(unsigned int mmax, Real) : base_type(mmax) {}
++
++    void operator()(Real* Gm, Real rho, Real T, int mmax,
++                    const std::array<double, 2>& params) {
++      const double omega = params[0];
++      const double r0 = params[1];
++      hook_type h = hook();
++      assert(h != nullptr &&
++             "libint2 Operator::terf used before libint2_terf_set_hook()");
++      const bool ok = h(rho, T, mmax, omega, r0, Gm);
++      if (!ok) std::fill(Gm, Gm + mmax + 1, Real{0});
++    }
++  };
++
+   }  // namespace os_core_ints
+ 
+   /*

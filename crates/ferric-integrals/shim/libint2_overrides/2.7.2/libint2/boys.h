@@ -45,7 +45,11 @@
  *  integral; all other arguments give bit-identical results.
  *  crates/ferric-integrals/build.rs puts this
  *  directory first on the shim's include path ONLY when the libint2 prefix's
- *  own boys.h is byte-identical to the stock 2.7.2 file above.
+ *  own boys.h is byte-identical to the stock 2.7.2 file above, or to that
+ *  file with ferric's terf patch applied (issue #234). For the latter it also
+ *  defines FERRIC_LIBINT2_TERF_BOYS, which compiles in the terf evaluator
+ *  (terf_gm_eval) on the same no-copy call path; without the define the
+ *  terf code is absent and this file is the stock override.
  */
 
 #ifndef _libint2_src_lib_libint_boys_h_
@@ -67,6 +71,9 @@
 #include <mutex>
 #include <type_traits>
 #include <memory>
+#ifdef FERRIC_LIBINT2_TERF_BOYS
+#include <array>
+#endif
 
 // from now on at least C++11 is required by default
 #include <libint2/util/cxxstd.h>
@@ -1838,6 +1845,23 @@ namespace libint2 {
       : std::true_type {};
   }  // namespace detail
 
+#ifdef FERRIC_LIBINT2_TERF_BOYS
+  // ferric patch (issue #234): the terf evaluator of a terf-patched 2.7.2
+  // prefix (stock + wiki/perf-tasks/patches/libint2-terf-*.patch), whose
+  // boys.h this file replaces. build.rs defines FERRIC_LIBINT2_TERF_BOYS only
+  // for that prefix. Its operator() is const and stateless, so it joins the
+  // const-reference call path: the stock terf patch inherited an (unused)
+  // CoreEvalScratch vector and was copied, allocating, on every call.
+  namespace os_core_ints {
+  template <typename Real> struct terf_gm_eval;
+  }
+  namespace detail {
+  template <typename Real>
+  struct gm_eval_call_by_const_ref<os_core_ints::terf_gm_eval<Real>>
+      : std::true_type {};
+  }  // namespace detail
+#endif  // FERRIC_LIBINT2_TERF_BOYS
+
   template <typename GmEvalFunction>
   struct GenericGmEval : private GmEvalFunction {
 
@@ -2065,6 +2089,52 @@ namespace libint2 {
      private:
       std::shared_ptr<const FmEvalType> fm_eval_;  // need for odd K
   };
+
+#ifdef FERRIC_LIBINT2_TERF_BOYS
+  /// core integral evaluator for the terf kernel, terf(r,r0)/r
+  /// (Dutoi & Head-Gordon, JPCA 112, 2110 (2008); tables per Goldey's thesis App. B).
+  ///
+  /// Unlike the other evaluators here, the kernel is not closed-form: it comes
+  /// from a 2D interpolation table indexed by the reduced variables (S, s).
+  /// libint2 supplies (rho, T); the mapping back is
+  ///     phi2 = rho*w^2/(rho + w^2),  PQ2 = T/rho,  S = phi2*PQ2,  s = phi2*r0^2
+  /// and the returned values carry the sqrt(phi2/rho) prefactor.  The table
+  /// lookup itself lives OUTSIDE libint2 (it owns multi-MB data files), so this
+  /// evaluator calls a host-provided hook.  The host must install it before any
+  /// terf engine is constructed; see libint2_terf_set_hook().
+  ///
+  /// Hook contract: (rho, T, mmax, omega, r0, Gm) -> bool. Returns false only
+  /// if the tables are unavailable, in which case the engine must not be used.
+  ///
+  /// ferric patch (issue #234): identical to the terf patch's evaluator except
+  /// that it has no CoreEvalScratch base (it never used the scratch) and its
+  /// operator() is const, so GenericGmEval calls it without a per-call copy
+  /// (see gm_eval_call_by_const_ref). The hook must therefore be safe to call
+  /// concurrently, which ferric's is (it only reads immutable tables).
+  template <typename Real>
+  struct terf_gm_eval {
+    typedef Real value_type;
+
+    typedef bool (*hook_type)(double rho, double T, int mmax, double omega,
+                              double r0, double* Gm);
+
+    /// installed by the host (ferric's shim) before any terf engine exists
+    static hook_type& hook() { static hook_type h = nullptr; return h; }
+
+    terf_gm_eval(unsigned int, Real) {}
+
+    void operator()(Real* Gm, Real rho, Real T, int mmax,
+                    const std::array<double, 2>& params) const {
+      const double omega = params[0];
+      const double r0 = params[1];
+      hook_type h = hook();
+      assert(h != nullptr &&
+             "libint2 Operator::terf used before libint2_terf_set_hook()");
+      const bool ok = h(rho, T, mmax, omega, r0, Gm);
+      if (!ok) std::fill(Gm, Gm + mmax + 1, Real{0});
+    }
+  };
+#endif  // FERRIC_LIBINT2_TERF_BOYS
 
   }  // namespace os_core_ints
 
