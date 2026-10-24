@@ -1299,6 +1299,11 @@ struct EspGridPoint {
 /// so they're processed in rayon like `esp_at_atoms`' per-atom loop (not
 /// serial like the tesserae version, since CHELPG grids run to thousands of
 /// points rather than a few hundred).
+///
+/// `memory_budget_bytes` is the explicit budget handed to the size guard's
+/// resolver. Every production caller passes `None` (the ambient budget); the
+/// parameter is a TEST SEAM so the guard's refusal can be exercised at a
+/// chosen budget, not a user-facing knob.
 fn chelpg_grid_esp(
     mol: &Molecule,
     prep: &PreparedBasis,
@@ -1307,6 +1312,7 @@ fn chelpg_grid_esp(
     margin: f64,
     vdw_scale: f64,
     outer_cutoff: f64,
+    memory_budget_bytes: Option<usize>,
 ) -> Result<Vec<EspGridPoint>, FerricError> {
     use ferric_pcm::radii::bondi_radius_bohr;
 
@@ -1330,114 +1336,48 @@ fn chelpg_grid_esp(
         ));
     }
 
-    // Bounding box (Bohr) + margin, same convention as
-    // `ferric_export::cube::GridSpec::bounding_box`.
-    let mut lo = [f64::MAX; 3];
-    let mut hi = [f64::MIN; 3];
     let atom_pos: Vec<[f64; 3]> = mol.atoms.iter().map(|a| [a.x, a.y, a.zpos]).collect();
     let atom_r_excl: Vec<f64> = mol
         .atoms
         .iter()
         .map(|a| vdw_scale * bondi_radius_bohr(a.z))
         .collect();
-    for p in &atom_pos {
-        for d in 0..3 {
-            lo[d] = lo[d].min(p[d]);
-            hi[d] = hi[d].max(p[d]);
-        }
-    }
-    // Grid is built symmetric about the bounding box's own CENTER (not
-    // anchored at `lo - margin` and stepped forward), so that a molecule
-    // with an exact point-group symmetry (e.g. water's C2v mirror plane)
-    // gets a grid that respects that symmetry too. An origin-anchored,
-    // ceil-rounded grid is generically NOT symmetric under the molecule's
-    // own symmetry operations (confirmed: water's C2v mirror maps its grid
-    // to a copy offset by a fraction of `spacing`), which silently breaks
-    // exact charge-symmetry between symmetry-equivalent atoms at the
-    // ~1e-4-e level — small numerically, but a real, avoidable artifact
-    // rather than physics. `half_pts` on each axis is the number of grid
-    // steps needed to cover the half-extent (bounding-box half-width +
-    // margin), so the full per-axis point count is always `2*half_pts + 1`
-    // (odd, with a point exactly at the center) — symmetric by construction
-    // for any bounding box, not just symmetric molecules.
-    let center = [
-        0.5 * (lo[0] + hi[0]),
-        0.5 * (lo[1] + hi[1]),
-        0.5 * (lo[2] + hi[2]),
-    ];
-    let half_pts = [
-        ((0.5 * (hi[0] - lo[0]) + margin) / spacing).ceil().max(1.0) as usize,
-        ((0.5 * (hi[1] - lo[1]) + margin) / spacing).ceil().max(1.0) as usize,
-        ((0.5 * (hi[2] - lo[2]) + margin) / spacing).ceil().max(1.0) as usize,
-    ];
-    let origin = [
-        center[0] - half_pts[0] as f64 * spacing,
-        center[1] - half_pts[1] as f64 * spacing,
-        center[2] - half_pts[2] as f64 * spacing,
-    ];
-    let n = [
-        2 * half_pts[0] + 1,
-        2 * half_pts[1] + 1,
-        2 * half_pts[2] + 1,
-    ];
+    let (origin, n) = chelpg_grid_layout(&atom_pos, spacing, margin);
     let npts_total = n[0] * n[1] * n[2];
 
-    // Size guard, mirroring `eval_basis_on_grid`'s fail-fast convention:
-    // don't silently build an unbounded candidate-point list for a very
-    // fine spacing / large molecule.
-    let peak_bytes = npts_total.saturating_mul(std::mem::size_of::<[f64; 3]>());
+    // Size guard, mirroring `eval_basis_on_grid`'s fail-fast convention.
+    // It counts the true co-resident peak (see `chelpg_peak_bytes`), with
+    // `npts_total` as the upper bound on the number of kept points.
     ferric_core::memory::check_alloc(
         &format!(
-            "chelpg candidate grid ({}×{}×{} = {npts_total} pts before vdW filtering)",
+            "chelpg candidate grid ({}×{}×{} = {npts_total} pts before vdW filtering; \
+             kept points + one ESP value + one output record per point)",
             n[0], n[1], n[2]
         ),
-        peak_bytes,
-        ferric_core::memory::resolve_budget_bytes(None),
+        chelpg_peak_bytes(npts_total),
+        ferric_core::memory::resolve_budget_bytes(memory_budget_bytes),
     )
     .map_err(|e| FerricError::General(e.to_string()))?;
 
     // Filter candidate points to the CHELPG shell (outside vdW, inside outer
     // cutoff) BEFORE the expensive V(r) evaluation — most of a generous
     // bounding-box grid is either buried inside an atom or wasted empty
-    // space far from the molecule.
-    let mut kept: Vec<[f64; 3]> = Vec::new();
-    for ix in 0..n[0] {
-        let x = origin[0] + ix as f64 * spacing;
-        for iy in 0..n[1] {
-            let y = origin[1] + iy as f64 * spacing;
-            for iz in 0..n[2] {
-                let z = origin[2] + iz as f64 * spacing;
-                let r = [x, y, z];
-
-                let mut inside_any_vdw = false;
-                let mut within_outer_cutoff = false;
-                for a in 0..natoms {
-                    let dx = r[0] - atom_pos[a][0];
-                    let dy = r[1] - atom_pos[a][1];
-                    let dz = r[2] - atom_pos[a][2];
-                    let dist = (dx * dx + dy * dy + dz * dz).sqrt();
-                    if dist < atom_r_excl[a] {
-                        inside_any_vdw = true;
-                        break;
-                    }
-                    if dist <= atom_r_excl[a] + outer_cutoff {
-                        within_outer_cutoff = true;
-                    }
-                }
-                if !inside_any_vdw && within_outer_cutoff {
-                    kept.push(r);
-                }
-            }
-        }
-    }
-
-    if kept.is_empty() {
+    // space far from the molecule. Two passes (count, then fill an exactly
+    // sized Vec) so `kept` never carries push-growth slack or a doubling
+    // realloc transient; the guard above is then an honest bound.
+    let in_shell = |r: &[f64; 3]| chelpg_in_shell(r, &atom_pos, &atom_r_excl, outer_cutoff);
+    let nkept = chelpg_grid_points(origin, n, spacing)
+        .filter(|r| in_shell(r))
+        .count();
+    if nkept == 0 {
         return Err(FerricError::General(
             "chelpg_grid_esp: no grid points survived the vdW-exclusion/outer-cutoff filter \
              (spacing too coarse, or vdw_scale/outer_cutoff too tight)"
                 .into(),
         ));
     }
+    let mut kept: Vec<[f64; 3]> = Vec::with_capacity(nkept);
+    kept.extend(chelpg_grid_points(origin, n, spacing).filter(|r| in_shell(r)));
 
     let values = esp_at_points(mol, prep, density, &kept)?;
 
@@ -1446,6 +1386,100 @@ fn chelpg_grid_esp(
         .zip(values)
         .map(|(r, v)| EspGridPoint { r, v })
         .collect())
+}
+
+/// Co-resident peak (bytes) of [`chelpg_grid_esp`] for a candidate grid of
+/// `npts_total` points.
+///
+/// The peak is the final `kept.into_iter().zip(values).map(..).collect()`:
+/// `kept` (`[f64; 3]`, 24 B/pt) and `values` (one `f64`, 8 B/pt) are both
+/// alive while the output `Vec<EspGridPoint>` (32 B/pt) is built. The output
+/// is a NEW allocation: its element (32 B) is larger than the source's
+/// (24 B), so the in-place-collect specialisation cannot reuse `kept`'s
+/// buffer. `npts_total` bounds the kept count from above, and `kept` is
+/// sized exactly (no growth slack), so 64 B per candidate point is a true
+/// upper bound. The old 24 B/pt counted `kept` alone.
+fn chelpg_peak_bytes(npts_total: usize) -> usize {
+    let per_point = std::mem::size_of::<[f64; 3]>()
+        + std::mem::size_of::<f64>()
+        + std::mem::size_of::<EspGridPoint>();
+    npts_total.saturating_mul(per_point)
+}
+
+/// Origin (Bohr) and per-axis point counts of the CHELPG candidate grid.
+///
+/// The bounding box (Bohr) + margin follows the convention of
+/// `ferric_export::cube::GridSpec::bounding_box`, but the grid is built
+/// symmetric about the bounding box's own CENTER (not anchored at
+/// `lo - margin` and stepped forward), so that a molecule with an exact
+/// point-group symmetry (e.g. water's C2v mirror plane) gets a grid that
+/// respects that symmetry too. An origin-anchored, ceil-rounded grid is
+/// generically NOT symmetric under the molecule's own symmetry operations
+/// (confirmed: water's C2v mirror maps its grid to a copy offset by a
+/// fraction of `spacing`), which silently breaks exact charge-symmetry
+/// between symmetry-equivalent atoms at the ~1e-4-e level — small
+/// numerically, but a real, avoidable artifact rather than physics.
+/// `half_pts` on each axis is the number of grid steps needed to cover the
+/// half-extent (bounding-box half-width + margin), so the full per-axis point
+/// count is always `2*half_pts + 1` (odd, with a point exactly at the
+/// center) — symmetric by construction for any bounding box.
+fn chelpg_grid_layout(atom_pos: &[[f64; 3]], spacing: f64, margin: f64) -> ([f64; 3], [usize; 3]) {
+    let mut lo = [f64::MAX; 3];
+    let mut hi = [f64::MIN; 3];
+    for p in atom_pos {
+        for d in 0..3 {
+            lo[d] = lo[d].min(p[d]);
+            hi[d] = hi[d].max(p[d]);
+        }
+    }
+    let mut origin = [0.0; 3];
+    let mut n = [0usize; 3];
+    for d in 0..3 {
+        let center = 0.5 * (lo[d] + hi[d]);
+        let half_pts = ((0.5 * (hi[d] - lo[d]) + margin) / spacing).ceil().max(1.0) as usize;
+        origin[d] = center - half_pts as f64 * spacing;
+        n[d] = 2 * half_pts + 1;
+    }
+    (origin, n)
+}
+
+/// The candidate grid points, x-major then y then z.
+fn chelpg_grid_points(
+    origin: [f64; 3],
+    n: [usize; 3],
+    spacing: f64,
+) -> impl Iterator<Item = [f64; 3]> {
+    (0..n[0]).flat_map(move |ix| {
+        let x = origin[0] + ix as f64 * spacing;
+        (0..n[1]).flat_map(move |iy| {
+            let y = origin[1] + iy as f64 * spacing;
+            (0..n[2]).map(move |iz| [x, y, origin[2] + iz as f64 * spacing])
+        })
+    })
+}
+
+/// True when `r` lies in the CHELPG shell: outside every scaled vdW sphere
+/// and within `outer_cutoff` of at least one sphere's surface.
+fn chelpg_in_shell(
+    r: &[f64; 3],
+    atom_pos: &[[f64; 3]],
+    atom_r_excl: &[f64],
+    outer_cutoff: f64,
+) -> bool {
+    let mut within_outer_cutoff = false;
+    for (p, &r_excl) in atom_pos.iter().zip(atom_r_excl) {
+        let dx = r[0] - p[0];
+        let dy = r[1] - p[1];
+        let dz = r[2] - p[2];
+        let dist = (dx * dx + dy * dy + dz * dz).sqrt();
+        if dist < r_excl {
+            return false;
+        }
+        if dist <= r_excl + outer_cutoff {
+            within_outer_cutoff = true;
+        }
+    }
+    within_outer_cutoff
 }
 
 /// Evaluate the molecular electrostatic potential `V_QM(r) = Σ_B Z_B/|r−R_B|
@@ -1687,6 +1721,7 @@ pub fn chelpg_charges(
         chelpg_margin(),
         chelpg_vdw_scale(),
         chelpg_outer_cutoff(),
+        None,
     )?;
     let atom_pos: Vec<[f64; 3]> = mol.atoms.iter().map(|a| [a.x, a.y, a.zpos]).collect();
     solve_chelpg_normal_equations(&atom_pos, &grid, mol.charge as f64)
@@ -1778,6 +1813,7 @@ pub fn resp_charges(
         chelpg_margin(),
         chelpg_vdw_scale(),
         chelpg_outer_cutoff(),
+        None,
     )?;
     let atom_pos: Vec<[f64; 3]> = mol.atoms.iter().map(|a| [a.x, a.y, a.zpos]).collect();
     let restraint_weight = resp_restraint_weight();
@@ -1819,6 +1855,7 @@ pub fn chelpg_and_resp_charges(
         chelpg_margin(),
         chelpg_vdw_scale(),
         chelpg_outer_cutoff(),
+        None,
     )?;
     let atom_pos: Vec<[f64; 3]> = mol.atoms.iter().map(|a| [a.x, a.y, a.zpos]).collect();
     let chelpg = solve_chelpg_normal_equations(&atom_pos, &grid, mol.charge as f64)?;
@@ -2018,6 +2055,91 @@ mod tests {
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
         let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &RhfConfig::default()).unwrap();
         (mol, obs, dfbs, op, rhf)
+    }
+
+    /// Water/STO-3G RHF, the CHELPG guard's fixture.
+    fn water_sto3g() -> (Molecule, PreparedBasis, crate::result::ScfResult) {
+        let mol = Molecule::load_xyz(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../testdata/molecules/water.xyz"
+        ))
+        .unwrap();
+        let bs = basis::bundled("sto-3g").unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+        let ctx = ParallelContext::default();
+        let rhf = solve_rhf(&ctx, &mol, &prep, op, &bounds, &RhfConfig::default()).unwrap();
+        (mol, prep, rhf)
+    }
+
+    fn water_chelpg(
+        mol: &Molecule,
+        prep: &PreparedBasis,
+        rhf: &crate::result::ScfResult,
+        budget: Option<usize>,
+    ) -> Result<Vec<EspGridPoint>, FerricError> {
+        chelpg_grid_esp(
+            mol,
+            prep,
+            rhf.density_r(),
+            chelpg_spacing(),
+            chelpg_margin(),
+            chelpg_vdw_scale(),
+            chelpg_outer_cutoff(),
+            budget,
+        )
+    }
+
+    fn water_npts_total(mol: &Molecule) -> usize {
+        let atom_pos: Vec<[f64; 3]> = mol.atoms.iter().map(|a| [a.x, a.y, a.zpos]).collect();
+        let (_, n) = chelpg_grid_layout(&atom_pos, chelpg_spacing(), chelpg_margin());
+        n[0] * n[1] * n[2]
+    }
+
+    #[test]
+    fn chelpg_peak_counts_kept_values_and_output() {
+        // kept [f64;3] (24) + values f64 (8) + output EspGridPoint (32).
+        assert_eq!(std::mem::size_of::<EspGridPoint>(), 32);
+        assert_eq!(chelpg_peak_bytes(1000), 64 * 1000);
+    }
+
+    #[test]
+    fn chelpg_guard_refuses_a_budget_between_the_old_and_true_peak() {
+        // A budget that fits the old 24 B/pt count but not the true 64 B/pt
+        // peak must refuse. Under the old count this budget is admitted.
+        let (mol, prep, rhf) = water_sto3g();
+        let npts = water_npts_total(&mol);
+        let budget = 40 * npts;
+        assert!(24 * npts < budget && budget < chelpg_peak_bytes(npts));
+        let err = match water_chelpg(&mol, &prep, &rhf, Some(budget)) {
+            Ok(g) => panic!(
+                "guard admitted {budget} B for {npts} pts ({} kept)",
+                g.len()
+            ),
+            Err(e) => e.to_string(),
+        };
+        assert!(err.contains("chelpg candidate grid"), "{err}");
+    }
+
+    #[test]
+    fn chelpg_ample_budget_admits_and_grid_is_bit_identical_to_ambient() {
+        // Reachability: the refusal above is not a guard that refuses
+        // everything. Inertness: the explicit budget changes nothing but the
+        // admit/refuse decision.
+        let (mol, prep, rhf) = water_sto3g();
+        let npts = water_npts_total(&mol);
+        let at_peak = water_chelpg(&mol, &prep, &rhf, Some(chelpg_peak_bytes(npts))).unwrap();
+        let ample = water_chelpg(&mol, &prep, &rhf, Some(usize::MAX)).unwrap();
+        let ambient = water_chelpg(&mol, &prep, &rhf, None).unwrap();
+        assert!(!ambient.is_empty() && ambient.len() < npts);
+        for other in [&at_peak, &ample] {
+            assert_eq!(other.len(), ambient.len());
+            for (a, b) in other.iter().zip(&ambient) {
+                assert_eq!(a.r.map(f64::to_bits), b.r.map(f64::to_bits));
+                assert_eq!(a.v.to_bits(), b.v.to_bits());
+            }
+        }
     }
 
     #[test]
