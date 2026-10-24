@@ -101,7 +101,9 @@ fn search(method: HessianMethod, recalc: usize, scf: &RhfConfig) -> Result<Run, 
         // saddle_cost.rs): an FD Hessian truly costs reported + 1.
         let cost = match fr.hessian_source {
             HessianSource::FiniteDifference => fr.n_gradient_evaluations + 1,
-            HessianSource::Analytic => fr.n_gradient_evaluations,
+            HessianSource::Analytic | HessianSource::AnalyticMovingGrid => {
+                fr.n_gradient_evaluations
+            }
         };
         n_hessian_grad.set(n_hessian_grad.get() + cost);
         sources.borrow_mut().push(fr.hessian_source);

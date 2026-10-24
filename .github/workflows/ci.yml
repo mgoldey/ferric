@@ -1249,6 +1249,14 @@ jobs:
         if: ${{ !cancelled() && matrix.partition == 4 }}
         run: uv run maturin develop --release --locked
 
+      # The binding-vs-CLI tests (test_ks_moving_grid_frequencies.py) compare
+      # the extension with the CLI binary of the same tree; FERRIC_CLI below
+      # points them at it, and they FAIL rather than skip when it is set but
+      # missing.
+      - name: Build ferric-cli (release)
+        if: ${{ !cancelled() && matrix.partition == 4 }}
+        run: cargo build --release -p ferric-cli --locked
+
       - name: Run Python validation tests
         if: ${{ !cancelled() && matrix.partition == 4 }}
         run: |
@@ -1257,7 +1265,8 @@ jobs:
           # (right for a dev box, wrong here: zero tests run would read as a
           # pass). Import first so a broken build fails this step loudly.
           uv run python -c "import ferric"
-          OPENBLAS_NUM_THREADS=1 uv run pytest -m validation crates/ferric-python/tests/ -q
+          FERRIC_CLI="$PWD/target/release/ferric-cli" OPENBLAS_NUM_THREADS=1 \
+            uv run pytest -m validation crates/ferric-python/tests/ -q
 
   # One validation test too long for any shard: Cr(CO)6 (199 AOs, exact 4-index
   # J/K) through the default SCF ladder with stability analysis. Every CI run

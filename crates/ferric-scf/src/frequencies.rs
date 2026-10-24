@@ -171,18 +171,33 @@ pub enum HessianMethod {
     Analytic,
     /// Central differences of the analytic gradient (`6N` gradients).
     FiniteDifference,
+    /// OPT-IN: the analytic Hessian of closed-shell Kohn-Sham on the
+    /// production (moving) grid, Becke weight response included
+    /// ([`crate::hessian::rks_moving_grid_hessian`]): the surface the KS
+    /// gradient differentiates, so it agrees with `FiniteDifference` to the
+    /// finite-difference error. RKS only (`FrequencyReference::Rhf` with
+    /// `RhfConfig::xc` set), LDA/GGA pure or global hybrid, exact or RI-J /
+    /// RI-K. Everything else is refused with a typed error before the SCF
+    /// ([`crate::hessian::rks_moving_grid_hessian_preflight`]): Hartree-Fock,
+    /// open-shell references, meta-GGA, VV10, range-separated hybrids, ECPs,
+    /// external potentials and angular-pruned grids. `Auto` and `Analytic`
+    /// never select it.
+    AnalyticMovingGrid,
 }
 
 impl HessianMethod {
-    /// Strict parse of a config string: `auto`, `analytic`, or `fd` /
-    /// `finite-difference`. Anything else is an error.
+    /// Strict parse of a config string: `auto`, `analytic`,
+    /// `analytic-moving-grid`, or `fd` / `finite-difference`. Anything else is
+    /// an error.
     pub fn parse_config_str(s: &str) -> Result<Self, FerricError> {
         match s {
             "auto" => Ok(Self::Auto),
             "analytic" => Ok(Self::Analytic),
+            "analytic-moving-grid" => Ok(Self::AnalyticMovingGrid),
             "fd" | "finite-difference" => Ok(Self::FiniteDifference),
             other => Err(FerricError::General(format!(
-                "unknown Hessian method {other:?}: expected \"auto\", \"analytic\" or \"fd\""
+                "unknown Hessian method {other:?}: expected \"auto\", \"analytic\", \
+                 \"analytic-moving-grid\" or \"fd\""
             ))),
         }
     }
@@ -195,14 +210,18 @@ pub enum HessianSource {
     Analytic,
     /// Central differences of the analytic gradient.
     FiniteDifference,
+    /// The analytic closed-shell Kohn-Sham Hessian on the moving grid
+    /// ([`HessianMethod::AnalyticMovingGrid`]).
+    AnalyticMovingGrid,
 }
 
 impl HessianSource {
-    /// `"analytic"` or `"finite-difference"`.
+    /// `"analytic"`, `"finite-difference"` or `"analytic-moving-grid"`.
     pub fn label(&self) -> &'static str {
         match self {
             HessianSource::Analytic => "analytic",
             HessianSource::FiniteDifference => "finite-difference",
+            HessianSource::AnalyticMovingGrid => "analytic-moving-grid",
         }
     }
 }
@@ -302,7 +321,9 @@ impl FrequencyResult {
 /// [`crate::hessian::analytic_uhf_hessian_available`]): one SCF plus CPHF. Every
 /// other case central-differences the analytic nuclear gradient, performing
 /// `6N` SCF-plus-gradient evaluations. `FrequencyResult::hessian_source` says
-/// which ran. The input geometry should be a
+/// which ran. [`HessianMethod::AnalyticMovingGrid`] instead runs
+/// [`harmonic_frequencies_ks_moving_grid`] (closed-shell KS only, opt-in).
+/// The input geometry should be a
 /// converged stationary point; nothing here verifies that, and frequencies at
 /// a non-stationary geometry are not physically meaningful (the residual
 /// gradient contaminates the projection).
@@ -323,7 +344,7 @@ pub fn harmonic_frequencies(
             "harmonic frequencies require at least 2 atoms, got {natoms}"
         )));
     }
-    if let Some(res) = analytic_if_selected(ctx, mol, basis_name, op, scf_config, freq_config)? {
+    if let Some(res) = analytic_route(ctx, mol, basis_name, op, scf_config, freq_config)? {
         return Ok(res);
     }
     if !(freq_config.delta.is_finite() && freq_config.delta > 0.0) {
@@ -347,19 +368,33 @@ pub fn harmonic_frequencies(
     })
 }
 
+/// Why an analytic Hessian cannot serve a corrected surface, or `None` for
+/// the finite-difference methods.
+fn analytic_with_correction_refusal(method: HessianMethod) -> Option<&'static str> {
+    match method {
+        HessianMethod::Analytic => Some(
+            "harmonic frequencies with an SCF energy correction: hessian = \"analytic\" is \
+             not available. The analytic SCF Hessian has no correction term, and adding a \
+             finite-difference correction Hessian to it would mix two constructions; use \
+             \"auto\" or \"fd\" (central differences of the corrected analytic gradient).",
+        ),
+        HessianMethod::AnalyticMovingGrid => Some(
+            "harmonic frequencies with an SCF energy correction: hessian = \
+             \"analytic-moving-grid\" is not available. The analytic moving-grid Kohn-Sham \
+             Hessian has no correction term; use \"auto\" or \"fd\" (central differences of the \
+             corrected analytic gradient).",
+        ),
+        HessianMethod::Auto | HessianMethod::FiniteDifference => None,
+    }
+}
+
 /// The configuration checks of [`harmonic_frequencies_with_scf_correction`]
 /// that need no SCF: no analytic Hessian, a finite positive displacement.
 /// Public so a caller can run them before any expensive setup of its
 /// correction (e.g. MBD@rsSCS's free-atom SCFs).
 pub fn check_scf_correction_config(freq_config: &FrequencyConfig) -> Result<(), FerricError> {
-    if freq_config.hessian == HessianMethod::Analytic {
-        return Err(FerricError::General(
-            "harmonic frequencies with an SCF energy correction: hessian = \"analytic\" is \
-             not available. The analytic SCF Hessian has no correction term, and adding a \
-             finite-difference correction Hessian to it would mix two constructions; use \
-             \"auto\" or \"fd\" (central differences of the corrected analytic gradient)."
-                .to_string(),
-        ));
+    if let Some(why) = analytic_with_correction_refusal(freq_config.hessian) {
+        return Err(FerricError::General(why.to_string()));
     }
     if !(freq_config.delta.is_finite() && freq_config.delta > 0.0) {
         return Err(FerricError::General(format!(
@@ -526,6 +561,23 @@ fn fd_hessian_frequencies(
     Ok(result)
 }
 
+/// The analytic routes of [`harmonic_frequencies`]: the explicit
+/// moving-grid KS Hessian, else [`analytic_if_selected`].
+fn analytic_route(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    basis_name: &str,
+    op: Operator,
+    scf_config: &RhfConfig,
+    freq_config: &FrequencyConfig,
+) -> Result<Option<FrequencyResult>, FerricError> {
+    if freq_config.hessian != HessianMethod::AnalyticMovingGrid {
+        return analytic_if_selected(ctx, mol, basis_name, op, scf_config, freq_config);
+    }
+    let reference = freq_config.reference;
+    harmonic_frequencies_ks_moving_grid(ctx, mol, basis_name, op, scf_config, reference).map(Some)
+}
+
 /// The analytic branch of [`harmonic_frequencies`]: `Some` when
 /// `freq_config.hessian` selects it and the system is supported, `None` to
 /// continue with finite differences, `Err` when `Analytic` was requested but
@@ -669,6 +721,54 @@ pub fn harmonic_frequencies_analytic_rohf(
     let bounds = SchwarzBounds::compute(op, &prep)?;
     let res = solve_rohf(ctx, mol, &prep, op, &bounds, scf_config)?;
     crate::hessian::analytic_frequencies_rohf(ctx, mol, &prep, op, &bounds, &res, scf_config)
+}
+
+/// Harmonic frequencies from the OPT-IN analytic moving-grid Kohn-Sham Hessian
+/// ([`crate::hessian::rks_moving_grid_hessian`]), the route
+/// [`HessianMethod::AnalyticMovingGrid`] takes: one closed-shell KS SCF
+/// ([`solve_rhf`] with `scf_config.xc` set) and the analytic Hessian of the
+/// surface the production KS gradient differentiates.
+///
+/// Refused with a typed error BEFORE the SCF: a reference other than
+/// [`FrequencyReference::Rhf`] (UKS/ROKS), and everything
+/// [`crate::hessian::rks_moving_grid_hessian_preflight`] refuses (no `xc`,
+/// meta-GGA, VV10, range-separated or double hybrids, ECPs, external
+/// potentials, angular-pruned grids, and the closed-shell RHF Hessian's
+/// configuration refusals: non-Coulomb operator, COSX, solvation, polarizable
+/// embedding, fractional occupations, cDFT, MOM). The checks that need the
+/// SCF (the recorded density-fitting route, Fock consistency) fire after it,
+/// inside the Hessian. `hessian_source` is [`HessianSource::AnalyticMovingGrid`],
+/// `n_gradient_evaluations` 0.
+pub fn harmonic_frequencies_ks_moving_grid(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    basis_name: &str,
+    op: Operator,
+    scf_config: &RhfConfig,
+    reference: FrequencyReference,
+) -> Result<FrequencyResult, FerricError> {
+    let natoms = mol.atoms.len();
+    if natoms < 2 {
+        return Err(FerricError::General(format!(
+            "harmonic frequencies require at least 2 atoms, got {natoms}"
+        )));
+    }
+    if reference != FrequencyReference::Rhf {
+        return Err(FerricError::General(format!(
+            "hessian = \"analytic-moving-grid\": the analytic moving-grid Kohn-Sham Hessian does \
+             not support an open-shell ({reference:?}, i.e. UKS/ROKS) reference (not yet \
+             implemented; next unit: spin-polarized XC kernel); use \"fd\""
+        )));
+    }
+    let bs = ferric_core::basis::bundled(basis_name)?;
+    crate::hessian::rks_moving_grid_hessian_preflight(mol, &bs, op, scf_config)?;
+    atom_masses(mol)?;
+    let prep = PreparedBasis::new(mol, &bs)?;
+    let bounds = SchwarzBounds::compute(op, &prep)?;
+    let res = solve_rhf(ctx, mol, &prep, op, &bounds, scf_config)?;
+    crate::hessian::analytic_frequencies_ks_moving_grid(
+        ctx, mol, &prep, op, &bounds, &res, scf_config,
+    )
 }
 
 /// Mass-weight, project out translations/rotations, diagonalize, and convert to
