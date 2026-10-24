@@ -1322,6 +1322,10 @@ use ndarray::Array4;
 /// and the analytic-α path additionally holds central-diff ∂Imo copies —
 /// budget for ~3 live nmo⁴ f64 buffers. Placed next to `full_mo_eri` so an M3/M5
 /// restructure that shrinks the peak updates the formula in the same diff.
+///
+/// This is the CEILING check only, left unchanged so no job the current tree
+/// admits is refused by it. The pool charge, which counts the true peak, is
+/// [`guard_full_mo_eri`].
 fn check_full_mo_eri_alloc(
     label: &str,
     nmo: usize,
@@ -1332,6 +1336,40 @@ fn check_full_mo_eri_alloc(
         &format!("{label}: dense nmo⁴ MO-ERI (nmo={nmo})"),
         peak,
         ferric_core::memory::resolve_budget_bytes(explicit_budget),
+    )
+}
+
+/// The ceiling check plus a charge of the caller's TRUE co-resident peak
+/// against the shared memory pool (the canonical.rs/mp3.rs convention: the
+/// ceiling figure stays, the pool sees the real bytes).
+///
+/// The charge is `pool_nmo4_buffers · nmo⁴ + naux · nmo²` f64. The second term
+/// is the `b_full` (naux, nmo, nmo) tensor every caller keeps alive to return.
+/// `full_mo_eri` alone holds two nmo⁴ buffers (the Gram matrix `g` and the
+/// tensor it is copied into), so the TDHF/BSE callers pass 2. The analytic-α
+/// axis loop holds `imo0`, `dimo`, `imo_p`, the `ed·dimo` temporary and
+/// `imo_m` at once, so it passes 5 (more than the ceiling's 3).
+///
+/// The AO 3-index tensor that `compute_b_full_mo` builds is charged by its own
+/// source while this reservation is outstanding, so the two compose. Hold the
+/// returned guard until the nmo⁴ tensors die, which for every caller is
+/// function end. Inert when no pool is installed.
+fn guard_full_mo_eri(
+    label: &str,
+    nmo: usize,
+    naux: usize,
+    pool_nmo4_buffers: usize,
+    explicit_budget: Option<usize>,
+) -> Result<ferric_core::memory::pool::Reservation, FerricError> {
+    check_full_mo_eri_alloc(label, nmo, explicit_budget)?;
+    let nmo2 = nmo.saturating_mul(nmo);
+    let elems = nmo2
+        .saturating_mul(nmo2)
+        .saturating_mul(pool_nmo4_buffers)
+        .saturating_add(naux.saturating_mul(nmo2));
+    crate::rimp2::charge_mo_side(
+        &format!("{label}: dense nmo⁴ MO-ERI (nmo={nmo})"),
+        elems.saturating_mul(8),
     )
 }
 
@@ -1572,9 +1610,13 @@ pub fn analytic_alpha_full(
     // ((nmo²)²=nmo⁴, :1146) and the central-diff ∂Imo copies in the axis loop.
     // The solve_zvec_dense (Δε+A) Hessian ((nocc·nvir)², :1243) is subsumed by
     // this larger nmo⁴ peak.
-    check_full_mo_eri_alloc(
+    // The pool is charged the true axis-loop peak (5 nmo⁴, see the guard's
+    // doc), held to function end where imo0 and b_full die.
+    let _imo0_charge = guard_full_mo_eri(
         &format!("relaxed-MP2 α (analytic; nmo={nmo}, nocc={nocc}, nvir={nvir})"),
         nmo,
+        dfbs.nbasis(),
+        5,
         mp2_config.memory_budget_bytes,
     )?;
 
@@ -1826,8 +1868,9 @@ pub fn bse_gate0_residuals(
     let nvir = nmo - nocc;
     let eps: Vec<f64> = rhf.eps_r().to_vec();
 
-    // Fail-fast size guard: full_mo_eri holds the nmo⁴ ERI + nmo⁴ Gram (:1143-1146).
-    check_full_mo_eri_alloc("BSE gate-0 residuals", nmo, None)?;
+    // Fail-fast size guard: full_mo_eri holds the nmo⁴ ERI + nmo⁴ Gram. The
+    // pool charge is held to function end, where imo and b_full die.
+    let _imo_charge = guard_full_mo_eri("BSE gate-0 residuals", nmo, dfbs.nbasis(), 2, None)?;
     let b_full = crate::oo_rimp2::compute_b_full_mo(obs, dfbs, op, c)?; // (naux, nmo, nmo)
     let imo = full_mo_eri(&b_full);
 
@@ -1872,8 +1915,9 @@ pub fn dynamic_cphf_alpha_iw(
     let n = nvir * nocc;
     let eps: Vec<f64> = rhf.eps_r().to_vec();
 
-    // Fail-fast size guard: full_mo_eri holds the nmo⁴ ERI + nmo⁴ Gram (:1143-1146).
-    check_full_mo_eri_alloc("dynamic CPHF/TDHF α(iω)", nmo, None)?;
+    // Fail-fast size guard: full_mo_eri holds the nmo⁴ ERI + nmo⁴ Gram. The
+    // pool charge is held to function end, where imo and b_full die.
+    let _imo_charge = guard_full_mo_eri("dynamic CPHF/TDHF α(iω)", nmo, dfbs.nbasis(), 2, None)?;
     let b_full = crate::oo_rimp2::compute_b_full_mo(obs, dfbs, op, c)?;
     let imo = full_mo_eri(&b_full);
     let (apb, amb) = build_apb_amb(&imo, &eps, nocc, nvir);
