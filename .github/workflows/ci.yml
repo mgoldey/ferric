@@ -426,6 +426,32 @@ jobs:
   build-tests:
     runs-on: ubuntu-22.04
     timeout-minutes: 170
+    # NO DEBUG INFO IN THE ARCHIVED BINARIES (#525). Every shard downloads
+    # this job's archive, and its size is what made downloads slow or
+    # truncated (25-80 min, run 40058633825). The workflow-level
+    # `line-tables-only` does not shrink the binaries much: each statically
+    # linked test binary still carries the precompiled std's FULL DWARF, plus
+    # ferric's own line tables, and the libint shim's C++ `-g` objects.
+    # MEASURED on run 40058633825's artifact (every member, streamed): 846
+    # files, 70.5 GB uncompressed, of which 51.3 GB (73%) is .debug_*
+    # sections; zstd-3 per file 15.30 GB as shipped vs 7.45 GB after
+    # `objcopy --strip-debug` (-51%). `debug = 0` + `strip = "debuginfo"`
+    # removes all of it. What this does NOT change: opt-level (2, Cargo.toml
+    # [profile.test]), debug-assertions, overflow-checks, features and cfgs,
+    # so the code under test is the same; only non-loaded .debug_* sections
+    # go. Panic messages keep file:line:col (that comes from
+    # `core::panic::Location`, compiled into .rodata, not from DWARF), and the
+    # symbol table stays, so a RUST_BACKTRACE=1 backtrace still names every
+    # function -- it only loses per-frame file:line. The libint shim's `-g`
+    # comes from the cc crate, which follows cargo's DEBUG env (so debug = 0
+    # already drops it); the linker-level strip is the backstop for any
+    # other prebuilt debug info, like std's. Job-scoped on purpose:
+    # the coverage/lint/slow-tests jobs keep the workflow-level setting.
+    env:
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_DEV_STRIP: debuginfo
+      CARGO_PROFILE_TEST_DEBUG: "0"
+      CARGO_PROFILE_TEST_STRIP: debuginfo
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
@@ -586,6 +612,38 @@ jobs:
           # the archive: .config/nextest.toml's `archive.include` packs it
           # into the archive and errors if it is absent.
           cargo build -p ferric-scf --example runlog_probe --locked
+          # Build the test binaries FIRST, with the same target selection and
+          # profile `nextest archive` uses (it runs `cargo test --no-run` with
+          # these flags), so the debug-info guard below runs before minutes of
+          # compression; the archive's own build is then a fresh no-op.
+          cargo test --no-run --workspace --all-targets --locked
+          # DEBUG-INFO GUARD (#525). The job `env:` above must have taken
+          # effect: an archived binary with a .debug_info section means the
+          # archive is back to ~2x its size, e.g. because a Cargo.toml profile
+          # started overriding the env. It FAILS CLOSED: a missing readelf, a
+          # readelf error, or too few binaries found (wrong path, empty
+          # target/) is an error, never a silent pass. 100 is a floor well
+          # under the 728 test binaries the archive held (run 40058633825).
+          command -v readelf >/dev/null \
+            || { echo "::error::readelf missing -- cannot check the test binaries for debug info (#525)"; exit 1; }
+          mapfile -d '' BINS < <(find target/debug/deps target/debug/examples -maxdepth 1 \
+            -type f -executable ! -name '*.so' -print0)
+          if [ "${#BINS[@]}" -lt 100 ]; then
+            echo "::error::debug-info guard found only ${#BINS[@]} test binaries (expected >= 100) -- it would be checking nothing (#525)"
+            exit 1
+          fi
+          WITH_DEBUG=()
+          for f in "${BINS[@]}"; do
+            SECTIONS=$(readelf -S -W "$f") \
+              || { echo "::error::readelf failed on $f (#525 debug-info guard)"; exit 1; }
+            if grep -q '\.debug_info' <<<"$SECTIONS"; then WITH_DEBUG+=("$f"); fi
+          done
+          if [ "${#WITH_DEBUG[@]}" -gt 0 ]; then
+            echo "::error::${#WITH_DEBUG[@]} of ${#BINS[@]} test binaries still carry DWARF debug info, which roughly doubles the nextest archive (#525):"
+            printf '%s\n' "${WITH_DEBUG[@]}" | head -20
+            exit 1
+          fi
+          echo "debug-info guard: ${#BINS[@]} test binaries checked, none carry .debug_info"
           cargo nextest archive --workspace --all-targets --locked \
             --archive-file /tmp/nextest-archive.tar.zst
           # The malloc-perturb job runs 6 binaries; downloading the whole
@@ -812,9 +870,23 @@ jobs:
       # 15 GB download used to eat the whole 120-min job. A timed-out or
       # failed attempt falls through to the zstd check, so the retry below
       # and the "ARTIFACT DOWNLOAD failure" error in the run step still fire.
+      #
+      # WHY 15 MIN PER ATTEMPT. Shards 1 and 4 of run 40058633825 died because
+      # BOTH 25-min attempts timed out (24.5 and 25.0 min; 25.0 and 25.0 min)
+      # and the run step then failed in ~30 s -- the bound fired as designed,
+      # the job's time budget was never exhausted. A tighter bound only makes
+      # that failure come EARLIER, so a re-run starts sooner. It is safe ONLY
+      # because build-tests now strips debug info and the archive halves
+      # (~15.2 -> ~7.5 GB, see the build-tests `env:` comment): shard 2's
+      # HEALTHY download of the 15.2 GB archive took 17.9 min and would have
+      # been cut off by this bound. build-tests' debug-info guard is what
+      # protects it; if that guard is ever removed, revisit this number.
+      # Budget at 15: setup ~2 min + 2 x (15 + ~1 min zstd -t) + run step
+      # ~55 min (shards 2/3 of that run) + shard 1's doctests 3-5 min =
+      # ~94 min worst case against the 120-min job timeout.
       - name: Download the archive
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        timeout-minutes: 25
+        timeout-minutes: 15
         continue-on-error: true
         with:
           name: nextest-archive
@@ -846,7 +918,7 @@ jobs:
       - name: Re-download if the artifact was incomplete
         if: steps.verify.outputs.complete != '1'
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        timeout-minutes: 25
+        timeout-minutes: 15
         continue-on-error: true
         with:
           name: nextest-archive
@@ -928,8 +1000,9 @@ jobs:
   # Time: against the FULL archive (~760 binaries, ~15 GB) each
   # `nextest run --archive-file` invocation cost ~3.5-4 min of extraction
   # (MEASURED from CI job logs) and the download itself was slow or truncated
-  # (#525); hence the separate canary archive of only these 6 binaries, whose
-  # download and extraction time has not yet been measured on a runner. The
+  # (#525); hence the separate canary archive of only these 6 binaries:
+  # 200 MB, downloaded in 37 s (MEASURED, run 40058633825), so its download
+  # steps are bounded at 5 min each rather than the full archive's 15. The
   # job still runs ONE invocation per MALLOC_PERTURB_ value (3 total).
   malloc-perturb:
     needs: build-tests
@@ -977,7 +1050,7 @@ jobs:
       # exactly like test-shard's download.
       - name: Download the canary archive
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        timeout-minutes: 25
+        timeout-minutes: 5
         continue-on-error: true
         with:
           name: canary-archive
@@ -998,7 +1071,7 @@ jobs:
       - name: Re-download if the artifact was incomplete
         if: steps.verify.outputs.complete != '1'
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        timeout-minutes: 25
+        timeout-minutes: 5
         continue-on-error: true
         with:
           name: canary-archive
