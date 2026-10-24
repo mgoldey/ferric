@@ -1124,3 +1124,130 @@ fn default_config_does_not_compute_the_canonical_reference() {
         on.e_corr - off.e_corr
     );
 }
+
+/// DECISIVE-SCALING bench (2026-09-16): repeats + free size list + cpu_s.
+///
+/// Motivation (wiki/amplitude-threshold-lmp2.md §34): the headline exponent
+/// rests on THREE points and moved 0.02-0.09 when only box conditions
+/// changed, and the doc itself records that an affine model t = a*N - b fits
+/// those same points as well as or better than a power law. A 4th point at
+/// the same spacing does not separate those models. Two things do:
+///   (1) a per-size sigma, so an exponent can be compared to 1.0 at all;
+///   (2) the DIFFERENCED observable dt/dN, which cancels the affine offset b
+///       -- flat under the affine artifact hypothesis, rising as N^(p-1)
+///       under the genuine-power-law hypothesis.
+/// Hence: no ri_mp2 reference (the crossover is settled and the reference is
+/// what makes large N unaffordable), REPEATS for sigma, and a caller-supplied
+/// size list so the tail can be sampled densely rather than merely extended.
+///
+/// Release, quiet box, uncapped:
+///   OPENBLAS_NUM_THREADS=1 FERRIC_LMP2_SIZES=24,32,40,48 \
+///   FERRIC_LMP2_REPS=3 FERRIC_LMP2_OPS=erfc1 FERRIC_LMP2_EPS=1e-3 \
+///   cargo test -p ferric-mp2 --release --test lmp2_direct -- \
+///     --ignored --nocapture bench_scaling_decisive
+///
+/// Memory: this bench reads `FERRIC_MEM_BUDGET_GB` ITSELF (default 6) and
+/// converts it as GiB (`x * 2^30` bytes), which it hands to both
+/// `eri3_budget_bytes` and the direct `scratch_budget_bytes`. That matches
+/// `ferric_core::memory`, which parses the same variable as GiB and prints
+/// the resolved budget in GiB (`BudgetResolution::audit_line`); only its
+/// over-budget refusal messages quote decimal GB (/1e9).
+#[test]
+#[ignore = "benchmark: release build, quiet box, OPENBLAS_NUM_THREADS=1; C32+ needs several GB"]
+fn bench_scaling_decisive() {
+    let sizes: Vec<usize> = std::env::var("FERRIC_LMP2_SIZES")
+        .unwrap_or_else(|_| "20,32,48".into())
+        .split(',')
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| s.trim().parse().unwrap())
+        .collect();
+    let reps: usize = std::env::var("FERRIC_LMP2_REPS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(3);
+    let ops: Vec<String> = std::env::var("FERRIC_LMP2_OPS")
+        .unwrap_or_else(|_| "coul,erfc1".into())
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .collect();
+    let epss: Vec<f64> = std::env::var("FERRIC_LMP2_EPS")
+        .unwrap_or_else(|_| "1e-3,1e-4".into())
+        .split(',')
+        .map(|s| s.trim().parse().unwrap())
+        .collect();
+    let budget_gb: f64 = std::env::var("FERRIC_MEM_BUDGET_GB")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(6.0);
+    let budget = (budget_gb * (1u64 << 30) as f64) as usize;
+
+    let prod = DirectConfig {
+        aux_radius_bohr: 10.0,
+        virt_radius_bohr: Some(12.0),
+        ao_tail: 1e-3,
+        schwarz_skip: 1e-5,
+        batch_merge: 4,
+        scratch_budget_bytes: budget,
+        virt_schwarz_kappa: None,
+    };
+
+    println!(
+        "# DECISIVE rows: sys op eps rep E_corr t_method wall_s cpu_s \
+         t_maps t_eri3 t_metric t_pairs t_asm t_solve Mtriples dom_mx strip_r_mx strip_c_mx pairs_per_occ"
+    );
+    for nc in &sizes {
+        let nc = *nc;
+        let su = setup(&format!("alkane_{nc}.xyz"));
+        for opname in &ops {
+            let (op, cal) = match opname.as_str() {
+                "coul" => (Operator::coulomb(), 0.7),
+                "erfc1" => (Operator::erfc(1.0), 0.02),
+                other => panic!("unknown op {other}"),
+            };
+            for eps in &epss {
+                for rep in 0..reps {
+                    let cfg = AmplitudeLmp2Config {
+                        eps: *eps,
+                        frozen_core: nc,
+                        pair_gate_cal: Some(cal),
+                        eri3_budget_bytes: Some(budget),
+                        compute_reference: false,
+                        ..Default::default()
+                    };
+                    let w0 = std::time::Instant::now();
+                    let c0 = cpu_time_s();
+                    let (r, st) = amplitude_lmp2_direct(
+                        &su.mol, &su.obs, &su.obs_bs, &su.dfbs, op, &su.rhf, &cfg, &prod,
+                    )
+                    .unwrap();
+                    let wall = w0.elapsed().as_secs_f64();
+                    let cpu = cpu_time_s() - c0;
+                    let t_method = r.timings.t_assembly_s + r.timings.t_solve_s;
+                    let no = 3 * nc + 1;
+                    println!(
+                        "DEC alkane_{:<3} {:6} {:6.0e} {} {:.10} {:8.3} {:8.3} {:9.3} \
+                         {:6.2} {:7.2} {:7.2} {:7.2} {:7.2} {:7.2} {:8.2} {:4.0} {:5.0} {:4.0} {:6.2}",
+                        nc, opname, eps, rep,
+                        r.e_corr, t_method, wall, cpu,
+                        st.t_maps_s, st.t_eri3_s, st.t_metric_s, st.t_pairs_s,
+                        r.timings.t_assembly_s, r.timings.t_solve_s,
+                        st.n_eri3_shell_triples as f64 / 1e6,
+                        r.dom_max, st.strip_rows_max, st.strip_cols_max,
+                        r.pair_fraction * (no * no) as f64 / no as f64,
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// Process CPU seconds (user+sys, all threads) via /proc/self/stat.
+fn cpu_time_s() -> f64 {
+    let s = std::fs::read_to_string("/proc/self/stat").unwrap();
+    // fields 14 (utime) and 15 (stime), 1-indexed, after the comm field
+    let rest = &s[s.rfind(')').unwrap() + 2..];
+    let f: Vec<&str> = rest.split_whitespace().collect();
+    let utime: u64 = f[11].parse().unwrap();
+    let stime: u64 = f[12].parse().unwrap();
+    (utime + stime) as f64 / 100.0
+}

@@ -2590,3 +2590,473 @@ def test_kuhf_matches_pinned_pyscf_kuhf_aftdf(name):
     ue = KUHF.kuhf(kb, r["na"], 0, conv=1e-12, guess=(u0["Da"], u0["Db"]))
     assert abs(u0["e"] - r["none"]) < 1e-11 and abs(ue["e"] - r["ewald"]) < 1e-11
     assert abs(u0["s2"] - r["s2"]) < 1e-12 and abs(ue["s2"] - r["s2"]) < 1e-12
+
+
+# ============================================================ Iteration 15: linear dependence (pbc_lindep.py)
+import pbc_lindep as LD  # noqa: E402
+
+_LD_ATOMS = [("H1", (0.3, 0.2, 0.1)), ("H2", (0.3, 0.2, 1.5))]
+
+
+def _ld_basis(ad=0.06, asym=1.15):
+    """H2 STO-3G + one diffuse s per H (exponents ad, ad*asym).  asym != 1 breaks the cell's inversion symmetry: with
+    equal exponents the Gamma near-null vector is ODD and orthogonal to the occupied band by symmetry, so dropping it
+    costs exactly 0 (measured -3e-12) -- a symmetry fact that would make every filter look free."""
+    sto = gto.basis.load("sto-3g", "H")
+    return {"H1": sto + [[0, [ad, 1.0]]], "H2": sto + [[0, [ad * asym, 1.0]]]}
+
+
+def test_lindep_bloch_overlap_matches_poisson_closed_form_and_its_error_is_absolute():
+    """One unit s Gaussian (alpha 0.0297, the H aug-cc-pVDZ diffuse s) per cubic a = 4 cell: real-space lattice sum vs
+    S(k) = (1/Omega)(2pi/alpha)^1.5 sum_G exp(-|k+G|^2/2alpha).  Measured abs err 9.9e-13/1.1e-16/1.4e-15/7.3e-16 at
+    Gamma/X/M/R: ABSOLUTE (~eps sum_L|S_L|), so the R value 1.1e-11 has only 6.5e-5 relative precision (a = 3: the
+    exact 8e-22 comes out -2.8e-16).  A sum truncated at prec 1e-6 (mutant) misses."""
+    alpha, A = 0.0297, np.eye(3) * 4.0
+    k = np.array([[0, 0, 0], [0, 0, 0.5], [0, 0.5, 0.5], [0.5, 0.5, 0.5]]) @ (
+        2 * np.pi * np.linalg.inv(A).T
+    )
+    ref = LD.single_s_poisson(alpha, A, k)
+    errs = {}
+    for prec in (1e-16, 1e-6):
+        _, Ls, S_L = LD.lattice_overlap(
+            A, [("H", (0.0, 0.0, 0.0))], {"H": [[0, [alpha, 1.0]]]}, prec=prec
+        )
+        errs[prec] = abs(LD.s_of_k(Ls, S_L, k)[:, 0, 0].real - ref)
+    e = errs[1e-16]
+    assert e[0] < 1e-11 and e[1:].max() < 1e-14 and e[3] / ref[3] > 1e-6
+    assert errs[1e-6][1:].max() > 1e-8
+
+
+def test_lindep_supercell_spectrum_is_the_union_over_k_so_an_absolute_cut_is_k_consistent():
+    """eig S_sc(Gamma) == union_k eig S(k) (measured 2.0e-13), so an ABSOLUTE canonical cut keeps the same space on
+    both sides although the kept count varies by k ([3,4,4] vs 11 at tau 1e-6: lam_min 2.2e-7 at Gamma, 1.6e-3 at
+    +-k).  A mesh shifted off the supercell reciprocal lattice (mutant) breaks the union by 4.2."""
+    A = np.eye(3) * 4.0
+    _, Ls, S_L = LD.lattice_overlap(A, _LD_ATOMS, _ld_basis())
+    sc = PK.supercell_cell(Cell(A, _LD_ATOMS, _ld_basis()), (1, 1, 3))
+    _, Ls2, S_L2 = LD.lattice_overlap(sc.a, sc.atoms, _ld_basis())
+    Ssc = LD.s_of_k(Ls2, S_L2, np.zeros((1, 3)))[0]
+    k = LD.gamma_mesh(A, (1, 1, 3))
+    for shift, ok in ((0.0, True), (0.1, False)):
+        Sk = LD.s_of_k(Ls, S_L, k + np.array([0, 0, shift]))
+        d = abs(
+            np.sort(np.concatenate([np.linalg.eigvalsh(s) for s in Sk]))
+            - np.linalg.eigvalsh(Ssc)
+        ).max()
+        assert (d < 1e-12) if ok else (d > 1.0)
+    Sk = LD.s_of_k(Ls, S_L, k)
+    orth = LD.orth_factory("canonical", thr=1e-6)
+    assert LD.kept_counts(Sk, orth) == [3, 4, 4] and orth(Ssc).shape[1] == 11
+    for o in (
+        orth,
+        LD.orth_factory("cholesky", tol=1e-6),
+        LD.orth_factory("canonical", thr=1e-6, normalize=True),
+    ):
+        X = o(Sk[0])
+        assert abs(X.conj().T @ Sk[0] @ X - np.eye(X.shape[1])).max() < 1e-12
+
+
+def test_lindep_exp_to_discard_semantics():
+    """PySCF Cell.exp_to_discard: drop primitives below emin, drop emptied shells; below every exponent == identity."""
+    b, nd = LD.discard_basis("aug-cc-pvdz", ["H"], 0.1)
+    assert nd == {"H": 1} and [s[0] for s in b["H"]] == [
+        0,
+        0,
+        1,
+        1,
+    ]  # the 0.0297 s goes, the 0.141 p stays
+    b0, nd0 = LD.discard_basis("aug-cc-pvdz", ["H", "Li"], 0.005)
+    assert nd0 == {"H": 0, "Li": 0} and b0["H"] == gto.basis.load("aug-cc-pvdz", "H")
+    bl, ndl = LD.discard_basis(
+        "cc-pvdz", ["Li"], 0.05
+    )  # Li s 0.02805 and p 0.02403 shells
+    assert ndl == {"Li": 2} and min(p[0] for s in bl["Li"] for p in s[1:]) >= 0.05
+
+
+@pytest.fixture(scope="module")
+def lindep_model():
+    """Asymmetric diffuse H2 (ad 0.06/0.069), a = 4, 1x1x3, loose AFT (gcut prec 1e-2, pair 1e-9) -- the filter
+    comparison is within ONE set of integrals; rcut_1e = 40 because pbc_kpts' default 22 truncates the diffuse S
+    at ~1e-6 (ARTIFACT, Iteration 15: fake lam_min, SCF non-convergence, anchor off by 8.7e-7).  ~16 s."""
+    cell = Cell(np.eye(3) * 4.0, _LD_ATOMS, _ld_basis())
+    gcut, th = PK.aft_gcut(cell, 1e-2), 1e-9
+    kb = PK.build_k(cell, (1, 1, 3), gcut=gcut, thresh=th, rcut_1e=40.0, verbose=False)
+    return dict(cell=cell, gcut=gcut, th=th, kb=kb)
+
+
+def _ld_e(kb, orth, nelec=2):
+    return PK.krhf(kb, nelec, conv=1e-12, kshift=0.0, orth=orth, maxiter=300)[0]
+
+
+def test_lindep_canonical_cut_is_variational_and_tiny_while_drop_largest_mutant_is_not(
+    lindep_model, monkeypatch
+):
+    """Nothing dropped (tau 1e-7) == Lowdin S^-1/2 (2e-13); dropping the Gamma near-null vector (lam 2.2e-7; tau 1e-6,
+    kept [3,4,4]) costs +2.28e-6 Ha/cell here (+2.55e-6 with tight integrals; > 0: variational), ~1700x less than
+    exp_to_discard of the whole diffuse shell (+4.38e-3, run_lindep_scf.py).  Keeping the right COUNT but the wrong
+    vectors (drop_largest mutant) does not converge in 300 iterations (caught)."""
+    kb = lindep_model["kb"]
+    e_ref = _ld_e(kb, LD.orth_factory("lowdin"))
+    assert abs(_ld_e(kb, LD.orth_factory("canonical", thr=1e-7)) - e_ref) < 1e-10
+    d = _ld_e(kb, LD.orth_factory("canonical", thr=1e-6)) - e_ref
+    assert 1e-7 < d < 1e-5
+    monkeypatch.setattr(LD, "_MUTANT", "drop_largest")
+    try:
+        dm = _ld_e(kb, LD.orth_factory("canonical", thr=1e-6)) - e_ref
+    except RuntimeError:  # a non-converging SCF also counts as caught
+        dm = np.inf
+    assert dm > 0.1
+
+
+@pytest.mark.skipif(
+    not SLOW, reason="PBC_SLOW=1: explicit 1x1x3 supercell build (~50 s)"
+)
+def test_lindep_kmesh_equals_supercell_for_canonical_but_not_for_pivoted_cholesky(
+    lindep_model,
+):
+    """Absolute canonical cut: k-mesh ([3,4,4]) == supercell (11) to 1e-13 at every tau (union of spectra).
+    Pivoted Cholesky picks AO Bloch functions per k but real-space AOs in SOME cells of the supercell: at tol 1e-7 the
+    k-mesh drops 1 at Gamma while the supercell drops nothing -> off by 2.3e-6 (2.6e-6 with tight integrals).
+    Measured canonical: -5.5e-13 (nothing dropped) / -3.5e-14 (tau 1e-6, 1e-3).  The PySCF-addon NORMALISED cut
+    (diag(S(k)) != diag(S_sc)) is off by 8.9e-10 and would fail the 1e-11 bar.  exp_to_discard: -3.8e-14 (script)."""
+    cell, kb = lindep_model["cell"], lindep_model["kb"]
+    g = LD.gamma_kb(
+        PK.gamma_aft(
+            PK.supercell_cell(cell, (1, 1, 3)),
+            gcut=lindep_model["gcut"],
+            thresh=lindep_model["th"],
+            rcut_1e=40.0,
+        )
+    )
+    for thr in (1e-9, 1e-6, 1e-3):
+        o = LD.orth_factory("canonical", thr=thr)
+        assert abs(_ld_e(kb, o) - _ld_e(g, o, 6) / 3) < 1e-11
+    o = LD.orth_factory("cholesky", tol=1e-7)
+    assert LD.kept_counts(kb["S"], o) == [3, 4, 4] and LD.kept_counts(g["S"], o) == [12]
+    assert abs(_ld_e(kb, o) - _ld_e(g, o, 6) / 3) > 1e-7
+
+
+# ------------------------------------------------------------------ Iteration 14: periodic ECP (pbc_ecp.py)
+import pbc_ecp as PE  # noqa: E402
+from pbc_gamma import _ewald  # noqa: E402
+
+HI_A = np.diag([6.0, 6.0, 7.0])
+HI_ATOMS = [("H", (0.3, 0.2, 0.4)), ("I", (0.3, 0.2, 3.44))]
+HI_BASIS = {"H": "sto-3g", "I": "lanl2dz"}
+HI_ECP = {"I": "lanl2dz"}  # 46 core electrons, local + s/p/d semi-local projectors
+HI_MIN_BASIS = {
+    "H": "sto-3g",
+    "I": gto.basis.parse("""
+I S
+  0.4653  1.0
+I P
+  0.318   1.0
+"""),
+}
+
+
+@pytest.fixture(scope="module")
+def hi_ecp():
+    cell = PE.EcpCell(HI_A, HI_ATOMS, HI_BASIS, HI_ECP)
+    return cell, PE.ecp_images(cell)
+
+
+def test_ecp_cell_carries_zeff_and_its_ewald_matches_pyscf(hi_ecp):
+    """E_nn(Ewald, Z_eff) vs PySCF cell.energy_nuc(): measured 1.2e-14.  Bare Z (charged cell): -617 Ha off."""
+    cell, _ = hi_ecp
+    assert list(cell.Z) == [1.0, 7.0] and list(cell.ncore) == [0, 46]
+    pc = pgto.Cell(
+        a=HI_A,
+        atom=HI_ATOMS,
+        basis=HI_BASIS,
+        ecp=HI_ECP,
+        unit="B",
+        cart=True,
+        verbose=0,
+    )
+    pc.precision = 1e-12
+    pc.build()
+    enn = PE._enn(cell, cell.Z)
+    assert abs(enn - pc.energy_nuc()) < 1e-11
+    assert abs(_ewald(cell, cell.Zfull, cell.R, 1.0) - enn) > 100
+
+
+def test_ecp_lattice_sum_equals_pairwise_small_molecule_construction():
+    """Third construction: sum over (L, M) of <H1s 0|U_I(M)|H1s L> from a 3-atom molecule per term, a = (7,7,8).
+    Supermolecule lattice sum agrees to 1e-13; PySCF 2.13 pbc.gto.ecp.ecp_int is 3.1e-6 low on this element
+    (precision-insensitive; FINDINGS Iteration 14) -- which is why PySCF is not the reference here."""
+    a = np.diag([7.0, 7.0, 8.0])
+    cell = PE.EcpCell(a, HI_ATOMS, HI_BASIS, HI_ECP)
+    v = PE.ecp_k(PE.ecp_images(cell), np.zeros(3))[0].real
+    r_h, r_i = np.array(HI_ATOMS[0][1]), np.array(HI_ATOMS[1][1])
+    hb = {"H": "sto-3g", "H1": "sto-3g", "I": gto.basis.parse("I S\n 1.0 1.0")}
+    Ls = cell.translations(30.0)
+    tot = 0.0
+    for L in Ls:
+        for M in Ls:
+            RM = r_i + M
+            if np.linalg.norm(RM - r_h) > 14 or np.linalg.norm(RM - r_h - L) > 14:
+                continue
+            if np.linalg.norm(L) < 1e-9:
+                m = gto.M(
+                    atom=[("H", r_h), ("I", RM)],
+                    basis=hb,
+                    ecp=HI_ECP,
+                    unit="B",
+                    cart=True,
+                    verbose=0,
+                    spin=None,
+                )
+                tot += m.intor("ECPscalar")[0, 0]
+            else:
+                m = gto.M(
+                    atom=[("H", r_h), ("H1", r_h + L), ("I", RM)],
+                    basis=hb,
+                    ecp=HI_ECP,
+                    unit="B",
+                    cart=True,
+                    verbose=0,
+                    spin=None,
+                )
+                tot += m.intor("ECPscalar")[0, 1]
+    assert abs(v[0, 0] - tot) < 1e-11
+
+
+def test_ecp_bloch_sum_is_hermitian_unfolds_to_supercell_and_converges(
+    hi_ecp, monkeypatch
+):
+    """V(k) Hermitian, V(-k) = V(k)^*; unfolded 1x1x3 V(k) == supercell Gamma V_ECP (measured 1.6e-15);
+    ECP-image truncation error at 12 / 16 Bohr 3.8e-7 / 8.8e-11 (Gaussian decay, not a plateau).
+    Mutant 'ecp_molecular' (M = 0, L = 0) breaks the unfolding at O(0.1)."""
+    cell, img = hi_ecp
+    n = (1, 1, 3)
+    ints, kpts = PK.mp_mesh(cell, n)
+    Vk = PE.ecp_k(img, kpts)
+    assert max(abs(v - v.conj().T).max() for v in Vk) < 1e-13
+    assert (
+        max(
+            abs(Vk[PK.mesh_index(n, -ints[k])] - Vk[k].conj()).max()
+            for k in range(len(kpts))
+        )
+        < 1e-13
+    )
+    sc = PE.supercell_ecp(cell, n)
+    Vs = PE.ecp_k(PE.ecp_images(sc), np.zeros(3))[0]
+    t = np.array(list(np.ndindex(*n))) @ cell.a
+
+    def unfold(X):
+        blocks = [
+            [
+                np.einsum("k,kmn->mn", np.exp(-1j * kpts @ (t[cp] - t[c])), X)
+                / len(kpts)
+                for cp in range(3)
+            ]
+            for c in range(3)
+        ]
+        return np.block(blocks)
+
+    assert abs(unfold(Vk) - Vs).max() < 1e-12
+    e12 = abs(PE.ecp_k(img, kpts, rcut_ecp=12.0) - Vk).max()
+    e16 = abs(PE.ecp_k(img, kpts, rcut_ecp=16.0) - Vk).max()
+    assert 1e-8 < e12 < 1e-5 and e16 < 1e-9
+    monkeypatch.setattr(PE, "_MUTANT", "ecp_molecular")
+    assert abs(unfold(PE.ecp_k(img, kpts)) - Vs).max() > 1e-2
+
+
+@pytest.mark.parametrize("mutant", [None, "ecp_molecular", "z_full_vne"])
+def test_ecp_kmesh_scf_equals_supercell(monkeypatch, mutant):
+    """HI (compact I s+p basis, LANL2DZ ECP), 1x1x3, both exxdiv: k-mesh E/cell == supercell E/3, measured 5.3e-13.
+    'ecp_molecular' is caught (FINDINGS: 9.2e-3 Ha/cell with the full basis); a bare Z applied to BOTH sides is
+    INVISIBLE to this anchor (by construction: it tests the Bloch sum, not the charge) -- the box limit sees it."""
+    cell = PE.EcpCell(HI_A, HI_ATOMS, HI_MIN_BASIS, HI_ECP)
+    monkeypatch.setattr(PE, "_MUTANT", mutant)
+    n, gcut = (1, 1, 3), PK.aft_gcut(cell, 1e-4)
+    kb = PE.build_k_ecp(cell, n, gcut=gcut, thresh=1e-8)
+    g = PE.gamma_ecp(PE.supercell_ecp(cell, n), gcut=gcut, thresh=1e-8)
+    assert abs(kb["madelung"] - g["madelung"]) < 1e-14
+    for vm in (0.0, kb["madelung"]):
+        ek = PK.krhf(kb, 8, conv=1e-12, kshift=vm)[0]
+        es = rhf(g["S"], g["h"], g["I"], g["enn"], 24, conv=1e-12, kshift=vm)[0]
+        if mutant == "ecp_molecular":
+            assert abs(ek - es / 3) > 1e-3
+        else:
+            assert abs(ek - es / 3) < 1e-10
+
+
+HI_MOL = [("H", (0.0, 0.0, 0.0)), ("I", (0.0, 0.0, 3.04))]
+
+
+def _hi_box_energy(a, basis=HI_MIN_BASIS, prec=1e-8):
+    cell = PE.EcpCell(
+        np.eye(3) * a,
+        [
+            (s, np.asarray(r) + np.array([0.37, 0.21, 0.5 * a - 1.52]))
+            for s, r in HI_MOL
+        ],
+        basis,
+        HI_ECP,
+    )
+    g = PE.gamma_ecp(cell, "ewald", gcut=PK.aft_gcut(cell, prec))
+    return rhf(
+        g["S"],
+        g["h"],
+        g["I"],
+        g["enn"],
+        8,
+        conv=1e-12,
+        kshift=g["madelung"],
+        maxiter=300,
+    )[0]
+
+
+def test_ecp_box_limit_a3_coefficient_includes_the_zeff_dipole(monkeypatch):
+    """Compact HI in a cubic box -> molecular RHF (PySCF, same basis + ECP).  Predicted c3 = -(4pi/3) Omega_I
+    - (2pi/3)|p|^2 = -56.712 - 13.860 = -70.571 (p = 2.572 a.u. built with Z_eff).  Measured c3 + c5 fit:
+    (16,18) -70.553, (20,24) -70.566; exchange-only (-56.71) is excluded by 14 Ha*Bohr^3.
+    Mutants: bare Z in V_ne (charged cell) -> -174 Ha at a=16; 'ecp_molecular' is INVISIBLE here (the box
+    limit removes the neighbouring ECP centres; only the k-mesh anchor / oracle can see it)."""
+    ref = PE.molecular_reference(HI_MOL, HI_MIN_BASIS, HI_ECP)
+    assert abs(ref["c3"] + 70.5715) < 1e-3
+    d = {a: _hi_box_energy(a) - ref["e"] for a in (16.0, 18.0)}
+    X = np.array([[a**-3, a**-5] for a in d])
+    c3 = np.linalg.solve(X, list(d.values()))[0]
+    assert abs(c3 - ref["c3"]) < 1e-3 * abs(ref["c3"])
+    assert abs(c3 + (4 * np.pi / 3) * ref["omega_I"]) > 10
+    monkeypatch.setattr(PE, "_MUTANT", "z_full_vne")
+    assert _hi_box_energy(16.0) - ref["e"] < -100
+    monkeypatch.setattr(PE, "_MUTANT", "ecp_molecular")
+    assert abs(_hi_box_energy(16.0) - ref["e"] - d[16.0]) < 1e-6
+
+
+@pytest.mark.skipif(not SLOW, reason="PBC_SLOW=1: full LANL2DZ HI 1x1x2 (~2 min)")
+def test_ecp_kmesh_matches_pinned_pyscf_krhf_with_our_hcore():
+    """PySCF 2.13 KRHF + AFTDF (mesh 61x61x71, precision 1e-12) with OUR hcore agreed to 7.9e-11 (both exxdiv);
+    with PySCF's own hcore it is -8.7e-7 off, entirely from pbc.gto.ecp.ecp_int (max|dV| 3.8e-6, run_ecp_lattice.py).
+    Pinned 2026-09-24 by run_ecp_anchor.py oracle."""
+    cell = PE.EcpCell(HI_A, HI_ATOMS, HI_BASIS, HI_ECP)
+    kb = PE.build_k_ecp(cell, (1, 1, 2))
+    e0 = PK.krhf(kb, 8, conv=1e-12, kshift=0.0)[0]
+    e1 = PK.krhf(kb, 8, conv=1e-12)[0]
+    assert abs(e0 + 10.388991762015) < 1e-9 and abs(e1 + 11.360192112699) < 1e-9
+
+
+# ============================================================ Iteration 16: Gamma RHF forces (pbc_grad.py)
+import pbc_grad as PGd  # noqa: E402
+
+GRAD_H2_ATOMS = [("H", (0.3, 0.2, 0.1)), ("H", (0.35, 0.12, 1.5))]
+GRAD_COMPS = [(0, 0), (0, 2), (1, 1)]
+
+
+def test_pair_ft_derivative_is_translation_consistent_and_matches_fd():
+    """Q = dP/dA_m (bra centre, p shells): Q_mn + Q_nm = -iG P_mn exactly, and delta_{m in A} Q + delta_{n in A} Q^T
+    equals the central FD of pair_ft when atom A (all images of its functions) moves."""
+    cell = Cell(TRI_A, TRI_ATOMS, SP_BASIS)
+    rng = np.random.default_rng(3)
+    G = (rng.integers(-3, 4, (10, 3)) @ cell.b)[1:]
+    P, Q = PGd.pair_ft_deriv(cell, G)
+    assert abs(P - pair_ft(cell, G)).max() < 1e-14
+    assert (
+        abs(Q + Q.transpose(0, 2, 1, 3) + 1j * G.T[:, None, None, :] * P[None]).max()
+        < 1e-12
+    )
+    aoat = PGd.ao_atom(cell.mol)
+    A, h = 2, 1e-5
+    for x in (
+        1,
+    ):  # one direction keeps this ~20 s; x/z pass identically (checked 2026-09-24)
+        fd = (
+            pair_ft(PGd.displaced(cell, A, x, h), G)
+            - pair_ft(PGd.displaced(cell, A, x, -h), G)
+        ) / (2 * h)
+        on = (aoat == A).astype(float)
+        an = on[:, None, None] * Q[x] + on[None, :, None] * Q[x].transpose(1, 0, 2)
+        assert abs(an - fd).max() < 1e-7 * max(1.0, abs(fd).max())
+
+
+@pytest.mark.parametrize("a,atoms", [(H2_A, GRAD_H2_ATOMS), (TRI_A, TRI_ATOMS)])
+def test_ewald_gradient_matches_pyscf_grad_nuc_and_fd(a, atoms):
+    from pyscf.pbc.grad import krhf as pkgrad
+
+    cell = Cell(a, atoms, "sto-3g")
+    g = PGd.ewald_grad(cell, 1.0)
+    assert abs(g - pkgrad.grad_nuc(pyscf_cell(a, atoms, "sto-3g"), None)).max() < 1e-10
+    assert abs(g.sum(0)).max() < 1e-12
+    h = 1e-5
+    fd = (
+        ewald_nn(PGd.displaced(cell, 1, 2, h), 1.0)
+        - ewald_nn(PGd.displaced(cell, 1, 2, -h), 1.0)
+    ) / (2 * h)
+    assert abs(g[1, 2] - fd) < 1e-8
+
+
+@pytest.fixture(scope="module")
+def grad_h2_fd():
+    """Central FD (h=1e-4) of the pure-AFT Gamma energy (gcut 12). exxdiv only shifts E by the constant -v_M N/2."""
+    cell = Cell(H2_A, GRAD_H2_ATOMS, "sto-3g")
+    return cell, PGd.fd_grad(cell, 2, GRAD_COMPS, gcut=12.0, exxdiv="none")
+
+
+@pytest.mark.parametrize("exxdiv", ["none", "ewald"])
+def test_gamma_force_matches_fd_of_own_energy_and_sums_to_zero(grad_h2_fd, exxdiv):
+    cell, fd = grad_h2_fd
+    r = PGd.gamma_rhf_grad(cell, 2, gcut=12.0, exxdiv=exxdiv)
+    assert (
+        max(abs(r["grad"][k] - v) for k, v in fd.items()) < 1e-8
+    )  # measured 2.4e-9 (FD truncation)
+    assert abs(r["grad"].sum(0)).max() < 1e-12
+
+
+@pytest.mark.parametrize(
+    "mutant,exxdiv",
+    [
+        ("vne_no_basis", "none"),
+        ("w_sign", "none"),
+        ("no_ewald_lr", "none"),
+        ("no_madelung_s", "ewald"),
+    ],
+)
+def test_gamma_force_anchor_catches_each_mutant(
+    grad_h2_fd, monkeypatch, mutant, exxdiv
+):
+    cell, fd = grad_h2_fd
+    monkeypatch.setattr(PGd, "_MUTANT", mutant)
+    r = PGd.gamma_rhf_grad(cell, 2, gcut=12.0, exxdiv=exxdiv)
+    assert max(abs(r["grad"][k] - v) for k, v in fd.items()) > 1e-3
+
+
+def test_gamma_force_sr_route_matches_fd_compact_basis():
+    """Ewald-split route (w=2): SR erfc 3c V_ne (basis + nucleus), SR int2e_ip1, G=0 c0 bookkeeping through S.
+    Compact basis so pbc_gamma's default SR image cutoffs are converged (they are NOT for STO-3G: 5.6e-7)."""
+    cell = Cell(
+        H2_A, GRAD_H2_ATOMS, {"H": gto.parse("H S\n  0.5  1.0\n")}
+    )  # s only: the s+p version is run_grad_anchor
+    kw = dict(w=2.0, exxdiv="ewald")
+    r = PGd.gamma_rhf_grad(cell, 2, **kw)
+    fd = PGd.fd_grad(cell, 2, [(0, 2)], **kw)
+    assert max(abs(r["grad"][k] - v) for k, v in fd.items()) < 1e-8
+    assert abs(r["grad"].sum(0)).max() < 1e-12
+    assert (
+        abs(r["parts"]["Vsr_basis"]).max() > 1e-2
+        and abs(r["parts"]["Isr"]).max() > 1e-3
+    )  # SR terms are live
+
+
+@pytest.mark.skipif(
+    not SLOW, reason="PBC_SLOW=1: triclinic 4H s+p pure-AFT gradient (~40 s)"
+)
+def test_gamma_force_triclinic_sp_matches_pinned_fd():
+    """Atoms moved off the TRI_ATOMS positions (run_grad_oracle.TRI_MOVED), gcut 10, both exxdiv.
+    FD pinned 2026-09-24 (h=1e-4, conv 1e-12); analytic agreed to <= 3.3e-9."""
+    from run_grad_oracle import TRI_MOVED
+
+    cell = Cell(TRI_A, TRI_MOVED, SP_BASIS)
+    fd = {
+        (0, 0): 0.010957614,
+        (1, 2): 0.115081538,
+        (2, 1): 0.030103724,
+        (3, 0): 0.019857183,
+    }
+    for ex in ("none", "ewald"):
+        g = PGd.gamma_rhf_grad(cell, 4, gcut=10.0, exxdiv=ex)["grad"]
+        assert max(abs(g[k] - v) for k, v in fd.items()) < 1e-8
+        assert abs(g.sum(0)).max() < 1e-12

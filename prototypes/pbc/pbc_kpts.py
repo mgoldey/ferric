@@ -224,15 +224,21 @@ def krhf(
     return_mo=False,
     kshift=None,
     jk=None,
+    orth=None,
 ):
     """Complex RHF per k with global aufbau (PySCF KRHF get_occ) and DIIS over all k blocks.
     kshift defaults to kb['madelung'] (0 for exxdiv none).  Returns (E per cell, eps list, iterations).
-    jk: optional dm -> (J, K) callable (per-k stacks) replacing the dense kernels (e.g. pbc_kgdf B tensors)."""
+    jk: optional dm -> (J, K) callable (per-k stacks) replacing the dense kernels (e.g. pbc_kgdf B tensors).
+    orth: optional S(k) -> X(k) orthogonaliser replacing the built-in canonical cut at `lindep` (Iteration 15)."""
     S, h, Nk = kb["S"], kb["h"], kb["Nk"]
     vm = kb["madelung"] if kshift is None else kshift
     nocc = nelec // 2
     X = []
     for k in range(Nk):
+        # orth: S(k) -> X(k) (pbc_lindep orthogonalisers); lindep is then ignored
+        if orth is not None:
+            X.append(orth(S[k]))
+            continue
         s, U = np.linalg.eigh(S[k])
         X.append(U[:, s > lindep] / np.sqrt(s[s > lindep]))
     dm = np.zeros_like(S)
