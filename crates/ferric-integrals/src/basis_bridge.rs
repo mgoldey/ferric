@@ -13,7 +13,7 @@ use std::sync::Once;
 
 static LIBINT_INIT: Once = Once::new();
 
-fn ensure_init() {
+pub(crate) fn ensure_init() {
     // SAFETY: Called exactly once via std::sync::Once. scf_libint_init
     // initializes libint2's global state (no arguments, no preconditions).
     LIBINT_INIT.call_once(|| unsafe { ffi::scf_libint_init() });

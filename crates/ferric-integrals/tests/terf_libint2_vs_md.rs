@@ -10,7 +10,7 @@ use ferric_core::{basis, mol::Molecule};
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::ffi;
 use std::ffi::CString;
-use std::os::raw::{c_char, c_double, c_int, c_void};
+use std::os::raw::{c_char, c_int, c_void};
 
 #[test]
 fn libint2_terf_matches_md_within_tolerance() {

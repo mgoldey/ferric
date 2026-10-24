@@ -449,6 +449,9 @@ extern "C" {
     // build only; the symbol is absent without FERRIC_LIBINT2_TERF).
     // STEP 4/5: libint2-native terf engine (feature-gated build only).
     // braket: 2 -> xs_xs, 3 -> xs_xx, 4 -> xx_xx. Params are {omega, r0}.
+    // `status` (nullable) gets SCF_OK, or SCF_EINVAL for a bad braket or a
+    // max_l past scf_terf_libint2_max_l(braket), SCF_EUNSUPPORTED for missing
+    // tables, SCF_EINTERNAL on a C++ exception; non-OK always returns null.
     pub fn scf_engine_create_terf_libint2(
         r0: c_double,
         omega: c_double,
@@ -457,7 +460,26 @@ extern "C" {
         max_l: c_int,
         precision: c_double,
         table_dir: *const c_char,
+        status: *mut c_int,
     ) -> *mut c_void;
+    // Largest max_l the libint2 terf engine accepts for `braket` (2/3/4):
+    // braket * max_l must stay below the table depth TERFC_DIMM (24).
+    // SCF_EINVAL for any other braket. Feature-gated build only.
+    pub fn scf_terf_libint2_max_l(braket: c_int) -> c_int;
+    // Calls the libint2 terf hook directly (test probe, feature-gated build
+    // only). `gm` holds `gm_len >= mmax + 1` doubles. SCF_OK if evaluated,
+    // SCF_EINVAL if the hook refused mmax >= TERFC_DIMM, SCF_EUNSUPPORTED if
+    // the tables are missing, SCF_EINTERNAL on any other exception.
+    pub fn scf_terf_libint2_hook_probe(
+        table_dir: *const c_char,
+        rho: c_double,
+        t: c_double,
+        mmax: c_int,
+        omega: c_double,
+        r0: c_double,
+        gm: *mut c_double,
+        gm_len: c_int,
+    ) -> c_int;
     pub fn scf_terf_libint2_vs_md_eri3(
         obs: *const c_void,
         dfbs: *const c_void,

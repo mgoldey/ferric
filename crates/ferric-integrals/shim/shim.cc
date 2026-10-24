@@ -2270,6 +2270,14 @@ void terf_G_tail(double S, double s, int mmax, double *G) {
 extern "C" { unsigned long long g_terf_tab = 0, g_terf_ser = 0; }
 inline bool terf_aux(const TerfcTableSet &set, double S, double s,
                      double phi_over_theta, int mmax, double *A) {
+    // Bounds (#234): every table row holds exactly TERFC_DIMM m-values (the
+    // loader rejects dimm < TERFC_DIMM) and the series fallback below writes
+    // into gser[TERFC_DIMM]. An mmax at or past that depth would read past
+    // each node's m-row (and past the table at the last node) and overflow
+    // gser on the stack. The MD callers already cap Ltot; this is the guard
+    // for everyone else, notably the libint2 hook, whose mmax comes from
+    // libint2 (braket rank x the engine's max_L).
+    if (mmax < 0 || mmax >= TERFC_DIMM) return false;
     // Fast path: every m shares the SAME (S, s), so the table selection, the
     // node windows and the Lagrange WEIGHTS are identical across m -- only the
     // tabulated values differ. The old loop called interp_G once per m, which
@@ -2429,6 +2437,20 @@ inline bool terf_gm_eval_impl(const TerfcTableSet &set, double rho, double T,
  */
 bool ferric_terf_libint2_hook(double rho, double T, int mmax, double omega,
                               double r0, double *Gm) {
+    // Second line of defence behind the max_L refusal in
+    // scf_engine_create_terf_libint2 (#234). The tables and terf_aux's series
+    // buffer are TERFC_DIMM deep, so an mmax at or past that depth cannot be
+    // evaluated. Returning false is NOT safe here: the patched libint2
+    // evaluator answers a false hook by zero-filling Gm, which would turn the
+    // refusal into silently wrong integrals. Throw instead. The hook runs
+    // inside libint2's compute call, under the try/catch of every
+    // scf_compute_* entry point, so this surfaces as SCF_EINTERNAL and never
+    // unwinds across the C ABI.
+    if (mmax < 0 || mmax >= TERFC_DIMM) {
+        throw std::out_of_range(
+            "terf libint2 hook: mmax " + std::to_string(mmax) +
+            " is outside the table depth [0, " + std::to_string(TERFC_DIMM) + ")");
+    }
     auto set = g_terfc_tables;          // shared_ptr copy: no torn read
     if (!set) return false;
     if (!terf_gm_eval_impl(*set, rho, T, mmax, omega, r0, Gm)) return false;
@@ -3827,15 +3849,47 @@ extern "C" int scf_terf_gm_eval_matches_terf_aux(const char *table_dir,
  * `braket` selects 2-, 3- or 4-center: 2 -> xs_xs, 3 -> xs_xx, 4 -> xx_xx.
  * Loads the tables and installs the core-eval hook BEFORE the engine exists,
  * so no worker thread can race the first table load.
+ *
+ * max_L cap (#234). libint2 sizes its core evaluator for
+ * mmax = braket_rank() * max_L + deriv_order (Engine::make_core_eval_pack)
+ * and asks each primitive set for mmax = l0 + l1 + l2 + l3 + deriv_order,
+ * where the unit shells of xs_* brakets carry l = 0. This engine is
+ * deriv_order 0, so the worst mmax is braket * max_L: 2*max_L for xs_xs,
+ * 3*max_L for xs_xx, 4*max_L for xx_xx. The tables and terf_aux's series
+ * buffer hold m < TERFC_DIMM, so any max_L whose worst mmax reaches
+ * TERFC_DIMM is refused here rather than allowed to read and write out of
+ * bounds later (xx_xx: max_L <= 5, xs_xx: <= 7, xs_xs: <= 11).
+ *
+ * `status` (may be null) receives SCF_OK on success, SCF_EINVAL for a bad
+ * braket / negative max_nprim / a max_L outside [0, max] as above,
+ * SCF_EUNSUPPORTED if the tables cannot be loaded, SCF_EINTERNAL on any C++
+ * exception. A non-OK status always comes with a null return.
  */
+extern "C" int scf_terf_libint2_max_l(int braket) {
+    if (braket < 2 || braket > 4) return SCF_EINVAL;
+    return (TERFC_DIMM - 1) / braket;
+}
+
 extern "C" scf_engine *scf_engine_create_terf_libint2(double r0, double omega,
                                                       int braket, int max_nprim,
                                                       int max_L, double precision,
-                                                      const char *table_dir) {
+                                                      const char *table_dir,
+                                                      int *status) {
+    int st_local = SCF_OK;
+    int &st = status ? *status : st_local;
+    st = SCF_OK;
+    const int max_l_allowed = scf_terf_libint2_max_l(braket);
+    if (max_l_allowed < 0 || max_nprim < 1 || max_L < 0 || max_L > max_l_allowed) {
+        st = SCF_EINVAL;
+        return nullptr;
+    }
     std::lock_guard<std::mutex> lock(libint_ctor_mutex);
     try {
         auto tables = get_terfc_tables(resolve_table_dir(table_dir));
-        if (!tables) return nullptr;      // tables missing => fail loudly
+        if (!tables) {                     // tables missing => fail loudly
+            st = SCF_EUNSUPPORTED;
+            return nullptr;
+        }
         libint2::os_core_ints::terf_gm_eval<double>::hook() =
             &ferric_terf_libint2_hook;
 
@@ -3844,7 +3898,7 @@ extern "C" scf_engine *scf_engine_create_terf_libint2(double r0, double omega,
             case 2: bk = libint2::BraKet::xs_xs; break;
             case 3: bk = libint2::BraKet::xs_xx; break;
             case 4: bk = libint2::BraKet::xx_xx; break;
-            default: return nullptr;
+            default: st = SCF_EINVAL; return nullptr;
         }
         // NOTE: the 6th ctor arg is Params, NOT BraKet -- passing the BraKet
         // there silently mis-constructs and the engine fails. Follow the
@@ -3852,7 +3906,10 @@ extern "C" scf_engine *scf_engine_create_terf_libint2(double r0, double omega,
         // .set(BraKet), then .set_params().
         auto *out = new (std::nothrow) scf_engine{
             Engine(libint2::Operator::terf, max_nprim, max_L, 0, precision)};
-        if (!out) return nullptr;
+        if (!out) {
+            st = SCF_EINTERNAL;
+            return nullptr;
+        }
         out->engine.set(bk);
         out->engine.set_params(std::array<double, 2>{{omega, r0}});
         // Both false: this engine is NOT the table-MD path. The compute
@@ -3865,7 +3922,36 @@ extern "C" scf_engine *scf_engine_create_terf_libint2(double r0, double omega,
         out->terfc_tables = std::move(tables);
         return out;
     } catch (...) {
+        st = SCF_EINTERNAL;
         return nullptr;
+    }
+}
+#endif
+
+#ifdef FERRIC_LIBINT2_TERF
+/* Test probe for the hook's own mmax guard (#234), the second line of defence
+ * behind the max_L refusal above. With that refusal in place libint2 can no
+ * longer hand the hook an over-deep mmax, so this calls the hook directly,
+ * exactly as libint2's terf_gm_eval would. `Gm` must hold `gm_len >= mmax+1`
+ * doubles (checked, so the probe itself never writes past the caller's
+ * buffer). Returns SCF_OK if the hook evaluated, SCF_EINVAL if it refused the
+ * mmax (or the arguments are bad), SCF_EUNSUPPORTED if the tables cannot be
+ * loaded, SCF_EINTERNAL on any other exception. */
+extern "C" int scf_terf_libint2_hook_probe(const char *table_dir, double rho,
+                                           double T, int mmax, double omega,
+                                           double r0, double *Gm, int gm_len) {
+    try {
+        if (!Gm || mmax < 0 || gm_len < mmax + 1) return SCF_EINVAL;
+        if (!get_terfc_tables(resolve_table_dir(table_dir))) return SCF_EUNSUPPORTED;
+        try {
+            return ferric_terf_libint2_hook(rho, T, mmax, omega, r0, Gm)
+                       ? SCF_OK
+                       : SCF_EUNSUPPORTED;
+        } catch (const std::out_of_range &) {
+            return SCF_EINVAL;
+        }
+    } catch (...) {
+        return SCF_EINTERNAL;
     }
 }
 #endif
@@ -3900,7 +3986,7 @@ extern "C" int scf_terf_libint2_vs_md_eri3(const scf_basis *obs,
         // --- libint2-native path ---
         scf_engine *eli = scf_engine_create_terf_libint2(
             r0, omega, 3, std::max(obs->max_nprim, dfbs->max_nprim),
-            std::max(obs->max_L, dfbs->max_L), 0.0, table_dir);
+            std::max(obs->max_L, dfbs->max_L), 0.0, table_dir, nullptr);
         if (!eli) return -102;   // libint2 terf engine ctor failed
         const int wli = scf_compute_eri3(eli, obs, dfbs, shP, sh1, sh2, li.data());
         scf_engine_destroy(eli);

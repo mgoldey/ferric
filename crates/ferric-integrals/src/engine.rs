@@ -2026,6 +2026,114 @@ pub fn deriv2_pairs(ncoord: usize) -> Vec<(usize, usize)> {
     out
 }
 
+/// Bra-ket shape of a libint2-native terf engine (feature `libint2_terf`).
+#[cfg(feature = "libint2_terf")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TerfLibint2Braket {
+    /// 2-center `(P|Q)`: libint2 `xs_xs`.
+    XsXs,
+    /// 3-center `(P|mu nu)`: libint2 `xs_xx`.
+    XsXx,
+    /// 4-center `(mu nu|la si)`: libint2 `xx_xx`.
+    XxXx,
+}
+
+#[cfg(feature = "libint2_terf")]
+impl TerfLibint2Braket {
+    /// libint2's `braket_rank()`, which is also the shim's `braket` code.
+    pub fn rank(self) -> i32 {
+        match self {
+            TerfLibint2Braket::XsXs => 2,
+            TerfLibint2Braket::XsXx => 3,
+            TerfLibint2Braket::XxXx => 4,
+        }
+    }
+
+    /// Largest `max_l` the libint2 terf engine accepts for this braket. The
+    /// worst Boys-like order libint2 requests is `rank * max_l`, and the terf
+    /// tables only hold `m < 24` (`TERFC_DIMM`). Asks the shim, so it cannot
+    /// drift from the limit the constructor enforces.
+    pub fn max_l(self) -> i32 {
+        // SAFETY: pure function of an int; no pointers.
+        unsafe { ffi::scf_terf_libint2_max_l(self.rank() as c_int) }
+    }
+}
+
+#[cfg(feature = "libint2_terf")]
+impl Engine {
+    /// Create a libint2-native terf engine (`Operator::terf` in a terf-patched
+    /// libint2, built with `FERRIC_LIBINT2_TERF`). The handle is driven through
+    /// the ordinary libint2 compute calls (`compute_quartet`, `compute_eri3`,
+    /// `compute_eri2`), not the table-MD path.
+    ///
+    /// Refuses, with a typed error and before any integral is computed, a
+    /// `max_l` whose worst `m` (`braket.rank() * max_l`) reaches the terf
+    /// table depth: the shim would otherwise read past the table rows and
+    /// overflow its series buffer (#234). `table_dir: None` falls back to
+    /// `FERRIC_TERF_TABLE_DIR`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_terf_libint2(
+        r0: f64,
+        omega: f64,
+        braket: TerfLibint2Braket,
+        max_nprim: usize,
+        max_l: i32,
+        precision: f64,
+        table_dir: Option<&str>,
+    ) -> Result<Self, FerricError> {
+        let cdir = table_dir
+            .map(std::ffi::CString::new)
+            .transpose()
+            .map_err(|e| FerricError::Libint(format!("terf table dir: {e}")))?;
+        let max_nprim = c_int::try_from(max_nprim)
+            .map_err(|_| FerricError::Libint(format!("max_nprim {max_nprim} overflows c_int")))?;
+        // libint2's Engine ctor asserts libint2::initialized(); every other
+        // constructor gets that from a PreparedBasis built first, this one
+        // takes no basis, so initialize here.
+        crate::basis_bridge::ensure_init();
+        let mut status: c_int = 0;
+        // SAFETY: scalar arguments, a nullable NUL-terminated path that outlives
+        // the call, and a live out-param. The shim catches every C++ exception.
+        // The returned handle is owned by this Engine and destroyed in Drop.
+        let h = unsafe {
+            ffi::scf_engine_create_terf_libint2(
+                r0,
+                omega,
+                braket.rank() as c_int,
+                max_nprim,
+                max_l as c_int,
+                precision,
+                cdir.as_ref().map_or(std::ptr::null(), |c| c.as_ptr()),
+                &mut status,
+            )
+        };
+        if h.is_null() {
+            let rank = braket.rank();
+            return Err(FerricError::Libint(match status {
+                ffi::SCF_EINVAL => format!(
+                    "libint2 terf {braket:?} engine refused max_l={max_l}: libint2 would request \
+                     m up to {rank}*max_l = {}, past the terf table depth (m < 24); the largest \
+                     accepted max_l for {braket:?} is {} (max_nprim={max_nprim})",
+                    rank * max_l,
+                    braket.max_l()
+                ),
+                ffi::SCF_EUNSUPPORTED => {
+                    "libint2 terf engine: terf tables could not be loaded (set FERRIC_TERF_TABLE_DIR)"
+                        .to_string()
+                }
+                s => format!("libint2 terf engine construction failed (shim status {s})"),
+            }));
+        }
+        Ok(Engine {
+            handles: vec![(1.0, h)],
+            buf: Vec::new(),
+            scratch: Vec::new(),
+            is_terfc: false,
+            is_terf: false,
+        })
+    }
+}
+
 impl Drop for Engine {
     fn drop(&mut self) {
         for &(_, h) in &self.handles {
