@@ -1128,6 +1128,10 @@ jobs:
     #   carries the most tests (180 of ~566) and, with ag2_augccpvdzpp, the
     #   second-heaviest load. The Python half therefore runs on the LAST
     #   shard, the lightest one.
+    # A test that cannot fit on any shard runs in its own `validation-*` job
+    # and is excluded here by `and not (...)` in the filter: today only the
+    # Cr(CO)6 SCF ladder (validation-cr-co6), which would have landed on
+    # shard 1.
     # The union of the shards is the whole tier (checked with nextest 0.9.145
     # on a three-binary toy crate). Every shard builds the same binaries
     # (~4 min) and runs a disjoint quarter of the tests. fail-fast off: one
@@ -1211,9 +1215,12 @@ jobs:
             exit 1
           fi
           echo "validation binaries: ${ARGS[*]}"
+          # `and not (...)`: tests that run in their OWN job below
+          # (validation-cr-co6), so each runs exactly once. The guard checks
+          # this exclusion list against those jobs' filters.
           cargo nextest run --profile validation --locked "${ARGS[@]}" \
             --partition "count:${{ matrix.partition }}/4" \
-            --run-ignored only -E 'binary(/^validation_/)'
+            --run-ignored only -E 'binary(/^validation_/) and not (binary_id(=ferric-scf::validation_scf_ladder) and test(=cr_co6_default_ladder_reaches_stable_rhf_minimum))'
 
       # ── Python half of the tier: `@pytest.mark.validation` tests ──────────
       # Excluded everywhere else by pyproject's `addopts = -m "not validation"`
@@ -1251,6 +1258,80 @@ jobs:
           # pass). Import first so a broken build fails this step loudly.
           uv run python -c "import ferric"
           OPENBLAS_NUM_THREADS=1 uv run pytest -m validation crates/ferric-python/tests/ -q
+
+  # One validation test too long for any shard: Cr(CO)6 (199 AOs, exact 4-index
+  # J/K) through the default SCF ladder with stability analysis. Every CI run
+  # that reached it in a shard killed it at the 30-min nextest limit, and its
+  # cost does not fit on top of a shard at the observed 1.6x spread (the
+  # measurement and the bound are in .config/nextest.toml). Same triggers as
+  # `validation`; the sharded run excludes this exact test with
+  # `and not (...)`, so it runs once. ci_validation_tier_guard.rs checks that
+  # every `validation-*` job's filter is excluded from the shards and vice
+  # versa. Builds ONE test binary.
+  validation-cr-co6:
+    name: validation (weekly, external references, Cr(CO)6 SCF ladder)
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && github.event.schedule == '17 4 * * 0')
+    runs-on: ubuntu-22.04
+    # 270: nextest terminates the test at 225 min (.config/nextest.toml, 2x
+    # the expected ~111 min CI time), plus ~15-20 min of setup and the build
+    # of one test binary, so nextest fires first with ~25 min to spare. At the
+    # 1.6x run-to-run spread seen on the shards the test takes ~178 min.
+    # Under GitHub's 360-min cap.
+    timeout-minutes: 270
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Free runner disk space
+        run: |
+          echo "--- before"; df -h / | tail -1
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /opt/hostedtoolcache/CodeQL /usr/share/swift /usr/local/share/boost \
+            "$AGENT_TOOLSDIRECTORY/CodeQL" 2>/dev/null || true
+          sudo docker image prune --all --force > /dev/null 2>&1 || true
+          echo "--- after"; df -h / | tail -1
+
+      - name: Install system dependencies
+        run: |
+          # Same as the `validation` job.
+          sudo grep -rlE 'dl\.google\.com' /etc/apt/sources.list /etc/apt/sources.list.d/ 2>/dev/null \
+            | xargs -r sudo rm -fv
+          sudo sed -i -E 's|^([^#].*dl\.google\.com.*)$|# \1|' /etc/apt/sources.list 2>/dev/null || true
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake g++ gfortran \
+            libeigen3-dev libopenblas-dev liblapack-dev pkg-config \
+            libxc-dev libboost-dev patchelf zstd
+
+      - name: Install libint2
+        run: scripts/install-libint.sh "$LIBINT2_PREFIX"
+
+      - name: Restore cargo cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-v3-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-v3-${{ runner.os }}-
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@26e9283f268b880168bdbd2c545dfcd60ec2c6ab # v2.87.13
+        with:
+          tool: cargo-nextest
+
+      - name: Run the Cr(CO)6 SCF ladder validation test
+        # --no-tests=fail: a filter that matches nothing (a renamed test) must
+        # fail, not pass with zero tests run.
+        run: |
+          set -euo pipefail
+          cargo nextest run --profile validation --locked \
+            -p ferric-scf --test validation_scf_ladder \
+            --run-ignored only --no-tests=fail \
+            -E 'binary_id(=ferric-scf::validation_scf_ladder) and test(=cr_co6_default_ladder_reaches_stable_rhf_minimum)'
 
   # The ONLY job that builds the `mpi` cargo feature at all. Nothing else in
   # this workflow does: every other job builds default features, under which

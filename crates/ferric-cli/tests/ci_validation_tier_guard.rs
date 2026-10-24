@@ -31,6 +31,10 @@
 //! * another job passing `--run-ignored` — validation tests then run
 //!   per-commit. MUTATION: add `--run-ignored all` to the test-shard run →
 //!   `no_other_job_runs_ignored_tests` fails.
+//!
+//! A test too long for any shard runs in its own `validation-<name>` job and
+//! is excluded from the shards' filter; the last section below checks that
+//! every such test runs exactly once.
 
 use std::path::{Path, PathBuf};
 
@@ -67,14 +71,64 @@ fn ci_yml() -> String {
     std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("{}: {e}", p.display()))
 }
 
-/// The text of the `validation:` job: from its `  validation:` key line to the
-/// next job key at the same (2-space) indentation, or a top-level key.
+/// The text of the sharded `validation:` job.
 fn validation_job(ci: &str) -> String {
+    job_text(ci, "validation").expect("ci.yml has no `validation:` job")
+}
+
+/// Every single-test validation job (`  validation-<name>:`), as (key, text).
+/// These run tests too long for a shard; the shards exclude them.
+fn solo_validation_jobs(ci: &str) -> Vec<(String, String)> {
+    ci.lines()
+        .filter_map(|l| {
+            let key = l.strip_prefix("  validation-")?.strip_suffix(':')?;
+            (!key.contains(' ')).then(|| format!("validation-{key}"))
+        })
+        .map(|k| {
+            let t = job_text(ci, &k).expect("job key just found");
+            (k, t)
+        })
+        .collect()
+}
+
+/// The single-quoted argument of the (only) nextest `-E '...'` filter in `job`
+/// (comment lines and `sed -E` are not nextest filters).
+fn nextest_expr(job: &str) -> String {
+    let hits: Vec<&str> = job
+        .lines()
+        .filter(|l| !l.trim_start().starts_with('#') && !l.contains("sed "))
+        .filter_map(|l| l.split_once("-E '").map(|(_, r)| r))
+        .collect();
+    assert_eq!(
+        hits.len(),
+        1,
+        "expected exactly one nextest `-E '...'` filter, found {}",
+        hits.len()
+    );
+    let rest = hits[0];
+    rest[..rest.find('\'').expect("unterminated -E '...'")].to_string()
+}
+
+/// `binary_id(=CRATE::BIN) and test(=NAME)` -> (CRATE, BIN, NAME).
+fn exact_test(expr: &str) -> (String, String, String) {
+    let parse = || -> Option<(String, String, String)> {
+        let rest = expr.strip_prefix("binary_id(=")?;
+        let (id, rest) = rest.split_once(") and test(=")?;
+        let name = rest.strip_suffix(')')?;
+        let (krate, bin) = id.split_once("::")?;
+        Some((krate.to_string(), bin.to_string(), name.to_string()))
+    };
+    parse().unwrap_or_else(|| {
+        panic!("{expr:?} is not `binary_id(=CRATE::BIN) and test(=NAME)`; extend this guard")
+    })
+}
+
+/// The text of the job keyed `  <key>:`: from its key line to the next job key
+/// at the same (2-space) indentation, or a top-level key.
+fn job_text(ci: &str, key: &str) -> Option<String> {
     let lines: Vec<&str> = ci.lines().collect();
-    let start = lines
-        .iter()
-        .position(|l| l.trim_end() == "  validation:")
-        .expect("ci.yml has no `validation:` job");
+    let want = format!("  {key}:");
+    let start = lines.iter().position(|l| l.trim_end() == want)?;
     let is_job_key = |l: &str| {
         l.len() > 2
             && l.starts_with("  ")
@@ -88,7 +142,7 @@ fn validation_job(ci: &str) -> String {
         .position(|l| is_job_key(l) || is_top_level(l))
         .map(|i| start + 1 + i)
         .unwrap_or(lines.len());
-    lines[start..end].join("\n")
+    Some(lines[start..end].join("\n"))
 }
 
 /// Every `crates/*/tests/*.rs` (top level only — only those are binaries),
@@ -129,15 +183,18 @@ fn validation_files() -> Vec<(String, String, PathBuf)> {
     v
 }
 
-/// The regex inside the job's `-E 'binary(/RE/)'`, reduced to the literal
-/// prefix it matches. Only the `^literal` form is evaluated; anything richer
-/// is refused so the guard never silently approves a filter it cannot read.
-fn filter_prefix(job: &str) -> String {
-    let at = job
-        .find("-E 'binary(/")
-        .expect("validation job has no `-E 'binary(/.../)'` filter");
-    let rest = &job[at + "-E 'binary(/".len()..];
-    let re = &rest[..rest.find("/)'").expect("unterminated binary(/.../) filter")];
+/// The sharded job's filter: `binary(/^PREFIX/)`, optionally followed by
+/// ` and not (T1 or T2 ...)` naming the tests that run in their own
+/// `validation-*` job. Returns (PREFIX, [T1, T2, ...]). Only these forms are
+/// evaluated; anything richer is refused so the guard never silently approves
+/// a filter it cannot read.
+fn shard_filter(job: &str) -> (String, Vec<String>) {
+    let expr = nextest_expr(job);
+    let rest = expr
+        .strip_prefix("binary(/")
+        .unwrap_or_else(|| panic!("validation filter {expr:?} does not start with `binary(/`"));
+    let close = rest.find("/)").expect("unterminated binary(/.../) filter");
+    let re = &rest[..close];
     let lit = re
         .strip_prefix('^')
         .unwrap_or_else(|| panic!("filter regex {re:?} is not anchored with ^; extend this guard"));
@@ -145,7 +202,24 @@ fn filter_prefix(job: &str) -> String {
         !lit.is_empty() && lit.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'),
         "filter regex {re:?} is not a plain ^literal prefix; extend this guard to evaluate it"
     );
-    lit.to_string()
+    let tail = &rest[close + "/)".len()..];
+    let excluded = if tail.is_empty() {
+        Vec::new()
+    } else {
+        let inner = tail
+            .strip_prefix(" and not (")
+            .and_then(|t| t.strip_suffix(')'))
+            .unwrap_or_else(|| {
+                panic!("validation filter tail {tail:?} is not ` and not (...)`; extend this guard")
+            });
+        inner.split(" or ").map(str::to_string).collect()
+    };
+    (lit.to_string(), excluded)
+}
+
+/// The literal prefix of the sharded job's `binary(/^PREFIX/)` filter.
+fn filter_prefix(job: &str) -> String {
+    shard_filter(job).0
 }
 
 #[test]
@@ -298,8 +372,10 @@ fn the_job_is_weekly_and_manual_only() {
 #[test]
 fn no_other_job_runs_ignored_tests() {
     let ci = ci_yml();
-    let job = validation_job(&ci);
-    let outside = ci.replacen(&job, "", 1);
+    let mut outside = ci.replacen(&validation_job(&ci), "", 1);
+    for (_, solo) in solo_validation_jobs(&ci) {
+        outside = outside.replacen(&solo, "", 1);
+    }
     // nextest's `--run-ignored` AND libtest's `-- --ignored` /
     // `-- --include-ignored`: any of them in another job would run the
     // validation tier per-commit (a `cargo test` that builds a validation_*
@@ -317,8 +393,9 @@ fn no_other_job_runs_ignored_tests() {
         .collect();
     assert!(
         hits.is_empty(),
-        "only the validation job may run ignored tests (--run-ignored, --ignored, \
-         --include-ignored); elsewhere they run the validation tier per-commit:\n  {}",
+        "only the validation jobs (`validation`, `validation-*`) may run ignored tests \
+         (--run-ignored, --ignored, --include-ignored); elsewhere they run the validation \
+         tier per-commit:\n  {}",
         hits.join("\n  ")
     );
 }
@@ -588,4 +665,110 @@ fn no_other_job_selects_the_validation_marker() {
          validation tier per-commit:\n  {}",
         hits.join("\n  ")
     );
+}
+
+// ── Single-test validation jobs (`validation-<name>`) ────────────────────────
+//
+// A test too long for any shard runs in its own job, and the sharded filter
+// excludes it with `and not (...)`. Quiet failures pinned below:
+//
+// * excluded from the shards but run by no `validation-*` job: never run.
+//   MUTATION: delete the `validation-cr-co6` job, or change the test name in
+//   its `-E` only → `every_test_runs_exactly_once_across_shards_and_solo_jobs`
+//   fails.
+// * run by a `validation-*` job AND left in the shards: runs twice, and still
+//   costs a shard its time budget. MUTATION: drop the `and not (...)` from the
+//   sharded filter → the same test fails.
+// * a solo job naming a test that does not exist, not building its binary,
+//   or gated differently from the shards. MUTATION: rename the test in BOTH
+//   filters, or edit the solo job's `if:` → `solo_validation_jobs_are_well_formed`
+//   fails.
+
+#[test]
+fn every_test_runs_exactly_once_across_shards_and_solo_jobs() {
+    let ci = ci_yml();
+    let (_, mut excluded) = shard_filter(&validation_job(&ci));
+    let mut solo: Vec<String> = solo_validation_jobs(&ci)
+        .iter()
+        .map(|(_, t)| nextest_expr(t))
+        .collect();
+    excluded.sort();
+    solo.sort();
+    let mut distinct = solo.clone();
+    distinct.dedup();
+    assert_eq!(
+        distinct.len(),
+        solo.len(),
+        "two `validation-*` jobs run the same test: {solo:?}"
+    );
+    let never: Vec<_> = excluded.iter().filter(|e| !solo.contains(e)).collect();
+    let twice: Vec<_> = solo.iter().filter(|e| !excluded.contains(e)).collect();
+    assert!(
+        never.is_empty(),
+        "excluded from the validation shards but run by no `validation-*` job (never run): \
+         {never:?}"
+    );
+    assert!(
+        twice.is_empty(),
+        "run by a `validation-*` job but NOT excluded from the shards (runs twice): {twice:?}"
+    );
+}
+
+#[test]
+fn solo_validation_jobs_are_well_formed() {
+    let ci = ci_yml();
+    let shard = validation_job(&ci);
+    let if_line = |job: &str, key: &str| {
+        job.lines()
+            .find(|l| l.trim_start().starts_with("if:"))
+            .unwrap_or_else(|| panic!("{key} has no `if:` gate"))
+            .trim()
+            .to_string()
+    };
+    let shard_if = if_line(&shard, "validation");
+    let prefix = filter_prefix(&shard);
+    for (key, job) in solo_validation_jobs(&ci) {
+        assert_eq!(
+            if_line(&job, &key),
+            shard_if,
+            "{key} must share the validation job's `if:`"
+        );
+        for flag in [
+            "--profile validation",
+            "--run-ignored only",
+            "--no-tests=fail",
+        ] {
+            assert!(job.contains(flag), "{key} must pass `{flag}`");
+        }
+        let (krate, bin, name) = exact_test(&nextest_expr(&job));
+        assert!(
+            bin.starts_with(&prefix),
+            "{key}: {bin} is not a {prefix}* binary"
+        );
+        assert!(
+            job.contains(&format!("-p {krate} --test {bin}")),
+            "{key} must build `-p {krate} --test {bin}`"
+        );
+        let path = validation_files()
+            .into_iter()
+            .find(|(k, stem, _)| *k == krate && *stem == bin)
+            .map(|(_, _, p)| p)
+            .unwrap_or_else(|| panic!("{key}: no crates/{krate}/tests/{bin}.rs"));
+        let src = std::fs::read_to_string(&path).unwrap();
+        let lines: Vec<&str> = src.lines().collect();
+        let decl = format!("fn {name}() {{");
+        let at = lines
+            .iter()
+            .position(|l| l.trim() == decl)
+            .unwrap_or_else(|| panic!("{key}: {} has no `{decl}`", path.display()));
+        assert!(
+            lines[..at]
+                .iter()
+                .rev()
+                .take_while(|l| l.trim_start().starts_with("#["))
+                .any(|l| l.trim() == "#[test]"),
+            "{key}: `{name}` in {} is not a #[test]",
+            path.display()
+        );
+    }
 }
