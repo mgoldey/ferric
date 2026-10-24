@@ -33,6 +33,7 @@ from analyze import A24_CLASS  # noqa: E402
 SYSTEMS = [2, 4, 5, 6, 8, 19, 20, 24]
 VALLEY_R0 = [0.85, 0.90, 0.95, 1.00, 1.05, 1.10]  # paper Table 1
 VALLEY_B = [8.0, 9.0, 9.5, 11.0, 12.5, 14.5]
+B_PRIOR_MAX = 20.0  # G.3.2 range; Addendum H interior-basin rule
 SIGMA = 0.055  # kcal/mol: sqrt(0.02^2 RI + 0.05^2 reference + grid^2), F.8
 
 
@@ -97,6 +98,25 @@ def stats(e):
         "mae": float(np.abs(e).mean()),
         "max_abs": float(np.abs(e).max()),
     }
+
+
+def chosen_best(out, conv):
+    """Addendum H: the lowest-RMSD node whose b* is interior (b_edge is None),
+    with the raw search optimum kept for the record."""
+    raw = json.loads((out / f"search_{conv}.json").read_text())["best"]
+    nodes = json.loads((out / f"nodes_{conv}.json").read_text())["nodes"]
+    interior = [n for n in nodes if not n["b_edge"] and n["b"] <= B_PRIOR_MAX]
+    if raw.get("edge") is None or not interior:
+        return raw, raw
+    n = min(interior, key=lambda r: r["rmsd"])
+    best = {
+        "r0": n["r0"],
+        "s": None if n["linked"] else n["s"],
+        "b": n["b"],
+        "rmsd": n["rmsd"],
+        "edge": None,
+    }
+    return best, raw
 
 
 def run_search(pool, ids, conv, out, beat, cap):
@@ -190,8 +210,8 @@ def run_valley(pool, ids, conv, out, beat):
 
 def run_curv(pool, ids, conv, out, beat):
     cp = conv == "cp"
-    best = json.loads((out / f"search_{conv}.json").read_text())["best"]
-    r = {}
+    best, raw = chosen_best(out, conv)
+    r = {"evaluated_at": best, "raw_search_optimum": raw}
     for h in (0.10, 0.05):
         hs = S.hessian(pool, ids, best, cp, h=h, sigma=SIGMA)
         r[f"h{h}"] = hs
@@ -204,8 +224,8 @@ def run_curv(pool, ids, conv, out, beat):
 
 def run_base(pool, ids, conv, out, beat):
     cp = conv == "cp"
-    best = json.loads((out / f"search_{conv}.json").read_text())["best"]
-    res = {}
+    best, raw = chosen_best(out, conv)
+    res = {"raw_search_optimum": raw}
     e_coul = np.array(
         [pool.eint_coulomb(sn, i, cp) - pool.systems[(sn, i)] for sn, i in ids]
     )
@@ -251,7 +271,7 @@ def summarize(out, convs):
                 row[k] = json.loads(f.read_text())
         s[conv] = row
     if "ncp" in s and "cp" in s and "search" in s["ncp"] and "search" in s["cp"]:
-        a, b = s["ncp"]["search"]["best"], s["cp"]["search"]["best"]
+        a, b = chosen_best(out, "ncp")[0], chosen_best(out, "cp")[0]
         s["cp_minus_ncp_shift_ln"] = {
             "r0": math.log(b["r0"] / a["r0"]),
             "s": math.log(S._sval(b["s"]) / S._sval(a["s"])),
@@ -269,6 +289,11 @@ def main(argv=None):
     ap.add_argument("--conventions", default="ncp,cp")
     ap.add_argument("--no-fast-damping", action="store_true")
     ap.add_argument("--cap", type=int, default=80)
+    ap.add_argument(
+        "--edge-accepted",
+        default="ncp",
+        help="conventions whose edge optimum was accepted (Addendum H)",
+    )
     ap.add_argument("--budget-gb", type=float, default=6.0)
     a = ap.parse_args(argv)
     out = Path(a.outdir)
@@ -284,7 +309,14 @@ def main(argv=None):
     convs = a.conventions.split(",")
     for conv in convs:
         if not done(out / f"search_{conv}.json"):
-            run_search(pool, ids, conv, out, beat, a.cap)
+            res = run_search(pool, ids, conv, out, beat, a.cap)
+            edge_ok = conv in a.edge_accepted.split(",")
+            if res["best"].get("edge") and not edge_ok:
+                beat.beat(phase=f"STOP_edge_{conv}")
+                beat.log(
+                    f"[{conv}] STOP: optimum on b edge (Addendum H: any later edge optimum is a stop condition)"
+                )
+                return 3
         for name, fn in (
             ("valley", run_valley),
             ("curv", run_curv),

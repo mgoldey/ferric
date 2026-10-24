@@ -807,3 +807,42 @@ command resumes. Interim reports at the first node batch and at ~50% of the node
 
 (a) the A1-lite valley check fails (G.3.1); (b) the optimum of either convention is on a box edge (r0, s or b) or the search is budget-limited at 80 nodes; (c) the Gauss-Newton matrix reports an
 undetermined parameter (inf sigma) at the optimum; (d) the in-sample ordering of G.3.5 is violated (a harness error, not a result); (e) any test of the code in use fails after launch.
+
+
+---
+
+# Addendum H (2026-10-10): stage-1 non-CP search result, stop condition G.6(b) tripped, decision
+
+## H.1 Measurement (non-CP search, `results/stage1/search_ncp.json`, `nodes_ncp.json`; aDZ, NLC (50, 50), lockstep Eq. 11, C = 0.0089, tabulated damping, 8 systems of G.2; all RMSDs in-sample)
+
+The F.5 adaptive search ended at 69 of the 80-node cap (not budget-limited). Process note: the first run was killed at node 9 by SIGBUS because the shared `target/release/libferric.so`
+was rebuilt under the running process (not a code defect; cause established from the core: fault address inside the mapped .so, .so mtime equal to the crash time); the run was resumed
+from the cache with a private copy of the library and reproduced nodes 1-9 identically.
+
+| node | r0 (A) | s = r0*omega | b* | RMSD (kcal/mol) | b status |
+|---|---|---|---|---|---|
+| best overall (node 60) | 1.152 | 0.522 | 251.99 | 0.0890 | ON THE UPPER b EDGE (window shifted twice; the next shift would pass the 400 limit) |
+| best with b* inside the pre-registered range b <= 20 (node 43) | 0.991 | 1.354 | 10.95 | 0.0930 | interior |
+| node 65 (lowest RMSD among nodes the code flags interior) | 1.123 | 0.522 | 72.96 | 0.0904 | interior by the flag, but b* = 73 is outside G.3.2 and on the runaway trend toward the edge |
+| node 67 | 1.152 | 0.563 | 67.05 | 0.0934 | interior |
+| node 68 / 69 | 1.181 | 0.522 / 0.563 | 251.99 | 0.0914 / 0.0917 | edge |
+
+Gain of the edge optimum over the best interior node: 0.0930 - 0.0890 = 0.0040 kcal/mol, below the 0.02 kcal/mol noise floor (F.8). 10 of the first 24 nodes (the coarse grid) had b* on the
+edge, mostly at sharp seams (s >= 4, RMSD 0.19-4.2) and at r0 >= 1.34 A. Linked-seam (s = 0.707) coarse values: r0 = 0.600, 0.733, 0.896, 1.095 A give b* = 5.6, 6.6, 9.2, 18.8 and RMSD
+0.159, 0.135, 0.125, 0.117. Along the b* values of the interior nodes near the optimum, b* rises with r0 at fixed s (s = 0.522: 73 at r0 = 1.123, edge at 1.152).
+
+Stop condition G.6(b) (optimum on a box edge) is TRIPPED for the non-CP convention. The job was stopped at the valley phase (one valley point computed: r0 = 0.85, b* = 8.25, paper 8.0, RMSD 0.127).
+
+## H.2 Decision (Matt, 2026-10-10, relayed by the coordinator)
+
+The interior basin (r0 = 0.991 A, s = 1.354, b* = 10.95, RMSD 0.0930) is the stage-1 NON-CP result. b is reported as NOT IDENTIFIED at the wide-seam edge. The b search window is NOT widened and the
+pre-registered rules (F.5, G.2) stand unchanged. Any later optimum on an edge (including the CP search) is again a stop condition. Curvature and baselines are evaluated at the interior basin
+(the lowest-RMSD node with an interior b* AND b* <= 20, the G.3.2 range: this is node 43, as the decision states; the code's weaker 'interior' flag alone would pick node 65, b* = 73, RMSD 0.0904, which sits on the same runaway trend and is NOT what the decision names); the raw edge optimum and node 65 are reported alongside, flagged. This node-43 rule was fixed after seeing the nodes (correction of the first draft of H.1, which mislabelled node 43 as the best interior node).
+
+## H.3 Interpretation (separate from the measurement; PROVISIONAL, untested)
+
+* The two regions are within 0.004 kcal/mol, inside the noise floor, so the data do not prefer the edge optimum; the sharper (s = 1.35) interior basin and the wider (s ~ 0.52) edge region are not
+  distinguished by 8 systems.
+* A flat valley that runs toward large b at wide seams (b rising steeply with r0 near s ~ 0.5) is one reading of the 73 -> 252 trend. It is NOT tested: the b > 252 region was not searched, the Gauss-Newton
+  matrix at the edge was not computed, and an unconverged b search at a wide seam could also be an artefact of the 9-node Chebyshev spline over a window whose far end is poorly sampled.
+* Against prediction G.3.2 (b in [6, 20]): the interior basin satisfies it; the raw optimum does not. Prediction G.3.1 (valley) is evaluated by the resumed A1-lite phase, not by these nodes.
