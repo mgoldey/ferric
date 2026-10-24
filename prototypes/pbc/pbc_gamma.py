@@ -295,7 +295,14 @@ def sr_terms(cell, w, rcut_1e, rcut_2e, rcut_bra):
 
 # ------------------------------------------------------------------- assemble + SCF
 def build_integrals(
-    cell, w, rcut_1e=22.0, rcut_2e=None, rcut_bra=None, verbose=True, exxdiv=None
+    cell,
+    w,
+    rcut_1e=22.0,
+    rcut_2e=None,
+    rcut_bra=None,
+    verbose=True,
+    exxdiv=None,
+    gcut=None,
 ):
     """Return S, h, I (full periodic Gamma ERI), E_nn. w=None => pure reciprocal (no SR).
 
@@ -305,6 +312,9 @@ def build_integrals(
     if exxdiv is not None and str(exxdiv).lower() not in ("none", "ewald"):
         raise ValueError(f"exxdiv must be None, 'none' or 'ewald', got {exxdiv!r}")
     t0 = time.time()
+    gcut_override = (
+        gcut  # optional explicit G sphere (Iteration 16: cheaper FD anchors)
+    )
     nao = cell.mol.nao
     if w is None:  # w -> infinity: all Coulomb in reciprocal space, SR vanishes
         L1 = cell.translations(rcut_1e)
@@ -335,6 +345,7 @@ def build_integrals(
         c0 = np.pi / (w * w * cell.vol)
         enn = ewald_nn(cell, w)
     t1 = time.time()
+    gcut = gcut_override if gcut_override is not None else gcut
     G = cell.gvectors(gcut)
     G = G[np.einsum("gi,gi->g", G, G) > 1e-12]
     G2 = np.einsum("gi,gi->g", G, G)
