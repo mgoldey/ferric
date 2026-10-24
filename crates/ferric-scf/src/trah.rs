@@ -396,6 +396,44 @@ pub fn note_trah_null_step_declined() {
     TRAH_NULL_STEPS_DECLINED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// Count of iterations handed to DIIS right after a TRAH REJECTION (radius
+/// not collapsed), process-wide. A rejection consumes the pending prediction,
+/// so "armed while a step is pending" did not cover the restored point; with
+/// err_max above the trigger there, DIIS took the next iteration and -- on
+/// CoH/def2-SVP UHF -- extrapolated from its saddle-region history straight
+/// back to the saddle, discarding a 100 mHa escape. Zero by construction once
+/// the loops latch `trah_engaged` (pinned in `tests/trah_hard_case.rs`).
+pub static TRAH_HANDOFFS_AFTER_REJECTION: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+/// Record a hand-off to DIIS on the iteration after a TRAH rejection.
+pub fn note_trah_handoff_after_rejection() {
+    TRAH_HANDOFFS_AFTER_REJECTION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Arming-gate bookkeeping for the `trah_engaged` latch, shared by the RHF/RKS
+/// and UHF/UKS loops (kept here so the loop bodies gain no branches).
+///
+/// Call once per iteration, right after `runs` (armed AND radius not
+/// collapsed) is decided. When TRAH does not run this iteration the latch is
+/// released, and a hand-off that immediately follows a rejection with the
+/// radius still open is counted in [`TRAH_HANDOFFS_AFTER_REJECTION`] -- with
+/// the latch held, that count is zero. `last_rejected` is consumed.
+pub(crate) fn settle_engaged_latch(
+    engaged: &mut bool,
+    last_rejected: &mut bool,
+    runs: bool,
+    collapsed: bool,
+) {
+    if !runs {
+        *engaged = false;
+        if *last_rejected && !collapsed {
+            note_trah_handoff_after_rejection();
+        }
+    }
+    *last_rejected = false;
+}
+
 /// Record that a pending TRAH prediction was dropped at a hand-off to DIIS.
 pub fn note_trah_prediction_discarded() {
     TRAH_PREDICTIONS_DISCARDED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
