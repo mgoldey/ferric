@@ -58,10 +58,75 @@ fn rows_into_array(n_quad: usize, m: usize, rows: Vec<Vec<f64>>) -> Array2<f64> 
     out
 }
 
+/// Below this `|x| = |λ − 1|` [`trace_log_summand_term`] uses the Taylor
+/// series; at or above it, the literal `ln λ − x`.
+const TRACE_LOG_SERIES_CUTOFF: f64 = 0.25;
+
+/// Highest power of `x` kept in the series branch. The first omitted term,
+/// `x³¹/31`, is `(2/31)·|x|²⁹ ≤ 2.0e-19` relative to the leading `x²/2` at the
+/// cutoff, far below `f64` epsilon.
+const TRACE_LOG_SERIES_ORDER: i32 = 30;
+
+/// One RPA trace-log summand `f(λ) = ln λ + (1 − λ)`, evaluated without the
+/// cancellation the literal `lam.ln() + (1.0 - lam)` suffers as `λ → 1`.
+///
+/// With `λ = 1 + x` the exact value is
+/// `f = ln(1+x) − x = −x²/2 + x³/3 − x⁴/4 + …`, of size `x²/2`. The literal
+/// form subtracts two quantities of size `x` (the rounding of `ln λ` alone is
+/// `~u·|x|`), so its relative error grows as `~u/|x|` (`u = 2⁻⁵³`):
+/// `~1e-8` at `x = 1e-8`, `~1e-2` at `x = 1e-14`. That regime is real: at
+/// high quadrature frequency, and for the weakly-screened modes at every
+/// frequency, the dielectric eigenvalues cluster at 1.
+///
+/// * `|x| < 0.25`: the series through `x³⁰`, by Horner. Successive terms
+///   shrink by a factor `≥ 4`, so there is no subtraction of near-equal
+///   quantities. `ln_1p` alone does NOT fix this regime — `ln_1p(x) − x`
+///   still cancels.
+/// * `|x| ≥ 0.25`: `ln λ − x`, bit-identical to the literal form
+///   (`−(λ − 1) == 1 − λ` exactly under round-to-nearest). Here the result is
+///   well conditioned (at most ~9 ulp of cancellation, at `λ = 1.25`). It
+///   deliberately does NOT use `ln_1p(x)`: for `λ < 0.5`, `x = λ − 1` is
+///   itself rounded, and `ln_1p` of the rounded `x` loses the low digits of
+///   `λ` (measured rel err 4.3e-13 at `λ = 1e-5`, 3.8e-9 at `λ = 1e-10`)
+///   where `ln λ` reads `λ` directly.
+///
+/// Measured worst relative error vs a 300-bit reference: 2.1e-16 on the
+/// series branch, 3.9e-16 on the `ln λ − x` branch (the table in
+/// `trace_log_summand_term_matches_high_precision_reference`).
+///
+/// The helper cannot restore digits the eigensolver already discarded when it
+/// rounded `1 + x`; it removes the cancellation in the summand only.
+#[inline]
+pub fn trace_log_summand_term(lam: f64) -> f64 {
+    let x = lam - 1.0;
+    if x.abs() < TRACE_LOG_SERIES_CUTOFF {
+        // f = x² · Σ_{k=0}^{N−2} (−1)^{k+1} x^k / (k+2), Horner from the top.
+        let mut acc = 0.0f64;
+        for k in (0..=TRACE_LOG_SERIES_ORDER - 2).rev() {
+            let sign = if k % 2 == 0 { -1.0 } else { 1.0 };
+            acc = acc.mul_add(x, sign / f64::from(k + 2));
+        }
+        acc * (x * x)
+    } else {
+        lam.ln() - x
+    }
+}
+
+/// `Σ_α [ln λ_α + (1 − λ_α)]` over one frequency's dielectric eigenvalues,
+/// each summand via [`trace_log_summand_term`]. The one entry point every
+/// eigenvalue-route RPA/dRPA energy uses.
+pub fn trace_log_sum<'a>(eigenvalues: impl IntoIterator<Item = &'a f64>) -> f64 {
+    eigenvalues
+        .into_iter()
+        .map(|&lam| trace_log_summand_term(lam))
+        .sum()
+}
+
 /// E_c^RPA = (1/2π) Σ_k w_k Σ_α [ln(λ_α(iω_k)) + (1 − λ_α(iω_k))].
 ///
 /// Computes RPA correlation energy from eigenvalues of the dielectric matrix
-/// evaluated at imaginary frequencies (quadrature points).
+/// evaluated at imaginary frequencies (quadrature points), via
+/// [`trace_log_sum`].
 ///
 /// # Arguments
 /// * `quad_weights` - Gauss-Legendre or other quadrature weights w_k, length N_quad
@@ -75,9 +140,7 @@ pub fn rpa_correlation_energy(quad_weights: &[f64], eigenvalues_freq: &Array2<f6
 
     let mut e_c = 0.0f64;
     for (k, &wk) in quad_weights.iter().enumerate() {
-        let row = eigenvalues_freq.row(k);
-        let contrib: f64 = row.iter().map(|&lam| lam.ln() + (1.0 - lam)).sum();
-        e_c += wk * contrib;
+        e_c += wk * trace_log_sum(eigenvalues_freq.row(k));
     }
     e_c / (2.0 * std::f64::consts::PI)
 }
@@ -406,6 +469,14 @@ pub fn eval_eigenvalues_at_frequencies_budgeted(
 /// `ε̃` is symmetric, but that is irrelevant here: `logdet_lu` reads the whole
 /// matrix and is transpose-invariant, so the row-major buffer needs no
 /// transposition (see [`ferric_core::linalg::logdet_lu`]'s layout note).
+///
+/// This route carries the same `λ → 1` cancellation that
+/// [`trace_log_summand_term`] removes from the eigenvalue route, aggregated
+/// over modes: `ln det ≈ Σ_α x_α` and `M − tr = −Σ_α x_α` are two independently
+/// rounded sums whose difference is `≈ −Σ_α x_α²/2`. With no eigenvalues there
+/// is no per-mode structure to expand, so it is not reformulated. The absolute
+/// error per mode is `~u·x_α`, negligible in f64; a reduced-precision (f32)
+/// evaluation of this route would not be.
 fn dielectric_trace_log_summand(eps_proj: &Array2<f64>, what: &str) -> Result<f64, FerricError> {
     let m = eps_proj.nrows();
     let log_det =
@@ -743,6 +814,134 @@ mod tests {
         )
         .unwrap();
         assert_eq!(a, b);
+    }
+
+    // ──────────────── trace_log_summand_term (λ → 1 cancellation) ────────────────
+
+    /// `(λ, f(λ) = ln λ + 1 − λ)` with `f` from mpmath at 300 bits, evaluated at
+    /// the EXACT f64 `λ` listed (so the reference measures the formula, not the
+    /// rounding of `1 + x`). Generated by:
+    /// `x = mpf(lam) - 1; print(nstr(log1p(x) - x, 21))`.
+    const TRACE_LOG_REFERENCE: &[(f64, f64)] = &[
+        (1.00000000000001, -4.99201041585168207765e-29),
+        (1.000000000001, -5.00088904533664359657e-25),
+        (1.0000000001, -5.0000008270704108047e-21),
+        (1.00000001, -4.99999990589195799987e-17),
+        (1.000001, -4.9999966658465011079e-13),
+        (1.00001, -4.99996666698217605181e-11),
+        (1.0001, -4.9996666916635656022e-9),
+        (1.001, -4.99666916466723166501e-7),
+        (1.01, -4.96691468319172397231e-5),
+        (1.1, -4.6898201956751480304e-3),
+        (1.2, -1.76784432060453663868e-2),
+        (1.2499999, -2.68564286857934325565e-2),
+        (1.2500001, -2.68564686857934559109e-2),
+        (0.999999999, -4.9999997205140224181e-19),
+        (0.9999, -5.00033335833423204863e-9),
+        (0.99, -5.03358535014412732638e-5),
+        (0.8, -2.31435513142097446641e-2),
+        (0.3, -5.03972804325936018528e-1),
+        (1e-5, -1.05129354649702283383e+1),
+        (1e-10, -2.20258509300404568037e+1),
+        (1.5, -9.4534891891835618022e-2),
+        (2.0, -3.06852819440054690583e-1),
+        (3.0, -9.01387711331890308605e-1),
+        (10.0, -6.69741490700595431598),
+        (100.0, -9.4394829814011908632e+1),
+        (10000.0, -9.98978965962802381726e+3),
+    ];
+
+    fn literal_trace_log(lam: f64) -> f64 {
+        lam.ln() + (1.0 - lam)
+    }
+
+    /// Exactness anchor: the helper matches a 300-bit reference to a few ulp
+    /// on BOTH branches and both sides of λ = 1, while the literal form loses
+    /// digits as `~u/|x|` near λ = 1.
+    ///
+    /// Measured (glibc libm): helper max rel err 2.1e-16 on the series
+    /// branch, 3.9e-16 on the `ln λ − x` branch; literal form 1.1e-2 at
+    /// x = 1e-14, 8.4e-7 at 1e-10, 2.6e-9 at 1e-8, 1.6e-11 at 1e-5,
+    /// 1.4e-13 at 1e-3, 7.5e-15 at 1e-2.
+    /// TOL = 5e-15 is ~13x the helper's worst case; the literal form misses it
+    /// at all 10 points with |x| <= 1e-2 (1.01 and 0.99 sit just above
+    /// 1e-2 in f64, so they are not counted).
+    ///
+    /// Mutation ledger: replacing the helper's body with the literal form
+    /// fails this test (first failing point x = 1e-14, rel err ~1e-2). So does
+    /// `ln_1p(x) - x` alone (same point, rel err 1.1e-2): it still cancels.
+    /// Using `ln_1p(x) - x` in the `|x| >= 0.25` branch fails here at
+    /// λ = 1e-5 (rel err 4.3e-13; 3.8e-9 at λ = 1e-10) and fails the bitwise
+    /// check in `..._matches_literal_away_from_unity`.
+    #[test]
+    fn trace_log_summand_term_matches_high_precision_reference() {
+        const TOL: f64 = 5e-15;
+        let (mut worst_series, mut worst_literal) = (0.0f64, 0.0f64);
+        let mut literal_misses = 0usize;
+        let mut near_one = 0usize;
+        for &(lam, want) in TRACE_LOG_REFERENCE {
+            let got = trace_log_summand_term(lam);
+            let rel = ((got - want) / want).abs();
+            if (lam - 1.0).abs() < TRACE_LOG_SERIES_CUTOFF {
+                worst_series = worst_series.max(rel);
+            } else {
+                worst_literal = worst_literal.max(rel);
+            }
+            assert!(
+                rel < TOL,
+                "helper at lam={lam:e}: got {got:.17e}, want {want:.17e}, rel {rel:.2e}"
+            );
+            if (lam - 1.0).abs() <= 1e-2 {
+                near_one += 1;
+                let lit = literal_trace_log(lam);
+                if ((lit - want) / want).abs() >= TOL {
+                    literal_misses += 1;
+                }
+            }
+        }
+        // The bar must discriminate: the literal form has to fail it near 1.
+        assert_eq!(
+            literal_misses, near_one,
+            "literal form met TOL at some |x| <= 1e-2 point; the bar is not discriminating"
+        );
+        eprintln!(
+            "trace_log_summand_term worst rel err vs 300-bit ref: series {worst_series:.2e}, \
+             ln-lambda branch {worst_literal:.2e}"
+        );
+    }
+
+    /// Where the literal form is accurate (λ far from 1) the helper must agree
+    /// with it bit for bit: the `|x| >= 0.25` branch IS the literal form.
+    #[test]
+    fn trace_log_summand_term_matches_literal_away_from_unity() {
+        for &lam in &[
+            1e-10f64, 1e-5, 0.3, 0.75, 1.3, 1.5, 2.0, 3.0, 7.25, 10.0, 100.0, 1e4, 1e8,
+        ] {
+            let h = trace_log_summand_term(lam);
+            let lit = literal_trace_log(lam);
+            assert_eq!(
+                h.to_bits(),
+                lit.to_bits(),
+                "lam={lam}: helper {h:.17e} vs literal {lit:.17e} must be bit-identical"
+            );
+        }
+    }
+
+    /// The two branches agree across the series cutoff (no seam).
+    #[test]
+    fn trace_log_summand_term_is_continuous_at_the_series_cutoff() {
+        for sign in [1.0f64, -1.0] {
+            let below = 1.0 + sign * TRACE_LOG_SERIES_CUTOFF * (1.0 - 1e-12);
+            let above = 1.0 + sign * TRACE_LOG_SERIES_CUTOFF * (1.0 + 1e-12);
+            let (fb, fa) = (trace_log_summand_term(below), trace_log_summand_term(above));
+            // f ~ x², so the 2e-12 relative step in x moves f by ~4e-12
+            // relative; 1e-10 allows that and rejects a branch mismatch.
+            let rel = ((fa - fb) / fb).abs();
+            assert!(
+                rel < 1e-10,
+                "seam at sign {sign}: {fb:.17e} vs {fa:.17e} ({rel:.2e})"
+            );
+        }
     }
 
     // ────────────── log-det (LU) vs eigenvalue path equivalence ──────────────
