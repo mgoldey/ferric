@@ -1484,6 +1484,21 @@ pub(crate) fn solve_rhf_blocked(
     solve_rhf_impl(ctx, mol, prep, op, bounds, config, None, Some(spec))
 }
 
+/// Title of the `FERRIC_TIMING` phase table printed by `solve_rhf_impl`:
+/// "RKS" when an XC functional is configured or injected, else "RHF", with
+/// " (free-atom guess)" appended inside an internal sub-solve (the MINAO
+/// guess's free-atom SCFs, see `runlog::in_sub_solve`). Nested tables are
+/// retitled, never suppressed, so none disappears.
+fn phase_table_title(config: &RhfConfig, injected_xc: bool) -> &'static str {
+    let ks = config.xc.is_some() || injected_xc;
+    match (ks, crate::runlog::in_sub_solve()) {
+        (false, false) => "RHF",
+        (true, false) => "RKS",
+        (false, true) => "RHF (free-atom guess)",
+        (true, true) => "RKS (free-atom guess)",
+    }
+}
+
 /// Shared body of [`solve_rhf`] (`inj = None`, byte-identical to the
 /// pre-injection solver) and [`solve_rhf_injected`] (`inj = Some`, config
 /// already validated).
@@ -1596,7 +1611,8 @@ fn solve_rhf_impl(
     // same arithmetic), and no closure is added to this function's
     // complexity. A `?` between `begin` and `stop` drops that one sample; the
     // guard still reports everything recorded before it.
-    let mut phases = ferric_core::timing::PhaseAccumulator::new().report_on_drop("RHF");
+    let mut phases = ferric_core::timing::PhaseAccumulator::new()
+        .report_on_drop(phase_table_title(config, inj_xc.is_some()));
 
     // Shared geometry-only environment: S, hcore(+ECP, +external), V_nn
     // (+external), COSMO/PCM contexts, resolved memory budget, RSH fitters.

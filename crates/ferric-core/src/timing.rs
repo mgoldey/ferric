@@ -183,13 +183,25 @@ impl PhaseAccumulator {
     /// whole-job wall time: anything the caller did not bracket is outside
     /// this table by construction. The caller's own wall-clock is the
     /// denominator to use for a whole-job claim.
+    ///
+    /// The whole table is formatted into one `String` and handed to a locked
+    /// stderr in a single `write_all`, so tables from solves running in
+    /// parallel (e.g. free-atom guess SCFs under `par_iter`) never interleave
+    /// line by line. The write error is ignored rather than unwrapped, because
+    /// this runs inside `Drop` (see [`PhaseAccumulator::report_on_drop`]) and
+    /// a panic there during an unwind would abort the process.
     pub fn report(&self, title: &str) {
+        use std::fmt::Write as _;
+        use std::io::Write as _;
         if !enabled() || self.phases.is_empty() {
             return;
         }
         let total = self.total_secs();
-        eprintln!("[timing] {title} phase totals (accumulated):");
-        eprintln!(
+        // `fmt::Write` for `String` is infallible; the results are discarded.
+        let mut out = String::new();
+        let _ = writeln!(out, "[timing] {title} phase totals (accumulated):");
+        let _ = writeln!(
+            out,
             "[timing]   {:<32} {:>10} {:>8} {:>7}",
             "phase", "sec", "calls", "%"
         );
@@ -199,12 +211,18 @@ impl PhaseAccumulator {
             } else {
                 0.0
             };
-            eprintln!(
+            let _ = writeln!(
+                out,
                 "[timing]   {:<32} {:>10.3} {:>8} {:>6.1}%",
                 p.label, p.secs, p.calls, pct
             );
         }
-        eprintln!("[timing]   {:<32} {:>10.3}", "TOTAL (timed phases)", total);
+        let _ = writeln!(
+            out,
+            "[timing]   {:<32} {:>10.3}",
+            "TOTAL (timed phases)", total
+        );
+        let _ = std::io::stderr().lock().write_all(out.as_bytes());
     }
     /// Wrap this accumulator in a guard that prints its table (via
     /// [`PhaseAccumulator::report`]) when the guard is DROPPED.
@@ -308,13 +326,11 @@ mod tests {
         assert_eq!(guard.secs_for("region").is_some(), enabled());
     }
 
-    /// The two tests above that only bite when timing is ON
-    /// (`repeated_labels_accumulate_into_one_row`, and the enabled branch of
-    /// `time_runs_the_closure_exactly_once`) would be vacuous in a plain
-    /// `cargo test`, because `enabled()` is fixed per process by a `OnceLock`.
-    /// So an untimed run re-executes this test binary with `FERRIC_TIMING=1`
-    /// over the timing tests and requires them to pass there too. (A timed
-    /// run already IS that child, so it does nothing.)
+    /// `enabled()` is fixed per process, so in an untimed run the ON-only
+    /// assertions above (coalescing; single evaluation in `time`'s enabled
+    /// branch) never execute. Re-run the timing tests in a child with
+    /// `FERRIC_TIMING=1` so a plain `cargo test` still checks them. No-op
+    /// when this process is already timed.
     #[test]
     fn timed_contract_holds_in_a_timed_child() {
         if enabled() {
