@@ -63,6 +63,17 @@ fn cfgs() -> Vec<SparsityCfg> {
     // Research spike (`--features spike-cholesky-seed`): the same thresholds
     // seeded by pivoted-Cholesky orbitals instead of Boys. See
     // reference/spikes/cholesky-vs-boys-pdep-seed.md.
+    // thresh = 0 disables every prescreen (aux rows and OBS shell pairs), so
+    // the screened operator is exact; used to separate screening error from
+    // operator error.
+    #[cfg(feature = "spike-cholesky-seed")]
+    v.push(SparsityCfg {
+        label: "Boys-0",
+        sparsity: Chi0Sparsity::BoysScreened {
+            thresh: 0.0,
+            dist_cutoff: f64::INFINITY,
+        },
+    });
     #[cfg(feature = "spike-cholesky-seed")]
     for (label, thresh) in [
         ("Cholesky-1e-3", 1e-3),

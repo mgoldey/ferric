@@ -20,7 +20,7 @@ from the CLI, Python or `Chi0Sparsity::parse_config_str`):
   and its dispatch arm in `run_pdep_rpa_eigensolve`.
 * `crates/ferric-rpa/tests/spike_cholesky_seed.rs`.
 * `benchmarks/harness/examples/sparse_scaling.rs` adds `Cholesky-1e-{3,4,5}`
-  configs under the same feature.
+  and `Boys-0` (Boys screening at thresh 0) configs under the same feature.
 
 ```
 OPENBLAS_NUM_THREADS=1 cargo test -p ferric-rpa --features spike-cholesky-seed \
@@ -210,12 +210,54 @@ commit.
 
 ### A main-branch observation outside this spike
 
-On main the Boys-screened path itself is 30.3 µHa (1e-3) and 80.6 µHa (1e-5,
-100% retention) from Dense on n-hexane at these production settings. The
-spike measured 1.8 and 0.1 µHa for the same configs before `a953d4ff5`.
-Because the error is present at 100% retention, it is not pruning error; it
-comes from the screened eigensolve (seed and matvec on semicanonical
-orbitals) under PDEP truncation. Not investigated further here.
+On main the Boys-screened path is 30.3 µHa (thresh 1e-3) and 80.6 µHa
+(thresh 1e-5) from Dense on n-hexane at the production settings above. Notes
+on reading those numbers:
+
+* `retained_frac` counts aux rows only. The tile build also drops OBS shell
+  pairs below `shell_thresh = thresh/100` (`crates/ferric-rpa/src/screen.rs:269`,
+  applied at `:393`), so a retained fraction of 1.0 does not mean the screened
+  operator is exact.
+* The spike's 1.8 / 0.1 µHa for the same configs are not directly comparable:
+  three months of main lie between the two runs (Dense E_RPA moved by
+  0.036 µHa; the RHF took 319 s then, 185 s now). No causal link to
+  `a953d4ff5` is claimed.
+* Boys at 1e-3 now keeps 95.8% of aux rows against 98.7% in the spike. The
+  screen now acts on semicanonical (canonical, delocalized) orbitals, not on
+  Boys orbitals.
+* The eigensolve is not the source. The screened seed has 19 columns (active
+  occupied) and naux = 532 = 19 × 28, so the block-Lanczos Krylov space fills
+  the whole aux space and the eigensolve is exact for whatever operator it is
+  given. Any error is in the screened operator.
+* Blind spot: at `trunc_thresh = 0` the energy is evaluated with the dense
+  `b_ov` in a complete eigenbasis, so the tight-settings tests in
+  `tests/spike_cholesky_seed.rs` cannot see an error in the screened
+  operator. Only the production-settings test can.
+
+**Decisive run, 2026-10-23** (n-hexane/cc-pVDZ, main @ `e2e804008`, same
+driver and production settings; `Boys-0` = Boys screening at thresh = 0, which
+disables both the aux-row and the OBS shell-pair prescreens):
+
+| config | E_RPA | ΔE vs Dense | t_pdep (s) |
+|---|---|---|---|
+| Dense | -1.1821589845 | n/a | 2.33 |
+| Boys-0 | -1.1821589845 | 0 at the printed 1e-10 Ha | 159.1 |
+
+Raw rows: `cholesky-vs-boys-pdep-seed-2026-10-23-main-thresh0.csv`.
+
+The error vanishes at thresh = 0, so the 30.3 / 80.6 µHa above is
+**screening error** from the prescreens (mostly the OBS shell-pair cut, since
+the 1e-5 run keeps every aux row). It is not an operator defect introduced
+by `a953d4ff5`. The error grows from 1e-3 to 1e-5 even though the 1e-5
+screen is looser. That is measured and not explained here.
+
+Side observation, not fixed in this PR: in `crates/ferric-rpa/src/lanczos.rs`
+`outer_iters = max_krylov / block_size` (`:480`, and `:728` in the targeted
+variant) rounds down. On water (naux 84, block 5) the Krylov space therefore
+stops at 80 vectors after 16 block iterations. The warning then reports "did
+not converge within max_iter=50" (`:417`), which is the wrong count. The water
+`run_pdep_rpa` tests in `tests/spike_cholesky_seed.rs` all run with that
+unconverged solver (worst residual 1.7e-7 to 2.0e-7).
 
 Mutation ledger for `tests/spike_cholesky_seed.rs` (each mutant run against
 the full file, then reverted):
@@ -233,7 +275,7 @@ the full file, then reverted):
   on main the comparison has no variable left to test.
 * Open, not done here: whether the screened path should screen localized
   rather than semicanonicalized orbitals (which needs a Fock-coupled matvec,
-  not a diagonal one); the 30-81 µHa Boys-screened error on n-hexane at
-  production settings on main; and a rerun at the spike's commit with the
+  not a diagonal one); why the n-hexane screening error grows from thresh
+  1e-3 to 1e-5; the Lanczos `outer_iters` rounding; and a rerun at the spike's commit with the
   semicanonicalization fix applied, to confirm the mechanism at the spike's
   sizes.
