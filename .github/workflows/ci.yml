@@ -714,6 +714,13 @@ jobs:
     needs: build-tests
     runs-on: ubuntu-22.04
     timeout-minutes: 120
+    # actions: read -- scripts/ci-download-artifact.sh reads this run's
+    # artifacts through the REST API with GITHUB_TOKEN (#525). The repo
+    # default already grants it; stated here so a default change cannot
+    # silently send this job to the fallback.
+    permissions:
+      contents: read
+      actions: read
     strategy:
       fail-fast: false
       matrix:
@@ -866,63 +873,74 @@ jobs:
         with:
           tool: cargo-nextest
 
-      # Both downloads are bounded and continue-on-error (#525): a stalled
-      # 15 GB download used to eat the whole 120-min job. A timed-out or
-      # failed attempt falls through to the zstd check, so the retry below
-      # and the "ARTIFACT DOWNLOAD failure" error in the run step still fire.
+      # HISTORY (#525). Both downloads used to be actions/download-artifact,
+      # bounded and continue-on-error: a stalled 15 GB download had eaten the
+      # whole 120-min job. Shards 1 and 4 of run 40058633825 then died
+      # because BOTH 25-min attempts timed out, and #544 cut each attempt to
+      # 15 min, which was safe only because build-tests now strips debug info
+      # (archive ~15.2 -> 7.43 GB; shard 2's HEALTHY download of the 15.2 GB
+      # archive took 17.9 min). build-tests' debug-info guard still protects
+      # the numbers below; if it is ever removed, revisit them.
       #
-      # WHY 15 MIN PER ATTEMPT. Shards 1 and 4 of run 40058633825 died because
-      # BOTH 25-min attempts timed out (24.5 and 25.0 min; 25.0 and 25.0 min)
-      # and the run step then failed in ~30 s -- the bound fired as designed,
-      # the job's time budget was never exhausted. A tighter bound only makes
-      # that failure come EARLIER, so a re-run starts sooner. It is safe ONLY
-      # because build-tests now strips debug info and the archive halves
-      # (~15.2 -> ~7.5 GB, see the build-tests `env:` comment): shard 2's
-      # HEALTHY download of the 15.2 GB archive took 17.9 min and would have
-      # been cut off by this bound. build-tests' debug-info guard is what
-      # protects it; if that guard is ever removed, revisit this number.
-      # Budget at 15: setup ~2 min + 2 x (15 + ~1 min zstd -t) + run step
-      # ~55 min (shards 2/3 of that run) + shard 1's doctests 3-5 min =
-      # ~94 min worst case against the 120-min job timeout.
+      # WHY A SCRIPT NOW. Run 40111474993, 7.43 GB, both attempts of each
+      # shard: 80 / 77 / 900+900 (timeout) / 831 s. Healthy is ~95 MB/s; bad
+      # transfers crawl at ~9 MB/s or hang and do not recover inside 15 min,
+      # so 15 min x 2 still failed. scripts/ci-download-artifact.sh fetches
+      # the artifact through the REST API with curl and abandons any
+      # connection below 25 MB/s for 45 s, then RESUMES from the same byte
+      # (HTTP Range) on a fresh connection, so a stall costs ~1 min instead
+      # of 15 and an abandoned attempt keeps what it fetched. It checks the
+      # byte count, the API's sha256 digest, unzip's CRC and `zstd -t`, and
+      # gives up when CI_DL_DEADLINE_S runs out, or after 6 attempts in a row
+      # that each moved < 25 MB (a hang). See the script header.
+      #
+      # CI_DL_DEADLINE_S covers lookup + transfer only; verification (~1-2.6
+      # min for 7.4 GB) runs after it, hence deadline = step cap - 5 min.
+      # `exec` makes the script the step's shell, so a step-timeout signal
+      # reaches it and its trap removes the partial zip.
+      #
+      # COST ON EVERY RUN: the sha256 pass and the unzip to disk are extra
+      # work the action did while streaming -- about 1-3 min per shard even
+      # when the download is healthy. That is the price of resumable,
+      # stall-detecting transfers; the old path lost 15-30 min per stall.
+      #
+      # The action stays as ONE fallback for a failure of the script itself
+      # (API error, token scope): 6 min is ~4.5x the healthy download time.
+      # The step after it makes a fallback VISIBLE (warning + job summary) so
+      # a broken script cannot hide behind it. Either way the run step's zstd
+      # check below fails closed with the "ARTIFACT DOWNLOAD failure" error.
+      #
+      # Budget: setup ~2 min + script <= 25 + fallback 6 + run step ~55 min
+      # (shards 2/3 of run 40058633825) + shard 1's doctests 3-5 min = ~93
+      # min worst case against the 120-min job timeout (old path: ~94).
       - name: Download the archive
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        timeout-minutes: 15
+        id: download
+        timeout-minutes: 25
         continue-on-error: true
-        with:
-          name: nextest-archive
-          path: /tmp
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          CI_DL_DEADLINE_S: "1200"
+        run: exec scripts/ci-download-artifact.sh nextest-archive nextest-archive.tar.zst /tmp
 
       # A second artifact file (the probe, uploaded next to the archive) went
       # missing on single shards after both the download and a retry (runs
       # 35483904588, 35486199559, 36013053462). The probe now travels INSIDE
-      # the archive, so there is one file to check. The retry stays for the
-      # archive itself.
-      - name: Verify the archive arrived
-        run: |
-          set -euo pipefail
-          # Existence is not enough: a truncated download leaves a file that
-          # only fails later, inside `nextest --archive-file`, as
-          # "incomplete frame" (seen on #168, test-shard 3). `zstd -t`
-          # checks every frame; a corrupt archive is deleted so the retry
-          # below downloads a fresh copy.
-          if [ -f /tmp/nextest-archive.tar.zst ] && zstd -tq /tmp/nextest-archive.tar.zst; then
-            echo "complete=1" >> "$GITHUB_OUTPUT"
-          else
-            echo "::warning::artifact download missing or corrupt -- retrying"
-            ls -la /tmp | head -40
-            rm -f /tmp/nextest-archive.tar.zst
-            echo "complete=0" >> "$GITHUB_OUTPUT"
-          fi
-        id: verify
-
-      - name: Re-download if the artifact was incomplete
-        if: steps.verify.outputs.complete != '1'
+      # the archive, so there is one file to check. The fallback stays for
+      # the archive itself.
+      - name: Fall back to download-artifact if the scripted download failed
+        if: steps.download.outcome != 'success'
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        timeout-minutes: 15
+        timeout-minutes: 6
         continue-on-error: true
         with:
           name: nextest-archive
           path: /tmp
+
+      - name: Report the download-artifact fallback
+        if: steps.download.outcome != 'success'
+        run: |
+          echo "::warning::scripts/ci-download-artifact.sh FAILED (outcome: ${{ steps.download.outcome }}) and the download-artifact fallback ran -- check the 'Download the archive' log; a script that always fails would otherwise hide behind the fallback (#525)."
+          echo "- :warning: \`nextest-archive\`: scripted download ${{ steps.download.outcome }}, used the actions/download-artifact fallback (#525)" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Run shard ${{ matrix.partition }} of 4
         timeout-minutes: 100
@@ -945,7 +963,7 @@ jobs:
           echo "deferring $(echo $SLOW | wc -w) binaries from the fast tier"
           if [ ! -f /tmp/nextest-archive.tar.zst ] || ! zstd -tq /tmp/nextest-archive.tar.zst; then
             echo "::error::the nextest archive is missing or corrupt after the download" \
-                 "AND the retry -- an ARTIFACT DOWNLOAD failure, not a build" \
+                 "AND the fallback -- an ARTIFACT DOWNLOAD failure, not a build" \
                  "or test failure. Re-run this job."
             exit 1
           fi
@@ -1001,13 +1019,21 @@ jobs:
   # `nextest run --archive-file` invocation cost ~3.5-4 min of extraction
   # (MEASURED from CI job logs) and the download itself was slow or truncated
   # (#525); hence the separate canary archive of only these 6 binaries:
-  # 200 MB, downloaded in 37 s (MEASURED, run 40058633825), so its download
-  # steps are bounded at 5 min each rather than the full archive's 15. The
+  # 200 MB, downloaded in 37 s (MEASURED, run 40058633825; ~100 MB since
+  # #544), so its scripted download has a 3-min deadline and its fallback
+  # 3 min, rather than the full archive's 20 and 6. The
   # job still runs ONE invocation per MALLOC_PERTURB_ value (3 total).
   malloc-perturb:
     needs: build-tests
     runs-on: ubuntu-22.04
     timeout-minutes: 60
+    # actions: read -- scripts/ci-download-artifact.sh reads this run's
+    # artifacts through the REST API with GITHUB_TOKEN (#525). The repo
+    # default already grants it; stated here so a default change cannot
+    # silently send this job to the fallback.
+    permissions:
+      contents: read
+      actions: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
@@ -1046,42 +1072,40 @@ jobs:
           tool: cargo-nextest
 
       # The small canary archive build-tests packs from the same canary list
-      # (#525), not the ~15 GB full one. Bounded, retried and zstd-checked
-      # exactly like test-shard's download.
+      # (#525), not the full one. Downloaded, stall-checked and verified by
+      # the same script as test-shard's, with a deadline scaled to its
+      # ~100 MB (healthy: a few seconds), and the same single
+      # download-artifact fallback.
       - name: Download the canary archive
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        id: download
         timeout-minutes: 5
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          # 5-min step cap - 2 min: verifying ~100 MB takes seconds.
+          CI_DL_DEADLINE_S: "180"
+        run: exec scripts/ci-download-artifact.sh canary-archive canary-archive.tar.zst /tmp
+
+      - name: Fall back to download-artifact if the scripted download failed
+        if: steps.download.outcome != 'success'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        timeout-minutes: 3
         continue-on-error: true
         with:
           name: canary-archive
           path: /tmp
 
-      - name: Verify the canary archive arrived
-        id: verify
+      - name: Report the download-artifact fallback
+        if: steps.download.outcome != 'success'
         run: |
-          set -euo pipefail
-          if [ -f /tmp/canary-archive.tar.zst ] && zstd -tq /tmp/canary-archive.tar.zst; then
-            echo "complete=1" >> "$GITHUB_OUTPUT"
-          else
-            echo "::warning::artifact download missing or corrupt -- retrying"
-            rm -f /tmp/canary-archive.tar.zst
-            echo "complete=0" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Re-download if the artifact was incomplete
-        if: steps.verify.outputs.complete != '1'
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        timeout-minutes: 5
-        continue-on-error: true
-        with:
-          name: canary-archive
-          path: /tmp
+          echo "::warning::scripts/ci-download-artifact.sh FAILED (outcome: ${{ steps.download.outcome }}) and the download-artifact fallback ran -- check the 'Download the canary archive' log; a script that always fails would otherwise hide behind the fallback (#525)."
+          echo "- :warning: \`canary-archive\`: scripted download ${{ steps.download.outcome }}, used the actions/download-artifact fallback (#525)" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Run the canary set under MALLOC_PERTURB_ 1, 170, 2
         run: |
           set -euo pipefail
           if [ ! -f /tmp/canary-archive.tar.zst ] || ! zstd -tq /tmp/canary-archive.tar.zst; then
-            echo "::error::the canary archive is missing or corrupt after the download AND the retry -- an ARTIFACT DOWNLOAD failure, not a test failure. Re-run this job."
+            echo "::error::the canary archive is missing or corrupt after the download AND the fallback -- an ARTIFACT DOWNLOAD failure, not a test failure. Re-run this job."
             exit 1
           fi
           # Canary binaries as nextest binary ids (crate::binary), from the

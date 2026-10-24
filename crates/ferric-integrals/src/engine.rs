@@ -50,6 +50,12 @@ pub struct Engine {
     /// complement (`scf_compute_terf_eri*`). Unused (must be false) when `is_terfc`
     /// is false.
     is_terf: bool,
+    /// True for a libint2-native terf engine ([`Engine::new_terf_libint2`]).
+    /// It is driven through the ordinary libint2 compute calls, but its core
+    /// evaluator (the terf hook) can REFUSE a call (negative status) instead
+    /// of only screening it, so the checked compute paths return that as
+    /// `Err(status)` rather than asserting, like the table engines.
+    libint2_terf: bool,
 }
 
 impl std::fmt::Debug for Engine {
@@ -117,6 +123,7 @@ impl Engine {
                 scratch: vec![0.0; n4],
                 is_terfc: true,
                 is_terf,
+                libint2_terf: false,
             });
         }
 
@@ -153,6 +160,7 @@ impl Engine {
             scratch: vec![0.0; max_fn * max_fn * max_fn * max_fn],
             is_terfc: false,
             is_terf: false,
+            libint2_terf: false,
         })
     }
 
@@ -212,6 +220,7 @@ impl Engine {
             scratch: vec![0.0; max_fn * max_fn * max_fn * max_fn],
             is_terfc: false,
             is_terf: false,
+            libint2_terf: false,
         })
     }
 
@@ -235,6 +244,7 @@ impl Engine {
             scratch: Vec::new(),
             is_terfc: false,
             is_terf: false,
+            libint2_terf: false,
         })
     }
 
@@ -360,8 +370,11 @@ impl Engine {
     }
 
     /// Compute a shell quartet of 4-center ERIs. Returns `None` if screened to
-    /// zero (and, for the terf/terfc table engines, if the engine REFUSED the
-    /// quartet; use [`Engine::compute_quartet_checked`] to tell the two apart).
+    /// zero (and, for the terf/terfc table engines and the libint2-native terf
+    /// engine, if the engine REFUSED the quartet; use
+    /// [`Engine::compute_quartet_checked`] to tell the two apart). Unlike
+    /// eri3/eri2, folding is the long-standing 4-center contract: the table
+    /// engines' 4-center path refuses quartets past the table depth by design.
     pub fn compute_quartet(
         &mut self,
         prep: &PreparedBasis,
@@ -379,6 +392,13 @@ impl Engine {
     /// quartet (negative status) as distinct from screening it to zero.
     pub fn is_table_engine(&self) -> bool {
         self.is_terf || self.is_terfc
+    }
+
+    /// True when a negative compute status is a refusal reported as
+    /// `Err(status)` by the `_checked` paths: the terf/terfc table engines
+    /// and the libint2-native terf engine.
+    fn can_refuse(&self) -> bool {
+        self.is_terf || self.is_terfc || self.libint2_terf
     }
 
     /// Like [`Engine::compute_quartet`], but a table-engine refusal (total L
@@ -451,7 +471,7 @@ impl Engine {
             // `None`). A Schwarz table must treat it as "cannot bound", never
             // as the zero of a screened block: schwarz_pair turns it into an
             // error.
-            if written < 0 && (self.is_terf || self.is_terfc) {
+            if written < 0 && self.can_refuse() {
                 return Err(written);
             }
             assert!(
@@ -581,6 +601,7 @@ impl Engine {
             scratch: Vec::new(),
             is_terfc: false,
             is_terf: false,
+            libint2_terf: false,
         })
     }
 
@@ -627,6 +648,7 @@ impl Engine {
             scratch: vec![0.0; 12 * max_fn * max_fn * max_fn * max_fn],
             is_terfc: false,
             is_terf: false,
+            libint2_terf: false,
         })
     }
 
@@ -840,6 +862,7 @@ impl Engine {
                 scratch: vec![0.0; max_fn_df * max_fn_obs * max_fn_obs],
                 is_terfc: true,
                 is_terf,
+                libint2_terf: false,
             });
         }
 
@@ -872,6 +895,7 @@ impl Engine {
             scratch: vec![0.0; max_fn_df * max_fn_obs * max_fn_obs],
             is_terfc: false,
             is_terf: false,
+            libint2_terf: false,
         })
     }
 
@@ -921,6 +945,7 @@ impl Engine {
                 scratch: vec![0.0; max_fn * max_fn],
                 is_terfc: true,
                 is_terf,
+                libint2_terf: false,
             });
         }
 
@@ -959,10 +984,17 @@ impl Engine {
             scratch: vec![0.0; max_fn * max_fn],
             is_terfc: false,
             is_terf: false,
+            libint2_terf: false,
         })
     }
 
-    /// Compute a 3-center ERI shell triplet (P|mu nu). Returns `None` if screened.
+    /// Compute a 3-center ERI shell triplet (P|mu nu). Returns `None` if screened
+    /// and, for the libint2-native terf engine only, if that engine REFUSED
+    /// the triplet (use [`Engine::compute_eri3_checked`] to tell the two
+    /// apart). Every other negative status, including a terf/terfc table
+    /// engine's (a caught C++ exception or a size mismatch, never a
+    /// screening), panics as it always has: folding it into `None` would hand
+    /// RI code a silent zero block.
     pub fn compute_eri3(
         &mut self,
         obs: &PreparedBasis,
@@ -971,6 +1003,25 @@ impl Engine {
         sh1: usize,
         sh2: usize,
     ) -> Option<&[f64]> {
+        let fold_refusal = self.libint2_terf;
+        match self.compute_eri3_checked(obs, dfbs, sh_p, sh1, sh2) {
+            Ok(block) => block,
+            Err(_) if fold_refusal => None,
+            Err(st) => panic!("internal error in eri3 ({sh_p}|{sh1},{sh2}): status {st}"),
+        }
+    }
+
+    /// Like [`Engine::compute_eri3`], but a refusal by an engine that can
+    /// refuse (see `can_refuse`) is `Err(status)` instead of `None`. Any
+    /// other negative status is still a libint2 internal error and panics.
+    pub fn compute_eri3_checked(
+        &mut self,
+        obs: &PreparedBasis,
+        dfbs: &PreparedBasis,
+        sh_p: usize,
+        sh1: usize,
+        sh2: usize,
+    ) -> Result<Option<&[f64]>, i32> {
         let n = dfbs.shell_dims()[sh_p] * obs.shell_dims()[sh1] * obs.shell_dims()[sh2];
         if self.buf.len() < n {
             self.buf.resize(n, 0.0);
@@ -1019,6 +1070,9 @@ impl Engine {
                     )
                 }
             };
+            if written < 0 && self.can_refuse() {
+                return Err(written);
+            }
             assert!(
                 written >= 0,
                 "internal error in eri3 ({sh_p}|{sh1},{sh2}): status {written}"
@@ -1032,9 +1086,9 @@ impl Engine {
             }
         }
         if max_written == 0 {
-            None
+            Ok(None)
         } else {
-            Some(&self.buf[..max_written])
+            Ok(Some(&self.buf[..max_written]))
         }
     }
 
@@ -1137,8 +1191,24 @@ impl Engine {
         Ok(if any { Some(&self.buf[..n]) } else { None })
     }
 
-    /// Compute a 2-center ERI shell pair (P|Q).
+    /// Compute a 2-center ERI shell pair (P|Q). Panics on any negative shim
+    /// status, for every engine (there is no `None` to fold a refusal into);
+    /// use [`Engine::compute_eri2_checked`] to get a refusal as `Err(status)`.
     pub fn compute_eri2(&mut self, dfbs: &PreparedBasis, sh_p: usize, sh_q: usize) -> &[f64] {
+        match self.compute_eri2_checked(dfbs, sh_p, sh_q) {
+            Ok(b) => b,
+            Err(st) => panic!("internal error in eri2 ({sh_p}|{sh_q}): status {st}"),
+        }
+    }
+
+    /// Like [`Engine::compute_eri2`], but a refusal by an engine that can
+    /// refuse is `Err(status)` instead of a panic.
+    pub fn compute_eri2_checked(
+        &mut self,
+        dfbs: &PreparedBasis,
+        sh_p: usize,
+        sh_q: usize,
+    ) -> Result<&[f64], i32> {
         let n = dfbs.shell_dims()[sh_p] * dfbs.shell_dims()[sh_q];
         if self.buf.len() < n {
             self.buf.resize(n, 0.0);
@@ -1180,6 +1250,9 @@ impl Engine {
                     )
                 }
             };
+            if written < 0 && self.can_refuse() {
+                return Err(written);
+            }
             assert!(
                 written >= 0,
                 "internal error in eri2 ({sh_p}|{sh_q}): status {written}"
@@ -1192,7 +1265,7 @@ impl Engine {
                 }
             }
         }
-        &self.buf[..max_written]
+        Ok(&self.buf[..max_written])
     }
 
     /// [`Self::compute_eri2`] with the ket shell translated:
@@ -1352,6 +1425,7 @@ impl Engine {
             scratch: Vec::new(),
             is_terfc: false,
             is_terf: false,
+            libint2_terf: false,
         })
     }
 
@@ -1371,6 +1445,7 @@ impl Engine {
             scratch: Vec::new(),
             is_terfc: false,
             is_terf: false,
+            libint2_terf: false,
         };
         let n_comp = if op.is_composite {
             op.num_components
@@ -1545,6 +1620,7 @@ impl Engine {
             scratch: vec![0.0; 9 * max_fn_df * max_fn_obs * max_fn_obs],
             is_terfc: false,
             is_terf: false,
+            libint2_terf: false,
         })
     }
 
@@ -1592,6 +1668,7 @@ impl Engine {
             scratch: vec![0.0; 6 * max_fn * max_fn],
             is_terfc: false,
             is_terf: false,
+            libint2_terf: false,
         })
     }
 
@@ -2024,6 +2101,152 @@ pub fn deriv2_pairs(ncoord: usize) -> Vec<(usize, usize)> {
         }
     }
     out
+}
+
+/// Bra-ket shape of a libint2-native terf engine (feature `libint2_terf`).
+#[cfg(feature = "libint2_terf")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TerfLibint2Braket {
+    /// 2-center `(P|Q)`: libint2 `xs_xs`.
+    XsXs,
+    /// 3-center `(P|mu nu)`: libint2 `xs_xx`.
+    XsXx,
+    /// 4-center `(mu nu|la si)`: libint2 `xx_xx`.
+    XxXx,
+}
+
+#[cfg(feature = "libint2_terf")]
+impl TerfLibint2Braket {
+    /// libint2's `braket_rank()`, which is also the shim's `braket` code.
+    pub fn rank(self) -> i32 {
+        match self {
+            TerfLibint2Braket::XsXs => 2,
+            TerfLibint2Braket::XsXx => 3,
+            TerfLibint2Braket::XxXx => 4,
+        }
+    }
+
+    /// Largest `max_l` the terf tables allow for this braket. The worst
+    /// Boys-like order libint2 requests is `rank * max_l` (deriv order 0), and
+    /// the tables only hold `m < 24` (`TERFC_DIMM`). Asks the shim, so it
+    /// cannot drift from the limit the constructor enforces.
+    pub fn max_l(self) -> i32 {
+        // SAFETY: pure function of an int; no pointers.
+        unsafe { ffi::scf_terf_libint2_max_l(self.rank() as c_int) }
+    }
+
+    /// Largest `max_l` the LINKED libint2 was generated for at this braket
+    /// (deriv order 0): `LIBINT2_MAX_AM_{2eri,3eri,eri}`. Past it libint2
+    /// itself throws `lmax_exceeded`. Independent of the terf table limit.
+    pub fn libint_max_l(self) -> i32 {
+        // SAFETY: pure function of an int; no pointers.
+        unsafe { ffi::scf_libint2_eri_max_l(self.rank() as c_int) }
+    }
+}
+
+#[cfg(feature = "libint2_terf")]
+impl Engine {
+    /// Create a libint2-native terf engine (`Operator::terf` in a terf-patched
+    /// libint2, built with `FERRIC_LIBINT2_TERF`). The handle is driven through
+    /// the ordinary libint2 compute calls (`compute_quartet`, `compute_eri3`,
+    /// `compute_eri2`), not the table-MD path; a refusal by its terf hook
+    /// comes back as `Err(status)` from the `_checked` variants.
+    ///
+    /// Refuses, with a typed error and before any integral is computed:
+    /// - a `max_l` whose worst `m` (`braket.rank() * max_l`) reaches the terf
+    ///   table depth (the shim would otherwise read past the table rows and
+    ///   overflow its series buffer, #234), see [`TerfLibint2Braket::max_l`];
+    /// - a `max_l` past what the linked libint2 was generated for, see
+    ///   [`TerfLibint2Braket::libint_max_l`];
+    /// - `omega` not finite and > 0, `r0` not finite, `max_nprim` < 1.
+    ///
+    /// `table_dir: None` falls back to `FERRIC_TERF_TABLE_DIR`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_terf_libint2(
+        r0: f64,
+        omega: f64,
+        braket: TerfLibint2Braket,
+        max_nprim: usize,
+        max_l: i32,
+        precision: f64,
+        table_dir: Option<&str>,
+    ) -> Result<Self, FerricError> {
+        let err = |m: String| {
+            Err(FerricError::Libint(format!(
+                "libint2 terf {braket:?} engine: {m}"
+            )))
+        };
+        // Argument checks the shim ALSO makes (it is the authority). Doing them
+        // here first means a shim SCF_EINVAL can only be the table-depth
+        // refusal, so the message below names the real cause.
+        if !(omega.is_finite() && omega > 0.0) {
+            return err(format!("omega must be finite and > 0, got {omega}"));
+        }
+        if !r0.is_finite() {
+            return err(format!("r0 must be finite, got {r0}"));
+        }
+        if max_nprim < 1 {
+            return err("max_nprim must be >= 1".into());
+        }
+        if max_l < 0 {
+            return err(format!("max_l must be >= 0, got {max_l}"));
+        }
+        let Ok(max_nprim_c) = c_int::try_from(max_nprim) else {
+            return err(format!("max_nprim {max_nprim} overflows c_int"));
+        };
+        let cdir = match table_dir.map(std::ffi::CString::new).transpose() {
+            Ok(c) => c,
+            Err(e) => return err(format!("terf table dir: {e}")),
+        };
+        // libint2's Engine ctor asserts libint2::initialized(); every other
+        // constructor gets that from a PreparedBasis built first, this one
+        // takes no basis, so initialize here.
+        crate::basis_bridge::ensure_init();
+        let mut status: c_int = 0;
+        // SAFETY: scalar arguments, a nullable NUL-terminated path that outlives
+        // the call, and a live out-param. The shim catches every C++ exception.
+        // The returned handle is owned by this Engine and destroyed in Drop.
+        let h = unsafe {
+            ffi::scf_engine_create_terf_libint2(
+                r0,
+                omega,
+                braket.rank() as c_int,
+                max_nprim_c,
+                max_l as c_int,
+                precision,
+                cdir.as_ref().map_or(std::ptr::null(), |c| c.as_ptr()),
+                &mut status,
+            )
+        };
+        if h.is_null() {
+            let worst_m = i64::from(braket.rank()) * i64::from(max_l);
+            return err(match status {
+                ffi::SCF_EINVAL if max_l > braket.max_l() => format!(
+                    "refused max_l={max_l}: libint2 would request m up to {}*max_l = {worst_m}, \
+                     past the terf table depth (m < 24); the largest accepted max_l is {}",
+                    braket.rank(),
+                    braket.max_l()
+                ),
+                ffi::SCF_ENOTIMPL => format!(
+                    "refused max_l={max_l}: the linked libint2 was generated for max_l <= {} \
+                     at this braket",
+                    braket.libint_max_l()
+                ),
+                ffi::SCF_EUNSUPPORTED => {
+                    "terf tables could not be loaded (set FERRIC_TERF_TABLE_DIR)".to_string()
+                }
+                s => format!("construction failed (shim status {s})"),
+            });
+        }
+        Ok(Engine {
+            handles: vec![(1.0, h)],
+            buf: Vec::new(),
+            scratch: Vec::new(),
+            is_terfc: false,
+            is_terf: false,
+            libint2_terf: true,
+        })
+    }
 }
 
 impl Drop for Engine {

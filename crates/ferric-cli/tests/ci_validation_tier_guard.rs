@@ -44,6 +44,14 @@
 //! binary, or paste the list back inline into the malloc-perturb job, or
 //! point malloc-perturb at the full `nextest-archive` →
 //! `malloc_perturb_canaries_have_one_source` fails.
+//!
+//! And it pins the PRIMARY archive download path (#525): test-shard and
+//! malloc-perturb `exec` `scripts/ci-download-artifact.sh` (stall detection
+//! + resume), with actions/download-artifact only as a fallback whose use is
+//! reported. Without this, a typo in the invocation would send every run to
+//! the fallback and stay green. MUTATION: misspell the artifact name or the
+//! script path in either invocation, or drop the fallback report step →
+//! `archive_downloads_go_through_the_stall_detecting_script` fails.
 
 use std::path::{Path, PathBuf};
 
@@ -863,4 +871,48 @@ fn malloc_perturb_canaries_have_one_source() {
         !run.contains("nextest-archive"),
         "malloc-perturb must use the small canary archive, not the full nextest-archive (#525)"
     );
+}
+
+/// Non-comment lines of `text`, joined -- so a needle cannot be satisfied by
+/// a comment that merely names it.
+fn code_only(text: &str) -> String {
+    text.lines()
+        .filter(|l| !l.trim_start().starts_with('#'))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn archive_downloads_go_through_the_stall_detecting_script() {
+    let script = workspace_root().join("scripts/ci-download-artifact.sh");
+    assert!(script.is_file(), "{} is missing", script.display());
+
+    let ci = ci_yml();
+    for (job_name, invocation) in [
+        (
+            "test-shard",
+            "run: exec scripts/ci-download-artifact.sh nextest-archive nextest-archive.tar.zst /tmp",
+        ),
+        (
+            "malloc-perturb",
+            "run: exec scripts/ci-download-artifact.sh canary-archive canary-archive.tar.zst /tmp",
+        ),
+    ] {
+        let text = code_only(&job(&ci, job_name));
+        for needle in [
+            invocation,
+            // The script reads this run's artifacts through the REST API.
+            "actions: read",
+            "GITHUB_TOKEN: ${{ github.token }}",
+            // The fallback runs only when the script failed, and says so.
+            "if: steps.download.outcome != 'success'",
+            "name: Report the download-artifact fallback",
+            "GITHUB_STEP_SUMMARY",
+        ] {
+            assert!(
+                text.contains(needle),
+                "{job_name} must contain `{needle}` (#525)"
+            );
+        }
+    }
 }

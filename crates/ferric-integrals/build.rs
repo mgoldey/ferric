@@ -109,6 +109,9 @@ fn main() {
     println!("cargo:rustc-link-lib=static=Faddeeva");
 
     println!("cargo:rerun-if-env-changed=LIBINT2_PREFIX");
+    // Selects whether shim.cc compiles the libint2-native terf path; without
+    // this a toggled FERRIC_LIBINT2_TERF reused the stale shim.
+    println!("cargo:rerun-if-env-changed=FERRIC_LIBINT2_TERF");
     println!("cargo:rerun-if-changed={libint_root}/include/libint2/config.h");
     for var in [STOCK_VAR, REQUIRE_VAR, ALLOW_VAR] {
         println!("cargo:rerun-if-env-changed={var}");
