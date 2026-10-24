@@ -18,7 +18,11 @@ estimated energy (`80b99e508`, `c3cace821`), now
 `LocalizedMp2Config::add_back_truncation` in `dlpno_localized.rs`. It is
 re-measured on `main`'s own path in
 `crates/ferric-mp2/tests/validation_dlpno_localized.rs` (gains of 4.1x to 26x
-on C4–C8; see that file).
+on C4–C8; see that file). The estimators differ: the branch added back a
+dipole-dipole ORIENTED estimate from its own pair screen, while the port adds
+back the full diagonal-f MP2 pair estimate that `main`'s screen already
+computes. The branch's 2.2x–4.5x gain and "no time cost" describe the branch's
+estimator, not the ported one.
 
 **What was checked and not ported.** The amplitude `conv_thresh` loosening
 (`0330d11b7`, `fe09cf88c`: 1e-12 to 1e-9 gave 1.63x on the LNO DIIS solve at
@@ -65,7 +69,7 @@ predicted). No size past the locality onset (~30 Bohr) was measured.
 |---|---|
 | `bf39b2e83` | domain-local aux fit routed through the coupled path: aux retention 0.5733, energies agree to 6e-7 Ha, **speedup 1.01x** (the coupled amplitude iteration is 21.1 s of 21.4 s). Hoisting `ThreeIndexSource` out of the batch loop: C8 25.27 → 21.36 s |
 | `80b99e508` | add-back on the neopentane dimer (34 atoms, 260 bf; canonical 25.88 s): pair 1e-4 err 2.37 → 0.67 kcal/mol, pair 1e-3 15.10 → 3.33, no time cost. The 1e-3 + add-back setting runs at 2.32x but carries 3.33 kcal/mol: on 3D systems the trade is accuracy XOR speed |
-| `c3cace821` | add-back, 5 of 5 cases improved with no overshoot: C6 1e-3 3.08x, C8 1e-4 2.15x, C8 1e-3 3.15x, 3D 1e-4 3.56x, 3D 1e-3 4.54x. The dipole-dipole ORIENTED estimate was used; the orientation-free BOUND over-corrected 5.56x |
+| `c3cace821` | add-back, 5 of 5 cases improved with no overshoot: C6 1e-3 3.08x, C8 1e-4 2.15x, C8 1e-3 3.15x, 3D 1e-4 3.56x, 3D 1e-3 4.54x. The dipole-dipole ORIENTED estimate was used (NOT the diagonal-f estimate the `main` port uses, so these gains do not carry over); the orientation-free BOUND over-corrected 5.56x |
 | `0330d11b7` | coupled DIIS conv 1e-12 → 1e-9: 23 → 12 iterations, 1.63x, 0.0000 uEh. DIIS depth 8 is optimal (deeper is worse); f_cut 1e-5 gives 1.08x at −0.003 uEh |
 
 Memory: the localized-coupled run breached `budget_gb` (alkane_10, 7.3 GB peak
@@ -86,7 +90,8 @@ budgeted.
 * The lane's own end-to-end measurements are negative or neutral at every
   measured size: fragment 0.67x at C8, getting worse; local aux fit 1.01x;
   Laplace 0.91x at C10, getting worse.
-* `wiki/local-ri-robust-domain-fitting.md` §7 lists "Per-LMO local
+* `wiki/local-ri-robust-domain-fitting.md` §7 (the wiki is untracked and is
+  not in clones; it lives in the main checkout only) lists "Per-LMO local
   correlation (LNO gap): REFUTED as stated" (cost and integration, not
   accuracy).
 * The fragment and PAO kernels need the per-LMO driver, the BP domains and

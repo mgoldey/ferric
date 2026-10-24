@@ -39,12 +39,14 @@
 //!
 //! # Add-back
 //!
-//! [`LocalizedMp2Config::add_back_truncation`] adds the screened pairs'
+//! [`crate::dlpno_localized::LocalizedMp2Config::add_back_truncation`] adds the screened pairs'
 //! estimated energy (the same diagonal-f estimate the screen ranked them by)
-//! to the result, as ORCA (below `0.01 * TCutPairs`) and Psi4 ("LMO
-//! Truncation Correction") do. Opt-in: `false` returns the retained-pair sum.
-//! Measured accuracy gain and its limits are in
-//! `tests/validation_dlpno_localized.rs`.
+//! to the result. This is similar in spirit to the screened-pair corrections
+//! production DLPNO codes report; it is not a reimplementation of any of them,
+//! and the diagonal-f estimate is not a bound, so it can in principle
+//! over-correct. Opt-in: `false` returns the retained-pair sum. Cost: one
+//! `(ia|jb)` block per discarded pair, at most one extra screen pass. Measured
+//! accuracy gain and its limits are in `tests/validation_dlpno_localized.rs`.
 //!
 //! # Exactness anchor
 //!

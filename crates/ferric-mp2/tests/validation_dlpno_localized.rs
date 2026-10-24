@@ -39,8 +39,11 @@
 //!
 //! # Mutation ledger
 //!
-//! See `MUTATIONS` in `dlpno_localized_occupied.rs`; the same mutants fail the
-//! anchor here too.
+//! See `MUTATIONS` in `dlpno_localized_occupied.rs`. The coupled-solve and
+//! weighting mutants listed there also fail the anchor here. The add-back
+//! mutants do not touch the anchor (add-back is off there, and the correction
+//! is zero with nothing screened); they are caught by the add-back tests in
+//! that file.
 
 #[path = "common/dlpno_loc.rs"]
 mod dlpno_loc;

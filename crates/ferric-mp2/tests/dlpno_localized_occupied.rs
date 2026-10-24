@@ -365,7 +365,7 @@ fn add_back_is_the_identity_when_no_pair_is_screened() {
 fn add_back_restores_the_discarded_estimate_and_reduces_the_error() {
     let fx = load(WATER, "cc-pvdz", "cc-pvdz-ri", false);
     let mut live = 0;
-    for tc in [1e-3, 1e-4] {
+    for tc in [1e-3, 5e-4] {
         let run = |add_back_truncation: bool| {
             let cfg = LocalizedMp2Config {
                 t_cut_pairs: tc,
@@ -384,9 +384,10 @@ fn add_back_restores_the_discarded_estimate_and_reduces_the_error() {
             don.pair_retention, don.truncation_correction
         );
         assert_eq!(doff.truncation_correction, 0.0);
-        if don.pair_retention == 1.0 {
-            continue;
-        }
+        assert!(
+            don.pair_retention < 1.0,
+            "premise: tc={tc:e} must drop pairs"
+        );
         live += 1;
         assert!(
             (don.truncation_correction - don.discarded_estimated_energy).abs() < 1e-12,
