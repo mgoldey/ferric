@@ -17,8 +17,14 @@
 //!   `HessianMethod::AnalyticMovingGrid` called in-process with the same
 //!   `RhfConfig`, bit for bit (both run the same deterministic code on the
 //!   same rayon width).
-//! * `cli_auto_is_still_finite_differences_for_ks`: the default is unchanged,
-//!   `auto` gives the `fd` record bit for bit for a KS reference.
+//! * `cli_auto_is_the_moving_grid_hessian_for_ks`: `auto` (the default)
+//!   gives the `analytic-moving-grid` record bit for bit for a closed-shell
+//!   KS reference (water, LDA and PBE).
+//! * `cli_auto_falls_back_to_fd_where_unsupported`: `auto` gives the `fd`
+//!   record bit for bit for meta-GGA (SCAN), an open-shell UKS reference and
+//!   `[dft] dispersion` (H2).
+//! * `cli_fd_stays_selectable_for_ks`: `hessian = "fd"` still differences
+//!   gradients for a supported KS reference.
 //! * `cli_refusals_are_named`: every refusal names what it refuses, and
 //!   fires before the SCF (no SCF iteration in the run log).
 //!
@@ -35,11 +41,17 @@
 //!   `harmonic_frequencies`: the bit-for-bit test fails on `hessian_source`
 //!   and `n_gradient_evaluations` (library and CLI both mutated, so the
 //!   numbers alone would agree).
-//! * `Auto` routed to the moving-grid Hessian for a KS reference: the `auto`
-//!   test fails (`analytic-moving-grid` vs `finite-difference`).
-//! * the CLI ignoring `[frequencies] hessian` (always `auto`): the bit-for-bit
-//!   test fails on `hessian_source`.
-//! * the preflight (`rks_moving_grid_hessian_preflight`) not called: every
+//! * `Auto` routed back to finite differences for KS (the `Auto` arm of
+//!   `analytic_route` deleted): `cli_auto_is_the_moving_grid_hessian_for_ks`
+//!   fails (`finite-difference` vs `analytic-moving-grid`).
+//! * `Auto` sent to the moving-grid route for every KS reference without the
+//!   support predicate or the fallback: `cli_auto_falls_back_to_fd_where_unsupported`
+//!   fails (the SCAN and UKS runs exit with the moving-grid refusal).
+//! * the CLI ignoring `[frequencies] hessian` (always `auto`):
+//!   `cli_fd_stays_selectable_for_ks` fails (`analytic-moving-grid` vs
+//!   `finite-difference`); the moving-grid tests cannot see it now that
+//!   `auto` is the moving-grid Hessian for KS.
+//! * the predicate (`rks_moving_grid_hessian_available`) not called: every
 //!   `cli_refusals_are_named` case it covers fails (the SCF runs first; the
 //!   Hessian's own post-SCF refusal repeats the message, so the iteration
 //!   count is what catches it).
@@ -100,15 +112,52 @@ fn cli_moving_grid_equals_the_library_bit_for_bit() {
 }
 
 #[test]
-fn cli_auto_is_still_finite_differences_for_ks() {
-    let auto = run_cli_ok("auto_pbe", H2, "PBE", "", "");
-    let fd = run_cli_ok("fd_pbe", H2, "PBE", "[frequencies]\nhessian = \"fd\"\n", "");
-    assert_eq!(auto.source, "finite-difference");
-    assert_eq!(auto.n_grad, 12);
+fn cli_auto_is_the_moving_grid_hessian_for_ks() {
+    if !has_deriv2() {
+        return;
+    }
+    let moving = "[frequencies]\nhessian = \"analytic-moving-grid\"\n";
+    for xc in ["LDA", "PBE"] {
+        let auto = run_cli_ok(&format!("auto_{xc}"), WATER, xc, "", "");
+        let explicit = run_cli_ok(&format!("moving_{xc}"), WATER, xc, moving, "");
+        assert_eq!(auto.source, "analytic-moving-grid", "{xc}");
+        assert_eq!(auto.n_grad, 0, "{xc}");
+        assert_same_record(
+            &auto,
+            &explicit,
+            &format!("{xc}: auto vs analytic-moving-grid"),
+        );
+        eprintln!(
+            "{xc}: auto == analytic-moving-grid, {:?} cm^-1",
+            auto.frequencies
+        );
+    }
+}
+
+#[test]
+fn cli_auto_falls_back_to_fd_where_unsupported() {
+    let fd = "[frequencies]\nhessian = \"fd\"\n";
+    // (label, method kind, functional, extra [dft] lines)
+    let cases = [
+        ("mgga", "ksdft", "SCAN", ""),
+        ("uks", "uhf", "LDA", ""),
+        ("disp", "ksdft", "B3LYP", "dispersion = \"d3bj\"\n"),
+    ];
+    for (label, kind, xc, extra) in cases {
+        let auto = run_cli_kind_ok(&format!("auto_fb_{label}"), H2, kind, xc, "", extra);
+        let diff = run_cli_kind_ok(&format!("fd_fb_{label}"), H2, kind, xc, fd, extra);
+        assert_eq!(auto.source, "finite-difference", "{label}");
+        assert_eq!(auto.n_grad, 12, "{label}");
+        assert_same_record(&auto, &diff, &format!("{label}: auto vs fd"));
+        eprintln!("{label}: auto == fd, {:?} cm^-1", auto.frequencies);
+    }
+}
+
+#[test]
+fn cli_fd_stays_selectable_for_ks() {
+    let fd = run_cli_ok("fd_lda", H2, "LDA", "[frequencies]\nhessian = \"fd\"\n", "");
     assert_eq!(fd.source, "finite-difference");
-    assert_eq!(auto.energy.to_bits(), fd.energy.to_bits(), "energy");
-    assert_bits_eq(&auto.hessian, &fd.hessian, "auto vs fd Hessian");
-    assert_bits_eq(&auto.frequencies, &fd.frequencies, "auto vs fd frequencies");
+    assert_eq!(fd.n_grad, 12);
 }
 
 #[test]

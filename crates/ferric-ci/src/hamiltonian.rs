@@ -317,6 +317,26 @@ pub fn dense_hamiltonian_bytes(n_det: usize) -> usize {
 /// resolved budget; pass `Some(b)` to pin the ceiling, `None` to resolve from
 /// `FERRIC_MEM_BUDGET_GB` / detected RAM. See
 /// `tests/mwe_casci_has_no_guard.rs`.
+///
+/// # Left OFF the shared pool (deliberately, not an oversight)
+///
+/// The 2026-09 pool migration (`ferric_core::memory::pool`) converts a
+/// check-then-allocate gate into a held RAII `Reservation` wherever the
+/// allocation stays inside the gating function's scope. This one cannot take
+/// that shape without changing its public return type: the `Array2<f64>`
+/// this returns IS the guarded allocation, and it is handed to the caller,
+/// who may hold it indefinitely (a test asserting on it, or — if a future
+/// caller appears — a cross-check kept alive across a longer scope). A
+/// `Reservation` created here would drop at the end of this function, before
+/// the matrix it was meant to guard is even returned, which is exactly the
+/// "dropped straight after the check is decoration" trap. Bundling the guard
+/// with the return value (`(Array2<f64>, Reservation)`) would fix that, but
+/// this function has no callers outside this crate's own tests today (see
+/// above), so that API change has no present benefit to weigh against the
+/// churn. Left on the plain `resolve_budget_bytes`/`check_alloc` path — still
+/// correct against the trivial (no-pool) limit, just not pool-composing —
+/// until a real caller needs the composing behaviour badly enough to justify
+/// the signature change.
 pub fn dense_hamiltonian(
     ints: &ActiveSpaceIntegrals,
     space: &DeterminantSpace,

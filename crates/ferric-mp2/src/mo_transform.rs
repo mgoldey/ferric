@@ -26,7 +26,8 @@
 //!    inside `transform_3center` for the same bytes would refuse jobs that fit.
 //!
 //! What remains genuinely uncharged is `dress_3index`'s transient second copy
-//! and any EXTERNAL caller (ferric-cc). Closing that properly means making
+//! when it is reached from an EXTERNAL caller (ferric-cc); `mp3_energy` counts
+//! that copy in its own peak (`mp3_peak_bytes`). Closing it properly means making
 //! this module fallible in one cross-crate change, which is reported rather
 //! than made here.
 

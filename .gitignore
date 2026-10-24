@@ -76,6 +76,10 @@ __pycache__/
 scripts/queue/out/
 scripts/**/*.log
 
+# PBC bench scratch: per-run logs, facts JSON and run_ferric_bench.py's pyshim
+# (a symlink to target/release/libferric.so). Committed results go in bench_results/.
+reference/pbc/bench/out/
+
 # Experimental parking lot: salvaged drivers/probes kept out of the build and
 # out of version control (e.g. c9_driver.rs). Promote deliberately with add -f.
 experimental/
