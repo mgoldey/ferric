@@ -1977,7 +1977,12 @@ fn assemble(
 
     // --- dS, dT over the energy's pair images (bra and ket blocks).
     let images = hcore_pair_images(cell, prep, hcore_cfg.precision, ledger)?;
-    let serial_st = mutation == Some(GradMutation::SerialDerivWalks);
+    // One rayon thread: the frozen serial loop gives the same bits without
+    // the ordered walk's per-unit copies (decided here, not in
+    // `overlap_kinetic_force`, so its test oracle still drives the ordered
+    // path at one thread).
+    let serial_st =
+        mutation == Some(GradMutation::SerialDerivWalks) || rayon::current_num_threads() == 1;
     let (g_s, g_t, mut g_fit_g0) =
         overlap_kinetic_force(prep, &images, &m, &d, m_g0, natoms, serial_st, ledger)?;
     if let Some((_, _, Some(mg), Some(sg))) = &fit {

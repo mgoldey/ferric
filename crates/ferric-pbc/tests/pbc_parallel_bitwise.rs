@@ -2583,7 +2583,9 @@ fn overlap_kinetic_force_end_to_end_is_bitwise_across_threads_and_vs_serial_loop
             nonzero(&p.overlap) && nonzero(&p.kinetic) && nonzero(&p.fit_g0),
             "{name}: a vacuous overlap/kinetic/g0 piece"
         );
-        // Reachability: far more units than one 6-thread window's width.
+        // Reachability: more units than the first ordered window
+        // (`ordered::FIRST_WINDOW` = 64; later windows grow with the budget),
+        // so the walk spans more than one window, each split across threads.
         let units = r.n_images * sys.prep.nshells() * sys.prep.nshells();
         assert!(units >= 64 * 6, "{name}: only {units} units");
         eprintln!(
