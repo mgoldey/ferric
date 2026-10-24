@@ -575,9 +575,10 @@ One extra untimed anchor per code at 150x434 (`toml_ri/dryice_pbe_150x434.toml`,
 | 150x590 | -753.6935212603 | -753.6935179690 | -3.29e-6 |
 Both codes are NON-MONOTONE along 75x302 -> 150x434 -> 150x590 on dryice (ferric moves +2.48e-5 then
 -2.26e-5; PySCF -7.2e-6 then +5.1e-6).  The first step changes the radial AND the angular grid, so this
-does not show non-monotonicity in the angular order alone.  A single 302 -> 590 step therefore
-underestimates each code's grid error, and gate part (a), which takes eps_c from that one step as the
-error bar, is not a valid bound on this cell.  The cross-code difference changes sign with the grid,
+does not show non-monotonicity in the angular order alone.  Without a converged reference, a single
+302 -> 590 step is therefore not a reliable estimate of either code's grid error (in either
+direction), and gate part (a), which takes eps_c from that one step as the error bar, is not a valid
+bound on this cell.  The cross-code difference changes sign with the grid,
 and its largest magnitude (2.44e-5, at 150x434) stays below the largest single-code grid move
 (2.48e-5, ferric 75x302 -> 150x434).  That is consistent with a grid-quadrature origin; a non-grid
 defect smaller than this ~1e-5 Ha/cell grid noise is NOT excluded (interpretation; the gate is still
