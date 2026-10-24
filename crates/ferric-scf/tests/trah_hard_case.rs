@@ -257,6 +257,8 @@ fn uhf_trah_tail_breaks_spin_symmetry_without_handing_off_to_diis() {
 /// rejection retries -> 34. Bound halfway. (Both counts include the iterations
 /// a declined null step spends on a DIIS step; the decline falls through to
 /// DIIS so that convergence is measured, see `trah_rks_null_step_is_measured.rs`.)
+/// The name became fully true only with the `trah_engaged` latch: before it, the
+/// iteration AFTER the retry could still go to DIIS (see the hand-off tests below).
 #[test]
 fn a_rejected_trah_step_is_retried_not_handed_to_diis() {
     let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -297,6 +299,9 @@ fn a_rejected_trah_step_is_retried_not_handed_to_diis() {
 // one DIIS iteration, and the energy was back on the saddle (-1381.6310), the
 // climb restarting from scratch. Cheap reproducers on main before the fix
 // (core guess, trah_trigger 1e-2): N2/STO-3G RHF 2 hand-offs, O2/STO-3G UHF 2.
+
+/// O2/STO-3G triplet UHF, core guess, tail-mode TRAH (measured, see below).
+const E_O2_STO3G_UHF: f64 = -147.635_556_143_6;
 
 fn handoffs_after_rejection(uhf: bool) -> (usize, usize, f64) {
     use std::sync::atomic::Ordering::Relaxed;
@@ -350,10 +355,17 @@ fn rhf_trah_keeps_control_after_a_rejection() {
 #[test]
 fn uhf_trah_keeps_control_after_a_rejection() {
     let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let (handoffs, rej, _e) = handoffs_after_rejection(true);
+    let (handoffs, rej, e) = handoffs_after_rejection(true);
     assert!(rej > 0, "no rejection happened; the test exercises nothing");
     assert_eq!(
         handoffs, 0,
         "{handoffs} of {rej} UHF rejections were followed by a DIIS iteration"
+    );
+    // Measured 2026-10-23 (identical with and without the latch; this guards
+    // against landing on a different state, not the hand-off itself).
+    // Tolerance 1e-8, never ==: golden energies drift by ulps across machines.
+    assert!(
+        (e - E_O2_STO3G_UHF).abs() < 1e-8,
+        "O2/STO-3G UHF E = {e:.12}, expected {E_O2_STO3G_UHF:.12}"
     );
 }

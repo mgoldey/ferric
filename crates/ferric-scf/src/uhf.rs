@@ -1467,11 +1467,13 @@ fn solve_uhf_impl(
         // away from a stationary point). Re-deciding on err_max alone handed
         // the next iteration to DIIS, which, with a history built at the
         // saddle, walked straight back into it: tail-mode TRAH cycled to
-        // max_iter on N2/cc-pVDZ. Keying on "a step is pending" closed that
-        // only for accepted steps: a REJECTION consumes the pending
-        // prediction, so the restored point (err_max still above the trigger)
-        // went to DIIS, which threw a 100 mHa escape on CoH/def2-SVP UHF back
-        // onto the saddle. Both pinned in `tests/trah_hard_case.rs`.
+        // max_iter on N2/cc-pVDZ (pinned in `tests/trah_hard_case.rs`).
+        // Keying on "a step is pending" closed that only for accepted steps:
+        // a REJECTION consumes the pending prediction, so the restored point
+        // (err_max still above the trigger) went to DIIS. Measured on
+        // CoH/def2-SVP UHF (`tests/saddle_repair_compare.rs`), that threw a
+        // 100 mHa escape back onto the saddle. Pinned by the N2/STO-3G RHF and
+        // O2/STO-3G UHF hand-off-after-rejection cases in `trah_hard_case.rs`.
         let trah_armed = config
             .trah_trigger
             .is_some_and(|t| err_max < t || trah_engaged)

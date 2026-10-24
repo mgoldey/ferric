@@ -30,9 +30,14 @@ use ferric_integrals::operator::Operator;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 
+/// The TRAH counters are process-wide; both tests hold this so a counter delta
+/// taken around one solve sees only that solve.
+static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[test]
 #[ignore = "measurement: run serially on a quiet box with fixed OPENBLAS/RAYON threads (wall time is reported)"]
 fn n2_saddle_descent_vs_trah() {
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mol = Molecule::parse_xyz("2\nn2\nN 0 0 0\nN 0 0 1.6\n", 0, 1).unwrap();
     let bases: Vec<String> = std::env::var("SADDLE_BASES")
         .map(|s| s.split(',').map(str::to_string).collect())
@@ -107,6 +112,7 @@ fn n2_saddle_descent_vs_trah() {
 #[test]
 #[ignore = "measurement: needs SPIKE_DEF2SVP_JSON (PySCF def2-svp with Co) and a quiet box with fixed threads"]
 fn coh_uhf_descent_vs_trah() {
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mol = Molecule::parse_xyz("2\ncoh\nCo 0 0 0\nH 0 0 1.52\n", 0, 3).unwrap();
     let path = std::env::var("SPIKE_DEF2SVP_JSON").expect("SPIKE_DEF2SVP_JSON");
     let bs = basis::load_bse_json(&path).unwrap();
