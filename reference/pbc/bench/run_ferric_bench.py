@@ -13,11 +13,18 @@ shared site-packages symlink (CLAUDE.md). Runs in the main checkout's venv (nump
 Usage (from the worktree root, one at a time, under the memory cap):
   scripts/ferric-limited --max=12G -- env OPENBLAS_NUM_THREADS=1 RAYON_NUM_THREADS=1 \
     <main checkout>/.venv/bin/python reference/pbc/bench/run_ferric_bench.py diamond_prim_rhf
-Runs are the toml/*.toml basenames; the TOML is read for cell/basis/aux/kind/functional/kmesh.
+Runs are the toml/*.toml basenames; the TOML is read for cell/basis/aux/kind/functional/kmesh
+and, for Gamma runs, [cell] sr_column_rotation (forwarded to run_rhf_gamma / run_rks_gamma).
+
+k-point runs do NOT honour the TOML's `sr_column_rotation = false` pin: run_rhf_kpts takes no
+sr_column_rotation kwarg, so they run the library default (the rotated k-point builds). A k-point
+number from this runner is therefore the ROTATED one, not the unrotated baseline the TOML asks for;
+use the CLI (run_ferric_bench.sh) for the pinned k-point baseline.
 """
 
 from __future__ import annotations
 
+import importlib.machinery
 import json
 import os
 import resource
@@ -36,7 +43,8 @@ def shim():
         sys.exit(f"no {so}; cargo build --release -p ferric-python in {ROOT}")
     pkg = os.path.join(HERE, "out", "pyshim", "ferric")
     os.makedirs(pkg, exist_ok=True)
-    link = os.path.join(pkg, "ferric.cpython-311-x86_64-linux-gnu.so")
+    # The running interpreter's own extension suffix (e.g. .cpython-311-x86_64-linux-gnu.so).
+    link = os.path.join(pkg, "ferric" + importlib.machinery.EXTENSION_SUFFIXES[0])
     if os.path.islink(link) or os.path.exists(link):
         os.remove(link)
     os.symlink(so, link)
@@ -71,6 +79,9 @@ def main(run):
         auxbasis=cell["auxbasis"],
         memory_budget_gb=budget,
     )
+    # The Gamma bindings take the TOML's sr_column_rotation pin (None = library default: rotated
+    # for rsgdf); run_rhf_kpts has no such kwarg, so a k-point run cannot honour it (docstring).
+    gamma_common = dict(common, sr_column_rotation=cell.get("sr_column_rotation"))
     t0 = time.perf_counter()
     kind = cfg["method"]["kind"]
     if "kmesh" in cell:
@@ -90,10 +101,10 @@ def main(run):
             cfg["dft"]["functional"],
             n_radial=cell.get("n_radial", 75),
             n_angular=cell.get("n_angular", 302),
-            **common,
+            **gamma_common,
         )
     else:
-        r = ferric.run_rhf_gamma(mol, lat_ang, bs, **common)
+        r = ferric.run_rhf_gamma(mol, lat_ang, bs, **gamma_common)
     wall = time.perf_counter() - t0
     rec = dict(
         code="ferric-python",

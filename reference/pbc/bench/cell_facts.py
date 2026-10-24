@@ -107,9 +107,16 @@ def nfun(sh):
 
 
 def lattice_points(lat, r, x0=np.zeros(3)):
+    """Lattice translations T = n @ lat (rows of `lat` are the lattice vectors) with |T - x0| <= r.
+
+    The integer box is centred on the lattice point nearest x0 (c0 = rint(x0 @ inv(lat))), not on
+    the origin: a box centred on 0 drops the points near a far-from-origin x0. The half-width
+    ceil(r |b_j| / 2 pi) + 1 covers the radius plus the <= 1/2 rounding of c0 in each direction.
+    """
     b = 2 * np.pi * np.linalg.inv(lat).T
+    c0 = np.rint(np.asarray(x0, float) @ np.linalg.inv(lat))
     rng = [int(math.ceil(r * np.linalg.norm(b[j]) / (2 * np.pi))) + 1 for j in range(3)]
-    n = np.array(list(itertools.product(*[range(-k, k + 1) for k in rng])), float)
+    n = c0 + np.array(list(itertools.product(*[range(-k, k + 1) for k in rng])), float)
     t = n @ lat
     return t[np.linalg.norm(t - x0, axis=1) <= r]
 
