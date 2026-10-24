@@ -520,13 +520,29 @@ def test_analytic_is_refused_not_silently_downgraded_when_unsupported():
         assert "hessian" in str(exc.value).lower(), str(exc.value)
 
 
-def test_auto_falls_back_to_fd_and_says_so():
+@needs_analytic
+def test_auto_with_ks_uses_the_moving_grid_hessian():
     r = ferric.run_saddle(
         _near_planar_ammonia(),
         "sto-3g",
         max_steps=40,
         hessian="auto",
         xc="pbe",
+    )
+    assert r.hessian_source == "analytic-moving-grid"
+    assert r.n_imaginary == 1
+
+
+def test_auto_falls_back_to_fd_and_says_so():
+    # KS with point charges: the moving-grid KS Hessian refuses an external
+    # potential, so "auto" differences gradients.
+    r = ferric.run_saddle(
+        _near_planar_ammonia(),
+        "sto-3g",
+        max_steps=40,
+        hessian="auto",
+        xc="pbe",
+        point_charges=[(0.1, 0.0, 0.0, 20.0)],
     )
     assert r.hessian_source == "finite-difference"
     assert r.n_imaginary == 1
