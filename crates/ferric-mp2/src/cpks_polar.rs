@@ -1317,43 +1317,37 @@ pub fn analytic_alpha_relaxed(
 // ===========================================================================
 use ndarray::Array4;
 
-/// Fail-fast pre-flight guard for every `full_mo_eri` caller. The dense (pq|rs)
-/// tensor is nmo⁴, built co-resident with its (nmo²)²=nmo⁴ Gram matrix (:1146),
-/// and the analytic-α path additionally holds central-diff ∂Imo copies —
-/// budget for ~3 live nmo⁴ f64 buffers. Placed next to `full_mo_eri` so an M3/M5
-/// restructure that shrinks the peak updates the formula in the same diff.
+/// Bytes a `full_mo_eri` caller holds at its nmo⁴-phase peak:
+/// `pool_nmo4_buffers · nmo⁴ + naux · nmo²` f64.
 ///
-/// This is the CEILING check only, left unchanged so no job the current tree
-/// admits is refused by it. The pool charge, which counts the true peak, is
-/// [`guard_full_mo_eri`].
-fn check_full_mo_eri_alloc(
-    label: &str,
-    nmo: usize,
-    explicit_budget: Option<usize>,
-) -> Result<(), FerricError> {
-    let peak = nmo.saturating_pow(4).saturating_mul(3).saturating_mul(8); // ~3× nmo⁴ f64
-    ferric_core::memory::check_alloc(
-        &format!("{label}: dense nmo⁴ MO-ERI (nmo={nmo})"),
-        peak,
-        ferric_core::memory::resolve_budget_bytes(explicit_budget),
-    )
+/// The second term is the `b_full` (naux, nmo, nmo) tensor every caller keeps
+/// alive to return. `full_mo_eri` alone holds two nmo⁴ buffers (the Gram
+/// matrix `g` and the tensor it is copied into), so the TDHF/BSE callers pass
+/// 2. The analytic-α axis loop holds `imo0`, `dimo`, `imo_p`, the `ed·dimo`
+/// temporary and `imo_m` at once, so it passes 5.
+fn full_mo_eri_peak_bytes(nmo: usize, naux: usize, pool_nmo4_buffers: usize) -> usize {
+    let nmo2 = nmo.saturating_mul(nmo);
+    nmo2.saturating_mul(nmo2)
+        .saturating_mul(pool_nmo4_buffers)
+        .saturating_add(naux.saturating_mul(nmo2))
+        .saturating_mul(8)
 }
 
-/// The ceiling check plus a charge of the caller's TRUE co-resident peak
-/// against the shared memory pool (the canonical.rs/mp3.rs convention: the
-/// ceiling figure stays, the pool sees the real bytes).
+/// Fail-fast pre-flight guard for every `full_mo_eri` caller: ONE peak
+/// ([`full_mo_eri_peak_bytes`]) is both checked against the resolved budget
+/// ceiling and charged to the shared memory pool.
 ///
-/// The charge is `pool_nmo4_buffers · nmo⁴ + naux · nmo²` f64. The second term
-/// is the `b_full` (naux, nmo, nmo) tensor every caller keeps alive to return.
-/// `full_mo_eri` alone holds two nmo⁴ buffers (the Gram matrix `g` and the
-/// tensor it is copied into), so the TDHF/BSE callers pass 2. The analytic-α
-/// axis loop holds `imo0`, `dimo`, `imo_p`, the `ed·dimo` temporary and
-/// `imo_m` at once, so it passes 5 (more than the ceiling's 3).
+/// The ceiling used to be a flat ~3 nmo⁴ for every caller. That undercounted
+/// the analytic path (5) and overcounted TDHF/BSE (2); both now use their
+/// true nmo⁴-phase peak.
 ///
-/// The AO 3-index tensor that `compute_b_full_mo` builds is charged by its own
-/// source while this reservation is outstanding, so the two compose. Hold the
-/// returned guard until the nmo⁴ tensors die, which for every caller is
-/// function end. Inert when no pool is installed.
+/// The charge is taken BEFORE `compute_b_full_mo` and held to function end,
+/// so it is also outstanding while that call's AO 3-index tensor (charged by
+/// its own source) exists. The two do not actually coexist with the nmo⁴
+/// buffers, so this is deliberately conservative by the AO peak (a sum, not a
+/// max): the refusal happens before any integrals are built. Inert when no
+/// pool is installed. Placed next to `full_mo_eri` so an M3/M5 restructure
+/// that shrinks the peak updates the formula in the same diff.
 fn guard_full_mo_eri(
     label: &str,
     nmo: usize,
@@ -1361,16 +1355,14 @@ fn guard_full_mo_eri(
     pool_nmo4_buffers: usize,
     explicit_budget: Option<usize>,
 ) -> Result<ferric_core::memory::pool::Reservation, FerricError> {
-    check_full_mo_eri_alloc(label, nmo, explicit_budget)?;
-    let nmo2 = nmo.saturating_mul(nmo);
-    let elems = nmo2
-        .saturating_mul(nmo2)
-        .saturating_mul(pool_nmo4_buffers)
-        .saturating_add(naux.saturating_mul(nmo2));
-    crate::rimp2::charge_mo_side(
-        &format!("{label}: dense nmo⁴ MO-ERI (nmo={nmo})"),
-        elems.saturating_mul(8),
-    )
+    let label = format!("{label}: dense nmo⁴ MO-ERI (nmo={nmo})");
+    let peak = full_mo_eri_peak_bytes(nmo, naux, pool_nmo4_buffers);
+    ferric_core::memory::check_alloc(
+        &label,
+        peak,
+        ferric_core::memory::resolve_budget_bytes(explicit_budget),
+    )?;
+    crate::rimp2::charge_mo_side(&label, peak)
 }
 
 /// Full-MO ERI (pq|rs) from the dressed B tensor. (nmo^4 — small systems only.)
@@ -1609,9 +1601,9 @@ pub fn analytic_alpha_full(
     // imo0 (nmo⁴, full_mo_eri :1143) co-resident with its Gram matrix g
     // ((nmo²)²=nmo⁴, :1146) and the central-diff ∂Imo copies in the axis loop.
     // The solve_zvec_dense (Δε+A) Hessian ((nocc·nvir)², :1243) is subsumed by
-    // this larger nmo⁴ peak.
-    // The pool is charged the true axis-loop peak (5 nmo⁴, see the guard's
-    // doc), held to function end where imo0 and b_full die.
+    // this larger nmo⁴ peak. Both the ceiling and the pool see the true
+    // axis-loop peak (5 nmo⁴ + b_full, see `full_mo_eri_peak_bytes`); the
+    // charge is held to function end, where imo0 and b_full die.
     let _imo0_charge = guard_full_mo_eri(
         &format!("relaxed-MP2 α (analytic; nmo={nmo}, nocc={nocc}, nvir={nvir})"),
         nmo,
