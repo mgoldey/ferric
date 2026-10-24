@@ -143,8 +143,21 @@ fn floats(v: &serde_json::Value, what: &str) -> Vec<f64> {
 /// `freq` is the `[frequencies]` section (or empty for the defaults) and
 /// `dft_extra` extra `[dft]` lines.
 pub fn run_cli_ok(tag: &str, mol: &str, xc: &str, freq: &str, dft_extra: &str) -> Freq {
+    run_cli_kind_ok(tag, mol, "ksdft", xc, freq, dft_extra)
+}
+
+/// [`run_cli_ok`] with an explicit `method.kind` (`"uhf"` with a functional
+/// is UKS).
+pub fn run_cli_kind_ok(
+    tag: &str,
+    mol: &str,
+    kind: &str,
+    xc: &str,
+    freq: &str,
+    dft_extra: &str,
+) -> Freq {
     let dft = format!("[dft]\nfunctional = \"{xc}\"\n{dft_extra}");
-    let toml = toml_body(mol, "sto-3g", "ksdft", &dft, freq);
+    let toml = toml_body(mol, "sto-3g", kind, &dft, freq);
     let (ok, stdout, stderr) = run_cli_raw(tag, &toml);
     assert!(ok, "{tag} failed.\nstdout:\n{stdout}\nstderr:\n{stderr}");
     let log_path = workspace_root()
@@ -170,6 +183,19 @@ pub fn run_cli_ok(tag: &str, mol: &str, xc: &str, freq: &str, dft_extra: &str) -
         n_grad: r["n_gradient_evaluations"].as_u64().unwrap(),
         asymmetry: r["asymmetry"].as_f64().unwrap(),
     }
+}
+
+/// Two runs gave the same record bit for bit.
+pub fn assert_same_record(a: &Freq, b: &Freq, what: &str) {
+    assert_eq!(a.source, b.source, "{what}: source");
+    assert_eq!(a.n_grad, b.n_grad, "{what}: gradient count");
+    assert_eq!(a.energy.to_bits(), b.energy.to_bits(), "{what}: energy");
+    assert_bits_eq(&a.hessian, &b.hessian, &format!("{what}: Hessian"));
+    assert_bits_eq(
+        &a.frequencies,
+        &b.frequencies,
+        &format!("{what}: frequencies"),
+    );
 }
 
 /// The `RhfConfig` the CLI builds from [`run_cli_ok`]'s TOML: a Kohn-Sham

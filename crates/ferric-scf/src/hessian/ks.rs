@@ -17,18 +17,20 @@
 //! omits, so the two differ by the grid's translation error and weight
 //! derivatives (measured in `tests/ks_fixed_grid_hessian.rs`).
 //!
-//! The opt-in moving-grid variant [`rks_moving_grid_hessian`] (issue #490)
+//! The moving-grid variant [`rks_moving_grid_hessian`] (issue #490)
 //! differentiates that production energy instead: the same Hessian with the
 //! XC skeleton and first-order Fock matrix replaced by their moving-grid
 //! versions (points riding their home atom, Becke weights differentiated with
 //! the point fixed, home rows filled by translation invariance; see
 //! [`crate::ks_fixed_grid`]), everything else shared. It matches central
 //! differences of the production gradient (`tests/ks_moving_grid_hessian.rs`).
-//! Both entry points are explicit: [`HessianMethod::Auto`] and
-//! [`HessianMethod::Analytic`] reach neither. The moving-grid one is the
-//! opt-in [`HessianMethod::AnalyticMovingGrid`] of `harmonic_frequencies`
-//! (CLI `[frequencies] hessian = "analytic-moving-grid"`, Python
-//! `run_frequencies(hessian="analytic-moving-grid")`).
+//! [`HessianMethod::Analytic`] reaches neither. The moving-grid one is what
+//! `harmonic_frequencies` runs for a closed-shell KS reference under
+//! [`HessianMethod::Auto`] wherever [`rks_moving_grid_hessian_available`]
+//! accepts the system (finite differences otherwise), and under the explicit
+//! [`HessianMethod::AnalyticMovingGrid`] (CLI `[frequencies] hessian =
+//! "analytic-moving-grid"`, Python `run_frequencies(hessian=
+//! "analytic-moving-grid")`). The fixed-grid one is library-only.
 //!
 //! The Hessian is the RHF one with `G(D) = J(D) − ½K(D)` replaced by
 //! `G(D) = J(D) − (a/2)K(D) + V1_xc[D]`:
@@ -271,6 +273,60 @@ pub fn rks_moving_grid_hessian_preflight(
         ));
     }
     Ok(())
+}
+
+/// THE pre-SCF support predicate of [`rks_moving_grid_hessian`]: `Ok` when
+/// the analytic moving-grid Kohn-Sham Hessian supports the system as far as
+/// can be decided without an SCF. It is
+/// [`rks_moving_grid_hessian_preflight`] plus the molecule- and basis-level
+/// checks of the closed-shell analytic Hessian (a closed shell, no ghost
+/// atoms, the RI-J / RI-K engines and metric probes, RI-K memory, libint2
+/// second-derivative engines for this basis) on the fitting bases the SCF
+/// will use (resolved exactly as `solve_rhf` does: unset means the default
+/// `def2-universal-jkfit` for J, and for K of a hybrid; `Some("")` means
+/// exact; a pure functional builds no K), and the size of the response's
+/// resident AO table on the production grid
+/// ([`crate::ks_fixed_grid::check_response_table`], the check the Hessian
+/// itself runs). Both [`crate::frequencies::HessianMethod::AnalyticMovingGrid`]
+/// (which returns the error) and [`crate::frequencies::HessianMethod::Auto`]
+/// for a closed-shell KS reference (which runs finite differences instead)
+/// consult this one function, so the two cannot drift.
+pub fn rks_moving_grid_hessian_available(
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    op: Operator,
+    config: &RhfConfig,
+) -> Result<(), FerricError> {
+    rks_moving_grid_hessian_preflight(mol, prep.basis_set(), op, config)?;
+    let name = config.xc.as_deref().unwrap_or_default();
+    let grid = FixedGridKs::new(mol, name, &config.dft_grid.clone().unwrap_or_default())?;
+    grid.check_response_table(prep.nbasis())?;
+    let resolve = |requested: &Option<String>, needed: bool| match requested.as_deref() {
+        None if needed => Some(crate::fock_assembly::DEFAULT_JK_AUX.to_string()),
+        None | Some("") => Some(String::new()),
+        Some(n) => Some(n.to_string()),
+    };
+    let hf = RhfConfig {
+        xc: None,
+        df_j_aux: resolve(&config.df_j_aux, true),
+        df_k_aux: resolve(&config.df_k_aux, grid.exact_exchange() > 0.0),
+        ..config.clone()
+    };
+    // A pure functional builds no K, whatever `df_k_aux` names.
+    let hf = if grid.exact_exchange() == 0.0 {
+        RhfConfig {
+            df_k_aux: Some(String::new()),
+            ..hf
+        }
+    } else {
+        hf
+    };
+    super::available(Reference::Rhf, mol, prep, op, &hf).map_err(|e| {
+        FerricError::General(format!(
+            "the analytic Kohn-Sham Hessian (fixed or moving grid) does not support this system \
+             (the closed-shell analytic Hessian's check: {e}); use the finite-difference Hessian"
+        ))
+    })
 }
 
 fn functional_refusal(name: &str, xc: &ferric_dft::libxc::XcDef) -> Result<(), FerricError> {
@@ -564,8 +620,9 @@ pub fn rks_fixed_grid_hessian_parts_with(
 
 /// The analytic Hessian of the closed-shell KS energy on the PRODUCTION
 /// (moving) grid, (3N, 3N): the surface `ks_gradient_closed` differentiates,
-/// with the Becke weight response (issue #490). Opt-in: `HessianMethod::Auto`
-/// and `Analytic` do not reach it; `HessianMethod::AnalyticMovingGrid` does.
+/// with the Becke weight response (issue #490). `HessianMethod::Auto` (for a
+/// closed-shell KS reference [`rks_moving_grid_hessian_available`] accepts)
+/// and `HessianMethod::AnalyticMovingGrid` reach it; `Analytic` does not.
 /// Same functionals, fits and refusals as [`rks_fixed_grid_hessian`] (the
 /// SCF-free ones also in [`rks_moving_grid_hessian_preflight`]); the XC skeleton and first-order Fock matrix are
 /// the moving-grid ones ([`FixedGridKs::skeleton_hessian_moving`],
