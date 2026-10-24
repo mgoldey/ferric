@@ -365,13 +365,28 @@ mod tests {
     /// onto it and THC-K must equal DF-K on the same aux basis and the same
     /// `V^{-1/2}`, on BOTH contraction paths.
     ///
-    /// The bar is the measured conditioning floor of the normal-equation fit,
-    /// not machine epsilon: `S` squares the collocation condition number and
-    /// `M` carries large cancelling entries. Measured 2026-10-24: 4.9e-10 at
-    /// `rank_tol = 1e-18` (n_ip 37), 2.3e-9 at 1e-14 (n_ip 28). The
-    /// construction mutants (Hadamard -> GEMM, one `S⁺` dropped, `V^{-1/2}`
-    /// dropped, `S` not squared) fail it by >= 8 orders of magnitude; see
-    /// `reference/thc/thc-lane-2026-10.md`.
+    /// The bar is DERIVED, not measured: `M = S⁺ WᵀW S⁺` is a normal-equation
+    /// solve, whose first-order rounding sensitivity is `ε · κ(S)` on the
+    /// kept spectrum (`S` squares the collocation condition number). The
+    /// test computes that `κ` from the same `ω` and asserts `err < ε · κ`.
+    /// The worst-case `γ_n` dimension factor is deliberately left out to keep
+    /// the anchor sharp.
+    ///
+    /// Why not a fixed number: `rank_tol = 1e-18` sits below round-off, so the
+    /// pivot COUNT depends on the BLAS kernel (37 with FMA kernels, 38 with
+    /// OPENBLAS_CORETYPE=Nehalem/Prescott), and the error moves with it. The
+    /// old fixed 1e-9 bar was 2x one machine's 4.9e-10, and CI (EPYC, Ubuntu
+    /// OpenBLAS) measured 2.68e-9. Measured 2026-10-24, κ ≈ 8.1e7..8.7e7 so
+    /// `ε·κ` ≈ 1.8e-8..1.9e-8. Errors 4.9e-10 (Haswell), 1.4e-9 (Prescott),
+    /// 1.6e-9 (Nehalem), 2.7e-9 (CI) are 0.03..0.15 of `ε·κ`.
+    ///
+    /// The kept rank must equal the pair-space rank exactly, or this is not
+    /// the trivial limit and the comparison means nothing (n_ip >= 28 alone
+    /// does not guarantee it: 37 points with duplicates keep rank 20).
+    /// Mutation-checked 2026-10-24 against this bar: Hadamard -> GEMM, one `S⁺`
+    /// dropped and `V^{-1/2}` dropped all err at 1.5e1..2.8e1 (~9 orders over);
+    /// a uniform 1e-6 relative scaling of `M` and a 1e-7 `S⁺` cut (2.4e-3)
+    /// fail too; duplicated points trip the rank assertion.
     #[test]
     fn thc_k_matches_exact_in_the_trivial_limit() {
         let f = fixture("sto-3g");
@@ -401,9 +416,28 @@ mod tests {
         let mut k_occ = Array2::zeros((n, n));
         thc.build_from_occ(&c, &mut k_occ).unwrap();
         let (e_den, e_occ) = (rel_max_diff(&k_den, &k_ref), rel_max_diff(&k_occ, &k_ref));
+
+        // Kept spectrum of S, using the same relative cut as `fit_core`.
+        let gram = thc.omega.t().dot(&thc.omega);
+        let (evals, _) = eigh_dc(&(&gram * &gram), Uplo::Upper).unwrap();
+        let lmax = evals.iter().cloned().fold(0.0f64, f64::max);
+        let kept: Vec<f64> = evals
+            .iter()
+            .cloned()
+            .filter(|&l| l > cfg.pinv_tol * lmax)
+            .collect();
+        assert_eq!(
+            kept.len(),
+            n * (n + 1) / 2,
+            "kept rank of S must equal the symmetric pair-space rank"
+        );
+        let kappa = lmax / kept.iter().cloned().fold(f64::INFINITY, f64::min);
+        let bar = f64::EPSILON * kappa;
         assert!(
-            e_den < 1e-9 && e_occ < 1e-9,
-            "THC vs DF-K: density {e_den:.2e}, occ {e_occ:.2e}"
+            e_den < bar && e_occ < bar,
+            "THC vs DF-K: density {e_den:.2e}, occ {e_occ:.2e}, bar eps*kappa(S) {bar:.2e} \
+             (kappa {kappa:.2e}, n_ip {})",
+            thc.n_interpolation_points()
         );
     }
 

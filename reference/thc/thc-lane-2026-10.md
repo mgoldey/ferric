@@ -114,6 +114,19 @@ both the density path and the occ path; the test asserts < 1e-9.
   reach this floor at all. Before normalising it was 5.1e-9.
 - At cc-pVDZ, full-rank selection stalls at n_ip 293 of 300, with a floor of
   **1.6e-4**. This is pinned as a regression bar (`thc_k_full_rank_floor_ccpvdz`).
+- **Bar replaced (2026-10-24, PR #539 CI):** the fixed `< 1e-9` was 2× one
+  machine's measurement, and CI's lint job (AMD EPYC 7763, Ubuntu OpenBLAS)
+  failed it at 2.68e-9. Locally, OPENBLAS_CORETYPE=Nehalem/Prescott give
+  1.58e-9/1.42e-9 with **n_ip 38**, against Haswell/Zen's 4.9e-10 with n_ip 37.
+  The pivot count moves because rank_tol 1e-18 sits below round-off. In every
+  configuration the kept spectrum of `S` is exactly 28 (pair rank), with
+  dropped eigenvalues at ~1e-16 relative and κ_kept(S) = 8.1e7..8.7e7. The
+  test now asserts kept rank == 28 and err < ε·κ_kept(S) ≈ 1.9e-8, the
+  first-order sensitivity of the normal-equation solve. Every observed error
+  is 0.03..0.15 of that bar. Re-run mutants against the new bar: M1/M2/M3 as
+  above, `M·(1+1e-6)` FAIL 1.0e-6, `S⁺` cut at 1e-7 FAIL 2.4e-3, and 37
+  points with duplicates (rank 20) FAIL the rank assertion, which
+  `n_ip ≥ 28` alone passes.
 
 | ThcK mutant | anchor result |
 |---|---|
