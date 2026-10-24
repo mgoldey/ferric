@@ -45,6 +45,98 @@ impl std::fmt::Display for Mp3Result {
     }
 }
 
+/// Bytes [`mp3_energy`] holds at its co-resident peak, read off the function
+/// body (f64 elements, then ×8; `no`/`nv` are ACTIVE spatial counts).
+///
+/// Notation: `A` = naux, `N` = nbas, `O` = 2no, `V` = 2nv,
+/// `s` = no²nv² (one spatial OVOV block), `d` = O²V² = 16s (one spin-orbital
+/// OOVV-sized block). `c_occ` + `c_vir` (`N·(no+nv)`) live throughout.
+///
+/// ```text
+/// metric     v2c + Cholesky L (a copy) + L⁻¹            3A²
+/// then       v2c + V^{-1/2}, held to the end            2A²  (+ below)
+/// RI build   eri3_ao (A·N², held to the end) plus, per block, the
+///            transform output AND its dressed copy:     b_ov 2·A·no·nv, then
+///            b_oo 2·A·no², then b_vv 2·A·nv² (earlier blocks held);
+///            b_vo is a transposed copy of b_ov
+/// held RI    r = A·(N² + 2·no·nv + no² + nv²)
+/// 4-index (on top of 2A² + r):
+///   oovv build      g_iajb s + asym out d
+///   vvvv build      oovv d + g_abcd nv⁴ + v_vvvv V⁴
+///   oooo build      d + V⁴ + g_ijkl no⁴ + v_oooo O⁴
+///   kcbj einsum     d + V⁴ + O⁴ + g_kcbj s + A·no·nv (einsum copies b_vo:
+///                   its `permuted_axes().to_owned()` keeps the permuted
+///                   strides, so it is not standard layout)
+///   ovvo build      d + V⁴ + O⁴ + 2s + asym out d
+///   amplitudes      V⁴ + O⁴ + 4d (v_ovvo, t, t_t, and oovv then x)
+///   e_ph z einsum   6d (v_ovvo, t, t_t, z, and einsum's interleaved-axis
+///                   copies of BOTH t_t and v_ovvo)
+/// ```
+///
+/// The peak is the max over those stages. Which 4-index stage wins depends on
+/// no/nv (VVVV when nv ≫ no, the amplitude set otherwise), and the held RI
+/// tensors sit under all of them. Excluded: O(n) vectors (`eo`, `ev`) and
+/// per-rayon-worker GEMM scratch inside `transform_3center` (its size reads
+/// the thread count, which must not decide admission).
+fn mp3_peak_bytes(naux: usize, nbas: usize, no: usize, nv: usize) -> usize {
+    let a = naux;
+    let a2 = a.saturating_mul(a);
+    let coeffs = nbas.saturating_mul(no.saturating_add(nv));
+    let eri3 = a.saturating_mul(nbas).saturating_mul(nbas);
+    let ov = a.saturating_mul(no).saturating_mul(nv);
+    let oo = a.saturating_mul(no).saturating_mul(no);
+    let vv = a.saturating_mul(nv).saturating_mul(nv);
+
+    let metric = a2.saturating_mul(3);
+    let ri_build = eri3
+        .saturating_add(ov.saturating_mul(2))
+        .max(eri3.saturating_add(ov).saturating_add(oo.saturating_mul(2)))
+        .max(
+            eri3.saturating_add(ov)
+                .saturating_add(oo)
+                .saturating_add(vv.saturating_mul(2)),
+        );
+    let held_ri = eri3
+        .saturating_add(ov.saturating_mul(2))
+        .saturating_add(oo)
+        .saturating_add(vv);
+
+    let s = no.saturating_mul(no).saturating_mul(nv).saturating_mul(nv);
+    let d = s.saturating_mul(16);
+    let nv4 = nv.saturating_pow(4);
+    let no4 = no.saturating_pow(4);
+    let v4 = nv4.saturating_mul(16);
+    let o4 = no4.saturating_mul(16);
+    let oovv_build = s.saturating_add(d);
+    let vvvv_build = d.saturating_add(nv4).saturating_add(v4);
+    let oooo_build = d.saturating_add(v4).saturating_add(no4).saturating_add(o4);
+    let kcbj = d
+        .saturating_add(v4)
+        .saturating_add(o4)
+        .saturating_add(s)
+        .saturating_add(ov);
+    let ovvo_build = d
+        .saturating_mul(2)
+        .saturating_add(v4)
+        .saturating_add(o4)
+        .saturating_add(s.saturating_mul(2));
+    let amplitudes = v4.saturating_add(o4).saturating_add(d.saturating_mul(4));
+    let e_ph = d.saturating_mul(6);
+    let four_index = oovv_build
+        .max(vvvv_build)
+        .max(oooo_build)
+        .max(kcbj)
+        .max(ovvo_build)
+        .max(amplitudes)
+        .max(e_ph);
+
+    let held = a2.saturating_mul(2);
+    let stage = metric
+        .max(held.saturating_add(ri_build))
+        .max(held.saturating_add(held_ri).saturating_add(four_index));
+    coeffs.saturating_add(stage).saturating_mul(8)
+}
+
 /// Compute the spin-orbital MP3 correlation energy via RI integrals.
 ///
 /// All 4-index contractions go through `einsum!`. Returns [`Mp3Result`].
@@ -71,51 +163,29 @@ pub fn mp3_energy(
         .to_owned();
     let c_vir = c.slice(ndarray::s![.., nocc_total..]).to_owned();
 
-    // Fail-fast size guard: peak is the spin-orbital VVVV block v_vvvv (:96) —
-    // a (2nv)⁴ f64 tensor built from the einsum! g_abcd intermediate (:98) held
-    // co-resident with the asym_same result → ~2× (2nv)⁴. Keep next to that
-    // allocation. `memory_budget_bytes` used to be hardcoded `None` here, so
-    // the CLI's `mp3` arm silently discarded a user's `[memory] budget_gb`.
-    let nv2 = 2 * nv;
-    let peak_vvvv = nv2.saturating_pow(4).saturating_mul(2).saturating_mul(8); // ~2× (2nv)⁴ f64
-    ferric_core::memory::check_alloc(
-        &format!("MP3 (no={no}, nv={nv} spatial; VVVV block over {nv2} spin-orbital virtuals)"),
-        peak_vvvv,
-        ferric_core::memory::resolve_budget_bytes(memory_budget_bytes),
-    )?;
-    // DEBIT the shared pool for the LARGER of MP3's two competing peaks.
-    //
-    // The `check_alloc` above charges only the VVVV pair. That is not
-    // necessarily the peak: the amplitude section below holds FIVE
-    // (2no)^2(2nv)^2 tensors simultaneously in `e_ph` -- `t`, `t_t` (an
-    // explicit `t.clone()`), `v_ovvo`, the `z` einsum result, and the
-    // `t_iakc` permuted copy -- and nothing charged any of them. Which peak
-    // dominates depends on no/nv: the VVVV pair wins when nv >> no, the
-    // amplitude set wins otherwise, and a guard that only ever sees one of
-    // them passes a job that dies in the other.
-    //
-    // `max`, not the sum: the two stages do not coexist. `v_vvvv` is moved
-    // into `vvvv_t` and dropped at the end of the `e_pp` scope, well before
-    // `e_ph` allocates `z`. Charging the sum would be the over-estimating
-    // guard this migration is also meant to avoid.
+    // Fail-fast size guard: ONE true co-resident peak ([`mp3_peak_bytes`]) is
+    // both checked against the resolved budget ceiling and charged to the
+    // shared pool, before the metric is built. The charge is held to function
+    // end: the RI tensors it counts live that long. `memory_budget_bytes` used
+    // to be hardcoded `None` here, so the CLI's `mp3` arm silently discarded a
+    // user's `[memory] budget_gb`.
     //
     // HARD: these are dense spin-orbital tensors with no blocked or streaming
     // alternative anywhere in this file. An over-budget MP3 has no fallback to
     // fall back TO, so refusing up front with an occupancy breakdown beats
     // being OOM-killed inside `einsum!`.
-    let no2 = 2 * no;
-    let amp_tensor_bytes = no2
-        .saturating_mul(no2)
-        .saturating_mul(nv2)
-        .saturating_mul(nv2)
-        .saturating_mul(8);
-    let peak_amplitudes = amp_tensor_bytes.saturating_mul(5);
-    let _mp3_charge = crate::rimp2::charge_mo_side(
-        &format!(
-            "MP3 peak (no={no}, nv={nv}; max of 2x(2nv)^4 VVVV and 5x(2no)^2(2nv)^2 amplitudes)"
-        ),
-        peak_vvvv.max(peak_amplitudes),
+    let nv2 = 2 * nv;
+    let naux = dfbs.nbasis();
+    let label = format!(
+        "MP3 (no={no}, nv={nv} spatial, naux={naux}; dense spin-orbital 4-index blocks over {nv2} virtuals)"
+    );
+    let peak = mp3_peak_bytes(naux, nbas, no, nv);
+    ferric_core::memory::check_alloc(
+        &label,
+        peak,
+        ferric_core::memory::resolve_budget_bytes(memory_budget_bytes),
     )?;
+    let _mp3_charge = crate::rimp2::charge_mo_side(&label, peak)?;
 
     // V^{-1/2} metric and AO 3-center integrals.
     let v2c = threeindex::coulomb_metric_2c(op, dfbs)?;
