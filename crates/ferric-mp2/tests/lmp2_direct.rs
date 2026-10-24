@@ -1149,9 +1149,9 @@ fn default_config_does_not_compute_the_canonical_reference() {
 /// Memory: this bench reads `FERRIC_MEM_BUDGET_GB` ITSELF (default 6) and
 /// converts it as GiB (`x * 2^30` bytes), which it hands to both
 /// `eri3_budget_bytes` and the direct `scratch_budget_bytes`. That matches
-/// `ferric_core::memory`'s GiB parse of the same variable; only the
-/// resolver's diagnostic messages print decimal GB (/1e9), so a budget
-/// quoted from those messages reads ~7% smaller than the value set here.
+/// `ferric_core::memory`, which parses the same variable as GiB and prints
+/// the resolved budget in GiB (`BudgetResolution::audit_line`); only its
+/// over-budget refusal messages quote decimal GB (/1e9).
 #[test]
 #[ignore = "benchmark: release build, quiet box, OPENBLAS_NUM_THREADS=1; C32+ needs several GB"]
 fn bench_scaling_decisive() {

@@ -7,10 +7,21 @@
 //!             log-det path); Riccati-direct with TRIVIAL maps at ε=0
 //!             (compute_reference=true → canonical plasmon zero as well);
 //!             Riccati global-B at ε=0. Prints every energy and every pairwise
-//!             difference. Sizes where the global B still fits (≤C16).
+//!             difference. Sizes ≤C8 ONLY: the ε=0 Riccati anchor is a
+//!             MEMORY ceiling, not a convenience — C12 thrashed for 3 h and
+//!             was OOM-killed under a 10G cgroup cap (C8 ran in 43 s). See
+//!             wiki/amplitude-threshold-drpa.md, "2026-09-06 — shared-zero
+//!             anchors on the DIRECT path", §4.
+//!             WARNING: do not run anchor mode above C8.
 //!   pdep    — PDEP only: τ ∈ {0, 1e-2} × n_quad ∈ {32, 64} × {eigen, log-det}
 //!             with wall per call and FERRIC_TIMING stage lines on stderr.
 //!             Sizes where no plasmon reference can be built (C20–C48).
+//!             C48 may be refused outright: as of 2026-09-06 the PDEP memory
+//!             preflight charges full-width per-worker scratch (~31 GB at 12
+//!             rayon workers) whatever the budget (same note, Phase 2 §5).
+//!
+//! Frozen core = number of carbon atoms (Z == 6), so it is correct only
+//! for hydrocarbons; other molecules get a wrong frozen-core count.
 //!
 //! Run (from the repo root, single BLAS thread, under scripts/ferric-limited):
 //!   OPENBLAS_NUM_THREADS=1 FERRIC_TIMING=1 cargo run --release \

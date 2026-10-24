@@ -4,7 +4,9 @@
 //! every ladder below is built locally from `ksdft_ladder` / `default_ladder_from`.
 //!
 //! Ladders:
-//!   A  current           plain DIIS, ADIIS, LS 0.5, LS 1.0 + SOSCF, smearing
+//!   A  current           plain DIIS, ADIIS, LS 0.5, LS 1.0 + SOSCF,
+//!                        smearing (which also carries SOSCF, Pulay DIIS and
+//!                        LS 0.5)
 //!   B  current + TRAH    A with a TRAH rung appended after smearing
 //!   C  proposed          [AURORA if applicable], plain DIIS, ADIIS, LS 0.5,
 //!                        TRAH (replaces the LS 1.0 + SOSCF rung), smearing
@@ -51,7 +53,12 @@ fn base_ladder(base: &RhfConfig) -> Vec<Rung> {
 }
 
 /// B: the current ladder with TRAH appended (inherits the last rung, minus
-/// smearing and SOSCF), as in `trah_hard_systems.rs`.
+/// smearing and SOSCF). Adapted from `with_trah_rung` in
+/// `trah_hard_systems.rs`, with two differences to keep in mind when
+/// comparing numbers: it does NOT reset `trah` to `TrahConfig::default()`
+/// (it inherits the base's, which is the default for every base used here),
+/// and it keeps the smearing rung's level shift (≥0.5), whereas ladder C's
+/// TRAH rung sets `level_shift = 0`.
 fn ladder_b(base: &RhfConfig) -> Vec<Rung> {
     let mut l = base_ladder(base);
     let mut c = l.last().unwrap().config.clone();
@@ -84,8 +91,9 @@ fn ladder_c(base: &RhfConfig, aurora_applies: bool) -> Vec<Rung> {
     l.push(a[0].clone()); // plain DIIS
     l.push(a[1].clone()); // ADIIS
     l.push(a[2].clone()); // LS 0.5
-                          // TRAH replaces the LS 1.0 + SOSCF rung: same iteration budget, no
-                          // SOSCF, no extra level shift (TRAH's own trust region does the damping).
+
+    // TRAH replaces the LS 1.0 + SOSCF rung: same iteration budget, no
+    // SOSCF, no extra level shift (TRAH's own trust region does the damping).
     let mut t = a[3].config.clone();
     t.newton_trigger = 0.0;
     t.level_shift = 0.0;
