@@ -307,4 +307,39 @@ mod tests {
         guard.stop(t);
         assert_eq!(guard.secs_for("region").is_some(), enabled());
     }
+
+    /// The two tests above that only bite when timing is ON
+    /// (`repeated_labels_accumulate_into_one_row`, and the enabled branch of
+    /// `time_runs_the_closure_exactly_once`) would be vacuous in a plain
+    /// `cargo test`, because `enabled()` is fixed per process by a `OnceLock`.
+    /// So an untimed run re-executes this test binary with `FERRIC_TIMING=1`
+    /// over the timing tests and requires them to pass there too. (A timed
+    /// run already IS that child, so it does nothing.)
+    #[test]
+    fn timed_contract_holds_in_a_timed_child() {
+        if enabled() {
+            return;
+        }
+        let exe = std::env::current_exe().expect("test binary path");
+        let out = std::process::Command::new(exe)
+            .args(["timing::tests::", "--test-threads=1"])
+            .env("FERRIC_TIMING", "1")
+            .output()
+            .expect("spawn timed child");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            out.status.success(),
+            "timing tests fail under FERRIC_TIMING=1:\n{stdout}\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        for name in [
+            "repeated_labels_accumulate_into_one_row ... ok",
+            "time_runs_the_closure_exactly_once ... ok",
+        ] {
+            assert!(
+                stdout.contains(name),
+                "timed child did not run `{name}`:\n{stdout}"
+            );
+        }
+    }
 }
