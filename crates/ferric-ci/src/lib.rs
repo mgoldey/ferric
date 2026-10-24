@@ -56,6 +56,7 @@ pub mod integrals;
 /// Determinant-string enumeration (bitmask α/β strings).
 pub mod strings;
 
+use ferric_core::memory::plan::{Lifetime, MemoryPlan};
 use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
@@ -219,21 +220,37 @@ pub fn run_cas_ci(
     // before this gate nothing stopped it. max_subspace is read from config,
     // not assumed: it is a user-settable memory knob whether or not it was
     // designed as one.
-    let budget = ferric_core::memory::resolve_budget_bytes(config.memory_budget_bytes);
-    let subspace_bytes = ndet
-        .saturating_mul(config.max_subspace.max(1))
-        .saturating_mul(2)
-        .saturating_mul(8);
-    // diag + guess + x + hx + t: five ndet-sized vectors alongside the bases.
-    let work_bytes = ndet.saturating_mul(5).saturating_mul(8);
-    ferric_core::memory::check_alloc(
-        &format!(
-            "CAS-CI Davidson subspace (n_active={n_active}, n_elec=({n_alpha},{n_beta}),              N_det={ndet}, max_subspace={})",
+    // `MemoryPlan::from_global_pool` re-bases the ceiling on what the
+    // process-global pool has LEFT (a no-op, resolving exactly as before,
+    // when no pool is installed) — the whole point being that this gate must
+    // not pass while believing it owns the entire budget when another
+    // subsystem is already holding some of it.
+    let mut plan = MemoryPlan::from_global_pool(
+        config.memory_budget_bytes,
+        format!(
+            "CAS-CI Davidson subspace (n_active={n_active}, n_elec=({n_alpha},{n_beta}), \
+             N_det={ndet}, max_subspace={})",
             config.max_subspace
         ),
-        subspace_bytes.saturating_add(work_bytes),
-        budget,
-    )?;
+    );
+    // Davidson holds TWO bases (v_basis + hv_basis), each up to max_subspace
+    // vectors of ndet doubles.
+    plan.reserve(
+        "Davidson v_basis + hv_basis",
+        ndet.saturating_mul(config.max_subspace.max(1))
+            .saturating_mul(2),
+        Lifetime::Resident,
+    );
+    // diag + guess + x + hx + t: five ndet-sized vectors alongside the bases.
+    plan.reserve(
+        "Davidson diag/guess/x/hx/t work vectors",
+        ndet.saturating_mul(5),
+        Lifetime::Resident,
+    );
+    // Held for the whole solve below: both bases and the work vectors are
+    // live for davidson_lowest's entire call, and are dropped when it
+    // returns, so the guard's scope matches exactly.
+    let _mem = plan.commit()?;
 
     // ---- Diagonal + Davidson solve ------------------------------------
     let diag = hamiltonian::hamiltonian_diagonal(&ints, &space);
