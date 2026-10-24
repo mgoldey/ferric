@@ -13,6 +13,7 @@
 //! contractions over the inactive orbitals). This is O(N^4) in the *full* AO
 //! basis for the transform and is intended for spike-scale systems only.
 
+use ferric_core::memory::plan::{Lifetime, MemoryPlan};
 use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
@@ -152,15 +153,28 @@ pub fn build_active_space_integrals(
     // 1.3x typically, 5x worst case -- a real under-count, though not the
     // order of magnitude "five uncharged buffers" suggests.
     let peak_elems = active_space_integral_elems(nbas, active_start + n_active);
-    ferric_core::memory::check_alloc(
-        &format!(
+    let mut plan = MemoryPlan::from_global_pool(
+        memory_budget_bytes,
+        format!(
             "CAS-CI dense AO ERIs + MO transform chain (nbas={nbas}, \
              n_needed={}; ao nbas^4 = {n4} f64, peak = {peak_elems} f64)",
             active_start + n_active,
         ),
-        peak_elems.saturating_mul(8),
-        ferric_core::memory::resolve_budget_bytes(memory_budget_bytes),
-    )?;
+    );
+    // `peak_elems` already sums ao_eri + mo_eri + t1 + t2 + t3 (see
+    // `active_space_integral_elems`) — all five are co-resident local
+    // bindings that go out of scope at the end of this function (only the
+    // small active-space slice below is copied out into
+    // `ActiveSpaceIntegrals`), so one Resident reservation for the whole sum
+    // is honest and the sizing arithmetic is untouched.
+    plan.reserve(
+        "ao_eri + mo_eri + t1 + t2 + t3 (co-resident MO transform chain)",
+        peak_elems,
+        Lifetime::Resident,
+    );
+    // Held for the rest of this function: every one of those buffers is
+    // allocated below and dropped only when this function returns.
+    let _mem = plan.commit()?;
     let mut ao_eri = vec![0.0f64; n4];
     let idx4 = |mu: usize, nu: usize, la: usize, sg: usize| -> usize {
         ((mu * nbas + nu) * nbas + la) * nbas + sg

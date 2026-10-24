@@ -416,71 +416,49 @@ fn dense_rhf_spectrum(sys: &System, res: &ScfResult) -> Vec<f64> {
     sym_eigh(&h, &format!("{} RHF", sys.name))
 }
 
-/// INFORMATION: the RHF→UHF external check, by BOTH constructions — ferric's
-/// UHF Hessian at the RHF point (λ_min = min(singlet, triplet)) and the
-/// dedicated `rhf_external_stability` triplet operator (λ_min = triplet alone,
-/// which is what `RhfConfig::check_stability` reports). See
-/// validation_scf_stability.rs for the normalization and the channel split.
-fn external_check(sys: &System, res: &ScfResult, r: &Value) {
+/// INFORMATION: the RHF→UHF external check.
+///
+/// * The DEDICATED triplet operator (`rhf_external_stability`, λ_min = triplet
+///   alone) is what `RhfConfig::check_stability` already ran inside
+///   `solve_rhf` on the returned orbitals and Fock matrix, with
+///   `StabilityConfig::default()`; it is READ from
+///   `ScfResult::stability_external`, not recomputed. Re-running it here was
+///   the same Davidson on the same inputs: on N2 and CuCN the recomputed and
+///   the stored λ_min were bit-identical (`to_bits`, 2026-10-23).
+/// * `uhf_cross`: also build ferric's UHF Hessian at the RHF point (λ_min =
+///   min(singlet, triplet)), an independent construction of the same channel.
+///   See validation_scf_stability.rs for the normalization and the channel
+///   split. It runs on N2 and CuCN only: on Cr(CO)6 (199 AOs) each Davidson
+///   iteration costs up to 6 matvecs, and the ladder phase alone (35 SCF
+///   iterations + singlet Davidson 66 iterations + triplet Davidson 50) took
+///   ~4800-5100 s locally at 3 rayon threads; the UHF cross-construction and
+///   the duplicate triplet were still running when a 5400 s cap killed the
+///   test. Without them the Cr(CO)6 test passes in 5083 s (same setup). The
+///   UHF construction is proven on the two smaller systems; on Cr(CO)6 the
+///   stored triplet verdict and λ_min are still asserted.
+fn external_check(sys: &System, res: &ScfResult, r: &Value, uhf_cross: bool) {
     let ctx = sys.name.as_str();
-    let nocc = sys.mol.nelec() as usize / 2;
-    let c = res.mos_alpha.clone();
-    let f_mo = c.t().dot(&res.fock_alpha).dot(&c);
-    let inp = UhfNewtonInputs {
-        prep: &sys.prep,
-        bounds: &sys.bounds,
-        c_a: &c,
-        c_b: &c,
-        f_a_mo: &f_mo,
-        f_b_mo: &f_mo,
-        nocc_a: nocc,
-        nocc_b: nocc,
-        k_mix_sr: 1.0,
-        rsh: None,
-        fxc: None,
-        thresh: RhfConfig::default().integral_thresh,
-        ooc_budget: ferric_core::memory::resolve_budget_bytes(None),
-    };
-    let st = uhf_internal_stability(&sys.ctx, &inp, &StabilityConfig::default())
-        .unwrap_or_else(|e| panic!("{ctx}: external analysis failed: {e:?}"));
-    eprintln!(
-        "{ctx}: external (UHF Hessian at the RHF point): {}",
-        st.summary()
-    );
-    assert!(st.converged, "{ctx}: {}", st.summary());
     let sing = nums(r, "/rhf/singlet_rhf_internal/lowest", ctx)[0];
     let trip = nums(r, "/rhf/triplet_rhf_to_uhf/lowest", ctx)[0];
-    check_close(
-        ctx,
-        "external lambda_min",
-        st.lowest_eigenvalue,
-        sing.min(trip),
-        TOL_LAMBDA,
-    );
-
-    // The DEDICATED triplet operator, which is what `check_stability` runs:
-    // it isolates the RHF→UHF channel instead of reporting min(singlet,
-    // triplet), so it is compared against the TRIPLET reference alone.
-    let rinp = RhfNewtonInputs {
-        prep: &sys.prep,
-        bounds: &sys.bounds,
-        c: &c,
-        f_mo: &f_mo,
-        nocc,
-        k_mix_sr: 1.0,
-        rsh: None,
-        fxc: None,
-        thresh: RhfConfig::default().integral_thresh,
-        ooc_budget: ferric_core::memory::resolve_budget_bytes(None),
+    let ext_stable = boolean(r, "/rhf/stability/external_stable", ctx);
+    let ext_verdict = if ext_stable {
+        StabilityVerdict::Stable
+    } else {
+        StabilityVerdict::Unstable
     };
-    let st_trip =
-        ferric_scf::stability::rhf_external_stability(&sys.ctx, &rinp, &StabilityConfig::default())
-            .unwrap_or_else(|e| panic!("{ctx}: dedicated triplet analysis failed: {e:?}"));
+
+    // The DEDICATED triplet operator, as `check_stability` ran it: it isolates
+    // the RHF→UHF channel instead of reporting min(singlet, triplet), so it is
+    // compared against the TRIPLET reference alone.
+    let st_trip = res.stability_external.as_ref().unwrap_or_else(|| {
+        panic!("{ctx}: check_stability was set but no external (triplet) verdict came back")
+    });
     eprintln!(
-        "{ctx}: external (dedicated triplet operator): {}",
+        "{ctx}: external (dedicated triplet operator, from solve_rhf): {}",
         st_trip.summary()
     );
     assert!(st_trip.converged, "{ctx}: {}", st_trip.summary());
+    assert_eq!(st_trip.kind, StabilityKind::RhfExternalTriplet);
     check_close(
         ctx,
         "triplet lambda_min",
@@ -488,18 +466,53 @@ fn external_check(sys: &System, res: &ScfResult, r: &Value) {
         trip,
         TOL_LAMBDA,
     );
-    let ext_stable = boolean(r, "/rhf/stability/external_stable", ctx);
-    let ext_verdict = if ext_stable {
-        StabilityVerdict::Stable
-    } else {
-        StabilityVerdict::Unstable
-    };
     assert_eq!(
-        st.verdict(),
+        st_trip.verdict(),
         ext_verdict,
-        "{ctx}: RHF->UHF verdict: {}",
-        st.summary()
+        "{ctx}: RHF->UHF verdict (triplet): {}",
+        st_trip.summary()
     );
+
+    if uhf_cross {
+        let nocc = sys.mol.nelec() as usize / 2;
+        let c = res.mos_alpha.clone();
+        let f_mo = c.t().dot(&res.fock_alpha).dot(&c);
+        let inp = UhfNewtonInputs {
+            prep: &sys.prep,
+            bounds: &sys.bounds,
+            c_a: &c,
+            c_b: &c,
+            f_a_mo: &f_mo,
+            f_b_mo: &f_mo,
+            nocc_a: nocc,
+            nocc_b: nocc,
+            k_mix_sr: 1.0,
+            rsh: None,
+            fxc: None,
+            thresh: RhfConfig::default().integral_thresh,
+            ooc_budget: ferric_core::memory::resolve_budget_bytes(None),
+        };
+        let st = uhf_internal_stability(&sys.ctx, &inp, &StabilityConfig::default())
+            .unwrap_or_else(|e| panic!("{ctx}: external analysis failed: {e:?}"));
+        eprintln!(
+            "{ctx}: external (UHF Hessian at the RHF point): {}",
+            st.summary()
+        );
+        assert!(st.converged, "{ctx}: {}", st.summary());
+        check_close(
+            ctx,
+            "external lambda_min",
+            st.lowest_eigenvalue,
+            sing.min(trip),
+            TOL_LAMBDA,
+        );
+        assert_eq!(
+            st.verdict(),
+            ext_verdict,
+            "{ctx}: RHF->UHF verdict: {}",
+            st.summary()
+        );
+    }
     if let Some(bs) = r.get("broken_symmetry_uhf") {
         eprintln!(
             "{ctx}: (info) PySCF broken-symmetry UHF {:.10} <S^2> {:.4}, {:.3e} Ha below RHF",
@@ -510,9 +523,10 @@ fn external_check(sys: &System, res: &ScfResult, r: &Value) {
     }
 }
 
-/// (a)+(b)+(c) for one system. `dense`: also compare ferric's dense singlet
-/// spectrum (affordable for N2 and CuCN, not for Cr(CO)6).
-fn ladder_row(system: &str, dense: bool) {
+/// (a)+(b)+(c) for one system. `small`: also compare ferric's dense singlet
+/// spectrum and run the UHF-Hessian external cross-construction (affordable
+/// for N2 and CuCN, not for Cr(CO)6; see `external_check`).
+fn ladder_row(system: &str, small: bool) {
     let r = reference(system);
     let sys = load_system(system, &r);
     let ctx = sys.name.clone();
@@ -576,7 +590,7 @@ fn ladder_row(system: &str, dense: bool) {
         want[0],
         TOL_LAMBDA,
     );
-    if dense {
+    if small {
         let spec = dense_rhf_spectrum(&sys, res);
         for k in 0..N_COMPARE.min(want.len()) {
             check_close(
@@ -590,7 +604,7 @@ fn ladder_row(system: &str, dense: bool) {
     }
 
     // INFORMATION: RHF -> UHF.
-    external_check(&sys, res, &r);
+    external_check(&sys, res, &r, small);
 }
 
 // ---------------------------------------------------------------------------

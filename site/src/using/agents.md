@@ -44,7 +44,7 @@ source-only (see [Installation](installation.md)).
 | An energy from a TOML file | CLI, `method.kind` | [Recipes](recipes.md) §1, [input reference](../reference/input.md) |
 | An ion, radical or metal center | `[molecule] charge`, `multiplicity` (Python: on `Molecule.from_xyz`) | [Recipes](recipes.md) §2 |
 | An optimized geometry | `method.task = "optimize"` | [Recipes](recipes.md) §3 |
-| Harmonic frequencies | `method.task = "frequencies"`, `ferric.run_frequencies` | Analytic Hessian for RHF/UHF/ROHF, otherwise finite differences of analytic gradients; `examples/water-frequencies.toml` |
+| Harmonic frequencies | `method.task = "frequencies"`, `ferric.run_frequencies` | Analytic Hessian for RHF/UHF/ROHF and closed-shell KS LDA/GGA (the moving-grid KS Hessian, chosen by the default `hessian = "auto"`), otherwise finite differences of analytic gradients; `examples/water-frequencies.toml` |
 | A transition state and its reaction path | `ferric.run_saddle`, `ferric.run_irc` (Python only, closed shell) | [Golden paths](applications.md) Step 5 |
 | QM/MM embedding | `ferric.QmmmSystem`, `ferric.run_qmmm`, CLI `[qmmm]` | [QM/MM](qmmm.md) |
 | A machine-readable record of a run | `<input>.ferric.jsonl`, written by default | [Run logs](run-logs.md) |

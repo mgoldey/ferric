@@ -771,7 +771,12 @@ class FrequencyResult:
 
     @property
     def hessian_source(self) -> str:
-        """\"analytic\" or \"finite-difference\": which construction produced the Hessian."""
+        """\"analytic\", \"analytic-moving-grid\" or \"finite-difference\": which construction produced the Hessian."""
+        ...
+
+    @property
+    def cartesian_hessian(self) -> list[list[float]]:
+        """Cartesian Hessian before mass-weighting (Hartree/Bohr^2), 3N x 3N, ordered [x0, y0, z0, x1, ...]."""
         ...
 
     @property
@@ -2798,6 +2803,9 @@ def run_frequencies(
     external_field: tuple[float, float, float] | None = None,
     hessian: str = "auto",
     dispersion: str | None = None,
+    max_iter: int | None = None,
+    energy_conv: float | None = None,
+    density_conv: float | None = None,
 ) -> FrequencyResult:
     """Harmonic vibrational frequencies.
 
@@ -2805,12 +2813,32 @@ def run_frequencies(
     (any multiplicity) with exact J/K, with or without an ECP, or ROHF with
     exact J/K and no ECP or external potential (`point_charges` /
     `external_field` are analytic for RHF and UHF only), and a basis up to f
-    functions, and a finite difference of analytic gradients otherwise (always
-    for KS, ROKS included). The choice is made before the SCF; an error the
-    analytic path raises after it (for ROHF a Fock-consistency failure from a
-    loose convergence threshold, a non-converging response, non-positive
-    curvature) is raised, not retried with finite differences; `"analytic"` raises if it does not apply;
-    `"fd"` always differences gradients. `.hessian_source` says which ran.
+    functions; for closed-shell Kohn-Sham (`xc` with `reference="rhf"`) the
+    `"analytic-moving-grid"` Hessian below wherever it applies; and a finite
+    difference of analytic gradients otherwise (UKS, ROKS, meta-GGA, VV10,
+    range-separated hybrids, ECPs or external potentials with `xc`,
+    `dispersion`, and large systems whose response AO table -- basis
+    functions x grid points x 4 for a GGA, 8 bytes each -- exceeds 2 GiB: on
+    the default grid a GGA above about 8,100 basis functions x atoms). The
+    choice is made before the SCF; an error an analytic path raises after it
+    (a non-converged SCF; for ROHF a Fock-consistency failure from a loose
+    convergence threshold; a non-converging response, non-positive curvature)
+    is raised, not retried with finite differences; `"analytic"` raises if the Hartree-Fock
+    analytic Hessian does not apply (it never covers KS); `"fd"` always
+    differences gradients. `.hessian_source` says which ran.
+
+    `hessian="analytic-moving-grid"` is
+    the analytic closed-shell Kohn-Sham Hessian on the production (moving)
+    grid, Becke weight response included: the Hessian of the surface the KS
+    gradient differentiates, so it agrees with `"fd"` to the finite-difference
+    error. It needs `xc` (LDA/GGA, pure or global hybrid) and
+    `reference="rhf"`, and raises before the SCF for Hartree-Fock,
+    `"uhf"`/`"rohf"`, meta-GGA, VV10, range-separated hybrids, ECPs,
+    `point_charges` / `external_field` and `dispersion`.
+
+    `max_iter`, `energy_conv`, `density_conv` are the SCF controls of every
+    SCF the run does (defaults 200, 1e-3, 1e-6, as in `run_rhf`); a
+    finite-difference Hessian's noise floor is the SCF's.
 
     `point_charges` ((q, x, y, z) in Bohr) and `external_field` embed the QM
     region in an MM field, the same way `run_optimize` does.
@@ -2818,7 +2846,8 @@ def run_frequencies(
     `dispersion` ("d3bj", "d3(bj)", "d3bj(<functional>)", "mbd",
     "mbd(<functional>)", as in `run_dft`) requires `xc` and works on every
     reference (RKS, UKS, ROKS); the Hessian is then the finite difference of
-    the KS + dispersion analytic gradient, so `hessian="analytic"` raises.
+    the KS + dispersion analytic gradient, so `hessian="analytic"` and
+    `hessian="analytic-moving-grid"` raise.
     """
     ...
 
@@ -2837,8 +2866,9 @@ class SaddleResult:
     def lowest_eigenvalue(self) -> float: ...
     @property
     def hessian_source(self) -> str:
-        """`"finite-difference"` or `"analytic"`: which construction produced
-        the final-geometry Hessian behind `n_imaginary`."""
+        """`"finite-difference"`, `"analytic"` or (under `hessian="auto"`
+        with `xc`) `"analytic-moving-grid"`: which construction produced the
+        final-geometry Hessian behind `n_imaginary`."""
         ...
     @property
     def symbols(self) -> list[str]: ...
@@ -2918,8 +2948,9 @@ def run_saddle(
     `hessian`: `"fd"` (default) central-differences the analytic gradient and
     honours `delta`; `"analytic"` uses the analytic RHF Hessian and raises when
     it does not apply (KS `xc`, point charges / field, basis too high in
-    angular momentum); `"auto"` uses it where it applies and otherwise falls
-    back to FD. `delta=` with `"analytic"` or `"auto"` raises. The result's
+    angular momentum); `"auto"` uses it where it applies (with `xc`, the
+    analytic moving-grid Kohn-Sham Hessian of `run_frequencies`) and otherwise
+    falls back to FD. `delta=` with `"analytic"` or `"auto"` raises. The result's
     `hessian_source` reports which ran.
     """
     ...

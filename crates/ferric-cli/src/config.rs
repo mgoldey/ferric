@@ -793,8 +793,9 @@ pub fn parse_coord_system(s: &str) -> Result<ferric_scf::optimize::CoordSystem, 
 }
 
 /// `[frequencies]` — harmonic vibrational frequencies (`method.task =
-/// "frequencies"`): the analytic RHF, UHF or ROHF Hessian where it applies,
-/// otherwise a finite difference of the ANALYTIC gradient.
+/// "frequencies"`): the analytic RHF, UHF, ROHF or closed-shell Kohn-Sham
+/// Hessian where it applies, otherwise a finite difference of the ANALYTIC
+/// gradient.
 #[derive(Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct FrequenciesCfg {
@@ -803,13 +804,26 @@ pub struct FrequenciesCfg {
     /// and/or RI-K) and a basis up to f functions (RHF
     /// and UHF also with optional external charges or field; an ECP is analytic
     /// for all three, with RI-J/RI-K too, but not together with an external
-    /// potential on the fitted routes), finite differences otherwise (always for ROKS and the
-    /// other KS references). An error raised by the analytic path after the SCF
+    /// potential on the fitted routes); for closed-shell Kohn-Sham the
+    /// `"analytic-moving-grid"` Hessian below wherever it applies; finite
+    /// differences otherwise (always for UKS, ROKS, meta-GGA, VV10,
+    /// range-separated hybrids, ECPs or external potentials with a functional,
+    /// `[dft] grid_prune`, `[dft] dispersion`, and a response AO table above
+    /// its 2 GiB cap: basis functions x grid points x 4 for a GGA). An error
+    /// raised by an analytic path after the SCF
     /// (a stored-versus-rebuilt Fock mismatch, a non-converged or
     /// non-positive-curvature response, a very large first-order rotation) is
     /// returned, never retried with finite differences; a loose
-    /// `density_conv` can trigger the Fock check. `"analytic"`: error if the
-    /// analytic Hessian does not apply. `"fd"`: always finite differences.
+    /// `density_conv` can trigger the Fock check. `"analytic"`: error if the Hartree-Fock analytic Hessian does
+    /// not apply (it never covers Kohn-Sham). `"fd"`: always finite differences.
+    /// `"analytic-moving-grid"`: the
+    /// analytic closed-shell KS Hessian on the production (moving) grid, Becke
+    /// weight response included, i.e. the Hessian of the surface the KS
+    /// gradient differentiates. `method.kind = "ksdft"` (or `rhf` with a
+    /// functional) on a closed shell, LDA/GGA pure or global hybrid, exact or
+    /// RI-J/RI-K; refused before the SCF for Hartree-Fock, UKS/ROKS, meta-GGA,
+    /// VV10, range-separated hybrids, ECPs, external potentials, `[dft]
+    /// grid_prune` and `[dft] dispersion`.
     pub hessian: Option<String>,
     /// Central-difference displacement in Bohr, finite-difference Hessians only.
     ///

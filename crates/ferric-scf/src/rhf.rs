@@ -1484,6 +1484,21 @@ pub(crate) fn solve_rhf_blocked(
     solve_rhf_impl(ctx, mol, prep, op, bounds, config, None, Some(spec))
 }
 
+/// Title of the `FERRIC_TIMING` phase table printed by `solve_rhf_impl`:
+/// "RKS" when an XC functional is configured or injected, else "RHF", with
+/// " (free-atom guess)" appended inside an internal sub-solve (the MINAO
+/// guess's free-atom SCFs, see `runlog::in_sub_solve`). Nested tables are
+/// retitled, never suppressed, so none disappears.
+fn phase_table_title(config: &RhfConfig, injected_xc: bool) -> &'static str {
+    let ks = config.xc.is_some() || injected_xc;
+    match (ks, crate::runlog::in_sub_solve()) {
+        (false, false) => "RHF",
+        (true, false) => "RKS",
+        (false, true) => "RHF (free-atom guess)",
+        (true, true) => "RKS (free-atom guess)",
+    }
+}
+
 /// Shared body of [`solve_rhf`] (`inj = None`, byte-identical to the
 /// pre-injection solver) and [`solve_rhf_injected`] (`inj = Some`, config
 /// already validated).
@@ -1577,9 +1592,32 @@ fn solve_rhf_impl(
     // `k_consumed` gate does for pure DFT).
     let inj_k_consumed = inj_xc.is_none() || k_mix.sr > 0.0;
 
+    // Opt-in per-phase timing (`FERRIC_TIMING=1`; inert otherwise — no clock
+    // read, no allocation). Declared before the one-time SETUP stages so they
+    // are covered too: they sit outside the SCF loop but inside this solve's
+    // wall time, and a table that omits them attributes their cost to nothing.
+    // The guard prints the table when this function returns, so EVERY exit
+    // (converged, MaxIter, Diverged, Stalled, `?`) reports, not just the ones
+    // that remember to. Timers bracket whole calls only (see
+    // ferric_core::timing's placement rule). Untimed on purpose: the TRAH,
+    // AURORA and Newton orbital steps (they `continue` past DIIS and the
+    // diagonalization, so their cost is simply absent from the table rather
+    // than folded into another label) and the converged-exit extras
+    // (final diagonalization, stability analysis, COSX final grid).
+    //
+    // Every region is bracketed with `begin`/`stop` tokens rather than wrapped
+    // in a `time(|| ..)` closure: the timed statements stay textually
+    // identical to the untimed code (so the disabled path is trivially the
+    // same arithmetic), and no closure is added to this function's
+    // complexity. A `?` between `begin` and `stop` drops that one sample; the
+    // guard still reports everything recorded before it.
+    let mut phases = ferric_core::timing::PhaseAccumulator::new()
+        .report_on_drop(phase_table_title(config, inj_xc.is_some()));
+
     // Shared geometry-only environment: S, hcore(+ECP, +external), V_nn
     // (+external), COSMO/PCM contexts, resolved memory budget, RSH fitters.
     // One construction serving all six SCF variants — see crate::driver.
+    let prepare_t = phases.begin("setup:prepare");
     let crate::driver::ScfEnv {
         s,
         h,
@@ -1591,6 +1629,7 @@ fn solve_rhf_impl(
         dfk_sr,
         dfk_lr,
     } = crate::driver::prepare(ctx, mol, prep, config, &k_mix, pre_env)?;
+    phases.stop(prepare_t);
 
     // The ONE SR/LR exchange response every Hessian matvec in this solve uses —
     // Newton steps, TRAH steps and the post-SCF stability eigensolve alike. It
@@ -1623,6 +1662,7 @@ fn solve_rhf_impl(
     // default because the bare hcore guess diverges on heavy-atom closed shells
     // (COSe/C2H3Br); if SAD fails to build (e.g. a free-atom solve doesn't
     // converge) we fall back to hcore rather than aborting the whole SCF.
+    let guess_t = phases.begin("setup:guess");
     let mut d = if let Some(d0) = config.init_guess_density.as_ref() {
         d0.clone()
     } else if config.use_sad_guess {
@@ -1637,6 +1677,7 @@ fn solve_rhf_impl(
     } else {
         hcore_guess(&s, &h, nocc)?
     };
+    phases.stop(guess_t);
     let mut f = Array2::zeros((n, n));
     let mut j_buf = Array2::<f64>::zeros((n, n));
     let mut k_buf = Array2::<f64>::zeros((n, n));
@@ -1806,6 +1847,7 @@ fn solve_rhf_impl(
     // `new_banded(Some(ctx))` stripes the aux band across ranks so each rank
     // builds/holds only its band of B (memory scales with rank count);
     // size-1 / non-MPI is byte-identical to the serial path.
+    let df_fitters_t = phases.begin("setup:df_fitters");
     let (mut df_j, mut df_k) = crate::fock_assembly::build_df_jk(
         ctx,
         mol,
@@ -1815,6 +1857,7 @@ fn solve_rhf_impl(
         df_k_aux_eff.as_deref(),
         ooc_budget,
     )?;
+    phases.stop(df_fitters_t);
     // Record the builders that actually produced the energy, from the SAME
     // effective names just handed to `build_df_jk` (and, for ω > 0, to
     // `driver::prepare`'s `build_rsh_dfk_pair`), so the analytic gradient
@@ -1922,9 +1965,11 @@ fn solve_rhf_impl(
     // dropping eigenvectors of S with λ < LINDEP_THRESH (near-linear-dependence).
     // For well-conditioned S, m == n and X reproduces existing energies; see
     // canonical_orthogonalizer / diagonalize for the padding-back-to-n convention.
+    let orth_t = phases.begin("setup:orthogonalizer");
     let x = canonical_orthogonalizer(&s)?;
     // Fock diagonalizer: global by default, per-irrep under point-group blocking.
     let diag = crate::symmetric::FockDiag::new(sym, &s, crate::symmetric::PlainDiag::Rect(&x))?;
+    phases.stop(orth_t);
 
     // Previous-iteration MO coefficients, needed to build the virtual-block level
     // shift (a projector onto the prior virtuals). None before the first solve.
@@ -2145,6 +2190,9 @@ fn solve_rhf_impl(
         // An injected (periodic) J/K pair pre-empts all of them; validate_injected
         // guarantees no DF/pluggable builder was requested alongside it. Same
         // call sequence as the pluggable-K arm (J, update_density, K).
+        // The rayon fan-out lives INSIDE the builders and has fully returned
+        // before `stop`.
+        let jk_t = phases.begin("jk_build");
         if let Some((ij, ik)) = inj_jk.as_mut() {
             total_quartets += ij.build(&d, &mut j_buf)?;
             if inj_k_consumed {
@@ -2235,6 +2283,7 @@ fn solve_rhf_impl(
             // Record the density that now corresponds to the J/K in the buffers.
             d_last_fock = Some(d.clone());
         }
+        phases.stop(jk_t);
 
         // F = H + J − ½ K_total  (V_xc, COSMO reaction field added below),
         // assembled in place — no k_total clone for HF/plain hybrids and no
@@ -2245,6 +2294,7 @@ fn solve_rhf_impl(
         //   RSH (wB97X-V):        k_mix = {sr, lr, ω>0}  → K_total = sr·K_SR + lr·K_LR
         // Bit-identical to the former `f.assign(&(&h + &j_buf - &(0.5 * &k_total)))`:
         // scaling by 0.5 is exact, so fl(0.5·α·k) = 0.5·fl(α·k) elementwise.
+        let fock_t = phases.begin("fock_assembly");
         f.assign(&h);
         f += &j_buf;
         if k_mix.omega > 0.0 {
@@ -2286,7 +2336,11 @@ fn solve_rhf_impl(
         // crate::cosmo module docs and the PySCF cross-check in its
         // `energy_elec`/`get_veff` split, where `e_solvent` is added
         // directly to the total rather than folded into the ½Tr[D·vhf] term).
+        phases.stop(fock_t);
+        let energy_t = phases.begin("energy_trace");
         let e_elec_no_xc: f64 = 0.5 * (&d * &(&h + &f)).sum();
+        phases.stop(energy_t);
+        let xc_t = phases.begin("xc_digest");
         let e_xc = if let Some(x) = xc_contrib.as_ref() {
             // Occupied-factored density pass when `d_occ` caches the C_occ of
             // the current D = 2·C_occ·C_occᵀ (None under smearing / on the
@@ -2310,6 +2364,7 @@ fn solve_rhf_impl(
         } else {
             0.0
         };
+        phases.stop(xc_t);
 
         // COSMO + IEF-PCM reaction fields: density-dependent, recomputed every
         // iteration and folded into F (unlike `external_potential`, folded into
@@ -2317,6 +2372,7 @@ fn solve_rhf_impl(
         // part of the ½Tr[D·(H+F)] trace (PySCF's e_solvent convention). See
         // driver::solvent_terms for the full derivation notes; a vacuum run
         // (both None) is byte-identical to a solvation-less build.
+        let solvent_t = phases.begin("solvent_terms");
         let (e_cosmo, e_pcm, e_pol, iter_induced_dipoles) = crate::driver::solvent_terms(
             mol,
             prep,
@@ -2327,6 +2383,7 @@ fn solve_rhf_impl(
             &d,
             &mut [&mut f],
         )?;
+        phases.stop(solvent_t);
         last_induced_dipoles = iter_induced_dipoles;
 
         let energy = e_elec_no_xc + e_xc + e_cosmo + e_pcm + e_pol + vnn;
@@ -2342,12 +2399,14 @@ fn solve_rhf_impl(
         // Zero-alloc: writes into the buffers hoisted above the loop. Same
         // dgemm calls in the same association as `f.dot(&d).dot(&s)` /
         // `s.dot(&d).dot(&f)`, so bit-identical (see the hoist comment).
+        let commutator_t = phases.begin("diis_commutator");
         with_blas_threads(opt_in_blas_threads(), || {
             general_mat_mul(1.0, &f, &d, 0.0, &mut fd_tmp);
             general_mat_mul(1.0, &fd_tmp, &s, 0.0, &mut fds);
             general_mat_mul(1.0, &s, &d, 0.0, &mut fd_tmp);
             general_mat_mul(1.0, &fd_tmp, &f, 0.0, &mut sdf);
         });
+        phases.stop(commutator_t);
         // err = fds - sdf, in place; `Zip` visits in the same (row-major)
         // element order `&fds - &sdf` produced.
         ndarray::Zip::from(&mut err)
@@ -3027,7 +3086,9 @@ fn solve_rhf_impl(
         } else {
             true
         };
+        let extrapolate_t = phases.begin("diis_extrapolate");
         let mut f_new = diis.step_checked(&f, &err, &d, energy, err_max, d_variational);
+        phases.stop(extrapolate_t);
 
         // Virtual-block level shift (config.level_shift > 0): add `shift` to the
         // diagonal of the virtual block in MO basis, i.e. F += shift · S·C_v·C_vᵀ·S
@@ -3050,7 +3111,9 @@ fn solve_rhf_impl(
             }
         }
 
+        let diagonalize_t = phases.begin("diagonalize");
         let (eps, mut c) = diag.run(&f_new)?;
+        phases.stop(diagonalize_t);
         last_eps = eps;
         // Only retain C across iterations when the level shift needs it; the
         // default (shift = 0) path skips the clone entirely.

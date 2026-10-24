@@ -178,3 +178,19 @@ slow-timeout = { period = "300s", terminate-after = 35 }
 [[profile.validation.overrides]]
 filter = 'binary_id(=ferric-scf::validation_ecp_hessian) and test(=ag2_augccpvdzpp)'
 slow-timeout = { period = "300s", terminate-after = 22 }
+
+# Cr(CO)6 SCF ladder (validation_scf_ladder.rs): runs ALONE in the
+# `validation-cr-co6` job (ci.yml), not in a shard. Slow, not stuck (measured
+# 2026-10-23, this profile, OPENBLAS_NUM_THREADS=1, 3 rayon threads): rung 0
+# converges in 35 iterations to the reference minimum (8.6e-10 Ha), internal
+# Davidson STABLE in 66 iterations, triplet Davidson 50; the whole ladder is
+# ~4800-5100 s because each Davidson iteration is up to 6 exact-J/K matvecs on
+# 199 AOs. With the duplicate triplet solve and the UHF cross-construction
+# removed from the test, it PASSES in 5083 s. Expected on CI, at the 1.31x
+# CI/local ratio of ecp_gradient_ch2i_uhf above (6715 s vs 5134 s, both at
+# this thread setup): ~6.7e3 s. Bound: 2x, 45 x 300 s = 13500 s. The job's
+# timeout-minutes (250) sits above this plus setup, so nextest's bound is the
+# one that fires.
+[[profile.validation.overrides]]
+filter = 'binary_id(=ferric-scf::validation_scf_ladder) and test(=cr_co6_default_ladder_reaches_stable_rhf_minimum)'
+slow-timeout = { period = "300s", terminate-after = 45 }
