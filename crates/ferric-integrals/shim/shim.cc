@@ -2270,6 +2270,14 @@ void terf_G_tail(double S, double s, int mmax, double *G) {
 extern "C" { unsigned long long g_terf_tab = 0, g_terf_ser = 0; }
 inline bool terf_aux(const TerfcTableSet &set, double S, double s,
                      double phi_over_theta, int mmax, double *A) {
+    // Bounds (#234): every table row holds exactly TERFC_DIMM m-values (the
+    // loader rejects dimm < TERFC_DIMM) and the series fallback below writes
+    // into gser[TERFC_DIMM]. An mmax at or past that depth would read past
+    // each node's m-row (and past the table at the last node) and overflow
+    // gser on the stack. The MD callers already cap Ltot; this is the guard
+    // for everyone else, notably the libint2 hook, whose mmax comes from
+    // libint2 (braket rank x the engine's max_L).
+    if (mmax < 0 || mmax >= TERFC_DIMM) return false;
     // Fast path: every m shares the SAME (S, s), so the table selection, the
     // node windows and the Lagrange WEIGHTS are identical across m -- only the
     // tabulated values differ. The old loop called interp_G once per m, which
@@ -2427,11 +2435,37 @@ inline bool terf_gm_eval_impl(const TerfcTableSet &set, double rho, double T,
  * happen before threads fan out -- scf_engine_create_terf_libint2 forces the
  * load at engine-construction time for exactly that reason.
  */
+// Test-only fault injection (scf_terf_libint2_inject_hook_fault).
+std::atomic<bool> g_terf_hook_fault{false};
+
 bool ferric_terf_libint2_hook(double rho, double T, int mmax, double omega,
                               double r0, double *Gm) {
+    // Second line of defence behind the max_L refusal in
+    // scf_engine_create_terf_libint2 (#234). The tables and terf_aux's series
+    // buffer are TERFC_DIMM deep, so an mmax at or past that depth cannot be
+    // evaluated. Returning false is NOT safe here: the patched libint2
+    // evaluator answers a false hook by zero-filling Gm, which would turn the
+    // refusal into silently wrong integrals. Throw instead. The hook runs
+    // inside libint2's compute call, under the try/catch of every
+    // scf_compute_* entry point, so this surfaces as SCF_EINTERNAL and never
+    // unwinds across the C ABI.
+    //
+    // The same applies to every other way this hook can fail: a false return
+    // is a silent zero, so each failure throws.
+    if (g_terf_hook_fault.load(std::memory_order_relaxed)) {
+        throw std::runtime_error("terf libint2 hook: injected fault (test only)");
+    }
+    if (mmax < 0 || mmax >= TERFC_DIMM) {
+        throw std::out_of_range(
+            "terf libint2 hook: mmax " + std::to_string(mmax) +
+            " is outside the table depth [0, " + std::to_string(TERFC_DIMM) + ")");
+    }
     auto set = g_terfc_tables;          // shared_ptr copy: no torn read
-    if (!set) return false;
-    if (!terf_gm_eval_impl(*set, rho, T, mmax, omega, r0, Gm)) return false;
+    if (!set) throw std::runtime_error("terf libint2 hook: terf tables not loaded");
+    if (!terf_gm_eval_impl(*set, rho, T, mmax, omega, r0, Gm)) {
+        // terf_gm_eval_impl only declines rho <= 0 or omega <= 0 (or NaN).
+        throw std::invalid_argument("terf libint2 hook: needs rho > 0 and omega > 0");
+    }
 
     /* PREFACTOR CONVENTION -- the reason the first cut was ~200x off.
      *
@@ -2643,6 +2677,29 @@ void build_hermite_R(int L, double theta, double PQx, double PQy, double PQz,
 inline int ncart_of(int L) { return (L + 1) * (L + 2) / 2; }
 inline int npure_of(int L) { return 2 * L + 1; }
 
+// Total angular momentum the MD paths can serve: their Fn / Boys / terf-aux
+// buffers are TERFC_DIMM deep (m = 0..Ltot). Entry points call these BEFORE
+// computing and return SCF_EINVAL, so the refusal is a status the Rust side
+// reports (Err / panic), never a "screened" zero block. eri3 reaches it at
+// lP+lA+lB = 24 (e.g. three l = 8 shells), eri2 at lP+lQ = 24 (two l = 12).
+inline bool eri3_Ltot_exceeds_tables(const Shell &shP, const Shell &shA,
+                                     const Shell &shB) {
+    return shP.contr[0].l + shA.contr[0].l + shB.contr[0].l >= TERFC_DIMM;
+}
+inline bool eri2_Ltot_exceeds_tables(const Shell &shP, const Shell &shQ) {
+    return shP.contr[0].l + shQ.contr[0].l >= TERFC_DIMM;
+}
+
+// Belt-and-braces stop inside the MD kernels, behind the entry-point checks.
+// Throws (caught by every extern "C" entry point as SCF_EINTERNAL) instead of
+// returning false, because false means "screened" to the callers and would
+// hand back zeros for a block that was merely too high-L.
+[[noreturn]] inline void md_Ltot_overflow(int Ltot) {
+    throw std::out_of_range("terf MD kernel: total angular momentum " +
+                            std::to_string(Ltot) + " reaches the table depth " +
+                            std::to_string(TERFC_DIMM));
+}
+
 // Compute the terfc (or Coulomb, if use_boys) Cartesian 3-center block
 // (P_cart | a_cart b_cart), contracted over primitives, into out_cart
 // (row-major [ncartP][ncartA][ncartB]).
@@ -2656,6 +2713,7 @@ bool compute_cart_eri3(const Shell &shP, const Shell &shA, const Shell &shB,
     const int lA = shA.contr[0].l;
     const int lB = shB.contr[0].l;
     const int Ltot = lP + lA + lB;
+    if (Ltot >= TERFC_DIMM) md_Ltot_overflow(Ltot);   // Fn[TERFC_DIMM] below
     const int ncP = ncart_of(lP), ncA = ncart_of(lA), ncB = ncart_of(lB);
     out_cart.assign((size_t)ncP * ncA * ncB, 0.0);
 
@@ -2729,9 +2787,7 @@ bool compute_cart_eri3(const Shell &shP, const Shell &shA, const Shell &shB,
                     // for far-field S > 20); the guard is defensive only.
                     // Skipping here would leave the full Coulomb value
                     // un-subtracted (terf -> 1/r at large r, NOT negligible).
-                    if (!terf_aux(*tables, S, s, phi_over_theta, Ltot, Fn)) {
-                        continue;
-                    }
+                    if (!terf_aux(*tables, S, s, phi_over_theta, Ltot, Fn)) md_Ltot_overflow(Ltot);
                     alpha_R = phi2;
                 }
 
@@ -2802,6 +2858,7 @@ bool compute_cart_eri2(const Shell &shP, const Shell &shQ,
     const int lP = shP.contr[0].l;
     const int lQ = shQ.contr[0].l;
     const int Ltot = lP + lQ;
+    if (Ltot >= TERFC_DIMM) md_Ltot_overflow(Ltot);   // Fn[TERFC_DIMM] below
     const int ncP = ncart_of(lP), ncQ = ncart_of(lQ);
     out_cart.assign((size_t)ncP * ncQ, 0.0);
 
@@ -2847,7 +2904,7 @@ bool compute_cart_eri2(const Shell &shP, const Shell &shQ,
                 const double s = phi2 * r02;
                 const double phi_over_theta = std::sqrt(phi2 / theta2);
                 // Always succeeds (table or exact far-field series); defensive.
-                if (!terf_aux(*tables, S, s, phi_over_theta, Ltot, Fn)) continue;
+                if (!terf_aux(*tables, S, s, phi_over_theta, Ltot, Fn)) md_Ltot_overflow(Ltot);
                 alpha_R = phi2;
             }
             const double pref =
@@ -2946,9 +3003,10 @@ bool compute_cart_eri4(const Shell &shA, const Shell &shB,
     // `false` return here is indistinguishable from "fully screened" and would
     // otherwise hand back zeros for a quartet that is merely too high-L -- a
     // silently wrong Schwarz bound rather than an error. This is a belt-and-
-    // braces stop, not the reporting path. (Ltot <= 23 covers l <= 5 on all
-    // four shells; eri3/eri2 need no such guard as lP+lA+lB cannot reach 24.)
-    if (Ltot >= TERFC_DIMM) return false;
+    // braces stop, not the reporting path, and it throws rather than return
+    // false for the same reason. (Ltot <= 23 covers l <= 5 on all four
+    // shells. eri3/eri2 have the same guard: lP+lA+lB reaches 24 at l = 8.)
+    if (Ltot >= TERFC_DIMM) md_Ltot_overflow(Ltot);
 
     std::vector<std::array<int, 3>> compA, compB, compC, compD;
     cart_components(lA, compA);
@@ -3031,9 +3089,7 @@ bool compute_cart_eri4(const Shell &shA, const Shell &shB,
                         // only. Skipping here would leave the full Coulomb
                         // value un-subtracted (terf -> 1/r at large r, NOT
                         // negligible).
-                        if (!terf_aux(*tables, S, s, phi_over_theta, Ltot, Fn)) {
-                            continue;
-                        }
+                        if (!terf_aux(*tables, S, s, phi_over_theta, Ltot, Fn)) md_Ltot_overflow(Ltot);
                         alpha_R = phi2;
                     }
 
@@ -3375,6 +3431,7 @@ extern "C" int scf_terfc_debug_coulomb_eri3(const scf_basis *obs,
         const Shell &shPsh = dfbs->bs[shP];
         const Shell &shAsh = obs->bs[sh1];
         const Shell &shBsh = obs->bs[sh2];
+        if (eri3_Ltot_exceeds_tables(shPsh, shAsh, shBsh)) return SCF_EINVAL;
         std::vector<double> cart;
         compute_cart_eri3(shPsh, shAsh, shBsh, nullptr, 0.0, 0.0,
                           /*use_boys=*/true, cart);
@@ -3492,6 +3549,7 @@ extern "C" int scf_compute_terfc_eri3(scf_engine *eng, const scf_basis *obs,
         // terfc = coulomb - terf. Both use the identical MD machinery (same
         // ordering, prefactor, normalisation, cart->pure transform), so the
         // subtraction is valid element-by-element in the Cartesian basis.
+        if (eri3_Ltot_exceeds_tables(shPsh, shAsh, shBsh)) return SCF_EINVAL;
         std::vector<double> cart_coul, cart_terf;
         bool any_c = compute_cart_eri3(shPsh, shAsh, shBsh, nullptr,
                                        eng->omega, eng->r0, /*use_boys=*/true,
@@ -3533,6 +3591,7 @@ extern "C" int scf_compute_terfc_eri2(scf_engine *eng, const scf_basis *dfbs,
         const Shell &shPsh = dfbs->bs[shP];
         const Shell &shQsh = dfbs->bs[shQ];
 
+        if (eri2_Ltot_exceeds_tables(shPsh, shQsh)) return SCF_EINVAL;
         std::vector<double> cart_coul, cart_terf;
         bool any_c = compute_cart_eri2(shPsh, shQsh, nullptr,
                                        eng->omega, eng->r0, /*use_boys=*/true,
@@ -3611,6 +3670,7 @@ extern "C" int scf_compute_terf_eri3(scf_engine *eng, const scf_basis *obs,
 
         // terf is the SAME Cartesian block terfc subtracts from Coulomb --
         // return it directly (no combine), so terf + terfc = coulomb exactly.
+        if (eri3_Ltot_exceeds_tables(shPsh, shAsh, shBsh)) return SCF_EINVAL;
         std::vector<double> cart_terf;
         bool any_t = compute_cart_eri3(shPsh, shAsh, shBsh, eng->terfc_tables.get(),
                                        eng->omega, eng->r0, /*use_boys=*/false,
@@ -3698,6 +3758,7 @@ extern "C" int scf_compute_terf_eri2(scf_engine *eng, const scf_basis *dfbs,
         const Shell &shPsh = dfbs->bs[shP];
         const Shell &shQsh = dfbs->bs[shQ];
 
+        if (eri2_Ltot_exceeds_tables(shPsh, shQsh)) return SCF_EINVAL;
         std::vector<double> cart_terf;
         bool any_t = compute_cart_eri2(shPsh, shQsh, eng->terfc_tables.get(),
                                        eng->omega, eng->r0, /*use_boys=*/false,
@@ -3827,15 +3888,93 @@ extern "C" int scf_terf_gm_eval_matches_terf_aux(const char *table_dir,
  * `braket` selects 2-, 3- or 4-center: 2 -> xs_xs, 3 -> xs_xx, 4 -> xx_xx.
  * Loads the tables and installs the core-eval hook BEFORE the engine exists,
  * so no worker thread can race the first table load.
+ *
+ * max_L cap (#234). libint2 sizes its core evaluator for
+ * mmax = braket_rank() * max_L + deriv_order (Engine::make_core_eval_pack)
+ * and asks each primitive set for mmax = l0 + l1 + l2 + l3 + deriv_order,
+ * where the unit shells of xs_* brakets carry l = 0. This engine is
+ * deriv_order 0, so the worst mmax is braket * max_L: 2*max_L for xs_xs,
+ * 3*max_L for xs_xx, 4*max_L for xx_xx. The tables and terf_aux's series
+ * buffer hold m < TERFC_DIMM, so any max_L whose worst mmax reaches
+ * TERFC_DIMM is refused here rather than allowed to read and write out of
+ * bounds later (xx_xx: max_L <= 5, xs_xx: <= 7, xs_xs: <= 11). If derivative
+ * engines are ever built on this path the bound becomes
+ * (TERFC_DIMM - 1 - deriv_order) / braket.
+ *
+ * A max_L past what the linked libint2 was generated for
+ * (scf_libint2_eri_max_l) is refused too, with its own status, instead of
+ * surfacing as libint2's lmax_exceeded exception.
+ *
+ * `status` (may be null) receives SCF_OK on success; SCF_EINVAL for a bad
+ * braket, max_nprim < 1, omega not finite and > 0, r0 not finite, or a max_L
+ * outside [0, scf_terf_libint2_max_l]; SCF_ENOTIMPL for a max_L past
+ * scf_libint2_eri_max_l; SCF_EUNSUPPORTED if the tables cannot be loaded;
+ * SCF_EINTERNAL on any C++ exception. A non-OK status always comes with a
+ * null return.
  */
+extern "C" int scf_terf_libint2_max_l(int braket) {
+    if (braket < 2 || braket > 4) return SCF_EINVAL;
+    return (TERFC_DIMM - 1) / braket;   // deriv_order 0, see above
+}
+
+/* Largest max_L the linked libint2 can serve for a deriv-0 engine of
+ * `braket` when EVERY shell may carry it (max_L is one number for all
+ * centers). libint2 throws lmax_exceeded when max_L > LIBINT2_MAX_AM_<task>,
+ * and the terf ctor first builds the engine at the default xx_xx braket
+ * before set(bk), so the 4-center limit applies to every braket too. A
+ * center-dependent build (2.13.1's 3eri) generates the bra (aux) center up
+ * to LIBINT2_MAX_AM_<task> but the ket centers only up to
+ * LIBINT2_MAX_AM_default; a ket shell past that ASSERTS ("null build function
+ * ptr") at compute time instead of throwing, so the ket limit is the one
+ * that counts. */
+#if defined(LIBINT2_CENTER_DEPENDENT_MAX_AM_3eri) && LIBINT2_CENTER_DEPENDENT_MAX_AM_3eri
+#define FERRIC_TERF_3ERI_UNIFORM_MAX_AM std::min(LIBINT2_MAX_AM_3eri, LIBINT2_MAX_AM_default)
+#else
+#define FERRIC_TERF_3ERI_UNIFORM_MAX_AM LIBINT2_MAX_AM_3eri
+#endif
+#if defined(LIBINT2_CENTER_DEPENDENT_MAX_AM_2eri) && LIBINT2_CENTER_DEPENDENT_MAX_AM_2eri
+#define FERRIC_TERF_2ERI_UNIFORM_MAX_AM std::min(LIBINT2_MAX_AM_2eri, LIBINT2_MAX_AM_default)
+#else
+#define FERRIC_TERF_2ERI_UNIFORM_MAX_AM LIBINT2_MAX_AM_2eri
+#endif
+extern "C" int scf_libint2_eri_max_l(int braket) {
+    switch (braket) {
+        case 2: return std::min(LIBINT2_MAX_AM_eri, FERRIC_TERF_2ERI_UNIFORM_MAX_AM);
+        case 3: return std::min(LIBINT2_MAX_AM_eri, FERRIC_TERF_3ERI_UNIFORM_MAX_AM);
+        case 4: return LIBINT2_MAX_AM_eri;
+        default: return SCF_EINVAL;
+    }
+}
+
+extern "C" void scf_terf_libint2_inject_hook_fault(int on) {
+    g_terf_hook_fault.store(on != 0, std::memory_order_relaxed);
+}
+
 extern "C" scf_engine *scf_engine_create_terf_libint2(double r0, double omega,
                                                       int braket, int max_nprim,
                                                       int max_L, double precision,
-                                                      const char *table_dir) {
+                                                      const char *table_dir,
+                                                      int *status) {
+    int st_local = SCF_OK;
+    int &st = status ? *status : st_local;
+    st = SCF_OK;
+    const int max_l_allowed = scf_terf_libint2_max_l(braket);
+    if (max_l_allowed < 0 || max_nprim < 1 || max_L < 0 || max_L > max_l_allowed ||
+        !std::isfinite(omega) || !(omega > 0.0) || !std::isfinite(r0)) {
+        st = SCF_EINVAL;
+        return nullptr;
+    }
+    if (max_L > scf_libint2_eri_max_l(braket)) {
+        st = SCF_ENOTIMPL;
+        return nullptr;
+    }
     std::lock_guard<std::mutex> lock(libint_ctor_mutex);
     try {
         auto tables = get_terfc_tables(resolve_table_dir(table_dir));
-        if (!tables) return nullptr;      // tables missing => fail loudly
+        if (!tables) {                     // tables missing => fail loudly
+            st = SCF_EUNSUPPORTED;
+            return nullptr;
+        }
         libint2::os_core_ints::terf_gm_eval<double>::hook() =
             &ferric_terf_libint2_hook;
 
@@ -3844,7 +3983,7 @@ extern "C" scf_engine *scf_engine_create_terf_libint2(double r0, double omega,
             case 2: bk = libint2::BraKet::xs_xs; break;
             case 3: bk = libint2::BraKet::xs_xx; break;
             case 4: bk = libint2::BraKet::xx_xx; break;
-            default: return nullptr;
+            default: st = SCF_EINVAL; return nullptr;
         }
         // NOTE: the 6th ctor arg is Params, NOT BraKet -- passing the BraKet
         // there silently mis-constructs and the engine fails. Follow the
@@ -3852,7 +3991,10 @@ extern "C" scf_engine *scf_engine_create_terf_libint2(double r0, double omega,
         // .set(BraKet), then .set_params().
         auto *out = new (std::nothrow) scf_engine{
             Engine(libint2::Operator::terf, max_nprim, max_L, 0, precision)};
-        if (!out) return nullptr;
+        if (!out) {
+            st = SCF_EINTERNAL;
+            return nullptr;
+        }
         out->engine.set(bk);
         out->engine.set_params(std::array<double, 2>{{omega, r0}});
         // Both false: this engine is NOT the table-MD path. The compute
@@ -3865,7 +4007,37 @@ extern "C" scf_engine *scf_engine_create_terf_libint2(double r0, double omega,
         out->terfc_tables = std::move(tables);
         return out;
     } catch (...) {
+        st = SCF_EINTERNAL;
         return nullptr;
+    }
+}
+#endif
+
+#ifdef FERRIC_LIBINT2_TERF
+/* Test probe for the hook's own mmax guard (#234), the second line of defence
+ * behind the max_L refusal above. With that refusal in place libint2 can no
+ * longer hand the hook an over-deep mmax, so this calls the hook directly,
+ * exactly as libint2's terf_gm_eval would. `Gm` must hold `gm_len >= mmax+1`
+ * doubles (checked, so the probe itself never writes past the caller's
+ * buffer). Returns SCF_OK if the hook evaluated, SCF_EINVAL if it refused
+ * mmax, rho or omega (or the probe's own arguments are bad), SCF_EUNSUPPORTED
+ * if the tables cannot be loaded or the hook returned false (it must not:
+ * libint2 would zero-fill), SCF_EINTERNAL on any other exception. */
+extern "C" int scf_terf_libint2_hook_probe(const char *table_dir, double rho,
+                                           double T, int mmax, double omega,
+                                           double r0, double *Gm, int gm_len) {
+    try {
+        if (!Gm || mmax < 0 || gm_len < mmax + 1) return SCF_EINVAL;
+        if (!get_terfc_tables(resolve_table_dir(table_dir))) return SCF_EUNSUPPORTED;
+        try {
+            return ferric_terf_libint2_hook(rho, T, mmax, omega, r0, Gm)
+                       ? SCF_OK
+                       : SCF_EUNSUPPORTED;
+        } catch (const std::logic_error &) {   // out_of_range, invalid_argument
+            return SCF_EINVAL;
+        }
+    } catch (...) {
+        return SCF_EINTERNAL;
     }
 }
 #endif
@@ -3900,7 +4072,7 @@ extern "C" int scf_terf_libint2_vs_md_eri3(const scf_basis *obs,
         // --- libint2-native path ---
         scf_engine *eli = scf_engine_create_terf_libint2(
             r0, omega, 3, std::max(obs->max_nprim, dfbs->max_nprim),
-            std::max(obs->max_L, dfbs->max_L), 0.0, table_dir);
+            std::max(obs->max_L, dfbs->max_L), 0.0, table_dir, nullptr);
         if (!eli) return -102;   // libint2 terf engine ctor failed
         const int wli = scf_compute_eri3(eli, obs, dfbs, shP, sh1, sh2, li.data());
         scf_engine_destroy(eli);

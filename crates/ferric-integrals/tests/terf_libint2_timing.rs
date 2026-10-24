@@ -11,7 +11,7 @@ use ferric_core::{basis, mol::Molecule};
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::{engine::Engine, ffi, operator::Operator};
 use std::ffi::CString;
-use std::os::raw::{c_char, c_double, c_int, c_void};
+use std::os::raw::{c_char, c_int};
 use std::time::Instant;
 
 fn load1() -> f64 {
@@ -39,6 +39,7 @@ fn sweep_libint2(prep: &PreparedBasis, dfbs: &PreparedBasis, r0: f64, omega: f64
             prep.max_l().max(dfbs.max_l()),
             0.0,
             cdir.as_ptr() as *const c_char,
+            std::ptr::null_mut(),
         )
     };
     assert!(!h.is_null(), "libint2 terf engine construction failed");
