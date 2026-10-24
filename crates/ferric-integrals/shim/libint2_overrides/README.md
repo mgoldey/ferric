@@ -407,7 +407,16 @@ terf-patched prefix) still builds with the warning. The decision is `build_suppo
 committed `.patch` and checks it selects its override.
 
 The terf patch adds `terf_gm_eval`, which also goes through `GenericGmEval` with `CoreEvalScratch`. So it has the
-same per-call copy, and this override does not fix it.
+same per-call copy, and this override does not fix it. It has no S/s table-edge read: `terf_gm_eval` only calls a
+hook into ferric's own `terf_aux` (`shim/shim.cc`), whose Lagrange window is clamped to `[0, N-K]`, so no read passes
+the table end at `S == S_max` or `s == s_max`. That says nothing about the m axis: the hook path does not check
+`mmax < TERFC_DIMM` (only ferric's own quartet path does), see issue #234. A terf-patched prefix is never
+hash-matched, so it is built without the override.
+
+`tests/boys_override_ci_config.rs` pins the CI side: ci.yml's workflow-level `env:`, each wheels.yml script that
+exports `LIBINT2_PREFIX`, and the Dockerfile must set `FERRIC_REQUIRE_PATCHED_BOYS=1`, and none of them may set
+`FERRIC_ALLOW_UNPATCHED_BOYS` or `FERRIC_LIBINT2_STOCK_BOYS`. The requirement is keyed on those files rather than on
+`CI`/`GITHUB_ACTIONS`, which are also set when a downstream project's CI builds ferric's sdist against its own libint2.
 
 License: libint is LGPL-3.0-or-later. This file keeps the upstream notice and adds a modification notice.
 
