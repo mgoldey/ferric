@@ -38,3 +38,9 @@ gpu = ["ferric-core/gpu", "ferric-tensors/gpu", "ferric-mp2/gpu", "ferric-scf/gp
 # Adds the fault-injection / settings-override seams (the unshipped `dfj-pack` arm of
 # dfj_device_split).
 test-seams = ["gpu", "ferric-scf/test-seams"]
+# Forwards to the library crates' experimental THC modules.
+thc = ["ferric-scf/thc", "ferric-rpa/thc"]
+
+[[example]]
+name = "thc_k_vs_dfk_timing"
+required-features = ["thc"]
