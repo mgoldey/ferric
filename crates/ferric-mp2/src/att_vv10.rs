@@ -1119,6 +1119,7 @@ fn eval_vv10_tuples(
     grid: &[ferric_dft::grid::GridPoint],
     dens: &ferric_dft::density_on_grid::DensityGrid,
     tuples: &[Vv10Tuple],
+    fast_damping: bool,
 ) -> Vec<f64> {
     if tuples.is_empty() {
         return Vec::new();
@@ -1154,7 +1155,14 @@ fn eval_vv10_tuples(
         };
         pairs.push((ki, wi));
     }
-    ferric_dft::vv10::compute_vv10_tuple_scan(grid, dens, &kernels, &weights, &pairs)
+    ferric_dft::vv10::compute_vv10_tuple_scan_opts(
+        grid,
+        dens,
+        &kernels,
+        &weights,
+        &pairs,
+        fast_damping,
+    )
 }
 
 /// Decoupled MP2-V scan on ONE converged RHF reference: attenuated MP2 for
@@ -1188,6 +1196,36 @@ pub fn att_mp2_vv10_decoupled_scan(
     arms: &[AttVv10ScanArm],
     tuples: &[Vv10Tuple],
     include_coulomb_mp2: bool,
+) -> Result<AttVv10DecoupledScanResult, FerricError> {
+    att_mp2_vv10_decoupled_scan_opts(
+        mol,
+        obs,
+        obs_bs,
+        dfbs,
+        rhf,
+        base,
+        arms,
+        tuples,
+        include_coulomb_mp2,
+        false,
+    )
+}
+
+/// [`att_mp2_vv10_decoupled_scan`] with the opt-in `fast_damping`: the VV10
+/// damping weights are tabulated (4-point Lagrange; |dE_nl| <= 1e-10 Ha is the
+/// registered gate, NOT bit-identical). `false` is the exact path.
+#[allow(clippy::too_many_arguments)]
+pub fn att_mp2_vv10_decoupled_scan_opts(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    obs_bs: &ferric_core::basis::BasisSet,
+    dfbs: &PreparedBasis,
+    rhf: &ScfResult,
+    base: &AttVv10Config,
+    arms: &[AttVv10ScanArm],
+    tuples: &[Vv10Tuple],
+    include_coulomb_mp2: bool,
+    fast_damping: bool,
 ) -> Result<AttVv10DecoupledScanResult, FerricError> {
     let who = "att_mp2_vv10_decoupled_scan";
     if !matches!(rhf.spin, Spin::Restricted) {
@@ -1254,7 +1292,7 @@ pub fn att_mp2_vv10_decoupled_scan(
             .map_err(|e| FerricError::General(format!("{who} AO grid evaluation: {e:?}")))?;
         let dens =
             ferric_dft::density_on_grid::eval_density_closed(rhf.density_total(), &chi, &dchi);
-        eval_vv10_tuples(&grid, &dens, tuples)
+        eval_vv10_tuples(&grid, &dens, tuples, fast_damping)
     };
     Ok(AttVv10DecoupledScanResult {
         e_hf: rhf.energy,
@@ -1387,6 +1425,16 @@ impl Mp2vSession {
     /// E_nl for every tuple from the stored grid state (CHEAP, one shared
     /// pair sum, bit-identical per tuple to a separate [`att_mp2_vv10`]).
     pub fn vv10(&self, tuples: &[Vv10Tuple]) -> Result<Vec<f64>, FerricError> {
+        self.vv10_opts(tuples, false)
+    }
+
+    /// [`Mp2vSession::vv10`] with the opt-in tabulated damping (`fast_damping`;
+    /// gate |dE_nl| <= 1e-10 Ha, NOT bit-identical; `false` = exact path).
+    pub fn vv10_opts(
+        &self,
+        tuples: &[Vv10Tuple],
+        fast_damping: bool,
+    ) -> Result<Vec<f64>, FerricError> {
         for t in tuples {
             if !(t.b > 0.0 && t.b.is_finite()) || !(t.c >= 0.0 && t.c.is_finite()) {
                 return Err(FerricError::General(format!(
@@ -1396,7 +1444,12 @@ impl Mp2vSession {
             }
             t.damping.validate("Mp2vSession::vv10")?;
         }
-        Ok(eval_vv10_tuples(&self.grid, &self.dens, tuples))
+        Ok(eval_vv10_tuples(
+            &self.grid,
+            &self.dens,
+            tuples,
+            fast_damping,
+        ))
     }
 
     /// The published LOCKSTEP tuple for an arm: Eq. 11 sharing the arm's

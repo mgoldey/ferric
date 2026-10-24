@@ -704,3 +704,106 @@ no seed on an edge):
 Grid decision: production NLC grid (50, 50) (F.11). Timing and cost: F.14. Session memory 46-92 MB per dimer fragment. Not done this turn: the 5 unpruned
 (50, 194) rescorings beyond #2 and #5 at f = 0.9/1.0, a (75, 302)/(99, 302) corner, CP-fragment grid checks, any step-like weight (s >= 8) grid check,
 the Table-1 anchor A1 (needs S66 at aTZ), 5 of the 12 planned planted seeds.
+
+
+---
+
+# Addendum G: Stage 0b (tabulated VV10 damping) and Stage 1 launch, pre-registered BEFORE the stage-1 production run
+
+Written after the stage-0b gate/cost measurements (section G.1, MEASURED) and before any stage-1 fit. Everything in G.2-G.6 is a rule or a prediction; nothing in them
+has been looked at in data.
+
+## G.1 Stage 0b: tabulated damping gate and cost split (MEASURED, `fastdamp_gate.py`, `results/fastdamp_gate_adz.json`)
+
+Opt-in `fast_damping` (default OFF) is plumbed through `compute_vv10_tuple_scan_opts` -> `att_mp2_vv10_decoupled_scan_opts` ->
+`Mp2vSession.vv10(tuples, fast_damping=)` / `run_mp2_v_decoupled_scan(..., fast_damping=)` -> `session.Pool(fast_damping=)` (cache keys carry `|fast`, so exact and
+tabulated values can never mix). Table: 4-point Lagrange on a spacing `min(0.01 Bohr, width/250)` (width = r0*sqrt2 linked, 1/omega decoupled), so a sharp seam is
+resolved at the same relative level as the linked one; beyond `r0 + 5 width` the weight is 1 (Eq. 11 bit-exactly; `terf` to <= 1e-12). The bit-exact skip of #372 is
+already active in the exact path of the tuple scan (same `Vv10Damping::factor_from_r2`).
+
+GATE (pre-registered: |E_nl(tabulated) - E_nl(exact erf)| <= 1e-10 Ha, every form, linked seam and r0*omega in {2, 4, 8}):
+water dimer and methane dimer, aDZ, NLC (50, 50), forms eq11/terf/bare, r0 in {1.0, 1.35} A, b in {11, 6}, C = 0.0089 (33 tuples each).
+
+| system | pts | max abs error (Ha) | worst relative | worst seam | gate |
+|---|---|---|---|---|---|
+| A24 #2 water dimer | 15000 | 4.5e-14 | 4.9e-13 | eq11 r0*omega=2 | PASS (2000x margin) |
+| A24 #19 methane dimer | 25000 | 4.7e-14 | 5.5e-13 | eq11 linked | PASS (2000x margin) |
+
+The error decreases toward sharp seams (eq11 s=8: 1.5e-16) because the spacing refines with the width. No seam had to be excluded: the tabulated damping is used at
+ALL seams of the search box. Rust side: `fast_damping_tuple_scan_matches_exact` asserts the gate on a synthetic density for both forms at linked/2/4/8 and that
+`fast_damping=false` is byte-identical to the plain scan; MUTATION-CHECKED (table spacing x25 coarser -> the test fails with 3.3e-9). CP-fragment and aTZ grids were not
+re-checked (same code path).
+
+COST SPLIT, RE-MEASURED from scratch (same fragments and settings as the earlier table, exact and tabulated interleaved in one process, two repeats each, load averages
+recorded in the JSON). The BOX IS STILL LOADED by other sessions (load average 11-19 during the runs), so absolute times remain upper bounds; interleaved ratios are the
+trustworthy part. The earlier cost table (F.14: 31 s / 86 s per damping weight, attMP2 1.8 / 3.7 s, stage estimates 42 h / 9 d / 30 d) was taken on a thermally throttled CPU
+(fan fixed 2026-10-10) and PREDATES the fan fix; it is superseded by this table.
+
+| fragment | NLC pts | pair sum 1 seam x 1 b: OLD (throttled) | now exact erf | now tabulated | 1 seam x 9 b exact / tab. | 5 seams x 9 b exact / tab. | bare kernel, 1 b |
+|---|---|---|---|---|---|---|---|
+| A24 #2 | 15000 | 31 s | 12.5 s | 3.0 s (4.2x) | 15.4 / 6.2 s (2.5x) | 44.7 / 15.6 s (2.9x) | 1.8 s |
+| A24 #19 | 25000 | 86 s | 37 s | 6.9 s (5.4x) | 48 / 20.5 s (2.3x) | 125-181 / 54-69 s (2.2-3.3x) | 6.5 s |
+
+Reading (MEASURED, single runs, loaded box): the exact path is already ~2.5x faster than the throttled numbers (fan fix + #372's bit-exact skip together; not separable here).
+Tabulating removes most of the remaining erf cost: 4-5x for a single kernel, 2.3-2.9x for the 9-b Chebyshev batches the search actually issues, because the pair sum is now
+dominated by the per-(b, C) denominators (9 b cost ~2x one b at a seam). attMP2 per seam: 1.4 s (#19) to 4.5 s (#2, includes first-call warm-up); no longer negligible.
+
+RE-DERIVED stage estimates (model, UNVERIFIED until the first stage-1 nodes are timed; dimer pair-sum coefficient 3.1 s per seam-node at 15000 pts, i.e. 0.0138 s per kpoint^2;
+monomer fragments 1/4 of a dimer; attMP2 ~3 s per dimer + 1 s per monomer; loaded box): per (r0, s) node over the 8 stage-1 systems and one convention ~55 s pair sums + ~55 s MP2
+= ~110 s; 80 nodes ~2.5 h per convention, ~5 h for CP + non-CP (earlier estimate 42 h). Stage 2 (24 systems, N~18, non-CP only): ~23 min/node, ~1 day (earlier 9 days). Stage 4
+(66 systems, non-CP): ~80 min/node, ~4 days (earlier 30 days). Stage 3 (aTZ, small systems): MP2 dominates (~10-15x aDZ), ~1-2 days. These will be replaced by the measured
+per-node cost reported at the end of stage 1.
+
+## G.2 The stage-1 system subset (fixed before launch)
+
+A24 systems {2, 4, 5, 6, 8, 19, 20, 24}, 4-10 atoms (mean 7.1; all fragment sessions, CP + non-CP, ~2 GB).
+
+| class (analyze.py A24_CLASS) | systems | why |
+|---|---|---|
+| hydrogen-bonded (3) | #2 water dimer (-5.014), #4 HF dimer (-4.572), #5 ammonia dimer (-3.157) | the three smallest H-bonded dimers; span 1.9 kcal/mol; #4 (4 atoms) is the cheapest set |
+| mixed (2) | #6 CH4-HF (-1.679), #8 CH4-H2O (-0.672) | polar + dispersion; the two smallest |
+| dispersion (2) | #19 CH4 dimer (-0.538), #20 CH4-Ar (-0.408) | pure dispersion; #20 exercises Ar (frozen core 5) |
+| repulsive stack (1) | #24 C2H4 dimer (+1.075) | the only positive-energy member small enough; tests that the fit does not over-bind |
+
+Class balance 3/2/2/1 against 6/9/6/3 in A24 (the smallest members of each class). The stack class has ONE member, so its class RMSD is a single point and is reported as such.
+Monomer-formula overlap with S66 (already analysed: A24 #2, 12, 24): #2 and #24 of the subset are in it, the other six are not. Overlap with S22 (A24 #2, 5, 14, 19, 22, 23): #2, 5,
+19 -- those S22 complexes are already excluded from the BLIND set (F.4). Stage 1 trains on these 8 only and touches no S66/S22 system, so no hold-out is consumed. No cross-validation
+at n = 8: ALL numbers are in-sample and are reported as such; the purpose of stage 1 is mechanics, identifiability and cost, not a generalisation claim.
+
+Fixed settings (Addendum F): primary arm lockstep Eq. 11 (VV10 damping shares (r0, s)), C = 0.0089 fixed, b free; the F.5 adaptive rule with node cap 80 PER convention and the box wall
+at s = 8; NLC grid (50, 50); aDZ (aug-cc-pVDZ, aug-cc-pVDZ-rifit); frozen core H/He 0, Li-Ne 1, Na-Ar 5 (Ar = 5); RHF densities, non-self-consistent VV10; tabulated damping ON (gate G.1);
+both conventions (non-CP, CP), each a FULL independent search sharing the evaluation cache. Gauss-Newton sigma_noise = 0.055 kcal/mol (F.8).
+
+## G.3 Predictions (stated before data)
+
+Physics hypothesis P: the paper's valley carries over to aDZ on these 8 systems. Null/artifact hypothesis N: the 8-point, 3-parameter problem is under-determined and the optimum is
+set by one or two systems.
+1. VALLEY (anchor A1-lite, G.4): on the linked line, the optimal b at r0 = 0.85, 0.90, 0.95, 1.00, 1.05, 1.10 A INCREASES monotonically with r0 in both conventions; the log-log slope
+   d ln b / d ln r0 lies in [1.2, 4.0] (paper Table 1: 2.31 at aTZ/S66); the RMSD varies by < 0.06 kcal/mol across the six r0 (paper: 0.013). Under N the slope is unconstrained or
+   negative and the RMSD varies. Monotone-and-in-range separates P from N (a random b ordering is monotone with probability 1/720).
+2. Position: full-refit r0 in [0.8, 1.2] A and b in [6, 20]; s NOT at the wall s = 8 (a minimum at the wall is reported as "edge, not found", not as a result).
+3. CP vs non-CP: ln(r0_CP / r0_nonCP) > 0 (CP removes the BSSE overbinding that a smaller r0 absorbs; same sign as plain attMP2, 1.75 CP vs 1.35 non-CP A). Refuted if <= 0 with the shift
+   larger than its Gauss-Newton sigma.
+4. Curvature: the softest Gauss-Newton direction has same-sign (ln r0, ln b) components both > 0.3, ratio ~2.3, and |ln s| component < 0.5 (the paper's valley). A softest direction dominated by
+   ln b alone or ln s would mean the 8-system data do not constrain r0 (the planted dry run found exactly that on a synthetic surface).
+5. In-sample nesting (arithmetic, not a finding): RMSD(full refit) <= RMSD(b-only refit at the published seam) <= RMSD(published, b = 11); full-vs-b-only gain expected < 0.03 kcal/mol; a larger
+   in-sample gain is NOT evidence of generalisation.
+6. Published parameters at a sharp seam, unrefit (s = 4, 8; r0 = 1.0, b = 11): clearly worse than linked (a sharp terfc roughly doubles E_corr, measured earlier): the control showing b must move with s.
+
+## G.4 Anchor A1-lite (what stage 1 can and cannot claim)
+
+Run on the linked line r0*omega = 1/sqrt2 at the paper's six r0 on THESE 8 systems at aDZ: optimal b per r0 (1-D search, same rule as the main search) compared with the paper's b in direction
+and slope only. This is NOT anchor A1: A1 (S66, non-CP, aTZ, frozen core, the six Table-1 RMSDs within 0.03 kcal/mol and b* within 0.5) is a LATER stage and is NOT claimed here. A1-lite can
+fail (non-monotone b, slope outside [1.2, 4.0]); if it fails, stage 1 stops and reports.
+
+## G.5 Run protocol
+
+`stage1.py`, detached (`nohup setsid nice -n 10 scripts/ferric-limited --max=12G --high=10G`, RAYON_NUM_THREADS = 4, OPENBLAS_NUM_THREADS = 1, one production process). Every attMP2 and E_nl is cached to
+`results/stage1_cache_adz.json` keyed by (fragment, params) (uncommitted bulk); `results/stage1/heartbeat.json` and `stage1.log` are rewritten after every node (nodes done / cap, ETA upper bound,
+best RMSD so far, load); per-node surfaces `nodes_{ncp,cp}.json` (r0, s, b*, RMSD, per-system errors, b-edge flags); per-phase JSONs (search, valley, curv, base, summary). Re-running the same
+command resumes. Interim reports at the first node batch and at ~50% of the nodes.
+
+## G.6 Stop conditions (report immediately, no further stage)
+
+(a) the A1-lite valley check fails (G.3.1); (b) the optimum of either convention is on a box edge (r0, s or b) or the search is budget-limited at 80 nodes; (c) the Gauss-Newton matrix reports an
+undetermined parameter (inf sigma) at the optimum; (d) the in-sample ordering of G.3.5 is violated (a harness error, not a result); (e) any test of the code in use fails after launch.

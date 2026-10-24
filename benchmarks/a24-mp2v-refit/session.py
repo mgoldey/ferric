@@ -160,10 +160,12 @@ class Fragment:
         return v
 
     def nl(self, tuples):
-        keys = [f"{self.name}|nl|{_nl_key(t)}" for t in tuples]
+        fast = self.pool.fast_damping
+        tag = "|fast" if fast else ""
+        keys = [f"{self.name}|nl|{_nl_key(t)}{tag}" for t in tuples]
         miss = [i for i, k in enumerate(keys) if self.pool.cache.get(k) is None]
         if miss:
-            vals = self.session().vv10([tuples[i] for i in miss])
+            vals = self.session().vv10([tuples[i] for i in miss], fast_damping=fast)
             self.n_nl_batches += 1
             for i, v in zip(miss, vals):
                 self.pool.cache.put(keys[i], v)
@@ -181,7 +183,9 @@ class Pool:
         budget_gb=4.0,
         sets=None,
         coulomb=False,
+        fast_damping=False,
     ):
+        self.fast_damping = fast_damping
         self.basis, self.nlc, self.budget = basis, tuple(nlc), budget_gb * 2**30
         self.sets = sets or load_sets()
         self.cache = Cache(
@@ -445,7 +449,7 @@ def node(pool, ids, r0, s, cp, c=0.0089, vv=None, rules=RULES):
     return d
 
 
-def adaptive_search(pool, ids, cp, rules=RULES, c=0.0089, log=print):
+def adaptive_search(pool, ids, cp, rules=RULES, c=0.0089, log=print, on_node=None):
     """Coarse (r0, s) grid -> extension if on the box edge -> local 3x3 refinement
     around the best `n_basins` nodes with halving steps. Returns map + optimum."""
     nodes = {}  # (round(u,6), round(v,6)) -> dict
@@ -462,6 +466,8 @@ def adaptive_search(pool, ids, cp, rules=RULES, c=0.0089, log=print):
             if not (lo[0] <= r0 <= lo[1] and hi[0] <= _sval(s) <= hi[1]):
                 return None
             nodes[k] = node(pool, ids, r0, s, cp, c, None, rules)
+            if on_node is not None:
+                on_node(nodes[k], len(nodes))
             log(
                 f"node r0={r0:.3f} s={_sval(s):.3f} b*={nodes[k]['b']:.2f} rmsd={nodes[k]['rmsd']:.4f}"
             )

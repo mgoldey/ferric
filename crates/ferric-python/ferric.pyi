@@ -1151,8 +1151,13 @@ class Mp2vSession:
         """Plain Coulomb RI-MP2 correlation energy (same reference/aux/core)."""
         ...
 
-    def vv10(self, tuples: list[tuple[float, float, str, float, float | None]]) -> list[float]:
-        """E_nl per ``(b, C, form, r0_vv, omega_vv)``; form eq11|terf|bare."""
+    def vv10(
+        self,
+        tuples: list[tuple[float, float, str, float, float | None]],
+        fast_damping: bool = False,
+    ) -> list[float]:
+        """E_nl per ``(b, C, form, r0_vv, omega_vv)``; form eq11|terf|bare.
+        ``fast_damping`` tabulates the damping weights (opt-in; |dE_nl| <= 1e-10 Ha)."""
         ...
 
     def total(
@@ -3248,12 +3253,14 @@ def run_mp2_v_decoupled_scan(
     k_builder: str | None = None,
     memory_budget_gb: float | None = None,
     include_coulomb_mp2: bool = False,
+    fast_damping: bool = False,
 ) -> dict[str, Any]:
     """DECOUPLED MP2-V scan (explicit opt-in; research). ``arms`` =
     ``(r0_mp2_A, omega_mp2_invA_or_None)`` (expensive: one MP2 each);
     ``tuples`` = ``(b, C, form, r0_vv_A, omega_vv_invA_or_None)`` with form
     ``"eq11" | "terf" | "bare"`` (cheap: one shared VV10 pair sum). Returns
-    ``vv10_e_nl`` per tuple and ``arms[a]["att_mp2_corr"]``."""
+    ``vv10_e_nl`` per tuple and ``arms[a]["att_mp2_corr"]``. ``fast_damping``
+    tabulates the damping weights (opt-in; gate |dE_nl| <= 1e-10 Ha)."""
     ...
 
 def run_rs_mp2_rpa(

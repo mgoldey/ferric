@@ -22,8 +22,8 @@ use ferric_core::parallel::ParallelContext;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_mp2::att_vv10::{
-    att_mp2_vv10, att_mp2_vv10_decoupled_scan, att_mp2_vv10_scan, AttVv10Attenuator, AttVv10Config,
-    AttVv10ScanArm, AttVv10SpinComponents, Mp2vSession, Vv10Decoupling, Vv10Tuple,
+    att_mp2_vv10, att_mp2_vv10_decoupled_scan_opts, att_mp2_vv10_scan, AttVv10Attenuator,
+    AttVv10Config, AttVv10ScanArm, AttVv10SpinComponents, Mp2vSession, Vv10Decoupling, Vv10Tuple,
 };
 use ferric_mp2::attenuated::{attenuated_ri_mp2, AttenuatedMp2Config};
 use ferric_mp2::double_hybrid::{mp2_double_hybrid, DoubleHybridKind};
@@ -7702,8 +7702,17 @@ impl PyMp2vSession {
 
     /// E_nl per `(b, C, form, r0_vv [A], omega_vv [A^-1] or None)` tuple from
     /// the stored grid state; `form` is "eq11" | "terf" | "bare".
-    fn vv10(&self, tuples: Vec<(f64, f64, String, f64, Option<f64>)>) -> PyResult<Vec<f64>> {
-        self.inner.vv10(&py_tuples(&tuples)?).map_err(make_err)
+    /// `fast_damping=True` tabulates the damping weights (opt-in, gate
+    /// |dE_nl| <= 1e-10 Ha, not bit-identical; default False = exact erf).
+    #[pyo3(signature = (tuples, fast_damping=false))]
+    fn vv10(
+        &self,
+        tuples: Vec<(f64, f64, String, f64, Option<f64>)>,
+        fast_damping: bool,
+    ) -> PyResult<Vec<f64>> {
+        self.inner
+            .vv10_opts(&py_tuples(&tuples)?, fast_damping)
+            .map_err(make_err)
     }
 
     /// Published LOCKSTEP total at `(r0, omega, b, C)` (Eq. 11 shares the
@@ -7743,8 +7752,10 @@ impl PyMp2vSession {
 /// mp2_coulomb_corr, arms: [{r0, omega, att_mp2_corr, e_os, e_ss}], vv10_e_nl:
 /// [one per tuple]}`; the model energy for any pairing is `rhf_energy +
 /// arms[a].att_mp2_corr + vv10_e_nl[t]`. Closed shell, terfc only.
+/// `fast_damping=True` tabulates the damping weights (opt-in; gate
+/// |dE_nl| <= 1e-10 Ha; NOT bit-identical; default False = exact erf).
 #[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, arms, tuples, frozen_core=None, nlc_grid=None, df_j_aux=None, df_k_aux=None, k_builder=None, memory_budget_gb=None, include_coulomb_mp2=false))]
+#[pyo3(signature = (mol, basis_set, auxbasis, arms, tuples, frozen_core=None, nlc_grid=None, df_j_aux=None, df_k_aux=None, k_builder=None, memory_budget_gb=None, include_coulomb_mp2=false, fast_damping=false))]
 #[allow(clippy::too_many_arguments)]
 fn run_mp2_v_decoupled_scan(
     py: Python<'_>,
@@ -7760,6 +7771,7 @@ fn run_mp2_v_decoupled_scan(
     k_builder: Option<&str>,
     memory_budget_gb: Option<f64>,
     include_coulomb_mp2: bool,
+    fast_damping: bool,
 ) -> PyResult<Py<pyo3::types::PyDict>> {
     use ferric_dft::vv10::Vv10Form;
     use pyo3::types::{PyDict, PyList};
@@ -7802,7 +7814,7 @@ fn run_mp2_v_decoupled_scan(
             omega: w.map(|w| w * ferric_mp2::attenuated::BOHR_INV_PER_ANG_INV),
         })
         .collect();
-    let r = att_mp2_vv10_decoupled_scan(
+    let r = att_mp2_vv10_decoupled_scan_opts(
         &mol.inner,
         &prep,
         &basis_set.inner,
@@ -7812,6 +7824,7 @@ fn run_mp2_v_decoupled_scan(
         &scan_arms,
         &vt,
         include_coulomb_mp2,
+        fast_damping,
     )
     .map_err(make_err)?;
     let out = PyDict::new(py);

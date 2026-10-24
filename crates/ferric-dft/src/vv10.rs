@@ -345,7 +345,18 @@ struct DampTable {
 }
 
 impl DampTable {
+    /// Largest node spacing (Bohr). Narrow seams get a proportionally finer
+    /// spacing (see [`DampTable::spacing`]) so a sharp terfc stays resolved.
     const H: f64 = 0.01;
+
+    /// Node spacing for a seam of width `width` (Bohr): `min(H, width / 250)`.
+    /// At the linked width of any r0 >= ~1 A this is exactly `H`, so the
+    /// historical table is unchanged there; a sharp seam (width = r0 / s) gets
+    /// a spacing that keeps the 4-point Lagrange error at the same relative
+    /// level (the error scales as (h / width)^4).
+    fn spacing(width: f64) -> f64 {
+        Self::H.min(width / 250.0)
+    }
 
     fn build(d: &Vv10Damping) -> Self {
         let (r0, om) = match *d {
@@ -355,18 +366,25 @@ impl DampTable {
             } => (r0_bohr, omega_bohr_inv),
             Vv10Damping::None => unreachable!("table built for Terfc only"),
         };
+        Self::build_with(r0, om, |r| {
+            let tc = terfc_dispatch(r, r0, om);
+            1.0 - tc * tc
+        })
+    }
+
+    /// Table of an arbitrary seam-weight `f(r)` that tends to 1 beyond
+    /// `damping_r_one(r0, omega)` (Eq. 11 exactly; `terf^power` to <= 1e-12).
+    fn build_with(r0: f64, om: Option<f64>, f: impl Fn(f64) -> f64) -> Self {
+        let width = match om {
+            None => r0 * std::f64::consts::SQRT_2,
+            Some(w) => 1.0 / w,
+        };
+        let h = Self::spacing(width);
         let r_one = damping_r_one(r0, om);
-        let n = (r_one / Self::H).ceil() as usize + 4;
-        // Direct evaluation at the nodes via the exact (non-skipping) formula.
-        let vals = (0..n)
-            .map(|k| {
-                let r = (k as f64 - 1.0) * Self::H;
-                let tc = terfc_dispatch(r, r0, om);
-                1.0 - tc * tc
-            })
-            .collect();
+        let n = (r_one / h).ceil() as usize + 4;
+        let vals = (0..n).map(|k| f((k as f64 - 1.0) * h)).collect();
         DampTable {
-            inv_h: 1.0 / Self::H,
+            inv_h: 1.0 / h,
             r_one2: r_one * r_one,
             vals,
         }
@@ -1338,6 +1356,43 @@ pub fn compute_vv10_tuple_scan(
     weights: &[Vv10Weight],
     pairs: &[(usize, usize)],
 ) -> Vec<f64> {
+    compute_vv10_tuple_scan_opts(grid, dens, kernels, weights, pairs, false)
+}
+
+/// [`compute_vv10_tuple_scan`] with the opt-in `fast_damping`: every UNIQUE
+/// seam weight (Eq. 11 and `Terf`) is evaluated by 4-point Lagrange
+/// interpolation on a precomputed table instead of two `erf` per pair (the
+/// dominant per-pair cost). NOT bit-identical to the exact path; the gate is
+/// `|dE_nl| <= 1e-10 Ha` (see `fast_damping_tuple_scan_matches_exact`), and
+/// the table spacing refines with the seam width (`DampTable::spacing`).
+/// `fast_damping = false` is byte-identical to [`compute_vv10_tuple_scan`].
+pub fn compute_vv10_tuple_scan_opts(
+    grid: &[GridPoint],
+    dens: &DensityGrid,
+    kernels: &[(f64, f64)],
+    weights: &[Vv10Weight],
+    pairs: &[(usize, usize)],
+    fast_damping: bool,
+) -> Vec<f64> {
+    let tables: Vec<Option<DampTable>> = weights
+        .iter()
+        .map(|w| {
+            if !fast_damping {
+                return None;
+            }
+            match *w {
+                Vv10Weight::Damping(d @ Vv10Damping::Terfc { .. }) => Some(DampTable::build(&d)),
+                Vv10Weight::TerfPower {
+                    r0_bohr,
+                    omega_bohr_inv,
+                    power,
+                } => Some(DampTable::build_with(r0_bohr, omega_bohr_inv, |r| {
+                    (1.0 - terfc_dispatch(r, r0_bohr, omega_bohr_inv)).powi(power)
+                })),
+                Vv10Weight::Damping(Vv10Damping::None) => None,
+            }
+        })
+        .collect();
     let bs: Vec<f64> = kernels.iter().map(|k| k.0).collect();
     let mut c_vals: Vec<f64> = Vec::new();
     let c_idx: Vec<usize> = kernels
@@ -1423,6 +1478,8 @@ pub fn compute_vv10_tuple_scan(
             for (a, d) in weights.iter().enumerate() {
                 fac[a] = if d.is_identity() {
                     rho_w[p]
+                } else if let Some(t) = &tables[a] {
+                    rho_w[p] * t.eval(r2)
                 } else {
                     rho_w[p] * d.factor_from_r2(r2)
                 };
@@ -2260,6 +2317,44 @@ mod cutoff_tests {
             e_tail < 0.5 * e_cut,
             "monopole must recover most of the tail"
         );
+    }
+
+    /// Pre-registered gate for the tabulated damping in the tuple scan:
+    /// |E_fast - E_exact| <= 1e-10 Ha for every form and for the linked seam
+    /// and r0*omega in {2, 4, 8}; `fast_damping = false` is byte-identical to
+    /// the plain scan. Mutation-checked: a 25x coarser table spacing fails it.
+    #[test]
+    fn fast_damping_tuple_scan_matches_exact() {
+        let mol = Molecule::parse_xyz(
+            "3\nwater\nO 0.0 0.0 0.1173\nH 0.0 0.7572 -0.4692\nH 0.0 -0.7572 -0.4692\n",
+            0,
+            1,
+        )
+        .unwrap();
+        let (_p, grid, dens) = synthetic_density_on_grid(&mol, 16, 14);
+        let r0 = ferric_core::units::ANGSTROM_TO_BOHR;
+        let mut weights = vec![Vv10Form::Bare.weight(r0, None)];
+        for s in [None, Some(2.0), Some(4.0), Some(8.0)] {
+            let om = s.map(|s: f64| s / r0);
+            weights.push(Vv10Form::Eq11.weight(r0, om));
+            weights.push(Vv10Form::Terf.weight(r0, om));
+        }
+        let kernels = [(11.0, 0.0089), (6.0, 0.0089)];
+        let pairs: Vec<(usize, usize)> = (0..weights.len())
+            .flat_map(|a| (0..kernels.len()).map(move |k| (k, a)))
+            .collect();
+        let exact = compute_vv10_tuple_scan_opts(&grid, &dens, &kernels, &weights, &pairs, false);
+        let plain = compute_vv10_tuple_scan(&grid, &dens, &kernels, &weights, &pairs);
+        for (a, b) in exact.iter().zip(&plain) {
+            assert_eq!(a.to_bits(), b.to_bits());
+        }
+        let fast = compute_vv10_tuple_scan_opts(&grid, &dens, &kernels, &weights, &pairs, true);
+        let worst = exact
+            .iter()
+            .zip(&fast)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f64, f64::max);
+        assert!(worst <= 1e-10, "worst |dE_nl| = {worst:e}");
     }
 
     /// EXACTNESS ANCHOR for the general (kernel, weight) TUPLE scan used by the
