@@ -2435,6 +2435,9 @@ inline bool terf_gm_eval_impl(const TerfcTableSet &set, double rho, double T,
  * happen before threads fan out -- scf_engine_create_terf_libint2 forces the
  * load at engine-construction time for exactly that reason.
  */
+// Test-only fault injection (scf_terf_libint2_inject_hook_fault).
+std::atomic<bool> g_terf_hook_fault{false};
+
 bool ferric_terf_libint2_hook(double rho, double T, int mmax, double omega,
                               double r0, double *Gm) {
     // Second line of defence behind the max_L refusal in
@@ -2446,14 +2449,23 @@ bool ferric_terf_libint2_hook(double rho, double T, int mmax, double omega,
     // inside libint2's compute call, under the try/catch of every
     // scf_compute_* entry point, so this surfaces as SCF_EINTERNAL and never
     // unwinds across the C ABI.
+    //
+    // The same applies to every other way this hook can fail: a false return
+    // is a silent zero, so each failure throws.
+    if (g_terf_hook_fault.load(std::memory_order_relaxed)) {
+        throw std::runtime_error("terf libint2 hook: injected fault (test only)");
+    }
     if (mmax < 0 || mmax >= TERFC_DIMM) {
         throw std::out_of_range(
             "terf libint2 hook: mmax " + std::to_string(mmax) +
             " is outside the table depth [0, " + std::to_string(TERFC_DIMM) + ")");
     }
     auto set = g_terfc_tables;          // shared_ptr copy: no torn read
-    if (!set) return false;
-    if (!terf_gm_eval_impl(*set, rho, T, mmax, omega, r0, Gm)) return false;
+    if (!set) throw std::runtime_error("terf libint2 hook: terf tables not loaded");
+    if (!terf_gm_eval_impl(*set, rho, T, mmax, omega, r0, Gm)) {
+        // terf_gm_eval_impl only declines rho <= 0 or omega <= 0 (or NaN).
+        throw std::invalid_argument("terf libint2 hook: needs rho > 0 and omega > 0");
+    }
 
     /* PREFACTOR CONVENTION -- the reason the first cut was ~200x off.
      *
@@ -3858,16 +3870,57 @@ extern "C" int scf_terf_gm_eval_matches_terf_aux(const char *table_dir,
  * 3*max_L for xs_xx, 4*max_L for xx_xx. The tables and terf_aux's series
  * buffer hold m < TERFC_DIMM, so any max_L whose worst mmax reaches
  * TERFC_DIMM is refused here rather than allowed to read and write out of
- * bounds later (xx_xx: max_L <= 5, xs_xx: <= 7, xs_xs: <= 11).
+ * bounds later (xx_xx: max_L <= 5, xs_xx: <= 7, xs_xs: <= 11). If derivative
+ * engines are ever built on this path the bound becomes
+ * (TERFC_DIMM - 1 - deriv_order) / braket.
  *
- * `status` (may be null) receives SCF_OK on success, SCF_EINVAL for a bad
- * braket / negative max_nprim / a max_L outside [0, max] as above,
- * SCF_EUNSUPPORTED if the tables cannot be loaded, SCF_EINTERNAL on any C++
- * exception. A non-OK status always comes with a null return.
+ * A max_L past what the linked libint2 was generated for
+ * (scf_libint2_eri_max_l) is refused too, with its own status, instead of
+ * surfacing as libint2's lmax_exceeded exception.
+ *
+ * `status` (may be null) receives SCF_OK on success; SCF_EINVAL for a bad
+ * braket, max_nprim < 1, omega not finite and > 0, r0 not finite, or a max_L
+ * outside [0, scf_terf_libint2_max_l]; SCF_ENOTIMPL for a max_L past
+ * scf_libint2_eri_max_l; SCF_EUNSUPPORTED if the tables cannot be loaded;
+ * SCF_EINTERNAL on any C++ exception. A non-OK status always comes with a
+ * null return.
  */
 extern "C" int scf_terf_libint2_max_l(int braket) {
     if (braket < 2 || braket > 4) return SCF_EINVAL;
-    return (TERFC_DIMM - 1) / braket;
+    return (TERFC_DIMM - 1) / braket;   // deriv_order 0, see above
+}
+
+/* Largest max_L the linked libint2 can serve for a deriv-0 engine of
+ * `braket` when EVERY shell may carry it (max_L is one number for all
+ * centers). libint2 throws lmax_exceeded when max_L > LIBINT2_MAX_AM_<task>,
+ * and the terf ctor first builds the engine at the default xx_xx braket
+ * before set(bk), so the 4-center limit applies to every braket too. A
+ * center-dependent build (2.13.1's 3eri) generates the bra (aux) center up
+ * to LIBINT2_MAX_AM_<task> but the ket centers only up to
+ * LIBINT2_MAX_AM_default; a ket shell past that ASSERTS ("null build function
+ * ptr") at compute time instead of throwing, so the ket limit is the one
+ * that counts. */
+#if defined(LIBINT2_CENTER_DEPENDENT_MAX_AM_3eri) && LIBINT2_CENTER_DEPENDENT_MAX_AM_3eri
+#define FERRIC_TERF_3ERI_UNIFORM_MAX_AM std::min(LIBINT2_MAX_AM_3eri, LIBINT2_MAX_AM_default)
+#else
+#define FERRIC_TERF_3ERI_UNIFORM_MAX_AM LIBINT2_MAX_AM_3eri
+#endif
+#if defined(LIBINT2_CENTER_DEPENDENT_MAX_AM_2eri) && LIBINT2_CENTER_DEPENDENT_MAX_AM_2eri
+#define FERRIC_TERF_2ERI_UNIFORM_MAX_AM std::min(LIBINT2_MAX_AM_2eri, LIBINT2_MAX_AM_default)
+#else
+#define FERRIC_TERF_2ERI_UNIFORM_MAX_AM LIBINT2_MAX_AM_2eri
+#endif
+extern "C" int scf_libint2_eri_max_l(int braket) {
+    switch (braket) {
+        case 2: return std::min(LIBINT2_MAX_AM_eri, FERRIC_TERF_2ERI_UNIFORM_MAX_AM);
+        case 3: return std::min(LIBINT2_MAX_AM_eri, FERRIC_TERF_3ERI_UNIFORM_MAX_AM);
+        case 4: return LIBINT2_MAX_AM_eri;
+        default: return SCF_EINVAL;
+    }
+}
+
+extern "C" void scf_terf_libint2_inject_hook_fault(int on) {
+    g_terf_hook_fault.store(on != 0, std::memory_order_relaxed);
 }
 
 extern "C" scf_engine *scf_engine_create_terf_libint2(double r0, double omega,
@@ -3879,8 +3932,13 @@ extern "C" scf_engine *scf_engine_create_terf_libint2(double r0, double omega,
     int &st = status ? *status : st_local;
     st = SCF_OK;
     const int max_l_allowed = scf_terf_libint2_max_l(braket);
-    if (max_l_allowed < 0 || max_nprim < 1 || max_L < 0 || max_L > max_l_allowed) {
+    if (max_l_allowed < 0 || max_nprim < 1 || max_L < 0 || max_L > max_l_allowed ||
+        !std::isfinite(omega) || !(omega > 0.0) || !std::isfinite(r0)) {
         st = SCF_EINVAL;
+        return nullptr;
+    }
+    if (max_L > scf_libint2_eri_max_l(braket)) {
+        st = SCF_ENOTIMPL;
         return nullptr;
     }
     std::lock_guard<std::mutex> lock(libint_ctor_mutex);
@@ -3934,9 +3992,10 @@ extern "C" scf_engine *scf_engine_create_terf_libint2(double r0, double omega,
  * longer hand the hook an over-deep mmax, so this calls the hook directly,
  * exactly as libint2's terf_gm_eval would. `Gm` must hold `gm_len >= mmax+1`
  * doubles (checked, so the probe itself never writes past the caller's
- * buffer). Returns SCF_OK if the hook evaluated, SCF_EINVAL if it refused the
- * mmax (or the arguments are bad), SCF_EUNSUPPORTED if the tables cannot be
- * loaded, SCF_EINTERNAL on any other exception. */
+ * buffer). Returns SCF_OK if the hook evaluated, SCF_EINVAL if it refused
+ * mmax, rho or omega (or the probe's own arguments are bad), SCF_EUNSUPPORTED
+ * if the tables cannot be loaded or the hook returned false (it must not:
+ * libint2 would zero-fill), SCF_EINTERNAL on any other exception. */
 extern "C" int scf_terf_libint2_hook_probe(const char *table_dir, double rho,
                                            double T, int mmax, double omega,
                                            double r0, double *Gm, int gm_len) {
@@ -3947,7 +4006,7 @@ extern "C" int scf_terf_libint2_hook_probe(const char *table_dir, double rho,
             return ferric_terf_libint2_hook(rho, T, mmax, omega, r0, Gm)
                        ? SCF_OK
                        : SCF_EUNSUPPORTED;
-        } catch (const std::out_of_range &) {
+        } catch (const std::logic_error &) {   // out_of_range, invalid_argument
             return SCF_EINVAL;
         }
     } catch (...) {
