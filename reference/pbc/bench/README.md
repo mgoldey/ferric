@@ -573,12 +573,15 @@ One extra untimed anchor per code at 150x434 (`toml_ri/dryice_pbe_150x434.toml`,
 | 75x302 | -753.6935234956 | -753.6935159345 | -7.56e-6 |
 | 150x434 | -753.6934987201 | -753.6935231043 | +2.44e-5 |
 | 150x590 | -753.6935212603 | -753.6935179690 | -3.29e-6 |
-Both codes are NON-MONOTONE in the angular order on dryice (ferric moves +2.48e-5 then -2.26e-5; PySCF
--7.2e-6 then +5.1e-6), so a single 302 -> 590 step underestimates each code's grid error and gate part
-(a), which takes eps_c from that one step as the error bar, is not a valid bound on this cell.  The
-cross-code difference changes sign with the grid and never exceeds the largest single-code grid move
-(2.5e-5), which is what a grid-quadrature origin predicts and a fixed non-grid defect does not
-(interpretation; the gate is still recorded as failed and the dryice timing rows stay unrun).  A
+Both codes are NON-MONOTONE along 75x302 -> 150x434 -> 150x590 on dryice (ferric moves +2.48e-5 then
+-2.26e-5; PySCF -7.2e-6 then +5.1e-6).  The first step changes the radial AND the angular grid, so this
+does not show non-monotonicity in the angular order alone.  A single 302 -> 590 step therefore
+underestimates each code's grid error, and gate part (a), which takes eps_c from that one step as the
+error bar, is not a valid bound on this cell.  The cross-code difference changes sign with the grid,
+and its largest magnitude (2.44e-5, at 150x434) stays below the largest single-code grid move
+(2.48e-5, ferric 75x302 -> 150x434).  That is consistent with a grid-quadrature origin; a non-grid
+defect smaller than this ~1e-5 Ha/cell grid noise is NOT excluded (interpretation; the gate is still
+recorded as failed and the dryice timing rows stay unrun).  A
 redesigned gate would need a converged reference per code (finer radial and angular, or a
 uniform-grid reference), not a one-step eps.
 
@@ -602,8 +605,9 @@ PySCF 5.36 / 1.00.  Foreign CPU 3.5-5.9% (N=6), 4.2-8.0% (N=1).  PySCF used 4314
   omega 0.417, on DIFFERENT 75x302 point sets (mismatch 1 of the pre-registration).  These are
   "same nominal grid label" ratios, not same-quadrature ratios; the two codes' 75x302 energies differ
   by 1.5e-4 Ha/cell, within each code's own 302 -> 590 grid change (~7e-4).
-- DF build (like-for-like stage, same as RHF): ferric/PySCF 0.75 (N=6), 0.91 (N=1); the first-session
-  RHF DF ratios on this cell were 0.71 / 0.89.
+- DF build (like-for-like stage, same as RHF): ferric/PySCF 0.75 (N=6), 0.91 (N=1); the RHF DF ratios on
+  this cell were 0.71 at N=6 (second session, 6.59 / 9.23 s) and 0.89 at N=1 (first session, 35.2 /
+  39.5 s).
 - The XC stage is NOT like-for-like (different point sets and counts: ferric's point count is not
   printed; PySCF 43141), so no XC ratio is quoted.  Within ferric: XC is 38% of the N=6 total and the
   one-time AO cache is 84% of XC (4.02 of 4.76 s).
@@ -612,9 +616,14 @@ PySCF 5.36 / 1.00.  Foreign CPU 3.5-5.9% (N=6), 4.2-8.0% (N=1).  PySCF used 4314
 ## Verdicts on the pre-registered hypotheses
 - H8 (both cells pass, refinement shrinks the difference >= 3x): FAILS.  dryice fails gate part (a);
   diamond_prim passes both parts but shrinks 2.8x, not >= 3x.
-- H9 (ferric/PySCF total in [0.3, 1.0] at N=6 on both cells): HOLDS on diamond_prim (0.57); untested on
-  dryice (gate).  The pre-registered artifact signature (ferric XC not growing with grid) not seen.
-- H10 (ferric N=1 -> 6 >= 4x): HOLDS on diamond_prim (5.10x); untested on dryice.
+- H9 (ferric/PySCF total in [0.3, 1.0] at N=6 on both cells): NOT CONFIRMED as stated (dryice
+  untestable, gate); within the band on diamond_prim (0.57).  Pre-registered artifact checks:
+  ferric XC grows with the grid (4.8 -> 17.8 s, not the signature); ferric PBE vs its own RHF on the
+  same cell and N (earlier sessions' rows, different binaries 654087b4 / a50e9964, so indicative
+  only): diamond_prim N=6 PBE 12.51 s vs RHF 7.48 s (second session), N=1 63.83 s vs 39.26 s (first
+  session).  PBE is not below RHF; the extra ~5 s (N=6) / ~24 s (N=1) matches the measured XC stage.
+- H10 (ferric N=1 -> 6 >= 4x on both cells): NOT CONFIRMED as stated (dryice untestable); within the
+  band on diamond_prim (5.10x).
 
 ## Mismatches (next to every ratio above)
 1. Grid construction and partition (pre-registration item 1): ferric TA-M4 x Lebedev, full atomic grids
@@ -633,4 +642,7 @@ PySCF 5.36 / 1.00.  Foreign CPU 3.5-5.9% (N=6), 4.2-8.0% (N=1).  PySCF used 4314
 ## Open items of #228 after this session
 dryice PBE rows (gate part (a) failed; needs a gate built on a converged per-code reference, see the
 diagnostic); PBE omega sweep and best-omega PBE row; k-meshes beyond 2x2x2; best ferric omega on
-dryice_112; N=1 rows for diamond_conv / diamond_prim222 / dryice_112; jkfit rows (aux-drop mismatch).
+dryice_112; N=1 rows for diamond_conv / diamond_prim222 / dryice_112; jkfit rows (aux-drop mismatch);
+why PySCF's dryice hcore moved +38% between the first two sessions (carried forward; this session ran
+no dryice RHF or PBE timing, so it adds no evidence).  The dryice_112 LR-scaling lead of the second
+session is not carried: #508 (merged) addressed it (#507); dryice_112 was not re-timed here.

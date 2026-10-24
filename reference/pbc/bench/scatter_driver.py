@@ -154,6 +154,7 @@ def _run_cmd_locked(cmd, env, threads, lock_wait):
     b0, t0j = cpu_jiffies()
     r0 = resource.getrusage(resource.RUSAGE_CHILDREN)
     w0 = time.time()
+    started = time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(w0))
     rc, out, err, rss = run_child(cmd, full)
     wall = time.time() - w0
     l1 = load1()
@@ -171,6 +172,7 @@ def _run_cmd_locked(cmd, env, threads, lock_wait):
     p = subprocess.CompletedProcess(cmd, rc, out, err)
     return p, dict(
         wall=wall,
+        started_at=started,
         n1_gate=N1_GATE if threads == 1 else None,
         lock_wait_s=lock_wait,
         foreign_cpu_frac=other / (wall * NCPU),
