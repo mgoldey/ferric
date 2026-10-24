@@ -264,8 +264,6 @@ fn plain_gamma_roks_and_roks_rsh_derivatives_refuse_by_name() {
     let mesh = KPointMesh::gamma_centred(&cell, [1, 1, 1]).unwrap();
     let mut kcfg = KRoksConfig::new(&cell, ExxDiv::Ewald, "HYB_GGA_XC_CAM_B3LYP");
     kcfg.rohf.hcore = hcfg;
-    kcfg.rohf.level_shift = 0.05;
-    kcfg.rohf.scf.max_iter = 600;
     let (kr, kept) = solve_kroks_on_grid_keep(&cell, &prep, None, &mesh, &s.grid, &kcfg).unwrap();
     let KRetainedJk::Dense(e) = &kept.jk else {
         panic!("dense J/K expected")

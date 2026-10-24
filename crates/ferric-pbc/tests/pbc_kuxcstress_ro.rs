@@ -180,7 +180,6 @@ fn rohf_cfg(cell: &Cell, exxdiv: ExxDiv) -> KRohfConfig {
     let (e, g) = SETTINGS.with(|s| s.get());
     c.scf.energy_conv = e;
     c.scf.grad_conv = g;
-    c.scf.max_iter = 600;
     c
 }
 
@@ -194,9 +193,6 @@ fn scf_on(cell: &Cell, m: Mesh, functional: Option<&str>, exxdiv: ExxDiv) -> KRo
         Some(f) => {
             let mut c = KRoksConfig::new(cell, exxdiv, f);
             c.rohf = rc;
-            if f.contains("PBE0") {
-                c.rohf.level_shift = 0.05;
-            }
             c.grid = grid_cfg();
             solve_kroks(cell, &prep, None, &mesh, &c)
         }
@@ -621,7 +617,6 @@ fn null_xc_roks_route_equals_the_rohf_stress_per_part() {
     let mut sc = ferric_pbc::kscf::KScfConfig::default();
     sc.energy_conv = 1e-14;
     sc.grad_conv = 1e-12;
-    sc.max_iter = 600;
     let scf = solve_kroks_injected(&fx.cell, &fx.mesh, &sc, inj, 2, 1, None, 1.0).unwrap();
     assert!(scf.converged);
     let deri = dense_eri(&fx);

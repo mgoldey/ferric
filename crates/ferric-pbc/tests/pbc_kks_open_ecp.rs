@@ -306,7 +306,7 @@ fn kroks(
     cfg.rohf.hcore.omega = OMEGA;
     cfg.rohf.scf.energy_conv = 1e-12;
     cfg.rohf.scf.grad_conv = 1e-9;
-    cfg.rohf.level_shift = level_shift;
+    cfg.rohf.level_shift = Some(level_shift);
     cfg.rohf.ewald_start = start;
     let aux = rs.map(|m| {
         cfg.rohf.jk = KJkKind::RsGdf;
@@ -374,7 +374,7 @@ fn shifted_triclinic_kuks_kroks_match_pinned_pyscf() {
         let e_ref = row["energy"].as_f64().unwrap();
         let mesh = KPointMesh::monkhorst_pack(&cell, n).unwrap();
         // k-ROKS hybrids: NO level shift and the default iteration cap
-        // (the Gamma-default 0.05 / 600 of pbc_kroks.rs is not needed).
+        // (neither the automatic hybrid shift nor a 600 cap is needed here).
         let (e, conv, it) = if method == "KUKS" {
             kuks(&cell, &mesh, f, None)
         } else {
@@ -432,7 +432,7 @@ fn rsgdf_shifted_triclinic_kroks_is_dense_to_the_fit_error() {
 /// ROKS level-shift measurement: the converged hybrid energy must not depend
 /// on the shift (0 vs the Gamma default 0.05) nor on the start (staged vs one
 /// direct ewald SCF), and the unshifted runs converge within the default
-/// iteration cap (200; the 600 of `pbc_kroks.rs` is not needed).
+/// iteration cap (200; no 600 cap is needed).
 #[test]
 fn kroks_pbe0_needs_no_level_shift() {
     let cell = h3_triclinic();
@@ -458,8 +458,8 @@ fn kroks_pbe0_needs_no_level_shift() {
     }
 }
 
-/// The ORIGINAL case that got the level shift 0.05 / 600 iterations in
-/// `pbc_kroks.rs`: H3 doublet, cubic a = 4.5, 1x1x2, PBE0, 45^3 uniform grid,
+/// The ORIGINAL case that got a hand-set level shift 0.05 / 600 iterations in
+/// `pbc_kroks.rs` (both removed in #356): H3 doublet, cubic a = 4.5, 1x1x2, PBE0, 45^3 uniform grid,
 /// against the same PySCF `KROKS` pins, with NO level shift and the default
 /// iteration cap.
 #[test]
@@ -479,7 +479,8 @@ fn original_kroks_hybrid_pins_converge_without_shift_or_long_cap() {
         cfg.rohf.hcore.omega = OMEGA;
         cfg.rohf.scf.energy_conv = 1e-12;
         cfg.rohf.scf.grad_conv = 1e-9;
-        assert_eq!(cfg.rohf.level_shift, 0.0);
+        assert_eq!(cfg.rohf.level_shift, None, "automatic by default");
+        cfg.rohf.level_shift = Some(0.0);
         let r = solve_kroks_on_grid(&cell, &prep, None, &mesh, &grid, &cfg).unwrap();
         let it = r.scf.iterations + r.none_stage.as_ref().map_or(0, |s| s.iterations);
         eprintln!(

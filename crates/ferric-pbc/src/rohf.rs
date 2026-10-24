@@ -194,6 +194,11 @@ pub struct GammaRoksConfig {
 
 /// Default `scf.level_shift` (Hartree) that [`GammaRoksConfig::new`] sets for
 /// a functional with exact exchange (`a > 0`). See [`GammaRoksConfig::new`].
+/// The k-point ROKS solver applies the same value to a hybrid when
+/// [`crate::kroks::KRohfConfig::level_shift`] is `None` (the default): on the
+/// tri 4H s+p triplet PBE0 `exxdiv = none` cell the 1x1x1 k-ROKS DIIS loop
+/// does not converge in 200 iterations without it and reaches the
+/// [`GammaRoksConfig::new`] pin with it (#356).
 pub const ROKS_HYBRID_LEVEL_SHIFT: f64 = 0.05;
 /// Default `scf.max_iter` that [`GammaRoksConfig::new`] sets for a functional
 /// with exact exchange (`a > 0`), per SCF stage.

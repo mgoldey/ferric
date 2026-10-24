@@ -51,7 +51,9 @@ use ferric_pbc::kroks::{
 use ferric_pbc::kscf::{solve_krhf, KRhfConfig, KScfConfig};
 use ferric_pbc::kuscf::{solve_kuhf, KUhfConfig};
 use ferric_pbc::lattice::Cell;
-use ferric_pbc::rohf::{gamma_rohf, gamma_roks_with_xc, GammaRohfConfig, GammaRoksConfig};
+use ferric_pbc::rohf::{
+    gamma_rohf, gamma_roks_with_xc, GammaRohfConfig, GammaRoksConfig, ROKS_HYBRID_LEVEL_SHIFT,
+};
 use ferric_pbc::uhf::{EwaldStart, GammaUhfIntegrals};
 
 const OMEGA: f64 = 0.8;
@@ -103,7 +105,10 @@ fn rohf_cfg(cell: &Cell, exx: ExxDiv, mutation: Option<KRohfMutation>) -> KRohfC
     c
 }
 
-/// Hybrid functionals get the Gamma ROKS DIIS-robustness defaults.
+/// `KRoksConfig::new` SCF defaults for every functional: the automatic level
+/// shift (0.05 for a hybrid, resolved by the solver) and the default
+/// iteration cap (no hand-set 600; the PBE0 runs here take <= 10 iterations
+/// with or without the shift, #356).
 fn roks_cfg(
     cell: &Cell,
     exx: ExxDiv,
@@ -112,10 +117,6 @@ fn roks_cfg(
 ) -> KRoksConfig {
     let mut c = KRoksConfig::new(cell, exx, functional);
     c.rohf = rohf_cfg(cell, exx, mutation);
-    if functional.contains("PBE0") {
-        c.rohf.level_shift = 0.05;
-        c.rohf.scf.max_iter = 600;
-    }
     c
 }
 
@@ -194,6 +195,7 @@ fn closed_shell_limit_is_krhf_and_krks() {
             &format!("{exx:?} kROHF vs kRHF"),
         );
         close(ro.scf.s2, 0.0, 1e-10, "closed-shell <S2>");
+        assert_eq!(ro.level_shift, 0.0, "k-ROHF gets no automatic shift");
         assert!(ro.scf.nopen_per_k.iter().all(|&o| o == 0));
     }
     let grid = PeriodicGrid::uniform(&cell, [36; 3]).unwrap();
@@ -587,6 +589,73 @@ fn pyscf_krohf_kroks_pins() {
             2e-8,
             &format!("H3 {functional} {n:?} {exx:?} vs PySCF"),
         );
+        // The automatic level shift: the hybrid shift for PBE0, none for
+        // LDA/PBE (the pins hold either way: the shift is ramped out).
+        let want = if functional == "PBE0" {
+            ROKS_HYBRID_LEVEL_SHIFT
+        } else {
+            0.0
+        };
+        assert_eq!(r.level_shift, want, "{functional} automatic level shift");
+    }
+}
+
+/// The automatic k-ROKS hybrid level shift (#356) on the cell whose Gamma
+/// ROKS minimum REPELS the undamped Roothaan map (tri 4H s+p triplet, PBE0,
+/// `exxdiv = none`, the SSF (75, 302) D = 10 grid of `pbc_rohf.rs`): at the
+/// 1x1x1 mesh the default config converges within the default iteration cap
+/// to that file's Gamma ROKS pin; with the shift switched off
+/// (`Some(0.0)`) the same SCF does not converge (measured: max error 1.55e-2
+/// after 200 iterations, 6.4e-2 after 600; with the shift 34 iterations).
+/// The negative control is capped at 60 iterations, ~2x the shifted count.
+///
+/// NOT covered: the 1x1x2 mesh of the same cell converges with no shift
+/// tried (0.05-0.5 ramped, 0.1-0.5 constant; 300-600 iterations) — that
+/// needs a second-order k-ROKS solver, which does not exist yet.
+#[test]
+fn kroks_hybrid_default_level_shift_converges_the_roothaan_trap() {
+    const TRI_ROKS_PBE0_NONE: f64 = -1.465458280448; // pbc_rohf.rs
+    let cell = cell_cm(&TRI_ATOMS, TRI_A, 0, 3);
+    let bs = sp_basis_h();
+    let grid = PeriodicGrid::build(
+        &cell,
+        &PeriodicGridConfig {
+            neighbour_cutoff: Some(10.0),
+            ..grid_cfg(75, 302)
+        },
+    )
+    .unwrap();
+    assert_eq!(grid.len(), 70784, "the pbc_rohf.rs SSF grid");
+    let prep = prep_for(&cell, &bs);
+    let mesh = KPointMesh::gamma_centred(&cell, [1, 1, 1]).unwrap();
+    let mut cfg = roks_cfg(&cell, ExxDiv::None, "PBE0", None);
+    assert_eq!(cfg.rohf.level_shift, None, "automatic by default");
+    let default_cap = cfg.rohf.scf.max_iter;
+    let r = solve_kroks_on_grid(&cell, &prep, None, &mesh, &grid, &cfg)
+        .expect("default k-ROKS PBE0 converges");
+    eprintln!(
+        "  tri PBE0 none 1x1x1 default: {:.12} ({} it, shift {})",
+        r.scf.energy, r.scf.iterations, r.level_shift
+    );
+    assert_eq!(r.level_shift, ROKS_HYBRID_LEVEL_SHIFT);
+    assert!(r.scf.iterations < default_cap);
+    close(
+        r.scf.energy,
+        TRI_ROKS_PBE0_NONE,
+        1e-8,
+        "tri PBE0 none vs Gamma ROKS pin",
+    );
+    close(r.scf.s2, 2.0, 1e-10, "tri triplet <S2>");
+
+    cfg.rohf.level_shift = Some(0.0);
+    cfg.rohf.scf.max_iter = 60;
+    match solve_kroks_on_grid(&cell, &prep, None, &mesh, &grid, &cfg) {
+        Err(ferric_core::FerricError::Convergence(m)) => eprintln!("  unshifted: {m}"),
+        Err(e) => panic!("unshifted: unexpected error {e}"),
+        Ok(r) => panic!(
+            "unshifted SCF converged ({:.12}, {} it): the shift is not what makes the default converge",
+            r.scf.energy, r.scf.iterations
+        ),
     }
 }
 
