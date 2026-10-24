@@ -1317,22 +1317,52 @@ pub fn analytic_alpha_relaxed(
 // ===========================================================================
 use ndarray::Array4;
 
-/// Fail-fast pre-flight guard for every `full_mo_eri` caller. The dense (pq|rs)
-/// tensor is nmo⁴, built co-resident with its (nmo²)²=nmo⁴ Gram matrix (:1146),
-/// and the analytic-α path additionally holds central-diff ∂Imo copies —
-/// budget for ~3 live nmo⁴ f64 buffers. Placed next to `full_mo_eri` so an M3/M5
-/// restructure that shrinks the peak updates the formula in the same diff.
-fn check_full_mo_eri_alloc(
+/// Bytes a `full_mo_eri` caller holds at its nmo⁴-phase peak:
+/// `pool_nmo4_buffers · nmo⁴ + naux · nmo²` f64.
+///
+/// The second term is the `b_full` (naux, nmo, nmo) tensor every caller keeps
+/// alive to return. `full_mo_eri` alone holds two nmo⁴ buffers (the Gram
+/// matrix `g` and the tensor it is copied into), so the TDHF/BSE callers pass
+/// 2. The analytic-α axis loop holds `imo0`, `dimo`, `imo_p`, the `ed·dimo`
+/// temporary and `imo_m` at once, so it passes 5.
+fn full_mo_eri_peak_bytes(nmo: usize, naux: usize, pool_nmo4_buffers: usize) -> usize {
+    let nmo2 = nmo.saturating_mul(nmo);
+    nmo2.saturating_mul(nmo2)
+        .saturating_mul(pool_nmo4_buffers)
+        .saturating_add(naux.saturating_mul(nmo2))
+        .saturating_mul(8)
+}
+
+/// Fail-fast pre-flight guard for every `full_mo_eri` caller: ONE peak
+/// ([`full_mo_eri_peak_bytes`]) is both checked against the resolved budget
+/// ceiling and charged to the shared memory pool.
+///
+/// The ceiling used to be a flat ~3 nmo⁴ for every caller. That undercounted
+/// the analytic path (5) and overcounted TDHF/BSE (2); both now use their
+/// true nmo⁴-phase peak.
+///
+/// The charge is taken BEFORE `compute_b_full_mo` and held to function end,
+/// so it is also outstanding while that call's AO 3-index tensor (charged by
+/// its own source) exists. The two do not actually coexist with the nmo⁴
+/// buffers, so this is deliberately conservative by the AO peak (a sum, not a
+/// max): the refusal happens before any integrals are built. Inert when no
+/// pool is installed. Placed next to `full_mo_eri` so an M3/M5 restructure
+/// that shrinks the peak updates the formula in the same diff.
+fn guard_full_mo_eri(
     label: &str,
     nmo: usize,
+    naux: usize,
+    pool_nmo4_buffers: usize,
     explicit_budget: Option<usize>,
-) -> Result<(), FerricError> {
-    let peak = nmo.saturating_pow(4).saturating_mul(3).saturating_mul(8); // ~3× nmo⁴ f64
+) -> Result<ferric_core::memory::pool::Reservation, FerricError> {
+    let label = format!("{label}: dense nmo⁴ MO-ERI (nmo={nmo})");
+    let peak = full_mo_eri_peak_bytes(nmo, naux, pool_nmo4_buffers);
     ferric_core::memory::check_alloc(
-        &format!("{label}: dense nmo⁴ MO-ERI (nmo={nmo})"),
+        &label,
         peak,
         ferric_core::memory::resolve_budget_bytes(explicit_budget),
-    )
+    )?;
+    crate::rimp2::charge_mo_side(&label, peak)
 }
 
 /// Full-MO ERI (pq|rs) from the dressed B tensor. (nmo^4 — small systems only.)
@@ -1571,10 +1601,14 @@ pub fn analytic_alpha_full(
     // imo0 (nmo⁴, full_mo_eri :1143) co-resident with its Gram matrix g
     // ((nmo²)²=nmo⁴, :1146) and the central-diff ∂Imo copies in the axis loop.
     // The solve_zvec_dense (Δε+A) Hessian ((nocc·nvir)², :1243) is subsumed by
-    // this larger nmo⁴ peak.
-    check_full_mo_eri_alloc(
+    // this larger nmo⁴ peak. Both the ceiling and the pool see the true
+    // axis-loop peak (5 nmo⁴ + b_full, see `full_mo_eri_peak_bytes`); the
+    // charge is held to function end, where imo0 and b_full die.
+    let _imo0_charge = guard_full_mo_eri(
         &format!("relaxed-MP2 α (analytic; nmo={nmo}, nocc={nocc}, nvir={nvir})"),
         nmo,
+        dfbs.nbasis(),
+        5,
         mp2_config.memory_budget_bytes,
     )?;
 
@@ -1826,8 +1860,9 @@ pub fn bse_gate0_residuals(
     let nvir = nmo - nocc;
     let eps: Vec<f64> = rhf.eps_r().to_vec();
 
-    // Fail-fast size guard: full_mo_eri holds the nmo⁴ ERI + nmo⁴ Gram (:1143-1146).
-    check_full_mo_eri_alloc("BSE gate-0 residuals", nmo, None)?;
+    // Fail-fast size guard: full_mo_eri holds the nmo⁴ ERI + nmo⁴ Gram. The
+    // pool charge is held to function end, where imo and b_full die.
+    let _imo_charge = guard_full_mo_eri("BSE gate-0 residuals", nmo, dfbs.nbasis(), 2, None)?;
     let b_full = crate::oo_rimp2::compute_b_full_mo(obs, dfbs, op, c)?; // (naux, nmo, nmo)
     let imo = full_mo_eri(&b_full);
 
@@ -1872,8 +1907,9 @@ pub fn dynamic_cphf_alpha_iw(
     let n = nvir * nocc;
     let eps: Vec<f64> = rhf.eps_r().to_vec();
 
-    // Fail-fast size guard: full_mo_eri holds the nmo⁴ ERI + nmo⁴ Gram (:1143-1146).
-    check_full_mo_eri_alloc("dynamic CPHF/TDHF α(iω)", nmo, None)?;
+    // Fail-fast size guard: full_mo_eri holds the nmo⁴ ERI + nmo⁴ Gram. The
+    // pool charge is held to function end, where imo and b_full die.
+    let _imo_charge = guard_full_mo_eri("dynamic CPHF/TDHF α(iω)", nmo, dfbs.nbasis(), 2, None)?;
     let b_full = crate::oo_rimp2::compute_b_full_mo(obs, dfbs, op, c)?;
     let imo = full_mo_eri(&b_full);
     let (apb, amb) = build_apb_amb(&imo, &eps, nocc, nvir);
