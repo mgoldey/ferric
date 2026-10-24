@@ -370,8 +370,11 @@ impl Engine {
     }
 
     /// Compute a shell quartet of 4-center ERIs. Returns `None` if screened to
-    /// zero (and, for the terf/terfc table engines, if the engine REFUSED the
-    /// quartet; use [`Engine::compute_quartet_checked`] to tell the two apart).
+    /// zero (and, for the terf/terfc table engines and the libint2-native terf
+    /// engine, if the engine REFUSED the quartet; use
+    /// [`Engine::compute_quartet_checked`] to tell the two apart). Unlike
+    /// eri3/eri2, folding is the long-standing 4-center contract: the table
+    /// engines' 4-center path refuses quartets past the table depth by design.
     pub fn compute_quartet(
         &mut self,
         prep: &PreparedBasis,
@@ -986,8 +989,12 @@ impl Engine {
     }
 
     /// Compute a 3-center ERI shell triplet (P|mu nu). Returns `None` if screened
-    /// (and, for the libint2-native terf engine, if the engine REFUSED the
-    /// triplet; use [`Engine::compute_eri3_checked`] to tell the two apart).
+    /// and, for the libint2-native terf engine only, if that engine REFUSED
+    /// the triplet (use [`Engine::compute_eri3_checked`] to tell the two
+    /// apart). Every other negative status, including a terf/terfc table
+    /// engine's (a caught C++ exception or a size mismatch, never a
+    /// screening), panics as it always has: folding it into `None` would hand
+    /// RI code a silent zero block.
     pub fn compute_eri3(
         &mut self,
         obs: &PreparedBasis,
@@ -996,9 +1003,12 @@ impl Engine {
         sh1: usize,
         sh2: usize,
     ) -> Option<&[f64]> {
-        self.compute_eri3_checked(obs, dfbs, sh_p, sh1, sh2)
-            .ok()
-            .flatten()
+        let fold_refusal = self.libint2_terf;
+        match self.compute_eri3_checked(obs, dfbs, sh_p, sh1, sh2) {
+            Ok(block) => block,
+            Err(_) if fold_refusal => None,
+            Err(st) => panic!("internal error in eri3 ({sh_p}|{sh1},{sh2}): status {st}"),
+        }
     }
 
     /// Like [`Engine::compute_eri3`], but a refusal by an engine that can
@@ -1181,13 +1191,13 @@ impl Engine {
         Ok(if any { Some(&self.buf[..n]) } else { None })
     }
 
-    /// Compute a 2-center ERI shell pair (P|Q). Panics on a negative shim
-    /// status, including a libint2-native terf engine's refusal; use
-    /// [`Engine::compute_eri2_checked`] to get that as `Err(status)`.
+    /// Compute a 2-center ERI shell pair (P|Q). Panics on any negative shim
+    /// status, for every engine (there is no `None` to fold a refusal into);
+    /// use [`Engine::compute_eri2_checked`] to get a refusal as `Err(status)`.
     pub fn compute_eri2(&mut self, dfbs: &PreparedBasis, sh_p: usize, sh_q: usize) -> &[f64] {
         match self.compute_eri2_checked(dfbs, sh_p, sh_q) {
             Ok(b) => b,
-            Err(st) => panic!("eri2 ({sh_p}|{sh_q}) refused: status {st}"),
+            Err(st) => panic!("internal error in eri2 ({sh_p}|{sh_q}): status {st}"),
         }
     }
 
