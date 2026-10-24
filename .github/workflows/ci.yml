@@ -891,25 +891,36 @@ jobs:
       # (HTTP Range) on a fresh connection, so a stall costs ~1 min instead
       # of 15 and an abandoned attempt keeps what it fetched. It checks the
       # byte count, the API's sha256 digest, unzip's CRC and `zstd -t`, and
-      # gives up after 20 min, or after 6 attempts in a row that each moved
-      # < 25 MB (a hang). See the script header for the measurements.
+      # gives up when CI_DL_DEADLINE_S runs out, or after 6 attempts in a row
+      # that each moved < 25 MB (a hang). See the script header.
+      #
+      # CI_DL_DEADLINE_S covers lookup + transfer only; verification (~1-2.6
+      # min for 7.4 GB) runs after it, hence deadline = step cap - 5 min.
+      # `exec` makes the script the step's shell, so a step-timeout signal
+      # reaches it and its trap removes the partial zip.
+      #
+      # COST ON EVERY RUN: the sha256 pass and the unzip to disk are extra
+      # work the action did while streaming -- about 1-3 min per shard even
+      # when the download is healthy. That is the price of resumable,
+      # stall-detecting transfers; the old path lost 15-30 min per stall.
       #
       # The action stays as ONE fallback for a failure of the script itself
       # (API error, token scope): 6 min is ~4.5x the healthy download time.
-      # Either way the run step's zstd check below fails closed with the
-      # "ARTIFACT DOWNLOAD failure" error.
+      # The step after it makes a fallback VISIBLE (warning + job summary) so
+      # a broken script cannot hide behind it. Either way the run step's zstd
+      # check below fails closed with the "ARTIFACT DOWNLOAD failure" error.
       #
-      # Budget: setup ~2 min + script <= 25 (20 deadline + sha256/unzip/zstd
-      # ~2 + slack) + fallback 6 + run step ~55 min (shards 2/3 of run
-      # 40058633825) + shard 1's doctests 3-5 min = ~93 min worst case
-      # against the 120-min job timeout (the old 2 x (15 + 1) path: ~94).
+      # Budget: setup ~2 min + script <= 25 + fallback 6 + run step ~55 min
+      # (shards 2/3 of run 40058633825) + shard 1's doctests 3-5 min = ~93
+      # min worst case against the 120-min job timeout (old path: ~94).
       - name: Download the archive
         id: download
         timeout-minutes: 25
         continue-on-error: true
         env:
           GITHUB_TOKEN: ${{ github.token }}
-        run: scripts/ci-download-artifact.sh nextest-archive nextest-archive.tar.zst /tmp
+          CI_DL_DEADLINE_S: "1200"
+        run: exec scripts/ci-download-artifact.sh nextest-archive nextest-archive.tar.zst /tmp
 
       # A second artifact file (the probe, uploaded next to the archive) went
       # missing on single shards after both the download and a retry (runs
@@ -924,6 +935,12 @@ jobs:
         with:
           name: nextest-archive
           path: /tmp
+
+      - name: Report the download-artifact fallback
+        if: steps.download.outcome != 'success'
+        run: |
+          echo "::warning::scripts/ci-download-artifact.sh FAILED (outcome: ${{ steps.download.outcome }}) and the download-artifact fallback ran -- check the 'Download the archive' log; a script that always fails would otherwise hide behind the fallback (#525)."
+          echo "- :warning: \`nextest-archive\`: scripted download ${{ steps.download.outcome }}, used the actions/download-artifact fallback (#525)" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Run shard ${{ matrix.partition }} of 4
         timeout-minutes: 100
@@ -1003,7 +1020,7 @@ jobs:
   # (MEASURED from CI job logs) and the download itself was slow or truncated
   # (#525); hence the separate canary archive of only these 6 binaries:
   # 200 MB, downloaded in 37 s (MEASURED, run 40058633825; ~100 MB since
-  # #544), so its scripted download has a 4-min deadline and its fallback
+  # #544), so its scripted download has a 3-min deadline and its fallback
   # 3 min, rather than the full archive's 20 and 6. The
   # job still runs ONE invocation per MALLOC_PERTURB_ value (3 total).
   malloc-perturb:
@@ -1065,8 +1082,9 @@ jobs:
         continue-on-error: true
         env:
           GITHUB_TOKEN: ${{ github.token }}
-          CI_DL_DEADLINE_S: "240"
-        run: scripts/ci-download-artifact.sh canary-archive canary-archive.tar.zst /tmp
+          # 5-min step cap - 2 min: verifying ~100 MB takes seconds.
+          CI_DL_DEADLINE_S: "180"
+        run: exec scripts/ci-download-artifact.sh canary-archive canary-archive.tar.zst /tmp
 
       - name: Fall back to download-artifact if the scripted download failed
         if: steps.download.outcome != 'success'
@@ -1076,6 +1094,12 @@ jobs:
         with:
           name: canary-archive
           path: /tmp
+
+      - name: Report the download-artifact fallback
+        if: steps.download.outcome != 'success'
+        run: |
+          echo "::warning::scripts/ci-download-artifact.sh FAILED (outcome: ${{ steps.download.outcome }}) and the download-artifact fallback ran -- check the 'Download the canary archive' log; a script that always fails would otherwise hide behind the fallback (#525)."
+          echo "- :warning: \`canary-archive\`: scripted download ${{ steps.download.outcome }}, used the actions/download-artifact fallback (#525)" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Run the canary set under MALLOC_PERTURB_ 1, 170, 2
         run: |
