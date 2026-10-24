@@ -118,6 +118,14 @@ fn tuples(r0: f64) -> Vec<Vv10Tuple> {
             c: 0.0089,
             damping: dec(Vv10Form::Eq11, 1.2 * r0, Some(2.0 / (1.2 * r0))),
         },
+        // Terf on tuple 0's exact seam and kernel: the weight dedupe must key
+        // on the FORM too (a key that ignored it would hand back Eq. 11 here;
+        // that mutant survived the suite before this tuple was added)
+        Vv10Tuple {
+            b: 11.0,
+            c: 0.0089,
+            damping: dec(Vv10Form::Terf, r0, None),
+        },
         // exact duplicate of tuple 0 (exercises kernel/weight dedupe)
         Vv10Tuple {
             b: 11.0,
@@ -167,9 +175,9 @@ fn decoupled_scan_matches_all_in_one_for_every_arm_and_tuple() {
         );
     }
     // E_nl does not depend on the MP2 arm: the duplicate tuple is identical.
-    assert_eq!(scan.e_nl_vv10[0].to_bits(), scan.e_nl_vv10[4].to_bits());
+    assert_eq!(scan.e_nl_vv10[0].to_bits(), scan.e_nl_vv10[5].to_bits());
     // Not vacuous: the tuples really differ, and so do the arms.
-    for (i, j) in [(0, 1), (0, 2), (0, 3), (1, 2)] {
+    for (i, j) in [(0, 1), (0, 2), (0, 3), (0, 4), (1, 2)] {
         assert!(
             (scan.e_nl_vv10[i] - scan.e_nl_vv10[j]).abs() > 1e-6,
             "tuples {i} and {j} too close"

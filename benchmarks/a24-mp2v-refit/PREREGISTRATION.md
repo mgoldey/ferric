@@ -846,3 +846,141 @@ pre-registered rules (F.5, G.2) stand unchanged. Any later optimum on an edge (i
 * A flat valley that runs toward large b at wide seams (b rising steeply with r0 near s ~ 0.5) is one reading of the 73 -> 252 trend. It is NOT tested: the b > 252 region was not searched, the Gauss-Newton
   matrix at the edge was not computed, and an unconverged b search at a wide seam could also be an artefact of the 9-node Chebyshev spline over a window whose far end is poorly sampled.
 * Against prediction G.3.2 (b in [6, 20]): the interior basin satisfies it; the raw optimum does not. Prediction G.3.1 (valley) is evaluated by the resumed A1-lite phase, not by these nodes.
+
+
+---
+
+# Addendum I (written 2026-10-24): stage-1 counterpoise (CP) search, and the non-CP A1-lite valley that Addendum H did not report
+
+Written AFTER every number below was read. Sections I.1-I.5 are MEASUREMENT (raw values copied from the committed JSONs);
+I.6 scores them mechanically against the rules pre-registered in F and G; I.7 is INTERPRETATION and is labelled
+provisional; I.8 lists what is NOT decided here. Nothing in this addendum changes a rule, a box, or a prediction.
+
+## I.0 Provenance
+
+* Run: `stage1.py` (driver as committed in the lane's 80346d0a9 on `feat/mp2v-full-refit`; Rust tree identical to 328f2afbe,
+  because 80346d0a9 touched no Rust). The ferric `.so` build stamp (`ferric.__build__`) was NOT recorded by the driver; that is a
+  provenance gap, and the claim above rests on the Rust tree being unchanged between those two commits.
+* Timeline (EDT, `results/stage1/stage1.log`): non-CP A1-lite valley resumed 2026-10-10 22:24-22:40, non-CP Gauss-Newton 22:45-22:50,
+  attempt 1 exited rc = 1 at 22:52 (a logging `KeyError` in `run_base` after `base_ncp.json` was written); attempt 2 ran the CP search
+  23:46 (2026-10-10) to 02:54 (2026-10-11) and exited rc = 1 at the same logging line after `base_cp.json` was written; attempt 3
+  (02:57:31) loaded the 2-line fix (skip the `raw_search_optimum` key in the log loop) and finished from the cache with zero new MP2
+  (`heartbeat.json`: `n_mp2 = 0`). The fix touches only the log loop, so no number depends on it.
+* Settings: exactly G.2 / H.1 (A24 {2, 4, 5, 6, 8, 19, 20, 24}; aug-cc-pVDZ / aug-cc-pVDZ-rifit; frozen core H/He 0, Li-Ne 1, Ar 5;
+  RHF densities, non-self-consistent VV10; NLC grid (50, 50); lockstep Eq. 11, C = 0.0089, b free; tabulated damping ON (gate G.1);
+  F.5 rule, cap 80 nodes). CP = Boys-Bernardi, each monomer in the full dimer basis (`@` ghost atoms, `harness.py`); CP fragments carry the
+  dimer's NLC grid (F.14). The CP search is a FULL independent search sharing the evaluation cache (G.2), not a re-minimisation over the non-CP nodes.
+* All RMSDs are in-sample over n = 8, kcal/mol, error = calc - ref (positive = underbound). Raw data: `results/stage1/{search,nodes,valley,curv,base}_{cp,ncp}.json`,
+  `summary.json`, `stage1.log`, `stdout.log`. The evaluation caches `results/stage1_cache_adz.json` (4.1 MB) and `results/planted_cache_dz.json` (2.2 MB)
+  are NOT committed; they stay in the lane worktree `.claude/worktrees/agent-af29ac89265471080/benchmarks/a24-mp2v-refit/results/`.
+
+## I.1 CP search (MEASURED)
+
+75 of 80 nodes, not budget-limited; every edge flag false (r0, s, b, coarse boundary). Lowest-RMSD nodes:
+
+| r0 (A) | s = r0*omega | b* | RMSD |
+|---|---|---|---|
+| **1.408** | **1.164** | **8.71** | **0.0780** (search optimum) |
+| 1.408 | 1.354 | 9.85 | 0.0783 |
+| 1.480 | 1.354 | 13.42 | 0.0795 |
+| 1.339 | 1.354 | 7.86 | 0.0824 |
+| 1.480 | 1.164 | 10.66 | 0.0837 |
+| 1.556 | 1.354 | 22.26 | 0.0846 |
+| 1.211 | 1.000 | 5.63 | 0.0943 |
+
+The second basin explored by the F.5 rule (around r0 ~ 1.0 A, s ~ 0.8) bottomed at 0.1095 (r0 = 1.068, s = 0.888, b* = 4.68).
+Coarse-grid b* reached the 252 edge only at s >= 2 with r0 >= 1.64 A (RMSD 0.45-3.4).
+
+## I.2 Linked-line valley, A1-lite (MEASURED; the non-CP column was computed 2026-10-10 22:24-22:40 and is reported here for the first time)
+
+| r0 (A) | b* CP | RMSD CP | b* non-CP | RMSD non-CP | paper Table 1 b (aTZ, S66, non-CP) |
+|---|---|---|---|---|---|
+| 0.85 | 3.93 | 0.1286 | 8.25 | 0.1268 | 8.0 |
+| 0.90 | 4.11 | 0.1231 | 9.29 | 0.1252 | 9.0 |
+| 0.95 | 4.32 | 0.1192 | 10.65 | 0.1237 | 9.5 |
+| 1.00 | 4.54 | 0.1174 | 12.49 | 0.1219 | 11.0 |
+| 1.05 | 4.78 | 0.1180 | 15.12 | 0.1196 | 12.5 |
+| 1.10 | 5.03 | 0.1210 | 19.27 | 0.1166 | 14.5 |
+| d ln b / d ln r0 (6-point fit) | **0.96** | | **3.23** | | 2.27 (same fit on Table 1; F.8's 2.31 is the end-point ratio) |
+| RMSD spread across the six r0 | | 0.011 | | 0.010 | 0.013 |
+
+No row is on a b edge. Both conventions give b* increasing monotonically with r0.
+
+## I.3 Gauss-Newton curvature (MEASURED; w = (ln r0, ln s, ln b), sigma_noise = 0.055)
+
+| convention, evaluated at | eigenvalues (h = 0.10) | softest eigenvector (ln r0, ln s, ln b) | 1-sigma per parameter (ln r0, ln s, ln b) | condition |
+|---|---|---|---|---|
+| CP, search optimum (1.408, 1.164, 8.71) | 0.0274, 0.827, 24.9 | (-0.246, -0.098, -0.964) | 0.083, 0.068, 0.321 | 911 |
+| non-CP, interior basin of H.2 (0.991, 1.354, 10.95) | 0.0738, 0.874, 15.4 | (-0.218, -0.367, -0.904) | 0.047, 0.092, 0.184 | 209 |
+
+h = 0.05 changes every GN eigenvalue by <= 3% in both conventions. The finite-difference Hessian cross-check (F.5.7, not the reported matrix):
+CP softest eigenvalue 0.0179 (h = 0.10) vs 0.0116 (h = 0.05), a 35% change, so the CP surface is flagged non-quadratic at that scale along its softest direction.
+
+## I.4 Baselines (MEASURED; RMSD / MSE)
+
+| row | CP | non-CP |
+|---|---|---|
+| MP2 (Coulomb) | 0.431 / +0.352 | 0.303 / -0.256 |
+| published linked MP2-V (r0 = 1.00 A, b = 11.0) | 0.568 / +0.545 | 0.129 / -0.064 |
+| published, sharp s = 4, unrefit | 0.908 / +0.821 | 0.388 / -0.200 |
+| published, sharp s = 8, unrefit | 0.958 / +0.844 | 0.486 / -0.285 |
+| b-only refit at r0 = 1.00 A, linked | 0.117 / +0.013 (b = 4.54) | 0.122 / -0.023 (b = 12.49) |
+| full refit (CP: search optimum; non-CP: interior basin) | 0.078 / +0.019 | 0.093 / -0.005 |
+
+Per-class MSE of the full refit: CP hbond +0.020, mixed +0.074, dispersion +0.038, stack (n = 1) -0.137; non-CP hbond +0.016, mixed -0.051, dispersion +0.007, stack -0.003.
+
+## I.5 CP minus non-CP parameter shift (MEASURED, `summary.json`)
+
+Against the H.2 interior basin: ln r0 +0.351, ln s -0.152, ln b -0.229. In combined GN sigmas (sqrt(sigma_CP^2 + sigma_nCP^2) = 0.096, 0.114, 0.370):
++3.7, -1.3, -0.6. Against the raw non-CP edge optimum (1.152, 0.522, b on the edge): ln r0 +0.20, ln s +0.80, b not defined.
+On the linked line at r0 = 1.00 A: ln(b*_CP / b*_nCP) = -1.01.
+
+## I.6 Scoring against the pre-registered rules (mechanical)
+
+| rule | CP | non-CP (interior basin) |
+|---|---|---|
+| G.3.1 valley: monotone | PASS | PASS |
+| G.3.1 valley: slope in [1.2, 4.0] | **FAIL (0.96)** | PASS (3.23) |
+| G.3.1 valley: RMSD spread < 0.06 | PASS | PASS |
+| G.3.2 r0 in [0.8, 1.2] A | **FAIL (1.408)** | PASS (0.991) |
+| G.3.2 b in [6, 20] | PASS (8.71) | PASS (10.95) |
+| G.3.2 s not at the wall | PASS | PASS |
+| G.3.3 ln(r0_CP / r0_nCP) > 0 | CONSISTENT: +0.351, 3.7 combined sigma | |
+| G.3.4 softest direction: ln r0 and ln b components both > 0.3 | **FAIL (0.246)**; ln b / ln r0 = 3.9 | **FAIL (0.218)**; ratio 4.1 |
+| G.3.4 softest direction: abs(ln s) component < 0.5 | PASS (0.098) | PASS (0.367) |
+| G.3.5 nesting full <= b-only <= published | holds (0.078 <= 0.117 <= 0.568); full-vs-b-only gain 0.039, above the expected < 0.03 (in-sample, not evidence) | holds (0.093 <= 0.122 <= 0.129); gain 0.029 |
+| G.3.6 sharp unrefit worse than linked | holds | holds |
+| G.6(a) A1-lite valley check | **TRIPPED** (slope) | not tripped |
+| G.6(b) optimum on an edge / budget-limited | not tripped | tripped for the raw optimum (H.1); H.2 took the interior basin |
+| G.6(c) undetermined parameter (inf sigma) | not tripped | not tripped |
+| G.6(d) in-sample ordering violated | not tripped | not tripped |
+| F.12 H-BSSE flag: abs(ln r0 shift) > 0.15 | **FLAGGED** (0.351) | |
+| F.12 H-BSSE flag: abs(ln b shift) > 0.3 | not flagged at the optima (0.229); 1.01 on the linked line at r0 = 1.00 A | |
+
+Stop condition G.6(a) is therefore TRIPPED for the CP convention. Under G.6 that means "report immediately, no further stage"; this addendum is that report.
+
+## I.7 Interpretation (PROVISIONAL, 2026-10-24, untested; separate from I.1-I.6)
+
+* The CP valley sits a factor 2.0-2.9 below the paper's b (3.9-5.0 against 8.0-14.5); the non-CP aDZ valley lands on the paper's numbers to within
+  0.3 at r0 <= 0.90 A and drifts above them with a steeper slope (3.23 vs 2.27). Two settings differ between the CP column and the paper at once
+  (CP vs non-CP, and aDZ vs aTZ), so this table alone cannot say which one moves b.
+* One reading (physics of the convention): the paper fitted at aTZ without CP, and MP2-V's MP2 half is the attenuated (terfc) operator, which was
+  designed in the attenuated-MP2 line to absorb basis-set superposition error rather than to be counterpoise-corrected. Under CP at aDZ the method
+  underbinds (published parameters MSE +0.545, Coulomb MP2 +0.352), and the fit restores attraction by lowering b (weaker short-range damping in the
+  VV10 kernel, more nonlocal correlation). On this reading the low CP b* is VV10 absorbing aDZ basis incompleteness, not a property of the method.
+  It matches the earlier de-risk finding (memory `derisk-cp-error-cancellation`) that bare attenuated SR-MP2 is over-repulsive when CP-corrected.
+* Artifact hypothesis, stated with what separates it: if the CP shift is basis incompleteness, the CP valley must move UP toward the non-CP one at aTZ
+  (F.12 H-BSSE: an artifact-absorbing parameter moves with the basis). If the CP-vs-non-CP gap persists at aTZ, then the non-CP parameters are absorbing
+  BSSE, which is the F.12 artifact reading. No aTZ CP number exists, so neither is tested. The stage-3 aTZ overlap set (F.13) is the measurement that decides.
+* The flatter CP slope (0.96) means the paper's valley SHAPE is not reproduced under CP at aDZ. The softest GN direction is mostly ln b in BOTH conventions,
+  so at n = 8 the data constrain r0 better than b and do not show the paper's r0-b valley as the softest direction; at n = 8 that may be a sample-size effect.
+* None of this bears on the published method as published: the paper's protocol (aTZ, S66, non-CP, frozen core) is a coherent convention for an attenuated
+  method, and this addendum is a refit study of ferric's implementation of it, not a reproduction or a correction of the paper.
+
+## I.8 Not decided here (for Matt)
+
+* Matt's decision of 2026-10-10 (H.2) made the non-CP interior basin the stage-1 non-CP result, and F.14 plans stages 2-4 as non-CP only for cost. F.3 registers
+  neither convention as primary. This addendum does NOT decide whether the non-CP plan stands in the light of I.6 (CP trips G.6(a) and the F.12 H-BSSE flag),
+  whether a CP arm is carried into stage 2 (about 2x the cost), or whether a small aTZ CP + non-CP check (the I.7 discriminator) runs before stage 2.
+  These are Matt's decisions.
+* Whether G.6(a) tripping on the CP convention alone blocks stage 2 for both conventions, or only the CP arm, is not stated by G.6; it needs Matt's ruling.

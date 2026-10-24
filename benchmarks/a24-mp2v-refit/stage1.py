@@ -258,6 +258,8 @@ def run_base(pool, ids, conv, out, beat):
     pool.cache.save()
     dump(out / f"base_{conv}.json", res)
     for k, v in res.items():
+        if k == "raw_search_optimum":
+            continue
         beat.log(f"[{conv}] {k}: rmsd={v['rmsd']:.4f} mse={v['mse']:+.4f}")
 
 

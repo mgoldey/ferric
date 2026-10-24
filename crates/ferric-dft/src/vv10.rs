@@ -2293,6 +2293,32 @@ mod cutoff_tests {
         }
     }
 
+    /// Sharp decoupled seams (r0*omega in {4, 8, 16}) keep the table error at
+    /// the linked seam's level because the node spacing refines with the seam
+    /// width (`DampTable::spacing`). Measured: 3.2e-11 at every s; with the
+    /// refinement removed (fixed 0.01 Bohr) 2.5e-8 / 4.1e-7 / 6.4e-6, so the
+    /// 1e-9 bound (the linked test's) kills that mutant at every s.
+    #[test]
+    fn damping_table_resolves_sharp_seams() {
+        let r0 = ferric_core::units::ANGSTROM_TO_BOHR;
+        for s in [4.0_f64, 8.0, 16.0] {
+            let d = Vv10Damping::Terfc {
+                r0_bohr: r0,
+                omega_bohr_inv: Some(s / r0),
+            };
+            let t = DampTable::build(&d);
+            let mut worst = 0.0f64;
+            let mut r = 0.0;
+            while r < 25.0 {
+                let e = (t.eval(r * r) - d.factor_from_r2(r * r)).abs();
+                worst = worst.max(e);
+                r += 0.000371;
+            }
+            eprintln!("[damp table sharp] s={s} max abs err {worst:.3e}");
+            assert!(worst < 1e-9, "s={s}: table error {worst:.3e}");
+        }
+    }
+
     /// The monopole far field must not be worse than discarding the tail.
     #[test]
     fn far_field_improves_on_truncation() {
