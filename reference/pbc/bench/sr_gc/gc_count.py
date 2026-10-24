@@ -1,5 +1,9 @@
 """Per-unit SR3 triplet counts for dry ice (ferric's exact rule, pbc_gdf_split.count_sr3_ferric),
-then a cost model t = t0 + tp * N_prim(nonzero) per libint call (pbc_triplet_bench, cc-pVDZ, 1 thread)."""
+then a cost model t = t0 + tp * N_prim(nonzero) per libint call (pbc_triplet_bench, cc-pVDZ, 1 thread).
+
+Writes units_<cell>_<w><tag>.npz and masks_<cell>_<w><tag>.pkl to the CURRENT directory (gc_model.py and
+gc_variants.py read and write there too). Run it from reference/pbc/bench/out/, which is gitignored:
+  mkdir -p reference/pbc/bench/out && cd reference/pbc/bench/out && python ../sr_gc/gc_count.py dryice 1.0"""
 
 import inspect
 import os

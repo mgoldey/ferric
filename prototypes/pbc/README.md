@@ -19,7 +19,7 @@ Run everything from this directory:
 
 ```
 cd prototypes/pbc
-OPENBLAS_NUM_THREADS=1 python -m pytest -q test_prototype.py   # PBC_SLOW=1 adds 9 slow tests
+OPENBLAS_NUM_THREADS=1 python -m pytest -q test_prototype.py   # ~8 min (133 cases, measured 2026-10-24); PBC_SLOW=1 adds 9 slow tests (10 cases)
 ```
 
 ## Reading order

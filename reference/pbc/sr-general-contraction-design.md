@@ -21,6 +21,8 @@ ferric timing.
 >   frozen s1 oracles stay unrotated.
 > - §5 item 4 "ω = 0.3, not yet measured": the dry ice ω = 0.3 rotation timing is in `prototypes/pbc/FINDINGS.md`,
 >   "Full timing series on libint 2.13.1: MWE, baseline, ω sweep, column rotation" (2026-09-30).
+> - SHA: 3fea0374 below = 5ab7c31b0 on main (perf(integrals): stop libint2 copying the erf/erfc Gm evaluator
+>   per primitive quartet); 3fea0374 itself is the worktree commit and is not on main.
 > - Paths: `pbc_gdf_split.py` is now `prototypes/pbc/pbc_gdf_split.py`. The `sr_gc/` scripts locate it and
 >   `cell_facts.py` relative to their own directory.
 >

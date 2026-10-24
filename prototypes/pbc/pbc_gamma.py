@@ -312,9 +312,8 @@ def build_integrals(
     if exxdiv is not None and str(exxdiv).lower() not in ("none", "ewald"):
         raise ValueError(f"exxdiv must be None, 'none' or 'ewald', got {exxdiv!r}")
     t0 = time.time()
-    gcut_override = (
-        gcut  # optional explicit G sphere (Iteration 16: cheaper FD anchors)
-    )
+    # optional explicit G sphere (Iteration 16: cheaper FD anchors)
+    gcut_override = gcut
     nao = cell.mol.nao
     if w is None:  # w -> infinity: all Coulomb in reciprocal space, SR vanishes
         L1 = cell.translations(rcut_1e)

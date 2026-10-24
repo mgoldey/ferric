@@ -12,7 +12,7 @@ shared site-packages symlink (CLAUDE.md). Runs in the main checkout's venv (nump
 
 Usage (from the worktree root, one at a time, under the memory cap):
   scripts/ferric-limited --max=12G -- env OPENBLAS_NUM_THREADS=1 RAYON_NUM_THREADS=1 \
-    /home/matt/qc/ferric/.venv/bin/python reference/pbc/bench/run_ferric_bench.py diamond_prim_rhf
+    <main checkout>/.venv/bin/python reference/pbc/bench/run_ferric_bench.py diamond_prim_rhf
 Runs are the toml/*.toml basenames; the TOML is read for cell/basis/aux/kind/functional/kmesh.
 """
 
