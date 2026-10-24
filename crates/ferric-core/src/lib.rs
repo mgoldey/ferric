@@ -45,6 +45,9 @@ pub mod orbitals;
 pub mod parallel;
 /// Abelian point-group detection (D2h and subgroups), AO representation, SO bases.
 pub mod symmetry;
+/// Opt-in stage/phase timing (`FERRIC_TIMING`): one-shot [`Stage`](timing::Stage)
+/// timers and the SCF-loop [`PhaseAccumulator`](timing::PhaseAccumulator).
+pub mod timing;
 /// Length units: the one Ångström ↔ Bohr conversion ([`units::ANGSTROM_TO_BOHR`]).
 pub mod units;
 

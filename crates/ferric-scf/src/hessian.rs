@@ -145,19 +145,21 @@
 //! feature (the FD Hessian in [`crate::frequencies::harmonic_frequencies`]
 //! covers those).
 //!
-//! The refusal of Kohn-Sham above applies to [`crate::hessian::rhf_hessian`],
-//! `Auto` and `Analytic`. The analytic KS Hessians are explicit library entry
+//! The refusal of Kohn-Sham above applies to [`crate::hessian::rhf_hessian`]
+//! and `Analytic`. The analytic KS Hessians are explicit library entry
 //! points for closed-shell LDA or GGA (pure or global hybrid), exact or RI-J
 //! Coulomb with exact or RI-K exchange:
 //! [`crate::hessian::rks_fixed_grid_hessian`], on a grid frozen in space (no
 //! Becke weight response, so not the surface the production KS gradient
-//! differentiates), and the opt-in moving-grid variant
+//! differentiates), and the moving-grid variant
 //! [`crate::hessian::rks_moving_grid_hessian`], on the production grid with
 //! the Becke weight response (the derivative of the production KS gradient).
-//! `Auto` is unchanged: neither is reached from it; see the `ks` module. The
-//! moving-grid one is reached from `harmonic_frequencies` only through the
-//! explicit [`crate::frequencies::HessianMethod::AnalyticMovingGrid`] (CLI
-//! and Python `"analytic-moving-grid"`).
+//! The moving-grid one is what `harmonic_frequencies` runs for a closed-shell
+//! KS reference under `Auto` (where
+//! [`crate::hessian::rks_moving_grid_hessian_available`] accepts the system;
+//! finite differences otherwise) and under the explicit
+//! [`crate::frequencies::HessianMethod::AnalyticMovingGrid`] (CLI and Python
+//! `"analytic-moving-grid"`). The fixed-grid one is library-only.
 //!
 //! Second-derivative integrals need libint2 generated with
 //! `LIBINT2_MAX_DERIV_ORDER >= 2` (conda-forge 2.13.1: AM ≤ 3, i.e. up to f
@@ -203,7 +205,8 @@ pub use ks::{
 };
 pub use ks::{
     rks_fixed_grid_hessian, rks_fixed_grid_hessian_parts, rks_moving_grid_hessian,
-    rks_moving_grid_hessian_parts, rks_moving_grid_hessian_preflight,
+    rks_moving_grid_hessian_available, rks_moving_grid_hessian_parts,
+    rks_moving_grid_hessian_preflight,
 };
 mod uhf_df;
 use uhf_df::{
