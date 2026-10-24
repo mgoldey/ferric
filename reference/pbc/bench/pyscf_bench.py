@@ -2,12 +2,22 @@
 
 Usage (from anywhere):
   OPENBLAS_NUM_THREADS=1 python pyscf_bench.py CELL --threads 1 --precision 1e-10 [--method rhf|pbe]
-      [--aux cc-pvdz-ri] [--out file.jsonl]
+      [--aux cc-pvdz-ri] [--kmesh 2 2 2] [--df gdf|rsdf] [--basis-repr general|segmented]
+      [--lindep-s 1e-6] [--init-guess hcore] [--verbose 0] [--tag T] [--out file.jsonl]
 
 CELL = basename of <CELL>.xyz / <CELL>.lattice next to this file (Angstrom xyz, Bohr lattice rows).
 Matched to the ferric CLI inputs under toml/ (see README.md): spherical cc-pVDZ and the aux basis
 read from ferric's own bundled BSE JSON, GDF (= _RSGDFBuilder in PySCF 2.13), exxdiv=ewald, hcore
 guess, eigendecomposed aux metric with absolute cut 1e-10, orbital lindep cut 1e-6.
+
+  --df gdf (default) is `density_fit` (in 2.13 the range-separated _RSGDFBuilder); --df rsdf is
+  `rs_density_fit` (the older RSGDF class, which also builds through _RSGDFBuilder, so the metric
+  and builder instrumentation below see it). RSJK is REFUSED: PySCF 2.13 `SCF.energy_nuc`
+  (pbc/scf/hf.py:760) has an operator-precedence bug that gives any 3-D RSJK run the molecular
+  E_nn (prototypes/pbc/FINDINGS.md "Iteration 1").
+  --basis-repr general (default) hands ferric's columns to PySCF as one general contraction per
+  shell (PySCF's native, fast form; same function space); segmented passes ferric's exact
+  per-column shells including the zero coefficients (what ferric itself computes with).
 
 One record = one process = one DF build (the cderi file is written under a private temp dir and
 deleted before exit, so nothing is ever reused). Stages are timed separately:
@@ -29,7 +39,10 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, "..", "..", ".."))
-BOHR = 0.52917721067  # Angstrom per Bohr (ferric's constant is checked in the README)
+# Angstrom per Bohr: ferric_core::units::BOHR_RADIUS_ANGSTROM == pyscf.data.nist.BOHR (CODATA 2010).
+# Until 2026-10-24 this file had the CODATA 2014 value 0.52917721067, so the PySCF atoms sat 4.7e-10
+# (relative) off ferric's while the Bohr lattice rows matched.
+BOHR = 0.52917721092
 
 
 def read_cell(name):
@@ -49,11 +62,13 @@ def read_cell(name):
 
 
 def ferric_basis_pyscf(name, symbols, repr_="general"):
-    """ferric's bundled BSE JSON -> PySCF basis dict (general contractions kept as one block)."""
-    if repr_ != "general":
-        raise NotImplementedError(
-            "only the general-contraction representation is built here"
-        )
+    """ferric's bundled BSE JSON -> PySCF basis dict.
+
+    repr_ "general": one block per BSE shell with all its columns (a general contraction).
+    repr_ "segmented": one shell per column, zero coefficients kept, i.e. ferric's own shells.
+    """
+    if repr_ not in ("general", "segmented"):
+        raise ValueError(f"repr_ must be 'general' or 'segmented', got {repr_!r}")
     from pyscf.data.elements import _symbol
 
     d = json.load(
@@ -73,15 +88,25 @@ def ferric_basis_pyscf(name, symbols, repr_="general"):
             for k, l in enumerate(ls):
                 # fused SP-type shells: one coefficient row per angular momentum
                 cc = [cols[k]] if len(ls) > 1 else cols
-                blocks.append(
-                    [l] + [[ex[i]] + [c[i] for c in cc] for i in range(len(ex))]
-                )
+                groups = [[c] for c in cc] if repr_ == "segmented" else [cc]
+                for g in groups:
+                    blocks.append(
+                        [l] + [[ex[i]] + [c[i] for c in g] for i in range(len(ex))]
+                    )
         out[sym] = blocks
     return out
 
 
 def peak_rss_bytes():
     return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024
+
+
+def _num(x):
+    return None if x is None else float(x)
+
+
+def _ints(v):
+    return None if v is None else [int(x) for x in v]
 
 
 def load1():
@@ -110,9 +135,21 @@ def main(argv=None):
     ap.add_argument("--max-cycle", type=int, default=100)
     ap.add_argument("--max-memory", type=int, default=8000)
     ap.add_argument("--grid", type=int, nargs=2, default=[75, 302])
+    ap.add_argument("--df", choices=["gdf", "rsdf", "rsjk"], default="gdf")
+    ap.add_argument("--basis-repr", choices=["general", "segmented"], default="general")
+    ap.add_argument(
+        "--lindep-s", type=float, default=1e-6, help="orbital S eigenvalue cut"
+    )
+    ap.add_argument("--init-guess", default="hcore")
+    ap.add_argument("--verbose", type=int, default=0, help="PySCF cell/mf verbosity")
     ap.add_argument("--tag", default="")
     ap.add_argument("--out", default=None)
     a = ap.parse_args(argv)
+    if a.df == "rsjk":
+        sys.exit(
+            "refused: PySCF 2.13 RSJK gets E_nn wrong for every 3-D cell "
+            "(pbc/scf/hf.py:760, FINDINGS Iteration 1)"
+        )
     kpt_run = a.kmesh is not None
     if a.conv_tol is None:
         a.conv_tol = 1e-12 if kpt_run else 1e-10
@@ -131,7 +168,8 @@ def main(argv=None):
     import pyscf.scf.hf as hf_mod
 
     lib.num_threads(a.threads)
-    hf_mod.overlap_zero_eigenvalue_threshold = 1e-6
+    hf_mod.remove_overlap_zero_eigenvalue = True  # PySCF's default; stated, not assumed
+    hf_mod.overlap_zero_eigenvalue_threshold = a.lindep_s
     atoms, lat = read_cell(a.cell)
     syms = [s for s, _ in atoms]
     load0 = load1()
@@ -140,11 +178,11 @@ def main(argv=None):
     cell.a = lat
     cell.unit = "B"
     cell.atom = atoms
-    cell.basis = ferric_basis_pyscf(a.basis, syms)
+    cell.basis = ferric_basis_pyscf(a.basis, syms, a.basis_repr)
     cell.cart = False
     cell.precision = a.precision
     cell.max_memory = a.max_memory
-    cell.verbose = 0
+    cell.verbose = a.verbose
     w0 = time.perf_counter()
     cell.build()
     t_cell = time.perf_counter() - w0
@@ -188,7 +226,11 @@ def main(argv=None):
         mf.grids = pdft.gen_grid.BeckeGrids(cell)
         mf.grids.atom_grid = tuple(a.grid)
         mf.grids.prune = None
-    mf = mf.density_fit(auxbasis=aux)
+    mf = (
+        mf.density_fit(auxbasis=aux)
+        if a.df == "gdf"
+        else mf.rs_density_fit(auxbasis=aux)
+    )
     if a.method == "pbe":
         # density_fit() rebuilds the grids object with DEFAULT settings (atom_grid {},
         # pruning back on): measured in the second #228 session, where the PySCF PBE
@@ -198,13 +240,17 @@ def main(argv=None):
         assert isinstance(mf.grids, pdft.gen_grid.BeckeGrids), type(mf.grids)
     df = mf.with_df
     df.linear_dep_threshold = a.lindep_aux
+    if a.df == "rsdf":
+        # RSDF copies its own __dict__ into the builder, so its instance attribute (default
+        # False) would override the class-level True set above.
+        df.j2c_eig_always = True
     tmpdir = tempfile.mkdtemp(prefix="pyscf228_", dir=os.environ.get("TMPDIR"))
     df._cderi_to_save = os.path.join(tmpdir, "cderi.h5")
-    mf.init_guess = "hcore"
+    mf.init_guess = a.init_guess
     mf.conv_tol = a.conv_tol
     mf.conv_tol_grad = a.conv_tol_grad
     mf.max_cycle = a.max_cycle
-    mf.verbose = 0
+    mf.verbose = a.verbose
 
     w0, c0 = time.perf_counter(), time.process_time()
     df.build()
@@ -246,14 +292,20 @@ def main(argv=None):
         threads=a.threads,
         precision=a.precision,
         aux=a.aux,
+        df=a.df,
+        basis_repr=a.basis_repr,
+        lindep_s=a.lindep_s,
+        init_guess=a.init_guess,
         energy=float(e),
         converged=bool(mf.converged),
         cycles=int(mf.cycles),
         nao=int(cell.nao_nr()),
-        naux=int(builders[0].auxcell.nao_nr()) if builders else None,
+        # --df rsdf: its builder subclass overrides build(), so `builders` stays empty and
+        # these come from the DF object itself.
+        naux=int((builders[0] if builders else df).auxcell.nao_nr()),
         aux_metric=drops,
-        omega=float(builders[0].omega) if builders else None,
-        mesh=[int(v) for v in builders[0].mesh] if builders else None,
+        omega=_num((builders[0] if builders else df).omega),
+        mesh=_ints((builders[0] if builders else df).mesh),
         t_cell_s=t_cell,
         t_df_build_s=t_df,
         cpu_df_build_s=c_df,
