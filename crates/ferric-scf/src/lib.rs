@@ -129,6 +129,9 @@ pub mod diis;
 pub mod guess;
 /// LinK exchange builder: linear-scaling K via Schwarz-screened column lists.
 pub mod link_k;
+/// EXPERIMENTAL tensor-hypercontraction (THC-RI-K) exchange builder.
+#[cfg(feature = "thc")]
+pub mod thc_k;
 
 pub mod rhf;
 /// Newton-step RHF solver with exact orbital Hessian.

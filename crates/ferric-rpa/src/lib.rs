@@ -71,6 +71,9 @@ pub mod seeds;
 pub mod sternheimer;
 /// Sparse Sternheimer chi0 via Boys-screened B-tiles.
 pub mod sternheimer_sparse;
+/// EXPERIMENTAL THC-factorized chi0 contraction kernel.
+#[cfg(feature = "thc")]
+pub mod thc_chi0;
 /// Stage timing instrumentation for PDEP-RPA.
 pub mod timing;
 

@@ -44,6 +44,10 @@ test-seams = ["gpu", "ferric-core/test-seams"]
 # builder with no speed benefit and unvalidated behaviour on diffuse bases.
 # Enable to work ON or test the CFMM implementation.
 cfmm-incomplete = []
+# EXPERIMENTAL tensor-hypercontraction exchange builder (crate::thc_k). Never
+# auto-selected and not wired into any driver; measured verdict in
+# reference/thc/thc-lane-2026-10.md.
+thc = []
 
 [dev-dependencies]
 ferric-dft = { path = "../ferric-dft" }
