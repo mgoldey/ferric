@@ -568,11 +568,13 @@ libint 2.13.1.  PySCF 2.13.1.  Every run (anchors included) held both heavy slot
 
 ### dryice diagnostic after the gate failure (post hoc, NOT a gate input)
 One extra untimed anchor per code at 150x434 (`toml_ri/dryice_pbe_150x434.toml`, `--grid 150 434`):
+
 | grid | ferric | PySCF | ferric - PySCF |
 |---|---|---|---|
 | 75x302 | -753.6935234956 | -753.6935159345 | -7.56e-6 |
 | 150x434 | -753.6934987201 | -753.6935231043 | +2.44e-5 |
 | 150x590 | -753.6935212603 | -753.6935179690 | -3.29e-6 |
+
 Both codes are NON-MONOTONE along 75x302 -> 150x434 -> 150x590 on dryice (ferric moves +2.48e-5 then
 -2.26e-5; PySCF -7.2e-6 then +5.1e-6).  The first step changes the radial AND the angular grid, so this
 does not show non-monotonicity in the angular order alone.  Without a converged reference, a single
