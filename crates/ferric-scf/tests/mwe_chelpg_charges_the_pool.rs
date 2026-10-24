@@ -81,9 +81,25 @@ fn run_with_room(
     out
 }
 
+/// Pin every CHELPG grid knob to its documented default so the candidate
+/// count below does not move with the caller's environment. Safe here: this
+/// binary holds a single test, and the pin runs before the SCF spawns any
+/// worker thread that could read the environment concurrently.
+fn pin_chelpg_settings() {
+    for (k, v) in [
+        ("FERRIC_CHELPG_SPACING", "0.3"),
+        ("FERRIC_CHELPG_MARGIN", "2.8"),
+        ("FERRIC_CHELPG_VDW_SCALE", "1.0"),
+        ("FERRIC_CHELPG_OUTER_CUTOFF", "2.8"),
+    ] {
+        std::env::set_var(k, v);
+    }
+}
+
 #[test]
 fn chelpg_is_charged_at_its_peak_refused_one_byte_short_and_released() {
     let _s = CleanSlot::acquire();
+    pin_chelpg_settings();
     let (mol, prep, rhf) = water();
 
     // Measure the charge, and check the pool is inert to the result.
@@ -100,8 +116,9 @@ fn chelpg_is_charged_at_its_peak_refused_one_byte_short_and_released() {
         "an ample pool moved a charge"
     );
     assert_eq!(outstanding, 0, "the CHELPG reservation outlived the call");
-    // Water's default CHELPG grid is 16,275 candidate points (in-module
-    // guard test); the charge is 64 B for each.
+    // At the pinned spacing 0.3 / margin 2.8 Bohr, water's CHELPG grid is
+    // 16,275 candidate points (in-module guard test); the charge is 64 B for
+    // each.
     assert_eq!(peak, 64 * 16_275, "pool high-water is not the CHELPG peak");
 
     // One byte short of the peak refuses at the CHELPG gate.

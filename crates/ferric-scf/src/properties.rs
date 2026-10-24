@@ -2143,13 +2143,34 @@ mod tests {
         let npts = water_npts_total(&mol);
         let at_peak = water_chelpg(&mol, &prep, &rhf, Some(chelpg_peak_bytes(npts))).unwrap();
         let ample = water_chelpg(&mol, &prep, &rhf, Some(usize::MAX)).unwrap();
-        let ambient = water_chelpg(&mol, &prep, &rhf, None).unwrap();
-        assert!(!ambient.is_empty() && ambient.len() < npts);
-        for other in [&at_peak, &ample] {
-            assert_eq!(other.len(), ambient.len());
-            for (a, b) in other.iter().zip(&ambient) {
-                assert_eq!(a.r.map(f64::to_bits), b.r.map(f64::to_bits));
-                assert_eq!(a.v.to_bits(), b.v.to_bits());
+        assert!(!ample.is_empty() && ample.len() < npts);
+        assert_eq!(at_peak.len(), ample.len());
+        for (a, b) in at_peak.iter().zip(&ample) {
+            assert_eq!(a.r.map(f64::to_bits), b.r.map(f64::to_bits));
+            assert_eq!(a.v.to_bits(), b.v.to_bits());
+        }
+        // The ambient budget comes from the environment / host, so the guard
+        // may legitimately refuse it: assert whichever decision the resolved
+        // budget dictates, and bit-identity only when it admits.
+        let ambient_budget = ferric_core::memory::resolve_budget_bytes(None);
+        match water_chelpg(&mol, &prep, &rhf, None) {
+            Ok(ambient) => {
+                assert!(
+                    ambient_budget >= chelpg_peak_bytes(npts),
+                    "admitted under an ambient budget {ambient_budget} B below the peak"
+                );
+                assert_eq!(ambient.len(), ample.len());
+                for (a, b) in ambient.iter().zip(&ample) {
+                    assert_eq!(a.r.map(f64::to_bits), b.r.map(f64::to_bits));
+                    assert_eq!(a.v.to_bits(), b.v.to_bits());
+                }
+            }
+            Err(e) => {
+                assert!(
+                    ambient_budget < chelpg_peak_bytes(npts),
+                    "refused under an ambient budget {ambient_budget} B >= the peak: {e}"
+                );
+                assert!(e.to_string().contains("chelpg candidate grid"), "{e}");
             }
         }
     }
