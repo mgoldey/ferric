@@ -1114,6 +1114,58 @@ class ScsMp2Result:
     @property
     def e_ss(self) -> float: ...
 
+class Mp2vSession:
+    """EXPERIMENTAL (research API, may change). In-memory MP2-V session for ONE
+    fragment: SCF run once; orbitals, density and NLC grid state kept alive.
+    ``att_mp2(r0, omega)`` is EXPENSIVE (one attenuated MP2); ``vv10(tuples)``
+    is CHEAP (stored grid state). r0 in Angstrom, omega in Angstrom^-1. Drop
+    the object to free memory."""
+
+    def __init__(
+        self,
+        mol: Molecule,
+        basis_set: BasisSet,
+        auxbasis: BasisSet,
+        c: float | None = None,
+        frozen_core: int | None = None,
+        nlc_grid: tuple[int, int] | None = None,
+        df_j_aux: str | None = None,
+        df_k_aux: str | None = None,
+        k_builder: str | None = None,
+        memory_budget_gb: float | None = None,
+    ) -> None: ...
+    @property
+    def rhf_energy(self) -> float: ...
+    @property
+    def n_nlc_points(self) -> int: ...
+    @property
+    def memory_bytes_estimate(self) -> int:
+        """Lower-bound estimate of bytes held; measure RSS for the real number."""
+        ...
+
+    def att_mp2(self, r0: float, omega: float | None = None) -> dict[str, float]:
+        """``{att_mp2_corr, e_os, e_ss}`` for the terfc arm (r0, omega)."""
+        ...
+
+    def coulomb_mp2(self) -> float:
+        """Plain Coulomb RI-MP2 correlation energy (same reference/aux/core)."""
+        ...
+
+    def vv10(
+        self,
+        tuples: list[tuple[float, float, str, float, float | None]],
+        fast_damping: bool = False,
+    ) -> list[float]:
+        """E_nl per ``(b, C, form, r0_vv, omega_vv)``; form eq11|terf|bare.
+        ``fast_damping`` tabulates the damping weights (opt-in; |dE_nl| <= 1e-10 Ha)."""
+        ...
+
+    def total(
+        self, r0: float, omega: float | None, b: float, c: float = 0.0089
+    ) -> dict[str, float]:
+        """Published LOCKSTEP total at (r0, omega, b, C)."""
+        ...
+
 class Mp2VResult:
     """Result of an MP2-V (attenuated MP2 + VV10) calculation."""
 
@@ -3186,6 +3238,29 @@ def run_vv10_variants(
     short-range weights: each spec is `(kind, r0_angstrom, r0_times_omega_or_None,
     power)` with kind "none" (bare VV10), "eq11" (1 - terfc^2) or "terf" (terf^power,
     terf = 1 - terfc). No MP2 is run. Closed shell."""
+    ...
+
+def run_mp2_v_decoupled_scan(
+    mol: Molecule,
+    basis_set: BasisSet,
+    auxbasis: BasisSet,
+    arms: list[tuple[float, float | None]],
+    tuples: list[tuple[float, float, str, float, float | None]],
+    frozen_core: int | None = None,
+    nlc_grid: tuple[int, int] | None = None,
+    df_j_aux: str | None = None,
+    df_k_aux: str | None = None,
+    k_builder: str | None = None,
+    memory_budget_gb: float | None = None,
+    include_coulomb_mp2: bool = False,
+    fast_damping: bool = False,
+) -> dict[str, Any]:
+    """DECOUPLED MP2-V scan (explicit opt-in; research). ``arms`` =
+    ``(r0_mp2_A, omega_mp2_invA_or_None)`` (expensive: one MP2 each);
+    ``tuples`` = ``(b, C, form, r0_vv_A, omega_vv_invA_or_None)`` with form
+    ``"eq11" | "terf" | "bare"`` (cheap: one shared VV10 pair sum). Returns
+    ``vv10_e_nl`` per tuple and ``arms[a]["att_mp2_corr"]``. ``fast_damping``
+    tabulates the damping weights (opt-in; gate |dE_nl| <= 1e-10 Ha)."""
     ...
 
 def run_rs_mp2_rpa(

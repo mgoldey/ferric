@@ -331,8 +331,9 @@ pub struct Vv10Screen {
     /// Replace dropped far cells by their monopole instead of discarding.
     pub far_field: bool,
     /// Evaluate the Eq-11 damping factor by 4-point Lagrange interpolation on
-    /// a 0.01 Bohr table instead of two `erf` per pair (about 20x cheaper per
-    /// pair). NOT bit-identical to the direct evaluation (interpolation error
+    /// a table instead of two `erf` per pair (about 20x cheaper per pair). The
+    /// node spacing is `min(0.01 Bohr, width / 250)` (`DampTable::spacing`):
+    /// 0.01 Bohr at the linked width of r0 >= ~0.94 A, finer for narrower seams. NOT bit-identical to the direct evaluation (interpolation error
     /// <~ 1e-10 relative in the factor); ignored when undamped.
     pub fast_damping: bool,
 }
@@ -345,7 +346,18 @@ struct DampTable {
 }
 
 impl DampTable {
+    /// Largest node spacing (Bohr). Narrow seams get a proportionally finer
+    /// spacing (see [`DampTable::spacing`]) so a sharp terfc stays resolved.
     const H: f64 = 0.01;
+
+    /// Node spacing for a seam of width `width` (Bohr): `min(H, width / 250)`.
+    /// At the linked width of any r0 >= ~1 A this is exactly `H`, so the
+    /// historical table is unchanged there; a sharp seam (width = r0 / s) gets
+    /// a spacing that keeps the 4-point Lagrange error at the same relative
+    /// level (the error scales as (h / width)^4).
+    fn spacing(width: f64) -> f64 {
+        Self::H.min(width / 250.0)
+    }
 
     fn build(d: &Vv10Damping) -> Self {
         let (r0, om) = match *d {
@@ -355,18 +367,25 @@ impl DampTable {
             } => (r0_bohr, omega_bohr_inv),
             Vv10Damping::None => unreachable!("table built for Terfc only"),
         };
+        Self::build_with(r0, om, |r| {
+            let tc = terfc_dispatch(r, r0, om);
+            1.0 - tc * tc
+        })
+    }
+
+    /// Table of an arbitrary seam-weight `f(r)` that tends to 1 beyond
+    /// `damping_r_one(r0, omega)` (Eq. 11 exactly; `terf^power` to <= 1e-12).
+    fn build_with(r0: f64, om: Option<f64>, f: impl Fn(f64) -> f64) -> Self {
+        let width = match om {
+            None => r0 * std::f64::consts::SQRT_2,
+            Some(w) => 1.0 / w,
+        };
+        let h = Self::spacing(width);
         let r_one = damping_r_one(r0, om);
-        let n = (r_one / Self::H).ceil() as usize + 4;
-        // Direct evaluation at the nodes via the exact (non-skipping) formula.
-        let vals = (0..n)
-            .map(|k| {
-                let r = (k as f64 - 1.0) * Self::H;
-                let tc = terfc_dispatch(r, r0, om);
-                1.0 - tc * tc
-            })
-            .collect();
+        let n = (r_one / h).ceil() as usize + 4;
+        let vals = (0..n).map(|k| f((k as f64 - 1.0) * h)).collect();
         DampTable {
-            inv_h: 1.0 / Self::H,
+            inv_h: 1.0 / h,
             r_one2: r_one * r_one,
             vals,
         }
@@ -1228,6 +1247,9 @@ impl Vv10Weight {
 }
 
 /// [`compute_vv10_damped_energy_scan`] generalised to [`Vv10Weight`] kernels.
+///
+/// One shared `C`, many `b`. A thin wrapper over
+/// [`compute_vv10_kernel_scan`] (same arithmetic, same summation order).
 pub fn compute_vv10_weighted_energy_scan(
     grid: &[GridPoint],
     dens: &DensityGrid,
@@ -1235,9 +1257,161 @@ pub fn compute_vv10_weighted_energy_scan(
     bs: &[f64],
     dampings: &[Vv10Weight],
 ) -> Vec<Vec<f64>> {
+    let kernels: Vec<(f64, f64)> = bs.iter().map(|&b| (b, c)).collect();
+    compute_vv10_kernel_scan(grid, dens, &kernels, dampings)
+}
+
+/// Categorical choice of the VV10 short-range pair weight, so the FORM can be
+/// scored under the same protocol as the continuous parameters
+/// (benchmarks/a24-mp2v-refit, Addendum F).
+///
+/// With `terf = 1 - terfc(R; r0, ω)`:
+///
+/// | form | pair weight | status |
+/// |------|-------------|--------|
+/// | [`Vv10Form::Eq11`] | `1 - terfc²` | the published MP2-V Eq. 11 |
+/// | [`Vv10Form::Terf`] | `terf` | pre-registered alternative V_A |
+/// | [`Vv10Form::Bare`] | `1` | undamped VV10 (ωB97X-V style) |
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Vv10Form {
+    /// `1 - terfc²` (paper Eq. 11).
+    Eq11,
+    /// `terf = 1 - terfc`.
+    Terf,
+    /// No damping.
+    Bare,
+}
+
+impl Vv10Form {
+    /// The pair weight for this form at seam `(r0_bohr, omega_bohr_inv)`
+    /// (`omega_bohr_inv = None` is the Dutoi-linked width). `Bare` ignores the
+    /// seam. `Eq11` goes through the SAME [`Vv10Damping::Terfc`] arithmetic as
+    /// the production lockstep path, so equal seams are bit-identical to it.
+    pub fn weight(self, r0_bohr: f64, omega_bohr_inv: Option<f64>) -> Vv10Weight {
+        match self {
+            Vv10Form::Eq11 => Vv10Weight::Damping(Vv10Damping::Terfc {
+                r0_bohr,
+                omega_bohr_inv,
+            }),
+            Vv10Form::Terf => Vv10Weight::TerfPower {
+                r0_bohr,
+                omega_bohr_inv,
+                power: 1,
+            },
+            Vv10Form::Bare => Vv10Weight::Damping(Vv10Damping::None),
+        }
+    }
+
+    /// Parse `"eq11" | "terf" | "bare"` (strict: anything else is an error).
+    pub fn parse_config_str(s: &str) -> Result<Self, String> {
+        match s {
+            "eq11" => Ok(Vv10Form::Eq11),
+            "terf" => Ok(Vv10Form::Terf),
+            "bare" => Ok(Vv10Form::Bare),
+            other => Err(format!(
+                "unknown VV10 damping form \"{other}\"; expected eq11|terf|bare"
+            )),
+        }
+    }
+}
+
+/// Energy-only VV10 pair sum for MANY `(b, C)` kernels x MANY pair weights.
+///
+/// Returns `e[a][k]` = E_nl for `weights[a]` and `kernels[k] = (b, C)` on the
+/// same grid/density: the full weights x kernels table, via
+/// [`compute_vv10_tuple_scan`]. Per `(a, k)` the arithmetic and summation order
+/// equal [`compute_vv10_damped_energy_and_potentials`], so a 1x1 call is
+/// bit-identical to it.
+pub fn compute_vv10_kernel_scan(
+    grid: &[GridPoint],
+    dens: &DensityGrid,
+    kernels: &[(f64, f64)],
+    dampings: &[Vv10Weight],
+) -> Vec<Vec<f64>> {
+    let nk = kernels.len();
+    let pairs: Vec<(usize, usize)> = (0..dampings.len())
+        .flat_map(|a| (0..nk).map(move |k| (k, a)))
+        .collect();
+    let flat = compute_vv10_tuple_scan(grid, dens, kernels, dampings, &pairs);
+    (0..dampings.len())
+        .map(|a| flat[a * nk..(a + 1) * nk].to_vec())
+        .collect()
+}
+
+/// Energy-only VV10 pair sum for an arbitrary list of `(kernel, weight)`
+/// tuples: `e[t]` = E_nl for `kernels[pairs[t].0] = (b, C)` damped by
+/// `weights[pairs[t].1]`.
+///
+/// Everything that depends only on geometry (pair distances, neighbour
+/// search) is shared by all tuples; each UNIQUE weight's damping factor (two
+/// `erf` evaluations, the dominant per-pair cost) is evaluated once per pair
+/// and each UNIQUE `(b, C)` denominator once per pair, then every tuple is one
+/// multiply-add. This is what makes a fit over (b, C, form, r0_vv, omega_vv)
+/// cost one pair sum plus `O(n_tuples)` work per pair, not `n_tuples` pair
+/// sums. A tuple's arithmetic and summation order equal
+/// [`compute_vv10_damped_energy_and_potentials`] (asserted bitwise in tests).
+pub fn compute_vv10_tuple_scan(
+    grid: &[GridPoint],
+    dens: &DensityGrid,
+    kernels: &[(f64, f64)],
+    weights: &[Vv10Weight],
+    pairs: &[(usize, usize)],
+) -> Vec<f64> {
+    compute_vv10_tuple_scan_opts(grid, dens, kernels, weights, pairs, false)
+}
+
+/// [`compute_vv10_tuple_scan`] with the opt-in `fast_damping`: every UNIQUE
+/// seam weight (Eq. 11 and `Terf`) is evaluated by 4-point Lagrange
+/// interpolation on a precomputed table instead of two `erf` per pair (the
+/// dominant per-pair cost). NOT bit-identical to the exact path; the gate is
+/// `|dE_nl| <= 1e-10 Ha` (see `fast_damping_tuple_scan_matches_exact`), and
+/// the table spacing refines with the seam width (`DampTable::spacing`).
+/// `fast_damping = false` is byte-identical to [`compute_vv10_tuple_scan`].
+pub fn compute_vv10_tuple_scan_opts(
+    grid: &[GridPoint],
+    dens: &DensityGrid,
+    kernels: &[(f64, f64)],
+    weights: &[Vv10Weight],
+    pairs: &[(usize, usize)],
+    fast_damping: bool,
+) -> Vec<f64> {
+    let tables: Vec<Option<DampTable>> = weights
+        .iter()
+        .map(|w| {
+            if !fast_damping {
+                return None;
+            }
+            match *w {
+                Vv10Weight::Damping(d @ Vv10Damping::Terfc { .. }) => Some(DampTable::build(&d)),
+                Vv10Weight::TerfPower {
+                    r0_bohr,
+                    omega_bohr_inv,
+                    power,
+                } => Some(DampTable::build_with(r0_bohr, omega_bohr_inv, |r| {
+                    (1.0 - terfc_dispatch(r, r0_bohr, omega_bohr_inv)).powi(power)
+                })),
+                Vv10Weight::Damping(Vv10Damping::None) => None,
+            }
+        })
+        .collect();
+    let bs: Vec<f64> = kernels.iter().map(|k| k.0).collect();
+    let mut c_vals: Vec<f64> = Vec::new();
+    let c_idx: Vec<usize> = kernels
+        .iter()
+        .map(
+            |k| match c_vals.iter().position(|c| c.to_bits() == k.1.to_bits()) {
+                Some(i) => i,
+                None => {
+                    c_vals.push(k.1);
+                    c_vals.len() - 1
+                }
+            },
+        )
+        .collect();
     let npts = dens.rho.len();
     let nb = bs.len();
-    let na = dampings.len();
+    let na = weights.len();
+    let nt = pairs.len();
     let pi = std::f64::consts::PI;
     let pi43 = 4.0 * pi / 3.0;
     let k_vv: Vec<f64> = bs
@@ -1250,7 +1424,7 @@ pub fn compute_vv10_weighted_energy_scan(
         .collect();
 
     let mut active = vec![false; npts];
-    let mut w0 = vec![0.0_f64; npts];
+    let mut w0 = vec![vec![0.0_f64; npts]; c_vals.len()];
     let mut kp = vec![vec![0.0_f64; npts]; nb];
     let mut xyz = vec![[0.0_f64; 3]; npts];
     let mut rho_w = vec![0.0_f64; npts];
@@ -1263,8 +1437,10 @@ pub fn compute_vv10_weighted_energy_scan(
         active[g] = true;
         xyz[g] = grid[g].xyz;
         rho_w[g] = r * grid[g].weight;
-        let w0sq = c * (s / (r * r)).powi(2) + pi43 * r;
-        w0[g] = w0sq.sqrt();
+        for (ci, &c) in c_vals.iter().enumerate() {
+            let w0sq = c * (s / (r * r)).powi(2) + pi43 * r;
+            w0[ci][g] = w0sq.sqrt();
+        }
         for k in 0..nb {
             kp[k][g] = k_vv[k] * r.powf(1.0 / 6.0);
         }
@@ -1273,14 +1449,14 @@ pub fn compute_vv10_weighted_energy_scan(
         (npts >= CELL_LIST_MIN_PTS).then(|| CellList::build(&xyz, &active, NLC_CUTOFF_BOHR));
 
     let row_fn = |i: usize| -> Vec<f64> {
-        let mut acc = vec![0.0_f64; na * nb];
+        let mut acc = vec![0.0_f64; nt];
         if !active[i] {
             return acc;
         }
         let xi = xyz[i];
-        let w0i = w0[i];
         let mut den = vec![0.0_f64; nb];
         let mut ok = vec![false; nb];
+        let mut fac = vec![0.0_f64; na];
         let mut visit = |p: usize, acc: &mut Vec<f64>| {
             let dx = xyz[p][0] - xi[0];
             let dy = xyz[p][1] - xi[1];
@@ -1288,8 +1464,8 @@ pub fn compute_vv10_weighted_energy_scan(
             let r2 = dx * dx + dy * dy + dz * dz;
             let mut any = false;
             for k in 0..nb {
-                let gp_val = r2 * w0[p] + kp[k][p];
-                let gi_val = r2 * w0i + kp[k][i];
+                let gp_val = r2 * w0[c_idx[k]][p] + kp[k][p];
+                let gi_val = r2 * w0[c_idx[k]][i] + kp[k][i];
                 let gt_val = gi_val + gp_val;
                 ok[k] = !(gi_val < 1e-30 || gp_val < 1e-30 || gt_val < 1e-30);
                 den[k] = gi_val * gp_val * gt_val;
@@ -1298,16 +1474,20 @@ pub fn compute_vv10_weighted_energy_scan(
             if !any {
                 return;
             }
-            for (a, d) in dampings.iter().enumerate() {
-                let t_num = if d.is_identity() {
+            // Per-weight numerator, once per pair (identity keeps the exact
+            // original arithmetic: no multiply by a literal 1.0).
+            for (a, d) in weights.iter().enumerate() {
+                fac[a] = if d.is_identity() {
                     rho_w[p]
+                } else if let Some(t) = &tables[a] {
+                    rho_w[p] * t.eval(r2)
                 } else {
                     rho_w[p] * d.factor_from_r2(r2)
                 };
-                for k in 0..nb {
-                    if ok[k] {
-                        acc[a * nb + k] += t_num / den[k];
-                    }
+            }
+            for (t, &(k, a)) in pairs.iter().enumerate() {
+                if ok[k] {
+                    acc[t] += fac[a] / den[k];
                 }
             }
         };
@@ -1331,17 +1511,15 @@ pub fn compute_vv10_weighted_energy_scan(
     };
     let rows = map_rows(npts, row_fn);
 
-    let mut e = vec![vec![0.0_f64; nb]; na];
+    let mut e = vec![0.0_f64; nt];
     for g in 0..npts {
         if !active[g] {
             continue;
         }
-        for a in 0..na {
-            for k in 0..nb {
-                let f_g = -1.5 * rows[g][a * nb + k];
-                let exc_g = beta[k] + 0.5 * f_g;
-                e[a][k] += grid[g].weight * dens.rho[g] * exc_g;
-            }
+        for (t, &(k, _)) in pairs.iter().enumerate() {
+            let f_g = -1.5 * rows[g][t];
+            let exc_g = beta[k] + 0.5 * f_g;
+            e[t] += grid[g].weight * dens.rho[g] * exc_g;
         }
     }
     e
@@ -2116,6 +2294,37 @@ mod cutoff_tests {
         }
     }
 
+    /// Sharp decoupled seams (r0*omega in {4, 8, 16}) keep the table error at
+    /// the linked seam's level because the node spacing refines with the seam
+    /// width (`DampTable::spacing`). Measured: 3.2e-11 at every s; with the
+    /// refinement removed (fixed 0.01 Bohr) 2.5e-8 / 4.1e-7 / 6.4e-6, so the
+    /// bound kills that mutant at every s.
+    ///
+    /// Bound: a pointwise weight error dw changes the pair term of E_nl by at
+    /// most |dw| times that term's magnitude, ~0.1 Ha for the A24 fragments of
+    /// the refit (the cached E_nl are 0.002-0.4 Ha). The registered gate on
+    /// E_nl is 1e-10 Ha (Addendum G.1), so |dw| <= 1e-10 / 0.1 = 1e-9.
+    #[test]
+    fn damping_table_resolves_sharp_seams() {
+        let r0 = ferric_core::units::ANGSTROM_TO_BOHR;
+        for s in [4.0_f64, 8.0, 16.0] {
+            let d = Vv10Damping::Terfc {
+                r0_bohr: r0,
+                omega_bohr_inv: Some(s / r0),
+            };
+            let t = DampTable::build(&d);
+            let mut worst = 0.0f64;
+            let mut r = 0.0;
+            while r < 25.0 {
+                let e = (t.eval(r * r) - d.factor_from_r2(r * r)).abs();
+                worst = worst.max(e);
+                r += 0.000371;
+            }
+            eprintln!("[damp table sharp] s={s} max abs err {worst:.3e}");
+            assert!(worst < 1e-9, "s={s}: table error {worst:.3e}");
+        }
+    }
+
     /// The monopole far field must not be worse than discarding the tail.
     #[test]
     fn far_field_improves_on_truncation() {
@@ -2140,5 +2349,99 @@ mod cutoff_tests {
             e_tail < 0.5 * e_cut,
             "monopole must recover most of the tail"
         );
+    }
+
+    /// Pre-registered gate for the tabulated damping in the tuple scan:
+    /// |E_fast - E_exact| <= 1e-10 Ha for every form and for the linked seam
+    /// and r0*omega in {2, 4, 8}; `fast_damping = false` is byte-identical to
+    /// the plain scan. Mutation-checked: a 25x coarser table spacing fails it.
+    #[test]
+    fn fast_damping_tuple_scan_matches_exact() {
+        let mol = Molecule::parse_xyz(
+            "3\nwater\nO 0.0 0.0 0.1173\nH 0.0 0.7572 -0.4692\nH 0.0 -0.7572 -0.4692\n",
+            0,
+            1,
+        )
+        .unwrap();
+        let (_p, grid, dens) = synthetic_density_on_grid(&mol, 16, 14);
+        let r0 = ferric_core::units::ANGSTROM_TO_BOHR;
+        let mut weights = vec![Vv10Form::Bare.weight(r0, None)];
+        for s in [None, Some(2.0), Some(4.0), Some(8.0)] {
+            let om = s.map(|s: f64| s / r0);
+            weights.push(Vv10Form::Eq11.weight(r0, om));
+            weights.push(Vv10Form::Terf.weight(r0, om));
+        }
+        let kernels = [(11.0, 0.0089), (6.0, 0.0089)];
+        let pairs: Vec<(usize, usize)> = (0..weights.len())
+            .flat_map(|a| (0..kernels.len()).map(move |k| (k, a)))
+            .collect();
+        let exact = compute_vv10_tuple_scan_opts(&grid, &dens, &kernels, &weights, &pairs, false);
+        let plain = compute_vv10_tuple_scan(&grid, &dens, &kernels, &weights, &pairs);
+        for (a, b) in exact.iter().zip(&plain) {
+            assert_eq!(a.to_bits(), b.to_bits());
+        }
+        let fast = compute_vv10_tuple_scan_opts(&grid, &dens, &kernels, &weights, &pairs, true);
+        let worst = exact
+            .iter()
+            .zip(&fast)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f64, f64::max);
+        assert!(worst <= 1e-10, "worst |dE_nl| = {worst:e}");
+    }
+
+    /// EXACTNESS ANCHOR for the general (kernel, weight) TUPLE scan used by the
+    /// full MP2-V refit: tuples with DIFFERENT (b, C) and different weights,
+    /// in a scrambled pairing (not a Cartesian product), each equal to the
+    /// single-combination production path bit-for-bit; the research `Terf`
+    /// form equals its own 1x1 evaluation bit-for-bit and sits where the
+    /// pointwise ordering bare <= Eq. 11 <= terf (weights 1 >= 1 - terfc^2 >=
+    /// terf) forces it on the (negative-f) pair sum. A mutated pairing (kernel
+    /// and weight indices swapped) fails the first loop.
+    #[test]
+    fn tuple_scan_matches_single_combination_bitwise() {
+        let mol = Molecule::parse_xyz(
+            "3\nwater\nO 0.0 0.0 0.1173\nH 0.0 0.7572 -0.4692\nH 0.0 -0.7572 -0.4692\n",
+            0,
+            1,
+        )
+        .unwrap();
+        let (params, grid, dens) = synthetic_density_on_grid(&mol, 16, 14);
+        assert!(grid.len() >= CELL_LIST_MIN_PTS);
+        let r0 = ferric_core::units::ANGSTROM_TO_BOHR;
+        let kernels = [(11.0, 0.0089), (8.0, 0.0089), (14.5, 0.03)];
+        let weights = [
+            Vv10Form::Bare.weight(r0, None),
+            Vv10Form::Eq11.weight(r0, None),
+            Vv10Form::Eq11.weight(1.2 * r0, Some(2.0)),
+            Vv10Form::Terf.weight(r0, None),
+        ];
+        // scrambled (kernel, weight) pairs, with a repeated kernel and weight
+        let pairs = [(2, 1), (0, 3), (1, 2), (0, 0), (2, 2), (0, 1), (1, 3)];
+        let e = compute_vv10_tuple_scan(&grid, &dens, &kernels, &weights, &pairs);
+        assert_eq!(e.len(), pairs.len());
+        let _ = params;
+        for (t, &(k, a)) in pairs.iter().enumerate() {
+            let p = Vv10Params {
+                b: kernels[k].0,
+                c: kernels[k].1,
+            };
+            if let Vv10Weight::Damping(d) = weights[a] {
+                let single = compute_vv10_damped_energy_and_potentials(&grid, &dens, &p, d).0;
+                assert_eq!(e[t].to_bits(), single.to_bits(), "tuple {t} (k={k}, a={a})");
+            } else {
+                let one =
+                    compute_vv10_tuple_scan(&grid, &dens, &[kernels[k]], &[weights[a]], &[(0, 0)]);
+                assert_eq!(e[t].to_bits(), one[0].to_bits(), "tuple {t} terf 1x1");
+            }
+        }
+        // Weight ordering at one kernel: bare < Eq. 11 < terf (E_nl rises as
+        // more attraction is removed).
+        let kk = [(11.0, 0.0089)];
+        let bare = compute_vv10_tuple_scan(&grid, &dens, &kk, &weights, &[(0, 0)])[0];
+        let eq11 = compute_vv10_tuple_scan(&grid, &dens, &kk, &weights, &[(0, 1)])[0];
+        let terf = compute_vv10_tuple_scan(&grid, &dens, &kk, &weights, &[(0, 3)])[0];
+        assert!(bare < eq11 && eq11 < terf, "{bare} {eq11} {terf}");
+        // C actually matters (not a vacuous kernel list).
+        assert!((e[0] - e[5]).abs() > 1e-7);
     }
 }

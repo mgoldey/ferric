@@ -22,8 +22,8 @@ use ferric_core::parallel::ParallelContext;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_mp2::att_vv10::{
-    att_mp2_vv10, att_mp2_vv10_scan, AttVv10Attenuator, AttVv10Config, AttVv10ScanArm,
-    AttVv10SpinComponents,
+    att_mp2_vv10, att_mp2_vv10_decoupled_scan_opts, att_mp2_vv10_scan, AttVv10Attenuator,
+    AttVv10Config, AttVv10ScanArm, AttVv10SpinComponents, Mp2vSession, Vv10Decoupling, Vv10Tuple,
 };
 use ferric_mp2::attenuated::{attenuated_ri_mp2, AttenuatedMp2Config};
 use ferric_mp2::double_hybrid::{mp2_double_hybrid, DoubleHybridKind};
@@ -7448,6 +7448,49 @@ fn run_mp2_v(
     })
 }
 
+/// Shared setup of the MP2-V scan bindings: the two prepared bases, ONE
+/// converged DF-JK RHF reference, and the base [`AttVv10Config`] (published
+/// terfc/Eq. 11 defaults with C, frozen core, budget and NLC grid applied).
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+fn mp2v_scan_reference(
+    mol: &PyMolecule,
+    basis_set: &PyBasisSet,
+    auxbasis: &PyBasisSet,
+    c: Option<f64>,
+    frozen_core: Option<usize>,
+    nlc_grid: Option<(usize, usize)>,
+    df_aux: (Option<&str>, Option<&str>),
+    k_builder: Option<&str>,
+    memory_budget_gb: Option<f64>,
+) -> PyResult<(PreparedBasis, PreparedBasis, ScfResult, AttVv10Config)> {
+    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
+    let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
+    let coul = Operator::coulomb();
+    let bounds = SchwarzBounds::compute(coul, &prep).map_err(make_err)?;
+    let ctx = ParallelContext::default();
+    let mut rcfg = rhf_config_budgeted(k_builder, budget_bytes_from_gb(memory_budget_gb));
+    rcfg.df_j_aux = resolve_df_aux(df_aux.0, "def2-universal-jkfit");
+    rcfg.df_k_aux = resolve_df_aux(df_aux.1, "def2-universal-jkfit");
+    let rhf = solve_rhf(&ctx, &mol.inner, &prep, coul, &bounds, &rcfg).map_err(make_err)?;
+    if !rhf.converged {
+        return Err(make_err(ferric_core::FerricError::ScfConvergence {
+            iterations: rhf.iterations,
+            last_energy: rhf.energy,
+        }));
+    }
+    let mut base = AttVv10Config::mp2_v_terfc_atz();
+    if let Some(c) = c {
+        base.vv10.c = c;
+    }
+    base.frozen_core = frozen_core.unwrap_or(0);
+    base.memory_budget_bytes = budget_bytes_from_gb(memory_budget_gb);
+    if let Some((nr, na)) = nlc_grid {
+        base.nlc_grid.n_radial = nr;
+        base.nlc_grid.n_angular = na;
+    }
+    Ok((prep, dfbs, rhf, base))
+}
+
 /// MP2-V scan on ONE converged RHF reference: the attenuated-MP2 half for
 /// every `(r0, omega)` arm and the damped VV10 half for every arm x `b`.
 ///
@@ -7488,31 +7531,17 @@ fn run_mp2_v_scan(
             )));
         }
     }
-    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
-    let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
-    let coul = Operator::coulomb();
-    let bounds = SchwarzBounds::compute(coul, &prep).map_err(make_err)?;
-    let ctx = ParallelContext::default();
-    let mut rcfg = rhf_config_budgeted(k_builder, budget_bytes_from_gb(memory_budget_gb));
-    rcfg.df_j_aux = resolve_df_aux(df_j_aux, "def2-universal-jkfit");
-    rcfg.df_k_aux = resolve_df_aux(df_k_aux, "def2-universal-jkfit");
-    let rhf = solve_rhf(&ctx, &mol.inner, &prep, coul, &bounds, &rcfg).map_err(make_err)?;
-    if !rhf.converged {
-        return Err(make_err(ferric_core::FerricError::ScfConvergence {
-            iterations: rhf.iterations,
-            last_energy: rhf.energy,
-        }));
-    }
-    let mut base = AttVv10Config::mp2_v_terfc_atz();
-    if let Some(c) = c {
-        base.vv10.c = c;
-    }
-    base.frozen_core = frozen_core.unwrap_or(0);
-    base.memory_budget_bytes = budget_bytes_from_gb(memory_budget_gb);
-    if let Some((nr, na)) = nlc_grid {
-        base.nlc_grid.n_radial = nr;
-        base.nlc_grid.n_angular = na;
-    }
+    let (prep, dfbs, rhf, base) = mp2v_scan_reference(
+        mol,
+        basis_set,
+        auxbasis,
+        c,
+        frozen_core,
+        nlc_grid,
+        (df_j_aux, df_k_aux),
+        k_builder,
+        memory_budget_gb,
+    )?;
     let scan_arms: Vec<AttVv10ScanArm> = arms
         .iter()
         .map(|(r0, w)| AttVv10ScanArm {
@@ -7548,6 +7577,272 @@ fn run_mp2_v_scan(
         lst.append(d)?;
     }
     out.set_item("arms", lst)?;
+    Ok(out.unbind())
+}
+
+/// EXPERIMENTAL in-memory MP2-V session for ONE fragment (research API, may
+/// change). Runs the SCF once and keeps the orbitals, density and NLC grid
+/// state alive so `(r0, omega)` (expensive: one attenuated MP2) and the VV10
+/// parameters (cheap: from the stored grid state) can be iterated without
+/// redoing either. Drop the object to release the memory.
+#[pyclass(name = "Mp2vSession", unsendable)]
+struct PyMp2vSession {
+    inner: Mp2vSession,
+}
+
+fn py_arm(r0: f64, omega: Option<f64>) -> PyResult<AttVv10ScanArm> {
+    if !r0.is_finite() || r0 <= 0.0 {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "r0 must be finite and > 0 (got {r0} A)"
+        )));
+    }
+    Ok(AttVv10ScanArm {
+        r0_bohr: r0 * ferric_mp2::att_vv10::BOHR_PER_ANG,
+        omega: omega.map(|w| w * ferric_mp2::attenuated::BOHR_INV_PER_ANG_INV),
+    })
+}
+
+fn py_tuples(tuples: &[(f64, f64, String, f64, Option<f64>)]) -> PyResult<Vec<Vv10Tuple>> {
+    use ferric_dft::vv10::Vv10Form;
+    let mut vt = Vec::with_capacity(tuples.len());
+    for (b, c, form, r0_vv, w_vv) in tuples {
+        let form =
+            Vv10Form::parse_config_str(form).map_err(pyo3::exceptions::PyValueError::new_err)?;
+        vt.push(Vv10Tuple {
+            b: *b,
+            c: *c,
+            damping: Vv10Decoupling {
+                form,
+                r0_bohr: r0_vv * ferric_mp2::att_vv10::BOHR_PER_ANG,
+                omega: w_vv.map(|w| w * ferric_mp2::attenuated::BOHR_INV_PER_ANG_INV),
+            },
+        });
+    }
+    Ok(vt)
+}
+
+#[pymethods]
+impl PyMp2vSession {
+    #[new]
+    #[pyo3(signature = (mol, basis_set, auxbasis, c=None, frozen_core=None, nlc_grid=None, df_j_aux=None, df_k_aux=None, k_builder=None, memory_budget_gb=None))]
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        mol: &PyMolecule,
+        basis_set: &PyBasisSet,
+        auxbasis: &PyBasisSet,
+        c: Option<f64>,
+        frozen_core: Option<usize>,
+        nlc_grid: Option<(usize, usize)>,
+        df_j_aux: Option<&str>,
+        df_k_aux: Option<&str>,
+        k_builder: Option<&str>,
+        memory_budget_gb: Option<f64>,
+    ) -> PyResult<Self> {
+        let (prep, dfbs, rhf, base) = mp2v_scan_reference(
+            mol,
+            basis_set,
+            auxbasis,
+            c,
+            frozen_core,
+            nlc_grid,
+            (df_j_aux, df_k_aux),
+            k_builder,
+            memory_budget_gb,
+        )?;
+        let inner = Mp2vSession::new(
+            mol.inner.clone(),
+            basis_set.inner.clone(),
+            prep,
+            dfbs,
+            rhf,
+            base,
+        )
+        .map_err(make_err)?;
+        Ok(Self { inner })
+    }
+
+    #[getter]
+    fn rhf_energy(&self) -> f64 {
+        self.inner.e_hf()
+    }
+
+    #[getter]
+    fn n_nlc_points(&self) -> usize {
+        self.inner.n_nlc_points()
+    }
+
+    /// Lower-bound estimate of bytes held (grid state + a few nbf^2 matrices);
+    /// measure RSS for the real number.
+    #[getter]
+    fn memory_bytes_estimate(&self) -> usize {
+        self.inner.memory_bytes_estimate()
+    }
+
+    /// Attenuated RI-MP2 correlation for `(r0 [A], omega [A^-1] or None)`.
+    /// Returns `{att_mp2_corr, e_os, e_ss}`.
+    #[pyo3(signature = (r0, omega=None))]
+    fn att_mp2(
+        &self,
+        py: Python<'_>,
+        r0: f64,
+        omega: Option<f64>,
+    ) -> PyResult<Py<pyo3::types::PyDict>> {
+        let r = self.inner.att_mp2(&py_arm(r0, omega)?).map_err(make_err)?;
+        let d = pyo3::types::PyDict::new(py);
+        d.set_item("att_mp2_corr", r.e_c_att_mp2)?;
+        d.set_item("e_os", r.e_os)?;
+        d.set_item("e_ss", r.e_ss)?;
+        Ok(d.unbind())
+    }
+
+    /// Plain Coulomb RI-MP2 correlation energy (same reference/aux/core).
+    fn coulomb_mp2(&self) -> PyResult<f64> {
+        self.inner.coulomb_mp2().map_err(make_err)
+    }
+
+    /// E_nl per `(b, C, form, r0_vv [A], omega_vv [A^-1] or None)` tuple from
+    /// the stored grid state; `form` is "eq11" | "terf" | "bare".
+    /// `fast_damping=True` tabulates the damping weights (opt-in, gate
+    /// |dE_nl| <= 1e-10 Ha, not bit-identical; default False = exact erf).
+    #[pyo3(signature = (tuples, fast_damping=false))]
+    fn vv10(
+        &self,
+        tuples: Vec<(f64, f64, String, f64, Option<f64>)>,
+        fast_damping: bool,
+    ) -> PyResult<Vec<f64>> {
+        self.inner
+            .vv10_opts(&py_tuples(&tuples)?, fast_damping)
+            .map_err(make_err)
+    }
+
+    /// Published LOCKSTEP total at `(r0, omega, b, C)` (Eq. 11 shares the
+    /// seam). Returns `{rhf_energy, att_mp2_corr, vv10_e_nl, total_energy}`.
+    #[pyo3(signature = (r0, omega, b, c=0.0089))]
+    fn total(
+        &self,
+        py: Python<'_>,
+        r0: f64,
+        omega: Option<f64>,
+        b: f64,
+        c: f64,
+    ) -> PyResult<Py<pyo3::types::PyDict>> {
+        let (hf, ec, en) = self
+            .inner
+            .total(&py_arm(r0, omega)?, b, c)
+            .map_err(make_err)?;
+        let d = pyo3::types::PyDict::new(py);
+        d.set_item("rhf_energy", hf)?;
+        d.set_item("att_mp2_corr", ec)?;
+        d.set_item("vv10_e_nl", en)?;
+        d.set_item("total_energy", hf + ec + en)?;
+        Ok(d.unbind())
+    }
+}
+
+/// DECOUPLED MP2-V scan on ONE converged RHF reference (explicit opt-in to a
+/// VV10 damping that is independent of the MP2 attenuator; research).
+///
+/// `arms`: list of `(r0_mp2_angstrom, omega_mp2_inverse_angstrom_or_None)` --
+/// the EXPENSIVE parameters (one attenuated MP2 each). `tuples`: list of
+/// `(b, C, form, r0_vv_angstrom, omega_vv_inverse_angstrom_or_None)` -- the
+/// CHEAP parameters (no SCF, no MP2; one shared VV10 pair sum for the whole
+/// list). `form` is `"eq11"` (1 - terfc^2, the published Eq. 11 factor),
+/// `"terf"` (terf = 1 - terfc) or `"bare"` (undamped; `r0_vv` is ignored and
+/// `omega_vv` must be None). Returns `{rhf_energy, n_nlc_points,
+/// mp2_coulomb_corr, arms: [{r0, omega, att_mp2_corr, e_os, e_ss}], vv10_e_nl:
+/// [one per tuple]}`; the model energy for any pairing is `rhf_energy +
+/// arms[a].att_mp2_corr + vv10_e_nl[t]`. Closed shell, terfc only.
+/// `fast_damping=True` tabulates the damping weights (opt-in; gate
+/// |dE_nl| <= 1e-10 Ha; NOT bit-identical; default False = exact erf).
+#[pyfunction]
+#[pyo3(signature = (mol, basis_set, auxbasis, arms, tuples, frozen_core=None, nlc_grid=None, df_j_aux=None, df_k_aux=None, k_builder=None, memory_budget_gb=None, include_coulomb_mp2=false, fast_damping=false))]
+#[allow(clippy::too_many_arguments)]
+fn run_mp2_v_decoupled_scan(
+    py: Python<'_>,
+    mol: &PyMolecule,
+    basis_set: &PyBasisSet,
+    auxbasis: &PyBasisSet,
+    arms: Vec<(f64, Option<f64>)>,
+    tuples: Vec<(f64, f64, String, f64, Option<f64>)>,
+    frozen_core: Option<usize>,
+    nlc_grid: Option<(usize, usize)>,
+    df_j_aux: Option<&str>,
+    df_k_aux: Option<&str>,
+    k_builder: Option<&str>,
+    memory_budget_gb: Option<f64>,
+    include_coulomb_mp2: bool,
+    fast_damping: bool,
+) -> PyResult<Py<pyo3::types::PyDict>> {
+    use ferric_dft::vv10::Vv10Form;
+    use pyo3::types::{PyDict, PyList};
+    for (r0, _) in &arms {
+        if !r0.is_finite() || *r0 <= 0.0 {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "r0 must be finite and > 0 (got {r0} A)"
+            )));
+        }
+    }
+    let mut vt = Vec::with_capacity(tuples.len());
+    for (b, c, form, r0_vv, w_vv) in &tuples {
+        let form =
+            Vv10Form::parse_config_str(form).map_err(pyo3::exceptions::PyValueError::new_err)?;
+        vt.push(Vv10Tuple {
+            b: *b,
+            c: *c,
+            damping: Vv10Decoupling {
+                form,
+                r0_bohr: r0_vv * ferric_mp2::att_vv10::BOHR_PER_ANG,
+                omega: w_vv.map(|w| w * ferric_mp2::attenuated::BOHR_INV_PER_ANG_INV),
+            },
+        });
+    }
+    let (prep, dfbs, rhf, base) = mp2v_scan_reference(
+        mol,
+        basis_set,
+        auxbasis,
+        None,
+        frozen_core,
+        nlc_grid,
+        (df_j_aux, df_k_aux),
+        k_builder,
+        memory_budget_gb,
+    )?;
+    let scan_arms: Vec<AttVv10ScanArm> = arms
+        .iter()
+        .map(|(r0, w)| AttVv10ScanArm {
+            r0_bohr: r0 * ferric_mp2::att_vv10::BOHR_PER_ANG,
+            omega: w.map(|w| w * ferric_mp2::attenuated::BOHR_INV_PER_ANG_INV),
+        })
+        .collect();
+    let r = att_mp2_vv10_decoupled_scan_opts(
+        &mol.inner,
+        &prep,
+        &basis_set.inner,
+        &dfbs,
+        &rhf,
+        &base,
+        &scan_arms,
+        &vt,
+        include_coulomb_mp2,
+        fast_damping,
+    )
+    .map_err(make_err)?;
+    let out = PyDict::new(py);
+    out.set_item("rhf_energy", r.e_hf)?;
+    out.set_item("n_nlc_points", r.n_nlc_points)?;
+    out.set_item("mp2_coulomb_corr", r.e_c_mp2_coulomb)?;
+    let lst = PyList::empty(py);
+    for (arm, res) in arms.iter().zip(r.arms.iter()) {
+        let d = PyDict::new(py);
+        d.set_item("r0", arm.0)?;
+        d.set_item("omega", arm.1)?;
+        d.set_item("att_mp2_corr", res.e_c_att_mp2)?;
+        d.set_item("e_os", res.e_os)?;
+        d.set_item("e_ss", res.e_ss)?;
+        lst.append(d)?;
+    }
+    out.set_item("arms", lst)?;
+    out.set_item("vv10_e_nl", r.e_nl_vv10)?;
     Ok(out.unbind())
 }
 
@@ -11053,6 +11348,16 @@ fn run_irc(
     })
 }
 
+/// Registers the MP2-V bindings (kept out of the module-init function to hold
+/// its cyclomatic complexity at the committed baseline).
+fn register_mp2v(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_class::<PyMp2VResult>()?;
+    m.add_class::<PyMp2vSession>()?;
+    m.add_function(wrap_pyfunction!(run_mp2_v, m)?)?;
+    m.add_function(wrap_pyfunction!(run_mp2_v_decoupled_scan, m)?)?;
+    Ok(())
+}
+
 /// Python bindings for ferric (pyo3).
 ///
 /// Exposes the engine to Python: `Molecule` / `BasisSet` constructors plus
@@ -11115,7 +11420,6 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyMp3Result>()?;
     m.add_class::<PyAttenuatedMp2Result>()?;
     m.add_class::<PyScsMp2Result>()?;
-    m.add_class::<PyMp2VResult>()?;
     m.add_class::<PyLaplaceMp2Result>()?;
     m.add_class::<PySosMp2Result>()?;
     m.add_class::<PyDftResult>()?;
@@ -11193,7 +11497,7 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(run_terfc_rimp2, m)?)?;
     m.add_function(wrap_pyfunction!(run_scs_mp2, m)?)?;
     m.add_function(wrap_pyfunction!(run_scs_mp2_2terfc, m)?)?;
-    m.add_function(wrap_pyfunction!(run_mp2_v, m)?)?;
+    register_mp2v(m)?;
     m.add_function(wrap_pyfunction!(run_double_hybrid, m)?)?;
 
     m.add_function(wrap_pyfunction!(run_laplace_mp2, m)?)?;

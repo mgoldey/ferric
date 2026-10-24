@@ -1,0 +1,29 @@
+mp2v{}.total_energy -0x1.30d5ce1c28bf6p+6
+mp2v{}.rhf_energy -0x1.301b6d19047b4p+6
+mp2v{}.att_mp2_corr -0x1.9aee16583979bp-3
+mp2v{}.vv10_e_nl 0x1.3160807d89b9fp-6
+mp2v{'omega': 2.0}.total_energy -0x1.314d03e6a6dd7p+6
+mp2v{'omega': 2.0}.rhf_energy -0x1.301b6d19047b4p+6
+mp2v{'omega': 2.0}.att_mp2_corr -0x1.44c5335a15378p-2
+mp2v{'omega': 2.0}.vv10_e_nl 0x1.32e65b7b2fe4dp-6
+mp2v{'r0': 1.35, 'b': 6.0}.total_energy -0x1.30bb46f512207p+6
+mp2v{'r0': 1.35, 'b': 6.0}.rhf_energy -0x1.301b6d19047b4p+6
+mp2v{'r0': 1.35, 'b': 6.0}.att_mp2_corr -0x1.9cf5ccb84cb2ep-3
+mp2v{'r0': 1.35, 'b': 6.0}.vv10_e_nl 0x1.75085274095d9p-5
+mp2v{'vv10_damping': 'none'}.total_energy -0x1.30d6498966e08p+6
+mp2v{'vv10_damping': 'none'}.rhf_energy -0x1.301b6d19047b4p+6
+mp2v{'vv10_damping': 'none'}.att_mp2_corr -0x1.9aee16583979bp-3
+mp2v{'vv10_damping': 'none'}.vv10_e_nl 0x1.29a9ac9b782b4p-6
+scan0.att -0x1.9ae151caebfa0p-3
+scan0.vv10[0] 0x1.701ea3b6f8a07p-5
+scan0.vv10[1] 0x1.31ecf759e5be2p-6
+scan0.vv10[2] 0x1.98bfe6e8182e8p-7
+scan1.att -0x1.30a60e4387aaap-2
+scan1.vv10[0] 0x1.7bd7c9d716a9cp-5
+scan1.vv10[1] 0x1.36b5eec258297p-6
+scan1.vv10[2] 0x1.9d40290f4b346p-7
+variant0 0x1.2a267b1ac119dp-6
+variant1 0x1.31ecf759e5be2p-6
+variant2 0x1.353b905bc06f4p-6
+variant3 0x1.3b40a31a5a9edp-6
+wb97xv.total -0x1.3191063f26c98p+6
