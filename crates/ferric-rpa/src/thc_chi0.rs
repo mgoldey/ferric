@@ -3,8 +3,10 @@
 //! **EXPERIMENTAL, feature `thc`, off by default. This is a contraction KERNEL
 //! only: there is no builder from a molecule (no ISDF of the projected pair
 //! densities), it is not wired into any RPA driver, and no timing claim is
-//! made.** No molecular THC-dRPA implementation is known in the literature
-//! (published THC-RPA, arXiv:2306.04880, is periodic/k-point).
+//! made.** We did not find a molecular THC-dRPA implementation; published
+//! THC-RPA work we checked (arXiv:2306.04880) is periodic/k-point. This is
+//! NOT a literature claim: Lu & Thicke (2017) may be a counterexample and
+//! has not been verified.
 //!
 //! # What it computes
 //!
@@ -291,21 +293,31 @@ mod tests {
         );
     }
 
+    /// At ω = 0 every Laplace weight is positive and the response is a sum
+    /// of Gram matrices, so `ε̃ − I` must be positive semi-definite. A sign
+    /// error in the prefactor, the weights or the projection breaks this.
+    /// (The former symmetry test could not fail: the kernel symmetrizes.)
     #[test]
-    fn thc_dielectric_is_symmetric() {
+    fn thc_dielectric_static_is_at_least_identity() {
+        use ndarray_linalg::{Eigh, UPLO};
         let (eps_occ, eps_vir) = toy(3, 6);
         let thc = toy_thc(3, 6, 12, 5);
         let e = thc
             .dielectric_at_omega(
                 &eps_occ,
                 &eps_vir,
-                0.4,
+                0.0,
                 &quad_for(&eps_occ, &eps_vir, 7),
                 4.0,
             )
             .unwrap();
-        let worst = (&e - &e.t()).iter().fold(0.0f64, |m, v| m.max(v.abs()));
-        assert!(worst < 1e-12, "dielectric not symmetric: {worst:.3e}");
+        let (w, _) = e.eigh(UPLO::Upper).unwrap();
+        let wmin = w.iter().cloned().fold(f64::INFINITY, f64::min);
+        let wmax = w.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        assert!(
+            wmin > 1.0 - 1e-12 && wmax > 1.0 + 1e-3,
+            "eigenvalues [{wmin}, {wmax}]"
+        );
     }
 
     #[test]

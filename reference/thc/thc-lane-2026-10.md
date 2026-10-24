@@ -62,7 +62,13 @@ These rows use synthetic factors (`ThcK::from_parts`) and a synthetic
 with 69% memory pressure and 428k `high` events. The process was reclaim-
 throttled 15 min into a roughly 5 min row, so it was killed and gives no
 number. Peak memory is the DF-K raw plus dressed tensors held together with
-the THC-side buffers.
+the THC-side buffers. The harness sets `DFK_BUDGET = 10 GiB`
+(`thc_k_vs_dfk_timing.rs`, the `DFK_BUDGET` const), which equals the cgroup
+MemoryHigh. DF-K was therefore allowed to stay in core right up to the
+throttle point, so the cut follows from how the harness was configured,
+not from a property of either method. alkane_24 was also the FIRST row inside
+the pre-registered crossover window (alkane_24-48): the window itself was
+never reached.
 
 **Control (artifact a):** synthetic and real THC builds at the same `N_IP`
 agree to within 1%: 0.1151 vs 0.1142 s at alkane_4, 0.5718 vs 0.5767 s at
@@ -116,6 +122,20 @@ both the density path and the occ path; the test asserts < 1e-9.
 | M2 drop right `S⁺` | FAIL 1.50e1 |
 | M3 drop `V^{-1/2}` | FAIL 2.78e1 |
 | M4 `S` not squared | FAIL 1.62e-1 |
+| S1 selection: skip the `resid -= c²` downdate | killed by `thc_k_selection_matches_column_pivoted_qr` (pivots diverge from the 2nd pivot on), `thc_k_truncated_rank_error_is_bounded` (7.00e-1) and `thc_k_full_rank_floor_ccpvdz` (6.99e-1). The anchor does NOT kill it cleanly: with no downdate the rank stop never fires, and at c_isdf 1e6 it walks the whole parent grid (killed at 19 min, 5 GB RSS). |
+
+**Added in review (2026-10-24):**
+- `thc_k_selection_matches_column_pivoted_qr`: the pivoted-Cholesky pivots
+  equal those of an independent column-pivoted QR (Gram-Schmidt on the
+  explicit `nbf² × npts` product matrix) at k = 60 on water/cc-pVDZ. The
+  reviewer also found them identical at k = 120 and 200.
+- `thc_k_truncated_rank_error_is_bounded` replaces the old
+  `thc_k_default_c_isdf_is_close_to_dfk`. At water/cc-pVDZ-RI (naux 84),
+  c_isdf 8.5 rank-clamps at 293 points, so the old test was the full-rank
+  floor again, and its "few percent" doc was false (the real error was
+  1.63e-4). The new test requests 200 points and measures 3.169e-3. Its
+  bounds are derived from both sides: below 6.4e-3 (2× measured) and above
+  8.2e-4 (5× the full-rank floor).
 
 **THC χ₀: `thc_chi0_matches_exact_in_the_trivial_limit`** builds generic
 factors and constructs `y_α,ia = Σ_K Ω_αK φ_iK φ_aK` explicitly. THC matches
@@ -135,6 +155,12 @@ n_quad 3/5/7, monotone.
 | C2 Hadamard → GEMM | FAIL (2.7e-1) |
 | C3 drop cos(ωt) | FAIL (3.8e-2 at ω=0.5) |
 | C4 re-inject pre-port core `M` | FAIL (7.4e-2) |
+| P1 negate the response coefficient | FAIL: anchor, quadrature-only, and the new static-PSD test (min eigenvalue −0.39) |
+
+The former `thc_dielectric_is_symmetric` could not fail, because the kernel
+symmetrizes its result. It is replaced by
+`thc_dielectric_static_is_at_least_identity`: at ω = 0 every eigenvalue of
+`ε̃` must be ≥ 1, since `ε̃ − I` is a positive-weight sum of Gram matrices.
 
 ## 3. Pre-registration (written 2026-10-24 00:35 EDT, BEFORE the timing run)
 
@@ -147,6 +173,9 @@ THC `≈ 2·nbf·N_IP²` with `N_IP = 8.5·naux`; DF-K `≈ 4·naux·nbf²·nocc
 Ratio THC/DF-K `≈ 36·naux/(nbf·nocc)`; with `naux/nbf ≈ 2.6` (cc-pVDZ-RI on
 alkanes) that is `≈ 95/nocc`, or `≈ 190/nocc` if DF-K's GEMMs run at twice
 THC's flop rate.
+(Review note, added after the run: the THC model above leaves out forming
+`P = ΦᵀΦ`, `2·nocc·N_IP²`, which is about `nocc/nbf ≈ 17%` of the dominant
+term at alkane_20. The measured GFLOP/s in §1d include it.)
 
 - **If a real crossover exists I expect:** the build ratio to rise at small
   sizes (rank clamp, overheads), peak, then FALL roughly as `1/nocc`; tail
@@ -191,23 +220,35 @@ THC's flop rate.
    runs at 24-44 GFLOP/s on one thread, the same rate as THC's GEMMs, so the
    flop model governs. THC-K loses on every measured per-build row: 2.0× slower
    at alkane_20 (nbf 490), with the gap closing as about `1/nocc`.
+   **The measured range ends BELOW the pre-registered crossover window**
+   (alkane_24-48; alkane_24 was cut, §1b). The per-build negative is
+   therefore a below-onset negative. It shows the gap is still closing; it does
+   NOT show that no per-build crossover exists.
 2. **Per-build crossover: extrapolated, not measured.** The extrapolation
    puts it at nbf ≈ 930 (alkane_38). That is beyond where DF-K's in-core
    tensor fits this box (about 22 GB there), so in that regime THC would be
    competing with spilled DF-K, LinK or COSX, none of which were measured here.
-3. **SCF-level: no win in any measured or plausible regime.**
-   - THC setup is 889 s at alkane_10, about 3500 DF-K builds, and it grows as
-     N^3.0.
-   - Past the per-build crossover, the per-build saving grows only as about
-     N^1.1, so setup cannot be amortised over an SCF of about 20 iterations
-     anywhere near the crossover.
-   - Extrapolating setup to alkane_38 gives about 13 h, and the selection
-     needs about 38 GB.
+3. **SCF-level: no win in any measured regime.** Beyond it, the following is
+   extrapolation:
+   - MEASURED: THC setup is 889 s at alkane_10, about 3500 DF-K builds, and
+     it grows as N^3.0 over alkane_6-10.
+   - EXTRAPOLATED (tail-3 ratio fit): past the per-build crossover, the
+     per-build saving grows only as about N^1.1. INTERPRETATION: setup cannot
+     be amortised over an SCF of about 20 iterations near the crossover
+     unless setup falls by about 10³.
+   - ESTIMATES (N^3.0 setup fit, and `npts·N_IP·8` bytes for the selection
+     factor): about 13 h of setup and about 38 GB of selection memory at
+     alkane_38.
+   - The setup was NEVER broken down by stage. Selection is an unblocked
+     BLAS2 pivoted Cholesky at about `npts·N_IP²` flops: about 2.6e12 at
+     alkane_10 (npts 48000, N_IP 7378). At BLAS2 rates that is LIKELY most of
+     the 889 s, but this is inferred, not timed. A blocked BLAS3 selection
+     could change the setup prefactor substantially.
 4. **A speedup bought with accuracy is not a win.** c_isdf = 2 makes THC 2.8×
    faster than DF-K at alkane_4, but ΔE_x = −21 mHa. c_isdf = 4 is still
    1.6× slower, with ΔE_x = 2.2 mHa (above chemical accuracy). Only c ≈ 8.5
    reaches sub-0.1 mHa through alkane_8; alkane_10 already shows −0.20 mHa.
-5. **Verdict (provisional):** in its current form (AO-THC, dense M, Gram/
+5. **Verdict (provisional, below onset):** in its current form (AO-THC, dense M, Gram/
    Cholesky selection), THC-K is not a DF-K replacement on this box at any
    reachable size. Keep it feature-gated as a correctness artifact. Do not
    wire it into SCF.
@@ -223,6 +264,12 @@ THC's flop rate.
 - The JK-fit aux (def2-universal-jkfit): naux is larger there, which raises
   `N_IP` and moves the crossover later.
 - Multi-thread timings; BLAS > 1. Comparisons vs LinK, COSX and spilled DF-K.
+- A per-stage setup breakdown (grid/collocation, selection, eri3 collocation,
+  `S⁺`, the `M` GEMMs), and a blocked BLAS3 selection. The "setup must fall
+  about 10³" in §4.3 is interpretation that rests on this unmeasured split.
+- Selection on NORMALISED product columns. Reviewer probe: QR on the
+  unnormalised `X` gives 5.5e-5 at cc-pVDZ water full rank, against the
+  Cholesky selection's 1.63e-4, so the selection metric is itself a lever.
 - Shell-pair-sparse M formation, ISDF/CVT point selection, a QR-based
   (non-normal-equation) fit, and a symmetric (dsyrk/dsymm) THC build. Each is
   an untested lever with a plausible 2× class effect. None changes the

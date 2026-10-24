@@ -37,6 +37,9 @@ const OBS: &str = "cc-pvdz";
 const AUX: &str = "cc-pvdz-ri";
 const DFK_BUDGET: usize = 10 << 30;
 
+// The THC_* environment knobs below are EXAMPLE-ONLY measurement switches for
+// this harness; they are deliberately not ConfigVar settings and nothing in
+// the library reads them.
 fn env_list(key: &str, default: &str) -> Vec<usize> {
     std::env::var(key)
         .unwrap_or_else(|_| default.into())
@@ -202,6 +205,11 @@ fn run_build(n_c: usize, c_isdf: f64, reps: usize) {
 
 fn main() {
     let grid = env_list("THC_GRID", "30,50");
+    assert_eq!(
+        grid.len(),
+        2,
+        "THC_GRID must be \"n_radial,n_angular\", got {grid:?}"
+    );
     let cfg = ThcKConfig {
         c_isdf: env_f64("THC_C_ISDF", ThcKConfig::default().c_isdf),
         n_radial: grid[0],

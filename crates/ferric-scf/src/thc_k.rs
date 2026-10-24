@@ -82,7 +82,11 @@ pub struct ThcKConfig {
     /// Becke parent-grid Lebedev order (ferric's table: 6/14/26/50/110/302).
     pub n_angular: usize,
     /// Pivoted-Cholesky stop: residual Gram diagonal below
-    /// `rank_tol · max initial diagonal` ends the selection (rank exhausted).
+    /// `rank_tol · max initial diagonal` ends the selection. The default
+    /// 1e-18 is BELOW the ~1e-16 relative resolution of the `resid -= c²`
+    /// downdate, so in practice the stop is set by rounding noise, not by an
+    /// exact rank test: STO-3G water selects 37 points against a pair-space
+    /// rank of 28 (the surplus columns are harmless, `S⁺` truncates them).
     pub rank_tol: f64,
     /// Relative eigenvalue drop for `S⁺`.
     pub pinv_tol: f64,
@@ -436,26 +440,87 @@ mod tests {
         );
     }
 
-    /// At the production `c_ISDF = 8.5` the fit is an approximation: a few
-    /// percent of max|K| is the pre-port bar, kept so a regression is visible.
+    /// TRUNCATED regime. Water/cc-pVDZ-RI has naux 84, so the production
+    /// `c_isdf = 8.5` asks for 714 points and is clamped at the 293 the
+    /// product space holds — that is the full-rank floor above, not a
+    /// truncation. Here 200 points (`c_isdf ≈ 2.38`) are requested, well below
+    /// the rank. Bounds are derived from both sides of the measured 3.17e-3
+    /// (2026-10-24): it must stay below 2× that (regression), and above 5×
+    /// the 1.63e-4 full-rank floor so the test cannot silently fall back into
+    /// the clamped regime.
     #[test]
-    fn thc_k_default_c_isdf_is_close_to_dfk() {
+    fn thc_k_truncated_rank_error_is_bounded() {
         let f = fixture("cc-pvdz");
         let n = f.obs.nbasis();
+        let cfg = ThcKConfig {
+            c_isdf: 199.5 / f.dfbs.nbasis() as f64,
+            ..Default::default()
+        };
         let mut thc = ThcK::new(
             &f.mol,
             &f.obs_set,
             &f.obs,
             &f.dfbs,
             Operator::coulomb(),
-            &ThcKConfig::default(),
+            &cfg,
         )
         .unwrap();
+        assert_eq!(thc.n_interpolation_points(), 200);
         let c = mock_c_occ(n, 5);
         let mut k = Array2::zeros((n, n));
         thc.build_from_occ(&c, &mut k).unwrap();
         let e = rel_max_diff(&k, &dfk_reference(&f, &c));
-        assert!(e < 0.05, "c_isdf=8.5 THC vs DF-K {e:.2e}");
+        assert!(
+            e < 6.4e-3 && e > 8.2e-4,
+            "truncated (n_ip 200) THC vs DF-K {e:.3e}"
+        );
+    }
+
+    /// Independent construction for the SELECTION: greedy column-pivoted QR
+    /// (Businger-Golub, by Gram-Schmidt on the explicit `nbf² × npts` product
+    /// matrix `X`, never forming the Gram) must pick the same pivots as the
+    /// pivoted Cholesky of `Γ = XᵀX`. Equal in exact arithmetic; checked at
+    /// k = 60 on water/cc-pVDZ.
+    fn qrcp_pivots(chi: &Array2<f64>, k: usize) -> Vec<usize> {
+        let (nbf, npts) = chi.dim();
+        let mut x = Array2::<f64>::zeros((nbf * nbf, npts));
+        for mu in 0..nbf {
+            for nu in 0..nbf {
+                let row = &chi.row(mu) * &chi.row(nu);
+                x.row_mut(mu * nbf + nu).assign(&row);
+            }
+        }
+        let mut norms2: Array1<f64> = x.map_axis(Axis(0), |c| c.dot(&c));
+        let mut q: Vec<Array1<f64>> = Vec::with_capacity(k);
+        let mut piv = Vec::with_capacity(k);
+        for _ in 0..k {
+            let (p, _) = argmax(&norms2);
+            let mut v = x.column(p).to_owned();
+            for _ in 0..2 {
+                for qi in &q {
+                    let d = qi.dot(&v);
+                    v.scaled_add(-d, qi);
+                }
+            }
+            v /= v.dot(&v).sqrt();
+            let proj = x.t().dot(&v);
+            norms2.zip_mut_with(&proj, |r, &c| *r -= c * c);
+            for &done in &piv {
+                norms2[done] = f64::NEG_INFINITY;
+            }
+            norms2[p] = f64::NEG_INFINITY;
+            q.push(v);
+            piv.push(p);
+        }
+        piv
+    }
+
+    #[test]
+    fn thc_k_selection_matches_column_pivoted_qr() {
+        let f = fixture("cc-pvdz");
+        let chi = parent_collocation(&f.mol, &f.obs_set, &ThcKConfig::default()).unwrap();
+        let chol = select_points_pivoted_cholesky(&chi, 60, ThcKConfig::default().rank_tol);
+        assert_eq!(chol, qrcp_pivots(&chi, 60));
     }
 
     #[test]
