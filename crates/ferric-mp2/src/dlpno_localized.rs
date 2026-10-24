@@ -37,6 +37,15 @@
 //! * The screen itself costs O(no^2 nv^2 naux), the same as canonical MP2.
 //! * Closed shell, library only. No speedup is claimed.
 //!
+//! # Add-back
+//!
+//! [`LocalizedMp2Config::add_back_truncation`] adds the screened pairs'
+//! estimated energy (the same diagonal-f estimate the screen ranked them by)
+//! to the result, as ORCA (below `0.01 * TCutPairs`) and Psi4 ("LMO
+//! Truncation Correction") do. Opt-in: `false` returns the retained-pair sum.
+//! Measured accuracy gain and its limits are in
+//! `tests/validation_dlpno_localized.rs`.
+//!
 //! # Exactness anchor
 //!
 //! With `t_cut_pairs = 0` every pair is retained and the energy equals the
@@ -61,6 +70,11 @@ pub struct LocalizedMp2Config {
     pub max_iter: usize,
     /// Optional cap on the working set ([`crate::dlpno_localized::localized_working_bytes`]).
     pub memory_budget_bytes: Option<usize>,
+    /// Add the screened pairs' diagonal-f estimated energy back into the result
+    /// (see the module docs, "Add-back"). `false` returns the retained-pair sum
+    /// only. With no pair screened the correction is exactly zero, so the
+    /// `t_cut_pairs = 0` anchor is unchanged either way.
+    pub add_back_truncation: bool,
 }
 
 impl Default for LocalizedMp2Config {
@@ -70,6 +84,7 @@ impl Default for LocalizedMp2Config {
             conv_thresh: 1e-10,
             max_iter: 200,
             memory_budget_bytes: None,
+            add_back_truncation: false,
         }
     }
 }
@@ -87,6 +102,9 @@ pub struct LocalizedMp2Diagnostics {
     pub max_amplitude_change: f64,
     /// Sum of estimated `e_ij` over DISCARDED pairs (diagonal-f estimate).
     pub discarded_estimated_energy: f64,
+    /// Energy added back into the returned components: the discarded pairs'
+    /// estimate when [`LocalizedMp2Config::add_back_truncation`] is set, else `0.0`.
+    pub truncation_correction: f64,
 }
 
 /// Bytes held by the solve for `n_pairs` retained pairs: `K`, `T` and the
@@ -312,10 +330,11 @@ pub fn dlpno_mp2_localized_from_b_ov(
     let pe = estimate_pairs(b_loc, f_occ, eps_vir, nocc, nvir)?;
     let domains = build_pair_domains_by_energy(centers, &pe, cfg.t_cut_pairs, f64::INFINITY)?;
     let pairs = domains.pairs.clone();
+    let idx = PairIndex::new(nocc, &pairs);
     let mut discarded = 0.0;
     for i in 0..nocc {
         for j in i..nocc {
-            if !pairs.contains(&(i, j)) {
+            if idx.get(i, j).is_none() {
                 discarded += pe.e_ij(i, j);
             }
         }
@@ -330,7 +349,6 @@ pub fn dlpno_mp2_localized_from_b_ov(
             )));
         }
     }
-    let idx = PairIndex::new(nocc, &pairs);
     let k: Vec<Array2<f64>> = pairs
         .par_iter()
         .map(|&(i, j)| k_block(b_loc, i, j, nvir))
@@ -380,6 +398,13 @@ pub fn dlpno_mp2_localized_from_b_ov(
         e_os += fac * kt.sum();
         e_ss += fac * (kt.sum() - ks.sum());
     }
+    let mut truncation_correction = 0.0;
+    if cfg.add_back_truncation {
+        let (c_os, c_ss) = discarded_spin_components(b_loc, f_occ, eps_vir, &idx);
+        e_os += c_os;
+        e_ss += c_ss;
+        truncation_correction = c_os + c_ss;
+    }
     Ok((
         SpinComponents {
             e_os,
@@ -392,6 +417,49 @@ pub fn dlpno_mp2_localized_from_b_ov(
             iterations,
             max_amplitude_change: change,
             discarded_estimated_energy: discarded,
+            truncation_correction,
         },
     ))
+}
+
+/// Opposite-spin / same-spin split of the diagonal-f estimate over the pairs
+/// the screen DISCARDED (every unique `i <= j` absent from `idx`).
+///
+/// Same estimator, same mirror weight and same denominators as the screen
+/// (`estimate_pairs`), so `os + ss` equals
+/// [`LocalizedMp2Diagnostics::discarded_estimated_energy`] up to summation
+/// order. Split into components so the add-back lands in `e_os`/`e_ss` and
+/// `e_total` stays their sum. Cost: one `(ia|jb)` block per discarded pair,
+/// built and dropped one at a time (no resident storage).
+fn discarded_spin_components(
+    b_loc: &Array2<f64>,
+    f: &Array2<f64>,
+    ev: &[f64],
+    idx: &PairIndex,
+) -> (f64, f64) {
+    let nocc = f.nrows();
+    let nvir = ev.len();
+    let discarded: Vec<(usize, usize)> = (0..nocc)
+        .flat_map(|i| (i..nocc).map(move |j| (i, j)))
+        .filter(|&(i, j)| idx.get(i, j).is_none())
+        .collect();
+    discarded
+        .par_iter()
+        .map(|&(i, j)| {
+            let fac = if i == j { 1.0 } else { 2.0 };
+            let kb = k_block(b_loc, i, j, nvir);
+            let (mut os, mut ss) = (0.0, 0.0);
+            for a in 0..nvir {
+                for b in 0..nvir {
+                    let d = diag_denominator(f, ev, i, j, a, b);
+                    let (kab, kba) = (kb[(a, b)], kb[(b, a)]);
+                    os += kab * kab / d;
+                    ss += kab * (kab - kba) / d;
+                }
+            }
+            (fac * os, fac * ss)
+        })
+        .collect::<Vec<_>>()
+        .into_iter()
+        .fold((0.0, 0.0), |(a, b), (x, y)| (a + x, b + y))
 }

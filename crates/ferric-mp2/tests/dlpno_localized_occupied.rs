@@ -80,6 +80,26 @@ const MUTATIONS: &[(&str, &str)] = &[
         "f[j,kk] for f[kk,j] (EQUIVALENT: f symmetric)",
         "survives, as it must",
     ),
+    (
+        "add-back subtracted instead of added",
+        "add_back_restores_the_discarded_estimate_and_reduces_the_error fails",
+    ),
+    (
+        "add-back folds in the OS part only",
+        "add_back_restores_the_discarded_estimate_and_reduces_the_error fails",
+    ),
+    (
+        "add-back sums RETAINED pairs instead of discarded",
+        "both add_back tests fail (identity anchor included)",
+    ),
+    (
+        "add-back mirror weight fac = 1",
+        "add_back_restores_the_discarded_estimate_and_reduces_the_error fails",
+    ),
+    (
+        "add-back same-spin exchange sign flipped",
+        "add_back_restores_the_discarded_estimate_and_reduces_the_error fails",
+    ),
 ];
 
 fn exact_cfg() -> LocalizedMp2Config {
@@ -315,4 +335,75 @@ fn unconverged_solve_and_memory_overrun_are_hard_errors() {
         dlpno_mp2_localized_from_b_ov(&fx.b_loc, &fx.f_loc, &fx.eps_vir, &fx.centers, &tiny)
             .is_err()
     );
+}
+
+/// Add-back exactness anchor: with nothing screened there is nothing to add
+/// back, so the result must be BIT-identical with the knob on or off.
+#[test]
+fn add_back_is_the_identity_when_no_pair_is_screened() {
+    let fx = load(WATER, "cc-pvdz", "cc-pvdz-ri", false);
+    let off =
+        dlpno_mp2_localized_from_b_ov(&fx.b_loc, &fx.f_loc, &fx.eps_vir, &fx.centers, &exact_cfg())
+            .unwrap();
+    let cfg = LocalizedMp2Config {
+        add_back_truncation: true,
+        ..exact_cfg()
+    };
+    let on = dlpno_mp2_localized_from_b_ov(&fx.b_loc, &fx.f_loc, &fx.eps_vir, &fx.centers, &cfg)
+        .unwrap();
+    assert_eq!(on.1.pair_retention, 1.0);
+    assert_eq!(on.1.truncation_correction, 0.0);
+    assert_eq!(on.0.e_total.to_bits(), off.0.e_total.to_bits());
+    assert_eq!(on.0.e_os.to_bits(), off.0.e_os.to_bits());
+    assert_eq!(on.0.e_ss.to_bits(), off.0.e_ss.to_bits());
+}
+
+/// With a live screen, add-back must (1) add exactly the discarded estimate,
+/// split consistently into OS/SS, and (2) move the energy TOWARD canonical
+/// RI-MP2 without overshooting past the measured bound below.
+#[test]
+fn add_back_restores_the_discarded_estimate_and_reduces_the_error() {
+    let fx = load(WATER, "cc-pvdz", "cc-pvdz-ri", false);
+    let mut live = 0;
+    for tc in [1e-3, 1e-4] {
+        let run = |add_back_truncation: bool| {
+            let cfg = LocalizedMp2Config {
+                t_cut_pairs: tc,
+                add_back_truncation,
+                ..LocalizedMp2Config::default()
+            };
+            dlpno_mp2_localized_from_b_ov(&fx.b_loc, &fx.f_loc, &fx.eps_vir, &fx.centers, &cfg)
+                .unwrap()
+        };
+        let (off, doff) = run(false);
+        let (on, don) = run(true);
+        let (e_off, e_on) = (off.e_total - fx.e_ri_mp2, on.e_total - fx.e_ri_mp2);
+        eprintln!(
+            "water tc={tc:e}: retention {:.3}, err off {e_off:+.3e}, on {e_on:+.3e}, \
+             correction {:+.3e}",
+            don.pair_retention, don.truncation_correction
+        );
+        assert_eq!(doff.truncation_correction, 0.0);
+        if don.pair_retention == 1.0 {
+            continue;
+        }
+        live += 1;
+        assert!(
+            (don.truncation_correction - don.discarded_estimated_energy).abs() < 1e-12,
+            "the correction must be the screen's own discarded estimate"
+        );
+        assert!(
+            (on.e_total - off.e_total - don.truncation_correction).abs() < 1e-12,
+            "the correction must be added exactly once"
+        );
+        assert!((on.e_total - on.e_os - on.e_ss).abs() < 1e-14);
+        // Measured: +1.908e-3 -> +4.795e-6 Ha at tc = 1e-3 (~400x). The bar asks
+        // for 10x; a sign flip doubles the error and an OS-only add-back
+        // leaves most of it.
+        assert!(
+            e_on.abs() < 0.1 * e_off.abs(),
+            "add-back must reduce the screening error >= 10x: {e_off:+.3e} -> {e_on:+.3e}"
+        );
+    }
+    assert!(live > 0, "premise: some threshold must actually drop pairs");
 }
