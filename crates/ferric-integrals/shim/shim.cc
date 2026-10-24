@@ -2677,6 +2677,29 @@ void build_hermite_R(int L, double theta, double PQx, double PQy, double PQz,
 inline int ncart_of(int L) { return (L + 1) * (L + 2) / 2; }
 inline int npure_of(int L) { return 2 * L + 1; }
 
+// Total angular momentum the MD paths can serve: their Fn / Boys / terf-aux
+// buffers are TERFC_DIMM deep (m = 0..Ltot). Entry points call these BEFORE
+// computing and return SCF_EINVAL, so the refusal is a status the Rust side
+// reports (Err / panic), never a "screened" zero block. eri3 reaches it at
+// lP+lA+lB = 24 (e.g. three l = 8 shells), eri2 at lP+lQ = 24 (two l = 12).
+inline bool eri3_Ltot_exceeds_tables(const Shell &shP, const Shell &shA,
+                                     const Shell &shB) {
+    return shP.contr[0].l + shA.contr[0].l + shB.contr[0].l >= TERFC_DIMM;
+}
+inline bool eri2_Ltot_exceeds_tables(const Shell &shP, const Shell &shQ) {
+    return shP.contr[0].l + shQ.contr[0].l >= TERFC_DIMM;
+}
+
+// Belt-and-braces stop inside the MD kernels, behind the entry-point checks.
+// Throws (caught by every extern "C" entry point as SCF_EINTERNAL) instead of
+// returning false, because false means "screened" to the callers and would
+// hand back zeros for a block that was merely too high-L.
+[[noreturn]] inline void md_Ltot_overflow(int Ltot) {
+    throw std::out_of_range("terf MD kernel: total angular momentum " +
+                            std::to_string(Ltot) + " reaches the table depth " +
+                            std::to_string(TERFC_DIMM));
+}
+
 // Compute the terfc (or Coulomb, if use_boys) Cartesian 3-center block
 // (P_cart | a_cart b_cart), contracted over primitives, into out_cart
 // (row-major [ncartP][ncartA][ncartB]).
@@ -2690,6 +2713,7 @@ bool compute_cart_eri3(const Shell &shP, const Shell &shA, const Shell &shB,
     const int lA = shA.contr[0].l;
     const int lB = shB.contr[0].l;
     const int Ltot = lP + lA + lB;
+    if (Ltot >= TERFC_DIMM) md_Ltot_overflow(Ltot);   // Fn[TERFC_DIMM] below
     const int ncP = ncart_of(lP), ncA = ncart_of(lA), ncB = ncart_of(lB);
     out_cart.assign((size_t)ncP * ncA * ncB, 0.0);
 
@@ -2763,9 +2787,7 @@ bool compute_cart_eri3(const Shell &shP, const Shell &shA, const Shell &shB,
                     // for far-field S > 20); the guard is defensive only.
                     // Skipping here would leave the full Coulomb value
                     // un-subtracted (terf -> 1/r at large r, NOT negligible).
-                    if (!terf_aux(*tables, S, s, phi_over_theta, Ltot, Fn)) {
-                        continue;
-                    }
+                    if (!terf_aux(*tables, S, s, phi_over_theta, Ltot, Fn)) md_Ltot_overflow(Ltot);
                     alpha_R = phi2;
                 }
 
@@ -2836,6 +2858,7 @@ bool compute_cart_eri2(const Shell &shP, const Shell &shQ,
     const int lP = shP.contr[0].l;
     const int lQ = shQ.contr[0].l;
     const int Ltot = lP + lQ;
+    if (Ltot >= TERFC_DIMM) md_Ltot_overflow(Ltot);   // Fn[TERFC_DIMM] below
     const int ncP = ncart_of(lP), ncQ = ncart_of(lQ);
     out_cart.assign((size_t)ncP * ncQ, 0.0);
 
@@ -2881,7 +2904,7 @@ bool compute_cart_eri2(const Shell &shP, const Shell &shQ,
                 const double s = phi2 * r02;
                 const double phi_over_theta = std::sqrt(phi2 / theta2);
                 // Always succeeds (table or exact far-field series); defensive.
-                if (!terf_aux(*tables, S, s, phi_over_theta, Ltot, Fn)) continue;
+                if (!terf_aux(*tables, S, s, phi_over_theta, Ltot, Fn)) md_Ltot_overflow(Ltot);
                 alpha_R = phi2;
             }
             const double pref =
@@ -2980,9 +3003,10 @@ bool compute_cart_eri4(const Shell &shA, const Shell &shB,
     // `false` return here is indistinguishable from "fully screened" and would
     // otherwise hand back zeros for a quartet that is merely too high-L -- a
     // silently wrong Schwarz bound rather than an error. This is a belt-and-
-    // braces stop, not the reporting path. (Ltot <= 23 covers l <= 5 on all
-    // four shells; eri3/eri2 need no such guard as lP+lA+lB cannot reach 24.)
-    if (Ltot >= TERFC_DIMM) return false;
+    // braces stop, not the reporting path, and it throws rather than return
+    // false for the same reason. (Ltot <= 23 covers l <= 5 on all four
+    // shells. eri3/eri2 have the same guard: lP+lA+lB reaches 24 at l = 8.)
+    if (Ltot >= TERFC_DIMM) md_Ltot_overflow(Ltot);
 
     std::vector<std::array<int, 3>> compA, compB, compC, compD;
     cart_components(lA, compA);
@@ -3065,9 +3089,7 @@ bool compute_cart_eri4(const Shell &shA, const Shell &shB,
                         // only. Skipping here would leave the full Coulomb
                         // value un-subtracted (terf -> 1/r at large r, NOT
                         // negligible).
-                        if (!terf_aux(*tables, S, s, phi_over_theta, Ltot, Fn)) {
-                            continue;
-                        }
+                        if (!terf_aux(*tables, S, s, phi_over_theta, Ltot, Fn)) md_Ltot_overflow(Ltot);
                         alpha_R = phi2;
                     }
 
@@ -3409,6 +3431,7 @@ extern "C" int scf_terfc_debug_coulomb_eri3(const scf_basis *obs,
         const Shell &shPsh = dfbs->bs[shP];
         const Shell &shAsh = obs->bs[sh1];
         const Shell &shBsh = obs->bs[sh2];
+        if (eri3_Ltot_exceeds_tables(shPsh, shAsh, shBsh)) return SCF_EINVAL;
         std::vector<double> cart;
         compute_cart_eri3(shPsh, shAsh, shBsh, nullptr, 0.0, 0.0,
                           /*use_boys=*/true, cart);
@@ -3526,6 +3549,7 @@ extern "C" int scf_compute_terfc_eri3(scf_engine *eng, const scf_basis *obs,
         // terfc = coulomb - terf. Both use the identical MD machinery (same
         // ordering, prefactor, normalisation, cart->pure transform), so the
         // subtraction is valid element-by-element in the Cartesian basis.
+        if (eri3_Ltot_exceeds_tables(shPsh, shAsh, shBsh)) return SCF_EINVAL;
         std::vector<double> cart_coul, cart_terf;
         bool any_c = compute_cart_eri3(shPsh, shAsh, shBsh, nullptr,
                                        eng->omega, eng->r0, /*use_boys=*/true,
@@ -3567,6 +3591,7 @@ extern "C" int scf_compute_terfc_eri2(scf_engine *eng, const scf_basis *dfbs,
         const Shell &shPsh = dfbs->bs[shP];
         const Shell &shQsh = dfbs->bs[shQ];
 
+        if (eri2_Ltot_exceeds_tables(shPsh, shQsh)) return SCF_EINVAL;
         std::vector<double> cart_coul, cart_terf;
         bool any_c = compute_cart_eri2(shPsh, shQsh, nullptr,
                                        eng->omega, eng->r0, /*use_boys=*/true,
@@ -3645,6 +3670,7 @@ extern "C" int scf_compute_terf_eri3(scf_engine *eng, const scf_basis *obs,
 
         // terf is the SAME Cartesian block terfc subtracts from Coulomb --
         // return it directly (no combine), so terf + terfc = coulomb exactly.
+        if (eri3_Ltot_exceeds_tables(shPsh, shAsh, shBsh)) return SCF_EINVAL;
         std::vector<double> cart_terf;
         bool any_t = compute_cart_eri3(shPsh, shAsh, shBsh, eng->terfc_tables.get(),
                                        eng->omega, eng->r0, /*use_boys=*/false,
@@ -3732,6 +3758,7 @@ extern "C" int scf_compute_terf_eri2(scf_engine *eng, const scf_basis *dfbs,
         const Shell &shPsh = dfbs->bs[shP];
         const Shell &shQsh = dfbs->bs[shQ];
 
+        if (eri2_Ltot_exceeds_tables(shPsh, shQsh)) return SCF_EINVAL;
         std::vector<double> cart_terf;
         bool any_t = compute_cart_eri2(shPsh, shQsh, eng->terfc_tables.get(),
                                        eng->omega, eng->r0, /*use_boys=*/false,
