@@ -331,8 +331,9 @@ pub struct Vv10Screen {
     /// Replace dropped far cells by their monopole instead of discarding.
     pub far_field: bool,
     /// Evaluate the Eq-11 damping factor by 4-point Lagrange interpolation on
-    /// a 0.01 Bohr table instead of two `erf` per pair (about 20x cheaper per
-    /// pair). NOT bit-identical to the direct evaluation (interpolation error
+    /// a table instead of two `erf` per pair (about 20x cheaper per pair). The
+    /// node spacing is `min(0.01 Bohr, width / 250)` (`DampTable::spacing`):
+    /// 0.01 Bohr at the linked width of r0 >= ~0.94 A, finer for narrower seams. NOT bit-identical to the direct evaluation (interpolation error
     /// <~ 1e-10 relative in the factor); ignored when undamped.
     pub fast_damping: bool,
 }
@@ -2297,7 +2298,12 @@ mod cutoff_tests {
     /// the linked seam's level because the node spacing refines with the seam
     /// width (`DampTable::spacing`). Measured: 3.2e-11 at every s; with the
     /// refinement removed (fixed 0.01 Bohr) 2.5e-8 / 4.1e-7 / 6.4e-6, so the
-    /// 1e-9 bound (the linked test's) kills that mutant at every s.
+    /// bound kills that mutant at every s.
+    ///
+    /// Bound: a pointwise weight error dw changes the pair term of E_nl by at
+    /// most |dw| times that term's magnitude, ~0.1 Ha for the A24 fragments of
+    /// the refit (the cached E_nl are 0.002-0.4 Ha). The registered gate on
+    /// E_nl is 1e-10 Ha (Addendum G.1), so |dw| <= 1e-10 / 0.1 = 1e-9.
     #[test]
     fn damping_table_resolves_sharp_seams() {
         let r0 = ferric_core::units::ANGSTROM_TO_BOHR;

@@ -858,9 +858,22 @@ provisional; I.8 lists what is NOT decided here. Nothing in this addendum change
 
 ## I.0 Provenance
 
-* Run: `stage1.py` (driver as committed in the lane's 80346d0a9 on `feat/mp2v-full-refit`; Rust tree identical to 328f2afbe,
-  because 80346d0a9 touched no Rust). The ferric `.so` build stamp (`ferric.__build__`) was NOT recorded by the driver; that is a
-  provenance gap, and the claim above rests on the Rust tree being unchanged between those two commits.
+* Driver: `stage1.py` as committed in the lane's 80346d0a9 on `feat/mp2v-full-refit` (plus the log-loop fix below).
+* WHICH FERRIC BUILD (the cache MIXES TWO BUILDS, neither stamped). Commit 328f2afbe (the last commit touching Rust) is stamped
+  16:56:46 and the run started 16:57:08, so the first `.so` was built from a PRE-COMMIT working tree, not from a commit. Addendum H
+  records that the shared `.so` was rebuilt under the running process at ~18:15 (SIGBUS) and that the run resumed at 18:54 from a
+  private copy of the rebuilt library; every entry computed after that came from the second build, whose source tree is also
+  unrecorded. The driver never logged `ferric.__build__`. Correction to H.1: "reproduced nodes 1-9 identically" was a re-read of
+  the cache (all nine nodes re-emitted within one second, 18:54:40), so it is NOT evidence that the two builds agree.
+* Gap closed by re-evaluation (2026-10-24), because the private copy is gone (a full-disk search for `libferric*.so` /
+  `ferric.cpython-311*.so` dated 2026-10-10 15:00 to 2026-10-11 04:00 found none): `recheck_cache.py` re-evaluated 66 cached
+  entries on a clean build of this branch (`ferric.__build__` = 6f88a11b5, dirty False) and compared them to the cache. The sample
+  is chosen so the producing build is known from the log: build 1 = non-CP fragments of A24 #2 and #4 at r0 = 0.6 A (linked: hf,
+  attMP2, 3 E_nl each; s = 2: attMP2), first evaluated by nodes 1-3 before 18:15; build 2 = CP fragments of the same systems at
+  r0 = 1.00 A linked (hf, attMP2, 3 E_nl each), reached only in the CP valley/baseline phases. b is mapped back to the exact float
+  the search issued (cache keys print 10 digits, and a rounded b alone moves E_nl by up to 1.2e-10 Ha, MEASURED). RESULT
+  (`results/stage1/recheck_cache.json`): max |cached - fresh| = 0.0 Ha for all 66 (36 from build 1, 30 from build 2), i.e. bit-identical,
+  inside the 1e-10 Ha bar. Scope: 2 of 8 systems, two seams; tabulated E_nl at sharp seams and the other six systems were not re-checked.
 * Timeline (EDT, `results/stage1/stage1.log`): non-CP A1-lite valley resumed 2026-10-10 22:24-22:40, non-CP Gauss-Newton 22:45-22:50,
   attempt 1 exited rc = 1 at 22:52 (a logging `KeyError` in `run_base` after `base_ncp.json` was written); attempt 2 ran the CP search
   23:46 (2026-10-10) to 02:54 (2026-10-11) and exited rc = 1 at the same logging line after `base_cp.json` was written; attempt 3
@@ -871,8 +884,10 @@ provisional; I.8 lists what is NOT decided here. Nothing in this addendum change
   F.5 rule, cap 80 nodes). CP = Boys-Bernardi, each monomer in the full dimer basis (`@` ghost atoms, `harness.py`); CP fragments carry the
   dimer's NLC grid (F.14). The CP search is a FULL independent search sharing the evaluation cache (G.2), not a re-minimisation over the non-CP nodes.
 * All RMSDs are in-sample over n = 8, kcal/mol, error = calc - ref (positive = underbound). Raw data: `results/stage1/{search,nodes,valley,curv,base}_{cp,ncp}.json`,
-  `summary.json`, `stage1.log`, `stdout.log`. The evaluation caches `results/stage1_cache_adz.json` (4.1 MB) and `results/planted_cache_dz.json` (2.2 MB)
-  are NOT committed; they stay in the lane worktree `.claude/worktrees/agent-af29ac89265471080/benchmarks/a24-mp2v-refit/results/`.
+  `summary.json`, `stage1.log`, `stdout.log`. The evaluation caches are NOT committed (size); they were moved 2026-10-24 to the untracked
+  `wiki/data/mp2v-refit/` of the main checkout: `stage1_cache_adz.json` (4197044 B, sha256
+  9009d555aa04ee4926f0760e2782b15dad5336fc4a4f0c8ae4114a74933f6d5e) and `planted_cache_dz.json` (2217209 B, sha256
+  1955c5664a08ad77cc21b270ea592c3b54d6153e74bab89f6900700909b3e0ad).
 
 ## I.1 CP search (MEASURED)
 
@@ -962,16 +977,22 @@ Stop condition G.6(a) is therefore TRIPPED for the CP convention. Under G.6 that
 ## I.7 Interpretation (PROVISIONAL, 2026-10-24, untested; separate from I.1-I.6)
 
 * The CP valley sits a factor 2.0-2.9 below the paper's b (3.9-5.0 against 8.0-14.5); the non-CP aDZ valley lands on the paper's numbers to within
-  0.3 at r0 <= 0.90 A and drifts above them with a steeper slope (3.23 vs 2.27). Two settings differ between the CP column and the paper at once
-  (CP vs non-CP, and aDZ vs aTZ), so this table alone cannot say which one moves b.
-* One reading (physics of the convention): the paper fitted at aTZ without CP, and MP2-V's MP2 half is the attenuated (terfc) operator, which was
-  designed in the attenuated-MP2 line to absorb basis-set superposition error rather than to be counterpoise-corrected. Under CP at aDZ the method
-  underbinds (published parameters MSE +0.545, Coulomb MP2 +0.352), and the fit restores attraction by lowering b (weaker short-range damping in the
-  VV10 kernel, more nonlocal correlation). On this reading the low CP b* is VV10 absorbing aDZ basis incompleteness, not a property of the method.
-  It matches the earlier de-risk finding (memory `derisk-cp-error-cancellation`) that bare attenuated SR-MP2 is over-repulsive when CP-corrected.
-* Artifact hypothesis, stated with what separates it: if the CP shift is basis incompleteness, the CP valley must move UP toward the non-CP one at aTZ
-  (F.12 H-BSSE: an artifact-absorbing parameter moves with the basis). If the CP-vs-non-CP gap persists at aTZ, then the non-CP parameters are absorbing
-  BSSE, which is the F.12 artifact reading. No aTZ CP number exists, so neither is tested. The stage-3 aTZ overlap set (F.13) is the measurement that decides.
+  0.3 at r0 <= 0.90 A and drifts above them with a steeper slope (3.23 vs 2.27). THREE settings differ between the CP column and the paper at once:
+  the convention (CP vs non-CP), the basis (aDZ vs aTZ) and the training set (an 8-system A24 subset vs the paper's 66-system S66). This table alone
+  cannot say which one moves b; even the non-CP agreement with the paper is between different training sets.
+* Two hypotheses, given equal weight; nothing here distinguishes them.
+  - H-conv (basis incompleteness absorbed under CP): under CP at aDZ the method underbinds (published parameters MSE +0.545, Coulomb MP2 +0.352),
+    and the fit restores attraction by lowering b (weaker short-range damping in the VV10 kernel, more nonlocal correlation); on this reading the
+    low CP b* is VV10 compensating aDZ basis incompleteness. An ANALOGY, not evidence for MP2-V itself: in the aDZ de-risk sweep
+    (`benchmarks/omega_diag/derisk/DERISK_REPORT_adz.md`) bare erfc SR-MP2, a different attenuated method, underbinds when counterpoise-corrected
+    (CP errors +0.3 to +1.6 kcal/mol across omega, against near-zero non-CP errors at omega = 0.42).
+  - H-BSSE (BSSE absorbed by the non-CP parameters, the F.12 artifact reading): the non-CP fit lands near the paper's b because BSSE overbinding at
+    aDZ is being cancelled by the fitted parameters, so the non-CP b* carries basis-set error rather than physics.
+* What would distinguish them, and why the registered plan does not: BSSE shrinks as the basis grows, so the CP-vs-non-CP gap closes at aTZ under
+  BOTH hypotheses; a closing gap decides nothing. The discriminating observable is WHICH SIDE MOVES between aDZ and aTZ: under H-conv the CP valley moves
+  up toward a roughly fixed non-CP one; under H-BSSE the non-CP valley moves while the CP one is roughly fixed. That needs CP AND non-CP fits at BOTH aDZ
+  and aTZ on the same systems, i.e. a CP + non-CP aTZ fit on the stage-3 overlap set. F.13/F.14 register stage 3 as NON-CP ONLY, so this decisive test is
+  NOT in the registered plan; adding it is one of the open items of I.8.
 * The flatter CP slope (0.96) means the paper's valley SHAPE is not reproduced under CP at aDZ. The softest GN direction is mostly ln b in BOTH conventions,
   so at n = 8 the data constrain r0 better than b and do not show the paper's r0-b valley as the softest direction; at n = 8 that may be a sample-size effect.
 * None of this bears on the published method as published: the paper's protocol (aTZ, S66, non-CP, frozen core) is a coherent convention for an attenuated
@@ -979,8 +1000,15 @@ Stop condition G.6(a) is therefore TRIPPED for the CP convention. Under G.6 that
 
 ## I.8 Not decided here (for Matt)
 
-* Matt's decision of 2026-10-10 (H.2) made the non-CP interior basin the stage-1 non-CP result, and F.14 plans stages 2-4 as non-CP only for cost. F.3 registers
-  neither convention as primary. This addendum does NOT decide whether the non-CP plan stands in the light of I.6 (CP trips G.6(a) and the F.12 H-BSSE flag),
-  whether a CP arm is carried into stage 2 (about 2x the cost), or whether a small aTZ CP + non-CP check (the I.7 discriminator) runs before stage 2.
-  These are Matt's decisions.
-* Whether G.6(a) tripping on the CP convention alone blocks stage 2 for both conventions, or only the CP arm, is not stated by G.6; it needs Matt's ruling.
+Each item below is open. This addendum records the question and the relevant rule text, and decides none of them.
+
+1. G.6 scope. G.3.1 registers the valley check "in both conventions" ("INCREASES monotonically with r0 in both conventions; the log-log slope
+   d ln b / d ln r0 lies in [1.2, 4.0]"), and G.6 reads "Stop conditions (report immediately, no further stage)" with (a) "the A1-lite valley check
+   fails (G.3.1)". The plain reading is that the CP failure stops ALL further stages, for both conventions. Limiting the stop to the CP arm only would be
+   a RULE CHANGE made after seeing the data. Which applies is Matt's ruling.
+2. Whether stage 2 carries a CP arm (about 2x the cost, F.14) or stays non-CP only as F.14 plans.
+3. Whether a CP + non-CP aTZ check on a small overlap set (the I.7 discriminator, not in the registered plan) runs before stage 2.
+4. Which convention is primary. F.3 registers neither ("Neither is 'primary'"); H.2 (Matt, 2026-10-10) fixed the non-CP stage-1 RESULT (the interior
+   basin), not the convention for later stages.
+5. Provenance. I.0 closes the build gap by re-evaluation on a sample (66 entries, 2 of 8 systems, bit-identical); whether that sample is sufficient,
+   or the full cache must be regenerated on one stamped build before any stage-1 number is quoted, is Matt's call.
