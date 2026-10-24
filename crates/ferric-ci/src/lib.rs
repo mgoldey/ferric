@@ -214,12 +214,14 @@ pub fn run_cas_ci(
 
     // ---- Memory pre-flight --------------------------------------------
     // Davidson holds TWO bases (v_basis + hv_basis), each up to max_subspace
-    // vectors of ndet doubles, plus the diagonal and a few ndet work vectors.
+    // vectors of ndet doubles, plus seven ndet work vectors (counted below).
     // ndet grows combinatorially with the active space, so this crosses a
     // 23 GB box between CAS(12,14) (7.2 GB) and CAS(14,16) (105 GB) -- and
     // before this gate nothing stopped it. max_subspace is read from config,
     // not assumed: it is a user-settable memory knob whether or not it was
-    // designed as one.
+    // designed as one. It is clamped with `.max(2)` exactly as
+    // `davidson_lowest` clamps it.
+    //
     // `MemoryPlan::from_global_pool` re-bases the ceiling on what the
     // process-global pool has LEFT (a no-op, resolving exactly as before,
     // when no pool is installed) — the whole point being that this gate must
@@ -233,23 +235,29 @@ pub fn run_cas_ci(
             config.max_subspace
         ),
     );
-    // Davidson holds TWO bases (v_basis + hv_basis), each up to max_subspace
-    // vectors of ndet doubles.
     plan.reserve(
         "Davidson v_basis + hv_basis",
-        ndet.saturating_mul(config.max_subspace.max(1))
+        ndet.saturating_mul(config.max_subspace.max(2))
             .saturating_mul(2),
         Lifetime::Resident,
     );
-    // diag + guess + x + hx + t: five ndet-sized vectors alongside the bases.
+    // Live alongside the bases at the restart branch of `davidson_lowest`:
+    // diag, x, hx, resid, best_vec, t, x_unit. `guess` is moved into
+    // v_basis, so it is already counted there.
     plan.reserve(
-        "Davidson diag/guess/x/hx/t work vectors",
-        ndet.saturating_mul(5),
+        "Davidson diag/x/hx/resid/best_vec/t/x_unit work vectors",
+        ndet.saturating_mul(7),
         Lifetime::Resident,
     );
     // Held for the whole solve below: both bases and the work vectors are
     // live for davidson_lowest's entire call, and are dropped when it
     // returns, so the guard's scope matches exactly.
+    //
+    // `_mem` MUST stay a named binding. `let _ = plan.commit()?` drops the
+    // reservation immediately, crediting the pool before Davidson allocates,
+    // and no test catches it: nothing else reserves from the pool during the
+    // solve, and outstanding bytes are not observable mid-run (the pool's
+    // high-water mark survives the drop).
     let _mem = plan.commit()?;
 
     // ---- Diagonal + Davidson solve ------------------------------------

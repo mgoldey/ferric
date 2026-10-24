@@ -104,11 +104,11 @@ impl Fixture {
         )
         .map_err(|e| e.to_string())
     }
-    /// The Davidson plan's peak: two bases of max_subspace vectors + 5 work
-    /// vectors, all N_det doubles.
+    /// The Davidson plan's peak: two bases of max_subspace vectors + 7 work
+    /// vectors (diag, x, hx, resid, best_vec, t, x_unit), all N_det doubles.
     fn davidson_peak(&self) -> usize {
-        let ms = self.config(None).max_subspace.max(1);
-        225 * (2 * ms + 5) * 8
+        let ms = self.config(None).max_subspace.max(2);
+        225 * (2 * ms + 7) * 8
     }
     /// The transform chain's peak (ao_eri + mo_eri + t1 + t2 + t3).
     fn transform_peak(&self) -> usize {
