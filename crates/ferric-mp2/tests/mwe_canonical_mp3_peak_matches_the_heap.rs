@@ -29,6 +29,10 @@
 //! Measured on a ONE-thread rayon pool: per-worker scratch is excluded from
 //! the formulas by design (a hard gate must not read the thread count), so
 //! more workers would widen the gap for reasons unrelated to the charge.
+//!
+//! Keep this file to ONE test. The counting allocator sees every thread in the
+//! process, so a second test running alongside would allocate inside the
+//! measured window and make it flaky.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};

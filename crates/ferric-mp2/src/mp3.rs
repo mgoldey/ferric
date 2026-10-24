@@ -307,7 +307,8 @@ pub fn mp3_energy(
         let z: ArrayD<f64> = einsum!("ijab,kbcj->iakc", &t_t, &ovvo_t);
         let z_t = Tensor::new(z, [Axis::O, Axis::V, Axis::O, Axis::V]);
         // t[i,k,a,c] in (i,a,k,c) order: permute storage (i,k,a,c)->(i,a,k,c) =
-        // axes [0,2,1,3]. This is the LAST use of `t`, so consume it (no clone).
+        // axes [0,2,1,3]. This is the LAST use of `t`; `.to_owned()` on the
+        // permuted view still makes a d-sized copy (counted in mp3_peak_bytes).
         let t_iakc = t.permuted_axes(IxDyn(&[0, 2, 1, 3])).to_owned();
         let t_iakc_t = Tensor::new(t_iakc, [Axis::O, Axis::V, Axis::O, Axis::V]);
         einsum!("iakc,iakc->", &z_t, &t_iakc_t)
