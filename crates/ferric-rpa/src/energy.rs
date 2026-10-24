@@ -59,7 +59,7 @@ fn rows_into_array(n_quad: usize, m: usize, rows: Vec<Vec<f64>>) -> Array2<f64> 
 }
 
 /// Below this `|x| = |λ − 1|` [`trace_log_summand_term`] uses the Taylor
-/// series; at or above it, `ln_1p(x) − x`.
+/// series; at or above it, the literal `ln λ − x`.
 const TRACE_LOG_SERIES_CUTOFF: f64 = 0.25;
 
 /// Highest power of `x` kept in the series branch. The first omitted term,
@@ -80,13 +80,19 @@ const TRACE_LOG_SERIES_ORDER: i32 = 30;
 ///
 /// * `|x| < 0.25`: the series through `x³⁰`, by Horner. Successive terms
 ///   shrink by a factor `≥ 4`, so there is no subtraction of near-equal
-///   quantities; measured worst relative error `~1.2e-16` (vs a 300-bit
-///   reference). `ln_1p` alone does NOT fix this regime — `ln_1p(x) − x`
+///   quantities. `ln_1p` alone does NOT fix this regime — `ln_1p(x) − x`
 ///   still cancels.
-/// * `|x| ≥ 0.25`: `ln_1p(x) − x`. `x = λ − 1` is exact here (Sterbenz up to
-///   `λ = 2`, and exactly representable beyond), so this differs from the
-///   literal form only in `ln_1p(x)` vs `ln(λ)` rounding — the two agree to
-///   ~1 ulp of `ln λ`, and the result is well conditioned.
+/// * `|x| ≥ 0.25`: `ln λ − x`, bit-identical to the literal form
+///   (`−(λ − 1) == 1 − λ` exactly under round-to-nearest). Here the result is
+///   well conditioned (at most ~9 ulp of cancellation, at `λ = 1.25`). It
+///   deliberately does NOT use `ln_1p(x)`: for `λ < 0.5`, `x = λ − 1` is
+///   itself rounded, and `ln_1p` of the rounded `x` loses the low digits of
+///   `λ` (measured rel err 4.3e-13 at `λ = 1e-5`, 3.8e-9 at `λ = 1e-10`)
+///   where `ln λ` reads `λ` directly.
+///
+/// Measured worst relative error vs a 300-bit reference: 2.1e-16 on the
+/// series branch, 3.9e-16 on the `ln λ − x` branch (the table in
+/// `trace_log_summand_term_matches_high_precision_reference`).
 ///
 /// The helper cannot restore digits the eigensolver already discarded when it
 /// rounded `1 + x`; it removes the cancellation in the summand only.
@@ -102,7 +108,7 @@ pub fn trace_log_summand_term(lam: f64) -> f64 {
         }
         acc * (x * x)
     } else {
-        x.ln_1p() - x
+        lam.ln() - x
     }
 }
 
@@ -834,6 +840,9 @@ mod tests {
         (0.9999, -5.00033335833423204863e-9),
         (0.99, -5.03358535014412732638e-5),
         (0.8, -2.31435513142097446641e-2),
+        (0.3, -5.03972804325936018528e-1),
+        (1e-5, -1.05129354649702283383e+1),
+        (1e-10, -2.20258509300404568037e+1),
         (1.5, -9.4534891891835618022e-2),
         (2.0, -3.06852819440054690583e-1),
         (3.0, -9.01387711331890308605e-1),
@@ -850,25 +859,34 @@ mod tests {
     /// on BOTH branches and both sides of λ = 1, while the literal form loses
     /// digits as `~u/|x|` near λ = 1.
     ///
-    /// Measured (glibc libm): helper max rel err 3.9e-16 over the table, both
-    /// branches; literal form 1.1e-2 at x = 1e-14, 8.4e-7 at 1e-10,
-    /// 2.6e-9 at 1e-8, 1.6e-11 at 1e-5, 1.4e-13 at 1e-3, 7.5e-15 at 1e-2.
+    /// Measured (glibc libm): helper max rel err 2.1e-16 on the series
+    /// branch, 3.9e-16 on the `ln λ − x` branch; literal form 1.1e-2 at
+    /// x = 1e-14, 8.4e-7 at 1e-10, 2.6e-9 at 1e-8, 1.6e-11 at 1e-5,
+    /// 1.4e-13 at 1e-3, 7.5e-15 at 1e-2.
     /// TOL = 5e-15 is ~13x the helper's worst case; the literal form misses it
-    /// at all 12 points with |x| <= 1e-2.
+    /// at all 10 points with |x| <= 1e-2 (1.01 and 0.99 sit just above
+    /// 1e-2 in f64, so they are not counted).
     ///
     /// Mutation ledger: replacing the helper's body with the literal form
     /// fails this test (first failing point x = 1e-14, rel err ~1e-2). So does
     /// `ln_1p(x) - x` alone (same point, rel err 1.1e-2): it still cancels.
+    /// Using `ln_1p(x) - x` in the `|x| >= 0.25` branch fails here at
+    /// λ = 1e-5 (rel err 4.3e-13; 3.8e-9 at λ = 1e-10) and fails the bitwise
+    /// check in `..._matches_literal_away_from_unity`.
     #[test]
     fn trace_log_summand_term_matches_high_precision_reference() {
         const TOL: f64 = 5e-15;
-        let mut worst_helper = 0.0f64;
+        let (mut worst_series, mut worst_literal) = (0.0f64, 0.0f64);
         let mut literal_misses = 0usize;
         let mut near_one = 0usize;
         for &(lam, want) in TRACE_LOG_REFERENCE {
             let got = trace_log_summand_term(lam);
             let rel = ((got - want) / want).abs();
-            worst_helper = worst_helper.max(rel);
+            if (lam - 1.0).abs() < TRACE_LOG_SERIES_CUTOFF {
+                worst_series = worst_series.max(rel);
+            } else {
+                worst_literal = worst_literal.max(rel);
+            }
             assert!(
                 rel < TOL,
                 "helper at lam={lam:e}: got {got:.17e}, want {want:.17e}, rel {rel:.2e}"
@@ -886,22 +904,25 @@ mod tests {
             literal_misses, near_one,
             "literal form met TOL at some |x| <= 1e-2 point; the bar is not discriminating"
         );
-        eprintln!("trace_log_summand_term worst rel err vs 300-bit ref: {worst_helper:.2e}");
+        eprintln!(
+            "trace_log_summand_term worst rel err vs 300-bit ref: series {worst_series:.2e}, \
+             ln-lambda branch {worst_literal:.2e}"
+        );
     }
 
     /// Where the literal form is accurate (λ far from 1) the helper must agree
-    /// with it to ~1 ulp of `ln λ`: both compute `ln(λ) − x` with the same exact
-    /// `x`; only `ln_1p(x)` vs `ln(λ)` rounding can differ.
+    /// with it bit for bit: the `|x| >= 0.25` branch IS the literal form.
     #[test]
     fn trace_log_summand_term_matches_literal_away_from_unity() {
-        for &lam in &[1.3f64, 1.5, 2.0, 3.0, 7.25, 10.0, 100.0, 1e4, 1e8] {
+        for &lam in &[
+            1e-10f64, 1e-5, 0.3, 0.75, 1.3, 1.5, 2.0, 3.0, 7.25, 10.0, 100.0, 1e4, 1e8,
+        ] {
             let h = trace_log_summand_term(lam);
             let lit = literal_trace_log(lam);
-            let bar = 2.0 * f64::EPSILON * lam.ln().abs();
-            assert!(
-                (h - lit).abs() <= bar,
-                "lam={lam}: helper {h:.17e} vs literal {lit:.17e} (diff {:.2e} > {bar:.2e})",
-                (h - lit).abs()
+            assert_eq!(
+                h.to_bits(),
+                lit.to_bits(),
+                "lam={lam}: helper {h:.17e} vs literal {lit:.17e} must be bit-identical"
             );
         }
     }
