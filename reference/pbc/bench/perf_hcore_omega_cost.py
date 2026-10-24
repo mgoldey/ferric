@@ -20,11 +20,12 @@ Usage: python perf_hcore_omega_cost.py <cell> <c...>   (w = c * sqrt(pi)/V^(1/3)
 """
 
 import math
+import os
 import sys
 
 import numpy as np
 
-sys.path.insert(0, "/home/matt/qc/ferric-pbc/reference/pbc/bench")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import cell_facts as cf  # noqa: E402
 
 PREC = 1e-14
