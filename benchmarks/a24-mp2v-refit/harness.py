@@ -37,6 +37,7 @@ K = 627.509474  # Hartree -> kcal/mol (same constant as the A24 scripts)
 BASES = {
     "adz": ("aug-cc-pvdz", "aug-cc-pvdz-rifit"),
     "atz": ("aug-cc-pvtz", "aug-cc-pvtz-rifit"),
+    "dz": ("cc-pvdz", "cc-pvdz-rifit"),  # cheap TEST basis (optimiser/anchor runs only)
 }
 ZSYM = {
     "H": 1, "He": 2, "Li": 3, "Be": 4, "B": 5, "C": 6, "N": 7, "O": 8, "F": 9,

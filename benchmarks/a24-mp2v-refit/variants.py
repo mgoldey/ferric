@@ -90,14 +90,14 @@ def report(vpath, ipaths):
         base = (
             (d["rhf"] + d["att"]) - (A["rhf"] + A["att"]) - (B["rhf"] + B["att"])
         ) * K
-        e = lambda n: (
-            (
+
+        def e(n, sid=sid, f=f):
+            return (
                 v[f"{sid}|{f}|dimer"]["e"][n]
                 - v[f"{sid}|mono|mA"]["e"][n]
                 - v[f"{sid}|mono|mB"]["e"][n]
-            )
-            * K
-        )  # noqa: E731
+            ) * K
+
         tot = {n: base + e(n) for n in ("V_C", "V_A", "V_B", "bare")}
         w = terf(rcc_ang(sid, f))
         tot["V_D"] = base + e("bare") * w

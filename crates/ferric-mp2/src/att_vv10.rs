@@ -171,7 +171,7 @@ use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
 use ferric_dft::grid::{build_atomic_grid, AtomicGridConfig};
 use ferric_dft::libxc::Vv10Params;
-use ferric_dft::vv10::Vv10Damping;
+use ferric_dft::vv10::{Vv10Damping, Vv10Form, Vv10Weight};
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_scf::result::Spin;
@@ -201,6 +201,58 @@ pub enum AttVv10Attenuator {
     /// (r₀, b, C) do not transfer: erfc and terfc have different tails at
     /// matched r₀, so this combination is unparameterized.
     Erfc,
+}
+
+/// An independent VV10 pair weight: its own form and its own seam
+/// `(r₀_vv, ω_vv)`, unrelated to the MP2 attenuator's `(r₀, ω)`.
+///
+/// Used by [`AttVv10Config::vv10_decoupling`] and [`att_mp2_vv10_decoupled_scan`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Vv10Decoupling {
+    /// Which short-range weight multiplies the VV10 pair kernel.
+    pub form: Vv10Form,
+    /// Seam length r₀_vv in **Bohr** (ignored by [`Vv10Form::Bare`]).
+    pub r0_bohr: f64,
+    /// Seam sharpness ω_vv in **Bohr⁻¹**; `None` = Dutoi-linked
+    /// `1/(r₀_vv√2)`. Must be `None` for [`Vv10Form::Bare`] (it has no seam).
+    pub omega: Option<f64>,
+}
+
+impl Vv10Decoupling {
+    /// The pair weight this decoupling selects.
+    pub fn weight(&self) -> Vv10Weight {
+        self.form.weight(self.r0_bohr, self.omega)
+    }
+
+    /// Reject non-finite / non-positive seam values; a `Bare` form with an ω is
+    /// a config contradiction (there is no seam to sharpen), never ignored.
+    fn validate(&self, who: &str) -> Result<(), FerricError> {
+        match self.form {
+            Vv10Form::Bare => {
+                if self.omega.is_some() {
+                    return Err(FerricError::General(format!(
+                        "{who}: the bare VV10 form has no seam; omega must be None"
+                    )));
+                }
+            }
+            Vv10Form::Eq11 | Vv10Form::Terf => {
+                if !(self.r0_bohr.is_finite() && self.r0_bohr > 0.0) {
+                    return Err(FerricError::General(format!(
+                        "{who}: VV10 r0 must be finite and > 0 (got {} Bohr)",
+                        self.r0_bohr
+                    )));
+                }
+                if let Some(w) = self.omega {
+                    if !(w.is_finite() && w > 0.0) {
+                        return Err(FerricError::General(format!(
+                            "{who}: VV10 omega must be finite and > 0 (got {w} Bohr^-1)"
+                        )));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Configuration for [`att_mp2_vv10`].
@@ -239,6 +291,17 @@ pub struct AttVv10Config {
     /// `Some(ω)` run is unparameterized until b is refit (Table 1's valley
     /// belongs to linked terfc).
     pub omega: Option<f64>,
+    /// EXPLICIT OPT-IN to a VV10 damping that is NOT in lockstep with the MP2
+    /// attenuator (refit research; `None` = the published, guarded behavior).
+    ///
+    /// `Some(d)` replaces the VV10 pair weight by `d` (its own form, `r₀` and
+    /// seam sharpness) and DISABLES the Eq. 11 lockstep guard of
+    /// [`Self::effective_vv10_damping`] — by construction the two halves may
+    /// now diverge, which is the point. Nothing here is parameterized: every
+    /// published number (r₀, b, C) belongs to the lockstep Eq. 11 form.
+    /// [`Self::vv10_damping`] is superseded in this mode; it must not carry a
+    /// seam ω of its own (that would be a second, contradicting setting).
+    pub vv10_decoupling: Option<Vv10Decoupling>,
     /// Frozen-core orbitals.
     ///
     /// **Convention mismatch to be aware of:** the paper used the frozen-core
@@ -286,6 +349,7 @@ impl AttVv10Config {
             },
             attenuator: AttVv10Attenuator::Terfc,
             omega: None,
+            vv10_decoupling: None,
             frozen_core: 0,
             nlc_grid: default_nlc_grid(),
             memory_budget_bytes: None,
@@ -412,6 +476,33 @@ impl AttVv10Config {
                     omega_bohr_inv: self.omega,
                 }),
             },
+        }
+    }
+
+    /// The VV10 pair weight actually evaluated. Lockstep (the default and the
+    /// published method): [`Self::effective_vv10_damping`], guard intact.
+    /// Decoupled (explicit opt-in via [`Self::vv10_decoupling`]): the
+    /// decoupling's own weight, with the guard replaced by validation of the
+    /// decoupling's seam and a check that [`Self::vv10_damping`] carries no
+    /// contradicting seam ω of its own.
+    pub fn effective_vv10_weight(&self) -> Result<Vv10Weight, FerricError> {
+        match self.vv10_decoupling {
+            None => Ok(Vv10Weight::Damping(self.effective_vv10_damping()?)),
+            Some(dec) => {
+                dec.validate("AttVv10Config.vv10_decoupling")?;
+                if let Vv10Damping::Terfc {
+                    omega_bohr_inv: Some(w),
+                    ..
+                } = self.vv10_damping
+                {
+                    return Err(FerricError::General(format!(
+                        "AttVv10Config: vv10_decoupling is set, so vv10_damping is superseded, \
+                         but it carries omega_bohr_inv = Some({w}); drop it (the seam lives in \
+                         vv10_decoupling)."
+                    )));
+                }
+                Ok(dec.weight())
+            }
         }
     }
 
@@ -659,6 +750,42 @@ pub fn u_att_mp2_vv10(
     )
 }
 
+/// The VV10 half of [`assemble`]: the published lockstep path (byte-identical
+/// to the pre-decoupling code) unless [`AttVv10Config::vv10_decoupling`] is set.
+fn vv10_half(
+    mol: &Molecule,
+    obs_bs: &ferric_core::basis::BasisSet,
+    scf: &ScfResult,
+    config: &AttVv10Config,
+) -> Result<(f64, usize), FerricError> {
+    Ok(match config.vv10_decoupling {
+        // Lockstep: damping seam derived from the same `config.omega` the MP2
+        // operator used (hard error on contradiction).
+        None => vv10_energy_on_density(
+            mol,
+            obs_bs,
+            scf.density_total(),
+            &config.vv10,
+            config.effective_vv10_damping()?,
+            &config.nlc_grid,
+        )?,
+        // Explicit opt-in: independent VV10 weight, evaluated through the SAME
+        // pair sum as the scan so a scan entry is reproducible by this call.
+        Some(_) => {
+            let w = config.effective_vv10_weight()?;
+            let e = vv10_weighted_energies_on_density(
+                mol,
+                obs_bs,
+                scf.density_total(),
+                &config.vv10,
+                &[w],
+                &config.nlc_grid,
+            )?;
+            (e[0], build_atomic_grid(mol, &config.nlc_grid).len())
+        }
+    })
+}
+
 /// Shared tail of both entry points: the (damped) VV10 half plus the
 /// three-way sum. Factored out so the VV10 evaluation is provably the *same
 /// call* for both spin cases — the closed-shell and open-shell paths cannot
@@ -675,16 +802,7 @@ fn assemble(
     // VV10 is a functional of the TOTAL density only. `density_total()` is
     // D_α + D_β for U/RO and 2·D_α for R, i.e. the electron density in both
     // cases — so this line is spin-agnostic by construction, not by coincidence.
-    let (e_nl_vv10, n_nlc_points) = vv10_energy_on_density(
-        mol,
-        obs_bs,
-        scf.density_total(),
-        &config.vv10,
-        // Lockstep: the damping's seam sharpness is derived from the same
-        // `config.omega` the MP2 operator used (hard error on contradiction).
-        config.effective_vv10_damping()?,
-        &config.nlc_grid,
-    )?;
+    let (e_nl_vv10, n_nlc_points) = vv10_half(mol, obs_bs, scf, config)?;
 
     let e_hf = scf.energy;
     Ok(AttVv10Result {
@@ -964,4 +1082,346 @@ pub fn vv10_energy_on_density_screened(
         pairs_near: r.pairs_near,
         pairs_far: r.pairs_far,
     })
+}
+
+/// One VV10 parameter tuple of a [`att_mp2_vv10_decoupled_scan`]:
+/// `(b, C)` plus an independent pair weight.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Vv10Tuple {
+    /// VV10 `b`.
+    pub b: f64,
+    /// VV10 `C`.
+    pub c: f64,
+    /// Independent damping form and seam.
+    pub damping: Vv10Decoupling,
+}
+
+/// Result of [`att_mp2_vv10_decoupled_scan`].
+#[derive(Debug, Clone)]
+pub struct AttVv10DecoupledScanResult {
+    /// Reference HF total energy.
+    pub e_hf: f64,
+    /// One attenuated-MP2 result per requested MP2 arm (`e_nl_vv10` is empty:
+    /// in decoupled mode E_nl does not depend on the MP2 arm).
+    pub arms: Vec<AttVv10ScanArmResult>,
+    /// Damped VV10 energy per requested tuple, same order.
+    pub e_nl_vv10: Vec<f64>,
+    /// VV10 grid size.
+    pub n_nlc_points: usize,
+    /// Plain Coulomb RI-MP2 correlation energy, when requested.
+    pub e_c_mp2_coulomb: Option<f64>,
+}
+
+/// VV10 energy for each tuple on a prepared grid/density: dedupes the `(b, C)`
+/// kernels and the damping weights so storage and per-pair work scale with the
+/// number of UNIQUE ones, then runs one shared pair sum.
+fn eval_vv10_tuples(
+    grid: &[ferric_dft::grid::GridPoint],
+    dens: &ferric_dft::density_on_grid::DensityGrid,
+    tuples: &[Vv10Tuple],
+) -> Vec<f64> {
+    if tuples.is_empty() {
+        return Vec::new();
+    }
+    let mut kernels: Vec<(f64, f64)> = Vec::new();
+    let mut weights: Vec<Vv10Weight> = Vec::new();
+    let mut wkeys: Vec<(u8, u64, Option<u64>)> = Vec::new();
+    let mut pairs: Vec<(usize, usize)> = Vec::with_capacity(tuples.len());
+    for t in tuples {
+        let ki = match kernels
+            .iter()
+            .position(|k| k.0.to_bits() == t.b.to_bits() && k.1.to_bits() == t.c.to_bits())
+        {
+            Some(i) => i,
+            None => {
+                kernels.push((t.b, t.c));
+                kernels.len() - 1
+            }
+        };
+        let d = t.damping;
+        let key = match d.form {
+            Vv10Form::Bare => (0u8, 0u64, None),
+            Vv10Form::Eq11 => (1u8, d.r0_bohr.to_bits(), d.omega.map(f64::to_bits)),
+            Vv10Form::Terf => (2u8, d.r0_bohr.to_bits(), d.omega.map(f64::to_bits)),
+        };
+        let wi = match wkeys.iter().position(|k| *k == key) {
+            Some(i) => i,
+            None => {
+                wkeys.push(key);
+                weights.push(d.weight());
+                weights.len() - 1
+            }
+        };
+        pairs.push((ki, wi));
+    }
+    ferric_dft::vv10::compute_vv10_tuple_scan(grid, dens, &kernels, &weights, &pairs)
+}
+
+/// Decoupled MP2-V scan on ONE converged RHF reference: attenuated MP2 for
+/// each `(r₀_mp2, ω_mp2)` arm and VV10 for each `(b, C, form, r₀_vv, ω_vv)`
+/// tuple, in one call.
+///
+/// # Cost split (this is the point of the API)
+///
+/// * EXPENSIVE, one RI-MP2 per arm: `r₀_mp2`, `ω_mp2` (the `arms`).
+/// * CHEAP, no SCF and no MP2, evaluated from the density/grid alone in ONE
+///   shared pair sum: `b`, `C`, `form`, `r₀_vv`, `ω_vv` (the `tuples`).
+///
+/// Because the VV10 weight is independent of the MP2 arm, E_nl is a function of
+/// the tuple alone and the full model energy for any (arm, tuple) pairing is
+/// `e_hf + arms[a].e_c_att_mp2 + e_nl_vv10[t]`. This function is the explicit
+/// opt-in to decoupled damping; the lockstep Eq. 11 guard of
+/// [`att_mp2_vv10_scan`]/[`att_mp2_vv10`] is untouched. `arms` or `tuples`
+/// may be empty (VV10-only or MP2-only evaluation).
+///
+/// Exactness anchor (tests): every `(arm, tuple)` reproduces a separate
+/// [`att_mp2_vv10`] call with `AttVv10Config { r0, omega: arm, vv10: (b, C),
+/// vv10_decoupling: Some(tuple.damping), .. }` bit for bit.
+#[allow(clippy::too_many_arguments)]
+pub fn att_mp2_vv10_decoupled_scan(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    obs_bs: &ferric_core::basis::BasisSet,
+    dfbs: &PreparedBasis,
+    rhf: &ScfResult,
+    base: &AttVv10Config,
+    arms: &[AttVv10ScanArm],
+    tuples: &[Vv10Tuple],
+    include_coulomb_mp2: bool,
+) -> Result<AttVv10DecoupledScanResult, FerricError> {
+    let who = "att_mp2_vv10_decoupled_scan";
+    if !matches!(rhf.spin, Spin::Restricted) {
+        return Err(FerricError::General(format!(
+            "{who} requires a closed-shell restricted reference, got {:?}",
+            rhf.spin
+        )));
+    }
+    if base.attenuator != AttVv10Attenuator::Terfc {
+        return Err(FerricError::General(format!(
+            "{who}: terfc attenuator only (the erfc control has no decoupled width)"
+        )));
+    }
+    for t in tuples {
+        if !(t.b > 0.0 && t.b.is_finite()) || !(t.c >= 0.0 && t.c.is_finite()) {
+            return Err(FerricError::General(format!(
+                "{who}: every tuple needs finite b > 0 and finite C >= 0 (got b={}, C={})",
+                t.b, t.c
+            )));
+        }
+        t.damping.validate(who)?;
+    }
+    let mut arm_out = Vec::with_capacity(arms.len());
+    for arm in arms {
+        let mut cfg = base.clone();
+        cfg.r0_bohr = arm.r0_bohr;
+        cfg.omega = arm.omega;
+        cfg.vv10_decoupling = None;
+        validate_config(&cfg, who)?;
+        let (sc, _) = ri_mp2_spin_components(
+            mol,
+            obs,
+            dfbs,
+            cfg.mp2_operator(),
+            rhf,
+            &cfg.ri_mp2_config(),
+        )?;
+        arm_out.push(AttVv10ScanArmResult {
+            e_c_att_mp2: sc.e_total,
+            e_os: sc.e_os,
+            e_ss: sc.e_ss,
+            e_nl_vv10: Vec::new(),
+        });
+    }
+    let e_c_mp2_coulomb = if include_coulomb_mp2 {
+        let (sc, _) = ri_mp2_spin_components(
+            mol,
+            obs,
+            dfbs,
+            Operator::coulomb(),
+            rhf,
+            &base.ri_mp2_config(),
+        )?;
+        Some(sc.e_total)
+    } else {
+        None
+    };
+    let grid = build_atomic_grid(mol, &base.nlc_grid);
+    let e_nl_vv10 = if tuples.is_empty() {
+        Vec::new()
+    } else {
+        let pts: Vec<[f64; 3]> = grid.iter().map(|g| g.xyz).collect();
+        let (chi, dchi) = ferric_dft::ao_grid::eval_basis_and_grad_on_points(mol, obs_bs, &pts)
+            .map_err(|e| FerricError::General(format!("{who} AO grid evaluation: {e:?}")))?;
+        let dens =
+            ferric_dft::density_on_grid::eval_density_closed(rhf.density_total(), &chi, &dchi);
+        eval_vv10_tuples(&grid, &dens, tuples)
+    };
+    Ok(AttVv10DecoupledScanResult {
+        e_hf: rhf.energy,
+        arms: arm_out,
+        e_nl_vv10,
+        n_nlc_points: grid.len(),
+        e_c_mp2_coulomb,
+    })
+}
+
+/// EXPERIMENTAL in-memory MP2-V session for ONE fragment: the converged RHF
+/// reference (orbitals, density), the prepared orbital/aux bases and the NLC
+/// grid state (grid points, rho, grad rho, sigma) are held so parameters can
+/// be iterated without redoing the SCF or the grid/density evaluation.
+///
+/// * [`Self::att_mp2`]: one attenuated RI-MP2 for an `(r0, omega)` arm
+///   (reuses the orbitals; rebuilds only the attenuated integrals — EXPENSIVE).
+/// * [`Self::vv10`]: E_nl for any list of `(b, C, form, r0_vv, omega_vv)`
+///   tuples from the stored grid state (CHEAP, no SCF/MP2).
+/// * [`Self::total`]: `e_hf + e_c + e_nl` for the published LOCKSTEP
+///   construction (Eq. 11 sharing the arm's seam) at one `(arm, b, C)`;
+///   bit-identical to [`att_mp2_vv10`] with the same settings (tested).
+pub struct Mp2vSession {
+    mol: Molecule,
+    obs: PreparedBasis,
+    dfbs: PreparedBasis,
+    rhf: ScfResult,
+    base: AttVv10Config,
+    grid: Vec<ferric_dft::grid::GridPoint>,
+    dens: ferric_dft::density_on_grid::DensityGrid,
+}
+
+impl Mp2vSession {
+    /// Build a session from a converged closed-shell reference. `base`
+    /// supplies C, frozen core, NLC grid and memory budget (terfc only).
+    pub fn new(
+        mol: Molecule,
+        obs_bs: ferric_core::basis::BasisSet,
+        obs: PreparedBasis,
+        dfbs: PreparedBasis,
+        rhf: ScfResult,
+        base: AttVv10Config,
+    ) -> Result<Self, FerricError> {
+        if !matches!(rhf.spin, Spin::Restricted) {
+            return Err(FerricError::General(format!(
+                "Mp2vSession requires a closed-shell restricted reference, got {:?}",
+                rhf.spin
+            )));
+        }
+        if base.attenuator != AttVv10Attenuator::Terfc {
+            return Err(FerricError::General(
+                "Mp2vSession: terfc attenuator only".into(),
+            ));
+        }
+        let grid = build_atomic_grid(&mol, &base.nlc_grid);
+        let pts: Vec<[f64; 3]> = grid.iter().map(|g| g.xyz).collect();
+        let (chi, dchi) = ferric_dft::ao_grid::eval_basis_and_grad_on_points(&mol, &obs_bs, &pts)
+            .map_err(|e| {
+            FerricError::General(format!("Mp2vSession AO grid evaluation: {e:?}"))
+        })?;
+        let dens =
+            ferric_dft::density_on_grid::eval_density_closed(rhf.density_total(), &chi, &dchi);
+        Ok(Self {
+            mol,
+            obs,
+            dfbs,
+            rhf,
+            base,
+            grid,
+            dens,
+        })
+    }
+
+    /// Reference HF energy.
+    pub fn e_hf(&self) -> f64 {
+        self.rhf.energy
+    }
+
+    /// Number of NLC grid points held.
+    pub fn n_nlc_points(&self) -> usize {
+        self.grid.len()
+    }
+
+    /// LOWER-BOUND estimate of the bytes this session holds: the stored grid
+    /// state (grid points, rho, grad rho, sigma) plus four nbf x nbf matrices
+    /// (orbitals, density, and two more of the reference). The prepared
+    /// integral bases are not counted; callers should also measure RSS.
+    pub fn memory_bytes_estimate(&self) -> usize {
+        let n = self.grid.len();
+        let nbf2 = self.rhf.density_total().len();
+        n * std::mem::size_of::<ferric_dft::grid::GridPoint>() + n * 5 * 8 + 4 * nbf2 * 8
+    }
+
+    /// One attenuated RI-MP2 for the arm (EXPENSIVE). `e_nl_vv10` is empty.
+    pub fn att_mp2(&self, arm: &AttVv10ScanArm) -> Result<AttVv10ScanArmResult, FerricError> {
+        let mut cfg = self.base.clone();
+        cfg.r0_bohr = arm.r0_bohr;
+        cfg.omega = arm.omega;
+        cfg.vv10_decoupling = None;
+        validate_config(&cfg, "Mp2vSession::att_mp2")?;
+        let (sc, _) = ri_mp2_spin_components(
+            &self.mol,
+            &self.obs,
+            &self.dfbs,
+            cfg.mp2_operator(),
+            &self.rhf,
+            &cfg.ri_mp2_config(),
+        )?;
+        Ok(AttVv10ScanArmResult {
+            e_c_att_mp2: sc.e_total,
+            e_os: sc.e_os,
+            e_ss: sc.e_ss,
+            e_nl_vv10: Vec::new(),
+        })
+    }
+
+    /// Plain Coulomb RI-MP2 correlation energy on the same reference.
+    pub fn coulomb_mp2(&self) -> Result<f64, FerricError> {
+        let (sc, _) = ri_mp2_spin_components(
+            &self.mol,
+            &self.obs,
+            &self.dfbs,
+            Operator::coulomb(),
+            &self.rhf,
+            &self.base.ri_mp2_config(),
+        )?;
+        Ok(sc.e_total)
+    }
+
+    /// E_nl for every tuple from the stored grid state (CHEAP, one shared
+    /// pair sum, bit-identical per tuple to a separate [`att_mp2_vv10`]).
+    pub fn vv10(&self, tuples: &[Vv10Tuple]) -> Result<Vec<f64>, FerricError> {
+        for t in tuples {
+            if !(t.b > 0.0 && t.b.is_finite()) || !(t.c >= 0.0 && t.c.is_finite()) {
+                return Err(FerricError::General(format!(
+                    "Mp2vSession::vv10: finite b > 0 and C >= 0 required (got b={}, C={})",
+                    t.b, t.c
+                )));
+            }
+            t.damping.validate("Mp2vSession::vv10")?;
+        }
+        Ok(eval_vv10_tuples(&self.grid, &self.dens, tuples))
+    }
+
+    /// The published LOCKSTEP tuple for an arm: Eq. 11 sharing the arm's
+    /// `(r0, omega)`.
+    pub fn lockstep_tuple(arm: &AttVv10ScanArm, b: f64, c: f64) -> Vv10Tuple {
+        Vv10Tuple {
+            b,
+            c,
+            damping: Vv10Decoupling {
+                form: Vv10Form::Eq11,
+                r0_bohr: arm.r0_bohr,
+                omega: arm.omega,
+            },
+        }
+    }
+
+    /// `(e_hf, e_c_att_mp2, e_nl)` for the lockstep construction at `(arm, b, C)`.
+    pub fn total(
+        &self,
+        arm: &AttVv10ScanArm,
+        b: f64,
+        c: f64,
+    ) -> Result<(f64, f64, f64), FerricError> {
+        let m = self.att_mp2(arm)?;
+        let e = self.vv10(&[Self::lockstep_tuple(arm, b, c)])?;
+        Ok((self.rhf.energy, m.e_c_att_mp2, e[0]))
+    }
 }
