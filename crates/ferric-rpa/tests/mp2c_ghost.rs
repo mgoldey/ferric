@@ -353,6 +353,7 @@ fn long_range_mp2c_also_runs_on_a_ghosted_fragment() {
 /// decomposition for A24-01 so the sign of the interaction-energy correction
 /// can be attributed to its parts.
 #[test]
+#[ignore = "diagnostic: prints the A24-01 decomposition, asserts nothing"]
 fn probe_a24_01_decomposition() {
     const DIMER: &str = "7\nd\nO 0.00000000 -0.05786571 -1.47979303\nH 0.00000000 0.82293384 -1.85541474\nH 0.00000000 0.07949567 -0.51934253\nN 0.00000000 0.01436394 1.46454628\nH 0.00000000 -0.98104857 1.65344779\nH -0.81348351 0.39876776 1.92934049\nH 0.81348351 0.39876776 1.92934049\n";
     const MA: &str = "7\na\nO 0.00000000 -0.05786571 -1.47979303\nH 0.00000000 0.82293384 -1.85541474\nH 0.00000000 0.07949567 -0.51934253\n@N 0.00000000 0.01436394 1.46454628\n@H 0.00000000 -0.98104857 1.65344779\n@H -0.81348351 0.39876776 1.92934049\n@H 0.81348351 0.39876776 1.92934049\n";

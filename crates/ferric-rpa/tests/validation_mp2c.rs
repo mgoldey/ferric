@@ -1,9 +1,12 @@
-//! MP2C on A24 counterpoise triples (weekly validation tier).
+//! ΔdRPA-corrected MP2 and the experimental CKS MP2C on A24 counterpoise
+//! triples (weekly validation tier).
 //!
 //! Two constructions, both library-only:
 //!
-//! * [`ferric_rpa::mp2c`] — MP2 with its uncoupled dispersion `2·E_OS` swapped
-//!   for supermolecular dRPA (full range by default).
+//! * [`ferric_rpa::mp2c`] — supermolecular ΔdRPA-corrected MP2: each system's
+//!   direct-ring correlation `2·E_OS` swapped for dRPA (full range by
+//!   default). Not published MP2C, which swaps only intermolecular SAPT
+//!   dispersion terms; see that module's docs.
 //! * [`ferric_rpa::mp2c_cks`] — the published SAPT-style construction with a
 //!   coupled-Kohn–Sham (ALDA) Casimir–Polder dispersion. EXPERIMENTAL: its
 //!   correction has an open sign discrepancy against the published table (see
@@ -22,19 +25,23 @@
 //! (only the `@` ghost marker differs), which is the ordering the CKS
 //! Casimir–Polder trace requires.
 //!
-//! # Measured (aug-cc-pVDZ / aug-cc-pVDZ-RI, CP, kcal/mol), dRPA MP2C
+//! # Measured (aug-cc-pVDZ / aug-cc-pVDZ-RI, CP, kcal/mol), ΔdRPA-corrected MP2
 //!
 //! ```text
-//!     sys          MP2C          MP2   correction  CCSD(T)/CBS  class
+//!     sys      MP2+dRPA         MP2   correction  CCSD(T)/CBS  class
 //!     A24-01    -5.7340      -5.8277       0.0937      -6.5240  electrostatic
 //!     A24-08    -0.3996      -0.5022       0.1026      -0.6720  electrostatic
 //!     A24-19    -0.0856      -0.3721       0.2865      -0.5380  dispersion
 //!     A24-20    -0.0394      -0.2615       0.2221      -0.4080  dispersion
 //! ```
 //!
-//! MP2C is further from the reference than MP2 on all four at this basis: MP2
-//! benefits from an error cancellation (basis incompleteness underbinds,
-//! uncoupled dispersion overbinds) that MP2C removes one half of.
+//! The ΔdRPA-corrected result is further from the reference than MP2 on all
+//! four at this basis. The corrections on the dispersion-bound pairs (+0.29,
+//! +0.22) are several times the ~0.0x kcal/mol scale of published MP2C
+//! corrections for comparable small complexes. One UNVERIFIED hypothesis for
+//! the first observation is an error cancellation in MP2 (basis
+//! incompleteness underbinding against uncoupled dispersion overbinding); it
+//! has not been tested here.
 
 use ferric_core::basis;
 use ferric_core::mol::Molecule;
@@ -51,7 +58,7 @@ use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::ScfResult;
 
 /// aug-cc-pVDZ, not cc-pVDZ: cc-pVDZ has no Ar (rules out A24-20), and without
-/// diffuse functions A24-19 comes out unbound by MP2 as well as MP2C.
+/// diffuse functions A24-19 comes out unbound by MP2 as well as with the dRPA correction.
 const A24_OBS: &str = "aug-cc-pvdz";
 const A24_AUX: &str = "aug-cc-pvdz-rifit";
 
@@ -157,7 +164,7 @@ fn mp2c_of(s: &Sys) -> Mp2cResult {
     mp2c_energy(&s.mol, &s.obs, &s.dfbs, &s.scf, &Mp2cConfig::default()).unwrap()
 }
 
-/// Full CP triple for A24 system `idx` with the dRPA MP2C.
+/// Full CP triple for A24 system `idx` with ΔdRPA-corrected MP2.
 fn a24_mp2c_interaction(idx: usize) -> Mp2cInteraction {
     let xyz = dimer_xyz(idx);
     let n_a = fragment_a_size(idx);
@@ -177,14 +184,14 @@ fn a24_mp2c_interaction(idx: usize) -> Mp2cInteraction {
     mp2c_interaction_energy(&rd, &ra, &rb)
 }
 
-/// dRPA MP2C on four A24 CP triples spanning the binding spectrum.
+/// ΔdRPA-corrected MP2 on four A24 CP triples spanning the binding spectrum.
 #[test]
-#[ignore = "validation: MP2C (dRPA dispersion) on A24 CP triples"]
+#[ignore = "validation: dRPA-corrected MP2 (mp2c) on A24 CP triples"]
 fn a24_cp_triples_run_and_correction_sign_tracks_binding_class() {
     let systems: [(usize, bool); 4] = [(1, false), (8, false), (19, true), (20, true)];
     eprintln!(
         "\n{:<7} {:>10} {:>10} {:>11} {:>12}  class",
-        "sys", "MP2C", "MP2", "correction", "CCSD(T)/CBS"
+        "sys", "MP2+dRPA", "MP2", "correction", "CCSD(T)/CBS"
     );
     for (idx, dispersion_bound) in systems {
         let int = a24_mp2c_interaction(idx);
@@ -233,7 +240,7 @@ fn a24_cp_triples_run_and_correction_sign_tracks_binding_class() {
 /// The counterpoise correction must be real: monomers in their own basis bind
 /// more than in the dimer basis (A24-20, methane–Ar, the smallest system).
 #[test]
-#[ignore = "validation: MP2C (dRPA dispersion) on A24 CP triples"]
+#[ignore = "validation: dRPA-corrected MP2 (mp2c) on A24 CP triples"]
 fn counterpoise_correction_is_nonzero_and_reduces_binding() {
     let idx = 20usize;
     let cp = a24_mp2c_interaction(idx);

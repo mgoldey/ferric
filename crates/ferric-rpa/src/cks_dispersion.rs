@@ -80,12 +80,17 @@
 //! non-additive part of the direct-MP2 energy, i.e. of `2·E_OS` (the direct
 //! ring term of the second-order energy).
 //!
-//! **That identity is intermolecular, not absolute.** `2·E_OS` evaluated on a
-//! single system is a supermolecular correlation energy containing intramonomer
-//! correlation; `E_disp^(2)` is by construction interaction-only. They agree on
-//! the *dimer-minus-monomers* difference, not term by term. The test
-//! `tests/cks_dispersion_uncoupled.rs` checks the difference (He₂/cc-pVDZ at
-//! 4 Å: 0.52% relative), which is the meaningful statement.
+//! **That identity is intermolecular and asymptotic, not absolute.** `2·E_OS`
+//! evaluated on a single system is a supermolecular correlation energy
+//! containing intramonomer correlation; `E_disp^(2)` is by construction
+//! interaction-only, so only the dimer-minus-monomers difference is
+//! comparable. Even that difference differs at finite `R`: the
+//! supermolecular `2·E_OS` is built on dimer-HF orbitals, which carry
+//! intermolecular exchange and orbital deformation, while the trace uses each
+//! monomer's own orbitals. Both sides share the dimer basis and the frequency
+//! grid, so this is the whole mismatch. `tests/cks_dispersion_uncoupled.rs`
+//! measures it on He₂/cc-pVDZ: 5.2e-3 relative at 4 Å, 3.0e-8 at 8 Å, and at
+//! 16 Å an absolute residual of 2.1e-16 Ha (the arithmetic floor).
 //!
 //! Switching the coupling off must recover the uncoupled number *bit-for-bit*
 //! through the same code path — that one **is** exact and is asserted.

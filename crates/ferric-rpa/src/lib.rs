@@ -33,7 +33,8 @@ pub mod budget;
 /// Per-spin RPA channel (B_ov, orbital energies) for unrestricted dispatch.
 pub mod channel;
 /// Coupled-Kohn-Sham (CKS) Casimir-Polder dispersion between two monomers
-/// (EXPERIMENTAL; see the module docs for the open sign discrepancy).
+/// (EXPERIMENTAL: the static coupled response is unstable, near a pole, in the
+/// dimer basis on every complex measured; see the module docs).
 pub mod cks_dispersion;
 /// PDEP-RPA configuration: eigensolver, quadrature, chi0 backend, sparsity.
 pub mod config;
@@ -53,9 +54,10 @@ pub mod gradient;
 pub mod lanczos;
 /// Laplace-separable chi0 kernel for the PDEP dielectric matvec.
 pub mod laplace_chi0;
-/// MP2C with the coupled dispersion taken from supermolecular dRPA.
+/// Supermolecular ΔdRPA-corrected MP2 (MP2C-inspired; not published MP2C).
 pub mod mp2c;
-/// MP2C with a genuine CKS (SAPT Casimir-Polder) dispersion swap (EXPERIMENTAL).
+/// MP2C with a SAPT-style (RHF orbitals, ALDAX kernel) CKS Casimir-Polder
+/// dispersion swap (EXPERIMENTAL).
 pub mod mp2c_cks;
 /// MPI-distributed PDEP-RPA frequency quadrature.
 #[cfg(feature = "mpi")]

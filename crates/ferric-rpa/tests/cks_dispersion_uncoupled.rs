@@ -154,12 +154,15 @@ fn uncoupled_dispersion_matches_direct_mp2_nonadditivity() {
         disp.e_disp
     );
 
-    // The identity is exact in the complete-basis/exact-response sense; here it
-    // is limited by the frequency quadrature and by the fact that the two
-    // constructions distribute the intramonomer/intermonomer split slightly
-    // differently in a finite basis. A 5% agreement on a number of order 1e-5
-    // Ha already rules out every convention error (a wrong prefactor or a
-    // missed dressing is an O(1) or larger discrepancy, not a 5% one).
+    // The two sides share the dimer basis and this 40-node grid, so neither
+    // basis incompleteness nor quadrature explains the measured 0.52% at 4 Å.
+    // The mismatch is physical: the supermolecular 2E_OS is built on DIMER
+    // HF orbitals, which carry intermolecular exchange and orbital
+    // deformation, while the trace is built on each monomer's own orbitals.
+    // The identity is therefore exact only as R -> inf (pinned by
+    // `uncoupled_mismatch_vanishes_asymptotically`). 5% sits ~10x above the
+    // measured value and far below the O(1) error of a wrong prefactor or a
+    // missed dressing.
     let rel = (disp.e_disp - e_ref).abs() / e_ref.abs();
     eprintln!(
         "He2/cc-pVDZ 4 A: E_disp^UCHF = {:.10e}, 2E_OS non-additivity = {:.10e}, rel = {rel:.4e}",
@@ -172,6 +175,85 @@ fn uncoupled_dispersion_matches_direct_mp2_nonadditivity() {
         disp.e_disp,
         e_ref,
         rel
+    );
+}
+
+/// The uncoupled trace and the 2E_OS non-additivity at He–He separation `r` Å,
+/// with the same 40-node grid as TEST 1.
+fn uchf_trace_and_dmp2_nonadditivity(r: f64) -> (f64, f64) {
+    let pos = |real_first: bool| {
+        let (a, b) = if real_first {
+            ("He", "@He")
+        } else {
+            ("@He", "He")
+        };
+        format!("2\nHe monomer\n{a} 0 0 0\n{b} 0 0 {r}\n")
+    };
+    let (dm, do_, dd, dr) = setup(&format!("2\nHe2\nHe 0 0 0\nHe 0 0 {r}\n"));
+    let (am, ao, ad, ar) = setup(&pos(true));
+    let (bm, bo, bd, br) = setup(&pos(false));
+    let e_ref =
+        two_e_os(&dm, &do_, &dd, &dr) - two_e_os(&am, &ao, &ad, &ar) - two_e_os(&bm, &bo, &bd, &br);
+    let cfg = CksDispersionConfig {
+        coupling: CksCoupling::Uncoupled,
+        n_freq: 40,
+        u0: 1.0,
+        frozen_core: 0,
+    };
+    let ra = build_monomer_response(&am, &ao, &ad, &ar, "", &cfg).unwrap();
+    let rb = build_monomer_response(&bm, &bo, &bd, &br, "", &cfg).unwrap();
+    (cks_dispersion_energy(&ra, &rb, &cfg).unwrap().e_disp, e_ref)
+}
+
+/// ASYMPTOTIC ANCHOR — the uncoupled trace equals the 2E_OS non-additivity as
+/// R -> inf. At finite R the dimer-HF orbitals carry exchange and deformation
+/// that the monomer-orbital trace does not; those decay exponentially with
+/// overlap, so the mismatch must collapse once the atoms stop overlapping.
+///
+/// MEASURED (He2/cc-pVDZ, 40 nodes):
+///
+/// ```text
+///   R (Å)   trace (Ha)           2E_OS non-add (Ha)   rel
+///    4      -1.0219333600e-6     -1.0166798349e-6     5.167e-3
+///    8      -1.5949996303e-8     -1.5949996782e-8     2.999e-8
+///   16      -2.4921973881e-10    -2.4921995023e-10    8.483e-7
+/// ```
+///
+/// The relative mismatch is NOT monotone: it falls 1.7e5x from 4 to 8 Å, then
+/// rises at 16 Å, where the absolute residual is 2.1e-16 Ha, the floor of
+/// subtracting three ~1e-2 Ha correlation energies (and of the 1e-10 SCF
+/// convergence). The assertions encode exactly that: a collapse by > 1e4
+/// between 4 and 8 Å, rel < 3e-7 at 8 Å (10x the measured 3.0e-8), and at
+/// 16 Å an absolute residual below 1e-14 Ha (rel < 1e-5).
+///
+/// MUTATION: scaling the trace prefactor by 1.001 (a 0.1% error that the 5%
+/// test at 4 Å cannot see) makes the 8 Å rel 1e-3 and FAILS this test.
+#[test]
+fn uncoupled_mismatch_vanishes_asymptotically() {
+    let mut rels = Vec::new();
+    let mut abs16 = 0.0;
+    for r in [4.0, 8.0, 16.0] {
+        let (e_disp, e_ref) = uchf_trace_and_dmp2_nonadditivity(r);
+        let rel = (e_disp - e_ref).abs() / e_ref.abs();
+        eprintln!(
+            "He2/cc-pVDZ R = {r:4.1} A: trace {e_disp:.10e}, 2E_OS non-add {e_ref:.10e}, rel {rel:.3e}"
+        );
+        rels.push(rel);
+        abs16 = (e_disp - e_ref).abs();
+    }
+    assert!(
+        rels[0] > 1e4 * rels[1],
+        "mismatch must collapse once the atoms stop overlapping: {rels:?}"
+    );
+    assert!(
+        rels[1] < 3e-7,
+        "8 A relative mismatch {:.3e} >= 3e-7",
+        rels[1]
+    );
+    assert!(
+        abs16 < 1e-14 && rels[2] < 1e-5,
+        "16 A residual {abs16:.3e} Ha (rel {:.3e}) is above the arithmetic floor",
+        rels[2]
     );
 }
 

@@ -208,6 +208,13 @@ fn methane_dimer_correction_has_the_published_sign() {
 }
 
 /// Ethene dimer (S22-07). Published correction −0.040 kcal/mol.
+///
+/// The two monomers of `testdata/molecules/s22/ethylene_dimer.xyz` are NOT
+/// symmetry-equivalent despite the file's "(D2d)" header: the first ethene's
+/// C=C lies along the intermolecular (z) axis and the second's perpendicular
+/// to it (along y). Each monomer's ghost environment therefore differs, which
+/// is why the two monomers' Dyson minima differ (+0.323 vs −0.401) where the
+/// methane monomers agree exactly.
 #[test]
 #[ignore = "known open: CKS MP2C correction vs published (ethene -0.335 vs -0.040, unstable response)"]
 fn ethene_dimer_correction_has_the_published_sign() {

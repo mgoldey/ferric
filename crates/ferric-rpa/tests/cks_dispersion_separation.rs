@@ -151,6 +151,12 @@ fn cks_dispersion_decays_with_separation() {
     // an effective exponent between 5 and 7) because the shortest separation
     // still carries real overlap-driven (exchange-dispersion-like) contamination
     // that is not asymptotic; it is not wide enough to admit a different power.
+    // Measured: 68.95x (3->6 A, effective exponent 6.11, the 3 A point still
+    // carrying higher multipoles R^-8, R^-10 and overlap) then 64.00x and
+    // 64.00x. The window is centred on the asymptotic 2^6 and spans one unit of
+    // exponent each side: the nearest competing powers, R^-4 (16x) or R^-8
+    // (256x), fall outside it, and the 3 A point's excess (+0.11 in exponent)
+    // sits well inside.
     let e_near = results[0].1;
     let e_far = results[results.len() - 1].1;
     let decay = (e_near / e_far).abs();

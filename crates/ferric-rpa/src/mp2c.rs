@@ -1,67 +1,49 @@
-//! MP2C — coupled-dispersion-corrected MP2.
+//! Supermolecular ΔdRPA-corrected MP2 (an MP2C-*inspired* construction).
 //!
-//! Pitoňák & Heßelmann, *J. Chem. Theory Comput.* **6**, 168 (2010);
-//! Huang, Goldey, Head-Gordon & Beran, *J. Chem. Theory Comput.* **10**, 2054
-//! (2014).
+//! Algebraically `E_MP2 + ΔdRPA[v_d]`, with `ΔdRPA = E_dRPA − 2·E_OS`. The
+//! Rust items keep the `mp2c` name for continuity; **this is not MP2C**.
 //!
-//! # The construction
+//! # What published MP2C does, and what this does instead
 //!
-//! MP2's dispersion is *uncoupled* — it is the second-order (UCHF-level)
-//! response, which neglects the orbital relaxation that screens the true
-//! dipole–dipole interaction. That is why MP2 overbinds π-stacked and other
-//! polarizable contacts. MP2C's remedy is a swap: subtract the uncoupled
-//! dispersion MP2 carries, add back a *coupled* one.
+//! Published MP2C (Pitoňák & Heßelmann, *J. Chem. Theory Comput.* **6**, 168
+//! (2010); Huang, Goldey, Head-Gordon & Beran, *J. Chem. Theory Comput.* **10**,
+//! 2054 (2014)) swaps **intermolecular SAPT dispersion terms**:
 //!
 //! ```text
-//!     E_MP2C = E_MP2 − E_disp^UCHF + E_disp^CKS                          (1)
+//!     E_MP2C = E_MP2 − E_disp^(20),UCHF + E_disp^TDDFT                    (1)
 //! ```
 //!
-//! The published method evaluates the coupled term at the coupled Kohn–Sham
-//! (CKS) level via SAPT(DFT) response, which needs a functional and a monomer
-//! decomposition. **ferric has neither.** What ferric does have is the
-//! *ab initio* coupled resummation of exactly the same channel — direct RPA —
-//! and the two identifications that make (1) computable here:
+//! both dispersion terms built from *monomer* responses, so the swap touches
+//! only the dispersion interaction. That construction is [`crate::mp2c_cks`]
+//! (experimental). This module instead swaps the **whole supermolecular
+//! direct-ring correlation energy** of each system:
 //!
 //! ```text
-//!     E_disp^uncoupled[v]  =  E_dMP2[v]  =  2·E_OS[v]                    (2)
-//!     E_disp^coupled[v]    =  E_dRPA[v]                                  (3)
+//!     E_c = E_MP2[v] − 2·E_OS[v_d] + E_dRPA[v_d]                          (4)
 //! ```
 //!
-//! (2) is derived in ferric's SR-MP2 + LR-RPA methodology note (§2, Eq. 2.6):
-//! discarding exchange from the second-order energy leaves the direct ring
-//! term, and carrying out the closed-shell spin summation gives exactly twice
-//! the opposite-spin energy. (3) is the statement that dRPA is the infinite-order
-//! ring resummation whose second-order truncation is (2) (§4 of the same
-//! note). So the ferric-native MP2C is
+//! `2·E_OS` is the second-order direct-ring (dMP2) energy (closed-shell spin
+//! summation of the exchange-free second-order term) and `E_dRPA` is its
+//! infinite-order ring resummation, so (4) replaces MP2's direct-ring
+//! correlation with dRPA's. The interaction energy is then recovered by
+//! counterpoise-corrected supermolecular subtraction (dimer − monomers).
 //!
-//! ```text
-//!     E_c^MP2C = E_MP2[v] − 2·E_OS[v_d] + E_dRPA[v_d]                    (4)
-//! ```
+//! **The non-additivity of (4) is not the dispersion swap of (1).** Besides
+//! the coupled-minus-uncoupled dispersion, the dimer-minus-monomers difference
+//! of `E_dRPA − 2·E_OS` also contains ring-coupling corrections to the
+//! intramonomer correlation as it responds to the partner (the correlation
+//! parts of electrostatics and induction) and changes driven by exchange and
+//! overlap. Those extra pieces vanish only as `R → ∞`; at van der Waals
+//! contact they need not be small, and nothing here separates them.
 //!
-//! with `v_d` the operator the dispersion swap acts through (see
-//! [`Mp2cDispersionRange`]).
+//! Consistent with that, the measured corrections are much larger than
+//! published MP2C corrections on comparable complexes: A24-19 (methane dimer)
+//! and A24-20 (methane–Ar) give +0.29 and +0.22 kcal/mol at aug-cc-pVDZ
+//! (`tests/validation_mp2c.rs`), against published MP2C corrections of order
+//! 0.0x kcal/mol for the smallest S22 complexes (methane dimer −0.060).
 //!
-//! ## What is and is not the published MP2C
-//!
-//! **The coupling source is dRPA, not CKS.** This is a deliberate substitution
-//! and it is the same one `rs_mp2_rpa`'s formulation B makes (methodology
-//! §1.1). It is *not* a reimplementation of Pitoňák–Heßelmann (that is
-//! [`crate::mp2c_cks`], experimental): their
-//! E_disp^CKS comes from a TD-DFT monomer response inside a SAPT decomposition,
-//! carries a functional choice, and is a genuinely different number from
-//! E_dRPA. Nothing here reproduces published MP2C interaction energies to
-//! their quoted accuracy, and this module does not claim to.
-//!
-//! **The dispersion swap is supermolecular, not monomer-based.** Real MP2C
-//! computes E_disp on the *dimer* from *monomer* responses — a SAPT
-//! construction in which the dispersion term is intrinsically an
-//! interaction-only quantity. Eq. (4) instead evaluates both dispersion terms
-//! on whatever system it is handed, and recovers the interaction energy by
-//! supermolecular subtraction (dimer − monomers), the same way plain MP2 does.
-//! That is a *different partitioning* with the same limiting content: the
-//! non-additive pieces of `−2E_OS + E_dRPA` cancel in the CP-corrected
-//! difference to the extent that the ring resummation is size-consistent, which
-//! it is. See [`mp2c_interaction_energy`].
+//! The coupling source is dRPA, not TDDFT: no functional enters. The same
+//! substitution is `rs_mp2_rpa`'s formulation B.
 //!
 //! ## Relationship to formulation B
 //!
@@ -72,18 +54,14 @@
 //!     E_c^B = E_MP2[v] + (E_dRPA[v_lr] − 2·E_OS[v_lr])
 //! ```
 //!
-//! This is not a coincidence to be papered over — it is the methodology
-//! document's §1.1 claim ("B is MP2C with the coupled dispersion computed by
-//! ab initio dRPA instead of CKS, and applied only to the long range") made
-//! executable. [`mp2c_energy`] with `LongRange` and `rs_mp2_lr_rpa` with
+//! [`mp2c_energy`] with `LongRange` and `rs_mp2_lr_rpa` with
 //! `DeltaLr` must agree to the floating-point noise floor at matched ω; that
 //! equivalence is asserted in the tests (`long_range_mp2c_equals_formulation_b`)
 //! rather than assumed, because it is the load-bearing structural claim.
 //!
-//! The default is [`Mp2cDispersionRange::FullRange`], which is the *literature*
-//! MP2C grouping (the swap is full-range; the published method has no range
-//! separation at all — see the methodology table in §1.1). Full-range MP2C is
-//! the ω→∞ limit of B, i.e. `E_MP2 + ΔdRPA[Coulomb]`.
+//! The default is [`Mp2cDispersionRange::FullRange`] (no range separation,
+//! as in published MP2C), which is the ω→∞ limit of B, i.e.
+//! `E_MP2 + ΔdRPA[Coulomb]`.
 //!
 //! # Counterpoise and ghost atoms
 //!
@@ -148,9 +126,10 @@ pub enum Mp2cDispersionRange {
     ///     E_c = E_MP2[v] − 2·E_OS[v] + E_dRPA[v]
     /// ```
     ///
-    /// This is the literature MP2C grouping — the published method has no range
-    /// separation, it replaces the uncoupled dispersion wholesale. `omega` is
-    /// not consulted.
+    /// Full range like published MP2C (which has no range separation), but
+    /// swapping the whole supermolecular direct-ring energy rather than only
+    /// the intermolecular dispersion (see the module docs). `omega` is not
+    /// consulted.
     ///
     /// Note this is also the ω→∞ limit of the long-range form, and equals
     /// `E_MP2 + ΔdRPA[Coulomb]`.
@@ -251,10 +230,14 @@ pub struct Mp2cResult {
     /// Always the full Coulomb operator regardless of `range`; the range
     /// selection only touches the dispersion swap.
     pub e_mp2: f64,
-    /// `2·E_OS[v_d]` — the uncoupled (direct, second-order) dispersion that is
-    /// *removed*. Positive-signed here; it is subtracted in `e_corr`.
+    /// `2·E_OS[v_d]`: the second-order direct-ring correlation energy of THIS
+    /// system (removed; subtracted in `e_corr`). A per-system correlation
+    /// energy, not a dispersion energy: only part of its dimer-minus-monomers
+    /// difference is dispersion (see the module docs).
     pub e_disp_uncoupled: f64,
-    /// `E_dRPA[v_d]` — the coupled dispersion that is *added*.
+    /// `E_dRPA[v_d]`: the dRPA correlation energy of THIS system (added). Same
+    /// caveat as `e_disp_uncoupled`: a correlation energy, not a dispersion
+    /// energy.
     pub e_disp_coupled: f64,
     /// `e_disp_coupled − e_disp_uncoupled`, the net MP2C correction to MP2.
     /// Exposed because it is the quantity that must vanish in the reduction
@@ -295,7 +278,10 @@ impl Mp2cResult {
     }
 }
 
-/// MP2C: MP2 with its uncoupled dispersion replaced by a coupled (dRPA) one.
+/// Supermolecular ΔdRPA-corrected MP2 for one system: MP2 with its
+/// direct-ring correlation `2·E_OS` replaced by dRPA. Named `mp2c_*` for
+/// continuity; it is not published MP2C, which swaps only intermolecular SAPT
+/// dispersion terms (see the module docs).
 ///
 /// ```text
 ///     E = E_HF + E_MP2[v] − 2·E_OS[v_d] + E_dRPA[v_d]
@@ -414,8 +400,8 @@ pub fn mp2c_energy(
     })
 }
 
-/// A counterpoise-corrected MP2C interaction energy from three already-computed
-/// results.
+/// A counterpoise-corrected ΔdRPA-corrected-MP2 interaction energy from three
+/// already-computed [`mp2c_energy`] results.
 ///
 /// ```text
 ///     ΔE = E(dimer) − E(monomer A, dimer basis) − E(monomer B, dimer basis)
@@ -428,16 +414,15 @@ pub fn mp2c_energy(
 /// the per-term breakdown and the caller is responsible for having fed it a
 /// genuine CP triple. `tests/mp2c_ghost.rs` exercises the real path.
 ///
-/// # Why the supermolecular subtraction is the right recovery here
+/// # What the supermolecular subtraction does and does not isolate
 ///
-/// Published MP2C computes E_disp from monomer responses, so its dispersion
-/// term is an interaction energy by construction. Eq. (4) instead evaluates
-/// `−2E_OS + E_dRPA` on each of the three systems and differences them. This is
-/// legitimate because both dRPA and E_OS are size-consistent: for two
-/// infinitely separated fragments each reduces additively, so the correction's
-/// non-additive residue *is* the coupled-minus-uncoupled dispersion between
-/// them, which is what MP2C wants. It differs from the SAPT construction in
-/// how the intramonomer part is bookkept, not in the intermolecular content.
+/// Both dRPA and `E_OS` are size-consistent, so the correction's non-additive
+/// residue vanishes for infinitely separated fragments and tends to the
+/// coupled-minus-uncoupled dispersion as `R → ∞`. At finite `R` it also
+/// carries ring-coupling corrections to the intramonomer correlation
+/// (electrostatics/induction correlation) and exchange–overlap changes, which
+/// published MP2C's monomer-response SAPT terms exclude by construction. This
+/// is therefore not the published MP2C interaction energy.
 pub fn mp2c_interaction_energy(
     dimer: &Mp2cResult,
     monomer_a: &Mp2cResult,
@@ -465,10 +450,10 @@ pub struct Mp2cInteraction {
     /// Plain MP2 interaction energy (HF + MP2 correlation), for comparison —
     /// this is the number MP2C is supposed to improve on.
     pub e_int_mp2: f64,
-    /// The MP2C correction's own contribution to the interaction energy,
-    /// `Δ(E_dRPA[v_d] − 2E_OS[v_d])`. Expected **positive** (repulsive) for a
-    /// dispersion-bound complex: coupling screens the uncoupled dispersion, so
-    /// MP2C binds less than MP2.
+    /// The correction's own contribution to the interaction energy,
+    /// `Δ(E_dRPA[v_d] − 2E_OS[v_d])`, dimer minus monomers. Positive
+    /// (repulsive) on the dispersion-bound A24 complexes measured; it is not
+    /// the published MP2C dispersion correction (see the module docs).
     pub e_int_correction: f64,
     /// Hartree–Fock interaction energy alone.
     pub e_int_hf: f64,

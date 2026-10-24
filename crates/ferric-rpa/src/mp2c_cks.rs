@@ -1,4 +1,5 @@
-//! MP2C with a **genuine** coupled-Kohn–Sham dispersion term (EXPERIMENTAL).
+//! MP2C with a SAPT-style (RHF orbitals, ALDAX kernel) coupled-Kohn–Sham
+//! dispersion term (EXPERIMENTAL).
 //!
 //! Pitoňák & Heßelmann, *J. Chem. Theory Comput.* **6**, 168 (2010):
 //!
@@ -19,6 +20,10 @@
 //!   ethene dimer        −0.5121      −0.8468      −0.3348      −0.040      +0.323 / −0.401
 //!   A24-12 / S22-16     −1.4618      −1.0710      +0.3908      +0.060      −1.975 / +0.751
 //! ```
+//!
+//! (The two ethene monomers of `s22/ethylene_dimer.xyz` are not
+//! symmetry-equivalent in that geometry — one C=C lies along the
+//! intermolecular axis, the other perpendicular — so their minima differ.)
 //!
 //! The last column is the smallest eigenvalue of the static Dyson matrix
 //! `M = I + Π⁰^{1/2} K Π⁰^{1/2}` of each monomer
@@ -45,8 +50,8 @@
 //!
 //! # How this differs from [`crate::mp2c`]
 //!
-//! `mp2c.rs` implements (1) with **dRPA substituted for CKS**, evaluated
-//! supermolecularly. This module implements the published construction:
+//! `mp2c.rs` is a supermolecular ΔdRPA-corrected MP2, not MP2C: it swaps the
+//! whole direct-ring correlation of each system for dRPA. This module implements the published construction:
 //!
 //! | | `mp2c.rs` | this module |
 //! |---|---|---|
@@ -185,7 +190,7 @@ pub struct Mp2cCksInteraction {
     ///
     /// Published MP2C corrections are repulsive for most complexes but
     /// negative for some small ones (methane and ethene dimers); see the
-    /// module docs for the open sign discrepancy.
+    /// module docs for the unstable static response behind the mismatch.
     pub e_correction: f64,
     /// Counterpoise-corrected Hartree–Fock/SCF interaction energy.
     pub e_int_scf: f64,
@@ -210,7 +215,7 @@ impl Mp2cCksInteraction {
     }
 }
 
-/// MP2C interaction energy with a genuine CKS coupled-dispersion term.
+/// MP2C interaction energy with a SAPT-style CKS coupled-dispersion term.
 ///
 /// ```text
 ///     ΔE_MP2C = ΔE_MP2(CP) − E_disp^UCHF + E_disp^CKS
