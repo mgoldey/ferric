@@ -39,7 +39,7 @@
 //! carries the weight-response term; the two differ by the grid's
 //! translation error and the weight derivatives (see `crate::hessian`).
 //!
-//! # Moving grid (opt-in, issue #490)
+//! # Moving grid (issue #490; the `Auto` KS Hessian)
 //!
 //! [`crate::ks_fixed_grid::FixedGridKs::skeleton_hessian_moving`] and
 //! [`crate::ks_fixed_grid::FixedGridKs::first_order_fock_moving`] differentiate instead the energy
@@ -97,6 +97,60 @@ const WEIGHT_CHUNK: usize = 64;
 /// matrix-vector products; a larger system is a typed error, not a silent
 /// re-evaluation per iteration.
 const RESPONSE_TABLE_MAX_BYTES: usize = 2 << 30;
+
+thread_local! {
+    /// Test-only override of [`RESPONSE_TABLE_MAX_BYTES`] on this thread
+    /// ([`ResponseTableCapOverride`]).
+    static RESPONSE_TABLE_CAP: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+}
+
+/// Lowers (or raises) the response-table cap on THIS thread while alive, so a
+/// test can exercise the size refusal on a small system. Restores the previous
+/// value on drop. Production never constructs one.
+#[doc(hidden)]
+pub struct ResponseTableCapOverride {
+    previous: Option<usize>,
+}
+
+impl ResponseTableCapOverride {
+    /// Cap the resident AO table at `max_bytes` on this thread.
+    pub fn new(max_bytes: usize) -> Self {
+        let previous = RESPONSE_TABLE_CAP.with(|c| c.replace(Some(max_bytes)));
+        ResponseTableCapOverride { previous }
+    }
+}
+
+impl Drop for ResponseTableCapOverride {
+    fn drop(&mut self) {
+        RESPONSE_TABLE_CAP.with(|c| c.set(self.previous));
+    }
+}
+
+/// THE size check of the KS Hessian response kernel's resident AO table
+/// (`nbf × npts × planes` doubles, planes 4 for a GGA and 1 for an LDA):
+/// [`FixedGridKs::response`] runs it after the SCF and
+/// `crate::hessian::rks_moving_grid_hessian_available` before it, so the
+/// pre-SCF predicate and the Hessian refuse exactly the same systems.
+pub fn check_response_table(nbf: usize, npts: usize, gga: bool) -> Result<(), FerricError> {
+    let planes = if gga { 4 } else { 1 };
+    let bytes = nbf
+        .saturating_mul(npts)
+        .saturating_mul(planes)
+        .saturating_mul(std::mem::size_of::<f64>());
+    let cap = RESPONSE_TABLE_CAP
+        .with(|c| c.get())
+        .unwrap_or(RESPONSE_TABLE_MAX_BYTES);
+    if bytes > cap {
+        return Err(FerricError::General(format!(
+            "the analytic Kohn-Sham Hessian (fixed or moving grid): the resident AO table of \
+             its response ({nbf} basis functions x {npts} grid points x {planes} planes, \
+             {:.3} GiB) exceeds the {:.3} GiB cap; use the finite-difference Hessian",
+            bytes as f64 / f64::powi(2.0, 30),
+            cap as f64 / f64::powi(2.0, 30)
+        )));
+    }
+    Ok(())
+}
 
 /// Scale factors on the pieces of the Hessian, for mutation tests.
 /// `Default` (all 1) is production; 0 drops a piece, 2 doubles it.
@@ -544,6 +598,11 @@ impl FixedGridKs {
     /// Number of grid points.
     pub fn npts(&self) -> usize {
         self.pts.len()
+    }
+
+    /// [`check_response_table`] for this grid and `nbf` basis functions.
+    pub fn check_response_table(&self, nbf: usize) -> Result<(), FerricError> {
+        check_response_table(nbf, self.npts(), self.gga)
     }
 
     fn ranges(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
@@ -1129,18 +1188,7 @@ impl FixedGridKs {
     ) -> Result<XcResponse, FerricError> {
         let nbf = d.nrows();
         let npts = self.npts();
-        let planes = if self.gga { 4 } else { 1 };
-        let bytes = nbf
-            .saturating_mul(npts)
-            .saturating_mul(planes)
-            .saturating_mul(std::mem::size_of::<f64>());
-        if bytes > RESPONSE_TABLE_MAX_BYTES {
-            return Err(FerricError::General(format!(
-                "fixed-grid KS Hessian: the resident AO table ({:.1} GiB) exceeds {:.0} GiB",
-                bytes as f64 / f64::powi(2.0, 30),
-                RESPONSE_TABLE_MAX_BYTES as f64 / f64::powi(2.0, 30)
-            )));
-        }
+        self.check_response_table(nbf)?;
         let mut resp = XcResponse {
             chi: Array2::<f64>::zeros((nbf, npts)),
             dchi: self.gga.then(|| Array3::<f64>::zeros((3, nbf, npts))),

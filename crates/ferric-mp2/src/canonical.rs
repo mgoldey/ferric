@@ -188,6 +188,55 @@ pub fn dense_ao_eri(prep: &PreparedBasis, op: Operator) -> Result<Vec<f64>, Ferr
     Ok(ao)
 }
 
+/// Bytes [`canonical_mp2`] holds at its co-resident peak, read off the
+/// transform chain (f64 elements, then ×8; `nocc` is the ACTIVE count).
+///
+/// The MO-coefficient copies `c_occ` + `c_vir` (`nbas·(nocc+nvir)`) live from
+/// before the first transform to function end. On top of them, the stages
+/// (each line is what is alive at that stage's widest point):
+///
+/// ```text
+///   ao + t1          nbas⁴ + nocc·nbas³                 (ao dropped after t1)
+///   t1 + t2 + ia     nocc·nbas³ + nov·nbas² + nvir·nbas² (t2 is zeroed while
+///                                                         t1 lives; `ia` is the
+///                                                         per-i GEMM result)
+///   t2 + t3          nov·nbas² + nov·nbas·nvir
+///   t3 + mo + jb     nov·nbas·nvir + nov² + nov          (`jb`: per-ia result)
+///   mo               nov²                                (energy pass)
+/// ```
+///
+/// The peak is `c_occ + c_vir` plus the max of those stages, NOT their sum:
+/// the old ceiling added `ao`, `t1` and `mo`, but `mo` is never alive with
+/// `ao`. In practice the first stage always dominates (the others are each
+/// bounded by `nbas⁴`), but every stage is kept so a reordering of the chain
+/// cannot silently move the peak. Excluded: O(n) vectors (`partials`, the
+/// shell-pair index list) and libint's own C++ scratch, which is not on the
+/// Rust heap.
+fn canonical_mp2_peak_bytes(nbas: usize, nocc: usize, nvir: usize) -> usize {
+    let n2 = nbas.saturating_mul(nbas);
+    let n3 = n2.saturating_mul(nbas);
+    let nov = nocc.saturating_mul(nvir);
+    let coeffs = nbas.saturating_mul(nocc.saturating_add(nvir));
+    let ao_t1 = n2
+        .saturating_mul(n2)
+        .saturating_add(nocc.saturating_mul(n3));
+    let t1_t2_ia = nocc
+        .saturating_mul(n3)
+        .saturating_add(nov.saturating_mul(n2))
+        .saturating_add(nvir.saturating_mul(n2));
+    let t2_t3 = nov
+        .saturating_mul(n2)
+        .saturating_add(nov.saturating_mul(nbas).saturating_mul(nvir));
+    let t3_mo_jb = nov
+        .saturating_mul(nbas)
+        .saturating_mul(nvir)
+        .saturating_add(nov.saturating_mul(nov))
+        .saturating_add(nov);
+    let mo = nov.saturating_mul(nov);
+    let stage = ao_t1.max(t1_t2_ia).max(t2_t3).max(t3_mo_jb).max(mo);
+    coeffs.saturating_add(stage).saturating_mul(8)
+}
+
 /// Compute the canonical MP2 correlation energy using full 4-center ERIs.
 ///
 /// This is an O(N^5) reference implementation for cross-validating RI-MP2.
@@ -211,57 +260,24 @@ pub fn canonical_mp2(
     let nov = nocc * nvir;
     let nb2 = nbas * nbas;
 
-    // Fail-fast size guard. The dense AO buffer (nbas^4) now dominates: it is
-    // the single largest allocation and, for any system where this reference
-    // path is usable, is far bigger than the MO-side buffers. Count it plus the
-    // largest transform intermediate (nbas^3 * nocc) and the final (nov)^2.
-    let peak = nb2
-        .saturating_mul(nb2)
-        .saturating_add(nb2.saturating_mul(nbas).saturating_mul(nocc))
-        .saturating_add(nov.saturating_mul(nov))
-        .saturating_mul(8);
-    ferric_core::memory::check_alloc(
-        &format!(
-            "canonical MP2 (nocc={nocc}, nvir={nvir}; dense AO ERI nbas^4 (nbas={nbas}), MO-ERI (nov={nov})²)"
-        ),
-        peak,
-        ferric_core::memory::resolve_budget_bytes(None),
-    )?;
-    // DEBIT the shared pool, before the nbas^4 buffer allocates.
-    //
-    // Charged on the TRUE co-resident peak, not on `peak` above. `peak` sums
-    // three buffers that do not all coexist: `ao` (nbas^4) is co-resident with
-    // `t1` (nbas^3*nocc) only across the first quarter transform and is
-    // `drop`ped immediately after, while `mo` (nov^2) is allocated several
-    // stages later. Charging their sum would be the over-estimating-guard bug
-    // -- it refuses jobs that would have fit -- so this takes the max of the
-    // two genuine stages instead:
-    //   stage 1: ao + t1        = nbas^4 + nbas^3*nocc
-    //   stage 2: t2 + t3        = nocc*nvir*nbas^2 + nov*nbas*nvir
-    // and `mo` (nov^2), which is the smallest of the three and is live with
-    // neither, is folded into stage 2 where it first appears.
-    //
-    // `peak` itself is left untouched: it is an EXISTING pre-flight whose
-    // conservatism has been in the tree and changing what it refuses is a
-    // behaviour change outside this migration's scope. The pool charge is
-    // strictly the more accurate of the two, so it never refuses something
-    // `check_alloc` admits.
+    // Fail-fast size guard: ONE true co-resident peak
+    // ([`canonical_mp2_peak_bytes`]) is both checked against the resolved
+    // budget ceiling and charged to the shared pool, before the nbas^4 buffer
+    // allocates. The charge is held to function end (`mo` lives that long).
     //
     // HARD: this is the dense reference path by construction ("Callers must
     // apply their own memory guard" per `dense_ao_eri`'s doc); it has no
     // blocked or streaming alternative to fall back to.
-    let stage1 = nb2
-        .saturating_mul(nb2)
-        .saturating_add(nb2.saturating_mul(nbas).saturating_mul(nocc));
-    let stage2 = nocc
-        .saturating_mul(nvir)
-        .saturating_mul(nb2)
-        .saturating_add(nov.saturating_mul(nbas).saturating_mul(nvir))
-        .saturating_add(nov.saturating_mul(nov));
-    let _canonical_charge = crate::rimp2::charge_mo_side(
-        &format!("canonical MP2 peak (nbas={nbas}, nocc={nocc}, nvir={nvir}; dense AO ERI nbas^4)"),
-        stage1.max(stage2).saturating_mul(8),
+    let label = format!(
+        "canonical MP2 (nocc={nocc}, nvir={nvir}; dense AO ERI nbas^4 (nbas={nbas}), MO-ERI (nov={nov})²)"
+    );
+    let peak = canonical_mp2_peak_bytes(nbas, nocc, nvir);
+    ferric_core::memory::check_alloc(
+        &label,
+        peak,
+        ferric_core::memory::resolve_budget_bytes(None),
     )?;
+    let _canonical_charge = crate::rimp2::charge_mo_side(&label, peak)?;
 
     // ---- Step 1: dense AO ERI (mu nu|la sg), 8-fold permutational symmetry. ----
     // Shared with the exact-integral reference paths via `dense_ao_eri` so there is
