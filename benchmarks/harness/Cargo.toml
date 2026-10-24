@@ -38,3 +38,5 @@ gpu = ["ferric-core/gpu", "ferric-tensors/gpu", "ferric-mp2/gpu", "ferric-scf/gp
 # Adds the fault-injection / settings-override seams (the unshipped `dfj-pack` arm of
 # dfj_device_split).
 test-seams = ["gpu", "ferric-scf/test-seams"]
+# Research spike: adds the Cholesky-seeded configs to examples/sparse_scaling.rs.
+spike-cholesky-seed = ["ferric-rpa/spike-cholesky-seed"]
