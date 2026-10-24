@@ -1347,17 +1347,24 @@ fn chelpg_grid_esp(
 
     // Size guard, mirroring `eval_basis_on_grid`'s fail-fast convention.
     // It counts the true co-resident peak (see `chelpg_peak_bytes`), with
-    // `npts_total` as the upper bound on the number of kept points.
+    // `npts_total` as the upper bound on the number of kept points, and
+    // charges the same bytes to the shared pool (a no-op when none is
+    // installed), as the other property-grid gates do.
+    let label = format!(
+        "chelpg candidate grid ({}×{}×{} = {npts_total} pts before vdW filtering; \
+         kept points + one ESP value + one output record per point)",
+        n[0], n[1], n[2]
+    );
+    let peak_bytes = chelpg_peak_bytes(npts_total);
     ferric_core::memory::check_alloc(
-        &format!(
-            "chelpg candidate grid ({}×{}×{} = {npts_total} pts before vdW filtering; \
-             kept points + one ESP value + one output record per point)",
-            n[0], n[1], n[2]
-        ),
-        chelpg_peak_bytes(npts_total),
+        &label,
+        peak_bytes,
         ferric_core::memory::resolve_budget_bytes(memory_budget_bytes),
     )
     .map_err(|e| FerricError::General(e.to_string()))?;
+    // Held to the return: `kept`, `values` and the output all live inside
+    // this function. MUST stay a named binding (`let _ =` releases at once).
+    let _charge = ferric_core::memory::pool::reserve_global(&label, peak_bytes)?;
 
     // Filter candidate points to the CHELPG shell (outside vdW, inside outer
     // cutoff) BEFORE the expensive V(r) evaluation — most of a generous
@@ -1378,6 +1385,7 @@ fn chelpg_grid_esp(
     }
     let mut kept: Vec<[f64; 3]> = Vec::with_capacity(nkept);
     kept.extend(chelpg_grid_points(origin, n, spacing).filter(|r| in_shell(r)));
+    debug_assert_eq!(kept.len(), nkept);
 
     let values = esp_at_points(mol, prep, density, &kept)?;
 
@@ -1399,6 +1407,10 @@ fn chelpg_grid_esp(
 /// buffer. `npts_total` bounds the kept count from above, and `kept` is
 /// sized exactly (no growth slack), so 64 B per candidate point is a true
 /// upper bound. The old 24 B/pt counted `kept` alone.
+///
+/// The transient inside `esp_at_points` (rayon's collect of a `Result` over
+/// an iterator of untyped length, about 48 B/pt while `kept` is alive) was
+/// checked and is below this 64 B/pt figure.
 fn chelpg_peak_bytes(npts_total: usize) -> usize {
     let per_point = std::mem::size_of::<[f64; 3]>()
         + std::mem::size_of::<f64>()
