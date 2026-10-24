@@ -707,7 +707,7 @@ pub fn ao_rpa_correlation_energy(
                 let (evals, _) = eps_mat
                     .eigh(UPLO::Upper)
                     .map_err(|e| FerricError::General(format!("AO-RPA eigh: {e}")))?;
-                let contrib: f64 = evals.iter().map(|&lam| lam.ln() + (1.0 - lam)).sum();
+                let contrib = crate::energy::trace_log_sum(&evals);
                 Ok(wk * contrib)
             })
             .collect()
@@ -805,7 +805,7 @@ pub fn ao_rpa_correlation_energy_minimax(
                     .eigh(UPLO::Upper)
                     .map_err(|e| FerricError::General(format!("AO-RPA minimax eigh: {e}")))?;
 
-                let contrib: f64 = evals.iter().map(|&lam| lam.ln() + (1.0 - lam)).sum();
+                let contrib = crate::energy::trace_log_sum(&evals);
                 Ok(wk * contrib)
             })
             .collect()
