@@ -35,6 +35,15 @@
 //! A test too long for any shard runs in its own `validation-<name>` job and
 //! is excluded from the shards' filter; the last section below checks that
 //! every such test runs exactly once.
+//!
+//! It also pins the malloc-perturb canary list to ONE source
+//! (`scripts/ci-malloc-perturb-canaries.sh`), which build-tests packs into
+//! the small canary archive and malloc-perturb runs (#525): a second copy of
+//! the list would let the archive and the run drift, and a canary missing
+//! from the archive is only caught on a runner. MUTATION: rename a listed
+//! binary, or paste the list back inline into the malloc-perturb job, or
+//! point malloc-perturb at the full `nextest-archive` →
+//! `malloc_perturb_canaries_have_one_source` fails.
 
 use std::path::{Path, PathBuf};
 
@@ -771,4 +780,87 @@ fn solo_validation_jobs_are_well_formed() {
             path.display()
         );
     }
+}
+
+const CANARY_SCRIPT: &str = "scripts/ci-malloc-perturb-canaries.sh";
+
+/// The text of job `name`, panicking if ci.yml has no such job.
+fn job(ci: &str, name: &str) -> String {
+    job_text(ci, name).unwrap_or_else(|| panic!("ci.yml has no `{name}:` job"))
+}
+
+/// The canary binary ids, read from the `CANARY_IDS=( ... )` array in
+/// `scripts/ci-malloc-perturb-canaries.sh`.
+fn canary_ids() -> Vec<String> {
+    let p = workspace_root().join(CANARY_SCRIPT);
+    let text = std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("{}: {e}", p.display()));
+    let body = text
+        .split_once("CANARY_IDS=(")
+        .and_then(|(_, rest)| rest.split_once(')'))
+        .map(|(body, _)| body)
+        .unwrap_or_else(|| panic!("{CANARY_SCRIPT} has no `CANARY_IDS=( ... )` array"));
+    body.split_whitespace().map(str::to_owned).collect()
+}
+
+#[test]
+fn malloc_perturb_canaries_have_one_source() {
+    let ids = canary_ids();
+    assert!(!ids.is_empty(), "{CANARY_SCRIPT} lists no canary binaries");
+
+    // Every id names a real test binary (crate dir == package name here).
+    let files: Vec<(String, String)> = test_files().into_iter().map(|(c, f, _)| (c, f)).collect();
+    for id in &ids {
+        let (krate, bin) = id
+            .split_once("::")
+            .unwrap_or_else(|| panic!("canary `{id}` is not a `crate::binary` id"));
+        assert!(
+            files.iter().any(|(c, f)| c == krate && f == bin),
+            "canary `{id}` has no crates/{krate}/tests/{bin}.rs: renamed or deleted, so the \
+             canary archive would silently lack it"
+        );
+    }
+
+    let ci = ci_yml();
+    // No second copy of the list anywhere in ci.yml (comments may name them).
+    let inline: Vec<&str> = ci
+        .lines()
+        .filter(|l| !l.trim_start().starts_with('#'))
+        .filter(|l| {
+            ids.iter()
+                .any(|id| l.contains(id.split_once("::").unwrap().1))
+        })
+        .collect();
+    assert!(
+        inline.is_empty(),
+        "ci.yml must read the canary list from {CANARY_SCRIPT}, not repeat it:\n  {}",
+        inline.join("\n  ")
+    );
+
+    let build = job(&ci, "build-tests");
+    for needle in [
+        "scripts/ci-malloc-perturb-canaries.sh filter",
+        "--archive-file /tmp/canary-archive.tar.zst",
+        "name: canary-archive",
+    ] {
+        assert!(
+            build.contains(needle),
+            "build-tests must contain `{needle}`"
+        );
+    }
+    let run = job(&ci, "malloc-perturb");
+    for needle in [
+        "scripts/ci-malloc-perturb-canaries.sh ids",
+        "scripts/ci-malloc-perturb-canaries.sh filter",
+        "--archive-file /tmp/canary-archive.tar.zst",
+        "name: canary-archive",
+    ] {
+        assert!(
+            run.contains(needle),
+            "malloc-perturb must contain `{needle}`"
+        );
+    }
+    assert!(
+        !run.contains("nextest-archive"),
+        "malloc-perturb must use the small canary archive, not the full nextest-archive (#525)"
+    );
 }

@@ -588,21 +588,40 @@ jobs:
           cargo build -p ferric-scf --example runlog_probe --locked
           cargo nextest archive --workspace --all-targets --locked \
             --archive-file /tmp/nextest-archive.tar.zst
-          # UNMEASURED RISK, printed so the first real run answers it: ci.yml
-          # records ~190 test binaries at 200-335 MB each uncompressed. They
-          # share most of their symbols so zstd should collapse it hard, but
-          # the compressed size has never been measured on a runner, and this
-          # runner has ~14 GB free and has already died once with "No space
-          # left on device" (run 33210162947).
-          ls -lh /tmp/nextest-archive.tar.zst
+          # The malloc-perturb job runs 6 binaries; downloading the whole
+          # ~15 GB archive for them was slow and sometimes truncated (#525).
+          # A second archive holding only those binaries reuses the binaries
+          # just built (no recompile). The filter comes from the same script
+          # malloc-perturb reads its canary list from, so the two cannot drift.
+          # Assigned on its own line so a failing script trips `set -e` (a
+          # command substitution inside an argument does not).
+          CANARY_FILTER="$(scripts/ci-malloc-perturb-canaries.sh filter)"
+          cargo nextest archive --workspace --all-targets --locked \
+            -E "$CANARY_FILTER" \
+            --archive-file /tmp/canary-archive.tar.zst
+          # Sizes of both archives (the #525 acceptance measurement), and the
+          # disk left: this runner has ~14 GB free and has already died once
+          # with "No space left on device" (run 33210162947).
+          ls -l /tmp/nextest-archive.tar.zst /tmp/canary-archive.tar.zst
           df -h / | tail -1
 
+      # compression-level 0: the archive is already zstd, so re-zipping it at
+      # the default level 6 spends upload time for nothing.
       - name: Upload the archive
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: nextest-archive
           path: /tmp/nextest-archive.tar.zst
           retention-days: 1
+          compression-level: 0
+
+      - name: Upload the canary archive
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: canary-archive
+          path: /tmp/canary-archive.tar.zst
+          retention-days: 1
+          compression-level: 0
 
       - name: Save cargo cache
         if: always() && steps.cache-cargo.outputs.cache-hit != 'true'
@@ -789,8 +808,14 @@ jobs:
         with:
           tool: cargo-nextest
 
+      # Both downloads are bounded and continue-on-error (#525): a stalled
+      # 15 GB download used to eat the whole 120-min job. A timed-out or
+      # failed attempt falls through to the zstd check, so the retry below
+      # and the "ARTIFACT DOWNLOAD failure" error in the run step still fire.
       - name: Download the archive
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        timeout-minutes: 25
+        continue-on-error: true
         with:
           name: nextest-archive
           path: /tmp
@@ -821,6 +846,8 @@ jobs:
       - name: Re-download if the artifact was incomplete
         if: steps.verify.outputs.complete != '1'
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        timeout-minutes: 25
+        continue-on-error: true
         with:
           name: nextest-archive
           path: /tmp
@@ -878,7 +905,7 @@ jobs:
   # surfaced only as LAPACK failures / non-convergence under MALLOC_PERTURB_.
   # The fast tier never sets it, so a reintroduced edge read would pass CI
   # silently. This job reruns a deliberately SMALL integral-sensitive set from
-  # the build-tests archive under glibc's MALLOC_PERTURB_ (fresh allocations
+  # build-tests' canary archive under glibc's MALLOC_PERTURB_ (fresh allocations
   # are filled with the byte ~value):
   #   1   (0xFE) and 170 (0x55): the two values that exposed #433
   #   2   (0xFD): a third pattern
@@ -891,19 +918,19 @@ jobs:
   # (far_field_contracted_s_blocks_do_not_read_uninitialised_memory, which
   # itself re-execs its #[ignore]d helper with --include-ignored). It is a
   # canary, not the survey. It also runs pbc_krsgdf, pbc_krsgdf_split and
-  # pbc_grad_ecp (RS-GDF / ECP-gradient paths). Local release-build wall times
+  # pbc_grad_ecp (RS-GDF / ECP-gradient paths). The list lives in ONE place,
+  # scripts/ci-malloc-perturb-canaries.sh, read by both build-tests (to pack
+  # the canary archive) and this job (to run and check it). Local release-build wall times
   # at MALLOC_PERTURB_=1, non-ignored tests only: 13 / 53 / 29 s. These are
   # local measurements, not CI-runner ones (CI builds at a lower opt-level, so
   # expect longer); the full survey record is in the README in
   # crates/ferric-integrals/shim/libint2_overrides.
-  # Time: each `nextest run --archive-file` invocation costs ~3.5-4 min of
-  # fixed archive-extraction overhead (MEASURED from CI job logs; the archive
-  # holds ~760 binaries), independent of the tests it runs. A per-binary loop
-  # (6 binaries x 3 values = 18 invocations) was cancelled at the 60 min limit;
-  # the 3-binary version (9 invocations) took ~38 min. So the job runs ONE
-  # invocation per MALLOC_PERTURB_ value (3 total). Expected wall time
-  # (ESTIMATE, not yet measured): 3 x (~4 min extraction + test time of the 6
-  # binaries, a few minutes) ~ 25-30 min.
+  # Time: against the FULL archive (~760 binaries, ~15 GB) each
+  # `nextest run --archive-file` invocation cost ~3.5-4 min of extraction
+  # (MEASURED from CI job logs) and the download itself was slow or truncated
+  # (#525); hence the separate canary archive of only these 6 binaries, whose
+  # download and extraction time has not yet been measured on a runner. The
+  # job still runs ONE invocation per MALLOC_PERTURB_ value (3 total).
   malloc-perturb:
     needs: build-tests
     runs-on: ubuntu-22.04
@@ -945,39 +972,56 @@ jobs:
         with:
           tool: cargo-nextest
 
-      - name: Download the archive
+      # The small canary archive build-tests packs from the same canary list
+      # (#525), not the ~15 GB full one. Bounded, retried and zstd-checked
+      # exactly like test-shard's download.
+      - name: Download the canary archive
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        timeout-minutes: 25
+        continue-on-error: true
         with:
-          name: nextest-archive
+          name: canary-archive
+          path: /tmp
+
+      - name: Verify the canary archive arrived
+        id: verify
+        run: |
+          set -euo pipefail
+          if [ -f /tmp/canary-archive.tar.zst ] && zstd -tq /tmp/canary-archive.tar.zst; then
+            echo "complete=1" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::artifact download missing or corrupt -- retrying"
+            rm -f /tmp/canary-archive.tar.zst
+            echo "complete=0" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Re-download if the artifact was incomplete
+        if: steps.verify.outputs.complete != '1'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        timeout-minutes: 25
+        continue-on-error: true
+        with:
+          name: canary-archive
           path: /tmp
 
       - name: Run the canary set under MALLOC_PERTURB_ 1, 170, 2
         run: |
           set -euo pipefail
-          if [ ! -f /tmp/nextest-archive.tar.zst ] || ! zstd -tq /tmp/nextest-archive.tar.zst; then
-            echo "::error::the nextest archive is missing or corrupt -- an ARTIFACT DOWNLOAD failure, not a test failure. Re-run this job."
+          if [ ! -f /tmp/canary-archive.tar.zst ] || ! zstd -tq /tmp/canary-archive.tar.zst; then
+            echo "::error::the canary archive is missing or corrupt after the download AND the retry -- an ARTIFACT DOWNLOAD failure, not a test failure. Re-run this job."
             exit 1
           fi
-          # Canary binaries as nextest binary ids (crate::binary).
-          CANARY_IDS=(
-            ferric-integrals::boys_chebyshev_table_edge
-            ferric-integrals::tenno_table_edge
-            ferric-pbc::pbc_kpoint_ecp_rotation
-            ferric-pbc::pbc_krsgdf
-            ferric-pbc::pbc_krsgdf_split
-            ferric-pbc::pbc_grad_ecp
-          )
-          FILTER=""
-          for id in "${CANARY_IDS[@]}"; do
-            FILTER="${FILTER:+$FILTER | }binary_id(=$id)"
-          done
+          # Canary binaries as nextest binary ids (crate::binary), from the
+          # single list build-tests also archived them from.
+          mapfile -t CANARY_IDS < <(scripts/ci-malloc-perturb-canaries.sh ids)
+          # mapfile from a process substitution does not trip `set -e`: an
+          # empty list would make the per-binary PASS check pass vacuously.
+          [ "${#CANARY_IDS[@]}" -gt 0 ] || { echo "::error::no malloc-perturb canary ids"; exit 1; }
+          FILTER="$(scripts/ci-malloc-perturb-canaries.sh filter)"
           for v in 1 170 2; do
             echo "::group::MALLOC_PERTURB_=$v"
-            # ONE extraction and ONE nextest invocation per value: each
-            # `--archive-file` invocation costs ~4 min of extraction
-            # regardless of what it runs. Extracted dir deleted afterwards
-            # (the archive holds every test binary: GBs on a disk the runner
-            # has little of).
+            # ONE extraction and ONE nextest invocation per value.
+            # Extracted dir deleted afterwards.
             EXTRACT=$(mktemp -d)
             LOG=$(mktemp)
             # --retries 0: a pass-on-retry would hide an allocator-dependent
@@ -988,7 +1032,7 @@ jobs:
             # canary binary.
             MALLOC_PERTURB_=$v cargo nextest run \
               --profile ci --retries 0 --no-tests=fail \
-              --archive-file /tmp/nextest-archive.tar.zst \
+              --archive-file /tmp/canary-archive.tar.zst \
               --extract-to "$EXTRACT" --extract-overwrite \
               --workspace-remap . \
               -E "$FILTER" 2>&1 | tee "$LOG"
