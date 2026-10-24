@@ -314,3 +314,393 @@ variant's TOTAL tracks table 18 across factors.
 * Table 17 operator: per-system r0_eff (linked omega) = 1.365 (#2), 1.355 (#5), 1.351 (#8), 1.354 (#19), and > 1.45 (#4, ill-conditioned:
   E saturates at ~0.002 kcal/mol per 0.05 A). H1 (r0 ~ 1.35) supported (1.35 is the paper's own non-CP optimum, not a fit here); H2 (sqrt2 = 1.414)
   not supported; H3 (r0=1.00 with a different omega) gives a system-dependent r0*omega (#19 ~0.35-0.4, #8 ~0.3, #2 below 0.25) so no single operator.
+
+
+---
+
+# Addendum F (pre-registered BEFORE any production number): full refit of attenuated MP2 + attenuated VV10
+
+Scope change from Addenda A-E: the question is no longer "can b be refit at a sharp seam" but "what do ALL of the
+method's parameters want to be, and is the extra flexibility real or overfit". Written before any production
+(A24/S22/S66) energy exists. Numbers in sections F.11 and F.13 come from the cheap validation runs of this turn and
+are labelled MEASURED; everything else is a pre-registered rule.
+
+## F.0 Facts taken from the paper (papers/mp2v.pdf, JCTC 11, 4159; these supersede earlier recollections in A-E)
+
+1. Eq. 11 is E_nlc = int rho(r) int rho(r') Phi_VV10(|r-r'|; b, C) (1 - terfc(|r-r'|, r0)^2): a MULTIPLICATIVE damping of the pair kernel
+   with the SAME r0 as the MP2 half ("shared ... rather than adjusted separately"). `eq11` in this refit IS the paper's construction.
+   `terf` (terf weight; Addendum A's V_A) and `bare` are NOT in the paper: they are CONTROLS scored under the same protocol to see
+   whether the damping form matters, never "candidates for the paper's construction". b "controls the strength of short-range damping"
+   and C "the magnitude of C6"; C was FIXED at the LC-VV10 value 0.0089 (LC-VV10's own b is 6.9) and never fitted.
+2. Training protocol of the paper (what "the published parameters" means): S66 (66 points); r0 scanned in 0.05 A steps x b in 0.1 steps
+   (Fig. 2's plotted grid is 0.5 in b, a 75x75 interpolation); converged HF densities, VV10 NON-self-consistent (the self-consistent
+   variant gave RMSD 0.199 vs 0.202 kcal/mol); counterpoise NOT applied; frozen core; RI where an RI basis exists; the VV10 grid is SG-1
+   (Q-Chem SG-1 = 50 radial x 194 Lebedev, pruned per radial shell). Our default NLC grid is 50 x 50 unpruned; see F.11 for the (50, 194) arm.
+3. The paper's own error surface is a VALLEY (Fig. 2, Table 1): RMSD 0.199-0.212 kcal/mol across r0 = 0.85-1.10 A with the optimal b rising
+   steeply with r0 ((0.85, 8.0), (0.90, 9.0), (0.95, 9.5), (1.00, 11.0), (1.05, 12.5), (1.10, 14.5)); "a range of r0 between approximately 0.8
+   and 1.2 A appear to be viable". The attenuated MP2 ALONE was optimal at r0 = 1.35 A ("MP2(terfc, aTZ)", SI tables 14/17/20). USE: the
+   prior box of the adaptive search is r0 in [0.8, 1.2] at the linked width (the coarse grid of F.5 still spans 0.6-2.0 so the prior is tested,
+   not assumed), and the identifiability expectation of F.8 is exactly this valley.
+4. omega is NOT a parameter of the paper (terfc has the single parameter r0 with the Dutoi link r0*omega = 1/sqrt2); the decoupled omega, the
+   independent VV10 seam and C-free fits are NEW work. ANCHOR A1 (first thing run at any production stage, before any new degree of freedom is
+   opened): on the LINKED line (s = 1/sqrt2) the six Table-1 (r0, b) pairs must reproduce the paper's valley: on S66, non-CP, frozen core, aTZ,
+   the six RMSDs within 0.03 kcal/mol of Table 1 (0.206, 0.200, 0.212, 0.199, 0.201, 0.204), and the b*(r0) of our own 1-D b search within one
+   0.5 of the paper's b at each r0. Failure means the harness differs from the paper (grid, RI aux, HF, frozen core) and NO refit result is
+   interpreted until the difference is located (at aDZ, where Table 1 does not apply, only the valley's SHAPE is checked: b* rising with r0).
+5. SCS-MP2-V(2terfc, aTZ) (trained jointly on S66 and W4-11 with the weighted-RMSD figure of merit of Eq. 13; r0 = 0.70/0.90 A, b = 14.0,
+   cOS = 1.267, cSS = 4.444) is OUT OF SCOPE for this refit; recorded as a possible later extension (a different objective, 3 more parameters).
+
+## F.1 Parameters (what is free)
+
+| # | parameter | symbol | class | where it enters |
+|---|---|---|---|---|
+| 1 | MP2 attenuation length | r0 (A) | EXPENSIVE | terfc(r; r0, omega)/r in the MP2 operator |
+| 2 | MP2 seam sharpness | s = r0*omega (dimensionless; omega = s/r0) | EXPENSIVE | same; `None` = Dutoi-linked s = 1/sqrt(2) |
+| 3 | VV10 b | b | CHEAP | kernel (k = b*(3pi/2)(9pi)^(-1/6) rho^(1/6), beta = (3/b^2)^(3/4)/32) |
+| 4 | VV10 C | C | CHEAP | omega_0^2 = C (grad rho/rho)^4 + 4pi rho/3 |
+| 5 | VV10 damping seam length | r0_vv (A) | CHEAP | pair weight W(R; r0_vv, s_vv) |
+| 6 | VV10 damping sharpness | s_vv | CHEAP | same |
+| 7 | VV10 damping FORM (categorical; only `eq11` is the paper's, `terf`/`bare` are CONTROLS, F.0.1) | eq11 \| terf \| bare | CHEAP | W = 1-terfc^2 (published Eq. 11) \| terf = 1-terfc \| 1 |
+
+EXPENSIVE = one attenuated RI-MP2 per fragment per (r0, s) node (orbitals reused). CHEAP = evaluated from the stored
+density/grid state of the fragment, no SCF and no MP2, with ALL tuples of a call sharing one VV10 pair sum
+(`Mp2vSession.vv10`, `att_mp2_vv10_decoupled_scan`). "Cheap" is relative and, MEASURED, the label is misleading for the VV10 half: b and C are nearly free once a damping weight's
+pair sum is paid for (0.7-5 s per extra b), but every NEW damping seam (r0, s, or r0_vv, s_vv, or form) costs a full erf-bound pair sum,
+10-30x the attMP2 of the same fragment (F.14). So in the current code "cheap" means "no SCF, no MP2", not "free"; the secondary
+arms' Nelder-Mead over (r0_vv, s_vv) pays one pair sum per candidate seam per fragment until the tabulated damping factor of F.14 exists.
+
+Lockstep (the published construction) is the PRIMARY arm: W = Eq. 11 with (r0_vv, s_vv) = (r0, s). The API guards it
+(`effective_vv10_damping` errors on a diverging seam, unchanged); independent damping is an explicit opt-in
+(`AttVv10Config::vv10_decoupling = Some(..)`, or the decoupled scan function) and is scored only as SECONDARY arms (F.7).
+Parameters 4-7 are therefore NOT searched until the primary result exists.
+
+## F.2 Primary loop structure (user's specification)
+
+```
+for each fragment f (dimer, monomers; CP ghosts when CP is scored):
+    SCF once; keep orbitals, density, NLC grid state                       [Mp2vSession]
+    for each MP2 seam node (r0, s):                                        [EXPENSIVE]
+        e_c(f, r0, s) = attMP2 (frozen core, same aux)
+        for each b (a Chebyshev node set in ln b):                         [CHEAP]
+            e_nl(f, r0, s, b) = VV10 with Eq. 11 damping at the SAME (r0, s)
+```
+E_int(system; r0, s, b) = E(dimer) - E(mA) - E(mB) with (CP) or without (non-CP) ghost basis; objective as F.4.
+
+## F.3 Objective and convention (both fitted, shift reported)
+
+* Primary statistic: RMSD of E_int against CCSD(T)/CBS over the TRAIN set, unweighted (the paper's statistic).
+* TWO complete fits: non-CP (the paper's convention; interaction energies from the monomers in their own basis) and CP
+  (the project rule, memory `counterpoise-dominates-small-basis-fragments`). Neither is "primary"; both are reported with
+  the full parameter vector. The parameter SHIFT between the two fits (in ln units, per parameter, with the Hessian-based
+  1-sigma) is the BSSE-absorption diagnostic: a fit whose parameters move by several sigma between CP and non-CP is
+  absorbing basis-set error into physics parameters. Prediction (before data): terfc attenuation removes diffuse-tail overlap,
+  so a smaller r0 (more attenuation) absorbs BSSE in the non-CP fit; expected sign of (r0_CP - r0_nonCP) > 0, as for the
+  uncorrected attMP2 (1.75 A CP vs 1.35 A non-CP, Huang/Goldey/Head-Gordon quoted in `att_vv10.rs`). A shift in the OTHER
+  direction, or one that is 0 within 1 sigma, refutes this reading.
+* Secondary statistics: MAE, MSE, max|err|, per class (F.4), per-system leverage.
+
+## F.4 Data, classes and splits (S66 is the training set; true hold-outs are kept untouched)
+
+Available locally (psi4 database modules; `sets.json` has A24/S22/S66 equilibria; S66by8 (528 pts) and S22by5 (110 pts) BIND tables
+exist in `/home/matt/qc/psi4/psi4/share/psi4/databases/` and need an extractor extension -- NOT yet extracted; HBC6/NBC10 are
+stored without BIND tables and are not used). Formula-pair overlap between the sets, MEASURED (monomer-formula pair equality, a
+conservative proxy for "same chemical system"): A24 vs S66: 3 of 24 (A24 #2, 12, 24); S22 vs S66: 6 of 22 (#2, 5, 11, 13, 17, 20);
+A24 vs S22: 6 of 24 (A24 #2, 5, 14, 19, 22, 23). A24 alone (24 pts, 22 of them <= 12 atoms) is too small for 6-7 parameters.
+
+| tier | set | n | role | rule |
+|---|---|---|---|---|
+| TRAIN | S66 equilibria | 66 | all fitting | the paper's own training set; reproducing the published non-CP S66 RMSD (0.199 at aTZ, linked, b=11) with the PUBLISHED parameters is an anchor of the harness, not a result |
+| TRAIN-extension (optional, stage 4) | S66by8 factors 0.9, 1.0, 1.25, 1.5, 2.0 | 330 | adds curvature information (seam sensitivity lives at short range) | decided only after stage 3 shows the fit unidentified on S66 equilibria |
+| DEV (cross-validation arbiter) | A24 minus the 3 S66-overlapping systems | 21 | model selection (F.8), never fitted | 
+| BLIND hold-out | S22 minus any complex whose formula pair is in S66 or A24 | 12 (#3,4,6,7,10,12,14,15,18,19,21,22) | ONE look at the end, per frozen decision | no parameter, form or box may change after it is read |
+
+Class labels (a priori, from `analyze.py::A24_CLASS` for A24; S66: indices 1-23 hydrogen-bonded, 24-46 dispersion-dominated,
+47-66 mixed per the S66 paper's own grouping -- VERIFY against the psi4 TAGL strings before use, this is recollection;
+stacked/pi systems form a 4th class "pi-stack" taken from the TAGLs). A second class split by reference energy
+(< -3, -3..-1, > -1 kcal/mol) keeps class assignment from being load-bearing.
+
+Cross-validation (the generalisation estimate; each fold is a full nested refit): leave-one-SYSTEM-out (66 folds, cheap
+parameters re-minimised; the MP2 node table is reused, so folds cost only cheap work) and leave-one-CLASS-out (4 folds).
+Reported: out-of-fold RMSD, the spread of each fitted parameter across folds (a parameter whose across-fold range exceeds its
+Hessian 1-sigma by > 3x is "unstable"), the max-leverage system.
+
+## F.5 The adaptive nested search (rule fixed here; implemented in `session.py::adaptive_search`)
+
+The curvature and the minima of the error surface are NOT known in advance, so the search is adaptive. Rule, all constants
+pre-registered (the code defaults are `session.RULES`):
+
+0. PRIOR (F.0.3): the search is expected to find its minimum near r0 in [0.8, 1.2] A on the linked line with b rising with r0; the
+   coarse grid below spans far beyond that on purpose, and a minimum found OUTSIDE [0.8, 1.2] on the linked line contradicts the paper
+   and triggers anchor A1 re-checks before it is believed.
+1. COARSE GRID of expensive nodes: r0 in 7 log-spaced values 0.60..2.00 A (ratio 1.22) x s in {linked (1/sqrt2), 1, 2, 4, 8}
+   = 35 nodes. Hard box r0 in [0.4, 3.0] A, s in [0.5, 8]. s > 8 is NOT searched until the integral-validity anchors of Addendum B(a)
+   (Fourier-space generator at s = 16, 32) pass; until then s = 8 is a wall and a minimum there is reported as "box edge", not found.
+2. At every node, b is found by the CHEAP rule: the per-system errors are evaluated on 9 Chebyshev nodes in ln b over [2, 64]
+   (one shared VV10 pair sum per fragment), cubic-spline interpolated per system, the pooled RMSD minimised on a 4001-point ln b grid,
+   and the optimum VERIFIED by one exact evaluation (spline-vs-exact RMSD must agree to 0.002 kcal/mol, else the point is added and the
+   spline refit, <= 3 times). Window shifts x4 once or twice if the minimum is on the window edge; at b in [0.4, 400] an edge is
+   reported as "b edge" and the node's RMSD is the edge value, flagged.
+3. EDGE EXTENSION: if the best coarse node is on the r0 boundary of the coarse grid, extend by one ratio-1.22 row, at most 2 times
+   (within the hard box).
+4. LOCAL REFINEMENT around the best `n_basins` = 2 nodes that are separated by > 1.5 grid spacings: a 3x3 stencil in (ln r0, ln s)
+   with half the coarse spacing, recentre on the best stencil node, halve the step, repeat. STOP a basin when step < (0.02, 0.04) in
+   (ln r0, ln s), or when a round gains < 0.005 kcal/mol RMSD (after the first), or after 4 rounds.
+5. MAX EXPENSIVE EVALUATIONS: 80 (r0, s) nodes per fit set (each = one attMP2 per distinct fragment in the set). If the cap is hit the
+   result is labelled "budget-limited", not converged.
+6. MAP: the full table of (r0, s, b*, RMSD(b*)) over every evaluated node is stored (JSON); contour map and the valley b*(r0) per s are
+   reported. Minimum interior/edge flags: r0_low/high, s_low/high, b_edge, "on the coarse boundary".
+7. CURVATURE (amended after the dry run, F.15): the REPORTED identifiability matrix is the Gauss-Newton information matrix J^T J of the
+   per-system errors in w = (ln r0, ln s, ln b) (first derivatives by central differences, step h = 0.10 in ln units), with covariance
+   sigma^2 (J^T J)^-1; it is positive semi-definite by construction and reports a rank-deficient direction as `inf`, never as a number.
+   The finite-difference Hessian of F = RMSD^2 is still computed and stored, as a cross-check only: in the planted dry run it was INDEFINITE in 7 of 7
+   seeds (softest eigenvalue < 0), so it cannot be the reported matrix. Original text of this item: the finite-difference Hessian of F = RMSD^2 in w = (ln r0, ln s, ln b), step h = 0.10 in ln units
+   (a 3x3x3 stencil: 9 expensive nodes, the b direction is cheap), eigenvalues, eigenvectors, condition number, and the implied
+   1-sigma of each eigen-direction for sigma_noise (F.9). A stencil step that leaves the box is shifted inward and flagged.
+   Step-size check: the Hessian is recomputed at h = 0.05; eigenvalues that change by > 30% flag the surface as non-quadratic at that
+   scale (then only the profile curves in F.9 are interpretable).
+
+Planted-parameter recovery (F.10) must use exactly this nested search; the code path is the same function.
+
+## F.6 Secondary arms (scored on top of the primary result; CHEAP only, no new MP2)
+
+Only after the primary fit is written down. At the best (r0, s) node (and at 2 further nodes on its valley) the MP2 energies are fixed
+and the cheap parameters are searched with the stored density state:
+* S1: C free (b, C), lockstep damping.
+* S2: independent damping seam (r0_vv, s_vv) with b, form = Eq. 11.
+* S3: form in {eq11, terf, bare} (categorical; each form gets its own continuous refit). `eq11` is the paper's; `terf`/`bare` are controls: a control that
+  beats `eq11` out of fold is a finding about the damping form, not a replacement of the published construction until it also passes the BLIND set.
+* S4: everything cheap free: (b, C, r0_vv, s_vv) x form.
+Optimiser: Nelder-Mead in ln space, multi-start (5 starts: the published seam, the primary optimum, 3 jittered), tolerance 1e-4 in F,
+bounded to the same boxes (r0_vv in [0.4, 3] A, s_vv in [0.5, 8], C in [0, 0.1], b in [0.4, 400]). Each is reported with its
+Hessian, and is compared to the primary arm by the SAME cross-validation (F.4), not by training RMSD. A secondary arm is "adopted"
+only if its out-of-fold RMSD beats the primary arm's by more than the noise floor (F.9, 0.02 kcal/mol) AND the BLIND hold-out
+decision (one look) is made on the arm frozen at that point.
+
+## F.7 Model selection / regularisation
+
+Out-of-fold RMSD (leave-one-system-out and leave-one-class-out on TRAIN, evaluated on DEV A24) is the primary arbiter; a parameter-count
+penalty is secondary: AICc = n ln(MSE) + 2k + 2k(k+1)/(n-k-1) with k = number of free continuous parameters (primary 3, S1 4, S2 5,
+S4 6, plus 1 for a non-default form), reported next to the CV numbers but not used to override them. No ridge/shrinkage term: the
+search box edges are the regulariser, and the identifiability analysis (F.8) says which parameters are not determined.
+A parameter that is not determined (its 1-sigma exceeds half the box width in ln units, or it sits on an edge) is FIXED at the published
+value in the adopted model and reported as "undetermined", never quoted as a fitted number.
+
+## F.8 Identifiability (the Hessian is reported, not just the minimum)
+
+* Hessian of F in (ln r0, ln s, ln b) at the minimum (F.5.7) and, for the secondary arms, in all of their parameters.
+* Prediction, stated before data, from the paper's own Table 1: along the published valley b rises steeply with r0
+  ((0.85, 8.0) -> (1.10, 14.5)), d ln b / d ln r0 = ln(14.5/8.0)/ln(1.10/0.85) = 2.31 with RMSD flat to 0.013 kcal/mol across it.
+  So (a) the SOFTEST Hessian eigenvector must lie near (d ln r0, d ln b) proportional to (1, 2.31) with small ln s component (< 0.3);
+  (b) the condition number lambda_max/lambda_min must exceed 20; (c) RMSD must be flat (within the noise floor) along that
+  line over at least +-0.15 in ln r0. If (a) fails (softest direction is elsewhere) or (c) fails (the surface is NOT a valley), the
+  paper's valley was a feature of its restricted (linked, s = 0.707) family and the "r0-b degeneracy" is not the relevant
+  identifiability limit here. Implication when it holds: r0 and b are NOT separately identified; only the valley coordinate
+  is; reporting (r0*, b*) as two numbers is a misrepresentation -- the deliverable is the valley and its transversal minimum.
+* Other candidate degeneracies to test explicitly (each with the eigenvector): r0 vs s (sharpness trades against length: the integral
+  of the weight (1-terfc^2) changes little when both move), r0_vv vs b and C vs b in the secondary arms, and r0_vv vs r0 when
+  the damping is decoupled (they are separated only by the MP2/VV10 split, which the data constrain only through the sum).
+* Profile curves: RMSD along each coordinate (others re-optimised) with the sigma_noise band; the profile width at +sigma_noise
+  is reported next to the Hessian prediction (they must agree to a factor 2 or the quadratic picture is wrong).
+* sigma_noise for the 1-sigma conversion: sqrt(0.02^2 [RI aux] + 0.05^2 [CCSD(T)/CBS reference, typical stated uncertainty] +
+  grid^2 [F.11]) ~ 0.055 kcal/mol; the 0.02-only value is also printed. Formula: delta_i = sqrt(2 sigma^2 / (n lambda_i)) for
+  F = RMSD^2 (chi^2 = n F / sigma^2, Delta chi^2 = 1).
+
+## F.9 Baselines (same SCF, aux, frozen core, same table; every row both CP and non-CP)
+
+1. MP2 (Coulomb).  2. Published linked MP2-V (terfc, r0 = 1.00 A, b = 11.0, C = 0.0089).  3. Published parameters at a SHARP seam,
+UNREFIT (s = 4, 8): expected to be badly wrong (a sharp terfc doubles E_corr, measured) -- it is the control that shows how
+much refitting b must supply.  4. MP2-V with only b free (r0, s at published).  5. Primary lockstep refit (r0, s, b all free).
+6. Secondary arms S1-S4.  7. attMP2 alone (no VV10) at its own optimum, to show what VV10 contributes.
+The headline comparison is 4 vs 5 vs 6 by OUT-OF-FOLD RMSD on DEV, with the BLIND set read once at the end.
+
+## F.10 Planted-parameter recovery (dry run on synthetic data; must pass before any production fit is trusted)
+
+`planted.py`: the attMP2 half is a spline-interpolated surrogate over a REAL tabulated (r0, s) node set (cc-pVDZ, non-CP,
+water/HF/NH3 dimers at 4 COM stretches each = 12 pseudo-systems, shared monomers); the VV10 half is the real cheap evaluation.
+"Experimental" energies = model(planted) + Gaussian noise at the measured floor; the UNMODIFIED nested search + Hessian must
+recover the planted (r0, s, b) = (1.15 A, 3.0, 13.0) over 12 noise seeds. Pass criteria, stated before the run:
+(i) median |ln(recovered/planted)| < the Hessian-predicted 1-sigma for every parameter (the optimiser is not biased);
+(ii) the across-seed sd of each recovered ln-parameter within a factor 2 of the median Hessian 1-sigma (the identifiability numbers are honest);
+(iii) the softest eigen-direction of the Hessian carries the largest across-seed scatter (the degenerate pair is flagged by the Hessian, not just present);
+(iv) no seed ends on an edge. Failure of (i) -> the search is biased or the b rule is wrong; failure of (ii)/(iii) -> the Hessian
+cannot be used to report identifiability for the real fit. The interpolation error of the surrogate on held-out REAL nodes is reported
+(it bounds how far the planted test is from the real surface; it does not make it a physics test).
+
+## F.11 Noise floor and the NLC grid (MEASURED this turn)
+
+NLC-grid sensitivity of the VV10 contribution to the NON-CP interaction energy (`gridsens.py`, aDZ, HF density, plain
+50x50 = ferric's default NLC grid; kcal/mol; column = damping spec at b = 11, C = 0.0089, r0_vv = 1.00 A; results in
+`results/gridsens_adz_a24_02.json`, `..._19.json`). CP-fragment grids were not repeated (they cost as much as the dimer and the
+ghost grid is the same construction); the CP-vs-non-CP grid difference is therefore UNMEASURED.
+
+| system | grid (radial, angular) | pts (dimer) | eq11 linked | eq11 s=4 | terf linked | bare |
+|---|---|---|---|---|---|---|
+| A24 #2 water dimer | (30, 50) | 9000 | -0.23129 | -0.23539 | -0.20840 | -0.24091 |
+| | **(50, 50)** | 15000 | **-0.23139** | -0.23549 | -0.20849 | -0.24101 |
+| | (75, 50) | 22500 | -0.23139 | -0.23549 | -0.20849 | -0.24101 |
+| | (50, 110) | 33000 | -0.23153 | -0.23565 | -0.20861 | -0.24116 |
+| | (30, 110) | 19800 | -0.23144 | -0.23556 | -0.20853 | -0.24107 |
+| | (30, 302) | 54360 | -0.23162 | -0.23574 | -0.20872 | -0.24124 |
+| A24 #19 methane dimer | (30, 50) | 15000 | -0.25541 | -0.25779 | -0.24235 | -0.25890 |
+| | **(50, 50)** | 25000 | **-0.25528** | -0.25766 | -0.24222 | -0.25876 |
+| | (75, 50) | 37500 | -0.25533 | -0.25771 | -0.24227 | -0.25881 |
+| | (50, 110) | 55000 | -0.25594 | -0.25820 | -0.24318 | -0.25926 |
+
+Reading (MEASURED, two small systems, one basis; NOT a guarantee for the 34-atom S66 systems or for step-like weights s >= 8):
+radial 50 -> 75 changes E_int by <= 5e-5 kcal/mol; angular 50 -> 110 by 1.4e-4 (water dimer) and 6.6e-4 (methane dimer);
+(30, 50) differs from (50, 50) by 1.0e-4 and 1.3e-4. Every difference is below the pre-registered 0.005 kcal/mol criterion by a
+factor >= 7, and 40x below the RI floor (0.02). DECISION: the production NLC grid is (50, 50) -- it is converged for the
+interaction energy to < 1e-3 kcal/mol on these systems and the damping choice (eq11 / terf / bare, linked / s=4) does not change the
+grid sensitivity beyond 2e-5. (30, 50) is admissible for the EARLY coarse stages of the search (2.7x fewer pair evaluations) but the
+final b and the Hessian are recomputed at (50, 50). Required at stage 1 (not yet done): repeat on one S66 system with >= 25 atoms,
+and with s = 8 (the steepest weight allowed in the box).
+
+SG-1-LIKE ARM (the paper's VV10 grid; ferric has no SG-1, so (50 radial, 194 Lebedev) UNPRUNED is the nearest available -- it has
+more points than SG-1 because it is not shell-pruned; `results/gridsens_adz_a24_02_sg1like.json`): water dimer aDZ, non-CP VV10 contribution
+(50, 194): eq11 -0.23170, eq11 s=4 -0.23583, terf -0.20880, bare -0.24132 kcal/mol, i.e. -3.1e-4 from (50, 50) (58200 vs 15000 points,
+1616 s vs 97 s on the loaded box). Same conclusion: the interaction-energy grid error is < 1e-3 kcal/mol.
+
+DOES THE GRID EXPLAIN THE SHORT-RANGE OFFSET TO PAPER SI TABLE 18? (`rescore_t18.py`, aTZ, non-CP, G1 stretched geometries, published linked
+parameters r0 = 1.00 A, b = 11.0, C = 0.0089; value = ferric MP2-V total minus paper table 18, kcal/mol; `results/rescore_t18_atz.json`.)
+The (50, 50) rows reproduce Addendum E exactly (eq11 +0.022/+0.022 at f = 0.9 for #2/#5; bare +0.005/+0.008).
+
+| system, f | (50, 50) eq11 | (50, 194) eq11 | change | (50, 50) bare | (50, 194) bare | change |
+|---|---|---|---|---|---|---|
+| #2 water dimer, 0.9 | +0.0219 | +0.0211 | -0.0008 | +0.0051 | +0.0043 | -0.0008 |
+| #2 water dimer, 1.0 | +0.0171 | +0.0167 | -0.0004 | +0.0075 | +0.0071 | -0.0004 |
+| #5 NH3 dimer, 0.9 | +0.0218 | +0.0198 | -0.0020 | +0.0076 | +0.0056 | -0.0020 |
+| #5 NH3 dimer, 1.0 and #4 HF dimer | (50, 194) NOT run (cost; stopped) | | | | | |
+
+The grid moves BOTH constructions by the same amount (the eq11 minus bare gap is +0.0168 -> +0.0168 for #2 at 0.9, +0.0142 -> +0.0142 for #5 at
+0.9): the refinement shifts the offset by <= 0.002 kcal/mol and does NOT change the eq11-vs-bare ordering, so the earlier reading stands -- the
+0.017 kcal/mol eq11-bare gap at f = 0.9 is not a grid effect. (n = 2 systems at (50, 194); the other three systems were not re-run.)
+It is also below the 0.02 kcal/mol RI floor, so it is not interpreted as evidence for or against Eq. 11 (Addendum E's conclusion).
+
+Frozen core: H, He 0; Li-Ne 1; Na-Ar 5 (Ar = 5; `scripts/scan_a24_aqz_terfc_r0_mae.py` counts Ar as 1 and is not used). Aux: matching `-rifit`
+(RI-fit noise 0.0025 kcal/mol canonical-vs-RI on H2/aTZ; aux swap 0.018). SCF: DF-JK def2-universal-jkfit (A24 grid convention) --
+the same for every arm.
+
+## F.12 Artifact hypotheses and falsification (the extra flexibility is overfit or an artifact if ANY of these holds)
+
+Artifact hypotheses, each paired with the physics hypothesis and what each predicts:
+* H-BSSE: physics -> CP and non-CP fits agree within ~1 sigma on the MP2-V-specific parameters and both beat the published parameters; artifact ->
+  the shift is >> 1 sigma and the non-CP fit's RMSD is better than the CP fit's only because BSSE cancels a basis-set error (the paper
+  fitted non-CP). Test: fit aDZ and aTZ; parameter shift aDZ->aTZ and CP->non-CP are compared; an artifact-absorbing parameter moves
+  with the basis, a physical one does not. Flag |ln(r0_CP/r0_nCP)| > 0.15 or |ln b shift| > 0.3.
+* H-sharp: at s >= 4 the kernel overshoots in k-space (E_corr ~ 2x Coulomb MP2, measured), so any b that "works" there is absorbing
+  an MP2 overshoot: physics -> fitted b at sharp seams is far off the linked valley AND the transferable total is still good; artifact ->
+  the sharp-seam optimum has RMSD no better than the linked one, i.e. b only cancels the overshoot.
+* H-grid: b* shifts with the NLC grid. Required: the production grid of F.11.
+* H-valley-as-artifact: the paper's r0-b valley might be the attMP2 half's own r0 preference (table-17 fit r0 = 1.35 vs 1.00) rather than the
+  VV10 coupling. Test: b* at fixed r0 across r0_vv decoupling (S2): if b* then ceases to move with r0, the valley was coupling of the halves.
+* Unquantified differences vs the paper (SG-1 grid, Q-Chem HF, possible self-consistent VV10) are LISTED and not bounded; the refit is
+  of ferric's MP2-V, not a reproduction of the paper's numbers.
+
+FALSIFIED (the flexible refit is not supported) if any of:
+(a) BLIND-set (or DEV) out-of-fold RMSD of the all-free primary arm is not better than the b-only refit by more than 0.02 kcal/mol, or is worse;
+(b) the optimum is on the box edge (r0, s, or b) in either CP or non-CP fit, or the search was budget-limited;
+(c) any fitted parameter's across-fold range (leave-one-system-out or class-out) exceeds 3x its Hessian 1-sigma, or the sign of
+    a CP-vs-non-CP shift contradicts F.3;
+(d) the planted-parameter recovery (F.10) fails;
+(e) the parameters move beyond 1 sigma between aDZ and aTZ on the stage-3 overlap set (the fit is basis-specific);
+(f) in a secondary arm, a gain in TRAIN RMSD is not accompanied by an out-of-fold gain (classic overfit signature);
+(g) CP-fit class MSEs differ in sign between hydrogen-bonded and dispersion classes by more than the noise floor (the refit trades classes).
+
+## F.13 Basis and staged production plan (cost numbers are in F.14; this fixes the order, nothing here has been run)
+
+Bases: aTZ is the paper's; aDZ is the cheap robustness arm. The box cannot do S66 at aTZ with the terfc engine in reasonable time, so:
+* Stage 0 (this turn, done): harness, anchors, noise floor, planted test, grid decision.
+* Stage 1: aDZ, stratified A24 SUBSET (8 systems: hydrogen-bond 2, 5; mixed 8, 10; dispersion 15, 19; stack 22; + 4 as a strongly bound one) --
+  smoke test of the whole nested search at the production grid; budget cap 80 nodes; non-CP and CP both. No hold-out is touched.
+* Stage 2: aDZ, S66 stratified subset (24 systems, 8 per class, <= ~20 atoms) as TRAIN; A24 DEV (21).
+* Stage 3: aTZ on the SMALL systems only (the 22 A24 systems with <= 12 atoms and S66 systems <= 12 atoms); the aDZ->aTZ parameter shift is
+  measured on this overlap set and decides whether aDZ results carry any transferable meaning (F.12(e)).
+* Stage 4: S66 full at aDZ (66), leave-one-out/class-out CV, secondary arms S1-S4; aTZ for as many S66 systems as the cost model
+  allows; BLIND set read once.
+The coordinator's go is required before any of stages 1-4 starts.
+
+## F.14 Cost model
+
+MEASURED (aDZ, dimer fragment, ferric-limited, RAYON_NUM_THREADS = 2, box load average 11-20 from another heavy job, so every wall time below
+is an UPPER bound; a quiet box is expected to be 2-4x faster, UNVERIFIED). `results/timing_adz.json`, `timing_erf_share_adz_a24_02.json`:
+
+| fragment | atoms | NLC pts | SCF + grid + session | attMP2 (terfc, one seam) | VV10 pair sum, Eq. 11, 1 seam x 1 b | + 8 more b (same seam) |
+|---|---|---|---|---|---|---|
+| A24 #2 water dimer | 6 | 15000 | 0.9 s | 1.8 s | 31 s (bare weight, no erf: 2.1 s) | +16 s |
+| A24 #19 methane dimer | 10 | 25000 | 1.4 s | 3.7 s (+ sharp 4.0 s) | 86 s | +49 s |
+| A24 #13 | 10 | 25000 | 2.1 s | 6.0 s | 82 s | +29 s |
+
+Session memory: 46-92 MB per dimer-class fragment session (measured RSS delta; includes the held SCF state, grid state and basis).
+`Pool` refuses to build a fragment that would exceed its budget (default 4 GiB) and sessions are droppable.
+
+THE FINDING THAT CHANGES THE PLAN: the "cheap" half is the dominant cost, not the attMP2. The VV10 pair sum is erf-bound: on the
+water dimer a bare (undamped) kernel costs 2.1 s, and each additional UNIQUE damping weight costs ~17-19 s because the factor
+1 - terfc^2 evaluates two erf per pair (npts = 15000, all pairs inside the 40 Bohr cutoff, so the work is quadratic in npts:
+31 -> 86 s for 15000 -> 25000 points). Extra b values at the same seam cost only ~0.7-5 s each. Consequences:
+(1) b (and C) really are free once the seam's damping weight is paid for; (2) a (r0, s) NODE costs one damping-weight pair sum per fragment,
+~10-30x its attMP2; batching nodes into one call (`Pool.prefetch_nl`) shares the pair geometry but NOT the erf (5 seams x 9 b = 120 s vs
+1 seam x 9 b = 32 s), so batching saves ~15%, not the 5x one would hope; (3) the lever is a tabulated damping factor D(R; r0, s)
+(cubic interpolation of the 1-D function of the pair distance; erf is then paid once per table, not per pair). Expected effect: a
+node drops from ~30 s to ~(2-9) s on #2 and the per-extra-seam cost from ~17 s to ~1 s, i.e. ~4-10x on the dominant cost; NOT
+implemented, NOT measured -- it must reproduce the exact-erf E_nl to < 1e-10 Ha before it is used (the bit-for-bit anchors stay on
+the exact path). RECOMMENDATION: do this first (stage 0b); a lower NLC cutoff (40 Bohr now) is a second, independent lever to be
+quantified separately.
+
+Model (loaded-box seconds, N = atoms of the dimer, CP fragments carry the dimer's grid, monomer grids are ~N/2 atoms = 1/4 the pair work):
+  t_nl(N) ~ 40 (N/6)^2 s per fragment per seam node (exact erf, includes 9 b-nodes + verification);  t_mp2(N) ~ 2 (N/6)^1.4 s.
+  per system per node: CP + non-CP = 3.5 t_nl(N); non-CP only = 1.5 t_nl(N).
+Per-node cost of a fit set = sum over systems; nodes per fit <= 80 (typically 50-65: the planted run used 61):
+
+| stage | systems (mean N) | convention | per node (loaded, exact erf) | x ~60 nodes | with tabulation (est. /4-10, UNVERIFIED) |
+|---|---|---|---|---|---|
+| 1 aDZ A24 stratified subset | 8 (N~9) | CP + non-CP | 8 x 3.5 x 90 s = 42 min | ~42 h | ~5-10 h |
+| 1 same | 8 | non-CP only | 18 min | ~18 h | ~2-4 h |
+| 2 aDZ S66 stratified subset | 24 (N~18) | non-CP only | 24 x 1.5 x 360 s = 3.6 h | ~9 days | ~1-2 days |
+| 3 aTZ smallest systems | 20 (N~8) | non-CP only | MP2 x ~15 (aTZ), pair sum same | ~14 h-1 day | ~4-8 h |
+| 4 aDZ S66 full | 66 (N~20) | non-CP only | 66 x 1.5 x 440 s = 12 h | ~30 days | ~3-7 days |
+
+The numbers say the full S66 refit is NOT affordable without the tabulation (and probably a lower cutoff); the aDZ stratified-subset
+stages are. They also say CP doubles the cost, so the CP fit should reuse the SAME seam nodes the non-CP search visited (the search
+is run on the non-CP objective; the CP objective is then re-minimised only over the cheap b and over the SAME node set, with the
+local refinement repeated for the CP objective only around the non-CP optimum). Memory is not the constraint: <= 100 MB per
+fragment session, ~1.5 GB for a 24-system pool of the 5 fragments (budget guard refuses past 4 GiB).
+
+Recommended ordering: (0b) tabulated damping factor + anchor; (1) aDZ A24 stratified subset non-CP (end-to-end smoke test of the
+search at the production grid, ~hours); (1b) its CP re-minimisation; (2) aDZ S66 stratified subset non-CP; (3) aTZ small-system overlap
+set (the basis-transfer check, F.12(e)); (4) the S66-wide CV and the secondary arms (cheap: they reuse stored densities, the damping
+tuples go through the same tabulated pair sum); BLIND set last. Do not start stage 2 before stage 1's planted/leave-one-out
+diagnostics are read.
+
+
+## F.15 Dry-run results of this turn (planted-parameter recovery, grid, timing) -- MEASURED, written after the runs
+
+Planted-parameter recovery (`planted.py`, `results/planted_dz_sigma0p02.json`; cc-pVDZ, non-CP, NLC grid (20, 26) -- a MECHANICS test, not a physics
+test; 12 pseudo-systems = A24 #2, #4, #5 at COM stretches 0.9, 1.0, 1.3, 1.8 with shared monomers; attMP2 = bicubic spline over a real 4 x 4
+(r0, s) node table; VV10 = real evaluation; planted (r0, s, b) = (1.15 A, 3.0, 13.0), C = 0.0089, noise sigma = 0.02 kcal/mol; the UNMODIFIED
+nested adaptive search + curvature code; 7 noise seeds completed of the 12 planned -- the run was stopped for cost; 53-61 nodes per seed,
+no seed on an edge):
+
+| quantity | ln r0 | ln s | ln b |
+|---|---|---|---|
+| mean ln(recovered/planted) | +0.0001 (0.0%) | +0.033 (+3.4%) | +0.078 (+8.2%) |
+| across-seed sd | 0.010 | 0.017 | 0.145 |
+| Gauss-Newton 1-sigma (median) | 0.006 | 0.033 | 0.086 |
+| sd / GN sigma | 1.7 | 0.5 | 1.7 |
+
+* (i) bias below the Hessian-predicted 1-sigma: PASS for r0 and b (0.0%, 0.9 sigma), s +3.4% vs 1-sigma 3.3% (marginal; the s step floor of the
+  search is 0.04 in ln, so a ~4% s bias is the search resolution, not a physics bias).
+* (ii) across-seed scatter within a factor 2 of the GN 1-sigma: PASS for all three (1.7, 0.5, 1.7).
+* (iii) the softest information eigen-direction is ln b (|component| 0.985, eigenvalue 0.053) and it carries the largest across-seed scatter
+  (sd 0.144 vs GN 0.087); the stiffest is ln r0 (sd 0.0025 vs 0.0017): PASS. GN condition number median 2.5e3.
+* (iv) no seed on an edge: PASS.
+* FINITE-DIFFERENCE HESSIAN OF F: FAIL as a reported matrix -- softest eigenvalue negative in 7 of 7 seeds (h = 0.10, eigenvector mostly ln s);
+  replaced by the Gauss-Newton matrix (F.5.7). The interpolation error of the surrogate at the E_int level on 3 held-out REAL off-grid
+  (r0, s) nodes (36 pseudo-system x node values) is rms 0.020, max 0.054 kcal/mol against a real seam-dependence range of 8 kcal/mol (the
+  per-fragment total correlation energy error is up to 19.7 kcal/mol and cancels in E_int); it is at the noise floor, so the planted test
+  cannot resolve differences of that size.
+* In THIS synthetic problem r0 is tight (1%) and b loose (14%); (ln r0, ln b) deviations correlate at 0.95, slope d ln b / d ln r0 = 13.8 -- a valley, but
+  not the paper's (2.31); the synthetic surface is not the real one and nothing about the paper's valley follows from it.
+
+Grid decision: production NLC grid (50, 50) (F.11). Timing and cost: F.14. Session memory 46-92 MB per dimer fragment. Not done this turn: the 5 unpruned
+(50, 194) rescorings beyond #2 and #5 at f = 0.9/1.0, a (75, 302)/(99, 302) corner, CP-fragment grid checks, any step-like weight (s >= 8) grid check,
+the Table-1 anchor A1 (needs S66 at aTZ), 5 of the 12 planned planted seeds.

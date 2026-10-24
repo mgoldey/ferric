@@ -28,6 +28,9 @@ class FakePool:
         self.cache = type("C", (), {"save": lambda self: None})()
         self.calls = 0
 
+    def prefetch_nl(self, ids, items, cp, c=0.0089):
+        self.prefetches = getattr(self, "prefetches", 0) + 1
+
     def errors_b(self, ids, r0, s, bs, cp, c=0.0089, vv=None):
         self.calls += 1
         sv = S._sval(s)
@@ -69,6 +72,8 @@ def test_adaptive_search_finds_the_planted_node():
     assert abs(math.log(best["r0"] / 1.2)) < 0.08, best
     assert abs(math.log(S._sval(best["s"]) / 3.0)) < 0.15, best
     assert out["n_nodes"] <= rules["max_nodes"]
+    # pair-sum calls are batched per stage, not issued per node
+    assert p.prefetches < out["n_nodes"] / 2, (p.prefetches, out["n_nodes"])
 
 
 def test_hessian_is_positive_definite_at_a_minimum_and_flags_the_valley():
@@ -78,6 +83,12 @@ def test_hessian_is_positive_definite_at_a_minimum_and_flags_the_valley():
     h = S.hessian(p, ids, best, True)
     ev = np.array(h["eigenvalues"])
     assert ev[0] > 0
+    # Gauss-Newton information is PSD; in the fake model only ln b moves the
+    # per-system errors at the planted seam, so it must be rank 1 and the other
+    # two parameters must be reported as undetermined (inf), not as numbers.
+    gn = np.array(h["gn_eigenvalues"])
+    assert gn.min() > -1e-10 and (gn > 1e-8).sum() == 1
+    assert all(math.isinf(x) for x in h["gn_one_sigma_param"])
     # the (ln r0, ln b) valley (b ~ r0^2.31) must show up as the softest eigenvector
     v = np.array(h["eigenvectors"][0])
     assert abs(v[2]) > 0.3 and abs(v[0]) > 0.2, v

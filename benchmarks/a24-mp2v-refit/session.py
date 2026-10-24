@@ -287,6 +287,21 @@ class Pool:
             tot += sign * (f.hf() + f.coulomb())
         return tot * K
 
+    def prefetch_nl(self, ids, items, cp, c=0.0089):
+        """Batch-evaluate E_nl for `items` = [(r0, s, [b, ...]), ...] (lockstep
+        Eq. 11) in ONE pair-sum traversal per fragment. The VV10 pair sum is the
+        dominant cost (MEASURED: ~80 s for a 25k-point dimer at ONE kernel vs
+        ~5 s per extra kernel), so every stage must hand the whole node list
+        to this call before the per-node profiles read the cache."""
+        tuples = [_tuple(P(r0, s, b, c, None)) for r0, s, bs in items for b in bs]
+        seen = set()
+        for sn, i in ids:
+            for tag in self._tags(cp):
+                f = self.frags[(sn, i, tag)]
+                if id(f) not in seen:
+                    seen.add(id(f))
+                    f.nl(tuples)
+
     def errors_b(self, ids, r0, s, bs, cp, c=0.0089, vv=None):
         """(n_sys, n_b) signed errors vs the CCSD(T)/CBS reference, kcal/mol."""
         rows = []
@@ -346,6 +361,34 @@ def _sval(s):
     return LINKED_S if s is None else s
 
 
+def _cheb_bs(lo, hi, n):
+    k = np.arange(n)
+    x = 0.5 * (math.log(lo) + math.log(hi)) + 0.5 * (
+        math.log(hi) - math.log(lo)
+    ) * -np.cos(math.pi * (k + 0.5) / n)
+    return x
+
+
+def prefetch_stage(pool, ids, seams, cp, c=0.0089, rules=RULES):
+    """Two batched pair-sum calls per fragment for a whole list of (r0, s)
+    nodes: (A) the Chebyshev b-nodes of every node, (B) the spline-predicted
+    optimum b* of every node (the verification points). Afterwards the per-node
+    `optimal_b` runs entirely from the cache unless a node's b window shifts."""
+    from scipy.interpolate import CubicSpline
+
+    lo, hi = rules["b_window"]
+    x = _cheb_bs(lo, hi, rules["n_cheb"])
+    bs = list(np.exp(x))
+    pool.prefetch_nl(ids, [(r0, s, bs) for r0, s in seams], cp, c)
+    items = []
+    for r0, s in seams:
+        err = pool.errors_b(ids, r0, s, bs, cp, c, None)
+        xf = np.linspace(x[0], x[-1], 4001)
+        r = np.sqrt((CubicSpline(x, err, axis=1)(xf) ** 2).mean(axis=0))
+        items.append((r0, s, [math.exp(xf[int(np.argmin(r))])]))
+    pool.prefetch_nl(ids, items, cp, c)
+
+
 def optimal_b(pool, ids, r0, s, cp, c=0.0089, vv=None, rules=RULES):
     """1-D b minimisation on stored state. The per-system error is smooth in
     ln b, so it is evaluated on N_CHEB Chebyshev nodes in ln b over a window,
@@ -361,10 +404,7 @@ def optimal_b(pool, ids, r0, s, cp, c=0.0089, vv=None, rules=RULES):
     lo, hi = rules["b_window"]
     nk = 0
     for _ in range(6):
-        k = np.arange(rules["n_cheb"])
-        x = 0.5 * (math.log(lo) + math.log(hi)) + 0.5 * (
-            math.log(hi) - math.log(lo)
-        ) * -np.cos(math.pi * (k + 0.5) / rules["n_cheb"])
+        x = _cheb_bs(lo, hi, rules["n_cheb"])
         bs = list(np.exp(x))
         err = pool.errors_b(ids, r0, s, bs, cp, c, vv)  # (n_sys, n_cheb)
         nk += len(bs)
@@ -427,9 +467,23 @@ def adaptive_search(pool, ids, cp, rules=RULES, c=0.0089, log=print):
             )
         return nodes[k]
 
-    for r0 in rules["r0_coarse"]:
-        for s in rules["s_coarse"]:
+    def ev_many(seams):
+        todo = []
+        lo, hi = rules["box"]["r0"], rules["box"]["s"]
+        for r0, s in seams:
+            if (
+                key(r0, s) not in nodes
+                and lo[0] <= r0 <= lo[1]
+                and hi[0] <= _sval(s) <= hi[1]
+                and len(nodes) + len(todo) < rules["max_nodes"]
+            ):
+                todo.append((r0, s))
+        if todo:
+            prefetch_stage(pool, ids, todo, cp, c, rules)
+        for r0, s in todo:
             ev(r0, s)
+
+    ev_many([(r0, s) for r0 in rules["r0_coarse"] for s in rules["s_coarse"]])
     pool.cache.save()
     r0s, ss = rules["r0_coarse"], rules["s_coarse"]
     # extension of the coarse box in r0 (s is capped by the hard box)
@@ -437,12 +491,10 @@ def adaptive_search(pool, ids, cp, rules=RULES, c=0.0089, log=print):
         best = min(nodes.values(), key=lambda d: d["rmsd"])
         if best["r0"] == r0s[0] and best["r0"] / 1.22 >= rules["box"]["r0"][0]:
             r0s = [round(r0s[0] / 1.22, 4)] + r0s
-            for s in ss:
-                ev(r0s[0], s)
+            ev_many([(r0s[0], s) for s in ss])
         elif best["r0"] == r0s[-1] and best["r0"] * 1.22 <= rules["box"]["r0"][1]:
             r0s = r0s + [round(r0s[-1] * 1.22, 4)]
-            for s in ss:
-                ev(r0s[-1], s)
+            ev_many([(r0s[-1], s) for s in ss])
         else:
             break
     du0 = float(np.mean(np.diff(np.log(r0s))))
@@ -470,9 +522,13 @@ def adaptive_search(pool, ids, cp, rules=RULES, c=0.0089, log=print):
         for rd in range(rules["max_rounds"]):
             if du < rules["step_floor"]["u"] and dv < rules["step_floor"]["v"]:
                 break
-            for a in (-1, 0, 1):
-                for b_ in (-1, 0, 1):
-                    ev(math.exp(cu + a * du), math.exp(cv + b_ * dv))
+            ev_many(
+                [
+                    (math.exp(cu + a * du), math.exp(cv + b_ * dv))
+                    for a in (-1, 0, 1)
+                    for b_ in (-1, 0, 1)
+                ]
+            )
             near = [
                 d
                 for d in nodes.values()
@@ -522,12 +578,22 @@ def hessian(pool, ids, best, cp, c=0.0089, h=0.10, sigma=0.05):
     sigma_noise = sigma kcal/mol."""
     u0, v0, w0 = math.log(best["r0"]), math.log(_sval(best["s"])), math.log(best["b"])
 
+    items = []
+    for a in (-h, 0.0, h):
+        for b_ in (-h, 0.0, h):
+            r0n, svn = math.exp(u0 + a), math.exp(v0 + b_)
+            sn = None if (best["s"] is None and a == 0 and b_ == 0) else svn
+            items.append((r0n, sn, [math.exp(w0 + g) for g in (-h, 0.0, h)]))
+    pool.prefetch_nl(ids, items, cp, c)
+
     def F(du, dv, dw):
         r0, sv, b = math.exp(u0 + du), math.exp(v0 + dv), math.exp(w0 + dw)
         s = None if (best["s"] is None and du == 0 and dv == 0) else sv
         e = pool.errors_b(ids, r0, s, [b], cp, c, None)[:, 0]
         return float((e**2).mean())
 
+    n = len(ids)
+    sig = sigma
     d = [-h, 0.0, h]
     f = {
         (a, b_, g): F(a, b_, g)
@@ -556,13 +622,41 @@ def hessian(pool, ids, best, cp, c=0.0089, h=0.10, sigma=0.05):
                 4 * h * h
             )
     evals, evecs = np.linalg.eigh(H)
-    n = len(ids)
-    sig = sigma
     # chi2 = n F / sig^2 ; Delta chi2 = 1 along eigvec i => delta = sqrt(2 sig^2 / (n * lam_i))
     one_sigma = [
         math.sqrt(2 * sig**2 / (n * lam)) if lam > 0 else math.inf for lam in evals
     ]
+
+    # Gauss-Newton (least-squares) information matrix J^T J from first derivatives
+    # of the per-system errors: positive semi-definite by construction, and the
+    # standard covariance sigma^2 (J^T J)^-1 when residuals are small against the
+    # curvature. Reported NEXT TO the finite-difference Hessian because the FD
+    # Hessian of F can be indefinite when the node is not exactly at the minimum.
+    def evec(du, dv, dw):
+        r0, sv, b = math.exp(u0 + du), math.exp(v0 + dv), math.exp(w0 + dw)
+        s_ = None if (best["s"] is None and du == 0 and dv == 0) else sv
+        return pool.errors_b(ids, r0, s_, [b], cp, c, None)[:, 0]
+
+    J = np.zeros((n, 3))
+    for k in range(3):
+        step = [0.0, 0.0, 0.0]
+        step[k] = h
+        J[:, k] = (evec(*step) - evec(*(-x for x in step))) / (2 * h)
+    JtJ = J.T @ J
+    mu, mv = np.linalg.eigh(JtJ)
+    gn = {
+        "gn_eigenvalues": mu.tolist(),
+        "gn_eigenvectors": mv.T.tolist(),
+        "gn_one_sigma_dir": [sig / math.sqrt(m) if m > 0 else math.inf for m in mu],
+        "gn_one_sigma_param": (
+            np.sqrt(np.diag(sig**2 * np.linalg.inv(JtJ))).tolist()
+            if mu[0] > 1e-12
+            else [math.inf] * 3
+        ),
+        "gn_condition": float(mu[-1] / mu[0]) if mu[0] > 0 else math.inf,
+    }
     return {
+        **gn,
         "h": h,
         "vars": ["ln r0", "ln s", "ln b"],
         "F0": f[(0.0, 0.0, 0.0)],

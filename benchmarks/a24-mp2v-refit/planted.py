@@ -82,6 +82,11 @@ def main(argv=None):
     ap.add_argument("--sigma", type=float, default=0.02)
     ap.add_argument("--seeds", type=int, default=20)
     ap.add_argument("--cp", action="store_true")
+    ap.add_argument(
+        "--replay-gn",
+        action="store_true",
+        help="re-use the seeds in --out, recompute only the Hessians (adds Gauss-Newton fields)",
+    )
     ap.add_argument("--nlc", default="20,26")
     ap.add_argument("--factors", default="")
     ap.add_argument("--tab", default="5,4", help="n_r0,n_s of the real attMP2 table")
@@ -121,6 +126,17 @@ def main(argv=None):
     rules["box"] = {"r0": (R0_TAB[0], R0_TAB[-1]), "s": (S._sval(S_TAB[0]), S_TAB[-1])}
     rules["max_extensions"] = 0
 
+    if a.replay_gn:
+        res = json.loads(Path(a.out).read_text())
+        for sd in res["seeds"]:
+            rng = np.random.default_rng(1000 + sd["seed"])
+            generate_refs(pool, ids, planted, a.cp, a.sigma, rng)
+            hs = S.hessian(pool, ids, sd["best"], a.cp, sigma=a.sigma)
+            sd.update({k: v for k, v in hs.items() if k.startswith("gn_")})
+            sd["hess_eigs"] = hs["eigenvalues"]
+            sd["hess_vecs"] = hs["eigenvectors"]
+        Path(a.out).write_text(json.dumps(res, indent=1, default=float))
+        return 0
     res = {
         "planted": planted,
         "sigma": a.sigma,
@@ -134,7 +150,7 @@ def main(argv=None):
         truth = generate_refs(pool, ids, planted, a.cp, a.sigma, rng)
         out = S.adaptive_search(pool, ids, a.cp, rules=rules, log=lambda *_: None)
         best = out["best"]
-        hs = S.hessian(pool, ids, best, a.cp)
+        hs = S.hessian(pool, ids, best, a.cp, sigma=a.sigma)
         res["seeds"].append(
             {
                 "seed": seed,
@@ -144,6 +160,7 @@ def main(argv=None):
                 "hess_eigs": hs["eigenvalues"],
                 "hess_vecs": hs["eigenvectors"],
                 "one_sigma": hs["one_sigma_ln_units"],
+                **{k: v for k, v in hs.items() if k.startswith("gn_")},
                 "rmsd_at_planted": float(
                     np.sqrt(np.mean([(truth[k] - pool.systems[k]) ** 2 for k in truth]))
                 ),
