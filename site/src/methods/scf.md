@@ -256,8 +256,14 @@ translations and rotations projected out. The Hessian is:
   the closed-virtual, open-virtual and closed-open rotations). This
   needs a libint2 with second derivatives (the build
   `scripts/install-libint.sh` installs).
+- **Analytic on the moving grid** for closed-shell Kohn-Sham (`ksdft`, or
+  `rhf` with a functional): LDA and GGA functionals, pure or global hybrid,
+  exact or density-fitted J and K, Becke weight response included, so it is
+  the Hessian of the surface the KS gradient differentiates. One SCF plus a
+  coupled-perturbed KS solve.
 - **Central finite differences of the analytic gradient** everywhere else
-  (ROKS and every other KS-DFT reference, RI J/K with an
+  (UKS, ROKS, meta-GGA, VV10, range-separated hybrids, KS with an ECP or an
+  external potential, pruned grids, `[dft] dispersion`, RI J/K with an
   external potential or an ill-conditioned fitting metric, solvent, polarizable
   embedding, g functions, ROHF with an external potential): 6N gradient
   evaluations. The displacement `[frequencies] delta` (default 5e-3 Bohr) is a
@@ -265,27 +271,34 @@ translations and rotations projected out. The Hessian is:
   is the check that it and the SCF thresholds suit the system.
 
 `[frequencies] hessian` (Python `hessian=`) selects it: `"auto"` (default,
-analytic where it applies), `"analytic"` (an error where it does not) or
-`"fd"`. The output names the one that ran (`Hessian = analytic`; Python
-`.hessian_source`).
+analytic where it applies, the moving-grid Hessian for closed-shell KS),
+`"analytic"` (the Hartree-Fock analytic Hessian; an error where it does not
+apply, including every KS reference), `"analytic-moving-grid"` (the
+closed-shell KS one; an error where it does not apply) or `"fd"`. The output
+names the one that ran (`Hessian = analytic`, `analytic-moving-grid` or
+`finite-difference`; Python `.hessian_source`).
 
-For closed-shell Kohn-Sham, `"analytic-moving-grid"` is an explicit opt-in
-(`"auto"` never selects it, so KS frequencies stay finite differences by
-default): the analytic Hessian on the production grid, Becke weight response
-included, for LDA and GGA functionals, pure or global hybrid, with exact or
-density-fitted J and K. It is the Hessian of the surface the KS gradient
-differentiates, so it agrees with `"fd"` up to the finite-difference error,
-for one SCF plus a coupled-perturbed KS solve instead of 6N gradients.
-Open-shell KS, meta-GGA, VV10, range-separated hybrids, ECPs, external
-potentials, pruned grids, `[dft] dispersion`, COSX, implicit solvent,
-fractional occupations and MOM are refused before the SCF.
+The moving-grid KS Hessian agrees with `"fd"` up to the finite-difference
+error: ≤ 5e-7 cm⁻¹ against Richardson-extrapolated FD at a tight SCF
+(`density_conv` 1e-11) on water / STO-3G, for one SCF plus a
+coupled-perturbed KS solve instead of 6N gradients. Against the default
+`"fd"` (step 5e-3 Bohr, default SCF), which `"auto"` ran for KS before, the
+wavenumbers move by ≤ 0.071 cm⁻¹ (water / STO-3G, LDA, PBE, B3LYP). Under
+`"auto"`, open-shell KS, meta-GGA, VV10, range-separated hybrids, ECPs,
+external potentials, pruned grids, `[dft] dispersion`, COSX, implicit solvent,
+fractional occupations, MOM, and systems whose response AO table (basis
+functions × grid points × 4 for a GGA, 8 bytes each) exceeds 2 GiB (on the
+default 75×110 grid, a GGA above about 8,100 basis functions × atoms, e.g.
+about 30 atoms at def2-SVP) run finite differences; `"analytic-moving-grid"`
+refuses them before the SCF.
 
 The choice is made before the SCF. An error the analytic path raises after the
 SCF (for ROHF: the stored spin Fock matrices differing from those rebuilt from
 the final densities by more than 1e-4 Ha, which a loose `density_conv` can
 cause; a response solve that does not converge; non-positive orbital curvature;
 a first-order rotation above 10 rad/Bohr) is returned as an error under
-`"auto"` too, never retried with finite differences.
+`"auto"` too, never retried with finite differences; the same holds for the
+moving-grid KS Hessian (a non-converged SCF included).
 
 **Transition states and IRC (Python only, closed shell).**
 `ferric.run_saddle(mol, basis_name, xc=...)` searches for a first-order saddle
@@ -293,7 +306,8 @@ by P-RFO, using two finite-difference Hessians with Bofill updates between
 them; it costs `2(6N + 1) + (n_steps + 1)` gradient evaluations and refuses to
 start from a geometry with no negative mode. `hessian="analytic"` (or `"auto"`,
 which falls back to finite differences where the analytic Hessian does not
-apply) swaps in the analytic RHF Hessian, which needs no displaced gradients;
+apply) swaps in the analytic RHF Hessian (with `xc`, `"auto"` takes the
+moving-grid KS Hessian), which needs no displaced gradients;
 `"analytic"` raises for KS `xc`, point charges / an external field, ECPs or a
 basis above the libint second-derivative limit, `delta=` is only valid with
 `"fd"`, and `result.hessian_source` says which ran. The default is `"fd"`. `result.is_transition_state()`

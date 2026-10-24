@@ -1,7 +1,8 @@
-"""`run_frequencies(hessian="analytic-moving-grid")` (issue #490).
+"""`run_frequencies(hessian="analytic-moving-grid")` and `"auto"` (issue #490).
 
-The opt-in analytic closed-shell Kohn-Sham Hessian on the production (moving)
-grid, `ferric_scf::hessian::rks_moving_grid_hessian`. The Hessian itself is
+The analytic closed-shell Kohn-Sham Hessian on the production (moving) grid,
+`ferric_scf::hessian::rks_moving_grid_hessian`, which `"auto"` (the default)
+selects for a closed-shell KS reference wherever it applies. The Hessian itself is
 validated in the library (`crates/ferric-scf/tests/ks_moving_grid_hessian.rs`)
 and its CLI wiring in `crates/ferric-cli/tests/ks_moving_grid_frequencies.rs`
 (CLI == library bit for bit). These tests pin the Python surface:
@@ -13,14 +14,21 @@ and its CLI wiring in `crates/ferric-cli/tests/ks_moving_grid_frequencies.rs`
   missing), else `target/release/ferric-cli` (skips if absent).
 * `test_moving_grid_matches_fd` (validation tier): against the binding's own
   finite-difference Hessian, Richardson-extrapolated, at a tight SCF.
-* `test_auto_is_still_finite_differences_for_ks`: the default is unchanged.
+* `test_auto_is_the_moving_grid_hessian_for_ks`: `"auto"` equals
+  `"analytic-moving-grid"` bit for bit (water, LDA and PBE).
+* `test_auto_falls_back_to_fd_where_unsupported`: `"auto"` equals `"fd"` bit
+  for bit for meta-GGA (SCAN), an open-shell UKS reference and `dispersion=`.
 * the refusals, each named.
 
 Mutation ledger (each measured to fail): the moving-grid route sent to the
-fixed-grid Hessian fails `test_moving_grid_matches_fd`; `Auto` sent to the
-moving-grid Hessian for KS fails `test_auto_is_still_finite_differences_for_ks`;
-the binding dropping `hessian=` (always "auto") fails
-`test_moving_grid_reports_its_source`.
+fixed-grid Hessian fails `test_moving_grid_matches_fd`; the binding dropping
+`hessian=` (always "auto") fails `test_fd_stays_selectable_for_ks` (now that
+"auto" is the moving-grid Hessian for KS, the moving-grid tests cannot see
+it). The `Auto` dispatch mutants (`Auto` back to finite differences for KS;
+`Auto` to the moving-grid route without the support predicate) fail
+`test_auto_is_the_moving_grid_hessian_for_ks` and
+`test_auto_falls_back_to_fd_where_unsupported`; they are measured on the
+library and CLI twins (see those ledgers), which run the same dispatch.
 """
 
 from __future__ import annotations
@@ -150,15 +158,46 @@ def test_moving_grid_matches_fd(xc):
     assert miss < FD_TOL_CM1
 
 
-def test_auto_is_still_finite_differences_for_ks():
+def _assert_same(a, b):
+    assert a.hessian_source == b.hessian_source
+    assert a.n_gradient_evaluations == b.n_gradient_evaluations
+    assert a.energy == b.energy
+    assert a.frequencies == b.frequencies
+    assert a.cartesian_hessian == b.cartesian_hessian
+
+
+@pytest.mark.parametrize("xc", ["LDA", "PBE"])
+def test_auto_is_the_moving_grid_hessian_for_ks(xc):
+    mol = _mol(WATER)
+    auto = ferric.run_frequencies(mol, "sto-3g", xc=xc)
+    moving = ferric.run_frequencies(mol, "sto-3g", xc=xc, hessian=MOVING)
+    assert auto.hessian_source == MOVING
+    assert auto.n_gradient_evaluations == 0
+    _assert_same(auto, moving)
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"xc": "SCAN"},
+        {"xc": "LDA", "reference": "uhf"},
+        {"xc": "B3LYP", "dispersion": "d3bj"},
+    ],
+    ids=["meta-gga", "uks", "dispersion"],
+)
+def test_auto_falls_back_to_fd_where_unsupported(kwargs):
     mol = _mol(H2)
-    auto = ferric.run_frequencies(mol, "sto-3g", xc="PBE")
-    fd = ferric.run_frequencies(mol, "sto-3g", xc="PBE", hessian="fd")
-    assert auto.hessian_source == fd.hessian_source == "finite-difference"
+    auto = ferric.run_frequencies(mol, "sto-3g", **kwargs)
+    fd = ferric.run_frequencies(mol, "sto-3g", hessian="fd", **kwargs)
+    assert auto.hessian_source == "finite-difference"
     assert auto.n_gradient_evaluations == 12
-    assert auto.energy == fd.energy
-    assert auto.frequencies == fd.frequencies
-    assert auto.cartesian_hessian == fd.cartesian_hessian
+    _assert_same(auto, fd)
+
+
+def test_fd_stays_selectable_for_ks():
+    r = ferric.run_frequencies(_mol(H2), "sto-3g", xc="LDA", hessian="fd")
+    assert r.hessian_source == "finite-difference"
+    assert r.n_gradient_evaluations == 12
 
 
 def _hi(tmp_path):

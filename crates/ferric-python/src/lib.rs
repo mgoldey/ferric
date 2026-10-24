@@ -4182,14 +4182,21 @@ impl PyFrequencyResult {
 /// and a basis up to f functions and fixed external point charges or a uniform field (QM/MM, RHF and UHF only,
 /// QM-QM block; this binding takes `point_charges=` / `external_field=` only,
 /// the Gaussian-smeared charges the Hessian also covers are reachable from the
-/// CLI and Rust API) (one SCF plus CPHF), and a finite difference of the ANALYTIC
-/// gradient (6N gradient evaluations) otherwise, including every KS
-/// reference (ROKS included) unless "analytic-moving-grid" is asked for. The choice is made before the SCF; an error the
-/// analytic path raises after it (for ROHF a Fock-consistency failure from a
-/// loose convergence threshold, a non-converging response, non-positive
-/// curvature) is raised, not retried with finite differences; "analytic" raises if the analytic Hessian does not apply; "fd"
-/// always differences gradients. `.hessian_source` says which ran.
-/// "analytic-moving-grid" (opt-in; "auto" never selects it) is the analytic
+/// CLI and Rust API) (one SCF plus CPHF); for closed-shell Kohn-Sham (`xc=`
+/// with `reference="rhf"`) the "analytic-moving-grid" Hessian below wherever
+/// it applies; and a finite difference of the ANALYTIC gradient (6N gradient
+/// evaluations) otherwise (UKS, ROKS, meta-GGA, VV10, range-separated
+/// hybrids, ECPs or external potentials with `xc=`, `dispersion=`, and large
+/// systems whose response AO table -- basis functions x grid points x 4 for
+/// a GGA, 8 bytes each -- exceeds 2 GiB: on the default grid a GGA above
+/// about 8,100 basis functions x atoms). The choice is made before the SCF;
+/// an error an analytic path raises after it (a non-converged SCF; for ROHF a
+/// Fock-consistency failure from a loose convergence threshold; a
+/// non-converging response, non-positive curvature) is raised, not retried
+/// with finite differences. "analytic" raises if the Hartree-Fock analytic Hessian does not
+/// apply (it never covers KS); "fd" always differences gradients.
+/// `.hessian_source` says which ran.
+/// "analytic-moving-grid" is the analytic
 /// closed-shell Kohn-Sham Hessian on the production (moving) grid, Becke
 /// weight response included: the Hessian of the surface the KS gradient
 /// differentiates, so it agrees with "fd" to the finite-difference error.
@@ -10601,7 +10608,8 @@ struct PySaddleResult {
     #[pyo3(get)]
     lowest_eigenvalue: f64,
     /// Which construction produced the Hessian of the FINAL geometry (the one
-    /// behind `n_imaginary`): "finite-difference" or "analytic".
+    /// behind `n_imaginary`): "finite-difference", "analytic" or (under
+    /// `hessian="auto"` with `xc=`) "analytic-moving-grid".
     #[pyo3(get)]
     hessian_source: String,
 }
@@ -10640,8 +10648,9 @@ fn parse_saddle_hessian(
         .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
     if method == HessianMethod::AnalyticMovingGrid {
         return Err(pyo3::exceptions::PyValueError::new_err(
-            "hessian=\"analytic-moving-grid\" is not available in run_saddle (it is wired \
-             for run_frequencies only); use \"fd\", \"auto\" or \"analytic\"",
+            "hessian=\"analytic-moving-grid\" is not available in run_saddle as an explicit \
+             value; \"auto\" selects the moving-grid Kohn-Sham Hessian wherever it applies \
+             (use \"fd\", \"auto\" or \"analytic\")",
         ));
     }
     if delta.is_some() && method != HessianMethod::FiniteDifference {
@@ -10672,7 +10681,9 @@ fn parse_saddle_hessian(
 /// no displaced gradients) and raises, naming the reason, when it does not
 /// apply (KS `xc`, point charges / external field, ECP, a basis above the
 /// libint second-derivative limit). "auto" uses the analytic Hessian where it
-/// applies and otherwise falls back to "fd"; `.hessian_source` says which ran.
+/// applies (with `xc=`, the analytic moving-grid Kohn-Sham Hessian of
+/// `run_frequencies`) and otherwise falls back to "fd"; `.hessian_source` says
+/// which ran.
 /// `delta` is only meaningful with "fd": combining it with "auto" or
 /// "analytic" raises rather than being silently ignored.
 #[pyfunction]
@@ -10834,7 +10845,8 @@ fn run_saddle(
         // Default is finite differences (the #214 decision: `delta=` is
         // honoured and the documented cost model holds). The analytic Hessian
         // is OPT-IN via `hessian=`; "analytic" errors when unsupported and
-        // "auto" falls back to FD, reported through `hessian_source`.
+        // "auto" falls back to FD, reported through `hessian_source` ("auto"
+        // with `xc` is the moving-grid KS Hessian where it applies).
         let mut fc = FrequencyConfig {
             reference: FrequencyReference::Rhf,
             hessian: hessian_method,
