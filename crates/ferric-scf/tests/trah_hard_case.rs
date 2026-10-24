@@ -257,6 +257,8 @@ fn uhf_trah_tail_breaks_spin_symmetry_without_handing_off_to_diis() {
 /// rejection retries -> 34. Bound halfway. (Both counts include the iterations
 /// a declined null step spends on a DIIS step; the decline falls through to
 /// DIIS so that convergence is measured, see `trah_rks_null_step_is_measured.rs`.)
+/// The name became fully true only with the `trah_engaged` latch: before it, the
+/// iteration AFTER the retry could still go to DIIS (see the hand-off tests below).
 #[test]
 fn a_rejected_trah_step_is_retried_not_handed_to_diis() {
     let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -283,5 +285,87 @@ fn a_rejected_trah_step_is_retried_not_handed_to_diis() {
         r.iterations <= 38,
         "{} iterations with {rej} rejections (retry path: 34; fall-through-to-DIIS: 42)",
         r.iterations
+    );
+}
+
+// ── Hand-off to DIIS after a REJECTION ──────────────────────────────────────
+//
+// "Armed while a step is pending" leaves a hole: a rejection CONSUMES the
+// pending prediction, so at the restored point -- whose err_max is above the
+// trigger, because TRAH was mid-escape -- the gate handed the next iteration
+// to DIIS, which extrapolated from its saddle-region history back to the
+// saddle. Measured on CoH/def2-SVP UHF (MINAO, tail mode): TRAH had escaped
+// from the 105 mHa saddle to within 6 mHa of the stable state; one rejection,
+// one DIIS iteration, and the energy was back on the saddle (-1381.6310), the
+// climb restarting from scratch. Cheap reproducers on main before the fix
+// (core guess, trah_trigger 1e-2): N2/STO-3G RHF 2 hand-offs, O2/STO-3G UHF 2.
+
+/// O2/STO-3G triplet UHF, core guess, tail-mode TRAH (measured, see below).
+const E_O2_STO3G_UHF: f64 = -147.635_556_143_6;
+
+fn handoffs_after_rejection(uhf: bool) -> (usize, usize, f64) {
+    use std::sync::atomic::Ordering::Relaxed;
+    let (xyz, mult) = if uhf {
+        ("2\no2\nO 0 0 0\nO 0 0 1.21\n", 3)
+    } else {
+        ("2\nn2\nN 0 0 0\nN 0 0 1.6\n", 1)
+    };
+    let mol = Molecule::parse_xyz(xyz, 0, mult).unwrap();
+    let bs = basis::bundled("sto-3g").unwrap();
+    let prep = PreparedBasis::new(&mol, &bs).unwrap();
+    let op = Operator::coulomb();
+    let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+    let cfg = RhfConfig {
+        energy_conv: 1e-10,
+        density_conv: 1e-8,
+        max_iter: 200,
+        use_sad_guess: false,
+        trah_trigger: Some(1e-2),
+        ..Default::default()
+    };
+    let h0 = ferric_scf::trah::TRAH_HANDOFFS_AFTER_REJECTION.load(Relaxed);
+    let r0 = ferric_scf::trah::TRAH_STEPS_REJECTED.load(Relaxed);
+    let ctx = ParallelContext::default();
+    let r = if uhf {
+        ferric_scf::uhf::solve_uhf(&ctx, &mol, &prep, &bounds, &cfg)
+    } else {
+        solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg)
+    }
+    .unwrap();
+    assert!(r.converged);
+    (
+        ferric_scf::trah::TRAH_HANDOFFS_AFTER_REJECTION.load(Relaxed) - h0,
+        ferric_scf::trah::TRAH_STEPS_REJECTED.load(Relaxed) - r0,
+        r.energy,
+    )
+}
+
+#[test]
+fn rhf_trah_keeps_control_after_a_rejection() {
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (handoffs, rej, e) = handoffs_after_rejection(false);
+    assert!(rej > 0, "no rejection happened; the test exercises nothing");
+    assert_eq!(
+        handoffs, 0,
+        "{handoffs} of {rej} RHF rejections were followed by a DIIS iteration"
+    );
+    assert!((e - E_STABLE).abs() < 1e-7, "E = {e:.10}");
+}
+
+#[test]
+fn uhf_trah_keeps_control_after_a_rejection() {
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (handoffs, rej, e) = handoffs_after_rejection(true);
+    assert!(rej > 0, "no rejection happened; the test exercises nothing");
+    assert_eq!(
+        handoffs, 0,
+        "{handoffs} of {rej} UHF rejections were followed by a DIIS iteration"
+    );
+    // Measured 2026-10-23 (identical with and without the latch; this guards
+    // against landing on a different state, not the hand-off itself).
+    // Tolerance 1e-8, never ==: golden energies drift by ulps across machines.
+    assert!(
+        (e - E_O2_STO3G_UHF).abs() < 1e-8,
+        "O2/STO-3G UHF E = {e:.12}, expected {E_O2_STO3G_UHF:.12}"
     );
 }
