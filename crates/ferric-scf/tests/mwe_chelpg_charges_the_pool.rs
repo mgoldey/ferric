@@ -82,15 +82,19 @@ fn run_with_room(
 }
 
 /// Pin every CHELPG grid knob to its documented default so the candidate
-/// count below does not move with the caller's environment. Safe here: this
-/// binary holds a single test, and the pin runs before the SCF spawns any
-/// worker thread that could read the environment concurrently.
+/// count below does not move with the caller's environment, and pin the
+/// ambient memory budget (`chelpg_charges` takes no explicit one) to an
+/// ample 64 GiB so the CHELPG ceiling gate never refuses: the unified var
+/// outranks the legacy ones and host auto-detection in `resolve_budget`.
+/// Safe here: this binary holds a single test, and the pin runs before the
+/// SCF spawns any worker thread that could read the environment concurrently.
 fn pin_chelpg_settings() {
     for (k, v) in [
         ("FERRIC_CHELPG_SPACING", "0.3"),
         ("FERRIC_CHELPG_MARGIN", "2.8"),
         ("FERRIC_CHELPG_VDW_SCALE", "1.0"),
         ("FERRIC_CHELPG_OUTER_CUTOFF", "2.8"),
+        (ferric_core::memory::ENV_UNIFIED, "64"),
     ] {
         std::env::set_var(k, v);
     }
