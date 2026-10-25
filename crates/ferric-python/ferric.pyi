@@ -2188,6 +2188,7 @@ def run_uks_gamma(
     range_split: float | bool | None = None,
     gdf_omega: float | None = None,
     sr_column_rotation: bool | None = None,
+    neighbour_switch: float = 0.0,
 ) -> GammaOpenShellResult:
     """Gamma-point periodic UKS (LDA/GGA/global hybrids, and range-separated
     (CAM) GGA hybrids as an energy: any libxc one is accepted, "HSE06" and
@@ -2197,7 +2198,14 @@ def run_uks_gamma(
     exchange); with_stress, with_gradient on jk="rsgdf" or for wB97X, and
     range_split raise). Meta-GGA raises (use run_uks_kpts with mesh
     (1, 1, 1)); VV10 raises. neighbour_cutoff in Angstrom (None = max(10
-    Bohr, covering bound))."""
+    Bohr, covering bound)). neighbour_switch W in Angstrom (default 0.0 = the
+    hard cutoff): W > 0 tapers each image atom's presence in the grid
+    partition to zero over the last W before the cutoff, so the energy is
+    continuous as images cross it (force and stress include the taper's
+    derivative); the automatic cutoff then grows by W and an explicit one must
+    exceed the covering bound by W. Negative or non-finite W raises
+    ValueError. Every KS binding (run_rks_gamma, run_roks_gamma, run_rks_kpts,
+    run_uks_kpts, run_roks_kpts) takes neighbour_switch with this contract."""
     ...
 
 def run_roks_gamma(
@@ -2222,6 +2230,7 @@ def run_roks_gamma(
     range_split: float | bool | None = None,
     gdf_omega: float | None = None,
     sr_column_rotation: bool | None = None,
+    neighbour_switch: float = 0.0,
 ) -> GammaOpenShellResult:
     """Gamma-point periodic ROKS (functional/grid contract of run_uks_gamma:
     range-separated hybrids run as an energy, dense or RS-GDF, and raise with
@@ -2251,6 +2260,7 @@ def run_rks_gamma(
     range_split: float | bool | None = None,
     gdf_omega: float | None = None,
     sr_column_rotation: bool | None = None,
+    neighbour_switch: float = 0.0,
 ) -> GammaRksResult:
     """Closed-shell Gamma-point periodic RKS; open shells raise ValueError.
     Meta-GGA: only SCAN / r2SCAN / TPSS; with_gradient / with_stress route the
@@ -2387,6 +2397,7 @@ def run_rks_kpts(
     with_stress: bool = False,
     range_split: float | bool | None = None,
     gdf_omega: float | None = None,
+    neighbour_switch: float = 0.0,
 ) -> KpointRksResult:
     """Closed-shell k-point RKS (LDA / GGA / global hybrids and the pure
     meta-GGAs SCAN / r2SCAN / TPSS, and the range-separated
@@ -2428,6 +2439,7 @@ def run_uks_kpts(
     with_stress: bool = False,
     range_split: float | bool | None = None,
     gdf_omega: float | None = None,
+    neighbour_switch: float = 0.0,
 ) -> KpointScfResult:
     """k-point UKS (LDA / GGA / global hybrids; spin state from the Molecule's
     multiplicity, electrons per cell). Mesh, ewald_start and jk as
@@ -2468,6 +2480,7 @@ def run_roks_kpts(
     range_split: float | bool | None = None,
     gdf_omega: float | None = None,
     level_shift: float | None = None,
+    neighbour_switch: float = 0.0,
 ) -> KpointScfResult:
     """k-point ROKS (restricted open-shell Kohn-Sham, Roothaan effective Fock)
     with the arguments of run_uks_kpts; LDA / GGA / global hybrids, and the

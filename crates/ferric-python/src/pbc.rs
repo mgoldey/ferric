@@ -196,6 +196,17 @@ fn positive(fname: &str, name: &str, v: f64) -> PyResult<f64> {
     }
 }
 
+/// A length `v` (Angstrom) if finite and `>= 0`, else a `ValueError` naming `name`.
+fn non_negative_angstrom(fname: &str, name: &str, v: f64) -> PyResult<f64> {
+    if v.is_finite() && v >= 0.0 {
+        Ok(v)
+    } else {
+        Err(val_err(format!(
+            "{fname}: {name} must be finite and >= 0 (Angstrom), got {v}"
+        )))
+    }
+}
+
 fn gamma_scf_config(max_iter: usize, density_conv: f64) -> RhfConfig {
     RhfConfig {
         use_sad_guess: false,
@@ -232,20 +243,26 @@ fn kscf_config(
 }
 
 /// Periodic XC grid from the Python knobs (`neighbour_cutoff` in Ångström;
-/// `None` = `max(10 Bohr, covering-radius bound)`). `n_radial`/`n_angular`
-/// are validated by the Rust grid builder (a refusal → `ValueError`).
+/// `None` = `max(10 Bohr, covering-radius bound)`; `neighbour_switch` W in
+/// Ångström, `PeriodicGridConfig::neighbour_switch`: `0.0` = the hard cutoff,
+/// `W > 0` the smooth taper over the last W before the cutoff; anything not
+/// finite or negative is a `ValueError` here). `n_radial`/`n_angular` are
+/// validated by the Rust grid builder (a refusal → `ValueError`).
 fn periodic_grid(
     fname: &str,
     n_radial: usize,
     n_angular: usize,
     neighbour_cutoff: Option<f64>,
+    neighbour_switch: f64,
 ) -> PyResult<PeriodicGridConfig> {
     let cutoff = match neighbour_cutoff {
         None => None,
         Some(d) => Some(positive(fname, "neighbour_cutoff", d)? * ANGSTROM_TO_BOHR),
     };
+    let switch = non_negative_angstrom(fname, "neighbour_switch", neighbour_switch)?;
     Ok(PeriodicGridConfig {
         neighbour_cutoff: cutoff,
+        neighbour_switch: switch * ANGSTROM_TO_BOHR,
         ..PeriodicGridConfig::with_size(n_radial, n_angular)
     })
 }
@@ -1445,7 +1462,16 @@ fn run_rohf_gamma(
 /// SCAN / r2SCAN energies); VV10 and double hybrids are refused. Grid: Treutler-Ahlrichs `n_radial` x
 /// Lebedev `n_angular` per atom with SSF partitioning over periodic images
 /// within `neighbour_cutoff` (Å; None = max(10 Bohr, covering-radius
-/// bound)). Otherwise the `run_uhf_gamma` contract (ewald_start, jk, units).
+/// bound)). `neighbour_switch` W (Å, default 0.0 = the hard cutoff, issue
+/// #495) tapers each image atom's presence to zero over the last W before
+/// the cutoff, so the energy stays continuous as images cross it; the force
+/// and stress carry the taper's derivative. With W > 0 the automatic cutoff
+/// grows by W and an explicit one must exceed the covering bound by W
+/// (`ferric_pbc::dft::PeriodicGridConfig::neighbour_switch`); a negative or
+/// non-finite W is a ValueError. Every KS binding (`run_rks_gamma`,
+/// `run_roks_gamma`, `run_rks_kpts`, `run_uks_kpts`, `run_roks_kpts`) takes
+/// it with this contract. Otherwise the `run_uhf_gamma` contract
+/// (ewald_start, jk, units).
 ///
 /// Validated vs crates/ferric-pbc/tests/pbc_uks.rs: H atom, a = 4 Bohr,
 /// STO-3G PySCF digits, SSF 75x302 D = 10 Bohr, ewald: LDA -0.667583328116.
@@ -1457,6 +1483,7 @@ fn run_rohf_gamma(
     neighbour_cutoff=None, with_gradient=false, with_stress=false,
     range_split=None,
     gdf_omega=None, sr_column_rotation=None,
+    neighbour_switch=0.0,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_uks_gamma(
@@ -1482,6 +1509,7 @@ fn run_uks_gamma(
     range_split: Option<&Bound<'_, PyAny>>,
     gdf_omega: Option<f64>,
     sr_column_rotation: Option<bool>,
+    neighbour_switch: f64,
 ) -> PyResult<PyGammaOpenShellResult> {
     let fname = "run_uks_gamma";
     let mut s = pbc_setup(&PbcArgs {
@@ -1512,7 +1540,13 @@ fn run_uks_gamma(
         method: OpenMethod::Uks(functional.to_string()),
         start,
         scf: gamma_scf_config(max_iter, density_conv),
-        grid: periodic_grid(fname, n_radial, n_angular, neighbour_cutoff)?,
+        grid: periodic_grid(
+            fname,
+            n_radial,
+            n_angular,
+            neighbour_cutoff,
+            neighbour_switch,
+        )?,
     };
     run_open_shell(py, s, o, start_name)
 }
@@ -1542,6 +1576,7 @@ fn run_uks_gamma(
     neighbour_cutoff=None, with_gradient=false, with_stress=false,
     range_split=None,
     gdf_omega=None, sr_column_rotation=None,
+    neighbour_switch=0.0,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_roks_gamma(
@@ -1567,6 +1602,7 @@ fn run_roks_gamma(
     range_split: Option<&Bound<'_, PyAny>>,
     gdf_omega: Option<f64>,
     sr_column_rotation: Option<bool>,
+    neighbour_switch: f64,
 ) -> PyResult<PyGammaOpenShellResult> {
     let fname = "run_roks_gamma";
     // Before any integral is built: RSH energy only.
@@ -1596,7 +1632,13 @@ fn run_roks_gamma(
         method: OpenMethod::Roks(functional.to_string()),
         start,
         scf: roks_scf_config(functional, max_iter, density_conv),
-        grid: periodic_grid(fname, n_radial, n_angular, neighbour_cutoff)?,
+        grid: periodic_grid(
+            fname,
+            n_radial,
+            n_angular,
+            neighbour_cutoff,
+            neighbour_switch,
+        )?,
     };
     run_open_shell(py, s, o, start_name)
 }
@@ -1786,6 +1828,7 @@ fn gamma_rsh_derivatives(
     neighbour_cutoff=None, with_gradient=false, with_stress=false,
     range_split=None,
     gdf_omega=None, sr_column_rotation=None,
+    neighbour_switch=0.0,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_rks_gamma(
@@ -1810,6 +1853,7 @@ fn run_rks_gamma(
     range_split: Option<&Bound<'_, PyAny>>,
     gdf_omega: Option<f64>,
     sr_column_rotation: Option<bool>,
+    neighbour_switch: f64,
 ) -> PyResult<PyGammaRksResult> {
     let fname = "run_rks_gamma";
     let mut s = pbc_setup(&PbcArgs {
@@ -1836,7 +1880,13 @@ fn run_rks_gamma(
     ferric_pbc::dft::check_gamma_rks_request(functional, s.derivs.any(), s.aux.is_some())
         .map_err(|e| val_err(format!("{fname}: functional {functional:?}: {e}")))?;
     s.set_sr_knobs(range_split, sr_column_rotation)?;
-    let grid = periodic_grid(fname, n_radial, n_angular, neighbour_cutoff)?;
+    let grid = periodic_grid(
+        fname,
+        n_radial,
+        n_angular,
+        neighbour_cutoff,
+        neighbour_switch,
+    )?;
     gamma_rks_preflight(&s, functional)?;
     let scf = gamma_scf_config(max_iter, density_conv);
     let (r, derivs, e_nuc, timings_data) = py
@@ -3104,6 +3154,7 @@ fn krks_driver(
     jk="dense", auxbasis=None, memory_budget_gb=None, n_radial=75, n_angular=302,
     neighbour_cutoff=None, with_gradient=false, with_stress=false,
     range_split=None, gdf_omega=None,
+    neighbour_switch=0.0,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_rks_kpts(
@@ -3130,6 +3181,7 @@ fn run_rks_kpts(
     with_stress: bool,
     range_split: Option<&Bound<'_, PyAny>>,
     gdf_omega: Option<f64>,
+    neighbour_switch: f64,
 ) -> PyResult<PyKpointRksResult> {
     let fname = "run_rks_kpts";
     let mut s = pbc_setup(&PbcArgs {
@@ -3153,7 +3205,13 @@ fn run_rks_kpts(
     check_kpoint_ks_support(fname, functional, KKsKind::Closed, &s)?;
     s.range_split = parse_range_split(fname, range_split, s.aux.is_some(), s.derivs)?;
     let m = k_mesh(&s, mesh, centring)?;
-    let grid = periodic_grid(fname, n_radial, n_angular, neighbour_cutoff)?;
+    let grid = periodic_grid(
+        fname,
+        n_radial,
+        n_angular,
+        neighbour_cutoff,
+        neighbour_switch,
+    )?;
     let scf = kscf_config(fname, max_iter, energy_conv, grad_conv)?;
     let (r, madelung, derivs) = py
         .allow_threads(|| krks_driver(&s, &m, functional, grid, scf))
@@ -3344,6 +3402,7 @@ fn kroks_driver(
     energy_conv=1e-12, grad_conv=1e-9, jk="dense", auxbasis=None,
     memory_budget_gb=None, n_radial=75, n_angular=302, neighbour_cutoff=None,
     with_gradient=false, with_stress=false, range_split=None, gdf_omega=None,
+    neighbour_switch=0.0,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_uks_kpts(
@@ -3371,6 +3430,7 @@ fn run_uks_kpts(
     with_stress: bool,
     range_split: Option<&Bound<'_, PyAny>>,
     gdf_omega: Option<f64>,
+    neighbour_switch: f64,
 ) -> PyResult<PyKpointScfResult> {
     let fname = "run_uks_kpts";
     let mut s = pbc_setup(&PbcArgs {
@@ -3402,7 +3462,13 @@ fn run_uks_kpts(
     }
     s.range_split = parse_range_split(fname, range_split, s.aux.is_some(), s.derivs)?;
     let m = k_mesh(&s, mesh, centring)?;
-    let grid = periodic_grid(fname, n_radial, n_angular, neighbour_cutoff)?;
+    let grid = periodic_grid(
+        fname,
+        n_radial,
+        n_angular,
+        neighbour_cutoff,
+        neighbour_switch,
+    )?;
     let (start, start_name) = parse_ewald_start(fname, s.exx, ewald_start)?;
     let scf = kscf_config(fname, max_iter, energy_conv, grad_conv)?;
     let (r, derivs) = py
@@ -3453,7 +3519,7 @@ fn run_ro_kpts(
     centring: &str,
     ewald_start: Option<&str>,
     scfk: (usize, f64, f64),
-    grid: (usize, usize, Option<f64>),
+    grid: (usize, usize, Option<f64>, f64),
     derivs: DerivRequest,
     range_split: Option<&Bound<'_, PyAny>>,
     level_shift: Option<f64>,
@@ -3472,7 +3538,7 @@ fn run_ro_kpts(
     }
     s.range_split = parse_range_split(fname, range_split, s.aux.is_some(), s.derivs)?;
     let m = k_mesh(&s, mesh, centring)?;
-    let grid = periodic_grid(fname, grid.0, grid.1, grid.2)?;
+    let grid = periodic_grid(fname, grid.0, grid.1, grid.2, grid.3)?;
     let (start, start_name) = parse_ewald_start(fname, s.exx, ewald_start)?;
     let scf = kscf_config(fname, scfk.0, scfk.1, scfk.2)?;
     let (r, derivs) = py
@@ -3534,6 +3600,7 @@ fn run_ro_kpts(
     memory_budget_gb=None, n_radial=75, n_angular=302, neighbour_cutoff=None,
     with_gradient=false, with_stress=false, range_split=None, gdf_omega=None,
     level_shift=None,
+    neighbour_switch=0.0,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_roks_kpts(
@@ -3562,6 +3629,7 @@ fn run_roks_kpts(
     range_split: Option<&Bound<'_, PyAny>>,
     gdf_omega: Option<f64>,
     level_shift: Option<f64>,
+    neighbour_switch: f64,
 ) -> PyResult<PyKpointScfResult> {
     let args = PbcArgs {
         fname: "run_roks_kpts",
@@ -3586,7 +3654,7 @@ fn run_roks_kpts(
         centring,
         ewald_start,
         (max_iter, energy_conv, grad_conv),
-        (n_radial, n_angular, neighbour_cutoff),
+        (n_radial, n_angular, neighbour_cutoff, neighbour_switch),
         DerivRequest {
             gradient: with_gradient,
             stress: with_stress,
@@ -3653,7 +3721,7 @@ fn run_rohf_kpts(
         centring,
         ewald_start,
         (max_iter, energy_conv, grad_conv),
-        (75, 302, None),
+        (75, 302, None, 0.0),
         DerivRequest {
             gradient: with_gradient,
             stress: with_stress,
