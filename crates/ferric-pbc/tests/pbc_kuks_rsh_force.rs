@@ -54,7 +54,7 @@
 //! those two HSE06 rows; per commit the spin defects and the erf piece on
 //! CAM-B3LYP.
 //!
-//! NOT covered: RS-GDF (refused), the stress (refused), ROKS (its own file,
+//! NOT covered: RS-GDF (`pbc_kuks_rsh_rsgdf_force.rs`), the stress (refused), ROKS (its own file,
 //! `pbc_kroks_rsh_force.rs`), wB97X (accepted, not force-tested), p/d shells (H/STO-3G only),
 //! shifted meshes, a PySCF force pin (the Python / CLI wiring of this force
 //! is tested in the binding suites).
@@ -262,8 +262,9 @@ fn polarized_spin_and_erf_mutants_are_caught() {
 
 /// Typed refusals: bare kernels with a range-separated name, kernels of
 /// another functional, a global-hybrid name on range-separated kernels,
-/// RS-GDF J/K with a range-separated name (UKS force), the open-shell stress
-/// with a range-separated name, and the Python / CLI derivative gate (UKS
+/// an RS-GDF source with a range-separated name on a dense SCF (UKS force:
+/// the Fock guard), the open-shell stress with a range-separated name (dense
+/// and RS-GDF), and the Python / CLI derivative gate (UKS
 /// force wired on dense AFT; the UKS stress, the UKS force on RS-GDF and every
 /// ROKS derivative refused).
 #[test]
@@ -311,9 +312,15 @@ fn oshell_rsh_force_refusals() {
         aux: &aux,
     };
     let e = call(KGradJk::RsGdf(src), "HSE06");
-    assert!(e.contains("RS-GDF") && e.contains("no derivative"), "{e}");
-    // An RS-GDF source that carries the functional's own range separation
-    // (the closed-shell RKS force differentiates it) is refused for UKS too.
+    assert!(
+        e.contains("RS-GDF") && e.contains("bare Coulomb exchange"),
+        "{e}"
+    );
+    // An RS-GDF source that carries the functional's own range separation is
+    // differentiated since the open-shell RS-GDF force landed
+    // (`pbc_kuks_rsh_rsgdf_force.rs`): this DENSE SCF's Focks are not that
+    // J/K's, so the Fock guard refuses it (not a range-separation refusal),
+    // and the open-shell stress refuses the range-separated source.
     let gdf_rsh = ferric_pbc::rsgdf::kpoint::KRsGdf::build_rsh(
         &fx.cell,
         &fx.prep,
@@ -330,10 +337,21 @@ fn oshell_rsh_force_refusals() {
         aux: &aux,
     };
     let e = call(KGradJk::RsGdf(src), "HSE06");
-    assert!(
-        e.contains("RS-GDF") && e.contains("open-shell state"),
-        "{e}"
-    );
+    assert!(e.contains("Fock matrix rebuilt"), "{e}");
+    let e = kpoint_uks_stress(
+        &fx.cell,
+        &fx.prep,
+        &fx.mesh,
+        &ferric_pbc::hcore::PeriodicHcoreConfig::with_omega(OMEGA),
+        &fx.hk,
+        ferric_pbc::kstress::KStressJk::RsGdf(src),
+        &fx.res.scf,
+        "HSE06",
+        &KUksStressConfig::default(),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(e.contains("range-separated"), "{e}");
     let e = kpoint_uks_stress(
         &fx.cell,
         &fx.prep,

@@ -46,8 +46,9 @@
 //! (`kderiv::FitMode::Attenuated`): it has no SR real-space walks, no column
 //! rotation, no range split and no `c0` G = 0 terms. [`KRsGdf::rsh_derivative`]
 //! hands the closed-shell RKS force ([`crate::kxcgrad::kpoint_rks_gradient`])
-//! and stress ([`crate::kxcstress::kpoint_rks_stress`]) the fit, `ω`, the
-//! Gaussian cut and the coefficient `c_lr − c_sr`.
+//! and stress ([`crate::kxcstress::kpoint_rks_stress`]) and the open-shell
+//! UKS / ROKS forces ([`crate::kuxcgrad`]) the fit, `ω`, the Gaussian cut and
+//! the coefficient `c_lr − c_sr`.
 
 use super::{
     hermitize_pairs, lr_accumulate_q, lr_kvectors, sat_prod, KRsGdf, KRsGdfConfig, KRsGdfMutation,

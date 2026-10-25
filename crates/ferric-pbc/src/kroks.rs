@@ -54,9 +54,9 @@
 //! and the MIXED Madelung constant `c_sr v_M + (c_lr − c_sr) v_M(ω)` are
 //! inside it), exactly as [`crate::kuks`] does; the Roothaan combination is
 //! unchanged. The reported fraction is `c_sr`. The library nuclear force on
-//! the dense-AFT J/K is [`crate::kuxcgrad::kpoint_roks_gradient`] (at Gamma
-//! [`crate::gamma_rsh::gamma_roks_rsh_gradient`]); the RS-GDF force, the
-//! stress and the binding gate ([`crate::kxcgrad::check_deriv_functional`])
+//! the dense-AFT and RS-GDF J/K is [`crate::kuxcgrad::kpoint_roks_gradient`]
+//! (at Gamma, dense-AFT only, [`crate::gamma_rsh::gamma_roks_rsh_gradient`]);
+//! the stress and the binding gate ([`crate::kxcgrad::check_deriv_functional`])
 //! refuse RSH.
 //! Meta-GGA (no tau term here), VV10 and double hybrids are refused.
 //!
