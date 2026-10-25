@@ -5325,6 +5325,60 @@ fn periodic_raw_key_check(
     Ok(())
 }
 
+/// The `[scf]` knobs a periodic run reads: the user's value where WRITTEN,
+/// else the periodic default (`periodic_raw_key_check` has already refused
+/// every other key, and `level_shift` off the k-point ROHF / ROKS routes).
+struct PeriodicScfKnobs {
+    max_iter: usize,
+    max_iter_explicit: bool,
+    density_conv: f64,
+    energy_conv: f64,
+    level_shift: Option<f64>,
+}
+
+fn periodic_scf_knobs(cfg: &Config, raw: &toml::Value) -> Result<PeriodicScfKnobs, String> {
+    let written = raw_keys(raw, "scf");
+    let max_iter_explicit = written.contains(&"max_iter");
+    let max_iter = if max_iter_explicit {
+        cfg.scf.max_iter
+    } else {
+        200
+    };
+    let density_conv = if written.contains(&"density_conv") {
+        cell_positive("density_conv ([scf])", cfg.scf.density_conv)?
+    } else {
+        1e-10
+    };
+    let energy_conv = if written.contains(&"energy_conv") {
+        cell_positive("energy_conv ([scf])", cfg.scf.energy_conv)?
+    } else {
+        1e-12
+    };
+    Ok(PeriodicScfKnobs {
+        max_iter,
+        max_iter_explicit,
+        density_conv,
+        energy_conv,
+        level_shift: periodic_level_shift(cfg, &written)?,
+    })
+}
+
+/// `[scf] level_shift` where written (admitted by `periodic_raw_key_check`
+/// on the k-point ROHF / ROKS routes only): finite and >= 0, Hartree.
+fn periodic_level_shift(cfg: &Config, written: &[&str]) -> Result<Option<f64>, String> {
+    match cfg.scf.level_shift {
+        Some(v) if written.contains(&"level_shift") => {
+            if !(v.is_finite() && v >= 0.0) {
+                return Err(format!(
+                    "[scf] level_shift must be finite and >= 0 (Hartree), got {v}"
+                ));
+            }
+            Ok(Some(v))
+        }
+        _ => Ok(None),
+    }
+}
+
 /// `[cell] kmesh` / `centring` with the functional gates of the route: the
 /// Gamma point (`None`) runs the Gamma gates, a mesh the k-point ones.
 fn resolve_kmesh(
@@ -5733,35 +5787,13 @@ pub fn periodic_plan(cfg: &Config, raw: &toml::Value) -> Result<Option<PeriodicP
         optimize,
         &jk,
     )?;
-    let written = raw_keys(raw, "scf");
-    let max_iter_explicit = written.contains(&"max_iter");
-    let max_iter = if max_iter_explicit {
-        cfg.scf.max_iter
-    } else {
-        200
-    };
-    let density_conv = if written.contains(&"density_conv") {
-        cell_positive("density_conv ([scf])", cfg.scf.density_conv)?
-    } else {
-        1e-10
-    };
-    let energy_conv = if written.contains(&"energy_conv") {
-        cell_positive("energy_conv ([scf])", cfg.scf.energy_conv)?
-    } else {
-        1e-12
-    };
-    // Admitted by periodic_raw_key_check on the k-point ROHF / ROKS routes only.
-    let level_shift = match cfg.scf.level_shift {
-        Some(v) if written.contains(&"level_shift") => {
-            if !(v.is_finite() && v >= 0.0) {
-                return Err(format!(
-                    "[scf] level_shift must be finite and >= 0 (Hartree), got {v}"
-                ));
-            }
-            Some(v)
-        }
-        _ => None,
-    };
+    let PeriodicScfKnobs {
+        max_iter,
+        max_iter_explicit,
+        density_conv,
+        energy_conv,
+        level_shift,
+    } = periodic_scf_knobs(cfg, raw)?;
 
     Ok(Some(PeriodicPlan {
         route,
