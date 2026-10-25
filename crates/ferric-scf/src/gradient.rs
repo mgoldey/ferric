@@ -1944,7 +1944,7 @@ pub(crate) fn gamma_uhf(
 /// projected out of the stored density, `f_p = c_pᵀ S D S c_p`, and snapped to
 /// the nearest allowed pattern within [`W_OCCUPATION_SNAP_TOL`] — the aufbau
 /// integer occupation (then W is the old integer expression, bit for bit) or
-/// the `fractional_occ` ensemble of [`crate::uhf::fractional_occupations`]
+/// the `fractional_occ` ensemble of `uhf::fractional_occupations`
 /// (then W uses its exact fractions). Projection, not a density match, because
 /// the stored D comes from the SCF's last iteration while C re-diagonalises
 /// F(D): after a loose SCF the two differ by up to ~1e-3 in D, which only
