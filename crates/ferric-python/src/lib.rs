@@ -7794,7 +7794,18 @@ struct PyDftResult {
     volume_ratios: Option<Vec<f64>>,
     #[pyo3(get)]
     converged: bool,
-    vxc_data: Array2<f64>,
+    /// The molecule and orbital basis the SCF ran on, kept so `vxc()` /
+    /// `e_xc` can evaluate the XC potential of the converged density on
+    /// demand (with `scf_config`'s functional and grids).
+    xc_mol: Molecule,
+    xc_basis: basis::BasisSet,
+    /// `(E_xc, V_xc)` of the converged density, computed on the first
+    /// `vxc()` / `e_xc` call and cached. Lazy so a caller who never asks for
+    /// it does not pay a grid build + XC evaluation per `run_dft`.
+    xc_cache: std::sync::OnceLock<(f64, Array2<f64>)>,
+    /// Serializes the first evaluation so concurrent first calls build the
+    /// grid once (`OnceLock::get_or_try_init` is not stable).
+    xc_lock: std::sync::Mutex<()>,
     density_data: Array2<f64>,
     /// Analytic nuclear gradient (natoms × 3) in Ha/Bohr, when computed
     /// (i.e. `with_gradient=True` was passed to `run_ksdft`). Closed-shell
@@ -7806,10 +7817,56 @@ struct PyDftResult {
     scf_config: RhfConfig,
 }
 
+impl PyDftResult {
+    /// `(E_xc, V_xc)` of the converged density, evaluated once and cached.
+    fn xc_pair(&self, py: Python<'_>) -> PyResult<&(f64, Array2<f64>)> {
+        if let Some(p) = self.xc_cache.get() {
+            return Ok(p);
+        }
+        let (mol, bs, cfg, d) = (
+            &self.xc_mol,
+            &self.xc_basis,
+            &self.scf_config,
+            &self.density_data,
+        );
+        let (cache, lock) = (&self.xc_cache, &self.xc_lock);
+        // One evaluation even under concurrent first calls: the guard is taken
+        // INSIDE allow_threads, so a waiting thread has released the GIL and
+        // cannot deadlock the thread computing (which needs the GIL back).
+        py.allow_threads(|| {
+            let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+            if cache.get().is_none() {
+                let pair = ferric_scf::rhf::ks_vxc_closed(mol, bs, cfg, d)?;
+                let _ = cache.set(pair);
+            }
+            Ok::<(), ferric_core::FerricError>(())
+        })
+        .map_err(make_err)?;
+        Ok(cache.get().expect("xc_cache is set under xc_lock above"))
+    }
+}
+
 #[pymethods]
 impl PyDftResult {
-    fn vxc<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
-        PyArray2::from_array(py, &self.vxc_data)
+    /// Exchange-correlation potential V_xc[D] of the converged density `D`
+    /// (`density()`), as an AO matrix (n_bf x n_bf), on the SCF's own XC grid.
+    ///
+    /// Semilocal part (incl. the meta-GGA τ term) plus VV10 V_nl when the
+    /// functional has it; exact exchange is NOT included (for a hybrid this
+    /// is only the DFT exchange-correlation part; for a range-separated
+    /// hybrid the semilocal exchange is the short-range-attenuated one).
+    /// Computed on first call.
+    fn vxc<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray2<f64>>> {
+        let (_, v) = self.xc_pair(py)?;
+        Ok(PyArray2::from_array(py, v))
+    }
+
+    /// E_xc[D] of the converged density on the SCF's XC grid, the energy
+    /// that `vxc()` is the derivative of (semilocal + VV10, no exact
+    /// exchange). Computed on first access, shared with `vxc()`.
+    #[getter]
+    fn e_xc(&self, py: Python<'_>) -> PyResult<f64> {
+        Ok(self.xc_pair(py)?.0)
     }
 
     /// The COSX final-grid pass record (see `RhfResult.cosx_final_pass`).
@@ -8121,7 +8178,6 @@ fn run_dft(
             last_energy: rhf.energy,
         }));
     }
-    let nbf = rhf.mos_alpha.nrows();
     // Dispersion, opt-in: energy, and its gradient when one is requested,
     // evaluated ONCE from the same resolved parameters (and, for MBD@rsSCS,
     // the same converged density), so `total_energy` and `gradient()` cannot
@@ -8209,7 +8265,10 @@ fn run_dft(
         dispersion_model,
         volume_ratios,
         converged: rhf.converged,
-        vxc_data: Array2::<f64>::zeros((nbf, nbf)),
+        xc_mol: emol,
+        xc_basis: basis_set.inner.clone(),
+        xc_cache: std::sync::OnceLock::new(),
+        xc_lock: std::sync::Mutex::new(()),
         density_data: rhf.density_total.clone(),
         gradient_data,
         scf_data: rhf,

@@ -1220,8 +1220,24 @@ class DftResult:
 
     @property
     def converged(self) -> bool: ...
+    @property
+    def e_xc(self) -> float:
+        """E_xc[D] of the converged density on the SCF's own XC grid: the
+        energy whose density derivative is `vxc()` (semilocal + VV10, no
+        exact exchange). Computed on first access, shared with `vxc()`."""
+        ...
+
     def vxc(self) -> NDArray[np.float64]:
-        """Exchange-correlation potential matrix (n_bf x n_bf)."""
+        """Exchange-correlation potential V_xc[D] (n_bf x n_bf, symmetric) of
+        the converged density `density()`, on the SCF's own XC grid.
+
+        Semilocal part (incl. the meta-GGA tau term) plus the VV10 nonlocal
+        V_nl when the functional has it. Exact exchange is NOT included: for a
+        hybrid this is only the DFT part, and for a range-separated hybrid
+        (e.g. wB97X-V) the semilocal exchange in it is the short-range-
+        attenuated one, as libxc defines that functional. Evaluated
+        once on first call (one grid build + XC pass) and cached.
+        """
         ...
 
     def density(self) -> NDArray[np.float64]:

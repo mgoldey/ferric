@@ -82,6 +82,8 @@ pub(crate) mod driver;
 /// J/K builder traits and composite Fock matrix assembly.
 pub mod fock;
 pub(crate) mod fock_assembly;
+#[cfg(test)]
+mod ks_vxc_tests;
 /// Range-separated hybrid ω-tuning via IP/EA condition.
 pub mod omega_tuning;
 /// Significant and density-screened shell-pair lists.

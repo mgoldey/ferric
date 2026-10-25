@@ -1499,6 +1499,76 @@ fn phase_table_title(config: &RhfConfig, injected_xc: bool) -> &'static str {
     }
 }
 
+/// The molecular closed-shell XC contribution [`solve_rhf`] builds for
+/// `config`: `None` when `config.xc` is `None` (Hartree-Fock), otherwise a
+/// `KsXc` on `config.dft_grid` / `config.nlc_grid` with `config.xc_omega` and
+/// the caller's memory budget. Shared with [`ks_vxc_closed`] so a post-SCF
+/// V_xc is evaluated with exactly the functional and grids the SCF used.
+fn molecular_ks_xc(
+    mol: &Molecule,
+    bs: &ferric_core::basis::BasisSet,
+    config: &RhfConfig,
+) -> Result<Option<ferric_dft::ks::KsXc>, FerricError> {
+    let Some(name) = config.xc.as_deref() else {
+        return Ok(None);
+    };
+    let main = config.dft_grid.clone().unwrap_or_default();
+    let nlc = config
+        .nlc_grid
+        .clone()
+        .unwrap_or_else(ferric_dft::grid::AtomicGridConfig::default_nlc);
+    // Thread the caller's `[memory] budget_gb` into the grid AO cache --
+    // the largest single allocation in a DFT job. This used to call the
+    // UNbudgeted `new_with_omega`, which resolves from env/auto-detect
+    // and so silently DISCARDED `config.three_index_budget_bytes`. The
+    // budgeted constructor existed for exactly this and had ZERO
+    // production callers; its own doc records the symptom ("Setting
+    // `budget_gb = 4` on a 64 GB box still sized the grid cache against
+    // ~51 GB"), i.e. the documented primary knob did nothing while
+    // FERRIC_MEM_BUDGET_GB worked. 0 means unset, matching
+    // `rhf::resolve_three_index_budget`.
+    ferric_dft::ks::KsXc::new_with_omega_budgeted(
+        mol,
+        bs,
+        name,
+        &main,
+        &nlc,
+        config.xc_omega,
+        (config.three_index_budget_bytes != 0).then_some(config.three_index_budget_bytes),
+    )
+    .map(Some)
+    .map_err(|e| FerricError::General(format!("KsXc init for {name}: {e:?}")))
+}
+
+/// Closed-shell `(E_xc, V_xc)` of the total density `d` (tr(D S) = N), with
+/// the functional, grids, ω and memory budget `solve_rhf` uses for `config`.
+///
+/// `V_xc` is everything the KS SCF adds to the Fock matrix through its XC
+/// contribution: the semilocal (LDA/GGA/meta-GGA, incl. the τ term) potential
+/// and, for a VV10 functional, the nonlocal V_nl. It EXCLUDES exact exchange:
+/// for a global hybrid it is only the DFT part (the fraction of semilocal
+/// exchange the functional keeps), not −½·a·K; for a range-separated hybrid
+/// the semilocal exchange in it is the short-range-attenuated one, and the
+/// −½(c_sr·K_SR + c_lr·K_LR) term is not included. Pinned against the SCF's
+/// own Fock matrix by `ks_vxc_tests`.
+/// `E_xc` is the matching energy on the same grid.
+///
+/// Errors when `config.xc` is `None` (no functional, so no V_xc).
+pub fn ks_vxc_closed(
+    mol: &Molecule,
+    bs: &ferric_core::basis::BasisSet,
+    config: &RhfConfig,
+    d: &Array2<f64>,
+) -> Result<(f64, Array2<f64>), FerricError> {
+    use ferric_dft::xc_trait::XcContribution;
+    let ks = molecular_ks_xc(mol, bs, config)?.ok_or_else(|| {
+        FerricError::General("ks_vxc_closed: config.xc is None (no functional)".to_string())
+    })?;
+    let mut v = Array2::<f64>::zeros(d.raw_dim());
+    let e = ks.add_xc(d, &mut v);
+    Ok((e, v))
+}
+
 /// Shared body of [`solve_rhf`] (`inj = None`, byte-identical to the
 /// pre-injection solver) and [`solve_rhf_injected`] (`inj = Some`, config
 /// already validated).
@@ -1533,39 +1603,11 @@ fn solve_rhf_impl(
     // Build the XC contribution once. None for pure HF. Built FIRST so the
     // shared driver env can size the RSH fitter pair from k_mix, and so the
     // JK-aux auto-defaults below can see hybrid/RSH-ness.
-    use ferric_dft::ks::KsXc;
     use ferric_dft::xc_trait::{KMix, XcContribution};
 
-    let xc_contrib: Option<Box<dyn XcContribution>> = if let Some(name) = config.xc.as_deref() {
-        let main = config.dft_grid.clone().unwrap_or_default();
-        let nlc = config
-            .nlc_grid
-            .clone()
-            .unwrap_or_else(ferric_dft::grid::AtomicGridConfig::default_nlc);
-        // Thread the caller's `[memory] budget_gb` into the grid AO cache --
-        // the largest single allocation in a DFT job. This used to call the
-        // UNbudgeted `new_with_omega`, which resolves from env/auto-detect
-        // and so silently DISCARDED `config.three_index_budget_bytes`. The
-        // budgeted constructor existed for exactly this and had ZERO
-        // production callers; its own doc records the symptom ("Setting
-        // `budget_gb = 4` on a 64 GB box still sized the grid cache against
-        // ~51 GB"), i.e. the documented primary knob did nothing while
-        // FERRIC_MEM_BUDGET_GB worked. 0 means unset, matching
-        // `rhf::resolve_three_index_budget`.
-        let ks = KsXc::new_with_omega_budgeted(
-            mol,
-            prep.basis_set(),
-            name,
-            &main,
-            &nlc,
-            config.xc_omega,
-            (config.three_index_budget_bytes != 0).then_some(config.three_index_budget_bytes),
-        )
-        .map_err(|e| FerricError::General(format!("KsXc init for {name}: {e:?}")))?;
-        Some(Box::new(ks) as Box<dyn XcContribution>)
-    } else {
-        None
-    };
+    let xc_contrib: Option<Box<dyn XcContribution>> =
+        molecular_ks_xc(mol, prep.basis_set(), config)?
+            .map(|ks| Box::new(ks) as Box<dyn XcContribution>);
     // Injected (periodic) KS: a global hybrid scales the injected K by its
     // exact-exchange fraction (validate_injected guarantees `xc_contrib` is
     // None there, so the two sources never coexist). Molecular path:
