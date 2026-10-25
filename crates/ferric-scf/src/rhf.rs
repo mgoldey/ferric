@@ -1546,8 +1546,11 @@ fn molecular_ks_xc(
 /// `V_xc` is everything the KS SCF adds to the Fock matrix through its XC
 /// contribution: the semilocal (LDA/GGA/meta-GGA, incl. the τ term) potential
 /// and, for a VV10 functional, the nonlocal V_nl. It EXCLUDES exact exchange:
-/// for a global or range-separated hybrid it is only the DFT part (the
-/// fraction of semilocal exchange the functional keeps), not −½·a·K.
+/// for a global hybrid it is only the DFT part (the fraction of semilocal
+/// exchange the functional keeps), not −½·a·K; for a range-separated hybrid
+/// the semilocal exchange in it is the short-range-attenuated one, and the
+/// −½(c_sr·K_SR + c_lr·K_LR) term is not included. Pinned against the SCF's
+/// own Fock matrix by `ks_vxc_tests`.
 /// `E_xc` is the matching energy on the same grid.
 ///
 /// Errors when `config.xc` is `None` (no functional, so no V_xc).

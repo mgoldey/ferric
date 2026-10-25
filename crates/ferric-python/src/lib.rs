@@ -7803,6 +7803,9 @@ struct PyDftResult {
     /// `vxc()` / `e_xc` call and cached. Lazy so a caller who never asks for
     /// it does not pay a grid build + XC evaluation per `run_dft`.
     xc_cache: std::sync::OnceLock<(f64, Array2<f64>)>,
+    /// Serializes the first evaluation so concurrent first calls build the
+    /// grid once (`OnceLock::get_or_try_init` is not stable).
+    xc_lock: std::sync::Mutex<()>,
     density_data: Array2<f64>,
     /// Analytic nuclear gradient (natoms × 3) in Ha/Bohr, when computed
     /// (i.e. `with_gradient=True` was passed to `run_ksdft`). Closed-shell
@@ -7826,12 +7829,20 @@ impl PyDftResult {
             &self.scf_config,
             &self.density_data,
         );
-        let pair = py
-            .allow_threads(|| ferric_scf::rhf::ks_vxc_closed(mol, bs, cfg, d))
-            .map_err(make_err)?;
-        // A racing thread may have filled it first; either value is the same
-        // deterministic evaluation, so keep whichever landed.
-        Ok(self.xc_cache.get_or_init(|| pair))
+        let (cache, lock) = (&self.xc_cache, &self.xc_lock);
+        // One evaluation even under concurrent first calls: the guard is taken
+        // INSIDE allow_threads, so a waiting thread has released the GIL and
+        // cannot deadlock the thread computing (which needs the GIL back).
+        py.allow_threads(|| {
+            let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+            if cache.get().is_none() {
+                let pair = ferric_scf::rhf::ks_vxc_closed(mol, bs, cfg, d)?;
+                let _ = cache.set(pair);
+            }
+            Ok::<(), ferric_core::FerricError>(())
+        })
+        .map_err(make_err)?;
+        Ok(cache.get().expect("xc_cache is set under xc_lock above"))
     }
 }
 
@@ -7842,7 +7853,9 @@ impl PyDftResult {
     ///
     /// Semilocal part (incl. the meta-GGA τ term) plus VV10 V_nl when the
     /// functional has it; exact exchange is NOT included (for a hybrid this
-    /// is only the DFT exchange-correlation part). Computed on first call.
+    /// is only the DFT exchange-correlation part; for a range-separated
+    /// hybrid the semilocal exchange is the short-range-attenuated one).
+    /// Computed on first call.
     fn vxc<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray2<f64>>> {
         let (_, v) = self.xc_pair(py)?;
         Ok(PyArray2::from_array(py, v))
@@ -8255,6 +8268,7 @@ fn run_dft(
         xc_mol: emol,
         xc_basis: basis_set.inner.clone(),
         xc_cache: std::sync::OnceLock::new(),
+        xc_lock: std::sync::Mutex::new(()),
         density_data: rhf.density_total.clone(),
         gradient_data,
         scf_data: rhf,

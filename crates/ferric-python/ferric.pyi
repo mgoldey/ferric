@@ -1233,7 +1233,9 @@ class DftResult:
 
         Semilocal part (incl. the meta-GGA tau term) plus the VV10 nonlocal
         V_nl when the functional has it. Exact exchange is NOT included: for a
-        hybrid or range-separated hybrid this is only the DFT part. Evaluated
+        hybrid this is only the DFT part, and for a range-separated hybrid
+        (e.g. wB97X-V) the semilocal exchange in it is the short-range-
+        attenuated one, as libxc defines that functional. Evaluated
         once on first call (one grid build + XC pass) and cached.
         """
         ...
