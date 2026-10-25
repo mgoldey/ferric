@@ -818,7 +818,7 @@ fn refusals_have_exact_wording() {
     );
     let roks_k = "General error: HSE06: the k-point ROKS range-separated hybrid force and \
                   stress are not implemented in the bindings (the library has the dense-AFT \
-                  ROKS force, kpoint_roks_gradient, unwired; the ROKS stress has no \
+                  and RS-GDF ROKS force, kpoint_roks_gradient, unwired; the ROKS stress has no \
                   range-separated term); the UKS force is available on the dense-AFT J/K";
     let ro = Input {
         tag: "",
