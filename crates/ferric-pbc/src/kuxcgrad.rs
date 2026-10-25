@@ -2,7 +2,7 @@
 //! ([`crate::kuks::solve_kuks`]) for LDA, GGA and GLOBAL HYBRID functionals
 //! (exact-exchange fraction `a`, `0 ≤ a ≤ 1`), dense-AFT and RS-GDF J/K, for
 //! the pure meta-GGAs SCAN / r2SCAN (UKS, dense-AFT J/K only), and for
-//! RANGE-SEPARATED hybrids (UKS, dense-AFT J/K only).
+//! RANGE-SEPARATED hybrids (UKS and ROKS, dense-AFT and RS-GDF J/K).
 //!
 //! The closed-shell derivation ([`crate::kxcgrad`]: AO motion X1, grid-point
 //! motion X3, weight response X4, the Madelung and exchange-fraction
@@ -103,9 +103,18 @@
 //! ([`kpoint_roks_gradient`]) builds the SAME per-spin Focks before the
 //! Roothaan coupling, so its force is this assembly on the ROHF spin densities
 //! with `W_RO` and the orbital-gradient gate of "ROHF / ROKS" below, nothing
-//! else changed (`tests/pbc_kroks_rsh_force.rs`). Refused: RS-GDF (its
-//! attenuated fit is differentiated for the closed-shell RKS force and stress
-//! only, [`crate::kxcgrad`]), the open-shell stress.
+//! else changed (`tests/pbc_kroks_rsh_force.rs`).
+//!
+//! On RS-GDF J/K (`KRsGdf::build_rsh`) the exchange walks are the closed-shell
+//! fit passes of [`crate::kxcgrad`] (the plain fit's exchange pieces scaled by
+//! `c_sr`, the attenuated fit's LR and metric passes by `c_lr − c_sr`), fed
+//! the same open-shell term list `(1, D_α), (1, D_β)` (twice the
+//! closed-shell `(½, D)` coefficient per spin), and the same M-term; no new
+//! derivative, only the composition (`crate::kgrad` "Scope"). Anchors and FD
+//! in `tests/pbc_kuks_rsh_rsgdf_force.rs` and
+//! `tests/validation_kuks_rsh_rsgdf_force.rs` (singlet UKS == RKS #514 per
+//! part, equal fractions == global hybrid, FD of the polarized UKS and ROKS
+//! energies). Refused: the open-shell stress.
 //!
 //! # Fock guard
 //!
@@ -202,9 +211,9 @@
 //! # Scope
 //!
 //! LDA, GGA and global hybrids; range-separated hybrids for UKS and ROKS on
-//! the dense-AFT J/K; for UKS also SCAN / r2SCAN on the dense-AFT J/K (any
-//! other meta-GGA, meta-GGA or a range-separated hybrid on RS-GDF, and
-//! meta-GGA ROKS are refused). VV10 and double hybrids are refused with the
+//! the dense-AFT and RS-GDF J/K; for UKS also SCAN / r2SCAN on the dense-AFT
+//! J/K (any other meta-GGA, meta-GGA on RS-GDF, and meta-GGA ROKS are
+//! refused). VV10 and double hybrids are refused with the
 //! typed errors of [`crate::kxcgrad`].
 
 use crate::budget::{bytes_of, Ledger};
@@ -1172,7 +1181,7 @@ pub(crate) fn resolve_open_shell(
 /// the range separation. Both the UKS and the ROKS force take a
 /// range-separated hybrid (exchange scale 1, its fractions inside the kernel;
 /// [`resolve_global_or_rsh`] refuses a range-separated meta-GGA, VV10 or
-/// double hybrid, and the RS-GDF refusal is `check_inputs_rsh`'s).
+/// double hybrid; `check_inputs_rsh` checks the J/K carry its parameters).
 /// `allow_mgga` marks the UKS force (SCAN / r2SCAN); ROKS keeps
 /// [`resolve_global`]'s meta-GGA refusal.
 fn grid_response<'a>(
@@ -1251,12 +1260,12 @@ fn grid_response<'a>(
 ///
 /// Also range-separated hybrids (HSE06 and CAM-B3LYP force-tested; wB97X and
 /// other CAM GGA hybrids accepted, not exercised by a force test) on the
-/// dense-AFT J/K built with the functional's [`RshParams`] (as `solve_kuks`
-/// builds them): `K_σ` with scale 1 and the mixed Madelung constant (module
-/// doc, "Range-separated hybrids (UKS)").
+/// dense-AFT or RS-GDF J/K built with the functional's [`RshParams`] (as
+/// `solve_kuks` builds them): `K_σ` with scale 1 and the mixed Madelung
+/// constant (module doc, "Range-separated hybrids (UKS, ROKS)").
 ///
-/// Refuses (typed errors) any other meta-GGA, meta-GGA or a range-separated
-/// hybrid with RS-GDF J/K, VV10/double hybrids, a hybrid without
+/// Refuses (typed errors) any other meta-GGA, meta-GGA with RS-GDF J/K,
+/// VV10/double hybrids, a hybrid without
 /// `cfg.base.exxdiv`, and an SCF whose spin Focks the rebuilt
 /// `h + J − a K_σ + V_xc,σ` do not reproduce.
 #[allow(clippy::too_many_arguments)]
@@ -1301,7 +1310,7 @@ pub fn kpoint_uks_gradient(
 /// orthonormality-Lagrangian `W_RO = sym(D_α F_α D_α + D_α F_β D_β)` at each k
 /// (module doc "ROHF / ROKS"). Arguments and refusals as
 /// [`kpoint_uks_gradient`] (range-separated hybrids included, on the
-/// dense-AFT J/K built with the functional's [`RshParams`], as `solve_kroks`
+/// dense-AFT or RS-GDF J/K built with the functional's [`RshParams`], as `solve_kroks`
 /// builds them; module doc "Range-separated hybrids (UKS, ROKS)"), except
 /// meta-GGA (the k-point ROKS SCF has no tau term), plus: a state whose ROHF
 /// orbital gradient (closed-open `f_β`, open-virtual `f_α`, closed-virtual

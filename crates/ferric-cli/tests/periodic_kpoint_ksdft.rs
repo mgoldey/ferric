@@ -286,8 +286,9 @@ fn cli_kpoint_rsh_rsgdf_equals_library_solve_krks() {
 /// With `jk = "rsgdf"` the range-separated energy is accepted (RKS, ROKS, and
 /// UKS: periodic_kpoint_open_shell.rs); the closed-shell force runs
 /// (periodic_rsh_open_mgga_derivs.rs) but the UKS `task = "optimize"` stays
-/// refused by name (the library UKS force has no RS-GDF attenuated-fit
-/// derivative).
+/// refused by name (the library UKS force differentiates the RS-GDF
+/// attenuated fit, `pbc_kuks_rsh_rsgdf_force.rs`, but the bindings do not wire
+/// it yet, #498).
 #[test]
 fn cli_kpoint_rsh_rsgdf_runs_roks_and_refuses_the_uks_force() {
     let hse = "[dft]\nfunctional = \"HSE06\"";

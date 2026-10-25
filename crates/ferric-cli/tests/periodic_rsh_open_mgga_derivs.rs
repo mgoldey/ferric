@@ -797,8 +797,8 @@ fn refusals_have_exact_wording() {
     assert!(
         e.contains(
             "method.task = \"optimize\" with [cell] kmesh: General error: HSE06: the k-point \
-             UKS range-separated hybrid force runs on the dense-AFT J/K only (the library UKS \
-             force has no derivative of the RS-GDF attenuated fit); use jk = \"dense\""
+             UKS range-separated hybrid force runs on the dense-AFT J/K only in the bindings (the \
+             library RS-GDF force, kpoint_uks_gradient, is not wired yet); use jk = \"dense\""
         ),
         "{e}"
     );
@@ -818,7 +818,7 @@ fn refusals_have_exact_wording() {
     );
     let roks_k = "General error: HSE06: the k-point ROKS range-separated hybrid force and \
                   stress are not implemented in the bindings (the library has the dense-AFT \
-                  ROKS force, kpoint_roks_gradient, unwired; the ROKS stress has no \
+                  and RS-GDF ROKS force, kpoint_roks_gradient, unwired; the ROKS stress has no \
                   range-separated term); the UKS force is available on the dense-AFT J/K";
     let ro = Input {
         tag: "",

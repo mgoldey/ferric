@@ -157,8 +157,9 @@
 //!   per-spin Fock guard; closed-shell densities reproduce [`kxcgrad`] per
 //!   part. UKS and ROKS take range-separated hybrids (`K_σ = K[D_σ]` on the
 //!   attenuated kernel, the mixed Madelung constant; the Gamma point through
-//!   `gamma_rsh::gamma_uks_rsh_gradient` / `gamma_roks_rsh_gradient`) and UKS
-//!   also SCAN / r2SCAN (per-spin tau terms), both on the dense-AFT J/K only;
+//!   `gamma_rsh::gamma_uks_rsh_gradient` / `gamma_roks_rsh_gradient`, dense
+//!   AFT only; at k on the dense-AFT or RS-GDF J/K) and UKS also SCAN / r2SCAN
+//!   (per-spin tau terms, dense-AFT J/K only);
 //!   ROKS/ROHF refuse meta-GGA, and VV10 is refused.
 //! * [`kstress`] — the k-point RHF / UHF stress tensor
 //!   (`kpoint_rhf_stress`, `kpoint_uhf_stress`) on the dense-AFT and the

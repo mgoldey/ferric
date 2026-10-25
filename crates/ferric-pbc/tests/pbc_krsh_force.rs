@@ -53,9 +53,9 @@
 //! are in `validation_krsh_force.rs`; this file runs one FD row.
 //!
 //! NOT covered here: RS-GDF (`pbc_krsh_rsgdf_force.rs`,
-//! `validation_krsh_rsgdf_force.rs`; closed-shell RKS only, the Gamma route
-//! refuses it), open shell (UKS on dense AFT: `pbc_kuks_rsh_force.rs`; ROKS
-//! refused), p/d
+//! `validation_krsh_rsgdf_force.rs`; open shell `pbc_kuks_rsh_rsgdf_force.rs`;
+//! the Gamma route refuses it), open shell (UKS on dense AFT:
+//! `pbc_kuks_rsh_force.rs`; ROKS `pbc_kroks_rsh_force.rs`), p/d
 //! shells (H2/STO-3G only), shifted meshes, a PySCF force pin, Python / CLI
 //! (the shared derivative gates still refuse range-separated hybrids).
 
