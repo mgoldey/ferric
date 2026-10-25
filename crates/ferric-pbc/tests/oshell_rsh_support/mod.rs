@@ -430,7 +430,8 @@ pub fn gamma_roks_on(
 }
 
 /// k-point ROKS (`solve_kroks_on_grid`): dense AFT, or RS-GDF on `AUX`;
-/// level shift 0.05 / 600 iterations as the hybrid KROKS tests use.
+/// `KRoksConfig::new` SCF defaults (automatic hybrid level shift, default
+/// iteration cap).
 pub fn kroks_run(
     cell: &Cell,
     f: &str,
@@ -447,8 +448,6 @@ pub fn kroks_run(
     cfg.rohf.hcore = PeriodicHcoreConfig::with_omega(OMEGA_HCORE);
     cfg.rohf.scf.energy_conv = 1e-12;
     cfg.rohf.scf.grad_conv = 1e-9;
-    cfg.rohf.scf.max_iter = 600;
-    cfg.rohf.level_shift = 0.05;
     cfg.rohf.mutation = mutation;
     let aux = rsgdf.then(|| aux_of(cell));
     if rsgdf {

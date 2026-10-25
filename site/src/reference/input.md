@@ -467,8 +467,9 @@ returned geometry and the gradient there at full precision
 (`extra.final_geometry_bohr`, `extra.final_gradient_hartree_per_bohr`). `solve_krks` (every k-point Kohn-Sham energy run, `run_rks_kpts` and the CLI included) clones `S(k)` and `h(k)` transiently during the SCF (`2 N_k n² × 16` bytes, not charged to the budget); the periodic XC Bloch AO cache of the SCF does not follow `[memory] budget_gb`. Each optimizer step runs a fresh SCF from the core guess; at a k-point mesh with `uhf` it can land in a different spin solution between steps, which shows as a visible jump in the step energies (nothing is hidden). The force is taken through the hcore and J/K objects the SCF built, which stay in memory for the force: their bytes are charged against the same memory budget (`[memory] budget_gb` with `jk = "rsgdf"`), and with `jk = "dense"` the kernels count against `max_eri_gb` while they exist. `task = "frequencies"` is an error.
 
 The periodic run reads only `[cell]`, `[scf]` `max_iter`, `[scf]`
-`density_conv` (Gamma point) or `energy_conv` (k-point mesh), `[dft]`
-`functional`, `[memory]` (RS-GDF only) and `[optimize]`. Any other section
+`density_conv` (Gamma point) or `energy_conv` (k-point mesh), `[scf]`
+`level_shift` (k-point `rohf` / ROKS only), `[dft]` `functional`, `[memory]`
+(RS-GDF only) and `[optimize]`. Any other section
 or key is an error. A charged cell is an error.
 
 | Key | Type | Default | Allowed values | Notes |
@@ -498,4 +499,9 @@ or key is an error. A charged cell is an error.
 | `neighbour_switch` | float | `0` (hard cutoff) | ≥ 0, in `unit` | Width W of a smooth taper on the image cutoff: an image at distance d from a grid point takes part with presence 1 for d ≤ D − W, falling to 0 at D (quintic smoothstep), and the analytic force and stress include the taper's derivative. This makes the energy continuous under displacement and strain. The taper costs the energy what lowering the cutoff toward D − W would (the automatic D adds W for that reason). Cost: the automatic D grows by W, so the image neighbours per point rise by about (1 + W/D)³; measured grid build on Li–H (75, 302): 0.29 s hard at D = 10, 0.87 s with W = 2 at the automatic D = 12. `0` is the hard cutoff, unchanged. Kohn-Sham only. Not exposed in the Python bindings. |
 
 Periodic `[scf]` defaults are `max_iter = 200`, `density_conv = 1e-10` and
-`energy_conv = 1e-12`, not the molecular ones.
+`energy_conv = 1e-12`, not the molecular ones. k-point ROKS with a hybrid
+(exact exchange, global or range-separated) applies a 0.05 Ha virtual level
+shift by default, ramped to zero at convergence so the converged energy is
+unchanged; LDA/GGA ROKS and ROHF get none. `[scf] level_shift` (finite,
+≥ 0, Hartree) overrides it on the k-point `rohf` / ROKS routes; `0` turns it
+off. Any other periodic route refuses the key.

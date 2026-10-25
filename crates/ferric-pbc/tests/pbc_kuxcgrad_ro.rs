@@ -93,7 +93,6 @@ fn rohf_cfg(cell: &Cell, exxdiv: ExxDiv) -> KRohfConfig {
     c.hcore = PeriodicHcoreConfig::with_omega(OMEGA);
     c.scf.energy_conv = 1e-13;
     c.scf.grad_conv = 1e-10;
-    c.scf.max_iter = 600;
     c
 }
 
@@ -135,9 +134,6 @@ fn run_scf_conv(
         Some(f) => {
             let mut c = KRoksConfig::new(&cell, exxdiv, f);
             c.rohf = rc;
-            if f.contains("PBE0") {
-                c.rohf.level_shift = 0.05;
-            }
             c.grid = grid_cfg();
             solve_kroks(&cell, &prep, None, &mesh, &c)
         }

@@ -33,15 +33,13 @@ use ferric_pbc::rsh::RshParams;
 /// FD step: the UKS file's h = 1e-4 (its sweep shows the h^2 regime there).
 pub const FD_H: f64 = 1e-4;
 
-/// The k-ROKS settings: the UKS file's convergence, plus the 0.05 Ha level
-/// shift (ramped to zero at convergence) the hybrid KROKS tests use.
+/// The k-ROKS settings: the UKS file's convergence and the `KRoksConfig::new`
+/// SCF defaults (automatic hybrid level shift, default iteration cap).
 pub fn kroks_cfg(cell: &Cell, f: &str, exxdiv: ExxDiv, conv: (f64, f64)) -> KRoksConfig {
     let mut c = KRoksConfig::new(cell, exxdiv, f);
     c.rohf.hcore = PeriodicHcoreConfig::with_omega(OMEGA);
     c.rohf.scf.energy_conv = conv.0;
     c.rohf.scf.grad_conv = conv.1;
-    c.rohf.scf.max_iter = 600;
-    c.rohf.level_shift = 0.05;
     c.rohf.dense = dense_cfg(None);
     c.grid = grid_cfg();
     c

@@ -257,6 +257,8 @@ fn uhf_trah_tail_breaks_spin_symmetry_without_handing_off_to_diis() {
 /// rejection retries -> 34. Bound halfway. (Both counts include the iterations
 /// a declined null step spends on a DIIS step; the decline falls through to
 /// DIIS so that convergence is measured, see `trah_rks_null_step_is_measured.rs`.)
+/// The name became fully true only with the `trah_engaged` latch: before it, the
+/// iteration AFTER the retry could still go to DIIS (see the hand-off tests below).
 #[test]
 fn a_rejected_trah_step_is_retried_not_handed_to_diis() {
     let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -283,5 +285,202 @@ fn a_rejected_trah_step_is_retried_not_handed_to_diis() {
         r.iterations <= 38,
         "{} iterations with {rej} rejections (retry path: 34; fall-through-to-DIIS: 42)",
         r.iterations
+    );
+}
+
+// ── Hand-off to DIIS after a REJECTION ──────────────────────────────────────
+//
+// "Armed while a step is pending" leaves a hole: a rejection CONSUMES the
+// pending prediction, so at the restored point -- whose err_max is above the
+// trigger, because TRAH was mid-escape -- the gate handed the next iteration
+// to DIIS, which extrapolated from its saddle-region history back to the
+// saddle. Measured on CoH/def2-SVP UHF (MINAO, tail mode): TRAH had escaped
+// from the 105 mHa saddle to within 6 mHa of the stable state; one rejection,
+// one DIIS iteration, and the energy was back on the saddle (-1381.6310), the
+// climb restarting from scratch. Cheap reproducers on main before the fix
+// (core guess, trah_trigger 1e-2): N2/STO-3G RHF 2 hand-offs, O2/STO-3G UHF 2.
+
+/// O2/STO-3G triplet UHF, core guess, tail-mode TRAH (measured, see below).
+const E_O2_STO3G_UHF: f64 = -147.635_556_143_6;
+
+fn handoffs_after_rejection(uhf: bool) -> (usize, usize, f64) {
+    use std::sync::atomic::Ordering::Relaxed;
+    let (xyz, mult) = if uhf {
+        ("2\no2\nO 0 0 0\nO 0 0 1.21\n", 3)
+    } else {
+        ("2\nn2\nN 0 0 0\nN 0 0 1.6\n", 1)
+    };
+    let mol = Molecule::parse_xyz(xyz, 0, mult).unwrap();
+    let bs = basis::bundled("sto-3g").unwrap();
+    let prep = PreparedBasis::new(&mol, &bs).unwrap();
+    let op = Operator::coulomb();
+    let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+    let cfg = RhfConfig {
+        energy_conv: 1e-10,
+        density_conv: 1e-8,
+        max_iter: 200,
+        use_sad_guess: false,
+        trah_trigger: Some(1e-2),
+        ..Default::default()
+    };
+    let h0 = ferric_scf::trah::TRAH_HANDOFFS_AFTER_REJECTION.load(Relaxed);
+    let r0 = ferric_scf::trah::TRAH_STEPS_REJECTED.load(Relaxed);
+    let ctx = ParallelContext::default();
+    let r = if uhf {
+        ferric_scf::uhf::solve_uhf(&ctx, &mol, &prep, &bounds, &cfg)
+    } else {
+        solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg)
+    }
+    .unwrap();
+    assert!(r.converged);
+    (
+        ferric_scf::trah::TRAH_HANDOFFS_AFTER_REJECTION.load(Relaxed) - h0,
+        ferric_scf::trah::TRAH_STEPS_REJECTED.load(Relaxed) - r0,
+        r.energy,
+    )
+}
+
+#[test]
+fn rhf_trah_keeps_control_after_a_rejection() {
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (handoffs, rej, e) = handoffs_after_rejection(false);
+    assert!(rej > 0, "no rejection happened; the test exercises nothing");
+    assert_eq!(
+        handoffs, 0,
+        "{handoffs} of {rej} RHF rejections were followed by a DIIS iteration"
+    );
+    assert!((e - E_STABLE).abs() < 1e-7, "E = {e:.10}");
+}
+
+#[test]
+fn uhf_trah_keeps_control_after_a_rejection() {
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (handoffs, rej, e) = handoffs_after_rejection(true);
+    assert!(rej > 0, "no rejection happened; the test exercises nothing");
+    assert_eq!(
+        handoffs, 0,
+        "{handoffs} of {rej} UHF rejections were followed by a DIIS iteration"
+    );
+    // Measured 2026-10-23 (identical with and without the latch; this guards
+    // against landing on a different state, not the hand-off itself).
+    // Tolerance 1e-8, never ==: golden energies drift by ulps across machines.
+    assert!(
+        (e - E_O2_STO3G_UHF).abs() < 1e-8,
+        "O2/STO-3G UHF E = {e:.12}, expected {E_O2_STO3G_UHF:.12}"
+    );
+}
+
+// ── UHF + DF-K: the C_occ cache must follow every TRAH orbital update ───────
+//
+// With DF-K the UHF loop builds K_σ from a cached C_occ,σ and J from D_σ. Only
+// the DIIS path refreshed that cache, so after a TRAH step or a rejection's
+// restore the next Fock had K at the last DIIS orbitals and J at the current
+// ones: a wrong energy, hence a wrong ρ. Reachable on main before the latch
+// (any accepted TRAH step); the latch only lengthens the TRAH-only runs.
+//
+// Measured 2026-10-24, O2/STO-3G triplet, core guess, def2-universal-jkfit for
+// J and K, tail-mode TRAH:
+//   refreshed cache:   E = -147.635627928824, 24 iterations, 1 rejection
+//   stale on restore:  E = -147.635627928824, 17 iterations, 1 rejection
+//   stale cache:       E = -147.380341650507, 58 iterations, 24 rejections
+//                      (TRAH thrashes, then DIIS lands on the higher state)
+//   exact J/K TRAH:    E = -147.6355561436 (`E_O2_STO3G_UHF`; the 7.2e-5
+//                      gap is the DF fitting error)
+//   DF-K DIIS alone:   E = -147.380341650507 (the higher state, 10 iterations)
+
+/// O2/STO-3G triplet UHF with DF-J/DF-K, core guess, tail-mode TRAH (above).
+const E_O2_STO3G_UHF_DFK: f64 = -147.635_627_928_824;
+
+#[test]
+fn uhf_dfk_trah_refreshes_the_occupied_orbital_cache() {
+    use std::sync::atomic::Ordering::Relaxed;
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mol = Molecule::parse_xyz("2\no2\nO 0 0 0\nO 0 0 1.21\n", 0, 3).unwrap();
+    let bs = basis::bundled("sto-3g").unwrap();
+    let prep = PreparedBasis::new(&mol, &bs).unwrap();
+    let bounds = SchwarzBounds::compute(Operator::coulomb(), &prep).unwrap();
+    let cfg = RhfConfig {
+        energy_conv: 1e-10,
+        density_conv: 1e-8,
+        max_iter: 200,
+        use_sad_guess: false,
+        trah_trigger: Some(1e-2),
+        df_j_aux: Some("def2-universal-jkfit".into()),
+        df_k_aux: Some("def2-universal-jkfit".into()),
+        ..Default::default()
+    };
+    let r0 = ferric_scf::trah::TRAH_STEPS_REJECTED.load(Relaxed);
+    let h0 = ferric_scf::trah::TRAH_HANDOFFS_AFTER_REJECTION.load(Relaxed);
+    let r = ferric_scf::uhf::solve_uhf(&ParallelContext::default(), &mol, &prep, &bounds, &cfg)
+        .unwrap();
+    let rej = ferric_scf::trah::TRAH_STEPS_REJECTED.load(Relaxed) - r0;
+    let handoffs = ferric_scf::trah::TRAH_HANDOFFS_AFTER_REJECTION.load(Relaxed) - h0;
+    assert!(r.converged);
+    assert!(
+        rej > 0,
+        "no rejection happened; the restore path is not exercised"
+    );
+    assert_eq!(handoffs, 0, "{handoffs} of {rej} rejections handed to DIIS");
+    // Independent anchor first: within DF fitting error of the exact-J/K
+    // TRAH energy (the stale-cache mutant is 255 mHa away), then the golden.
+    assert!(
+        (r.energy - E_O2_STO3G_UHF).abs() < 1e-3,
+        "DF-K TRAH E = {:.12} is not the exact-J/K state {E_O2_STO3G_UHF:.10}",
+        r.energy
+    );
+    assert!(
+        (r.energy - E_O2_STO3G_UHF_DFK).abs() < 1e-8,
+        "DF-K TRAH E = {:.12}, expected {E_O2_STO3G_UHF_DFK:.12}",
+        r.energy
+    );
+    // The trajectory, not just the endpoint: a cache left stale only on the
+    // RESTORE path still reaches this state, but in 17 iterations instead of
+    // 24 (the stale K happens to help here). 24 is also what the exact-J/K
+    // TRAH run takes. Identical under the native and Nehalem OpenBLAS kernels.
+    assert_eq!(
+        r.iterations, 24,
+        "{} iterations with {rej} rejections (refreshed cache: 24 / 1; stale on restore only: 17; stale everywhere: 58 / 24)",
+        r.iterations
+    );
+}
+
+/// The UHF Newton branch had the same stale-cache defect as the TRAH step:
+/// it moved C_σ and `continue`d without refreshing the DF-K C_occ cache.
+/// O2/STO-3G triplet, MINAO guess, `newton_trigger` 0.1, measured 2026-10-24:
+/// exact J/K converges in 6 iterations to -147.634048539975; DF-K with the
+/// refresh converges in 6 to -147.634115743968 (6.7e-5 DF error); with the
+/// cache stale on the Newton path the solve does not converge at all.
+#[test]
+fn uhf_dfk_newton_refreshes_the_occupied_orbital_cache() {
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let run = |dfk: bool| {
+        let mol = Molecule::parse_xyz("2\no2\nO 0 0 0\nO 0 0 1.21\n", 0, 3).unwrap();
+        let bs = basis::bundled("sto-3g").unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let bounds = SchwarzBounds::compute(Operator::coulomb(), &prep).unwrap();
+        let cfg = RhfConfig {
+            energy_conv: 1e-10,
+            density_conv: 1e-8,
+            max_iter: 200,
+            newton_trigger: 1e-1,
+            df_j_aux: dfk.then(|| "def2-universal-jkfit".into()),
+            df_k_aux: dfk.then(|| "def2-universal-jkfit".into()),
+            ..Default::default()
+        };
+        ferric_scf::uhf::solve_uhf(&ParallelContext::default(), &mol, &prep, &bounds, &cfg)
+    };
+    let exact = run(false).expect("exact-J/K Newton UHF converges");
+    let df = run(true).expect("DF-K Newton UHF must converge");
+    assert!(df.converged);
+    assert!(
+        (df.energy - exact.energy).abs() < 1e-3,
+        "DF-K Newton E = {:.12}, exact-J/K {:.12}",
+        df.energy,
+        exact.energy
+    );
+    assert_eq!(
+        df.iterations, exact.iterations,
+        "DF-K Newton took {} iterations, exact-J/K {}",
+        df.iterations, exact.iterations
     );
 }

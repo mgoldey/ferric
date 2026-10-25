@@ -1933,6 +1933,11 @@ class KpointScfResult:
     def n_grid_points(self) -> int | None: ...
     @property
     def electrons_on_grid(self) -> float | None: ...
+    @property
+    def level_shift(self) -> float | None:
+        """rohf / roks only: the virtual level shift (Hartree) the SCF applied
+        (ramped out at convergence); None for the other methods."""
+        ...
     def gradient(self) -> NDArray[np.float64] | None:
         """Analytic nuclear gradient dE/dR (natoms x 3, Hartree/Bohr per cell,
         rows in the Molecule's atom order; the force on ONE copy of each atom
@@ -2462,6 +2467,7 @@ def run_roks_kpts(
     with_stress: bool = False,
     range_split: float | bool | None = None,
     gdf_omega: float | None = None,
+    level_shift: float | None = None,
 ) -> KpointScfResult:
     """k-point ROKS (restricted open-shell Kohn-Sham, Roothaan effective Fock)
     with the arguments of run_uks_kpts; LDA / GGA / global hybrids, and the
@@ -2469,7 +2475,10 @@ def run_roks_kpts(
     raises. with_gradient / with_stress run with jk="dense" or the unsplit
     jk="rsgdf" (not with a range-separated hybrid, which raises); converge
     grad_conv well below 1e-5 for the stress (the ROHF orbital-gradient
-    gate)."""
+    gate). level_shift=None: a 0.05 Ha ramped level shift for a hybrid
+    (a > 0 or range-separated), else no shift; max_iter stays 200 either way.
+    A float >= 0 overrides it (0.0 disables it); negative or non-finite
+    raises ValueError. The applied value is result.level_shift."""
     ...
 
 def run_rohf_kpts(

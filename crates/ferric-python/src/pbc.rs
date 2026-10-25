@@ -2295,6 +2295,10 @@ struct PyKpointScfResult {
     n_grid_points: Option<usize>,
     #[pyo3(get)]
     electrons_on_grid: Option<f64>,
+    /// ROHF / ROKS only: the virtual-space level shift (Hartree) the SCF
+    /// applied (ramped out at convergence). `None` for the other methods.
+    #[pyo3(get)]
+    level_shift: Option<f64>,
     /// Canonical-orthogonaliser report on S(k): threshold, min/max/total
     /// vectors kept over the mesh, and whether the threshold is near the
     /// overlap's rounding-noise floor.
@@ -2448,6 +2452,7 @@ fn kpoint_result_base(
         exact_exchange_fraction: None,
         n_grid_points: None,
         electrons_on_grid: None,
+        level_shift: None,
         lindep_threshold: scf.lindep.threshold,
         lindep_min_kept: scf.lindep.min_kept,
         lindep_max_kept: scf.lindep.max_kept,
@@ -3205,6 +3210,8 @@ struct KOpenParts<'a> {
     /// `(functional, E_xc, a_x, grid points, electrons on the grid)`; `None`
     /// for ROHF.
     ks: Option<(String, f64, f64, usize, f64)>,
+    /// The applied level shift (ROHF / ROKS); `None` for UKS.
+    level_shift: Option<f64>,
     derivs: Derivs,
 }
 
@@ -3217,6 +3224,7 @@ fn open_kpoint_result(s: &PbcSetup, m: &KPointMesh, p: KOpenParts<'_>) -> PyKpoi
     (out.nalpha, out.nbeta, out.s2) = (Some(p.nocc.0), Some(p.nocc.1), Some(p.s2));
     (out.gap_alpha, out.gap_beta) = (p.gaps.gap_alpha, p.gaps.gap_beta);
     (out.gradient_data, out.stress_data) = (p.derivs.gradient, p.derivs.stress);
+    out.level_shift = p.level_shift;
     if let Some((f, e_xc, a, n, ne)) = p.ks {
         out.functional = Some(f);
         (out.e_xc, out.exact_exchange_fraction) = (Some(e_xc), Some(a));
@@ -3266,9 +3274,11 @@ fn kroks_driver(
     grid: PeriodicGridConfig,
     scf: KScfConfig,
     start: EwaldStart,
+    level_shift: Option<f64>,
 ) -> Result<(ferric_pbc::KRoksResult, Derivs), FerricError> {
     let mut base = ferric_pbc::kroks::KRohfConfig::for_cell(&s.cell, s.exx);
     (base.scf, base.ewald_start) = (scf, start);
+    base.level_shift = level_shift;
     base.hcore = khcore_config(s);
     (base.jk, base.dense, base.rsgdf) = (kjk_kind(s), kdense_config(s), krsgdf_config(s));
     base.budget_bytes = s.budget_bytes;
@@ -3426,6 +3436,7 @@ fn run_uks_kpts(
             r.n_grid_points,
             r.electrons_on_grid,
         )),
+        level_shift: None,
         derivs,
     };
     Ok(open_kpoint_result(&s, &m, parts))
@@ -3445,7 +3456,15 @@ fn run_ro_kpts(
     grid: (usize, usize, Option<f64>),
     derivs: DerivRequest,
     range_split: Option<&Bound<'_, PyAny>>,
+    level_shift: Option<f64>,
 ) -> PyResult<PyKpointScfResult> {
+    if let Some(x) = level_shift {
+        if !(x.is_finite() && x >= 0.0) {
+            return Err(PyValueError::new_err(format!(
+                "{fname}: level_shift must be a finite number >= 0 (Hartree), got {x}"
+            )));
+        }
+    }
     let mut s = pbc_setup(a)?;
     s.derivs = derivs;
     if let Some(f) = functional {
@@ -3457,7 +3476,7 @@ fn run_ro_kpts(
     let (start, start_name) = parse_ewald_start(fname, s.exx, ewald_start)?;
     let scf = kscf_config(fname, scfk.0, scfk.1, scfk.2)?;
     let (r, derivs) = py
-        .allow_threads(|| kroks_driver(&s, &m, functional, grid, scf, start))
+        .allow_threads(|| kroks_driver(&s, &m, functional, grid, scf, start, level_shift))
         .map_err(pbc_err(fname))?;
     let u = &r.scf;
     let like = KScfLike {
@@ -3480,6 +3499,7 @@ fn run_ro_kpts(
         timings: r.timings.clone(),
         none_stage_energy: r.none_stage.as_ref().map(|n| n.energy),
         ewald_start: start_name,
+        level_shift: Some(r.level_shift),
         ks: functional.map(|f| {
             (
                 f.to_string(),
@@ -3502,7 +3522,10 @@ fn run_ro_kpts(
 /// Roothaan orbital order. The derivatives (not for a range-separated
 /// hybrid) run on the dense-AFT and the unsplit RS-GDF J/K. The
 /// stress gate is the ROHF orbital gradient (converge `grad_conv` well below
-/// 1e-5).
+/// 1e-5). `level_shift=None` (default) is the solver's automatic virtual
+/// shift: 0.05 Ha (ramped out at convergence) for a hybrid, 0 otherwise; a
+/// float >= 0 overrides it (0.0 disables it). The applied value is
+/// `result.level_shift`.
 #[pyfunction]
 #[pyo3(signature = (
     mol, lattice, basis_set, functional, mesh, exxdiv="ewald", centring="gamma",
@@ -3510,6 +3533,7 @@ fn run_ro_kpts(
     energy_conv=1e-12, grad_conv=1e-9, jk="dense", auxbasis=None,
     memory_budget_gb=None, n_radial=75, n_angular=302, neighbour_cutoff=None,
     with_gradient=false, with_stress=false, range_split=None, gdf_omega=None,
+    level_shift=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_roks_kpts(
@@ -3537,6 +3561,7 @@ fn run_roks_kpts(
     with_stress: bool,
     range_split: Option<&Bound<'_, PyAny>>,
     gdf_omega: Option<f64>,
+    level_shift: Option<f64>,
 ) -> PyResult<PyKpointScfResult> {
     let args = PbcArgs {
         fname: "run_roks_kpts",
@@ -3567,6 +3592,7 @@ fn run_roks_kpts(
             stress: with_stress,
         },
         range_split,
+        level_shift,
     )
 }
 
@@ -3633,6 +3659,7 @@ fn run_rohf_kpts(
             stress: with_stress,
         },
         range_split,
+        None,
     )
 }
 

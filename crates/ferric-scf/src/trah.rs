@@ -396,6 +396,60 @@ pub fn note_trah_null_step_declined() {
     TRAH_NULL_STEPS_DECLINED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// Count of iterations handed to DIIS (or Newton) right after a TRAH
+/// REJECTION (radius not collapsed), process-wide -- whether TRAH did not run
+/// at all or ran and declined its step under `predicted_min`. A rejection
+/// consumes the pending prediction, so "armed while a step is pending" did not
+/// cover the restored point; with err_max above the trigger there, DIIS took
+/// the next iteration and -- on CoH/def2-SVP UHF -- extrapolated from its
+/// saddle-region history straight back to the saddle, discarding a 100 mHa
+/// escape. With the `trah_engaged` latch the not-run route is closed; the
+/// decline route stays open on purpose (a model gain below `predicted_min` at
+/// the restored point means nothing is left to gain, and DIIS then measures
+/// convergence), so a nonzero count means either a latch regression or a
+/// decline right after a rejection. `tests/trah_hard_case.rs` pins zero on
+/// systems where every rejection is followed by a real step (traced).
+pub static TRAH_HANDOFFS_AFTER_REJECTION: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+/// Record a hand-off to DIIS on the iteration after a TRAH rejection.
+pub fn note_trah_handoff_after_rejection() {
+    TRAH_HANDOFFS_AFTER_REJECTION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Arming-gate bookkeeping for the `trah_engaged` latch, shared by the RHF/RKS
+/// and UHF/UKS loops (kept here so the loop bodies gain no branches).
+///
+/// Call once per iteration, right after `runs` (armed AND radius not
+/// collapsed) is decided. When TRAH does not run this iteration the latch is
+/// released. `last_rejected` is consumed and RETURNED: whether this iteration
+/// follows a rejection is only half the hand-off question, because TRAH can
+/// still run here and then decline its step under `predicted_min`, which
+/// falls through to DIIS too. The caller passes the returned flag to
+/// [`note_handoff_if_after_rejection`] at the point the loop actually leaves
+/// TRAH, so both routes to DIIS are counted.
+pub(crate) fn settle_engaged_latch(
+    engaged: &mut bool,
+    last_rejected: &mut bool,
+    runs: bool,
+) -> bool {
+    if !runs {
+        *engaged = false;
+    }
+    std::mem::take(last_rejected)
+}
+
+/// Call at the loop's real TRAH-to-DIIS transition (after the
+/// `if trah_took_step { continue; }`): this iteration is being handed to
+/// Newton/DIIS. If it is the iteration right after a rejection and the radius
+/// has not collapsed (a collapse is a legitimate hand-off), count it in
+/// [`TRAH_HANDOFFS_AFTER_REJECTION`].
+pub(crate) fn note_handoff_if_after_rejection(after_rejection: bool, collapsed: bool) {
+    if after_rejection && !collapsed {
+        note_trah_handoff_after_rejection();
+    }
+}
+
 /// Record that a pending TRAH prediction was dropped at a hand-off to DIIS.
 pub fn note_trah_prediction_discarded() {
     TRAH_PREDICTIONS_DISCARDED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -1066,8 +1120,23 @@ where
     // A vanishing leading entry is the trust-region HARD CASE, not a failure:
     // the root is (0, v) with (λ, v) a Hessian eigenpair orthogonal to g.
     // Report it so the caller can take the Moré-Sorensen step.
+    //
+    // A NUMERICALLY-ZERO Hessian mode is the hard case too, even when rounding
+    // leaves it a leading entry above 1e-6. Near convergence α‖g‖ falls below
+    // that mode's |λ|, so it becomes the lowest root and stays lowest at every α,
+    // with v₀ set by rounding. Read as Regular, κ = v/v₀ is ~1e6 long, the α
+    // search clamps it to the boundary, and the model credits ½λΔ² for a λ that
+    // is noise. Measured on stretched N2/STO-3G RHF at |g| = 6e-8, λ = -4.6e-10,
+    // v₀ = -1.004e-6: the step raised E by 1.5e-2 (ρ = -3.8e7), and each retry
+    // repeated it at 0.7Δ. That is 10 rejections and 15 extra iterations, under
+    // non-FMA OpenBLAS kernels (CI) only; with FMA the mode's λ rounds the other
+    // way. Classified Hard, `hard_case_step` deflates it. Its own DEGENERACY_TOL
+    // rule then returns the plain deflated Newton step for any λ > -1e-6, so a
+    // curvature that small is never stepped along. |v₀| < 0.1 is PySCF's
+    // `_regular_step` bound for "this root does not couple to g".
     let first = pair.eigenvector[0];
-    if first.abs() < 1e-6 {
+    let null_mode = first.abs() < 0.1 && pair.eigenvalue > -DEGENERACY_TOL;
+    if first.abs() < 1e-6 || null_mode {
         return Ok(AhRoot::Hard {
             lambda: pair.eigenvalue,
             v: pair.eigenvector[1..].to_vec(),
@@ -1768,6 +1837,50 @@ mod tests {
             vec![0.0, 0.0, 3.0],
         ];
         (h, vec![0.0, 1.0, 1.0], vec![-1.0, 2.0, 3.0])
+    }
+
+    /// A numerically-zero Hessian mode must not be stepped along, even when
+    /// rounding gives its AH root a leading entry above the 1e-6 hard-case
+    /// cut. This reproduces the converged-tail state of stretched N2/STO-3G RHF
+    /// (`tests/trah_hard_case.rs`) without depending on the BLAS kernel that
+    /// produced it: λ = -5e-10, |g| ~ 1e-7, and a g·v coupling small enough that
+    /// the lowest root's leading entry is ~1e-3. Read as Regular, κ = v/v₀ was
+    /// clamped to the boundary (‖κ‖ = Δ) with a model gain of ½λΔ². On the SCF
+    /// that step raised E by 1.5e-2 (ρ = -3.8e7) and was retried 9 more times.
+    /// The policy this pins is `hard_case_step`'s own: curvature above
+    /// -DEGENERACY_TOL earns the deflated Newton step, not a boundary step.
+    #[test]
+    fn a_numerically_zero_mode_is_not_stepped_along_to_the_boundary() {
+        let lambda = -5e-10;
+        let h = vec![
+            vec![lambda, 0.0, 0.0],
+            vec![0.0, 0.5, 0.0],
+            vec![0.0, 0.0, 1.0],
+        ];
+        let g = vec![5e-13, 6e-8, 6e-8];
+        // An orbital-gap-like preconditioner that knows nothing of the mode.
+        let diag = vec![0.3, 0.5, 1.0];
+        let mv = dense_matvec(h);
+        let cfg = TrahConfig::default();
+        let radius = 0.7;
+        // Precondition of the regression: the root IS the null mode, and its
+        // leading entry clears the old 1e-6 cut (else this tests nothing).
+        match ah_solve_classified(&g, &mv, &diag, ALPHA_MIN, &cfg).unwrap() {
+            AhRoot::Regular(s) => panic!("null mode read as a regular root: |k| = {:.3e}", s.norm),
+            AhRoot::Hard { lambda: l, .. } => {
+                assert!(
+                    (l - lambda).abs() < 1e-12,
+                    "lowest root is not the mode: {l:e}"
+                )
+            }
+        }
+        let s = solve_trust_region(&g, &mv, &diag, radius, &cfg).unwrap();
+        assert!(
+            s.norm < 1e-5 && !s.on_boundary,
+            "stepped along a zero-curvature mode: |k| = {:.3e} (radius {radius}), predicted {:.3e}",
+            s.norm,
+            s.predicted
+        );
     }
 
     /// Before the fix this returned Err("near-zero leading entry") and the
