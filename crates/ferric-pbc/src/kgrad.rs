@@ -98,7 +98,7 @@
 //! [`KGradParts::fit_attenuated`]), and the M-term carrying the SCF's mixed
 //! constant (not scaled again: the exchange scale of a range-separated K is
 //! 1). Both fit passes take the same exchange terms `Σ_s c_s D_s X D_s`
-//! ([`KSpins::exch_terms`]: `(½, D)` closed shell, `(1, D_α), (1, D_β)` open
+//! (`KSpins::exch_terms`: `(½, D)` closed shell, `(1, D_α), (1, D_β)` open
 //! shell), so the open-shell case is the closed-shell one with the spin
 //! bookkeeping of the UHF force, nothing else (`tests/pbc_kuks_rsh_rsgdf_force.rs`).
 //! The closed-shell RKS stress admits it the same way ([`crate::kstress`]);
