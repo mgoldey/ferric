@@ -1486,11 +1486,10 @@ fn solve_uhf_impl(
         // leave a prediction pending across intervening DIIS steps).
         let trah_collapsed = trah_state.as_ref().is_some_and(|s| s.collapsed());
         let trah_runs = trah_armed && !trah_collapsed;
-        crate::trah::settle_engaged_latch(
+        let trah_after_rejection = crate::trah::settle_engaged_latch(
             &mut trah_engaged,
             &mut trah_last_rejected,
             trah_runs,
-            trah_collapsed,
         );
         if let Some(st) = trah_state.as_mut() {
             if !trah_runs {
@@ -1552,6 +1551,10 @@ fn solve_uhf_impl(
                     c_b = cb_undo;
                     d_a = density(&c_a, nocc_a);
                     d_b = density(&c_b, nocc_b);
+                    // Keep the DF-K C_occ cache on the restored orbitals (see
+                    // the TRAH step below for why every C update needs this).
+                    d_occ_a = occ_or_none(&c_a, nocc_a);
+                    d_occ_b = occ_or_none(&c_b, nocc_b);
                     let d_tot_new = &d_a + &d_b;
                     mon.record_density_change(&d_tot_new, &d_tot_old);
                 }
@@ -1682,6 +1685,14 @@ fn solve_uhf_impl(
                     let d_tot_old = &d_a + &d_b;
                     d_a = density(&c_a, nocc_a);
                     d_b = density(&c_b, nocc_b);
+                    // DF-K builds K_σ from this C_occ cache, J from d_σ. Before
+                    // 2026-10-24 only the DIIS path refreshed it, so after a
+                    // TRAH step (or restore, or Newton step) the next Fock had
+                    // K at the last DIIS orbitals and J at the current ones --
+                    // a wrong energy and a wrong ρ. RHF refreshes `d_occ` at
+                    // every C update; this mirrors it.
+                    d_occ_a = occ_or_none(&c_a, nocc_a);
+                    d_occ_b = occ_or_none(&c_b, nocc_b);
                     let d_tot_new = &d_a + &d_b;
                     mon.record_density_change(&d_tot_new, &d_tot_old);
                 }
@@ -1691,6 +1702,10 @@ fn solve_uhf_impl(
         if trah_took_step {
             continue;
         }
+        // TRAH did not step this iteration (not run, or ran and declined): the
+        // iteration goes to Newton/DIIS. Counted here, not at the gate, so a
+        // decline right after a rejection is seen too.
+        crate::trah::note_handoff_if_after_rejection(trah_after_rejection, trah_collapsed);
 
         // ── Second-order (Newton) update, UHF/UKS ────────────────────────────
         // When enabled (newton_trigger > 0) and err_max has dropped below the
@@ -1815,6 +1830,8 @@ fn solve_uhf_impl(
             let d_tot_old = &d_a + &d_b;
             d_a = density(&c_a, nocc_a);
             d_b = density(&c_b, nocc_b);
+            d_occ_a = occ_or_none(&c_a, nocc_a);
+            d_occ_b = occ_or_none(&c_b, nocc_b);
             let d_tot_new = &d_a + &d_b;
             mon.record_density_change(&d_tot_new, &d_tot_old);
             continue;

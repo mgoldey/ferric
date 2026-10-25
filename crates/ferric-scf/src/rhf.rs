@@ -2717,11 +2717,10 @@ fn solve_rhf_impl(
         // DIIS steps in between — a ρ built from two unrelated points.
         let trah_collapsed = trah_state.as_ref().is_some_and(|s| s.collapsed());
         let trah_runs = trah_armed && !trah_collapsed;
-        crate::trah::settle_engaged_latch(
+        let trah_after_rejection = crate::trah::settle_engaged_latch(
             &mut trah_engaged,
             &mut trah_last_rejected,
             trah_runs,
-            trah_collapsed,
         );
         if let Some(st) = trah_state.as_mut() {
             if !trah_runs {
@@ -2947,6 +2946,10 @@ fn solve_rhf_impl(
         if trah_took_step {
             continue;
         }
+        // TRAH did not step this iteration (not run, or ran and declined): the
+        // iteration goes to AURORA/Newton/DIIS. Counted here, not at the gate, so a
+        // decline right after a rejection is seen too.
+        crate::trah::note_handoff_if_after_rejection(trah_after_rejection, trah_collapsed);
 
         // ── AURORA auxiliary-curvature update, RHF/RKS ───────────────────────
         // Opt-in (config.aurora.enabled, default false). Replaces the DIIS

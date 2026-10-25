@@ -162,9 +162,16 @@ fn coh_uhf_descent_vs_trah() {
                         .as_ref()
                         .map(|s| (s.lowest_eigenvalue, s.verdict().label().to_string()))
                         .unwrap_or((f64::NAN, "none".into()));
+                    // NOT a work total for the descent arm: `ScfResult::iterations`
+                    // is the RETURNED solve's own count (the initial solve, or the
+                    // re-converge descent kept), omitting the initial solve and
+                    // every discarded attempt. Neither `ScfResult` nor
+                    // `uhf::stability_descent` exposes a cumulative count, and the
+                    // `aurora::target_jk_builds` counter the N2 test uses is
+                    // RHF-only. Compare work across arms by `wall`.
                     println!(
                         "COH {gname:5} {arm:9} conv={:<5} E={:.10} dE_ref={:+8.3} mHa lam={lam:+.2e} {v:<8} \
-                         iters={} trah_steps={ts:<3} trah_rej={tr:<2} wall={secs:.2}s",
+                         final_solve_iters={} trah_steps={ts:<3} trah_rej={tr:<2} wall={secs:.2}s",
                         r.converged,
                         r.energy,
                         1e3 * (r.energy - (-1_381.736_565_75)),

@@ -369,3 +369,118 @@ fn uhf_trah_keeps_control_after_a_rejection() {
         "O2/STO-3G UHF E = {e:.12}, expected {E_O2_STO3G_UHF:.12}"
     );
 }
+
+// ── UHF + DF-K: the C_occ cache must follow every TRAH orbital update ───────
+//
+// With DF-K the UHF loop builds K_σ from a cached C_occ,σ and J from D_σ. Only
+// the DIIS path refreshed that cache, so after a TRAH step or a rejection's
+// restore the next Fock had K at the last DIIS orbitals and J at the current
+// ones: a wrong energy, hence a wrong ρ. Reachable on main before the latch
+// (any accepted TRAH step); the latch only lengthens the TRAH-only runs.
+//
+// Measured 2026-10-24, O2/STO-3G triplet, core guess, def2-universal-jkfit for
+// J and K, tail-mode TRAH:
+//   refreshed cache:   E = -147.635627928824, 24 iterations, 1 rejection
+//   stale on restore:  E = -147.635627928824, 17 iterations, 1 rejection
+//   stale cache:       E = -147.380341650507, 58 iterations, 24 rejections
+//                      (TRAH thrashes, then DIIS lands on the higher state)
+//   exact J/K TRAH:    E = -147.6355561436 (`E_O2_STO3G_UHF`; the 7.2e-5
+//                      gap is the DF fitting error)
+//   DF-K DIIS alone:   E = -147.380341650507 (the higher state, 10 iterations)
+
+/// O2/STO-3G triplet UHF with DF-J/DF-K, core guess, tail-mode TRAH (above).
+const E_O2_STO3G_UHF_DFK: f64 = -147.635_627_928_824;
+
+#[test]
+fn uhf_dfk_trah_refreshes_the_occupied_orbital_cache() {
+    use std::sync::atomic::Ordering::Relaxed;
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mol = Molecule::parse_xyz("2\no2\nO 0 0 0\nO 0 0 1.21\n", 0, 3).unwrap();
+    let bs = basis::bundled("sto-3g").unwrap();
+    let prep = PreparedBasis::new(&mol, &bs).unwrap();
+    let bounds = SchwarzBounds::compute(Operator::coulomb(), &prep).unwrap();
+    let cfg = RhfConfig {
+        energy_conv: 1e-10,
+        density_conv: 1e-8,
+        max_iter: 200,
+        use_sad_guess: false,
+        trah_trigger: Some(1e-2),
+        df_j_aux: Some("def2-universal-jkfit".into()),
+        df_k_aux: Some("def2-universal-jkfit".into()),
+        ..Default::default()
+    };
+    let r0 = ferric_scf::trah::TRAH_STEPS_REJECTED.load(Relaxed);
+    let h0 = ferric_scf::trah::TRAH_HANDOFFS_AFTER_REJECTION.load(Relaxed);
+    let r = ferric_scf::uhf::solve_uhf(&ParallelContext::default(), &mol, &prep, &bounds, &cfg)
+        .unwrap();
+    let rej = ferric_scf::trah::TRAH_STEPS_REJECTED.load(Relaxed) - r0;
+    let handoffs = ferric_scf::trah::TRAH_HANDOFFS_AFTER_REJECTION.load(Relaxed) - h0;
+    assert!(r.converged);
+    assert!(
+        rej > 0,
+        "no rejection happened; the restore path is not exercised"
+    );
+    assert_eq!(handoffs, 0, "{handoffs} of {rej} rejections handed to DIIS");
+    // Independent anchor first: within DF fitting error of the exact-J/K
+    // TRAH energy (the stale-cache mutant is 255 mHa away), then the golden.
+    assert!(
+        (r.energy - E_O2_STO3G_UHF).abs() < 1e-3,
+        "DF-K TRAH E = {:.12} is not the exact-J/K state {E_O2_STO3G_UHF:.10}",
+        r.energy
+    );
+    assert!(
+        (r.energy - E_O2_STO3G_UHF_DFK).abs() < 1e-8,
+        "DF-K TRAH E = {:.12}, expected {E_O2_STO3G_UHF_DFK:.12}",
+        r.energy
+    );
+    // The trajectory, not just the endpoint: a cache left stale only on the
+    // RESTORE path still reaches this state, but in 17 iterations instead of
+    // 24 (the stale K happens to help here). 24 is also what the exact-J/K
+    // TRAH run takes. Identical under the native and Nehalem OpenBLAS kernels.
+    assert_eq!(
+        r.iterations, 24,
+        "{} iterations with {rej} rejections (refreshed cache: 24 / 1; stale on restore only: 17; stale everywhere: 58 / 24)",
+        r.iterations
+    );
+}
+
+/// The UHF Newton branch had the same stale-cache defect as the TRAH step:
+/// it moved C_σ and `continue`d without refreshing the DF-K C_occ cache.
+/// O2/STO-3G triplet, MINAO guess, `newton_trigger` 0.1, measured 2026-10-24:
+/// exact J/K converges in 6 iterations to -147.634048539975; DF-K with the
+/// refresh converges in 6 to -147.634115743968 (6.7e-5 DF error); with the
+/// cache stale on the Newton path the solve does not converge at all.
+#[test]
+fn uhf_dfk_newton_refreshes_the_occupied_orbital_cache() {
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let run = |dfk: bool| {
+        let mol = Molecule::parse_xyz("2\no2\nO 0 0 0\nO 0 0 1.21\n", 0, 3).unwrap();
+        let bs = basis::bundled("sto-3g").unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let bounds = SchwarzBounds::compute(Operator::coulomb(), &prep).unwrap();
+        let cfg = RhfConfig {
+            energy_conv: 1e-10,
+            density_conv: 1e-8,
+            max_iter: 200,
+            newton_trigger: 1e-1,
+            df_j_aux: dfk.then(|| "def2-universal-jkfit".into()),
+            df_k_aux: dfk.then(|| "def2-universal-jkfit".into()),
+            ..Default::default()
+        };
+        ferric_scf::uhf::solve_uhf(&ParallelContext::default(), &mol, &prep, &bounds, &cfg)
+    };
+    let exact = run(false).expect("exact-J/K Newton UHF converges");
+    let df = run(true).expect("DF-K Newton UHF must converge");
+    assert!(df.converged);
+    assert!(
+        (df.energy - exact.energy).abs() < 1e-3,
+        "DF-K Newton E = {:.12}, exact-J/K {:.12}",
+        df.energy,
+        exact.energy
+    );
+    assert_eq!(
+        df.iterations, exact.iterations,
+        "DF-K Newton took {} iterations, exact-J/K {}",
+        df.iterations, exact.iterations
+    );
+}

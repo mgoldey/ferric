@@ -396,13 +396,19 @@ pub fn note_trah_null_step_declined() {
     TRAH_NULL_STEPS_DECLINED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 }
 
-/// Count of iterations handed to DIIS right after a TRAH REJECTION (radius
-/// not collapsed), process-wide. A rejection consumes the pending prediction,
-/// so "armed while a step is pending" did not cover the restored point; with
-/// err_max above the trigger there, DIIS took the next iteration and -- on
-/// CoH/def2-SVP UHF -- extrapolated from its saddle-region history straight
-/// back to the saddle, discarding a 100 mHa escape. Zero by construction once
-/// the loops latch `trah_engaged` (pinned in `tests/trah_hard_case.rs`).
+/// Count of iterations handed to DIIS (or Newton) right after a TRAH
+/// REJECTION (radius not collapsed), process-wide -- whether TRAH did not run
+/// at all or ran and declined its step under `predicted_min`. A rejection
+/// consumes the pending prediction, so "armed while a step is pending" did not
+/// cover the restored point; with err_max above the trigger there, DIIS took
+/// the next iteration and -- on CoH/def2-SVP UHF -- extrapolated from its
+/// saddle-region history straight back to the saddle, discarding a 100 mHa
+/// escape. With the `trah_engaged` latch the not-run route is closed; the
+/// decline route stays open on purpose (a model gain below `predicted_min` at
+/// the restored point means nothing is left to gain, and DIIS then measures
+/// convergence), so a nonzero count means either a latch regression or a
+/// decline right after a rejection. `tests/trah_hard_case.rs` pins zero on
+/// systems where every rejection is followed by a real step (traced).
 pub static TRAH_HANDOFFS_AFTER_REJECTION: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
 
@@ -416,22 +422,32 @@ pub fn note_trah_handoff_after_rejection() {
 ///
 /// Call once per iteration, right after `runs` (armed AND radius not
 /// collapsed) is decided. When TRAH does not run this iteration the latch is
-/// released, and a hand-off that immediately follows a rejection with the
-/// radius still open is counted in [`TRAH_HANDOFFS_AFTER_REJECTION`] -- with
-/// the latch held, that count is zero. `last_rejected` is consumed.
+/// released. `last_rejected` is consumed and RETURNED: whether this iteration
+/// follows a rejection is only half the hand-off question, because TRAH can
+/// still run here and then decline its step under `predicted_min`, which
+/// falls through to DIIS too. The caller passes the returned flag to
+/// [`note_handoff_if_after_rejection`] at the point the loop actually leaves
+/// TRAH, so both routes to DIIS are counted.
 pub(crate) fn settle_engaged_latch(
     engaged: &mut bool,
     last_rejected: &mut bool,
     runs: bool,
-    collapsed: bool,
-) {
+) -> bool {
     if !runs {
         *engaged = false;
-        if *last_rejected && !collapsed {
-            note_trah_handoff_after_rejection();
-        }
     }
-    *last_rejected = false;
+    std::mem::take(last_rejected)
+}
+
+/// Call at the loop's real TRAH-to-DIIS transition (after the
+/// `if trah_took_step { continue; }`): this iteration is being handed to
+/// Newton/DIIS. If it is the iteration right after a rejection and the radius
+/// has not collapsed (a collapse is a legitimate hand-off), count it in
+/// [`TRAH_HANDOFFS_AFTER_REJECTION`].
+pub(crate) fn note_handoff_if_after_rejection(after_rejection: bool, collapsed: bool) {
+    if after_rejection && !collapsed {
+        note_trah_handoff_after_rejection();
+    }
 }
 
 /// Record that a pending TRAH prediction was dropped at a hand-off to DIIS.
