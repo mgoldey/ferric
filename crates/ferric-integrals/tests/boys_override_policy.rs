@@ -290,6 +290,14 @@ fn terf_code_in_the_override_is_compiled_only_under_the_terf_define() {
     // A stock 2.7.2 prefix gets the same override WITHOUT TERF_DEFINE; any
     // terf code outside the guarded blocks would change the stock builds (and
     // fail to compile there: stock engine.h has no Operator::terf).
+    //
+    // This is a TEXTUAL check: it proves every `terf_gm_eval` token sits
+    // inside an `#ifdef TERF_DEFINE` block, not that the preprocessed stock
+    // build is byte-identical to main's. That stronger check needs a C++
+    // preprocessor (`c++ -E`) plus a libint2 include tree, which this test
+    // harness cannot assume portably, so it is not done here. (By hand on
+    // 2026-10-24: the manifest and SWEEP_HASH of stock 2.7.2 + this override
+    // matched the terf-prefix build, see the overrides README.)
     let path = concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/shim/libint2_overrides/2.7.2/libint2/boys.h"

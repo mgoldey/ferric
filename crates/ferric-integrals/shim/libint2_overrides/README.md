@@ -276,7 +276,7 @@ Not changed: `eval_yukawa` with `U < Umin` or `T > Tmax` still uses the upward r
   s/p/d shells x 7 centres (same-centre, 9-6-0 integer, 5.5 along x ...) x zeta in {0.3, 1, 3, 10}, 28592 blocks:
   FNV-1a hash `25864f7f62d9114b` for stock, for the pre-#436 override and for this one, 0 non-finite values.
   Rust-side, `tenno_table_edge::sweep_child_prints_hashes` prints `SWEEP_HASH edge=bbf3ce42b1378db6
-  engine=de36c9077af007c0 n=296` on 2.7.2+override and, on stock 2.13.1 (before #439), `edge=2acf9250b8e24a57
+  engine=de36c9077af007c0 n=296` on 2.7.2+override (superseded after #443; current value in the Sixth change section) and, on stock 2.13.1 (before #439), `edge=2acf9250b8e24a57
   engine=0ed77033630946fd`; with the 2.13.1 override of #439 the `edge` hash is `b445e0973c928c4d` (its T = ulp(1024) points at U = 100..1000 were NaN on stock 2.13.1 and are now 0) and `engine` is unchanged (see the Fourth change).
 * Accuracy of what changed. Points where stock was non-finite (184 of the 12640 grid points) are now finite and
   accurate: of the 210 changed grid points checked against a 500-digit mpmath evaluation, the largest absolute error
@@ -453,6 +453,11 @@ quartet through it, roughly 3 to 4 times slower than the table path. No producti
 
 ## Sixth change (2.7.2, terf-patched prefixes only): `terf_gm_eval` without the per-call copy (issue #234)
 
+Coverage is libint **2.7.2 only**. The tracked terf patch fails 3 of 3 hunks on 2.13.1's `boys.h`, so there is no
+2.13.1 terf hash: a 2.13.1 terf prefix still gets no override (a warning by default, a build error under
+`FERRIC_REQUIRE_PATCHED_BOYS=1`) and keeps every defect listed above. Porting the terf patch to 2.13.1 is a remaining
+#234 item.
+
 A `FERRIC_LIBINT2_TERF` build uses a libint 2.7.2 prefix with ferric's terf patches applied
 (`wiki/perf-tasks/patches/libint2-terf-*.patch`). The `boys.h` part of that patch adds `os_core_ints::terf_gm_eval`, which
 derived from a `CoreEvalScratch` holding a `std::vector` (never used: the hook fills `Gm` directly) and had a
@@ -528,5 +533,5 @@ call, `FmStackScratch`), built without any override; **B2** the unmodified terf 
   that the terf hash collides with no stock or override hash, and that no terf code is compiled outside the guarded
   blocks. Mutants (terf branch returning `Override`, one digit of the terf hash, the evaluator's `#ifdef` removed) each
   fail exactly one of them; the unmutated file passes 13/13.
-* Not checked: a CI job (CI has no terf prefix, so `FERRIC_LIBINT2_TERF` builds are local only), and other molecules or
+* Not checked: a 2.13.1 terf prefix (not covered, see the top of this section); a CI job (CI has no terf prefix, so `FERRIC_LIBINT2_TERF` builds are local only), and other molecules or
   bases for the scaling table.
