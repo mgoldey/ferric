@@ -797,8 +797,10 @@ pub(crate) fn stall_detected(errmax_history: &[f64], window: usize, current_err:
 ///   `‖ΔP‖_F / sqrt(nao²)`.
 /// - `dp_max`: max element of |ΔP|.
 ///
-/// The DIIS commutator (FDS−SDF) is deliberately absent: it is a *diagnostic*
-/// (printed in the trace), never a gate — see [`scf_converged`] for why.
+/// The DIIS commutator (FDS−SDF) is deliberately absent: it never decides
+/// convergence on its own — see [`scf_converged`] for why. It vetoes an exit
+/// far from stationarity (`veto_nonstationary_exit`) and, in UHF, certifies a
+/// degenerate orbital swap (`degenerate_swap_converged`).
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ConvergenceSignals {
     pub de: f64,
@@ -838,11 +840,13 @@ pub(crate) struct ConvergenceSignals {
 ///   above the ~2e-5 DF energy floor, so it excludes a descending run without
 ///   demanding an unreachable tight ΔE)
 ///
-/// The commutator (FDS−SDF) is *not* consulted by this function — diagnostic
-/// only. The one exception lives at its call site: under ADIIS/EDIIS, while the
-/// commutator is still above `diis_switch_thresh`, a density-settled exit is
-/// refused and the run restarts on plain Pulay DIIS (a stalled energy
-/// extrapolation, not a converged SCF; #422).
+/// The commutator (FDS−SDF) is *not* consulted by this function. Two vetoes
+/// live at its call sites: under ADIIS/EDIIS, while the commutator is still
+/// above `diis_switch_thresh`, a density-settled exit is refused and the run
+/// restarts on plain Pulay DIIS (a stalled energy extrapolation, not a
+/// converged SCF; #422); on plain Pulay (RHF) and in UHF, an exit whose
+/// commutator exceeds `sqrt(density_conv)` is refused and DIIS is cleared
+/// (`veto_nonstationary_exit`).
 ///
 /// Returns `Some(ScfExit::Converged)` when met, else `None` (keep iterating).
 /// The caller still owns divergence/stall/max-iter exits.
@@ -891,6 +895,102 @@ fn veto_stalled_energy_diis(
         }
         (exit, _) => (exit, None),
     }
+}
+
+/// Orbital-gradient veto on a ΔP/ΔE-accepted exit, shared by the RHF (plain
+/// Pulay) and UHF loops — the closed/unrestricted counterpart of the ROHF
+/// gradient guard (`rohf_occupation`, defect F6).
+///
+/// [`scf_converged`] reads ΔP and ΔE only. A DIIS extrapolation that stagnates
+/// (ill-conditioned subspace) can reproduce the same density and energy on
+/// every step without that density being a stationary point: MEASURED on OH
+/// UKS-LDA/STO-3G, DIIS jumped to a non-aufbau state at −73.4899520144 with
+/// `err_max` 0.136, the next extrapolation gave it ~0 weight, D froze, and the
+/// ΔP gate accepted it — 0.586 Ha above the stationary ground state. Here an
+/// exit is refused when `err_max > sqrt(density_conv)`. The bound is loose on
+/// purpose (1e-3 at the 1e-6 default, three orders above the largest RI
+/// commutator floor on record, ~1.3e-6), so a genuinely converged run never
+/// trips it; the stagnated states seen sit at ≥ 0.13.
+///
+/// Returns the exit to take and whether the veto fired; on a veto the caller
+/// clears its DIIS history (so the next step is a fresh Fock diagonalization)
+/// and continues. The one-time notice is printed here (`warned` latches it).
+pub(crate) fn veto_nonstationary_exit(
+    conv_exit: Option<ScfExit>,
+    err_max: f64,
+    iter: usize,
+    density_conv: f64,
+    label: &str,
+    announce: bool,
+    warned: &mut bool,
+) -> (Option<ScfExit>, bool) {
+    let bound = density_conv.sqrt();
+    if conv_exit != Some(ScfExit::Converged) || err_max <= bound {
+        return (conv_exit, false);
+    }
+    if announce && !*warned {
+        eprintln!(
+            "{label}: density and energy have stopped changing at iteration {iter} but the \
+             orbital gradient is {err_max:.3e} (> sqrt(density_conv) = {bound:.1e}) — not a \
+             stationary point (stagnated extrapolation). Clearing DIIS and continuing."
+        );
+        *warned = true;
+    }
+    if scf_trace() {
+        eprintln!("{label} iter={iter}: gradient veto, err_max={err_max:.3e} > {bound:.1e}");
+    }
+    (None, true)
+}
+
+/// RHF plain-Pulay form of [`veto_nonstationary_exit`]: applied only while the
+/// driver is pure Pulay (ADIIS/EDIIS carry their own, tighter-scoped veto in
+/// `veto_stalled_energy_diis`, and become pure Pulay after it fires), and
+/// clears the DIIS history when it vetoes.
+fn veto_nonstationary_pulay_exit(
+    conv_exit: Option<ScfExit>,
+    diis: &mut DiisDriver,
+    err_max: f64,
+    iter: usize,
+    density_conv: f64,
+    announce: bool,
+    warned: &mut bool,
+) -> Option<ScfExit> {
+    if diis.commutator_veto_bound().is_some() {
+        return conv_exit;
+    }
+    let (exit, vetoed) = veto_nonstationary_exit(
+        conv_exit,
+        err_max,
+        iter,
+        density_conv,
+        "RHF",
+        announce,
+        warned,
+    );
+    if vetoed {
+        diis.reset();
+    }
+    exit
+}
+
+/// A stationary point whose occupied set swaps between degenerate orbitals on
+/// every iteration (open-shell UHF/UKS only).
+///
+/// OH doublet: the β hole flips between π_x and π_y each step, so ΔP_max = 1
+/// and [`scf_converged`] can never pass, although each density is stationary
+/// (`err_max` ~2e-9 MEASURED at −74.0755553242). Accept when the density moved
+/// by an orbital-sized amount (`dp_max > 0.1`) while the orbital gradient is
+/// below `density_conv` and the energy has stopped changing: a swap between
+/// degenerate orbitals at a stationary point, not a descending run.
+pub(crate) fn degenerate_swap_converged(
+    sig: ConvergenceSignals,
+    err_max: f64,
+    iter: usize,
+    energy_conv: f64,
+    density_conv: f64,
+) -> Option<ScfExit> {
+    (iter > 2 && sig.dp_max > 0.1 && err_max < density_conv && sig.de < energy_conv)
+        .then_some(ScfExit::Converged)
 }
 
 /// Record a fired veto: the visible notice, the trace line, the once-set
@@ -1751,6 +1851,8 @@ fn solve_rhf_impl(
     // ADIIS/EDIIS activate only when a caller opts in.
     // Set once, when ADIIS/EDIIS stalled and was replaced by Pulay (#422).
     let mut diis_fallback: Option<crate::result::DiisFallback> = None;
+    // One-time notice latch for `veto_nonstationary_exit`.
+    let mut grad_veto_warned = false;
     let mut diis = DiisDriver::new(
         config.diis_flavor,
         config.diis_size,
@@ -2560,6 +2662,15 @@ fn solve_rhf_impl(
             ctx.is_root(),
             &mut diis_fallback,
             &mut last_report,
+        );
+        let conv_exit = veto_nonstationary_pulay_exit(
+            conv_exit,
+            &mut diis,
+            err_max,
+            iter,
+            config.density_conv,
+            ctx.is_root(),
+            &mut grad_veto_warned,
         );
 
         // Divergence: energy climbing for consecutive iters (see ScfMonitor).

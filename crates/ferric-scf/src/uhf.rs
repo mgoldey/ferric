@@ -818,6 +818,8 @@ fn solve_uhf_impl(
     // 421 iterations to converge with independent DIIS; coupled converges
     // in ~15-25 cycles).
     let mut diis = Diis::new(config.diis_size);
+    // One-time notice latch for the orbital-gradient veto (`uhf_exit_decision`).
+    let mut grad_veto_warned = false;
     // UHF extrapolates with `step_pair`, which fills the β histories as well —
     // FOUR n×n matrices per subspace entry, twice RHF's. This projection was
     // missing entirely until 2026-08-30: the warning was called from RHF only,
@@ -1344,11 +1346,18 @@ fn solve_uhf_impl(
         // the naux-dependent RI noise floor and never drains. See
         // rhf::scf_converged. This replaces the old df_noise_floor_ok hack; the
         // `df_active` distinction is gone (ΔP handles DF and direct uniformly).
-        let conv_exit = crate::cosx_schedule::gate(
+        // Two orbital-gradient amendments (see `uhf_exit_decision`): a
+        // degenerate-swap stationary point is accepted, a stagnated
+        // non-stationary one is refused.
+        let conv_exit = uhf_exit_decision(
             &mut cosx_sched,
             iter,
-            sig.dp_max,
-            crate::rhf::scf_converged(sig, config.energy_conv, config.density_conv),
+            sig,
+            err_max,
+            config,
+            &mut diis,
+            ctx.is_root(),
+            &mut grad_veto_warned,
         );
 
         // Divergence / stall early exits (shared driver::ScfMonitor; both are
@@ -1362,8 +1371,11 @@ fn solve_uhf_impl(
         }
 
         if iter > 1 && conv_exit.is_some() {
-            let (eps_a, c_a_f) = diag_a.run(&f_a)?;
-            let (eps_b, c_b_f) = diag_b.run(&f_b)?;
+            // Returned MOs must reproduce the returned density: after a
+            // degenerate swap the aufbau eigenvectors of F hold the OTHER
+            // member of the pair (identity otherwise; see `occupied_by_density`).
+            let (eps_a, c_a_f) = occupied_by_density(diag_a.run(&f_a)?, &s, &d_a, nocc_a, config);
+            let (eps_b, c_b_f) = occupied_by_density(diag_b.run(&f_b)?, &s, &d_b, nocc_b, config);
             // ⟨S²⟩ diagnostic
             let s2 = expectation_s_squared(&c_a_f, &c_b_f, &s, nocc_a, nocc_b);
             let s_true = 0.5 * (nocc_a as f64 - nocc_b as f64);
@@ -2110,6 +2122,88 @@ fn mix_beta_homo_lumo(c_b: &mut Array2<f64>, nocc_a: usize, nocc_b: usize, block
         c_b[(mu, homo)] = cs * h_val + sn * l_val;
         c_b[(mu, lumo)] = -sn * h_val + cs * l_val;
     }
+}
+
+/// The UHF convergence decision for one iteration.
+///
+/// The shared ΔP/ΔE gate ([`crate::rhf::scf_converged`]) with two amendments,
+/// both read off the orbital gradient `err_max = max_σ |F_σD_σS − SD_σF_σ|`
+/// (MEASURED on OH UKS-LDA/STO-3G, `tests/uhf_degenerate_swap.rs`):
+/// 1. a degenerate swap at a stationary point is accepted
+///    (`rhf::degenerate_swap_converged`) — the OH β hole flips between π_x
+///    and π_y every iteration, so ΔP_max = 1 and the plain gate never passes
+///    at the true ground state (−74.0755553242, `err_max` ~2e-9);
+/// 2. a ΔP/ΔE-settled state that is not stationary is refused and the DIIS
+///    history cleared (`rhf::veto_nonstationary_exit`) — without it DIIS
+///    stagnated at that system into a non-aufbau state 0.586 Ha high
+///    (`err_max` 0.136), froze D, and the plain gate accepted it.
+///
+/// Both are no-ops on an ordinary run: (1) needs an orbital-sized density
+/// jump at `err_max < density_conv`, (2) needs `err_max > sqrt(density_conv)`
+/// at a settled density.
+#[allow(clippy::too_many_arguments)]
+fn uhf_exit_decision(
+    cosx_sched: &mut Option<crate::cosx_schedule::ScheduleRun>,
+    iter: usize,
+    sig: crate::rhf::ConvergenceSignals,
+    err_max: f64,
+    config: &UhfConfig,
+    diis: &mut Diis,
+    announce: bool,
+    warned: &mut bool,
+) -> Option<ScfExit> {
+    let (econv, dconv) = (config.energy_conv, config.density_conv);
+    let settled = crate::rhf::scf_converged(sig, econv, dconv)
+        .or_else(|| crate::rhf::degenerate_swap_converged(sig, err_max, iter, econv, dconv));
+    let gated = crate::cosx_schedule::gate(cosx_sched, iter, sig.dp_max, settled);
+    let (exit, vetoed) =
+        crate::rhf::veto_nonstationary_exit(gated, err_max, iter, dconv, "UHF", announce, warned);
+    if vetoed {
+        diis.reset();
+    }
+    exit
+}
+
+/// Order one spin's eigenpairs so the first `nocc` columns are the
+/// eigenvectors carrying the most weight in `d` (`w_p = c_pᵀ S D S c_p`),
+/// each block kept in ascending eigenvalue order with `eps` permuted to match.
+///
+/// The identity whenever `d` is the aufbau density of these eigenvectors —
+/// every run that does not end on a degenerate swap. After a swap
+/// (`rhf::degenerate_swap_converged`) `d` occupies the other member of the
+/// degenerate pair, and returning the aufbau `C` would hand downstream code
+/// (gradients, post-HF) occupied orbitals that do not build the returned
+/// density. Not `mom::mom_reorder`, which scrambles the occupied order.
+/// Skipped under `fractional_occ`, whose ensemble density has no integer
+/// occupied set to identify.
+fn occupied_by_density(
+    (eps, c): (Vec<f64>, Array2<f64>),
+    s: &Array2<f64>,
+    d: &Array2<f64>,
+    nocc: usize,
+    config: &UhfConfig,
+) -> (Vec<f64>, Array2<f64>) {
+    let n = c.ncols();
+    if config.fractional_occ || nocc == 0 || nocc >= n {
+        return (eps, c);
+    }
+    let sc = s.dot(&c);
+    let w = (sc.t().dot(d) * sc.t()).sum_axis(ndarray::Axis(1));
+    let mut by_weight: Vec<usize> = (0..n).collect();
+    by_weight.sort_by(|&p, &q| w[q].total_cmp(&w[p]).then(p.cmp(&q)));
+    let mut occ = by_weight[..nocc].to_vec();
+    occ.sort_unstable();
+    if occ.iter().enumerate().all(|(k, &p)| k == p) {
+        return (eps, c);
+    }
+    let mut vir = by_weight[nocc..].to_vec();
+    vir.sort_unstable();
+    let order: Vec<usize> = occ.into_iter().chain(vir).collect();
+    let mut c_out = Array2::<f64>::zeros(c.raw_dim());
+    for (k, &p) in order.iter().enumerate() {
+        c_out.column_mut(k).assign(&c.column(p));
+    }
+    (order.iter().map(|&p| eps[p]).collect(), c_out)
 }
 
 fn density(c: &Array2<f64>, nocc: usize) -> Array2<f64> {
