@@ -24,7 +24,7 @@
 //!
 //! Not a path: the open-shell RSH STRESS (UKS and ROKS) does not exist with
 //! or without the switch (the UKS stress has no range-separated term); it is
-//! refused by name, pinned by `open_shell_rsh_stress_stays_refused` below. ROKS
+//! refused by name, pinned per commit by `pbc_grid_switch_refusals.rs`. ROKS
 //! meta-GGA has no SCF (refused by `kroks` / `rohf`), so it has no derivative
 //! to check. Open-shell meta-GGA at Gamma routes through the k code on a
 //! 1x1x1 mesh (the k UKS SCAN row).
@@ -136,11 +136,14 @@ const CAM: &str = "HYB_GGA_XC_CAM_B3LYP";
 /// the dropped presence derivative misses by >= 1.73e-6 (Gamma RKS CAM-B3LYP).
 const FD_BAR: f64 = 1e-7;
 /// Stress vs FD at h = 1e-4. The H3 cells carry a larger h² truncation than
-/// #504's H2 cell: worst 3.27e-7 (k UKS SCAN), falling 3.8-3.9x per halving
+/// #504's H2 cell: worst 3.27e-7 (k UKS SCAN), falling ≈3.7-4.4x per halving
 /// of h on every row (truncation, not a defect), so #504's 1e-7 would fail on
 /// arithmetic; the bar is 3x the worst floor. Dropped presence derivative:
 /// >= 2.72e-5.
 const STRESS_FD_BAR: f64 = 1e-6;
+/// The force misses sit at the SCF noise floor (~1e-9; h → h/2 ratios
+/// 1.5-3, not h²-limited), so for the force this bar tests noise against
+/// 2e-8, not truncation; for the stress it removes a real h² term.
 /// Richardson `(4 FD(h/2) − FD(h)) / 3` vs analytic, force and stress: the
 /// h² term cancels, so this is the sharp check. Worst floor 2.53e-9 (k UKS
 /// SCAN stress); dropped presence derivative >= 1.73e-6 (its miss is the
@@ -725,18 +728,4 @@ fn gamma_uks_rsh_force_matches_fd_with_the_switch() {
 #[ignore = "validation: Gamma ROKS CAM-B3LYP H3 force, 39 SCFs; ~1 min release"]
 fn gamma_roks_rsh_force_matches_fd_with_the_switch() {
     check("Gamma ROKS CAM-B3LYP", &cell_of(&H3), &run_gamma_roks_rsh);
-}
-
-/// The open-shell range-separated STRESS does not exist (switch or not): the
-/// request gates refuse it by name before any SCF. Pinned so a later switch
-/// wiring cannot silently report a stress without its range-separated term.
-#[test]
-fn open_shell_rsh_stress_stays_refused() {
-    use ferric_pbc::kxcgrad::Deriv;
-    let e = ferric_pbc::dft::check_gamma_uks_request(CAM, &[Deriv::Stress], false)
-        .expect_err("Gamma UKS RSH stress must be refused");
-    assert!(e.to_string().contains("stress"), "{e}");
-    let e = ferric_pbc::dft::check_gamma_roks_request(CAM, true)
-        .expect_err("Gamma ROKS RSH derivatives must be refused in the bindings");
-    assert!(e.to_string().contains("range-separated"), "{e}");
 }
