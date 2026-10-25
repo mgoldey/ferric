@@ -864,10 +864,9 @@ fn solve_uhf_impl(
     // pure aufbau. This pins the open-shell occupation through SCF and converges
     // open-shell atoms (e.g. S/O ³P) whose near-degenerate p-shell otherwise
     // makes plain DIIS oscillate forever. Empty open block for UHF (each spin is
-    // a pure closed set). Mirrors the rohf.rs MOM wiring.
+    // a pure closed set, see `mom_pin`). Mirrors the rohf.rs MOM wiring.
     let mut mom_ref_a: Option<Array2<f64>> = None;
     let mut mom_ref_b: Option<Array2<f64>> = None;
-    let empty_open: Array2<f64> = Array2::<f64>::zeros((n, 0));
 
     // K built per spin:
     //   * RSH (ω > 0): K_σ = c_SR · K_SR[D_σ] + c_LR · K_LR[D_σ] via DfK
@@ -1915,21 +1914,13 @@ fn solve_uhf_impl(
                 f_b_new += &(shift_eff * s.dot(&p_bv).dot(&s));
             }
         }
-        let (eps_a_new, mut c_a_new) = diag_a.run(&f_a_new)?;
-        let (eps_b_new, mut c_b_new) = diag_b.run(&f_b_new)?;
+        let (mut eps_a_new, mut c_a_new) = diag_a.run(&f_a_new)?;
+        let (mut eps_b_new, mut c_b_new) = diag_b.run(&f_b_new)?;
 
         // MOM occupied-orbital selection (per spin) from iter mom_after_iter+1.
         if config.mom_after_iter > 0 && iter > config.mom_after_iter {
-            if let Some(ref_a) = mom_ref_a.as_ref() {
-                if nocc_a > 0 {
-                    c_a_new = crate::mom::mom_reorder(&c_a_new, &s, ref_a, &empty_open, nocc_a, 0);
-                }
-            }
-            if let Some(ref_b) = mom_ref_b.as_ref() {
-                if nocc_b > 0 {
-                    c_b_new = crate::mom::mom_reorder(&c_b_new, &s, ref_b, &empty_open, nocc_b, 0);
-                }
-            }
+            (c_a_new, eps_a_new) = mom_pin(c_a_new, eps_a_new, &s, mom_ref_a.as_ref(), nocc_a);
+            (c_b_new, eps_b_new) = mom_pin(c_b_new, eps_b_new, &s, mom_ref_b.as_ref(), nocc_b);
         }
         c_a = c_a_new;
         c_b = c_b_new;
@@ -2365,21 +2356,51 @@ fn density(c: &Array2<f64>, nocc: usize) -> Array2<f64> {
     c_occ.dot(&c_occ.t())
 }
 
-/// Density with fixed fractional (ensemble) occupation of a degenerate frontier
-/// shell, for one spin channel: `D = Σ_p f_p c_p c_pᵀ`.
+/// One spin's MOM step: reorder the new eigenpairs so the first `nocc` columns
+/// overlap most with `mom_ref` (the previous occupied block). A no-op without a
+/// reference or with nothing occupied.
 ///
-/// Builds integer occupation `f = 1` for orbitals fully below the frontier, then
-/// detects the group of orbitals near-degenerate with the HOMO (energies within
-/// `EPS_TOL` of `eps[nocc-1]`) that straddle the occupation boundary, and spreads
-/// the remaining electrons of that shell *equally* across the whole group. For a
-/// ³P atom this puts 2/3 of an electron in each of the three degenerate p
-/// orbitals, restoring spherical symmetry so the GGA potential stops oscillating.
+/// The eigenvalues are permuted WITH the columns. `density_fractional` reads
+/// `eps[p]` as the energy of column `p`; before 2026-10-24 only C was
+/// reordered, so after a MOM swap the frontier was grouped by the energies of
+/// other orbitals and the ensemble could spread an electron into a virtual.
+fn mom_pin(
+    c: Array2<f64>,
+    eps: Vec<f64>,
+    s: &Array2<f64>,
+    mom_ref: Option<&Array2<f64>>,
+    nocc: usize,
+) -> (Array2<f64>, Vec<f64>) {
+    match mom_ref {
+        Some(r) if nocc > 0 => {
+            let empty_open = Array2::<f64>::zeros((c.nrows(), 0));
+            crate::mom::mom_reorder(&c, &eps, s, r, &empty_open, nocc, 0)
+        }
+        _ => (c, eps),
+    }
+}
+
+/// The degenerate frontier group that [`density_fractional`] spreads: the
+/// columns in `members` (ascending) each carry occupation `frac`, the other
+/// occupied columns (`p < nocc`) carry 1 and the other virtuals 0.
+struct FrontierGroup {
+    members: Vec<usize>,
+    frac: f64,
+}
+
+/// Find the fractional frontier group, or `None` when the occupation stays
+/// integer. `eps[p]` must be the energy of column `p`.
 ///
-/// Returns `None` when the occupation stays integer (HOMO non-degenerate — the
-/// common case — or nothing to spread); the caller then uses plain `density()`,
-/// so it is a no-op for ordinary molecules.
-fn density_fractional(c: &Array2<f64>, eps: &[f64], nocc: usize) -> Option<Array2<f64>> {
-    let n = c.nrows();
+/// Membership is by ENERGY, not by index: the HOMO is the highest occupied
+/// energy, the LUMO the lowest virtual one, and the group is every occupied
+/// column within `EPS_TOL` of the HOMO plus every virtual within `EPS_TOL` of
+/// the LUMO. For ε-sorted columns this is exactly the contiguous walk down
+/// from `nocc − 1` and up from `nocc` that this function used before
+/// 2026-10-24. It also holds after a MOM step, whose occupied block is ordered
+/// by overlap score (measured on Br/aug-cc-pVDZ: the 4s at −0.73 Ha lands in
+/// column `nocc − 3` or `nocc − 2` of the α block), where the index walk
+/// would anchor on whichever occupied orbital landed last.
+fn fractional_frontier_group(eps: &[f64], nocc: usize, n: usize) -> Option<FrontierGroup> {
     if nocc == 0 || nocc >= n {
         return None;
     }
@@ -2389,40 +2410,76 @@ fn density_fractional(c: &Array2<f64>, eps: &[f64], nocc: usize) -> Option<Array
     // catches only 2 of 3 and the fix fails. 0.05 Ha reliably groups them; this
     // path is opt-in (free atoms only), so a loose tol cannot affect molecules.
     const EPS_TOL: f64 = 0.05;
-    let e_homo = eps[nocc - 1];
-    // Grow the group around BOTH the HOMO (nocc-1) and the LUMO (nocc): the
-    // degenerate frontier shell straddles the occupation boundary.
-    let mut lo = nocc - 1;
-    while lo > 0 && (eps[lo - 1] - e_homo).abs() < EPS_TOL {
-        lo -= 1;
-    }
-    // Extend upward from the LUMO using the LUMO energy as the anchor (it may
-    // differ from the HOMO by the artificial split, but be within EPS_TOL).
-    let e_lumo = eps[nocc];
-    let mut hi = nocc; // start at LUMO
-    while hi + 1 < n && (eps[hi + 1] - e_lumo).abs() < EPS_TOL {
-        hi += 1;
-    }
+    let e_homo = eps[..nocc]
+        .iter()
+        .copied()
+        .fold(f64::NEG_INFINITY, f64::max);
+    let e_lumo = eps[nocc..n].iter().copied().fold(f64::INFINITY, f64::min);
     // Only act if HOMO and LUMO are within tol (genuine straddling degeneracy).
     if (e_lumo - e_homo).abs() >= EPS_TOL {
         return None;
     }
-    let group_size = hi - lo + 1;
-    if group_size <= 1 {
-        return None;
-    }
+    // The degenerate frontier shell straddles the occupation boundary: grow
+    // it around the HOMO on the occupied side and around the LUMO (which may
+    // differ from the HOMO by the artificial split) on the virtual side.
+    let members: Vec<usize> = (0..n)
+        .filter(|&p| {
+            let anchor = if p < nocc { e_homo } else { e_lumo };
+            (eps[p] - anchor).abs() < EPS_TOL
+        })
+        .collect();
     // Electrons to distribute over the group = (occupied orbitals in group).
-    let n_in_group_occupied = nocc - lo; // how many of the group are below the boundary
-    let frac = n_in_group_occupied as f64 / group_size as f64;
+    let n_in_group_occupied = members.iter().filter(|&&p| p < nocc).count();
+    let frac = n_in_group_occupied as f64 / members.len() as f64;
+    Some(FrontierGroup { members, frac })
+}
 
+/// The per-column occupation vector `f` (length `n`) that [`density_fractional`]
+/// uses, so `D = Σ_p f_p c_p c_pᵀ`; `None` when the occupation stays integer.
+/// The gradient's energy-weighted density `W = Σ_p f_p ε_p c_p c_pᵀ` is built
+/// from this same vector (`gradient::build_energy_weighted_density_uhf`).
+pub(crate) fn fractional_occupations(eps: &[f64], nocc: usize, n: usize) -> Option<Vec<f64>> {
+    let g = fractional_frontier_group(eps, nocc, n)?;
+    let mut f: Vec<f64> = (0..n).map(|p| if p < nocc { 1.0 } else { 0.0 }).collect();
+    for &p in &g.members {
+        f[p] = g.frac;
+    }
+    Some(f)
+}
+
+/// Density with fixed fractional (ensemble) occupation of a degenerate frontier
+/// shell, for one spin channel: `D = Σ_p f_p c_p c_pᵀ`.
+///
+/// Builds integer occupation `f = 1` for orbitals fully below the frontier, then
+/// detects the group of orbitals near-degenerate with the HOMO (energies within
+/// `EPS_TOL` of the highest occupied energy, see [`fractional_frontier_group`])
+/// that straddle the occupation boundary, and spreads
+/// the remaining electrons of that shell *equally* across the whole group. For a
+/// ³P atom this puts 2/3 of an electron in each of the three degenerate p
+/// orbitals, restoring spherical symmetry so the GGA potential stops oscillating.
+///
+/// Returns `None` when the occupation stays integer (HOMO non-degenerate — the
+/// common case — or nothing to spread); the caller then uses plain `density()`,
+/// so it is a no-op for ordinary molecules.
+fn density_fractional(c: &Array2<f64>, eps: &[f64], nocc: usize) -> Option<Array2<f64>> {
+    let n = c.nrows();
+    let FrontierGroup { members, frac } = fractional_frontier_group(eps, nocc, n)?;
+    let core: Vec<usize> = (0..nocc).filter(|p| !members.contains(p)).collect();
     let mut d = Array2::<f64>::zeros((n, n));
-    // Fully-occupied orbitals below the degenerate group: f = 1.
-    if lo > 0 {
-        let c_core = c.slice(ndarray::s![.., ..lo]);
+    // Fully-occupied orbitals outside the degenerate group: f = 1. For
+    // ε-sorted columns they are the leading block, contracted as a slice
+    // exactly as before; after a MOM reorder they are gathered.
+    if core.iter().enumerate().all(|(k, &p)| k == p) {
+        if !core.is_empty() {
+            let c_core = c.slice(ndarray::s![.., ..core.len()]);
+            d = c_core.dot(&c_core.t());
+        }
+    } else {
+        let c_core = c.select(ndarray::Axis(1), &core);
         d = c_core.dot(&c_core.t());
     }
     // Degenerate group: f = frac each.
-    for p in lo..=hi {
+    for &p in &members {
         let cp = c.slice(ndarray::s![.., p]);
         let outer = {
             let col = cp.to_owned();
@@ -3181,6 +3238,70 @@ mod tests {
             df.energy,
             exact.energy
         );
+    }
+
+    #[test]
+    fn mom_scrambled_occupied_block_keeps_the_fractional_group() {
+        // A Br-like β channel: n = 5, S = I, C = I, ε-sorted
+        // [-0.700 (s), -0.276, -0.275, -0.274 (p shell), 0.030], nocc = 3, so
+        // the ensemble is s full and 2/3 on each p. MOM orders the occupied
+        // block by overlap SCORE: with the reference below the scores are
+        // u1 = u2 = 1 and u0 = 0.81, so the block becomes [u1, u2, u0] and the
+        // s orbital sits in the HOMO slot `nocc − 1`.
+        //
+        // Measured failure modes this pins:
+        // * ε left in diagonalisation order (pre-fix): the group is columns
+        //   1..=3 = [u2, u0, u3], so the s orbital got 2/3 and u1 a full 1.
+        // * ε permuted but the group found by the old index walk anchored on
+        //   eps[nocc − 1] = −0.700: no group, the ensemble collapses to integer.
+        let n = 5;
+        let s = Array2::<f64>::eye(n);
+        let c = Array2::<f64>::eye(n);
+        let eps = vec![-0.700, -0.276, -0.275, -0.274, 0.030];
+        let mut mom_ref = Array2::<f64>::zeros((n, 3));
+        mom_ref[(1, 0)] = 1.0;
+        mom_ref[(2, 1)] = 1.0;
+        mom_ref[(0, 2)] = 0.9;
+        mom_ref[(4, 2)] = (1.0f64 - 0.81).sqrt();
+        let (c_m, eps_m) = mom_pin(c, eps, &s, Some(&mom_ref), 3);
+        let (d, occ) = spin_density_and_occ(&c_m, &eps_m, 3, true);
+        let f = 2.0 / 3.0;
+        let expected = Array2::from_diag(&ndarray::arr1(&[1.0, f, f, f, 0.0]));
+        let err = (&d - &expected).iter().fold(0.0_f64, |m, v| m.max(v.abs()));
+        assert!(err < 1e-15, "wrong ensemble after the MOM reorder: {d:?}");
+        assert!(occ.is_none(), "fractional density must not cache C_occ");
+        assert_eq!(eps_m, vec![-0.276, -0.275, -0.700, -0.274, 0.030]);
+    }
+
+    #[test]
+    fn mom_swap_groups_the_fractional_frontier_by_the_moved_energies() {
+        // Four orthonormal orbitals (S = I, C = I), ε-sorted by the
+        // diagonaliser: [-1.00, -0.30, -0.28, -0.20], nocc = 2. MOM keeps the
+        // previously occupied set {u0, u3}: u3 is pinned although it rose
+        // above u1, u2. After the swap the column order is [u0, u3, u1, u2] and
+        // their energies are [-1.00, -0.20, -0.30, -0.28]: the HOMO (u3,
+        // -0.20) and LUMO (u1, -0.30) are 0.10 Ha apart, outside the 0.05 Ha
+        // grouping tolerance, so the occupation stays integer, D = u0 u0ᵀ +
+        // u3 u3ᵀ.
+        //
+        // With the eigenvalues left in diagonalisation order (the pre-fix
+        // code), column 1 (u3) was given -0.30 and column 2 (u1) -0.28, so the
+        // ensemble spread the pinned electron half onto u1, a virtual.
+        let n = 4;
+        let s = Array2::<f64>::eye(n);
+        let c = Array2::<f64>::eye(n);
+        let eps = vec![-1.00, -0.30, -0.28, -0.20];
+        let mut mom_ref = Array2::<f64>::zeros((n, 2));
+        mom_ref[(0, 0)] = 1.0;
+        mom_ref[(3, 1)] = 1.0;
+        let (c_m, eps_m) = mom_pin(c, eps, &s, Some(&mom_ref), 2);
+        let (d, occ) = spin_density_and_occ(&c_m, &eps_m, 2, true);
+        let mut expected = Array2::<f64>::zeros((n, n));
+        expected[(0, 0)] = 1.0;
+        expected[(3, 3)] = 1.0;
+        assert_eq!(d, expected, "MOM-pinned occupation was spread: {d:?}");
+        assert!(occ.is_some(), "integer density must keep its C_occ cache");
+        assert_eq!(eps_m, vec![-1.00, -0.20, -0.30, -0.28]);
     }
 
     #[test]

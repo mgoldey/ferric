@@ -572,7 +572,7 @@ fn check_w_mutants(mol: &Molecule, basis_name: &str) {
     // What `uhf_hessian_parts` would do with a ROHF result: the library's UHF
     // eigenvalue builder. A ROHF result carries no beta orbitals, so only the
     // alpha half is built (the real hazard named in the #291 sizing report).
-    let w_uhf_library = build_energy_weighted_density_uhf(&fx.rohf, nc + no, nc);
+    let w_uhf_library = build_energy_weighted_density_uhf(&fx.rohf, nc + no, nc).unwrap();
     // The UHF eigenvalue form with the beta half rebuilt from the SAME orbital
     // set is algebraically C diag(2 eps_c, eps_o) C^T, the Roothaan form below
     // (one mutant, not two).

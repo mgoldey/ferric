@@ -548,7 +548,7 @@ pub fn uhf_gradient_cosx(
         .ok_or_else(|| FerricError::General("uhf_gradient_cosx: missing density_beta".into()))?;
     let d_total = d_a + d_b;
     if !cosx.overlap_fit {
-        let w = build_energy_weighted_density_uhf(result, nocc_a, nocc_b);
+        let w = build_energy_weighted_density_uhf(result, nocc_a, nocc_b)?;
         let mut grad = oneelectron_gradient(mol, prep, &d_total, &w, ext)?;
         grad += &cosx_run_coulomb_gradient(mol, prep, op, bounds, result, &d_total, None)?;
         grad += &crate::cosx_gradient::cosx_exchange_gradient(
@@ -561,6 +561,7 @@ pub fn uhf_gradient_cosx(
         return Ok(grad);
     }
     // Overlap fit: per-spin Z-vector Lagrangian (Hartree-Fock, c_x = 1).
+    require_integer_uhf_occupation(result, nocc_a, nocc_b, "uhf_gradient_cosx (overlap fit)")?;
     let (c_b, eps_b) = match (result.mos_beta.as_ref(), result.eps_beta.as_ref()) {
         (Some(c), Some(e)) => (c, e.as_slice()),
         _ => {
@@ -1916,25 +1917,143 @@ pub(crate) fn gamma_uhf(
         - 0.5 * (da[(mu, la)] * da[(nu, sg)] + db[(mu, la)] * db[(nu, sg)])
 }
 
-/// Build the UHF energy-weighted density: W = W_α + W_β with
-/// W_σ = Σ_i^occ_σ ε_σi C_σi C_σi^T.
+/// Build the UHF energy-weighted density `W = W_α + W_β`, with
+/// `W_σ = Σ_p f_σp ε_σp c_σp c_σpᵀ` over the SAME occupations `f_σ` that built
+/// the SCF density `D_σ = Σ_p f_σp c_σp c_σpᵀ`.
+///
+/// For an integer occupation (`f = 1` on the first `nocc` columns) this is the
+/// textbook `C_occ diag(ε_occ) C_occᵀ`, evaluated exactly as before. Under
+/// `fractional_occ` the frontier group carries `f < 1`, and the Pulay term
+/// needs the same `f`: with orthonormality multipliers `λ`, stationarity of
+/// `E − Σ λ_pq (c_pᵀ S c_q − δ_pq)` gives `λ_qp = f_p F_qp`, which is symmetric
+/// (a valid multiplier) only if `F_pq (f_p − f_q) = 0` — true for the canonical
+/// orbitals of the converged F — and then `−Σ λ_pq c_pᵀ S^R c_q` is
+/// `−tr(W S^R)` with `W = C f ε Cᵀ`. The occupations are fixed numbers (the
+/// count over the group size), not variables, so the energy need not be
+/// stationary in `f`; it only has to keep the same grouping at nearby
+/// geometries. Before 2026-10-24 this used the integer `nocc` columns while
+/// the gradient's densities were the fractional ones.
+///
+/// The occupations are recovered, not assumed: the stored density must equal
+/// the integer product or the fractional ensemble of
+/// [`crate::uhf::fractional_occupations`] (what the SCF used), to
+/// [`W_OCCUPATION_TOL`]. A density that is neither (a MOM excited state, whose
+/// stored orbitals are the ε-sorted final diagonalisation) is refused rather
+/// than given an inconsistent W.
 pub fn build_energy_weighted_density_uhf(
     result: &ScfResult,
     nocc_a: usize,
     nocc_b: usize,
-) -> Array2<f64> {
-    // W = Σ_spin C_occ diag(ε) C_occ^T (per-spin, unit weight — UHF, not ×2).
-    let spin_block = |c: &Array2<f64>, eps: &[f64], nocc: usize| {
-        let c_occ = c.slice(ndarray::s![.., ..nocc]);
-        let eps_occ = ndarray::ArrayView1::from(&eps[..nocc]);
-        let cw = &c_occ * &eps_occ;
-        c_occ.dot(&cw.t())
-    };
-    let mut w = spin_block(&result.mos_alpha, &result.eps_alpha, nocc_a);
+) -> Result<Array2<f64>, FerricError> {
+    let mut w = spin_energy_weighted_density(
+        &result.mos_alpha,
+        &result.eps_alpha,
+        nocc_a,
+        &result.density_alpha,
+        "alpha",
+    )?;
     if let (Some(cb), Some(epsb)) = (result.mos_beta.as_ref(), result.eps_beta.as_ref()) {
-        w = w + spin_block(cb, epsb, nocc_b);
+        let db = result.density_beta.as_ref().ok_or_else(|| {
+            FerricError::General("energy-weighted density: missing density_beta".into())
+        })?;
+        w = w + spin_energy_weighted_density(cb, epsb, nocc_b, db, "beta")?;
     }
-    w
+    Ok(w)
+}
+
+/// Max-abs mismatch allowed between the stored spin density and `C f Cᵀ` when
+/// recovering the occupations `f` for W. A converged SCF matches to the size
+/// of its last density step (≤ 1e-4 at the loosest test settings); dropping or
+/// adding a fractional frontier occupation changes D by O(0.1).
+pub const W_OCCUPATION_TOL: f64 = 1e-3;
+
+/// One spin's `W_σ = C f ε Cᵀ`, with `f` recovered from the stored density.
+fn spin_energy_weighted_density(
+    c: &Array2<f64>,
+    eps: &[f64],
+    nocc: usize,
+    d: &Array2<f64>,
+    spin: &str,
+) -> Result<Array2<f64>, FerricError> {
+    match recover_spin_occupations(c, eps, nocc, d, spin)? {
+        None => {
+            let c_occ = c.slice(ndarray::s![.., ..nocc]);
+            let eps_occ = ndarray::ArrayView1::from(&eps[..nocc]);
+            let cw = &c_occ * &eps_occ;
+            Ok(c_occ.dot(&cw.t()))
+        }
+        Some(f) => {
+            let fe = &f * &ndarray::ArrayView1::from(eps);
+            Ok((c * &fe).dot(&c.t()))
+        }
+    }
+}
+
+/// The occupations behind one stored spin density: `None` when `D = C_occ C_occᵀ`
+/// (integer, the first `nocc` columns), `Some(f)` when `D = C f Cᵀ` with the
+/// `fractional_occ` ensemble `f`, and an error when it is neither (to
+/// [`W_OCCUPATION_TOL`]).
+fn recover_spin_occupations(
+    c: &Array2<f64>,
+    eps: &[f64],
+    nocc: usize,
+    d: &Array2<f64>,
+    spin: &str,
+) -> Result<Option<ndarray::Array1<f64>>, FerricError> {
+    let max_abs_diff = |a: &Array2<f64>| (a - d).iter().fold(0.0_f64, |m, v| m.max(v.abs()));
+    let c_occ = c.slice(ndarray::s![.., ..nocc]);
+    let integer_mismatch = max_abs_diff(&c_occ.dot(&c_occ.t()));
+    if integer_mismatch <= W_OCCUPATION_TOL {
+        return Ok(None);
+    }
+    let mut fractional_mismatch = f64::NAN;
+    if let Some(f) = crate::uhf::fractional_occupations(eps, nocc, c.ncols()) {
+        let f = ndarray::Array1::from(f);
+        fractional_mismatch = max_abs_diff(&(c * &f).dot(&c.t()));
+        if fractional_mismatch <= W_OCCUPATION_TOL {
+            return Ok(Some(f));
+        }
+    }
+    Err(FerricError::General(format!(
+        "UHF gradient: the {spin} density is neither the integer occupation of the stored \
+         orbitals (max |ΔD| {integer_mismatch:.2e}) nor their fractional_occ ensemble \
+         (max |ΔD| {fractional_mismatch:.2e}), so the energy-weighted density W cannot be \
+         built from the same occupations (tolerance {W_OCCUPATION_TOL:.0e}). An unconverged \
+         SCF or a MOM excited state gives this; use a finite-difference gradient"
+    )))
+}
+
+/// Refuse a gradient path whose response equations assume integer
+/// occupation (the COSX overlap-fit Z-vector) on a `fractional_occ` result.
+fn require_integer_uhf_occupation(
+    result: &ScfResult,
+    nocc_a: usize,
+    nocc_b: usize,
+    what: &str,
+) -> Result<(), FerricError> {
+    let mut spins = vec![(
+        &result.mos_alpha,
+        &result.eps_alpha,
+        nocc_a,
+        &result.density_alpha,
+        "alpha",
+    )];
+    if let (Some(c), Some(e), Some(d)) = (
+        result.mos_beta.as_ref(),
+        result.eps_beta.as_ref(),
+        result.density_beta.as_ref(),
+    ) {
+        spins.push((c, e, nocc_b, d, "beta"));
+    }
+    for (c, eps, nocc, d, spin) in spins {
+        if recover_spin_occupations(c, eps, nocc, d, spin)?.is_some() {
+            return Err(FerricError::General(format!(
+                "{what}: not implemented for fractional occupation (the {spin} density is a \
+                 fractional_occ ensemble; its Z-vector assumes integer occupation)"
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// Compute the UHF analytical nuclear gradient.
@@ -1986,7 +2105,7 @@ fn uhf_gradient_densities<'a>(
         .as_ref()
         .expect("uhf_gradient: missing density_beta");
     let d_total = &result.density_alpha + d_beta;
-    let w = build_energy_weighted_density_uhf(result, nocc_a, nocc_b);
+    let w = build_energy_weighted_density_uhf(result, nocc_a, nocc_b)?;
     Ok((d_total, d_beta, w))
 }
 

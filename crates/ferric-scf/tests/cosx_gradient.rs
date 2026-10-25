@@ -939,7 +939,7 @@ fn fitted_uhf_cosx_gradient_matches_fd_ho2_sto3g() {
     let d_a = &r.density_alpha;
     let d_b = r.density_beta.as_ref().expect("beta");
     let d_t = d_a + d_b;
-    let w = build_energy_weighted_density_uhf(&r, na, nb);
+    let w = build_energy_weighted_density_uhf(&r, na, nb).unwrap();
     let mut g_nr = oneelectron_gradient(&mol, &prep, &d_t, &w, None).expect("1e");
     g_nr += &twoelectron_j_gradient(&prep, op, &bounds, &d_t).expect("J");
     g_nr +=

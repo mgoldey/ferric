@@ -51,7 +51,7 @@ pub(super) fn uhf_hessian_parts_with(
     let nocc = uhf_occupations(mol);
     let (da, db) = uhf_spin_densities(uhf)?;
     let d = da + db;
-    let w = build_energy_weighted_density_uhf(uhf, nocc[0], nocc[1]);
+    let w = build_energy_weighted_density_uhf(uhf, nocc[0], nocc[1])?;
 
     let extra = extra_charges(config);
     let nuclear = nuclear_term(mol, config);
