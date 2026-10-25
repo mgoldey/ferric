@@ -1059,6 +1059,9 @@ fn solve_uhf_impl(
     // j_buf/k_a_buf/k_b_buf. `None` until the first full build.
     let mut d_last_fock: Option<(Array2<f64>, Array2<f64>)> = None;
     const INCREMENTAL_FULL_REBUILD_EVERY: usize = 8;
+    // Newton and TRAH rebuild an integer density after each step; under
+    // fractional occupation they stay off (see second_order_blocked_by_fractional_occ).
+    let fractional_blocks_second_order = second_order_blocked_by_fractional_occ(config);
 
     for iter in 1..=config.max_iter {
         ctx.check_interrupted()?;
@@ -1479,7 +1482,8 @@ fn solve_uhf_impl(
             .is_some_and(|t| err_max < t || trah_engaged)
             && iter > 3
             && k_mix.omega == 0.0
-            && !crate::rohf::xc_is_metagga(config.xc.as_deref());
+            && !crate::rohf::xc_is_metagga(config.xc.as_deref())
+            && !fractional_blocks_second_order;
         // One condition for "a TRAH step runs", used BOTH to gate the step and
         // to discard a stale prediction — see the RHF counterpart for why these
         // must not diverge (a radius that collapses mid-run would otherwise
@@ -1731,7 +1735,8 @@ fn solve_uhf_impl(
             && iter > 3
             && err_max < config.newton_trigger
             && k_mix.omega == 0.0
-            && !crate::rohf::xc_is_metagga(config.xc.as_deref());
+            && !crate::rohf::xc_is_metagga(config.xc.as_deref())
+            && !fractional_blocks_second_order;
         if use_newton {
             let f_a_mo = c_a.t().dot(&f_a).dot(&c_a);
             let f_b_mo = c_b.t().dot(&f_b).dot(&c_b);
@@ -1888,17 +1893,11 @@ fn solve_uhf_impl(
             mom_ref_b = Some(c_b.slice(ndarray::s![.., ..nocc_b]).to_owned());
         }
         let d_tot_old = &d_a + &d_b;
-        if config.fractional_occ {
-            d_a = density_fractional(&c_a, &eps_a_new, nocc_a);
-            d_b = density_fractional(&c_b, &eps_b_new, nocc_b);
-        } else {
-            d_a = density(&c_a, nocc_a);
-            d_b = density(&c_b, nocc_b);
-        }
-        // Refresh the cached occupied MO blocks for the next iteration's DF-K
-        // half-transform (kept None under fractional occupation — see occ_or_none).
-        d_occ_a = occ_or_none(&c_a, nocc_a);
-        d_occ_b = occ_or_none(&c_b, nocc_b);
+        // Density plus the cached occupied MO block for the next iteration's
+        // DF-K half-transform; the cache is None whenever the ensemble density
+        // is genuinely fractional (see spin_density_and_occ).
+        (d_a, d_occ_a) = spin_density_and_occ(&c_a, &eps_a_new, nocc_a, config.fractional_occ);
+        (d_b, d_occ_b) = spin_density_and_occ(&c_b, &eps_b_new, nocc_b, config.fractional_occ);
         // ΔP over the total density (α+β) — consumed at the top of the next
         // iteration by rhf::scf_converged. Drains to zero at the RI fixed point
         // even when the DIIS commutator parks on the naux noise floor.
@@ -2132,15 +2131,13 @@ fn density(c: &Array2<f64>, nocc: usize) -> Array2<f64> {
 /// ³P atom this puts 2/3 of an electron in each of the three degenerate p
 /// orbitals, restoring spherical symmetry so the GGA potential stops oscillating.
 ///
-/// Falls back to plain integer `density()` when the HOMO is non-degenerate (the
-/// common case), so it is a no-op for ordinary molecules.
-fn density_fractional(c: &Array2<f64>, eps: &[f64], nocc: usize) -> Array2<f64> {
+/// Returns `None` when the occupation stays integer (HOMO non-degenerate — the
+/// common case — or nothing to spread); the caller then uses plain `density()`,
+/// so it is a no-op for ordinary molecules.
+fn density_fractional(c: &Array2<f64>, eps: &[f64], nocc: usize) -> Option<Array2<f64>> {
     let n = c.nrows();
-    if nocc == 0 {
-        return Array2::zeros((n, n));
-    }
-    if nocc >= n {
-        return density(c, nocc);
+    if nocc == 0 || nocc >= n {
+        return None;
     }
     // Tolerance must be loose enough to capture a frontier shell that the
     // *oscillating* SCF has artificially split. For a free ³P atom the three p
@@ -2164,11 +2161,11 @@ fn density_fractional(c: &Array2<f64>, eps: &[f64], nocc: usize) -> Array2<f64> 
     }
     // Only act if HOMO and LUMO are within tol (genuine straddling degeneracy).
     if (e_lumo - e_homo).abs() >= EPS_TOL {
-        return density(c, nocc);
+        return None;
     }
     let group_size = hi - lo + 1;
     if group_size <= 1 {
-        return density(c, nocc);
+        return None;
     }
     // Electrons to distribute over the group = (occupied orbitals in group).
     let n_in_group_occupied = nocc - lo; // how many of the group are below the boundary
@@ -2195,7 +2192,66 @@ fn density_fractional(c: &Array2<f64>, eps: &[f64], nocc: usize) -> Array2<f64> 
         };
         d += &outer;
     }
-    d
+    Some(d)
+}
+
+/// Whether `fractional_occ` keeps the second-order (Newton / TRAH) steps off.
+///
+/// Both steps rotate the orbitals and rebuild the integer density
+/// `C_occ·C_occᵀ`, then skip the DIIS branch, which is the only place
+/// `density_fractional` runs. Under `fractional_occ` they therefore dropped
+/// the ensemble occupation: before 2026-10-24, Br/def2-SVP/O3LYP with
+/// `newton_trigger = 0.1` converged to the integer state, 16 mHa from the
+/// fractional DIIS answer. So they stay off, and the SCF uses DIIS, the same
+/// way the analytic Hessian and the KS z-vector refuse fractional occupation.
+/// An explicit request is reported once per solve instead of skipped silently.
+fn second_order_blocked_by_fractional_occ(config: &UhfConfig) -> bool {
+    if !config.fractional_occ {
+        return false;
+    }
+    let requested: Vec<&str> = [
+        (config.newton_trigger > 0.0, "newton_trigger"),
+        (config.trah_trigger.is_some(), "trah_trigger"),
+    ]
+    .into_iter()
+    .filter_map(|(on, name)| on.then_some(name))
+    .collect();
+    if !requested.is_empty() {
+        eprintln!(
+            "[warning] solve_uhf: {} ignored: fractional occupation. Newton/TRAH steps rebuild \
+             an integer-occupied density, so this SCF uses DIIS only",
+            requested.join(" and ")
+        );
+    }
+    true
+}
+
+/// One spin's density after an SCF step, paired with the occupied MO block
+/// that drives the DF-K half-transform (`KBuilder::build_from_occ`, which
+/// returns K for `C_occ·C_occᵀ`).
+///
+/// The cache is `Some(C_occ)` exactly when `D = C_occ·C_occᵀ`. A genuinely
+/// fractional ensemble density (`D = Σ_p f_p c_p c_pᵀ`, 0 < f < 1 on the
+/// frontier group) is not that product, so it returns `None` and K is built
+/// from `D` itself — the same convention the RHF Fermi-smearing path uses
+/// (`d_occ = None` in `rhf.rs`). Before 2026-10-24 the cache was always the
+/// integer C_occ, so under `fractional_occ` + DF-K, K came from the integer
+/// occupation while J, E and V_xc came from the fractional D. When
+/// `fractional_occ` finds nothing to spread, `D` and the cache are the
+/// integer ones, bit-identical to `fractional_occ = false`.
+fn spin_density_and_occ(
+    c: &Array2<f64>,
+    eps: &[f64],
+    nocc: usize,
+    fractional_occ: bool,
+) -> (Array2<f64>, Option<Array2<f64>>) {
+    if fractional_occ {
+        if let Some(d) = density_fractional(c, eps, nocc) {
+            return (d, None);
+        }
+    }
+    let occ = (nocc > 0).then(|| c.slice(ndarray::s![.., ..nocc]).to_owned());
+    (density(c, nocc), occ)
 }
 
 /// Diagonalize F in the canonical-orthogonal basis X (n × m), padding the
@@ -2611,6 +2667,201 @@ mod tests {
             res.converged,
             "UKS-PBE O atom did not converge with fractional occ"
         );
+    }
+
+    /// Max-abs deviation from idempotency, `max|D·S·D − D|`: zero for an
+    /// integer-occupied spin density, nonzero once the ensemble path spreads.
+    fn idempotency_defect(d: &Array2<f64>, s: &Array2<f64>) -> f64 {
+        (&d.dot(s).dot(d) - d)
+            .iter()
+            .fold(0.0_f64, |m, v| m.max(v.abs()))
+    }
+
+    #[test]
+    fn fractional_occ_dfk_is_bit_identical_when_occupations_stay_integer() {
+        // Exactness anchor for the fractional-occupation DF-K cache: H2O+ has a
+        // non-degenerate frontier in both spins, so `fractional_occ` finds
+        // nothing to spread and must reproduce `fractional_occ = false` — the
+        // same density, the same C_occ half-transform, the same bits. This
+        // guards against a NEEDLESS dense fallback (or any other change to the
+        // integer path); it cannot see the bug itself, which needs a genuinely
+        // fractional density (see fractional_occ_dfk_matches_exact_k).
+        let mol = Molecule::parse_xyz(
+            "3\nwater cation\nO 0.000000 0.000000 0.117300\nH 0.000000 0.757200 -0.469200\nH 0.000000 -0.757200 -0.469200\n",
+            1,
+            2,
+        )
+        .unwrap();
+        let bs = basis::bundled("def2-svp").unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let op = ferric_integrals::operator::Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+        let ctx = ParallelContext::default();
+        let run = |fractional_occ: bool| {
+            let cfg = UhfConfig {
+                max_iter: 100,
+                df_k_aux: Some("def2-universal-jkfit".to_string()),
+                fractional_occ,
+                ..Default::default()
+            };
+            solve_uhf(&ctx, &mol, &prep, &bounds, &cfg).unwrap()
+        };
+        let (plain, frac) = (run(false), run(true));
+        assert!(plain.converged && frac.converged);
+        let s = oneelectron::overlap(&prep);
+        assert!(
+            idempotency_defect(frac.density_beta.as_ref().unwrap(), &s) < 1e-8,
+            "fixture must stay integer-occupied for this anchor"
+        );
+        assert_eq!(frac.iterations, plain.iterations);
+        assert_eq!(
+            frac.energy.to_bits(),
+            plain.energy.to_bits(),
+            "integer-occupation fractional_occ run {} != plain {}",
+            frac.energy,
+            plain.energy
+        );
+    }
+
+    #[test]
+    fn fractional_occ_dfk_matches_exact_k() {
+        // Free Br atom (²P), UKS-O3LYP (11.6 % exact exchange) with
+        // `fractional_occ`: the β 4p hole is spread 1/3 over px/py/pz, so D_β is
+        // NOT C_occ·C_occᵀ. (With ≥20 % exchange, PBE0/B3LYP/HF, the exchange
+        // splitting of the p shell exceeds the 0.05 Ha grouping tolerance and
+        // the occupations stay integer — hence this functional.) DF-K must then
+        // build K_β from D_β itself; before the fix it used the integer C_occ
+        // half-transform, so K described a different density from J, E and
+        // V_xc. Reference: the same calculation with exact (direct) K; J is
+        // exact in both arms, so the only difference left is the K fit.
+        // Measured 2026-10-24: fixed DF-K −2574.3315855 vs exact-K
+        // −2574.3315936 Ha (8.0e-6, the fit). The old cache broke the p-shell
+        // symmetry through K, the ensemble collapsed to integer occupation, and
+        // DF-K converged to a different state at −2574.3475260 Ha (1.59e-2 Ha
+        // away); both asserts below fail on that behaviour.
+        let mol = Molecule::parse_xyz("1\nBr\nBr 0 0 0\n", 0, 2).unwrap();
+        let bs = basis::bundled("def2-svp").unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let op = ferric_integrals::operator::Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+        let ctx = ParallelContext::default();
+        let s = oneelectron::overlap(&prep);
+        let run = |df_k_aux: Option<&str>| {
+            let cfg = UhfConfig {
+                xc: Some("HYB_GGA_XC_O3LYP".to_string()),
+                fractional_occ: true,
+                max_iter: 200,
+                df_k_aux: df_k_aux.map(str::to_string),
+                ..Default::default()
+            };
+            solve_uhf(&ctx, &mol, &prep, &bounds, &cfg).unwrap()
+        };
+        let (exact, df) = (run(None), run(Some("def2-universal-jkfit")));
+        assert!(exact.converged && df.converged, "Br/O3LYP did not converge");
+        for (name, r) in [("exact-K", &exact), ("DF-K", &df)] {
+            let defect = idempotency_defect(r.density_beta.as_ref().unwrap(), &s);
+            assert!(
+                defect > 1e-2,
+                "{name}: β density is idempotent ({defect:.1e}) — fractional path not taken"
+            );
+        }
+        let de = (df.energy - exact.energy).abs();
+        eprintln!(
+            "Br/def2-SVP O3LYP fractional: DF-K {:.10} exact-K {:.10} |dE| {de:.3e}",
+            df.energy, exact.energy
+        );
+        assert!(
+            de < 1e-4,
+            "DF-K {} vs exact-K {} differ by {de:.2e} (> DF-K fitting error)",
+            df.energy,
+            exact.energy
+        );
+    }
+
+    #[test]
+    fn spin_density_and_occ_caches_c_occ_only_for_integer_densities() {
+        // Synthetic orthonormal-column C (identity, 6 AOs), eps with a 3-fold
+        // degenerate group straddling nocc=3 (orbitals 2..=4), and a
+        // non-degenerate control.
+        let n = 6;
+        let c = Array2::<f64>::eye(n);
+        let degenerate = [-1.0, -0.5, -0.2, -0.2, -0.2, 0.5];
+        let gapped = [-1.0, -0.5, -0.2, 0.3, 0.4, 0.5];
+        let c_ct = |o: &Array2<f64>| o.dot(&o.t());
+        // Degenerate + fractional_occ: D spreads 1/3 over the group, no cache.
+        let (d, occ) = spin_density_and_occ(&c, &degenerate, 3, true);
+        assert!(occ.is_none(), "fractional D must not carry a C_occ cache");
+        for (p, want) in [1.0, 1.0, 1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0, 0.0]
+            .iter()
+            .enumerate()
+        {
+            assert!((d[(p, p)] - want).abs() < 1e-15, "f_{p} = {}", d[(p, p)]);
+        }
+        // Every integer case caches exactly the C_occ with C_occ·C_occᵀ == D.
+        for (eps, frac) in [(&degenerate, false), (&gapped, true), (&gapped, false)] {
+            for nocc in [0, 3, n] {
+                let (d, occ) = spin_density_and_occ(&c, eps, nocc, frac);
+                match occ {
+                    Some(o) => assert_eq!(c_ct(&o), d, "C_occ·C_occᵀ != D (nocc {nocc})"),
+                    None => {
+                        assert_eq!(nocc, 0, "integer D lost its cache (nocc {nocc})");
+                        assert!(d.iter().all(|v| *v == 0.0));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn fractional_occ_keeps_newton_and_trah_off() {
+        // Newton and TRAH rebuild an integer density after every step, so with
+        // them armed the Br/O3LYP ensemble used to collapse onto the integer
+        // state (−2574.3475339 Ha exact-K at newton_trigger = 0.1, 16 mHa from
+        // the fractional DIIS answer). With fractional_occ they must stay off
+        // and the run must land on the fractional DIIS state.
+        let mol = Molecule::parse_xyz("1\nBr\nBr 0 0 0\n", 0, 2).unwrap();
+        let bs = basis::bundled("def2-svp").unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let op = ferric_integrals::operator::Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+        let ctx = ParallelContext::default();
+        let s = oneelectron::overlap(&prep);
+        let run = |newton_trigger: f64, trah_trigger: Option<f64>| {
+            let cfg = UhfConfig {
+                xc: Some("HYB_GGA_XC_O3LYP".to_string()),
+                fractional_occ: true,
+                max_iter: 200,
+                df_k_aux: Some("def2-universal-jkfit".to_string()),
+                newton_trigger,
+                trah_trigger,
+                ..Default::default()
+            };
+            solve_uhf(&ctx, &mol, &prep, &bounds, &cfg).unwrap()
+        };
+        let diis = run(0.0, None);
+        assert!(diis.converged);
+        for (name, newton_trigger, trah_trigger) in
+            [("newton", 0.1, None), ("trah", 0.0, Some(0.1))]
+        {
+            let r = run(newton_trigger, trah_trigger);
+            assert!(r.converged, "{name}: not converged");
+            let defect = idempotency_defect(r.density_beta.as_ref().unwrap(), &s);
+            let de = (r.energy - diis.energy).abs();
+            eprintln!(
+                "{name}: E {:.10} vs DIIS {:.10} |dE| {de:.3e} defect {defect:.2e}",
+                r.energy, diis.energy
+            );
+            assert!(
+                defect > 1e-2,
+                "{name}: β density is idempotent ({defect:.1e}) — fractional occupation dropped"
+            );
+            assert!(
+                de < 1e-4,
+                "{name}: E {} vs fractional DIIS {} ({de:.2e})",
+                r.energy,
+                diis.energy
+            );
+        }
     }
 
     #[test]
