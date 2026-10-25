@@ -609,9 +609,10 @@ fn pyscf_krohf_kroks_pins() {
 /// after 200 iterations, 6.4e-2 after 600; with the shift 34 iterations).
 /// The negative control is capped at 60 iterations, ~2x the shifted count.
 ///
-/// NOT covered: the 1x1x2 mesh of the same cell converges with no shift
-/// tried (0.05-0.5 ramped, 0.1-0.5 constant; 300-600 iterations) — that
-/// needs a second-order k-ROKS solver, which does not exist yet.
+/// NOT covered: on the 1x1x2 mesh the same cell does NOT converge with any
+/// shift tried (0, and 0.05-0.5 ramped or 0.1-0.5 constant; 300-600
+/// iterations) — that needs a second-order k-ROKS solver, which does not
+/// exist yet.
 #[test]
 fn kroks_hybrid_default_level_shift_converges_the_roothaan_trap() {
     const TRI_ROKS_PBE0_NONE: f64 = -1.465458280448; // pbc_rohf.rs

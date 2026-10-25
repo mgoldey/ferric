@@ -4891,6 +4891,10 @@ pub struct PeriodicPlan {
     pub energy_conv: f64,
     /// k-point SCF orbital-gradient threshold.
     pub grad_conv: f64,
+    /// k-point ROHF / ROKS `[scf] level_shift` (Hartree) where WRITTEN;
+    /// `None` = the solver's automatic shift (0.05, ramped out, for a hybrid
+    /// ROKS; 0 for LDA/GGA and ROHF; `ferric_pbc::kroks::KRohfConfig`).
+    pub level_shift: Option<f64>,
     pub n_radial: usize,
     pub n_angular: usize,
     pub neighbour_cutoff_bohr: Option<f64>,
@@ -5274,13 +5278,16 @@ fn periodic_raw_key_check(
                         "max_iter" => true,
                         "density_conv" => !kpoints,
                         "energy_conv" => kpoints,
+                        "level_shift" => {
+                            kpoints && matches!(route, PeriodicRoute::Rohf | PeriodicRoute::Roks)
+                        }
                         _ => false,
                     };
                     if !ok {
                         return Err(format!(
                             "[scf] {key} is not read by the periodic ([cell]) {} path. It \
-                             reads [scf] max_iter, density_conv (Gamma point) and \
-                             energy_conv (k-point mesh) only",
+                             reads [scf] max_iter, density_conv (Gamma point), energy_conv \
+                             (k-point mesh) and level_shift (k-point ROHF / ROKS) only",
                             if kpoints { "k-point" } else { "Gamma-point" }
                         ));
                     }
@@ -5743,6 +5750,18 @@ pub fn periodic_plan(cfg: &Config, raw: &toml::Value) -> Result<Option<PeriodicP
     } else {
         1e-12
     };
+    // Admitted by periodic_raw_key_check on the k-point ROHF / ROKS routes only.
+    let level_shift = match cfg.scf.level_shift {
+        Some(v) if written.contains(&"level_shift") => {
+            if !(v.is_finite() && v >= 0.0) {
+                return Err(format!(
+                    "[scf] level_shift must be finite and >= 0 (Hartree), got {v}"
+                ));
+            }
+            Some(v)
+        }
+        _ => None,
+    };
 
     Ok(Some(PeriodicPlan {
         route,
@@ -5763,6 +5782,7 @@ pub fn periodic_plan(cfg: &Config, raw: &toml::Value) -> Result<Option<PeriodicP
         density_conv,
         energy_conv,
         grad_conv: c.grad_conv.unwrap_or(1e-9),
+        level_shift,
         n_radial: c.n_radial.unwrap_or(75),
         n_angular: c.n_angular.unwrap_or(302),
         neighbour_cutoff_bohr,
@@ -6173,6 +6193,36 @@ kind = "ccsd"
             assert!(
                 e.contains("Gamma point") && e.contains("kmesh = [1, 1, 1]"),
                 "{kind}: {e}"
+            );
+        }
+    }
+
+    /// `[scf] level_shift` on the periodic path (#356): read by the k-point
+    /// ROHF / ROKS routes only (where it overrides the solver's automatic
+    /// hybrid shift), strictly validated, refused everywhere else by name.
+    #[test]
+    fn periodic_level_shift_is_kpoint_restricted_open_shell_only() {
+        let pbe0 = "[dft]\nfunctional = \"PBE0\"";
+        let km = "kmesh = [1, 1, 2]";
+        let with = |f: &str, v: &str| format!("{f}\n[scf]\nlevel_shift = {v}");
+        let p = ok(&h2("rohf", km, pbe0));
+        assert!(p.route == PeriodicRoute::Roks && p.level_shift.is_none());
+        let p = ok(&h2("rohf", km, &with(pbe0, "0.0")));
+        assert!(p.route == PeriodicRoute::Roks && p.level_shift == Some(0.0));
+        let p = ok(&h2("rohf", km, &with("", "0.1")));
+        assert!(p.route == PeriodicRoute::Rohf && p.level_shift == Some(0.1));
+        for v in ["-0.1", "nan", "inf"] {
+            let e = err(&h2("rohf", km, &with(pbe0, v)));
+            assert!(
+                e.contains("level_shift must be finite and >= 0"),
+                "{v}: {e}"
+            );
+        }
+        for (kind, cell) in [("rohf", ""), ("uhf", km), ("rhf", km)] {
+            let e = err(&h2(kind, cell, &with(pbe0, "0.05")));
+            assert!(
+                e.contains("[scf] level_shift is not read by the periodic"),
+                "{kind} {cell}: {e}"
             );
         }
     }
