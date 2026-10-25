@@ -561,7 +561,7 @@ pub fn uhf_gradient_cosx(
         return Ok(grad);
     }
     // Overlap fit: per-spin Z-vector Lagrangian (Hartree-Fock, c_x = 1).
-    require_integer_uhf_occupation(
+    require_aufbau_uhf_occupation(
         result,
         prep,
         nocc_a,
@@ -1950,10 +1950,12 @@ pub(crate) fn gamma_uhf(
 /// F(D): after a loose SCF the two differ by up to ~1e-3 in D, which only
 /// shifts `f_p` by that much, far below the O(0.1+) gap between patterns.
 ///
-/// A non-aufbau integer occupation (a MOM excited state: the stored orbitals
-/// are the ε-sorted final diagonalisation, the density holds a different
-/// occupied set) is refused: before 2026-10-24 it silently got the aufbau W
-/// from the wrong occupied set. Any other occupation is refused too.
+/// A non-aufbau integer occupation is supported with `W = C diag(f ε) Cᵀ` and
+/// the snapped integer `f`. It arises from a MOM excited state, and from a
+/// converged open-shell KS state whose occupied set is not the lowest orbitals
+/// of the re-diagonalised F(D) (measured on OH/STO-3G UKS-LDA). Before
+/// 2026-10-24 both silently got the aufbau W from the wrong occupied set. An
+/// occupation that snaps to no pattern is refused.
 pub fn build_energy_weighted_density_uhf(
     result: &ScfResult,
     prep: &PreparedBasis,
@@ -2010,7 +2012,8 @@ fn spin_energy_weighted_density(
 /// The occupations behind one stored spin density, from the projection
 /// `f_p = c_pᵀ S D S c_p` snapped to an allowed pattern: `None` for the aufbau
 /// integer occupation (the first `nocc` columns), `Some(f)` for the
-/// `fractional_occ` ensemble, an error otherwise (see
+/// `fractional_occ` ensemble or a non-aufbau integer occupation, an error
+/// otherwise (see
 /// [`build_energy_weighted_density_uhf`]).
 fn recover_spin_occupations(
     c: &Array2<f64>,
@@ -2039,25 +2042,31 @@ fn recover_spin_occupations(
     if let Some(f) = fractional.filter(|_| fractional_dev <= W_OCCUPATION_SNAP_TOL) {
         return Ok(Some(ndarray::Array1::from(f)));
     }
-    let integer_dev = deviation(&|p| projected[p].round().clamp(0.0, 1.0));
-    let what = if integer_dev <= W_OCCUPATION_SNAP_TOL {
-        "a non-aufbau integer occupation (a MOM excited state: the density holds a \
-         different occupied set than the lowest orbitals)"
-    } else {
-        "neither the integer aufbau occupation nor the fractional_occ ensemble"
-    };
+    // Any other integer occupation: a MOM excited state, or a converged
+    // open-shell KS state whose occupied set is not the lowest orbitals of the
+    // re-diagonalised F(D) (OH/STO-3G UKS-LDA). At an SCF fixed point D's
+    // orbitals are eigenvectors of F(D), so W = C diag(f ε) Cᵀ is exact.
+    let rounded: Vec<f64> = projected
+        .iter()
+        .map(|f| f.round().clamp(0.0, 1.0))
+        .collect();
+    let integer_dev = deviation(&|p| rounded[p]);
+    if integer_dev <= W_OCCUPATION_SNAP_TOL && rounded.iter().sum::<f64>() == nocc as f64 {
+        return Ok(Some(ndarray::Array1::from(rounded)));
+    }
     Err(FerricError::General(format!(
-        "UHF gradient: the {spin} density is {what} of the stored orbitals (max |f − pattern| \
-         {:.2e} aufbau, {fractional_dev:.2e} fractional, tolerance {W_OCCUPATION_SNAP_TOL}), \
-         so the energy-weighted density W cannot be built from the occupations the SCF used; \
-         use a finite-difference gradient",
-        aufbau_dev
+        "UHF gradient: the {spin} density is neither an integer occupation of the stored \
+         orbitals nor their fractional_occ ensemble (max |f − pattern| {aufbau_dev:.2e} \
+         aufbau, {integer_dev:.2e} nearest integer, {fractional_dev:.2e} fractional, \
+         tolerance {W_OCCUPATION_SNAP_TOL}), so the energy-weighted density W cannot be built \
+         from the occupations the SCF used; use a finite-difference gradient"
     )))
 }
 
 /// Refuse a gradient path whose response equations assume integer
-/// occupation (the COSX overlap-fit Z-vector) on a `fractional_occ` result.
-fn require_integer_uhf_occupation(
+/// aufbau occupation (the COSX overlap-fit Z-vector splits occupied/virtual at
+/// column `nocc`) on a fractional or non-aufbau result.
+fn require_aufbau_uhf_occupation(
     result: &ScfResult,
     prep: &PreparedBasis,
     nocc_a: usize,
@@ -2082,8 +2091,8 @@ fn require_integer_uhf_occupation(
     for (c, eps, nocc, d, spin) in spins {
         if recover_spin_occupations(c, eps, nocc, d, &s, spin)?.is_some() {
             return Err(FerricError::General(format!(
-                "{what}: not implemented for fractional occupation (the {spin} density is a \
-                 fractional_occ ensemble; its Z-vector assumes integer occupation)"
+                "{what}: not implemented for a fractional or non-aufbau occupation (the \
+                 {spin} density is not its first nocc orbitals; the Z-vector assumes it is)"
             )));
         }
     }

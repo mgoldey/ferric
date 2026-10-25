@@ -31,7 +31,7 @@ use ferric_scf::gradient::build_energy_weighted_density_uhf;
 use ferric_scf::ks_gradient::ks_gradient_uks;
 use ferric_scf::result::ScfResult;
 use ferric_scf::screening::SchwarzBounds;
-use ferric_scf::uhf::{solve_uhf, UhfConfig};
+use ferric_scf::uhf::{solve_uhf, solve_uhf_with_guess, UhfConfig};
 use ndarray::Array2;
 use ndarray_linalg::{EigValsh, Eigh, UPLO};
 
@@ -156,21 +156,16 @@ fn uhf_gradient_error(
 
 #[test]
 fn uhf_gradient_refuses_a_density_its_orbitals_cannot_build() {
+    // Not an occupation pattern at all: a half-filled core orbital. (A
+    // non-aufbau INTEGER occupation is supported; see
+    // non_aufbau_integer_occupation_gradient_matches_fd_of_energy.)
     let mol = o_he(R_OHE);
     let (r, prep, bounds) = solve(&mol);
     let c = r.mos_beta.as_ref().unwrap();
-    let n = c.ncols();
-    // A MOM-style excited state: the first three columns plus the HIGHEST,
-    // skipping the p shell. Integer, but not aufbau.
-    let mut mom = r.clone();
-    mom.density_beta = Some(density_of_columns(c, &[0, 1, 2, n - 1], &[1.0; 4]));
-    let err = uhf_gradient_error(&mom, &mol, &prep, &bounds);
-    assert!(err.contains("non-aufbau integer occupation"), "{err}");
-    // Not an occupation pattern at all: a half-filled core orbital.
     let mut odd = r.clone();
     odd.density_beta = Some(density_of_columns(c, &[0, 1, 2, 3], &[0.5, 1.0, 1.0, 1.0]));
     let err = uhf_gradient_error(&odd, &mol, &prep, &bounds);
-    assert!(err.contains("neither the integer"), "{err}");
+    assert!(err.contains("neither an integer occupation"), "{err}");
 }
 
 #[test]
@@ -232,4 +227,101 @@ fn integer_w_after_a_loose_scf_is_the_old_expression_bit_for_bit() {
         None,
     )
     .unwrap();
+}
+
+fn h2o_cation(dz_o: f64) -> Molecule {
+    let b = 0.529_177_210_903;
+    let xyz = format!(
+        "3\nH2O+\nO 0 0 {}\nH 0 0.7572 -0.4692\nH 0 -0.7572 -0.4692\n",
+        0.1173 + dz_o * b
+    );
+    Molecule::parse_xyz(&xyz, 1, 2).unwrap()
+}
+
+/// A MOM ΔSCF state of H2O⁺ (UHF/6-31G): β 3a1 → 1b1, 0.072 Ha above the
+/// ground state, pinned by MOM from a column-swapped guess.
+fn h2o_cation_excited(
+    dz_o: f64,
+    guess: Option<(&Array2<f64>, &Array2<f64>)>,
+) -> (ScfResult, Molecule, PreparedBasis, SchwarzBounds) {
+    let mol = h2o_cation(dz_o);
+    let bs = basis::bundled("6-31g").unwrap();
+    let prep = PreparedBasis::new(&mol, &bs).unwrap();
+    let bounds = SchwarzBounds::compute(Operator::coulomb(), &prep).unwrap();
+    let cfg = UhfConfig {
+        energy_conv: 1e-12,
+        density_conv: 1e-9,
+        max_iter: 300,
+        mom_after_iter: 1,
+        ..Default::default()
+    };
+    let ctx = ParallelContext::default();
+    let r = solve_uhf_with_guess(&ctx, &mol, &prep, &bounds, &cfg, guess).unwrap();
+    assert!(r.converged);
+    (r, mol, prep, bounds)
+}
+
+/// Swap two columns of `c` (and the matching eigenvalues).
+fn swap_columns(c: &mut Array2<f64>, eps: &mut [f64], i: usize, j: usize) {
+    let ci = c.column(i).to_owned();
+    let cj = c.column(j).to_owned();
+    c.column_mut(i).assign(&cj);
+    c.column_mut(j).assign(&ci);
+    eps.swap(i, j);
+}
+
+#[test]
+fn non_aufbau_integer_occupation_gradient_matches_fd_of_energy() {
+    // The state: a genuine SCF fixed point (|FDS − SDF| ≲ 1e-9), so its
+    // gradient is exact with W = Σ_occ ε_p c_p c_pᵀ over ITS occupied set.
+    let nb = 4;
+    let (ground, ..) = h2o_cation_excited(0.0, None);
+    let ca = ground.mos_alpha.clone();
+    let (mut cb, mut eb) = (
+        ground.mos_beta.clone().unwrap(),
+        ground.eps_beta.clone().unwrap(),
+    );
+    swap_columns(&mut cb, &mut eb, nb - 1, nb);
+    let (r, mol, prep, bounds) = h2o_cation_excited(0.0, Some((&ca, &cb)));
+    assert!(
+        r.energy > ground.energy + 0.05,
+        "MOM fell back to the ground state"
+    );
+    // The FD points restart from the converged excited orbitals, so MOM pins
+    // the same state there.
+    let (ca_x, cb_x) = (r.mos_alpha.clone(), r.mos_beta.clone().unwrap());
+    let e = |dz: f64| h2o_cation_excited(dz, Some((&ca_x, &cb_x))).0.energy;
+    let fd = (e(DELTA) - e(-DELTA)) / (2.0 * DELTA);
+
+    // Store the state with an occupied β column (HOMO) after a virtual one
+    // (LUMO): the stored orbitals no longer list the occupied set first, which
+    // is what a converged open-shell KS state whose occupied set is not the
+    // lowest orbitals of F(D) looks like. Occupation recovery must find the
+    // real occupied set.
+    let mut stored = r.clone();
+    let (mut cbs, mut ebs) = (r.mos_beta.clone().unwrap(), r.eps_beta.clone().unwrap());
+    swap_columns(&mut cbs, &mut ebs, nb - 1, nb);
+    stored.mos_beta = Some(cbs);
+    stored.eps_beta = Some(ebs);
+    let op = Operator::coulomb();
+    let g = ferric_scf::gradient::uhf_gradient(&mol, &prep, op, &bounds, &stored, None).unwrap();
+    let g_ref = ferric_scf::gradient::uhf_gradient(&mol, &prep, op, &bounds, &r, None).unwrap();
+    let ana = g[(0, 2)];
+    let diff = (ana - fd).abs();
+    eprintln!(
+        "H2O+ ΔSCF: E {:.10} (ground {:.10}); dE/dz_O non-aufbau-stored {ana:+.8e} \
+         aufbau-stored {:+.8e} FD {fd:+.8e} |diff| {diff:.2e}",
+        r.energy,
+        ground.energy,
+        g_ref[(0, 2)]
+    );
+    assert!(
+        diff < 1e-6,
+        "analytic {ana:.8e} vs FD {fd:.8e} ({diff:.2e})"
+    );
+    let relabel = (&g - &g_ref).iter().fold(0.0_f64, |m, v| m.max(v.abs()));
+    assert!(
+        relabel < 1e-10,
+        "relabelling changed the gradient by {relabel:.2e}"
+    );
 }
