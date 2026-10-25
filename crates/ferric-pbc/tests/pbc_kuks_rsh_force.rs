@@ -54,7 +54,7 @@
 //! those two HSE06 rows; per commit the spin defects and the erf piece on
 //! CAM-B3LYP.
 //!
-//! NOT covered: RS-GDF (`pbc_kuks_rsh_rsgdf_force.rs`), the stress (refused), ROKS (its own file,
+//! NOT covered: RS-GDF (`pbc_kuks_rsh_rsgdf_force.rs`), the stress (`pbc_kuks_rsh_stress.rs`), ROKS (its own file,
 //! `pbc_kroks_rsh_force.rs`), wB97X (accepted, not force-tested), p/d shells (H/STO-3G only),
 //! shifted meshes, a PySCF force pin (the Python / CLI wiring of this force
 //! is tested in the binding suites).
@@ -263,8 +263,8 @@ fn polarized_spin_and_erf_mutants_are_caught() {
 /// Typed refusals: bare kernels with a range-separated name, kernels of
 /// another functional, a global-hybrid name on range-separated kernels,
 /// an RS-GDF source with a range-separated name on a dense SCF (UKS force:
-/// the Fock guard), the open-shell stress with a range-separated name (dense
-/// and RS-GDF), and the Python / CLI derivative gate (UKS
+/// the Fock guard; the open-shell stress likewise, and its exxdiv refusal on
+/// dense kernels), and the Python / CLI derivative gate (UKS
 /// force wired on dense AFT; the UKS stress, the UKS force on RS-GDF and every
 /// ROKS derivative refused).
 #[test]
@@ -319,8 +319,7 @@ fn oshell_rsh_force_refusals() {
     // An RS-GDF source that carries the functional's own range separation is
     // differentiated since the open-shell RS-GDF force landed
     // (`pbc_kuks_rsh_rsgdf_force.rs`): this DENSE SCF's Focks are not that
-    // J/K's, so the Fock guard refuses it (not a range-separation refusal),
-    // and the open-shell stress refuses the range-separated source.
+    // J/K's, so the Fock guard refuses it (not a range-separation refusal).
     let gdf_rsh = ferric_pbc::rsgdf::kpoint::KRsGdf::build_rsh(
         &fx.cell,
         &fx.prep,
@@ -338,6 +337,12 @@ fn oshell_rsh_force_refusals() {
     };
     let e = call(KGradJk::RsGdf(src), "HSE06");
     assert!(e.contains("Fock matrix rebuilt"), "{e}");
+    // The open-shell STRESS differentiates a range-separated source too
+    // (#492, `pbc_kuks_rsh_stress.rs`): the RS-GDF one on this DENSE SCF hits
+    // the Fock guard, the dense one needs the SCF's exxdiv.
+    let mut scfg = KUksStressConfig::default();
+    scfg.base.exxdiv = Some(ExxDiv::Ewald);
+    scfg.base.grid = ferric_pbc::kxcgrad::KXcGrid::Atom(grid_cfg());
     let e = kpoint_uks_stress(
         &fx.cell,
         &fx.prep,
@@ -347,11 +352,11 @@ fn oshell_rsh_force_refusals() {
         ferric_pbc::kstress::KStressJk::RsGdf(src),
         &fx.res.scf,
         "HSE06",
-        &KUksStressConfig::default(),
+        &scfg,
     )
     .unwrap_err()
     .to_string();
-    assert!(e.contains("range-separated"), "{e}");
+    assert!(e.contains("Fock matrix rebuilt"), "{e}");
     let e = kpoint_uks_stress(
         &fx.cell,
         &fx.prep,
@@ -365,7 +370,7 @@ fn oshell_rsh_force_refusals() {
     )
     .unwrap_err()
     .to_string();
-    assert!(e.contains("range-separated"), "{e}");
+    assert!(e.contains("needs KRksStressConfig::exxdiv"), "{e}");
     // The binding derivative gate: the UKS force on the dense-AFT J/K is
     // wired; the UKS stress, the UKS force on RS-GDF and every ROKS
     // derivative stay refused (the library ROKS force is

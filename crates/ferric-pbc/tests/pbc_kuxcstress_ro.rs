@@ -918,7 +918,9 @@ fn refusals_and_the_fock_guard() {
     for (name, key) in [
         (
             "HSE06",
-            "range-separated hybrid stress at k is not supported: HSE06: the open-shell k-point XC stress covers LDA, GGA and GLOBAL hybrid functionals (the range-separated stress is closed-shell RKS only, kpoint_rks_stress)",
+            // Differentiated since #492 on J/K that carry its range
+            // separation; these bare kernels are refused by the input check.
+            "but the dense kernels carry the bare Coulomb exchange; build the J/K with KDenseAftConfig::rsh set",
         ),
         (
             "SCAN",

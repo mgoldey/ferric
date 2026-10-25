@@ -1050,9 +1050,12 @@ fn refusals_and_the_per_spin_fock_guard() {
     let ok_cfg = scfg(Some(ExxDiv::Ewald), None, None, None);
     let run = |f: &str, s: &KUScfResult, cfg: &KUksStressConfig| stress_with(&fx, f, s, cfg);
     for (name, key) in [
+        // A range-separated name is differentiated since #492 (on J/K that
+        // carry its range separation; `pbc_kuks_rsh_stress.rs`): on these
+        // bare kernels the shared input check refuses it.
         (
             "HSE06",
-            "range-separated hybrid stress at k is not supported: HSE06: the open-shell k-point XC stress covers LDA, GGA and GLOBAL hybrid functionals (the range-separated stress is closed-shell RKS only, kpoint_rks_stress)",
+            "but the dense kernels carry the bare Coulomb exchange; build the J/K with KDenseAftConfig::rsh set",
         ),
         // SCAN is covered (`pbc_kuxc_mgga.rs`): a PBE0 state handed in as
         // SCAN is refused by the Fock guard.

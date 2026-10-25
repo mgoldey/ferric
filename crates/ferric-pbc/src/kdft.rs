@@ -38,7 +38,7 @@
 //! full-Coulomb fit plus a G-space fit of the erf-attenuated kernel). The
 //! closed-shell nuclear force and stress cover both J/K
 //! ([`crate::kxcgrad`], [`crate::kxcstress`]), the open-shell UKS and ROKS
-//! forces too ([`crate::kuxcgrad`]); the open-shell stress refuses them. The Gamma-point [`crate::gamma_rsh`]
+//! forces and stresses too ([`crate::kuxcgrad`], [`crate::kuxcstress`]). The Gamma-point [`crate::gamma_rsh`]
 //! reuses this exchange at k = 0, and the open-shell [`crate::kuks`] (KUKS)
 //! and [`crate::kroks`] (KROKS) take it per spin (with SCAN / r2SCAN
 //! open-shell energies in KUKS too, spin-resolved tau). Range-separated meta-GGAs, VV10 and double hybrids are

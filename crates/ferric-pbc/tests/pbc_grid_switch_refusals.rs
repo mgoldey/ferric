@@ -3,9 +3,9 @@
 
 const CAM: &str = "HYB_GGA_XC_CAM_B3LYP";
 
-/// The open-shell range-separated STRESS does not exist (switch or not): the
-/// request gates refuse it by name before any SCF. Pinned so a later switch
-/// wiring cannot silently report a stress without its range-separated term.
+/// The open-shell range-separated STRESS is library only (#492; not wired in
+/// the bindings, #498): the request gates refuse it by name before any SCF.
+/// Pinned so the bindings cannot report it before it is wired with anchors.
 #[test]
 fn open_shell_rsh_stress_stays_refused() {
     use ferric_pbc::kxcgrad::Deriv;

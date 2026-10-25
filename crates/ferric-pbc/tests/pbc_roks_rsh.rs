@@ -212,12 +212,12 @@ fn roks_mutants_fail_the_polarized_cam_pin() {
 
 /// The plain global-hybrid ROKS entry (`gamma_roks`) still refuses a
 /// range-separated name (it would otherwise run it with no attenuated K), and
-/// so do the plain Gamma ROKS force and stress and the k-point ROKS stress on
-/// a REAL ROKS RSH SCF. The k-point ROKS FORCE covers RSH on dense-AFT J/K
-/// (`pbc_kroks_rsh_force.rs`; at Gamma `gamma_rsh::gamma_roks_rsh_gradient`):
-/// without the SCF's exxdiv it is a typed refusal, with it and the SCF's own
-/// grid it differentiates this state (Fock guard and orbital-gradient gate
-/// passed).
+/// so do the plain Gamma ROKS force and stress on a REAL ROKS RSH SCF. The
+/// k-point ROKS FORCE and STRESS cover RSH on dense-AFT J/K
+/// (`pbc_kroks_rsh_force.rs`, `pbc_kuks_rsh_stress.rs`; at Gamma
+/// `gamma_rsh::gamma_roks_rsh_gradient`): without the SCF's exxdiv each is a
+/// typed refusal, with it and the SCF's own grid each differentiates this
+/// state (Fock guard and orbital-gradient gate passed).
 #[test]
 fn plain_gamma_roks_and_roks_rsh_derivatives_refuse_by_name() {
     use ferric_pbc::kgrad::KGradJk;
@@ -292,7 +292,10 @@ fn plain_gamma_roks_and_roks_rsh_derivatives_refuse_by_name() {
     ok.base.grid = ferric_pbc::kxcgrad::KXcGrid::Uniform([MESH; 3]);
     let g = call(&ok).unwrap_or_else(|e| panic!("ROKS RSH force on the SCF's own state: {e}"));
     assert!(g.grad.iter().all(|v| v.is_finite()) && g.hf.fock_mismatch < 1e-8);
-    named(
+    // The k-point ROKS STRESS covers range-separated hybrids too (#492,
+    // `pbc_kuks_rsh_stress.rs`): without the SCF's exxdiv a typed refusal,
+    // with it and the SCF's own grid it differentiates this state.
+    let scall = |c: &KUksStressConfig| {
         kpoint_roks_stress(
             &cell,
             &prep,
@@ -302,9 +305,14 @@ fn plain_gamma_roks_and_roks_rsh_derivatives_refuse_by_name() {
             KStressJk::Dense(e),
             &kr.scf,
             "HYB_GGA_XC_CAM_B3LYP",
-            &KUksStressConfig::default(),
+            c,
         )
-        .unwrap_err()
-        .to_string(),
-    );
+    };
+    let se = scall(&KUksStressConfig::default()).unwrap_err().to_string();
+    assert!(se.contains("needs KRksStressConfig::exxdiv"), "{se}");
+    let mut sok = KUksStressConfig::default();
+    sok.base.exxdiv = Some(ExxDiv::Ewald);
+    sok.base.grid = ferric_pbc::kxcgrad::KXcGrid::Uniform([MESH; 3]);
+    let st = scall(&sok).unwrap_or_else(|e| panic!("ROKS RSH stress on the SCF's own state: {e}"));
+    assert!(st.de_deps.iter().flatten().all(|v| v.is_finite()) && st.hf.fock_mismatch < 1e-8);
 }

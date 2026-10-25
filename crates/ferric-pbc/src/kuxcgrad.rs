@@ -114,7 +114,8 @@
 //! in `tests/pbc_kuks_rsh_rsgdf_force.rs` and
 //! `tests/validation_kuks_rsh_rsgdf_force.rs` (singlet UKS == RKS #514 per
 //! part, equal fractions == global hybrid, FD of the polarized UKS and ROKS
-//! energies). Refused: the open-shell stress.
+//! energies). The open-shell stress composes the same way
+//! ([`crate::kuxcstress`], "Range-separated hybrids").
 //!
 //! # Fock guard
 //!
