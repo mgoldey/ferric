@@ -210,3 +210,127 @@ fn env_flag_parses_off_values_as_false() {
     }
     assert!(!env_flag(None));
 }
+
+/// The `boys.h` of a terf-patched 2.7.2 prefix: the stock 2.7.2 file (rebuilt
+/// as above) with the committed copy of ferric's terf patch applied.
+fn terf_boys_h() -> Vec<u8> {
+    let stock = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(stock.path(), stock_boys_h("2.7.2")).unwrap();
+    let out = tempfile::NamedTempFile::new().unwrap();
+    let status = std::process::Command::new("patch")
+        .args(["-s", "-o"])
+        .arg(out.path())
+        .arg(stock.path())
+        .arg(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/shim/libint2_overrides/2.7.2/libint2-terf-boys.h.patch"
+        ))
+        .status()
+        .expect("GNU patch is needed to rebuild the terf boys.h");
+    assert!(status.success(), "patch failed for the terf boys.h");
+    std::fs::read(out.path()).unwrap()
+}
+
+#[test]
+fn terf_prefix_selects_the_2_7_2_override_with_the_terf_define() {
+    // #234: the terf-patched prefix used to get no override at all (no
+    // GmEval copy fix, no #433/#436/#443 fixes) and terf_gm_eval kept its
+    // per-call copy. It now gets the 2.7.2 override with the terf evaluator.
+    let terf = terf_boys_h();
+    assert_ne!(
+        terf,
+        stock_boys_h("2.7.2"),
+        "the terf patch changed nothing"
+    );
+    for require in [false, true] {
+        let env = BoysEnv {
+            require,
+            ..BoysEnv::default()
+        };
+        assert_eq!(
+            boys_outcome(PATH, Ok(&terf), env),
+            BoysOutcome::OverrideTerf("2.7.2"),
+            "require={require}"
+        );
+    }
+    let mut edited = terf.clone();
+    edited[0] ^= 1;
+    assert!(matches!(
+        boys_outcome(PATH, Ok(&edited), BoysEnv::default()),
+        BoysOutcome::Unpatched(_)
+    ));
+    // FERRIC_LIBINT2_STOCK_BOYS still wins (A/B against the prefix's own header).
+    let forced = BoysEnv {
+        force_stock: true,
+        ..BoysEnv::default()
+    };
+    assert!(matches!(
+        boys_outcome(PATH, Ok(&terf), forced),
+        BoysOutcome::Unpatched(_)
+    ));
+}
+
+#[test]
+fn terf_hashes_are_distinct_from_stock_and_override_hashes() {
+    for (version, h) in TERF_BOYS_H_FNV1A64 {
+        assert!(
+            STOCK_BOYS_H_FNV1A64.iter().all(|(_, s)| *s != h),
+            "terf {version} collides with a stock hash"
+        );
+        let path = format!(
+            "{}/shim/libint2_overrides/{version}/libint2/boys.h",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        assert_ne!(fnv1a64(&std::fs::read(&path).unwrap()), h, "{path}");
+    }
+}
+
+#[test]
+fn terf_code_in_the_override_is_compiled_only_under_the_terf_define() {
+    // A stock 2.7.2 prefix gets the same override WITHOUT TERF_DEFINE; any
+    // terf code outside the guarded blocks would change the stock builds (and
+    // fail to compile there: stock engine.h has no Operator::terf).
+    //
+    // This is a TEXTUAL check: it proves every `terf_gm_eval` token sits
+    // inside an `#ifdef TERF_DEFINE` block, not that the preprocessed stock
+    // build is byte-identical to main's. That stronger check needs a C++
+    // preprocessor (`c++ -E`) plus a libint2 include tree, which this test
+    // harness cannot assume portably, so it is not done here. (By hand on
+    // 2026-10-24: the manifest and SWEEP_HASH of stock 2.7.2 + this override
+    // matched the terf-prefix build, see the overrides README.)
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/shim/libint2_overrides/2.7.2/libint2/boys.h"
+    );
+    let text = std::fs::read_to_string(path).unwrap();
+    let (mut depth, mut blocks, mut guarded_terf) = (0usize, 0usize, 0usize);
+    for line in text.lines() {
+        let t = line.trim_start();
+        if t.starts_with(&format!("#ifdef {TERF_DEFINE}")) {
+            assert_eq!(depth, 0, "nested {TERF_DEFINE} block");
+            depth = 1;
+            blocks += 1;
+            continue;
+        }
+        if depth > 0 {
+            if t.starts_with("#if") {
+                depth += 1;
+            } else if t.starts_with("#endif") {
+                depth -= 1;
+            }
+            guarded_terf += usize::from(line.contains("terf_gm_eval"));
+            continue;
+        }
+        // Comments may name it (the file header does); code may not.
+        let code = line.split("//").next().unwrap_or("");
+        let comment = t.starts_with('*') || t.starts_with("/*");
+        assert!(
+            comment || !code.contains("terf_gm_eval"),
+            "unguarded terf code in {path}: {line}"
+        );
+    }
+    assert_eq!(depth, 0, "unterminated {TERF_DEFINE} block");
+    // The include, the trait specialization and the evaluator itself.
+    assert_eq!(blocks, 3, "expected 3 {TERF_DEFINE} blocks");
+    assert!(guarded_terf >= 3, "the guarded blocks hold no terf_gm_eval");
+}
