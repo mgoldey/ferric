@@ -646,7 +646,8 @@ ECP_GRID = dict(GRID, neighbour_cutoff=16.0 * BOHR_IN_ANGSTROM)
 def _ecp_cell(atoms, lat_bohr):
     lines = [str(len(atoms)), "periodic HI / H2I (Angstrom)"]
     for sym, p in atoms:
-        x, y, z = (c * BOHR_IN_ANGSTROM for c in p)
+        # float(): numpy scalars repr as "np.float64(...)" under numpy 2.
+        x, y, z = (float(c * BOHR_IN_ANGSTROM) for c in p)
         lines.append(f"{sym} {x!r} {y!r} {z!r}")
     mol = ferric.Molecule.from_xyz_string(
         "\n".join(lines) + "\n", multiplicity=1 if len(atoms) == 2 else 2
