@@ -63,7 +63,7 @@ fn make_engine(op: Op, obs: &PreparedBasis, dfbs: &PreparedBasis) -> Engine {
             R0.recip() / 2f64.sqrt(),
             TerfLibint2Braket::XsXx,
             obs.max_nprim().max(dfbs.max_nprim()) as usize,
-            obs.max_l().max(dfbs.max_l()) as i32,
+            obs.max_l().max(dfbs.max_l()),
             0.0,
             Some(table_dir().as_str()),
         )
@@ -130,6 +130,21 @@ fn thread_scaling_of_generic_gm_eval_operators() {
         .collect();
     let reps: usize = env_or("FERRIC_SCALING_REPS", 3);
     let sweeps: usize = env_or("FERRIC_SCALING_SWEEPS", 1);
+    // Inflation and speed-up are relative to best[0], so the first thread
+    // count must be the 1-thread baseline; zero reps/sweeps measure nothing.
+    assert_eq!(
+        threads.first(),
+        Some(&1),
+        "FERRIC_SCALING_THREADS must start with 1 (the baseline), got {threads:?}"
+    );
+    assert!(
+        threads.iter().all(|&n| n > 0),
+        "FERRIC_SCALING_THREADS entries must be positive, got {threads:?}"
+    );
+    assert!(
+        reps > 0 && sweeps > 0,
+        "FERRIC_SCALING_REPS and FERRIC_SCALING_SWEEPS must be positive (got {reps}, {sweeps})"
+    );
     let molname = std::env::var("FERRIC_SCALING_MOLECULE").unwrap_or_else(|_| "benzene".into());
     let mol = Molecule::load_xyz(&format!(
         "{}/../../testdata/molecules/{molname}.xyz",
