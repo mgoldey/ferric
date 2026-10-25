@@ -1989,6 +1989,12 @@ fn solve_rhf_impl(
         .trah_trigger
         .map(|_| crate::trah::TrahState::new(config.trah));
     let mut trah_undo: Option<(Array2<f64>, Array2<f64>)> = None;
+    // Set on the iteration a TRAH step is rejected; consumed at the next
+    // iteration's arming gate (`crate::trah::settle_engaged_latch`).
+    let mut trah_last_rejected = false;
+    // TRAH keeps control from its first step until it declines a step as
+    // worthless or its radius collapses -- see the arming gate.
+    let mut trah_engaged = false;
     // EXPERIMENTAL auxiliary-curvature TRAH (`config.trah.aux_curvature`).
     // Built lazily on the first armed TRAH iteration and refreshed to the
     // current orbitals every step, so that with the flag off (the default)
@@ -2683,19 +2689,22 @@ fn solve_rhf_impl(
         //
         // Phase 2 (step): solve the level-shifted AH equations inside the
         // current radius and apply the rotation.
-        // Armed below the trigger -- OR while a TRAH step still awaits its ρ
-        // verdict. A step may legitimately RAISE err_max (a hard-case escape
-        // moves along negative curvature, away from a stationary point), and
-        // re-deciding on err_max alone then handed the next iteration to DIIS,
-        // which discarded the prediction unscored and, with a history built at
-        // the saddle, walked straight back into it: tail-mode TRAH cycled to
-        // max_iter on N2/cc-pVDZ (`tests/trah_hard_case.rs`). Every TRAH step
-        // leaves a prediction pending, so TRAH keeps control until it stops
-        // stepping (nothing left to gain) or its radius collapses.
-        let trah_pending = trah_state.as_ref().is_some_and(|s| s.has_pending());
+        // Armed below the trigger -- OR once TRAH has ENGAGED, until it declines
+        // a step as worthless or its radius collapses. A step may legitimately
+        // RAISE err_max (a hard-case escape moves along negative curvature,
+        // away from a stationary point). Re-deciding on err_max alone handed
+        // the next iteration to DIIS, which, with a history built at the
+        // saddle, walked straight back into it: tail-mode TRAH cycled to
+        // max_iter on N2/cc-pVDZ (pinned in `tests/trah_hard_case.rs`).
+        // Keying on "a step is pending" closed that only for accepted steps:
+        // a REJECTION consumes the pending prediction, so the restored point
+        // (err_max still above the trigger) went to DIIS. Measured on
+        // CoH/def2-SVP UHF (`tests/saddle_repair_compare.rs`), that threw a
+        // 100 mHa escape back onto the saddle. Pinned by the N2/STO-3G RHF and
+        // O2/STO-3G UHF hand-off-after-rejection cases in `trah_hard_case.rs`.
         let trah_armed = config
             .trah_trigger
-            .is_some_and(|t| err_max < t || trah_pending)
+            .is_some_and(|t| err_max < t || trah_engaged)
             && iter > 3
             && k_mix.omega == 0.0
             && !crate::rohf::xc_is_metagga(config.xc.as_deref());
@@ -2706,7 +2715,13 @@ fn solve_rhf_impl(
         // prediction is pending, DIIS resumes, and a later re-arm would
         // otherwise score that stale prediction against an energy produced by
         // DIIS steps in between — a ρ built from two unrelated points.
-        let trah_runs = trah_armed && !trah_state.as_ref().is_some_and(|s| s.collapsed());
+        let trah_collapsed = trah_state.as_ref().is_some_and(|s| s.collapsed());
+        let trah_runs = trah_armed && !trah_collapsed;
+        let trah_after_rejection = crate::trah::settle_engaged_latch(
+            &mut trah_engaged,
+            &mut trah_last_rejected,
+            trah_runs,
+        );
         if let Some(st) = trah_state.as_mut() {
             if !trah_runs {
                 if st.has_pending() {
@@ -2747,6 +2762,11 @@ fn solve_rhf_impl(
             }
             if verdict == Some(crate::trah::TrahVerdict::Rejected) {
                 crate::trah::note_trah_rejection();
+                // `trah_engaged` is already set: the rejected step set it when
+                // it was taken, and only a hand-off or a decline (both of which
+                // clear the pending prediction) releases it. So the restored
+                // point stays armed whatever its err_max.
+                trah_last_rejected = true;
                 if let Some((c_undo, d_undo)) = trah_undo.take() {
                     if scf_trace() {
                         eprintln!(
@@ -2852,6 +2872,7 @@ fn solve_rhf_impl(
                 // pins that a decline cannot declare convergence).
                 if step.predicted.abs() < config.trah.predicted_min {
                     crate::trah::note_trah_null_step_declined();
+                    trah_engaged = false;
                     if scf_trace() {
                         eprintln!(
                             "TRAH iter={iter}: predicted |{:.3e}| < {:.0e}, \
@@ -2906,6 +2927,7 @@ fn solve_rhf_impl(
                         st.record_step(energy, &step);
                     }
                     crate::trah::note_trah_step();
+                    trah_engaged = true;
 
                     let c_occ = c_new.slice(ndarray::s![.., ..nocc]);
                     d_occ = Some(c_occ.to_owned());
@@ -2924,6 +2946,10 @@ fn solve_rhf_impl(
         if trah_took_step {
             continue;
         }
+        // TRAH did not step this iteration (not run, or ran and declined): the
+        // iteration goes to AURORA/Newton/DIIS. Counted here, not at the gate, so a
+        // decline right after a rejection is seen too.
+        crate::trah::note_handoff_if_after_rejection(trah_after_rejection, trah_collapsed);
 
         // ── AURORA auxiliary-curvature update, RHF/RKS ───────────────────────
         // Opt-in (config.aurora.enabled, default false). Replaces the DIIS
