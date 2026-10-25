@@ -1848,17 +1848,11 @@ fn solve_uhf_impl(
             mom_ref_b = Some(c_b.slice(ndarray::s![.., ..nocc_b]).to_owned());
         }
         let d_tot_old = &d_a + &d_b;
-        if config.fractional_occ {
-            d_a = density_fractional(&c_a, &eps_a_new, nocc_a);
-            d_b = density_fractional(&c_b, &eps_b_new, nocc_b);
-        } else {
-            d_a = density(&c_a, nocc_a);
-            d_b = density(&c_b, nocc_b);
-        }
-        // Refresh the cached occupied MO blocks for the next iteration's DF-K
-        // half-transform (kept None under fractional occupation — see occ_or_none).
-        d_occ_a = occ_or_none(&c_a, nocc_a);
-        d_occ_b = occ_or_none(&c_b, nocc_b);
+        // Density plus the cached occupied MO block for the next iteration's
+        // DF-K half-transform; the cache is None whenever the ensemble density
+        // is genuinely fractional (see spin_density_and_occ).
+        (d_a, d_occ_a) = spin_density_and_occ(&c_a, &eps_a_new, nocc_a, config.fractional_occ);
+        (d_b, d_occ_b) = spin_density_and_occ(&c_b, &eps_b_new, nocc_b, config.fractional_occ);
         // ΔP over the total density (α+β) — consumed at the top of the next
         // iteration by rhf::scf_converged. Drains to zero at the RI fixed point
         // even when the DIIS commutator parks on the naux noise floor.
@@ -2092,15 +2086,13 @@ fn density(c: &Array2<f64>, nocc: usize) -> Array2<f64> {
 /// ³P atom this puts 2/3 of an electron in each of the three degenerate p
 /// orbitals, restoring spherical symmetry so the GGA potential stops oscillating.
 ///
-/// Falls back to plain integer `density()` when the HOMO is non-degenerate (the
-/// common case), so it is a no-op for ordinary molecules.
-fn density_fractional(c: &Array2<f64>, eps: &[f64], nocc: usize) -> Array2<f64> {
+/// Returns `None` when the occupation stays integer (HOMO non-degenerate — the
+/// common case — or nothing to spread); the caller then uses plain `density()`,
+/// so it is a no-op for ordinary molecules.
+fn density_fractional(c: &Array2<f64>, eps: &[f64], nocc: usize) -> Option<Array2<f64>> {
     let n = c.nrows();
-    if nocc == 0 {
-        return Array2::zeros((n, n));
-    }
-    if nocc >= n {
-        return density(c, nocc);
+    if nocc == 0 || nocc >= n {
+        return None;
     }
     // Tolerance must be loose enough to capture a frontier shell that the
     // *oscillating* SCF has artificially split. For a free ³P atom the three p
@@ -2124,11 +2116,11 @@ fn density_fractional(c: &Array2<f64>, eps: &[f64], nocc: usize) -> Array2<f64> 
     }
     // Only act if HOMO and LUMO are within tol (genuine straddling degeneracy).
     if (e_lumo - e_homo).abs() >= EPS_TOL {
-        return density(c, nocc);
+        return None;
     }
     let group_size = hi - lo + 1;
     if group_size <= 1 {
-        return density(c, nocc);
+        return None;
     }
     // Electrons to distribute over the group = (occupied orbitals in group).
     let n_in_group_occupied = nocc - lo; // how many of the group are below the boundary
@@ -2155,7 +2147,35 @@ fn density_fractional(c: &Array2<f64>, eps: &[f64], nocc: usize) -> Array2<f64> 
         };
         d += &outer;
     }
-    d
+    Some(d)
+}
+
+/// One spin's density after an SCF step, paired with the occupied MO block
+/// that drives the DF-K half-transform (`KBuilder::build_from_occ`, which
+/// returns K for `C_occ·C_occᵀ`).
+///
+/// The cache is `Some(C_occ)` exactly when `D = C_occ·C_occᵀ`. A genuinely
+/// fractional ensemble density (`D = Σ_p f_p c_p c_pᵀ`, 0 < f < 1 on the
+/// frontier group) is not that product, so it returns `None` and K is built
+/// from `D` itself — the same convention the RHF Fermi-smearing path uses
+/// (`d_occ = None` in `rhf.rs`). Before 2026-10-24 the cache was always the
+/// integer C_occ, so under `fractional_occ` + DF-K, K came from the integer
+/// occupation while J, E and V_xc came from the fractional D. When
+/// `fractional_occ` finds nothing to spread, `D` and the cache are the
+/// integer ones, bit-identical to `fractional_occ = false`.
+fn spin_density_and_occ(
+    c: &Array2<f64>,
+    eps: &[f64],
+    nocc: usize,
+    fractional_occ: bool,
+) -> (Array2<f64>, Option<Array2<f64>>) {
+    if fractional_occ {
+        if let Some(d) = density_fractional(c, eps, nocc) {
+            return (d, None);
+        }
+    }
+    let occ = (nocc > 0).then(|| c.slice(ndarray::s![.., ..nocc]).to_owned());
+    (density(c, nocc), occ)
 }
 
 /// Diagonalize F in the canonical-orthogonal basis X (n × m), padding the
@@ -2570,6 +2590,112 @@ mod tests {
         assert!(
             res.converged,
             "UKS-PBE O atom did not converge with fractional occ"
+        );
+    }
+
+    /// Max-abs deviation from idempotency, `max|D·S·D − D|`: zero for an
+    /// integer-occupied spin density, nonzero once the ensemble path spreads.
+    fn idempotency_defect(d: &Array2<f64>, s: &Array2<f64>) -> f64 {
+        (&d.dot(s).dot(d) - d)
+            .iter()
+            .fold(0.0_f64, |m, v| m.max(v.abs()))
+    }
+
+    #[test]
+    fn fractional_occ_dfk_is_bit_identical_when_occupations_stay_integer() {
+        // Exactness anchor for the fractional-occupation DF-K cache: H2O+ has a
+        // non-degenerate frontier in both spins, so `fractional_occ` finds
+        // nothing to spread and must reproduce `fractional_occ = false` — the
+        // same density, the same C_occ half-transform, the same bits.
+        let mol = Molecule::parse_xyz(
+            "3\nwater cation\nO 0.000000 0.000000 0.117300\nH 0.000000 0.757200 -0.469200\nH 0.000000 -0.757200 -0.469200\n",
+            1,
+            2,
+        )
+        .unwrap();
+        let bs = basis::bundled("def2-svp").unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let op = ferric_integrals::operator::Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+        let ctx = ParallelContext::default();
+        let run = |fractional_occ: bool| {
+            let cfg = UhfConfig {
+                max_iter: 100,
+                df_k_aux: Some("def2-universal-jkfit".to_string()),
+                fractional_occ,
+                ..Default::default()
+            };
+            solve_uhf(&ctx, &mol, &prep, &bounds, &cfg).unwrap()
+        };
+        let (plain, frac) = (run(false), run(true));
+        assert!(plain.converged && frac.converged);
+        let s = oneelectron::overlap(&prep);
+        assert!(
+            idempotency_defect(frac.density_beta.as_ref().unwrap(), &s) < 1e-8,
+            "fixture must stay integer-occupied for this anchor"
+        );
+        assert_eq!(frac.iterations, plain.iterations);
+        assert_eq!(
+            frac.energy.to_bits(),
+            plain.energy.to_bits(),
+            "integer-occupation fractional_occ run {} != plain {}",
+            frac.energy,
+            plain.energy
+        );
+    }
+
+    #[test]
+    fn fractional_occ_dfk_matches_exact_k() {
+        // Free Br atom (²P), UKS-O3LYP (11.6 % exact exchange) with
+        // `fractional_occ`: the β 4p hole is spread 1/3 over px/py/pz, so D_β is
+        // NOT C_occ·C_occᵀ. (With ≥20 % exchange, PBE0/B3LYP/HF, the exchange
+        // splitting of the p shell exceeds the 0.05 Ha grouping tolerance and
+        // the occupations stay integer — hence this functional.) DF-K must then
+        // build K_β from D_β itself; before the fix it used the integer C_occ
+        // half-transform, so K described a different density from J, E and
+        // V_xc. Reference: the same calculation with exact (direct) K; J is
+        // exact in both arms, so the only difference left is the K fit.
+        // Measured 2026-10-24: fixed DF-K −2574.3315855 vs exact-K
+        // −2574.3315936 Ha (8.0e-6, the fit). The old cache broke the p-shell
+        // symmetry through K, the ensemble collapsed to integer occupation, and
+        // DF-K converged to a different state at −2574.3475260 Ha (1.59e-2 Ha
+        // away); both asserts below fail on that behaviour.
+        let mol = Molecule::parse_xyz("1\nBr\nBr 0 0 0\n", 0, 2).unwrap();
+        let bs = basis::bundled("def2-svp").unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let op = ferric_integrals::operator::Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+        let ctx = ParallelContext::default();
+        let s = oneelectron::overlap(&prep);
+        let run = |df_k_aux: Option<&str>| {
+            let cfg = UhfConfig {
+                xc: Some("HYB_GGA_XC_O3LYP".to_string()),
+                fractional_occ: true,
+                max_iter: 200,
+                df_k_aux: df_k_aux.map(str::to_string),
+                ..Default::default()
+            };
+            solve_uhf(&ctx, &mol, &prep, &bounds, &cfg).unwrap()
+        };
+        let (exact, df) = (run(None), run(Some("def2-universal-jkfit")));
+        assert!(exact.converged && df.converged, "Br/O3LYP did not converge");
+        for (name, r) in [("exact-K", &exact), ("DF-K", &df)] {
+            let defect = idempotency_defect(r.density_beta.as_ref().unwrap(), &s);
+            assert!(
+                defect > 1e-2,
+                "{name}: β density is idempotent ({defect:.1e}) — fractional path not taken"
+            );
+        }
+        let de = (df.energy - exact.energy).abs();
+        eprintln!(
+            "Br/def2-SVP O3LYP fractional: DF-K {:.10} exact-K {:.10} |dE| {de:.3e}",
+            df.energy, exact.energy
+        );
+        assert!(
+            de < 1e-4,
+            "DF-K {} vs exact-K {} differ by {de:.2e} (> DF-K fitting error)",
+            df.energy,
+            exact.energy
         );
     }
 
