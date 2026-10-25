@@ -592,7 +592,7 @@ pub fn ks_gradient_uks_with_exchange_on_grids(
         .density_beta
         .as_ref()
         .expect("ks_gradient_uks: missing density_beta");
-    let w = build_energy_weighted_density_uhf(result, nocc_a, nocc_b)?;
+    let w = build_energy_weighted_density_uhf(result, prep, nocc_a, nocc_b)?;
     ks_gradient_uks_for_density(
         mol, prep, bs, op, bounds, xc_name, result, ext, cosx, d_a, d_b, &w, grids,
     )

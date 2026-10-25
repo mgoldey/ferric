@@ -450,7 +450,7 @@ fn check_skeleton_overlap(mol: &Molecule, basis_name: &str) {
     let s = setup(mol, basis_name);
     let p = parts(&s);
     let (na, nb) = nocc(&s.mol);
-    let w = build_energy_weighted_density_uhf(&s.uhf, na, nb).unwrap();
+    let w = build_energy_weighted_density_uhf(&s.uhf, &s.prep, na, nb).unwrap();
     let zero = Array2::<f64>::zeros(w.dim());
     let fd = fd_hessian(&s.mol, H_SKELETON, |m| {
         let (prep, _) = prep_for(m, basis_name);

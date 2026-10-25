@@ -2462,7 +2462,8 @@ pub(crate) fn fractional_occupations(eps: &[f64], nocc: usize, n: usize) -> Opti
 /// common case — or nothing to spread); the caller then uses plain `density()`,
 /// so it is a no-op for ordinary molecules.
 fn density_fractional(c: &Array2<f64>, eps: &[f64], nocc: usize) -> Option<Array2<f64>> {
-    let n = c.nrows();
+    let n = c.ncols();
+    debug_assert_eq!(c.nrows(), n, "density_fractional: C must be square");
     let FrontierGroup { members, frac } = fractional_frontier_group(eps, nocc, n)?;
     let core: Vec<usize> = (0..nocc).filter(|p| !members.contains(p)).collect();
     let mut d = Array2::<f64>::zeros((n, n));

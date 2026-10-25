@@ -1332,7 +1332,7 @@ pub fn relaxation_gradient_unrestricted(
             dd.dot(&sp.f_ao).dot(&sp.d) + sp.d.dot(&sp.f_ao).dot(dd) + sp.d.dot(df).dot(&sp.d)
         };
         let w_dot = w_dot_spin(&sa, &dd_a, &df_a) + w_dot_spin(&sb, &dd_b, &df_b);
-        let w0 = crate::gradient::build_energy_weighted_density_uhf(result, nocc_a, nocc_b)?;
+        let w0 = crate::gradient::build_energy_weighted_density_uhf(result, prep, nocc_a, nocc_b)?;
         let t = T_SCALE / max_abs(&dd_a).max(max_abs(&dd_b));
         let ext = config.external_potential.as_ref();
         let grids = crate::ks_gradient::KsGradGrids::from_config(config);
