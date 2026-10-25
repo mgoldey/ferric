@@ -75,8 +75,8 @@ def _xyz(atoms_bohr):
     lines = [str(len(atoms_bohr)), "pbc bindings test (Angstrom)"]
     for x, y, z in atoms_bohr:
         lines.append(
-            f"H {x * BOHR_IN_ANGSTROM!r} {y * BOHR_IN_ANGSTROM!r} "
-            f"{z * BOHR_IN_ANGSTROM!r}"
+            f"H {float(x * BOHR_IN_ANGSTROM)!r} {float(y * BOHR_IN_ANGSTROM)!r} "
+            f"{float(z * BOHR_IN_ANGSTROM)!r}"
         )
     return "\n".join(lines) + "\n"
 
@@ -342,8 +342,8 @@ def _hi_xyz(n_cells=1):
         for sym, (x, y, z) in HI_ATOMS:
             zz = z + m * HI_A_BOHR[2]
             lines.append(
-                f"{sym} {x * BOHR_IN_ANGSTROM!r} {y * BOHR_IN_ANGSTROM!r} "
-                f"{zz * BOHR_IN_ANGSTROM!r}"
+                f"{sym} {float(x * BOHR_IN_ANGSTROM)!r} {float(y * BOHR_IN_ANGSTROM)!r} "
+                f"{float(zz * BOHR_IN_ANGSTROM)!r}"
             )
     return "\n".join(lines) + "\n"
 

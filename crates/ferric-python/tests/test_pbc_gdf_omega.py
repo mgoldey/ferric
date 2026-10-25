@@ -77,8 +77,8 @@ def h2():
     lines = [str(len(H2_ATOMS_BOHR)), "gdf_omega test (Angstrom)"]
     for x, y, z in H2_ATOMS_BOHR:
         lines.append(
-            f"H {x * BOHR_IN_ANGSTROM!r} {y * BOHR_IN_ANGSTROM!r} "
-            f"{z * BOHR_IN_ANGSTROM!r}"
+            f"H {float(x * BOHR_IN_ANGSTROM)!r} {float(y * BOHR_IN_ANGSTROM)!r} "
+            f"{float(z * BOHR_IN_ANGSTROM)!r}"
         )
     return ferric.Molecule.from_xyz_string("\n".join(lines) + "\n")
 

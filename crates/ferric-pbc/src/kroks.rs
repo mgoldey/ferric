@@ -75,6 +75,7 @@ use crate::kscf::{
     KPointInjection, KPointJk, KRetained, KRetainedJk, KScfConfig,
 };
 use crate::lattice::Cell;
+use crate::rohf::ROKS_HYBRID_LEVEL_SHIFT;
 use crate::rsgdf::kpoint::{KRsGdf, KRsGdfConfig};
 use crate::rsh::RshParams;
 use crate::timing::{PbcTimings, StageClock};
@@ -402,14 +403,19 @@ pub struct KRohfConfig {
     /// Open-orbital selection rule ([`OpenOrbitalRule`]).
     pub open_rule: OpenOrbitalRule,
     /// Virtual-space level shift (Hartree), ramped as `ls·err/(err + 1e-3)`
-    /// so it vanishes at convergence (the Gamma ROKS convention).
-    pub level_shift: f64,
+    /// so it vanishes at convergence (the Gamma ROKS convention). `None`
+    /// (the default) resolves per run: [`ROKS_HYBRID_LEVEL_SHIFT`] for a
+    /// Kohn-Sham functional with exact exchange (`a > 0`, global or
+    /// range-separated), 0 for LDA/GGA and for ROHF; `Some(x)` applies `x`
+    /// exactly (`Some(0.0)` = no shift). The applied value is
+    /// [`KRoksResult::level_shift`]. See [`ROKS_HYBRID_LEVEL_SHIFT`] for why.
+    pub level_shift: Option<f64>,
     #[doc(hidden)]
     pub mutation: Option<KRohfMutation>,
 }
 
 impl KRohfConfig {
-    /// Defaults (dense J/K, staged ewald start, no level shift).
+    /// Defaults (dense J/K, staged ewald start, automatic level shift).
     pub fn for_cell(cell: &Cell, exxdiv: ExxDiv) -> Self {
         Self {
             scf: KScfConfig::default(),
@@ -421,7 +427,7 @@ impl KRohfConfig {
             rsgdf: KRsGdfConfig::default(),
             budget_bytes: None,
             open_rule: OpenOrbitalRule::default(),
-            level_shift: 0.0,
+            level_shift: None,
             mutation: None,
         }
     }
@@ -442,11 +448,11 @@ pub struct KRoksConfig {
 }
 
 impl KRoksConfig {
-    /// Defaults (dense J/K, grid (75, 302) SSF) for `functional`. Unlike
-    /// [`crate::rohf::GammaRoksConfig::new`], no level shift or iteration
-    /// default is set for a hybrid (global or range-separated): the hybrid
-    /// KROKS tests set `rohf.level_shift = 0.05` and `rohf.scf.max_iter = 600`
-    /// themselves.
+    /// Defaults (dense J/K, grid (75, 302) SSF) for `functional`. The hybrid
+    /// level shift is resolved at solve time from the functional
+    /// ([`KRohfConfig::level_shift`] `None`), so it survives a caller
+    /// replacing `rohf` with [`KRohfConfig::for_cell`]; the iteration cap
+    /// stays the [`KScfConfig`] default for every functional.
     pub fn new(cell: &Cell, exxdiv: ExxDiv, functional: &str) -> Self {
         Self {
             rohf: KRohfConfig::for_cell(cell, exxdiv),
@@ -474,6 +480,9 @@ pub struct KRoksResult {
     pub exact_exchange_fraction: f64,
     /// `(N_α, N_β)` per cell.
     pub nocc: (usize, usize),
+    /// The level shift the SCF stages applied (Hartree; the resolved
+    /// [`KRohfConfig::level_shift`]).
+    pub level_shift: f64,
     /// Per-spin gaps (actual occupations) against `a·v_M` applied.
     pub gaps: SpinGapReport,
     /// `E_xc` at the converged densities (0 for ROHF).
@@ -695,6 +704,14 @@ fn drive(
     if let KInts::RsGdf(g) = &ints {
         crate::rsgdf::kpoint::record_stats(&mut timings, g.stats());
     }
+    // Hybrid KS (exact exchange next to the semilocal XC) gets the Gamma ROKS
+    // hybrid shift unless the caller chose one: the Roothaan map can repel
+    // the hybrid ROKS minimum here too (KRohfConfig::level_shift).
+    let level_shift = cfg.level_shift.unwrap_or(if xc.is_some() && a > 0.0 {
+        ROKS_HYBRID_LEVEL_SHIFT
+    } else {
+        0.0
+    });
     let clock = StageClock::start();
     let mut run = |vm: f64,
                    guess: Option<(&[Array2<Complex64>], &[Array2<Complex64>])>|
@@ -720,7 +737,7 @@ fn drive(
             xc_dyn,
             guess,
             cfg.open_rule,
-            cfg.level_shift,
+            level_shift,
             cfg.budget_bytes,
             cfg.mutation,
         )?;
@@ -769,6 +786,7 @@ fn drive(
         madelung: v_m,
         exact_exchange_fraction: rsh.map_or(a, |r| r.c_sr),
         nocc: (na, nb),
+        level_shift,
         gaps,
         n_grid_points: 0,
         electrons_on_grid: 0.0,

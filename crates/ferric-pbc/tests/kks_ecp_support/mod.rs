@@ -387,7 +387,6 @@ fn rohf_cfg(cell: &Cell, s: &Spec) -> KRohfConfig {
     c.hcore = hcore_cfg();
     c.scf.energy_conv = 1e-13;
     c.scf.grad_conv = 1e-10;
-    c.scf.max_iter = 600;
     if s.jk == Jk::Gdf {
         c.jk = KJkKind::RsGdf;
         c.rsgdf = gdf_cfg(s.exxdiv);

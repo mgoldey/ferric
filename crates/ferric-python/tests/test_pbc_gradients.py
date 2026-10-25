@@ -75,8 +75,8 @@ def _mol(atoms_bohr, multiplicity=1):
     lines = [str(len(atoms_bohr)), "pbc gradient test (Angstrom)"]
     for x, y, z in atoms_bohr:
         lines.append(
-            f"H {x * BOHR_IN_ANGSTROM!r} {y * BOHR_IN_ANGSTROM!r} "
-            f"{z * BOHR_IN_ANGSTROM!r}"
+            f"H {float(x * BOHR_IN_ANGSTROM)!r} {float(y * BOHR_IN_ANGSTROM)!r} "
+            f"{float(z * BOHR_IN_ANGSTROM)!r}"
         )
     return ferric.Molecule.from_xyz_string(
         "\n".join(lines) + "\n", multiplicity=multiplicity

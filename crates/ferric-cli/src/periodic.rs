@@ -2101,6 +2101,7 @@ fn krohf_config(plan: &PeriodicPlan, s: &Setup) -> KRohfConfig {
     c.hcore = khcore_config(plan, s);
     (c.jk, c.dense, c.rsgdf) = (kjk_kind(s), kdense_config(plan), krsgdf_config(plan));
     c.budget_bytes = budget_bytes(plan);
+    c.level_shift = plan.level_shift;
     c
 }
 

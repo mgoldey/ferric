@@ -486,6 +486,26 @@ def test_roks_is_not_uks(basis):
     assert u.method == "uks" and r.method == "roks"
 
 
+def test_roks_level_shift_default_override_and_refusals(basis):
+    # #356: run_roks_kpts(level_shift=None) is the solver's automatic shift
+    # (0.05 Ha, ramped out, for a hybrid; none for LDA/GGA); a float overrides
+    # it; the shift is ramped to zero at convergence, so the energy agrees.
+    d = _roks(H3_ATOMS, basis, "PBE0")
+    z = _roks(H3_ATOMS, basis, "PBE0", level_shift=0.0)
+    assert d.converged and z.converged
+    assert d.level_shift == 0.05 and z.level_shift == 0.0
+    assert abs(d.energy - z.energy) < 1e-8, f"{d.energy - z.energy:.2e}"
+    assert _roks(H3_ATOMS, basis, "PBE").level_shift == 0.0
+    assert _rohf(H3_ATOMS, basis).level_shift == 0.0
+    assert _uks(H3_ATOMS, basis, "PBE").level_shift is None
+    for bad in (-0.1, float("nan"), float("inf")):
+        with pytest.raises(
+            ValueError,
+            match=r"^run_roks_kpts: level_shift must be a finite number >= 0",
+        ):
+            _roks(H3_ATOMS, basis, "PBE0", level_shift=bad)
+
+
 # ──────────────────────────────────────── Monkhorst-Pack 1x1x2 meshes ──
 
 MP = dict(mesh=(1, 1, 2), centring="mp")
@@ -646,7 +666,8 @@ ECP_GRID = dict(GRID, neighbour_cutoff=16.0 * BOHR_IN_ANGSTROM)
 def _ecp_cell(atoms, lat_bohr):
     lines = [str(len(atoms)), "periodic HI / H2I (Angstrom)"]
     for sym, p in atoms:
-        x, y, z = (c * BOHR_IN_ANGSTROM for c in p)
+        # float(): numpy scalars repr as "np.float64(...)" under numpy 2.
+        x, y, z = (float(c * BOHR_IN_ANGSTROM) for c in p)
         lines.append(f"{sym} {x!r} {y!r} {z!r}")
     mol = ferric.Molecule.from_xyz_string(
         "\n".join(lines) + "\n", multiplicity=1 if len(atoms) == 2 else 2
