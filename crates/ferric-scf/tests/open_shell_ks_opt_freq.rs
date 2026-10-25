@@ -109,8 +109,9 @@ fn uks_geometry_optimization_runs_and_lowers_the_energy() {
     //
     // Which check catches what (mutation-tested): with the gradient SIGN
     // FLIPPED the optimizer still descends (-74.0807743087, its energy-based
-    // step control finds the minimum) but does not converge in 6 steps, so
-    // `converged` is the check on the gradient; the descent bound catches an
+    // step control finds the minimum) but too slowly to converge in 6 steps
+    // (the correct gradient takes 2), so the sign flip is caught by
+    // convergence speed through `converged`; the descent bound catches an
     // SCF that lands on the wrong state (a 0.58 Ha stagnated state is far
     // outside it). FD validation of the gradient itself stays in
     // tests/uks_gradient.rs.
@@ -150,7 +151,8 @@ fn roks_geometry_optimization_runs_and_lowers_the_energy() {
     // -74.0803874578 in 2 steps, converged. ROHF already carried the F6
     // gradient guard; the stale numbers this comment used to carry were the
     // UKS ones (see the sibling test). Gradient sign-flip mutant: descends to
-    // -74.0803874586 but does not converge in 6 steps.
+    // -74.0803874586 but too slowly to converge in 6 steps (caught by
+    // convergence speed, through `converged`).
     assert!(res.steps > 0, "optimizer took no steps");
     assert!(
         res.converged,
