@@ -111,14 +111,13 @@ fn singlet_uks_is_the_rks_rsgdf_rsh_force() {
     }
 }
 
-/// (b) EQUAL FRACTIONS (polarized H3 doublet, `TRI_A`, ewald; UKS here,
-/// ROKS and exxdiv none weekly): `c_sr = c_lr = 0.4` on `KRsGdf::build_rsh`
+/// (b) EQUAL FRACTIONS (polarized H3 doublet, `TRI_A`, ewald; exxdiv none
+/// weekly): `c_sr = c_lr = 0.4` on `KRsGdf::build_rsh`
 /// reproduces the global-hybrid force with fraction 0.4 on the plain fit,
 /// `<= 1e-10` (measured 3.6e-14). The spin defects are visible here (the
 /// global side is correct); the attenuated-fit and `c_sr v_M` defects are
 /// blind by construction (coefficient 0, mixed constant `c v_M`).
-#[test]
-fn equal_fractions_are_the_global_hybrid_on_rsgdf() {
+fn equal_fraction_case(spin: Spin) {
     let c = 0.4;
     let eq = RshParams {
         omega: 0.33,
@@ -126,7 +125,6 @@ fn equal_fractions_are_the_global_hybrid_on_rsgdf() {
         c_lr: c,
     };
     {
-        let spin = Spin::Uks;
         let cell = || cell_of(Lat::Tri, 2, &H3D);
         let zr = zx_open(cell(), spin, Some(eq), 1.0, rs::LINDEP_FD, ExxDiv::Ewald);
         let zg = zx_open(cell(), spin, None, c, rs::LINDEP_FD, ExxDiv::Ewald);
@@ -140,13 +138,39 @@ fn equal_fractions_are_the_global_hybrid_on_rsgdf() {
         );
         assert!(de < 1e-11, "{de:e}");
         assert!(d < ANCHOR_TOL, "{spin:?}: {d:e}");
-        for n in ["ExchDropBeta", "ExchBetaUsesAlpha", "ExchClosedShellFactor"] {
-            let (_, m, sm) = ledger_mutants().into_iter().find(|t| t.0 == n).unwrap();
+        let mut mutants: Vec<_> = ledger_mutants()
+            .into_iter()
+            .filter(|t| {
+                ["ExchDropBeta", "ExchBetaUsesAlpha", "ExchClosedShellFactor"].contains(&t.0)
+            })
+            .collect();
+        if spin == Spin::Roks {
+            // The ROKS-only energy-weighted (W_RO) cross term.
+            mutants.push((
+                "RoWDropCross",
+                None,
+                Some(ferric_pbc::kuxcgrad::KUSpinMutation::RoWDropCross),
+            ));
+        }
+        for (n, m, sm) in mutants {
             let miss = diff(&zx_open_force_m(&zr, m, sm).unwrap().grad, &gg.grad);
             eprintln!("  {spin:?} equal-fraction anchor vs {n}: {miss:.2e}");
             assert!(miss > 1e-3, "{n}: {miss:e}");
         }
     }
+}
+
+/// (b) on the UKS route (measured 3.6e-14).
+#[test]
+fn uks_equal_fractions_are_the_global_hybrid_on_rsgdf() {
+    equal_fraction_case(Spin::Uks);
+}
+
+/// (b) on the RestrictedOpen (ROKS) route, guarding it per commit (measured
+/// 1.9e-14); plus the ROKS `W_RO` cross-term defect.
+#[test]
+fn roks_equal_fractions_are_the_global_hybrid_on_rsgdf() {
+    equal_fraction_case(Spin::Roks);
 }
 
 /// (c) Central FD (h = 1e-4) of the polarized zero-XC CAM-type UKS energy

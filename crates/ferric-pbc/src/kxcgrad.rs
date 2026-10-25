@@ -1117,8 +1117,8 @@ fn check_rsh_deriv(
         ),
         (DerivSpin::RestrictedOpen, _, _) => refuse(
             "the k-point ROKS range-separated hybrid force and stress are not implemented \
-             in the bindings (the library has the dense-AFT ROKS force, kpoint_roks_gradient, \
-             unwired; the ROKS stress has no range-separated term); the UKS force is \
+             in the bindings (the library has the dense-AFT and RS-GDF ROKS force, \
+             kpoint_roks_gradient, unwired; the ROKS stress has no range-separated term); the UKS force is \
              available on the dense-AFT J/K",
         ),
     }

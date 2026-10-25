@@ -241,16 +241,18 @@ impl GammaRshExchange {
 }
 
 impl GammaRshExchange {
-    /// The dense k = 0 kernels a routed Gamma force differentiates; an RS-GDF
-    /// exchange is refused (the Gamma routes have no derivative for it).
+    /// The dense k = 0 kernels a routed Gamma force differentiates (shared by
+    /// the RKS, UKS and ROKS Gamma routes); an RS-GDF exchange is refused (the
+    /// Gamma routes have no derivative for it; the k-point RKS, UKS and ROKS
+    /// forces differentiate it on a 1x1x1 mesh).
     fn dense_for_force(&self, who: &str) -> Result<&KDenseAftEri, FerricError> {
         match &self.src {
             Source::Dense(eri) => Ok(eri),
             Source::RsGdf(_) => Err(FerricError::General(format!(
                 "{who}: the range-separated exchange was built on RS-GDF; this Gamma route \
                  has no derivative for it (build it with GammaRshExchange::build_dense, jk = \
-                 dense; the closed-shell k-point force kpoint_rks_gradient differentiates the \
-                 RS-GDF one on a 1x1x1 mesh)"
+                 dense; the k-point forces kpoint_rks_gradient / kpoint_uks_gradient / \
+                 kpoint_roks_gradient differentiate the RS-GDF one on a 1x1x1 mesh)"
             ))),
         }
     }

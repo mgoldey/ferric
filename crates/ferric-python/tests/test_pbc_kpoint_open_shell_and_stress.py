@@ -581,7 +581,8 @@ def test_open_shell_refusals_have_exact_wording(basis):
             {"with_gradient": True},
             r"^run_roks_kpts: with_gradient: General error: HSE06: the k-point ROKS "
             r"range-separated hybrid force and stress are not implemented in the bindings "
-            r"\(the library has the dense-AFT ROKS force, kpoint_roks_gradient, unwired; "
+            r"\(the library has the dense-AFT and RS-GDF ROKS force, kpoint_roks_gradient, "
+            r"unwired; "
             r"the ROKS stress has no range-separated term\); the UKS force is available on "
             r"the dense-AFT J/K$",
         ),
