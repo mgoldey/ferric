@@ -40,7 +40,7 @@
 //! and `W_RO` defects on CAM-B3LYP, the singlet blindness, and the
 //! unrestricted-form `W` off stationarity (refused by the gate).
 //!
-//! NOT covered: RS-GDF (refused for every open-shell force), the stress
+//! NOT covered: RS-GDF (`pbc_kuks_rsh_rsgdf_force.rs`), the stress
 //! (refused), wB97X (accepted, not force-tested), p/d shells (H/STO-3G only),
 //! shifted meshes, a Gamma ROKS on a caller-supplied grid, Python / CLI (the
 //! binding derivative gate still refuses open-shell range separation).
@@ -456,11 +456,26 @@ fn roks_rsh_force_refusals() {
         cfg: &kc,
         aux: &aux,
     };
+    // Differentiated since the open-shell RS-GDF force landed
+    // (`pbc_kuks_rsh_rsgdf_force.rs`): this DENSE SCF's spin Focks are not
+    // that J/K's, so the Fock guard refuses it, and the ROKS stress refuses
+    // the range-separated source.
     let e = call(KGradJk::RsGdf(src), "HSE06", &cfg);
-    assert!(
-        e.contains("RS-GDF") && e.contains("open-shell state"),
-        "{e}"
-    );
+    assert!(e.contains("Fock matrix rebuilt"), "{e}");
+    let e = kpoint_roks_stress(
+        &fx.cell,
+        &fx.prep,
+        &fx.mesh,
+        &ferric_pbc::hcore::PeriodicHcoreConfig::with_omega(OMEGA),
+        &fx.hk,
+        ferric_pbc::kstress::KStressJk::RsGdf(src),
+        &fx.res.scf,
+        "HSE06",
+        &KUksStressConfig::default(),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(e.contains("range-separated"), "{e}");
     let e = kpoint_roks_stress(
         &fx.cell,
         &fx.prep,

@@ -91,13 +91,18 @@
 //! constant);
 //! every other entry refuses them. An RS-GDF build with a range separation
 //! (`KRsGdf::build_rsh`, `K = c_sr K[1/r] + (c_lr − c_sr) K[erf] + v_M^{mix}
-//! S D S`) is differentiated for the closed-shell RKS force only (the
-//! open-shell forces refuse it): the plain fit's exchange pieces scaled by `c_sr`, plus
-//! the attenuated fit's LR and metric passes scaled by `c_lr − c_sr`
-//! (`kderiv`'s module doc, "Attenuated fit"; [`KGradParts::fit_attenuated`]),
-//! and the M-term carrying the SCF's mixed constant (not scaled again: the
-//! exchange scale of a range-separated K is 1); the closed-shell RKS stress
-//! admits it the same way ([`crate::kstress`]). RS-GDF aux on the
+//! S D S`) is differentiated for the closed-shell RKS force and the
+//! open-shell UKS and ROKS forces: the plain fit's exchange pieces scaled by
+//! `c_sr`, plus the attenuated fit's LR and metric passes scaled by
+//! `c_lr − c_sr` (`kderiv`'s module doc, "Attenuated fit";
+//! [`KGradParts::fit_attenuated`]), and the M-term carrying the SCF's mixed
+//! constant (not scaled again: the exchange scale of a range-separated K is
+//! 1). Both fit passes take the same exchange terms `Σ_s c_s D_s X D_s`
+//! ([`KSpins::exch_terms`]: `(½, D)` closed shell, `(1, D_α), (1, D_β)` open
+//! shell), so the open-shell case is the closed-shell one with the spin
+//! bookkeeping of the UHF force, nothing else (`tests/pbc_kuks_rsh_rsgdf_force.rs`).
+//! The closed-shell RKS stress admits it the same way ([`crate::kstress`]);
+//! the open-shell stresses refuse it. RS-GDF aux on the
 //! cell's atoms (no ghost sites). A scalar periodic ECP is differentiated by the Gamma ECP walk
 //! ([`crate::ecp::periodic_ecp_gradient`]) with the SR walk's image weight
 //! `Re Δ_nm(L)` in place of the density (`parts.ecp`; derivation in the
@@ -267,6 +272,10 @@ pub enum KGradMutation {
     /// Open shell: the β exchange term dropped from the derivative walks.
     /// A no-op on a restricted state.
     ExchDropBeta,
+    /// Open shell: the closed-shell coefficient `½` on each spin's exchange
+    /// term of the derivative walks (dense and fit), `(½, D_α), (½, D_β)`
+    /// instead of `(1, D_α), (1, D_β)`. A no-op on a restricted state.
+    ExchClosedShellFactor,
     /// Open shell: the Madelung M-term in the closed-shell form
     /// `½ D S D` on the TOTAL density instead of `Σ_σ D_σ S D_σ`. A no-op on
     /// a restricted state; invisible on a singlet; blind for `exxdiv = none`.
@@ -775,11 +784,10 @@ pub(crate) fn check_inputs(
 
 /// [`check_inputs`] for an entry that differentiates a range-separated
 /// exchange: `rsh` is the functional's range separation (`None` for every
-/// entry but the RKS force and stress and the UKS and ROKS forces). A dense source must
-/// carry exactly these parameters (and none when `rsh` is `None`). An RS-GDF
-/// source must too, and is admitted with a range separation only for a
-/// closed-shell entry (one density per k, the RKS force and stress): the
-/// attenuated fit's derivative is not wired into the open-shell assembly.
+/// entry but the RKS force and stress and the UKS and ROKS forces). A dense
+/// or RS-GDF source must carry exactly these parameters (and none when `rsh`
+/// is `None`); every other entry (the open-shell stresses, the HF forces)
+/// passes `None`, so a range-separated source is refused there.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn check_inputs_rsh(
     who: &str,
@@ -844,15 +852,6 @@ pub(crate) fn check_inputs_rsh(
             }
         }
         KGradJk::RsGdf(s) => {
-            if dens.len() != 1 && (s.gdf.rsh().is_some() || rsh.is_some()) {
-                return Err(FerricError::General(format!(
-                    "{who}: range-separated exchange on RS-GDF J/K (KRsGdf::build_rsh) has no \
-                     derivative for an open-shell state (the attenuated fit is differentiated for \
-                     the closed-shell RKS force and stress only); the open-shell UKS and ROKS \
-                     forces (kpoint_uks_gradient, kpoint_roks_gradient) cover range separation on \
-                     dense-AFT J/K only"
-                )));
-            }
             check_rsgdf_rsh(who, s.gdf.rsh(), rsh)?;
             if s.gdf.nk() != nk {
                 return Err(FerricError::General(format!(
@@ -883,9 +882,9 @@ fn check_dense_rsh(
         (Some(_), None) => Err(FerricError::General(format!(
             "{who}: the dense kernels carry an attenuated (range-separated) exchange (rsh); \
              this entry point does not differentiate it (the range-separated k-point force \
-             and stress cover RKS (kpoint_rks_gradient / kpoint_rks_stress, dense-AFT or \
-             RS-GDF J/K) and the UKS and ROKS forces (kpoint_uks_gradient / \
-             kpoint_roks_gradient, dense-AFT J/K), with a range-separated functional)"
+             and stress cover RKS (kpoint_rks_gradient / kpoint_rks_stress) and the UKS and \
+             ROKS forces (kpoint_uks_gradient / kpoint_roks_gradient), dense-AFT or RS-GDF \
+             J/K, with a range-separated functional)"
         ))),
         (None, Some(w)) => Err(FerricError::General(format!(
             "{who}: the functional is range-separated ({w:?}) but the dense kernels carry the \
@@ -912,8 +911,9 @@ fn check_rsgdf_rsh(
         (Some(_), None) => Err(FerricError::General(format!(
             "{who}: the RS-GDF J/K carry an attenuated (range-separated) exchange \
              (KRsGdf::build_rsh); this entry point does not differentiate it (the \
-             range-separated k-point force and stress cover closed-shell RKS, \
-             kpoint_rks_gradient / kpoint_rks_stress with a range-separated functional)"
+             range-separated k-point derivatives on RS-GDF cover the RKS force and stress \
+             (kpoint_rks_gradient / kpoint_rks_stress) and the UKS and ROKS forces \
+             (kpoint_uks_gradient / kpoint_roks_gradient), with a range-separated functional)"
         ))),
         (None, Some(w)) => Err(FerricError::General(format!(
             "{who}: the functional is range-separated ({w:?}) but the RS-GDF J/K carry the \
@@ -1115,9 +1115,8 @@ fn m_term_madelung(
     Ok(exch_scale * base)
 }
 
-/// The range separation of the source (`check_inputs_rsh` admits a dense one
-/// on the RKS, UKS and ROKS forces, an RS-GDF one on the closed-shell RKS force
-/// only) and the `v_M` the M-term uses: the SCF's (mixed, for a
+/// The range separation of the source (`check_inputs_rsh` admits a dense or
+/// RS-GDF one on the RKS, UKS and ROKS forces) and the `v_M` the M-term uses: the SCF's (mixed, for a
 /// range-separated K) `vm`, never scaled again by `c_sr`, or a wrong constant
 /// under the `RshPlainMadelung`, `RshNoMadelungTerm` and `RshMadelung*`
 /// defects.
@@ -1225,8 +1224,9 @@ fn m_term_sandwich(
 }
 
 /// The open-shell exchange-term defects ([`KGradMutation::ExchBetaUsesAlpha`],
-/// [`KGradMutation::ExchDropBeta`]) applied to the `(c_α, D_α), (c_β, D_β)`
-/// terms; anything else (and a restricted, single-term list) unchanged.
+/// [`KGradMutation::ExchDropBeta`], [`KGradMutation::ExchClosedShellFactor`])
+/// applied to the `(c_α, D_α), (c_β, D_β)` terms; anything else (and a
+/// restricted, single-term list) unchanged.
 fn spin_mutated(
     mut terms: Vec<(f64, &[Array2<C64>])>,
     mutation: Option<KGradMutation>,
@@ -1236,6 +1236,9 @@ fn spin_mutated(
             Some(KGradMutation::ExchBetaUsesAlpha) => terms[1].1 = terms[0].1,
             Some(KGradMutation::ExchDropBeta) => {
                 terms.pop();
+            }
+            Some(KGradMutation::ExchClosedShellFactor) => {
+                terms.iter_mut().for_each(|t| t.0 *= 0.5);
             }
             _ => {}
         }

@@ -572,9 +572,9 @@ def test_open_shell_refusals_have_exact_wording(basis):
             _uks,
             {"with_gradient": True, "jk": "rsgdf", "auxbasis": "cc-pvdz-ri"},
             r"^run_uks_kpts: with_gradient: General error: HSE06: the k-point UKS "
-            r"range-separated hybrid force runs on the dense-AFT J/K only \(the library "
-            r"UKS force has no derivative of the RS-GDF attenuated fit\); use jk = "
-            r'"dense"$',
+            r"range-separated hybrid force runs on the dense-AFT J/K only in the bindings "
+            r"\(the library RS-GDF force, kpoint_uks_gradient, is not wired yet\); use jk "
+            r'= "dense"$',
         ),
         (
             _roks,

@@ -797,8 +797,8 @@ fn refusals_have_exact_wording() {
     assert!(
         e.contains(
             "method.task = \"optimize\" with [cell] kmesh: General error: HSE06: the k-point \
-             UKS range-separated hybrid force runs on the dense-AFT J/K only (the library UKS \
-             force has no derivative of the RS-GDF attenuated fit); use jk = \"dense\""
+             UKS range-separated hybrid force runs on the dense-AFT J/K only in the bindings (the \
+             library RS-GDF force, kpoint_uks_gradient, is not wired yet); use jk = \"dense\""
         ),
         "{e}"
     );
