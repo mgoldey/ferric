@@ -70,14 +70,10 @@ pub fn compiled_inputs(root: &Path) -> Vec<PathBuf> {
     out
 }
 
+/// Runs a read-only git query in `root`. `--no-optional-locks` keeps
+/// `git status` from rewriting the watched `.git/index`, which made cargo
+/// re-run this build script on every second build (#525).
 fn git(root: &Path, args: &[&str]) -> Option<String> {
-    // `--no-optional-locks`: without it `git status` refreshes and REWRITES
-    // `.git/index` whenever file stat data changed, and the build script
-    // watches that index (git_watch_files). A write during the script's own
-    // run leaves the index newer than the run, so cargo re-ran this script
-    // (and relinked everything that embeds the build identity) on the next
-    // build -- which in CI was `nextest archive` right after
-    // `cargo test --no-run` (#525). Read-only queries need no index lock.
     let out = Command::new("git")
         .arg("--no-optional-locks")
         .arg("-C")
