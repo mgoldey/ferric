@@ -19,16 +19,43 @@ use ndarray::Array2;
 /// `c_prev_closed`: shape (n, n_closed) — previous accepted closed-MO block.
 /// `c_prev_open`:   shape (n, n_open)   — previous accepted open-MO block.
 ///
-/// Returns a new (n, n) matrix with the same columns as `c_new` but
-/// reordered. Virtuals at the end keep their original (ε-sorted) order.
+/// `eps_new`: the eigenvalues of `c_new`, in the same (diagonalisation) order.
+///
+/// Returns `(C, ε)`: the columns of `c_new` reordered, and `eps_new` permuted
+/// the SAME way, so `ε[p]` stays the energy of column `p`. Virtuals at the end
+/// keep their original (ε-sorted) order. Every consumer that reads energies by
+/// column index (UHF `density_fractional`, RHF Fermi smearing) needs the
+/// permuted ε: before 2026-10-24 only C was returned, so after a MOM swap
+/// those paths grouped/occupied the columns by the energies of other orbitals.
 pub fn mom_reorder(
+    c_new: &Array2<f64>,
+    eps_new: &[f64],
+    s: &Array2<f64>,
+    c_prev_closed: &Array2<f64>,
+    c_prev_open: &Array2<f64>,
+    n_closed: usize,
+    n_open: usize,
+) -> (Array2<f64>, Vec<f64>) {
+    debug_assert_eq!(eps_new.len(), c_new.ncols());
+    let order = mom_order(c_new, s, c_prev_closed, c_prev_open, n_closed, n_open);
+    let mut out = Array2::<f64>::zeros(c_new.raw_dim());
+    for (target, &source) in order.iter().enumerate() {
+        out.column_mut(target).assign(&c_new.column(source));
+    }
+    let eps = order.iter().map(|&p| eps_new[p]).collect();
+    (out, eps)
+}
+
+/// The MOM column order: `order[target] = source` column of `c_new`
+/// (closed block, then open block, then the virtuals in ascending index).
+fn mom_order(
     c_new: &Array2<f64>,
     s: &Array2<f64>,
     c_prev_closed: &Array2<f64>,
     c_prev_open: &Array2<f64>,
     n_closed: usize,
     n_open: usize,
-) -> Array2<f64> {
+) -> Vec<usize> {
     let n = c_new.nrows();
     debug_assert_eq!(c_new.ncols(), n);
     debug_assert_eq!(s.dim(), (n, n));
@@ -101,20 +128,12 @@ pub fn mom_reorder(
     // Sort virtuals by original index (preserves ε-order for diagnostic clarity).
     virt_chosen.sort();
 
-    // 3. Assemble output.
-    let mut out = Array2::<f64>::zeros((n, n));
-    for (target, &source) in closed_chosen.iter().enumerate() {
-        out.column_mut(target).assign(&c_new.column(source));
-    }
-    for (target, &source) in open_chosen.iter().enumerate() {
-        out.column_mut(n_closed + target)
-            .assign(&c_new.column(source));
-    }
-    for (target, &source) in virt_chosen.iter().enumerate() {
-        out.column_mut(n_closed + n_open + target)
-            .assign(&c_new.column(source));
-    }
-    out
+    // 3. Assemble the order: closed, open, virtual.
+    closed_chosen
+        .into_iter()
+        .chain(open_chosen)
+        .chain(virt_chosen)
+        .collect()
 }
 
 #[cfg(test)]
@@ -122,28 +141,43 @@ mod tests {
     use super::*;
     use ndarray::array;
 
+    /// Energies of the three test columns, in `c_new` order.
+    const EPS: [f64; 3] = [-1.0, -0.5, 0.2];
+
+    /// One closed + one open MOM reorder of a 3-orbital `c_new` against the
+    /// identity (S = I) references `e0` (closed) and `e1` (open).
+    fn reorder_against_identity(c_new: &Array2<f64>) -> (Array2<f64>, Vec<f64>) {
+        let s = Array2::<f64>::eye(3);
+        let c_prev_closed = array![[1.0], [0.0], [0.0]];
+        let c_prev_open = array![[0.0], [1.0], [0.0]];
+        mom_reorder(c_new, &EPS, &s, &c_prev_closed, &c_prev_open, 1, 1)
+    }
+
     /// MOM is the identity when `c_new == c_prev` (block-diagonal overlap).
     #[test]
     fn mom_reorder_identity_when_c_new_equals_c_prev() {
-        let s = Array2::<f64>::eye(3);
-        let c_new = array![[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0],];
-        let c_prev_closed = c_new.slice(ndarray::s![.., 0..1]).to_owned();
-        let c_prev_open = c_new.slice(ndarray::s![.., 1..2]).to_owned();
-        let out = mom_reorder(&c_new, &s, &c_prev_closed, &c_prev_open, 1, 1);
+        let c_new = Array2::<f64>::eye(3);
+        let (out, eps_out) = reorder_against_identity(&c_new);
         assert_eq!(out, c_new);
+        assert_eq!(eps_out, EPS);
     }
 
     /// If c_new's columns are permuted vs c_prev, MOM should put them back
     /// in the previous order.
     #[test]
     fn mom_reorder_undoes_a_permutation() {
-        let s = Array2::<f64>::eye(3);
         // c_prev: identity. c_new: same columns, but swapped 0 <-> 1.
         let c_new = array![[0.0, 1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0],];
-        let c_prev_closed = array![[1.0], [0.0], [0.0]];
-        let c_prev_open = array![[0.0], [1.0], [0.0]];
-        let out = mom_reorder(&c_new, &s, &c_prev_closed, &c_prev_open, 1, 1);
-        let expected = array![[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0],];
-        assert_eq!(out, expected);
+        let (out, _) = reorder_against_identity(&c_new);
+        assert_eq!(out, Array2::<f64>::eye(3));
+    }
+
+    /// The eigenvalues travel with their columns: after the 0 <-> 1 swap,
+    /// output column 0 is column 1 of c_new, so its energy is EPS[1].
+    #[test]
+    fn mom_reorder_permutes_eigenvalues_with_columns() {
+        let c_new = array![[0.0, 1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0],];
+        let (_, eps_out) = reorder_against_identity(&c_new);
+        assert_eq!(eps_out, vec![EPS[1], EPS[0], EPS[2]]);
     }
 }

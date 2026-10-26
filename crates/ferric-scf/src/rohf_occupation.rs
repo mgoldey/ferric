@@ -453,7 +453,8 @@ impl OccupationGuard {
 
     /// The DIIS step's new orbitals: count open-space swaps against `c_prev`,
     /// engage the lock after [`HOLE_SWAP_LOCK_STREAK`] in a row (clearing the
-    /// DIIS history built on the swapping states), and apply it.
+    /// DIIS history built on the swapping states), and apply it. Returns the
+    /// eigenpairs `(ε, C)`, with ε permuted together with the columns.
     pub(crate) fn select(
         &mut self,
         c_prev: &Array2<f64>,
@@ -462,15 +463,15 @@ impl OccupationGuard {
         s: &Array2<f64>,
         diis: &mut Diis,
         announce: bool,
-    ) -> Array2<f64> {
+    ) -> (Vec<f64>, Array2<f64>) {
         if !self.enabled || !self.lock_enabled {
-            return c_new;
+            return (eps, c_new);
         }
         if !self.locked {
             let swapped = open_space_changed(c_prev, &c_new, s, self.nocc_double, self.nocc_open);
             self.swap_streak = if swapped { self.swap_streak + 1 } else { 0 };
             if self.swap_streak < HOLE_SWAP_LOCK_STREAK {
-                return c_new;
+                return (eps, c_new);
             }
             self.locked = true;
             diis.reset();
@@ -482,7 +483,7 @@ impl OccupationGuard {
                 );
             }
         }
-        self.relabel(c_prev, eps, c_new, s).1
+        self.relabel(c_prev, eps, c_new, s)
     }
 
     /// The gradient guard: a ΔP/ΔE-converged state is accepted only if its
