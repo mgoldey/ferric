@@ -616,6 +616,13 @@ jobs:
           # profile `nextest archive` uses (it runs `cargo test --no-run` with
           # these flags), so the debug-info guard below runs before minutes of
           # compression; the archive's own build is then a fresh no-op.
+          # It was NOT a no-op until #525 (~10 min rebuild): libecpint's
+          # generator rewrote the tracked qgen.hpp inside a directory
+          # ferric-integrals' build script watches, and ferric-build-info's
+          # `git status` rewrote the .git/index it watches, so both build
+          # scripts re-ran and everything above them recompiled. Fixed in
+          # crates/ferric-integrals/build.rs (MtimeGuard) and
+          # crates/ferric-build-info/src/probe.rs (--no-optional-locks).
           cargo test --no-run --workspace --all-targets --locked
           # DEBUG-INFO GUARD (#525). The job `env:` above must have taken
           # effect: an archived binary with a .debug_info section means the
@@ -644,8 +651,55 @@ jobs:
             exit 1
           fi
           echo "debug-info guard: ${#BINS[@]} test binaries checked, none carry .debug_info"
-          cargo nextest archive --workspace --all-targets --locked \
-            --archive-file /tmp/nextest-archive.tar.zst
+          # PER-SHARD ARCHIVES (#525). One archive per test-shard job, split
+          # at the BINARY level, so each shard downloads ~1/4 of the bytes
+          # (the single 7.6 GB archive could not be fetched in 20 min at the
+          # 5 MB/s slow runners reach; run 40364869971). `--partition hash`
+          # split by TEST, so every shard needed every binary; nextest has no
+          # binary-level partition, so the split is done here, by filtering
+          # what goes into each archive. scripts/ci-shard-plan.sh assigns the
+          # fast-tier binaries largest-first by measured time
+          # (scripts/ci-shard-weights.tsv) to the least-loaded shard, and
+          # adds ferric-cli's executable to every shard whose tests run it.
+          # SHARDS must equal test-shard's matrix (ci_validation_tier_guard
+          # `shard_archives_match_the_matrix`).
+          SHARDS=4
+          SLOW="$(scripts/ci-shard-plan.sh slow-filter)"
+          PLAN=/tmp/shard-plan
+          cargo nextest list --workspace --all-targets --locked \
+            -E "not ($SLOW)" --message-format json > "$PLAN-full.json"
+          scripts/ci-shard-plan.sh assign "$PLAN-full.json" scripts/ci-shard-weights.tsv "$SHARDS" "$PLAN"
+          for k in $(seq 1 "$SHARDS"); do
+            F="$(cat "$PLAN/$k.filter")"
+            cargo nextest archive --workspace --all-targets --locked \
+              -E "$F" --archive-file "/tmp/nextest-shard-$k.tar.zst"
+          done
+          # EXACTLY-ONCE GUARD (#525). Lists each archive exactly the way its
+          # shard will run it, and requires the union of their fast-tier
+          # tests to equal the full fast-tier list above, with no test in two
+          # archives. Fails closed: a test in no archive would silently stop
+          # running; one in two would run twice.
+          SHARD_LISTS=()
+          for k in $(seq 1 "$SHARDS"); do
+            cargo nextest list --archive-file "/tmp/nextest-shard-$k.tar.zst" \
+              --workspace-remap . -E "not ($SLOW)" --message-format json > "$PLAN-$k.json"
+            SHARD_LISTS+=("$PLAN-$k.json")
+          done
+          scripts/ci-shard-plan.sh verify "$PLAN-full.json" "${SHARD_LISTS[@]}"
+          # The probe from .config/nextest.toml's archive.include must be in
+          # EVERY shard archive (runlog_writer asserts it exists), and every
+          # archive holding ferric-cli integration tests must carry the
+          # ferric-cli executable they run through CARGO_BIN_EXE_ferric-cli.
+          for k in $(seq 1 "$SHARDS"); do
+            MEMBERS="$(tar -I zstd -tf "/tmp/nextest-shard-$k.tar.zst")"
+            grep -q 'target/debug/examples/runlog_probe$' <<<"$MEMBERS" \
+              || { echo "::error::nextest-shard-$k lacks examples/runlog_probe (#525)"; exit 1; }
+            if grep -q '^ferric-cli::' "$PLAN/$k.ids" \
+                && ! grep -q 'target/debug/ferric-cli$' <<<"$MEMBERS"; then
+              echo "::error::nextest-shard-$k has ferric-cli tests but not the ferric-cli executable (#525)"
+              exit 1
+            fi
+          done
           # The malloc-perturb job runs 6 binaries; downloading the whole
           # ~15 GB archive for them was slow and sometimes truncated (#525).
           # A second archive holding only those binaries reuses the binaries
@@ -657,19 +711,59 @@ jobs:
           cargo nextest archive --workspace --all-targets --locked \
             -E "$CANARY_FILTER" \
             --archive-file /tmp/canary-archive.tar.zst
-          # Sizes of both archives (the #525 acceptance measurement), and the
+          # Sizes of every archive (the #525 acceptance measurement), and the
           # disk left: this runner has ~14 GB free and has already died once
           # with "No space left on device" (run 33210162947).
-          ls -l /tmp/nextest-archive.tar.zst /tmp/canary-archive.tar.zst
+          ls -l /tmp/nextest-shard-*.tar.zst /tmp/canary-archive.tar.zst
           df -h / | tail -1
 
-      # compression-level 0: the archive is already zstd, so re-zipping it at
-      # the default level 6 spends upload time for nothing.
-      - name: Upload the archive
+      # INFORMATIONAL ONLY, never fails the job: how much a long-window zstd
+      # (cross-binary dedup) would shrink shard 1, to decide whether a
+      # recompression pass is worth its time (#525).
+      - name: Measure long-window recompression of shard 1 (informational)
+        continue-on-error: true
+        run: |
+          set +e
+          START=$(date +%s)
+          zstd -dc /tmp/nextest-shard-1.tar.zst | zstd --long=27 -T0 -3 -c > /tmp/shard-1-long.tar.zst
+          END=$(date +%s)
+          ls -l /tmp/nextest-shard-1.tar.zst /tmp/shard-1-long.tar.zst
+          echo "zstd --long=27 -3 recompression of shard 1 took $((END - START)) s"
+          rm -f /tmp/shard-1-long.tar.zst
+          exit 0
+
+      # compression-level 0: the archives are already zstd, so re-zipping them
+      # at the default level 6 spends upload time for nothing. One artifact
+      # per shard; test-shard downloads `nextest-shard-${{ matrix.partition }}`.
+      - name: Upload shard archive 1
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: nextest-archive
-          path: /tmp/nextest-archive.tar.zst
+          name: nextest-shard-1
+          path: /tmp/nextest-shard-1.tar.zst
+          retention-days: 1
+          compression-level: 0
+
+      - name: Upload shard archive 2
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: nextest-shard-2
+          path: /tmp/nextest-shard-2.tar.zst
+          retention-days: 1
+          compression-level: 0
+
+      - name: Upload shard archive 3
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: nextest-shard-3
+          path: /tmp/nextest-shard-3.tar.zst
+          retention-days: 1
+          compression-level: 0
+
+      - name: Upload shard archive 4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: nextest-shard-4
+          path: /tmp/nextest-shard-4.tar.zst
           retention-days: 1
           compression-level: 0
 
@@ -700,12 +794,23 @@ jobs:
   #
   # The curve flattens at 4 because the floor is `cdft_coupling_hene` at
   # 13.4 min on its own. With the cdft/cosx/qqr3 binaries deferred to nightly
-  # (they are in SLOW below), the remaining 26.1 min divides to ~6.5 min/shard.
+  # (they are in SLOW, scripts/ci-shard-plan.sh), the remaining 26.1 min
+  # divides to ~6.5 min/shard.
   #
   # CRATE-level sharding does NOT work here and was measured before this was
   # written: ferric-scf alone is 33.7 of the 52.3 min (64%), so a
-  # crate-granularity split saturates at 33.7 min at ANY shard count. Hence
-  # `--partition hash:i/4`, which shards by TEST, not by crate.
+  # crate-granularity split saturates at 33.7 min at ANY shard count.
+  #
+  # BINARY-level sharding (#525, replaced `--partition hash:i/4`, which split
+  # by TEST and so made every shard download every binary). Each shard runs
+  # ALL of its own archive, `nextest-shard-<k>`, which build-tests packed
+  # from scripts/ci-shard-plan.sh's LPT assignment. On run 40346982823's
+  # timings (45,347 s of tests over 516 binaries) that assignment balances
+  # to ~11,337 s per shard; the largest single binary, pbc_parallel_bitwise,
+  # is 2,090 s, so binaries are fine-grained enough at 4. Stale weights
+  # (scripts/ci-shard-weights.tsv; regenerate with
+  # scripts/ci-shard-weights.sh <green-run-id>) only worsen the balance;
+  # build-tests' exactly-once guard makes sure no test is lost or doubled.
   #
   # Each shard RESTORES both caches and SAVES NEITHER -- build-tests is the
   # single writer, so adding shards cannot increase eviction pressure on the
@@ -904,6 +1009,13 @@ jobs:
       # when the download is healthy. That is the price of resumable,
       # stall-detecting transfers; the old path lost 15-30 min per stall.
       #
+      # SIZE, NOT RETRIES (#525, run 40364869971). Shards 2 and 4 then failed
+      # at 4-14 MB/s with 6.2 and 7.0 of 7.59 GB fetched when the 1200 s
+      # deadline ran out: the retry logic worked, but a 7.6 GB file cannot be
+      # fetched in 20 min at 5 MB/s. Each shard now downloads only its own
+      # archive, `nextest-shard-<k>` (estimated ~1.2-1.6 GB; build-tests logs
+      # the real sizes), ~5 min even at 5 MB/s.
+      #
       # The action stays as ONE fallback for a failure of the script itself
       # (API error, token scope): 6 min is ~4.5x the healthy download time.
       # The step after it makes a fallback VISIBLE (warning + job summary) so
@@ -920,7 +1032,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           CI_DL_DEADLINE_S: "1200"
-        run: exec scripts/ci-download-artifact.sh nextest-archive nextest-archive.tar.zst /tmp
+        run: exec scripts/ci-download-artifact.sh nextest-shard-${{ matrix.partition }} nextest-shard-${{ matrix.partition }}.tar.zst /tmp
 
       # A second artifact file (the probe, uploaded next to the archive) went
       # missing on single shards after both the download and a retry (runs
@@ -933,35 +1045,29 @@ jobs:
         timeout-minutes: 6
         continue-on-error: true
         with:
-          name: nextest-archive
+          name: nextest-shard-${{ matrix.partition }}
           path: /tmp
 
       - name: Report the download-artifact fallback
         if: steps.download.outcome != 'success'
         run: |
           echo "::warning::scripts/ci-download-artifact.sh FAILED (outcome: ${{ steps.download.outcome }}) and the download-artifact fallback ran -- check the 'Download the archive' log; a script that always fails would otherwise hide behind the fallback (#525)."
-          echo "- :warning: \`nextest-archive\`: scripted download ${{ steps.download.outcome }}, used the actions/download-artifact fallback (#525)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- :warning: \`nextest-shard-${{ matrix.partition }}\`: scripted download ${{ steps.download.outcome }}, used the actions/download-artifact fallback (#525)" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Run shard ${{ matrix.partition }} of 4
         timeout-minutes: 100
         run: |
           set -euo pipefail
-          # The deferred set, DERIVED from the same SLOW list the nightly job
-          # uses rather than retyped. A third hand-maintained copy of these 17
-          # names is exactly how a deferral silently becomes a deletion, which
-          # this repo has already hit once (2026-09-16, grid_prune_live_scf).
-          SLOW="dft_wb97xv mpi_dfjk_banding dft_pbe pair_screen_criteria attenuation_plus_dlpno lmp2_amplitude \
-                screening_exactness csam_screening link_scf_anchor link_screen_reachability \
-                grid_prune_live_scf hirshfeld_symmetry \
-                cdft_coupling_hene cdft_state_selection rimp2_qqr3_screening \
-                cosx_group_screen_anchors cosx_sparse_anchors cosx_mixed_error_law"
-          EXPR=""
-          for b in $SLOW; do
-            [ -n "$EXPR" ] && EXPR="$EXPR + "
-            EXPR="${EXPR}binary($b)"
-          done
-          echo "deferring $(echo $SLOW | wc -w) binaries from the fast tier"
-          if [ ! -f /tmp/nextest-archive.tar.zst ] || ! zstd -tq /tmp/nextest-archive.tar.zst; then
+          # The deferred set comes from scripts/ci-shard-plan.sh, the ONE
+          # copy of the SLOW list (build-tests and slow-tests read it too). A
+          # hand-maintained copy is exactly how a deferral silently becomes a
+          # deletion, which this repo has already hit once (2026-09-16,
+          # grid_prune_live_scf). build-tests already left these binaries out
+          # of every shard archive; the filter below is a safety net.
+          SLOW="$(scripts/ci-shard-plan.sh slow-filter)"
+          echo "deferring $(scripts/ci-shard-plan.sh slow-names | wc -l) binaries from the fast tier"
+          ARCHIVE=/tmp/nextest-shard-${{ matrix.partition }}.tar.zst
+          if [ ! -f "$ARCHIVE" ] || ! zstd -tq "$ARCHIVE"; then
             echo "::error::the nextest archive is missing or corrupt after the download" \
                  "AND the fallback -- an ARTIFACT DOWNLOAD failure, not a build" \
                  "or test failure. Re-run this job."
@@ -972,13 +1078,19 @@ jobs:
           # `runlog_writer` asserts the probe exists rather than skipping.
           EXTRACT=$(mktemp -d)
           export FERRIC_RUNLOG_PROBE="$EXTRACT/target/debug/examples/runlog_probe"
+          # NO `--partition`: the archive IS this shard's partition (#525).
+          # `--no-tests=fail`: an archive with nothing to run fails closed
+          # (exit 4, "no tests to run") instead of a green shard that checked
+          # nothing. Spelled out rather than left to nextest's default, which
+          # has changed before. build-tests' exactly-once guard already
+          # rejects an empty shard; this is the run-side backstop.
           cargo nextest run \
             --profile ci \
-            --archive-file /tmp/nextest-archive.tar.zst \
+            --archive-file "$ARCHIVE" \
             --extract-to "$EXTRACT" \
             --workspace-remap . \
-            --partition hash:${{ matrix.partition }}/4 \
-            -E "not ($EXPR)"
+            --no-tests=fail \
+            -E "not ($SLOW)"
 
       # nextest does NOT run doctests -- `cargo nextest run` skips them
       # silently. Without this step doctest coverage would vanish the moment
@@ -1180,13 +1292,22 @@ jobs:
           key: cargo-v3-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: cargo-v3-${{ runner.os }}-
 
-      # MUST stay in sync with SLOW in the fast tier above: a binary named
-      # there but missing here is verified NOWHERE. Grouped by crate so a
-      # failure names the area.
+      # MUST stay in sync with SLOW_BINARIES in scripts/ci-shard-plan.sh (the
+      # list test-shard defers): a binary named there but missing here is
+      # verified NOWHERE. The first lines of the step check that, against
+      # this step's own --test lines. Grouped by crate so a failure names
+      # the area.
       - name: Test (deferred)
         # --locked: see build-and-test's "Check (all targets)" step for why.
         run: |
           set +e
+          STEP_TEXT=$(sed -n '/- name: Test (deferred)/,/^  [a-z]/p' .github/workflows/ci.yml)
+          NAMES=$(scripts/ci-shard-plan.sh slow-names) && [ -n "$NAMES" ] \
+            || { echo "::error::scripts/ci-shard-plan.sh slow-names failed or is empty"; exit 1; }
+          for b in $NAMES; do
+            grep -qE -- "--test $b( |$)" <<<"$STEP_TEXT" \
+              || { echo "::error::SLOW binary $b (scripts/ci-shard-plan.sh) has no --test line in slow-tests, so it runs nowhere"; exit 1; }
+          done
           rc=0
           # The original six.
           cargo test --no-fail-fast -p ferric-scf --test dft_wb97xv --test mpi_dfjk_banding --test dft_pbe --locked || rc=1
