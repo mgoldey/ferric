@@ -11,7 +11,9 @@
 #   4-centre ERI     deriv 0,1,2 : l <= 6,6,3  (second derivatives up to f)
 #   3-centre ERI     deriv 0,1   : l <= 6,6    (pure solid harmonics)
 #   2-centre ERI     deriv 0,1   : l <= 6,6    (pure solid harmonics)
-#   one-body         deriv 0,1,2 : l <= 6,4,3  (multipoles to order 2)
+#   one-body         deriv 0,1,2 : l <= 6,6,6  (multipoles to order 2;
+#                                 --with-max-am=6,4,3 sets only the default
+#                                 class, which caps the 3-centre orbital shells)
 # Generic code + no unrolling keep the library small; --with-opt-am=3.
 #
 # Usage: scripts/generate-libint-small.sh [workdir]

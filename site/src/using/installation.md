@@ -195,9 +195,13 @@ momentum for energy / 1st / 2nd derivatives (– = not generated):
 | Integrals | Source build with `scripts/install-libint.sh` (conda-forge 2.13.1) | PyPI wheel (ferric's libint2 2.7.2 export) | Needed for |
 |---|---|---|---|
 | 4-centre ERI | 7 / 6 / 3 | 6 / 6 / 3 | SCF, gradients, analytic Hessians |
-| One-electron (overlap, kinetic, nuclear) | 7 / 6 / 3 | 6 / 4 / 3 | the same |
-| 3- and 2-centre ERI | 7 / 7 / 4 | 6 / 6 / – | RI-MP2, RPA, GW and their gradients |
+| One-electron (overlap, kinetic, nuclear) | 7 / 6 / 3 | 6 / 6 / 6 | the same |
+| 3- and 2-centre ERI (auxiliary shell) | 7 / 7 / 4 | 6 / 6 / – | RI-MP2, RPA, GW and their gradients |
 | G12 geminal | 4 / – / – | – | F12 / geminal integrals |
+
+The 3-centre limit is for the auxiliary shell; libint caps the two orbital
+shells of a 3-centre integral at its default limit for that derivative order
+(the wheel: l ≤ 6 for energies, l ≤ 4 for first derivatives; 2.13.1: 6 / 6 / 3).
 
 With either build, analytic Hessians cover orbital bases up to f functions; a
 basis with g or higher functions uses finite differences of the analytic

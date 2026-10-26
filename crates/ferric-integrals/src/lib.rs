@@ -94,7 +94,9 @@ pub const LIBINT_AM_CLASSES: [&str; 4] = ["eri", "eri3", "eri2", "onebody"];
 /// (`LIBINT2_MAX_AM_3eri*`), `"eri2"` (`LIBINT2_MAX_AM_2eri*`) and
 /// `"onebody"` (`LIBINT2_MAX_AM_overlap*`). Entry `d` is the limit for
 /// derivative order `d`; orders the build lacks are dropped from the end, so
-/// a first-derivative-only build gives two entries. This is how the PyPI
+/// a first-derivative-only build gives two entries. The `"eri3"` limit is
+/// the auxiliary shell's; libint caps the two orbital shells at its default
+/// class limit for that order. Returned in alphabetical key order. This is how the PyPI
 /// wheel (small libint) and a conda-forge 2.13.1 build are told apart, since
 /// both carry the same version and commit.
 pub fn libint_max_am() -> std::collections::BTreeMap<&'static str, Vec<i32>> {
