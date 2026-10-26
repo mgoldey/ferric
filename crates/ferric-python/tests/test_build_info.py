@@ -29,7 +29,17 @@ def _loaded_so() -> Path:
 
 def test_build_info_has_every_field_with_a_definite_type():
     info = ferric.build_info()
-    assert set(info) == {"version", "commit", "dirty", "profile", "libint_version"}
+    assert set(info) == {
+        "version",
+        "commit",
+        "dirty",
+        "profile",
+        "libint_version",
+        "libint_max_deriv_order",
+        "libint_max_am",
+        "libint_g12_max_am",
+        "libint_linkage",
+    }
     assert info["version"] == ferric.__version__
     assert info["commit"] == "unknown" or re.fullmatch(
         r"[0-9a-f]{40}|[0-9a-f]{64}", info["commit"]
@@ -42,6 +52,42 @@ def test_build_info_has_every_field_with_a_definite_type():
     assert info["libint_version"] == "unknown" or re.fullmatch(
         r"\d+\.\d+\.\d+.*", info["libint_version"]
     )
+
+
+def test_libint_limits_are_well_formed():
+    info = ferric.build_info()
+    order = info["libint_max_deriv_order"]
+    assert type(order) is int and order >= 0
+    am = info["libint_max_am"]
+    assert set(am) == {"eri", "eri3", "eri2", "onebody"}
+    for cls, ams in am.items():
+        assert 1 <= len(ams) <= order + 1, (cls, ams, order)
+        assert all(type(lmax) is int and lmax >= 0 for lmax in ams), (cls, ams)
+    g12 = info["libint_g12_max_am"]
+    assert g12 is None or (type(g12) is int and g12 >= 0)
+    assert info["libint_linkage"] in {"static", "shared"}
+
+
+def test_conda_forge_2_13_1_limits():
+    """The shared conda-forge 2.13.1 build CI and the GitHub-release wheel use.
+
+    The exact numbers are asserted against libint2_params.h by the Rust test
+    ``ferric-integrals/tests/libint_build_report.rs`` for ANY libint; here they
+    pin the one build whose limits the release notes quote.
+    """
+    info = ferric.build_info()
+    if (info["libint_version"], info["libint_linkage"]) != ("2.13.1", "shared"):
+        pytest.skip(
+            f"not conda-forge 2.13.1: {info['libint_version']} {info['libint_linkage']}"
+        )
+    assert info["libint_max_deriv_order"] == 2
+    assert info["libint_max_am"] == {
+        "eri": [7, 6, 3],
+        "eri3": [7, 7, 4],
+        "eri2": [7, 7, 4],
+        "onebody": [7, 6, 3],
+    }
+    assert info["libint_g12_max_am"] == 4
 
 
 def test_version_is_never_a_pypi_rejected_local_version():

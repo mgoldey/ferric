@@ -99,9 +99,13 @@ fn main() {
     // an rpath.
     if std::path::Path::new(&format!("{libint_root}/lib/libint2.a")).exists() {
         println!("cargo:rustc-link-lib=static=int2");
+        println!("cargo:rustc-env=FERRIC_LIBINT_LINKAGE=static");
     } else {
         println!("cargo:rustc-link-lib=dylib=int2");
+        println!("cargo:rustc-env=FERRIC_LIBINT_LINKAGE=shared");
     }
+    // Lets the libint_max_am test read the very params header it compiled against.
+    println!("cargo:rustc-env=FERRIC_LIBINT_ROOT={libint_root}");
     println!("cargo:rustc-link-lib=dylib=openblas");
     println!("cargo:rustc-link-lib=dylib=stdc++");
 
@@ -118,6 +122,7 @@ fn main() {
     // this a toggled FERRIC_LIBINT2_TERF reused the stale shim.
     println!("cargo:rerun-if-env-changed=FERRIC_LIBINT2_TERF");
     println!("cargo:rerun-if-changed={libint_root}/include/libint2/config.h");
+    println!("cargo:rerun-if-changed={libint_root}/include/libint2/libint2_params.h");
     for var in [STOCK_VAR, REQUIRE_VAR, ALLOW_VAR] {
         println!("cargo:rerun-if-env-changed={var}");
     }

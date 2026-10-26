@@ -214,6 +214,10 @@ python -c "import ferric; print(ferric.__version__); print(ferric.build_info());
 ferric --version
 ```
 
+The wheel and a conda-forge 2.13.1 build share a version and commit; they
+differ in the libint2 limits in the table above, which `ferric --version` (the
+`libint:` line) and `ferric.build_info()["libint_max_am"]` report.
+
 `ferric.build_info()` and `ferric --version` report the version, the full git
 commit, whether tracked files differed from that commit (`dirty`), the cargo
 profile and the libint2 version. `ferric.__build__` is the compact stamp

@@ -34,6 +34,15 @@ class BuildInfo(TypedDict):
     """Cargo build profile: ``"release"`` or ``"debug"``."""
     libint_version: str
     """libint2 header version the integral shim was compiled against, or ``"unknown"``."""
+    libint_max_deriv_order: int
+    """``LIBINT2_MAX_DERIV_ORDER``: 1 = gradients only, 2 = analytic Hessians too."""
+    libint_max_am: dict[str, list[int]]
+    """Max angular momentum per class (``"eri"``, ``"eri3"``, ``"eri2"``,
+    ``"onebody"``); entry ``d`` is derivative order ``d``."""
+    libint_g12_max_am: int | None
+    """``LIBINT2_MAX_AM_R12kG12``, or ``None`` if the build defines none."""
+    libint_linkage: str
+    """``"static"`` or ``"shared"`` libint2."""
 
 def build_info() -> BuildInfo:
     """Which build of ferric is loaded. All values are fixed at compile time."""
