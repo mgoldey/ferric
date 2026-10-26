@@ -1395,9 +1395,22 @@ fn solve_uhf_impl(
             // Returned MOs must reproduce the returned density: after a
             // degenerate swap the aufbau eigenvectors of F hold the OTHER
             // member of the pair. Only then (see `occupied_by_density`): a MOM
-            // state is non-aufbau by design and keeps main's C and eps.
-            let (eps_a, c_a_f) = occupied_by_density(diag_a.run(&f_a)?, &s, &d_a, nocc_a, swapped);
-            let (eps_b, c_b_f) = occupied_by_density(diag_b.run(&f_b)?, &s, &d_b, nocc_b, swapped);
+            // state is non-aufbau by design and keeps main's C and eps. Per
+            // spin, and only for an integer density (`reorder_exit_mos`).
+            let (eps_a, c_a_f) = occupied_by_density(
+                diag_a.run(&f_a)?,
+                &s,
+                &d_a,
+                nocc_a,
+                reorder_exit_mos(swapped, d_occ_a.as_ref()),
+            );
+            let (eps_b, c_b_f) = occupied_by_density(
+                diag_b.run(&f_b)?,
+                &s,
+                &d_b,
+                nocc_b,
+                reorder_exit_mos(swapped, d_occ_b.as_ref()),
+            );
             // ⟨S²⟩ diagnostic
             let s2 = expectation_s_squared(&c_a_f, &c_b_f, &s, nocc_a, nocc_b);
             let s_true = 0.5 * (nocc_a as f64 - nocc_b as f64);
@@ -2203,9 +2216,11 @@ struct UhfExitGate {
 }
 
 impl UhfExitGate {
-    /// The exit to take, and whether the exit MOs are to be reordered: only
-    /// after a degenerate-swap acceptance, and never under `fractional_occ`
-    /// (an ensemble density has no integer occupied set to identify).
+    /// The exit to take, and whether it is a degenerate-swap acceptance (the
+    /// only exit whose MOs may be reordered; per spin, [`reorder_exit_mos`]).
+    /// Not refused wholesale under `fractional_occ`: when the frontier is not
+    /// degenerate `density_fractional` spreads nothing and the density is the
+    /// integer `C_occ·C_occᵀ`, which the reorder must still match.
     fn decide(
         &mut self,
         cosx_sched: &mut Option<crate::cosx_schedule::ScheduleRun>,
@@ -2248,7 +2263,7 @@ impl UhfExitGate {
         if vetoed {
             diis.reset();
         }
-        (exit, swap && exit.is_some() && !config.fractional_occ)
+        (exit, swap && exit.is_some())
     }
 
     fn record(&self) -> Option<crate::result::GradientVetoes> {
@@ -2284,6 +2299,17 @@ fn degenerate_swap_converged(
         && err_max < bound
         && prev_err_max < bound
         && sig.de < energy_conv.min(SWAP_MAX_DE)
+}
+
+/// Whether one spin's exit MOs are reordered to build its density: after a
+/// degenerate-swap acceptance (`swapped`, from [`UhfExitGate::decide`]) and
+/// only when that spin's density is integer. `d_occ` is the occupied-block
+/// cache that built the exit density, `Some` exactly when `D = C_occ·C_occᵀ`
+/// (see `spin_density_and_occ`); a fractional ensemble density has no integer
+/// occupied set to identify, so it keeps the aufbau eigenpairs. A MOM exit is
+/// never a swap acceptance, so it is never reordered.
+fn reorder_exit_mos(swapped: bool, d_occ: Option<&Array2<f64>>) -> bool {
+    swapped && d_occ.is_some()
 }
 
 /// Order one spin's eigenpairs so the first `nocc` columns are the
@@ -2707,6 +2733,75 @@ mod tests {
         assert_eq!((rec.count, rec.last_iteration), (1, 12));
         let (fa, _) = diis.step_pair(&f(5.0), &f(5.0), &f(0.4), &f(0.4));
         assert_eq!(fa, f(5.0), "DIIS history was not cleared by the veto");
+    }
+
+    /// A degenerate swap under `fractional_occ` whose density is integer (no
+    /// degenerate frontier to spread) must still reorder the exit MOs, per
+    /// spin: before, `decide` refused any reorder under `fractional_occ`, so
+    /// the returned aufbau C occupied the other member of the swapped pair
+    /// and did not build the returned integer D. A fractional spin keeps its
+    /// aufbau eigenpairs (no integer occupied set exists).
+    #[test]
+    fn swap_under_fractional_occ_reorders_each_integer_spin() {
+        let n = 3;
+        let x = Array2::<f64>::eye(n);
+        let err = Array2::<f64>::zeros((n, n));
+        let config = UhfConfig {
+            density_conv: 1e-6,
+            fractional_occ: true,
+            ..Default::default()
+        };
+        let mut gate = UhfExitGate::default();
+        let mut diis = Diis::new(6);
+        let mut report = None;
+        let mut step = |iter: usize| {
+            gate.decide(
+                &mut None,
+                UhfIterGradients {
+                    iter,
+                    sig: signals(1e-9, 1.0),
+                    err_max: 1e-9,
+                    err: [&err, &err],
+                    x: &x,
+                    xc_active: [true, false],
+                },
+                &config,
+                &mut diis,
+                false,
+                &mut report,
+            )
+        };
+        let _ = step(5);
+        let (exit, swapped) = step(6);
+        assert!(exit.is_some(), "the degenerate swap was not accepted");
+        assert!(swapped, "a swap under fractional_occ was not flagged");
+
+        // Aufbau C = I with eps ascending; D occupies orbital 1, the other
+        // member of a swapped pair, as an integer density.
+        let c = Array2::<f64>::eye(n);
+        let eps = vec![-0.5, -0.4, 0.3];
+        let mut d = Array2::<f64>::zeros((n, n));
+        d[(1, 1)] = 1.0;
+        let d_occ = Some(c.slice(ndarray::s![.., 1..2]).to_owned());
+        let (_, c_int) = occupied_by_density(
+            (eps.clone(), c.clone()),
+            &x,
+            &d,
+            1,
+            reorder_exit_mos(swapped, d_occ.as_ref()),
+        );
+        let occ = c_int.slice(ndarray::s![.., ..1]);
+        assert_eq!(
+            occ.dot(&occ.t()),
+            d,
+            "integer-density exit MOs do not build D"
+        );
+        // A fractional spin (no cache) keeps the aufbau eigenpairs.
+        assert!(!reorder_exit_mos(swapped, None));
+        let (eps_f, c_f) = occupied_by_density((eps.clone(), c.clone()), &x, &d, 1, false);
+        assert_eq!((eps_f, c_f), (eps, c));
+        // No swap (a plain or MOM exit): never reordered.
+        assert!(!reorder_exit_mos(false, d_occ.as_ref()));
     }
 
     /// The swap gradient bound is `max(density_conv, 1e-6)`: at a tight
