@@ -41,6 +41,8 @@
 //! `validation_kuks_rsh_stress.rs`.
 
 mod common;
+#[path = "kuks_rsh_force_support/mod.rs"]
+mod dsup;
 #[path = "krsh_rsgdf_force_support/mod.rs"]
 mod rs;
 #[path = "kuks_rsh_stress_support/mod.rs"]
@@ -287,4 +289,69 @@ fn oshell_rsh_stress_refusals() {
             assert!(e.contains("not implemented in the bindings"), "{f}: {e}");
         }
     }
+}
+
+/// Gamma == 1x1x1 for the routed Gamma UKS RSH stress
+/// (`gamma_rsh::gamma_uks_rsh_stress`, CAM-B3LYP: its erf piece is live on
+/// this cell; HSE06 and the measured numbers are weekly): the Gamma UKS SCF
+/// (dense J and exchange) through the 1x1x1 route equals the k-point UKS
+/// stress of an independent 1x1x1 KUKS SCF on the dense UKS force file's H3
+/// doublet fixtures. Also pins the binding gate's exact Gamma refusal text.
+#[test]
+fn gamma_uks_rsh_stress_is_the_one_point_mesh() {
+    use ferric_pbc::kuxcstress::{kpoint_uks_stress, KUksStressConfig};
+    let f = dsup::CAM;
+    let g = dsup::gamma_fixture(f, ExxDiv::Ewald);
+    let gs = ferric_pbc::gamma_rsh::gamma_uks_rsh_stress(
+        &g.cell,
+        &g.prep,
+        &g.hcfg,
+        &g.scf,
+        &g.gc,
+        &g.ex,
+        &ferric_pbc::kstress::KStressConfig {
+            budget_bytes: Some(dsup::AMPLE),
+            ..Default::default()
+        },
+    )
+    .unwrap_or_else(|e| panic!("gamma {f}: {e}"));
+    let fx = dsup::fixture(dsup::Kind::Tri(2), &dsup::H3D, [1, 1, 1], f, ExxDiv::Ewald);
+    let mut base = base_cfg(ExxDiv::Ewald, None);
+    base.grid = ferric_pbc::kxcgrad::KXcGrid::Atom(dsup::grid_cfg());
+    let ks = kpoint_uks_stress(
+        &fx.cell,
+        &fx.prep,
+        &fx.mesh,
+        &ferric_pbc::hcore::PeriodicHcoreConfig::with_omega(dsup::OMEGA),
+        &fx.hk,
+        ferric_pbc::kstress::KStressJk::Dense(&fx.eri),
+        &fx.res.scf,
+        f,
+        &KUksStressConfig {
+            base,
+            spin_mutation: None,
+        },
+    )
+    .unwrap();
+    let d = mdiff(&gs.de_deps, &ks.de_deps);
+    eprintln!(
+        "{f}: Gamma vs 1x1x1 stress {d:.2e} (|dE/de| {:.2e}, Fock guard {:.1e})",
+        mmax(&ks.de_deps),
+        gs.hf.fock_mismatch
+    );
+    assert!(mmax(&ks.de_deps) > 1e-2, "non-trivial stress");
+    assert!(d < 1e-9, "{f}: {d:e}");
+    // The binding gate's Gamma refusal, exact wording.
+    let e =
+        ferric_pbc::dft::check_gamma_uks_request(f, &[ferric_pbc::kxcgrad::Deriv::Stress], false)
+            .unwrap_err()
+            .to_string();
+    assert!(
+        e.contains(
+            "HYB_GGA_XC_CAM_B3LYP: the Gamma-point UKS range-separated hybrid stress is not \
+             implemented in the bindings (the library stress, gamma_uks_rsh_stress, is not \
+             wired yet); the force is available on the dense-AFT J/K"
+        ),
+        "{e}"
+    );
 }
