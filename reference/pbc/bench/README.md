@@ -660,18 +660,24 @@ bench/harness-hardening-228, base origin/main 5a536617a).  No session-4 number e
 the only runs made while writing it were seconds-long harness smoke checks on H2 / water STO-3G toy
 cells (`--smoke` rows, never timing data) and a parse check of every new TOML (below).  Earlier
 sessions' text is left as written; their stale dryice_112 ratios are marked inline.
+Revised once in review of PR #560 (quoting rule, binary pinning, run_id, rep minimum, ladder
+helper), still BEFORE any session-4 run; the text below is the revised version.
 
 ## Harness changes (this commit)
 - `scatter_driver.py`: `--bin` is required and must be a PRIVATE copy (any `target/` path component,
-  as given or after resolving symlinks, is refused: a rebuild under a running job SIGBUSes it); its
-  sha256 is recorded on every row (`bin_sha256`, re-hashed before each ferric run, outside the timed
-  window).  `--cpus` pins BOTH codes with `taskset -c` (defaults N=1 -> `0`, N=6 -> `0-5`: the
-  i7-6800K's physical cores; SMT siblings 6-11 stay idle).  Every row carries `scaling_cur_freq` of all
+  as given or after resolving symlinks, and any file with more than one hard link, is refused: a
+  rebuild under a running job SIGBUSes it); its sha256 is taken at start and recorded on every row
+  (`bin_sha256`); it is re-hashed before each ferric run (outside the timed window) and the driver
+  EXITS if it changed.  `FERRIC_LINDEP_THRESH` in the environment is refused.  Each invocation stamps
+  a `run_id` on its rows; an existing `--out` is refused unless `--append` (a top-up run).
+  `--cpus` pins BOTH codes with `taskset -c` (defaults N=1 -> `1` (core 0 takes most interrupts),
+  N=6 -> `0-5`: the i7-6800K's physical cores; SMT siblings 6-11 stay idle).  Every row carries `scaling_cur_freq` of all
   12 CPUs and the coretemp temperatures at the start and end of the timed window, and a `box_state`
   label (next section).  `--ferric-tags` runs several ferric inputs per rep, interleaved with PySCF;
   the sequence [ferric T1 .. Tk, PySCF] is rotated by the rep index.  `--pyscf-match-ferric-conv`,
   `--pyscf-args`, `--smoke` (no locks / waits, rows smoke=true, valid=false).
-- `pyscf_bench.py --match-ferric-conv`: PySCF stops on ferric's periodic SCF rule (next sections).
+- `pyscf_bench.py --match-ferric-conv`: PySCF stops on ferric's periodic SCF rule (next sections);
+  `max_cycle` defaults to 200 under it (ferric's periodic `max_iter`, config.rs:5341-5346).
 - `summarize.py`: the statistics below; `test_bench_harness.py` unit-tests them (pairing, bootstrap,
   noisy label, binary refusal, pinning defaults, rotation, sysfs snapshots, the stopping rule).
 - New inputs in `toml_ri/`: `diamond_prim_k333_rhf.toml`; `dryice_112_rhf_w{0.3,0.5,0.7,1.0}.toml`;
@@ -683,7 +689,8 @@ sessions' text is left as written; their stale dryice_112 ratios are marked inli
   the keys took effect.
 
 ## Quiet-box preconditions (every row)
-- One private binary per session; rows with different `bin_sha256` are never pooled.  ferric
+- One private binary per session; rows with different `bin_sha256` are never pooled or compared
+  (`summarize.py` keys every group on it).  ferric
   `--version` must name a commit that contains #508 (fc0ccc041), checked before the first run.
 - Pinning as above for both codes (`cpus` recorded).  Both heavy-slot locks held from before the
   quiet wait until the run exits (unchanged).
@@ -698,23 +705,31 @@ sessions' text is left as written; their stale dryice_112 ratios are marked inli
 
 ## Repeat counts and order
 - Timed rows: 5 valid reps per (cell, code, input) at N=6; 3 at N=1.  Order rotated per rep (default).
+  A group (or a per-session group) with fewer valid reps is labelled "n too small": neither NOISY
+  nor ok, and never quoted.
 - Between-session scatter: every row to be quoted is run in at least 2 sessions (separate `--out`
   files, started >= 1 h apart, same binary sha256).
 
-## Statistics (`summarize.py`, per (cell, N, code, input, box_state))
+## Statistics (`summarize.py`, per (cell, N, code, input, box_state); ratios per binary sha256)
 - median, min-max, IQR, IQR/median, relative MAD (median |x - median| / median); NOISY iff
-  IQR/median of the quoted metric (total wall unless stated) > 10%.
-- ferric/PySCF ratio of medians, same cell, same N, same method, with a PAIRED bootstrap 95% percentile
-  CI: pairs are (session, rep) keys present for both codes (last valid attempt each), 10000
-  resamples of pairs with replacement, `random.Random(228)`.
+  IQR/median of the quoted metric (total wall unless stated) > 10%; "n too small" below the rep
+  minimum above.
+- THE quoted ratio: ferric median / PySCF median over the PAIRED reps only (the (session, run_id,
+  rep) keys with a valid row for both codes, last valid attempt each), pooled across all sessions
+  of one binary, same cell, N and method; with a PAIRED bootstrap 95% percentile CI (10000
+  resamples of pairs with replacement, `random.Random(228)`).  Because that bootstrap pools
+  sessions, it does not see session-to-session drift; the between-session range below is the guard
+  for that.
 - Between sessions: per-session medians, CV of those medians (sample stdev / mean), max/min; and the
   per-session ferric/PySCF ratio with its max/min.
 
 ## Quoting rule
-A ferric/PySCF ratio is quoted only if: same cell, N, method and stage definition; both groups quiet
-and not NOISY; and the ratio's between-session range (max/min of the per-session ratios - 1) is < 5%
-over >= 2 sessions.  Every quoted ratio carries its bootstrap CI and the mismatch list.  Otherwise it is
-reported as "not quotable" with its range.
+A ferric/PySCF ratio is quoted only if: same cell, N, method, stage definition and binary sha256;
+EVERY contributing row has `box_state = "quiet"`; every per-session group of both codes is labelled
+ok (not NOISY, not "n too small"); and the ratio's between-session range (max/min of the
+per-session ratios - 1) is < 5% over >= 2 sessions.  `summarize.py` prints QUOTABLE only when all of
+these hold (else "not quotable" with the failing conditions).  Every quoted ratio carries its
+bootstrap CI and the mismatch list.
 
 ## SCF stopping rule (matched work)
 Timed PySCF rows use `--match-ferric-conv`.  The hook reproduces ferric's rule as read from the code
@@ -741,11 +756,16 @@ Gate on the switch: per cell, one untimed PySCF anchor under each rule; if they 
    150x590, 100x590, 200x590, 250x590 (PySCF `--grid R A`, precision 1e-11).
 5. If (4) passes the gate below: dryice PBE 75x302 timing, 5 reps N=6, 3 reps N=1.
 6. Repeats of the earlier quoted rows (diamond_prim / dryice RHF N=6) for the between-session table.
+   That table uses session-4-and-later rows only: rows of sessions 1-3 carry no `bin_sha256`,
+   `box_state` or `run_id` (summarize.py labels them "no-sha" / "unlabelled", so they can never be
+   QUOTABLE) and are shown for context only.
 
 ## dryice PBE ladder gate (replaces the one-step eps of the third session for this cell)
 ref = 250x590.  The ref is valid for code c only if |E_c(250x590) - E_c(200x590)| < 1e-6 Ha/cell;
 if either code fails, the gate is undecidable and no dryice PBE timing row is run.  Pass iff
   |E_f(75x302) - E_P(75x302)| <= |E_f(ref) - E_f(75x302)| + |E_P(ref) - E_P(75x302)| + 1e-8.
+Computed by `summarize.py <anchor jsonl...> --ladder dryice` (`ladder_gate`, unit-tested; PySCF rows
+at `--ladder-precision`, default 1e-11; refuses mixed ferric binaries).
 The full ladder is reported per code (non-monotone steps are reported, not a failure).  Artifact vs
 physics: if the cross-code 75x302 difference is grid quadrature, |E_f(ref) - E_P(ref)| is small next
 to it; a cross-code difference that does NOT shrink at the ref points at a non-grid defect and is

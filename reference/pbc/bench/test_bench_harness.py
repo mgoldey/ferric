@@ -18,8 +18,19 @@ import summarize as sm  # noqa: E402
 
 
 # ----------------------------------------------------------------------- summarize: pairing ----
-def _row(code, rep, wall, session="s1", attempt=0):
-    return dict(code=code, rep=rep, wall=wall, session=session, attempt=attempt)
+def _row(
+    code, rep, wall, session="s1", attempt=0, run_id="r1", box="quiet", sha="a" * 64
+):
+    return dict(
+        code=code,
+        rep=rep,
+        wall=wall,
+        session=session,
+        attempt=attempt,
+        run_id=run_id,
+        box_state=box,
+        bin_sha256=sha,
+    )
 
 
 def test_pairing_keeps_only_reps_present_for_both_codes():
@@ -150,7 +161,7 @@ def test_private_binary_refuses_target_paths(tmp_path):
 
 
 def test_default_cpus_and_count():
-    assert sd.default_cpus(1) == "0"
+    assert sd.default_cpus(1) == "1"  # core 0 takes most IRQs
     assert sd.default_cpus(6) == "0-5"
     assert sd.default_cpus(3) == "0-2"
     with pytest.raises(SystemExit):
@@ -268,3 +279,191 @@ def test_orthogonalizer_drops_modes_below_absolute_cut():
     x = pb.ferric_canonical_orthogonalizer(s)
     assert x.shape == (3, 2)
     assert np.allclose(x.T @ s @ x, np.eye(2))
+
+
+# ------------------------------------------------------ review fixes (PR #560): quoting ----
+def _session(code, session, walls, box="quiet", sha="a" * 64):
+    return [_row(code, i, w, session, box=box, sha=sha) for i, w in enumerate(walls)]
+
+
+QUIET5 = [10.0, 10.1, 9.9, 10.05, 9.95]
+
+
+def test_quotable_reachable_on_clean_quiet_data():
+    f = _session("ferric", "s1", [0.6 * x for x in QUIET5]) + _session(
+        "ferric", "s2", [0.61 * x for x in QUIET5]
+    )
+    p = _session("pyscf", "s1", QUIET5) + _session("pyscf", "s2", QUIET5)
+    ok, why = sm.quotable(f, p, "wall", 6)
+    assert ok, why
+
+
+def test_ambient_rows_are_never_quotable():
+    f = _session("ferric", "s1", [0.6 * x for x in QUIET5]) + _session(
+        "ferric", "s2", [0.6 * x for x in QUIET5], box="ambient"
+    )
+    p = _session("pyscf", "s1", QUIET5) + _session("pyscf", "s2", QUIET5)
+    ok, why = sm.quotable(f, p, "wall", 6)
+    assert not ok and any("non-quiet" in w for w in why)
+    # rows written before box_state existed ("unlabelled") are not quiet either
+    for r in f:
+        r["box_state"] = "unlabelled"
+    assert not sm.quotable(f, p, "wall", 6)[0]
+
+
+def test_noisy_session_group_is_never_quotable():
+    noisy = [6.0, 4.0, 8.0, 5.0, 7.0]  # same median as 6.0, IQR/median 33%
+    f = _session("ferric", "s1", noisy) + _session("ferric", "s2", [6.0] * 5)
+    p = _session("pyscf", "s1", [10.0] * 5) + _session("pyscf", "s2", [10.0] * 5)
+    ok, why = sm.quotable(f, p, "wall", 6)
+    assert not ok and any("NOISY" in w for w in why)
+
+
+def test_too_few_reps_is_labelled_and_not_quotable():
+    st = sm.spread_stats([10.0, 30.0, 50.0, 70.0], min_n=5)
+    assert st["label"] == "n too small" and st["noisy"] is None
+    assert sm.spread_stats([10.0] * 3, min_n=3)["label"] == "ok"
+    f = _session("ferric", "s1", [6.0] * 4) + _session("ferric", "s2", [6.0] * 4)
+    p = _session("pyscf", "s1", [10.0] * 4) + _session("pyscf", "s2", [10.0] * 4)
+    ok, why = sm.quotable(f, p, "wall", 6)  # N=6 needs 5 reps
+    assert not ok and any("n too small" in w for w in why)
+    assert sm.quotable(f, p, "wall", 1)[0]  # N=1 needs 3
+
+
+def test_different_binaries_are_never_pooled_or_compared():
+    rows = _session("ferric", "s1", [6.0] * 5, sha="a" * 64) + _session(
+        "pyscf", "s1", [10.0] * 5, sha="b" * 64
+    )
+    by_input = {}
+    for r in rows:
+        r.update(cell="c", threads=6, method="rhf", toml="c_rhf.toml")
+        k = (r["cell"], r["threads"], r["code"], sm.input_label(r), r["bin_sha256"])
+        by_input.setdefault(k, []).append(r)
+    assert sm.comparable_pairs(by_input) == []
+    for r in by_input[next(k for k in by_input if k[2] == "pyscf")]:
+        r["bin_sha256"] = "a" * 64
+    by2 = {}
+    for r in rows:
+        k = (r["cell"], r["threads"], r["code"], sm.input_label(r), r["bin_sha256"])
+        by2.setdefault(k, []).append(r)
+    assert len(sm.comparable_pairs(by2)) == 1
+
+
+def test_pairing_separates_runs_within_one_session():
+    # a top-up run in the same --out restarts rep at 0: both rep-0s must survive, unmixed
+    f = [_row("ferric", 0, 1.0, run_id="r1"), _row("ferric", 0, 2.0, run_id="r2")]
+    p = [_row("pyscf", 0, 10.0, run_id="r1"), _row("pyscf", 0, 20.0, run_id="r2")]
+    assert sm.pair_by_rep(f, p, "wall") == [(1.0, 10.0), (2.0, 20.0)]
+
+
+# ------------------------------------------------------ review fixes: driver guards ----
+def test_binary_change_mid_session_exits(tmp_path):
+    b = tmp_path / "ferric"
+    b.write_bytes(b"v1")
+    sha = sd.sha256_file(str(b))
+    assert sd.check_binary_unchanged(str(b), sha) == sha
+    b.write_bytes(b"v2")
+    with pytest.raises(SystemExit, match="changed during the session"):
+        sd.check_binary_unchanged(str(b), sha)
+
+
+def test_hardlinked_binary_is_refused(tmp_path):
+    b = tmp_path / "ferric"
+    b.write_bytes(b"x")
+    b.chmod(0o755)
+    assert sd.check_private_binary(str(b))
+    os.link(b, tmp_path / "ferric-link")
+    with pytest.raises(SystemExit, match="hard links"):
+        sd.check_private_binary(str(b))
+
+
+def test_existing_out_needs_append(tmp_path):
+    out = tmp_path / "t.jsonl"
+    sd.check_out_path(str(out), False)  # new file: fine
+    out.write_text("")
+    with pytest.raises(SystemExit, match="--append"):
+        sd.check_out_path(str(out), False)
+    sd.check_out_path(str(out), True)
+    assert sd.new_run_id() != sd.new_run_id()
+
+
+def test_lindep_override_is_refused():
+    sd.check_no_lindep_override({})
+    with pytest.raises(SystemExit, match="FERRIC_LINDEP_THRESH"):
+        sd.check_no_lindep_override({"FERRIC_LINDEP_THRESH": "1e-5"})
+
+
+def test_max_cycle_default_follows_the_rule():
+    assert pb.resolve_max_cycle(None, True) == 200
+    assert pb.resolve_max_cycle(None, False) == 100
+    assert pb.resolve_max_cycle(50, True) == 50
+
+
+# ------------------------------------------------------------ review fixes: ladder gate ----
+def _ladder(e75, e200, e250):
+    return {"75x302": e75, "200x590": e200, "250x590": e250}
+
+
+def test_ladder_gate_pass_fail_undecidable():
+    # pass: cross-code 75x302 gap 2e-6 <= 3e-6 + 3e-6 + 1e-8
+    r = sm.ladder_gate(
+        _ladder(-1.0, -1.000003, -1.000003), _ladder(-1.000002, -1.000005, -1.000005)
+    )
+    assert r["status"] == "pass"
+    # fail: both codes move little but disagree by 1e-5 at 75x302
+    r = sm.ladder_gate(
+        _ladder(-1.0, -1.0000001, -1.0000001), _ladder(-1.00001, -1.0000101, -1.0000101)
+    )
+    assert r["status"] == "fail" and r["lhs"] > r["rhs"]
+    # undecidable: the ref moves 2e-6 from 200x590 for one code
+    r = sm.ladder_gate(_ladder(-1.0, -1.0, -1.000002), _ladder(-1.0, -1.0, -1.0))
+    assert r["status"] == "undecidable"
+    assert sm.ladder_gate({}, _ladder(-1, -1, -1))["status"] == "undecidable"
+
+
+def test_grid_label_parses_both_codes():
+    assert (
+        sm.grid_label(dict(code="ferric", toml="x/dryice_pbe.toml"), "dryice")
+        == "75x302"
+    )
+    assert (
+        sm.grid_label(dict(code="ferric", toml="dryice_pbe_250x590.toml"), "dryice")
+        == "250x590"
+    )
+    assert (
+        sm.grid_label(dict(code="ferric", toml="dryice_pbe_w0.5.toml"), "dryice")
+        is None
+    )
+    assert sm.grid_label(dict(code="pyscf", grid=[150, 434]), "dryice") == "150x434"
+
+
+# ----------------------------------------------------------- review nit: cached X in hook ----
+def test_hook_builds_the_orthogonaliser_once_and_matches_uncached(monkeypatch):
+    calls = []
+    real = pb.ferric_canonical_orthogonalizer
+
+    def counting(s, lindep=pb.FERRIC_LINDEP):
+        calls.append(1)
+        return real(s, lindep)
+
+    monkeypatch.setattr(pb, "ferric_canonical_orthogonalizer", counting)
+    s = [np.eye(2), np.array([[1.0, 0.1], [0.1, 1.0]])]
+    d = [np.diag([2.0, 0.0])] * 2
+    f = [np.array([[-1.0, 1e-9], [1e-9, 1.0]])] * 2
+    trace = []
+    check = pb.make_ferric_conv_check(True, trace)
+    for cyc in range(3):
+        check(dict(e_tot=-1.0, last_hf_e=-1.0, dm=d, fock=f, s1e=s, cycle=cyc))
+    assert len(calls) == 2  # once per k, not per cycle
+    calls.clear()
+    ref = pb.ferric_k_signals(-1.0, -1.0, d, f, s)
+    assert trace[-1]["grad_max"] == pytest.approx(ref["grad_max"])
+
+
+def test_between_session_range_of_5_percent_blocks_quoting():
+    f = _session("ferric", "s1", [0.6 * x for x in QUIET5]) + _session(
+        "ferric", "s2", [0.66 * x for x in QUIET5]
+    )
+    p = _session("pyscf", "s1", QUIET5) + _session("pyscf", "s2", QUIET5)
+    ok, why = sm.quotable(f, p, "wall", 6)
+    assert not ok and why == ["between-session range >= 5%"]

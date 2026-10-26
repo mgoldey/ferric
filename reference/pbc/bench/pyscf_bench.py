@@ -178,17 +178,20 @@ def ferric_density_change(d_new, d_old):
     return float(np.sqrt(np.sum(a * a) / max(diff.size, 1))), float(a.max())
 
 
-def ferric_orthogonal_gradient_max(fock, dm, s, lindep=FERRIC_LINDEP):
-    """max |X^H (F D S - S D F) X| (rhf.rs:921-927; kscf.rs:831-841 per k)."""
+def ferric_orthogonal_gradient_max(fock, dm, s, lindep=FERRIC_LINDEP, x=None):
+    """max |X^H (F D S - S D F) X| (rhf.rs:921-927; kscf.rs:831-841 per k).
+
+    x: a precomputed orthogonaliser of s (S is fixed during one SCF); None = build it."""
     import numpy as np
 
-    x = ferric_canonical_orthogonalizer(s, lindep)
+    if x is None:
+        x = ferric_canonical_orthogonalizer(s, lindep)
     fds = np.asarray(fock) @ np.asarray(dm) @ np.asarray(s)
     g = fds - fds.conj().T
     return float(np.abs(x.conj().T @ g @ x).max())
 
 
-def ferric_gamma_signals(e, e_last, dm, dm_last, fock, s):
+def ferric_gamma_signals(e, e_last, dm, dm_last, fock, s, x=None):
     dp_rms, dp_max = ferric_density_change(dm, dm_last)
     sig = dict(de=abs(e - e_last), dp_rms=dp_rms, dp_max=dp_max, grad_max=None)
     gate = (
@@ -197,16 +200,19 @@ def ferric_gamma_signals(e, e_last, dm, dm_last, fock, s):
         and sig["de"] < FERRIC_GAMMA_ENERGY_CONV
     )
     if gate:  # ferric evaluates the veto gradient only on an accepted exit
-        sig["grad_max"] = ferric_orthogonal_gradient_max(fock, dm, s)
+        sig["grad_max"] = ferric_orthogonal_gradient_max(fock, dm, s, x=x)
         bound = max(FERRIC_GAMMA_DENSITY_CONV**0.5, FERRIC_VETO_MIN_GRAD)
         gate = sig["grad_max"] <= bound
     sig["converged"] = bool(gate)
     return sig
 
 
-def ferric_k_signals(e, e_last, dm_k, fock_k, s_k):
+def ferric_k_signals(e, e_last, dm_k, fock_k, s_k, x_k=None):
+    if x_k is None:
+        x_k = [None] * len(s_k)
     grad = max(
-        ferric_orthogonal_gradient_max(f, d, s) for f, d, s in zip(fock_k, dm_k, s_k)
+        ferric_orthogonal_gradient_max(f, d, s, x=x)
+        for f, d, s, x in zip(fock_k, dm_k, s_k, x_k)
     )
     de = abs(e - e_last)
     return dict(
@@ -219,10 +225,29 @@ def ferric_k_signals(e, e_last, dm_k, fock_k, s_k):
 def make_ferric_conv_check(kpt_run, trace):
     """mf.check_convergence(envs) applying ferric's rule; appends each cycle's signals to trace."""
 
+    cache = {}  # id(s1e) -> orthogonaliser(s); S is built once per kernel call
+
+    def orth(s1e):
+        key = id(s1e)
+        if key not in cache:
+            cache.clear()
+            cache[key] = (
+                [ferric_canonical_orthogonalizer(s) for s in s1e]
+                if kpt_run
+                else ferric_canonical_orthogonalizer(s1e)
+            )
+        return cache[key]
+
     def check(envs):
+        x = orth(envs["s1e"])
         if kpt_run:
             sig = ferric_k_signals(
-                envs["e_tot"], envs["last_hf_e"], envs["dm"], envs["fock"], envs["s1e"]
+                envs["e_tot"],
+                envs["last_hf_e"],
+                envs["dm"],
+                envs["fock"],
+                envs["s1e"],
+                x,
             )
         else:
             sig = ferric_gamma_signals(
@@ -232,12 +257,24 @@ def make_ferric_conv_check(kpt_run, trace):
                 envs["dm_last"],
                 envs["fock"],
                 envs["s1e"],
+                x,
             )
         sig["cycle"] = int(envs["cycle"]) + 1
         trace.append(sig)
         return sig["converged"]
 
     return check
+
+
+FERRIC_PERIODIC_MAX_ITER = (
+    200  # config.rs:5341-5346 (periodic_scf_knobs, max_iter not written)
+)
+
+
+def resolve_max_cycle(max_cycle, match_ferric_conv):
+    if max_cycle is not None:
+        return max_cycle
+    return FERRIC_PERIODIC_MAX_ITER if match_ferric_conv else 100
 
 
 def main(argv=None):
@@ -259,7 +296,12 @@ def main(argv=None):
     # Defaults: Gamma 1e-10 / 1e-6; k-mesh 1e-12 / 1e-9 (ferric's k-point stopping rule).
     ap.add_argument("--conv-tol", type=float, default=None)
     ap.add_argument("--conv-tol-grad", type=float, default=None)
-    ap.add_argument("--max-cycle", type=int, default=100)
+    ap.add_argument(
+        "--max-cycle",
+        type=int,
+        default=None,
+        help="default 100; 200 (ferric's periodic max_iter) with --match-ferric-conv",
+    )
     ap.add_argument("--max-memory", type=int, default=8000)
     ap.add_argument("--grid", type=int, nargs=2, default=[75, 302])
     ap.add_argument("--df", choices=["gdf", "rsdf", "rsjk"], default="gdf")
@@ -278,6 +320,12 @@ def main(argv=None):
     ap.add_argument("--tag", default="")
     ap.add_argument("--out", default=None)
     a = ap.parse_args(argv)
+    a.max_cycle = resolve_max_cycle(a.max_cycle, a.match_ferric_conv)
+    if a.match_ferric_conv and "FERRIC_LINDEP_THRESH" in os.environ:
+        sys.exit(
+            "refused: FERRIC_LINDEP_THRESH is set; --match-ferric-conv hard-codes ferric's "
+            "default orthogonaliser cut 1e-6"
+        )
     if a.df == "rsjk":
         sys.exit(
             "refused: PySCF 2.13 RSJK gets E_nn wrong for every 3-D cell "
@@ -453,6 +501,7 @@ def main(argv=None):
         conv_tol=None if a.match_ferric_conv else a.conv_tol,
         conv_tol_grad=None if a.match_ferric_conv else a.conv_tol_grad,
         conv_check=bool(mf.conv_check),
+        max_cycle=int(mf.max_cycle),
         ferric_conv_final=conv_trace[-1] if conv_trace else None,
         ferric_conv_trace=conv_trace or None,
         grid=a.grid if a.method == "pbe" else None,

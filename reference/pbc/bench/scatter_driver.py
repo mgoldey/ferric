@@ -27,10 +27,15 @@ recorded per ferric run.
 
 Addendum (issue #228 fourth session, harness hardening):
   --bin is REQUIRED and must be a private copy of the binary: any path (as given or resolved) with a
-  `target` component is refused, because a rebuild under a running job SIGBUSes it.  Its sha256 is
-  recorded in every row (`bin_sha256`, hashed before every ferric run, outside the timed window).
-  --cpus pins BOTH codes with `taskset -c` (default N=1 -> "0", N<=6 -> "0-(N-1)"; the box is an
-  i7-6800K, physical cores 0-5, SMT siblings 6-11).  Recorded as `cpus`.
+  `target` component, or a file with more than one hard link, is refused, because a rebuild under a
+  running job SIGBUSes it.  Its sha256 is taken once at start and recorded in every row
+  (`bin_sha256`); before every ferric run (outside the timed window) it is re-hashed and the driver
+  EXITS if it changed.  FERRIC_LINDEP_THRESH in the environment is refused (the PySCF stopping-rule
+  hook hard-codes ferric's 1e-6).
+  --cpus pins BOTH codes with `taskset -c` (default N=1 -> "1" (core 0 takes most IRQs), N<=6 ->
+  "0-(N-1)"; the box is an i7-6800K, physical cores 0-5, SMT siblings 6-11).  Recorded as `cpus`.
+  Every invocation gets a `run_id` (start time + random suffix) on its rows; reps are paired on
+  (session, run_id, rep).  An existing --out is refused unless --append (a top-up run).
   Every row carries scaling_cur_freq (kHz, all CPUs) and the coretemp hwmon temperatures (milli-C)
   at the start and the end of the timed window (`freq_*_khz`, `temp_*_mc`), and `box_state` =
   "quiet" iff start loadavg < --quiet-load (1.5) AND foreign-CPU fraction < --quiet-foreign (0.02),
@@ -56,6 +61,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import uuid
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, "..", "..", ".."))
@@ -134,7 +140,33 @@ def check_private_binary(path):
             )
     if not (os.path.isfile(real) and os.access(real, os.X_OK)):
         raise SystemExit(f"refused: --bin {path} is not an executable file")
+    if os.stat(real).st_nlink > 1:
+        raise SystemExit(
+            f"refused: --bin {path} has {os.stat(real).st_nlink} hard links (cargo hardlinks its "
+            "outputs, so a link can be rewritten by a rebuild); `cp` it to an unlinked file"
+        )
     return real
+
+
+def check_binary_unchanged(binary, expected_sha):
+    """sha256 of the binary now; SystemExit if it differs from the session's."""
+    digest = sha256_file(binary)
+    if digest != expected_sha:
+        raise SystemExit(
+            f"refused: {binary} changed during the session (sha256 {digest} != session "
+            f"{expected_sha}); its rows would mix two binaries"
+        )
+    return digest
+
+
+def check_no_lindep_override(environ=None):
+    """pyscf_bench --match-ferric-conv hard-codes ferric's lindep 1e-6; an override breaks it."""
+    env = os.environ if environ is None else environ
+    if "FERRIC_LINDEP_THRESH" in env:
+        raise SystemExit(
+            "refused: FERRIC_LINDEP_THRESH is set; ferric's orthogonaliser cut would differ from "
+            "the 1e-6 the PySCF stopping-rule hook reproduces.  Unset it."
+        )
 
 
 def sha256_file(path):
@@ -146,9 +178,11 @@ def sha256_file(path):
 
 
 def default_cpus(threads):
-    """taskset list for N threads on the 6-core box: physical cores only, 0 first."""
+    """taskset list for N threads on the 6-core box: physical cores only.
+
+    N=1 runs on core 1, not core 0 (core 0 takes most device interrupts)."""
     if threads == 1:
-        return "0"
+        return "1"
     if 1 < threads <= 6:
         return f"0-{threads - 1}"
     raise SystemExit(f"--threads {threads} > 6 physical cores: pass --cpus explicitly")
@@ -213,6 +247,19 @@ def box_state(load_start, foreign_frac, quiet_load=1.5, quiet_foreign=0.02):
 
 
 QUIET = dict(load=1.5, foreign=0.02)
+
+
+def new_run_id():
+    """One id per driver invocation: start time + random suffix (pairs never cross runs)."""
+    return time.strftime("%Y%m%dT%H%M%S") + "-" + uuid.uuid4().hex[:8]
+
+
+def check_out_path(out, append):
+    if os.path.exists(out) and not append:
+        raise SystemExit(
+            f"refused: --out {out} exists; pass --append to add a top-up run to it (its rows get "
+            "a new run_id, so reps are never paired across invocations)"
+        )
 
 
 def acquire_locks():
@@ -320,11 +367,23 @@ def ferric_version(binary):
 
 
 def run_ferric(
-    cell, threads, binary, toml_dir, tag="", method="rhf", cpus="0", smoke=False
+    cell,
+    threads,
+    binary,
+    toml_dir,
+    tag="",
+    method="rhf",
+    cpus="1",
+    smoke=False,
+    expected_sha=None,
 ):
     toml = os.path.join(toml_dir, f"{cell}_{method}{tag}.toml")
     version = ferric_version(binary)
-    digest = sha256_file(binary)
+    digest = (
+        check_binary_unchanged(binary, expected_sha)
+        if expected_sha
+        else sha256_file(binary)
+    )
     env = dict(
         OPENBLAS_NUM_THREADS="1", OMP_NUM_THREADS="1", RAYON_NUM_THREADS=str(threads)
     )
@@ -360,7 +419,7 @@ def run_pyscf(
     precision,
     method="rhf",
     grid=None,
-    cpus="0",
+    cpus="1",
     smoke=False,
     match_ferric_conv=False,
     extra=(),
@@ -416,6 +475,7 @@ def run_pyscf(
         rec["conv_tol"] = inner.get("conv_tol")
         rec["conv_tol_grad"] = inner.get("conv_tol_grad")
         rec["conv_rule"] = inner.get("conv_rule", "pyscf")
+        rec["max_cycle"] = inner.get("max_cycle")
         rec["ferric_conv_final"] = inner.get("ferric_conv_final")
         rec["grid"] = inner.get("grid")
         rec["n_grid_points"] = inner.get("n_grid_points")
@@ -440,7 +500,7 @@ def main(argv=None):
     ap.add_argument(
         "--cpus",
         default=None,
-        help="taskset -c list for both codes (default: N=1 -> 0, N<=6 -> 0-(N-1))",
+        help="taskset -c list for both codes (default: N=1 -> 1, N<=6 -> 0-(N-1))",
     )
     ap.add_argument("--toml-dir", default=os.path.join(HERE, "toml_ri"))
     ap.add_argument(
@@ -470,6 +530,11 @@ def main(argv=None):
         action="store_true",
         help="F P every rep (the first session's order); default rotates the sequence per rep",
     )
+    ap.add_argument(
+        "--append",
+        action="store_true",
+        help="allow an existing --out (a top-up run; rows get a new run_id)",
+    )
     ap.add_argument("--quiet-load", type=float, default=QUIET["load"])
     ap.add_argument("--quiet-foreign", type=float, default=QUIET["foreign"])
     ap.add_argument(
@@ -478,12 +543,15 @@ def main(argv=None):
         help="no locks / quiet wait, one attempt, rows smoke=true valid=false (harness check only)",
     )
     a = ap.parse_args(argv)
+    check_out_path(a.out, a.append)
+    check_no_lindep_override()
     binary = check_private_binary(a.bin)
     cpus = a.cpus or default_cpus(a.threads)
     if cpu_list_count(cpus) < a.threads:
         raise SystemExit(f"--cpus {cpus} has fewer CPUs than --threads {a.threads}")
     QUIET.update(load=a.quiet_load, foreign=a.quiet_foreign)
     session_sha = sha256_file(binary)
+    run_id = new_run_id()
     tags = a.ferric_tags if a.ferric_tags is not None else [a.ferric_tag]
     seq = [("ferric", t) for t in tags] + [("pyscf", None)]
     seq = [x for x in seq if a.only in ("both", x[0])]
@@ -501,6 +569,7 @@ def main(argv=None):
                             a.method,
                             cpus,
                             a.smoke,
+                            session_sha,
                         )
                     else:
                         rec = run_pyscf(
@@ -516,7 +585,10 @@ def main(argv=None):
                         )
                         rec["bin_sha256"] = session_sha
                     rec.update(
-                        rep=rep, attempt=attempt, session=os.path.basename(a.out)
+                        rep=rep,
+                        attempt=attempt,
+                        session=os.path.basename(a.out),
+                        run_id=run_id,
                     )
                     # A run without a parsed energy cannot pass the energy gate.
                     if rec.get("energy") is None or "parse_error" in rec:
