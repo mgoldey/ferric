@@ -797,8 +797,10 @@ pub(crate) fn stall_detected(errmax_history: &[f64], window: usize, current_err:
 ///   `‖ΔP‖_F / sqrt(nao²)`.
 /// - `dp_max`: max element of |ΔP|.
 ///
-/// The DIIS commutator (FDS−SDF) is deliberately absent: it is a *diagnostic*
-/// (printed in the trace), never a gate — see [`scf_converged`] for why.
+/// The DIIS commutator (FDS−SDF) is deliberately absent: it never decides
+/// convergence on its own — see [`scf_converged`] for why. It vetoes an exit
+/// far from stationarity (`GradientVeto`) and, in UKS, certifies a degenerate
+/// orbital swap (`uhf::degenerate_swap_converged`).
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ConvergenceSignals {
     pub de: f64,
@@ -838,11 +840,13 @@ pub(crate) struct ConvergenceSignals {
 ///   above the ~2e-5 DF energy floor, so it excludes a descending run without
 ///   demanding an unreachable tight ΔE)
 ///
-/// The commutator (FDS−SDF) is *not* consulted by this function — diagnostic
-/// only. The one exception lives at its call site: under ADIIS/EDIIS, while the
-/// commutator is still above `diis_switch_thresh`, a density-settled exit is
-/// refused and the run restarts on plain Pulay DIIS (a stalled energy
-/// extrapolation, not a converged SCF; #422).
+/// The commutator (FDS−SDF) is *not* consulted by this function. Two vetoes
+/// live at its call sites: under ADIIS/EDIIS, while the commutator is still
+/// above `diis_switch_thresh`, a density-settled exit is refused and the run
+/// restarts on plain Pulay DIIS (a stalled energy extrapolation, not a
+/// converged SCF; #422); in RHF and UHF, an exit whose orbital gradient (in
+/// the kept orthonormal basis) exceeds `max(sqrt(density_conv), 1e-3)` is
+/// refused and DIIS is cleared (`GradientVeto`).
 ///
 /// Returns `Some(ScfExit::Converged)` when met, else `None` (keep iterating).
 /// The caller still owns divergence/stall/max-iter exits.
@@ -891,6 +895,143 @@ fn veto_stalled_energy_diis(
         }
         (exit, _) => (exit, None),
     }
+}
+
+/// Lower limit of the orbital-gradient veto bound: ROHF F6's
+/// `ACCEPT_MAX_ORBITAL_GRADIENT`, so the three solvers refuse the same states.
+pub(crate) const VETO_MIN_ORBITAL_GRADIENT: f64 =
+    crate::rohf_occupation::ACCEPT_MAX_ORBITAL_GRADIENT;
+
+/// The orbital-gradient veto bound for a given `density_conv`:
+/// `max(sqrt(density_conv), 1e-3)`.
+pub(crate) fn gradient_veto_bound(density_conv: f64) -> f64 {
+    density_conv.sqrt().max(VETO_MIN_ORBITAL_GRADIENT)
+}
+
+/// Max |Xᵀ G X|: an AO commutator `G = FDS − SDF` expressed in the kept
+/// orthonormal basis of the canonical orthogonalizer `X` (n × m).
+///
+/// This, not the AO max-norm, is the orbital gradient the SCF can drive to
+/// zero. When the lindep filter drops near-null overlap modes, the AO
+/// commutator keeps a residual in the dropped subspace that no rotation of the
+/// kept orbitals can remove. MEASURED on water/aug-cc-pVTZ with
+/// `FERRIC_LINDEP_THRESH=1e-3`: AO `err_max` parks at 2.54e-4 at the converged
+/// state (origin/main exits in 14 iterations at `density_conv` 1e-8), and
+/// Na4/aug-cc-pVTZ parks at ~3e-5.
+pub(crate) fn orthogonal_gradient_max(x: &Array2<f64>, g: &Array2<f64>) -> f64 {
+    x.t()
+        .dot(g)
+        .dot(x)
+        .iter()
+        .fold(0.0f64, |m, v| m.max(v.abs()))
+}
+
+/// Orbital-gradient veto on a ΔP/ΔE-accepted exit, shared by the RHF and UHF
+/// loops — the closed/unrestricted counterpart of the ROHF gradient guard
+/// (`rohf_occupation`, defect F6).
+///
+/// [`scf_converged`] reads ΔP and ΔE only. A DIIS extrapolation that stagnates
+/// (ill-conditioned subspace) can reproduce the same density and energy on
+/// every step without that density being a stationary point. MEASURED on OH
+/// UKS-LDA/STO-3G: DIIS jumped to a non-aufbau state at −73.4899520144 with
+/// `err_max` 0.136, the next extrapolation gave it ~0 weight, D froze, and the
+/// ΔP gate accepted it, 0.586 Ha above the stationary ground state. Stretched
+/// H2 RHF stagnates the same way at 0.096–0.156.
+///
+/// An exit is refused when the orbital gradient in the kept orthonormal basis
+/// ([`orthogonal_gradient_max`]) exceeds [`gradient_veto_bound`]. The gradient
+/// is evaluated only when the gate has accepted (`orbital_gradient` is lazy),
+/// so an iteration that does not exit pays nothing and is bit-identical.
+/// On a veto the caller clears its DIIS history (the next step is a fresh Fock
+/// diagonalization) and continues; the refusal is counted in the convergence
+/// report and a one-time notice is printed.
+#[derive(Debug, Default)]
+pub(crate) struct GradientVeto {
+    warned: bool,
+    record: Option<crate::result::GradientVetoes>,
+}
+
+impl GradientVeto {
+    /// Returns the exit to take and whether the veto fired. `report` (this
+    /// iteration's, already built) gets the updated record.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn apply(
+        &mut self,
+        conv_exit: Option<ScfExit>,
+        orbital_gradient: impl FnOnce() -> f64,
+        iter: usize,
+        density_conv: f64,
+        label: &str,
+        announce: bool,
+        report: &mut Option<crate::result::ConvergenceReport>,
+    ) -> (Option<ScfExit>, bool) {
+        if conv_exit != Some(ScfExit::Converged) {
+            return (conv_exit, false);
+        }
+        let bound = gradient_veto_bound(density_conv);
+        let g = orbital_gradient();
+        if g <= bound {
+            return (conv_exit, false);
+        }
+        let count = self.record.map_or(0, |r| r.count) + 1;
+        self.record = Some(crate::result::GradientVetoes {
+            count,
+            last_iteration: iter,
+            last_orbital_gradient: g,
+            bound,
+        });
+        if let Some(rep) = report.as_mut() {
+            rep.gradient_vetoes = self.record;
+        }
+        if announce && !self.warned {
+            eprintln!(
+                "{label}: density and energy have stopped changing at iteration {iter} but the \
+                 orbital gradient is {g:.3e} (> {bound:.1e}) — not a stationary point \
+                 (stagnated extrapolation). Clearing DIIS and continuing."
+            );
+            self.warned = true;
+        }
+        if scf_trace() {
+            eprintln!("{label} iter={iter}: gradient veto #{count}, |g|={g:.3e} > {bound:.1e}");
+        }
+        (None, true)
+    }
+
+    /// The running record, for the next iteration's report.
+    pub(crate) fn record(&self) -> Option<crate::result::GradientVetoes> {
+        self.record
+    }
+}
+
+/// RHF form of [`GradientVeto::apply`]: the gradient is `Xᵀ(FDS−SDF)X`, and a
+/// veto clears the DIIS history. Applied under every DIIS flavour: under
+/// ADIIS/EDIIS `veto_stalled_energy_diis` runs first, and its bound
+/// (`diis_switch_thresh`, default 0.1) is looser than this one.
+#[allow(clippy::too_many_arguments)]
+fn veto_nonstationary_rhf_exit(
+    veto: &mut GradientVeto,
+    conv_exit: Option<ScfExit>,
+    diis: &mut DiisDriver,
+    x: &Array2<f64>,
+    err: &Array2<f64>,
+    iter: usize,
+    density_conv: f64,
+    announce: bool,
+    report: &mut Option<crate::result::ConvergenceReport>,
+) -> Option<ScfExit> {
+    let (exit, vetoed) = veto.apply(
+        conv_exit,
+        || orthogonal_gradient_max(x, err),
+        iter,
+        density_conv,
+        "RHF",
+        announce,
+        report,
+    );
+    if vetoed {
+        diis.reset();
+    }
+    exit
 }
 
 /// Record a fired veto: the visible notice, the trace line, the once-set
@@ -1751,6 +1892,8 @@ fn solve_rhf_impl(
     // ADIIS/EDIIS activate only when a caller opts in.
     // Set once, when ADIIS/EDIIS stalled and was replaced by Pulay (#422).
     let mut diis_fallback: Option<crate::result::DiisFallback> = None;
+    // Orbital-gradient veto state (`GradientVeto`): notice latch + count.
+    let mut grad_veto = GradientVeto::default();
     let mut diis = DiisDriver::new(
         config.diis_flavor,
         config.diis_size,
@@ -2486,6 +2629,7 @@ fn solve_rhf_impl(
                 incremental_direct,
             ),
             diis_fallback,
+            gradient_vetoes: grad_veto.record(),
         });
 
         if scf_trace() {
@@ -2559,6 +2703,17 @@ fn solve_rhf_impl(
             iter,
             ctx.is_root(),
             &mut diis_fallback,
+            &mut last_report,
+        );
+        let conv_exit = veto_nonstationary_rhf_exit(
+            &mut grad_veto,
+            conv_exit,
+            &mut diis,
+            &x,
+            &err,
+            iter,
+            config.density_conv,
+            ctx.is_root(),
             &mut last_report,
         );
 
@@ -4471,6 +4626,62 @@ mod tests {
     // density_conv (tight ΔP) = 1e-6.
     const E_CONV: f64 = 1e-3;
     const D_CONV: f64 = 1e-6;
+
+    /// The bound is sqrt(dconv) above the ROHF F6 floor and the floor below it.
+    #[test]
+    fn gradient_veto_bound_is_sqrt_dconv_floored_at_1e_minus_3() {
+        assert_eq!(gradient_veto_bound(1e-4), 1e-2);
+        assert_eq!(gradient_veto_bound(1e-6), 1e-3);
+        assert_eq!(gradient_veto_bound(1e-10), 1e-3);
+    }
+
+    /// A commutator living entirely in a lindep-dropped overlap mode is no
+    /// orbital gradient at all in the kept orthonormal basis, while its AO
+    /// max-norm is not zero (the false-veto mode on diffuse bases).
+    #[test]
+    fn orthogonal_gradient_ignores_the_dropped_subspace() {
+        let s = ndarray::array![[1.0, 0.0], [0.0, 1e-9]];
+        let x = canonical_orthogonalizer(&s).unwrap();
+        assert_eq!(x.ncols(), 1, "the near-null mode must be dropped");
+        let g = ndarray::array![[0.0, 0.5], [-0.5, 0.0]];
+        assert_eq!(orthogonal_gradient_max(&x, &g), 0.0);
+        // A kept-space gradient is seen, scaled by X (unit here).
+        let g = ndarray::array![[0.25, 0.0], [0.0, 0.0]];
+        assert_eq!(orthogonal_gradient_max(&x, &g), 0.25);
+    }
+
+    /// The veto fires only on a gate-accepted exit above the bound, counts
+    /// every refusal, and evaluates the gradient lazily.
+    #[test]
+    fn gradient_veto_refuses_counts_and_is_lazy() {
+        let mut v = GradientVeto::default();
+        let (exit, vetoed) = v.apply(
+            None,
+            || panic!("evaluated"),
+            3,
+            D_CONV,
+            "T",
+            false,
+            &mut None,
+        );
+        assert!(exit.is_none() && !vetoed);
+        let ok = Some(ScfExit::Converged);
+        assert_eq!(
+            v.apply(ok, || 5e-4, 4, D_CONV, "T", false, &mut None),
+            (ok, false)
+        );
+        assert_eq!(
+            v.apply(ok, || 0.1, 5, D_CONV, "T", false, &mut None),
+            (None, true)
+        );
+        assert_eq!(
+            v.apply(ok, || 0.2, 9, D_CONV, "T", false, &mut None),
+            (None, true)
+        );
+        let rec = v.record().unwrap();
+        assert_eq!((rec.count, rec.last_iteration), (2, 9));
+        assert_eq!((rec.last_orbital_gradient, rec.bound), (0.2, 1e-3));
+    }
 
     #[test]
     fn scf_converged_accepts_settled_density_and_nondescending_energy() {

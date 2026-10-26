@@ -173,11 +173,26 @@ pub fn solve_uhf_injected<'a>(
     )?)
 }
 
+/// The error variant carries no text: say why a run whose density settled
+/// still failed (the orbital-gradient veto refused it), when it did.
+fn note_vetoed_nonconvergence(r: &ScfResult) {
+    let Some(v) = r.convergence.and_then(|c| c.gradient_vetoes) else {
+        return;
+    };
+    eprintln!(
+        "UHF: not converged after {} iterations; the density settled but the \
+         orbital-gradient veto refused it {} time(s) (last at iteration {}, \
+         gradient {:.3e} > {:.1e})",
+        r.iterations, v.count, v.last_iteration, v.last_orbital_gradient, v.bound
+    );
+}
+
 /// Convert a non-converged best-effort result into the historical hard error.
 fn err_if_unconverged(r: ScfResult) -> Result<ScfResult, FerricError> {
     if r.converged {
         Ok(r)
     } else {
+        note_vetoed_nonconvergence(&r);
         Err(FerricError::ScfConvergence {
             iterations: r.iterations,
             last_energy: r.energy,
@@ -818,6 +833,8 @@ fn solve_uhf_impl(
     // 421 iterations to converge with independent DIIS; coupled converges
     // in ~15-25 cycles).
     let mut diis = Diis::new(config.diis_size);
+    // Orbital-gradient exit gate (`UhfExitGate`): veto state + swap history.
+    let mut exit_gate = UhfExitGate::default();
     // UHF extrapolates with `step_pair`, which fills the β histories as well —
     // FOUR n×n matrices per subspace entry, twice RHF's. This projection was
     // missing entirely until 2026-08-30: the warning was called from RHF only,
@@ -1294,6 +1311,7 @@ fn solve_uhf_impl(
                 .flatten(),
             // UHF reads no `diis_flavor`: it always runs Pulay.
             diis_fallback: None,
+            gradient_vetoes: exit_gate.record(),
         });
 
         if crate::rhf::scf_trace() {
@@ -1344,11 +1362,23 @@ fn solve_uhf_impl(
         // the naux-dependent RI noise floor and never drains. See
         // rhf::scf_converged. This replaces the old df_noise_floor_ok hack; the
         // `df_active` distinction is gone (ΔP handles DF and direct uniformly).
-        let conv_exit = crate::cosx_schedule::gate(
+        // Two orbital-gradient amendments (see `UhfExitGate`): a UKS
+        // degenerate-swap stationary point is accepted, a stagnated
+        // non-stationary state is refused.
+        let (conv_exit, swapped) = exit_gate.decide(
             &mut cosx_sched,
-            iter,
-            sig.dp_max,
-            crate::rhf::scf_converged(sig, config.energy_conv, config.density_conv),
+            UhfIterGradients {
+                iter,
+                sig,
+                err_max,
+                err: [&err_a, &err_b],
+                x: &x,
+                xc_active: [xc_contrib.is_some(), inj_xc.is_some()],
+            },
+            config,
+            &mut diis,
+            ctx.is_root(),
+            &mut last_report,
         );
 
         // Divergence / stall early exits (shared driver::ScfMonitor; both are
@@ -1362,8 +1392,25 @@ fn solve_uhf_impl(
         }
 
         if iter > 1 && conv_exit.is_some() {
-            let (eps_a, c_a_f) = diag_a.run(&f_a)?;
-            let (eps_b, c_b_f) = diag_b.run(&f_b)?;
+            // Returned MOs must reproduce the returned density: after a
+            // degenerate swap the aufbau eigenvectors of F hold the OTHER
+            // member of the pair. Only then (see `occupied_by_density`): a MOM
+            // state is non-aufbau by design and keeps main's C and eps. Per
+            // spin, and only for an integer density (`reorder_exit_mos`).
+            let (eps_a, c_a_f) = occupied_by_density(
+                diag_a.run(&f_a)?,
+                &s,
+                &d_a,
+                nocc_a,
+                reorder_exit_mos(swapped, d_occ_a.as_ref()),
+            );
+            let (eps_b, c_b_f) = occupied_by_density(
+                diag_b.run(&f_b)?,
+                &s,
+                &d_b,
+                nocc_b,
+                reorder_exit_mos(swapped, d_occ_b.as_ref()),
+            );
             // ⟨S²⟩ diagnostic
             let s2 = expectation_s_squared(&c_a_f, &c_b_f, &s, nocc_a, nocc_b);
             let s_true = 0.5 * (nocc_a as f64 - nocc_b as f64);
@@ -2112,6 +2159,203 @@ fn mix_beta_homo_lumo(c_b: &mut Array2<f64>, nocc_a: usize, nocc_b: usize, block
     }
 }
 
+/// Largest energy change (Ha) between the two members of an accepted
+/// degenerate swap, whatever `energy_conv` is (its default, 1e-3, would admit
+/// two distinct states).
+const SWAP_MAX_DE: f64 = 1e-5;
+
+/// Lower limit of the gradient bound for a degenerate-swap acceptance:
+/// `max(density_conv, 1e-6)`.
+///
+/// The bound cannot be `density_conv` itself: the swapping state's orbital
+/// gradient floors on the arithmetic, and the floor straddles a tight
+/// `density_conv`. MEASURED on OH UKS-LDA/STO-3G at the stationary ground
+/// state: 9.1e-10 (OpenBLAS Nehalem kernels), 1.1e-9 (Prescott, the CI
+/// kernels), 2.2e-9 (native FMA). At `density_conv` 1e-9 the Prescott run
+/// therefore never accepted the swap, cycled ground ↔ stagnated state, and
+/// ended at `max_iter` (Err) on the RIGHT energy. 1e-6 sits three orders
+/// above those floors and three below the veto floor (1e-3). Accepting at
+/// this bound loses nothing that `density_conv` could buy here: the swapping
+/// density is only defined up to the degenerate rotation (it changes by O(1)
+/// every iteration), and the energy error of a gradient g is O(g²); the ΔE
+/// bound still applies at full strength.
+const SWAP_GRADIENT_FLOOR: f64 = 1e-6;
+
+/// One iteration's inputs to [`UhfExitGate::decide`].
+struct UhfIterGradients<'a> {
+    iter: usize,
+    sig: crate::rhf::ConvergenceSignals,
+    /// max over spins of |F_σD_σS − SD_σF_σ| (AO basis, pre-DIIS).
+    err_max: f64,
+    /// The per-spin AO commutators.
+    err: [&'a Array2<f64>; 2],
+    /// The lindep-filtered canonical orthogonalizer.
+    x: &'a Array2<f64>,
+    /// Whether an XC functional is active: (the SCF's own, an injected one).
+    /// Either makes this Kohn-Sham.
+    xc_active: [bool; 2],
+}
+
+/// The UHF convergence decision: the shared ΔP/ΔE gate
+/// ([`crate::rhf::scf_converged`]) with two orbital-gradient amendments,
+/// MEASURED on OH UKS-LDA/STO-3G (`tests/uhf_degenerate_swap.rs`):
+/// 1. a UKS degenerate swap at a stationary point is accepted
+///    ([`degenerate_swap_converged`]) — the OH β hole flips between π_x and
+///    π_y every iteration, so ΔP_max = 1 and the plain gate never passes at
+///    the true ground state (−74.0755553242, `err_max` ~2e-9);
+/// 2. a ΔP/ΔE-settled state that is not stationary is refused and the DIIS
+///    history cleared (`rhf::GradientVeto`, on the orthonormal-basis
+///    gradient) — without it DIIS stagnated at that system into a
+///    non-aufbau state 0.586 Ha high (`err_max` 0.136), froze D, and the
+///    plain gate accepted it.
+#[derive(Debug, Default)]
+struct UhfExitGate {
+    veto: crate::rhf::GradientVeto,
+    /// The previous iteration's AO `err_max` (∞ before the first).
+    prev_err_max: Option<f64>,
+}
+
+impl UhfExitGate {
+    /// The exit to take, and whether it is a degenerate-swap acceptance (the
+    /// only exit whose MOs may be reordered; per spin, [`reorder_exit_mos`]).
+    /// Not refused wholesale under `fractional_occ`: when the frontier is not
+    /// degenerate `density_fractional` spreads nothing and the density is the
+    /// integer `C_occ·C_occᵀ`, which the reorder must still match.
+    fn decide(
+        &mut self,
+        cosx_sched: &mut Option<crate::cosx_schedule::ScheduleRun>,
+        it: UhfIterGradients<'_>,
+        config: &UhfConfig,
+        diis: &mut Diis,
+        announce: bool,
+        report: &mut Option<crate::result::ConvergenceReport>,
+    ) -> (Option<ScfExit>, bool) {
+        let (econv, dconv) = (config.energy_conv, config.density_conv);
+        let prev_err_max = self
+            .prev_err_max
+            .replace(it.err_max)
+            .unwrap_or(f64::INFINITY);
+        let plain = crate::rhf::scf_converged(it.sig, econv, dconv);
+        let swap = plain.is_none()
+            && it.xc_active.contains(&true)
+            && degenerate_swap_converged(it.sig, it.err_max, prev_err_max, it.iter, econv, dconv);
+        let settled = if swap {
+            Some(ScfExit::Converged)
+        } else {
+            plain
+        };
+        let gated = crate::cosx_schedule::gate(cosx_sched, it.iter, it.sig.dp_max, settled);
+        let orbital_gradient = || {
+            it.err
+                .iter()
+                .map(|e| crate::rhf::orthogonal_gradient_max(it.x, e))
+                .fold(0.0f64, f64::max)
+        };
+        let (exit, vetoed) = self.veto.apply(
+            gated,
+            orbital_gradient,
+            it.iter,
+            dconv,
+            "UHF",
+            announce,
+            report,
+        );
+        if vetoed {
+            diis.reset();
+        }
+        (exit, swap && exit.is_some())
+    }
+
+    fn record(&self) -> Option<crate::result::GradientVetoes> {
+        self.veto.record()
+    }
+}
+
+/// A stationary point whose occupied set swaps between degenerate orbitals on
+/// every iteration.
+///
+/// OH doublet: the β hole flips between π_x and π_y each step, so ΔP_max = 1
+/// and [`crate::rhf::scf_converged`] can never pass, although each density is
+/// stationary (`err_max` ~1e-9 MEASURED at −74.0755553242). Accept when the
+/// density moved by an orbital-sized amount (`dp_max > 0.1`) while the
+/// orbital gradient is below `max(density_conv, SWAP_GRADIENT_FLOOR)` at BOTH
+/// ends of the swap (this iteration and the previous one) and the energy
+/// moved by less than
+/// `min(energy_conv, 1e-5)`: a swap between degenerate orbitals at a
+/// stationary point, not a descending run or a hop between distinct states.
+/// The caller restricts it to Kohn-Sham: a UHF (Hartree-Fock) minimiser is
+/// aufbau, so a swapping HF state is not one to accept.
+fn degenerate_swap_converged(
+    sig: crate::rhf::ConvergenceSignals,
+    err_max: f64,
+    prev_err_max: f64,
+    iter: usize,
+    energy_conv: f64,
+    density_conv: f64,
+) -> bool {
+    let bound = density_conv.max(SWAP_GRADIENT_FLOOR);
+    iter > 2
+        && sig.dp_max > 0.1
+        && err_max < bound
+        && prev_err_max < bound
+        && sig.de < energy_conv.min(SWAP_MAX_DE)
+}
+
+/// Whether one spin's exit MOs are reordered to build its density: after a
+/// degenerate-swap acceptance (`swapped`, from [`UhfExitGate::decide`]) and
+/// only when that spin's density is integer. `d_occ` is the occupied-block
+/// cache that built the exit density, `Some` exactly when `D = C_occ·C_occᵀ`
+/// (see `spin_density_and_occ`); a fractional ensemble density has no integer
+/// occupied set to identify, so it keeps the aufbau eigenpairs. A MOM exit is
+/// never a swap acceptance, so it is never reordered.
+fn reorder_exit_mos(swapped: bool, d_occ: Option<&Array2<f64>>) -> bool {
+    swapped && d_occ.is_some()
+}
+
+/// Order one spin's eigenpairs so the first `nocc` columns are the
+/// eigenvectors carrying the most weight in `d` (`w_p = c_pᵀ S D S c_p`),
+/// each block kept in ascending eigenvalue order with `eps` permuted to match.
+///
+/// Applied (`apply`) only to an exit accepted as a degenerate swap
+/// ([`degenerate_swap_converged`]): there `d` occupies the other member of
+/// the degenerate pair, and returning the aufbau `C` would hand downstream
+/// code (gradients, post-HF) occupied orbitals that do not build the returned
+/// density. Every other exit returns the aufbau eigenpairs unchanged — in
+/// particular a MOM state, which is non-aufbau BY DESIGN and whose consumers
+/// (and the Hessian's non-aufbau refusal) rely on main's C and eps. Not
+/// `mom::mom_reorder`, which scrambles the occupied order. The reordered
+/// result has an occupied eigenvalue above a virtual one, which is how
+/// `hessian::uhf_state_refusal` recognises it.
+fn occupied_by_density(
+    (eps, c): (Vec<f64>, Array2<f64>),
+    s: &Array2<f64>,
+    d: &Array2<f64>,
+    nocc: usize,
+    apply: bool,
+) -> (Vec<f64>, Array2<f64>) {
+    let n = c.ncols();
+    if !apply || nocc == 0 || nocc >= n {
+        return (eps, c);
+    }
+    let sc = s.dot(&c);
+    let w = (sc.t().dot(d) * sc.t()).sum_axis(ndarray::Axis(1));
+    let mut by_weight: Vec<usize> = (0..n).collect();
+    by_weight.sort_by(|&p, &q| w[q].total_cmp(&w[p]).then(p.cmp(&q)));
+    let mut occ = by_weight[..nocc].to_vec();
+    occ.sort_unstable();
+    if occ.iter().enumerate().all(|(k, &p)| k == p) {
+        return (eps, c);
+    }
+    let mut vir = by_weight[nocc..].to_vec();
+    vir.sort_unstable();
+    let order: Vec<usize> = occ.into_iter().chain(vir).collect();
+    let mut c_out = Array2::<f64>::zeros(c.raw_dim());
+    for (k, &p) in order.iter().enumerate() {
+        c_out.column_mut(k).assign(&c.column(p));
+    }
+    (order.iter().map(|&p| eps[p]).collect(), c_out)
+}
+
 fn density(c: &Array2<f64>, nocc: usize) -> Array2<f64> {
     let n = c.nrows();
     if nocc == 0 {
@@ -2436,6 +2680,167 @@ mod tests {
     use ferric_core::external_potential::{ExternalPotential, PointCharge};
     use ferric_core::parallel::ParallelContext;
     use ferric_integrals::oneelectron;
+
+    fn signals(de: f64, dp: f64) -> crate::rhf::ConvergenceSignals {
+        crate::rhf::ConvergenceSignals {
+            de,
+            dp_rms: dp,
+            dp_max: dp,
+        }
+    }
+
+    /// The UHF veto wiring, independent of SCF arithmetic: a ΔP/ΔE-settled
+    /// state with a large orbital gradient is refused, the refusal recorded,
+    /// and the DIIS history cleared (the next extrapolation sees one entry and
+    /// returns its input unchanged). End to end the stagnation is
+    /// arithmetic-sensitive (it is reached on some OpenBLAS kernels and not
+    /// others), so the wiring is pinned here.
+    #[test]
+    fn exit_gate_vetoes_a_settled_nonstationary_state_and_clears_diis() {
+        let n = 2;
+        let x = Array2::<f64>::eye(n);
+        let f = |v: f64| Array2::from_elem((n, n), v);
+        let mut diis = Diis::new(6);
+        diis.step_pair(&f(1.0), &f(1.0), &f(0.3), &f(0.1));
+        diis.step_pair(&f(2.0), &f(2.0), &f(0.2), &f(0.05));
+        let err = ndarray::array![[0.0, 0.136], [-0.136, 0.0]];
+        let config = UhfConfig {
+            density_conv: 1e-6,
+            ..Default::default()
+        };
+        let mut gate = UhfExitGate::default();
+        let mut report = None;
+        let (exit, swapped) = gate.decide(
+            &mut None,
+            UhfIterGradients {
+                iter: 12,
+                sig: signals(2.4e-12, 3.4e-8),
+                err_max: 0.136,
+                err: [&err, &err],
+                x: &x,
+                xc_active: [true, false],
+            },
+            &config,
+            &mut diis,
+            false,
+            &mut report,
+        );
+        assert!(
+            exit.is_none() && !swapped,
+            "a non-stationary state was accepted"
+        );
+        let rec = gate.record().expect("the veto must be recorded");
+        assert_eq!((rec.count, rec.last_iteration), (1, 12));
+        let (fa, _) = diis.step_pair(&f(5.0), &f(5.0), &f(0.4), &f(0.4));
+        assert_eq!(fa, f(5.0), "DIIS history was not cleared by the veto");
+    }
+
+    /// A degenerate swap under `fractional_occ` whose density is integer (no
+    /// degenerate frontier to spread) must still reorder the exit MOs, per
+    /// spin: before, `decide` refused any reorder under `fractional_occ`, so
+    /// the returned aufbau C occupied the other member of the swapped pair
+    /// and did not build the returned integer D. A fractional spin keeps its
+    /// aufbau eigenpairs (no integer occupied set exists).
+    #[test]
+    fn swap_under_fractional_occ_reorders_each_integer_spin() {
+        let n = 3;
+        let x = Array2::<f64>::eye(n);
+        let err = Array2::<f64>::zeros((n, n));
+        let config = UhfConfig {
+            density_conv: 1e-6,
+            fractional_occ: true,
+            ..Default::default()
+        };
+        let mut gate = UhfExitGate::default();
+        let mut diis = Diis::new(6);
+        let mut report = None;
+        let mut step = |iter: usize| {
+            gate.decide(
+                &mut None,
+                UhfIterGradients {
+                    iter,
+                    sig: signals(1e-9, 1.0),
+                    err_max: 1e-9,
+                    err: [&err, &err],
+                    x: &x,
+                    xc_active: [true, false],
+                },
+                &config,
+                &mut diis,
+                false,
+                &mut report,
+            )
+        };
+        let _ = step(5);
+        let (exit, swapped) = step(6);
+        assert!(exit.is_some(), "the degenerate swap was not accepted");
+        assert!(swapped, "a swap under fractional_occ was not flagged");
+
+        // Aufbau C = I with eps ascending; D occupies orbital 1, the other
+        // member of a swapped pair, as an integer density.
+        let c = Array2::<f64>::eye(n);
+        let eps = vec![-0.5, -0.4, 0.3];
+        let mut d = Array2::<f64>::zeros((n, n));
+        d[(1, 1)] = 1.0;
+        let d_occ = Some(c.slice(ndarray::s![.., 1..2]).to_owned());
+        let (_, c_int) = occupied_by_density(
+            (eps.clone(), c.clone()),
+            &x,
+            &d,
+            1,
+            reorder_exit_mos(swapped, d_occ.as_ref()),
+        );
+        let occ = c_int.slice(ndarray::s![.., ..1]);
+        assert_eq!(
+            occ.dot(&occ.t()),
+            d,
+            "integer-density exit MOs do not build D"
+        );
+        // A fractional spin (no cache) keeps the aufbau eigenpairs.
+        assert!(!reorder_exit_mos(swapped, None));
+        let (eps_f, c_f) = occupied_by_density((eps.clone(), c.clone()), &x, &d, 1, false);
+        assert_eq!((eps_f, c_f), (eps, c));
+        // No swap (a plain or MOM exit): never reordered.
+        assert!(!reorder_exit_mos(false, d_occ.as_ref()));
+    }
+
+    /// The swap gradient bound is `max(density_conv, 1e-6)`: at a tight
+    /// `density_conv` a swap at the measured arithmetic floor (~1e-9) is
+    /// accepted; a still-descending gradient, or an energy hop, is not.
+    #[test]
+    fn swap_acceptance_bound_is_floored_above_the_arithmetic_floor() {
+        let swap = signals(1.4e-14, 0.986);
+        // OH/STO-3G floor on the CI (Prescott) kernels, dconv 1e-9.
+        assert!(degenerate_swap_converged(
+            swap, 1.12e-9, 1.12e-9, 153, 1e-7, 1e-9
+        ));
+        // dconv 1e-4: the bound is dconv (OH: iterations 5 and 6).
+        assert!(degenerate_swap_converged(
+            swap, 8.9e-7, 6.8e-5, 6, 1e-7, 1e-4
+        ));
+        // One end above the floor: still descending.
+        assert!(!degenerate_swap_converged(
+            swap, 1.9e-8, 4.6e-6, 151, 1e-7, 1e-9
+        ));
+        // Energy moved: not a degenerate swap.
+        assert!(!degenerate_swap_converged(
+            signals(2e-5, 0.986),
+            1e-9,
+            1e-9,
+            9,
+            1e-3,
+            1e-9
+        ));
+        // Density did not move by an orbital: the plain gate's business.
+        assert!(!degenerate_swap_converged(
+            signals(1e-14, 1e-3),
+            1e-9,
+            1e-9,
+            9,
+            1e-3,
+            1e-9
+        ));
+    }
 
     #[test]
     fn test_uhf_h_atom_sto3g() {

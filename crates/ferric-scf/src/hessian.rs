@@ -1069,6 +1069,21 @@ fn semicanonical_refusal(uhf: &ScfResult) -> Option<&'static str> {
     )
 }
 
+/// Whether the highest of the first `nocc` eigenvalues lies above the lowest
+/// of the rest (strictly: a degenerate pair split across the boundary by an
+/// exact tie is aufbau).
+fn non_aufbau_eigenvalues(eps: &[f64], nocc: usize) -> bool {
+    if nocc == 0 || nocc >= eps.len() {
+        return false;
+    }
+    let homo = eps[..nocc]
+        .iter()
+        .copied()
+        .fold(f64::NEG_INFINITY, f64::max);
+    let lumo = eps[nocc..].iter().copied().fold(f64::INFINITY, f64::min);
+    homo > lumo
+}
+
 fn uhf_state_refusal(mol: &Molecule, uhf: &ScfResult) -> Option<&'static str> {
     if let Some(what) = semicanonical_refusal(uhf) {
         return Some(what);
@@ -1097,6 +1112,15 @@ fn uhf_state_refusal(mol: &Molecule, uhf: &ScfResult) -> Option<&'static str> {
         let c_occ = c.slice(s![.., ..n]);
         if max_abs(&(c_occ.dot(&c_occ.t()) - d)) > OCC_CONSISTENCY_TOL {
             return Some("non-aufbau UHF occupations (e.g. MOM)");
+        }
+    }
+    // MOs consistent with D can still be non-aufbau: a UKS exit accepted as a
+    // degenerate orbital swap returns C reordered to build D, so an occupied
+    // eigenvalue sits above a virtual one. The response equations assume the
+    // aufbau ordering, so refuse that too.
+    for (e, n) in [(&uhf.eps_alpha, nocc[0]), (eb, nocc[1])] {
+        if non_aufbau_eigenvalues(e, n) {
+            return Some("non-aufbau UHF occupations (an occupied orbital above a virtual one)");
         }
     }
     None
