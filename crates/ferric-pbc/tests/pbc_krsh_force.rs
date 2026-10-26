@@ -54,7 +54,7 @@
 //!
 //! NOT covered here: RS-GDF (`pbc_krsh_rsgdf_force.rs`,
 //! `validation_krsh_rsgdf_force.rs`; open shell `pbc_kuks_rsh_rsgdf_force.rs`;
-//! the Gamma route refuses it), open shell (UKS on dense AFT:
+//! the Gamma route on RS-GDF: `pbc_grsh_rsgdf_derivs.rs`), open shell (UKS on dense AFT:
 //! `pbc_kuks_rsh_force.rs`; ROKS `pbc_kroks_rsh_force.rs`), p/d
 //! shells (H2/STO-3G only), shifted meshes, a PySCF force pin, Python / CLI
 //! (the shared derivative gates still refuse range-separated hybrids).
@@ -255,8 +255,10 @@ fn gamma_force(f: &str, exxdiv: ExxDiv) -> KRksGradient {
     gamma_rks_rsh_gradient(&cell, &prep, &hcfg, &r.scf, &gc, &ex, &kc).unwrap()
 }
 
-/// Typed refusals of the routed Gamma force: an RS-GDF exchange (the Gamma
-/// route differentiates the dense one only; the k force covers RS-GDF) and an open-shell result (here the
+/// Typed refusals of the routed Gamma force: an RS-GDF exchange handed with
+/// this dense-J SCF (the route differentiates the exchange's own source, whose
+/// J is not the SCF's: the Fock guard refuses it; the consistent Gamma RS-GDF
+/// route is `pbc_grsh_rsgdf_derivs.rs`) and an open-shell result (here the
 /// restricted result relabelled `Spin::Unrestricted`, which must be refused by
 /// the spin check, not differentiated as closed shell).
 #[allow(clippy::too_many_arguments)]
@@ -287,10 +289,10 @@ fn gamma_refusals(
     let ex_gdf =
         GammaRshExchange::build_rsgdf(cell, prep, &aux, s, gc.exxdiv, &rcfg, rsh_of(f)).unwrap();
     let e = gamma_rks_rsh_gradient(cell, prep, hcfg, scf, gc, &ex_gdf, kc)
-        .expect_err("RS-GDF Gamma exchange accepted")
+        .expect_err("an RS-GDF exchange on a dense-J SCF accepted")
         .to_string();
-    eprintln!("Gamma RS-GDF refusal: {e}");
-    assert!(e.contains("RS-GDF") && e.contains("no derivative"), "{e}");
+    eprintln!("Gamma RS-GDF exchange on a dense-J SCF: {e}");
+    assert!(e.contains("differs from the SCF's stored"), "{e}");
     let dc = KDenseAftConfig {
         precision: PRECISION,
         budget_bytes: Some(AMPLE),
@@ -373,7 +375,7 @@ fn rsh_mutants_are_caught() {
 
 /// Typed refusals: kernels without the functional's range separation, with
 /// other parameters, and the open-shell allowlist (the routed Gamma force's
-/// RS-GDF and open-shell refusals are in `gamma_refusals`; the k-point RS-GDF
+/// foreign-J and open-shell refusals are in `gamma_refusals`; the k-point RS-GDF
 /// source checks are in `pbc_krsh_rsgdf.rs`).
 #[test]
 fn rsh_force_refusals() {
