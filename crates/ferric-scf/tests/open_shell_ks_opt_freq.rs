@@ -56,12 +56,12 @@ fn freq_config(xc: &str) -> RhfConfig {
 }
 
 fn ks_config(xc: &str) -> RhfConfig {
-    // Same tolerances as tests/uks_gradient.rs, and for the reason documented
-    // there: doublet OH/LDA has a near-degenerate HOMO pair that DIIS cannot
-    // drive below ~1e-5 err_max, even though the ENERGY is converged to 1e-5 Ha.
-    // Demanding density_conv = 1e-7 here makes the SCF spin to max_iter and the
-    // optimizer/frequency driver then fails on a convergence error rather than
-    // on anything to do with the gradient wiring under test.
+    // Same tolerances as tests/uks_gradient.rs. Doublet OH/LDA has a degenerate
+    // π hole: at the stationary ground state the β hole flips π_x <-> π_y every
+    // iteration, so ΔP_max = 1 and the ΔP gate alone never passes. UHF accepts
+    // that swap once the orbital gradient is below density_conv
+    // (tests/uhf_degenerate_swap.rs); ROHF holds the occupation by continuity
+    // (rohf_occupation, F6).
     RhfConfig {
         xc: Some(xc.to_string()),
         energy_conv: 1e-7,
@@ -70,6 +70,11 @@ fn ks_config(xc: &str) -> RhfConfig {
         ..Default::default()
     }
 }
+
+/// Measured descent of a 2-step optimization from the input geometry (see the
+/// tests); a correct gradient lowers E by ~5.2e-3 Ha. Half of that separates it
+/// from a stalled or uphill run with margin on both sides.
+const MIN_DESCENT: f64 = 2.5e-3;
 
 /// UKS geometry optimization must run and lower the energy.
 ///
@@ -93,31 +98,33 @@ fn uks_geometry_optimization_runs_and_lowers_the_energy() {
         "UKS/LDA OH: E {e0:.10} -> {:.10} in {} steps (converged={})",
         res.energy, res.steps, res.converged
     );
-    // NO ENERGY-DESCENT ASSERTION HERE, deliberately. The obvious guard --
-    // "a wired-but-wrong gradient would still run, so require downhill" -- is
-    // NOT MEASURABLE on this system, and a version of it failed on CI while
-    // passing locally.
+    // MEASURED (fix/uhf-convergence-gradient-guard): -74.0755553242 ->
+    // -74.0807743024 in 2 steps, converged. The numbers this comment used to
+    // carry (-73.4949867620 -> -73.5376814463 / -73.4876300115, and the
+    // "unmeasurable" verdict) came from SCFs that the ΔP gate had accepted on a
+    // stagnated non-stationary state ~0.58 Ha above the ground state; the
+    // gradient at such a state is not the derivative of anything, so descent
+    // was noise. With the UHF orbital-gradient guard the SCF lands on the
+    // stationary state and both checks below are real.
     //
-    // Measured on one commit, 6 steps, OH/LDA doublet:
-    //     correct gradient, this machine : -73.4949867620 -> -73.5376814463  (-4.27e-2)
-    //     correct gradient, GitHub runner: -73.4949867620 -> -73.4876300115  (+7.36e-3)
-    //     gradient SIGN FLIPPED (mutation): -73.4949867620 -> -73.4822944098  (+1.27e-2)
-    //
-    // A deliberately BROKEN gradient and a correct one differ by 1.7x, on the
-    // same side of zero. No threshold separates them, so any such assertion
-    // either fails spuriously (as CI did) or passes a sign-flipped gradient (as
-    // a widened 5e-2 bound did when mutation-tested). The cause is in
-    // ks_config: doublet OH/LDA has a near-degenerate HOMO pair, so density_conv
-    // is 1e-4 and the gradient noise floor is the same size as the steps.
-    //
-    // The real guard is tests/roks_gradient.rs (and uks_gradient.rs), which
-    // validate these gradients against FINITE DIFFERENCES -- an independent
-    // construction, 4/4 passing. What THIS test can honestly assert is that the
-    // open-shell KS optimize path is wired and runs.
+    // Which check catches what (mutation-tested): with the gradient SIGN
+    // FLIPPED the optimizer still descends (-74.0807743087, its energy-based
+    // step control finds the minimum) but too slowly to converge in 6 steps
+    // (the correct gradient takes 2), so the sign flip is caught by
+    // convergence speed through `converged`; the descent bound catches an
+    // SCF that lands on the wrong state (a 0.58 Ha stagnated state is far
+    // outside it). FD validation of the gradient itself stays in
+    // tests/uks_gradient.rs.
     assert!(res.steps > 0, "optimizer took no steps");
     assert!(
-        res.energy.is_finite(),
-        "optimizer produced a non-finite energy"
+        res.converged,
+        "optimizer did not converge in {} steps",
+        res.steps
+    );
+    assert!(
+        res.energy < e0 - MIN_DESCENT,
+        "optimizer did not descend: {e0:.10} -> {:.10}",
+        res.energy
     );
 }
 
@@ -140,31 +147,22 @@ fn roks_geometry_optimization_runs_and_lowers_the_energy() {
         "ROKS/LDA OH: E {e0:.10} -> {:.10} in {} steps (converged={})",
         res.energy, res.steps, res.converged
     );
-    // NO ENERGY-DESCENT ASSERTION HERE, deliberately. The obvious guard --
-    // "a wired-but-wrong gradient would still run, so require downhill" -- is
-    // NOT MEASURABLE on this system, and a version of it failed on CI while
-    // passing locally.
-    //
-    // Measured on one commit, 6 steps, OH/LDA doublet:
-    //     correct gradient, this machine : -73.4949867620 -> -73.5376814463  (-4.27e-2)
-    //     correct gradient, GitHub runner: -73.4949867620 -> -73.4876300115  (+7.36e-3)
-    //     gradient SIGN FLIPPED (mutation): -73.4949867620 -> -73.4822944098  (+1.27e-2)
-    //
-    // A deliberately BROKEN gradient and a correct one differ by 1.7x, on the
-    // same side of zero. No threshold separates them, so any such assertion
-    // either fails spuriously (as CI did) or passes a sign-flipped gradient (as
-    // a widened 5e-2 bound did when mutation-tested). The cause is in
-    // ks_config: doublet OH/LDA has a near-degenerate HOMO pair, so density_conv
-    // is 1e-4 and the gradient noise floor is the same size as the steps.
-    //
-    // The real guard is tests/roks_gradient.rs (and uks_gradient.rs), which
-    // validate these gradients against FINITE DIFFERENCES -- an independent
-    // construction, 4/4 passing. What THIS test can honestly assert is that the
-    // open-shell KS optimize path is wired and runs.
+    // MEASURED (fix/uhf-convergence-gradient-guard): -74.0752223408 ->
+    // -74.0803874578 in 2 steps, converged. ROHF already carried the F6
+    // gradient guard; the stale numbers this comment used to carry were the
+    // UKS ones (see the sibling test). Gradient sign-flip mutant: descends to
+    // -74.0803874586 but too slowly to converge in 6 steps (caught by
+    // convergence speed, through `converged`).
     assert!(res.steps > 0, "optimizer took no steps");
     assert!(
-        res.energy.is_finite(),
-        "optimizer produced a non-finite energy"
+        res.converged,
+        "optimizer did not converge in {} steps",
+        res.steps
+    );
+    assert!(
+        res.energy < e0 - MIN_DESCENT,
+        "optimizer did not descend: {e0:.10} -> {:.10}",
+        res.energy
     );
 }
 
@@ -179,12 +177,13 @@ fn roks_geometry_optimization_runs_and_lowers_the_energy() {
 fn uks_frequencies_run_and_give_one_vibrational_mode_for_a_diatomic() {
     let ctx = ParallelContext::default();
     let mol = Molecule::parse_xyz(OH, 0, 2).unwrap();
-    // PBE, NOT LDA. Measured: OH/LDA either converges only at density_conv=1e-4
-    // -- too loose to differentiate, giving a Hessian asymmetry of 1.9e+1
-    // Ha/Bohr^2 and a nonsense -21896 cm^-1 mode -- or fails to converge at all
-    // at 1e-6 and below (600 iters). That is the near-degenerate-HOMO pathology
-    // documented in tests/uks_gradient.rs, not a gradient-wiring problem: OH/PBE
-    // at density_conv=1e-6 gives asymmetry 5.1e-5 and a clean 4346 cm^-1.
+    // PBE. The old reason for avoiding LDA here ("OH/LDA converges only at
+    // density_conv=1e-4 and gives a nonsense -21896 cm^-1 mode, or never
+    // converges at 1e-6") was the UHF gate accepting a stagnated
+    // non-stationary state, fixed by the orbital-gradient guard
+    // (tests/uhf_degenerate_swap.rs). MEASURED after the fix: OH/LDA gives
+    // 4357.29 cm^-1, asymmetry 5.3e-6, at density_conv=1e-6 (4.3e-6 at 1e-8).
+    // OH/PBE at 1e-6: asymmetry 5.1e-5 and a clean 4346 cm^-1.
     let cfg = freq_config("pbe");
     let fcfg = FrequencyConfig {
         reference: FrequencyReference::Uhf,

@@ -101,6 +101,34 @@ fn gamma_rsgdf_rsh_stress_matches_fd() {
     }
 }
 
+/// FD of the open-shell UKS Gamma RS-GDF CAM-B3LYP energy under strain
+/// (`gamma_uks_rsh_stress` on the RS-GDF exchange), ewald, the closed-shell
+/// test's components and steps. This cell's stress is larger (|dE/dε_zz| ≈
+/// 1.3), so the h² truncation at h = 2e-4 is larger too (ε_zz: 4.0e-7 /
+/// 1.0e-7 at h = 4e-4 / 2e-4, ratio 4.0, Richardson 2.5e-11): bar 2e-7 at
+/// h = 2e-4, 2e-8 on Richardson.
+#[test]
+#[ignore = "validation: FD of the Gamma RS-GDF UKS RSH stress"]
+fn gamma_rsgdf_rsh_uks_stress_matches_fd() {
+    let x = ExxDiv::Ewald;
+    let g = gamma_run(cell_at(&H3D), Sp::Uks, CAM, x, Jk::RsGdf);
+    let st = gamma_stress(&g).unwrap();
+    for (i, j) in [(2, 2), (0, 1), (1, 0)] {
+        let f1 = fd_strain(Sp::Uks, CAM, x, (i, j, 4e-4));
+        let f2 = fd_strain(Sp::Uks, CAM, x, (i, j, 2e-4));
+        let a = st.de_deps[i][j];
+        let (r1, r2) = ((a - f1).abs(), (a - f2).abs());
+        let rich = (a - (4.0 * f2 - f1) / 3.0).abs();
+        eprintln!(
+            "UKS eps_{i}{j}: analytic {a:+.10e} |diff| h=4e-4 {r1:.2e} h=2e-4 {r2:.2e} \
+             Richardson {rich:.2e}"
+        );
+        assert!(a.abs() > 1e-3, "a non-zero component");
+        assert!(r2 < 2e-7, "({i},{j}): {r2:e}");
+        assert!(rich < 2e-8, "({i},{j}) Richardson: {rich:e}");
+    }
+}
+
 /// RS-GDF vs the DENSE-AFT oracle: the Gamma RS-GDF RSH force minus the
 /// Gamma dense-AFT RSH force (both routed) is a fit error of the same order
 /// as the plain-Coulomb (PBE0) RS-GDF − dense force gap of the same aux on

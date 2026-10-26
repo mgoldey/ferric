@@ -112,8 +112,9 @@ def test_range_separated_hybrid_runs_on_rsgdf(h2, h_atom, basis):
     )
     assert d.energy == r.energy
     assert np.isfinite(d.gradient()).all() and np.isfinite(d.stress()).all()
-    # The open-shell UKS stress stays refused (no range-separated term; the
-    # UKS force runs on the dense-AFT J/K: test_pbc_rsh_open_mgga_derivs.py).
+    # The open-shell UKS stress stays refused in the bindings (library only,
+    # #498; the UKS force runs on the dense-AFT J/K:
+    # test_pbc_rsh_open_mgga_derivs.py).
     with pytest.raises(
         ValueError, match="UKS range-separated hybrid stress is not implemented"
     ):

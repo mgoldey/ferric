@@ -1,8 +1,10 @@
 //! Analytic stress tensor of the k-point open-shell KS-DFT energy
 //! ([`crate::kuks::solve_kuks`]) for LDA, GGA and GLOBAL hybrid functionals
-//! (exact-exchange fraction `a`), dense-AFT and RS-GDF J/K, and for the pure
-//! meta-GGAs SCAN / r2SCAN (UKS, dense-AFT J/K only): the spin-resolved twin
-//! of [`crate::kxcstress`] and the strain twin of [`crate::kuxcgrad`].
+//! (exact-exchange fraction `a`), dense-AFT and RS-GDF J/K, range-separated
+//! (CAM) GGA hybrids on either J/K ("Range-separated hybrids" below), and
+//! the pure meta-GGAs SCAN / r2SCAN (UKS, dense-AFT J/K only): the
+//! spin-resolved twin of [`crate::kxcstress`] and the strain twin of
+//! [`crate::kuxcgrad`].
 //!
 //! # Convention and energy
 //!
@@ -167,12 +169,44 @@
 //! ROKS PBE0), and the RS-GDF / `W_RO` mutants; on the range-split build the
 //! closed-shell limit (force and stress) and FD of the split energy.
 //!
+//! # Range-separated hybrids (UKS and ROKS)
+//!
+//! A CAM GGA hybrid's exchange per spin is `K_σ = K_f[D_σ] + v_M^mix S D_σ S`
+//! with the attenuated kernel `v(K) = 4π f(K²)/K²` ([`crate::rsh`]), the
+//! fractions inside the kernel (exchange scale 1) and the mixed Madelung
+//! constant `c_sr v_M + (c_lr − c_sr) v_M^LR(ω)` of the supercell. Its strain
+//! is a COMPOSITION of pieces that already exist, with no new derivative
+//! algebra: every strain walk of [`crate::kstress`]'s assembly is bilinear in
+//! the exchange term list `Σ_s c_s D_s X D_s` (`(½, D)` closed shell, `(1,
+//! D_α), (1, D_β)` open shell) or in the M-term sandwich (`½ D S D` closed,
+//! `Σ_σ D_σ S D_σ` open), and the kernel and Madelung strains are scalar
+//! factors that do not see the spin:
+//!
+//! * dense AFT: the exchange walks with `v(K)` and its slope `dv/dK² = −v/K²
+//!   + (4π/K²) f'(K²)` (J bare), the closed-shell RKS stress's
+//!   (`crate::kxcstress`, "Range-separated hybrids");
+//! * RS-GDF (`KRsGdf::build_rsh`): the plain fit's exchange strain scaled by
+//!   `c_sr` and the attenuated fit's LR strain passes by `c_lr − c_sr`, both
+//!   on the open-shell term list;
+//! * Madelung: the M-term overlap weight `−v_M^mix Σ_σ D_σ S D_σ` and the
+//!   strain `−½ (1/N_k) Σ_k Σ_σ tr[D_σ S D_σ S] (c_sr dv_M/dε + (c_lr − c_sr)
+//!   dv_M^LR/dε)`.
+//!
+//! So this module only resolves the range separation (exchange scale 1),
+//! hands it to the shared input check (the J/K must carry the functional's
+//! own parameters) and uses the mixed constant for the Fock rebuild and the
+//! M-term. The XC part is the semilocal remainder of the functional,
+//! polarized, unchanged. ROKS takes the same assembly with `W_RO`.
+//!
 //! # Scope
 //!
-//! LDA, GGA and global hybrids; for UKS also SCAN / r2SCAN on the dense-AFT
-//! J/K. Range-separated hybrids, any other meta-GGA, meta-GGA on RS-GDF,
-//! VV10 and double hybrids are refused with typed errors (ROKS also refuses
-//! every meta-GGA; the ROHF entry has no functional). A ROKS state cannot
+//! LDA, GGA, global and range-separated (CAM GGA) hybrids on either J/K (the
+//! range-separated stress validated for HSE06 and CAM-B3LYP; other CAM GGA
+//! hybrids such as wB97X are accepted, not exercised); for UKS also SCAN /
+//! r2SCAN on the dense-AFT J/K. Any other meta-GGA, meta-GGA on RS-GDF,
+//! range-separated meta-GGA, VV10 and double hybrids are refused with typed
+//! errors (ROKS also refuses every meta-GGA; the ROHF entry has no
+//! functional). A ROKS state cannot
 //! be handed to [`kpoint_uks_stress`] (its SCF type is
 //! [`crate::kroks::KRoScfResult`], not [`KUScfResult`]).
 
@@ -183,7 +217,7 @@ use crate::grad::ao_atoms;
 use crate::grad::RO_ORBITAL_GRADIENT_TOL;
 use crate::hcore::kpoint::PeriodicHcoreK;
 use crate::hcore::PeriodicHcoreConfig;
-use crate::kgrad::{check_fock, check_inputs, jk_build, KGradJk, KSpins};
+use crate::kgrad::{check_fock, check_inputs_rsh, jk_build, KGradJk, KSpins};
 use crate::kpts::KPointMesh;
 use crate::kroks::KRoScfResult;
 use crate::kstress::{assemble, grad_jk, open_ledger, refuse_unsupported, KStressJk};
@@ -195,10 +229,12 @@ use crate::kuxcgrad::{
 };
 use crate::kxcgrad::{add_vtau, chunk_density, chunk_tau, chunk_vxc, conj, hermitize};
 use crate::kxcstress::{
-    finish, resolve_global, resolve_open_stress, strain_points_for, KRksStress, KRksStressConfig,
-    KXcStressMutation, XcStressOut, AO_PLANES, CHUNK_TARGET_BYTES, KS_REMEDY, MAX_CHUNK, MIN_CHUNK,
+    finish, resolve_global, resolve_global_mgga_stress, resolve_open_stress, strain_points_for,
+    KRksStress, KRksStressConfig, KXcStressMutation, XcStressOut, AO_PLANES, CHUNK_TARGET_BYTES,
+    KS_REMEDY, MAX_CHUNK, MIN_CHUNK,
 };
 use crate::lattice::Cell;
+use crate::rsh::{resolve_periodic_functional_rsh, RshParams};
 use crate::stress::{add_into, Mat3, ZERO3};
 use ferric_core::FerricError;
 use ferric_dft::density_on_grid::UksDensityGrid;
@@ -725,6 +761,12 @@ impl KUXcStressResponse for GridXcPol<'_> {
     }
 }
 
+/// The polarized XC response of an open-shell stress, the exchange scale and
+/// the range separation. A range-separated hybrid (UKS and ROKS) enters with
+/// exchange scale 1 (its fractions are inside the kernel; VV10 and mixing
+/// weights refused by [`resolve_global_mgga_stress`]); otherwise ROKS keeps
+/// the stress resolver's own meta-GGA refusal and UKS narrows meta-GGA to
+/// SCAN / r2SCAN on the dense-AFT J/K.
 fn grid_response<'a>(
     cell: &'a Cell,
     prep: &'a PreparedBasis,
@@ -732,9 +774,14 @@ fn grid_response<'a>(
     functional: &str,
     cfg: &'a KUksStressConfig,
     (who, allow_mgga, rsgdf): (&str, bool, bool),
-) -> Result<(GridXcPol<'a>, f64), FerricError> {
-    // ROKS keeps the stress resolver's own meta-GGA refusal.
-    let (exch, is_mgga) = if allow_mgga {
+) -> Result<(GridXcPol<'a>, f64, Option<RshParams>), FerricError> {
+    let rsh = match resolve_periodic_functional_rsh(functional)?.2 {
+        Some(_) => resolve_global_mgga_stress(functional)?.2,
+        None => None,
+    };
+    let (exch, is_mgga) = if rsh.is_some() {
+        (1.0, false)
+    } else if allow_mgga {
         resolve_open_shell(who, functional, (true, rsgdf), &|f| {
             resolve_open_stress(f, true)
         })?
@@ -766,6 +813,7 @@ fn grid_response<'a>(
             cfg,
         },
         exch,
+        rsh,
     ))
 }
 
@@ -776,10 +824,13 @@ fn grid_response<'a>(
 /// [`crate::kxcstress::kpoint_rks_stress`] with the SCF a [`KUScfResult`].
 ///
 /// Also the pure meta-GGAs SCAN / r2SCAN on the dense-AFT J/K (module doc,
-/// item 3).
+/// item 3), and range-separated (CAM GGA) hybrids on the dense-AFT or RS-GDF
+/// J/K built with the functional's [`RshParams`] (as
+/// [`crate::kuks::solve_kuks`] builds them; module doc "Range-separated
+/// hybrids").
 ///
-/// Refuses (typed errors) range-separated hybrids, any other meta-GGA,
-/// meta-GGA with RS-GDF J/K, VV10/double
+/// Refuses (typed errors) J/K whose range separation is not the
+/// functional's, any other meta-GGA, meta-GGA with RS-GDF J/K, VV10/double
 /// hybrids, a hybrid without `cfg.base.exxdiv`, an SCF whose spin Focks the
 /// rebuilt `h + J − a K_σ + V_xc,σ` do not reproduce, an unconverged SCF and a
 /// non-stationary state (`max |F_σ D_σ S − S D_σ F_σ|` above
@@ -797,7 +848,7 @@ pub fn kpoint_uks_stress(
     cfg: &KUksStressConfig,
 ) -> Result<KUksStress, FerricError> {
     let rsgdf = matches!(jk, KStressJk::RsGdf(_));
-    let (resp, exch) = grid_response(
+    let (resp, exch, rsh) = grid_response(
         cell,
         prep,
         mesh,
@@ -815,7 +866,7 @@ pub fn kpoint_uks_stress(
         jk,
         &uks_input(scf),
         &resp,
-        exch,
+        (exch, rsh),
         cfg,
     )
 }
@@ -850,7 +901,7 @@ pub fn kpoint_roks_stress(
     functional: &str,
     cfg: &KUksStressConfig,
 ) -> Result<KUksStress, FerricError> {
-    let (resp, exch) = grid_response(
+    let (resp, exch, rsh) = grid_response(
         cell,
         prep,
         mesh,
@@ -868,7 +919,7 @@ pub fn kpoint_roks_stress(
         jk,
         &ro_input(scf),
         &resp,
-        exch,
+        (exch, rsh),
         cfg,
     )
 }
@@ -901,7 +952,7 @@ pub fn kpoint_rohf_stress(
         jk,
         &ro_input(scf),
         &NullXcPol,
-        1.0,
+        (1.0, None),
         &c,
     )
 }
@@ -924,6 +975,28 @@ pub fn kpoint_null_xc_roks_stress(
     exch: f64,
     cfg: &KUksStressConfig,
 ) -> Result<KUksStress, FerricError> {
+    kpoint_null_xc_roks_stress_rsh(cell, prep, mesh, hcore_cfg, hk, jk, scf, exch, None, cfg)
+}
+
+/// TEST/DIAGNOSTIC: [`kpoint_null_xc_roks_stress`] on J/K (dense or RS-GDF)
+/// that carry the range separation `rsh` (any `ω`, `c_sr`, `c_lr`), with the
+/// exchange scale `exch` (1 for a range-separated K) and, under
+/// `exxdiv = ewald`, the mixed Madelung constant of `rsh`. The
+/// restricted-open-shell anchor entry for `c_sr = c_lr = c`.
+#[doc(hidden)]
+#[allow(clippy::too_many_arguments)]
+pub fn kpoint_null_xc_roks_stress_rsh(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    mesh: &KPointMesh,
+    hcore_cfg: &PeriodicHcoreConfig,
+    hk: &PeriodicHcoreK,
+    jk: KStressJk<'_>,
+    scf: &KRoScfResult,
+    exch: f64,
+    rsh: Option<RshParams>,
+    cfg: &KUksStressConfig,
+) -> Result<KUksStress, FerricError> {
     uks_stress_with(
         "kpoint_null_xc_roks_stress",
         cell,
@@ -934,7 +1007,7 @@ pub fn kpoint_null_xc_roks_stress(
         jk,
         &ro_input(scf),
         &NullXcPol,
-        exch,
+        (exch, rsh),
         cfg,
     )
 }
@@ -994,6 +1067,28 @@ pub fn kpoint_null_xc_uks_stress(
     exch: f64,
     cfg: &KUksStressConfig,
 ) -> Result<KUksStress, FerricError> {
+    kpoint_null_xc_uks_stress_rsh(cell, prep, mesh, hcore_cfg, hk, jk, scf, exch, None, cfg)
+}
+
+/// TEST/DIAGNOSTIC: [`kpoint_null_xc_uks_stress`] on J/K (dense or RS-GDF)
+/// that carry the range separation `rsh` (any `ω`, `c_sr`, `c_lr`), with the
+/// exchange scale `exch` (1 for a range-separated K) and, under
+/// `exxdiv = ewald`, the mixed Madelung constant of `rsh`. The open-shell
+/// anchor entry for `c_sr = c_lr = c` (the global hybrid with fraction `c`).
+#[doc(hidden)]
+#[allow(clippy::too_many_arguments)]
+pub fn kpoint_null_xc_uks_stress_rsh(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    mesh: &KPointMesh,
+    hcore_cfg: &PeriodicHcoreConfig,
+    hk: &PeriodicHcoreK,
+    jk: KStressJk<'_>,
+    scf: &KUScfResult,
+    exch: f64,
+    rsh: Option<RshParams>,
+    cfg: &KUksStressConfig,
+) -> Result<KUksStress, FerricError> {
     uks_stress_with(
         "kpoint_null_xc_uks_stress",
         cell,
@@ -1004,7 +1099,7 @@ pub fn kpoint_null_xc_uks_stress(
         jk,
         &uks_input(scf),
         &NullXcPol,
-        exch,
+        (exch, rsh),
         cfg,
     )
 }
@@ -1015,12 +1110,15 @@ fn guard_bytes(nk: usize, n: usize) -> usize {
     bytes_of((nk * n * n) as u64, 16 * 10)
 }
 
-/// The Madelung shift of the SCF's K (0 for a pure functional: no K).
+/// The Madelung shift of the SCF's K (0 for a pure functional: no K): the
+/// mesh constant under `exxdiv = ewald`, or for a range-separated K (`rsh`)
+/// the mixed constant of [`crate::rsh`] on the supercell (as the force's
+/// `kxcgrad::hybrid_madelung`).
 fn madelung_shift(
     who: &str,
     cell: &Cell,
     mesh: &KPointMesh,
-    exch: f64,
+    (exch, rsh): (f64, Option<RshParams>),
     cfg: &KUksStressConfig,
 ) -> Result<f64, FerricError> {
     if exch == 0.0 {
@@ -1033,9 +1131,12 @@ fn madelung_shift(
              Madelung shift)"
         ))
     })?;
-    Ok(match exxdiv {
-        ExxDiv::None => 0.0,
-        ExxDiv::Ewald => mesh.madelung(cell)?,
+    Ok(match (exxdiv, rsh) {
+        (ExxDiv::None, _) => 0.0,
+        (ExxDiv::Ewald, None) => mesh.madelung(cell)?,
+        (ExxDiv::Ewald, Some(r)) => {
+            r.madelung(&Cell::new(cell.mol().clone(), mesh.supercell_lattice())?)?
+        }
     })
 }
 
@@ -1123,7 +1224,7 @@ fn uks_stress_with(
     jk: KStressJk<'_>,
     inp: &SpinInput<'_>,
     xc: &dyn KUXcStressResponse,
-    exch: f64,
+    (exch, rsh): (f64, Option<RshParams>),
     cfg: &KUksStressConfig,
 ) -> Result<KUksStress, FerricError> {
     if !(0.0..=1.0).contains(&exch) {
@@ -1133,7 +1234,7 @@ fn uks_stress_with(
     }
     refuse_unsupported(who, &jk)?;
     let gj: KGradJk<'_> = grad_jk(&jk);
-    check_inputs(
+    check_inputs_rsh(
         who,
         cell,
         prep,
@@ -1144,10 +1245,11 @@ fn uks_stress_with(
         &[inp.da, inp.db],
         inp.converged,
         inp.kpts,
+        rsh,
     )?;
     let ro = inp.mos.is_some();
     let nk = mesh.nk();
-    let vm = madelung_shift(who, cell, mesh, exch, cfg)?;
+    let vm = madelung_shift(who, cell, mesh, (exch, rsh), cfg)?;
     let mut ledger = open_ledger(prep, mesh, &cfg.base.stress, true)?;
     let da = inp.da.to_vec();
     let db = inp.db.to_vec();

@@ -679,8 +679,8 @@ fn stress_refusals_name_the_toml_key() {
     let km = "kmesh = [1, 1, 2]\nstress = true";
     // The closed-shell HSE06 / CAM-B3LYP stress runs on either J/K (anchored
     // above); the open-shell range-separated stress is refused by the stress
-    // gate, which names the key (UKS: no range-separated stress term; ROKS:
-    // no range-separated derivative at all).
+    // gate, which names the key (the library open-shell RSH stress is not
+    // wired in the bindings yet, #498).
     for (route, kind, want) in [
         (
             Route::Uks,

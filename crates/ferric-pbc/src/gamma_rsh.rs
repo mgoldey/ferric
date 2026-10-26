@@ -1,11 +1,12 @@
 //! Range-separated exact exchange at the Gamma point: the RKS, UKS and ROKS
 //! energies ([`crate::dft::gamma_rks_rsh`], [`crate::dft::gamma_uks_rsh`],
 //! [`crate::rohf::gamma_roks_rsh`]; mgoldey/ferric#354) and the nuclear
-//! forces routed through the 1x1x1 mesh ([`gamma_rks_rsh_gradient`],
-//! [`gamma_uks_rsh_gradient`], [`gamma_roks_rsh_gradient`]; plus the
-//! closed-shell [`gamma_rks_rsh_stress`]), on the dense-AFT or the RS-GDF
-//! exchange (mgoldey/ferric#492): the route hands the 1x1x1 derivative the
-//! source the SCF's exchange ran on, the dense `k = 0` kernels or the `k = 0`
+//! forces and stresses routed through the 1x1x1 mesh
+//! ([`gamma_rks_rsh_gradient`], [`gamma_uks_rsh_gradient`],
+//! [`gamma_roks_rsh_gradient`]; [`gamma_rks_rsh_stress`],
+//! [`gamma_uks_rsh_stress`]), on the dense-AFT or the RS-GDF exchange
+//! (mgoldey/ferric#492): the route hands the 1x1x1 derivative the source the
+//! SCF's exchange ran on, the dense `k = 0` kernels or the `k = 0`
 //! `KRsGdf::build_rsh` fit with its config and aux.
 //!
 //! # Route
@@ -449,9 +450,10 @@ pub fn gamma_rks_rsh_stress(
 }
 
 /// The open-shell tail of the routed RSH derivatives' restricted-only refusal.
-const RSH_OPEN_SHELL_NOTE: &str = "an unrestricted result's force takes \
-     gamma_uks_rsh_gradient, a restricted-open-shell one gamma_roks_rsh_gradient (the \
-     open-shell range-separated stress is not implemented)";
+const RSH_OPEN_SHELL_NOTE: &str = "an unrestricted result takes \
+     gamma_uks_rsh_gradient / gamma_uks_rsh_stress, a restricted-open-shell one \
+     gamma_roks_rsh_gradient (the Gamma ROKS range-separated stress has no routed entry; \
+     kpoint_roks_stress on a 1x1x1 mesh differentiates it)";
 
 /// The shared checks and 1x1x1 inputs of the routed Gamma RSH derivatives:
 /// the dense kernels, the mesh, its hcore and the Gamma result as the 1x1x1
@@ -531,11 +533,88 @@ pub fn gamma_uks_rsh_gradient(
     cfg: &crate::kgrad::KGradConfig,
 ) -> Result<crate::kuxcgrad::KUksGradient, FerricError> {
     let who = "gamma_uks_rsh_gradient";
+    let (mesh, hk, kscf) = uks_route(who, cell, prep, hcore_cfg, scf, dft, rsh_k)?;
+    let kcfg = open_shell_kcfg(&dft.grid, dft.xc.ao_threshold, dft.exxdiv, cfg);
+    crate::kuxcgrad::kpoint_uks_gradient(
+        cell,
+        prep,
+        &mesh,
+        hcore_cfg,
+        &hk,
+        rsh_k.force_jk(),
+        &kscf,
+        &dft.functional,
+        &kcfg,
+    )
+}
+
+/// Open-shell Gamma UKS STRESS of a range-separated hybrid, routed through
+/// the 1x1x1 k-point UKS stress ([`crate::kuxcstress::kpoint_uks_stress`])
+/// exactly as [`gamma_uks_rsh_gradient`] routes the force: same arguments
+/// (`cfg` the HF-part stress settings; dense-AFT or RS-GDF `rsh_k`), same
+/// refusals (a restricted or restricted-open-shell result, a config or Gamma
+/// J that is not the SCF's, caught by the routed per-spin Fock guard). `σ`
+/// is returned unsymmetrised (see [`crate::kxcstress`]).
+pub fn gamma_uks_rsh_stress(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    hcore_cfg: &crate::hcore::PeriodicHcoreConfig,
+    scf: &ferric_scf::result::ScfResult,
+    dft: &crate::dft::GammaUksConfig,
+    rsh_k: &GammaRshExchange,
+    cfg: &crate::kstress::KStressConfig,
+) -> Result<crate::kuxcstress::KUksStress, FerricError> {
+    let who = "gamma_uks_rsh_stress";
+    let (mesh, hk, kscf) = uks_route(who, cell, prep, hcore_cfg, scf, dft, rsh_k)?;
+    let kcfg = crate::kuxcstress::KUksStressConfig {
+        base: crate::kxcstress::KRksStressConfig {
+            stress: *cfg,
+            grid: crate::kxcgrad::KXcGrid::Atom(dft.grid.clone()),
+            ao_threshold: dft.xc.ao_threshold,
+            exxdiv: Some(dft.exxdiv),
+            ..Default::default()
+        },
+        spin_mutation: None,
+    };
+    crate::kuxcstress::kpoint_uks_stress(
+        cell,
+        prep,
+        &mesh,
+        hcore_cfg,
+        &hk,
+        rsh_k.stress_jk(),
+        &kscf,
+        &dft.functional,
+        &kcfg,
+    )
+}
+
+/// The shared checks and 1x1x1 inputs of the routed Gamma UKS RSH
+/// derivatives: the mesh, its hcore and the unrestricted Gamma result as the
+/// 1x1x1 k-point result (spin densities, Focks, MOs); the J/K source is
+/// `rsh_k`'s own ([`GammaRshExchange::force_jk`] / `stress_jk`).
+fn uks_route(
+    who: &str,
+    cell: &Cell,
+    prep: &PreparedBasis,
+    hcore_cfg: &crate::hcore::PeriodicHcoreConfig,
+    scf: &ferric_scf::result::ScfResult,
+    dft: &crate::dft::GammaUksConfig,
+    rsh_k: &GammaRshExchange,
+) -> Result<
+    (
+        KPointMesh,
+        crate::hcore::kpoint::PeriodicHcoreK,
+        crate::kuscf::KUScfResult,
+    ),
+    FerricError,
+> {
     rsh_k.check_for(who, &dft.functional, dft.exxdiv)?;
     if scf.spin != ferric_scf::result::Spin::Unrestricted {
         return Err(FerricError::General(format!(
             "{who}: unrestricted (UKS) results only, got {:?} (restricted: \
-             gamma_rks_rsh_gradient; restricted-open-shell: gamma_roks_rsh_gradient)",
+             gamma_rks_rsh_gradient / gamma_rks_rsh_stress; restricted-open-shell: \
+             gamma_roks_rsh_gradient)",
             scf.spin
         )));
     }
@@ -583,18 +662,7 @@ pub fn gamma_uks_rsh_gradient(
         kpts: mesh.kpts().to_vec(),
         lindep: Default::default(),
     };
-    let kcfg = open_shell_kcfg(&dft.grid, dft.xc.ao_threshold, dft.exxdiv, cfg);
-    crate::kuxcgrad::kpoint_uks_gradient(
-        cell,
-        prep,
-        &mesh,
-        hcore_cfg,
-        &hk,
-        rsh_k.force_jk(),
-        &kscf,
-        &dft.functional,
-        &kcfg,
-    )
+    Ok((mesh, hk, kscf))
 }
 
 /// The 1x1x1 open-shell force settings of a routed Gamma force: the SCF's

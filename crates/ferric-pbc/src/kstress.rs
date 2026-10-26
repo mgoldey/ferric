@@ -65,14 +65,18 @@
 //!
 //! Dense pure-AFT and RS-GDF (unsplit or range-split) J/K, HF, RHF and UHF,
 //! with or without a scalar periodic ECP. A dense source built with a
-//! range-separated exchange ([`crate::rsh`]) is differentiated for the
-//! closed-shell RKS stress only ([`crate::kxcstress::kpoint_rks_stress`]):
+//! range-separated exchange ([`crate::rsh`]) is differentiated for the KS
+//! stresses ([`crate::kxcstress::kpoint_rks_stress`],
+//! [`crate::kuxcstress::kpoint_uks_stress`],
+//! [`crate::kuxcstress::kpoint_roks_stress`]; the open-shell exchange terms
+//! `(1, D_α), (1, D_β)` against the closed-shell `(½, D)` and the M-term
+//! `Σ_σ D_σ S D_σ` against `½ D S D`, nothing else spin-specific):
 //! the exchange walks use `v(K) = 4π f(K²)/K²` and its slope
 //! [`crate::rsh::RshParams::kernel_slope`] (J keeps the bare kernel), and the
 //! Madelung strain is the mixed [`crate::rsh::RshParams::madelung_strain`] of
 //! the supercell. An RS-GDF source built with a range separation
-//! (`KRsGdf::build_rsh`) is differentiated for the same closed-shell RKS
-//! stress: the plain fit's exchange pieces scaled by `c_sr`, the attenuated
+//! (`KRsGdf::build_rsh`) is differentiated for the same KS stresses: the
+//! plain fit's exchange pieces scaled by `c_sr`, the attenuated
 //! fit's LR strain passes (`kderiv`'s "Attenuated fit": no SR walks, no G = 0
 //! volume terms) scaled by `c_lr − c_sr` ([`KStressParts::fit_attenuated`]),
 //! and the same mixed Madelung strain. Every other entry refuses a
@@ -339,6 +343,19 @@ pub enum KStressMutation {
     /// Range separation on RS-GDF: the attenuated fit's strain dropped (the
     /// plain fit's exchange still scaled by `c_sr`).
     RshFitNoAttenuated,
+    /// Open shell: the β exchange term dropped from the strain walks (dense
+    /// K walk, plain and attenuated fit passes). A no-op on a restricted
+    /// state.
+    ExchDropBeta,
+    /// Open shell: the closed-shell coefficient `½` on each spin's exchange
+    /// term of the strain walks (dense and both fit passes), `(½, D_α), (½,
+    /// D_β)` instead of `(1, D_α), (1, D_β)`. A no-op on a restricted state.
+    ExchClosedShellFactor,
+    /// Open shell: the Madelung M-term (overlap weight and `dv_M/dε` trace)
+    /// in the closed-shell form `½ D S D` on the TOTAL density instead of
+    /// `Σ_σ D_σ S D_σ`. A no-op on a restricted state; invisible on a
+    /// singlet; blind for `exxdiv = none`.
+    MTermTotalDensity,
 }
 
 /// Settings for the k-point stress entry points.
@@ -878,8 +895,8 @@ pub fn kpoint_hcore_stress_fixed_d(
 /// Where the k-point J/K come from.
 #[derive(Clone, Copy)]
 pub enum KStressJk<'a> {
-    /// Dense pure-AFT oracle (bare `4π/K²` kernels; the closed-shell RKS
-    /// stress also takes kernels built with a range-separated exchange).
+    /// Dense pure-AFT oracle (bare `4π/K²` kernels; the KS stresses, RKS,
+    /// UKS and ROKS, also take kernels built with a range-separated exchange).
     Dense(&'a KDenseAftEri),
     /// k-point RS-GDF, unsplit or range-split with `lambda <= 1` (a split with
     /// `lambda > 1`, or a config that disagrees with the build about the split,
@@ -1089,7 +1106,7 @@ pub(crate) fn grad_jk<'a>(jk: &KStressJk<'a>) -> KGradJk<'a> {
 /// (a range-split RS-GDF build is supported; so is an ECP). A
 /// range-separated source (dense or RS-GDF) is checked against the entry's
 /// own range separation by the shared input check (`kgrad::check_inputs_rsh`):
-/// only the closed-shell RKS stress accepts one.
+/// only the KS stresses (RKS, UKS, ROKS) accept one.
 pub(crate) fn refuse_unsupported(who: &str, jk: &KStressJk<'_>) -> Result<(), FerricError> {
     if let KStressJk::RsGdf(src) = jk {
         refuse_split_mismatch(who, src)?;
@@ -1305,7 +1322,7 @@ pub(crate) fn assemble(
             vm
         };
     // The range separation of the source (admitted by the input check on the
-    // closed-shell RKS stress only), with the `Rsh*` test defects.
+    // KS stresses only), with the `Rsh*` test defects.
     let rsh = match jk {
         KGradJk::Dense(e) => e.rsh(),
         KGradJk::RsGdf(s) => s.gdf.rsh(),
@@ -1345,7 +1362,7 @@ pub(crate) fn assemble(
     );
     let w_mad = fold_real(
         &(0..nk)
-            .map(|k| spins.sandwich(k, &s_k[k]).mapv(|z| z * (-vm_m)))
+            .map(|k| m_sandwich(&spins, k, &s_k[k], mutation).mapv(|z| z * (-vm_m)))
             .collect::<Vec<_>>(),
         &ph.d,
         nrm1,
@@ -1509,7 +1526,7 @@ pub(crate) fn assemble(
     let vm_strain = madelung_strain_of(m_cell, rsh_d, mutation)?;
     let mut t_m = 0.0_f64;
     for k in 0..nk {
-        let sd = spins.sandwich(k, &s_k[k]);
+        let sd = m_sandwich(&spins, k, &s_k[k], mutation);
         let n = sd.nrows();
         for m in 0..n {
             for q in 0..n {
@@ -1558,6 +1575,47 @@ pub(crate) fn assemble(
     })
 }
 
+/// The exchange terms `(c_s, D_s)` of the strain walks scaled by `scale`
+/// (`kgrad::scaled_exch_terms`: `(½, D)` restricted, `(1, D_α), (1, D_β)`
+/// open shell), with the open-shell test defects
+/// [`KStressMutation::ExchDropBeta`] / [`KStressMutation::ExchClosedShellFactor`]
+/// (no-ops on a single-term, restricted list).
+fn stress_exch_terms(
+    spins: &KSpins,
+    scale: f64,
+    mutation: Option<KStressMutation>,
+) -> Vec<(f64, &[Array2<C64>])> {
+    let mut terms = scaled_exch_terms(spins, scale);
+    if terms.len() == 2 {
+        match mutation {
+            Some(KStressMutation::ExchDropBeta) => {
+                terms.pop();
+            }
+            Some(KStressMutation::ExchClosedShellFactor) => {
+                terms.iter_mut().for_each(|t| t.0 *= 0.5);
+            }
+            _ => {}
+        }
+    }
+    terms
+}
+
+/// The Madelung M-term sandwich `Σ_σ D_σ S D_σ` at `k` (restricted `½ D S
+/// D`), or the total-density form under [`KStressMutation::MTermTotalDensity`].
+fn m_sandwich(
+    spins: &KSpins,
+    k: usize,
+    s: &Array2<C64>,
+    mutation: Option<KStressMutation>,
+) -> Array2<C64> {
+    if mutation == Some(KStressMutation::MTermTotalDensity) {
+        let d = spins.total(k);
+        d.dot(s).dot(&d).mapv(|z| z * 0.5)
+    } else {
+        spins.sandwich(k, s)
+    }
+}
+
 /// `dv_M/dε` of the lattice of `m_cell`: the plain Ewald strain, or for a
 /// range-separated K the mixed [`RshParams::madelung_strain`] (with the
 /// `Rsh*Madelung*` test defects).
@@ -1602,7 +1660,7 @@ fn fit_pass(
     let exch = if is(KStressMutation::FitExchangeDropped) {
         Vec::new()
     } else {
-        scaled_exch_terms(spins, exch_scale * c_full)
+        stress_exch_terms(spins, exch_scale * c_full, cfg.mutation)
     };
     let fm = KFitMutation {
         rot: KRotKind::defect(rot_kind(cfg.mutation)),
@@ -1654,7 +1712,7 @@ fn fit_pass(
     } else {
         att.coeff
     };
-    let exch_att = scaled_exch_terms(spins, exch_scale * coeff);
+    let exch_att = stress_exch_terms(spins, exch_scale * coeff, cfg.mutation);
     let fa = KFitMutation {
         no_metric: fm.no_metric,
         lr_wrong_q: fm.lr_wrong_q,
@@ -1741,7 +1799,7 @@ fn dense_two_electron_strain(
         &format!("k stress ERI K list (|K| <= {gcut:.3}, |q| <= {qmax:.3})"),
         gvector_list_bytes(cell, gcut + qmax)?.saturating_mul(2),
     )?;
-    let exch = scaled_exch_terms(spins, exch_scale);
+    let exch = stress_exch_terms(spins, exch_scale, mutation);
     let c_k = -1.0 / (2.0 * vol * (nk * nk) as f64);
     let mut out = DenseStrain {
         coulomb: ZERO3,

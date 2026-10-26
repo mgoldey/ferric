@@ -1531,7 +1531,7 @@ fn run_uks_gamma(
         stress: with_stress,
     };
     // Before any integral is built (pbc_setup builds none): the RSH force on
-    // the dense-AFT J/K only, no RSH stress, no Gamma UKS meta-GGA.
+    // the dense-AFT J/K only, no RSH stress (library only), no Gamma UKS meta-GGA.
     ferric_pbc::dft::check_gamma_uks_request(functional, &s.derivs.kinds(), s.aux.is_some())
         .map_err(|e| val_err(format!("{fname}: functional {functional:?}: {e}")))?;
     s.set_sr_knobs(range_split, sr_column_rotation)?;
@@ -3388,8 +3388,8 @@ fn kroks_driver(
 /// (`result.stress()`, 3 x 3, Hartree/Bohr³) of the converged SCF on the J/K
 /// it ran on, XC on the energy's own grid; set `neighbour_cutoff` explicitly
 /// for finite-difference checks. Refused with a ValueError naming the gap:
-/// `with_stress` with a range-separated hybrid (the UKS stress has no
-/// range-separated term), its `with_gradient` on `jk="rsgdf"` or for another
+/// `with_stress` with a range-separated hybrid (the library stress exists,
+/// not wired yet: #498), its `with_gradient` on `jk="rsgdf"` or for another
 /// range-separated hybrid (wB97X), a meta-GGA with `jk="rsgdf"`, other
 /// meta-GGAs, VV10 / double
 /// hybrids, and `range_split` with derivatives. ECP cells are

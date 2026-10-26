@@ -342,7 +342,16 @@ pub fn gamma_stress(g: &G) -> Result<KRksStress, FerricError> {
             &g.ex,
             &kstress_cfg(),
         ),
-        _ => panic!("the open-shell Gamma RSH stress is not routed here"),
+        GCfg::U(d) => ferric_pbc::gamma_rsh::gamma_uks_rsh_stress(
+            &g.cell,
+            &g.prep,
+            &hcore_cfg(),
+            &g.scf,
+            d,
+            &g.ex,
+            &kstress_cfg(),
+        ),
+        GCfg::Ro(_) => panic!("the Gamma ROKS RSH stress has no routed entry"),
     }
 }
 
@@ -476,9 +485,6 @@ pub fn k1_force(k: &K1, f: &str, exxdiv: ExxDiv) -> KRksGradient {
 
 /// The 1x1x1 k-point RKS stress of `k`.
 pub fn k1_stress(k: &K1, f: &str, exxdiv: ExxDiv) -> KRksStress {
-    let KScf::R(r) = &k.scf else {
-        panic!("closed shell only")
-    };
     let jk = k
         .kept
         .stress_jk(k.rsgdf.then_some(&k.aux), &k.rcfg)
@@ -489,17 +495,25 @@ pub fn k1_stress(k: &K1, f: &str, exxdiv: ExxDiv) -> KRksStress {
         exxdiv: Some(exxdiv),
         ..Default::default()
     };
-    kpoint_rks_stress(
-        &k.cell,
-        &k.prep,
-        &k.mesh,
-        &hcore_cfg(),
-        &k.hk,
-        jk,
-        r,
-        f,
-        &cfg,
-    )
+    let (c, p, m, h) = (&k.cell, &k.prep, &k.mesh, &hcore_cfg());
+    match &k.scf {
+        KScf::R(r) => kpoint_rks_stress(c, p, m, h, &k.hk, jk, r, f, &cfg),
+        KScf::U(r) => ferric_pbc::kuxcstress::kpoint_uks_stress(
+            c,
+            p,
+            m,
+            h,
+            &k.hk,
+            jk,
+            r,
+            f,
+            &ferric_pbc::kuxcstress::KUksStressConfig {
+                base: cfg,
+                spin_mutation: None,
+            },
+        ),
+        KScf::Ro(_) => panic!("the Gamma ROKS RSH stress has no routed entry"),
+    }
     .unwrap()
 }
 

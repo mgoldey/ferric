@@ -173,11 +173,26 @@ pub fn solve_uhf_injected<'a>(
     )?)
 }
 
+/// The error variant carries no text: say why a run whose density settled
+/// still failed (the orbital-gradient veto refused it), when it did.
+fn note_vetoed_nonconvergence(r: &ScfResult) {
+    let Some(v) = r.convergence.and_then(|c| c.gradient_vetoes) else {
+        return;
+    };
+    eprintln!(
+        "UHF: not converged after {} iterations; the density settled but the \
+         orbital-gradient veto refused it {} time(s) (last at iteration {}, \
+         gradient {:.3e} > {:.1e})",
+        r.iterations, v.count, v.last_iteration, v.last_orbital_gradient, v.bound
+    );
+}
+
 /// Convert a non-converged best-effort result into the historical hard error.
 fn err_if_unconverged(r: ScfResult) -> Result<ScfResult, FerricError> {
     if r.converged {
         Ok(r)
     } else {
+        note_vetoed_nonconvergence(&r);
         Err(FerricError::ScfConvergence {
             iterations: r.iterations,
             last_energy: r.energy,
@@ -818,6 +833,8 @@ fn solve_uhf_impl(
     // 421 iterations to converge with independent DIIS; coupled converges
     // in ~15-25 cycles).
     let mut diis = Diis::new(config.diis_size);
+    // Orbital-gradient exit gate (`UhfExitGate`): veto state + swap history.
+    let mut exit_gate = UhfExitGate::default();
     // UHF extrapolates with `step_pair`, which fills the β histories as well —
     // FOUR n×n matrices per subspace entry, twice RHF's. This projection was
     // missing entirely until 2026-08-30: the warning was called from RHF only,
@@ -847,10 +864,9 @@ fn solve_uhf_impl(
     // pure aufbau. This pins the open-shell occupation through SCF and converges
     // open-shell atoms (e.g. S/O ³P) whose near-degenerate p-shell otherwise
     // makes plain DIIS oscillate forever. Empty open block for UHF (each spin is
-    // a pure closed set). Mirrors the rohf.rs MOM wiring.
+    // a pure closed set, see `mom_pin`). Mirrors the rohf.rs MOM wiring.
     let mut mom_ref_a: Option<Array2<f64>> = None;
     let mut mom_ref_b: Option<Array2<f64>> = None;
-    let empty_open: Array2<f64> = Array2::<f64>::zeros((n, 0));
 
     // K built per spin:
     //   * RSH (ω > 0): K_σ = c_SR · K_SR[D_σ] + c_LR · K_LR[D_σ] via DfK
@@ -1294,6 +1310,7 @@ fn solve_uhf_impl(
                 .flatten(),
             // UHF reads no `diis_flavor`: it always runs Pulay.
             diis_fallback: None,
+            gradient_vetoes: exit_gate.record(),
         });
 
         if crate::rhf::scf_trace() {
@@ -1344,11 +1361,23 @@ fn solve_uhf_impl(
         // the naux-dependent RI noise floor and never drains. See
         // rhf::scf_converged. This replaces the old df_noise_floor_ok hack; the
         // `df_active` distinction is gone (ΔP handles DF and direct uniformly).
-        let conv_exit = crate::cosx_schedule::gate(
+        // Two orbital-gradient amendments (see `UhfExitGate`): a UKS
+        // degenerate-swap stationary point is accepted, a stagnated
+        // non-stationary state is refused.
+        let (conv_exit, swapped) = exit_gate.decide(
             &mut cosx_sched,
-            iter,
-            sig.dp_max,
-            crate::rhf::scf_converged(sig, config.energy_conv, config.density_conv),
+            UhfIterGradients {
+                iter,
+                sig,
+                err_max,
+                err: [&err_a, &err_b],
+                x: &x,
+                xc_active: [xc_contrib.is_some(), inj_xc.is_some()],
+            },
+            config,
+            &mut diis,
+            ctx.is_root(),
+            &mut last_report,
         );
 
         // Divergence / stall early exits (shared driver::ScfMonitor; both are
@@ -1362,8 +1391,42 @@ fn solve_uhf_impl(
         }
 
         if iter > 1 && conv_exit.is_some() {
-            let (eps_a, c_a_f) = diag_a.run(&f_a)?;
-            let (eps_b, c_b_f) = diag_b.run(&f_b)?;
+            // Returned MOs must reproduce the returned density: after a
+            // degenerate swap the aufbau eigenvectors of F hold the OTHER
+            // member of the pair. Only then (see `occupied_by_density`): a MOM
+            // state is non-aufbau by design and keeps main's C and eps. Per
+            // spin, and only for an integer density (`reorder_exit_mos`).
+            // A plain ΔP exit can also settle on an integer D that is not the
+            // aufbau state of F[D]; then the spin gets D's semicanonical
+            // orbitals instead (`exit_mos_building_density`; not under MOM or
+            // symmetry blocking, see `exit_eigenpairs`).
+            let mom = config.mom_after_iter > 0;
+            let (eps_a, c_a_f) = exit_eigenpairs(
+                &diag_a,
+                ExitSpin {
+                    f: &f_a,
+                    s: &s,
+                    x: &x,
+                    d: &d_a,
+                    d_occ: d_occ_a.as_ref(),
+                },
+                nocc_a,
+                swapped,
+                mom,
+            )?;
+            let (eps_b, c_b_f) = exit_eigenpairs(
+                &diag_b,
+                ExitSpin {
+                    f: &f_b,
+                    s: &s,
+                    x: &x,
+                    d: &d_b,
+                    d_occ: d_occ_b.as_ref(),
+                },
+                nocc_b,
+                swapped,
+                mom,
+            )?;
             // ⟨S²⟩ diagnostic
             let s2 = expectation_s_squared(&c_a_f, &c_b_f, &s, nocc_a, nocc_b);
             let s_true = 0.5 * (nocc_a as f64 - nocc_b as f64);
@@ -1868,21 +1931,13 @@ fn solve_uhf_impl(
                 f_b_new += &(shift_eff * s.dot(&p_bv).dot(&s));
             }
         }
-        let (eps_a_new, mut c_a_new) = diag_a.run(&f_a_new)?;
-        let (eps_b_new, mut c_b_new) = diag_b.run(&f_b_new)?;
+        let (mut eps_a_new, mut c_a_new) = diag_a.run(&f_a_new)?;
+        let (mut eps_b_new, mut c_b_new) = diag_b.run(&f_b_new)?;
 
         // MOM occupied-orbital selection (per spin) from iter mom_after_iter+1.
         if config.mom_after_iter > 0 && iter > config.mom_after_iter {
-            if let Some(ref_a) = mom_ref_a.as_ref() {
-                if nocc_a > 0 {
-                    c_a_new = crate::mom::mom_reorder(&c_a_new, &s, ref_a, &empty_open, nocc_a, 0);
-                }
-            }
-            if let Some(ref_b) = mom_ref_b.as_ref() {
-                if nocc_b > 0 {
-                    c_b_new = crate::mom::mom_reorder(&c_b_new, &s, ref_b, &empty_open, nocc_b, 0);
-                }
-            }
+            (c_a_new, eps_a_new) = mom_pin(c_a_new, eps_a_new, &s, mom_ref_a.as_ref(), nocc_a);
+            (c_b_new, eps_b_new) = mom_pin(c_b_new, eps_b_new, &s, mom_ref_b.as_ref(), nocc_b);
         }
         c_a = c_a_new;
         c_b = c_b_new;
@@ -2112,6 +2167,369 @@ fn mix_beta_homo_lumo(c_b: &mut Array2<f64>, nocc_a: usize, nocc_b: usize, block
     }
 }
 
+/// Largest energy change (Ha) between the two members of an accepted
+/// degenerate swap, whatever `energy_conv` is (its default, 1e-3, would admit
+/// two distinct states).
+const SWAP_MAX_DE: f64 = 1e-5;
+
+/// Lower limit of the gradient bound for a degenerate-swap acceptance:
+/// `max(density_conv, 1e-6)`.
+///
+/// The bound cannot be `density_conv` itself: the swapping state's orbital
+/// gradient floors on the arithmetic, and the floor straddles a tight
+/// `density_conv`. MEASURED on OH UKS-LDA/STO-3G at the stationary ground
+/// state: 9.1e-10 (OpenBLAS Nehalem kernels), 1.1e-9 (Prescott, the CI
+/// kernels), 2.2e-9 (native FMA). At `density_conv` 1e-9 the Prescott run
+/// therefore never accepted the swap, cycled ground ↔ stagnated state, and
+/// ended at `max_iter` (Err) on the RIGHT energy. 1e-6 sits three orders
+/// above those floors and three below the veto floor (1e-3). Accepting at
+/// this bound loses nothing that `density_conv` could buy here: the swapping
+/// density is only defined up to the degenerate rotation (it changes by O(1)
+/// every iteration), and the energy error of a gradient g is O(g²); the ΔE
+/// bound still applies at full strength.
+const SWAP_GRADIENT_FLOOR: f64 = 1e-6;
+
+/// One iteration's inputs to [`UhfExitGate::decide`].
+struct UhfIterGradients<'a> {
+    iter: usize,
+    sig: crate::rhf::ConvergenceSignals,
+    /// max over spins of |F_σD_σS − SD_σF_σ| (AO basis, pre-DIIS).
+    err_max: f64,
+    /// The per-spin AO commutators.
+    err: [&'a Array2<f64>; 2],
+    /// The lindep-filtered canonical orthogonalizer.
+    x: &'a Array2<f64>,
+    /// Whether an XC functional is active: (the SCF's own, an injected one).
+    /// Either makes this Kohn-Sham.
+    xc_active: [bool; 2],
+}
+
+/// The UHF convergence decision: the shared ΔP/ΔE gate
+/// ([`crate::rhf::scf_converged`]) with two orbital-gradient amendments,
+/// MEASURED on OH UKS-LDA/STO-3G (`tests/uhf_degenerate_swap.rs`):
+/// 1. a UKS degenerate swap at a stationary point is accepted
+///    ([`degenerate_swap_converged`]) — the OH β hole flips between π_x and
+///    π_y every iteration, so ΔP_max = 1 and the plain gate never passes at
+///    the true ground state (−74.0755553242, `err_max` ~2e-9);
+/// 2. a ΔP/ΔE-settled state that is not stationary is refused and the DIIS
+///    history cleared (`rhf::GradientVeto`, on the orthonormal-basis
+///    gradient) — without it DIIS stagnated at that system into a
+///    non-aufbau state 0.586 Ha high (`err_max` 0.136), froze D, and the
+///    plain gate accepted it.
+#[derive(Debug, Default)]
+struct UhfExitGate {
+    veto: crate::rhf::GradientVeto,
+    /// The previous iteration's AO `err_max` (∞ before the first).
+    prev_err_max: Option<f64>,
+}
+
+impl UhfExitGate {
+    /// The exit to take, and whether it is a degenerate-swap acceptance (the
+    /// only exit whose MOs may be reordered; per spin, [`reorder_exit_mos`]).
+    /// Not refused wholesale under `fractional_occ`: when the frontier is not
+    /// degenerate `density_fractional` spreads nothing and the density is the
+    /// integer `C_occ·C_occᵀ`, which the reorder must still match.
+    fn decide(
+        &mut self,
+        cosx_sched: &mut Option<crate::cosx_schedule::ScheduleRun>,
+        it: UhfIterGradients<'_>,
+        config: &UhfConfig,
+        diis: &mut Diis,
+        announce: bool,
+        report: &mut Option<crate::result::ConvergenceReport>,
+    ) -> (Option<ScfExit>, bool) {
+        let (econv, dconv) = (config.energy_conv, config.density_conv);
+        let prev_err_max = self
+            .prev_err_max
+            .replace(it.err_max)
+            .unwrap_or(f64::INFINITY);
+        let plain = crate::rhf::scf_converged(it.sig, econv, dconv);
+        let swap = plain.is_none()
+            && it.xc_active.contains(&true)
+            && degenerate_swap_converged(it.sig, it.err_max, prev_err_max, it.iter, econv, dconv);
+        let settled = if swap {
+            Some(ScfExit::Converged)
+        } else {
+            plain
+        };
+        let gated = crate::cosx_schedule::gate(cosx_sched, it.iter, it.sig.dp_max, settled);
+        let orbital_gradient = || {
+            it.err
+                .iter()
+                .map(|e| crate::rhf::orthogonal_gradient_max(it.x, e))
+                .fold(0.0f64, f64::max)
+        };
+        let (exit, vetoed) = self.veto.apply(
+            gated,
+            orbital_gradient,
+            it.iter,
+            dconv,
+            "UHF",
+            announce,
+            report,
+        );
+        if vetoed {
+            diis.reset();
+        }
+        (exit, swap && exit.is_some())
+    }
+
+    fn record(&self) -> Option<crate::result::GradientVetoes> {
+        self.veto.record()
+    }
+}
+
+/// A stationary point whose occupied set swaps between degenerate orbitals on
+/// every iteration.
+///
+/// OH doublet: the β hole flips between π_x and π_y each step, so ΔP_max = 1
+/// and [`crate::rhf::scf_converged`] can never pass, although each density is
+/// stationary (`err_max` ~1e-9 MEASURED at −74.0755553242). Accept when the
+/// density moved by an orbital-sized amount (`dp_max > 0.1`) while the
+/// orbital gradient is below `max(density_conv, SWAP_GRADIENT_FLOOR)` at BOTH
+/// ends of the swap (this iteration and the previous one) and the energy
+/// moved by less than
+/// `min(energy_conv, 1e-5)`: a swap between degenerate orbitals at a
+/// stationary point, not a descending run or a hop between distinct states.
+/// The caller restricts it to Kohn-Sham: a UHF (Hartree-Fock) minimiser is
+/// aufbau, so a swapping HF state is not one to accept.
+fn degenerate_swap_converged(
+    sig: crate::rhf::ConvergenceSignals,
+    err_max: f64,
+    prev_err_max: f64,
+    iter: usize,
+    energy_conv: f64,
+    density_conv: f64,
+) -> bool {
+    let bound = density_conv.max(SWAP_GRADIENT_FLOOR);
+    iter > 2
+        && sig.dp_max > 0.1
+        && err_max < bound
+        && prev_err_max < bound
+        && sig.de < energy_conv.min(SWAP_MAX_DE)
+}
+
+/// Whether one spin's exit MOs are reordered to build its density: after a
+/// degenerate-swap acceptance (`swapped`, from [`UhfExitGate::decide`]) and
+/// only when that spin's density is integer. `d_occ` is the occupied-block
+/// cache that built the exit density, `Some` exactly when `D = C_occ·C_occᵀ`
+/// (see `spin_density_and_occ`); a fractional ensemble density has no integer
+/// occupied set to identify, so it keeps the aufbau eigenpairs. A MOM exit is
+/// never a swap acceptance, so it is never reordered.
+fn reorder_exit_mos(swapped: bool, d_occ: Option<&Array2<f64>>) -> bool {
+    swapped && d_occ.is_some()
+}
+
+/// Order one spin's eigenpairs so the first `nocc` columns are the
+/// eigenvectors carrying the most weight in `d` (`w_p = c_pᵀ S D S c_p`),
+/// each block kept in ascending eigenvalue order with `eps` permuted to match.
+///
+/// Applied (`apply`) only to an exit accepted as a degenerate swap
+/// ([`degenerate_swap_converged`]): there `d` occupies the other member of
+/// the degenerate pair, and returning the aufbau `C` would hand downstream
+/// code (gradients, post-HF) occupied orbitals that do not build the returned
+/// density. Every other exit returns the aufbau eigenpairs unchanged — in
+/// particular a MOM state, which is non-aufbau BY DESIGN and whose consumers
+/// (and the Hessian's non-aufbau refusal) rely on main's C and eps. Not
+/// `mom::mom_reorder`, which scrambles the occupied order. The reordered
+/// result has an occupied eigenvalue above a virtual one, which is how
+/// `hessian::uhf_state_refusal` recognises it.
+fn occupied_by_density(
+    (eps, c): (Vec<f64>, Array2<f64>),
+    s: &Array2<f64>,
+    d: &Array2<f64>,
+    nocc: usize,
+    apply: bool,
+) -> (Vec<f64>, Array2<f64>) {
+    let n = c.ncols();
+    if !apply || nocc == 0 || nocc >= n {
+        return (eps, c);
+    }
+    let sc = s.dot(&c);
+    let w = (sc.t().dot(d) * sc.t()).sum_axis(ndarray::Axis(1));
+    let mut by_weight: Vec<usize> = (0..n).collect();
+    by_weight.sort_by(|&p, &q| w[q].total_cmp(&w[p]).then(p.cmp(&q)));
+    let mut occ = by_weight[..nocc].to_vec();
+    occ.sort_unstable();
+    if occ.iter().enumerate().all(|(k, &p)| k == p) {
+        return (eps, c);
+    }
+    let mut vir = by_weight[nocc..].to_vec();
+    vir.sort_unstable();
+    let order: Vec<usize> = occ.into_iter().chain(vir).collect();
+    let mut c_out = Array2::<f64>::zeros(c.raw_dim());
+    for (k, &p) in order.iter().enumerate() {
+        c_out.column_mut(k).assign(&c.column(p));
+    }
+    (order.iter().map(|&p| eps[p]).collect(), c_out)
+}
+
+/// One spin's returned eigenpairs at a converged exit: F[D] diagonalised,
+/// reordered after a degenerate swap (`occupied_by_density`), then replaced
+/// by D's semicanonical orbitals when D is not the aufbau state of F[D]
+/// (`exit_mos_building_density`). `mom` is whether MOM is configured.
+///
+/// A symmetry-blocked run (`FockDiag` with a `BlockedDiag`) is never
+/// replaced: the blocked diagonaliser records each column's irrep on the
+/// spec as it runs (`symmetric_open::solve_uhf_symmetric` reads them back as
+/// `alpha_irreps`/`beta_irreps`), so new columns would carry stale labels, and
+/// its per-irrep `U_h X_h` bases are not the global X the construction
+/// projects in. The blocked solver fixes occupations per irrep, which keeps
+/// the two π of a linear radical in different irreps in the first place.
+fn exit_eigenpairs(
+    diag: &crate::symmetric::FockDiag<'_>,
+    spin: ExitSpin<'_>,
+    nocc: usize,
+    swapped: bool,
+    mom: bool,
+) -> Result<(Vec<f64>, Array2<f64>), FerricError> {
+    let eig = occupied_by_density(
+        diag.run(spin.f)?,
+        spin.s,
+        spin.d,
+        nocc,
+        reorder_exit_mos(swapped, spin.d_occ),
+    );
+    if diag.is_blocked() {
+        return Ok(eig);
+    }
+    exit_mos_building_density(eig, spin, mom)
+}
+
+/// Largest `max|C_occ C_occᵀ − D|` an exit's eigenpairs may show before the
+/// exit even checks whether D is the aufbau state of F[D].
+///
+/// A cheap prefilter, not the decision: `rhf::scf_converged` accepts
+/// `dp_max < 10·density_conv`, and D is built from the PREVIOUS iteration's
+/// MOs while C diagonalises F[D], so an ordinary exit misses D by up to about
+/// that (MEASURED 3.5e-8 for NH2 UKS-PBE at density_conv 1e-6, 6e-6..9e-6 for
+/// the aufbau α of SH/HCl+ UKS-LDA, and above 1e-3 for SH UHF at density_conv
+/// 1e-4). Below the prefilter nothing is computed, so tight runs stay
+/// bit-identical at no cost; above it, the decision is the aufbau test in
+/// `exit_mos_building_density`, which does not depend on `density_conv`.
+const EXIT_MO_DENSITY_GATE: f64 = 1e-3;
+
+/// One spin's exit inputs to `exit_mos_building_density`: its Fock F[D],
+/// the AO overlap, the canonical orthogonaliser X (n × m), the exit density,
+/// and its occupied-block cache (`Some` exactly when `D = C_occ C_occᵀ`, see
+/// `spin_density_and_occ`).
+struct ExitSpin<'a> {
+    f: &'a Array2<f64>,
+    s: &'a Array2<f64>,
+    x: &'a Array2<f64>,
+    d: &'a Array2<f64>,
+    d_occ: Option<&'a Array2<f64>>,
+}
+
+/// Make one spin's returned MOs build its returned integer density when D is
+/// not the aufbau state of F[D].
+///
+/// `eig` are the exit eigenpairs (aufbau, or swap-reordered by
+/// `occupied_by_density`). A plain ΔP/ΔE exit can settle on a state whose D
+/// is the integer density of the previous iteration's MOs but whose occupied
+/// space is not the aufbau space of F[D] (UKS-LDA SH/HCl+: no integer β state
+/// is aufbau, DIIS stagnates under the gradient-veto floor). The aufbau
+/// eigenvectors then occupy a DIFFERENT orbital (the other π) and hand
+/// gradients and post-SCF code MOs of another state.
+///
+/// Decision: when `eig` miss D by more than `EXIT_MO_DENSITY_GATE`, build D's
+/// semicanonical orbitals (`semicanonical_orbitals`) and return them only if
+/// their eigenvalues CROSS (an occupied one above a virtual one), i.e. D is
+/// not the aufbau state of F[D]. A loosely converged aufbau state (a moderate
+/// rotation of the aufbau space, eigenvalues still ordered) keeps F's
+/// eigenpairs: its miss is the convergence scale, and the analytic Hessian
+/// refuses it through its MO-density consistency check. A replaced result
+/// rebuilds D to rounding with D's energy unchanged, and the crossing is what
+/// `hessian::uhf_state_refusal` refuses it on (its stationarity check is a
+/// second, independent backstop).
+///
+/// Unchanged: a fractional (ensemble) density, which has no integer occupied
+/// space (`d_occ` is `None`); and every run with MOM configured (`mom`),
+/// including one that exits before MOM engages (iter ≤ `mom_after_iter`),
+/// which keeps F's eigenpairs. A MOM state is non-aufbau by design and its
+/// consumers and Hessian refusal rely on the aufbau eigenpairs of F
+/// (`uhf_degenerate_swap.rs`,
+/// `mom_state_keeps_aufbau_eigenpairs_and_the_hessian_refuses_it`).
+fn exit_mos_building_density(
+    eig: (Vec<f64>, Array2<f64>),
+    spin: ExitSpin<'_>,
+    mom: bool,
+) -> Result<(Vec<f64>, Array2<f64>), FerricError> {
+    let Some(c_occ) = spin.d_occ else {
+        return Ok(eig);
+    };
+    let nocc = c_occ.ncols();
+    if mom || nocc == 0 || nocc >= spin.x.ncols() {
+        return Ok(eig);
+    }
+    let occ = eig.1.slice(ndarray::s![.., ..nocc]);
+    let miss = (occ.dot(&occ.t()) - spin.d)
+        .iter()
+        .fold(0.0f64, |m, v| m.max(v.abs()));
+    if miss <= EXIT_MO_DENSITY_GATE {
+        return Ok(eig);
+    }
+    let (eps, c) = semicanonical_orbitals(spin.f, spin.s, spin.x, c_occ)?;
+    let homo = eps[..nocc]
+        .iter()
+        .copied()
+        .fold(f64::NEG_INFINITY, f64::max);
+    let lumo = eps[nocc..].iter().copied().fold(f64::INFINITY, f64::min);
+    Ok(if homo > lumo { (eps, c) } else { eig })
+}
+
+/// The semicanonical orbitals of the space spanned by `c_occ` (n × nocc,
+/// `0 < nocc < m`, S-orthonormal: the occupied block of an earlier
+/// `diagonalize` in the same X basis): F diagonalised separately inside that
+/// space and inside its complement within span(X), with no shift and no
+/// mixing between the two.
+///
+/// Occupied: `C_occ U_o` with `U_o` the eigenvectors of `C_occᵀ F C_occ`, so
+/// the occupied block rebuilds `C_occ C_occᵀ` up to rounding. Virtual: with
+/// `W = Xᵀ S C_occ` (orthonormal columns in the m-dimensional X basis), the
+/// complement is the eigenvalue-1 eigenspace of the projector `I − W Wᵀ`
+/// (its other eigenvalue is 0, a gap of 1); F is diagonalised in it. Returned
+/// occupied block first, each block ascending, padded to n × n like
+/// `driver::diagonalize_rect` (zero columns, sentinel eigenvalue 1e6).
+fn semicanonical_orbitals(
+    f: &Array2<f64>,
+    s: &Array2<f64>,
+    x: &Array2<f64>,
+    c_occ: &Array2<f64>,
+) -> Result<(Vec<f64>, Array2<f64>), FerricError> {
+    use ndarray_linalg::{Eigh, UPLO};
+    let lapack = |e: ndarray_linalg::error::LinalgError| {
+        FerricError::Lapack(format!("exit semicanonical orbitals: {e}"))
+    };
+    let (n, m, nocc) = (x.nrows(), x.ncols(), c_occ.ncols());
+    let (e_o, u_o) = c_occ
+        .t()
+        .dot(f)
+        .dot(c_occ)
+        .eigh(UPLO::Upper)
+        .map_err(lapack)?;
+    let w = x.t().dot(s).dot(c_occ);
+    let (p_vals, p_vecs) = (Array2::<f64>::eye(m) - w.dot(&w.t()))
+        .eigh(UPLO::Upper)
+        .map_err(lapack)?;
+    // C_occ lies in span(X) and is S-orthonormal, so the projector's spectrum
+    // is exactly nocc zeros and m − nocc ones, up to rounding.
+    debug_assert!(
+        p_vals.iter().take(nocc).all(|v| v.abs() < 1e-8)
+            && p_vals.iter().skip(nocc).all(|v| (v - 1.0).abs() < 1e-8),
+        "C_occ is not an S-orthonormal set in span(X): projector spectrum {p_vals:?}"
+    );
+    let xq = x.dot(&p_vecs.slice(ndarray::s![.., nocc..]));
+    let (e_v, u_v) = xq.t().dot(f).dot(&xq).eigh(UPLO::Upper).map_err(lapack)?;
+    let mut c = Array2::<f64>::zeros((n, n));
+    c.slice_mut(ndarray::s![.., ..nocc])
+        .assign(&c_occ.dot(&u_o));
+    c.slice_mut(ndarray::s![.., nocc..m]).assign(&xq.dot(&u_v));
+    let mut eps: Vec<f64> = e_o.iter().chain(e_v.iter()).copied().collect();
+    eps.resize(n, 1e6);
+    Ok((eps, c))
+}
+
 fn density(c: &Array2<f64>, nocc: usize) -> Array2<f64> {
     let n = c.nrows();
     if nocc == 0 {
@@ -2121,21 +2539,51 @@ fn density(c: &Array2<f64>, nocc: usize) -> Array2<f64> {
     c_occ.dot(&c_occ.t())
 }
 
-/// Density with fixed fractional (ensemble) occupation of a degenerate frontier
-/// shell, for one spin channel: `D = Σ_p f_p c_p c_pᵀ`.
+/// One spin's MOM step: reorder the new eigenpairs so the first `nocc` columns
+/// overlap most with `mom_ref` (the previous occupied block). A no-op without a
+/// reference or with nothing occupied.
 ///
-/// Builds integer occupation `f = 1` for orbitals fully below the frontier, then
-/// detects the group of orbitals near-degenerate with the HOMO (energies within
-/// `EPS_TOL` of `eps[nocc-1]`) that straddle the occupation boundary, and spreads
-/// the remaining electrons of that shell *equally* across the whole group. For a
-/// ³P atom this puts 2/3 of an electron in each of the three degenerate p
-/// orbitals, restoring spherical symmetry so the GGA potential stops oscillating.
+/// The eigenvalues are permuted WITH the columns. `density_fractional` reads
+/// `eps[p]` as the energy of column `p`; before 2026-10-24 only C was
+/// reordered, so after a MOM swap the frontier was grouped by the energies of
+/// other orbitals and the ensemble could spread an electron into a virtual.
+fn mom_pin(
+    c: Array2<f64>,
+    eps: Vec<f64>,
+    s: &Array2<f64>,
+    mom_ref: Option<&Array2<f64>>,
+    nocc: usize,
+) -> (Array2<f64>, Vec<f64>) {
+    match mom_ref {
+        Some(r) if nocc > 0 => {
+            let empty_open = Array2::<f64>::zeros((c.nrows(), 0));
+            crate::mom::mom_reorder(&c, &eps, s, r, &empty_open, nocc, 0)
+        }
+        _ => (c, eps),
+    }
+}
+
+/// The degenerate frontier group that [`density_fractional`] spreads: the
+/// columns in `members` (ascending) each carry occupation `frac`, the other
+/// occupied columns (`p < nocc`) carry 1 and the other virtuals 0.
+struct FrontierGroup {
+    members: Vec<usize>,
+    frac: f64,
+}
+
+/// Find the fractional frontier group, or `None` when the occupation stays
+/// integer. `eps[p]` must be the energy of column `p`.
 ///
-/// Returns `None` when the occupation stays integer (HOMO non-degenerate — the
-/// common case — or nothing to spread); the caller then uses plain `density()`,
-/// so it is a no-op for ordinary molecules.
-fn density_fractional(c: &Array2<f64>, eps: &[f64], nocc: usize) -> Option<Array2<f64>> {
-    let n = c.nrows();
+/// Membership is by ENERGY, not by index: the HOMO is the highest occupied
+/// energy, the LUMO the lowest virtual one, and the group is every occupied
+/// column within `EPS_TOL` of the HOMO plus every virtual within `EPS_TOL` of
+/// the LUMO. For ε-sorted columns this is exactly the contiguous walk down
+/// from `nocc − 1` and up from `nocc` that this function used before
+/// 2026-10-24. It also holds after a MOM step, whose occupied block is ordered
+/// by overlap score (measured on Br/aug-cc-pVDZ: the 4s at −0.73 Ha lands in
+/// column `nocc − 3` or `nocc − 2` of the α block), where the index walk
+/// would anchor on whichever occupied orbital landed last.
+fn fractional_frontier_group(eps: &[f64], nocc: usize, n: usize) -> Option<FrontierGroup> {
     if nocc == 0 || nocc >= n {
         return None;
     }
@@ -2145,40 +2593,77 @@ fn density_fractional(c: &Array2<f64>, eps: &[f64], nocc: usize) -> Option<Array
     // catches only 2 of 3 and the fix fails. 0.05 Ha reliably groups them; this
     // path is opt-in (free atoms only), so a loose tol cannot affect molecules.
     const EPS_TOL: f64 = 0.05;
-    let e_homo = eps[nocc - 1];
-    // Grow the group around BOTH the HOMO (nocc-1) and the LUMO (nocc): the
-    // degenerate frontier shell straddles the occupation boundary.
-    let mut lo = nocc - 1;
-    while lo > 0 && (eps[lo - 1] - e_homo).abs() < EPS_TOL {
-        lo -= 1;
-    }
-    // Extend upward from the LUMO using the LUMO energy as the anchor (it may
-    // differ from the HOMO by the artificial split, but be within EPS_TOL).
-    let e_lumo = eps[nocc];
-    let mut hi = nocc; // start at LUMO
-    while hi + 1 < n && (eps[hi + 1] - e_lumo).abs() < EPS_TOL {
-        hi += 1;
-    }
+    let e_homo = eps[..nocc]
+        .iter()
+        .copied()
+        .fold(f64::NEG_INFINITY, f64::max);
+    let e_lumo = eps[nocc..n].iter().copied().fold(f64::INFINITY, f64::min);
     // Only act if HOMO and LUMO are within tol (genuine straddling degeneracy).
     if (e_lumo - e_homo).abs() >= EPS_TOL {
         return None;
     }
-    let group_size = hi - lo + 1;
-    if group_size <= 1 {
-        return None;
-    }
+    // The degenerate frontier shell straddles the occupation boundary: grow
+    // it around the HOMO on the occupied side and around the LUMO (which may
+    // differ from the HOMO by the artificial split) on the virtual side.
+    let members: Vec<usize> = (0..n)
+        .filter(|&p| {
+            let anchor = if p < nocc { e_homo } else { e_lumo };
+            (eps[p] - anchor).abs() < EPS_TOL
+        })
+        .collect();
     // Electrons to distribute over the group = (occupied orbitals in group).
-    let n_in_group_occupied = nocc - lo; // how many of the group are below the boundary
-    let frac = n_in_group_occupied as f64 / group_size as f64;
+    let n_in_group_occupied = members.iter().filter(|&&p| p < nocc).count();
+    let frac = n_in_group_occupied as f64 / members.len() as f64;
+    Some(FrontierGroup { members, frac })
+}
 
+/// The per-column occupation vector `f` (length `n`) that [`density_fractional`]
+/// uses, so `D = Σ_p f_p c_p c_pᵀ`; `None` when the occupation stays integer.
+/// The gradient's energy-weighted density `W = Σ_p f_p ε_p c_p c_pᵀ` is built
+/// from this same vector (`gradient::build_energy_weighted_density_uhf`).
+pub(crate) fn fractional_occupations(eps: &[f64], nocc: usize, n: usize) -> Option<Vec<f64>> {
+    let g = fractional_frontier_group(eps, nocc, n)?;
+    let mut f: Vec<f64> = (0..n).map(|p| if p < nocc { 1.0 } else { 0.0 }).collect();
+    for &p in &g.members {
+        f[p] = g.frac;
+    }
+    Some(f)
+}
+
+/// Density with fixed fractional (ensemble) occupation of a degenerate frontier
+/// shell, for one spin channel: `D = Σ_p f_p c_p c_pᵀ`.
+///
+/// Builds integer occupation `f = 1` for orbitals fully below the frontier, then
+/// detects the group of orbitals near-degenerate with the HOMO (energies within
+/// `EPS_TOL` of the highest occupied energy, see [`fractional_frontier_group`])
+/// that straddle the occupation boundary, and spreads
+/// the remaining electrons of that shell *equally* across the whole group. For a
+/// ³P atom this puts 2/3 of an electron in each of the three degenerate p
+/// orbitals, restoring spherical symmetry so the GGA potential stops oscillating.
+///
+/// Returns `None` when the occupation stays integer (HOMO non-degenerate — the
+/// common case — or nothing to spread); the caller then uses plain `density()`,
+/// so it is a no-op for ordinary molecules.
+fn density_fractional(c: &Array2<f64>, eps: &[f64], nocc: usize) -> Option<Array2<f64>> {
+    let n = c.ncols();
+    debug_assert_eq!(c.nrows(), n, "density_fractional: C must be square");
+    let FrontierGroup { members, frac } = fractional_frontier_group(eps, nocc, n)?;
+    let core: Vec<usize> = (0..nocc).filter(|p| !members.contains(p)).collect();
     let mut d = Array2::<f64>::zeros((n, n));
-    // Fully-occupied orbitals below the degenerate group: f = 1.
-    if lo > 0 {
-        let c_core = c.slice(ndarray::s![.., ..lo]);
+    // Fully-occupied orbitals outside the degenerate group: f = 1. For
+    // ε-sorted columns they are the leading block, contracted as a slice
+    // exactly as before; after a MOM reorder they are gathered.
+    if core.iter().enumerate().all(|(k, &p)| k == p) {
+        if !core.is_empty() {
+            let c_core = c.slice(ndarray::s![.., ..core.len()]);
+            d = c_core.dot(&c_core.t());
+        }
+    } else {
+        let c_core = c.select(ndarray::Axis(1), &core);
         d = c_core.dot(&c_core.t());
     }
     // Degenerate group: f = frac each.
-    for p in lo..=hi {
+    for &p in &members {
         let cp = c.slice(ndarray::s![.., p]);
         let outer = {
             let col = cp.to_owned();
@@ -2436,6 +2921,310 @@ mod tests {
     use ferric_core::external_potential::{ExternalPotential, PointCharge};
     use ferric_core::parallel::ParallelContext;
     use ferric_integrals::oneelectron;
+
+    fn signals(de: f64, dp: f64) -> crate::rhf::ConvergenceSignals {
+        crate::rhf::ConvergenceSignals {
+            de,
+            dp_rms: dp,
+            dp_max: dp,
+        }
+    }
+
+    /// The UHF veto wiring, independent of SCF arithmetic: a ΔP/ΔE-settled
+    /// state with a large orbital gradient is refused, the refusal recorded,
+    /// and the DIIS history cleared (the next extrapolation sees one entry and
+    /// returns its input unchanged). End to end the stagnation is
+    /// arithmetic-sensitive (it is reached on some OpenBLAS kernels and not
+    /// others), so the wiring is pinned here.
+    #[test]
+    fn exit_gate_vetoes_a_settled_nonstationary_state_and_clears_diis() {
+        let n = 2;
+        let x = Array2::<f64>::eye(n);
+        let f = |v: f64| Array2::from_elem((n, n), v);
+        let mut diis = Diis::new(6);
+        diis.step_pair(&f(1.0), &f(1.0), &f(0.3), &f(0.1));
+        diis.step_pair(&f(2.0), &f(2.0), &f(0.2), &f(0.05));
+        let err = ndarray::array![[0.0, 0.136], [-0.136, 0.0]];
+        let config = UhfConfig {
+            density_conv: 1e-6,
+            ..Default::default()
+        };
+        let mut gate = UhfExitGate::default();
+        let mut report = None;
+        let (exit, swapped) = gate.decide(
+            &mut None,
+            UhfIterGradients {
+                iter: 12,
+                sig: signals(2.4e-12, 3.4e-8),
+                err_max: 0.136,
+                err: [&err, &err],
+                x: &x,
+                xc_active: [true, false],
+            },
+            &config,
+            &mut diis,
+            false,
+            &mut report,
+        );
+        assert!(
+            exit.is_none() && !swapped,
+            "a non-stationary state was accepted"
+        );
+        let rec = gate.record().expect("the veto must be recorded");
+        assert_eq!((rec.count, rec.last_iteration), (1, 12));
+        let (fa, _) = diis.step_pair(&f(5.0), &f(5.0), &f(0.4), &f(0.4));
+        assert_eq!(fa, f(5.0), "DIIS history was not cleared by the veto");
+    }
+
+    /// A degenerate swap under `fractional_occ` whose density is integer (no
+    /// degenerate frontier to spread) must still reorder the exit MOs, per
+    /// spin: before, `decide` refused any reorder under `fractional_occ`, so
+    /// the returned aufbau C occupied the other member of the swapped pair
+    /// and did not build the returned integer D. A fractional spin keeps its
+    /// aufbau eigenpairs (no integer occupied set exists).
+    #[test]
+    fn swap_under_fractional_occ_reorders_each_integer_spin() {
+        let n = 3;
+        let x = Array2::<f64>::eye(n);
+        let err = Array2::<f64>::zeros((n, n));
+        let config = UhfConfig {
+            density_conv: 1e-6,
+            fractional_occ: true,
+            ..Default::default()
+        };
+        let mut gate = UhfExitGate::default();
+        let mut diis = Diis::new(6);
+        let mut report = None;
+        let mut step = |iter: usize| {
+            gate.decide(
+                &mut None,
+                UhfIterGradients {
+                    iter,
+                    sig: signals(1e-9, 1.0),
+                    err_max: 1e-9,
+                    err: [&err, &err],
+                    x: &x,
+                    xc_active: [true, false],
+                },
+                &config,
+                &mut diis,
+                false,
+                &mut report,
+            )
+        };
+        let _ = step(5);
+        let (exit, swapped) = step(6);
+        assert!(exit.is_some(), "the degenerate swap was not accepted");
+        assert!(swapped, "a swap under fractional_occ was not flagged");
+
+        // Aufbau C = I with eps ascending; D occupies orbital 1, the other
+        // member of a swapped pair, as an integer density.
+        let c = Array2::<f64>::eye(n);
+        let eps = vec![-0.5, -0.4, 0.3];
+        let mut d = Array2::<f64>::zeros((n, n));
+        d[(1, 1)] = 1.0;
+        let d_occ = Some(c.slice(ndarray::s![.., 1..2]).to_owned());
+        let (_, c_int) = occupied_by_density(
+            (eps.clone(), c.clone()),
+            &x,
+            &d,
+            1,
+            reorder_exit_mos(swapped, d_occ.as_ref()),
+        );
+        let occ = c_int.slice(ndarray::s![.., ..1]);
+        assert_eq!(
+            occ.dot(&occ.t()),
+            d,
+            "integer-density exit MOs do not build D"
+        );
+        // A fractional spin (no cache) keeps the aufbau eigenpairs.
+        assert!(!reorder_exit_mos(swapped, None));
+        let (eps_f, c_f) = occupied_by_density((eps.clone(), c.clone()), &x, &d, 1, false);
+        assert_eq!((eps_f, c_f), (eps, c));
+        // No swap (a plain or MOM exit): never reordered.
+        assert!(!reorder_exit_mos(false, d_occ.as_ref()));
+    }
+
+    /// `exit_mos_building_density`: the gate and the construction, on a
+    /// synthetic F with a non-identity S (square X) and with a rectangular X
+    /// (a dropped near-singular mode, padded like `diagonalize_rect`).
+    ///
+    /// - eigenpairs missing D by less than the prefilter come back
+    ///   bit-identical, as do MOM and fractional (no cache) exits;
+    /// - above it, a D that is not the aufbau state of F[D] is replaced: the
+    ///   occupied block rebuilds D to rounding, C stays S-orthonormal (the
+    ///   blocks never mix), F is diagonal inside each block, each block
+    ///   ascends, and the result is non-aufbau;
+    /// - a moderate rotation of the aufbau space (eigenvalues still ordered)
+    ///   keeps the eigenpairs.
+    #[test]
+    fn exit_mos_building_density_gates_and_semicanonicalises() {
+        let n = 5;
+        let f = Array2::from_shape_fn((n, n), |(p, q)| {
+            let (a, b) = (p.min(q) as f64, p.max(q) as f64);
+            if p == q {
+                -1.0 + 0.4 * a
+            } else {
+                0.05 * (a + 1.0) / (b + 2.0)
+            }
+        });
+        let s_full = Array2::from_shape_fn((n, n), |(p, q)| {
+            if p == q {
+                1.0
+            } else {
+                0.2 / (1.0 + (p as f64 - q as f64).abs())
+            }
+        });
+        let x_full = crate::rhf::canonical_orthogonalizer(&s_full).unwrap();
+        assert_eq!(x_full.ncols(), n);
+        let s_id = Array2::<f64>::eye(n);
+        let x_rect = s_id.slice(ndarray::s![.., ..n - 1]).to_owned();
+        let max_abs = |a: &Array2<f64>| a.iter().fold(0.0f64, |m, v| m.max(v.abs()));
+        for (s, x) in [(&s_full, &x_full), (&s_id, &x_rect)] {
+            let m = x.ncols();
+            let eig = diagonalize(&f, x).unwrap();
+            // A non-aufbau integer D: orbitals 0 and 2 occupied, 1 empty.
+            let c_occ = ndarray::concatenate(
+                ndarray::Axis(1),
+                &[
+                    eig.1.slice(ndarray::s![.., 0..1]),
+                    eig.1.slice(ndarray::s![.., 2..3]),
+                ],
+            )
+            .unwrap();
+            let d = c_occ.dot(&c_occ.t());
+            let spin = |d_occ| ExitSpin {
+                f: &f,
+                s,
+                x,
+                d: &d,
+                d_occ,
+            };
+
+            // MOM and fractional exits are never touched.
+            assert_eq!(
+                exit_mos_building_density(eig.clone(), spin(Some(&c_occ)), true).unwrap(),
+                eig
+            );
+            assert_eq!(
+                exit_mos_building_density(eig.clone(), spin(None), false).unwrap(),
+                eig
+            );
+
+            let (eps, c) =
+                exit_mos_building_density(eig.clone(), spin(Some(&c_occ)), false).unwrap();
+            let occ = c.slice(ndarray::s![.., ..2]);
+            assert!(
+                max_abs(&(occ.dot(&occ.t()) - &d)) < 1e-14,
+                "occupied MOs miss D"
+            );
+            let ck = c.slice(ndarray::s![.., ..m]);
+            let orth = max_abs(&(ck.t().dot(s).dot(&ck) - Array2::<f64>::eye(m)));
+            assert!(orth < 1e-13, "C^T S C - I = {orth:.2e}");
+            let g = ck.t().dot(&f).dot(&ck);
+            for p in 0..m {
+                assert!(
+                    (g[(p, p)] - eps[p]).abs() < 1e-13,
+                    "eps[{p}] is not diag(C^T F C)"
+                );
+                for q in 0..m {
+                    if p != q && (p < 2) == (q < 2) {
+                        assert!(
+                            g[(p, q)].abs() < 1e-13,
+                            "F not diagonal in a block ({p},{q})"
+                        );
+                    }
+                }
+            }
+            assert!(eps[0] <= eps[1] && eps[2..m].windows(2).all(|w| w[0] <= w[1]));
+            assert!(
+                eps[1] > eps[2],
+                "the occupied orbital above a virtual one is lost"
+            );
+            // Padding matches `diagonalize_rect`.
+            assert!(eps[m..].iter().all(|&e| e == 1e6));
+            assert!(c.slice(ndarray::s![.., m..]).iter().all(|&v| v == 0.0));
+
+            // The prefilter: a miss below 1e-3 returns `eig` bit-identically
+            // without looking further, even for a non-aufbau `d_occ`.
+            let aufbau = eig.1.slice(ndarray::s![.., ..2]).to_owned();
+            let mut d_small = aufbau.dot(&aufbau.t());
+            d_small[(0, 0)] += 5e-4;
+            let small = ExitSpin {
+                f: &f,
+                s,
+                x,
+                d: &d_small,
+                d_occ: Some(&c_occ),
+            };
+            assert_eq!(
+                exit_mos_building_density(eig.clone(), small, false).unwrap(),
+                eig
+            );
+            // The decision: occupied space = {φ0, cos θ φ1 + sin θ φ2}. Its
+            // semicanonical eigenvalues cross iff θ > π/4. A moderate
+            // rotation of the aufbau space (θ = 0.3, a loosely converged
+            // aufbau state: miss ~0.3, above the prefilter) keeps `eig`; past
+            // π/4 (θ = 1.2) D is not the aufbau state of F[D] and is replaced.
+            for (theta, replaced) in [(0.3f64, false), (1.2, true)] {
+                let mut rot = aufbau.clone();
+                let mixed = &eig.1.column(1) * theta.cos() + &eig.1.column(2) * theta.sin();
+                rot.column_mut(1).assign(&mixed);
+                let d_rot = rot.dot(&rot.t());
+                let spin_rot = ExitSpin {
+                    f: &f,
+                    s,
+                    x,
+                    d: &d_rot,
+                    d_occ: Some(&rot),
+                };
+                let out = exit_mos_building_density(eig.clone(), spin_rot, false).unwrap();
+                assert_eq!(out != eig, replaced, "decision wrong at theta {theta}");
+                if replaced {
+                    let occ = out.1.slice(ndarray::s![.., ..2]);
+                    assert!(max_abs(&(occ.dot(&occ.t()) - &d_rot)) < 1e-14);
+                }
+            }
+        }
+    }
+
+    /// The swap gradient bound is `max(density_conv, 1e-6)`: at a tight
+    /// `density_conv` a swap at the measured arithmetic floor (~1e-9) is
+    /// accepted; a still-descending gradient, or an energy hop, is not.
+    #[test]
+    fn swap_acceptance_bound_is_floored_above_the_arithmetic_floor() {
+        let swap = signals(1.4e-14, 0.986);
+        // OH/STO-3G floor on the CI (Prescott) kernels, dconv 1e-9.
+        assert!(degenerate_swap_converged(
+            swap, 1.12e-9, 1.12e-9, 153, 1e-7, 1e-9
+        ));
+        // dconv 1e-4: the bound is dconv (OH: iterations 5 and 6).
+        assert!(degenerate_swap_converged(
+            swap, 8.9e-7, 6.8e-5, 6, 1e-7, 1e-4
+        ));
+        // One end above the floor: still descending.
+        assert!(!degenerate_swap_converged(
+            swap, 1.9e-8, 4.6e-6, 151, 1e-7, 1e-9
+        ));
+        // Energy moved: not a degenerate swap.
+        assert!(!degenerate_swap_converged(
+            signals(2e-5, 0.986),
+            1e-9,
+            1e-9,
+            9,
+            1e-3,
+            1e-9
+        ));
+        // Density did not move by an orbital: the plain gate's business.
+        assert!(!degenerate_swap_converged(
+            signals(1e-14, 1e-3),
+            1e-9,
+            1e-9,
+            9,
+            1e-3,
+            1e-9
+        ));
+    }
 
     #[test]
     fn test_uhf_h_atom_sto3g() {
@@ -2776,6 +3565,70 @@ mod tests {
             df.energy,
             exact.energy
         );
+    }
+
+    #[test]
+    fn mom_scrambled_occupied_block_keeps_the_fractional_group() {
+        // A Br-like β channel: n = 5, S = I, C = I, ε-sorted
+        // [-0.700 (s), -0.276, -0.275, -0.274 (p shell), 0.030], nocc = 3, so
+        // the ensemble is s full and 2/3 on each p. MOM orders the occupied
+        // block by overlap SCORE: with the reference below the scores are
+        // u1 = u2 = 1 and u0 = 0.81, so the block becomes [u1, u2, u0] and the
+        // s orbital sits in the HOMO slot `nocc − 1`.
+        //
+        // Measured failure modes this pins:
+        // * ε left in diagonalisation order (pre-fix): the group is columns
+        //   1..=3 = [u2, u0, u3], so the s orbital got 2/3 and u1 a full 1.
+        // * ε permuted but the group found by the old index walk anchored on
+        //   eps[nocc − 1] = −0.700: no group, the ensemble collapses to integer.
+        let n = 5;
+        let s = Array2::<f64>::eye(n);
+        let c = Array2::<f64>::eye(n);
+        let eps = vec![-0.700, -0.276, -0.275, -0.274, 0.030];
+        let mut mom_ref = Array2::<f64>::zeros((n, 3));
+        mom_ref[(1, 0)] = 1.0;
+        mom_ref[(2, 1)] = 1.0;
+        mom_ref[(0, 2)] = 0.9;
+        mom_ref[(4, 2)] = (1.0f64 - 0.81).sqrt();
+        let (c_m, eps_m) = mom_pin(c, eps, &s, Some(&mom_ref), 3);
+        let (d, occ) = spin_density_and_occ(&c_m, &eps_m, 3, true);
+        let f = 2.0 / 3.0;
+        let expected = Array2::from_diag(&ndarray::arr1(&[1.0, f, f, f, 0.0]));
+        let err = (&d - &expected).iter().fold(0.0_f64, |m, v| m.max(v.abs()));
+        assert!(err < 1e-15, "wrong ensemble after the MOM reorder: {d:?}");
+        assert!(occ.is_none(), "fractional density must not cache C_occ");
+        assert_eq!(eps_m, vec![-0.276, -0.275, -0.700, -0.274, 0.030]);
+    }
+
+    #[test]
+    fn mom_swap_groups_the_fractional_frontier_by_the_moved_energies() {
+        // Four orthonormal orbitals (S = I, C = I), ε-sorted by the
+        // diagonaliser: [-1.00, -0.30, -0.28, -0.20], nocc = 2. MOM keeps the
+        // previously occupied set {u0, u3}: u3 is pinned although it rose
+        // above u1, u2. After the swap the column order is [u0, u3, u1, u2] and
+        // their energies are [-1.00, -0.20, -0.30, -0.28]: the HOMO (u3,
+        // -0.20) and LUMO (u1, -0.30) are 0.10 Ha apart, outside the 0.05 Ha
+        // grouping tolerance, so the occupation stays integer, D = u0 u0ᵀ +
+        // u3 u3ᵀ.
+        //
+        // With the eigenvalues left in diagonalisation order (the pre-fix
+        // code), column 1 (u3) was given -0.30 and column 2 (u1) -0.28, so the
+        // ensemble spread the pinned electron half onto u1, a virtual.
+        let n = 4;
+        let s = Array2::<f64>::eye(n);
+        let c = Array2::<f64>::eye(n);
+        let eps = vec![-1.00, -0.30, -0.28, -0.20];
+        let mut mom_ref = Array2::<f64>::zeros((n, 2));
+        mom_ref[(0, 0)] = 1.0;
+        mom_ref[(3, 1)] = 1.0;
+        let (c_m, eps_m) = mom_pin(c, eps, &s, Some(&mom_ref), 2);
+        let (d, occ) = spin_density_and_occ(&c_m, &eps_m, 2, true);
+        let mut expected = Array2::<f64>::zeros((n, n));
+        expected[(0, 0)] = 1.0;
+        expected[(3, 3)] = 1.0;
+        assert_eq!(d, expected, "MOM-pinned occupation was spread: {d:?}");
+        assert!(occ.is_some(), "integer density must keep its C_occ cache");
+        assert_eq!(eps_m, vec![-1.00, -0.20, -0.30, -0.28]);
     }
 
     #[test]

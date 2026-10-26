@@ -107,6 +107,30 @@ fn gamma_rsgdf_rsh_stress_is_the_one_point_mesh_stress() {
     }
 }
 
+/// (1'') GAMMA == 1x1x1 (open-shell UKS stress, `gamma_uks_rsh_stress` of
+/// #557 handed the RS-GDF exchange), H3 doublet, exxdiv ewald, all nine
+/// components. Same physics / artifact hypothesis as the force anchor.
+#[test]
+fn gamma_rsgdf_rsh_uks_stress_is_the_one_point_mesh_stress() {
+    let x = ExxDiv::Ewald;
+    let g = gamma_run(cell_at(&H3D), Sp::Uks, CAM, x, Jk::RsGdf);
+    let gs = gamma_stress(&g).unwrap_or_else(|e| panic!("{e}"));
+    let k = k1_run(cell_at(&H3D), Sp::Uks, CAM, x);
+    let ks = k1_stress(&k, CAM, x);
+    let d = mdiff(&gs.de_deps, &ks.de_deps);
+    let big = gs
+        .de_deps
+        .iter()
+        .flatten()
+        .fold(0.0_f64, |m, v| m.max(v.abs()));
+    eprintln!(
+        "UKS {x:?}: Gamma vs 1x1x1 RS-GDF dE/deps {d:.2e} (max {big:.2e}, Fock guard {:.1e})",
+        gs.hf.fock_mismatch
+    );
+    assert!(d < ANCHOR_TOL, "{d:e}");
+    assert!(big > 1e-2);
+}
+
 /// (2) A J THAT IS NOT THE EXCHANGE'S FIT IS REFUSED. The routed force
 /// rebuilds `h + J + V_xc − K` from the exchange's source; an SCF that ran
 /// its Gamma J on the other source (dense J with an RS-GDF exchange, RS-GDF
@@ -129,7 +153,7 @@ fn gamma_rsh_route_refuses_a_j_that_is_not_the_exchanges() {
             e.contains("differs from the SCF's stored"),
             "{sp:?} {jk:?}: {e}"
         );
-        if sp == Sp::Rks {
+        if sp != Sp::Roks {
             let e = gamma_stress(&g)
                 .expect_err("a foreign J accepted (stress)")
                 .to_string();

@@ -189,6 +189,25 @@ pub struct ConvergenceReport {
     /// Pulay DIIS because it stalled (#422); `None` otherwise (always `None`
     /// for Pulay, UHF and ROHF).
     pub diis_fallback: Option<DiisFallback>,
+    /// Density-settled exits refused because the state was not stationary
+    /// (RHF and UHF orbital-gradient veto, `rhf::GradientVeto`); `None` when
+    /// it never fired (always `None` for ROHF, whose F6 guard is separate).
+    pub gradient_vetoes: Option<GradientVetoes>,
+}
+
+/// Running record of the RHF/UHF orbital-gradient veto: how many ΔP/ΔE-settled
+/// exits were refused because the orbital gradient in the kept orthonormal
+/// basis exceeded the bound, and the most recent one.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GradientVetoes {
+    /// Number of refused exits so far.
+    pub count: usize,
+    /// Iteration of the most recent refusal.
+    pub last_iteration: usize,
+    /// Orbital gradient (max |Xᵀ(FDS−SDF)X|) at the most recent refusal.
+    pub last_orbital_gradient: f64,
+    /// The bound it exceeded (`max(sqrt(density_conv), 1e-3)`).
+    pub bound: f64,
 }
 
 /// A record that ADIIS/EDIIS stalled and the run restarted on plain Pulay DIIS:
@@ -229,6 +248,12 @@ impl ConvergenceReport {
         {
             u.push("err_max");
         }
+        if self
+            .gradient_vetoes
+            .is_some_and(|v| v.last_iteration == self.iteration)
+        {
+            u.push("orbital_gradient");
+        }
         u
     }
 
@@ -249,6 +274,14 @@ impl ConvergenceReport {
             ),
             None => String::new(),
         };
+        let veto_note = match self.gradient_vetoes {
+            Some(v) => format!(
+                "; not a stationary point: density-settled exit refused {} time(s), last at \
+                 iteration {} with orbital gradient {:.3e} > {:.1e}",
+                v.count, v.last_iteration, v.last_orbital_gradient, v.bound
+            ),
+            None => String::new(),
+        };
         let floor_note = match self.de_noise_floor {
             // Only when dE is the SOLE unmet criterion: if a density criterion is
             // also unmet, the energy gate is not what stopped the run.
@@ -265,7 +298,7 @@ impl ConvergenceReport {
         };
         format!(
             "iteration {}: dp_rms={:.3e} (need < {:.1e}), dp_max={:.3e} (need < {:.1e}), \
-             dE={:.3e} (need < {:.1e}), DIIS err_max={:.3e}; {}{}{}",
+             dE={:.3e} (need < {:.1e}), DIIS err_max={:.3e}; {}{}{}{}",
             self.iteration,
             self.dp_rms,
             self.density_conv,
@@ -276,7 +309,8 @@ impl ConvergenceReport {
             self.err_max,
             verdict,
             floor_note,
-            fallback_note
+            fallback_note,
+            veto_note
         )
     }
 }
@@ -435,6 +469,7 @@ mod convergence_report_tests {
             density_conv: 1e-8,
             de_noise_floor: None,
             diis_fallback: None,
+            gradient_vetoes: None,
         }
     }
 
@@ -478,6 +513,7 @@ mod convergence_report_tests {
                 energy_conv: ec,
                 de_noise_floor: floor,
                 diis_fallback: None,
+                gradient_vetoes: None,
                 ..rep(de, dp, dp * 10.0)
             }
             .describe()
