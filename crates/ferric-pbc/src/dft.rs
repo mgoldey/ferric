@@ -1697,8 +1697,10 @@ pub fn check_gamma_rks_request(name: &str, derivs: bool, rsgdf: bool) -> Result<
     Ok(())
 }
 
-/// The refusal of a Gamma-point range-separated derivative on RS-GDF (the
-/// Gamma routes differentiate the dense-AFT exchange only).
+/// The bindings' refusal of a Gamma-point range-separated derivative on
+/// RS-GDF: the library routes (`gamma_rsh::gamma_rks_rsh_gradient` and its
+/// siblings) differentiate an RS-GDF exchange, but the Python / CLI
+/// derivative paths are not wired to it (#498).
 fn gamma_rsh_rsgdf_refusal(name: &str, method: &str, what: &str) -> FerricError {
     // Only the closed-shell k-point force and stress differentiate an RS-GDF
     // range-separated exchange (the UKS force refuses it at every mesh).
@@ -1711,7 +1713,8 @@ fn gamma_rsh_rsgdf_refusal(name: &str, method: &str, what: &str) -> FerricError 
         feature: "range-separated hybrid gradient / stress on RS-GDF",
         reason: format!(
             "{name}: the Gamma-point {method} range-separated hybrid {what} on the \
-             dense-AFT J/K only (the Gamma route has no RS-GDF exchange derivative{hint}); \
+             dense-AFT J/K only (the bindings do not wire the library's Gamma RS-GDF exchange \
+             derivative{hint}); \
              use jk = \"dense\""
         ),
     }

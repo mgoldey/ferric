@@ -697,8 +697,8 @@ const RSGDF: &str = "jk = \"rsgdf\"\nauxbasis = \"cc-pvdz-ri\"";
 fn refusals_have_exact_wording() {
     // Closed-shell RSH derivatives: on RS-GDF the k-point force and stress
     // are wired (anchored above and in periodic_kpoint_stress.rs); the Gamma
-    // RS-GDF optimize stays refused (the Gamma route has no RS-GDF exchange
-    // derivative).
+    // RS-GDF optimize stays refused (the library's Gamma RS-GDF exchange
+    // derivative is not wired in the bindings, #498).
     let base = Input {
         tag: "",
         kind: "rhf",
@@ -715,7 +715,8 @@ fn refusals_have_exact_wording() {
         e.contains("method.task = \"optimize\" with [cell]: ")
             && e.contains(
                 "HSE06: the Gamma-point RKS range-separated hybrid force and stress run on \
-                 the dense-AFT J/K only (the Gamma route has no RS-GDF exchange derivative"
+                 the dense-AFT J/K only (the bindings do not wire the library's Gamma RS-GDF \
+                 exchange derivative"
             ),
         "{e}"
     );
@@ -812,7 +813,8 @@ fn refusals_have_exact_wording() {
         e.contains("method.task = \"optimize\" with [cell]: ")
             && e.contains(
                 "HSE06: the Gamma-point UKS range-separated hybrid force runs on the dense-AFT \
-                 J/K only (the Gamma route has no RS-GDF exchange derivative"
+                 J/K only (the bindings do not wire the library's Gamma RS-GDF \
+                 exchange derivative"
             ),
         "{e}"
     );

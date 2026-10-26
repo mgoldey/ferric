@@ -152,7 +152,8 @@ fn equal_fractions_is_the_global_hybrid_roks_force() {
 /// closed/open/virtual diagonal-block part the Roothaan `F_eff` cannot see)
 /// are each refused by the spin guard; the
 /// Roothaan fallback (no stored spin Focks) gives the same force and still
-/// refuses another grid. Also: an unrestricted result, an RS-GDF exchange.
+/// refuses another grid. Also: an unrestricted result, an RS-GDF exchange on
+/// this dense-J SCF (Fock guard).
 #[test]
 fn gamma_roks_rsh_force_is_the_one_point_mesh_force() {
     let g = ro_gamma_fixture(CAM, ExxDiv::Ewald);
@@ -260,9 +261,9 @@ fn gamma_roks_rsh_force_is_the_one_point_mesh_force() {
     )
     .unwrap();
     let e = call(&g.scf, &g.gc, &ex_gdf)
-        .expect_err("RS-GDF Gamma exchange accepted")
+        .expect_err("an RS-GDF exchange on a dense-J SCF accepted")
         .to_string();
-    assert!(e.contains("RS-GDF") && e.contains("no derivative"), "{e}");
+    assert!(e.contains("differs from the SCF's stored"), "{e}");
     let gf = ro_gamma_force(&g).unwrap();
     let k = ro_force(&ro_fixture(
         Kind::Tri(2),

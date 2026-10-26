@@ -1,8 +1,12 @@
 //! Range-separated exact exchange at the Gamma point: the RKS, UKS and ROKS
 //! energies ([`crate::dft::gamma_rks_rsh`], [`crate::dft::gamma_uks_rsh`],
-//! [`crate::rohf::gamma_roks_rsh`]; mgoldey/ferric#354) and the dense-AFT
-//! nuclear forces routed through the 1x1x1 mesh ([`gamma_rks_rsh_gradient`],
-//! [`gamma_uks_rsh_gradient`], [`gamma_roks_rsh_gradient`]).
+//! [`crate::rohf::gamma_roks_rsh`]; mgoldey/ferric#354) and the nuclear
+//! forces routed through the 1x1x1 mesh ([`gamma_rks_rsh_gradient`],
+//! [`gamma_uks_rsh_gradient`], [`gamma_roks_rsh_gradient`]; plus the
+//! closed-shell [`gamma_rks_rsh_stress`]), on the dense-AFT or the RS-GDF
+//! exchange (mgoldey/ferric#492): the route hands the 1x1x1 derivative the
+//! source the SCF's exchange ran on, the dense `k = 0` kernels or the `k = 0`
+//! `KRsGdf::build_rsh` fit with its config and aux.
 //!
 //! # Route
 //!
@@ -66,7 +70,17 @@ pub enum GammaSpinMutant {
 
 enum Source {
     Dense(KDenseAftEri),
-    RsGdf(KRsGdf),
+    RsGdf(Box<RsGdfSource>),
+}
+
+/// The RS-GDF exchange: the fit, the config it was built with and its aux
+/// basis (re-prepared from the caller's on the cell's atoms); the RS-GDF
+/// derivative passes rebuild the fit per q from these and check it against
+/// `gdf`.
+struct RsGdfSource {
+    gdf: KRsGdf,
+    cfg: KRsGdfConfig,
+    aux: PreparedBasis,
 }
 
 /// The attenuated exchange of a Gamma-point range-separated hybrid.
@@ -123,8 +137,13 @@ impl GammaRshExchange {
         let gdf = KRsGdf::build_rsh(cell, prep, aux, &mesh, &[to_complex(s)], cfg, rsh)?
             .with_exxdiv(exxdiv);
         let madelung = gdf.madelung_ewald();
+        let aux = PreparedBasis::new(cell.mol(), aux.basis_set())?;
         Ok(Self {
-            src: Source::RsGdf(gdf),
+            src: Source::RsGdf(Box::new(RsGdfSource {
+                gdf,
+                cfg: *cfg,
+                aux,
+            })),
             rsh,
             exxdiv,
             madelung,
@@ -219,7 +238,7 @@ impl GammaRshExchange {
     pub fn k_builder(&self) -> GammaRshK<'_> {
         let jk: Box<dyn KPointJk + '_> = match &self.src {
             Source::Dense(e) => Box::new(e.jk_builder()),
-            Source::RsGdf(g) => Box::new(g.jk_builder()),
+            Source::RsGdf(r) => Box::new(r.gdf.jk_builder()),
         };
         GammaRshK::new(jk, None)
     }
@@ -234,26 +253,36 @@ impl GammaRshExchange {
         };
         let jk: Box<dyn KPointJk + '_> = match &self.src {
             Source::Dense(e) => Box::new(e.jk_builder_with_madelung(madelung)),
-            Source::RsGdf(g) => Box::new(g.jk_builder_with_madelung(madelung)),
+            Source::RsGdf(r) => Box::new(r.gdf.jk_builder_with_madelung(madelung)),
         };
         GammaRshK::new(jk, self.spin_mutant)
     }
 }
 
 impl GammaRshExchange {
-    /// The dense k = 0 kernels a routed Gamma force differentiates (shared by
-    /// the RKS, UKS and ROKS Gamma routes); an RS-GDF exchange is refused (the
-    /// Gamma routes have no derivative for it; the k-point RKS, UKS and ROKS
-    /// forces differentiate it on a 1x1x1 mesh).
-    fn dense_for_force(&self, who: &str) -> Result<&KDenseAftEri, FerricError> {
+    /// The k = 0 J/K source a routed Gamma force differentiates (shared by the
+    /// RKS, UKS and ROKS Gamma routes): the dense kernels, or the RS-GDF fit
+    /// (`KRsGdf::build_rsh` at the single `k = 0`) with the config and aux it
+    /// was built with. The 1x1x1 force rebuilds `h + J + V_xc − K` from this
+    /// source and its Fock guard compares it with the SCF's stored Fock, so a
+    /// Gamma J that is not the same fit (dense J under an RS-GDF exchange, or
+    /// another split or aux) is refused there, not silently differentiated.
+    fn force_jk(&self) -> crate::kgrad::KGradJk<'_> {
         match &self.src {
-            Source::Dense(eri) => Ok(eri),
-            Source::RsGdf(_) => Err(FerricError::General(format!(
-                "{who}: the range-separated exchange was built on RS-GDF; this Gamma route \
-                 has no derivative for it (build it with GammaRshExchange::build_dense, jk = \
-                 dense; the k-point forces kpoint_rks_gradient / kpoint_uks_gradient / \
-                 kpoint_roks_gradient differentiate the RS-GDF one on a 1x1x1 mesh)"
-            ))),
+            Source::Dense(eri) => crate::kgrad::KGradJk::Dense(eri),
+            Source::RsGdf(r) => crate::kgrad::KGradJk::RsGdf(crate::kgrad::KRsGdfGradSource {
+                gdf: &r.gdf,
+                cfg: &r.cfg,
+                aux: &r.aux,
+            }),
+        }
+    }
+
+    /// [`Self::force_jk`] as the stress entry points' source.
+    fn stress_jk(&self) -> crate::kstress::KStressJk<'_> {
+        match self.force_jk() {
+            crate::kgrad::KGradJk::Dense(e) => crate::kstress::KStressJk::Dense(e),
+            crate::kgrad::KGradJk::RsGdf(s) => crate::kstress::KStressJk::RsGdf(s),
         }
     }
 }
@@ -326,12 +355,14 @@ impl KBuilder for GammaRshK<'_> {
 }
 
 /// Closed-shell Gamma RKS nuclear gradient of a range-separated hybrid
-/// (`scf` from [`crate::dft::gamma_rks_rsh`] with the dense-AFT exchange
-/// `rsh_k` and dense-AFT Gamma J), routed through the 1x1x1 k-point force
-/// ([`crate::kxcgrad::kpoint_rks_gradient`]): the Gamma point IS the 1x1x1
-/// mesh, so the Gamma density, Fock and MOs are the `k = 0` ones, and the
-/// k-point force differentiates the attenuated kernel of `rsh_k` (its dense
-/// J kernel is the same G sphere as the Gamma J at equal precision).
+/// (`scf` from [`crate::dft::gamma_rks_rsh`] with the exchange `rsh_k`: the
+/// dense-AFT exchange with the dense-AFT Gamma J, or the RS-GDF exchange with
+/// the RS-GDF Gamma J of the same aux and config), routed through the 1x1x1
+/// k-point force ([`crate::kxcgrad::kpoint_rks_gradient`]): the Gamma point
+/// IS the 1x1x1 mesh, so the Gamma density, Fock and MOs are the `k = 0`
+/// ones, and the k-point force differentiates `rsh_k`'s source (the dense
+/// kernels, whose J is the same G sphere as the Gamma J at equal precision;
+/// or the `k = 0` fit, whose plain fit is the Gamma RS-GDF J).
 ///
 /// * `hcore_cfg` — the hcore config of the energy (the 1x1x1 hcore is
 ///   rebuilt from it).
@@ -341,12 +372,10 @@ impl KBuilder for GammaRshK<'_> {
 /// * `cfg` — the HF-part settings (budget).
 ///
 /// The k-point Fock guard compares the rebuilt `h + J + V_xc − K` with the
-/// SCF's stored Fock, so a Gamma J from another source (RS-GDF) or a
-/// different grid is refused, not silently differentiated. Refuses an
-/// RS-GDF `rsh_k` (this Gamma route has no derivative for it; the closed-shell
-/// k-point force differentiates an RS-GDF range-separated exchange,
-/// [`crate::kxcgrad::kpoint_rks_gradient`] on a 1x1x1 mesh) and an open-shell
-/// result (the UKS twin is [`gamma_uks_rsh_gradient`]).
+/// SCF's stored Fock, so a Gamma J from another source than `rsh_k` (dense J
+/// under an RS-GDF exchange or the reverse) or a different grid is refused,
+/// not silently differentiated. Refuses an open-shell result (the UKS twin is
+/// [`gamma_uks_rsh_gradient`]).
 pub fn gamma_rks_rsh_gradient(
     cell: &Cell,
     prep: &PreparedBasis,
@@ -357,7 +386,7 @@ pub fn gamma_rks_rsh_gradient(
     cfg: &crate::kgrad::KGradConfig,
 ) -> Result<crate::kxcgrad::KRksGradient, FerricError> {
     let who = "gamma_rks_rsh_gradient";
-    let (eri, mesh, hk, kscf) = gamma_route(who, cell, prep, hcore_cfg, scf, dft, rsh_k)?;
+    let (mesh, hk, kscf) = gamma_route(who, cell, prep, hcore_cfg, scf, dft, rsh_k)?;
     let kcfg = crate::kxcgrad::KRksGradConfig {
         grad: *cfg,
         grid: crate::kxcgrad::KXcGrid::Atom(dft.grid.clone()),
@@ -371,7 +400,7 @@ pub fn gamma_rks_rsh_gradient(
         &mesh,
         hcore_cfg,
         &hk,
-        crate::kgrad::KGradJk::Dense(eri),
+        rsh_k.force_jk(),
         &kscf,
         &dft.functional,
         &kcfg,
@@ -381,8 +410,8 @@ pub fn gamma_rks_rsh_gradient(
 /// Closed-shell Gamma RKS STRESS of a range-separated hybrid, routed through
 /// the 1x1x1 k-point stress ([`crate::kxcstress::kpoint_rks_stress`]) exactly
 /// as [`gamma_rks_rsh_gradient`] routes the force: same arguments, same
-/// refusals (RS-GDF `rsh_k`, open-shell result, a config or Gamma J that is
-/// not the SCF's, caught by the routed Fock guard). `σ` is returned
+/// refusals (open-shell result, a config or Gamma J that is not the SCF's,
+/// caught by the routed Fock guard); dense-AFT or RS-GDF `rsh_k`. `σ` is returned
 /// unsymmetrised (the atom-centred grid is not rotation invariant; see
 /// [`crate::kxcstress`]).
 pub fn gamma_rks_rsh_stress(
@@ -395,7 +424,7 @@ pub fn gamma_rks_rsh_stress(
     cfg: &crate::kstress::KStressConfig,
 ) -> Result<crate::kxcstress::KRksStress, FerricError> {
     let who = "gamma_rks_rsh_stress";
-    let (eri, mesh, hk, kscf) = gamma_route(who, cell, prep, hcore_cfg, scf, dft, rsh_k)?;
+    let (mesh, hk, kscf) = gamma_route(who, cell, prep, hcore_cfg, scf, dft, rsh_k)?;
     let kcfg = crate::kxcstress::KRksStressConfig {
         stress: *cfg,
         grid: crate::kxcgrad::KXcGrid::Atom(dft.grid.clone()),
@@ -409,7 +438,7 @@ pub fn gamma_rks_rsh_stress(
         &mesh,
         hcore_cfg,
         &hk,
-        crate::kstress::KStressJk::Dense(eri),
+        rsh_k.stress_jk(),
         &kscf,
         &dft.functional,
         &kcfg,
@@ -424,17 +453,16 @@ const RSH_OPEN_SHELL_NOTE: &str = "an unrestricted result's force takes \
 /// The shared checks and 1x1x1 inputs of the routed Gamma RSH derivatives:
 /// the dense kernels, the mesh, its hcore and the Gamma result as the 1x1x1
 /// k-point result.
-fn gamma_route<'a>(
+fn gamma_route(
     who: &str,
     cell: &Cell,
     prep: &PreparedBasis,
     hcore_cfg: &crate::hcore::PeriodicHcoreConfig,
     scf: &ferric_scf::result::ScfResult,
     dft: &crate::dft::GammaRksConfig,
-    rsh_k: &'a GammaRshExchange,
+    rsh_k: &GammaRshExchange,
 ) -> Result<
     (
-        &'a crate::kdense_aft::KDenseAftEri,
         KPointMesh,
         crate::hcore::kpoint::PeriodicHcoreK,
         crate::kscf::KScfResult,
@@ -442,9 +470,7 @@ fn gamma_route<'a>(
     FerricError,
 > {
     rsh_k.check_for(who, &dft.functional, dft.exxdiv)?;
-    let eri = rsh_k.dense_for_force(who)?;
-    let (mesh, hk, kscf) = one_point_inputs(who, RSH_OPEN_SHELL_NOTE, cell, prep, hcore_cfg, scf)?;
-    Ok((eri, mesh, hk, kscf))
+    one_point_inputs(who, RSH_OPEN_SHELL_NOTE, cell, prep, hcore_cfg, scf)
 }
 
 /// The 1x1x1 inputs of a routed closed-shell Gamma derivative: the mesh,
@@ -478,8 +504,8 @@ pub(crate) fn one_point_inputs(
 }
 
 /// Open-shell Gamma UKS nuclear gradient of a range-separated hybrid (`scf`
-/// from [`crate::dft::gamma_uks_rsh`] with the dense-AFT exchange `rsh_k` and
-/// dense-AFT Gamma J), routed through the 1x1x1 k-point UKS force
+/// from [`crate::dft::gamma_uks_rsh`] with the exchange `rsh_k` and the
+/// Gamma J of the same source, dense AFT or RS-GDF), routed through the 1x1x1 k-point UKS force
 /// ([`crate::kuxcgrad::kpoint_uks_gradient`]) exactly as
 /// [`gamma_rks_rsh_gradient`] routes the closed shell: the Gamma spin
 /// densities and spin Focks are the `k = 0` ones, `K_σ = K[D_σ]` with the
@@ -489,7 +515,7 @@ pub(crate) fn one_point_inputs(
 /// [`crate::dft::GammaUksConfig`] of the SCF (functional, `grid` rebuilt as
 /// an atom-centred grid, `xc.ao_threshold`, `exxdiv`; a run on a
 /// caller-supplied grid is not covered). Both spin Focks pass the k-point
-/// Fock guard and the UKS stationarity gate. Refuses an RS-GDF `rsh_k`, a
+/// Fock guard and the UKS stationarity gate. Refuses a
 /// restricted or restricted-open-shell result (the ROKS twin is
 /// [`gamma_roks_rsh_gradient`]).
 pub fn gamma_uks_rsh_gradient(
@@ -503,7 +529,6 @@ pub fn gamma_uks_rsh_gradient(
 ) -> Result<crate::kuxcgrad::KUksGradient, FerricError> {
     let who = "gamma_uks_rsh_gradient";
     rsh_k.check_for(who, &dft.functional, dft.exxdiv)?;
-    let eri = rsh_k.dense_for_force(who)?;
     if scf.spin != ferric_scf::result::Spin::Unrestricted {
         return Err(FerricError::General(format!(
             "{who}: unrestricted (UKS) results only, got {:?} (restricted: \
@@ -562,7 +587,7 @@ pub fn gamma_uks_rsh_gradient(
         &mesh,
         hcore_cfg,
         &hk,
-        crate::kgrad::KGradJk::Dense(eri),
+        rsh_k.force_jk(),
         &kscf,
         &dft.functional,
         &kcfg,
@@ -590,8 +615,8 @@ fn open_shell_kcfg(
 }
 
 /// Restricted-open-shell Gamma ROKS nuclear gradient of a range-separated
-/// hybrid (`scf` from [`crate::rohf::gamma_roks_rsh`] with the dense-AFT
-/// exchange `rsh_k` and dense-AFT Gamma J), routed through the 1x1x1 k-point
+/// hybrid (`scf` from [`crate::rohf::gamma_roks_rsh`] with the exchange
+/// `rsh_k` and the Gamma J of the same source, dense AFT or RS-GDF), routed through the 1x1x1 k-point
 /// ROKS force ([`crate::kuxcgrad::kpoint_roks_gradient`]) as
 /// [`gamma_uks_rsh_gradient`] routes UKS: the Gamma ROHF spin densities and
 /// the one MO set are the `k = 0` ones, the spin Focks are rebuilt from them
@@ -610,7 +635,7 @@ fn open_shell_kcfg(
 /// [`crate::rohf::GammaRoksConfig`] of the SCF (functional, `grid` rebuilt as
 /// an atom-centred grid, `xc.ao_threshold`, `exxdiv`; a run on a
 /// caller-supplied grid, `gamma_roks_rsh_on_grid`, is not covered). Refuses
-/// an RS-GDF `rsh_k` and a restricted or unrestricted result.
+/// a restricted or unrestricted result.
 pub fn gamma_roks_rsh_gradient(
     cell: &Cell,
     prep: &PreparedBasis,
@@ -622,7 +647,6 @@ pub fn gamma_roks_rsh_gradient(
 ) -> Result<crate::kuxcgrad::KUksGradient, FerricError> {
     let who = "gamma_roks_rsh_gradient";
     rsh_k.check_for(who, &dft.functional, dft.exxdiv)?;
-    let eri = rsh_k.dense_for_force(who)?;
     let db = match (&scf.spin, &scf.density_beta) {
         (ferric_scf::result::Spin::RestrictedOpen, Some(db)) => db,
         _ => {
@@ -658,7 +682,7 @@ pub fn gamma_roks_rsh_gradient(
     };
     parts.roks_gradient(
         who,
-        crate::kgrad::KGradJk::Dense(eri),
+        rsh_k.force_jk(),
         &inp,
         &dft.functional,
         &open_shell_kcfg(&dft.grid, dft.xc.ao_threshold, dft.exxdiv, cfg),

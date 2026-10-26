@@ -1811,7 +1811,8 @@ fn gamma_rsh_derivatives(
 /// `with_stress` run on `jk="dense"` (`ferric_pbc::gamma_rsh::
 /// gamma_rks_rsh_gradient` / `_stress`: the 1x1x1 k-point force and stress
 /// on the SCF's own exchange) and are ValueErrors with `jk="rsgdf"` (the
-/// Gamma route has no RS-GDF exchange derivative). `range_split` with an RSH functional
+/// library's Gamma RS-GDF exchange derivative is not wired here, #498).
+/// `range_split` with an RSH functional
 /// is a ValueError (it would shape the Gamma J only), and the
 /// result's `exact_exchange_fraction` is the short-range `c_sr`, `madelung`
 /// the mixed `c_sr v_M + (c_lr - c_sr) v_M^LR(omega)` constant. wB97X-V stays

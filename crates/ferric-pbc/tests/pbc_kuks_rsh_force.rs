@@ -191,7 +191,9 @@ fn gamma_uks_rsh_force_is_the_one_point_mesh_force() {
     .expect_err("restricted result accepted")
     .to_string();
     assert!(e.contains("unrestricted (UKS) results only"), "{e}");
-    // An RS-GDF exchange is refused (the Gamma routes differentiate dense AFT only).
+    // An RS-GDF exchange handed with this dense-J SCF is refused by the Fock
+    // guard (the route differentiates the exchange's own source; the
+    // consistent Gamma RS-GDF route is `pbc_grsh_rsgdf_derivs.rs`).
     let hc = ferric_pbc::hcore::periodic_hcore(&g.cell, &g.prep, &g.hcfg).unwrap();
     let aux = prep_for(&g.cell, &ferric_core::basis::bundled("cc-pvdz-ri").unwrap());
     let rcfg = ferric_pbc::rsgdf::kpoint::KRsGdfConfig {
@@ -222,9 +224,9 @@ fn gamma_uks_rsh_force_is_the_one_point_mesh_force() {
         &ex_gdf,
         &kgrad_cfg(),
     )
-    .expect_err("RS-GDF Gamma exchange accepted")
+    .expect_err("an RS-GDF exchange on a dense-J SCF accepted")
     .to_string();
-    assert!(e.contains("RS-GDF") && e.contains("no derivative"), "{e}");
+    assert!(e.contains("differs from the SCF's stored"), "{e}");
     let gf = gamma_force(&g).unwrap();
     let k = force(&fixture(Kind::Tri(2), &H3D, [1, 1, 1], CAM, ExxDiv::Ewald));
     let d = diff(&gf.grad, &k.grad);
