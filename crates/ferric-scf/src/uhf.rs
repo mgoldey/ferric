@@ -2151,6 +2151,23 @@ fn mix_beta_homo_lumo(c_b: &mut Array2<f64>, nocc_a: usize, nocc_b: usize, block
 /// two distinct states).
 const SWAP_MAX_DE: f64 = 1e-5;
 
+/// Lower limit of the gradient bound for a degenerate-swap acceptance:
+/// `max(density_conv, 1e-6)`.
+///
+/// The bound cannot be `density_conv` itself: the swapping state's orbital
+/// gradient floors on the arithmetic, and the floor straddles a tight
+/// `density_conv`. MEASURED on OH UKS-LDA/STO-3G at the stationary ground
+/// state: 9.1e-10 (OpenBLAS Nehalem kernels), 1.1e-9 (Prescott, the CI
+/// kernels), 2.2e-9 (native FMA). At `density_conv` 1e-9 the Prescott run
+/// therefore never accepted the swap, cycled ground ↔ stagnated state, and
+/// ended at `max_iter` (Err) on the RIGHT energy. 1e-6 sits three orders
+/// above those floors and three below the veto floor (1e-3). Accepting at
+/// this bound loses nothing that `density_conv` could buy here: the swapping
+/// density is only defined up to the degenerate rotation (it changes by O(1)
+/// every iteration), and the energy error of a gradient g is O(g²); the ΔE
+/// bound still applies at full strength.
+const SWAP_GRADIENT_FLOOR: f64 = 1e-6;
+
 /// One iteration's inputs to [`UhfExitGate::decide`].
 struct UhfIterGradients<'a> {
     iter: usize,
@@ -2244,10 +2261,11 @@ impl UhfExitGate {
 ///
 /// OH doublet: the β hole flips between π_x and π_y each step, so ΔP_max = 1
 /// and [`crate::rhf::scf_converged`] can never pass, although each density is
-/// stationary (`err_max` ~2e-9 MEASURED at −74.0755553242). Accept when the
+/// stationary (`err_max` ~1e-9 MEASURED at −74.0755553242). Accept when the
 /// density moved by an orbital-sized amount (`dp_max > 0.1`) while the
-/// orbital gradient is below `density_conv` at BOTH ends of the swap (this
-/// iteration and the previous one) and the energy moved by less than
+/// orbital gradient is below `max(density_conv, SWAP_GRADIENT_FLOOR)` at BOTH
+/// ends of the swap (this iteration and the previous one) and the energy
+/// moved by less than
 /// `min(energy_conv, 1e-5)`: a swap between degenerate orbitals at a
 /// stationary point, not a descending run or a hop between distinct states.
 /// The caller restricts it to Kohn-Sham: a UHF (Hartree-Fock) minimiser is
@@ -2260,10 +2278,11 @@ fn degenerate_swap_converged(
     energy_conv: f64,
     density_conv: f64,
 ) -> bool {
+    let bound = density_conv.max(SWAP_GRADIENT_FLOOR);
     iter > 2
         && sig.dp_max > 0.1
-        && err_max < density_conv
-        && prev_err_max < density_conv
+        && err_max < bound
+        && prev_err_max < bound
         && sig.de < energy_conv.min(SWAP_MAX_DE)
 }
 
@@ -2635,6 +2654,98 @@ mod tests {
     use ferric_core::external_potential::{ExternalPotential, PointCharge};
     use ferric_core::parallel::ParallelContext;
     use ferric_integrals::oneelectron;
+
+    fn signals(de: f64, dp: f64) -> crate::rhf::ConvergenceSignals {
+        crate::rhf::ConvergenceSignals {
+            de,
+            dp_rms: dp,
+            dp_max: dp,
+        }
+    }
+
+    /// The UHF veto wiring, independent of SCF arithmetic: a ΔP/ΔE-settled
+    /// state with a large orbital gradient is refused, the refusal recorded,
+    /// and the DIIS history cleared (the next extrapolation sees one entry and
+    /// returns its input unchanged). End to end the stagnation is
+    /// arithmetic-sensitive (it is reached on some OpenBLAS kernels and not
+    /// others), so the wiring is pinned here.
+    #[test]
+    fn exit_gate_vetoes_a_settled_nonstationary_state_and_clears_diis() {
+        let n = 2;
+        let x = Array2::<f64>::eye(n);
+        let f = |v: f64| Array2::from_elem((n, n), v);
+        let mut diis = Diis::new(6);
+        diis.step_pair(&f(1.0), &f(1.0), &f(0.3), &f(0.1));
+        diis.step_pair(&f(2.0), &f(2.0), &f(0.2), &f(0.05));
+        let err = ndarray::array![[0.0, 0.136], [-0.136, 0.0]];
+        let config = UhfConfig {
+            density_conv: 1e-6,
+            ..Default::default()
+        };
+        let mut gate = UhfExitGate::default();
+        let mut report = None;
+        let (exit, swapped) = gate.decide(
+            &mut None,
+            UhfIterGradients {
+                iter: 12,
+                sig: signals(2.4e-12, 3.4e-8),
+                err_max: 0.136,
+                err: [&err, &err],
+                x: &x,
+                xc_active: [true, false],
+            },
+            &config,
+            &mut diis,
+            false,
+            &mut report,
+        );
+        assert!(
+            exit.is_none() && !swapped,
+            "a non-stationary state was accepted"
+        );
+        let rec = gate.record().expect("the veto must be recorded");
+        assert_eq!((rec.count, rec.last_iteration), (1, 12));
+        let (fa, _) = diis.step_pair(&f(5.0), &f(5.0), &f(0.4), &f(0.4));
+        assert_eq!(fa, f(5.0), "DIIS history was not cleared by the veto");
+    }
+
+    /// The swap gradient bound is `max(density_conv, 1e-6)`: at a tight
+    /// `density_conv` a swap at the measured arithmetic floor (~1e-9) is
+    /// accepted; a still-descending gradient, or an energy hop, is not.
+    #[test]
+    fn swap_acceptance_bound_is_floored_above_the_arithmetic_floor() {
+        let swap = signals(1.4e-14, 0.986);
+        // OH/STO-3G floor on the CI (Prescott) kernels, dconv 1e-9.
+        assert!(degenerate_swap_converged(
+            swap, 1.12e-9, 1.12e-9, 153, 1e-7, 1e-9
+        ));
+        // dconv 1e-4: the bound is dconv (OH: iterations 5 and 6).
+        assert!(degenerate_swap_converged(
+            swap, 8.9e-7, 6.8e-5, 6, 1e-7, 1e-4
+        ));
+        // One end above the floor: still descending.
+        assert!(!degenerate_swap_converged(
+            swap, 1.9e-8, 4.6e-6, 151, 1e-7, 1e-9
+        ));
+        // Energy moved: not a degenerate swap.
+        assert!(!degenerate_swap_converged(
+            signals(2e-5, 0.986),
+            1e-9,
+            1e-9,
+            9,
+            1e-3,
+            1e-9
+        ));
+        // Density did not move by an orbital: the plain gate's business.
+        assert!(!degenerate_swap_converged(
+            signals(1e-14, 1e-3),
+            1e-9,
+            1e-9,
+            9,
+            1e-3,
+            1e-9
+        ));
+    }
 
     #[test]
     fn test_uhf_h_atom_sto3g() {

@@ -179,14 +179,22 @@ fn oh_uks_lda_converges_to_the_stationary_ground_state_not_a_stagnated_one() {
 /// MEASURED on this branch (see the PR body for the per-iteration table).
 const ITERATIONS: usize = 6;
 
-/// The UHF veto wiring (refuse + clear DIIS). At `density_conv` 1e-9 the swap
-/// acceptance cannot fire (the ground state's gradient floors at ~2e-9), so
-/// the run reaches the stagnation; MEASURED: 5 vetoes (gradient 0.111 against
-/// the 1e-3 bound), after which a fresh DIIS settles on the ground state and
-/// converges (137 iterations). Without the veto the stagnated state is
-/// returned.
+/// A tight `density_conv` must still converge on a degenerate open shell.
+///
+/// CI failure this pins (PR #556, first push): at `density_conv` 1e-9 the swap
+/// acceptance demanded a gradient below 1e-9, but the stationary state's
+/// gradient floors on the arithmetic at 9.1e-10 (OpenBLAS Nehalem), 1.1e-9
+/// (Prescott, the CI kernels) or 2.2e-9 (native FMA). On Prescott the run
+/// never accepted, cycled ground ↔ stagnated state (the veto refusing the
+/// latter 7 times) and returned `ScfConvergence` after 400 iterations at the
+/// right energy. The swap bound is now `max(density_conv, 1e-6)`.
+///
+/// Arithmetic-robust by construction: no exact iteration count (the
+/// trajectory differs by kernel), only a bound well below the failure.
+/// The veto + DIIS-reset wiring is pinned arithmetic-free in
+/// `uhf::tests::exit_gate_vetoes_a_settled_nonstationary_state_and_clears_diis`.
 #[test]
-fn oh_uks_lda_tight_gate_vetoes_the_stagnated_state_and_recovers() {
+fn oh_uks_lda_tight_density_conv_converges_on_the_ground_state() {
     let sys = oh();
     let r = solve(&sys, &lda(1e-9, 0));
     let v = r.convergence.and_then(|c| c.gradient_vetoes);
@@ -200,8 +208,11 @@ fn oh_uks_lda_tight_gate_vetoes_the_stagnated_state_and_recovers() {
         "E {:.10} vs stationary ground state {E_GROUND:.10}",
         r.energy
     );
-    let v = v.expect("the veto must have fired on the stagnated state");
-    assert!(v.count >= 1 && v.last_orbital_gradient > 0.05 && v.bound == 1e-3);
+    assert!(
+        r.iterations <= 30,
+        "{} iterations: the swap was not accepted at the gradient floor",
+        r.iterations
+    );
 }
 
 /// A MOM state is non-aufbau by design: its returned C and eps must be main's
