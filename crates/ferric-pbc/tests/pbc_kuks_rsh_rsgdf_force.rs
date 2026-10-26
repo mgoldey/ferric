@@ -226,38 +226,6 @@ fn polarized_cam_type_uks_force_matches_fd_and_sees_the_ledger() {
     }
 }
 
-/// The open-shell STRESS keeps refusing a range-separated RS-GDF source
-/// (a later #492 item): the UKS stress on the CAM-type build.
-#[test]
-fn open_shell_stress_still_refuses_rsgdf_rsh() {
-    use ferric_pbc::kuxcstress::{kpoint_uks_stress, KUksStressConfig};
-    let z = zx_open(
-        cell_of(Lat::Tri, 2, &H3D),
-        Spin::Uks,
-        Some(cam_type()),
-        1.0,
-        rs::LINDEP_FD,
-        ExxDiv::Ewald,
-    );
-    let OScf::U(scf) = &z.scf else { unreachable!() };
-    let s = &z.sys;
-    let e = kpoint_uks_stress(
-        &s.cell,
-        &s.prep,
-        &s.mesh,
-        &ferric_pbc::hcore::PeriodicHcoreConfig::with_omega(rs::OMEGA_HCORE),
-        &s.hk,
-        ferric_pbc::kstress::KStressJk::RsGdf(ferric_pbc::kgrad::KRsGdfGradSource {
-            gdf: &z.gdf,
-            cfg: &z.cfg,
-            aux: &s.aux,
-        }),
-        scf,
-        CAM,
-        &KUksStressConfig::default(),
-    )
-    .unwrap_err()
-    .to_string();
-    eprintln!("{e}");
-    assert!(e.contains("range-separated"), "{e}");
-}
+// The open-shell STRESS on a range-separated RS-GDF source (formerly
+// refused here) is differentiated since #492's open-shell RSH stress:
+// `pbc_kuks_rsh_stress.rs` / `validation_kuks_rsh_stress.rs`.

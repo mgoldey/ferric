@@ -134,8 +134,10 @@
 //!   returned unsymmetrised (the Gamma convention).
 //! * [`kuxcstress`] — the open-shell twin (`kpoint_uks_stress`, k-point UKS
 //!   from [`kuks`]): per-spin Pulay/exchange/Madelung assembly and the
-//!   spin-resolved XC strain terms; LDA, GGA and global hybrids, with the Fock
-//!   guard and the stationarity gate. `kpoint_roks_stress` /
+//!   spin-resolved XC strain terms; LDA, GGA, global and range-separated
+//!   (CAM) GGA hybrids (dense-AFT or RS-GDF J/K; Gamma UKS through the 1×1×1
+//!   mesh, `gamma_rsh::gamma_uks_rsh_stress`), with the Fock guard and the
+//!   stationarity gate. `kpoint_roks_stress` /
 //!   `kpoint_rohf_stress` (the restricted-open-shell energies of [`kroks`]):
 //!   the same assembly on the ROHF spin densities with the orthonormality
 //!   Lagrangian `W_RO` as the overlap weight and the ROHF orbital-gradient

@@ -6533,8 +6533,8 @@ kind = "ccsd"
         assert!(ok(&h2("ksdft", km, HSE)).stress);
         assert!(ok(&h2("ksdft", &format!("{rs}\n{km}"), HSE)).stress);
         // Open-shell SCAN has a dense-AFT stress; open-shell range-separated
-        // hybrids have a k-point energy (and a UKS force) but no stress: the
-        // stress gate names the key.
+        // hybrids have a k-point energy (and a UKS force); their stress is
+        // library only (not wired, #498): the stress gate names the key.
         assert!(ok(&h2("uhf", km, SCAN)).stress);
         for (kind, want) in [
             (

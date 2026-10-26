@@ -75,7 +75,7 @@
 //! and `gamma_roks_rsh` for range-separated hybrids).
 //!
 //! Refused by name: range-separated hybrids in every entry but closed-shell
-//! [`gamma_rks_rsh`] (the attenuated K is the k = 0 of the 1x1x1 k-point machinery, [`crate::gamma_rsh`]; open-shell [`gamma_uks_rsh`] and [`crate::rohf::gamma_roks_rsh`] take the same exchange per spin; the closed-shell dense-AFT force and stress are [`crate::gamma_rsh::gamma_rks_rsh_gradient`] and [`crate::gamma_rsh::gamma_rks_rsh_stress`], the open-shell UKS dense-AFT force is [`crate::gamma_rsh::gamma_uks_rsh_gradient`] (wired to the bindings through [`check_gamma_uks_request`]) and the ROKS one [`crate::gamma_rsh::gamma_roks_rsh_gradient`] (library only: the bindings refuse it); the open-shell stress refuses them),
+//! [`gamma_rks_rsh`] (the attenuated K is the k = 0 of the 1x1x1 k-point machinery, [`crate::gamma_rsh`]; open-shell [`gamma_uks_rsh`] and [`crate::rohf::gamma_roks_rsh`] take the same exchange per spin; the closed-shell dense-AFT force and stress are [`crate::gamma_rsh::gamma_rks_rsh_gradient`] and [`crate::gamma_rsh::gamma_rks_rsh_stress`], the open-shell UKS dense-AFT force is [`crate::gamma_rsh::gamma_uks_rsh_gradient`] (wired to the bindings through [`check_gamma_uks_request`]) and the ROKS one [`crate::gamma_rsh::gamma_roks_rsh_gradient`] (library only: the bindings refuse it); the open-shell UKS stress is [`crate::gamma_rsh::gamma_uks_rsh_stress`] (library only)),
 //! meta-GGA except the validated SCAN / r2SCAN / TPSS in closed-shell [`gamma_rks`] (tau from D and ∇χ^Γ, energy anchored to the 1x1x1 k-mesh and PySCF; the force and stress are the 1x1x1 k-point route [`crate::gamma_mgga`] on the dense-AFT J, the native Gamma XC derivatives refuse it; UKS and ROKS refuse it), VV10 / double hybrids, grid pruning, Newton /
 //! TRAH / stability (they rebuild molecular J/K and the f_xc kernel on the
 //! molecular grid — rejected by `validate_injected`), the molecular grid knobs
@@ -1725,7 +1725,8 @@ fn gamma_rsh_rsgdf_refusal(name: &str, method: &str, what: &str) -> FerricError 
 /// FORCE runs on the dense-AFT J/K for the validated functionals
 /// ([`crate::gamma_rsh::gamma_uks_rsh_gradient`],
 /// [`crate::kxcgrad::check_validated_rsh_deriv`]); its STRESS is refused by
-/// name (the UKS stress has no range-separated term). A meta-GGA is refused
+/// name (library only, [`crate::gamma_rsh::gamma_uks_rsh_stress`], not
+/// wired). A meta-GGA is refused
 /// by name (the Gamma UKS has no tau term), pointing at the k-point UKS on a
 /// 1x1x1 mesh, which is the Gamma point and has SCAN / r2SCAN. Everything
 /// else passes to [`gamma_uks`]'s own functional check.
@@ -1741,8 +1742,8 @@ pub fn check_gamma_uks_request(
                 feature: "open-shell range-separated hybrid stress",
                 reason: format!(
                     "{name}: the Gamma-point UKS range-separated hybrid stress is not \
-                     implemented (the UKS stress has no range-separated term); the force is \
-                     available on the dense-AFT J/K"
+                     implemented in the bindings (the library stress, gamma_uks_rsh_stress, is \
+                     not wired yet); the force is available on the dense-AFT J/K"
                 ),
             }
             .into());
