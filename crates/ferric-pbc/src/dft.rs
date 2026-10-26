@@ -1702,8 +1702,9 @@ pub fn check_gamma_rks_request(name: &str, derivs: bool, rsgdf: bool) -> Result<
 /// siblings) differentiate an RS-GDF exchange, but the Python / CLI
 /// derivative paths are not wired to it (#498).
 fn gamma_rsh_rsgdf_refusal(name: &str, method: &str, what: &str) -> FerricError {
-    // Only the closed-shell k-point force and stress differentiate an RS-GDF
-    // range-separated exchange (the UKS force refuses it at every mesh).
+    // Only the closed-shell k-point force and stress are wired on an RS-GDF
+    // range-separated exchange (the bindings refuse the UKS RS-GDF force at
+    // every mesh).
     let hint = if method == "RKS" {
         "; the closed-shell k-point one on RS-GDF is wired at a k-point mesh, e.g. 1x1x1"
     } else {

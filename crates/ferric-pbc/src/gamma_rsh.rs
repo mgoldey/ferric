@@ -76,7 +76,10 @@ enum Source {
 /// The RS-GDF exchange: the fit, the config it was built with and its aux
 /// basis (re-prepared from the caller's on the cell's atoms); the RS-GDF
 /// derivative passes rebuild the fit per q from these and check it against
-/// `gdf`.
+/// `gdf`. A caller's aux prepared on other centres than the cell's atoms
+/// therefore no longer matches `gdf` and is refused by that rebuilt-B check
+/// (relative ‖B‖ mismatch 1.95e-4 for H2 with the aux centres moved 0.1
+/// Bohr; bar 1e-8), not silently differentiated.
 struct RsGdfSource {
     gdf: KRsGdf,
     cfg: KRsGdfConfig,
@@ -411,9 +414,9 @@ pub fn gamma_rks_rsh_gradient(
 /// the 1x1x1 k-point stress ([`crate::kxcstress::kpoint_rks_stress`]) exactly
 /// as [`gamma_rks_rsh_gradient`] routes the force: same arguments, same
 /// refusals (open-shell result, a config or Gamma J that is not the SCF's,
-/// caught by the routed Fock guard); dense-AFT or RS-GDF `rsh_k`. `σ` is returned
-/// unsymmetrised (the atom-centred grid is not rotation invariant; see
-/// [`crate::kxcstress`]).
+/// caught by the routed Fock guard); dense-AFT or RS-GDF `rsh_k`. `σ` is
+/// returned unsymmetrised (the atom-centred grid is not rotation invariant;
+/// see [`crate::kxcstress`]).
 pub fn gamma_rks_rsh_stress(
     cell: &Cell,
     prep: &PreparedBasis,
@@ -505,9 +508,9 @@ pub(crate) fn one_point_inputs(
 
 /// Open-shell Gamma UKS nuclear gradient of a range-separated hybrid (`scf`
 /// from [`crate::dft::gamma_uks_rsh`] with the exchange `rsh_k` and the
-/// Gamma J of the same source, dense AFT or RS-GDF), routed through the 1x1x1 k-point UKS force
-/// ([`crate::kuxcgrad::kpoint_uks_gradient`]) exactly as
-/// [`gamma_rks_rsh_gradient`] routes the closed shell: the Gamma spin
+/// Gamma J of the same source, dense AFT or RS-GDF), routed through the
+/// 1x1x1 k-point UKS force ([`crate::kuxcgrad::kpoint_uks_gradient`]) exactly
+/// as [`gamma_rks_rsh_gradient`] routes the closed shell: the Gamma spin
 /// densities and spin Focks are the `k = 0` ones, `K_σ = K[D_σ]` with the
 /// kernel and mixed Madelung constant of `rsh_k`.
 ///
@@ -616,8 +619,9 @@ fn open_shell_kcfg(
 
 /// Restricted-open-shell Gamma ROKS nuclear gradient of a range-separated
 /// hybrid (`scf` from [`crate::rohf::gamma_roks_rsh`] with the exchange
-/// `rsh_k` and the Gamma J of the same source, dense AFT or RS-GDF), routed through the 1x1x1 k-point
-/// ROKS force ([`crate::kuxcgrad::kpoint_roks_gradient`]) as
+/// `rsh_k` and the Gamma J of the same source, dense AFT or RS-GDF), routed
+/// through the 1x1x1 k-point ROKS force
+/// ([`crate::kuxcgrad::kpoint_roks_gradient`]) as
 /// [`gamma_uks_rsh_gradient`] routes UKS: the Gamma ROHF spin densities and
 /// the one MO set are the `k = 0` ones, the spin Focks are rebuilt from them
 /// (`K_σ = K[D_σ]` with the kernel and mixed Madelung constant of `rsh_k`),

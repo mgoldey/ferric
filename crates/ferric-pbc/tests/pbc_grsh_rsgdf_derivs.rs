@@ -20,7 +20,7 @@
 //! The shared k-point derivative itself (attenuated fit passes, mixed
 //! Madelung) is validated by `pbc_krsh_rsgdf_force.rs`,
 //! `pbc_kuks_rsh_rsgdf_force.rs` and their validation files; this file checks
-//! the Gamma GLUE onto it plus one FD row.
+//! the Gamma GLUE onto it plus one FD row (two force components).
 
 mod common;
 #[path = "grsh_rsgdf_support/mod.rs"]
@@ -39,30 +39,43 @@ use gs::*;
 /// the Gamma -> 1x1x1 glue shows as O(1e-2). Measured 4.4e-16 (RKS), 1.9e-14
 /// (UKS), 1.1e-14 (ROKS), the Fock guard at <= 5.6e-16: on these minimal
 /// cells the two SCFs land on the same density to roundoff, so this is a
-/// GLUE check (the kernel is shared); the FD row below and the validation
+/// GLUE check (the kernel is shared); the FD test below (two components)
+/// and the validation
 /// file check the kernel. exxdiv none is in the validation file.
 #[test]
-fn gamma_rsgdf_rsh_force_is_the_one_point_mesh_force() {
-    for (sp, x) in [
-        (Sp::Rks, ExxDiv::Ewald),
-        (Sp::Uks, ExxDiv::Ewald),
-        (Sp::Roks, ExxDiv::Ewald),
-    ] {
-        let g = gamma_run(cell_at(sp.atoms()), sp, CAM, x, Jk::RsGdf);
-        let gf = gamma_force(&g).unwrap_or_else(|e| panic!("{sp:?} {x:?}: {e}"));
-        let k = k1_run(cell_at(sp.atoms()), sp, CAM, x);
-        let kf = k1_force(&k, CAM, x);
-        let d = diff(&gf.grad, &kf.grad);
-        eprintln!(
-            "{sp:?} {x:?}: Gamma vs 1x1x1 RS-GDF force {d:.2e} (|F| {:.2e}, Fock guard {:.1e}, \
-             dE {:.1e})",
-            max_abs(&gf.grad),
-            gf.hf.fock_mismatch,
-            g.scf.energy - kscf_energy(&k)
-        );
-        assert!(d < ANCHOR_TOL, "{sp:?} {x:?}: {d:e}");
-        assert!(max_abs(&gf.grad) > 1e-2, "a non-trivial force");
-    }
+fn gamma_rsgdf_rsh_rks_force_is_the_one_point_mesh_force() {
+    one_point_force_anchor(Sp::Rks);
+}
+
+/// (1) as above, UKS (H3 doublet).
+#[test]
+fn gamma_rsgdf_rsh_uks_force_is_the_one_point_mesh_force() {
+    one_point_force_anchor(Sp::Uks);
+}
+
+/// (1) as above, ROKS (H3 doublet).
+#[test]
+fn gamma_rsgdf_rsh_roks_force_is_the_one_point_mesh_force() {
+    one_point_force_anchor(Sp::Roks);
+}
+
+/// The Gamma == 1x1x1 force anchor of one spin treatment (exxdiv ewald).
+fn one_point_force_anchor(sp: Sp) {
+    let x = ExxDiv::Ewald;
+    let g = gamma_run(cell_at(sp.atoms()), sp, CAM, x, Jk::RsGdf);
+    let gf = gamma_force(&g).unwrap_or_else(|e| panic!("{sp:?} {x:?}: {e}"));
+    let k = k1_run(cell_at(sp.atoms()), sp, CAM, x);
+    let kf = k1_force(&k, CAM, x);
+    let d = diff(&gf.grad, &kf.grad);
+    eprintln!(
+        "{sp:?} {x:?}: Gamma vs 1x1x1 RS-GDF force {d:.2e} (|F| {:.2e}, Fock guard {:.1e}, \
+         dE {:.1e})",
+        max_abs(&gf.grad),
+        gf.hf.fock_mismatch,
+        g.scf.energy - kscf_energy(&k)
+    );
+    assert!(d < ANCHOR_TOL, "{sp:?} {x:?}: {d:e}");
+    assert!(max_abs(&gf.grad) > 1e-2, "a non-trivial force");
 }
 
 fn kscf_energy(k: &K1) -> f64 {
@@ -121,6 +134,57 @@ fn gamma_rsh_route_refuses_a_j_that_is_not_the_exchanges() {
                 .expect_err("a foreign J accepted (stress)")
                 .to_string();
             assert!(e.contains("differs from the SCF's stored"), "{jk:?}: {e}");
+        }
+    }
+}
+
+/// (2') AN RS-GDF GAMMA J ON ANOTHER FIT than the exchange's (closed shell,
+/// exchange built at the production config: metric cut 1e-6, ω₀ = 1, ET-sp
+/// aux). Only the routed Fock guard (1e-8) ties the two together, so this
+/// pins what it does. Measured 2026-10-26:
+///
+/// | Gamma J fit                 | ΔE vs consistent | outcome                  |
+/// |-----------------------------|------------------|--------------------------|
+/// | metric cut 1e-8             | 0 (bitwise)      | accepted, force Δ 0      |
+/// | metric cut 1e-2 (drops 2)   | −1.5e-7          | refused, Fock Δ 1.26e-6  |
+/// | ω₀ = 0.9                    | −6.7e-15         | accepted, force Δ 2.8e-16 |
+/// | aux + extra s shell         | +4.1e-6          | refused, Fock Δ 5.44e-6  |
+///
+/// The plain-metric eigenvalues of this aux are all >= 5.3e-3, so a cut of
+/// 1e-8 (or 1e-4) changes nothing, and the RS-GDF J does not depend on the
+/// split ω₀ beyond the integral precision: those J are the SAME J, and their
+/// forces equal the consistent (FD-validated) one. Every fit change that
+/// moves the J is refused. Not covered: a fit change that moves the Fock by
+/// less than the 1e-8 bar would pass, with a force error of that order.
+#[test]
+fn gamma_rsh_route_on_a_differently_configured_rsgdf_j() {
+    let x = ExxDiv::Ewald;
+    let base = gamma_run(cell_at(&H2), Sp::Rks, CAM, x, Jk::RsGdf);
+    let fb = gamma_force(&base).unwrap();
+    for (m, same) in [
+        (Mis::Lindep, true),
+        (Mis::LindepLoose, false),
+        (Mis::Omega0, true),
+        (Mis::Aux, false),
+    ] {
+        let g = gamma_run(cell_at(&H2), Sp::Rks, CAM, x, Jk::RsGdfJOther(m));
+        let de = g.scf.energy - base.scf.energy;
+        match gamma_force(&g) {
+            Ok(gf) => {
+                let d = diff(&gf.grad, &fb.grad);
+                eprintln!(
+                    "{m:?}: dE {de:.2e} accepted (Fock {:.1e}), force vs consistent {d:.2e}",
+                    gf.hf.fock_mismatch
+                );
+                assert!(same, "{m:?}: a J that moved by {de:e} was accepted");
+                assert!(d < 1e-12, "{m:?}: {d:e}");
+            }
+            Err(e) => {
+                let e = e.to_string();
+                eprintln!("{m:?}: dE {de:.2e} refused: {e}");
+                assert!(!same, "{m:?}: the same J was refused: {e}");
+                assert!(e.contains("differs from the SCF's stored"), "{m:?}: {e}");
+            }
         }
     }
 }

@@ -1,7 +1,8 @@
 //! Validation tier (weekly, `--ignored`) of the Gamma-point range-separated
 //! hybrid forces and stress on RS-GDF J/K (`gamma_rsh::gamma_*_rsh_gradient`,
 //! `gamma_rks_rsh_stress` on a `GammaRshExchange::build_rsgdf` exchange;
-//! mgoldey/ferric#492). The per-commit glue anchors and one FD row are in
+//! mgoldey/ferric#492). The per-commit glue anchors and the two-component FD
+//! force check are in
 //! `pbc_grsh_rsgdf_derivs.rs`.
 //!
 //! Here: central FD of ferric's own Gamma RS-GDF energy (fresh fits + SCF per
@@ -66,7 +67,8 @@ fn gamma_rsgdf_rsh_open_shell_force_matches_fd() {
 /// ewald and none, three components (diagonal, off-diagonal and its
 /// transpose), h = 4e-4 and 2e-4, plus their Richardson combination. Physics:
 /// the h² truncation (4.5x per halving: 7.0e-8 / 1.57e-8 on ε_zz, ewald;
-/// Richardson ≤ 5.0e-9 on every component, bar 1e-8);
+/// Richardson ≤ 5.0e-9 on every component; bars 5e-8 at h = 2e-4 and 2e-8
+/// Richardson, still ~1e5 below the 1.3e-3 attenuated-strain mutant);
 /// artifact: the k-point stress ledger (attenuated strain dropped, Madelung
 /// strain) misses by >= 1e-1.
 ///
@@ -92,9 +94,9 @@ fn gamma_rsgdf_rsh_stress_matches_fd() {
                 "{x:?} eps_{i}{j}: analytic {a:+.10e} |diff| h=4e-4 {r1:.2e} h=2e-4 {r2:.2e} \
                  Richardson {rich:.2e}"
             );
-            assert!(r2 < 3e-8, "{x:?} ({i},{j}): {r2:e}");
+            assert!(r2 < 5e-8, "{x:?} ({i},{j}): {r2:e}");
             assert!(a.abs() > 1e-3, "a non-zero component");
-            assert!(rich < 1e-8, "{x:?} ({i},{j}) Richardson: {rich:e}");
+            assert!(rich < 2e-8, "{x:?} ({i},{j}) Richardson: {rich:e}");
         }
     }
 }

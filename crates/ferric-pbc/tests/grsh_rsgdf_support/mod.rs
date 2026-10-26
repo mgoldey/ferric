@@ -128,6 +128,41 @@ pub enum Jk {
     DenseJRsGdfK,
     /// RS-GDF Gamma J under the dense exchange.
     RsGdfJDenseK,
+    /// An RS-GDF Gamma J whose fit differs from the exchange's (built with
+    /// the production `kcfg`): see [`Mis`].
+    RsGdfJOther(Mis),
+}
+
+/// How the Gamma J's RS-GDF fit differs from the exchange's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mis {
+    /// Metric cut 1e-8 instead of 1e-6.
+    Lindep,
+    /// Metric cut 1e-2 instead of 1e-6 (drops 2 of the 20 plain-metric
+    /// eigenvectors the exchange's fit keeps; its smallest is 5.3e-3).
+    LindepLoose,
+    /// Ewald split ω₀ = 0.9 instead of 1.
+    Omega0,
+    /// The aux with an extra s shell (`rs::et_sp_dup_aux(0.5)`).
+    Aux,
+}
+
+/// The Gamma J config and aux basis of `jk` (`None` for a dense J).
+fn j_fit(
+    jk: Jk,
+    exxdiv: ExxDiv,
+) -> Option<(ferric_pbc::rsgdf::RsGdfConfig, ferric_core::basis::BasisSet)> {
+    let mut c = kcfg(exxdiv).gdf;
+    let mut aux = et_sp_aux();
+    match jk {
+        Jk::RsGdf | Jk::RsGdfJDenseK => {}
+        Jk::RsGdfJOther(Mis::Lindep) => c.lindep = 1e-8,
+        Jk::RsGdfJOther(Mis::LindepLoose) => c.lindep = 1e-2,
+        Jk::RsGdfJOther(Mis::Omega0) => c.omega = 0.9,
+        Jk::RsGdfJOther(Mis::Aux) => aux = crate::rs::et_sp_dup_aux(0.5),
+        Jk::Dense | Jk::DenseJRsGdfK => return None,
+    }
+    Some((c, aux))
 }
 
 /// A converged Gamma RSH run kept for its derivatives.
@@ -177,10 +212,10 @@ pub fn gamma_run(cell: Cell, sp: Sp, f: &str, exxdiv: ExxDiv, jk: Jk) -> G {
     let prep = prep_for(&cell, &pyscf_sto3g_h());
     let hc = periodic_hcore(&cell, &prep, &hcore_cfg()).unwrap();
     let aux = PreparedBasis::new(cell.mol(), &et_sp_aux()).unwrap();
-    let rs_j = matches!(jk, Jk::RsGdf | Jk::RsGdfJDenseK);
     let (gdf_j, dense_j);
-    if rs_j {
-        gdf_j = Some(RsGdf::build(&cell, &prep, &aux, &hc.s, &kcfg(exxdiv).gdf).unwrap());
+    if let Some((jc, jaux)) = j_fit(jk, exxdiv) {
+        let jaux = PreparedBasis::new(cell.mol(), &jaux).unwrap();
+        gdf_j = Some(RsGdf::build(&cell, &prep, &jaux, &hc.s, &jc).unwrap());
         dense_j = None;
     } else {
         gdf_j = None;
@@ -204,7 +239,7 @@ pub fn gamma_run(cell: Cell, sp: Sp, f: &str, exxdiv: ExxDiv, jk: Jk) -> G {
     // The exchange the SCF runs on: the one matching its J for the
     // production cases, the OTHER one for the mixed cases (the derivative is
     // handed the matching one below, so its J and the SCF's differ).
-    let scf_k_rsgdf = matches!(jk, Jk::RsGdf | Jk::RsGdfJDenseK);
+    let scf_k_rsgdf = matches!(jk, Jk::RsGdf | Jk::RsGdfJDenseK | Jk::RsGdfJOther(_));
     let scf_ex = if scf_k_rsgdf {
         rsgdf_k(&cell, &prep, &aux, &hc, f, exxdiv)
     } else {
@@ -246,7 +281,7 @@ pub fn gamma_run(cell: Cell, sp: Sp, f: &str, exxdiv: ExxDiv, jk: Jk) -> G {
         "Gamma {sp:?} {f} {exxdiv:?} {jk:?}: not converged"
     );
     let ex = match jk {
-        Jk::RsGdf | Jk::Dense => scf_ex,
+        Jk::RsGdf | Jk::Dense | Jk::RsGdfJOther(_) => scf_ex,
         // The derivative gets the exchange of the OTHER source.
         Jk::DenseJRsGdfK => rsgdf_k(&cell, &prep, &aux, &hc, f, exxdiv),
         Jk::RsGdfJDenseK => dense_k(&cell, &prep, &hc, f, exxdiv),
@@ -263,7 +298,12 @@ pub fn gamma_run(cell: Cell, sp: Sp, f: &str, exxdiv: ExxDiv, jk: Jk) -> G {
 
 /// The Gamma SCF energy alone (FD oracle: fresh build + SCF per point).
 pub fn gamma_energy(cell: Cell, sp: Sp, f: &str, exxdiv: ExxDiv) -> f64 {
-    gamma_run(cell, sp, f, exxdiv, Jk::RsGdf).scf.energy
+    gamma_energy_on(cell, sp, f, exxdiv, Jk::RsGdf)
+}
+
+/// [`gamma_energy`] on the J/K `jk`.
+pub fn gamma_energy_on(cell: Cell, sp: Sp, f: &str, exxdiv: ExxDiv, jk: Jk) -> f64 {
+    gamma_run(cell, sp, f, exxdiv, jk).scf.energy
 }
 
 pub fn kgrad_cfg() -> KGradConfig {
@@ -472,9 +512,14 @@ pub fn moved(pos: &[[f64; 3]], a: usize, x: usize, h: f64) -> Vec<[f64; 3]> {
 }
 
 /// Central FD of the Gamma RS-GDF RSH energy along atom `a`, axis `x`.
-pub fn fd_force(sp: Sp, f: &str, exxdiv: ExxDiv, (a, x, h): (usize, usize, f64)) -> f64 {
+pub fn fd_force(sp: Sp, f: &str, exxdiv: ExxDiv, axh: (usize, usize, f64)) -> f64 {
+    fd_force_on(sp, f, exxdiv, axh, Jk::RsGdf)
+}
+
+/// [`fd_force`] of the energy on the J/K `jk`.
+pub fn fd_force_on(sp: Sp, f: &str, exxdiv: ExxDiv, (a, x, h): (usize, usize, f64), jk: Jk) -> f64 {
     let pos = sp.atoms();
-    let e = |p: Vec<[f64; 3]>| gamma_energy(cell_at(&p), sp, f, exxdiv);
+    let e = |p: Vec<[f64; 3]>| gamma_energy_on(cell_at(&p), sp, f, exxdiv, jk);
     (e(moved(pos, a, x, h)) - e(moved(pos, a, x, -h))) / (2.0 * h)
 }
 
