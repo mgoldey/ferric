@@ -192,6 +192,9 @@ fn basis_toml(s: &System, dir: &Path) -> String {
     }
 }
 
+/// The library reads the same G94 text through `basis::load_g94`, which is
+/// the CLI's own reader; it takes a path only (`parse_g94` is private), so
+/// the text is written once more into the library's scratch directory.
 fn load_basis(s: &System, dir: &Path) -> BasisSet {
     match s.basis {
         Basis::Bundled(n) => basis::bundled(n).unwrap(),
@@ -486,6 +489,16 @@ pub fn lib_kuks_force(s: &System, f: &str, x: &[f64]) -> (f64, Vec<f64>) {
 /// (`crate::periodic::rks_config`, `gamma_rks_any_keep`,
 /// `gamma_rks_rsh_gradient`).
 pub fn lib_gamma_rks_rsh_force(s: &System, f: &str, x: &[f64]) -> (f64, Vec<f64>) {
+    gamma_rks_rsh(s, f, x, true)
+}
+
+/// [`lib_gamma_rks_rsh_force`]'s energy alone (no derivative call), for the
+/// finite-difference anchor.
+pub fn lib_gamma_rks_rsh_energy(s: &System, f: &str, x: &[f64]) -> f64 {
+    gamma_rks_rsh(s, f, x, false).0
+}
+
+fn gamma_rks_rsh(s: &System, f: &str, x: &[f64], with_force: bool) -> (f64, Vec<f64>) {
     let (cell, prep) = cell_at(s, Some(x));
     let (hc, eri) = gamma_ints(&cell, &prep);
     let mut c = GammaRksConfig::new(f);
@@ -506,6 +519,9 @@ pub fn lib_gamma_rks_rsh_force(s: &System, f: &str, x: &[f64]) -> (f64, Vec<f64>
         &c,
     )
     .expect("scf");
+    if !with_force {
+        return (r.scf.energy, Vec::new());
+    }
     let ex = ex.expect("a range-separated hybrid keeps its exchange");
     let g = gamma_rks_rsh_gradient(
         &cell,
@@ -518,6 +534,19 @@ pub fn lib_gamma_rks_rsh_force(s: &System, f: &str, x: &[f64]) -> (f64, Vec<f64>
     )
     .expect("force");
     (r.scf.energy, g.grad.iter().copied().collect())
+}
+
+/// A generic displacement direction over all atoms (rows: atoms), normalised
+/// over the whole 3N vector: every atom moves along every axis, by different
+/// amounts per atom, so a defect confined to one Cartesian branch cannot
+/// cancel between atoms (a net-force-preserving error in the x row of H2
+/// moves `g . d` by `dg_x (d_0x - d_1x)`, here 1.6 dg_x).
+pub fn generic_direction(natoms: usize) -> Vec<f64> {
+    const D: [[f64; 3]; 3] = [[1.0, 0.7, 0.4], [-0.6, 0.9, -0.3], [0.5, -0.8, 0.2]];
+    assert!(natoms <= D.len());
+    let v: Vec<f64> = D[..natoms].iter().flatten().copied().collect();
+    let n = v.iter().map(|a| a * a).sum::<f64>().sqrt();
+    v.iter().map(|a| a / n).collect()
 }
 
 /// Library Gamma UKS range-separated `(E, dE/dR)` at `x`

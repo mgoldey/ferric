@@ -16,16 +16,33 @@ Z = 3 nucleus; Li 1s sets a ~10x larger G sphere, so those are validation
 tier).
 
 Anchors:
-* PHYSICS (per commit, p shells), each against a central FD of the
-  binding's OWN energy (h = 1e-4 Bohr / strain): the k-point RKS HSE06 force
-  and full stress tensor, the k-point UKS SCAN force and stress (zz, xy), the
-  k-point UKS HSE06 force, the Gamma RKS CAM-B3LYP force and stress (xx, xz),
-  the Gamma UKS CAM-B3LYP force.
+* PHYSICS (fast tier, p shells), each against a central FD of the binding's
+  OWN energy (h = 1e-4 Bohr / strain): the k-point RKS HSE06 force and full
+  stress tensor, the k-point UKS SCAN force and stress (zz, xy), the k-point
+  UKS HSE06 force, the Gamma RKS CAM-B3LYP force and stress (xx, xz), the
+  Gamma UKS CAM-B3LYP force. A force is checked as the directional derivative
+  along one generic 3N direction (every atom along every axis, by different
+  amounts per atom, so all three Cartesian branches enter at the cost of two
+  energies), against g . d; each axis' share of g . d must be non-trivial.
+  NOTE: "fast tier" is NOT PR-gating. CI runs this file only in the nightly
+  coverage job, which is continue-on-error. The PR-gating physics anchor of
+  the same path is the library FD in
+  crates/ferric-cli/tests/periodic_heavy_anchors.rs (Gamma RKS CAM-B3LYP force
+  on the p-shell cell; it kills the mutant below).
 * GLUE (validation tier, needs the CLI): the binding equals the CLI's
   `run_end` numbers on the same p-shell cell, and the CLI equals the library
   bit for bit (crates/ferric-cli/tests/periodic_heavy_anchors.rs), so the
   binding equals the library. No golden constants: both sides run here.
-* d shells and Li (validation tier): the same FD anchors.
+* d shells and Li, plus the k-point UKS r2SCAN stress on the p-shell cell
+  (validation tier): the same FD anchors.
+* BASIS GUARD: each custom-basis fixture runs a molecular RHF on H2 and
+  checks the density is 8x8 (s+p) or 18x18 (s+p+d), so a reader that dropped
+  the polarisation shells fails the fixture instead of running s-only cells.
+
+The `validation` marker here means "too slow for the fast tier, or needs the
+CLI binary" (the tier this repo runs with -m validation), not the marker's
+pyproject wording "compares against a committed external reference": these
+tests compare ferric with itself (FD of its own energy, binding vs CLI).
 
 ARTIFACT HYPOTHESIS (written before measuring). The derivative of a Cartesian
 Gaussian x^l exp(-a x^2) is 2a x^(l+1) - l x^(l-1) exp(...): an s shell sees
@@ -41,41 +58,51 @@ floor of the H cells (1e-9..1e-8). The two are 5+ decades apart, so the
 experiment distinguishes them.
 
 MEASURED (2026-10-26, release build, OPENBLAS_NUM_THREADS=1; the
-OPENBLAS_CORETYPE=Prescott kernel moves every miss by < 1e-11):
-* p shells, FD misses: 2.0e-9 (k RKS HSE06 force), 2.0e-8 (k RKS HSE06
-  stress, six components), 7.9e-10 / 5.8e-9 (k UKS SCAN force / stress),
-  9.4e-10 (k UKS HSE06 force), 2.3e-9 / 1.4e-8 (Gamma RKS CAM-B3LYP force /
-  stress), 7.7e-11 (Gamma UKS CAM-B3LYP force). Binding - CLI <= 1.6e-15
-  (forces: the CLI's moved geometry re-entered in Angstrom), stress 0.
-* d shells: 1.9e-9 / 1.9e-8 (k RKS HSE06 force / stress), 8.3e-10 (k UKS
-  SCAN force), 2.0e-9 / 1.3e-8 (Gamma RKS CAM-B3LYP force / stress).
-* Li (STO-3G): 3.0e-10 / 5.3e-9 (LiH k RKS HSE06 force / stress), 6.9e-9
+OPENBLAS_CORETYPE=Prescott kernel moves every miss by < 2e-11). Forces are
+|g . d - FD| along the generic direction:
+* p shells: 3.4e-10 (k RKS HSE06 force), 2.0e-8 (k RKS HSE06 stress, six
+  components), 7.4e-10 / 5.8e-9 (k UKS SCAN force / stress), 1.0e-8 (k UKS
+  r2SCAN stress at h = 5e-5; 4.7e-8 at 1e-4, clean h^2), 4.5e-10 (k UKS
+  HSE06 force), 5.2e-10 / 1.4e-8 (Gamma RKS CAM-B3LYP force / stress),
+  5.3e-10 (Gamma UKS CAM-B3LYP force). Binding - CLI <= 1.6e-15 (forces: the
+  CLI's moved geometry re-entered in Angstrom), stress 0.
+* d shells: 3.2e-10 / 1.9e-8 (k RKS HSE06 force / stress), 2.8e-10 (k UKS
+  SCAN force), 4.9e-10 / 1.3e-8 (Gamma RKS CAM-B3LYP force / stress).
+* Li (STO-3G): 3.2e-11 / 5.3e-9 (LiH k RKS HSE06 force / stress), 4.9e-10
   (LiH2 k UKS SCAN force).
 No FD miss on a p, d or Li cell exceeds the h^2 / grid floor of the
 H/STO-3G cells: no defect found. The hypothesis' magnitude for a defect was
 too high (the p shells here carry a small polarisation population), but
 the mutants below still miss by 300x+ the worst floor.
 
+RUNTIMES (release, one at a time): fast tier 10-34 s per test (~2.5 min
+for the 7); validation 14-60 s per binding-vs-CLI test, 34 s r2SCAN stress,
+52-125 s per d-shell test, 178 s LiH2, 609 s LiH: ~23 min in all (the
+Python half of the validation tier runs on CI shard 4).
+
 MUTATION LEDGER (library source mutated, extension rebuilt, reverted). The
 mutant drops the p lowering term of the x-derivative (`if ax > 0` ->
 `if ax > 1` in crates/ferric-pbc/src/pair_ft/residues.rs: s and d_xx-type
 components keep their terms, every p_x component loses `-1 F[0]`):
-* in the k-point pair-FT derivative (`residue_deriv_block`, the force): k RKS
-  HSE06 force misses FD by 9.1e-6, k UKS SCAN by 2.0e-5, k UKS HSE06 by
-  1.3e-4, Gamma RKS CAM-B3LYP by 4.9e-5, Gamma UKS CAM-B3LYP by 7.3e-5: all
-  KILLED. The H/STO-3G FD anchors of test_pbc_rsh_open_mgga_derivs.py pass
-  unchanged under the same mutant (2.8e-9 / 7.6e-10 / 4.1e-10): SURVIVED,
-  which is the gap this file closes.
+* in the k-point pair-FT derivative (`residue_deriv_block`, the force; the
+  Gamma range-separated force runs through it too), against the directional
+  FD: k RKS HSE06 8.5e-6, k UKS SCAN 2.6e-4, k UKS HSE06 2.3e-5, Gamma RKS
+  CAM-B3LYP 4.6e-5, Gamma UKS CAM-B3LYP 1.2e-4: all KILLED. The H/STO-3G FD
+  anchors of test_pbc_rsh_open_mgga_derivs.py pass unchanged under the same
+  mutant (2.8e-9 / 7.6e-10 / 4.1e-10): SURVIVED, which is the gap this file
+  closes. The PR-gating Rust twin (periodic_heavy_anchors.rs) misses by
+  4.6e-5: KILLED.
 * in the k-point pair-FT strain derivative (`residue_strain_block`, the
-  stress): k RKS HSE06 stress misses by 1.3e-5, k UKS SCAN by 1.1e-4, Gamma
-  RKS CAM-B3LYP by 6.3e-6: KILLED. The previous Gamma-vs-(1, 1, 1) stress
-  check stayed at 5.9e-14 under this mutant: the Gamma range-separated
-  derivatives run through the same k-point kernels, so that comparison is a
-  routing check, not an independent construction; the Gamma anchors here
-  are therefore FD anchors.
-* An FD component must include an x displacement / x strain to see these
-  mutants (the first UKS choice, z and y only, let them survive; the
-  components were changed accordingly).
+  stress): k RKS HSE06 stress 1.3e-5, k UKS SCAN 1.1e-4, k UKS r2SCAN
+  1.1e-4, Gamma RKS CAM-B3LYP 6.3e-6: KILLED. The previous Gamma-vs-(1, 1,
+  1) stress check stayed at 5.9e-14 under this mutant: the Gamma
+  range-separated derivatives run through the same k-point kernels, so that
+  comparison is a routing check, not an independent construction; the
+  Gamma anchors here are therefore FD anchors.
+* With per-axis FD components, a component set without x (the first UKS
+  choice, z and y only) let the force mutant survive; that is why forces
+  are now checked along one direction with every axis' share of g . d
+  asserted non-trivial. Stress component sets each include an x strain.
 """
 
 from __future__ import annotations
@@ -88,7 +115,7 @@ import subprocess
 import numpy as np
 import pytest
 
-ferric = pytest.importorskip("ferric", reason="the compiled extension is not built")
+import ferric  # noqa: E402  (conftest.py skips the suite without the extension)
 
 ROOT = pathlib.Path(__file__).resolve().parents[3]
 BOHR_IN_ANGSTROM = (
@@ -109,10 +136,10 @@ LIH = (("Li", "H"), ((0.3, 0.2, 0.1), (1.9, 1.4, 2.4)))
 LIH2 = (("Li", "H", "H"), ((0.3, 0.2, 0.1), (1.9, 1.4, 2.4), (0.5, 2.9, 1.2)))
 
 FD_H = 1e-4
-# Bars (measured worst, see the module doc): force 6.9e-9 (LiH2 SCAN), stress
-# 2.0e-8 (p-shell RKS HSE06, six components); binding - CLI 1.6e-15. The
-# mutants miss by >= 6.3e-6.
-FD_BAR = 5e-8
+# Bars (measured worst, see the module doc): force 7.4e-10 (p-shell UKS SCAN),
+# stress 2.0e-8 (p-shell RKS HSE06, six components); binding - CLI 1.6e-15.
+# The mutants miss by >= 6.3e-6.
+FD_BAR = 1e-8
 STRESS_BAR = 1e-7
 CLI_BAR = 1e-12
 
@@ -139,7 +166,13 @@ def _basis(tmp, lmax):
     p = tmp / f"h_l{lmax}.json"
     shells = [_H_S] + [_pol(ang) for ang in range(1, lmax + 1)]
     p.write_text(json.dumps({"elements": {"1": {"electron_shells": shells}}}))
-    return ferric.BasisSet.from_bse_json(str(p))
+    bs = ferric.BasisSet.from_bse_json(str(p))
+    # Basis guard: 1 + 3 (+ 5 pure d) functions per H, read back through a
+    # molecular H2 RHF (the BasisSet object exposes no count).
+    nbf = 2 * sum(2 * ang + 1 for ang in range(lmax + 1))
+    shape = ferric.run_rhf(_mol(*H2, 1), bs).density().shape
+    assert shape == (nbf, nbf), f"H l<={lmax}: density {shape}, want {nbf}"
+    return bs
 
 
 @pytest.fixture(scope="module")
@@ -193,52 +226,59 @@ def _run(route, system, bs, functional, mult, atoms=None, eps=None, **kw):
     raise AssertionError(route)
 
 
-def _force_vs_fd(route, system, bs, functional, mult, comps):
+# A generic displacement direction (rows: atoms), normalised over the whole
+# 3N vector; the same rows as `generic_direction` in
+# crates/ferric-cli/tests/heavy_anchors_cli/mod.rs. Per-atom components
+# differ, so a net-force-preserving error in one axis cannot cancel.
+_DIRECTION = np.array([[1.0, 0.7, 0.4], [-0.6, 0.9, -0.3], [0.5, -0.8, 0.2]])
+
+
+def _force_vs_fd(route, system, bs, functional, mult):
+    """|g . d - dE/dh| along the generic direction d, h = FD_H."""
     r = _run(route, system, bs, functional, mult, with_gradient=True)
     assert r.converged
     g = r.gradient()
-    assert np.abs(g).max() > 1e-3, "trivial force: the FD check would be vacuous"
-    x0 = [list(p) for p in system[1]]
-    worst = 0.0
-    for i, x in comps:
-        e = []
-        for h in (FD_H, -FD_H):
-            at = [list(p) for p in x0]
-            at[i][x] += h
-            e.append(_run(route, system, bs, functional, mult, atoms=at).energy)
-        worst = max(worst, abs(g[i, x] - (e[0] - e[1]) / (2.0 * FD_H)))
-    return r, worst
+    x0 = np.array(system[1], dtype=float)
+    d = _DIRECTION[: len(x0)] / np.linalg.norm(_DIRECTION[: len(x0)])
+    share = (g * d).sum(axis=0)
+    assert (np.abs(share) > 1e-4).all(), f"an axis' share of g.d is trivial: {share}"
+    e = [
+        _run(route, system, bs, functional, mult, atoms=x0 + h * d).energy
+        for h in (FD_H, -FD_H)
+    ]
+    return r, abs(float((g * d).sum()) - (e[0] - e[1]) / (2.0 * FD_H))
 
 
-def _stress_vs_fd(route, system, bs, functional, mult, comps):
+def _stress_vs_fd(route, system, bs, functional, mult, comps, h_fd=FD_H):
     """Omega (sigma_ab + sigma_ba) / 2 against the central FD of E under the
     symmetric strain eps_ab = eps_ba = h / 2 (eps_aa = h on the diagonal)."""
     r = _run(route, system, bs, functional, mult, with_stress=True)
     assert r.converged
     s = r.stress()
-    assert np.abs(s).max() > 1e-6, "trivial stress: the FD check would be vacuous"
     vol = A**3
     worst = 0.0
     for a, b in comps:
+        sym = vol * 0.5 * (s[a, b] + s[b, a])
+        assert abs(sym) > 1e-5, f"trivial stress component {a}{b}: {sym!r}"
         e = []
-        for h in (FD_H, -FD_H):
+        for h in (h_fd, -h_fd):
             eps = np.zeros((3, 3))
             eps[a, b] += h / 2.0
             eps[b, a] += h / 2.0
             e.append(_run(route, system, bs, functional, mult, eps=eps).energy)
-        fd = (e[0] - e[1]) / (2.0 * FD_H)
-        worst = max(worst, abs(vol * 0.5 * (s[a, b] + s[b, a]) - fd))
+        fd = (e[0] - e[1]) / (2.0 * h_fd)
+        worst = max(worst, abs(sym - fd))
     return r, worst
 
 
 ALL6 = ((0, 0), (1, 1), (2, 2), (0, 1), (0, 2), (1, 2))
 
 
-# ─────────────────────────────────────────── p shells, per commit: physics ──
+# ───────────────────────────── p shells, fast tier (nightly in CI): physics ──
 
 
 def test_kpoint_rks_hse06_force_p_shell_matches_fd(h_sp):
-    _, miss = _force_vs_fd("rks_k", H2, h_sp, "HSE06", 1, ((0, 0), (1, 2)))
+    _, miss = _force_vs_fd("rks_k", H2, h_sp, "HSE06", 1)
     print(f"k RKS HSE06 p-shell force vs FD: {miss:.2e}")
     assert miss < FD_BAR
 
@@ -250,7 +290,7 @@ def test_kpoint_rks_hse06_stress_p_shell_matches_fd(h_sp):
 
 
 def test_kpoint_uks_scan_force_p_shell_matches_fd(h_sp):
-    _, miss = _force_vs_fd("uks_k", H3, h_sp, "SCAN", 2, ((0, 0), (2, 1)))
+    _, miss = _force_vs_fd("uks_k", H3, h_sp, "SCAN", 2)
     print(f"k UKS SCAN p-shell force vs FD: {miss:.2e}")
     assert miss < FD_BAR
 
@@ -262,7 +302,7 @@ def test_kpoint_uks_scan_stress_p_shell_matches_fd(h_sp):
 
 
 def test_kpoint_uks_hse06_force_p_shell_matches_fd(h_sp):
-    r, miss = _force_vs_fd("uks_k", H3, h_sp, "HSE06", 2, ((1, 0), (2, 2)))
+    r, miss = _force_vs_fd("uks_k", H3, h_sp, "HSE06", 2)
     print(f"k UKS HSE06 p-shell force vs FD: {miss:.2e}")
     assert miss < FD_BAR
 
@@ -272,7 +312,7 @@ def test_gamma_rks_cam_b3lyp_p_shell_force_and_stress_match_fd(h_sp):
     # on the one-point mesh, so "Gamma == (1, 1, 1)" is a routing check, not
     # an independent construction (the p-lowering mutants move both alike):
     # the physics anchor is the FD.
-    _, fmiss = _force_vs_fd("rks_g", H2, h_sp, CAM, 1, ((0, 0), (1, 2)))
+    _, fmiss = _force_vs_fd("rks_g", H2, h_sp, CAM, 1)
     _, smiss = _stress_vs_fd("rks_g", H2, h_sp, CAM, 1, ((0, 0), (0, 2)))
     print(
         f"Gamma RKS CAM-B3LYP p-shell: force vs FD {fmiss:.2e}, stress vs FD {smiss:.2e}"
@@ -281,7 +321,7 @@ def test_gamma_rks_cam_b3lyp_p_shell_force_and_stress_match_fd(h_sp):
 
 
 def test_gamma_uks_cam_b3lyp_p_shell_force_matches_fd(h_sp):
-    _, miss = _force_vs_fd("uks_g", H3, h_sp, CAM, 2, ((0, 0), (2, 1)))
+    _, miss = _force_vs_fd("uks_g", H3, h_sp, CAM, 2)
     print(f"Gamma UKS CAM-B3LYP p-shell force vs FD: {miss:.2e}")
     assert miss < FD_BAR
 
@@ -316,6 +356,15 @@ def _cli_run_end(tmp, system, mult, kind, functional, kmesh, task):
     cli = _cli_binary()
     if cli is None:
         pytest.skip("no ferric-cli binary (build it, or set FERRIC_CLI)")
+    # Same tree on both sides, or the comparison is between two builds.
+    ver = subprocess.run([str(cli), "--version"], capture_output=True, text=True)
+    info = ferric.build_info()
+    want = (f"commit: {info['commit']}", f"dirty: {str(info['dirty']).lower()}")
+    if not all(w in ver.stdout for w in want):
+        pytest.skip(
+            f"ferric-cli ({cli}) and the extension are different builds: "
+            f"{ver.stdout.strip()!r} vs {info}; rebuild both from this tree"
+        )
     (tmp / "m.xyz").write_text(_xyz(*system))
     (tmp / "basis.g94").write_text(_H_SP_G94)
     extra = (
@@ -402,8 +451,20 @@ def test_p_shell_stress_equals_the_cli(
 
 
 @pytest.mark.validation
+def test_kpoint_uks_r2scan_stress_p_shell_matches_fd(h_sp):
+    # r2SCAN's zz strain curvature is larger: the miss is the FD truncation,
+    # measured 1.9e-7 / 4.7e-8 / 1.0e-8 at h = 2e-4 / 1e-4 / 5e-5 (clean h^2),
+    # so this one runs at h = 5e-5.
+    _, miss = _stress_vs_fd(
+        "uks_k", H3, h_sp, "r2SCAN", 2, ((2, 2), (0, 1)), h_fd=FD_H / 2
+    )
+    print(f"k UKS r2SCAN p-shell stress (zz, xy) vs FD: {miss:.2e}")
+    assert miss < STRESS_BAR
+
+
+@pytest.mark.validation
 def test_kpoint_rks_hse06_d_shell_force_and_stress_match_fd(h_spd):
-    _, fmiss = _force_vs_fd("rks_k", H2, h_spd, "HSE06", 1, ((0, 0), (1, 2)))
+    _, fmiss = _force_vs_fd("rks_k", H2, h_spd, "HSE06", 1)
     _, smiss = _stress_vs_fd("rks_k", H2, h_spd, "HSE06", 1, ((0, 0), (2, 2), (0, 2)))
     print(f"k RKS HSE06 d-shell: force vs FD {fmiss:.2e}, stress vs FD {smiss:.2e}")
     assert fmiss < FD_BAR and smiss < STRESS_BAR
@@ -411,14 +472,14 @@ def test_kpoint_rks_hse06_d_shell_force_and_stress_match_fd(h_spd):
 
 @pytest.mark.validation
 def test_kpoint_uks_scan_d_shell_force_matches_fd(h_spd):
-    _, miss = _force_vs_fd("uks_k", H3, h_spd, "SCAN", 2, ((0, 0), (2, 1)))
+    _, miss = _force_vs_fd("uks_k", H3, h_spd, "SCAN", 2)
     print(f"k UKS SCAN d-shell force vs FD: {miss:.2e}")
     assert miss < FD_BAR
 
 
 @pytest.mark.validation
 def test_gamma_rks_cam_b3lyp_d_shell_force_and_stress_match_fd(h_spd):
-    _, fmiss = _force_vs_fd("rks_g", H2, h_spd, CAM, 1, ((0, 0), (1, 2)))
+    _, fmiss = _force_vs_fd("rks_g", H2, h_spd, CAM, 1)
     _, smiss = _stress_vs_fd("rks_g", H2, h_spd, CAM, 1, ((0, 0), (0, 2)))
     print(
         f"Gamma RKS CAM-B3LYP d-shell: force vs FD {fmiss:.2e}, stress vs FD {smiss:.2e}"
@@ -433,7 +494,7 @@ def sto3g():
 
 @pytest.mark.validation
 def test_kpoint_rks_hse06_lih_force_and_stress_match_fd(sto3g):
-    _, fmiss = _force_vs_fd("rks_k", LIH, sto3g, "HSE06", 1, ((0, 0), (1, 2)))
+    _, fmiss = _force_vs_fd("rks_k", LIH, sto3g, "HSE06", 1)
     _, smiss = _stress_vs_fd("rks_k", LIH, sto3g, "HSE06", 1, ((0, 0), (0, 2)))
     print(f"k RKS HSE06 LiH: force vs FD {fmiss:.2e}, stress vs FD {smiss:.2e}")
     assert fmiss < FD_BAR and smiss < STRESS_BAR
@@ -441,6 +502,6 @@ def test_kpoint_rks_hse06_lih_force_and_stress_match_fd(sto3g):
 
 @pytest.mark.validation
 def test_kpoint_uks_scan_lih2_force_matches_fd(sto3g):
-    _, miss = _force_vs_fd("uks_k", LIH2, sto3g, "SCAN", 2, ((0, 1), (2, 2)))
+    _, miss = _force_vs_fd("uks_k", LIH2, sto3g, "SCAN", 2)
     print(f"k UKS SCAN LiH2 force vs FD: {miss:.2e}")
     assert miss < FD_BAR

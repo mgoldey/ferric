@@ -14,6 +14,19 @@
 //!
 //! Measured 2026-10-26 (test profile, one test at a time; the times are in
 //! the ignore reasons): every CLI run and library call bit-equal.
+//!
+//! COST: ~42 min of summed test time locally (~70 min on CI at the ~1.6x
+//! CI/local spread), dealt by `count:K/4` (round-robin in name order, see the
+//! validation job in ci.yml; `cargo nextest list --profile validation
+//! --run-ignored only --partition count:K/4` on this binary):
+//! * shard 1: LiH stress (~13 min), d-shell UKS SCAN force, p-shell Gamma UKS
+//!   force: ~17 min;
+//! * shard 2: LiH2 UKS SCAN force (~8 min), d-shell RKS force, p-shell RKS
+//!   stress: ~10.5 min. Shard 2 is the tier's tightest (ecp_gradient_ch2i_uhf;
+//!   ci.yml's timeout note): this is ~17 min of its CI headroom;
+//! * shard 3: LiH force (~9 min), p-shell UKS HSE06 and SCAN forces: ~11 min;
+//! * shard 4: d-shell RKS stress, p-shell SCAN / r2SCAN stress: ~4.5 min
+//!   (plus the Python half of the tier, which this PR grows by ~23 min).
 
 mod heavy_anchors_cli;
 
