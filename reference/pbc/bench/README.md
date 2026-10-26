@@ -377,12 +377,15 @@ dryice: ferric best omega 11.69 s (this sweep) vs ferric default 20.41 s vs PySC
 
 ## Statements the data supports (same cell, same N, same stage definition; mismatches below)
 - Total wall ferric/PySCF: k222 0.61 (N=1), 0.55 (N=6); diamond_prim 0.64, dryice 0.58, diamond_conv
-  0.78, prim222 0.54 (N=6): ferric faster.  **dryice_112: 2.20, ferric SLOWER** (N=6), with ferric at its
+  0.78, prim222 0.54 (N=6): ferric faster.  **dryice_112: 2.20, ferric SLOWER** (N=6) [STALE, do not
+  quote: timed on 654087b4, before #508 (fc0ccc041) resized the RS-GDF LR chunk (#507); dryice_112 has
+  not been re-timed since; see "Session 4 pre-registration"], with ferric at its
   default omega 1.0 vs PySCF's automatic 0.285; ferric's best omega on dryice was 1.74x faster than its
   default, and the best omega on dryice_112 was NOT measured.  PySCF automatic omega per cell: k222
   0.316, diamond_prim 0.417, dryice 0.330, conv 0.370, prim222 0.316, dryice_112 0.285.
 - DF build only: ferric/PySCF = 0.61 (k222 N=1), 0.61 (k222 N=6), 0.71 (diamond_prim), 0.88 (conv),
-  0.86 (prim222), but 2.0 (dryice) and **7.5 (dryice_112)**.  ferric's LR part (pair FT + GEMM) is the
+  0.86 (prim222), but 2.0 (dryice) and **7.5 (dryice_112)** [STALE, same reason as the 2.20 above].
+  ferric's LR part (pair FT + GEMM) is the
   cause: 12.6 s -> 266 s from dryice to dryice_112 (21x for 2x the cell), while its SR 3-centre went
   2.8 -> 6.2 s.  Inside the LR part (medians): `LR sink: J3 + J2 GEMMs` 4.99 -> 216.9 s (43x; the
   `aux FT + GEMM` stage 5.68 -> 221.5 s, 39x) vs pair FT 6.95 -> 44.9 s (6.5x).  39-43x exceeds the
@@ -649,3 +652,115 @@ dryice_112; N=1 rows for diamond_conv / diamond_prim222 / dryice_112; jkfit rows
 why PySCF's dryice hcore moved +38% between the first two sessions (carried forward; this session ran
 no dryice RHF or PBE timing, so it adds no evidence).  The dryice_112 LR-scaling lead of the second
 session is not carried: #508 (merged) addressed it (#507); dryice_112 was not re-timed here.
+
+# ADDENDUM 2026-10-26: Session 4 pre-registration (harness hardening; PRE-REGISTERED)
+
+Written and committed BEFORE any anchor or timed run of session 4 (branch
+bench/harness-hardening-228, base origin/main 5a536617a).  No session-4 number exists at this commit;
+the only runs made while writing it were seconds-long harness smoke checks on H2 / water STO-3G toy
+cells (`--smoke` rows, never timing data) and a parse check of every new TOML (below).  Earlier
+sessions' text is left as written; their stale dryice_112 ratios are marked inline.
+
+## Harness changes (this commit)
+- `scatter_driver.py`: `--bin` is required and must be a PRIVATE copy (any `target/` path component,
+  as given or after resolving symlinks, is refused: a rebuild under a running job SIGBUSes it); its
+  sha256 is recorded on every row (`bin_sha256`, re-hashed before each ferric run, outside the timed
+  window).  `--cpus` pins BOTH codes with `taskset -c` (defaults N=1 -> `0`, N=6 -> `0-5`: the
+  i7-6800K's physical cores; SMT siblings 6-11 stay idle).  Every row carries `scaling_cur_freq` of all
+  12 CPUs and the coretemp temperatures at the start and end of the timed window, and a `box_state`
+  label (next section).  `--ferric-tags` runs several ferric inputs per rep, interleaved with PySCF;
+  the sequence [ferric T1 .. Tk, PySCF] is rotated by the rep index.  `--pyscf-match-ferric-conv`,
+  `--pyscf-args`, `--smoke` (no locks / waits, rows smoke=true, valid=false).
+- `pyscf_bench.py --match-ferric-conv`: PySCF stops on ferric's periodic SCF rule (next sections).
+- `summarize.py`: the statistics below; `test_bench_harness.py` unit-tests them (pairing, bootstrap,
+  noisy label, binary refusal, pinning defaults, rotation, sysfs snapshots, the stopping rule).
+- New inputs in `toml_ri/`: `diamond_prim_k333_rhf.toml`; `dryice_112_rhf_w{0.3,0.5,0.7,1.0}.toml`;
+  `diamond_prim_pbe_w{0.3,0.5,0.7,1.0}.toml` (`w1.0` writes the default explicitly); dryice PBE grid
+  ladder `dryice_pbe_150x302`, `_100x590`, `_200x590`, `_250x590` (with the existing `dryice_pbe`
+  (75x302), `_150x434`, `_150x590`).  Parse check: each new file, with only `[molecule] xyz` swapped
+  to H2 and `[basis]` to sto-3g, ran to `converged = true` on a private copy of an existing release
+  build (commit 3843d65c8, dirty false); the printed `gdf_omega` and the grid-dependent energies show
+  the keys took effect.
+
+## Quiet-box preconditions (every row)
+- One private binary per session; rows with different `bin_sha256` are never pooled.  ferric
+  `--version` must name a commit that contains #508 (fc0ccc041), checked before the first run.
+- Pinning as above for both codes (`cpus` recorded).  Both heavy-slot locks held from before the
+  quiet wait until the run exits (unchanged).
+- `box_state = "quiet"` iff the 1-minute loadavg at the start of the run is < 1.5 AND the foreign-CPU
+  fraction over the run (box CPU outside the run's own process tree / (wall x 12 logical CPUs)) is
+  < 2%; otherwise `"ambient"`.  Ambient rows are kept and shown, but only quiet rows enter a QUOTED
+  number (`summarize.py --quiet-only`).  If a group has no quiet rows, its ratio is not quoted.
+  The existing `valid` gate (N=6 and N=1 with `N1_GATE=foreign`: foreign < 12%, start loadavg < 1.5,
+  converged, energy parsed; <= 3 attempts) is unchanged and applies on top.
+- Frequency / temperature snapshots are recorded, not gated; the write-up reports, per group, the
+  range of the pinned CPUs' start/end `scaling_cur_freq` and the max package temperature.
+
+## Repeat counts and order
+- Timed rows: 5 valid reps per (cell, code, input) at N=6; 3 at N=1.  Order rotated per rep (default).
+- Between-session scatter: every row to be quoted is run in at least 2 sessions (separate `--out`
+  files, started >= 1 h apart, same binary sha256).
+
+## Statistics (`summarize.py`, per (cell, N, code, input, box_state))
+- median, min-max, IQR, IQR/median, relative MAD (median |x - median| / median); NOISY iff
+  IQR/median of the quoted metric (total wall unless stated) > 10%.
+- ferric/PySCF ratio of medians, same cell, same N, same method, with a PAIRED bootstrap 95% percentile
+  CI: pairs are (session, rep) keys present for both codes (last valid attempt each), 10000
+  resamples of pairs with replacement, `random.Random(228)`.
+- Between sessions: per-session medians, CV of those medians (sample stdev / mean), max/min; and the
+  per-session ferric/PySCF ratio with its max/min.
+
+## Quoting rule
+A ferric/PySCF ratio is quoted only if: same cell, N, method and stage definition; both groups quiet
+and not NOISY; and the ratio's between-session range (max/min of the per-session ratios - 1) is < 5%
+over >= 2 sessions.  Every quoted ratio carries its bootstrap CI and the mismatch list.  Otherwise it is
+reported as "not quotable" with its range.
+
+## SCF stopping rule (matched work)
+Timed PySCF rows use `--match-ferric-conv`.  The hook reproduces ferric's rule as read from the code
+(file:line in the `pyscf_bench.py` comment block): Gamma: dP_rms < 1e-10 AND dP_max < 1e-9 AND
+|dE| < 1e-3, where dP = D_new - D_old over all nao^2 elements with D = 2 C_occ C_occ^T, then the
+orbital-gradient veto max|X^T (FDS - SDF) X| <= 1e-3 (X: canonical orthogonaliser, absolute
+eigenvalue cut 1e-6); k-mesh: |dE| < 1e-12 AND max over k of |X_k^H (FDS - SDF) X_k| < 1e-9.  PySCF's
+extra `conv_check` cycle is switched off (ferric has none).  Under the same rule ferric `iterations` =
+PySCF `cycles` + 1 (ferric counts the guess-energy pass).  Equivalence evidence (toy, untimed,
+`--smoke`): water / STO-3G in an 8 Bohr cube, Gamma RHF, hcore guess, an unextrapolated first step in
+either code: the first checked step agrees to the 4 digits ferric's `FERRIC_SCF_TRACE` prints
+(ferric iteration 2: dE 1.704, dP_rms 5.200e-1, dP_max 1.708; PySCF cycle 1: 1.70437, 0.519993,
+1.70816); final energies differ by 1.3e-12 Ha.  Later steps differ (different DIIS), so iteration
+counts are reported, not assumed equal (ferric 10, PySCF 12 cycles = 13 ferric-equivalent there).
+Gate on the switch: per cell, one untimed PySCF anchor under each rule; if they differ by more than
+1e-8 Ha/cell, the matched-rule rows of that cell are not used.
+
+## Rows, in priority order
+1. dryice_112 Gamma RHF, N=6: ferric `--ferric-tags _w0.3 _w0.5 _w0.7 _w1.0` interleaved with PySCF
+   (automatic omega, labelled).  Replaces the stale 2.20 / 7.5.
+2. diamond_prim RHF, N=6: ferric k333 (`diamond_prim_k333`) vs PySCF `--kmesh 3 3 3`; N=1 if budget.
+3. diamond_prim Gamma PBE 75x302, N=6: `--ferric-tags _w0.3 _w0.5 _w0.7 _w1.0` vs PySCF.
+4. dryice PBE ladder anchors (untimed, N=6, one run per code per grid): 75x302, 150x302, 150x434,
+   150x590, 100x590, 200x590, 250x590 (PySCF `--grid R A`, precision 1e-11).
+5. If (4) passes the gate below: dryice PBE 75x302 timing, 5 reps N=6, 3 reps N=1.
+6. Repeats of the earlier quoted rows (diamond_prim / dryice RHF N=6) for the between-session table.
+
+## dryice PBE ladder gate (replaces the one-step eps of the third session for this cell)
+ref = 250x590.  The ref is valid for code c only if |E_c(250x590) - E_c(200x590)| < 1e-6 Ha/cell;
+if either code fails, the gate is undecidable and no dryice PBE timing row is run.  Pass iff
+  |E_f(75x302) - E_P(75x302)| <= |E_f(ref) - E_f(75x302)| + |E_P(ref) - E_P(75x302)| + 1e-8.
+The full ladder is reported per code (non-monotone steps are reported, not a failure).  Artifact vs
+physics: if the cross-code 75x302 difference is grid quadrature, |E_f(ref) - E_P(ref)| is small next
+to it; a cross-code difference that does NOT shrink at the ref points at a non-grid defect and is
+investigated instead of timed, whatever the gate says.
+
+## Hypotheses (before any session-4 number)
+- H11: with #508, ferric/PySCF total at N=6 on dryice_112 at the default omega is < 1.0.  Artifact
+  signature: a ferric `LR sink: J3 + J2 GEMMs` stage near the second session's 216.9 s means the
+  binary lacks #508.
+- H12: every quiet group has IQR/median <= 3%, and ferric's between-session max/min <= 1.05.  PySCF
+  dryice hcore (+38% between the first two sessions) is checked again under pinning.
+- H13: diamond_prim k333 ferric/PySCF total in [0.5, 2] at N=6 (k222: 0.55).
+- H14: the dryice ladder gate is decidable and passes; |E_f(ref) - E_P(ref)| < 1e-6 Ha/cell.
+
+## Mismatches known before running
+The earlier lists still apply (precision, aux handling, hcore twice in PySCF, python import in
+PySCF wall, s/iter definitions, omega labelled), except that the stopping rule is now matched
+(trajectories and DIIS are not) and both codes are pinned to the same CPUs.

@@ -4,6 +4,7 @@ Usage (from anywhere):
   OPENBLAS_NUM_THREADS=1 python pyscf_bench.py CELL --threads 1 --precision 1e-10 [--method rhf|pbe]
       [--aux cc-pvdz-ri] [--kmesh 2 2 2] [--df gdf|rsdf] [--basis-repr general|segmented]
       [--lindep-s 1e-6] [--init-guess hcore] [--verbose 0] [--tag T] [--out file.jsonl]
+      [--match-ferric-conv]   (stop on ferric's periodic SCF rule; see the comment block below)
 
 CELL = basename of <CELL>.xyz / <CELL>.lattice next to this file (Angstrom xyz, Bohr lattice rows).
 Matched to the ferric CLI inputs under toml/ (see README.md): spherical cc-pVDZ and the aux basis
@@ -85,13 +86,13 @@ def ferric_basis_pyscf(name, symbols, repr_="general"):
             ex = [float(x) for x in sh["exponents"]]
             cols = [[float(x) for x in c] for c in sh["coefficients"]]
             ls = sh["angular_momentum"]
-            for k, l in enumerate(ls):
+            for k, ang in enumerate(ls):
                 # fused SP-type shells: one coefficient row per angular momentum
                 cc = [cols[k]] if len(ls) > 1 else cols
                 groups = [[c] for c in cc] if repr_ == "segmented" else [cc]
                 for g in groups:
                     blocks.append(
-                        [l] + [[ex[i]] + [c[i] for c in g] for i in range(len(ex))]
+                        [ang] + [[ex[i]] + [c[i] for c in g] for i in range(len(ex))]
                     )
         out[sym] = blocks
     return out
@@ -111,6 +112,132 @@ def _ints(v):
 
 def load1():
     return float(open("/proc/loadavg").read().split()[0])
+
+
+# ---------------------------------------------------------------------------------------------
+# --match-ferric-conv: ferric's periodic SCF stopping rule as a PySCF `mf.check_convergence` hook.
+# Read from origin/main 5a536617a (line numbers are at that commit):
+#
+# Gamma point (RHF and RKS; both go through ferric_scf::rhf::solve_rhf_injected ->
+# solve_rhf_impl, crates/ferric-scf/src/rhf.rs:1411 / :1716, loop at :2349):
+#   density_conv = 1e-10   crates/ferric-cli/src/config.rs:5347-5351 (periodic_scf_knobs default when
+#                          [scf] density_conv is not written; every toml_ri input leaves it unwritten)
+#   energy_conv  = 1e-3    RhfConfig::default, crates/ferric-scf/src/rhf.rs:463, reached through
+#                          gamma_scf_config's `..Default::default()` (crates/ferric-cli/src/periodic.rs:629-636)
+#   gate         crates/ferric-scf/src/rhf.rs:853-866 `scf_converged`:
+#                dp_rms < density_conv AND dp_max < 10*density_conv AND |dE| < energy_conv  (all strict)
+#   dp_rms/max   crates/ferric-scf/src/driver.rs:207-219 `density_change`: sqrt(sum(dP^2) / len) over ALL
+#                n*n elements of dP = D_new - D_old (both triangles, len = nao^2), and max |dP_ij|.
+#                D = 2 C_occ C_occ^T (rhf.rs:3289, :3360), the same normalisation as PySCF make_rdm1.
+#   pairing      ScfMonitor (driver.rs:445-459): the check at iteration n+1 uses dE = E(D_{n+1}) - E(D_n)
+#                and dP = D_{n+1} - D_n, where D_{n+1} came from diagonalising the (DIIS) Fock of D_n.
+#                PySCF's kernel (scf/hf.py:172-198 in 2.13.1) hands check_convergence exactly that
+#                pair: e_tot/last_hf_e and dm/dm_last.  ferric counts the guess-energy pass as
+#                iteration 1, so ferric `iterations` = PySCF `cycles` + 1 under the same rule.
+#   veto         an accepted exit is refused if max|X^T (F D S - S D F) X| > max(sqrt(density_conv), 1e-3)
+#                (rhf.rs:902-927, applied at :2708-2718 after the gate at :2694-2698; 1e-3 = rohf_occupation.rs:107), F = the un-extrapolated
+#                Fock of the current D (PySCF's `fock` in envs, hf.py:187), X = canonical orthogonaliser
+#                U_kept diag(1/sqrt(lambda)) with an ABSOLUTE cut lambda >= 1e-6 on the raw eigenvalues
+#                of S (rhf.rs:3596, :3652-3676).
+#   Not reproduced (inactive in the bench inputs): the ADIIS/EDIIS veto (Pulay is the default),
+#   the COSX schedule gate, divergence/stall exits.
+#
+# k-mesh (crates/ferric-pbc/src/kscf.rs:842, KRHF):
+#   it > 0 AND |dE| < energy_conv (1e-12 per cell) AND max_k max|X_k^H (F D S - (F D S)^H) X_k| < grad_conv
+#   (1e-9), elementwise complex modulus; defaults kscf.rs:105-106 and config.rs:5352-5356 / :5816.
+#   X_k: same absolute 1e-6 cut (kscf.rs:407-432).  D(k) = 2 C_occ C_occ^H (kscf.rs:657-661).
+#   dm starts at 0 (it = 0 is the D = 0 pass, it = 1 the hcore-guess energy), so ferric's 0-based
+#   `it` at exit (KScfResult.iterations, kscf.rs:842-858) is PySCF `cycles` + 1 under the same rule.
+#
+# PySCF's post-convergence `conv_check` extra cycle (hf.py:212-238) has no ferric counterpart and would
+# re-run this hook; --match-ferric-conv therefore sets mf.conv_check = False.
+# Basis-dependence caveat: max|X^T G X| depends on the eigenvector basis inside a DEGENERATE eigenspace
+# of S, in ferric as well; it only enters through the 1e-3 veto (Gamma) or the 1e-9 bound (k).
+FERRIC_GAMMA_DENSITY_CONV = 1e-10
+FERRIC_GAMMA_ENERGY_CONV = 1e-3
+FERRIC_VETO_MIN_GRAD = 1e-3
+FERRIC_LINDEP = 1e-6
+FERRIC_K_ENERGY_CONV = 1e-12
+FERRIC_K_GRAD_CONV = 1e-9
+
+
+def ferric_canonical_orthogonalizer(s, lindep=FERRIC_LINDEP):
+    import numpy as np
+
+    w, u = np.linalg.eigh(s)
+    keep = w >= lindep
+    return u[:, keep] / np.sqrt(w[keep])
+
+
+def ferric_density_change(d_new, d_old):
+    """(rms, max) of dP over all n*n elements (driver.rs:207-219)."""
+    import numpy as np
+
+    diff = np.asarray(d_new) - np.asarray(d_old)
+    a = np.abs(diff)
+    return float(np.sqrt(np.sum(a * a) / max(diff.size, 1))), float(a.max())
+
+
+def ferric_orthogonal_gradient_max(fock, dm, s, lindep=FERRIC_LINDEP):
+    """max |X^H (F D S - S D F) X| (rhf.rs:921-927; kscf.rs:831-841 per k)."""
+    import numpy as np
+
+    x = ferric_canonical_orthogonalizer(s, lindep)
+    fds = np.asarray(fock) @ np.asarray(dm) @ np.asarray(s)
+    g = fds - fds.conj().T
+    return float(np.abs(x.conj().T @ g @ x).max())
+
+
+def ferric_gamma_signals(e, e_last, dm, dm_last, fock, s):
+    dp_rms, dp_max = ferric_density_change(dm, dm_last)
+    sig = dict(de=abs(e - e_last), dp_rms=dp_rms, dp_max=dp_max, grad_max=None)
+    gate = (
+        dp_rms < FERRIC_GAMMA_DENSITY_CONV
+        and dp_max < 10.0 * FERRIC_GAMMA_DENSITY_CONV
+        and sig["de"] < FERRIC_GAMMA_ENERGY_CONV
+    )
+    if gate:  # ferric evaluates the veto gradient only on an accepted exit
+        sig["grad_max"] = ferric_orthogonal_gradient_max(fock, dm, s)
+        bound = max(FERRIC_GAMMA_DENSITY_CONV**0.5, FERRIC_VETO_MIN_GRAD)
+        gate = sig["grad_max"] <= bound
+    sig["converged"] = bool(gate)
+    return sig
+
+
+def ferric_k_signals(e, e_last, dm_k, fock_k, s_k):
+    grad = max(
+        ferric_orthogonal_gradient_max(f, d, s) for f, d, s in zip(fock_k, dm_k, s_k)
+    )
+    de = abs(e - e_last)
+    return dict(
+        de=de,
+        grad_max=grad,
+        converged=bool(de < FERRIC_K_ENERGY_CONV and grad < FERRIC_K_GRAD_CONV),
+    )
+
+
+def make_ferric_conv_check(kpt_run, trace):
+    """mf.check_convergence(envs) applying ferric's rule; appends each cycle's signals to trace."""
+
+    def check(envs):
+        if kpt_run:
+            sig = ferric_k_signals(
+                envs["e_tot"], envs["last_hf_e"], envs["dm"], envs["fock"], envs["s1e"]
+            )
+        else:
+            sig = ferric_gamma_signals(
+                envs["e_tot"],
+                envs["last_hf_e"],
+                envs["dm"],
+                envs["dm_last"],
+                envs["fock"],
+                envs["s1e"],
+            )
+        sig["cycle"] = int(envs["cycle"]) + 1
+        trace.append(sig)
+        return sig["converged"]
+
+    return check
 
 
 def main(argv=None):
@@ -142,6 +269,12 @@ def main(argv=None):
     )
     ap.add_argument("--init-guess", default="hcore")
     ap.add_argument("--verbose", type=int, default=0, help="PySCF cell/mf verbosity")
+    ap.add_argument(
+        "--match-ferric-conv",
+        action="store_true",
+        help="stop on ferric's periodic SCF rule (Gamma: dP rms/max + dE + gradient veto; "
+        "k: dE + max orbital-gradient element), via mf.check_convergence; conv_check off",
+    )
     ap.add_argument("--tag", default="")
     ap.add_argument("--out", default=None)
     a = ap.parse_args(argv)
@@ -251,6 +384,10 @@ def main(argv=None):
     mf.conv_tol_grad = a.conv_tol_grad
     mf.max_cycle = a.max_cycle
     mf.verbose = a.verbose
+    conv_trace = []
+    if a.match_ferric_conv:
+        mf.check_convergence = make_ferric_conv_check(kpt_run, conv_trace)
+        mf.conv_check = False
 
     w0, c0 = time.perf_counter(), time.process_time()
     df.build()
@@ -312,8 +449,12 @@ def main(argv=None):
         t_hcore_s=tt.get("hcore"),
         hcore_calls=tt.get("hcore_calls", 0),
         kmesh=a.kmesh,
-        conv_tol=a.conv_tol,
-        conv_tol_grad=a.conv_tol_grad,
+        conv_rule="ferric" if a.match_ferric_conv else "pyscf",
+        conv_tol=None if a.match_ferric_conv else a.conv_tol,
+        conv_tol_grad=None if a.match_ferric_conv else a.conv_tol_grad,
+        conv_check=bool(mf.conv_check),
+        ferric_conv_final=conv_trace[-1] if conv_trace else None,
+        ferric_conv_trace=conv_trace or None,
         grid=a.grid if a.method == "pbe" else None,
         n_grid_points=int(mf.grids.weights.size) if a.method == "pbe" else None,
         t_kernel_s=t_kernel,
