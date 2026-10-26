@@ -27,15 +27,13 @@
 #       same filter) must equal the full list's matching tests, with no test
 #       in two shards. Fails closed.
 #
-# EXTRA BINARIES. The archive filter keeps only the test binaries it names
-# (plus .config/nextest.toml's archive.include). Integration tests that run
-# a package's own executable through CARGO_BIN_EXE_<name> need that
-# executable in the same archive, so a shard holding any test of a package
-# listed in BIN_DEPS also gets that package's bin target, by its own
-# binary_id. NEVER `kind(bin)`: that would add every bin unit-test binary to
-# every shard, and their tests would then run more than once. The bin's
-# OWN unit tests run in exactly one shard (it is an ordinary assigned binary
-# like any other); `verify` checks that.
+# EXECUTABLES. Integration tests that run a package's own executable via
+# CARGO_BIN_EXE_<name> need it in the same archive. nextest already packs a
+# package's non-test executables into any archive that selects one of that
+# package's test binaries, so nothing is added here; ci.yml checks the
+# ferric-cli executable is present in every shard archive that needs it.
+# Never add a bin target's own binary_id to a shard it was not assigned to:
+# if that bin ever gains tests they would then run in two shards.
 #
 # Needs: python3 (ubuntu runners ship it).
 set -euo pipefail
@@ -52,9 +50,6 @@ SLOW_BINARIES=(
   cosx_group_screen_anchors cosx_sparse_anchors cosx_mixed_error_law
 )
 
-# package -> binary_id of the bin target its integration tests execute
-# (CARGO_BIN_EXE_<name>). Space-separated `package=binary_id` pairs.
-BIN_DEPS="ferric-cli=ferric-cli::bin/ferric-cli"
 
 usage() {
   sed -n '2,/^# Needs:/p' "$0" | sed 's/^# \{0,1\}//' >&2
@@ -74,12 +69,12 @@ case "${1:-}" in
     ;;
   assign)
     [ "$#" -eq 5 ] || usage
-    python3 - "$2" "$3" "$4" "$5" "$BIN_DEPS" <<'PY'
+    python3 - "$2" "$3" "$4" "$5" <<'PY'
 import json
 import os
 import sys
 
-list_json, weights_tsv, n_str, outdir, bin_deps = sys.argv[1:6]
+list_json, weights_tsv, n_str, outdir = sys.argv[1:5]
 n = int(n_str)
 if n < 1:
     sys.exit(f"assign: N must be >= 1, got {n}")
@@ -138,25 +133,16 @@ missing = sorted(set(matching) - set(seen))
 if missing:
     sys.exit(f"assign: {len(missing)} matching binaries unassigned: {missing[:10]}")
 
-deps = dict(pair.split("=", 1) for pair in bin_deps.split())
 os.makedirs(outdir, exist_ok=True)
 for k, ids in enumerate(shards, 1):
-    packages = {suites[b]["package-name"] for b in ids}
-    extra = sorted(
-        dep for pkg, dep in deps.items() if pkg in packages and dep not in ids
-    )
-    for dep in extra:
-        if dep not in suites:
-            sys.exit(f"assign: BIN_DEPS names {dep}, which {list_json} does not list")
     ids_sorted = sorted(ids)
     with open(os.path.join(outdir, f"{k}.ids"), "w", encoding="utf-8") as fh:
         fh.write("".join(f"{b}\n" for b in ids_sorted))
     with open(os.path.join(outdir, f"{k}.filter"), "w", encoding="utf-8") as fh:
-        fh.write(" | ".join(f"binary_id(={b})" for b in ids_sorted + extra) + "\n")
+        fh.write(" | ".join(f"binary_id(={b})" for b in ids_sorted) + "\n")
     tests = sum(matching[b] for b in ids)
     print(
         f"shard {k}: {len(ids)} binaries, {tests} tests, predicted {loads[k - 1]:.0f} s"
-        + (f" (+ {', '.join(extra)} for CARGO_BIN_EXE)" if extra else "")
     )
 unweighted = sorted(b for b in matching if b not in weights)
 total = sum(loads)

@@ -1301,7 +1301,7 @@ jobs:
         # --locked: see build-and-test's "Check (all targets)" step for why.
         run: |
           set +e
-          STEP_TEXT=$(sed -n '/- name: Test (deferred)/,/^  [a-z]/p' .github/workflows/ci.yml)
+          STEP_TEXT=$(sed -n '/- name: Test (deferred)/,/^  [a-z]/p' .github/workflows/ci.yml | grep -vE '^[[:space:]]*#')
           NAMES=$(scripts/ci-shard-plan.sh slow-names) && [ -n "$NAMES" ] \
             || { echo "::error::scripts/ci-shard-plan.sh slow-names failed or is empty"; exit 1; }
           for b in $NAMES; do
