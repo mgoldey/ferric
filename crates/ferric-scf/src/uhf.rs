@@ -1396,20 +1396,37 @@ fn solve_uhf_impl(
             // member of the pair. Only then (see `occupied_by_density`): a MOM
             // state is non-aufbau by design and keeps main's C and eps. Per
             // spin, and only for an integer density (`reorder_exit_mos`).
-            let (eps_a, c_a_f) = occupied_by_density(
-                diag_a.run(&f_a)?,
-                &s,
-                &d_a,
+            // A plain ΔP exit can also settle on an integer D that is not the
+            // aufbau state of F[D]; then the spin gets D's semicanonical
+            // orbitals instead (`exit_mos_building_density`; not under MOM or
+            // symmetry blocking, see `exit_eigenpairs`).
+            let mom = config.mom_after_iter > 0;
+            let (eps_a, c_a_f) = exit_eigenpairs(
+                &diag_a,
+                ExitSpin {
+                    f: &f_a,
+                    s: &s,
+                    x: &x,
+                    d: &d_a,
+                    d_occ: d_occ_a.as_ref(),
+                },
                 nocc_a,
-                reorder_exit_mos(swapped, d_occ_a.as_ref()),
-            );
-            let (eps_b, c_b_f) = occupied_by_density(
-                diag_b.run(&f_b)?,
-                &s,
-                &d_b,
+                swapped,
+                mom,
+            )?;
+            let (eps_b, c_b_f) = exit_eigenpairs(
+                &diag_b,
+                ExitSpin {
+                    f: &f_b,
+                    s: &s,
+                    x: &x,
+                    d: &d_b,
+                    d_occ: d_occ_b.as_ref(),
+                },
                 nocc_b,
-                reorder_exit_mos(swapped, d_occ_b.as_ref()),
-            );
+                swapped,
+                mom,
+            )?;
             // ⟨S²⟩ diagnostic
             let s2 = expectation_s_squared(&c_a_f, &c_b_f, &s, nocc_a, nocc_b);
             let s_true = 0.5 * (nocc_a as f64 - nocc_b as f64);
@@ -2347,6 +2364,172 @@ fn occupied_by_density(
     (order.iter().map(|&p| eps[p]).collect(), c_out)
 }
 
+/// One spin's returned eigenpairs at a converged exit: F[D] diagonalised,
+/// reordered after a degenerate swap (`occupied_by_density`), then replaced
+/// by D's semicanonical orbitals when D is not the aufbau state of F[D]
+/// (`exit_mos_building_density`). `mom` is whether MOM is configured.
+///
+/// A symmetry-blocked run (`FockDiag` with a `BlockedDiag`) is never
+/// replaced: the blocked diagonaliser records each column's irrep on the
+/// spec as it runs (`symmetric_open::solve_uhf_symmetric` reads them back as
+/// `alpha_irreps`/`beta_irreps`), so new columns would carry stale labels, and
+/// its per-irrep `U_h X_h` bases are not the global X the construction
+/// projects in. The blocked solver fixes occupations per irrep, which keeps
+/// the two π of a linear radical in different irreps in the first place.
+fn exit_eigenpairs(
+    diag: &crate::symmetric::FockDiag<'_>,
+    spin: ExitSpin<'_>,
+    nocc: usize,
+    swapped: bool,
+    mom: bool,
+) -> Result<(Vec<f64>, Array2<f64>), FerricError> {
+    let eig = occupied_by_density(
+        diag.run(spin.f)?,
+        spin.s,
+        spin.d,
+        nocc,
+        reorder_exit_mos(swapped, spin.d_occ),
+    );
+    if diag.is_blocked() {
+        return Ok(eig);
+    }
+    exit_mos_building_density(eig, spin, mom)
+}
+
+/// Largest `max|C_occ C_occᵀ − D|` an exit's eigenpairs may show before the
+/// exit even checks whether D is the aufbau state of F[D].
+///
+/// A cheap prefilter, not the decision: `rhf::scf_converged` accepts
+/// `dp_max < 10·density_conv`, and D is built from the PREVIOUS iteration's
+/// MOs while C diagonalises F[D], so an ordinary exit misses D by up to about
+/// that (MEASURED 3.5e-8 for NH2 UKS-PBE at density_conv 1e-6, 6e-6..9e-6 for
+/// the aufbau α of SH/HCl+ UKS-LDA, and above 1e-3 for SH UHF at density_conv
+/// 1e-4). Below the prefilter nothing is computed, so tight runs stay
+/// bit-identical at no cost; above it, the decision is the aufbau test in
+/// `exit_mos_building_density`, which does not depend on `density_conv`.
+const EXIT_MO_DENSITY_GATE: f64 = 1e-3;
+
+/// One spin's exit inputs to `exit_mos_building_density`: its Fock F[D],
+/// the AO overlap, the canonical orthogonaliser X (n × m), the exit density,
+/// and its occupied-block cache (`Some` exactly when `D = C_occ C_occᵀ`, see
+/// `spin_density_and_occ`).
+struct ExitSpin<'a> {
+    f: &'a Array2<f64>,
+    s: &'a Array2<f64>,
+    x: &'a Array2<f64>,
+    d: &'a Array2<f64>,
+    d_occ: Option<&'a Array2<f64>>,
+}
+
+/// Make one spin's returned MOs build its returned integer density when D is
+/// not the aufbau state of F[D].
+///
+/// `eig` are the exit eigenpairs (aufbau, or swap-reordered by
+/// `occupied_by_density`). A plain ΔP/ΔE exit can settle on a state whose D
+/// is the integer density of the previous iteration's MOs but whose occupied
+/// space is not the aufbau space of F[D] (UKS-LDA SH/HCl+: no integer β state
+/// is aufbau, DIIS stagnates under the gradient-veto floor). The aufbau
+/// eigenvectors then occupy a DIFFERENT orbital (the other π) and hand
+/// gradients and post-SCF code MOs of another state.
+///
+/// Decision: when `eig` miss D by more than `EXIT_MO_DENSITY_GATE`, build D's
+/// semicanonical orbitals (`semicanonical_orbitals`) and return them only if
+/// their eigenvalues CROSS (an occupied one above a virtual one), i.e. D is
+/// not the aufbau state of F[D]. A loosely converged aufbau state (a moderate
+/// rotation of the aufbau space, eigenvalues still ordered) keeps F's
+/// eigenpairs: its miss is the convergence scale, and the analytic Hessian
+/// refuses it through its MO-density consistency check. A replaced result
+/// rebuilds D to rounding with D's energy unchanged, and the crossing is what
+/// `hessian::uhf_state_refusal` refuses it on (its stationarity check is a
+/// second, independent backstop).
+///
+/// Unchanged: a fractional (ensemble) density, which has no integer occupied
+/// space (`d_occ` is `None`); and every run with MOM configured (`mom`),
+/// including one that exits before MOM engages (iter ≤ `mom_after_iter`),
+/// which keeps F's eigenpairs. A MOM state is non-aufbau by design and its
+/// consumers and Hessian refusal rely on the aufbau eigenpairs of F
+/// (`uhf_degenerate_swap.rs`,
+/// `mom_state_keeps_aufbau_eigenpairs_and_the_hessian_refuses_it`).
+fn exit_mos_building_density(
+    eig: (Vec<f64>, Array2<f64>),
+    spin: ExitSpin<'_>,
+    mom: bool,
+) -> Result<(Vec<f64>, Array2<f64>), FerricError> {
+    let Some(c_occ) = spin.d_occ else {
+        return Ok(eig);
+    };
+    let nocc = c_occ.ncols();
+    if mom || nocc == 0 || nocc >= spin.x.ncols() {
+        return Ok(eig);
+    }
+    let occ = eig.1.slice(ndarray::s![.., ..nocc]);
+    let miss = (occ.dot(&occ.t()) - spin.d)
+        .iter()
+        .fold(0.0f64, |m, v| m.max(v.abs()));
+    if miss <= EXIT_MO_DENSITY_GATE {
+        return Ok(eig);
+    }
+    let (eps, c) = semicanonical_orbitals(spin.f, spin.s, spin.x, c_occ)?;
+    let homo = eps[..nocc]
+        .iter()
+        .copied()
+        .fold(f64::NEG_INFINITY, f64::max);
+    let lumo = eps[nocc..].iter().copied().fold(f64::INFINITY, f64::min);
+    Ok(if homo > lumo { (eps, c) } else { eig })
+}
+
+/// The semicanonical orbitals of the space spanned by `c_occ` (n × nocc,
+/// `0 < nocc < m`, S-orthonormal: the occupied block of an earlier
+/// `diagonalize` in the same X basis): F diagonalised separately inside that
+/// space and inside its complement within span(X), with no shift and no
+/// mixing between the two.
+///
+/// Occupied: `C_occ U_o` with `U_o` the eigenvectors of `C_occᵀ F C_occ`, so
+/// the occupied block rebuilds `C_occ C_occᵀ` up to rounding. Virtual: with
+/// `W = Xᵀ S C_occ` (orthonormal columns in the m-dimensional X basis), the
+/// complement is the eigenvalue-1 eigenspace of the projector `I − W Wᵀ`
+/// (its other eigenvalue is 0, a gap of 1); F is diagonalised in it. Returned
+/// occupied block first, each block ascending, padded to n × n like
+/// `driver::diagonalize_rect` (zero columns, sentinel eigenvalue 1e6).
+fn semicanonical_orbitals(
+    f: &Array2<f64>,
+    s: &Array2<f64>,
+    x: &Array2<f64>,
+    c_occ: &Array2<f64>,
+) -> Result<(Vec<f64>, Array2<f64>), FerricError> {
+    use ndarray_linalg::{Eigh, UPLO};
+    let lapack = |e: ndarray_linalg::error::LinalgError| {
+        FerricError::Lapack(format!("exit semicanonical orbitals: {e}"))
+    };
+    let (n, m, nocc) = (x.nrows(), x.ncols(), c_occ.ncols());
+    let (e_o, u_o) = c_occ
+        .t()
+        .dot(f)
+        .dot(c_occ)
+        .eigh(UPLO::Upper)
+        .map_err(lapack)?;
+    let w = x.t().dot(s).dot(c_occ);
+    let (p_vals, p_vecs) = (Array2::<f64>::eye(m) - w.dot(&w.t()))
+        .eigh(UPLO::Upper)
+        .map_err(lapack)?;
+    // C_occ lies in span(X) and is S-orthonormal, so the projector's spectrum
+    // is exactly nocc zeros and m − nocc ones, up to rounding.
+    debug_assert!(
+        p_vals.iter().take(nocc).all(|v| v.abs() < 1e-8)
+            && p_vals.iter().skip(nocc).all(|v| (v - 1.0).abs() < 1e-8),
+        "C_occ is not an S-orthonormal set in span(X): projector spectrum {p_vals:?}"
+    );
+    let xq = x.dot(&p_vecs.slice(ndarray::s![.., nocc..]));
+    let (e_v, u_v) = xq.t().dot(f).dot(&xq).eigh(UPLO::Upper).map_err(lapack)?;
+    let mut c = Array2::<f64>::zeros((n, n));
+    c.slice_mut(ndarray::s![.., ..nocc])
+        .assign(&c_occ.dot(&u_o));
+    c.slice_mut(ndarray::s![.., nocc..m]).assign(&xq.dot(&u_v));
+    let mut eps: Vec<f64> = e_o.iter().chain(e_v.iter()).copied().collect();
+    eps.resize(n, 1e6);
+    Ok((eps, c))
+}
+
 fn density(c: &Array2<f64>, nocc: usize) -> Array2<f64> {
     let n = c.nrows();
     if nocc == 0 {
@@ -2860,6 +3043,149 @@ mod tests {
         assert_eq!((eps_f, c_f), (eps, c));
         // No swap (a plain or MOM exit): never reordered.
         assert!(!reorder_exit_mos(false, d_occ.as_ref()));
+    }
+
+    /// `exit_mos_building_density`: the gate and the construction, on a
+    /// synthetic F with a non-identity S (square X) and with a rectangular X
+    /// (a dropped near-singular mode, padded like `diagonalize_rect`).
+    ///
+    /// - eigenpairs missing D by less than the prefilter come back
+    ///   bit-identical, as do MOM and fractional (no cache) exits;
+    /// - above it, a D that is not the aufbau state of F[D] is replaced: the
+    ///   occupied block rebuilds D to rounding, C stays S-orthonormal (the
+    ///   blocks never mix), F is diagonal inside each block, each block
+    ///   ascends, and the result is non-aufbau;
+    /// - a moderate rotation of the aufbau space (eigenvalues still ordered)
+    ///   keeps the eigenpairs.
+    #[test]
+    fn exit_mos_building_density_gates_and_semicanonicalises() {
+        let n = 5;
+        let f = Array2::from_shape_fn((n, n), |(p, q)| {
+            let (a, b) = (p.min(q) as f64, p.max(q) as f64);
+            if p == q {
+                -1.0 + 0.4 * a
+            } else {
+                0.05 * (a + 1.0) / (b + 2.0)
+            }
+        });
+        let s_full = Array2::from_shape_fn((n, n), |(p, q)| {
+            if p == q {
+                1.0
+            } else {
+                0.2 / (1.0 + (p as f64 - q as f64).abs())
+            }
+        });
+        let x_full = crate::rhf::canonical_orthogonalizer(&s_full).unwrap();
+        assert_eq!(x_full.ncols(), n);
+        let s_id = Array2::<f64>::eye(n);
+        let x_rect = s_id.slice(ndarray::s![.., ..n - 1]).to_owned();
+        let max_abs = |a: &Array2<f64>| a.iter().fold(0.0f64, |m, v| m.max(v.abs()));
+        for (s, x) in [(&s_full, &x_full), (&s_id, &x_rect)] {
+            let m = x.ncols();
+            let eig = diagonalize(&f, x).unwrap();
+            // A non-aufbau integer D: orbitals 0 and 2 occupied, 1 empty.
+            let c_occ = ndarray::concatenate(
+                ndarray::Axis(1),
+                &[
+                    eig.1.slice(ndarray::s![.., 0..1]),
+                    eig.1.slice(ndarray::s![.., 2..3]),
+                ],
+            )
+            .unwrap();
+            let d = c_occ.dot(&c_occ.t());
+            let spin = |d_occ| ExitSpin {
+                f: &f,
+                s,
+                x,
+                d: &d,
+                d_occ,
+            };
+
+            // MOM and fractional exits are never touched.
+            assert_eq!(
+                exit_mos_building_density(eig.clone(), spin(Some(&c_occ)), true).unwrap(),
+                eig
+            );
+            assert_eq!(
+                exit_mos_building_density(eig.clone(), spin(None), false).unwrap(),
+                eig
+            );
+
+            let (eps, c) =
+                exit_mos_building_density(eig.clone(), spin(Some(&c_occ)), false).unwrap();
+            let occ = c.slice(ndarray::s![.., ..2]);
+            assert!(
+                max_abs(&(occ.dot(&occ.t()) - &d)) < 1e-14,
+                "occupied MOs miss D"
+            );
+            let ck = c.slice(ndarray::s![.., ..m]);
+            let orth = max_abs(&(ck.t().dot(s).dot(&ck) - Array2::<f64>::eye(m)));
+            assert!(orth < 1e-13, "C^T S C - I = {orth:.2e}");
+            let g = ck.t().dot(&f).dot(&ck);
+            for p in 0..m {
+                assert!(
+                    (g[(p, p)] - eps[p]).abs() < 1e-13,
+                    "eps[{p}] is not diag(C^T F C)"
+                );
+                for q in 0..m {
+                    if p != q && (p < 2) == (q < 2) {
+                        assert!(
+                            g[(p, q)].abs() < 1e-13,
+                            "F not diagonal in a block ({p},{q})"
+                        );
+                    }
+                }
+            }
+            assert!(eps[0] <= eps[1] && eps[2..m].windows(2).all(|w| w[0] <= w[1]));
+            assert!(
+                eps[1] > eps[2],
+                "the occupied orbital above a virtual one is lost"
+            );
+            // Padding matches `diagonalize_rect`.
+            assert!(eps[m..].iter().all(|&e| e == 1e6));
+            assert!(c.slice(ndarray::s![.., m..]).iter().all(|&v| v == 0.0));
+
+            // The prefilter: a miss below 1e-3 returns `eig` bit-identically
+            // without looking further, even for a non-aufbau `d_occ`.
+            let aufbau = eig.1.slice(ndarray::s![.., ..2]).to_owned();
+            let mut d_small = aufbau.dot(&aufbau.t());
+            d_small[(0, 0)] += 5e-4;
+            let small = ExitSpin {
+                f: &f,
+                s,
+                x,
+                d: &d_small,
+                d_occ: Some(&c_occ),
+            };
+            assert_eq!(
+                exit_mos_building_density(eig.clone(), small, false).unwrap(),
+                eig
+            );
+            // The decision: occupied space = {φ0, cos θ φ1 + sin θ φ2}. Its
+            // semicanonical eigenvalues cross iff θ > π/4. A moderate
+            // rotation of the aufbau space (θ = 0.3, a loosely converged
+            // aufbau state: miss ~0.3, above the prefilter) keeps `eig`; past
+            // π/4 (θ = 1.2) D is not the aufbau state of F[D] and is replaced.
+            for (theta, replaced) in [(0.3f64, false), (1.2, true)] {
+                let mut rot = aufbau.clone();
+                let mixed = &eig.1.column(1) * theta.cos() + &eig.1.column(2) * theta.sin();
+                rot.column_mut(1).assign(&mixed);
+                let d_rot = rot.dot(&rot.t());
+                let spin_rot = ExitSpin {
+                    f: &f,
+                    s,
+                    x,
+                    d: &d_rot,
+                    d_occ: Some(&rot),
+                };
+                let out = exit_mos_building_density(eig.clone(), spin_rot, false).unwrap();
+                assert_eq!(out != eig, replaced, "decision wrong at theta {theta}");
+                if replaced {
+                    let occ = out.1.slice(ndarray::s![.., ..2]);
+                    assert!(max_abs(&(occ.dot(&occ.t()) - &d_rot)) < 1e-14);
+                }
+            }
+        }
     }
 
     /// The swap gradient bound is `max(density_conv, 1e-6)`: at a tight
