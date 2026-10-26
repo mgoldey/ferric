@@ -696,16 +696,15 @@ fn rsh_rsgdf_derivatives_need_the_rks_entry_with_the_functionals_rsh() {
     .expect_err("CAM-B3LYP on HSE06 J/K must be refused")
     .to_string();
     assert!(e.contains("functional's"), "{e}");
-    // The binding derivative gate takes the closed-shell RSH force and
-    // stress on RS-GDF (above), and refuses the UKS RSH force on RS-GDF and
-    // the UKS RSH stress on either J/K.
+    // The binding derivative gate takes the RSH force and stress on RS-GDF
+    // for every SCF family (#498).
     use ferric_pbc::kxcgrad::{check_deriv_functional, Deriv, DerivSpin};
+    let cam = "HYB_GGA_XC_CAM_B3LYP";
     for d in [Deriv::Force, Deriv::Stress] {
         check_deriv_functional(DerivSpin::Restricted, d, true, "HSE06").unwrap();
+        check_deriv_functional(DerivSpin::Unrestricted, d, true, cam).unwrap();
+        check_deriv_functional(DerivSpin::RestrictedOpen, d, true, cam).unwrap();
     }
-    let cam = "HYB_GGA_XC_CAM_B3LYP";
-    assert!(check_deriv_functional(DerivSpin::Unrestricted, Deriv::Force, true, cam).is_err());
-    assert!(check_deriv_functional(DerivSpin::Unrestricted, Deriv::Stress, false, cam).is_err());
 }
 
 /// k-point ROKS takes the attenuated RS-GDF K per spin as well

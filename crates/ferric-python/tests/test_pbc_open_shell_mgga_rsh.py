@@ -213,12 +213,13 @@ def test_rsgdf_energy_runs_and_meta_gga_needs_dense(basis):
 
 def test_derivatives_roks_and_gamma_meta_gga_stay_refused(basis):
     lat = _lat(4.0)
+    wb = "HYB_GGA_XC_WB97X"
     with pytest.raises(
         ValueError,
-        match=r"^run_uks_kpts: with_stress: .*HSE06.*UKS range-separated "
-        r"hybrid stress is not implemented",
+        match=rf"^run_uks_kpts: with_stress: .*{wb}: the range-separated hybrid "
+        r"force and stress are validated for HSE06 / CAM-B3LYP",
     ):
-        _uks(H3_SCAN_ATOMS, lat, basis, "HSE06", (1, 1, 2), with_stress=True)
+        _uks(H3_SCAN_ATOMS, lat, basis, wb, (1, 1, 2), with_stress=True)
     with pytest.raises(
         ValueError,
         match=r'^run_roks_kpts: functional "SCAN": .*\. k-point ROKS supports '
@@ -227,9 +228,9 @@ def test_derivatives_roks_and_gamma_meta_gga_stay_refused(basis):
         ferric.run_roks_kpts(
             _mol(H3_SCAN_ATOMS, 2), lat, basis, "SCAN", (1, 1, 2), omega=OMEGA
         )
-    with pytest.raises(ValueError, match="open-shell range-separated hybrid stress"):
+    with pytest.raises(ValueError, match="validated for HSE06 / CAM-B3LYP"):
         ferric.run_uks_gamma(
-            _mol(H3_SCAN_ATOMS, 2), lat, basis, "HSE06", omega=OMEGA, with_stress=True
+            _mol(H3_SCAN_ATOMS, 2), lat, basis, wb, omega=OMEGA, with_stress=True
         )
     with pytest.raises(ValueError, match=r"no tau term.*1x1x1"):
         ferric.run_uks_gamma(_mol(H3_SCAN_ATOMS, 2), lat, basis, "SCAN", omega=OMEGA)
@@ -246,7 +247,7 @@ def test_derivatives_roks_and_gamma_meta_gga_stay_refused(basis):
         )
     with pytest.raises(
         ValueError,
-        match="restricted-open-shell range-separated hybrid gradient / stress",
+        match="Gamma-point ROKS range-separated hybrid stress has no library entry",
     ):
         ferric.run_roks_gamma(
             _mol(H3_SCAN_ATOMS, 2), lat, basis, "HSE06", omega=OMEGA, with_stress=True

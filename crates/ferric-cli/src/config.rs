@@ -5167,9 +5167,9 @@ fn deriv_spin(route: PeriodicRoute) -> ferric_pbc::kxcgrad::DerivSpin {
 /// mesh the library `ferric_pbc::kxcgrad::check_deriv_functional` (per route
 /// and J/K, `rsgdf`); at the Gamma point the library request gates
 /// (`check_gamma_rks_request`: the SCAN / r2SCAN / TPSS force through the
-/// 1x1x1 route and range-separated hybrids, both on the dense-AFT J/K only; `check_gamma_uks_request` /
-/// `check_gamma_roks_request`: the UKS range-separated force on the dense-AFT
-/// J/K, no ROKS one).
+/// 1x1x1 route on the dense-AFT J/K only; `check_gamma_rks_request` /
+/// `check_gamma_uks_request` / `check_gamma_roks_request`: the validated
+/// range-separated hybrid force on either J/K).
 fn check_optimize_gate(
     route: PeriodicRoute,
     functional: Option<&str>,
@@ -5184,8 +5184,8 @@ fn check_optimize_gate(
     if !kpoints {
         let gate = match route {
             PeriodicRoute::Rks => ferric_pbc::dft::check_gamma_rks_request(f, true, rsgdf),
-            PeriodicRoute::Uks => ferric_pbc::dft::check_gamma_uks_request(f, &[Force], rsgdf),
-            _ => ferric_pbc::dft::check_gamma_roks_request(f, true),
+            PeriodicRoute::Uks => ferric_pbc::dft::check_gamma_uks_request(f, &[Force]),
+            _ => ferric_pbc::dft::check_gamma_roks_request(f, &[Force]),
         };
         return gate.map_err(|e| format!("method.task = \"optimize\" with [cell]: {e}"));
     }
@@ -5463,7 +5463,7 @@ fn check_gamma_meta_gga(
     );
     match functional {
         Some(f) if route == PeriodicRoute::Uks && ferric_pbc::dft::is_meta_gga_name(f) => {
-            ferric_pbc::dft::check_gamma_uks_request(f, &[], false).map_err(|e| {
+            ferric_pbc::dft::check_gamma_uks_request(f, &[]).map_err(|e| {
                 format!(
                     "[dft] functional {f:?} at the Gamma point: {e} (set [cell] kmesh = \
                      [1, 1, 1])"
@@ -6259,11 +6259,10 @@ kind = "ccsd"
         }
     }
 
-    /// Gamma-point open-shell range-separated hybrids: the UKS and ROKS
-    /// energies resolve; the UKS optimize runs on the dense-AFT J/K; the UKS
-    /// optimize on RS-GDF, the ROKS optimize and `range_split` are refused by
-    /// name at plan time. The closed-shell optimize runs on the dense-AFT J/K
-    /// and is refused on RS-GDF.
+    /// Gamma-point range-separated hybrids: the UKS and ROKS energies
+    /// resolve; the RKS, UKS and ROKS optimize run on either J/K (#498);
+    /// `range_split` and an unvalidated functional (wB97X) are refused by
+    /// name at plan time.
     #[test]
     fn gamma_open_shell_rsh_gates() {
         let rsgdf = "jk = \"rsgdf\"\nauxbasis = \"cc-pvdz-ri\"";
@@ -6277,32 +6276,18 @@ kind = "ccsd"
                 "{kind}: {e}"
             );
         }
-        assert!(ok(&opt("uhf", "", HSE)).optimize);
-        for (kind, cell, want) in [
-            (
-                "uhf",
-                rsgdf,
-                "the Gamma-point UKS range-separated hybrid force runs on the dense-AFT J/K only",
-            ),
-            (
-                "rohf",
-                "",
-                "the Gamma-point ROKS range-separated hybrid force and stress are not implemented",
-            ),
-        ] {
-            let e = err(&opt(kind, cell, HSE));
+        let wb = "[dft]\nfunctional = \"HYB_GGA_XC_WB97X\"";
+        for kind in ["ksdft", "uhf", "rohf"] {
+            for cell in ["", rsgdf] {
+                assert!(ok(&opt(kind, cell, HSE)).optimize, "{kind} {cell}");
+            }
+            let e = err(&opt(kind, "", wb));
             assert!(
-                e.contains("method.task = \"optimize\" with [cell]") && e.contains(want),
+                e.contains("method.task = \"optimize\" with [cell]: ")
+                    && e.contains("validated for HSE06 / CAM-B3LYP"),
                 "{kind}: {e}"
             );
         }
-        assert!(ok(&opt("ksdft", "", HSE)).optimize);
-        let e = err(&opt("ksdft", rsgdf, HSE));
-        assert!(
-            e.contains("method.task = \"optimize\" with [cell]: ")
-                && e.contains("dense-AFT J/K only"),
-            "{e}"
-        );
     }
 
     /// The open-shell k-point meta-GGA runs on the dense-AFT J/K only.
@@ -6408,21 +6393,24 @@ kind = "ccsd"
                 }
             }
         }
-        // Range-separated hybrids: closed-shell force and stress on either
-        // J/K; the UKS force on the dense-AFT J/K only; no UKS stress, no ROKS.
-        for f in ["HSE06", "HYB_GGA_XC_CAM_B3LYP"] {
-            for (d, rsgdf) in [
-                (Force, false),
-                (Force, true),
-                (Stress, false),
-                (Stress, true),
+        // Range-separated hybrids: force and stress on either J/K for every
+        // SCF family (#498); wB97X stays refused.
+        for (d, rsgdf) in [
+            (Force, false),
+            (Force, true),
+            (Stress, false),
+            (Stress, true),
+        ] {
+            for spin in [
+                DerivSpin::Restricted,
+                DerivSpin::Unrestricted,
+                DerivSpin::RestrictedOpen,
             ] {
-                gate(DerivSpin::Restricted, d, rsgdf, f).unwrap();
-                assert!(gate(DerivSpin::RestrictedOpen, d, rsgdf, f).is_err());
+                for f in ["HSE06", "HYB_GGA_XC_CAM_B3LYP"] {
+                    gate(spin, d, rsgdf, f).unwrap();
+                }
+                assert!(gate(spin, d, rsgdf, "HYB_GGA_XC_WB97X").is_err());
             }
-            gate(DerivSpin::Unrestricted, Force, false, f).unwrap();
-            assert!(gate(DerivSpin::Unrestricted, Force, true, f).is_err());
-            assert!(gate(DerivSpin::Unrestricted, Stress, false, f).is_err());
         }
         // SCAN / r2SCAN: closed shell on either J/K, UKS on dense only, no ROKS.
         for f in ["SCAN", "r2SCAN"] {
@@ -6462,32 +6450,18 @@ kind = "ccsd"
         assert!(ok(&opt("ksdft", "kmesh = [1, 1, 2]", HSE)).optimize);
         assert!(ok(&opt("ksdft", rsgdf, HSE)).optimize);
         // Open-shell KS: ROKS has no meta-GGA at a mesh (energy gate); the UKS
-        // SCAN and range-separated forces run (dense J/K); the UKS RSH force on
-        // RS-GDF and the ROKS RSH force are refused by the force gate.
+        // SCAN force runs (dense J/K); the UKS and ROKS RSH forces run on
+        // either J/K (#498).
         let e = err(&opt("rohf", "kmesh = [1, 1, 2]", SCAN));
         assert!(
             e.contains("meta-GGA") && e.contains("for ROKS"),
             "rohf: {e}"
         );
         assert!(ok(&opt("uhf", "kmesh = [1, 1, 2]", SCAN)).optimize);
-        assert!(ok(&opt("uhf", "kmesh = [1, 1, 2]", HSE)).optimize);
-        for (kind, cell, want) in [
-            (
-                "uhf",
-                rsgdf,
-                "the k-point UKS range-separated hybrid force runs on the dense-AFT J/K only",
-            ),
-            (
-                "rohf",
-                "kmesh = [1, 1, 2]",
-                "the k-point ROKS range-separated hybrid force and stress are not implemented",
-            ),
-        ] {
-            let e = err(&opt(kind, cell, HSE));
-            assert!(
-                e.contains("method.task = \"optimize\" with [cell] kmesh") && e.contains(want),
-                "{kind}: {e}"
-            );
+        for kind in ["uhf", "rohf"] {
+            for cell in ["kmesh = [1, 1, 2]", rsgdf] {
+                assert!(ok(&opt(kind, cell, HSE)).optimize, "{kind} {cell}");
+            }
         }
         // UKS, ROKS and ROHF resolve at a mesh with optimize (dense J/K).
         for (kind, dft, route) in [
@@ -6532,23 +6506,17 @@ kind = "ccsd"
         let rs = "jk = \"rsgdf\"\nauxbasis = \"cc-pvdz-ri\"";
         assert!(ok(&h2("ksdft", km, HSE)).stress);
         assert!(ok(&h2("ksdft", &format!("{rs}\n{km}"), HSE)).stress);
-        // Open-shell SCAN has a dense-AFT stress; open-shell range-separated
-        // hybrids have a k-point energy (and a UKS force); their stress is
-        // library only (not wired, #498): the stress gate names the key.
+        // Open-shell SCAN has a dense-AFT stress; the open-shell
+        // range-separated stress runs on either J/K (#498); an unvalidated
+        // range-separated hybrid is refused by the stress gate, naming the key.
         assert!(ok(&h2("uhf", km, SCAN)).stress);
-        for (kind, want) in [
-            (
-                "uhf",
-                "the k-point UKS range-separated hybrid stress is not implemented",
-            ),
-            (
-                "rohf",
-                "the k-point ROKS range-separated hybrid force and stress are not implemented",
-            ),
-        ] {
-            let e = err(&h2(kind, km, HSE));
+        let wb = "[dft]\nfunctional = \"HYB_GGA_XC_WB97X\"";
+        for kind in ["uhf", "rohf"] {
+            assert!(ok(&h2(kind, km, HSE)).stress, "{kind}");
+            assert!(ok(&h2(kind, &format!("{rs}\n{km}"), HSE)).stress, "{kind}");
+            let e = err(&h2(kind, km, wb));
             assert!(
-                e.contains("[cell] stress = true") && e.contains(want),
+                e.contains("[cell] stress = true") && e.contains("validated for HSE06 / CAM-B3LYP"),
                 "{kind}: {e}"
             );
         }

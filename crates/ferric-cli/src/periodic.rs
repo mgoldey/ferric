@@ -30,15 +30,15 @@ use ferric_pbc::rsgdf::auto_omega::auto_rsgdf_omega;
 use ferric_pbc::rsgdf::DEFAULT_RSGDF_OMEGA;
 use ferric_pbc::SrColumnRotation;
 use ferric_pbc::{
-    gamma_drpa, gamma_mp2, gamma_rohf, gamma_roks, gamma_uhf, kpoint_drpa, kpoint_mp2,
-    periodic_hcore, periodic_hcore_kpts, solve_krhf, solve_krhf_injected, solve_krks, solve_kuhf,
-    Cell, DenseAftEri, ExxDiv, GammaDrpaConfig, GammaDrpaIntegrals, GammaMp2Config,
-    GammaMp2Integrals, GammaRksConfig, GammaRohfConfig, GammaRoksConfig, GammaUhfConfig,
-    GammaUhfIntegrals, GammaUksConfig, KCorrIntegrals, KDenseAftConfig, KDenseAftEri,
-    KDenseAftPairs, KDrpaConfig, KDrpaEnergy, KJkKind, KMp2Config, KPointInjection, KPointMesh,
-    KRhfConfig, KRksConfig, KRksResult, KRsGdf, KRsGdfConfig, KScfConfig, KScfResult, KUhfConfig,
-    MeshCentring, Mp2Denominators, PbcTimings, PeriodicGridConfig, PeriodicHcore,
-    PeriodicHcoreConfig, RangeSplit, RsGdf, RsGdfConfig, StageClock,
+    gamma_drpa, gamma_mp2, gamma_rohf, gamma_uhf, kpoint_drpa, kpoint_mp2, periodic_hcore,
+    periodic_hcore_kpts, solve_krhf, solve_krhf_injected, solve_krks, solve_kuhf, Cell,
+    DenseAftEri, ExxDiv, GammaDrpaConfig, GammaDrpaIntegrals, GammaMp2Config, GammaMp2Integrals,
+    GammaRksConfig, GammaRohfConfig, GammaRoksConfig, GammaUhfConfig, GammaUhfIntegrals,
+    GammaUksConfig, KCorrIntegrals, KDenseAftConfig, KDenseAftEri, KDenseAftPairs, KDrpaConfig,
+    KDrpaEnergy, KJkKind, KMp2Config, KPointInjection, KPointMesh, KRhfConfig, KRksConfig,
+    KRksResult, KRsGdf, KRsGdfConfig, KScfConfig, KScfResult, KUhfConfig, MeshCentring,
+    Mp2Denominators, PbcTimings, PeriodicGridConfig, PeriodicHcore, PeriodicHcoreConfig,
+    RangeSplit, RsGdf, RsGdfConfig, StageClock,
 };
 use ferric_pbc::{
     gamma_rhf_gradient_rsgdf, gamma_rhf_gradient_with, gamma_rks_gradient_rsgdf,
@@ -879,8 +879,8 @@ fn rsh_sizing(plan: &PeriodicPlan) -> ferric_pbc::gamma_rsh::GammaRshSizing {
 }
 
 /// Gamma RKS on `sys`: a range-separated hybrid takes the attenuated K of the
-/// k = 0 exchange (energy only; `task = "optimize"` was refused at plan time),
-/// any other functional the plain Gamma K.
+/// k = 0 exchange, any other functional the plain Gamma K (the energy path;
+/// `task = "optimize"` is [`gamma_energy_and_gradient`]).
 fn gamma_rks_for(
     plan: &PeriodicPlan,
     s: &Setup,
@@ -1030,8 +1030,7 @@ fn gamma_open_driver(
         }
         PeriodicRoute::Roks => {
             // A range-separated hybrid takes the attenuated K of the k = 0
-            // exchange (energy only; `task = "optimize"` was refused at plan
-            // time), any other functional the plain Gamma K.
+            // exchange, any other functional the plain Gamma K.
             let c = roks_config(plan);
             let r = ferric_pbc::gamma_rsh::gamma_roks_any(
                 &s.cell,
@@ -2547,8 +2546,8 @@ fn require_converged(plan: &PeriodicPlan, scf: &ScfResult) -> Result<(), FerricE
 }
 
 /// The Gamma RKS gradients routed through the 1x1x1 k-point force: a
-/// range-separated hybrid on the SCF's dense-AFT exchange (RS-GDF was refused
-/// at plan time) and a meta-GGA (`ferric_pbc::gamma_mgga`, dense J only).
+/// range-separated hybrid on the SCF's own exchange (dense AFT or RS-GDF) and
+/// a meta-GGA (`ferric_pbc::gamma_mgga`, dense J only).
 /// `None` = the native Gamma force applies.
 fn routed_rks_gradient(
     plan: &PeriodicPlan,
@@ -2672,21 +2671,7 @@ fn gamma_energy_and_gradient(
             (scf.energy, g)
         }
         PeriodicRoute::Uks => return gamma_uks_energy_and_gradient(plan, s, sys, &jk, &gcfg),
-        PeriodicRoute::Roks => {
-            let c = roks_config(plan);
-            let r = gamma_roks(cell, prep, hc, ints, &c)?;
-            require_converged(plan, &r.scf)?;
-            let scf = &r.scf;
-            let g = match &jk {
-                GradJk::Dense(e) => {
-                    gamma_roks_gradient_with(cell, prep, hcfg, hc, e, scf, &c, &gcfg)?
-                }
-                GradJk::Fit(f) => {
-                    gamma_roks_gradient_rsgdf(cell, prep, hcfg, hc, f, scf, &c, &gcfg)?
-                }
-            };
-            (scf.energy, g)
-        }
+        PeriodicRoute::Roks => return gamma_roks_energy_and_gradient(plan, s, sys, &jk, &gcfg),
         // Refused by `periodic_plan`.
         PeriodicRoute::Mp2 | PeriodicRoute::Drpa => {
             return Err(FerricError::General(format!(
@@ -2701,8 +2686,8 @@ fn gamma_energy_and_gradient(
 /// The Gamma UKS SCF of [`gamma_energy_and_gradient`] through the bindings'
 /// shared entry (`gamma_uks_any_keep`) and its force: a range-separated
 /// hybrid routed through the 1x1x1 k-point UKS force on the SCF's own
-/// dense-AFT exchange (`gamma_uks_rsh_gradient`; RS-GDF was refused at plan
-/// time), anything else the native Gamma UKS force on `jk`.
+/// exchange (`gamma_uks_rsh_gradient`, dense AFT or RS-GDF), anything else
+/// the native Gamma UKS force on `jk`.
 fn gamma_uks_energy_and_gradient(
     plan: &PeriodicPlan,
     s: &Setup,
@@ -2736,6 +2721,49 @@ fn gamma_uks_energy_and_gradient(
         }
         (None, GradJk::Fit(f)) => {
             gamma_uks_gradient_rsgdf(cell, prep, hcfg, hc, f, scf, &c, gcfg)?.grad
+        }
+    };
+    Ok((scf.energy, g))
+}
+
+/// The Gamma ROKS SCF of [`gamma_energy_and_gradient`] through the bindings'
+/// shared entry (`gamma_roks_any_keep`) and its force: a range-separated
+/// hybrid routed through the 1x1x1 k-point ROKS force on the SCF's own
+/// exchange (`gamma_roks_rsh_gradient`, dense AFT or RS-GDF), anything else
+/// the native Gamma ROKS force on `jk`.
+fn gamma_roks_energy_and_gradient(
+    plan: &PeriodicPlan,
+    s: &Setup,
+    sys: &GammaSystem,
+    jk: &GradJk<'_>,
+    gcfg: &GammaGradConfig,
+) -> Result<(f64, ndarray::Array2<f64>), FerricError> {
+    let (cell, prep, hcfg, hc) = (&s.cell, &s.prep, &sys.hcfg, &sys.hc);
+    let c = roks_config(plan);
+    let (r, rsh_k) = ferric_pbc::gamma_rsh::gamma_roks_any_keep(
+        cell,
+        prep,
+        hc,
+        sys.ints.scf(),
+        s.aux.as_ref(),
+        rsh_sizing(plan),
+        &c,
+    )?;
+    require_converged(plan, &r.scf)?;
+    let scf = &r.scf;
+    let g = match (rsh_k.as_ref(), jk) {
+        (Some(ex), _) => {
+            let kg = KGradConfig {
+                budget_bytes: budget_bytes(plan),
+                ..Default::default()
+            };
+            ferric_pbc::gamma_rsh::gamma_roks_rsh_gradient(cell, prep, hcfg, scf, &c, ex, &kg)?.grad
+        }
+        (None, GradJk::Dense(e)) => {
+            gamma_roks_gradient_with(cell, prep, hcfg, hc, e, scf, &c, gcfg)?.grad
+        }
+        (None, GradJk::Fit(f)) => {
+            gamma_roks_gradient_rsgdf(cell, prep, hcfg, hc, f, scf, &c, gcfg)?.grad
         }
     };
     Ok((scf.energy, g))

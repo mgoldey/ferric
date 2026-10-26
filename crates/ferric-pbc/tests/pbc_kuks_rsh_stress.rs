@@ -223,8 +223,8 @@ fn fd_zero_xc_polarized_uks_rsgdf() {
 
 /// Typed refusals of the open-shell stress: a range-separated name on bare
 /// kernels, kernels of another range separation, a global-hybrid name on
-/// range-separated kernels, a missing exxdiv; and the binding gate keeps
-/// refusing the open-shell RSH stress (library only, #498).
+/// range-separated kernels, a missing exxdiv; and the binding gate now
+/// accepts the open-shell RSH stress (wired, #498).
 #[test]
 fn oshell_rsh_stress_refusals() {
     use ferric_pbc::kuxcstress::{kpoint_uks_stress, KUksStressConfig};
@@ -276,17 +276,17 @@ fn oshell_rsh_stress_refusals() {
     assert!(e.contains("needs KRksStressConfig::exxdiv"), "{e}");
     let ok = call(&own, "HSE06", true).unwrap_or_else(|e| panic!("own kernels: {e}"));
     assert!(ok.hf.fock_mismatch < 1e-8 && ok.de_deps.iter().flatten().all(|v| v.is_finite()));
+    // The binding gate accepts the open-shell RSH stress on either J/K (#498).
     use ferric_pbc::kxcgrad::{check_deriv_functional, Deriv, DerivSpin};
     for f in FUNCTIONALS {
         for (spin, g) in [
             (DerivSpin::Unrestricted, false),
             (DerivSpin::Unrestricted, true),
             (DerivSpin::RestrictedOpen, false),
+            (DerivSpin::RestrictedOpen, true),
         ] {
-            let e = check_deriv_functional(spin, Deriv::Stress, g, f)
-                .unwrap_err()
-                .to_string();
-            assert!(e.contains("not implemented in the bindings"), "{f}: {e}");
+            check_deriv_functional(spin, Deriv::Stress, g, f)
+                .unwrap_or_else(|e| panic!("{f} {spin:?} {g}: {e}"));
         }
     }
 }
@@ -296,7 +296,7 @@ fn oshell_rsh_stress_refusals() {
 /// this cell; HSE06 and the measured numbers are weekly): the Gamma UKS SCF
 /// (dense J and exchange) through the 1x1x1 route equals the k-point UKS
 /// stress of an independent 1x1x1 KUKS SCF on the dense UKS force file's H3
-/// doublet fixtures. Also pins the binding gate's exact Gamma refusal text.
+/// doublet fixtures. Also pins that the binding gate accepts the Gamma stress.
 #[test]
 fn gamma_uks_rsh_stress_is_the_one_point_mesh() {
     use ferric_pbc::kuxcstress::{kpoint_uks_stress, KUksStressConfig};
@@ -341,17 +341,6 @@ fn gamma_uks_rsh_stress_is_the_one_point_mesh() {
     );
     assert!(mmax(&ks.de_deps) > 1e-2, "non-trivial stress");
     assert!(d < 1e-9, "{f}: {d:e}");
-    // The binding gate's Gamma refusal, exact wording.
-    let e =
-        ferric_pbc::dft::check_gamma_uks_request(f, &[ferric_pbc::kxcgrad::Deriv::Stress], false)
-            .unwrap_err()
-            .to_string();
-    assert!(
-        e.contains(
-            "HYB_GGA_XC_CAM_B3LYP: the Gamma-point UKS range-separated hybrid stress is not \
-             implemented in the bindings (the library stress, gamma_uks_rsh_stress, is not \
-             wired yet); the force is available on the dense-AFT J/K"
-        ),
-        "{e}"
-    );
+    // The binding gate accepts the Gamma UKS RSH stress (wired, #498).
+    ferric_pbc::dft::check_gamma_uks_request(f, &[ferric_pbc::kxcgrad::Deriv::Stress]).unwrap();
 }

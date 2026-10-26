@@ -1671,16 +1671,15 @@ pub fn resolve_gamma_rks_functional(name: &str) -> Result<(XcDef, f64), FerricEr
 /// [`resolve_gamma_rks_functional`] allowlist for a meta-GGA, plus
 /// [`check_gamma_derivs_functional`] and [`check_gamma_mgga_deriv_jk`] (a
 /// meta-GGA force / stress is the 1x1x1 route, dense-AFT J only) when a
-/// gradient, stress or optimization is requested (`derivs`). A range-separated hybrid runs as an energy on
-/// either J/K and with derivatives on the dense-AFT J/K only (`rsgdf` = the
-/// RS-GDF fit; [`crate::gamma_rsh::gamma_rks_rsh_gradient`] /
-/// [`crate::gamma_rsh::gamma_rks_rsh_stress`]). Plain (non-meta-GGA) names
-/// pass untouched.
+/// gradient, stress or optimization is requested (`derivs`; `rsgdf` = the
+/// RS-GDF fit). A range-separated hybrid runs as an energy on either J/K and
+/// with derivatives, for the validated functionals
+/// ([`crate::kxcgrad::check_validated_rsh_deriv`]), on either J/K too
+/// ([`crate::gamma_rsh::gamma_rks_rsh_gradient`] /
+/// [`crate::gamma_rsh::gamma_rks_rsh_stress`] on the SCF's own exchange).
+/// Plain (non-meta-GGA) names pass untouched.
 pub fn check_gamma_rks_request(name: &str, derivs: bool, rsgdf: bool) -> Result<(), FerricError> {
     if crate::rsh::is_range_separated(name) {
-        if derivs && rsgdf {
-            return Err(gamma_rsh_rsgdf_refusal(name, "RKS", "force and stress run"));
-        }
         if derivs {
             crate::kxcgrad::check_validated_rsh_deriv(name)?;
         }
@@ -1697,64 +1696,22 @@ pub fn check_gamma_rks_request(name: &str, derivs: bool, rsgdf: bool) -> Result<
     Ok(())
 }
 
-/// The bindings' refusal of a Gamma-point range-separated derivative on
-/// RS-GDF: the library routes (`gamma_rsh::gamma_rks_rsh_gradient` and its
-/// siblings) differentiate an RS-GDF exchange, but the Python / CLI
-/// derivative paths are not wired to it (#498).
-fn gamma_rsh_rsgdf_refusal(name: &str, method: &str, what: &str) -> FerricError {
-    // Only the closed-shell k-point force and stress are wired on an RS-GDF
-    // range-separated exchange (the bindings refuse the UKS RS-GDF force at
-    // every mesh).
-    let hint = if method == "RKS" {
-        "; the closed-shell k-point one on RS-GDF is wired at a k-point mesh, e.g. 1x1x1"
-    } else {
-        ""
-    };
-    PeriodicDftError::Unsupported {
-        feature: "range-separated hybrid gradient / stress on RS-GDF",
-        reason: format!(
-            "{name}: the Gamma-point {method} range-separated hybrid {what} on the \
-             dense-AFT J/K only (the bindings do not wire the library's Gamma RS-GDF exchange \
-             derivative{hint}); \
-             use jk = \"dense\""
-        ),
-    }
-    .into()
-}
-
 /// The Gamma UKS request gate, one call for the bindings (Python, CLI), run
 /// before any integral is built. `derivs` lists the requested derivatives
-/// (empty = energy only) and `rsgdf` names the J/K. A range-separated hybrid
-/// runs as an energy on either J/K ([`crate::gamma_rsh::gamma_uks_any`]); its
-/// FORCE runs on the dense-AFT J/K for the validated functionals
+/// (empty = energy only). A range-separated hybrid runs as an energy on
+/// either J/K ([`crate::gamma_rsh::gamma_uks_any`]); its force and stress run
+/// on either J/K for the validated functionals
 /// ([`crate::gamma_rsh::gamma_uks_rsh_gradient`],
-/// [`crate::kxcgrad::check_validated_rsh_deriv`]); its STRESS is refused by
-/// name (library only, [`crate::gamma_rsh::gamma_uks_rsh_stress`], not
-/// wired). A meta-GGA is refused
-/// by name (the Gamma UKS has no tau term), pointing at the k-point UKS on a
+/// [`crate::gamma_rsh::gamma_uks_rsh_stress`],
+/// [`crate::kxcgrad::check_validated_rsh_deriv`]). A meta-GGA is refused by
+/// name (the Gamma UKS has no tau term), pointing at the k-point UKS on a
 /// 1x1x1 mesh, which is the Gamma point and has SCAN / r2SCAN. Everything
 /// else passes to [`gamma_uks`]'s own functional check.
 pub fn check_gamma_uks_request(
     name: &str,
     derivs: &[crate::kxcgrad::Deriv],
-    rsgdf: bool,
 ) -> Result<(), FerricError> {
-    use crate::kxcgrad::Deriv;
     if crate::rsh::is_range_separated(name) && !derivs.is_empty() {
-        if derivs.contains(&Deriv::Stress) {
-            return Err(PeriodicDftError::Unsupported {
-                feature: "open-shell range-separated hybrid stress",
-                reason: format!(
-                    "{name}: the Gamma-point UKS range-separated hybrid stress is not \
-                     implemented in the bindings (the library stress, gamma_uks_rsh_stress, is \
-                     not wired yet); the force is available on the dense-AFT J/K"
-                ),
-            }
-            .into());
-        }
-        if rsgdf {
-            return Err(gamma_rsh_rsgdf_refusal(name, "UKS", "force runs"));
-        }
         crate::kxcgrad::check_validated_rsh_deriv(name)?;
     }
     if is_meta_gga_name(name) {
@@ -1770,26 +1727,33 @@ pub fn check_gamma_uks_request(
     Ok(())
 }
 
-/// The Gamma ROKS request gate (Python, CLI): a range-separated hybrid runs
-/// as an energy ([`crate::gamma_rsh::gamma_roks_any`]) and is refused with a
-/// gradient, stress or optimization (the library ROKS force
-/// [`crate::gamma_rsh::gamma_roks_rsh_gradient`] exists on the dense-AFT J/K
-/// but is not wired here; there is no ROKS range-separated stress). Everything else passes to [`crate::rohf::gamma_roks`]'s own
-/// functional check (no meta-GGA).
-pub fn check_gamma_roks_request(name: &str, derivs: bool) -> Result<(), FerricError> {
-    if derivs && crate::rsh::is_range_separated(name) {
+/// The Gamma ROKS request gate (Python, CLI). `derivs` lists the requested
+/// derivatives (empty = energy only). A range-separated hybrid runs as an
+/// energy ([`crate::gamma_rsh::gamma_roks_any`]) and, for the validated
+/// functionals, with a FORCE on either J/K
+/// ([`crate::gamma_rsh::gamma_roks_rsh_gradient`]); its STRESS is refused by
+/// name (no Gamma library entry; the k-point ROKS stress on a 1x1x1 mesh,
+/// which is the Gamma point, differentiates it). Everything else passes to
+/// [`crate::rohf::gamma_roks`]'s own functional check (no meta-GGA).
+pub fn check_gamma_roks_request(
+    name: &str,
+    derivs: &[crate::kxcgrad::Deriv],
+) -> Result<(), FerricError> {
+    if derivs.is_empty() || !crate::rsh::is_range_separated(name) {
+        return Ok(());
+    }
+    if derivs.contains(&crate::kxcgrad::Deriv::Stress) {
         return Err(PeriodicDftError::Unsupported {
-            feature: "restricted-open-shell range-separated hybrid gradient / stress",
+            feature: "restricted-open-shell range-separated hybrid stress",
             reason: format!(
-                "{name}: the Gamma-point ROKS range-separated hybrid force and stress are not \
-                 implemented in the bindings (energy only; the library has the dense-AFT ROKS \
-                 force, gamma_roks_rsh_gradient, unwired); the UKS force is available on the \
-                 dense-AFT J/K"
+                "{name}: the Gamma-point ROKS range-separated hybrid stress has no library \
+                 entry; the k-point ROKS stress on a 1x1x1 mesh (the Gamma point) \
+                 differentiates it, and the Gamma ROKS force is available"
             ),
         }
         .into());
     }
-    Ok(())
+    crate::kxcgrad::check_validated_rsh_deriv(name)
 }
 
 /// The meta-GGA gate of a closed-shell Gamma-point nuclear gradient, stress
