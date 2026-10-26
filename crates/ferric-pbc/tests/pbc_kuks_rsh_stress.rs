@@ -277,7 +277,7 @@ fn oshell_rsh_stress_refusals() {
     let ok = call(&own, "HSE06", true).unwrap_or_else(|e| panic!("own kernels: {e}"));
     assert!(ok.hf.fock_mismatch < 1e-8 && ok.de_deps.iter().flatten().all(|v| v.is_finite()));
     // The binding gate accepts the open-shell RSH stress on either J/K (#498).
-    use ferric_pbc::kxcgrad::{check_deriv_functional, Deriv, DerivSpin};
+    use ferric_pbc::kxcgrad::{check_deriv_functional, DerivSpin};
     for f in FUNCTIONALS {
         for (spin, g) in [
             (DerivSpin::Unrestricted, false),
@@ -285,8 +285,7 @@ fn oshell_rsh_stress_refusals() {
             (DerivSpin::RestrictedOpen, false),
             (DerivSpin::RestrictedOpen, true),
         ] {
-            check_deriv_functional(spin, Deriv::Stress, g, f)
-                .unwrap_or_else(|e| panic!("{f} {spin:?} {g}: {e}"));
+            check_deriv_functional(spin, g, f).unwrap_or_else(|e| panic!("{f} {spin:?} {g}: {e}"));
         }
     }
 }

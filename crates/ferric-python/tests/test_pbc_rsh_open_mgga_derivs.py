@@ -360,7 +360,8 @@ OPEN_RSH_FORCES = [
         ],
     ),
 ]
-# (tag, route, kpoints, rsgdf, functional, E, sigma row-major) at X_H3.
+# (tag, route, kpoints, rsgdf, functional, E, sigma row-major) at X_H3 (H2
+# at X_H2 for the RKS row).
 OPEN_RSH_STRESS = [
     (
         "k UKS HSE06",
@@ -476,6 +477,25 @@ OPEN_RSH_STRESS = [
             -0.0019885910287827926,
         ],
     ),
+    (
+        "Gamma RKS HSE06 RS-GDF",
+        "rks",
+        False,
+        True,
+        "HSE06",
+        -1.5776585570742494,
+        [
+            0.006572346770482129,
+            1.013205181174152e-5,
+            -3.203357276020062e-5,
+            1.0373110682834141e-5,
+            0.006558966830035616,
+            5.4250155189842494e-5,
+            -0.00012063984861634764,
+            0.00019344385086120561,
+            0.0029967800761385244,
+        ],
+    ),
 ]
 # CLI `[cell] stress = true` tensor (run_end, Hartree/Bohr^3) of the k-point
 # RKS CAM-B3LYP on RS-GDF, H2 at (0.3, 0.2, 0.1), (0.3, 0.2, 1.6) Bohr (the
@@ -507,10 +527,18 @@ GDF_BAR = 1e-6
 # 2.3e-15, dense stress <= 7.5e-17; Gamma RS-GDF force <= 9.1e-15, stress
 # 2.4e-15; k-point RS-GDF force 2.6e-9 / 3.8e-9 and stress 2.0e-10 / 8.0e-11
 # (the roundoff-limited RS-GDF fit seeing the binding's repr-Angstrom vs the
-# CLI's 12-decimal xyz, as for KRKS_GDF above; GDF_BAR). Gamma vs 1x1x1:
-# ROKS HSE06 force 1.2e-14, UKS HSE06 stress 1.7e-13.
+# CLI's 12-decimal xyz, as for KRKS_GDF above). Gamma vs 1x1x1: ROKS HSE06
+# force 1.2e-14, UKS HSE06 stress 1.7e-13. Bars: G_BAR on every dense and
+# every Gamma pin (the Gamma RS-GDF fit does not show the k-point
+# roundoff); the k-point RS-GDF pins get K_GDF_FORCE_BAR = 1e-7 (26x the
+# worst measured, 8x the 1.25e-8 BLAS-kernel drift noted above) and
+# K_GDF_STRESS_BAR = 1e-8 (50x the worst measured, 6x the 1.65e-9 kernel
+# drift), both far below the RS-GDF - dense gap (>= 1.3e-5 force, >= 6.9e-7
+# stress), so the pins can tell an RS-GDF run from a dense one.
 E_BAR = 1e-12
 G_BAR = 1e-12
+K_GDF_FORCE_BAR = 1e-7
+K_GDF_STRESS_BAR = 1e-8
 FD_H = 1e-4
 FD_BAR = 2e-8
 GAMMA_BAR = 1e-10
@@ -716,7 +744,7 @@ def test_open_shell_rsh_forces_equal_the_library(
     de = abs(r.energy - e)
     dg = float(np.abs(r.gradient().ravel() - np.array(g)).max())
     print(f"{tag}: binding - library energy {de:.2e}, force {dg:.2e}")
-    assert de < E_BAR and dg < (GDF_BAR if gdf else G_BAR)
+    assert de < E_BAR and dg < (K_GDF_FORCE_BAR if gdf and kpoints else G_BAR)
 
 
 @pytest.mark.parametrize(
@@ -728,13 +756,13 @@ def test_open_shell_rsh_stress_equals_the_library(
     tag, route, kpoints, gdf, functional, e, sigma
 ):
     extra = RSGDF if gdf else {}
-    mol = _mol(_rows(X_H3), 2)
+    mol = _mol(_rows(X_H2), 1) if route == "rks" else _mol(_rows(X_H3), 2)
     r = _open_run(route, kpoints, mol, functional, **_kw(with_stress=True, **extra))
     de = abs(r.energy - e)
     ds = float(np.abs(r.stress().ravel() - np.array(sigma)).max())
     print(f"{tag}: binding - library energy {de:.2e}, stress {ds:.2e}")
     assert np.abs(r.stress()).max() > 1e-6
-    assert de < E_BAR and ds < (GDF_BAR if gdf else G_BAR)
+    assert de < E_BAR and ds < (K_GDF_STRESS_BAR if gdf and kpoints else G_BAR)
 
 
 def test_gamma_open_shell_rsh_derivatives_equal_the_one_point_mesh(sto3g):

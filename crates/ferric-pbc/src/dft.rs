@@ -1671,14 +1671,19 @@ pub fn resolve_gamma_rks_functional(name: &str) -> Result<(XcDef, f64), FerricEr
 /// [`resolve_gamma_rks_functional`] allowlist for a meta-GGA, plus
 /// [`check_gamma_derivs_functional`] and [`check_gamma_mgga_deriv_jk`] (a
 /// meta-GGA force / stress is the 1x1x1 route, dense-AFT J only) when a
-/// gradient, stress or optimization is requested (`derivs`; `rsgdf` = the
-/// RS-GDF fit). A range-separated hybrid runs as an energy on either J/K and
+/// gradient, stress or optimization is requested (`derivs` lists the
+/// requested derivatives, empty = energy only; `rsgdf` = the RS-GDF fit). A range-separated hybrid runs as an energy on either J/K and
 /// with derivatives, for the validated functionals
 /// ([`crate::kxcgrad::check_validated_rsh_deriv`]), on either J/K too
 /// ([`crate::gamma_rsh::gamma_rks_rsh_gradient`] /
 /// [`crate::gamma_rsh::gamma_rks_rsh_stress`] on the SCF's own exchange).
 /// Plain (non-meta-GGA) names pass untouched.
-pub fn check_gamma_rks_request(name: &str, derivs: bool, rsgdf: bool) -> Result<(), FerricError> {
+pub fn check_gamma_rks_request(
+    name: &str,
+    derivs: &[crate::kxcgrad::Deriv],
+    rsgdf: bool,
+) -> Result<(), FerricError> {
+    let derivs = !derivs.is_empty();
     if crate::rsh::is_range_separated(name) {
         if derivs {
             crate::kxcgrad::check_validated_rsh_deriv(name)?;

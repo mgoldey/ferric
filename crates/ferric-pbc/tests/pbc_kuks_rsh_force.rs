@@ -375,14 +375,12 @@ fn oshell_rsh_force_refusals() {
     assert!(e.contains("needs KRksStressConfig::exxdiv"), "{e}");
     // The binding derivative gate: every open-shell RSH force and stress on
     // either J/K is wired (#498).
-    use ferric_pbc::kxcgrad::{check_deriv_functional, Deriv, DerivSpin};
+    use ferric_pbc::kxcgrad::{check_deriv_functional, DerivSpin};
     for f in FUNCTIONALS {
         for spin in [DerivSpin::Unrestricted, DerivSpin::RestrictedOpen] {
-            for d in [Deriv::Force, Deriv::Stress] {
-                for g in [false, true] {
-                    check_deriv_functional(spin, d, g, f)
-                        .unwrap_or_else(|e| panic!("{spin:?} {d:?} {g} {f}: {e}"));
-                }
+            for g in [false, true] {
+                check_deriv_functional(spin, g, f)
+                    .unwrap_or_else(|e| panic!("{spin:?} {g} {f}: {e}"));
             }
         }
     }

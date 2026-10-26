@@ -405,8 +405,8 @@ fn rsh_force_refusals() {
     // The Python / CLI derivative gate wires the open-shell RSH force too
     // (#498; the library forces are `pbc_kuks_rsh_force.rs` and
     // `pbc_kroks_rsh_force.rs`).
-    use ferric_pbc::kxcgrad::{check_deriv_functional, Deriv, DerivSpin};
+    use ferric_pbc::kxcgrad::{check_deriv_functional, DerivSpin};
     for spin in [DerivSpin::Unrestricted, DerivSpin::RestrictedOpen] {
-        check_deriv_functional(spin, Deriv::Force, false, "HSE06").unwrap();
+        check_deriv_functional(spin, false, "HSE06").unwrap();
     }
 }

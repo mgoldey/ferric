@@ -1889,12 +1889,7 @@ impl KForceCtx<'_> {
 
     /// The binding force allowlist of this route on its J/K.
     fn check_functional(&self, spin: DerivSpin) -> Result<(), FerricError> {
-        ferric_pbc::kxcgrad::check_deriv_functional(
-            spin,
-            ferric_pbc::kxcgrad::Deriv::Force,
-            self.s.aux.is_some(),
-            self.functional(),
-        )
+        ferric_pbc::kxcgrad::check_deriv_functional(spin, self.s.aux.is_some(), self.functional())
     }
 
     fn not_converged(&self, it: usize, e: f64) -> FerricError {

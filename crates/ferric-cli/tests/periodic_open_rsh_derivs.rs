@@ -9,72 +9,65 @@
 //!   `gamma_roks_rsh_gradient`), dense AFT.
 //!
 //! The RS-GDF routes (G1: the k-point UKS / ROKS force and stress on
-//! RS-GDF; G5: the Gamma RKS / UKS / ROKS force on RS-GDF) are anchored in
-//! the validation twin only: each of those CLI + library pairs takes ~50 s.
+//! RS-GDF; G5: the Gamma RKS / UKS / ROKS force on RS-GDF), the p-shell
+//! cell and the sibling checks are in the validation twin: each of those CLI
+//! + library pairs takes ~50 s.
 //!
 //! EXACTNESS ANCHOR (CLI vs library, BIT FOR BIT): the CLI energy, gradient
 //! (`task = "optimize"` with zero optimizer steps: the gradient of the input
 //! geometry) and stress tensor are read from the run log's `run_end` record;
 //! the library is called on the SAME cell with the CLI's configs restated.
 //!
-//! INDEPENDENT CONSTRUCTION (per commit, for a NEW route): the CLI force and
-//! one stress component against a central finite difference of the CLI's OWN
-//! energies (k-point ROKS HSE06 force; k-point UKS HSE06 `sigma_zz` from a
-//! uniaxial strain of the lattice and the atoms). Artifact hypothesis: a
-//! wiring bug that differentiates the wrong density or spin (alpha density
-//! passed as beta, the UKS force on a ROKS state, a dropped stress term)
-//! misses the FD by the size of the spin polarization or of the term (>=
-//! 1e-3 Ha/Bohr here; the HSE06 vs CAM-B3LYP force gap alone is 5e-3),
-//! while a correct one misses only by the FD floor (SCF noise / h + h^2
-//! remainder, measured below).
+//! INDEPENDENT CONSTRUCTION (per commit, for a NEW route, in the same test
+//! as the anchor so the CLI run is shared): the CLI force and one stress
+//! component against a central finite difference of the CLI's OWN energies
+//! (k-point ROKS HSE06 force; k-point UKS HSE06 `sigma_zz` from a uniaxial
+//! strain of the lattice and the atoms). Artifact hypothesis: a wiring bug
+//! that differentiates the wrong density or spin (alpha density passed as
+//! beta, the UKS force on a ROKS state, a dropped stress term) misses the FD
+//! by the size of the spin polarization or of the term (>= 1e-3 Ha/Bohr
+//! here; the HSE06 vs CAM-B3LYP force gap alone is 5e-3), while a correct
+//! one misses only by the FD floor (SCF noise / h + h^2 remainder).
 //!
-//! Measured (2026-10-26): every anchor bit-equal. FD: k ROKS HSE06 force
-//! atom 1 z 6.6e-10 (h = 1e-4, |g| 0.369; bar 1e-7); k UKS HSE06 sigma_zz
-//! 7.5e-10 Hartree/Bohr^3 (h = 1e-4, |sigma_zz| 1.04e-2; bar 1e-8). Sibling
-//! gaps (HSE06 vs CAM-B3LYP, RS-GDF vs dense) are in the validation twin.
-//! The file runs in ~90 s on 3 threads (each test is one or three CLI runs
-//! of ~10-20 s plus a library run).
+//! Measured (2026-10-26; also with OPENBLAS_CORETYPE=Prescott): every anchor
+//! bit-equal. FD: k ROKS HSE06 force atom 1 z 6.6e-10 (h = 1e-4, |g| 0.369;
+//! bar 1e-7); k UKS HSE06 sigma_zz 7.5e-10 Hartree/Bohr^3 (h = 1e-4,
+//! |sigma_zz| 1.04e-2; bar 1e-8). Runtimes (nextest, 3 threads): ROKS force
+//! + FD 31 s (three CLI runs + one library run), UKS stress + FD 45 s, Gamma
+//! ROKS force 25 s, refusals 0.1 s.
 //!
 //! Mutation ledger (CLI source mutated, rebuilt, this file run, reverted),
 //! all KILLED:
 //! * `k_force_ro` hands the ROKS force a state whose beta density (and beta
-//!   / effective Fock) is the alpha one: both ROKS force tests fail (the
+//!   / effective Fock) is the alpha one: the ROKS force test fails (the
 //!   library's Fock guard refuses it, mismatch 1.27e-1).
 //! * `k_force_ro` returns the force times (1 + 1e-6): the anchor fails on the
-//!   bits and the FD misses by 3.7e-7 (bar 1e-7).
-//! * `k_stress_uks` returns the transposed tensor: the stress anchor fails
-//!   on the bits (the tensor is unsymmetrised); the zz FD is blind to it.
-//! * `k_stress_uks` drops the stress (`sigma: None`): the anchor and the FD
-//!   fail (no tensor in `run_end`).
+//!   bits (run separately before the fold, the FD alone missed by 3.7e-7,
+//!   bar 1e-7).
+//! * `k_stress_uks` returns the transposed tensor: the anchor fails on the
+//!   bits (the tensor is unsymmetrised); the zz FD alone is blind to it.
+//! * `k_stress_uks` drops the stress (`sigma: None`): the test fails (no
+//!   tensor in `run_end`).
 //! * the Gamma ROKS route ignores the kept exchange (native
-//!   `gamma_roks_gradient_rsgdf`, run against the RS-GDF anchor now in the
-//!   validation twin): the anchor fails (the native force refuses a
-//!   range-separated functional).
+//!   `gamma_roks_gradient_rsgdf`): the Gamma anchors fail (the native force
+//!   refuses a range-separated functional).
 //! * the library gate accepts every range-separated hybrid (no validated
 //!   check): the refusal test fails (wB97X runs).
 
 mod open_rsh_cli;
 use open_rsh_cli::*;
 
+/// k-point ROKS HSE06 force (G2): CLI == library bit for bit, and a central
+/// FD of the CLI's own energy along atom 1 z (the largest force component).
 #[test]
-fn kpoint_roks_hse06_force_equals_the_library_bit_for_bit() {
-    let r = Run::new("kroks-hse-f", Spin::Roks, "HSE06", "optimize");
-    let c = cli_force(&r);
-    assert_force_bit_equal(r.tag, &c, lib_k_force(Spin::Roks, "HSE06", &c.1, false));
-}
-
-/// Central FD of the CLI's own k-point ROKS HSE06 energy along atom 1 z (the
-/// largest force component) against the CLI force at the same geometry.
-#[test]
-fn kpoint_roks_hse06_force_matches_fd_of_the_cli_energy() {
+fn kpoint_roks_hse06_force_equals_the_library_and_matches_fd() {
     const H: f64 = 1e-4;
-    let r = Run::new("kroks-hse-fd", Spin::Roks, "HSE06", "optimize");
-    let (_, _, g) = cli_force(&r);
+    let r = Run::new("kroks-hse-f", Spin::Roks, "HSE06", "optimize");
+    let (_, _, g) = force_anchor(&r);
     let e_at = |dz: f64, tag: &str| {
         let mut at = H3;
         at[1][2] += dz;
         cli_energy(&Run {
-            tag,
             atoms: Some(&at),
             ..Run::new(tag, Spin::Roks, "HSE06", "energy")
         })
@@ -89,20 +82,14 @@ fn kpoint_roks_hse06_force_matches_fd_of_the_cli_energy() {
     assert!(miss < 1e-7, "FD miss {miss:e}");
 }
 
+/// k-point UKS HSE06 stress (G4): CLI == library bit for bit, and
+/// `sigma_zz = (1/Omega) dE/d(eps_zz)` against a central FD of the CLI's own
+/// energy under a uniaxial strain (lattice c and every atom z scaled by
+/// `1 + eps`).
 #[test]
-fn kpoint_uks_hse06_stress_equals_the_library_bit_for_bit() {
-    let r = Run::new("kuks-hse-s", Spin::Uks, "HSE06", "stress");
-    let c = cli_stress(&r);
-    assert_stress_bit_equal(r.tag, &c, lib_k_stress(Spin::Uks, "HSE06", false));
-}
-
-/// `sigma_zz = (1/Omega) dE/d(eps_zz)`: central FD of the CLI's own energy
-/// under a uniaxial strain (lattice c and every atom z scaled by `1 + eps`).
-#[test]
-fn kpoint_uks_hse06_stress_zz_matches_fd_of_the_cli_energy() {
+fn kpoint_uks_hse06_stress_equals_the_library_and_matches_fd() {
     const H: f64 = 1e-4;
-    let r = Run::new("kuks-hse-sfd", Spin::Uks, "HSE06", "stress");
-    let (_, s) = cli_stress(&r);
+    let (_, s) = stress_anchor(&Run::new("kuks-hse-s", Spin::Uks, "HSE06", "stress"));
     let e_at = |eps: f64, tag: &str| {
         cli_energy(&Run {
             strain_zz: eps,
@@ -120,14 +107,13 @@ fn kpoint_uks_hse06_stress_zz_matches_fd_of_the_cli_energy() {
     assert!(miss < 1e-8, "FD miss {miss:e}");
 }
 
+/// Gamma ROKS CAM-B3LYP force (G3, dense AFT): CLI == library bit for bit.
 #[test]
 fn gamma_roks_cam_b3lyp_force_equals_the_library_bit_for_bit() {
-    let r = Run {
+    force_anchor(&Run {
         kpoints: false,
         ..Run::new("groks-cam-f", Spin::Roks, CAM, "optimize")
-    };
-    let c = cli_force(&r);
-    assert_force_bit_equal(r.tag, &c, lib_gamma_force(Spin::Roks, CAM, &c.1, false));
+    });
 }
 
 /// What stays refused, by name, before any integral: the derivatives of an

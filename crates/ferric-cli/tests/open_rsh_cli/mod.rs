@@ -11,19 +11,24 @@
 //! the SAME cell, so the anchors can compare bit for bit.
 //!
 //! Fixtures: H2 (closed shell) and an H3 doublet in a 4 Bohr cubic cell,
-//! STO-3G, exxdiv ewald, omega 0.8, XC grid 20x50 with a 14 Bohr cutoff;
-//! `jk = "rsgdf"` takes cc-pVDZ-RI at the default gdf_omega with the SR
-//! column rotation on (the plan's choice for an RS-GDF run).
+//! STO-3G, or STO-3G plus one p shell (zeta 1.0) on every H ([`H_SP`], the
+//! p-cell of #561, inlined here since that PR is not on main yet), exxdiv
+//! ewald, omega 0.8, XC grid 20x50 with a 14 Bohr cutoff; `jk = "rsgdf"`
+//! takes cc-pVDZ-RI at the default gdf_omega with the SR column rotation on
+//! (the plan's choice for an RS-GDF run). Every run asserts the number of
+//! basis functions on both sides (CLI printout, `PreparedBasis::nbasis`), so
+//! a silent fall back to the s-only basis cannot pass.
 #![allow(dead_code)]
 
-use ferric_core::basis;
+use ferric_core::basis::{self, BasisSet};
 use ferric_core::mol::Molecule;
 use ferric_core::units::BOHR_RADIUS_ANGSTROM;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_pbc::dense_aft::{DEFAULT_DENSE_AFT_MAX_BYTES, DEFAULT_DENSE_AFT_PRECISION};
 use ferric_pbc::gamma_rsh::{
-    gamma_rks_any_keep, gamma_rks_rsh_gradient, gamma_roks_any_keep, gamma_roks_rsh_gradient,
-    gamma_uks_any_keep, gamma_uks_rsh_gradient, GammaRshSizing,
+    gamma_rks_any_keep, gamma_rks_rsh_gradient, gamma_rks_rsh_stress, gamma_roks_any_keep,
+    gamma_roks_rsh_gradient, gamma_uks_any_keep, gamma_uks_rsh_gradient, gamma_uks_rsh_stress,
+    GammaRshExchange, GammaRshSizing,
 };
 use ferric_pbc::kroks::{KRoScfResult, KRohfConfig, KRoksConfig};
 use ferric_pbc::kstress::KStressConfig;
@@ -38,6 +43,7 @@ use ferric_pbc::{
     KUksStressConfig, MeshCentring, PeriodicGridConfig, PeriodicHcoreConfig, RsGdf, RsGdfConfig,
     SrColumnRotation,
 };
+use ferric_scf::result::ScfResult;
 use ferric_scf::rhf::RhfConfig;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -51,6 +57,20 @@ pub const H2: [[f64; 3]; 2] = [[0.3, 0.2, 0.1], [0.35, 0.12, 1.5]];
 pub const H3: [[f64; 3]; 3] = [[0.3, 0.2, 0.1], [0.35, 0.12, 1.5], [0.3, 1.9, 0.4]];
 pub const CAM: &str = "HYB_GGA_XC_CAM_B3LYP";
 pub const KMESH: [usize; 3] = [1, 1, 2];
+
+/// H STO-3G (the bundled digits) plus one p shell (zeta 1.0): the cheapest
+/// basis with l = 1 that keeps the dense-AFT G sphere of the H/STO-3G cells
+/// (set by the tightest exponent, 3.425). The same text as #561's `H_SP`.
+pub const H_SP: &str = "****
+H     0
+S   3   1.00
+      0.3425250914E+01       0.1543289673E+00
+      0.6239137298E+00       0.5353281423E+00
+      0.1688554040E+00       0.4446345422E+00
+P   1   1.00
+      1.0000000000E+00       1.0000000000E+00
+****
+";
 
 /// The SCF family of a run (`[method] kind` "rhf" / "uhf" / "rohf" with a
 /// functional = RKS / UKS / ROKS).
@@ -94,13 +114,17 @@ pub struct Run<'a> {
     /// `false` = Gamma point, `true` = the 1x1x2 Gamma-centred [`KMESH`].
     pub kpoints: bool,
     pub rsgdf: bool,
-    /// `"energy"`, `"optimize"` (zero optimizer steps: the gradient of the
-    /// input geometry) or `"stress"` (energy + `[cell] stress = true`).
+    /// `"energy"`, `"optimize"` (`steps` optimizer steps; 0 = the gradient of
+    /// the input geometry) or `"stress"` (energy + `[cell] stress = true`).
     pub task: &'a str,
     /// Atom positions in Bohr (`None` = [`Spin::atoms`]).
     pub atoms: Option<&'a [[f64; 3]]>,
     /// Uniaxial strain `eps_zz`: lattice c and every z scaled by `1 + eps`.
     pub strain_zz: f64,
+    /// STO-3G plus a p shell ([`H_SP`]) instead of the bundled STO-3G.
+    pub sp: bool,
+    /// BFGS steps of an optimize run.
+    pub steps: usize,
 }
 
 impl<'a> Run<'a> {
@@ -114,6 +138,8 @@ impl<'a> Run<'a> {
             task,
             atoms: None,
             strain_zz: 0.0,
+            sp: false,
+            steps: 0,
         }
     }
     fn atoms(&self) -> Vec<[f64; 3]> {
@@ -123,6 +149,18 @@ impl<'a> Run<'a> {
             .iter()
             .map(|p| [p[0], p[1], p[2] * s])
             .collect()
+    }
+    /// The basis functions the cell must carry (the basis guard).
+    pub fn nbasis(&self) -> usize {
+        self.spin.atoms().len() * if self.sp { 4 } else { 1 }
+    }
+    /// The same run with another functional / J/K (a sibling).
+    pub fn with(&self, functional: &'a str, rsgdf: bool) -> Self {
+        Run {
+            functional,
+            rsgdf,
+            ..*self
+        }
     }
 }
 
@@ -164,15 +202,31 @@ fn xyz(atoms_bohr: &[[f64; 3]]) -> String {
 
 pub const RSGDF_KEYS: &str = "jk = \"rsgdf\"\nauxbasis = \"cc-pvdz-ri\"";
 
+/// The `[basis]` lines of `r` (the p-cell G94 text is written into `dir`).
+fn basis_toml(r: &Run, dir: &Path) -> String {
+    if !r.sp {
+        return "name = \"sto-3g\"".into();
+    }
+    let p = dir.join("basis.g94");
+    std::fs::write(&p, H_SP).unwrap();
+    format!("path = \"{}\"", p.display())
+}
+
 /// Write the input (and its xyz) into a fresh scratch directory.
 pub fn write(r: &Run) -> PathBuf {
     let dir = scratch(r.tag);
     let xyz_path = dir.join("m.xyz");
     std::fs::write(&xyz_path, xyz(&r.atoms())).unwrap();
     let (task, tail) = match r.task {
-        "optimize" => ("optimize", "[optimize]\nmax_steps = 0"),
-        "stress" => ("energy", ""),
-        _ => ("energy", ""),
+        "optimize" => (
+            "optimize",
+            format!(
+                "[optimize]\nmax_steps = {}\ng_max_thresh = 1e-9\ng_rms_thresh = 1e-9\n\
+                 e_conv = 1e-14",
+                r.steps
+            ),
+        ),
+        _ => ("energy", String::new()),
     };
     let kmesh = if r.kpoints {
         format!("kmesh = {KMESH:?}")
@@ -194,7 +248,7 @@ pub fn write(r: &Run) -> PathBuf {
 xyz = "{xyz}"
 multiplicity = {mult}
 [basis]
-name = "sto-3g"
+{basis}
 [method]
 kind = "{kind}"
 task = "{task}"
@@ -217,6 +271,7 @@ neighbour_cutoff = {CUTOFF_BOHR}
 "#,
             xyz = xyz_path.display(),
             mult = r.spin.mult(),
+            basis = basis_toml(r, &dir),
             kind = r.spin.kind(),
             f = r.functional,
             json = dir.join("run.jsonl").display(),
@@ -236,16 +291,23 @@ fn exec(toml: &Path) -> Output {
         .expect("run ferric-cli")
 }
 
-/// Run `r` through the CLI; it must succeed. Returns the `run_end` record.
+/// Run `r` through the CLI; it must succeed and print the expected basis
+/// size. Returns the `run_end` record.
 pub fn cli(r: &Run) -> serde_json::Value {
     let toml = write(r);
     let o = exec(&toml);
+    let stdout = String::from_utf8_lossy(&o.stdout);
     assert!(
         o.status.success(),
-        "{}: ferric-cli failed\n{}\n{}",
+        "{}: ferric-cli failed\n{stdout}\n{}",
         r.tag,
-        String::from_utf8_lossy(&o.stdout),
         String::from_utf8_lossy(&o.stderr)
+    );
+    let want = format!("nbasis     = {}\n", r.nbasis());
+    assert!(
+        stdout.contains(&want),
+        "{}: CLI basis guard ({want:?})\n{stdout}",
+        r.tag
     );
     let log = std::fs::read_to_string(toml.with_file_name("run.jsonl")).expect("run log");
     let _ = std::fs::remove_dir_all(toml.parent().unwrap());
@@ -286,7 +348,8 @@ pub fn max_diff(a: &[f64], b: &[f64]) -> f64 {
         .fold(0.0_f64, |m, (p, q)| m.max((p - q).abs()))
 }
 
-/// `(E, geometry Bohr, dE/dR)` of a CLI optimize run (zero steps).
+/// `(E, geometry Bohr, dE/dR)` of a CLI optimize run: the returned geometry
+/// and the gradient evaluated there.
 pub fn cli_force(r: &Run) -> (f64, Vec<f64>, Vec<f64>) {
     assert_eq!(r.task, "optimize");
     let v = cli(r);
@@ -318,16 +381,25 @@ pub fn cli_energy(r: &Run) -> f64 {
 
 // ───────────────────────────────────────────────────────────── library ──
 
-/// The cell the CLI built: the same xyz round trip, then (for a force run)
-/// the logged Bohr positions written into the parsed molecule exactly as the
-/// CLI's optimizer does.
-pub fn cell_at(spin: Spin, at: Option<&[f64]>) -> (Cell, PreparedBasis) {
+/// The cell the CLI built for `r`: the same xyz round trip (and G94 basis
+/// text), then (for a force run) the logged Bohr positions written into the
+/// parsed molecule exactly as the CLI's optimizer does. Asserts the basis
+/// guard.
+pub fn cell_at(r: &Run, at: Option<&[f64]>) -> (Cell, PreparedBasis) {
     static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let dir = scratch(&format!("lib{n}"));
     let p = dir.join("l.xyz");
-    std::fs::write(&p, xyz(spin.atoms())).unwrap();
-    let mut mol = Molecule::load_xyz_with_charge(p.to_str().unwrap(), 0, spin.mult()).expect("xyz");
+    std::fs::write(&p, xyz(r.spin.atoms())).unwrap();
+    let mut mol =
+        Molecule::load_xyz_with_charge(p.to_str().unwrap(), 0, r.spin.mult()).expect("xyz");
+    let bs: BasisSet = if r.sp {
+        let b = dir.join("l.g94");
+        std::fs::write(&b, H_SP).unwrap();
+        basis::load_g94(b.to_str().unwrap()).unwrap()
+    } else {
+        basis::bundled("sto-3g").unwrap()
+    };
     let _ = std::fs::remove_dir_all(&dir);
     if let Some(x) = at {
         for (k, a) in mol.atoms.iter_mut().enumerate() {
@@ -336,7 +408,8 @@ pub fn cell_at(spin: Spin, at: Option<&[f64]>) -> (Cell, PreparedBasis) {
     }
     let lat = [[A_BOHR, 0.0, 0.0], [0.0, A_BOHR, 0.0], [0.0, 0.0, A_BOHR]];
     let cell = Cell::new(mol, lat).expect("cell");
-    let prep = PreparedBasis::new(cell.mol(), &basis::bundled("sto-3g").unwrap()).unwrap();
+    let prep = PreparedBasis::new(cell.mol(), &bs).unwrap();
+    assert_eq!(prep.nbasis(), r.nbasis(), "{}: library basis guard", r.tag);
     (cell, prep)
 }
 
@@ -406,62 +479,6 @@ fn jk_kind(rsgdf: bool) -> KJkKind {
     }
 }
 
-/// An open-shell k-point SCF (UKS or ROKS) through `solve_k*_keep` with the
-/// CLI's configs, handed to `f` with its retained J/K.
-fn with_kscf<T>(
-    spin: Spin,
-    func: &str,
-    x: Option<&[f64]>,
-    rsgdf: bool,
-    f: impl FnOnce(&KOpen<'_>) -> T,
-) -> T {
-    let (cell, prep) = cell_at(spin, x);
-    let mesh = KPointMesh::new(&cell, KMESH, MeshCentring::Gamma).unwrap();
-    let aux = aux_of(&cell, rsgdf);
-    match spin {
-        Spin::Uks => {
-            let mut c = KUksConfig::new(&cell, ExxDiv::Ewald, func);
-            (c.kuhf.scf, c.kuhf.hcore, c.kuhf.dense, c.grid) =
-                (kscf(), hcore_cfg(rsgdf), kdense(), grid());
-            (c.kuhf.jk, c.kuhf.rsgdf) = (jk_kind(rsgdf), krsgdf(rsgdf));
-            let (r, kept) = solve_kuks_keep(&cell, &prep, aux.as_ref(), &mesh, &c).expect("scf");
-            f(&KOpen {
-                cell: &cell,
-                prep: &prep,
-                aux: aux.as_ref(),
-                mesh: &mesh,
-                kept: &kept,
-                rcfg: &c.kuhf.rsgdf,
-                hcfg: &c.kuhf.hcore,
-                ao: c.xc.ao_threshold,
-                scf: KOpenScf::Uks(&r.scf),
-                func,
-            })
-        }
-        Spin::Roks => {
-            let mut c = KRoksConfig::new(&cell, ExxDiv::Ewald, func);
-            let mut ro = KRohfConfig::for_cell(&cell, ExxDiv::Ewald);
-            (ro.scf, ro.hcore, ro.dense) = (kscf(), hcore_cfg(rsgdf), kdense());
-            (ro.jk, ro.rsgdf) = (jk_kind(rsgdf), krsgdf(rsgdf));
-            (c.rohf, c.grid) = (ro, grid());
-            let (r, kept) = solve_kroks_keep(&cell, &prep, aux.as_ref(), &mesh, &c).expect("scf");
-            f(&KOpen {
-                cell: &cell,
-                prep: &prep,
-                aux: aux.as_ref(),
-                mesh: &mesh,
-                kept: &kept,
-                rcfg: &c.rohf.rsgdf,
-                hcfg: &c.rohf.hcore,
-                ao: c.xc.ao_threshold,
-                scf: KOpenScf::Roks(&r.scf),
-                func,
-            })
-        }
-        Spin::Rks => panic!("open-shell helper"),
-    }
-}
-
 enum KOpenScf<'a> {
     Uks(&'a ferric_pbc::KUScfResult),
     Roks(&'a KRoScfResult),
@@ -489,9 +506,52 @@ impl KOpen<'_> {
     }
 }
 
+/// An open-shell k-point SCF (UKS or ROKS) through `solve_k*_keep` with the
+/// CLI's configs, handed to `f` with its retained J/K.
+fn with_kscf<T>(r: &Run, x: Option<&[f64]>, f: impl FnOnce(&KOpen<'_>) -> T) -> T {
+    let (cell, prep) = cell_at(r, x);
+    let mesh = KPointMesh::new(&cell, KMESH, MeshCentring::Gamma).unwrap();
+    let (rsgdf, func) = (r.rsgdf, r.functional);
+    let aux = aux_of(&cell, rsgdf);
+    let open = |kept, rcfg, hcfg, ao, scf| KOpen {
+        cell: &cell,
+        prep: &prep,
+        aux: aux.as_ref(),
+        mesh: &mesh,
+        kept,
+        rcfg,
+        hcfg,
+        ao,
+        scf,
+        func,
+    };
+    match r.spin {
+        Spin::Uks => {
+            let mut c = KUksConfig::new(&cell, ExxDiv::Ewald, func);
+            (c.kuhf.scf, c.kuhf.hcore, c.kuhf.dense, c.grid) =
+                (kscf(), hcore_cfg(rsgdf), kdense(), grid());
+            (c.kuhf.jk, c.kuhf.rsgdf) = (jk_kind(rsgdf), krsgdf(rsgdf));
+            let (s, kept) = solve_kuks_keep(&cell, &prep, aux.as_ref(), &mesh, &c).expect("scf");
+            let (ao, scf) = (c.xc.ao_threshold, KOpenScf::Uks(&s.scf));
+            f(&open(&kept, &c.kuhf.rsgdf, &c.kuhf.hcore, ao, scf))
+        }
+        Spin::Roks => {
+            let mut c = KRoksConfig::new(&cell, ExxDiv::Ewald, func);
+            let mut ro = KRohfConfig::for_cell(&cell, ExxDiv::Ewald);
+            (ro.scf, ro.hcore, ro.dense) = (kscf(), hcore_cfg(rsgdf), kdense());
+            (ro.jk, ro.rsgdf) = (jk_kind(rsgdf), krsgdf(rsgdf));
+            (c.rohf, c.grid) = (ro, grid());
+            let (s, kept) = solve_kroks_keep(&cell, &prep, aux.as_ref(), &mesh, &c).expect("scf");
+            let (ao, scf) = (c.xc.ao_threshold, KOpenScf::Roks(&s.scf));
+            f(&open(&kept, &c.rohf.rsgdf, &c.rohf.hcore, ao, scf))
+        }
+        Spin::Rks => panic!("open-shell helper"),
+    }
+}
+
 /// Library k-point UKS / ROKS `(E, dE/dR)` at `x` (`KForceCtx::xc_cfg`).
-pub fn lib_k_force(spin: Spin, func: &str, x: &[f64], rsgdf: bool) -> (f64, Vec<f64>) {
-    with_kscf(spin, func, Some(x), rsgdf, |k| {
+fn lib_k_force(r: &Run, x: Option<&[f64]>) -> (f64, Vec<f64>) {
+    with_kscf(r, x, |k| {
         let gc = KUksGradConfig {
             base: KRksGradConfig {
                 grad: KGradConfig {
@@ -508,8 +568,8 @@ pub fn lib_k_force(spin: Spin, func: &str, x: &[f64], rsgdf: bool) -> (f64, Vec<
         let jk = k.kept.grad_jk(k.aux, k.rcfg).unwrap();
         let (c, p, m, h, hk) = (k.cell, k.prep, k.mesh, k.hcfg, &k.kept.hk);
         let g = match k.scf {
-            KOpenScf::Uks(r) => kpoint_uks_gradient(c, p, m, h, hk, jk, r, k.func, &gc),
-            KOpenScf::Roks(r) => kpoint_roks_gradient(c, p, m, h, hk, jk, r, k.func, &gc),
+            KOpenScf::Uks(s) => kpoint_uks_gradient(c, p, m, h, hk, jk, s, k.func, &gc),
+            KOpenScf::Roks(s) => kpoint_roks_gradient(c, p, m, h, hk, jk, s, k.func, &gc),
         }
         .expect("force");
         (k.energy(), g.grad.iter().copied().collect())
@@ -518,8 +578,8 @@ pub fn lib_k_force(spin: Spin, func: &str, x: &[f64], rsgdf: bool) -> (f64, Vec<
 
 /// Library k-point UKS / ROKS `(E, sigma row-major)` at the fixture geometry
 /// (`KStressCtx`'s stress settings).
-pub fn lib_k_stress(spin: Spin, func: &str, rsgdf: bool) -> (f64, Vec<f64>) {
-    with_kscf(spin, func, None, rsgdf, |k| {
+fn lib_k_stress(r: &Run) -> (f64, Vec<f64>) {
+    with_kscf(r, None, |k| {
         let sc = KUksStressConfig {
             base: KRksStressConfig {
                 stress: KStressConfig {
@@ -536,8 +596,8 @@ pub fn lib_k_stress(spin: Spin, func: &str, rsgdf: bool) -> (f64, Vec<f64>) {
         let jk = k.kept.stress_jk(k.aux, k.rcfg).unwrap();
         let (c, p, m, h, hk) = (k.cell, k.prep, k.mesh, k.hcfg, &k.kept.hk);
         let s = match k.scf {
-            KOpenScf::Uks(r) => kpoint_uks_stress(c, p, m, h, hk, jk, r, k.func, &sc),
-            KOpenScf::Roks(r) => kpoint_roks_stress(c, p, m, h, hk, jk, r, k.func, &sc),
+            KOpenScf::Uks(s) => kpoint_uks_stress(c, p, m, h, hk, jk, s, k.func, &sc),
+            KOpenScf::Roks(s) => kpoint_roks_stress(c, p, m, h, hk, jk, s, k.func, &sc),
         }
         .expect("stress");
         (k.energy(), s.sigma.iter().flatten().copied().collect())
@@ -568,28 +628,38 @@ fn gamma_scf() -> RhfConfig {
     }
 }
 
-/// Library Gamma RKS / UKS / ROKS `(E, dE/dR)` of a range-separated hybrid
-/// at `x`: `gamma_system(.., for_gradient = true)` (dense AFT or
-/// `RsGdf::build_for_gradient`), `gamma_*_any_keep` with `rsh_sizing`, then
-/// the routed `gamma_*_rsh_gradient` on the kept exchange.
-pub fn lib_gamma_force(spin: Spin, func: &str, x: &[f64], rsgdf: bool) -> (f64, Vec<f64>) {
-    let (cell, prep) = cell_at(spin, Some(x));
-    let hcfg = hcore_cfg(rsgdf);
+/// The Gamma SCF of a range-separated hybrid on the CLI's `gamma_system(..,
+/// for_gradient = true)` (dense AFT or `RsGdf::build_for_gradient`) through
+/// `gamma_*_any_keep` with `rsh_sizing`, handed to `f` with its kept
+/// exchange: `f(cell, prep, hcore config, SCF, configs, exchange)`.
+enum GammaCfg {
+    Rks(GammaRksConfig),
+    Uks(GammaUksConfig),
+    Roks(GammaRoksConfig),
+}
+
+fn with_gamma<T>(
+    r: &Run,
+    x: Option<&[f64]>,
+    f: impl FnOnce(
+        &Cell,
+        &PreparedBasis,
+        &PeriodicHcoreConfig,
+        &ScfResult,
+        &GammaCfg,
+        &GammaRshExchange,
+    ) -> T,
+) -> T {
+    let (cell, prep) = cell_at(r, x);
+    let hcfg = hcore_cfg(r.rsgdf);
     let hc = periodic_hcore(&cell, &prep, &hcfg).unwrap();
-    let aux = aux_of(&cell, rsgdf);
+    let aux = aux_of(&cell, r.rsgdf);
     let (dense, fit);
     let ints = match &aux {
         None => {
             let max = ferric_core::memory::gib_to_bytes(0.5);
-            dense = DenseAftEri::build(
-                &cell,
-                &prep,
-                &hc.s,
-                ExxDiv::Ewald,
-                DEFAULT_DENSE_AFT_PRECISION,
-                max,
-            )
-            .unwrap();
+            let prec = DEFAULT_DENSE_AFT_PRECISION;
+            dense = DenseAftEri::build(&cell, &prep, &hc.s, ExxDiv::Ewald, prec, max).unwrap();
             GammaUhfIntegrals::DenseAft(&dense)
         }
         Some(a) => {
@@ -601,26 +671,23 @@ pub fn lib_gamma_force(spin: Spin, func: &str, x: &[f64], rsgdf: bool) -> (f64, 
             GammaUhfIntegrals::RsGdf(&fit)
         }
     };
-    let (sz, kg) = (sizing(rsgdf), KGradConfig::default());
-    let (cell, prep, hc, aux) = (&cell, &prep, &hc, aux.as_ref());
-    let (e, g) = match spin {
+    let (sz, func) = (sizing(r.rsgdf), r.functional);
+    let (cl, pr, hcr, aux) = (&cell, &prep, &hc, aux.as_ref());
+    let keep = "a range-separated hybrid keeps its exchange";
+    match r.spin {
         Spin::Rks => {
             let mut c = GammaRksConfig::new(func);
             (c.grid, c.exxdiv, c.scf) = (grid(), ExxDiv::Ewald, gamma_scf());
-            let (r, ex) = gamma_rks_any_keep(cell, prep, hc, ints, aux, sz, &c).expect("scf");
-            let ex = ex.expect("a range-separated hybrid keeps its exchange");
-            let g = gamma_rks_rsh_gradient(cell, prep, &hcfg, &r.scf, &c, &ex, &kg);
-            (r.scf.energy, g.expect("force").grad)
+            let (s, ex) = gamma_rks_any_keep(cl, pr, hcr, ints, aux, sz, &c).expect("scf");
+            f(cl, pr, &hcfg, &s.scf, &GammaCfg::Rks(c), &ex.expect(keep))
         }
         Spin::Uks => {
             let mut c = GammaUksConfig::new(func);
             (c.grid, c.exxdiv) = (grid(), ExxDiv::Ewald);
             c.ewald_start = ferric_pbc::EwaldStart::Staged;
             c.scf = gamma_scf();
-            let (r, ex) = gamma_uks_any_keep(cell, prep, hc, ints, aux, sz, &c).expect("scf");
-            let ex = ex.expect("a range-separated hybrid keeps its exchange");
-            let g = gamma_uks_rsh_gradient(cell, prep, &hcfg, &r.scf, &c, &ex, &kg);
-            (r.scf.energy, g.expect("force").grad)
+            let (s, ex) = gamma_uks_any_keep(cl, pr, hcr, ints, aux, sz, &c).expect("scf");
+            f(cl, pr, &hcfg, &s.scf, &GammaCfg::Uks(c), &ex.expect(keep))
         }
         Spin::Roks => {
             // `crate::periodic::roks_config` with `[scf]` unwritten: the
@@ -633,71 +700,76 @@ pub fn lib_gamma_force(spin: Spin, func: &str, x: &[f64], rsgdf: bool) -> (f64, 
                 max_iter: c.scf.max_iter,
                 ..gamma_scf()
             };
-            let (r, ex) = gamma_roks_any_keep(cell, prep, hc, ints, aux, sz, &c).expect("scf");
-            let ex = ex.expect("a range-separated hybrid keeps its exchange");
-            let g = gamma_roks_rsh_gradient(cell, prep, &hcfg, &r.scf, &c, &ex, &kg);
-            (r.scf.energy, g.expect("force").grad)
+            let (s, ex) = gamma_roks_any_keep(cl, pr, hcr, ints, aux, sz, &c).expect("scf");
+            f(cl, pr, &hcfg, &s.scf, &GammaCfg::Roks(c), &ex.expect(keep))
         }
-    };
-    (e, g.iter().copied().collect())
+    }
 }
 
-/// Library Gamma UKS `(E, sigma row-major)` of a range-separated hybrid at
-/// the fixture geometry (`gamma_uks_rsh_stress` on the kept exchange): the
-/// CLI has no Gamma stress, so this is the library side of the Python
-/// `run_uks_gamma(with_stress=True)` pins (the binding's Gamma settings are
-/// the CLI's ones restated here).
-pub fn lib_gamma_uks_stress(func: &str, rsgdf: bool) -> (f64, Vec<f64>) {
-    let (cell, prep) = cell_at(Spin::Uks, None);
-    let hcfg = hcore_cfg(rsgdf);
-    let hc = periodic_hcore(&cell, &prep, &hcfg).unwrap();
-    let aux = aux_of(&cell, rsgdf);
-    let (dense, fit);
-    let ints = match &aux {
-        None => {
-            let max = ferric_core::memory::gib_to_bytes(0.5);
-            dense = DenseAftEri::build(
-                &cell,
-                &prep,
-                &hc.s,
-                ExxDiv::Ewald,
-                DEFAULT_DENSE_AFT_PRECISION,
-                max,
-            )
-            .unwrap();
-            GammaUhfIntegrals::DenseAft(&dense)
-        }
-        Some(a) => {
-            let cfg = RsGdfConfig {
-                exxdiv: ExxDiv::Ewald,
-                ..rsgdf_cfg(true)
-            };
-            fit = RsGdf::build_for_gradient(&cell, &prep, a, &hc.s, &cfg).unwrap();
-            GammaUhfIntegrals::RsGdf(&fit)
-        }
-    };
-    let mut c = GammaUksConfig::new(func);
-    (c.grid, c.exxdiv) = (grid(), ExxDiv::Ewald);
-    c.ewald_start = ferric_pbc::EwaldStart::Staged;
-    c.scf = gamma_scf();
-    let sz = sizing(rsgdf);
-    let (r, ex) = gamma_uks_any_keep(&cell, &prep, &hc, ints, aux.as_ref(), sz, &c).expect("scf");
-    let ex = ex.expect("a range-separated hybrid keeps its exchange");
-    let st = ferric_pbc::gamma_rsh::gamma_uks_rsh_stress(
-        &cell,
-        &prep,
-        &hcfg,
-        &r.scf,
-        &c,
-        &ex,
-        &KStressConfig::default(),
-    )
-    .expect("stress");
-    (r.scf.energy, st.sigma.iter().flatten().copied().collect())
+/// Library Gamma RKS / UKS / ROKS `(E, dE/dR)` of a range-separated hybrid
+/// at `x`: the routed `gamma_*_rsh_gradient` on the kept exchange.
+fn lib_gamma_force(r: &Run, x: Option<&[f64]>) -> (f64, Vec<f64>) {
+    with_gamma(r, x, |cell, prep, hcfg, scf, cfg, ex| {
+        let kg = KGradConfig::default();
+        let g = match cfg {
+            GammaCfg::Rks(c) => {
+                gamma_rks_rsh_gradient(cell, prep, hcfg, scf, c, ex, &kg).map(|g| g.grad)
+            }
+            GammaCfg::Uks(c) => {
+                gamma_uks_rsh_gradient(cell, prep, hcfg, scf, c, ex, &kg).map(|g| g.grad)
+            }
+            GammaCfg::Roks(c) => {
+                gamma_roks_rsh_gradient(cell, prep, hcfg, scf, c, ex, &kg).map(|g| g.grad)
+            }
+        };
+        (scf.energy, g.expect("force").iter().copied().collect())
+    })
 }
 
-/// CLI force `(E, x, g)` equals the library at `x` bit for bit; returns the
-/// library force for further checks.
+/// Library Gamma RKS / UKS `(E, sigma row-major)` of a range-separated
+/// hybrid at the fixture geometry (`gamma_*_rsh_stress` on the kept
+/// exchange). The CLI has no Gamma stress: this is the library side of the
+/// Python `run_rks_gamma` / `run_uks_gamma(with_stress=True)` pins (the
+/// binding's Gamma settings are the CLI's ones restated here).
+fn lib_gamma_stress(r: &Run) -> (f64, Vec<f64>) {
+    with_gamma(r, None, |cell, prep, hcfg, scf, cfg, ex| {
+        let sc = KStressConfig::default();
+        let s = match cfg {
+            GammaCfg::Rks(c) => {
+                gamma_rks_rsh_stress(cell, prep, hcfg, scf, c, ex, &sc).map(|s| s.sigma)
+            }
+            GammaCfg::Uks(c) => {
+                gamma_uks_rsh_stress(cell, prep, hcfg, scf, c, ex, &sc).map(|s| s.sigma)
+            }
+            GammaCfg::Roks(_) => panic!("no Gamma ROKS range-separated stress"),
+        };
+        (
+            scf.energy,
+            s.expect("stress").iter().flatten().copied().collect(),
+        )
+    })
+}
+
+/// Library force of `r` (k-point or Gamma) at `x` (`None` = the fixture
+/// geometry as the CLI parses it).
+pub fn lib_force(r: &Run, x: Option<&[f64]>) -> (f64, Vec<f64>) {
+    if r.kpoints {
+        lib_k_force(r, x)
+    } else {
+        lib_gamma_force(r, x)
+    }
+}
+
+/// Library stress of `r` (k-point or Gamma) at the fixture geometry.
+pub fn lib_stress(r: &Run) -> (f64, Vec<f64>) {
+    if r.kpoints {
+        lib_k_stress(r)
+    } else {
+        lib_gamma_stress(r)
+    }
+}
+
+/// CLI force `(E, x, g)` equals the library at `x` bit for bit.
 pub fn assert_force_bit_equal(tag: &str, cli: &(f64, Vec<f64>, Vec<f64>), lib: (f64, Vec<f64>)) {
     let (e, _, g) = cli;
     let (el, gl) = lib;
@@ -720,4 +792,20 @@ pub fn assert_stress_bit_equal(tag: &str, cli: &(f64, Vec<f64>), lib: (f64, Vec<
     assert!((s[0] - s[8]).abs() > 1e-7, "{tag}: xx == zz, untestable");
     assert_eq!(e.to_bits(), el.to_bits(), "{tag}: energy {e} vs {el}");
     assert_eq!(bits(s), bits(&sl), "{tag}: stress {s:?} vs {sl:?}");
+}
+
+/// Run `r` (optimize) through the CLI and assert it equals the library bit
+/// for bit; returns the CLI `(E, x, g)`.
+pub fn force_anchor(r: &Run) -> (f64, Vec<f64>, Vec<f64>) {
+    let c = cli_force(r);
+    assert_force_bit_equal(r.tag, &c, lib_force(r, Some(&c.1)));
+    c
+}
+
+/// Run `r` (stress) through the CLI and assert it equals the library bit
+/// for bit; returns the CLI `(E, sigma)`.
+pub fn stress_anchor(r: &Run) -> (f64, Vec<f64>) {
+    let c = cli_stress(r);
+    assert_stress_bit_equal(r.tag, &c, lib_stress(r));
+    c
 }

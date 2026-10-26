@@ -971,8 +971,9 @@ impl DerivSpin {
     }
 }
 
-/// Which analytic derivative a binding requests. The k-point allowlist of
-/// [`check_deriv_functional`] is the same for both today; the Gamma ROKS gate
+/// Which analytic derivative a binding requests (the Gamma request gates of
+/// [`crate::dft`] take a list of them). The k-point allowlist of
+/// [`check_deriv_functional`] is the same for both; the Gamma ROKS gate
 /// ([`crate::dft::check_gamma_roks_request`]) refuses the range-separated
 /// stress (no library entry).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -987,8 +988,8 @@ pub enum Deriv {
 /// CLI entry points, per SCF family and J/K (`rsgdf` = the RS-GDF fit, else
 /// the dense-AFT oracle). Independent of what the ENERGY gate accepts, so
 /// widening the energy path cannot silently enable a derivative. The force
-/// and the stress share every list today (`_deriv` names the request so a
-/// future split stays at the call sites).
+/// and the stress share every list (the Gamma ROKS gate,
+/// [`crate::dft::check_gamma_roks_request`], is where they differ).
 ///
 /// * Every family: LDA, GGA and GLOBAL hybrid functionals (every component a
 ///   `Lda`, `Gga` or `HybridGga` libxc family, no VV10, no mixing weights such
@@ -1014,7 +1015,6 @@ pub enum Deriv {
 /// ...).
 pub fn check_deriv_functional(
     spin: DerivSpin,
-    _deriv: Deriv,
     rsgdf: bool,
     functional: &str,
 ) -> Result<(), FerricError> {
@@ -1119,12 +1119,11 @@ pub fn check_validated_rsh_deriv(functional: &str) -> Result<(), FerricError> {
 /// vocabulary (`what`: `"with_stress"`, `"[cell] stress = true"`).
 pub fn check_kpoint_deriv_functional(
     spin: DerivSpin,
-    deriv: Deriv,
     rsgdf: bool,
     functional: &str,
     what: &str,
 ) -> Result<(), String> {
-    check_deriv_functional(spin, deriv, rsgdf, functional).map_err(|e| format!("{what}: {e}"))
+    check_deriv_functional(spin, rsgdf, functional).map_err(|e| format!("{what}: {e}"))
 }
 
 /// SCAN and r2SCAN: the meta-GGAs whose k-point SCF, force and stress are
@@ -1630,63 +1629,58 @@ mod force_allowlist_tests {
         );
     }
 
-    /// The full (family x derivative x J/K x functional) acceptance table of
-    /// the binding derivative gate: every validated route accepted, every
-    /// other refused. Mutation-tested: routing a range-separated hybrid past
-    /// the validated check (wB97X accepted), or refusing the open-shell RS-GDF
-    /// or stress rows (the pre-#498 arms restored), each fail a row below.
+    /// The full (family x J/K x functional) acceptance table of the binding
+    /// derivative gate (force and stress share it): every validated route
+    /// accepted, every other refused. Mutation-tested: routing a
+    /// range-separated hybrid past the validated check (wB97X accepted), or
+    /// refusing the open-shell RS-GDF rows (the pre-#498 arms restored), each
+    /// fail a row below.
     #[test]
     fn derivative_gate_accepts_exactly_the_validated_routes() {
-        use Deriv::{Force as F, Stress as S};
         use DerivSpin::{Restricted as R, RestrictedOpen as O, Unrestricted as U};
         let cam = "HYB_GGA_XC_CAM_B3LYP";
-        let mut ok: Vec<(DerivSpin, Deriv, bool, &str)> = Vec::new();
-        for d in [F, S] {
-            ok.extend([
-                (R, d, false, "PBE0"),
-                (R, d, true, "PBE0"),
-                (U, d, true, "PBE"),
-                (O, d, true, "B3LYP"),
-                (R, d, false, "SCAN"),
-                (R, d, true, "r2SCAN"),
-                (U, d, false, "SCAN"),
-                (U, d, false, "R2SCAN"),
-                (R, d, false, "TPSS"),
-            ]);
-            for spin in [R, U, O] {
-                for g in [false, true] {
-                    ok.extend([(spin, d, g, "HSE06"), (spin, d, g, cam)]);
-                }
+        let mut ok: Vec<(DerivSpin, bool, &str)> = vec![
+            (R, false, "PBE0"),
+            (R, true, "PBE0"),
+            (U, true, "PBE"),
+            (O, true, "B3LYP"),
+            (R, false, "SCAN"),
+            (R, true, "r2SCAN"),
+            (U, false, "SCAN"),
+            (U, false, "R2SCAN"),
+            (R, false, "TPSS"),
+        ];
+        for spin in [R, U, O] {
+            for g in [false, true] {
+                ok.extend([(spin, g, "HSE06"), (spin, g, cam)]);
             }
         }
-        for &(s, d, g, f) in &ok {
-            check_deriv_functional(s, d, g, f)
-                .unwrap_or_else(|e| panic!("{s:?} {d:?} {g} {f}: {e}"));
+        for &(s, g, f) in &ok {
+            check_deriv_functional(s, g, f).unwrap_or_else(|e| panic!("{s:?} {g} {f}: {e}"));
         }
         let wb = "HYB_GGA_XC_WB97X";
         let val = "validated for HSE06 / CAM-B3LYP";
-        let refused: &[(DerivSpin, Deriv, bool, &str, &str)] = &[
-            (R, F, false, wb, val),
-            (R, S, true, wb, val),
-            (U, F, false, wb, val),
-            (U, S, true, wb, val),
-            (O, F, true, wb, val),
-            (O, S, false, wb, val),
+        let refused: &[(DerivSpin, bool, &str, &str)] = &[
+            (R, false, wb, val),
+            (R, true, wb, val),
+            (U, false, wb, val),
+            (U, true, wb, val),
+            (O, true, wb, val),
+            (O, false, wb, val),
             (
                 U,
-                F,
                 true,
                 "SCAN",
                 "UKS) meta-GGA force and stress run on the dense-AFT",
             ),
-            (O, F, false, "SCAN", "ROKS has no meta-GGA"),
-            (R, S, true, "TPSS", "validated on the dense-AFT J only"),
-            (U, F, false, "TPSS", "TPSS is closed-shell only"),
-            (O, S, false, "TPSS", "ROKS has no meta-GGA"),
+            (O, false, "SCAN", "ROKS has no meta-GGA"),
+            (R, true, "TPSS", "validated on the dense-AFT J only"),
+            (U, false, "TPSS", "TPSS is closed-shell only"),
+            (O, false, "TPSS", "ROKS has no meta-GGA"),
         ];
-        for &(s, d, g, f, msg) in refused {
-            let e = check_deriv_functional(s, d, g, f).expect_err(f).to_string();
-            assert!(e.contains(msg), "{s:?} {d:?} {g} {f}: {e}");
+        for &(s, g, f, msg) in refused {
+            let e = check_deriv_functional(s, g, f).expect_err(f).to_string();
+            assert!(e.contains(msg), "{s:?} {g} {f}: {e}");
         }
     }
 

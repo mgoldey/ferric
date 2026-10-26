@@ -1223,6 +1223,9 @@ fn gamma_roks_rsh_force(
     cfg: &GammaRoksConfig,
     ex: &ferric_pbc::gamma_rsh::GammaRshExchange,
 ) -> Result<Derivs, FerricError> {
+    // `run_roks_gamma` refused the stress before any integral; refuse it
+    // again here rather than silently returning none.
+    ferric_pbc::dft::check_gamma_roks_request(&cfg.functional, &s.derivs.kinds())?;
     let mut out = Derivs::default();
     if s.derivs.gradient {
         let g = ferric_pbc::gamma_rsh::gamma_roks_rsh_gradient(
@@ -1940,7 +1943,7 @@ fn run_rks_gamma(
     // Before any integral is built: the meta-GGA allowlist (SCAN / r2SCAN /
     // TPSS; their force / stress is the 1x1x1 route) and the meta-GGA and
     // range-separated derivative J/K (dense AFT only).
-    ferric_pbc::dft::check_gamma_rks_request(functional, s.derivs.any(), s.aux.is_some())
+    ferric_pbc::dft::check_gamma_rks_request(functional, &s.derivs.kinds(), s.aux.is_some())
         .map_err(|e| val_err(format!("{fname}: functional {functional:?}: {e}")))?;
     s.set_sr_knobs(range_split, sr_column_rotation)?;
     let grid = periodic_grid(
@@ -3055,10 +3058,9 @@ fn check_kpoint_ks_support(
             kind.label()
         ))
     })?;
-    for (deriv, what) in s.derivs.named() {
+    for (_, what) in s.derivs.named() {
         ferric_pbc::kxcgrad::check_kpoint_deriv_functional(
             kind.deriv_spin(),
-            deriv,
             s.aux.is_some(),
             functional,
             what,

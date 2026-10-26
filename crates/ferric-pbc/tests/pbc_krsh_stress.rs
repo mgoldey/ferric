@@ -519,7 +519,6 @@ fn rsh_stress_refusals() {
         ferric_pbc::kxcgrad::DerivSpin::Unrestricted,
         ferric_pbc::kxcgrad::DerivSpin::RestrictedOpen,
     ] {
-        let stress = ferric_pbc::kxcgrad::Deriv::Stress;
-        ferric_pbc::kxcgrad::check_deriv_functional(spin, stress, false, "HSE06").unwrap();
+        ferric_pbc::kxcgrad::check_deriv_functional(spin, false, "HSE06").unwrap();
     }
 }

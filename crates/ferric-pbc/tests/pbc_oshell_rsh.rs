@@ -199,17 +199,17 @@ fn open_shell_rsh_derivatives_refuse_by_name() {
     let named = |m: String| assert!(m.contains("range-separated"), "{m}");
     // The binding gate: every open-shell RSH derivative of a validated
     // functional is wired (#498); an unvalidated one (wB97X) is refused by name.
-    use ferric_pbc::kxcgrad::{Deriv, DerivSpin};
-    for (spin, d, what) in [
-        (DerivSpin::Unrestricted, Deriv::Stress, "with_stress"),
-        (DerivSpin::RestrictedOpen, Deriv::Force, "with_gradient"),
-        (DerivSpin::RestrictedOpen, Deriv::Stress, "with_stress"),
+    use ferric_pbc::kxcgrad::DerivSpin;
+    for (spin, what) in [
+        (DerivSpin::Unrestricted, "with_stress"),
+        (DerivSpin::RestrictedOpen, "with_gradient"),
+        (DerivSpin::RestrictedOpen, "with_stress"),
     ] {
-        ferric_pbc::kxcgrad::check_kpoint_deriv_functional(spin, d, false, "HSE06", what)
+        ferric_pbc::kxcgrad::check_kpoint_deriv_functional(spin, false, "HSE06", what)
             .unwrap_or_else(|e| panic!("{e}"));
         let wb = "HYB_GGA_XC_WB97X";
-        let e = ferric_pbc::kxcgrad::check_kpoint_deriv_functional(spin, d, false, wb, what)
-            .unwrap_err();
+        let e =
+            ferric_pbc::kxcgrad::check_kpoint_deriv_functional(spin, false, wb, what).unwrap_err();
         named(e);
     }
     let cell = cell_named("h3d");

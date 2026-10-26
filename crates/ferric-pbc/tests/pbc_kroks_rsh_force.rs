@@ -498,11 +498,9 @@ fn roks_rsh_force_refusals() {
     .to_string();
     assert!(e.contains("needs KRksStressConfig::exxdiv"), "{e}");
     // The binding derivative gate takes ROKS range separation (#498).
-    use ferric_pbc::kxcgrad::{check_deriv_functional, Deriv, DerivSpin};
+    use ferric_pbc::kxcgrad::{check_deriv_functional, DerivSpin};
     for f in FUNCTIONALS {
-        for d in [Deriv::Force, Deriv::Stress] {
-            check_deriv_functional(DerivSpin::RestrictedOpen, d, false, f)
-                .unwrap_or_else(|e| panic!("{f} {d:?}: {e}"));
-        }
+        check_deriv_functional(DerivSpin::RestrictedOpen, false, f)
+            .unwrap_or_else(|e| panic!("{f}: {e}"));
     }
 }
