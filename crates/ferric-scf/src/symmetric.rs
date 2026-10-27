@@ -1,4 +1,4 @@
-//! Point-group-blocked closed-shell RHF (stage 2 of issue #294).
+//! Point-group-blocked closed-shell RHF and RKS (issue #294).
 //!
 //! [`solve_rhf_symmetric`] (with `RhfConfig::symmetry = true`) detects the
 //! highest Abelian subgroup of the molecule (`ferric_core::symmetry`), builds
@@ -79,19 +79,54 @@
 //! a symmetry-broken-in-labelling state, the same choice other Abelian-subgroup
 //! codes make; use `irrep_nelec` to choose explicitly.
 //!
+//! # Kohn-Sham (RKS)
+//!
+//! With `RhfConfig::xc` set the blocked solve is RKS, with NO Fock or density
+//! symmetrisation. The KS grid is built from the reoriented molecule, and in
+//! that frame it is exactly invariant under every detected operation: each
+//! Lebedev rule is an Oh orbit placed at the atoms without rotation, the
+//! canonical-frame operations `diag(±1, ±1, ±1)` lie in Oh, and the radial
+//! grids and Becke weights depend only on the element and are symmetric under
+//! the atom permutation. So `V_xc` of a symmetric density commutes with the
+//! operations to roundoff (measured about 3e-15 relative), and blocking
+//! discards nothing but that roundoff and the batch screen's 1e-13-level
+//! asymmetry. The grid is NOT rotation invariant, so a rotated input gives an
+//! energy that differs from the unblocked input-frame energy at the
+//! grid-error level (1e-6 to 1e-3 Ha measured at 75x110); against the
+//! unblocked solve of the symmetry-frame molecule it agrees to roundoff.
+//! RI-J (the KS default) and exact J both block exactly.
+//!
+//! C3 and C6 are not Lebedev symmetries, so degenerate partners of the full
+//! (non-Abelian) group can split on the grid (NH3 e by 3e-6 to 4e-5 Ha, benzene
+//! e1g by 6e-5 Ha at 75x110), far above the 1e-10 clustering tolerance. A
+//! partially filled degenerate shell would then be occupied by grid noise.
+//! Under KS the solve is therefore refused when, among the irreps that
+//! `irrep_nelec` does not list (all of them without a request), the highest
+//! occupied and lowest unoccupied orbitals of the FIRST blocked
+//! diagonalization (the Fock matrix of the guess, symmetric under the full
+//! point group) lie in different irreps within `KS_SHELL_SPLIT_TOL` (1e-3 Ha).
+//! Stretched H2 (sigma_g and sigma_u degenerate) and singlet O2 (one pair in
+//! pi_g, also with only Ag listed) are such cases; list one of the shell's
+//! irreps in `irrep_nelec`. Closed degenerate shells are unaffected. The
+//! check looks at the starting Fock matrix because a partially filled shell
+//! that the SCF itself splits (O2's pi_g ends 0.05 Ha apart) would pass a
+//! check of the converged state; at convergence the same test only warns.
+//! The tolerance is meaningful only on a fine enough grid, so blocked KS
+//! refuses a main grid below 110 angular points (`MIN_KS_ANGULAR`, with the
+//! measured splittings).
+//!
 //! # Refused (typed error, never silently ignored)
 //!
 //! MOM, smearing, fractional occupations, Newton / AH / TRAH / AURORA,
 //! stability analysis and stability descent, constraints (cDFT), a user
-//! initial density (it would be in the input frame), Kohn-Sham functionals
-//! (the Becke-Lebedev grid is not symmetric, a maintainer decision pending),
-//! external potentials, COSMO, PCM, polarizable embedding, the periodic
+//! initial density (it would be in the input frame), COSX exchange (its
+//! seminumerical grid and final-grid pass are not wired to the symmetry
+//! frame), external potentials, COSMO, PCM, polarizable embedding, the periodic
 //! injected path. Open shells have their own entry points
 //! ([`crate::symmetric_open`]), which share this module's frame, blocking and
-//! refusals. Compatible: DIIS, level shift, damping,
-//! direct J/K, LinK, density-fitted J/K and COSX (whose grid breaks symmetry
-//! only at grid-error level; off-block elements of F are dropped by the
-//! blocking).
+//! refusals and also refuse Kohn-Sham. Compatible: DIIS, level shift, damping,
+//! direct J/K, LinK, density-fitted J/K, and Kohn-Sham functionals (RKS, see
+//! above).
 //!
 //! The input molecule must already carry its ECP assignment
 //! (`Molecule::apply_ecp`) when detection runs: species identity includes the
@@ -111,13 +146,27 @@ use ferric_integrals::blas_threads::{opt_in_blas_threads, with_blas_threads};
 use ferric_integrals::operator::Operator;
 use ndarray::Array2;
 use ndarray_linalg::Eigh;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 
 /// Orbital energies closer than this are one degenerate cluster: ordered by
 /// irrep instead of by roundoff.
 const DEGENERACY_TOL: f64 = 1e-10;
 /// Label of a padded (linearly dependent) MO column.
 const PAD_IRREP: usize = usize::MAX;
+/// Under Kohn-Sham, a HOMO and LUMO of different irreps closer than this
+/// (Hartree) are taken as a split degenerate shell. Only sound together with
+/// `MIN_KS_ANGULAR`; see there for the measured splittings.
+const KS_SHELL_SPLIT_TOL: f64 = 1e-3;
+/// Smallest main-grid Lebedev order blocked KS accepts. The grid splits
+/// degenerate partners of non-Lebedev rotations (C3, C6), and on a coarse
+/// grid the split exceeds `KS_SHELL_SPLIT_TOL`, so the split-shell refusal
+/// would no longer see the shell. MEASURED, largest split of the 12
+/// degenerate pairs of exact-D6h benzene PBE/STO-3G (75 radial unless
+/// stated): 590: 1.6e-7, 302: 8.5e-7, 194: 6.6e-6, 110: 7.9e-5 (also with
+/// NWChem pruning), 50: 7.0e-4, 40x26: 7.4e-3, 14: 2.6e-2, 20x6: 0.17 Ha
+/// (the rounded `testdata` benzene adds a geometric split up to 3e-4).
+/// 110 keeps a factor 12 below the tolerance; 50 does not.
+const MIN_KS_ANGULAR: usize = 110;
 
 /// Symmetry data one SCF run needs: the AO representation, the irreps, the
 /// occupation request, and a slot where the solver records the irrep of each
@@ -135,6 +184,9 @@ pub(crate) struct SymmetrySpec {
     /// Requested orbitals per group, per irrep (index-aligned with `irreps`).
     request: Vec<Option<Vec<usize>>>,
     last_labels: RefCell<Vec<usize>>,
+    /// Pending Kohn-Sham split-shell check of the FIRST blocked
+    /// diagonalization (see `refuse_split_ks_shell`); cleared once run.
+    split_shell_check: Cell<bool>,
 }
 
 impl SymmetrySpec {
@@ -166,7 +218,13 @@ impl SymmetrySpec {
             totals,
             request,
             last_labels: RefCell::new(Vec::new()),
+            split_shell_check: Cell::new(false),
         }
+    }
+
+    /// Arm the Kohn-Sham split-shell refusal for the first diagonalization.
+    fn arm_split_shell_check(&self) {
+        self.split_shell_check.set(true);
     }
 
     /// Irrep label of each MO column of the latest diagonalization.
@@ -323,6 +381,26 @@ impl<'a> BlockedDiag<'a> {
             }
         }
         let order = grouped_order(&eps_all, &irrep_all, &self.spec.request, &self.spec.totals)?;
+        if self.spec.split_shell_check.replace(false) {
+            let nocc = self.spec.totals.iter().sum();
+            let sorted_eps: Vec<f64> = order.iter().map(|&i| eps_all[i]).collect();
+            let sorted_irrep: Vec<usize> = order.iter().map(|&i| irrep_all[i]).collect();
+            if let Some(msg) = split_ks_shell(
+                &self.spec.irreps,
+                &self.spec.request,
+                &sorted_eps,
+                &sorted_irrep,
+                nocc,
+            ) {
+                return Err(FerricError::General(format!(
+                    "RhfConfig.symmetry with a Kohn-Sham functional: {msg} of the starting Fock \
+                     matrix. The KS grid can split a degenerate shell (C3/C6 partners by up to \
+                     about 8e-5 Ha at 110 angular points), so aufbau would choose the occupation \
+                     by grid noise; pass irrep_nelec listing at least one of these irreps to \
+                     choose it explicitly"
+                )));
+            }
+        }
         let mut eps = vec![1e6; nao];
         let mut c = Array2::<f64>::zeros((nao, nao));
         let mut labels = vec![PAD_IRREP; nao];
@@ -510,18 +588,13 @@ pub(crate) fn validate_config(config: &RhfConfig) -> Result<(), FerricError> {
             "the density would be in the input frame, the SCF runs in the symmetry frame",
         );
     }
-    if config.xc.is_some() {
-        return no(
-            "a Kohn-Sham functional",
-            "the Becke-Lebedev grid is not symmetric (RKS blocking is a later stage)",
-        );
-    }
     if config.cosmo.is_some() || config.pcm.is_some() || config.polarizable.is_some() {
         return no(
             "COSMO/PCM/polarizable embedding",
             "cavities and sites are not part of the symmetry detection",
         );
     }
+    refuse_coarse_ks_grid(config)?;
     require_no_external_potential(config.external_potential.as_ref())
         .map_err(|e| FerricError::General(format!("RhfConfig.symmetry: {e}")))
 }
@@ -666,8 +739,18 @@ pub fn solve_rhf_symmetric(
         config.irrep_nelec.as_deref(),
         sym_mol.nelec().max(0) as usize,
     )?;
+    if config.xc.is_some() {
+        spec.arm_split_shell_check();
+    }
     let scf =
         crate::rhf::solve_rhf_blocked(ctx, &sym_mol, &prep_sym, op, &bounds_sym, config, &spec)?;
+    if config.xc.is_some() {
+        warn_split_ks_shell_at_convergence(
+            &spec,
+            &scf.eps_alpha,
+            sym_mol.nelec().max(0) as usize / 2,
+        );
+    }
     Ok(SymmetricRhf {
         scf,
         group: det.group.name().to_string(),
@@ -677,6 +760,82 @@ pub fn solve_rhf_symmetric(
         origin: det.origin,
         max_symmetrization_shift: det.max_symmetrization_shift,
     })
+}
+
+/// The Kohn-Sham split-shell test: among the orbitals of irreps NOT listed in
+/// `irrep_nelec` (all irreps without a request), the highest occupied and the
+/// lowest unoccupied lie in different irreps within `KS_SHELL_SPLIT_TOL`, so
+/// their relative occupation was decided by aufbau over a near-degeneracy
+/// the grid may have caused. Returns a description, or `None`. A listed irrep
+/// takes its orbitals by request, not by energy, so it cannot be the culprit.
+///
+/// Run on the FIRST blocked diagonalization (a Fock matrix of the symmetric
+/// guess, symmetric under the full point group) as a refusal, and at
+/// convergence as a warning. Degenerate partners that fall into the SAME
+/// Abelian irrep (an Oh e_g pair maps to Ag + Ag in D2h) pass, because only a
+/// cross-irrep pair can be split by the blocking; aufbau within one irrep
+/// block is an ordinary eigen-decomposition. `eps` and `irrep` are in
+/// MO-column order (occupied first); `nocc` is the occupied count.
+fn split_ks_shell(
+    irreps: &[Irrep],
+    request: &[Option<Vec<usize>>],
+    eps: &[f64],
+    irrep: &[usize],
+    nocc: usize,
+) -> Option<String> {
+    let unlisted = |k: &usize| request.get(irrep[*k]).is_some_and(Option::is_none);
+    let homo = (0..nocc.min(eps.len()))
+        .filter(unlisted)
+        .max_by(|&a, &b| eps[a].total_cmp(&eps[b]))?;
+    let lumo = (nocc.min(eps.len())..eps.len())
+        .filter(unlisted)
+        .min_by(|&a, &b| eps[a].total_cmp(&eps[b]))?;
+    let (h, l) = (irrep[homo], irrep[lumo]);
+    let gap = (eps[lumo] - eps[homo]).abs();
+    if h == l || gap >= KS_SHELL_SPLIT_TOL {
+        return None;
+    }
+    Some(format!(
+        "the near-degenerate highest occupied ({}, {:.8} Ha) and lowest unoccupied ({}, {:.8} \
+         Ha) orbitals of the irreps irrep_nelec does not list lie in different irreps within \
+         {KS_SHELL_SPLIT_TOL:e} Ha",
+        irreps[h].label, eps[homo], irreps[l].label, eps[lumo]
+    ))
+}
+
+/// The converged-state counterpart of the first-iteration refusal: a
+/// warning only, because a shell the SCF itself split is a legitimate state.
+fn warn_split_ks_shell_at_convergence(spec: &SymmetrySpec, eps: &[f64], nocc: usize) {
+    let labels = spec.last_labels.borrow();
+    let n = labels.iter().take_while(|&&h| h != PAD_IRREP).count();
+    if let Some(msg) = split_ks_shell(&spec.irreps, &spec.request, &eps[..n], &labels[..n], nocc) {
+        eprintln!("warning: blocked KS at convergence: {msg}; check irrep_nelec");
+    }
+}
+
+/// Refuse a Kohn-Sham main grid coarser than `MIN_KS_ANGULAR` (see there).
+fn refuse_coarse_ks_grid(config: &RhfConfig) -> Result<(), FerricError> {
+    let n = config.dft_grid.as_ref().map_or(110, |g| g.n_angular);
+    if config.xc.is_none() {
+        return Ok(());
+    }
+    if !ferric_dft::prune::SUPPORTED_LEBEDEV_ORDERS.contains(&n) {
+        return Err(FerricError::General(format!(
+            "RhfConfig.symmetry: {n} angular points is not a supported Lebedev order \
+             (supported: {:?})",
+            ferric_dft::prune::SUPPORTED_LEBEDEV_ORDERS
+        )));
+    }
+    if n >= MIN_KS_ANGULAR {
+        return Ok(());
+    }
+    Err(FerricError::General(format!(
+        "RhfConfig.symmetry cannot be combined with a Kohn-Sham grid of {n} angular points: \
+         below {MIN_KS_ANGULAR} the grid splits degenerate partners by more than the \
+         {KS_SHELL_SPLIT_TOL:e} Ha split-shell tolerance (measured on benzene: 7e-4 Ha at 50, \
+         7e-3 Ha at 26), so a partially filled shell could pass unseen; use at least \
+         {MIN_KS_ANGULAR} angular points"
+    )))
 }
 
 /// The screening flavour the caller's bounds carry (the two tables are
