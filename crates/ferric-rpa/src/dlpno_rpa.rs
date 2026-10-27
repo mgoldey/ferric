@@ -383,9 +383,9 @@ fn rpa_energy_in_reduced_basis(
     )?;
     if !lz.converged {
         eprintln!(
-            "warning: DLPNO-RPA Lanczos eigensolve did NOT converge (max Ritz residual \
-             {:.3e} > {:.3e}); the reported energy is best-effort",
-            lz.max_resid, config.eigensolver_conv_thresh
+            "warning: DLPNO-RPA Lanczos eigensolve did NOT converge ({}); the reported \
+             energy is best-effort",
+            crate::lanczos::lanczos_stall_summary(&lz, config.eigensolver_conv_thresh)
         );
     }
 

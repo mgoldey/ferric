@@ -288,9 +288,9 @@ pub fn run_pdep_rpa_osv(
     )?;
     if !lz.converged {
         eprintln!(
-            "warning: Lanczos eigensolve did NOT converge (max Ritz residual {:.3e} \
-             > {:.3e}); OSV/PNO eigenpotentials are best-effort",
-            lz.max_resid, config.eigensolver_conv_thresh
+            "warning: Lanczos eigensolve did NOT converge ({}); OSV/PNO eigenpotentials \
+             are best-effort",
+            lanczos::lanczos_stall_summary(&lz, config.eigensolver_conv_thresh)
         );
     }
     let eigvals = &lz.eigenvalues;

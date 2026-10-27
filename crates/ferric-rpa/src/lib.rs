@@ -736,10 +736,9 @@ pub(crate) fn run_pdep_rpa_eigensolve(
             )?;
             if !lz.converged {
                 eprintln!(
-                    "warning: Lanczos eigensolve did NOT converge (max Ritz residual \
-                     {:.3e} > {:.3e} after {max_iter} block iterations); PDEP \
-                     eigenpotentials and the RPA energy built on them are best-effort",
-                    lz.max_resid, config.eigensolver_conv_thresh
+                    "warning: Lanczos eigensolve did NOT converge ({}; max_iter={max_iter}); \
+                     PDEP eigenpotentials and the RPA energy built on them are best-effort",
+                    lanczos::lanczos_stall_summary(&lz, config.eigensolver_conv_thresh)
                 );
             }
             davidson::DavidsonResult {

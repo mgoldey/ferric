@@ -160,6 +160,9 @@ where
             eigenvectors: Array2::zeros((naux, 0)),
             converged: true,
             max_resid: 0.0,
+            subspace_dim: 0,
+            n_desired,
+            block_iterations: 0,
         });
     }
 
@@ -240,6 +243,9 @@ where
         eigenvectors,
         converged: true,
         max_resid: 0.0,
+        subspace_dim: naux,
+        n_desired,
+        block_iterations: 0,
     })
 }
 
@@ -265,6 +271,116 @@ pub struct LanczosResult {
     /// the returned Ritz pairs at the point the solve stopped. `0.0` for the
     /// full-rank (exact) path.
     pub max_resid: f64,
+    /// Krylov dimension reached (`nb * block_size`) when the solve stopped;
+    /// `naux` for the full-rank path.
+    ///
+    /// Carried so a non-convergence warning can name the ACTUAL cause:
+    /// [`run_lanczos_seeded`] needs BOTH `max_resid < conv_thresh` AND
+    /// `subspace_dim >= n_desired`. Reporting only `max_resid` made a
+    /// count-starved solve read as a residual failure (an alkane sweep warned
+    /// "worst residual=1.172e-14" against `conv_thresh=1e-6`).
+    pub subspace_dim: usize,
+    /// Eigenpairs requested. For [`run_lanczos_targeted`] it is the number of
+    /// modes found above `depart_thresh`, whose count criterion differs.
+    pub n_desired: usize,
+    /// Outer block iterations run (`0` for the full-rank path). Fewer than
+    /// `max_iter + 1` on an unconverged solve means the ambient-space cap
+    /// (`naux` rounded DOWN to a multiple of the block size), not `max_iter`,
+    /// ended the solve.
+    pub block_iterations: usize,
+}
+
+/// Why [`run_lanczos_seeded`] reported `converged == false`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LanczosStallCause {
+    /// Residual below `conv_thresh`, but the Krylov subspace holds fewer than
+    /// `n_desired` pairs: more iterations are needed, not a tighter solve.
+    CountStarved,
+    /// Enough pairs, but the residual is still at or above `conv_thresh`.
+    ResidualAboveThreshold,
+    /// Both the residual and the pair count fall short.
+    ResidualAndCount,
+    /// Both criteria hold yet the solve is flagged unconverged: a logic error
+    /// in the iteration, reported rather than hidden.
+    Inconsistent,
+}
+
+/// Classify an unconverged seeded-Lanczos stop by which convergence criterion
+/// failed. Pure, so the warning text is testable without capturing stderr.
+pub fn lanczos_stall_cause(
+    max_resid: f64,
+    conv_thresh: f64,
+    subspace_dim: usize,
+    n_desired: usize,
+) -> LanczosStallCause {
+    let resid_ok = max_resid < conv_thresh;
+    let count_ok = subspace_dim >= n_desired;
+    match (resid_ok, count_ok) {
+        (true, false) => LanczosStallCause::CountStarved,
+        (false, true) => LanczosStallCause::ResidualAboveThreshold,
+        (false, false) => LanczosStallCause::ResidualAndCount,
+        (true, true) => LanczosStallCause::Inconsistent,
+    }
+}
+
+/// One-clause summary of why `result` is unconverged, for call-site warnings
+/// that previously asserted "residual > conv_thresh" unconditionally.
+pub fn lanczos_stall_summary(result: &LanczosResult, conv_thresh: f64) -> String {
+    let (resid, dim, want) = (result.max_resid, result.subspace_dim, result.n_desired);
+    let what = match lanczos_stall_cause(resid, conv_thresh, dim, want) {
+        LanczosStallCause::CountStarved => "count-starved, residual is fine",
+        LanczosStallCause::ResidualAboveThreshold => "residual above threshold",
+        LanczosStallCause::ResidualAndCount => "residual above threshold and count-starved",
+        LanczosStallCause::Inconsistent => "INTERNAL INCONSISTENCY, both criteria pass",
+    };
+    format!(
+        "{what}: max Ritz residual {resid:.3e} vs conv_thresh {conv_thresh:.3e}, subspace \
+         {dim} of {want} eigenpairs, {} block iterations",
+        result.block_iterations
+    )
+}
+
+/// The non-convergence warning for an unconverged seeded-Lanczos result,
+/// naming the failed criterion and what ended the iteration.
+pub fn lanczos_nonconvergence_message(
+    result: &LanczosResult,
+    max_iter: usize,
+    conv_thresh: f64,
+) -> String {
+    let (resid, dim, want) = (result.max_resid, result.subspace_dim, result.n_desired);
+    let stop = if result.block_iterations <= max_iter {
+        format!(
+            "the Krylov space hit its ambient cap of {dim} after {} block iterations \
+             (naux rounded down to a multiple of the block size), NOT max_iter={max_iter}",
+            result.block_iterations
+        )
+    } else {
+        format!("max_iter={max_iter} was exhausted")
+    };
+    let cause = match lanczos_stall_cause(resid, conv_thresh, dim, want) {
+        LanczosStallCause::CountStarved => format!(
+            "the residual is FINE ({resid:.3e} < conv_thresh {conv_thresh:.3e}) but the Krylov \
+             subspace reached only {dim} of the {want} eigenpairs requested; the residual is \
+             NOT the problem"
+        ),
+        LanczosStallCause::ResidualAboveThreshold => format!(
+            "residual {resid:.3e} is still above conv_thresh {conv_thresh:.3e} (subspace {dim} \
+             >= {want} requested, so the count is fine)"
+        ),
+        LanczosStallCause::ResidualAndCount => format!(
+            "residual {resid:.3e} is above conv_thresh {conv_thresh:.3e} AND the subspace \
+             reached only {dim} of the {want} eigenpairs requested"
+        ),
+        LanczosStallCause::Inconsistent => format!(
+            "INTERNAL INCONSISTENCY: residual {resid:.3e} < {conv_thresh:.3e} and subspace \
+             {dim} >= {want} both hold, yet the solve reports non-convergence; please report \
+             this"
+        ),
+    };
+    format!(
+        "ferric-rpa WARNING: block Lanczos did not converge: {cause}; {stop}. Returned Ritz \
+         pairs are the best available, not verified eigenpairs of the dielectric matrix."
+    )
 }
 
 /// QR-orthonormalize columns; returns Q with the same shape as the input when
@@ -414,10 +530,8 @@ where
     })?;
     if !result.converged {
         eprintln!(
-            "ferric-rpa WARNING: block Lanczos did not converge within max_iter={max_iter} \
-             (conv_thresh={conv_thresh:.3e}, worst residual={:.3e}); returned Ritz pairs \
-             are the best available, not verified eigenpairs of the dielectric matrix.",
-            result.max_resid,
+            "{}",
+            lanczos_nonconvergence_message(&result, max_iter, conv_thresh)
         );
     }
     Ok(result)
@@ -443,6 +557,9 @@ where
             eigenvectors: Array2::zeros((naux, 0)),
             converged: true,
             max_resid: 0.0,
+            subspace_dim: 0,
+            n_desired,
+            block_iterations: 0,
         });
     }
 
@@ -455,6 +572,9 @@ where
             eigenvectors: Array2::zeros((naux, 0)),
             converged: true,
             max_resid: 0.0,
+            subspace_dim: 0,
+            n_desired,
+            block_iterations: 0,
         });
     }
 
@@ -628,6 +748,9 @@ where
             eigenvectors: ritz,
             converged,
             max_resid,
+            subspace_dim: tdim,
+            n_desired,
+            block_iterations: k + 1,
         };
         last_result = Some(result);
 
@@ -714,6 +837,9 @@ where
             eigenvectors: Array2::zeros((naux, 0)),
             converged: true,
             max_resid: 0.0,
+            subspace_dim: 0,
+            n_desired: 0,
+            block_iterations: 0,
         });
     }
 
@@ -836,6 +962,9 @@ where
             eigenvectors: Array2::zeros((naux, 0)),
             converged,
             max_resid,
+            subspace_dim: tdim,
+            n_desired: n_keep,
+            block_iterations: k + 1,
         });
 
         if no_more_expansion || residual_ok {
@@ -1360,6 +1489,108 @@ mod tests {
         assert!(
             generous_panel <= naux,
             "panel width must never exceed naux, got {generous_panel} for naux={naux}"
+        );
+    }
+
+    /// Narrow 4-column seed on a naux=40 dielectric operator: one Lanczos
+    /// step (max_iter=1, two block iterations) reaches an 8-dim subspace.
+    fn narrow_seed_run(n_desired: usize, conv_thresh: f64) -> LanczosResult {
+        let naux = 40;
+        let (matvec, _a) = make_dielectric_op(naux, 90, 11);
+        let mut seed = Array2::<f64>::zeros((naux, 4));
+        for j in 0..4 {
+            for i in 0..naux {
+                seed[(i, j)] = ((i + j * 13) as f64).cos();
+            }
+        }
+        run_lanczos_seeded(seed, |v| matvec(v), n_desired, 1, conv_thresh, false).unwrap()
+    }
+
+    /// The bug this guards: a COUNT-starved solve (residual already below
+    /// `conv_thresh`, too few pairs) used to be reported as a residual failure.
+    #[test]
+    fn count_starved_solve_is_not_blamed_on_the_residual() {
+        let res = narrow_seed_run(40, 1.0e3);
+        assert!(!res.converged);
+        assert!(res.max_resid < 1.0e3, "setup: residual must pass the bar");
+        assert_eq!((res.subspace_dim, res.n_desired), (8, 40));
+        assert_eq!(
+            lanczos_stall_cause(res.max_resid, 1.0e3, res.subspace_dim, res.n_desired),
+            LanczosStallCause::CountStarved
+        );
+        let msg = lanczos_nonconvergence_message(&res, 1, 1.0e3);
+        assert!(msg.contains("residual is FINE"), "{msg}");
+        assert!(msg.contains("only 8 of the 40 eigenpairs"), "{msg}");
+        assert!(msg.contains("max_iter=1 was exhausted"), "{msg}");
+        assert!(lanczos_stall_summary(&res, 1.0e3).starts_with("count-starved"));
+    }
+
+    /// Enough pairs (8 >= 4) but an unreachable residual bar: the residual,
+    /// and only the residual, is named.
+    #[test]
+    fn residual_stalled_solve_names_the_residual_not_the_count() {
+        let res = narrow_seed_run(4, 1e-14);
+        assert!(!res.converged);
+        assert_eq!(
+            lanczos_stall_cause(res.max_resid, 1e-14, res.subspace_dim, res.n_desired),
+            LanczosStallCause::ResidualAboveThreshold
+        );
+        let msg = lanczos_nonconvergence_message(&res, 1, 1e-14);
+        assert!(msg.contains("still above conv_thresh"), "{msg}");
+        assert!(msg.contains("count is fine"), "{msg}");
+        assert!(lanczos_stall_summary(&res, 1e-14).starts_with("residual above threshold:"));
+    }
+
+    /// PR #532's side observation: naux=42 with a 5-wide block caps the Krylov
+    /// space at 40 after 8 block iterations, so the old "within max_iter=50"
+    /// blamed a budget that was never reached. The message must name the cap.
+    #[test]
+    fn ambient_cap_stop_is_not_blamed_on_max_iter() {
+        let naux = 42;
+        let (matvec, _a) = make_dielectric_op(naux, 90, 3);
+        let mut seed = Array2::<f64>::zeros((naux, 5));
+        for j in 0..5 {
+            for i in 0..naux {
+                seed[(i, j)] = ((i * 7 + j * 13) as f64).sin();
+            }
+        }
+        let res = run_lanczos_seeded(seed, |v| matvec(v), naux, 50, 1e-300, false).unwrap();
+        assert!(!res.converged);
+        assert_eq!((res.block_iterations, res.subspace_dim), (8, 40));
+        assert_eq!(
+            lanczos_stall_cause(res.max_resid, 1e-300, res.subspace_dim, res.n_desired),
+            LanczosStallCause::ResidualAndCount
+        );
+        let msg = lanczos_nonconvergence_message(&res, 50, 1e-300);
+        assert!(msg.contains("ambient cap of 40 after 8 block"), "{msg}");
+        assert!(msg.contains("NOT max_iter=50"), "{msg}");
+        assert!(!msg.contains("was exhausted"), "{msg}");
+    }
+
+    /// The classifier mirrors the solver gate `max_resid < conv_thresh &&
+    /// subspace_dim >= n_desired` exactly, boundaries included.
+    #[test]
+    fn stall_cause_classifier_matches_the_convergence_gate() {
+        use LanczosStallCause::*;
+        assert_eq!(lanczos_stall_cause(1e-9, 1e-6, 4, 8), CountStarved);
+        assert_eq!(
+            lanczos_stall_cause(1e-3, 1e-6, 8, 8),
+            ResidualAboveThreshold
+        );
+        assert_eq!(lanczos_stall_cause(1e-3, 1e-6, 4, 8), ResidualAndCount);
+        assert_eq!(lanczos_stall_cause(1e-9, 1e-6, 8, 8), Inconsistent);
+        // `<` on the residual: equality is NOT converged.
+        assert_eq!(
+            lanczos_stall_cause(1e-6, 1e-6, 8, 8),
+            ResidualAboveThreshold
+        );
+        // `>=` on the count: equality IS enough (the Inconsistent row above),
+        // one short is not.
+        assert_eq!(lanczos_stall_cause(1e-9, 1e-6, 7, 8), CountStarved);
+        // A NaN residual never passes.
+        assert_eq!(
+            lanczos_stall_cause(f64::NAN, 1e-6, 8, 8),
+            ResidualAboveThreshold
         );
     }
 }
