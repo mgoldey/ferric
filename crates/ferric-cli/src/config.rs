@@ -5521,9 +5521,10 @@ fn resolve_kmesh(
     Ok(Some((n, centring)))
 }
 
-/// The open-shell k-point meta-GGA is validated on the dense-AFT J/K only
-/// (the library `solve_kuks` refuses RS-GDF too; this names the key at plan
-/// time).
+/// The CLI's open-shell k-point meta-GGA runs on the dense-AFT J/K only
+/// (the library `solve_kuks` and the UKS force / stress accept RS-GDF since
+/// #492, validated in `pbc_kuks_mgga_rsgdf.rs`, but the CLI route is not
+/// wired; this names the key at plan time).
 fn check_kpoint_uks_mgga_jk(
     route: PeriodicRoute,
     functional: Option<&str>,

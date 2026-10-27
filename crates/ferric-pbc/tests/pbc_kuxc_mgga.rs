@@ -29,20 +29,15 @@ mod common;
 #[path = "kuxc_mgga_support/mod.rs"]
 mod support;
 
-use common::*;
-use ferric_core::basis::{BasisSet, Shell};
 use ferric_pbc::dense_aft::ExxDiv;
 use ferric_pbc::hcore::PeriodicHcoreConfig;
-use ferric_pbc::kgrad::{KGradJk, KRsGdfGradSource};
+use ferric_pbc::kgrad::KGradJk;
 use ferric_pbc::kroks::{solve_kroks, KRoksConfig};
 use ferric_pbc::kstress::KStressJk;
-use ferric_pbc::kuxcgrad::{kpoint_roks_gradient, kpoint_uks_gradient};
-use ferric_pbc::kuxcstress::{kpoint_roks_stress, kpoint_uks_stress};
+use ferric_pbc::kuxcgrad::kpoint_roks_gradient;
+use ferric_pbc::kuxcstress::kpoint_roks_stress;
 use ferric_pbc::kxcgrad::KXcMutation;
 use ferric_pbc::kxcstress::KXcStressMutation;
-use ferric_pbc::rsgdf::kpoint::{KRsGdf, KRsGdfConfig};
-use ferric_pbc::rsgdf::RsGdfConfig;
-use std::collections::HashMap;
 use support::*;
 
 /// Singlet k-UKS vs k-RKS, per part (independent SCF loops). Measured
@@ -141,29 +136,10 @@ fn polarized_fixed_density_xc_stress_matches_fd() {
 
 // ------------------------------------------------------------ refusals
 
-fn et_sp_aux() -> BasisSet {
-    let mut shells = Vec::new();
-    for a in [4.7, 1.9, 0.75, 0.3] {
-        shells.push(Shell {
-            l: 0,
-            pure: false,
-            exponents: vec![a],
-            coefficients: vec![1.0],
-        });
-    }
-    let mut m = HashMap::new();
-    m.insert(1, shells);
-    BasisSet {
-        name: "et-s-aux-H".into(),
-        shells: m,
-        ecps: HashMap::new(),
-    }
-}
-
-/// Outside the validated envelope, by name: meta-GGA on the RS-GDF J (the
-/// open-shell meta-GGA energy is refused there), any other meta-GGA (raw
-/// TPSS components), and meta-GGA ROKS (its SCF has no tau term). Each
-/// refusal precedes the Fock guard, so a PBE state exercises it.
+/// Outside the validated envelope, by name: any other meta-GGA (raw TPSS
+/// components) and meta-GGA ROKS (its SCF has no tau term). Each refusal
+/// precedes the Fock guard, so a PBE state exercises it. (UKS SCAN / r2SCAN
+/// on the RS-GDF J/K is accepted since #492: `pbc_kuks_mgga_rsgdf.rs`.)
 #[test]
 fn unvalidated_open_shell_meta_gga_derivatives_are_refused() {
     let fx = fixture(h3(&H3), [1, 1, 1], "SCAN", atom_grid());
@@ -177,54 +153,8 @@ fn unvalidated_open_shell_meta_gga_derivatives_are_refused() {
             .to_string();
         assert!(e.contains("SCAN and r2SCAN"), "{f}: {e}");
     }
-    // RS-GDF J/K.
-    let aux = prep_for(&fx.cell, &et_sp_aux());
-    let kc = KRsGdfConfig {
-        gdf: RsGdfConfig {
-            omega: 1.0,
-            exxdiv: ExxDiv::None,
-            budget_bytes: Some(AMPLE),
-            ..Default::default()
-        },
-        mutation: None,
-    };
-    let gdf = KRsGdf::build(&fx.cell, &fx.prep, &aux, &fx.mesh, &fx.hk.s, &kc).unwrap();
-    let src = || KRsGdfGradSource {
-        gdf: &gdf,
-        cfg: &kc,
-        aux: &aux,
-    };
-    let hcfg = PeriodicHcoreConfig::with_omega(OMEGA);
-    let e = kpoint_uks_gradient(
-        &fx.cell,
-        &fx.prep,
-        &fx.mesh,
-        &hcfg,
-        &fx.hk,
-        KGradJk::RsGdf(src()),
-        &fx.res.scf,
-        "SCAN",
-        &gcfg(&fx.grid, None, None),
-    )
-    .expect_err("SCAN force on RS-GDF")
-    .to_string();
-    eprintln!("UKS SCAN force on RS-GDF: {e}");
-    assert!(e.contains("RS-GDF") && e.contains("dense"), "{e}");
-    let e = kpoint_uks_stress(
-        &fx.cell,
-        &fx.prep,
-        &fx.mesh,
-        &hcfg,
-        &fx.hk,
-        KStressJk::RsGdf(src()),
-        &fx.res.scf,
-        "SCAN",
-        &scfg(&fx.grid, None, None),
-    )
-    .expect_err("SCAN stress on RS-GDF")
-    .to_string();
-    assert!(e.contains("RS-GDF") && e.contains("dense"), "{e}");
     // ROKS: a PBE ROKS state handed in as SCAN.
+    let hcfg = PeriodicHcoreConfig::with_omega(OMEGA);
     let mut rcfg = KRoksConfig::new(&fx.cell, ExxDiv::None, "PBE");
     rcfg.rohf.hcore = hcfg;
     if let ferric_pbc::kxcgrad::KXcGrid::Atom(g) = &fx.grid {

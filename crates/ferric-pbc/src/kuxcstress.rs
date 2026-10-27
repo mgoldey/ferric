@@ -2,7 +2,7 @@
 //! ([`crate::kuks::solve_kuks`]) for LDA, GGA and GLOBAL hybrid functionals
 //! (exact-exchange fraction `a`), dense-AFT and RS-GDF J/K, range-separated
 //! (CAM) GGA hybrids on either J/K ("Range-separated hybrids" below), and
-//! the pure meta-GGAs SCAN / r2SCAN (UKS, dense-AFT J/K only): the
+//! the pure meta-GGAs SCAN / r2SCAN (UKS, dense-AFT and RS-GDF J/K): the
 //! spin-resolved twin of [`crate::kxcstress`] and the strain twin of
 //! [`crate::kuxcgrad`].
 //!
@@ -58,8 +58,8 @@
 //!
 //!    The weight response carries `ε(ρ_σ, σ_στ, τ_σ)` unchanged and the Fock
 //!    guard rebuilds `F_σ` with `V^τ_σ`. ROKS refuses meta-GGA (no tau in its
-//!    SCF), as does the RS-GDF J route (the open-shell meta-GGA energy is
-//!    refused there).
+//!    SCF). The RS-GDF J route composes unchanged (no exact exchange; FD of
+//!    the RS-GDF SCF energy in `tests/pbc_kuks_mgga_rsgdf.rs`, issue #492).
 //!
 //! The atom grid is not rotation invariant, so `sigma` is returned
 //! UNSYMMETRISED like the RKS entry ([`crate::kxcstress`] module doc);
@@ -203,8 +203,7 @@
 //! LDA, GGA, global and range-separated (CAM GGA) hybrids on either J/K (the
 //! range-separated stress validated for HSE06 and CAM-B3LYP; other CAM GGA
 //! hybrids such as wB97X are accepted, not exercised); for UKS also SCAN /
-//! r2SCAN on the dense-AFT J/K. Any other meta-GGA, meta-GGA on RS-GDF,
-//! range-separated meta-GGA, VV10 and double hybrids are refused with typed
+//! r2SCAN on either J/K. Any other meta-GGA, range-separated meta-GGA, VV10 and double hybrids are refused with typed
 //! errors (ROKS also refuses every meta-GGA; the ROHF entry has no
 //! functional). A ROKS state cannot
 //! be handed to [`kpoint_uks_stress`] (its SCF type is
@@ -766,14 +765,14 @@ impl KUXcStressResponse for GridXcPol<'_> {
 /// exchange scale 1 (its fractions are inside the kernel; VV10 and mixing
 /// weights refused by [`resolve_global_mgga_stress`]); otherwise ROKS keeps
 /// the stress resolver's own meta-GGA refusal and UKS narrows meta-GGA to
-/// SCAN / r2SCAN on the dense-AFT J/K.
+/// SCAN / r2SCAN (dense-AFT or RS-GDF J/K).
 fn grid_response<'a>(
     cell: &'a Cell,
     prep: &'a PreparedBasis,
     mesh: &KPointMesh,
     functional: &str,
     cfg: &'a KUksStressConfig,
-    (who, allow_mgga, rsgdf): (&str, bool, bool),
+    (who, allow_mgga): (&str, bool),
 ) -> Result<(GridXcPol<'a>, f64, Option<RshParams>), FerricError> {
     let rsh = match resolve_periodic_functional_rsh(functional)?.2 {
         Some(_) => resolve_global_mgga_stress(functional)?.2,
@@ -782,9 +781,7 @@ fn grid_response<'a>(
     let (exch, is_mgga) = if rsh.is_some() {
         (1.0, false)
     } else if allow_mgga {
-        resolve_open_shell(who, functional, (true, rsgdf), &|f| {
-            resolve_open_stress(f, true)
-        })?
+        resolve_open_shell(who, functional, true, &|f| resolve_open_stress(f, true))?
     } else {
         (resolve_global(functional)?.1, false)
     };
@@ -823,14 +820,14 @@ fn grid_response<'a>(
 /// [`KRksStressConfig::exxdiv`], here `cfg.base.exxdiv`). Arguments as
 /// [`crate::kxcstress::kpoint_rks_stress`] with the SCF a [`KUScfResult`].
 ///
-/// Also the pure meta-GGAs SCAN / r2SCAN on the dense-AFT J/K (module doc,
-/// item 3), and range-separated (CAM GGA) hybrids on the dense-AFT or RS-GDF
+/// Also the pure meta-GGAs SCAN / r2SCAN on the dense-AFT or RS-GDF J/K
+/// (module doc, item 3), and range-separated (CAM GGA) hybrids on the dense-AFT or RS-GDF
 /// J/K built with the functional's [`RshParams`] (as
 /// [`crate::kuks::solve_kuks`] builds them; module doc "Range-separated
 /// hybrids").
 ///
 /// Refuses (typed errors) J/K whose range separation is not the
-/// functional's, any other meta-GGA, meta-GGA with RS-GDF J/K, VV10/double
+/// functional's, any other meta-GGA, VV10/double
 /// hybrids, a hybrid without `cfg.base.exxdiv`, an SCF whose spin Focks the
 /// rebuilt `h + J − a K_σ + V_xc,σ` do not reproduce, an unconverged SCF and a
 /// non-stationary state (`max |F_σ D_σ S − S D_σ F_σ|` above
@@ -847,14 +844,13 @@ pub fn kpoint_uks_stress(
     functional: &str,
     cfg: &KUksStressConfig,
 ) -> Result<KUksStress, FerricError> {
-    let rsgdf = matches!(jk, KStressJk::RsGdf(_));
     let (resp, exch, rsh) = grid_response(
         cell,
         prep,
         mesh,
         functional,
         cfg,
-        ("kpoint_uks_stress", true, rsgdf),
+        ("kpoint_uks_stress", true),
     )?;
     uks_stress_with(
         "kpoint_uks_stress",
@@ -907,7 +903,7 @@ pub fn kpoint_roks_stress(
         mesh,
         functional,
         cfg,
-        ("kpoint_roks_stress", false, false),
+        ("kpoint_roks_stress", false),
     )?;
     uks_stress_with(
         "kpoint_roks_stress",
