@@ -29,7 +29,7 @@
 //!   diabat pair, `S_ab` rises by many orders of magnitude and varies smoothly
 //!   and monotonically with R (it is an orbital overlap, so it must decay).
 //! * **H-DEGENERACY (artifact)** — `S_ab ≈ 1e-13` is the Löwdin pairing hitting
-//!   its `S_TOL = 1e-8` near-zero branch for a reason unrelated to the hole's
+//!   its (since removed, #576) `S_TOL = 1e-8` near-zero branch for a reason unrelated to the hole's
 //!   symmetry (e.g. the two constrained determinants differing in more than one
 //!   orbital, which makes a one-body element vanish for cofactor reasons).
 //!   OBSERVABLE: `S_ab` stays at the 1e-13 floor with a σ reference too, and/or
