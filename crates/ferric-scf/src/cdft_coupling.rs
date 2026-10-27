@@ -5,8 +5,9 @@
 //! non-orthogonal UHF determinants with different MO sets. Per spin, SVD the
 //! occupied-MO overlap M = (C_a^occ)ᵀ S C_b^occ = U Σ Vᵀ (Löwdin pairing);
 //! the determinant overlap is the product of singular values, and one-body
-//! elements use the reduced-overlap form, with the 0/1/≥2 near-zero
-//! singular-value cases handled explicitly.
+//! elements use the division-free cofactor form of
+//! [`cross_one_body`](crate::cdft_coupling::cross_one_body), which is exact
+//! and continuous for any number of zero singular values.
 //!
 //! # The raw element (constraint-offset invariant form)
 //!
@@ -44,9 +45,6 @@
 use ndarray::{Array1, Array2};
 use ndarray_linalg::SVD;
 
-/// Singular-value threshold below which a paired orbital is "zero overlap".
-const S_TOL: f64 = 1e-8;
-
 /// Löwdin pairing of two occupied MO sets for one spin channel.
 #[derive(Debug, Clone)]
 pub struct Pairing {
@@ -80,78 +78,62 @@ pub fn biorth_pairing(c_occ_a: &Array2<f64>, c_occ_b: &Array2<f64>, s: &Array2<f
     }
 }
 
-/// ⟨Ψ_a|Ô|Ψ_b⟩ for a one-body AO operator Ô, given both spins' pairings and
-/// the total overlap S_ab = pair_α.det_m · pair_β.det_m.
+/// Σ_i d_i Π_{j≠i} s_j, the derivative of Π_j (s_j + t·d_j) at t = 0.
 ///
-/// Per spin the reduced contribution is Σ_i ⟨ã_i|Ô|b̃_i⟩ / s_i, valid when all
-/// s_i > S_TOL. Near-zero s_i are handled by the cofactor rules:
-///   - one spin with exactly one zero s_k: that spin contributes only the k-th
-///     paired term with the zero excluded from the det prefactor; the other
-///     spin contributes its full det. The element is finite though S_ab = 0.
-///   - ≥2 zeros total (in one spin, or one in each spin): a one-body operator
-///     connects determinants differing by ≤1 orbital, so the element is 0.
-pub fn cross_one_body(
-    op_ao: &Array2<f64>,
-    pair_alpha: &Pairing,
-    pair_beta: &Pairing,
-    s_ab: f64,
-) -> f64 {
-    // Per-spin paired diagonal d_i = ⟨ã_i|Ô|b̃_i⟩.
-    let diag = |p: &Pairing| -> Vec<f64> {
-        let n = p.s_vals.len();
-        (0..n)
-            .map(|i| {
-                let a = p.c_tilde_a.column(i);
-                let b = p.c_tilde_b.column(i);
-                // aᵀ Op b
-                a.dot(&op_ao.dot(&b))
-            })
-            .collect()
-    };
-    let da = diag(pair_alpha);
-    let db = diag(pair_beta);
-
-    // Count near-zero singular values per spin.
-    let zeros = |p: &Pairing| -> Vec<usize> {
-        p.s_vals
-            .iter()
-            .enumerate()
-            .filter(|(_, &s)| s < S_TOL)
-            .map(|(i, _)| i)
-            .collect()
-    };
-    let za = zeros(pair_alpha);
-    let zb = zeros(pair_beta);
-    let nz = za.len() + zb.len();
-
-    if nz == 0 {
-        // Generic: S_ab · Σ_σ Σ_i d_i / s_i.
-        let red = |p: &Pairing, d: &[f64]| -> f64 {
-            p.s_vals.iter().zip(d).map(|(s, di)| di / s).sum::<f64>()
-        };
-        s_ab * (red(pair_alpha, &da) + red(pair_beta, &db))
-    } else if nz == 1 {
-        // Exactly one zero, in one spin. The element is
-        //   (Π_{i≠k} s_i^that-spin) · d_k^that-spin · (det of the other spin),
-        // i.e. cofactor: the zero orbital is the only connecting pair.
-        let (p_zero, d_zero, k, det_other) = if za.len() == 1 {
-            (pair_alpha, &da, za[0], pair_beta.det_m)
-        } else {
-            (pair_beta, &db, zb[0], pair_alpha.det_m)
-        };
-        let prod_nonzero: f64 = p_zero
-            .s_vals
-            .iter()
-            .enumerate()
-            .filter(|(i, _)| *i != k)
-            .map(|(_, s)| *s)
-            .product();
-        prod_nonzero * d_zero[k] * det_other
-    } else {
-        // ≥2 zeros: one-body operator cannot connect determinants differing by
-        // more than one orbital.
-        0.0
+/// Built from prefix and suffix products, so no s_j is ever divided by: the
+/// result is a polynomial in the singular values and stays exact (and
+/// continuous) when any of them is zero.
+fn cofactor_sum(s_vals: &Array1<f64>, d: &[f64]) -> f64 {
+    let n = s_vals.len();
+    let mut suffix = vec![1.0; n + 1];
+    for i in (0..n).rev() {
+        suffix[i] = suffix[i + 1] * s_vals[i];
     }
+    let mut prefix = 1.0;
+    let mut total = 0.0;
+    for i in 0..n {
+        total += d[i] * prefix * suffix[i + 1];
+        prefix *= s_vals[i];
+    }
+    total
+}
+
+/// Paired diagonal d_i = ⟨ã_i|Ô|b̃_i⟩ of a one-body AO operator for one spin.
+fn paired_diagonal(op_ao: &Array2<f64>, p: &Pairing) -> Vec<f64> {
+    (0..p.s_vals.len())
+        .map(|i| {
+            p.c_tilde_a
+                .column(i)
+                .dot(&op_ao.dot(&p.c_tilde_b.column(i)))
+        })
+        .collect()
+}
+
+/// ⟨Ψ_a|Ô|Ψ_b⟩ for a one-body AO operator Ô, given both spins' pairings.
+///
+/// In the Löwdin-paired basis the spin-σ overlap matrix is diag(s^σ), and the
+/// generalized Slater–Condon rule gives the one-body element as the adjugate
+/// trace tr(adj(M_σ) O_σ) times the other spin's determinant:
+///
+/// ```text
+/// ⟨Ψ_a|Ô|Ψ_b⟩ = Σ_σ [Σ_i d_i^σ Π_{j≠i} s_j^σ] · det_σ'
+/// ```
+///
+/// with d_i^σ = ⟨ã_i|Ô|b̃_i⟩ and det_σ' = Π s^σ'. This is the derivative of
+/// det(M + t·O) and contains no division, so it is exact for any number of
+/// zero singular values: one zero leaves only that pair's cofactor term, two or
+/// more give zero, and the value is continuous as a singular value passes
+/// through zero. When every s_i is nonzero it equals the reduced-overlap form
+/// S_ab · Σ_σ Σ_i d_i^σ / s_i^σ.
+///
+/// It is linear in Ô, so W → W − c·S shifts it by exactly −c·N_e·S_ab (each
+/// d_i^σ moves by −c·s_i^σ). An earlier thresholded version treated
+/// s_k < 1e-8 as an exact zero and kept only the k-th term, which shifted by
+/// −c·S_ab instead and left ½·c·(N_e − 1)·S_ab·(λ_a + λ_b) in H_ab.
+pub fn cross_one_body(op_ao: &Array2<f64>, pair_alpha: &Pairing, pair_beta: &Pairing) -> f64 {
+    let alpha = cofactor_sum(&pair_alpha.s_vals, &paired_diagonal(op_ao, pair_alpha));
+    let beta = cofactor_sum(&pair_beta.s_vals, &paired_diagonal(op_ao, pair_beta));
+    alpha * pair_beta.det_m + beta * pair_alpha.det_m
 }
 
 /// A converged constrained UHF diabatic state, viewed for coupling.
@@ -219,8 +201,8 @@ pub fn coupling_hab(
     let s_ab = pair_alpha.det_m * pair_beta.det_m;
 
     // ⟨Ψ_a|Ŵ_a|Ψ_b⟩ and ⟨Ψ_a|Ŵ_b|Ψ_b⟩.
-    let w_a_elem = cross_one_body(state_a.w, &pair_alpha, &pair_beta, s_ab);
-    let w_b_elem = cross_one_body(state_b.w, &pair_alpha, &pair_beta, s_ab);
+    let w_a_elem = cross_one_body(state_a.w, &pair_alpha, &pair_beta);
+    let w_b_elem = cross_one_body(state_b.w, &pair_alpha, &pair_beta);
 
     // Each state's own constraint population N_X = ⟨Ψ_X|Ŵ_X|Ψ_X⟩.
     let n_a = own_population(state_a, &ca_occ_a, &ca_occ_b);
