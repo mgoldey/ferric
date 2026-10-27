@@ -71,9 +71,7 @@ PBC = os.path.dirname(HERE)
 sys.path.insert(0, PBC)
 sys.path.insert(0, HERE)
 
-DATA = os.environ.get(
-    "HEAD_DATA", "/home/matt/qc/ferric/wiki/data/pbc-head-anomaly"
-)
+DATA = os.environ.get("HEAD_DATA", "/home/matt/qc/ferric/wiki/data/pbc-head-anomaly")
 A_CELL = 6.0
 E1_GAMMA = {  # stored rows (cub1, MP2); n = 6 from Iteration 12
     3: -1.3356869412022e-2,
@@ -155,12 +153,20 @@ def anchor():
     with open(child, "w") as f:
         f.write(_Z0_CHILD)
     outs = {}
-    for tag, path, mode in (("origin", orig, "none"), ("new-None", PBC, "none"), ("new-0", PBC, "zero")):
+    for tag, path, mode in (
+        ("origin", orig, "none"),
+        ("new-None", PBC, "none"),
+        ("new-0", PBC, "zero"),
+    ):
         if path is None:
             print("Z0: ORIGIN_PBC not set (or SKIP_Z0), Z0 skipped")
             break
         outs[tag] = subprocess.run(
-            [sys.executable, child, path, mode], capture_output=True, text=True, check=True, cwd=path
+            [sys.executable, child, path, mode],
+            capture_output=True,
+            text=True,
+            check=True,
+            cwd=path,
         ).stdout
     if outs:
         same = len(set(outs.values())) == 1 and len(outs) == 3
@@ -186,7 +192,9 @@ def anchor():
     ok &= z1b > 1e-6
     try:
         bad = _small((2, 2, 2), s, mutant="no_twist")
-        print(f"   mutant no_twist (build_k): dS {bad['S'] - good['S']:+.1e} dHF {bad['e_hf'] - good['e_hf']:+.1e} (must fail)")
+        print(
+            f"   mutant no_twist (build_k): dS {bad['S'] - good['S']:+.1e} dHF {bad['e_hf'] - good['e_hf']:+.1e} (must fail)"
+        )
         ok &= abs(bad["S"] - good["S"]) > 1e-6
     except RuntimeError as exc:
         print(f"   mutant no_twist (build_k): SCF fails ({exc}) -> caught")
@@ -198,15 +206,21 @@ def anchor():
         PK._MUTANT = mut
         # n = 3 along z: at n = 2 every q is its own negative, the shortcut never runs and a mutant cannot fail
         kf.append(
-            PK.build_k(cell, (1, 1, 3), exxdiv="ewald", verbose=False, shift=(0.0, 0.0, 0.5))["Kker"]
+            PK.build_k(
+                cell, (1, 1, 3), exxdiv="ewald", verbose=False, shift=(0.0, 0.0, 0.5)
+            )["Kker"]
         )
     PK._MUTANT = None
     d_tr, d_neg = abs(kf[0] - kf[1]).max(), abs(kf[2] - kf[1]).max()
-    print(f"Z2 time-reversal shortcut vs full q loop: max|dKker| {d_tr:.1e} (gate 1e-13); mutant shift_neg_k {d_neg:.1e} (must fail)")
+    print(
+        f"Z2 time-reversal shortcut vs full q loop: max|dKker| {d_tr:.1e} (gate 1e-13); mutant shift_neg_k {d_neg:.1e} (must fail)"
+    )
     ok &= d_tr < 1e-13 and d_neg > 1e-6
 
     # Z3: PySCF oracle
-    pc = pgto.Cell(a=H2_A, atom=H2_ATOMS, basis="sto-3g", unit="B", cart=True, verbose=0)
+    pc = pgto.Cell(
+        a=H2_A, atom=H2_ATOMS, basis="sto-3g", unit="B", cart=True, verbose=0
+    )
     pc.precision = 1e-12
     pc.max_memory = 4000
     pc.build()
@@ -218,12 +232,16 @@ def anchor():
         t = time.time()
         ours = good if n == (2, 2, 2) else _small(n, s)
         kp = pc.make_kpts(list(n), scaled_center=list(np.array(s) / np.array(n)))
-        assert np.allclose(kp, ours["kb"]["kpts"], atol=1e-14), "k order differs from PySCF"
+        assert np.allclose(kp, ours["kb"]["kpts"], atol=1e-14), (
+            "k order differs from PySCF"
+        )
         mf = pscf.KRHF(pc, kp, exxdiv="ewald")
         mf.with_df = pdf.AFTDF(pc, kp)
         mf.with_df.mesh = [61] * 3
         mf.conv_tol = 1e-11
-        dm = np.array([2 * c[:, o] @ c[:, o].conj().T for c, o in zip(ours["C"], ours["occ"])])
+        dm = np.array(
+            [2 * c[:, o] @ c[:, o].conj().T for c, o in zip(ours["C"], ours["occ"])]
+        )
         ehf = mf.kernel(dm0=dm)
         ep = pmp.KMP2(mf).kernel()[0]
         # ours e_hf is exxdiv=None-at-fixed-C (kshift 0); PySCF's is ewald: differ by nocc v_M exactly (Iteration 9)
@@ -238,7 +256,9 @@ def anchor():
             for mut in ("no_twist", "shift_neg_k"):
                 try:
                     badz = _small(n, s, mutant=mut)
-                    print(f"   mutant {mut} vs PySCF: d {badz['S'] - ep:+.1e} (must fail)")
+                    print(
+                        f"   mutant {mut} vs PySCF: d {badz['S'] - ep:+.1e} (must fail)"
+                    )
                     ok &= abs(badz["S"] - ep) > 1e-6
                 except RuntimeError as exc:
                     print(f"   mutant {mut}: SCF fails ({exc}) -> caught")
@@ -267,7 +287,10 @@ def gen(m, s):
     vm = kb["madelung"]
     t1 = time.time()
     gap = min(e[1] for e in eps) - max(e[0] for e in eps)
-    print(f"scf {t1 - t0:.0f}s HF(none) {e_hf:.12f} it {it} v_M {vm:.10f} gap {gap:.4f}", flush=True)
+    print(
+        f"scf {t1 - t0:.0f}s HF(none) {e_hf:.12f} it {it} v_M {vm:.10f} gap {gap:.4f}",
+        flush=True,
+    )
     st = KC.aft_ov(cell, n, C, 1, gcut=gcut, shift=shift)
     st["Co"], st["Cv"] = KC._mo_stacks(C, 1)
     t2 = time.time()
@@ -325,7 +348,9 @@ def _rows(n, s):
 
 def analyze():
     print("== raw (MP2 per cell, Hartree)")
-    print("  n  shift  S                      E1 (cub1)              Hc n^3        F n^3        gap     HF(none)")
+    print(
+        "  n  shift  S                      E1 (cub1)              Hc n^3        F n^3        gap     HF(none)"
+    )
     R = {}
     for n in (3, 4, 5, 6):
         for s in (0, 0.5):
@@ -344,7 +369,9 @@ def analyze():
             rr, _ = _rows_path(_npz(n, 0, regen=True))
             for k in ("sh", "cub1"):
                 d = abs(rr[k][0] - R[(n, 0)][k][0])
-                print(f"  Z4 n={n} s=0 regenerated by this code vs stored npz, row {k}: |diff| {d:.1e} (gate 1e-12)")
+                print(
+                    f"  Z4 n={n} s=0 regenerated by this code vs stored npz, row {k}: |diff| {d:.1e} (gate 1e-12)"
+                )
     print("== shift response Delta(n) = X(shifted) - X(Gamma-centred), same n")
     D = {}
     for n in (3, 4):
@@ -359,7 +386,9 @@ def analyze():
             print(f"         twist average E1 {(a['cub1'][0] + b['cub1'][0]) / 2:.13e}")
     if 3 in D and 4 in D:
         tav = {n: (R[(n, 0.5)]["cub1"][0] + R[(n, 0)]["cub1"][0]) / 2 for n in (3, 4)}
-        print(f"  twist-average step (3) - (4): {tav[3] - tav[4]:+.3e}  (Gamma-centred step {E1_GAMMA[3] - E1_GAMMA[4]:+.3e})")
+        print(
+            f"  twist-average step (3) - (4): {tav[3] - tav[4]:+.3e}  (Gamma-centred step {E1_GAMMA[3] - E1_GAMMA[4]:+.3e})"
+        )
         print("== decision (pre-registered)")
         if 0.7e-7 <= D[4] <= 2.5e-7 and -2.5e-7 <= D[3] <= -0.7e-7:
             v = "SUPPORTED (H-k): the parity is k-sampling; a half shift flips it"
