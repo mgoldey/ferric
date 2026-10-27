@@ -55,7 +55,8 @@
 //! `V^τ_σ(k) = Σ_g ½ w v_τσ Σ_ax (∂φ_μ)* ∂φ_ν` inside `F_σ`, which the Roothaan
 //! combination above then couples exactly as it couples the LDA / GGA `V_σ`.
 //! Wiring only (no new formula): pinned to PySCF `pbc.dft.KROKS` (whose veff is
-//! its KUKS one) in `tests/pbc_kroks_mgga.rs`. Any other meta-GGA (TPSS, raw
+//! its KUKS one) in `tests/pbc_kroks_mgga.rs`, on the dense-AFT J/K only (the
+//! RS-GDF J/K is refused by name for a ROKS meta-GGA: nothing pins it). Any other meta-GGA (TPSS, raw
 //! `MGGA_*` names) and a meta-GGA hybrid are refused by name, and so are the
 //! ROKS meta-GGA force and stress ([`crate::kxcgrad::check_deriv_functional`],
 //! the ROKS resolvers of [`crate::kuxcgrad`] / [`crate::kuxcstress`]). Library
@@ -397,6 +398,7 @@ pub fn solve_kroks_keep(
     cfg: &KRoksConfig,
 ) -> Result<(KRoksResult, KRetained), FerricError> {
     resolve_kroks_functional(&cfg.functional)?;
+    refuse_mgga_on_rsgdf(cfg, aux)?;
     let grid = PeriodicGrid::build(cell, &cfg.grid)?;
     solve_kroks_on_grid_keep(cell, prep, aux, mesh, &grid, cfg)
 }
@@ -411,6 +413,27 @@ pub fn solve_kroks_keep(
 /// refused by name.
 pub fn resolve_kroks_functional(name: &str) -> Result<(), FerricError> {
     crate::kuks::resolve_open_shell_k_functional(name, "ROKS")
+}
+
+/// The k-point ROKS meta-GGA is validated on the dense-AFT J/K only
+/// (`tests/pbc_kroks_mgga.rs`); on the RS-GDF J/K nothing pins it, so it is
+/// refused by name there (the Gamma open-shell meta-GGA refuses RS-GDF too;
+/// the k-UKS one is validated on RS-GDF, `tests/pbc_kuks_mgga_rsgdf.rs`).
+fn refuse_mgga_on_rsgdf(cfg: &KRoksConfig, aux: Option<&PreparedBasis>) -> Result<(), FerricError> {
+    let rsgdf = aux.is_some() || matches!(cfg.rohf.jk, KJkKind::RsGdf);
+    if rsgdf && crate::dft::is_meta_gga_name(&cfg.functional) {
+        return Err(crate::dft::PeriodicDftError::Unsupported {
+            feature: "meta-GGA on RS-GDF",
+            reason: format!(
+                "{}: the k-point ROKS SCAN / r2SCAN energy is validated on the dense-AFT J/K \
+                 only (jk = dense); k-point ROKS meta-GGA on the RS-GDF J/K is not validated \
+                 (#492)",
+                cfg.functional
+            ),
+        }
+        .into());
+    }
+    Ok(())
 }
 
 /// [`solve_kroks`] on a caller-supplied grid (`cfg.grid` is ignored).
@@ -438,6 +461,7 @@ pub fn solve_kroks_on_grid_keep(
     // gate is narrower: check it on this entry point too, not only in
     // `solve_kroks`.
     resolve_kroks_functional(&cfg.functional)?;
+    refuse_mgga_on_rsgdf(cfg, aux)?;
     let mut pxc =
         KPeriodicXcPolarized::new(cell, prep.basis_set(), &cfg.functional, grid, mesh, &cfg.xc)?;
     if let Some(m) = cfg.mgga_mutation {

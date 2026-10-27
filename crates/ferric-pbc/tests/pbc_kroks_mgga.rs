@@ -51,8 +51,8 @@
 //!
 //! Not covered: the ROKS meta-GGA force and stress (refused, checked here on
 //! a converged SCAN ROKS state), TPSS (refused, `pbc_kroks.rs`), RS-GDF J/K
-//! for ROKS meta-GGA (the route enters only through J for a pure meta-GGA, as
-//! for k-UKS, but no ROKS RS-GDF meta-GGA pin exists), the 1x1x1 == Gamma ROKS
+//! for ROKS meta-GGA (refused by name: no ROKS RS-GDF meta-GGA pin exists),
+//! the 1x1x1 == Gamma ROKS
 //! anchor (Gamma ROKS SCAN is #581), and the Python / CLI bindings (refused,
 //! #498).
 
@@ -67,7 +67,8 @@ use ferric_pbc::hcore::PeriodicHcoreConfig;
 use ferric_pbc::kdense_aft::KDenseAftEri;
 use ferric_pbc::kgrad::{KGradConfig, KGradJk};
 use ferric_pbc::kpts::KPointMesh;
-use ferric_pbc::kroks::KRohfMutation;
+use ferric_pbc::kroks::{solve_kroks, solve_kroks_on_grid, KRohfMutation};
+use ferric_pbc::kscf::KJkKind;
 use ferric_pbc::kstress::{KStressConfig, KStressJk};
 use ferric_pbc::kuks::KUksMggaMutation;
 use ferric_pbc::kuxcgrad::{kpoint_roks_gradient, KUksGradConfig};
@@ -269,4 +270,35 @@ fn kroks_meta_gga_force_and_stress_stay_refused() {
             "{f}: {e}"
         );
     }
+}
+
+/// The k-ROKS meta-GGA is validated on the dense-AFT J/K only: on the RS-GDF
+/// J/K it is refused by name on both entry points, before any integral (the
+/// k-UKS one IS validated on RS-GDF, `pbc_kuks_mgga_rsgdf.rs`, and its gate
+/// is not touched; PBE ROKS on RS-GDF is pinned in `pbc_kroks.rs`).
+#[test]
+fn kroks_meta_gga_on_rsgdf_is_refused() {
+    let cell = cube_cell(&H3, 2);
+    let bs = s05();
+    let prep = prep_for(&cell, &bs);
+    let aux = prep_for(&cell, &single_s_h(1.0));
+    let mesh = KPointMesh::gamma_centred(&cell, [1, 1, 1]).unwrap();
+    let grid = uniform_grid(&cell);
+    for f in FUNCTIONALS {
+        let mut cfg = kroks_cfg(&cell, f);
+        cfg.rohf.jk = KJkKind::RsGdf;
+        for e in [
+            solve_kroks(&cell, &prep, Some(&aux), &mesh, &cfg).map(|_| ()),
+            solve_kroks_on_grid(&cell, &prep, Some(&aux), &mesh, &grid, &cfg).map(|_| ()),
+        ] {
+            let e = e.expect_err("ROKS meta-GGA on RS-GDF").to_string();
+            assert!(
+                e.contains("meta-GGA on RS-GDF")
+                    && e.contains("validated on the dense-AFT J/K only"),
+                "{f}: {e}"
+            );
+        }
+    }
+    // The k-UKS gate is unchanged (SCAN on RS-GDF is #579's validated route).
+    ferric_pbc::kuks::resolve_kuks_functional("SCAN").unwrap();
 }
