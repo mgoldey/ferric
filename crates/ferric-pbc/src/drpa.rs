@@ -23,8 +23,11 @@
 //!   - `b_ov` is ALREADY metric-dressed (`B = s^{-1/2} Uᵀ J3ᵀ`); no further
 //!     `V^{-1/2}` is applied;
 //!   - `naux` = the KEPT count after the lindep cut (it sizes the eigensolve);
-//!   - `v_inv_sqrt` = `U_kept s_kept^{-1/2}` ([`RsGdf::metric_inv_sqrt`],
-//!     `(naux_ao, naux_kept)`), used only to back-transform eigenpotentials;
+//!   - `v_inv_sqrt` = `F = Wᵀ`, the TRANSPOSE of `W = U_kept s_kept^{-1/2}`
+//!     ([`RsGdf::metric_inv_sqrt`], `(naux_ao, naux_kept)`), so `F` is
+//!     `(naux_kept, naux_ao)` with `B = F·J3ᵀ` — the one
+//!     [`RpaIntermediates::v_inv_sqrt`] convention (eigenpotentials
+//!     `c = Fᵀ·u = W·u`; #573). Used only to back-transform eigenpotentials;
 //!   - `trunc_thresh = 0` (full rank; also the production rule) and
 //!     `chi0_sparsity = Dense`. ferric-rpa's `run_pdep_rpa_from_intermediates`
 //!     is NOT used: its atom seed sizes itself from `dfbs.nbasis()`, which is
@@ -213,8 +216,11 @@ fn excitation_energies(eps_occ: &[f64], eps_vir: &[f64]) -> Result<Vec<f64>, Fer
 
 /// dRPA from an already-transformed `b_ov` `(naux, nocc·nvir)` and the ACTIVE
 /// denominators, through ferric-rpa's [`run_pdep_rpa_from_parts`] with
-/// [`pdep_config`]. `v_inv_sqrt = None` uses the identity (eigenpotentials
-/// then stay in the dressed basis; the energy does not depend on it).
+/// [`pdep_config`]. `v_inv_sqrt` is the metric factor `F` `(naux, naux_src)`
+/// with `b_ov = F·J` (eigenpotentials `c = Fᵀ·u`, the
+/// [`RpaIntermediates::v_inv_sqrt`] convention); `None` uses the identity
+/// (eigenpotentials then stay in the dressed basis; the energy does not
+/// depend on it).
 /// Exposed for tests (e.g. scaling `b_ov` by √λ scales the kernel by λ).
 pub fn drpa_from_b_ov(
     b_ov: Array2<f64>,
@@ -456,7 +462,9 @@ pub fn gamma_drpa(
                 bytes_of(nx, nov.saturating_add(naux).saturating_mul(8)),
             )?;
             let b_ov = b_ov_from_ao_b(b, nao, c_occ, c_vir)?;
-            let inter = intermediates(b_ov, Some(w.to_owned()), nocc, nvir, nocc_total, first_occ)?;
+            // F = Wᵀ: the one `RpaIntermediates::v_inv_sqrt` convention (#573).
+            let f = w.t().to_owned();
+            let inter = intermediates(b_ov, Some(f), nocc, nvir, nocc_total, first_occ)?;
             let r = drpa_from_intermediates(
                 &inter,
                 &eps_occ,

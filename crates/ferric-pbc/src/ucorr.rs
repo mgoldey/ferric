@@ -673,10 +673,11 @@ pub fn gamma_ump2(
                 &format!("Gamma UMP2 kernel G_i block per worker ({gi} elements)"),
                 bytes_of(gi as u64, 8),
             )?;
-            let ia = intermediates(b_ov_spin(b, &sp, 0)?, Array2::zeros((0, naux)), &sp, 0);
-            let ib = intermediates(b_ov_spin(b, &sp, 1)?, Array2::zeros((0, naux)), &sp, 1);
+            let ia = intermediates(b_ov_spin(b, &sp, 0)?, Array2::zeros((naux, 0)), &sp, 0);
+            let ib = intermediates(b_ov_spin(b, &sp, 1)?, Array2::zeros((naux, 0)), &sp, 1);
             // v_inv_sqrt is never read by the MP2 kernels (eigenpotential
-            // back-transform only), hence the empty (0, naux) placeholders.
+            // back-transform only), hence the empty (naux, 0) placeholders
+            // (`F` is `(naux, naux_src)`; naux_src = 0 marks "no factor").
             (
                 u_ri_mp2_from_parts(&ia, &ib, &sp.eps[0], &sp.eps[1])?,
                 Some(naux),
@@ -802,8 +803,13 @@ pub fn gamma_urpa(
                 &format!("Gamma URPA per-worker quadrature scratch (naux = {naux}, nov = {nov})"),
                 bytes_of(nx, nov.saturating_add(naux).saturating_mul(8)),
             )?;
-            let ia = intermediates(b_ov_spin(b, &sp, 0)?, w.to_owned(), &sp, 0);
-            let ib = intermediates(b_ov_spin(b, &sp, 1)?, w.to_owned(), &sp, 1);
+            // F = Wᵀ `(naux_kept, naux_ao)`: the one `RpaIntermediates::
+            // v_inv_sqrt` convention (#573). Passing `W` itself panicked in
+            // the back-transform once the lindep cut dropped a mode, and gave
+            // wrong eigenpotentials when it did not.
+            let f = w.t().to_owned();
+            let ia = intermediates(b_ov_spin(b, &sp, 0)?, f.clone(), &sp, 0);
+            let ib = intermediates(b_ov_spin(b, &sp, 1)?, f, &sp, 1);
             let r = run_u_pdep_rpa_from_parts(
                 &ia,
                 &ib,

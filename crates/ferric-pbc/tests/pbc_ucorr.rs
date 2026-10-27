@@ -341,7 +341,8 @@ fn u_inter(
         };
         RpaIntermediates {
             b_ov: b.mapv(|x| x * scale),
-            v_inv_sqrt: gdf.metric_inv_sqrt().to_owned(),
+            // F = Wᵀ, the one `RpaIntermediates::v_inv_sqrt` convention (#573).
+            v_inv_sqrt: gdf.metric_inv_sqrt().t().to_owned(),
             nocc: no,
             nvir: nv,
             nocc_total: no,
@@ -642,6 +643,78 @@ fn open_shell_b_matches_dense_in_the_trivial_aux_limit_triplet_and_doublet() {
             let again = ump2_from_ovov(&aa, &bb, &ab, &e[0], &e[1], &e[2], &e[3]).unwrap();
             assert!((again.e_total - em.mp2_corr).abs() < 1e-15);
         }
+    }
+}
+
+// ===========================================================================
+// (b') URPA through an RS-GDF build that DROPS a metric mode (#573).
+// ===========================================================================
+
+/// `gamma_urpa` on an RS-GDF whose aux set carries an exact duplicate, so the
+/// lindep cut drops one metric mode and `W = U_kept s_kept^{-1/2}` is
+/// rectangular `(naux_ao, naux_kept)`.
+///
+/// Until #573 the driver stored `W` as `RpaIntermediates::v_inv_sqrt` while
+/// the open-shell core back-transformed with `Fᵀ·u`: with a dropped mode the
+/// GEMM shapes disagree and ndarray PANICKED, so gamma_urpa died on any
+/// lindep-cut build. The exact-span anchor build drops nothing (asserted), so
+/// every other test here ran with a square `W` and could not see it.
+///
+/// Anchor: an exact duplicate adds no span, so the energy must equal the
+/// undropped build's (and the dense plasmon's) to fit precision.
+/// MUTATION: revert the driver to `w.to_owned()` → this test panics.
+#[test]
+fn urpa_rsgdf_survives_a_lindep_drop_and_keeps_the_energy() {
+    let t = anchor(&TRI_ATOMS, 3, None);
+    let cell = &t.cell;
+    let u = uhf_dense(cell, &t.prep, &t.hc, &t.eri, ExxDiv::None);
+    let mut sites = pair_sites(cell);
+    sites.push(sites[1]);
+    let dup = SiteBasis::new(&sites, 0).unwrap();
+    let gcfg = RsGdfConfig {
+        omega: 0.8,
+        exxdiv: ExxDiv::None,
+        budget_bytes: Some(AMPLE),
+        ..Default::default()
+    };
+    let g1 = RsGdf::build(cell, &t.prep, &dup.prep, &t.hc.s, &gcfg).unwrap();
+    let (s0, s1) = (t.gdf.stats(), g1.stats());
+    eprintln!(
+        "lindep: base dropped {}/{}, duplicated dropped {}/{}",
+        s0.n_dropped, s0.naux, s1.n_dropped, s1.naux
+    );
+    assert_eq!(
+        s0.n_dropped, 0,
+        "the anchor build must be the square-W case"
+    );
+    assert!(s1.n_dropped > 0, "the duplicate must be dropped");
+    let w = g1.metric_inv_sqrt();
+    assert_eq!(w.dim(), (s1.naux, s1.naux_kept));
+    assert!(w.nrows() > w.ncols(), "W must be rectangular here");
+    for den in DENS {
+        let c = rcfg(ExxDiv::None, den, ANCHOR_QUAD);
+        let rd = gamma_urpa(cell, &u, GammaDrpaIntegrals::DenseAft(&t.eri), &c).unwrap();
+        let r0 = gamma_urpa(cell, &u, GammaDrpaIntegrals::RsGdf(&t.gdf), &c).unwrap();
+        let r1 = gamma_urpa(cell, &u, GammaDrpaIntegrals::RsGdf(&g1), &c).unwrap();
+        eprintln!(
+            "{den:?}: URPA plasmon {:.12e}, square-W B {:+.2e}, dropped-mode B {:+.2e}",
+            rd.rpa_corr,
+            r0.rpa_corr - rd.rpa_corr,
+            r1.rpa_corr - rd.rpa_corr
+        );
+        assert_eq!(r1.naux, Some(s1.naux_kept));
+        close(
+            r1.rpa_corr,
+            r0.rpa_corr,
+            1e-10,
+            "dropped-mode vs square-W URPA",
+        );
+        close(
+            r1.rpa_corr,
+            rd.rpa_corr,
+            1e-10,
+            "dropped-mode URPA vs dense plasmon",
+        );
     }
 }
 
@@ -1222,6 +1295,11 @@ fn u_parts_entries_reproduce_the_molecular_drivers_bitwise() {
         bits(&parts_r.eigenvalues_static),
         bits(&mol_r.eigenvalues_static)
     );
+    // Eigenpotentials too (#573): one back-transform convention on both entries.
+    assert_eq!(
+        bits(parts_r.eigenpotentials.as_slice().unwrap()),
+        bits(mol_r.eigenpotentials.as_slice().unwrap())
+    );
 
     // Config honesty on the U parts entry.
     let refuse = |a: &RpaIntermediates,
@@ -1266,7 +1344,7 @@ fn u_parts_entries_reproduce_the_molecular_drivers_bitwise() {
     // naux mismatch: a typed error (was a debug_assert on the molecular path).
     let short = RpaIntermediates {
         b_ov: ib.b_ov.slice(s![..ib.naux - 1, ..]).to_owned(),
-        v_inv_sqrt: ib.v_inv_sqrt.slice(s![.., ..ib.naux - 1]).to_owned(),
+        v_inv_sqrt: ib.v_inv_sqrt.slice(s![..ib.naux - 1, ..]).to_owned(),
         naux: ib.naux - 1,
         ..ib.clone()
     };

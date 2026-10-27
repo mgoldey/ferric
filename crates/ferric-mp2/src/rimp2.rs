@@ -1588,7 +1588,21 @@ impl Mp2Intermediates {
 /// drops the setup cost from ~5 s to ~0.5 s.
 #[derive(Debug, Clone)]
 pub struct RpaIntermediates {
+    /// Metric-dressed `B = F·(Q|ia)`, shape `(naux, nocc·nvir)`.
     pub b_ov: Array2<f64>,
+    /// The metric factor `F`, shape `(naux, naux_src)`: the map from the
+    /// `naux_src` physical aux functions onto the `naux` dressed rows of
+    /// `b_ov`, i.e. `B = F·(Q|ia)` with `F V Fᵀ = I` (`V = (P|Q)`).
+    ///
+    /// ONE convention for every builder and reader (#573): the physical aux
+    /// coefficients of a dressed vector `u` are `c = Fᵀ·u` (so `cᵀ V c = I`).
+    /// * molecular Coulomb: `F = L⁻¹` (Cholesky, lower-triangular, square);
+    /// * molecular erf/terf: `F` = symmetric `V^{-1/2}` (square);
+    /// * periodic RS-GDF: `F = Wᵀ = s_kept^{-1/2} U_keptᵀ`, `(naux_kept,
+    ///   naux_ao)` — rectangular after a lindep cut. Store the TRANSPOSE of
+    ///   `RsGdf::metric_inv_sqrt()`, never the map itself.
+    ///
+    /// Only the eigenpotential back-transform reads it; no energy does.
     pub v_inv_sqrt: Array2<f64>,
     pub nocc: usize,
     pub nvir: usize,
