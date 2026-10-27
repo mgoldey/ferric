@@ -1042,7 +1042,7 @@ fn gamma_rohf_and_roks_refuse_unsupported_features_by_name() {
         }),
         ("VV10", &|c| c.functional = "wB97X-V".into()),
         ("range-separated hybrid", &|c| c.functional = "HSE06".into()),
-        ("meta-GGA", &|c| c.functional = "SCAN".into()),
+        ("TPSS", &|c| c.functional = "TPSS".into()),
     ];
     for (word, edit) in roks_cases {
         let mut cfg = GammaRoksConfig::new("PBE");
