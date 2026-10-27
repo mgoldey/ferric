@@ -1,11 +1,12 @@
 //! Weekly validation of the open-shell k-point meta-GGA (UKS SCAN / r2SCAN)
 //! force and stress on the RS-GDF J/K (issue #492). Every test here is
-//! `#[ignore]`d (the SCF-energy FD costs ~5 min per test); the per-commit
-//! subset (exact-aux anchor, PySCF energy pins with the tau defects, singlet
-//! UKS == RKS) is `pbc_kuks_mgga_rsgdf.rs`, whose header carries the
-//! hypotheses and the full ledger. The derivative defects are caught HERE
-//! only; per commit, the singlet anchor and the Fock guard cover the
-//! derivative path.
+//! `#[ignore]`d (the SCF-energy FD costs ~5 min per test). Per commit,
+//! `pbc_kuks_mgga_rsgdf.rs` runs the exact-aux anchor, the PySCF energy pins
+//! with the tau defects, the singlet UKS == RKS anchor with `TauDropBeta`,
+//! `TauDoubled` and `PulayJOneSpin` (force and stress), and ONE polarized
+//! strain component against FD with `TauNoVxcBeta`. The alpha / beta
+//! exchange defects of the derivative (`TauSpinSwap`, `TauTotalBothChannels`
+//! on the force) and every remaining component are caught HERE only.
 //!
 //! System: the H3 doublet (N_alpha = 2, N_beta = 1) in the a = 4 cube,
 //! STO-3G H, even-tempered s + p aux, RS-GDF `omega = 0.8`, hcore
@@ -73,6 +74,7 @@ fn polarized_rsgdf_stress_matches_fd_all_components() {
             Jk::Gdf,
             KXcGrid::Uniform([24; 3]),
         );
+        assert!(spin_asymmetry(&fx) > 0.1, "{f}: not polarized");
         let fd = fd_scf_stress(&fx, STRESS_H, &ALL9);
         let s = stress(&fx, None, None);
         let ok = stress_miss(&s.de_deps, &fd, &ALL9);

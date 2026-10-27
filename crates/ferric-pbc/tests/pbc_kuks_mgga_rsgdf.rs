@@ -21,14 +21,23 @@
 //! * Artifact: the route drops or double-counts the tau term, or runs the
 //!   spin-summed evaluator, on RS-GDF only. A tau defect moves the polarized
 //!   energy by >= 1e-6 (measured on each test), far outside the 1e-9 / 1e-10
-//!   bars; the singlet anchor is BLIND to spin-channel defects (there
-//!   `τ_α = τ_β`), so every spin mutant is required to fail a POLARIZED pin.
+//!   bars. The singlet anchor is BLIND to the alpha / beta exchanges (there
+//!   `τ_α = τ_β`: swapped tau is exactly invisible), so every spin mutant
+//!   is required to fail a POLARIZED pin; it does catch the asymmetric
+//!   derivative defects (dropped beta term, doubled term, one-spin Coulomb).
 //!
-//! Per commit: the exactness anchor, the PySCF pins (with the tau defects)
-//! and the singlet anchor. The force and stress FD of the RS-GDF SCF energy
-//! (every component, SCAN and r2SCAN, with the derivative defect ledger) are
-//! weekly, `validation_pbc_kuks_mgga_rsgdf.rs`, as for the closed-shell
-//! RS-GDF meta-GGA force.
+//! Per commit: the exactness anchor, the PySCF pins (with the tau defects),
+//! the singlet anchor (with three derivative defects it must catch) and one
+//! cheap polarized check (force and stress run through their Fock /
+//! commutator gates on the H3 doublet, one strain component against FD, the
+//! `TauNoVxcBeta` defect). Every force and strain component against FD, both
+//! functionals, with the full derivative ledger, is weekly
+//! (`validation_pbc_kuks_mgga_rsgdf.rs`). The RS-GDF J derivative itself is
+//! gated per commit on polarized states elsewhere
+//! (`fd_zero_xc_polarized_uks_rsgdf`,
+//! `h3_uhf_1x1x3_rsgdf_force_is_the_supercell_rsgdf_force`,
+//! `rsgdf_roks_pbe_force_matches_fd_1x1x3`); nothing route-specific is added
+//! by the meta-GGA.
 //!
 //! # Measured (2026-10-27, test profile)
 //!
@@ -57,7 +66,7 @@
 //! | `TauDropBeta` | - | 4.4e-3 | 2.5e-2 |
 //! | `TauNoAo` / `NoTauStrain` | - | 6.9e-3 | 8.7e-2 |
 //! | `TauDoubled` | - | 6.9e-3 | 8.7e-2 |
-//! | `PulayJOneSpin` (RS-GDF J in the Pulay Fock) | - | 1.1e-2 | 7.8e-2 |
+//! | `PulayJOneSpin` (Coulomb of one spin in the route-independent Pulay Fock) | - | 1.1e-2 | 7.8e-2 |
 //!
 //! Source mutants (edited, run, reverted): (1) `tau_beta` built from `D_alpha`
 //! in `KPeriodicXcPolarized`: the PySCF pin misses by 4.1e-2 while the
@@ -77,7 +86,10 @@ mod support;
 
 use common::*;
 use ferric_pbc::kuks::KUksMggaMutation;
-use ferric_pbc::kxcgrad::KXcGrid;
+use ferric_pbc::kuxcgrad::KUSpinMutation;
+use ferric_pbc::kuxcstress::KUStressMutation;
+use ferric_pbc::kxcgrad::{KXcGrid, KXcMutation};
+use ferric_pbc::kxcstress::KXcStressMutation;
 use support::*;
 
 const FUNCTIONALS: [&str; 2] = ["SCAN", "R2SCAN"];
@@ -108,7 +120,7 @@ fn pin_run<'a>(
 ///
 /// Measured (H3 doublet, one s per H alpha 0.5, uniform 32^3): |E_rsgdf -
 /// E_dense| 2.0e-13 / 2.0e-13 (1x1x1 SCAN / r2SCAN), 3.7e-14 / 3.5e-14
-/// (1x1x3), |dE_xc| <= 3.1e-15; incomplete aux 2.1e-3 (1x1x1) and 5.2e-4
+/// (1x1x3), |dE_xc| <= 4.9e-15; incomplete aux 2.1e-3 (1x1x1) and 5.2e-4
 /// (1x1x3), >= 5e6 x the bar.
 #[test]
 fn polarized_mgga_rsgdf_equals_dense_in_the_trivial_aux_limit() {
@@ -197,8 +209,12 @@ const PIN_BAR: f64 = 1e-9;
 
 /// Singlet k-UKS == k-RKS on the RS-GDF J/K: energy, force and stress from
 /// independent SCF loops (H2 / STO-3G, et-sp aux, 1x1x3, atom grid). Blind to
-/// every alpha / beta mix-up by construction (module doc); a dropped or
-/// doubled tau term on the open-shell route alone would show.
+/// the alpha / beta EXCHANGE (`TauSpinSwap`, 1.4e-15 / 2.6e-15 force / stress)
+/// by construction (module doc). The asymmetric defects must break it; three
+/// run here, the rest were measured once (2026-10-27, |UKS - RKS| force /
+/// stress): `TauNoAo` / `NoTauStrain` 1.15e-2 / 5.2e-2, `TauDoubled` 1.15e-2
+/// / 5.2e-2, `TauDropBeta` 5.7e-3 / 2.6e-2, `TauTotalBothChannels` 2.4e-3 /
+/// 1.6e-2, `TauNoVxcBeta` 2.8e-3 / 1.2e-2, `PulayJOneSpin` 1.8e-2 / 8.9e-2.
 #[test]
 fn singlet_rsgdf_uks_equals_rks() {
     let fx = fixture(h_cell(&H2), [1, 1, 3], "SCAN", Jk::Gdf, atom_grid());
@@ -217,6 +233,63 @@ fn singlet_rsgdf_uks_equals_rks() {
         eprintln!("SCAN RS-GDF singlet UKS vs RKS: {name:<13} {d:.2e}");
         assert!(d < SINGLET_BAR, "{name}: {d:e}");
     }
+    use KUSpinMutation as U;
+    use KUStressMutation as V;
+    let fm = [
+        ("TauDropBeta", None, Some(U::TauDropBeta)),
+        ("TauDoubled", Some(KXcMutation::TauDoubled), None),
+        ("PulayJOneSpin", None, Some(U::PulayJOneSpin)),
+    ];
+    for (name, xm, sm) in fm {
+        let d = diff(&force(&fx, xm, sm).grad, &rg.grad);
+        eprintln!("  singlet force {name}: |UKS - RKS| {d:.2e}");
+        assert!(d > MUTANT_BAR, "{name} survives the singlet force: {d:e}");
+    }
+    let sm = [
+        ("TauDropBeta", None, Some(V::TauDropBeta)),
+        ("TauDoubled", Some(KXcStressMutation::TauDoubled), None),
+        ("PulayJOneSpin", None, Some(V::PulayJOneSpin)),
+    ];
+    for (name, xm, sm) in sm {
+        let d = mdiff(&stress(&fx, xm, sm).de_deps, &rs.de_deps);
+        eprintln!("  singlet stress {name}: |UKS - RKS| {d:.2e}");
+        assert!(d > MUTANT_BAR, "{name} survives the singlet stress: {d:e}");
+    }
+}
+
+/// Bar a defect must exceed (the anchors pass at <= 1e-10 / 5e-7).
+const MUTANT_BAR: f64 = 1e-5;
+
+/// One cheap POLARIZED derivative check per commit (the weekly file has every
+/// component): on the H3 doublet RS-GDF state (atom grid 20x50, cutoff 14;
+/// the uniform grid costs ~2.5x per derivative here) the force (translation
+/// sum checked) and the stress run, so their Fock and
+/// commutator gates see a polarized state; one strain component against the
+/// central FD of the RS-GDF SCF energy; and the `TauNoVxcBeta` defect (beta
+/// `V^tau` missing from the Pulay Fock, guard skipped) misses that FD.
+#[test]
+fn polarized_rsgdf_force_and_stress_run_and_one_strain_matches_fd() {
+    let fx = fixture(h_cell(&H3), [1, 1, 3], "SCAN", Jk::Gdf, atom_grid());
+    assert!(spin_asymmetry(&fx) > 0.1, "not polarized");
+    let g = force(&fx, None, None);
+    let sum = (0..3)
+        .map(|x| g.grad.column(x).sum().abs())
+        .fold(0.0, f64::max);
+    assert!(amax(&g.grad) > 1e-3 && sum < 1e-10, "sum_A F_A = {sum:e}");
+    let comps = [(2, 2)];
+    let fd = fd_scf_stress(&fx, 1e-4, &comps);
+    let ok = stress_miss(&stress(&fx, None, None).de_deps, &fd, &comps);
+    let bad = stress_miss(
+        &stress(&fx, None, Some(KUStressMutation::TauNoVxcBeta)).de_deps,
+        &fd,
+        &comps,
+    );
+    eprintln!(
+        "SCAN RS-GDF polarized: |sum_A F_A| {sum:.1e}; stress (2,2) vs FD {ok:.2e}; \
+         TauNoVxcBeta {bad:.2e}"
+    );
+    assert!(ok < 5e-7, "{ok:e}");
+    assert!(bad > MUTANT_BAR, "TauNoVxcBeta survives: {bad:e}");
 }
 
 const SINGLET_BAR: f64 = 1e-10;

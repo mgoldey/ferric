@@ -259,6 +259,7 @@ ferric-pbc::pbc_kstress	1771.033
 ferric-pbc::pbc_kuhf	52.234
 ferric-pbc::pbc_kuks	309.355
 ferric-pbc::pbc_kuks_mgga	218.001
+ferric-pbc::pbc_kuks_mgga_rsgdf	258.498
 ferric-pbc::pbc_kuks_rsh_force	469.198
 ferric-pbc::pbc_kuks_rsh_rsgdf_force	372.291
 ferric-pbc::pbc_kuxc_mgga	325.393

@@ -248,6 +248,33 @@ pub struct Fx {
     pub grid: KXcGrid,
     pub f: String,
     pub jk: Jk,
+    /// The J/K the derivatives differentiate, built once per fixture.
+    built: BuiltJk,
+}
+
+enum BuiltJk {
+    Dense(KDenseAftEri),
+    Gdf(KRsGdf),
+}
+
+fn build_jk(
+    jk: Jk,
+    cell: &Cell,
+    prep: &PreparedBasis,
+    aux: &PreparedBasis,
+    mesh: &KPointMesh,
+    s: &[Array2<num_complex::Complex64>],
+) -> BuiltJk {
+    match jk {
+        Jk::Dense => BuiltJk::Dense(
+            KDenseAftEri::build(cell, prep, mesh, s, ExxDiv::Ewald, &Default::default()).unwrap(),
+        ),
+        Jk::Gdf => BuiltJk::Gdf(
+            KRsGdf::build(cell, prep, aux, mesh, s, &rsgdf_cfg())
+                .unwrap()
+                .with_exxdiv(ExxDiv::Ewald),
+        ),
+    }
 }
 
 pub fn fixture(cell: Cell, n: [usize; 3], f: &str, jk: Jk, grid: KXcGrid) -> Fx {
@@ -273,6 +300,7 @@ pub fn fixture(cell: Cell, n: [usize; 3], f: &str, jk: Jk, grid: KXcGrid) -> Fx 
         &PeriodicHcoreConfig::with_omega(OMEGA_HCORE),
     )
     .unwrap();
+    let built = build_jk(jk, &cell, &prep, &aux, &mesh, &hk.s);
     Fx {
         cell,
         prep,
@@ -284,6 +312,7 @@ pub fn fixture(cell: Cell, n: [usize; 3], f: &str, jk: Jk, grid: KXcGrid) -> Fx 
         grid,
         f: f.into(),
         jk,
+        built,
     }
 }
 
@@ -307,26 +336,12 @@ pub fn energy_like(fx: &Fx, cell: &Cell) -> f64 {
 
 /// Run `body` with the fixture's J/K as both a gradient and a stress source.
 fn with_jk<T>(fx: &Fx, body: impl FnOnce(KGradJk<'_>, KStressJk<'_>) -> T) -> T {
-    match fx.jk {
-        Jk::Dense => {
-            let eri = KDenseAftEri::build(
-                &fx.cell,
-                &fx.prep,
-                &fx.mesh,
-                &fx.hk.s,
-                ExxDiv::Ewald,
-                &Default::default(),
-            )
-            .unwrap();
-            body(KGradJk::Dense(&eri), KStressJk::Dense(&eri))
-        }
-        Jk::Gdf => {
+    match &fx.built {
+        BuiltJk::Dense(eri) => body(KGradJk::Dense(eri), KStressJk::Dense(eri)),
+        BuiltJk::Gdf(gdf) => {
             let kc = rsgdf_cfg();
-            let gdf = KRsGdf::build(&fx.cell, &fx.prep, &fx.aux, &fx.mesh, &fx.hk.s, &kc)
-                .unwrap()
-                .with_exxdiv(ExxDiv::Ewald);
             let src = || KRsGdfGradSource {
-                gdf: &gdf,
+                gdf,
                 cfg: &kc,
                 aux: &fx.aux,
             };
