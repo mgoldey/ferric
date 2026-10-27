@@ -747,3 +747,421 @@ fn he2_plus_coupling_decays_with_distance() {
         "|H_ab| not strictly decreasing: {h25}, {h30}, {h35}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Second ET system: HeNe⁺, an ASYMMETRIC (donor ≠ acceptor) hole transfer.
+//
+// He₂⁺ above is a SYMMETRIC self-exchange, so E_a = E_b and λ_a = λ_b, and a
+// family of checks passes on that degenerate special case. HeNe⁺ (charge +1,
+// doublet, 11 e, def2-SVP, nbf = 19) breaks those degeneracies at the same
+// cost: E_a ≠ E_b, λ_a ≠ ±λ_b, and the two Becke cells differ in size.
+//
+// Ported from the stranded `test/cdft-et-second-system` (04a7ea88) and
+// re-measured on main after #569 (an unapplied constraint now takes a Newton
+// step) and the default-on `cdft_stability_descent`. Only what main did not
+// already cover is kept here. Covered elsewhere and NOT repeated:
+//   * the vacuous-constraint anchor:
+//     `cdft_uhf::hene_vacuous_constraint_is_still_accepted`;
+//   * the hole-on-Ne state reached through N(He) = 2 and through N(Ne) = 9:
+//     `cdft_uhf::cliff_side_targets_with_tight_tolerance_are_accepted`;
+//   * a loose tolerance returning the unconstrained state:
+//     `cdft_uhf::loose_tolerance_still_applies_the_constraint`;
+//   * state B's saddle and the descent that leaves it:
+//     `cdft_constrained_stability.rs` and `cdft_state_selection.rs`;
+//   * why |H_ab| is not assertable on HeNe⁺ (S_ab is one tiny β singular value):
+//     `cdft_coupling_hene.rs`.
+//
+// No external H_ab exists for this system: the literature databases
+// (HAB11/HAB7/HAB18/HAB79, Wu–Van Voorhis Zn₂⁺) are all symmetric and larger.
+
+/// The one separation at which both HeNe⁺ diabats are constructible.
+///
+/// RE-MEASURED on main (2026-10-27), hcore start, `cdft_lambda_tol` 1e-5,
+/// default 30-iteration outer cap, for the four constraints N(He) = 1, N(Ne) = 10,
+/// N(He) = 2, N(Ne) = 9:
+///
+/// ```text
+///   R = 2.0  all four converge (A: 4 outer iterations, B: 7)
+///   R = 2.5  all four fail (outer loop does not converge), descent on or off
+///   R = 3.5  N(He)=1 / N(Ne)=10 return the unconstrained state, which already
+///            has the hole on He (λ ~ 1e-4); both hole-on-Ne targets fail
+///   R = 4.0  all four fail
+/// ```
+///
+/// With the MINAO start R = 2.5 does converge, but the two hole-on-Ne routes
+/// disagree by 6.1e-4 Ha, so that point is not used either.
+const HENE_R_ANG: f64 = 2.0;
+
+/// HeNe⁺ at [`HENE_R_ANG`], with the driver's (99, 302) grid.
+struct Hene {
+    mol: Molecule,
+    bs: basis::BasisSet,
+    prep: PreparedBasis,
+    bounds: SchwarzBounds,
+    ctx: ParallelContext,
+}
+
+fn hene() -> Hene {
+    let xyz = format!("2\nHeNe+\nHe 0 0 0\nNe 0 0 {HENE_R_ANG}\n");
+    let mol = Molecule::parse_xyz(&xyz, 1, 2).unwrap();
+    let bs = basis::bundled("def2-svp").unwrap();
+    let prep = PreparedBasis::new(&mol, &bs).unwrap();
+    let bounds = SchwarzBounds::compute(Operator::coulomb(), &prep).unwrap();
+    Hene {
+        mol,
+        bs,
+        prep,
+        bounds,
+        ctx: ParallelContext::default(),
+    }
+}
+
+/// Base config. `use_sad_guess: false` (hcore) because whether the MINAO start
+/// converges the integer target is machine-dependent (see
+/// `cdft_state_selection::the_default_minao_path_converges_to_the_same_state_as_hcore`);
+/// MEASURED (2026-10-27, this box, not asserted): both starts give the same A
+/// and B to 1e-8 Ha. `level_shift` 0.5
+/// is the value every other HeNe⁺ test uses for its near-degenerate SOMO.
+fn hene_base_cfg() -> RhfConfig {
+    RhfConfig {
+        level_shift: 0.5,
+        max_iter: 400,
+        use_sad_guess: false,
+        fractional_occ: false,
+        ..Default::default()
+    }
+}
+
+/// Solve one HeNe⁺ diabat with the default driver (stability descent ON).
+fn hene_diabat(sys: &Hene, fragment: usize, target: f64) -> ferric_scf::cdft_driver::CdftResult {
+    hene_diabat_with(sys, fragment, target, true)
+}
+
+/// State A (N(He) = 1) and state B (N(He) = 2) from the default driver, solved
+/// once and shared by the tests below, which only read them.
+fn hene_default_pair() -> &'static (
+    ferric_scf::cdft_driver::CdftResult,
+    ferric_scf::cdft_driver::CdftResult,
+) {
+    static PAIR: std::sync::OnceLock<(
+        ferric_scf::cdft_driver::CdftResult,
+        ferric_scf::cdft_driver::CdftResult,
+    )> = std::sync::OnceLock::new();
+    PAIR.get_or_init(|| {
+        let sys = hene();
+        (hene_diabat(&sys, 0, 1.0), hene_diabat(&sys, 0, 2.0))
+    })
+}
+
+/// [`hene_diabat`] with the stability descent chosen explicitly.
+fn hene_diabat_with(
+    sys: &Hene,
+    fragment: usize,
+    target: f64,
+    descent: bool,
+) -> ferric_scf::cdft_driver::CdftResult {
+    let cfg = RhfConfig {
+        cdft_stability_descent: descent,
+        constraints: vec![Constraint {
+            fragment: vec![fragment],
+            spin: SpinChannel::Total,
+            target,
+        }],
+        cdft_lambda_tol: 1e-5,
+        dft_grid: Some(AtomicGridConfig {
+            n_radial: 99,
+            n_angular: 302,
+            ..Default::default()
+        }),
+        ..hene_base_cfg()
+    };
+    let r = solve_cdft_uhf(&sys.ctx, &sys.mol, &sys.prep, &sys.bs, &sys.bounds, &cfg)
+        .unwrap_or_else(|e| panic!("HeNe+ N(atom {fragment}) = {target}: {e}"));
+    assert!(r.scf.converged, "inner SCF did not converge");
+    r
+}
+
+/// Both unconstrained HeNe⁺ UHF states: the ²Π saddle the hcore start reaches
+/// and the σ minimum the MINAO start reaches (−130.50035 / −130.50534 Ha). A
+/// diabat equal to either is the unconstrained solution, not a diabat.
+fn hene_unconstrained_energies(sys: &Hene) -> [f64; 2] {
+    [false, true].map(|sad| {
+        let cfg = RhfConfig {
+            use_sad_guess: sad,
+            ..hene_base_cfg()
+        };
+        let scf =
+            ferric_scf::uhf::solve_uhf(&sys.ctx, &sys.mol, &sys.prep, &sys.bounds, &cfg).unwrap();
+        assert!(
+            scf.converged,
+            "unconstrained UHF (sad = {sad}) did not converge"
+        );
+        scf.energy
+    })
+}
+
+/// A constrained diabat must be a DIFFERENT state from the unconstrained
+/// molecule, on three independent witnesses: λ ≠ 0 (the constraint potential
+/// does work), more than one outer iteration (λ moved off its zero start), and
+/// an energy different from every unconstrained state. The branch this was
+/// ported from shipped the failure these catch: a tolerance looser than the
+/// λ = 0 residual returned the unconstrained state labelled as a diabat.
+fn assert_genuinely_constrained(
+    name: &str,
+    r: &ferric_scf::cdft_driver::CdftResult,
+    e_free: &[f64],
+) {
+    assert!(
+        r.lambdas[0].abs() > 1e-3,
+        "{name}: λ = {} — the constraint did no work",
+        r.lambdas[0]
+    );
+    assert!(
+        r.outer_iters > 1,
+        "{name}: the λ loop never moved off λ = 0"
+    );
+    for &e in e_free {
+        assert!(
+            (r.scf.energy - e).abs() > 1e-3,
+            "{name}: E = {} is the unconstrained state {e}",
+            r.scf.energy
+        );
+    }
+}
+
+/// The constraint machinery on a HETERONUCLEAR fragment pair.
+///
+/// He₂⁺ cannot test this: its two Becke cells are identical by symmetry, so a
+/// weight operator mishandling differing atomic sizes would still look right.
+///
+/// MEASURED (main, 2026-10-27): A (hole on He) N(He) = 0.99999321,
+/// λ = +1.631409, E = −130.36185950; B (hole on Ne) N(He) = 1.99999993,
+/// λ = −2.439010, E = −130.42670717. Unconstrained: −130.50034664 (²Π, hcore)
+/// and −130.50534054 (σ, MINAO).
+#[test]
+fn hene_plus_constrained_states_carry_the_requested_charge() {
+    let sys = hene();
+    let e_free = hene_unconstrained_energies(&sys);
+    let (a, b) = hene_default_pair();
+    eprintln!(
+        "HeNe+ @{HENE_R_ANG} Å: E_free = {e_free:?} | A λ = {:+.6} E = {:.8} N(He) = {:.8} \
+         | B λ = {:+.6} E = {:.8} N(He) = {:.8}",
+        a.lambdas[0], a.scf.energy, a.populations[0], b.lambdas[0], b.scf.energy, b.populations[0]
+    );
+    assert_genuinely_constrained("A (hole on He)", a, &e_free);
+    assert_genuinely_constrained("B (hole on Ne)", b, &e_free);
+    assert!(
+        (a.populations[0] - 1.0).abs() < 1e-4,
+        "A: N(He) = {}",
+        a.populations[0]
+    );
+    assert!(
+        (b.populations[0] - 2.0).abs() < 1e-4,
+        "B: N(He) = {}",
+        b.populations[0]
+    );
+}
+
+/// INDEPENDENT CONSTRUCTION for the hole-on-He state: N(He) = 1 and
+/// N(Ne) = 10 are the same state of the 11-electron cation reached through
+/// different weight operators, residuals and λ. Agreement separates signal
+/// from a systematic error in one weight operator; consistency across R or
+/// basis would not.
+///
+/// MEASURED (main, 2026-10-27): λ = +1.631409 via He and −1.631220 via Ne,
+/// energies 3.861e-6 Ha apart (both residuals are inside the 1e-5 population
+/// tolerance, so the routes agree to ~λ·1e-5, not to machine precision). The
+/// 1e-4 bar is 650× tighter than the 0.0648 Ha gap to the other diabat.
+#[test]
+fn hene_plus_hole_on_he_is_reachable_through_either_fragment() {
+    let sys = hene();
+    let via_he = &hene_default_pair().0;
+    let via_ne = hene_diabat(&sys, 1, 10.0);
+    let d = (via_he.scf.energy - via_ne.scf.energy).abs();
+    eprintln!(
+        "hole on He: via N(He)=1 λ = {:+.6} E = {:.10}; via N(Ne)=10 λ = {:+.6} E = {:.10}; \
+         ΔE = {d:.3e}",
+        via_he.lambdas[0], via_he.scf.energy, via_ne.lambdas[0], via_ne.scf.energy
+    );
+    assert!(
+        d < 1e-4,
+        "the two routes to one state disagree by {d:.3e} Ha"
+    );
+    assert!(
+        via_he.lambdas[0] * via_ne.lambdas[0] < 0.0,
+        "complementary fragments must carry opposite-signed λ: {} and {}",
+        via_he.lambdas[0],
+        via_ne.lambdas[0]
+    );
+    assert!(
+        (via_he.lambdas[0].abs() - via_ne.lambdas[0].abs()).abs() < 1e-2,
+        "|λ| should agree between the routes: {} and {}",
+        via_he.lambdas[0],
+        via_ne.lambdas[0]
+    );
+}
+
+/// THE ASYMMETRY TEST: the hole is more stable on the lower-IP atom (He
+/// 24.587 eV, Ne 21.565 eV), so E(hole on Ne) < E(hole on He).
+///
+/// CORRECTED VALUE. The source branch measured this gap as 1.0975 eV and
+/// asserted only its sign. That number is REFUTED: its hole-on-Ne state
+/// (−130.40219057, λ −2.753705) is a saddle of the λ-augmented manifold
+/// (`cdft_constrained_stability.rs`), and the default driver now descends from
+/// it. RE-MEASURED on main with the default driver:
+///
+/// ```text
+///   E(hole on He) = -130.36185950   λ = +1.631409
+///   E(hole on Ne) = -130.42670717   λ = -2.439010
+///   gap           =    0.06484768 Ha = 1.7646 eV
+/// ```
+///
+/// The hole-on-Ne state is the one NWChem finds when its Becke partition is
+/// given ferric's He/Ne radius ratio (0.667; NWChem's own is 0.700):
+/// −130.426701846, λ −2.439043 (`validation_cdft_state.rs`). The earlier
+/// "0.563 eV above NWChem's LOW member" was that partition difference, not a
+/// missing state. MEASURED by mutation (2026-10-27): patching NWChem's radii
+/// (He 0.35, Ne 0.50 Å) into `becke.rs` moves the hole-on-Ne state to
+/// −130.447403725, NWChem's NATIVE lower state to 2.3e-6 Ha, and fails the pin
+/// below. The NWChem values are the checked-in
+/// `testdata/reference/validation/cdft_state/hene_def2-svp.json`
+/// (`states/low/ferric_partition/matched/energy_extrapolated` −130.426701846,
+/// `states/low/native/matched/energy_extrapolated` −130.447401411). The
+/// hole-on-He state has no external reference.
+///
+/// The NWChem pin below is a STATE-IDENTITY check (which of the two states at
+/// N_He = 2 the driver returns; they are 0.0245 Ha apart), not the
+/// quadrature-corrected energy comparison, which lives in
+/// `validation_cdft_state.rs`. Because dE/dN = −λ, a population residual δ moves
+/// E by |λ|·δ, so the pin first requires |N − 2| < 1e-6 (≤ 2.4e-6 Ha); a
+/// residual merely inside `cdft_lambda_tol` (1e-5, up to 2.4e-5 Ha) could break
+/// the 2e-5 bar on its own.
+///
+/// The gap is ferric-partition specific: a different radius ratio constrains a
+/// different population. Its asymptote at this level is the UHF ΔIP 3.6305 eV
+/// (`hene_atomic_ip_anchor.rs`), not the experimental 3.022 eV.
+#[test]
+fn hene_plus_hole_prefers_the_lower_ip_atom() {
+    /// NWChem 7.2.2, Becke partition relabelled to ferric's radius ratio.
+    const NWCHEM_MATCHED_HOLE_ON_NE: f64 = -130.426_701_846;
+    let (hole_he, hole_ne) = hene_default_pair();
+    let gap = hole_he.scf.energy - hole_ne.scf.energy;
+    let ev = 27.211_386_245_988;
+    eprintln!(
+        "HeNe+ @{HENE_R_ANG} Å: E(hole on He) = {:.8} E(hole on Ne) = {:.8} gap = {gap:.8} Ha \
+         = {:.4} eV",
+        hole_he.scf.energy,
+        hole_ne.scf.energy,
+        gap * ev
+    );
+    assert!(
+        gap > 0.0,
+        "the hole on Ne (lower IP) must be the more stable diabat: gap = {gap}"
+    );
+    // The partition-matched NWChem state. The refuted saddle is 0.0245 Ha away.
+    // State identity only; see the doc comment for why the population is
+    // checked first.
+    assert!(
+        (hole_ne.populations[0] - 2.0).abs() < 1e-6,
+        "hole-on-Ne population residual {:.3e} is too large for the 2e-5 Ha pin \
+         (dE/dN = −λ = {:+.6})",
+        hole_ne.populations[0] - 2.0,
+        -hole_ne.lambdas[0]
+    );
+    assert!(
+        (hole_ne.scf.energy - NWCHEM_MATCHED_HOLE_ON_NE).abs() < 2e-5,
+        "hole-on-Ne E = {:.9} vs NWChem (matched partition) {NWCHEM_MATCHED_HOLE_ON_NE}",
+        hole_ne.scf.energy
+    );
+    // Pinned so a drift is visible; 1e-4 Ha is 245× smaller than the step to
+    // the refuted 1.0975 eV value.
+    assert!(
+        (gap - 0.064_847_68).abs() < 1e-4,
+        "gap {gap:.8} Ha ({:.4} eV); measured 0.06484768 Ha = 1.7646 eV",
+        gap * ev
+    );
+}
+
+/// The Wu–Van Voorhis coupling is invariant under W → W − c·S on a REAL
+/// asymmetric pair of converged constrained determinants.
+///
+/// Shifting each weight operator by a multiple of the overlap leaves the
+/// constrained problem unchanged (N and the target move together), so H_ab
+/// must not move. The old kernel used E·S where F = E + λN belongs (#247) and
+/// was not invariant; on He₂⁺ that bug was exactly 3×, and the synthetic
+/// `coupling_is_invariant_under_constraint_offset` covers arbitrary numbers.
+/// Here E_a ≠ E_b and λ_a ≠ −λ_b. The second condition matters: the E·S bug
+/// shifts H_raw by ½·c·N_e·S·(λ_a + λ_b), which vanishes when λ_a = −λ_b.
+///
+/// WHICH PAIR, and why not the default one. The default driver's pair (state A
+/// and the descended hole-on-Ne state) has S_ab ≈ 7e-8 on this box but 8.7e-9
+/// under `OPENBLAS_CORETYPE=Prescott`, which is below the kernel's near-zero
+/// singular-value threshold `S_TOL` = 1e-8. In that branch the kernel drops
+/// O(σ) terms, and MEASURED under Prescott the offset then moved H_ab by
+/// 1.3e-8 against an H_ab of 1.2e-8. So the identity only holds above S_TOL,
+/// and that pair straddles it depending on the BLAS kernel. Below S_TOL the
+/// known non-invariance is ½·c·(N_e − 1)·S_ab·(λ_a + λ_b), here
+/// ½·0.37·10·8.66e-9·0.808 = 1.3e-8, as measured; a separate change is to
+/// replace S_TOL with an exact cofactor sum. This test uses the
+/// descent-OFF hole-on-Ne state (λ −2.753705, the saddle pinned in
+/// `cdft_constrained_stability.rs`) instead: it is a converged determinant of
+/// the same constraint, S_ab ≈ 2.9e-2, and the identity is algebraic, so the
+/// state's stability does not matter. No |H_ab| magnitude is asserted.
+///
+/// MEASURED (main, 2026-10-27): H_ab = −3.036e-2 Ha, S_ab = 2.946e-2.
+#[test]
+fn hene_plus_coupling_is_invariant_under_constraint_offset() {
+    let sys = hene();
+    let a = &hene_default_pair().0;
+    let b = hene_diabat_with(&sys, 0, 2.0, false);
+    let s = overlap(&sys.prep);
+    let hab = |wa: &Array2<f64>, wb: &Array2<f64>| {
+        let sa = DiabaticState {
+            c_a: &a.scf.mos_alpha,
+            c_b: a.scf.mos_beta.as_ref().unwrap(),
+            nocc_a: 6,
+            nocc_b: 5,
+            energy: a.scf.energy,
+            lambda: a.lambdas[0],
+            w: wa,
+        };
+        let sb = DiabaticState {
+            c_a: &b.scf.mos_alpha,
+            c_b: b.scf.mos_beta.as_ref().unwrap(),
+            nocc_a: 6,
+            nocc_b: 5,
+            energy: b.scf.energy,
+            lambda: b.lambdas[0],
+            w: wb,
+        };
+        coupling_hab(&sa, &sb, &s)
+    };
+    let (wa, wb) = (&a.weight_matrices[0], &b.weight_matrices[0]);
+    let r0 = hab(wa, wb);
+    let c = 0.37;
+    let r1 = hab(&(wa - &(&s * c)), &(wb - &(&s * c)));
+    // What the E·S bug would move H_ab by, for scale: ½·c·N_e·S·(λ_a + λ_b).
+    let bug_shift = 0.5 * c * 11.0 * r0.s_ab * (a.lambdas[0] + b.lambdas[0]);
+    eprintln!(
+        "HeNe+ H_ab = {:.6e} S_ab = {:.6e} (λ_a {:+.6}, λ_b {:+.6}); offset moves it by \
+         {:.3e}; the E·S bug would move it by ~{bug_shift:.3e}",
+        r0.h_ab,
+        r0.s_ab,
+        a.lambdas[0],
+        b.lambdas[0],
+        (r1.h_ab - r0.h_ab).abs()
+    );
+    // The pair must be well above S_TOL and genuinely asymmetric in λ, or the
+    // identity cannot tell the bug from the fix.
+    assert!(r0.s_ab.abs() > 1e-4, "S_ab = {:.3e}", r0.s_ab);
+    assert!(
+        bug_shift.abs() > 1e-3,
+        "the E·S bug would only move H_ab by {bug_shift:.3e}; the check is blind"
+    );
+    assert!(
+        (r1.h_ab - r0.h_ab).abs() < 1e-10,
+        "H_ab moved under W -> W - {c} S: {:.10e} -> {:.10e} (bug scale {bug_shift:.3e})",
+        r0.h_ab,
+        r1.h_ab
+    );
+}

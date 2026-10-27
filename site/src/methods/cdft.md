@@ -92,11 +92,13 @@ What to know before using it:
   `lambda_tol`; 75 × 110 resolves them only to about 1e-4. Setting
   `grid_radial` or `grid_angular` uses that grid for the XC quadrature too.
 - **The UKS path is the one compared against another code.** Constrained
-  UKS/PBE matches NWChem 7.2.2 (see Accuracy). The UHF path (`functional=None`
-  or `"HF"`) has only internal checks: NWChem's standalone SCF (Hartree–Fock)
-  module has no cDFT, because the Becke weight operator is built on the XC
-  grid of its DFT module. A Hartree–Fock comparison through that DFT module
-  (`xc HFexch`) has not been made.
+  UKS/PBE matches NWChem 7.2.2 (see Accuracy). The UHF path
+  (`functional=None` or `"HF"`) has no comparison for energies along a target
+  scan or for couplings: NWChem's standalone SCF (Hartree–Fock) module has no
+  cDFT, because the Becke weight operator is built on the XC grid of its DFT
+  module. Constrained UHF state selection on HeNe⁺ and LiH⁺ is compared
+  through that DFT module, with Hartree–Fock exchange and a vanishing Slater
+  term extrapolated to zero (`ferric-scf/tests/validation_cdft_state.rs`).
 - **One constraint is the tested case.** For one constraint the outer loop is
   a Newton step kept inside a sign-change bracket. It backs off from a λ
   whose inner SCF does not converge, and it discards a finite-difference
@@ -114,32 +116,46 @@ What to know before using it:
 
 ## Accuracy
 
-Constrained UKS/PBE energies and multipliers are compared against NWChem
-7.2.2 `cdft ... pop becke` on LiH, HF and H2O⁺ (charge and spin constraints)
-at 6-31G and def2-SVP (`ferric-scf/tests/validation_cdft.rs`): E(N) −
+Constrained UKS/PBE energies and multipliers are compared against NWChem 7.2.2
+`cdft ... pop becke` on LiH, HF and H2O⁺ (charge and spin constraints) at
+6-31G and def2-SVP (`ferric-scf/tests/validation_cdft.rs`): E(N) −
 E_unconstrained to 2.0e-7 Ha and λ to 1.1e-6 against NWChem's grid limit, and
-dE/dN = −λ to 2.3e-12 Ha (this identity is checked at def2-SVP, on the
-first target of each constraint kind); numbers are on
-[Capabilities and validation](../reference/validation.md#anchors). No external
-reference value is stated for UHF-cDFT energies. The He₂⁺ coupling ingredients
-(determinant overlap, one- and two-electron transition elements, |V|) match
-NWChem's `et` module to ≤ 6e-11 Ha on NWChem's own determinants, and the KS
-diabats and couplings match end to end when started from NWChem's λ, except
-def2-SVP at 3.50 Å, where inner SCF solves within 1e-9 in λ of the root do
-not converge in 100 iterations (see
-[Capabilities and validation](../reference/validation.md)). These diabats are
-validated only from NWChem's λ, set through the Rust
-`RhfConfig::cdft_lambda_init`; `run_cdft` starts from λ = 0, where the
-symmetric pair is delocalized and the inner SCF is bistable. The tests also
-check the coupling kernel on synthetic matrices and He₂⁺ identities
-(`ferric-scf/tests/cdft_coupling.rs`), probe HeNe⁺ over a distance series
-(`cdft_coupling_hene.rs`), and check exact identities on LiH/def2-SVP
-(`cdft_uhf.rs`): the constraint is satisfied, λ = 0 reproduces plain UHF, and
-the constraint composes with an external point charge. The Python tests
-(`crates/ferric-python/tests/test_cdft.py`) rerun those configurations
-through the bindings and check `cdft_coupling` against an independent
-transition-density construction. Treat UHF-cDFT energies as unvalidated
-against other codes; see
+dE/dN = −λ to 2.3e-12 Ha (this identity is checked at def2-SVP, on the first
+target of each constraint kind); numbers are on [Capabilities and
+validation](../reference/validation.md#anchors). No external reference value
+is stated for UHF-cDFT energies apart from the HeNe⁺ and LiH⁺ states in
+`validation_cdft_state.rs`. On HeNe⁺/def2-SVP at R = 2.0 Å the hole-on-Ne
+state (N_He = 2) is NWChem's lower state once NWChem's Becke partition is
+given ferric's He/Ne radius ratio (0.667; NWChem's own is 0.700). Against
+NWChem's native partition it sits 0.563 eV higher, and that offset is the
+partition difference, not a missing state: with NWChem's radii patched into
+ferric's radius table (a one-off measurement, not a test), ferric reaches
+−130.447404 Ha against NWChem's native −130.447401 Ha. The He₂⁺ coupling
+ingredients (determinant overlap, one- and two-electron transition elements,
+|V|) match NWChem's `et` module to ≤ 6e-11 Ha on NWChem's own determinants,
+and the KS diabats and couplings match end to end when started from NWChem's
+λ, except def2-SVP at 3.50 Å, where inner SCF solves within 1e-9 in λ of the
+root do not converge in 100 iterations (see [Capabilities and
+validation](../reference/validation.md)). These diabats are validated only
+from NWChem's λ, set through the Rust `RhfConfig::cdft_lambda_init`;
+`run_cdft` starts from λ = 0, where the symmetric pair is delocalized and the
+inner SCF is bistable. The tests also check the coupling kernel on synthetic
+matrices and He₂⁺ identities (`ferric-scf/tests/cdft_coupling.rs`). On HeNe⁺,
+an asymmetric pair, the same file checks that both diabats carry the requested
+charge, that the hole-on-He state is reached through either fragment (3.9e-6
+Ha apart), that the hole prefers Ne, the lower-IP atom (gap 1.7646 eV with the
+default stability descent; the 1.0975 eV once reported came from a saddle),
+and that H_ab is invariant under W → W − cS. These run at R = 2.0 Å only: from
+the hcore start, at 2.5, 3.5 and 4.0 Å the outer loop does not converge or
+returns the unconstrained state, and from MINAO at 2.5 Å the two routes to the
+hole-on-Ne state disagree by 6e-4 Ha. |H_ab| is not asserted on HeNe⁺;
+`cdft_coupling_hene.rs` probes it over a distance series. The tests also check
+exact identities on LiH/def2-SVP (`cdft_uhf.rs`): the constraint is satisfied,
+λ = 0 reproduces plain UHF, and the constraint composes with an external point
+charge. The Python tests (`crates/ferric-python/tests/test_cdft.py`) rerun
+those configurations through the bindings and check `cdft_coupling` against an
+independent transition-density construction. Apart from the HeNe⁺ and LiH⁺
+states above, treat UHF-cDFT energies as unvalidated against other codes; see
 [Capabilities and validation](../reference/validation.md#python-entry-points).
 
 ## The response connection
