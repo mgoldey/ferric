@@ -396,8 +396,9 @@ fn lambda_zero_equals_plain_uhf() {
 }
 
 // ---------------------------------------------------------------------------
-// Plateau conditioning: the driver must not report success on a solve in which
-// the constraint was never applied.
+// Plateau conditioning: the driver must not return a solve in which the
+// constraint was never applied, unless the unconstrained state already meets the
+// target to the population floor.
 //
 // HeNe⁺/def2-SVP (charge +1, doublet, nbf = 19) is the reproducer. Its
 // N(λ) response is a near-step function with two reachable branches
@@ -456,13 +457,12 @@ fn hene_free_population(
     (population(&w, d_a, d_b, &SpinChannel::Total), scf.energy)
 }
 
-/// EXACTNESS ANCHOR for the plateau guard, written and run before it.
+/// EXACTNESS ANCHOR for the "applied at least once" rule.
 ///
-/// A constraint whose target IS the unconstrained population must still be
-/// accepted: λ stays at 0, the energy is plain UHF's, and the guard below must
-/// not fire. This is the trivial limit in which the constraint does nothing,
-/// and it is the case the guard is most at risk of breaking — a guard keyed on
-/// "λ never moved" would reject it if it did not also look at the residual.
+/// A constraint whose target IS the unconstrained population must still return
+/// at once: λ stays at 0 and the energy is plain UHF's. This is the trivial
+/// limit in which the constraint does nothing, and the case a rule keyed on
+/// "λ never moved" is most at risk of breaking if it ignored the residual.
 #[test]
 fn hene_vacuous_constraint_is_still_accepted() {
     let (mol, bs, prep, bounds, gcfg) = setup_hene(2.0);
@@ -485,7 +485,7 @@ fn hene_vacuous_constraint_is_still_accepted() {
         ..base
     };
     let res = solve_cdft_uhf(&ctx, &mol, &prep, &bs, &bounds, &cfg)
-        .expect("vacuous constraint must not be rejected by the plateau guard");
+        .expect("a vacuous constraint must return");
     assert_eq!(res.lambdas[0], 0.0, "vacuous constraint moved λ");
     assert!(
         res.max_residual() <= 1e-6,
@@ -499,23 +499,24 @@ fn hene_vacuous_constraint_is_still_accepted() {
     );
 }
 
-/// THE GUARD FIRES. With `cdft_lambda_tol` looser than the distance from the
-/// unconstrained population to the target, the outer loop used to exit on
-/// iteration 1 with λ = 0 and return the UNCONSTRAINED state as if it were
-/// constrained: `Ok`, with the plain-UHF energy, off target by the whole gap.
-/// MEASURED on origin/main before the guard (R = 2.0 Å, tolerance 1e-1, every
-/// `level_shift` below, stability descent on and off): λ = 0, outer = 1,
-/// E = −130.50534054 (plain UHF), residual ±6.93e-2, all returned `Ok`.
+/// A loose tolerance no longer returns the UNCONSTRAINED state.
 ///
-/// The tolerance is DERIVED from the measured gap (twice it), not hard-coded,
-/// so the test keeps exercising the λ = 0 exit if a guess change moves the
-/// unconstrained state; the gap is asserted to be far above the vacuous floor,
-/// so the pass condition is reachable only through the guard. Both formulations
-/// are checked because they are the same state expressed on either fragment
-/// (N(He) = 2 and N(Ne) = 9 on an 11-electron cation). The `level_shift` sweep
-/// rules out an inner-solve stiffness artifact.
+/// With `cdft_lambda_tol` looser than the distance from the unconstrained
+/// population to the target, the outer loop used to exit on iteration 1 with
+/// λ = 0 and return the unconstrained state as if it were constrained.
+/// MEASURED on origin/main (R = 2.0 Å, tolerance 1e-1, `level_shift`
+/// 0.2/0.5/0.8, stability descent on and off): λ = 0, outer = 1,
+/// E = −130.50534054 (plain UHF), residual ±6.93e-2, all `Ok`. Now the λ = 0
+/// residual, being above the floor, does not count as met, so the loop takes a
+/// Newton step: outer 2, λ ≈ ±0.51, residual ±4.73e-2.
+///
+/// The tolerance is DERIVED from the measured gap (twice it), so the test keeps
+/// exercising the λ = 0 exit if a guess change moves the unconstrained state,
+/// and the gap is asserted to be far above the floor. Both formulations are
+/// checked (N(He) = 2 and N(Ne) = 9 are the same state of the 11-electron
+/// cation); the `level_shift` sweep rules out an inner-solve stiffness artifact.
 #[test]
-fn plateau_side_target_with_loose_tolerance_is_rejected() {
+fn loose_tolerance_still_applies_the_constraint() {
     let (mol, bs, prep, bounds, gcfg) = setup_hene(2.0);
     let ctx = ParallelContext::default();
     for &(frag, target) in &[(1usize, 9.0_f64), (0usize, 2.0_f64)] {
@@ -527,12 +528,12 @@ fn plateau_side_target_with_loose_tolerance_is_rejected() {
                 fractional_occ: false,
                 ..Default::default()
             };
-            let (n_free, _) = hene_free_population(&mol, &bs, &prep, &bounds, &gcfg, &base, frag);
+            let (n_free, e_free) =
+                hene_free_population(&mol, &bs, &prep, &bounds, &gcfg, &base, frag);
             let gap = (n_free - target).abs();
             assert!(
                 gap > 1e-2,
-                "frag {frag} ls {ls}: gap {gap:.3e} too small to separate the guard from \
-                 the vacuous floor"
+                "frag {frag} ls {ls}: gap {gap:.3e} too small to exercise the rule"
             );
             let cfg = RhfConfig {
                 constraints: vec![Constraint {
@@ -543,28 +544,33 @@ fn plateau_side_target_with_loose_tolerance_is_rejected() {
                 cdft_lambda_tol: 2.0 * gap,
                 ..base
             };
-            let err = solve_cdft_uhf(&ctx, &mol, &prep, &bs, &bounds, &cfg).expect_err(&format!(
-                "frag {frag} target {target} level_shift {ls}: a λ = 0 return with the \
-                 constraint violated by {gap:.3e} e must not be reported as success"
-            ));
-            let msg = format!("{err}");
+            let res = solve_cdft_uhf(&ctx, &mol, &prep, &bs, &bounds, &cfg)
+                .unwrap_or_else(|e| panic!("frag {frag} ls {ls}: {e}"));
             assert!(
-                msg.contains("the constraint was never applied"),
-                "wrong error for frag {frag} ls {ls}: {msg}"
+                res.lambdas[0].abs() > 1e-3 && res.outer_iters >= 2,
+                "frag {frag} ls {ls}: the constraint was not applied (λ = {}, outer {})",
+                res.lambdas[0],
+                res.outer_iters
             );
             assert!(
-                msg.contains("re-express the constraint on the other fragment"),
-                "error must name the remedy: {msg}"
+                res.max_residual() < gap,
+                "frag {frag} ls {ls}: residual {:.3e} did not shrink from {gap:.3e}",
+                res.max_residual()
+            );
+            assert!(
+                (res.scf.energy - e_free).abs() > 1e-4,
+                "frag {frag} ls {ls}: E = {} is the unconstrained {e_free}",
+                res.scf.energy
             );
         }
     }
 }
 
-/// A LOOSE tolerance that the loop meets only AFTER moving λ is not vacuous,
-/// and is accepted with its residual reported honestly.
+/// A LOOSE tolerance met once λ has moved is accepted, with its residual
+/// reported.
 ///
-/// The guard is keyed on "λ never moved", not on "the tolerance is loose", so
-/// a loose solve in which the constraint term did reach the Fock must pass.
+/// The rule is keyed on "λ never applied", not on "the tolerance is loose", so
+/// a loose solve in which the constraint term did reach the Fock returns.
 /// MEASURED: at `cdft_lambda_tol = 5e-2` the λ = 0 solve misses N(Ne) = 9 by
 /// 6.93e-2, one Newton step lands at λ ≈ +0.511 with residual +4.73e-2, and the
 /// loop stops there on outer iteration 2.
@@ -605,12 +611,9 @@ fn loose_tolerance_met_after_lambda_moved_is_accepted() {
     );
 }
 
-/// THE GUARD STAYS QUIET on the same two targets once the tolerance is tight
-/// enough that the driver actually solves for λ.
+/// The same two targets at a tight tolerance solve for λ.
 ///
-/// This is the other half of the guard's pass condition: it must separate
-/// "λ never moved" from "the response is flat", because a flat response is not
-/// by itself an error. MEASURED: with the default stability descent both
+/// A flat response is not by itself a reason to stop or fail. MEASURED: with the default stability descent both
 /// formulations reach λ = ±2.4390, E = −130.42671, agreeing to 7e-6 Ha (without
 /// the descent, the saddle at λ = ±2.7537, E = −130.40218); agreement is the
 /// physical consistency check, since they describe the same state.
@@ -689,13 +692,9 @@ fn reported_residual_matches_population_minus_target() {
 ///
 /// `hene_vacuous_constraint_is_still_accepted` passes the population straight
 /// back as the target, so its residual is bit-identically 0.0 and it cannot
-/// tell `VACUOUS_RESIDUAL_FLOOR = 1e-6` from `0.0` — verified by mutation, which
-/// was INERT on that test. A real caller does not get an exact round trip: a
-/// target read off a previous run, or computed on a slightly different grid,
-/// lands a few times 1e-8 away. Offsetting the target by 1e-8 (well inside the
-/// (99,302) grid's ~1e-8 population accuracy, and 100x below the floor) must
-/// still be accepted, while the measured silent-wrong case sits four orders
-/// ABOVE the floor at 6.9e-2.
+/// tell a positive floor from `0.0`. A caller's target read off another run
+/// lands slightly away; a 1e-8 offset, with a loose tolerance, must still
+/// return at once with λ = 0.
 #[test]
 fn near_vacuous_constraint_within_the_quadrature_floor_is_accepted() {
     let (mol, bs, prep, bounds, gcfg) = setup_hene(2.0);
@@ -707,10 +706,6 @@ fn near_vacuous_constraint_within_the_quadrature_floor_is_accepted() {
         ..Default::default()
     };
     let (n_free, _) = hene_free_population(&mol, &bs, &prep, &bounds, &gcfg, &base, 1);
-
-    // Offset by 1e-8: inside the grid's population accuracy, 100x below the
-    // 1e-6 floor. Tolerance stays loose so the loop still exits on iteration 1
-    // with λ = 0 — i.e. this takes exactly the code path the guard polices.
     let cfg = RhfConfig {
         constraints: vec![Constraint {
             fragment: vec![1],
@@ -720,14 +715,128 @@ fn near_vacuous_constraint_within_the_quadrature_floor_is_accepted() {
         cdft_lambda_tol: 5e-2,
         ..base
     };
-    let res = solve_cdft_uhf(&ctx, &mol, &prep, &bs, &bounds, &cfg).unwrap_or_else(|e| {
-        panic!("a target 1e-8 from the unconstrained population is vacuous, not an error: {e}")
-    });
+    let res = solve_cdft_uhf(&ctx, &mol, &prep, &bs, &bounds, &cfg)
+        .unwrap_or_else(|e| panic!("a target 1e-8 from the unconstrained population: {e}"));
     assert_eq!(res.lambdas[0], 0.0);
     assert_eq!(res.outer_iters, 1);
     assert!(
         res.max_residual() < 1e-6,
-        "residual {:.3e} should be inside the quadrature floor",
+        "residual {:.3e}",
         res.max_residual()
     );
+}
+
+/// A dissociation-limit diabat that the unconstrained state already IS, to
+/// within the floor, returns at λ = 0.
+///
+/// HeNe⁺ at R = 6.0 Å, N(He) = 2: the unconstrained UHF state has
+/// N(He) = 1.99948 (residual −5.2e-4), so with `cdft_lambda_tol = 1e-3` it is
+/// the requested diabat. MEASURED: an error on this case would be wrong, and
+/// its tighter-tolerance remedy does not help (1e-5 does not converge in 40
+/// outer iterations). The residual sits between the largest measured
+/// same-state population spread (8.9e-5) and the floor (1e-3), so lowering the
+/// floor below 5.2e-4 fails this test.
+#[test]
+fn dissociation_limit_target_met_at_lambda_zero_is_accepted() {
+    let (mol, bs, prep, bounds, gcfg) = setup_hene(6.0);
+    let ctx = ParallelContext::default();
+    let base = RhfConfig {
+        level_shift: 0.5,
+        dft_grid: Some(gcfg.clone()),
+        fractional_occ: false,
+        cdft_stability_descent: false,
+        ..Default::default()
+    };
+    let (n_free, e_free) = hene_free_population(&mol, &bs, &prep, &bounds, &gcfg, &base, 0);
+    let target = 2.0;
+    let gap = (n_free - target).abs();
+    assert!(gap > 1e-4 && gap < 1e-3, "reachability: gap {gap:.3e}");
+    let cfg = RhfConfig {
+        constraints: vec![Constraint {
+            fragment: vec![0],
+            spin: SpinChannel::Total,
+            target,
+        }],
+        cdft_lambda_tol: 1e-3,
+        ..base
+    };
+    let res = solve_cdft_uhf(&ctx, &mol, &prep, &bs, &bounds, &cfg)
+        .unwrap_or_else(|e| panic!("the R = 6 Å diabat must be accepted: {e}"));
+    assert_eq!((res.outer_iters, res.lambdas[0]), (1, 0.0));
+    assert!(
+        (res.max_residual() - gap).abs() < 1e-6,
+        "residual {:.3e}",
+        res.max_residual()
+    );
+    assert!(
+        (res.scf.energy - e_free).abs() < 1e-8,
+        "E = {} vs {e_free}",
+        res.scf.energy
+    );
+}
+
+/// The several-constraint exit follows the same rule as the single one.
+///
+/// HeNe⁺ at 2.0 Å with N(He) = 2 (6.93e-2 from the unconstrained state) plus a
+/// spin constraint on He at its unconstrained value, tolerance 1e-1. With
+/// main's `max|c| < tol` exit restored (mutation-tested) this test fails; with
+/// the rule it steps (MEASURED: outer 2, λ = [−1, −1], residuals
+/// [−6.71e-2, +2.49e-2]). Only the rule is asserted: at this
+/// tolerance the k × k loop stops after one clamped step, which is a loose
+/// answer, not a validated one.
+#[test]
+fn two_constraint_loose_tolerance_still_applies_the_constraint() {
+    use ferric_dft::ao_grid::eval_basis_on_points;
+    use ferric_dft::cdft::build_weight_matrix;
+    use ferric_dft::grid::build_atomic_grid;
+
+    let (mol, bs, prep, bounds, gcfg) = setup_hene(2.0);
+    let ctx = ParallelContext::default();
+    let base = RhfConfig {
+        level_shift: 0.5,
+        dft_grid: Some(gcfg.clone()),
+        fractional_occ: false,
+        cdft_stability_descent: false,
+        max_iter: 400,
+        ..Default::default()
+    };
+    let scf = solve_uhf(&ctx, &mol, &prep, &bounds, &base).unwrap();
+    let grid = build_atomic_grid(&mol, &gcfg);
+    let pts: Vec<[f64; 3]> = grid.iter().map(|g| g.xyz).collect();
+    let chi = eval_basis_on_points(&mol, &bs, &pts).unwrap();
+    let w = build_weight_matrix(&mol, &grid, &chi, &[0]);
+    let d_b = scf.density_beta.as_ref().unwrap();
+    let n_free = population(&w, &scf.density_alpha, d_b, &SpinChannel::Total);
+    let s_free = population(&w, &scf.density_alpha, d_b, &SpinChannel::SpinDiff);
+    let tol = 1e-1;
+    assert!(
+        (n_free - 2.0).abs() > 1e-2 && (n_free - 2.0).abs() < tol,
+        "reachability: N(He) = {n_free}"
+    );
+    let cfg = RhfConfig {
+        constraints: vec![
+            Constraint {
+                fragment: vec![0],
+                spin: SpinChannel::Total,
+                target: 2.0,
+            },
+            Constraint {
+                fragment: vec![0],
+                spin: SpinChannel::SpinDiff,
+                target: s_free,
+            },
+        ],
+        cdft_lambda_tol: tol,
+        cdft_max_outer: 40,
+        ..base
+    };
+    let res = solve_cdft_uhf(&ctx, &mol, &prep, &bs, &bounds, &cfg)
+        .unwrap_or_else(|e| panic!("two-constraint loose solve: {e}"));
+    assert!(res.outer_iters >= 2, "outer = {}", res.outer_iters);
+    assert!(
+        res.lambdas[0].abs() > 1e-3,
+        "the Total constraint was not applied: λ = {:?}",
+        res.lambdas
+    );
+    assert!(res.max_residual() < tol, "residual {:?}", res.residuals);
 }

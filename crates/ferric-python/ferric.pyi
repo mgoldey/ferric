@@ -651,8 +651,13 @@ class CdftResult:
         ...
 
     @property
+    def residuals(self) -> list[float]:
+        """population - target per constraint (electrons), in input order."""
+        ...
+
+    @property
     def max_constraint_error(self) -> float:
-        """max |population - target| over constraints (electrons)."""
+        """max |population - target| over constraints (electrons); NaN if any residual is NaN."""
         ...
 
     @property

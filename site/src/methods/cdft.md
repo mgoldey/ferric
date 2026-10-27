@@ -72,14 +72,17 @@ What to know before using it:
   `max_outer`, `run_cdft` raises `RuntimeError`. The inner SCF at the final λ
   can still be unconverged, so check `r.converged`: it is true only when the
   inner SCF converged and every constraint is met to `lambda_tol`.
-- **A constraint that was never applied is an error, not a result.** If
-  `lambda_tol` is looser than the distance from the unconstrained population
-  to the target, the λ = 0 solve already meets it and the loop would stop
-  before λ moves, returning the unconstrained state. That case now raises
-  `RuntimeError` ("the constraint was never applied"), unless the residual is
-  below 1e-6 electrons, where the target genuinely is the unconstrained
-  population. A loose tolerance met after λ has moved is accepted, so check
-  `r.max_constraint_error` to see how far from the target such a state is.
+- **A constraint is applied at least once before it counts as met.** The
+  loop starts at λ = 0, where the state is the unconstrained one. If its
+  population is within `lambda_tol` of the target but more than 1e-3
+  electrons away, the loop still takes a Newton step rather than returning
+  the unconstrained state as if it were constrained. Within 1e-3 the
+  unconstrained state is returned with λ = 0: that is the measured spread of
+  one state's population across grids, level shifts and guesses (up to
+  8.9e-5), with a margin. A loose tolerance can therefore return a state that
+  is only partly constrained, so check `r.max_constraint_error` (or the
+  per-constraint `r.residuals`) to see how far from the target it is. The
+  stability-descent restarts follow the same rule.
 - **`stability_descent` defaults to True here** (in `run_uhf` it defaults to
   False). After the λ loop converges, a constrained saddle point is followed
   downhill to a lower state that still meets the constraint. The example turns
@@ -176,12 +179,12 @@ way worth checking: a loosely converged \\( \lambda \\) produces diabatic
 states that are not quite the ones you asked for, and \\( H_{ab} \\) inherits
 that error. Tighten it before trusting a coupling. The exception is a
 constraint whose population barely responds to \\( \lambda \\), such as He₂⁺
-at the localized-hole plateau: on He₂⁺/def2-SVP at 2.5–3.5 Å the outer loop
-does not converge in 40 iterations at 1e-5, while at 1e-2 (what the tests use)
-it stops after 3 with λ ≈ 0.91 and residuals of 1.6e-3 to 7.8e-3 electrons,
-so check `r.max_constraint_error` before trusting the state. A loosened tolerance
-must stay below the distance from the unconstrained population to the target,
-or the solve is refused as never having applied the constraint.
+at the localized-hole plateau with a UHF reference: on He₂⁺/def2-SVP UHF at
+2.5–3.5 Å the outer loop does not converge in 40 iterations at 1e-5, while at
+1e-2 (what the tests use) it stops after 3 with λ ≈ 0.91 and residuals of
+1.6e-3 to 7.8e-3 electrons, so check `r.max_constraint_error` before trusting
+the state. With a UKS/PBE reference the He₂⁺ diabats do converge from λ = 0 at
+1e-10 (`validation_cdft_et.rs`).
 
 ## Cite
 

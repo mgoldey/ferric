@@ -3375,7 +3375,11 @@ struct PyCdftResult {
     /// The requested targets, one per constraint.
     #[pyo3(get)]
     targets: Vec<f64>,
-    /// max_C |population_C - target_C| (electrons).
+    /// Constraint residuals population_C - target_C (electrons), one per
+    /// constraint, in input order.
+    #[pyo3(get)]
+    residuals: Vec<f64>,
+    /// max_C |population_C - target_C| (electrons); NaN if any residual is NaN.
     #[pyo3(get)]
     max_constraint_error: f64,
     /// The outer-loop tolerance the solve used.
@@ -3757,11 +3761,7 @@ fn run_cdft(
 
     let targets: Vec<f64> = config.constraints.iter().map(|c| c.target).collect();
     let spins: Vec<SpinChannel> = config.constraints.iter().map(|c| c.spin).collect();
-    let max_constraint_error = r
-        .populations
-        .iter()
-        .zip(&targets)
-        .fold(0.0_f64, |m, (&n, &t)| m.max((n - t).abs()));
+    let max_constraint_error = r.max_residual();
     // Same occupation rule as the driver (cdft_driver::occupied_alpha/_beta).
     let nel = nelec as usize;
     let nopen = emol.multiplicity.saturating_sub(1);
@@ -3783,6 +3783,7 @@ fn run_cdft(
         lambdas: r.lambdas,
         populations: r.populations,
         targets,
+        residuals: r.residuals,
         max_constraint_error,
         lambda_tol,
         density_alpha_data: scf.density_alpha,

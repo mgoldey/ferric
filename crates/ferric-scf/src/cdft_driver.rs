@@ -24,12 +24,20 @@
 //! and |∂N/∂λ| ≈ 0.01–0.06 on the upper plateau. A target a few hundredths from
 //! the unconstrained population therefore sits on the plateau, and with a
 //! `cdft_lambda_tol` looser than that gap the loop used to stop before λ moved
-//! and return the unconstrained state; `reject_vacuous_solve` now refuses that.
-//! At R = 2.0 Å the unconstrained UHF state has N(Ne) = 9.0693, so the targets
-//! N(Ne) = 9 and N(He) = 2 sit 6.93e-2 from it: they solve at
-//! `cdft_lambda_tol = 1e-5` (λ = ±2.4390 after the stability descent), and at a
-//! tolerance looser than 6.93e-2 they are now an error rather than a silent
-//! no-op.
+//! and return the unconstrained state. A constraint now counts as met only once
+//! its multiplier has been applied, unless its residual is already at the
+//! population floor (see `constraint_met`), so such a solve takes at least one
+//! Newton step. At R = 2.0 Å the unconstrained UHF state has N(Ne) = 9.0693, so
+//! the targets N(Ne) = 9 and N(He) = 2 sit 6.93e-2 from it: they solve at
+//! `cdft_lambda_tol = 1e-5` (λ = ±2.4390 after the stability descent), and at
+//! 1e-1 they now stop at outer 2 with λ ≈ ±0.51 and residual ±4.73e-2 instead
+//! of returning the unconstrained state. At R = 6.0 Å the unconstrained state
+//! is the N(He) = 2 diabat to 5.2e-4, inside the floor, and is returned at
+//! λ = 0.
+//!
+//! The stability descent restarts the λ loop from λ = 0, so it inherits the
+//! same rule: a restart cannot return an unapplied constraint above the floor
+//! as a candidate.
 
 use crate::result::ScfResult;
 use crate::rhf::RhfConfig;
@@ -539,7 +547,8 @@ impl ScalarStepper {
 }
 
 /// The single-constraint (k = 1) outer loop: a root of c(λ) = 0 to `tol`,
-/// driven by [`ScalarStepper`] (read that for the rules).
+/// accepted only per [`constraint_met`] (an unapplied λ above the floor takes a
+/// step), driven by [`ScalarStepper`] (read that for the rules).
 ///
 /// `eval(λ, label)` runs one inner solve and returns its [`Sample`] plus a
 /// payload (the SCF result) that is handed back for the accepted λ.
@@ -562,7 +571,7 @@ fn solve_scalar<T>(
             );
         }
         let (s, payload) = eval(lam, "main")?;
-        if s.c.abs() < tol {
+        if constraint_met(lam, s.c, tol) {
             return Ok(ScalarRoot {
                 lambda: lam,
                 outer_iters: outer,
@@ -603,92 +612,91 @@ fn solve_scalar<T>(
     )))
 }
 
-/// Refuse a "converged" return in which the constraint was never applied.
+/// Is one constraint met? `|c| < tol`, AND either its multiplier has actually
+/// been applied (`|λ| >` [`UNAPPLIED_LAMBDA`]) or its residual is at the
+/// population floor ([`VACUOUS_RESIDUAL_FLOOR`]).
 ///
-/// Both outer loops stop as soon as `max|c| < cdft_lambda_tol`, and that test
-/// runs BEFORE λ has moved. When the tolerance is looser than the distance from
-/// the unconstrained population to the target, the loop stops on iteration 1
-/// with λ = 0 and hands back the UNCONSTRAINED state labelled as a constrained
-/// one. Measured on HeNe⁺/def2-SVP at R = 2.0 Å, `cdft_lambda_tol = 1e-1`, every
-/// `level_shift` in {0.2, 0.5, 0.8}, stability descent on and off:
+/// # Why the multiplier enters the test
 ///
-/// ```text
-///   target N(He) = 2.0 → λ = 0, outer = 1, E = −130.50534054, residual −6.93e-2
-///   target N(Ne) = 9.0 → λ = 0, outer = 1, E = −130.50534054, residual +6.93e-2
-/// ```
+/// The outer loops used to stop on `|c| < cdft_lambda_tol` alone, which is
+/// tested BEFORE λ moves. With a tolerance looser than the distance from the
+/// unconstrained population to the target, the λ = 0 solve already passed, and
+/// the driver returned the UNCONSTRAINED state labelled as constrained.
+/// MEASURED on origin/main (HeNe⁺/def2-SVP, R = 2.0 Å, grid (99,302),
+/// `level_shift` 0.5, tolerance 1e-1): N(He) = 2 and N(Ne) = 9 both returned
+/// outer 1, λ = 0, residual ∓6.93e-2, E = −130.50534054 (plain UHF).
 ///
-/// All returned `Ok` with the energy of plain UHF. That is now an error. A
-/// loose tolerance met only after λ moved is NOT this defect and is accepted:
-/// at 5e-2 the same targets stop at outer 2, λ ≈ ±0.51, residual ±4.73e-2,
-/// reported in [`CdftResult::residuals`].
+/// An unapplied constraint whose residual is above the floor is therefore NOT
+/// met, and the loop takes a Newton step instead of returning. That is a step,
+/// not an error, because the unconstrained state can be the right answer to
+/// within tolerance: at R = 6.0 Å, N(He) = 2 is met at λ = 0 to 5.2e-4, and an
+/// error there would reject a correct diabat whose tighter-tolerance solve
+/// does not converge. With the step, every return above the floor has applied
+/// its constraint at least once.
 ///
-/// # Why "λ never moved", not a conditioning test
+/// Checked PER constraint, so with several constraints an applied λ on one
+/// does not excuse an unapplied one on another, and by MAGNITUDE, so a
+/// starting multiplier like 1e-300 does not count as applied. A NaN residual
+/// is never met.
 ///
-/// Erroring on a small finite-difference `|∂c/∂λ|`, or a large implied Newton
-/// step `|c / (∂c/∂λ)|`, was implemented and measured (2026-09-16, before the
-/// guarded outer loop of #248), and did not work: the legitimate He₂⁺ coupling
-/// solves sit on a plateau with FLATTER slopes than the broken HeNe⁺ ones
-/// (∂c/∂λ = −1.3e-5 at R = 3.5 Å, implied step 127, versus −1.6e-2 and 2.9 for
-/// the vacuous HeNe⁺ return). Flatness is a property of the system; "λ never
-/// moved" is a property of the error.
-///
-/// The k > 1 return applies the same check; no test in the corpus reaches it
-/// with several constraints.
-///
-/// # Which clauses are load-bearing
-///
-/// A genuinely vacuous constraint (the target IS the unconstrained population)
-/// is legitimate and must still return λ = 0 on iteration 1; it is told apart by
-/// a residual at or below [`VACUOUS_RESIDUAL_FLOOR`]. The `outer != 1` and λ
-/// clauses are load-bearing only JOINTLY: removing both rejects every solve
-/// that stops with a residual between the floor and the tolerance
-/// (`loose_tolerance_met_after_lambda_moved_is_accepted` and
-/// `charge_constraint_is_satisfied_hf_molecule` fail), but short-circuiting
-/// either one alone leaves `cdft_uhf` green, so neither is individually shown
-/// by a test to do any work. Each covers the other's blind spot: the λ clause a
-/// seeded λ⁰ ≠ 0 met on iteration 1 (the constraint term is in the Fock, so it
-/// is not vacuous), the outer clause a later step that returns λ to exactly 0.0.
-fn reject_vacuous_solve(
-    outer: usize,
-    lam: &[f64],
-    resid: &[f64],
-    tol: f64,
-) -> Result<(), FerricError> {
-    if outer != 1 || lam.iter().any(|&l| l != 0.0) {
-        return Ok(());
-    }
-    let (worst, max_resid) = resid
-        .iter()
-        .map(|r| r.abs())
-        .enumerate()
-        .fold((0, 0.0_f64), |b, (i, r)| if r > b.1 { (i, r) } else { b });
-    if max_resid <= VACUOUS_RESIDUAL_FLOOR {
-        return Ok(());
-    }
-    Err(FerricError::Convergence(format!(
-        "cDFT: the constraint was never applied. The outer loop exited on its \
-         first iteration with λ = 0, so the returned state is the UNCONSTRAINED \
-         one, but constraint {worst} is off target by {max_resid:.3e} electrons. \
-         This happens when cdft_lambda_tol ({tol:.1e}) is looser than the \
-         distance from the unconstrained population to the target. Either \
-         tighten cdft_lambda_tol below {max_resid:.1e}, or, if tightening then \
-         fails to converge, re-express the constraint on the other fragment, \
-         where the target is far from the unconstrained population instead of a \
-         few hundredths away. N(λ) can be a near-step function: a target on its \
-         flat plateau is ill-posed regardless of tolerance."
-    )))
+/// HISTORICAL (2026-09-16, the pre-#248 driver and the older unconstrained
+/// HeNe⁺ state, not re-measured): a slope test (error on small |∂c/∂λ|) was
+/// tried first and rejected, because the legitimate He₂⁺ plateau solves were
+/// flatter (∂c/∂λ = −1.3e-5 at 3.5 Å) than the broken HeNe⁺ return (−1.6e-2).
+/// Whether a constraint was applied is a property of the solve; flatness is a
+/// property of the system.
+fn constraint_met(lam: f64, c: f64, tol: f64) -> bool {
+    c.abs() < tol && (lam.abs() > UNAPPLIED_LAMBDA || c.abs() <= VACUOUS_RESIDUAL_FLOOR)
 }
 
-/// Residual (electrons) at or below which a λ = 0, first-iteration return is a
-/// genuinely vacuous constraint rather than a tolerance accident.
+/// [`constraint_met`] for every constraint.
+fn all_constraints_met(lam: &[f64], resid: &[f64], tol: f64) -> bool {
+    lam.len() == resid.len()
+        && lam
+            .iter()
+            .zip(resid)
+            .all(|(&l, &c)| constraint_met(l, c, tol))
+}
+
+/// `max |c_C|`, or NaN if any residual is NaN (a plain `f64::max` fold drops
+/// NaN and would report a NaN residual as met).
+fn max_abs_residual(resid: &[f64]) -> f64 {
+    resid.iter().fold(0.0_f64, |m, &r| {
+        if m.is_nan() || r.is_nan() {
+            f64::NAN
+        } else {
+            m.max(r.abs())
+        }
+    })
+}
+
+/// |λ| (Ha per electron) at or below which a multiplier counts as never
+/// applied. Such a λW term moves a population by |λ·∂N/∂λ|, which stays below
+/// [`VACUOUS_RESIDUAL_FLOOR`] unless |∂N/∂λ| exceeds 1e7 at λ ≈ 0; the
+/// measured slope there is 0.136 per Ha (HeNe⁺, R = 2.0 Å).
+const UNAPPLIED_LAMBDA: f64 = 1e-10;
+
+/// Residual (electrons) at or below which an unapplied constraint counts as
+/// genuinely vacuous: the target IS the unconstrained population, to within
+/// how reproducibly that population can be stated.
 ///
-/// Set at the population-quadrature floor, not at a user tolerance: the default
-/// (99,302) grid recovers a fragment population to ~1e-8, so 1e-6 sits two
-/// orders above it, while the measured silent-wrong cases (6.93e-2) miss it by
-/// four orders. The slack above 0.0 matters, because a target taken from another
-/// run or grid lands ~1e-8 away; it is pinned by
-/// `near_vacuous_constraint_within_the_quadrature_floor_is_accepted`.
-const VACUOUS_RESIDUAL_FLOOR: f64 = 1e-6;
+/// MEASURED spread of the λ = 0 fragment population within ONE SCF state, at
+/// the default `density_conv` 1e-6 (HeNe⁺/def2-SVP at R = 2.0 and 6.0 Å, LiH;
+/// `level_shift` 0/0.2/0.5/0.8, SAD and hcore guesses):
+///
+/// * across level shift and guess, on one grid: ≤ 1.1e-6 (LiH);
+/// * across weight grids for one density, against the cDFT default (99,302):
+///   (75,110) — the XC default a caller is likely to compute a target on —
+///   ≤ 8.9e-5; (99,194) ≤ 1.1e-5; (75,302) and (150,302) ≤ 4.8e-7.
+///
+/// 1e-3 is 11× the largest of these, so a target taken from any of those runs
+/// is accepted at λ = 0, while the measured silent-wrong residual (6.93e-2) is
+/// 69× above it. A guess that lands in another SCF state (HeNe⁺ at 2.0 Å: N(He)
+/// 1.9307 vs 1.9535, E −130.50534 vs −130.50035) is not spread but a different
+/// state, and is not what this floor is for. Pinned by
+/// `dissociation_limit_target_met_at_lambda_zero_is_accepted` (residual 5.2e-4,
+/// below) and `loose_tolerance_still_applies_the_constraint` (6.93e-2, above).
+const VACUOUS_RESIDUAL_FLOOR: f64 = 1e-3;
 
 /// One inner solve at fixed λ: the SCF result, the residuals `c_C` and the
 /// populations `N_C`, one per constraint.
@@ -721,16 +729,17 @@ pub struct CdftResult {
     ///
     /// Reported rather than only tested against `cdft_lambda_tol`, so a caller
     /// can see HOW well the constraint is met. `outer_iters` is not a proxy for
-    /// this: a loose tolerance can end the loop on iteration 1 with a residual
-    /// of several hundredths of an electron (see `reject_vacuous_solve`).
+    /// this: a loose tolerance can end the loop with a residual of several
+    /// hundredths of an electron (see `constraint_met`).
     pub residuals: Vec<f64>,
 }
 
 impl CdftResult {
-    /// Largest `|c_C|` over the constraints at the returned λ.
+    /// Largest `|c_C|` over the constraints at the returned λ (NaN if any
+    /// residual is NaN).
     #[must_use]
     pub fn max_residual(&self) -> f64 {
-        self.residuals.iter().fold(0.0_f64, |m, &r| m.max(r.abs()))
+        max_abs_residual(&self.residuals)
     }
 }
 
@@ -934,12 +943,6 @@ pub fn solve_cdft_uhf_seeded(
                 trace,
             )?;
             let (scf, resid, pops) = root.payload;
-            reject_vacuous_solve(
-                root.outer_iters,
-                &[root.lambda],
-                &resid,
-                config.cdft_lambda_tol,
-            )?;
             return Ok(CdftResult {
                 scf,
                 lambdas: vec![root.lambda],
@@ -959,7 +962,7 @@ pub fn solve_cdft_uhf_seeded(
 
         for outer in 1..=max_outer {
             let (scf, resid, pops) = run_inner(&lam)?;
-            let max_resid = resid.iter().fold(0.0_f64, |m, &r| m.max(r.abs()));
+            let max_resid = max_abs_residual(&resid);
             if trace {
                 eprintln!(
                     "[cdft-trace] outer={outer:2}  lam={lam:?}  N_C={pops:?}  \
@@ -968,8 +971,7 @@ pub fn solve_cdft_uhf_seeded(
                     scf.energy, scf.converged, scf.iterations
                 );
             }
-            if max_resid < config.cdft_lambda_tol {
-                reject_vacuous_solve(outer, &lam, &resid, config.cdft_lambda_tol)?;
+            if all_constraints_met(&lam, &resid, config.cdft_lambda_tol) {
                 return Ok(CdftResult {
                     scf,
                     lambdas: lam,
@@ -2131,5 +2133,98 @@ mod tests {
         let shifted = Sample { v: b.v + 0.02, ..b };
         let gap = hf_mismatch(&a, &shifted, FD_STEP);
         assert!((gap - 0.02).abs() < 1e-10, "gap {gap}");
+    }
+
+    // ---------------------------------------------------------------------
+    // `constraint_met`: a constraint counts as met only once applied, unless
+    // its residual is already at the population floor.
+    // ---------------------------------------------------------------------
+
+    /// One assertion per clause, at tolerance 1e-1 (looser than every residual
+    /// used, so the tolerance clause alone would accept them all).
+    #[test]
+    fn constraint_met_pins_each_clause() {
+        let tol = 1e-1;
+        let above = 10.0 * VACUOUS_RESIDUAL_FLOOR;
+        let below = 0.5 * VACUOUS_RESIDUAL_FLOOR;
+        // Applied (λ ≠ 0) and within tolerance: met, at any iteration.
+        assert!(constraint_met(0.51, above, tol));
+        // Unapplied (λ = 0) and above the floor: NOT met — take a step.
+        assert!(!constraint_met(0.0, above, tol));
+        assert!(!constraint_met(0.0, -above, tol));
+        // Unapplied but at the floor: genuinely vacuous, met.
+        assert!(constraint_met(0.0, below, tol));
+        assert!(constraint_met(0.0, VACUOUS_RESIDUAL_FLOOR, tol));
+        // The magnitude test: a denormal-scale λ is still unapplied, and the
+        // threshold itself is unapplied while just above it is applied.
+        assert!(!constraint_met(1e-300, above, tol));
+        assert!(!constraint_met(UNAPPLIED_LAMBDA, above, tol));
+        assert!(constraint_met(2.0 * UNAPPLIED_LAMBDA, above, tol));
+        assert!(constraint_met(-2.0 * UNAPPLIED_LAMBDA, above, tol));
+        // Outside tolerance is never met, applied or not.
+        assert!(!constraint_met(0.51, 0.2, tol));
+        assert!(!constraint_met(0.0, 0.2, 1.0e-6));
+        // NaN is never met.
+        assert!(!constraint_met(0.51, f64::NAN, tol));
+        assert!(!constraint_met(0.0, f64::NAN, tol));
+    }
+
+    /// Several constraints are checked one by one: an applied multiplier on one
+    /// does not excuse an unapplied one on another.
+    #[test]
+    fn all_constraints_met_is_per_constraint() {
+        let tol = 1e-1;
+        let above = 10.0 * VACUOUS_RESIDUAL_FLOOR;
+        assert!(all_constraints_met(&[0.5, -0.3], &[above, above], tol));
+        assert!(!all_constraints_met(&[0.5, 0.0], &[above, above], tol));
+        assert!(!all_constraints_met(&[0.0, 0.5], &[above, above], tol));
+        assert!(all_constraints_met(&[0.5, 0.0], &[above, 0.0], tol));
+        assert!(!all_constraints_met(&[0.5, 0.5], &[above, f64::NAN], tol));
+        assert!(!all_constraints_met(&[0.5], &[above, above], tol));
+    }
+
+    #[test]
+    fn max_abs_residual_propagates_nan() {
+        assert_eq!(max_abs_residual(&[0.1, -0.3]), 0.3);
+        assert!(max_abs_residual(&[0.1, f64::NAN]).is_nan());
+        assert!(max_abs_residual(&[f64::NAN, 0.1]).is_nan());
+        assert_eq!(max_abs_residual(&[]), 0.0);
+    }
+
+    /// Linear c(λ) = c0 − 0.1·λ with its exact V; a loose tolerance 1e-1.
+    fn linear_loose(c0: f64) -> impl Fn(f64) -> Sample {
+        move |l: f64| sample(c0 - 0.1 * l, c0 * l - 0.05 * l * l, true)
+    }
+
+    fn run_loose(oracle: &dyn Fn(f64) -> Sample, lam0: f64) -> (ScalarRoot<()>, Vec<f64>) {
+        let mut mains = Vec::new();
+        let mut eval = |l: f64, what: &str| -> Result<(Sample, ()), FerricError> {
+            if what == "main" {
+                mains.push(l);
+            }
+            Ok((oracle(l), ()))
+        };
+        let r = solve_scalar(&mut eval, lam0, 1e-1, 40, true, false).expect("converges");
+        (r, mains)
+    }
+
+    /// The outer loop: an unapplied residual above the floor but inside the
+    /// tolerance takes a step (outer 2, λ ≠ 0, smaller |c|); one at the floor
+    /// returns on outer 1 with λ = 0; a seeded λ⁰ ≠ 0 inside the tolerance
+    /// returns on outer 1 without moving.
+    #[test]
+    fn solve_scalar_applies_an_unapplied_constraint_at_least_once() {
+        let c0 = 50.0 * VACUOUS_RESIDUAL_FLOOR;
+        let (r, mains) = run_loose(&linear_loose(c0), 0.0);
+        assert_eq!(mains[0], 0.0);
+        assert!(r.outer_iters >= 2, "outer = {}", r.outer_iters);
+        assert!(r.lambda.abs() > UNAPPLIED_LAMBDA, "λ = {}", r.lambda);
+        assert!((c0 - 0.1 * r.lambda).abs() < c0, "|c| did not shrink");
+
+        let (r, _) = run_loose(&linear_loose(0.5 * VACUOUS_RESIDUAL_FLOOR), 0.0);
+        assert_eq!((r.outer_iters, r.lambda), (1, 0.0));
+
+        let (r, _) = run_loose(&linear_loose(c0), 0.25);
+        assert_eq!((r.outer_iters, r.lambda), (1, 0.25));
     }
 }
