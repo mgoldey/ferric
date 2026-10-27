@@ -8650,6 +8650,23 @@ struct PyCcResult {
     correlation_energy: f64,
     #[pyo3(get)]
     t_correction: Option<f64>,
+    /// Closed-shell CCSD's particle-particle ladder route: `"dense"` or
+    /// `"ri"` (`None` for CCD). With `ladder="auto"` this says which ran.
+    #[pyo3(get)]
+    ladder_route: Option<String>,
+    /// The RI ladder's `a`-block width (`None` unless `ladder_route == "ri"`).
+    #[pyo3(get)]
+    ladder_block: Option<usize>,
+}
+
+/// `(ladder_route, ladder_block)` for the Python result.
+fn py_ladder_route(r: &ferric_cc::CcResult) -> (Option<String>, Option<usize>) {
+    use ferric_cc::ccsd_closed_shell::LadderRoute;
+    match r.ladder_route {
+        Some(LadderRoute::Dense) => (Some("dense".into()), None),
+        Some(LadderRoute::Ri { block }) => (Some("ri".into()), Some(block)),
+        None => (None, None),
+    }
 }
 
 #[pymethods]
@@ -8719,11 +8736,14 @@ fn run_ccd(
     Ok(PyCcResult {
         correlation_energy: r.correlation_energy,
         t_correction: None,
+        ladder_route: None,
+        ladder_block: None,
     })
 }
 
 #[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None, memory_budget_gb=None))]
+#[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None, memory_budget_gb=None, ladder="auto"))]
+#[allow(clippy::too_many_arguments)]
 fn run_ccsd(
     py: Python<'_>,
     mol: &PyMolecule,
@@ -8732,6 +8752,7 @@ fn run_ccsd(
     frozen_core: Option<usize>,
     k_builder: Option<&str>,
     memory_budget_gb: Option<f64>,
+    ladder: &str,
 ) -> PyResult<PyCcResult> {
     let emol = mol.inner.clone();
     let ebasis = basis_set.inner.clone();
@@ -8740,6 +8761,9 @@ fn run_ccsd(
     let cfg = CcConfig {
         frozen_core: frozen_core.unwrap_or(0),
         memory_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
+        // Strict: an unknown route is a ValueError before any SCF runs.
+        ladder: ferric_cc::CcsdLadder::parse_config_str(ladder)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?,
         ..Default::default()
     };
     // Release the GIL for the SCF + CCSD compute. All captured values are
@@ -8770,14 +8794,18 @@ fn run_ccsd(
             run_ccsd_cs_inner(&emol, &prep, &dfbs, op, &rhf, &cfg)
         })
         .map_err(make_err)?;
+    let (ladder_route, ladder_block) = py_ladder_route(&r);
     Ok(PyCcResult {
         correlation_energy: r.correlation_energy,
         t_correction: None,
+        ladder_route,
+        ladder_block,
     })
 }
 
 #[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None, memory_budget_gb=None))]
+#[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None, memory_budget_gb=None, ladder="auto"))]
+#[allow(clippy::too_many_arguments)]
 fn run_ccsd_t(
     py: Python<'_>,
     mol: &PyMolecule,
@@ -8786,6 +8814,7 @@ fn run_ccsd_t(
     frozen_core: Option<usize>,
     k_builder: Option<&str>,
     memory_budget_gb: Option<f64>,
+    ladder: &str,
 ) -> PyResult<PyCcResult> {
     let emol = mol.inner.clone();
     let ebasis = basis_set.inner.clone();
@@ -8794,6 +8823,9 @@ fn run_ccsd_t(
     let cfg = CcConfig {
         frozen_core: frozen_core.unwrap_or(0),
         memory_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
+        // Strict: an unknown route is a ValueError before any SCF runs.
+        ladder: ferric_cc::CcsdLadder::parse_config_str(ladder)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?,
         ..Default::default()
     };
     // Release the GIL for the SCF + CCSD + (T) compute. All captured values
@@ -8832,9 +8864,12 @@ fn run_ccsd_t(
             Ok((r_cs, e_t))
         })
         .map_err(make_err)?;
+    let (ladder_route, ladder_block) = py_ladder_route(&r_cs);
     Ok(PyCcResult {
         correlation_energy: r_cs.correlation_energy,
         t_correction: Some(e_t),
+        ladder_route,
+        ladder_block,
     })
 }
 

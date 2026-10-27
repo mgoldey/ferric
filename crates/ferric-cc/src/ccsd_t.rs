@@ -949,6 +949,7 @@ mod tests {
             correlation_energy: 0.0,
             t1: Some(ndarray::Array2::<f64>::zeros((nocc, nv))),
             t2: ndarray::Array4::<f64>::zeros((nocc, nocc, nv, nv)),
+            ladder_route: None,
         };
         // 1e-6 GiB ≈ 1 KB budget — far below the H2O/cc-pVDZ (T) per-triple peak.
         let cc_cfg = CcConfig {

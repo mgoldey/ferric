@@ -72,6 +72,8 @@ pub mod linlccd_amplitude;
 pub mod linlccd_exact;
 /// Unrestricted LinLCCD (α/β spin channels).
 pub mod linlccd_u;
+/// Integral-direct (RI) particle-particle ladder for closed-shell CCSD.
+pub mod ri_ladder;
 
 pub use ferric_mp2::local_pno as pno;
 /// Local-correlation machinery, re-exported from `ferric-mp2`.
@@ -118,6 +120,77 @@ pub struct CcConfig {
     /// * [`dlpno_ccsd_t_virtual::TripleTnoBasis::build_within_budget`] — the
     ///   pair-PNO and per-triple-TNO transform sets.
     pub memory_budget_bytes: Option<usize>,
+    /// How closed-shell CCSD ([`ccsd_closed_shell`]) evaluates the
+    /// particle-particle ladder. See [`CcsdLadder`]; the default is
+    /// [`CcsdLadder::Auto`]. Read by `ccsd_closed_shell` only — the
+    /// spin-orbital solvers have no RI ladder.
+    pub ladder: CcsdLadder,
+    /// Explicit `a`-block width for the RI particle-particle ladder.
+    ///
+    /// `None` (the default) takes the widest block the memory plan still fits
+    /// (see `ccsd_closed_shell::plan_ladder`). Set it only to pin a width — the
+    /// tests use it to force narrow and deliberately RAGGED blocks (widths that
+    /// do not divide `nv`) without having to starve the whole calculation's
+    /// budget. It requires `ladder: CcsdLadder::Ri` (a pinned width on a route
+    /// that may not use it would be a silently ignored knob), and a value of 0
+    /// or one exceeding `nv` is a hard error rather than a clamp.
+    pub ri_ladder_block: Option<usize>,
+}
+
+/// How closed-shell CCSD evaluates the particle-particle ladder
+/// `Σ_cd W_abcd τ_ij^cd`.
+///
+/// Both routes compute the same number from the same RI tensors: the RI route
+/// is an exact algebraic refactor of the dense `W_abcd`, not an approximation
+/// (H2O/cc-pVDZ: `|ΔE|` and `max|Δt|` ≲ 3e-17, i.e. round-off). They differ
+/// only in memory and time:
+///
+/// * [`Dense`](CcsdLadder::Dense) holds the chemist `(ab|cd)` block for the
+///   whole run and builds `W_abcd` every iteration — `nv⁴`-class residents
+///   plus three `nv⁴` temporaries.
+/// * [`Ri`](CcsdLadder::Ri) holds neither the `(ab|cd)` block nor `W_abcd`;
+///   it rebuilds the `(ac|bd)` entries from the 3-index blocks each iteration
+///   in `blk·nv³` panels ([`crate::ri_ladder`]) — at most one `nv⁴`-sized
+///   panel at full width (dense holds four), narrower panels when the budget
+///   requires. The rebuild costs about `naux/no` times the dense path's
+///   per-iteration `W` build (measured 1.3–1.5× per iteration at `nv ≥ 69`),
+///   so it is a memory-for-time trade.
+/// * [`Auto`](CcsdLadder::Auto) (the default) takes Dense whenever the dense
+///   memory plan fits the budget and RI otherwise, so it is never refused
+///   where RI would run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CcsdLadder {
+    /// Dense when its memory plan fits the budget, RI otherwise.
+    #[default]
+    Auto,
+    /// Always the in-core `nv⁴` ladder.
+    Dense,
+    /// Always the integral-direct (RI) ladder.
+    Ri,
+}
+
+impl CcsdLadder {
+    /// Strict parser for the CLI/Python spelling: `"auto"`, `"dense"` or
+    /// `"ri"`. Anything else is an error, never a silent default.
+    pub fn parse_config_str(s: &str) -> Result<Self, ferric_core::FerricError> {
+        match s {
+            "auto" => Ok(Self::Auto),
+            "dense" => Ok(Self::Dense),
+            "ri" => Ok(Self::Ri),
+            other => Err(ferric_core::FerricError::General(format!(
+                "unknown CCSD ladder {other:?}: expected \"auto\", \"dense\" or \"ri\""
+            ))),
+        }
+    }
+
+    /// The config spelling, the inverse of [`CcsdLadder::parse_config_str`].
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Dense => "dense",
+            Self::Ri => "ri",
+        }
+    }
 }
 
 impl Default for CcConfig {
@@ -129,6 +202,8 @@ impl Default for CcConfig {
             diis_start: 5,
             diis_subspace: 6,
             memory_budget_bytes: None,
+            ladder: CcsdLadder::Auto,
+            ri_ladder_block: None,
         }
     }
 }
@@ -163,6 +238,9 @@ pub struct CcResult {
     pub correlation_energy: f64,
     pub t1: Option<Array2<f64>>,
     pub t2: Array4<f64>,
+    /// The particle-particle ladder route closed-shell CCSD took (with
+    /// [`CcsdLadder::Auto`] resolved). `None` for every other solver.
+    pub ladder_route: Option<ccsd_closed_shell::LadderRoute>,
 }
 
 impl std::fmt::Display for CcResult {

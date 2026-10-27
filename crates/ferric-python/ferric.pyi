@@ -1271,6 +1271,14 @@ class CcResult:
     def correlation_energy(self) -> float: ...
     @property
     def t_correction(self) -> float | None: ...
+    @property
+    def ladder_route(self) -> str | None:
+        """Closed-shell CCSD ladder route taken: "dense" or "ri" (None for CCD)."""
+        ...
+    @property
+    def ladder_block(self) -> int | None:
+        """RI ladder block width (None unless ladder_route == "ri")."""
+        ...
 
 class PdepRpaResult:
     """Result of a PDEP-RPA calculation."""
@@ -3460,8 +3468,18 @@ def run_ccsd(
     frozen_core: int | None = None,
     k_builder: str | None = None,
     memory_budget_gb: float | None = None,
+    ladder: str = "auto",
 ) -> CcResult:
-    """Coupled-cluster singles and doubles (CCSD), spin-adapted."""
+    """Coupled-cluster singles and doubles (CCSD), spin-adapted.
+
+    ``ladder`` picks how the particle-particle ladder is evaluated:
+    ``"auto"`` (default: dense when its memory plan fits the budget, RI
+    otherwise), ``"dense"`` (in-core nv^4, four nv^4 buffers at the peak) or
+    ``"ri"`` (integral-direct: at most one nv^4-sized panel at full width,
+    narrower panels when the budget requires; same energy to round-off,
+    1.3-1.5x slower per iteration). The route taken is on
+    ``CcResult.ladder_route``. Any other value raises ValueError.
+    """
     ...
 
 def run_ccsd_t(
@@ -3471,8 +3489,18 @@ def run_ccsd_t(
     frozen_core: int | None = None,
     k_builder: str | None = None,
     memory_budget_gb: float | None = None,
+    ladder: str = "auto",
 ) -> CcResult:
-    """CCSD(T): CCSD plus perturbative triples correction, spin-adapted."""
+    """CCSD(T): CCSD plus perturbative triples correction, spin-adapted.
+
+    ``ladder`` picks how the particle-particle ladder is evaluated:
+    ``"auto"`` (default: dense when its memory plan fits the budget, RI
+    otherwise), ``"dense"`` (in-core nv^4, four nv^4 buffers at the peak) or
+    ``"ri"`` (integral-direct: at most one nv^4-sized panel at full width,
+    narrower panels when the budget requires; same energy to round-off,
+    1.3-1.5x slower per iteration). The route taken is on
+    ``CcResult.ladder_route``. Any other value raises ValueError.
+    """
     ...
 
 def run_pdep_rpa(

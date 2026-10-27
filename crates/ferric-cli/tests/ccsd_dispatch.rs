@@ -150,3 +150,57 @@ auxbasis = "cc-pvdz-ri"
         (corr - pyscf_ref).abs(),
     );
 }
+
+/// Parse `CCSD corr` and the `ladder` line from a ccsd(t)/ccsd printout.
+fn corr_and_ladder(out: &std::process::Output) -> (f64, String) {
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "ferric-cli failed:\nstdout:\n{stdout}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let corr = stdout
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("CCSD corr  = "))
+        .and_then(|s| s.split_whitespace().next())
+        .and_then(|s| s.parse().ok())
+        .unwrap_or_else(|| panic!("no 'CCSD corr' in:\n{stdout}"));
+    let ladder = stdout
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("ladder     = "))
+        .unwrap_or_else(|| panic!("no 'ladder' line in:\n{stdout}"))
+        .to_string();
+    (corr, ladder)
+}
+
+/// `[cc] ladder` reaches the solver: each spelling prints the route it took,
+/// and the dense and RI routes give the same energy (they are the same
+/// algebra). The printed route is the negative control: an ignored key would
+/// print `dense (auto)` every time.
+#[test]
+fn cc_ladder_key_selects_the_route_and_keeps_the_energy() {
+    let toml = |ladder: &str| {
+        format!(
+            "[molecule]\nxyz = \"testdata/molecules/water.xyz\"\n\n[basis]\nname = \"sto-3g\"\n\n\
+             [method]\nkind = \"ccsd\"\n\n[mp2]\nauxbasis = \"cc-pvdz-ri\"\n\n{ladder}"
+        )
+    };
+    let (e_auto, l_auto) = corr_and_ladder(&run_toml(&toml("")));
+    let (e_dense, l_dense) = corr_and_ladder(&run_toml(&toml("[cc]\nladder = \"dense\"\n")));
+    let (e_ri, l_ri) = corr_and_ladder(&run_toml(&toml("[cc]\nladder = \"ri\"\n")));
+    assert_eq!(l_auto, "dense (auto)");
+    assert_eq!(l_dense, "dense (dense)");
+    assert!(
+        l_ri.starts_with("ri, block ") && l_ri.ends_with("(ri)"),
+        "{l_ri}"
+    );
+    assert!(
+        (e_dense - e_ri).abs() < 1e-9,
+        "dense {e_dense} vs ri {e_ri}"
+    );
+    assert_eq!(e_auto, e_dense);
+
+    let bad = run_toml(&toml("[cc]\nladder = \"RI\"\n"));
+    assert!(!bad.status.success(), "an unknown ladder must be refused");
+    assert!(String::from_utf8_lossy(&bad.stderr).contains("ladder"));
+}

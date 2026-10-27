@@ -25,6 +25,11 @@ pub struct Config {
     pub scf: ScfCfg,
     #[serde(default)]
     pub mp2: Mp2Cfg,
+    /// Optional `[cc]` section: closed-shell CCSD knobs (see [`CcCfg`]).
+    /// Absent means the defaults; present on a kind that does not run
+    /// closed-shell CCSD, it is refused.
+    #[serde(default)]
+    pub cc: Option<CcCfg>,
     #[serde(default)]
     pub optimize: OptimizeCfg,
     #[serde(default)]
@@ -1232,6 +1237,31 @@ impl LocalCfg {
             reference: self.reference.unwrap_or(false),
             direct,
         }))
+    }
+}
+
+/// `[cc]` — closed-shell CCSD knobs, read by `method.kind = "ccsd"` and
+/// `"ccsd(t)"` only (any other kind refuses the section rather than ignoring
+/// it). The aux basis and frozen core stay in `[mp2]`, where every correlated
+/// kind reads them.
+#[derive(Deserialize, Debug, Clone, Default)]
+#[serde(deny_unknown_fields)]
+pub struct CcCfg {
+    /// Particle-particle ladder route: `"auto"` (default; dense when its
+    /// memory plan fits the budget, RI otherwise), `"dense"` or `"ri"`.
+    /// See `ferric_cc::CcsdLadder`.
+    pub ladder: Option<String>,
+}
+
+impl CcCfg {
+    /// The parsed ladder; an unknown spelling is an error, never a default.
+    pub fn ladder(&self) -> Result<ferric_cc::CcsdLadder, String> {
+        match &self.ladder {
+            None => Ok(ferric_cc::CcsdLadder::Auto),
+            Some(s) => {
+                ferric_cc::CcsdLadder::parse_config_str(s).map_err(|e| format!("[cc] ladder: {e}"))
+            }
+        }
     }
 }
 
@@ -3526,6 +3556,7 @@ impl Config {
         self.gpu.validate()?;
         self.scf.validate()?;
         self.mp2.linlccd_variant()?;
+        self.cc_ladder()?;
         self.local_model()?;
         self.external_potential.validate()?;
         match &self.pcm {
@@ -3559,6 +3590,34 @@ impl Config {
                 self.mp2.att_rimp2_operator()?,
             )
             .map_err(|e| format!("[local] integral_direct: {e}"))?;
+        }
+        Ok(())
+    }
+
+    /// The `[cc] ladder` route for closed-shell CCSD (`Auto` when the
+    /// section or key is absent).
+    pub fn cc_ladder(&self) -> Result<ferric_cc::CcsdLadder, String> {
+        self.cc
+            .as_ref()
+            .map_or(Ok(ferric_cc::CcsdLadder::Auto), CcCfg::ladder)
+    }
+
+    /// `[cc]` is read by the closed-shell CCSD kinds only.
+    fn validate_cc_section(&self, kind: &str, mult: usize) -> Result<(), String> {
+        if self.cc.is_none() {
+            return Ok(());
+        }
+        if !matches!(kind, "ccsd" | "ccsd(t)") {
+            return Err(format!(
+                "[cc] is read by method.kind = \"ccsd\" and \"ccsd(t)\" only; kind = \"{kind}\" \
+                 would silently ignore it"
+            ));
+        }
+        if mult > 1 {
+            return Err(format!(
+                "[cc] applies to closed-shell CCSD only; multiplicity = {mult} would take an \
+                 open-shell route with no ladder choice"
+            ));
         }
         Ok(())
     }
@@ -3684,6 +3743,7 @@ impl Config {
         }
 
         self.validate_local()?;
+        self.validate_cc_section(kind, mult)?;
 
         if self.gw.reference.is_some() {
             self.gw.parse_reference()?;
@@ -4020,6 +4080,49 @@ mod compat_guard_tests {
             cfg("uhf", "energy", "").scf_xc_and_aux_defaults(),
             (None, None, None)
         );
+    }
+
+    /// `[cc]` is read by `ccsd`/`ccsd(t)` only, and its `ladder` is strict.
+    #[test]
+    fn cc_section_is_kind_scoped_and_strict() {
+        let with = |kind: &str, body: &str| {
+            let text = format!(
+                "[molecule]\nxyz = \"w.xyz\"\n[basis]\nname = \"sto-3g\"\n\
+                 [method]\nkind = \"{kind}\"\n{body}"
+            );
+            let cfg: Config = toml::from_str(&text).unwrap();
+            cfg.validate_loaded_values()
+                .and_then(|_| cfg.validate_cli_wired_keys())
+                .map(|_| cfg.cc_ladder().unwrap())
+        };
+        for kind in ["ccsd", "ccsd(t)"] {
+            for (v, want) in [
+                ("auto", ferric_cc::CcsdLadder::Auto),
+                ("dense", ferric_cc::CcsdLadder::Dense),
+                ("ri", ferric_cc::CcsdLadder::Ri),
+            ] {
+                assert_eq!(with(kind, &format!("[cc]\nladder = \"{v}\"\n")), Ok(want));
+            }
+            assert_eq!(with(kind, ""), Ok(ferric_cc::CcsdLadder::Auto));
+            let e = with(kind, "[cc]\nladder = \"direct\"\n").unwrap_err();
+            assert!(e.contains("[cc] ladder") && e.contains("direct"), "{e}");
+        }
+        for kind in ["ccd", "rimp2", "linlccd", "rhf"] {
+            let e = with(kind, "[cc]\nladder = \"ri\"\n").unwrap_err();
+            assert!(e.contains("[cc]") && e.contains(kind), "{kind}: {e}");
+        }
+        let typo: Result<Config, _> = toml::from_str(
+            "[molecule]\nxyz = \"w.xyz\"\n[basis]\nname = \"sto-3g\"\n\
+             [method]\nkind = \"ccsd\"\n[cc]\nladdr = \"ri\"\n",
+        );
+        assert!(typo.is_err(), "deny_unknown_fields must bite inside [cc]");
+        let open: Config = toml::from_str(
+            "[molecule]\nxyz = \"w.xyz\"\nmultiplicity = 3\n[basis]\nname = \"sto-3g\"\n\
+             [method]\nkind = \"ccsd\"\n[cc]\nladder = \"ri\"\n",
+        )
+        .unwrap();
+        let e = open.validate_cli_wired_keys().unwrap_err();
+        assert!(e.contains("[cc]") && e.contains("multiplicity = 3"), "{e}");
     }
 
     /// Before the guard, `rimp2` on triplet water returned the singlet, and
