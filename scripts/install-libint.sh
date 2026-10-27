@@ -3,7 +3,8 @@
 # (linux-64), a prebuilt shared library generated with second-derivative
 # integrals (LIBINT2_MAX_DERIV_ORDER 2).
 #
-#   scripts/install-libint.sh [PREFIX]        # default PREFIX: ~/.local/libint2-2.13.1
+#   scripts/install-libint.sh [PREFIX] [--keep-soname]
+#                                             # default PREFIX: ~/.local/libint2-2.13.1
 #   export LIBINT2_PREFIX=<PREFIX>            # what crates/ferric-integrals/build.rs reads
 #
 # Angular-momentum limits of this build (config.h *_MAX_AM_LIST, by
@@ -26,10 +27,30 @@
 # rustc-link-arg, so an rpath set in ferric-integrals' build.rs would not
 # reach ferric-cli, ferric-python or other crates' tests).
 #
-# Needs: curl, python3, zstd, patchelf.
+# --keep-soname leaves the SONAME as the plain "libint2.so". The wheels
+# workflow's large-libint wheel needs that: auditwheel finds the library
+# through LD_LIBRARY_PATH and copies it into the wheel, and an absolute host
+# path in the extension's DT_NEEDED would be wrong on every other machine.
+# A binary linked against a --keep-soname install needs LD_LIBRARY_PATH (or
+# an rpath) to load it. Without the flag the behaviour is unchanged.
+#
+# Needs: curl, python3, zstd, patchelf (patchelf only to print the SONAME
+# under --keep-soname).
 set -euo pipefail
 
-PREFIX="${1:-$HOME/.local/libint2-2.13.1}"
+KEEP_SONAME=0
+PREFIX=""
+for arg in "$@"; do
+  case "$arg" in
+    --keep-soname) KEEP_SONAME=1 ;;
+    -*) echo "install-libint.sh: unknown option $arg" >&2; exit 2 ;;
+    *)
+      [ -z "$PREFIX" ] || { echo "install-libint.sh: more than one PREFIX given" >&2; exit 2; }
+      PREFIX="$arg"
+      ;;
+  esac
+done
+PREFIX="${PREFIX:-$HOME/.local/libint2-2.13.1}"
 URL="https://conda.anaconda.org/conda-forge/linux-64/libint-2.13.1-h83f5b4b_0.conda"
 SHA256="d5219aae3bdd9629c6cff471f129f3aebbaddb058d0d19fbbab12c28924a0535"  # pragma: allowlist secret
 
@@ -58,7 +79,12 @@ zstd -dc "$work/$(cat "$work/payload")" | tar -x -C "$PREFIX"
 
 lib="$(cd "$PREFIX/lib" && pwd)/libint2.so"
 [ -f "$lib" ] || { echo "install-libint.sh: $lib missing after extraction" >&2; exit 1; }
-patchelf --set-soname "$lib" "$lib"
+if [ "$KEEP_SONAME" = 1 ]; then
+  [ "$(patchelf --print-soname "$lib")" = "libint2.so" ] \
+    || { echo "install-libint.sh: expected SONAME libint2.so in the package, got $(patchelf --print-soname "$lib")" >&2; exit 1; }
+else
+  patchelf --set-soname "$lib" "$lib"
+fi
 
 cfg="$PREFIX/include/libint2/config.h"
 params="$PREFIX/include/libint2/libint2_params.h"
