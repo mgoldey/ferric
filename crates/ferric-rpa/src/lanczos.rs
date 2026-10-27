@@ -262,6 +262,23 @@ fn nan_max(a: f64, b: f64) -> f64 {
     }
 }
 
+/// Block-Lanczos residual estimate over the picked Ritz pairs: the max over
+/// columns `0..n_pick` of `||β_k · y_pick[tail_start.., col]||`, reduced with
+/// [`nan_max`] so a NaN in any column survives. The ONE reduction both the
+/// seeded and the targeted loop call, so neither can drift back to `f64::max`.
+fn max_ritz_residual(
+    beta_k: &Array2<f64>,
+    y_pick: &Array2<f64>,
+    tail_start: usize,
+    n_pick: usize,
+) -> f64 {
+    (0..n_pick).fold(0.0f64, |acc, col| {
+        let y_tail = y_pick.slice(s![tail_start.., col]).to_owned();
+        let r_vec = beta_k.dot(&y_tail);
+        nan_max(acc, r_vec.dot(&r_vec).sqrt())
+    })
+}
+
 /// Result of a block-Lanczos run.
 #[derive(Debug, Clone)]
 #[must_use]
@@ -298,13 +315,14 @@ pub struct LanczosResult {
     pub n_desired: usize,
     /// Outer block iterations run (`0` for the full-rank path).
     pub block_iterations: usize,
-    /// The solve ran its last permitted block iteration AND that bound was
-    /// the ambient-space cap (`naux` rounded DOWN to a multiple of the block
-    /// size), not `max_iter`. Set by the solver from its own loop bound
-    /// (`outer_iters <= max_iter`, i.e. fewer than the `max_iter + 1` passes
-    /// `max_iter` alone would allow), so the warning never has to infer the
-    /// limit from `block_iterations`. `false` for the full-rank path and for
-    /// any solve that stopped before its last permitted iteration.
+    /// An UNCONVERGED solve ran its last permitted block iteration AND that
+    /// bound was the ambient-space cap (`naux` rounded DOWN to a multiple of
+    /// the block size), not `max_iter`. Set by the solver from its own loop
+    /// bound (`outer_iters <= max_iter`, i.e. fewer than the `max_iter + 1`
+    /// passes `max_iter` alone would allow), so the warning never has to infer
+    /// the limit from `block_iterations`. Always `false` when `converged`
+    /// (including a full-space solve that converged on its last pass), and
+    /// for the full-rank path.
     pub hit_ambient_cap: bool,
 }
 
@@ -321,6 +339,9 @@ pub enum LanczosStallCause {
     /// Both criteria hold yet the solve is flagged unconverged: a logic error
     /// in the iteration, reported rather than hidden.
     Inconsistent,
+    /// The residual is NaN or infinite, so it can neither pass nor be
+    /// compared; reported as such whatever the pair count.
+    NonFiniteResidual,
 }
 
 /// Classify an unconverged seeded-Lanczos stop by which convergence criterion
@@ -331,6 +352,9 @@ pub fn lanczos_stall_cause(
     subspace_dim: usize,
     n_desired: usize,
 ) -> LanczosStallCause {
+    if !max_resid.is_finite() {
+        return LanczosStallCause::NonFiniteResidual;
+    }
     let resid_ok = max_resid < conv_thresh;
     let count_ok = subspace_dim >= n_desired;
     match (resid_ok, count_ok) {
@@ -366,6 +390,7 @@ pub fn lanczos_stall_summary(result: &LanczosResult, conv_thresh: f64) -> String
         LanczosStallCause::ResidualAboveThreshold => "residual above threshold",
         LanczosStallCause::ResidualAndCount => "residual above threshold and count-starved",
         LanczosStallCause::Inconsistent => "INTERNAL INCONSISTENCY, both criteria pass",
+        LanczosStallCause::NonFiniteResidual => "non-finite residual",
     };
     format!(
         "{what}; stopped by {} after {} block iterations, see the block Lanczos warning above",
@@ -375,15 +400,29 @@ pub fn lanczos_stall_summary(result: &LanczosResult, conv_thresh: f64) -> String
 }
 
 /// `Some` when every eigenpair of the `naux`-dim space was requested; `naux`
-/// is the row count of the returned Ritz vectors.
+/// is the row count of the returned Ritz vectors. When the block size does not
+/// divide `naux`, the size cap rounds the Krylov space DOWN below `naux`, so no
+/// `max_iter` can ever meet the count (only an exact invariant-subspace
+/// breakdown, which ends the solve as converged, escapes it): the note says so
+/// instead of inviting a larger `max_iter`.
 fn full_request_note(result: &LanczosResult) -> Option<String> {
     let naux = result.eigenvectors.nrows();
-    (result.n_desired >= naux).then(|| {
-        format!(
-            "all {naux} eigenpairs were requested; only a full Krylov space satisfies this, so \
-             the solve runs to max_iter or the size cap"
-        )
-    })
+    if result.n_desired < naux {
+        return None;
+    }
+    let bs = (result.subspace_dim / result.block_iterations.max(1)).max(1);
+    if !naux.is_multiple_of(bs) {
+        let cap = naux - naux % bs;
+        return Some(format!(
+            "all {naux} eigenpairs were requested, which cannot converge at any max_iter: the \
+             size cap rounds naux={naux} down to {cap} (block size {bs}); use the dense/full-rank \
+             solver"
+        ));
+    }
+    Some(format!(
+        "all {naux} eigenpairs were requested; only a full Krylov space satisfies this, so the \
+         solve runs to max_iter or the size cap"
+    ))
 }
 
 /// What a count-starved user can do. When every eigenpair of the space was
@@ -441,6 +480,10 @@ pub fn lanczos_nonconvergence_message(
             "INTERNAL INCONSISTENCY: residual {resid:.3e} < {conv_thresh:.3e} and subspace \
              {dim} >= {want} both hold, yet the solve reports non-convergence; please report \
              this"
+        ),
+        LanczosStallCause::NonFiniteResidual => format!(
+            "non-finite residual ({resid}): the Ritz pairs are numerically broken, not merely \
+             unconverged (subspace {dim} of {want} eigenpairs requested)"
         ),
     };
     format!(
@@ -664,7 +707,10 @@ where
     let mut beta_prev: Option<Array2<f64>> = None;
 
     // Cap the Krylov dimension so we don't exceed the ambient space.
-    let max_krylov = (max_iter + 1).saturating_mul(block_size).min(naux);
+    let max_krylov = max_iter
+        .saturating_add(1)
+        .saturating_mul(block_size)
+        .min(naux);
     let outer_iters = (max_krylov / block_size).max(1);
 
     // Track best result across iterations to return if convergence isn't reached.
@@ -771,13 +817,7 @@ where
         if let Some(beta_k) = betas.last() {
             // Only meaningful when we actually have a *next* block of Q to advance to.
             if v_next_opt.is_some() {
-                let last_block_start = tdim - block_size;
-                for (slot, _) in picks.iter().enumerate() {
-                    let y_tail = y_pick.slice(s![last_block_start.., slot]).to_owned();
-                    let r_vec = beta_k.dot(&y_tail);
-                    let nrm = r_vec.dot(&r_vec).sqrt();
-                    max_resid = nan_max(max_resid, nrm);
-                }
+                max_resid = max_ritz_residual(beta_k, &y_pick, tdim - block_size, picks.len());
             }
         } else {
             // No β computed yet (single-iteration corner case); count as converged.
@@ -819,7 +859,7 @@ where
             subspace_dim: tdim,
             n_desired,
             block_iterations: k + 1,
-            hit_ambient_cap: is_last_iter && outer_iters <= max_iter,
+            hit_ambient_cap: !converged && outer_iters <= max_iter,
         };
         last_result = Some(result);
 
@@ -920,7 +960,10 @@ where
     let mut v_prev: Option<Array2<f64>> = None;
     let mut beta_prev: Option<Array2<f64>> = None;
 
-    let max_krylov = (max_iter + 1).saturating_mul(block_size).min(naux);
+    let max_krylov = max_iter
+        .saturating_add(1)
+        .saturating_mul(block_size)
+        .min(naux);
     let outer_iters = (max_krylov / block_size).max(1);
     let mut last_result: Option<LanczosResult> = None;
     let mut last_y_pick: Option<Array2<f64>> = None;
@@ -1003,13 +1046,7 @@ where
         let mut max_resid = 0.0f64;
         if let Some(beta_k) = betas.last() {
             if v_next_opt.is_some() && n_keep > 0 {
-                let last_block_start = tdim - block_size;
-                for slot in 0..n_keep {
-                    let y_tail = y_pick.slice(s![last_block_start.., slot]).to_owned();
-                    let r_vec = beta_k.dot(&y_tail);
-                    let nrm = r_vec.dot(&r_vec).sqrt();
-                    max_resid = nan_max(max_resid, nrm);
-                }
+                max_resid = max_ritz_residual(beta_k, &y_pick, tdim - block_size, n_keep);
             }
         }
 
@@ -1035,7 +1072,7 @@ where
             subspace_dim: tdim,
             n_desired: n_keep,
             block_iterations: k + 1,
-            hit_ambient_cap: k + 1 == outer_iters && outer_iters <= max_iter,
+            hit_ambient_cap: !converged && k + 1 == outer_iters && outer_iters <= max_iter,
         });
 
         if no_more_expansion || residual_ok {
@@ -1674,6 +1711,10 @@ mod tests {
         run_lanczos_seeded(seed, |v| matvec(v), naux, max_iter, 1e-300, false).unwrap()
     }
 
+    /// 42 is not a multiple of 5, so a full request can never be met.
+    const UNREACHABLE_42: &str = "cannot converge at any max_iter: the size cap rounds naux=42 \
+                                  down to 40 (block size 5); use the dense/full-rank solver";
+
     #[test]
     fn cap_binding_at_outer_iters_equal_max_iter_names_the_cap() {
         let res = cap_boundary_run(8);
@@ -1684,6 +1725,7 @@ mod tests {
             "outer_iters 8 <= max_iter 8: the cap binds"
         );
         let msg = lanczos_nonconvergence_message(&res, 8, 1e-300);
+        assert!(msg.contains(UNREACHABLE_42), "{msg}");
         assert!(
             msg.contains("ambient Krylov cap of 40 after 8 block"),
             "{msg}"
@@ -1702,6 +1744,7 @@ mod tests {
             "outer_iters 8 == max_iter + 1: max_iter binds"
         );
         let msg = lanczos_nonconvergence_message(&res, 7, 1e-300);
+        assert!(msg.contains(UNREACHABLE_42), "{msg}");
         assert!(
             msg.contains("stopped by max_iter=7, which was exhausted"),
             "{msg}"
@@ -1730,6 +1773,73 @@ mod tests {
         );
         assert!(!msg.contains("max_vecs"), "{msg}");
         assert!(!msg.contains("more block iterations"), "{msg}");
+        assert!(
+            !msg.contains("cannot converge at any max_iter"),
+            "40 % 4 == 0: {msg}"
+        );
+    }
+
+    /// naux=40, block 5: the cap equals naux, so the full-space solve converges
+    /// on its last permitted pass and must NOT read as stopped by the cap.
+    #[test]
+    fn converged_full_space_solve_does_not_report_the_cap() {
+        let naux = 40;
+        let (matvec, _a) = make_dielectric_op(naux, 90, 3);
+        let mut seed = Array2::<f64>::zeros((naux, 5));
+        for j in 0..5 {
+            for i in 0..naux {
+                seed[(i, j)] = ((i * 7 + j * 13) as f64).sin();
+            }
+        }
+        let res = run_lanczos_seeded(seed, |v| matvec(v), naux, 50, 1e-300, false).unwrap();
+        assert!(res.converged);
+        assert_eq!((res.block_iterations, res.subspace_dim), (8, 40));
+        assert!(!res.hit_ambient_cap);
+    }
+
+    /// A non-finite residual gets its own text, not "NaN is above conv_thresh".
+    #[test]
+    fn nan_residual_message_says_non_finite() {
+        let res = LanczosResult {
+            eigenvalues: Vec::new(),
+            eigenvectors: Array2::zeros((40, 0)),
+            converged: false,
+            max_resid: f64::NAN,
+            subspace_dim: 8,
+            n_desired: 4,
+            block_iterations: 2,
+            hit_ambient_cap: false,
+        };
+        let msg = lanczos_nonconvergence_message(&res, 1, 1e-6);
+        assert!(msg.contains("non-finite residual (NaN)"), "{msg}");
+        assert!(!msg.contains("above conv_thresh"), "{msg}");
+        let summary = lanczos_stall_summary(&res, 1e-6);
+        assert!(summary.starts_with("non-finite residual;"), "{summary}");
+    }
+
+    /// The shared residual reduction (both solver loops call it): max norm of
+    /// the β-projected tails, and a NaN in ANY column, first or last, survives.
+    #[test]
+    fn max_ritz_residual_is_the_tail_max_and_keeps_nan() {
+        let beta = Array2::<f64>::eye(2);
+        let mut y = Array2::<f64>::zeros((3, 3));
+        y[(1, 0)] = 3.0;
+        y[(2, 0)] = 4.0;
+        y[(2, 1)] = 1.0;
+        assert_eq!(max_ritz_residual(&beta, &y, 1, 3), 5.0);
+        y[(1, 2)] = f64::NAN;
+        assert!(
+            max_ritz_residual(&beta, &y, 1, 3).is_nan(),
+            "NaN in last column"
+        );
+        let mut y0 = y.clone();
+        y0[(1, 2)] = 0.0;
+        y0[(2, 0)] = f64::NAN;
+        assert!(
+            max_ritz_residual(&beta, &y0, 1, 3).is_nan(),
+            "NaN in first column"
+        );
+        assert_eq!(max_ritz_residual(&beta, &y, 1, 0), 0.0);
     }
 
     /// `f64::max` drops NaN; the residual reduction must not, or a NaN Ritz
@@ -1764,9 +1874,11 @@ mod tests {
         // one short is not.
         assert_eq!(lanczos_stall_cause(1e-9, 1e-6, 7, 8), CountStarved);
         // A NaN residual never passes.
+        assert_eq!(lanczos_stall_cause(f64::NAN, 1e-6, 8, 8), NonFiniteResidual);
+        assert_eq!(lanczos_stall_cause(f64::NAN, 1e-6, 4, 8), NonFiniteResidual);
         assert_eq!(
-            lanczos_stall_cause(f64::NAN, 1e-6, 8, 8),
-            ResidualAboveThreshold
+            lanczos_stall_cause(f64::INFINITY, 1e-6, 8, 8),
+            NonFiniteResidual
         );
     }
 }
