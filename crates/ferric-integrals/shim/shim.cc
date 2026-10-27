@@ -916,6 +916,89 @@ int scf_libint_max_deriv_order(void) {
 #endif
 }
 
+/* Each SCF_AM_* expands to its libint2_params.h macro, or -1 when that
+ * libint2 build does not define it (class not generated, or derivative order
+ * above LIBINT2_MAX_DERIV_ORDER). Pure compile-time constants: cannot throw. */
+#ifdef LIBINT2_MAX_AM_eri
+#define SCF_AM_ERI0 LIBINT2_MAX_AM_eri
+#else
+#define SCF_AM_ERI0 (-1)
+#endif
+#ifdef LIBINT2_MAX_AM_eri1
+#define SCF_AM_ERI1 LIBINT2_MAX_AM_eri1
+#else
+#define SCF_AM_ERI1 (-1)
+#endif
+#ifdef LIBINT2_MAX_AM_eri2
+#define SCF_AM_ERI2 LIBINT2_MAX_AM_eri2
+#else
+#define SCF_AM_ERI2 (-1)
+#endif
+#ifdef LIBINT2_MAX_AM_3eri
+#define SCF_AM_3ERI0 LIBINT2_MAX_AM_3eri
+#else
+#define SCF_AM_3ERI0 (-1)
+#endif
+#ifdef LIBINT2_MAX_AM_3eri1
+#define SCF_AM_3ERI1 LIBINT2_MAX_AM_3eri1
+#else
+#define SCF_AM_3ERI1 (-1)
+#endif
+#ifdef LIBINT2_MAX_AM_3eri2
+#define SCF_AM_3ERI2 LIBINT2_MAX_AM_3eri2
+#else
+#define SCF_AM_3ERI2 (-1)
+#endif
+#ifdef LIBINT2_MAX_AM_2eri
+#define SCF_AM_2ERI0 LIBINT2_MAX_AM_2eri
+#else
+#define SCF_AM_2ERI0 (-1)
+#endif
+#ifdef LIBINT2_MAX_AM_2eri1
+#define SCF_AM_2ERI1 LIBINT2_MAX_AM_2eri1
+#else
+#define SCF_AM_2ERI1 (-1)
+#endif
+#ifdef LIBINT2_MAX_AM_2eri2
+#define SCF_AM_2ERI2 LIBINT2_MAX_AM_2eri2
+#else
+#define SCF_AM_2ERI2 (-1)
+#endif
+#ifdef LIBINT2_MAX_AM_overlap
+#define SCF_AM_1B0 LIBINT2_MAX_AM_overlap
+#else
+#define SCF_AM_1B0 (-1)
+#endif
+#ifdef LIBINT2_MAX_AM_overlap1
+#define SCF_AM_1B1 LIBINT2_MAX_AM_overlap1
+#else
+#define SCF_AM_1B1 (-1)
+#endif
+#ifdef LIBINT2_MAX_AM_overlap2
+#define SCF_AM_1B2 LIBINT2_MAX_AM_overlap2
+#else
+#define SCF_AM_1B2 (-1)
+#endif
+
+int scf_libint_max_am(int cls, int deriv) {
+    static const int table[4][3] = {
+        {SCF_AM_ERI0, SCF_AM_ERI1, SCF_AM_ERI2},
+        {SCF_AM_3ERI0, SCF_AM_3ERI1, SCF_AM_3ERI2},
+        {SCF_AM_2ERI0, SCF_AM_2ERI1, SCF_AM_2ERI2},
+        {SCF_AM_1B0, SCF_AM_1B1, SCF_AM_1B2},
+    };
+    if (cls < 0 || cls > 3 || deriv < 0 || deriv > 2) return -1;
+    return table[cls][deriv];
+}
+
+int scf_libint_g12_max_am(void) {
+#if defined(LIBINT2_SUPPORT_G12) && defined(LIBINT2_MAX_AM_R12kG12)
+    return LIBINT2_MAX_AM_R12kG12;
+#else
+    return -1;
+#endif
+}
+
 scf_engine *scf_engine_create_deriv2(int op_kind, double omega,
                                        int max_nprim, int max_L, double precision) {
 #if LIBINT2_MAX_DERIV_ORDER >= 2

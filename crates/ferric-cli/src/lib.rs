@@ -65,7 +65,7 @@ fn print_usage() {
     eprintln!("  --no-json       Do not write a run log. Same as `[output] json = false`.");
     gpu_flag::print_help();
     eprintln!("  --version, -V   Print which build this is (version, git commit, dirty");
-    eprintln!("                  flag, build profile, libint version) and exit.");
+    eprintln!("                  flag, build profile, libint version and limits) and exit.");
 }
 
 /// The `ferric --version` text: one `key: value` line per field, the same
@@ -78,7 +78,35 @@ pub fn version_text() -> String {
         ferric_build_info::COMMIT,
         ferric_build_info::dirty_str(),
         ferric_build_info::PROFILE,
+        libint_summary(),
+    )
+}
+
+/// The `libint:` value of `ferric --version`: the libint2 version followed by
+/// the build's max angular momentum per integral class (one entry per
+/// derivative order) and its G12 limit, e.g.
+/// `2.13.1 (eri 7,6,3; eri3 7,7,4; eri2 7,7,4; onebody 7,6,3; g12 4)`.
+/// Two wheels with the same version and commit can differ only here.
+pub fn libint_summary() -> String {
+    let max_am = ferric_integrals::libint_max_am();
+    let mut parts: Vec<String> = ferric_integrals::LIBINT_AM_CLASSES
+        .iter()
+        .map(|class| {
+            let ams: Vec<String> = max_am[class].iter().map(i32::to_string).collect();
+            let ams = if ams.is_empty() {
+                "none".to_string()
+            } else {
+                ams.join(",")
+            };
+            format!("{class} {ams}")
+        })
+        .collect();
+    let g12 = ferric_integrals::libint_g12_max_am().map_or("none".to_string(), |l| l.to_string());
+    parts.push(format!("g12 {g12}"));
+    format!(
+        "{} ({})",
         ferric_integrals::libint_version(),
+        parts.join("; ")
     )
 }
 

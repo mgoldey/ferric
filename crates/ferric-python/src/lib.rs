@@ -10533,6 +10533,14 @@ fn _cli_main(py: Python<'_>) -> PyResult<()> {
 /// - ``profile`` (str): cargo build profile, ``"release"`` or ``"debug"``.
 /// - ``libint_version`` (str): version of the libint2 headers the integral
 ///   shim was compiled against, or ``"unknown"``.
+/// - ``libint_max_deriv_order`` (int): ``LIBINT2_MAX_DERIV_ORDER`` of that
+///   libint2 (1 = gradients only, 2 = analytic Hessians too).
+/// - ``libint_max_am`` (dict[str, list[int]]): max angular momentum per
+///   integral class (``"eri"``, ``"eri3"``, ``"eri2"``, ``"onebody"``),
+///   entry ``d`` for derivative order ``d``. Tells the PyPI wheel (small
+///   libint) from a conda-forge 2.13.1 build, which share version and commit.
+/// - ``libint_g12_max_am`` (int or None): ``LIBINT2_MAX_AM_R12kG12``.
+/// - ``libint_linkage`` (str): ``"static"`` or ``"shared"`` libint2.
 ///
 /// All values are fixed when the extension is compiled, so they describe the
 /// loaded ``.so`` even when it is a symlink into some other checkout.
@@ -10543,8 +10551,20 @@ fn build_info(py: Python<'_>) -> PyResult<Py<pyo3::types::PyDict>> {
     d.set_item("commit", ferric_build_info::COMMIT)?;
     d.set_item("dirty", ferric_build_info::DIRTY)?;
     d.set_item("profile", ferric_build_info::PROFILE)?;
-    d.set_item("libint_version", ferric_integrals::libint_version())?;
+    add_libint_info(&d)?;
     Ok(d.unbind())
+}
+
+/// The `libint_*` entries of [`build_info`].
+fn add_libint_info(d: &Bound<'_, pyo3::types::PyDict>) -> PyResult<()> {
+    d.set_item("libint_version", ferric_integrals::libint_version())?;
+    d.set_item(
+        "libint_max_deriv_order",
+        ferric_integrals::libint_max_deriv_order(),
+    )?;
+    d.set_item("libint_max_am", ferric_integrals::libint_max_am())?;
+    d.set_item("libint_g12_max_am", ferric_integrals::libint_g12_max_am())?;
+    d.set_item("libint_linkage", ferric_integrals::libint_linkage())
 }
 
 /// `ferric.__build__`: `{"git_sha": str, "dirty": bool}`, or `None` when the
