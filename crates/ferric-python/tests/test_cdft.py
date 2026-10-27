@@ -212,6 +212,9 @@ def test_charge_constraint_is_met_and_raises_the_energy():
     assert abs(r.populations[0] - 2.2) < 1e-5, r.populations
     assert r.lambda_tol == 1e-5
     assert r.max_constraint_error < r.lambda_tol
+    assert len(r.residuals) == 1
+    assert abs(r.residuals[0] - (r.populations[0] - r.targets[0])) < 1e-14
+    assert r.max_constraint_error == abs(r.residuals[0])
     assert abs(r.lambdas[0]) > 1e-3, r.lambdas
     # Independent population from the returned density and weight operator.
     w = r.weight_matrix(0)

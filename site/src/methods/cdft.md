@@ -72,6 +72,17 @@ What to know before using it:
   `max_outer`, `run_cdft` raises `RuntimeError`. The inner SCF at the final λ
   can still be unconverged, so check `r.converged`: it is true only when the
   inner SCF converged and every constraint is met to `lambda_tol`.
+- **A constraint is applied at least once before it counts as met.** The
+  loop starts at λ = 0, where the state is the unconstrained one. If its
+  population is within `lambda_tol` of the target but more than 1e-3
+  electrons away, the loop still takes a Newton step rather than returning
+  the unconstrained state as if it were constrained. Within 1e-3 the
+  unconstrained state is returned with λ = 0: that is the measured spread of
+  one state's population across grids, level shifts and guesses (up to
+  8.9e-5), with a margin. A loose tolerance can therefore return a state that
+  is only partly constrained, so check `r.max_constraint_error` (or the
+  per-constraint `r.residuals`) to see how far from the target it is. The
+  stability-descent restarts follow the same rule.
 - **`stability_descent` defaults to True here** (in `run_uhf` it defaults to
   False). After the λ loop converges, a constrained saddle point is followed
   downhill to a lower state that still meets the constraint. The example turns
@@ -168,9 +179,12 @@ way worth checking: a loosely converged \\( \lambda \\) produces diabatic
 states that are not quite the ones you asked for, and \\( H_{ab} \\) inherits
 that error. Tighten it before trusting a coupling. The exception is a
 constraint whose population barely responds to \\( \lambda \\), such as He₂⁺
-at the localized-hole plateau: there the tolerance has to be loosened to match
-that flatness (the tests use 1e-2), or the Newton step drives
-\\( \lambda \\) off a cliff.
+at the localized-hole plateau with a UHF reference: on He₂⁺/def2-SVP UHF at
+2.5–3.5 Å the outer loop does not converge in 40 iterations at 1e-5, while at
+1e-2 (what the tests use) it stops after 3 with λ ≈ 0.91 and residuals of
+1.6e-3 to 7.8e-3 electrons, so check `r.max_constraint_error` before trusting
+the state. With a UKS/PBE reference the He₂⁺ diabats do converge from λ = 0 at
+1e-10 (`validation_cdft_et.rs`).
 
 ## Cite
 
