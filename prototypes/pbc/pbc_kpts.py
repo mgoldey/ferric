@@ -42,15 +42,43 @@ from pbc_supercell import Supercell, pair_ft_residues
 #   'phase_P'        : e^{-ik'.L} in the pair FT only (S, T keep +ik.L)
 #   'kernel_no_q'    : v(G) instead of v(G+q) in exchange (the q-shift of the kernel dropped)
 #   'madelung_prim'  : primitive-cell v_M instead of the supercell (k-mesh) v_M
+#   'no_twist'       : shifted mesh without the supercell twist in the residue pair FT (phase e^{ik'.t_r} only)
+#   'shift_neg_k'    : time-reversal partner of a shifted k taken as -m (the Gamma-centred map) instead of -m - 2s
 _MUTANT = None
 
 
 # ------------------------------------------------------------------------------ mesh
-def mp_mesh(cell, n):
-    """Gamma-centred mesh k = sum_i (m_i / n_i) b_i, m_i = 0..n_i-1 (PySCF cell.make_kpts(n) order)."""
+def mp_mesh(cell, n, shift=None):
+    """Mesh k = sum_i ((m_i + s_i) / n_i) b_i, m_i = 0..n_i-1 (PySCF cell.make_kpts(n) order).
+    shift s (per axis, in units of the mesh spacing; None/0 = Gamma-centred).  s = 1/2 on an even axis is the
+    Monkhorst-Pack mesh that avoids Gamma and the zone boundary; on an odd axis it contains the boundary.
+    Integer index arithmetic (k_i + k_j - k_a, k' - q) is unchanged: q = k' - k stays on the Gamma-centred mesh."""
     n = tuple(int(x) for x in n)
     ints = np.array(list(itertools.product(*(range(k) for k in n))))
-    return ints, (ints / np.array(n)) @ cell.b
+    if shift is None or not np.any(np.asarray(shift) != 0):
+        return ints, (ints / np.array(n)) @ cell.b
+    return ints, ((ints + np.asarray(shift, float)) / np.array(n)) @ cell.b
+
+
+def mesh_twist(cell, n, shift=None):
+    """k_s = sum_i (s_i / n_i) b_i, the offset of a shifted mesh from the Gamma-centred one (None if unshifted)."""
+    if shift is None or not np.any(np.asarray(shift) != 0):
+        return None
+    return (np.asarray(shift, float) / np.array(n, float)) @ cell.b
+
+
+def q_mesh(cell, n):
+    """Momentum transfers q = k' - k: always the Gamma-centred mesh, whatever the k shift."""
+    return mp_mesh(cell, n)[1]
+
+
+def neg_k_index(n, ints, shift=None):
+    """Index of -k for each k of the (possibly shifted) mesh: m' = -m - 2s (mod n); needs 2s integer."""
+    s2 = np.zeros(3) if shift is None else 2 * np.asarray(shift, float)
+    if np.any(abs(s2 - np.rint(s2)) > 1e-12):
+        raise ValueError(f"time reversal needs 2*shift integer, got shift={shift!r}")
+    s2 = np.rint(s2).astype(int)
+    return [mesh_index(n, -m - s2) for m in ints]
 
 
 def mesh_index(n, m):
@@ -101,13 +129,17 @@ def build_k(
     rcut_1e=22.0,
     mem_bytes=8e8,
     verbose=True,
+    shift=None,
 ):
-    """Dense k-point integrals for an n = (n1, n2, n3) Gamma-centred mesh (pure AFT, no SR split)."""
+    """Dense k-point integrals for an n = (n1, n2, n3) mesh (pure AFT, no SR split); Gamma-centred unless shift
+    (mp_mesh) is given.  The q classes, K sets and v_M are those of the Gamma-centred mesh in every case."""
     if exxdiv is not None and str(exxdiv).lower() not in ("none", "ewald"):
         raise ValueError(f"exxdiv must be None, 'none' or 'ewald', got {exxdiv!r}")
     t0 = time.time()
     n = tuple(int(x) for x in n)
-    ints, kpts = mp_mesh(cell, n)
+    ints, kpts = mp_mesh(cell, n, shift)
+    qpts = q_mesh(cell, n)
+    twist = mesh_twist(cell, n, shift)
     Nk, nao = len(kpts), cell.mol.nao
     gcut = gcut or aft_gcut(cell)
 
@@ -147,11 +179,14 @@ def build_k(
     nK_tot = 0
     # time reversal: P^{-k,-k'}(-K) = conj P^{k,k'}(K) (real phi), so Kker[-k,-k'] = conj Kker[k,k'] and
     # only one of each (q, -q) pair of passes is computed
-    neg = [mesh_index(n, -ints[k]) for k in range(Nk)]
+    neg = [mesh_index(n, -ints[k]) for k in range(Nk)]  # -q on the Gamma-centred q mesh
+    negk = (
+        neg if _MUTANT == "shift_neg_k" else neg_k_index(n, ints, shift)
+    )  # -k on the k mesh
     for iq in range(Nk):
         if neg[iq] < iq and _MUTANT != "no_time_reversal":
             continue
-        q = kpts[iq]
+        q = qpts[iq]
         K = shifted_gvectors(cell, q, gcut)
         nK_tot += len(K)
         kof = [
@@ -160,7 +195,12 @@ def build_k(
         for c0 in range(0, len(K), chunk):
             Kc = K[c0 : c0 + chunk]
             K2 = np.einsum("gi,gi->g", Kc, Kc)
-            Q = pair_ft_residues(scell, Kc, thresh) * nn[None, :, :, None]
+            Q = (
+                pair_ft_residues(
+                    scell, Kc, thresh, twist=None if _MUTANT == "no_twist" else twist
+                )
+                * nn[None, :, :, None]
+            )
             P = np.einsum("jr,rmng->jmng", ph_r, Q)  # P[j] = P^{kof[j], j}(Kc)
             del Q
             if _MUTANT == "kernel_no_q":
@@ -173,7 +213,7 @@ def build_k(
                 blk = np.einsum("mlg,nsg->mlns", P[j] * v, P[j].conj()) / cell.vol
                 Kker[kof[j], j] += blk
                 if neg[iq] != iq and _MUTANT != "no_time_reversal":
-                    Kker[neg[kof[j]], neg[j]] += blk.conj()
+                    Kker[negk[kof[j]], negk[j]] += blk.conj()
             if iq == 0:  # q = 0: kof[j] == j, P[j] = P^{jj}(G), G != 0
                 Jker += np.einsum("kmng,jlsg->kjmnls", P * v, P.conj()) / cell.vol
                 SG = np.exp(-1j * Kc @ cell.R.T) @ cell.Z
@@ -204,6 +244,7 @@ def build_k(
         n=n,
         Nk=Nk,
         gcut=gcut,
+        shift=shift,
     )
 
 

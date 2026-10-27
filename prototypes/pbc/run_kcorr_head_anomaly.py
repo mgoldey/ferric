@@ -193,9 +193,10 @@ def run_mol():
 
 
 # ------------------------------------------------------------------------------ mesh helpers
-def pair_derivs(cell, n, delta=1e-4, delta2=2e-3, thresh=1e-14):
-    """Fixed-k P^{kk}(K) near K = 0: P0 (Nk,nao,nao), A[..., a] = dP/dK_a, B[..., a] = d2P/dK_a^2 (per axis)."""
-    ints, kpts = mp_mesh(cell, n)
+def pair_derivs(cell, n, delta=1e-4, delta2=2e-3, thresh=1e-14, shift=None):
+    """Fixed-k P^{kk}(K) near K = 0: P0 (Nk,nao,nao), A[..., a] = dP/dK_a, B[..., a] = d2P/dK_a^2 (per axis).
+    shift: k-mesh shift (pbc_kpts.mp_mesh)."""
+    ints, kpts = mp_mesh(cell, n, shift)
     scell = Supercell(cell.a, cell.atoms, cell.basis, n)
     ph_r = np.exp(1j * kpts @ scell.t.T)
     nn = KC._pair_norm(cell)
@@ -203,7 +204,10 @@ def pair_derivs(cell, n, delta=1e-4, delta2=2e-3, thresh=1e-14):
         [np.zeros((1, 3))]
         + [s * dl * np.eye(3) for dl in (delta, delta2) for s in (1, -1)]
     )
-    Q = pair_ft_residues(scell, Ks, thresh) * nn[None, :, :, None]
+    Q = (
+        pair_ft_residues(scell, Ks, thresh, twist=PK.mesh_twist(cell, n, shift))
+        * nn[None, :, :, None]
+    )
     P = np.einsum("jr,rmng->jmng", ph_r, Q)
     P0 = P[..., 0]
     A = (P[..., 1:4] - P[..., 4:7]) / (2 * delta)
