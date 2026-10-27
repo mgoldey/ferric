@@ -14,7 +14,8 @@
 //! (b) blocked RKS == unblocked RKS in the SAME frame to 1e-10 Ha, and the
 //!     converged KS Fock (V_xc included) and density commute with every
 //!     operation to 1e-10, under both RI-J (the KS default) and exact J;
-//! (c) a partially filled degenerate shell is refused without `irrep_nelec`;
+//! (c) a partially filled degenerate shell is refused unless `irrep_nelec`
+//!     lists one of its irreps, and so is a grid too coarse for that check;
 //! (d) stretched H2 reaches sigma_g^2 with symmetry and misses it without
 //!     (negative control).
 //!
@@ -245,6 +246,7 @@ fn ks_rotated_input_documents_the_grid_orientation_change() {
     }
     let a = anchor(&mol, "sto-3g", &ks(true), &ks(false));
     assert!(a.de < 1e-10, "same-frame anchor {:e}", a.de);
+    assert!(a.fcomm < 1e-10, "same-frame [R,F_KS] {:e}", a.fcomm);
     let sym = run_sym(&mol, "sto-3g", &ks(true)).unwrap();
     let input_frame = run_mol(&mol, "sto-3g", &ks(false)).unwrap();
     let d = (sym.energy() - input_frame.energy).abs();
@@ -266,8 +268,18 @@ fn ks_rotated_input_documents_the_grid_orientation_change() {
 fn ks_partially_filled_degenerate_shell_needs_irrep_nelec() {
     let mol = load("o2.xyz");
     let err = run_sym(&mol, "sto-3g", &ks(true)).unwrap_err();
-    assert!(err.contains("degenerate shell"), "{err}");
+    assert!(err.contains("near-degenerate"), "{err}");
     assert!(err.contains("irrep_nelec"), "{err}");
+    // A PARTIAL request that leaves both pi_g irreps unlisted is still
+    // refused: Ag takes its three pairs by request, and the remaining pair
+    // would again be placed in pi_g by aufbau over the grid split.
+    let mut partial = ks(true);
+    partial.irrep_nelec = Some(vec![("Ag".into(), 6)]);
+    let err = run_sym(&mol, "sto-3g", &partial).unwrap_err();
+    assert!(
+        err.contains("near-degenerate"),
+        "partial irrep_nelec: {err}"
+    );
     // The same shell under HF is allowed (documented cluster ordering).
     let mut hf = ks(true);
     hf.xc = None;
@@ -329,7 +341,7 @@ fn ks_stretched_h2_needs_symmetry_to_reach_sigma_g_squared() {
             .as_f64()
             .unwrap();
         let bare = run_sym(&mol, "cc-pvdz", &ks(true)).unwrap_err();
-        assert!(bare.contains("degenerate shell"), "R={r}: {bare}");
+        assert!(bare.contains("near-degenerate"), "R={r}: {bare}");
         let mut on = ks(true);
         on.irrep_nelec = Some(vec![("Ag".into(), 2)]);
         let blocked = run_sym(&mol, "cc-pvdz", &on).unwrap();
@@ -346,14 +358,59 @@ fn ks_stretched_h2_needs_symmetry_to_reach_sigma_g_squared() {
             "R={r}: {} vs {want}",
             blocked.energy()
         );
-        // A failed (non-converged) unblocked run is also a miss.
-        if let Ok(p) = plain {
-            assert!(
-                (p.energy - want).abs() > 1e-3,
-                "R={r}: unblocked KS reached sigma_g^2 ({} vs {want}); the negative \
-                 control fails",
-                p.energy
-            );
+        // Non-convergence is Ok(converged = false), not an Err: an Err here
+        // is a failure of the control itself, not a miss.
+        let p = plain.unwrap();
+        assert!(
+            (p.energy - want).abs() > 1e-3,
+            "R={r}: unblocked KS reached sigma_g^2 ({} vs {want}); the negative \
+             control fails",
+            p.energy
+        );
+    }
+}
+
+/// Below 110 angular points the grid splits degenerate partners by more than
+/// the split-shell tolerance (benzene: 7e-4 Ha at 50, 7e-3 Ha at 26), so
+/// blocked KS refuses such a grid; 110 (also pruned) is accepted.
+#[test]
+fn ks_coarse_grid_is_refused() {
+    let mol = load("water.xyz");
+    for (ang, prune, ok) in [
+        (50, None, false),
+        (26, None, false),
+        (110, Some(ferric_dft::prune::PruneScheme::NwchemLike), true),
+    ] {
+        let mut c = ks(true);
+        c.dft_grid = Some(ferric_dft::grid::AtomicGridConfig {
+            n_radial: 50,
+            n_angular: ang,
+            prune,
+        });
+        let r = run_sym(&mol, "sto-3g", &c);
+        match (ok, r) {
+            (true, r) => assert!(r.is_ok(), "{ang}: {:?}", r.err()),
+            (false, Err(e)) => assert!(e.contains("angular points"), "{ang}: {e}"),
+            (false, Ok(_)) => panic!("{ang} angular points accepted"),
         }
+    }
+}
+
+/// Beyond PBE: a meta-GGA (tau term, auto level shift) and a range-separated
+/// hybrid with VV10 (SR/LR fitted exchange, nonlocal grid) block exactly too.
+#[test]
+fn ks_blocking_holds_for_scan_and_wb97x_v() {
+    let mol = load("water.xyz");
+    for xc in ["SCAN", "wB97X-V"] {
+        let (mut on, mut off) = (ks(true), ks(false));
+        on.xc = Some(xc.into());
+        off.xc = Some(xc.into());
+        let a = anchor(&mol, "sto-3g", &on, &off);
+        eprintln!(
+            "water {xc}/STO-3G: |dE| = {:.1e}, max [R,F_KS] = {:.1e}",
+            a.de, a.fcomm
+        );
+        assert!(a.de < 1e-10, "{xc}: {:e}", a.de);
+        assert!(a.fcomm < 1e-10, "{xc}: [R,F] {:e}", a.fcomm);
     }
 }

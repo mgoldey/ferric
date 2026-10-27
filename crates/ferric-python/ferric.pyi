@@ -3353,7 +3353,34 @@ def run_dft(
     symmetry: Literal[True],
     irrep_nelec: dict[str, int] | None = None,
 ) -> SymmetricRhfResult: ...
-
+@overload
+def run_dft(
+    mol: Molecule,
+    basis_set: BasisSet,
+    functional: str | None = None,
+    k_builder: str | None = None,
+    with_gradient: bool = False,
+    max_iter: int | None = None,
+    energy_conv: float | None = None,
+    density_conv: float | None = None,
+    level_shift: float | None = None,
+    mom_after_iter: int | None = None,
+    point_charges: list[tuple[float, float, float, float]] | None = None,
+    external_field: tuple[float, float, float] | None = None,
+    memory_budget_gb: float | None = None,
+    dispersion: str | None = None,
+    df_j_aux: str | None = None,
+    df_k_aux: str | None = None,
+    grid_radial: int | None = None,
+    grid_angular: int | None = None,
+    grid_prune: str | None = None,
+    cosx_grid: tuple[int, int] | tuple[int, int, str] | None = None,
+    cosx_final_pass: bool | None = None,
+    cosx_final_grid: tuple[int, int] | tuple[int, int, str] | None = None,
+    cosx_overlap_fit: bool | None = None,
+    symmetry: bool = False,
+    irrep_nelec: dict[str, int] | None = None,
+) -> DftResult | SymmetricRhfResult: ...
 def dft_grid_point_count(
     mol: Molecule,
     grid_radial: int | None = None,
@@ -3437,7 +3464,30 @@ def run_ksdft(
     symmetry: Literal[True],
     irrep_nelec: dict[str, int] | None = None,
 ) -> SymmetricRhfResult: ...
-
+@overload
+def run_ksdft(
+    mol: Molecule,
+    basis_set: BasisSet,
+    functional: str | None = None,
+    k_builder: str | None = None,
+    with_gradient: bool = False,
+    max_iter: int | None = None,
+    energy_conv: float | None = None,
+    density_conv: float | None = None,
+    level_shift: float | None = None,
+    mom_after_iter: int | None = None,
+    point_charges: list[tuple[float, float, float, float]] | None = None,
+    external_field: tuple[float, float, float] | None = None,
+    memory_budget_gb: float | None = None,
+    dispersion: str | None = None,
+    df_j_aux: str | None = None,
+    df_k_aux: str | None = None,
+    grid_radial: int | None = None,
+    grid_angular: int | None = None,
+    grid_prune: str | None = None,
+    symmetry: bool = False,
+    irrep_nelec: dict[str, int] | None = None,
+) -> DftResult | SymmetricRhfResult: ...
 def d3bj_energy(mol: Molecule, functional: str) -> float:
     """Grimme D3(BJ) dispersion energy in Hartree (two-body term).
 

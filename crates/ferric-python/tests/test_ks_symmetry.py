@@ -62,7 +62,7 @@ def test_stretched_h2_reaches_sigma_g_squared_only_with_irrep_nelec(tmp_path):
     assert r.orbital_irreps[0] == "Ag"
     # Without irrep_nelec the sigma_g / sigma_u shell is partially filled and
     # degenerate: refused (the grid could pick the occupation), not guessed.
-    with pytest.raises(ValueError, match=r"symmetry=True.*degenerate shell"):
+    with pytest.raises(ValueError, match=r"symmetry=True.*near-degenerate"):
         ferric.run_dft(mol, bs, "PBE", symmetry=True)
 
 
@@ -81,3 +81,13 @@ def test_refusals_are_valueerrors():
     ):
         with pytest.raises(ValueError, match=r"run_dft\(symmetry=True\)"):
             ferric.run_dft(mol, bs, "PBE", symmetry=True, **kwargs)
+
+
+def test_partial_irrep_nelec_and_coarse_grids_are_refused():
+    o2 = ferric.Molecule.from_xyz(str(ROOT / "testdata" / "molecules" / "o2.xyz"))
+    bs = ferric.BasisSet.bundled("sto-3g")
+    # Ag listed, the half-filled pi_g pair left to aufbau: still refused.
+    with pytest.raises(ValueError, match="near-degenerate"):
+        ferric.run_dft(o2, bs, "PBE", symmetry=True, irrep_nelec={"Ag": 6})
+    with pytest.raises(ValueError, match="angular points"):
+        ferric.run_dft(_water(), bs, "PBE", symmetry=True, grid_angular=50)

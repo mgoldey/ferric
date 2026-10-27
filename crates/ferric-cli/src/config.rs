@@ -10215,7 +10215,7 @@ mod cli_wired_keys_tests {
     // ---- [scf] symmetry / irrep_nelec ----
 
     #[test]
-    fn symmetry_is_closed_shell_rhf_energy_only() {
+    fn symmetry_is_closed_shell_rhf_or_rks_energy_only() {
         let on = "[scf]\nsymmetry = true\nirrep_nelec = { A1 = 4, B2 = 2 }\n";
         let c = cfg("rhf", "energy", 1, on);
         c.validate_cli_wired_keys().unwrap();

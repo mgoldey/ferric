@@ -34,10 +34,18 @@ occupations as a MULTISET for D2h. C2v and Cs labels are fixed by convention.
 Run:
     scripts/validation/run_slot.sh --light -- \
         uv run --no-sync python scripts/validation/gen_scf_symmetry.py
+
+`--rks-only` recomputes only the `rks_pbe` blocks and merges them into the
+existing files, leaving every other block byte-identical (each `rks_pbe`
+block carries its own `provenance`). Unblocked stretched-H2 runs do not
+converge, so their recorded energy depends on the SCF trajectory and the BLAS
+kernel; regenerating everything moves those numbers without any change in
+the physics.
 """
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -155,10 +163,22 @@ def block(mol, mf, e_unblocked=None) -> dict:
     return d
 
 
+def rks_prov(system, xyz, basis) -> dict:
+    p = prov(system, xyz, basis, {})
+    p["keywords"] = {**KS_RECIPE, "symmetry": True, **CONV}
+    p["grid"] = KS_RECIPE["grid"]
+    p["aux_basis"] = AUX
+    return p
+
+
 def rks_ground(xyz: Path, basis: str) -> dict:
     _, off = run_rks(xyz, basis, False)
     mol, mf = run_rks(xyz, basis, True)
-    return {"recipe": KS_RECIPE, "ground": block(mol, mf, off.e_tot)}
+    return {
+        "provenance": rks_prov("h2o", xyz, basis),
+        "recipe": KS_RECIPE,
+        "ground": block(mol, mf, off.e_tot),
+    }
 
 
 def rks_stretched(xyz: Path, basis: str) -> dict:
@@ -166,6 +186,7 @@ def rks_stretched(xyz: Path, basis: str) -> dict:
     mol_g, g = run_rks(xyz, basis, True, irrep_nelec={"A1g": 2, "A1u": 0})
     mol_u, u = run_rks(xyz, basis, True, irrep_nelec={"A1g": 0, "A1u": 2})
     return {
+        "provenance": rks_prov(xyz.stem, xyz, basis),
         "recipe": KS_RECIPE,
         "unblocked": {"energy": float(off.e_tot), "converged": bool(off.converged)},
         "sigma_g2": block(mol_g, g),
@@ -232,7 +253,27 @@ def h2_stretched(tag: str) -> None:
     print(f"wrote {common.write_reference(ROW, tag, basis, payload)}")
 
 
+def merge_rks(system: str, basis: str, block_: dict) -> None:
+    """Replace only the `rks_pbe` block of an existing reference file."""
+    path = common.reference_path(ROW, system, basis)
+    payload = json.loads(path.read_text())
+    payload["rks_pbe"] = block_
+    print(f"merged rks_pbe into {common.write_reference(ROW, system, basis, payload)}")
+
+
+def main_rks_only() -> int:
+    for basis in BASES:
+        merge_rks("h2o", basis, rks_ground(SYSTEMS["h2o"], basis))
+    for tag in ("h2_r50", "h2_r10000"):
+        merge_rks(
+            tag, "cc-pvdz", rks_stretched(common.MOL_DIR / f"{tag}.xyz", "cc-pvdz")
+        )
+    return 0
+
+
 def main() -> int:
+    if "--rks-only" in sys.argv[1:]:
+        return main_rks_only()
     for system, xyz in SYSTEMS.items():
         for basis in BASES:
             path = common.write_reference(
