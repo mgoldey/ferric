@@ -112,17 +112,18 @@ def test_range_separated_hybrid_runs_on_rsgdf(h2, h_atom, basis):
     )
     assert d.energy == r.energy
     assert np.isfinite(d.gradient()).all() and np.isfinite(d.stress()).all()
-    # The open-shell UKS stress stays refused in the bindings (library only,
-    # #498; the UKS force runs on the dense-AFT J/K:
+    # An unvalidated range-separated hybrid's open-shell stress is refused by
+    # name (HSE06 / CAM-B3LYP run on either J/K, #498:
     # test_pbc_rsh_open_mgga_derivs.py).
     with pytest.raises(
-        ValueError, match="UKS range-separated hybrid stress is not implemented"
+        ValueError,
+        match="HYB_GGA_XC_WB97X: the range-separated hybrid force and stress are validated",
     ):
         ferric.run_uks_kpts(
             h_atom,
             lat,
             basis,
-            "HSE06",
+            "HYB_GGA_XC_WB97X",
             (1, 1, 2),
             omega=OMEGA,
             with_stress=True,
@@ -227,35 +228,26 @@ def test_gamma_range_separated_hybrid_equals_the_one_point_mesh(
 
 def test_gamma_range_separated_hybrid_refusals(h2, h_atom, basis):
     lat = _cubic()
-    # The closed-shell force and stress run on the dense-AFT J/K
-    # (test_pbc_rsh_open_mgga_derivs.py); on RS-GDF they are refused by name.
+    # The closed- and open-shell force and stress run on either J/K for
+    # HSE06 / CAM-B3LYP (#498, test_pbc_rsh_open_mgga_derivs.py); wB97X
+    # derivatives, the Gamma ROKS stress (no library entry) and VV10 stay
+    # refused by name.
     for kw in ({"with_gradient": True}, {"with_stress": True}):
         with pytest.raises(
             ValueError,
-            match=r"^run_rks_gamma: functional \"HSE06\": .*range-separated hybrid "
-            r"gradient / stress on RS-GDF.*dense-AFT J/K only",
+            match=r"^run_rks_gamma: functional \"HYB_GGA_XC_WB97X\": .*validated for "
+            r"HSE06 / CAM-B3LYP",
         ):
             ferric.run_rks_gamma(
-                h2, lat, basis, "HSE06", omega=OMEGA, **kw, **RSGDF, **GRID
+                h2, lat, basis, "HYB_GGA_XC_WB97X", omega=OMEGA, **kw, **RSGDF, **GRID
             )
-    # The open-shell (UKS, ROKS) energies run (test_pbc_open_shell_mgga_rsh.py,
-    # test_pbc_rsh_open_mgga_derivs.py), and so does the dense-AFT UKS force;
-    # the UKS stress, every ROKS derivative and VV10 stay refused by name.
     with pytest.raises(
         ValueError,
-        match=r"open-shell range-separated hybrid stress.*Gamma-point UKS "
-        r"range-separated hybrid stress is not implemented",
-    ):
-        ferric.run_uks_gamma(
-            h_atom, lat, basis, "HSE06", omega=OMEGA, with_stress=True, **GRID
-        )
-    with pytest.raises(
-        ValueError,
-        match=r"restricted-open-shell range-separated hybrid gradient / stress.*"
-        r"Gamma-point ROKS range-separated hybrid force and stress are not implemented",
+        match=r"restricted-open-shell range-separated hybrid stress.*Gamma-point ROKS "
+        r"range-separated hybrid stress has no library entry",
     ):
         ferric.run_roks_gamma(
-            h_atom, lat, basis, "HSE06", omega=OMEGA, with_gradient=True, **GRID
+            h_atom, lat, basis, "HSE06", omega=OMEGA, with_stress=True, **GRID
         )
     with pytest.raises(ValueError, match="VV10"):
         ferric.run_rks_gamma(h2, lat, basis, "wB97X-V", omega=OMEGA, **GRID)

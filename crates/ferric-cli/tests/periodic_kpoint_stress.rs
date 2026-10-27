@@ -677,26 +677,16 @@ fn refused(c: Case, tag: &str, kind: &str, cell: &str, method: &str) -> String {
 #[test]
 fn stress_refusals_name_the_toml_key() {
     let km = "kmesh = [1, 1, 2]\nstress = true";
-    // The closed-shell HSE06 / CAM-B3LYP stress runs on either J/K (anchored
-    // above); the open-shell range-separated stress is refused by the stress
-    // gate, which names the key (the library open-shell RSH stress is not
-    // wired in the bindings yet, #498).
-    for (route, kind, want) in [
-        (
-            Route::Uks,
-            "uhf",
-            "UKS range-separated hybrid stress is not implemented",
-        ),
-        (
-            Route::Roks,
-            "rohf",
-            "ROKS range-separated hybrid force and stress are not implemented",
-        ),
-    ] {
+    // The HSE06 / CAM-B3LYP stress runs on either J/K for every SCF family
+    // (anchored above, #498); an unvalidated range-separated hybrid (wB97X)
+    // is refused by the stress gate, which names the key.
+    let want = "HYB_GGA_XC_WB97X: the range-separated hybrid force and stress are validated for \
+                HSE06 / CAM-B3LYP (HYB_GGA_XC_CAM_B3LYP) only";
+    for (route, kind) in [(Route::Uks, "uhf"), (Route::Roks, "rohf")] {
         let c = Case {
             tag: "ho",
             route,
-            functional: "HSE06",
+            functional: "HYB_GGA_XC_WB97X",
         };
         let e = refused(c, &format!("hse-{kind}"), kind, km, "");
         assert!(

@@ -16,6 +16,10 @@ use ferric_pbc::{
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+/// The derivative gate's refusal of an unvalidated range-separated hybrid.
+const WB97X_DERIV: &str = "HYB_GGA_XC_WB97X: the range-separated hybrid force and stress are \
+                           validated for HSE06 / CAM-B3LYP (HYB_GGA_XC_CAM_B3LYP) only";
+
 fn ferric_cli_bin() -> PathBuf {
     if let Ok(exe) = std::env::current_exe() {
         if let Some(profile_dir) = exe.parent().and_then(Path::parent) {
@@ -284,13 +288,12 @@ fn cli_kpoint_rsh_rsgdf_equals_library_solve_krks() {
 }
 
 /// With `jk = "rsgdf"` the range-separated energy is accepted (RKS, ROKS, and
-/// UKS: periodic_kpoint_open_shell.rs); the closed-shell force runs
-/// (periodic_rsh_open_mgga_derivs.rs) but the UKS `task = "optimize"` stays
-/// refused by name (the library UKS force differentiates the RS-GDF
-/// attenuated fit, `pbc_kuks_rsh_rsgdf_force.rs`, but the bindings do not wire
-/// it yet, #498).
+/// UKS: periodic_kpoint_open_shell.rs); the RKS, UKS and ROKS forces of HSE06
+/// / CAM-B3LYP run (periodic_rsh_open_mgga_derivs.rs, #498), and the UKS
+/// `task = "optimize"` of an unvalidated range-separated hybrid (wB97X) is
+/// refused by name.
 #[test]
-fn cli_kpoint_rsh_rsgdf_runs_roks_and_refuses_the_uks_force() {
+fn cli_kpoint_rsh_rsgdf_runs_roks_and_refuses_an_unvalidated_uks_force() {
     let hse = "[dft]\nfunctional = \"HSE06\"";
     let out = run(&input("rsgdf-roks", "rohf", 3, hse, RSGDF_CELL));
     assert!(
@@ -298,7 +301,8 @@ fn cli_kpoint_rsh_rsgdf_runs_roks_and_refuses_the_uks_force() {
         "rsgdf-roks:\n{}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let toml = input("rsgdf-opt", "uhf", 3, hse, RSGDF_CELL);
+    let wb = "[dft]\nfunctional = \"HYB_GGA_XC_WB97X\"";
+    let toml = input("rsgdf-opt", "uhf", 3, wb, RSGDF_CELL);
     let src = std::fs::read_to_string(&toml)
         .unwrap()
         .replace("kind = \"uhf\"", "task = \"optimize\"\nkind = \"uhf\"");
@@ -307,8 +311,7 @@ fn cli_kpoint_rsh_rsgdf_runs_roks_and_refuses_the_uks_force() {
     assert!(!out.status.success(), "rsgdf-opt must be refused");
     let e = String::from_utf8_lossy(&out.stderr);
     assert!(
-        e.contains("method.task = \"optimize\"")
-            && e.contains("UKS range-separated hybrid force runs on the dense-AFT J/K only"),
+        e.contains("method.task = \"optimize\"") && e.contains(WB97X_DERIV),
         "rsgdf-opt: {e}"
     );
 }
@@ -325,8 +328,9 @@ fn gamma_input(tag: &str, kind: &str, mult: usize, dft: &str) -> PathBuf {
 
 /// Gamma-point range-separated hybrids (issue #354): the CLI energy equals the
 /// 1x1x1 mesh of the same input (Gamma J/XC/SCF vs the k-point driver; the
-/// library anchors are `pbc_grsh.rs`), and the surface that does not exist
-/// (forces on RS-GDF, ROKS forces) is refused by name.
+/// library anchors are `pbc_grsh.rs`), and the derivatives of an unvalidated
+/// range-separated hybrid (wB97X; HSE06 / CAM-B3LYP run on either J/K for
+/// RKS, UKS and ROKS, periodic_rsh_open_mgga_derivs.rs) are refused by name.
 #[test]
 fn cli_gamma_rsh_equals_the_one_point_mesh_and_keeps_derivatives_refused() {
     for (tag, name) in [("hse", "HSE06"), ("cam", "HYB_GGA_XC_CAM_B3LYP")] {
@@ -353,9 +357,10 @@ fn cli_gamma_rsh_equals_the_one_point_mesh_and_keeps_derivatives_refused() {
         );
     }
     let hse = "[dft]\nfunctional = \"HSE06\"";
-    // task = "optimize" runs on the dense-AFT J/K (periodic_rsh_open_mgga_derivs.rs)
-    // and is refused at plan time on RS-GDF, before any integral.
-    let toml = input("gam-opt", "ksdft", 1, hse, RSGDF_CELL);
+    // task = "optimize" runs on either J/K (periodic_rsh_open_mgga_derivs.rs)
+    // for HSE06 / CAM-B3LYP; wB97X is refused at plan time, before any integral.
+    let wb = "[dft]\nfunctional = \"HYB_GGA_XC_WB97X\"";
+    let toml = input("gam-opt", "ksdft", 1, wb, RSGDF_CELL);
     let src = std::fs::read_to_string(&toml)
         .unwrap()
         .replace("kmesh = [1, 1, 2]\n", "")
@@ -365,14 +370,13 @@ fn cli_gamma_rsh_equals_the_one_point_mesh_and_keeps_derivatives_refused() {
     assert!(!out.status.success(), "gam-opt must be refused");
     let e = String::from_utf8_lossy(&out.stderr);
     assert!(
-        e.contains("method.task = \"optimize\"") && e.contains("dense-AFT J/K only"),
+        e.contains("method.task = \"optimize\"") && e.contains(WB97X_DERIV),
         "gam-opt: {e}"
     );
     // The open-shell energies at Gamma run (periodic_kpoint_open_shell.rs) and
-    // so does the UKS optimize on the dense-AFT J/K
-    // (periodic_rsh_open_mgga_derivs.rs); the ROKS optimize is refused at plan
-    // time.
-    let toml = gamma_input("gam-roks-opt", "rohf", 3, hse);
+    // so do the UKS and ROKS optimizes (periodic_rsh_open_mgga_derivs.rs); the
+    // ROKS optimize of wB97X is refused at plan time.
+    let toml = gamma_input("gam-roks-opt", "rohf", 3, wb);
     let src = std::fs::read_to_string(&toml)
         .unwrap()
         .replace("kind = \"rohf\"", "task = \"optimize\"\nkind = \"rohf\"");
@@ -381,8 +385,7 @@ fn cli_gamma_rsh_equals_the_one_point_mesh_and_keeps_derivatives_refused() {
     assert!(!out.status.success(), "gam-roks-opt must be refused");
     let e = String::from_utf8_lossy(&out.stderr);
     assert!(
-        e.contains("method.task = \"optimize\"")
-            && e.contains("ROKS range-separated hybrid force and stress are not implemented"),
+        e.contains("method.task = \"optimize\"") && e.contains(WB97X_DERIV),
         "gam-roks-opt: {e}"
     );
     // range_split would shape only the Gamma J, never the attenuated K.
