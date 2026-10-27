@@ -101,9 +101,8 @@
 //! ([`periodic_ecp_gradient`], FINDINGS "Iteration 22"; added to every Gamma
 //! force by `crate::grad`), the Gamma strain term ([`periodic_ecp_strain`],
 //! `crate::stress`) and both at k-points (`crate::kgrad`, `crate::kstress`,
-//! module doc "k-points"). Ghost atoms carry no ECP (no nucleus); the
-//! molecular `ecp_potential` includes a ghost's ECP, which is a
-//! molecular-path quirk not reproduced here.
+//! module doc "k-points"). Ghost atoms carry no ECP (no nucleus), matching
+//! the molecular `ecp_inputs_with_atoms`.
 //!
 //! # k-points (forces and stress)
 //!

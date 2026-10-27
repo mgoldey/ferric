@@ -269,7 +269,8 @@ pub fn hcore_ecp_with_external(
 /// Compute the dense spherical ECP projector matrix `V_ECP`, shape
 /// (nbasis, nbasis), for the given molecule + ECP-carrying basis set.
 ///
-/// Returns `None` (and does zero work) when the basis carries no ECPs. The shell
+/// Returns `None` (and does zero work) when the basis carries no ECPs or no
+/// non-ghost atom carries one. The shell
 /// iteration order mirrors [`PreparedBasis::new`] exactly, so the resulting AO
 /// ordering matches libint's spherical basis — the matrix can be added to
 /// `hcore` directly.
@@ -289,8 +290,9 @@ pub fn ecp_potential(mol: &Molecule, bs: &BasisSet) -> Option<Array2<f64>> {
 /// wrapper consumes, in exactly the order [`PreparedBasis::new`] emits shells.
 ///
 /// Returns `None` when the basis carries no ECPs or the molecule has no
-/// ECP-carrying atom. Shared by [`ecp_potential`] and [`ecp_potential_deriv`] so
-/// the energy and gradient can never disagree about the basis they describe.
+/// non-ghost ECP-carrying atom (a ghost contributes shells only). Shared by
+/// [`ecp_potential`] and [`ecp_potential_deriv`] so the energy and gradient can
+/// never disagree about the basis they describe.
 fn build_ecp_inputs(
     mol: &Molecule,
     bs: &BasisSet,
@@ -305,7 +307,7 @@ fn build_ecp_inputs(
 pub struct EcpInputs {
     /// Gaussian shells in [`PreparedBasis::new`] order.
     pub shells: Vec<EcpGaussianShell>,
-    /// ECP centres (one per ECP-carrying atom, in atom order).
+    /// ECP centres (one per non-ghost ECP-carrying atom, in atom order).
     pub ecps: Vec<EcpCenter>,
     /// `shell_atom[i]` = index into `mol.atoms` of shell `i`.
     pub shell_atom: Vec<usize>,
@@ -314,7 +316,7 @@ pub struct EcpInputs {
 }
 
 /// [`ecp_potential`]'s shells and ECP centres plus their atom indices;
-/// `None` when the basis carries no ECPs.
+/// `None` when the basis carries no ECPs or no non-ghost atom carries one.
 pub fn ecp_inputs_with_atoms(mol: &Molecule, bs: &BasisSet) -> Option<EcpInputs> {
     if bs.ecps.is_empty() {
         return None;
@@ -343,9 +345,9 @@ pub fn ecp_inputs_with_atoms(mol: &Molecule, bs: &BasisSet) -> Option<EcpInputs>
                 });
             }
         }
-        // ECP center for this atom, if any. Flatten EcpDef channels into the
-        // (am, n, exp, coef) primitive lists libecpint expects.
-        if let Some(def) = bs.ecp_for_element(atom.z) {
+        // ECP center for a real atom, if any (a ghost is basis-only). Flatten
+        // EcpDef channels into the (am, n, exp, coef) lists libecpint expects.
+        if let Some(def) = bs.ecp_for_element(atom.z).filter(|_| !atom.ghost) {
             let mut ams = Vec::new();
             let mut ns = Vec::new();
             let mut exponents = Vec::new();
@@ -382,7 +384,8 @@ pub fn ecp_inputs_with_atoms(mol: &Molecule, bs: &BasisSet) -> Option<EcpInputs>
 /// First derivatives of the spherical ECP matrix with respect to each atomic
 /// coordinate: `dV_ECP/dR_{A,c}`.
 ///
-/// Returns `Ok(None)` (zero work) when the basis carries no ECPs, mirroring
+/// Returns `Ok(None)` (zero work) when the basis carries no ECPs or no
+/// non-ghost atom carries one, mirroring
 /// [`ecp_potential`]. Otherwise returns a `(natoms, 3)`-shaped nesting: element
 /// `[a][c]` is the `(nbasis, nbasis)` derivative w.r.t. atom `a`'s coordinate
 /// `c`, indexed by **the molecule's** atom order. Atoms libecpint never sees
