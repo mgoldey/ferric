@@ -58,13 +58,30 @@ LINE = re.compile(
     r"\b[A-Z][A-Z0-9 /]*\[\s*([0-9]+(?:\.[0-9]+)?)s\]\s+(?:\(\s*\d+/\d+\)\s+)?(\S+)\s+\S"
 )
 
+# nextest's closing summary (after `Summary [...]`) REPEATS result lines it
+# already printed during the run -- `FLAKY 2/2 [ 1.234s] <id> <test>` for a
+# pass-on-retry, FAIL lines for failures -- so counting them would add those
+# tests twice. Lines are read only between `Starting N tests` and `Summary [`.
+STARTING = re.compile(r"\bStarting \d+ tests? across ")
+SUMMARY = re.compile(r"\bSummary \[")
+
 out, logs = sys.argv[1], sys.argv[2:]
 weights = defaultdict(float)
 lines = 0
 for path in logs:
+    in_run = False
     with open(path, encoding="utf-8", errors="replace") as fh:
         for raw in fh:
-            m = LINE.search(ANSI.sub("", raw))
+            text = ANSI.sub("", raw)
+            if STARTING.search(text):
+                in_run = True
+                continue
+            if SUMMARY.search(text):
+                in_run = False
+                continue
+            if not in_run:
+                continue
+            m = LINE.search(text)
             if m:
                 weights[m.group(2)] += float(m.group(1))
                 lines += 1

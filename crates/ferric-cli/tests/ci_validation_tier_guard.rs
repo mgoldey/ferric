@@ -56,7 +56,9 @@
 //! And the per-shard archives (#525): build-tests uploads exactly
 //! `nextest-shard-1..N` for an N-entry test-shard matrix and runs the
 //! exactly-once guard, and test-shard runs its whole archive with no
-//! `--partition` (`shard_archives_match_the_matrix`); the SLOW list lives
+//! `--partition` (`shard_archives_match_the_matrix`), and every archive is
+//! recompressed with `zstd --long=27` before the guard lists it
+//! (`shard_archives_are_long_window_and_readable`); the SLOW list lives
 //! only in `scripts/ci-shard-plan.sh` and each entry runs nightly
 //! (`slow_binaries_have_one_source_and_run_nightly`).
 
@@ -1034,6 +1036,119 @@ fn shard_archives_match_the_matrix() {
         !shard.contains("--partition"),
         "test-shard must not pass --partition: each shard runs its whole archive (#525)"
     );
+
+    // build-tests plans and verifies the shards with the SAME deferred set
+    // test-shard runs with. A build-side filter that differs from the run's
+    // would make the exactly-once guard certify a different test set from the
+    // one the shards actually run.
+    for needle in [
+        "SLOW=\"$(scripts/ci-shard-plan.sh slow-filter)\"",
+        // The full fast-tier list the plan and the guard start from ...
+        "-E \"not ($SLOW)\" --message-format json > \"$PLAN-full.json\"",
+        // ... and each archive's list, which the guard compares with it.
+        "--workspace-remap . -E \"not ($SLOW)\" --message-format json > \"$PLAN-$k.json\"",
+    ] {
+        assert!(
+            build.contains(needle),
+            "build-tests must contain `{needle}`: the same SLOW filter as test-shard (#525)"
+        );
+    }
+}
+
+/// The text of the step `- name: <name>` inside `job_text`, up to the next
+/// step.
+fn step_text(job_text: &str, name: &str) -> String {
+    let want = format!("- name: {name}");
+    let lines: Vec<&str> = job_text.lines().collect();
+    let start = lines
+        .iter()
+        .position(|l| l.trim() == want)
+        .unwrap_or_else(|| panic!("no step `{want}`"));
+    let end = lines[start + 1..]
+        .iter()
+        .position(|l| {
+            l.trim_start().starts_with("- name:") || l.trim_start().starts_with("- uses:")
+        })
+        .map(|i| start + 1 + i)
+        .unwrap_or(lines.len());
+    lines[start..end].join("\n")
+}
+
+/// Long-window shard archives (#525). build-tests recompresses each shard
+/// archive with `zstd --long=27`, and every reader must accept it.
+///
+/// 27 is a hard ceiling, not a tuning knob: it is the largest window a zstd
+/// decoder accepts by default, and nextest (which has no window option) reads
+/// the archive with a default decoder. Measured locally: `cargo nextest list
+/// --archive-file` reads a --long=27 archive and fails a --long=28 one with
+/// "Frame requires too much memory for decoding".
+///
+/// MUTATIONS (each fails this test): `--long=28` anywhere; drop `pipefail`
+/// from the archive step (a decompressor dying half way then leaves a
+/// SHORTER but valid frame that passes `zstd -t`); move the recompression
+/// after the exactly-once guard (the guard would then certify the
+/// originals, not the uploaded files); drop `--long=27` from test-shard's or
+/// the download script's `zstd -t`.
+#[test]
+fn shard_archives_are_long_window_and_readable() {
+    let ci = ci_yml();
+    let build = code_only(&job(&ci, "build-tests"));
+    let archive_step = step_text(&build, "Archive the test binaries");
+    let shard = code_only(&job(&ci, "test-shard"));
+    let dl_path = workspace_root().join("scripts/ci-download-artifact.sh");
+    let dl = code_only(
+        &std::fs::read_to_string(&dl_path).unwrap_or_else(|e| panic!("{}: {e}", dl_path.display())),
+    );
+
+    assert!(
+        archive_step.contains("set -euo pipefail"),
+        "the archive step pipes zstd into zstd and must `set -euo pipefail`"
+    );
+    let recompress = "zstd -dcq \"$A\" | zstd -q --long=27 -T0 -3 -c > \"$A.long\"";
+    for needle in [
+        "A=\"/tmp/nextest-shard-$k.tar.zst\"",
+        recompress,
+        "zstd -tq --long=27 \"$A.long\"",
+        // Same tar entry count before and after.
+        "AFTER_N=$(tar -I 'zstd --long=27' -tf \"$A.long\" | wc -l)",
+        "\"$AFTER_N\" -ne \"$BEFORE_N\"",
+        "mv \"$A.long\" \"$A\"",
+    ] {
+        assert!(
+            archive_step.contains(needle),
+            "build-tests' archive step must contain `{needle}` (#525)"
+        );
+    }
+    let at = |needle: &str| {
+        archive_step
+            .find(needle)
+            .unwrap_or_else(|| panic!("archive step lacks `{needle}`"))
+    };
+    assert!(
+        at("mv \"$A.long\" \"$A\"") < at("cargo nextest list --archive-file"),
+        "the --long=27 recompression must run BEFORE the exactly-once guard lists the \
+         archives, so the guard reads the files that are uploaded"
+    );
+    assert!(
+        shard.contains("zstd -tq --long=27 \"$ARCHIVE\""),
+        "test-shard's integrity check must pass --long=27"
+    );
+    assert!(
+        dl.contains("zstd -tq --long=27 \"$OUT\""),
+        "scripts/ci-download-artifact.sh's integrity check must pass --long=27"
+    );
+    for (what, text) in [("ci.yml", code_only(&ci)), ("ci-download-artifact.sh", dl)] {
+        for (i, _) in text.match_indices("--long=") {
+            let window = &text[i + "--long=".len()..]
+                .chars()
+                .take_while(char::is_ascii_digit)
+                .collect::<String>();
+            assert_eq!(
+                window, "27",
+                "{what} uses --long={window}: nextest cannot read a window above 27"
+            );
+        }
+    }
 }
 
 /// The SLOW (deferred-to-nightly) list lives ONLY in scripts/ci-shard-plan.sh,

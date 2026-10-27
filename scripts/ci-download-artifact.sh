@@ -22,7 +22,7 @@
 #
 # Integrity, in order: byte count == the API's size_in_bytes; sha256 of the
 # zip == the API's `digest` (the same check actions/download-artifact makes);
-# unzip's CRC32; then `zstd -t` on the extracted file (every frame), which is
+# unzip's CRC32; then `zstd -t --long=27` on the extracted file (every frame), which is
 # what the run step re-checks before it uses the file.
 # Existence is never enough: a truncated download leaves a file that only
 # fails later, inside `nextest --archive-file`, as "incomplete frame" (seen
@@ -220,5 +220,7 @@ echo "downloaded and digest-checked in $(elapsed) s over $attempt attempt(s)"
 run_bg unzip -o -q "$ZIP" "$FILE" -d "$DEST" || fail "unzip failed"
 rm -f "$ZIP"
 [ -f "$OUT" ] || fail "$FILE is not in the artifact"
-run_bg zstd -tq "$OUT" || fail "zstd -t failed on $FILE"
+# --long=27: the shard archives are recompressed with a 128 MiB window
+# (ci.yml build-tests, #525). Harmless for a default-window file.
+run_bg zstd -tq --long=27 "$OUT" || fail "zstd -t failed on $FILE"
 echo "$OUT verified in $(elapsed) s total"
