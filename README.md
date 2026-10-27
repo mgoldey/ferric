@@ -30,6 +30,16 @@ OpenBLAS/LAPACK, libxc, Eigen3 and a Rust toolchain are already installed
 without them. Details:
 [Installation](https://matthew.thegoldeys.com/ferric/using/installation.html#building-from-the-sdist).
 
+Starting with 0.1.0rc8, each [GitHub release](https://github.com/mgoldey/ferric/releases)
+also carries a large-libint wheel per CPython
+(`ferric-<version>-1largeam-cp3NN-...whl`): the same version and commit,
+built against conda-forge's libint2 2.13.1 (l = 7 shells, analytic 3- and
+2-centre second derivatives, G12/F12 integrals) instead of the PyPI wheel's
+smaller libint2. It is not a strict superset (the PyPI wheel goes higher in
+one-electron second derivatives), and RI Hessians do not need it. `ferric.build_info()["libint_max_am"]`
+shows which one is loaded. Details:
+[Installation](https://matthew.thegoldeys.com/ferric/using/installation.html#the-large-libint-wheel-github-releases).
+
 ## A first calculation
 
 <!-- doctest -->

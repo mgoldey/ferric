@@ -19,10 +19,24 @@ name: Wheels
 # RELEASING: push a `vX.Y.Z` tag; nothing to commit. The tag supplies the
 # version (main carries a `.devN` placeholder); see "RELEASING" in build-wheels.
 #
-# THIS WORKFLOW IS UNTESTED. It has never been run end-to-end (see the PR
-# description) -- it was written by reading ci.yml and the crate build
-# scripts, not by a green CI run. Treat the first real run as a debugging
-# session, not a confirmation.
+# TWO WHEEL VARIANTS of the SAME version and commit (#347), built by one
+# build-wheels matrix so both go through the same identity gates:
+#   - pypi:    ferric's small libint2 2.7.2 export, linked statically. The
+#              only variant uploaded to PyPI (publish).
+#   - largeam: conda-forge's libint2 2.13.1 (scripts/install-libint.sh,
+#              fetch-libint-large), bundled as a shared library by the
+#              wheel repair, then marked with the wheel BUILD TAG
+#              $LARGE_BUILD_TAG. Attached to the GitHub release
+#              (github-release) next to the PyPI files, the libint2
+#              licence texts and SHA256SUMS.
+# A failed largeam build or smoke test blocks the PyPI upload too: publish
+# needs every matrix leg. The release-check job (scripts/release-check.py)
+# checks every file once, on every run; publish and github-release need it.
+#
+# Status: the nightly and workflow_dispatch runs exercise everything except
+# the two upload jobs (release-check runs on the real files every time).
+# This workflow published v0.1.0rc3 through v0.1.0rc7 to PyPI. The largeam
+# variant and github-release are new in #347 and have not run on a tag yet.
 
 on:
   push:
@@ -30,9 +44,8 @@ on:
       - 'v*'
   workflow_dispatch: {}
   schedule:
-    # 10:53 UTC daily -- this workflow's header admits it has NEVER been
-    # validated by a green run; it was written by reading ci.yml, not by
-    # exercising it. Without a schedule, the wheel-build/native-deps/
+    # 10:53 UTC daily. This workflow was first written by reading ci.yml,
+    # not by exercising it. Without a schedule, the wheel-build/native-deps/
     # smoke-test pipeline gets its FIRST real execution at the moment of an
     # actual release tag push -- the worst possible time to discover a
     # manylinux_2_28-container issue, a maturin-action regression, or a
@@ -120,6 +133,17 @@ env:
   # Entropy String" purely on shape. It is a PUBLIC container image digest,
   # not a credential -- being published is the entire point of it.
   MANYLINUX_DIGEST: "531d7aa844bbb0c131d4ab011d3db741c4abc8d498cd5ccc86121046f62303b4"  # pragma: allowlist secret
+  # PEP 427 build tag of the large-libint wheel (must start with a digit):
+  # ferric-<version>-1largeam-cp3NN-cp3NN-manylinux_2_28_x86_64.whl. A build
+  # tag, not a `+largeam` local version, so the version, __version__ and
+  # __build__ stay byte-identical across both variants and the stamp/identity
+  # gates hold unchanged; only the file name and the WHEEL file's `Build:`
+  # line differ. Applied to the FINISHED, verified wheel (build-wheels' "Mark
+  # the large-libint wheel with its build tag"), never to the source tree.
+  LARGE_BUILD_TAG: "1largeam"
+  # Pinned `wheel` for `wheel tags --build`; the tagging step checks that only
+  # the WHEEL and RECORD members changed.
+  WHEEL_TOOL_VERSION: "0.45.1"
 
 jobs:
   # Builds OpenBLAS + libxc + libint2 + Eigen ONCE, inside the SAME
@@ -514,8 +538,105 @@ jobs:
           # this from lingering as dead storage after the run completes.
           retention-days: 1
 
+  # The libint2 the largeam wheel bundles: conda-forge 2.13.1, installed by
+  # the SAME script (and so the same URL + sha256 pin) ci.yml and developers
+  # use, with --keep-soname so the library keeps the plain SONAME
+  # "libint2.so". The wheel repair finds it through LD_LIBRARY_PATH and copies
+  # it into ferric.libs/; the default absolute-path SONAME would put this
+  # runner's path into the extension's DT_NEEDED instead.
+  #
+  # Nothing is compiled: a ~100 MB download. It runs on the ubuntu runner, not
+  # in the manylinux container, because the package is a prebuilt binary; the
+  # symbol-version check below is what makes it safe to ship under the
+  # manylinux_2_28 tag (the repair step re-checks the whole wheel).
+  fetch-libint-large:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Install conda-forge libint2 2.13.1 (plain SONAME)
+        run: |
+          set -euo pipefail
+          sudo apt-get update -q
+          sudo apt-get install -y --no-install-recommends zstd patchelf
+          # --licenses-dir: libint2 is LGPL-3.0-only, and the release that
+          # carries a wheel bundling it also carries the package's licence
+          # texts (github-release attaches them).
+          scripts/install-libint.sh "$PWD/libint-large" --keep-soname \
+            --licenses-dir "$PWD/libint-licenses"
+          echo "libint-large/" >> .git/info/exclude
+          echo "libint-licenses/" >> .git/info/exclude
+          grep -q "GNU LESSER GENERAL PUBLIC LICENSE" libint-licenses/libint2-COPYING.LESSER.txt
+          ls -l libint-licenses/
+
+      # The limits the largeam wheel is FOR, read off the installed headers,
+      # so a changed pin cannot silently ship a different build under the
+      # same release notes. Then the manylinux_2_28 policy: AlmaLinux 8's
+      # libstdc++ (gcc 8) and glibc 2.28 bound the symbol versions a bundled
+      # library may require. Measured locally for this package: GLIBC_2.14,
+      # GLIBCXX_3.4.21, CXXABI_1.3.9.
+      - name: Verify the large libint2 build
+        run: |
+          set -euo pipefail
+          cfg=libint-large/include/libint2/config.h
+          for want in 'ERI_MAX_AM_LIST "7,6,3"' 'ERI3_MAX_AM_LIST "7,7,4"' \
+                      'ERI2_MAX_AM_LIST "7,7,4"' 'ONEBODY_MAX_AM_LIST "7,6,3"' \
+                      'LIBINT_INCLUDE_ERI 2' 'LIBINT_INCLUDE_ERI3 2' \
+                      'LIBINT_INCLUDE_ERI2 2' 'LIBINT_INCLUDE_ONEBODY 2'; do
+            grep -qF "$want" "$cfg" || { echo "::error::$cfg lacks: $want"; grep -E 'MAX_AM_LIST|LIBINT_INCLUDE_' "$cfg"; exit 1; }
+          done
+          lib=libint-large/lib/libint2.so
+          soname="$(patchelf --print-soname "$lib")"
+          [ "$soname" = "libint2.so" ] || { echo "::error::$lib SONAME is $soname, not libint2.so"; exit 1; }
+          readelf -d "$lib" | grep -E 'NEEDED|SONAME|RPATH|RUNPATH'
+          versions="$(objdump -T "$lib" | grep -oE '\((GLIBC|GLIBCXX|CXXABI)_[0-9.]+\)' | tr -d '()' | sort -u)"
+          echo "$versions"
+          # newest_ok PREFIX MAX: fail if any PREFIX_x.y.z exceeds MAX.
+          newest_ok() {
+            local top
+            top="$(printf '%s\n' "$versions" | sed -n "s/^$1_//p" | sort -V | tail -1)"
+            [ -z "$top" ] && return 0
+            if [ "$(printf '%s\n%s\n' "$top" "$2" | sort -V | tail -1)" != "$2" ]; then
+              echo "::error::$lib needs $1_$top, newer than manylinux_2_28 allows ($1_$2)"
+              return 1
+            fi
+            echo "$1: newest $top <= $2"
+          }
+          newest_ok GLIBC 2.28
+          newest_ok GLIBCXX 3.4.24
+          newest_ok CXXABI 1.3.11
+          ls -l "$lib"
+
+      # !libint-large/share/**: the same reason native-deps excludes share/
+      # (upload-artifact rejects file names with `*`, which libint2's basis
+      # library uses). Only lib/ and include/ are read.
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: libint-large
+          path: |
+            libint-large/
+            !libint-large/share/**
+          if-no-files-found: error
+          retention-days: 1
+
+      # Separate and small, so release-check and github-release need not
+      # download the ~390 MB library to get two text files.
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: libint-licenses
+          path: libint-licenses/
+          if-no-files-found: error
+          retention-days: 1
+
+  # needs: fetch-libint-large applies to EVERY leg, the pypi ones included,
+  # on purpose: one matrix means one set of gates, and the two variants are
+  # released together or not at all. The fetch is a ~1 min download, so the
+  # pypi legs lose almost nothing by waiting for it.
   build-wheels:
-    needs: build-native-deps
+    needs: [build-native-deps, fetch-libint-large]
     runs-on: ubuntu-22.04
     # One from-scratch native build is now build-native-deps' job, not this
     # one's -- each leg here only pays its own maturin build (compiling
@@ -534,6 +655,11 @@ jobs:
       fail-fast: false
       matrix:
         python-version: ["3.10", "3.11", "3.12", "3.13"]
+        # pypi: small static libint2 (native-deps-cache), uploaded to PyPI.
+        # largeam: conda-forge 2.13.1 shared libint2 (fetch-libint-large),
+        # attached to the GitHub release only. ONE matrix, not a copy of this
+        # job, so both variants pass through the identical identity gates.
+        variant: [pypi, largeam]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
@@ -704,6 +830,38 @@ jobs:
       - name: Keep native-deps-cache out of the wheel / git
         run: echo "native-deps-cache/" >> .git/info/exclude
 
+      - name: Download the large libint2 (largeam)
+        if: matrix.variant == 'largeam'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: libint-large
+          path: libint-large
+
+      # The small libint2 must be GONE from the native prefix, not just
+      # shadowed: CPATH and LIBRARY_PATH below still name native-deps-cache
+      # (for OpenBLAS and libxc), so its 2.7.2 headers or libint2.a would
+      # otherwise sit on the compiler's search path next to the 2.13.1
+      # library. Mixing a libint2 version's headers with another's library is
+      # the segfault crates/ferric-integrals/build.rs documents.
+      - name: Remove the small libint2 from the native prefix (largeam)
+        if: matrix.variant == 'largeam'
+        run: |
+          set -euo pipefail
+          echo "libint-large/" >> .git/info/exclude
+          for d in lib lib64; do
+            rm -rf native-deps-cache/$d/libint2* \
+                   native-deps-cache/$d/pkgconfig/libint2* \
+                   native-deps-cache/$d/cmake/libint2* native-deps-cache/$d/cmake/Libint2*
+          done
+          rm -rf native-deps-cache/include/libint2*
+          left="$(find native-deps-cache -iname '*libint*')"
+          if [ -n "$left" ]; then
+            echo "::error::small libint2 files remain in native-deps-cache:"; echo "$left"; exit 1
+          fi
+          test -f libint-large/lib/libint2.so
+          test -f libint-large/include/libint2.hpp
+          echo "native-deps-cache holds no libint2; libint2 comes from libint-large/ only"
+
       # Runs INSIDE the manylinux_2_28 (AlmaLinux 8) container, before
       # `maturin build`. This is now everything a FRESH container needs that
       # build-native-deps' one-time build could not already bake into the
@@ -733,6 +891,7 @@ jobs:
           #!/usr/bin/env bash
           set -euo pipefail
           EIGEN_VERSION="$1"
+          VARIANT="$2"
           cd /tmp
           # curl, NOT wget: confirmed live -- a real run failed here with
           # "wget: command not found". build-native-deps.sh's OWN wget calls
@@ -751,6 +910,13 @@ jobs:
           mkdir -p /usr/include/eigen3
           cp -r eigen-${EIGEN_VERSION}/Eigen /usr/include/eigen3/
           cp -r eigen-${EIGEN_VERSION}/unsupported /usr/include/eigen3/
+          # libint2 2.13.1's engine.impl.h includes <boost/preprocessor.hpp>
+          # (ci.yml installs libboost-dev for the same reason); the small
+          # 2.7.2 export does not need it.
+          if [ "$VARIANT" = largeam ]; then
+            dnf install -y boost-devel
+            test -f /usr/include/boost/preprocessor.hpp
+          fi
           SCRIPT_EOF
           chmod +x native-deps-cache/prepare-container.sh
 
@@ -797,45 +963,116 @@ jobs:
           before-script-linux: |
             set -euo pipefail
             NATIVE_PREFIX="$(pwd)/native-deps-cache"
-            bash "$NATIVE_PREFIX/prepare-container.sh" "${{ env.EIGEN_VERSION }}"
+            bash "$NATIVE_PREFIX/prepare-container.sh" "${{ env.EIGEN_VERSION }}" "${{ matrix.variant }}"
             # Release gate: ferric-build-info's build.rs fails the build unless
             # the host-recorded stamp says clean (see "Record commit and dirty
             # state"). Exported inline for the same reason as the vars below.
             export FERRIC_RELEASE_BUILD=1
             export FERRIC_GIT_SHA="${{ env.FERRIC_GIT_SHA }}"
             export FERRIC_GIT_DIRTY="${{ env.FERRIC_GIT_DIRTY }}"
-            export LIBINT2_PREFIX="$NATIVE_PREFIX"
-            # The export's boys.h is stock 2.7.2: fail the build, not warn, if
-            # the boys.h override cannot be applied (issue #234).
+            # pypi: the small static libint2 inside native-deps-cache.
+            # largeam: the conda-forge 2.13.1 shared library (plain SONAME),
+            # which the wheel repair finds through LD_LIBRARY_PATH and bundles.
+            export LIBINT2_PREFIX="$PWD/${{ matrix.variant == 'largeam' && 'libint-large' || 'native-deps-cache' }}"
+            # Both libint2 builds have a boys.h override (2.7.2 and 2.13.1):
+            # fail the build, not warn, if it cannot be applied (issue #234).
             export FERRIC_REQUIRE_PATCHED_BOYS=1
             export PKG_CONFIG_PATH="$NATIVE_PREFIX/lib/pkgconfig:$NATIVE_PREFIX/lib64/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
-            export LD_LIBRARY_PATH="$NATIVE_PREFIX/lib:$NATIVE_PREFIX/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-            export LIBRARY_PATH="$NATIVE_PREFIX/lib:$NATIVE_PREFIX/lib64${LIBRARY_PATH:+:$LIBRARY_PATH}"
+            export LD_LIBRARY_PATH="$LIBINT2_PREFIX/lib:$NATIVE_PREFIX/lib:$NATIVE_PREFIX/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+            export LIBRARY_PATH="$LIBINT2_PREFIX/lib:$NATIVE_PREFIX/lib:$NATIVE_PREFIX/lib64${LIBRARY_PATH:+:$LIBRARY_PATH}"
             export CPATH="$NATIVE_PREFIX/include${CPATH:+:$CPATH}"
 
       - name: Wheel size / contents sanity check
+        env:
+          VARIANT: ${{ matrix.variant }}
         run: |
           set -euo pipefail
           ls -lh dist/
-          # PyPI refuses files over 100 MiB (warehouse MAX_FILESIZE) unless
-          # the project has an increase. Fail here, not at upload on tag day.
-          limit=$((100 * 1024 * 1024))
+          [ "$(ls dist/*.whl | wc -l)" -eq 1 ] || { echo "::error::expected one wheel in dist/"; exit 1; }
+          # pypi: PyPI refuses files over 100 MiB (warehouse MAX_FILESIZE)
+          # unless the project has an increase. Fail here, not at upload on
+          # tag day. largeam: GitHub's 2 GiB per-release-asset limit; it never
+          # goes to PyPI, so the PyPI cap does not apply.
+          if [ "$VARIANT" = largeam ]; then
+            limit=$((2 * 1024 * 1024 * 1024)); where="GitHub's release-asset"
+          else
+            limit=$((100 * 1024 * 1024)); where="PyPI's"
+          fi
           for whl in dist/*.whl; do
             echo "--- $whl ---"
-            python3 -m zipfile -l "$whl" | grep -iE '\.so$|openblas|libxc' || true
+            python3 -m zipfile -l "$whl" | grep -iE '\.so|openblas|libxc|libint' || true
             size=$(stat -c %s "$whl")
-            echo "size: $size bytes ($((size * 100 / limit))% of PyPI's limit)"
+            echo "size: $size bytes ($((size * 100 / limit))% of $where limit)"
             if [ "$size" -ge "$limit" ]; then
-              echo "::error::$whl is $size bytes, over PyPI's $limit-byte limit"
+              echo "::error::$whl is $size bytes, over $where $limit-byte limit"
               exit 1
             fi
+            # Which libint2 is inside: the pypi wheel links the small one
+            # statically, so NO bundled libint2; the largeam wheel must carry
+            # exactly one (the 2.13.1 shared library, renamed by the repair).
+            n_libint="$(python3 -m zipfile -l "$whl" | awk '{print $1}' | grep -cE '^ferric\.libs/libint2[^/]*\.so' || true)"
+            if [ "$VARIANT" = largeam ] && [ "$n_libint" -ne 1 ]; then
+              echo "::error::$whl bundles $n_libint ferric.libs/libint2*.so files, expected exactly 1"; exit 1
+            fi
+            if [ "$VARIANT" = pypi ] && [ "$n_libint" -ne 0 ]; then
+              echo "::error::$whl bundles a libint2 shared library; the PyPI wheel must link the small libint2 statically"; exit 1
+            fi
+            echo "bundled libint2 shared libraries: $n_libint (variant $VARIANT)"
           done
 
+      # The build tag goes on AFTER the wheel is built, repaired and checked
+      # above, and only on a copy in dist-largeam/: the source tree and the
+      # version stay exactly what the identity gates verified. `wheel tags
+      # --build` renames the file and adds `Build: <tag>` to the WHEEL file
+      # (rewriting RECORD); the check below proves nothing else in the archive
+      # changed.
+      - name: Mark the large-libint wheel with its build tag (largeam)
+        if: matrix.variant == 'largeam'
+        run: |
+          set -euo pipefail
+          python3 -m pip install -q --no-deps --target "$RUNNER_TEMP/wheel-tool" "wheel==${WHEEL_TOOL_VERSION}"
+          orig="$(ls dist/*.whl)"
+          rm -rf dist-largeam && mkdir dist-largeam
+          cp "$orig" dist-largeam/
+          PYTHONPATH="$RUNNER_TEMP/wheel-tool" python3 -m wheel tags --build "$LARGE_BUILD_TAG" --remove dist-largeam/*.whl
+          ls -l dist-largeam/
+          [ "$(ls dist-largeam/*.whl | wc -l)" -eq 1 ] || { echo "::error::expected one tagged wheel"; exit 1; }
+          tagged="$(ls dist-largeam/*.whl)"
+          case "$(basename "$tagged")" in
+            ferric-*-"${LARGE_BUILD_TAG}"-cp*) ;;
+            *) echo "::error::$tagged does not carry the build tag $LARGE_BUILD_TAG"; exit 1 ;;
+          esac
+          python3 - "$orig" "$tagged" "$LARGE_BUILD_TAG" <<'PY'
+          import sys, zipfile
+          orig, tagged, tag = sys.argv[1:]
+          def members(path):
+              with zipfile.ZipFile(path) as z:
+                  return {i.filename: i.CRC for i in z.infolist()}
+          a, b = members(orig), members(tagged)
+          meta = {n for n in a if n.endswith(".dist-info/WHEEL") or n.endswith(".dist-info/RECORD")}
+          assert set(a) == set(b), f"member lists differ: {sorted(set(a) ^ set(b))}"
+          changed = sorted(n for n in a if a[n] != b[n] and n not in meta)
+          assert not changed, f"tagging changed archive members: {changed}"
+          with zipfile.ZipFile(tagged) as z:
+              wheel = next(n for n in z.namelist() if n.endswith(".dist-info/WHEEL"))
+              lines = z.read(wheel).decode().splitlines()
+          assert f"Build: {tag}" in lines, lines
+          print(f"build tag {tag} applied; only WHEEL and RECORD changed")
+          PY
+
+      # Artifact names are a publish-safety control: publish downloads
+      # `pattern: wheels-*`, so the largeam wheel's artifact must NOT start
+      # with `wheels-` (same reason as mpi-wheel's `mpi-wheels-` prefix).
+      # publish's sanity check also refuses any build-tagged wheel, in case
+      # this name is ever "tidied".
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: wheels-cp${{ matrix.python-version }}
-          path: dist/*.whl
+          name: ${{ matrix.variant == 'largeam' && 'gh-largeam-wheels' || 'wheels' }}-cp${{ matrix.python-version }}
+          path: ${{ matrix.variant == 'largeam' && 'dist-largeam/*.whl' || 'dist/*.whl' }}
           if-no-files-found: error
+          # Non-tag runs (nightly, dispatch): 3 days, enough to download and
+          # inspect. Tag runs: 0 = the repository's default retention.
+          retention-days: ${{ !startsWith(github.ref, 'refs/tags/') && 3 || 0 }}
 
   # Allocator-perturbation canary in the RELEASE toolchain (#433 item 4).
   # ci.yml's malloc-perturb job runs on ubuntu-22.04 against libint2 2.13.1
@@ -993,6 +1230,8 @@ jobs:
           name: sdist
           path: dist/*.tar.gz
           if-no-files-found: error
+          # As the wheels: 3 days on non-tag runs, the default on tags.
+          retention-days: ${{ !startsWith(github.ref, 'refs/tags/') && 3 || 0 }}
 
   # Installs each BUILT WHEEL (never the source tree -- a wheel that builds
   # but does not import/run is worse than no wheel, since it fails silently
@@ -1009,6 +1248,9 @@ jobs:
       fail-fast: false
       matrix:
         python-version: ["3.10", "3.11", "3.12", "3.13"]
+        # Both variants run EVERY step below; "Assert the libint2 variant"
+        # is the only one that differs.
+        variant: [pypi, largeam]
     steps:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
@@ -1016,7 +1258,7 @@ jobs:
 
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: wheels-cp${{ matrix.python-version }}
+          name: ${{ matrix.variant == 'largeam' && 'gh-largeam-wheels' || 'wheels' }}-cp${{ matrix.python-version }}
           path: dist
 
       - name: Install wheel into a fresh venv
@@ -1061,6 +1303,56 @@ jobs:
               assert ferric.__version__ == tag, f"{ferric.__version__!r} != tag {tag!r}"
           print("build identity OK:", ferric.__version__, ferric.__build__)
           PY
+
+      # The two variants share version and __build__, so only the libint2
+      # report (build_info(), from #565) and the WHEEL file's `Build:` line
+      # tell them apart. Assert both, so a pypi artifact carrying the large
+      # libint2 (or the reverse) cannot reach either upload. The expected
+      # limits are the generated headers' LIBINT2_MAX_AM_* values (small:
+      # scripts/generate-libint-small.sh; large: install-libint.sh).
+      - name: Assert the libint2 variant
+        env:
+          VARIANT: ${{ matrix.variant }}
+        run: |
+          set -euo pipefail
+          source /tmp/smoke-venv/bin/activate
+          cd /tmp
+          python - <<'PY'
+          import importlib.metadata, os, ferric
+          variant = os.environ["VARIANT"]
+          tag = os.environ["LARGE_BUILD_TAG"]
+          expect = {
+              "pypi": {
+                  "libint_version": "2.7.2",
+                  "libint_linkage": "static",
+                  "libint_max_deriv_order": 2,
+                  "libint_max_am": {"eri": [6, 6, 3], "eri3": [6, 6], "eri2": [6, 6], "onebody": [6, 6, 6]},
+                  "libint_g12_max_am": None,
+              },
+              "largeam": {
+                  "libint_version": "2.13.1",
+                  "libint_linkage": "shared",
+                  "libint_max_deriv_order": 2,
+                  "libint_max_am": {"eri": [7, 6, 3], "eri3": [7, 7, 4], "eri2": [7, 7, 4], "onebody": [7, 6, 3]},
+                  "libint_g12_max_am": 4,
+              },
+          }[variant]
+          info = ferric.build_info()
+          got = {k: info.get(k, "<missing>") for k in expect}
+          assert got == expect, f"{variant}: build_info libint report {got} != {expect}"
+          wheel_meta = importlib.metadata.distribution("ferric").read_text("WHEEL") or ""
+          builds = [ln.split(":", 1)[1].strip() for ln in wheel_meta.splitlines() if ln.startswith("Build:")]
+          want = [tag] if variant == "largeam" else []
+          assert builds == want, f"{variant}: WHEEL Build lines {builds} != {want}"
+          print(f"libint2 variant OK ({variant}):", got, "WHEEL Build:", builds)
+          PY
+          # The CLI reports the same limits on its `libint:` line.
+          ferric --version | tee /tmp/version.txt
+          case "$VARIANT" in
+            largeam) want="libint: 2.13.1 (eri 7,6,3; eri3 7,7,4; eri2 7,7,4; onebody 7,6,3; g12 4)" ;;
+            *) want="libint: 2.7.2 (eri 6,6,3; eri3 6,6; eri2 6,6; onebody 6,6,6; g12 none)" ;;
+          esac
+          grep -qxF "$want" /tmp/version.txt || { echo "::error::ferric --version lacks the line: $want"; exit 1; }
 
       - name: Smoke test -- import + RHF energy on the built wheel
         run: |
@@ -1219,9 +1511,11 @@ jobs:
   #      write` permission below is what lets this job mint the short-lived
   #      OIDC token PyPI's Trusted Publishers API exchanges for upload
   #      credentials, scoped to this one job run only.
-  #   3. Wheel size confirmed well under PyPI's 100 MB default per-file cap:
-  #      all four (cp310-cp313) measured ~65.5 MiB, not the 100-200 MB this
-  #      job's placeholder comment once guessed.
+  #   3. Wheel size is checked against PyPI's 100 MiB default per-file cap
+  #      in build-wheels and again here. The margin is THIN: nightly run
+  #      40364679793 measured 101,670,503 bytes (97.0% of 104,857,600), rc7
+  #      was 98,746,566, and the wheel has been growing ~1 MB/week. The size
+  #      table in release-check's step summary is the current number.
   #
   # =====================================================================
   # OpenMPI-linked wheel variant. SEPARATE PACKAGE, NEVER PUBLISHED HERE.
@@ -1636,7 +1930,7 @@ jobs:
   # cheapest available brake on an accidental tag push publishing a bad
   # wheel -- consider turning that on before the first real release.
   publish:
-    needs: [build-wheels, build-sdist, smoke-test]
+    needs: [build-wheels, build-sdist, smoke-test, release-check]
     # THIS GUARD IS THE ONLY THING STANDING BETWEEN A NIGHTLY CRON RUN AND A
     # REAL PYPI UPLOAD -- treat any change near it as a publish-safety change,
     # not a cosmetic one. On a `schedule` (or `workflow_dispatch`) event,
@@ -1662,6 +1956,8 @@ jobs:
       # pattern + merge-multiple: pulls all four wheels-cp3.NN artifacts
       # (built separately per Python version above) into one flat dist/ --
       # gh-action-pypi-publish uploads everything it finds there in one go.
+      # `wheels-*` does NOT match `gh-largeam-wheels-*` (or `mpi-wheels-*`):
+      # artifact patterns match the whole name.
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           pattern: wheels-*
@@ -1721,6 +2017,53 @@ jobs:
                 ;;
             esac
           done
+          # DEFENCE IN DEPTH against the large-libint wheel reaching PyPI. It
+          # uploads under `gh-largeam-wheels-*`, which the `wheels-*` download
+          # above does not match; this rests on an artifact NAME, like the MPI
+          # check above, so refuse any wheel with a build tag (a digit-led
+          # field after the version) or the largeam tag itself. And PyPI's
+          # 100 MiB per-file cap: refusing here gives a clear error instead
+          # of a failed upload halfway through the set.
+          limit=$((100 * 1024 * 1024))
+          for f in dist/*; do
+            name="$(basename "$f")"
+            # The field after "ferric-<version>-": a build tag starts with a
+            # digit, a python tag (cp3NN) never does. Prefix-stripped with a
+            # QUOTED pattern, so the version's dots are literal, not regex.
+            after_version="${name#ferric-"$tag_version"-}"
+            if [[ "$name" == *"${LARGE_BUILD_TAG}"* || ( "$after_version" != "$name" && "$after_version" == [0-9]* ) ]]; then
+              echo "::error::$name carries a wheel build tag; build-tagged (large-libint) wheels go to the GitHub release only, never to PyPI"
+              exit 1
+            fi
+            size=$(stat -c %s "$f")
+            if [ "$size" -ge "$limit" ]; then
+              echo "::error::$name is $size bytes, not under PyPI's $limit-byte limit"
+              exit 1
+            fi
+          done
+
+
+      # The fuller checks (METADATA/WHEEL/PKG-INFO contents, one wheel per
+      # CPython, no bundled libint2, ...) ran in the release-check job, which
+      # this job needs. Its SHA256SUMS is the record of exactly what it
+      # checked: every file about to go to PyPI must be listed there with the
+      # same hash, so PyPI gets those bytes and no others.
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-meta
+          path: release-meta
+
+      - name: Every upload is a file release-check verified
+        run: |
+          set -euo pipefail
+          for f in dist/*; do
+            line="$(sha256sum "$f" | awk '{print $1}')  $(basename "$f")"
+            grep -qxF "$line" release-meta/SHA256SUMS || {
+              echo "::error::$(basename "$f") is not in release-check's SHA256SUMS with this hash; refusing to publish bytes that were not checked"
+              exit 1
+            }
+          done
+          echo "all $(ls dist | wc -l) files match release-check's SHA256SUMS"
 
       # Was `@release/v1`, a BRANCH ref, not a tag -- pinned to the commit
       # v1.14.2's (also annotated) tag peels to, which is confirmed to be the
@@ -1730,3 +2073,225 @@ jobs:
       - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
         with:
           packages-dir: dist/
+
+
+  # ONE place that checks the release's files, on EVERY run: on a tag with
+  # the tag's version (publish and github-release need this job, so nothing
+  # is uploaded unless it passed); on nightly/dispatch runs with the
+  # pyproject.toml placeholder version, as a dry run of the same checks on
+  # real files. scripts/release-check.py (stdlib only) does the checking:
+  # names, METADATA/WHEEL/PKG-INFO, one wheel per CPython per variant, the
+  # bundled-libint2 rule per variant, size limits, the two libint2 licence
+  # texts, and that SHA256SUMS covers exactly these 11 files.
+  #
+  # Its outputs, as the `release-meta` artifact: SHA256SUMS (publish refuses
+  # any file not listed in it with the same hash), notes.md and the licence
+  # texts (github-release uploads them). The step summary gets the size
+  # table (both variants against their limits) and the rendered notes.
+  #
+  # Read-only on purpose: the checks run without the
+  # `id-token: write` of publish or the `contents: write` of github-release.
+  # No workflow_dispatch inputs: see publish's guard comment.
+  release-check:
+    needs: [smoke-test, build-sdist, fetch-libint-large]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            pyproject.toml
+            scripts/release-check.py
+          sparse-checkout-cone-mode: false
+
+      # `wheels-*` does NOT match `gh-largeam-wheels-*` (or `mpi-wheels-*`):
+      # artifact patterns match the whole name.
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: wheels-*
+          path: dist/pypi
+          merge-multiple: true
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: sdist
+          path: dist/pypi
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: gh-largeam-wheels-*
+          path: dist/largeam
+          merge-multiple: true
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: libint-licenses
+          path: dist/licenses
+
+      - name: Release check (PyPI set, large-libint set, licences, SHA256SUMS)
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            version="${GITHUB_REF#refs/tags/v}"
+          else
+            version="$(python3 scripts/release-check.py pyproject-version pyproject.toml)"
+          fi
+          echo "version: $version"
+          echo "RELEASE_VERSION=$version" >> "$GITHUB_ENV"
+          mkdir -p release release-meta
+          cp dist/pypi/* dist/largeam/* dist/licenses/* release/
+          (cd release && sha256sum -- * > ../release-meta/SHA256SUMS)
+          cat release-meta/SHA256SUMS
+          python3 scripts/release-check.py check \
+            --version "$version" \
+            --pypi-dir dist/pypi --largeam-dir dist/largeam \
+            --licenses-dir dist/licenses \
+            --sha256sums release-meta/SHA256SUMS \
+            --build-tag "$LARGE_BUILD_TAG" --summary "$GITHUB_STEP_SUMMARY"
+          python3 scripts/release-check.py notes --version "$version" --build-tag "$LARGE_BUILD_TAG" > release-meta/notes.md
+          cp dist/licenses/* release-meta/
+          {
+            echo ""
+            echo "### Release notes as github-release renders them"
+            echo ""
+            cat release-meta/notes.md
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-meta
+          path: release-meta/
+          if-no-files-found: error
+          retention-days: ${{ !startsWith(github.ref, 'refs/tags/') && 3 || 0 }}
+
+      # Informational, not a gate: with both variants on one --find-links
+      # index, which file does pip pick for this interpreter? (PEP 427 sorts a
+      # build-tagged wheel above an untagged one of the same version.)
+      - name: Which wheel does pip prefer when both are offered?
+        run: |
+          set -euo pipefail
+          python3 -m pip download --no-index --find-links release --no-deps \
+            --only-binary=:all: -d picked "ferric==$RELEASE_VERSION"
+          picked="$(ls picked)"
+          echo "pip ($(python3 --version)) picked: $picked"
+          echo "pip picked \`$picked\` when both variants were on one index." >> "$GITHUB_STEP_SUMMARY"
+
+  # Attaches the release's files to a GitHub release for the tag: the four
+  # PyPI wheels and the sdist (the same bytes PyPI got), the four
+  # large-libint wheels, the two libint2 licence texts (LGPL-3.0-only) and
+  # SHA256SUMS over those 11 files: 12 assets.
+  #
+  # needs: [publish, release-check], so the release page never lists a
+  # version PyPI does not have, and a failed largeam build (which publish
+  # already waits on) leaves neither. The `if:` is the same tag-only guard as
+  # publish's; read the long comment there before touching it. The gh CLI
+  # already on the runner does the upload, so there is no third-party action
+  # to pin. The files are the ones release-check verified: `sha256sum -c`
+  # against its SHA256SUMS before anything is uploaded.
+  #
+  # Draft first: a new release is created as a DRAFT, the assets are
+  # uploaded, and only then is it published, so nobody sees a release with
+  # half its files. An existing release is reused (rc2-rc7 were created by
+  # hand with no assets): a draft is finished the same way; a published one
+  # gets the files uploaded. Never --clobber, so an asset already on the
+  # release is never replaced: if a rerun fails on a partial upload, delete
+  # those assets by hand first.
+  #
+  # PRE-RELEASE POLICY (maintainer's decision, #347): rc2-rc7 were published
+  # as ordinary (non-prerelease) releases and rc7 is "Latest". While the
+  # repository has NO final release (a vX.Y.Z or vX.Y.Z.postN tag that is not
+  # itself marked prerelease), a pre-release tag (aN/bN/rcN/.devN) is
+  # published as an ordinary release too, so rc8 becomes Latest, consistent
+  # with that history. Once a final release exists, pre-release tags get
+  # --prerelease, so they never displace it as Latest. A final tag is never
+  # marked prerelease.
+  github-release:
+    needs: [publish, release-check]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      # No checkout below, so tell gh which repository to act on.
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: wheels-*
+          path: release
+          merge-multiple: true
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: sdist
+          path: release
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: gh-largeam-wheels-*
+          path: release
+          merge-multiple: true
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-meta
+          path: release-meta
+
+      - name: Assemble the assets and verify them against release-check
+        run: |
+          set -euo pipefail
+          cp release-meta/libint2-LICENSE.txt release-meta/libint2-COPYING.LESSER.txt release/
+          n="$(ls release | wc -l)"
+          [ "$n" -eq 11 ] || { echo "::error::expected 11 release files (4 + 1 + 4 + 2 licence texts), found $n"; ls -l release; exit 1; }
+          [ "$(wc -l < release-meta/SHA256SUMS)" -eq 11 ] || { echo "::error::SHA256SUMS does not list 11 files"; cat release-meta/SHA256SUMS; exit 1; }
+          (cd release && sha256sum -c ../release-meta/SHA256SUMS)
+          cp release-meta/SHA256SUMS release/
+          ls -l release
+
+      - name: Create (as a draft) or reuse the GitHub release, upload, publish
+        run: |
+          set -euo pipefail
+          tag="$GITHUB_REF_NAME"
+          version="${tag#v}"
+          notes=release-meta/notes.md
+          pre=()
+          if [[ "$version" =~ (a|b|rc)[0-9]+ || "$version" =~ \.dev[0-9]+$ ]]; then
+            # See PRE-RELEASE POLICY above: count published final releases.
+            n_final="$(gh release list --limit 1000 --exclude-drafts --json tagName,isPrerelease \
+              --jq '[.[] | select((.isPrerelease | not) and (.tagName | test("^v[0-9]+[.][0-9]+[.][0-9]+([.]post[0-9]+)?$")))] | length')"
+            echo "published final releases: $n_final"
+            if [ "$n_final" -gt 0 ]; then
+              pre=(--prerelease)
+            else
+              echo "no final release yet: publishing pre-release $tag as an ordinary release (it becomes Latest)"
+            fi
+          fi
+          if gh release view "$tag" > /dev/null 2>&1; then
+            draft="$(gh release view "$tag" --json isDraft --jq .isDraft)"
+            body="$(gh release view "$tag" --json body --jq .body)"
+            echo "release $tag already exists (draft: $draft); reusing it"
+            if [ -z "${body//[[:space:]]/}" ]; then
+              gh release edit "$tag" --notes-file "$notes"
+              echo "filled in the empty release notes"
+            elif [[ "$body" != *libint-feedstock* ]]; then
+              echo "::warning::the existing $tag release notes do not link the libint2 source (LGPL-3.0-only); add the libint2 source section of notes.md (printed below) by hand"
+              cat "$notes"
+            fi
+            # No --clobber: a released file is never overwritten.
+            gh release upload "$tag" release/*
+            if [ "$draft" = true ]; then
+              gh release edit "$tag" --draft=false
+            fi
+          else
+            gh release create "$tag" --draft --verify-tag --title "ferric $version" \
+              --notes-file "$notes" "${pre[@]}"
+            gh release upload "$tag" release/*
+            gh release edit "$tag" --draft=false
+          fi
+          gh release view "$tag" --json isDraft,isPrerelease,assets \
+            --jq '"draft: \(.isDraft) prerelease: \(.isPrerelease)", (.assets[].name)'

@@ -63,6 +63,67 @@ ferric examples/water-rhf.toml
 The CLI resolves `[molecule] xyz = "..."` relative to the **current directory**,
 so run example files from the repository root.
 
+### The large-libint wheel (GitHub releases)
+
+Starting with 0.1.0rc8, each [GitHub release](https://github.com/mgoldey/ferric/releases)
+also carries a second wheel for each CPython. It has the same version and
+commit as the PyPI wheel, but it is built against conda-forge's libint2
+2.13.1 (the build `scripts/install-libint.sh` installs), which it bundles as a
+shared library. Its file name carries the wheel build tag `1largeam`:
+
+```text
+ferric-0.1.0rc8-1largeam-cp311-cp311-manylinux_2_28_x86_64.whl
+```
+
+Compared with the PyPI wheel it adds l = 7 shells, analytic 3- and 2-centre
+second derivatives, multipoles above order 2 and G12 (F12) integrals; see
+[What the libint2 build carries](#what-the-libint2-build-carries). It does not
+extend analytic Hessians: 4-centre second derivatives stop at f functions in
+both wheels. RI-J/RI-K Hessians already work with the PyPI wheel, so they are
+no reason to switch. Nor is it a strict superset: its one-electron integrals
+reach l = 7 / 6 / 3 (energy / 1st / 2nd derivative), while the PyPI wheel's
+reach 6 / 6 / 6, so one-electron second derivatives of g, h or i functions
+are available only in the PyPI wheel.
+
+Install the PyPI wheel first, so its dependencies are present, then swap in
+the file for your Python from the release (check it against the release's
+`SHA256SUMS`):
+
+```bash
+pip install ferric==0.1.0rc8
+pip install --force-reinstall --no-deps \
+  https://github.com/mgoldey/ferric/releases/download/v0.1.0rc8/ferric-0.1.0rc8-1largeam-cp311-cp311-manylinux_2_28_x86_64.whl
+```
+
+Both wheels are the distribution `ferric` at the same version, so `pip list`
+shows no difference and only one can be installed at a time:
+
+- `pip install ferric==0.1.0rc8` then reports "already satisfied" and keeps the
+  large wheel.
+- `pip install -U ferric` at the next release replaces it with that release's
+  PyPI wheel; swap in the large one again from the new release.
+- With both files on one `--find-links` index, pip picks the build-tagged
+  (large) wheel.
+
+To see which one is loaded:
+
+```bash
+python -c "import ferric; i = ferric.build_info(); print(i['libint_version'], i['libint_linkage'], i['libint_max_am'])"
+```
+
+The large wheel prints `2.13.1 shared` and `'eri3': [7, 7, 4]`; the PyPI wheel
+prints `2.7.2 static` and `'eri3': [6, 6]`. The `libint:` line of
+`ferric --version` reports the same limits.
+
+The large wheel contains a libint2 binary (LGPL-3.0-only) built by
+conda-forge. Its source is the
+[loriab/libint v0.1](https://github.com/loriab/libint/releases/tag/v0.1)
+generated tarball, built by the
+[conda-forge libint feedstock](https://github.com/conda-forge/libint-feedstock);
+each release's notes link both and give the tarball's sha256. The licence
+texts ship with the release as `libint2-LICENSE.txt` and
+`libint2-COPYING.LESSER.txt`, covered by its `SHA256SUMS`.
+
 ## Building from source
 
 Build from source if you are changing ferric, need the MPI build, or are on a
