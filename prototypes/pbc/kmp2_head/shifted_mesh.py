@@ -149,37 +149,57 @@ def anchor():
     ok = True
     # Z0: bitwise vs unmodified origin/main (exported by the caller to $ORIGIN_PBC), shift None and shift 0
     orig = os.environ.get("ORIGIN_PBC")
+    if os.environ.get("SKIP_Z0"):
+        orig = None
     child = os.path.join(tempfile.mkdtemp(), "z0_child.py")
     with open(child, "w") as f:
         f.write(_Z0_CHILD)
     outs = {}
     for tag, path, mode in (("origin", orig, "none"), ("new-None", PBC, "none"), ("new-0", PBC, "zero")):
         if path is None:
-            print("Z0: ORIGIN_PBC not set, origin leg skipped")
-            continue
+            print("Z0: ORIGIN_PBC not set (or SKIP_Z0), Z0 skipped")
+            break
         outs[tag] = subprocess.run(
             [sys.executable, child, path, mode], capture_output=True, text=True, check=True, cwd=path
         ).stdout
-    same = len(set(outs.values())) == 1 and len(outs) == 3
-    print(f"Z0 bitwise (origin == new shift None == new shift 0): {same}")
-    print("   " + outs.get("origin", "").replace("\n", "\n   "))
-    ok &= same
+    if outs:
+        same = len(set(outs.values())) == 1 and len(outs) == 3
+        print(f"Z0 bitwise (origin == new shift None == new shift 0): {same}")
+        print("   " + outs.get("origin", "").replace("\n", "\n   "))
+        ok &= same
 
     # Z1 / Z2 / mutants on a shifted 2x2x2 mesh (a = 4 cell)
     s = (0.5, 0.5, 0.5)
     good = _small((2, 2, 2), s)
     print(f"Z1 shifted 2x2x2: max|P0 - S(k)| {good['z1']:.1e}  (gate 1e-10)")
     ok &= good["z1"] < 1e-10
-    bad = _small((2, 2, 2), s, mutant="no_twist")
-    print(f"   mutant no_twist: max|P0 - S(k)| {bad['z1']:.1e}  dS {bad['S'] - good['S']:+.1e} (must fail)")
-    ok &= bad["z1"] > 1e-6
+    import run_kcorr_head_anomaly as HA
+
+    real_twist = PK.mesh_twist
+    PK.mesh_twist = lambda *a, **k: None  # mutant: residue phase e^{ik'.t_r} only
+    try:
+        P0b = HA.pair_derivs(good["cell"], (2, 2, 2), shift=s)[0]
+    finally:
+        PK.mesh_twist = real_twist
+    z1b = max(abs(P0b[k] - good["kb"]["S"][k]).max() for k in range(8))
+    print(f"   mutant no_twist (pair_derivs): max|P0 - S(k)| {z1b:.1e} (must fail)")
+    ok &= z1b > 1e-6
+    try:
+        bad = _small((2, 2, 2), s, mutant="no_twist")
+        print(f"   mutant no_twist (build_k): dS {bad['S'] - good['S']:+.1e} dHF {bad['e_hf'] - good['e_hf']:+.1e} (must fail)")
+        ok &= abs(bad["S"] - good["S"]) > 1e-6
+    except RuntimeError as exc:
+        print(f"   mutant no_twist (build_k): SCF fails ({exc}) -> caught")
     from pbc_gamma import Cell
 
     cell = Cell(H2_A, H2_ATOMS, "sto-3g")
     kf = []
     for mut in (None, "no_time_reversal", "shift_neg_k"):
         PK._MUTANT = mut
-        kf.append(PK.build_k(cell, (2, 2, 2), exxdiv="ewald", verbose=False, shift=s)["Kker"])
+        # n = 3 along z: at n = 2 every q is its own negative, the shortcut never runs and a mutant cannot fail
+        kf.append(
+            PK.build_k(cell, (1, 1, 3), exxdiv="ewald", verbose=False, shift=(0.0, 0.0, 0.5))["Kker"]
+        )
     PK._MUTANT = None
     d_tr, d_neg = abs(kf[0] - kf[1]).max(), abs(kf[2] - kf[1]).max()
     print(f"Z2 time-reversal shortcut vs full q loop: max|dKker| {d_tr:.1e} (gate 1e-13); mutant shift_neg_k {d_neg:.1e} (must fail)")
@@ -190,7 +210,11 @@ def anchor():
     pc.precision = 1e-12
     pc.max_memory = 4000
     pc.build()
-    for n, s in (((1, 1, 2), (0.0, 0.0, 0.5)), ((2, 2, 2), (0.5, 0.5, 0.5))):
+    for n, s in (
+        ((1, 1, 2), (0.0, 0.0, 0.5)),
+        ((1, 1, 3), (0.0, 0.0, 0.5)),
+        ((2, 2, 2), (0.5, 0.5, 0.5)),
+    ):
         t = time.time()
         ours = good if n == (2, 2, 2) else _small(n, s)
         kp = pc.make_kpts(list(n), scaled_center=list(np.array(s) / np.array(n)))
@@ -210,10 +234,14 @@ def anchor():
             flush=True,
         )
         ok &= abs(ours["S"] - ep) < 1e-10
-        if n == (1, 1, 2):
-            badz = _small(n, s, mutant="no_twist")
-            print(f"   mutant no_twist vs PySCF: d {badz['S'] - ep:+.1e} (must fail)")
-            ok &= abs(badz["S"] - ep) > 1e-6
+        if n == (1, 1, 3):
+            for mut in ("no_twist", "shift_neg_k"):
+                try:
+                    badz = _small(n, s, mutant=mut)
+                    print(f"   mutant {mut} vs PySCF: d {badz['S'] - ep:+.1e} (must fail)")
+                    ok &= abs(badz["S"] - ep) > 1e-6
+                except RuntimeError as exc:
+                    print(f"   mutant {mut}: SCF fails ({exc}) -> caught")
     print("ANCHORS", "PASS" if ok else "FAIL")
     return ok
 
