@@ -8,6 +8,28 @@
 //! SCF that does not converge, and an inner SCF that lands in a different
 //! basin at λ + h than at λ. Several constraints use a plain k × k
 //! finite-difference Newton step.
+//!
+//! # c(λ) can be a near-step function, and a loose tolerance can hide it
+//!
+//! On HeNe⁺/def2-SVP (charge +1, doublet, grid (99,302), `level_shift` 0.5,
+//! constraint on He), single inner solves at fixed λ give (all converged):
+//!
+//! ```text
+//!   λ:              −2.00    −1.00    −0.50    −0.30     0.00    +0.50    +1.00
+//!   R = 2.5 Å N(He): 1.9764   1.9742   1.9729   1.9722   1.9699   0.9999   0.9991
+//!   R = 2.0 Å N(He): 1.9685   1.9589   1.9526   1.9483   1.9307   1.0124   1.0059
+//! ```
+//!
+//! Two flat branches, with N(He) ∈ (1.01, 1.93) unreachable on this grid of λ,
+//! and |∂N/∂λ| ≈ 0.01–0.06 on the upper plateau. A target a few hundredths from
+//! the unconstrained population therefore sits on the plateau, and with a
+//! `cdft_lambda_tol` looser than that gap the loop used to stop before λ moved
+//! and return the unconstrained state; `reject_vacuous_solve` now refuses that.
+//! At R = 2.0 Å the unconstrained UHF state has N(Ne) = 9.0693, so the targets
+//! N(Ne) = 9 and N(He) = 2 sit 6.93e-2 from it: they solve at
+//! `cdft_lambda_tol = 1e-5` (λ = ±2.4390 after the stability descent), and at a
+//! tolerance looser than 6.93e-2 they are now an error rather than a silent
+//! no-op.
 
 use crate::result::ScfResult;
 use crate::rhf::RhfConfig;
@@ -581,6 +603,97 @@ fn solve_scalar<T>(
     )))
 }
 
+/// Refuse a "converged" return in which the constraint was never applied.
+///
+/// Both outer loops stop as soon as `max|c| < cdft_lambda_tol`, and that test
+/// runs BEFORE λ has moved. When the tolerance is looser than the distance from
+/// the unconstrained population to the target, the loop stops on iteration 1
+/// with λ = 0 and hands back the UNCONSTRAINED state labelled as a constrained
+/// one. Measured on HeNe⁺/def2-SVP at R = 2.0 Å, `cdft_lambda_tol = 1e-1`, every
+/// `level_shift` in {0.2, 0.5, 0.8}, stability descent on and off:
+///
+/// ```text
+///   target N(He) = 2.0 → λ = 0, outer = 1, E = −130.50534054, residual −6.93e-2
+///   target N(Ne) = 9.0 → λ = 0, outer = 1, E = −130.50534054, residual +6.93e-2
+/// ```
+///
+/// All returned `Ok` with the energy of plain UHF. That is now an error. A
+/// loose tolerance met only after λ moved is NOT this defect and is accepted:
+/// at 5e-2 the same targets stop at outer 2, λ ≈ ±0.51, residual ±4.73e-2,
+/// reported in [`CdftResult::residuals`].
+///
+/// # Why "λ never moved", not a conditioning test
+///
+/// Erroring on a small finite-difference `|∂c/∂λ|`, or a large implied Newton
+/// step `|c / (∂c/∂λ)|`, was implemented and measured (2026-09-16, before the
+/// guarded outer loop of #248), and did not work: the legitimate He₂⁺ coupling
+/// solves sit on a plateau with FLATTER slopes than the broken HeNe⁺ ones
+/// (∂c/∂λ = −1.3e-5 at R = 3.5 Å, implied step 127, versus −1.6e-2 and 2.9 for
+/// the vacuous HeNe⁺ return). Flatness is a property of the system; "λ never
+/// moved" is a property of the error.
+///
+/// The k > 1 return applies the same check; no test in the corpus reaches it
+/// with several constraints.
+///
+/// # Which clauses are load-bearing
+///
+/// A genuinely vacuous constraint (the target IS the unconstrained population)
+/// is legitimate and must still return λ = 0 on iteration 1; it is told apart by
+/// a residual at or below [`VACUOUS_RESIDUAL_FLOOR`]. The `outer != 1` and λ
+/// clauses are load-bearing only JOINTLY: removing both rejects every solve
+/// that stops with a residual between the floor and the tolerance
+/// (`loose_tolerance_met_after_lambda_moved_is_accepted` and
+/// `charge_constraint_is_satisfied_hf_molecule` fail), but short-circuiting
+/// either one alone leaves `cdft_uhf` green, so neither is individually shown
+/// by a test to do any work. Each covers the other's blind spot: the λ clause a
+/// seeded λ⁰ ≠ 0 met on iteration 1 (the constraint term is in the Fock, so it
+/// is not vacuous), the outer clause a later step that returns λ to exactly 0.0.
+fn reject_vacuous_solve(
+    outer: usize,
+    lam: &[f64],
+    resid: &[f64],
+    tol: f64,
+) -> Result<(), FerricError> {
+    if outer != 1 || lam.iter().any(|&l| l != 0.0) {
+        return Ok(());
+    }
+    let (worst, max_resid) = resid
+        .iter()
+        .map(|r| r.abs())
+        .enumerate()
+        .fold((0, 0.0_f64), |b, (i, r)| if r > b.1 { (i, r) } else { b });
+    if max_resid <= VACUOUS_RESIDUAL_FLOOR {
+        return Ok(());
+    }
+    Err(FerricError::Convergence(format!(
+        "cDFT: the constraint was never applied. The outer loop exited on its \
+         first iteration with λ = 0, so the returned state is the UNCONSTRAINED \
+         one, but constraint {worst} is off target by {max_resid:.3e} electrons. \
+         This happens when cdft_lambda_tol ({tol:.1e}) is looser than the \
+         distance from the unconstrained population to the target. Either \
+         tighten cdft_lambda_tol below {max_resid:.1e}, or, if tightening then \
+         fails to converge, re-express the constraint on the other fragment, \
+         where the target is far from the unconstrained population instead of a \
+         few hundredths away. N(λ) can be a near-step function: a target on its \
+         flat plateau is ill-posed regardless of tolerance."
+    )))
+}
+
+/// Residual (electrons) at or below which a λ = 0, first-iteration return is a
+/// genuinely vacuous constraint rather than a tolerance accident.
+///
+/// Set at the population-quadrature floor, not at a user tolerance: the default
+/// (99,302) grid recovers a fragment population to ~1e-8, so 1e-6 sits two
+/// orders above it, while the measured silent-wrong cases (6.93e-2) miss it by
+/// four orders. The slack above 0.0 matters, because a target taken from another
+/// run or grid lands ~1e-8 away; it is pinned by
+/// `near_vacuous_constraint_within_the_quadrature_floor_is_accepted`.
+const VACUOUS_RESIDUAL_FLOOR: f64 = 1e-6;
+
+/// One inner solve at fixed λ: the SCF result, the residuals `c_C` and the
+/// populations `N_C`, one per constraint.
+type InnerSolve = (ScfResult, Vec<f64>, Vec<f64>);
+
 /// Result of a constrained SCF.
 #[derive(Debug, Clone)]
 #[must_use]
@@ -603,6 +716,22 @@ pub struct CdftResult {
     /// build and hoping its grid config matches. They are density-independent
     /// and nbf² each, so holding them costs nothing next to the MO sets.
     pub weight_matrices: Vec<Array2<f64>>,
+    /// Final constraint residuals `c_C = N_C[ρ_λ] − target_C`, one per
+    /// constraint, at the returned λ.
+    ///
+    /// Reported rather than only tested against `cdft_lambda_tol`, so a caller
+    /// can see HOW well the constraint is met. `outer_iters` is not a proxy for
+    /// this: a loose tolerance can end the loop on iteration 1 with a residual
+    /// of several hundredths of an electron (see `reject_vacuous_solve`).
+    pub residuals: Vec<f64>,
+}
+
+impl CdftResult {
+    /// Largest `|c_C|` over the constraints at the returned λ.
+    #[must_use]
+    pub fn max_residual(&self) -> f64 {
+        self.residuals.iter().fold(0.0_f64, |m, &r| m.max(r.abs()))
+    }
 }
 
 /// Solve constrained UHF/UKS. Reads `config.constraints` and
@@ -742,7 +871,7 @@ pub fn solve_cdft_uhf_seeded(
     let lambda_newton_from = |guess: Option<(&Array2<f64>, &Array2<f64>)>,
                               lam_start: &[f64]|
      -> Result<CdftResult, FerricError> {
-        let run_inner = |lam: &[f64]| -> Result<(ScfResult, Vec<f64>, Vec<f64>), FerricError> {
+        let run_inner = |lam: &[f64]| -> Result<InnerSolve, FerricError> {
             let fm = |f_a: &mut Array2<f64>, f_b: &mut Array2<f64>| {
                 for (ci, c) in cons.iter().enumerate() {
                     let l = lam[ci];
@@ -780,23 +909,22 @@ pub fn solve_cdft_uhf_seeded(
         // inner solve is wrapped as an oracle returning the residual, the
         // λ-augmented value V(λ) = E + λ·c and the inner convergence flag.
         if k == 1 {
-            let mut eval =
-                |l: f64, what: &str| -> Result<(Sample, (ScfResult, Vec<f64>)), FerricError> {
-                    let (scf, resid, pops) = run_inner(&[l])?;
-                    let s = Sample {
-                        c: resid[0],
-                        v: scf.energy + l * resid[0],
-                        converged: scf.converged,
-                    };
-                    if trace {
-                        eprintln!(
-                            "[cdft-trace]   {what:<5} lam={l:+.12}  N_C={:.12}  resid={:+.6e}  \
-                         E={:.10}  V={:.10}  inner_conv={}  inner_iters={}",
-                            pops[0], resid[0], scf.energy, s.v, scf.converged, scf.iterations
-                        );
-                    }
-                    Ok((s, (scf, pops)))
+            let mut eval = |l: f64, what: &str| -> Result<(Sample, InnerSolve), FerricError> {
+                let (scf, resid, pops) = run_inner(&[l])?;
+                let s = Sample {
+                    c: resid[0],
+                    v: scf.energy + l * resid[0],
+                    converged: scf.converged,
                 };
+                if trace {
+                    eprintln!(
+                        "[cdft-trace]   {what:<5} lam={l:+.12}  N_C={:.12}  resid={:+.6e}  \
+                         E={:.10}  V={:.10}  inner_conv={}  inner_iters={}",
+                        pops[0], resid[0], scf.energy, s.v, scf.converged, scf.iterations
+                    );
+                }
+                Ok((s, (scf, resid, pops)))
+            };
             let root = solve_scalar(
                 &mut eval,
                 lam_start[0],
@@ -805,13 +933,20 @@ pub fn solve_cdft_uhf_seeded(
                 true,
                 trace,
             )?;
-            let (scf, pops) = root.payload;
+            let (scf, resid, pops) = root.payload;
+            reject_vacuous_solve(
+                root.outer_iters,
+                &[root.lambda],
+                &resid,
+                config.cdft_lambda_tol,
+            )?;
             return Ok(CdftResult {
                 scf,
                 lambdas: vec![root.lambda],
                 populations: pops,
                 outer_iters: root.outer_iters,
                 weight_matrices: w_mats.clone(),
+                residuals: resid,
             });
         }
 
@@ -834,12 +969,14 @@ pub fn solve_cdft_uhf_seeded(
                 );
             }
             if max_resid < config.cdft_lambda_tol {
+                reject_vacuous_solve(outer, &lam, &resid, config.cdft_lambda_tol)?;
                 return Ok(CdftResult {
                     scf,
                     lambdas: lam,
                     populations: pops,
                     outer_iters: outer,
                     weight_matrices: w_mats.clone(),
+                    residuals: resid,
                 });
             }
 
