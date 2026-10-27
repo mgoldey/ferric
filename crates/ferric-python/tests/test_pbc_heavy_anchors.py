@@ -226,6 +226,16 @@ def _run(route, system, bs, functional, mult, atoms=None, eps=None, **kw):
     raise AssertionError(route)
 
 
+def _displaced_energy(*args, **kw):
+    """Energy of a displaced run; a non-converged or non-finite one fails the
+    test, so a NaN cannot slip through `max` and skip a component."""
+    r = _run(*args, **kw)
+    assert r.converged, f"displaced SCF did not converge: {kw}"
+    e = float(r.energy)
+    assert np.isfinite(e), f"displaced energy is not finite: {e!r}"
+    return e
+
+
 # A generic displacement direction (rows: atoms), normalised over the whole
 # 3N vector; the same rows as `generic_direction` in
 # crates/ferric-cli/tests/heavy_anchors_cli/mod.rs. Per-atom components
@@ -243,7 +253,7 @@ def _force_vs_fd(route, system, bs, functional, mult):
     share = (g * d).sum(axis=0)
     assert (np.abs(share) > 1e-4).all(), f"an axis' share of g.d is trivial: {share}"
     e = [
-        _run(route, system, bs, functional, mult, atoms=x0 + h * d).energy
+        _displaced_energy(route, system, bs, functional, mult, atoms=x0 + h * d)
         for h in (FD_H, -FD_H)
     ]
     return r, abs(float((g * d).sum()) - (e[0] - e[1]) / (2.0 * FD_H))
@@ -265,7 +275,7 @@ def _stress_vs_fd(route, system, bs, functional, mult, comps, h_fd=FD_H):
             eps = np.zeros((3, 3))
             eps[a, b] += h / 2.0
             eps[b, a] += h / 2.0
-            e.append(_run(route, system, bs, functional, mult, eps=eps).energy)
+            e.append(_displaced_energy(route, system, bs, functional, mult, eps=eps))
         fd = (e[0] - e[1]) / (2.0 * h_fd)
         worst = max(worst, abs(sym - fd))
     return r, worst
@@ -346,8 +356,9 @@ def _cli_binary():
     `None`."""
     env = os.environ.get("FERRIC_CLI")
     if env:
-        assert pathlib.Path(env).is_file(), f"FERRIC_CLI={env} does not exist"
-        return pathlib.Path(env)
+        path = pathlib.Path(env).resolve()
+        assert path.is_file(), f"FERRIC_CLI={env} does not exist"
+        return path
     path = ROOT / "target" / "release" / "ferric-cli"
     return path if path.is_file() else None
 
