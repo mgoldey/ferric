@@ -25,16 +25,21 @@
 //! ewald from that density) and the per-spin gaps are checked against
 //! `a·v_M`.
 //!
-//! Meta-GGA (issue #355): ONLY the pure SCAN / r2SCAN on the dense-AFT J/K
-//! (any other meta-GGA, a meta-GGA hybrid and RS-GDF are refused by name). The
+//! Meta-GGA (issue #355): ONLY the pure SCAN / r2SCAN, on the dense-AFT or
+//! the RS-GDF J/K (any other meta-GGA and a meta-GGA hybrid are refused by
+//! name; a pure meta-GGA has no exact exchange, so the J/K route enters only
+//! through `J`, and the tau path is the same object on both routes,
+//! `tests/pbc_kuks_mgga_rsgdf.rs`, issue #492). The
 //! per-spin kinetic-energy density is
 //! `τ_σ = (1/N_k) Σ_k ½ Σ_ax Re Σ D_σ(k)_{μν} ∂φ_μ (∂φ_ν)*` (libxc's `½`
 //! convention, `KPeriodicXc::chunk_tau` applied to `D_σ`), fed to the
 //! polarized libxc kernel as `(τ_α, τ_β)`, and each spin gets its own
 //! `V^τ_σ(k) = Σ_g ½ w v_τσ Σ_ax (∂φ_μ)* ∂φ_ν`. The library force and stress
 //! are [`crate::kuxcgrad::kpoint_uks_gradient`] and
-//! [`crate::kuxcstress::kpoint_uks_stress`] (dense-AFT J/K), accepted by the
-//! Python / CLI derivative gate ([`crate::kxcgrad::check_deriv_functional`]).
+//! [`crate::kuxcstress::kpoint_uks_stress`] (dense-AFT or RS-GDF J/K). The
+//! Python / CLI derivative gate ([`crate::kxcgrad::check_deriv_functional`])
+//! accepts them on the dense-AFT J/K only (the RS-GDF route is library-only
+//! until the bindings are wired).
 //!
 //! Range-separated hybrids (HSE06, CAM-B3LYP validated against PySCF, wB97X unpinned; mgoldey/ferric#354) take
 //! the closed-shell attenuated K unchanged ([`crate::rsh`], dense AFT or
@@ -607,17 +612,6 @@ pub fn solve_kuks_on_grid_keep(
     let mut pxc =
         KPeriodicXcPolarized::new(cell, prep.basis_set(), &cfg.functional, grid, mesh, &cfg.xc)?;
     pxc.mutation = cfg.mgga_mutation;
-    if pxc.is_meta_gga() && aux.is_some() {
-        return Err(PeriodicDftError::Unsupported {
-            feature: "meta-GGA with RS-GDF",
-            reason: format!(
-                "{}: the open-shell k-point meta-GGA is validated on the dense-AFT J/K only \
-                 (jk = dense)",
-                cfg.functional
-            ),
-        }
-        .into());
-    }
     // Range-separated hybrid: fractions and the mixed Madelung constant live
     // INSIDE the attenuated K, which the SCF scales by 1 (see `kdft`).
     let rsh = pxc.rsh();

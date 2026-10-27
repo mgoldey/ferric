@@ -3518,11 +3518,12 @@ fn run_uks_kpts(
     };
     check_kpoint_ks_support(fname, functional, KKsKind::Unrestricted, &s)?;
     if s.aux.is_some() && ferric_pbc::dft::is_meta_gga_name(functional) {
-        // The CLI refuses the same at plan time; `solve_kuks` re-checks.
+        // The CLI refuses the same at plan time. The library accepts it since
+        // #492 (validated library-only); the bindings are not wired yet.
         return Err(val_err(format!(
-            "{fname}: functional {functional:?}: meta-GGA with RS-GDF is not supported: \
-             the open-shell k-point meta-GGA is validated on the dense-AFT J/K only; use \
-             jk=\"dense\""
+            "{fname}: functional {functional:?}: meta-GGA with RS-GDF is not supported here: \
+             the open-shell k-point meta-GGA on RS-GDF is validated in the library (#492) \
+             but not yet wired in the bindings (#498); use jk=\"dense\""
         )));
     }
     s.range_split = parse_range_split(fname, range_split, s.aux.is_some(), s.derivs)?;

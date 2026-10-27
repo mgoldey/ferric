@@ -5538,9 +5538,10 @@ fn resolve_kmesh(
     Ok(Some((n, centring)))
 }
 
-/// The open-shell k-point meta-GGA is validated on the dense-AFT J/K only
-/// (the library `solve_kuks` refuses RS-GDF too; this names the key at plan
-/// time).
+/// The CLI's open-shell k-point meta-GGA runs on the dense-AFT J/K only
+/// (the library `solve_kuks` and the UKS force / stress accept RS-GDF since
+/// #492, validated in `pbc_kuks_mgga_rsgdf.rs`, but the CLI route is not
+/// wired; this names the key at plan time).
 fn check_kpoint_uks_mgga_jk(
     route: PeriodicRoute,
     functional: Option<&str>,
@@ -5554,8 +5555,9 @@ fn check_kpoint_uks_mgga_jk(
         {
             Err(format!(
                 "[cell] kmesh with functional {f:?} and jk = \"rsgdf\": the open-shell \
-                 k-point meta-GGA (UKS) is validated on the dense-AFT J/K only; set [cell] \
-                 jk = \"dense\""
+                 k-point meta-GGA (UKS) on RS-GDF is validated in the library (#492) but \
+                 not yet wired in the CLI (#498), which runs it on the dense-AFT J/K only; \
+                 set [cell] jk = \"dense\""
             ))
         }
         _ => Ok(()),
@@ -6408,13 +6410,16 @@ kind = "ccsd"
         }
     }
 
-    /// The open-shell k-point meta-GGA runs on the dense-AFT J/K only.
+    /// The CLI's open-shell k-point meta-GGA runs on the dense-AFT J/K only
+    /// (RS-GDF is library-validated, #492, not wired, #498).
     #[test]
     fn kmesh_uks_meta_gga_needs_dense_jk() {
         let rsgdf = "jk = \"rsgdf\"\nauxbasis = \"cc-pvdz-ri\"\nkmesh = [1, 1, 2]";
         let e = err(&h2("uhf", rsgdf, SCAN));
         assert!(
-            e.contains("jk = \"rsgdf\"") && e.contains("dense-AFT J/K only"),
+            e.contains("jk = \"rsgdf\"")
+                && e.contains("dense-AFT J/K only")
+                && e.contains("not yet wired"),
             "{e}"
         );
         // The closed-shell route and the UKS range-separated hybrid are not affected.

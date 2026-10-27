@@ -1,7 +1,7 @@
 //! Analytic nuclear forces of the k-point open-shell KS-DFT energy
 //! ([`crate::kuks::solve_kuks`]) for LDA, GGA and GLOBAL HYBRID functionals
 //! (exact-exchange fraction `a`, `0 ≤ a ≤ 1`), dense-AFT and RS-GDF J/K, for
-//! the pure meta-GGAs SCAN / r2SCAN (UKS, dense-AFT J/K only), and for
+//! the pure meta-GGAs SCAN / r2SCAN (UKS, dense-AFT and RS-GDF J/K), and for
 //! RANGE-SEPARATED hybrids (UKS and ROKS, dense-AFT and RS-GDF J/K).
 //!
 //! The closed-shell derivation ([`crate::kxcgrad`]: AO motion X1, grid-point
@@ -70,8 +70,10 @@
 //! the singlet UKS force reproduces the RKS one, and why that anchor is blind
 //! to every α/β mix-up; the polarized anchors are in
 //! `tests/pbc_kuxc_mgga.rs`). ROKS refuses meta-GGA (its SCF has no tau
-//! term), and so does the RS-GDF J route (the open-shell meta-GGA energy is
-//! refused there).
+//! term). The tau terms are independent of the J/K route (a pure meta-GGA
+//! has no exact exchange), so the RS-GDF J route composes unchanged: anchored
+//! (exact-aux RS-GDF == dense == PySCF `KUKS` energy, singlet UKS == RKS, FD
+//! of the RS-GDF SCF energy) in `tests/pbc_kuks_mgga_rsgdf.rs`, issue #492.
 //!
 //! # Exact exchange and the Pulay term
 //!
@@ -212,9 +214,8 @@
 //! # Scope
 //!
 //! LDA, GGA and global hybrids; range-separated hybrids for UKS and ROKS on
-//! the dense-AFT and RS-GDF J/K; for UKS also SCAN / r2SCAN on the dense-AFT
-//! J/K (any other meta-GGA, meta-GGA on RS-GDF, and meta-GGA ROKS are
-//! refused). VV10 and double hybrids are refused with the
+//! the dense-AFT and RS-GDF J/K; for UKS also SCAN / r2SCAN on either J/K
+//! (any other meta-GGA and meta-GGA ROKS are refused). VV10 and double hybrids are refused with the
 //! typed errors of [`crate::kxcgrad`].
 
 use crate::budget::{bytes_of, Ledger};
@@ -1129,15 +1130,15 @@ impl KUXcResponse for GridXcPol<'_> {
 
 /// Resolve an open-shell derivative's functional and exact-exchange fraction.
 /// `allow_mgga` (UKS) lets the validated pure meta-GGAs SCAN / r2SCAN through
-/// on the dense-AFT J only (`rsgdf`: the open-shell meta-GGA energy is refused
-/// there, so nothing anchors it); ROKS/ROHF keep [`resolve_global`]'s
+/// on either J/K (dense-AFT or RS-GDF; `tests/pbc_kuks_mgga_rsgdf.rs`);
+/// ROKS/ROHF keep [`resolve_global`]'s
 /// refusal (the k-point ROKS SCF has no tau term). `base` is the force's or
 /// the stress's own resolver (their refusal wordings differ). Returns `(a, mgga)`;
 /// shared with the open-shell stress. `who` names the entry point.
 pub(crate) fn resolve_open_shell(
     who: &str,
     functional: &str,
-    (allow_mgga, rsgdf): (bool, bool),
+    allow_mgga: bool,
     base: &dyn Fn(&str) -> Result<(XcDef, f64), FerricError>,
 ) -> Result<(f64, bool), FerricError> {
     if !allow_mgga {
@@ -1152,8 +1153,8 @@ pub(crate) fn resolve_open_shell(
         return Err(PeriodicDftError::Unsupported {
             feature: "open-shell meta-GGA derivative at k",
             reason: format!(
-                "{functional}: the k-point UKS force and stress cover the pure SCAN and r2SCAN \
-                 meta-GGAs only (those the k-point UKS SCF accepts)"
+                "{who}: {functional}: the k-point UKS force and stress cover the pure SCAN and \
+                 r2SCAN meta-GGAs only (those the k-point UKS SCF accepts)"
             ),
         }
         .into());
@@ -1162,16 +1163,6 @@ pub(crate) fn resolve_open_shell(
         return Err(PeriodicDftError::Unsupported {
             feature: "VV10/double-hybrid derivative at k",
             reason: format!("{functional}: VV10 and mixing weights are not covered"),
-        }
-        .into());
-    }
-    if mgga && rsgdf {
-        return Err(PeriodicDftError::Unsupported {
-            feature: "open-shell meta-GGA derivative at k with RS-GDF J",
-            reason: format!(
-                "{who}: {functional}: the open-shell k-point meta-GGA (energy, force and stress) \
-                 is validated on the dense-AFT J/K only (jk = dense)"
-            ),
         }
         .into());
     }
@@ -1191,13 +1182,13 @@ fn grid_response<'a>(
     mesh: &KPointMesh,
     functional: &str,
     cfg: &'a KUksGradConfig,
-    (who, allow_mgga, rsgdf): (&str, bool, bool),
+    (who, allow_mgga): (&str, bool),
 ) -> Result<(GridXcPol<'a>, f64, Option<RshParams>), FerricError> {
     let rsh = resolve_global_or_rsh(functional)?.2;
     let (exch, is_mgga) = if rsh.is_some() {
         (1.0, false)
     } else {
-        resolve_open_shell(who, functional, (allow_mgga, rsgdf), &resolve_global_mgga)?
+        resolve_open_shell(who, functional, allow_mgga, &resolve_global_mgga)?
     };
     let mut name = functional.to_string();
     if cfg.base.mutation == Some(KXcMutation::WrongRemainder) {
@@ -1256,8 +1247,8 @@ fn grid_response<'a>(
 /// [`KRksGradConfig::exxdiv`], here `cfg.base.exxdiv`). Arguments as
 /// [`crate::kxcgrad::kpoint_rks_gradient`], with the SCF a [`KUScfResult`].
 ///
-/// Also the pure meta-GGAs SCAN / r2SCAN on the dense-AFT J/K (module doc,
-/// "Meta-GGA (UKS)").
+/// Also the pure meta-GGAs SCAN / r2SCAN on the dense-AFT or RS-GDF J/K
+/// (module doc, "Meta-GGA (UKS)").
 ///
 /// Also range-separated hybrids (HSE06 and CAM-B3LYP force-tested; wB97X and
 /// other CAM GGA hybrids accepted, not exercised by a force test) on the
@@ -1265,8 +1256,7 @@ fn grid_response<'a>(
 /// `solve_kuks` builds them): `K_σ` with scale 1 and the mixed Madelung
 /// constant (module doc, "Range-separated hybrids (UKS, ROKS)").
 ///
-/// Refuses (typed errors) any other meta-GGA, meta-GGA with RS-GDF J/K,
-/// VV10/double hybrids, a hybrid without
+/// Refuses (typed errors) any other meta-GGA, VV10/double hybrids, a hybrid without
 /// `cfg.base.exxdiv`, and an SCF whose spin Focks the rebuilt
 /// `h + J − a K_σ + V_xc,σ` do not reproduce.
 #[allow(clippy::too_many_arguments)]
@@ -1281,14 +1271,13 @@ pub fn kpoint_uks_gradient(
     functional: &str,
     cfg: &KUksGradConfig,
 ) -> Result<KUksGradient, FerricError> {
-    let rsgdf = matches!(jk, KGradJk::RsGdf(_));
     let (resp, exch, rsh) = grid_response(
         cell,
         prep,
         mesh,
         functional,
         cfg,
-        ("kpoint_uks_gradient", true, rsgdf),
+        ("kpoint_uks_gradient", true),
     )?;
     uks_gradient_with(
         "kpoint_uks_gradient",
@@ -1365,7 +1354,7 @@ impl RoParts<'_> {
             self.mesh,
             functional,
             cfg,
-            (who, false, false),
+            (who, false),
         )?;
         uks_gradient_with(
             who,

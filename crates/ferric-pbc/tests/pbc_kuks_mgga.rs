@@ -459,10 +459,11 @@ fn empty_beta_channel_is_finite_or_refused() {
 }
 
 /// Everything outside the validated envelope is refused BY NAME: other
-/// meta-GGAs (raw TPSS), meta-GGA with RS-GDF J/K, and (the library gates the
-/// Python / CLI bindings share) the open-shell meta-GGA forces and stress
-/// outside the wired UKS SCAN / r2SCAN on the dense-AFT J/K: UKS on RS-GDF
-/// and every ROKS meta-GGA derivative.
+/// meta-GGAs (raw TPSS), and (the library gate the Python / CLI bindings
+/// share) the open-shell meta-GGA forces and stress outside the wired UKS
+/// SCAN / r2SCAN on the dense-AFT J/K: UKS on RS-GDF (validated in the
+/// library, `pbc_kuks_mgga_rsgdf.rs`, not yet wired) and every ROKS meta-GGA
+/// derivative.
 #[test]
 fn unvalidated_meta_gga_requests_are_refused() {
     let cell = h3_doublet();
@@ -476,15 +477,6 @@ fn unvalidated_meta_gga_requests_are_refused() {
             solve_kuks_on_grid(&cell, &prep, None, &mesh, &grid, &kuks_cfg(&cell, f)).expect_err(f);
         assert!(e.to_string().contains("meta-GGA"), "{f}: {e}");
     }
-    // RS-GDF J/K (the aux basis is only reached after the gate).
-    let mut cfg = kuks_cfg(&cell, "SCAN");
-    cfg.kuhf.jk = ferric_pbc::kscf::KJkKind::RsGdf;
-    let e = solve_kuks_on_grid(&cell, &prep, Some(&prep), &mesh, &grid, &cfg)
-        .expect_err("SCAN with RS-GDF");
-    assert!(
-        e.to_string().contains("meta-GGA with RS-GDF") && e.to_string().contains("dense"),
-        "{e}"
-    );
     // Forces / stress: the Python / CLI derivative gate takes the UKS
     // meta-GGA on the dense-AFT J/K only, and ROKS never.
     use ferric_pbc::kxcgrad::{check_kpoint_deriv_functional, DerivSpin};
