@@ -1720,10 +1720,20 @@ mod force_allowlist_tests {
             .expect_err("wB97X")
             .to_string();
         assert!(e.contains("validated for HSE06 / CAM-B3LYP"), "{e}");
-        // Non-RSH names keep their own gates: PBE0 passes, SCAN names the tau gap.
+        // Non-RSH names keep their own gates: PBE0 passes; a meta-GGA is
+        // refused for the bindings on both routes, energy included (the
+        // library Gamma UKS / ROKS SCAN energy is not wired yet, #498).
         uks("PBE0", &[F, S]).unwrap();
         roks("PBE0", &[F, S]).unwrap();
-        let e = uks("SCAN", &[F]).expect_err("SCAN").to_string();
-        assert!(e.contains("no tau term"), "{e}");
+        for d in [&[][..], &[F], &[S]] {
+            for (route, e) in [("UKS", uks("SCAN", d)), ("ROKS", roks("SCAN", d))] {
+                let e = e.expect_err("SCAN").to_string();
+                assert!(
+                    e.contains(&format!("Gamma-point {route} SCAN / r2SCAN energy"))
+                        && e.contains("not yet wired (#498)"),
+                    "{route} {d:?}: {e}"
+                );
+            }
+        }
     }
 }

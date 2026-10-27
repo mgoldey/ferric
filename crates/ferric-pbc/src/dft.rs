@@ -76,7 +76,7 @@
 //!
 //! Refused by name: range-separated hybrids in every entry but closed-shell
 //! [`gamma_rks_rsh`] (the attenuated K is the k = 0 of the 1x1x1 k-point machinery, [`crate::gamma_rsh`]; open-shell [`gamma_uks_rsh`] and [`crate::rohf::gamma_roks_rsh`] take the same exchange per spin; the closed-shell dense-AFT force and stress are [`crate::gamma_rsh::gamma_rks_rsh_gradient`] and [`crate::gamma_rsh::gamma_rks_rsh_stress`], the open-shell UKS dense-AFT force is [`crate::gamma_rsh::gamma_uks_rsh_gradient`] (wired to the bindings through [`check_gamma_uks_request`]) and the ROKS one [`crate::gamma_rsh::gamma_roks_rsh_gradient`] (library only: the bindings refuse it); the open-shell UKS stress is [`crate::gamma_rsh::gamma_uks_rsh_stress`] (library only)),
-//! meta-GGA except the validated SCAN / r2SCAN / TPSS in closed-shell [`gamma_rks`] (tau from D and ∇χ^Γ, energy anchored to the 1x1x1 k-mesh and PySCF; the force and stress are the 1x1x1 k-point route [`crate::gamma_mgga`] on the dense-AFT J, the native Gamma XC derivatives refuse it; UKS and ROKS refuse it), VV10 / double hybrids, grid pruning, Newton /
+//! meta-GGA except the validated SCAN / r2SCAN / TPSS in closed-shell [`gamma_rks`] (tau from D and ∇χ^Γ, energy anchored to the 1x1x1 k-mesh and PySCF; the force and stress are the 1x1x1 k-point route [`crate::gamma_mgga`] on the dense-AFT J, the native Gamma XC derivatives refuse it; open-shell [`gamma_uks`] and [`crate::rohf::gamma_roks`] take SCAN / r2SCAN only, ENERGY only, with per-spin tau from `D_σ` ([`PeriodicXc::eval_polarized`], anchored to the 1x1x1 k-point UKS and to PySCF `pbc.dft.UKS` / `ROKS`; their force and stress refuse it, and the bindings refuse it through [`check_gamma_uks_request`] / [`check_gamma_roks_request`] until #498 wires it), VV10 / double hybrids, grid pruning, Newton /
 //! TRAH / stability (they rebuild molecular J/K and the f_xc kernel on the
 //! molecular grid — rejected by `validate_injected`), the molecular grid knobs
 //! `RhfConfig.{xc, xc_omega, dft_grid, nlc_grid}`. Nuclear gradients (with
@@ -101,13 +101,17 @@ use ferric_dft::becke::{
     partition_weight_over, partition_weight_over_and_grad, partition_weight_over_switched,
     partition_weight_over_switched_and_grad, NeighbourAtom, NeighbourSwitch, PartitionScheme,
 };
-use ferric_dft::density_on_grid::{eval_density_closed, eval_density_uks, eval_tau_closed};
+use ferric_dft::density_on_grid::{
+    eval_density_closed, eval_density_uks, eval_tau_closed, eval_tau_uks,
+};
 use ferric_dft::grid::GridPoint;
 use ferric_dft::lebedev::lebedev;
 use ferric_dft::libxc::{xc_def_from_name, xc_def_from_name_nspin, FunctionalFamily, XcDef};
 use ferric_dft::prune::PruneScheme;
 use ferric_dft::radial::treutler_ahlrichs_m4;
-use ferric_dft::vxc::{semilocal_vxc_closed_scratch, semilocal_vxc_polarized_scratch, VxcScratch};
+use ferric_dft::vxc::{
+    polarized_kernel, semilocal_vxc_closed_scratch, semilocal_vxc_polarized_scratch, VxcScratch,
+};
 use ferric_integrals::ao_grid::{
     collect_shells, eval_shell_and_grad, eval_shell_grad_hess, LocatedShell,
 };
@@ -119,7 +123,7 @@ use ferric_scf::rhf::{
 };
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::uhf::solve_uhf_injected;
-use ndarray::{Array2, Array3, Array4};
+use ndarray::{Array1, Array2, Array3, Array4};
 use num_complex::Complex64;
 use rayon::prelude::*;
 
@@ -1701,6 +1705,47 @@ pub fn check_gamma_rks_request(
     Ok(())
 }
 
+/// The functional gate of the open-shell Gamma-point KS energies ([`gamma_uks`],
+/// [`crate::rohf::gamma_roks`]): everything [`resolve_periodic_functional`]
+/// accepts, plus ONLY the pure SCAN / r2SCAN meta-GGAs
+/// ([`crate::kxcgrad::is_validated_mgga`]; the per-spin tau term of
+/// [`PeriodicXc::eval_polarized`] is validated for those alone). Any other
+/// meta-GGA (TPSS, raw `MGGA_*` names) is refused by name.
+pub fn resolve_gamma_open_shell_functional(name: &str) -> Result<(XcDef, f64), FerricError> {
+    let validated = crate::kxcgrad::is_validated_mgga(name);
+    if is_meta_gga_name(name) && !validated {
+        return Err(PeriodicDftError::Unsupported {
+            feature: "meta-GGA",
+            reason: format!(
+                "{name}: the Gamma-point UKS / ROKS support only the pure SCAN / r2SCAN \
+                 meta-GGAs"
+            ),
+        }
+        .into());
+    }
+    resolve_periodic_functional_mgga(name, validated)
+}
+
+/// The bindings' refusal of a Gamma-point open-shell meta-GGA (`route` is
+/// `"UKS"` or `"ROKS"`): the SCAN / r2SCAN energy is validated in the library
+/// ([`gamma_uks`], [`crate::rohf::gamma_roks`], #492) but not yet wired
+/// (#498), and its force and stress do not exist.
+fn refuse_gamma_open_shell_mgga(name: &str, route: &str) -> Result<(), FerricError> {
+    if !is_meta_gga_name(name) {
+        return Ok(());
+    }
+    Err(PeriodicDftError::Unsupported {
+        feature: "meta-GGA",
+        reason: format!(
+            "{name}: the Gamma-point {route} SCAN / r2SCAN energy is validated in the library \
+             (#492), not yet wired (#498), and its force and stress are not implemented; the \
+             k-point UKS on a 1x1x1 mesh (the Gamma point) has SCAN / r2SCAN energies, forces \
+             and stress"
+        ),
+    }
+    .into())
+}
+
 /// The Gamma UKS request gate, one call for the bindings (Python, CLI), run
 /// before any integral is built. `derivs` lists the requested derivatives
 /// (empty = energy only). A range-separated hybrid runs as an energy on
@@ -1709,9 +1754,10 @@ pub fn check_gamma_rks_request(
 /// ([`crate::gamma_rsh::gamma_uks_rsh_gradient`],
 /// [`crate::gamma_rsh::gamma_uks_rsh_stress`],
 /// [`crate::kxcgrad::check_validated_rsh_deriv`]). A meta-GGA is refused by
-/// name (the Gamma UKS has no tau term), pointing at the k-point UKS on a
-/// 1x1x1 mesh, which is the Gamma point and has SCAN / r2SCAN. Everything
-/// else passes to [`gamma_uks`]'s own functional check.
+/// name: the library [`gamma_uks`] has the SCAN / r2SCAN energy, but the
+/// bindings are not wired to it (#498); the message points at the k-point
+/// UKS on a 1x1x1 mesh, which is the Gamma point and has SCAN / r2SCAN.
+/// Everything else passes to [`gamma_uks`]'s own functional check.
 pub fn check_gamma_uks_request(
     name: &str,
     derivs: &[crate::kxcgrad::Deriv],
@@ -1719,17 +1765,7 @@ pub fn check_gamma_uks_request(
     if crate::rsh::is_range_separated(name) && !derivs.is_empty() {
         crate::kxcgrad::check_validated_rsh_deriv(name)?;
     }
-    if is_meta_gga_name(name) {
-        return Err(PeriodicDftError::Unsupported {
-            feature: "meta-GGA",
-            reason: format!(
-                "{name}: the Gamma-point UKS has no tau term; the k-point UKS on a 1x1x1 \
-                 mesh (the Gamma point) has SCAN / r2SCAN energies, forces and stress"
-            ),
-        }
-        .into());
-    }
-    Ok(())
+    refuse_gamma_open_shell_mgga(name, "UKS")
 }
 
 /// The Gamma ROKS request gate (Python, CLI). `derivs` lists the requested
@@ -1738,12 +1774,15 @@ pub fn check_gamma_uks_request(
 /// functionals, with a FORCE on either J/K
 /// ([`crate::gamma_rsh::gamma_roks_rsh_gradient`]); its STRESS is refused by
 /// name (no Gamma library entry; the k-point ROKS stress on a 1x1x1 mesh,
-/// which is the Gamma point, differentiates it). Everything else passes to
-/// [`crate::rohf::gamma_roks`]'s own functional check (no meta-GGA).
+/// which is the Gamma point, differentiates it). A meta-GGA is refused by
+/// name, as in [`check_gamma_uks_request`] (the library
+/// [`crate::rohf::gamma_roks`] has the SCAN / r2SCAN energy, not yet wired).
+/// Everything else passes to [`crate::rohf::gamma_roks`]'s own functional check.
 pub fn check_gamma_roks_request(
     name: &str,
     derivs: &[crate::kxcgrad::Deriv],
 ) -> Result<(), FerricError> {
+    refuse_gamma_open_shell_mgga(name, "ROKS")?;
     if derivs.is_empty() || !crate::rsh::is_range_separated(name) {
         return Ok(());
     }
@@ -1887,8 +1926,27 @@ pub struct PeriodicXc {
     /// calls ([`crate::timing`]).
     clock: CallClock,
     /// The functional is a meta-GGA: [`PeriodicXc::eval`] builds tau from the
-    /// cached `∇χ^Γ` (closed shell only; the spin-resolved path refuses).
+    /// cached `∇χ^Γ`; [`PeriodicXc::eval_polarized`] builds per-spin tau for
+    /// SCAN / r2SCAN and refuses any other meta-GGA.
     mgga: bool,
+    /// Test hook: a deliberate spin-resolved tau defect ([`GammaMggaMutation`]).
+    mgga_mutation: Option<GammaMggaMutation>,
+}
+
+/// Deliberate spin-resolved tau defects of [`PeriodicXc::eval_polarized`], for
+/// the mutation tests of `tests/pbc_gamma_open_mgga.rs`. Each must be caught by
+/// a genuinely POLARIZED check (the singlet hides all of them).
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GammaMggaMutation {
+    /// `τ_β` built from `D_α` (so `τ_β = τ_α`).
+    TauBetaFromAlpha,
+    /// Both `τ_σ` set to zero (tau omitted).
+    TauOmitted,
+    /// `(τ_α, τ_β)` handed to libxc swapped.
+    SwapTau,
+    /// `V^τ_β` dropped from the β potential (the energy is unchanged).
+    DropBetaVtau,
 }
 
 impl std::fmt::Debug for PeriodicXc {
@@ -1917,7 +1975,8 @@ impl PeriodicXc {
 
     /// [`PeriodicXc::new`] with the meta-GGA refusal lifted for the CLOSED-shell
     /// [`PeriodicXc::eval`] (tau from `D` and `∇χ^Γ`, as the k-point path does).
-    /// [`PeriodicXc::eval_polarized`] errors on a meta-GGA built this way.
+    /// [`PeriodicXc::eval_polarized`] errors on a meta-GGA built this way
+    /// unless it is SCAN / r2SCAN (see [`PeriodicXc::new_open_mgga`]).
     pub fn new_closed_mgga(
         cell: &Cell,
         bs: &BasisSet,
@@ -1926,6 +1985,28 @@ impl PeriodicXc {
         cfg: &PeriodicXcConfig,
     ) -> Result<Self, FerricError> {
         Self::build_xc(cell, bs, functional, grid, cfg, true, false)
+    }
+
+    /// [`PeriodicXc::new`] behind the open-shell gate
+    /// [`resolve_gamma_open_shell_functional`]: additionally the pure SCAN /
+    /// r2SCAN, whose [`PeriodicXc::eval_polarized`] builds `τ_σ` from `D_σ`
+    /// (the evaluator [`gamma_uks`] and [`crate::rohf::gamma_roks`] build).
+    pub fn new_open_mgga(
+        cell: &Cell,
+        bs: &BasisSet,
+        functional: &str,
+        grid: &PeriodicGrid,
+        cfg: &PeriodicXcConfig,
+    ) -> Result<Self, FerricError> {
+        resolve_gamma_open_shell_functional(functional)?;
+        Self::build_xc(cell, bs, functional, grid, cfg, true, false)
+    }
+
+    /// Test hook: inject a deliberate tau defect (see [`GammaMggaMutation`]).
+    #[doc(hidden)]
+    pub fn with_mgga_mutation(mut self, m: GammaMggaMutation) -> Self {
+        self.mgga_mutation = Some(m);
+        self
     }
 
     pub(crate) fn build_xc(
@@ -1967,6 +2048,7 @@ impl PeriodicXc {
             scratch: VxcScratch::new(),
             clock: CallClock::default(),
             mgga,
+            mgga_mutation: None,
         })
     }
 
@@ -2098,14 +2180,15 @@ impl PeriodicXc {
         out
     }
 
-    /// The Gamma-point spin-resolved path has no tau term: error on a meta-GGA
-    /// (the k-point UKS has one, see `crate::kuks`).
-    fn refuse_if_mgga(&self) -> Result<(), FerricError> {
-        if self.mgga {
+    /// The spin-resolved tau term is validated for SCAN / r2SCAN only: error on
+    /// any other meta-GGA (e.g. TPSS built through [`PeriodicXc::new_closed_mgga`]).
+    fn refuse_unvalidated_polarized_mgga(&self) -> Result<(), FerricError> {
+        if self.mgga && !crate::kxcgrad::is_validated_mgga(&self.name) {
             return Err(PeriodicDftError::Unsupported {
                 feature: "meta-GGA",
                 reason: format!(
-                    "{}: the Gamma-point spin-resolved periodic XC has no tau term",
+                    "{}: the Gamma-point spin-resolved periodic XC supports only the pure \
+                     SCAN / r2SCAN meta-GGAs",
                     self.name
                 ),
             }
@@ -2114,9 +2197,53 @@ impl PeriodicXc {
         Ok(())
     }
 
+    /// Per-spin `(τ_α, τ_β)` of one chunk (`τ_σ = ½ Σ_axis Σ_μν D^σ_μν ∂χ_μ ∂χ_ν`,
+    /// libxc's convention), or a deliberate defect under a [`GammaMggaMutation`].
+    fn polarized_tau(
+        &self,
+        d_a: &Array2<f64>,
+        d_b: &Array2<f64>,
+        dchi: &Array3<f64>,
+    ) -> (Array1<f64>, Array1<f64>) {
+        let (ta, tb) = eval_tau_uks(d_a, d_b, dchi);
+        match self.mgga_mutation {
+            Some(GammaMggaMutation::TauBetaFromAlpha) => (ta.clone(), ta),
+            Some(GammaMggaMutation::TauOmitted) => (ta.mapv(|_| 0.0), tb.mapv(|_| 0.0)),
+            Some(GammaMggaMutation::SwapTau) => (tb, ta),
+            _ => (ta, tb),
+        }
+    }
+
+    /// `(E_xc, V_α, V_β)` of ONE grid chunk: per-spin tau for a meta-GGA, and
+    /// the β tau potential removed under [`GammaMggaMutation::DropBetaVtau`].
+    fn polarized_chunk(
+        &self,
+        c: &AoChunk,
+        d_a: &Array2<f64>,
+        d_b: &Array2<f64>,
+        scratch: &mut VxcScratch,
+    ) -> (f64, Array2<f64>, Array2<f64>) {
+        let dens = eval_density_uks(d_a, d_b, &c.chi, &c.dchi);
+        let tau = self.mgga.then(|| self.polarized_tau(d_a, d_b, &c.dchi));
+        let tau_in = tau.as_ref().map(|(a, b)| (a, b));
+        let (ec, va, mut vb) = semilocal_vxc_polarized_scratch(
+            &c.points,
+            &c.chi,
+            &c.dchi,
+            &dens,
+            tau_in,
+            &self.xc_pol,
+            scratch,
+        );
+        if let (Some(GammaMggaMutation::DropBetaVtau), Some(t)) = (self.mgga_mutation, tau_in) {
+            vb -= &beta_vtau_matrix(&c.points, &c.dchi, &dens, t, &self.xc_pol);
+        }
+        (ec, va, vb)
+    }
+
     /// Spin-polarized `(E_xc, V_α, V_β)` for `(d_a, d_b)`, summed over the grid
-    /// chunks, with no clock. Errors on a wrong-shaped density or a non-finite
-    /// energy / potential element.
+    /// chunks, with no clock. Errors on a wrong-shaped density, a meta-GGA
+    /// other than SCAN / r2SCAN, or a non-finite energy / potential element.
     fn eval_polarized_untimed(
         &mut self,
         d_a: &Array2<f64>,
@@ -2124,25 +2251,18 @@ impl PeriodicXc {
     ) -> Result<(f64, Array2<f64>, Array2<f64>), FerricError> {
         self.check_d(d_a)?;
         self.check_d(d_b)?;
-        self.refuse_if_mgga()?;
+        self.refuse_unvalidated_polarized_mgga()?;
+        let mut scratch = std::mem::replace(&mut self.scratch, VxcScratch::new());
         let mut e = 0.0;
         let mut v_a = Array2::<f64>::zeros((self.nbf, self.nbf));
         let mut v_b = Array2::<f64>::zeros((self.nbf, self.nbf));
         for c in &self.chunks {
-            let dens = eval_density_uks(d_a, d_b, &c.chi, &c.dchi);
-            let (ec, va, vb) = semilocal_vxc_polarized_scratch(
-                &c.points,
-                &c.chi,
-                &c.dchi,
-                &dens,
-                None,
-                &self.xc_pol,
-                &mut self.scratch,
-            );
+            let (ec, va, vb) = self.polarized_chunk(c, d_a, d_b, &mut scratch);
             e += ec;
             v_a += &va;
             v_b += &vb;
         }
+        self.scratch = scratch;
         if !e.is_finite() || v_a.iter().chain(v_b.iter()).any(|x| !x.is_finite()) {
             return Err(FerricError::General(format!(
                 "PeriodicXc: non-finite polarized E_xc/V_xc ({e}) for {}",
@@ -2156,6 +2276,30 @@ impl PeriodicXc {
     pub fn exact_exchange_fraction(&self) -> f64 {
         self.exx
     }
+}
+
+/// `V^τ_β = ½ Σ_g w_g v_τβ(g) Σ_axis ∂χ ∂χᵀ` of one chunk: the β tau potential
+/// that [`GammaMggaMutation::DropBetaVtau`] removes (mutation tests only).
+fn beta_vtau_matrix(
+    points: &[GridPoint],
+    dchi: &Array3<f64>,
+    dens: &ferric_dft::density_on_grid::UksDensityGrid,
+    tau: (&Array1<f64>, &Array1<f64>),
+    xc_pol: &XcDef,
+) -> Array2<f64> {
+    let kern = polarized_kernel(dens, Some(tau), xc_pol);
+    let nbf = dchi.dim().1;
+    let mut v = Array2::<f64>::zeros((nbf, nbf));
+    for ax in 0..3 {
+        let d = dchi.index_axis(ndarray::Axis(0), ax);
+        let mut wd = d.to_owned();
+        for (g, p) in points.iter().enumerate() {
+            let f = 0.5 * p.weight * kern.vtau_b[g];
+            wd.column_mut(g).mapv_inplace(|x| x * f);
+        }
+        v += &wd.dot(&d.t());
+    }
+    v
 }
 
 impl XcBuilder for PeriodicXc {
@@ -2535,29 +2679,31 @@ pub struct GammaUksResult {
     pub timings: PbcTimings,
 }
 
-/// The periodic grid and the [`PeriodicXc`] AO cache of a KS driver, with
-/// their build stages (`"xc grid build"`, `"xc AO cache"`) and the grid-point
-/// counter.
-pub(crate) fn ks_grid_and_xc(
+/// The periodic grid and the [`PeriodicXc`] AO cache of an open-shell KS
+/// driver, with their build stages (`"xc grid build"`, `"xc AO cache"`) and
+/// the grid-point counter, behind the open-shell gate
+/// [`resolve_gamma_open_shell_functional`] ([`gamma_uks`],
+/// [`crate::rohf::gamma_roks`]): SCAN / r2SCAN get the per-spin tau path of
+/// [`PeriodicXc::eval_polarized`], every other meta-GGA is refused.
+pub(crate) fn open_shell_grid_and_xc(
     cell: &Cell,
     prep: &PreparedBasis,
     functional: &str,
     grid_cfg: &PeriodicGridConfig,
     xc_cfg: &PeriodicXcConfig,
 ) -> Result<(PeriodicGrid, PeriodicXc, PbcTimings), FerricError> {
+    resolve_gamma_open_shell_functional(functional)?;
     gated_grid_and_xc(
         cell,
         prep,
         functional,
         GridSource::config(grid_cfg),
         xc_cfg,
-        false,
+        crate::kxcgrad::is_validated_mgga(functional),
         false,
     )
 }
 
-/// [`ks_grid_and_xc`] with the meta-GGA refusal optional (closed-shell
-/// [`gamma_rks`] only, after its own allowlist).
 /// Where the XC grid comes from: built from a config, or supplied.
 #[derive(Clone, Copy)]
 pub(crate) struct GridSource<'a> {
@@ -2660,10 +2806,10 @@ pub fn gamma_uks(
     refuse_molecular_grid_knobs(&cfg.scf)?;
     nocc_ab(cell.mol())?;
     // Cheap name checks before the grid is built.
-    resolve_periodic_functional(&cfg.functional)?;
+    resolve_gamma_open_shell_functional(&cfg.functional)?;
     let total = StageClock::start();
     let (grid, mut pxc, mut timings) =
-        ks_grid_and_xc(cell, prep, &cfg.functional, &cfg.grid, &cfg.xc)?;
+        open_shell_grid_and_xc(cell, prep, &cfg.functional, &cfg.grid, &cfg.xc)?;
     let mut out = gamma_uks_with_xc(cell, prep, hc, ints, &mut pxc, cfg)?;
     let electrons_on_grid = pxc.integrate_density(&out.scf.density_total)?;
     out.grid = Some(GammaUksGridInfo {

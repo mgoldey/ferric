@@ -5565,9 +5565,10 @@ fn check_kpoint_uks_mgga_jk(
 }
 
 /// Gamma-point meta-GGA: closed-shell RKS, SCAN / r2SCAN / TPSS only; the UKS
-/// route refuses every meta-GGA by name (no Gamma tau term; the 1x1x1 mesh
-/// has it). `range_split` with a range-separated hybrid (RKS, UKS) is refused
-/// too. Plan time.
+/// and ROKS routes refuse every meta-GGA by name (the library Gamma UKS / ROKS
+/// SCAN / r2SCAN energy is not wired here yet, #498; the 1x1x1 k-point UKS
+/// mesh has it). `range_split` with a range-separated hybrid (RKS, UKS) is
+/// refused too. Plan time.
 fn check_gamma_meta_gga(
     route: PeriodicRoute,
     functional: Option<&str>,
@@ -5582,13 +5583,23 @@ fn check_gamma_meta_gga(
         PeriodicRoute::Rks | PeriodicRoute::Uks | PeriodicRoute::Roks
     );
     match functional {
-        Some(f) if route == PeriodicRoute::Uks && ferric_pbc::dft::is_meta_gga_name(f) => {
-            ferric_pbc::dft::check_gamma_uks_request(f, &[]).map_err(|e| {
-                format!(
-                    "[dft] functional {f:?} at the Gamma point: {e} (set [cell] kmesh = \
-                     [1, 1, 1])"
+        Some(f)
+            if matches!(route, PeriodicRoute::Uks | PeriodicRoute::Roks)
+                && ferric_pbc::dft::is_meta_gga_name(f) =>
+        {
+            let (gate, hint) = if route == PeriodicRoute::Uks {
+                (
+                    ferric_pbc::dft::check_gamma_uks_request(f, &[]),
+                    "set [cell] kmesh = [1, 1, 1]",
                 )
-            })
+            } else {
+                (
+                    ferric_pbc::dft::check_gamma_roks_request(f, &[]),
+                    "k-point ROKS has no meta-GGA either; UKS with [cell] kmesh = [1, 1, 1] \
+                     has it",
+                )
+            };
+            gate.map_err(|e| format!("[dft] functional {f:?} at the Gamma point: {e} ({hint})"))
         }
         Some(f) if ks && split => ferric_pbc::gamma_rsh::check_range_split(f, true)
             .map_err(|e| format!("[cell] range_split at the Gamma point: {e}")),

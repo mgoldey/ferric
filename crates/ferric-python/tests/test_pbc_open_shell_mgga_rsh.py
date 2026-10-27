@@ -232,8 +232,11 @@ def test_derivatives_roks_and_gamma_meta_gga_stay_refused(basis):
         ferric.run_uks_gamma(
             _mol(H3_SCAN_ATOMS, 2), lat, basis, wb, omega=OMEGA, with_stress=True
         )
-    with pytest.raises(ValueError, match=r"no tau term.*1x1x1"):
+    # Gamma UKS / ROKS meta-GGA: library energy only (#492), not wired (#498).
+    with pytest.raises(ValueError, match=r"not yet wired \(#498\).*1x1x1"):
         ferric.run_uks_gamma(_mol(H3_SCAN_ATOMS, 2), lat, basis, "SCAN", omega=OMEGA)
+    with pytest.raises(ValueError, match=r"Gamma-point ROKS SCAN.*not yet wired"):
+        ferric.run_roks_gamma(_mol(H3_SCAN_ATOMS, 2), lat, basis, "SCAN", omega=OMEGA)
     with pytest.raises(ValueError, match="range_split"):
         ferric.run_uks_gamma(
             _mol(H3_SCAN_ATOMS, 2),

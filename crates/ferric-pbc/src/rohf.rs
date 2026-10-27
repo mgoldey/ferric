@@ -578,8 +578,11 @@ pub fn gamma_rohf(
 /// Gamma-point ROKS with [`crate::dft::PeriodicXc`] built from `cfg.functional` on
 /// `cfg.grid` (spin-polarized evaluation, as [`crate::dft::gamma_uks`]).
 ///
-/// Errors (by name) on refused functionals (range-separated hybrids, which
-/// take [`gamma_roks_rsh`]; meta-GGA / VV10 / double hybrids), molecular-grid knobs (`scf.xc_omega`, `scf.dft_grid`,
+/// SCAN / r2SCAN run (ENERGY only: per-spin tau from `D_σ` in
+/// [`crate::dft::PeriodicXc::eval_polarized`], pinned to PySCF `pbc.dft.ROKS`;
+/// the ROKS force and stress refuse a meta-GGA). Errors (by name) on refused
+/// functionals (range-separated hybrids, which take [`gamma_roks_rsh`]; any
+/// other meta-GGA, VV10 / double hybrids), molecular-grid knobs (`scf.xc_omega`, `scf.dft_grid`,
 /// `scf.nlc_grid`), SCF features `validate_injected_rohf` refuses, a
 /// neighbour cutoff below the covering bound, budget overruns and a
 /// non-converged SCF stage.
@@ -594,10 +597,10 @@ pub fn gamma_roks(
     refuse_molecular_grid_knobs(&cfg.scf)?;
     nocc_ab(cell.mol())?;
     // Cheap name checks before the grid is built.
-    resolve_periodic_functional(&cfg.functional)?;
+    crate::dft::resolve_gamma_open_shell_functional(&cfg.functional)?;
     let total = crate::timing::StageClock::start();
     let (grid, mut pxc, mut timings) =
-        crate::dft::ks_grid_and_xc(cell, prep, &cfg.functional, &cfg.grid, &cfg.xc)?;
+        crate::dft::open_shell_grid_and_xc(cell, prep, &cfg.functional, &cfg.grid, &cfg.xc)?;
     let mut out = gamma_roks_with_xc(cell, prep, hc, ints, &mut pxc, cfg)?;
     let electrons_on_grid = pxc.integrate_density(&out.scf.density_total)?;
     out.grid = Some(GammaUksGridInfo {

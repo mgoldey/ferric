@@ -762,10 +762,25 @@ fn open_shell_refusals_have_exact_messages() {
     i.jk = "jk = \"rsgdf\"\nauxbasis = \"cc-pvdz-ri\"";
     let e = refused(&run(&i), "uks-scan-rsgdf");
     assert!(e.contains("dense-AFT J/K only"), "{e}");
-    // Gamma-point UKS meta-GGA: no tau term at Gamma; the 1x1x1 mesh has it.
+    // Gamma-point UKS meta-GGA: library only (#492), not wired; the 1x1x1 mesh has it.
     let e = refused(&run(&energy_input("gam-scan", "SCAN", "")), "gam-scan");
     assert!(
-        e.contains("Gamma point") && e.contains("kmesh = [1, 1, 1]"),
+        e.contains("Gamma point")
+            && e.contains("not yet wired (#498)")
+            && e.contains("kmesh = [1, 1, 1]"),
+        "{e}"
+    );
+    // ... and the Gamma-point ROKS meta-GGA, refused at plan time by the same
+    // library gate (k-point ROKS has no meta-GGA, so the hint differs).
+    let tag = "gam-roks-scan";
+    let i = Input {
+        kmesh: "",
+        ..input(tag, Method::Roks, "SCAN", "energy")
+    };
+    let e = refused(&run(&i), tag);
+    assert!(
+        e.contains("Gamma-point ROKS SCAN / r2SCAN energy")
+            && e.contains("k-point ROKS has no meta-GGA either"),
         "{e}"
     );
 }
