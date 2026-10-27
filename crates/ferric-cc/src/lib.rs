@@ -142,20 +142,22 @@ pub struct CcConfig {
 ///
 /// Both routes compute the same number from the same RI tensors: the RI route
 /// is an exact algebraic refactor of the dense `W_abcd`, not an approximation
-/// (H2O/cc-pVDZ: `ΔE = 0` exactly, `max|Δt2| = 1.4e-17`). They differ only in
-/// memory and time:
+/// (H2O/cc-pVDZ: `|ΔE|` and `max|Δt|` ≲ 3e-17, i.e. round-off). They differ
+/// only in memory and time:
 ///
 /// * [`Dense`](CcsdLadder::Dense) holds the chemist `(ab|cd)` block for the
 ///   whole run and builds `W_abcd` every iteration — `nv⁴`-class residents
 ///   plus three `nv⁴` temporaries.
-/// * [`Ri`](CcsdLadder::Ri) never forms an `nv⁴` tensor; it rebuilds the
-///   `(ac|bd)` entries from the 3-index blocks each iteration in
-///   `blk·nv³` panels ([`crate::ri_ladder`]). That rebuild costs about
-///   `naux/no` times the dense path's per-iteration `W` build, so it is a
-///   memory-for-time trade.
-/// * [`Auto`](CcsdLadder::Auto) (the default) takes Dense when the dense
+/// * [`Ri`](CcsdLadder::Ri) holds neither the `(ab|cd)` block nor `W_abcd`;
+///   it rebuilds the `(ac|bd)` entries from the 3-index blocks each iteration
+///   in `blk·nv³` panels ([`crate::ri_ladder`]) — at most one `nv⁴`-sized
+///   panel at full width (dense holds four), narrower panels when the budget
+///   requires. The rebuild costs about `naux/no` times the dense path's
+///   per-iteration `W` build (measured 1.3–1.5× per iteration at `nv ≥ 69`),
+///   so it is a memory-for-time trade.
+/// * [`Auto`](CcsdLadder::Auto) (the default) takes Dense whenever the dense
 ///   memory plan fits the budget and RI otherwise, so it is never refused
-///   where RI would run and never slower where Dense fits.
+///   where RI would run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CcsdLadder {
     /// Dense when its memory plan fits the budget, RI otherwise.
@@ -236,6 +238,9 @@ pub struct CcResult {
     pub correlation_energy: f64,
     pub t1: Option<Array2<f64>>,
     pub t2: Array4<f64>,
+    /// The particle-particle ladder route closed-shell CCSD took (with
+    /// [`CcsdLadder::Auto`] resolved). `None` for every other solver.
+    pub ladder_route: Option<ccsd_closed_shell::LadderRoute>,
 }
 
 impl std::fmt::Display for CcResult {

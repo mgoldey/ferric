@@ -191,7 +191,7 @@ the section is an error. The aux basis and frozen core stay in `[mp2]`.
 
 | Key | Type | Default | Allowed values | Notes |
 |---|---|---|---|---|
-| `ladder` | string | `"auto"` | `auto` `dense` `ri` (lower case only) | How the particle–particle ladder is evaluated. `dense` holds the n<sub>v</sub>⁴ `(ab\|cd)` block; `ri` rebuilds it from the RI 3-index tensors every iteration and never forms an n<sub>v</sub>⁴ tensor (same energy to round-off, less memory, slower per iteration); `auto` takes `dense` when its memory plan fits the budget and `ri` otherwise. The run prints the route taken (`ladder = dense (auto)`). Python `run_ccsd(ladder=)`, `run_ccsd_t(ladder=)`. See [Coupled cluster](../methods/cc.md#particle-particle-ladder-dense-or-ri). |
+| `ladder` | string | `"auto"` | `auto` `dense` `ri` (lower case only) | How the particle–particle ladder is evaluated. `dense` holds the n<sub>v</sub>⁴ `(ab\|cd)` block; `ri` rebuilds it from the RI 3-index tensors every iteration, holding at most one n<sub>v</sub>⁴-sized panel at full width (dense holds four) and narrower panels when the budget requires (same energy to round-off, less memory, slower per iteration); `auto` takes `dense` whenever its memory plan fits the budget and `ri` otherwise, and says so on stderr when it falls back. The run prints the route taken (`ladder = dense (auto)`). Python `run_ccsd(ladder=)`, `run_ccsd_t(ladder=)`. See [Coupled cluster](../methods/cc.md#particle-particle-ladder-dense-or-ri). |
 
 ## `[local]`
 

@@ -3326,23 +3326,17 @@ fn closed_shell_cc_config(cfg: &Config, mol: &Molecule, budget_bytes: Option<usi
     }
 }
 
-/// The particle-particle ladder route closed-shell CCSD will take, as printed:
+/// The particle-particle ladder route closed-shell CCSD took, as printed:
 /// `"dense (auto)"`, `"ri, block 19 (ri)"`, ... — the configured setting in
-/// parentheses, so an `auto` run says which way it went.
-fn ladder_label(
-    prep: &PreparedBasis,
-    dfbs: &PreparedBasis,
-    result: &ferric_scf::result::ScfResult,
-    cc_config: &CcConfig,
-) -> String {
-    use ferric_cc::ccsd_closed_shell::{closed_shell_ladder_route, LadderRoute};
+/// parentheses, so an `auto` run says which way it went. Read from the result
+/// itself, not re-planned. `None` for solvers without a ladder choice.
+fn ladder_label(cc_result: &ferric_cc::CcResult, cc_config: &CcConfig) -> Option<String> {
+    use ferric_cc::ccsd_closed_shell::LadderRoute;
     let setting = cc_config.ladder.as_str();
-    match or_exit(
-        closed_shell_ladder_route(prep, dfbs, result, cc_config).map_err(|e| e.to_string()),
-    ) {
+    cc_result.ladder_route.map(|r| match r {
         LadderRoute::Dense => format!("dense ({setting})"),
         LadderRoute::Ri { block } => format!("ri, block {block} ({setting})"),
-    }
+    })
 }
 
 /// `method.kind = "ccsd"`. Extracted verbatim from the former `main()`
@@ -3389,7 +3383,6 @@ fn run_ccsd(
     } else {
         "spin-orbital"
     };
-    let ladder = is_closed_shell.then(|| ladder_label(prep, &dfbs, result, &cc_config));
     let cc_result = if is_closed_shell {
         ccsd_closed_shell(mol, prep, &dfbs, op, result, &cc_config)
     } else {
@@ -3399,6 +3392,7 @@ fn run_ccsd(
         eprintln!("error: {e}");
         std::process::exit(1);
     });
+    let ladder = ladder_label(&cc_result, &cc_config);
     println!(
         "CCSD/{} (aux: {}, {solver}) on {}",
         bs.name, aux_name, cfg.molecule.xyz
@@ -3683,7 +3677,6 @@ fn run_ccsd_t(
     require_restricted(result, "ccsd(t)");
     let (aux_name, dfbs) = correlation_aux(cfg, mol);
     let cc_config = closed_shell_cc_config(cfg, mol, budget_bytes);
-    let ladder = ladder_label(prep, &dfbs, result, &cc_config);
     let cc_result =
         ccsd_closed_shell(mol, prep, &dfbs, op, result, &cc_config).unwrap_or_else(|e| {
             eprintln!("error: {e}");
@@ -3695,6 +3688,7 @@ fn run_ccsd_t(
             std::process::exit(1);
         });
     let e_ccsd = cc_result.correlation_energy;
+    let ladder = ladder_label(&cc_result, &cc_config).unwrap_or_default();
     let total = result.energy + e_ccsd + e_t;
     println!(
         "CCSD(T)/{} (aux: {}, spin-adapted) on {}",

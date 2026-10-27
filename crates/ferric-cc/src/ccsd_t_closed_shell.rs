@@ -714,6 +714,7 @@ mod tests {
             correlation_energy: r_cs.correlation_energy,
             t1: Some(t1_so.into_dimensionality().unwrap()),
             t2: t2_so.into_dimensionality().unwrap(),
+            ladder_route: None,
         };
         let t_old = ccsd_t(&s.mol, &s.obs, &s.dfbs, s.op, &s.rhf, &cc_so, &cfg).unwrap();
         (t_old, t_new)
@@ -914,6 +915,7 @@ mod tests {
             correlation_energy: r_cs.correlation_energy,
             t1: Some(t1_so.into_dimensionality().unwrap()),
             t2: t2_so.into_dimensionality().unwrap(),
+            ladder_route: None,
         };
         for rep in 0..reps {
             let t0 = Instant::now();

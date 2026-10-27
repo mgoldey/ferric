@@ -31,13 +31,17 @@ def water():
 
 def test_every_ladder_spelling_gives_the_same_ccsd_energy(water):
     mol, obs, aux = water
-    e = {
-        lad: ferric.run_ccsd(mol, obs, aux, ladder=lad).correlation_energy
+    r = {
+        lad: ferric.run_ccsd(mol, obs, aux, ladder=lad)
         for lad in ("auto", "dense", "ri")
     }
+    e = {lad: res.correlation_energy for lad, res in r.items()}
     assert abs(e["auto"]) > 0.1
     assert abs(e["dense"] - e["ri"]) < 1e-10, e
     assert abs(e["auto"] - e["dense"]) < 1e-10, e
+    assert (r["dense"].ladder_route, r["dense"].ladder_block) == ("dense", None)
+    assert r["auto"].ladder_route == "dense"
+    assert r["ri"].ladder_route == "ri" and r["ri"].ladder_block == 19
 
 
 def test_ri_runs_under_a_budget_the_dense_ladder_is_refused(water):
@@ -51,7 +55,9 @@ def test_ri_runs_under_a_budget_the_dense_ladder_is_refused(water):
     e_ri = ferric.run_ccsd(
         mol, obs, aux, memory_budget_gb=gb, ladder="ri"
     ).correlation_energy
-    e_auto = ferric.run_ccsd(mol, obs, aux, memory_budget_gb=gb).correlation_energy
+    auto = ferric.run_ccsd(mol, obs, aux, memory_budget_gb=gb)
+    assert auto.ladder_route == "ri", "auto must fall back to RI under this budget"
+    e_auto = auto.correlation_energy
     e_dense = ferric.run_ccsd(mol, obs, aux, ladder="dense").correlation_energy
     assert abs(e_ri - e_dense) < 1e-10
     assert abs(e_auto - e_dense) < 1e-10

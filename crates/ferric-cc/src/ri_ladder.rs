@@ -3,10 +3,10 @@
 //! # What this replaces
 //!
 //! The dense spin-adapted CCSD in [`crate::ccsd_closed_shell`] materializes the
-//! chemist `vvvv` block `(ab|cd)` in core, then a permuted copy `(ac|bd)`, then
-//! the t1-dressed intermediate `W_abcd` — **three simultaneous `nv⁴` tensors**,
-//! which is exactly what its own size guard checks for (`3 × nv⁴`). Measured
-//! peak RSS on alkane/cc-pVDZ scales cleanly as `nv⁴` and hits 7.86 GB at
+//! chemist `vvvv` block `(ab|cd)` in core and builds the t1-dressed `W_abcd`
+//! from a permuted `(ac|bd)` copy every iteration — **four `nv⁴` buffers at
+//! the peak**, which is what its memory plan charges. Measured
+//! peak RSS on alkane/cc-pVDZ scales cleanly as `nv⁴` and hits 7.90 GB at
 //! `nv=109` (alkane_5, 130 basis functions) — a *basis-size* ceiling, not an
 //! atom-count one (STO-3G reaches alkane_8 in well under a GB).
 //!
@@ -17,9 +17,11 @@
 //!   W_abcd     = (ac|bd) − Σ_k (kd|ac) t1[k,b] − Σ_k (kc|bd) t1[k,a]
 //! ```
 //!
-//! **without ever forming a rank-4 virtual tensor.** Peak virtual-side scratch
-//! is `O(blk · nv³)` for a caller-chosen block width `blk ≤ nv`, so the memory
-//! ceiling becomes `nv³` × a constant instead of `nv⁴`.
+//! **without holding the `nv⁴` chemist block or `W_abcd`.** Peak virtual-side
+//! scratch is one `blk · nv³` panel for a block width `blk ≤ nv`: at most one
+//! `nv⁴`-sized panel at full width (`blk = nv`; the dense route holds four
+//! `nv⁴` buffers at its peak), and narrower panels when the budget requires, so
+//! the memory floor is `nv³` × a constant instead of `4·nv⁴`.
 //!
 //! # The factorization
 //!
@@ -53,7 +55,8 @@
 //! (both sides use the same `B`), i.e. machine precision, not the RI floor.
 //!
 //! `Bx` costs `naux · nv²` — the same size class as `B_vv` itself, which the
-//! dense path already holds. No new `nv⁴`-class allocation appears anywhere.
+//! dense path already holds. The only `nv⁴`-class buffer is the panel itself,
+//! and only at full block width.
 //!
 //! # Blocking
 //!
@@ -95,6 +98,10 @@
 //! as a real ~1.1 GB of avoidable peak on alkane_5/cc-pVDZ before it was fixed,
 //! so this is a load-bearing detail, not a micro-optimization.
 //!
+//! `.dot` on two row-stride-1 operands can return a column-major array, so
+//! `g_blk` is only ever read by 2-index `[[i, j]]` access, never by flat
+//! offset; the transposed slab `gp` is built that way for the same reason.
+//!
 //! `ccsd_closed_shell::plan_ladder` picks `blk` as the widest width whose
 //! whole-run `MemoryPlan` still fits — the panel is one more reservation on
 //! the same plan as everything else, not a separate fraction of the budget —
@@ -104,14 +111,17 @@
 //! # Measured: dense vs RI
 //!
 //! Alkane/cc-pVDZ, one route per process (`VmHWM` never resets), routes
-//! interleaved, `OPENBLAS_NUM_THREADS=1`, measured 2026-10-26 with
-//! `benchmarks/harness/examples/ri_ccsd_memory.rs`:
+//! interleaved, `OPENBLAS_NUM_THREADS=1`, `RAYON_NUM_THREADS=4`, load average
+//! 3-6 from other jobs, measured 2026-10-26 with
+//! `benchmarks/harness/examples/ri_ccsd_memory.rs`. RI ran at full block width
+//! (`blk = nv`, the default-budget choice). Per-iteration time: 3 repeats per
+//! route for alkane_3, 2 for alkane_4/5; peak RSS: one converged run each.
 //!
 //! ```text
 //!   system    nv   peak RSS dense  RI      per-iteration dense  RI      RI/dense
-//!   alkane_3  69   1.501 GB  0.704 GB      1.27 s    1.64 s     1.30
-//!   alkane_4  89   3.788 GB  1.671 GB      3.2-3.7 s 5.2-5.3 s  1.50
-//!   alkane_5  109  7.898 GB  3.404 GB      8.8-10.8 s 14.5 s    1.48
+//!   alkane_3  69   1.50 GB   0.70 GB       1.27 s    1.64 s     1.30
+//!   alkane_4  89   3.79 GB   1.67 GB       3.2-3.7 s 5.2-5.3 s  1.50
+//!   alkane_5  109  7.90 GB   3.40 GB       8.8-10.8 s 14.5 s    1.48
 //! ```
 //!
 //! Energies are identical to all 10 printed digits. The rebuild costs
@@ -226,21 +236,9 @@ pub fn ri_ladder_contract(
         let l_slab = l_flat.slice(ndarray::s![.., rows.clone()]); // (naux, alen*nv)
         let bvv_slab = b_vv_flat.slice(ndarray::s![.., rows.clone()]); // (naux, alen*nv)
 
-        // Wide GEMMs: (alen*nv, naux) · (naux, nv*nv). `.t()` of a slice gives
-        // the transposed view BLAS consumes directly.
-        //
-        // The second term is accumulated with `general_mat_mul` (BLAS `beta=1`)
-        // rather than `g_blk += &(...).dot(...)`. The latter allocates a SECOND
-        // full `blk·nv³` temporary for the right-hand side, doubling the peak of
-        // the largest buffer in this routine — measured as a real ~1.1 GB extra
-        // on alkane_5/cc-pVDZ (nv=109). Accumulating in place keeps the peak at
-        // the one `blk·nv³` panel the memory plan budgets for.
+        // In-place accumulation and layout: see "Memory accounting" above.
         let mut g_blk: Array2<f64> = l_slab.t().dot(&b_vv_flat);
         ndarray::linalg::general_mat_mul(1.0, &bvv_slab.t(), &bx_flat, 1.0, &mut g_blk);
-        // `.dot` on two row-stride-1 operands can return a COLUMN-major array
-        // (see CLAUDE.md); we only ever index it via ndarray's `[[i,j]]` /
-        // `slice`, never by flat offset, so the layout is immaterial here.
-        // `gp` below is built by explicit 2-index reads for that reason.
 
         for a_loc in 0..alen {
             // g_blk rows for this `a` are [a_loc*nv + c], columns are [b*nv + d].
@@ -469,14 +467,13 @@ mod tests {
     /// Block width changes the answer only in the last bits — and this test
     /// pins HOW MUCH, because the honest answer is "not bitwise identical".
     ///
-    /// **Measured, not assumed.** `blk` sets the `M` dimension of the wide GEMM
-    /// `(alen·nv, naux) · (naux, nv·nv)`. ferric's `einsum`/`ndarray` GEMMs run
-    /// on `matrixmultiply`, whose two-level blocked-recursive k-sum reassociates
-    /// the sum over `P` differently for different panel shapes (see the
-    /// `matrixmultiply-accumulation-structure` note). So the aux sum order is a
-    /// function of `blk` and bit-identity across widths is NOT achievable
-    /// without giving up BLAS3 — measured here as ~86 of 196 elements differing
-    /// in their last bits at `nv=7`.
+    /// `blk` sets the `M` dimension of the wide GEMM
+    /// `(alen·nv, naux) · (naux, nv·nv)`. ndarray's `blas` feature is on, so
+    /// these GEMMs run on OpenBLAS, whose kernel choice and blocking depend on
+    /// the matrix shape (including `M`) and on the CPU kernel selected at run
+    /// time. The order of the sum over `P` is therefore not guaranteed to be
+    /// the same for different block widths, and bit-identity across widths is
+    /// not promised.
     ///
     /// What we can and do guarantee is that the difference stays at rounding
     /// level (`<1e-14` relative), i.e. block width is a performance knob and

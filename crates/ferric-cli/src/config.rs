@@ -3603,11 +3603,20 @@ impl Config {
     }
 
     /// `[cc]` is read by the closed-shell CCSD kinds only.
-    fn validate_cc_section(&self, kind: &str) -> Result<(), String> {
-        if self.cc.is_some() && !matches!(kind, "ccsd" | "ccsd(t)") {
+    fn validate_cc_section(&self, kind: &str, mult: usize) -> Result<(), String> {
+        if self.cc.is_none() {
+            return Ok(());
+        }
+        if !matches!(kind, "ccsd" | "ccsd(t)") {
             return Err(format!(
                 "[cc] is read by method.kind = \"ccsd\" and \"ccsd(t)\" only; kind = \"{kind}\" \
                  would silently ignore it"
+            ));
+        }
+        if mult > 1 {
+            return Err(format!(
+                "[cc] applies to closed-shell CCSD only; multiplicity = {mult} would take an \
+                 open-shell route with no ladder choice"
             ));
         }
         Ok(())
@@ -3734,7 +3743,7 @@ impl Config {
         }
 
         self.validate_local()?;
-        self.validate_cc_section(kind)?;
+        self.validate_cc_section(kind, mult)?;
 
         if self.gw.reference.is_some() {
             self.gw.parse_reference()?;
@@ -4107,6 +4116,13 @@ mod compat_guard_tests {
              [method]\nkind = \"ccsd\"\n[cc]\nladdr = \"ri\"\n",
         );
         assert!(typo.is_err(), "deny_unknown_fields must bite inside [cc]");
+        let open: Config = toml::from_str(
+            "[molecule]\nxyz = \"w.xyz\"\nmultiplicity = 3\n[basis]\nname = \"sto-3g\"\n\
+             [method]\nkind = \"ccsd\"\n[cc]\nladder = \"ri\"\n",
+        )
+        .unwrap();
+        let e = open.validate_cli_wired_keys().unwrap_err();
+        assert!(e.contains("[cc]") && e.contains("multiplicity = 3"), "{e}");
     }
 
     /// Before the guard, `rimp2` on triplet water returned the singlet, and

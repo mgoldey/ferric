@@ -37,18 +37,19 @@
 //! ## Particle-particle ladder: dense vs RI (`CcConfig::ladder`)
 //!
 //! The `Σ_cd (ac|bd) tau[ij,cd]` ladder is both the most expensive term and the
-//! reason this module used to be memory-bound. The dense route builds THREE
-//! simultaneous `nv⁴` tensors — the chemist `(ab|cd)` block, its `(ac|bd)`
-//! permuted copy, and the t1-dressed `W_abcd`. Measured peak RSS on
-//! alkane/cc-pVDZ scaled cleanly as `nv⁴` and reached 7.86 GB at `nv=109`
+//! reason this module used to be memory-bound. The dense route holds four
+//! `nv⁴` buffers at its peak — the chemist `(ab|cd)` block plus the `W_abcd`
+//! build (its two t1 terms and `W` itself, formed from the `(ac|bd)` copy). Measured peak RSS on
+//! alkane/cc-pVDZ scaled cleanly as `nv⁴` and reached 7.90 GB at `nv=109`
 //! (alkane_5, 130 basis functions) — a *basis-size* ceiling.
 //!
 //! The RI route ([`crate::ri_ladder`]) rebuilds the needed `(ac|bd)` entries
-//! from the RI 3-index blocks in `O(blk·nv³)` panels. **No `nv⁴` tensor is
-//! allocated anywhere on that path.** It is an exact algebraic refactor over the
-//! same `B`, not an approximation — measured agreement with the dense path on
-//! H2O/cc-pVDZ is `ΔE = 0.0` exactly with `max|Δt2| = 1.4e-17`. It pays for the
-//! memory in time: the rebuild is redone every iteration.
+//! from the RI 3-index blocks in `blk·nv³` panels: at most one `nv⁴`-sized
+//! panel at full width (the dense route holds four `nv⁴` buffers at its peak),
+//! and narrower panels when the budget requires. It is an exact algebraic
+//! refactor over the same `B`, not an approximation — measured agreement with
+//! the dense path on H2O/cc-pVDZ is `|ΔE|`, `max|Δt|` ≲ 3e-17 (round-off). It
+//! pays for the memory in time: the rebuild is redone every iteration.
 //!
 //! [`CcsdLadder::Auto`] (the default) takes the dense route when its memory
 //! plan fits the budget and the RI route otherwise (see [`plan_ladder`](crate::ccsd_closed_shell::plan_ladder));
@@ -148,8 +149,8 @@ pub struct LadderChoice {
 /// Lifetimes are chosen deliberately in BOTH directions (an over-estimating
 /// guard refuses jobs that would have fit, which is also a bug):
 ///
-/// * `eri3_ao` is TRANSIENT: consumed by the `build_b` transforms and dead
-///   before the chemist blocks are formed.
+/// * `eri3_ao` is TRANSIENT: consumed by the `build_b` transforms and dropped
+///   explicitly before the chemist blocks are formed.
 /// * The dressed `b_*` blocks and the chemist blocks are RESIDENT, as are the
 ///   `ovov_t`/`ovoo_t`/`ovvv_t` clones held for the whole loop. (The `ovvv`
 ///   clone, `no·nv³`, is what the pre-plan guard missed outright.)
@@ -157,15 +158,34 @@ pub struct LadderChoice {
 ///   co-resident within an iteration.
 /// * Dense: `vvvv` is resident and the `wvvvv` build holds three more `nv⁴`
 ///   buffers as the largest transient.
-/// * RI: no `nv⁴` anywhere. The ladder call's scratch is ONE transient,
+/// * RI: no `vvvv`/`wvvvv`. The ladder call's scratch is ONE transient,
 ///   because its parts coexist: `Bx` and `L = B_vv + Bx` (`2·naux·nv²`), the
-///   `blk·nv³` panel, the `nv³` transpose slab and the `no²·nv²` output `Z`.
+///   `blk·nv³` panel (one `nv⁴`-sized buffer at full width), the `nv³`
+///   transpose slab and the `no²·nv²` output `Z`.
 ///   The ladder reads the dressed `b_vv`/`b_ov` in place, so they are not
 ///   charged twice.
 pub fn cs_ccsd_memory_plan(
     shape: CsCcsdShape,
     route: LadderRoute,
     budget_bytes: usize,
+) -> MemoryPlan {
+    let (no, nv) = (shape.no, shape.nv);
+    let label = match route {
+        LadderRoute::Dense => format!("closed-shell CCSD (no={no}, nv={nv} spatial; dense ladder)"),
+        LadderRoute::Ri { block } => {
+            format!("closed-shell CCSD (no={no}, nv={nv} spatial; RI ladder, block {block})")
+        }
+    };
+    labelled_plan(shape, route, budget_bytes, label)
+}
+
+/// [`cs_ccsd_memory_plan`] under a caller-chosen label (the `Auto` fallback
+/// names the refused dense plan in it).
+fn labelled_plan(
+    shape: CsCcsdShape,
+    route: LadderRoute,
+    budget_bytes: usize,
+    label: String,
 ) -> MemoryPlan {
     let CsCcsdShape {
         no,
@@ -178,12 +198,6 @@ pub fn cs_ccsd_memory_plan(
     let nv3 = nv.saturating_pow(3);
     let nv4 = nv.saturating_pow(4);
     let no2 = no.saturating_pow(2);
-    let label = match route {
-        LadderRoute::Dense => format!("closed-shell CCSD (no={no}, nv={nv} spatial; dense ladder)"),
-        LadderRoute::Ri { block } => {
-            format!("closed-shell CCSD (no={no}, nv={nv} spatial; RI ladder, block {block})")
-        }
-    };
     let mut plan = MemoryPlan::with_budget_bytes(budget_bytes, label);
     plan.reserve(
         "eri3_ao (P|mn)",
@@ -335,10 +349,44 @@ pub fn plan_ladder(
             if d.plan.check().is_ok() {
                 d
             } else {
-                ri()
+                auto_fallback(shape, ri().route, &d.plan, budget_bytes)
             }
         }
     })
+}
+
+/// Relabel the RI choice `Auto` fell back to so that a refusal of it also
+/// says the dense plan was refused first, and by how much.
+fn auto_fallback(
+    shape: CsCcsdShape,
+    route: LadderRoute,
+    dense: &MemoryPlan,
+    budget_bytes: usize,
+) -> LadderChoice {
+    let label = format!(
+        "{} [Auto: the dense-ladder plan needs {:.2} GB and was refused first]",
+        cs_ccsd_memory_plan(shape, route, budget_bytes).label(),
+        dense.peak_bytes() as f64 / 1e9
+    );
+    LadderChoice {
+        route,
+        plan: labelled_plan(shape, route, budget_bytes, label),
+    }
+}
+
+/// Tell the user when `Auto` took the slower RI route because the dense plan
+/// did not fit (stderr; the route is also on `CcResult::ladder_route`).
+fn note_auto_fallback(shape: CsCcsdShape, ladder: CcsdLadder, route: LadderRoute, budget: usize) {
+    if let (CcsdLadder::Auto, LadderRoute::Ri { block }) = (ladder, route) {
+        let dense = cs_ccsd_memory_plan(shape, LadderRoute::Dense, budget).peak_bytes();
+        eprintln!(
+            "note: closed-shell CCSD ladder = auto: the dense ladder needs {:.2} GB, over the \
+             {:.2} GB budget, so the RI ladder runs instead (block {block}; same energy, \
+             slower per iteration). Set the ladder explicitly to silence this.",
+            dense as f64 / 1e9,
+            budget as f64 / 1e9
+        );
+    }
 }
 
 /// The ceiling `plan_ladder` sizes against: the resolved budget, narrowed to
@@ -408,6 +456,7 @@ fn commit_ladder_plan(
     let pool = ferric_core::memory::pool::global();
     let budget = ladder_budget_bytes(cfg.memory_budget_bytes, pool.as_ref());
     let LadderChoice { route, mut plan } = plan_ladder(shape, cfg, budget)?;
+    note_auto_fallback(shape, cfg.ladder, route, budget);
     if let Some(pool) = pool {
         plan = plan.with_pool(&pool);
     }
@@ -418,8 +467,9 @@ fn commit_ladder_plan(
 /// The dense `cc_Wvvvv` intermediate,
 /// `W_abcd = (ac|bd) − Σ_k (kd|ac) t1_kb − Σ_k (kc|bd) t1_ka`.
 ///
-/// Dense route only: it and the `perm(vvvv)` temporary it needs are `nv⁴`
-/// each. The RI route computes the same contraction blocked
+/// Dense route only. With `vvvv` resident its peak is four `nv⁴` buffers
+/// (`vvvv`, the two t1 terms, and `W` itself, formed in place from the
+/// permuted `(ac|bd)` copy), which is what the dense plan charges. The RI route computes the same contraction blocked
 /// ([`crate::ri_ladder`]).
 fn build_wvvvv(vvvv: &ArrayD<f64>, ovvv: &ArrayD<f64>, t1_t: &Tensor<2>) -> Tensor<4> {
     use Axis::{O, V};
@@ -430,8 +480,10 @@ fn build_wvvvv(vvvv: &ArrayD<f64>, ovvv: &ArrayD<f64>, t1_t: &Tensor<2>) -> Tens
     let ovvv_kcbd_t = lbl4(ovvv.clone(), [O, V, V, V]);
     let a2: ArrayD<f64> = perm(&einsum!("kcbd,ka->cbda", &ovvv_kcbd_t, t1_t), &[3, 1, 0, 2]);
     // (ac|bd) = vvvv.transpose(0,2,1,3).
-    let a3 = perm(vvvv, &[0, 2, 1, 3]);
-    lbl4(&a3 - &a1 - &a2, [V, V, V, V])
+    let mut w = perm(vvvv, &[0, 2, 1, 3]);
+    w -= &a1;
+    w -= &a2;
+    lbl4(w, [V, V, V, V])
 }
 
 /// The particle-particle ladder `Σ_cd W_abcd τ_ij^cd`, in `[i,j,a,b]` order,
@@ -471,11 +523,10 @@ pub fn ccsd_closed_shell(
     rhf: &ScfResult,
     cfg: &CcConfig,
 ) -> Result<CcResult, FerricError> {
-    let nbas = obs.nbasis();
-    let nocc_total = rhf.eps_r().iter().filter(|&&e| e < 0.0).count();
+    let shape = cs_shape(obs, dfbs, rhf, cfg)?;
+    let (no, nv) = (shape.no, shape.nv); // spatial active occ / virtual
     let first_occ = cfg.frozen_core;
-    let no = active_occ(nocc_total, first_occ)?; // spatial active occ
-    let nv = nbas - nocc_total; // spatial virtual
+    let nocc_total = shape.nbas - nv;
 
     let eps = rhf.eps_r();
     let c = rhf.mos_r();
@@ -484,7 +535,6 @@ pub fn ccsd_closed_shell(
 
     // Fail-fast size guard: the plan and the route are one decision (see
     // `cs_ccsd_memory_plan`, `plan_ladder`). `_charge` lives to the end.
-    let shape = cs_shape(obs, dfbs, rhf, cfg)?;
     let (route, plan, _charge) = commit_ladder_plan(shape, cfg)?;
 
     // V^{-1/2} metric and AO 3-center integrals, then dressed RI MO blocks.
@@ -501,6 +551,7 @@ pub fn ccsd_closed_shell(
     );
     let b_oo = build_b(&transform_3center_oo(&eri3_ao, &c_occ), &v_inv_sqrt, O, O);
     let b_vv = build_b(&transform_3center_vv(&eri3_ao, &c_vir), &v_inv_sqrt, V, V);
+    drop(eri3_ao); // charged as Transient by the plan
     let b_vo = transpose_b(&b_ov);
 
     // --- chemist-notation MO integral blocks (pq|rs) = Σ_P B^P_pq B^P_rs ---
@@ -944,6 +995,7 @@ pub fn ccsd_closed_shell(
                 correlation_energy: e_corr,
                 t1: Some(t1_out),
                 t2: t2_out,
+                ladder_route: Some(route),
             });
         }
         e_old = e_corr;
@@ -1203,7 +1255,7 @@ mod tests {
     }
 
     /// The RI route's refusal must name ITS scratch, and must NOT charge (or
-    /// name) an `nv⁴` block it never allocates. Auto under a budget nothing
+    /// name) the `vvvv` block it never allocates. Auto under a budget nothing
     /// fits falls through to RI, so it must refuse the same way.
     #[test]
     fn cs_ccsd_ri_refusal_names_the_ladder_scratch_not_vvvv() {
@@ -1230,6 +1282,11 @@ mod tests {
             assert!(
                 msg.contains("RI ladder scratch"),
                 "{ladder:?}: must name the scratch: {msg}"
+            );
+            assert_eq!(
+                msg.contains("dense-ladder plan needs"),
+                ladder == CcsdLadder::Auto,
+                "{ladder:?}: only an Auto refusal says the dense plan was refused first: {msg}"
             );
             assert!(
                 msg.contains("ovvv"),
@@ -1302,12 +1359,17 @@ mod tests {
             "one byte under the dense threshold Auto must take RI, got {tight_route:?}"
         );
 
-        let e_dense = ccsd_closed_shell(&mol, &obs, &dfbs, op, &rhf, &with_budget(1 << 34))
-            .unwrap()
-            .correlation_energy;
-        let e_ri = ccsd_closed_shell(&mol, &obs, &dfbs, op, &rhf, &with_budget(tight))
-            .expect("the RI plan must accept the budget the dense plan just refused")
-            .correlation_energy;
+        let r_dense =
+            ccsd_closed_shell(&mol, &obs, &dfbs, op, &rhf, &with_budget(1 << 34)).unwrap();
+        let r_ri = ccsd_closed_shell(&mol, &obs, &dfbs, op, &rhf, &with_budget(tight))
+            .expect("the RI plan must accept the budget the dense plan just refused");
+        assert_eq!(r_dense.ladder_route, Some(LadderRoute::Dense));
+        assert_eq!(
+            r_ri.ladder_route,
+            Some(tight_route),
+            "the result must carry the route"
+        );
+        let (e_dense, e_ri) = (r_dense.correlation_energy, r_ri.correlation_energy);
         println!("Auto: dense E={e_dense:.12} RI({tight_route:?}) E={e_ri:.12}");
         assert!(e_dense.abs() > 0.1, "vacuous");
         assert!(
@@ -1666,6 +1728,7 @@ mod tests {
             correlation_energy: r_cs.correlation_energy,
             t1: Some(t1_x.into_dimensionality::<ndarray::Ix2>().unwrap()),
             t2: t2_x.into_dimensionality::<ndarray::Ix4>().unwrap(),
+            ladder_route: None,
         };
         let e_t_conv = crate::ccsd_t::ccsd_t(&mol, &obs, &dfbs, op, &rhf, &r_conv, &cfg).unwrap();
 
@@ -1697,8 +1760,9 @@ mod tests {
     /// The two paths use the SAME `B` tensors and the same algebra — the RI form
     /// is an exact refactor of `W_abcd`, not an approximation — so they must
     /// agree far below the RI fitting floor. The only difference admissible is
-    /// floating-point reassociation of the aux sum inside `matrixmultiply`'s
-    /// blocked GEMM, which is `~1e-13`-class, amplified over ~12 CCSD iterations.
+    /// floating-point reassociation of the aux sum inside the (OpenBLAS) GEMMs,
+    /// whose blocking depends on the matrix shape, amplified over ~12 CCSD
+    /// iterations.
     ///
     /// Mutation-verified: dropping either `Bx` cross term, transposing a `B`
     /// slice, or truncating the final `a` block each fail this test.

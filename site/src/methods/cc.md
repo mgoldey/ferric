@@ -60,20 +60,36 @@ of closed-shell CCSD can be evaluated two ways, chosen by `[cc] ladder`
 
 - **`dense`** holds the chemist (ab|cd) block in core and builds W<sub>abcd</sub>
   every iteration: n<sub>v</sub>⁴ memory, a few times over.
-- **`ri`** never forms an n<sub>v</sub>⁴ tensor. It rebuilds the (ac|bd)
-  entries from the RI 3-index tensors in a<sub>blk</sub>·n<sub>v</sub>³ panels
-  every iteration, with the panel width set by the memory budget. It is the
-  same algebra over the same tensors, not an approximation: on water/cc-pVDZ
-  ΔE = 0 and max|Δt2| = 1.4e-17, and the alkane energies below agree to
+- **`ri`** holds neither the (ab|cd) block nor W<sub>abcd</sub>. It rebuilds
+  the (ac|bd) entries from the RI 3-index tensors every iteration in
+  a<sub>blk</sub>·n<sub>v</sub>³ panels: at most one n<sub>v</sub>⁴-sized
+  panel at full width (dense holds four n<sub>v</sub>⁴ buffers at its peak),
+  and narrower panels when the budget requires. It is the same algebra over
+  the same tensors, not an approximation: on water/cc-pVDZ |ΔE| and
+  max|Δt| are ≲ 3e-17 (round-off), and the alkane energies below agree to
   all 10 printed digits.
-- **`auto`** (the default) runs `dense` when its memory plan fits the budget
-  and `ri` otherwise. It is never refused where `ri` would run, and never
-  slower where `dense` fits. The run prints the route taken
-  (`ladder = dense (auto)`).
+- **`auto`** (the default) runs `dense` whenever its memory plan fits the
+  budget and `ri` otherwise, so it is never refused where `ri` would run.
+  When it falls back to `ri` it says so on stderr. The route taken is
+  printed (`ladder = dense (auto)`), logged, and returned
+  (`CcResult::ladder_route`; Python `CcResult.ladder_route`).
+
+**Behaviour change.** Before `[cc] ladder` existed, a closed-shell CCSD job
+whose dense plan exceeded the memory budget was refused; under `auto` it now
+runs on the RI ladder instead. And because `auto` decides against the
+budget, a run without an explicit `[memory] budget_gb` (which is then
+auto-detected as 0.8 × the RAM available at start-up) can take different
+routes on the same input from one run to the next. The energies agree to
+round-off either way, but the time does not. Set `ladder` explicitly, or
+fix the budget, for reproducible timings.
 
 Measured 2026-10-26, alkane/cc-pVDZ (cc-pvdz-ri), `OPENBLAS_NUM_THREADS=1`,
 `RAYON_NUM_THREADS=4`, routes interleaved one per process, load average 3–6
-from other jobs (`benchmarks/harness/examples/ri_ccsd_memory.rs`):
+from other jobs (`benchmarks/harness/examples/ri_ccsd_memory.rs`). RI ran at
+full block width (a<sub>blk</sub> = n<sub>v</sub>, the default-budget
+choice). Per-iteration time is (time for k iterations − setup time) / k,
+repeated 4× per route for water, 3× for C3H8 and 2× for C4H10/C5H12;
+ratios are of the medians. Peak RSS is one converged run per route.
 
 | System | n<sub>v</sub> | Per iteration, dense | Per iteration, RI | RI / dense | Peak RSS, dense | Peak RSS, RI |
 |---|---|---|---|---|---|---|
@@ -82,12 +98,11 @@ from other jobs (`benchmarks/harness/examples/ri_ccsd_memory.rs`):
 | C4H10 | 89 | 3.2–3.7 s | 5.2–5.3 s | 1.50 | 3.79 GB | 1.67 GB |
 | C5H12 | 109 | 8.8–10.8 s | 14.5–14.6 s | 1.48 | 7.90 GB | 3.40 GB |
 
-Per-iteration time is (time for k iterations − setup time) / k; ratios are of
-the medians. RI is 1.3–1.5× slower per iteration from n<sub>v</sub> ≈ 70 up
-and uses 2.1–2.3× less memory, which is why `auto` takes it only when `dense`
-does not fit. The RI route still holds the n<sub>o</sub>·n<sub>v</sub>³
-`(ia|bc)` block in core, so it removes the n<sub>v</sub>⁴ ceiling but not
-every large tensor.
+RI is 1.3–1.5× slower per iteration from n<sub>v</sub> ≈ 70 up and uses
+2.1–2.3× less memory, which is why `auto` takes it only when `dense` does
+not fit. The RI route still holds the n<sub>o</sub>·n<sub>v</sub>³
+`(ia|bc)` block in core, so it lowers the n<sub>v</sub>⁴ ceiling but does
+not remove every large tensor.
 
 ## LinLCCD and ωB97X-L-V
 
