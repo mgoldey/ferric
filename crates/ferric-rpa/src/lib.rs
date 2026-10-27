@@ -600,7 +600,7 @@ pub(crate) fn run_pdep_rpa_eigensolve(
     // call frame, never spawning a thread or storing the closure past the
     // call — confirmed by reading davidson.rs/lanczos.rs), and `inter` (the
     // source of `b_ov`) is borrowed for this whole function's body (it's
-    // read again below at `inter.v_inv_sqrt.dot(...)`), so the closures can
+    // read again below at `inter.v_inv_sqrt.t().dot(...)`), so the closures can
     // safely capture plain references instead. At benzene aug-cc-pVQZ scale
     // (naux≈2976, nov≈61740) `b_ov.clone()` alone was ~1.4 GB — a pure
     // aliasing change, zero numerical effect (see `dense_legacy_path_clone_

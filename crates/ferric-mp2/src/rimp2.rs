@@ -1592,7 +1592,7 @@ pub struct RpaIntermediates {
     pub b_ov: Array2<f64>,
     /// The metric factor `F`, shape `(naux, naux_src)`: the map from the
     /// `naux_src` physical aux functions onto the `naux` dressed rows of
-    /// `b_ov`, i.e. `B = F·(Q|ia)` with `F V Fᵀ = I` (`V = (P|Q)`).
+    /// `b_ov`, i.e. `B = F·(Q|ia)` with `F V Fᵀ = I` (`V = (P|Q)`; a projector when a lindep-filtered eigh zeroes modes).
     ///
     /// ONE convention for every builder and reader (#573): the physical aux
     /// coefficients of a dressed vector `u` are `c = Fᵀ·u` (so `cᵀ V c = I`).
