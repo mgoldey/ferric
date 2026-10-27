@@ -24,8 +24,11 @@
 //!   bars; the singlet anchor is BLIND to spin-channel defects (there
 //!   `τ_α = τ_β`), so every spin mutant is required to fail a POLARIZED pin.
 //!
-//! The weekly all-components FD and the r2SCAN derivative rows are
-//! `validation_pbc_kuks_mgga_rsgdf.rs`.
+//! Per commit: the exactness anchor, the PySCF pins (with the tau defects)
+//! and the singlet anchor. The force and stress FD of the RS-GDF SCF energy
+//! (every component, SCAN and r2SCAN, with the derivative defect ledger) are
+//! weekly, `validation_pbc_kuks_mgga_rsgdf.rs`, as for the closed-shell
+//! RS-GDF meta-GGA force.
 //!
 //! # Measured (2026-10-27, test profile)
 //!
@@ -217,56 +220,3 @@ fn singlet_rsgdf_uks_equals_rks() {
 }
 
 const SINGLET_BAR: f64 = 1e-10;
-
-/// FD step, components and bars of the SCF-energy FD (H3 doublet, 1x1x3).
-/// One component each per commit (every component, both functionals, in the
-/// validation file). Bars: the dense-AFT UKS meta-GGA FD bar (force) and the
-/// closed-shell RS-GDF meta-GGA stress bar (`pbc_kxcstress_mgga.rs`).
-const FORCE_H: f64 = 1e-4;
-const FORCE_COMPS: [(usize, usize); 1] = [(1, 2)];
-const STRESS_H: f64 = 1e-4;
-const STRESS_COMPS: [(usize, usize); 1] = [(2, 2)];
-const FD_BAR: f64 = 1e-7;
-const STRESS_FD_BAR: f64 = 5e-7;
-const MUTANT_BAR: f64 = 1e-5;
-
-/// Polarized RS-GDF SCAN force against the central FD of the converged RS-GDF
-/// SCF energy (H3 doublet / STO-3G, et-sp aux, 1x1x3 complex Bloch AOs, atom
-/// grid), and every spin / tau / RS-GDF-J Pulay defect misses the same FD.
-#[test]
-fn polarized_rsgdf_force_matches_fd_of_the_scf_energy() {
-    let fx = fixture(h_cell(&H3), [1, 1, 3], "SCAN", Jk::Gdf, atom_grid());
-    assert!(spin_asymmetry(&fx) > 0.1, "not polarized");
-    let fd = fd_scf_force(&fx, &h_cell, &H3, FORCE_H, &FORCE_COMPS);
-    let ok = force_miss(&force(&fx, None, None).grad, &fd, &FORCE_COMPS);
-    eprintln!("SCAN RS-GDF force vs FD of the SCF energy: {ok:.2e} (|FD| {fd:?})");
-    assert!(ok < FD_BAR, "{ok:e}");
-    for (name, xm, sm) in force_mutants() {
-        let bad = force_miss(&force(&fx, xm, sm).grad, &fd, &FORCE_COMPS);
-        eprintln!("  force {name}: FD miss {bad:.2e}");
-        assert!(bad > MUTANT_BAR, "{name} survives the FD: {bad:e}");
-    }
-}
-
-/// Polarized RS-GDF SCAN stress against the central FD of the converged
-/// RS-GDF SCF energy under cell strain (uniform 24^3 grid, which strains with
-/// the cell), and the defects miss the same FD.
-#[test]
-fn polarized_rsgdf_stress_matches_fd_of_the_scf_energy() {
-    let fx = fixture(
-        h_cell(&H3),
-        [1, 1, 3],
-        "SCAN",
-        Jk::Gdf,
-        KXcGrid::Uniform([24; 3]),
-    );
-    let fd = fd_scf_stress(&fx, STRESS_H, &STRESS_COMPS);
-    let ok = stress_miss(&stress(&fx, None, None).de_deps, &fd, &STRESS_COMPS);
-    eprintln!("SCAN RS-GDF stress vs FD of the SCF energy: {ok:.2e} (FD {fd:?})");
-    assert!(ok < STRESS_FD_BAR, "{ok:e}");
-    for (name, xm, sm) in stress_mutants() {
-        let bad = stress_miss(&stress(&fx, xm, sm).de_deps, &fd, &STRESS_COMPS);
-        eprintln!("  stress {name}: FD miss {bad:.2e}");
-        assert!(bad > MUTANT_BAR, "{name} survives the FD: {bad:e}");
-    }
-}

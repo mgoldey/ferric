@@ -1,8 +1,11 @@
 //! Weekly validation of the open-shell k-point meta-GGA (UKS SCAN / r2SCAN)
 //! force and stress on the RS-GDF J/K (issue #492). Every test here is
-//! `#[ignore]`d; the per-commit subset (exact-aux anchor, PySCF energy pin,
-//! singlet UKS == RKS, one FD component of force and stress with the defect
-//! ledger) is `pbc_kuks_mgga_rsgdf.rs`, whose header carries the hypotheses.
+//! `#[ignore]`d (the SCF-energy FD costs ~5 min per test); the per-commit
+//! subset (exact-aux anchor, PySCF energy pins with the tau defects, singlet
+//! UKS == RKS) is `pbc_kuks_mgga_rsgdf.rs`, whose header carries the
+//! hypotheses and the full ledger. The derivative defects are caught HERE
+//! only; per commit, the singlet anchor and the Fock guard cover the
+//! derivative path.
 //!
 //! System: the H3 doublet (N_alpha = 2, N_beta = 1) in the a = 4 cube,
 //! STO-3G H, even-tempered s + p aux, RS-GDF `omega = 0.8`, hcore
@@ -38,6 +41,7 @@ fn polarized_rsgdf_force_matches_fd_all_components() {
     let comps = all_atoms(H3.len());
     for f in ["SCAN", "R2SCAN"] {
         let fx = fixture(h_cell(&H3), [1, 1, 3], f, Jk::Gdf, atom_grid());
+        assert!(spin_asymmetry(&fx) > 0.1, "{f}: not polarized");
         let fd = fd_scf_force(&fx, &h_cell, &H3, FORCE_H, &comps);
         let g = force(&fx, None, None);
         let ok = force_miss(&g.grad, &fd, &comps);
