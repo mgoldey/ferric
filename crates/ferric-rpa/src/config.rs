@@ -213,7 +213,9 @@ pub enum Eigensolver {
 pub struct PdepRpaConfig {
     /// Number of frozen core orbitals.
     pub frozen_core: usize,
-    /// Truncate eigenpotentials whose |λ_α(0) − 1| ≤ trunc_thresh.
+    /// Truncate eigenpotentials whose |λ_α(0) − 1| ≤ trunc_thresh. `0` (or
+    /// below) means full rank: every mode is kept, an exact λ = 1 included
+    /// (see [`PdepRpaConfig::n_kept_modes`]).
     pub trunc_thresh: f64,
     /// Maximum subspace size before restart. Applies to whichever
     /// [`Eigensolver`] is selected: Davidson's subspace cap, and (via
@@ -305,6 +307,28 @@ impl Default for PdepRpaConfig {
 }
 
 impl PdepRpaConfig {
+    /// How many of `eigenvalues` (ordered by |λ − 1| descending, as every
+    /// eigensolver here returns them) survive `trunc_thresh`; at least one.
+    ///
+    /// `trunc_thresh <= 0` asks for full rank and keeps every mode. The plain
+    /// filter `|λ − 1| > 0` would silently drop a mode whose λ is exactly 1.0
+    /// (an aux direction with a zero row in B, i.e. a null vector of Π).
+    /// That drop is invisible to the energy (such a mode adds ln 1 + 1 − 1 = 0
+    /// at every frequency) but not to the rank, `eigenvalues_static`, the
+    /// exported eigenpotentials, or an energy evaluated on an operator other
+    /// than the one diagonalized (the Boys-screened path).
+    pub fn n_kept_modes(&self, eigenvalues: &[f64]) -> usize {
+        let n = if self.trunc_thresh <= 0.0 {
+            eigenvalues.len()
+        } else {
+            eigenvalues
+                .iter()
+                .filter(|&&lam| (lam - 1.0).abs() > self.trunc_thresh)
+                .count()
+        };
+        n.max(1)
+    }
+
     /// Set the number of frozen core orbitals.
     pub fn with_frozen_core(mut self, n: usize) -> Self {
         self.frozen_core = n;
@@ -434,6 +458,18 @@ impl Default for SternheimerConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Full rank keeps an exact λ = 1 mode; a positive threshold still drops
+    /// it. Mutation: the old `|λ − 1| > 0` filter returns 2 here, not 3.
+    #[test]
+    fn zero_trunc_thresh_keeps_an_exact_unit_mode() {
+        let lams = [3.0, 1.5, 1.0];
+        let cfg = |t| PdepRpaConfig::default().with_trunc_thresh(t);
+        assert_eq!(cfg(0.0).n_kept_modes(&lams), 3);
+        assert_eq!(cfg(1e-4).n_kept_modes(&lams), 2);
+        assert_eq!(cfg(0.75).n_kept_modes(&lams), 1);
+        assert_eq!(cfg(10.0).n_kept_modes(&lams), 1, "at least one mode");
+    }
 
     #[test]
     fn auto_resolves_dense_below_cutoff_boys_at_or_above() {

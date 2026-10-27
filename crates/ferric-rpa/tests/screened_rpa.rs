@@ -696,16 +696,17 @@ fn screened_eps_loc_are_genuine_eigenvalues_not_a_diagonal() {
 }
 
 /// Boys-screened Lanczos at `thresh = 0` against the dense full-rank solve,
-/// returning `(converged, n_eigenpotentials, max |Δλ|, |ΔE|)`. `Δλ` is over
-/// the modes with `|λ − 1| > 1e-8`: at frozen_core 1 `nov = 76 < naux = 84`,
-/// so 8 modes are exactly 1 and rounding alone decides which survive the
-/// `λ − 1 > 0` truncation (they carry no energy).
+/// returning `(converged, n_eigenpotentials, dense n_eigenpotentials,
+/// max |Δλ|, |ΔE|)`. `Δλ` is over the modes with `|λ − 1| > 1e-8`: at
+/// frozen_core 1 `nov = 76 < naux = 84`, so 8 modes sit at λ = 1 to rounding
+/// and the two solves need not order them alike (they carry no energy).
+/// `thresh = 0` keeps all of them.
 ///
 /// The screened PDEP solve asks for ALL `naux` eigenpairs from a seed of
 /// width `n_occ_loc`. Before the full-request fix, a block size that does not
 /// divide `naux` capped the Krylov space below `naux`, so the solve could never
 /// converge (water/cc-pVDZ frozen_core 0: 80 of 84 pairs, `converged = false`).
-fn boys_lanczos_vs_dense(frozen_core: usize) -> (bool, usize, f64, f64) {
+fn boys_lanczos_vs_dense(frozen_core: usize) -> (bool, usize, usize, f64, f64) {
     let (mol, obs, dfbs, op, rhf) = setup(
         "../../testdata/molecules/water.xyz",
         "cc-pvdz",
@@ -761,6 +762,7 @@ fn boys_lanczos_vs_dense(frozen_core: usize) -> (bool, usize, f64, f64) {
     (
         r_scr.eigensolver_converged,
         r_scr.n_eigenpotentials,
+        r_dense.n_eigenpotentials,
         max_dl,
         de,
     )
@@ -769,7 +771,7 @@ fn boys_lanczos_vs_dense(frozen_core: usize) -> (bool, usize, f64, f64) {
 /// EXACTNESS ANCHOR for the full-request fix: nocc 5 does not divide naux 84.
 #[test]
 fn boys_lanczos_full_request_converges_when_block_does_not_divide_naux() {
-    let (converged, n_eig, max_dl, de) = boys_lanczos_vs_dense(0);
+    let (converged, n_eig, _, max_dl, de) = boys_lanczos_vs_dense(0);
     assert!(converged, "84 % 5 != 0 must still converge");
     assert_eq!(
         n_eig, 84,
@@ -779,12 +781,17 @@ fn boys_lanczos_full_request_converges_when_block_does_not_divide_naux() {
     assert!(de < 1e-10, "energy vs dense: |dE| {de:.3e}");
 }
 
-/// Control: nocc 4 divides naux 84; this path converged before the fix and
-/// still runs the block Lanczos iteration unchanged.
+/// nocc 4 divides naux 84. The block Lanczos converged here before #573,
+/// but a full request is now solved densely whatever the block. With
+/// `nov = 76 < naux = 84`, 8 modes sit at λ = 1 to rounding: `thresh = 0`
+/// keeps all 84 on both paths. None lands on exactly 1.0 here (measured), so
+/// this pin does not catch the old `|λ − 1| > 0` filter;
+/// `full_rank_keeps_unit_modes.rs` does.
 #[test]
 fn boys_lanczos_full_request_converges_when_block_divides_naux() {
-    let (converged, _n_eig, max_dl, de) = boys_lanczos_vs_dense(1);
+    let (converged, n_eig, n_dense, max_dl, de) = boys_lanczos_vs_dense(1);
     assert!(converged);
+    assert_eq!((n_eig, n_dense), (84, 84), "thresh 0 keeps every mode");
     assert!(max_dl < 1e-10, "spectrum vs dense: max |dλ| {max_dl:.3e}");
     assert!(de < 1e-10, "energy vs dense: |dE| {de:.3e}");
 }
