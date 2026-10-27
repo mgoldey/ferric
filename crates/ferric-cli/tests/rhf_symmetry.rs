@@ -196,19 +196,22 @@ fn unsupported_combinations_are_refused_by_name() {
             "[scf]\nsymmetry = true\n",
             "kind = \"rhf\"",
         ),
+        // Blocked RKS is supported (kind = "ksdft", or "rhf" + [dft]
+        // functional); what stays refused is dispersion and any task but
+        // a single-point energy.
         (
-            "ksdft",
+            "ksdft_disp",
             "ksdft",
             "energy",
-            "[scf]\nsymmetry = true\n",
-            "kind = \"rhf\"",
+            "[scf]\nsymmetry = true\n[dft]\nfunctional = \"PBE\"\ndispersion = \"d3bj\"\n",
+            "[dft] dispersion",
         ),
         (
-            "dft",
-            "rhf",
-            "energy",
+            "ksdft_opt",
+            "ksdft",
+            "optimize",
             "[scf]\nsymmetry = true\n[dft]\nfunctional = \"PBE\"\n",
-            "[dft] functional",
+            "task = \"energy\" only",
         ),
         (
             "orphan",
