@@ -288,8 +288,8 @@ pub fn run_pdep_rpa_osv(
     )?;
     if !lz.converged {
         eprintln!(
-            "warning: Lanczos eigensolve did NOT converge ({}); OSV/PNO eigenpotentials \
-             are best-effort",
+            "warning: OSV/PNO eigenpotentials are best-effort: the Lanczos eigensolve did \
+             not converge ({})",
             lanczos::lanczos_stall_summary(&lz, config.eigensolver_conv_thresh)
         );
     }

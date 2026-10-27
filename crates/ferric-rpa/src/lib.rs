@@ -736,8 +736,8 @@ pub(crate) fn run_pdep_rpa_eigensolve(
             )?;
             if !lz.converged {
                 eprintln!(
-                    "warning: Lanczos eigensolve did NOT converge ({}; max_iter={max_iter}); \
-                     PDEP eigenpotentials and the RPA energy built on them are best-effort",
+                    "warning: PDEP eigenpotentials and the RPA energy built on them are \
+                     best-effort: the Boys-screened Lanczos eigensolve did not converge ({})",
                     lanczos::lanczos_stall_summary(&lz, config.eigensolver_conv_thresh)
                 );
             }
