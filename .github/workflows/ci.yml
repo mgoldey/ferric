@@ -1509,7 +1509,14 @@ jobs:
 
       - name: Build ferric-python extension (release)
         if: ${{ !cancelled() && matrix.partition == 4 }}
-        run: uv run maturin develop --release --locked
+        run: |
+          # --no-sync: a plain `uv run` first does its OWN PEP 517 editable build,
+          # so maturin develop then builds a second time with cargo fresh; maturin
+          # 1.13.3 then copies target/maturin/libferric.so onto a hardlink of itself
+          # and truncates it ("Object is too small", nightly 2026-10-27). The rm is
+          # belt-and-braces for any other double build.
+          rm -rf target/maturin
+          uv run --no-sync maturin develop --release --locked
 
       # The binding-vs-CLI tests (test_ks_moving_grid_frequencies.py) compare
       # the extension with the CLI binary of the same tree; FERRIC_CLI below
@@ -1526,9 +1533,9 @@ jobs:
           # conftest.py turns a failed `import ferric` into a whole-suite SKIP
           # (right for a dev box, wrong here: zero tests run would read as a
           # pass). Import first so a broken build fails this step loudly.
-          uv run python -c "import ferric"
+          uv run --no-sync python -c "import ferric"
           FERRIC_CLI="$PWD/target/release/ferric-cli" OPENBLAS_NUM_THREADS=1 \
-            uv run pytest -m validation crates/ferric-python/tests/ -q
+            uv run --no-sync pytest -m validation crates/ferric-python/tests/ -q
 
   # One validation test too long for any shard: Cr(CO)6 (199 AOs, exact 4-index
   # J/K) through the default SCF ladder with stability analysis. Every CI run
@@ -2422,7 +2429,14 @@ jobs:
         # `maturin develop` invokes cargo underneath; --locked carries the
         # same rationale as every other cargo invocation in this file (see
         # build-and-test's "Check (all targets)" step).
-        run: uv run maturin develop --release --locked
+        run: |
+          # --no-sync: a plain `uv run` first does its OWN PEP 517 editable build,
+          # so maturin develop then builds a second time with cargo fresh; maturin
+          # 1.13.3 then copies target/maturin/libferric.so onto a hardlink of itself
+          # and truncates it ("Object is too small", nightly 2026-10-27). The rm is
+          # belt-and-braces for any other double build.
+          rm -rf target/maturin
+          uv run --no-sync maturin develop --release --locked
 
       - name: pytest -- Python bindings, with coverage
         # PROVISIONAL, continue-on-error: this suite has never been run in
@@ -2431,7 +2445,7 @@ jobs:
         # Flip to BLOCKING once a run has actually gone green here.
         continue-on-error: true
         run: |
-          uv run pytest crates/ferric-python/tests/ \
+          uv run --no-sync pytest crates/ferric-python/tests/ \
             --cov=ferric --cov-report=lcov:python-ext-coverage.lcov -q
 
       - name: Upload Python extension coverage artifact
