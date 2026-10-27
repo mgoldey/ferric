@@ -22,9 +22,10 @@
 //! | Gamma UKS CAM-B3LYP | `dft::gamma_uks_rsh` | `gamma_rsh` → 1x1x1 `kuxcgrad` (force only) |
 //! | Gamma ROKS CAM-B3LYP | `rohf::gamma_roks_rsh` | `gamma_rsh` → 1x1x1 `kuxcgrad` ROKS (force only) |
 //!
-//! Not a path: the open-shell RSH STRESS (UKS and ROKS) does not exist with
-//! or without the switch (the UKS stress has no range-separated term); it is
-//! refused by name, pinned per commit by `pbc_grid_switch_refusals.rs`. ROKS
+//! Not a path: the open-shell RSH STRESS (UKS and ROKS) was library-absent
+//! when this file was written (it landed later in #492, library only, and
+//! the binding gates still refuse it by name, pinned per commit by
+//! `pbc_grid_switch_refusals.rs`). ROKS
 //! meta-GGA has no SCF (refused by `kroks` / `rohf`), so it has no derivative
 //! to check. Open-shell meta-GGA at Gamma routes through the k code on a
 //! 1x1x1 mesh (the k UKS SCAN row).

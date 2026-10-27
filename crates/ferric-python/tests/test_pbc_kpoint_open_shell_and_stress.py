@@ -557,42 +557,27 @@ def test_open_shell_refusals_have_exact_wording(basis):
             r"only \(no meta-GGA for k-point ROKS; run_uks_kpts has SCAN / r2SCAN\)$",
         ):
             _roks(H3_ATOMS, basis, f)
-    # Open-shell range-separated hybrids: the UKS force runs on the dense-AFT
-    # J/K (test_pbc_rsh_open_mgga_derivs.py); the UKS stress, the UKS force on
-    # RS-GDF and every ROKS derivative are refused by name.
+    # Open-shell range-separated hybrids: the HSE06 / CAM-B3LYP force and
+    # stress run on either J/K (#498, test_pbc_rsh_open_mgga_derivs.py); an
+    # unvalidated one (wB97X) is refused by name, per requested derivative.
+    wb = "HYB_GGA_XC_WB97X"
+    msg = (
+        rf"General error: {wb}: the range-separated hybrid force and stress are "
+        r"validated for HSE06 / CAM-B3LYP \(HYB_GGA_XC_CAM_B3LYP\) only; "
+        rf"{wb} runs as an energy$"
+    )
     for run, kw, want in (
-        (
-            _uks,
-            {"with_stress": True},
-            r"^run_uks_kpts: with_stress: General error: HSE06: the k-point UKS "
-            r"range-separated hybrid stress is not implemented \(the UKS stress has no "
-            r"range-separated term\); the UKS force is available on the dense-AFT J/K$",
-        ),
+        (_uks, {"with_stress": True}, rf"^run_uks_kpts: with_stress: {msg}"),
         (
             _uks,
             {"with_gradient": True, "jk": "rsgdf", "auxbasis": "cc-pvdz-ri"},
-            r"^run_uks_kpts: with_gradient: General error: HSE06: the k-point UKS "
-            r"range-separated hybrid force runs on the dense-AFT J/K only in the bindings "
-            r"\(the library RS-GDF force, kpoint_uks_gradient, is not wired yet\); use jk "
-            r'= "dense"$',
+            rf"^run_uks_kpts: with_gradient: {msg}",
         ),
-        (
-            _roks,
-            {"with_gradient": True},
-            r"^run_roks_kpts: with_gradient: General error: HSE06: the k-point ROKS "
-            r"range-separated hybrid force and stress are not implemented in the bindings "
-            r"\(the library has the dense-AFT and RS-GDF ROKS force, kpoint_roks_gradient, "
-            r"unwired; "
-            r"the ROKS stress has no range-separated term\); the UKS force is available on "
-            r"the dense-AFT J/K$",
-        ),
+        (_roks, {"with_gradient": True}, rf"^run_roks_kpts: with_gradient: {msg}"),
+        (_roks, {"with_stress": True}, rf"^run_roks_kpts: with_stress: {msg}"),
     ):
         with pytest.raises(ValueError, match=want):
-            run(H3_ATOMS, basis, "HSE06", **kw)
-    # Both derivatives requested: each is gated (the stress refusal names
-    # with_stress even though the force alone would run).
-    with pytest.raises(ValueError, match=r"^run_uks_kpts: with_stress: "):
-        _uks(H3_ATOMS, basis, "HSE06", with_gradient=True, with_stress=True)
+            run(H3_ATOMS, basis, wb, **kw)
     # UKS meta-GGA derivatives: dense-AFT J/K only.
     with pytest.raises(
         ValueError,

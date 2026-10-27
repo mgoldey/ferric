@@ -256,6 +256,12 @@ impl<'a> FockDiag<'a> {
         Ok(Self { plain, blocked })
     }
 
+    /// Whether this is the per-irrep blocked diagonaliser, which records each
+    /// returned column's irrep on its spec.
+    pub(crate) fn is_blocked(&self) -> bool {
+        self.blocked.is_some()
+    }
+
     pub(crate) fn run(&self, f: &Array2<f64>) -> Result<(Vec<f64>, Array2<f64>), FerricError> {
         match (&self.blocked, self.plain) {
             (Some(b), _) => b.diagonalize(f),

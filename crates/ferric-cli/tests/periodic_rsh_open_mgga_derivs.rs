@@ -57,12 +57,12 @@
 //!   none`: the HSE06 stress anchors fail (the CLI run errors); the SCAN /
 //!   r2SCAN ones pass (no exact exchange: an equivalent mutant there).
 //!
-//! Refusals with exact wording: the Gamma RKS range-separated derivatives on
-//! RS-GDF, derivatives of an unvalidated range-separated hybrid (wB97X; RKS
-//! and UKS, k and Gamma), the UKS range-separated stress, the UKS
-//! range-separated force on RS-GDF (k and Gamma), every ROKS range-separated
-//! derivative (k force and stress, Gamma force), ROKS meta-GGA, UKS meta-GGA
-//! derivatives on RS-GDF.
+//! Refusals with exact wording: derivatives of an unvalidated
+//! range-separated hybrid (wB97X; RKS and UKS, k and Gamma), ROKS meta-GGA,
+//! UKS meta-GGA derivatives on RS-GDF. The open-shell range-separated
+//! derivatives and the Gamma ones on RS-GDF, refused here before, are wired
+//! (#498) and anchored in `periodic_open_rsh_derivs.rs` and its validation
+//! twin.
 
 use ferric_core::basis;
 use ferric_core::mol::Molecule;
@@ -695,32 +695,19 @@ const RSGDF: &str = "jk = \"rsgdf\"\nauxbasis = \"cc-pvdz-ri\"";
 
 #[test]
 fn refusals_have_exact_wording() {
-    // Closed-shell RSH derivatives: on RS-GDF the k-point force and stress
-    // are wired (anchored above and in periodic_kpoint_stress.rs); the Gamma
-    // RS-GDF optimize stays refused (the Gamma route has no RS-GDF exchange
-    // derivative).
+    // The closed- and open-shell RSH derivatives of HSE06 / CAM-B3LYP run on
+    // either J/K at a k-mesh and at Gamma (anchored above, in
+    // periodic_kpoint_stress.rs and in periodic_open_rsh_derivs.rs, #498).
+    // Range-separated hybrids outside the force/stress validation (wB97X)
+    // are refused by name for derivatives, at a k-mesh and at Gamma (dense).
     let base = Input {
         tag: "",
         kind: "rhf",
-        functional: "HSE06",
+        functional: "HYB_GGA_XC_WB97X",
         task: "optimize",
         kmesh: "",
-        cell_extra: RSGDF,
+        cell_extra: "",
     };
-    let e = refused(&Input {
-        tag: "r-g-opt",
-        ..base
-    });
-    assert!(
-        e.contains("method.task = \"optimize\" with [cell]: ")
-            && e.contains(
-                "HSE06: the Gamma-point RKS range-separated hybrid force and stress run on \
-                 the dense-AFT J/K only (the Gamma route has no RS-GDF exchange derivative"
-            ),
-        "{e}"
-    );
-    // Range-separated hybrids outside the force/stress validation (wB97X)
-    // are refused by name for derivatives, at a k-mesh and at Gamma (dense).
     let wb = "HYB_GGA_XC_WB97X: the range-separated hybrid force and stress are validated \
               for HSE06 / CAM-B3LYP (HYB_GGA_XC_CAM_B3LYP) only";
     for (tag, kmesh, prefix) in [
@@ -731,18 +718,11 @@ fn refusals_have_exact_wording() {
         ),
         ("wb-g-opt", "", "method.task = \"optimize\" with [cell]: "),
     ] {
-        let e = refused(&Input {
-            tag,
-            functional: "HYB_GGA_XC_WB97X",
-            kmesh,
-            cell_extra: "",
-            ..base
-        });
+        let e = refused(&Input { tag, kmesh, ..base });
         assert!(e.contains(prefix) && e.contains(wb), "{tag}: {e}");
     }
     let e = refused(&Input {
         tag: "wb-k-stress",
-        functional: "HYB_GGA_XC_WB97X",
         task: "energy",
         kmesh: "[1, 1, 2]",
         cell_extra: "stress = true",
@@ -757,108 +737,11 @@ fn refusals_have_exact_wording() {
         let e = refused(&Input {
             tag,
             kind: "uhf",
-            functional: "HYB_GGA_XC_WB97X",
             kmesh,
-            cell_extra: "",
             ..base
         });
         assert!(e.contains("optimize") && e.contains(wb), "{tag}: {e}");
     }
-    // Open-shell RSH derivatives that stay refused: the UKS stress (k-point;
-    // the CLI has no Gamma stress), the UKS force on RS-GDF (k and Gamma) and
-    // every ROKS derivative (k-point force and stress, Gamma force).
-    let open = Input {
-        tag: "",
-        kind: "uhf",
-        functional: "HSE06",
-        task: "optimize",
-        kmesh: "[1, 1, 2]",
-        cell_extra: "",
-    };
-    let e = refused(&Input {
-        tag: "o-k-stress-uks",
-        task: "energy",
-        cell_extra: "stress = true",
-        ..open
-    });
-    assert!(
-        e.contains(
-            "[cell] stress = true: General error: HSE06: the k-point UKS range-separated hybrid \
-             stress is not implemented (the UKS stress has no range-separated term); the UKS \
-             force is available on the dense-AFT J/K"
-        ),
-        "{e}"
-    );
-    let e = refused(&Input {
-        tag: "o-k-opt-uks-gdf",
-        cell_extra: RSGDF,
-        ..open
-    });
-    assert!(
-        e.contains(
-            "method.task = \"optimize\" with [cell] kmesh: General error: HSE06: the k-point \
-             UKS range-separated hybrid force runs on the dense-AFT J/K only in the bindings (the \
-             library RS-GDF force, kpoint_uks_gradient, is not wired yet); use jk = \"dense\""
-        ),
-        "{e}"
-    );
-    let e = refused(&Input {
-        tag: "o-g-opt-uks-gdf",
-        kmesh: "",
-        cell_extra: RSGDF,
-        ..open
-    });
-    assert!(
-        e.contains("method.task = \"optimize\" with [cell]: ")
-            && e.contains(
-                "HSE06: the Gamma-point UKS range-separated hybrid force runs on the dense-AFT \
-                 J/K only (the Gamma route has no RS-GDF exchange derivative"
-            ),
-        "{e}"
-    );
-    let roks_k = "General error: HSE06: the k-point ROKS range-separated hybrid force and \
-                  stress are not implemented in the bindings (the library has the dense-AFT \
-                  and RS-GDF ROKS force, kpoint_roks_gradient, unwired; the ROKS stress has no \
-                  range-separated term); the UKS force is available on the dense-AFT J/K";
-    let ro = Input {
-        tag: "",
-        kind: "rohf",
-        ..open
-    };
-    let e = refused(&Input {
-        tag: "o-k-opt-roks",
-        ..ro
-    });
-    assert!(
-        e.contains(&format!(
-            "method.task = \"optimize\" with [cell] kmesh: {roks_k}"
-        )),
-        "{e}"
-    );
-    let e = refused(&Input {
-        tag: "o-k-stress-roks",
-        task: "energy",
-        cell_extra: "stress = true",
-        ..ro
-    });
-    assert!(
-        e.contains(&format!("[cell] stress = true: {roks_k}")),
-        "{e}"
-    );
-    let e = refused(&Input {
-        tag: "o-g-opt-roks",
-        kmesh: "",
-        ..ro
-    });
-    assert!(
-        e.contains(
-            "HSE06: the Gamma-point ROKS range-separated hybrid force and stress are not \
-             implemented in the bindings (energy only; the library has the dense-AFT ROKS \
-             force, gamma_roks_rsh_gradient, unwired); the UKS force is available on the \
-             dense-AFT J/K"
-        ),
-        "{e}"
-    );
     // ROKS meta-GGA (energy gate) and UKS meta-GGA derivatives on RS-GDF (the
     // energy gate already names the J/K).
     let e = refused(&Input {

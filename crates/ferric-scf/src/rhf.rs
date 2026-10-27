@@ -3350,7 +3350,9 @@ fn solve_rhf_impl(
         if config.mom_after_iter > 0 && iter > config.mom_after_iter {
             if let Some(r) = mom_ref.as_ref() {
                 let empty_open = Array2::<f64>::zeros((c.nrows(), 0));
-                c = crate::mom::mom_reorder(&c, &s, r, &empty_open, nocc, 0);
+                // Permute ε with C: the Fermi-smearing occupations below are
+                // solved from `last_eps` and applied column by column.
+                (c, last_eps) = crate::mom::mom_reorder(&c, &last_eps, &s, r, &empty_open, nocc, 0);
             }
         }
         if config.mom_after_iter > 0 && iter >= config.mom_after_iter {

@@ -167,8 +167,8 @@
 //! strain passes scaled by `c_lr − c_sr` ([`crate::kstress`] scope), with the
 //! same mixed Madelung strain; validated against FD of the zero-XC
 //! range-separated energy (`tests/validation_krsh_rsgdf_force.rs`). The
-//! open-shell (UKS) twin is
-//! [`crate::kuxcstress`] (SCAN and r2SCAN on the dense-AFT J; ROKS refuses
+//! open-shell (UKS, ROKS) twin is [`crate::kuxcstress`] (range-separated
+//! hybrids on either J/K; SCAN and r2SCAN on the dense-AFT J; ROKS refuses
 //! meta-GGA).
 
 use crate::budget::{bytes_of, Ledger};
@@ -757,8 +757,9 @@ pub(crate) fn resolve_global(functional: &str) -> Result<(XcDef, f64), FerricErr
 
 /// [`resolve_global`] with the meta-GGA refusal lifted when `allow_mgga` (the
 /// UKS stress, which narrows meta-GGA further in
-/// `crate::kuxcgrad::resolve_open_shell`); the range-separated refusal keeps
-/// its stress wording.
+/// `crate::kuxcgrad::resolve_open_shell`). A range-separated name is refused
+/// here as a defensive guard only: the open-shell stress entries resolve the
+/// range separation before calling this.
 pub(crate) fn resolve_open_stress(
     functional: &str,
     allow_mgga: bool,
@@ -768,9 +769,9 @@ pub(crate) fn resolve_open_stress(
         return Err(PeriodicDftError::Unsupported {
             feature: "range-separated hybrid stress at k",
             reason: format!(
-                "{functional}: the open-shell k-point XC stress covers LDA, GGA and GLOBAL \
-                 hybrid functionals (the range-separated stress is closed-shell RKS only, \
-                 kpoint_rks_stress)"
+                "{functional}: this resolver covers LDA, GGA and GLOBAL hybrid functionals; \
+                 the open-shell range-separated stress resolves its range separation first \
+                 (kpoint_uks_stress / kpoint_roks_stress)"
             ),
         }
         .into());
@@ -800,9 +801,10 @@ pub(crate) fn resolve_open_stress(
 
 /// [`resolve_global`] that lets meta-GGA and range-separated hybrids
 /// through: the closed-shell stress supplies the tau strain term and the
-/// attenuated-exchange strain (dense-AFT J/K). VV10 and mixing weights
-/// (double hybrids) are refused; the open-shell stress keeps
-/// [`resolve_global`]'s refusal. Returns `(XcDef, global fraction,
+/// attenuated-exchange strain (dense-AFT or RS-GDF J/K). VV10 and mixing
+/// weights (double hybrids) are refused; the open-shell stress uses it for
+/// its range-separated branch only (its meta-GGA gate is
+/// `crate::kuxcgrad::resolve_open_shell`). Returns `(XcDef, global fraction,
 /// Some(RshParams) for a CAM functional)`.
 pub(crate) fn resolve_global_mgga_stress(
     functional: &str,

@@ -881,7 +881,7 @@ jobs:
               cd /io
               NATIVE_PREFIX=/io/native-deps-cache
               export LIBINT2_PREFIX="$NATIVE_PREFIX"
-              # The export's boys.h is stock 2.7.2: fail the build, not warn, if
+              # The exported boys.h is stock 2.7.2: fail the build, not warn, if
               # the boys.h override cannot be applied (issue #234).
               export FERRIC_REQUIRE_PATCHED_BOYS=1
               export PKG_CONFIG_PATH="$NATIVE_PREFIX/lib/pkgconfig:$NATIVE_PREFIX/lib64/pkgconfig"

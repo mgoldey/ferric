@@ -41,7 +41,7 @@
 //! unrestricted-form `W` off stationarity (refused by the gate).
 //!
 //! NOT covered: RS-GDF (`pbc_kuks_rsh_rsgdf_force.rs`), the stress
-//! (refused), wB97X (accepted, not force-tested), p/d shells (H/STO-3G only),
+//! (`pbc_kuks_rsh_stress.rs`), wB97X (accepted, not force-tested), p/d shells (H/STO-3G only),
 //! shifted meshes, a Gamma ROKS on a caller-supplied grid, Python / CLI (the
 //! binding derivative gate still refuses open-shell range separation).
 
@@ -152,7 +152,8 @@ fn equal_fractions_is_the_global_hybrid_roks_force() {
 /// closed/open/virtual diagonal-block part the Roothaan `F_eff` cannot see)
 /// are each refused by the spin guard; the
 /// Roothaan fallback (no stored spin Focks) gives the same force and still
-/// refuses another grid. Also: an unrestricted result, an RS-GDF exchange.
+/// refuses another grid. Also: an unrestricted result, an RS-GDF exchange on
+/// this dense-J SCF (Fock guard).
 #[test]
 fn gamma_roks_rsh_force_is_the_one_point_mesh_force() {
     let g = ro_gamma_fixture(CAM, ExxDiv::Ewald);
@@ -260,9 +261,9 @@ fn gamma_roks_rsh_force_is_the_one_point_mesh_force() {
     )
     .unwrap();
     let e = call(&g.scf, &g.gc, &ex_gdf)
-        .expect_err("RS-GDF Gamma exchange accepted")
+        .expect_err("an RS-GDF exchange on a dense-J SCF accepted")
         .to_string();
-    assert!(e.contains("RS-GDF") && e.contains("no derivative"), "{e}");
+    assert!(e.contains("differs from the SCF's stored"), "{e}");
     let gf = ro_gamma_force(&g).unwrap();
     let k = ro_force(&ro_fixture(
         Kind::Tri(2),
@@ -385,8 +386,9 @@ fn unrestricted_w_is_an_identity_at_convergence_and_refused_off_it() {
 /// Typed refusals of the ROKS RSH force: bare kernels with a range-separated
 /// name, kernels of another functional, a global-hybrid name on
 /// range-separated kernels, RS-GDF J/K carrying the functional's range
-/// separation (open-shell), a missing exxdiv; the ROKS stress with a
-/// range-separated name; and the Python / CLI derivative gate (unchanged).
+/// separation (open-shell), a missing exxdiv; the ROKS stress's Fock guard
+/// and exxdiv refusals on a range-separated source; and the Python / CLI
+/// derivative gate (unchanged).
 #[test]
 fn roks_rsh_force_refusals() {
     use ferric_pbc::kuxcstress::{kpoint_roks_stress, KUksStressConfig};
@@ -458,10 +460,15 @@ fn roks_rsh_force_refusals() {
     };
     // Differentiated since the open-shell RS-GDF force landed
     // (`pbc_kuks_rsh_rsgdf_force.rs`): this DENSE SCF's spin Focks are not
-    // that J/K's, so the Fock guard refuses it, and the ROKS stress refuses
-    // the range-separated source.
+    // that J/K's, so the Fock guard refuses it.
     let e = call(KGradJk::RsGdf(src), "HSE06", &cfg);
     assert!(e.contains("Fock matrix rebuilt"), "{e}");
+    // The open-shell STRESS differentiates a range-separated source too
+    // (#492, `pbc_kuks_rsh_stress.rs`): the RS-GDF one on this DENSE SCF hits
+    // the Fock guard, the dense one needs the SCF's exxdiv.
+    let mut scfg = KUksStressConfig::default();
+    scfg.base.exxdiv = Some(ExxDiv::Ewald);
+    scfg.base.grid = ferric_pbc::kxcgrad::KXcGrid::Atom(grid_cfg());
     let e = kpoint_roks_stress(
         &fx.cell,
         &fx.prep,
@@ -471,11 +478,11 @@ fn roks_rsh_force_refusals() {
         ferric_pbc::kstress::KStressJk::RsGdf(src),
         &fx.res.scf,
         "HSE06",
-        &KUksStressConfig::default(),
+        &scfg,
     )
     .unwrap_err()
     .to_string();
-    assert!(e.contains("range-separated"), "{e}");
+    assert!(e.contains("Fock matrix rebuilt"), "{e}");
     let e = kpoint_roks_stress(
         &fx.cell,
         &fx.prep,
@@ -489,15 +496,11 @@ fn roks_rsh_force_refusals() {
     )
     .unwrap_err()
     .to_string();
-    assert!(e.contains("range-separated"), "{e}");
-    // The binding derivative gate keeps refusing ROKS range separation.
-    use ferric_pbc::kxcgrad::{check_deriv_functional, Deriv, DerivSpin};
+    assert!(e.contains("needs KRksStressConfig::exxdiv"), "{e}");
+    // The binding derivative gate takes ROKS range separation (#498).
+    use ferric_pbc::kxcgrad::{check_deriv_functional, DerivSpin};
     for f in FUNCTIONALS {
-        for d in [Deriv::Force, Deriv::Stress] {
-            assert!(
-                check_deriv_functional(DerivSpin::RestrictedOpen, d, false, f).is_err(),
-                "{f} {d:?}"
-            );
-        }
+        check_deriv_functional(DerivSpin::RestrictedOpen, false, f)
+            .unwrap_or_else(|e| panic!("{f}: {e}"));
     }
 }

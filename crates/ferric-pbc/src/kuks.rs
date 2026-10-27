@@ -41,11 +41,12 @@
 //! `KRsGdf::build_rsh`): the K builder is linear in the density and the
 //! fractions and the MIXED Madelung constant are inside it, so the open-shell
 //! step is `K_σ = K[D_σ]` per spin scaled by 1 (`a = 1`; the reported fraction
-//! is `c_sr`). The library nuclear force on the dense-AFT and RS-GDF J/K is
-//! [`crate::kuxcgrad::kpoint_uks_gradient`] (at Gamma, dense-AFT only,
-//! [`crate::gamma_rsh::gamma_uks_rsh_gradient`]), wired to Python / CLI on the
-//! dense-AFT J/K only (the RS-GDF force is library only); the stress refuses
-//! RSH. Range-separated
+//! is `c_sr`). The nuclear force and stress on the dense-AFT and RS-GDF J/K
+//! are [`crate::kuxcgrad::kpoint_uks_gradient`] and
+//! [`crate::kuxcstress::kpoint_uks_stress`] (at Gamma
+//! [`crate::gamma_rsh::gamma_uks_rsh_gradient`] /
+//! [`crate::gamma_rsh::gamma_uks_rsh_stress`]), wired to Python / CLI on
+//! either J/K for HSE06 / CAM-B3LYP. Range-separated
 //! meta-GGAs, VV10 and double hybrids are refused as at Gamma.
 
 use crate::dense_aft::ExxDiv;

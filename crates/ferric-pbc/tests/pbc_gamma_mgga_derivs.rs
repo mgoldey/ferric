@@ -403,7 +403,8 @@ fn binding_gates() {
     };
     for f in ["SCAN", "r2SCAN", "TPSS", "PBE"] {
         check_gamma_derivs_functional(f).unwrap_or_else(|e| panic!("{f}: {e}"));
-        check_gamma_rks_request(f, true, false).unwrap_or_else(|e| panic!("{f}: {e}"));
+        check_gamma_rks_request(f, &[ferric_pbc::kxcgrad::Deriv::Force], false)
+            .unwrap_or_else(|e| panic!("{f}: {e}"));
         check_gamma_mgga_deriv_jk(f, false).unwrap();
     }
     let e = check_gamma_derivs_functional("MGGA_X_TPSS")
@@ -416,11 +417,11 @@ fn binding_gates() {
     assert!(e.contains("dense-AFT J only"), "{e}");
     // The request gate the bindings call carries the same J/K refusal.
     for f in ["SCAN", "r2SCAN", "TPSS"] {
-        let e = check_gamma_rks_request(f, true, true)
+        let e = check_gamma_rks_request(f, &[ferric_pbc::kxcgrad::Deriv::Stress], true)
             .unwrap_err()
             .to_string();
         assert!(e.contains("dense-AFT J only"), "{f}: {e}");
-        check_gamma_rks_request(f, false, true).unwrap_or_else(|e| panic!("{f}: {e}"));
+        check_gamma_rks_request(f, &[], true).unwrap_or_else(|e| panic!("{f}: {e}"));
     }
     check_gamma_mgga_deriv_jk("PBE", true).unwrap();
 }

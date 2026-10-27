@@ -1385,17 +1385,24 @@ fn solve_rohf_impl(
             // `c_new`) unless the open shell has swapped several iterations
             // running, after which the labels follow orbital continuity.
             let announce = rohf_trace() || (config.verbose && ctx.is_root());
-            let c_new = guard.select(&c, eps_new, c_new, &s, &mut diis, announce);
+            let (eps_new, c_new) = guard.select(&c, eps_new, c_new, &s, &mut diis, announce);
+            // ROHF builds its densities from the integer closed/open blocks, so
+            // nothing below reads ε; it is still permuted with C (mom_reorder
+            // keeps the pair consistent) and then dropped.
             let c_after_mom = if config.mom_after_iter > 0 && iter > config.mom_after_iter {
                 match mom_ref.as_ref() {
-                    Some((ref_closed, ref_open)) => crate::mom::mom_reorder(
-                        &c_new,
-                        &s,
-                        ref_closed,
-                        ref_open,
-                        nocc_double,
-                        nocc_open,
-                    ),
+                    Some((ref_closed, ref_open)) => {
+                        crate::mom::mom_reorder(
+                            &c_new,
+                            &eps_new,
+                            &s,
+                            ref_closed,
+                            ref_open,
+                            nocc_double,
+                            nocc_open,
+                        )
+                        .0
+                    }
                     None => c_new,
                 }
             } else {

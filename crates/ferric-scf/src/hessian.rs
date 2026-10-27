@@ -239,6 +239,22 @@ pub const CPHF_MAX_ITER: usize = 200;
 /// SCF convergence noise is orders of magnitude below it.
 const OCC_CONSISTENCY_TOL: f64 = 1e-4;
 
+/// A UHF result whose MOs leave an occupied-virtual Fock element
+/// `max|C_occᵀ F_σ C_vir|` above this (per spin) is refused as non-stationary.
+///
+/// An ordinary exit returns the eigenvectors of its own F, so that block is
+/// rounding: MEASURED at most 6.0e-15 over every state `uhf_hessian_fd.rs`
+/// and `df_hessian_uhf.rs` hand the Hessian, whatever `density_conv` (a
+/// loosely converged state shows up instead as MOs that miss D, which
+/// `OCC_CONSISTENCY_TOL` refuses). Only MOs that are NOT F's eigenvectors
+/// leave it finite — the semicanonical orbitals a UHF exit returns when its D
+/// is not the aufbau state of F[D] (`uhf::exit_mos_building_density`), which
+/// build D, so the consistency check alone passes them. Their block is the
+/// true orbital gradient (MEASURED 8.6e-4..1.1e-3 for UKS-LDA SH/HCl+). The
+/// response equations assume a stationary point, so refuse it. 1e-5 sits
+/// nine orders above the canonical rounding and under every such gradient.
+const STATIONARITY_TOL: f64 = 1e-5;
+
 /// Per-term breakdown of the analytic RHF (or UHF, see [`UhfHessianParts`])
 /// Hessian. Every matrix is 3N × 3N, Hartree/Bohr², index `3·atom + xyz`.
 #[derive(Debug, Clone)]
@@ -1088,10 +1104,11 @@ fn uhf_state_refusal(mol: &Molecule, uhf: &ScfResult) -> Option<&'static str> {
     if let Some(what) = semicanonical_refusal(uhf) {
         return Some(what);
     }
-    let (Some(cb), Some(eb), Some(db)) = (
+    let (Some(cb), Some(eb), Some(db), Some(fb)) = (
         uhf.mos_beta.as_ref(),
         uhf.eps_beta.as_ref(),
         uhf.density_beta.as_ref(),
+        uhf.fock_beta.as_ref(),
     ) else {
         return Some("a UHF result without β orbitals");
     };
@@ -1122,6 +1139,23 @@ fn uhf_state_refusal(mol: &Molecule, uhf: &ScfResult) -> Option<&'static str> {
         if non_aufbau_eigenvalues(e, n) {
             return Some("non-aufbau UHF occupations (an occupied orbital above a virtual one)");
         }
+    }
+    // MOs consistent with D, eigenvalues in aufbau order, can still be a
+    // non-stationary state: MOs that build D without being F's eigenvectors
+    // leave the occupied-virtual Fock block at the orbital gradient. A
+    // backstop: the UHF exit hands back such MOs (D's semicanonical orbitals)
+    // only for a D whose eigenvalues cross, which the check above refuses.
+    if [
+        (&uhf.mos_alpha, &uhf.fock_alpha, nocc[0]),
+        (cb, fb, nocc[1]),
+    ]
+    .into_iter()
+    .any(|(c, f, n)| occupied_virtual_fock(c, f, n) > STATIONARITY_TOL)
+    {
+        return Some(
+            "a non-stationary UHF state (its MOs leave an occupied-virtual Fock block \
+             above the stationarity bound)",
+        );
     }
     None
 }
@@ -1409,6 +1443,14 @@ fn system_refusal(
         ),
     ];
     checks.iter().find(|(bad, _)| *bad).map(|(_, what)| *what)
+}
+
+/// `max|C_occᵀ F C_vir|` over the first `nocc` and the remaining columns of
+/// `c` (zero padding columns contribute zero).
+fn occupied_virtual_fock(c: &Array2<f64>, f: &Array2<f64>, nocc: usize) -> f64 {
+    let occ = c.slice(s![.., ..nocc]);
+    let vir = c.slice(s![.., nocc..]);
+    max_abs(&occ.t().dot(f).dot(&vir))
 }
 
 fn max_abs(a: &Array2<f64>) -> f64 {

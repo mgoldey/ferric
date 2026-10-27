@@ -10,9 +10,14 @@
   J/K): `run_uks_kpts` and `run_uks_gamma` `with_gradient`.
 * Closed-shell range-separated hybrid force and stress on the k-point RS-GDF
   J/K: `run_rks_kpts` `with_gradient` / `with_stress` with `jk="rsgdf"`.
-* What stays refused, by name: the UKS range-separated stress, the UKS force
-  on RS-GDF (k and Gamma), the Gamma RKS range-separated derivatives on
-  RS-GDF, every ROKS range-separated derivative, wB97X derivatives.
+* Open-shell range-separated hybrid derivatives (HSE06, CAM-B3LYP) on either
+  J/K: the k-point UKS and ROKS force and stress (`run_uks_kpts`,
+  `run_roks_kpts`), the Gamma UKS force and stress (`run_uks_gamma`) and the
+  Gamma ROKS force (`run_roks_gamma`); and the Gamma RKS range-separated
+  force and stress on RS-GDF (`run_rks_gamma`).
+* What stays refused, by name: the Gamma ROKS range-separated stress (no
+  library entry; the (1, 1, 1) k-point ROKS stress has it) and wB97X
+  derivatives.
 
 Anchors:
 
@@ -29,8 +34,16 @@ Anchors:
   gap every pin also asserts (>= 5e-4).
 * Independent constructions inside the binding: the k-point HSE06 (RKS and
   UKS) and UKS SCAN forces against a central FD of the binding's own
-  energies; the Gamma CAM-B3LYP RKS force and stress and UKS force against
-  the (1, 1, 1) mesh.
+  energies; the Gamma CAM-B3LYP RKS force and stress and UKS force, the
+  Gamma ROKS HSE06 force and the Gamma UKS HSE06 stress against the (1, 1, 1)
+  mesh.
+* The open-shell RSH pins (issue #498, second pass) are the CLI `run_end`
+  values of crates/ferric-cli/tests/periodic_open_rsh_derivs.rs and
+  validation_periodic_open_rsh_derivs.rs (zero optimizer steps: the input
+  geometry, H3 at the parsed-xyz Bohr positions below), proven equal to the
+  library BIT FOR BIT there; the Gamma UKS stress pins (the CLI has no Gamma
+  stress) are the library values that file's
+  `gamma_uks_rsh_stress_library_pins` prints.
 
 Mutation ledger (binding source mutated, rebuilt, reverted; both KILLED):
 `run_roks_gamma` with `exxdiv = none` forced misses the ROKS pin by 0.458 Ha;
@@ -191,6 +204,299 @@ KRKS_GDF_G = [
     -0.004763743149494487,
 ]
 RSGDF = dict(jk="rsgdf", auxbasis="cc-pvdz-ri")
+
+# Issue #498, open-shell RSH derivatives: the CLI's parsed-xyz H3 / H2
+# positions (Bohr), at which every pin below was evaluated (zero optimizer
+# steps), and the CLI = library values.
+X_H3 = [
+    0.3,
+    0.19999999999999998,
+    0.09999999999999999,
+    0.35,
+    0.1199999999992441,
+    1.4999999999999998,
+    0.3,
+    1.9,
+    0.39999999999999997,
+]
+X_H2 = X_H3[:6]
+# (tag, route, kpoints, rsgdf, functional, x, E, dE/dR)
+OPEN_RSH_FORCES = [
+    (
+        "k ROKS HSE06",
+        "roks",
+        True,
+        False,
+        "HSE06",
+        X_H3,
+        -1.6217160984287924,
+        [
+            0.0011989843352957809,
+            0.036480027026473516,
+            0.21265141925510397,
+            -0.006992040708774561,
+            0.06141995533871902,
+            -0.36880108267447925,
+            0.005793056373478615,
+            -0.09789998236519418,
+            0.15614966341936926,
+        ],
+    ),
+    (
+        "k ROKS CAM-B3LYP RS-GDF",
+        "roks",
+        True,
+        True,
+        CAM,
+        X_H3,
+        -1.630327859693625,
+        [
+            0.002098814557951564,
+            0.03423909842544136,
+            0.2074955603174627,
+            -0.008487917695619547,
+            0.06032358574149925,
+            -0.36726521650205224,
+            0.006389103137667225,
+            -0.09456268416694055,
+            0.15976965618458278,
+        ],
+    ),
+    (
+        "k UKS CAM-B3LYP RS-GDF",
+        "uks",
+        True,
+        True,
+        CAM,
+        X_H3,
+        -1.6310067486339133,
+        [
+            0.002090003221944596,
+            0.03446603537932972,
+            0.20631937505224038,
+            -0.008483676593427986,
+            0.06031538629026999,
+            -0.3679172739016368,
+            0.006393673371483312,
+            -0.09478142166958423,
+            0.16159789884939157,
+        ],
+    ),
+    (
+        "Gamma ROKS CAM-B3LYP",
+        "roks",
+        False,
+        False,
+        CAM,
+        X_H3,
+        -1.574336912992121,
+        [
+            0.0007132677864258208,
+            0.06561052276857068,
+            0.12271573426884705,
+            -0.013131280872817359,
+            0.1011443041235046,
+            -0.30006128506810587,
+            0.012418013086390876,
+            -0.16675482689207682,
+            0.17734555079924977,
+        ],
+    ),
+    (
+        "Gamma ROKS HSE06 RS-GDF",
+        "roks",
+        False,
+        True,
+        "HSE06",
+        X_H3,
+        -1.5499685607074372,
+        [
+            3.851521263031465e-5,
+            0.06770348004585922,
+            0.12437046501951853,
+            -0.011710407684267368,
+            0.10285399610055798,
+            -0.300184807501043,
+            0.011671892471637357,
+            -0.17055747614642064,
+            0.1758143424815075,
+        ],
+    ),
+    (
+        "Gamma UKS CAM-B3LYP RS-GDF",
+        "uks",
+        False,
+        True,
+        CAM,
+        X_H3,
+        -1.5754918070632955,
+        [
+            0.0008397176360631434,
+            0.06445757985289025,
+            0.12387879945144904,
+            -0.013282704940819784,
+            0.10148428326030391,
+            -0.30240189468214246,
+            0.012442987304757604,
+            -0.16594186311319878,
+            0.1785230952306757,
+        ],
+    ),
+    (
+        "Gamma RKS HSE06 RS-GDF",
+        "rks",
+        False,
+        True,
+        "HSE06",
+        X_H2,
+        -1.5776585570742494,
+        [
+            0.007675787984522898,
+            -0.012363388908638945,
+            0.17190816072919118,
+            -0.007675787984522946,
+            0.012363388908638924,
+            -0.1719081607291914,
+        ],
+    ),
+]
+# (tag, route, kpoints, rsgdf, functional, E, sigma row-major) at X_H3 (H2
+# at X_H2 for the RKS row).
+OPEN_RSH_STRESS = [
+    (
+        "k UKS HSE06",
+        "uks",
+        True,
+        False,
+        "HSE06",
+        -1.6224626688847699,
+        [
+            0.010172508821464862,
+            -5.979458705749496e-5,
+            -7.551634573324573e-5,
+            2.2265592867358865e-5,
+            -0.0028142872768242566,
+            0.0006654222733865025,
+            -0.0001590379112009695,
+            0.00045474016291087736,
+            -0.010419367185719588,
+        ],
+    ),
+    (
+        "k ROKS HSE06",
+        "roks",
+        True,
+        False,
+        "HSE06",
+        -1.6217160984287924,
+        [
+            0.010171734581412038,
+            -5.9960864170078394e-5,
+            -7.533854709877369e-5,
+            2.2228989629024068e-5,
+            -0.0027769588264296447,
+            0.0006633847871327534,
+            -0.00015884509753642554,
+            0.0004524161708584239,
+            -0.010426136374644493,
+        ],
+    ),
+    (
+        "k ROKS CAM-B3LYP RS-GDF",
+        "roks",
+        True,
+        True,
+        CAM,
+        -1.630327859693625,
+        [
+            0.009374012611312202,
+            -2.334295790686042e-5,
+            -0.00011173048691405975,
+            2.7664773736850203e-5,
+            -0.003155836317187604,
+            0.0006367122411249145,
+            -0.00016536944767856464,
+            0.0005086659183455922,
+            -0.009963816416380873,
+        ],
+    ),
+    (
+        "k UKS CAM-B3LYP RS-GDF",
+        "uks",
+        True,
+        True,
+        CAM,
+        -1.6310067486339133,
+        [
+            0.009375382574338254,
+            -2.326717284673426e-5,
+            -0.00011189154131630297,
+            2.767028837332619e-5,
+            -0.003192386984857386,
+            0.0006381633560296673,
+            -0.00016551656247670228,
+            0.0005102603442384379,
+            -0.00996014279051939,
+        ],
+    ),
+    (
+        "Gamma UKS HSE06",
+        "uks",
+        False,
+        False,
+        "HSE06",
+        -1.5513072682853248,
+        [
+            0.009844533534466432,
+            -5.4527968910358136e-5,
+            -9.711154310969468e-5,
+            3.849503929634633e-5,
+            -0.018845108810043535,
+            0.000872103794254751,
+            -0.00017673785711825224,
+            0.0006053574874198606,
+            -0.0015261174092443376,
+        ],
+    ),
+    (
+        "Gamma UKS CAM-B3LYP RS-GDF",
+        "uks",
+        False,
+        True,
+        CAM,
+        -1.5754918070632955,
+        [
+            0.009244335753996089,
+            -1.1434950469432583e-5,
+            -0.00013180352155890267,
+            4.5930101422191205e-5,
+            -0.018956309170521494,
+            0.0008334749309097,
+            -0.0001828865564665271,
+            0.0006701955945700261,
+            -0.0019885910287827926,
+        ],
+    ),
+    (
+        "Gamma RKS HSE06 RS-GDF",
+        "rks",
+        False,
+        True,
+        "HSE06",
+        -1.5776585570742494,
+        [
+            0.006572346770482129,
+            1.013205181174152e-5,
+            -3.203357276020062e-5,
+            1.0373110682834141e-5,
+            0.006558966830035616,
+            5.4250155189842494e-5,
+            -0.00012063984861634764,
+            0.00019344385086120561,
+            0.0029967800761385244,
+        ],
+    ),
+]
 # CLI `[cell] stress = true` tensor (run_end, Hartree/Bohr^3) of the k-point
 # RKS CAM-B3LYP on RS-GDF, H2 at (0.3, 0.2, 0.1), (0.3, 0.2, 1.6) Bohr (the
 # periodic_kpoint_stress.rs cell, which that file proves equal to the library
@@ -217,8 +523,22 @@ GDF_BAR = 1e-6
 # sibling gaps). FD: measured 2.8e-9 (RKS HSE06, h^2 floor of
 # pbc_krsh_force.rs), 4.1e-10 (UKS HSE06), 7.6e-10 / 3.8e-10 (SCAN / r2SCAN);
 # Gamma vs 1x1x1: RKS 1.1e-16 / 1.7e-17, UKS force 3.7e-12.
+# Open-shell RSH pins (#498, 2026-10-26): energy <= 3.8e-15; dense force <=
+# 2.3e-15, dense stress <= 7.5e-17; Gamma RS-GDF force <= 9.1e-15, stress
+# 2.4e-15; k-point RS-GDF force 2.6e-9 / 3.8e-9 and stress 2.0e-10 / 8.0e-11
+# (the roundoff-limited RS-GDF fit seeing the binding's repr-Angstrom vs the
+# CLI's 12-decimal xyz, as for KRKS_GDF above). Gamma vs 1x1x1: ROKS HSE06
+# force 1.2e-14, UKS HSE06 stress 1.7e-13. Bars: G_BAR on every dense and
+# every Gamma pin (the Gamma RS-GDF fit does not show the k-point
+# roundoff); the k-point RS-GDF pins get K_GDF_FORCE_BAR = 1e-7 (26x the
+# worst measured, 8x the 1.25e-8 BLAS-kernel drift noted above) and
+# K_GDF_STRESS_BAR = 1e-8 (50x the worst measured, 6x the 1.65e-9 kernel
+# drift), both far below the RS-GDF - dense gap (>= 1.3e-5 force, >= 6.9e-7
+# stress), so the pins can tell an RS-GDF run from a dense one.
 E_BAR = 1e-12
 G_BAR = 1e-12
+K_GDF_FORCE_BAR = 1e-7
+K_GDF_STRESS_BAR = 1e-8
 FD_H = 1e-4
 FD_BAR = 2e-8
 GAMMA_BAR = 1e-10
@@ -397,52 +717,92 @@ def test_rsgdf_rks_rsh_stress_equals_the_cli(sto3g):
     assert np.abs(r.stress()).max() > 1e-6 and d < GDF_BAR
 
 
+def _open_run(route, kpoints, mol, functional, **kw):
+    fn = {
+        ("rks", True): ferric.run_rks_kpts,
+        ("uks", True): ferric.run_uks_kpts,
+        ("roks", True): ferric.run_roks_kpts,
+        ("rks", False): ferric.run_rks_gamma,
+        ("uks", False): ferric.run_uks_gamma,
+        ("roks", False): ferric.run_roks_gamma,
+    }[(route, kpoints)]
+    mesh = ((1, 1, 2),) if kpoints else ()
+    return fn(mol, _lat(A), ferric.BasisSet.bundled("sto-3g"), functional, *mesh, **kw)
+
+
+@pytest.mark.parametrize(
+    "tag, route, kpoints, gdf, functional, x, e, g",
+    OPEN_RSH_FORCES,
+    ids=[r[0] for r in OPEN_RSH_FORCES],
+)
+def test_open_shell_rsh_forces_equal_the_library(
+    tag, route, kpoints, gdf, functional, x, e, g
+):
+    mol = _mol(_rows(x), 1 if route == "rks" else 2)
+    extra = RSGDF if gdf else {}
+    r = _open_run(route, kpoints, mol, functional, **_kw(with_gradient=True, **extra))
+    de = abs(r.energy - e)
+    dg = float(np.abs(r.gradient().ravel() - np.array(g)).max())
+    print(f"{tag}: binding - library energy {de:.2e}, force {dg:.2e}")
+    assert de < E_BAR and dg < (K_GDF_FORCE_BAR if gdf and kpoints else G_BAR)
+
+
+@pytest.mark.parametrize(
+    "tag, route, kpoints, gdf, functional, e, sigma",
+    OPEN_RSH_STRESS,
+    ids=[r[0] for r in OPEN_RSH_STRESS],
+)
+def test_open_shell_rsh_stress_equals_the_library(
+    tag, route, kpoints, gdf, functional, e, sigma
+):
+    extra = RSGDF if gdf else {}
+    mol = _mol(_rows(X_H2), 1) if route == "rks" else _mol(_rows(X_H3), 2)
+    r = _open_run(route, kpoints, mol, functional, **_kw(with_stress=True, **extra))
+    de = abs(r.energy - e)
+    ds = float(np.abs(r.stress().ravel() - np.array(sigma)).max())
+    print(f"{tag}: binding - library energy {de:.2e}, stress {ds:.2e}")
+    assert np.abs(r.stress()).max() > 1e-6
+    assert de < E_BAR and ds < (K_GDF_STRESS_BAR if gdf and kpoints else G_BAR)
+
+
+def test_gamma_open_shell_rsh_derivatives_equal_the_one_point_mesh(sto3g):
+    # Gamma ROKS force and Gamma UKS stress vs the binding's own (1, 1, 1)
+    # k-point ROKS / UKS derivative (dense AFT): an independent construction.
+    mol, lat = _mol(H3, 2), _lat(A)
+    g = ferric.run_roks_gamma(mol, lat, sto3g, "HSE06", **_kw(with_gradient=True))
+    k = ferric.run_roks_kpts(
+        mol, lat, sto3g, "HSE06", (1, 1, 1), **_kw(with_gradient=True)
+    )
+    dg = float(np.abs(g.gradient() - k.gradient()).max())
+    gs = ferric.run_uks_gamma(mol, lat, sto3g, "HSE06", **_kw(with_stress=True))
+    ks = ferric.run_uks_kpts(
+        mol, lat, sto3g, "HSE06", (1, 1, 1), **_kw(with_stress=True)
+    )
+    ds = float(np.abs(gs.stress() - ks.stress()).max())
+    print(f"Gamma vs 1x1x1: ROKS HSE06 force {dg:.2e}, UKS HSE06 stress {ds:.2e}")
+    assert np.abs(g.gradient()).max() > 1e-3 and np.abs(gs.stress()).max() > 1e-6
+    assert dg < GAMMA_BAR and ds < GAMMA_BAR
+
+
 def test_open_shell_rsh_derivatives_that_stay_refused(sto3g):
     mol3, lat = _mol(H3, 2), _lat(A)
-    uks_stress = r"UKS range-separated hybrid stress is not implemented"
-    with pytest.raises(
-        ValueError, match=rf"^run_uks_kpts: with_stress: .*{uks_stress}"
-    ):
-        ferric.run_uks_kpts(
-            mol3, lat, sto3g, "HSE06", (1, 1, 2), **_kw(with_stress=True)
-        )
-    with pytest.raises(ValueError, match=rf"^run_uks_gamma: .*{uks_stress}"):
-        ferric.run_uks_gamma(mol3, lat, sto3g, "HSE06", **_kw(with_stress=True))
+    # The Gamma ROKS range-separated stress has no library entry.
     with pytest.raises(
         ValueError,
-        match=r"^run_uks_kpts: with_gradient: .*UKS range-separated hybrid force runs "
-        r"on the dense-AFT J/K only",
+        match=r'^run_roks_gamma: functional "HSE06": .*HSE06: the Gamma-point ROKS '
+        r"range-separated hybrid stress has no library entry; the k-point ROKS "
+        r"stress on a 1x1x1 mesh \(the Gamma point\) differentiates it, and the "
+        r"Gamma ROKS force is available",
     ):
-        ferric.run_uks_kpts(
-            mol3, lat, sto3g, CAM, (1, 1, 2), **_kw(with_gradient=True, **RSGDF)
-        )
-    with pytest.raises(
-        ValueError,
-        match=r"^run_uks_gamma: .*Gamma-point UKS range-separated hybrid force runs "
-        r"on the dense-AFT J/K only",
-    ):
-        ferric.run_uks_gamma(mol3, lat, sto3g, CAM, **_kw(with_gradient=True, **RSGDF))
-    with pytest.raises(
-        ValueError,
-        match=r"^run_rks_gamma: .*Gamma-point RKS range-separated hybrid force and "
-        r"stress run on the dense-AFT J/K only",
-    ):
-        ferric.run_rks_gamma(
-            _mol(H2), lat, sto3g, CAM, **_kw(with_gradient=True, **RSGDF)
-        )
-    roks = r"ROKS range-separated hybrid force and stress are not implemented"
-    with pytest.raises(ValueError, match=rf"^run_roks_kpts: with_gradient: .*{roks}"):
-        ferric.run_roks_kpts(
-            mol3, lat, sto3g, "HSE06", (1, 1, 2), **_kw(with_gradient=True)
-        )
-    with pytest.raises(ValueError, match=rf"^run_roks_gamma: .*{roks}"):
-        ferric.run_roks_gamma(mol3, lat, sto3g, "HSE06", **_kw(with_gradient=True))
-    wb = r"HYB_GGA_XC_WB97X: the range-separated hybrid force and stress are validated"
-    with pytest.raises(ValueError, match=rf"^run_uks_kpts: with_gradient: .*{wb}"):
-        ferric.run_uks_kpts(
-            mol3, lat, sto3g, "HYB_GGA_XC_WB97X", (1, 1, 2), **_kw(with_gradient=True)
-        )
-    with pytest.raises(ValueError, match=rf"^run_uks_gamma: .*{wb}"):
-        ferric.run_uks_gamma(
-            mol3, lat, sto3g, "HYB_GGA_XC_WB97X", **_kw(with_gradient=True)
-        )
+        ferric.run_roks_gamma(mol3, lat, sto3g, "HSE06", **_kw(with_stress=True))
+    # wB97X: energy only, every open-shell derivative refused by name.
+    wb = "HYB_GGA_XC_WB97X"
+    msg = rf"{wb}: the range-separated hybrid force and stress are validated"
+    for kw in ("with_gradient", "with_stress"):
+        for fn in (ferric.run_uks_kpts, ferric.run_roks_kpts):
+            with pytest.raises(ValueError, match=rf"^{fn.__name__}: {kw}: .*{msg}"):
+                fn(mol3, lat, sto3g, wb, (1, 1, 2), **_kw(**{kw: True}))
+        with pytest.raises(ValueError, match=rf"^run_uks_gamma: .*{msg}"):
+            ferric.run_uks_gamma(mol3, lat, sto3g, wb, **_kw(**{kw: True}))
+    with pytest.raises(ValueError, match=rf"^run_roks_gamma: .*{msg}"):
+        ferric.run_roks_gamma(mol3, lat, sto3g, wb, **_kw(with_gradient=True))

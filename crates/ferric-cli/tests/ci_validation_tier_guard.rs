@@ -42,7 +42,7 @@
 //! the list would let the archive and the run drift, and a canary missing
 //! from the archive is only caught on a runner. MUTATION: rename a listed
 //! binary, or paste the list back inline into the malloc-perturb job, or
-//! point malloc-perturb at the full `nextest-archive` →
+//! point malloc-perturb at a `nextest-shard-<k>` archive →
 //! `malloc_perturb_canaries_have_one_source` fails.
 //!
 //! And it pins the PRIMARY archive download path (#525): test-shard and
@@ -52,6 +52,13 @@
 //! the fallback and stay green. MUTATION: misspell the artifact name or the
 //! script path in either invocation, or drop the fallback report step →
 //! `archive_downloads_go_through_the_stall_detecting_script` fails.
+//!
+//! And the per-shard archives (#525): build-tests uploads exactly
+//! `nextest-shard-1..N` for an N-entry test-shard matrix and runs the
+//! exactly-once guard, and test-shard runs its whole archive with no
+//! `--partition` (`shard_archives_match_the_matrix`); the SLOW list lives
+//! only in `scripts/ci-shard-plan.sh` and each entry runs nightly
+//! (`slow_binaries_have_one_source_and_run_nightly`).
 
 use std::path::{Path, PathBuf};
 
@@ -868,8 +875,8 @@ fn malloc_perturb_canaries_have_one_source() {
         );
     }
     assert!(
-        !run.contains("nextest-archive"),
-        "malloc-perturb must use the small canary archive, not the full nextest-archive (#525)"
+        !run.contains("nextest-shard"),
+        "malloc-perturb must use the small canary archive, not a test-shard archive (#525)"
     );
 }
 
@@ -891,7 +898,8 @@ fn archive_downloads_go_through_the_stall_detecting_script() {
     for (job_name, invocation) in [
         (
             "test-shard",
-            "run: exec scripts/ci-download-artifact.sh nextest-archive nextest-archive.tar.zst /tmp",
+            "run: exec scripts/ci-download-artifact.sh nextest-shard-${{ matrix.partition }} \
+             nextest-shard-${{ matrix.partition }}.tar.zst /tmp",
         ),
         (
             "malloc-perturb",
@@ -914,5 +922,163 @@ fn archive_downloads_go_through_the_stall_detecting_script() {
                 "{job_name} must contain `{needle}` (#525)"
             );
         }
+    }
+}
+
+const SHARD_PLAN_SCRIPT: &str = "scripts/ci-shard-plan.sh";
+
+/// The `partition: [1, 2, ...]` matrix of `job`, as numbers.
+fn partition_matrix(job_text: &str) -> Vec<u32> {
+    let line = code_only(job_text)
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("partition: [").map(str::to_owned))
+        .expect("job has no `partition: [...]` matrix");
+    line.trim_end_matches(']')
+        .split(',')
+        .map(|v| {
+            v.trim()
+                .parse()
+                .unwrap_or_else(|e| panic!("partition value {v:?}: {e}"))
+        })
+        .collect()
+}
+
+/// Per-shard archives (#525): build-tests packs one archive per test-shard
+/// job and test-shard runs ALL of its own, so the artifact set, the matrix and
+/// the assign count must agree. A shard without an uploaded archive fails
+/// only on a runner; an uploaded archive no shard downloads is a set of
+/// tests that silently never runs; a leftover `--partition` would run only
+/// a quarter of each shard's quarter.
+///
+/// MUTATIONS (each fails this test): drop the `Upload shard archive 4` step;
+/// add `5` to the matrix; set `SHARDS=3`; re-add
+/// `--partition hash:${{ matrix.partition }}/4` to the shard run; delete the
+/// `ci-shard-plan.sh verify` call.
+#[test]
+fn shard_archives_match_the_matrix() {
+    assert!(
+        workspace_root().join(SHARD_PLAN_SCRIPT).is_file(),
+        "{SHARD_PLAN_SCRIPT} is missing"
+    );
+    let ci = ci_yml();
+    let shard = code_only(&job(&ci, "test-shard"));
+    let build = code_only(&job(&ci, "build-tests"));
+
+    let matrix = partition_matrix(&shard);
+    let n = matrix.len() as u32;
+    assert_eq!(
+        matrix,
+        (1..=n).collect::<Vec<_>>(),
+        "test-shard's partition matrix must be 1..=N"
+    );
+
+    // build-tests: the shard count it plans for and the artifacts it uploads.
+    let shards_decl: Vec<&str> = build
+        .lines()
+        .filter_map(|l| l.trim().strip_prefix("SHARDS="))
+        .collect();
+    assert_eq!(
+        shards_decl,
+        [n.to_string().as_str()],
+        "build-tests must set SHARDS={n} exactly once (the test-shard matrix size)"
+    );
+    assert!(
+        build.contains(&format!(
+            "{SHARD_PLAN_SCRIPT} assign \"$PLAN-full.json\" scripts/ci-shard-weights.tsv \"$SHARDS\""
+        )),
+        "build-tests must run `{SHARD_PLAN_SCRIPT} assign ... \"$SHARDS\"`"
+    );
+    assert!(
+        build.contains(&format!("{SHARD_PLAN_SCRIPT} verify \"$PLAN-full.json\"")),
+        "build-tests must run the exactly-once guard (`{SHARD_PLAN_SCRIPT} verify`)"
+    );
+    let mut uploaded: Vec<String> = build
+        .lines()
+        .filter_map(|l| l.trim().strip_prefix("name: nextest-shard-"))
+        .map(str::to_owned)
+        .collect();
+    uploaded.sort();
+    let want: Vec<String> = (1..=n).map(|k| k.to_string()).collect();
+    assert_eq!(
+        uploaded, want,
+        "build-tests must upload exactly nextest-shard-1..{n}"
+    );
+    for k in 1..=n {
+        let needle = format!("path: /tmp/nextest-shard-{k}.tar.zst");
+        assert!(
+            build.contains(&needle),
+            "build-tests must contain `{needle}`"
+        );
+    }
+    assert!(
+        !build.contains("name: nextest-archive"),
+        "build-tests still uploads the single nextest-archive (#525)"
+    );
+
+    // test-shard: its own archive, run whole.
+    for needle in [
+        "ARCHIVE=/tmp/nextest-shard-${{ matrix.partition }}.tar.zst",
+        "--archive-file \"$ARCHIVE\"",
+        "name: nextest-shard-${{ matrix.partition }}",
+        "SLOW=\"$(scripts/ci-shard-plan.sh slow-filter)\"",
+        "-E \"not ($SLOW)\"",
+        // An empty archive must fail the shard, not pass it.
+        "--no-tests=fail",
+    ] {
+        assert!(
+            shard.contains(needle),
+            "test-shard must contain `{needle}` (#525)"
+        );
+    }
+    assert!(
+        !shard.contains("--partition"),
+        "test-shard must not pass --partition: each shard runs its whole archive (#525)"
+    );
+}
+
+/// The SLOW (deferred-to-nightly) list lives ONLY in scripts/ci-shard-plan.sh,
+/// and every entry has a `--test` line in slow-tests, or it runs nowhere.
+/// MUTATIONS: paste a `binary(dft_pbe)` list back into a job, or delete the
+/// `--test dft_pbe` from slow-tests → this fails.
+#[test]
+fn slow_binaries_have_one_source_and_run_nightly() {
+    let p = workspace_root().join(SHARD_PLAN_SCRIPT);
+    let text = std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("{}: {e}", p.display()));
+    let names: Vec<String> = text
+        .split_once("SLOW_BINARIES=(")
+        .and_then(|(_, rest)| rest.split_once(')'))
+        .map(|(body, _)| body)
+        .unwrap_or_else(|| panic!("{SHARD_PLAN_SCRIPT} has no `SLOW_BINARIES=( ... )` array"))
+        .split_whitespace()
+        .map(str::to_owned)
+        .collect();
+    assert!(
+        names.len() >= 10,
+        "{SHARD_PLAN_SCRIPT} lists only {} SLOW binaries",
+        names.len()
+    );
+
+    let ci = ci_yml();
+    let code = code_only(&ci);
+    for name in &names {
+        let inline = format!("binary({name})");
+        assert!(
+            !code.contains(&inline),
+            "ci.yml repeats `{inline}`: read the SLOW list from {SHARD_PLAN_SCRIPT} instead"
+        );
+    }
+    let slow = code_only(&job(&ci, "slow-tests"));
+    for name in &names {
+        let has_line = slow.lines().any(|l| {
+            l.split_whitespace()
+                .collect::<Vec<_>>()
+                .windows(2)
+                .any(|w| w[0] == "--test" && w[1] == name)
+        });
+        assert!(
+            has_line,
+            "SLOW binary `{name}` has no `--test {name}` in slow-tests: deferred from the \
+             fast tier AND never run nightly"
+        );
     }
 }

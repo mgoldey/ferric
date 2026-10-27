@@ -70,8 +70,12 @@ pub fn compiled_inputs(root: &Path) -> Vec<PathBuf> {
     out
 }
 
+/// Runs a read-only git query in `root`. `--no-optional-locks` keeps
+/// `git status` from rewriting the watched `.git/index`, which made cargo
+/// re-run this build script on every second build (#525).
 fn git(root: &Path, args: &[&str]) -> Option<String> {
     let out = Command::new("git")
+        .arg("--no-optional-locks")
         .arg("-C")
         .arg(root)
         .args(args)

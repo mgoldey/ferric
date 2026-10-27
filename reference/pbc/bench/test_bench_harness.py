@@ -1,0 +1,469 @@
+"""Unit tests for the issue-#228 bench harness (no ferric, no PySCF runs; numpy only for the hook).
+
+uv run --no-sync pytest reference/pbc/bench/test_bench_harness.py -q
+"""
+
+from __future__ import annotations
+
+import math
+import os
+import sys
+
+import pytest
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import pyscf_bench as pb  # noqa: E402
+import scatter_driver as sd  # noqa: E402
+import summarize as sm  # noqa: E402
+
+
+# ----------------------------------------------------------------------- summarize: pairing ----
+def _row(
+    code, rep, wall, session="s1", attempt=0, run_id="r1", box="quiet", sha="a" * 64
+):
+    return dict(
+        code=code,
+        rep=rep,
+        wall=wall,
+        session=session,
+        attempt=attempt,
+        run_id=run_id,
+        box_state=box,
+        bin_sha256=sha,
+    )
+
+
+def test_pairing_keeps_only_reps_present_for_both_codes():
+    f = [_row("ferric", 0, 1.0), _row("ferric", 1, 2.0), _row("ferric", 2, 3.0)]
+    p = [_row("pyscf", 1, 20.0), _row("pyscf", 2, 30.0), _row("pyscf", 3, 40.0)]
+    assert sm.pair_by_rep(f, p, "wall") == [(2.0, 20.0), (3.0, 30.0)]
+
+
+def test_pairing_separates_sessions_and_takes_last_attempt():
+    f = [
+        _row("ferric", 0, 1.0, "a"),
+        _row("ferric", 0, 9.0, "b", attempt=0),
+        _row("ferric", 0, 5.0, "b", attempt=1),
+    ]
+    p = [_row("pyscf", 0, 10.0, "a"), _row("pyscf", 0, 50.0, "b")]
+    # rep 0 of session a pairs with session a only; session b uses its last (re-run) attempt.
+    assert sm.pair_by_rep(f, p, "wall") == [(1.0, 10.0), (5.0, 50.0)]
+
+
+def test_pairing_is_by_rep_not_by_position():
+    # Same values, shuffled row order: the pairing must follow rep, not list position.
+    f = [_row("ferric", 2, 3.0), _row("ferric", 0, 1.0), _row("ferric", 1, 2.0)]
+    p = [_row("pyscf", 0, 10.0), _row("pyscf", 1, 20.0), _row("pyscf", 2, 30.0)]
+    assert sm.pair_by_rep(f, p, "wall") == [(1.0, 10.0), (2.0, 20.0), (3.0, 30.0)]
+
+
+# --------------------------------------------------------------------- summarize: bootstrap ----
+def test_bootstrap_constant_ratio_has_zero_width_ci():
+    # Every pair has ratio exactly 0.5 and the medians of ANY resample are paired values, so the
+    # ratio of medians is 0.5 in every resample only if the resample keeps pairs together.
+    pairs = [(x, 2 * x) for x in (1.0, 2.0, 3.0, 5.0, 8.0)]
+    pt, lo, hi = sm.paired_bootstrap_ci(pairs, n_boot=2000, seed=1)
+    assert pt == pytest.approx(0.5)
+    assert lo == pytest.approx(0.5) and hi == pytest.approx(0.5)
+
+
+def test_bootstrap_unpaired_resampling_would_widen_the_ci():
+    # Mutation check of the test above: resampling the two codes INDEPENDENTLY gives a wide CI on
+    # the same data, so the zero-width result really depends on the pairing.
+    import random
+
+    pairs = [(x, 2 * x) for x in (1.0, 2.0, 3.0, 5.0, 8.0)]
+    rng = random.Random(1)
+    a = [x for x, _ in pairs]
+    b = [y for _, y in pairs]
+    rs = []
+    for _ in range(2000):
+        sa = [a[rng.randrange(5)] for _ in range(5)]
+        sb = [b[rng.randrange(5)] for _ in range(5)]
+        rs.append(sm.statistics.median(sa) / sm.statistics.median(sb))
+    assert max(rs) - min(rs) > 0.5
+
+
+def test_bootstrap_is_reproducible():
+    pairs = [(10.0 + i % 3, 20.0 + (i * 7) % 5) for i in range(8)]
+    a = sm.paired_bootstrap_ci(pairs, n_boot=500, seed=228)
+    b = sm.paired_bootstrap_ci(pairs, n_boot=500, seed=228)
+    c = sm.paired_bootstrap_ci(pairs, n_boot=500, seed=229)
+    assert a == b
+    assert a[0] == c[0]  # the point estimate does not depend on the seed
+    assert a[1] <= a[0] <= a[2]
+
+
+def test_bootstrap_ci_covers_the_true_ratio_on_noisy_synthetic_data():
+    import random
+
+    rng = random.Random(7)
+    pairs = []
+    for _ in range(12):
+        drift = rng.uniform(0.9, 1.1)  # shared per-rep box state: what pairing exploits
+        pairs.append(
+            (0.6 * drift * rng.uniform(0.98, 1.02), drift * rng.uniform(0.98, 1.02))
+        )
+    pt, lo, hi = sm.paired_bootstrap_ci(pairs, n_boot=4000, seed=3)
+    assert lo < 0.6 < hi
+    assert hi - lo < 0.1
+
+
+def test_spread_stats_and_noisy_label():
+    st = sm.spread_stats([10.0, 10.0, 10.0, 10.0, 10.0])
+    assert st["iqr_rel"] == 0 and st["rel_mad"] == 0 and not st["noisy"]
+    st = sm.spread_stats([8.0, 9.0, 10.0, 11.0, 12.0])
+    assert st["median"] == 10.0
+    assert st["iqr_rel"] == pytest.approx(0.2)  # inclusive quartiles 9 and 11
+    assert st["rel_mad"] == pytest.approx(0.1)
+    assert st["noisy"]
+
+
+def test_between_sessions_cv_and_ratio():
+    bs = sm.between_sessions(
+        {"s1": [10.0, 11.0, 12.0], "s2": [12.0, 12.0], "s3": [14.0]}
+    )
+    assert bs["medians"] == {"s1": 11.0, "s2": 12.0, "s3": 14.0}
+    assert bs["max_over_min"] == pytest.approx(14.0 / 11.0)
+    assert bs["cv"] == pytest.approx(
+        sm.statistics.stdev([11.0, 12.0, 14.0]) / (37.0 / 3)
+    )
+    f = [_row("ferric", 0, 6.0, "s1"), _row("ferric", 0, 7.0, "s2")]
+    p = [_row("pyscf", 0, 10.0, "s1"), _row("pyscf", 0, 10.0, "s2")]
+    assert sm.session_ratios(f, p, "wall") == {"s1": 0.6, "s2": 0.7}
+
+
+# ------------------------------------------------------------------------ scatter_driver ----
+def test_private_binary_refuses_target_paths(tmp_path):
+    t = tmp_path / "target" / "release"
+    t.mkdir(parents=True)
+    b = t / "ferric"
+    b.write_text("#!/bin/sh\n")
+    b.chmod(0o755)
+    with pytest.raises(SystemExit, match="target/"):
+        sd.check_private_binary(str(b))
+    link = tmp_path / "ferric-link"
+    link.symlink_to(b)
+    with pytest.raises(SystemExit, match="target/"):
+        sd.check_private_binary(str(link))
+    priv = tmp_path / "ferric-private"
+    priv.write_bytes(b.read_bytes())
+    priv.chmod(0o755)
+    assert sd.check_private_binary(str(priv)) == os.path.realpath(priv)
+    # a path that merely CONTAINS "target" in a name is fine
+    other = tmp_path / "targeted"
+    other.mkdir()
+    ok = other / "ferric"
+    ok.write_bytes(b"x")
+    ok.chmod(0o755)
+    assert sd.check_private_binary(str(ok))
+    assert len(sd.sha256_file(str(ok))) == 64
+
+
+def test_default_cpus_and_count():
+    assert sd.default_cpus(1) == "1"  # core 0 takes most IRQs
+    assert sd.default_cpus(6) == "0-5"
+    assert sd.default_cpus(3) == "0-2"
+    with pytest.raises(SystemExit):
+        sd.default_cpus(12)
+    assert sd.cpu_list_count("0-5") == 6
+    assert sd.cpu_list_count("0,2,4-5") == 4
+
+
+def test_rotated_order_cycles_every_position():
+    seq = ["F1", "F2", "P"]
+    orders = [sd.rotated_order(seq, r) for r in range(3)]
+    assert orders == [["F1", "F2", "P"], ["F2", "P", "F1"], ["P", "F1", "F2"]]
+    # two entries reproduce the old F P / P F alternation
+    assert sd.rotated_order(["F", "P"], 0) == ["F", "P"]
+    assert sd.rotated_order(["F", "P"], 1) == ["P", "F"]
+    assert sd.rotated_order(seq, 4, fixed=True) == seq
+
+
+def test_box_state_label():
+    assert sd.box_state(1.0, 0.01) == "quiet"
+    assert sd.box_state(1.6, 0.01) == "ambient"
+    assert sd.box_state(1.0, 0.03) == "ambient"
+
+
+def test_snapshots_read_sysfs_layout(tmp_path):
+    for i, khz in ((0, 3600000), (11, 1200000)):
+        d = tmp_path / f"cpu{i}" / "cpufreq"
+        d.mkdir(parents=True)
+        (d / "scaling_cur_freq").write_text(f"{khz}\n")
+    f = sd.snapshot_freq_khz(str(tmp_path / "cpu*" / "cpufreq" / "scaling_cur_freq"))
+    assert f == {"0": 3600000, "11": 1200000}
+    h0 = tmp_path / "hwmon" / "hwmon0"
+    h0.mkdir(parents=True)
+    (h0 / "name").write_text("coretemp\n")
+    (h0 / "temp1_input").write_text("45000\n")
+    (h0 / "temp1_label").write_text("Package id 0\n")
+    h1 = tmp_path / "hwmon" / "hwmon1"
+    h1.mkdir()
+    (h1 / "name").write_text("nct6792\n")
+    (h1 / "temp1_input").write_text("30000\n")
+    assert sd.snapshot_temp_mc(str(tmp_path / "hwmon")) == {
+        "coretemp/Package id 0": 45000
+    }
+
+
+# ----------------------------------------------------- pyscf_bench: ferric stopping rule ----
+np = pytest.importorskip("numpy")
+
+
+def _sym(rng, n, scale):
+    a = rng.standard_normal((n, n)) * scale
+    return a + a.T
+
+
+def test_density_change_is_rms_over_all_elements_and_abs_max():
+    d0 = np.zeros((3, 3))
+    d1 = np.zeros((3, 3))
+    d1[0, 1] = d1[1, 0] = 3e-10
+    d1[2, 2] = -6e-10
+    rms, mx = pb.ferric_density_change(d1, d0)
+    assert rms == pytest.approx(math.sqrt((2 * 9e-20 + 36e-20) / 9))
+    assert mx == pytest.approx(6e-10)
+
+
+def test_gamma_rule_thresholds():
+    rng = np.random.default_rng(0)
+    n = 4
+    s = np.eye(n)
+    f = np.diag([-1.0, -0.5, 0.5, 1.0])
+    d = np.diag([2.0, 2.0, 0.0, 0.0])  # commutes with f: zero gradient
+    tiny = _sym(rng, n, 1e-12)
+    assert pb.ferric_gamma_signals(-1.0, -1.0 + 1e-6, d + tiny, d, f, s)["converged"]
+    # rms just above 1e-10 -> not converged
+    big = np.full((n, n), 1.01e-10)
+    assert not pb.ferric_gamma_signals(-1.0, -1.0, d + big, d, f, s)["converged"]
+    # one element at 9e-10 (< 10*density_conv) with rms 9e-10/4 > 1e-10: refused by rms
+    one = np.zeros((n, n))
+    one[0, 0] = 9e-10
+    assert not pb.ferric_gamma_signals(-1.0, -1.0, d + one, d, f, s)["converged"]
+    # |dE| >= 1e-3 refuses even a frozen density
+    assert not pb.ferric_gamma_signals(-1.0, -1.002, d, d, f, s)["converged"]
+    # non-stationary frozen density (gradient 0.2 > 1e-3): the veto refuses
+    f2 = f.copy()
+    f2[0, 2] = f2[2, 0] = 0.1
+    sig = pb.ferric_gamma_signals(-1.0, -1.0, d, d, f2, s)
+    assert not sig["converged"] and sig["grad_max"] == pytest.approx(0.2)
+
+
+def test_gamma_rule_dp_max_companion_is_ten_times_density_conv():
+    # rms 2e-9/30 = 6.7e-11 passes, but the single element 2e-9 >= 10 * 1e-10: refused.
+    n = 30
+    s, f = np.eye(n), np.diag(np.arange(n, dtype=float))
+    d = np.diag([2.0] * 5 + [0.0] * (n - 5))
+    one = np.zeros((n, n))
+    one[7, 7] = 2e-9
+    sig = pb.ferric_gamma_signals(-1.0, -1.0, d + one, d, f, s)
+    assert sig["dp_rms"] < 1e-10 and not sig["converged"]
+    one[7, 7] = 0.9e-9
+    assert pb.ferric_gamma_signals(-1.0, -1.0, d + one, d, f, s)["converged"]
+
+
+def test_k_rule_uses_max_over_k_and_strict_bounds():
+    s = [np.eye(2), np.eye(2)]
+    d = [np.diag([2.0, 0.0])] * 2
+    f_ok = [np.diag([-1.0, 1.0])] * 2
+    f_bad = [np.diag([-1.0, 1.0]), np.array([[-1.0, 1e-9j], [-1e-9j, 1.0]])]
+    assert pb.ferric_k_signals(-1.0, -1.0 + 5e-13, d, f_ok, s)["converged"]
+    assert not pb.ferric_k_signals(-1.0, -1.0 + 2e-12, d, f_ok, s)["converged"]
+    sig = pb.ferric_k_signals(-1.0, -1.0, d, f_bad, s)
+    assert sig["grad_max"] == pytest.approx(2e-9) and not sig["converged"]
+
+
+def test_orthogonalizer_drops_modes_below_absolute_cut():
+    s = np.diag([1.0, 5e-7, 2.0])
+    x = pb.ferric_canonical_orthogonalizer(s)
+    assert x.shape == (3, 2)
+    assert np.allclose(x.T @ s @ x, np.eye(2))
+
+
+# ------------------------------------------------------ review fixes (PR #560): quoting ----
+def _session(code, session, walls, box="quiet", sha="a" * 64):
+    return [_row(code, i, w, session, box=box, sha=sha) for i, w in enumerate(walls)]
+
+
+QUIET5 = [10.0, 10.1, 9.9, 10.05, 9.95]
+
+
+def test_quotable_reachable_on_clean_quiet_data():
+    f = _session("ferric", "s1", [0.6 * x for x in QUIET5]) + _session(
+        "ferric", "s2", [0.61 * x for x in QUIET5]
+    )
+    p = _session("pyscf", "s1", QUIET5) + _session("pyscf", "s2", QUIET5)
+    ok, why = sm.quotable(f, p, "wall", 6)
+    assert ok, why
+
+
+def test_ambient_rows_are_never_quotable():
+    f = _session("ferric", "s1", [0.6 * x for x in QUIET5]) + _session(
+        "ferric", "s2", [0.6 * x for x in QUIET5], box="ambient"
+    )
+    p = _session("pyscf", "s1", QUIET5) + _session("pyscf", "s2", QUIET5)
+    ok, why = sm.quotable(f, p, "wall", 6)
+    assert not ok and any("non-quiet" in w for w in why)
+    # rows written before box_state existed ("unlabelled") are not quiet either
+    for r in f:
+        r["box_state"] = "unlabelled"
+    assert not sm.quotable(f, p, "wall", 6)[0]
+
+
+def test_noisy_session_group_is_never_quotable():
+    noisy = [6.0, 4.0, 8.0, 5.0, 7.0]  # same median as 6.0, IQR/median 33%
+    f = _session("ferric", "s1", noisy) + _session("ferric", "s2", [6.0] * 5)
+    p = _session("pyscf", "s1", [10.0] * 5) + _session("pyscf", "s2", [10.0] * 5)
+    ok, why = sm.quotable(f, p, "wall", 6)
+    assert not ok and any("NOISY" in w for w in why)
+
+
+def test_too_few_reps_is_labelled_and_not_quotable():
+    st = sm.spread_stats([10.0, 30.0, 50.0, 70.0], min_n=5)
+    assert st["label"] == "n too small" and st["noisy"] is None
+    assert sm.spread_stats([10.0] * 3, min_n=3)["label"] == "ok"
+    f = _session("ferric", "s1", [6.0] * 4) + _session("ferric", "s2", [6.0] * 4)
+    p = _session("pyscf", "s1", [10.0] * 4) + _session("pyscf", "s2", [10.0] * 4)
+    ok, why = sm.quotable(f, p, "wall", 6)  # N=6 needs 5 reps
+    assert not ok and any("n too small" in w for w in why)
+    assert sm.quotable(f, p, "wall", 1)[0]  # N=1 needs 3
+
+
+def test_different_binaries_are_never_pooled_or_compared():
+    rows = _session("ferric", "s1", [6.0] * 5, sha="a" * 64) + _session(
+        "pyscf", "s1", [10.0] * 5, sha="b" * 64
+    )
+    by_input = {}
+    for r in rows:
+        r.update(cell="c", threads=6, method="rhf", toml="c_rhf.toml")
+        k = (r["cell"], r["threads"], r["code"], sm.input_label(r), r["bin_sha256"])
+        by_input.setdefault(k, []).append(r)
+    assert sm.comparable_pairs(by_input) == []
+    for r in by_input[next(k for k in by_input if k[2] == "pyscf")]:
+        r["bin_sha256"] = "a" * 64
+    by2 = {}
+    for r in rows:
+        k = (r["cell"], r["threads"], r["code"], sm.input_label(r), r["bin_sha256"])
+        by2.setdefault(k, []).append(r)
+    assert len(sm.comparable_pairs(by2)) == 1
+
+
+def test_pairing_separates_runs_within_one_session():
+    # a top-up run in the same --out restarts rep at 0: both rep-0s must survive, unmixed
+    f = [_row("ferric", 0, 1.0, run_id="r1"), _row("ferric", 0, 2.0, run_id="r2")]
+    p = [_row("pyscf", 0, 10.0, run_id="r1"), _row("pyscf", 0, 20.0, run_id="r2")]
+    assert sm.pair_by_rep(f, p, "wall") == [(1.0, 10.0), (2.0, 20.0)]
+
+
+# ------------------------------------------------------ review fixes: driver guards ----
+def test_binary_change_mid_session_exits(tmp_path):
+    b = tmp_path / "ferric"
+    b.write_bytes(b"v1")
+    sha = sd.sha256_file(str(b))
+    assert sd.check_binary_unchanged(str(b), sha) == sha
+    b.write_bytes(b"v2")
+    with pytest.raises(SystemExit, match="changed during the session"):
+        sd.check_binary_unchanged(str(b), sha)
+
+
+def test_hardlinked_binary_is_refused(tmp_path):
+    b = tmp_path / "ferric"
+    b.write_bytes(b"x")
+    b.chmod(0o755)
+    assert sd.check_private_binary(str(b))
+    os.link(b, tmp_path / "ferric-link")
+    with pytest.raises(SystemExit, match="hard links"):
+        sd.check_private_binary(str(b))
+
+
+def test_existing_out_needs_append(tmp_path):
+    out = tmp_path / "t.jsonl"
+    sd.check_out_path(str(out), False)  # new file: fine
+    out.write_text("")
+    with pytest.raises(SystemExit, match="--append"):
+        sd.check_out_path(str(out), False)
+    sd.check_out_path(str(out), True)
+    assert sd.new_run_id() != sd.new_run_id()
+
+
+def test_lindep_override_is_refused():
+    sd.check_no_lindep_override({})
+    with pytest.raises(SystemExit, match="FERRIC_LINDEP_THRESH"):
+        sd.check_no_lindep_override({"FERRIC_LINDEP_THRESH": "1e-5"})
+
+
+def test_max_cycle_default_follows_the_rule():
+    assert pb.resolve_max_cycle(None, True) == 200
+    assert pb.resolve_max_cycle(None, False) == 100
+    assert pb.resolve_max_cycle(50, True) == 50
+
+
+# ------------------------------------------------------------ review fixes: ladder gate ----
+def _ladder(e75, e200, e250):
+    return {"75x302": e75, "200x590": e200, "250x590": e250}
+
+
+def test_ladder_gate_pass_fail_undecidable():
+    # pass: cross-code 75x302 gap 2e-6 <= 3e-6 + 3e-6 + 1e-8
+    r = sm.ladder_gate(
+        _ladder(-1.0, -1.000003, -1.000003), _ladder(-1.000002, -1.000005, -1.000005)
+    )
+    assert r["status"] == "pass"
+    # fail: both codes move little but disagree by 1e-5 at 75x302
+    r = sm.ladder_gate(
+        _ladder(-1.0, -1.0000001, -1.0000001), _ladder(-1.00001, -1.0000101, -1.0000101)
+    )
+    assert r["status"] == "fail" and r["lhs"] > r["rhs"]
+    # undecidable: the ref moves 2e-6 from 200x590 for one code
+    r = sm.ladder_gate(_ladder(-1.0, -1.0, -1.000002), _ladder(-1.0, -1.0, -1.0))
+    assert r["status"] == "undecidable"
+    assert sm.ladder_gate({}, _ladder(-1, -1, -1))["status"] == "undecidable"
+
+
+def test_grid_label_parses_both_codes():
+    assert (
+        sm.grid_label(dict(code="ferric", toml="x/dryice_pbe.toml"), "dryice")
+        == "75x302"
+    )
+    assert (
+        sm.grid_label(dict(code="ferric", toml="dryice_pbe_250x590.toml"), "dryice")
+        == "250x590"
+    )
+    assert (
+        sm.grid_label(dict(code="ferric", toml="dryice_pbe_w0.5.toml"), "dryice")
+        is None
+    )
+    assert sm.grid_label(dict(code="pyscf", grid=[150, 434]), "dryice") == "150x434"
+
+
+# ----------------------------------------------------------- review nit: cached X in hook ----
+def test_hook_builds_the_orthogonaliser_once_and_matches_uncached(monkeypatch):
+    calls = []
+    real = pb.ferric_canonical_orthogonalizer
+
+    def counting(s, lindep=pb.FERRIC_LINDEP):
+        calls.append(1)
+        return real(s, lindep)
+
+    monkeypatch.setattr(pb, "ferric_canonical_orthogonalizer", counting)
+    s = [np.eye(2), np.array([[1.0, 0.1], [0.1, 1.0]])]
+    d = [np.diag([2.0, 0.0])] * 2
+    f = [np.array([[-1.0, 1e-9], [1e-9, 1.0]])] * 2
+    trace = []
+    check = pb.make_ferric_conv_check(True, trace)
+    for cyc in range(3):
+        check(dict(e_tot=-1.0, last_hf_e=-1.0, dm=d, fock=f, s1e=s, cycle=cyc))
+    assert len(calls) == 2  # once per k, not per cycle
+    calls.clear()
+    ref = pb.ferric_k_signals(-1.0, -1.0, d, f, s)
+    assert trace[-1]["grad_max"] == pytest.approx(ref["grad_max"])
+
+
+def test_between_session_range_of_5_percent_blocks_quoting():
+    f = _session("ferric", "s1", [0.6 * x for x in QUIET5]) + _session(
+        "ferric", "s2", [0.66 * x for x in QUIET5]
+    )
+    p = _session("pyscf", "s1", QUIET5) + _session("pyscf", "s2", QUIET5)
+    ok, why = sm.quotable(f, p, "wall", 6)
+    assert not ok and why == ["between-session range >= 5%"]

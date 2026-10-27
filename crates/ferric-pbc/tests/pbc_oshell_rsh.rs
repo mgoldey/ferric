@@ -184,9 +184,9 @@ fn one_point_mesh_is_gamma_uks_rsh() {
 
 /// The derivatives of a REAL open-shell RSH SCF refuse by name (and so does
 /// the plain global-hybrid ROKS entry; ROKS RSH is `gamma_roks_rsh`), except
-/// the k-point UKS force, which covers RSH on dense-AFT J/K
-/// (`pbc_kuks_rsh_force.rs`): it refuses a missing exxdiv and runs on the
-/// SCF's own exxdiv and grid.
+/// the k-point UKS force and stress, which cover RSH on dense-AFT J/K
+/// (`pbc_kuks_rsh_force.rs`, `pbc_kuks_rsh_stress.rs`): each refuses a
+/// missing exxdiv and runs on the SCF's own exxdiv and grid.
 #[test]
 fn open_shell_rsh_derivatives_refuse_by_name() {
     use ferric_pbc::kdense_aft::KDenseAftEri;
@@ -197,16 +197,19 @@ fn open_shell_rsh_derivatives_refuse_by_name() {
     use ferric_pbc::kuxcgrad::{kpoint_uks_gradient, KUksGradConfig};
     use ferric_pbc::kuxcstress::{kpoint_uks_stress, KUksStressConfig};
     let named = |m: String| assert!(m.contains("range-separated"), "{m}");
-    // The binding gate: the UKS stress and every ROKS derivative stay refused
-    // (the UKS force is wired, `pbc_kuks_rsh_force.rs`).
-    use ferric_pbc::kxcgrad::{Deriv, DerivSpin};
-    for (spin, d, what) in [
-        (DerivSpin::Unrestricted, Deriv::Stress, "with_stress"),
-        (DerivSpin::RestrictedOpen, Deriv::Force, "with_gradient"),
-        (DerivSpin::RestrictedOpen, Deriv::Stress, "with_stress"),
+    // The binding gate: every open-shell RSH derivative of a validated
+    // functional is wired (#498); an unvalidated one (wB97X) is refused by name.
+    use ferric_pbc::kxcgrad::DerivSpin;
+    for (spin, what) in [
+        (DerivSpin::Unrestricted, "with_stress"),
+        (DerivSpin::RestrictedOpen, "with_gradient"),
+        (DerivSpin::RestrictedOpen, "with_stress"),
     ] {
-        let e = ferric_pbc::kxcgrad::check_kpoint_deriv_functional(spin, d, false, "HSE06", what)
-            .unwrap_err();
+        ferric_pbc::kxcgrad::check_kpoint_deriv_functional(spin, false, "HSE06", what)
+            .unwrap_or_else(|e| panic!("{e}"));
+        let wb = "HYB_GGA_XC_WB97X";
+        let e =
+            ferric_pbc::kxcgrad::check_kpoint_deriv_functional(spin, false, wb, what).unwrap_err();
         named(e);
     }
     let cell = cell_named("h3d");
@@ -295,7 +298,10 @@ fn open_shell_rsh_derivatives_refuse_by_name() {
     ok.base.grid = ferric_pbc::kxcgrad::KXcGrid::Uniform([MESH; 3]);
     let g = call(&ok).unwrap_or_else(|e| panic!("UKS RSH force on the SCF's own state: {e}"));
     assert!(g.grad.iter().all(|v| v.is_finite()) && g.hf.fock_mismatch < 1e-8);
-    named(
+    // The k-point UKS STRESS covers range-separated hybrids too (#492,
+    // `pbc_kuks_rsh_stress.rs`): without the SCF's exxdiv a typed refusal,
+    // with it and the SCF's own grid it differentiates this state.
+    let scall = |c: &KUksStressConfig| {
         kpoint_uks_stress(
             &cell,
             &prep,
@@ -305,9 +311,14 @@ fn open_shell_rsh_derivatives_refuse_by_name() {
             KStressJk::Dense(e),
             &kr.scf,
             "HYB_GGA_XC_CAM_B3LYP",
-            &KUksStressConfig::default(),
+            c,
         )
-        .unwrap_err()
-        .to_string(),
-    );
+    };
+    let se = scall(&KUksStressConfig::default()).unwrap_err().to_string();
+    assert!(se.contains("needs KRksStressConfig::exxdiv"), "{se}");
+    let mut sok = KUksStressConfig::default();
+    sok.base.exxdiv = Some(ExxDiv::Ewald);
+    sok.base.grid = ferric_pbc::kxcgrad::KXcGrid::Uniform([MESH; 3]);
+    let st = scall(&sok).unwrap_or_else(|e| panic!("UKS RSH stress on the SCF's own state: {e}"));
+    assert!(st.de_deps.iter().flatten().all(|v| v.is_finite()) && st.hf.fock_mismatch < 1e-8);
 }
