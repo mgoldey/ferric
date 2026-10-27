@@ -48,7 +48,10 @@
 //! * `drpa_second_order_from_b_ov`: `/ (2.0 * PI)` → `/ PI` → (2) fails.
 //! * `gamma_drpa`: `metric_inv_sqrt` replaced by identity → no energy test can
 //!   fail (eigenpotentials only) — documented blind spot; the shape check
-//!   `w.ncols() != naux` is the only guard.
+//!   `F.nrows() != naux` (F = Wᵀ) is the only guard. The back-transform
+//!   CONVENTION is pinned by (6), which now also compares the eigenpotentials
+//!   bitwise (#573: `run_pdep_rpa_from_parts` read `F·u`, the molecular path
+//!   `Fᵀ·u`; reverting the `.t()` fails (6)).
 //!
 //! # Molecular path unchanged (task item 6)
 //!
@@ -894,6 +897,17 @@ fn run_pdep_rpa_from_parts_reproduces_the_molecular_path_bitwise() {
             .collect::<Vec<_>>()
     );
     assert!((full.e_rpa - mol_r.e_rpa).abs() < 1e-12);
+    // The eigenpotentials too (#573): the molecular `inter` carries the
+    // lower-triangular Cholesky L⁻¹, so the old `F·u` back-transform of the
+    // parts entry differed from the molecular `Fᵀ·u` here although every
+    // energy and eigenvalue above matched bit for bit.
+    let bits2 = |a: &ndarray::Array2<f64>| a.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+    assert_eq!(parts.eigenpotentials.dim(), mol_r.eigenpotentials.dim());
+    let dmax = (&parts.eigenpotentials - &mol_r.eigenpotentials)
+        .iter()
+        .fold(0.0_f64, |m, x| m.max(x.abs()));
+    eprintln!("  eigenpotentials parts vs molecular: max|Δ| = {dmax:.3e}");
+    assert_eq!(bits2(&parts.eigenpotentials), bits2(&mol_r.eigenpotentials));
 
     // Config honesty: everything the parts path cannot honour is refused.
     let refuse = |c: &ferric_rpa::PdepRpaConfig, eo: &[f64], ev: &[f64], what: &str| {

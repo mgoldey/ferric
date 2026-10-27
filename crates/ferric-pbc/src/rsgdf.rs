@@ -393,7 +393,7 @@ pub struct RsGdf {
     madelung: f64,
     stats: RsGdfStats,
     /// `W = U_kept s_kept^{-1/2}`, `(naux, naux_kept)`: the aux-space map of
-    /// B's rows (B = Wᵀ J3ᵀ). Retained for the dRPA driver's
+    /// B's rows (B = Wᵀ J3ᵀ). Its TRANSPOSE `Wᵀ` is the dRPA drivers'
     /// `RpaIntermediates::v_inv_sqrt` (eigenpotential back-transform only;
     /// never part of an energy). Counted by the build ledger's metric line.
     metric_inv_sqrt: Array2<f64>,
@@ -2959,7 +2959,8 @@ impl RsGdf {
     }
 
     /// `U_kept s_kept^{-1/2}`, `(naux, naux_kept)`, from the metric solve
-    /// (`B = (J3 W)ᵀ` with this `W`).
+    /// (`B = (J3 W)ᵀ` with this `W`). NOT itself an
+    /// `RpaIntermediates::v_inv_sqrt`: that field takes `F = Wᵀ` (#573).
     pub fn metric_inv_sqrt(&self) -> &Array2<f64> {
         &self.metric_inv_sqrt
     }

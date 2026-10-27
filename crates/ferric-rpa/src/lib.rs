@@ -600,7 +600,7 @@ pub(crate) fn run_pdep_rpa_eigensolve(
     // call frame, never spawning a thread or storing the closure past the
     // call — confirmed by reading davidson.rs/lanczos.rs), and `inter` (the
     // source of `b_ov`) is borrowed for this whole function's body (it's
-    // read again below at `inter.v_inv_sqrt.dot(...)`), so the closures can
+    // read again below at `inter.v_inv_sqrt.t().dot(...)`), so the closures can
     // safely capture plain references instead. At benzene aug-cc-pVQZ scale
     // (naux≈2976, nov≈61740) `b_ov.clone()` alone was ~1.4 GB — a pure
     // aliasing change, zero numerical effect (see `dense_legacy_path_clone_
@@ -1039,6 +1039,25 @@ pub fn run_pdep_rpa_from_intermediates(
     })
 }
 
+/// Shape check for the metric factor `F` of a parts entry: `(naux, naux_src)`
+/// with `naux_src >= naux` (see [`ferric_mp2::rimp2::RpaIntermediates::v_inv_sqrt`]).
+///
+/// The rectangular case is exactly the periodic RS-GDF factor after a lindep
+/// cut; handing in its untransposed map `W` `(naux_ao, naux_kept)` instead of
+/// `Wᵀ` fails here (`nrows = naux_ao != naux_kept`) rather than panicking in
+/// the back-transform GEMM (#573).
+fn check_metric_factor(f: &Array2<f64>, naux: usize) -> Result<(), String> {
+    if f.nrows() != naux || f.ncols() < naux {
+        return Err(format!(
+            "v_inv_sqrt is {:?}, expected F of shape (naux, naux_src) = ({naux}, >= {naux}) with \
+             B = F·(Q|ia) and eigenpotentials c = Fᵀ·u; a periodic RS-GDF caller must pass the \
+             TRANSPOSE of RsGdf::metric_inv_sqrt()",
+            f.dim()
+        ));
+    }
+    Ok(())
+}
+
 /// Full-rank closed-shell dRPA energy from caller-supplied parts: RI
 /// intermediates plus the ACTIVE occupied/virtual orbital energies, with no
 /// `Molecule`, orbital `PreparedBasis` or aux `PreparedBasis`.
@@ -1062,6 +1081,20 @@ pub fn run_pdep_rpa_from_intermediates(
 /// `rhf.eps_r()` slices with an admissible config, it returns the
 /// molecular energy bit for bit (`ferric-pbc/tests/pbc_drpa.rs`).
 ///
+/// # Metric factor convention (`inter.v_inv_sqrt`)
+///
+/// `F = v_inv_sqrt` is `(naux, naux_src)` with `b_ov = F·(Q|ia)`, and the
+/// exported eigenpotentials are the physical aux coefficients `c = Fᵀ·u` —
+/// the ONE convention of [`ferric_mp2::rimp2::RpaIntermediates::v_inv_sqrt`],
+/// identical to the molecular drivers'. A periodic RS-GDF caller therefore
+/// passes `RsGdf::metric_inv_sqrt().t()` (`Wᵀ`, rectangular after a lindep
+/// cut), never `W`; a factor whose row count is not `naux` is refused. Until
+/// #573 the closed- and open-shell parts entries read opposite conventions
+/// (`F·u` vs `Fᵀ·u`), so one of them was always wrong for any non-symmetric
+/// factor. Pinned by `tests/pdep_eigenpotentials_are_physical.rs`
+/// (`parts_entries_*`): `cᵀVc = I`, `cᵀ(V+Π)c = diag(λ)` for a rectangular,
+/// non-symmetric `F`.
+///
 /// # Refused configurations (config honesty: errors, never silent)
 ///
 /// * `trunc_thresh != 0` — PDEP truncation on this path is unmeasured, and
@@ -1071,8 +1104,9 @@ pub fn run_pdep_rpa_from_intermediates(
 ///   molecular 3-index tensor.
 /// * `chi0_backend` other than `Dense`, `eigensolver` other than `Lanczos` —
 ///   not needed by any caller yet; refused rather than half-supported.
-/// * shape mismatches between `b_ov`, `naux`, `v_inv_sqrt`, `nocc`, `nvir`
-///   and the energy slices; any non-positive or non-finite `e_ia`.
+/// * shape mismatches between `b_ov`, `naux`, `nocc`, `nvir` and the energy
+///   slices; a `v_inv_sqrt` that is not `(naux, >= naux)`; any non-positive or
+///   non-finite `e_ia`.
 ///
 /// `config.frozen_core` is ignored (it is baked into `inter` and the slices
 /// by the caller). The memory ceiling check is the molecular one
@@ -1121,11 +1155,8 @@ pub fn run_pdep_rpa_from_parts(
             nocc * nvir
         ));
     }
-    if inter.v_inv_sqrt.ncols() != naux {
-        return err(format!(
-            "v_inv_sqrt is {:?}, expected {naux} columns",
-            inter.v_inv_sqrt.dim()
-        ));
+    if let Err(m) = check_metric_factor(&inter.v_inv_sqrt, naux) {
+        return err(m);
     }
     if eps_occ.len() != nocc || eps_vir.len() != nvir {
         return err(format!(
@@ -1177,7 +1208,10 @@ pub fn run_pdep_rpa_from_parts(
     let n_keep = config.n_kept_modes(&lz.eigenvalues);
     let eigenvalues_static: Vec<f64> = lz.eigenvalues[..n_keep].to_vec();
     let eigenvectors = lz.eigenvectors.slice(ndarray::s![.., ..n_keep]).to_owned();
-    let eigenpotentials_aux = inter.v_inv_sqrt.dot(&eigenvectors);
+    // c = Fᵀ·u, the ONE `RpaIntermediates::v_inv_sqrt` convention (#573) —
+    // the same back-transform as `run_pdep_rpa_eigensolve`. (This read `F·u`
+    // until #573, correct only for the old untransposed RS-GDF map.)
+    let eigenpotentials_aux = inter.v_inv_sqrt.t().dot(&eigenvectors);
     let (quad_freqs, quad_weights) = quadrature::build_quadrature(&config.quadrature);
 
     let logdet_ok = !config.need_eigenvalues_freq && !config.need_inv_dielectric_freq;
@@ -1386,6 +1420,20 @@ pub fn run_u_pdep_rpa(
 /// `ε̃(0) = I + Π_α + Π_β` (per-spin χ₀ prefactor 2), full-rank eigensolve,
 /// the same frequency evaluator and energy integrator.
 ///
+/// # Metric factor convention (`inter.v_inv_sqrt`)
+///
+/// `F = v_inv_sqrt` is `(naux, naux_src)` with `b_ov = F·(Q|ia)`, and the
+/// exported eigenpotentials are the physical aux coefficients `c = Fᵀ·u` —
+/// the ONE convention of [`ferric_mp2::rimp2::RpaIntermediates::v_inv_sqrt`],
+/// identical to the molecular drivers'. A periodic RS-GDF caller therefore
+/// passes `RsGdf::metric_inv_sqrt().t()` (`Wᵀ`, rectangular after a lindep
+/// cut), never `W`; a factor whose row count is not `naux` is refused. Until
+/// #573 the closed- and open-shell parts entries read opposite conventions
+/// (`F·u` vs `Fᵀ·u`), so one of them was always wrong for any non-symmetric
+/// factor. Pinned by `tests/pdep_eigenpotentials_are_physical.rs`
+/// (`parts_entries_*`): `cᵀVc = I`, `cᵀ(V+Π)c = diag(λ)` for a rectangular,
+/// non-symmetric `F`.
+///
 /// # Refused configurations (config honesty: errors, never silent)
 ///
 /// * `trunc_thresh != 0`, `chi0_sparsity != Dense`, `chi0_backend != Dense`,
@@ -1393,9 +1441,11 @@ pub fn run_u_pdep_rpa(
 /// * `inter_a.naux != inter_b.naux` — a typed error here (the molecular path
 ///   only `debug_assert`s it): the spin-summed dielectric is meaningless
 ///   unless both channels live in the SAME aux basis.
-/// * shape mismatches between each `b_ov`, `naux`, `v_inv_sqrt`, `nocc`,
-///   `nvir` and the energy slices; any non-positive or non-finite `e_ia` in a
-///   non-empty channel; both channels empty.
+/// * shape mismatches between each `b_ov`, `naux`, `nocc`, `nvir` and the
+///   energy slices; a `v_inv_sqrt` that is not `(naux, >= naux)`; alpha and
+///   beta factors that differ (the back-transform reads alpha's); any
+///   non-positive or non-finite `e_ia` in a non-empty channel; both channels
+///   empty.
 ///
 /// One EMPTY spin channel (`nocc = 0` or `nvir = 0`, e.g. a high-spin
 /// reference with no β electron) is accepted: it contributes nothing to Π.
@@ -1458,11 +1508,8 @@ pub fn run_u_pdep_rpa_from_parts(
                 nocc * nvir
             ));
         }
-        if inter.v_inv_sqrt.ncols() != naux {
-            return err(format!(
-                "{label} v_inv_sqrt is {:?}, expected {naux} columns",
-                inter.v_inv_sqrt.dim()
-            ));
+        if let Err(m) = check_metric_factor(&inter.v_inv_sqrt, naux) {
+            return err(format!("{label} {m}"));
         }
         if eo.len() != nocc || ev.len() != nvir {
             return err(format!(
@@ -1486,6 +1533,13 @@ pub fn run_u_pdep_rpa_from_parts(
     }
     if !any_nonempty {
         return err("both spin channels are empty (no occupied-virtual pair)".into());
+    }
+    if inter_a.v_inv_sqrt != inter_b.v_inv_sqrt {
+        return err(
+            "alpha and beta carry different metric factors v_inv_sqrt; the eigenpotential \
+             back-transform reads alpha's, so both spins must share ONE F"
+                .into(),
+        );
     }
 
     // Molecular-style ceiling check (per-spin sum, no AO tensor on this path).
@@ -1668,8 +1722,10 @@ fn u_pdep_rpa_core(
         .slice(ndarray::s![.., ..n_keep])
         .to_owned();
 
-    // Physical aux coefficients c_α = Fᵀ · u_α (see run_pdep_rpa_eigensolve).
-    // inter_a/inter_b share the aux metric, hence the same factor F.
+    // Physical aux coefficients c_α = Fᵀ · u_α (see run_pdep_rpa_eigensolve),
+    // the ONE `RpaIntermediates::v_inv_sqrt` convention (#573). inter_a/inter_b
+    // share the aux metric, hence the same factor F (the parts entry refuses
+    // two different ones).
     let eigenpotentials_aux = inter_a.v_inv_sqrt.t().dot(&eigenvectors);
 
     let (quad_freqs, quad_weights) = quadrature::build_quadrature(&config.quadrature);
