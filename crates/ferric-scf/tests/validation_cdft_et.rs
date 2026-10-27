@@ -770,10 +770,10 @@ fn wu_vv(
     let pa = biorth_pairing(&a[0], &b[0], &sys.s_ao);
     let pb = biorth_pairing(&a[1], &b[1], &sys.s_ao);
     let s_ab = pa.det_m * pb.det_m;
-    let w1 = cross_one_body(&sys.w[0], &pa, &pb, s_ab);
-    let w2 = cross_one_body(&sys.w[1], &pa, &pb, s_ab);
-    let wa = cross_one_body(w_a, &pa, &pb, s_ab);
-    let wb = cross_one_body(w_b, &pa, &pb, s_ab);
+    let w1 = cross_one_body(&sys.w[0], &pa, &pb);
+    let w2 = cross_one_body(&sys.w[1], &pa, &pb);
+    let wa = cross_one_body(w_a, &pa, &pb);
+    let wb = cross_one_body(w_b, &pa, &pb);
     let own = |d: &Det, w: &Array2<f64>| -> f64 {
         d.iter().map(|c| c.t().dot(w).dot(c).diag().sum()).sum()
     };

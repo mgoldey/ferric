@@ -47,8 +47,7 @@ fn cross_one_body_identical_is_expectation() {
     op[(2, 2)] = 5.0;
     let pa = biorth_pairing(&c, &c, &s);
     let pb = biorth_pairing(&c, &c, &s);
-    let s_ab = pa.det_m * pb.det_m; // = 1
-    let val = cross_one_body(&op, &pa, &pb, s_ab);
+    let val = cross_one_body(&op, &pa, &pb);
     // Two spins, each occupying AO0 and AO1: ⟨0|op|0⟩+⟨1|op|1⟩ = 2+3 = 5 per
     // spin, ×2 spins = 10.
     assert!((val - 10.0).abs() < 1e-10, "got {val}");
@@ -85,21 +84,22 @@ fn cross_one_body_single_zero_overlap_is_finite() {
     let mut op = Array2::<f64>::zeros((4, 4));
     op[(1, 2)] = 1.0;
     op[(2, 1)] = 1.0;
-    let val = cross_one_body(&op, &pa, &pb, s_ab);
+    let val = cross_one_body(&op, &pa, &pb);
     // Finite and nonzero: the single zero-overlap pair carries the element.
     assert!(val.is_finite(), "element not finite: {val}");
     assert!(val.abs() > 1e-6, "expected nonzero element, got {val}");
 }
 
-/// COFACTOR BRANCH: the OTHER spin's determinant is a real factor.
+/// ONE ZERO SINGULAR VALUE: the OTHER spin's determinant is a real factor.
 ///
 /// `cross_one_body_single_zero_overlap_is_finite` above exercises the same
-/// `nz == 1` branch but makes the β sets IDENTICAL, so det_β = 1 exactly and
-/// the `* det_other` factor is invisible. MUTATION-PROVEN: deleting `det_other`
-/// from that branch leaves the rest of this file GREEN. Here β is rotated so
+/// one-zero case but makes the β sets IDENTICAL, so det_β = 1 exactly and
+/// the other-spin factor is invisible. MUTATION-PROVEN (on the former
+/// thresholded kernel): deleting `det_other` from its one-zero branch left the
+/// rest of this file GREEN. Here β is rotated so
 /// det_β = cos(0.5) ≈ 0.8776 ≠ 1, and the element must scale with it.
 ///
-/// The reference is INDEPENDENT of the branch under test: the element is
+/// The reference is INDEPENDENT of the kernel under test: the element is
 /// computed twice with two different β rotations and the RATIO is checked
 /// against the ratio of the β determinants, so no absolute value from the
 /// kernel is used to validate the kernel.
@@ -129,8 +129,7 @@ fn cross_one_body_cofactor_carries_the_other_spin_determinant() {
         let cb_a = array![[1.0], [0.0], [0.0], [0.0]];
         let cb_b = array![[t.cos()], [0.0], [0.0], [t.sin()]];
         let pb = biorth_pairing(&cb_a, &cb_b, &s);
-        let s_ab = pa.det_m * pb.det_m;
-        (cross_one_body(&op, &pa, &pb, s_ab), pb.det_m)
+        (cross_one_body(&op, &pa, &pb), pb.det_m)
     };
     let (v1, d1) = beta_case(0.5);
     let (v2, d2) = beta_case(1.0);
@@ -156,8 +155,10 @@ fn cross_one_body_cofactor_carries_the_other_spin_determinant() {
 /// ≥2 near-zero singular values ⇒ the one-body element is exactly zero.
 ///
 /// A one-body operator connects determinants differing by at most ONE spin
-/// orbital, so two or more broken pairings kill it. That branch had NO test:
-/// MUTATION-PROVEN, replacing its `0.0` with `1.0` left the whole file green.
+/// orbital, so two or more broken pairings kill it. The former thresholded
+/// kernel's ≥2-zeros branch had NO test: MUTATION-PROVEN, replacing its `0.0`
+/// with `1.0` left the whole file green. The cofactor kernel gets the zero
+/// from products of exact zeros.
 /// Both sub-cases are covered — two zeros in one spin, and one zero in each.
 #[test]
 fn cross_one_body_two_zero_overlaps_is_exactly_zero() {
@@ -187,7 +188,7 @@ fn cross_one_body_two_zero_overlaps_is_exactly_zero() {
         "case 1 needs two α zeros, s = {:?}",
         pa.s_vals
     );
-    let v1 = cross_one_body(&op, &pa, &pb, pa.det_m * pb.det_m);
+    let v1 = cross_one_body(&op, &pa, &pb);
     assert!(v1.abs() < 1e-14, "two α zeros must give 0, got {v1}");
 
     // Case 2: one zero in α AND one in β.
@@ -199,22 +200,312 @@ fn cross_one_body_two_zero_overlaps_is_exactly_zero() {
         2,
         "case 2 needs one zero in each spin"
     );
-    let v2 = cross_one_body(&op, &pa2, &pb2, pa2.det_m * pb2.det_m);
+    let v2 = cross_one_body(&op, &pa2, &pb2);
     assert!(
         v2.abs() < 1e-14,
         "one zero in each spin must give 0, got {v2}"
     );
 
-    // Reachability: the SAME operator gives a NONZERO element on the nz == 1
-    // fixture, so these zeros come from the branch logic and not from an
+    // Reachability: the SAME operator gives a NONZERO element on the one-zero
+    // fixture, so these zeros come from the kernel and not from an
     // operator that can never connect anything.
     let pb3 = biorth_pairing(&e1(4), &e1(4), &s);
     let pa3 = biorth_pairing(&e([0, 1]), &e([0, 2]), &s);
-    let v3 = cross_one_body(&op, &pa3, &pb3, pa3.det_m * pb3.det_m);
+    let v3 = cross_one_body(&op, &pa3, &pb3);
     assert!(
         v3.abs() > 1e-6,
-        "reachability failed: the nz == 1 element is also ~0 ({v3}), so the \
-         zeros above prove nothing about the ≥2 branch"
+        "reachability failed: the one-zero element is also ~0 ({v3}), so the \
+         zeros above prove nothing about the ≥2-zero case"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Division-free cofactor kernel: an exactness anchor, continuity through a
+// vanishing singular value, and offset invariance below the old 1e-8 cutoff.
+//
+// The previous kernel switched at S_TOL = 1e-8: a singular value below it was
+// treated as an exact zero and only that pair's cofactor term was kept. That
+// dropped O(s_k) terms (a 1e-9 jump at s_k = 1e-8 on the fixture below) and
+// broke W -> W - c·S invariance by ½·c·(N_e − 1)·S_ab·(λ_a + λ_b).
+// ---------------------------------------------------------------------------
+
+/// Deterministic, full-rank fill (no RNG dependency). The (i+1)(j+1) term
+/// matters: sin(a_i + b_j) alone is a rank-2 matrix.
+fn fill(rows: usize, cols: usize, seed: f64) -> Array2<f64> {
+    Array2::from_shape_fn((rows, cols), |(i, j)| {
+        let (x, y) = (i as f64 + 1.0, j as f64 + 1.0);
+        (x * 1.37 + y * 2.71 * seed + x * y * (0.53 + seed) + seed).sin()
+    })
+}
+
+/// Symmetric deterministic matrix.
+fn sym_fill(n: usize, seed: f64) -> Array2<f64> {
+    let a = fill(n, n, seed);
+    (&a + &a.t()) * 0.5
+}
+
+/// SPD "AO overlap" A Aᵀ / n + I.
+fn spd_fill(n: usize, seed: f64) -> Array2<f64> {
+    let a = fill(n, n, seed);
+    a.dot(&a.t()) / n as f64 + Array2::<f64>::eye(n)
+}
+
+/// Columns orthonormal in the S metric: X = S^{-1/2} Q, Q orthogonal.
+fn s_orthonormal(s: &Array2<f64>, seed: f64) -> Array2<f64> {
+    use ndarray_linalg::{Eigh, QR, UPLO};
+    let (w, v) = s.eigh(UPLO::Lower).unwrap();
+    let inv_sqrt = Array2::from_diag(&w.mapv(|x| x.powf(-0.5)));
+    let x = v.dot(&inv_sqrt).dot(&v.t());
+    let (q, _) = fill(s.nrows(), s.nrows(), seed).qr().unwrap();
+    x.dot(&q)
+}
+
+/// tr(adj(M) O) from explicit (n−1)×(n−1) minor determinants: the derivative
+/// of det(M + t·O) at t = 0, built without SVD, reciprocals or thresholds.
+fn adjugate_trace(m: &Array2<f64>, o: &Array2<f64>) -> f64 {
+    use ndarray_linalg::Determinant;
+    let n = m.nrows();
+    if n == 1 {
+        return o[(0, 0)];
+    }
+    let mut total = 0.0;
+    for i in 0..n {
+        for j in 0..n {
+            let rows: Vec<usize> = (0..n).filter(|&r| r != i).collect();
+            let cols: Vec<usize> = (0..n).filter(|&c| c != j).collect();
+            let minor = Array2::from_shape_fn((n - 1, n - 1), |(r, c)| m[(rows[r], cols[c])]);
+            let sign = if (i + j) % 2 == 0 { 1.0 } else { -1.0 };
+            total += sign * minor.det().unwrap() * o[(i, j)];
+        }
+    }
+    total
+}
+
+/// INDEPENDENT REFERENCE for ⟨Ψ_a|Ô|Ψ_b⟩: Σ_σ tr(adj(M̃_σ) Õ_σ) · det(M̃_σ'),
+/// with M̃ = C̃_aᵀ S C̃_b and Õ = C̃_aᵀ Ô C̃_b formed in full from the rotated
+/// coefficients (never assumed diagonal) and determinants by LU. It shares
+/// only the SVD rotation with the kernel, which fixes the overall phase.
+fn adjugate_reference(
+    op: &Array2<f64>,
+    s: &Array2<f64>,
+    pa: &ferric_scf::cdft_coupling::Pairing,
+    pb: &ferric_scf::cdft_coupling::Pairing,
+) -> f64 {
+    use ndarray_linalg::Determinant;
+    let m = |p: &ferric_scf::cdft_coupling::Pairing, x: &Array2<f64>| {
+        p.c_tilde_a.t().dot(x).dot(&p.c_tilde_b)
+    };
+    let (ma, mb) = (m(pa, s), m(pb, s));
+    adjugate_trace(&ma, &m(pa, op)) * mb.det().unwrap()
+        + adjugate_trace(&mb, &m(pb, op)) * ma.det().unwrap()
+}
+
+/// EXACTNESS ANCHOR: with every singular value well away from zero the
+/// cofactor kernel equals the reduced-overlap form S_ab · Σ_σ Σ_i d_i/s_i that
+/// the old kernel used there, and the independent adjugate reference.
+///
+/// Both old and new kernels pass this by design (they agree on regular
+/// overlaps). MUTATION-PROVEN against a broken cofactor sum instead: using
+/// `suffix[i]` for `suffix[i + 1]` (keeping s_i in its own term) fails it.
+#[test]
+fn cross_one_body_matches_reduced_overlap_form_when_regular() {
+    use ferric_scf::cdft_coupling::{biorth_pairing, cross_one_body};
+    let nbf = 8;
+    for seed in [0.31, 0.57, 0.83] {
+        let s = spd_fill(nbf, seed);
+        let op = sym_fill(nbf, seed + 0.11);
+        let pa = biorth_pairing(&fill(nbf, 3, seed + 0.2), &fill(nbf, 3, seed + 0.3), &s);
+        let pb = biorth_pairing(&fill(nbf, 2, seed + 0.4), &fill(nbf, 2, seed + 0.5), &s);
+        let s_min = pa
+            .s_vals
+            .iter()
+            .chain(pb.s_vals.iter())
+            .fold(f64::MAX, |m, &v| m.min(v));
+        assert!(
+            s_min > 1e-3,
+            "seed {seed}: fixture not regular, min s = {s_min:.3e}"
+        );
+        let reduced = |p: &ferric_scf::cdft_coupling::Pairing| -> f64 {
+            (0..p.s_vals.len())
+                .map(|i| p.c_tilde_a.column(i).dot(&op.dot(&p.c_tilde_b.column(i))) / p.s_vals[i])
+                .sum()
+        };
+        let old_form = pa.det_m * pb.det_m * (reduced(&pa) + reduced(&pb));
+        let val = cross_one_body(&op, &pa, &pb);
+        let reference = adjugate_reference(&op, &s, &pa, &pb);
+        let scale = 1.0_f64.max(old_form.abs());
+        assert!(
+            (val - old_form).abs() < 1e-12 * scale,
+            "seed {seed}: cofactor {val:.15e} vs reduced-overlap {old_form:.15e}"
+        );
+        assert!(
+            (val - reference).abs() < 1e-11 * scale,
+            "seed {seed}: cofactor {val:.15e} vs adjugate {reference:.15e}"
+        );
+    }
+}
+
+/// α pairing whose third singular value is exactly `t` (S = I): two generic
+/// rotated pairs plus q2 against t·q2 + √(1−t²)·q5, mixed by a fixed rotation.
+fn alpha_pairing_with_small_singular_value(
+    q: &Array2<f64>,
+    t: f64,
+) -> ferric_scf::cdft_coupling::Pairing {
+    use ferric_scf::cdft_coupling::biorth_pairing;
+    let col = |k: usize| q.column(k).to_owned();
+    let ca = q.slice(ndarray::s![.., ..3]).to_owned();
+    let mut cb = Array2::<f64>::zeros((q.nrows(), 3));
+    cb.column_mut(0)
+        .assign(&(&col(0) * 0.9 + &col(6) * 0.19_f64.sqrt()));
+    cb.column_mut(1).assign(&(&col(1) * 0.8 + &col(7) * 0.6));
+    cb.column_mut(2)
+        .assign(&(&col(2) * t + &col(5) * (1.0 - t * t).sqrt()));
+    let (mix, _) = {
+        use ndarray_linalg::QR;
+        fill(3, 3, 0.77).qr().unwrap()
+    };
+    biorth_pairing(&ca, &cb.dot(&mix), &Array2::<f64>::eye(q.nrows()))
+}
+
+/// CONTINUITY: as one α singular value t runs from 1e-6 through the old
+/// 1e-8 cutoff to exactly 0, the element tracks the independent adjugate
+/// reference to 1e-13 at every point, including t = 0.
+///
+/// MUTATION-PROVEN (2026-10-27) against the old thresholded kernel: at
+/// t = 9.9e-9 it is off by −5.93e-9 against a value of 0.2072, because it
+/// dropped Σ_{i≠k} d_i Π_{j≠i} s_j, which is O(t). The same bug makes it
+/// jump across t = 1e-8. Against a broken cofactor sum (`suffix[i]` in place
+/// of `suffix[i + 1]`) it fails at t = 1e-6.
+#[test]
+fn cross_one_body_is_continuous_through_a_vanishing_singular_value() {
+    use ferric_scf::cdft_coupling::{biorth_pairing, cross_one_body};
+    let nbf = 8;
+    let s = Array2::<f64>::eye(nbf);
+    let q = s_orthonormal(&s, 0.43);
+    let op = sym_fill(nbf, 0.29);
+    let cb_a = q.slice(ndarray::s![.., ..2]).to_owned();
+    let mut cb_b = Array2::<f64>::zeros((nbf, 2));
+    cb_b.column_mut(0)
+        .assign(&(&q.column(0) * 0.4_f64.cos() + &q.column(3) * 0.4_f64.sin()));
+    cb_b.column_mut(1)
+        .assign(&(&q.column(1) * 0.3_f64.cos() + &q.column(4) * 0.3_f64.sin()));
+    let pb = biorth_pairing(&cb_a, &cb_b, &s);
+    for t in [1e-6, 3e-8, 1.01e-8, 0.99e-8, 5e-9, 1e-9, 1e-12, 0.0] {
+        let pa = alpha_pairing_with_small_singular_value(&q, t);
+        let s_min = pa.s_vals.iter().fold(f64::MAX, |m, &v| m.min(v));
+        assert!(
+            (s_min - t).abs() < 1e-14,
+            "t = {t:.2e}: smallest s = {s_min:.3e}"
+        );
+        let val = cross_one_body(&op, &pa, &pb);
+        let reference = adjugate_reference(&op, &s, &pa, &pb);
+        assert!(
+            reference.abs() > 0.1,
+            "t = {t:.2e}: reference {reference} too small to test"
+        );
+        assert!(
+            (val - reference).abs() < 1e-13,
+            "t = {t:.2e}: kernel {val:.16e} vs adjugate {reference:.16e} (diff {:.3e})",
+            val - reference
+        );
+    }
+    let below = cross_one_body(
+        &op,
+        &alpha_pairing_with_small_singular_value(&q, 1e-8 - 1e-15),
+        &pb,
+    );
+    let above = cross_one_body(
+        &op,
+        &alpha_pairing_with_small_singular_value(&q, 1e-8 + 1e-15),
+        &pb,
+    );
+    assert!(
+        (above - below).abs() < 1e-13,
+        "jump across 1e-8: {:.3e}",
+        above - below
+    );
+}
+
+/// OFFSET INVARIANCE BELOW THE OLD CUTOFF: one β singular value is 5e-9, so
+/// S_ab ≈ 4.1e-9, and H_ab must not move under W → W − c·S.
+///
+/// MUTATION-PROVEN (2026-10-27) against the old thresholded kernel: H_ab
+/// moved 1.06596309e-2 → 1.06595241e-2 at c = 10, i.e. by 1.068e-7, which is
+/// the predicted ½·c·(N_e − 1)·S_ab·(λ_a + λ_b) (N_e = 5, λ_a + λ_b = 1.3).
+/// The reachability asserts pin that shift at ~1e5× the tolerance.
+#[test]
+fn coupling_is_offset_invariant_with_a_near_zero_singular_value() {
+    use ferric_scf::cdft_coupling::{coupling_hab, DiabaticState};
+    let nbf = 10;
+    let s = spd_fill(nbf, 0.61);
+    let q = s_orthonormal(&s, 0.47);
+    let (w_a, w_b) = (sym_fill(nbf, 0.23), sym_fill(nbf, 0.37));
+    let sigma = 5e-9;
+    let col = |k: usize| q.column(k).to_owned();
+    let mix = |k: usize, l: usize, c: f64, sn: f64| &col(k) * c + &col(l) * sn;
+    let a_alpha = q.slice(ndarray::s![.., ..3]).to_owned();
+    let a_beta = q.slice(ndarray::s![.., ..2]).to_owned();
+    let mut b_alpha = Array2::<f64>::zeros((nbf, 3));
+    b_alpha
+        .column_mut(0)
+        .assign(&mix(0, 5, 0.3_f64.cos(), 0.3_f64.sin()));
+    b_alpha.column_mut(1).assign(&col(1));
+    b_alpha
+        .column_mut(2)
+        .assign(&mix(2, 6, 0.5_f64.cos(), 0.5_f64.sin()));
+    let mut b_beta = Array2::<f64>::zeros((nbf, 2));
+    b_beta
+        .column_mut(0)
+        .assign(&mix(0, 7, 0.2_f64.cos(), 0.2_f64.sin()));
+    b_beta
+        .column_mut(1)
+        .assign(&mix(1, 8, sigma, (1.0 - sigma * sigma).sqrt()));
+    let (lam_a, lam_b) = (0.9, 0.4);
+    let run = |c: f64| {
+        let (wa, wb) = (&w_a - &(&s * c), &w_b - &(&s * c));
+        let a = DiabaticState {
+            c_a: &a_alpha,
+            c_b: &a_beta,
+            nocc_a: 3,
+            nocc_b: 2,
+            energy: -3.0,
+            lambda: lam_a,
+            w: &wa,
+        };
+        let b = DiabaticState {
+            c_a: &b_alpha,
+            c_b: &b_beta,
+            nocc_a: 3,
+            nocc_b: 2,
+            energy: -2.9,
+            lambda: lam_b,
+            w: &wb,
+        };
+        coupling_hab(&a, &b, &s)
+    };
+    let r0 = run(0.0);
+    let c = 10.0;
+    let r1 = run(c);
+    let old_shift = 0.5 * c * (5.0 - 1.0) * r0.s_ab * (lam_a + lam_b);
+    assert!(
+        r0.s_ab.abs() < 1e-8 && r0.s_ab.abs() > 1e-9,
+        "S_ab = {:.3e}",
+        r0.s_ab
+    );
+    assert!(
+        r0.h_ab.abs() > 1e-5,
+        "H_ab = {:.3e} too small to test",
+        r0.h_ab
+    );
+    assert!(
+        old_shift.abs() > 1e-8,
+        "the old kernel's shift {old_shift:.3e} would be invisible"
+    );
+    assert!(
+        (r1.h_ab - r0.h_ab).abs() < 1e-13,
+        "H_ab moved under W -> W - {c} S: {:.16e} -> {:.16e} (old-kernel shift {old_shift:.3e})",
+        r0.h_ab,
+        r1.h_ab
     );
 }
 
@@ -331,8 +622,8 @@ fn swap_fixture_is_not_degenerate() {
         s_ab.abs() > 0.1 && s_ab.abs() < 0.99,
         "S_ab = {s_ab:.6e} is not O(1); every h_raw term collapses"
     );
-    let e_wa = cross_one_body(&w_a, &pa, &pb, s_ab);
-    let e_wb = cross_one_body(&w_b, &pa, &pb, s_ab);
+    let e_wa = cross_one_body(&w_a, &pa, &pb);
+    let e_wb = cross_one_body(&w_b, &pa, &pb);
     assert!(
         e_wa.abs() > 0.1 && e_wb.abs() > 0.1,
         "a weight element vanished: ⟨a|W_A|b⟩ = {e_wa:.6e}, ⟨a|W_B|b⟩ = {e_wb:.6e}"
@@ -1095,14 +1386,15 @@ fn hene_plus_hole_prefers_the_lower_ip_atom() {
 ///
 /// WHICH PAIR, and why not the default one. The default driver's pair (state A
 /// and the descended hole-on-Ne state) has S_ab ≈ 7e-8 on this box but 8.7e-9
-/// under `OPENBLAS_CORETYPE=Prescott`, which is below the kernel's near-zero
-/// singular-value threshold `S_TOL` = 1e-8. In that branch the kernel drops
-/// O(σ) terms, and MEASURED under Prescott the offset then moved H_ab by
-/// 1.3e-8 against an H_ab of 1.2e-8. So the identity only holds above S_TOL,
-/// and that pair straddles it depending on the BLAS kernel. Below S_TOL the
-/// known non-invariance is ½·c·(N_e − 1)·S_ab·(λ_a + λ_b), here
-/// ½·0.37·10·8.66e-9·0.808 = 1.3e-8, as measured; a separate change is to
-/// replace S_TOL with an exact cofactor sum. This test uses the
+/// under `OPENBLAS_CORETYPE=Prescott`, which was below the kernel's former
+/// near-zero singular-value threshold `S_TOL` = 1e-8. In that branch the old
+/// kernel dropped O(σ) terms, and MEASURED under Prescott the offset then moved
+/// H_ab by 1.3e-8 against an H_ab of 1.2e-8: ½·c·(N_e − 1)·S_ab·(λ_a + λ_b) =
+/// ½·0.37·10·8.66e-9·0.808 = 1.3e-8, as predicted. The threshold is gone (the
+/// kernel is now a division-free cofactor sum, pinned synthetically by
+/// `coupling_is_offset_invariant_with_a_near_zero_singular_value`), but a pair
+/// whose S_ab depends on the BLAS kernel by 8x is still a poor fixture. This
+/// test uses the
 /// descent-OFF hole-on-Ne state (λ −2.753705, the saddle pinned in
 /// `cdft_constrained_stability.rs`) instead: it is a converged determinant of
 /// the same constraint, S_ab ≈ 2.9e-2, and the identity is algebraic, so the
@@ -1151,7 +1443,7 @@ fn hene_plus_coupling_is_invariant_under_constraint_offset() {
         b.lambdas[0],
         (r1.h_ab - r0.h_ab).abs()
     );
-    // The pair must be well above S_TOL and genuinely asymmetric in λ, or the
+    // The pair must have an O(1e-2) overlap and be genuinely asymmetric in λ, or the
     // identity cannot tell the bug from the fix.
     assert!(r0.s_ab.abs() > 1e-4, "S_ab = {:.3e}", r0.s_ab);
     assert!(
