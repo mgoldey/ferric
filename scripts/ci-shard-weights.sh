@@ -52,10 +52,13 @@ import sys
 from collections import defaultdict
 
 ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
-# `<STATUS> [ 1.234s] (  n/N) <binary_id> <test name>`; the (n/N) counter is
-# absent in some nextest output modes.
+# `<STATUS> [ 1.234s] (  n/N) <binary_id> <test name>`. The parenthesised
+# counter is absent in some nextest output modes, and is NOT always `n/N`: a
+# failed retry attempt prints `TRY 1 FAIL [ 0.306s] (───) <id> <test>`. So
+# the counter is any `(...)`, and the id may not start with `(`, so an
+# unforeseen counter form can never be booked as a binary id.
 LINE = re.compile(
-    r"\b[A-Z][A-Z0-9 /]*\[\s*([0-9]+(?:\.[0-9]+)?)s\]\s+(?:\(\s*\d+/\d+\)\s+)?(\S+)\s+\S"
+    r"\b[A-Z][A-Z0-9 /]*\[\s*([0-9]+(?:\.[0-9]+)?)s\]\s+(?:\([^)]*\)\s+)?([^\s(]\S*)\s+\S"
 )
 
 # nextest's closing summary (after `Summary [...]`) REPEATS result lines it

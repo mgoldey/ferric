@@ -1088,7 +1088,10 @@ fn step_text(job_text: &str, name: &str) -> String {
 /// SHORTER but valid frame that passes `zstd -t`); move the recompression
 /// after the exactly-once guard (the guard would then certify the
 /// originals, not the uploaded files); drop `--long=27` from test-shard's or
-/// the download script's `zstd -t`.
+/// the download script's `zstd -t`; replace the `exit 1` after the
+/// entry/byte-count `::error::` with `true` (the mismatch would then be
+/// logged and uploaded anyway); add `set +o pipefail` (or any `set +`) to
+/// the archive step; drop the decompressed byte-count comparison.
 #[test]
 fn shard_archives_are_long_window_and_readable() {
     let ci = ci_yml();
@@ -1112,6 +1115,11 @@ fn shard_archives_are_long_window_and_readable() {
         // Same tar entry count before and after.
         "AFTER_N=$(tar -I 'zstd --long=27' -tf \"$A.long\" | wc -l)",
         "\"$AFTER_N\" -ne \"$BEFORE_N\"",
+        // Same decompressed byte count: a cut on a member boundary keeps
+        // the entry count but not this.
+        "BEFORE_RAW=$(zstd -dcq \"$A\" | wc -c)",
+        "AFTER_RAW=$(zstd -dcq --long=27 \"$A.long\" | wc -c)",
+        "\"$AFTER_RAW\" -ne \"$BEFORE_RAW\"",
         "mv \"$A.long\" \"$A\"",
     ] {
         assert!(
@@ -1119,6 +1127,32 @@ fn shard_archives_are_long_window_and_readable() {
             "build-tests' archive step must contain `{needle}` (#525)"
         );
     }
+    // Nothing in the step may switch the shell options back off: a
+    // `set +o pipefail` (or `set +e`) anywhere in it reopens the
+    // shorter-but-valid-frame hole the checks above exist for.
+    let relaxed: Vec<&str> = archive_step
+        .lines()
+        .map(str::trim)
+        .filter(|l| l.starts_with("set +") || l.contains("+o pipefail"))
+        .collect();
+    assert!(
+        relaxed.is_empty(),
+        "the archive step must not relax its shell options: {relaxed:?}"
+    );
+    // The mismatch check must STOP the job: its `::error::` line is followed
+    // directly by `exit 1`, inside the recompress loop.
+    let lines: Vec<&str> = archive_step.lines().map(str::trim).collect();
+    let err = lines
+        .iter()
+        .position(|l| {
+            l.contains("::error::nextest-shard-$k changed in the --long=27 recompression")
+        })
+        .expect("archive step lacks the recompression mismatch ::error::");
+    assert_eq!(
+        lines.get(err + 1).copied(),
+        Some("exit 1"),
+        "the recompression mismatch ::error:: must be followed by `exit 1`"
+    );
     let at = |needle: &str| {
         archive_step
             .find(needle)

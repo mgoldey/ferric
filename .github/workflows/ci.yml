@@ -698,22 +698,28 @@ jobs:
           # test-shard runs it unchanged.
           # pipefail (set above) is load-bearing: a decompress that dies
           # half way still leaves the second zstd a valid, SHORTER frame that
-          # passes `zstd -t`. Hence also the entry count, and the nextest
-          # list below, which reads these recompressed files, not the
-          # originals.
+          # passes `zstd -t`. Hence also the tar entry count AND the
+          # decompressed byte count (a cut on a member boundary keeps the
+          # first and changes the second; the two extra passes cost 3.4 s +
+          # 2.3 s locally on shard 1's 3.65 GB tar stream),
+          # and the nextest list below, which reads these recompressed
+          # files, not the originals.
           for k in $(seq 1 "$SHARDS"); do
             A="/tmp/nextest-shard-$k.tar.zst"
-            BEFORE_BYTES=$(stat -c %s "$A")
+            BEFORE_SIZE=$(stat -c %s "$A")
             BEFORE_N=$(tar -I zstd -tf "$A" | wc -l)
+            BEFORE_RAW=$(zstd -dcq "$A" | wc -c)
             zstd -dcq "$A" | zstd -q --long=27 -T0 -3 -c > "$A.long"
             zstd -tq --long=27 "$A.long"
             AFTER_N=$(tar -I 'zstd --long=27' -tf "$A.long" | wc -l)
-            if [ "$BEFORE_N" -eq 0 ] || [ "$AFTER_N" -ne "$BEFORE_N" ]; then
-              echo "::error::nextest-shard-$k: $BEFORE_N tar entries before the --long=27 recompression, $AFTER_N after (#525)"
+            AFTER_RAW=$(zstd -dcq --long=27 "$A.long" | wc -c)
+            if [ "$BEFORE_N" -eq 0 ] || [ "$AFTER_N" -ne "$BEFORE_N" ] \
+                || [ "$AFTER_RAW" -ne "$BEFORE_RAW" ]; then
+              echo "::error::nextest-shard-$k changed in the --long=27 recompression: $BEFORE_N -> $AFTER_N tar entries, $BEFORE_RAW -> $AFTER_RAW decompressed bytes (#525)"
               exit 1
             fi
             mv "$A.long" "$A"
-            echo "nextest-shard-$k: $BEFORE_BYTES -> $(stat -c %s "$A") bytes with --long=27, $AFTER_N entries"
+            echo "nextest-shard-$k: $BEFORE_SIZE -> $(stat -c %s "$A") bytes with --long=27, $AFTER_N entries, $AFTER_RAW bytes decompressed"
           done
           # EXACTLY-ONCE GUARD (#525). Lists each archive exactly the way its
           # shard will run it, and requires the union of their fast-tier
