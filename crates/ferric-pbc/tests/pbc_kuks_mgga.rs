@@ -488,6 +488,9 @@ fn unvalidated_meta_gga_requests_are_refused() {
         assert!(e.contains("run on the dense-AFT J/K only"), "{f}: {e}");
         let e = check_kpoint_deriv_functional(DerivSpin::RestrictedOpen, false, f, "with_stress")
             .expect_err(f);
-        assert!(e.contains("ROKS has no meta-GGA"), "{f}: {e}");
+        assert!(
+            e.contains("ROKS meta-GGA force and stress are not implemented"),
+            "{f}: {e}"
+        );
     }
 }

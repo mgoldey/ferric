@@ -57,8 +57,8 @@
 //!    ```
 //!
 //!    The weight response carries `ε(ρ_σ, σ_στ, τ_σ)` unchanged and the Fock
-//!    guard rebuilds `F_σ` with `V^τ_σ`. ROKS refuses meta-GGA (no tau in its
-//!    SCF). The RS-GDF J route composes unchanged (no exact exchange; FD of
+//!    guard rebuilds `F_σ` with `V^τ_σ`. ROKS refuses meta-GGA (its k-point SCF
+//!    has the SCAN / r2SCAN energy, #492, but no meta-GGA stress). The RS-GDF J route composes unchanged (no exact exchange; FD of
 //!    the RS-GDF SCF energy in `tests/pbc_kuks_mgga_rsgdf.rs`, issue #492).
 //!
 //! The atom grid is not rotation invariant, so `sigma` is returned
@@ -204,7 +204,8 @@
 //! range-separated stress validated for HSE06 and CAM-B3LYP; other CAM GGA
 //! hybrids such as wB97X are accepted, not exercised); for UKS also SCAN /
 //! r2SCAN on either J/K. Any other meta-GGA, range-separated meta-GGA, VV10 and double hybrids are refused with typed
-//! errors (ROKS also refuses every meta-GGA; the ROHF entry has no
+//! errors (ROKS also refuses every meta-GGA: its SCAN / r2SCAN energy has no
+//! stress yet; the ROHF entry has no
 //! functional). A ROKS state cannot
 //! be handed to [`kpoint_uks_stress`] (its SCF type is
 //! [`crate::kroks::KRoScfResult`], not [`KUScfResult`]).

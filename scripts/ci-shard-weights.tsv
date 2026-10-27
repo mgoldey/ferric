@@ -247,6 +247,7 @@ ferric-pbc::pbc_krks_2x2x1	41.313
 ferric-pbc::pbc_krks_mgga_rsgdf	157.785
 ferric-pbc::pbc_krks_shifted	316.784
 ferric-pbc::pbc_kroks	351.257
+ferric-pbc::pbc_kroks_mgga	34.019
 ferric-pbc::pbc_kroks_rsh_force	711.723
 ferric-pbc::pbc_krsgdf	37.882
 ferric-pbc::pbc_krsgdf_split	151.909

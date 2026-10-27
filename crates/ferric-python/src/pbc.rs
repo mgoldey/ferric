@@ -2987,7 +2987,8 @@ fn run_uhf_kpts(
 
 /// Which k-point Kohn-Sham driver a binding runs: the functional families
 /// each supports differ (RKS and UKS take the pure meta-GGAs SCAN / r2SCAN and
-/// range-separated hybrids; k-point ROKS has neither).
+/// range-separated hybrids; k-point ROKS takes range-separated hybrids, and
+/// its library SCAN / r2SCAN energy is not wired here, #498).
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum KKsKind {
     Closed,
@@ -3019,7 +3020,8 @@ impl KKsKind {
 /// derivative gate sees the J/K (`s.aux`) and the request (`s.derivs`).
 ///
 /// Energy gate: LDA, GGA, global hybrids and range-separated hybrids
-/// everywhere (ROKS through the library `resolve_kroks_functional`); the pure
+/// everywhere (ROKS through the library `resolve_kroks_functional`, minus its
+/// library-only SCAN / r2SCAN energy, #492 / #498); the pure
 /// meta-GGAs SCAN / r2SCAN on RKS and UKS (the UKS one is the library
 /// `resolve_kuks_functional`; its meta-GGA needs the dense-AFT J/K, which
 /// `solve_kuks` checks); TPSS on RKS only. The force and stress
@@ -3042,11 +3044,25 @@ fn check_kpoint_ks_support(
         KKsKind::Unrestricted => ferric_pbc::kuks::resolve_kuks_functional(functional),
         KKsKind::RestrictedOpen => ferric_pbc::kroks::resolve_kroks_functional(functional),
     };
+    // The library k-point ROKS takes SCAN / r2SCAN (energy only, #492); the
+    // binding is not wired for it (#498), so refuse it here rather than run
+    // the library path unvalidated.
+    if energy.is_ok()
+        && kind == KKsKind::RestrictedOpen
+        && ferric_pbc::dft::is_meta_gga_name(functional)
+    {
+        return Err(val_err(format!(
+            "{fname}: functional {functional:?}: the k-point ROKS SCAN / r2SCAN meta-GGA energy \
+             is validated in the library (#492) but not yet wired in the bindings (#498); \
+             run_uks_kpts has SCAN / r2SCAN"
+        )));
+    }
     energy.map_err(|e| {
         let what = match kind {
             KKsKind::RestrictedOpen => {
                 "LDA, GGA, global-hybrid and range-separated hybrid functionals only (no \
-                 meta-GGA for k-point ROKS; run_uks_kpts has SCAN / r2SCAN)"
+                 meta-GGA for k-point ROKS here: the library's SCAN / r2SCAN energy is not \
+                 wired, #498; run_uks_kpts has SCAN / r2SCAN)"
             }
             KKsKind::Closed => {
                 "LDA, GGA, global-hybrid and SCAN / r2SCAN / TPSS meta-GGA functionals (plus \
@@ -3652,7 +3668,8 @@ fn run_ro_kpts(
 
 /// **k-point ROKS** (restricted open-shell Kohn-Sham; LDA / GGA / global
 /// hybrids, and range-separated (CAM) GGA hybrids on either J/K
-/// (`ferric_pbc::kroks::solve_kroks`); no meta-GGA, use `run_uks_kpts`;
+/// (`ferric_pbc::kroks::solve_kroks`); no meta-GGA here (the library's
+/// SCAN / r2SCAN ROKS energy is not wired yet, #498), use `run_uks_kpts`;
 /// Roothaan effective Fock) on a k-mesh. Arguments and result as
 /// `run_uks_kpts`; `mo_energy` / `mo_energy_beta` are `c† F_σ c` per k in the
 /// Roothaan orbital order. The derivatives run on the dense-AFT and the

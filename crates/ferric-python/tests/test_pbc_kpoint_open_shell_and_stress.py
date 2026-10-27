@@ -546,17 +546,24 @@ def test_monkhorst_pack_full_stress_tensor_matches_fd(basis, route):
 
 
 def test_open_shell_refusals_have_exact_wording(basis):
-    # k-point ROKS: no meta-GGA (UKS has SCAN / r2SCAN,
-    # test_pbc_open_shell_mgga_rsh.py; the ROKS range-separated hybrid energy
-    # runs, test_pbc_rsh_open_mgga_derivs.py).
+    # k-point ROKS SCAN / r2SCAN: library-only (#492), not wired here (#498)
+    # (UKS has SCAN / r2SCAN, test_pbc_open_shell_mgga_rsh.py; the ROKS
+    # range-separated hybrid energy runs, test_pbc_rsh_open_mgga_derivs.py).
     for f in ("SCAN", "r2SCAN"):
         with pytest.raises(
             ValueError,
-            match=rf'^run_roks_kpts: functional "{f}": .*meta-GGA.*\. k-point ROKS '
-            r"supports LDA, GGA, global-hybrid and range-separated hybrid functionals "
-            r"only \(no meta-GGA for k-point ROKS; run_uks_kpts has SCAN / r2SCAN\)$",
+            match=rf'^run_roks_kpts: functional "{f}": the k-point ROKS SCAN / r2SCAN '
+            r"meta-GGA energy is validated in the library \(#492\) but not yet wired "
+            r"in the bindings \(#498\); run_uks_kpts has SCAN / r2SCAN$",
         ):
             _roks(H3_ATOMS, basis, f)
+    # Any other meta-GGA is refused by the library gate itself.
+    with pytest.raises(
+        ValueError,
+        match=r'^run_roks_kpts: functional "TPSS": .*k-point ROKS supports only the '
+        r"pure SCAN / r2SCAN.*no meta-GGA for k-point ROKS here",
+    ):
+        _roks(H3_ATOMS, basis, "TPSS")
     # Open-shell range-separated hybrids: the HSE06 / CAM-B3LYP force and
     # stress run on either J/K (#498, test_pbc_rsh_open_mgga_derivs.py); an
     # unvalidated one (wB97X) is refused by name, per requested derivative.

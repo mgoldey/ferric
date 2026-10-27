@@ -734,13 +734,18 @@ fn cli_open_shell_hse06_rsgdf_equals_library_solve_kuks() {
 
 #[test]
 fn open_shell_refusals_have_exact_messages() {
-    // k-point ROKS has no meta-GGA (the UKS route has it; the ROKS
-    // range-separated hybrid energy runs: periodic_rsh_open_mgga_derivs.rs).
+    // k-point ROKS SCAN is library-only (#492; not wired, #498): the plan-time
+    // gate must refuse it, or the CLI would reach the library path (the UKS
+    // route has it; the ROKS range-separated hybrid energy runs:
+    // periodic_rsh_open_mgga_derivs.rs).
     let tag = "roks-SCAN";
     let e = refused(&run(&input(tag, Method::Roks, "SCAN", "energy")), tag);
     assert!(
         e.contains("[cell] kmesh with functional \"SCAN\"")
-            && e.contains("no meta-GGA for ROKS; the UKS route"),
+            && e.contains(
+                "validated in the library (#492) but not yet wired for ROKS in the CLI (#498); \
+                 the UKS route"
+            ),
         "{tag}: {e}"
     );
     // ROKS wB97X has an energy here but no validated force: optimize is

@@ -754,8 +754,8 @@ fn refusals_have_exact_wording() {
     });
     assert!(
         e.contains(
-            "k-point ROKS supports LDA, GGA, global-hybrid and range-separated hybrid \
-                    functionals only (no meta-GGA for ROKS"
+            "the k-point ROKS SCAN / r2SCAN meta-GGA energy is validated in the library \
+             (#492) but not yet wired for ROKS in the CLI (#498)"
         ),
         "{e}"
     );

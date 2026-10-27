@@ -924,7 +924,7 @@ fn refusals_and_the_fock_guard() {
         ),
         (
             "SCAN",
-            "meta-GGA stress at k is not supported: SCAN: the restricted-open-shell (ROKS) k-point SCF has no meta-GGA; the k-point meta-GGA stress covers RKS and UKS only",
+            "meta-GGA stress at k is not supported: SCAN: the k-point ROKS meta-GGA stress is not implemented (the SCAN / r2SCAN ROKS energy is, #492); the k-point meta-GGA stress covers RKS and UKS only",
         ),
         ("wB97X-V", "VV10"),
         ("B2PLYP", "double hybrid"),

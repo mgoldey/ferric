@@ -100,12 +100,23 @@ pub enum KUksMggaMutation {
     TotalTauBothChannels,
     /// The spin-summed evaluator: `ρ/2`, `∇ρ/2`, `τ/2` in both channels.
     UnpolarizedEvaluator,
+    /// `τ_β` built from `D_α` (both channels get `τ_α`).
+    TauBetaFromAlpha,
+    /// Zero `τ` handed to libxc in both channels (the tau term dropped from
+    /// the kernel input; `V^τ` still assembled from what libxc returns).
+    DropTau,
 }
 
 /// The functional gate of [`solve_kuks`]: everything
 /// [`resolve_periodic_functional`] accepts, plus ONLY the pure SCAN / r2SCAN
 /// meta-GGAs (the spin-resolved tau term is validated for those alone).
 pub fn resolve_kuks_functional(name: &str) -> Result<(), FerricError> {
+    resolve_open_shell_k_functional(name, "UKS")
+}
+
+/// The functional gate shared by the k-point UKS and ROKS SCFs (both run on
+/// [`KPeriodicXcPolarized`]); `route` names the SCF in the refusal.
+pub(crate) fn resolve_open_shell_k_functional(name: &str, route: &str) -> Result<(), FerricError> {
     // A range-separated hybrid goes through the RSH resolver (it refuses
     // range-separated meta-GGA, VV10 and double hybrids); the meta-GGA gate
     // below is for the global functionals only.
@@ -118,7 +129,7 @@ pub fn resolve_kuks_functional(name: &str) -> Result<(), FerricError> {
         if !crate::kxcgrad::is_validated_mgga(name) {
             return Err(PeriodicDftError::Unsupported {
                 feature: "meta-GGA",
-                reason: format!("{name}: k-point UKS supports only the pure SCAN / r2SCAN"),
+                reason: format!("{name}: k-point {route} supports only the pure SCAN / r2SCAN"),
             }
             .into());
         }
@@ -293,6 +304,13 @@ impl KPeriodicXcPolarized {
     ) -> (UksDensityGrid, Option<(Array1<f64>, Array1<f64>)>) {
         match (self.mutation, tau) {
             (Some(KUksMggaMutation::SwapTau), Some((ta, tb))) => (dens, Some((tb, ta))),
+            (Some(KUksMggaMutation::TauBetaFromAlpha), Some((ta, _))) => {
+                (dens, Some((ta.clone(), ta)))
+            }
+            (Some(KUksMggaMutation::DropTau), Some((ta, _))) => {
+                let z = Array1::<f64>::zeros(ta.len());
+                (dens, Some((z.clone(), z)))
+            }
             (Some(KUksMggaMutation::TotalTauBothChannels), Some((ta, tb))) => {
                 let t = &ta + &tb;
                 (dens, Some((t.clone(), t)))

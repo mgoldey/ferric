@@ -4913,7 +4913,8 @@ impl PeriodicRoute {
     ///
     /// Energy gate: LDA, GGA, global hybrids and the range-separated hybrids
     /// (HSE06, CAM-B3LYP, wB97X) on every Kohn-Sham route (ROKS through the
-    /// library `resolve_kroks_functional`); the pure meta-GGAs SCAN / r2SCAN
+    /// library `resolve_kroks_functional`, minus its SCAN / r2SCAN energy,
+    /// which is library-only until #498); the pure meta-GGAs SCAN / r2SCAN
     /// on the RKS and UKS routes (UKS through the library
     /// `resolve_kuks_functional`; its meta-GGA needs `jk = "dense"`, checked
     /// in [`periodic_plan`]); TPSS on the RKS route only. The
@@ -4938,15 +4939,30 @@ impl PeriodicRoute {
                     PeriodicRoute::Uks => ferric_pbc::kuks::resolve_kuks_functional(f),
                     _ => ferric_pbc::kroks::resolve_kroks_functional(f),
                 };
+                // The library k-point ROKS takes SCAN / r2SCAN (energy only,
+                // #492), but this route is not wired for it (#498): refuse at
+                // plan time, or the CLI would run the library path unvalidated.
+                if energy.is_ok()
+                    && self == PeriodicRoute::Roks
+                    && ferric_pbc::dft::is_meta_gga_name(f)
+                {
+                    return Err(format!(
+                        "[cell] kmesh with functional {f:?}: the k-point ROKS SCAN / r2SCAN \
+                         meta-GGA energy is validated in the library (#492) but not yet wired \
+                         for ROKS in the CLI (#498); the UKS route, method.kind = \"uhf\" with \
+                         a functional or \"ksdft\" with multiplicity > 1, has SCAN / r2SCAN"
+                    ));
+                }
                 energy.map_err(|e| {
                     format!(
                         "[cell] kmesh with functional {f:?}: {e}. k-point {} supports {}",
                         self.label(),
                         if self == PeriodicRoute::Roks {
                             "LDA, GGA, global-hybrid and range-separated hybrid functionals \
-                             only (no meta-GGA for ROKS; the UKS route, method.kind = \"uhf\" \
-                             with a functional or \"ksdft\" with multiplicity > 1, has SCAN / \
-                             r2SCAN)"
+                             only in the CLI (no meta-GGA for ROKS here: the library's SCAN / \
+                             r2SCAN energy is not wired, #498; the UKS route, method.kind = \
+                             \"uhf\" with a functional or \"ksdft\" with multiplicity > 1, has \
+                             SCAN / r2SCAN)"
                         } else if self == PeriodicRoute::Rks {
                             "LDA, GGA and global-hybrid functionals, the SCAN / r2SCAN / \
                              TPSS meta-GGAs and range-separated hybrids"
@@ -6075,8 +6091,8 @@ kind = "ccsd"
     }
 
     /// (kind, extra TOML, triplet?, fragments the refusal must contain).
-    /// k-point ROKS has no meta-GGA: SCAN is refused by name, pointing at the
-    /// UKS route that has it.
+    /// k-point ROKS meta-GGA is library-only (#492, not wired, #498): SCAN is
+    /// refused by name, pointing at the UKS route that has it.
     type KmeshRefusal = (&'static str, &'static str, bool, &'static [&'static str]);
     const PBE: &str = "[dft]\nfunctional = \"PBE\"";
     const SCAN: &str = "[dft]\nfunctional = \"SCAN\"";
@@ -6558,7 +6574,7 @@ kind = "ccsd"
         let rsgdf = "jk = \"rsgdf\"\nauxbasis = \"cc-pvdz-ri\"\nkmesh = [1, 1, 2]";
         assert!(ok(&opt("ksdft", "kmesh = [1, 1, 2]", HSE)).optimize);
         assert!(ok(&opt("ksdft", rsgdf, HSE)).optimize);
-        // Open-shell KS: ROKS has no meta-GGA at a mesh (energy gate); the UKS
+        // Open-shell KS: ROKS meta-GGA is not wired at a mesh (energy gate); the UKS
         // SCAN force runs (dense J/K); the UKS and ROKS RSH forces run on
         // either J/K (#498).
         let e = err(&opt("rohf", "kmesh = [1, 1, 2]", SCAN));
