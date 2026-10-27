@@ -285,7 +285,8 @@ impl Molecule {
     ///
     /// For every atom whose element has an ECP definition in `bs.ecps`, set its
     /// `n_core_ecp` to that definition's `n_core`. Atoms without an ECP are left
-    /// untouched (`n_core_ecp` stays 0). This is the single point where the
+    /// untouched (`n_core_ecp` stays 0), and so are ghost atoms: a ghost is
+    /// basis-only, with no core to replace. This is the single point where the
     /// reduced electron count and effective nuclear charge enter the molecule;
     /// `nelec()` and `nuclear_repulsion()` both read `n_core_ecp` afterward.
     ///
@@ -294,7 +295,7 @@ impl Molecule {
         if bs.ecps.is_empty() {
             return;
         }
-        for atom in &mut self.atoms {
+        for atom in self.atoms.iter_mut().filter(|a| !a.ghost) {
             if let Some(def) = bs.ecp_for_element(atom.z) {
                 atom.n_core_ecp = def.n_core;
             }

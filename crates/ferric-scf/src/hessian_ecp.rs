@@ -68,7 +68,11 @@ pub(crate) const MAX_L: i32 = 3;
 /// the ECP Hessian terms are exactly zero and are skipped (bit-identical to
 /// the all-electron Hessian).
 pub(crate) fn has_ecp(mol: &Molecule, bs: &BasisSet) -> bool {
-    !bs.ecps.is_empty() && mol.atoms.iter().any(|a| bs.ecp_for_element(a.z).is_some())
+    !bs.ecps.is_empty()
+        && mol
+            .atoms
+            .iter()
+            .any(|a| !a.ghost && bs.ecp_for_element(a.z).is_some())
 }
 
 /// Whether the core charge some atom carries differs from the basis ECP's
@@ -77,6 +81,7 @@ pub(crate) fn has_ecp(mol: &Molecule, bs: &BasisSet) -> bool {
 pub(crate) fn ecp_inconsistent(mol: &Molecule, bs: &BasisSet) -> bool {
     mol.atoms
         .iter()
+        .filter(|a| !a.ghost)
         .any(|a| a.n_core_ecp != bs.ecp_for_element(a.z).map_or(0, |d| d.n_core))
 }
 
@@ -263,4 +268,27 @@ fn ao_maps(inp: &EcpInputs) -> (Vec<usize>, Vec<usize>) {
         }
     }
     (atom, shell)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ecp_inconsistent, has_ecp};
+    use ferric_core::basis;
+    use ferric_core::mol::Molecule;
+
+    /// A ghost ECP element carries no ECP and no core: it neither switches the
+    /// ECP Hessian terms on nor reads as an un-applied ECP.
+    #[test]
+    fn ghost_ecp_atom_is_neither_an_ecp_nor_inconsistent() {
+        let bs = basis::bundled("def2-svp").unwrap();
+        let mut mol = Molecule::parse_xyz("2\n\nHe 0 0 0\n@I 0 0 1.5\n", 0, 1).unwrap();
+        mol.apply_ecp(&bs);
+        assert!(!has_ecp(&mol, &bs));
+        assert!(!ecp_inconsistent(&mol, &bs));
+
+        let mut hi = Molecule::parse_xyz("3\n\nH 0 0 0\nI 0 0 1.61\n@I 0 0 4.3\n", 0, 1).unwrap();
+        hi.apply_ecp(&bs);
+        assert!(has_ecp(&hi, &bs));
+        assert!(!ecp_inconsistent(&hi, &bs));
+    }
 }

@@ -289,8 +289,9 @@ pub fn ecp_potential(mol: &Molecule, bs: &BasisSet) -> Option<Array2<f64>> {
 /// wrapper consumes, in exactly the order [`PreparedBasis::new`] emits shells.
 ///
 /// Returns `None` when the basis carries no ECPs or the molecule has no
-/// ECP-carrying atom. Shared by [`ecp_potential`] and [`ecp_potential_deriv`] so
-/// the energy and gradient can never disagree about the basis they describe.
+/// non-ghost ECP-carrying atom (a ghost contributes shells only). Shared by
+/// [`ecp_potential`] and [`ecp_potential_deriv`] so the energy and gradient can
+/// never disagree about the basis they describe.
 fn build_ecp_inputs(
     mol: &Molecule,
     bs: &BasisSet,
@@ -305,7 +306,7 @@ fn build_ecp_inputs(
 pub struct EcpInputs {
     /// Gaussian shells in [`PreparedBasis::new`] order.
     pub shells: Vec<EcpGaussianShell>,
-    /// ECP centres (one per ECP-carrying atom, in atom order).
+    /// ECP centres (one per non-ghost ECP-carrying atom, in atom order).
     pub ecps: Vec<EcpCenter>,
     /// `shell_atom[i]` = index into `mol.atoms` of shell `i`.
     pub shell_atom: Vec<usize>,
@@ -343,9 +344,9 @@ pub fn ecp_inputs_with_atoms(mol: &Molecule, bs: &BasisSet) -> Option<EcpInputs>
                 });
             }
         }
-        // ECP center for this atom, if any. Flatten EcpDef channels into the
-        // (am, n, exp, coef) primitive lists libecpint expects.
-        if let Some(def) = bs.ecp_for_element(atom.z) {
+        // ECP center for a real atom, if any (a ghost is basis-only). Flatten
+        // EcpDef channels into the (am, n, exp, coef) lists libecpint expects.
+        if let Some(def) = bs.ecp_for_element(atom.z).filter(|_| !atom.ghost) {
             let mut ams = Vec::new();
             let mut ns = Vec::new();
             let mut exponents = Vec::new();
