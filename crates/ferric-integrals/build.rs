@@ -313,6 +313,18 @@ fn build_libecpint() -> (PathBuf, Vec<PathBuf>) {
 
 /// Restores a file's mtime on drop if its bytes are unchanged (see the
 /// qgen.hpp note in `build_libecpint`).
+///
+/// What it covers, and what it assumes about the generator. It restores by
+/// PATH, so it works whether the generator truncates the file in place (what
+/// libecpint's `generate` does today: `std::ofstream qgen_head(header_name)`,
+/// shim/libecpint/src/generate.cpp) or writes a new file and renames it over
+/// the old one. It does NOT cover a generator that leaves any OTHER new or
+/// changed entry under the watched `shim/libecpint/include` (a temp file, a
+/// second header): cargo would see that entry's fresh mtime and re-run this
+/// script on the next build all the same. The symptom is the one #525 fixed --
+/// build-tests' `nextest archive` recompiling after `cargo test --no-run`
+/// instead of finishing in under a second -- so check that log line first if
+/// libecpint is ever upgraded.
 struct MtimeGuard {
     path: PathBuf,
     before: Option<(Vec<u8>, std::time::SystemTime)>,

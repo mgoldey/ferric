@@ -87,8 +87,13 @@ env:
   # "needs 0.01 GB but the budget is 0.00 GB" on a PR that never touched
   # ferric-dft. Explicit per-test budgets still override this (config > env).
   FERRIC_MEM_BUDGET_GB: "3"
-  # Disk, not CPU, is the binding constraint on a GitHub runner (~14 GB free).
-  # Each of the ~190 integration-test binaries is 200-335 MB; measured
+  # Disk WAS the binding constraint on a GitHub runner: ~14 GB free when the
+  # incidents below happened. MEASURED 2026-10-27 (build-tests of run
+  # 40542404911, ubuntu-22.04 image 20261021.618): / is 146 GB with 87 GB
+  # free before the "Free runner disk space" step and 109 GB after it, and
+  # build-tests peaked at ~26 GB. The settings below stay because they also
+  # shrink the binaries. Each of the ~190 integration-test binaries is
+  # 200-335 MB; measured
   # locally, a 236 MB ferric-scf test binary carries 82 MB of .debug_*
   # sections, so line tables trim roughly a third per binary (and
   # `target/debug/incremental` would add GBs more if enabled). A branch
@@ -130,10 +135,10 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      # The ubuntu-22.04 image ships ~30 GB of toolchains this job never uses
-      # (.NET, Android SDK, GHC, CodeQL, Swift). Deleting them is the standard
-      # way to get a Rust workspace with a multi-GB target/ cache onto the
-      # ~14 GB the runner otherwise has free. `df` before/after so the next
+      # The ubuntu-22.04 image ships toolchains this job never uses (.NET,
+      # Android SDK, GHC, CodeQL, Swift). Deleting them freed 21 GB (87 ->
+      # 109 GB free, run 40542404911); it was added when the runner had only
+      # ~14 GB free. `df` before/after so the next
       # disk-space failure is visible in the log instead of a mystery.
       - name: Free runner disk space
         run: |
@@ -455,10 +460,10 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      # The ubuntu-22.04 image ships ~30 GB of toolchains this job never uses
-      # (.NET, Android SDK, GHC, CodeQL, Swift). Deleting them is the standard
-      # way to get a Rust workspace with a multi-GB target/ cache onto the
-      # ~14 GB the runner otherwise has free. `df` before/after so the next
+      # The ubuntu-22.04 image ships toolchains this job never uses (.NET,
+      # Android SDK, GHC, CodeQL, Swift). Deleting them freed 21 GB (87 ->
+      # 109 GB free, run 40542404911); it was added when the runner had only
+      # ~14 GB free. `df` before/after so the next
       # disk-space failure is visible in the log instead of a mystery.
       - name: Free runner disk space
         run: |
@@ -659,8 +664,12 @@ jobs:
           # binary-level partition, so the split is done here, by filtering
           # what goes into each archive. scripts/ci-shard-plan.sh assigns the
           # fast-tier binaries largest-first by measured time
-          # (scripts/ci-shard-weights.tsv) to the least-loaded shard, and
-          # adds ferric-cli's executable to every shard whose tests run it.
+          # (scripts/ci-shard-weights.tsv) to the least-loaded shard. It
+          # selects test binaries by binary_id only; nextest itself packs a
+          # package's non-test executables (ferric-cli's, for its
+          # CARGO_BIN_EXE_ tests) into each archive that selects one of that
+          # package's test binaries, and the member check below fails the
+          # job if one is ever missing.
           # SHARDS must equal test-shard's matrix (ci_validation_tier_guard
           # `shard_archives_match_the_matrix`).
           SHARDS=4
@@ -673,6 +682,44 @@ jobs:
             F="$(cat "$PLAN/$k.filter")"
             cargo nextest archive --workspace --all-targets --locked \
               -E "$F" --archive-file "/tmp/nextest-shard-$k.tar.zst"
+          done
+          # LONG-WINDOW RECOMPRESSION (#525). nextest compresses each archive
+          # member with a small window, so the code every statically linked
+          # test binary repeats (std, ndarray, the ferric crates below it) is
+          # stored once per binary. `--long=27` (a 128 MiB window) finds those
+          # repeats across binaries: shard 1 of run 40542404911 went from
+          # 1406 MB to 217 MB in 6 s here. 27 is the CEILING, not a tuning
+          # choice: it is the largest window a zstd decoder accepts without
+          # an explicit --long/--memory, which is what lets nextest read the
+          # result directly (nextest has no window option). MEASURED
+          # LOCALLY: `nextest list --archive-file` reads a --long=27 archive
+          # and fails a --long=28 one with "Frame requires too much memory
+          # for decoding". The output keeps nextest's .tar.zst layout, so
+          # test-shard runs it unchanged.
+          # pipefail (set above) is load-bearing: a decompress that dies
+          # half way still leaves the second zstd a valid, SHORTER frame that
+          # passes `zstd -t`. Hence also the tar entry count AND the
+          # decompressed byte count (a cut on a member boundary keeps the
+          # first and changes the second; the two extra passes cost 3.4 s +
+          # 2.3 s locally on shard 1's 3.65 GB tar stream),
+          # and the nextest list below, which reads these recompressed
+          # files, not the originals.
+          for k in $(seq 1 "$SHARDS"); do
+            A="/tmp/nextest-shard-$k.tar.zst"
+            BEFORE_SIZE=$(stat -c %s "$A")
+            BEFORE_N=$(tar -I zstd -tf "$A" | wc -l)
+            BEFORE_RAW=$(zstd -dcq "$A" | wc -c)
+            zstd -dcq "$A" | zstd -q --long=27 -T0 -3 -c > "$A.long"
+            zstd -tq --long=27 "$A.long"
+            AFTER_N=$(tar -I 'zstd --long=27' -tf "$A.long" | wc -l)
+            AFTER_RAW=$(zstd -dcq --long=27 "$A.long" | wc -c)
+            if [ "$BEFORE_N" -eq 0 ] || [ "$AFTER_N" -ne "$BEFORE_N" ] \
+                || [ "$AFTER_RAW" -ne "$BEFORE_RAW" ]; then
+              echo "::error::nextest-shard-$k changed in the --long=27 recompression: $BEFORE_N -> $AFTER_N tar entries, $BEFORE_RAW -> $AFTER_RAW decompressed bytes (#525)"
+              exit 1
+            fi
+            mv "$A.long" "$A"
+            echo "nextest-shard-$k: $BEFORE_SIZE -> $(stat -c %s "$A") bytes with --long=27, $AFTER_N entries, $AFTER_RAW bytes decompressed"
           done
           # EXACTLY-ONCE GUARD (#525). Lists each archive exactly the way its
           # shard will run it, and requires the union of their fast-tier
@@ -691,7 +738,7 @@ jobs:
           # archive holding ferric-cli integration tests must carry the
           # ferric-cli executable they run through CARGO_BIN_EXE_ferric-cli.
           for k in $(seq 1 "$SHARDS"); do
-            MEMBERS="$(tar -I zstd -tf "/tmp/nextest-shard-$k.tar.zst")"
+            MEMBERS="$(tar -I 'zstd --long=27' -tf "/tmp/nextest-shard-$k.tar.zst")"
             grep -q 'target/debug/examples/runlog_probe$' <<<"$MEMBERS" \
               || { echo "::error::nextest-shard-$k lacks examples/runlog_probe (#525)"; exit 1; }
             if grep -q '^ferric-cli::' "$PLAN/$k.ids" \
@@ -712,25 +759,11 @@ jobs:
             -E "$CANARY_FILTER" \
             --archive-file /tmp/canary-archive.tar.zst
           # Sizes of every archive (the #525 acceptance measurement), and the
-          # disk left: this runner has ~14 GB free and has already died once
-          # with "No space left on device" (run 33210162947).
+          # disk left (83 GB on run 40542404911; this job died once with "No
+          # space left on device" back when the runner had ~14 GB free, run
+          # 33210162947).
           ls -l /tmp/nextest-shard-*.tar.zst /tmp/canary-archive.tar.zst
           df -h / | tail -1
-
-      # INFORMATIONAL ONLY, never fails the job: how much a long-window zstd
-      # (cross-binary dedup) would shrink shard 1, to decide whether a
-      # recompression pass is worth its time (#525).
-      - name: Measure long-window recompression of shard 1 (informational)
-        continue-on-error: true
-        run: |
-          set +e
-          START=$(date +%s)
-          zstd -dc /tmp/nextest-shard-1.tar.zst | zstd --long=27 -T0 -3 -c > /tmp/shard-1-long.tar.zst
-          END=$(date +%s)
-          ls -l /tmp/nextest-shard-1.tar.zst /tmp/shard-1-long.tar.zst
-          echo "zstd --long=27 -3 recompression of shard 1 took $((END - START)) s"
-          rm -f /tmp/shard-1-long.tar.zst
-          exit 0
 
       # compression-level 0: the archives are already zstd, so re-zipping them
       # at the default level 6 spends upload time for nothing. One artifact
@@ -833,10 +866,10 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      # The ubuntu-22.04 image ships ~30 GB of toolchains this job never uses
-      # (.NET, Android SDK, GHC, CodeQL, Swift). Deleting them is the standard
-      # way to get a Rust workspace with a multi-GB target/ cache onto the
-      # ~14 GB the runner otherwise has free. `df` before/after so the next
+      # The ubuntu-22.04 image ships toolchains this job never uses (.NET,
+      # Android SDK, GHC, CodeQL, Swift). Deleting them freed 21 GB (87 ->
+      # 109 GB free, run 40542404911); it was added when the runner had only
+      # ~14 GB free. `df` before/after so the next
       # disk-space failure is visible in the log instead of a mystery.
       - name: Free runner disk space
         run: |
@@ -1013,8 +1046,11 @@ jobs:
       # at 4-14 MB/s with 6.2 and 7.0 of 7.59 GB fetched when the 1200 s
       # deadline ran out: the retry logic worked, but a 7.6 GB file cannot be
       # fetched in 20 min at 5 MB/s. Each shard now downloads only its own
-      # archive, `nextest-shard-<k>` (estimated ~1.2-1.6 GB; build-tests logs
-      # the real sizes), ~5 min even at 5 MB/s.
+      # archive, `nextest-shard-<k>`: 1.36-1.45 GB as nextest writes it
+      # (run 40542404911), then recompressed by build-tests with --long=27
+      # (shard 1 of that run: 1406 -> 217 MB, ~45 s even at 5 MB/s; the
+      # other shards were not measured). build-tests logs every shard's
+      # before/after size.
       #
       # The action stays as ONE fallback for a failure of the script itself
       # (API error, token scope): 6 min is ~4.5x the healthy download time.
@@ -1067,7 +1103,10 @@ jobs:
           SLOW="$(scripts/ci-shard-plan.sh slow-filter)"
           echo "deferring $(scripts/ci-shard-plan.sh slow-names | wc -l) binaries from the fast tier"
           ARCHIVE=/tmp/nextest-shard-${{ matrix.partition }}.tar.zst
-          if [ ! -f "$ARCHIVE" ] || ! zstd -tq "$ARCHIVE"; then
+          # --long=27: build-tests recompresses the archive with a 128 MiB
+          # window (#525); spelled out so an older zstd with a smaller
+          # default decoder limit cannot misreport it as corrupt.
+          if [ ! -f "$ARCHIVE" ] || ! zstd -tq --long=27 "$ARCHIVE"; then
             echo "::error::the nextest archive is missing or corrupt after the download" \
                  "AND the fallback -- an ARTIFACT DOWNLOAD failure, not a build" \
                  "or test failure. Re-run this job."
@@ -1301,7 +1340,10 @@ jobs:
         # --locked: see build-and-test's "Check (all targets)" step for why.
         run: |
           set +e
-          STEP_TEXT=$(sed -n '/- name: Test (deferred)/,/^  [a-z]/p' .github/workflows/ci.yml | grep -vE '^[[:space:]]*#')
+          # Comments are dropped BEFORE the range is taken, and the start is
+          # the anchored step line: a comment that quotes the step name, or
+          # a commented-out `--test` line, can satisfy neither end.
+          STEP_TEXT=$(grep -vE '^[[:space:]]*#' .github/workflows/ci.yml | sed -n '/^      - name: Test (deferred)$/,/^  [a-z]/p')
           NAMES=$(scripts/ci-shard-plan.sh slow-names) && [ -n "$NAMES" ] \
             || { echo "::error::scripts/ci-shard-plan.sh slow-names failed or is empty"; exit 1; }
           for b in $NAMES; do
@@ -2295,12 +2337,13 @@ jobs:
   # (target/llvm-cov-target) and, unlike a plain `cargo test`, this is by
   # design a SECOND full build on top of whatever `cargo check`/`cargo test`
   # already produced. build-and-test's uninstrumented target/ already runs
-  # ~9 GB against the runner's ~14 GB free (see the `CARGO_PROFILE_DEV_DEBUG`
-  # comment at the top of this file, and the two "No space left on device"
-  # incidents it cites) -- stacking a second full build into that SAME job's
-  # disk budget would reproduce that failure on purpose. A separate job
-  # starts from a fresh ~14 GB, so it only ever carries ONE instrumented
-  # build's worth of target/ at a time.
+  # ~9 GB against the ~14 GB the runner had free when this was written (see
+  # the `CARGO_PROFILE_DEV_DEBUG` comment at the top of this file for that
+  # history, the two "No space left on device" incidents it cites, and the
+  # larger disk measured since) -- stacking a second full build into that
+  # SAME job's disk budget would have reproduced that failure on purpose. A
+  # separate job starts from a fresh disk, so it only ever carries ONE
+  # instrumented build's worth of target/ at a time.
   # ---------------------------------------------------------------------
   coverage:
     name: coverage (nightly, non-blocking)
@@ -2370,9 +2413,9 @@ jobs:
         # file), and `cargo llvm-cov`'s instrumented binaries run LARGER
         # still than the line-tables-only debug binaries that comment
         # measures. Building all of them a second time, instrumented, into a
-        # from-scratch ~14 GB budget risks the exact "No space left on
-        # device" failure that comment already cites twice for the
-        # UNINSTRUMENTED build. Unit tests exercise most of the workspace's
+        # from-scratch disk budget (~14 GB when this was written) risked the
+        # exact "No space left on device" failure that comment cites twice
+        # for the UNINSTRUMENTED build. Unit tests exercise most of the workspace's
         # numerical core directly (the integration binaries mostly drive
         # that same code through a higher-level API), so `--lib` trades
         # completeness for a coverage run that reliably finishes.
@@ -2395,7 +2438,7 @@ jobs:
       # starts: `cargo llvm-cov` and a plain `cargo build --release` use
       # DIFFERENT target subdirectories (target/llvm-cov-target vs.
       # target/release), so without this they would coexist and stack their
-      # disk usage inside this job's single ~14 GB budget -- the same
+      # disk usage inside this job's single disk budget -- the same
       # two-full-builds problem this job exists to keep OUT of build-and-
       # test, recreated inside itself. The lcov.info this step's output feeds
       # is already extracted and uploaded above, so nothing here is lost.
