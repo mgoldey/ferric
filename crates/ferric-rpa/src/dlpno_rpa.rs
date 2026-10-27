@@ -389,12 +389,7 @@ fn rpa_energy_in_reduced_basis(
         );
     }
 
-    let n_keep = lz
-        .eigenvalues
-        .iter()
-        .filter(|&&lam| (lam - 1.0).abs() > config.trunc_thresh)
-        .count()
-        .max(1);
+    let n_keep = config.n_kept_modes(&lz.eigenvalues);
     let v_kept = lz.eigenvectors.slice(s![.., ..n_keep]).to_owned();
 
     let (quad_freqs, quad_weights) = crate::quadrature::build_quadrature(&config.quadrature);

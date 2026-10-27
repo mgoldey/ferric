@@ -296,11 +296,7 @@ pub fn run_pdep_rpa_osv(
     let eigvals = &lz.eigenvalues;
     let eigvecs = &lz.eigenvectors;
 
-    let n_keep = eigvals
-        .iter()
-        .filter(|&&lam| (lam - 1.0).abs() > config.trunc_thresh)
-        .count()
-        .max(1);
+    let n_keep = config.n_kept_modes(eigvals);
     let v_kept = eigvecs.slice(s![.., ..n_keep]).to_owned();
 
     let (quad_freqs, quad_weights) = crate::quadrature::build_quadrature(&config.quadrature);

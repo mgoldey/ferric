@@ -9120,7 +9120,7 @@ fn run_pdep_rpa(
         frozen_core: frozen_core.unwrap_or(0),
         trunc_thresh: trunc_thresh.unwrap_or(1e-4),
         eigensolver_max_vecs: 0,
-        eigensolver_conv_thresh: eigensolver_conv_thresh.unwrap_or(1e-6),
+        eigensolver_conv_thresh: lanczos_conv_thresh_or(eigensolver_conv_thresh, 1e-6),
         quadrature: QuadratureConfig {
             scheme,
             n_points: n_quad.unwrap_or(40),
@@ -9344,7 +9344,7 @@ fn run_gw(
         frozen_core: fc,
         trunc_thresh: trunc_thresh.unwrap_or(1e-4),
         eigensolver_max_vecs: 0,
-        eigensolver_conv_thresh: eigensolver_conv_thresh.unwrap_or(1e-6),
+        eigensolver_conv_thresh: lanczos_conv_thresh_or(eigensolver_conv_thresh, 1e-6),
         quadrature: QuadratureConfig {
             scheme,
             n_points: n_quad.unwrap_or(20),
@@ -9649,7 +9649,7 @@ fn run_u_gw(
         frozen_core: fc,
         trunc_thresh: trunc_thresh.unwrap_or(1e-4),
         eigensolver_max_vecs: 0,
-        eigensolver_conv_thresh: eigensolver_conv_thresh.unwrap_or(1e-6),
+        eigensolver_conv_thresh: lanczos_conv_thresh_or(eigensolver_conv_thresh, 1e-6),
         quadrature: QuadratureConfig {
             scheme,
             n_points: n_quad.unwrap_or(20),
@@ -9877,7 +9877,7 @@ fn run_bse_tda(
         frozen_core: fc,
         trunc_thresh: trunc_thresh.unwrap_or(1e-4),
         eigensolver_max_vecs: 0,
-        eigensolver_conv_thresh: eigensolver_conv_thresh.unwrap_or(1e-6),
+        eigensolver_conv_thresh: lanczos_conv_thresh_or(eigensolver_conv_thresh, 1e-6),
         quadrature: QuadratureConfig {
             scheme,
             n_points: n_quad.unwrap_or(20),
@@ -10041,7 +10041,7 @@ fn run_tdhf_static_polarizability(
         frozen_core: fc,
         trunc_thresh: trunc_thresh.unwrap_or(1e-4),
         eigensolver_max_vecs: 0,
-        eigensolver_conv_thresh: eigensolver_conv_thresh.unwrap_or(1e-6),
+        eigensolver_conv_thresh: lanczos_conv_thresh_or(eigensolver_conv_thresh, 1e-6),
         quadrature: QuadratureConfig {
             scheme,
             n_points: n_quad.unwrap_or(20),
@@ -11414,4 +11414,19 @@ fn register_device_and_geometry(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(gpu_status, m)?)?;
     m.add_function(wrap_pyfunction!(configure_gpu, m)?)?;
     Ok(())
+}
+
+/// `eigensolver_conv_thresh`, or `default` when unset, warning if it was
+/// passed: the bindings always run `Eigensolver::Lanczos`, whose full-rank PDEP
+/// eigensolve is one dense eigh that reads no convergence threshold (see
+/// `Eigensolver::honours_iteration_knobs`).
+fn lanczos_conv_thresh_or(set: Option<f64>, default: f64) -> f64 {
+    if set.is_some() && !ferric_rpa::Eigensolver::default().honours_iteration_knobs() {
+        eprintln!(
+            "warning: eigensolver_conv_thresh is ignored: the Lanczos eigensolver solves \
+             the full-rank PDEP problem with one dense eigh, which has no convergence \
+             threshold; drop the argument"
+        );
+    }
+    set.unwrap_or(default)
 }

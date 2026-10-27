@@ -174,7 +174,7 @@ where
 /// Dense eigensolve of the `naux`-dim operator behind `matvec`: assemble
 /// `A = matvec(I)` in `panel`-column slabs, symmetrize, one `eigh`, and return
 /// the top `n_desired` pairs by `|λ − 1|` descending. Shared by the full-rank
-/// path and by [`run_lanczos_seeded`] for a request no Krylov space can hold.
+/// path and by [`run_lanczos_seeded`] for a full or uncappable request.
 fn paneled_dense_eigs<F>(
     naux: usize,
     panel: usize,
@@ -608,10 +608,11 @@ pub(crate) fn solver_blas_threads_with(get: impl Fn(&str) -> Option<String> + Co
 /// eigenpairs we seek (here: the projected dielectric ε̃ at ω=0).
 ///
 /// On convergence, returns up to `n_desired` Ritz pairs ordered by `|λ − 1|`
-/// descending. A request the block Krylov space can never hold (`n_desired`
-/// above `naux` rounded down to a multiple of the block size, e.g. every pair
-/// from a block that does not divide `naux`) is solved densely through the
-/// same `matvec` instead, ignoring `max_iter` and `conv_thresh`. If the residuals never drop below `conv_thresh` within
+/// descending. A full request (`n_desired >= naux`), or one the block Krylov
+/// space can never hold (`n_desired` above `naux` rounded down to a multiple
+/// of the block size), is solved densely through the same `matvec` instead,
+/// ignoring `max_iter` and `conv_thresh` (see `solves_densely`). It matches the
+/// Krylov answer to solver tolerance, not bitwise. If the residuals never drop below `conv_thresh` within
 /// `max_iter` outer block iterations, returns the best Ritz pairs from the
 /// final iteration without error (matching Davidson's "soft" fall-through
 /// pattern when subspace expansion is exhausted).
@@ -664,14 +665,30 @@ fn krylov_cap(naux: usize, block_size: usize) -> usize {
     naux - naux % block_size.max(1)
 }
 
+/// Whether a `block_size`-seeded request for `n_desired` of `naux` pairs is
+/// solved by one dense `eigh` instead of the Krylov recurrence.
+///
+/// Two cases. Above [`krylov_cap`] the count criterion is unreachable at any
+/// `max_iter` (#573). A full request (`n_desired >= naux`) is reachable when
+/// the block divides `naux`, but the Krylov space must then grow to all of
+/// `naux` anyway, with full reorthogonalization on top of the same
+/// `naux / block_size` matvecs the dense assembly needs (4.8x slower than
+/// dense, measured in the #573 review). The two answers agree to solver tolerance, not bitwise.
+///
+/// Every PDEP-RPA caller (Boys-screened, OSV/PNO, DLPNO) makes a full
+/// request, so for them `max_iter`, `conv_thresh` and `hit_ambient_cap` are
+/// inert and the Krylov loop is reached only by partial requests (tests and
+/// direct library callers); see `Eigensolver::honours_iteration_knobs`.
+fn solves_densely(naux: usize, block_size: usize, n_desired: usize) -> bool {
+    n_desired >= naux || n_desired > krylov_cap(naux, block_size)
+}
+
 /// Serial Lanczos iteration body; BLAS threading is managed by the caller
 /// (`run_lanczos_seeded`).
 ///
-/// A request for more pairs than [`krylov_cap`] (every full request
-/// `n_desired >= naux` whose block size does not divide `naux`, and any seed
-/// wider than the space) could never meet the count criterion, so it is
-/// solved densely instead: `A = matvec(I)` assembled in `block_size`-wide
-/// panels (the matvec width the caller already sized) and one `eigh`.
+/// A request [`solves_densely`] accepts is solved as `A = matvec(I)`
+/// assembled in `block_size`-wide panels (the matvec width the caller already
+/// sized) and one `eigh`; everything else runs [`block_krylov_loop`].
 fn lanczos_iterations<F>(
     seed: Array2<f64>,
     matvec: F,
@@ -713,16 +730,35 @@ where
         });
     }
 
-    if n_desired > krylov_cap(naux, block_size) {
+    if solves_densely(naux, block_size, n_desired) {
         if verbose {
             println!(
-                "Lanczos: {n_desired} of {naux} pairs exceed the block-{block_size} Krylov cap \
-                 {}; solving densely",
+                "Lanczos: {n_desired} of {naux} pairs from a block-{block_size} seed (Krylov cap \
+                 {}); solving densely",
                 krylov_cap(naux, block_size)
             );
         }
         return paneled_dense_eigs(naux, block_size, &matvec, n_desired);
     }
+    block_krylov_loop(v0, &matvec, n_desired, max_iter, conv_thresh, verbose)
+}
+
+/// The block Lanczos recurrence proper, from an orthonormal `v0`
+/// (`naux × block_size`), for a request [`solves_densely`] declined. Tests
+/// call it directly to keep an independent Lanczos reference for full
+/// requests, which [`run_lanczos_seeded`] no longer iterates.
+fn block_krylov_loop<F>(
+    v0: Array2<f64>,
+    matvec: &F,
+    n_desired: usize,
+    max_iter: usize,
+    conv_thresh: f64,
+    verbose: bool,
+) -> Result<LanczosResult, FerricError>
+where
+    F: Fn(&Array2<f64>) -> Array2<f64>,
+{
+    let (naux, block_size) = v0.dim();
 
     // Stacked basis Q = [V_0 | V_1 | ... | V_k]. We grow this column-by-block.
     let mut q_basis: Array2<f64> = v0.clone();
@@ -1287,6 +1323,19 @@ mod tests {
         );
     }
 
+    /// Genuine block Lanczos, bypassing the dense routing: the independent
+    /// reference for full requests, which `run_lanczos_seeded` solves densely.
+    fn krylov_only<F: Fn(&Array2<f64>) -> Array2<f64>>(
+        seed: Array2<f64>,
+        matvec: F,
+        n_desired: usize,
+        max_iter: usize,
+        conv_thresh: f64,
+    ) -> LanczosResult {
+        let v0 = qr_orthonormalize(seed).unwrap();
+        block_krylov_loop(v0, &matvec, n_desired, max_iter, conv_thresh, false).unwrap()
+    }
+
     fn make_symmetric_with_spectrum(lambdas: &[f64], seed: u64) -> Array2<f64> {
         let n = lambdas.len();
         // Build a random orthogonal U via QR of a deterministic pseudo-random matrix.
@@ -1429,16 +1478,16 @@ mod tests {
         let nov = 140;
         let (matvec, a) = make_dielectric_op(naux, nov, 7);
 
-        // Reference: identity-seed block Lanczos (the old production path).
-        let ref_res = run_lanczos_seeded(
+        // Reference: identity-seed block Lanczos (the old production path),
+        // run through the Krylov loop itself: `run_lanczos_seeded` now routes
+        // this full request to the same dense eigh under test.
+        let ref_res = krylov_only(
             Array2::<f64>::eye(naux),
             |v| matvec(v),
             naux,
             naux + 4,
             1e-12,
-            false,
-        )
-        .unwrap();
+        );
 
         // Sanity: identity-seed Lanczos itself ≡ dense eigh of A.
         let (theta_dense, _) = a.eigh(UPLO::Upper).unwrap();
@@ -1501,15 +1550,13 @@ mod tests {
         let naux = 40;
         let nov = 90;
         let (matvec, _a) = make_dielectric_op(naux, nov, 11);
-        let res = run_lanczos_seeded(
+        let res = krylov_only(
             Array2::<f64>::eye(naux),
             |v| matvec(v),
             naux,
             naux + 4, // ample outer-iteration budget
             1e-10,
-            false,
-        )
-        .unwrap();
+        );
         assert!(
             res.converged,
             "expected convergence with a generous iteration budget"
@@ -1545,8 +1592,8 @@ mod tests {
         let res = run_lanczos_seeded(
             seed,
             |v| matvec(v),
-            naux, // n_desired = full naux, unreachable from a 4-wide block in 1 step
-            1,    // max_iter = 1
+            20, // partial (a full request routes dense); 8-dim reach in 1 step
+            1,  // max_iter = 1
             1e-14,
             false,
         )
@@ -1637,6 +1684,7 @@ mod tests {
 
     /// Narrow 4-column seed on a naux=40 dielectric operator: one Lanczos
     /// step (max_iter=1, two block iterations) reaches an 8-dim subspace.
+    /// Runs the Krylov loop directly: a 40-of-40 request would route dense.
     fn narrow_seed_run(n_desired: usize, conv_thresh: f64) -> LanczosResult {
         let naux = 40;
         let (matvec, _a) = make_dielectric_op(naux, 90, 11);
@@ -1646,7 +1694,7 @@ mod tests {
                 seed[(i, j)] = ((i + j * 13) as f64).cos();
             }
         }
-        run_lanczos_seeded(seed, |v| matvec(v), n_desired, 1, conv_thresh, false).unwrap()
+        krylov_only(seed, |v| matvec(v), n_desired, 1, conv_thresh)
     }
 
     /// The bug this guards: a COUNT-starved solve (residual already below
@@ -1829,6 +1877,72 @@ mod tests {
         }
     }
 
+    /// 5-wide seed on the naux=40 dielectric operator (seed 3): the block
+    /// divides naux, so the Krylov loop CAN hold all 40 pairs.
+    fn seed_40x5() -> Array2<f64> {
+        let mut seed = Array2::<f64>::zeros((40, 5));
+        for j in 0..5 {
+            for i in 0..40 {
+                seed[(i, j)] = ((i * 7 + j * 13) as f64).sin();
+            }
+        }
+        seed
+    }
+
+    /// A full request the Krylov loop could converge (block divides naux) is
+    /// still routed densely, and matches a genuinely converged block Lanczos
+    /// on the same operator.
+    ///
+    /// Not bitwise: Lanczos diagonalizes Qᵀ A Q in its own Krylov basis, the
+    /// dense route A itself. Both are backward-stable eigensolves of the same
+    /// operator, so they agree to O(n·ε·‖A‖): eigenvalues within 1e-12·‖A‖ and
+    /// each eigenvector to |⟨v_L, v_D⟩| ≥ 1 − 1e-10 (the spectrum has no near
+    /// degeneracy at this scale, so columns pair one to one).
+    #[test]
+    fn dense_route_matches_block_lanczos_on_a_full_request() {
+        let (matvec, a) = make_dielectric_op(40, 90, 3);
+        let lz = krylov_only(seed_40x5(), |v| matvec(v), 40, 50, 1e-12);
+        assert!(
+            lz.converged && lz.block_iterations > 0,
+            "reference must iterate"
+        );
+        let dn = run_lanczos_seeded(seed_40x5(), |v| matvec(v), 40, 50, 1e-12, false).unwrap();
+        assert_eq!(
+            dn.block_iterations, 0,
+            "full request must take the dense route"
+        );
+        assert_eq!(dn.eigenvalues.len(), 40);
+        let norm_a = dense_spectrum(&a).last().copied().unwrap();
+        let dl = dn
+            .eigenvalues
+            .iter()
+            .zip(&lz.eigenvalues)
+            .map(|(d, l)| (d - l).abs())
+            .fold(0.0, f64::max);
+        let overlap = (0..40)
+            .map(|k| {
+                dn.eigenvectors
+                    .column(k)
+                    .dot(&lz.eigenvectors.column(k))
+                    .abs()
+            })
+            .fold(f64::INFINITY, f64::min);
+        eprintln!(
+            "dense vs Lanczos: max |dλ| {dl:.3e} (‖A‖ {norm_a:.3e}), min |overlap| {overlap:.17}"
+        );
+        assert!(dl < 1e-12 * norm_a, "max |dλ| {dl:.3e}");
+        assert!(overlap > 1.0 - 1e-10, "min |overlap| {overlap}");
+    }
+
+    #[test]
+    fn solves_densely_takes_full_and_uncappable_requests_only() {
+        assert!(solves_densely(40, 5, 40), "full, dividing block");
+        assert!(solves_densely(40, 40, 40), "identity seed");
+        assert!(solves_densely(42, 5, 41), "above the cap");
+        assert!(!solves_densely(42, 5, 40), "at the cap");
+        assert!(!solves_densely(40, 5, 39), "partial request");
+    }
+
     /// A partial request above the cap (41 > 40) is equally unreachable and
     /// takes the same dense route; the PDEP ordering by |λ − 1| is kept.
     #[test]
@@ -1891,7 +2005,7 @@ mod tests {
                 seed[(i, j)] = ((i * 7 + j * 13) as f64).sin();
             }
         }
-        let res = run_lanczos_seeded(seed, |v| matvec(v), naux, 50, 1e-300, false).unwrap();
+        let res = krylov_only(seed, |v| matvec(v), naux, 50, 1e-300);
         assert!(res.converged);
         assert_eq!((res.block_iterations, res.subspace_dim), (8, 40));
         assert!(!res.hit_ambient_cap);

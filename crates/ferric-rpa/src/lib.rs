@@ -834,15 +834,9 @@ pub(crate) fn run_pdep_rpa_eigensolve(
         1.1,
     );
 
-    // Step 4: Truncate by departure from identity: keep eigenpotentials where
-    // (λ_α(0) − 1) > trunc_thresh. The dielectric ε̃ = I + Π has eigenvalues ≥ 1,
-    // so identity-modes (λ = 1) carry no RPA weight; only |λ−1| ≠ 0 modes matter.
-    let n_keep = davidson_result
-        .eigenvalues
-        .iter()
-        .filter(|&&lam| (lam - 1.0).abs() > config.trunc_thresh)
-        .count();
-    let n_keep = n_keep.max(1);
+    // Step 4: Truncate by departure from identity (|λ_α(0) − 1| > trunc_thresh;
+    // trunc_thresh = 0 keeps every mode, see PdepRpaConfig::n_kept_modes).
+    let n_keep = config.n_kept_modes(&davidson_result.eigenvalues);
 
     let eigenvalues_static: Vec<f64> = davidson_result.eigenvalues[..n_keep].to_vec();
     let eigenvectors = davidson_result
@@ -1062,7 +1056,7 @@ pub fn run_pdep_rpa_from_intermediates(
 /// The `(Eigensolver::Lanczos, Chi0Sparsity::Dense)` arm of
 /// `run_pdep_rpa_eigensolve` (full-rank identity seed →
 /// [`lanczos::run_lanczos_full_rank_budgeted`], i.e. one dense `eigh` of
-/// `ε̃(0) = I + Π(0)`), the same `|λ − 1| > trunc_thresh` mode count, then
+/// `ε̃(0) = I + Π(0)`), the same [`PdepRpaConfig::n_kept_modes`] count, then
 /// the same frequency evaluators and energy integrators as
 /// [`run_pdep_rpa_from_intermediates`]. Fed the molecular `inter` and
 /// `rhf.eps_r()` slices with an admissible config, it returns the
@@ -1180,12 +1174,7 @@ pub fn run_pdep_rpa_from_parts(
         naux,
         config.memory_budget_bytes,
     )?;
-    let n_keep = lz
-        .eigenvalues
-        .iter()
-        .filter(|&&lam| (lam - 1.0).abs() > config.trunc_thresh)
-        .count()
-        .max(1);
+    let n_keep = config.n_kept_modes(&lz.eigenvalues);
     let eigenvalues_static: Vec<f64> = lz.eigenvalues[..n_keep].to_vec();
     let eigenvectors = lz.eigenvectors.slice(ndarray::s![.., ..n_keep]).to_owned();
     let eigenpotentials_aux = inter.v_inv_sqrt.dot(&eigenvectors);
@@ -1671,12 +1660,7 @@ fn u_pdep_rpa_core(
         }
     };
 
-    let n_keep = davidson_result
-        .eigenvalues
-        .iter()
-        .filter(|&&lam| (lam - 1.0).abs() > config.trunc_thresh)
-        .count();
-    let n_keep = n_keep.max(1);
+    let n_keep = config.n_kept_modes(&davidson_result.eigenvalues);
 
     let eigenvalues_static: Vec<f64> = davidson_result.eigenvalues[..n_keep].to_vec();
     let eigenvectors = davidson_result

@@ -491,7 +491,8 @@ mod tests {
                 seed[(i, j)] = ((i + j * 13) as f64).cos();
             }
         }
-        let lz = run_lanczos_seeded(seed, matvec, naux, 1, 1e-14, false).unwrap();
+        // Partial request: a full one (naux) is solved densely and converges.
+        let lz = run_lanczos_seeded(seed, matvec, 20, 1, 1e-14, false).unwrap();
         assert!(
             !lz.converged,
             "test setup must reproduce an unconverged Lanczos result"
