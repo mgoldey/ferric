@@ -12,6 +12,11 @@ use ndarray::Array2;
 
 /// naux = 6, nov = 6 with aux row 0 of B identically zero, so e₀ is an exact
 /// null vector of Π and ε̃(0) has an exact eigenvalue 1.0 there.
+///
+/// The EXACT 1.0 relies on LAPACK returning the decoupled row/column of ε̃(0)
+/// untouched (it does with the OpenBLAS LAPACK here). A LAPACK that rounds it
+/// to 1 ± ε would make the old filter keep it too; the setup asserts in the
+/// test turn that into a loud failure rather than a silently vacuous pass.
 fn inter_with_a_null_aux_row() -> RpaIntermediates {
     let (naux, nocc, nvir) = (6, 2, 3);
     let b_ov = Array2::from_shape_fn((naux, nocc * nvir), |(p, k)| {

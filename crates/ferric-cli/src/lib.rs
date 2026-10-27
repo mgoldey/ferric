@@ -4310,7 +4310,7 @@ fn run_pdep_rpa_arm(
         frozen_core: cfg.rpa.frozen_core.resolve(mol),
         trunc_thresh: cfg.rpa.trunc_thresh.unwrap_or(1e-4),
         eigensolver_max_vecs: 0,
-        eigensolver_conv_thresh: cfg.rpa.eigensolver_conv_thresh.unwrap_or(1e-6),
+        eigensolver_conv_thresh: cfg.rpa.eigensolver_conv_thresh_or(1e-6),
         quadrature: QuadratureConfig {
             scheme,
             n_points: cfg.rpa.n_quad.unwrap_or(20),
@@ -5239,7 +5239,7 @@ fn run_gw(
         frozen_core: gw_frozen_core,
         trunc_thresh: cfg.rpa.trunc_thresh.unwrap_or(1e-4),
         eigensolver_max_vecs: 0,
-        eigensolver_conv_thresh: cfg.rpa.eigensolver_conv_thresh.unwrap_or(1e-6),
+        eigensolver_conv_thresh: cfg.rpa.eigensolver_conv_thresh_or(1e-6),
         quadrature: QuadratureConfig {
             scheme,
             n_points: cfg.rpa.n_quad.unwrap_or(20),
@@ -5567,7 +5567,7 @@ fn run_bse_tda(
         frozen_core: bse_frozen_core,
         trunc_thresh: cfg.rpa.trunc_thresh.unwrap_or(1e-4),
         eigensolver_max_vecs: 0,
-        eigensolver_conv_thresh: cfg.rpa.eigensolver_conv_thresh.unwrap_or(1e-6),
+        eigensolver_conv_thresh: cfg.rpa.eigensolver_conv_thresh_or(1e-6),
         quadrature: QuadratureConfig {
             scheme,
             n_points: cfg.rpa.n_quad.unwrap_or(20),
@@ -5689,7 +5689,7 @@ fn run_tdhf_static_polarizability(
         frozen_core,
         trunc_thresh: cfg.rpa.trunc_thresh.unwrap_or(1e-4),
         eigensolver_max_vecs: 0,
-        eigensolver_conv_thresh: cfg.rpa.eigensolver_conv_thresh.unwrap_or(1e-6),
+        eigensolver_conv_thresh: cfg.rpa.eigensolver_conv_thresh_or(1e-6),
         quadrature: QuadratureConfig {
             scheme,
             n_points: cfg.rpa.n_quad.unwrap_or(20),
@@ -6177,7 +6177,7 @@ fn run_optimize(
                 frozen_core: cfg.rpa.frozen_core.resolve(mol),
                 trunc_thresh: cfg.rpa.trunc_thresh.unwrap_or(1e-4),
                 eigensolver_max_vecs: 0,
-                eigensolver_conv_thresh: cfg.rpa.eigensolver_conv_thresh.unwrap_or(1e-8),
+                eigensolver_conv_thresh: cfg.rpa.eigensolver_conv_thresh_or(1e-8),
                 quadrature: QuadratureConfig {
                     scheme,
                     n_points: cfg.rpa.n_quad.unwrap_or(16),

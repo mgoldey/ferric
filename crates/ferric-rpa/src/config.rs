@@ -208,6 +208,19 @@ pub enum Eigensolver {
     Davidson,
 }
 
+impl Eigensolver {
+    /// Whether this backend reads [`PdepRpaConfig::eigensolver_conv_thresh`]
+    /// and [`PdepRpaConfig::eigensolver_max_vecs`].
+    ///
+    /// `Lanczos` does not: every PDEP-RPA path asks it for all `naux` pairs,
+    /// and a full request is one dense `eigh` (no residual, no iteration
+    /// count). Callers use this to warn instead of silently dropping a user
+    /// setting, as [`QuadratureScheme::honours_u0`] does for `u0`.
+    pub fn honours_iteration_knobs(&self) -> bool {
+        matches!(self, Eigensolver::Davidson)
+    }
+}
+
 /// Top-level PDEP-RPA configuration.
 #[derive(Debug, Clone)]
 pub struct PdepRpaConfig {
@@ -217,13 +230,14 @@ pub struct PdepRpaConfig {
     /// below) means full rank: every mode is kept, an exact λ = 1 included
     /// (see [`PdepRpaConfig::n_kept_modes`]).
     pub trunc_thresh: f64,
-    /// Maximum subspace size before restart. Applies to whichever
-    /// [`Eigensolver`] is selected: Davidson's subspace cap, and (via
-    /// `max_vecs / block_size`) the Lanczos outer-iteration cap. `0` = auto.
+    /// Maximum subspace size before restart (Davidson). `0` = auto. INERT
+    /// under [`Eigensolver::Lanczos`] (the default): every PDEP-RPA path asks
+    /// for all `naux` pairs, which is one dense `eigh`; see
+    /// [`Eigensolver::honours_iteration_knobs`].
     pub eigensolver_max_vecs: usize,
-    /// Eigenvalue convergence threshold for the static dielectric eigenproblem.
-    /// Applies to whichever [`Eigensolver`] is selected — the default is
-    /// [`Eigensolver::Lanczos`], not Davidson.
+    /// Eigenvalue convergence threshold for the static dielectric eigenproblem
+    /// (Davidson). INERT under [`Eigensolver::Lanczos`] (the default), for the
+    /// same reason as `eigensolver_max_vecs`.
     pub eigensolver_conv_thresh: f64,
     pub quadrature: QuadratureConfig,
     pub sternheimer: SternheimerConfig,
@@ -461,6 +475,12 @@ mod tests {
 
     /// Full rank keeps an exact λ = 1 mode; a positive threshold still drops
     /// it. Mutation: the old `|λ − 1| > 0` filter returns 2 here, not 3.
+    #[test]
+    fn only_davidson_honours_the_iteration_knobs() {
+        assert!(Eigensolver::Davidson.honours_iteration_knobs());
+        assert!(!Eigensolver::Lanczos.honours_iteration_knobs());
+    }
+
     #[test]
     fn zero_trunc_thresh_keeps_an_exact_unit_mode() {
         let lams = [3.0, 1.5, 1.0];

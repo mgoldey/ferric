@@ -674,6 +674,11 @@ fn krylov_cap(naux: usize, block_size: usize) -> usize {
 /// `naux` anyway, with full reorthogonalization on top of the same
 /// `naux / block_size` matvecs the dense assembly needs (4.8x slower than
 /// dense, measured in the #573 review). The two answers agree to solver tolerance, not bitwise.
+///
+/// Every PDEP-RPA caller (Boys-screened, OSV/PNO, DLPNO) makes a full
+/// request, so for them `max_iter`, `conv_thresh` and `hit_ambient_cap` are
+/// inert and the Krylov loop is reached only by partial requests (tests and
+/// direct library callers); see `Eigensolver::honours_iteration_knobs`.
 fn solves_densely(naux: usize, block_size: usize, n_desired: usize) -> bool {
     n_desired >= naux || n_desired > krylov_cap(naux, block_size)
 }

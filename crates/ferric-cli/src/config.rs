@@ -1843,8 +1843,9 @@ pub struct RpaCfg {
     /// "chebyshev-tan"; "minimax" derives u₀ from `n_quad` and ignores it.
     pub quadrature: Option<String>,
     pub trunc_thresh: Option<f64>,
-    /// Convergence threshold for the static dielectric eigensolver (Lanczos by
-    /// default, Davidson if selected). The old name `davidson_conv_thresh` is
+    /// Convergence threshold for the static dielectric eigensolver. IGNORED
+    /// (with a warning) by the CLI's Lanczos eigensolver, whose full-rank
+    /// solve is one dense eigh. The old name `davidson_conv_thresh` is
     /// accepted as an alias — it was misleading (it never was Davidson-specific)
     /// but existing TOML files must not break.
     #[serde(alias = "davidson_conv_thresh")]
@@ -2040,6 +2041,22 @@ impl RpaCfg {
     pub fn parse_chi0_sparsity(&self) -> Result<ferric_rpa::config::Chi0Sparsity, String> {
         // Canonical parser lives on the type (shared with the Python bindings).
         ferric_rpa::config::Chi0Sparsity::parse_config_str(self.chi0_sparsity.as_deref())
+    }
+
+    /// `[rpa] eigensolver_conv_thresh`, or `default` when unset, warning if it
+    /// was set: the CLI always runs [`ferric_rpa::Eigensolver::Lanczos`],
+    /// whose full-rank PDEP eigensolve is one dense `eigh` that reads no
+    /// convergence threshold (see `Eigensolver::honours_iteration_knobs`).
+    pub fn eigensolver_conv_thresh_or(&self, default: f64) -> f64 {
+        let solver = ferric_rpa::Eigensolver::default();
+        if self.eigensolver_conv_thresh.is_some() && !solver.honours_iteration_knobs() {
+            eprintln!(
+                "warning: [rpa] eigensolver_conv_thresh is ignored: the Lanczos \
+                 eigensolver solves the full-rank PDEP problem with one dense eigh, \
+                 which has no convergence threshold; remove the key"
+            );
+        }
+        self.eigensolver_conv_thresh.unwrap_or(default)
     }
 
     /// Parse the `[rpa] quadrature` TOML string into a [`ferric_rpa::config::QuadratureScheme`],
