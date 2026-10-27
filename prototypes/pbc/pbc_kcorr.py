@@ -33,7 +33,14 @@ from __future__ import annotations
 import numpy as np
 
 from pbc_gamma import pair_ft
-from pbc_kpts import aft_gcut, mesh_index, mp_mesh, shifted_gvectors
+from pbc_kpts import (
+    aft_gcut,
+    mesh_index,
+    mesh_twist,
+    mp_mesh,
+    q_mesh,
+    shifted_gvectors,
+)
 from pbc_rpa import _log1p_minus, gl_quadrature
 from pbc_supercell import Supercell, pair_ft_residues
 
@@ -102,12 +109,24 @@ def _pair_norm(cell):
 
 
 def aft_ov(
-    cell, n, C, nocc, gcut=None, thresh=1e-14, mem_bytes=3e8, head=False, delta=1e-4
+    cell,
+    n,
+    C,
+    nocc,
+    gcut=None,
+    thresh=1e-14,
+    mem_bytes=3e8,
+    head=False,
+    delta=1e-4,
+    shift=None,
 ):
     """Exact (dense pure-AFT) V and per-q ov Grams Kq, streamed over K chunks of every q class (pbc_kpts.build_k's
-    K sets, phases and normalisation).  C: per-k MO coefficients (columns sorted by energy, nocc occupied per k)."""
+    K sets, phases and normalisation).  C: per-k MO coefficients (columns sorted by energy, nocc occupied per k).
+    shift: the k-mesh shift of pbc_kpts.mp_mesh (q classes stay Gamma-centred)."""
     n = tuple(int(x) for x in n)
-    ints, kpts = mp_mesh(cell, n)
+    ints, kpts = mp_mesh(cell, n, shift)
+    qpts = q_mesh(cell, n)
+    twist = mesh_twist(cell, n, shift)
     Nk = len(kpts)
     gcut = gcut or aft_gcut(cell)
     nn = _pair_norm(cell)
@@ -118,19 +137,19 @@ def aft_ov(
     st = _new_store(Nk, nocc, Cv.shape[2])
     chunk = max(200, int(mem_bytes / (16 * Nk * nao * nao * 3)))
     for iq in range(Nk):
-        q = kpts[iq]
+        q = qpts[iq]
         kof = [mesh_index(n, ints[j] - ints[iq]) for j in range(Nk)]
         K = shifted_gvectors(cell, q, gcut)
         for c0 in range(0, len(K), chunk):
             Kc = K[c0 : c0 + chunk]
             v = 4 * np.pi / np.einsum("gi,gi->g", Kc, Kc) / cell.vol
-            Q = pair_ft_residues(scell, Kc, thresh) * nn[None, :, :, None]
+            Q = pair_ft_residues(scell, Kc, thresh, twist=twist) * nn[None, :, :, None]
             P = np.einsum("jr,rmng->jmng", ph_r, Q) * np.sqrt(v)
             del Q
             _accumulate(st, iq, kof, P, Co, Cv, Nk)
     if head:
         kd = np.vstack([s * delta * np.eye(3) for s in (1, -1)])  # +x,+y,+z,-x,-y,-z
-        Q = pair_ft_residues(scell, kd, thresh) * nn[None, :, :, None]
+        Q = pair_ft_residues(scell, kd, thresh, twist=twist) * nn[None, :, :, None]
         P = np.einsum("jr,rmng->jmng", ph_r, Q)
         g = (
             (P[..., :3] - P[..., 3:])
@@ -138,7 +157,7 @@ def aft_ov(
             * np.sqrt(4 * np.pi / (3 * cell.vol))
         )
         _accumulate(st, 0, list(range(Nk)), g, Co, Cv, Nk)
-    st.update(n=n, ints=ints, Nk=Nk)
+    st.update(n=n, ints=ints, Nk=Nk, shift=shift)
     return st
 
 

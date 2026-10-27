@@ -96,9 +96,14 @@ class Supercell:
 
 
 # ---------------------------------------------------------- per-residue pair FT (primitive AOs)
-def pair_ft_residues(scell, G, thresh=1e-14):
+def pair_ft_residues(scell, G, thresh=1e-14, twist=None):
     """Q[r, m, n, g] = sum_{D == r} FT[chi_m(x) chi_n(x - D)](G_g) (raw, unnormalised Cartesian;
-    same kernel as pbc_gamma.pair_ft, but accumulated by residue of the primitive translation)."""
+    same kernel as pbc_gamma.pair_ft, but accumulated by residue of the primitive translation).
+
+    twist (3-vector, Bohr^-1, optional): weight each D by e^{i twist.(D - t_r)}, t_r the residue's cell translation
+    (D - t_r is a SUPERCELL lattice vector).  For a shifted mesh k' = k'_0 + twist (k'_0 on the Gamma-centred mesh)
+    e^{ik'.D} = e^{ik'.t_r} e^{i twist.(D - t_r)}, so the residue phase product of pbc_kpts still applies.  None or
+    zero leaves the accumulation untouched (bitwise)."""
     prim = scell.prim
     sh = shell_table(prim.mol)
     nao, ng = prim.mol.nao, len(G)
@@ -107,6 +112,10 @@ def pair_ft_residues(scell, G, thresh=1e-14):
     amin = min(s["exps"].min() for s in sh)
     Ls = prim.translations(np.sqrt(2 * np.log(1 / thresh) / amin) + 2.0)
     rs = scell.residues(Ls)
+    if twist is not None and np.any(np.asarray(twist) != 0):
+        tw = np.exp(1j * (Ls - scell.t[rs]) @ np.asarray(twist, float))
+    else:
+        tw = None
     lmax = max(s["l"] for s in sh)
     powg = [
         np.stack([(-1j * G[:, d]) ** t for t in range(2 * lmax + 2)]) for d in range(3)
@@ -115,7 +124,7 @@ def pair_ft_residues(scell, G, thresh=1e-14):
         ca = cart_comps(sa["l"])
         for sb in sh:
             cb = cart_comps(sb["l"])
-            for L, r in zip(Ls, rs):
+            for iL, (L, r) in enumerate(zip(Ls, rs)):
                 B = sb["A"] + L
                 AB = sa["A"] - B
                 for a, cA in zip(sa["exps"], sa["coef"]):
@@ -133,6 +142,8 @@ def pair_ft_residues(scell, G, thresh=1e-14):
                             * (np.pi / p) ** 1.5
                             * np.exp(-G2[gm] / (4 * p) - 1j * (G[gm] @ Pc))
                         )
+                        if tw is not None:
+                            common = common * tw[iL]
                         F = []
                         for d in range(3):
                             E = hermite_E(sa["l"], sb["l"], a, b, AB[d])
