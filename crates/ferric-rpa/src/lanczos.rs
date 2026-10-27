@@ -168,6 +168,23 @@ where
     }
 
     let panel = lanczos_panel_width(naux, nov, memory_budget_bytes);
+    paneled_dense_eigs(naux, panel, &matvec, n_desired)
+}
+
+/// Dense eigensolve of the `naux`-dim operator behind `matvec`: assemble
+/// `A = matvec(I)` in `panel`-column slabs, symmetrize, one `eigh`, and return
+/// the top `n_desired` pairs by `|λ − 1|` descending. Shared by the full-rank
+/// path and by [`run_lanczos_seeded`] for a request no Krylov space can hold.
+fn paneled_dense_eigs<F>(
+    naux: usize,
+    panel: usize,
+    matvec: &F,
+    n_desired: usize,
+) -> Result<LanczosResult, FerricError>
+where
+    F: Fn(&Array2<f64>) -> Array2<f64>,
+{
+    let panel = panel.max(1);
 
     // Assemble A = ε̃(0) one column-panel at a time. `matvec(I_panel)` yields the
     // corresponding naux-row × k-col slab of A; scatter it into A. Only one
@@ -291,11 +308,11 @@ pub struct LanczosResult {
     /// Whether the returned Ritz pairs met the caller's residual-norm
     /// tolerance (`conv_thresh` in [`run_lanczos_seeded`]) within the
     /// iteration budget. `true` unconditionally for [`run_lanczos_full_rank`]
+    /// and for a seeded request above the Krylov cap, which is solved densely
     /// (single dense `eigh`, no iterative residual). `false` means the block
-    /// Lanczos recurrence exhausted `max_iter` (or ran out of Krylov space
-    /// before reaching Ambient dimension) while `max_resid` was still
-    /// above `conv_thresh` — the returned Ritz pairs are the best available,
-    /// not verified eigenpairs.
+    /// Lanczos recurrence exhausted `max_iter` or the ambient cap before both
+    /// `max_resid < conv_thresh` and the pair count held — the returned Ritz
+    /// pairs are the best available, not verified eigenpairs.
     pub converged: bool,
     /// Residual norm `max_i ||A v_i − λ_i v_i||` (block-Lanczos estimate) of
     /// the returned Ritz pairs at the point the solve stopped. `0.0` for the
@@ -320,7 +337,9 @@ pub struct LanczosResult {
     /// the block size), not `max_iter`. Set by the solver from its own loop
     /// bound (`outer_iters <= max_iter`, i.e. fewer than the `max_iter + 1`
     /// passes `max_iter` alone would allow), so the warning never has to infer
-    /// the limit from `block_iterations`. Always `false` when `converged`
+    /// the limit from `block_iterations`. At the cap the pair count always
+    /// holds (a larger request is solved densely), so the residual is what
+    /// failed. Always `false` when `converged`
     /// (including a full-space solve that converged on its last pass), and
     /// for the full-rank path.
     pub hit_ambient_cap: bool,
@@ -400,24 +419,14 @@ pub fn lanczos_stall_summary(result: &LanczosResult, conv_thresh: f64) -> String
 }
 
 /// `Some` when every eigenpair of the `naux`-dim space was requested; `naux`
-/// is the row count of the returned Ritz vectors. When the block size does not
-/// divide `naux`, the size cap rounds the Krylov space DOWN below `naux`, so no
-/// `max_iter` can ever meet the count (only an exact invariant-subspace
-/// breakdown, which ends the solve as converged, escapes it): the note says so
-/// instead of inviting a larger `max_iter`.
+/// is the row count of the returned Ritz vectors. Such a request reaches the
+/// iteration only when the block size divides `naux` (otherwise
+/// [`run_lanczos_seeded`] solves it densely), so a full Krylov space is
+/// reachable and only `max_iter` can have starved it.
 fn full_request_note(result: &LanczosResult) -> Option<String> {
     let naux = result.eigenvectors.nrows();
     if result.n_desired < naux {
         return None;
-    }
-    let bs = (result.subspace_dim / result.block_iterations.max(1)).max(1);
-    if !naux.is_multiple_of(bs) {
-        let cap = naux - naux % bs;
-        return Some(format!(
-            "all {naux} eigenpairs were requested, which cannot converge at any max_iter: the \
-             size cap rounds naux={naux} down to {cap} (block size {bs}); use the dense/full-rank \
-             solver"
-        ));
     }
     Some(format!(
         "all {naux} eigenpairs were requested; only a full Krylov space satisfies this, so the \
@@ -426,18 +435,15 @@ fn full_request_note(result: &LanczosResult) -> Option<String> {
 }
 
 /// What a count-starved user can do. When every eigenpair of the space was
-/// requested (`n_desired >= naux`, as at every production call site) only a
-/// full Krylov space meets the count, so raising `max_vecs` is NOT the advice.
+/// requested only a full Krylov space meets the count, so raising `max_vecs`
+/// is NOT the advice. A count-starved stop is never the ambient cap: a request
+/// above [`krylov_cap`] is solved densely and never iterates.
 fn count_starved_advice(result: &LanczosResult) -> String {
-    if let Some(note) = full_request_note(result) {
-        note
-    } else if result.hit_ambient_cap {
-        "the Krylov space cannot grow further".to_string()
-    } else {
+    full_request_note(result).unwrap_or_else(|| {
         "more block iterations (a larger max_iter / eigensolver_max_vecs) are needed, not a \
          tighter residual"
             .to_string()
-    }
+    })
 }
 
 /// The non-convergence warning for an unconverged seeded-Lanczos result,
@@ -600,7 +606,10 @@ pub(crate) fn solver_blas_threads_with(get: impl Fn(&str) -> Option<String> + Co
 /// eigenpairs we seek (here: the projected dielectric ε̃ at ω=0).
 ///
 /// On convergence, returns up to `n_desired` Ritz pairs ordered by `|λ − 1|`
-/// descending. If the residuals never drop below `conv_thresh` within
+/// descending. A request the block Krylov space can never hold (`n_desired`
+/// above `naux` rounded down to a multiple of the block size, e.g. every pair
+/// from a block that does not divide `naux`) is solved densely through the
+/// same `matvec` instead, ignoring `max_iter` and `conv_thresh`. If the residuals never drop below `conv_thresh` within
 /// `max_iter` outer block iterations, returns the best Ritz pairs from the
 /// final iteration without error (matching Davidson's "soft" fall-through
 /// pattern when subspace expansion is exhausted).
@@ -646,8 +655,21 @@ where
     Ok(result)
 }
 
+/// Largest Krylov dimension a `block_size`-wide block Lanczos can build in an
+/// `naux`-dim space: the loop runs whole blocks only, so `naux` rounded DOWN
+/// to a multiple of `block_size` (`0` for a seed wider than the space).
+fn krylov_cap(naux: usize, block_size: usize) -> usize {
+    naux - naux % block_size.max(1)
+}
+
 /// Serial Lanczos iteration body; BLAS threading is managed by the caller
 /// (`run_lanczos_seeded`).
+///
+/// A request for more pairs than [`krylov_cap`] (every full request
+/// `n_desired >= naux` whose block size does not divide `naux`, and any seed
+/// wider than the space) could never meet the count criterion, so it is
+/// solved densely instead: `A = matvec(I)` assembled in `block_size`-wide
+/// panels (the matvec width the caller already sized) and one `eigh`.
 fn lanczos_iterations<F>(
     seed: Array2<f64>,
     matvec: F,
@@ -687,6 +709,17 @@ where
             block_iterations: 0,
             hit_ambient_cap: false,
         });
+    }
+
+    if n_desired > krylov_cap(naux, block_size) {
+        if verbose {
+            println!(
+                "Lanczos: {n_desired} of {naux} pairs exceed the block-{block_size} Krylov cap \
+                 {}; solving densely",
+                krylov_cap(naux, block_size)
+            );
+        }
+        return paneled_dense_eigs(naux, block_size, &matvec, n_desired);
     }
 
     // Stacked basis Q = [V_0 | V_1 | ... | V_k]. We grow this column-by-block.
@@ -1658,25 +1691,30 @@ mod tests {
         assert!(lanczos_stall_summary(&res, 1e-14).starts_with("residual above threshold;"));
     }
 
-    /// PR #532's side observation: naux=42 with a 5-wide block caps the Krylov
-    /// space at 40 after 8 block iterations, so the old "within max_iter=50"
-    /// blamed a budget that was never reached. The message must name the cap.
-    #[test]
-    fn ambient_cap_stop_is_not_blamed_on_max_iter() {
-        let naux = 42;
-        let (matvec, _a) = make_dielectric_op(naux, 90, 3);
-        let mut seed = Array2::<f64>::zeros((naux, 5));
+    /// Pseudo-random 5-wide seed on the naux=42 dielectric operator (seed 3).
+    fn seed_42x5() -> Array2<f64> {
+        let mut seed = Array2::<f64>::zeros((42, 5));
         for j in 0..5 {
-            for i in 0..naux {
+            for i in 0..42 {
                 seed[(i, j)] = ((i * 7 + j * 13) as f64).sin();
             }
         }
-        let res = run_lanczos_seeded(seed, |v| matvec(v), naux, 50, 1e-300, false).unwrap();
+        seed
+    }
+
+    /// naux=42 with a 5-wide block: the Krylov space caps at 40 after 8 block
+    /// iterations. Requesting exactly the cap (40 pairs) still iterates; the
+    /// unreachable 1e-300 residual then stops it AT the cap, and the message
+    /// must name the cap, not the never-reached max_iter=50.
+    #[test]
+    fn ambient_cap_stop_is_not_blamed_on_max_iter() {
+        let (matvec, _a) = make_dielectric_op(42, 90, 3);
+        let res = run_lanczos_seeded(seed_42x5(), |v| matvec(v), 40, 50, 1e-300, false).unwrap();
         assert!(!res.converged);
         assert_eq!((res.block_iterations, res.subspace_dim), (8, 40));
         assert_eq!(
             lanczos_stall_cause(res.max_resid, 1e-300, res.subspace_dim, res.n_desired),
-            LanczosStallCause::ResidualAndCount
+            LanczosStallCause::ResidualAboveThreshold
         );
         let msg = lanczos_nonconvergence_message(&res, 50, 1e-300);
         assert!(res.hit_ambient_cap);
@@ -1686,7 +1724,7 @@ mod tests {
         );
         assert!(msg.contains("NOT max_iter=50"), "{msg}");
         assert!(!msg.contains("was exhausted"), "{msg}");
-        assert!(msg.contains("all 42 eigenpairs were requested"), "{msg}");
+        assert!(!msg.contains("eigenpairs were requested"), "{msg}");
         let summary = lanczos_stall_summary(&res, 1e-300);
         assert!(
             summary.contains("stopped by the ambient Krylov cap after 8"),
@@ -1694,26 +1732,15 @@ mod tests {
         );
     }
 
-    /// naux=42, block 5: the ambient cap allows 8 block iterations. At
-    /// `max_iter = 8` that cap binds one pass before `max_iter` would
+    /// naux=42, block 5, 40 pairs: the ambient cap allows 8 block iterations.
+    /// At `max_iter = 8` that cap binds one pass before `max_iter` would
     /// (`outer_iters == max_iter`, the `<=` boundary); at `max_iter = 7`
     /// `max_iter` binds. Both stop after 8 iterations, so only the solver's
     /// own loop bound can name the limit.
     fn cap_boundary_run(max_iter: usize) -> LanczosResult {
-        let naux = 42;
-        let (matvec, _a) = make_dielectric_op(naux, 90, 3);
-        let mut seed = Array2::<f64>::zeros((naux, 5));
-        for j in 0..5 {
-            for i in 0..naux {
-                seed[(i, j)] = ((i * 7 + j * 13) as f64).sin();
-            }
-        }
-        run_lanczos_seeded(seed, |v| matvec(v), naux, max_iter, 1e-300, false).unwrap()
+        let (matvec, _a) = make_dielectric_op(42, 90, 3);
+        run_lanczos_seeded(seed_42x5(), |v| matvec(v), 40, max_iter, 1e-300, false).unwrap()
     }
-
-    /// 42 is not a multiple of 5, so a full request can never be met.
-    const UNREACHABLE_42: &str = "cannot converge at any max_iter: the size cap rounds naux=42 \
-                                  down to 40 (block size 5); use the dense/full-rank solver";
 
     #[test]
     fn cap_binding_at_outer_iters_equal_max_iter_names_the_cap() {
@@ -1725,7 +1752,6 @@ mod tests {
             "outer_iters 8 <= max_iter 8: the cap binds"
         );
         let msg = lanczos_nonconvergence_message(&res, 8, 1e-300);
-        assert!(msg.contains(UNREACHABLE_42), "{msg}");
         assert!(
             msg.contains("ambient Krylov cap of 40 after 8 block"),
             "{msg}"
@@ -1744,12 +1770,88 @@ mod tests {
             "outer_iters 8 == max_iter + 1: max_iter binds"
         );
         let msg = lanczos_nonconvergence_message(&res, 7, 1e-300);
-        assert!(msg.contains(UNREACHABLE_42), "{msg}");
         assert!(
             msg.contains("stopped by max_iter=7, which was exhausted"),
             "{msg}"
         );
         assert!(!msg.contains("ambient Krylov cap"), "{msg}");
+    }
+
+    /// Ascending spectrum of the dense `a`, for comparison against a solve.
+    fn dense_spectrum(a: &Array2<f64>) -> Vec<f64> {
+        let (theta, _) = a.eigh(UPLO::Upper).unwrap();
+        let mut v = theta.to_vec();
+        v.sort_by(f64::total_cmp);
+        v
+    }
+
+    /// Max |Δλ| (sorted) and max ||A v − λ v|| of `res` against the dense `a`.
+    fn errors_vs_dense(res: &LanczosResult, a: &Array2<f64>) -> (f64, f64) {
+        let mut got = res.eigenvalues.clone();
+        got.sort_by(f64::total_cmp);
+        let dl = got
+            .iter()
+            .zip(dense_spectrum(a))
+            .map(|(g, d)| (g - d).abs())
+            .fold(0.0, f64::max);
+        let r = res
+            .eigenvalues
+            .iter()
+            .enumerate()
+            .map(|(k, &lam)| {
+                let v = res.eigenvectors.column(k).to_owned();
+                let r = a.dot(&v) - lam * &v;
+                r.dot(&r).sqrt()
+            })
+            .fold(0.0, f64::max);
+        (dl, r)
+    }
+
+    /// THE DEFECT: all 42 pairs from a 5-wide block. The Krylov space caps at
+    /// 40, so the iteration could never meet the count at any max_iter (it
+    /// returned 40 pairs, `converged = false`). The request must now be solved
+    /// densely: every pair, converged, equal to a dense eigh of the operator.
+    #[test]
+    fn full_request_with_non_dividing_block_converges_to_dense_eigh() {
+        let (matvec, a) = make_dielectric_op(42, 90, 3);
+        for max_iter in [1, 50] {
+            let res =
+                run_lanczos_seeded(seed_42x5(), |v| matvec(v), 42, max_iter, 1e-10, false).unwrap();
+            assert!(res.converged, "max_iter {max_iter}");
+            assert_eq!(res.eigenvalues.len(), 42, "max_iter {max_iter}");
+            assert_eq!(res.eigenvectors.dim(), (42, 42));
+            assert!(!res.hit_ambient_cap);
+            let (dl, r) = errors_vs_dense(&res, &a);
+            assert!(dl < 1e-12, "max_iter {max_iter}: max |dλ| {dl:.3e}");
+            assert!(r < 1e-10, "max_iter {max_iter}: max residual {r:.3e}");
+        }
+    }
+
+    /// A partial request above the cap (41 > 40) is equally unreachable and
+    /// takes the same dense route; the PDEP ordering by |λ − 1| is kept.
+    #[test]
+    fn partial_request_above_the_krylov_cap_is_solved_densely() {
+        let (matvec, a) = make_dielectric_op(42, 90, 3);
+        let res = run_lanczos_seeded(seed_42x5(), |v| matvec(v), 41, 50, 1e-10, false).unwrap();
+        assert!(res.converged);
+        assert_eq!(res.eigenvalues.len(), 41);
+        let dev: Vec<f64> = res.eigenvalues.iter().map(|l| (l - 1.0).abs()).collect();
+        assert!(dev.windows(2).all(|w| w[0] >= w[1]), "{dev:?}");
+        let mut want = dense_spectrum(&a);
+        want.sort_by(|x, y| (y - 1.0).abs().total_cmp(&(x - 1.0).abs()));
+        for (g, w) in res.eigenvalues.iter().zip(&want) {
+            assert!((g - w).abs() < 1e-12, "{g} vs {w}");
+        }
+    }
+
+    #[test]
+    fn krylov_cap_rounds_naux_down_to_whole_blocks() {
+        assert_eq!(krylov_cap(42, 5), 40);
+        assert_eq!(krylov_cap(84, 5), 80);
+        assert_eq!(krylov_cap(84, 4), 84);
+        assert_eq!(krylov_cap(40, 40), 40);
+        assert_eq!(krylov_cap(40, 41), 0);
+        assert_eq!(krylov_cap(40, 0), 40);
     }
 
     /// A count-starved solve that did NOT request every pair gets the
@@ -1773,10 +1875,6 @@ mod tests {
         );
         assert!(!msg.contains("max_vecs"), "{msg}");
         assert!(!msg.contains("more block iterations"), "{msg}");
-        assert!(
-            !msg.contains("cannot converge at any max_iter"),
-            "40 % 4 == 0: {msg}"
-        );
     }
 
     /// naux=40, block 5: the cap equals naux, so the full-space solve converges
