@@ -379,6 +379,7 @@ fn ks_coarse_grid_is_refused() {
     for (ang, prune, ok) in [
         (50, None, false),
         (26, None, false),
+        (111, None, false),
         (110, Some(ferric_dft::prune::PruneScheme::NwchemLike), true),
     ] {
         let mut c = ks(true);

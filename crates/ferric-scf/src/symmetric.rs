@@ -816,7 +816,17 @@ fn warn_split_ks_shell_at_convergence(spec: &SymmetrySpec, eps: &[f64], nocc: us
 /// Refuse a Kohn-Sham main grid coarser than `MIN_KS_ANGULAR` (see there).
 fn refuse_coarse_ks_grid(config: &RhfConfig) -> Result<(), FerricError> {
     let n = config.dft_grid.as_ref().map_or(110, |g| g.n_angular);
-    if config.xc.is_none() || n >= MIN_KS_ANGULAR {
+    if config.xc.is_none() {
+        return Ok(());
+    }
+    if !ferric_dft::prune::SUPPORTED_LEBEDEV_ORDERS.contains(&n) {
+        return Err(FerricError::General(format!(
+            "RhfConfig.symmetry: {n} angular points is not a supported Lebedev order \
+             (supported: {:?})",
+            ferric_dft::prune::SUPPORTED_LEBEDEV_ORDERS
+        )));
+    }
+    if n >= MIN_KS_ANGULAR {
         return Ok(());
     }
     Err(FerricError::General(format!(
