@@ -201,6 +201,13 @@ fn h2o_cc_pvdz_screened_davidson_equivalence_thresh_zero() {
 /// 4.2e-16 at 1e-8..1e-5 (was 4.7e-7 / 4.7e-7 / 8.6e-7 / 5.5e-7, 80 of 84
 /// pairs). At 1e-4 it reads 9.6e-10 with 83 pairs: one screened mode lands at
 /// λ = 1 and the `λ − 1 > 0` truncation drops it (Davidson keeps 84).
+///
+/// What the post-fix sweep measures: the frequency stage projects the DENSE
+/// `b_ov` onto the static eigenvectors, so at `trunc_thresh = 0` with a full,
+/// orthogonal basis the energy is invariant under any rotation of it -- Boys
+/// screening cannot move E_RPA at all there. The ~1e-16 readings therefore
+/// confirm BASIS COMPLETENESS, not that screening is lossless; the "live
+/// measurement of screening" wording above predates that observation.
 #[test]
 fn h2o_cc_pvdz_screened_production_thresh() {
     let (mol, obs, dfbs, op, rhf) = setup(

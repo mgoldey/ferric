@@ -12,7 +12,7 @@
 use ferric_core::FerricError;
 use ferric_integrals::blas_threads::with_blas_threads;
 use ndarray::{s, Array2};
-use ndarray_linalg::{Eigh, QR, UPLO};
+use ndarray_linalg::{Eigh, EighInto, QR, UPLO};
 
 /// Panel width (number of identity-seed columns processed per matvec) for the
 /// full-rank paneled dielectric assembly in [`run_lanczos_full_rank`].
@@ -216,8 +216,10 @@ where
     // against a 141 MB charge — a 1.5x under-count on the Lanczos term.
     //
     // Symmetrizing in place fixes the accounting by fixing the allocation: `a`
-    // becomes its own symmetrized self, so only `a` and the subsequent `eigh`
-    // output are ever co-resident and the existing 2·naux² charge is exact.
+    // becomes its own symmetrized self, and `eigh_into` consumes it (plain
+    // `eigh(&self)` clones its input first, which kept a third naux² alive), so
+    // only `a`'s buffer and the eigenvector output are co-resident and the
+    // existing 2·naux² charge holds (plus the naux×n_keep gather below).
     //
     // Bit-identical: the previous form computed element (i,j) as
     // `0.5 * (a[(i,j)] + a[(j,i)])`, and so does this. Reading a[(j,i)] before
@@ -235,7 +237,7 @@ where
     let a_sym = a;
 
     let (theta, y) = a_sym
-        .eigh(UPLO::Upper)
+        .eigh_into(UPLO::Upper)
         .map_err(|e| FerricError::General(format!("Full-rank PDEP eigh failed: {e}")))?;
 
     // Order by |λ − 1| descending (PDEP relevance metric), matching Lanczos/Davidson.
