@@ -72,23 +72,12 @@ fn h2o_cc_pvdz_screened_equivalence_thresh_zero() {
         "H2O/cc-pVDZ thresh=0  dense={:.10}  screened={:.10}  diff={:.2e}",
         r_dense.e_rpa, r_scr.e_rpa, diff
     );
-    // At thresh=0 the screened tile representation retains every aux row, so it
-    // is *algebraically* equivalent to dense — but the two paths are not
-    // bit-identical: the dense solve seeds block-Lanczos from the full identity
-    // block, while the screened solve seeds it from Boys-localized tile-column
-    // sums (build_boys_screened_seed). Different-but-spanning seeds converge to
-    // the same dielectric eigenspace, yet accumulate GEMM reductions in a
-    // different order, so the final RPA energy differs at the ~1e-8 finite-
-    // precision floor. This diff is fully deterministic (bit-stable run-to-run
-    // and independent of BLAS thread count) — it is genuine algorithm-ordering
-    // drift, not nondeterminism. The 1e-9 originally asserted here was below
-    // that floor and never passed (fails identically on main). 5e-8 sits ~6×
-    // above the observed 8.2e-9 floor while still catching a real screening
-    // regression (which corrupts the energy at the mHa scale, not 1e-8) by many
-    // orders of magnitude.
+    // Algebraically equivalent at thresh=0. The ~1e-8 "ordering drift" once
+    // tolerated here was the full-request defect: 84 % 5 != 0 left the
+    // screened Lanczos 4 eigenvectors short. Since that fix it is ~5e-16.
     assert!(
-        diff < 5e-8,
-        "screened-vs-dense diff at thresh=0 = {:.2e}; expected <5e-8",
+        diff < 1e-10,
+        "screened-vs-dense diff at thresh=0 = {:.2e}; expected <1e-10",
         diff
     );
 }
@@ -201,6 +190,24 @@ fn h2o_cc_pvdz_screened_davidson_equivalence_thresh_zero() {
 /// 6.96e-11 on CI) with well over an order of margin, and still fails the
 /// mutation below by six orders -- so it remains a live measurement of
 /// screening rather than of the eigensolver.
+///
+/// # Addendum 2026-10-27: the Lanczos "noise" was a solver defect
+///
+/// The Lanczos floor above was not residual noise. The screened solve asks
+/// for all 84 pairs from a 5-wide Boys seed; 84 % 5 != 0 capped the Krylov
+/// space at 80, so 4 eigenvectors were always missing from the basis the
+/// frequency stage projects onto. With such requests now solved densely, the
+/// same Lanczos sweep (Prescott, this box) reads 5.6e-17 / 5.6e-17 / 3.3e-16 /
+/// 4.2e-16 at 1e-8..1e-5 (was 4.7e-7 / 4.7e-7 / 8.6e-7 / 5.5e-7, 80 of 84
+/// pairs). At 1e-4 it reads 9.6e-10 with 83 pairs: one screened mode lands at
+/// λ = 1 and the `λ − 1 > 0` truncation drops it (Davidson keeps 84).
+///
+/// What the post-fix sweep measures: the frequency stage projects the DENSE
+/// `b_ov` onto the static eigenvectors, so at `trunc_thresh = 0` with a full,
+/// orthogonal basis the energy is invariant under any rotation of it -- Boys
+/// screening cannot move E_RPA at all there. The ~1e-16 readings therefore
+/// confirm BASIS COMPLETENESS, not that screening is lossless; the "live
+/// measurement of screening" wording above predates that observation.
 #[test]
 fn h2o_cc_pvdz_screened_production_thresh() {
     let (mol, obs, dfbs, op, rhf) = setup(
@@ -686,4 +693,98 @@ fn screened_eps_loc_are_genuine_eigenvalues_not_a_diagonal() {
          the occupied block cannot change it); max deviation {maxdev:.3e}. \
          A large value means screen.rs went back to taking diag(F_loc)."
     );
+}
+
+/// Boys-screened Lanczos at `thresh = 0` against the dense full-rank solve,
+/// returning `(converged, n_eigenpotentials, max |Δλ|, |ΔE|)`. `Δλ` is over
+/// the modes with `|λ − 1| > 1e-8`: at frozen_core 1 `nov = 76 < naux = 84`,
+/// so 8 modes are exactly 1 and rounding alone decides which survive the
+/// `λ − 1 > 0` truncation (they carry no energy).
+///
+/// The screened PDEP solve asks for ALL `naux` eigenpairs from a seed of
+/// width `n_occ_loc`. Before the full-request fix, a block size that does not
+/// divide `naux` capped the Krylov space below `naux`, so the solve could never
+/// converge (water/cc-pVDZ frozen_core 0: 80 of 84 pairs, `converged = false`).
+fn boys_lanczos_vs_dense(frozen_core: usize) -> (bool, usize, f64, f64) {
+    let (mol, obs, dfbs, op, rhf) = setup(
+        "../../testdata/molecules/water.xyz",
+        "cc-pvdz",
+        "cc-pvdz-ri",
+    );
+    let cfg_dense = PdepRpaConfig {
+        frozen_core,
+        ..base_cfg()
+    };
+    let r_dense = run_pdep_rpa(&mol, &obs, &dfbs, op, &rhf, &cfg_dense).unwrap();
+    let cfg_scr = PdepRpaConfig {
+        chi0_sparsity: Chi0Sparsity::BoysScreened {
+            thresh: 0.0,
+            dist_cutoff: f64::INFINITY,
+        },
+        ..cfg_dense
+    };
+    let r_scr = run_pdep_rpa(&mol, &obs, &dfbs, op, &rhf, &cfg_scr).unwrap();
+    let significant = |v: &[f64]| {
+        let mut s: Vec<f64> = v
+            .iter()
+            .copied()
+            .filter(|l| (l - 1.0).abs() > 1e-8)
+            .collect();
+        s.sort_by(f64::total_cmp);
+        s
+    };
+    let (ld, ls) = (
+        significant(&r_dense.eigenvalues_static),
+        significant(&r_scr.eigenvalues_static),
+    );
+    let max_dl = if ld.len() == ls.len() {
+        ld.iter()
+            .zip(&ls)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0, f64::max)
+    } else {
+        f64::INFINITY
+    };
+    let de = (r_scr.e_rpa - r_dense.e_rpa).abs();
+    println!(
+        "fc={frozen_core}: screened converged={} n_eig={} (dense {}) significant={}/{} \
+         max|dλ|={max_dl:.3e} |dE|={de:.3e} dense={:.17e} screened={:.17e}",
+        r_scr.eigensolver_converged,
+        r_scr.n_eigenpotentials,
+        r_dense.n_eigenpotentials,
+        ls.len(),
+        ld.len(),
+        r_dense.e_rpa,
+        r_scr.e_rpa
+    );
+    assert!(r_dense.eigensolver_converged);
+    (
+        r_scr.eigensolver_converged,
+        r_scr.n_eigenpotentials,
+        max_dl,
+        de,
+    )
+}
+
+/// EXACTNESS ANCHOR for the full-request fix: nocc 5 does not divide naux 84.
+#[test]
+fn boys_lanczos_full_request_converges_when_block_does_not_divide_naux() {
+    let (converged, n_eig, max_dl, de) = boys_lanczos_vs_dense(0);
+    assert!(converged, "84 % 5 != 0 must still converge");
+    assert_eq!(
+        n_eig, 84,
+        "every eigenpair must be returned (nov 95 > naux 84)"
+    );
+    assert!(max_dl < 1e-10, "spectrum vs dense: max |dλ| {max_dl:.3e}");
+    assert!(de < 1e-10, "energy vs dense: |dE| {de:.3e}");
+}
+
+/// Control: nocc 4 divides naux 84; this path converged before the fix and
+/// still runs the block Lanczos iteration unchanged.
+#[test]
+fn boys_lanczos_full_request_converges_when_block_divides_naux() {
+    let (converged, _n_eig, max_dl, de) = boys_lanczos_vs_dense(1);
+    assert!(converged);
+    assert!(max_dl < 1e-10, "spectrum vs dense: max |dλ| {max_dl:.3e}");
+    assert!(de < 1e-10, "energy vs dense: |dE| {de:.3e}");
 }
