@@ -222,8 +222,9 @@ def test_derivatives_roks_and_gamma_meta_gga_stay_refused(basis):
         _uks(H3_SCAN_ATOMS, lat, basis, wb, (1, 1, 2), with_stress=True)
     with pytest.raises(
         ValueError,
-        match=r'^run_roks_kpts: functional "SCAN": .*\. k-point ROKS supports '
-        r"LDA, GGA, global-hybrid and range-separated hybrid functionals only",
+        match=r'^run_roks_kpts: functional "SCAN": the k-point ROKS SCAN / r2SCAN '
+        r"meta-GGA energy is validated in the library \(#492\) but not yet wired "
+        r"in the bindings \(#498\)",
     ):
         ferric.run_roks_kpts(
             _mol(H3_SCAN_ATOMS, 2), lat, basis, "SCAN", (1, 1, 2), omega=OMEGA
