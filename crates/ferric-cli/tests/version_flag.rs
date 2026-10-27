@@ -37,6 +37,34 @@ fn version_output(flag: &str) -> String {
     String::from_utf8(out.stdout).unwrap()
 }
 
+/// The `libint:` value rebuilt independently from the integrals crate's API:
+/// `<version> (eri a,b,c; eri3 ...; eri2 ...; onebody ...; g12 n|none)`, an
+/// ungenerated class printing `none`.
+fn expected_libint_value() -> String {
+    let am = ferric_integrals::libint_max_am();
+    let join = |k: &str| {
+        if am[k].is_empty() {
+            return "none".to_string();
+        }
+        am[k]
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    let g12 = ferric_integrals::libint_g12_max_am()
+        .map(|l| l.to_string())
+        .unwrap_or_else(|| "none".into());
+    format!(
+        "{} (eri {}; eri3 {}; eri2 {}; onebody {}; g12 {g12})",
+        ferric_integrals::libint_version(),
+        join("eri"),
+        join("eri3"),
+        join("eri2"),
+        join("onebody"),
+    )
+}
+
 #[test]
 fn version_prints_every_identity_field_and_matches_the_embedded_values() {
     let text = version_output("--version");
@@ -53,6 +81,11 @@ fn version_prints_every_identity_field_and_matches_the_embedded_values() {
     assert!(
         lines[4].len() > "libint: ".len(),
         "libint must never be empty"
+    );
+    assert_eq!(
+        lines[4],
+        format!("libint: {}", expected_libint_value()),
+        "{text}"
     );
     assert!(
         !ferric_build_info::VERSION.contains('+'),

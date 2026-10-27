@@ -743,14 +743,18 @@ fn open_shell_refusals_have_exact_messages() {
             && e.contains("no meta-GGA for ROKS; the UKS route"),
         "{tag}: {e}"
     );
-    // ROKS HSE06 has an energy here but no force: optimize is refused by the
-    // derivative allowlist, before any integral (the UKS SCAN and HSE06
-    // forces run: periodic_rsh_open_mgga_derivs.rs).
-    let tag = "roks-opt-HSE06";
-    let e = refused(&run(&input(tag, Method::Roks, "HSE06", "optimize")), tag);
+    // ROKS wB97X has an energy here but no validated force: optimize is
+    // refused by the derivative allowlist, before any integral (the ROKS and
+    // UKS HSE06 / CAM-B3LYP forces run: periodic_rsh_open_mgga_derivs.rs).
+    let tag = "roks-opt-wB97X";
+    let wb = "HYB_GGA_XC_WB97X";
+    let e = refused(&run(&input(tag, Method::Roks, wb, "optimize")), tag);
     assert!(
         e.contains("method.task = \"optimize\" with [cell] kmesh")
-            && e.contains("ROKS range-separated hybrid force and stress are not implemented"),
+            && e.contains(
+                "HYB_GGA_XC_WB97X: the range-separated hybrid force and stress are validated \
+                 for HSE06 / CAM-B3LYP (HYB_GGA_XC_CAM_B3LYP) only"
+            ),
         "{tag}: {e}"
     );
     // Open-shell meta-GGA needs the dense-AFT J/K.

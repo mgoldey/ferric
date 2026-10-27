@@ -272,6 +272,18 @@ int scf_compute_eri_deriv_quartet(scf_engine *eng, const scf_basis *bs,
 /* LIBINT2_MAX_DERIV_ORDER of the libint2 this shim was compiled against. */
 int scf_libint_max_deriv_order(void);
 
+/* Max angular momentum the linked libint2 was generated for, by integral
+ * class and derivative order: cls 0 = 4-centre ERI (LIBINT2_MAX_AM_eri*),
+ * 1 = 3-centre ERI (LIBINT2_MAX_AM_3eri*), 2 = 2-centre ERI
+ * (LIBINT2_MAX_AM_2eri*), 3 = one-body (LIBINT2_MAX_AM_overlap*); deriv 0..2.
+ * Returns -1 when the macro is undefined or the arguments are out of range.
+ * Compile-time constants: cannot fail, needs no libint init. */
+int scf_libint_max_am(int cls, int deriv);
+
+/* LIBINT2_MAX_AM_R12kG12 (geminal / F12 integrals), or -1 when the build
+ * lacks LIBINT2_SUPPORT_G12 or that macro. */
+int scf_libint_g12_max_am(void);
+
 /* deriv_order=2 engine for the same op_kinds as scf_engine_create (1e: 100,
  * 101, 102; 2e: 0-4). Returns NULL if libint2 was generated without second
  * derivatives, or if max_L exceeds the second-derivative AM limit of the

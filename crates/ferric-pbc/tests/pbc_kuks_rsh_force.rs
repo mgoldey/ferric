@@ -373,24 +373,15 @@ fn oshell_rsh_force_refusals() {
     .unwrap_err()
     .to_string();
     assert!(e.contains("needs KRksStressConfig::exxdiv"), "{e}");
-    // The binding derivative gate: the UKS force on the dense-AFT J/K is
-    // wired; the UKS stress, the UKS force on RS-GDF and every ROKS
-    // derivative stay refused (the library ROKS force is
-    // `pbc_kroks_rsh_force.rs`, unwired).
-    use ferric_pbc::kxcgrad::{check_deriv_functional, Deriv, DerivSpin};
+    // The binding derivative gate: every open-shell RSH force and stress on
+    // either J/K is wired (#498).
+    use ferric_pbc::kxcgrad::{check_deriv_functional, DerivSpin};
     for f in FUNCTIONALS {
-        check_deriv_functional(DerivSpin::Unrestricted, Deriv::Force, false, f)
-            .unwrap_or_else(|e| panic!("{f}: {e}"));
-        for (spin, d, g) in [
-            (DerivSpin::Unrestricted, Deriv::Stress, false),
-            (DerivSpin::Unrestricted, Deriv::Force, true),
-            (DerivSpin::RestrictedOpen, Deriv::Force, false),
-            (DerivSpin::RestrictedOpen, Deriv::Stress, false),
-        ] {
-            assert!(
-                check_deriv_functional(spin, d, g, f).is_err(),
-                "{spin:?} {d:?} {g} {f}"
-            );
+        for spin in [DerivSpin::Unrestricted, DerivSpin::RestrictedOpen] {
+            for g in [false, true] {
+                check_deriv_functional(spin, g, f)
+                    .unwrap_or_else(|e| panic!("{spin:?} {g} {f}: {e}"));
+            }
         }
     }
 }

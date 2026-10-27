@@ -80,3 +80,52 @@ pub fn libint_version() -> &'static str {
     let s = unsafe { std::ffi::CStr::from_ptr(ffi::scf_libint_version()) };
     s.to_str().unwrap_or("unknown")
 }
+
+pub use engine::libint_max_deriv_order;
+
+/// Integral classes reported by [`libint_max_am`], in the shim's `cls` order
+/// (the order `ferric --version` prints them in).
+pub const LIBINT_AM_CLASSES: [&str; 4] = ["eri", "eri3", "eri2", "onebody"];
+
+/// Maximum angular momentum the linked libint2 was generated for, per
+/// integral class, indexed by derivative order.
+///
+/// Keys are `"eri"` (4-centre, `LIBINT2_MAX_AM_eri*`), `"eri3"`
+/// (`LIBINT2_MAX_AM_3eri*`), `"eri2"` (`LIBINT2_MAX_AM_2eri*`) and
+/// `"onebody"` (`LIBINT2_MAX_AM_overlap*`). Entry `d` is the limit for
+/// derivative order `d`; orders the build lacks are dropped from the end, so
+/// a first-derivative-only build gives two entries. The `"eri3"` limit is
+/// the auxiliary shell's; libint caps the two orbital shells at its default
+/// class limit for that order. Returned in alphabetical key order. This is how the PyPI
+/// wheel (small libint) and a conda-forge 2.13.1 build are told apart, since
+/// both carry the same version and commit.
+pub fn libint_max_am() -> std::collections::BTreeMap<&'static str, Vec<i32>> {
+    LIBINT_AM_CLASSES
+        .iter()
+        .enumerate()
+        .map(|(cls, &name)| {
+            // SAFETY: returns a compile-time constant; any argument is valid.
+            let mut ams: Vec<i32> = (0..3)
+                .map(|deriv| unsafe { ffi::scf_libint_max_am(cls as i32, deriv) })
+                .collect();
+            while ams.last() == Some(&-1) {
+                ams.pop();
+            }
+            (name, ams)
+        })
+        .collect()
+}
+
+/// `LIBINT2_MAX_AM_R12kG12` of the linked libint2 (geminal/F12 integrals),
+/// or `None` if the build lacks `LIBINT2_SUPPORT_G12` or that limit.
+pub fn libint_g12_max_am() -> Option<i32> {
+    // SAFETY: returns a compile-time constant, no arguments.
+    let am = unsafe { ffi::scf_libint_g12_max_am() };
+    (am >= 0).then_some(am)
+}
+
+/// How the integral shim links libint2: `"static"` (a prefix with
+/// `libint2.a`) or `"shared"` (`libint2.so`, e.g. conda-forge 2.13.1).
+pub fn libint_linkage() -> &'static str {
+    env!("FERRIC_LIBINT_LINKAGE")
+}

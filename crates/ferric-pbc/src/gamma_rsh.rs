@@ -937,9 +937,9 @@ pub fn gamma_uks_any_keep(
 }
 
 /// Open-shell Gamma ROKS for ANY supported functional: the [`gamma_uks_any`]
-/// routing for [`crate::rohf::gamma_roks_rsh`] (range-separated hybrid,
-/// ENERGY only) or [`crate::rohf::gamma_roks`] (LDA, GGA, global hybrids).
-/// The one entry the Python and CLI bindings share.
+/// routing for [`crate::rohf::gamma_roks_rsh`] (range-separated hybrid) or
+/// [`crate::rohf::gamma_roks`] (LDA, GGA, global hybrids). The one entry the
+/// Python and CLI bindings share.
 pub fn gamma_roks_any(
     cell: &Cell,
     prep: &PreparedBasis,
@@ -949,15 +949,32 @@ pub fn gamma_roks_any(
     sizing: GammaRshSizing,
     cfg: &crate::rohf::GammaRoksConfig,
 ) -> Result<crate::rohf::GammaRoksResult, FerricError> {
+    Ok(gamma_roks_any_keep(cell, prep, hc, ints, aux, sizing, cfg)?.0)
+}
+
+/// [`gamma_roks_any`] that also returns the range-separated exchange the SCF
+/// ran on (`None` for any other functional), so a binding can hand it to
+/// [`gamma_roks_rsh_gradient`] without rebuilding it (the
+/// [`gamma_uks_any_keep`] twin; the same residency note applies).
+pub fn gamma_roks_any_keep(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    hc: &crate::hcore::PeriodicHcore,
+    ints: crate::uhf::GammaUhfIntegrals<'_>,
+    aux: Option<&PreparedBasis>,
+    sizing: GammaRshSizing,
+    cfg: &crate::rohf::GammaRoksConfig,
+) -> Result<(crate::rohf::GammaRoksResult, Option<GammaRshExchange>), FerricError> {
     check_range_split(&cfg.functional, sizing.range_split)?;
     match crate::rsh::resolve_periodic_functional_rsh(&cfg.functional)?.2 {
         Some(rsh) => {
             let ex = GammaRshExchange::build_for_binding(
                 cell, prep, aux, &hc.s, cfg.exxdiv, sizing, rsh,
             )?;
-            crate::rohf::gamma_roks_rsh(cell, prep, hc, ints, &ex, cfg)
+            let r = crate::rohf::gamma_roks_rsh(cell, prep, hc, ints, &ex, cfg)?;
+            Ok((r, Some(ex)))
         }
-        None => crate::rohf::gamma_roks(cell, prep, hc, ints, cfg),
+        None => Ok((crate::rohf::gamma_roks(cell, prep, hc, ints, cfg)?, None)),
     }
 }
 

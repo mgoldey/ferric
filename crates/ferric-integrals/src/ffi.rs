@@ -167,6 +167,12 @@ extern "C" {
     ) -> c_int;
     /// `LIBINT2_MAX_DERIV_ORDER` of the libint2 the shim was compiled against.
     pub fn scf_libint_max_deriv_order() -> c_int;
+    /// Max AM of the linked libint2 for integral class `cls` (0 eri, 1 eri3,
+    /// 2 eri2, 3 one-body) at derivative order `deriv` (0..=2); -1 when the
+    /// build does not define it or the arguments are out of range.
+    pub fn scf_libint_max_am(cls: c_int, deriv: c_int) -> c_int;
+    /// `LIBINT2_MAX_AM_R12kG12` of the linked libint2, or -1.
+    pub fn scf_libint_g12_max_am() -> c_int;
     /// deriv_order=2 engine; NULL without second-derivative support or when
     /// `max_l` exceeds the linked library's second-derivative AM limit.
     pub fn scf_engine_create_deriv2(
