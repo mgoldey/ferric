@@ -38,10 +38,14 @@ fn version_output(flag: &str) -> String {
 }
 
 /// The `libint:` value rebuilt independently from the integrals crate's API:
-/// `<version> (eri a,b,c; eri3 ...; eri2 ...; onebody ...; g12 n|none)`.
+/// `<version> (eri a,b,c; eri3 ...; eri2 ...; onebody ...; g12 n|none)`, an
+/// ungenerated class printing `none`.
 fn expected_libint_value() -> String {
     let am = ferric_integrals::libint_max_am();
     let join = |k: &str| {
+        if am[k].is_empty() {
+            return "none".to_string();
+        }
         am[k]
             .iter()
             .map(|l| l.to_string())

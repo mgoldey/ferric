@@ -61,7 +61,8 @@ def test_libint_limits_are_well_formed():
     am = info["libint_max_am"]
     assert set(am) == {"eri", "eri3", "eri2", "onebody"}
     for cls, ams in am.items():
-        assert 1 <= len(ams) <= order + 1, (cls, ams, order)
+        # Empty when the build generated no integrals of that class at all.
+        assert 0 <= len(ams) <= order + 1, (cls, ams, order)
         assert all(type(lmax) is int and lmax >= 0 for lmax in ams), (cls, ams)
     g12 = info["libint_g12_max_am"]
     assert g12 is None or (type(g12) is int and g12 >= 0)

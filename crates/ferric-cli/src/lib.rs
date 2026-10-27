@@ -93,7 +93,12 @@ pub fn libint_summary() -> String {
         .iter()
         .map(|class| {
             let ams: Vec<String> = max_am[class].iter().map(i32::to_string).collect();
-            format!("{class} {}", ams.join(","))
+            let ams = if ams.is_empty() {
+                "none".to_string()
+            } else {
+                ams.join(",")
+            };
+            format!("{class} {ams}")
         })
         .collect();
     let g12 = ferric_integrals::libint_g12_max_am().map_or("none".to_string(), |l| l.to_string());
