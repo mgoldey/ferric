@@ -47,14 +47,14 @@
     ],
     "bohr_in_angstrom": 0.52917721092,
     "generator": "scripts/validation/gen_scf_symmetry.py",
-    "git_head": "cec6f3b2b9da379fa73f615a756c54ce8cd30b16",
-    "generated_utc": "2026-10-17T15:11:33+00:00"
+    "git_head": "46cc22360f9372b0f59c5f819468993848636fae",
+    "generated_utc": "2026-10-27T02:01:20+00:00"
   },
   "unblocked": {
-    "energy": -75.9838311136362
+    "energy": -75.98383111363627
   },
   "ground": {
-    "energy": -75.98383111363621,
+    "energy": -75.9838311136362,
     "group": "C2v",
     "irreps": [
       "A1",
@@ -67,10 +67,10 @@
       "B2": 1
     },
     "nuclear_repulsion": 9.189193229309746,
-    "energy_unblocked": -75.9838311136362
+    "energy_unblocked": -75.98383111363627
   },
   "excited": {
-    "energy": -75.17801649392689,
+    "energy": -75.17801649392688,
     "group": "C2v",
     "irreps": [
       "A1",
@@ -89,5 +89,37 @@
       "B2": 2
     },
     "moved_from": "B1"
+  },
+  "rks_pbe": {
+    "recipe": {
+      "method": "dft.RKS",
+      "xc": "PBE,PBE",
+      "grid": {
+        "atom_grid": [
+          75,
+          110
+        ],
+        "prune": null,
+        "partition": "Becke (original_becke)",
+        "radii_adjust": "becke_atomic_radii_adjust"
+      },
+      "jk": "RI-J (density_fit, def2-universal-jkfit fed from ferric JSON); K unused"
+    },
+    "ground": {
+      "energy": -76.29805950765854,
+      "group": "C2v",
+      "irreps": [
+        "A1",
+        "B1",
+        "B2"
+      ],
+      "docc_per_irrep": {
+        "A1": 3,
+        "B1": 1,
+        "B2": 1
+      },
+      "nuclear_repulsion": 9.189193229309746,
+      "energy_unblocked": -76.29805950765851
+    }
   }
 }

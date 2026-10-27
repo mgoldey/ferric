@@ -908,7 +908,8 @@ pub fn run(args: Vec<String>) {
     // MaxIter instead of converging) + the ksdft_ladder tests in
     // ferric-scf/src/ladder.rs.
     if rhf_config.symmetry {
-        // `Config::validate_symmetry_keys` admitted only kind "rhf" + energy.
+        // `Config::validate_symmetry_keys` admitted only kind "rhf"/"ksdft" + energy
+        // on a closed-shell singlet (RHF, or RKS when `rhf_config.xc` is set).
         run_symmetric_rhf(&cfg, &ctx, &mol, &bs, &prep, op, &bounds, &rhf_config);
         return;
     }
@@ -1367,7 +1368,7 @@ fn run_rhf(
     print_cosx_final(result);
 }
 
-/// `[scf] symmetry = true`: closed-shell RHF blocked by point-group irrep
+/// `[scf] symmetry = true`: closed-shell RHF or RKS blocked by point-group irrep
 /// (`ferric_scf::symmetric::solve_rhf_symmetric`). Prints the group, the
 /// symmetrization shift and the per-irrep occupations, then writes the
 /// terminal `run_end` record with the same fields. The energy is that of the
@@ -1396,8 +1397,12 @@ fn run_symmetric_rhf(
         .map(|(l, n)| format!("{l}={n}"))
         .collect::<Vec<_>>()
         .join(" ");
+    let label = match rhf_config.xc.as_deref() {
+        Some(xc) => format!("RKS({xc})"),
+        None => "RHF".to_string(),
+    };
     println!(
-        "RHF/{} on {} (point-group blocked)",
+        "{label}/{} on {} (point-group blocked)",
         bs.name, cfg.molecule.xyz
     );
     println!("  nbasis     = {}", prep.nbasis());

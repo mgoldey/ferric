@@ -189,6 +189,39 @@ fn blocked_matches_unblocked_and_fock_commutes() {
     }
 }
 
+/// Anchor (b) beyond STO-3G: correlation-consistent basis (d shells, pure
+/// solid harmonics) on the issue's named systems, including the
+/// non-Abelian Td (CH4, blocked in a D2 or C2v subgroup) and D-infinity-h
+/// (N2, blocked in D2h) molecules. The unconstrained SCF already lands on the
+/// symmetric state for all four, so the energies must agree.
+#[test]
+fn blocked_matches_unblocked_cc_pvdz() {
+    for xyz in ["water.xyz", "nh3.xyz", "methane.xyz", "n2.xyz"] {
+        let mol = load(xyz);
+        let sym = run_sym(&mol, "cc-pvdz", &cfg(true)).unwrap();
+        assert_ne!(sym.group(), "C1", "{xyz}");
+        let on = sym.scf_in_frame();
+        assert!(on.converged, "{xyz}");
+        let off = run_mol(sym.molecule(), "cc-pvdz", &cfg(false)).unwrap();
+        let de = (on.energy - off.energy).abs();
+        let det = detect(&mol, DEFAULT_SYMMETRY_TOL).unwrap();
+        let bs = basis::bundled("cc-pvdz").unwrap();
+        let rep = AoRepresentation::new(&det, &det.molecule, &bs).unwrap();
+        let ncomm = max_noncommutation(&rep, det.ops.len(), &on.fock_alpha);
+        eprintln!(
+            "{xyz} RHF/cc-pVDZ ({}): |dE| = {de:.1e}, max [R,F] = {ncomm:.1e}",
+            sym.group()
+        );
+        assert!(
+            de < 1e-10,
+            "{xyz}: blocked {} vs unblocked {}",
+            on.energy,
+            off.energy
+        );
+        assert!(ncomm < 1e-10, "{xyz}: [R,F] = {ncomm:e}");
+    }
+}
+
 // ---------------------------------------------------------------- anchor (c)
 
 fn water_excited_nelec() -> Vec<(String, usize)> {
@@ -230,7 +263,7 @@ fn unsupported_combinations_are_typed_errors() {
         ("newton", Box::new(|c| c.newton_trigger = 1e-2)),
         ("trah", Box::new(|c| c.trah_trigger = Some(1e-2))),
         ("stability", Box::new(|c| c.check_stability = true)),
-        ("xc", Box::new(|c| c.xc = Some("PBE".into()))),
+        ("cosx", Box::new(|c| c.k_builder = Some("cosx".into()))),
         (
             "pcm",
             Box::new(|c| c.pcm = Some(ferric_pcm::PcmConfig::water())),

@@ -1008,13 +1008,38 @@ fn run_rhf(
 
 /// A refusal the library classifies as a bad symmetry request
 /// (`ferric_scf::symmetric::is_symmetry_refusal`) is a `ValueError` naming
-/// `symmetry=True`; anything else is a solver failure (`RuntimeError`).
-fn symmetry_err(e: ferric_core::error::FerricError) -> PyErr {
-    if ferric_scf::symmetric::is_symmetry_refusal(&e) {
-        pyo3::exceptions::PyValueError::new_err(format!("run_rhf(symmetry=True): {e}"))
-    } else {
-        make_err(e)
+/// `<who>(symmetry=True)`; anything else is a solver failure (`RuntimeError`).
+fn symmetry_err(who: &'static str) -> impl Fn(ferric_core::error::FerricError) -> PyErr {
+    move |e| {
+        if ferric_scf::symmetric::is_symmetry_refusal(&e) {
+            pyo3::exceptions::PyValueError::new_err(format!("{who}(symmetry=True): {e}"))
+        } else {
+            make_err(e)
+        }
     }
+}
+
+/// Run the point-group-blocked closed-shell solve (`config.symmetry` set) and
+/// wrap it as a `SymmetricRhfResult`. `who` names the Python entry point in
+/// refusals.
+#[allow(clippy::too_many_arguments)]
+fn solve_symmetric_outcome(
+    py: Python<'_>,
+    who: &'static str,
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    config: &RhfConfig,
+) -> PyResult<PyObject> {
+    let sym = py
+        .allow_threads(|| {
+            ferric_scf::symmetric::solve_rhf_symmetric(ctx, mol, prep, op, bounds, config)
+        })
+        .map_err(symmetry_err(who))?;
+    warn_rhf_not_converged(py, sym.scf_in_frame(), config);
+    Ok(Py::new(py, PySymmetricRhfResult::from_solution(sym))?.into_any())
 }
 
 /// Solve and wrap: the plain `RhfResult` path (unchanged), or with
@@ -1035,13 +1060,7 @@ fn solve_rhf_outcome(
         ));
     }
     if config.symmetry {
-        let sym = py
-            .allow_threads(|| {
-                ferric_scf::symmetric::solve_rhf_symmetric(ctx, mol, prep, op, bounds, &config)
-            })
-            .map_err(symmetry_err)?;
-        warn_rhf_not_converged(py, sym.scf_in_frame(), &config);
-        return Ok(Py::new(py, PySymmetricRhfResult::from_solution(sym))?.into_any());
+        return solve_symmetric_outcome(py, "run_rhf", ctx, mol, prep, op, bounds, &config);
     }
     let r = py
         .allow_threads(|| solve_rhf(ctx, mol, prep, op, bounds, &config))
@@ -1066,7 +1085,8 @@ fn add_rhf_result_classes(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PySymmetricRhfResult>()
 }
 
-/// Result of `run_rhf(..., symmetry=True)`: point-group-blocked closed-shell RHF.
+/// Result of `run_rhf(..., symmetry=True)` (point-group-blocked closed-shell
+/// RHF) and of `run_dft` / `run_ksdft(..., symmetry=True)` (blocked RKS).
 ///
 /// A distinct type from `RhfResult` on purpose. The SCF ran on the
 /// reoriented, SYMMETRIZED geometry, so `energy` belongs to that geometry
@@ -8034,6 +8054,11 @@ fn run_double_hybrid(
 ///
 /// Note: the final_* residuals, unmet_criteria and non-convergence RuntimeWarning
 /// are RHF-only today (the result has `exit_reason` and `iterations`).
+///
+/// `symmetry=True`: point-group-blocked closed-shell RKS
+/// (`ferric_scf::symmetric::solve_rhf_symmetric`), returning a
+/// `SymmetricRhfResult` for the symmetrized geometry; `irrep_nelec` pins
+/// electrons per irrep. Refused with `with_gradient` or `dispersion`.
 #[pyfunction]
 #[pyo3(signature = (
     mol, basis_set, functional=None, k_builder=None, with_gradient=false,
@@ -8043,6 +8068,7 @@ fn run_double_hybrid(
     dispersion=None, df_j_aux=None, df_k_aux=None,
     grid_radial=None, grid_angular=None, grid_prune=None,
     cosx_grid=None, cosx_final_pass=None, cosx_final_grid=None, cosx_overlap_fit=None,
+    symmetry=false, irrep_nelec=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_dft(
@@ -8070,7 +8096,9 @@ fn run_dft(
     cosx_final_pass: Option<bool>,
     cosx_final_grid: Option<&Bound<'_, PyAny>>,
     cosx_overlap_fit: Option<bool>,
-) -> PyResult<PyDftResult> {
+    symmetry: bool,
+    irrep_nelec: Option<std::collections::BTreeMap<String, usize>>,
+) -> PyResult<PyObject> {
     // Refuse an (E, grad-E) pair that does not belong to the same surface.
     //
     // `total_energy` below is `e_scf + e_dispersion`, but `gradient_data` is
@@ -8133,6 +8161,12 @@ fn run_dft(
     // Main KS grid. `None` (no grid kwarg) keeps the historical 75x110 flat
     // grid byte-for-byte; `ksdft_ladder` clones `cfg`, so every rung uses it.
     cfg.dft_grid = resolve_dft_grid(grid_radial, grid_angular, grid_prune)?;
+    if symmetry || irrep_nelec.is_some() {
+        refuse_dft_symmetry_extras(symmetry, with_gradient, dispersion.is_some())?;
+        cfg.symmetry = true;
+        cfg.irrep_nelec = irrep_nelec.map(|m| m.into_iter().collect());
+        return solve_symmetric_outcome(py, "run_dft", &ctx, &emol, &prep, op, &bounds, &cfg);
+    }
     // The gradient below goes through `restricted_scf_gradient`, which
     // differentiates `cfg.dft_grid` (pruned or not), the grid the SCF runs on.
     // COSX exchange (RIJCOSX by default here): the gradient below goes
@@ -8258,7 +8292,7 @@ fn run_dft(
         None => (None, None),
         Some(d) => (Some(d.model.to_string()), d.volume_ratios),
     };
-    Ok(PyDftResult {
+    let result = PyDftResult {
         total_energy: rhf.energy + e_dispersion.unwrap_or(0.0),
         e_scf: rhf.energy,
         e_dispersion,
@@ -8273,7 +8307,36 @@ fn run_dft(
         gradient_data,
         scf_data: rhf,
         scf_config: cfg,
-    })
+    };
+    Ok(Py::new(py, result)?.into_any())
+}
+
+/// `run_dft(symmetry=True)` scoping: `irrep_nelec` needs `symmetry`, and the
+/// result lives in the symmetry frame, so no gradient (input-frame rows) and
+/// no dispersion (its energy would be silently dropped from the blocked
+/// result) are offered.
+fn refuse_dft_symmetry_extras(
+    symmetry: bool,
+    with_gradient: bool,
+    dispersion: bool,
+) -> PyResult<()> {
+    let refuse = |m: &str| Err(pyo3::exceptions::PyValueError::new_err(m.to_string()));
+    if !symmetry {
+        return refuse("run_dft: irrep_nelec requires symmetry=True");
+    }
+    if with_gradient {
+        return refuse(
+            "run_dft(symmetry=True): with_gradient is not available; the blocked SCF runs in \
+             the reoriented, symmetrized frame. Use symmetry=False for gradients.",
+        );
+    }
+    if dispersion {
+        return refuse(
+            "run_dft(symmetry=True): dispersion is not available with the blocked solve; \
+             use symmetry=False or add the correction separately (d3bj_energy).",
+        );
+    }
+    Ok(())
 }
 
 /// Number of points in the main KS integration grid `run_dft` would build for
@@ -8466,6 +8529,7 @@ fn evaluate_dispersion(
     point_charges=None, external_field=None, memory_budget_gb=None,
     dispersion=None, df_j_aux=None, df_k_aux=None,
     grid_radial=None, grid_angular=None, grid_prune=None,
+    symmetry=false, irrep_nelec=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_ksdft(
@@ -8489,7 +8553,9 @@ fn run_ksdft(
     grid_radial: Option<usize>,
     grid_angular: Option<usize>,
     grid_prune: Option<&str>,
-) -> PyResult<PyDftResult> {
+    symmetry: bool,
+    irrep_nelec: Option<std::collections::BTreeMap<String, usize>>,
+) -> PyResult<PyObject> {
     run_dft(
         py,
         mol,
@@ -8515,6 +8581,8 @@ fn run_ksdft(
         None,
         None,
         None,
+        symmetry,
+        irrep_nelec,
     )
 }
 

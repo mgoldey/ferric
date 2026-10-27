@@ -41,11 +41,11 @@
     ],
     "bohr_in_angstrom": 0.52917721092,
     "generator": "scripts/validation/gen_scf_symmetry.py",
-    "git_head": "cec6f3b2b9da379fa73f615a756c54ce8cd30b16",
-    "generated_utc": "2026-10-17T15:11:51+00:00"
+    "git_head": "46cc22360f9372b0f59c5f819468993848636fae",
+    "generated_utc": "2026-10-27T02:01:26+00:00"
   },
   "unblocked": {
-    "energy": -0.3733464194286767,
+    "energy": -0.37334641942867225,
     "converged": false
   },
   "sigma_g2": {
@@ -70,7 +70,7 @@
     "nuclear_repulsion": 5.2917721092e-05
   },
   "sigma_u2": {
-    "energy": -0.7074015877033303,
+    "energy": -0.70740158770333,
     "group": "Dooh",
     "irreps": [
       "A1g",
@@ -89,5 +89,67 @@
       "E1ux": 0
     },
     "nuclear_repulsion": 5.2917721092e-05
+  },
+  "rks_pbe": {
+    "recipe": {
+      "method": "dft.RKS",
+      "xc": "PBE,PBE",
+      "grid": {
+        "atom_grid": [
+          75,
+          110
+        ],
+        "prune": null,
+        "partition": "Becke (original_becke)",
+        "radii_adjust": "becke_atomic_radii_adjust"
+      },
+      "jk": "RI-J (density_fit, def2-universal-jkfit fed from ferric JSON); K unused"
+    },
+    "unblocked": {
+      "energy": -0.40191137362372814,
+      "converged": false
+    },
+    "sigma_g2": {
+      "energy": -0.9142274570932226,
+      "group": "Dooh",
+      "irreps": [
+        "A1g",
+        "E1gx",
+        "E1gy",
+        "A1u",
+        "E1uy",
+        "E1ux"
+      ],
+      "docc_per_irrep": {
+        "A1g": 1,
+        "E1gx": 0,
+        "E1gy": 0,
+        "A1u": 0,
+        "E1uy": 0,
+        "E1ux": 0
+      },
+      "nuclear_repulsion": 5.2917721092e-05
+    },
+    "sigma_u2": {
+      "energy": -0.9142274570932226,
+      "group": "Dooh",
+      "irreps": [
+        "A1g",
+        "E1gx",
+        "E1gy",
+        "A1u",
+        "E1uy",
+        "E1ux"
+      ],
+      "docc_per_irrep": {
+        "A1g": 0,
+        "E1gx": 0,
+        "E1gy": 0,
+        "A1u": 1,
+        "E1uy": 0,
+        "E1ux": 0
+      },
+      "nuclear_repulsion": 5.2917721092e-05
+    }
   }
 }

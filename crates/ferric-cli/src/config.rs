@@ -2586,10 +2586,13 @@ pub struct ScfCfg {
     /// subgroup, symmetrize and reorient the geometry, and block the Fock
     /// diagonalization by irrep. Default `false` (byte-identical to today).
     ///
-    /// SCOPE: `kind = "rhf"`, `task = "energy"`, singlet, no `[dft] functional`
-    /// (the Becke-Lebedev grid is not symmetric), no `[cell]`/`[qmmm]`. The
-    /// reported energy is that of the SYMMETRIZED geometry; the printout states
-    /// the symmetrization shift. Vector outputs are not produced in this mode.
+    /// SCOPE: `kind = "rhf"` (Hartree-Fock, or RKS with `[dft] functional`) or
+    /// `kind = "ksdft"`, `task = "energy"`, singlet, no `[dft] dispersion`, no
+    /// `[cell]`/`[qmmm]`. Under RKS the KS grid is built in the symmetry frame,
+    /// where it is exactly symmetric; a partially filled degenerate shell
+    /// needs `irrep_nelec`. The reported energy is that of the SYMMETRIZED
+    /// geometry; the printout states the symmetrization shift. Vector outputs
+    /// are not produced in this mode.
     #[serde(default)]
     pub symmetry: bool,
     /// Per-irrep electron counts, `{ A1 = 4, B2 = 2, ... }` (requires
@@ -2669,8 +2672,8 @@ impl CosxGridCfg {
 }
 
 impl Config {
-    /// `[scf] symmetry` / `irrep_nelec` scoping: only the closed-shell RHF
-    /// energy run is wired. Everything else is refused by name, because the
+    /// `[scf] symmetry` / `irrep_nelec` scoping: only the closed-shell RHF and
+    /// RKS energy runs are wired. Everything else is refused by name, because the
     /// blocked solver works in a rotated frame and a consumer assuming the
     /// input frame (gradient, optimizer, post-HF, properties) would be wrong.
     pub fn validate_symmetry_keys(&self) -> Result<(), String> {
@@ -2684,17 +2687,19 @@ impl Config {
         let kind = self.method.kind.as_str();
         let task = self.method.task.as_str();
         let refuse = |why: String| Err(format!("[scf] symmetry = true: {why}"));
-        if kind != "rhf" || self.dft.functional.is_some() {
+        if kind != "rhf" && kind != "ksdft" {
             return refuse(format!(
-                "wired for method.kind = \"rhf\" (Hartree-Fock) only; got kind = \"{kind}\"{}. \
-                 Kohn-Sham needs a symmetric integration grid and post-HF/open-shell \
-                 drivers are not blocked. Remove the key.",
-                if self.dft.functional.is_some() {
-                    " with [dft] functional"
-                } else {
-                    ""
-                }
+                "wired for method.kind = \"rhf\" (Hartree-Fock, or RKS with [dft] functional) and \
+                 \"ksdft\" only; got kind = \"{kind}\". Post-HF, double-hybrid and open-shell \
+                 drivers are not blocked. Remove the key."
             ));
+        }
+        if self.dft.dispersion.is_some() {
+            return refuse(
+                "[dft] dispersion is not supported: the blocked solve reports the SCF energy \
+                 only. Remove the key (or symmetry = true)."
+                    .to_string(),
+            );
         }
         if task != "energy" {
             return refuse(format!(
@@ -10221,15 +10226,25 @@ mod cli_wired_keys_tests {
         refused(&cfg("uhf", "energy", 3, sym), "kind = \"rhf\"");
         refused(&cfg("rimp2", "energy", 1, sym), "kind = \"rhf\"");
         refused(&cfg("rhf", "energy", 3, sym), "closed-shell singlets");
+        // Closed-shell RKS is wired: rhf + [dft] functional, and ksdft.
+        let rks = "[scf]\nsymmetry = true\n[dft]\nfunctional = \"PBE\"\n";
+        cfg("rhf", "energy", 1, rks)
+            .validate_cli_wired_keys()
+            .unwrap();
+        cfg("ksdft", "energy", 1, rks)
+            .validate_cli_wired_keys()
+            .unwrap();
         refused(
             &cfg(
-                "rhf",
+                "ksdft",
                 "energy",
                 1,
-                "[scf]\nsymmetry = true\n[dft]\nfunctional = \"PBE\"\n",
+                "[scf]\nsymmetry = true\n[dft]\nfunctional = \"PBE\"\ndispersion = \"d3bj\"\n",
             ),
-            "[dft] functional",
+            "[dft] dispersion",
         );
+        refused(&cfg("ksdft", "energy", 3, rks), "closed-shell singlets");
+        refused(&cfg("ksdft", "optimize", 1, rks), "task = \"energy\" only");
         refused(
             &cfg("rhf", "energy", 1, "[scf]\nirrep_nelec = { A1 = 4 }\n"),
             "requires [scf] symmetry",

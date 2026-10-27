@@ -38,8 +38,10 @@
 //! # Refusals beyond the closed-shell list
 //!
 //! All stage 2 refusals apply (MOM, smearing, Newton/AH/TRAH/AURORA, stability,
-//! cDFT constraints, user initial density, Kohn-Sham functionals, external
-//! potentials, solvation, polarizable embedding). ROHF additionally refuses
+//! cDFT constraints, user initial density, external potentials, solvation,
+//! polarizable embedding). Kohn-Sham functionals are refused here (UKS/ROKS
+//! blocking is not validated yet), although closed-shell RKS is blocked by
+//! [`solve_rhf_symmetric`](crate::symmetric::solve_rhf_symmetric). ROHF additionally refuses
 //! `rohf_occupation_guard = true`: its swap witness and hole-swap lock move
 //! electrons between orbitals of different irreps, which the blocking fixes.
 //! Set it to `false` (the pre-F6 loop). UHF's usual `HOMO/LUMO` mix of the
@@ -253,6 +255,13 @@ fn validate_open(config: &RhfConfig, who: &str, rohf: bool) -> Result<(), Ferric
         )));
     }
     validate_config(config)?;
+    if config.xc.is_some() {
+        return Err(FerricError::General(format!(
+            "RhfConfig.symmetry cannot be combined with a Kohn-Sham functional in {who}: UKS/ROKS \
+             blocking is not validated yet (closed-shell RKS blocking is \
+             ferric_scf::symmetric::solve_rhf_symmetric)"
+        )));
+    }
     if rohf && config.rohf_occupation_guard {
         return Err(FerricError::General(format!(
             "RhfConfig.symmetry cannot be combined with rohf_occupation_guard: its swap witness \
