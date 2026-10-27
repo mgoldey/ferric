@@ -1726,6 +1726,46 @@ pub fn resolve_gamma_open_shell_functional(name: &str) -> Result<(XcDef, f64), F
     resolve_periodic_functional_mgga(name, validated)
 }
 
+/// The library refusal of the open-shell Gamma meta-GGA paths that are NOT
+/// validated (`route` is `"UKS"` or `"ROKS"`): the RS-GDF J/K (`rsgdf`), and
+/// for ROKS the second-order solver (`second_order`), whose XC Hessian is a
+/// central finite difference of `build_polarized` along an arbitrary `ΔD`.
+/// That meets the clamped iso-orbital kink of SCAN / r2SCAN (a spin channel
+/// with one orbital sits exactly at `τ_σ = τ_W`), so it is refused, not
+/// merely unvalidated. Non-meta-GGA names pass.
+pub(crate) fn refuse_unvalidated_open_shell_mgga(
+    route: &str,
+    functional: &str,
+    rsgdf: bool,
+    second_order: bool,
+) -> Result<(), FerricError> {
+    if !is_meta_gga_name(functional) {
+        return Ok(());
+    }
+    let (feature, reason) = if rsgdf {
+        (
+            "meta-GGA on RS-GDF J/K",
+            format!(
+                "{functional}: the Gamma-point {route} meta-GGA energy is validated on the \
+                 dense-AFT J/K only (GammaUhfIntegrals::DenseAft); RS-GDF is not supported"
+            ),
+        )
+    } else if second_order {
+        (
+            "meta-GGA with the second-order ROKS solver",
+            format!(
+                "{functional}: the Gamma-point ROKS meta-GGA energy is validated with the DIIS \
+                 solver only (RohfSolver::Diis); RohfSolver::SecondOrder builds its XC Hessian \
+                 by a finite difference of the polarized XC along an arbitrary density \
+                 change, which meets the meta-GGA iso-orbital kink"
+            ),
+        )
+    } else {
+        return Ok(());
+    };
+    Err(PeriodicDftError::Unsupported { feature, reason }.into())
+}
+
 /// The bindings' refusal of a Gamma-point open-shell meta-GGA (`route` is
 /// `"UKS"` or `"ROKS"`): the SCAN / r2SCAN energy is validated in the library
 /// ([`gamma_uks`], [`crate::rohf::gamma_roks`], #492) but not yet wired
@@ -1734,14 +1774,22 @@ fn refuse_gamma_open_shell_mgga(name: &str, route: &str) -> Result<(), FerricErr
     if !is_meta_gga_name(name) {
         return Ok(());
     }
-    Err(PeriodicDftError::Unsupported {
-        feature: "meta-GGA",
-        reason: format!(
+    let reason = if crate::kxcgrad::is_validated_mgga(name) {
+        format!(
             "{name}: the Gamma-point {route} SCAN / r2SCAN energy is validated in the library \
              (#492), not yet wired (#498), and its force and stress are not implemented; the \
              k-point UKS on a 1x1x1 mesh (the Gamma point) has SCAN / r2SCAN energies, forces \
              and stress"
-        ),
+        )
+    } else {
+        format!(
+            "{name}: unsupported at the Gamma-point {route}; only the pure SCAN / r2SCAN \
+             meta-GGAs have an open-shell periodic energy (k-point UKS on a 1x1x1 mesh)"
+        )
+    };
+    Err(PeriodicDftError::Unsupported {
+        feature: "meta-GGA",
+        reason,
     }
     .into())
 }
@@ -2792,9 +2840,10 @@ pub(crate) fn refuse_molecular_grid_knobs(scf: &RhfConfig) -> Result<(), FerricE
 ///
 /// `prep` must be the basis `hc`/`ints` were built in, from `cell.mol()`.
 /// Errors (by name) on refused functionals / grid knobs / SCF features, a
-/// neighbour cutoff below the covering bound, budget overruns, and a
-/// non-converged SCF stage. Warns on stderr when the occupation-aware
-/// per-spin gap is below `a·v_M` (possible Ewald trap).
+/// meta-GGA (SCAN / r2SCAN: energy only, dense-AFT J/K only) on
+/// `GammaUhfIntegrals::RsGdf`, a neighbour cutoff below the covering bound,
+/// budget overruns, and a non-converged SCF stage. Warns on stderr when the
+/// occupation-aware per-spin gap is below `a·v_M` (possible Ewald trap).
 pub fn gamma_uks(
     cell: &Cell,
     prep: &PreparedBasis,
@@ -2805,8 +2854,10 @@ pub fn gamma_uks(
     ferric_scf::uhf::validate_injected_uhf(&cfg.scf).map_err(FerricError::from)?;
     refuse_molecular_grid_knobs(&cfg.scf)?;
     nocc_ab(cell.mol())?;
-    // Cheap name checks before the grid is built.
+    // Cheap name and route checks before the grid is built.
     resolve_gamma_open_shell_functional(&cfg.functional)?;
+    let rsgdf = matches!(ints, GammaUhfIntegrals::RsGdf(_));
+    refuse_unvalidated_open_shell_mgga("UKS", &cfg.functional, rsgdf, false)?;
     let total = StageClock::start();
     let (grid, mut pxc, mut timings) =
         open_shell_grid_and_xc(cell, prep, &cfg.functional, &cfg.grid, &cfg.xc)?;
@@ -2828,7 +2879,10 @@ pub fn gamma_uks(
 /// `cfg.grid` and `cfg.xc` are ignored). Everything else — the injected SCF,
 /// the staged ewald start for `a > 0`, `⟨S²⟩` and the occupation-aware gap
 /// check against `a·v_M` — is identical. A builder with `a = 1` and zero
-/// `E_xc`/`V_σ` is exactly the Gamma UHF (the equivalence test).
+/// `E_xc`/`V_σ` is exactly the Gamma UHF (the equivalence test). The builder
+/// is opaque, so the meta-GGA route refusal of [`gamma_uks`] (RS-GDF J/K) is
+/// NOT applied here: a meta-GGA builder (e.g. [`PeriodicXc::new_open_mgga`])
+/// is validated on `GammaUhfIntegrals::DenseAft` only.
 pub fn gamma_uks_with_xc(
     cell: &Cell,
     prep: &PreparedBasis,

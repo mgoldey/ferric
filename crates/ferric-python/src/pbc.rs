@@ -1521,8 +1521,9 @@ fn run_rohf_gamma(
 /// another range-separated hybrid, and `range_split`, are ValueErrors;
 /// `exact_exchange_fraction` is the short-range `c_sr`,
 /// `madelung` the mixed constant). Meta-GGA is a
-/// ValueError (no tau term at Gamma; `run_uks_kpts` on a (1, 1, 1) mesh has
-/// SCAN / r2SCAN energies); VV10 and double hybrids are refused. Grid: Treutler-Ahlrichs `n_radial` x
+/// ValueError (the Gamma UKS SCAN / r2SCAN energy is validated in the library,
+/// #492, but not wired here yet, #498; `run_uks_kpts` on a (1, 1, 1) mesh has
+/// SCAN / r2SCAN energies, forces and stress); VV10 and double hybrids are refused. Grid: Treutler-Ahlrichs `n_radial` x
 /// Lebedev `n_angular` per atom with SSF partitioning over periodic images
 /// within `neighbour_cutoff` (Å; None = max(10 Bohr, covering-radius
 /// bound)). `neighbour_switch` W (Å, default 0.0 = the hard cutoff, issue
@@ -1630,6 +1631,9 @@ fn run_uks_gamma(
 ///
 /// Validated: for one electron ROKS == UKS (H atom, a = 4 Bohr, SSF 75x302,
 /// LDA -0.667583328116).
+///
+/// Meta-GGA is a ValueError (the Gamma ROKS SCAN / r2SCAN energy is validated
+/// in the library, #492, but not wired here yet, #498).
 ///
 /// `max_iter=None` takes the `GammaRoksConfig::new` default: 600 with a
 /// 0.05 Ha ramped level shift for a hybrid (a > 0, a DIIS robustness default

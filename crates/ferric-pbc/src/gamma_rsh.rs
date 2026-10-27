@@ -895,8 +895,10 @@ pub fn gamma_rks_any_keep(
 /// Open-shell Gamma UKS for ANY supported functional: the [`gamma_rks_any`]
 /// routing for [`crate::dft::gamma_uks_rsh`] (range-separated hybrid) or
 /// [`crate::dft::gamma_uks`] (everything else). The one entry the Python and
-/// CLI bindings share. Meta-GGAs stay refused here (the Gamma UKS has no tau
-/// term; the k-point `solve_kuks` on a 1x1x1 mesh has).
+/// CLI bindings share. A pure SCAN / r2SCAN routes to [`crate::dft::gamma_uks`],
+/// whose library energy is validated on the dense-AFT J/K (#492); the bindings
+/// refuse it earlier ([`crate::dft::check_gamma_uks_request`], not yet wired,
+/// #498), and the k-point `solve_kuks` on a 1x1x1 mesh is their route.
 pub fn gamma_uks_any(
     cell: &Cell,
     prep: &PreparedBasis,
@@ -938,8 +940,10 @@ pub fn gamma_uks_any_keep(
 
 /// Open-shell Gamma ROKS for ANY supported functional: the [`gamma_uks_any`]
 /// routing for [`crate::rohf::gamma_roks_rsh`] (range-separated hybrid) or
-/// [`crate::rohf::gamma_roks`] (LDA, GGA, global hybrids). The one entry the
-/// Python and CLI bindings share.
+/// [`crate::rohf::gamma_roks`] (LDA, GGA, global hybrids, and the pure SCAN /
+/// r2SCAN energy on the dense-AFT J/K with the DIIS solver, #492). The one
+/// entry the Python and CLI bindings share; they refuse a meta-GGA earlier
+/// ([`crate::dft::check_gamma_roks_request`], not yet wired, #498).
 pub fn gamma_roks_any(
     cell: &Cell,
     prep: &PreparedBasis,

@@ -320,3 +320,63 @@ fn open_shell_mgga_derivatives_and_other_meta_ggas_refuse() {
         .unwrap_err(),
     );
 }
+
+/// The open-shell Gamma meta-GGA routes that are NOT validated refuse BY
+/// NAME before any SCF: RS-GDF J/K (UKS and ROKS), and the second-order ROKS
+/// solver, whose XC Hessian is a finite difference of the polarized XC along
+/// an arbitrary `ΔD` (the iso-orbital kink of `polarized_vxc_is_the_derivative_of_exc`).
+/// The bindings' message names an unsupported meta-GGA (TPSS) as unsupported,
+/// not as a validated SCAN / r2SCAN energy.
+#[test]
+fn unvalidated_open_shell_mgga_routes_refuse() {
+    use ferric_pbc::rohf::RohfSolver;
+    use ferric_pbc::rsgdf::{RsGdf, RsGdfConfig};
+    use ferric_pbc::uhf::GammaUhfIntegrals;
+    let su = setup(h3_doublet());
+    let aux = ferric_integrals::basis_bridge::PreparedBasis::new(
+        su.cell.mol(),
+        &ferric_core::basis::bundled("cc-pvdz-ri").unwrap(),
+    )
+    .unwrap();
+    let gcfg = RsGdfConfig {
+        exxdiv: ExxDiv::None,
+        ..Default::default()
+    };
+    let gdf = RsGdf::build(&su.cell, &su.prep, &aux, &su.hc.s, &gcfg).unwrap();
+    let rs = GammaUhfIntegrals::RsGdf(&gdf);
+    let grid = grid_cfg(20, 50);
+    for f in FUNCTIONALS {
+        let e = gamma_uks(&su.cell, &su.prep, &su.hc, rs, &uks_cfg(f, grid.clone()))
+            .expect_err("UKS meta-GGA on RS-GDF")
+            .to_string();
+        assert!(
+            e.contains("validated on the dense-AFT J/K only"),
+            "UKS {f}: {e}"
+        );
+        let e = gamma_roks(&su.cell, &su.prep, &su.hc, rs, &roks_cfg(f, grid.clone()))
+            .expect_err("ROKS meta-GGA on RS-GDF")
+            .to_string();
+        assert!(
+            e.contains("validated on the dense-AFT J/K only"),
+            "ROKS {f}: {e}"
+        );
+        let mut cfg = roks_cfg(f, grid.clone());
+        cfg.solver = RohfSolver::second_order();
+        let e = gamma_roks(&su.cell, &su.prep, &su.hc, ints(&su), &cfg)
+            .expect_err("ROKS meta-GGA second order")
+            .to_string();
+        assert!(e.contains("DIIS solver only"), "ROKS {f}: {e}");
+    }
+    use ferric_pbc::dft::{check_gamma_roks_request, check_gamma_uks_request};
+    for (route, e) in [
+        ("UKS", check_gamma_uks_request("TPSS", &[])),
+        ("ROKS", check_gamma_roks_request("TPSS", &[])),
+    ] {
+        let e = e.expect_err("TPSS").to_string();
+        assert!(
+            e.contains(&format!("TPSS: unsupported at the Gamma-point {route}"))
+                && !e.contains("validated in the library"),
+            "{route}: {e}"
+        );
+    }
+}
