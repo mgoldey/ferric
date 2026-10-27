@@ -3,7 +3,7 @@
 # (linux-64), a prebuilt shared library generated with second-derivative
 # integrals (LIBINT2_MAX_DERIV_ORDER 2).
 #
-#   scripts/install-libint.sh [PREFIX] [--keep-soname]
+#   scripts/install-libint.sh [PREFIX] [--keep-soname] [--licenses-dir DIR]
 #                                             # default PREFIX: ~/.local/libint2-2.13.1
 #   export LIBINT2_PREFIX=<PREFIX>            # what crates/ferric-integrals/build.rs reads
 #
@@ -34,21 +34,32 @@
 # A binary linked against a --keep-soname install needs LD_LIBRARY_PATH (or
 # an rpath) to load it. Without the flag the behaviour is unchanged.
 #
+# --licenses-dir DIR also copies the package's licence texts (info/licenses/
+# in the package payload) to DIR/libint2-LICENSE.txt and
+# DIR/libint2-COPYING.LESSER.txt (libint2 is LGPL-3.0-only). The wheels
+# workflow attaches them to the GitHub release that carries the wheel which
+# bundles this library.
+#
 # Needs: curl, python3, zstd, patchelf (patchelf only to print the SONAME
 # under --keep-soname).
 set -euo pipefail
 
 KEEP_SONAME=0
 PREFIX=""
-for arg in "$@"; do
-  case "$arg" in
+LICENSES_DIR=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
     --keep-soname) KEEP_SONAME=1 ;;
-    -*) echo "install-libint.sh: unknown option $arg" >&2; exit 2 ;;
+    --licenses-dir)
+      [ "$#" -ge 2 ] || { echo "install-libint.sh: --licenses-dir needs a directory" >&2; exit 2; }
+      LICENSES_DIR="$2"; shift ;;
+    -*) echo "install-libint.sh: unknown option $1" >&2; exit 2 ;;
     *)
       [ -z "$PREFIX" ] || { echo "install-libint.sh: more than one PREFIX given" >&2; exit 2; }
-      PREFIX="$arg"
+      PREFIX="$1"
       ;;
   esac
+  shift
 done
 PREFIX="${PREFIX:-$HOME/.local/libint2-2.13.1}"
 URL="https://conda.anaconda.org/conda-forge/linux-64/libint-2.13.1-h83f5b4b_0.conda"
@@ -76,6 +87,18 @@ with zipfile.ZipFile(f"{work}/libint.conda") as z:
 EOF
 mkdir -p "$PREFIX"
 zstd -dc "$work/$(cat "$work/payload")" | tar -x -C "$PREFIX"
+
+# The licence texts ship inside the payload, at info/licenses/ (conda's
+# location for a package's license_file entries), not in info-*.tar.zst.
+if [ -n "$LICENSES_DIR" ]; then
+  mkdir -p "$LICENSES_DIR"
+  for f in LICENSE COPYING.LESSER; do
+    [ -s "$PREFIX/info/licenses/$f" ] \
+      || { echo "install-libint.sh: info/licenses/$f missing from the package" >&2; exit 1; }
+    cp "$PREFIX/info/licenses/$f" "$LICENSES_DIR/libint2-$f.txt"
+  done
+  echo "libint2 licence texts copied to $LICENSES_DIR"
+fi
 
 lib="$(cd "$PREFIX/lib" && pwd)/libint2.so"
 [ -f "$lib" ] || { echo "install-libint.sh: $lib missing after extraction" >&2; exit 1; }

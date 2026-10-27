@@ -80,7 +80,10 @@ second derivatives, multipoles above order 2 and G12 (F12) integrals; see
 [What the libint2 build carries](#what-the-libint2-build-carries). It does not
 extend analytic Hessians: 4-centre second derivatives stop at f functions in
 both wheels. RI-J/RI-K Hessians already work with the PyPI wheel, so they are
-no reason to switch.
+no reason to switch. Nor is it a strict superset: its one-electron integrals
+reach l = 7 / 6 / 3 (energy / 1st / 2nd derivative), while the PyPI wheel's
+reach 6 / 6 / 6, so one-electron second derivatives of g, h or i functions
+are available only in the PyPI wheel.
 
 Install the PyPI wheel first, so its dependencies are present, then swap in
 the file for your Python from the release (check it against the release's
@@ -112,12 +115,14 @@ The large wheel prints `2.13.1 shared` and `'eri3': [7, 7, 4]`; the PyPI wheel
 prints `2.7.2 static` and `'eri3': [6, 6]`. The `libint:` line of
 `ferric --version` reports the same limits.
 
-The large wheel contains a libint2 binary (LGPL-3.0-or-later) built by
+The large wheel contains a libint2 binary (LGPL-3.0-only) built by
 conda-forge. Its source is the
 [loriab/libint v0.1](https://github.com/loriab/libint/releases/tag/v0.1)
 generated tarball, built by the
 [conda-forge libint feedstock](https://github.com/conda-forge/libint-feedstock);
-each release's notes link both.
+each release's notes link both and give the tarball's sha256. The licence
+texts ship with the release as `libint2-LICENSE.txt` and
+`libint2-COPYING.LESSER.txt`, covered by its `SHA256SUMS`.
 
 ## Building from source
 

@@ -27,13 +27,14 @@ name: Wheels
 #              fetch-libint-large), bundled as a shared library by the
 #              wheel repair, then marked with the wheel BUILD TAG
 #              $LARGE_BUILD_TAG. Attached to the GitHub release
-#              (github-release) next to the PyPI files and SHA256SUMS.
+#              (github-release) next to the PyPI files, the libint2
+#              licence texts and SHA256SUMS.
 # A failed largeam build or smoke test blocks the PyPI upload too: publish
-# needs every matrix leg. scripts/release-check.py holds the file checks that
-# publish, github-release and release-dry-run share.
+# needs every matrix leg. The release-check job (scripts/release-check.py)
+# checks every file once, on every run; publish and github-release need it.
 #
 # Status: the nightly and workflow_dispatch runs exercise everything except
-# the two upload jobs (release-dry-run runs their checks on the real files).
+# the two upload jobs (release-check runs on the real files every time).
 # This workflow published v0.1.0rc3 through v0.1.0rc7 to PyPI. The largeam
 # variant and github-release are new in #347 and have not run on a tag yet.
 
@@ -551,6 +552,8 @@ jobs:
   fetch-libint-large:
     runs-on: ubuntu-22.04
     timeout-minutes: 15
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
@@ -559,8 +562,15 @@ jobs:
           set -euo pipefail
           sudo apt-get update -q
           sudo apt-get install -y --no-install-recommends zstd patchelf
-          scripts/install-libint.sh "$PWD/libint-large" --keep-soname
+          # --licenses-dir: libint2 is LGPL-3.0-only, and the release that
+          # carries a wheel bundling it also carries the package's licence
+          # texts (github-release attaches them).
+          scripts/install-libint.sh "$PWD/libint-large" --keep-soname \
+            --licenses-dir "$PWD/libint-licenses"
           echo "libint-large/" >> .git/info/exclude
+          echo "libint-licenses/" >> .git/info/exclude
+          grep -q "GNU LESSER GENERAL PUBLIC LICENSE" libint-licenses/libint2-COPYING.LESSER.txt
+          ls -l libint-licenses/
 
       # The limits the largeam wheel is FOR, read off the installed headers,
       # so a changed pin cannot silently ship a different build under the
@@ -612,6 +622,19 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+      # Separate and small, so release-check and github-release need not
+      # download the ~390 MB library to get two text files.
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: libint-licenses
+          path: libint-licenses/
+          if-no-files-found: error
+          retention-days: 1
+
+  # needs: fetch-libint-large applies to EVERY leg, the pypi ones included,
+  # on purpose: one matrix means one set of gates, and the two variants are
+  # released together or not at all. The fetch is a ~1 min download, so the
+  # pypi legs lose almost nothing by waiting for it.
   build-wheels:
     needs: [build-native-deps, fetch-libint-large]
     runs-on: ubuntu-22.04
@@ -1047,6 +1070,9 @@ jobs:
           name: ${{ matrix.variant == 'largeam' && 'gh-largeam-wheels' || 'wheels' }}-cp${{ matrix.python-version }}
           path: ${{ matrix.variant == 'largeam' && 'dist-largeam/*.whl' || 'dist/*.whl' }}
           if-no-files-found: error
+          # Non-tag runs (nightly, dispatch): 3 days, enough to download and
+          # inspect. Tag runs: 0 = the repository's default retention.
+          retention-days: ${{ !startsWith(github.ref, 'refs/tags/') && 3 || 0 }}
 
   # Allocator-perturbation canary in the RELEASE toolchain (#433 item 4).
   # ci.yml's malloc-perturb job runs on ubuntu-22.04 against libint2 2.13.1
@@ -1204,6 +1230,8 @@ jobs:
           name: sdist
           path: dist/*.tar.gz
           if-no-files-found: error
+          # As the wheels: 3 days on non-tag runs, the default on tags.
+          retention-days: ${{ !startsWith(github.ref, 'refs/tags/') && 3 || 0 }}
 
   # Installs each BUILT WHEEL (never the source tree -- a wheel that builds
   # but does not import/run is worse than no wheel, since it fails silently
@@ -1487,7 +1515,7 @@ jobs:
   #      in build-wheels and again here. The margin is THIN: nightly run
   #      40364679793 measured 101,670,503 bytes (97.0% of 104,857,600), rc7
   #      was 98,746,566, and the wheel has been growing ~1 MB/week. The size
-  #      table in release-dry-run's step summary is the current number.
+  #      table in release-check's step summary is the current number.
   #
   # =====================================================================
   # OpenMPI-linked wheel variant. SEPARATE PACKAGE, NEVER PUBLISHED HERE.
@@ -1902,7 +1930,7 @@ jobs:
   # cheapest available brake on an accidental tag push publishing a bad
   # wheel -- consider turning that on before the first real release.
   publish:
-    needs: [build-wheels, build-sdist, smoke-test]
+    needs: [build-wheels, build-sdist, smoke-test, release-check]
     # THIS GUARD IS THE ONLY THING STANDING BETWEEN A NIGHTLY CRON RUN AND A
     # REAL PYPI UPLOAD -- treat any change near it as a publish-safety change,
     # not a cosmetic one. On a `schedule` (or `workflow_dispatch`) event,
@@ -1999,7 +2027,11 @@ jobs:
           limit=$((100 * 1024 * 1024))
           for f in dist/*; do
             name="$(basename "$f")"
-            if [[ "$name" == *"${LARGE_BUILD_TAG}"* || "$name" =~ ^ferric-${tag_version//./\.}-[0-9] ]]; then
+            # The field after "ferric-<version>-": a build tag starts with a
+            # digit, a python tag (cp3NN) never does. Prefix-stripped with a
+            # QUOTED pattern, so the version's dots are literal, not regex.
+            after_version="${name#ferric-"$tag_version"-}"
+            if [[ "$name" == *"${LARGE_BUILD_TAG}"* || ( "$after_version" != "$name" && "$after_version" == [0-9]* ) ]]; then
               echo "::error::$name carries a wheel build tag; build-tagged (large-libint) wheels go to the GitHub release only, never to PyPI"
               exit 1
             fi
@@ -2010,21 +2042,28 @@ jobs:
             fi
           done
 
-      # The shared, fuller check (METADATA/WHEEL/PKG-INFO contents, one wheel
-      # per CPython, no bundled libint2) that github-release and
-      # release-dry-run also run. Sparse: nothing else from the repo is
-      # needed here, and dist/ stays the only thing uploaded.
-      - name: Check out the release checker
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-        with:
-          path: release-tools
-          persist-credentials: false
-          sparse-checkout: |
-            scripts/release-check.py
-          sparse-checkout-cone-mode: false
 
-      - name: Release check (PyPI set)
-        run: python3 release-tools/scripts/release-check.py check --version "${GITHUB_REF#refs/tags/v}" --pypi-dir dist --build-tag "$LARGE_BUILD_TAG" --summary "$GITHUB_STEP_SUMMARY"
+      # The fuller checks (METADATA/WHEEL/PKG-INFO contents, one wheel per
+      # CPython, no bundled libint2, ...) ran in the release-check job, which
+      # this job needs. Its SHA256SUMS is the record of exactly what it
+      # checked: every file about to go to PyPI must be listed there with the
+      # same hash, so PyPI gets those bytes and no others.
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-meta
+          path: release-meta
+
+      - name: Every upload is a file release-check verified
+        run: |
+          set -euo pipefail
+          for f in dist/*; do
+            line="$(sha256sum "$f" | awk '{print $1}')  $(basename "$f")"
+            grep -qxF "$line" release-meta/SHA256SUMS || {
+              echo "::error::$(basename "$f") is not in release-check's SHA256SUMS with this hash; refusing to publish bytes that were not checked"
+              exit 1
+            }
+          done
+          echo "all $(ls dist | wc -l) files match release-check's SHA256SUMS"
 
       # Was `@release/v1`, a BRANCH ref, not a tag -- pinned to the commit
       # v1.14.2's (also annotated) tag peels to, which is confirmed to be the
@@ -2035,124 +2074,41 @@ jobs:
         with:
           packages-dir: dist/
 
-  # Attaches the release's files to a GitHub release for the tag: the four
-  # PyPI wheels and the sdist (the same bytes PyPI got), the four
-  # large-libint wheels, and SHA256SUMS. 4 + 1 + 4 + 1 = 10 assets.
+
+  # ONE place that checks the release's files, on EVERY run: on a tag with
+  # the tag's version (publish and github-release need this job, so nothing
+  # is uploaded unless it passed); on nightly/dispatch runs with the
+  # pyproject.toml placeholder version, as a dry run of the same checks on
+  # real files. scripts/release-check.py (stdlib only) does the checking:
+  # names, METADATA/WHEEL/PKG-INFO, one wheel per CPython per variant, the
+  # bundled-libint2 rule per variant, size limits, the two libint2 licence
+  # texts, and that SHA256SUMS covers exactly these 11 files.
   #
-  # needs: [publish], so the release page never lists a version PyPI does not
-  # have, and a failed largeam build (which publish already waits on) leaves
-  # neither. The `if:` is the same tag-only guard as publish's; read the long
-  # comment there before touching it. The gh CLI already on the runner does
-  # the upload, so there is no third-party action to pin.
+  # Its outputs, as the `release-meta` artifact: SHA256SUMS (publish refuses
+  # any file not listed in it with the same hash), notes.md and the licence
+  # texts (github-release uploads them). The step summary gets the size
+  # table (both variants against their limits) and the rendered notes.
   #
-  # An existing release is reused: rc2-rc7 were created by hand with no
-  # assets. Its notes are filled in only when it has none. Files are uploaded
-  # WITHOUT --clobber, so an asset already on the release is never replaced:
-  # if a rerun fails on a partial upload, delete those assets by hand first.
-  github-release:
-    needs: [publish]
-    if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-22.04
-    timeout-minutes: 30
-    permissions:
-      contents: write
-    env:
-      GH_TOKEN: ${{ github.token }}
-      # No full checkout below, so tell gh which repository to act on.
-      GH_REPO: ${{ github.repository }}
-    steps:
-      - name: Check out the release checker
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-        with:
-          path: release-tools
-          persist-credentials: false
-          sparse-checkout: |
-            scripts/release-check.py
-          sparse-checkout-cone-mode: false
-
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          pattern: wheels-*
-          path: dist/pypi
-          merge-multiple: true
-
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: sdist
-          path: dist/pypi
-
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          pattern: gh-largeam-wheels-*
-          path: dist/largeam
-          merge-multiple: true
-
-      - name: Release check (PyPI set + large-libint set)
-        run: |
-          set -euo pipefail
-          python3 release-tools/scripts/release-check.py check \
-            --version "${GITHUB_REF#refs/tags/v}" \
-            --pypi-dir dist/pypi --largeam-dir dist/largeam \
-            --build-tag "$LARGE_BUILD_TAG" --summary "$GITHUB_STEP_SUMMARY"
-
-      - name: Collect assets and SHA256SUMS
-        run: |
-          set -euo pipefail
-          mkdir -p release
-          cp dist/pypi/* dist/largeam/* release/
-          n="$(ls release | wc -l)"
-          [ "$n" -eq 9 ] || { echo "::error::expected 9 release files, found $n"; ls -l release; exit 1; }
-          (cd release && sha256sum -- * > ../SHA256SUMS)
-          cat SHA256SUMS
-          python3 release-tools/scripts/release-check.py notes \
-            --version "${GITHUB_REF#refs/tags/v}" --build-tag "$LARGE_BUILD_TAG" > notes.md
-
-      - name: Create or reuse the GitHub release, then upload
-        run: |
-          set -euo pipefail
-          tag="$GITHUB_REF_NAME"
-          version="${tag#v}"
-          pre=()
-          # PEP 440 pre-releases: (a|b|rc)N, and .devN.
-          if [[ "$version" =~ (a|b|rc)[0-9]+ || "$version" =~ \.dev[0-9]+$ ]]; then
-            pre=(--prerelease)
-          fi
-          if gh release view "$tag" > /dev/null 2>&1; then
-            echo "release $tag already exists; reusing it"
-            body="$(gh release view "$tag" --json body --jq .body)"
-            if [ -z "${body//[[:space:]]/}" ]; then
-              gh release edit "$tag" --notes-file notes.md
-              echo "filled in the empty release notes"
-            elif [[ "$body" != *libint-feedstock* ]]; then
-              echo "::warning::the existing $tag release notes do not link the libint2 source (LGPL); add the libint2 source section of notes.md (printed below) by hand"
-              cat notes.md
-            fi
-          else
-            gh release create "$tag" --verify-tag --title "ferric $version" \
-              --notes-file notes.md "${pre[@]}"
-          fi
-          # No --clobber: a released file is never overwritten.
-          gh release upload "$tag" release/* SHA256SUMS
-          gh release view "$tag" --json assets --jq '.assets[].name' | sort
-
-  # Every non-tag run (nightly, workflow_dispatch): the checks publish and
-  # github-release would run, on this run's real files, with the version read
-  # from pyproject.toml (no stamp off a tag, so the `.devN` placeholder).
-  # Uploads nothing. Writes the size table to the step summary: the measured
-  # size of both wheel variants against their limits. The release notes are
-  # rendered too, so a change to them is visible before a tag uses them.
-  #
+  # Read-only on purpose: the checks run without the
+  # `id-token: write` of publish or the `contents: write` of github-release.
   # No workflow_dispatch inputs: see publish's guard comment.
-  release-dry-run:
-    needs: [smoke-test, build-sdist]
-    if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+  release-check:
+    needs: [smoke-test, build-sdist, fetch-libint-large]
     runs-on: ubuntu-22.04
     timeout-minutes: 15
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
+          sparse-checkout: |
+            pyproject.toml
+            scripts/release-check.py
+          sparse-checkout-cone-mode: false
 
+      # `wheels-*` does NOT match `gh-largeam-wheels-*` (or `mpi-wheels-*`):
+      # artifact patterns match the whole name.
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           pattern: wheels-*
@@ -2170,24 +2126,46 @@ jobs:
           path: dist/largeam
           merge-multiple: true
 
-      - name: Release check (PyPI set + large-libint set)
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: libint-licenses
+          path: dist/licenses
+
+      - name: Release check (PyPI set, large-libint set, licences, SHA256SUMS)
         run: |
           set -euo pipefail
-          version="$(python3 scripts/release-check.py pyproject-version pyproject.toml)"
-          echo "version (pyproject.toml): $version"
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            version="${GITHUB_REF#refs/tags/v}"
+          else
+            version="$(python3 scripts/release-check.py pyproject-version pyproject.toml)"
+          fi
+          echo "version: $version"
+          echo "RELEASE_VERSION=$version" >> "$GITHUB_ENV"
+          mkdir -p release release-meta
+          cp dist/pypi/* dist/largeam/* dist/licenses/* release/
+          (cd release && sha256sum -- * > ../release-meta/SHA256SUMS)
+          cat release-meta/SHA256SUMS
           python3 scripts/release-check.py check \
             --version "$version" \
             --pypi-dir dist/pypi --largeam-dir dist/largeam \
+            --licenses-dir dist/licenses \
+            --sha256sums release-meta/SHA256SUMS \
             --build-tag "$LARGE_BUILD_TAG" --summary "$GITHUB_STEP_SUMMARY"
-          mkdir -p release
-          cp dist/pypi/* dist/largeam/* release/
-          (cd release && sha256sum -- *)
+          python3 scripts/release-check.py notes --version "$version" --build-tag "$LARGE_BUILD_TAG" > release-meta/notes.md
+          cp dist/licenses/* release-meta/
           {
             echo ""
-            echo "### Release notes as a tag would render them"
+            echo "### Release notes as github-release renders them"
             echo ""
-            python3 scripts/release-check.py notes --version "$version" --build-tag "$LARGE_BUILD_TAG"
+            cat release-meta/notes.md
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-meta
+          path: release-meta/
+          if-no-files-found: error
+          retention-days: ${{ !startsWith(github.ref, 'refs/tags/') && 3 || 0 }}
 
       # Informational, not a gate: with both variants on one --find-links
       # index, which file does pip pick for this interpreter? (PEP 427 sorts a
@@ -2195,9 +2173,125 @@ jobs:
       - name: Which wheel does pip prefer when both are offered?
         run: |
           set -euo pipefail
-          version="$(python3 scripts/release-check.py pyproject-version pyproject.toml)"
           python3 -m pip download --no-index --find-links release --no-deps \
-            --only-binary=:all: -d picked "ferric==$version"
+            --only-binary=:all: -d picked "ferric==$RELEASE_VERSION"
           picked="$(ls picked)"
           echo "pip ($(python3 --version)) picked: $picked"
           echo "pip picked \`$picked\` when both variants were on one index." >> "$GITHUB_STEP_SUMMARY"
+
+  # Attaches the release's files to a GitHub release for the tag: the four
+  # PyPI wheels and the sdist (the same bytes PyPI got), the four
+  # large-libint wheels, the two libint2 licence texts (LGPL-3.0-only) and
+  # SHA256SUMS over those 11 files: 12 assets.
+  #
+  # needs: [publish, release-check], so the release page never lists a
+  # version PyPI does not have, and a failed largeam build (which publish
+  # already waits on) leaves neither. The `if:` is the same tag-only guard as
+  # publish's; read the long comment there before touching it. The gh CLI
+  # already on the runner does the upload, so there is no third-party action
+  # to pin. The files are the ones release-check verified: `sha256sum -c`
+  # against its SHA256SUMS before anything is uploaded.
+  #
+  # Draft first: a new release is created as a DRAFT, the assets are
+  # uploaded, and only then is it published, so nobody sees a release with
+  # half its files. An existing release is reused (rc2-rc7 were created by
+  # hand with no assets): a draft is finished the same way; a published one
+  # gets the files uploaded. Never --clobber, so an asset already on the
+  # release is never replaced: if a rerun fails on a partial upload, delete
+  # those assets by hand first.
+  #
+  # PRE-RELEASE POLICY (maintainer's decision, #347): rc2-rc7 were published
+  # as ordinary (non-prerelease) releases and rc7 is "Latest". While the
+  # repository has NO final release (a vX.Y.Z or vX.Y.Z.postN tag that is not
+  # itself marked prerelease), a pre-release tag (aN/bN/rcN/.devN) is
+  # published as an ordinary release too, so rc8 becomes Latest, consistent
+  # with that history. Once a final release exists, pre-release tags get
+  # --prerelease, so they never displace it as Latest. A final tag is never
+  # marked prerelease.
+  github-release:
+    needs: [publish, release-check]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      # No checkout below, so tell gh which repository to act on.
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: wheels-*
+          path: release
+          merge-multiple: true
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: sdist
+          path: release
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: gh-largeam-wheels-*
+          path: release
+          merge-multiple: true
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-meta
+          path: release-meta
+
+      - name: Assemble the assets and verify them against release-check
+        run: |
+          set -euo pipefail
+          cp release-meta/libint2-LICENSE.txt release-meta/libint2-COPYING.LESSER.txt release/
+          n="$(ls release | wc -l)"
+          [ "$n" -eq 11 ] || { echo "::error::expected 11 release files (4 + 1 + 4 + 2 licence texts), found $n"; ls -l release; exit 1; }
+          [ "$(wc -l < release-meta/SHA256SUMS)" -eq 11 ] || { echo "::error::SHA256SUMS does not list 11 files"; cat release-meta/SHA256SUMS; exit 1; }
+          (cd release && sha256sum -c ../release-meta/SHA256SUMS)
+          cp release-meta/SHA256SUMS release/
+          ls -l release
+
+      - name: Create (as a draft) or reuse the GitHub release, upload, publish
+        run: |
+          set -euo pipefail
+          tag="$GITHUB_REF_NAME"
+          version="${tag#v}"
+          notes=release-meta/notes.md
+          pre=()
+          if [[ "$version" =~ (a|b|rc)[0-9]+ || "$version" =~ \.dev[0-9]+$ ]]; then
+            # See PRE-RELEASE POLICY above: count published final releases.
+            n_final="$(gh release list --limit 1000 --exclude-drafts --json tagName,isPrerelease \
+              --jq '[.[] | select((.isPrerelease | not) and (.tagName | test("^v[0-9]+[.][0-9]+[.][0-9]+([.]post[0-9]+)?$")))] | length')"
+            echo "published final releases: $n_final"
+            if [ "$n_final" -gt 0 ]; then
+              pre=(--prerelease)
+            else
+              echo "no final release yet: publishing pre-release $tag as an ordinary release (it becomes Latest)"
+            fi
+          fi
+          if gh release view "$tag" > /dev/null 2>&1; then
+            draft="$(gh release view "$tag" --json isDraft --jq .isDraft)"
+            body="$(gh release view "$tag" --json body --jq .body)"
+            echo "release $tag already exists (draft: $draft); reusing it"
+            if [ -z "${body//[[:space:]]/}" ]; then
+              gh release edit "$tag" --notes-file "$notes"
+              echo "filled in the empty release notes"
+            elif [[ "$body" != *libint-feedstock* ]]; then
+              echo "::warning::the existing $tag release notes do not link the libint2 source (LGPL-3.0-only); add the libint2 source section of notes.md (printed below) by hand"
+              cat "$notes"
+            fi
+            # No --clobber: a released file is never overwritten.
+            gh release upload "$tag" release/*
+            if [ "$draft" = true ]; then
+              gh release edit "$tag" --draft=false
+            fi
+          else
+            gh release create "$tag" --draft --verify-tag --title "ferric $version" \
+              --notes-file "$notes" "${pre[@]}"
+            gh release upload "$tag" release/*
+            gh release edit "$tag" --draft=false
+          fi
+          gh release view "$tag" --json isDraft,isPrerelease,assets \
+            --jq '"draft: \(.isDraft) prerelease: \(.isPrerelease)", (.assets[].name)'

@@ -1,20 +1,17 @@
 #!/usr/bin/env python3
 """Check a ferric release's files before they are uploaded anywhere.
 
-One script, standard library only, run by three jobs of
-.github/workflows/wheels.yml so that they cannot drift apart:
-
-- ``publish`` (tag only): the PyPI set, 4 wheels + 1 sdist.
-- ``github-release`` (tag only): the PyPI set plus the 4 large-libint wheels
-  that carry the wheel build tag (``--build-tag``).
-- ``release-dry-run`` (every non-tag run): the same as github-release, with
-  the version read from pyproject.toml, so the nightly proves the checks pass
-  on real files before a tag ever depends on them.
+Standard library only. Run by the ``release-check`` job of
+.github/workflows/wheels.yml on every run: with the tag's version on a tag
+(``publish`` and ``github-release`` need that job), and with the
+pyproject.toml placeholder version on nightly/dispatch runs, so the checks
+pass on real files before a tag ever depends on them.
 
 Usage:
 
     release-check.py check --version 0.1.0rc8 --pypi-dir dist/pypi \\
-        [--largeam-dir dist/largeam --build-tag 1largeam] [--summary FILE]
+        [--largeam-dir dist/largeam --licenses-dir dist/licenses \\
+         --build-tag 1largeam] [--sha256sums SHA256SUMS] [--summary FILE]
     release-check.py notes --version 0.1.0rc8 --build-tag 1largeam
     release-check.py pyproject-version pyproject.toml
 
@@ -37,11 +34,19 @@ What ``check`` asserts, for every file:
   says ``Build: <build-tag>``, whose METADATA has the same name and version,
   which bundles exactly one ``ferric.libs/libint2*`` shared library, and which
   is under GitHub's 2 GiB per-asset limit.
+- Licence texts (``--licenses-dir``, required with ``--largeam-dir``):
+  exactly ``libint2-LICENSE.txt`` and ``libint2-COPYING.LESSER.txt`` (libint2
+  is LGPL-3.0-only), each containing its expected phrases.
+- Every directory holds only those files: wheels and the sdist (pypi), wheels
+  (largeam), ``.txt`` (licences). A subdirectory or any other file is an error.
+- ``--sha256sums``: the file lists exactly the release files, each once, with
+  its current sha256.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import re
 import sys
 import tarfile
@@ -55,6 +60,13 @@ PLATFORM = "manylinux_2_28_x86_64"
 NAME = "ferric"
 LIBINT_SOURCE_TARBALL = "https://github.com/loriab/libint/releases/tag/v0.1"
 LIBINT_FEEDSTOCK = "https://github.com/conda-forge/libint-feedstock"
+# From the conda package's info/recipe/meta.yaml; re-hashed from the download.
+LIBINT_SOURCE_SHA256 = "324b578f795d1f406f37a1d936f04ea51a85eae1b2ea37b5cf773afb4e25ab14"  # pragma: allowlist secret
+# The two licence texts, each with phrases it must contain.
+LICENSE_FILES = {
+    "libint2-LICENSE.txt": ("Libint", "GNU Lesser General Public License"),
+    "libint2-COPYING.LESSER.txt": ("GNU LESSER GENERAL PUBLIC LICENSE", "Version 3"),
+}
 LIBINT_CONDA_PACKAGE = (
     "https://conda.anaconda.org/conda-forge/linux-64/libint-2.13.1-h83f5b4b_0.conda"
 )
@@ -250,39 +262,110 @@ def write_summary(rep: Report, summary: Path) -> None:
         fh.write("\n".join(lines) + "\n")
 
 
+def list_dir(rep: Report, d: Path, allowed: tuple[str, ...]) -> list[Path]:
+    """Files directly in ``d``; anything else, or a name ending in none of
+    ``allowed``, is an error (a release directory holds only release files)."""
+    if not d.is_dir():
+        rep.error(f"{d}: not a directory")
+        return []
+    out = []
+    for p in sorted(d.iterdir()):
+        if not p.is_file():
+            rep.error(
+                f"{d}/{p.name}: not a regular file (directories are not released)"
+            )
+        elif not p.name.endswith(allowed):
+            rep.error(f"{d}/{p.name}: unexpected file; allowed: {', '.join(allowed)}")
+        else:
+            out.append(p)
+    return out
+
+
+def check_licenses(rep: Report, d: Path) -> list[Path]:
+    """The libint2 licence texts the large-libint wheels must ship with."""
+    files = list_dir(rep, d, (".txt",))
+    names = sorted(p.name for p in files)
+    if names != sorted(LICENSE_FILES):
+        rep.error(f"{d}: expected exactly {sorted(LICENSE_FILES)}, found {names}")
+    for p in files:
+        text = p.read_text(encoding="utf-8", errors="replace")
+        for needle in LICENSE_FILES.get(p.name, ()):
+            if needle not in text:
+                rep.error(f"{p.name}: does not contain {needle!r}")
+    return files
+
+
+def check_sha256sums(rep: Report, sums: Path, files: list[Path]) -> None:
+    """``sums`` (sha256sum format) lists exactly ``files``, by name, with
+    their current hashes."""
+    listed: dict[str, str] = {}
+    for n, line in enumerate(sums.read_text(encoding="utf-8").splitlines(), 1):
+        m = re.fullmatch(r"([0-9a-f]{64})  ([^/]+)", line)
+        if not m:
+            rep.error(f"{sums.name}:{n}: not a `<sha256>  <file name>` line: {line!r}")
+            continue
+        if m.group(2) in listed:
+            rep.error(f"{sums.name}: {m.group(2)} listed twice")
+        listed[m.group(2)] = m.group(1)
+    actual = {p.name: p for p in files}
+    if sorted(listed) != sorted(actual):
+        rep.error(
+            f"{sums.name} lists {sorted(listed)}, but the release files are "
+            f"{sorted(actual)}"
+        )
+    for name, digest in listed.items():
+        if name in actual and sha256(actual[name]) != digest:
+            rep.error(f"{sums.name}: hash of {name} does not match the file")
+
+
+def sha256(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
 def cmd_check(args: argparse.Namespace) -> int:
     rep = Report()
     version = args.version
+    if args.build_tag and not re.fullmatch(r"[0-9][A-Za-z0-9_]*", args.build_tag):
+        rep.error(f"build tag {args.build_tag!r} must start with a digit (PEP 427)")
     pypi_dir = Path(args.pypi_dir)
-    files = sorted(p for p in pypi_dir.iterdir() if p.is_file())
+    pypi_files = list_dir(rep, pypi_dir, (".whl", ".tar.gz"))
+    large_files: list[Path] = []
     if args.largeam_dir:
-        files += sorted(p for p in Path(args.largeam_dir).iterdir() if p.is_file())
-    for p in files:
+        large_files = list_dir(rep, Path(args.largeam_dir), (".whl",))
+    license_files: list[Path] = []
+    if args.licenses_dir:
+        if not args.largeam_dir:
+            rep.error("--licenses-dir belongs with --largeam-dir (they ship together)")
+        license_files = check_licenses(rep, Path(args.licenses_dir))
+    elif args.largeam_dir:
+        rep.error("--largeam-dir needs --licenses-dir: the wheel bundles LGPL libint2")
+    for p in pypi_files + large_files:
         if "mpi" in p.name.lower():
             rep.error(
                 f"{p.name}: an MPI-variant file is never released from this workflow"
             )
-    known = {".whl", ".gz"}
-    for p in files:
-        if p.suffix not in known:
-            rep.error(f"{p.name}: unexpected file in a release directory")
 
     check_wheel_set(
-        rep, sorted(pypi_dir.glob("*.whl")), version, "pypi", args.build_tag
+        rep,
+        [p for p in pypi_files if p.name.endswith(".whl")],
+        version,
+        "pypi",
+        args.build_tag,
     )
-    check_sdist(rep, sorted(pypi_dir.glob("*.tar.gz")), version)
-    if args.build_tag and not re.fullmatch(r"[0-9][A-Za-z0-9_]*", args.build_tag):
-        rep.error(f"build tag {args.build_tag!r} must start with a digit (PEP 427)")
+    check_sdist(rep, [p for p in pypi_files if p.name.endswith(".tar.gz")], version)
     if args.largeam_dir:
         if not args.build_tag:
             rep.error("--largeam-dir needs --build-tag")
         else:
-            large_dir = Path(args.largeam_dir)
-            if list(large_dir.glob("*.tar.gz")):
-                rep.error(f"{large_dir}: the large-libint set has no sdist of its own")
-            check_wheel_set(
-                rep, sorted(large_dir.glob("*.whl")), version, "largeam", args.build_tag
-            )
+            check_wheel_set(rep, large_files, version, "largeam", args.build_tag)
+    if args.sha256sums:
+        check_sha256sums(
+            rep, Path(args.sha256sums), pypi_files + large_files + license_files
+        )
 
     if args.summary:
         write_summary(rep, Path(args.summary))
@@ -311,21 +394,26 @@ def cmd_notes(args: argparse.Namespace) -> int:
   and commit, built against conda-forge's libint2 2.13.1, which is bundled in
   the wheel as a shared library. It adds l = 7 shells, analytic 3- and
   2-centre second derivatives, multipoles above order 2 and G12 (F12)
-  integrals. Analytic 4-centre Hessians stay limited to f functions in both
+  integrals. It is not a strict superset: its one-electron integrals go to
+  l = 7 / 6 / 3 (energy / 1st / 2nd derivative) where the PyPI wheel's go to
+  6 / 6 / 6. Analytic 4-centre Hessians stay limited to f functions in both
   wheels, and RI Hessians already work with the PyPI wheel. Install it with
   `pip install --force-reinstall --no-deps <asset URL>`; `pip install -U
   ferric` later replaces it with the PyPI wheel. Check which one is loaded
   with `python -c "import ferric; print(ferric.build_info()['libint_max_am'])"`
   (`eri3` is `[7, 7, 4]` for this wheel, `[6, 6]` for the PyPI one).
+- `libint2-LICENSE.txt`, `libint2-COPYING.LESSER.txt`: the licence texts of
+  the libint2 the large-libint wheels bundle, from its conda-forge package.
 - `SHA256SUMS`: `sha256sum -c SHA256SUMS` checks every file above.
 
-## libint2 source (LGPL-3.0-or-later)
+## libint2 source (LGPL-3.0-only)
 
 The large-libint wheels contain a libint2 binary built by conda-forge. Its
 source and build recipe:
 
 - generated library source: {LIBINT_SOURCE_TARBALL}
-  (`libint-2.13.1-7-6-3-7-7-4_mm10f12ob2_0.tgz`)
+  (`libint-2.13.1-7-6-3-7-7-4_mm10f12ob2_0.tgz`, sha256
+  `{LIBINT_SOURCE_SHA256}`)
 - conda-forge recipe: {LIBINT_FEEDSTOCK}
 - the exact package bundled: {LIBINT_CONDA_PACKAGE}
   (sha256 `d5219aae3bdd9629c6cff471f129f3aebbaddb058d0d19fbbab12c28924a0535`)
@@ -356,6 +444,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--pypi-dir", required=True)
     p.add_argument("--largeam-dir")
     p.add_argument("--build-tag", default="")
+    p.add_argument("--licenses-dir", help="the libint2 licence texts")
+    p.add_argument("--sha256sums", help="a SHA256SUMS file that must cover every file")
     p.add_argument("--summary")
     p.set_defaults(func=cmd_check)
 
