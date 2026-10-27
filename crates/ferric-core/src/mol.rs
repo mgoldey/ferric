@@ -286,9 +286,12 @@ impl Molecule {
     /// For every atom whose element has an ECP definition in `bs.ecps`, set its
     /// `n_core_ecp` to that definition's `n_core`. Atoms without an ECP are left
     /// untouched (`n_core_ecp` stays 0), and so are ghost atoms: a ghost is
-    /// basis-only, with no core to replace. This is the single point where the
-    /// reduced electron count and effective nuclear charge enter the molecule;
-    /// `nelec()` and `nuclear_repulsion()` both read `n_core_ecp` afterward.
+    /// basis-only, with no core to replace. Readers already treat a ghost as
+    /// charge 0 and core 0 (`effective_z`, `auto_frozen_core`); skipping it
+    /// here keeps the stored field consistent with them. This is the single
+    /// point where the reduced electron count and effective nuclear charge
+    /// enter the molecule; `nelec()` and `nuclear_repulsion()` both read
+    /// `n_core_ecp` afterward.
     ///
     /// No-op when `bs.ecps` is empty (the all-electron path).
     pub fn apply_ecp(&mut self, bs: &BasisSet) {

@@ -269,7 +269,8 @@ pub fn hcore_ecp_with_external(
 /// Compute the dense spherical ECP projector matrix `V_ECP`, shape
 /// (nbasis, nbasis), for the given molecule + ECP-carrying basis set.
 ///
-/// Returns `None` (and does zero work) when the basis carries no ECPs. The shell
+/// Returns `None` (and does zero work) when the basis carries no ECPs or no
+/// non-ghost atom carries one. The shell
 /// iteration order mirrors [`PreparedBasis::new`] exactly, so the resulting AO
 /// ordering matches libint's spherical basis — the matrix can be added to
 /// `hcore` directly.
@@ -315,7 +316,7 @@ pub struct EcpInputs {
 }
 
 /// [`ecp_potential`]'s shells and ECP centres plus their atom indices;
-/// `None` when the basis carries no ECPs.
+/// `None` when the basis carries no ECPs or no non-ghost atom carries one.
 pub fn ecp_inputs_with_atoms(mol: &Molecule, bs: &BasisSet) -> Option<EcpInputs> {
     if bs.ecps.is_empty() {
         return None;
@@ -383,7 +384,8 @@ pub fn ecp_inputs_with_atoms(mol: &Molecule, bs: &BasisSet) -> Option<EcpInputs>
 /// First derivatives of the spherical ECP matrix with respect to each atomic
 /// coordinate: `dV_ECP/dR_{A,c}`.
 ///
-/// Returns `Ok(None)` (zero work) when the basis carries no ECPs, mirroring
+/// Returns `Ok(None)` (zero work) when the basis carries no ECPs or no
+/// non-ghost atom carries one, mirroring
 /// [`ecp_potential`]. Otherwise returns a `(natoms, 3)`-shaped nesting: element
 /// `[a][c]` is the `(nbasis, nbasis)` derivative w.r.t. atom `a`'s coordinate
 /// `c`, indexed by **the molecule's** atom order. Atoms libecpint never sees
