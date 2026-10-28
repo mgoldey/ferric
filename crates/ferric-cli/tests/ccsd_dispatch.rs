@@ -82,9 +82,10 @@ fn run_toml(body: &str) -> std::process::Output {
     static CALLS: AtomicUsize = AtomicUsize::new(0);
     let root = workspace_root();
     let n = CALLS.fetch_add(1, Ordering::Relaxed);
-    let path = root
-        .join("target")
-        .join(format!("ccsd_dispatch_test_{}_{n}.toml", std::process::id()));
+    let path = root.join("target").join(format!(
+        "ccsd_dispatch_test_{}_{n}.toml",
+        std::process::id()
+    ));
     std::fs::write(&path, body).expect("write temp toml");
     let output = Command::new(ferric_cli_bin())
         .arg(&path)
