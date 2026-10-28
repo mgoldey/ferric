@@ -91,6 +91,76 @@ fn gamma_uks_doublet_is_one_point_kuks() {
     }
 }
 
+/// EXACTNESS ANCHOR (ROKS): the polarized H3 doublet Gamma ROKS equals the
+/// k-point ROKS on a 1x1x1 mesh on the same atom-centred grid. Independent
+/// constructions of the same energy: ferric-dft's `eval_tau_uks` on real
+/// lattice-summed AOs (`PeriodicXc::eval_polarized`, Gamma ROHF driver) vs
+/// `chunk_tau` on complex Bloch AOs (`KPeriodicXcPolarized`, k-ROKS driver,
+/// PySCF-pinned in `pbc_kroks_mgga.rs`). Bar 1e-10. Every Gamma-side tau
+/// mutant, and the k-side `τ_β` from `D_α` and swapped `V^xc_σ`, must miss
+/// by > 1e-7 (SCAN; r2SCAN anchor only, to keep the per-commit cost down).
+#[test]
+fn gamma_roks_doublet_is_one_point_kroks() {
+    use ferric_pbc::kroks::{solve_kroks_on_grid, KRohfMutation, KRoksConfig};
+    use ferric_pbc::kuks::KUksMggaMutation;
+    let su = setup(h3_doublet());
+    let gcfg = grid_cfg(40, 110);
+    let grid = PeriodicGrid::build(&su.cell, &gcfg).unwrap();
+    let mesh = KPointMesh::gamma_centred(&su.cell, [1, 1, 1]).unwrap();
+    let kroks = |f: &str, tau: Option<KUksMggaMutation>, ro: Option<KRohfMutation>| {
+        let mut kcfg = KRoksConfig::new(&su.cell, ExxDiv::Ewald, f);
+        kcfg.rohf.hcore = PeriodicHcoreConfig::with_omega(OMEGA);
+        kcfg.rohf.scf.energy_conv = 1e-12;
+        kcfg.rohf.scf.grad_conv = 1e-9;
+        kcfg.mgga_mutation = tau;
+        kcfg.rohf.mutation = ro;
+        solve_kroks_on_grid(&su.cell, &su.prep, None, &mesh, &grid, &kcfg)
+            .map(|r| (r.scf.energy, r.e_xc))
+    };
+    for f in FUNCTIONALS {
+        let g = gamma_roks(
+            &su.cell,
+            &su.prep,
+            &su.hc,
+            ints(&su),
+            &roks_cfg(f, gcfg.clone()),
+        )
+        .unwrap_or_else(|e| panic!("gamma_roks {f}: {e}"));
+        let (e_k, xc_k) = kroks(f, None, None).unwrap_or_else(|e| panic!("k-ROKS {f}: {e}"));
+        let de = g.scf.energy - e_k;
+        let dxc = g.e_xc - xc_k;
+        eprintln!(
+            "H3 ROKS {f}: E_gamma {:.12} E_k111 {e_k:.12} dE {de:.2e} dE_xc {dxc:.2e} <S2> {:.6}",
+            g.scf.energy, g.s2
+        );
+        assert!(de.abs() < 1e-10, "{f}: dE {de:.2e}");
+        assert!(dxc.abs() < 1e-10, "{f}: dE_xc {dxc:.2e}");
+        assert!(g.s2 > 0.7, "{f}: <S2> {}", g.s2);
+        if f != "SCAN" {
+            continue;
+        }
+        for m in MUTANTS {
+            let miss = mutant_miss(roks_with(&su, &mut open_xc(&su, &grid, f, Some(m)), f), e_k);
+            eprintln!("H3 ROKS {f} Gamma {m:?}: |E - E_k111| {miss:.2e}");
+            assert!(miss > 1e-7, "{f} Gamma {m:?} not detected: {miss:.2e}");
+        }
+        for (name, r) in [
+            (
+                "k TauBetaFromAlpha",
+                kroks(f, Some(KUksMggaMutation::TauBetaFromAlpha), None),
+            ),
+            (
+                "k XcSpinSwap",
+                kroks(f, None, Some(KRohfMutation::XcSpinSwap)),
+            ),
+        ] {
+            let miss = mutant_miss(r, g.scf.energy);
+            eprintln!("H3 ROKS {f} {name}: |E_k111 - E_gamma| {miss:.2e}");
+            assert!(miss > 1e-7, "{f} {name} not detected: {miss:.2e}");
+        }
+    }
+}
+
 /// A singlet (`N_alpha == N_beta`) Gamma UKS and ROKS equal Gamma RKS, on the
 /// H2 cube and the four-H triclinic cell. Blind to every spin-channel tau
 /// mutant by construction (module doc): necessary, not sufficient.
@@ -231,8 +301,9 @@ fn polarized_vxc_is_the_derivative_of_exc() {
 /// `pbc.dft.ROKS`, AFTDF + UniformGrids 61^3,
 /// `scripts/gen_pyscf_gamma_open_mgga_refs.py`), on the same 61^3 grid; bar
 /// 1e-9. The r2SCAN pins and the mutants-versus-pin table are in
-/// `validation_pbc_gamma_open_mgga.rs` (weekly). ROKS has no other polarized
-/// anchor (no k-point ROKS meta-GGA), so its pin runs on every commit.
+/// `validation_pbc_gamma_open_mgga.rs` (weekly). The ROKS pin runs on every
+/// commit next to its polarized anchor `gamma_roks_doublet_is_one_point_kroks`
+/// (the 1x1x1 k-ROKS, itself PySCF-pinned in `pbc_kroks_mgga.rs`).
 fn pin(route: &str) {
     let su = setup(h3_doublet());
     let grid = PeriodicGrid::uniform(&su.cell, [61; 3]).unwrap();

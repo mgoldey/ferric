@@ -776,7 +776,8 @@ fn open_shell_refusals_have_exact_messages() {
         "{e}"
     );
     // ... and the Gamma-point ROKS meta-GGA, refused at plan time by the same
-    // library gate (k-point ROKS has no meta-GGA, so the hint differs).
+    // library gate (the CLI k-point ROKS route does not run a meta-GGA either:
+    // library only, #498; so the hint differs).
     let tag = "gam-roks-scan";
     let i = Input {
         kmesh: "",
@@ -785,7 +786,7 @@ fn open_shell_refusals_have_exact_messages() {
     let e = refused(&run(&i), tag);
     assert!(
         e.contains("Gamma-point ROKS SCAN / r2SCAN energy")
-            && e.contains("k-point ROKS has no meta-GGA either"),
+            && e.contains("the CLI k-point ROKS route does not run it either (library only, #498)"),
         "{e}"
     );
 }

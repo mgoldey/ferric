@@ -51,10 +51,10 @@
 //!
 //! Not covered: the ROKS meta-GGA force and stress (refused, checked here on
 //! a converged SCAN ROKS state), TPSS (refused, `pbc_kroks.rs`), RS-GDF J/K
-//! for ROKS meta-GGA (refused by name: no ROKS RS-GDF meta-GGA pin exists),
-//! the 1x1x1 == Gamma ROKS
-//! anchor (Gamma ROKS SCAN is #581), and the Python / CLI bindings (refused,
-//! #498).
+//! for ROKS meta-GGA (refused by name: no ROKS RS-GDF meta-GGA pin exists)
+//! and the Python / CLI bindings (refused, #498). The 1x1x1 == Gamma ROKS
+//! anchor lives with the Gamma tests
+//! (`pbc_gamma_open_mgga.rs::gamma_roks_doublet_is_one_point_kroks`).
 
 mod common;
 #[path = "kroks_mgga_support/mod.rs"]

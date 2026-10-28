@@ -5611,8 +5611,8 @@ fn check_gamma_meta_gga(
             } else {
                 (
                     ferric_pbc::dft::check_gamma_roks_request(f, &[]),
-                    "k-point ROKS has no meta-GGA either; UKS with [cell] kmesh = [1, 1, 1] \
-                     has it",
+                    "the CLI k-point ROKS route does not run it either (library only, #498); \
+                     UKS with [cell] kmesh = [1, 1, 1] has it",
                 )
             };
             gate.map_err(|e| format!("[dft] functional {f:?} at the Gamma point: {e} ({hint})"))
