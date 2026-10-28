@@ -871,31 +871,34 @@ fn gamma_meta_gga_native_derivatives_point_at_the_routed_entries() {
     .to_string();
     assert!(e.contains("only the validated SCAN / r2SCAN"), "{e}");
 
-    // UKS keeps the by-name refusal.
+    // UKS takes SCAN / r2SCAN only (tests/pbc_gamma_open_mgga.rs); TPSS keeps
+    // the by-name refusal.
     let e = gamma_uks(
         &su.cell,
         &su.prep,
         &su.hc,
         GammaUhfIntegrals::DenseAft(&su.eri),
-        &GammaUksConfig::new("SCAN"),
+        &GammaUksConfig::new("TPSS"),
     )
     .unwrap_err()
     .to_string();
-    assert!(e.contains("meta-GGA"), "uks: {e}");
+    assert!(e.contains("only the pure SCAN / r2SCAN"), "uks: {e}");
 
-    // The spin-resolved XC of a meta-GGA PeriodicXc errors (no tau term).
+    // The spin-resolved XC of a TPSS PeriodicXc errors (its polarized tau
+    // term is not validated); SCAN evaluates.
     let grid = PeriodicGrid::build(&su.cell, &cfg.grid).unwrap();
-    let mut xc = PeriodicXc::new_closed_mgga(
-        &su.cell,
-        &su.bs,
-        "SCAN",
-        &grid,
-        &PeriodicXcConfig::default(),
-    )
-    .unwrap();
+    let new_xc = |f: &str| {
+        PeriodicXc::new_closed_mgga(&su.cell, &su.bs, f, &grid, &PeriodicXcConfig::default())
+            .unwrap()
+    };
     let d = probe_density(&su);
-    let e = xc.eval_polarized(&d, &d).unwrap_err().to_string();
-    assert!(e.contains("no tau term"), "{e}");
+    let e = new_xc("TPSS")
+        .eval_polarized(&d, &d)
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("only the pure SCAN / r2SCAN"), "{e}");
+    let (e_xc, _, _) = new_xc("SCAN").eval_polarized(&d, &d).unwrap();
+    assert!(e_xc.is_finite());
     // ... and the plain constructor still refuses a meta-GGA.
     assert!(PeriodicXc::new(
         &su.cell,

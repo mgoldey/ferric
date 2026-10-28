@@ -69,8 +69,8 @@
 //! derivative algebra: it is the closed-shell kernel per spin (which is why
 //! the singlet UKS force reproduces the RKS one, and why that anchor is blind
 //! to every α/β mix-up; the polarized anchors are in
-//! `tests/pbc_kuxc_mgga.rs`). ROKS refuses meta-GGA (its SCF has no tau
-//! term). The tau terms are independent of the J/K route (a pure meta-GGA
+//! `tests/pbc_kuxc_mgga.rs`). ROKS refuses meta-GGA (its k-point SCF has
+//! the SCAN / r2SCAN energy, #492, but no meta-GGA force). The tau terms are independent of the J/K route (a pure meta-GGA
 //! has no exact exchange), so the RS-GDF J route composes unchanged: anchored
 //! (exact-aux RS-GDF == dense == PySCF `KUKS` energy, singlet UKS == RKS, FD
 //! of the RS-GDF SCF energy) in `tests/pbc_kuks_mgga_rsgdf.rs`, issue #492.
@@ -1132,7 +1132,7 @@ impl KUXcResponse for GridXcPol<'_> {
 /// `allow_mgga` (UKS) lets the validated pure meta-GGAs SCAN / r2SCAN through
 /// on either J/K (dense-AFT or RS-GDF; `tests/pbc_kuks_mgga_rsgdf.rs`);
 /// ROKS/ROHF keep [`resolve_global`]'s
-/// refusal (the k-point ROKS SCF has no tau term). `base` is the force's or
+/// refusal (no ROKS meta-GGA force or stress; only its energy exists). `base` is the force's or
 /// the stress's own resolver (their refusal wordings differ). Returns `(a, mgga)`;
 /// shared with the open-shell stress. `who` names the entry point.
 pub(crate) fn resolve_open_shell(
@@ -1302,7 +1302,7 @@ pub fn kpoint_uks_gradient(
 /// [`kpoint_uks_gradient`] (range-separated hybrids included, on the
 /// dense-AFT or RS-GDF J/K built with the functional's [`RshParams`], as `solve_kroks`
 /// builds them; module doc "Range-separated hybrids (UKS, ROKS)"), except
-/// meta-GGA (the k-point ROKS SCF has no tau term), plus: a state whose ROHF
+/// meta-GGA (the k-point ROKS SCAN / r2SCAN energy has no force yet), plus: a state whose ROHF
 /// orbital gradient (closed-open `f_β`, open-virtual `f_α`, closed-virtual
 /// `f_α + f_β`, any k) exceeds [`crate::grad::RO_ORBITAL_GRADIENT_TOL`] is
 /// refused.

@@ -221,6 +221,7 @@ ferric-pbc::pbc_dense_aft_scf	7.143
 ferric-pbc::pbc_drpa	25.077
 ferric-pbc::pbc_ecp	15.574
 ferric-pbc::pbc_gamma_mgga_derivs	499.861
+ferric-pbc::pbc_gamma_open_mgga	190.000
 ferric-pbc::pbc_grad	48.293
 ferric-pbc::pbc_grad_ecp	132.746
 ferric-pbc::pbc_grad_open	412.369
@@ -246,6 +247,7 @@ ferric-pbc::pbc_krks_2x2x1	41.313
 ferric-pbc::pbc_krks_mgga_rsgdf	157.785
 ferric-pbc::pbc_krks_shifted	316.784
 ferric-pbc::pbc_kroks	351.257
+ferric-pbc::pbc_kroks_mgga	34.019
 ferric-pbc::pbc_kroks_rsh_force	711.723
 ferric-pbc::pbc_krsgdf	37.882
 ferric-pbc::pbc_krsgdf_split	151.909

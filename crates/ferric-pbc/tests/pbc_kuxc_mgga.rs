@@ -137,7 +137,8 @@ fn polarized_fixed_density_xc_stress_matches_fd() {
 // ------------------------------------------------------------ refusals
 
 /// Outside the validated envelope, by name: any other meta-GGA (raw TPSS
-/// components) and meta-GGA ROKS (its SCF has no tau term). Each refusal
+/// components) and meta-GGA ROKS (its SCF has the SCAN / r2SCAN energy since
+/// #492, but no meta-GGA force or stress). Each refusal
 /// precedes the Fock guard, so a PBE state exercises it. (UKS SCAN / r2SCAN
 /// on the RS-GDF J/K is accepted since #492: `pbc_kuks_mgga_rsgdf.rs`.)
 #[test]

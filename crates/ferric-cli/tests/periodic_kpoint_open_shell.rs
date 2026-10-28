@@ -734,13 +734,18 @@ fn cli_open_shell_hse06_rsgdf_equals_library_solve_kuks() {
 
 #[test]
 fn open_shell_refusals_have_exact_messages() {
-    // k-point ROKS has no meta-GGA (the UKS route has it; the ROKS
-    // range-separated hybrid energy runs: periodic_rsh_open_mgga_derivs.rs).
+    // k-point ROKS SCAN is library-only (#492; not wired, #498): the plan-time
+    // gate must refuse it, or the CLI would reach the library path (the UKS
+    // route has it; the ROKS range-separated hybrid energy runs:
+    // periodic_rsh_open_mgga_derivs.rs).
     let tag = "roks-SCAN";
     let e = refused(&run(&input(tag, Method::Roks, "SCAN", "energy")), tag);
     assert!(
         e.contains("[cell] kmesh with functional \"SCAN\"")
-            && e.contains("no meta-GGA for ROKS; the UKS route"),
+            && e.contains(
+                "validated in the library (#492) but not yet wired for ROKS in the CLI (#498); \
+                 the UKS route"
+            ),
         "{tag}: {e}"
     );
     // ROKS wB97X has an energy here but no validated force: optimize is
@@ -762,10 +767,26 @@ fn open_shell_refusals_have_exact_messages() {
     i.jk = "jk = \"rsgdf\"\nauxbasis = \"cc-pvdz-ri\"";
     let e = refused(&run(&i), "uks-scan-rsgdf");
     assert!(e.contains("dense-AFT J/K only"), "{e}");
-    // Gamma-point UKS meta-GGA: no tau term at Gamma; the 1x1x1 mesh has it.
+    // Gamma-point UKS meta-GGA: library only (#492), not wired; the 1x1x1 mesh has it.
     let e = refused(&run(&energy_input("gam-scan", "SCAN", "")), "gam-scan");
     assert!(
-        e.contains("Gamma point") && e.contains("kmesh = [1, 1, 1]"),
+        e.contains("Gamma point")
+            && e.contains("not yet wired (#498)")
+            && e.contains("kmesh = [1, 1, 1]"),
+        "{e}"
+    );
+    // ... and the Gamma-point ROKS meta-GGA, refused at plan time by the same
+    // library gate (the CLI k-point ROKS route does not run a meta-GGA either:
+    // library only, #498; so the hint differs).
+    let tag = "gam-roks-scan";
+    let i = Input {
+        kmesh: "",
+        ..input(tag, Method::Roks, "SCAN", "energy")
+    };
+    let e = refused(&run(&i), tag);
+    assert!(
+        e.contains("Gamma-point ROKS SCAN / r2SCAN energy")
+            && e.contains("the CLI k-point ROKS route does not run it either (library only, #498)"),
         "{e}"
     );
 }

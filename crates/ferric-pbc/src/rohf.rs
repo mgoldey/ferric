@@ -578,8 +578,13 @@ pub fn gamma_rohf(
 /// Gamma-point ROKS with [`crate::dft::PeriodicXc`] built from `cfg.functional` on
 /// `cfg.grid` (spin-polarized evaluation, as [`crate::dft::gamma_uks`]).
 ///
-/// Errors (by name) on refused functionals (range-separated hybrids, which
-/// take [`gamma_roks_rsh`]; meta-GGA / VV10 / double hybrids), molecular-grid knobs (`scf.xc_omega`, `scf.dft_grid`,
+/// SCAN / r2SCAN run (ENERGY only: per-spin tau from `D_σ` in
+/// [`crate::dft::PeriodicXc::eval_polarized`], pinned to PySCF `pbc.dft.ROKS`;
+/// the ROKS force and stress refuse a meta-GGA), on the dense-AFT J/K with
+/// [`RohfSolver::Diis`] only: RS-GDF and [`RohfSolver::SecondOrder`] refuse a
+/// meta-GGA by name. Errors (by name) on refused
+/// functionals (range-separated hybrids, which take [`gamma_roks_rsh`]; any
+/// other meta-GGA, VV10 / double hybrids), molecular-grid knobs (`scf.xc_omega`, `scf.dft_grid`,
 /// `scf.nlc_grid`), SCF features `validate_injected_rohf` refuses, a
 /// neighbour cutoff below the covering bound, budget overruns and a
 /// non-converged SCF stage.
@@ -594,10 +599,16 @@ pub fn gamma_roks(
     refuse_molecular_grid_knobs(&cfg.scf)?;
     nocc_ab(cell.mol())?;
     // Cheap name checks before the grid is built.
-    resolve_periodic_functional(&cfg.functional)?;
+    crate::dft::resolve_gamma_open_shell_functional(&cfg.functional)?;
+    crate::dft::refuse_unvalidated_open_shell_mgga(
+        "ROKS",
+        &cfg.functional,
+        matches!(ints, GammaUhfIntegrals::RsGdf(_)),
+        matches!(cfg.solver, RohfSolver::SecondOrder(_)),
+    )?;
     let total = crate::timing::StageClock::start();
     let (grid, mut pxc, mut timings) =
-        crate::dft::ks_grid_and_xc(cell, prep, &cfg.functional, &cfg.grid, &cfg.xc)?;
+        crate::dft::open_shell_grid_and_xc(cell, prep, &cfg.functional, &cfg.grid, &cfg.xc)?;
     let mut out = gamma_roks_with_xc(cell, prep, hc, ints, &mut pxc, cfg)?;
     let electrons_on_grid = pxc.integrate_density(&out.scf.density_total)?;
     out.grid = Some(GammaUksGridInfo {
@@ -613,7 +624,10 @@ pub fn gamma_roks(
 
 /// [`gamma_roks`] with a caller-supplied spin-polarized [`XcBuilder`]
 /// (`cfg.functional`, `cfg.grid`, `cfg.xc` ignored). A builder with `a = 1`
-/// and zero `E_xc`/`V_σ` is exactly [`gamma_rohf`].
+/// and zero `E_xc`/`V_σ` is exactly [`gamma_rohf`]. The builder is opaque, so
+/// the meta-GGA route refusals of [`gamma_roks`] (RS-GDF J/K, the
+/// second-order solver) are NOT applied here: a meta-GGA builder is validated
+/// on `GammaUhfIntegrals::DenseAft` with [`RohfSolver::Diis`] only.
 pub fn gamma_roks_with_xc(
     cell: &Cell,
     prep: &PreparedBasis,

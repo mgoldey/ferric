@@ -1,6 +1,7 @@
 //! k-point restricted open-shell HF / Kohn-Sham (`solve_krohf`,
 //! `solve_kroks`): the k-mesh analogue of [`crate::rohf::gamma_roks`], with
-//! LDA, GGA, global-hybrid and range-separated-hybrid functionals.
+//! LDA, GGA, global-hybrid and range-separated-hybrid functionals, and the
+//! pure SCAN / r2SCAN meta-GGAs (energy only).
 //!
 //! One spatial orbital set per k with closed (2), open (1) and virtual (0)
 //! levels; the per-spin Focks of the k-point UHF/UKS,
@@ -42,8 +43,24 @@
 //! `exxdiv = none` first and continues with ewald from that density; the
 //! per-spin gaps (from the actual occupations) are reported against `a·v_M`.
 //!
-//! Semilocal XC uses the Bloch AO cache of [`crate::kdft::KPeriodicXc`] with
-//! the spin-polarized libxc kernel (`V_σ = ∂E_xc/∂D_σ(k)`, no `1/N_k`).
+//! Semilocal XC is the k-point UKS evaluator [`crate::kuks::KPeriodicXcPolarized`]
+//! (the Bloch AO cache of [`crate::kdft::KPeriodicXc`] with the spin-polarized
+//! libxc kernel, `V_σ = ∂E_xc/∂D_σ(k)`, no `1/N_k`), applied to the ROHF spin
+//! densities `D_α`, `D_β`.
+//!
+//! # Meta-GGA (energy only)
+//!
+//! The pure SCAN / r2SCAN (issue #492): the same evaluator gives each spin its
+//! own `τ_σ = (1/N_k) Σ_k ½ Σ_ax Re Σ D_σ(k)_{μν} ∂φ_μ (∂φ_ν)*` and its own
+//! `V^τ_σ(k) = Σ_g ½ w v_τσ Σ_ax (∂φ_μ)* ∂φ_ν` inside `F_σ`, which the Roothaan
+//! combination above then couples exactly as it couples the LDA / GGA `V_σ`.
+//! Wiring only (no new formula): pinned to PySCF `pbc.dft.KROKS` (whose veff is
+//! its KUKS one) in `tests/pbc_kroks_mgga.rs`, on the dense-AFT J/K only (the
+//! RS-GDF J/K is refused by name for a ROKS meta-GGA: nothing pins it). Any other meta-GGA (TPSS, raw
+//! `MGGA_*` names) and a meta-GGA hybrid are refused by name, and so are the
+//! ROKS meta-GGA force and stress ([`crate::kxcgrad::check_deriv_functional`],
+//! the ROKS resolvers of [`crate::kuxcgrad`] / [`crate::kuxcstress`]). Library
+//! only: the Python and CLI gates refuse it (wiring is #498).
 //!
 //! # Range-separated hybrids
 //!
@@ -59,22 +76,23 @@
 //! [`crate::kuxcstress::kpoint_roks_stress`] (at Gamma the force only,
 //! [`crate::gamma_rsh::gamma_roks_rsh_gradient`]), accepted for HSE06 /
 //! CAM-B3LYP by the binding gate ([`crate::kxcgrad::check_deriv_functional`]).
-//! Meta-GGA (no tau term here), VV10 and double hybrids are refused.
+//! Range-separated meta-GGAs, VV10 and double hybrids are refused.
 //!
 //! Units: Bohr and Hartree.
 
 use crate::budget::{bytes_of, Ledger};
 use crate::dense_aft::ExxDiv;
-use crate::dft::{resolve_periodic_functional, PeriodicGrid, PeriodicGridConfig, PeriodicXcConfig};
+use crate::dft::{PeriodicGrid, PeriodicGridConfig, PeriodicXcConfig};
 use crate::hcore::kpoint::{hermitize, periodic_hcore_kpts};
 use crate::hcore::PeriodicHcoreConfig;
 use crate::kdense_aft::{KDenseAftConfig, KDenseAftEri};
-use crate::kdft::{conj, KPeriodicXc};
 use crate::kpts::KPointMesh;
 use crate::kscf::{
     diagonalize_all, herm_t, occupied_projector, orthogonalizers_with_report, KDiis, KJkKind,
     KPointInjection, KPointJk, KRetained, KRetainedJk, KScfConfig,
 };
+use crate::kuks::{KPeriodicXcPolarized, KUksMggaMutation};
+use crate::kuscf::KPointXcPolarized;
 use crate::lattice::Cell;
 use crate::rohf::ROKS_HYBRID_LEVEL_SHIFT;
 use crate::rsgdf::kpoint::{KRsGdf, KRsGdfConfig};
@@ -82,10 +100,8 @@ use crate::rsh::RshParams;
 use crate::timing::{PbcTimings, StageClock};
 use crate::uhf::{nocc_ab, EwaldStart, SpinGapReport};
 use ferric_core::FerricError;
-use ferric_dft::density_on_grid::UksDensityGrid;
-use ferric_dft::vxc::{polarized_kernel, DENSITY_FLOOR};
 use ferric_integrals::basis_bridge::PreparedBasis;
-use ndarray::{Array1, Array2, Axis};
+use ndarray::Array2;
 use num_complex::Complex64;
 
 /// TEST ONLY: deliberate defects the k-ROKS tests must catch.
@@ -113,6 +129,13 @@ pub enum KRohfMutation {
     /// Range-separated hybrids only: scale the attenuated K by `c_sr` (the
     /// fractions applied twice) instead of 1.
     RshScaledBySr,
+    /// Kohn-Sham only: `V_α^xc` and `V_β^xc` (meta-GGA `V^τ_σ` included)
+    /// swapped between the two spin Focks the Roothaan combination couples.
+    /// Invisible in the closed-shell limit. (`V_β^xc := V_α^xc` was tried
+    /// first and dropped: for a functional without exact exchange it makes
+    /// `F_β = F_α`, where `F_eff` collapses to `F_α`, i.e. it IS
+    /// [`Self::BareAlphaFock`], measured identical to 7 digits.)
+    XcSpinSwap,
 }
 
 /// How the `(N_α − N_β) N_k` open orbitals are chosen among the levels above
@@ -127,188 +150,6 @@ pub enum OpenOrbitalRule {
     /// (PySCF `KROHF.get_occ`). Can cycle between two states where the
     /// converged state is not an `F_eff`-aufbau fixed point.
     AlphaEnergy,
-}
-
-/// Spin-resolved semilocal exchange-correlation for the k-point ROKS
-/// ([`solve_kroks_injected`]).
-pub trait KSpinXc {
-    /// `(E_xc per cell, V_α(k), V_β(k))` for the Hermitian unit-occupation
-    /// per-spin densities `D_σ(k) = C_σ,occ C_σ,occ†`.
-    #[allow(clippy::type_complexity)]
-    fn build_spin(
-        &mut self,
-        da: &[Array2<Complex64>],
-        db: &[Array2<Complex64>],
-    ) -> Result<(f64, Vec<Array2<Complex64>>, Vec<Array2<Complex64>>), FerricError>;
-}
-
-impl KPeriodicXc {
-    /// Per-spin `ρ_σ`, `∇ρ_σ`, `σ_{σσ'}` of one chunk from the k densities.
-    fn chunk_density_spin(
-        &self,
-        c: &crate::kdft::KAoChunk,
-        da: &[Array2<Complex64>],
-        db: &[Array2<Complex64>],
-    ) -> UksDensityGrid {
-        let np = c.points.len();
-        let inv_nk = 1.0 / self.nk as f64;
-        let mut rho = [Array1::<f64>::zeros(np), Array1::<f64>::zeros(np)];
-        let mut grad = [
-            ndarray::Array2::<f64>::zeros((3, np)),
-            ndarray::Array2::<f64>::zeros((3, np)),
-        ];
-        for (s, dm) in [da, db].into_iter().enumerate() {
-            for k in 0..self.nk {
-                let p = dm[k].dot(&conj(&c.chi[k]));
-                for g in 0..np {
-                    let mut r = Complex64::new(0.0, 0.0);
-                    for mu in 0..self.nbf {
-                        r += c.chi[k][(mu, g)] * p[(mu, g)];
-                    }
-                    rho[s][g] += inv_nk * r.re;
-                    if self.gga {
-                        for ax in 0..3 {
-                            let mut gr = Complex64::new(0.0, 0.0);
-                            for mu in 0..self.nbf {
-                                gr += c.dchi[k][(ax, mu, g)] * p[(mu, g)];
-                            }
-                            grad[s][(ax, g)] += inv_nk * 2.0 * gr.re;
-                        }
-                    }
-                }
-            }
-        }
-        let [rho_a, rho_b] = rho;
-        let [grad_a, grad_b] = grad;
-        let mut sigma = ndarray::Array2::<f64>::zeros((3, np));
-        for g in 0..np {
-            for ax in 0..3 {
-                sigma[(0, g)] += grad_a[(ax, g)] * grad_a[(ax, g)];
-                sigma[(1, g)] += grad_a[(ax, g)] * grad_b[(ax, g)];
-                sigma[(2, g)] += grad_b[(ax, g)] * grad_b[(ax, g)];
-            }
-        }
-        UksDensityGrid {
-            rho_a,
-            rho_b,
-            grad_a,
-            grad_b,
-            sigma,
-        }
-    }
-}
-
-impl KSpinXc for KPeriodicXc {
-    fn build_spin(
-        &mut self,
-        da: &[Array2<Complex64>],
-        db: &[Array2<Complex64>],
-    ) -> Result<(f64, Vec<Array2<Complex64>>, Vec<Array2<Complex64>>), FerricError> {
-        self.check(da)?;
-        self.check(db)?;
-        let n = self.nbf;
-        let nk = self.nk;
-        let zeros = || -> Vec<Array2<Complex64>> {
-            (0..nk)
-                .map(|_| Array2::<Complex64>::zeros((n, n)))
-                .collect()
-        };
-        let mut e = 0.0;
-        let mut va = zeros();
-        let mut vb = zeros();
-        for c in &self.chunks {
-            let dens = self.chunk_density_spin(c, da, db);
-            let kern = polarized_kernel(&dens, None, &self.xc_pol);
-            let np = c.points.len();
-            for g in 0..np {
-                e += c.points[g].weight * (dens.rho_a[g] + dens.rho_b[g]) * kern.exc[g];
-            }
-            for spin in 0..2 {
-                let (rho_s, vrho, vss, grad_self, grad_cross, v) = if spin == 0 {
-                    (
-                        &dens.rho_a,
-                        &kern.vrho_a,
-                        &kern.vsigma_aa,
-                        &dens.grad_a,
-                        &dens.grad_b,
-                        &mut va,
-                    )
-                } else {
-                    (
-                        &dens.rho_b,
-                        &kern.vrho_b,
-                        &kern.vsigma_bb,
-                        &dens.grad_b,
-                        &dens.grad_a,
-                        &mut vb,
-                    )
-                };
-                let a_w: Vec<f64> = (0..np)
-                    .map(|g| {
-                        if rho_s[g] > DENSITY_FLOOR {
-                            c.points[g].weight * vrho[g]
-                        } else {
-                            0.0
-                        }
-                    })
-                    .collect();
-                let f_ax: Vec<Vec<f64>> = if self.gga {
-                    (0..3)
-                        .map(|ax| {
-                            (0..np)
-                                .map(|g| {
-                                    if rho_s[g] > DENSITY_FLOOR {
-                                        c.points[g].weight
-                                            * (2.0 * vss[g] * grad_self[(ax, g)]
-                                                + kern.vsigma_ab[g] * grad_cross[(ax, g)])
-                                    } else {
-                                        0.0
-                                    }
-                                })
-                                .collect()
-                        })
-                        .collect()
-                } else {
-                    Vec::new()
-                };
-                for k in 0..nk {
-                    let scale = |fac: &[f64]| {
-                        let mut m = conj(&c.chi[k]);
-                        for g in 0..np {
-                            m.column_mut(g).mapv_inplace(|z| z * fac[g]);
-                        }
-                        m
-                    };
-                    v[k] += &scale(&a_w).dot(&c.chi[k].t());
-                    if self.gga {
-                        for ax in 0..3 {
-                            let d_ax = c.dchi[k].index_axis(Axis(0), ax);
-                            let m = scale(&f_ax[ax]).dot(&d_ax.t());
-                            let mh = conj(&m).t().to_owned();
-                            v[k] += &m;
-                            v[k] += &mh;
-                        }
-                    }
-                }
-            }
-        }
-        if !e.is_finite()
-            || va
-                .iter()
-                .chain(vb.iter())
-                .any(|m| m.iter().any(|z| !z.re.is_finite()))
-        {
-            return Err(FerricError::General(format!(
-                "KPeriodicXc: non-finite spin-polarized E_xc/V_xc ({e}) for {}",
-                self.name
-            )));
-        }
-        for m in va.iter_mut().chain(vb.iter_mut()) {
-            let h = conj(m).t().to_owned();
-            *m = (&*m + &h).mapv(|z| z * 0.5);
-        }
-        Ok((e, va, vb))
-    }
 }
 
 /// Result of a k-point ROHF/ROKS SCF (one stage).
@@ -439,13 +280,16 @@ impl KRohfConfig {
 pub struct KRoksConfig {
     /// SCF, J/K source, exxdiv and one-electron settings.
     pub rohf: KRohfConfig,
-    /// LDA / GGA / global- or range-separated-hybrid name
-    /// ([`resolve_kroks_functional`]).
+    /// LDA / GGA / global- or range-separated-hybrid name, or the pure
+    /// SCAN / r2SCAN (energy only; [`resolve_kroks_functional`]).
     pub functional: String,
     /// The periodic grid.
     pub grid: PeriodicGridConfig,
     /// AO truncation / budget of the Bloch AO cache.
     pub xc: PeriodicXcConfig,
+    /// Test hook: a deliberate spin-resolved tau defect (meta-GGA only).
+    #[doc(hidden)]
+    pub mgga_mutation: Option<KUksMggaMutation>,
 }
 
 impl KRoksConfig {
@@ -460,6 +304,7 @@ impl KRoksConfig {
             functional: functional.to_string(),
             grid: PeriodicGridConfig::default(),
             xc: PeriodicXcConfig::default(),
+            mgga_mutation: None,
         }
     }
 }
@@ -553,23 +398,40 @@ pub fn solve_kroks_keep(
     cfg: &KRoksConfig,
 ) -> Result<(KRoksResult, KRetained), FerricError> {
     resolve_kroks_functional(&cfg.functional)?;
+    refuse_mgga_on_rsgdf(cfg, aux)?;
     let grid = PeriodicGrid::build(cell, &cfg.grid)?;
     solve_kroks_on_grid_keep(cell, prep, aux, mesh, &grid, cfg)
 }
 
-/// The functional gate of [`solve_kroks`]: LDA, GGA, global hybrids
-/// ([`resolve_periodic_functional`]) and range-separated hybrids
+/// The functional gate of [`solve_kroks`], the k-point UKS one
+/// ([`crate::kuks::resolve_kuks_functional`]; the two SCFs share the XC
+/// evaluator): LDA, GGA, global hybrids
+/// ([`crate::dft::resolve_periodic_functional`]), range-separated hybrids
 /// ([`crate::rsh::resolve_periodic_functional_rsh`]: no range-separated
-/// meta-GGA, VV10 or double hybrid). Meta-GGA is refused: the spin-resolved
-/// XC here has no tau term.
+/// meta-GGA, VV10 or double hybrid) and the pure SCAN / r2SCAN meta-GGAs
+/// (ENERGY only: the ROKS force and stress refuse them). Any other meta-GGA is
+/// refused by name.
 pub fn resolve_kroks_functional(name: &str) -> Result<(), FerricError> {
-    let range_separated = ferric_dft::libxc::xc_def_from_name(name)
-        .map(|d| d.cam.is_some())
-        .unwrap_or(false);
-    if range_separated {
-        crate::rsh::resolve_periodic_functional_rsh(name)?;
-    } else {
-        resolve_periodic_functional(name)?;
+    crate::kuks::resolve_open_shell_k_functional(name, "ROKS")
+}
+
+/// The k-point ROKS meta-GGA is validated on the dense-AFT J/K only
+/// (`tests/pbc_kroks_mgga.rs`); on the RS-GDF J/K nothing pins it, so it is
+/// refused by name there (the Gamma open-shell meta-GGA refuses RS-GDF too;
+/// the k-UKS one is validated on RS-GDF, `tests/pbc_kuks_mgga_rsgdf.rs`).
+fn refuse_mgga_on_rsgdf(cfg: &KRoksConfig, aux: Option<&PreparedBasis>) -> Result<(), FerricError> {
+    let rsgdf = aux.is_some() || matches!(cfg.rohf.jk, KJkKind::RsGdf);
+    if rsgdf && crate::dft::is_meta_gga_name(&cfg.functional) {
+        return Err(crate::dft::PeriodicDftError::Unsupported {
+            feature: "meta-GGA on RS-GDF",
+            reason: format!(
+                "{}: the k-point ROKS SCAN / r2SCAN energy is validated on the dense-AFT J/K \
+                 only (jk = dense); k-point ROKS meta-GGA on the RS-GDF J/K is not validated \
+                 (#492)",
+                cfg.functional
+            ),
+        }
+        .into());
     }
     Ok(())
 }
@@ -595,11 +457,16 @@ pub fn solve_kroks_on_grid_keep(
     grid: &PeriodicGrid,
     cfg: &KRoksConfig,
 ) -> Result<(KRoksResult, KRetained), FerricError> {
-    // KPeriodicXc accepts meta-GGA for the closed-shell solver, but the
-    // spin-resolved XC here has no tau term: refuse it on this entry point
-    // too, not only in `solve_kroks`.
+    // KPeriodicXc accepts TPSS for the closed-shell solver; the open-shell
+    // gate is narrower: check it on this entry point too, not only in
+    // `solve_kroks`.
     resolve_kroks_functional(&cfg.functional)?;
-    let mut pxc = KPeriodicXc::new(cell, prep.basis_set(), &cfg.functional, grid, mesh, &cfg.xc)?;
+    refuse_mgga_on_rsgdf(cfg, aux)?;
+    let mut pxc =
+        KPeriodicXcPolarized::new(cell, prep.basis_set(), &cfg.functional, grid, mesh, &cfg.xc)?;
+    if let Some(m) = cfg.mgga_mutation {
+        pxc = pxc.with_mgga_mutation(m);
+    }
     // Range-separated hybrid: the fractions and the mixed Madelung constant
     // live INSIDE the attenuated K, which the SCF scales by 1 (as k-UKS).
     let rsh = pxc.rsh();
@@ -618,13 +485,7 @@ pub fn solve_kroks_on_grid_keep(
         Some((&mut pxc, a)),
         rsh,
     )?;
-    let da = &r.scf.density_alpha;
-    let tot: Vec<Array2<Complex64>> = da
-        .iter()
-        .zip(&r.scf.density_beta)
-        .map(|(x, y)| x + y)
-        .collect();
-    r.electrons_on_grid = pxc.integrate_density(&tot)?;
+    r.electrons_on_grid = pxc.integrate_density(&r.scf.density_alpha, &r.scf.density_beta)?;
     r.n_grid_points = grid.len();
     Ok((r, kept))
 }
@@ -636,7 +497,7 @@ fn drive(
     aux: Option<&PreparedBasis>,
     mesh: &KPointMesh,
     cfg: &KRohfConfig,
-    mut xc: Option<(&mut KPeriodicXc, f64)>,
+    mut xc: Option<(&mut KPeriodicXcPolarized, f64)>,
     rsh: Option<RshParams>,
 ) -> Result<(KRoksResult, KRetained), FerricError> {
     match (cfg.jk, aux) {
@@ -723,7 +584,7 @@ fn drive(
             vnn: hk.enn,
             jk: jk_of(&ints, vm),
         };
-        let xc_dyn: Option<&mut dyn KSpinXc> = match xc.as_mut() {
+        let xc_dyn: Option<&mut dyn KPointXcPolarized> = match xc.as_mut() {
             Some((x, _)) => Some(&mut **x),
             None => None,
         };
@@ -809,7 +670,7 @@ pub fn solve_kroks_injected(
     inj: KPointInjection<'_>,
     nalpha: usize,
     nbeta: usize,
-    xc: Option<&mut dyn KSpinXc>,
+    xc: Option<&mut dyn KPointXcPolarized>,
     exact_exchange: f64,
 ) -> Result<KRoScfResult, FerricError> {
     run_kroks(
@@ -980,7 +841,7 @@ fn run_kroks(
     na: usize,
     nb: usize,
     a: f64,
-    mut xc: Option<&mut dyn KSpinXc>,
+    mut xc: Option<&mut dyn KPointXcPolarized>,
     guess: Option<(&[Array2<Complex64>], &[Array2<Complex64>])>,
     open_rule: OpenOrbitalRule,
     level_shift: f64,
@@ -1124,13 +985,16 @@ fn run_kroks(
         let (e_xc, fa, fb) = match xc.as_mut() {
             None => (0.0, fa_nox.clone(), fb_nox.clone()),
             Some(b) => {
-                let (e, va, vb) = b.build_spin(&da, &db)?;
+                let (e, mut va, mut vb) = b.build_polarized(&da, &db)?;
                 if va.len() != nk || vb.len() != nk {
                     return Err(FerricError::General(format!(
                         "solve_kroks: XC builder returned {}/{} V_xc(k) for {nk} k-points",
                         va.len(),
                         vb.len()
                     )));
+                }
+                if mutation == Some(KRohfMutation::XcSpinSwap) {
+                    std::mem::swap(&mut va, &mut vb);
                 }
                 let fa = (0..nk).map(|k| hermitize(&(&fa_nox[k] + &va[k]))).collect();
                 let fb = (0..nk).map(|k| hermitize(&(&fb_nox[k] + &vb[k]))).collect();

@@ -162,7 +162,8 @@
 //!   `gamma_rsh::gamma_uks_rsh_gradient` / `gamma_roks_rsh_gradient`, dense
 //!   AFT only; at k on the dense-AFT or RS-GDF J/K) and UKS also SCAN / r2SCAN
 //!   (per-spin tau terms, dense-AFT or RS-GDF J/K);
-//!   ROKS/ROHF refuse meta-GGA, and VV10 is refused.
+//!   ROKS refuses meta-GGA (the k-point ROKS SCAN / r2SCAN energy has no
+//!   derivative yet), and VV10 is refused.
 //! * [`kstress`] — the k-point RHF / UHF stress tensor
 //!   (`kpoint_rhf_stress`, `kpoint_uhf_stress`) on the dense-AFT and the
 //!   unsplit RS-GDF J/K:

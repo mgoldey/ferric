@@ -660,19 +660,30 @@ fn kroks_hybrid_default_level_shift_converges_the_roothaan_trap() {
     }
 }
 
-/// KPeriodicXc accepts meta-GGA for the closed-shell solver; the open-shell
-/// solver has no tau term, so it must refuse SCAN on BOTH entry points
-/// rather than return a wrong energy.
+/// KPeriodicXc accepts TPSS for the closed-shell solver; the open-shell
+/// solver takes only the validated SCAN / r2SCAN (`pbc_kroks_mgga.rs`), so it
+/// must refuse TPSS by name on BOTH entry points rather than return an
+/// unvalidated energy.
 #[test]
-fn kroks_refuses_meta_gga() {
+fn kroks_refuses_unvalidated_meta_gga() {
     let cell = h3_cell();
     let bs = pyscf_sto3g_h();
     let prep = prep_for(&cell, &bs);
     let mesh = KPointMesh::gamma_centred(&cell, [1, 1, 2]).unwrap();
-    let cfg = roks_cfg(&cell, ExxDiv::None, "SCAN", None);
-    let grid = PeriodicGrid::build(&cell, &cfg.grid).unwrap();
-    let on_grid = solve_kroks_on_grid(&cell, &prep, None, &mesh, &grid, &cfg);
-    assert!(on_grid.is_err(), "solve_kroks_on_grid accepted SCAN");
-    let plain = ferric_pbc::kroks::solve_kroks(&cell, &prep, None, &mesh, &cfg);
-    assert!(plain.is_err(), "solve_kroks accepted SCAN");
+    // The ROKS gate's own wording (the shared evaluator re-checks with the UKS
+    // one, so a bare "meta-GGA" would not see the ROKS gate widened).
+    const ROKS_GATE: &str = "k-point ROKS supports only the pure SCAN / r2SCAN";
+    for f in ["TPSS", "MGGA_X_TPSS"] {
+        let cfg = roks_cfg(&cell, ExxDiv::None, f, None);
+        let grid = PeriodicGrid::build(&cell, &cfg.grid).unwrap();
+        let e = solve_kroks_on_grid(&cell, &prep, None, &mesh, &grid, &cfg)
+            .expect_err("solve_kroks_on_grid accepted TPSS")
+            .to_string();
+        eprintln!("{f}: {e}");
+        assert!(e.contains(ROKS_GATE), "{f}: {e}");
+        let e = ferric_pbc::kroks::solve_kroks(&cell, &prep, None, &mesh, &cfg)
+            .expect_err("solve_kroks accepted TPSS")
+            .to_string();
+        assert!(e.contains(ROKS_GATE), "{f}: {e}");
+    }
 }

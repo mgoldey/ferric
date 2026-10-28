@@ -1132,6 +1132,7 @@ fn uks_gradient(
     cfg: &GammaGradConfig,
 ) -> Result<GammaGradient, FerricError> {
     check_inputs(who, cell, prep, hcore_cfg, hc, &jk, scf, Spin::Unrestricted)?;
+    crate::gamma_mgga::refuse_native_mgga(who, &dft.functional)?;
     let (_, alpha) = resolve_periodic_functional(&dft.functional)?;
     let mut ledger = open_ledger(cell, prep, cfg, true)?;
     let (da, db) = spin_densities(who, scf)?;
@@ -1558,7 +1559,10 @@ fn ro_gradient(
     )?;
     let (alpha, exxdiv) = match kind {
         RoKind::Hf(e) => (1.0, e),
-        RoKind::Ks(d) => (resolve_periodic_functional(&d.functional)?.1, d.exxdiv),
+        RoKind::Ks(d) => {
+            crate::gamma_mgga::refuse_native_mgga(who, &d.functional)?;
+            (resolve_periodic_functional(&d.functional)?.1, d.exxdiv)
+        }
     };
     let mut ledger = open_ledger(cell, prep, cfg, true)?;
     let (da, db) = spin_densities(who, scf)?;

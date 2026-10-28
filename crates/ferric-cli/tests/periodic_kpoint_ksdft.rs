@@ -157,8 +157,8 @@ fn refusal(tag: &str, kind: &str, mult: usize, dft: &str, cell: &str) -> String 
 
 #[test]
 fn unsupported_kpoint_ks_combinations_are_refused_by_name() {
-    // k-point ROKS has no meta-GGA (no tau term); the early gate (config.rs),
-    // not a later library refusal, names it. The UKS energies run
+    // k-point ROKS meta-GGA is library-only (#492; not wired, #498); the early
+    // gate (config.rs), not a later library refusal, names it. The UKS energies run
     // (periodic_kpoint_open_shell.rs), and so does the ROKS range-separated
     // hybrid energy (periodic_rsh_open_mgga_derivs.rs).
     let e = refusal("roks-meta", "rohf", 3, "[dft]\nfunctional = \"SCAN\"", "");

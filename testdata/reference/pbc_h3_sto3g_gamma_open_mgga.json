@@ -1,0 +1,26 @@
+{
+  "pyscf_version": "2.13.1",
+  "cell": "H3 doublet (N_a=2, N_b=1) in the a = 4 Bohr cube, atoms (0.3,0.2,0.1),(0.3,0.2,1.5),(0.3,1.9,0.4), STO-3G H",
+  "settings": "Gamma point, pbc.dft.UKS / pbc.dft.ROKS, AFTDF + UniformGrids 61^3, exxdiv ewald, conv_tol 1e-12, cell.precision 1e-12",
+  "generator": "scripts/gen_pyscf_gamma_open_mgga_refs.py",
+  "kuks_1x1x1_scan_pin": -1.524551950364,
+  "unit": "Hartree",
+  "rows": {
+    "UKS SCAN": {
+      "e_tot": -1.5245519503638933,
+      "e_xc": -1.220957609781253
+    },
+    "UKS R2SCAN": {
+      "e_tot": -1.523392968512533,
+      "e_xc": -1.2198123732500001
+    },
+    "ROKS SCAN": {
+      "e_tot": -1.5228793372068483,
+      "e_xc": -1.2170903000997726
+    },
+    "ROKS R2SCAN": {
+      "e_tot": -1.5217087154361795,
+      "e_xc": -1.2159244804945086
+    }
+  }
+}

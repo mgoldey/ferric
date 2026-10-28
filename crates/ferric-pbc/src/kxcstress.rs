@@ -790,8 +790,9 @@ pub(crate) fn resolve_open_stress(
         return Err(PeriodicDftError::Unsupported {
             feature: "meta-GGA stress at k",
             reason: format!(
-                "{functional}: the restricted-open-shell (ROKS) k-point SCF has no meta-GGA; \
-                 the k-point meta-GGA stress covers RKS and UKS only"
+                "{functional}: the k-point ROKS meta-GGA stress is not implemented (the \
+                 SCAN / r2SCAN ROKS energy is, #492); the k-point meta-GGA stress covers RKS \
+                 and UKS only"
             ),
         }
         .into());
