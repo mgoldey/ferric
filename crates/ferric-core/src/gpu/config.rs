@@ -213,6 +213,48 @@ pub struct GpuSettings {
     pub mixed_kernels: MixedKernelSet,
 }
 
+/// A `mixed_kernels` list given under `precision = mixed`: every name must be
+/// shipped or opt-in ([`MixedKernelSet::OPT_IN`]), and an opt-in kernel needs
+/// `mode = on` (the KS XC grid, the one opt-in consumer, uses the device only
+/// then; under `auto` it would silently run f64 on the CPU).
+fn check_given_kernels(
+    kernels: MixedKernelSet,
+    shipped: MixedKernelSet,
+    mode: GpuMode,
+) -> Result<(), String> {
+    let opt_in = MixedKernelSet::OPT_IN;
+    let missing: Vec<&str> = kernels
+        .iter()
+        .filter(|&k| !shipped.contains(k) && !opt_in.contains(k))
+        .map(|k| k.name())
+        .collect();
+    if !missing.is_empty() {
+        let have = if shipped.is_empty() {
+            "none are shipped in this build".to_string()
+        } else {
+            format!("shipped in this build: {shipped}")
+        };
+        return Err(format!(
+            "[gpu] mixed_kernels: {} not shipped yet ({have}; opt-in, named explicitly and \
+             needing [gpu] mode = \"on\": {opt_in})",
+            missing.join(", ")
+        ));
+    }
+    let needs_on: Vec<&str> = kernels
+        .iter()
+        .filter(|&k| opt_in.contains(k) && !shipped.contains(k))
+        .map(|k| k.name())
+        .collect();
+    if !needs_on.is_empty() && mode != GpuMode::On {
+        return Err(format!(
+            "[gpu] mixed_kernels: {} is opt-in and needs [gpu] mode = \"on\" \
+             (FERRIC_GPU / [gpu] mode is {mode}; preset \"mixed\" sets it)",
+            needs_on.join(", ")
+        ));
+    }
+    Ok(())
+}
+
 fn tag<T>(r: Result<Resolved<T>, String>, name: &str) -> Result<Resolved<T>, String> {
     r.map_err(|e| format!("{name}: {e}"))
 }
@@ -431,23 +473,7 @@ impl GpuSettings {
                 );
             }
             Precision::Mixed if kernels_given => {
-                let missing: Vec<&str> = kernels
-                    .value
-                    .iter()
-                    .filter(|&k| !shipped.contains(k) && !MixedKernelSet::OPT_IN.contains(k))
-                    .map(|k| k.name())
-                    .collect();
-                if !missing.is_empty() {
-                    let have = if shipped.is_empty() {
-                        "none are shipped in this build".to_string()
-                    } else {
-                        format!("shipped in this build: {shipped}")
-                    };
-                    return Err(format!(
-                        "[gpu] mixed_kernels: {} not shipped yet ({have})",
-                        missing.join(", ")
-                    ));
-                }
+                check_given_kernels(kernels.value, shipped, mode.value)?;
             }
             Precision::Mixed if kernels.value.is_empty() => {
                 return Err(

@@ -6,7 +6,7 @@ use ferric_core::gpu::config::{GpuSettings, GpuSettingsExplicit};
 use ferric_core::gpu::precision::{
     MixedKernel, MixedKernelSet, MixedScope, Precision, GPU_PRECISION, PRECISION_DEFAULT,
 };
-use ferric_core::gpu::GpuMode;
+use ferric_core::gpu::{GpuMode, GpuPreset};
 use std::collections::HashMap;
 
 /// A test-only shipped set (the real constant is a build fact).
@@ -342,4 +342,91 @@ fn an_explicit_unshipped_kernel_is_refused_and_a_shipped_one_admitted() {
     // Unknown is a different message from not-shipped.
     let e = "diis".parse::<MixedKernelSet>().unwrap_err();
     assert!(e.contains("unknown mixed-precision kernel"), "{e}");
+}
+
+/// Catches: an opt-in kernel (`xc-vxc`) admitted under a mode other than
+/// `on`. Its one consumer, the KS XC grid, uses the device only under `on`,
+/// so under `auto` the audit line would claim mixed xc-vxc while the XC ran
+/// f64 on the CPU. Every spelling (TOML/kwarg, preset, env) is refused with
+/// an error naming `mode = "on"`; under `on` (explicit or preset `mixed`) it
+/// is admitted.
+#[test]
+fn an_opt_in_kernel_needs_mode_on_in_every_spelling() {
+    let with_xc = MixedKernelSet::SHIPPED.with(MixedKernel::XcVxc);
+    let refused = |r: Result<(GpuSettings, Vec<String>), String>, what: &str| {
+        let e = r.expect_err(what);
+        assert!(
+            e.contains("xc-vxc is opt-in and needs [gpu] mode = \"on\"")
+                && e.contains("mode is auto"),
+            "{what}: {e}"
+        );
+    };
+    // TOML / kwarg
+    refused(
+        GpuSettings::resolve(
+            GpuSettingsExplicit {
+                mode: Some(GpuMode::Auto),
+                precision: Some(Precision::Mixed),
+                mixed_kernels: Some(with_xc),
+                ..Default::default()
+            },
+            lookup(&[]),
+        ),
+        "toml auto",
+    );
+    // preset auto-mixed with a list naming it
+    refused(
+        GpuSettings::resolve(
+            GpuSettingsExplicit {
+                preset: Some(GpuPreset::AutoMixed),
+                mixed_kernels: Some(with_xc),
+                ..Default::default()
+            },
+            lookup(&[]),
+        ),
+        "preset auto-mixed",
+    );
+    // env
+    refused(
+        GpuSettings::resolve(
+            GpuSettingsExplicit::default(),
+            lookup(&[
+                ("FERRIC_GPU", "auto"),
+                ("FERRIC_GPU_PRECISION", "mixed"),
+                ("FERRIC_GPU_MIXED_KERNELS", "xc-vxc"),
+            ]),
+        ),
+        "env auto",
+    );
+    // admitted under `on`: explicit, preset `mixed`, env
+    for (explicit, env) in [
+        (
+            GpuSettingsExplicit {
+                mode: Some(GpuMode::On),
+                precision: Some(Precision::Mixed),
+                mixed_kernels: Some(with_xc),
+                ..Default::default()
+            },
+            vec![],
+        ),
+        (
+            GpuSettingsExplicit {
+                preset: Some(GpuPreset::Mixed),
+                mixed_kernels: Some(with_xc),
+                ..Default::default()
+            },
+            vec![],
+        ),
+        (
+            GpuSettingsExplicit::default(),
+            vec![
+                ("FERRIC_GPU", "on"),
+                ("FERRIC_GPU_PRECISION", "mixed"),
+                ("FERRIC_GPU_MIXED_KERNELS", "xc-vxc"),
+            ],
+        ),
+    ] {
+        let (s, _) = GpuSettings::resolve(explicit, lookup(&env)).unwrap();
+        assert!(s.mixed_allows(MixedKernel::XcVxc), "{explicit:?} {env:?}");
+    }
 }

@@ -27,6 +27,7 @@ use ferric_integrals::oneelectron;
 use ferric_integrals::operator::Operator;
 use ferric_scf::direct_jk::DirectJK;
 use ferric_scf::rhf::{ks_vxc_closed, solve_rhf, RhfConfig};
+use ferric_scf::rohf::solve_rohf;
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::uhf::solve_uhf;
 use ndarray::Array2;
@@ -236,8 +237,8 @@ fn a_converged_uks_exit_returns_f64_fock_matrices() {
 /// UKS evaluator, a mixed build at D1 followed by `refine_last_to_f64_uks`
 /// must equal a fresh evaluator's f64 build at D1 to rounding, report `true`
 /// exactly once, and report `false` (touching nothing) after an f64 build.
-/// The ROKS SCF exit is not pinned end to end here: ROHF returns the densities
-/// of the NEXT orbitals, not those its exit Fock matrices were built from.
+/// The ROKS SCF exit is pinned end to end by
+/// `a_converged_roks_exit_returns_the_f64_spin_fock_matrices`.
 #[test]
 fn the_exit_rebuild_restores_the_f64_spin_potentials() {
     let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -287,6 +288,63 @@ fn the_exit_rebuild_restores_the_f64_spin_potentials() {
     assert!(refined && !again, "refine must fire exactly once");
     assert!(res < 1e-3 * dev, "rebuilt V is not f64: {res:e}");
     assert!(!after_f64 && max_abs(&za) == 0.0 && max_abs(&zb) == 0.0);
+}
+
+/// Catches: a converged ROKS exit diagonalising (and returning) spin Fock
+/// matrices from a mixed build (`refine_exit_focks` in rohf.rs). ROHF returns
+/// the densities of the NEXT orbitals, so the exit Fock matrices cannot be
+/// rebuilt from the result; instead two runs share their whole trajectory up
+/// to the exit: thresholds wide enough that both exit at iteration 2, the
+/// occupation guard off (it would refuse such an exit and continue). Build 1 is
+/// f64 in both (a first build), so build 2 sees the same density in both; on
+/// the twin it is mixed. After the exit rebuild the twin's spin Fock matrices
+/// and Roothaan Fock matrix must equal the f64 run's to rounding.
+#[test]
+fn a_converged_roks_exit_returns_the_f64_spin_fock_matrices() {
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mol = Molecule::load_xyz_with_charge(WATER, 1, 2).unwrap();
+    let prep = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
+    let op = Operator::coulomb();
+    let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+    let cfg = RhfConfig {
+        density_conv: 1e3,
+        energy_conv: 1e3,
+        rohf_occupation_guard: false,
+        ..loose_cfg()
+    };
+    let run = |twin: bool| {
+        FORCE_HOST.store(true, Ordering::SeqCst);
+        MIXED_VXC_HOST_TWIN.store(twin, Ordering::SeqCst);
+        let m0 = MIXED_VXC_BUILDS.load(Ordering::SeqCst);
+        let r = solve_rohf(&ParallelContext::default(), &mol, &prep, op, &bounds, &cfg);
+        let mixed = MIXED_VXC_BUILDS.load(Ordering::SeqCst) - m0;
+        MIXED_VXC_HOST_TWIN.store(false, Ordering::SeqCst);
+        FORCE_HOST.store(false, Ordering::SeqCst);
+        (r.unwrap(), mixed)
+    };
+    let (f64_run, m_f) = run(false);
+    let (twin, m_t) = run(true);
+    assert!(f64_run.converged && twin.converged);
+    assert_eq!(
+        (f64_run.iterations, twin.iterations),
+        (2, 2),
+        "both exit at iteration 2"
+    );
+    assert_eq!(
+        (m_f, m_t),
+        (0, 1),
+        "build 2 of the twin run is mixed (the test is live)"
+    );
+    let (fa_t, fb_t) = twin.rohf_spin_focks.as_ref().unwrap();
+    let (fa_f, fb_f) = f64_run.rohf_spin_focks.as_ref().unwrap();
+    let res = max_abs(&(fa_t - fa_f))
+        .max(max_abs(&(fb_t - fb_f)))
+        .max(max_abs(&(&twin.fock_alpha - &f64_run.fock_alpha)));
+    eprintln!("ROKS exit at iteration 2: max|F_twin − F_f64| {res:.2e}");
+    assert!(
+        res < F64_FOCK_TOL,
+        "returned ROKS Fock matrices are not f64: {res:e}"
+    );
 }
 
 /// Catches: the ladder carrying a previous SCF's density into the next one on

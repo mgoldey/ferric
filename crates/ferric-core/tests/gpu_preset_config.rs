@@ -304,7 +304,8 @@ fn an_unshipped_name_in_a_narrower_list_under_mixed_is_refused() {
     .unwrap_err();
     assert_eq!(
         e,
-        "[gpu] mixed_kernels: dfk-occ not shipped yet (shipped in this build: rimp2-energy)"
+        "[gpu] mixed_kernels: dfk-occ not shipped yet (shipped in this build: rimp2-energy; \
+         opt-in, named explicitly and needing [gpu] mode = \"on\": xc-vxc)"
     );
 }
 

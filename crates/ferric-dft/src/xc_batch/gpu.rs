@@ -272,7 +272,7 @@ pub(super) fn session<'a>(sg: &'a ScreenedGrid, grid: &[GridPoint]) -> DevSessio
         return None;
     };
     if rayon::current_thread_index().is_some() {
-        stats::note_cpu(CpuReason::InsideRayonWorker); // transient: the slot is untouched
+        note_rayon_worker(sg);
         return None;
     }
     let mut slot = sg.device.lock().unwrap_or_else(|e| e.into_inner());
@@ -300,6 +300,17 @@ pub(super) fn session<'a>(sg: &'a ScreenedGrid, grid: &[GridPoint]) -> DevSessio
         }
     }
     Some(slot)
+}
+
+/// A call from inside a rayon worker runs on the CPU (transient: the slot is
+/// untouched). Counted as `InsideRayonWorker` unless the grid is already
+/// declined, which is known without blocking: `try_lock` never waits, and a
+/// slot that is busy or poisoned counts as not declined.
+fn note_rayon_worker(sg: &ScreenedGrid) {
+    let declined = matches!(sg.device.try_lock().as_deref(), Ok(DeviceSlot::Declined));
+    if !declined {
+        stats::note_cpu(CpuReason::InsideRayonWorker);
+    }
 }
 
 /// True when `sg`'s AO blocks are on the device and no failure declined it.
