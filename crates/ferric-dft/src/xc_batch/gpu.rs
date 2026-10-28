@@ -25,9 +25,9 @@
 //!
 //! # Numerics and determinism
 //!
-//! The device products are plain f64 `cublasDgemm` (no mixed precision: the
-//! XC kernel is not on the mixed allowlist), one call per product with no k
-//! blocking. They are NOT bit-identical to the host GEMMs (cuBLAS orders its
+//! The device products are plain f64 `cublasDgemm`, one call per product with
+//! no k blocking — except the pass-2 product of a build the precision ladder
+//! marks mixed (see below). They are NOT bit-identical to the host GEMMs (cuBLAS orders its
 //! sums its own way); each product obeys the classical bound
 //! `|ĉ − c| ≤ γ_k (|A||B|)` (Higham, ASNA §3.5) with `k = nact` (pass 1 dense,
 //! pass 1 `Ψ`), `k = nocc` (pass 1 `Φ` from `Ψ`) or `k = ncols` (pass 2), the
@@ -36,6 +36,22 @@
 //! group in ascending batch order, groups summed in ascending order. The result
 //! is therefore deterministic run to run on one device and independent of the
 //! rayon thread count.
+//!
+//! # Mixed precision (`xc-vxc`)
+//!
+//! With `[gpu] precision = "mixed"` and `xc-vxc` in `mixed_kernels`, the upload
+//! also keeps the AO blocks rounded to f32 (round to nearest, ties to even;
+//! half the bytes again), and a pass 2 that `KsXc`'s precision ladder marks
+//! mixed (LDA/GGA only, density still moving; see `ks::MIXED_VXC_LADDER_THRESH`)
+//! forms each `V_b = A·Xᵀ` from f32 `A` and `X` with the k-panelled SGEMM and
+//! f64 flush of `ferric_core::gpu::mixed` (panels of 64). Per element
+//! `|ΔV_ij| ≤ (2u32 + γ_64(u32) + γ_⌈k/64⌉(u64))·(|A||X|ᵀ)_ij`, `k = ncols`
+//! (the host twin's bound, pinned by `xc_batch`'s unit test). Pass 1 (ρ, ∇ρ),
+//! the functional and E_xc stay f64. A wave whose panel sums could leave the
+//! f32 range (`k_panel·max|A|·max|X| ≥ f32::MAX/2`, or a NaN) runs f64, and a
+//! missing flush kernel, an AO value beyond the f32 range or a pool too small
+//! for the f32 copies leave the whole grid f64 on the device; each is counted
+//! (`mixed_fallback_f64`) and the last three announced.
 //!
 //! # Fallback (never silent)
 //!
@@ -52,9 +68,10 @@ use rayon::prelude::*;
 
 use ferric_core::gpu::device::{device, Device, GpuError};
 use ferric_core::gpu::gemm::{dev_left, dev_right, dev_right_padded, gemm_f64_dev_into};
+use ferric_core::gpu::mixed::{effective_k_panel, gemm_f32_f64acc_dev_into, round_to_f32};
 use ferric_core::gpu::resident::DeviceMatrix;
 use ferric_core::gpu::stats::{self, CpuReason};
-use ferric_core::gpu::{GpuMode, GpuStatus};
+use ferric_core::gpu::{GpuMode, GpuStatus, MixedKernel};
 
 use super::{
     batch_density_from_phi, fill_amat, group_ranges, map_indexed, n_groups, scatter_sym,
@@ -78,6 +95,29 @@ const UPLOAD_STAGE_BYTES: usize = 64 << 20;
 #[cfg(feature = "test-seams")]
 #[doc(hidden)]
 pub static FORCE_HOST: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Test seam (`test-seams` feature): the CPU pass 2 forms each `V_b` with the
+/// host twin of the mixed kernel, so its error map is measurable without a device.
+#[cfg(feature = "test-seams")]
+#[doc(hidden)]
+pub static MIXED_VXC_HOST_TWIN: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(feature = "test-seams")]
+pub(super) fn mixed_vxc_host_twin() -> bool {
+    MIXED_VXC_HOST_TWIN.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// See `xc_batch::mixed_vxc_requested`.
+pub(super) fn mixed_vxc_requested() -> bool {
+    #[cfg(feature = "test-seams")]
+    if mixed_vxc_host_twin() {
+        return true;
+    }
+    !force_host()
+        && ferric_core::gpu::settings().mixed_allows(MixedKernel::XcVxc)
+        && matches!(ferric_core::gpu::status(), GpuStatus::Ready(_))
+}
 
 fn force_host() -> bool {
     #[cfg(feature = "test-seams")]
@@ -122,6 +162,39 @@ pub(crate) struct DeviceXc {
     stage_mid: DeviceMatrix<f64>,
     /// Per-batch results (`Φ` or `V_b`).
     stage_out: DeviceMatrix<f64>,
+    /// The f32 operands of the mixed `xc-vxc` kernel; `None` when mixed
+    /// precision was not requested or could not be set up (f64 only).
+    mixed: Option<MixedState>,
+}
+
+/// Device state of the mixed `xc-vxc` kernel.
+struct MixedState {
+    /// `ao` rounded to f32 (round to nearest, ties to even), same layout.
+    ao32: DeviceMatrix<f32>,
+    /// Per-batch `A` rounded to f32 (the pass-2 left operands).
+    stage_in32: DeviceMatrix<f32>,
+    /// f32 panel scratch, `max nact²` elements: one batch at a time (the
+    /// launches are stream-ordered, so a batch's panels and flushes finish
+    /// before the next batch's first panel overwrites it).
+    c32: DeviceMatrix<f32>,
+    /// `max |χ|, |∇χ|` over every AO block (the panel-overflow guard).
+    max_abs_x: f64,
+}
+
+/// Why the mixed state could not be built: a reason to run f64 on the device
+/// (`Soft`), or a device failure that declines the grid (`Hard`).
+enum MixedSetup {
+    Soft(GpuError),
+    Hard(GpuError),
+}
+
+/// True when every panel sum of a mixed `A·Xᵀ` stays inside the f32 range: a
+/// panel of `k_panel` terms is bounded by `k_panel·max|A|·max|X|`, kept below
+/// half of `f32::MAX`. A NaN maximum is refused too (the f64 path then
+/// propagates it exactly as the CPU does).
+pub(crate) fn mixed_panel_fits(k_panel: usize, max_a: f64, max_x: f64) -> bool {
+    let worst = k_panel.max(1) as f64 * max_a * max_x;
+    worst < 0.5 * f64::from(f32::MAX)
 }
 
 /// Why a device pass stopped: a host AO evaluation error (the caller's error,
@@ -265,14 +338,21 @@ pub(super) fn potential_pass<F>(
     nmats: usize,
     factors: &F,
     flags: (bool, bool),
-    serial: bool,
+    exec: super::Exec,
     dev: &mut DevSession<'_>,
 ) -> Result<Option<Vec<Array2<f64>>>, GtoEvalError>
 where
     F: Fn(&XcBatch, usize) -> BatchFactors + Sync,
 {
     with_device(dev, |dx| {
-        dx.potential(sg, grid, nmats, factors, flags, serial)
+        dx.potential(
+            sg,
+            grid,
+            nmats,
+            factors,
+            flags,
+            (exec.serial, exec.mixed_vxc),
+        )
     })
 }
 
@@ -395,6 +475,49 @@ fn gather_into(d: &DensityInput, funcs: &[u32], out: &mut [f64]) {
     }
 }
 
+/// Mixed precision was requested but this grid runs its V_xc in f64 on the
+/// device: counted (`mixed_fallback_f64`) and announced, never silent.
+fn mixed_unavailable(e: &GpuError) {
+    eprintln!(
+        "[ferric] gpu: KS-DFT XC potential runs in f64 on the device (mixed xc-vxc unavailable: {})",
+        one_line(e)
+    );
+    stats::note_mixed_fallback();
+}
+
+impl MixedState {
+    /// Probe the flush kernel (a typed `Kernel` error moves nothing), then
+    /// reserve the f32 copies; a pool refusal is `Soft` (f64 stays usable).
+    fn reserve(
+        dev: &Arc<Device>,
+        pool: &ferric_core::gpu::pool::DevicePool,
+        ao_len: usize,
+        stage: usize,
+        max_na2: usize,
+    ) -> Result<Self, GpuError> {
+        dev.axpy_f32_to_f64()?;
+        let z = |label: &str, len: usize| DeviceMatrix::<f32>::zeros(dev, pool, label, len, 1);
+        let c32 = z("KS-DFT XC mixed panel scratch (f32)", max_na2.max(1))?;
+        let stage_in32 = z("KS-DFT XC staging (operands, f32)", stage)?;
+        let ao32 = z("KS-DFT grid AO blocks (device, f32)", ao_len)?;
+        Ok(Self {
+            ao32,
+            stage_in32,
+            c32,
+            max_abs_x: 0.0,
+        })
+    }
+
+    /// Round one AO block to f32 and send it to `ao32[at..]`.
+    fn write_block(&mut self, dev: &Device, at: usize, src: &[f64]) -> Result<(), MixedSetup> {
+        let r = round_to_f32("XC AO block", src).map_err(MixedSetup::Soft)?;
+        self.max_abs_x = src.iter().fold(self.max_abs_x, |m, v| m.max(v.abs()));
+        dev.stream
+            .memcpy_htod(&r, &mut self.ao32.buf_mut().slice_mut(at..at + r.len()))
+            .map_err(|e| MixedSetup::Hard(cuda("H2D XC AO block (f32)", e)))
+    }
+}
+
 impl DeviceXc {
     /// Reserve the staging buffers and the AO copy (charged before any byte
     /// moves), then send every batch's block, evaluating it on the host first in
@@ -433,6 +556,18 @@ impl DeviceXc {
         let stage_mid = z("KS-DFT XC staging (psi)", stage)?;
         let stage_out = z("KS-DFT XC staging (results)", stage)?;
         let mut ao = z(AO_LABEL, total)?;
+        let mut mixed = if mixed_vxc_requested() {
+            let max_na2 = shapes.iter().map(|&(na, _)| na * na).max().unwrap_or(0);
+            match MixedState::reserve(dev, pool, total, stage, max_na2) {
+                Ok(m) => Some(m),
+                Err(e) => {
+                    mixed_unavailable(&e);
+                    None
+                }
+            }
+        } else {
+            None
+        };
         let n = sg.batches.len();
         let mut b0 = 0usize;
         while b0 < n {
@@ -463,6 +598,16 @@ impl DeviceXc {
                 dev.stream
                     .memcpy_htod(src, &mut ao.buf_mut().slice_mut(at..at + src.len()))
                     .map_err(|e| cuda(&format!("H2D XC AO block {bi}"), e))?;
+                if let Some(m) = mixed.as_mut() {
+                    match m.write_block(dev, at, src) {
+                        Ok(()) => {}
+                        Err(MixedSetup::Soft(e)) => {
+                            mixed_unavailable(&e);
+                            mixed = None;
+                        }
+                        Err(MixedSetup::Hard(e)) => return Err(e),
+                    }
+                }
             }
             b0 = b1;
         }
@@ -470,6 +615,9 @@ impl DeviceXc {
             .synchronize()
             .map_err(|e| cuda("sync after the XC AO upload", e))?;
         stats::note_resident_upload(ao.bytes());
+        if let Some(m) = &mixed {
+            stats::note_resident_upload(m.ao32.bytes());
+        }
         Ok(Self {
             dev: Arc::clone(dev),
             ao,
@@ -477,6 +625,7 @@ impl DeviceXc {
             stage_in,
             stage_mid,
             stage_out,
+            mixed,
         })
     }
 
@@ -635,6 +784,7 @@ impl DeviceXc {
             stage_in,
             stage_mid,
             stage_out,
+            ..
         } = self;
         let at = ao_off[bi];
         let ao_tw = twin(na, 4 * nb);
@@ -679,12 +829,14 @@ impl DeviceXc {
         nmats: usize,
         factors: &F,
         flags: (bool, bool),
-        serial: bool,
+        (serial, mixed_req): (bool, bool),
     ) -> Result<Vec<Array2<f64>>, Fail>
     where
         F: Fn(&XcBatch, usize) -> BatchFactors + Sync,
     {
         let (nbat, nbf) = (sg.batches.len(), sg.nbf);
+        let k_panel = effective_k_panel();
+        let (mut mixed_waves, mut panels) = (0usize, 0usize);
         let ranges = group_ranges(nbat, n_groups(nbat, nbf, nmats));
         let mut accs: Vec<Vec<Array2<f64>>> = ranges
             .iter()
@@ -722,13 +874,46 @@ impl DeviceXc {
                 }
                 Ok(())
             })?;
-            let host_out = self.round_trip(&host_in, w.total[2], |me| {
-                for (j, off) in w.off.iter().enumerate() {
-                    me.launch_potential(sg, b0 + j, *off, nmats, &ncols)?;
+            // Mixed for this wave only when the ladder asked for it, the f32
+            // state exists, and no panel sum can leave the f32 range.
+            let mixed_wave = match (&self.mixed, mixed_req) {
+                (Some(m), true) => {
+                    let fits = mixed_panel_fits(k_panel, max_abs_nan(&host_in), m.max_abs_x);
+                    if !fits {
+                        stats::note_mixed_fallback();
+                    }
+                    fits
                 }
-                Ok(())
-            })?;
-            h2d += 8 * host_in.len();
+                _ => false,
+            };
+            let host_out = if mixed_wave {
+                let a32 = round_to_f32("XC A", &host_in)?;
+                let out = self.round_trip(&[], w.total[2], |me| {
+                    let m = me.mixed.as_mut().expect("mixed_wave implies the f32 state");
+                    if !a32.is_empty() {
+                        me.dev
+                            .stream
+                            .memcpy_htod(&a32, &mut m.stage_in32.buf_mut().slice_mut(..a32.len()))
+                            .map_err(|e| cuda("H2D XC operands (f32)", e))?;
+                    }
+                    for (j, off) in w.off.iter().enumerate() {
+                        panels += me.launch_potential(sg, b0 + j, *off, (nmats, true), &ncols)?;
+                    }
+                    Ok(())
+                })?;
+                h2d += 4 * a32.len();
+                mixed_waves += 1;
+                out
+            } else {
+                let out = self.round_trip(&host_in, w.total[2], |me| {
+                    for (j, off) in w.off.iter().enumerate() {
+                        me.launch_potential(sg, b0 + j, *off, (nmats, false), &ncols)?;
+                    }
+                    Ok(())
+                })?;
+                h2d += 8 * host_in.len();
+                out
+            };
             d2h += 8 * host_out.len();
             // Scatter: every group touched by this wave, its batches in
             // ascending order (waves ascend too), groups independent.
@@ -769,22 +954,28 @@ impl DeviceXc {
             }
         }
         stats::note_xc_pass(h2d, d2h);
+        if mixed_waves > 0 {
+            // Bytes are already in the pass's tally above.
+            stats::note_mixed(panels, 0, 0);
+        }
         Ok(out)
     }
 
-    /// Launch batch `bi`'s pass-2 products `V_b = A·Xᵀ` (stream-ordered, no sync).
+    /// Launch batch `bi`'s pass-2 products `V_b = A·Xᵀ` (stream-ordered, no
+    /// sync): f64 dgemm, or with `mixed` the f32-operand / f64-accumulate
+    /// kernel on `ao32` and `stage_in32`. Returns the mixed panels flushed.
     fn launch_potential(
         &mut self,
         sg: &ScreenedGrid,
         bi: usize,
         [ii, _, oo]: [usize; 3],
-        nmats: usize,
+        (nmats, mixed): (usize, bool),
         ncols: impl Fn(usize) -> usize,
-    ) -> Result<(), GpuError> {
+    ) -> Result<usize, GpuError> {
         let b = &sg.batches[bi];
         let (na, nb) = (b.funcs.len(), b.idx.len());
         if na == 0 {
-            return Ok(());
+            return Ok(0);
         }
         let nc = ncols(nb);
         let Self {
@@ -793,6 +984,7 @@ impl DeviceXc {
             ao_off,
             stage_in,
             stage_out,
+            mixed: mixed_state,
             ..
         } = self;
         let at = ao_off[bi];
@@ -800,16 +992,51 @@ impl DeviceXc {
         let xt_tw = ao_tw.slice(s![.., ..nc]);
         let xt_tw = xt_tw.t();
         let atw = twin(na, nc);
+        let mut panels = 0usize;
         for mat in 0..nmats {
-            let xt = dev_right_padded(ao.buf().slice(at..at + na * 4 * nb), &xt_tw)?;
             let a0 = ii + mat * na * nc;
-            let a = dev_left(stage_in.buf().slice(a0..a0 + na * nc), &atw.view())?;
             let o0 = oo + mat * na * na;
             let mut vb = stage_out.buf_mut().slice_mut(o0..o0 + na * na);
-            gemm_f64_dev_into(dev, na, nc, na, &a, &xt, &mut vb, nc.max(1))?;
+            match (mixed, mixed_state.as_mut()) {
+                (true, Some(m)) => {
+                    let xt = dev_right_padded(m.ao32.buf().slice(at..at + na * 4 * nb), &xt_tw)?;
+                    let a = dev_left(m.stage_in32.buf().slice(a0..a0 + na * nc), &atw.view())?;
+                    let mut c32 = m.c32.buf_mut().slice_mut(..na * na);
+                    panels += gemm_f32_f64acc_dev_into(
+                        dev,
+                        (na, nc, na),
+                        &a,
+                        &xt,
+                        &mut c32,
+                        &mut vb,
+                        effective_k_panel(),
+                    )?;
+                }
+                (true, None) => {
+                    return Err(GpuError::Layout(
+                        "mixed XC launch without the f32 state".into(),
+                    ))
+                }
+                (false, _) => {
+                    let xt = dev_right_padded(ao.buf().slice(at..at + na * 4 * nb), &xt_tw)?;
+                    let a = dev_left(stage_in.buf().slice(a0..a0 + na * nc), &atw.view())?;
+                    gemm_f64_dev_into(dev, na, nc, na, &a, &xt, &mut vb, nc.max(1))?;
+                }
+            }
         }
-        Ok(())
+        Ok(panels)
     }
+}
+
+/// `max |x|`, NaN if any element is NaN.
+fn max_abs_nan(x: &[f64]) -> f64 {
+    x.iter().fold(0.0_f64, |m, &v| {
+        if v.is_nan() || m.is_nan() {
+            f64::NAN
+        } else {
+            m.max(v.abs())
+        }
+    })
 }
 
 #[cfg(test)]
@@ -848,6 +1075,19 @@ mod tests {
             b0 = w.end;
         }
         assert_eq!(seen, needs.len());
+    }
+
+    #[test]
+    fn mixed_panels_that_could_overflow_f32_run_f64() {
+        assert!(mixed_panel_fits(64, 1e3, 1e3));
+        let edge = 0.5 * f64::from(f32::MAX) / 64.0;
+        assert!(!mixed_panel_fits(64, edge, 1.0), "the bound is strict");
+        assert!(mixed_panel_fits(64, edge * 0.99, 1.0));
+        assert!(!mixed_panel_fits(64, f64::NAN, 1.0));
+        assert!(!mixed_panel_fits(64, f64::INFINITY, 1.0));
+        assert!(max_abs_nan(&[1.0, -3.0, 2.0]) == 3.0);
+        assert!(max_abs_nan(&[1.0, f64::NAN, 5.0]).is_nan());
+        assert_eq!(max_abs_nan(&[]), 0.0);
     }
 
     #[test]

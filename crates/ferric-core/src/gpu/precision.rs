@@ -78,15 +78,22 @@ pub enum MixedKernel {
     /// Named only: not in `SHIPPED`, selectable only through the `df_k_gpu`
     /// settings-override seam until its error map ships.
     DfjPack = 16,
+    /// KS-DFT XC potential: each grid batch's `V_b = A·Xᵀ` (the pass-2 product
+    /// of the screened XC grid) from f32 operands with f64 panel accumulation,
+    /// LDA and GGA only (meta-GGA τ stays on the never-f32 list), and only for
+    /// Fock builds whose density is still moving (the precision ladder in
+    /// `ferric_dft::ks`). The density pass, the functional and E_xc stay f64.
+    XcVxc = 32,
 }
 
 impl MixedKernel {
-    pub const ALL: [MixedKernel; 5] = [
+    pub const ALL: [MixedKernel; 6] = [
         MixedKernel::RiMp2Energy,
         MixedKernel::CcsdAmplitudes,
         MixedKernel::DfkOcc,
         MixedKernel::CosxKern,
         MixedKernel::DfjPack,
+        MixedKernel::XcVxc,
     ];
 
     pub const fn name(self) -> &'static str {
@@ -96,6 +103,7 @@ impl MixedKernel {
             MixedKernel::DfkOcc => "dfk-occ",
             MixedKernel::CosxKern => "cosx-kern",
             MixedKernel::DfjPack => "dfj-pack",
+            MixedKernel::XcVxc => "xc-vxc",
         }
     }
 }
@@ -126,11 +134,15 @@ impl MixedKernelSet {
     /// The kernels whose error-budget row has shipped. Each Phase 4 task that
     /// ships a row extends this constant in the same commit as its gates:
     /// `RiMp2Energy` is shipped (its budget row is in the `gpu_rimp2_mixed`
-    /// test docstring); Task 4.3 adds `CcsdAmplitudes`, Task 4.4 `DfkOcc`.
+    /// test docstring), and `XcVxc` (its error map is on the validation page,
+    /// measured by `ferric-scf/tests/xc_mixed_vxc_error_map.rs`); Task 4.3
+    /// adds `CcsdAmplitudes`, Task 4.4 `DfkOcc`.
     /// It is the default of `FERRIC_GPU_MIXED_KERNELS`; a build whose set is
     /// empty refuses `precision = mixed`. Shipping a kernel does not change the
     /// precision default: `PRECISION_DEFAULT` stays f64.
-    pub const SHIPPED: Self = Self::EMPTY.with(MixedKernel::RiMp2Energy);
+    pub const SHIPPED: Self = Self::EMPTY
+        .with(MixedKernel::RiMp2Energy)
+        .with(MixedKernel::XcVxc);
 
     pub const fn with(self, k: MixedKernel) -> Self {
         Self(self.0 | k as u8)
@@ -271,7 +283,7 @@ mod tests {
         );
         assert!(MixedKernel::ALL.contains(&MixedKernel::CosxKern));
         assert!(!MixedKernelSet::SHIPPED.contains(MixedKernel::CosxKern));
-        assert_eq!(MixedKernel::ALL.len(), 5);
+        assert_eq!(MixedKernel::ALL.len(), 6);
     }
 
     #[test]
@@ -285,7 +297,7 @@ mod tests {
         assert!(MixedKernel::ALL.contains(&MixedKernel::DfjPack));
         assert!(!MixedKernelSet::SHIPPED.contains(MixedKernel::DfjPack));
         let set = MixedKernelSet::SHIPPED.with(MixedKernel::DfjPack);
-        assert_eq!(set.to_string(), "rimp2-energy,dfj-pack");
+        assert_eq!(set.to_string(), "rimp2-energy,dfj-pack,xc-vxc");
         assert_eq!(set.to_string().parse::<MixedKernelSet>().unwrap(), set);
     }
 

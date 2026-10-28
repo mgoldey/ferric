@@ -26,11 +26,12 @@ use ferric_core::mol::Molecule;
 use crate::ao_grid::{collect_shells, eval_basis_and_grad_on_points, nbasis, GtoEvalError};
 use crate::density_on_grid::{eval_density_closed, DensityGrid};
 use crate::grid::{build_atomic_grid_pruned, AtomicGridConfig, GridPoint};
-use crate::libxc::{xc_def_from_name, xc_def_from_name_nspin, LibxcError, XcDef};
+use crate::libxc::{xc_def_from_name, xc_def_from_name_nspin, FunctionalFamily, LibxcError, XcDef};
 use crate::vv10::add_vv10_scratch;
 use crate::vxc::VxcScratch;
 use crate::xc_batch::{
-    owned_shells, AoStorage, DensityInput, ScreenedGrid, XcBatchConfig, XcScreeningStats,
+    mixed_vxc_requested, owned_shells, AoStorage, DensityInput, Exec, ScreenedGrid, XcBatchConfig,
+    XcScreeningStats,
 };
 use crate::xc_trait::{KMix, UksXcContribution, XcContribution};
 
@@ -370,6 +371,101 @@ fn build_grids(
     })
 }
 
+/// RMS change of every spin density matrix between two consecutive Fock
+/// builds (`sqrt(Σ ΔD²/nbf²)`, AO basis) above which the later build may form
+/// V_xc with the device's mixed-precision `xc-vxc` kernel.
+///
+/// Why a ladder. V_xc in mixed precision perturbs only the Fock matrix; the
+/// energy is variational in the density, so the converged energy moves at
+/// second order. But the f32 panel sums are rounding NOISE that changes with
+/// the density, and an SCF iterated to a tight `density_conv` stalls on it:
+/// with every build mixed (host twin of the kernel, benzene/cc-pVDZ PBE) the
+/// SCF took 77 instead of 12 iterations at `density_conv = 1e-9` and did not
+/// converge in 200 at 1e-10. (Rounding only the AO values to f32, a fixed
+/// perturbation, costs nothing; rounding only `A` costs 2-6 iterations; the
+/// f32 panel accumulation is the rest.) So mixed precision runs only while
+/// the density still moves by more than this, and the closing iterations —
+/// the ones whose Fock matrix and energy the SCF returns — are f64.
+///
+/// Chosen by measurement (host twin, benzene and water⁺ PBE, water r2SCAN,
+/// cc-pVDZ, `density_conv` 1e-6 / 1e-9 / 1e-10): τ = 1e-3, 1e-4, 1e-5 ran 3-4,
+/// 4-5 and 6 of the ~10 builds mixed, cost at most 3, 3 and 2 extra
+/// iterations, and moved the converged energy by at most 6e-13 Eh. 1e-5 keeps
+/// the most builds mixed for the fewest extra iterations.
+pub const MIXED_VXC_LADDER_THRESH: f64 = 1e-5;
+
+/// Process-wide count of Fock builds the ladder allowed to use the mixed
+/// `xc-vxc` kernel (tests read deltas).
+#[doc(hidden)]
+pub static MIXED_VXC_BUILDS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Per-evaluator memory of the last Fock build's spin densities, deciding
+/// whether the next build may use the mixed `xc-vxc` kernel. A build is mixed
+/// only when mixed precision was requested (`[gpu] precision = "mixed"` with
+/// `xc-vxc` in `mixed_kernels`, and a ready device), the functional is not a
+/// meta-GGA (see `mixed_vxc_allowed`), a previous build exists,
+/// and some spin density moved by more than [`MIXED_VXC_LADDER_THRESH`]
+/// since it. A first (or one-shot) build is therefore always f64, and so is
+/// every build of a converging SCF once it closes in.
+#[derive(Debug, Default)]
+struct MixedLadder {
+    prev: Mutex<Vec<Array2<f64>>>,
+}
+
+impl MixedLadder {
+    /// Record `ds` and say whether this build may use the mixed kernel.
+    fn step(&self, ds: &[&Array2<f64>]) -> bool {
+        let moving = self.step_with(mixed_vxc_requested(), MIXED_VXC_LADDER_THRESH, ds);
+        if moving {
+            MIXED_VXC_BUILDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+        moving
+    }
+
+    /// [`Self::step`] with the request and threshold injected. Nothing is
+    /// recorded when mixed precision is not requested (no nbf² copies).
+    fn step_with(&self, requested: bool, thresh: f64, ds: &[&Array2<f64>]) -> bool {
+        if !requested {
+            return false;
+        }
+        let mut prev = self.prev.lock().unwrap_or_else(|e| e.into_inner());
+        let same_shape =
+            prev.len() == ds.len() && prev.iter().zip(ds).all(|(p, d)| p.dim() == d.dim());
+        let moving = same_shape && prev.iter().zip(ds).any(|(p, d)| rms_diff(p, d) > thresh);
+        if same_shape {
+            for (p, d) in prev.iter_mut().zip(ds) {
+                p.assign(d);
+            }
+        } else {
+            *prev = ds.iter().map(|d| (*d).clone()).collect();
+        }
+        moving
+    }
+}
+
+/// Whether this Fock build may form V_xc with the mixed `xc-vxc` kernel: never
+/// for a meta-GGA (its potential carries the τ blocks, and meta-GGA τ is on the
+/// never-f32 list of `ferric_core::gpu::precision`), otherwise the ladder's
+/// answer. A meta-GGA does not step the ladder at all.
+fn mixed_vxc_allowed(xc: &XcDef, ladder: &MixedLadder, ds: &[&Array2<f64>]) -> bool {
+    let mgga = xc
+        .funcs
+        .iter()
+        .any(|f| matches!(f.family(), FunctionalFamily::MetaGga));
+    !mgga && ladder.step(ds)
+}
+
+/// `sqrt(Σ (a − b)² / len)`; NaN propagates (and then compares false, so a
+/// NaN density never selects the mixed kernel).
+fn rms_diff(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
+    let n = a.len().max(1) as f64;
+    let ss = a
+        .iter()
+        .zip(b.iter())
+        .fold(0.0_f64, |acc, (x, y)| acc + (x - y) * (x - y));
+    (ss / n).sqrt()
+}
+
 /// Closed-shell Kohn-Sham XC evaluator: Becke-Lebedev grid + screened batches
 /// (see [`crate::xc_batch`]) + optional VV10 NLC grid and its dense AO cache.
 #[derive(Debug)]
@@ -390,6 +486,8 @@ pub struct KsXc {
     /// VV10's scratch, sized for the NLC grid. (`add_xc` takes `&self`, hence
     /// the Mutex; uncontended — one lock per Fock build.)
     nlc_scratch: Mutex<VxcScratch>,
+    /// When a Fock build may form V_xc in mixed precision (see [`MixedLadder`]).
+    ladder: MixedLadder,
 }
 
 /// The working budget the grid cache sizes itself against.
@@ -573,6 +671,7 @@ impl KsXc {
             nlc_chi: b.nlc_chi,
             nlc_dchi: b.nlc_dchi,
             nlc_scratch: Mutex::new(VxcScratch::new()),
+            ladder: MixedLadder::default(),
         })
     }
 }
@@ -616,7 +715,12 @@ impl KsXc {
     fn add_xc_input(&self, d: &Array2<f64>, input: DensityInput, f: &mut Array2<f64>) -> f64 {
         let (e_xc, vxc) = self
             .screened
-            .integrate_closed(&self.grid, input, &self.xc)
+            .integrate_closed_exec(
+                &self.grid,
+                input,
+                &self.xc,
+                Exec::auto().with_mixed_vxc(mixed_vxc_allowed(&self.xc, &self.ladder, &[d])),
+            )
             .expect(
                 "per-shell AO evaluation failed inside a Fock build, but KsXc::new already \
                  evaluated every shell once (ScreenedGrid::build) and the only per-shell \
@@ -702,6 +806,8 @@ pub struct KsXcUks {
     pub nlc_dchi: Option<Array3<f64>>,
     /// See `KsXc::nlc_scratch`.
     nlc_scratch: Mutex<VxcScratch>,
+    /// When a Fock build may form V_xc in mixed precision (see [`MixedLadder`]).
+    ladder: MixedLadder,
 }
 
 impl KsXcUks {
@@ -803,6 +909,7 @@ impl KsXcUks {
             nlc_chi: b.nlc_chi,
             nlc_dchi: b.nlc_dchi,
             nlc_scratch: Mutex::new(VxcScratch::new()),
+            ladder: MixedLadder::default(),
         })
     }
 }
@@ -821,7 +928,13 @@ impl KsXcUks {
         // batches, then the polarized libxc kernel.
         let (e_xc, vxc_a, vxc_b) = self
             .screened
-            .integrate_polarized(&self.grid, in_a, in_b, &self.xc)
+            .integrate_polarized_exec(
+                &self.grid,
+                in_a,
+                in_b,
+                &self.xc,
+                Exec::auto().with_mixed_vxc(mixed_vxc_allowed(&self.xc, &self.ladder, &[d_a, d_b])),
+            )
             .expect(
                 "per-shell AO evaluation failed inside a Fock build, but KsXcUks::new already \
                  evaluated every shell once (ScreenedGrid::build) and the only per-shell \
@@ -900,6 +1013,58 @@ impl UksXcContribution for KsXcUks {
             lr: 0.0,
             omega: 0.0,
         }
+    }
+}
+
+#[cfg(test)]
+mod ladder_tests {
+    use super::*;
+
+    fn m(v: f64) -> Array2<f64> {
+        Array2::from_elem((3, 3), v)
+    }
+
+    #[test]
+    fn first_build_is_f64_and_only_a_moving_density_is_mixed() {
+        let l = MixedLadder::default();
+        let t = 1e-5;
+        assert!(!l.step_with(true, t, &[&m(0.0)]), "no previous build: f64");
+        assert!(l.step_with(true, t, &[&m(1e-3)]), "moved by 1e-3: mixed");
+        assert!(
+            !l.step_with(true, t, &[&m(1e-3 + 1e-6)]),
+            "moved by 1e-6: f64"
+        );
+        assert!(!l.step_with(true, t, &[&m(1e-3 + 1e-6)]), "unchanged: f64");
+        // Exactly τ is not "more than τ".
+        let l = MixedLadder::default();
+        l.step_with(true, 0.25, &[&m(0.0)]);
+        assert!(!l.step_with(true, 0.25, &[&m(0.25)]));
+    }
+
+    #[test]
+    fn any_moving_spin_counts_and_a_shape_change_restarts() {
+        let l = MixedLadder::default();
+        let t = 1e-5;
+        l.step_with(true, t, &[&m(0.0), &m(0.0)]);
+        assert!(l.step_with(true, t, &[&m(0.0), &m(1.0)]), "beta moved");
+        // A different number of spins, or a different nbf, has no previous build.
+        assert!(!l.step_with(true, t, &[&m(5.0)]));
+        assert!(!l.step_with(true, t, &[&Array2::from_elem((4, 4), 9.0)]));
+        assert!(l.step_with(true, t, &[&Array2::from_elem((4, 4), 0.0)]));
+    }
+
+    #[test]
+    fn not_requested_records_nothing_and_nan_is_never_mixed() {
+        let l = MixedLadder::default();
+        assert!(!l.step_with(false, 1e-5, &[&m(0.0)]));
+        assert!(
+            l.prev.lock().unwrap().is_empty(),
+            "no copy when not requested"
+        );
+        assert!(!l.step_with(false, 1e-5, &[&m(1.0)]));
+        let l = MixedLadder::default();
+        l.step_with(true, 1e-5, &[&m(0.0)]);
+        assert!(!l.step_with(true, 1e-5, &[&m(f64::NAN)]));
     }
 }
 

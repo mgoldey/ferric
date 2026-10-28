@@ -153,7 +153,7 @@ fn shipping_rimp2_energy_leaves_the_default_f64_and_admits_mixed_with_a_device_m
         "{e}"
     );
     assert!(
-        e.contains("FERRIC_GPU_MIXED_KERNELS: rimp2-energy  [source: default]"),
+        e.contains("FERRIC_GPU_MIXED_KERNELS: rimp2-energy,xc-vxc  [source: default]"),
         "{e}"
     );
     // explicit mixed with mode off is still an error naming the keys

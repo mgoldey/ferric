@@ -102,7 +102,22 @@ use crate::vxc::{closed_kernel, deterministic_point_sum, polarized_kernel, DENSI
 #[cfg(feature = "gpu")]
 mod gpu;
 #[cfg(feature = "test-seams")]
-pub use gpu::FORCE_HOST;
+pub use gpu::{FORCE_HOST, MIXED_VXC_HOST_TWIN};
+
+/// True when this process asked for V_xc in mixed precision and could run it:
+/// `[gpu] precision = "mixed"` with `xc-vxc` in `mixed_kernels` and a ready
+/// device (or, in tests, the `MIXED_VXC_HOST_TWIN` seam). Always false without
+/// the `gpu` feature.
+pub(crate) fn mixed_vxc_requested() -> bool {
+    #[cfg(feature = "gpu")]
+    {
+        gpu::mixed_vxc_requested()
+    }
+    #[cfg(not(feature = "gpu"))]
+    {
+        false
+    }
+}
 
 /// What one integration holds of the device: the locked device slot (`gpu`
 /// builds; `None` when this integration runs on the CPU), or nothing.
@@ -630,8 +645,7 @@ fn batch_vxc_one(
     funcs: &[u32],
     nb: usize,
     fac: &BatchFactors,
-    has_gga: bool,
-    has_mgga: bool,
+    (has_gga, has_mgga, mixed): (bool, bool, bool),
     acc: &mut Array2<f64>,
 ) {
     let nact = ao.nrows();
@@ -647,9 +661,31 @@ fn batch_vxc_one(
         (has_gga, has_mgga),
         amat.as_slice_mut().expect("contiguous"),
     );
-    let vb = amat.dot(&ao.slice(s![.., ..ncols]).t());
+    let vb = vb_product(&amat, ao.slice(s![.., ..ncols]), mixed);
     let vb = vb.as_standard_layout();
     scatter_sym(vb.as_slice().expect("standard layout"), funcs, acc);
+}
+
+/// `V_b = A · Xᵀ` on the host. A `mixed` build under the `MIXED_VXC_HOST_TWIN`
+/// test seam forms it with the host twin of the device's `xc-vxc` kernel
+/// (operands rounded to f32, f32 panels summed in f64;
+/// `ferric_core::gpu::mixed_host`), so the kernel's error map and its effect on
+/// an SCF are measurable without a device. Otherwise (every shipped CPU build)
+/// it is the f64 product whatever `mixed` says: mixed precision is device-only.
+fn vb_product(amat: &Array2<f64>, x: ArrayView2<f64>, mixed: bool) -> Array2<f64> {
+    #[cfg(feature = "test-seams")]
+    if mixed && gpu::mixed_vxc_host_twin() {
+        let mut out = Array2::<f64>::zeros((amat.nrows(), x.nrows()));
+        ferric_core::gpu::mixed_host::gemm_f32_f64acc_host(
+            &amat.view(),
+            &x.t(),
+            &mut out.view_mut(),
+            ferric_core::gpu::mixed::effective_k_panel(),
+        );
+        return out;
+    }
+    let _ = mixed;
+    amat.dot(&x.t())
 }
 
 /// Write the pass-2 left factor `A` of one batch (row-major `(nact, ncols)`,
@@ -720,6 +756,9 @@ fn fill_amat(
 pub(crate) struct Exec {
     serial: bool,
     blas: usize,
+    /// Pass 2 may use the device's mixed-precision `xc-vxc` kernel (see
+    /// `KsXc`'s precision ladder); ignored on the CPU, f64 by default.
+    mixed_vxc: bool,
 }
 
 impl Exec {
@@ -729,6 +768,7 @@ impl Exec {
             Self {
                 serial: true,
                 blas: ferric_integrals::blas_threads::opt_in_blas_threads(),
+                mixed_vxc: false,
             }
         } else {
             Self::parallel()
@@ -738,13 +778,19 @@ impl Exec {
         Self {
             serial: false,
             blas: 1,
+            mixed_vxc: false,
         }
+    }
+    /// This mode with pass 2 allowed (or not) to run in mixed precision.
+    pub(crate) fn with_mixed_vxc(self, mixed_vxc: bool) -> Self {
+        Self { mixed_vxc, ..self }
     }
     #[cfg(test)]
     pub(crate) fn serial_single_blas() -> Self {
         Self {
             serial: true,
             blas: 1,
+            mixed_vxc: false,
         }
     }
 }
@@ -1026,15 +1072,16 @@ impl ScreenedGrid {
         nmats: usize,
         factors: &F,
         (has_gga, has_mgga): (bool, bool),
-        serial: bool,
+        exec: Exec,
         dev: &mut DevSession<'_>,
     ) -> Result<Vec<Array2<f64>>, GtoEvalError>
     where
         F: Fn(&XcBatch, usize) -> BatchFactors + Sync,
     {
+        let (serial, mixed) = (exec.serial, exec.mixed_vxc);
         #[cfg(feature = "gpu")]
         if let Some(v) =
-            gpu::potential_pass(self, grid, nmats, factors, (has_gga, has_mgga), serial, dev)?
+            gpu::potential_pass(self, grid, nmats, factors, (has_gga, has_mgga), exec, dev)?
         {
             return Ok(v);
         }
@@ -1048,7 +1095,7 @@ impl ScreenedGrid {
             let ao = self.batch_ao(bi, grid)?;
             for (mat, acc) in accs.iter_mut().enumerate() {
                 let fac = factors(b, mat);
-                batch_vxc_one(&ao, &b.funcs, nb, &fac, has_gga, has_mgga, acc);
+                batch_vxc_one(&ao, &b.funcs, nb, &fac, (has_gga, has_mgga, mixed), acc);
             }
             Ok(())
         })
@@ -1094,17 +1141,8 @@ impl ScreenedGrid {
     /// would race): 1 in the rayon-parallel mode, where every GEMM runs on a
     /// worker and a multi-threaded OpenBLAS oversubscribes (and has crashed
     /// before, see `blas_threads.rs`); `opt_in_blas_threads()` in the serial
-    /// mode. See `Exec` for when each is chosen and what is bit-identical.
-    pub(crate) fn integrate_closed(
-        &self,
-        grid: &[GridPoint],
-        d: DensityInput,
-        xc: &XcDef,
-    ) -> Result<(f64, Array2<f64>), GtoEvalError> {
-        self.integrate_closed_exec(grid, d, xc, Exec::auto())
-    }
-
-    /// [`Self::integrate_closed`] with an explicit execution mode.
+    /// mode. See `Exec` for when each is chosen and what is bit-identical
+    /// (`Exec::auto()` is the production mode), and for `mixed_vxc`.
     pub(crate) fn integrate_closed_exec(
         &self,
         grid: &[GridPoint],
@@ -1112,9 +1150,7 @@ impl ScreenedGrid {
         xc: &XcDef,
         exec: Exec,
     ) -> Result<(f64, Array2<f64>), GtoEvalError> {
-        with_blas_threads(exec.blas, || {
-            self.integrate_closed_inner(grid, d, xc, exec.serial)
-        })
+        with_blas_threads(exec.blas, || self.integrate_closed_inner(grid, d, xc, exec))
     }
 
     fn integrate_closed_inner(
@@ -1122,8 +1158,9 @@ impl ScreenedGrid {
         grid: &[GridPoint],
         d: DensityInput,
         xc: &XcDef,
-        serial: bool,
+        exec: Exec,
     ) -> Result<(f64, Array2<f64>), GtoEvalError> {
+        let serial = exec.serial;
         let npts = self.npts;
         assert_eq!(grid.len(), npts, "grid does not match the screened grid");
         assert!(d.nbf() == self.nbf && d.is_square(), "density matrix shape");
@@ -1202,24 +1239,12 @@ impl ScreenedGrid {
             }
             fac
         };
-        let mut v =
-            self.potential_pass(grid, 1, &factors, (has_gga, has_mgga), serial, &mut dev)?;
+        let mut v = self.potential_pass(grid, 1, &factors, (has_gga, has_mgga), exec, &mut dev)?;
         Ok((e_xc, v.pop().expect("one matrix")))
     }
 
     /// Spin-polarized `(E_xc, V_α, V_β)` for the spin density matrices. BLAS
-    /// threading and execution mode as in [`Self::integrate_closed`].
-    pub(crate) fn integrate_polarized(
-        &self,
-        grid: &[GridPoint],
-        d_a: DensityInput,
-        d_b: DensityInput,
-        xc: &XcDef,
-    ) -> Result<(f64, Array2<f64>, Array2<f64>), GtoEvalError> {
-        self.integrate_polarized_exec(grid, d_a, d_b, xc, Exec::auto())
-    }
-
-    /// [`Self::integrate_polarized`] with an explicit execution mode.
+    /// threading and execution mode as in [`Self::integrate_closed_exec`].
     pub(crate) fn integrate_polarized_exec(
         &self,
         grid: &[GridPoint],
@@ -1229,7 +1254,7 @@ impl ScreenedGrid {
         exec: Exec,
     ) -> Result<(f64, Array2<f64>, Array2<f64>), GtoEvalError> {
         with_blas_threads(exec.blas, || {
-            self.integrate_polarized_inner(grid, d_a, d_b, xc, exec.serial)
+            self.integrate_polarized_inner(grid, d_a, d_b, xc, exec)
         })
     }
 
@@ -1239,8 +1264,9 @@ impl ScreenedGrid {
         d_a: DensityInput,
         d_b: DensityInput,
         xc: &XcDef,
-        serial: bool,
+        exec: Exec,
     ) -> Result<(f64, Array2<f64>, Array2<f64>), GtoEvalError> {
+        let serial = exec.serial;
         let npts = self.npts;
         assert_eq!(grid.len(), npts, "grid does not match the screened grid");
         assert!(
@@ -1373,8 +1399,7 @@ impl ScreenedGrid {
             }
             fac
         };
-        let mut v =
-            self.potential_pass(grid, 2, &factors, (has_gga, has_mgga), serial, &mut dev)?;
+        let mut v = self.potential_pass(grid, 2, &factors, (has_gga, has_mgga), exec, &mut dev)?;
         let v_b = v.pop().expect("two matrices");
         let v_a = v.pop().expect("two matrices");
         Ok((e_xc, v_a, v_b))
@@ -1517,6 +1542,79 @@ mod tests {
     /// different batch order, or a missed batch. With BLAS at 1 thread the
     /// two must be bit-identical (see `Exec`). Meta-GGA, UKS and closed shell,
     /// screening on, cc-pVDZ.
+    /// The host twin of the device `xc-vxc` kernel (f32 operands, f32 panels of
+    /// 64 summed in f64) against the f64 `V_b = A·Xᵀ` on real batches of a
+    /// screened grid (water/cc-pVDZ, GGA-shaped factors; meta-GGAs never run
+    /// mixed):
+    /// every element inside the documented bound
+    /// `|ΔV_ij| ≤ (ε_mixed(ncols, 64) + γ_ncols(u64))·(|A||X|ᵀ)_ij`, and the
+    /// twin not identical to f64 (the comparison is live).
+    #[test]
+    fn mixed_vxc_host_twin_stays_inside_its_elementwise_bound() {
+        use ferric_core::gpu::mixed_host::{gamma, gemm_f32_f64acc_host, mixed_error_factor, U64};
+        let mol = ferric_core::mol::Molecule::parse_xyz(
+            "3\nH2O\nO 0 0 0\nH 0 0.7572 0.5868\nH 0 -0.7572 0.5868\n",
+            0,
+            1,
+        )
+        .unwrap();
+        let bs = ferric_core::basis::bundled("cc-pvdz").unwrap();
+        let cfg = crate::grid::AtomicGridConfig {
+            n_radial: 30,
+            n_angular: 50,
+            ..Default::default()
+        };
+        let grid = crate::grid::build_atomic_grid_pruned(&mol, &cfg, None).unwrap();
+        let shells = crate::ao_grid::collect_shells(&mol, &bs).unwrap();
+        let nbf = crate::ao_grid::nbasis(&mol, &bs).unwrap();
+        let sg = ScreenedGrid::build(&grid, owned_shells(&shells), nbf, &XcBatchConfig::default())
+            .unwrap();
+        let mut worst = 0.0_f64;
+        let mut changed = false;
+        for bi in (0..sg.batches.len()).step_by(7) {
+            let b = &sg.batches[bi];
+            let (na, nb) = (b.funcs.len(), b.idx.len());
+            if na == 0 {
+                continue;
+            }
+            let ao = sg.eval_batch(bi, &grid).unwrap();
+            for mgga in [false] {
+                let wave = |j: usize, s: f64| ((j as f64 * 0.37 + s).sin()) * 0.3;
+                let fac = BatchFactors {
+                    s_half: (0..nb).map(|j| wave(j, 0.1)).collect(),
+                    f: [
+                        (0..nb).map(|j| wave(j, 1.0)).collect(),
+                        (0..nb).map(|j| wave(j, 2.0)).collect(),
+                        (0..nb).map(|j| wave(j, 3.0)).collect(),
+                    ],
+                    t_half: (0..nb).map(|j| wave(j, 4.0).abs()).collect(),
+                };
+                let nc = if mgga { 4 * nb } else { nb };
+                let mut a = Array2::<f64>::zeros((na, nc));
+                fill_amat(&ao, nb, &fac, (true, mgga), a.as_slice_mut().unwrap());
+                let x = ao.slice(s![.., ..nc]);
+                let exact = a.dot(&x.t());
+                let mut twin = Array2::<f64>::zeros((na, na));
+                gemm_f32_f64acc_host(&a.view(), &x.t(), &mut twin.view_mut(), 64);
+                let mag = a.mapv(f64::abs).dot(&x.mapv(f64::abs).t());
+                let eps = (mixed_error_factor(nc, 64) + gamma(nc, U64)) * 1.01;
+                for ((t, e), m) in twin.iter().zip(exact.iter()).zip(mag.iter()) {
+                    let err = (t - e).abs();
+                    assert!(err <= eps * m, "batch {bi}: |dV| {err:e} > {:e}", eps * m);
+                    if *m > 0.0 {
+                        worst = worst.max(err / (eps * m));
+                    }
+                    changed |= t != e;
+                }
+            }
+        }
+        assert!(
+            changed,
+            "the twin reproduced f64 exactly: the comparison is not live"
+        );
+        eprintln!("worst |dV| / bound = {worst:.3e}");
+    }
+
     #[test]
     fn serial_and_parallel_execution_are_bit_identical() {
         use crate::ao_grid::{collect_shells, nbasis};

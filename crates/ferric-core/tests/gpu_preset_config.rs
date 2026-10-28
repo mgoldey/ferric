@@ -304,7 +304,7 @@ fn an_unshipped_name_in_a_narrower_list_under_mixed_is_refused() {
     .unwrap_err();
     assert_eq!(
         e,
-        "[gpu] mixed_kernels: dfk-occ not shipped yet (shipped in this build: rimp2-energy)"
+        "[gpu] mixed_kernels: dfk-occ not shipped yet (shipped in this build: rimp2-energy,xc-vxc)"
     );
 }
 
@@ -352,7 +352,7 @@ fn kernels_with_an_f64_preset_name_the_preset_as_the_way_out() {
     .unwrap_err();
     assert_eq!(
         e,
-        "FERRIC_GPU_MIXED_KERNELS / [gpu] mixed_kernels = rimp2-energy given but the precision is f64; \
+        "FERRIC_GPU_MIXED_KERNELS / [gpu] mixed_kernels = rimp2-energy,xc-vxc given but the precision is f64; \
          set [gpu] precision = \"mixed\" (or use preset = \"mixed\") or drop the list"
     );
 }
