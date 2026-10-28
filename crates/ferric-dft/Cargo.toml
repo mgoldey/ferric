@@ -15,6 +15,14 @@ ndarray = { workspace = true }
 thiserror = { workspace = true }
 rayon = { workspace = true }
 
+[features]
+default = []
+# Device offload of the screened XC grid's per-batch GEMMs (xc_batch::gpu).
+# Additive; default builds unchanged.
+gpu = ["ferric-core/gpu"]
+# FORCE_HOST seam for the device tests. Never enabled by a shipped build.
+test-seams = ["gpu", "ferric-core/test-seams"]
+
 [dev-dependencies]
 ferric-scf = { path = "../ferric-scf" }
 # Used by tests/grid_prune_live_scf.rs to read the same PySCF reference JSONs

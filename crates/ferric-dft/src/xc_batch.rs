@@ -98,6 +98,19 @@ use crate::grid::GridPoint;
 use crate::libxc::{FunctionalFamily, XcDef};
 use crate::vxc::{closed_kernel, deterministic_point_sum, polarized_kernel, DENSITY_FLOOR};
 
+/// Device offload of the per-batch GEMMs (feature `gpu`).
+#[cfg(feature = "gpu")]
+mod gpu;
+#[cfg(feature = "test-seams")]
+pub use gpu::FORCE_HOST;
+
+/// What one integration holds of the device: the locked device slot (`gpu`
+/// builds; `None` when this integration runs on the CPU), or nothing.
+#[cfg(feature = "gpu")]
+type DevSession<'a> = Option<std::sync::MutexGuard<'a, gpu::DeviceSlot>>;
+#[cfg(not(feature = "gpu"))]
+type DevSession<'a> = std::marker::PhantomData<&'a ()>;
+
 /// Default per-batch shell-screening threshold on `max(|χ|, |∇χ|)`.
 ///
 /// Chosen by measurement (numpy/PySCF prototype of exactly this algorithm,
@@ -497,11 +510,10 @@ fn group_ranges(nbatches: usize, ngroups: usize) -> Vec<(usize, usize)> {
 /// Add `V_b + V_bᵀ` into `acc[funcs, funcs]`. Both `(i,j)` and `(j,i)` receive
 /// the same increment (fp `+` is commutative), so `acc` stays exactly
 /// symmetric, like the dense path's final `½(V + Vᵀ)`.
-fn scatter_sym(vb: &Array2<f64>, funcs: &[u32], acc: &mut Array2<f64>) {
+fn scatter_sym(v: &[f64], funcs: &[u32], acc: &mut Array2<f64>) {
     let n = funcs.len();
     let nbf = acc.ncols();
-    let vb = vb.as_standard_layout();
-    let v = vb.as_slice().expect("standard layout");
+    debug_assert_eq!(v.len(), n * n);
     let acc_s = acc.as_slice_mut().expect("accumulator is contiguous");
     for i in 0..n {
         let fi = funcs[i] as usize;
@@ -530,29 +542,31 @@ fn batch_density_one(
     nb: usize,
     need_tau: bool,
 ) -> BatchDensity {
-    let nact = ao.nrows();
-    let ld = 4 * nb;
     let ncols = if need_tau { 4 * nb } else { nb };
-    let mut rho = vec![0.0_f64; nb];
-    let mut gx = vec![0.0_f64; nb];
-    let mut gy = vec![0.0_f64; nb];
-    let mut gz = vec![0.0_f64; nb];
-    let mut tau = Vec::new();
-    if nact == 0 {
-        if need_tau {
-            tau = vec![0.0_f64; nb];
-        }
-        return BatchDensity {
-            rho,
-            grad: [gx, gy, gz],
-            tau,
-        };
+    if ao.nrows() == 0 {
+        // No active function: every sum is empty (ρ = ∇ρ = τ = 0).
+        return batch_density_from_phi(ao, &[], nb, need_tau);
     }
     // Φ = D_sub · [χ | (∂χ)] — ONE GEMM, BLAS threads set once by
     // `integrate_*_exec` (1 on rayon workers; see `Exec`).
     let phi = dsub.apply(ao.slice(s![.., ..ncols]));
     let phi = phi.as_standard_layout();
-    let p = phi.as_slice().expect("standard layout");
+    batch_density_from_phi(ao, phi.as_slice().expect("standard layout"), nb, need_tau)
+}
+
+/// The point-local reductions of [`batch_density_one`] for a given row-major
+/// `Φ` (`(nact, ncols)`, `ncols = 4nb` with τ, else `nb`), wherever the GEMM
+/// that produced it ran.
+fn batch_density_from_phi(ao: &Array2<f64>, p: &[f64], nb: usize, need_tau: bool) -> BatchDensity {
+    let nact = ao.nrows();
+    let ld = 4 * nb;
+    let ncols = if need_tau { 4 * nb } else { nb };
+    debug_assert_eq!(p.len(), nact * ncols);
+    let mut rho = vec![0.0_f64; nb];
+    let mut gx = vec![0.0_f64; nb];
+    let mut gy = vec![0.0_f64; nb];
+    let mut gz = vec![0.0_f64; nb];
+    let mut tau = Vec::new();
     let a = ao.as_slice().expect("batch AO block is contiguous");
     let tn = if need_tau { nb } else { 0 };
     let mut t = [vec![0.0_f64; tn], vec![0.0_f64; tn], vec![0.0_f64; tn]];
@@ -624,36 +638,55 @@ fn batch_vxc_one(
     if nact == 0 {
         return;
     }
-    let ld = 4 * nb;
     let ncols = if has_mgga { 4 * nb } else { nb };
     let mut amat = Array2::<f64>::zeros((nact, ncols));
-    {
-        let am = amat.as_slice_mut().expect("contiguous");
-        let a = ao.as_slice().expect("batch AO block is contiguous");
-        for mu in 0..nact {
-            let crow = &a[mu * ld..(mu + 1) * ld];
-            let arow = &mut am[mu * ncols..(mu + 1) * ncols];
-            for g in 0..nb {
-                let mut v = fac.s_half[g] * crow[g];
-                if has_gga {
-                    v += fac.f[0][g] * crow[nb + g];
-                    v += fac.f[1][g] * crow[2 * nb + g];
-                    v += fac.f[2][g] * crow[3 * nb + g];
-                }
-                arow[g] = v;
+    fill_amat(
+        ao,
+        nb,
+        fac,
+        (has_gga, has_mgga),
+        amat.as_slice_mut().expect("contiguous"),
+    );
+    let vb = amat.dot(&ao.slice(s![.., ..ncols]).t());
+    let vb = vb.as_standard_layout();
+    scatter_sym(vb.as_slice().expect("standard layout"), funcs, acc);
+}
+
+/// Write the pass-2 left factor `A` of one batch (row-major `(nact, ncols)`,
+/// `ncols = 4nb` for meta-GGA, else `nb`) into `am`.
+fn fill_amat(
+    ao: &Array2<f64>,
+    nb: usize,
+    fac: &BatchFactors,
+    (has_gga, has_mgga): (bool, bool),
+    am: &mut [f64],
+) {
+    let nact = ao.nrows();
+    let ld = 4 * nb;
+    let ncols = if has_mgga { 4 * nb } else { nb };
+    debug_assert_eq!(am.len(), nact * ncols);
+    let a = ao.as_slice().expect("batch AO block is contiguous");
+    for mu in 0..nact {
+        let crow = &a[mu * ld..(mu + 1) * ld];
+        let arow = &mut am[mu * ncols..(mu + 1) * ncols];
+        for g in 0..nb {
+            let mut v = fac.s_half[g] * crow[g];
+            if has_gga {
+                v += fac.f[0][g] * crow[nb + g];
+                v += fac.f[1][g] * crow[2 * nb + g];
+                v += fac.f[2][g] * crow[3 * nb + g];
             }
-            if has_mgga {
-                for ax in 0..3 {
-                    let off = (1 + ax) * nb;
-                    for g in 0..nb {
-                        arow[off + g] = fac.t_half[g] * crow[off + g];
-                    }
+            arow[g] = v;
+        }
+        if has_mgga {
+            for ax in 0..3 {
+                let off = (1 + ax) * nb;
+                for g in 0..nb {
+                    arow[off + g] = fac.t_half[g] * crow[off + g];
                 }
             }
         }
     }
-    let vb = amat.dot(&ao.slice(s![.., ..ncols]).t());
-    scatter_sym(&vb, funcs, acc);
 }
 
 /// How one Fock build is executed.
@@ -748,6 +781,11 @@ pub(crate) struct ScreenedGrid {
     /// Resident compact AO blocks, one per batch; `None` = recompute.
     ao: Option<Vec<Array2<f64>>>,
     max_batch_pts: usize,
+    /// Device copy of the AO blocks and GEMM staging (feature `gpu`);
+    /// `Untried` until the first integration asks for it. A `Mutex` because
+    /// the integrations take `&self`; one lock per Fock build, uncontended.
+    #[cfg(feature = "gpu")]
+    device: std::sync::Mutex<gpu::DeviceSlot>,
 }
 
 impl ScreenedGrid {
@@ -809,6 +847,8 @@ impl ScreenedGrid {
             batches,
             ao: None,
             max_batch_pts: cfg.max_batch_pts.max(1),
+            #[cfg(feature = "gpu")]
+            device: Default::default(),
         })
     }
 
@@ -877,6 +917,35 @@ impl ScreenedGrid {
         }
     }
 
+    /// The device session for one integration: `None`/inert when this
+    /// integration runs on the CPU (no `gpu` feature, mode off, no device,
+    /// declined, called from a rayon worker). The first call uploads the AO
+    /// blocks.
+    fn device_session(&self, grid: &[GridPoint]) -> DevSession<'_> {
+        #[cfg(feature = "gpu")]
+        {
+            gpu::session(self, grid)
+        }
+        #[cfg(not(feature = "gpu"))]
+        {
+            let _ = grid;
+            std::marker::PhantomData
+        }
+    }
+
+    /// True when the KS XC GEMMs of this grid run on the device (the AO
+    /// blocks are uploaded and no failure has sent the grid back to the CPU).
+    pub(crate) fn on_device(&self) -> bool {
+        #[cfg(feature = "gpu")]
+        {
+            gpu::is_ready(self)
+        }
+        #[cfg(not(feature = "gpu"))]
+        {
+            false
+        }
+    }
+
     /// True when the compact AO blocks are resident.
     pub(crate) fn is_resident(&self) -> bool {
         self.ao.is_some()
@@ -907,6 +976,82 @@ impl ScreenedGrid {
             gemm_fraction: gemm / (nbf * nbf * npts).max(1.0),
             resident: self.is_resident(),
         }
+    }
+
+    /// Pass 1 for the (spin) densities `ds`: `out[i][bi]` is batch `bi` of
+    /// density `i`. Runs the Φ GEMMs on the device when `dev` holds a ready
+    /// session (see `gpu`), otherwise on the CPU; a device failure falls back
+    /// to the CPU here, for this pass and every later one. Each batch's AO
+    /// block is fetched once for all densities (one evaluation in recompute
+    /// mode).
+    fn density_pass(
+        &self,
+        grid: &[GridPoint],
+        ds: &[DensityInput],
+        need_tau: bool,
+        serial: bool,
+        dev: &mut DevSession<'_>,
+    ) -> Result<Vec<Vec<BatchDensity>>, GtoEvalError> {
+        #[cfg(feature = "gpu")]
+        if let Some(parts) = gpu::density_pass(self, grid, ds, need_tau, serial, dev)? {
+            return Ok(parts);
+        }
+        let _ = dev;
+        let per_batch = map_indexed(serial, self.batches.len(), |bi| {
+            let b = &self.batches[bi];
+            let ao = self.batch_ao(bi, grid)?;
+            Ok(ds
+                .iter()
+                .map(|d| batch_density_one(&ao, &d.gather(&b.funcs), b.idx.len(), need_tau))
+                .collect::<Vec<_>>())
+        })?;
+        let mut out: Vec<Vec<BatchDensity>> = ds
+            .iter()
+            .map(|_| Vec::with_capacity(per_batch.len()))
+            .collect();
+        for parts in per_batch {
+            for (o, p) in out.iter_mut().zip(parts) {
+                o.push(p);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Pass 2: the `nmats` V matrices, `factors(batch, mat)` giving matrix
+    /// `mat`'s per-point factors. Same fixed-group ordered reduction on either
+    /// path; device dispatch and fallback as in [`Self::density_pass`].
+    fn potential_pass<F>(
+        &self,
+        grid: &[GridPoint],
+        nmats: usize,
+        factors: &F,
+        (has_gga, has_mgga): (bool, bool),
+        serial: bool,
+        dev: &mut DevSession<'_>,
+    ) -> Result<Vec<Array2<f64>>, GtoEvalError>
+    where
+        F: Fn(&XcBatch, usize) -> BatchFactors + Sync,
+    {
+        #[cfg(feature = "gpu")]
+        if let Some(v) =
+            gpu::potential_pass(self, grid, nmats, factors, (has_gga, has_mgga), serial, dev)?
+        {
+            return Ok(v);
+        }
+        let _ = dev;
+        self.reduce_groups(serial, nmats, |bi, accs| {
+            let b = &self.batches[bi];
+            if b.funcs.is_empty() {
+                return Ok(());
+            }
+            let nb = b.idx.len();
+            let ao = self.batch_ao(bi, grid)?;
+            for (mat, acc) in accs.iter_mut().enumerate() {
+                let fac = factors(b, mat);
+                batch_vxc_one(&ao, &b.funcs, nb, &fac, has_gga, has_mgga, acc);
+            }
+            Ok(())
+        })
     }
 
     /// Fixed-grouping, ordered reduction of per-batch V contributions.
@@ -991,13 +1136,13 @@ impl ScreenedGrid {
             .iter()
             .any(|f| !matches!(f.family(), FunctionalFamily::Lda));
 
+        let mut dev = self.device_session(grid);
+
         // ── Pass 1: density, parallel over batches, disjoint output slots.
-        let parts: Vec<BatchDensity> = map_indexed(serial, self.batches.len(), |bi| {
-            let b = &self.batches[bi];
-            let ao = self.batch_ao(bi, grid)?;
-            let dsub = d.gather(&b.funcs);
-            Ok(batch_density_one(&ao, &dsub, b.idx.len(), has_mgga))
-        })?;
+        let parts = self
+            .density_pass(grid, &[d], has_mgga, serial, &mut dev)?
+            .pop()
+            .expect("one density");
         let mut rho = Array1::<f64>::zeros(npts);
         let mut grad = Array2::<f64>::zeros((3, npts));
         let mut tau = Array1::<f64>::zeros(if has_mgga { npts } else { 0 });
@@ -1026,11 +1171,7 @@ impl ScreenedGrid {
         let e_xc = deterministic_point_sum(npts, |g| grid[g].weight * dens.rho[g] * k.exc[g]);
 
         // ── Pass 2: V, fixed-group ordered reduction.
-        let mut v = self.reduce_groups(serial, 1, |bi, accs| {
-            let b = &self.batches[bi];
-            if b.funcs.is_empty() {
-                return Ok(());
-            }
+        let factors = |b: &XcBatch, _mat: usize| -> BatchFactors {
             let nb = b.idx.len();
             let mut fac = BatchFactors {
                 s_half: vec![0.0; nb],
@@ -1059,10 +1200,10 @@ impl ScreenedGrid {
                     }
                 }
             }
-            let ao = self.batch_ao(bi, grid)?;
-            batch_vxc_one(&ao, &b.funcs, nb, &fac, has_gga, has_mgga, &mut accs[0]);
-            Ok(())
-        })?;
+            fac
+        };
+        let mut v =
+            self.potential_pass(grid, 1, &factors, (has_gga, has_mgga), serial, &mut dev)?;
         Ok((e_xc, v.pop().expect("one matrix")))
     }
 
@@ -1119,16 +1260,12 @@ impl ScreenedGrid {
             .iter()
             .any(|f| !matches!(f.family(), FunctionalFamily::Lda));
 
+        let mut dev = self.device_session(grid);
+
         // ── Pass 1.
-        let parts: Vec<(BatchDensity, BatchDensity)> =
-            map_indexed(serial, self.batches.len(), |bi| {
-                let b = &self.batches[bi];
-                let ao = self.batch_ao(bi, grid)?;
-                let nb = b.idx.len();
-                let pa = batch_density_one(&ao, &d_a.gather(&b.funcs), nb, has_mgga);
-                let pb = batch_density_one(&ao, &d_b.gather(&b.funcs), nb, has_mgga);
-                Ok((pa, pb))
-            })?;
+        let mut parts = self.density_pass(grid, &[d_a, d_b], has_mgga, serial, &mut dev)?;
+        let parts_b = parts.pop().expect("two densities");
+        let parts_a = parts.pop().expect("two densities");
         let mut rho_a = Array1::<f64>::zeros(npts);
         let mut rho_b = Array1::<f64>::zeros(npts);
         let mut grad_a = Array2::<f64>::zeros((3, npts));
@@ -1136,7 +1273,7 @@ impl ScreenedGrid {
         let tn = if has_mgga { npts } else { 0 };
         let mut tau_a = Array1::<f64>::zeros(tn);
         let mut tau_b = Array1::<f64>::zeros(tn);
-        for (b, (pa, pb)) in self.batches.iter().zip(&parts) {
+        for (b, (pa, pb)) in self.batches.iter().zip(parts_a.iter().zip(&parts_b)) {
             for (j, &gi) in b.idx.iter().enumerate() {
                 let g = gi as usize;
                 rho_a[g] = pa.rho[j];
@@ -1151,7 +1288,7 @@ impl ScreenedGrid {
                 }
             }
         }
-        drop(parts);
+        drop((parts_a, parts_b));
         let mut sigma = Array2::<f64>::zeros((3, npts));
         for g in 0..npts {
             let (ax, ay, az) = (grad_a[(0, g)], grad_a[(1, g)], grad_a[(2, g)]);
@@ -1184,7 +1321,8 @@ impl ScreenedGrid {
 
         // ── Pass 2. Spin σ gates on its own ρ_σ, exactly as the dense
         // `semilocal_vxc_polarized_scratch` `build` closure does.
-        let factors = |b: &XcBatch, alpha: bool| -> BatchFactors {
+        let factors = |b: &XcBatch, mat: usize| -> BatchFactors {
+            let alpha = mat == 0;
             let nb = b.idx.len();
             let (rho_s, vrho_s, vs_self, vtau_s, g_self, g_cross) = if alpha {
                 (
@@ -1235,19 +1373,8 @@ impl ScreenedGrid {
             }
             fac
         };
-        let mut v = self.reduce_groups(serial, 2, |bi, accs| {
-            let b = &self.batches[bi];
-            if b.funcs.is_empty() {
-                return Ok(());
-            }
-            let nb = b.idx.len();
-            let ao = self.batch_ao(bi, grid)?;
-            let fa = factors(b, true);
-            batch_vxc_one(&ao, &b.funcs, nb, &fa, has_gga, has_mgga, &mut accs[0]);
-            let fb = factors(b, false);
-            batch_vxc_one(&ao, &b.funcs, nb, &fb, has_gga, has_mgga, &mut accs[1]);
-            Ok(())
-        })?;
+        let mut v =
+            self.potential_pass(grid, 2, &factors, (has_gga, has_mgga), serial, &mut dev)?;
         let v_b = v.pop().expect("two matrices");
         let v_a = v.pop().expect("two matrices");
         Ok((e_xc, v_a, v_b))

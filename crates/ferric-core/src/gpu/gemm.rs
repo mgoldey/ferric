@@ -8,7 +8,7 @@
 //! for the bound that IS guaranteed.
 use cudarc::cublas::sys::cublasOperation_t;
 use cudarc::cublas::{Gemm, GemmConfig};
-use cudarc::driver::{CudaSlice, CudaView};
+use cudarc::driver::{CudaSlice, CudaView, CudaViewMut};
 use ndarray::{ArrayView2, ArrayViewMut2};
 
 use super::device::{Device, GpuError};
@@ -434,6 +434,22 @@ pub fn gemm_f64_dev(
     c: &mut CudaSlice<f64>,
     k_block: usize,
 ) -> Result<(), GpuError> {
+    gemm_f64_dev_into(dev, m, k, n, left, right, &mut c.slice_mut(..), k_block)
+}
+
+/// [`gemm_f64_dev`] writing into a sub-range of a larger device buffer (the
+/// first m·n elements of `c`), so many small products can share one staging
+/// allocation. Same geometry checks, same numerics.
+pub fn gemm_f64_dev_into(
+    dev: &Device,
+    m: usize,
+    k: usize,
+    n: usize,
+    left: &DevOperand<'_, f64>,
+    right: &DevOperand<'_, f64>,
+    c: &mut CudaViewMut<'_, f64>,
+    k_block: usize,
+) -> Result<(), GpuError> {
     check_dev_geometry(
         m,
         k,
@@ -444,14 +460,15 @@ pub fn gemm_f64_dev(
         &[("c", c.len())],
     )?;
     // Empty product: nothing to compute and nothing to write (same as the CPU
-    // path and the mixed core). k == 0 with m, n > 0 is the zero matrix.
+    // path and the mixed core). k == 0 with m, n > 0 is the zero matrix; only
+    // the m·n output elements are zeroed (the rest of `c` may belong to others).
     if m == 0 || n == 0 {
         return Ok(());
     }
     if k == 0 {
         return dev
             .stream
-            .memset_zeros(c)
+            .memset_zeros(&mut c.slice_mut(..m * n))
             .map_err(|e| GpuError::Cuda(format!("memset c (k = 0): {e:?}")));
     }
     let (left_op, right_op) = (left.geom.op, right.geom.op);

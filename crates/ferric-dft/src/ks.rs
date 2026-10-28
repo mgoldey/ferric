@@ -473,6 +473,14 @@ impl KsXc {
         self.screened.stats()
     }
 
+    /// True when the main-grid XC GEMMs run on the device (feature `gpu`: the
+    /// AO blocks were uploaded by an earlier Fock build and no failure has
+    /// declined the grid since). Always false without the feature.
+    #[doc(hidden)]
+    pub fn xc_on_device(&self) -> bool {
+        self.screened.on_device()
+    }
+
     /// Build a closed-shell XC evaluator: resolve the functional, construct the Becke-Lebedev grid, and screen it.
     pub fn new(
         mol: &Molecule,
@@ -711,6 +719,14 @@ impl KsXcUks {
     #[doc(hidden)]
     pub fn xc_screening_stats(&self) -> XcScreeningStats {
         self.screened.stats()
+    }
+
+    /// True when the main-grid XC GEMMs run on the device (feature `gpu`: the
+    /// AO blocks were uploaded by an earlier Fock build and no failure has
+    /// declined the grid since). Always false without the feature.
+    #[doc(hidden)]
+    pub fn xc_on_device(&self) -> bool {
+        self.screened.on_device()
     }
 
     /// Build an open-shell (UKS) XC evaluator with spin-resolved libxc response.
