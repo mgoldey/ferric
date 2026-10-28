@@ -1,5 +1,8 @@
 //! Device offload of the screened XC grid's per-batch GEMMs (feature `gpu`).
 //!
+//! Opt-in: the grid uses the device only under `[gpu] mode = "on"`; `auto`
+//! keeps it on the CPU (see [`xc_grid_routes_to_device`] for the measurement).
+//!
 //! # What runs where
 //!
 //! Everything that is O(nact·nb) per batch stays on the host, exactly as on
@@ -55,8 +58,8 @@
 //!
 //! # Fallback (never silent)
 //!
-//! `[gpu] mode = off`, no ready device, no pool, or a call from inside a rayon
-//! worker: the integration runs on the CPU and touches no CUDA. A pool refusal
+//! `[gpu] mode` other than `on`, no ready device, no pool, or a call from
+//! inside a rayon worker: the integration runs on the CPU and touches no CUDA. A pool refusal
 //! or a CUDA error while uploading, or any device error during a pass, declines
 //! the grid for its lifetime (one `[ferric] gpu:` notice, counted in
 //! `stats::xc_declined`) and the pass that failed is recomputed on the CPU.
@@ -108,6 +111,17 @@ pub(super) fn mixed_vxc_host_twin() -> bool {
     MIXED_VXC_HOST_TWIN.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// Whether the KS XC grid may use the device under `mode`: only an explicit
+/// `mode = "on"` (or a preset that sets it). Under `auto` it stays on the CPU
+/// because the device path was measured SLOWER than the CPU on a GTX 1080
+/// (Pascal, sm_61; PBE/cc-pVDZ SCF wall time, benzene 2.0 s CPU vs 3.6 s f64
+/// device, n-octane 8.5-8.9 s vs 18-23 s; 2.2-3x the host time per XC build at
+/// RAYON_NUM_THREADS = 3), so `auto` would silently slow every DFT run on a
+/// GPU box. Nothing faster has been measured yet.
+pub fn xc_grid_routes_to_device(mode: GpuMode) -> bool {
+    mode == GpuMode::On
+}
+
 /// See `xc_batch::mixed_vxc_requested`.
 pub(super) fn mixed_vxc_requested() -> bool {
     #[cfg(feature = "test-seams")]
@@ -115,6 +129,7 @@ pub(super) fn mixed_vxc_requested() -> bool {
         return true;
     }
     !force_host()
+        && xc_grid_routes_to_device(ferric_core::gpu::settings().mode)
         && ferric_core::gpu::settings().mixed_allows(MixedKernel::XcVxc)
         && matches!(ferric_core::gpu::status(), GpuStatus::Ready(_))
 }
@@ -250,18 +265,18 @@ fn twin(rows: usize, cols: usize) -> Array2<()> {
 
 /// Open the device session for one integration (see `ScreenedGrid::device_session`).
 pub(super) fn session<'a>(sg: &'a ScreenedGrid, grid: &[GridPoint]) -> DevSession<'a> {
-    if force_host() || ferric_core::gpu::settings().mode == GpuMode::Off {
+    if force_host() || !xc_grid_routes_to_device(ferric_core::gpu::settings().mode) {
         return None;
     }
     let GpuStatus::Ready(info) = ferric_core::gpu::status() else {
         return None;
     };
-    let mut slot = sg.device.lock().unwrap_or_else(|e| e.into_inner());
-    if matches!(*slot, DeviceSlot::Declined) {
-        return None;
-    }
     if rayon::current_thread_index().is_some() {
         stats::note_cpu(CpuReason::InsideRayonWorker); // transient: the slot is untouched
+        return None;
+    }
+    let mut slot = sg.device.lock().unwrap_or_else(|e| e.into_inner());
+    if matches!(*slot, DeviceSlot::Declined) {
         return None;
     }
     let pool = ferric_core::gpu::pool()?;
@@ -834,6 +849,8 @@ impl DeviceXc {
     where
         F: Fn(&XcBatch, usize) -> BatchFactors + Sync,
     {
+        // Meta-GGA τ (flags.1) is on the never-f32 list: never mixed here.
+        let mixed_req = mixed_req && !flags.1;
         let (nbat, nbf) = (sg.batches.len(), sg.nbf);
         let k_panel = effective_k_panel();
         let (mut mixed_waves, mut panels) = (0usize, 0usize);
@@ -886,8 +903,12 @@ impl DeviceXc {
                 }
                 _ => false,
             };
-            let host_out = if mixed_wave {
-                let a32 = round_to_f32("XC A", &host_in)?;
+            let a32 = if mixed_wave {
+                wave_a_f32(&host_in)
+            } else {
+                None
+            };
+            let host_out = if let Some(a32) = a32 {
                 let out = self.round_trip(&[], w.total[2], |me| {
                     let m = me.mixed.as_mut().expect("mixed_wave implies the f32 state");
                     if !a32.is_empty() {
@@ -957,6 +978,7 @@ impl DeviceXc {
         if mixed_waves > 0 {
             // Bytes are already in the pass's tally above.
             stats::note_mixed(panels, 0, 0);
+            super::note_mixed_vxc_pass();
         }
         Ok(out)
     }
@@ -1025,6 +1047,18 @@ impl DeviceXc {
             }
         }
         Ok(panels)
+    }
+}
+
+/// A mixed wave's `A` rounded to f32, or `None` (counted in
+/// `mixed_fallback_f64`) when some element does not fit: the wave then runs f64.
+fn wave_a_f32(host_in: &[f64]) -> Option<Vec<f32>> {
+    match round_to_f32("XC A", host_in) {
+        Ok(a32) => Some(a32),
+        Err(_) => {
+            stats::note_mixed_fallback();
+            None
+        }
     }
 }
 

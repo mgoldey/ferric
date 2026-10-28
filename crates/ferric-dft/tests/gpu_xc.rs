@@ -30,7 +30,7 @@ fn ready() -> bool {
     static INSTALL: std::sync::Once = std::sync::Once::new();
     INSTALL.call_once(|| {
         install(GpuSettingsExplicit {
-            mode: Some(GpuMode::Auto),
+            mode: Some(GpuMode::On), // the XC grid uses the device only under `on`
             memory_gb: Some(1.0),
             ..Default::default()
         })

@@ -1,11 +1,13 @@
 #![cfg(all(feature = "gpu", feature = "test-seams"))]
 //! The mixed-precision `xc-vxc` kernel on the device (`[gpu] precision =
-//! "mixed"`, `xc-vxc` shipped). Its own binary: the GPU settings are installed
-//! once per process, and this one installs mixed.
+//! "mixed"`, `mode = "on"`). `xc-vxc` is opt-in (not in the default set), so
+//! this binary names it in `mixed_kernels`. Its own binary: the GPU settings
+//! are installed once per process.
 //!
 //! * The precision ladder: a first build is f64; a build whose density moved is
-//!   mixed (`gemm_mixed` and `MIXED_VXC_BUILDS` move, V differs from f64); an
-//!   unchanged density is f64 again. A meta-GGA (r2SCAN) is never mixed.
+//!   mixed (`gemm_mixed` and `MIXED_VXC_BUILDS`, which counts mixed device
+//!   passes, move; V differs from f64); an unchanged density is f64 again. A
+//!   meta-GGA (r2SCAN) is never mixed.
 //! * The device error is the same class as the host twin's (`mixed_host`, the
 //!   algorithm whose elementwise bound `ferric-dft`'s unit test pins): within
 //!   a factor of 10 either way, and well below 1e-5 of max|V|. E_xc comes
@@ -39,11 +41,12 @@ fn ready() -> bool {
     }
     static INSTALL: std::sync::Once = std::sync::Once::new();
     INSTALL.call_once(|| {
-        assert!(MixedKernelSet::SHIPPED.contains(MixedKernel::XcVxc));
+        assert!(!MixedKernelSet::SHIPPED.contains(MixedKernel::XcVxc));
         install(GpuSettingsExplicit {
-            mode: Some(GpuMode::Auto),
+            mode: Some(GpuMode::On), // the XC grid uses the device only under `on`
             memory_gb: Some(1.0),
             precision: Some(Precision::Mixed),
+            mixed_kernels: Some(MixedKernelSet::SHIPPED.with(MixedKernel::XcVxc)),
             ..Default::default()
         })
         .expect("install");

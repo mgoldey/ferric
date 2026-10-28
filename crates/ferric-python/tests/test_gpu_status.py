@@ -102,13 +102,13 @@ def test_default_build_contract():
         "reason": None,
         "device": None,
         "precision": "f64",
-        "mixed_kernels": ["rimp2-energy", "xc-vxc"],
+        "mixed_kernels": ["rimp2-energy"],
     }
 
 
 def test_precision_keys_present_and_default_f64():
     st = _in_subprocess(None)
-    assert st["precision"] == "f64" and st["mixed_kernels"] == ["rimp2-energy", "xc-vxc"]
+    assert st["precision"] == "f64" and st["mixed_kernels"] == ["rimp2-energy"]
 
 
 def test_mixed_without_a_device_mode_degrades_to_off_and_says_why():
@@ -236,7 +236,7 @@ def test_configure_gpu_preset_off_equals_the_untouched_default():
     st = _configured({"preset": "off"})
     assert st == _in_subprocess(None)
     assert st["mode"] == "off" and st["precision"] == "f64"
-    assert st["mixed_kernels"] == ["rimp2-energy", "xc-vxc"]
+    assert st["mixed_kernels"] == ["rimp2-energy"]
 
 
 def test_configure_gpu_returns_what_gpu_status_reports_afterwards():
@@ -253,7 +253,7 @@ def test_configure_gpu_auto_mixed_degrades_without_a_device():
     st = _configured({"preset": "auto-mixed"})
     assert st["mode"] == "auto"
     if st["status"] == "ready":
-        assert st["precision"] == "mixed" and st["mixed_kernels"] == ["rimp2-energy", "xc-vxc"]
+        assert st["precision"] == "mixed" and st["mixed_kernels"] == ["rimp2-energy"]
     else:
         # an unusable device never leaves a run labelled mixed
         assert st["status"] in ("not_compiled", "unavailable")
@@ -269,7 +269,7 @@ def test_configure_gpu_mixed_preset_on_the_device_or_a_named_refusal():
     if rc == 0:
         st = json.loads(out)
         assert st["mode"] == "on" and st["status"] == "ready"
-        assert st["precision"] == "mixed" and st["mixed_kernels"] == ["rimp2-energy", "xc-vxc"]
+        assert st["precision"] == "mixed" and st["mixed_kernels"] == ["rimp2-energy"]
     elif COMPILED:
         assert "[gpu] mode = on but no usable device: " in err
         _skip_or_fail("no usable device for preset mixed")

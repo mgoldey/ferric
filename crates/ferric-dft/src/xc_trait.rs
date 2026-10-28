@@ -59,6 +59,22 @@ pub trait XcContribution: Send + Sync {
 
     /// How to build the exact-exchange contribution for this functional.
     fn k_mix(&self) -> KMix;
+
+    /// Called once when an SCF starts: forget state carried over from earlier
+    /// builds (for `KsXc`, the mixed-precision ladder), so the SCF's first
+    /// build is decided as a first build. The default does nothing.
+    fn start_scf(&self) {}
+
+    /// Called at a converged SCF exit with the Fock matrix of the exit
+    /// iteration. If the most recent `add_xc*` call formed V_xc in reduced
+    /// precision, replace it in `f` by the f64 V_xc of the same density and
+    /// return `true`; otherwise leave `f` alone and return `false`. The
+    /// energy that call returned is unchanged (E_xc never runs below f64).
+    /// The default (no reduced precision) returns `false`.
+    fn refine_last_to_f64(&self, f: &mut Array2<f64>) -> bool {
+        let _ = f;
+        false
+    }
 }
 
 /// Spin-polarized analog of `XcContribution`. Takes separate α/β densities
@@ -91,4 +107,13 @@ pub trait UksXcContribution: Send + Sync {
     /// How to build the exact-exchange contribution for this functional. Same
     /// semantics as `XcContribution::k_mix` — applies per-spin in the UKS Fock.
     fn k_mix(&self) -> KMix;
+
+    /// See [`XcContribution::start_scf`].
+    fn start_scf(&self) {}
+
+    /// [`XcContribution::refine_last_to_f64`] for the two spin Fock matrices.
+    fn refine_last_to_f64_uks(&self, f_a: &mut Array2<f64>, f_b: &mut Array2<f64>) -> bool {
+        let _ = (f_a, f_b);
+        false
+    }
 }

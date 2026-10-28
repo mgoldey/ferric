@@ -94,13 +94,15 @@
 //!
 //! # MUTATIONS (to run once, record the outcome here)
 //!
-//! * MUTATION A — zero the V^τ factor (`t_half`) in xc_batch.rs
-//!   `integrate_closed`: every RKS energy must fail, UKS must still pass.
-//! * MUTATION B — same in `integrate_polarized`: every UKS energy must fail,
-//!   RKS must still pass.
+//! * MUTATION A — zero the V^τ factor (`fac.t_half[j]`) in xc_batch.rs
+//!   `ScreenedGrid::integrate_closed_inner` (the pass-2 `factors` closure):
+//!   every RKS energy must fail, UKS must still pass.
+//! * MUTATION B — same in `ScreenedGrid::integrate_polarized_inner`: every
+//!   UKS energy must fail, RKS must still pass.
 //!
-//! Run 2026-09-25: A fails all eight RKS tests with both UKS green; B fails
-//! both UKS tests with all eight RKS green.
+//! Run 2026-09-25 (when these bodies were `integrate_closed` /
+//! `integrate_polarized`, since renamed): A fails all eight RKS tests with
+//! both UKS green; B fails both UKS tests with all eight RKS green.
 //!
 //! A missing reference JSON is a HARD failure (panic naming the path).
 

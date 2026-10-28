@@ -101,13 +101,16 @@ use crate::vxc::{closed_kernel, deterministic_point_sum, polarized_kernel, DENSI
 /// Device offload of the per-batch GEMMs (feature `gpu`).
 #[cfg(feature = "gpu")]
 mod gpu;
+#[cfg(feature = "gpu")]
+pub use gpu::xc_grid_routes_to_device;
 #[cfg(feature = "test-seams")]
 pub use gpu::{FORCE_HOST, MIXED_VXC_HOST_TWIN};
 
 /// True when this process asked for V_xc in mixed precision and could run it:
-/// `[gpu] precision = "mixed"` with `xc-vxc` in `mixed_kernels` and a ready
-/// device (or, in tests, the `MIXED_VXC_HOST_TWIN` seam). Always false without
-/// the `gpu` feature.
+/// `[gpu] mode = "on"`, `precision = "mixed"` with `xc-vxc` named in
+/// `mixed_kernels` (it is opt-in, not in the default set), and a ready device
+/// (or, in tests, the `MIXED_VXC_HOST_TWIN` seam). Always false without the
+/// `gpu` feature.
 pub(crate) fn mixed_vxc_requested() -> bool {
     #[cfg(feature = "gpu")]
     {
@@ -666,6 +669,31 @@ fn batch_vxc_one(
     scatter_sym(vb.as_slice().expect("standard layout"), funcs, acc);
 }
 
+/// Process-wide count of V_xc passes that formed at least one batch product
+/// with the mixed `xc-vxc` kernel: on the device (a pass with at least one
+/// mixed wave) or, under the `MIXED_VXC_HOST_TWIN` test seam, with its host
+/// twin. A pass the ladder approved but that ran f64 throughout (every wave
+/// fell back, or the grid is declined) is not counted. Tests read deltas.
+#[doc(hidden)]
+pub static MIXED_VXC_BUILDS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn note_mixed_vxc_pass() {
+    MIXED_VXC_BUILDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// True when the CPU pass 2 forms mixed products with the host twin (the
+/// `test-seams` seam); always false in a shipped build.
+fn host_twin_active() -> bool {
+    #[cfg(feature = "test-seams")]
+    {
+        gpu::mixed_vxc_host_twin()
+    }
+    #[cfg(not(feature = "test-seams"))]
+    {
+        false
+    }
+}
+
 /// `V_b = A · Xᵀ` on the host. A `mixed` build under the `MIXED_VXC_HOST_TWIN`
 /// test seam forms it with the host twin of the device's `xc-vxc` kernel
 /// (operands rounded to f32, f32 panels summed in f64;
@@ -674,7 +702,7 @@ fn batch_vxc_one(
 /// it is the f64 product whatever `mixed` says: mixed precision is device-only.
 fn vb_product(amat: &Array2<f64>, x: ArrayView2<f64>, mixed: bool) -> Array2<f64> {
     #[cfg(feature = "test-seams")]
-    if mixed && gpu::mixed_vxc_host_twin() {
+    if mixed && host_twin_active() {
         let mut out = Array2::<f64>::zeros((amat.nrows(), x.nrows()));
         ferric_core::gpu::mixed_host::gemm_f32_f64acc_host(
             &amat.view(),
@@ -1078,14 +1106,24 @@ impl ScreenedGrid {
     where
         F: Fn(&XcBatch, usize) -> BatchFactors + Sync,
     {
-        let (serial, mixed) = (exec.serial, exec.mixed_vxc);
+        // Meta-GGA τ is on the never-f32 list: refused here whatever the caller says.
+        let (serial, mixed) = (exec.serial, exec.mixed_vxc && !has_mgga);
         #[cfg(feature = "gpu")]
-        if let Some(v) =
-            gpu::potential_pass(self, grid, nmats, factors, (has_gga, has_mgga), exec, dev)?
-        {
+        if let Some(v) = gpu::potential_pass(
+            self,
+            grid,
+            nmats,
+            factors,
+            (has_gga, has_mgga),
+            exec.with_mixed_vxc(mixed),
+            dev,
+        )? {
             return Ok(v);
         }
         let _ = dev;
+        if mixed && host_twin_active() {
+            note_mixed_vxc_pass();
+        }
         self.reduce_groups(serial, nmats, |bi, accs| {
             let b = &self.batches[bi];
             if b.funcs.is_empty() {
@@ -1537,18 +1575,15 @@ mod tests {
         }
     }
 
-    /// Catches: the serial execution mode (one-thread rayon pool, BLAS opt-in)
-    /// drifting from the parallel mode — different group boundaries, a
-    /// different batch order, or a missed batch. With BLAS at 1 thread the
-    /// two must be bit-identical (see `Exec`). Meta-GGA, UKS and closed shell,
-    /// screening on, cc-pVDZ.
     /// The host twin of the device `xc-vxc` kernel (f32 operands, f32 panels of
     /// 64 summed in f64) against the f64 `V_b = A·Xᵀ` on real batches of a
-    /// screened grid (water/cc-pVDZ, GGA-shaped factors; meta-GGAs never run
-    /// mixed):
-    /// every element inside the documented bound
+    /// screened grid (water/cc-pVDZ AO values, GGA-shaped `A`; meta-GGAs never
+    /// run mixed): every element inside the documented bound
     /// `|ΔV_ij| ≤ (ε_mixed(ncols, 64) + γ_ncols(u64))·(|A||X|ᵀ)_ij`, and the
-    /// twin not identical to f64 (the comparison is live).
+    /// twin not identical to f64 (the comparison is live). The potential
+    /// factors in `A` are synthetic sine waves, not functional output, so the
+    /// printed worst ratio to the bound (0.10 when measured) describes these
+    /// operands, not an SCF.
     #[test]
     fn mixed_vxc_host_twin_stays_inside_its_elementwise_bound() {
         use ferric_core::gpu::mixed_host::{gamma, gemm_f32_f64acc_host, mixed_error_factor, U64};
@@ -1615,6 +1650,11 @@ mod tests {
         eprintln!("worst |dV| / bound = {worst:.3e}");
     }
 
+    /// Catches: the serial execution mode (one-thread rayon pool, BLAS opt-in)
+    /// drifting from the parallel mode — different group boundaries, a
+    /// different batch order, or a missed batch. With BLAS at 1 thread the
+    /// two must be bit-identical (see `Exec`). Meta-GGA, UKS and closed shell,
+    /// screening on, cc-pVDZ.
     #[test]
     fn serial_and_parallel_execution_are_bit_identical() {
         use crate::ao_grid::{collect_shells, nbasis};

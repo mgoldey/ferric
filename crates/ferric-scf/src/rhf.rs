@@ -2345,6 +2345,9 @@ fn solve_rhf_impl(
     const INCREMENTAL_FULL_REBUILD_EVERY: usize = 8;
 
     crate::driver::warn_if_rss_over_at_stage("RHF", "setup", ooc_budget);
+    if let Some(x) = xc_contrib.as_ref() {
+        x.start_scf();
+    }
 
     for iter in 1..=config.max_iter {
         ctx.check_interrupted()?;
@@ -2779,6 +2782,10 @@ fn solve_rhf_impl(
                             energy - sigma * sm.entropy
                         );
                     }
+                }
+                // A converged SCF returns an f64 V_xc (see `XcContribution::refine_last_to_f64`).
+                if let Some(x) = xc_contrib.as_ref() {
+                    x.refine_last_to_f64(&mut f);
                 }
                 let (orb_e, c) = diag.run(&f)?;
                 let density_alpha = 0.5 * &d;

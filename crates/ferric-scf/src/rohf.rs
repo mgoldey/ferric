@@ -866,6 +866,9 @@ fn solve_rohf_impl(
     // Injected (periodic) path: no continuity lock (it can hold a periodic
     // hole state the unrelaxed witness cannot refute); molecular path unchanged.
     .with_continuity_lock(!injected);
+    if let Some(x) = xc_contrib.as_ref() {
+        x.start_scf();
+    }
 
     let mut iter = 0usize;
     loop {
@@ -1161,6 +1164,15 @@ fn solve_rohf_impl(
         // Gradient guard (F6): a stagnated DIIS extrapolation settles ΔP and ΔE
         // without being a stationary point (OH ROKS/PBE on CI, 0.58 Ha high).
         if iter > 1 && guard.accept(converged, err_max, iter, &mut diis, ctx.is_root()) {
+            let refined =
+                refine_exit_focks(xc_contrib.as_deref(), &mut f_a, &mut f_b, &d_a, &d_b, &s);
+            let f_eff = match refined {
+                Some(fe) => {
+                    spin_focks_last = Some((f_a.clone(), f_b.clone()));
+                    fe
+                }
+                None => f_eff,
+            };
             let (eps, c_f) = diag.run(&f_eff)?;
             let (eps, c_f) = guard.relabel(&c, eps, c_f, &s);
             let (d_a_f, d_b_f) = build_rohf_densities(&c_f, nocc_double, nocc_open);
@@ -1761,6 +1773,22 @@ pub(crate) fn injected_rohf_guess_mos(
     let f_eff = roothaan_fock(&f_a, &f_b, &d_a, &d_b, s);
     let (_, c) = diagonalize(&f_eff, s_inv_sqrt)?;
     Ok(c)
+}
+
+/// At a converged exit: if the last XC build was mixed precision, swap its
+/// V_xc in `f_a`/`f_b` for the f64 one (see
+/// `UksXcContribution::refine_last_to_f64_uks`) and return the Roothaan
+/// effective Fock rebuilt from them; `None` when nothing changed.
+fn refine_exit_focks(
+    xc: Option<&dyn ferric_dft::xc_trait::UksXcContribution>,
+    f_a: &mut Array2<f64>,
+    f_b: &mut Array2<f64>,
+    d_a: &Array2<f64>,
+    d_b: &Array2<f64>,
+    s: &Array2<f64>,
+) -> Option<Array2<f64>> {
+    let refined = xc.is_some_and(|x| x.refine_last_to_f64_uks(f_a, f_b));
+    refined.then(|| roothaan_fock(f_a, f_b, d_a, d_b, s))
 }
 
 pub(crate) fn roothaan_fock(

@@ -434,7 +434,7 @@ impl GpuSettings {
                 let missing: Vec<&str> = kernels
                     .value
                     .iter()
-                    .filter(|&k| !shipped.contains(k))
+                    .filter(|&k| !shipped.contains(k) && !MixedKernelSet::OPT_IN.contains(k))
                     .map(|k| k.name())
                     .collect();
                 if !missing.is_empty() {

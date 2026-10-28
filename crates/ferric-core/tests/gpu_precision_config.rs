@@ -27,18 +27,14 @@ fn lookup(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
 fn default_precision_is_f64_with_the_shipped_allowlist_and_audit_names_both() {
     let (s, audit) = GpuSettings::resolve(GpuSettingsExplicit::default(), lookup(&[])).unwrap();
     assert_eq!(s.precision, Precision::F64);
-    // the build ships exactly rimp2-energy and xc-vxc; shipping them does not
-    // make mixed the default: precision stays f64, so no kernel is allowed to
-    // run mixed
+    // the build ships exactly rimp2-energy; shipping it does not make mixed the
+    // default: precision stays f64, so no kernel is allowed to run mixed
     assert_eq!(
         MixedKernelSet::SHIPPED,
-        MixedKernelSet::EMPTY
-            .with(MixedKernel::RiMp2Energy)
-            .with(MixedKernel::XcVxc)
+        MixedKernelSet::EMPTY.with(MixedKernel::RiMp2Energy)
     );
     assert_eq!(s.mixed_kernels, MixedKernelSet::SHIPPED);
     assert!(!s.mixed_allows(MixedKernel::RiMp2Energy));
-    assert!(!s.mixed_allows(MixedKernel::XcVxc));
     assert_eq!(PRECISION_DEFAULT, Precision::F64);
     assert!(
         audit
@@ -66,8 +62,8 @@ fn mixed_requires_a_device_mode() {
 #[test]
 fn mixed_resolves_to_the_shipped_kernel_and_an_empty_shipped_set_is_refused() {
     let env = lookup(&[("FERRIC_GPU", "auto"), ("FERRIC_GPU_PRECISION", "mixed")]);
-    // The real build ships rimp2-energy and xc-vxc: explicit mixed resolves and
-    // allows them (and nothing else).
+    // The real build ships rimp2-energy: explicit mixed resolves and allows it
+    // (and nothing else).
     let (s, _) = GpuSettings::resolve(GpuSettingsExplicit::default(), &env).unwrap();
     assert_eq!(s.precision, Precision::Mixed);
     assert_eq!(s.mixed_kernels, MixedKernelSet::SHIPPED);
@@ -294,6 +290,19 @@ fn an_explicit_unshipped_kernel_is_refused_and_a_shipped_one_admitted() {
             && e.contains("shipped in this build: rimp2-energy"),
         "{e}"
     );
+    // xc-vxc is opt-in: not in the default (shipped) set, so `mixed` alone does
+    // not run it, but a list that names it is admitted.
+    assert!(!s.mixed_allows(MixedKernel::XcVxc));
+    let mixed_only = lookup(&[("FERRIC_GPU", "on"), ("FERRIC_GPU_PRECISION", "mixed")]);
+    let (s, _) = GpuSettings::resolve(GpuSettingsExplicit::default(), &mixed_only).unwrap();
+    assert!(s.mixed_allows(MixedKernel::RiMp2Energy) && !s.mixed_allows(MixedKernel::XcVxc));
+    let env_xc = lookup(&[
+        ("FERRIC_GPU", "on"),
+        ("FERRIC_GPU_PRECISION", "mixed"),
+        ("FERRIC_GPU_MIXED_KERNELS", "rimp2-energy,xc-vxc"),
+    ]);
+    let (s, _) = GpuSettings::resolve(GpuSettingsExplicit::default(), &env_xc).unwrap();
+    assert!(s.mixed_allows(MixedKernel::XcVxc) && s.mixed_allows(MixedKernel::RiMp2Energy));
     // An empty shipped set says none are shipped.
     let e = GpuSettings::resolve_with_default(
         GpuSettingsExplicit::default(),

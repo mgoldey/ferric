@@ -1078,6 +1078,9 @@ fn solve_uhf_impl(
     // Newton and TRAH rebuild an integer density after each step; under
     // fractional occupation they stay off (see second_order_blocked_by_fractional_occ).
     let fractional_blocks_second_order = second_order_blocked_by_fractional_occ(config);
+    if let Some(x) = xc_contrib.as_ref() {
+        x.start_scf();
+    }
 
     for iter in 1..=config.max_iter {
         ctx.check_interrupted()?;
@@ -1391,6 +1394,10 @@ fn solve_uhf_impl(
         }
 
         if iter > 1 && conv_exit.is_some() {
+            // A converged SCF returns f64 V_xc (see `UksXcContribution::refine_last_to_f64_uks`).
+            if let Some(x) = xc_contrib.as_ref() {
+                x.refine_last_to_f64_uks(&mut f_a, &mut f_b);
+            }
             // Returned MOs must reproduce the returned density: after a
             // degenerate swap the aufbau eigenvectors of F hold the OTHER
             // member of the pair. Only then (see `occupied_by_density`): a MOM
