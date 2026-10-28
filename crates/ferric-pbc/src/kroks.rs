@@ -1,7 +1,7 @@
 //! k-point restricted open-shell HF / Kohn-Sham (`solve_krohf`,
 //! `solve_kroks`): the k-mesh analogue of [`crate::rohf::gamma_roks`], with
 //! LDA, GGA, global-hybrid and range-separated-hybrid functionals, and the
-//! pure SCAN / r2SCAN meta-GGAs (energy only).
+//! pure SCAN / r2SCAN meta-GGAs (energy, force and stress on the dense-AFT J/K).
 //!
 //! One spatial orbital set per k with closed (2), open (1) and virtual (0)
 //! levels; the per-spin Focks of the k-point UHF/UKS,
@@ -48,7 +48,7 @@
 //! libxc kernel, `V_σ = ∂E_xc/∂D_σ(k)`, no `1/N_k`), applied to the ROHF spin
 //! densities `D_α`, `D_β`.
 //!
-//! # Meta-GGA (energy only)
+//! # Meta-GGA
 //!
 //! The pure SCAN / r2SCAN (issue #492): the same evaluator gives each spin its
 //! own `τ_σ = (1/N_k) Σ_k ½ Σ_ax Re Σ D_σ(k)_{μν} ∂φ_μ (∂φ_ν)*` and its own
@@ -57,10 +57,14 @@
 //! Wiring only (no new formula): pinned to PySCF `pbc.dft.KROKS` (whose veff is
 //! its KUKS one) in `tests/pbc_kroks_mgga.rs`, on the dense-AFT J/K only (the
 //! RS-GDF J/K is refused by name for a ROKS meta-GGA: nothing pins it). Any other meta-GGA (TPSS, raw
-//! `MGGA_*` names) and a meta-GGA hybrid are refused by name, and so are the
-//! ROKS meta-GGA force and stress ([`crate::kxcgrad::check_deriv_functional`],
-//! the ROKS resolvers of [`crate::kuxcgrad`] / [`crate::kuxcstress`]). Library
-//! only: the Python and CLI gates refuse it (wiring is #498).
+//! `MGGA_*` names) and a meta-GGA hybrid are refused by name. The SCAN /
+//! r2SCAN force and stress are [`crate::kuxcgrad::kpoint_roks_gradient`] /
+//! [`crate::kuxcstress::kpoint_roks_stress`]: the k-UKS per-spin tau terms on
+//! the ROHF spin densities, with `W_RO` from the spin Focks that carry
+//! `V^τ_σ` (no ROKS-specific algebra; anchored and finite-differenced in
+//! `tests/pbc_kroks_mgga.rs`). Library only: the Python and CLI gates refuse
+//! the energy and [`crate::kxcgrad::check_deriv_functional`] the derivatives
+//! (wiring is #498).
 //!
 //! # Range-separated hybrids
 //!
@@ -281,7 +285,7 @@ pub struct KRoksConfig {
     /// SCF, J/K source, exxdiv and one-electron settings.
     pub rohf: KRohfConfig,
     /// LDA / GGA / global- or range-separated-hybrid name, or the pure
-    /// SCAN / r2SCAN (energy only; [`resolve_kroks_functional`]).
+    /// SCAN / r2SCAN ([`resolve_kroks_functional`]).
     pub functional: String,
     /// The periodic grid.
     pub grid: PeriodicGridConfig,
@@ -409,7 +413,7 @@ pub fn solve_kroks_keep(
 /// ([`crate::dft::resolve_periodic_functional`]), range-separated hybrids
 /// ([`crate::rsh::resolve_periodic_functional_rsh`]: no range-separated
 /// meta-GGA, VV10 or double hybrid) and the pure SCAN / r2SCAN meta-GGAs
-/// (ENERGY only: the ROKS force and stress refuse them). Any other meta-GGA is
+/// (with the library force and stress, dense-AFT J/K). Any other meta-GGA is
 /// refused by name.
 pub fn resolve_kroks_functional(name: &str) -> Result<(), FerricError> {
     crate::kuks::resolve_open_shell_k_functional(name, "ROKS")

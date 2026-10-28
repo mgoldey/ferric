@@ -137,8 +137,8 @@ fn polarized_fixed_density_xc_stress_matches_fd() {
 // ------------------------------------------------------------ refusals
 
 /// Outside the validated envelope, by name: any other meta-GGA (raw TPSS
-/// components) and meta-GGA ROKS (its SCF has the SCAN / r2SCAN energy since
-/// #492, but no meta-GGA force or stress). Each refusal
+/// components), for UKS and for ROKS (whose SCAN / r2SCAN force and stress
+/// exist since #492, `pbc_kroks_mgga.rs`). Each refusal
 /// precedes the Fock guard, so a PBE state exercises it. (UKS SCAN / r2SCAN
 /// on the RS-GDF J/K is accepted since #492: `pbc_kuks_mgga_rsgdf.rs`.)
 #[test]
@@ -154,7 +154,9 @@ fn unvalidated_open_shell_meta_gga_derivatives_are_refused() {
             .to_string();
         assert!(e.contains("SCAN and r2SCAN"), "{f}: {e}");
     }
-    // ROKS: a PBE ROKS state handed in as SCAN.
+    // ROKS (SCAN / r2SCAN accepted since #492, `pbc_kroks_mgga.rs`): any
+    // other meta-GGA is refused by name, before the Fock guard (a PBE ROKS
+    // state handed in as raw TPSS).
     let hcfg = PeriodicHcoreConfig::with_omega(OMEGA);
     let mut rcfg = KRoksConfig::new(&fx.cell, ExxDiv::None, "PBE");
     rcfg.rohf.hcore = hcfg;
@@ -162,33 +164,35 @@ fn unvalidated_open_shell_meta_gga_derivatives_are_refused() {
         rcfg.grid = g.clone();
     }
     let ro = solve_kroks(&fx.cell, &fx.prep, None, &fx.mesh, &rcfg).unwrap();
-    let e = kpoint_roks_gradient(
-        &fx.cell,
-        &fx.prep,
-        &fx.mesh,
-        &hcfg,
-        &fx.hk,
-        KGradJk::Dense(&fx.eri),
-        &ro.scf,
-        "SCAN",
-        &gcfg(&fx.grid, None, None),
-    )
-    .expect_err("ROKS SCAN force")
-    .to_string();
-    eprintln!("ROKS SCAN force: {e}");
-    assert!(e.contains("meta-GGA") && e.contains("ROKS"), "{e}");
-    let e = kpoint_roks_stress(
-        &fx.cell,
-        &fx.prep,
-        &fx.mesh,
-        &hcfg,
-        &fx.hk,
-        KStressJk::Dense(&fx.eri),
-        &ro.scf,
-        "SCAN",
-        &scfg(&fx.grid, None, None),
-    )
-    .expect_err("ROKS SCAN stress")
-    .to_string();
-    assert!(e.contains("meta-GGA") && e.contains("ROKS"), "{e}");
+    for f in ["MGGA_X_TPSS", "MGGA_C_TPSS"] {
+        let e = kpoint_roks_gradient(
+            &fx.cell,
+            &fx.prep,
+            &fx.mesh,
+            &hcfg,
+            &fx.hk,
+            KGradJk::Dense(&fx.eri),
+            &ro.scf,
+            f,
+            &gcfg(&fx.grid, None, None),
+        )
+        .expect_err("ROKS TPSS force")
+        .to_string();
+        eprintln!("ROKS {f} force: {e}");
+        assert!(e.contains("SCAN and r2SCAN"), "{f}: {e}");
+        let e = kpoint_roks_stress(
+            &fx.cell,
+            &fx.prep,
+            &fx.mesh,
+            &hcfg,
+            &fx.hk,
+            KStressJk::Dense(&fx.eri),
+            &ro.scf,
+            f,
+            &scfg(&fx.grid, None, None),
+        )
+        .expect_err("ROKS TPSS stress")
+        .to_string();
+        assert!(e.contains("SCAN and r2SCAN"), "{f}: {e}");
+    }
 }

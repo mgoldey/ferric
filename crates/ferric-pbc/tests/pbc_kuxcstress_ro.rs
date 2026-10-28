@@ -923,8 +923,10 @@ fn refusals_and_the_fock_guard() {
             "but the dense kernels carry the bare Coulomb exchange; build the J/K with KDenseAftConfig::rsh set",
         ),
         (
-            "SCAN",
-            "meta-GGA stress at k is not supported: SCAN: the k-point ROKS meta-GGA stress is not implemented (the SCAN / r2SCAN ROKS energy is, #492); the k-point meta-GGA stress covers RKS and UKS only",
+            // SCAN / r2SCAN are differentiated since #492 (pbc_kroks_mgga.rs);
+            // any other meta-GGA is refused by name before the Fock guard.
+            "MGGA_X_TPSS",
+            "kpoint_roks_stress: MGGA_X_TPSS: the k-point UKS / ROKS force and stress cover the pure SCAN and r2SCAN meta-GGAs only",
         ),
         ("wB97X-V", "VV10"),
         ("B2PLYP", "double hybrid"),

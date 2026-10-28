@@ -1,5 +1,6 @@
 //! k-point ROKS meta-GGA (`ferric_pbc::kroks::solve_kroks`, pure SCAN and
-//! r2SCAN, ENERGY ONLY; issue #492, item "meta-GGA ROKS energies").
+//! r2SCAN; issue #492): the energy (item "meta-GGA ROKS energies") and the
+//! force and stress (`kpoint_roks_gradient` / `kpoint_roks_stress`, item 3).
 //!
 //! What changed. The k-ROKS SCF had its own spin-resolved XC builder without a
 //! tau term and refused meta-GGA. It now runs on the k-point UKS evaluator
@@ -49,32 +50,50 @@
 //! no exact exchange it makes `F_β = F_α`, where the Roothaan `F_eff` collapses
 //! to `F_α`, so it IS `BareAlphaFock` (identical misses to 7 digits).
 //!
-//! Not covered: the ROKS meta-GGA force and stress (refused, checked here on
-//! a converged SCAN ROKS state), TPSS (refused, `pbc_kroks.rs`), RS-GDF J/K
-//! for ROKS meta-GGA (refused by name: no ROKS RS-GDF meta-GGA pin exists)
-//! and the Python / CLI bindings (refused, #498). The 1x1x1 == Gamma ROKS
-//! anchor lives with the Gamma tests
-//! (`pbc_gamma_open_mgga.rs::gamma_roks_doublet_is_one_point_kroks`).
+//! # Force and stress (item 3)
+//!
+//! No new derivative code: the ROKS force and stress are the k-UKS assembly
+//! on the ROHF spin densities, whose meta-GGA path already carries every tau
+//! term; the ROKS Pulay weight `W_RO = sym(D_α F_α D_α + D_α F_β D_β)` is
+//! built from the rebuilt spin Focks, which include `V^τ_σ`. Only the
+//! refusal was lifted.
+//!
+//! * Physics right: (1) singlet k-ROKS == k-RKS per part; (2) fully
+//!   polarized (`N_β = 0`) k-ROKS == k-UKS per part (`W_RO` is then the UKS
+//!   `W`); (3) on the H3 doublet the force and `dE/dε` equal the central FD
+//!   of ferric's own converged k-ROKS energy.
+//! * Artifact: a tau term on the wrong spin, a dropped `V^τ_β` in the Pulay
+//!   Fock or a dropped `W_RO` cross term. (1) is blind to a `v_τα`/`v_τβ`
+//!   swap and (2) to the cross term and both β tau terms (`D_β = 0`), so the
+//!   polarized FD (3) carries the ledger (`validation_pbc_kroks_mgga.rs`).
+//!   A dropped `V^τ_β` cannot reach the force at all: the ROHF
+//!   orbital-gradient gate is evaluated on the rebuilt Focks and refuses it.
+//!
+//! No external oracle exists: PySCF has no k-point ROKS gradient and its
+//! `KUKS` force refuses meta-GGA. The independent constructions are the
+//! anchors above and, weekly, the FD of the Gamma-point ROKS energy (real
+//! AOs, `eval_tau_uks`) against the 1x1x1 k-ROKS force and stress.
+//!
+//! Not covered: TPSS (refused, `pbc_kroks.rs`; its force / stress refused by
+//! name, `pbc_kuxc_mgga.rs`), RS-GDF J/K for ROKS meta-GGA (the SCF refuses
+//! it by name: no ROKS RS-GDF meta-GGA pin exists), the Gamma-point ROKS
+//! meta-GGA force and stress (refused) and the Python / CLI bindings
+//! (refused, #498). The 1x1x1 == Gamma ROKS energy anchor lives with the
+//! Gamma tests (`pbc_gamma_open_mgga.rs::gamma_roks_doublet_is_one_point_kroks`).
 
 mod common;
 #[path = "kroks_mgga_support/mod.rs"]
 mod support;
 
 use common::*;
-use ferric_pbc::dense_aft::ExxDiv;
-use ferric_pbc::hcore::kpoint::periodic_hcore_kpts;
-use ferric_pbc::hcore::PeriodicHcoreConfig;
-use ferric_pbc::kdense_aft::KDenseAftEri;
-use ferric_pbc::kgrad::{KGradConfig, KGradJk};
 use ferric_pbc::kpts::KPointMesh;
 use ferric_pbc::kroks::{solve_kroks, solve_kroks_on_grid, KRohfMutation};
 use ferric_pbc::kscf::KJkKind;
-use ferric_pbc::kstress::{KStressConfig, KStressJk};
 use ferric_pbc::kuks::KUksMggaMutation;
-use ferric_pbc::kuxcgrad::{kpoint_roks_gradient, KUksGradConfig};
-use ferric_pbc::kuxcstress::{kpoint_roks_stress, KUksStressConfig};
-use ferric_pbc::kxcgrad::{KRksGradConfig, KXcGrid};
-use ferric_pbc::kxcstress::KRksStressConfig;
+use ferric_pbc::kuxcgrad::KUSpinMutation;
+use ferric_pbc::kuxcstress::KUStressMutation;
+use ferric_pbc::kxcgrad::KXcMutation;
+use ferric_pbc::kxcstress::KXcStressMutation;
 use support::*;
 
 /// EXACTNESS ANCHOR 1 (written and passed before any PySCF number): a singlet
@@ -195,81 +214,160 @@ fn h3_kroks_matches_pinned_pyscf() {
     }
 }
 
-/// The library ROKS meta-GGA is ENERGY only: a converged SCAN ROKS state is
-/// refused by the ROKS force and stress (item 3 of #492 is later).
+// ------------------------------------------- force and stress (#492, item 3)
+
+/// Singlet k-ROKS vs k-RKS, per part, and fully polarized k-ROKS vs k-UKS.
+/// Measured (2026-10-28, SCAN / r2SCAN): singlet <= 4.4e-16 / 7.8e-16, fully
+/// polarized <= 1.9e-12 / 5.5e-14.
+const DERIV_ANCHOR_BAR: f64 = 1e-11;
+/// The FD row of [`h3_kroks_scan_force_and_stress_match_fd_row`]. Measured:
+/// force 4.9e-10, `dE/dε` (1,2) 8.4e-11 at h = 5e-5 (orbital gradient
+/// 5.7e-12). The diagonal strains (1,1) and (2,2) carry an h^2 stencil error
+/// of ~3e-8 at this h, so the per-commit row uses the shear (1,2); the weekly
+/// file extrapolates.
+const FD_H: f64 = 5e-5;
+const FD_BAR: f64 = 1e-8;
+const FD_FORCE_ROW: [(usize, usize); 2] = [(0, 2), (2, 1)];
+const FD_STRAIN_ROW: [(usize, usize); 1] = [(1, 2)];
+const MUTANT_BAR: f64 = 1e-5;
+
+/// EXACTNESS ANCHOR 1 for the derivatives: the singlet k-ROKS (H2, 1x1x3)
+/// SCAN force and stress equal the k-RKS ones per part (independent SCF loop,
+/// unpolarized kernel and total tau). Blind to a swap of `v_τα` and `v_τβ`
+/// (equal here); the uniform grid has no grid response, so `xc_point` and
+/// `xc_weight` are zero on both sides.
 #[test]
-fn kroks_meta_gga_force_and_stress_stay_refused() {
-    let cell = cube_cell(&H3, 2);
+fn singlet_k_roks_scan_force_and_stress_equal_k_rks_per_part() {
+    let cell = cube_cell(&H2, 1);
     let bs = s05();
     let grid = uniform_grid(&cell);
-    let n = [1, 1, 1];
-    let r = kroks(&cell, &bs, n, "SCAN", &grid);
-    let prep = prep_for(&cell, &bs);
-    let mesh = KPointMesh::gamma_centred(&cell, n).unwrap();
-    let hcfg = PeriodicHcoreConfig::with_omega(OMEGA_HCORE);
-    let hk = periodic_hcore_kpts(&cell, &prep, &mesh, &hcfg).unwrap();
-    let eri = KDenseAftEri::build(
-        &cell,
-        &prep,
-        &mesh,
-        &hk.s,
-        ExxDiv::Ewald,
-        &Default::default(),
+    let n = [1, 1, 3];
+    let fx = deriv_fx(&cell, &bs, n);
+    let f = "SCAN";
+    let ro = kroks(&cell, &bs, n, f, &grid);
+    let r = krks(&cell, &bs, n, f, &grid);
+    let rod = (
+        roks_force(&fx, &ro.scf, f, &gcfg(&fx, None, None)).unwrap(),
+        roks_stress(&fx, &ro.scf, f, &scfg(&fx, None, None)).unwrap(),
+    );
+    let rd = rks_derivs(&fx, &r.scf, f);
+    assert!(rd.0.xc_ao.iter().any(|x| x.abs() > 1e-3) && mmax(&rd.1.xc_ao) > 1e-3);
+    for (name, d) in part_rows(&rod, &rd) {
+        eprintln!("H2 singlet {f} k-ROKS vs k-RKS: {name:<17} {d:.2e}");
+        assert!(d < DERIV_ANCHOR_BAR, "{name}: {d:e}");
+    }
+}
+
+/// EXACTNESS ANCHOR 2: a fully polarized state (H2 triplet, two s per H,
+/// 1x1x3, `N_beta = 0`) has `D_beta = 0` and no closed shell, so `W_RO = D_α
+/// F_α D_α` is the UKS `W` and the ROKS force and stress equal the k-UKS ones
+/// of an independent k-UKS SCF, per part. Polarized tau terms; blind to the
+/// `W_RO` cross term (it multiplies `D_β = 0`) and to a dropped beta tau term.
+#[test]
+fn fully_polarized_k_roks_scan_force_and_stress_equal_k_uks() {
+    let cell = cube_cell(&H2, 3);
+    let bs = two_s();
+    let grid = uniform_grid(&cell);
+    let n = [1, 1, 3];
+    let fx = deriv_fx(&cell, &bs, n);
+    let f = "SCAN";
+    let ro = kroks(&cell, &bs, n, f, &grid);
+    let u = kuks(&cell, &bs, n, f, &grid);
+    let rod = (
+        roks_force(&fx, &ro.scf, f, &gcfg(&fx, None, None)).unwrap(),
+        roks_stress(&fx, &ro.scf, f, &scfg(&fx, None, None)).unwrap(),
+    );
+    let ud = uks_derivs(&fx, &u.scf, f);
+    assert!(mmax(&ud.1.xc_ao) > 1e-3);
+    for (name, d) in part_rows(&rod, &ud) {
+        eprintln!("H2 triplet {f} k-ROKS vs k-UKS: {name:<17} {d:.2e}");
+        assert!(d < DERIV_ANCHOR_BAR, "{name}: {d:e}");
+    }
+}
+
+/// The POLARIZED check per commit: on the H3 doublet (N_alpha = 2, N_beta =
+/// 1, a genuine closed-open-virtual ROHF state), 1x1x3 (complex Bloch AOs),
+/// the SCAN force (two components) and `dE/dε` (one shear component) against
+/// the central FD of ferric's own converged k-ROKS energy (h = 5e-5). The
+/// β `V^τ` dropped from the Pulay Fock (`TauNoVxcBeta`, Fock guard skipped)
+/// is refused by the ROHF orbital-gradient gate, and `V^τ` dropped with the
+/// gate off misses the same row; the full ledger is in
+/// `validation_pbc_kroks_mgga.rs`.
+#[test]
+fn h3_kroks_scan_force_and_stress_match_fd_row() {
+    let cell = cube_cell(&H3, 2);
+    let n = [1, 1, 3];
+    let f = "SCAN";
+    let fx = deriv_fx(&cell, &s05(), n);
+    let r = kroks(&cell, &s05(), n, f, &uniform_grid(&cell));
+    assert!(spin_asymmetry(&r.scf) > 0.1, "not polarized");
+    let g = roks_force(&fx, &r.scf, f, &gcfg(&fx, None, None)).unwrap();
+    let s = roks_stress(&fx, &r.scf, f, &scfg(&fx, None, None)).unwrap();
+    let fd_f = fd_roks_force(&H3, n, f, FD_H, &FD_FORCE_ROW);
+    let fd_s = fd_roks_stress(&cell, n, f, FD_H, &FD_STRAIN_ROW);
+    let wf = worst_force(&g.grad, &fd_f, &FD_FORCE_ROW);
+    let ws = worst_stress(&s.de_deps, &fd_s, &FD_STRAIN_ROW);
+    eprintln!(
+        "H3 {f} 1x1x3: orbital gradient {:.2e}; force vs FD {wf:.2e}, dE/deps vs FD {ws:.2e} \
+         (FD force {fd_f:?}, FD dE/deps {fd_s:?})",
+        g.hf.commutator
+    );
+    assert!(
+        fd_f.iter().chain(&fd_s).any(|x| x.abs() > 1e-2),
+        "vacuous FD"
+    );
+    assert!(wf < FD_BAR, "force {wf:e}");
+    assert!(ws < FD_BAR, "stress {ws:e}");
+    // β V^τ dropped from the rebuilt Fock (guard skipped): on a ROHF state
+    // the orbital-gradient gate, evaluated on the rebuilt Focks, refuses it.
+    let e = roks_force(
+        &fx,
+        &r.scf,
+        f,
+        &gcfg(&fx, None, Some(KUSpinMutation::TauNoVxcBeta)),
+    )
+    .expect_err("TauNoVxcBeta must be refused by the ROHF gate")
+    .to_string();
+    eprintln!("H3 {f} TauNoVxcBeta force: {e}");
+    assert!(e.contains("ROHF orbital gradient"), "{e}");
+    let e = roks_stress(
+        &fx,
+        &r.scf,
+        f,
+        &scfg(&fx, None, Some(KUStressMutation::TauNoVxcBeta)),
+    )
+    .expect_err("TauNoVxcBeta must be refused by the ROHF gate")
+    .to_string();
+    assert!(e.contains("ROHF orbital gradient"), "{e}");
+    // With the gate off as well, the Pulay-side V^tau defect misses the FD row.
+    let gm = roks_force(
+        &fx,
+        &r.scf,
+        f,
+        &gcfg(
+            &fx,
+            Some(KXcMutation::TauNoVxcUnguarded),
+            Some(KUSpinMutation::RoGateOff),
+        ),
     )
     .unwrap();
-    let ugrid = KXcGrid::Uniform([PIN_GRID; 3]);
-    let gcfg = KUksGradConfig {
-        base: KRksGradConfig {
-            grad: KGradConfig::default(),
-            grid: ugrid.clone(),
-            ..Default::default()
-        },
-        spin_mutation: None,
-    };
-    let scfg = KUksStressConfig {
-        base: KRksStressConfig {
-            stress: KStressConfig::default(),
-            grid: ugrid,
-            ..Default::default()
-        },
-        spin_mutation: None,
-    };
-    for f in FUNCTIONALS {
-        let e = kpoint_roks_gradient(
-            &cell,
-            &prep,
-            &mesh,
-            &hcfg,
-            &hk,
-            KGradJk::Dense(&eri),
-            &r.scf,
-            f,
-            &gcfg,
-        )
-        .expect_err("ROKS meta-GGA force")
-        .to_string();
-        assert!(
-            e.contains("k-point ROKS meta-GGA force is not implemented"),
-            "{f}: {e}"
-        );
-        let e = kpoint_roks_stress(
-            &cell,
-            &prep,
-            &mesh,
-            &hcfg,
-            &hk,
-            KStressJk::Dense(&eri),
-            &r.scf,
-            f,
-            &scfg,
-        )
-        .expect_err("ROKS meta-GGA stress")
-        .to_string();
-        assert!(
-            e.contains("k-point ROKS meta-GGA stress is not implemented"),
-            "{f}: {e}"
-        );
-    }
+    let sm = roks_stress(
+        &fx,
+        &r.scf,
+        f,
+        &scfg(
+            &fx,
+            Some(KXcStressMutation::TauNoVxc),
+            Some(KUStressMutation::RoGateOff),
+        ),
+    )
+    .unwrap();
+    let (mf, ms) = (
+        worst_force(&gm.grad, &fd_f, &FD_FORCE_ROW),
+        worst_stress(&sm.de_deps, &fd_s, &FD_STRAIN_ROW),
+    );
+    eprintln!("H3 {f} V^tau dropped, gate off: force miss {mf:.2e}, dE/deps miss {ms:.2e}");
+    assert!(mf > MUTANT_BAR && ms > MUTANT_BAR, "{mf:e} {ms:e}");
 }
 
 /// The k-ROKS meta-GGA is validated on the dense-AFT J/K only: on the RS-GDF

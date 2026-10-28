@@ -57,8 +57,9 @@
 //!    ```
 //!
 //!    The weight response carries `ε(ρ_σ, σ_στ, τ_σ)` unchanged and the Fock
-//!    guard rebuilds `F_σ` with `V^τ_σ`. ROKS refuses meta-GGA (its k-point SCF
-//!    has the SCAN / r2SCAN energy, #492, but no meta-GGA stress). The RS-GDF J route composes unchanged (no exact exchange; FD of
+//!    guard rebuilds `F_σ` with `V^τ_σ`. ROKS (#492) takes the same terms on
+//!    its spin densities (its spin Focks, and so `W_RO`, carry `V^τ_σ`;
+//!    `tests/pbc_kroks_mgga.rs`). The RS-GDF J route composes unchanged (no exact exchange; FD of
 //!    the RS-GDF SCF energy in `tests/pbc_kuks_mgga_rsgdf.rs`, issue #492).
 //!
 //! The atom grid is not rotation invariant, so `sigma` is returned
@@ -202,10 +203,10 @@
 //!
 //! LDA, GGA, global and range-separated (CAM GGA) hybrids on either J/K (the
 //! range-separated stress validated for HSE06 and CAM-B3LYP; other CAM GGA
-//! hybrids such as wB97X are accepted, not exercised); for UKS also SCAN /
-//! r2SCAN on either J/K. Any other meta-GGA, range-separated meta-GGA, VV10 and double hybrids are refused with typed
-//! errors (ROKS also refuses every meta-GGA: its SCAN / r2SCAN energy has no
-//! stress yet; the ROHF entry has no
+//! hybrids such as wB97X are accepted, not exercised); SCAN / r2SCAN for UKS
+//! on either J/K and for ROKS on the dense-AFT J/K (the k-ROKS meta-GGA SCF
+//! refuses RS-GDF). Any other meta-GGA, range-separated meta-GGA, VV10 and
+//! double hybrids are refused with typed errors (the ROHF entry has no
 //! functional). A ROKS state cannot
 //! be handed to [`kpoint_uks_stress`] (its SCF type is
 //! [`crate::kroks::KRoScfResult`], not [`KUScfResult`]).
@@ -229,9 +230,9 @@ use crate::kuxcgrad::{
 };
 use crate::kxcgrad::{add_vtau, chunk_density, chunk_tau, chunk_vxc, conj, hermitize};
 use crate::kxcstress::{
-    finish, resolve_global, resolve_global_mgga_stress, resolve_open_stress, strain_points_for,
-    KRksStress, KRksStressConfig, KXcStressMutation, XcStressOut, AO_PLANES, CHUNK_TARGET_BYTES,
-    KS_REMEDY, MAX_CHUNK, MIN_CHUNK,
+    finish, resolve_global_mgga_stress, resolve_open_stress, strain_points_for, KRksStress,
+    KRksStressConfig, KXcStressMutation, XcStressOut, AO_PLANES, CHUNK_TARGET_BYTES, KS_REMEDY,
+    MAX_CHUNK, MIN_CHUNK,
 };
 use crate::lattice::Cell;
 use crate::rsh::{resolve_periodic_functional_rsh, RshParams};
@@ -764,16 +765,15 @@ impl KUXcStressResponse for GridXcPol<'_> {
 /// The polarized XC response of an open-shell stress, the exchange scale and
 /// the range separation. A range-separated hybrid (UKS and ROKS) enters with
 /// exchange scale 1 (its fractions are inside the kernel; VV10 and mixing
-/// weights refused by [`resolve_global_mgga_stress`]); otherwise ROKS keeps
-/// the stress resolver's own meta-GGA refusal and UKS narrows meta-GGA to
-/// SCAN / r2SCAN (dense-AFT or RS-GDF J/K).
+/// weights refused by [`resolve_global_mgga_stress`]); otherwise meta-GGA is
+/// narrowed to SCAN / r2SCAN (`crate::kuxcgrad::resolve_open_shell`).
 fn grid_response<'a>(
     cell: &'a Cell,
     prep: &'a PreparedBasis,
     mesh: &KPointMesh,
     functional: &str,
     cfg: &'a KUksStressConfig,
-    (who, allow_mgga): (&str, bool),
+    who: &str,
 ) -> Result<(GridXcPol<'a>, f64, Option<RshParams>), FerricError> {
     let rsh = match resolve_periodic_functional_rsh(functional)?.2 {
         Some(_) => resolve_global_mgga_stress(functional)?.2,
@@ -781,10 +781,8 @@ fn grid_response<'a>(
     };
     let (exch, is_mgga) = if rsh.is_some() {
         (1.0, false)
-    } else if allow_mgga {
-        resolve_open_shell(who, functional, true, &|f| resolve_open_stress(f, true))?
     } else {
-        (resolve_global(functional)?.1, false)
+        resolve_open_shell(who, functional, &resolve_open_stress)?
     };
     let xc = xc_def_from_name_nspin(functional, 2)
         .map_err(|e| FerricError::General(format!("{functional}: spin-polarized: {e:?}")))?;
@@ -845,14 +843,7 @@ pub fn kpoint_uks_stress(
     functional: &str,
     cfg: &KUksStressConfig,
 ) -> Result<KUksStress, FerricError> {
-    let (resp, exch, rsh) = grid_response(
-        cell,
-        prep,
-        mesh,
-        functional,
-        cfg,
-        ("kpoint_uks_stress", true),
-    )?;
+    let (resp, exch, rsh) = grid_response(cell, prep, mesh, functional, cfg, "kpoint_uks_stress")?;
     uks_stress_with(
         "kpoint_uks_stress",
         cell,
@@ -872,8 +863,9 @@ pub fn kpoint_uks_stress(
 /// (`KRoksResult::scf`): the open-shell assembly of [`kpoint_uks_stress`] on
 /// the ROHF spin densities and spin Focks with the orthonormality Lagrangian
 /// `W_RO = sym(D_α F_α D_α + D_α F_β D_β)` at each k (module doc "ROHF /
-/// ROKS"). Arguments and refusals as [`kpoint_uks_stress`], except that the
-/// stationarity gate is the ROHF orbital gradient (a state whose closed-open
+/// ROKS"). Arguments and refusals as [`kpoint_uks_stress`] (SCAN / r2SCAN
+/// included, on the dense-AFT J/K: the k-ROKS meta-GGA SCF refuses RS-GDF;
+/// #492, `tests/pbc_kroks_mgga.rs`), except that the stationarity gate is the ROHF orbital gradient (a state whose closed-open
 /// `f_β`, open-virtual `f_α` or closed-virtual `f_α + f_β` block, at any k,
 /// exceeds [`crate::grad::RO_ORBITAL_GRADIENT_TOL`] is refused), the MO set
 /// must be one per k-point.
@@ -898,14 +890,7 @@ pub fn kpoint_roks_stress(
     functional: &str,
     cfg: &KUksStressConfig,
 ) -> Result<KUksStress, FerricError> {
-    let (resp, exch, rsh) = grid_response(
-        cell,
-        prep,
-        mesh,
-        functional,
-        cfg,
-        ("kpoint_roks_stress", false),
-    )?;
+    let (resp, exch, rsh) = grid_response(cell, prep, mesh, functional, cfg, "kpoint_roks_stress")?;
     uks_stress_with(
         "kpoint_roks_stress",
         cell,
