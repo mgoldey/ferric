@@ -14,6 +14,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Path to the `ferric-cli` binary, resolved at RUN TIME.
 ///
@@ -74,16 +75,25 @@ fn workspace_root() -> PathBuf {
         .to_path_buf()
 }
 
+/// Each call gets its own file: nextest runs the tests of this binary in
+/// parallel processes, and a shared path let one test read the other's
+/// half-written TOML ("TOML parse error at line 1, column 1" on CI).
 fn run_toml(body: &str) -> std::process::Output {
+    static CALLS: AtomicUsize = AtomicUsize::new(0);
     let root = workspace_root();
-    let path = root.join("target").join("ccsd_dispatch_test.toml");
+    let n = CALLS.fetch_add(1, Ordering::Relaxed);
+    let path = root
+        .join("target")
+        .join(format!("ccsd_dispatch_test_{}_{n}.toml", std::process::id()));
     std::fs::write(&path, body).expect("write temp toml");
-    Command::new(ferric_cli_bin())
+    let output = Command::new(ferric_cli_bin())
         .arg(&path)
         .current_dir(&root)
         .env("OPENBLAS_NUM_THREADS", "1")
         .output()
-        .expect("failed to run ferric-cli binary")
+        .expect("failed to run ferric-cli binary");
+    let _ = std::fs::remove_file(&path);
+    output
 }
 
 #[test]
