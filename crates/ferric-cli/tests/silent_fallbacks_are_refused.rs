@@ -52,20 +52,24 @@ fn workspace_root() -> PathBuf {
         .to_path_buf()
 }
 
+/// The pid keeps parallel nextest processes apart even when two tests pass the
+/// same tag (both NH2 ROKS optimization tests use `nh2_roks_plain_opt`).
 fn run_toml(tag: &str, body: &str) -> std::process::Output {
     let root = workspace_root();
     let path = root
         .join("target")
-        .join(format!("silent_fallback_{tag}.toml"));
+        .join(format!("silent_fallback_{tag}_{}.toml", std::process::id()));
     std::fs::write(&path, body).expect("write temp toml");
-    Command::new(ferric_cli_bin())
+    let output = Command::new(ferric_cli_bin())
         .arg(&path)
         .arg("--no-json")
         .current_dir(&root)
         .env("OPENBLAS_NUM_THREADS", "1")
         .env("RAYON_NUM_THREADS", "2")
         .output()
-        .expect("failed to run ferric-cli binary")
+        .expect("failed to run ferric-cli binary");
+    let _ = std::fs::remove_file(&path);
+    output
 }
 
 /// Molecule + STO-3G + `[method]`, followed by `extra` verbatim.
