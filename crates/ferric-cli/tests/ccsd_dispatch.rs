@@ -94,6 +94,7 @@ fn run_toml(body: &str) -> std::process::Output {
         .output()
         .expect("failed to run ferric-cli binary");
     let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(path.with_extension("ferric.jsonl"));
     output
 }
 
