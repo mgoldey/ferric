@@ -304,6 +304,30 @@ pub fn pivoted_cholesky_order(m: &Array2<f64>, rank: usize) -> Result<Vec<usize>
 // projected-minimal cross overlap via a combined basis
 // ---------------------------------------------------------------------------
 
+/// Refuse a molecule with ECP-substituted atoms. The valence-virtual count is
+/// `n_min − n_occ` with STO-3G, an ALL-ELECTRON minimal basis, while `n_occ`
+/// excludes the ECP core, so the count is wrong on such atoms (HI in
+/// aug-cc-pVDZ-PP: 28 STO-3G functions − 13 occupied = 15, which counts the
+/// ECP core's functions as valence virtuals). STO-3G stopped at Ar until PR #596, so
+/// these molecules used to fail here on a missing element; they still fail,
+/// now with the reason.
+fn refuse_ecp_atoms(mol: &Molecule, obs_bs: &BasisSet) -> Result<(), FerricError> {
+    let ecp_atom = mol
+        .atoms
+        .iter()
+        .find(|a| !a.ghost && (a.n_core_ecp > 0 || obs_bs.ecp_for_element(a.z).is_some()));
+    match ecp_atom {
+        None => Ok(()),
+        Some(a) => Err(FerricError::Basis(format!(
+            "lmp2_amplitude: the VV-HV localized virtuals project an all-electron \
+             STO-3G minimal basis and cannot count valence virtuals on ECP atoms \
+             ({} carries an ECP in basis {:?}); use an all-electron basis or the \
+             exact (non-local) method",
+            a.symbol, obs_bs.name
+        ))),
+    }
+}
+
 /// Overlap block ⟨obs AO | minimal AO⟩ computed by preparing ONE combined
 /// basis (obs shells then STO-3G shells per element) and slicing the full
 /// overlap — ferric has no cross-basis 1e path, and per-atom shell order
@@ -314,6 +338,7 @@ fn cross_overlap_with_minimal(
     obs: &PreparedBasis,
     obs_bs: &BasisSet,
 ) -> Result<(Array2<f64>, usize), FerricError> {
+    refuse_ecp_atoms(mol, obs_bs)?;
     let min_bs = ferric_core::basis::bundled("sto-3g")
         .map_err(|e| FerricError::General(format!("lmp2_amplitude: bundled sto-3g: {e}")))?;
     let mut merged: HashMap<i32, Vec<ferric_core::basis::Shell>> = HashMap::new();

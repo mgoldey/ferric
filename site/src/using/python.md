@@ -83,24 +83,60 @@ QM/MM accessors.
 ### Bundled basis sets
 
 `BasisSet.bundled(name)` loads a basis compiled into the library. Names are
-case-insensitive. An unknown name raises `ValueError`. These 27 sets are
-available (`cc-pvdz-rifit` is also accepted, as an alias of `cc-pvdz-ri`):
+case-insensitive. An unknown name raises `ValueError` listing the known ones;
+`BasisSet.bundled_names()` returns them, and `bs.elements()` gives the atomic
+numbers a set covers. These 64 sets are available:
 
 | Kind | Names |
 |---|---|
-| Orbital | `sto-3g`, `6-31g`, `cc-pvdz`, `cc-pvtz`, `aug-cc-pvdz`, `aug-cc-pvtz`, `aug-cc-pvqz`, `def2-svp`, `def2-tzvp`, `def2-qzvp` |
-| Orbital with ECP (heavy elements) | `aug-cc-pvdz-pp`, `aug-cc-pvtz-pp` |
+| Pople | `sto-3g`, `6-31g`, `6-31g*`, `6-31g**`, `6-31+g*`, `6-31+g**`, `6-31++g**`, `6-311g**`, `6-311++g**` |
+| Dunning | `cc-pvdz`, `cc-pvtz`, `cc-pvqz`, `aug-cc-pvdz`, `aug-cc-pvtz`, `aug-cc-pvqz` |
+| Dunning with ECP (Z >= 29; lighter elements are the all-electron set) | `cc-pvdz-pp`, `cc-pvtz-pp`, `cc-pvqz-pp`, `aug-cc-pvdz-pp`, `aug-cc-pvtz-pp`, `aug-cc-pvqz-pp` |
+| Karlsruhe (ECP inline for Z >= 37) | `def2-svp`, `def2-svpd`, `def2-tzvp`, `def2-tzvpp`, `def2-tzvpd`, `def2-tzvppd`, `def2-qzvp`, `def2-qzvpp`, `def2-qzvppd` |
+| Jensen | `pcseg-0`, `pcseg-1`, `pcseg-2`, `aug-pcseg-1`, `aug-pcseg-2` |
 | Explicitly correlated (F12) | `cc-pvdz-f12` (orbital), `cc-pvdz-f12-optri` (OptRI auxiliary) |
-| RI (MP2/RPA/CC fitting) | `cc-pvdz-ri`, `cc-pvtz-rifit`, `aug-cc-pvdz-rifit`, `aug-cc-pvtz-rifit`, `aug-cc-pvqz-rifit`, `def2-svp-rifit`, `def2-tzvp-rifit`, `def2-tzvpp-rifit`, `def2-qzvp-rifit`, `def2-qzvpp-rifit` |
-| JK (SCF fitting) | `def2-universal-jkfit`, `cc-pvtz-jkfit`, `cc-pvqz-jkfit` |
+| RI (MP2/RPA/CC fitting) | `cc-pvdz-rifit`, `cc-pvtz-rifit`, `cc-pvqz-rifit`, `aug-cc-pvdz-rifit`, `aug-cc-pvtz-rifit`, `aug-cc-pvqz-rifit`, the six `<set>-pp-rifit` partners of the ECP sets, and `def2-<x>-rifit` for each of the nine def2 sets |
+| JK (SCF fitting) | `def2-universal-jkfit`, `cc-pvtz-jkfit`, `cc-pvqz-jkfit`, `aug-cc-pvdz-jkfit`, `aug-cc-pvtz-jkfit`, `aug-cc-pvqz-jkfit` |
 
-The list comes from the `bundled()` match in `crates/ferric-core/src/basis.rs`.
-The source records two coverage gaps: `cc-pvtz` lacks K, and `cc-pvtz-rifit`
-lacks K and Ca. `cc-pvtz-jkfit` and `cc-pvqz-jkfit` carry only H, B-F, Al-Cl and
-Ga-Br (no He, Li, Be, Ne, Na, Mg, Ar, K-Zn, Kr). An RI run on a missing element errors; it is not silently
-patched. The Python API has no loader for basis files on disk; the Rust
-library parses BSE-JSON and Gaussian-94 files (see the
-[Rust API](../reference/api.md)).
+Aliases: the Pople stars also load as `6-31g(d)`, `6-31g(d,p)`, `6-31+g(d)`,
+and so on; every RIFIT set also loads as `<orbital>-ri` and ORCA's
+`<orbital>/c` (so `cc-pvdz-ri` is `cc-pvdz-rifit`); the JKFIT sets as
+`<orbital>/jk`; and `def2-universal-jkfit` as `def2/jk` or PySCF's
+`def2-<x>-jkfit`.
+
+The `aug-cc-pv{d,t,q}z-jkfit` sets (Weigend, PCCP 4, 4285 (2002)) are the one
+exception to "from the Basis Set Exchange": BSE does not carry them. They come
+from Molpro's `weigend_jkfit.libmol` via Psi4's library (commit pinned in
+`provenance.json`), checked bit-identical to PySCF's copy. Two caveats from
+that source: their Ne, Ar and Kr functions are extrapolated, not published,
+and `aug-cc-pvdz-jkfit` was never published at all; it is
+`aug-cc-pvtz-jkfit` with the highest angular momentum dropped. For the
+S66-type noncovalent work they exist for, `aug-cc-pvtz-jkfit` is the set to
+use with aug-cc-pVTZ.
+
+Each set covers what its source covers, and an element it lacks is an error
+at basis setup that names the element and the covered range (for example
+`cc-pvtz` has H-Ar and Ca-Kr, with no K; `cc-pvtz-jkfit` and `cc-pvqz-jkfit`
+have only H, B-F, Al-Cl and Ga-Br; the `-pp-rifit` sets cover H-Ar (the aug ones
+without Li and Na), Sc-Ni at TZ and QZ only, Y-Pd and Hf-Pt). It is never patched silently. The Pople sets follow
+Gaussian's d convention: the 6-31G family has Cartesian d (6D), and the
+6-311G family has spherical d (5D) on every element, including Na-Ar, which
+the Basis Set Exchange marks Cartesian. Everything else is spherical, as the
+Basis Set Exchange types it. See
+[For PySCF users](./pyscf-users.md) for matching PySCF.
+`crates/ferric-core/src/basis/provenance.json` records the source, version and
+element list of every set. `BasisSet.from_bse_json(path)` loads any other
+Basis Set Exchange JSON file.
+
+Validation: every set is checked against PySCF fed the same basis
+(`crates/ferric-mp2/tests/basis_coverage_vs_pyscf.rs`, at most 1e-8 Ha). Orbital
+sets are checked by an RHF energy, RI sets by an RI-MP2 correlation energy, and
+JK sets also by a density-fitted (RI-J + RI-K) RHF energy. For the BSE sets,
+PySCF fetches the basis from BSE by name, so the comparison covers both the
+shipped digits and ferric's parsing and normalisation. For the three aug-JKFIT
+sets, PySCF uses its own copy of the data. The digits are covered instead by
+the import's Psi4-vs-PySCF comparison, and the energy comparison covers parsing
+and normalisation.
 
 Most drivers take a `BasisSet` object. The drivers that move atoms
 (`run_optimize`, `run_frequencies`, `run_saddle`, `run_irc`, `run_qmmm`,

@@ -10,5 +10,5 @@ pub(crate) fn parse_float_list(ss: &[String]) -> Result<Vec<f64>, FerricError> {
 }
 
 pub(crate) fn canonical_name(name: &str) -> String {
-    name.to_ascii_lowercase()
+    name.trim().to_ascii_lowercase()
 }

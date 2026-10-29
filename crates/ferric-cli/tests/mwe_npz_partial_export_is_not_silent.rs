@@ -43,9 +43,10 @@
 //!   succeeds completely (water at 0.01-0.3, benzene at 0.2 — all exit 0 with a
 //!   complete bundle). There is no window in between.
 //! * The Z>18 route (`ts_free_atom` returns `None`, which the TS C6 branch
-//!   warns-and-skips) is not reachable either: `aug-cc-pvdz-pp` has no Br
-//!   shells in this build ("basis error: no basis shells for Z=35"), and
-//!   HBr/aug-cc-pVDZ completes with `alpha_tensor`, `alpha_atomic`, `c6_iso`,
+//!   warns-and-skips) was not reachable either when this was written:
+//!   `aug-cc-pvdz-pp` had no Br shells ("basis error: no basis shells for
+//!   Z=35"; since 2026-10-29 it carries Br with its ECP, which re-opens this
+//!   route — untried), and HBr/aug-cc-pVDZ completes with `alpha_tensor`, `alpha_atomic`, `c6_iso`,
 //!   `c6_aniso` and `alpha_atomic_dynamic` all PRESENT and zero warnings.
 //!
 //! So CONTRACTS 1 and 2 below are NOT the regression guard for this fix — they

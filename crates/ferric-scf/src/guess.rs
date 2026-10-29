@@ -417,18 +417,20 @@ fn free_atom_density(
 /// Pick the small basis used to build a high-l atom's free-atom density block,
 /// tiered by element coverage:
 ///
-/// 1. `def2-svp` if it carries element `z` (covers Z=1-20,37,53,54).
+/// 1. `def2-svp` for the elements in [`SVP_TIER_ELEMENTS`].
 /// 2. else `def2-tzvp` if it carries `z` (covers the d-block and heavy atoms,
 ///    up to Z=86, with max l=3 — no g functions, so the free-atom solve stays
-///    cheap even for transition metals like Cu that def2-svp lacks).
+///    cheap even for transition metals like Cu).
 /// 3. else `None` — the caller falls back to the zero block.
 ///
-/// Loading either bundled basis is cheap (parsed from an embedded JSON string),
-/// so this simply loads and clones rather than caching across calls.
+/// Loading either bundled basis is cheap (built from the packed in-memory
+/// library), so this simply loads and clones rather than caching across calls.
 fn pick_small_basis(z: i32) -> Option<ferric_core::basis::BasisSet> {
-    if let Ok(svp) = ferric_core::basis::bundled("def2-svp") {
-        if svp.for_element(z).is_some() {
-            return Some(svp);
+    if SVP_TIER_ELEMENTS.contains(&z) {
+        if let Ok(svp) = ferric_core::basis::bundled("def2-svp") {
+            if svp.for_element(z).is_some() {
+                return Some(svp);
+            }
         }
     }
     if let Ok(tzvp) = ferric_core::basis::bundled("def2-tzvp") {
@@ -439,6 +441,16 @@ fn pick_small_basis(z: i32) -> Option<ferric_core::basis::BasisSet> {
     None
 }
 
+/// Elements whose small-basis SAD block uses def2-SVP: exactly the bundled
+/// def2-SVP's coverage when this tiering was written and tuned (H-Ca, Br, Rb,
+/// I, Xe). The bundled def2-SVP has covered H-Rn since 2026-10-29; widening
+/// this list would move the d-block (e.g. Cu/aug-cc-pVTZ) from def2-TZVP to
+/// def2-SVP, a larger size ratio to the target basis and so a larger
+/// projection trace inflation, which nobody has measured. Kept as it was.
+const SVP_TIER_ELEMENTS: [i32; 24] = [
+    1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 35, 37, 53, 54,
+];
+
 /// SAD guess where high angular-momentum atoms (l≥4, e.g. Cu/aTZ g functions)
 /// build their density block in a small basis and project it into the target
 /// AO space via the S-metric, instead of being left zero. Everyone else uses
@@ -446,7 +458,7 @@ fn pick_small_basis(z: i32) -> Option<ferric_core::basis::BasisSet> {
 ///
 /// For each atom whose target-basis shells include l≥4, this:
 ///  1. Picks a small basis via `pick_small_basis` (def2-svp, falling back to
-///     def2-tzvp for elements def2-svp lacks, e.g. the d-block) and solves the
+///     def2-tzvp for any element def2-svp lacks) and solves the
 ///     free atom in it — cheap even for Cu.
 ///  2. Builds a combined single-atom `PreparedBasis` with target shells followed
 ///     by small-basis shells for that element, and slices the cross-overlap
@@ -1431,8 +1443,8 @@ mod tests {
         // Now that the small-basis lookup is tiered (def2-svp -> def2-tzvp),
         // Cu/aug-cc-pVTZ — the actual target case this feature exists for
         // (Cu has g functions, l=4, in aug-cc-pVTZ) — is exercisable directly:
-        // def2-svp lacks Cu (Z=29; svp only covers Z=1-20,37,53,54), so the
-        // tier falls through to def2-tzvp, which covers the whole d-block up
+        // Cu is not in SVP_TIER_ELEMENTS (def2-svp's coverage when the tiering
+        // was tuned), so the tier falls through to def2-tzvp, which covers the whole d-block up
         // to Z=86 with max l=3 (cheap free-atom solve, no g functions).
         //
         // def2-tzvp/Cu has roughly a ~2x AO-count ratio to aug-cc-pVTZ/Cu (vs

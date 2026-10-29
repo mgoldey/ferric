@@ -971,3 +971,35 @@ fn default_config_does_not_compute_the_canonical_reference() {
         on.e_corr - off.e_corr
     );
 }
+
+/// STO-3G now reaches Xe, so an ECP molecule no longer fails on a missing
+/// STO-3G element. The VV-HV build must still refuse it: its all-electron
+/// minimal basis would count the ECP core's functions as valence virtuals
+/// (HI/aug-cc-pVDZ-PP: 28 - 13 = 15). Every local-correlation driver
+/// (lmp2, lmp2_direct, drpa/rccd/linlccd amplitude) goes through build_vvhv.
+#[test]
+fn vvhv_refuses_ecp_molecules() {
+    let mut mol = Molecule::parse_xyz("2\nHI\nH 0 0 0\nI 0 0 1.609\n", 0, 1).unwrap();
+    let obs_bs = basis::bundled("aug-cc-pvdz-pp").unwrap();
+    mol.apply_ecp(&obs_bs);
+    let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
+    let op = Operator::coulomb();
+    let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+    let rhf = solve_rhf(
+        &ferric_core::parallel::ParallelContext::default(),
+        &mol,
+        &obs,
+        op,
+        &bounds,
+        &RhfConfig::default(),
+    )
+    .unwrap();
+    let msg = match build_vvhv(&mol, &obs, &obs_bs, &rhf) {
+        Ok(v) => panic!(
+            "HI/aug-cc-pVDZ-PP must be refused, got n_valence={}",
+            v.n_valence
+        ),
+        Err(e) => e.to_string(),
+    };
+    assert!(msg.contains("ECP") && msg.contains("I carries"), "{msg}");
+}

@@ -85,9 +85,7 @@ def main():
             "rifit": "aug-cc-pvtz-pp-rifit",
             "optri": "aug-cc-pvtz-pp-optri",
         },
-        "name": (
-            "aug-cc-pVTZ-PP (heavy: I/Xe/Ag with ECP; light: aug-cc-pVTZ for H/C/Al/Cl)"
-        ),
+        "name": "aug-cc-pVTZ-PP",
     }
 
     with open(OUT, "w") as f:

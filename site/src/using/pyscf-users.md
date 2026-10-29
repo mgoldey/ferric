@@ -153,8 +153,27 @@ energies, charges), not raw AO matrices. Axis order differs too:
 `compute_eri3` returns `(naux, n_bf, n_bf)`, with the auxiliary index first.
 
 **Basis sets come from a fixed bundled list.** `BasisSet.bundled(name)` knows
-25 names (see [Bundled basis sets](./python.md#bundled-basis-sets)). There is
-no Python loader for a basis file or for a per-element basis dictionary.
+64 sets plus aliases (see [Bundled basis sets](./python.md#bundled-basis-sets)).
+`BasisSet.from_bse_json(path)` loads a Basis Set Exchange JSON file; there is
+no per-element basis dictionary.
+
+**The Pople sets use Gaussian's d convention, not PySCF's default.** PySCF
+builds every molecule spherical (5D) unless you pass `cart=True`, and the flag
+covers the whole molecule. ferric types each shell:
+
+| Basis | ferric | Matching PySCF call |
+|---|---|---|
+| 6-31G, 6-31G\*, 6-31G\*\*, 6-31+G\*, 6-31+G\*\*, 6-31++G\*\* | Cartesian d (6D) | `gto.M(..., cart=True)` |
+| 6-311G\*\*, 6-311++G\*\* | spherical d (5D) on every element | the default (`cart=False`) |
+| every other bundled set | spherical, as the Basis Set Exchange types it | the default |
+
+The 6D/5D difference is not small: water/6-31G\* differs by about 1.4 mHa
+between the two. For the 6-311G family ferric departs from the Basis Set
+Exchange, which marks the Na-Ar d shells Cartesian; ferric makes them
+spherical like every other element, so a molecule such as CH3Cl is 5D
+throughout and matches PySCF's default. The f shells the 6-31G\* family
+carries on Sc-Zn are spherical (7F), as in Gaussian; `cart=True` would make
+them Cartesian too, so PySCF's single flag cannot reproduce 6-31G\* on Sc-Zn.
 
 **Results come back as numpy arrays or lists, not live objects.** Matrices are
 `numpy.ndarray`. Per-atom quantities such as charges are Python lists.
