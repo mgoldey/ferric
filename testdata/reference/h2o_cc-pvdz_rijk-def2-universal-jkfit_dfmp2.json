@@ -1,0 +1,13 @@
+{
+  "molecule": "h2o",
+  "basis": "cc-pvdz",
+  "scf_jk": "rijk",
+  "jk_auxbasis": "def2-universal-jkfit",
+  "auxbasis": "cc-pvdz-ri",
+  "frozen_core": 0,
+  "rhf_energy": -76.02673544283248,
+  "mp2_corr": -0.20400854966180854,
+  "total_energy": -76.23074399249428,
+  "generator": "scripts/gen_pyscf_rijk_mp2_ref.py",
+  "pyscf_version": "2.13.1"
+}

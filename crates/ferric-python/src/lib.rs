@@ -5612,6 +5612,15 @@ struct PyRiMp2Result {
     /// `compute_reference=True`) and the solver counters. Read through the
     /// `local` getter.
     local: Option<Py<pyo3::types::PyDict>>,
+    /// How the reference SCF built J/K: "exact", "rijk" or "rijcosx".
+    #[pyo3(get)]
+    scf_jk: String,
+    /// The printout's SCF J/K echo (`ScfJk::label`: names a non-default
+    /// exchange builder on the exact path).
+    jk_label: String,
+    /// The SCF's JK-fitting basis (`None` for "exact").
+    #[pyo3(get)]
+    jk_auxbasis: Option<String>,
 }
 
 #[pymethods]
@@ -5632,7 +5641,7 @@ impl PyRiMp2Result {
     }
     fn __str__(&self) -> String {
         format!(
-            "RI-MP2 {} Total Energy: {:.10} Ha ({}: {:.10}, corr: {:.10})",
+            "RI-MP2 {} Total Energy: {:.10} Ha ({}: {:.10}, corr: {:.10}, SCF J/K: {})",
             if self.local.is_some() {
                 "(local)"
             } else {
@@ -5642,6 +5651,7 @@ impl PyRiMp2Result {
             self.reference,
             self.rhf_energy,
             self.mp2_corr,
+            self.jk_label,
         )
     }
 }
@@ -5833,6 +5843,13 @@ fn local_correlation_operator(
 /// `frozen_core` (default 0) excludes that many lowest-energy occupied
 /// orbitals from the correlation treatment.
 ///
+/// `scf_jk` sets how the reference SCF builds J/K: "exact" (default,
+/// four-centre), "rijk" (RI-J + RI-K) or "rijcosx" (RI-J + COSX K), fitted
+/// on `jk_auxbasis` (a bundled JK-fit name, default "def2-universal-jkfit";
+/// never `auxbasis`). Strict: an unknown mode, `jk_auxbasis` with "exact",
+/// or a `k_builder` the mode overrides raise ValueError. Echoed as
+/// `result.scf_jk` / `result.jk_auxbasis`.
+///
 /// Raises if the internal SCF does not converge.
 ///
 /// Returns a [`RiMp2Result`](PyRiMp2Result) with `total_energy` (reference +
@@ -5841,7 +5858,7 @@ fn local_correlation_operator(
 /// ("RHF" or "UHF") and `local` (`None` for the exact method, else the
 /// local model dict).
 #[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None, memory_budget_gb=None, kappa=None, local=None, eps=None, compute_reference=None, integral_direct=None, aux_radius=None, virt_radius=None, ao_tail=None, schwarz_skip=None, batch_merge=None, gate_cal=None, virt_schwarz_kappa=None, att_operator=None, omega=None, att_r0=None, att_omega=None))]
+#[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None, memory_budget_gb=None, kappa=None, local=None, eps=None, compute_reference=None, integral_direct=None, aux_radius=None, virt_radius=None, ao_tail=None, schwarz_skip=None, batch_merge=None, gate_cal=None, virt_schwarz_kappa=None, att_operator=None, omega=None, att_r0=None, att_omega=None, scf_jk=None, jk_auxbasis=None))]
 #[allow(clippy::too_many_arguments)]
 fn run_rimp2(
     py: Python<'_>,
@@ -5867,8 +5884,17 @@ fn run_rimp2(
     omega: Option<f64>,
     att_r0: Option<f64>,
     att_omega: Option<f64>,
+    scf_jk: Option<&str>,
+    jk_auxbasis: Option<&str>,
 ) -> PyResult<PyRiMp2Result> {
     let (att_keys, sets_att) = att_keys_from_kwargs(att_operator, omega, att_r0, att_omega);
+    let (rhf_config, jk) = mp2_exact_default_config(
+        "run_rimp2",
+        k_builder,
+        memory_budget_gb,
+        scf_jk,
+        jk_auxbasis,
+    )?;
     let model = local_model_from_kwargs(
         "run_rimp2",
         ferric_cli::LocalCfg {
@@ -5893,7 +5919,7 @@ fn run_rimp2(
             basis_set,
             auxbasis,
             frozen_core,
-            k_builder,
+            (&rhf_config, &jk),
             memory_budget_gb,
             kappa,
             &model,
@@ -5903,10 +5929,34 @@ fn run_rimp2(
     if sets_att {
         return Err(att_keys_on_exact_error());
     }
+    run_rimp2_exact(
+        py,
+        mol,
+        basis_set,
+        auxbasis,
+        frozen_core,
+        memory_budget_gb,
+        kappa,
+        (rhf_config, jk),
+    )
+}
+
+/// `run_rimp2`'s exact (canonical RI-MP2) path: RHF + RI-MP2 for a singlet,
+/// UHF + unrestricted RI-MP2 for multiplicity > 1.
+#[allow(clippy::too_many_arguments)]
+fn run_rimp2_exact(
+    py: Python<'_>,
+    mol: &PyMolecule,
+    basis_set: &PyBasisSet,
+    auxbasis: &PyBasisSet,
+    frozen_core: Option<usize>,
+    memory_budget_gb: Option<f64>,
+    kappa: Option<f64>,
+    (rhf_config, jk): (RhfConfig, ferric_scf::scf_jk::ScfJk),
+) -> PyResult<PyRiMp2Result> {
     let emol = mol.inner.clone();
     let ebasis = basis_set.inner.clone();
     let eaux = auxbasis.inner.clone();
-    let rhf_config = rhf_config_budgeted(k_builder, budget_bytes_from_gb(memory_budget_gb));
     let mp2_budget = budget_bytes_from_gb(memory_budget_gb);
     let open_shell = emol.multiplicity > 1;
     if open_shell && kappa.is_some() {
@@ -5935,29 +5985,82 @@ fn run_rimp2(
         mp2_corr,
         reference: if open_shell { "UHF" } else { "RHF" }.to_string(),
         local: None,
+        scf_jk: jk.mode.as_str().to_string(),
+        jk_label: jk.label(),
+        jk_auxbasis: jk.aux,
     })
 }
 
-/// Solve the closed-shell RHF reference the local correlation paths share,
-/// erroring on non-convergence (same rule as every `run_*` driver).
-fn local_rhf_reference(
-    mol: &Molecule,
-    prep: &PreparedBasis,
+/// The reference-SCF config of every MP2-family entry point: `k_builder`, the
+/// memory budget, and `scf_jk` / `jk_auxbasis` resolved by the ONE shared
+/// rule (`ferric_scf::scf_jk::ScfJk`), so "rijk" means the same `RhfConfig`
+/// in every function. `default` is the entry point's historical J/K mode,
+/// which keeps an unset `scf_jk` bit-identical to before. Errors are
+/// `ValueError` naming `who`, raised before any integral is computed.
+fn mp2_reference_config(
+    who: &str,
     k_builder: Option<&str>,
     memory_budget_gb: Option<f64>,
-) -> PyResult<ferric_scf::result::ScfResult> {
-    let op = Operator::coulomb();
-    let bounds = SchwarzBounds::compute(op, prep).map_err(make_err)?;
-    let ctx = ParallelContext::default();
-    let rhf = solve_rhf(
-        &ctx,
-        mol,
-        prep,
-        op,
-        &bounds,
-        &rhf_config_budgeted(k_builder, budget_bytes_from_gb(memory_budget_gb)),
+    scf_jk: Option<&str>,
+    jk_auxbasis: Option<&str>,
+    default: ferric_scf::scf_jk::ScfJkMode,
+) -> PyResult<(RhfConfig, ferric_scf::scf_jk::ScfJk)> {
+    let jk = ferric_scf::scf_jk::ScfJk::resolve(
+        scf_jk,
+        jk_auxbasis,
+        k_builder,
+        default,
+        ferric_scf::scf_jk::ScfJkKeys::PYTHON,
     )
-    .map_err(make_err)?;
+    .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("{who}: {e}")))?;
+    if let Some(w) = jk.aux_warning(ferric_scf::scf_jk::ScfJkKeys::PYTHON) {
+        eprintln!("[ferric] warning: {who}: {w}");
+    }
+    let mut cfg = rhf_config_budgeted(k_builder, budget_bytes_from_gb(memory_budget_gb));
+    jk.apply(&mut cfg);
+    Ok((cfg, jk))
+}
+
+/// [`mp2_reference_config`] with the exact four-centre default every
+/// MP2-family entry point except `run_rs_mp2_rpa` has always used.
+fn mp2_exact_default_config(
+    who: &str,
+    k_builder: Option<&str>,
+    memory_budget_gb: Option<f64>,
+    scf_jk: Option<&str>,
+    jk_auxbasis: Option<&str>,
+) -> PyResult<(RhfConfig, ferric_scf::scf_jk::ScfJk)> {
+    use ferric_scf::scf_jk::ScfJkMode;
+    mp2_reference_config(
+        who,
+        k_builder,
+        memory_budget_gb,
+        scf_jk,
+        jk_auxbasis,
+        ScfJkMode::Exact,
+    )
+}
+
+/// Solve the closed-shell Coulomb RHF reference, building its Schwarz table.
+fn converged_rhf(
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    config: &RhfConfig,
+) -> PyResult<ferric_scf::result::ScfResult> {
+    let bounds = SchwarzBounds::compute(Operator::coulomb(), prep).map_err(make_err)?;
+    converged_rhf_with_bounds(mol, prep, &bounds, config)
+}
+
+/// Solve the closed-shell Coulomb RHF reference every MP2-family entry point
+/// shares, erroring on non-convergence (same rule as every `run_*` driver).
+fn converged_rhf_with_bounds(
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    bounds: &SchwarzBounds,
+    config: &RhfConfig,
+) -> PyResult<ferric_scf::result::ScfResult> {
+    let ctx = ParallelContext::default();
+    let rhf = solve_rhf(&ctx, mol, prep, Operator::coulomb(), bounds, config).map_err(make_err)?;
     if !rhf.converged {
         return Err(make_err(ferric_core::FerricError::ScfConvergence {
             iterations: rhf.iterations,
@@ -5965,6 +6068,17 @@ fn local_rhf_reference(
         }));
     }
     Ok(rhf)
+}
+
+/// The exact-J/K RHF reference of the local dRPA / LinLCCD paths.
+fn local_rhf_reference(
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    k_builder: Option<&str>,
+    memory_budget_gb: Option<f64>,
+) -> PyResult<ferric_scf::result::ScfResult> {
+    let config = rhf_config_budgeted(k_builder, budget_bytes_from_gb(memory_budget_gb));
+    converged_rhf(mol, prep, &config)
 }
 
 /// `run_rimp2(local="amplitude-threshold", ...)`: the amplitude-threshold
@@ -5977,7 +6091,7 @@ fn run_rimp2_local(
     basis_set: &PyBasisSet,
     auxbasis: &PyBasisSet,
     frozen_core: Option<usize>,
-    k_builder: Option<&str>,
+    (rhf_config, jk): (&RhfConfig, &ferric_scf::scf_jk::ScfJk),
     memory_budget_gb: Option<f64>,
     kappa: Option<f64>,
     model: &ferric_cli::LocalModel,
@@ -6002,7 +6116,7 @@ fn run_rimp2_local(
     let op = local_correlation_operator(att_keys, model)?;
     let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
     let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
-    let rhf = local_rhf_reference(&mol.inner, &prep, k_builder, memory_budget_gb)?;
+    let rhf = converged_rhf(&mol.inner, &prep, rhf_config)?;
     let eps = model.eps[0];
     let lcfg = AmplitudeLmp2Config {
         eps,
@@ -6072,6 +6186,9 @@ fn run_rimp2_local(
         mp2_corr: r.e_corr,
         reference: "RHF".to_string(),
         local: Some(d.unbind()),
+        scf_jk: jk.mode.as_str().to_string(),
+        jk_label: jk.label(),
+        jk_auxbasis: jk.aux.clone(),
     })
 }
 
@@ -6637,6 +6754,15 @@ struct PyOoRiMp2Result {
     iterations: usize,
     #[pyo3(get)]
     grad_norm: f64,
+    /// How the reference SCF built J/K: "exact", "rijk" or "rijcosx".
+    #[pyo3(get)]
+    scf_jk: String,
+    /// The printout's SCF J/K echo (`ScfJk::label`: names a non-default
+    /// exchange builder on the exact path).
+    jk_label: String,
+    /// The SCF's JK-fitting basis (`None` for "exact").
+    #[pyo3(get)]
+    jk_auxbasis: Option<String>,
 }
 
 #[pymethods]
@@ -6649,8 +6775,9 @@ impl PyOoRiMp2Result {
     }
     fn __str__(&self) -> String {
         format!(
-            "OO-RI-MP2 Total Energy: {:.10} Ha (HF: {:.10}, corr: {:.10}, converged: {}, {} iterations, grad_norm: {:.2e})",
+            "OO-RI-MP2 Total Energy: {:.10} Ha (HF: {:.10}, corr: {:.10}, converged: {}, {} iterations, grad_norm: {:.2e}) [SCF J/K: {}]",
             self.total_energy, self.hf_energy, self.mp2_corr, self.converged, self.iterations, self.grad_norm,
+            self.jk_label,
         )
     }
 }
@@ -6666,7 +6793,7 @@ impl PyOoRiMp2Result {
 #[pyo3(signature = (
     mol, basis_set, auxbasis, frozen_core=None, k_builder=None,
     max_iter=None, grad_conv=None, level_shift=None, diis_size=None,
-    memory_budget_gb=None,
+    memory_budget_gb=None, scf_jk=None, jk_auxbasis=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_oo_rimp2(
@@ -6680,27 +6807,29 @@ fn run_oo_rimp2(
     level_shift: Option<f64>,
     diis_size: Option<usize>,
     memory_budget_gb: Option<f64>,
+    scf_jk: Option<&str>,
+    jk_auxbasis: Option<&str>,
 ) -> PyResult<PyOoRiMp2Result> {
+    let (rhf_config, jk) = mp2_exact_default_config(
+        "run_oo_rimp2",
+        k_builder,
+        memory_budget_gb,
+        scf_jk,
+        jk_auxbasis,
+    )?;
+    // OO-MP2 rebuilds exact four-centre J/K at every orbital step (and takes
+    // its HF energy from those builds), so a fitted reference would only
+    // change the starting orbitals: refused, never echoed as if honoured.
+    jk.require_exact(
+        ferric_scf::scf_jk::ScfJkKeys::PYTHON,
+        ferric_scf::scf_jk::OO_REBUILDS_EXACT_JK,
+    )
+    .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("run_oo_rimp2: {e}")))?;
     let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
     let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
-    let ctx = ParallelContext::default();
-    let rhf = solve_rhf(
-        &ctx,
-        &mol.inner,
-        &prep,
-        op,
-        &bounds,
-        &rhf_config_budgeted(k_builder, budget_bytes_from_gb(memory_budget_gb)),
-    )
-    .map_err(make_err)?;
-    if !rhf.converged {
-        return Err(make_err(ferric_core::FerricError::ScfConvergence {
-            iterations: rhf.iterations,
-            last_energy: rhf.energy,
-        }));
-    }
+    let rhf = converged_rhf_with_bounds(&mol.inner, &prep, &bounds, &rhf_config)?;
     // Orbital-rotation loop knobs default to OoRiMp2Config::default() (same
     // library default the CLI's oo-rimp2 arm uses); frozen_core/memory_budget
     // follow the run_rimp2 convention.
@@ -6727,6 +6856,9 @@ fn run_oo_rimp2(
         converged: r.converged,
         iterations: r.iterations,
         grad_norm: r.grad_norm,
+        scf_jk: jk.mode.as_str().to_string(),
+        jk_label: jk.label(),
+        jk_auxbasis: jk.aux,
     })
 }
 
@@ -6829,6 +6961,15 @@ struct PyLaplaceMp2Result {
     e_os: f64,
     #[pyo3(get)]
     e_ss: f64,
+    /// How the reference SCF built J/K: "exact", "rijk" or "rijcosx".
+    #[pyo3(get)]
+    scf_jk: String,
+    /// The printout's SCF J/K echo (`ScfJk::label`: names a non-default
+    /// exchange builder on the exact path).
+    jk_label: String,
+    /// The SCF's JK-fitting basis (`None` for "exact").
+    #[pyo3(get)]
+    jk_auxbasis: Option<String>,
 }
 
 #[pymethods]
@@ -6841,14 +6982,15 @@ impl PyLaplaceMp2Result {
     }
     fn __str__(&self) -> String {
         format!(
-            "Laplace RI-MP2 Total Energy: {:.10} Ha (corr: {:.10}, OS: {:.10}, SS: {:.10})",
+            "Laplace RI-MP2 Total Energy: {:.10} Ha (corr: {:.10}, OS: {:.10}, SS: {:.10}) [SCF J/K: {}]",
             self.total_energy, self.mp2_corr, self.e_os, self.e_ss,
+            self.jk_label,
         )
     }
 }
 
 #[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, n_quad=None, frozen_core=None, k_builder=None, memory_budget_gb=None))]
+#[pyo3(signature = (mol, basis_set, auxbasis, n_quad=None, frozen_core=None, k_builder=None, memory_budget_gb=None, scf_jk=None, jk_auxbasis=None))]
 fn run_laplace_mp2(
     mol: &PyMolecule,
     basis_set: &PyBasisSet,
@@ -6857,28 +6999,21 @@ fn run_laplace_mp2(
     frozen_core: Option<usize>,
     k_builder: Option<&str>,
     memory_budget_gb: Option<f64>,
+    scf_jk: Option<&str>,
+    jk_auxbasis: Option<&str>,
 ) -> PyResult<PyLaplaceMp2Result> {
+    let (rhf_config, jk) = mp2_exact_default_config(
+        "run_laplace_mp2",
+        k_builder,
+        memory_budget_gb,
+        scf_jk,
+        jk_auxbasis,
+    )?;
     let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
     let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
     let op = Operator::coulomb();
-    let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
-    let ctx = ParallelContext::default();
     let budget = budget_bytes_from_gb(memory_budget_gb);
-    let rhf = solve_rhf(
-        &ctx,
-        &mol.inner,
-        &prep,
-        op,
-        &bounds,
-        &rhf_config_budgeted(k_builder, budget),
-    )
-    .map_err(make_err)?;
-    if !rhf.converged {
-        return Err(make_err(ferric_core::FerricError::ScfConvergence {
-            iterations: rhf.iterations,
-            last_energy: rhf.energy,
-        }));
-    }
+    let rhf = converged_rhf(&mol.inner, &prep, &rhf_config)?;
     let r = laplace_ri_mp2(
         &mol.inner,
         &prep,
@@ -6895,6 +7030,9 @@ fn run_laplace_mp2(
         mp2_corr: r.mp2_corr,
         e_os: r.e_os,
         e_ss: r.e_ss,
+        scf_jk: jk.mode.as_str().to_string(),
+        jk_label: jk.label(),
+        jk_auxbasis: jk.aux,
     })
 }
 
@@ -6923,6 +7061,15 @@ struct PySosMp2Result {
     /// `"mo"` or `"ao"`, echoed so a caller can record which algebra ran.
     #[pyo3(get)]
     formulation: String,
+    /// How the reference SCF built J/K: "exact", "rijk" or "rijcosx".
+    #[pyo3(get)]
+    scf_jk: String,
+    /// The printout's SCF J/K echo (`ScfJk::label`: names a non-default
+    /// exchange builder on the exact path).
+    jk_label: String,
+    /// The SCF's JK-fitting basis (`None` for "exact").
+    #[pyo3(get)]
+    jk_auxbasis: Option<String>,
 }
 
 #[pymethods]
@@ -6935,8 +7082,9 @@ impl PySosMp2Result {
     }
     fn __str__(&self) -> String {
         format!(
-            "SOS-MP2 Total Energy: {:.10} Ha (RHF: {:.10}, SOS corr: {:.10}, c_os={}, n_quad={}, formulation={})",
+            "SOS-MP2 Total Energy: {:.10} Ha (RHF: {:.10}, SOS corr: {:.10}, c_os={}, n_quad={}, formulation={}) [SCF J/K: {}]",
             self.total_energy, self.rhf_energy, self.sos_corr, self.c_os, self.n_quad, self.formulation,
+            self.jk_label,
         )
     }
 }
@@ -6964,7 +7112,7 @@ impl PySosMp2Result {
 #[pyfunction]
 #[pyo3(signature = (mol, basis_set, auxbasis, c_os=None, n_quad=None, frozen_core=None,
                     formulation=None, domain_cutoff_bohr=None, k_builder=None,
-                    memory_budget_gb=None))]
+                    memory_budget_gb=None, scf_jk=None, jk_auxbasis=None))]
 #[allow(clippy::too_many_arguments)]
 fn run_laplace_sos_mp2(
     mol: &PyMolecule,
@@ -6977,27 +7125,20 @@ fn run_laplace_sos_mp2(
     domain_cutoff_bohr: Option<f64>,
     k_builder: Option<&str>,
     memory_budget_gb: Option<f64>,
+    scf_jk: Option<&str>,
+    jk_auxbasis: Option<&str>,
 ) -> PyResult<PySosMp2Result> {
+    let (rhf_config, jk) = mp2_exact_default_config(
+        "run_laplace_sos_mp2",
+        k_builder,
+        memory_budget_gb,
+        scf_jk,
+        jk_auxbasis,
+    )?;
     let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
     let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
     let op = Operator::coulomb();
-    let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
-    let ctx = ParallelContext::default();
-    let rhf = solve_rhf(
-        &ctx,
-        &mol.inner,
-        &prep,
-        op,
-        &bounds,
-        &rhf_config_budgeted(k_builder, budget_bytes_from_gb(memory_budget_gb)),
-    )
-    .map_err(make_err)?;
-    if !rhf.converged {
-        return Err(make_err(ferric_core::FerricError::ScfConvergence {
-            iterations: rhf.iterations,
-            last_energy: rhf.energy,
-        }));
-    }
+    let rhf = converged_rhf(&mol.inner, &prep, &rhf_config)?;
     let form =
         SosFormulation::parse_config_str(formulation, domain_cutoff_bohr).map_err(make_err)?;
     let cfg = SosMp2Config {
@@ -7020,6 +7161,9 @@ fn run_laplace_sos_mp2(
             SosFormulation::Ao => "ao".to_string(),
             SosFormulation::AoSparse(_) => "ao-sparse".to_string(),
         },
+        scf_jk: jk.mode.as_str().to_string(),
+        jk_label: jk.label(),
+        jk_auxbasis: jk.aux,
     })
 }
 
@@ -7038,6 +7182,15 @@ struct PyAttenuatedMp2Result {
     e_os: f64,
     #[pyo3(get)]
     e_ss: f64,
+    /// How the reference SCF built J/K: "exact", "rijk" or "rijcosx".
+    #[pyo3(get)]
+    scf_jk: String,
+    /// The printout's SCF J/K echo (`ScfJk::label`: names a non-default
+    /// exchange builder on the exact path).
+    jk_label: String,
+    /// The SCF's JK-fitting basis (`None` for "exact").
+    #[pyo3(get)]
+    jk_auxbasis: Option<String>,
 }
 
 #[pymethods]
@@ -7050,14 +7203,15 @@ impl PyAttenuatedMp2Result {
     }
     fn __str__(&self) -> String {
         format!(
-            "Attenuated RI-MP2 Total Energy: {:.10} Ha (RHF: {:.10}, corr: {:.10}, OS: {:.10}, SS: {:.10})",
+            "Attenuated RI-MP2 Total Energy: {:.10} Ha (RHF: {:.10}, corr: {:.10}, OS: {:.10}, SS: {:.10}) [SCF J/K: {}]",
             self.total_energy, self.rhf_energy, self.mp2_corr, self.e_os, self.e_ss,
+            self.jk_label,
         )
     }
 }
 
 #[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, omega=None, frozen_core=None, k_builder=None, memory_budget_gb=None))]
+#[pyo3(signature = (mol, basis_set, auxbasis, omega=None, frozen_core=None, k_builder=None, memory_budget_gb=None, scf_jk=None, jk_auxbasis=None))]
 fn run_attenuated_rimp2(
     mol: &PyMolecule,
     basis_set: &PyBasisSet,
@@ -7066,27 +7220,19 @@ fn run_attenuated_rimp2(
     frozen_core: Option<usize>,
     k_builder: Option<&str>,
     memory_budget_gb: Option<f64>,
+    scf_jk: Option<&str>,
+    jk_auxbasis: Option<&str>,
 ) -> PyResult<PyAttenuatedMp2Result> {
+    let (rhf_config, jk) = mp2_exact_default_config(
+        "run_attenuated_rimp2",
+        k_builder,
+        memory_budget_gb,
+        scf_jk,
+        jk_auxbasis,
+    )?;
     let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
     let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
-    let op = Operator::coulomb();
-    let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
-    let ctx = ParallelContext::default();
-    let rhf = solve_rhf(
-        &ctx,
-        &mol.inner,
-        &prep,
-        op,
-        &bounds,
-        &rhf_config_budgeted(k_builder, budget_bytes_from_gb(memory_budget_gb)),
-    )
-    .map_err(make_err)?;
-    if !rhf.converged {
-        return Err(make_err(ferric_core::FerricError::ScfConvergence {
-            iterations: rhf.iterations,
-            last_energy: rhf.energy,
-        }));
-    }
+    let rhf = converged_rhf(&mol.inner, &prep, &rhf_config)?;
     // omega is supplied in Å⁻¹; convert to Bohr⁻¹ for the operator.
     let cfg = AttenuatedMp2Config {
         omega: omega.unwrap_or(0.420) * ferric_mp2::attenuated::BOHR_INV_PER_ANG_INV,
@@ -7102,6 +7248,9 @@ fn run_attenuated_rimp2(
         mp2_corr: r.mp2_corr,
         e_os: r.spin_components.e_os,
         e_ss: r.spin_components.e_ss,
+        scf_jk: jk.mode.as_str().to_string(),
+        jk_label: jk.label(),
+        jk_auxbasis: jk.aux,
     })
 }
 
@@ -7112,7 +7261,7 @@ fn run_attenuated_rimp2(
 /// the MP2 correlation is attenuated. Requires the terfc tables on disk
 /// (FERRIC_TERF_TABLE_DIR). Paper aDZ-optimal r0 = 1.05 Å.
 #[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, r0=None, frozen_core=None, k_builder=None, memory_budget_gb=None))]
+#[pyo3(signature = (mol, basis_set, auxbasis, r0=None, frozen_core=None, k_builder=None, memory_budget_gb=None, scf_jk=None, jk_auxbasis=None))]
 fn run_terfc_rimp2(
     mol: &PyMolecule,
     basis_set: &PyBasisSet,
@@ -7121,27 +7270,19 @@ fn run_terfc_rimp2(
     frozen_core: Option<usize>,
     k_builder: Option<&str>,
     memory_budget_gb: Option<f64>,
+    scf_jk: Option<&str>,
+    jk_auxbasis: Option<&str>,
 ) -> PyResult<PyRiMp2Result> {
+    let (rhf_config, jk) = mp2_exact_default_config(
+        "run_terfc_rimp2",
+        k_builder,
+        memory_budget_gb,
+        scf_jk,
+        jk_auxbasis,
+    )?;
     let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
     let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
-    let coul = Operator::coulomb();
-    let bounds = SchwarzBounds::compute(coul, &prep).map_err(make_err)?;
-    let ctx = ParallelContext::default();
-    let rhf = solve_rhf(
-        &ctx,
-        &mol.inner,
-        &prep,
-        coul,
-        &bounds,
-        &rhf_config_budgeted(k_builder, budget_bytes_from_gb(memory_budget_gb)),
-    )
-    .map_err(make_err)?;
-    if !rhf.converged {
-        return Err(make_err(ferric_core::FerricError::ScfConvergence {
-            iterations: rhf.iterations,
-            last_energy: rhf.energy,
-        }));
-    }
+    let rhf = converged_rhf(&mol.inner, &prep, &rhf_config)?;
     // r0 supplied in Å; convert to Bohr for the operator.
     let r0_bohr = r0.unwrap_or(1.05) * ANGSTROM_TO_BOHR;
     let mp2 = ri_mp2(
@@ -7163,6 +7304,9 @@ fn run_terfc_rimp2(
         mp2_corr: mp2.mp2_corr,
         reference: "RHF".to_string(),
         local: None,
+        scf_jk: jk.mode.as_str().to_string(),
+        jk_label: jk.label(),
+        jk_auxbasis: jk.aux,
     })
 }
 
@@ -7181,6 +7325,15 @@ struct PyScsMp2Result {
     e_os: f64,
     #[pyo3(get)]
     e_ss: f64,
+    /// How the reference SCF built J/K: "exact", "rijk" or "rijcosx".
+    #[pyo3(get)]
+    scf_jk: String,
+    /// The printout's SCF J/K echo (`ScfJk::label`: names a non-default
+    /// exchange builder on the exact path).
+    jk_label: String,
+    /// The SCF's JK-fitting basis (`None` for "exact").
+    #[pyo3(get)]
+    jk_auxbasis: Option<String>,
 }
 
 #[pymethods]
@@ -7193,14 +7346,15 @@ impl PyScsMp2Result {
     }
     fn __str__(&self) -> String {
         format!(
-            "SCS-MP2 Total Energy: {:.10} Ha (RHF: {:.10}, SCS corr: {:.10}, OS: {:.10}, SS: {:.10})",
+            "SCS-MP2 Total Energy: {:.10} Ha (RHF: {:.10}, SCS corr: {:.10}, OS: {:.10}, SS: {:.10}) [SCF J/K: {}]",
             self.total_energy, self.rhf_energy, self.scs_corr, self.e_os, self.e_ss,
+            self.jk_label,
         )
     }
 }
 
 #[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, c_os=None, c_ss=None, frozen_core=None, k_builder=None, memory_budget_gb=None))]
+#[pyo3(signature = (mol, basis_set, auxbasis, c_os=None, c_ss=None, frozen_core=None, k_builder=None, memory_budget_gb=None, scf_jk=None, jk_auxbasis=None))]
 fn run_scs_mp2(
     mol: &PyMolecule,
     basis_set: &PyBasisSet,
@@ -7210,27 +7364,19 @@ fn run_scs_mp2(
     frozen_core: Option<usize>,
     k_builder: Option<&str>,
     memory_budget_gb: Option<f64>,
+    scf_jk: Option<&str>,
+    jk_auxbasis: Option<&str>,
 ) -> PyResult<PyScsMp2Result> {
+    let (rhf_config, jk) = mp2_exact_default_config(
+        "run_scs_mp2",
+        k_builder,
+        memory_budget_gb,
+        scf_jk,
+        jk_auxbasis,
+    )?;
     let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
     let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
-    let op = Operator::coulomb();
-    let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
-    let ctx = ParallelContext::default();
-    let rhf = solve_rhf(
-        &ctx,
-        &mol.inner,
-        &prep,
-        op,
-        &bounds,
-        &rhf_config_budgeted(k_builder, budget_bytes_from_gb(memory_budget_gb)),
-    )
-    .map_err(make_err)?;
-    if !rhf.converged {
-        return Err(make_err(ferric_core::FerricError::ScfConvergence {
-            iterations: rhf.iterations,
-            last_energy: rhf.energy,
-        }));
-    }
+    let rhf = converged_rhf(&mol.inner, &prep, &rhf_config)?;
     let cfg = ScsMp2Config {
         c_os: c_os.unwrap_or(6.0 / 5.0),
         c_ss: c_ss.unwrap_or(1.0 / 3.0),
@@ -7244,6 +7390,9 @@ fn run_scs_mp2(
         scs_corr: r.scs_corr,
         e_os: r.e_os,
         e_ss: r.e_ss,
+        scf_jk: jk.mode.as_str().to_string(),
+        jk_label: jk.label(),
+        jk_auxbasis: jk.aux,
     })
 }
 
@@ -7252,7 +7401,7 @@ fn run_scs_mp2(
 /// (Å). E = c_OS·E_OS(r0_1) + c_SS·[E_SS(r0_2) − E_SS(r0_1)]. Requires the terfc
 /// tables (FERRIC_TERF_TABLE_DIR). Paper defaults: r0=0.75/1.05 Å, c_OS=1.27, c_SS=4.05.
 #[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, r0_bonded=None, r0_nonbonded=None, c_os=None, c_ss=None, frozen_core=None, k_builder=None, memory_budget_gb=None))]
+#[pyo3(signature = (mol, basis_set, auxbasis, r0_bonded=None, r0_nonbonded=None, c_os=None, c_ss=None, frozen_core=None, k_builder=None, memory_budget_gb=None, scf_jk=None, jk_auxbasis=None))]
 #[allow(clippy::too_many_arguments)]
 fn run_scs_mp2_2terfc(
     mol: &PyMolecule,
@@ -7265,27 +7414,19 @@ fn run_scs_mp2_2terfc(
     frozen_core: Option<usize>,
     k_builder: Option<&str>,
     memory_budget_gb: Option<f64>,
+    scf_jk: Option<&str>,
+    jk_auxbasis: Option<&str>,
 ) -> PyResult<PyScsMp2Result> {
+    let (rhf_config, jk) = mp2_exact_default_config(
+        "run_scs_mp2_2terfc",
+        k_builder,
+        memory_budget_gb,
+        scf_jk,
+        jk_auxbasis,
+    )?;
     let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
     let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
-    let coul = Operator::coulomb();
-    let bounds = SchwarzBounds::compute(coul, &prep).map_err(make_err)?;
-    let ctx = ParallelContext::default();
-    let rhf = solve_rhf(
-        &ctx,
-        &mol.inner,
-        &prep,
-        coul,
-        &bounds,
-        &rhf_config_budgeted(k_builder, budget_bytes_from_gb(memory_budget_gb)),
-    )
-    .map_err(make_err)?;
-    if !rhf.converged {
-        return Err(make_err(ferric_core::FerricError::ScfConvergence {
-            iterations: rhf.iterations,
-            last_energy: rhf.energy,
-        }));
-    }
+    let rhf = converged_rhf(&mol.inner, &prep, &rhf_config)?;
     const ANG2BOHR: f64 = ANGSTROM_TO_BOHR;
     let cfg = ScsMp2TerfcConfig {
         r0_bonded: r0_bonded.unwrap_or(0.75) * ANG2BOHR,
@@ -7307,6 +7448,9 @@ fn run_scs_mp2_2terfc(
         scs_corr: r.scs_corr,
         e_os: r.e_os,
         e_ss: r.e_ss,
+        scf_jk: jk.mode.as_str().to_string(),
+        jk_label: jk.label(),
+        jk_auxbasis: jk.aux,
     })
 }
 
@@ -7337,6 +7481,15 @@ struct PyMp2VResult {
     /// small E_nl from a suspiciously small grid).
     #[pyo3(get)]
     n_nlc_points: usize,
+    /// How the reference SCF built J/K: "exact", "rijk" or "rijcosx".
+    #[pyo3(get)]
+    scf_jk: String,
+    /// The printout's SCF J/K echo (`ScfJk::label`: names a non-default
+    /// exchange builder on the exact path).
+    jk_label: String,
+    /// The SCF's JK-fitting basis (`None` for "exact").
+    #[pyo3(get)]
+    jk_auxbasis: Option<String>,
 }
 
 #[pymethods]
@@ -7349,8 +7502,9 @@ impl PyMp2VResult {
     }
     fn __str__(&self) -> String {
         format!(
-            "MP2-V Total Energy: {:.10} Ha (RHF: {:.10}, att-MP2 corr: {:.10}, VV10 E_nl: {:.10})",
+            "MP2-V Total Energy: {:.10} Ha (RHF: {:.10}, att-MP2 corr: {:.10}, VV10 E_nl: {:.10}) [SCF J/K: {}]",
             self.total_energy, self.rhf_energy, self.att_mp2_corr, self.vv10_e_nl,
+            self.jk_label,
         )
     }
 }
@@ -7368,7 +7522,7 @@ impl PyMp2VResult {
 /// `vv10_damping`: "terfc" (published Eq. 11) or "none" (bare VV10 —
 /// double-counts short range, measurement-only). b defaults 11.0, c 0.0089.
 #[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, r0=None, b=None, c=None, omega=None, attenuator=None, vv10_damping=None, frozen_core=None, k_builder=None, memory_budget_gb=None))]
+#[pyo3(signature = (mol, basis_set, auxbasis, r0=None, b=None, c=None, omega=None, attenuator=None, vv10_damping=None, frozen_core=None, k_builder=None, memory_budget_gb=None, scf_jk=None, jk_auxbasis=None))]
 #[allow(clippy::too_many_arguments)]
 fn run_mp2_v(
     mol: &PyMolecule,
@@ -7383,27 +7537,19 @@ fn run_mp2_v(
     frozen_core: Option<usize>,
     k_builder: Option<&str>,
     memory_budget_gb: Option<f64>,
+    scf_jk: Option<&str>,
+    jk_auxbasis: Option<&str>,
 ) -> PyResult<PyMp2VResult> {
+    let (rhf_config, jk) = mp2_exact_default_config(
+        "run_mp2_v",
+        k_builder,
+        memory_budget_gb,
+        scf_jk,
+        jk_auxbasis,
+    )?;
     let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
     let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
-    let coul = Operator::coulomb();
-    let bounds = SchwarzBounds::compute(coul, &prep).map_err(make_err)?;
-    let ctx = ParallelContext::default();
-    let rhf = solve_rhf(
-        &ctx,
-        &mol.inner,
-        &prep,
-        coul,
-        &bounds,
-        &rhf_config_budgeted(k_builder, budget_bytes_from_gb(memory_budget_gb)),
-    )
-    .map_err(make_err)?;
-    if !rhf.converged {
-        return Err(make_err(ferric_core::FerricError::ScfConvergence {
-            iterations: rhf.iterations,
-            last_energy: rhf.energy,
-        }));
-    }
+    let rhf = converged_rhf(&mol.inner, &prep, &rhf_config)?;
 
     // Start from the published MP2-V(terfc, aTZ) parameterization and override
     // only what the caller set (same construction order as the CLI's
@@ -7466,6 +7612,9 @@ fn run_mp2_v(
         e_os,
         e_ss,
         n_nlc_points: r.n_nlc_points,
+        scf_jk: jk.mode.as_str().to_string(),
+        jk_label: jk.label(),
+        jk_auxbasis: jk.aux,
     })
 }
 
@@ -7680,6 +7829,15 @@ struct PyRsMp2RpaResult {
     /// ΔdRPA[erfc] = E_dRPA[erfc] − 2·E_OS[erfc] (CoupledRings only).
     #[pyo3(get)]
     e_delta_drpa_sr: Option<f64>,
+    /// How the reference SCF built J/K: "exact", "rijk" or "rijcosx".
+    #[pyo3(get)]
+    scf_jk: String,
+    /// The printout's SCF J/K echo (`ScfJk::label`: names a non-default
+    /// exchange builder on the exact path).
+    jk_label: String,
+    /// The SCF's JK-fitting basis (`None` for "exact").
+    #[pyo3(get)]
+    jk_auxbasis: Option<String>,
 }
 
 #[pymethods]
@@ -7692,14 +7850,25 @@ impl PyRsMp2RpaResult {
     }
     fn __str__(&self) -> String {
         format!(
-            "RS-MP2-RPA Total Energy: {:.10} Ha (RHF: {:.10}, corr: {:.10}, SR-MP2: {:.10}, LR-MP2: {:.10})",
+            "RS-MP2-RPA Total Energy: {:.10} Ha (RHF: {:.10}, corr: {:.10}, SR-MP2: {:.10}, LR-MP2: {:.10}) [SCF J/K: {}]",
             self.total_energy, self.rhf_energy, self.e_corr, self.e_sr_mp2, self.e_lr_mp2,
+            self.jk_label,
         )
     }
 }
 
+/// SR-MP2 + LR-dRPA on an RHF reference (`formulation` "delta-lr" or
+/// "coupled-rings"; `attenuator` "erf" with `omega` in A^-1, or "terf" with
+/// `r0` in A).
+///
+/// `scf_jk` / `jk_auxbasis` work as in `run_rimp2`, BUT THE DEFAULT DIFFERS:
+/// this entry point has always used RI-JK, so `scf_jk` defaults to "rijk"
+/// (on "def2-universal-jkfit") here, not "exact". Pass `scf_jk="exact"` for
+/// four-centre J/K. A `k_builder` under "rijk" is a ValueError (it used to
+/// be ignored with a warning). The mode actually used is echoed as
+/// `result.scf_jk` / `result.jk_auxbasis`.
 #[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, omega=None, frozen_core=None, k_builder=None, formulation=None, attenuator=None, r0=None, terf_omega=None, memory_budget_gb=None))]
+#[pyo3(signature = (mol, basis_set, auxbasis, omega=None, frozen_core=None, k_builder=None, formulation=None, attenuator=None, r0=None, terf_omega=None, memory_budget_gb=None, scf_jk=None, jk_auxbasis=None))]
 #[allow(clippy::too_many_arguments)]
 fn run_rs_mp2_rpa(
     mol: &PyMolecule,
@@ -7713,25 +7882,22 @@ fn run_rs_mp2_rpa(
     r0: Option<f64>,
     terf_omega: Option<f64>,
     memory_budget_gb: Option<f64>,
+    scf_jk: Option<&str>,
+    jk_auxbasis: Option<&str>,
 ) -> PyResult<PyRsMp2RpaResult> {
+    // The default differs from the other MP2 entry points: this one has
+    // always used RI-JK on def2-universal-jkfit (same convention as pdep-rpa).
+    let (cfg_rhf, jk) = mp2_reference_config(
+        "run_rs_mp2_rpa",
+        k_builder,
+        memory_budget_gb,
+        scf_jk,
+        jk_auxbasis,
+        ferric_scf::scf_jk::ScfJkMode::RiJk,
+    )?;
     let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
     let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
-    let op = Operator::coulomb();
-    let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
-    let ctx = ParallelContext::default();
-    let mut cfg_rhf = rhf_config_budgeted(k_builder, budget_bytes_from_gb(memory_budget_gb));
-    // Default RI-J/RI-K to def2-universal-jkfit (same convention as pdep-rpa and
-    // run_dft); keeps SCF aux separate from the SR-MP2+LR-RPA correlation aux
-    // (see ferric-jk-aux-convention). k_builder from the caller is preserved.
-    cfg_rhf.df_j_aux = Some("def2-universal-jkfit".to_string());
-    cfg_rhf.df_k_aux = Some("def2-universal-jkfit".to_string());
-    let rhf = solve_rhf(&ctx, &mol.inner, &prep, op, &bounds, &cfg_rhf).map_err(make_err)?;
-    if !rhf.converged {
-        return Err(make_err(ferric_core::FerricError::ScfConvergence {
-            iterations: rhf.iterations,
-            last_energy: rhf.energy,
-        }));
-    }
+    let rhf = converged_rhf(&mol.inner, &prep, &cfg_rhf)?;
     // Map formulation string to enum.
     let form = match formulation.unwrap_or("delta-lr") {
         "delta-lr" => ferric_rpa::RsMp2RpaFormulation::DeltaLr,
@@ -7782,6 +7948,9 @@ fn run_rs_mp2_rpa(
         e_drpa_lr: r.e_drpa_lr,
         e_delta_drpa_full: r.e_delta_drpa_full,
         e_delta_drpa_sr: r.e_delta_drpa_sr,
+        scf_jk: jk.mode.as_str().to_string(),
+        jk_label: jk.label(),
+        jk_auxbasis: jk.aux,
     })
 }
 

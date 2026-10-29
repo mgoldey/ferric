@@ -135,6 +135,9 @@ pub mod link_k;
 pub mod rhf;
 /// Newton-step RHF solver with exact orbital Hessian.
 pub mod rhf_newton;
+/// `scf_jk = "exact" | "rijk" | "rijcosx"`: one strict switch for how a
+/// correlated method's reference SCF builds J and K.
+pub mod scf_jk;
 /// Fermi-smearing (fractional occupation) for metallic/near-degenerate systems.
 pub mod smearing;
 pub mod symmetric;

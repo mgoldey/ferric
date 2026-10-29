@@ -307,6 +307,29 @@ fn install_integral_settings(scf: &config::ScfCfg) -> Result<(), String> {
     Ok(())
 }
 
+/// `[scf] jk` / `jk_aux` (MP2-family kinds): the shared `ferric_scf::scf_jk`
+/// rule, with the kind's own default, writes `df_j_aux` / `df_k_aux` /
+/// `k_builder`. Returns whether the reference SCF is density-fitted by that
+/// rule (`false` when the rule does not govern the run, which then is
+/// untouched). Already validated at load, so an error here exits.
+fn apply_scf_jk(cfg: &Config, task: &str, rhf_config: &mut RhfConfig) -> bool {
+    let choice = cfg
+        .scf
+        .scf_jk_choice(&cfg.method.kind, task)
+        .unwrap_or_else(|e| {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        });
+    let Some(jk) = choice else {
+        return false;
+    };
+    if let Some(w) = jk.aux_warning(ferric_scf::scf_jk::ScfJkKeys::CLI) {
+        eprintln!("warning: {w}");
+    }
+    jk.apply(rhf_config);
+    jk.is_fitted()
+}
+
 /// The actual CLI, taking argv explicitly instead of reading
 /// `std::env::args()` itself. Split out so a caller whose real OS-process
 /// argv does NOT match `[program_name, ...user_args]` can reconstruct that
@@ -657,7 +680,7 @@ pub fn run(args: Vec<String>) {
     // the installed settings are the TOML-aware ones. Printed next to the
     // memory audit so every run states where its GEMMs go.
     install_gpu_or_exit(&cfg, cli_gpu);
-    let rhf_config = RhfConfig {
+    let mut rhf_config = RhfConfig {
         xc_omega: None,
         max_iter: cfg.scf.max_iter,
         energy_conv: cfg.scf.energy_conv,
@@ -789,6 +812,10 @@ pub fn run(args: Vec<String>) {
         }),
         symmetry: cfg.scf.symmetry,
     };
+    // A fitted reference (`[scf] jk`, or rs-mp2-rpa's RI-JK default) skips
+    // the DF-guess pre-stage below: a density-fitted pre-stage in front of a
+    // density-fitted SCF only repeats it.
+    let scf_jk_fitted = apply_scf_jk(&cfg, task, &mut rhf_config);
 
     // Advisory only (issue #410): a USER-SET `[scf] energy_conv` below the
     // estimated noise floor of dE is met only by chance, so the run just
@@ -801,6 +828,7 @@ pub fn run(args: Vec<String>) {
     // Header record for the JSON run log: everything needed to reproduce this
     // run, written before any expensive work so it survives even a job killed
     // in the first SCF iteration. No-op when no log is installed.
+    let jk_route = ferric_scf::scf_jk::effective_jk(&rhf_config);
     if let Some(rl) = ferric_scf::runlog::log() {
         ferric_scf::runlog::set_build_identity(
             ferric_build_info::VERSION,
@@ -818,6 +846,12 @@ pub fn run(args: Vec<String>) {
                 "density_conv": cfg.scf.density_conv,
                 "df_j_aux": rhf_config.df_j_aux,
                 "df_k_aux": rhf_config.df_k_aux,
+                // The EFFECTIVE J/K route (what the SCF builds), not the
+                // raw `[scf] jk` key: rs-mp2-rpa with no `jk` is "rijk", and
+                // a `k_builder` that density fitting overrides is null.
+                "k_builder": jk_route.k_builder,
+                "scf_jk": jk_route.mode,
+                "jk_aux": jk_route.j_aux,
                 "level_shift": rhf_config.level_shift,
                 // The RESOLVED budget in bytes, not the raw `[memory]` key:
                 // an omitted budget auto-detects, and the number actually used
@@ -1003,7 +1037,7 @@ pub fn run(args: Vec<String>) {
         } else {
             solve_open_shell_reference(method, &cfg, &ctx, &mol, &prep, &bounds, &rhf_config)
         }
-    } else if cfg.scf.df_guess_enabled() {
+    } else if cfg.scf.df_guess_enabled() && !scf_jk_fitted {
         // Opt-in DF-guess two-stage SCF (see
         // `ferric_scf::ladder::solve_rhf_with_df_guess`). Closed-shell only:
         // open-shell (UHF/ROHF) df_guess is not implemented, and open-shell
@@ -1023,7 +1057,7 @@ pub fn run(args: Vec<String>) {
             std::process::exit(1);
         });
         eprintln!(
-            "[ferric] SCF: DF-guess pre-stage via {} ({} iters, {}), exact stage from that density",
+            "[ferric] SCF: DF-guess pre-stage via {} ({} iters, {}), {} J/K stage from that density",
             df_guess_aux
                 .as_deref()
                 .unwrap_or(ferric_scf::ladder::DF_GUESS_DEFAULT_AUX),
@@ -1033,6 +1067,7 @@ pub fn run(args: Vec<String>) {
             } else {
                 "did not fully converge"
             },
+            jk_route.mode,
         );
         let _ = dfg.df_energy; // diagnostic only; the exact-stage result is authoritative
         dfg.result

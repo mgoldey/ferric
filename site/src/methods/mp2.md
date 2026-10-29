@@ -31,6 +31,37 @@ closed shell only: set `multiplicity = 1`. `mp2-v` switches to a UHF reference
 when `multiplicity > 1` (CLI, energy only); Python `run_mp2_v` is closed shell
 only.
 
+**The reference SCF: exact, RI-JK or RIJCOSX.** The `auxbasis` above fits the
+correlation step only. The reference SCF is a separate choice, `scf_jk` on
+every MP2-family Python driver (`[scf] jk` in the CLI, task `energy`):
+`"exact"` (four-centre J and K, the default), `"rijk"` (RI-J + RI-K) or
+`"rijcosx"` (RI-J + COSX K). The fitted modes use `jk_auxbasis` (`[scf]
+jk_aux`), a JK-fit basis with default `def2-universal-jkfit`. It is never the
+MP2 `auxbasis`, because an MP2-fit set used for K costs mHa. `rs-mp2-rpa` is the
+exception: it has always run RI-JK, so its default is `"rijk"`. Every result
+echoes `scf_jk` and `jk_auxbasis`. An unknown mode, `jk_auxbasis` with
+`"exact"`, or a `k_builder` the mode would override is an error (so is any
+`k_builder` on `rs-mp2-rpa`'s RI-JK default, in the CLI as in Python). A
+`jk_auxbasis` whose name lacks "jkfit" draws a warning. `oo-rimp2` accepts only
+`"exact"`: orbital optimisation rebuilds exact four-centre J/K at every orbital
+step, so a fitted reference would change only the starting orbitals; threading
+RI-JK through the OO Fock builds is not implemented. In the CLI a fitted
+reference cannot be combined with `[scf] df_increments` (an exact-J/K scheme)
+or an explicit `df_guess = true`, and it skips the default DF-guess
+pre-stage. At aug-cc-pVTZ
+the four-centre SCF is most of an MP2 single point, so a fitted reference is the
+usual choice for interaction-energy benchmarks. The fitting error is small and
+largely cancels in a counterpoise-corrected interaction energy. Measured with
+PySCF DF-MP2 (frozen core, `aug-cc-pvXz-ri` for MP2) on the S66 water dimer:
+
+| Basis | JK aux | ΔE_total(dimer) | ΔIE (CP) |
+|---|---|---|---|
+| aug-cc-pVDZ | def2-universal-jkfit | +98 µHa | +0.0059 kcal/mol |
+| aug-cc-pVDZ | aug-cc-pvdz-jkfit (not bundled) | +58 µHa | +0.0001 kcal/mol |
+| aug-cc-pVTZ | def2-universal-jkfit | +69 µHa | +0.0043 kcal/mol |
+| aug-cc-pVTZ | cc-pvtz-jkfit | +78 µHa | +0.0026 kcal/mol |
+| aug-cc-pVTZ | aug-cc-pvtz-jkfit (not bundled) | +63 µHa | <0.00001 kcal/mol |
+
 **Run it.** `method.kind = "rimp2"` (`examples/water-rimp2.toml`,
 `examples/water-rimp2-frozen-core.toml`); Python `ferric.run_rimp2(mol, bs, aux)`.
 
