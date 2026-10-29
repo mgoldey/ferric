@@ -52,6 +52,7 @@ use ndarray::{Array2, Array3};
 use numpy::{PyArray1, PyArray2, PyArray3};
 use pyo3::prelude::*;
 
+mod blocks;
 mod pbc;
 
 // ── Molecule ──
@@ -11582,7 +11583,9 @@ fn register_device_and_geometry(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(shell_info, m)?)?;
     m.add_function(wrap_pyfunction!(gpu_status, m)?)?;
     m.add_function(wrap_pyfunction!(configure_gpu, m)?)?;
-    Ok(())
+    // `AoIntegrals` + `einsum`: the building blocks for writing a method in
+    // Python (see blocks.rs).
+    blocks::register(m)
 }
 
 /// `eigensolver_conv_thresh`, or `default` when unset, warning if it was

@@ -405,6 +405,60 @@ class BasisSet:
         """Load a Basis Set Exchange JSON file (contractions renormalised)."""
         ...
 
+
+class AoIntegrals:
+    """AO integrals and J/K builds for one molecule in one basis (numpy).
+
+    Bohr, Hartree, AOs in ferric's shell order. ECPs are applied as in
+    run_rhf. `jk()` takes the TOTAL density: F = hcore() + J - 0.5 * K.
+    `operator` is 'coulomb' (no omega) or 'erf'/'erfc' (omega > 0, Bohr^-1).
+    """
+
+    def __init__(self, mol: Molecule, basis_set: BasisSet) -> None: ...
+    @property
+    def nao(self) -> int: ...
+    @property
+    def nelec(self) -> int: ...
+    def nuclear_repulsion(self) -> float: ...
+    def shell_offsets(self) -> list[int]:
+        """AO offset per shell plus trailing nao (length nshells + 1)."""
+        ...
+    def shell_atoms(self) -> list[int]: ...
+    def ao_atoms(self) -> list[int]: ...
+    def overlap(self) -> NDArray[np.float64]: ...
+    def kinetic(self) -> NDArray[np.float64]: ...
+    def nuclear(self) -> NDArray[np.float64]: ...
+    def ecp(self) -> NDArray[np.float64] | None: ...
+    def hcore(self) -> NDArray[np.float64]: ...
+    def dipole(
+        self, origin: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    ) -> NDArray[np.float64]: ...
+    def eri(
+        self,
+        operator: Literal["coulomb", "erf", "erfc"] = "coulomb",
+        omega: float | None = None,
+        max_gb: float = 2.0,
+    ) -> NDArray[np.float64]: ...
+    def eri3(
+        self,
+        aux: BasisSet,
+        operator: Literal["coulomb", "erf", "erfc"] = "coulomb",
+        omega: float | None = None,
+    ) -> NDArray[np.float64]: ...
+    def eri2(
+        self,
+        aux: BasisSet,
+        operator: Literal["coulomb", "erf", "erfc"] = "coulomb",
+        omega: float | None = None,
+    ) -> NDArray[np.float64]: ...
+    def jk(
+        self,
+        density: NDArray[np.float64],
+        operator: Literal["coulomb", "erf", "erfc"] = "coulomb",
+        omega: float | None = None,
+        thresh: float = 1e-12,
+    ) -> tuple[NDArray[np.float64], NDArray[np.float64]]: ...
+
 class SymmetricRhfResult:
     """Result of run_rhf(symmetry=True) (point-group-blocked closed-shell RHF)
     and of run_dft / run_ksdft(symmetry=True) (blocked closed-shell RKS).
@@ -3991,6 +4045,20 @@ def esp_at_atoms(
     result: RhfResult | DftResult,
 ) -> list[float]:
     """Electrostatic potential at each nucleus (Hartree atomic units)."""
+    ...
+
+
+def einsum(
+    spec: str,
+    a: NDArray[np.float64],
+    b: NDArray[np.float64],
+    scale: float = 1.0,
+) -> NDArray[np.float64] | float:
+    """Binary contraction on ferric's GEMM engine (the einsum! macro's).
+
+    Two operands, explicit '->', no repeated index within a term; output lists
+    batch, then left-free, then right-free indices. Scalar specs return float.
+    """
     ...
 
 def esp_at_points(
