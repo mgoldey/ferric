@@ -22,6 +22,9 @@
 //! * [`CallClock`] — an accumulator for the per-SCF-iteration builders
 //!   (J, K, XC), which only get `&self`/`&mut self` of a borrowed source:
 //!   atomics, so the source can stay `Clone` and `Sync`.
+//! * [`PhaseClock`] — the wall-only variant for phases timed inside a hot
+//!   per-chunk loop, where a CPU-clock syscall per call would perturb the
+//!   very time it measures.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
@@ -305,6 +308,58 @@ impl CallClock {
     }
 }
 
+/// A WALL-ONLY [`CallClock`] for phases timed inside a hot loop (e.g. once
+/// per grid chunk). It reads only [`Instant`] (vDSO, no syscall); process CPU
+/// time is a syscall per read, so it belongs at stage boundaries, and the
+/// stage built from this clock reports `cpu_s: None`.
+#[derive(Debug, Default)]
+pub struct PhaseClock {
+    wall_ns: AtomicU64,
+    calls: AtomicU64,
+}
+
+impl Clone for PhaseClock {
+    /// Snapshot of the counters (relaxed loads).
+    fn clone(&self) -> Self {
+        Self {
+            wall_ns: AtomicU64::new(self.wall_ns.load(Ordering::Relaxed)),
+            calls: AtomicU64::new(self.calls.load(Ordering::Relaxed)),
+        }
+    }
+}
+
+impl PhaseClock {
+    /// Run `f` and add its wall time and one call.
+    pub fn time<T>(&self, f: impl FnOnce() -> T) -> T {
+        let t0 = Instant::now();
+        let out = f();
+        self.record(t0);
+        out
+    }
+
+    /// Add the wall time since `t0` as one call.
+    pub fn record(&self, t0: Instant) {
+        let ns = u64::try_from(t0.elapsed().as_nanos()).unwrap_or(u64::MAX);
+        self.wall_ns.fetch_add(ns, Ordering::Relaxed);
+        self.calls.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// The totals so far as a stage named `name` (`cpu_s: None`).
+    pub fn timing(&self, name: &'static str) -> StageTiming {
+        StageTiming {
+            name,
+            wall_s: self.wall_ns.load(Ordering::Relaxed) as f64 * 1e-9,
+            cpu_s: None,
+            calls: self.calls.load(Ordering::Relaxed),
+        }
+    }
+
+    /// Calls timed so far.
+    pub fn calls(&self) -> u64 {
+        self.calls.load(Ordering::Relaxed)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -329,6 +384,10 @@ mod tests {
         let v = clock.time(|| 7);
         assert_eq!((v, clock.calls()), (7, 1));
         assert!(clock.timing("x").wall_s >= 0.0);
+        let phase = PhaseClock::default();
+        assert_eq!(phase.time(|| 7), 7);
+        let st = phase.timing("p");
+        assert_eq!((st.calls, st.cpu_s), (1, None));
     }
 
     #[test]

@@ -72,7 +72,7 @@ use crate::kscf::{
 use crate::lattice::Cell;
 use crate::rsgdf::kpoint::KRsGdf;
 use crate::rsh::{resolve_periodic_functional_rsh, RshParams};
-use crate::timing::{CallClock, PbcTimings, StageClock, StageTiming};
+use crate::timing::{CallClock, PbcTimings, PhaseClock, StageClock, StageTiming};
 use ferric_core::basis::{num_functions, BasisSet};
 use ferric_core::FerricError;
 use ferric_dft::density_on_grid::DensityGrid;
@@ -118,26 +118,28 @@ pub struct KPeriodicXc {
 /// Accumulated per-phase time of the k-point XC builds (closed and open
 /// shell), for [`KPeriodicXc::xc_timings`]. Observation only: the clocks never
 /// touch a number. The phase clocks are summed over every timed call, so
-/// when phases run on several threads their wall time is THREAD-SUMMED (and
-/// their CPU time is the whole process's): compare phases by wall share only.
+/// when phases run on several threads their wall time is THREAD-SUMMED:
+/// compare phases by wall share only. They run per chunk, so they are
+/// wall-only ([`PhaseClock`]); the process CPU clock is read only around a
+/// whole build.
 #[derive(Debug, Default, Clone)]
 pub(crate) struct KXcClocks {
     /// One whole `build` / `build_polarized` call.
     pub(crate) build: CallClock,
     /// `P(k) = D(k) φ^k*` (complex GEMM, per spin and k).
-    pub(crate) density_gemm: CallClock,
+    pub(crate) density_gemm: PhaseClock,
     /// `ρ`, `∇ρ` from `P` and `φ` (the per-point contraction loops).
-    pub(crate) density_contract: CallClock,
+    pub(crate) density_contract: PhaseClock,
     /// `τ` (meta-GGA): its own GEMMs and contraction.
-    pub(crate) tau: CallClock,
+    pub(crate) tau: PhaseClock,
     /// The libxc kernel.
-    pub(crate) kernel: CallClock,
+    pub(crate) kernel: PhaseClock,
     /// The weighted conjugate AO copies (and `m^H`) of the potential build.
-    pub(crate) vxc_scale: CallClock,
+    pub(crate) vxc_scale: PhaseClock,
     /// The potential's complex GEMMs.
-    pub(crate) vxc_gemm: CallClock,
+    pub(crate) vxc_gemm: PhaseClock,
     /// The potential's accumulation into `V(k)`.
-    pub(crate) vxc_add: CallClock,
+    pub(crate) vxc_add: PhaseClock,
 }
 
 impl std::fmt::Debug for KPeriodicXc {
@@ -300,6 +302,20 @@ pub(crate) fn conj(m: &Array2<Complex64>) -> Array2<Complex64> {
 /// holds at once (it never limits the window below one chunk).
 const FOLD_WINDOW_BYTES: usize = 256 << 20;
 
+/// Upper bound on what [`KPeriodicXc::fold_chunks_in_order`] holds at once,
+/// independent of the thread count: the window cap (or one chunk's result
+/// if larger), but never more than every chunk's. One result is the
+/// open-shell `(V_α(k), V_β(k))`, which also bounds the closed shell's.
+fn fold_window_bound(nk: usize, nbf: usize, nchunks: usize) -> usize {
+    let one = bytes_of(
+        (2 * nk as u64)
+            .saturating_mul(nbf as u64)
+            .saturating_mul(nbf as u64),
+        std::mem::size_of::<Complex64>(),
+    );
+    one.saturating_mul(nchunks).min(FOLD_WINDOW_BYTES.max(one))
+}
+
 /// `out[g] += s · Re Σ_μ a[μ,g] b[μ,g]`. The `μ` sum of each point runs
 /// ascending from zero, the order of the former per-point loop, so the bits
 /// are unchanged; the sweep goes row by row so both operands stream
@@ -365,6 +381,10 @@ impl KPeriodicXc {
             cfg.ao_threshold,
             gga,
             &mut ledger,
+        )?;
+        ledger.reserve(
+            "k-point periodic XC chunk fold window",
+            fold_window_bound(mesh.nk(), nbf, chunks.len()),
         )?;
         let (wall_s, cpu_s) = clock.elapsed();
         Ok(Self {
@@ -479,7 +499,7 @@ impl KPeriodicXc {
         for k in 0..self.nk {
             // P_{μg} = Σ_ν D_{μν} φ*_{νg}
             let p = clk.density_gemm.time(|| dm[k].dot(&conj(&c.chi[k])));
-            let clock = StageClock::start();
+            let t0 = std::time::Instant::now();
             let rho_s = rho.as_slice_mut().expect("standard layout");
             add_re_column_dots(rho_s, inv_nk, c.chi[k].view(), p.view(), &mut acc);
             if self.gga {
@@ -490,7 +510,7 @@ impl KPeriodicXc {
                     add_re_column_dots(out, inv_nk * 2.0, d_ax, p.view(), &mut acc);
                 }
             }
-            clk.density_contract.record(&clock);
+            clk.density_contract.record(t0);
         }
         let sigma = (0..np)
             .map(|g| grad[(0, g)].powi(2) + grad[(1, g)].powi(2) + grad[(2, g)].powi(2))
@@ -835,6 +855,7 @@ pub fn solve_krks_keep_on_grid(
         }
         _ => {}
     }
+    let total = StageClock::start();
     let mut pxc = KPeriodicXc::new(cell, prep.basis_set(), &cfg.functional, grid, mesh, &cfg.xc)?;
     let mut a = pxc.exact_exchange_fraction();
     // Range-separated hybrid: the fractions live inside the K kernel (dense
@@ -879,6 +900,7 @@ pub fn solve_krks_keep_on_grid(
     let mut scf = solve_krks_injected(cell, mesh, &kc.scf, inj, &mut pxc, a)?;
     timings.stop("k SCF", &clock);
     pxc.record_scf_timings(&mut timings);
+    timings.finish(&total);
     scf.timings = timings;
     if !scf.converged {
         return Err(FerricError::Convergence(format!(

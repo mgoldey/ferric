@@ -229,7 +229,7 @@ impl KPeriodicXcPolarized {
         let mut acc = vec![0.0; np];
         for k in 0..x.nk {
             let p = clk.density_gemm.time(|| dm[k].dot(&conj(&c.chi[k])));
-            let clock = StageClock::start();
+            let t0 = std::time::Instant::now();
             let rho_s = rho.as_slice_mut().expect("standard layout");
             add_re_column_dots(rho_s, inv_nk, c.chi[k].view(), p.view(), &mut acc);
             if x.gga {
@@ -240,7 +240,7 @@ impl KPeriodicXcPolarized {
                     add_re_column_dots(out, inv_nk * 2.0, d_ax, p.view(), &mut acc);
                 }
             }
-            clk.density_contract.record(&clock);
+            clk.density_contract.record(t0);
         }
         (rho, grad)
     }
