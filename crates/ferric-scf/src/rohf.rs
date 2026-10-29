@@ -273,7 +273,26 @@ pub fn solve_rohf_best_effort(
     config: &RohfConfig,
 ) -> Result<ScfResult, FerricError> {
     crate::symmetric::require_symmetry_off(config, "solve_rohf")?;
-    solve_rohf_impl(ctx, mol, prep, bounds, config, None, None, None, None)
+    solve_rohf_routed(ctx, mol, prep, bounds, config)
+}
+
+/// The molecular ROHF solve, started from the secondary-basis guess MOs when
+/// [`RhfConfig::guess_basis`] applies.
+fn solve_rohf_routed(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    bounds: &SchwarzBounds,
+    config: &RohfConfig,
+) -> Result<ScfResult, FerricError> {
+    if !crate::basis2::applies(config, false) {
+        return solve_rohf_impl(ctx, mol, prep, bounds, config, None, None, None, None);
+    }
+    let kind = crate::basis2::ScfKind::Rohf;
+    let g = crate::basis2::open_shell_guess(ctx, mol, prep, bounds, config, kind)?;
+    let mut r = solve_rohf_impl(ctx, mol, prep, bounds, &g.config, Some(&g.c_a), None, None, None)?;
+    r.guess_basis = Some(g.report);
+    Ok(r)
 }
 
 /// Reject every `RohfConfig` feature [`solve_rohf_injected`] cannot honour,
@@ -1283,6 +1302,7 @@ fn solve_rohf_impl(
                 );
             }
             let result = ScfResult {
+                guess_basis: None,
                 spin: Spin::RestrictedOpen,
                 energy,
                 density_total,
@@ -1534,6 +1554,7 @@ fn solve_rohf_impl(
     let (eps_last, c_last) = guard.relabel(&c, eps_last, c_last, &s);
     let density_total = &d_a + &d_b;
     Ok(ScfResult {
+        guess_basis: None,
         spin: Spin::RestrictedOpen,
         energy: mon.prev_e,
         density_total,

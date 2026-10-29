@@ -506,6 +506,30 @@ fn solve_uhf_molecular(
     fock_mod: Option<UhfFockMod>,
 ) -> Result<ScfResult, FerricError> {
     crate::symmetric::require_symmetry_off(config, "solve_uhf")?;
+    if crate::basis2::applies(config, initial_mos.is_some()) {
+        let g = crate::basis2::open_shell_guess(
+            ctx,
+            mol,
+            prep,
+            bounds,
+            config,
+            crate::basis2::ScfKind::Uhf,
+        )?;
+        let mut r = solve_uhf_impl(
+            ctx,
+            mol,
+            prep,
+            bounds,
+            &g.config,
+            Some((&g.c_a, &g.c_b)),
+            fock_mod,
+            None,
+            None,
+            None,
+        )?;
+        r.guess_basis = Some(g.report);
+        return Ok(r);
+    }
     solve_uhf_impl(
         ctx,
         mol,
@@ -1536,6 +1560,7 @@ fn solve_uhf_impl(
                 _ => (energy, None),
             };
             return Ok(ScfResult {
+                guess_basis: None,
                 spin: Spin::Unrestricted,
                 energy,
                 density_total,
@@ -2030,6 +2055,7 @@ fn solve_uhf_impl(
     };
     let density_total = &d_a + &d_b;
     Ok(ScfResult {
+        guess_basis: None,
         spin: Spin::Unrestricted,
         energy: mon.prev_e,
         density_total,

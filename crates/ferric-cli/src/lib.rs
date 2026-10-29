@@ -681,6 +681,11 @@ pub fn run(args: Vec<String>) {
     // memory audit so every run states where its GEMMs go.
     install_gpu_or_exit(&cfg, cli_gpu);
     let mut rhf_config = RhfConfig {
+        // `[scf] guess_basis` / `guess_projection` (validated at load time).
+        guess_basis: cfg.scf.guess_basis_config().unwrap_or_else(|e| {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }),
         xc_omega: None,
         max_iter: cfg.scf.max_iter,
         energy_conv: cfg.scf.energy_conv,

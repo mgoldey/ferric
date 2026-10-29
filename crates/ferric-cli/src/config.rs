@@ -2341,6 +2341,14 @@ pub struct ScfCfg {
     /// SCF initial guess: "minao" (default, no per-element free-atom SCF for
     /// heavy atoms), "sad" (legacy free-atom-SCF superposition), or "hcore".
     pub guess: Option<String>,
+    /// Secondary-basis guess (Q-Chem `BASIS2`): a bundled basis name. The SCF
+    /// is converged in it first and projected into the target basis as the
+    /// starting point (`ferric_scf::basis2`). Unset = no secondary stage.
+    pub guess_basis: Option<String>,
+    /// Projection for `guess_basis`: "fock" (default; Q-Chem FOPPROJECTION)
+    /// or "overlap" (OVPROJECTION). Setting it without `guess_basis` is an
+    /// error.
+    pub guess_projection: Option<String>,
     /// Enable the closed-shell second-order (Newton/SOSCF) step in the SCF tail
     /// (sets newton_trigger). Default false.
     #[serde(default)]
@@ -2675,6 +2683,8 @@ impl Default for ScfCfg {
             diis_switch_thresh: None,
             smearing_sigma: None,
             guess: None,
+            guess_basis: None,
+            guess_projection: None,
             soscf: false,
             aurora: false,
             trah_trigger: None,
@@ -3083,6 +3093,20 @@ impl ScfCfg {
             Some(s) => ferric_scf::guess::InitialGuess::parse_config_str(s)
                 .map(|g| g.use_sad_guess())
                 .map_err(|e| format!("[scf] guess: {e}")),
+        }
+    }
+    /// Resolve `[scf] guess_basis` / `guess_projection` (strict): an unknown
+    /// basis or projection, or a projection without a basis, is an error.
+    pub fn guess_basis_config(&self) -> Result<Option<ferric_scf::basis2::GuessBasis>, String> {
+        match (
+            self.guess_basis.as_deref(),
+            self.guess_projection.as_deref(),
+        ) {
+            (None, None) => Ok(None),
+            (None, Some(_)) => Err("[scf] guess_projection is set but guess_basis is not".into()),
+            (Some(b), p) => ferric_scf::basis2::GuessBasis::bundled(b, p.unwrap_or("fock"))
+                .map(Some)
+                .map_err(|e| format!("[scf] guess_basis: {e}")),
         }
     }
     /// The `[scf] jk_storage` policy, strictly parsed.
@@ -3787,6 +3811,20 @@ impl Config {
     /// wrongly or not at all. Pure function of the config: the multiplicity
     /// is `[molecule] multiplicity`, which is what the solved molecule
     /// carries (with `[qmmm]` too — the QM region takes it).
+    /// `[scf] guess_basis` / `guess_projection`: strict parse, and refused
+    /// for a periodic `[cell]` system (the secondary-basis guess is molecular).
+    fn validate_guess_basis_keys(&self) -> Result<(), String> {
+        self.scf.guess_basis_config()?;
+        if self.cell.is_some() && self.scf.guess_basis.is_some() {
+            return Err(
+                "[scf] guess_basis is not supported for a periodic [cell] system: \
+                        the secondary-basis guess is molecular only"
+                    .into(),
+            );
+        }
+        Ok(())
+    }
+
     pub fn validate_cli_wired_keys(&self) -> Result<(), String> {
         let kind = self.method.kind.as_str();
         let task = self.method.task.as_str();
@@ -3830,6 +3868,7 @@ impl Config {
 
         self.scf.validate_accelerators(kind, mult)?;
         self.validate_symmetry_keys()?;
+        self.validate_guess_basis_keys()?;
 
         if self.scf.stability_descent {
             if task != "energy" {
@@ -8068,6 +8107,23 @@ json = [1, 2]
         }
     }
 
+    /// `[scf] guess_basis` / `guess_projection` resolve strictly: projection
+    /// defaults to "fock", both spellings parse case-insensitively.
+    #[test]
+    fn scf_guess_basis_resolves() {
+        assert_eq!(scf_cfg("").guess_basis_config(), Ok(None));
+        let g = scf_cfg("guess_basis = \"6-31g\"")
+            .guess_basis_config()
+            .unwrap()
+            .unwrap();
+        assert_eq!(g.projection, ferric_scf::basis2::GuessProjection::Fock);
+        let g = scf_cfg("guess_basis = \"sto-3g\"\nguess_projection = \"Overlap\"")
+            .guess_basis_config()
+            .unwrap()
+            .unwrap();
+        assert_eq!(g.projection, ferric_scf::basis2::GuessProjection::Overlap);
+    }
+
     /// A NaN `[scf] diis_switch_thresh` is refused: it would compare below no
     /// error and disable the ADIIS/EDIIS commutator veto; +inf stays supported.
     #[test]
@@ -8132,6 +8188,21 @@ json = [1, 2]
                 "bad_rung.toml",
                 "[[scf.ladder]]\nguess = \"hcore\"\n[[scf.ladder]]\nguess = \"sad-smallbasis\"\n",
                 "rung 1",
+            ),
+            (
+                "bad_guess_projection.toml",
+                "[scf]\nguess_basis = \"6-31g\"\nguess_projection = \"fop\"\n",
+                "unknown guess_projection 'fop'",
+            ),
+            (
+                "bad_guess_basis.toml",
+                "[scf]\nguess_basis = \"6-31gx\"\n",
+                "[scf] guess_basis",
+            ),
+            (
+                "projection_without_basis.toml",
+                "[scf]\nguess_projection = \"overlap\"\n",
+                "guess_basis is not",
             ),
         ];
         for (file, extra, want) in cases {

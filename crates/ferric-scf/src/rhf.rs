@@ -291,6 +291,16 @@ pub struct RhfConfig {
     /// hcore or SAD guess internally. Shape must match `(nbasis, nbasis)`. The
     /// primary use-case is a SAD guess built by `guess::sad_guess(...)`.
     pub init_guess_density: Option<Array2<f64>>,
+    /// Secondary-basis ("BASIS2") guess, after Q-Chem's `BASIS2` /
+    /// `BASISPROJTYPE`: converge the same SCF in this basis first, project
+    /// the result into the target basis and start from it (see
+    /// [`crate::basis2`]). Honoured by RHF/RKS, UHF/UKS and ROHF/ROKS; refused
+    /// by the injected (periodic) and point-group-blocked entry points. An
+    /// explicit `init_guess_density` or caller-supplied initial MOs take
+    /// precedence, as they do over `use_sad_guess`. `None` (the default) is
+    /// bit-identical to a build without this field. The secondary SCF must
+    /// converge; otherwise the solve errors (no fallback to MINAO).
+    pub guess_basis: Option<crate::basis2::GuessBasis>,
     /// When `true` (the default) and no `init_guess_density` is supplied, the SCF
     /// starts from a SAD (superposition-of-atomic-densities) guess computed via
     /// `guess::sad_guess`, falling back to the hcore guess if SAD fails. SAD cures
@@ -493,6 +503,7 @@ impl Default for RhfConfig {
             // 0 = "unset" → resolve_three_index_budget auto-detects (0.8×RAM).
             three_index_budget_bytes: 0,
             init_guess_density: None,
+            guess_basis: None,
             use_sad_guess: true,
             stall_window: None,
             divergence_tol: None,
@@ -1369,6 +1380,12 @@ pub fn validate_injected(config: &RhfConfig) -> Result<(), InjectedConfigError> 
             "the TRAH orbital Hessian rebuilds molecular J/K from prep/bounds",
         );
     }
+    if config.guess_basis.is_some() {
+        return reject(
+            "guess_basis",
+            "the secondary-basis SCF needs molecular integrals in a second basis",
+        );
+    }
     if config.init_guess_density.is_none() && config.use_sad_guess {
         return reject(
             "use_sad_guess",
@@ -1608,7 +1625,7 @@ pub(crate) fn solve_rhf_once(
     bounds: &SchwarzBounds,
     config: &RhfConfig,
 ) -> Result<ScfResult, FerricError> {
-    solve_rhf_impl(ctx, mol, prep, op, bounds, config, None, None, None)
+    solve_rhf_routed(ctx, mol, prep, op, bounds, config)
 }
 
 /// The point-group-blocked solve (see [`crate::symmetric`]); `mol`/`prep`/
@@ -1722,6 +1739,30 @@ pub fn validate_fock_hook(config: &RhfConfig) -> Result<(), FerricError> {
         ))),
         None => Ok(()),
     }
+}
+
+/// The molecular closed-shell solve, routed through the secondary-basis
+/// guess when [`RhfConfig::guess_basis`] applies: the projected density
+/// becomes the explicit starting density, so the Fock projection's
+/// build-and-diagonalise step is this solve's first iteration.
+fn solve_rhf_routed(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    config: &RhfConfig,
+) -> Result<ScfResult, FerricError> {
+    if !crate::basis2::applies(config, false) {
+        return solve_rhf_impl(ctx, mol, prep, op, bounds, config, None, None, None);
+    }
+    let g = crate::basis2::build(ctx, mol, prep, bounds, config, crate::basis2::ScfKind::Rhf)?;
+    let mut cfg = config.clone();
+    cfg.guess_basis = None;
+    cfg.init_guess_density = Some(g.rhf_density((mol.nelec() / 2) as usize));
+    let mut r = solve_rhf_impl(ctx, mol, prep, op, bounds, &cfg, None, None, None)?;
+    r.guess_basis = Some(g.report);
+    Ok(r)
 }
 
 /// Title of the `FERRIC_TIMING` phase table printed by `solve_rhf_impl`:
@@ -2325,6 +2366,7 @@ fn solve_rhf_impl(
                               convergence: Option<crate::result::ConvergenceReport>|
      -> ScfResult {
         ScfResult {
+            guess_basis: None,
             spin: Spin::Restricted,
             energy,
             density_total: d.clone(),
@@ -2939,6 +2981,7 @@ fn solve_rhf_impl(
                     _ => (energy, None),
                 };
                 return Ok(ScfResult {
+                    guess_basis: None,
                     spin: Spin::Restricted,
                     energy,
                     density_total: d,

@@ -240,6 +240,7 @@ fn gamma_scf(da: Array2<f64>, db: Option<Array2<f64>>) -> ScfResult {
     };
     let un = db.is_some();
     ScfResult {
+        guess_basis: None,
         spin,
         energy: 0.0,
         density_total: total,

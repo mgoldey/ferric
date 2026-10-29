@@ -958,6 +958,7 @@ pub fn solve_rohf_injected_second_order<'a>(
     }
     let (c, eps, f_eff) = semicanonicalize(&pt, &model.s, nocc_double, nocc_open)?;
     let result = ScfResult {
+        guess_basis: None,
         spin: Spin::RestrictedOpen,
         energy: pt.energy,
         density_total: &pt.d_a + &pt.d_b,

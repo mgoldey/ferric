@@ -443,6 +443,7 @@ pub fn solve_rhf_with_df_increments(
         if let Some(exit) = conv {
             let density_alpha = 0.5 * &d_cur;
             let result = ScfResult {
+                guess_basis: None,
                 spin: Spin::Restricted,
                 energy,
                 density_total: d_cur,
@@ -484,6 +485,7 @@ pub fn solve_rhf_with_df_increments(
         if exact_cleanup_iterations > DF_INCREMENTS_CLEANUP_MAX_ITER {
             let density_alpha = 0.5 * &d_new;
             let result = ScfResult {
+                guess_basis: None,
                 spin: Spin::Restricted,
                 energy,
                 density_total: d_new,

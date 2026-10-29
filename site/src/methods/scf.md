@@ -571,6 +571,58 @@ gates on the density RMS change instead.
 can drive the overlap matrix near-singular; the canonical-orthogonalization
 threshold is tunable via `FERRIC_LINDEP_THRESH`.
 
+### Secondary-basis guess (Q-Chem `BASIS2`)
+
+`[scf] guess_basis = "6-31g"` (Python `guess_basis="6-31g"` on `run_rhf`,
+`run_uhf`, `run_rohf`, `run_dft`, `run_ksdft`) converges the same SCF
+(method, functional, charge, multiplicity and settings) in the named basis
+first, projects the result into the target basis, and starts the target SCF
+from it. `guess_projection` picks how the projection is done:
+
+- `"fock"` (default; Q-Chem `FOPPROJECTION`): the small-basis spin densities
+  are projected, `D = P D_small Pᵀ` with `P = S_bb⁻¹ S_bs`, and the target
+  Fock built at that density is diagonalised. Closed shell, that Fock build
+  is the target SCF's first iteration. Open shell, the guess Fock is
+  `h + J − K_σ` with no XC term, which is the form ferric's MINAO
+  open-shell guess also uses.
+- `"overlap"` (Q-Chem `OVPROJECTION`): the occupied MOs are mapped,
+  `C = S_bb⁻¹ S_bs C_small`, and re-orthonormalised in the target metric. For
+  ROHF, the doubly occupied block is orthonormalised first and the singly
+  occupied block is made orthogonal to it.
+
+`S_bb⁻¹` is the lindep-filtered pseudo-inverse from the canonical
+orthogonalizer. A secondary SCF that does not converge is an error; there is
+no silent fall back to MINAO. A secondary basis missing an element, a
+mismatched ECP core count, or a projected occupied space that is
+near-singular in the target basis are also errors. A secondary basis larger
+than the target is allowed, with a warning. The guess is refused with
+`symmetry = true` and on periodic systems. An explicit starting density or
+MOs take precedence, just as they do over `guess = "minao"`. The result
+reports the secondary SCF's iterations and energy (Python:
+`result.guess_basis`). The dual-basis energy correction (Q-Chem
+`DUAL_BASIS_ENERGY`) is not implemented. This is a guess only; the converged
+energy is the same as with the default guess.
+
+What it buys, measured in a PySCF prototype (6-31G → aug-cc-pVDZ unless
+noted; target-SCF cycles to `conv_tol` 1e-10; the secondary SCF's own cycles
+are extra):
+
+| system | MINAO | hcore | BASIS2 fock / overlap |
+|---|---|---|---|
+| water RHF | 9 | 12 | 9 / 9 |
+| water dimer RHF | 10 | 13 | 10 / 10 |
+| benzene RHF | 9 | 13 | 8 / 8 |
+| glycine PBE | 14 | 20 | 13 / 13 |
+| NH₂ UHF | 11 | 13 | 10 / 10 |
+| O₂ UHF (triplet) | 10 | 11 | 8 / 8 |
+| CN UHF | 20 | 18 | 12 / 12 |
+| CN ROHF | 15 | 14 | 10 / 10 |
+| Cu–H₂O UKS-PBE (cc-pVDZ) | 21 | 26 | 11 / 12 |
+
+On closed shells the saving over MINAO is 0 to 1 cycles, and STO-3G as the
+secondary basis is a cycle *worse* than MINAO on water. The guess pays off
+on open shells and metals, where MINAO starts far from the answer.
+
 ## Screening
 
 - **Schwarz** bounds on every 4-centre path, built so they can never

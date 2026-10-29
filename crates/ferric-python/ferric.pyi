@@ -854,6 +854,14 @@ class RhfResult:
         None when no pass ran. ``energy`` is ``e_final`` when it ran."""
         ...
 
+    @property
+    def guess_basis(self) -> dict[str, float | int | str] | None:
+        """The secondary-basis guess (``guess_basis=``): ``{"basis",
+        "projection", "iterations", "energy", "nbasis_guess",
+        "nbasis_target"}`` describing the secondary SCF, or None when no
+        secondary-basis guess ran."""
+        ...
+
 class UhfResult:
     """Result of an open-shell UHF or ROHF calculation."""
 
@@ -898,6 +906,14 @@ class UhfResult:
         """The COSX final-grid pass: ``{"e_scf_grid", "e_final",
         "npts_scf_grid", "npts_final_grid", "gradient_differentiates"}``, or
         None when no pass ran. ``energy`` is ``e_final`` when it ran."""
+        ...
+
+    @property
+    def guess_basis(self) -> dict[str, float | int | str] | None:
+        """The secondary-basis guess (``guess_basis=``): ``{"basis",
+        "projection", "iterations", "energy", "nbasis_guess",
+        "nbasis_target"}`` describing the secondary SCF, or None when no
+        secondary-basis guess ran."""
         ...
 
 class CdftConstraint:
@@ -1668,6 +1684,14 @@ class DftResult:
         """The COSX final-grid pass: ``{"e_scf_grid", "e_final",
         "npts_scf_grid", "npts_final_grid", "gradient_differentiates"}``, or
         None when no pass ran. ``energy`` is ``e_final`` when it ran."""
+        ...
+
+    @property
+    def guess_basis(self) -> dict[str, float | int | str] | None:
+        """The secondary-basis guess (``guess_basis=``): ``{"basis",
+        "projection", "iterations", "energy", "nbasis_guess",
+        "nbasis_target"}`` describing the secondary SCF, or None when no
+        secondary-basis guess ran."""
         ...
 
 class CcResult:
@@ -3039,6 +3063,8 @@ def run_rhf(
     symmetry: Literal[False] = False,
     irrep_nelec: None = None,
     fock_hook: FockHook | None = None,
+    guess_basis: str | None = None,
+    guess_projection: str | None = None,
 ) -> RhfResult:
     """Closed-shell Restricted Hartree-Fock.
 
@@ -3092,6 +3118,17 @@ def run_rhf(
 
     smeared_charges: list of (q, x, y, z, width) Gaussian-smeared classical
     charges (Bohr / Hartree atomic units).
+
+    guess_basis / guess_projection: Q-Chem-style BASIS2 guess (also on
+    run_uhf, run_rohf, run_dft, run_ksdft). guess_basis names a bundled basis;
+    the same SCF (method, functional, charge, multiplicity, settings) is
+    converged in it first and projected into basis_set as the starting point.
+    guess_projection is "fock" (default; Q-Chem FOPPROJECTION: build the
+    target Fock at the projected density and diagonalise) or "overlap"
+    (OVPROJECTION: S_bb^-1 S_bs C, re-orthonormalised). Unknown names, a
+    projection without a basis, or symmetry=True raise ValueError; a secondary
+    SCF that does not converge raises (no fallback to MINAO). The result's
+    guess_basis property reports the secondary SCF's iterations and energy.
     """
     ...
 
@@ -3130,6 +3167,8 @@ def run_rhf(
     symmetry: Literal[True],
     irrep_nelec: dict[str, int] | None = None,
     fock_hook: None = None,
+    guess_basis: str | None = None,
+    guess_projection: str | None = None,
 ) -> SymmetricRhfResult: ...
 def run_uhf(
     mol: Molecule,
@@ -3155,6 +3194,8 @@ def run_uhf(
     cosx_overlap_fit: bool | None = None,
     trah_trigger: float | None = None,
     fock_hook: SpinFockHook | None = None,
+    guess_basis: str | None = None,
+    guess_projection: str | None = None,
 ) -> UhfResult:
     """Unrestricted Hartree-Fock (open-shell). fock_hook=hook adds one
     density-dependent term: hook(D_a, D_b) gets the per-spin densities every
@@ -3194,6 +3235,8 @@ def run_rohf(
     external_field: tuple[float, float, float] | None = None,
     memory_budget_gb: float | None = None,
     fock_hook: SpinFockHook | None = None,
+    guess_basis: str | None = None,
+    guess_projection: str | None = None,
 ) -> UhfResult:
     """Restricted Open-Shell Hartree-Fock. fock_hook: as for run_uhf; V_a and
     V_b enter before the Roothaan effective-Fock combination. Note: the exit report (final_* residuals, unmet_criteria, non-convergence RuntimeWarning) is RHF-only today. A user-set energy_conv below the estimated (rounding-level) noise floor of dE emits one RuntimeWarning before the SCF starts."""
@@ -3760,6 +3803,8 @@ def run_dft(
     symmetry: Literal[False] = False,
     irrep_nelec: None = None,
     fock_hook: FockHook | None = None,
+    guess_basis: str | None = None,
+    guess_projection: str | None = None,
 ) -> DftResult:
     """Kohn-Sham DFT (closed-shell). fock_hook: as for run_rhf; with a
     hook only the first convergence-ladder rung runs, and with_gradient,
@@ -3845,6 +3890,8 @@ def run_dft(
     symmetry: Literal[True],
     irrep_nelec: dict[str, int] | None = None,
     fock_hook: None = None,
+    guess_basis: str | None = None,
+    guess_projection: str | None = None,
 ) -> SymmetricRhfResult: ...
 @overload
 def run_dft(
@@ -3874,6 +3921,8 @@ def run_dft(
     symmetry: bool = False,
     irrep_nelec: dict[str, int] | None = None,
     fock_hook: FockHook | None = None,
+    guess_basis: str | None = None,
+    guess_projection: str | None = None,
 ) -> DftResult | SymmetricRhfResult: ...
 def dft_grid_point_count(
     mol: Molecule,
@@ -3915,6 +3964,8 @@ def run_ksdft(
     grid_prune: str | None = None,
     symmetry: Literal[False] = False,
     irrep_nelec: None = None,
+    guess_basis: str | None = None,
+    guess_projection: str | None = None,
 ) -> DftResult:
     """Kohn-Sham DFT (closed-shell). Alias of run_dft (same grid_* kwargs).
 
@@ -3957,6 +4008,8 @@ def run_ksdft(
     *,
     symmetry: Literal[True],
     irrep_nelec: dict[str, int] | None = None,
+    guess_basis: str | None = None,
+    guess_projection: str | None = None,
 ) -> SymmetricRhfResult: ...
 @overload
 def run_ksdft(
@@ -3981,6 +4034,8 @@ def run_ksdft(
     grid_prune: str | None = None,
     symmetry: bool = False,
     irrep_nelec: dict[str, int] | None = None,
+    guess_basis: str | None = None,
+    guess_projection: str | None = None,
 ) -> DftResult | SymmetricRhfResult: ...
 def d3bj_energy(mol: Molecule, functional: str) -> float:
     """Grimme D3(BJ) dispersion energy in Hartree (two-body term).

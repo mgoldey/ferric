@@ -223,6 +223,7 @@ fn make_scf_view(
     let d_b = c_b_occ.dot(&c_b_occ.t());
     let d_tot = &d_a + &d_b;
     ScfResult {
+        guess_basis: None,
         spin: Spin::Unrestricted,
         energy: e_hf,
         density_total: d_tot,
