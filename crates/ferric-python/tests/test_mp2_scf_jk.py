@@ -14,6 +14,7 @@ builders); a lax parser stops raising.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -146,3 +147,85 @@ def test_strict_parse_and_conflicts_raise_value_error(water, name, kwargs, needl
 def test_jk_auxbasis_without_scf_jk_raises_on_exact_default(water):
     with pytest.raises(ValueError, match="only read with scf_jk"):
         ferric.run_rimp2(*water, jk_auxbasis=JK)
+
+
+def _terf_tables_present() -> bool:
+    d = os.environ.get("FERRIC_TERF_TABLE_DIR", "")
+    return bool(d) and (Path(d) / "16_4_2.bin").is_file()
+
+
+needs_terf = pytest.mark.skipif(
+    not _terf_tables_present(),
+    reason="terfc interpolation tables absent (set FERRIC_TERF_TABLE_DIR to a "
+    "directory holding 16_4_2.bin)",
+)
+
+
+def _hf_energy(r) -> float:
+    """The reference SCF energy a result carries (LaplaceMp2Result has none,
+    so it is total minus correlation)."""
+    if hasattr(r, "rhf_energy"):
+        return r.rhf_energy
+    return r.total_energy - r.mp2_corr
+
+
+# Every entry point that honours scf_jk, with the kwargs that make it run on
+# water/cc-pVDZ. run_oo_rimp2 refuses the fitted modes (tested below).
+HONOURING = [
+    pytest.param("run_rimp2", {}, id="rimp2"),
+    pytest.param(
+        "run_rimp2", {"local": "amplitude-threshold", "eps": 1e-6}, id="rimp2-local"
+    ),
+    pytest.param("run_laplace_mp2", {}, id="laplace_mp2"),
+    pytest.param("run_laplace_sos_mp2", {}, id="laplace_sos_mp2"),
+    pytest.param("run_attenuated_rimp2", {}, id="attenuated_rimp2"),
+    pytest.param("run_scs_mp2", {}, id="scs_mp2"),
+    pytest.param("run_rs_mp2_rpa", {}, id="rs_mp2_rpa"),
+    pytest.param("run_terfc_rimp2", {}, id="terfc_rimp2", marks=needs_terf),
+    pytest.param("run_scs_mp2_2terfc", {}, id="scs_mp2_2terfc", marks=needs_terf),
+    pytest.param("run_mp2_v", {}, id="mp2_v", marks=needs_terf),
+]
+
+
+@pytest.fixture(scope="module")
+def rhf_refs(water):
+    mol, bs, _ = water
+    return {
+        "exact": _rhf(mol, bs),
+        "rijk": _rhf(mol, bs, df_j_aux=JK, df_k_aux=JK),
+    }
+
+
+@pytest.mark.parametrize(("name", "kwargs"), HONOURING)
+def test_every_entry_point_runs_the_rijk_reference_it_echoes(
+    water, rhf_refs, name, kwargs
+):
+    """HOW THIS FAILS IF BROKEN: an entry point that builds its SCF config
+    without the scf_jk rule (e.g. back on rhf_config_budgeted) returns the
+    exact energy while echoing "rijk": the >1e-7 shift and the run_rhf
+    match both fail."""
+    fn = getattr(ferric, name)
+    rijk = fn(*water, scf_jk="rijk", **kwargs)
+    exact = fn(*water, scf_jk="exact", **kwargs)
+    assert (rijk.scf_jk, rijk.jk_auxbasis) == ("rijk", JK)
+    assert (exact.scf_jk, exact.jk_auxbasis) == ("exact", None)
+    e_rijk, e_exact = _hf_energy(rijk), _hf_energy(exact)
+    shift = abs(e_rijk - e_exact)
+    assert 1e-7 < shift < 1e-3, (name, e_rijk, e_exact)
+    assert abs(e_rijk - rhf_refs["rijk"]) <= 1e-10, (name, e_rijk, rhf_refs["rijk"])
+    assert abs(e_exact - rhf_refs["exact"]) <= 1e-10, (name, e_exact)
+    assert abs(rijk.total_energy - exact.total_energy) > 1e-7
+
+
+@pytest.mark.parametrize("mode", ["rijk", "rijcosx"])
+def test_oo_rimp2_refuses_a_fitted_reference(water, mode):
+    with pytest.raises(ValueError, match="rebuilds exact four-centre J/K") as err:
+        ferric.run_oo_rimp2(*water, scf_jk=mode)
+    assert "run_oo_rimp2" in str(err.value)
+    assert f'scf_jk = "{mode}" is refused' in str(err.value)
+
+
+def test_exact_echo_names_a_non_default_k_builder(water):
+    r = ferric.run_rimp2(*water, k_builder="link")
+    assert "SCF J/K: exact, k_builder=link" in str(r)
+    assert "SCF J/K: exact)" in str(ferric.run_rimp2(*water))

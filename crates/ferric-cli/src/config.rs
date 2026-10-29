@@ -2855,51 +2855,109 @@ impl ScfCfg {
     }
 
     /// `[scf] jk` / `jk_aux` resolved by the shared `ferric_scf::scf_jk`
-    /// rule, or `None` when `jk` is unset (the run is then unchanged).
+    /// rule with the kind's OWN default (the Python entry points' rule:
+    /// RI-JK for rs-mp2-rpa, four-centre for the rest), or `None` when the
+    /// rule does not govern this run: a kind outside [`SCF_JK_KINDS`], a task
+    /// other than "energy", or the explicit `df_j_aux` / `df_k_aux` spelling
+    /// (the run is then unchanged).
     ///
     /// Hard errors: `jk_aux` without `jk`; `jk` on a kind outside
     /// [`SCF_JK_KINDS`] or a task other than "energy"; `jk` together with
-    /// `df_j_aux` / `df_k_aux` (two spellings of the same fields); and every
+    /// `df_j_aux` / `df_k_aux` (two spellings of the same fields); every
     /// conflict the shared rule refuses (unknown value, `jk_aux` with
-    /// "exact", a `k_builder` the mode would override).
+    /// "exact", a `k_builder` the mode would override, which also catches
+    /// `k_builder` on rs-mp2-rpa's RI-JK default, as in Python); and the
+    /// paths that would quietly NOT run the fitted reference:
+    /// * oo-rimp2 with any fitted reference (it rebuilds exact J/K at every
+    ///   orbital step, [`ferric_scf::scf_jk::OO_REBUILDS_EXACT_JK`]);
+    /// * a fitted mode with `df_increments` (that SCF uses exact J/K and
+    ///   its own aux) or an explicit `df_guess = true` (a DF pre-stage in
+    ///   front of a DF SCF only repeats it; a fitted reference skips it).
     pub fn scf_jk_choice(
         &self,
         kind: &str,
         task: &str,
     ) -> Result<Option<ferric_scf::scf_jk::ScfJk>, String> {
-        use ferric_scf::scf_jk::{ScfJk, ScfJkKeys, ScfJkMode};
-        let Some(mode) = self.jk.as_deref() else {
-            return match &self.jk_aux {
-                Some(a) => Err(format!(
+        use ferric_scf::scf_jk::{ScfJk, ScfJkKeys, ScfJkMode, OO_REBUILDS_EXACT_JK};
+        let governed = SCF_JK_KINDS.contains(&kind) && task == "energy";
+        if !governed {
+            if self.jk.is_some() || self.jk_aux.is_some() {
+                return Err(format!(
+                    "[scf] jk / jk_aux are wired for task = \"energy\" with method.kind = {} \
+                     only; got kind = \"{kind}\", task = \"{task}\". Use [scf] df_j_aux / \
+                     df_k_aux / k_builder there",
+                    SCF_JK_KINDS.join(", ")
+                ));
+            }
+            return Ok(None);
+        }
+        if self.jk.is_none() {
+            if let Some(a) = &self.jk_aux {
+                return Err(format!(
                     "[scf] jk_aux = \"{a}\" is only read with [scf] jk = \"rijk\" or \"rijcosx\""
-                )),
-                None => Ok(None),
-            };
+                ));
+            }
+        }
+        let explicit_fits = self.df_j_aux.is_some() || self.df_k_aux.is_some();
+        if explicit_fits {
+            if self.jk.is_some() {
+                return Err(
+                    "[scf] jk sets the reference SCF's RI-J/RI-K itself, so it cannot be \
+                     combined with [scf] df_j_aux / df_k_aux; name the fitting basis with \
+                     [scf] jk_aux"
+                        .to_string(),
+                );
+            }
+            let fitted = [self.df_j_aux_resolved(), self.df_k_aux_resolved()]
+                .iter()
+                .any(|a| a.as_deref().is_some_and(|s| !s.is_empty()));
+            if kind == "oo-rimp2" && fitted {
+                return Err(format!(
+                    "[scf] df_j_aux / df_k_aux are refused for method.kind = \"oo-rimp2\": \
+                     {OO_REBUILDS_EXACT_JK}"
+                ));
+            }
+            return Ok(None);
+        }
+        let default = if kind == "rs-mp2-rpa" {
+            ScfJkMode::RiJk
+        } else {
+            ScfJkMode::Exact
         };
-        if !SCF_JK_KINDS.contains(&kind) || task != "energy" {
-            return Err(format!(
-                "[scf] jk is wired for task = \"energy\" with method.kind = {} only; got \
-                 kind = \"{kind}\", task = \"{task}\". Use [scf] df_j_aux / df_k_aux / \
-                 k_builder there",
-                SCF_JK_KINDS.join(", ")
-            ));
-        }
-        if self.df_j_aux.is_some() || self.df_k_aux.is_some() {
-            return Err(
-                "[scf] jk sets the reference SCF's RI-J/RI-K itself, so it cannot be \
-                        combined with [scf] df_j_aux / df_k_aux; name the fitting basis with \
-                        [scf] jk_aux"
-                    .to_string(),
-            );
-        }
-        ScfJk::resolve(
-            Some(mode),
+        let jk = ScfJk::resolve(
+            self.jk.as_deref(),
             self.jk_aux.as_deref(),
             self.k_builder.as_deref(),
-            ScfJkMode::Exact,
+            default,
             ScfJkKeys::CLI,
-        )
-        .map(Some)
+        )?;
+        if kind == "oo-rimp2" {
+            jk.require_exact(ScfJkKeys::CLI, OO_REBUILDS_EXACT_JK)?;
+        }
+        if jk.is_fitted() {
+            let m = jk.mode.as_str();
+            if self.df_increments {
+                return Err(format!(
+                    "[scf] df_increments cannot be combined with a fitted reference \
+                     ([scf] jk = \"{m}\"{}): df_increments builds exact four-centre J/K \
+                     and fits only with its own df_increments_aux, so the run would not be \
+                     the {m} SCF. Remove df_increments, or use [scf] jk = \"exact\"",
+                    if self.jk.is_none() {
+                        format!(", the {kind} default")
+                    } else {
+                        String::new()
+                    }
+                ));
+            }
+            if self.df_guess == Some(true) {
+                return Err(format!(
+                    "[scf] df_guess = true cannot be combined with a fitted reference \
+                     ([scf] jk = \"{m}\"): its density-fitted pre-stage only repeats a \
+                     density-fitted SCF, so a fitted reference skips it. Remove df_guess"
+                ));
+            }
+        }
+        Ok(Some(jk))
     }
 
     /// Resolve the `[scf] cosx_*` knobs into a `CosxConfig` (strict).
@@ -4327,7 +4385,20 @@ mod compat_guard_tests {
                 .scf
                 .scf_jk_choice(kind, task)
         };
-        assert_eq!(choice("rimp2", "energy", ""), Ok(None));
+        // Unset: the kind's own default, as in Python (exact, except
+        // rs-mp2-rpa's historical RI-JK); off the governed kinds, None.
+        let unset = choice("rimp2", "energy", "").unwrap().unwrap();
+        assert_eq!((unset.mode, unset.aux), (ScfJkMode::Exact, None));
+        let rs_default = choice("rs-mp2-rpa", "energy", "").unwrap().unwrap();
+        assert_eq!(rs_default.mode, ScfJkMode::RiJk);
+        assert_eq!(rs_default.aux.as_deref(), Some("def2-universal-jkfit"));
+        assert_eq!(choice("rhf", "energy", ""), Ok(None));
+        assert_eq!(choice("rimp2", "optimize", ""), Ok(None));
+        // The explicit df_*_aux spelling leaves the run untouched.
+        assert_eq!(
+            choice("rimp2", "energy", "df_j_aux = \"def2-universal-jkfit\"\n"),
+            Ok(None)
+        );
         let rijk = choice("scs-mp2", "energy", "jk = \"rijk\"\n")
             .unwrap()
             .unwrap();
@@ -4397,12 +4468,87 @@ mod compat_guard_tests {
                 "jk = \"rijk\"\ndf_j_aux = \"def2-universal-jkfit\"\n",
                 "df_j_aux / df_k_aux",
             ),
+            // rs-mp2-rpa's RI-JK default refuses a k_builder, as Python does.
+            (
+                "rs-mp2-rpa",
+                "energy",
+                "k_builder = \"link\"\n",
+                "[scf] k_builder = \"link\" conflicts with [scf] jk = \"rijk\"",
+            ),
+            (
+                "oo-rimp2",
+                "energy",
+                "jk = \"rijk\"\n",
+                "[scf] jk = \"rijk\" is refused here: orbital-optimised MP2 rebuilds",
+            ),
+            (
+                "oo-rimp2",
+                "energy",
+                "jk = \"rijcosx\"\n",
+                "rebuilds exact four-centre J/K",
+            ),
+            (
+                "oo-rimp2",
+                "energy",
+                "df_j_aux = \"def2-universal-jkfit\"\n",
+                "refused for method.kind = \"oo-rimp2\"",
+            ),
+            (
+                "rimp2",
+                "energy",
+                "jk = \"rijk\"\ndf_increments = true\n",
+                "df_increments cannot be combined with a fitted reference",
+            ),
+            (
+                "rimp2",
+                "energy",
+                "jk = \"rijcosx\"\ndf_increments = true\n",
+                "df_increments cannot be combined",
+            ),
+            (
+                "rs-mp2-rpa",
+                "energy",
+                "df_increments = true\n",
+                "the rs-mp2-rpa default",
+            ),
+            (
+                "rimp2",
+                "energy",
+                "jk = \"rijk\"\ndf_guess = true\n",
+                "df_guess = true cannot be combined",
+            ),
             ("rhf", "energy", "jk = \"rijk\"\n", "wired for task"),
+            (
+                "rhf",
+                "energy",
+                "jk_aux = \"cc-pvtz-jkfit\"\n",
+                "wired for task",
+            ),
             ("ccsd", "energy", "jk = \"rijk\"\n", "wired for task"),
             ("rimp2", "optimize", "jk = \"rijk\"\n", "wired for task"),
         ] {
             let e = choice(kind, task, extra).expect_err(extra);
             assert!(e.contains(needle), "{extra}: {e}");
+        }
+        assert!(choice("oo-rimp2", "energy", "jk = \"exact\"\n").is_ok());
+        assert!(choice("rimp2", "energy", "jk = \"exact\"\ndf_increments = true\n").is_ok());
+        assert!(choice("rimp2", "energy", "df_increments = true\n").is_ok());
+        for refused in [
+            "[scf]\njk = \"rijk\"\ndf_increments = true\n",
+            "[scf]\njk = \"rijk\"\n",
+        ] {
+            let kind = if refused.contains("df_increments") {
+                "rimp2"
+            } else {
+                "oo-rimp2"
+            };
+            let e = cfg(kind, "energy", refused)
+                .validate_cli_wired_keys()
+                .expect_err(refused);
+            assert!(
+                e.contains("cannot be combined") || e.contains("refused here"),
+                "{e}"
+            );
         }
         let e = cfg(
             "rimp2",

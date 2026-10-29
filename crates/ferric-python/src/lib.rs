@@ -5615,6 +5615,9 @@ struct PyRiMp2Result {
     /// How the reference SCF built J/K: "exact", "rijk" or "rijcosx".
     #[pyo3(get)]
     scf_jk: String,
+    /// The printout's SCF J/K echo (`ScfJk::label`: names a non-default
+    /// exchange builder on the exact path).
+    jk_label: String,
     /// The SCF's JK-fitting basis (`None` for "exact").
     #[pyo3(get)]
     jk_auxbasis: Option<String>,
@@ -5648,16 +5651,8 @@ impl PyRiMp2Result {
             self.reference,
             self.rhf_energy,
             self.mp2_corr,
-            scf_jk_label(&self.scf_jk, self.jk_auxbasis.as_deref()),
+            self.jk_label,
         )
-    }
-}
-
-/// `"exact"` or `"<mode>(<jk aux>)"`, the SCF J/K echo in result printouts.
-fn scf_jk_label(mode: &str, aux: Option<&str>) -> String {
-    match aux {
-        Some(a) => format!("{mode}({a})"),
-        None => mode.to_string(),
     }
 }
 
@@ -5991,6 +5986,7 @@ fn run_rimp2_exact(
         reference: if open_shell { "UHF" } else { "RHF" }.to_string(),
         local: None,
         scf_jk: jk.mode.as_str().to_string(),
+        jk_label: jk.label(),
         jk_auxbasis: jk.aux,
     })
 }
@@ -6017,6 +6013,9 @@ fn mp2_reference_config(
         ferric_scf::scf_jk::ScfJkKeys::PYTHON,
     )
     .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("{who}: {e}")))?;
+    if let Some(w) = jk.aux_warning(ferric_scf::scf_jk::ScfJkKeys::PYTHON) {
+        eprintln!("[ferric] warning: {who}: {w}");
+    }
     let mut cfg = rhf_config_budgeted(k_builder, budget_bytes_from_gb(memory_budget_gb));
     jk.apply(&mut cfg);
     Ok((cfg, jk))
@@ -6188,6 +6187,7 @@ fn run_rimp2_local(
         reference: "RHF".to_string(),
         local: Some(d.unbind()),
         scf_jk: jk.mode.as_str().to_string(),
+        jk_label: jk.label(),
         jk_auxbasis: jk.aux.clone(),
     })
 }
@@ -6757,6 +6757,9 @@ struct PyOoRiMp2Result {
     /// How the reference SCF built J/K: "exact", "rijk" or "rijcosx".
     #[pyo3(get)]
     scf_jk: String,
+    /// The printout's SCF J/K echo (`ScfJk::label`: names a non-default
+    /// exchange builder on the exact path).
+    jk_label: String,
     /// The SCF's JK-fitting basis (`None` for "exact").
     #[pyo3(get)]
     jk_auxbasis: Option<String>,
@@ -6774,7 +6777,7 @@ impl PyOoRiMp2Result {
         format!(
             "OO-RI-MP2 Total Energy: {:.10} Ha (HF: {:.10}, corr: {:.10}, converged: {}, {} iterations, grad_norm: {:.2e}) [SCF J/K: {}]",
             self.total_energy, self.hf_energy, self.mp2_corr, self.converged, self.iterations, self.grad_norm,
-            scf_jk_label(&self.scf_jk, self.jk_auxbasis.as_deref()),
+            self.jk_label,
         )
     }
 }
@@ -6814,6 +6817,14 @@ fn run_oo_rimp2(
         scf_jk,
         jk_auxbasis,
     )?;
+    // OO-MP2 rebuilds exact four-centre J/K at every orbital step (and takes
+    // its HF energy from those builds), so a fitted reference would only
+    // change the starting orbitals: refused, never echoed as if honoured.
+    jk.require_exact(
+        ferric_scf::scf_jk::ScfJkKeys::PYTHON,
+        ferric_scf::scf_jk::OO_REBUILDS_EXACT_JK,
+    )
+    .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("run_oo_rimp2: {e}")))?;
     let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
     let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
     let op = Operator::coulomb();
@@ -6846,6 +6857,7 @@ fn run_oo_rimp2(
         iterations: r.iterations,
         grad_norm: r.grad_norm,
         scf_jk: jk.mode.as_str().to_string(),
+        jk_label: jk.label(),
         jk_auxbasis: jk.aux,
     })
 }
@@ -6952,6 +6964,9 @@ struct PyLaplaceMp2Result {
     /// How the reference SCF built J/K: "exact", "rijk" or "rijcosx".
     #[pyo3(get)]
     scf_jk: String,
+    /// The printout's SCF J/K echo (`ScfJk::label`: names a non-default
+    /// exchange builder on the exact path).
+    jk_label: String,
     /// The SCF's JK-fitting basis (`None` for "exact").
     #[pyo3(get)]
     jk_auxbasis: Option<String>,
@@ -6969,7 +6984,7 @@ impl PyLaplaceMp2Result {
         format!(
             "Laplace RI-MP2 Total Energy: {:.10} Ha (corr: {:.10}, OS: {:.10}, SS: {:.10}) [SCF J/K: {}]",
             self.total_energy, self.mp2_corr, self.e_os, self.e_ss,
-            scf_jk_label(&self.scf_jk, self.jk_auxbasis.as_deref()),
+            self.jk_label,
         )
     }
 }
@@ -7016,6 +7031,7 @@ fn run_laplace_mp2(
         e_os: r.e_os,
         e_ss: r.e_ss,
         scf_jk: jk.mode.as_str().to_string(),
+        jk_label: jk.label(),
         jk_auxbasis: jk.aux,
     })
 }
@@ -7048,6 +7064,9 @@ struct PySosMp2Result {
     /// How the reference SCF built J/K: "exact", "rijk" or "rijcosx".
     #[pyo3(get)]
     scf_jk: String,
+    /// The printout's SCF J/K echo (`ScfJk::label`: names a non-default
+    /// exchange builder on the exact path).
+    jk_label: String,
     /// The SCF's JK-fitting basis (`None` for "exact").
     #[pyo3(get)]
     jk_auxbasis: Option<String>,
@@ -7065,7 +7084,7 @@ impl PySosMp2Result {
         format!(
             "SOS-MP2 Total Energy: {:.10} Ha (RHF: {:.10}, SOS corr: {:.10}, c_os={}, n_quad={}, formulation={}) [SCF J/K: {}]",
             self.total_energy, self.rhf_energy, self.sos_corr, self.c_os, self.n_quad, self.formulation,
-            scf_jk_label(&self.scf_jk, self.jk_auxbasis.as_deref()),
+            self.jk_label,
         )
     }
 }
@@ -7143,6 +7162,7 @@ fn run_laplace_sos_mp2(
             SosFormulation::AoSparse(_) => "ao-sparse".to_string(),
         },
         scf_jk: jk.mode.as_str().to_string(),
+        jk_label: jk.label(),
         jk_auxbasis: jk.aux,
     })
 }
@@ -7165,6 +7185,9 @@ struct PyAttenuatedMp2Result {
     /// How the reference SCF built J/K: "exact", "rijk" or "rijcosx".
     #[pyo3(get)]
     scf_jk: String,
+    /// The printout's SCF J/K echo (`ScfJk::label`: names a non-default
+    /// exchange builder on the exact path).
+    jk_label: String,
     /// The SCF's JK-fitting basis (`None` for "exact").
     #[pyo3(get)]
     jk_auxbasis: Option<String>,
@@ -7182,7 +7205,7 @@ impl PyAttenuatedMp2Result {
         format!(
             "Attenuated RI-MP2 Total Energy: {:.10} Ha (RHF: {:.10}, corr: {:.10}, OS: {:.10}, SS: {:.10}) [SCF J/K: {}]",
             self.total_energy, self.rhf_energy, self.mp2_corr, self.e_os, self.e_ss,
-            scf_jk_label(&self.scf_jk, self.jk_auxbasis.as_deref()),
+            self.jk_label,
         )
     }
 }
@@ -7226,6 +7249,7 @@ fn run_attenuated_rimp2(
         e_os: r.spin_components.e_os,
         e_ss: r.spin_components.e_ss,
         scf_jk: jk.mode.as_str().to_string(),
+        jk_label: jk.label(),
         jk_auxbasis: jk.aux,
     })
 }
@@ -7281,6 +7305,7 @@ fn run_terfc_rimp2(
         reference: "RHF".to_string(),
         local: None,
         scf_jk: jk.mode.as_str().to_string(),
+        jk_label: jk.label(),
         jk_auxbasis: jk.aux,
     })
 }
@@ -7303,6 +7328,9 @@ struct PyScsMp2Result {
     /// How the reference SCF built J/K: "exact", "rijk" or "rijcosx".
     #[pyo3(get)]
     scf_jk: String,
+    /// The printout's SCF J/K echo (`ScfJk::label`: names a non-default
+    /// exchange builder on the exact path).
+    jk_label: String,
     /// The SCF's JK-fitting basis (`None` for "exact").
     #[pyo3(get)]
     jk_auxbasis: Option<String>,
@@ -7320,7 +7348,7 @@ impl PyScsMp2Result {
         format!(
             "SCS-MP2 Total Energy: {:.10} Ha (RHF: {:.10}, SCS corr: {:.10}, OS: {:.10}, SS: {:.10}) [SCF J/K: {}]",
             self.total_energy, self.rhf_energy, self.scs_corr, self.e_os, self.e_ss,
-            scf_jk_label(&self.scf_jk, self.jk_auxbasis.as_deref()),
+            self.jk_label,
         )
     }
 }
@@ -7363,6 +7391,7 @@ fn run_scs_mp2(
         e_os: r.e_os,
         e_ss: r.e_ss,
         scf_jk: jk.mode.as_str().to_string(),
+        jk_label: jk.label(),
         jk_auxbasis: jk.aux,
     })
 }
@@ -7420,6 +7449,7 @@ fn run_scs_mp2_2terfc(
         e_os: r.e_os,
         e_ss: r.e_ss,
         scf_jk: jk.mode.as_str().to_string(),
+        jk_label: jk.label(),
         jk_auxbasis: jk.aux,
     })
 }
@@ -7454,6 +7484,9 @@ struct PyMp2VResult {
     /// How the reference SCF built J/K: "exact", "rijk" or "rijcosx".
     #[pyo3(get)]
     scf_jk: String,
+    /// The printout's SCF J/K echo (`ScfJk::label`: names a non-default
+    /// exchange builder on the exact path).
+    jk_label: String,
     /// The SCF's JK-fitting basis (`None` for "exact").
     #[pyo3(get)]
     jk_auxbasis: Option<String>,
@@ -7471,7 +7504,7 @@ impl PyMp2VResult {
         format!(
             "MP2-V Total Energy: {:.10} Ha (RHF: {:.10}, att-MP2 corr: {:.10}, VV10 E_nl: {:.10}) [SCF J/K: {}]",
             self.total_energy, self.rhf_energy, self.att_mp2_corr, self.vv10_e_nl,
-            scf_jk_label(&self.scf_jk, self.jk_auxbasis.as_deref()),
+            self.jk_label,
         )
     }
 }
@@ -7580,6 +7613,7 @@ fn run_mp2_v(
         e_ss,
         n_nlc_points: r.n_nlc_points,
         scf_jk: jk.mode.as_str().to_string(),
+        jk_label: jk.label(),
         jk_auxbasis: jk.aux,
     })
 }
@@ -7798,6 +7832,9 @@ struct PyRsMp2RpaResult {
     /// How the reference SCF built J/K: "exact", "rijk" or "rijcosx".
     #[pyo3(get)]
     scf_jk: String,
+    /// The printout's SCF J/K echo (`ScfJk::label`: names a non-default
+    /// exchange builder on the exact path).
+    jk_label: String,
     /// The SCF's JK-fitting basis (`None` for "exact").
     #[pyo3(get)]
     jk_auxbasis: Option<String>,
@@ -7815,7 +7852,7 @@ impl PyRsMp2RpaResult {
         format!(
             "RS-MP2-RPA Total Energy: {:.10} Ha (RHF: {:.10}, corr: {:.10}, SR-MP2: {:.10}, LR-MP2: {:.10}) [SCF J/K: {}]",
             self.total_energy, self.rhf_energy, self.e_corr, self.e_sr_mp2, self.e_lr_mp2,
-            scf_jk_label(&self.scf_jk, self.jk_auxbasis.as_deref()),
+            self.jk_label,
         )
     }
 }
@@ -7912,6 +7949,7 @@ fn run_rs_mp2_rpa(
         e_delta_drpa_full: r.e_delta_drpa_full,
         e_delta_drpa_sr: r.e_delta_drpa_sr,
         scf_jk: jk.mode.as_str().to_string(),
+        jk_label: jk.label(),
         jk_auxbasis: jk.aux,
     })
 }

@@ -3188,7 +3188,12 @@ def run_oo_rimp2(
     scf_jk: str | None = None,
     jk_auxbasis: str | None = None,
 ) -> OoRiMp2Result:
-    """Orbital-optimized RI-MP2."""
+    """Orbital-optimized RI-MP2.
+
+    `scf_jk` accepts only "exact" here: orbital optimisation rebuilds exact
+    four-centre J/K at every orbital step, so "rijk"/"rijcosx" raise
+    ValueError (threading RI-JK through the OO Fock builds is not
+    implemented)."""
     ...
 
 def run_mp3(

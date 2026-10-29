@@ -40,7 +40,15 @@ jk_aux`), a JK-fit basis with default `def2-universal-jkfit`. It is never the
 MP2 `auxbasis`, because an MP2-fit set used for K costs mHa. `rs-mp2-rpa` is the
 exception: it has always run RI-JK, so its default is `"rijk"`. Every result
 echoes `scf_jk` and `jk_auxbasis`. An unknown mode, `jk_auxbasis` with
-`"exact"`, or a `k_builder` the mode would override is an error. At aug-cc-pVTZ
+`"exact"`, or a `k_builder` the mode would override is an error (so is any
+`k_builder` on `rs-mp2-rpa`'s RI-JK default, in the CLI as in Python). A
+`jk_auxbasis` whose name lacks "jkfit" draws a warning. `oo-rimp2` accepts only
+`"exact"`: orbital optimisation rebuilds exact four-centre J/K at every orbital
+step, so a fitted reference would change only the starting orbitals; threading
+RI-JK through the OO Fock builds is not implemented. In the CLI a fitted
+reference cannot be combined with `[scf] df_increments` (an exact-J/K scheme)
+or an explicit `df_guess = true`, and it skips the default DF-guess
+pre-stage. At aug-cc-pVTZ
 the four-centre SCF is most of an MP2 single point, so a fitted reference is the
 usual choice for interaction-energy benchmarks. The fitting error is small and
 largely cancels in a counterpoise-corrected interaction energy. Measured with

@@ -469,7 +469,9 @@ See [QM/MM](./qmmm.md) for a worked example.
 `run_laplace_sos_mp2` and `run_rs_mp2_rpa` take `scf_jk="exact"|"rijk"|"rijcosx"`
 and `jk_auxbasis=` to choose how the reference SCF builds J and K, and their
 results echo `scf_jk` and `jk_auxbasis`. The default is `"exact"`, except for
-`run_rs_mp2_rpa`, whose default is `"rijk"`. See
+`run_rs_mp2_rpa`, whose default is `"rijk"`. `run_oo_rimp2` accepts only
+`"exact"` and raises on the fitted modes, because it rebuilds exact J/K at
+every orbital step. See
 [The MP2 family](../methods/mp2.md).
 
 ### Exact and local correlation
