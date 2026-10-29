@@ -212,6 +212,12 @@ ferric_clear_stale_sccache_lock "$LOCK_FILE"
 # fd closed ({lock_fd}>&-, which is what -o does in the wrapper form), so
 # sccache cannot inherit and squat it. The flock keeps -o too (#591's rule:
 # every acquisition carries it); with a numeric fd it has no command to act on.
+# The command also gets GATE_OUT_FD closed: a daemon it spawns (sccache) would
+# otherwise keep the gate's stdout open, and whatever reads the gate through a
+# pipe (`| tee`, a tool wrapping `git push`) would never see EOF.
+#
+# The holder writes "PID step=NAME since=EPOCH" to $LOCK_FILE.holder while it
+# holds the lock (see lock_holder for why /proc/locks cannot name it).
 #
 # SIGNALS. `timeout` moves itself and the command into a NEW process group, so
 # a Ctrl-C / SIGHUP / SIGTERM aimed at the gate's group does not reach the
@@ -230,26 +236,47 @@ ferric_clear_stale_sccache_lock "$LOCK_FILE"
 run_locked() {
     ferric_clear_stale_sccache_lock "$LOCK_FILE" >&"$GATE_OUT_FD"
     (
-        sig=""
-        trap 'sig=INT' INT
-        trap 'sig=TERM' TERM
-        trap 'sig=HUP' HUP
+        sig="" pid="" forwarded=0
+        # Record the signal; once the build is running, forward it at once.
+        # The loop below forwards too, for a signal that arrived before `pid`
+        # was set. Between them no window is left in which a signal waits out
+        # the whole build.
+        # shellcheck disable=SC2329  # invoked by the traps below
+        on_signal() {
+            sig=$1
+            if [[ -n $pid && $forwarded -eq 0 ]]; then
+                kill -TERM "$pid" 2>/dev/null
+                forwarded=1
+            fi
+        }
+        trap 'on_signal INT' INT
+        trap 'on_signal TERM' TERM
+        trap 'on_signal HUP' HUP
+        holder_file="$LOCK_FILE.holder"
         exec {lock_fd}>>"$LOCK_FILE" || exit 1
         flock -o -w "$LOCK_WAIT_SECS" -E "$LOCK_WAIT_EXPIRED_RC" "$lock_fd"
         rc=$?
-        if [[ $rc -eq 0 && -z $sig ]]; then
+        held=0
+        [[ $rc -eq 0 ]] && held=1
+        if ((held)); then
+            printf '%s step=%s since=%s\n' "$BASHPID" "${RUN_LOCKED_STEP:-unnamed}" \
+                "$(date +%s)" >"$holder_file.$BASHPID" 2>/dev/null &&
+                mv -f "$holder_file.$BASHPID" "$holder_file" 2>/dev/null
+        fi
+        if ((held)) && [[ -z $sig ]]; then
             timeout --signal=TERM --kill-after=30 "${TIMEOUT_SECS}" \
-                bash -c "$*" {lock_fd}>&- &
+                bash -c "$*" {lock_fd}>&- {GATE_OUT_FD}>&- &
             pid=$!  # timeout's pid == its process group id (it calls setpgid)
-            forwarded=0
             while :; do
-                wait "$pid"
-                rc=$?
-                kill -0 "$pid" 2>/dev/null || break  # exited (and reaped)
+                # A signal that landed after the check above but before `pid`
+                # was set is forwarded here rather than ignored until the end.
                 if [[ -n $sig && $forwarded -eq 0 ]]; then
                     kill -TERM "$pid" 2>/dev/null
                     forwarded=1
                 fi
+                wait "$pid"
+                rc=$?
+                kill -0 "$pid" 2>/dev/null || break  # exited (and reaped)
             done
             # timeout returns when its direct child exits; the rest of its group
             # can outlive it by a moment after a TERM. Hold the lock until the
@@ -264,6 +291,7 @@ run_locked() {
                 done
             fi
         fi
+        ((held)) && rm -f "$holder_file"
         if [[ -n $sig ]]; then
             trap - "$sig"
             exec {lock_fd}>&-
@@ -273,18 +301,28 @@ run_locked() {
     )
 }
 
-# Name the process that HOLDS the lock now. `fuser` would also list every
+# Name the process(es) that HOLD the lock now. `fuser` would also list every
 # queued waiter, which is the wrong answer to "who is building?". /proc/locks
-# lists holders and waiters ("->") separately, by device and inode.
+# is wrong too: it keeps the pid that called flock(2), and for run_locked that
+# is the flock program, which has EXITED by the time anyone asks (measured).
+# The live holders come from fdinfo (ferric_cargo_lock_holders); a run_locked
+# holder is labelled with the step it is running, from $LOCK_FILE.holder. The
+# sidecar is only a label: it is used for a pid that fdinfo confirms holds the
+# lock, so a stale one (its writer was SIGKILLed) never names anyone.
 lock_holder() {
-    local lock="$1" dev ino pid
-    dev="$(stat -L -c '%Hd %Ld' "$lock" 2>/dev/null)" || return 0
-    ino="$(stat -L -c '%i' "$lock")"
-    # shellcheck disable=SC2086  # split "major minor" into two printf args
-    dev="$(printf '%02x:%02x' $dev)"
-    pid="$(awk -v want="$dev:$ino" '$2 != "->" && $6 == want {print $5; exit}' /proc/locks)"
-    [[ -n "$pid" ]] || return 0
-    printf 'pid %s (%s)' "$pid" "$(ps -o args= -p "$pid" 2>/dev/null | cut -c1-120)"
+    local lock="$1" pid spid="" slabel="" out="" args
+    if [[ -r "$lock.holder" ]]; then
+        read -r spid slabel <"$lock.holder" 2>/dev/null || true
+    fi
+    for pid in $(ferric_cargo_lock_holders "$lock"); do
+        args="$(ps -o args= -p "$pid" 2>/dev/null | cut -c1-120)"
+        if [[ "$pid" == "$spid" ]]; then
+            out+="${out:+; }pid $pid ($slabel; $args)"
+        else
+            out+="${out:+; }pid $pid ($args)"
+        fi
+    done
+    printf '%s' "$out"
 }
 
 # Report a locked step's status as one of three outcomes, and record which.
@@ -315,7 +353,7 @@ run_step() {
     local name="$1" rc=0
     shift
     echo "-- $name --"
-    run_locked "$@" || rc=$?
+    RUN_LOCKED_STEP="$name" run_locked "$@" || rc=$?
     report_step "$name" "$rc"
 }
 
@@ -390,7 +428,7 @@ if [[ "${CI_GATE_SKIP_CLIPPY:-0}" != "1" ]]; then
     echo "-- cargo clippy --workspace --all-targets --"
     CLIPPY_JSON="$(mktemp /tmp/ferric-ci-gate-clippy.XXXXXX.json)"
     CLIPPY_RC=0
-    run_locked \
+    RUN_LOCKED_STEP="cargo clippy" run_locked \
         "OPENBLAS_NUM_THREADS=1 cargo clippy --workspace --all-targets -j $JOBS --message-format=json" \
         > "$CLIPPY_JSON" 2>&1 || CLIPPY_RC=$?
 

@@ -34,6 +34,7 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[3]
 GATE = REPO / "scripts" / "ci-gate.sh"
+LIB = REPO / "scripts" / "cargo-lock-lib.sh"
 FUNCS = ("run_locked", "lock_holder", "report_step", "run_step")
 
 pytestmark = pytest.mark.skipif(
@@ -83,6 +84,7 @@ def _harness(tmp_path, timeout_secs, lock_wait_secs, run_locked=None, clear=":")
     harness = tmp_path / "harness.sh"
     harness.write_text(
         "set -uo pipefail\n"
+        f"source {LIB}\n"  # lock_holder reads the live holders through it
         f"ferric_clear_stale_sccache_lock() {{ {clear}; }}\n"
         "exec {GATE_OUT_FD}>&1\n"
         f"LOCK_FILE={tmp_path / 'cargo.lock'}\n"
@@ -91,6 +93,8 @@ def _harness(tmp_path, timeout_secs, lock_wait_secs, run_locked=None, clear=":")
         "FAILED=0 STEP_TIMED_OUT=0 STEP_LOCK_WAIT_EXPIRED=0 STEP_CHECK_FAILED=0\n"
         + _gate_functions(run_locked)
         + '\nrun_step "probe" "$1"; rc=$?\n'
+        # An optional second step, as the gate runs several in sequence.
+        '[[ -n "${2:-}" ]] && run_step "after" "$2"\n'
         'echo "FLAGS rc=$rc FAILED=$FAILED STEP_TIMED_OUT=$STEP_TIMED_OUT '
         "STEP_LOCK_WAIT_EXPIRED=$STEP_LOCK_WAIT_EXPIRED "
         'STEP_CHECK_FAILED=$STEP_CHECK_FAILED"\n'
@@ -261,9 +265,94 @@ def test_the_old_ordering_fails_the_queueing_scenario(tmp_path):
 def test_the_command_does_not_inherit_the_lock_fd(tmp_path):
     """What -o guaranteed: a daemon the build spawns (sccache) cannot squat."""
     fds = tmp_path / "fds"
-    rc, out, _, _ = _run(tmp_path, f"ls -l /proc/$$/fd > {fds}", 30, 30)
+    rc, out, _, _ = _run(tmp_path, f"ls -l /proc/$$/fd > {fds}; true", 30, 30)
     assert rc == 0, out
     assert "cargo.lock" not in fds.read_text(), fds.read_text()
+
+
+def test_the_command_inherits_no_fd_beyond_stdio(tmp_path):
+    """Nothing but 0, 1 and 2 may reach the build.
+
+    The gate's saved stdout (GATE_OUT_FD) leaked into the command before. A
+    daemon the build spawns (sccache) keeps every fd it inherits, so a reader
+    piping the gate (`| tee`, a tool capturing `git push`) never saw EOF.
+    `; true` keeps bash from exec'ing `ls`, so $$ is the command's shell.
+    """
+    fds = tmp_path / "fds"
+    rc, out, _, _ = _run(tmp_path, f"ls /proc/$$/fd > {fds}; true", 30, 30)
+    assert rc == 0, out
+    assert sorted(fds.read_text().split()) == ["0", "1", "2"], fds.read_text()
+
+
+def test_the_gate_output_reaches_eof_while_a_daemon_lives_on(tmp_path):
+    """End to end: a step leaves a daemon behind; the gate's reader gets EOF."""
+    pidfile = tmp_path / "daemon.pid"
+    harness = _harness(tmp_path, 30, 30)
+    # setsid + stdio to /dev/null: a well-behaved daemon. Only an fd it was
+    # never told about can keep the pipe open.
+    cmd = f"setsid sleep 30 </dev/null >/dev/null 2>&1 & echo $! > {pidfile}"
+    p = subprocess.Popen(
+        ["bash", str(harness), cmd], stdout=subprocess.PIPE, stderr=subprocess.PIPE
+    )
+    daemon = None
+    try:
+        t0 = time.monotonic()
+        out, _ = p.communicate(timeout=20)  # returns only at EOF on both pipes
+        daemon = int(pidfile.read_text())
+        assert _alive(daemon), "the daemon should outlive the step"
+        assert time.monotonic() - t0 < 10, "the reader waited on the daemon"
+        assert b"-- probe: PASS --" in out
+    finally:
+        if p.poll() is None:
+            p.kill()
+            p.wait()
+        if daemon is not None:
+            _kill_if_alive(daemon)
+
+
+def test_a_lock_wait_expiry_names_a_live_run_locked_holder(tmp_path):
+    """The holder is ANOTHER run_locked: report its live subshell and step.
+
+    /proc/locks keeps the pid of the `flock` program that took the lock, and
+    that program exits once the subshell's fd holds it, so the old report
+    named a dead process (review of #593, reproduced).
+    """
+    holder_pid, marker = tmp_path / "holder.pid", tmp_path / "ran"
+    sidecar = tmp_path / "cargo.lock.holder"
+    # $PPID is `timeout`; ITS parent is run_locked's subshell, the holder.
+    holder_cmd = f"ps -o ppid= -p $PPID | tr -d ' ' > {holder_pid}; sleep 4"
+    first = subprocess.Popen(
+        ["bash", str(_harness(tmp_path, 30, 30)), holder_cmd],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and not (
+            holder_pid.exists() and holder_pid.read_text().strip()
+        ):
+            time.sleep(0.02)
+        sub = int(holder_pid.read_text())
+        assert _alive(sub)
+        # The scenario reproduces the finding: /proc/locks names someone else.
+        ino = os.stat(tmp_path / "cargo.lock").st_ino
+        locks = Path("/proc/locks").read_text().splitlines()
+        named = [ln.split()[4] for ln in locks if ln.split()[5].endswith(f":{ino}")]
+        assert named and named[0] != str(sub), named
+
+        rc, out, flags, _ = _run(tmp_path, f"touch {marker}", 30, 1)
+        assert rc == 1, out
+        assert not marker.exists(), "the command ran without the lock"
+        assert flags["STEP_LOCK_WAIT_EXPIRED"] == "1"
+        assert f"Held now by: pid {sub} (step=probe since=" in out, out
+        assert f"pid {named[0]}" not in out, out
+        first.wait(timeout=20)
+        assert first.returncode == 0
+        assert not sidecar.exists(), "the holder left its sidecar behind"
+    finally:
+        if first.poll() is None:
+            first.kill()
+            first.wait()
 
 
 def test_lock_notes_are_not_captured_by_a_step_redirect(tmp_path):
@@ -286,13 +375,23 @@ def test_lock_notes_are_not_captured_by_a_step_redirect(tmp_path):
 def _interrupt_mid_step(tmp_path, sig, run_locked=None):
     """Signal the harness's whole process group while the step is building.
 
-    Returns a list of violations: moments where the build was alive and the
-    lock free. Leaves no process behind.
+    The build's worker is a GRANDCHILD of `timeout` that traps TERM and lives
+    3 s past it, as cargo's children can: `timeout` returns as soon as its
+    direct child dies, so only run_locked's group drain keeps the lock held
+    while the worker is alive. A second step that writes a marker follows.
+
+    Returns (violations, harness exit status, worker pid, after-step marker).
+    Violations are moments where the worker was alive and the lock free.
+    Leaves no process behind.
     """
-    pidfile = tmp_path / "child.pid"
+    pidfile, marker = tmp_path / "child.pid", tmp_path / "after-ran"
     harness = _harness(tmp_path, 60, 30, run_locked)
-    cmd = f"sleep 60 & echo $! > {pidfile}; wait"
-    p = subprocess.Popen(["bash", str(harness), cmd], start_new_session=True)
+    # \$\$ is the worker's own pid; the outer shell must not expand it.
+    worker = f"trap 'sleep 3; exit' TERM; sleep 60 & echo \\$\\$ > {pidfile}; wait"
+    cmd = f'bash -c "{worker}" & wait'
+    p = subprocess.Popen(
+        ["bash", str(harness), cmd, f"touch {marker}"], start_new_session=True
+    )
     child = None
     try:
         deadline = time.monotonic() + 10
@@ -302,7 +401,6 @@ def _interrupt_mid_step(tmp_path, sig, run_locked=None):
             time.sleep(0.02)
         child = int(pidfile.read_text())
         os.killpg(p.pid, sig)  # what Ctrl-C / a hangup / a tool does
-        p.wait(timeout=60)
         violations = []
         deadline = time.monotonic() + 40
         while time.monotonic() < deadline:
@@ -313,7 +411,8 @@ def _interrupt_mid_step(tmp_path, sig, run_locked=None):
             if not alive:
                 break
             time.sleep(0.05)
-        return violations, p.returncode, child
+        p.wait(timeout=60)
+        return violations, p.returncode, child, marker
     finally:
         if p.poll() is None:
             p.kill()
@@ -324,17 +423,18 @@ def _interrupt_mid_step(tmp_path, sig, run_locked=None):
 
 @pytest.mark.parametrize("sig", [signal.SIGINT, signal.SIGTERM, signal.SIGHUP])
 def test_a_signal_never_leaves_the_build_running_without_the_lock(tmp_path, sig):
-    violations, harness_rc, child = _interrupt_mid_step(tmp_path, sig)
+    violations, harness_rc, child, marker = _interrupt_mid_step(tmp_path, sig)
     assert not violations, violations
-    # The forwarded TERM actually stopped the build, and the gate stopped too
-    # instead of carrying on to its next step.
+    # The forwarded TERM actually stopped the build...
     assert not _alive(child), "the build survived the interrupt"
+    # ...and the gate stopped too instead of carrying on to its next step.
     assert harness_rc != 0
+    assert not marker.exists(), "the gate ran its next step after the signal"
 
 
 def test_the_unguarded_holder_fails_the_signal_invariant(tmp_path):
     """Guard the guard: 59b8dc361's run_locked must fail the test above."""
-    violations, _, _ = _interrupt_mid_step(
+    violations, _, _, _ = _interrupt_mid_step(
         tmp_path, signal.SIGINT, run_locked=UNGUARDED_RUN_LOCKED
     )
     assert violations == ["build alive with the lock free"]

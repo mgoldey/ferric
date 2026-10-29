@@ -16,16 +16,39 @@
 #
 # Root fix (2026-10-28): every `flock ... -c` here and in ci-gate.sh uses -o,
 # which closes the lock fd in the command, so sccache can no longer inherit it.
-# The clearer below stays as a backstop, but it cannot fire when other gates
-# are already queued: their waiting `flock`s count as "real consumers". Five
-# queued pushes sat behind one squatting sccache for 30+ minutes that way.
+# The clearer below stays as a backstop. It used to count every process with
+# the file OPEN (fuser), so queued gates' waiting `flock`s blocked it: five
+# queued pushes sat behind one squatting sccache for 30+ minutes that way. It
+# now looks only at the processes that HOLD the lock (ferric_cargo_lock_holders).
 
 : "${FERRIC_CARGO_LOCK:=/tmp/ferric-cargo.lock}"
 : "${FERRIC_CARGO_LOCK_WAIT_SECS:=14400}"
 
-# Clear a squatting sccache daemon off the cargo lock, if and only if no real
-# build is using it. Safe to call unconditionally; no-op when the lock is free
-# or genuinely busy.
+# Print the pids that HOLD the flock on $1, one per line, lowest first.
+#
+# /proc/locks cannot answer this. It records the pid that CALLED flock(2), and
+# for the fd form (`flock -o -w N "$fd"`, ci-gate.sh's run_locked) that is the
+# flock(1) program, which exits as soon as the lock is taken; the lock lives on
+# in the subshell that owns the fd (measured: /proc/locks named a dead pid).
+# A "lock:" line in /proc/PID/fdinfo/FD appears only on an open file that holds
+# the lock -- a queued waiter's file shows none -- so the processes listing one
+# are the live holders (every process sharing that open file). Other users'
+# processes are not readable and do not appear.
+ferric_cargo_lock_holders() {
+    local lock="${1:-$FERRIC_CARGO_LOCK}" dev ino
+    dev="$(stat -L -c '%Hd %Ld' "$lock" 2>/dev/null)" || return 0
+    ino="$(stat -L -c '%i' "$lock")"
+    # shellcheck disable=SC2086  # split "major minor" into two printf args
+    dev="$(printf '%02x:%02x' $dev)"
+    # printf is a builtin, so a box with many open fds cannot hit ARG_MAX.
+    printf '%s\0' /proc/[0-9]*/fdinfo/* \
+        | xargs -0 grep -ls -E "^lock:.* $dev:$ino " 2>/dev/null \
+        | cut -d/ -f3 | sort -nu
+}
+
+# Clear a squatting sccache daemon off the cargo lock, if and only if sccache
+# is ALL that holds it. Safe to call unconditionally; no-op when the lock is
+# free or held by anything else.
 #
 # DISCRIMINATOR (arrived at by testing, not reasoning): parentage does NOT
 # work. sccache is a daemon and is ALWAYS reparented to systemd -- INCLUDING
@@ -33,28 +56,29 @@
 # kills running compiles. Verified 2026-08-17 against a live mid-build sccache
 # showing ppid=systemd; that first draft would have killed it.
 #
-# What DOES work: whether a real consumer also holds the lock. A running build
-# puts cargo/rustc on it; a QUEUED build puts its own `flock` on it (observed
-# directly). sccache ALONE means nothing is building or waiting, so the daemon
-# is squatting and is safe to clear. Killing it costs nothing -- sccache is a
-# CACHE, its on-disk store survives a restart and cargo respawns the server.
+# What DOES work: who HOLDS the lock. A build started without -o shares the
+# locked open file with its cargo/rustc/flock, so they hold it too; ci-gate.sh's
+# run_locked holds it in a bash subshell. sccache ALONE among the holders means
+# the build that spawned it is gone and the daemon is squatting. Queued waiters
+# do not hold the lock, so they no longer protect a squatter (they used to:
+# the old check counted every process with the file open). An sccache that has
+# the file open but does NOT hold the lock is serving whoever does, and is left
+# alone. Killing a squatter costs nothing -- sccache is a CACHE, its on-disk
+# store survives a restart and cargo respawns the server.
 ferric_clear_stale_sccache_lock() {
     local lock="${1:-$FERRIC_CARGO_LOCK}"
     [[ -e "$lock" ]] || return 0
-    command -v fuser >/dev/null 2>&1 || return 0
 
-    local holders pid comm killed=0
-    local sccache_pids=() has_real_consumer=0
-    holders="$(fuser "$lock" 2>/dev/null || true)"
-    for pid in $holders; do
+    local pid comm killed=0 holders=() sccache_pids=()
+    mapfile -t holders < <(ferric_cargo_lock_holders "$lock")
+    for pid in "${holders[@]}"; do
         comm="$(ps -o comm= -p "$pid" 2>/dev/null || true)"
         case "$comm" in
-            sccache)           sccache_pids+=("$pid") ;;
-            cargo|rustc|flock) has_real_consumer=1 ;;
+            sccache) sccache_pids+=("$pid") ;;
+            "")      ;;          # exited while we looked
+            *)       return 0 ;; # a real holder: a build, or a gate's subshell
         esac
     done
-
-    [[ $has_real_consumer -eq 1 ]] && return 0
 
     for pid in "${sccache_pids[@]:-}"; do
         [[ -n "$pid" ]] || continue
