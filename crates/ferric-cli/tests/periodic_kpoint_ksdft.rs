@@ -157,12 +157,14 @@ fn refusal(tag: &str, kind: &str, mult: usize, dft: &str, cell: &str) -> String 
 
 #[test]
 fn unsupported_kpoint_ks_combinations_are_refused_by_name() {
-    // k-point ROKS meta-GGA is library-only (#492; not wired, #498); the early
-    // gate (config.rs), not a later library refusal, names it. The UKS energies run
-    // (periodic_kpoint_open_shell.rs), and so does the ROKS range-separated
-    // hybrid energy (periodic_rsh_open_mgga_derivs.rs).
-    let e = refusal("roks-meta", "rohf", 3, "[dft]\nfunctional = \"SCAN\"", "");
-    assert!(e.contains("meta-GGA") && e.contains("for ROKS"), "{e}");
+    // k-point ROKS meta-GGA: SCAN / r2SCAN run (#498,
+    // periodic_open_mgga_energy.rs); any other meta-GGA is refused by the
+    // early gate (config.rs), not a later library refusal.
+    let e = refusal("roks-meta", "rohf", 3, "[dft]\nfunctional = \"TPSS\"", "");
+    assert!(
+        e.contains("meta-GGA") && e.contains("k-point ROKS supports only the pure SCAN / r2SCAN"),
+        "{e}"
+    );
     // task = "optimize" with a validated range-separated hybrid runs on
     // either J/K (periodic_rsh_open_mgga_derivs.rs); an unvalidated one
     // (wB97X) is refused by name.

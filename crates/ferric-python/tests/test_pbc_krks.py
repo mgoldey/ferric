@@ -50,12 +50,11 @@ def test_unsupported_combinations_are_refused_by_name(h2, h_atom, basis):
     lat = _cubic()
     with pytest.raises(ValueError, match="multiplicity 2"):
         ferric.run_rks_kpts(h_atom, lat, basis, "LDA", (1, 1, 2))
-    # Open-shell SCAN runs as a UKS energy (test_pbc_open_shell_mgga_rsh.py);
-    # k-point ROKS keeps refusing meta-GGA by name in the bindings (the library
-    # SCAN energy is not wired, #498; its range-separated hybrid energy runs:
-    # test_pbc_rsh_open_mgga_derivs.py).
-    with pytest.raises(ValueError, match="not yet wired in the bindings"):
-        ferric.run_roks_kpts(h_atom, lat, basis, "SCAN", (1, 1, 2))
+    # Open-shell SCAN runs as a UKS and a ROKS energy (#498,
+    # test_pbc_open_shell_mgga_energy.py); the k-point ROKS meta-GGA force is
+    # refused by name before any SCF.
+    with pytest.raises(ValueError, match="k-point ROKS meta-GGA force and stress"):
+        ferric.run_roks_kpts(h_atom, lat, basis, "SCAN", (1, 1, 2), with_gradient=True)
     # The k-point KS stress is wired (test_pbc_kpoint_open_shell_and_stress.py).
     r = ferric.run_rks_kpts(
         h2, lat, basis, "LDA", (1, 1, 2), omega=OMEGA, with_stress=True, **GRID

@@ -734,18 +734,22 @@ fn cli_open_shell_hse06_rsgdf_equals_library_solve_kuks() {
 
 #[test]
 fn open_shell_refusals_have_exact_messages() {
-    // k-point ROKS SCAN is library-only (#492; not wired, #498): the plan-time
-    // gate must refuse it, or the CLI would reach the library path (the UKS
-    // route has it; the ROKS range-separated hybrid energy runs:
-    // periodic_rsh_open_mgga_derivs.rs).
-    let tag = "roks-SCAN";
-    let e = refused(&run(&input(tag, Method::Roks, "SCAN", "energy")), tag);
+    // k-point ROKS SCAN runs as an energy on the dense-AFT J/K (#498,
+    // periodic_open_mgga_energy.rs); RS-GDF and its force refuse at plan time.
+    let tag = "roks-SCAN-rsgdf";
+    let mut i = input(tag, Method::Roks, "SCAN", "energy");
+    i.jk = "jk = \"rsgdf\"\nauxbasis = \"cc-pvdz-ri\"";
+    let e = refused(&run(&i), tag);
     assert!(
-        e.contains("[cell] kmesh with functional \"SCAN\"")
-            && e.contains(
-                "validated in the library (#492) but not yet wired for ROKS in the CLI (#498); \
-                 the UKS route"
-            ),
+        e.contains("[cell] kmesh with functional \"SCAN\" and jk = \"rsgdf\"")
+            && e.contains("the k-point ROKS SCAN / r2SCAN energy is validated on the dense-AFT"),
+        "{tag}: {e}"
+    );
+    let tag = "roks-opt-SCAN";
+    let e = refused(&run(&input(tag, Method::Roks, "SCAN", "optimize")), tag);
+    assert!(
+        e.contains("method.task = \"optimize\" with [cell] kmesh")
+            && e.contains("SCAN: the k-point ROKS meta-GGA force and stress"),
         "{tag}: {e}"
     );
     // ROKS wB97X has an energy here but no validated force: optimize is
@@ -762,31 +766,32 @@ fn open_shell_refusals_have_exact_messages() {
             ),
         "{tag}: {e}"
     );
-    // Open-shell meta-GGA needs the dense-AFT J/K.
-    let mut i = input("uks-scan-rsgdf", Method::Uks, "SCAN", "energy");
+    // The open-shell meta-GGA force and stress need the dense-AFT J/K (the
+    // RS-GDF energy runs, #498).
+    let mut i = input("uks-scan-rsgdf", Method::Uks, "SCAN", "optimize");
     i.jk = "jk = \"rsgdf\"\nauxbasis = \"cc-pvdz-ri\"";
     let e = refused(&run(&i), "uks-scan-rsgdf");
-    assert!(e.contains("dense-AFT J/K only"), "{e}");
-    // Gamma-point UKS meta-GGA: library only (#492), not wired; the 1x1x1 mesh has it.
-    let e = refused(&run(&energy_input("gam-scan", "SCAN", "")), "gam-scan");
     assert!(
-        e.contains("Gamma point")
-            && e.contains("not yet wired (#498)")
-            && e.contains("kmesh = [1, 1, 1]"),
+        e.contains("method.task = \"optimize\" with [cell] kmesh")
+            && e.contains("run on the dense-AFT J/K only"),
         "{e}"
     );
-    // ... and the Gamma-point ROKS meta-GGA, refused at plan time by the same
-    // library gate (the CLI k-point ROKS route does not run a meta-GGA either:
-    // library only, #498; so the hint differs).
-    let tag = "gam-roks-scan";
-    let i = Input {
-        kmesh: "",
-        ..input(tag, Method::Roks, "SCAN", "energy")
-    };
-    let e = refused(&run(&i), tag);
-    assert!(
-        e.contains("Gamma-point ROKS SCAN / r2SCAN energy")
-            && e.contains("the CLI k-point ROKS route does not run it either (library only, #498)"),
-        "{e}"
-    );
+    // Gamma-point UKS / ROKS meta-GGA: the energy runs (#498); the force is
+    // refused by name, pointing at the 1x1x1 mesh that has it.
+    for (tag, method) in [
+        ("gam-uks-scan-opt", Method::Uks),
+        ("gam-roks-scan-opt", Method::Roks),
+    ] {
+        let i = Input {
+            kmesh: "",
+            ..input(tag, method, "SCAN", "optimize")
+        };
+        let e = refused(&run(&i), tag);
+        assert!(
+            e.contains("method.task = \"optimize\" with [cell]: ")
+                && e.contains("SCAN / r2SCAN force and stress are not implemented")
+                && e.contains("1x1x1 mesh"),
+            "{tag}: {e}"
+        )
+    }
 }

@@ -1509,6 +1509,23 @@ fn run_rohf_gamma(
     run_open_shell(py, s, o, start_name)
 }
 
+/// The Gamma UKS / ROKS (`restricted_open`) request gate, before any integral
+/// is built (`pbc_setup` builds none): the library request gate (the
+/// validated RSH force and stress, the SCAN / r2SCAN energy without
+/// derivatives) and the meta-GGA J/K gate (dense-AFT only).
+fn check_gamma_open_ks(s: &PbcSetup, functional: &str, restricted_open: bool) -> PyResult<()> {
+    use ferric_pbc::dft::check_gamma_uks_request;
+    use ferric_pbc::dft::{check_gamma_open_mgga_jk, check_gamma_roks_request};
+    let kinds = s.derivs.kinds();
+    let (gate, route) = if restricted_open {
+        (check_gamma_roks_request(functional, &kinds), "ROKS")
+    } else {
+        (check_gamma_uks_request(functional, &kinds), "UKS")
+    };
+    gate.and_then(|()| check_gamma_open_mgga_jk(functional, route, s.aux.is_some()))
+        .map_err(|e| val_err(format!("{}: functional {functional:?}: {e}", s.fname)))
+}
+
 /// Gamma-point periodic **UKS**. `functional`: LDA/GGA/global hybrids
 /// (e.g. "LDA", "PBE", "PBE0") and range-separated (CAM) GGA hybrids (any
 /// libxc one is accepted; "HSE06" and "HYB_GGA_XC_CAM_B3LYP" are pinned,
@@ -1520,10 +1537,11 @@ fn run_rohf_gamma(
 /// k-point UKS force and stress on the SCF's own exchange); either for
 /// another range-separated hybrid, and `range_split`, are ValueErrors;
 /// `exact_exchange_fraction` is the short-range `c_sr`,
-/// `madelung` the mixed constant). Meta-GGA is a
-/// ValueError (the Gamma UKS SCAN / r2SCAN energy is validated in the library,
-/// #492, but not wired here yet, #498; `run_uks_kpts` on a (1, 1, 1) mesh has
-/// SCAN / r2SCAN energies, forces and stress); VV10 and double hybrids are refused. Grid: Treutler-Ahlrichs `n_radial` x
+/// `madelung` the mixed constant). The pure meta-GGAs SCAN / r2SCAN run as an
+/// ENERGY on `jk="dense"` (`ferric_pbc::dft::gamma_uks`, per-spin tau); their
+/// `with_gradient` / `with_stress`, the RS-GDF J/K and any other meta-GGA are
+/// ValueErrors (`run_uks_kpts` on a (1, 1, 1) mesh, the Gamma point, has the
+/// SCAN / r2SCAN forces and stress); VV10 and double hybrids are refused. Grid: Treutler-Ahlrichs `n_radial` x
 /// Lebedev `n_angular` per atom with SSF partitioning over periodic images
 /// within `neighbour_cutoff` (Å; None = max(10 Bohr, covering-radius
 /// bound)). `neighbour_switch` W (Å, default 0.0 = the hard cutoff, issue
@@ -1594,10 +1612,7 @@ fn run_uks_gamma(
         gradient: with_gradient,
         stress: with_stress,
     };
-    // Before any integral is built (pbc_setup builds none): the validated RSH
-    // force and stress (either J/K), no Gamma UKS meta-GGA.
-    ferric_pbc::dft::check_gamma_uks_request(functional, &s.derivs.kinds())
-        .map_err(|e| val_err(format!("{fname}: functional {functional:?}: {e}")))?;
+    check_gamma_open_ks(&s, functional, false)?;
     s.set_sr_knobs(range_split, sr_column_rotation)?;
     let (start, start_name) = parse_ewald_start(fname, s.exx, ewald_start)?;
     let o = OpenOpts {
@@ -1632,8 +1647,9 @@ fn run_uks_gamma(
 /// Validated: for one electron ROKS == UKS (H atom, a = 4 Bohr, SSF 75x302,
 /// LDA -0.667583328116).
 ///
-/// Meta-GGA is a ValueError (the Gamma ROKS SCAN / r2SCAN energy is validated
-/// in the library, #492, but not wired here yet, #498).
+/// The pure meta-GGAs SCAN / r2SCAN run as an ENERGY on `jk="dense"`
+/// (`ferric_pbc::rohf::gamma_roks`, DIIS solver); their `with_gradient` /
+/// `with_stress`, the RS-GDF J/K and any other meta-GGA are ValueErrors.
 ///
 /// `max_iter=None` takes the `GammaRoksConfig::new` default: 600 with a
 /// 0.05 Ha ramped level shift for a hybrid (a > 0, a DIIS robustness default
@@ -1676,13 +1692,6 @@ fn run_roks_gamma(
     neighbour_switch: f64,
 ) -> PyResult<PyGammaOpenShellResult> {
     let fname = "run_roks_gamma";
-    let derivs = DerivRequest {
-        gradient: with_gradient,
-        stress: with_stress,
-    };
-    // Before any integral is built: the validated RSH force, no RSH stress.
-    ferric_pbc::dft::check_gamma_roks_request(functional, &derivs.kinds())
-        .map_err(|e| val_err(format!("{fname}: functional {functional:?}: {e}")))?;
     let mut s = pbc_setup(&PbcArgs {
         fname,
         mol,
@@ -1697,7 +1706,11 @@ fn run_roks_gamma(
         memory_budget_gb,
         closed_shell: false,
     })?;
-    s.derivs = derivs;
+    s.derivs = DerivRequest {
+        gradient: with_gradient,
+        stress: with_stress,
+    };
+    check_gamma_open_ks(&s, functional, true)?;
     s.set_sr_knobs(range_split, sr_column_rotation)?;
     let (start, start_name) = parse_ewald_start(fname, s.exx, ewald_start)?;
     let o = OpenOpts {
@@ -2986,9 +2999,8 @@ fn run_uhf_kpts(
 // ─────────────────────────────────────────────────── k-point RKS ──
 
 /// Which k-point Kohn-Sham driver a binding runs: the functional families
-/// each supports differ (RKS and UKS take the pure meta-GGAs SCAN / r2SCAN and
-/// range-separated hybrids; k-point ROKS takes range-separated hybrids, and
-/// its library SCAN / r2SCAN energy is not wired here, #498).
+/// each supports differ (RKS, UKS and ROKS take the pure meta-GGAs SCAN /
+/// r2SCAN and range-separated hybrids; TPSS is RKS only).
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum KKsKind {
     Closed,
@@ -3020,11 +3032,10 @@ impl KKsKind {
 /// derivative gate sees the J/K (`s.aux`) and the request (`s.derivs`).
 ///
 /// Energy gate: LDA, GGA, global hybrids and range-separated hybrids
-/// everywhere (ROKS through the library `resolve_kroks_functional`, minus its
-/// library-only SCAN / r2SCAN energy, #492 / #498); the pure
-/// meta-GGAs SCAN / r2SCAN on RKS and UKS (the UKS one is the library
-/// `resolve_kuks_functional`; its meta-GGA needs the dense-AFT J/K, which
-/// `solve_kuks` checks); TPSS on RKS only. The force and stress
+/// everywhere; the pure meta-GGAs SCAN / r2SCAN on RKS, UKS and ROKS (the
+/// open-shell ones through the library `resolve_kuks_functional` /
+/// `resolve_kroks_functional`; the ROKS meta-GGA runs on the dense-AFT J/K
+/// only, which `solve_kroks` checks); TPSS on RKS only. The force and stress
 /// gate is the library allowlist `ferric_pbc::kxcgrad::check_deriv_functional`,
 /// independent of the energy gate, so widening the energy path cannot
 /// silently enable a derivative.
@@ -3044,31 +3055,13 @@ fn check_kpoint_ks_support(
         KKsKind::Unrestricted => ferric_pbc::kuks::resolve_kuks_functional(functional),
         KKsKind::RestrictedOpen => ferric_pbc::kroks::resolve_kroks_functional(functional),
     };
-    // The library k-point ROKS takes SCAN / r2SCAN (energy, force and stress,
-    // #492); the binding is not wired for any of them (#498), so refuse it
-    // here rather than run the library path through an unvalidated binding.
-    if energy.is_ok()
-        && kind == KKsKind::RestrictedOpen
-        && ferric_pbc::dft::is_meta_gga_name(functional)
-    {
-        return Err(val_err(format!(
-            "{fname}: functional {functional:?}: the k-point ROKS SCAN / r2SCAN meta-GGA energy \
-             is validated in the library (#492) but not yet wired in the bindings (#498); \
-             run_uks_kpts has SCAN / r2SCAN"
-        )));
-    }
     energy.map_err(|e| {
         let what = match kind {
-            KKsKind::RestrictedOpen => {
-                "LDA, GGA, global-hybrid and range-separated hybrid functionals only (no \
-                 meta-GGA for k-point ROKS here: the library's SCAN / r2SCAN energy is not \
-                 wired, #498; run_uks_kpts has SCAN / r2SCAN)"
-            }
             KKsKind::Closed => {
                 "LDA, GGA, global-hybrid and SCAN / r2SCAN / TPSS meta-GGA functionals (plus \
                  range-separated hybrids) only"
             }
-            KKsKind::Unrestricted => {
+            KKsKind::Unrestricted | KKsKind::RestrictedOpen => {
                 "LDA, GGA, global-hybrid and SCAN / r2SCAN meta-GGA functionals (plus \
                  range-separated hybrids) only"
             }
@@ -3078,6 +3071,15 @@ fn check_kpoint_ks_support(
             kind.label()
         ))
     })?;
+    if kind == KKsKind::RestrictedOpen
+        && s.aux.is_some()
+        && ferric_pbc::dft::is_meta_gga_name(functional)
+    {
+        return Err(val_err(format!(
+            "{fname}: functional {functional:?}: the k-point ROKS SCAN / r2SCAN energy is \
+             validated on the dense-AFT J/K only; use jk=\"dense\""
+        )));
+    }
     for (_, what) in s.derivs.named() {
         ferric_pbc::kxcgrad::check_kpoint_deriv_functional(
             kind.deriv_spin(),
@@ -3456,8 +3458,8 @@ fn kroks_driver(
     Ok((r, derivs))
 }
 
-/// **k-point UKS** (LDA / GGA / global hybrids, plus SCAN / r2SCAN on
-/// `jk="dense"` (energy, force and stress) and range-separated (CAM) GGA
+/// **k-point UKS** (LDA / GGA / global hybrids, plus SCAN / r2SCAN (energy
+/// on either J/K, force and stress on `jk="dense"`) and range-separated (CAM) GGA
 /// hybrids as an energy on either J/K (any libxc one is accepted; "HSE06" and
 /// "HYB_GGA_XC_CAM_B3LYP" are pinned, open-shell "HYB_GGA_XC_WB97X" is
 /// accepted, not pinned) with `with_gradient` / `with_stress` for HSE06 /
@@ -3474,7 +3476,8 @@ fn kroks_driver(
 /// it ran on, XC on the energy's own grid; set `neighbour_cutoff` explicitly
 /// for finite-difference checks. Refused with a ValueError naming the gap:
 /// `with_gradient` / `with_stress` for a range-separated hybrid other than
-/// HSE06 / CAM-B3LYP (wB97X), a meta-GGA with `jk="rsgdf"`, other
+/// HSE06 / CAM-B3LYP (wB97X), a meta-GGA force or stress with `jk="rsgdf"`
+/// (the RS-GDF energy runs, `ferric_pbc::kuks::solve_kuks`), other
 /// meta-GGAs, VV10 / double
 /// hybrids, and `range_split` with derivatives. ECP cells are
 /// supported, derivatives included. For a range-separated hybrid
@@ -3537,15 +3540,6 @@ fn run_uks_kpts(
         stress: with_stress,
     };
     check_kpoint_ks_support(fname, functional, KKsKind::Unrestricted, &s)?;
-    if s.aux.is_some() && ferric_pbc::dft::is_meta_gga_name(functional) {
-        // The CLI refuses the same at plan time. The library accepts it since
-        // #492 (validated library-only); the bindings are not wired yet.
-        return Err(val_err(format!(
-            "{fname}: functional {functional:?}: meta-GGA with RS-GDF is not supported here: \
-             the open-shell k-point meta-GGA on RS-GDF is validated in the library (#492) \
-             but not yet wired in the bindings (#498); use jk=\"dense\""
-        )));
-    }
     s.range_split = parse_range_split(fname, range_split, s.aux.is_some(), s.derivs)?;
     let m = k_mesh(&s, mesh, centring)?;
     let grid = periodic_grid(
@@ -3668,8 +3662,9 @@ fn run_ro_kpts(
 
 /// **k-point ROKS** (restricted open-shell Kohn-Sham; LDA / GGA / global
 /// hybrids, and range-separated (CAM) GGA hybrids on either J/K
-/// (`ferric_pbc::kroks::solve_kroks`); no meta-GGA here (the library's
-/// SCAN / r2SCAN ROKS energy is not wired yet, #498), use `run_uks_kpts`;
+/// (`ferric_pbc::kroks::solve_kroks`), and the pure meta-GGAs SCAN / r2SCAN
+/// as an ENERGY on `jk="dense"` (their force and stress, and the RS-GDF J/K,
+/// are ValueErrors; `run_uks_kpts` has the SCAN / r2SCAN derivatives);
 /// Roothaan effective Fock) on a k-mesh. Arguments and result as
 /// `run_uks_kpts`; `mo_energy` / `mo_energy_beta` are `c† F_σ c` per k in the
 /// Roothaan orbital order. The derivatives run on the dense-AFT and the

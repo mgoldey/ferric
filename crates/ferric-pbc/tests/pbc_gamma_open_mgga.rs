@@ -450,4 +450,36 @@ fn unvalidated_open_shell_mgga_routes_refuse() {
             "{route}: {e}"
         );
     }
+    // The bindings' gate: SCAN / r2SCAN energy passes (#498); a force or
+    // stress, and the RS-GDF J/K, refuse by name before any integral.
+    use ferric_pbc::dft::check_gamma_open_mgga_jk;
+    use ferric_pbc::kxcgrad::Deriv;
+    for f in FUNCTIONALS {
+        check_gamma_uks_request(f, &[]).expect("UKS energy");
+        check_gamma_roks_request(f, &[]).expect("ROKS energy");
+        for (route, d) in [("UKS", Deriv::Force), ("ROKS", Deriv::Stress)] {
+            let e = if route == "UKS" {
+                check_gamma_uks_request(f, &[d])
+            } else {
+                check_gamma_roks_request(f, &[d])
+            }
+            .expect_err("Gamma open-shell meta-GGA derivative")
+            .to_string();
+            assert!(
+                e.contains(&format!(
+                    "the Gamma-point {route} SCAN / r2SCAN force and stress are not implemented"
+                )),
+                "{route} {f}: {e}"
+            );
+            check_gamma_open_mgga_jk(f, route, false).expect("dense");
+            let e = check_gamma_open_mgga_jk(f, route, true)
+                .expect_err("RS-GDF")
+                .to_string();
+            assert!(
+                e.contains("validated on the dense-AFT J/K only"),
+                "{route} {f}: {e}"
+            );
+        }
+    }
+    check_gamma_open_mgga_jk("PBE", "UKS", true).expect("not a meta-GGA");
 }
