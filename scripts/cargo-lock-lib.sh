@@ -3,8 +3,8 @@
 #     source "$(dirname "${BASH_SOURCE[0]}")/cargo-lock-lib.sh"
 #
 # Why this exists: scripts/ci-gate.sh serializes cargo behind
-# `flock -w 14400 /tmp/ferric-cargo.lock`. The sccache server that cargo
-# auto-spawns INHERITS that lock file descriptor and outlives the cargo run
+# `flock -w 14400 /tmp/ferric-cargo.lock`. Before #591 (no -o), the sccache
+# server that cargo auto-spawns INHERITED that lock file descriptor and outlives the cargo run
 # that spawned it, so the NEXT build queues behind a daemon that will never
 # release -- a silent 4-hour dead wait that reads as "the box is slow".
 #
