@@ -1786,10 +1786,17 @@ fn refuse_gamma_open_shell_mgga(
              meta-GGAs have an open-shell periodic energy"
         )
     } else if !derivs.is_empty() {
+        let alternative = if route == "ROKS" {
+            "the k-point ROKS on a 1x1x1 mesh (the Gamma point) has them in the library only \
+             (kuxcgrad::kpoint_roks_gradient / kuxcstress::kpoint_roks_stress), not yet in \
+             Python or the CLI"
+        } else {
+            "the k-point UKS on a 1x1x1 mesh (the Gamma point) has SCAN / r2SCAN forces and \
+             stress"
+        };
         format!(
             "{name}: the Gamma-point {route} SCAN / r2SCAN force and stress are not \
-             implemented (its energy is); the k-point UKS on a 1x1x1 mesh (the Gamma point) \
-             has SCAN / r2SCAN forces and stress"
+             implemented (its energy is); {alternative}"
         )
     } else {
         return Ok(());
@@ -3485,5 +3492,25 @@ mod switch_tests {
             let e = PeriodicGrid::build(&cell, &bad).unwrap_err().to_string();
             assert!(e.contains("neighbour_switch"), "{e}");
         }
+    }
+}
+
+#[cfg(test)]
+mod open_mgga_refusal_tests {
+    use super::{check_gamma_roks_request, check_gamma_uks_request};
+    use crate::kxcgrad::Deriv;
+
+    #[test]
+    fn each_route_points_to_its_own_kpoint_derivative() {
+        let roks = check_gamma_roks_request("SCAN", &[Deriv::Force])
+            .unwrap_err()
+            .to_string();
+        assert!(roks.contains("k-point ROKS"), "{roks}");
+        assert!(!roks.contains("k-point UKS"), "{roks}");
+        let uks = check_gamma_uks_request("SCAN", &[Deriv::Force])
+            .unwrap_err()
+            .to_string();
+        assert!(uks.contains("k-point UKS"), "{uks}");
+        assert!(!uks.contains("k-point ROKS"), "{uks}");
     }
 }
