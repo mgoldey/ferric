@@ -899,6 +899,7 @@ fn warn_rhf_not_converged(py: Python<'_>, r: &ferric_scf::result::ScfResult, con
     stability_descent=None,
     cosx_grid=None, cosx_final_pass=None, cosx_final_grid=None, cosx_overlap_fit=None,
     aurora=None, trah_trigger=None, symmetry=false, irrep_nelec=None,
+    fock_hook=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_rhf(
@@ -934,6 +935,7 @@ fn run_rhf(
     trah_trigger: Option<f64>,
     symmetry: bool,
     irrep_nelec: Option<std::collections::BTreeMap<String, usize>>,
+    fock_hook: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<PyObject> {
     // The descent needs a stability verdict to act on, so the kwarg turns on
     // both halves (as run_uhf does).
@@ -1004,7 +1006,7 @@ fn run_rhf(
         &prep,
         &config,
     );
-    solve_rhf_outcome(py, &ctx, &emol, &prep, op, &bounds, config)
+    solve_rhf_outcome(py, &ctx, &emol, &prep, op, &bounds, config, fock_hook)
 }
 
 /// A refusal the library classifies as a bad symmetry request
@@ -1045,7 +1047,9 @@ fn solve_symmetric_outcome(
 
 /// Solve and wrap: the plain `RhfResult` path (unchanged), or with
 /// `config.symmetry` the blocked solve returned as the distinct frame-aware
-/// `SymmetricRhfResult`.
+/// `SymmetricRhfResult`. A `fock_hook` takes the hooked solve
+/// (`blocks::solve_rhf_hooked`), which refuses symmetry itself.
+#[allow(clippy::too_many_arguments)]
 fn solve_rhf_outcome(
     py: Python<'_>,
     ctx: &ParallelContext,
@@ -1054,7 +1058,12 @@ fn solve_rhf_outcome(
     op: Operator,
     bounds: &SchwarzBounds,
     config: RhfConfig,
+    fock_hook: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<PyObject> {
+    if let Some(hook) = fock_hook {
+        let r = blocks::solve_rhf_hooked(py, ctx, mol, prep, op, bounds, &config, hook)?;
+        return wrap_rhf_result(py, r, config);
+    }
     if config.irrep_nelec.is_some() && !config.symmetry {
         return Err(pyo3::exceptions::PyValueError::new_err(
             "run_rhf: irrep_nelec requires symmetry=True",
@@ -1066,6 +1075,11 @@ fn solve_rhf_outcome(
     let r = py
         .allow_threads(|| solve_rhf(ctx, mol, prep, op, bounds, &config))
         .map_err(make_err)?;
+    wrap_rhf_result(py, r, config)
+}
+
+/// Warn if unconverged and wrap a closed-shell solve as an `RhfResult`.
+fn wrap_rhf_result(py: Python<'_>, r: ScfResult, config: RhfConfig) -> PyResult<PyObject> {
     warn_rhf_not_converged(py, &r, &config);
     let result = PyRhfResult {
         energy: r.energy,
@@ -8239,7 +8253,7 @@ fn run_double_hybrid(
     dispersion=None, df_j_aux=None, df_k_aux=None,
     grid_radial=None, grid_angular=None, grid_prune=None,
     cosx_grid=None, cosx_final_pass=None, cosx_final_grid=None, cosx_overlap_fit=None,
-    symmetry=false, irrep_nelec=None,
+    symmetry=false, irrep_nelec=None, fock_hook=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_dft(
@@ -8269,6 +8283,7 @@ fn run_dft(
     cosx_overlap_fit: Option<bool>,
     symmetry: bool,
     irrep_nelec: Option<std::collections::BTreeMap<String, usize>>,
+    fock_hook: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<PyObject> {
     // Refuse an (E, grad-E) pair that does not belong to the same surface.
     //
@@ -8333,7 +8348,12 @@ fn run_dft(
     // grid byte-for-byte; `ksdft_ladder` clones `cfg`, so every rung uses it.
     cfg.dft_grid = resolve_dft_grid(grid_radial, grid_angular, grid_prune)?;
     if symmetry || irrep_nelec.is_some() {
-        refuse_dft_symmetry_extras(symmetry, with_gradient, dispersion.is_some())?;
+        blocks::refuse_symmetric_dft(
+            symmetry,
+            with_gradient,
+            dispersion.is_some(),
+            fock_hook.is_some(),
+        )?;
         cfg.symmetry = true;
         cfg.irrep_nelec = irrep_nelec.map(|m| m.into_iter().collect());
         return solve_symmetric_outcome(py, "run_dft", &ctx, &emol, &prep, op, &bounds, &cfg);
@@ -8371,12 +8391,16 @@ fn run_dft(
     // below is an owned Rust value (`emol` is a clone; `ctx`/`prep`/`bounds`/
     // `ladder` are built above), so nothing Python-borrowed crosses the
     // closure boundary.
-    let lr = py
-        .allow_threads(|| {
-            ferric_scf::ladder::solve_rhf_ladder(&ctx, &emol, &prep, op, &bounds, &ladder)
-        })
-        .map_err(make_err)?;
-    let rhf = lr.result;
+    let rhf = blocks::solve_ks_ladder(
+        py,
+        &ctx,
+        &emol,
+        &prep,
+        op,
+        &bounds,
+        &ladder,
+        fock_hook.map(|h| (h, with_gradient, dispersion.is_some())),
+    )?;
     if !rhf.converged {
         return Err(make_err(ferric_core::FerricError::ScfConvergence {
             iterations: rhf.iterations,
@@ -8754,6 +8778,7 @@ fn run_ksdft(
         None,
         symmetry,
         irrep_nelec,
+        None,
     )
 }
 

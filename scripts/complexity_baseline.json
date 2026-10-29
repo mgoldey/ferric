@@ -47732,7 +47732,7 @@
     "mi": 94.1383086739688
   },
   "crates/ferric-scf/src/rhf.rs::solve_rhf_impl": {
-    "cc": 220.0,
+    "cc": 224.0,
     "mi": -54.2486897032622
   },
   "crates/ferric-scf/src/rhf.rs::solve_rhf_impl::<anonymous>": {

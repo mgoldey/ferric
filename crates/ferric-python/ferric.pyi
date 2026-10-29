@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal, NoReturn, Sequence, TypedDict, overload
+from typing import Any, Callable, Literal, NoReturn, Sequence, TypedDict, overload
 
 import numpy as np
 from numpy.typing import NDArray
+
+# run_rhf / run_dft fock_hook: hook(D_total) -> (E, V), V = dE/dD symmetric.
+FockHook = Callable[[NDArray[np.float64]], tuple[float, NDArray[np.float64]]]
 
 # ── Module-level constants ──
 
@@ -456,6 +459,27 @@ class AoIntegrals:
         operator: Literal["coulomb", "erf", "erfc"] = "coulomb",
         omega: float | None = None,
         thresh: float = 1e-12,
+    ) -> tuple[NDArray[np.float64], NDArray[np.float64]]: ...
+    def df_jk(
+        self,
+        aux: BasisSet,
+        operator: Literal["coulomb", "erf", "erfc"] = "coulomb",
+        omega: float | None = None,
+        memory_budget_gb: float | None = None,
+    ) -> DfJk:
+        """RI-J/RI-K fitters against `aux`, built once and reused per density."""
+        ...
+
+class DfJk:
+    """Density-fitted J and K from AoIntegrals.df_jk(aux); TOTAL density in,
+    so the closed-shell Fock matrix is hcore() + J - 0.5 * K."""
+
+    @property
+    def naux(self) -> int: ...
+    def j(self, density: NDArray[np.float64]) -> NDArray[np.float64]: ...
+    def k(self, density: NDArray[np.float64]) -> NDArray[np.float64]: ...
+    def jk(
+        self, density: NDArray[np.float64]
     ) -> tuple[NDArray[np.float64], NDArray[np.float64]]: ...
 
 class SymmetricRhfResult:
@@ -2767,6 +2791,7 @@ def run_rhf(
     trah_trigger: float | None = None,
     symmetry: Literal[False] = False,
     irrep_nelec: None = None,
+    fock_hook: FockHook | None = None,
 ) -> RhfResult:
     """Closed-shell Restricted Hartree-Fock.
 
@@ -2781,6 +2806,14 @@ def run_rhf(
     HF only: solvent, point_charges/external_field/smeared_charges, cosx,
     stability_descent, soscf, aurora/trah_trigger and the like raise ValueError.
     The blocked SCF is one plain solve: no convergence-ladder escalation.
+
+    fock_hook=hook adds one density-dependent term: hook(D) is called with the
+    TOTAL density every iteration and returns (E, V); V is added to the Fock
+    matrix and E to the energy (outside the 1/2 Tr[D(h+F)] trace, like E_xc),
+    so the result is variational when V = dE/dD. An exception raised by the
+    hook propagates unchanged. soscf, stability_descent, symmetry, aurora and
+    trah_trigger raise ValueError with a hook (their Hessians or blocked solve
+    do not see it).
 
     SCF controls (defaults): max_iter 200 (the iteration cap, the Rust RhfConfig default; reaching it returns
     converged=False and emits a RuntimeWarning naming the unmet criteria),
@@ -2849,6 +2882,7 @@ def run_rhf(
     *,
     symmetry: Literal[True],
     irrep_nelec: dict[str, int] | None = None,
+    fock_hook: None = None,
 ) -> SymmetricRhfResult: ...
 def run_uhf(
     mol: Molecule,
@@ -3460,8 +3494,11 @@ def run_dft(
     cosx_overlap_fit: bool | None = None,
     symmetry: Literal[False] = False,
     irrep_nelec: None = None,
+    fock_hook: FockHook | None = None,
 ) -> DftResult:
-    """Kohn-Sham DFT (closed-shell). Note: the final_* residuals, unmet_criteria and the
+    """Kohn-Sham DFT (closed-shell). fock_hook: as for run_rhf; with a
+    hook only the first convergence-ladder rung runs, and with_gradient,
+    dispersion and symmetry raise ValueError. Note: the final_* residuals, unmet_criteria and the
     non-convergence RuntimeWarning are RHF-only today (this result has exit_reason and iterations).
 
 
@@ -3542,6 +3579,7 @@ def run_dft(
     *,
     symmetry: Literal[True],
     irrep_nelec: dict[str, int] | None = None,
+    fock_hook: None = None,
 ) -> SymmetricRhfResult: ...
 @overload
 def run_dft(
@@ -3570,6 +3608,7 @@ def run_dft(
     cosx_overlap_fit: bool | None = None,
     symmetry: bool = False,
     irrep_nelec: dict[str, int] | None = None,
+    fock_hook: FockHook | None = None,
 ) -> DftResult | SymmetricRhfResult: ...
 def dft_grid_point_count(
     mol: Molecule,
