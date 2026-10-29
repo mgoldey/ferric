@@ -17,6 +17,8 @@ checks / stage parsing it calls unchanged, through the `ctl` hook):
   (`gate_before` / `gate_after`).  A sample counts (`gated` = true, and `valid` only then) iff both
   ends pass; otherwise it is discarded and re-run (<= --max-attempts per key).  If the box is not
   quiet the driver sleeps and polls until --hours runs out, then exits 3 (resume later).
+  The busy / foreign bars are the box's IDLE FLOOR (measured at startup, recorded in the manifest
+  and on every row) + the pre-registered 0.02 margin; a floor > --max-floor refuses to start.
 - RESUMABLE: DIR/results.jsonl is append-only, one row per sample, keyed by (plan id, code,
   variant, threads, rep).  A key with a gated, converged row is done; a killed run picks up at the
   first key that is not.  A second launch on the same DIR while one runs exits (flock on DIR/lock).
@@ -256,8 +258,37 @@ def own_load(history, now):
     )
 
 
-def judge(reading, th, phase="before"):
-    """Reasons a reading fails the thresholds (empty = quiet).
+MARGIN = (
+    0.02  # pre-registered quiet bar, now read as a margin ABOVE the measured idle floor
+)
+MAX_FLOOR = 0.10  # an idle floor above this means the box is not idle: refuse to start
+FLOOR_SAMPLES = 6
+UNREACHABLE_AFTER_MIN = 30.0
+
+
+class FloorTooHigh(SystemExit):
+    pass
+
+
+def resolve_bar(th, which, floor):
+    """The bar for `which` in ("busy", "foreign"), as a fraction of the physical cores.
+
+    An explicit --max-busy / --max-foreign is ABSOLUTE and wins.  Otherwise the bar is the idle
+    floor measured at startup (Gate.measure_floor) plus the pre-registered margin.  Without
+    either there is no bar at all, and asking for one is an error (never a silent 0.02)."""
+    absolute = getattr(th, f"max_{which}", None)
+    if absolute is not None:
+        return absolute
+    if floor is None:
+        raise RuntimeError(
+            f"no {which} bar: pass --max-{which} or measure the idle floor first"
+        )
+    return floor[f"{which}_floor"] + getattr(th, f"{which}_margin", MARGIN)
+
+
+def judge(reading, th, phase="before", busy_bar=None):
+    """Reasons a reading fails the thresholds (empty = quiet).  `busy_bar` defaults to
+    th.max_busy (absolute); Gate passes its floor + margin bar.
 
     The loadavg is judged only BEFORE a sample.  Right after one, load1 still holds the sample's
     own ~N (1 - e^{-wall/60}): judging it there would discard every long N=6 sample and keep
@@ -271,8 +302,15 @@ def judge(reading, th, phase="before"):
         why.append(
             f"load1 {reading['load1']:.2f} (own-adjusted {reading['load1_adj']:.2f})"
         )
-    if reading["busy_phys"] >= th.max_busy:
-        why.append(f"busy {reading['busy_phys']:.3f} of the physical cores")
+    bar = th.max_busy if busy_bar is None else busy_bar
+    if bar is None:
+        raise RuntimeError(
+            "no busy bar: pass --max-busy or measure the idle floor first"
+        )
+    if reading["busy_phys"] >= bar:
+        why.append(
+            f"busy {reading['busy_phys']:.3f} of the physical cores (bar {bar:.3f})"
+        )
     if th.check_steal_iowait:
         if reading["iowait_frac"] >= th.max_iowait:
             why.append(f"iowait {reading['iowait_frac']:.3f}")
@@ -289,7 +327,7 @@ class Gate:
     A reading = `window` s of /proc/stat (box busy / iowait / steal; our own process is idle
     then, so busy = foreign; busy is judged as a fraction of the PHYSICAL cores) and of
     /proc/<pid>/stat (per-process CPU), plus the 1-min loadavg (raw, or minus own_load).  Quiet
-    iff load < max_load (before/recheck only, see judge), busy < max_busy, iowait/steal under
+    iff load < max_load (before/recheck only, see judge), busy < busy bar, iowait/steal under
     their caps, and no heavy process: rustc/cc1plus/ld/... alive at all, cargo/ninja/sccache
     above 1% of a core, python*/pytest/uv above max_python_cpu of one core, or any other process
     above max_proc_cpu.
@@ -297,16 +335,115 @@ class Gate:
              scatter_driver.run_cmd WITHOUT the heavy-slot locks.
     recheck: one reading right after the locks are taken; never waits.
     after:   one reading (no loadavg), plus the run window: foreign CPU (scatter_driver's
-             accounting, re-expressed per physical core) < max_foreign, steal under its cap.
-             Never waits."""
+             accounting, re-expressed per physical core) < foreign bar, steal under its cap.
+             Never waits.
+
+    BARS (resolve_bar): the busy and foreign bars are the box's IDLE FLOOR, measured once per
+    launch by measure_floor() while nothing of ours runs, plus the pre-registered 0.02 margin.
+    An absolute 0.02 was unreachable on the desktop box (idle floor 0.035-0.045: night 1 waited
+    2 h 13 min and took no sample).  Explicit --max-busy / --max-foreign stay absolute."""
 
     def __init__(self, th, deadline, enforce=True):
         self.th, self.deadline, self.enforce = th, deadline, enforce
         self.history = []  # (end time, effective parallelism, wall) of our recent samples
         self._stat_before = None
         self._waited, self._polls = 0.0, 0
+        self.floor = None  # measure_floor(); recorded in the manifest and on every row
+
+    @property
+    def busy_bar(self):
+        return resolve_bar(self.th, "busy", self.floor)
+
+    @property
+    def foreign_bar(self):
+        return resolve_bar(self.th, "foreign", self.floor)
+
+    def bars(self):
+        """What every row records: the floor this launch measured and the bars it judged by."""
+        f = self.floor or {}
+        return dict(
+            busy_floor=f.get("busy_floor"),
+            foreign_floor=f.get("foreign_floor"),
+            floor_measured_at=f.get("measured_at"),
+            busy_bar=round(self.busy_bar, 4),
+            foreign_bar=round(self.foreign_bar, 4),
+            busy_bar_mode="absolute"
+            if self.th.max_busy is not None
+            else "floor+margin",
+            foreign_bar_mode="absolute"
+            if self.th.max_foreign is not None
+            else "floor+margin",
+        )
+
+    def measure_floor(self, k=None, max_floor=None, refuse=True):
+        """The box's idle floor: k back-to-back readings while nothing of ours runs.
+
+        busy_floor = MEDIAN busy_phys (what one before/after window is judged on);
+        foreign_floor = MEAN busy_phys over the same readings (the run-window foreign CPU is an
+        average over the whole run, and with our process idle, busy == foreign).
+        Readings with a heavy process (a compile, a python sweep) are excluded: they are not the
+        idle desktop.  Refuses (FloorTooHigh) if fewer than half the readings are clean or a
+        floor exceeds max_floor (default 0.10): the box is not idle, and a bar built on it would
+        quietly accept a loaded box."""
+        k = k or getattr(self.th, "floor_samples", FLOOR_SAMPLES)
+        max_floor = (
+            max_floor
+            if max_floor is not None
+            else getattr(self.th, "max_floor", MAX_FLOOR)
+        )
+        reads = [self._read_raw("floor") for _ in range(k)]
+        clean = [r for r in reads if not r["heavy"]]
+        # No clean reading at all (refused anyway): report the numbers over every reading.
+        busy = sorted(r["busy_phys"] for r in (clean or reads))
+        problems = []
+        if len(clean) * 2 < k:
+            heavy = sorted({p["comm"] for r in reads for p in r["heavy"]})
+            problems.append(
+                f"only {len(clean)}/{k} floor readings had no heavy process ({heavy})"
+            )
+        floor = dict(
+            measured_at=time.strftime(
+                "%Y-%m-%dT%H:%M:%S%z", time.localtime(time.time())
+            ),
+            n=k,
+            n_clean=len(clean),
+            window_s=self.th.window,
+            busy_floor=round(_median(busy), 4),
+            foreign_floor=round(sum(busy) / len(busy), 4),
+            readings=[
+                dict(t=r["t"], busy_phys=r["busy_phys"], heavy=r["heavy"])
+                for r in reads
+            ],
+            max_floor=max_floor,
+        )
+        for which in ("busy", "foreign"):
+            v = floor[f"{which}_floor"]
+            if v > max_floor:
+                problems.append(
+                    f"{which} idle floor {v:.3f} of the physical cores > {max_floor:.2f}"
+                )
+        floor["problems"] = problems
+        if problems and refuse:
+            raise FloorTooHigh(
+                "refused: the box is not idle enough to measure a quiet-window floor:\n  "
+                + "\n  ".join(problems)
+                + "\n  readings (busy_phys): "
+                + ", ".join(f"{r['busy_phys']:.3f}" for r in reads)
+                + "\n  stop the load, or raise --max-floor knowingly (rows record the floor)"
+            )
+        if not problems:
+            self.floor = floor
+        return floor
 
     def read(self, phase="before"):
+        r = self._read_raw(phase)
+        r["busy_bar"] = round(self.busy_bar, 4)
+        r["reasons"] = judge(r, self.th, phase, busy_bar=self.busy_bar)
+        r["ok"] = not r["reasons"]
+        return r
+
+    def _read_raw(self, phase):
+        """One window's numbers, not judged."""
         own = {os.getpid()}
         s0, p0, t0 = read_stat(), proc_times(own), time.time()
         time.sleep(self.th.window)
@@ -339,8 +476,6 @@ class Gate:
             steal_frac=round(fr["steal"], 4),
             heavy=heavy,
         )
-        r["reasons"] = judge(r, self.th, phase)
-        r["ok"] = not r["reasons"]
         return r
 
     def gate(self, phase, **ctx):
@@ -353,11 +488,39 @@ class Gate:
             return r
         if phase == "before":
             t_start, n = time.time(), 0
+            idle_fail_since, idle_busy, warned = None, [], False
             while True:
                 r = self.read()
                 n += 1
                 if r["ok"] or not self.enforce:
                     break
+                # Failing on busy alone, at idle-desktop level (<= max_floor): the bar itself may
+                # be below what this box can do.  Say so once per wait; never wait silently.
+                idle_level = r["busy_phys"] <= getattr(self.th, "max_floor", MAX_FLOOR)
+                if idle_level and all(w.startswith("busy") for w in r["reasons"]):
+                    if idle_fail_since is None:
+                        idle_fail_since = time.time()
+                    idle_busy.append(r["busy_phys"])
+                else:
+                    idle_fail_since, idle_busy = None, []
+                after = 60 * getattr(
+                    self.th, "unreachable_after", UNREACHABLE_AFTER_MIN
+                )
+                if (
+                    not warned
+                    and idle_fail_since is not None
+                    and time.time() - idle_fail_since >= after
+                ):
+                    warned = True
+                    b = sorted(idle_busy)
+                    print(
+                        f"[gate] WARNING: the busy bar {self.busy_bar:.3f} may be UNREACHABLE: "
+                        f"{(time.time() - idle_fail_since) / 60:.0f} min of failures from "
+                        f"idle-level busy readings alone (n={len(b)}, min {b[0]:.3f} / median "
+                        f"{_median(b):.3f} / max {b[-1]:.3f}; floor {self.bars()['busy_floor']}, "
+                        f"mode {self.bars()['busy_bar_mode']}). Still waiting until the deadline.",
+                        flush=True,
+                    )
                 if time.time() + self.th.poll > self.deadline:
                     raise Deadline(
                         f"box not quiet by the deadline; last: {r['reasons']}"
@@ -370,7 +533,12 @@ class Gate:
                 )
                 time.sleep(min(self.th.poll, 10.0) if own_tail_only else self.th.poll)
             self._waited, self._polls = round(time.time() - t_start, 1), n
-            r.update(waited_s=self._waited, polls=n, enforced=self.enforce)
+            r.update(
+                waited_s=self._waited,
+                polls=n,
+                enforced=self.enforce,
+                unreachable_warned=warned,
+            )
             self._stat_before = read_stat()
             return r
         wall, cpu = ctx["wall"], ctx["cpu_s"]
@@ -387,14 +555,24 @@ class Gate:
             run_iowait_frac=run and round(run["iowait"], 4),
             run_steal_frac=run and round(run["steal"], 4),
         )
-        if foreign >= self.th.max_foreign:
-            r["reasons"].append(f"foreign CPU over the run {foreign:.3f} of the cores")
+        r["foreign_bar"] = round(self.foreign_bar, 4)
+        if foreign >= self.foreign_bar:
+            r["reasons"].append(
+                f"foreign CPU over the run {foreign:.3f} of the cores "
+                f"(bar {self.foreign_bar:.3f})"
+            )
         # Run-window iowait is NOT judged: PySCF writes its own cderi file, so it is partly
         # ours (logged only; the post-run window's iowait above is foreign).  Steal is never ours.
         if run and self.th.check_steal_iowait and run["steal"] >= self.th.max_steal:
             r["reasons"].append(f"steal over the run {run['steal']:.3f}")
         r["ok"] = not r["reasons"]
         return r
+
+
+def _median(xs):
+    xs = sorted(xs)
+    m = len(xs) // 2
+    return xs[m] if len(xs) % 2 else 0.5 * (xs[m - 1] + xs[m])
 
 
 class Ctl:
@@ -559,6 +737,17 @@ def prepare_bin(a, run_dir, python, smoke):
     return binary, man
 
 
+def record_floor(run_dir, floor, bars):
+    """Append this launch's floor to manifest.json (atomically); resume checks ignore it."""
+    path = os.path.join(run_dir, "manifest.json")
+    man = json.load(open(path))
+    man.setdefault("idle_floors", []).append(dict(floor, bars=bars))
+    tmp = f"{path}.{os.getpid()}.tmp"
+    with open(tmp, "w") as f:
+        json.dump(man, f, indent=1)
+    os.replace(tmp, path)
+
+
 # ---------------------------------------------------------------------------------- driver ----
 def session_id(run_dir):
     """Unique per run dir: basename + hash of the absolute path (two `night1`s never pair)."""
@@ -653,6 +842,9 @@ def run_sample(cell, code, tag, threads, rep, attempt, ctx):
         invocation=ctx["invocation"],
         gated=gated,
         gate_reasons=(gb.get("reasons") or []) + (ga.get("reasons") or []),
+        idle_floor=ctx[
+            "gate"
+        ].bars(),  # this launch's measured floor + the bars judged by
     )
     # summarize.py reads `valid`: only gated, converged, exit-0 samples may enter a statistic.
     rec["valid"] = bool(rec.get("valid") and gated and converged and rec["exit"] == 0)
@@ -829,13 +1021,41 @@ def build_parser():
         "waits for its own tail to decay; adjusted: minus own_load (a model; both are logged)",
     )
     g.add_argument(
-        "--max-busy", type=float, default=0.02, help="box CPU busy fraction, window"
+        "--max-busy",
+        type=float,
+        default=None,
+        help="ABSOLUTE busy bar per window (physical cores); default: idle floor + --busy-margin",
     )
     g.add_argument(
         "--max-foreign",
         type=float,
-        default=0.02,
-        help="foreign CPU fraction over the run (the pre-registered 2%% quiet bar)",
+        default=None,
+        help="ABSOLUTE foreign-CPU bar over the run; default: idle floor + --foreign-margin",
+    )
+    g.add_argument(
+        "--busy-margin",
+        type=float,
+        default=MARGIN,
+        help="the pre-registered 2%% quiet bar, ABOVE the measured idle floor",
+    )
+    g.add_argument("--foreign-margin", type=float, default=MARGIN, help="likewise")
+    g.add_argument(
+        "--floor-samples",
+        type=int,
+        default=FLOOR_SAMPLES,
+        help="gate readings taken at startup to measure the idle floor",
+    )
+    g.add_argument(
+        "--max-floor",
+        type=float,
+        default=MAX_FLOOR,
+        help="refuse to start if the idle floor is above this (the box is not idle)",
+    )
+    g.add_argument(
+        "--unreachable-after",
+        type=float,
+        default=UNREACHABLE_AFTER_MIN,
+        help="minutes of idle-level busy-only failures before warning the bar may be unreachable",
     )
     g.add_argument("--max-python-cpu", type=float, default=0.10, help="one core = 1.0")
     g.add_argument("--max-proc-cpu", type=float, default=0.25, help="one core = 1.0")
@@ -885,8 +1105,15 @@ def dry_run(a, cells):
         print("  extension:", prov["so_build"])
         for b in bad:
             print("  WOULD REFUSE:", b)
-    print("\n# gate reading now (one window; not enforced)")
-    print(" ", Gate(a, time.time()).read())
+    print(f"\n# idle floor now ({a.floor_samples} readings; not enforced)")
+    g = Gate(a, time.time())
+    fl = g.measure_floor(refuse=False)
+    print(f"  busy floor {fl['busy_floor']}  foreign floor {fl['foreign_floor']}")
+    for p in fl["problems"]:
+        print("  WOULD REFUSE:", p)
+    if not fl["problems"]:
+        print("  bars:", g.bars())
+        print("  one gate reading:", g.read())
     print(
         "\n# ESTIMATED wall per plan row (README session medians; PySCF x%.1f for 1e-13; "
         "+%.0f s gate overhead per sample%s; waits for FOREIGN load and retries NOT "
@@ -926,6 +1153,13 @@ def main(argv=None):
     binary, man = prepare_bin(a, run_dir, sd.PY, a.smoke)
     deadline = time.time() + a.hours * 3600
     gate = Gate(a, deadline, enforce=not a.smoke)
+    # Idle floor, measured now while nothing of ours runs (we hold no heavy-slot lock).
+    fl = gate.measure_floor(refuse=not a.smoke)
+    if fl["problems"]:  # smoke only: proceed, the gate is not enforced anyway
+        print(f"[overnight] smoke: ignoring {fl['problems']}", flush=True)
+        gate.floor = fl
+    record_floor(run_dir, fl, gate.bars())
+    print(f"[overnight] idle floor + bars: {gate.bars()}", flush=True)
     prefix = [
         os.path.join(ROOT, "scripts", "ferric-limited"),
         f"--max={a.mem}",

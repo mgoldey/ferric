@@ -636,18 +636,22 @@ class _Box:
 
     HZ = os.sysconf("SC_CLK_TCK")
 
-    def __init__(self):
+    def __init__(self, ambient=lambda t: 0.05):
         self.t, self.busy, self.total, self.load, self.own_cpu = 1e6, 0, 0, 0.1, 0.0
         self.events, self.held, self._locked_at, self._ran = [], [], None, 0.0
+        self.ambient = (
+            ambient  # cores busy with the idle desktop, as a function of time
+        )
 
-    def advance(self, dt, own=0.0, foreign=0.0, ambient=0.05):
+    def advance(self, dt, own=0.0, foreign=0.0, ambient=None):
         steps = max(1, int(dt))
         for _ in range(steps):
             h = dt / steps
+            ambient_now = self.ambient(self.t) if ambient is None else ambient
             k = math.exp(-h / 60)
-            running = (6.0 if own else 0.0) + foreign + ambient
+            running = (6.0 if own else 0.0) + foreign + ambient_now
             self.load = self.load * k + running * (1 - k)
-            self.busy += (own + foreign + ambient) * self.HZ * h
+            self.busy += (own + foreign + ambient_now) * self.HZ * h
             self.total += ov.LOGICAL * self.HZ * h
             self.t += h
 
@@ -761,6 +765,111 @@ def test_failed_recheck_releases_the_locks_and_waits_again(monkeypatch):
         "run",
         "unlock",
     ]
+
+
+# ------------------------------------------- idle floor: the bar must be REACHABLE on a desktop ----
+# Night 1 (2026-10-29): the idle desktop alone read 0.035-0.045 of the physical cores busy, the
+# absolute 0.02 bar was never met, and the gate waited 2 h 13 min without a sample.  Every test
+# above mocks a near-idle box (0.05 cores = 0.008 phys), which is why none of them caught it.
+class _ThFloor(_ThReal):
+    max_busy = max_foreign = None  # the defaults: idle floor + margin
+    busy_margin = foreign_margin = 0.02
+    floor_samples, max_floor, unreachable_after = 6, 0.10, 30.0
+
+
+def _desktop(floor_phys, jitter=0.005):
+    """Idle-desktop cores busy: `floor_phys` of the physical cores, wobbling by +-jitter."""
+    return lambda t: (floor_phys + jitter * math.sin(2 * math.pi * t / 37.0)) * ov.PHYS
+
+
+@pytest.mark.parametrize("wall", [15.0, 60.0, 300.0])
+def test_idle_floor_of_004_is_reachable_end_to_end(monkeypatch, wall):
+    box = _Box(ambient=_desktop(0.04))
+    box.install(monkeypatch, wall)
+    gate = ov.Gate(_ThFloor, box.t + 3600)
+    fl = gate.measure_floor()
+    assert fl["busy_floor"] == pytest.approx(0.04, abs=0.006) and not fl["problems"]
+    assert gate.bars()["busy_bar_mode"] == "floor+margin"
+    assert gate.busy_bar == pytest.approx(fl["busy_floor"] + 0.02)
+    for _ in range(2):  # back to back, as overnight
+        g = _one_sample(gate)
+        assert g["gate_before"]["ok"], g["gate_before"]["reasons"]
+        assert g["gate_after"]["ok"], g["gate_after"]["reasons"]
+        assert g["gate_after"]["run_foreign_phys"] == pytest.approx(0.04, abs=0.006)
+    # The same box under the OLD absolute 0.02 bar never gets a sample: the test discriminates.
+    old = ov.Gate(
+        type("T", (_ThFloor,), dict(max_busy=0.02, max_foreign=0.02)), box.t + 900
+    )
+    old.measure_floor()
+    with pytest.raises(ov.Deadline):
+        _one_sample(old)
+
+
+def test_floor_plus_a_real_foreign_process_fails(monkeypatch):
+    box = _Box(ambient=_desktop(0.04))
+    box.install(
+        monkeypatch, 60.0, foreign_mid_run=0.04 * ov.PHYS
+    )  # +0.04 during the run
+    gate = ov.Gate(_ThFloor, box.t + 3600)
+    gate.measure_floor()
+    g = _one_sample(gate)
+    assert g["gate_before"]["ok"] and not g["gate_after"]["ok"]
+    assert g["gate_after"]["reasons"][0].startswith("foreign CPU over the run")
+    assert g["gate_after"]["run_foreign_phys"] == pytest.approx(0.08, abs=0.006)
+    # ...and the same process running BEFORE the sample keeps the before gate waiting.
+    box.ambient = _desktop(0.08)
+    with pytest.raises(ov.Deadline):
+        gate.deadline = box.t + 900  # floor measured while idle; the load arrived after
+        _one_sample(gate)
+
+
+def test_floor_above_010_refuses_to_start(monkeypatch):
+    box = _Box(ambient=_desktop(0.12))
+    box.install(monkeypatch, 15.0)
+    gate = ov.Gate(_ThFloor, box.t + 3600)
+    with pytest.raises(ov.FloorTooHigh, match="not idle"):
+        gate.measure_floor()
+    assert gate.floor is None
+    with pytest.raises(RuntimeError, match="no busy bar"):  # and no silent default bar
+        gate.read()
+    fl = gate.measure_floor(refuse=False)  # the dry run reports instead
+    assert fl["busy_floor"] == pytest.approx(0.12, abs=0.006) and fl["problems"]
+
+
+def test_unreachable_bar_is_said_once_with_the_readings(monkeypatch, capsys):
+    box = _Box(ambient=_desktop(0.04))
+    box.install(monkeypatch, 15.0)
+    th = type("T", (_ThFloor,), dict(max_busy=0.02, max_foreign=0.02))  # night 1's bar
+    gate = ov.Gate(th, box.t + 2 * 3600)
+    gate.measure_floor()
+    assert gate.bars()["busy_bar_mode"] == "absolute" and gate.busy_bar == 0.02
+    with pytest.raises(ov.Deadline):
+        gate.gate("before")
+    lines = [ln for ln in capsys.readouterr().out.splitlines() if "UNREACHABLE" in ln]
+    assert len(lines) == 1, lines
+    assert "median 0.04" in lines[0] and "mode absolute" in lines[0]
+
+
+def test_parser_defaults_are_floor_plus_margin_and_overrides_stay_absolute():
+    a = ov.build_parser().parse_args(["--run-dir", "x"])
+    assert a.max_busy is None and a.max_foreign is None
+    assert a.busy_margin == a.foreign_margin == 0.02 and a.max_floor == 0.10
+    b = ov.build_parser().parse_args(["--run-dir", "x", "--max-busy", "0.05"])
+    floor = dict(busy_floor=0.04, foreign_floor=0.041)
+    assert ov.resolve_bar(b, "busy", floor) == 0.05  # absolute, floor ignored
+    assert ov.resolve_bar(b, "foreign", floor) == pytest.approx(0.061)
+
+
+def test_record_floor_appends_to_the_manifest(tmp_path):
+    (tmp_path / "manifest.json").write_text('{"bin_sha256": "x"}')
+    ov.record_floor(str(tmp_path), dict(busy_floor=0.04), dict(busy_bar=0.06))
+    ov.record_floor(str(tmp_path), dict(busy_floor=0.05), dict(busy_bar=0.07))
+    import json
+
+    man = json.loads((tmp_path / "manifest.json").read_text())
+    assert man["bin_sha256"] == "x" and [
+        f["busy_floor"] for f in man["idle_floors"]
+    ] == [0.04, 0.05]
 
 
 # -------------------------------------------------------------- jsonl, provenance, session ----

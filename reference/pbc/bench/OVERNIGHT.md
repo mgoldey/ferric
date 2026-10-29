@@ -71,11 +71,53 @@ measured against the 6 PHYSICAL cores, not the 12 logical ones: the SMT siblings
 | check | fails when |
 |---|---|
 | 1-min loadavg (before / recheck ONLY) | `load1 >= 1.5`, read from `/proc/loadavg` as is: the pre-registered gate, and the default. After an N=6 sample, the next sample waits for the driver's own load tail to decay; that wait is about 90 s after a long run and is polled every 10 s. `--load-mode adjusted` gates on `load1 - own_load` instead. `own_load` models the driver's own recent samples under the kernel's 60 s exponential average. Both values are logged. |
-| box CPU busy over the window | `>= 2%` of the physical cores |
+| box CPU busy over the window | `>=` the busy bar: the measured idle floor + 0.02 of the physical cores (see below) |
 | iowait / steal over the window | `>= 2%` / `>= 1%` (`--no-steal-iowait` disables) |
 | compiler alive | any `rustc`, `cc1plus`, `cc1`, `collect2`, `ld`, `rust-lld` |
 | build driver busy | `cargo`, `ninja` or `sccache` above 1% of a core. A blocked cargo shim is idle and does not count. |
 | other processes | any `python*`, `pytest`, `uv` or `uvx` above 10% of a core; any other process above 25% |
+
+### The idle floor (bars are floor + margin, not an absolute 0.02)
+
+Night 1 (2026-10-28/29) showed that an absolute 0.02 bar cannot be met on this box. With only the
+desktop running (Zoom, conky, several Claude sessions, a node worker), the box reads 0.035-0.045
+of the physical cores busy. The gate waited from 00:14 to 02:27 and took no sample. The unit tests
+had mocked a near-idle box, so none of them could see it.
+
+So, at every launch and before any sample, the driver measures the box's **idle floor**:
+- `--floor-samples 6` back-to-back gate readings (5 s each), while nothing of ours runs.
+- Readings with a heavy process (a compile, a python sweep) are left out, since they are not the
+  idle desktop.
+- `busy_floor` is the MEDIAN `busy_phys` of the clean readings: what one window is judged on.
+- `foreign_floor` is their MEAN: the run-window foreign CPU is an average over the run, and with the
+  driver idle, busy and foreign are the same quantity.
+
+The bars are then `busy_floor + --busy-margin` and `foreign_floor + --foreign-margin`. Both margins
+default to 0.02: the pre-registered quiet bar, now read as a margin above the floor. An explicit
+`--max-busy` / `--max-foreign` is still an ABSOLUTE bar and wins over the floor.
+
+The driver **refuses to start** (smoke runs only warn) if:
+- the busy or foreign floor is above `--max-floor 0.10`, meaning the box is not idle; or
+- fewer than half the floor readings were free of heavy processes.
+
+A bar built on a loaded box would quietly accept loaded samples, so the driver stops instead. The
+dry run measures the floor too and prints `WOULD REFUSE` instead of stopping.
+
+It **never waits silently.** If the before gate has failed for `--unreachable-after 30` minutes on
+busy readings alone, at idle-desktop level (`<= --max-floor`, no heavy process, load fine), it logs
+one `[gate] WARNING: the busy bar ... may be UNREACHABLE` line per wait. That line gives the bar, its
+mode, the floor, and the min/median/max of the failing readings. It then keeps waiting until
+`--hours`.
+
+**Recorded:**
+- each launch's floor (every reading) is appended to `manifest.json` under `idle_floors`;
+- every row carries `idle_floor`: the floors, the bars it was judged by, and each bar's mode
+  (`floor+margin` or `absolute`);
+- every gate reading carries `busy_bar`, and the after reading carries `foreign_bar`.
+
+The floor is re-measured per launch, so the bars can differ between resumed launches. Every row also
+keeps `foreign_cpu_frac`, so any fixed bar (for example the old absolute 0.02) can be re-applied
+after the fact.
 
 The order around the heavy-slot locks (`/tmp/ferric-compile*.lock`), in `scatter_driver.run_cmd`:
 1. **before**: poll every 60 s until a reading is quiet, holding NO lock. A busy box therefore never
@@ -86,8 +128,8 @@ The order around the heavy-slot locks (`/tmp/ferric-compile*.lock`), in `scatter
    sample's own ~N(1 − e^{−wall/60}). Judging it would discard every N=6 sample longer than ~17 s and
    keep the fast ones, a selection bias. The after phase judges only FOREIGN activity:
    - busy CPU, processes, iowait and steal in the post-run window (the driver is idle then);
-   - foreign CPU over the run (scatter_driver's accounting, per physical core) `< 2%`, the
-     pre-registered quiet bar;
+   - foreign CPU over the run (scatter_driver's accounting, per physical core) below the foreign
+     bar: the measured idle floor + the pre-registered 0.02 margin;
    - steal over the run. Run-window iowait is logged but not judged, because PySCF writes its own
      cderi file.
 4. Release the locks.
@@ -157,9 +199,10 @@ as such.
   start (~0.1-0.3 s, close to the 2% bar on ~15 s cells) and PySCF's ~1.5 s import, so on short cells read
   `t_setup_s` / `t_scf_s` first. `s_per_iter` has different definitions in the two codes (README.md).
 - **Quotability:** `summarize.py --quiet-only` still applies its pre-registered QUOTABLE rule to the same
-  rows. Under the raw-load gate, a gated row should also carry `box_state = quiet`.
-  `box_state` is read a few milliseconds later, so a loadavg tick can split the two. Check before
-  quoting.
+  rows. `box_state` comes from scatter_driver's own ABSOLUTE 0.02 foreign bar, not the idle-floor
+  bar. A gated row on this desktop can therefore carry `box_state = ambient`, and that alone does not
+  make it unquotable. `box_state` is also read a few milliseconds after the gate, so a loadavg tick can
+  split the two. Check before quoting.
 - **Deadline:** with `--hours 10` the default tiers fit one night with about 3 h of slack for waits on
   other load. n1-large needs another ~3.2 h: run it as a second night in a second run dir on the same
   binary. That second night also gives the between-session scatter.
