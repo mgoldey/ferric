@@ -119,8 +119,23 @@ def is_valid(r):
     return bool(r.get("valid")) and r.get("exit") == 0 and not r.get("smoke")
 
 
+def read_jsonl(path):
+    """Rows of a JSONL file.  A truncated LAST line (a run killed mid-write) is skipped with a
+    warning; a bad line anywhere else is an error."""
+    lines = [ln for ln in open(path) if ln.strip()]
+    rows = []
+    for i, ln in enumerate(lines):
+        try:
+            rows.append(json.loads(ln))
+        except json.JSONDecodeError:
+            if i != len(lines) - 1:
+                raise
+            print(f"warning: {path}: skipping a truncated last line", file=sys.stderr)
+    return rows
+
+
 def load_rows(paths):
-    return [normalise(json.loads(ln)) for p in paths for ln in open(p) if ln.strip()]
+    return [normalise(r) for p in paths for r in read_jsonl(p)]
 
 
 def pair_by_rep(rows_a, rows_b, metric):

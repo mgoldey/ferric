@@ -8,8 +8,9 @@
 #          on its first launch, so later rebuilds cannot touch the run.  Without --build the
 #          driver copies whatever ~/qc/ferric-mainline/target/release holds (it refuses a dirty,
 #          mismatched or pre-#508 build).
-# Re-running the same command on the same RUN_DIR resumes (the binary is NOT rebuilt or recopied
-# into an existing run dir; --build only refreshes the mainline worktree).
+# RESUME = the same command WITHOUT --build.  --build is refused once RUN_DIR has a manifest (the
+# run already copied its binary) or while a driver holds RUN_DIR/lock: rebuilding the shared
+# ~/qc/ferric-mainline (which the main venv's ferric .so points at) is never part of a resume.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -26,6 +27,14 @@ RUN_DIR="$1"
 shift
 
 if ((BUILD)); then
+  if [[ -e "$RUN_DIR/manifest.json" ]]; then
+    echo "refused: $RUN_DIR/manifest.json exists; resume WITHOUT --build" >&2
+    exit 2
+  fi
+  if [[ -e "$RUN_DIR/lock" ]] && ! flock -n "$RUN_DIR/lock" true; then
+    echo "refused: a driver holds $RUN_DIR/lock" >&2
+    exit 2
+  fi
   git -C "$MAINLINE" fetch -q origin
   git -C "$MAINLINE" checkout -q --detach origin/main
   (cd "$MAINLINE" && PATH=/tmp/ferric-cargo-shim:$PATH \
@@ -35,4 +44,4 @@ fi
 mkdir -p "$RUN_DIR"
 LOG="$RUN_DIR/driver.log"
 nohup setsid "$PY" "$HERE/overnight_228.py" --run-dir "$RUN_DIR" "$@" >>"$LOG" 2>&1 </dev/null &
-echo "overnight_228.py pid $! -> $LOG (re-run this command to resume; analyze: $PY $HERE/analyze_228.py $RUN_DIR/results.jsonl)"
+echo "overnight_228.py pid $! -> $LOG (resume: $0 $RUN_DIR, no --build; analyze: $PY $HERE/analyze_228.py $RUN_DIR/results.jsonl)"

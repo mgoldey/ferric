@@ -47,9 +47,11 @@ Addendum (issue #228 fourth session, harness hardening):
 
 Addendum (overnight_228.py): run_ferric / run_pyscf / run_cmd take an optional `ctl` object with
   `prefix` (argv put in front of `taskset`, e.g. scripts/ferric-limited) and `gate(phase, **ctx)`.
-  With a ctl, gate("before") REPLACES the built-in quiet wait (it is called after the locks are
-  taken, outside the timed window, and decides ok_before), and gate("after", wall=, cpu_s=,
-  foreign=, threads=) runs right after the child exits; both readings are stored on the row as
+  With a ctl, the built-in quiet wait is REPLACED by: gate("before") (may wait for hours) WITHOUT
+  the heavy-slot locks, then acquire the locks, then gate("recheck") (one short reading, decides
+  ok_before); if the recheck fails the locks are released and the wait starts again, so a busy box
+  never makes this driver sit on the locks.  gate("after", wall=, cpu_s=, foreign=, threads=) runs
+  right after the child exits.  The recheck and after readings are stored on the row as
   `gate_before` / `gate_after`.  Without a ctl nothing changes.
 """
 
@@ -299,19 +301,27 @@ def run_child(cmd, env):
 def run_cmd(cmd, env, threads, cpus, smoke=False, ctl=None):
     cmd = list(getattr(ctl, "prefix", ())) + ["taskset", "-c", cpus] + list(cmd)
     if smoke:
-        return _run_cmd_locked(cmd, env, threads, None, smoke=True, ctl=ctl)
-    fds, lock_wait = acquire_locks()
-    try:
-        return _run_cmd_locked(cmd, env, threads, lock_wait, ctl=ctl)
-    finally:
-        release_locks(fds)
+        gb = ctl.gate("before", threads=threads) if ctl is not None else None
+        return _run_cmd_locked(cmd, env, threads, None, True, ctl, gb)
+    while True:
+        if ctl is not None:
+            ctl.gate("before", threads=threads)  # the long wait: NO locks held
+        fds, lock_wait = acquire_locks()
+        try:
+            gb = ctl.gate("recheck", threads=threads) if ctl is not None else None
+            if gb is not None and not gb["ok"] and gb.get("enforced", True):
+                continue  # `finally` releases the locks; wait again without them
+            return _run_cmd_locked(cmd, env, threads, lock_wait, False, ctl, gb)
+        finally:
+            release_locks(fds)
 
 
-def _run_cmd_locked(cmd, env, threads, lock_wait, smoke=False, ctl=None):
+def _run_cmd_locked(
+    cmd, env, threads, lock_wait, smoke=False, ctl=None, gate_before=None
+):
     full = dict(os.environ)
     full.update(env)
     ok_before = False
-    gate_before = ctl.gate("before", threads=threads) if ctl is not None else None
     if gate_before is not None:
         ok_before = bool(gate_before["ok"])
     elif smoke:

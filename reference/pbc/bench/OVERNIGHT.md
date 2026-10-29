@@ -17,8 +17,22 @@ driver's defaults are tiers `anchor,core,pbe-gated`, `--hours 10`, PySCF `cell.p
 `--match-ferric-conv`. Extra arguments go to the driver, e.g. `--tiers anchor,core,pbe-gated,n1-large`.
 
 `--build` is required today: the mainline build is from 2026-09-24. It predates #508 and has no
-`--version`, so the driver would refuse it. To resume after a kill, reboot or deadline, re-run the same
-command. The binary already copied into `night1/bin` is kept and re-hashed. Finished keys are skipped.
+`--version`, so the driver would refuse it.
+
+**Resume** after a kill, a reboot, the deadline (exit 3) or exhausted keys (exit 4) with the same
+command WITHOUT `--build`, plus the same extra arguments if any:
+
+```
+reference/pbc/bench/overnight_228.sh ~/qc/pbc228-runs/night1
+```
+
+The launcher refuses `--build` once `night1/manifest.json` exists, or while a driver holds
+`night1/lock`. Rebuilding the shared `~/qc/ferric-mainline` is never part of a resume: the main venv's
+`ferric` `.so` points at it. On resume, the driver re-hashes both `night1/bin` files and re-checks the
+python environment against the manifest; it refuses on any mismatch. Finished keys are skipped.
+
+Exit codes: 0 = every key has a gated sample; 3 = deadline; 4 = some keys used all `--max-attempts`
+without a gated sample. Those keys are listed in `driver.log`, and "plan complete" is NOT printed.
 
 To check the setup first without running any SCF:
 `python reference/pbc/bench/overnight_228.py --run-dir X --dry-run`. To prove the pipeline end to end, add
@@ -36,10 +50,12 @@ inodes, so a rebuild cannot SIGBUS the run. `RUN_DIR/manifest.json` records:
 - `ferric --version`;
 - the extension's `__build__`, loaded by file path in `python -I`;
 - both sha256s;
-- whether the commit contains #508 (fc0ccc041).
+- whether the commit contains #508 (fc0ccc041);
+- the PySCF side's python path and its python, pyscf, numpy and scipy versions.
 
 The driver refuses to start unless all of these hold:
 - both files are clean;
+- the extension HAS a `__build__` with a commit (a missing or unknown one is refused, never skipped);
 - they name the same commit;
 - that commit contains #508.
 
@@ -48,37 +64,46 @@ The driver refuses to start unless all of these hold:
 
 ## The quiet-window gate (read before AND after every sample, logged on the row)
 
-One reading takes 5 s of `/proc/stat` and `/proc/<pid>/stat` (never `pgrep`). It fails if any of these
-holds:
+One reading takes 5 s of `/proc/stat` and `/proc/<pid>/stat` (never `pgrep`). CPU fractions are
+measured against the 6 PHYSICAL cores, not the 12 logical ones: the SMT siblings of the pinned cores
+0-5 are outside the taskset. A reading fails if any of these holds:
 
 | check | fails when |
 |---|---|
-| 1-min loadavg | `load1 >= 1.5`, read from `/proc/loadavg` as is: the pre-registered gate, and the default. After an N=6 sample, the next sample waits for the driver's own load tail to decay; that wait is about 90 s after a long run and is polled every 10 s. `--load-mode adjusted` gates on `load1 - own_load` instead. `own_load` models the driver's own recent samples under the kernel's 60 s exponential average. Both values are logged. |
-| box CPU busy over the window | `>= 2%` |
-| iowait / steal | `>= 2%` / `>= 1%` (`--no-steal-iowait` disables) |
+| 1-min loadavg (before / recheck ONLY) | `load1 >= 1.5`, read from `/proc/loadavg` as is: the pre-registered gate, and the default. After an N=6 sample, the next sample waits for the driver's own load tail to decay; that wait is about 90 s after a long run and is polled every 10 s. `--load-mode adjusted` gates on `load1 - own_load` instead. `own_load` models the driver's own recent samples under the kernel's 60 s exponential average. Both values are logged. |
+| box CPU busy over the window | `>= 2%` of the physical cores |
+| iowait / steal over the window | `>= 2%` / `>= 1%` (`--no-steal-iowait` disables) |
 | compiler alive | any `rustc`, `cc1plus`, `cc1`, `collect2`, `ld`, `rust-lld` |
-| build driver busy | `cargo`, `ninja` or `sccache` above 1% of a core. A cargo shim blocked on the heavy-slot lock that this driver holds is idle and does NOT count, or the two would deadlock. |
-| other processes | any `python*` above 10% of a core; any other process above 25% |
+| build driver busy | `cargo`, `ninja` or `sccache` above 1% of a core. A blocked cargo shim is idle and does not count. |
+| other processes | any `python*`, `pytest`, `uv` or `uvx` above 10% of a core; any other process above 25% |
 
-- **before**: the gate polls every 60 s until the box is quiet. If `--hours` runs out first, the driver
-  exits 3 and can be resumed.
-- **after**: one more reading, plus checks over the run window itself:
-  - the foreign-CPU fraction must be below 2%. This is scatter_driver's accounting, and the pre-registered
-    quiet bar.
-  - iowait and steal between the two ends must stay under their caps.
+The order around the heavy-slot locks (`/tmp/ferric-compile*.lock`), in `scatter_driver.run_cmd`:
+1. **before**: poll every 60 s until a reading is quiet, holding NO lock. A busy box therefore never
+   blocks anyone else's build. If `--hours` runs out first, the driver exits 3.
+2. Take both locks, then **recheck**: one 5 s reading. If it fails (e.g. a build started in between),
+   release the locks and go back to step 1.
+3. Run the sample, then **after**: one reading with NO loadavg check, since load1 still holds the
+   sample's own ~N(1 − e^{−wall/60}). Judging it would discard every N=6 sample longer than ~17 s and
+   keep the fast ones, a selection bias. The after phase judges only FOREIGN activity:
+   - busy CPU, processes, iowait and steal in the post-run window (the driver is idle then);
+   - foreign CPU over the run (scatter_driver's accounting, per physical core) `< 2%`, the
+     pre-registered quiet bar;
+   - steal over the run. Run-window iowait is logged but not judged, because PySCF writes its own
+     cderi file.
+4. Release the locks.
 
-A sample is **gated** only if both ends pass. Its row is still written, but with `valid = false`.
-
-The key is then re-run, up to `--max-attempts 3`. Only gated, converged, exit-0 rows enter any statistic.
-
-While it waits for quiet, the driver holds both heavy-slot locks (`/tmp/ferric-compile*.lock`), as
-`scatter_driver.py` always has. That means other agents' builds queue behind it overnight.
+A sample is **gated** only if both the recheck and the after reading pass. A failed sample's row is still
+written, with `valid = false`, and the key is re-run, up to `--max-attempts 3`. Only gated, converged,
+exit-0 rows enter any statistic.
 
 ## Resumability, memory and order
 
 - **Resumability:** `RUN_DIR/results.jsonl` is append-only, one row per sample. Rows are keyed by
-  (plan id, code, variant, threads, rep). A second launch on the same dir exits at once, through a flock
-  on `RUN_DIR/lock`. `run_id` = `session` = the dir name, so reps pair across resumed launches. The
+  (plan id, code, variant, threads, rep). If a kill leaves a partial last line, the next append moves it
+  to `results.jsonl.truncated` before writing. Readers skip a partial LAST line with a warning, and
+  refuse a bad line anywhere else. A second launch on the same dir exits at once, through a flock
+  on `RUN_DIR/lock`. `run_id` = `session` = the dir name plus a hash of its absolute path (two `night1` dirs never pair),
+  so reps pair across resumed launches of one dir. The
   `invocation` field tells the launches apart.
 - **Memory:** every process runs under `scripts/ferric-limited --max=14G --high=14G`. MemoryHigh is set
   equal to MemoryMax, so a runaway is killed rather than throttled, which would silently distort its
@@ -127,6 +152,10 @@ as such.
 - **Spread flag:** `analyze_228.py` flags `SPREAD>2%` on range/median over gated samples. That is
   stricter than summarize.py's NOISY (IQR/median > 10%) and H12 (≤ 3%). It shows `n<3` when fewer than 3
   samples were gated.
+- **Metrics:** spreads and ratios are reported for `wall`, `t_setup_s`, `t_scf_s` and `s_per_iter`, and
+  each 2% flag is computed on the metric of its own block. `wall` contains the `systemd-run --scope`
+  start (~0.1-0.3 s, close to the 2% bar on ~15 s cells) and PySCF's ~1.5 s import, so on short cells read
+  `t_setup_s` / `t_scf_s` first. `s_per_iter` has different definitions in the two codes (README.md).
 - **Quotability:** `summarize.py --quiet-only` still applies its pre-registered QUOTABLE rule to the same
   rows. Under the raw-load gate, a gated row should also carry `box_state = quiet`.
   `box_state` is read a few milliseconds later, so a loadavg tick can split the two. Check before

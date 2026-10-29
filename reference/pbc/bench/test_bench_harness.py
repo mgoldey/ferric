@@ -481,7 +481,8 @@ class _Th:
 
 
 def _reading(**kw):
-    r = dict(load1=0.3, load1_adj=0.3, busy_frac=0.005, iowait_frac=0.0, steal_frac=0.0)
+    r = dict(load1=0.3, load1_adj=0.3, busy_frac=0.005, busy_phys=0.01, iowait_frac=0.0)
+    r["steal_frac"] = 0.0
     r.update(dict(heavy=[]), **kw)
     return r
 
@@ -550,7 +551,9 @@ def test_gate_after_discards_on_foreign_cpu_and_before_raises_at_the_deadline(
     monkeypatch,
 ):
     g = ov.Gate(_Th, deadline=0.0)
-    monkeypatch.setattr(g, "read", lambda: dict(_reading(), reasons=[], ok=True))
+    monkeypatch.setattr(
+        g, "read", lambda phase="before": dict(_reading(), reasons=[], ok=True)
+    )
     monkeypatch.setattr(
         ov, "read_stat", lambda: dict(total=1, busy=0, iowait=0, steal=0)
     )
@@ -558,7 +561,9 @@ def test_gate_after_discards_on_foreign_cpu_and_before_raises_at_the_deadline(
     after = g.gate("after", wall=10.0, cpu_s=10.0, foreign=0.03, threads=1)
     assert not after["ok"] and "foreign CPU" in after["reasons"][0]
     assert g.history and g.history[-1][1] == pytest.approx(1.0)
-    monkeypatch.setattr(g, "read", lambda: dict(_reading(), reasons=["busy"], ok=False))
+    monkeypatch.setattr(
+        g, "read", lambda phase="before": dict(_reading(), reasons=["busy"], ok=False)
+    )
     with pytest.raises(ov.Deadline):
         g.gate("before")
     g.enforce = False  # smoke / anchors: logged, never waited on
@@ -600,9 +605,214 @@ def test_execute_resumes_and_retries_only_discarded_keys(monkeypatch, tmp_path):
         ov.execute([c], dict(args=args, smoke=False, gate=gate, die=True), out)
     assert len(ov.load_rows(out)) == 2  # rep 0 ferric gated, rep 0 pyscf discarded
     calls.clear()
-    ov.execute([c], dict(args=args, smoke=False, gate=gate), out)
+    assert ov.execute([c], dict(args=args, smoke=False, gate=gate), out) == []
     # resume: rep-0 ferric is done; rep-0 pyscf is retried (attempt 1); rep 1 rotates to P F.
     assert calls == [("pyscf", 0, 1), ("pyscf", 1, 0), ("ferric", 1, 0)]
+
+
+def test_execute_reports_keys_that_never_got_a_gated_sample(monkeypatch, tmp_path):
+    c = ov.Cell("x", "x", "rhf", {6: ("",)}, {6: 1}, "core", {6: (1.0, 1.0)})
+
+    def fake(cell, code, tag, threads, rep, attempt, ctx):
+        return dict(plan_id=cell.id, code=code, variant=tag, threads=threads, rep=rep,
+                    attempt=attempt, exit=0, energy=-1.0, converged=True,
+                    gated=code == "ferric", gate_reasons=["busy"], wall=1.0, kind="timed")  # fmt: skip
+
+    monkeypatch.setattr(ov, "run_sample", fake)
+    args = type("A", (), dict(max_attempts=2))
+    out = str(tmp_path / "r.jsonl")
+    ctx = dict(args=args, smoke=False, gate=ov.Gate(_Th, 1e18))
+    assert ov.execute([c], ctx, out) == [("x", "pyscf", "", 6, 0)]
+    assert len(ov.load_rows(out)) == 3  # ferric once, pyscf twice
+    assert ov.execute([c], ctx, out) == [
+        ("x", "pyscf", "", 6, 0)
+    ]  # resume: still exhausted
+
+
+# ------------------------------------------------ whole sample, before -> after, fake box ----
+class _Box:
+    """A fake box: clock, /proc/stat jiffies, loadavg (the kernel's 60 s exponential average of
+    the runnable count, updated continuously) and our children's rusage."""
+
+    HZ = os.sysconf("SC_CLK_TCK")
+
+    def __init__(self):
+        self.t, self.busy, self.total, self.load, self.own_cpu = 1e6, 0, 0, 0.1, 0.0
+        self.events, self.held, self._locked_at, self._ran = [], [], None, 0.0
+
+    def advance(self, dt, own=0.0, foreign=0.0, ambient=0.05):
+        steps = max(1, int(dt))
+        for _ in range(steps):
+            h = dt / steps
+            k = math.exp(-h / 60)
+            running = (6.0 if own else 0.0) + foreign + ambient
+            self.load = self.load * k + running * (1 - k)
+            self.busy += (own + foreign + ambient) * self.HZ * h
+            self.total += ov.LOGICAL * self.HZ * h
+            self.t += h
+
+    def install(self, monkeypatch, wall, foreign_mid_run=0.0):
+        import types
+
+        box = self
+        fake_time = types.SimpleNamespace(
+            time=lambda: box.t,
+            sleep=lambda s: box.advance(s),
+            strftime=__import__("time").strftime,
+            localtime=__import__("time").localtime,
+        )
+        monkeypatch.setattr(ov, "time", fake_time)
+        monkeypatch.setattr(sd, "time", fake_time)
+        stat = lambda: dict(total=int(box.total), busy=int(box.busy), iowait=0, steal=0)  # noqa: E731
+        monkeypatch.setattr(ov, "read_stat", stat)
+        monkeypatch.setattr(sd, "cpu_jiffies", lambda: (int(box.busy), int(box.total)))
+        monkeypatch.setattr(ov, "read_loadavg", lambda: (box.load, box.load))
+        monkeypatch.setattr(sd, "load1", lambda: box.load)
+        monkeypatch.setattr(ov, "proc_times", lambda own=(): {7: ("bash", 0)})
+        ru = lambda who: types.SimpleNamespace(ru_utime=box.own_cpu, ru_stime=0.0)  # noqa: E731
+        monkeypatch.setattr(sd.resource, "getrusage", ru)
+
+        def child(cmd, env):
+            box.events.append("run")
+            box._ran += wall
+            box.advance(wall, own=5.5, foreign=foreign_mid_run)
+            box.own_cpu += 5.5 * wall
+            return 0, "", "", 0
+
+        monkeypatch.setattr(sd, "run_child", child)
+
+        def lock():
+            box.events.append("lock")
+            box._locked_at, box._ran = box.t, 0.0
+            return [], 0.0
+
+        def unlock(fds):
+            box.events.append("unlock")
+            box.held.append(
+                box.t - box._locked_at - box._ran
+            )  # lock time NOT spent running
+
+        monkeypatch.setattr(sd, "acquire_locks", lock)
+        monkeypatch.setattr(sd, "release_locks", unlock)
+
+
+class _ThReal(_Th):
+    window, poll, load_mode = 5.0, 60.0, "raw"
+
+
+def _one_sample(gate):
+    ctl = ov.Ctl([], gate)
+    _, g = sd.run_cmd(["ferric", "x.toml"], {}, 6, "0-5", False, ctl)
+    return g
+
+
+@pytest.mark.parametrize("wall", [15.0, 60.0, 300.0])
+def test_quiet_n6_sample_passes_both_ends_whatever_its_own_load(monkeypatch, wall):
+    box = _Box()
+    box.install(monkeypatch, wall)
+    gate = ov.Gate(_ThReal, box.t + 3600)
+    for _ in range(2):  # back to back: the 2nd waits for the 1st one's own load tail
+        g = _one_sample(gate)
+        assert g["gate_before"]["ok"] and g["gate_after"]["ok"], g["gate_after"][
+            "reasons"
+        ]
+        assert (
+            g["gate_after"]["load1"] > 1.5 or wall < 20
+        )  # the own load really is there
+    # the wait for quiet (the 2nd sample waits ~1.5 min for the 1st's load tail at 60/300 s)
+    # happened with NO lock held: under the locks only the recheck + after readings (2 x 5 s)
+    assert box.events == ["lock", "run", "unlock"] * 2
+    assert max(box.held) <= 2 * _ThReal.window + 1e-6, box.held
+
+
+def test_n6_sample_with_a_foreign_job_mid_run_is_discarded(monkeypatch):
+    box = _Box()
+    box.install(monkeypatch, 60.0, foreign_mid_run=0.5)
+    g = _one_sample(ov.Gate(_ThReal, box.t + 3600))
+    assert g["gate_before"]["ok"] and not g["gate_after"]["ok"]
+    assert g["gate_after"]["reasons"][0].startswith("foreign CPU over the run")
+    assert g["gate_after"]["run_foreign_phys"] == pytest.approx(
+        (0.5 + 0.05) / ov.PHYS, rel=0.02
+    )  # job + ambient
+
+
+def test_failed_recheck_releases_the_locks_and_waits_again(monkeypatch):
+    box = _Box()
+    box.install(monkeypatch, 15.0)
+    gate = ov.Gate(_ThReal, box.t + 3600)
+    real = gate.read
+    n = {"recheck": 0}
+
+    def read(phase="before"):
+        r = real(phase)
+        if (
+            phase == "recheck" and n["recheck"] == 0
+        ):  # a build starts between wait and lock
+            n["recheck"] += 1
+            r["reasons"], r["ok"] = ["proc rustc[9] 90%"], False
+        return r
+
+    monkeypatch.setattr(gate, "read", read)
+    g = _one_sample(gate)
+    assert g["gate_before"]["ok"] and box.events == [
+        "lock",
+        "unlock",
+        "lock",
+        "run",
+        "unlock",
+    ]
+
+
+# -------------------------------------------------------------- jsonl, provenance, session ----
+def test_truncated_last_line_is_skipped_and_the_next_append_starts_fresh(
+    tmp_path, capsys
+):
+    out = str(tmp_path / "r.jsonl")
+    ov.append_row(out, dict(code="pyscf", a=1))
+    with open(out, "a") as f:
+        f.write('{"a": 2, "b"')  # killed mid-write
+    assert ov.load_rows(out) == [dict(code="pyscf", a=1)]
+    assert "truncated last line" in capsys.readouterr().err
+    ov.append_row(out, dict(code="pyscf", a=3))
+    assert [r["a"] for r in ov.load_rows(out)] == [1, 3]
+    assert [r["a"] for r in sm.load_rows([out])] == [1, 3]
+    assert open(out + ".truncated").read() == '{"a": 2, "b"\n'  # kept, not parsed
+    with open(out, "a") as f:
+        f.write("not json\n")
+    ov.append_row(out, dict(a=4))
+    with pytest.raises(
+        ValueError
+    ):  # a bad line in the MIDDLE is an error, never skipped
+        sm.read_jsonl(out)
+
+
+def test_provenance_refuses_an_extension_without_build_info(monkeypatch, tmp_path):
+    so = tmp_path / "libferric.so"
+    so.write_bytes(b"x")
+    c = "a" * 40
+    v = dict(text="", commit=c, dirty=False, ok=True)
+    monkeypatch.setattr(ov, "ferric_version", lambda b: v)
+    monkeypatch.setattr(ov, "contains", lambda commit: True)
+    for build, bad in (
+        (None, "no __build__"),
+        (dict(git_sha="unknown", dirty=False), "commit unknown"),
+        (dict(git_sha=c, dirty=None), "dirty flag"),
+        (dict(git_sha="b" * 40, dirty=False), "!= extension commit"),
+    ):
+        monkeypatch.setattr(
+            ov, "so_build", lambda so, py, b=build: dict(build=b, version="0")
+        )
+        _, problems = ov.provenance("ferric", str(so), "python")
+        assert any(bad in p for p in problems), (build, problems)
+    monkeypatch.setattr(
+        ov, "so_build", lambda so, py: dict(build=dict(git_sha=c, dirty=False))
+    )
+    assert ov.provenance("ferric", str(so), "python")[1] == []
+
+
+def test_session_id_is_unique_per_run_dir_path():
+    a, b = ov.session_id("/x/night1"), ov.session_id("/y/night1")
+    assert a != b and a.startswith("night1-") and a == ov.session_id("/x/night1")
 
 
 def test_plan_inputs_parse_and_pyscf_argv_is_well_formed():

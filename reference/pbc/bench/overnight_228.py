@@ -34,6 +34,8 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import fcntl
+import glob
+import hashlib
 import json
 import math
 import os
@@ -62,6 +64,7 @@ PYSCF_PREC_FACTOR = (
 GATE_OVERHEAD_S = 15.0  # two 5 s gate windows + process start, per sample (estimate)
 OK_EXIT = 0
 DEADLINE_EXIT = 3
+EXHAUSTED_EXIT = 4
 
 
 class Deadline(Exception):
@@ -183,6 +186,35 @@ def pyscf_argv(cell, threads, tag, precision):
 # cargo shim BLOCKED on the heavy-slot lock this driver holds is idle and must not stall the gate.
 DENY = ("rustc", "cc1plus", "cc1", "collect2", "ld", "ld.lld", "rust-lld")
 DENY_BUSY, DENY_BUSY_CPU = ("cargo", "ninja", "sccache"), 0.01
+PYLIKE = ("pytest", "uv", "uvx")  # get the python cap too (comm of a script = its name)
+
+
+def physical_cores():
+    """Distinct (package, core) pairs: 6 on the i7-6800K (12 logical).  The SMT siblings of the
+    pinned cores are outside the taskset, so foreign work is measured against physical cores."""
+    seen = set()
+    for d in glob.glob("/sys/devices/system/cpu/cpu[0-9]*/topology"):
+        try:
+            pkg = open(os.path.join(d, "physical_package_id")).read().strip()
+            core = open(os.path.join(d, "core_id")).read().strip()
+        except OSError:
+            continue
+        seen.add((pkg, core))
+    return len(seen) or (os.cpu_count() or 1)
+
+
+PHYS = physical_cores()
+LOGICAL = os.cpu_count() or PHYS
+
+
+def to_phys(frac_of_logical):
+    """A fraction of all logical CPUs, re-expressed as a fraction of the physical cores."""
+    return frac_of_logical * LOGICAL / PHYS
+
+
+def read_loadavg():
+    la = open("/proc/loadavg").read().split()
+    return float(la[0]), float(la[1])
 
 
 def read_stat():
@@ -224,16 +256,23 @@ def own_load(history, now):
     )
 
 
-def judge(reading, th):
-    """Reasons a reading fails the thresholds (empty = quiet)."""
+def judge(reading, th, phase="before"):
+    """Reasons a reading fails the thresholds (empty = quiet).
+
+    The loadavg is judged only BEFORE a sample.  Right after one, load1 still holds the sample's
+    own ~N (1 - e^{-wall/60}): judging it there would discard every long N=6 sample and keep
+    the fast ones (a selection bias in the timed statistic).  The after phase judges FOREIGN
+    activity only: busy CPU in the post-run window (we are idle then), processes, iowait/steal,
+    plus the run-window foreign CPU (Gate.gate)."""
     why = []
     raw = getattr(th, "load_mode", "raw") == "raw"
-    if (reading["load1"] if raw else reading["load1_adj"]) >= th.max_load:
+    load = reading["load1"] if raw else reading["load1_adj"]
+    if phase != "after" and load >= th.max_load:
         why.append(
             f"load1 {reading['load1']:.2f} (own-adjusted {reading['load1_adj']:.2f})"
         )
-    if reading["busy_frac"] >= th.max_busy:
-        why.append(f"busy {reading['busy_frac']:.3f}")
+    if reading["busy_phys"] >= th.max_busy:
+        why.append(f"busy {reading['busy_phys']:.3f} of the physical cores")
     if th.check_steal_iowait:
         if reading["iowait_frac"] >= th.max_iowait:
             why.append(f"iowait {reading['iowait_frac']:.3f}")
@@ -247,23 +286,27 @@ def judge(reading, th):
 class Gate:
     """Quiet-window gate.  `gate(phase, **ctx)` is scatter_driver's ctl hook.
 
-    A reading = `window` s of /proc/stat (box busy / iowait / steal fractions over all CPUs, our
-    own process is idle then, so busy = foreign) and of /proc/<pid>/stat (per-process CPU), plus
-    the 1-min loadavg corrected for our own previous samples (own_load).  Quiet iff load1_adj <
-    max_load, busy < max_busy, iowait/steal under their caps, and no heavy process: any
-    rustc/cc1plus/ld/... alive at all, cargo/ninja/sccache above 1% of a core, a python* process
-    above max_python_cpu of one core, or any other process above max_proc_cpu.
-    before: poll until quiet (sleep `poll` s between readings), or raise Deadline.
-    after:  one reading, plus the run window itself: foreign CPU (scatter_driver's accounting:
-            box CPU outside the run's process tree / (wall x NCPU)) < max_foreign and the
-            iowait/steal fractions between the two ends.  Never waits."""
+    A reading = `window` s of /proc/stat (box busy / iowait / steal; our own process is idle
+    then, so busy = foreign; busy is judged as a fraction of the PHYSICAL cores) and of
+    /proc/<pid>/stat (per-process CPU), plus the 1-min loadavg (raw, or minus own_load).  Quiet
+    iff load < max_load (before/recheck only, see judge), busy < max_busy, iowait/steal under
+    their caps, and no heavy process: rustc/cc1plus/ld/... alive at all, cargo/ninja/sccache
+    above 1% of a core, python*/pytest/uv above max_python_cpu of one core, or any other process
+    above max_proc_cpu.
+    before:  poll until quiet (sleep `poll` s between readings), or raise Deadline.  Called by
+             scatter_driver.run_cmd WITHOUT the heavy-slot locks.
+    recheck: one reading right after the locks are taken; never waits.
+    after:   one reading (no loadavg), plus the run window: foreign CPU (scatter_driver's
+             accounting, re-expressed per physical core) < max_foreign, steal under its cap.
+             Never waits."""
 
     def __init__(self, th, deadline, enforce=True):
         self.th, self.deadline, self.enforce = th, deadline, enforce
         self.history = []  # (end time, effective parallelism, wall) of our recent samples
         self._stat_before = None
+        self._waited, self._polls = 0.0, 0
 
-    def read(self):
+    def read(self, phase="before"):
         own = {os.getpid()}
         s0, p0, t0 = read_stat(), proc_times(own), time.time()
         time.sleep(self.th.window)
@@ -274,31 +317,40 @@ class Gate:
             cpu = (j1 - p0[pid][1]) / hz / dt if pid in p0 else 0.0
             cap = (
                 self.th.max_python_cpu
-                if comm.startswith("python")
+                if comm.startswith("python") or comm in PYLIKE
                 else self.th.max_proc_cpu
             )
             if comm in DENY or (comm in DENY_BUSY and cpu > DENY_BUSY_CPU) or cpu > cap:
                 heavy.append(dict(pid=pid, comm=comm, cpu=round(cpu, 3)))
-        la = open("/proc/loadavg").read().split()
+        l1, l5 = read_loadavg()
         tail = own_load(self.history, t1)
         fr = stat_fracs(s0, s1)
         r = dict(
+            phase=phase,
             t=round(t1, 1),
             window_s=round(dt, 2),
-            load1=float(la[0]),
-            load5=float(la[1]),
+            load1=l1,
+            load5=l5,
             own_load=round(tail, 3),
-            load1_adj=round(float(la[0]) - tail, 3),
+            load1_adj=round(l1 - tail, 3),
             busy_frac=round(fr["busy"], 4),
+            busy_phys=round(to_phys(fr["busy"]), 4),
             iowait_frac=round(fr["iowait"], 4),
             steal_frac=round(fr["steal"], 4),
             heavy=heavy,
         )
-        r["reasons"] = judge(r, self.th)
+        r["reasons"] = judge(r, self.th, phase)
         r["ok"] = not r["reasons"]
         return r
 
     def gate(self, phase, **ctx):
+        if phase == "recheck":
+            # Locks just taken (scatter_driver.run_cmd): one reading, no waiting.  A failure
+            # makes run_cmd release the locks and call gate("before") again.
+            r = self.read("recheck")
+            r.update(enforced=self.enforce, waited_s=self._waited, polls=self._polls)
+            self._stat_before = read_stat()
+            return r
         if phase == "before":
             t_start, n = time.time(), 0
             while True:
@@ -317,9 +369,8 @@ class Gate:
                     w.startswith("load1") for w in r["reasons"]
                 )
                 time.sleep(min(self.th.poll, 10.0) if own_tail_only else self.th.poll)
-            r.update(
-                waited_s=round(time.time() - t_start, 1), polls=n, enforced=self.enforce
-            )
+            self._waited, self._polls = round(time.time() - t_start, 1), n
+            r.update(waited_s=self._waited, polls=n, enforced=self.enforce)
             self._stat_before = read_stat()
             return r
         wall, cpu = ctx["wall"], ctx["cpu_s"]
@@ -327,20 +378,21 @@ class Gate:
         self.history = (self.history + [(time.time(), cpu / max(wall, 1e-9), wall)])[
             -8:
         ]
-        r = self.read()
+        r = self.read("after")
+        foreign = to_phys(ctx["foreign"])  # scatter_driver divides by ALL logical CPUs
         r.update(
             enforced=self.enforce,
             run_foreign_frac=round(ctx["foreign"], 4),
+            run_foreign_phys=round(foreign, 4),
             run_iowait_frac=run and round(run["iowait"], 4),
             run_steal_frac=run and round(run["steal"], 4),
         )
-        if ctx["foreign"] >= self.th.max_foreign:
-            r["reasons"].append(f"foreign CPU over the run {ctx['foreign']:.3f}")
-        if run and self.th.check_steal_iowait:
-            if run["iowait"] >= self.th.max_iowait:
-                r["reasons"].append(f"iowait over the run {run['iowait']:.3f}")
-            if run["steal"] >= self.th.max_steal:
-                r["reasons"].append(f"steal over the run {run['steal']:.3f}")
+        if foreign >= self.th.max_foreign:
+            r["reasons"].append(f"foreign CPU over the run {foreign:.3f} of the cores")
+        # Run-window iowait is NOT judged: PySCF writes its own cderi file, so it is partly
+        # ours (logged only; the post-run window's iowait above is foreign).  Steal is never ours.
+        if run and self.th.check_steal_iowait and run["steal"] >= self.th.max_steal:
+            r["reasons"].append(f"steal over the run {run['steal']:.3f}")
         r["ok"] = not r["reasons"]
         return r
 
@@ -416,9 +468,13 @@ def provenance(bin_path, so_path, python):
         problems.append("ferric binary is dirty")
     if "error" in b:
         problems.append(f"python extension: {b['error']}")
-    elif (b.get("build") or {}).get("dirty"):
-        problems.append("python extension is dirty")
-    if v["commit"] and so_sha and not so_sha.startswith(v["commit"][:12]):
+    elif not isinstance(b.get("build"), dict):
+        problems.append("python extension has no __build__ (built without build info)")
+    elif b["build"].get("dirty") is not False:
+        problems.append(f"python extension dirty flag is {b['build'].get('dirty')!r}")
+    if "error" not in b and not re.fullmatch(r"[0-9a-f]{7,40}", str(so_sha)):
+        problems.append(f"python extension commit unknown: {so_sha!r}")
+    elif v["commit"] and so_sha and not so_sha.startswith(v["commit"][:12]):
         problems.append(
             f"binary commit {v['commit'][:12]} != extension commit {so_sha[:12]}"
         )
@@ -426,6 +482,23 @@ def provenance(bin_path, so_path, python):
     if has is not True:
         problems.append(f"cannot confirm the binary contains #508 ({PR508}): {has}")
     return dict(ferric_version=v, so_build=b, contains_pr508=has), problems
+
+
+def python_env(python):
+    """Interpreter + library versions the PySCF side runs on (recorded; checked on resume)."""
+    code = (
+        "import json, sys, numpy, scipy, pyscf\n"
+        "print(json.dumps(dict(executable=sys.executable, version=sys.version.split()[0],"
+        " pyscf=pyscf.__version__, numpy=numpy.__version__, scipy=scipy.__version__)))"
+    )
+    p = subprocess.run(
+        [python, "-c", code], capture_output=True, text=True, timeout=120
+    )
+    if p.returncode:
+        raise SystemExit(
+            f"refused: {python} cannot import pyscf/numpy/scipy: {p.stderr[-300:]}"
+        )
+    return dict(path=python, **json.loads(p.stdout.strip().splitlines()[-1]))
 
 
 def prepare_bin(a, run_dir, python, smoke):
@@ -439,6 +512,17 @@ def prepare_bin(a, run_dir, python, smoke):
         if sha != man["bin_sha256"]:
             raise SystemExit(
                 f"refused: {binary} sha256 {sha} != manifest {man['bin_sha256']}"
+            )
+        so_sha = sd.sha256_file(so) if os.path.exists(so) else None
+        if so_sha != man.get("so_sha256"):
+            raise SystemExit(
+                f"refused: {so} sha256 {so_sha} != manifest {man.get('so_sha256')}"
+            )
+        env = python_env(python)
+        if env != man.get("python_env"):
+            raise SystemExit(
+                f"refused: python environment changed since this run dir started:\n  "
+                f"now {env}\n  manifest {man.get('python_env')}"
             )
         for k in ("precision", "mem"):
             if man["settings"].get(k) != getattr(a, k):
@@ -467,6 +551,7 @@ def prepare_bin(a, run_dir, python, smoke):
         provenance_problems=problems,
         settings=dict(precision=a.precision, mem=a.mem),
         python=python,
+        python_env=python_env(python),
         **prov,
     )
     with open(man_path, "w") as f:
@@ -475,10 +560,31 @@ def prepare_bin(a, run_dir, python, smoke):
 
 
 # ---------------------------------------------------------------------------------- driver ----
+def session_id(run_dir):
+    """Unique per run dir: basename + hash of the absolute path (two `night1`s never pair)."""
+    h = hashlib.sha256(os.path.abspath(run_dir).encode()).hexdigest()[:8]
+    return f"{os.path.basename(run_dir)}-{h}"
+
+
 def load_rows(path):
-    if not os.path.exists(path):
-        return []
-    return [json.loads(ln) for ln in open(path) if ln.strip()]
+    return sm.read_jsonl(path) if os.path.exists(path) else []
+
+
+def append_row(path, rec):
+    """Append one JSON line.  If a killed run left a partial last line, it is MOVED to
+    <path>.truncated (kept, never parsed) and cut from the file first, so every row starts on a
+    fresh line and the file never carries a bad line in the middle."""
+    with open(path, "a+b") as f:
+        f.seek(0)
+        data = f.read()
+        if data and not data.endswith(b"\n"):
+            cut = data.rfind(b"\n") + 1
+            with open(path + ".truncated", "ab") as g:
+                g.write(data[cut:] + b"\n")
+            f.truncate(cut)
+            print(f"warning: moved a partial last line of {path} to {path}.truncated")
+        f.seek(0, os.SEEK_END)
+        f.write((json.dumps(rec) + "\n").encode())
 
 
 def is_done(r):
@@ -568,6 +674,7 @@ def walk(cells, ctx):
 
 
 def execute(cells, ctx, out):
+    """Run every key not yet done; return the keys that used all attempts without a done row."""
     rows = load_rows(out)
     done = {row_key(r) for r in rows if is_done(r)}
     tries = {}
@@ -580,8 +687,7 @@ def execute(cells, ctx, out):
                 raise Deadline("--hours elapsed")
             rec = run_sample(c, code, tag, n, rep, tries.get(k, 0), ctx)
             tries[k] = tries.get(k, 0) + 1
-            with open(out, "a") as f:
-                f.write(json.dumps(rec) + "\n")
+            append_row(out, rec)
             print(
                 f"{c.id} {code}{tag} N={n} rep {rep} try {rec['attempt']} "
                 f"wall {rec['wall']:.1f}s E {rec.get('energy')} "
@@ -592,6 +698,13 @@ def execute(cells, ctx, out):
                 done.add(k)
             if ctx["smoke"]:
                 break
+    if ctx["smoke"]:
+        return []
+    return [
+        key_of(c, code, tag, n, rep)
+        for c, code, tag, n, rep in walk(cells, ctx)
+        if key_of(c, code, tag, n, rep) not in done
+    ]
 
 
 def decay_wait(threads, wall, max_load=1.5, ambient=0.3):
@@ -826,7 +939,7 @@ def main(argv=None):
         sha=man["bin_sha256"],
         gate=gate,
         ctl=Ctl(prefix, gate),
-        session=os.path.basename(run_dir),
+        session=session_id(run_dir),
         invocation=sd.new_run_id() + "-" + uuid.uuid4().hex[:4],
     )
     out = os.path.join(run_dir, "smoke.jsonl" if a.smoke else "results.jsonl")
@@ -837,18 +950,26 @@ def main(argv=None):
     )
     try:
         timed = [c for c in cells if c.tier != "pbe-gated"]
-        execute(timed, ctx, out)
+        exhausted = execute(timed, ctx, out)
         gated_pbe = [c for c in cells if c.tier == "pbe-gated"]
         if gated_pbe:
             status = ladder_status(load_rows(out), a.precision)
             print(f"[overnight] dryice PBE ladder gate: {status}", flush=True)
             if status == "pass":
-                execute(gated_pbe, ctx, out)
+                exhausted += execute(gated_pbe, ctx, out)
     except Deadline as e:
         print(
             f"[overnight] stopped at the deadline: {e}. Re-run the same command to resume."
         )
         return DEADLINE_EXIT
+    if exhausted:
+        print(
+            f"[overnight] INCOMPLETE: {len(exhausted)} key(s) used all "
+            f"{a.max_attempts} attempts without a gated sample:"
+        )
+        for k in exhausted:
+            print("   ", k)
+        return EXHAUSTED_EXIT
     print(f"[overnight] plan complete. python {HERE}/analyze_228.py {out}")
     return OK_EXIT
 

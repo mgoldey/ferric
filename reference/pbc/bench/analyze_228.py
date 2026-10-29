@@ -1,7 +1,19 @@
 """Analysis of overnight_228.py results: gated samples only.
 
-  python analyze_228.py RUN_DIR/results.jsonl [RUN_DIR2/results.jsonl ...] [--metric wall]
-                        [--bar 0.02] [--boot 10000] [--seed 228]
+  python analyze_228.py RUN_DIR/results.jsonl [RUN_DIR2/results.jsonl ...]
+                        [--metrics wall t_setup_s t_scf_s s_per_iter] [--bar 0.02]
+                        [--boot 10000] [--seed 228]
+
+Sections 1 and 2 are printed once PER METRIC, and every SPREAD flag and ratio flag is computed on
+the metric of the block it sits in.  Read them per metric:
+  wall        harness wall around the whole process: includes the `systemd-run --scope` start
+              (scripts/ferric-limited, ~0.1-0.3 s) and, for PySCF, the python/pyscf import
+              (~1.5 s).  Both are constant-ish offsets that dilute ratios and can by themselves
+              approach the 2% bar on ~15 s cells.
+  t_setup_s   ferric: every stage except SCF; PySCF: df build + hcore.
+  t_scf_s     ferric: SCF stages; PySCF: kernel minus hcore.  Neither contains process start.
+  s_per_iter  DIFFERENT definitions (ferric SCF / iterations; PySCF median callback gap), see
+              README.md; compare within a code, not across.
 
 1. Per (plan id, N, code, variant, binary): n gated / n discarded, median, range/median and
    IQR/median.  SPREAD flag iff range/median > --bar (default 2%, the pre-registered bar; the
@@ -14,7 +26,6 @@
    Ha/cell for RHF (the sessions' gate; PBE integrates on different grids, see README).
 4. With several run dirs (sessions) of ONE binary: per-session medians and max/min of the
    per-session ratio (summarize.between_sessions).
-Metrics: wall (harness wall), t_setup_s, t_scf_s, s_per_iter (definitions in README.md).
 """
 
 from __future__ import annotations
@@ -29,6 +40,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import summarize as sm  # noqa: E402
 
 E_BAR = 1e-8
+METRICS = ("wall", "t_setup_s", "t_scf_s", "s_per_iter")
 MIN_N = 3
 
 
@@ -118,7 +130,7 @@ def fmt(x, nd=3):
 def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("paths", nargs="+")
-    ap.add_argument("--metric", default="wall")
+    ap.add_argument("--metrics", nargs="+", default=list(METRICS))
     ap.add_argument("--bar", type=float, default=0.02)
     ap.add_argument("--boot", type=int, default=10000)
     ap.add_argument("--seed", type=int, default=228)
@@ -126,11 +138,30 @@ def main(argv=None):
     rows = sm.load_rows(a.paths)
     shas = {r.get("bin_sha256") for r in rows if r.get("kind") == "timed"}
     print(
-        f"# {len(rows)} rows, binaries {sorted(sm.sha_short(s) for s in shas)}; metric "
-        f"{a.metric}; gated samples only; spread bar {a.bar:.0%} (range/median)"
+        f"# {len(rows)} rows, binaries {sorted(sm.sha_short(s) for s in shas)}; "
+        f"gated samples only; spread bar {a.bar:.0%} (range/median), applied per metric"
     )
-    sp, ratios, energies = analyze(rows, a.metric, a.bar, a.boot, a.seed)
-    print("\n## 1. spread per group (plan id, N, code, variant, binary)")
+    for metric in a.metrics:
+        energies = report(rows, metric, a)
+    print("\n## 3. |E_ferric - E_PySCF| (medians, Ha/cell; RHF bar 1e-8)")
+    for d in energies:
+        print(
+            f"{d['plan_id']:24s} N={d['threads']} {d['variant'] or '-':8s} {d['method']} "
+            f"{d['dE']:.2e}  {d['flag']}"
+        )
+    sessions = {r.get("session") for r in rows if gated(r)}
+    if len(sessions) > 1 and len(shas) == 1:
+        print("\n## 4. between sessions (one binary)")
+        for metric in a.metrics:
+            between(rows, metric)
+    elif len(shas) > 1:
+        print("\n## 4. several binaries: sessions are NOT compared across them")
+    return 0
+
+
+def report(rows, metric, a):
+    sp, ratios, energies = analyze(rows, metric, a.bar, a.boot, a.seed)
+    print(f"\n## 1 [{metric}]. spread per group (plan id, N, code, variant, binary)")
     for d in sp:
         pid, n, code, var, sha = d["key"]
         print(
@@ -139,7 +170,8 @@ def main(argv=None):
             f"{fmt(d['range_rel'], 4)} IQR/med {fmt(d['iqr_rel'], 4)}  {d['flag']}"
         )
     print(
-        "\n## 2. ferric / PySCF (ratio of medians over paired reps, paired bootstrap 95% CI)"
+        f"\n## 2 [{metric}]. ferric / PySCF (ratio of medians over paired reps, paired "
+        "bootstrap 95% CI; flag on this metric)"
     )
     for d in ratios:
         ci = (
@@ -151,31 +183,24 @@ def main(argv=None):
             f"{d['plan_id']:24s} N={d['threads']} {d['variant'] or '-':8s} "
             f"pairs {d['n_pairs']}: {ci}  {d['flag']}"
         )
-    print("\n## 3. |E_ferric - E_PySCF| (medians, Ha/cell; RHF bar 1e-8)")
-    for d in energies:
+    return energies
+
+
+def between(rows, metric):
+    by = defaultdict(lambda: defaultdict(list))
+    for r in rows:
+        if gated(r) and r.get(metric) is not None:
+            by[(r["plan_id"], r["threads"], r["code"], r["variant"])][
+                r["session"]
+            ].append(r[metric])
+    for k, v in sorted(by.items(), key=lambda kv: str(kv[0])):
+        b = sm.between_sessions(v)
         print(
-            f"{d['plan_id']:24s} N={d['threads']} {d['variant'] or '-':8s} {d['method']} "
-            f"{d['dE']:.2e}  {d['flag']}"
+            f"[{metric}]",
+            k,
+            {s: round(m, 3) for s, m in b["medians"].items()},
+            f"max/min {b['max_over_min']:.4f}",
         )
-    sessions = {r.get("session") for r in rows if gated(r)}
-    if len(sessions) > 1 and len(shas) == 1:
-        print("\n## 4. between sessions (one binary)")
-        by = defaultdict(lambda: defaultdict(list))
-        for r in rows:
-            if gated(r) and r.get(a.metric) is not None:
-                by[(r["plan_id"], r["threads"], r["code"], r["variant"])][
-                    r["session"]
-                ].append(r[a.metric])
-        for k, v in sorted(by.items(), key=lambda kv: str(kv[0])):
-            b = sm.between_sessions(v)
-            print(
-                k,
-                {s: round(m, 3) for s, m in b["medians"].items()},
-                f"max/min {b['max_over_min']:.4f}",
-            )
-    elif len(shas) > 1:
-        print("\n## 4. several binaries: sessions are NOT compared across them")
-    return 0
 
 
 if __name__ == "__main__":
