@@ -54,6 +54,7 @@
 //! either J/K for HSE06 / CAM-B3LYP. Range-separated
 //! meta-GGAs, VV10 and double hybrids are refused as at Gamma.
 
+use crate::budget::bytes_of;
 use crate::dense_aft::ExxDiv;
 use crate::dft::{
     resolve_periodic_functional, resolve_periodic_functional_mgga, PeriodicDftError, PeriodicGrid,
@@ -61,7 +62,7 @@ use crate::dft::{
 };
 use crate::hcore::kpoint::periodic_hcore_kpts;
 use crate::kdense_aft::KDenseAftEri;
-use crate::kdft::{conj, KAoChunk, KPeriodicXc, KXcClocks};
+use crate::kdft::{add_re_column_dots, conj, KAoChunk, KPeriodicXc, KXcClocks};
 use crate::kpts::KPointMesh;
 use crate::kscf::{KJkKind, KPointInjection, KPointJk, KRetained, KRetainedJk};
 use crate::kuscf::{
@@ -69,14 +70,14 @@ use crate::kuscf::{
 };
 use crate::lattice::Cell;
 use crate::rsgdf::kpoint::KRsGdf;
-use crate::timing::{PbcTimings, StageClock};
+use crate::timing::{PbcTimings, StageClock, StageTiming};
 use crate::uhf::{nocc_ab, EwaldStart, SpinGapReport};
 use ferric_core::FerricError;
 use ferric_dft::density_on_grid::UksDensityGrid;
 use ferric_dft::libxc::{xc_def_from_name_nspin, XcDef};
-use ferric_dft::vxc::{polarized_kernel, DENSITY_FLOOR};
+use ferric_dft::vxc::{polarized_kernel, PolarizedKernel, DENSITY_FLOOR};
 use ferric_integrals::basis_bridge::PreparedBasis;
-use ndarray::{Array1, Array2};
+use ndarray::{Array1, Array2, Axis};
 use num_complex::Complex64;
 
 /// Spin-polarized semilocal XC on the Bloch AO cache of a [`KPeriodicXc`].
@@ -225,23 +226,18 @@ impl KPeriodicXcPolarized {
         let inv_nk = 1.0 / x.nk as f64;
         let mut rho = Array1::<f64>::zeros(np);
         let mut grad = Array2::<f64>::zeros((3, np));
+        let mut acc = vec![0.0; np];
         for k in 0..x.nk {
             let p = clk.density_gemm.time(|| dm[k].dot(&conj(&c.chi[k])));
             let clock = StageClock::start();
-            for g in 0..np {
-                let mut r = Complex64::new(0.0, 0.0);
-                for mu in 0..x.nbf {
-                    r += c.chi[k][(mu, g)] * p[(mu, g)];
-                }
-                rho[g] += inv_nk * r.re;
-                if x.gga {
-                    for ax in 0..3 {
-                        let mut gr = Complex64::new(0.0, 0.0);
-                        for mu in 0..x.nbf {
-                            gr += c.dchi[k][(ax, mu, g)] * p[(mu, g)];
-                        }
-                        grad[(ax, g)] += inv_nk * 2.0 * gr.re;
-                    }
+            let rho_s = rho.as_slice_mut().expect("standard layout");
+            add_re_column_dots(rho_s, inv_nk, c.chi[k].view(), p.view(), &mut acc);
+            if x.gga {
+                for ax in 0..3 {
+                    let d_ax = c.dchi[k].index_axis(Axis(0), ax);
+                    let mut row = grad.row_mut(ax);
+                    let out = row.as_slice_mut().expect("standard layout");
+                    add_re_column_dots(out, inv_nk * 2.0, d_ax, p.view(), &mut acc);
                 }
             }
             clk.density_contract.record(&clock);
@@ -374,6 +370,121 @@ impl KPeriodicXcPolarized {
         self.inner.xc_timings()
     }
 
+    /// See [`KPeriodicXc::record_scf_timings`].
+    pub(crate) fn record_scf_timings(&self, t: &mut PbcTimings) {
+        self.inner.record_scf_timings(t);
+    }
+
+    /// The one-off Bloch AO cache build (stage `"k XC AO cache"`).
+    pub(crate) fn ao_cache_timing(&self) -> &StageTiming {
+        &self.inner.ao_cache
+    }
+
+    /// One chunk's `(E_xc, V_α(k), V_β(k))`, each summed from zero.
+    #[allow(clippy::type_complexity)]
+    fn chunk_build_polarized(
+        &self,
+        c: &KAoChunk,
+        da: &[Array2<Complex64>],
+        db: &[Array2<Complex64>],
+    ) -> (f64, Vec<Array2<Complex64>>, Vec<Array2<Complex64>>) {
+        let x = &self.inner;
+        let dens = self.chunk_density(c, da, db, &x.clocks);
+        // Per-spin tau of THIS chunk (libxc's 1/2 convention), and the
+        // density the libxc kernel sees (only the unpolarized-evaluator
+        // mutant alters it).
+        let tau = x.mgga.then(|| (x.chunk_tau(c, da), x.chunk_tau(c, db)));
+        let (dens, tau_in) = self.kernel_inputs(dens, tau);
+        let kern = x
+            .clocks
+            .kernel
+            .time(|| polarized_kernel(&dens, tau_in.as_ref().map(|(a, b)| (a, b)), &self.xc_pol));
+        let mut e = 0.0;
+        for (g, p) in c.points.iter().enumerate() {
+            e += p.weight * (dens.rho_a[g] + dens.rho_b[g]) * kern.exc[g];
+        }
+        let va = self.spin_potential(c, &dens, &kern, 0);
+        let vb = self.spin_potential(c, &dens, &kern, 1);
+        (e, va, vb)
+    }
+
+    /// Spin `spin`'s `V_σ(k)` of one chunk from zero: the LDA weight, the GGA
+    /// axis functions and the tau weight, each floored on its own spin
+    /// density (as the Gamma builder); `V^τ_β` is dropped under
+    /// [`KUksMggaMutation::DropBetaVtau`].
+    fn spin_potential(
+        &self,
+        c: &KAoChunk,
+        dens: &UksDensityGrid,
+        kern: &PolarizedKernel,
+        spin: usize,
+    ) -> Vec<Array2<Complex64>> {
+        let x = &self.inner;
+        let np = c.points.len();
+        let (rho, vrho, vs_self, vtau, grad_self, grad_cross) = if spin == 0 {
+            let k = kern;
+            (
+                &dens.rho_a,
+                &k.vrho_a,
+                &k.vsigma_aa,
+                &k.vtau_a,
+                &dens.grad_a,
+                &dens.grad_b,
+            )
+        } else {
+            let k = kern;
+            (
+                &dens.rho_b,
+                &k.vrho_b,
+                &k.vsigma_bb,
+                &k.vtau_b,
+                &dens.grad_b,
+                &dens.grad_a,
+            )
+        };
+        let gated = |g: usize, v: f64| if rho[g] > DENSITY_FLOOR { v } else { 0.0 };
+        let w = |g: usize| c.points[g].weight;
+        let a: Vec<f64> = (0..np).map(|g| gated(g, w(g) * vrho[g])).collect();
+        let f_ax: Vec<Vec<f64>> = if x.gga {
+            (0..3)
+                .map(|ax| {
+                    (0..np)
+                        .map(|g| {
+                            let cross = kern.vsigma_ab[g] * grad_cross[(ax, g)];
+                            gated(g, w(g) * (2.0 * vs_self[g] * grad_self[(ax, g)] + cross))
+                        })
+                        .collect()
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let drop_tau = spin == 1 && self.mutation == Some(KUksMggaMutation::DropBetaVtau);
+        let f_tau: Vec<f64> = if x.mgga && !drop_tau {
+            (0..np).map(|g| gated(g, 0.5 * w(g) * vtau[g])).collect()
+        } else {
+            Vec::new()
+        };
+        let n = x.nbf;
+        let mut v: Vec<Array2<Complex64>> = (0..x.nk).map(|_| Array2::zeros((n, n))).collect();
+        for (k, vk) in v.iter_mut().enumerate() {
+            let chi = c.chi[k].view();
+            x.add_weighted_product(vk, chi, chi, &a, false);
+            if !f_tau.is_empty() {
+                // V^tau_s(k)_{mn} = sum_g 1/2 w v_tau_s sum_ax (d phi_m)* d phi_n
+                for ax in 0..3 {
+                    let d_ax = c.dchi[k].index_axis(Axis(0), ax);
+                    x.add_weighted_product(vk, d_ax, d_ax, &f_tau, false);
+                }
+            }
+            for (ax, f) in f_ax.iter().enumerate() {
+                let d_ax = c.dchi[k].index_axis(Axis(0), ax);
+                x.add_weighted_product(vk, chi, d_ax, f, true);
+            }
+        }
+        v
+    }
+
     #[allow(clippy::type_complexity)]
     fn build_polarized_untimed(
         &self,
@@ -389,108 +500,20 @@ impl KPeriodicXcPolarized {
                 .map(|_| Array2::<Complex64>::zeros((n, n)))
                 .collect()
         };
-        let drop_beta_vtau = self.mutation == Some(KUksMggaMutation::DropBetaVtau);
         let mut e = 0.0;
         let mut va = zeros();
         let mut vb = zeros();
-        for c in &x.chunks {
-            let dens = self.chunk_density(c, da, db, &x.clocks);
-            let np = c.points.len();
-            // Per-spin tau of THIS chunk (libxc's 1/2 convention), and the
-            // density the libxc kernel sees (only the unpolarized-evaluator
-            // mutant alters it).
-            let tau = x.mgga.then(|| (x.chunk_tau(c, da), x.chunk_tau(c, db)));
-            let (dens, tau_in) = self.kernel_inputs(dens, tau);
-            let kern = x.clocks.kernel.time(|| {
-                polarized_kernel(&dens, tau_in.as_ref().map(|(a, b)| (a, b)), &self.xc_pol)
-            });
-            for g in 0..np {
-                e += c.points[g].weight * (dens.rho_a[g] + dens.rho_b[g]) * kern.exc[g];
-            }
-            // Per-spin weights (LDA piece) and axis functions (GGA piece),
-            // each floored on its own spin density (as the Gamma builder).
-            for (spin, v) in [(0usize, &mut va), (1usize, &mut vb)] {
-                let (rho, vrho, vs_self, grad_self, grad_cross) = if spin == 0 {
-                    (
-                        &dens.rho_a,
-                        &kern.vrho_a,
-                        &kern.vsigma_aa,
-                        &dens.grad_a,
-                        &dens.grad_b,
-                    )
-                } else {
-                    (
-                        &dens.rho_b,
-                        &kern.vrho_b,
-                        &kern.vsigma_bb,
-                        &dens.grad_b,
-                        &dens.grad_a,
-                    )
-                };
-                let a: Vec<f64> = (0..np)
-                    .map(|g| {
-                        if rho[g] > DENSITY_FLOOR {
-                            c.points[g].weight * vrho[g]
-                        } else {
-                            0.0
-                        }
-                    })
-                    .collect();
-                let f_ax: Vec<Vec<f64>> = if x.gga {
-                    (0..3)
-                        .map(|ax| {
-                            (0..np)
-                                .map(|g| {
-                                    if rho[g] > DENSITY_FLOOR {
-                                        c.points[g].weight
-                                            * (2.0 * vs_self[g] * grad_self[(ax, g)]
-                                                + kern.vsigma_ab[g] * grad_cross[(ax, g)])
-                                    } else {
-                                        0.0
-                                    }
-                                })
-                                .collect()
-                        })
-                        .collect()
-                } else {
-                    Vec::new()
-                };
-                let f_tau: Vec<f64> = if x.mgga && !(spin == 1 && drop_beta_vtau) {
-                    let vtau = if spin == 0 {
-                        &kern.vtau_a
-                    } else {
-                        &kern.vtau_b
-                    };
-                    (0..np)
-                        .map(|g| {
-                            if rho[g] > DENSITY_FLOOR {
-                                0.5 * c.points[g].weight * vtau[g]
-                            } else {
-                                0.0
-                            }
-                        })
-                        .collect()
-                } else {
-                    Vec::new()
-                };
-                for k in 0..x.nk {
-                    x.add_weighted_product(&mut v[k], &c.chi[k], c.chi[k].view(), &a, false);
-                    if !f_tau.is_empty() {
-                        // V^tau_s(k)_{mn} = sum_g 1/2 w v_tau_s sum_ax (d phi_m)* d phi_n
-                        for ax in 0..3 {
-                            let d_ax = c.dchi[k].index_axis(ndarray::Axis(0), ax).to_owned();
-                            x.add_weighted_product(&mut v[k], &d_ax, d_ax.view(), &f_tau, false);
-                        }
-                    }
-                    if x.gga {
-                        for ax in 0..3 {
-                            let d_ax = c.dchi[k].index_axis(ndarray::Axis(0), ax);
-                            x.add_weighted_product(&mut v[k], &c.chi[k], d_ax, &f_ax[ax], true);
-                        }
-                    }
+        let out_bytes = bytes_of((2 * x.nk * n * n) as u64, std::mem::size_of::<Complex64>());
+        x.fold_chunks_in_order(
+            out_bytes,
+            |c| self.chunk_build_polarized(c, da, db),
+            |(ec, ca, cb)| {
+                e += ec;
+                for (acc, m) in va.iter_mut().zip(&ca).chain(vb.iter_mut().zip(&cb)) {
+                    *acc += m;
                 }
-            }
-        }
+            },
+        );
         if !e.is_finite()
             || va
                 .iter()
@@ -752,6 +775,7 @@ pub fn solve_kuks_on_grid_keep(
         (run(k_madelung, None)?, None)
     };
     timings.stop("k SCF", &clock);
+    pxc.record_scf_timings(&mut timings);
     let shift = a * applied;
     let gaps = kuhf_gap_report(&scf, shift);
     if !gaps.satisfied() {

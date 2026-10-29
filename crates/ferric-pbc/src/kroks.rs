@@ -485,6 +485,12 @@ pub fn solve_kroks_on_grid_keep(
         Some((&mut pxc, a)),
         rsh,
     )?;
+    // The AO cache was built before `drive` started its total: extend the
+    // total by it so the leaf stages still sum within it.
+    pxc.record_scf_timings(&mut r.timings);
+    let cache = pxc.ao_cache_timing();
+    r.timings.wall_s += cache.wall_s;
+    r.timings.cpu_s = r.timings.cpu_s.zip(cache.cpu_s).map(|(a, b)| a + b);
     r.electrons_on_grid = pxc.integrate_density(&r.scf.density_alpha, &r.scf.density_beta)?;
     r.n_grid_points = grid.len();
     Ok((r, kept))

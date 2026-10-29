@@ -18,19 +18,26 @@
 //!   `tests/validation_pbc_kks_core.rs`, STO-3G;
 //! * `diamond`: the fcc primitive diamond of `reference/pbc/bench`, 6-31G.
 //!
+//! `--scf dense|rsgdf` instead runs one closed-shell `solve_krks` on that J/K
+//! (RS-GDF aux `cc-pvdz-ri`) and prints its stage record, so the XC build's
+//! share of the SCF (sub-stage `"k XC build"` inside stage `"k SCF"`) and the
+//! AO cache's share of the run are measured, not estimated.
+//!
 //! ```text
 //! OPENBLAS_NUM_THREADS=1 cargo run --release -p ferric-pbc --example kxc_build_bench -- \
 //!     [--cell h2|lih|diamond] [--mesh 2,2,2] [--functional PBE] [--reps 3] \
-//!     [--radial 75] [--angular 302]
+//!     [--radial 75] [--angular 302] [--scf dense|rsgdf]
 //! ```
 
 use ferric_core::basis;
 use ferric_core::mol::{Atom, Molecule};
+use ferric_integrals::basis_bridge::PreparedBasis;
+use ferric_pbc::dense_aft::ExxDiv;
 use ferric_pbc::dft::{PeriodicGrid, PeriodicGridConfig, PeriodicXcConfig};
 use ferric_pbc::kuks::KPeriodicXcPolarized;
 use ferric_pbc::kuscf::KPointXcPolarized;
 use ferric_pbc::timing::{PbcTimings, StageClock};
-use ferric_pbc::{Cell, KPeriodicXc, KPointMesh, KPointXc};
+use ferric_pbc::{solve_krks, Cell, KJkKind, KPeriodicXc, KPointMesh, KPointXc, KRksConfig};
 use ndarray::Array2;
 use num_complex::Complex64;
 
@@ -43,6 +50,7 @@ struct Args {
     reps: usize,
     radial: usize,
     angular: usize,
+    scf: Option<String>,
 }
 
 fn parse_args() -> Res<Args> {
@@ -53,6 +61,7 @@ fn parse_args() -> Res<Args> {
         reps: 3,
         radial: 75,
         angular: 302,
+        scf: None,
     };
     let argv: Vec<String> = std::env::args().skip(1).collect();
     let mut it = argv.iter();
@@ -64,6 +73,7 @@ fn parse_args() -> Res<Args> {
             "--reps" => a.reps = val.parse()?,
             "--radial" => a.radial = val.parse()?,
             "--angular" => a.angular = val.parse()?,
+            "--scf" => a.scf = Some(val.clone()),
             "--mesh" => {
                 let v: Vec<usize> = val
                     .split(',')
@@ -140,21 +150,63 @@ fn print_timings(label: &str, t: &PbcTimings, reps: usize) {
         "[{label}] build: {:.4} s/call over {reps} calls",
         build / reps.max(1) as f64
     );
+    // Phase clocks are thread-summed: compare them as shares of their own sum.
     let sub: f64 = t.substages.iter().map(|s| s.wall_s).sum();
     for s in &t.substages {
         println!(
-            "[{label}]   {:<34} {:>9.4} s/call  {:>5.1}% of build (thread-summed)",
+            "[{label}]   {:<34} {:>9.4} thread-s/call  {:>5.1}% of phases",
             s.name,
             s.wall_s / reps.max(1) as f64,
-            100.0 * s.wall_s / build.max(1e-300)
+            100.0 * s.wall_s / sub.max(1e-300)
         );
     }
+    if rayon::current_num_threads() == 1 {
+        println!(
+            "[{label}]   {:<34} {:>9.4} s/call (build minus phases)",
+            "other (finite check, hermitise)",
+            (build - sub) / reps.max(1) as f64
+        );
+    }
+}
+
+/// One closed-shell SCF on `jk`; prints every stage and sub-stage.
+fn run_scf(cell: &Cell, bs: &basis::BasisSet, mesh: &KPointMesh, a: &Args, jk: &str) -> Res<()> {
+    let prep = PreparedBasis::new(cell.mol(), bs)?;
+    let mut cfg = KRksConfig::new(cell, ExxDiv::None, &a.functional);
+    cfg.grid.n_radial = a.radial;
+    cfg.grid.n_angular = a.angular;
+    let aux = match jk {
+        "dense" => None,
+        "rsgdf" => {
+            cfg.krhf.jk = KJkKind::RsGdf;
+            Some(PreparedBasis::new(
+                cell.mol(),
+                &basis::bundled("cc-pvdz-ri")?,
+            )?)
+        }
+        _ => return Err(format!("--scf takes dense or rsgdf, got {jk}").into()),
+    };
+    let total = StageClock::start();
+    let r = solve_krks(cell, &prep, aux.as_ref(), mesh, &cfg)?;
     println!(
-        "[{label}]   {:<34} {:>9.4} s/call  {:>5.1}%",
-        "other (finite check, hermitise)",
-        (build - sub) / reps.max(1) as f64,
-        100.0 * (build - sub) / build.max(1e-300)
+        "SCF {jk}: E {:.12} in {} iterations, {:.2} s wall",
+        r.scf.energy,
+        r.scf.iterations,
+        total.elapsed().0
     );
+    for s in &r.scf.timings.stages {
+        println!(
+            "  stage    {:<34} {:>9.3} s ({} calls)",
+            s.name, s.wall_s, s.calls
+        );
+    }
+    for s in &r.scf.timings.substages {
+        println!(
+            "  substage {:<34} {:>9.3} s ({} calls)",
+            s.name, s.wall_s, s.calls
+        );
+    }
+    Ok(())
 }
 
 fn main() -> Res<()> {
@@ -162,6 +214,9 @@ fn main() -> Res<()> {
     let (cell, bname) = cell_of(&a.cell)?;
     let bs = basis::bundled(bname)?;
     let mesh = KPointMesh::gamma_centred(&cell, a.mesh)?;
+    if let Some(jk) = &a.scf {
+        return run_scf(&cell, &bs, &mesh, &a, jk);
+    }
     let gcfg = PeriodicGridConfig {
         n_radial: a.radial,
         n_angular: a.angular,
