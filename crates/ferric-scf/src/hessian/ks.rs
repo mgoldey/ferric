@@ -1020,3 +1020,81 @@ fn rks_fixed_grid_hessian_core(
         resp,
     ))
 }
+
+/// The XC pieces of the analytic closed-shell Kohn-Sham Hessian, one at a
+/// time, as `crate::hessian::blocks` exposes the Hartree-Fock ones: the
+/// fixed-density XC skeleton and first-order XC matrix that
+/// [`rks_moving_grid_hessian`] adds, on the MOVING (production) grid (points
+/// riding their home atom, Becke weights differentiated), i.e. the second
+/// derivatives of the surface `ks_gradient::xc_gradient_closed`
+/// differentiates.
+///
+/// Refused with the Hessian's own typed errors: meta-GGA, VV10, range-
+/// separated and double hybrids, unequal short/long-range exchange, an
+/// angular-pruned grid and ghost atoms. These are closed-shell only (no
+/// spin-polarized moving-grid skeleton exists).
+pub mod xc_blocks {
+    use super::*;
+
+    /// `Ok` when [`hess_xc`] and [`vxc_deriv`] support `xc_name` on a grid
+    /// built with `cfg` for `mol`; otherwise the analytic KS Hessian's typed
+    /// refusal (no SCF or grid is built).
+    pub fn check(
+        mol: &Molecule,
+        xc_name: &str,
+        cfg: &ferric_dft::grid::AtomicGridConfig,
+    ) -> Result<(), FerricError> {
+        let xc = xc_def_from_name(xc_name)
+            .map_err(|e| FerricError::General(format!("XC Hessian pieces: libxc: {e:?}")))?;
+        functional_refusal(xc_name, &xc)?;
+        if cfg.prune.is_some() {
+            return Err(unsupported(
+                "an angular-pruned XC grid (grid_prune)",
+                "the pruned grid's weight response",
+            ));
+        }
+        if mol.atoms.iter().any(|a| a.ghost) {
+            return Err(unsupported("ghost atoms", "ghost-atom XC grid response"));
+        }
+        Ok(())
+    }
+
+    /// The production grid of `mol` for `xc_name` with `cfg`, after [`check`].
+    fn moving_grid(
+        mol: &Molecule,
+        xc_name: &str,
+        cfg: &ferric_dft::grid::AtomicGridConfig,
+    ) -> Result<FixedGridKs, FerricError> {
+        check(mol, xc_name, cfg)?;
+        FixedGridKs::new(mol, xc_name, cfg)
+    }
+
+    /// `∂²E_xc/∂x∂y` at fixed total density `d`, (3N, 3N), moving grid
+    /// (the XC part of the skeleton of [`rks_moving_grid_hessian`]).
+    pub fn hess_xc(
+        mol: &Molecule,
+        prep: &PreparedBasis,
+        xc_name: &str,
+        cfg: &ferric_dft::grid::AtomicGridConfig,
+        d: &Array2<f64>,
+    ) -> Result<Array2<f64>, FerricError> {
+        let grid = moving_grid(mol, xc_name, cfg)?;
+        let geo = XcGeometry::new(mol, prep)?;
+        grid.skeleton_hessian_moving(&geo, d, &XcMutants::default())
+    }
+
+    /// `∂V_xc/∂x` at fixed total density `d` for every coordinate
+    /// `x = 3·atom + axis` (length 3N, each `nbf × nbf`), moving grid (the XC
+    /// part of the first-order Fock matrix of [`rks_moving_grid_hessian`]).
+    pub fn vxc_deriv(
+        mol: &Molecule,
+        prep: &PreparedBasis,
+        xc_name: &str,
+        cfg: &ferric_dft::grid::AtomicGridConfig,
+        d: &Array2<f64>,
+    ) -> Result<Vec<Array2<f64>>, FerricError> {
+        let grid = moving_grid(mol, xc_name, cfg)?;
+        let geo = XcGeometry::new(mol, prep)?;
+        grid.first_order_fock_moving(&geo, d, &XcMutants::default())
+    }
+}

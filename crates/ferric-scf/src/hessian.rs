@@ -197,6 +197,8 @@ use ndarray::{s, Array1, Array2, ArrayView2};
 mod rohf;
 pub use rohf::{rohf_hessian, rohf_hessian_parts};
 mod ks;
+/// The XC Hessian pieces (moving grid), next to [`blocks`].
+pub use ks::xc_blocks;
 #[doc(hidden)]
 pub use ks::{
     rks_fixed_grid_fock_residual, rks_fixed_grid_hessian_parts_with,
