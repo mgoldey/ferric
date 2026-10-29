@@ -465,6 +465,58 @@ class AoIntegrals:
         omega: float | None = None,
         thresh: float = 1e-12,
     ) -> tuple[NDArray[np.float64], NDArray[np.float64]]: ...
+    def ao2mo(
+        self,
+        c1: NDArray[np.float64],
+        c2: NDArray[np.float64],
+        c3: NDArray[np.float64],
+        c4: NDArray[np.float64],
+        operator: Literal["coulomb", "erf", "erfc"] = "coulomb",
+        omega: float | None = None,
+        max_gb: float = 2.0,
+    ) -> NDArray[np.float64]:
+        """MO ERIs (pq|rs), shape (k1, k2, k3, k4), integral-direct (no nao^4
+        AO tensor; peak nao^2*k3*k4 plus the result, ValueError above max_gb)."""
+        ...
+    def df_mo(
+        self,
+        aux: BasisSet,
+        c1: NDArray[np.float64],
+        c2: NDArray[np.float64],
+        operator: Literal["coulomb", "erf", "erfc"] = "coulomb",
+        omega: float | None = None,
+    ) -> NDArray[np.float64]:
+        """Fitted B^P_pq (naux, k1, k2) with (pq|rs) ~ sum_P B^P_pq B^P_rs."""
+        ...
+    def grad_nuclear_repulsion(self) -> NDArray[np.float64]:
+        """dV_nn/dR, (natoms, 3), Hartree/Bohr."""
+        ...
+    def grad_hcore(self, density: NDArray[np.float64]) -> NDArray[np.float64]:
+        """sum D dh/dR at fixed D (T + V + V_ECP), (natoms, 3); D total."""
+        ...
+    def grad_overlap(self, w: NDArray[np.float64]) -> NDArray[np.float64]:
+        """sum W dS/dR, (natoms, 3), W used as given (SCF: subtract it)."""
+        ...
+    def grad_jk(
+        self,
+        density: NDArray[np.float64],
+        operator: Literal["coulomb", "erf", "erfc"] = "coulomb",
+        omega: float | None = None,
+    ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+        """(gJ, gK) = d/dR of 1/2 Tr[D J(D)] and 1/2 Tr[D K(D)] at fixed D.
+        Closed-shell HF: gJ - 0.5 gK; UHF: gJ(Da+Db) - gK(Da) - gK(Db)."""
+        ...
+    def grad_df_jk(
+        self,
+        aux: BasisSet,
+        density: NDArray[np.float64],
+        operator: Literal["coulomb", "erf", "erfc"] = "coulomb",
+        omega: float | None = None,
+        memory_budget_gb: float | None = None,
+    ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+        """Density-fitted grad_jk: d/dR of 1/2 Tr[D J_fit(D)] and 1/2 Tr[D K_fit(D)]
+        at fixed D, for df_jk(aux)'s fits. D must be positive semidefinite."""
+        ...
     def df_jk(
         self,
         aux: BasisSet,

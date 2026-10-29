@@ -48,6 +48,7 @@ ferric-cli = { path = "../ferric-cli" }
 pyo3 = { workspace = true }
 numpy = { workspace = true }
 ndarray = { workspace = true }
+rayon = { workspace = true }
 ctrlc = { workspace = true }
 
 [features]

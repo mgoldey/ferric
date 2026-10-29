@@ -9,6 +9,14 @@
 //! `AoIntegrals.df_jk(aux)` returns a `DfJk`: the production RI-J/RI-K
 //! fitters, built once and reused for every density.
 //!
+//! MO transforms: `ao2mo(c1, c2, c3, c4)` (integral-direct (pq|rs), never
+//! holding the nao⁴ AO tensor) and `df_mo(aux, c1, c2)` (fitted B^P_pq).
+//!
+//! Gradient pieces, each `(natoms, 3)` at fixed densities:
+//! `grad_nuclear_repulsion()`, `grad_hcore(D)`, `grad_overlap(W)` and
+//! `grad_jk(D)` (exact) / `grad_df_jk(aux, D)` (density-fitted); an SCF
+//! gradient is assembled from them in numpy.
+//!
 //! `einsum(spec, a, b)` exposes the contraction engine ferric's own
 //! correlation codes use (`einsum!`), with the same spec rules.
 //!
@@ -16,10 +24,6 @@
 //! `ferric_scf::rhf::RhfFockHook`, for `run_rhf(fock_hook=)` and
 //! `run_dft(fock_hook=)`, and `hook(D_a, D_b) -> (E, V_a, V_b)` to
 //! `ferric_scf::fock::SpinFockHook`, for `run_uhf` / `run_rohf(fock_hook=)`.
-//!
-//! Conventions match the drivers: Bohr, Hartree, AOs in ferric's shell order
-//! (`shell_offsets()`), and `jk()` takes the TOTAL density, so the closed-shell
-//! Fock matrix is `hcore() + J - 0.5 * K`.
 //!
 //! Conventions match the drivers: Bohr, Hartree, AOs in ferric's shell order
 //! (`shell_offsets()`), and `jk()` takes the TOTAL density, so the closed-shell
@@ -41,10 +45,11 @@ use ferric_scf::df_j::DfJ;
 use ferric_scf::df_k::DfK;
 use ferric_scf::fock::{JBuilder, KBuilder};
 use ferric_scf::screening::SchwarzBounds;
-use ndarray::{Array2, Array3, Array4};
+use ndarray::{Array2, Array3, Array4, Axis};
 use numpy::{PyArray2, PyArray3, PyArray4, PyArrayDyn, PyReadonlyArray2, PyReadonlyArrayDyn};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
+use rayon::prelude::*;
 
 /// Default cap on the dense `eri()` tensor, in GiB.
 const DEFAULT_ERI_MAX_GB: f64 = 2.0;
@@ -88,17 +93,24 @@ fn asymmetry(a: &Array2<f64>, what: &str) -> PyResult<f64> {
         .fold(0.0f64, |m, (x, y)| m.max((x - y).abs())))
 }
 
-/// Copy a density and check it is `(n, n)`, finite and symmetric: the J/K
-/// builds fold ERI permutational symmetry, so an asymmetric D would give a
-/// silently wrong K.
-fn checked_density(density: PyReadonlyArray2<'_, f64>, n: usize) -> PyResult<Array2<f64>> {
-    let d = density.as_array().to_owned();
-    if d.dim() != (n, n) {
+/// Copy a matrix and check it is `(n, n)` and finite.
+fn checked_square(m: PyReadonlyArray2<'_, f64>, n: usize, what: &str) -> PyResult<Array2<f64>> {
+    let m = m.as_array().to_owned();
+    if m.dim() != (n, n) {
         return Err(PyValueError::new_err(format!(
-            "density has shape {:?}, expected ({n}, {n})",
-            d.dim()
+            "{what} has shape {:?}, expected ({n}, {n})",
+            m.dim()
         )));
     }
+    asymmetry(&m, what)?;
+    Ok(m)
+}
+
+/// Copy a density and check it is `(n, n)`, finite and symmetric: the J/K
+/// builds (and the gradient contractions) fold ERI permutational symmetry,
+/// so an asymmetric D would give a silently wrong result.
+fn checked_density(density: PyReadonlyArray2<'_, f64>, n: usize) -> PyResult<Array2<f64>> {
+    let d = checked_square(density, n, "density")?;
     let asym = asymmetry(&d, "density")?;
     if asym > DENSITY_SYMMETRY_TOL {
         return Err(PyValueError::new_err(format!(
@@ -107,6 +119,133 @@ fn checked_density(density: PyReadonlyArray2<'_, f64>, n: usize) -> PyResult<Arr
         )));
     }
     Ok(d)
+}
+
+/// Copy MO coefficients and check they are `(nao, k)` and finite.
+fn checked_coeffs(c: PyReadonlyArray2<'_, f64>, nao: usize, what: &str) -> PyResult<Array2<f64>> {
+    let c = c.as_array().to_owned();
+    if c.nrows() != nao {
+        return Err(PyValueError::new_err(format!(
+            "{what} has shape {:?}, expected ({nao}, k)",
+            c.dim()
+        )));
+    }
+    if !c.iter().all(|v| v.is_finite()) {
+        return Err(PyValueError::new_err(format!("{what} contains NaN or inf")));
+    }
+    Ok(c)
+}
+
+/// (μν|rs) for every AO pair μν and the ket MO pair rs, from one shell pair
+/// (s1, s2) of the bra: all kets (s3 ≥ s4) are computed, scattered into
+/// `(n1·n2, nao, nao)`, and transformed with `c3`/`c4`. Returns the block as
+/// `(n1·n2, n3·n4)` rows in (a, b) order within the shell pair.
+fn half_transformed_pair(
+    eng: &mut Engine,
+    prep: &PreparedBasis,
+    (s1, s2): (usize, usize),
+    c3: &Array2<f64>,
+    c4: &Array2<f64>,
+) -> Result<Array2<f64>, String> {
+    let n = prep.nbasis();
+    let dims = prep.shell_dims();
+    let offs = prep.shell_offsets();
+    let (n1, n2) = (dims[s1], dims[s2]);
+    let mut g = Array3::<f64>::zeros((n1 * n2, n, n));
+    for s3 in 0..prep.nshells() {
+        for s4 in 0..=s3 {
+            let block = match eng.compute_quartet_checked(prep, s1, s2, s3, s4) {
+                Ok(Some(b)) => b,
+                Ok(None) => continue,
+                Err(status) => {
+                    return Err(format!(
+                        "ERI engine refused shell quartet ({s1},{s2}|{s3},{s4}): status {status}"
+                    ))
+                }
+            };
+            let (n3, n4) = (dims[s3], dims[s4]);
+            for ab in 0..n1 * n2 {
+                for c in 0..n3 {
+                    for d in 0..n4 {
+                        let v = block[(ab * n3 + c) * n4 + d];
+                        let (k, l) = (offs[s3] + c, offs[s4] + d);
+                        g[[ab, k, l]] = v;
+                        g[[ab, l, k]] = v;
+                    }
+                }
+            }
+        }
+    }
+    let (m3, m4) = (c3.ncols(), c4.ncols());
+    // (ab·λ, σ) · C4 -> (ab, λ, s); then C3ᵀ per ab -> (ab, r, s).
+    let gs = g
+        .into_shape_with_order((n1 * n2 * n, n))
+        .expect("contiguous")
+        .dot(c4)
+        .into_shape_with_order((n1 * n2, n, m4))
+        .expect("contiguous");
+    let mut out = Array2::<f64>::zeros((n1 * n2, m3 * m4));
+    for (ab, slab) in gs.axis_iter(Axis(0)).enumerate() {
+        let rs = c3.t().dot(&slab);
+        out.row_mut(ab)
+            .assign(&rs.into_shape_with_order(m3 * m4).expect("contiguous"));
+    }
+    Ok(out)
+}
+
+/// (pq|rs) = Σ C1_μp C2_νq C3_λr C4_σs (μν|λσ), integral-direct: one pass
+/// over bra shell pairs (parallel, 2-fold bra symmetry, 2-fold ket symmetry)
+/// builds the half-transformed `(nao, nao, n3·n4)`, then two GEMMs finish it.
+fn ao2mo_direct(
+    op: Operator,
+    prep: &PreparedBasis,
+    c: [&Array2<f64>; 4],
+) -> Result<Array4<f64>, String> {
+    let n = prep.nbasis();
+    let offs = prep.shell_offsets();
+    let dims = prep.shell_dims();
+    let (m1, m2, m3, m4) = (c[0].ncols(), c[1].ncols(), c[2].ncols(), c[3].ncols());
+    let pairs: Vec<(usize, usize)> = (0..prep.nshells())
+        .flat_map(|s1| (0..=s1).map(move |s2| (s1, s2)))
+        .collect();
+    let blocks = pairs
+        .par_iter()
+        .map_init(
+            || Engine::new_2e(op, prep, eri_precision()),
+            |eng, &pair| -> Result<_, String> {
+                let eng = eng.as_mut().map_err(|e| e.to_string())?;
+                Ok((pair, half_transformed_pair(eng, prep, pair, c[2], c[3])?))
+            },
+        )
+        .collect::<Result<Vec<_>, String>>()?;
+    let mut half = Array3::<f64>::zeros((n, n, m3 * m4));
+    for ((s1, s2), blk) in blocks {
+        for a in 0..dims[s1] {
+            for b in 0..dims[s2] {
+                let row = blk.row(a * dims[s2] + b);
+                let (mu, nu) = (offs[s1] + a, offs[s2] + b);
+                half.slice_mut(ndarray::s![mu, nu, ..]).assign(&row);
+                half.slice_mut(ndarray::s![nu, mu, ..]).assign(&row);
+            }
+        }
+    }
+    // C1ᵀ over μ, then C2ᵀ over ν per p.
+    let t1 = c[0]
+        .t()
+        .dot(
+            &half
+                .into_shape_with_order((n, n * m3 * m4))
+                .expect("contiguous"),
+        )
+        .into_shape_with_order((m1, n, m3 * m4))
+        .expect("contiguous");
+    let mut out = Array3::<f64>::zeros((m1, m2, m3 * m4));
+    for (p, slab) in t1.axis_iter(Axis(0)).enumerate() {
+        out.index_axis_mut(Axis(0), p).assign(&c[1].t().dot(&slab));
+    }
+    Ok(out
+        .into_shape_with_order((m1, m2, m3, m4))
+        .expect("contiguous"))
 }
 
 /// Dense (μν|λσ) over every shell quartet, scattered by 8-fold symmetry.
@@ -178,6 +317,12 @@ struct PyAoIntegrals {
 impl PyAoIntegrals {
     fn aux_prep(&self, aux: &PyBasisSet) -> PyResult<PreparedBasis> {
         PreparedBasis::new(&self.mol, &aux.inner).map_err(make_err)
+    }
+    /// dV_nn/dR: `oneelectron_gradient` at D = W = 0 is exactly its
+    /// nuclear-repulsion term (every other term is linear in D or W).
+    fn nuclear_gradient(&self) -> Result<Array2<f64>, FerricError> {
+        let zero = Array2::<f64>::zeros((self.prep.nbasis(), self.prep.nbasis()));
+        ferric_scf::gradient::oneelectron_gradient(&self.mol, &self.prep, &zero, &zero, None)
     }
 }
 
@@ -362,6 +507,196 @@ impl PyAoIntegrals {
         Ok((
             PyArray2::from_owned_array(py, j),
             PyArray2::from_owned_array(py, k),
+        ))
+    }
+    /// MO-basis ERIs (pq|rs) = Σ C1_μp C2_νq C3_λr C4_σs (μν|λσ), shape
+    /// (k1, k2, k3, k4), chemists' notation.
+    ///
+    /// Integral-direct: the nao⁴ AO tensor is never stored; peak memory is
+    /// the half-transformed nao²·k3·k4 plus the result, and above `max_gb`
+    /// GiB it raises `ValueError`. Put the smaller orbital sets in `c3`/`c4`.
+    #[pyo3(signature = (c1, c2, c3, c4, operator="coulomb", omega=None, max_gb=DEFAULT_ERI_MAX_GB))]
+    #[allow(clippy::too_many_arguments)]
+    fn ao2mo<'py>(
+        &self,
+        py: Python<'py>,
+        c1: PyReadonlyArray2<'py, f64>,
+        c2: PyReadonlyArray2<'py, f64>,
+        c3: PyReadonlyArray2<'py, f64>,
+        c4: PyReadonlyArray2<'py, f64>,
+        operator: &str,
+        omega: Option<f64>,
+        max_gb: f64,
+    ) -> PyResult<Bound<'py, PyArray4<f64>>> {
+        let op = parse_operator(operator, omega)?;
+        let n = self.prep.nbasis();
+        let c = [
+            checked_coeffs(c1, n, "c1")?,
+            checked_coeffs(c2, n, "c2")?,
+            checked_coeffs(c3, n, "c3")?,
+            checked_coeffs(c4, n, "c4")?,
+        ];
+        let k: Vec<f64> = c.iter().map(|m| m.ncols() as f64).collect();
+        let words = (n * n) as f64 * k[2] * k[3] + k.iter().product::<f64>();
+        let gb = words * 8.0 / f64::from(1u32 << 30);
+        if gb > max_gb {
+            return Err(PyValueError::new_err(format!(
+                "ao2mo needs {gb:.2} GiB > max_gb={max_gb} (half-transformed nao^2*k3*k4 plus \
+                 the result); use df_mo(), or raise max_gb"
+            )));
+        }
+        let prep = &self.prep;
+        let out = py
+            .allow_threads(|| ao2mo_direct(op, prep, [&c[0], &c[1], &c[2], &c[3]]))
+            .map_err(make_err)?;
+        Ok(PyArray4::from_owned_array(py, out))
+    }
+    /// Fitted 3-index MO tensor B^P_pq = Σ_Q (V^-1/2)_PQ (Q|μν) C1_μp C2_νq,
+    /// shape (naux, k1, k2), so that (pq|rs) ≈ Σ_P B^P_pq B^P_rs. V is the
+    /// (P|Q) metric under the same operator (RI-MP2's `metric_inverse_sqrt`:
+    /// Cholesky, or a regularized eigh for erf).
+    #[pyo3(signature = (aux, c1, c2, operator="coulomb", omega=None))]
+    fn df_mo<'py>(
+        &self,
+        py: Python<'py>,
+        aux: &PyBasisSet,
+        c1: PyReadonlyArray2<'py, f64>,
+        c2: PyReadonlyArray2<'py, f64>,
+        operator: &str,
+        omega: Option<f64>,
+    ) -> PyResult<Bound<'py, PyArray3<f64>>> {
+        let op = parse_operator(operator, omega)?;
+        let n = self.prep.nbasis();
+        let (c1, c2) = (checked_coeffs(c1, n, "c1")?, checked_coeffs(c2, n, "c2")?);
+        let dfbs = self.aux_prep(aux)?;
+        let obs = &self.prep;
+        let b = py
+            .allow_threads(|| -> Result<Array3<f64>, FerricError> {
+                let raw = eri3_tensor(op, obs, &dfbs)?;
+                let mo = ferric_mp2::mo_transform::transform_3center_ov(&raw, &c1, &c2);
+                let v = coulomb_metric_2c(op, &dfbs)?;
+                let v_is = ferric_mp2::rimp2::metric_inverse_sqrt(&v, op)?;
+                Ok(ferric_mp2::mo_transform::dress_3index(&mo, &v_is))
+            })
+            .map_err(make_err)?;
+        Ok(PyArray3::from_owned_array(py, b))
+    }
+    /// Nuclear-repulsion gradient dV_nn/dR, shape (natoms, 3), Hartree/Bohr.
+    fn grad_nuclear_repulsion<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray2<f64>>> {
+        let g = py
+            .allow_threads(|| self.nuclear_gradient())
+            .map_err(make_err)?;
+        Ok(PyArray2::from_owned_array(py, g))
+    }
+    /// Σ D_μν ∂h_μν/∂R at fixed D, shape (natoms, 3): kinetic, nuclear
+    /// attraction (basis-centre and operator derivatives) and V_ECP. `D` is
+    /// the TOTAL density. The overlap (Pulay) term is `grad_overlap(W)`.
+    fn grad_hcore<'py>(
+        &self,
+        py: Python<'py>,
+        density: PyReadonlyArray2<'py, f64>,
+    ) -> PyResult<Bound<'py, PyArray2<f64>>> {
+        let d = checked_density(density, self.prep.nbasis())?;
+        let g = py
+            .allow_threads(|| -> Result<Array2<f64>, FerricError> {
+                let zero = Array2::<f64>::zeros(d.dim());
+                let (mol, prep) = (&self.mol, &self.prep);
+                let mut g = ferric_scf::gradient::oneelectron_gradient(mol, prep, &d, &zero, None)?;
+                g -= &self.nuclear_gradient()?;
+                g += &ferric_scf::gradient::ecp_gradient(mol, prep, &d)?;
+                Ok(g)
+            })
+            .map_err(make_err)?;
+        Ok(PyArray2::from_owned_array(py, g))
+    }
+    /// Σ W_μν ∂S_μν/∂R, shape (natoms, 3), for any (n, n) `W`, used as given
+    /// (no symmetrization, no sign). For an SCF, W is the energy-weighted
+    /// density and the term enters the gradient with a minus sign.
+    fn grad_overlap<'py>(
+        &self,
+        py: Python<'py>,
+        w: PyReadonlyArray2<'py, f64>,
+    ) -> PyResult<Bound<'py, PyArray2<f64>>> {
+        let w = checked_square(w, self.prep.nbasis(), "W")?;
+        let prep = &self.prep;
+        let g = py
+            .allow_threads(|| ferric_scf::gradient::overlap_deriv_contract(prep, &w))
+            .map_err(make_err)?;
+        Ok(PyArray2::from_owned_array(py, g))
+    }
+    /// Two-electron integral-derivative terms at fixed D, each (natoms, 3):
+    /// `(gJ, gK)` with gJ = ∂/∂R ½Tr[D J(D)] and gK = ∂/∂R ½Tr[D K(D)].
+    ///
+    /// Closed-shell HF: gJ - 0.5 gK (D total). UHF: gJ(D_a + D_b) - gK(D_a)
+    /// - gK(D_b). A bilinear term follows by polarization,
+    /// E(D1, D2) = [E(D1 + D2) - E(D1 - D2)] / 4.
+    #[pyo3(signature = (density, operator="coulomb", omega=None))]
+    fn grad_jk<'py>(
+        &self,
+        py: Python<'py>,
+        density: PyReadonlyArray2<'py, f64>,
+        operator: &str,
+        omega: Option<f64>,
+    ) -> PyResult<(Bound<'py, PyArray2<f64>>, Bound<'py, PyArray2<f64>>)> {
+        let op = parse_operator(operator, omega)?;
+        let d = checked_density(density, self.prep.nbasis())?;
+        let prep = &self.prep;
+        let (gj, gk) = py
+            .allow_threads(|| -> Result<_, FerricError> {
+                let bounds = SchwarzBounds::compute(op, prep)?;
+                let gj = ferric_scf::gradient::twoelectron_j_gradient(prep, op, &bounds, &d)?;
+                // twoelectron_gradient = gJ - ½gK (Γ = ½DD - ¼DD exchange).
+                let g2 = ferric_scf::gradient::twoelectron_gradient(prep, op, &bounds, &d)?;
+                let gk = 2.0 * (&gj - &g2);
+                Ok((gj, gk))
+            })
+            .map_err(make_err)?;
+        Ok((
+            PyArray2::from_owned_array(py, gj),
+            PyArray2::from_owned_array(py, gk),
+        ))
+    }
+    /// Density-fitted counterpart of `grad_jk`: `(gJ, gK)`, the gradients
+    /// of ½Tr[D J_fit(D)] and ½Tr[D K_fit(D)] at fixed D for the fits
+    /// `df_jk(aux, operator, omega)` builds. They differentiate the 3-index
+    /// integrals, the auxiliary-basis centres and the metric (RI-J: Cholesky
+    /// inverse; RI-K: DfK's truncated V^-1/2, see ferric_scf::df_gradient).
+    ///
+    /// `D` must be positive semidefinite for the K term (every SCF density
+    /// is, total or per spin); an indefinite one raises. So unlike `grad_jk`,
+    /// a bilinear K term cannot come from polarizing D1 - D2.
+    #[pyo3(signature = (aux, density, operator="coulomb", omega=None, memory_budget_gb=None))]
+    fn grad_df_jk<'py>(
+        &self,
+        py: Python<'py>,
+        aux: &PyBasisSet,
+        density: PyReadonlyArray2<'py, f64>,
+        operator: &str,
+        omega: Option<f64>,
+        memory_budget_gb: Option<f64>,
+    ) -> PyResult<(Bound<'py, PyArray2<f64>>, Bound<'py, PyArray2<f64>>)> {
+        use ferric_scf::df_gradient::{df_jk_gradient, DfKChannel};
+        let op = parse_operator(operator, omega)?;
+        let d = checked_density(density, self.prep.nbasis())?;
+        let budget = ferric_scf::rhf::resolve_three_index_budget(
+            super::budget_bytes_from_gb(memory_budget_gb).unwrap_or(0),
+        );
+        let dfbs = self.aux_prep(aux)?;
+        let (natoms, obs) = (self.mol.atoms.len(), &self.prep);
+        let (gj, gk) = py
+            .allow_threads(|| -> Result<_, FerricError> {
+                let gj = df_jk_gradient(natoms, obs, &dfbs, op, Some(&d), &[], budget)?;
+                let k = [DfKChannel {
+                    density: &d,
+                    alpha: 0.5,
+                }];
+                let gk = df_jk_gradient(natoms, obs, &dfbs, op, None, &k, budget)?;
+                Ok((gj, gk))
+            })
+            .map_err(make_err)?;
+        Ok((
+            PyArray2::from_owned_array(py, gj),
+            PyArray2::from_owned_array(py, gk),
         ))
     }
     /// Density-fitted J/K builders against the auxiliary basis `aux`: the
