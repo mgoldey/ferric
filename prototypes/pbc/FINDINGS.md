@@ -6247,6 +6247,104 @@ Pure n^-3 gives rho = 0.356. The total row reproduces e3d_n5.py.
 - Both "~ X": (i) is indicated but reported as UNDETERMINED, pending an E_inf-robust X_dir(z).
 - Anything else: UNDETERMINED.
 
+### Addendum 2026-10-29: FIQ Stage 1 result (issue #230)
+
+Pre-registration commit e2f1f1c8b (step 0, bands, gates, decision rule) was made before any FIQ number existed.
+Code: `prototypes/pbc/kmp2_head/fiq.py`.
+- Raw per-q arrays (V_body, V_head, D for every contraction variant) are in `wiki/data/pbc-head-anomaly/fiq/`
+  of the main checkout: 466 npz, 223 MB, untracked.
+- Manifest: `wiki/data/pbc-head-anomaly/fiq_manifest.sha256` (sha256 2cf1eab4...ddd1).
+- Python 3.11, numpy 1.26.4, PySCF 2.13.1; single-thread BLAS per worker; 6 workers.
+
+**Timing (shared box, UNVERIFIED).**
+- Load averages (1-min) at run start/end:
+  - A0 n0 = 3: 15.9 / 15.7, wall 149 s for 54 q.
+  - A0 n0 = 4: 12.0 / 14.0, wall 373 s for 128 q.
+  - Pilot: 10.4 / 11.9, wall 42 s for 10 q.
+  - Stage 1: 12.1 / 9.7, wall 896 s for 274 q.
+- Per-q cost (one worker) is 14.7-15.4 s at steady state. The pilot mean, 22.5 s, includes the one-time worker
+  setup. The Stage-1 mean is 19.5 s, with a peak of 57 s while the box load rose.
+- About 12 s of each q is the AO pair FT, which is Python-loop bound. The K sphere is prec 1e-10, about 58k K.
+- The design's abort rule ("> 20 s per q: lower gcut to precision 1e-12") did not trigger at steady state.
+  - As written it cannot apply: the stored V and A0 already use the looser prec-1e-10 sphere.
+  - The rule assumed a 1e-14 production sphere.
+
+**Measured: anchors and mutants.**
+
+| check | result | gate | mutant (must fail) |
+|---|---|---|---|
+| A0 z n0 = 3 (27 q): per-q / total vs stored V | 2.1e-18 / 0 | 1e-12 | mut_phase (leg-1 k' = k_i): 2.3e-5 per q |
+| A0 [111] n0 = 3 | 2.8e-18 / 2.1e-17 | 1e-12 | mut_phase: 4.9e-6 |
+| A0 z n0 = 4 (64 q) | 2.7e-18 / 2.1e-17 | 1e-12 | mut_phase 1.3e-5; ws_full (interpolant without WS half weights) 9.6e-10 |
+| A0 [111] n0 = 4 | 4.8e-18 / 2.8e-17 | 1e-12 | mut_phase 2.6e-6; ws_full 1.4e-10 |
+| A1 (i a \| j b), k_a = (0.137, -0.071, 0.213).b, vs PySCF 2.13 AFTDF 61^3 (complex) | 1.34e-13 (K sphere 1e-10 and 1e-16) | 1e-10 | mut_phase: 1.7e-2 |
+| A2 Duffy, synthetic N = 12 vs 16 / smooth periodic exact | 2.0e-10 rel / 1.1e-16 | 1e-9 / 1e-13 | no Jacobian: 1.7e-10 (passes) / 2.3 (fails) |
+| A4 fixed-k pairing: P_num(fixed) vs P_code(fixed), relative | 1.29e-8 (z), 1.11e-8 ([111]); same at n0 = 4 | 1e-6 | |
+| A5 body: limit of the lambda = 0 integrand minus r0 | <= 3.1e-12 | 0.01 \|X\|min | |
+| A5 time reversal F(-q) vs F(q), relative (5 generic q) | 3.6e-16 | 1e-12 | |
+
+The no-Jacobian mutant passes the N-convergence half of A2 and fails only the exact-value half. N-convergence alone
+would not have caught it.
+
+**Measured: Stage 1** (direct channel; x n^-3; Lebedev 50, t = 0.04/0.02/0.01, 'none' interpolant).
+
+| | z n0 = 3 | z n0 = 4 | [111] n0 = 3 | [111] n0 = 4 |
+|---|---|---|---|---|
+| P_num = -Phi[F_lim - r0] | +3.999000e-3 | +4.012193e-3 | +5.360561e-3 | +5.373363e-3 |
+| P_code (true vectors) | +3.999000e-3 | +4.012193e-3 | +5.360561e-3 | +5.373363e-3 |
+| **Delta** | **+3.0e-11** | +6.2e-11 | **+5.4e-11** | +6.0e-11 |
+| Delta_L / Delta_Q (lambda split) | +5.1e-11 / -1.7e-11 | +6.8e-11 / -6.4e-12 | +3.9e-11 / +1.6e-11 | +4.3e-11 / +1.8e-11 |
+| G_t (t-sets) | 2.3e-11 | 8.3e-12 | 5.8e-12 | 4.6e-13 |
+| G_leb (Lebedev 50 vs 38) | 3.8e-12 | 1.6e-12 | 4.0e-14 | 8.8e-13 |
+| G_int (ewald vs none) | 1.6e-12 | 1.4e-12 | 2.2e-13 | 1.0e-13 |
+| G_int_v0 (see note) | 2.4e-6 | 4.9e-7 | 9.1e-6 | 8.0e-6 |
+| l >= 6 content (rms fit residual / rms of h) | 2.8e-12 / 6.5e-3 | 5.0e-13 / 6.6e-3 | 5.9e-13 / 6.6e-3 | 1.0e-12 / 6.6e-3 |
+| M1: P_num(fixed) - P_num(true) | +4.83e-5 | +3.82e-5 | +1.29e-5 | +6.4e-6 |
+| reachability, injected X_dir (l = 4 / l = 0) | +2.4835e-4 / same | same | -8.6531e-5 / same | same |
+
+Gate limits: G_t and G_leb <= 0.05 |X|min (2.0e-6 z, 3.3e-6 [111]); G_int <= 0.3 |X|min (1.2e-5, 2.0e-5).
+
+Note on G_int: as first run, P_code('ewald') passed the ewald dF to `bloch_head.head_vectors`, but its pairing
+formula still used the unshifted eps. That is G_int_v0. After the run it was corrected to use the ewald
+interpolant's own eigenvalues (eps_occ - v_M) everywhere; that is G_int. The pre-registered gate passes under both.
+
+**Pre-registered verdict (Stage 1, 2026-10-29): the "~ 0" row at both orientations.**
+- |Delta| <= 6.2e-11, against bands of 6.03e-6 (z) and 9.90e-6 ([111]).
+- The ERI-side reading (i) is REFUTED: the coded direct-channel q = 0 head (cubic linear head plus the Phi-tensor
+  quadratic head, with Bloch-paired vectors) equals the numerical q -> 0 limit of the fixed-inner integrand.
+- Separating (ii)-ERI from the mean-field side needs Stage 2 (D_num), which was not run.
+
+**Interpretation (provisional, 2026-10-29).**
+- The agreement is about 1e-8 relative. A4 shows the same 1.1-1.3e-8 relative error on the fixed-k vectors, where
+  P_code is exact by definition. The floor is therefore the finite-difference step of the stored A (delta = 1e-4),
+  not a shared arithmetic.
+- The two routes share the pair-FT kernel, the Fourier interpolant and the Phi constants. They share no derivative,
+  extrapolation or contraction code.
+- Not "too clean" in the pre-registered sense, which was Delta = X within 2%. Still, a load-bearing negative
+  earns an independent audit before any lane closes. The specific scope question for that audit: does the Lyness
+  form R_q = -Phi[F_lim - r0] hold for this integrand? Stage 2 tests exactly that.
+- Weak spots, named:
+  - **Reachability here is close to algebraic.** The injection is linear, and the K4 projection of K4 is 1 by
+    construction, so it tests only the Richardson step and the bookkeeping.
+  - **The non-algebraic sensitivity evidence is M1.** Replacing Bloch pairing by fixed-k pairing moves Delta by
+    4.8e-5 (z) and 1.3e-5 ([111], n0 = 3), with a resolution of about 1e-10.
+  - **At [111], n0 = 4 the H5-sized move (6.4e-6) sits inside the zero band.** The band classifies, but it would
+    not by itself flag an error of that size there.
+- Step 0 changes what Stage 2 can decide:
+  - X_dir(z) changes sign with the E_inf model (rho_dir = -0.10 over n = 3..5);
+  - at z the exchange channel carries a residual of about the same size as the direct one, with the opposite sign.
+  - So the "D_num ~ X_dir" band at z is ill-posed as registered. FIQ also covers only the direct channel.
+- Before Stage 2 is scheduled:
+  - fix an E_inf-robust X_dir, for example from a same-parity or parity-term fit;
+  - decide whether the exchange channel needs its own FIQ leg.
+
+**Stage 2 cost (estimate from the measured per-q cost; not run).**
+- The design's q count: about 2,700 (z) + 2,300 ([111]) = about 5,000 q. That covers Duffy N = 12, the N = 16 check
+  on a quarter subset, and the meshes n_q = 4..12, assuming the D4h / D3d wedge reduction.
+- The wedge reduction needs anchor A3 first. Only time reversal has been checked so far.
+- At 15-20 s per q per worker on this box: about 3.5-4.6 h on 6 workers. The design assumed 8 s per q and 2.5 h.
+- The pair FT is Python-loop bound. A vectorised s-shell kernel (anchored by A0) would probably cut this 2-3x.
+
 ## Full timing series on libint 2.13.1: MWE, baseline, ω sweep, column rotation (measured 2026-09-30 16:25-16:55, head 24c53e63)
 
 The box had desktop load (Chrome), so the gate was relaxed to a 1-minute load below 2.5. Start loads were 1.6-2.5.
