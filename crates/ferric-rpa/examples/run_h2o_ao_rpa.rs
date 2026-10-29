@@ -194,7 +194,7 @@ fn main() {
             let (evals, _) = eps_mat
                 .eigh(UPLO::Upper)
                 .map_err(|e| ferric_core::FerricError::General(format!("MO-RPA eigh: {e}")))?;
-            let contrib: f64 = evals.iter().map(|&lam| lam.ln() + (1.0 - lam)).sum();
+            let contrib = ferric_rpa::energy::trace_log_sum(&evals);
             Ok(wk * contrib)
         })
         .collect();

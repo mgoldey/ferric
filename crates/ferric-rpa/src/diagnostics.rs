@@ -175,7 +175,7 @@ pub fn u_ri_drpa_energy(
         }
         let evals = ferric_core::linalg::eigvalsh_dc(&eps_mat, ferric_core::linalg::Uplo::Upper)
             .map_err(|e| FerricError::General(format!("U-RI-dRPA eigh: {e}")))?;
-        let contrib: f64 = evals.iter().map(|&lam| lam.ln() + (1.0 - lam)).sum();
+        let contrib = crate::energy::trace_log_sum(&evals);
         Ok(wk * contrib)
     })?;
 
@@ -201,7 +201,7 @@ pub fn ri_drpa_energy(
         let evals = ri_drpa_eigenvalues(b_ov, eps_occ, eps_vir, omega)?;
         // ln det(I + Π) − tr(Π) where Π = −χ₀ ≥ 0
         // = Σ_α [ln(λ_α) + (1 − λ_α)] with λ_α = 1 + μ_α ≥ 1
-        let contrib: f64 = evals.iter().map(|&lam| lam.ln() + (1.0 - lam)).sum();
+        let contrib = crate::energy::trace_log_sum(&evals);
         Ok(wk * contrib)
     })?;
     let e_c: f64 = contribs.iter().sum();
