@@ -1092,7 +1092,7 @@ fn injected_rohf_density_and_mo_guesses_reach_the_same_state() {
         (
             "bad MOs",
             Some(Array2::<f64>::zeros((n, n + 1))),
-            "solve_rohf_injected: initial MO shape",
+            "ROHF: initial MO shape",
         ),
     ] {
         let (j, k) = direct_pair(&su, &cfg);
