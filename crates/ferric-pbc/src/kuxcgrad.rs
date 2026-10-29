@@ -1321,6 +1321,29 @@ pub fn kpoint_roks_gradient(
     parts.roks_gradient("kpoint_roks_gradient", jk, &ro_input(scf), functional, cfg)
 }
 
+/// Refuse a k-point ROKS meta-GGA derivative on the RS-GDF J/K by name: the
+/// k-ROKS meta-GGA SCF refuses RS-GDF ([`crate::kroks`]), so no such state is
+/// validated, and the derivative must not run on a hand-built one either.
+/// Shared with [`crate::kuxcstress::kpoint_roks_stress`].
+pub(crate) fn refuse_roks_mgga_on_rsgdf(
+    who: &str,
+    functional: &str,
+    rsgdf: bool,
+) -> Result<(), FerricError> {
+    if rsgdf && crate::dft::is_meta_gga_name(functional) {
+        return Err(PeriodicDftError::Unsupported {
+            feature: "ROKS meta-GGA derivative on RS-GDF",
+            reason: format!(
+                "{who}: {functional}: the k-point ROKS SCAN / r2SCAN force and stress are \
+                 validated on the dense-AFT J/K only (the k-ROKS meta-GGA SCF refuses RS-GDF, \
+                 #492)"
+            ),
+        }
+        .into());
+    }
+    Ok(())
+}
+
 /// The cell, basis, mesh and hcore of a ROKS force (the arguments
 /// [`kpoint_roks_gradient`] and the routed Gamma ROKS force share).
 pub(crate) struct RoParts<'a> {
@@ -1341,6 +1364,7 @@ impl RoParts<'_> {
         functional: &str,
         cfg: &KUksGradConfig,
     ) -> Result<KUksGradient, FerricError> {
+        refuse_roks_mgga_on_rsgdf(who, functional, matches!(jk, KGradJk::RsGdf(_)))?;
         let (resp, exch, rsh) =
             grid_response(self.cell, self.prep, self.mesh, functional, cfg, who)?;
         uks_gradient_with(

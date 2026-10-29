@@ -223,12 +223,18 @@ const DERIV_ANCHOR_BAR: f64 = 1e-11;
 /// The FD row of [`h3_kroks_scan_force_and_stress_match_fd_row`]. Measured:
 /// force 4.9e-10, `dE/dε` (1,2) 8.4e-11 at h = 5e-5 (orbital gradient
 /// 5.7e-12). The diagonal strains (1,1) and (2,2) carry an h^2 stencil error
-/// of ~3e-8 at this h, so the per-commit row uses the shear (1,2); the weekly
-/// file extrapolates.
+/// of ~3e-8 at this h, so the diagonal component has its own bar
+/// ([`FD_DIAG_BAR`]).
 const FD_H: f64 = 5e-5;
 const FD_BAR: f64 = 1e-8;
 const FD_FORCE_ROW: [(usize, usize); 2] = [(0, 2), (2, 1)];
 const FD_STRAIN_ROW: [(usize, usize); 1] = [(1, 2)];
+/// A diagonal strain (a volume-term defect shows here) at the same h, with a
+/// looser bar: its raw h^2 stencil error is 3.2e-8 at h = 5e-5 (Richardson
+/// would cost two more SCFs; the weekly file extrapolates). The derivative
+/// mutants miss the stress by >= 3.3e-2.
+const FD_DIAG_ROW: [(usize, usize); 1] = [(1, 1)];
+const FD_DIAG_BAR: f64 = 1e-7;
 const MUTANT_BAR: f64 = 1e-5;
 
 /// EXACTNESS ANCHOR 1 for the derivatives: the singlet k-ROKS (H2, 1x1x3)
@@ -287,7 +293,8 @@ fn fully_polarized_k_roks_scan_force_and_stress_equal_k_uks() {
 
 /// The POLARIZED check per commit: on the H3 doublet (N_alpha = 2, N_beta =
 /// 1, a genuine closed-open-virtual ROHF state), 1x1x3 (complex Bloch AOs),
-/// the SCAN force (two components) and `dE/dε` (one shear component) against
+/// the SCAN force (two components) and `dE/dε` (one shear and one diagonal
+/// component, the latter at a looser bar) against
 /// the central FD of ferric's own converged k-ROKS energy (h = 5e-5). The
 /// β `V^τ` dropped from the Pulay Fock (`TauNoVxcBeta`, Fock guard skipped)
 /// is refused by the ROHF orbital-gradient gate, and `V^τ` dropped with the
@@ -318,6 +325,24 @@ fn h3_kroks_scan_force_and_stress_match_fd_row() {
     );
     assert!(wf < FD_BAR, "force {wf:e}");
     assert!(ws < FD_BAR, "stress {ws:e}");
+    let d_h = fd_roks_stress(&cell, n, f, FD_H, &FD_DIAG_ROW);
+    let wd = worst_stress(&s.de_deps, &d_h, &FD_DIAG_ROW);
+    eprintln!("H3 {f} dE/deps (1,1) vs FD {wd:.2e} (raw, h^2-limited)");
+    assert!(wd < FD_DIAG_BAR, "diagonal stress {wd:e}");
+    // The volume (grid-weight) term of the stress dropped misses the diagonal.
+    let sv = roks_stress(
+        &fx,
+        &r.scf,
+        f,
+        &scfg(&fx, Some(KXcStressMutation::NoWeightDeriv), None),
+    )
+    .unwrap();
+    let mv = worst_stress(&sv.de_deps, &d_h, &FD_DIAG_ROW);
+    eprintln!("H3 {f} NoWeightDeriv: (1,1) miss {mv:.2e}");
+    assert!(
+        mv > MUTANT_BAR,
+        "NoWeightDeriv survives the diagonal row: {mv:e}"
+    );
     // β V^τ dropped from the rebuilt Fock (guard skipped): on a ROHF state
     // the orbital-gradient gate, evaluated on the rebuilt Focks, refuses it.
     let e = roks_force(
@@ -368,6 +393,75 @@ fn h3_kroks_scan_force_and_stress_match_fd_row() {
     );
     eprintln!("H3 {f} V^tau dropped, gate off: force miss {mf:.2e}, dE/deps miss {ms:.2e}");
     assert!(mf > MUTANT_BAR && ms > MUTANT_BAR, "{mf:e} {ms:e}");
+}
+
+/// Defence in depth: the ROKS meta-GGA force and stress refuse the RS-GDF
+/// J/K by name before any integral, even for a hand-supplied state (the SCF
+/// already refuses to make one; here a converged dense-AFT SCAN state is
+/// handed in with an RS-GDF source).
+#[test]
+fn kroks_meta_gga_derivatives_refuse_rsgdf() {
+    use ferric_pbc::dense_aft::ExxDiv;
+    use ferric_pbc::kgrad::{KGradJk, KRsGdfGradSource};
+    use ferric_pbc::kstress::KStressJk;
+    use ferric_pbc::rsgdf::kpoint::{KRsGdf, KRsGdfConfig};
+    use ferric_pbc::rsgdf::RsGdfConfig;
+    let cell = cube_cell(&H3, 2);
+    let n = [1, 1, 1];
+    let fx = deriv_fx(&cell, &s05(), n);
+    let r = kroks(&cell, &s05(), n, "SCAN", &uniform_grid(&cell));
+    let aux = prep_for(&cell, &single_s_h(1.0));
+    let kc = KRsGdfConfig {
+        gdf: RsGdfConfig {
+            omega: 0.8,
+            exxdiv: ExxDiv::Ewald,
+            budget_bytes: Some(AMPLE),
+            ..Default::default()
+        },
+        mutation: None,
+    };
+    let gdf = KRsGdf::build(&cell, &fx.prep, &aux, &fx.mesh, &fx.hk.s, &kc).unwrap();
+    let src = || KRsGdfGradSource {
+        gdf: &gdf,
+        cfg: &kc,
+        aux: &aux,
+    };
+    for f in FUNCTIONALS {
+        let e = ferric_pbc::kuxcgrad::kpoint_roks_gradient(
+            &fx.cell,
+            &fx.prep,
+            &fx.mesh,
+            &fx.hcfg,
+            &fx.hk,
+            KGradJk::RsGdf(src()),
+            &r.scf,
+            f,
+            &gcfg(&fx, None, None),
+        )
+        .expect_err("ROKS meta-GGA force on RS-GDF")
+        .to_string();
+        assert!(
+            e.contains("kpoint_roks_gradient") && e.contains("ROKS meta-GGA derivative on RS-GDF"),
+            "{f}: {e}"
+        );
+        let e = ferric_pbc::kuxcstress::kpoint_roks_stress(
+            &fx.cell,
+            &fx.prep,
+            &fx.mesh,
+            &fx.hcfg,
+            &fx.hk,
+            KStressJk::RsGdf(src()),
+            &r.scf,
+            f,
+            &scfg(&fx, None, None),
+        )
+        .expect_err("ROKS meta-GGA stress on RS-GDF")
+        .to_string();
+        assert!(
+            e.contains("kpoint_roks_stress") && e.contains("ROKS meta-GGA derivative on RS-GDF"),
+            "{f}: {e}"
+        );
+    }
 }
 
 /// The k-ROKS meta-GGA is validated on the dense-AFT J/K only: on the RS-GDF

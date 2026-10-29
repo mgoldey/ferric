@@ -214,7 +214,8 @@ fn route(
 /// The refusal of the NATIVE Gamma force / stress entries ([`crate::grad`],
 /// [`crate::stress`]) for a meta-GGA, pointing at this module for closed
 /// shell (the native XC derivatives have no tau term) and at the 1x1x1
-/// k-point UKS for open shell (the Gamma UKS / ROKS meta-GGA is energy only).
+/// k-point UKS / ROKS (library) for open shell (the Gamma UKS / ROKS
+/// meta-GGA is energy only).
 pub(crate) fn refuse_native_mgga(who: &str, functional: &str) -> Result<(), FerricError> {
     if crate::dft::is_meta_gga_name(functional) {
         return Err(FerricError::General(format!(
@@ -222,7 +223,8 @@ pub(crate) fn refuse_native_mgga(who: &str, functional: &str) -> Result<(), Ferr
              term: closed shell, use gamma_mgga::gamma_rks_mgga_gradient / \
              gamma_rks_mgga_stress (the 1x1x1 k-point route, dense-AFT J); open shell (UKS / \
              ROKS), the Gamma meta-GGA is energy only and the k-point UKS on a 1x1x1 mesh \
-             has the SCAN / r2SCAN force and stress"
+             has the SCAN / r2SCAN force and stress (the k-point ROKS one too, library \
+             only: kuxcgrad::kpoint_roks_gradient / kuxcstress::kpoint_roks_stress)"
         )));
     }
     Ok(())

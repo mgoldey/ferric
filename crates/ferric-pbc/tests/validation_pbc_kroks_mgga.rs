@@ -119,14 +119,20 @@ use ferric_pbc::uhf::GammaUhfIntegrals;
 /// FD of the converged SCF energy (uniform 32^3, SCF to 1e-13 / orbital
 /// gradient ~1e-11): bar on every component, the force at `H_MAIN`, the
 /// stress on the Richardson extrapolation of `H_MAIN` and `H_MAIN / 2`. The
-/// diagonal strains (1,1) and (2,2) carry an h^2 stencil error of 1.3e-7 /
-/// 6e-8 at h = 5e-5 (falling 4x per halving, the same for PBE), which the
-/// extrapolation removes; the force and the other strains are below 1e-9 at
-/// h = 5e-5.
+/// diagonal strains (1,1) and (2,2) carry an h^2 stencil error (worst raw
+/// miss 3.2e-8 / 2.7e-8 for SCAN / r2SCAN at h = 5e-5, 7.6e-9 / 6.3e-9 at
+/// h / 2), which the extrapolation removes; the fall per halving is asserted
+/// (`H2_FALL`). The force and the other strains are below 1e-9 at h = 5e-5.
 const FD_BAR: f64 = 1e-8;
 const DERIV_MUTANT_BAR: f64 = 1e-5;
 const H_SWEEP: [f64; 2] = [1e-4, 5e-5];
 const H_MAIN: f64 = 5e-5;
+/// Minimum raw-miss ratio for one halving of h (h^2 predicts 4; measured 4.19
+/// / 4.23 for SCAN / r2SCAN).
+const H2_FALL: f64 = 2.5;
+/// Gamma ROKS vs 1x1x1 k-ROKS energy at every strained geometry of the
+/// Gamma FD (the base geometry measured 2.2e-16; strained probe <= 1.6e-14).
+const GAMMA_K_ENERGY_BAR: f64 = 1e-10;
 
 /// `(4 FD(h/2) - FD(h)) / 3`: the central difference with its h^2 term
 /// removed.
@@ -291,6 +297,7 @@ fn h3_kroks_force_and_stress_match_fd_with_ledger() {
             "{f}: dE/deps vs FD {w1:.2e} (h = {H_MAIN:.1e}), {w2:.2e} (h/2), {ws:.2e} (Richardson)"
         );
         assert!(ws < FD_BAR, "{f} stress {ws:e}");
+        assert!(w1 / w2 > H2_FALL, "{f}: no h^2 fall ({w1:e} -> {w2:e})");
         check_ledger(&format!("{f} force"), &force_ledger(&fx, &r.scf, f, &fd_f));
         check_ledger(
             &format!("{f} stress"),
@@ -369,9 +376,10 @@ fn derivative_anchors_and_their_reach() {
 /// and `dE/dε` (complex Bloch AOs, `chunk_tau`), H3 doublet, s05, uniform
 /// 32^3, every component, h = 5e-5 (the stress on the Richardson
 /// extrapolation with h / 2, see `FD_BAR`). The 1x1x1 k-ROKS energy == Gamma ROKS
-/// anchor is in `pbc_gamma_open_mgga.rs`; it is re-checked here on this cell.
+/// anchor is in `pbc_gamma_open_mgga.rs`; it is re-checked here on this cell,
+/// at the base geometry and at the 18 strained geometries of h = 5e-5.
 #[test]
-#[ignore = "validation: FD of the Gamma ROKS SCAN energy vs the 1x1x1 k-ROKS force and stress (H3 doublet, 9 + 9 components, 55 Gamma SCFs)"]
+#[ignore = "validation: FD of the Gamma ROKS SCAN energy vs the 1x1x1 k-ROKS force and stress (H3 doublet, 9 + 9 components, 55 Gamma + 19 k-ROKS SCFs)"]
 fn gamma_roks_scan_fd_matches_the_one_point_kroks_force_and_stress() {
     let f = "SCAN";
     let n = [1, 1, 1];
@@ -386,7 +394,7 @@ fn gamma_roks_scan_fd_matches_the_one_point_kroks_force_and_stress() {
         r.scf.energy,
         e0 - r.scf.energy
     );
-    assert!((e0 - r.scf.energy).abs() < 1e-9);
+    assert!((e0 - r.scf.energy).abs() < GAMMA_K_ENERGY_BAR);
     let (fc, sc) = (all_force_comps(3), all_strain_comps());
     let h = H_MAIN;
     let fd_f: Vec<f64> = fc
@@ -397,16 +405,33 @@ fn gamma_roks_scan_fd_matches_the_one_point_kroks_force_and_stress() {
             (ep - em) / (2.0 * h)
         })
         .collect();
+    let worst_e = std::cell::Cell::new(0.0_f64);
     let fd_strain = |h: f64| -> Vec<f64> {
         sc.iter()
             .map(|&(i, j)| {
                 let ep = gamma_roks_energy(&strained(&cell, i, j, h), f);
                 let em = gamma_roks_energy(&strained(&cell, i, j, -h), f);
+                if h == H_MAIN {
+                    for (eg, hs) in [(ep, h), (em, -h)] {
+                        let c = strained(&cell, i, j, hs);
+                        let ek = kroks(&c, &s05(), n, f, &uniform_grid(&c)).scf.energy;
+                        assert!(
+                            (eg - ek).abs() < GAMMA_K_ENERGY_BAR,
+                            "({i},{j}) {hs:e}: Gamma vs k-ROKS {:e}",
+                            eg - ek
+                        );
+                        worst_e.set(worst_e.get().max((eg - ek).abs()));
+                    }
+                }
                 (ep - em) / (2.0 * h)
             })
             .collect()
     };
     let (s_h, s_half) = (fd_strain(h), fd_strain(h / 2.0));
+    eprintln!(
+        "H3 {f}: Gamma vs k-ROKS energy at the 18 strained geometries of h: {:.2e}",
+        worst_e.get()
+    );
     eprintln!(
         "H3 {f}: dE/deps vs the Gamma FD {:.2e} (h), {:.2e} (h/2)",
         worst_stress(&s.de_deps, &s_h, &sc),

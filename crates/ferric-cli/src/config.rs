@@ -4939,9 +4939,10 @@ impl PeriodicRoute {
                     PeriodicRoute::Uks => ferric_pbc::kuks::resolve_kuks_functional(f),
                     _ => ferric_pbc::kroks::resolve_kroks_functional(f),
                 };
-                // The library k-point ROKS takes SCAN / r2SCAN (energy only,
-                // #492), but this route is not wired for it (#498): refuse at
-                // plan time, or the CLI would run the library path unvalidated.
+                // The library k-point ROKS takes SCAN / r2SCAN (energy, force
+                // and stress, #492; all library-only), but this route is not
+                // wired for them (#498): refuse at plan time, or the CLI would
+                // run the library path through an unvalidated route.
                 if energy.is_ok()
                     && self == PeriodicRoute::Roks
                     && ferric_pbc::dft::is_meta_gga_name(f)

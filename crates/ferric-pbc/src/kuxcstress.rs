@@ -890,6 +890,11 @@ pub fn kpoint_roks_stress(
     functional: &str,
     cfg: &KUksStressConfig,
 ) -> Result<KUksStress, FerricError> {
+    crate::kuxcgrad::refuse_roks_mgga_on_rsgdf(
+        "kpoint_roks_stress",
+        functional,
+        matches!(jk, KStressJk::RsGdf(_)),
+    )?;
     let (resp, exch, rsh) = grid_response(cell, prep, mesh, functional, cfg, "kpoint_roks_stress")?;
     uks_stress_with(
         "kpoint_roks_stress",
