@@ -44,6 +44,17 @@
 //! open-shell energies in KUKS too, spin-resolved tau). Range-separated meta-GGAs, VV10 and double hybrids are
 //! refused. Time reversal is NOT used
 //! to halve the XC work (every k gets its own Bloch AO cache).
+//!
+//! # Parallelism and reproducibility
+//!
+//! The build runs the grid chunks (`CHUNK` points each, fixed by the grid
+//! alone) in parallel. Each chunk's `E_xc` and `V_xc(k)` are summed from zero
+//! and the chunk results are added in ascending chunk order
+//! (`KPeriodicXc::fold_chunks_in_order`), so the result is bit-identical at
+//! any thread count (`tests/pbc_kxc_parallel.rs`). The per-point density
+//! contractions sweep the AO rows contiguously with the per-point sum order
+//! unchanged. Per-phase timings: [`KPeriodicXc::xc_timings`] and the KS
+//! drivers' `timings` (`examples/kxc_build_bench.rs`).
 
 use crate::budget::{bytes_of, Ledger};
 use crate::dft::{dist3, PeriodicDftError};
@@ -61,7 +72,7 @@ use crate::kscf::{
 use crate::lattice::Cell;
 use crate::rsgdf::kpoint::KRsGdf;
 use crate::rsh::{resolve_periodic_functional_rsh, RshParams};
-use crate::timing::{PbcTimings, StageClock};
+use crate::timing::{CallClock, PbcTimings, PhaseClock, StageClock, StageTiming};
 use ferric_core::basis::{num_functions, BasisSet};
 use ferric_core::FerricError;
 use ferric_dft::density_on_grid::DensityGrid;
@@ -70,7 +81,7 @@ use ferric_dft::libxc::{FunctionalFamily, XcDef};
 use ferric_dft::vxc::{closed_kernel, DENSITY_FLOOR};
 use ferric_integrals::ao_grid::{collect_shells, eval_shell_and_grad};
 use ferric_integrals::basis_bridge::PreparedBasis;
-use ndarray::{Array1, Array2, Array3};
+use ndarray::{Array1, Array2, Array3, ArrayView2, Axis};
 use num_complex::Complex64;
 use rayon::prelude::*;
 
@@ -96,6 +107,39 @@ pub struct KPeriodicXc {
     rsh: Option<RshParams>,
     /// Meta-GGA: tau (and its Vxc term) is evaluated from `dchi`.
     pub(crate) mgga: bool,
+    /// Wall/CPU of the Bloch AO cache build ([`KPeriodicXc::new`]).
+    pub(crate) ao_cache: StageTiming,
+    /// Per-phase clocks of every XC build ([`KPeriodicXc::xc_timings`]).
+    pub(crate) clocks: KXcClocks,
+    /// Test hook ([`KPeriodicXc::set_serial_reduction`]).
+    serial_reduction: bool,
+}
+
+/// Accumulated per-phase time of the k-point XC builds (closed and open
+/// shell), for [`KPeriodicXc::xc_timings`]. Observation only: the clocks never
+/// touch a number. The phase clocks are summed over every timed call, so
+/// when phases run on several threads their wall time is THREAD-SUMMED:
+/// compare phases by wall share only. They run per chunk, so they are
+/// wall-only ([`PhaseClock`]); the process CPU clock is read only around a
+/// whole build.
+#[derive(Debug, Default, Clone)]
+pub(crate) struct KXcClocks {
+    /// One whole `build` / `build_polarized` call.
+    pub(crate) build: CallClock,
+    /// `P(k) = D(k) φ^k*` (complex GEMM, per spin and k).
+    pub(crate) density_gemm: PhaseClock,
+    /// `ρ`, `∇ρ` from `P` and `φ` (the per-point contraction loops).
+    pub(crate) density_contract: PhaseClock,
+    /// `τ` (meta-GGA): its own GEMMs and contraction.
+    pub(crate) tau: PhaseClock,
+    /// The libxc kernel.
+    pub(crate) kernel: PhaseClock,
+    /// The weighted conjugate AO copies (and `m^H`) of the potential build.
+    pub(crate) vxc_scale: PhaseClock,
+    /// The potential's complex GEMMs.
+    pub(crate) vxc_gemm: PhaseClock,
+    /// The potential's accumulation into `V(k)`.
+    pub(crate) vxc_add: PhaseClock,
 }
 
 impl std::fmt::Debug for KPeriodicXc {
@@ -254,6 +298,58 @@ pub(crate) fn conj(m: &Array2<Complex64>) -> Array2<Complex64> {
     m.mapv(|z| z.conj())
 }
 
+/// Most bytes of per-chunk results [`KPeriodicXc::fold_chunks_in_order`]
+/// holds at once (it never limits the window below one chunk).
+const FOLD_WINDOW_BYTES: usize = 256 << 20;
+
+/// Upper bound on what [`KPeriodicXc::fold_chunks_in_order`] holds at once,
+/// independent of the thread count: the window cap (or one chunk's result
+/// if larger), but never more than every chunk's. One result is the
+/// open-shell `(V_α(k), V_β(k))`, which also bounds the closed shell's.
+fn fold_window_bound(nk: usize, nbf: usize, nchunks: usize) -> usize {
+    let one = bytes_of(
+        (2 * nk as u64)
+            .saturating_mul(nbf as u64)
+            .saturating_mul(nbf as u64),
+        std::mem::size_of::<Complex64>(),
+    );
+    one.saturating_mul(nchunks).min(FOLD_WINDOW_BYTES.max(one))
+}
+
+/// `out[g] += s · Re Σ_μ a[μ,g] b[μ,g]`. The `μ` sum of each point runs
+/// ascending from zero, the order of the former per-point loop, so the bits
+/// are unchanged; the sweep goes row by row so both operands stream
+/// contiguously, and only the real part is formed. `acc` is scratch of
+/// length `out.len()`.
+pub(crate) fn add_re_column_dots(
+    out: &mut [f64],
+    s: f64,
+    a: ArrayView2<'_, Complex64>,
+    b: ArrayView2<'_, Complex64>,
+    acc: &mut [f64],
+) {
+    acc.fill(0.0);
+    for (ra, rb) in a.rows().into_iter().zip(b.rows()) {
+        for ((t, x), y) in acc.iter_mut().zip(ra.iter()).zip(rb.iter()) {
+            *t += x.re * y.re - x.im * y.im;
+        }
+    }
+    for (o, t) in out.iter_mut().zip(acc.iter()) {
+        *o += s * t;
+    }
+}
+
+/// `conj(x) · diag(fac)` (column `g` scaled by `fac[g]`), built row by row.
+pub(crate) fn weighted_conj(x: ArrayView2<'_, Complex64>, fac: &[f64]) -> Array2<Complex64> {
+    let mut m = Array2::<Complex64>::zeros(x.raw_dim());
+    for (mut rm, rx) in m.rows_mut().into_iter().zip(x.rows()) {
+        for ((o, z), f) in rm.iter_mut().zip(rx.iter()).zip(fac) {
+            *o = z.conj() * *f;
+        }
+    }
+    m
+}
+
 impl KPeriodicXc {
     /// Resolve `functional` and evaluate the Bloch AO cache of `bs` (the
     /// basis the cell's `PreparedBasis` was built from) on `grid` for every
@@ -276,6 +372,7 @@ impl KPeriodicXc {
             .iter()
             .any(|f| !matches!(f.family(), FunctionalFamily::Lda));
         let mut ledger = Ledger::new(crate::budget::resolve(cfg.budget_bytes));
+        let clock = StageClock::start();
         let (chunks, nbf) = build_k_chunks(
             cell,
             bs,
@@ -285,7 +382,20 @@ impl KPeriodicXc {
             gga,
             &mut ledger,
         )?;
+        ledger.reserve(
+            "k-point periodic XC chunk fold window",
+            fold_window_bound(mesh.nk(), nbf, chunks.len()),
+        )?;
+        let (wall_s, cpu_s) = clock.elapsed();
         Ok(Self {
+            ao_cache: StageTiming {
+                name: "k XC AO cache",
+                wall_s,
+                cpu_s,
+                calls: 1,
+            },
+            clocks: KXcClocks::default(),
+            serial_reduction: false,
             name: functional.to_string(),
             xc,
             exx,
@@ -319,6 +429,50 @@ impl KPeriodicXc {
         self.nbf
     }
 
+    /// Stage `"k XC AO cache"` (the one-off Bloch AO evaluation) and stage
+    /// `"k XC build"` (every `build` / `build_polarized` call so far), with
+    /// the build's phases as sub-stages `"k XC build/<phase>"` (density GEMM,
+    /// density contraction, tau, libxc kernel, Vxc scale, Vxc GEMM, Vxc add).
+    /// Phase wall times are summed over threads when the chunks run in parallel.
+    pub fn xc_timings(&self) -> PbcTimings {
+        let mut t = PbcTimings::default();
+        t.add_stage(&self.ao_cache);
+        t.add_stage(&self.clocks.build.timing("k XC build"));
+        let c = &self.clocks;
+        for (clock, name) in [
+            (&c.density_gemm, "k XC build/density GEMM"),
+            (&c.density_contract, "k XC build/density contraction"),
+            (&c.tau, "k XC build/tau"),
+            (&c.kernel, "k XC build/libxc kernel"),
+            (&c.vxc_scale, "k XC build/Vxc scale"),
+            (&c.vxc_gemm, "k XC build/Vxc GEMM"),
+            (&c.vxc_add, "k XC build/Vxc add"),
+        ] {
+            if clock.calls() > 0 {
+                let st = clock.timing(name);
+                t.substages.push(st);
+            }
+        }
+        t.set_counter("k XC grid points", self.npoints() as u64);
+        t.set_counter("k XC chunks", self.chunks.len() as u64);
+        t
+    }
+
+    /// Add the XC cost to a KS driver's record: the AO cache as the leaf stage
+    /// `"k XC AO cache"` (built before the SCF), and every build so far as the
+    /// sub-stage `"k XC build"` (inside `"k SCF"`) with its phases.
+    pub(crate) fn record_scf_timings(&self, t: &mut PbcTimings) {
+        let x = self.xc_timings();
+        t.add_stage(&self.ao_cache);
+        if let Some(b) = x.stage("k XC build") {
+            t.substages.push(b.clone());
+        }
+        t.substages.extend(x.substages);
+        for &(n, v) in &x.counters {
+            t.set_counter(n, v);
+        }
+    }
+
     pub(crate) fn check(&self, dm: &[Array2<Complex64>]) -> Result<(), FerricError> {
         if dm.len() != self.nk || dm.iter().any(|d| d.dim() != (self.nbf, self.nbf)) {
             return Err(FerricError::General(format!(
@@ -331,30 +485,32 @@ impl KPeriodicXc {
     }
 
     /// `ρ`, `∇ρ`, `σ` of one chunk from the k densities (module doc).
-    fn chunk_density(&self, c: &KAoChunk, dm: &[Array2<Complex64>]) -> DensityGrid {
+    fn chunk_density(
+        &self,
+        c: &KAoChunk,
+        dm: &[Array2<Complex64>],
+        clk: &KXcClocks,
+    ) -> DensityGrid {
         let np = c.points.len();
         let inv_nk = 1.0 / self.nk as f64;
         let mut rho = Array1::<f64>::zeros(np);
         let mut grad = Array2::<f64>::zeros((3, np));
+        let mut acc = vec![0.0; np];
         for k in 0..self.nk {
             // P_{μg} = Σ_ν D_{μν} φ*_{νg}
-            let p = dm[k].dot(&conj(&c.chi[k]));
-            for g in 0..np {
-                let mut r = Complex64::new(0.0, 0.0);
-                for mu in 0..self.nbf {
-                    r += c.chi[k][(mu, g)] * p[(mu, g)];
-                }
-                rho[g] += inv_nk * r.re;
-                if self.gga {
-                    for ax in 0..3 {
-                        let mut gr = Complex64::new(0.0, 0.0);
-                        for mu in 0..self.nbf {
-                            gr += c.dchi[k][(ax, mu, g)] * p[(mu, g)];
-                        }
-                        grad[(ax, g)] += inv_nk * 2.0 * gr.re;
-                    }
+            let p = clk.density_gemm.time(|| dm[k].dot(&conj(&c.chi[k])));
+            let t0 = std::time::Instant::now();
+            let rho_s = rho.as_slice_mut().expect("standard layout");
+            add_re_column_dots(rho_s, inv_nk, c.chi[k].view(), p.view(), &mut acc);
+            if self.gga {
+                for ax in 0..3 {
+                    let d_ax = c.dchi[k].index_axis(Axis(0), ax);
+                    let mut row = grad.row_mut(ax);
+                    let out = row.as_slice_mut().expect("standard layout");
+                    add_re_column_dots(out, inv_nk * 2.0, d_ax, p.view(), &mut acc);
                 }
             }
+            clk.density_contract.record(t0);
         }
         let sigma = (0..np)
             .map(|g| grad[(0, g)].powi(2) + grad[(1, g)].powi(2) + grad[(2, g)].powi(2))
@@ -365,20 +521,20 @@ impl KPeriodicXc {
     /// Total kinetic-energy density of one chunk,
     /// `τ = (1/N_k) Σ_k ½ Σ_ax Re Σ_{μν} D(k)_{μν} ∂_ax φ^k_μ (∂_ax φ^k_ν)*`.
     pub(crate) fn chunk_tau(&self, c: &KAoChunk, dm: &[Array2<Complex64>]) -> Array1<f64> {
+        self.clocks.tau.time(|| self.chunk_tau_untimed(c, dm))
+    }
+
+    fn chunk_tau_untimed(&self, c: &KAoChunk, dm: &[Array2<Complex64>]) -> Array1<f64> {
         let np = c.points.len();
         let w = 0.5 / self.nk as f64;
         let mut tau = Array1::<f64>::zeros(np);
+        let mut acc = vec![0.0; np];
         for k in 0..self.nk {
             for ax in 0..3 {
-                let d_ax = c.dchi[k].index_axis(ndarray::Axis(0), ax).to_owned();
-                let p = dm[k].dot(&conj(&d_ax));
-                for g in 0..np {
-                    let mut t = Complex64::new(0.0, 0.0);
-                    for mu in 0..self.nbf {
-                        t += d_ax[(mu, g)] * p[(mu, g)];
-                    }
-                    tau[g] += w * t.re;
-                }
+                let d_ax = c.dchi[k].index_axis(Axis(0), ax);
+                let p = dm[k].dot(&conj(&d_ax.to_owned()));
+                let out = tau.as_slice_mut().expect("standard layout");
+                add_re_column_dots(out, w, d_ax, p.view(), &mut acc);
             }
         }
         tau
@@ -391,7 +547,7 @@ impl KPeriodicXc {
             .chunks
             .iter()
             .map(|c| {
-                let d = self.chunk_density(c, dm);
+                let d = self.chunk_density(c, dm, &KXcClocks::default());
                 c.points
                     .iter()
                     .zip(d.rho.iter())
@@ -421,90 +577,153 @@ impl KPointXc for KPeriodicXc {
         &mut self,
         dm: &[Array2<Complex64>],
     ) -> Result<(f64, Vec<Array2<Complex64>>), FerricError> {
+        let clock = StageClock::start();
+        let out = self.build_untimed(dm);
+        self.clocks.build.record(&clock);
+        out
+    }
+}
+
+impl KPeriodicXc {
+    /// `V += (conj(x) · diag(fac)) · yᵀ` (plus its adjoint if `with_adjoint`):
+    /// one potential term of one chunk, timed per phase.
+    pub(crate) fn add_weighted_product(
+        &self,
+        v: &mut Array2<Complex64>,
+        x: ArrayView2<'_, Complex64>,
+        y: ArrayView2<'_, Complex64>,
+        fac: &[f64],
+        with_adjoint: bool,
+    ) {
+        let c = &self.clocks;
+        let m = c.vxc_scale.time(|| weighted_conj(x, fac));
+        let m = c.vxc_gemm.time(|| m.dot(&y.t()));
+        if with_adjoint {
+            let mh = c.vxc_scale.time(|| conj(&m).t().to_owned());
+            c.vxc_add.time(|| {
+                *v += &m;
+                *v += &mh;
+            });
+        } else {
+            c.vxc_add.time(|| *v += &m);
+        }
+    }
+
+    /// Run `f` on every chunk (in parallel, at most `window` chunks in flight,
+    /// unless the serial reduction is set) and hand the results to `fold` in
+    /// ASCENDING chunk order. The reduction order is therefore fixed by the
+    /// chunking alone: the result is bit-identical at any thread count.
+    /// `out_bytes` (one result's size) caps the window at [`FOLD_WINDOW_BYTES`].
+    pub(crate) fn fold_chunks_in_order<T: Send>(
+        &self,
+        out_bytes: usize,
+        f: impl Fn(&KAoChunk) -> T + Sync,
+        mut fold: impl FnMut(T),
+    ) {
+        let window = if self.serial_reduction {
+            1
+        } else {
+            let by_bytes = (FOLD_WINDOW_BYTES / out_bytes.max(1)).max(1);
+            rayon::current_num_threads().clamp(1, by_bytes)
+        };
+        for w in self.chunks.chunks(window) {
+            let outs: Vec<T> = if self.serial_reduction {
+                w.iter().map(&f).collect()
+            } else {
+                w.par_iter().map(&f).collect()
+            };
+            outs.into_iter().for_each(&mut fold);
+        }
+    }
+
+    /// Test hook: evaluate the chunks one by one on the calling thread (no
+    /// rayon), the serial reference of the ordered reduction.
+    #[doc(hidden)]
+    pub fn set_serial_reduction(&mut self, serial: bool) {
+        self.serial_reduction = serial;
+    }
+
+    /// One chunk's `(E_xc, V_xc(k))`, each summed from zero.
+    fn chunk_build(&self, c: &KAoChunk, dm: &[Array2<Complex64>]) -> (f64, Vec<Array2<Complex64>>) {
+        let n = self.nbf;
+        let dens = self.chunk_density(c, dm, &self.clocks);
+        let tau = self.mgga.then(|| self.chunk_tau(c, dm));
+        let kern = self
+            .clocks
+            .kernel
+            .time(|| closed_kernel(&dens, tau.as_ref(), &self.xc));
+        let np = c.points.len();
+        let mut e = 0.0;
+        for g in 0..np {
+            e += c.points[g].weight * dens.rho[g] * kern.exc[g];
+        }
+        let gated = |g: usize, x: f64| if dens.rho[g] > DENSITY_FLOOR { x } else { 0.0 };
+        let a: Vec<f64> = (0..np)
+            .map(|g| gated(g, c.points[g].weight * kern.vrho[g]))
+            .collect();
+        let f_ax: Vec<Vec<f64>> = if self.gga {
+            (0..3)
+                .map(|ax| {
+                    (0..np)
+                        .map(|g| {
+                            let w = c.points[g].weight;
+                            gated(g, 2.0 * w * kern.vsigma[g] * dens.grad[(ax, g)])
+                        })
+                        .collect()
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let f_tau: Vec<f64> = if self.mgga {
+            (0..np)
+                .map(|g| gated(g, 0.5 * c.points[g].weight * kern.vtau[g]))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let mut v: Vec<Array2<Complex64>> = (0..self.nk).map(|_| Array2::zeros((n, n))).collect();
+        for (k, vk) in v.iter_mut().enumerate() {
+            let chi = c.chi[k].view();
+            self.add_weighted_product(vk, chi, chi, &a, false);
+            if self.gga {
+                for (ax, f) in f_ax.iter().enumerate() {
+                    let d_ax = c.dchi[k].index_axis(Axis(0), ax);
+                    self.add_weighted_product(vk, chi, d_ax, f, true);
+                }
+            }
+            if self.mgga {
+                // V^tau(k)_{μν} = Σ_g ½ w v_tau Σ_ax (∂φ_μ)* ∂φ_ν
+                for ax in 0..3 {
+                    let d_ax = c.dchi[k].index_axis(Axis(0), ax);
+                    self.add_weighted_product(vk, d_ax, d_ax, &f_tau, false);
+                }
+            }
+        }
+        (e, v)
+    }
+
+    fn build_untimed(
+        &self,
+        dm: &[Array2<Complex64>],
+    ) -> Result<(f64, Vec<Array2<Complex64>>), FerricError> {
         self.check(dm)?;
         let n = self.nbf;
         let mut e = 0.0;
         let mut v: Vec<Array2<Complex64>> = (0..self.nk)
             .map(|_| Array2::<Complex64>::zeros((n, n)))
             .collect();
-        for c in &self.chunks {
-            let dens = self.chunk_density(c, dm);
-            let tau = self.mgga.then(|| self.chunk_tau(c, dm));
-            let kern = closed_kernel(&dens, tau.as_ref(), &self.xc);
-            let np = c.points.len();
-            for g in 0..np {
-                e += c.points[g].weight * dens.rho[g] * kern.exc[g];
-            }
-            let a: Vec<f64> = (0..np)
-                .map(|g| {
-                    if dens.rho[g] > DENSITY_FLOOR {
-                        c.points[g].weight * kern.vrho[g]
-                    } else {
-                        0.0
-                    }
-                })
-                .collect();
-            let f_ax: Vec<Vec<f64>> = if self.gga {
-                (0..3)
-                    .map(|ax| {
-                        (0..np)
-                            .map(|g| {
-                                if dens.rho[g] > DENSITY_FLOOR {
-                                    2.0 * c.points[g].weight * kern.vsigma[g] * dens.grad[(ax, g)]
-                                } else {
-                                    0.0
-                                }
-                            })
-                            .collect()
-                    })
-                    .collect()
-            } else {
-                Vec::new()
-            };
-            let f_tau: Vec<f64> = if self.mgga {
-                (0..np)
-                    .map(|g| {
-                        if dens.rho[g] > DENSITY_FLOOR {
-                            0.5 * c.points[g].weight * kern.vtau[g]
-                        } else {
-                            0.0
-                        }
-                    })
-                    .collect()
-            } else {
-                Vec::new()
-            };
-            for k in 0..self.nk {
-                let scale = |fac: &[f64]| {
-                    let mut m = conj(&c.chi[k]);
-                    for g in 0..np {
-                        m.column_mut(g).mapv_inplace(|z| z * fac[g]);
-                    }
-                    m
-                };
-                v[k] += &scale(&a).dot(&c.chi[k].t());
-                if self.gga {
-                    for ax in 0..3 {
-                        let d_ax = c.dchi[k].index_axis(ndarray::Axis(0), ax);
-                        let m = scale(&f_ax[ax]).dot(&d_ax.t());
-                        let mh = conj(&m).t().to_owned();
-                        v[k] += &m;
-                        v[k] += &mh;
-                    }
+        let out_bytes = bytes_of((self.nk * n * n) as u64, std::mem::size_of::<Complex64>());
+        self.fold_chunks_in_order(
+            out_bytes,
+            |c| self.chunk_build(c, dm),
+            |(ec, vc)| {
+                e += ec;
+                for (acc, x) in v.iter_mut().zip(&vc) {
+                    *acc += x;
                 }
-                if self.mgga {
-                    // V^tau(k)_{μν} = Σ_g ½ w v_tau Σ_ax (∂φ_μ)* ∂φ_ν
-                    for ax in 0..3 {
-                        let d_ax = c.dchi[k].index_axis(ndarray::Axis(0), ax).to_owned();
-                        let mut m = conj(&d_ax);
-                        for g in 0..np {
-                            m.column_mut(g).mapv_inplace(|z| z * f_tau[g]);
-                        }
-                        v[k] += &m.dot(&d_ax.t());
-                    }
-                }
-            }
-        }
+            },
+        );
         if !e.is_finite() || v.iter().any(|m| m.iter().any(|z| !z.re.is_finite())) {
             return Err(FerricError::General(format!(
                 "KPeriodicXc: non-finite E_xc/V_xc ({e}) for {}",
@@ -636,6 +855,7 @@ pub fn solve_krks_keep_on_grid(
         }
         _ => {}
     }
+    let total = StageClock::start();
     let mut pxc = KPeriodicXc::new(cell, prep.basis_set(), &cfg.functional, grid, mesh, &cfg.xc)?;
     let mut a = pxc.exact_exchange_fraction();
     // Range-separated hybrid: the fractions live inside the K kernel (dense
@@ -679,6 +899,8 @@ pub fn solve_krks_keep_on_grid(
     let clock = StageClock::start();
     let mut scf = solve_krks_injected(cell, mesh, &kc.scf, inj, &mut pxc, a)?;
     timings.stop("k SCF", &clock);
+    pxc.record_scf_timings(&mut timings);
+    timings.finish(&total);
     scf.timings = timings;
     if !scf.converged {
         return Err(FerricError::Convergence(format!(
