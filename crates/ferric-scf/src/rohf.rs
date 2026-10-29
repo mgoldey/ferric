@@ -99,7 +99,11 @@ pub(crate) fn xc_is_metagga(xc_name: Option<&str>) -> bool {
     }
 }
 
-pub(crate) enum FxcKernelStore {
+/// The spin-polarized exchange-correlation kernel f_xc at a reference
+/// density, as the Newton steps use it (LDA, GGA, hybrid and range-separated
+/// GGA, and τ-only meta-GGA; VV10 has no kernel here and must be refused by
+/// the caller).
+pub enum FxcKernelStore {
     Lda {
         kernel: Box<ferric_dft::fxc::LdaFxcKernel>,
         rho_a0: Vec<f64>,
@@ -108,6 +112,14 @@ pub(crate) enum FxcKernelStore {
     Gga {
         kernel: Box<ferric_dft::fxc::GgaFxcKernel>,
         ref_dens: Box<ferric_dft::density_on_grid::UksDensityGrid>,
+    },
+    /// τ-only meta-GGA (SCAN / r2SCAN / TPSS). Reachable through `build`, but
+    /// every SCF consumer (Newton, stability, Z-vector) still refuses
+    /// meta-GGA with its own `xc_is_metagga` gate before building; today the
+    /// Python response blocks are the only caller that applies it.
+    Mgga {
+        kernel: Box<ferric_dft::fxc::MggaFxcKernel>,
+        reference: Box<ferric_dft::fxc::MggaFxcReference>,
     },
 }
 
@@ -130,7 +142,7 @@ impl FxcKernelStore {
     /// to 1e-9. `None` means "use the functional's published ω", which is
     /// byte-identical to the former behaviour for every caller that has no
     /// override set.
-    pub(crate) fn build(
+    pub fn build(
         mol: &Molecule,
         prep: &PreparedBasis,
         cfg: &ferric_dft::grid::AtomicGridConfig,
@@ -148,6 +160,13 @@ impl FxcKernelStore {
             .funcs
             .iter()
             .all(|f| f.family() == ferric_dft::libxc::FunctionalFamily::Lda);
+        let is_mgga = xc_def
+            .funcs
+            .iter()
+            .any(|f| f.family() == ferric_dft::libxc::FunctionalFamily::MetaGga);
+        if is_mgga {
+            return Self::build_mgga(mol, prep, cfg, xc_def, (d_a, d_b));
+        }
         if is_lda {
             let kernel = ferric_dft::fxc::LdaFxcKernel::new(mol, prep.basis_set(), xc_def, cfg)
                 .map_err(|e| FerricError::General(format!("LdaFxcKernel: {e}")))?;
@@ -169,9 +188,27 @@ impl FxcKernelStore {
         }
     }
 
+    /// The τ-only meta-GGA kernel at `(d_a, d_b)`.
+    fn build_mgga(
+        mol: &Molecule,
+        prep: &PreparedBasis,
+        cfg: &ferric_dft::grid::AtomicGridConfig,
+        xc_def: ferric_dft::libxc::XcDef,
+        (d_a, d_b): (&Array2<f64>, &Array2<f64>),
+    ) -> Result<Self, FerricError> {
+        let err = |e: String| FerricError::General(format!("MggaFxcKernel: {e}"));
+        let kernel =
+            ferric_dft::fxc::MggaFxcKernel::new(mol, prep.basis_set(), xc_def, cfg).map_err(err)?;
+        let reference = kernel.reference(d_a, d_b).map_err(err)?;
+        Ok(FxcKernelStore::Mgga {
+            kernel: Box::new(kernel),
+            reference: Box::new(reference),
+        })
+    }
+
     /// The `Fn(δD_α, δD_β) -> (δV_α, δV_β)` response closure, borrowing `self`.
     #[allow(clippy::type_complexity)]
-    pub(crate) fn response(
+    pub fn response(
         &self,
     ) -> Box<dyn Fn(&Array2<f64>, &Array2<f64>) -> (Array2<f64>, Array2<f64>) + Sync + '_> {
         match self {
@@ -185,6 +222,11 @@ impl FxcKernelStore {
             FxcKernelStore::Gga { kernel, ref_dens } => {
                 Box::new(move |dd_a: &Array2<f64>, dd_b: &Array2<f64>| {
                     kernel.apply_with_ref(ref_dens, dd_a, dd_b)
+                })
+            }
+            FxcKernelStore::Mgga { kernel, reference } => {
+                Box::new(move |a: &Array2<f64>, b: &Array2<f64>| {
+                    kernel.apply_with_ref(reference, a, b)
                 })
             }
         }
@@ -231,7 +273,7 @@ pub fn solve_rohf_best_effort(
     config: &RohfConfig,
 ) -> Result<ScfResult, FerricError> {
     crate::symmetric::require_symmetry_off(config, "solve_rohf")?;
-    solve_rohf_impl(ctx, mol, prep, bounds, config, None, None, None)
+    solve_rohf_impl(ctx, mol, prep, bounds, config, None, None, None, None)
 }
 
 /// Reject every `RohfConfig` feature [`solve_rohf_injected`] cannot honour,
@@ -328,7 +370,44 @@ pub fn solve_rohf_injected<'a>(
             ));
         }
     }
-    let r = solve_rohf_impl(ctx, mol, prep, bounds, config, initial_mos, Some(inj), None)?;
+    let r = solve_rohf_impl(
+        ctx,
+        mol,
+        prep,
+        bounds,
+        config,
+        initial_mos,
+        Some(inj),
+        None,
+        None,
+    )?;
+    if r.converged {
+        Ok(r)
+    } else {
+        Err(FerricError::ScfConvergence {
+            iterations: r.iterations,
+            last_energy: r.energy,
+        })
+    }
+}
+
+/// ROHF/ROKS with one extra density-dependent term,
+/// `(E_hook, V_α, V_β) = hook(D_α, D_β)`: V_σ is added to F_σ before the
+/// Roothaan effective-Fock combination and E_hook to the energy outside the
+/// trace, so the converged energy is stationary under ROHF orbital rotations
+/// when V_σ = ∂E_hook/∂D_σ. Settings the hook would bypass are refused by
+/// [`crate::rhf::validate_fock_hook`]; a non-converged SCF is an error, as
+/// for [`solve_rohf`].
+pub fn solve_rohf_with_hook(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    bounds: &SchwarzBounds,
+    config: &RohfConfig,
+    hook: crate::fock::SpinFockHook<'_>,
+) -> Result<ScfResult, FerricError> {
+    crate::rhf::validate_fock_hook(config)?;
+    let r = solve_rohf_impl(ctx, mol, prep, bounds, config, None, None, None, Some(hook))?;
     if r.converged {
         Ok(r)
     } else {
@@ -349,7 +428,7 @@ pub(crate) fn solve_rohf_blocked(
     config: &RohfConfig,
     spec: &crate::symmetric::SymmetrySpec,
 ) -> Result<ScfResult, FerricError> {
-    let r = solve_rohf_impl(ctx, mol, prep, bounds, config, None, None, Some(spec))?;
+    let r = solve_rohf_impl(ctx, mol, prep, bounds, config, None, None, Some(spec), None)?;
     if r.converged {
         Ok(r)
     } else {
@@ -374,6 +453,7 @@ fn solve_rohf_impl(
     initial_mos: Option<&Array2<f64>>,
     inj: Option<PeriodicInjection<'_>>,
     sym: Option<&crate::symmetric::SymmetrySpec>,
+    mut hook: Option<crate::fock::SpinFockHook<'_>>,
 ) -> Result<ScfResult, FerricError> {
     use ferric_dft::ks::KsXcUks;
     use ferric_dft::xc_trait::{KMix, UksXcContribution};
@@ -1023,6 +1103,16 @@ fn solve_rohf_impl(
             0.0
         };
 
+        // Caller-supplied term (`solve_rohf_with_hook`): V_σ into F_σ before
+        // the Roothaan combination, its energy outside the trace.
+        let e_hook = crate::fock::apply_spin_fock_hook(
+            hook.as_mut(),
+            "solve_rohf_with_hook",
+            (&d_a, &d_b),
+            &mut f_a,
+            &mut f_b,
+        )?;
+
         // COSMO + IEF-PCM reaction fields, built from the total density
         // D_a + D_b and added identically to BOTH spin Focks (before the
         // Roothaan effective-Fock combination, so the coupled single-MO-set
@@ -1040,7 +1130,7 @@ fn solve_rohf_impl(
         )?;
         last_induced_dipoles = iter_induced_dipoles;
 
-        let energy = e_elec_no_xc + e_xc + e_cosmo + e_pcm + e_pol + vnn;
+        let energy = e_elec_no_xc + e_xc + e_hook + e_cosmo + e_pcm + e_pol + vnn;
 
         // Swap witness: while a probe is outstanding, `energy` is the probe
         // determinant's unrelaxed energy (see OccupationGuard::on_energy).

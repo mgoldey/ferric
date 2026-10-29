@@ -242,22 +242,6 @@ pub fn ks_gradient_closed_for_density(
     // therefore have an extra ~mHa/Bohr error vs the full PySCF gradient.
     let xc =
         xc_def_from_name(xc_name).map_err(|e| FerricError::General(format!("libxc: {e:?}")))?;
-    let mut needs_gga = false;
-    let mut needs_mgga = false;
-    for f in &xc.funcs {
-        match f.family() {
-            FunctionalFamily::Lda => {}
-            FunctionalFamily::Gga | FunctionalFamily::HybridGga | FunctionalFamily::RangeSepGga => {
-                needs_gga = true
-            }
-            // Meta-GGA: the τ-dependent AO-derivative + grid-response terms are
-            // handled by `xc_gradient_closed_mgga_from_density`.
-            FunctionalFamily::MetaGga => {
-                needs_gga = true;
-                needs_mgga = true;
-            }
-        }
-    }
     let k_mix = ferric_dft::libxc::k_mix_from_xc_def(&xc);
     let d = d.clone();
 
@@ -330,61 +314,7 @@ pub fn ks_gradient_closed_for_density(
         grad += &twoelectron_gradient_scaled_k(prep, op, bounds, &d, k_mix.sr)?;
     }
 
-    // XC gradient: dispatch on functional family (LDA fast path, GGA needs Hessians).
-    let grid_cfg = &grids.main;
-    let xc_grad = if needs_mgga {
-        xc_gradient_closed_mgga_from_density(
-            mol,
-            bs,
-            &d,
-            xc_name,
-            grid_cfg,
-            prep.shell_to_atom(),
-            prep.shell_offsets(),
-            prep.shell_dims(),
-        )
-    } else if needs_gga {
-        xc_gradient_closed_gga_from_density(
-            mol,
-            bs,
-            &d,
-            xc_name,
-            grid_cfg,
-            prep.shell_to_atom(),
-            prep.shell_offsets(),
-            prep.shell_dims(),
-        )
-    } else {
-        xc_gradient_closed_lda_from_density(
-            mol,
-            bs,
-            &d,
-            xc_name,
-            grid_cfg,
-            prep.shell_to_atom(),
-            prep.shell_offsets(),
-            prep.shell_dims(),
-        )
-    }
-    .map_err(|e| FerricError::General(format!("xc gradient: {e:?}")))?;
-    grad += &xc_grad;
-
-    // VV10 nonlocal-correlation gradient (only if the functional advertises it).
-    if let Some(vv10_params) = xc.vv10 {
-        let nlc_cfg = &grids.nlc;
-        let vv10_grad = ferric_dft::gradient::vv10_gradient_from_density(
-            mol,
-            bs,
-            &d,
-            &vv10_params,
-            nlc_cfg,
-            prep.shell_to_atom(),
-            prep.shell_offsets(),
-            prep.shell_dims(),
-        )
-        .map_err(|e| FerricError::General(format!("vv10 gradient: {e:?}")))?;
-        grad += &vv10_grad;
-    }
+    add_xc_gradient_closed(&mut grad, mol, prep, bs, xc_name, &d, grids)?;
 
     Ok(grad)
 }
@@ -637,10 +567,6 @@ pub fn ks_gradient_uks_for_density(
         .map_err(|e| FerricError::General(format!("libxc: {e:?}")))?;
     // Meta-GGA: the τ-dependent AO-derivative + grid-response terms are handled
     // by `xc_gradient_uks_mgga_from_density`.
-    let needs_mgga = xc
-        .funcs
-        .iter()
-        .any(|f| matches!(f.family(), FunctionalFamily::MetaGga));
     let k_mix = ferric_dft::libxc::k_mix_from_xc_def(&xc);
     let c_k: f64 = k_mix.sr;
 
@@ -697,52 +623,7 @@ pub fn ks_gradient_uks_for_density(
         grad += &twoelectron_gradient_uhf_scaled_k(prep, op, bounds, &d_total, d_a, d_b, c_k)?;
     }
 
-    // XC gradient (polarized).
-    let grid_cfg = &grids.main;
-    let xc_grad = if needs_mgga {
-        xc_gradient_uks_mgga_from_density(
-            mol,
-            bs,
-            d_a,
-            d_b,
-            xc_name,
-            grid_cfg,
-            prep.shell_to_atom(),
-            prep.shell_offsets(),
-            prep.shell_dims(),
-        )
-    } else {
-        xc_gradient_uks_from_density(
-            mol,
-            bs,
-            d_a,
-            d_b,
-            xc_name,
-            grid_cfg,
-            prep.shell_to_atom(),
-            prep.shell_offsets(),
-            prep.shell_dims(),
-        )
-    }
-    .map_err(|e| FerricError::General(format!("uks xc gradient: {e:?}")))?;
-    grad += &xc_grad;
-
-    // VV10: function of ρ_tot, identical to the closed-shell formula.
-    if let Some(vv10_params) = xc.vv10 {
-        let nlc_cfg = &grids.nlc;
-        let vv10_grad = ferric_dft::gradient::vv10_gradient_from_density(
-            mol,
-            bs,
-            &d_total,
-            &vv10_params,
-            nlc_cfg,
-            prep.shell_to_atom(),
-            prep.shell_offsets(),
-            prep.shell_dims(),
-        )
-        .map_err(|e| FerricError::General(format!("vv10 gradient: {e:?}")))?;
-        grad += &vv10_grad;
-    }
+    add_xc_gradient_open(&mut grad, mol, prep, bs, xc_name, (d_a, d_b), grids)?;
 
     Ok(grad)
 }
@@ -958,10 +839,6 @@ pub fn ks_gradient_roks_for_density(
     let xc = ferric_dft::libxc::xc_def_from_name(xc_name)
         .map_err(|e| FerricError::General(format!("libxc: {e:?}")))?;
     // Meta-GGA: handled by the polarized τ-aware driver, same as UKS.
-    let needs_mgga = xc
-        .funcs
-        .iter()
-        .any(|f| matches!(f.family(), FunctionalFamily::MetaGga));
     let k_mix = ferric_dft::libxc::k_mix_from_xc_def(&xc);
     let c_k: f64 = k_mix.sr;
 
@@ -1017,53 +894,7 @@ pub fn ks_gradient_roks_for_density(
         grad += &twoelectron_gradient_uhf_scaled_k(prep, op, bounds, &d_total, d_a, d_b, c_k)?;
     }
 
-    // XC piece via the polarized driver (ROKS densities already satisfy the
-    // structure; UKS XC machinery applies as-is).
-    let grid_cfg = &grids.main;
-    let xc_grad = if needs_mgga {
-        xc_gradient_uks_mgga_from_density(
-            mol,
-            bs,
-            d_a,
-            d_b,
-            xc_name,
-            grid_cfg,
-            prep.shell_to_atom(),
-            prep.shell_offsets(),
-            prep.shell_dims(),
-        )
-    } else {
-        xc_gradient_uks_from_density(
-            mol,
-            bs,
-            d_a,
-            d_b,
-            xc_name,
-            grid_cfg,
-            prep.shell_to_atom(),
-            prep.shell_offsets(),
-            prep.shell_dims(),
-        )
-    }
-    .map_err(|e| FerricError::General(format!("roks xc gradient: {e:?}")))?;
-    grad += &xc_grad;
-
-    // VV10 (closed-shell-friendly, on total ρ).
-    if let Some(vv10_params) = xc.vv10 {
-        let nlc_cfg = &grids.nlc;
-        let vv10_grad = ferric_dft::gradient::vv10_gradient_from_density(
-            mol,
-            bs,
-            &d_total,
-            &vv10_params,
-            nlc_cfg,
-            prep.shell_to_atom(),
-            prep.shell_offsets(),
-            prep.shell_dims(),
-        )
-        .map_err(|e| FerricError::General(format!("vv10 gradient: {e:?}")))?;
-        grad += &vv10_grad;
-    }
+    add_xc_gradient_open(&mut grad, mol, prep, bs, xc_name, (d_a, d_b), grids)?;
 
     Ok(grad)
 }
@@ -1127,4 +958,206 @@ pub fn twoelectron_k_gradient_uhf(
     crate::gradient::par_twoelectron_gradient(prep, op, bounds, max_d, |mu, nu, la, sg| {
         -0.5 * c_k * (d_alpha[(mu, la)] * d_alpha[(nu, sg)] + d_beta[(mu, la)] * d_beta[(nu, sg)])
     })
+}
+
+/// Family flags of an XC definition: `(needs_gga, needs_mgga)`.
+fn xc_families(xc: &ferric_dft::libxc::XcDef) -> (bool, bool) {
+    let mut needs_gga = false;
+    let mut needs_mgga = false;
+    for f in &xc.funcs {
+        match f.family() {
+            FunctionalFamily::Lda => {}
+            FunctionalFamily::Gga | FunctionalFamily::HybridGga | FunctionalFamily::RangeSepGga => {
+                needs_gga = true
+            }
+            // Meta-GGA: the τ-dependent AO-derivative + grid-response terms are
+            // handled by the `*_mgga_from_density` drivers.
+            FunctionalFamily::MetaGga => {
+                needs_gga = true;
+                needs_mgga = true;
+            }
+        }
+    }
+    (needs_gga, needs_mgga)
+}
+
+/// The XC part of the closed-shell KS gradient at fixed total density `d`:
+/// the semilocal term (with grid response) plus VV10, exactly as
+/// [`ks_gradient_closed_for_density`] adds it. Exact exchange is not
+/// included (it is a two-electron term). Refuses ghost atoms, as the full
+/// closed-shell gradient does.
+pub fn xc_gradient_closed(
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    bs: &ferric_core::basis::BasisSet,
+    xc_name: &str,
+    d: &Array2<f64>,
+    grids: &KsGradGrids,
+) -> Result<Array2<f64>, FerricError> {
+    refuse_ghosts(mol)?;
+    let mut grad = Array2::zeros((mol.atoms.len(), 3));
+    add_xc_gradient_closed(&mut grad, mol, prep, bs, xc_name, d, grids)?;
+    Ok(grad)
+}
+
+/// Open-shell twin of [`xc_gradient_closed`] at fixed `(d_a, d_b)`, as the
+/// UKS and ROKS gradients add it (VV10 from the total density).
+pub fn xc_gradient_open(
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    bs: &ferric_core::basis::BasisSet,
+    xc_name: &str,
+    (d_a, d_b): (&Array2<f64>, &Array2<f64>),
+    grids: &KsGradGrids,
+) -> Result<Array2<f64>, FerricError> {
+    refuse_ghosts(mol)?;
+    let mut grad = Array2::zeros((mol.atoms.len(), 3));
+    add_xc_gradient_open(&mut grad, mol, prep, bs, xc_name, (d_a, d_b), grids)?;
+    Ok(grad)
+}
+
+fn refuse_ghosts(mol: &Molecule) -> Result<(), FerricError> {
+    if mol.atoms.iter().any(|a| a.ghost) {
+        return Err(FerricError::General(
+            "the XC gradient is not implemented for molecules containing ghost atoms".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// `grad += XC; grad += VV10`, the two separate additions the full
+/// closed-shell gradient always made, so its result is bit-identical.
+fn add_xc_gradient_closed(
+    grad: &mut Array2<f64>,
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    bs: &ferric_core::basis::BasisSet,
+    xc_name: &str,
+    d: &Array2<f64>,
+    grids: &KsGradGrids,
+) -> Result<(), FerricError> {
+    let xc =
+        xc_def_from_name(xc_name).map_err(|e| FerricError::General(format!("libxc: {e:?}")))?;
+    let (needs_gga, needs_mgga) = xc_families(&xc);
+    // XC gradient: dispatch on functional family (LDA fast path, GGA needs Hessians).
+    let grid_cfg = &grids.main;
+    let xc_grad = if needs_mgga {
+        xc_gradient_closed_mgga_from_density(
+            mol,
+            bs,
+            d,
+            xc_name,
+            grid_cfg,
+            prep.shell_to_atom(),
+            prep.shell_offsets(),
+            prep.shell_dims(),
+        )
+    } else if needs_gga {
+        xc_gradient_closed_gga_from_density(
+            mol,
+            bs,
+            d,
+            xc_name,
+            grid_cfg,
+            prep.shell_to_atom(),
+            prep.shell_offsets(),
+            prep.shell_dims(),
+        )
+    } else {
+        xc_gradient_closed_lda_from_density(
+            mol,
+            bs,
+            d,
+            xc_name,
+            grid_cfg,
+            prep.shell_to_atom(),
+            prep.shell_offsets(),
+            prep.shell_dims(),
+        )
+    }
+    .map_err(|e| FerricError::General(format!("xc gradient: {e:?}")))?;
+    *grad += &xc_grad;
+
+    // VV10 nonlocal-correlation gradient (only if the functional advertises it).
+    if let Some(vv10_params) = xc.vv10 {
+        let nlc_cfg = &grids.nlc;
+        let vv10_grad = ferric_dft::gradient::vv10_gradient_from_density(
+            mol,
+            bs,
+            d,
+            &vv10_params,
+            nlc_cfg,
+            prep.shell_to_atom(),
+            prep.shell_offsets(),
+            prep.shell_dims(),
+        )
+        .map_err(|e| FerricError::General(format!("vv10 gradient: {e:?}")))?;
+        *grad += &vv10_grad;
+    }
+
+    Ok(())
+}
+
+/// Open-shell twin of [`add_xc_gradient_closed`] (UKS and ROKS).
+fn add_xc_gradient_open(
+    grad: &mut Array2<f64>,
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    bs: &ferric_core::basis::BasisSet,
+    xc_name: &str,
+    (d_a, d_b): (&Array2<f64>, &Array2<f64>),
+    grids: &KsGradGrids,
+) -> Result<(), FerricError> {
+    let xc = ferric_dft::libxc::xc_def_from_name(xc_name)
+        .map_err(|e| FerricError::General(format!("libxc: {e:?}")))?;
+    let (_, needs_mgga) = xc_families(&xc);
+    let d_total = d_a + d_b;
+    // XC gradient (polarized).
+    let grid_cfg = &grids.main;
+    let xc_grad = if needs_mgga {
+        xc_gradient_uks_mgga_from_density(
+            mol,
+            bs,
+            d_a,
+            d_b,
+            xc_name,
+            grid_cfg,
+            prep.shell_to_atom(),
+            prep.shell_offsets(),
+            prep.shell_dims(),
+        )
+    } else {
+        xc_gradient_uks_from_density(
+            mol,
+            bs,
+            d_a,
+            d_b,
+            xc_name,
+            grid_cfg,
+            prep.shell_to_atom(),
+            prep.shell_offsets(),
+            prep.shell_dims(),
+        )
+    }
+    .map_err(|e| FerricError::General(format!("uks xc gradient: {e:?}")))?;
+    *grad += &xc_grad;
+
+    // VV10: function of ρ_tot, identical to the closed-shell formula.
+    if let Some(vv10_params) = xc.vv10 {
+        let nlc_cfg = &grids.nlc;
+        let vv10_grad = ferric_dft::gradient::vv10_gradient_from_density(
+            mol,
+            bs,
+            &d_total,
+            &vv10_params,
+            nlc_cfg,
+            prep.shell_to_atom(),
+            prep.shell_offsets(),
+            prep.shell_dims(),
+        )
+        .map_err(|e| FerricError::General(format!("vv10 gradient: {e:?}")))?;
+        *grad += &vv10_grad;
+    }
+
+    Ok(())
 }

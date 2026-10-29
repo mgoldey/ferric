@@ -58,3 +58,41 @@ pub trait KBuilder {
         None
     }
 }
+
+/// A density-dependent open-shell Fock term for
+/// [`crate::uhf::solve_uhf_with_hook`] and
+/// [`crate::rohf::solve_rohf_with_hook`]: called with the per-spin densities
+/// `(D_α, D_β)` every iteration, it returns `(E, V_α, V_β)`, the term's energy
+/// and its potentials `V_σ = ∂E/∂D_σ` (each `(nbasis, nbasis)`, symmetric).
+/// The closed-shell counterpart is [`crate::rhf::RhfFockHook`].
+pub type SpinFockHook<'a> =
+    &'a mut dyn FnMut(
+        &Array2<f64>,
+        &Array2<f64>,
+    ) -> Result<(f64, Array2<f64>, Array2<f64>), FerricError>;
+
+/// Add `hook(d_a, d_b)`'s potentials to `f_a`/`f_b` and return its energy
+/// (0 without a hook). `who` names the solver in the shape error.
+pub(crate) fn apply_spin_fock_hook(
+    hook: Option<&mut SpinFockHook<'_>>,
+    who: &str,
+    (d_a, d_b): (&Array2<f64>, &Array2<f64>),
+    f_a: &mut Array2<f64>,
+    f_b: &mut Array2<f64>,
+) -> Result<f64, FerricError> {
+    let Some(h) = hook else {
+        return Ok(0.0);
+    };
+    let (e, v_a, v_b) = h(d_a, d_b)?;
+    if v_a.dim() != f_a.dim() || v_b.dim() != f_b.dim() || !e.is_finite() {
+        return Err(FerricError::General(format!(
+            "{who}: hook returned V_a/V_b of shapes {:?}/{:?} (expected {:?}) and E = {e}",
+            v_a.dim(),
+            v_b.dim(),
+            f_a.dim()
+        )));
+    }
+    *f_a += &v_a;
+    *f_b += &v_b;
+    Ok(e)
+}

@@ -17,6 +17,7 @@ thiserror = { workspace = true }
 log = "0.4"
 ferric-core = { path = "../ferric-core" }
 ferric-tensor-macro = { path = "../ferric-tensor-macro" }
+ferric-einsum-spec = { path = "../ferric-einsum-spec" }
 
 [features]
 gpu = ["ferric-core/gpu"]

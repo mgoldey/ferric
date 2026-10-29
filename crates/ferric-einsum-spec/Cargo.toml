@@ -1,0 +1,13 @@
+[package]
+name = "ferric-einsum-spec"
+version = "0.1.0"
+license.workspace = true
+edition = "2021"
+
+[lints]
+workspace = true
+
+# No dependencies on purpose: the `einsum!` proc macro (compile time) and
+# `ferric_tensors::einsum::einsum_dyn` (run time, behind `ferric.einsum`)
+# both parse specs with this crate, so the two can never disagree.
+[dependencies]

@@ -1419,7 +1419,7 @@ pub fn solve_rhf_injected<'a>(
 ) -> Result<ScfResult, FerricError> {
     validate_injected(config)?;
     check_injection_shapes("solve_rhf_injected", &inj, prep.nbasis())?;
-    solve_rhf_impl(ctx, mol, prep, op, bounds, config, Some(inj), None)
+    solve_rhf_impl(ctx, mol, prep, op, bounds, config, Some(inj), None, None)
 }
 
 /// Shape/finiteness checks shared by [`solve_rhf_injected`] and
@@ -1608,7 +1608,7 @@ pub(crate) fn solve_rhf_once(
     bounds: &SchwarzBounds,
     config: &RhfConfig,
 ) -> Result<ScfResult, FerricError> {
-    solve_rhf_impl(ctx, mol, prep, op, bounds, config, None, None)
+    solve_rhf_impl(ctx, mol, prep, op, bounds, config, None, None, None)
 }
 
 /// The point-group-blocked solve (see [`crate::symmetric`]); `mol`/`prep`/
@@ -1622,7 +1622,106 @@ pub(crate) fn solve_rhf_blocked(
     config: &RhfConfig,
     spec: &crate::symmetric::SymmetrySpec,
 ) -> Result<ScfResult, FerricError> {
-    solve_rhf_impl(ctx, mol, prep, op, bounds, config, None, Some(spec))
+    solve_rhf_impl(ctx, mol, prep, op, bounds, config, None, Some(spec), None)
+}
+
+/// A density-dependent closed-shell Fock term for [`solve_rhf_with_hook`]:
+/// called with the TOTAL density `D` every iteration, it returns `(E, V)`,
+/// the term's energy and its potential `V = ∂E/∂D` (`(nbasis, nbasis)`,
+/// symmetric).
+pub type RhfFockHook<'a> =
+    &'a mut dyn FnMut(&Array2<f64>) -> Result<(f64, Array2<f64>), FerricError>;
+
+/// Closed-shell RHF/RKS with one extra density-dependent term:
+///
+/// ```text
+/// F = F_rhf/rks + V,   E = E_rhf/rks + E_hook,   (E_hook, V) = hook(D)
+/// ```
+///
+/// `V` is added to the Fock matrix before DIIS sees it and `E_hook` sits
+/// outside the `½Tr[D(h + F)]` trace, exactly as V_xc/E_xc do, so the
+/// converged energy is variational in the hooked functional when `V` is the
+/// derivative of `E_hook`. Settings that build an orbital Hessian
+/// (Newton/SOSCF, TRAH, AURORA, stability) or block by symmetry would not
+/// see the hook and are refused by [`validate_fock_hook`].
+pub fn solve_rhf_with_hook(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    config: &RhfConfig,
+    hook: RhfFockHook<'_>,
+) -> Result<ScfResult, FerricError> {
+    validate_fock_hook(config)?;
+    solve_rhf_impl(ctx, mol, prep, op, bounds, config, None, None, Some(hook))
+}
+
+/// Add `hook(d)`'s potential to `f` and return its energy (0 without a hook).
+fn apply_fock_hook(
+    hook: Option<&mut RhfFockHook<'_>>,
+    d: &Array2<f64>,
+    f: &mut Array2<f64>,
+) -> Result<f64, FerricError> {
+    let Some(h) = hook else {
+        return Ok(0.0);
+    };
+    let (e, v) = h(d)?;
+    if v.dim() != f.dim() || !e.is_finite() {
+        return Err(FerricError::General(format!(
+            "solve_rhf_with_hook: hook returned V of shape {:?} (expected {:?}) and E = {e}",
+            v.dim(),
+            f.dim()
+        )));
+    }
+    *f += &v;
+    Ok(e)
+}
+
+/// Reject every `RhfConfig` setting a Fock hook cannot honour
+/// ([`solve_rhf_with_hook`], [`crate::uhf::solve_uhf_with_hook`],
+/// [`crate::rohf::solve_rohf_with_hook`]), naming the first offending field.
+/// Each one builds an orbital Hessian or a blocked solve that never calls
+/// the hook.
+pub fn validate_fock_hook(config: &RhfConfig) -> Result<(), FerricError> {
+    let refused = [
+        (
+            config.symmetry || config.irrep_nelec.is_some(),
+            "symmetry",
+            "the point-group-blocked solve does not call the hook",
+        ),
+        (
+            config.newton_trigger > 0.0,
+            "newton_trigger",
+            "the Newton orbital Hessian does not include the hook",
+        ),
+        (
+            config.ah_trigger > 0.0,
+            "ah_trigger",
+            "the augmented-Hessian step does not include the hook",
+        ),
+        (
+            config.aurora.enabled,
+            "aurora.enabled",
+            "the AURORA curvature model does not include the hook",
+        ),
+        (
+            config.trah_trigger.is_some(),
+            "trah_trigger",
+            "the TRAH orbital Hessian does not include the hook",
+        ),
+        (
+            config.check_stability || config.scf_stability_descent,
+            "check_stability",
+            "the stability Hessian does not include the hook",
+        ),
+    ];
+    match refused.iter().find(|r| r.0) {
+        Some((_, field, reason)) => Err(FerricError::General(format!(
+            "RhfConfig.{field} is not supported with a Fock hook: {reason}"
+        ))),
+        None => Ok(()),
+    }
 }
 
 /// Title of the `FERRIC_TIMING` phase table printed by `solve_rhf_impl`:
@@ -1722,6 +1821,7 @@ fn solve_rhf_impl(
     config: &RhfConfig,
     inj: Option<PeriodicInjection<'_>>,
     sym: Option<&crate::symmetric::SymmetrySpec>,
+    mut hook: Option<RhfFockHook<'_>>,
 ) -> Result<ScfResult, FerricError> {
     // Refuse an open-shell molecule BEFORE any work. See `require_closed_shell`.
     // (Moved here from solve_rhf on rebase so the injected path keeps it too.)
@@ -2558,6 +2658,10 @@ fn solve_rhf_impl(
         } else {
             0.0
         };
+        // Caller-supplied term (`solve_rhf_with_hook`): like V_xc, its
+        // potential goes into F and its energy is a standalone term outside
+        // the ½Tr[D(h + F)] trace. `None` adds nothing.
+        let e_hook = apply_fock_hook(hook.as_mut(), &d, &mut f)?;
         phases.stop(xc_t);
 
         // COSMO + IEF-PCM reaction fields: density-dependent, recomputed every
@@ -2580,7 +2684,7 @@ fn solve_rhf_impl(
         phases.stop(solvent_t);
         last_induced_dipoles = iter_induced_dipoles;
 
-        let energy = e_elec_no_xc + e_xc + e_cosmo + e_pcm + e_pol + vnn;
+        let energy = e_elec_no_xc + e_xc + e_hook + e_cosmo + e_pcm + e_pol + vnn;
 
         // DIIS error: e = FDS - SDF. Runs once per SCF iteration, serially
         // (this whole loop body is outside any rayon region — the JK build

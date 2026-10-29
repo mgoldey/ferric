@@ -197,6 +197,8 @@ use ndarray::{s, Array1, Array2, ArrayView2};
 mod rohf;
 pub use rohf::{rohf_hessian, rohf_hessian_parts};
 mod ks;
+/// The XC Hessian pieces (moving grid), next to [`blocks`].
+pub use ks::xc_blocks;
 #[doc(hidden)]
 pub use ks::{
     rks_fixed_grid_fock_residual, rks_fixed_grid_hessian_parts_with,
@@ -2915,6 +2917,223 @@ fn frequencies_from_parts(
     result.hessian_source = super::frequencies::HessianSource::Analytic;
     result.energy = energy;
     Ok(result)
+}
+
+/// Fixed-density pieces of the analytic SCF Hessian, for assembling one
+/// outside ferric (the Python `AoIntegrals.hess_*` / `*_deriv` blocks). Every
+/// function wraps the term [`rhf_hessian_parts`] itself uses, nuclei only (no
+/// external charges or field); index `3·atom + xyz` throughout.
+pub mod blocks {
+    use super::*;
+
+    /// `Σ D_μν ∂²h_μν/∂x∂y`, (3N, 3N): kinetic, nuclear attraction (basis-
+    /// and nuclear-centre derivatives) and V_ECP. Term 2 of [`RhfHessianParts`].
+    pub fn hess_hcore(
+        mol: &Molecule,
+        prep: &PreparedBasis,
+        d: &Array2<f64>,
+    ) -> Result<Array2<f64>, FerricError> {
+        if let Some(what) = ecp_refusal(mol, prep) {
+            return Err(FerricError::General(format!(
+                "hess_hcore: not supported for {what}"
+            )));
+        }
+        let mut h = skeleton_hess_1e_nuclei(prep, mol.atoms.len(), d)?;
+        if has_ecp(mol, prep.basis_set()) {
+            h += &ecp_skeleton_hessian(mol, prep.basis_set(), d)?;
+        }
+        Ok(h)
+    }
+
+    /// `Σ W_μν ∂²S_μν/∂x∂y`, (3N, 3N), for any W, with no sign (term 3 of
+    /// [`RhfHessianParts`] is its negative at the energy-weighted density).
+    pub fn hess_overlap(
+        prep: &PreparedBasis,
+        natoms: usize,
+        w: &Array2<f64>,
+    ) -> Result<Array2<f64>, FerricError> {
+        contract_1e_deriv2(prep, natoms, &[], ffi::OP_OVERLAP, w)
+    }
+
+    /// `(hJ, hK)`, each (3N, 3N): the second integral derivatives of
+    /// `½Tr[D J(D)]` and `½Tr[D K(D)]` at fixed D (closed-shell term 4 is
+    /// `hJ − ½hK`).
+    pub fn hess_jk(
+        prep: &PreparedBasis,
+        op: Operator,
+        bounds: &SchwarzBounds,
+        natoms: usize,
+        d: &Array2<f64>,
+    ) -> Result<(Array2<f64>, Array2<f64>), FerricError> {
+        let m = max_abs(d);
+        let gam_j = |mu, nu, la, sg| 0.5 * d[(mu, nu)] * d[(la, sg)];
+        let gam_k = |mu, nu, la, sg| 0.5 * d[(mu, la)] * d[(nu, sg)];
+        let hj = skeleton_hess_2e(prep, op, bounds, natoms, m, &gam_j)?;
+        let hk = skeleton_hess_2e(prep, op, bounds, natoms, m, &gam_k)?;
+        Ok((hj, hk))
+    }
+
+    /// `∂h/∂x` as AO matrices (length 3N): kinetic, nuclear attraction
+    /// (including the nuclear-centre derivatives) and V_ECP.
+    pub fn hcore_deriv(
+        mol: &Molecule,
+        prep: &PreparedBasis,
+    ) -> Result<Vec<Array2<f64>>, FerricError> {
+        let natoms = mol.atoms.len();
+        let mut h1 = deriv1_1e_matrices(prep, natoms, &[], ffi::OP_KINETIC)?;
+        for (h, v) in h1
+            .iter_mut()
+            .zip(deriv1_1e_matrices(prep, natoms, &[], ffi::OP_NUCLEAR)?)
+        {
+            *h += &v;
+        }
+        if has_ecp(mol, prep.basis_set()) {
+            for (h, v) in h1
+                .iter_mut()
+                .zip(ecp_first_derivative_matrices(mol, prep.basis_set())?)
+            {
+                *h += &v;
+            }
+        }
+        Ok(h1)
+    }
+
+    /// `∂S/∂x` as AO matrices (length 3N).
+    pub fn overlap_deriv(
+        prep: &PreparedBasis,
+        natoms: usize,
+    ) -> Result<Vec<Array2<f64>>, FerricError> {
+        deriv1_1e_matrices(prep, natoms, &[], ffi::OP_OVERLAP)
+    }
+
+    /// `(J^x, K^x)` (each length 3N) with `J^x_μν = Σ ∂(μν|λσ)/∂x D_λσ` and
+    /// `K^x_μν = Σ ∂(μλ|νσ)/∂x D_λσ`: the integral-derivative part of the
+    /// first-order Fock matrix at fixed D (closed shell `J^x − ½K^x`).
+    pub fn jk_deriv(
+        prep: &PreparedBasis,
+        op: Operator,
+        bounds: &SchwarzBounds,
+        natoms: usize,
+        d: &Array2<f64>,
+    ) -> Result<(Vec<Array2<f64>>, Vec<Array2<f64>>), FerricError> {
+        let zero = Array2::<f64>::zeros(d.dim());
+        let specs = [
+            FockSpec {
+                coulomb: d,
+                exchange: &zero,
+                k_scale: 0.0,
+            },
+            // G = J − k·K with J = 0 and k = 1 is −K.
+            FockSpec {
+                coulomb: &zero,
+                exchange: d,
+                k_scale: 1.0,
+            },
+        ];
+        let mut g = deriv1_g_matrices(prep, op, bounds, natoms, &specs)?;
+        let k = g
+            .pop()
+            .expect("two specs")
+            .into_iter()
+            .map(|m| -m)
+            .collect();
+        let j = g.pop().expect("two specs");
+        Ok((j, k))
+    }
+
+    /// The density-fitted twins of [`hess_jk`] and [`jk_deriv`], from the
+    /// RI-J / RI-K Hessian code `rhf_hessian_parts` runs under an SCF with
+    /// `df_j_aux = df_k_aux = aux`: the derivatives of ½Tr[D J_DF(D)] and
+    /// ½Tr[D K_DF(D)] (fits, aux centres and metric all differentiated).
+    #[derive(Debug, Clone)]
+    pub struct DfJkHessian {
+        /// RI-J skeleton, (3N, 3N).
+        pub hj: Array2<f64>,
+        /// RI-K skeleton, (3N, 3N).
+        pub hk: Array2<f64>,
+        /// `∂J_DF[D]/∂x` (length 3N).
+        pub jx: Vec<Array2<f64>>,
+        /// `∂K_DF[D]/∂x` (length 3N).
+        pub kx: Vec<Array2<f64>>,
+    }
+
+    /// [`DfJkHessian`] for any symmetric `d`. The RI-K code takes an energy
+    /// `α Tr[D K(D)]` through a factor `D = X Xᵀ`, so an indefinite `d = P − N`
+    /// (eigen-split) goes by polarization, `Q(P − N) = 2Q(P) + 2Q(N) −
+    /// Q(P + N)`, as three channels in one pass (as `df_k_gradient_any`).
+    pub fn df_jk_hessian(
+        mol: &Molecule,
+        obs: &PreparedBasis,
+        aux: &ferric_core::basis::BasisSet,
+        op: Operator,
+        budget: usize,
+        d: &Array2<f64>,
+    ) -> Result<DfJkHessian, FerricError> {
+        use crate::hessian_df_k::{rik_channel_terms_with_aux, RikChannel};
+        use ndarray_linalg::{Eigh, UPLO};
+        let natoms = mol.atoms.len();
+        let rij = crate::hessian_df::rij_terms_with_aux(
+            natoms,
+            obs,
+            PreparedBasis::new(mol, aux)?,
+            op,
+            budget,
+            d,
+            &RijMutants::default(),
+        )?;
+        let (evals, evecs) = d
+            .eigh(UPLO::Upper)
+            .map_err(|e| FerricError::Lapack(format!("DF Hessian: density eigh failed: {e}")))?;
+        let scale = evals.iter().fold(0.0f64, |m, &v| m.max(v.abs()));
+        let tol = 1e-8 * scale;
+        // X with X Xᵀ = Σ_{kept λ} |λ| v vᵀ.
+        let factor = |keep: &dyn Fn(f64) -> bool| -> Array2<f64> {
+            let cols: Vec<usize> = (0..evals.len()).filter(|&k| keep(evals[k])).collect();
+            let mut x = Array2::<f64>::zeros((d.nrows(), cols.len()));
+            for (j, &k) in cols.iter().enumerate() {
+                x.column_mut(j)
+                    .assign(&(&evecs.column(k) * evals[k].abs().sqrt()));
+            }
+            x
+        };
+        let (xp, xn) = (factor(&|l| l > tol), factor(&|l| l < -tol));
+        let xa = ndarray::concatenate(ndarray::Axis(1), &[xp.view(), xn.view()])
+            .map_err(|e| FerricError::General(format!("DF Hessian: factor concat: {e}")))?;
+        let channels: Vec<RikChannel<'_>> = if xn.ncols() == 0 {
+            vec![RikChannel { x: &xp, alpha: 0.5 }]
+        } else {
+            vec![
+                RikChannel { x: &xp, alpha: 1.0 },
+                RikChannel { x: &xn, alpha: 1.0 },
+                RikChannel {
+                    x: &xa,
+                    alpha: -0.5,
+                },
+            ]
+        };
+        let mut rik = rik_channel_terms_with_aux(
+            natoms,
+            obs,
+            PreparedBasis::new(mol, aux)?,
+            op,
+            budget,
+            &channels,
+            &RikMutants::default(),
+        )?;
+        // K is linear in D: K^x[P − N] = K^x[P] − K^x[N].
+        let mut kx = rik.channels.remove(0).first_order_k;
+        if xn.ncols() > 0 {
+            for (k, kn) in kx.iter_mut().zip(rik.channels.remove(0).first_order_k) {
+                *k -= &kn;
+            }
+        }
+        Ok(DfJkHessian {
+            hj: rij.skeleton,
+            hk: rik.skeleton,
+            jx: rij.first_order_j,
+            kx,
+        })
+    }
 }
 
 #[cfg(test)]

@@ -25,6 +25,8 @@ ferric-gw = { path = "../ferric-gw" }
 ferric-dft = { path = "../ferric-dft" }
 ferric-cc = { path = "../ferric-cc" }
 ferric-tddft = { path = "../ferric-tddft" }
+# `ferric.einsum`: the run-time face of the `einsum!` contraction engine.
+ferric-tensors = { path = "../ferric-tensors" }
 # Gamma-point periodic RHF (`run_rhf_gamma`): lattice hcore + the dense AFT
 # oracle J/K. Pure Rust on top of crates already linked here (core/integrals/
 # scf) plus num-complex -- no new native linkage.
@@ -46,6 +48,7 @@ ferric-cli = { path = "../ferric-cli" }
 pyo3 = { workspace = true }
 numpy = { workspace = true }
 ndarray = { workspace = true }
+rayon = { workspace = true }
 ctrlc = { workspace = true }
 
 [features]

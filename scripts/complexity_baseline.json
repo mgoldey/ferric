@@ -47732,7 +47732,7 @@
     "mi": 94.1383086739688
   },
   "crates/ferric-scf/src/rhf.rs::solve_rhf_impl": {
-    "cc": 220.0,
+    "cc": 224.0,
     "mi": -54.2486897032622
   },
   "crates/ferric-scf/src/rhf.rs::solve_rhf_impl::<anonymous>": {
@@ -48104,8 +48104,8 @@
     "mi": 153.0837736153568
   },
   "crates/ferric-scf/src/rohf.rs::impl:FxcKernelStore::response": {
-    "cc": 5.0,
-    "mi": 90.86841910129827
+    "cc": 6.0,
+    "mi": 84.8
   },
   "crates/ferric-scf/src/rohf.rs::impl:FxcKernelStore::response::<anonymous>": {
     "cc": 1.0,
@@ -48144,7 +48144,7 @@
     "mi": 106.96474121625049
   },
   "crates/ferric-scf/src/rohf.rs::solve_rohf_impl": {
-    "cc": 170.0,
+    "cc": 174.0,
     "mi": -35.46653081078031
   },
   "crates/ferric-scf/src/rohf.rs::solve_rohf_impl::<anonymous>": {

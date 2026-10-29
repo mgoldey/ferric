@@ -2,10 +2,18 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal, NoReturn, Sequence, TypedDict, overload
+from typing import Any, Callable, Literal, NoReturn, Sequence, TypedDict, overload
 
 import numpy as np
 from numpy.typing import NDArray
+
+# run_rhf / run_dft fock_hook: hook(D_total) -> (E, V), V = dE/dD symmetric.
+FockHook = Callable[[NDArray[np.float64]], tuple[float, NDArray[np.float64]]]
+# run_uhf / run_rohf fock_hook: hook(D_a, D_b) -> (E, V_a, V_b), V_s = dE/dD_s.
+SpinFockHook = Callable[
+    [NDArray[np.float64], NDArray[np.float64]],
+    tuple[float, NDArray[np.float64], NDArray[np.float64]],
+]
 
 # ── Module-level constants ──
 
@@ -404,6 +412,303 @@ class BasisSet:
     def from_bse_json(path: str) -> BasisSet:
         """Load a Basis Set Exchange JSON file (contractions renormalised)."""
         ...
+
+class AoIntegrals:
+    """AO integrals and J/K builds for one molecule in one basis (numpy).
+
+    Bohr, Hartree, AOs in ferric's shell order. ECPs are applied as in
+    run_rhf. `jk()` takes the TOTAL density: F = hcore() + J - 0.5 * K.
+    `operator` is 'coulomb' (no omega) or 'erf'/'erfc' (omega > 0, Bohr^-1).
+    """
+
+    def __init__(self, mol: Molecule, basis_set: BasisSet) -> None: ...
+    @property
+    def nao(self) -> int: ...
+    @property
+    def nelec(self) -> int: ...
+    def nuclear_repulsion(self) -> float: ...
+    def shell_offsets(self) -> list[int]:
+        """AO offset per shell plus trailing nao (length nshells + 1)."""
+        ...
+    def shell_atoms(self) -> list[int]: ...
+    def ao_atoms(self) -> list[int]: ...
+    def overlap(self) -> NDArray[np.float64]: ...
+    def kinetic(self) -> NDArray[np.float64]: ...
+    def nuclear(self) -> NDArray[np.float64]: ...
+    def ecp(self) -> NDArray[np.float64] | None: ...
+    def hcore(self) -> NDArray[np.float64]: ...
+    def dipole(
+        self, origin: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    ) -> NDArray[np.float64]: ...
+    def eri(
+        self,
+        operator: Literal["coulomb", "erf", "erfc"] = "coulomb",
+        omega: float | None = None,
+        max_gb: float = 2.0,
+    ) -> NDArray[np.float64]: ...
+    def eri3(
+        self,
+        aux: BasisSet,
+        operator: Literal["coulomb", "erf", "erfc"] = "coulomb",
+        omega: float | None = None,
+    ) -> NDArray[np.float64]: ...
+    def eri2(
+        self,
+        aux: BasisSet,
+        operator: Literal["coulomb", "erf", "erfc"] = "coulomb",
+        omega: float | None = None,
+    ) -> NDArray[np.float64]: ...
+    def jk(
+        self,
+        density: NDArray[np.float64],
+        operator: Literal["coulomb", "erf", "erfc"] = "coulomb",
+        omega: float | None = None,
+        thresh: float = 1e-12,
+    ) -> tuple[NDArray[np.float64], NDArray[np.float64]]: ...
+    def ao2mo(
+        self,
+        c1: NDArray[np.float64],
+        c2: NDArray[np.float64],
+        c3: NDArray[np.float64],
+        c4: NDArray[np.float64],
+        operator: Literal["coulomb", "erf", "erfc"] = "coulomb",
+        omega: float | None = None,
+        max_gb: float = 2.0,
+    ) -> NDArray[np.float64]:
+        """MO ERIs (pq|rs), shape (k1, k2, k3, k4), integral-direct (no nao^4
+        AO tensor; peak nao^2*k3*k4 plus the result, ValueError above max_gb)."""
+        ...
+    def df_mo(
+        self,
+        aux: BasisSet,
+        c1: NDArray[np.float64],
+        c2: NDArray[np.float64],
+        operator: Literal["coulomb", "erf", "erfc"] = "coulomb",
+        omega: float | None = None,
+    ) -> NDArray[np.float64]:
+        """Fitted B^P_pq (naux, k1, k2) with (pq|rs) ~ sum_P B^P_pq B^P_rs."""
+        ...
+    def grad_nuclear_repulsion(self) -> NDArray[np.float64]:
+        """dV_nn/dR, (natoms, 3), Hartree/Bohr."""
+        ...
+    def grad_hcore(self, density: NDArray[np.float64]) -> NDArray[np.float64]:
+        """sum D dh/dR at fixed D (T + V + V_ECP), (natoms, 3); D total."""
+        ...
+    def grad_overlap(self, w: NDArray[np.float64]) -> NDArray[np.float64]:
+        """sum W dS/dR, (natoms, 3), W used as given (SCF: subtract it)."""
+        ...
+    def grad_jk(
+        self,
+        density: NDArray[np.float64],
+        operator: Literal["coulomb", "erf", "erfc"] = "coulomb",
+        omega: float | None = None,
+        aux: BasisSet | None = None,
+        memory_budget_gb: float | None = None,
+    ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+        """(gJ, gK) = d/dR of 1/2 Tr[D J(D)] and 1/2 Tr[D K(D)] at fixed D (any
+        symmetric D, so bilinear terms follow by polarization). Closed-shell HF:
+        gJ - 0.5 gK; UHF: gJ(Da+Db) - gK(Da) - gK(Db). aux: the df_jk(aux)
+        fits instead (an SCF with df_j_aux=df_k_aux=aux)."""
+        ...
+    def hess_nuclear_repulsion(self) -> NDArray[np.float64]:
+        """d2 V_nn / dx dy, shape (3N, 3N), Hartree/Bohr^2, index 3*atom + xyz."""
+        ...
+    def hess_hcore(self, density: NDArray[np.float64]) -> NDArray[np.float64]:
+        """sum D d2h/dx dy at fixed D (kinetic, nuclear attraction, V_ECP), (3N, 3N)."""
+        ...
+    def hess_overlap(self, w: NDArray[np.float64]) -> NDArray[np.float64]:
+        """sum W d2S/dx dy, (3N, 3N), W used as given (an SCF subtracts it)."""
+        ...
+    def hess_jk(
+        self,
+        density: NDArray[np.float64],
+        operator: Literal["coulomb", "erf", "erfc"] = "coulomb",
+        omega: float | None = None,
+        aux: BasisSet | None = None,
+        memory_budget_gb: float | None = None,
+    ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+        """(hJ, hK) = second integral derivatives of 1/2 Tr[D J(D)] and
+        1/2 Tr[D K(D)] at fixed D, each (3N, 3N). Closed-shell HF: hJ - 0.5 hK.
+        aux: the df_jk(aux) fits instead (an SCF with df_j_aux=df_k_aux=aux)."""
+        ...
+    def hcore_deriv(self) -> NDArray[np.float64]:
+        """dh/dx for every nuclear coordinate, (3N, nao, nao), incl. V_ECP."""
+        ...
+    def overlap_deriv(self) -> NDArray[np.float64]:
+        """dS/dx for every nuclear coordinate, (3N, nao, nao)."""
+        ...
+    def jk_deriv(
+        self,
+        density: NDArray[np.float64],
+        operator: Literal["coulomb", "erf", "erfc"] = "coulomb",
+        omega: float | None = None,
+        aux: BasisSet | None = None,
+        memory_budget_gb: float | None = None,
+    ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+        """(Jx, Kx), each (3N, nao, nao): sum d(mn|ls)/dx D_ls and
+        sum d(ml|ns)/dx D_ls. Closed-shell first-order Fock: hcore_deriv + Jx - 0.5 Kx.
+        aux: d/dx of the df_jk(aux) fits' J[D] and K[D]."""
+        ...
+    def veff(
+        self,
+        density: NDArray[np.float64],
+        xc: XcFunctional | None = None,
+        aux: BasisSet | None = None,
+        memory_budget_gb: float | None = None,
+    ) -> tuple[float, NDArray[np.float64]]:
+        """(E, V): V = J - 0.5 K (xc=None) or J - 0.5 (c_sr K_erfc + c_lr K_erf)
+        + V_xc; E = 0.5 Tr[D (J - 0.5 mix K)] (+ E_xc). Fock = hcore() + V.
+        aux: RI-J/RI-K (as df_j_aux=df_k_aux=aux). Builders cached per (mix, aux)."""
+        ...
+    def veff_polarized(
+        self,
+        d_a: NDArray[np.float64],
+        d_b: NDArray[np.float64],
+        xc: XcFunctional | None = None,
+        aux: BasisSet | None = None,
+        memory_budget_gb: float | None = None,
+    ) -> tuple[float, NDArray[np.float64], NDArray[np.float64]]:
+        """(E, V_a, V_b): V_s = J(D_a + D_b) - mix K(D_s) (+ V_xc,s)."""
+        ...
+    def cphf(
+        self,
+        mo_coeff: NDArray[np.float64],
+        mo_energy: Sequence[float],
+        nocc: int,
+        xc: XcFunctional | None = None,
+        aux: BasisSet | None = None,
+        memory_budget_gb: float | None = None,
+    ) -> Cphf:
+        """Closed-shell CPHF (xc=None) / CPKS for converged MOs; see Cphf.
+        aux: RI-J/RI-K against that basis (as df_j_aux=df_k_aux=aux)."""
+        ...
+    def ucphf(
+        self,
+        mo_coeff_a: NDArray[np.float64],
+        mo_coeff_b: NDArray[np.float64],
+        mo_energy_a: Sequence[float],
+        mo_energy_b: Sequence[float],
+        nocc_a: int,
+        nocc_b: int,
+        xc: XcFunctional | None = None,
+        aux: BasisSet | None = None,
+        memory_budget_gb: float | None = None,
+    ) -> Ucphf:
+        """Open-shell UCPHF / UCPKS for converged per-spin MOs; see Ucphf."""
+        ...
+    def xc_functional(
+        self,
+        functional: str,
+        grid_radial: int | None = None,
+        grid_angular: int | None = None,
+        grid_prune: str | None = None,
+    ) -> XcFunctional:
+        """The functional on run_dft's grid (same grid kwargs), built once."""
+        ...
+    def df_jk(
+        self,
+        aux: BasisSet,
+        operator: Literal["coulomb", "erf", "erfc"] = "coulomb",
+        omega: float | None = None,
+        memory_budget_gb: float | None = None,
+    ) -> DfJk:
+        """RI-J/RI-K fitters against `aux`, built once and reused per density."""
+        ...
+
+class XcFunctional:
+    """An XC functional on one molecule's grid, from AoIntegrals.xc_functional.
+
+    eval / eval_polarized: semilocal (+ VV10) E_xc and V_xc as the SCF adds them;
+    grad / grad_polarized: the XC gradient at fixed density (grid response
+    included); hess / vxc_deriv: its closed-shell Hessian pieces (moving grid).
+    Exact exchange is not included: see exchange_mix."""
+
+    @property
+    def name(self) -> str: ...
+    @property
+    def exchange_mix(self) -> tuple[float, float, float]:
+        """(c_sr, c_lr, omega): closed-shell F = h + J - 0.5 (c_sr K_erfc +
+        c_lr K_erf) + V_xc (omega == 0: h + J - 0.5 c_sr K + V_xc)."""
+        ...
+    def eval(
+        self, density: NDArray[np.float64]
+    ) -> tuple[float, NDArray[np.float64]]: ...
+    def eval_polarized(
+        self, d_a: NDArray[np.float64], d_b: NDArray[np.float64]
+    ) -> tuple[float, NDArray[np.float64], NDArray[np.float64]]: ...
+    def response(
+        self, density: NDArray[np.float64], d1: NDArray[np.float64]
+    ) -> NDArray[np.float64]:
+        """d/dt V_xc(D + t D1) at t = 0 (LDA/GGA/hybrid/RSH-GGA and the tau-only
+        meta-GGAs SCAN/r2SCAN/TPSS; VV10 functionals add the derivative of the
+        V_nl the SCF assembles, on its NLC grid)."""
+        ...
+    def response_polarized(
+        self,
+        d_a: NDArray[np.float64],
+        d_b: NDArray[np.float64],
+        d1_a: NDArray[np.float64],
+        d1_b: NDArray[np.float64],
+    ) -> tuple[NDArray[np.float64], NDArray[np.float64]]: ...
+    def grad(self, density: NDArray[np.float64]) -> NDArray[np.float64]: ...
+    def grad_polarized(
+        self, d_a: NDArray[np.float64], d_b: NDArray[np.float64]
+    ) -> NDArray[np.float64]: ...
+    def hess(self, density: NDArray[np.float64]) -> NDArray[np.float64]:
+        """d2 E_xc / dx dy at fixed total density, (3N, 3N), index 3*atom + xyz:
+        the XC skeleton of run_frequencies(hessian="analytic-moving-grid"),
+        grid response included (the derivative of grad). Closed-shell LDA/GGA,
+        pure or global hybrid, unpruned grid; meta-GGA, VV10, range-separated
+        or double hybrids, grid_prune and ghost atoms raise ValueError."""
+        ...
+    def vxc_deriv(self, density: NDArray[np.float64]) -> NDArray[np.float64]:
+        """dV_xc / dx at fixed total density, (3N, n, n), same moving grid as
+        hess (the derivative of eval's V_xc): the XC part of the first-order
+        KS matrix of a CPKS right-hand side. Same limits as hess."""
+        ...
+
+class Cphf:
+    """Closed-shell orbital response. Rotations U are (nvir, nocc).
+
+    matvec(U) = (e_a - e_i) U + C_v^T F1(D1) C_o, D1 = density(U) =
+    2 (C_v U C_o^T + h.c.), F1 = J - 0.5 mix K + f_xc. solve(rhs) gives U with
+    matvec(U) = rhs; for a perturbation h1, rhs = -C_v^T h1 C_o."""
+
+    def matvec(self, u: NDArray[np.float64]) -> NDArray[np.float64]: ...
+    def solve(
+        self, rhs: NDArray[np.float64], tol: float = 1e-9, max_iter: int = 100
+    ) -> NDArray[np.float64]: ...
+    def density(self, u: NDArray[np.float64]) -> NDArray[np.float64]: ...
+
+class Ucphf:
+    """Open-shell twin of Cphf on (U_a, U_b); D1_s = C_vs U_s C_os^T + h.c.,
+    F1_s = J(D1_a + D1_b) - mix K(D1_s) + f_xc_s."""
+
+    def matvec(
+        self, u_a: NDArray[np.float64], u_b: NDArray[np.float64]
+    ) -> tuple[NDArray[np.float64], NDArray[np.float64]]: ...
+    def solve(
+        self,
+        rhs_a: NDArray[np.float64],
+        rhs_b: NDArray[np.float64],
+        tol: float = 1e-9,
+        max_iter: int = 100,
+    ) -> tuple[NDArray[np.float64], NDArray[np.float64]]: ...
+    def density(
+        self, u_a: NDArray[np.float64], u_b: NDArray[np.float64]
+    ) -> tuple[NDArray[np.float64], NDArray[np.float64]]: ...
+
+class DfJk:
+    """Density-fitted J and K from AoIntegrals.df_jk(aux); TOTAL density in,
+    so the closed-shell Fock matrix is hcore() + J - 0.5 * K."""
+
+    @property
+    def naux(self) -> int: ...
+    def j(self, density: NDArray[np.float64]) -> NDArray[np.float64]: ...
+    def k(self, density: NDArray[np.float64]) -> NDArray[np.float64]: ...
+    def jk(
+        self, density: NDArray[np.float64]
+    ) -> tuple[NDArray[np.float64], NDArray[np.float64]]: ...
 
 class SymmetricRhfResult:
     """Result of run_rhf(symmetry=True) (point-group-blocked closed-shell RHF)
@@ -2714,6 +3019,7 @@ def run_rhf(
     trah_trigger: float | None = None,
     symmetry: Literal[False] = False,
     irrep_nelec: None = None,
+    fock_hook: FockHook | None = None,
 ) -> RhfResult:
     """Closed-shell Restricted Hartree-Fock.
 
@@ -2728,6 +3034,14 @@ def run_rhf(
     HF only: solvent, point_charges/external_field/smeared_charges, cosx,
     stability_descent, soscf, aurora/trah_trigger and the like raise ValueError.
     The blocked SCF is one plain solve: no convergence-ladder escalation.
+
+    fock_hook=hook adds one density-dependent term: hook(D) is called with the
+    TOTAL density every iteration and returns (E, V); V is added to the Fock
+    matrix and E to the energy (outside the 1/2 Tr[D(h+F)] trace, like E_xc),
+    so the result is variational when V = dE/dD. An exception raised by the
+    hook propagates unchanged. soscf, stability_descent, symmetry, aurora and
+    trah_trigger raise ValueError with a hook (their Hessians or blocked solve
+    do not see it).
 
     SCF controls (defaults): max_iter 200 (the iteration cap, the Rust RhfConfig default; reaching it returns
     converged=False and emits a RuntimeWarning naming the unmet criteria),
@@ -2796,6 +3110,7 @@ def run_rhf(
     *,
     symmetry: Literal[True],
     irrep_nelec: dict[str, int] | None = None,
+    fock_hook: None = None,
 ) -> SymmetricRhfResult: ...
 def run_uhf(
     mol: Molecule,
@@ -2820,8 +3135,14 @@ def run_uhf(
     cosx_final_grid: tuple[int, int] | tuple[int, int, str] | None = None,
     cosx_overlap_fit: bool | None = None,
     trah_trigger: float | None = None,
+    fock_hook: SpinFockHook | None = None,
 ) -> UhfResult:
-    """Unrestricted Hartree-Fock (open-shell). Note: the exit report (final_* residuals, unmet_criteria, non-convergence RuntimeWarning) is RHF-only today; non-convergence raises. A user-set energy_conv below the estimated (rounding-level) noise floor of dE emits one RuntimeWarning before the SCF starts.
+    """Unrestricted Hartree-Fock (open-shell). fock_hook=hook adds one
+    density-dependent term: hook(D_a, D_b) gets the per-spin densities every
+    iteration and returns (E, V_a, V_b); V_s is added to F_s and E to the
+    energy, so the result is variational when V_s = dE/dD_s. The exception
+    and refusal rules are run_rhf's (stability_descent and trah_trigger raise
+    ValueError with a hook). Note: the exit report (final_* residuals, unmet_criteria, non-convergence RuntimeWarning) is RHF-only today; non-convergence raises. A user-set energy_conv below the estimated (rounding-level) noise floor of dE emits one RuntimeWarning before the SCF starts.
 
 
     cosx_grid / cosx_final_pass / cosx_final_grid / cosx_overlap_fit: COSX
@@ -2853,8 +3174,10 @@ def run_rohf(
     point_charges: list[tuple[float, float, float, float]] | None = None,
     external_field: tuple[float, float, float] | None = None,
     memory_budget_gb: float | None = None,
+    fock_hook: SpinFockHook | None = None,
 ) -> UhfResult:
-    """Restricted Open-Shell Hartree-Fock. Note: the exit report (final_* residuals, unmet_criteria, non-convergence RuntimeWarning) is RHF-only today. A user-set energy_conv below the estimated (rounding-level) noise floor of dE emits one RuntimeWarning before the SCF starts."""
+    """Restricted Open-Shell Hartree-Fock. fock_hook: as for run_uhf; V_a and
+    V_b enter before the Roothaan effective-Fock combination. Note: the exit report (final_* residuals, unmet_criteria, non-convergence RuntimeWarning) is RHF-only today. A user-set energy_conv below the estimated (rounding-level) noise floor of dE emits one RuntimeWarning before the SCF starts."""
     ...
 
 def run_cdft(
@@ -2943,8 +3266,18 @@ def run_frequencies(
     max_iter: int | None = None,
     energy_conv: float | None = None,
     density_conv: float | None = None,
+    df_j_aux: str | None = None,
+    df_k_aux: str | None = None,
 ) -> FrequencyResult:
     """Harmonic vibrational frequencies.
+
+    `df_j_aux` / `df_k_aux` density-fit every SCF of the
+    run as in `run_rhf`. Unset means exact J/K for HF, but for KS (`xc=`) the
+    SCF's own default, RI-J (and RI-K for a hybrid) in def2-universal-jkfit;
+    pass `"none"` for exact. The analytic RHF/UHF/ROHF Hessian differentiates
+    the fitted energy (RI-J, RI-K or both) and `"fd"` differences the fitted
+    analytic gradient. RI with point charges / a field takes the
+    finite-difference path under "auto" (`"analytic"` raises).
 
     `hessian="auto"` uses the analytic Hessian for RHF (closed shell) or UHF
     (any multiplicity) with exact J/K, with or without an ECP, or ROHF with
@@ -3407,8 +3740,11 @@ def run_dft(
     cosx_overlap_fit: bool | None = None,
     symmetry: Literal[False] = False,
     irrep_nelec: None = None,
+    fock_hook: FockHook | None = None,
 ) -> DftResult:
-    """Kohn-Sham DFT (closed-shell). Note: the final_* residuals, unmet_criteria and the
+    """Kohn-Sham DFT (closed-shell). fock_hook: as for run_rhf; with a
+    hook only the first convergence-ladder rung runs, and with_gradient,
+    dispersion and symmetry raise ValueError. Note: the final_* residuals, unmet_criteria and the
     non-convergence RuntimeWarning are RHF-only today (this result has exit_reason and iterations).
 
 
@@ -3489,6 +3825,7 @@ def run_dft(
     *,
     symmetry: Literal[True],
     irrep_nelec: dict[str, int] | None = None,
+    fock_hook: None = None,
 ) -> SymmetricRhfResult: ...
 @overload
 def run_dft(
@@ -3517,6 +3854,7 @@ def run_dft(
     cosx_overlap_fit: bool | None = None,
     symmetry: bool = False,
     irrep_nelec: dict[str, int] | None = None,
+    fock_hook: FockHook | None = None,
 ) -> DftResult | SymmetricRhfResult: ...
 def dft_grid_point_count(
     mol: Molecule,
@@ -3991,6 +4329,19 @@ def esp_at_atoms(
     result: RhfResult | DftResult,
 ) -> list[float]:
     """Electrostatic potential at each nucleus (Hartree atomic units)."""
+    ...
+
+def einsum(
+    spec: str,
+    a: NDArray[np.float64],
+    b: NDArray[np.float64],
+    scale: float = 1.0,
+) -> NDArray[np.float64] | float:
+    """Binary contraction on ferric's GEMM engine (the einsum! macro's).
+
+    Two operands, explicit '->', no repeated index within a term; output lists
+    batch, then left-free, then right-free indices. Scalar specs return float.
+    """
     ...
 
 def esp_at_points(

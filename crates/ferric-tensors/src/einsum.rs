@@ -24,6 +24,12 @@ pub enum TensorError {
     /// The computed 2D product shape could not be reshaped to the output shape.
     #[error("output reshape failed: product has {got} elements, output shape needs {want}")]
     OutputReshape { got: usize, want: usize },
+    /// A run-time spec ([`einsum_dyn`]) failed to parse.
+    #[error("invalid einsum spec: {0}")]
+    Spec(String),
+    /// A run-time operand's rank or an index's extents disagree with the spec.
+    #[error("einsum operand mismatch: {0}")]
+    Operand(String),
 }
 
 impl From<TensorError> for ferric_core::error::FerricError {
@@ -113,6 +119,67 @@ pub fn einsum_binary(
         .into_shape_with_order(IxDyn(out_shape))
         .map_err(|_| TensorError::OutputReshape { got, want })?;
     Ok(out)
+}
+
+/// Contract two operands under a spec string chosen at RUN time.
+///
+/// Same spec rules and the same engine as the `einsum!` macro (both parse with
+/// `ferric_einsum_spec`), but every check the macro does at compile time is
+/// a [`TensorError`] here: a malformed spec, an operand whose rank differs
+/// from its term, or a shared index whose extents differ between operands.
+/// A scalar spec (`"ij,ij->"`) returns a 0-dimensional array.
+pub fn einsum_dyn(
+    spec: &str,
+    left: ArrayViewD<f64>,
+    right: ArrayViewD<f64>,
+    scale: f64,
+) -> Result<ArrayD<f64>, TensorError> {
+    let s = ferric_einsum_spec::parse(spec).map_err(TensorError::Spec)?;
+    let ranks = [
+        ("left", left.ndim(), s.left_rank),
+        ("right", right.ndim(), s.right_rank),
+    ];
+    for (which, ndim, rank) in ranks {
+        if ndim != rank {
+            return Err(TensorError::Operand(format!(
+                "{which} operand has {ndim} axes, spec '{spec}' gives it {rank}"
+            )));
+        }
+    }
+    let shared = s.left_batch.iter().zip(&s.right_batch);
+    for (&lp, &rp) in shared.chain(s.left_contr.iter().zip(&s.right_contr)) {
+        let (ln, rn) = (left.shape()[lp], right.shape()[rp]);
+        if ln != rn {
+            return Err(TensorError::Operand(format!(
+                "shared index at left axis {lp} has extent {ln} but right axis {rp} has {rn}"
+            )));
+        }
+    }
+    let out_shape: Vec<usize> = s
+        .out_from_batch
+        .iter()
+        .map(|&p| left.shape()[p])
+        .chain(s.out_from_left.iter().map(|&p| left.shape()[p]))
+        .chain(s.out_from_right.iter().map(|&p| right.shape()[p]))
+        .collect();
+    // A zero-extent axis: every output element is an empty sum (or the
+    // output itself is empty), so the result is zeros. The GEMM lowering
+    // below cannot reshape empty permuted views and would panic.
+    if left.is_empty() || right.is_empty() {
+        return Ok(ArrayD::zeros(IxDyn(&out_shape)));
+    }
+    einsum_binary_batched(
+        left,
+        &s.left_batch,
+        &s.left_free,
+        &s.left_contr,
+        right,
+        &s.right_batch,
+        &s.right_free,
+        &s.right_contr,
+        &out_shape,
+        scale,
+    )
 }
 
 /// Contract two operands with optional *batch* (diagonal) axes and a scale.
