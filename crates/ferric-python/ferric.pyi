@@ -640,7 +640,8 @@ class XcFunctional:
         self, density: NDArray[np.float64], d1: NDArray[np.float64]
     ) -> NDArray[np.float64]:
         """d/dt V_xc(D + t D1) at t = 0 (LDA/GGA/hybrid/RSH-GGA and the tau-only
-        meta-GGAs SCAN/r2SCAN/TPSS; VV10 raises RuntimeError)."""
+        meta-GGAs SCAN/r2SCAN/TPSS; VV10 functionals add the derivative of the
+        V_nl the SCF assembles, on its NLC grid)."""
         ...
     def response_polarized(
         self,

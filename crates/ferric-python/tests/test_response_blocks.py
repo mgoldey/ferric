@@ -78,7 +78,7 @@ def test_rhf_matvec_equals_the_dense_orbital_hessian():
 
 
 @pytest.mark.parametrize(
-    "functional", ["PBE", "B3LYP", WB97X, "r2SCAN", "SCAN", "TPSS"]
+    "functional", ["PBE", "B3LYP", WB97X, "r2SCAN", "SCAN", "TPSS", "wB97X-V"]
 )
 def test_xc_kernel_is_the_derivative_of_vxc(functional):
     mol, bs, ints = _ints(NH2_ASYM, "6-31g", multiplicity=2)
@@ -290,10 +290,9 @@ def test_response_refusals():
     mol, bs, ints = _ints(WATER, "sto-3g")
     e, c = _rhf_mos(mol, bs, ints)
     no = ints.nelec // 2
-    with pytest.raises(RuntimeError, match="no exchange-correlation kernel for VV10"):
-        ints.cphf(c, list(e), no, xc=ints.xc_functional("wB97X-V"))
-    # The tau-only meta-GGAs now have a kernel.
+    # The tau-only meta-GGAs and VV10 now have a kernel.
     ints.cphf(c, list(e), no, xc=ints.xc_functional("SCAN"))
+    ints.cphf(c, list(e), no, xc=ints.xc_functional("wB97X-V"))
     with pytest.raises(ValueError, match="nocc"):
         ints.cphf(c, list(e), c.shape[1])
     cphf = ints.cphf(c, list(e), no)
@@ -387,3 +386,41 @@ def test_df_uhf_polarizability_matches_finite_field():
         return ferric.run_uhf(mol, bs, **kw, **DF, **TIGHT).energy
 
     assert abs(alpha_zz - _alpha_zz_finite_field(run)) < 1e-5 * abs(alpha_zz)
+
+
+def test_vv10_polarizability_matches_the_finite_field_dipole():
+    # wB97X-V: range-separated exchange + VV10. CPKS gives the response of
+    # the SCF density under the Fock map the SCF uses, so the anchor is the
+    # finite-field derivative of the SCF dipole, alpha_zz = -d Tr[D z]/dF_z
+    # (H' = +F.r). The energy route -d2E/dF2 equals it only if V_nl were
+    # exactly dE_nl/dD, which it is not (the strict xfail in
+    # test_xc_blocks.py); it is checked loosely below as a magnitude check.
+    # ferric builds RSH exchange only via RI-K, so everything is RI-JK.
+    mol, bs, ints = _ints(WATER, "6-31g")
+    aux = ferric.BasisSet.bundled(AUX)
+    xc = ints.xc_functional("wB97X-V")
+    d0 = ferric.run_dft(mol, bs, functional="wB97X-V", **DF, **TIGHT).density()
+    e, c = _canonical(ints, ints.hcore() + ints.veff(d0, xc=xc, aux=aux)[1])
+    no = ints.nelec // 2
+    alpha = _alpha_closed(ints, ints.cphf(c, list(e), no, xc=xc, aux=aux), c, no)
+    np.testing.assert_allclose(alpha, alpha.T, atol=1e-7)
+    z = ints.dipole()[2]
+
+    def run(field):
+        kw = {"external_field": field} if field else {}
+        return ferric.run_dft(mol, bs, functional="wB97X-V", **kw, **DF, **TIGHT)
+
+    def dip_slope(f):
+        lo, hi = run((0, 0, -f)).density(), run((0, 0, f)).density()
+        return -np.sum((hi - lo) * z) / (2 * f)
+
+    ff = (4 * dip_slope(1e-3) - dip_slope(2e-3)) / 3
+    assert abs(alpha[2, 2] - ff) < 1e-8 * abs(alpha[2, 2]), (alpha[2, 2], ff)
+    # The kernel without its VV10 part would miss this by far more.
+    no_vv10 = ints.xc_functional(WB97X)
+    alpha_wo = _alpha_closed(
+        ints, ints.cphf(c, list(e), no, xc=no_vv10, aux=aux), c, no
+    )
+    assert abs(alpha_wo[2, 2] - ff) > 10 * abs(alpha[2, 2] - ff)
+    energy = _alpha_zz_finite_field(lambda f: run(f).total_energy)
+    assert abs(alpha[2, 2] - energy) < 1e-3 * abs(alpha[2, 2])

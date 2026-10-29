@@ -384,6 +384,7 @@ impl PyAoIntegrals {
         let spec = XcSpec {
             name: String::new(),
             grid: Default::default(),
+            nlc: Default::default(),
             mix,
         };
         let zero = Array2::<f64>::zeros((self.prep.nbasis(), self.prep.nbasis()));
@@ -1247,6 +1248,7 @@ impl PyXcFunctional {
         XcSpec {
             name: self.name.clone(),
             grid: self.grids.main.clone(),
+            nlc: self.grids.nlc.clone(),
             mix: self.exchange_mix,
         }
     }
@@ -1422,8 +1424,8 @@ impl PyXcFunctional {
     }
     /// Closed-shell kernel response V1 = d/dt V_xc(D + t D1) at t = 0, for
     /// symmetric `density` (total) and `d1`. LDA / GGA / hybrid / RSH-GGA
-    /// and tau-only meta-GGA (SCAN, r2SCAN, TPSS); VV10 has no kernel here
-    /// and raises RuntimeError.
+    /// and tau-only meta-GGA (SCAN, r2SCAN, TPSS); with VV10 the derivative
+    /// of the V_nl the SCF assembles (NLC grid; total density only).
     /// Builds the kernel at `density` on each call (`cphf` caches it).
     fn response<'py>(
         &self,
@@ -1479,37 +1481,51 @@ impl PyXcFunctional {
 struct XcSpec {
     name: String,
     grid: ferric_dft::grid::AtomicGridConfig,
+    /// The VV10 grid (used only by a functional with VV10).
+    nlc: ferric_dft::grid::AtomicGridConfig,
     mix: (f64, f64, f64),
 }
 
+/// The f_xc kernel of one functional: the semilocal store, plus the VV10
+/// nonlocal response on the NLC grid when the functional carries VV10.
+struct XcKernel {
+    semilocal: ferric_scf::rohf::FxcKernelStore,
+    vv10: Option<ferric_dft::vv10::Vv10Response>,
+}
+
 impl XcSpec {
-    /// The f_xc kernel at `(d_a, d_b)`. LDA / GGA / hybrid / RSH-GGA and the
-    /// τ-only meta-GGAs (SCAN, r2SCAN, TPSS). VV10 (no nonlocal kernel) is
-    /// refused: the response would silently miss it.
+    /// The f_xc kernel at `(d_a, d_b)`. LDA / GGA / hybrid / RSH-GGA, the
+    /// τ-only meta-GGAs (SCAN, r2SCAN, TPSS), and VV10 (the derivative of
+    /// the V_nl the SCF assembles, on its NLC grid).
     fn kernel(
         &self,
         mol: &Molecule,
         prep: &PreparedBasis,
         (d_a, d_b): (&Array2<f64>, &Array2<f64>),
-    ) -> Result<ferric_scf::rohf::FxcKernelStore, FerricError> {
+    ) -> Result<XcKernel, FerricError> {
         let def = ferric_dft::libxc::xc_def_from_name(&self.name)
             .map_err(|e| FerricError::General(format!("libxc: {e:?}")))?;
-        if def.vv10.is_some() {
-            return Err(FerricError::General(format!(
-                "functional '{}': no exchange-correlation kernel for VV10 (LDA, GGA, hybrid, \
-                 range-separated GGA and tau-only meta-GGA only)",
-                self.name
-            )));
-        }
-        ferric_scf::rohf::FxcKernelStore::build(mol, prep, &self.grid, &self.name, None, d_a, d_b)
+        let semilocal = ferric_scf::rohf::FxcKernelStore::build(
+            mol, prep, &self.grid, &self.name, None, d_a, d_b,
+        )?;
+        let vv10 = def
+            .vv10
+            .map(|params| {
+                let d = d_a + d_b;
+                ferric_dft::vv10::Vv10Response::new(mol, prep.basis_set(), params, &self.nlc, &d)
+            })
+            .transpose()?;
+        Ok(XcKernel { semilocal, vv10 })
     }
 }
 
-fn apply_kernel(
-    k: &ferric_scf::rohf::FxcKernelStore,
-    (d1_a, d1_b): (&Array2<f64>, &Array2<f64>),
-) -> [Array2<f64>; 2] {
-    let (va, vb) = (k.response())(d1_a, d1_b);
+fn apply_kernel(k: &XcKernel, (d1_a, d1_b): (&Array2<f64>, &Array2<f64>)) -> [Array2<f64>; 2] {
+    let (mut va, mut vb) = (k.semilocal.response())(d1_a, d1_b);
+    if let Some(nl) = &k.vv10 {
+        let v1 = nl.apply(&(d1_a + d1_b));
+        va += &v1;
+        vb += &v1;
+    }
     [va, vb]
 }
 
@@ -1585,7 +1601,7 @@ struct FockResponse {
     /// `(erfc, erf)` bounds of a range-separated functional.
     rsh: Option<(SchwarzBounds, SchwarzBounds)>,
     mix: (f64, f64, f64),
-    kernel: Option<ferric_scf::rohf::FxcKernelStore>,
+    kernel: Option<XcKernel>,
     df: Option<DfResponse>,
 }
 

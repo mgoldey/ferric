@@ -1442,6 +1442,285 @@ pub fn add_vv10_scratch(
     e_nl
 }
 
+// ---------------------------------------------------------------------------
+// Linear response of V_nl (the VV10 f_xc kernel)
+// ---------------------------------------------------------------------------
+
+/// A value and its directional derivative (forward-mode dual number), for
+/// differentiating the V_nl pair sum exactly as implemented.
+#[derive(Clone, Copy, Debug)]
+struct Dual {
+    v: f64,
+    d: f64,
+}
+
+impl Dual {
+    const fn c(v: f64) -> Self {
+        Dual { v, d: 0.0 }
+    }
+    fn sqrt(self) -> Self {
+        let r = self.v.sqrt();
+        Dual {
+            v: r,
+            d: 0.5 * self.d / r,
+        }
+    }
+    fn powf(self, e: f64) -> Self {
+        let p = self.v.powf(e);
+        Dual {
+            v: p,
+            d: e * p / self.v * self.d,
+        }
+    }
+    fn sq(self) -> Self {
+        self * self
+    }
+    fn recip(self) -> Self {
+        Dual {
+            v: 1.0 / self.v,
+            d: -self.d / (self.v * self.v),
+        }
+    }
+}
+
+impl std::ops::Add for Dual {
+    type Output = Dual;
+    fn add(self, o: Dual) -> Dual {
+        Dual {
+            v: self.v + o.v,
+            d: self.d + o.d,
+        }
+    }
+}
+impl std::ops::Sub for Dual {
+    type Output = Dual;
+    fn sub(self, o: Dual) -> Dual {
+        Dual {
+            v: self.v - o.v,
+            d: self.d - o.d,
+        }
+    }
+}
+impl std::ops::Mul for Dual {
+    type Output = Dual;
+    fn mul(self, o: Dual) -> Dual {
+        Dual {
+            v: self.v * o.v,
+            d: self.d * o.v + self.v * o.d,
+        }
+    }
+}
+impl std::ops::Mul<Dual> for f64 {
+    type Output = Dual;
+    fn mul(self, o: Dual) -> Dual {
+        Dual {
+            v: self * o.v,
+            d: self * o.d,
+        }
+    }
+}
+impl std::ops::Div for Dual {
+    type Output = Dual;
+    fn div(self, o: Dual) -> Dual {
+        let q = self.v / o.v;
+        Dual { v: q, d: (self.d - q * o.d) / o.v }
+    }
+}
+impl std::ops::AddAssign for Dual {
+    fn add_assign(&mut self, o: Dual) {
+        *self = *self + o;
+    }
+}
+
+/// Per-point VV10 setup of [`vv10_internal_screened`] in dual numbers.
+#[derive(Clone, Copy)]
+struct DualSetup {
+    w0: Dual,
+    kp: Dual,
+    dw0_dr: Dual,
+    dw0_dg: Dual,
+    dk_dr: Dual,
+    rho_w: Dual,
+}
+
+/// `(vrho, vsig)` of the production V_nl at `dens` and their directional
+/// derivatives along `(drho, dsigma)`: the same active set, pair set (dense
+/// below `CELL_LIST_MIN_PTS`, the `NLC_CUTOFF_BOHR` cell list above) and
+/// guards as [`vv10_internal`], so the tangent is the exact derivative of the
+/// V_nl the SCF uses (which is not exactly δE_nl/δρ; see the module tests).
+/// The active mask and the `σ > RHO_THRESH` branch are held at the reference.
+fn vv10_potential_tangent(
+    grid: &[GridPoint],
+    dens: &DensityGrid,
+    drho: &[f64],
+    dsigma: &[f64],
+    params: &Vv10Params,
+) -> (Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>) {
+    let npts = dens.rho.len();
+    let (b_vv, c_vv) = (params.b, params.c);
+    let pi = std::f64::consts::PI;
+    let pi43 = 4.0 * pi / 3.0;
+    let k_vv = b_vv * 1.5 * pi * (9.0 * pi).powf(-1.0 / 6.0);
+    let beta = (3.0 / (b_vv * b_vv)).powf(0.75) / 32.0;
+
+    let active: Vec<bool> = (0..npts).map(|g| dens.rho[g] >= RHO_THRESH).collect();
+    let xyz: Vec<[f64; 3]> = grid.iter().map(|gp| gp.xyz).collect();
+    let zero = DualSetup {
+        w0: Dual::c(0.0),
+        kp: Dual::c(0.0),
+        dw0_dr: Dual::c(0.0),
+        dw0_dg: Dual::c(0.0),
+        dk_dr: Dual::c(0.0),
+        rho_w: Dual::c(0.0),
+    };
+    let setup: Vec<DualSetup> = map_rows(npts, |g| {
+        if !active[g] {
+            return zero;
+        }
+        let r = Dual {
+            v: dens.rho[g],
+            d: drho[g],
+        };
+        let s = Dual {
+            v: dens.sigma[g],
+            d: dsigma[g],
+        };
+        let w0tmp = c_vv * (s / (r * r)).sq();
+        let w0 = (w0tmp + pi43 * r).sqrt();
+        let kp = k_vv * r.powf(1.0 / 6.0);
+        let dw0_dg = if s.v > RHO_THRESH {
+            w0tmp * r / (s * w0)
+        } else {
+            Dual::c(0.0)
+        };
+        DualSetup {
+            w0,
+            kp,
+            dw0_dr: (0.5 * pi43 * r - 2.0 * w0tmp) / w0,
+            dw0_dg,
+            dk_dr: (1.0 / 6.0) * kp,
+            rho_w: grid[g].weight * r,
+        }
+    });
+
+    let cells =
+        (npts >= CELL_LIST_MIN_PTS).then(|| CellList::build(&xyz, &active, NLC_CUTOFF_BOHR));
+    let row_fn = |i: usize| -> (Dual, Dual, Dual) {
+        let (mut fi, mut ui, mut wi) = (Dual::c(0.0), Dual::c(0.0), Dual::c(0.0));
+        if !active[i] {
+            return (fi, ui, wi);
+        }
+        let (xi, si) = (xyz[i], setup[i]);
+        let mut pair = |p: usize| {
+            let dx = xyz[p][0] - xi[0];
+            let dy = xyz[p][1] - xi[1];
+            let dz = xyz[p][2] - xi[2];
+            let r2 = dx * dx + dy * dy + dz * dz;
+            let sp = setup[p];
+            let gp = r2 * sp.w0 + sp.kp;
+            let gi = r2 * si.w0 + si.kp;
+            let gt = gi + gp;
+            if gi.v < 1e-30 || gp.v < 1e-30 || gt.v < 1e-30 {
+                return;
+            }
+            let t = sp.rho_w / (gi * gp * gt);
+            fi += t;
+            let t_u = t * (gi.recip() + gt.recip());
+            ui += t_u;
+            wi += r2 * t_u;
+        };
+        match &cells {
+            None => (0..npts).filter(|&p| active[p]).for_each(&mut pair),
+            Some(cl) => {
+                let mut buf = Vec::new();
+                cl.neighbors_into(xi, &mut buf);
+                buf.iter().for_each(|&p| pair(p));
+            }
+        }
+        ((-1.5) * fi, ui, wi)
+    };
+    let fuw = map_rows(npts, row_fn);
+
+    let (mut vrho, mut vsig) = (vec![0.0; npts], vec![0.0; npts]);
+    let (mut dvrho, mut dvsig) = (vec![0.0; npts], vec![0.0; npts]);
+    for g in (0..npts).filter(|&g| active[g]) {
+        let (f, u, w) = fuw[g];
+        let s = setup[g];
+        let vr = Dual::c(beta) + f + 1.5 * (u * s.dk_dr + w * s.dw0_dr);
+        let vs = 1.5 * (w * s.dw0_dg);
+        (vrho[g], dvrho[g]) = (vr.v, vr.d);
+        (vsig[g], dvsig[g]) = (vs.v, vs.d);
+    }
+    (vrho, vsig, dvrho, dvsig)
+}
+
+/// The VV10 part of the closed-shell f_xc kernel: `V1_nl = d/dt V_nl[D + t D1]`
+/// at `t = 0` on the NLC grid, built once at the reference TOTAL density and
+/// applied to any symmetric `D1` (indefinite allowed). It differentiates the
+/// V_nl matrix `add_vv10` assembles (the potential the SCF uses), including
+/// the `vsig · δ∇ρ` term of the GGA-like piece. VV10 depends on the total
+/// density only, so a spin-polarized response adds the same `V1_nl[D1_a +
+/// D1_b]` to both spins.
+pub struct Vv10Response {
+    grid: Vec<GridPoint>,
+    chi: Array2<f64>,
+    dchi: Array3<f64>,
+    dens: DensityGrid,
+    params: Vv10Params,
+}
+
+impl Vv10Response {
+    /// Build on the NLC grid of `cfg` (as `KsXc` does) at total density `d`.
+    pub fn new(
+        mol: &ferric_core::mol::Molecule,
+        bs: &ferric_core::basis::BasisSet,
+        params: Vv10Params,
+        cfg: &crate::grid::AtomicGridConfig,
+        d: &Array2<f64>,
+    ) -> Result<Self, ferric_core::FerricError> {
+        let grid = crate::grid::build_atomic_grid_pruned(mol, cfg, cfg.prune)?;
+        let pts: Vec<[f64; 3]> = grid.iter().map(|gp| gp.xyz).collect();
+        let (chi, dchi) = crate::ao_grid::eval_basis_and_grad_on_points(mol, bs, &pts)
+            .map_err(|e| ferric_core::FerricError::General(format!("VV10 response grid: {e}")))?;
+        let dens = crate::density_on_grid::eval_density_closed(d, &chi, &dchi);
+        Ok(Vv10Response {
+            grid,
+            chi,
+            dchi,
+            dens,
+            params,
+        })
+    }
+
+    /// `V1_nl` for the symmetric total density change `d1`.
+    pub fn apply(&self, d1: &Array2<f64>) -> Array2<f64> {
+        let (chi, dchi) = (&self.chi, &self.dchi);
+        let (nbf, npts) = chi.dim();
+        let lin = crate::density_on_grid::eval_density_closed(d1, chi, dchi);
+        let g0 = &self.dens.grad;
+        let dsigma: Vec<f64> = (0..npts)
+            .map(|g| 2.0 * (0..3).map(|a| g0[(a, g)] * lin.grad[(a, g)]).sum::<f64>())
+            .collect();
+        let drho = lin.rho.to_vec();
+        let (_, vsig, dvrho, dvsig) =
+            vv10_potential_tangent(&self.grid, &self.dens, &drho, &dsigma, &self.params);
+        let w = |g: usize| self.grid[g].weight;
+        let mut buf = Array2::<f64>::zeros((nbf, npts));
+        let s: Array1<f64> = (0..npts).map(|g| w(g) * dvrho[g]).collect();
+        scale_columns_into(chi.view(), &s, &mut buf);
+        let mut v1 = buf.dot(&chi.t());
+        for axis in 0..3 {
+            let f_ax: Array1<f64> = (0..npts)
+                .map(|g| 2.0 * w(g) * (dvsig[g] * g0[(axis, g)] + vsig[g] * lin.grad[(axis, g)]))
+                .collect();
+            scale_columns_into(chi.view(), &f_ax, &mut buf);
+            let m = buf.dot(&dchi.index_axis(Axis(0), axis).t());
+            v1 = v1 + &m + &m.t();
+        }
+        0.5 * (&v1 + &v1.t())
+    }
+}
+
 #[cfg(test)]
 mod damping_tests {
     //! Accuracy anchors for the hand-rolled erfc/terfc used by [`Vv10Damping`].
@@ -2140,5 +2419,70 @@ mod cutoff_tests {
             e_tail < 0.5 * e_cut,
             "monopole must recover most of the tail"
         );
+    }
+
+    /// The dual-number tangent's VALUES are production `(vrho, vsig)` (same
+    /// active set, pair set and arithmetic), and its DERIVATIVES are a
+    /// Richardson central difference of production `(vrho, vsig)` along
+    /// `(δρ, δσ)`, on the dense path (< CELL_LIST_MIN_PTS points) and the
+    /// cell-list path. Perturbations are relative (δρ ∝ ρ, δσ ∝ σ) so no point
+    /// crosses the RHO_THRESH branches within the steps.
+    #[test]
+    fn potential_tangent_is_the_derivative_of_production_vnl() {
+        let h2 = Molecule::parse_xyz("2\n\nH 0 0 0\nH 0 0 0.74\n", 0, 1).unwrap();
+        let water = Molecule::parse_xyz(
+            "3\n\nO 0 0 0.117\nH 0 0.757 -0.467\nH 0 -0.757 -0.467\n",
+            0,
+            1,
+        )
+        .unwrap();
+        for (mol, nr, na, dense) in [(&h2, 5, 6, true), (&water, 20, 26, false)] {
+            let (params, grid, dens) = synthetic_density_on_grid(mol, nr, na);
+            let npts = grid.len();
+            assert_eq!(npts < CELL_LIST_MIN_PTS, dense, "{npts} points");
+            let drho: Vec<f64> = (0..npts)
+                .map(|g| 0.3 * dens.rho[g] * (g as f64).sin())
+                .collect();
+            let dsig: Vec<f64> = (0..npts)
+                .map(|g| 0.2 * dens.sigma[g] * (0.7 * g as f64).cos())
+                .collect();
+            let (vr, vs, dvr, dvs) = vv10_potential_tangent(&grid, &dens, &drho, &dsig, &params);
+            let prod = vv10_internal(&grid, &dens, &params);
+            let scale = prod.vrho.iter().fold(0.0f64, |m, v| m.max(v.abs()));
+            for g in 0..npts {
+                assert!((vr[g] - prod.vrho[g]).abs() <= 1e-13 * scale, "vrho {g}");
+                assert!(
+                    (vs[g] - prod.vsig[g]).abs() <= 1e-12 * scale.max(1.0),
+                    "vsig {g}"
+                );
+            }
+            let at = |t: f64| {
+                let mut d = dens.clone();
+                for g in 0..npts {
+                    d.rho[g] += t * drho[g];
+                    d.sigma[g] += t * dsig[g];
+                }
+                let o = vv10_internal(&grid, &d, &params);
+                (o.vrho, o.vsig)
+            };
+            let central = |h: f64| {
+                let ((rp, sp), (rm, sm)) = (at(h), at(-h));
+                let r: Vec<f64> = (0..npts).map(|g| (rp[g] - rm[g]) / (2.0 * h)).collect();
+                let s: Vec<f64> = (0..npts).map(|g| (sp[g] - sm[g]) / (2.0 * h)).collect();
+                (r, s)
+            };
+            let ((r1, s1), (r2, s2)) = (central(1e-3), central(5e-4));
+            let dmax = dvr.iter().fold(0.0f64, |m, v| m.max(v.abs()));
+            let smax = dvs.iter().fold(0.0f64, |m, v| m.max(v.abs()));
+            assert!(dmax > 1e-6 && smax > 0.0, "the perturbation moves V_nl");
+            let (mut er, mut es) = (0.0f64, 0.0f64);
+            for g in 0..npts {
+                er = er.max(((4.0 * r2[g] - r1[g]) / 3.0 - dvr[g]).abs());
+                es = es.max(((4.0 * s2[g] - s1[g]) / 3.0 - dvs[g]).abs());
+            }
+            eprintln!("dense={dense} npts={npts} |dvrho|max={dmax:.3e} err={er:.2e} |dvsig|max={smax:.3e} err={es:.2e}");
+            assert!(er < 1e-8 * dmax.max(1.0), "dvrho err {er:.3e}");
+            assert!(es < 1e-8 * smax.max(1.0), "dvsig err {es:.3e}");
+        }
     }
 }
