@@ -65,9 +65,17 @@ ferric_clear_stale_sccache_lock() {
     return 0
 }
 
+# flock's status when the wait expires (its default, 1, looks like a failed build).
+: "${FERRIC_CARGO_LOCK_WAIT_EXPIRED_RC:=75}"
+
 # Run a command under the cargo lock, clearing a stale holder first.
 # Usage: ferric_cargo_locked "OPENBLAS_NUM_THREADS=1 cargo test --workspace -j 6"
+# Returns the command's status, or FERRIC_CARGO_LOCK_WAIT_EXPIRED_RC (75) if the
+# lock wait expired and the command never ran. A caller that adds a timeout
+# should put it INSIDE, around the command, as ci-gate.sh's run_locked does --
+# wrapping this call would spend the timeout queueing.
 ferric_cargo_locked() {
     ferric_clear_stale_sccache_lock
-    flock -o -w "$FERRIC_CARGO_LOCK_WAIT_SECS" "$FERRIC_CARGO_LOCK" -c "$*"
+    flock -o -w "$FERRIC_CARGO_LOCK_WAIT_SECS" -E "$FERRIC_CARGO_LOCK_WAIT_EXPIRED_RC" \
+        "$FERRIC_CARGO_LOCK" -c "$*"
 }

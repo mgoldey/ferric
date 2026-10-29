@@ -20,9 +20,10 @@
 #      --cap-lints or otherwise bypasses the workspace lints table) and a
 #      place to fail loudly with a clear message if anything DOES fire.
 #
-# Exit code: 0 = clean, nonzero = a real failure (test or clippy) OR a timeout
-# under heavy machine load (see LOAD AWARENESS below) -- read the final
-# message to tell which.
+# Exit code: 0 = clean, 1 = a real failure (test or clippy), a step that timed
+# out while holding the cargo lock (see LOAD AWARENESS below), OR a step that
+# never got the lock at all and did not run -- read the final RESULT lines to
+# tell which.
 #
 # Env overrides:
 #   CI_GATE_TIMEOUT_SECS   per-step timeout (default 1800 = 30 min; a cold
@@ -30,6 +31,10 @@
 #                          this assumes a warm/incremental build -- see
 #                          scripts/README.md for what to do on a cold-cache OR
 #                          heavily-contended box).
+#   CI_GATE_LOCK_WAIT_SECS how long a step may QUEUE for /tmp/ferric-cargo.lock
+#                          before giving up WITHOUT running (default 14400).
+#                          Separate from the timeout above, which starts only
+#                          once the lock is held.
 #   CI_GATE_JOBS           cargo -j value (default: nproc, capped at 8 to
 #                          leave headroom on a shared box).
 #   CI_GATE_SKIP_CLIPPY=1  skip the clippy step (test-only gate).
@@ -67,7 +72,10 @@ NPROC="$(nproc 2>/dev/null || echo 4)"
 DEFAULT_JOBS=$(( NPROC < 8 ? NPROC : 8 ))
 JOBS="${CI_GATE_JOBS:-$DEFAULT_JOBS}"
 LOCK_FILE="/tmp/ferric-cargo.lock"
-LOCK_WAIT_SECS=14400
+LOCK_WAIT_SECS="${CI_GATE_LOCK_WAIT_SECS:-14400}"
+# flock's exit status when the -w wait expires. Its default is 1, which is
+# indistinguishable from a failed build; 75 is EX_TEMPFAIL (cargo fails with 101).
+LOCK_WAIT_EXPIRED_RC=75
 
 # ---- fast tier --------------------------------------------------------
 # The four slowest INTEGRATION binaries, measured on the 2026-08-22 full
@@ -169,7 +177,9 @@ echo "   per-step timeout: ${TIMEOUT_SECS}s (CI_GATE_TIMEOUT_SECS to change)"
 echo
 
 FAILED=0
-STEP_TIMED_OUT=0
+STEP_TIMED_OUT=0          # (b) a step got the lock, then ran past TIMEOUT_SECS
+STEP_LOCK_WAIT_EXPIRED=0  # (a) a step never got the lock; it did NOT run
+STEP_CHECK_FAILED=0       # (c) a step ran and failed (test, clippy, doc, ...)
 
 # ---- stale sccache lock holder ----------------------------------------
 # Logic lives in scripts/cargo-lock-lib.sh so ad-hoc scripts (scripts/queue/*)
@@ -187,26 +197,53 @@ ferric_clear_stale_sccache_lock "$LOCK_FILE"
 # The startup-only call cannot see that -- it ran before the daemon existed.
 # MEASURED 2026-09-21: `cargo doc` sat on a lock whose only holders were a
 # squatting sccache and this gate's own queued flock.
-run_step() {
-    local name="$1"
-    shift
-    echo "-- $name --"
+# Run "$*" under the cargo lock. The timeout wraps the COMMAND only, inside the
+# lock: it bounds the build, and LOCK_WAIT_SECS bounds the queue. The old form
+# (`timeout ... flock -w ...`) started the 1800 s clock while still queued, so
+# with several gates waiting a step could be killed before it ever ran and be
+# reported as "TIMEOUT under heavy load" (2026-10-28: five queued gates).
+#
+# Signals: timeout puts itself and the command in a new process group and
+# sends TERM (then KILL after 30 s) to that whole group, so cargo/rustc and
+# test binaries die with it. flock sits outside that group and only waits;
+# with -o it does not pass the lock fd to the command, so the lock is released
+# the moment timeout returns and flock exits.
+#
+# Returns the command's status, 124/137 for a timeout, or LOCK_WAIT_EXPIRED_RC
+# when the wait expired and the command never started.
+run_locked() {
     ferric_clear_stale_sccache_lock "$LOCK_FILE"
-    if timeout --signal=TERM --kill-after=30 "${TIMEOUT_SECS}" \
-        flock -o -w "$LOCK_WAIT_SECS" "$LOCK_FILE" -c "$*"; then
+    flock -o -w "$LOCK_WAIT_SECS" -E "$LOCK_WAIT_EXPIRED_RC" "$LOCK_FILE" \
+        timeout --signal=TERM --kill-after=30 "${TIMEOUT_SECS}" bash -c "$*"
+}
+
+# Report a locked step's status as one of three outcomes, and record which.
+report_step() {
+    local name="$1" rc="$2"
+    if [[ $rc -eq 0 ]]; then
         echo "-- $name: PASS --"
         return 0
+    elif [[ $rc -eq $LOCK_WAIT_EXPIRED_RC ]]; then
+        echo "-- $name: NOT RUN -- never got the cargo lock in ${LOCK_WAIT_SECS}s;"
+        echo "   another build held $LOCK_FILE the whole time (fuser $LOCK_FILE) --"
+        STEP_LOCK_WAIT_EXPIRED=1
+    elif [[ $rc -eq 124 || $rc -eq 137 ]]; then
+        echo "-- $name: TIMEOUT after ${TIMEOUT_SECS}s holding the lock (exit $rc) --"
+        STEP_TIMED_OUT=1
     else
-        local rc=$?
-        if [[ $rc -eq 124 || $rc -eq 137 ]]; then
-            echo "-- $name: TIMEOUT after ${TIMEOUT_SECS}s (exit $rc) --"
-            STEP_TIMED_OUT=1
-        else
-            echo "-- $name: FAIL (exit $rc) --"
-        fi
-        FAILED=1
-        return 1
+        echo "-- $name: FAIL (exit $rc) --"
+        STEP_CHECK_FAILED=1
     fi
+    FAILED=1
+    return 1
+}
+
+run_step() {
+    local name="$1" rc=0
+    shift
+    echo "-- $name --"
+    run_locked "$@" || rc=$?
+    report_step "$name" "$rc"
 }
 
 # ---- 1. cargo test --workspace (default set, no --ignored) ------------
@@ -279,20 +316,13 @@ ALLOWED_LINTS=(
 if [[ "${CI_GATE_SKIP_CLIPPY:-0}" != "1" ]]; then
     echo "-- cargo clippy --workspace --all-targets --"
     CLIPPY_JSON="$(mktemp /tmp/ferric-ci-gate-clippy.XXXXXX.json)"
-    ferric_clear_stale_sccache_lock "$LOCK_FILE"
-    if timeout --signal=TERM --kill-after=30 "${TIMEOUT_SECS}" \
-        flock -o -w "$LOCK_WAIT_SECS" "$LOCK_FILE" -c \
+    CLIPPY_RC=0
+    run_locked \
         "OPENBLAS_NUM_THREADS=1 cargo clippy --workspace --all-targets -j $JOBS --message-format=json" \
-        > "$CLIPPY_JSON" 2>&1; then
-        CLIPPY_RC=0
-    else
-        CLIPPY_RC=$?
-    fi
+        > "$CLIPPY_JSON" 2>&1 || CLIPPY_RC=$?
 
-    if [[ $CLIPPY_RC -eq 124 || $CLIPPY_RC -eq 137 ]]; then
-        echo "-- cargo clippy: TIMEOUT after ${TIMEOUT_SECS}s (exit $CLIPPY_RC) --"
-        STEP_TIMED_OUT=1
-        FAILED=1
+    if [[ $CLIPPY_RC -eq $LOCK_WAIT_EXPIRED_RC || $CLIPPY_RC -eq 124 || $CLIPPY_RC -eq 137 ]]; then
+        report_step "cargo clippy" "$CLIPPY_RC"
     else
         # Build a grep -F -f pattern file from the allow-list, matched against
         # each JSON line's "code":"<lint>" field.
@@ -339,10 +369,12 @@ for line in sys.stdin:
             echo "   elsewhere -- add it to BOTH the allow-list here and the"
             echo "   [workspace.lints] block, with a one-line rationale."
             FAILED=1
+            STEP_CHECK_FAILED=1
         elif [[ $CLIPPY_RC -ne 0 ]]; then
             echo "-- cargo clippy: FAIL (exit $CLIPPY_RC, no parseable violations -- check raw output) --"
             tail -40 "$CLIPPY_JSON"
             FAILED=1
+            STEP_CHECK_FAILED=1
         else
             echo "-- cargo clippy: PASS (no warnings outside the allow-list) --"
         fi
@@ -382,6 +414,7 @@ if [[ "${CI_GATE_SKIP_COMPLEXITY:-0}" != "1" ]]; then
             else
                 echo "-- complexity regression: FAIL --"
                 FAILED=1
+                STEP_CHECK_FAILED=1
             fi
         fi
     else
@@ -509,16 +542,27 @@ echo
 echo "== gate summary =="
 echo "   load avg(1m) at start: $LOAD1 (nproc/2 = $HALF_NPROC, contended=$CONTENDED)"
 if [[ "$FAILED" == "1" ]]; then
+    # One line per outcome that occurred: a gate can hit more than one.
+    if [[ "$STEP_LOCK_WAIT_EXPIRED" == "1" ]]; then
+        echo "   RESULT: NOT RUN -- a step never got the cargo lock in ${LOCK_WAIT_SECS}s;"
+        echo "           another build held $LOCK_FILE the whole time. Nothing was"
+        echo "           tested by that step, so this says nothing about correctness."
+        echo "           Check who holds it (fuser $LOCK_FILE) and retry; raise"
+        echo "           CI_GATE_LOCK_WAIT_SECS to queue longer."
+    fi
     if [[ "$STEP_TIMED_OUT" == "1" && "$CONTENDED" == "1" ]]; then
         echo "   RESULT: TIMEOUT under heavy load -- box was busy (load $LOAD1 > nproc/2"
-        echo "           = $HALF_NPROC). This is NOT necessarily a correctness problem."
+        echo "           = $HALF_NPROC). A step held the cargo lock for ${TIMEOUT_SECS}s"
+        echo "           and did not finish. This is NOT necessarily a correctness problem."
         echo "           Retry when the box is quieter, or raise CI_GATE_TIMEOUT_SECS."
         echo "           If you must push now: git push --no-verify (this SKIPS the"
         echo "           gate entirely -- only do this with an explicit note in your"
         echo "           push/PR that the gate was bypassed, not silently passed)."
     elif [[ "$STEP_TIMED_OUT" == "1" ]]; then
         echo "   RESULT: TIMEOUT (load looked normal -- investigate: hung test? deadlock?)."
-    else
+    fi
+    if [[ "$STEP_CHECK_FAILED" == "1" ||
+          ( "$STEP_LOCK_WAIT_EXPIRED" == "0" && "$STEP_TIMED_OUT" == "0" ) ]]; then
         echo "   RESULT: FAIL -- see above for the failing test(s) or clippy violation(s)."
     fi
     exit 1
