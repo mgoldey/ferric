@@ -100,3 +100,22 @@ fn reports_mismatches_as_errors() {
         Err(TensorError::Spec(_))
     ));
 }
+
+#[test]
+fn zero_extent_operands_give_zeros_not_a_panic() {
+    // Empty free, contracted and batch axes, and the scalar output.
+    let cases: &[(&str, &[usize], &[usize])] = &[
+        ("ij,jk->ik", &[0, 3], &[3, 4]),
+        ("ij,jk->ik", &[2, 0], &[0, 4]),
+        ("ij,jk->ik", &[2, 3], &[3, 0]),
+        ("kij,kij->ij", &[0, 2, 3], &[0, 2, 3]),
+        ("ij,ij->", &[0, 3], &[0, 3]),
+        ("ij,kl->ijkl", &[2, 0], &[3, 1]),
+    ];
+    for &(spec, sa, sb) in cases {
+        let a = filled(sa, 0.37);
+        let b = filled(sb, 1.13);
+        let got = einsum_dyn(spec, a.view(), b.view(), -0.5).unwrap();
+        assert_close(&got, &naive(spec, &a, &b, -0.5));
+    }
+}

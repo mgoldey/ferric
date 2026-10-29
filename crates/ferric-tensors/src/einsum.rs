@@ -162,6 +162,12 @@ pub fn einsum_dyn(
         .chain(s.out_from_left.iter().map(|&p| left.shape()[p]))
         .chain(s.out_from_right.iter().map(|&p| right.shape()[p]))
         .collect();
+    // A zero-extent axis: every output element is an empty sum (or the
+    // output itself is empty), so the result is zeros. The GEMM lowering
+    // below cannot reshape empty permuted views and would panic.
+    if left.is_empty() || right.is_empty() {
+        return Ok(ArrayD::zeros(IxDyn(&out_shape)));
+    }
     einsum_binary_batched(
         left,
         &s.left_batch,

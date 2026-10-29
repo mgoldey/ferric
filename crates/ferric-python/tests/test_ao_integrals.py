@@ -265,3 +265,20 @@ def test_einsum_builds_j_from_the_dense_eri():
 def test_einsum_errors_are_value_errors(spec, sa, sb, match):
     with pytest.raises(ValueError, match=match):
         ferric.einsum(spec, np.ones(sa), np.ones(sb))
+
+
+@pytest.mark.parametrize(
+    "spec, sa, sb",
+    [
+        ("ij,jk->ik", (0, 3), (3, 4)),
+        ("ij,jk->ik", (2, 0), (0, 4)),
+        ("kij,kij->ij", (0, 2, 3), (0, 2, 3)),
+        ("ij,ij->", (0, 3), (0, 3)),
+    ],
+)
+def test_einsum_zero_extent_operands_give_zeros(spec, sa, sb):
+    # Used to panic in the GEMM reshape (CodeRabbit, PR #594).
+    got = ferric.einsum(spec, np.ones(sa), np.ones(sb), scale=2.0)
+    ref = 2.0 * np.einsum(spec, np.ones(sa), np.ones(sb))
+    assert np.shape(got) == np.shape(ref)
+    np.testing.assert_array_equal(got, ref)
