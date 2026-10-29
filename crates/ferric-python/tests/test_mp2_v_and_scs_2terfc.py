@@ -2,8 +2,15 @@
 
 EXACTNESS ANCHOR for the S66 shared-SCF entry point (mgoldey/ferric#278).
 `run_mp2_v`, `run_scs_mp2_2terfc` and `run_rimp2` each run their own SCF with
-the library-default config; the shared binding runs one. The SCF is
-deterministic for a fixed config, so every energy must match BITWISE.
+the library-default config; the shared binding runs one. Every energy must
+match BITWISE, and `==` (not a tolerance) is safe because every parallel
+reduction on these paths has a fixed order by construction, independent of
+thread count and work stealing: the J/K builders fold group partials in
+ascending group order (ferric_scf::reduce), RI-MP2 sums its per-i partials
+from an index-ordered collect (rimp2.rs), and the VV10 pair sum folds its
+rows serially. Same build, same process, same inputs => same bits. (Across
+machines/builds it would not be: see the golden-energy memory; this test never
+compares across those.)
 
 Artifact hypothesis: a wrong frozen_core, a swapped r0, a units slip (A vs
 Bohr) or a different SCF config in the shared binding moves the energies by

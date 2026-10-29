@@ -28,9 +28,25 @@ use ferric_scf::ScfResult;
 
 const WATER: &str = "3\nwater\nO 0.000 0.000 0.118\nH 0.000 0.755 -0.471\nH 0.000 -0.755 -0.471\n";
 
+/// Point `FERRIC_TERF_TABLE_DIR` at the committed `terf-tables/` when unset, so
+/// this anchor RUNS in CI instead of passing vacuously. Skips (loudly) only if
+/// neither the variable nor the committed directory is available.
 fn tables_present() -> bool {
+    static INIT: std::sync::Once = std::sync::Once::new();
+    INIT.call_once(|| {
+        if std::env::var("FERRIC_TERF_TABLE_DIR").is_err() {
+            let d = concat!(env!("CARGO_MANIFEST_DIR"), "/../../terf-tables");
+            if std::path::Path::new(d).is_dir() {
+                std::env::set_var("FERRIC_TERF_TABLE_DIR", d);
+            }
+        }
+    });
     if std::env::var("FERRIC_TERF_TABLE_DIR").is_err() {
-        eprintln!("SKIP: FERRIC_TERF_TABLE_DIR not set; terfc interpolation tables unavailable");
+        eprintln!(
+            "SKIP (test NOT run, vacuous pass): FERRIC_TERF_TABLE_DIR unset and no committed \
+             terf-tables/ directory found; the shared-SCF bitwise anchor needs the terfc tables. \
+             The binding pytest test_mp2_v_and_scs_2terfc.py is the independent anchor."
+        );
         return false;
     }
     true

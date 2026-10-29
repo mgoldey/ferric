@@ -104,6 +104,11 @@ PUBLISHED = {
     },
     "mp2": {"rmsd": 1.533, "source": "JCTC 11, 4159 (2015) Table 2, MP2/aTZ"},
 }
+GEOMETRY_CAVEAT = (
+    "published RMSDs (0.228 / 0.202 / 1.533) are on the ORIGINAL S66 geometries; this run "
+    "uses the S66x8 1.00 geometries, whose nuclear repulsion differs by up to 1e-2 relative, "
+    "against the S66x8 1.00 CCSD(T)/CBS reference - NOT like-for-like"
+)
 
 # ── geometry, fragments, basis sizes (pure Python; no ferric) ──────────────
 
@@ -335,6 +340,52 @@ def cmd_dry_run(a) -> None:
     sys.exit(1 if bad else 0)
 
 
+# ── JSONL (crash-tolerant) ─────────────────────────────────────────────────
+
+
+def read_jsonl(path: Path) -> list[dict]:
+    """Parse a JSONL file. A malformed LAST line with no trailing newline is a
+    torn append (crash mid-write): logged and skipped. A malformed line anywhere
+    else is corruption: ValueError naming the line."""
+    if not path.exists():
+        return []
+    text = path.read_text()
+    lines = text.split("\n")
+    out = []
+    for i, ln in enumerate(lines):
+        if not ln.strip():
+            continue
+        try:
+            out.append(json.loads(ln))
+        except json.JSONDecodeError as e:
+            if i == len(lines) - 1:  # no newline after it: a torn final append
+                print(
+                    f"WARNING: {path}:{i + 1}: skipping truncated last line ({len(ln)} chars)",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                continue
+            raise ValueError(f"{path}:{i + 1}: malformed JSONL line: {e}") from e
+    return out
+
+
+def append_jsonl(path: Path, rec: dict) -> None:
+    """Append one record on a fresh line. A torn (unterminated) tail from an
+    earlier crash is moved to `<path>.torn` and cut, so it can never end up in
+    the middle of the file where `read_jsonl` would reject it."""
+    if path.exists() and path.stat().st_size:
+        with path.open("rb+") as f:
+            data = f.read()
+            if not data.endswith(b"\n"):
+                cut = data.rfind(b"\n") + 1
+                with path.with_suffix(path.suffix + ".torn").open("ab") as t:
+                    t.write(data[cut:] + b"\n")
+                f.truncate(cut)
+                print(f"WARNING: moved a torn tail of {path} to .torn", file=sys.stderr)
+    with path.open("a") as f:
+        f.write(json.dumps(rec) + "\n")
+
+
 # ── cost model / estimate ──────────────────────────────────────────────────
 
 
@@ -353,10 +404,7 @@ def pilot_cost_model(path: Path, basis: str) -> dict:
     """Per-method power law t = c * nbf^p from the #474 pilot (one SCF per method)."""
     files, fraga = s66_files(), s66_fraga()
     pts: dict[str, list[tuple[int, float]]] = {m: [] for m in METHODS}
-    for ln in path.read_text().splitlines():
-        if not ln.strip():
-            continue
-        r = json.loads(ln)
+    for r in read_jsonl(path):
         if r.get("basis") != basis or "method" not in r:
             continue
         nbf = job_nbf(
@@ -380,10 +428,7 @@ def shared_cost_model(path: Path, basis: str) -> dict | None:
     if not path.exists():
         return None
     xs, ys, scf = [], [], []
-    for ln in path.read_text().splitlines():
-        if not ln.strip():
-            continue
-        r = json.loads(ln)
+    for r in read_jsonl(path):
         if r.get("schema") == SCHEMA and r.get("basis") == basis and not r.get("smoke"):
             xs.append(r["nbf"])
             ys.append(r["wall_s"])
@@ -474,11 +519,24 @@ def cmd_estimate(a) -> None:
 BUSY_COMMS = ("cargo", "rustc")
 
 
-def busy_reason(max_load: float) -> str | None:
-    """None if the box is quiet; else why not. Reads /proc only (no pgrep -f)."""
-    load1 = float(Path("/proc/loadavg").read_text().split()[0])
-    if load1 >= max_load:
-        return f"load1 {load1:.2f} >= {max_load}"
+# Box-wide heavy-step slot shared with scripts/validation/run_slot.sh.
+SLOT_LOCK = Path(
+    os.environ.get(
+        "FERRIC_SLOT_LOCK", str(Path.home() / ".cache/ferric/validation-slot.lock")
+    )
+)
+LIBRARY_DENSITY_CONV = (
+    1e-6  # run_mp2_v_and_scs_2terfc default (returned as density_conv)
+)
+
+
+def busy_reason(max_load: float | None) -> str | None:
+    """None if the box is quiet; else why not. Reads /proc only (no pgrep -f).
+    `max_load=None` judges foreign processes only (no load average)."""
+    if max_load is not None:
+        load1 = float(Path("/proc/loadavg").read_text().split()[0])
+        if load1 >= max_load:
+            return f"load1 {load1:.2f} >= {max_load}"
     me = os.getpid()
     for d in Path("/proc").iterdir():
         if not d.name.isdigit() or int(d.name) == me:
@@ -490,6 +548,27 @@ def busy_reason(max_load: float) -> str | None:
         if comm in BUSY_COMMS:
             return f"{comm} running (pid {d.name})"
     return None
+
+
+def cpu_busy_s() -> float:
+    """Box-wide busy CPU-seconds so far (user+nice+system+irq+softirq+steal)."""
+    f = Path("/proc/stat").read_text().split("\n", 1)[0].split()[1:]
+    busy = sum(int(f[i]) for i in (0, 1, 2, 5, 6, 7))
+    return busy / os.sysconf("SC_CLK_TCK")
+
+
+def own_cpu_s() -> float:
+    import resource
+
+    u = resource.getrusage(resource.RUSAGE_SELF)
+    return u.ru_utime + u.ru_stime
+
+
+def foreign_cores(busy0: float, own0: float, wall: float) -> float:
+    """Average cores used by OTHER processes over a window: box busy CPU minus
+    this process's own CPU. Never raw load: the job's own load would fail long
+    jobs and bias the survivors fast (post-sample-load-gate memory)."""
+    return max(cpu_busy_s() - busy0 - (own_cpu_s() - own0), 0.0) / max(wall, 1e-9)
 
 
 def wait_until_quiet(max_load: float, poll_s: float, heartbeat: Path) -> float:
@@ -565,6 +644,7 @@ def cmd_job(a) -> None:
     calc = KEY_CALC[(a.fragment, a.ghosted == 1)]
     xyz, nfc = build_calc(atoms, fraga[a.dimer], calc)
     mol = ferric.Molecule.from_xyz_string(xyz)
+    busy0, own0 = cpu_busy_s(), own_cpu_s()
     t0 = time.perf_counter()
     r = ferric.run_mp2_v_and_scs_2terfc(
         mol,
@@ -576,6 +656,7 @@ def cmd_job(a) -> None:
         memory_budget_gb=a.mem_gb,
     )
     wall = time.perf_counter() - t0
+    foreign = foreign_cores(busy0, own0, wall)
     so = Path(ferric.__file__).with_name("ferric.cpython-311-x86_64-linux-gnu.so")
     rec = {
         "schema": SCHEMA,
@@ -608,6 +689,7 @@ def cmd_job(a) -> None:
         "density_conv": r["density_conv"],
         "timings": r["timings"],
         "wall_s": wall,
+        "foreign_cpu_cores": foreign,
         "frozen_core": nfc,
         "natoms": len(atoms)
         if a.fragment == "AB" or a.ghosted
@@ -636,21 +718,45 @@ def record_key(r: dict) -> tuple:
 
 def load_pair_records(path: Path, basis: str, aux: str, smoke: bool = False) -> dict:
     done = {}
-    if path.exists():
-        for ln in path.read_text().splitlines():
-            if not ln.strip():
-                continue
-            r = json.loads(ln)
-            if (
-                r.get("schema") != SCHEMA
-                or r.get("basis") != basis
-                or r.get("aux") != aux
-            ):
-                continue
-            if bool(r.get("smoke")) != smoke:
-                continue
-            done[record_key(r)] = r
+    for r in read_jsonl(path):
+        if r.get("schema") != SCHEMA or r.get("basis") != basis or r.get("aux") != aux:
+            continue
+        if bool(r.get("smoke")) != smoke:
+            continue
+        done[record_key(r)] = r
     return done
+
+
+def resume_mismatches(done: dict, density_conv: float, so_sha: str | None) -> list[str]:
+    """Settings of existing records that differ from this run's. A resume that
+    mixed SCF thresholds or binaries would put two methods into one statistic."""
+    bad = []
+    for r in done.values():
+        if r.get("density_conv") != density_conv:
+            bad.append(
+                f"{record_key(r)} density_conv {r.get('density_conv')} != {density_conv}"
+            )
+        if so_sha is not None and r.get("so_sha256") != so_sha:
+            bad.append(
+                f"{record_key(r)} so_sha256 {str(r.get('so_sha256'))[:12]} != {so_sha[:12]}"
+            )
+    return bad
+
+
+def judge_contended(rec: dict, a) -> tuple[bool, list[str]]:
+    """After-job verdict on FOREIGN activity only: other processes' CPU over the
+    job's compute window (measured in the child), and compile jobs still running.
+    A skipped pre-job gate always counts as contended."""
+    why = []
+    if a.no_load_gate:
+        why.append("pre-job load gate skipped (--no-load-gate)")
+    fc = rec.get("foreign_cpu_cores")
+    if fc is None or fc >= a.max_load:
+        why.append(f"foreign CPU {fc} cores >= {a.max_load}")
+    proc = busy_reason(None)
+    if proc:
+        why.append(proc)
+    return bool(why), why
 
 
 def cmd_run(a) -> None:
@@ -682,6 +788,24 @@ def cmd_run(a) -> None:
     env.setdefault("OPENBLAS_NUM_THREADS", "1")
     env["RAYON_NUM_THREADS"] = str(a.threads)
     env.setdefault("FERRIC_TERF_TABLE_DIR", str(TERF_DIR))
+    so_sha = None
+    if a.so_dir:
+        so = (
+            Path(a.so_dir).expanduser()
+            / "ferric/ferric.cpython-311-x86_64-linux-gnu.so"
+        )
+        so_sha = sha256(so) if so.exists() else None
+    want_dc = a.density_conv if a.density_conv is not None else LIBRARY_DENSITY_CONV
+    bad = resume_mismatches(
+        load_pair_records(out, a.basis, a.aux, a.smoke), want_dc, so_sha
+    )
+    if bad:
+        sys.exit(
+            f"refusing to resume {out}: {len(bad)} existing records were made with other "
+            "settings (use a new --out, or the original --density-conv / --so-dir):\n  "
+            + "\n  ".join(bad[:10])
+        )
+    SLOT_LOCK.parent.mkdir(parents=True, exist_ok=True)
     tries: dict[tuple, int] = {}
     for _pass in range(a.max_tries):
         done = load_pair_records(out, a.basis, a.aux, a.smoke)
@@ -728,6 +852,9 @@ def cmd_run(a) -> None:
                 cmd += ["--density-conv", str(a.density_conv)]
             if a.smoke:
                 cmd += ["--smoke"]
+            # The whole job holds the box-wide heavy slot (run_slot.sh's lock);
+            # -o so a daemon the child spawns cannot inherit and keep it.
+            cmd = ["flock", "-o", str(SLOT_LOCK), *cmd]
             t0 = time.time()
             p = subprocess.run(cmd, env=env, capture_output=True, text=True)
             res = [ln for ln in p.stdout.splitlines() if ln.startswith("RESULT ")]
@@ -735,12 +862,11 @@ def cmd_run(a) -> None:
                 rec = json.loads(res[-1][len("RESULT ") :])
                 rec["load1_at_start"] = load1
                 rec["waited_s"] = waited
-                rec["contended"] = load1 >= 1.5
+                rec["contended"], rec["contended_why"] = judge_contended(rec, a)
                 rec["script_head"] = git_info()["head"]
                 if a.smoke:
                     rec["label"] = "SMOKE: not a result"
-                with out.open("a") as f:
-                    f.write(json.dumps(rec) + "\n")
+                append_jsonl(out, rec)
                 print(
                     f"[{time.strftime('%F %T')}] S66-{j['dimer']:02d} {j['calc']:8s} nbf={j['nbf']:4d} "
                     f"wall={rec['wall_s']:.1f}s scf={rec['timings']['scf_s']:.1f}s load1={load1:.1f}",
@@ -754,8 +880,7 @@ def cmd_run(a) -> None:
                     "elapsed_s": time.time() - t0,
                     "stderr_tail": p.stderr[-2000:],
                 }
-                with failures.open("a") as f:
-                    f.write(json.dumps(fail) + "\n")
+                append_jsonl(failures, fail)
                 print(f"FAILED {key} rc={p.returncode} (see {failures})", flush=True)
     heartbeat.write_text(json.dumps({"t": time.time(), "state": "finished"}))
 
@@ -811,6 +936,7 @@ def cmd_report(a) -> None:
         "aux": a.aux,
         "units": "kcal/mol",
         "published": PUBLISHED,
+        "published_caveat": GEOMETRY_CAVEAT,
         "summary": summ,
         "rows": list(rows.values()),
         "provenance": {
@@ -842,6 +968,7 @@ def cmd_report(a) -> None:
     print(
         "no-CP = fit-reproduction check (published fits are no-CP); CP = physics check."
     )
+    print(f"CAVEAT: {GEOMETRY_CAVEAT}.")
     for m in METHODS:
         pub = PUBLISHED[m]["rmsd"]
         for c in ("nocp", "cp"):
@@ -851,7 +978,7 @@ def cmd_report(a) -> None:
                     f"{m:10s} {c:5s} n={s['n']:2d} MSE={s['mse']:+.3f} MAD={s['mad']:.3f} "
                     f"RMSD={s['rmsd']:.3f} max={s['max_abs']:.3f}"
                     + (
-                        f"   (published no-CP full-set RMSD {pub})"
+                        f"   (published no-CP full-set RMSD {pub}, original S66 geometries; see CAVEAT)"
                         if c == "nocp"
                         else ""
                     )
@@ -897,7 +1024,60 @@ def cmd_unit(a) -> None:
     assert abs(p - 4.5) < 1e-9 and abs(c - 3) < 1e-6
     assert nbf_per_element("aug-cc-pvtz") == {"H": 23, "C": 46, "N": 46, "O": 46}
     assert nbf_per_element("cc-pvdz") == {"H": 5, "C": 14, "N": 14, "O": 14}
+    unit_jsonl_and_resume()
     print("UNIT OK")
+
+
+def unit_jsonl_and_resume() -> None:
+    """Torn-append tolerance, mid-file corruption error, fresh-line appends,
+    resume refusal on settings mismatch, and the foreign-only contention verdict."""
+    import tempfile
+    from types import SimpleNamespace
+
+    with tempfile.TemporaryDirectory() as d:
+        f = Path(d) / "r.jsonl"
+        f.write_text('{"a": 1}\n{"a": 2}\n{"a": 3, "tr')  # crash mid-append
+        assert read_jsonl(f) == [{"a": 1}, {"a": 2}]
+        append_jsonl(f, {"a": 4})  # must start on a fresh line, torn tail moved out
+        assert read_jsonl(f) == [{"a": 1}, {"a": 2}, {"a": 4}]
+        assert f.read_text().endswith('{"a": 4}\n')
+        assert '{"a": 3, "tr' in f.with_suffix(".jsonl.torn").read_text()
+        g = Path(d) / "bad.jsonl"
+        g.write_text('{"a": 1}\n{oops\n{"a": 2}\n')
+        try:
+            read_jsonl(g)
+            raise AssertionError("mid-file corruption must be an error")
+        except ValueError as e:
+            assert ":2:" in str(e)
+        h = Path(d) / "badlast.jsonl"
+        h.write_text('{"a": 1}\n{oops\n')  # newline-terminated: not a torn append
+        try:
+            read_jsonl(h)
+            raise AssertionError("a complete malformed line must be an error")
+        except ValueError:
+            pass
+        assert read_jsonl(Path(d) / "missing.jsonl") == []
+    rec = {
+        "dimer": 1,
+        "fragment": "A",
+        "ghosted": False,
+        "density_conv": 1e-6,
+        "so_sha256": "ab" * 32,
+    }
+    done = {record_key(rec): rec}
+    assert resume_mismatches(done, 1e-6, "ab" * 32) == []
+    assert len(resume_mismatches(done, 1e-9, "ab" * 32)) == 1
+    assert len(resume_mismatches(done, 1e-6, "cd" * 32)) == 1
+    assert resume_mismatches(done, 1e-6, None) == []  # smoke: no frozen .so to compare
+    a = SimpleNamespace(no_load_gate=False, max_load=1.5)
+    # A long job's OWN load is never counted: only the measured foreign cores.
+    if busy_reason(None) is None:
+        assert judge_contended({"foreign_cpu_cores": 0.2}, a) == (False, [])
+    assert judge_contended({"foreign_cpu_cores": 2.0}, a)[0]
+    assert judge_contended({}, a)[0]
+    assert judge_contended(
+        {"foreign_cpu_cores": 0.0}, SimpleNamespace(no_load_gate=True, max_load=1.5)
+    )[0]
 
 
 def cmd_selftest(a) -> None:
@@ -1026,13 +1206,19 @@ def main() -> None:
         type=float,
         help="SCF RMS density gate (default: library 1e-6)",
     )
-    r.add_argument("--max-load", type=float, default=1.5)
+    r.add_argument(
+        "--max-load",
+        type=float,
+        default=1.5,
+        help="pre-job gate on load1, and post-job limit on FOREIGN CPU cores",
+    )
     r.add_argument("--poll-s", type=float, default=120.0)
     r.add_argument("--max-tries", type=int, default=2)
     r.add_argument(
         "--no-load-gate",
         action="store_true",
-        help="smoke/debug only; records are marked contended",
+        help="do not wait for a quiet box before each job (smoke/debug); every record "
+        "is then marked contended. The slot lock is still taken.",
     )
     r.add_argument(
         "--smoke",
