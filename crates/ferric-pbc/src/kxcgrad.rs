@@ -1008,11 +1008,11 @@ pub enum Deriv {
 /// * UKS: SCAN and r2SCAN on the dense-AFT J/K
 ///   ([`crate::kuxcgrad::kpoint_uks_gradient`],
 ///   [`crate::kuxcstress::kpoint_uks_stress`]).
-/// * ROKS: no meta-GGA. The library k-point ROKS SCAN / r2SCAN force and
-///   stress exist ([`crate::kuxcgrad::kpoint_roks_gradient`],
+/// * ROKS: no meta-GGA. The k-point ROKS SCAN / r2SCAN ENERGY is wired in
+///   the bindings (dense-AFT J/K, #498), and the library force and stress
+///   exist ([`crate::kuxcgrad::kpoint_roks_gradient`],
 ///   [`crate::kuxcstress::kpoint_roks_stress`], dense-AFT J/K, #492), but
-///   neither its energy nor its derivatives are wired in the bindings (#498),
-///   so this gate keeps refusing them.
+///   those derivatives are not wired, so this gate keeps refusing them.
 ///
 /// Refused by name: TPSS on RS-GDF and on UKS / ROKS, SCAN / r2SCAN on the
 /// UKS RS-GDF J/K, hybrid meta-GGA and other range-separated hybrids (wB97X,
