@@ -85,6 +85,7 @@ See [The MP2 family](../methods/mp2.md).
 |---|---|---|---|---|
 | `water-rimp2.toml` | H2O / cc-pVDZ | `rimp2` | — | All-electron. |
 | `water-rimp2-frozen-core.toml` | H2O / cc-pVDZ | `rimp2` | Expected log line: "`[ferric] frozen core: 1 orbital(s) frozen from [mp2] frozen_core = "auto"`" | |
+| `water-rimp2-rijk.toml` | H2O / cc-pVDZ | `rimp2` | — | RI-JK reference SCF (`[scf] jk = "rijk"`, `jk_aux = "def2-universal-jkfit"`); the MP2 RI aux stays `cc-pvdz-ri`. |
 | `water-rimp2-local.toml` | H2O / 6-31G | `rimp2` + `[local]` | — | Amplitude-threshold local MP2, `eps = 1e-4`. Sets `reference = true`, so it also computes the exact RI-MP2 and prints the local error against it (off by default). |
 | `alkane8-rimp2-local-direct.toml` | octane / 6-31G | `rimp2` + `[local]` | — | Integral-direct local MP2 (`integral_direct = true`), every locality map at its default. |
 | `water-drpa.toml` | H2O / 6-31G | `drpa` | — | Exact dRPA (no `[local]`). |

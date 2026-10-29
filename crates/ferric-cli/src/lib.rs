@@ -307,6 +307,22 @@ fn install_integral_settings(scf: &config::ScfCfg) -> Result<(), String> {
     Ok(())
 }
 
+/// `[scf] jk` / `jk_aux` (MP2-family kinds): the shared `ferric_scf::scf_jk`
+/// rule writes `df_j_aux` / `df_k_aux` / `k_builder`. Unset leaves the
+/// config untouched. Already validated at load, so an error here exits.
+fn apply_scf_jk(cfg: &Config, task: &str, rhf_config: &mut RhfConfig) {
+    let choice = cfg
+        .scf
+        .scf_jk_choice(&cfg.method.kind, task)
+        .unwrap_or_else(|e| {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        });
+    if let Some(jk) = choice {
+        jk.apply(rhf_config);
+    }
+}
+
 /// The actual CLI, taking argv explicitly instead of reading
 /// `std::env::args()` itself. Split out so a caller whose real OS-process
 /// argv does NOT match `[program_name, ...user_args]` can reconstruct that
@@ -657,7 +673,7 @@ pub fn run(args: Vec<String>) {
     // the installed settings are the TOML-aware ones. Printed next to the
     // memory audit so every run states where its GEMMs go.
     install_gpu_or_exit(&cfg, cli_gpu);
-    let rhf_config = RhfConfig {
+    let mut rhf_config = RhfConfig {
         xc_omega: None,
         max_iter: cfg.scf.max_iter,
         energy_conv: cfg.scf.energy_conv,
@@ -789,6 +805,7 @@ pub fn run(args: Vec<String>) {
         }),
         symmetry: cfg.scf.symmetry,
     };
+    apply_scf_jk(&cfg, task, &mut rhf_config);
 
     // Advisory only (issue #410): a USER-SET `[scf] energy_conv` below the
     // estimated noise floor of dE is met only by chance, so the run just
@@ -818,6 +835,8 @@ pub fn run(args: Vec<String>) {
                 "density_conv": cfg.scf.density_conv,
                 "df_j_aux": rhf_config.df_j_aux,
                 "df_k_aux": rhf_config.df_k_aux,
+                "k_builder": rhf_config.k_builder,
+                "scf_jk": cfg.scf.jk,
                 "level_shift": rhf_config.level_shift,
                 // The RESOLVED budget in bytes, not the raw `[memory]` key:
                 // an omitted budget auto-detects, and the number actually used

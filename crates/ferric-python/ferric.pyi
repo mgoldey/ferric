@@ -1027,6 +1027,16 @@ class RiMp2Result:
         solver counters."""
         ...
 
+    @property
+    def scf_jk(self) -> str:
+        """How the reference SCF built J/K: "exact", "rijk" or "rijcosx"."""
+        ...
+
+    @property
+    def jk_auxbasis(self) -> str | None:
+        """The SCF's JK-fitting basis (None for "exact")."""
+        ...
+
 class OoRiMp2Result:
     """Result of an orbital-optimized RI-MP2 calculation."""
 
@@ -1042,6 +1052,15 @@ class OoRiMp2Result:
     def iterations(self) -> int: ...
     @property
     def grad_norm(self) -> float: ...
+    @property
+    def scf_jk(self) -> str:
+        """How the reference SCF built J/K: "exact", "rijk" or "rijcosx"."""
+        ...
+
+    @property
+    def jk_auxbasis(self) -> str | None:
+        """The SCF's JK-fitting basis (None for "exact")."""
+        ...
 
 class Mp3Result:
     """Result of an MP3 calculation."""
@@ -1068,6 +1087,15 @@ class LaplaceMp2Result:
     def e_os(self) -> float: ...
     @property
     def e_ss(self) -> float: ...
+    @property
+    def scf_jk(self) -> str:
+        """How the reference SCF built J/K: "exact", "rijk" or "rijcosx"."""
+        ...
+
+    @property
+    def jk_auxbasis(self) -> str | None:
+        """The SCF's JK-fitting basis (None for "exact")."""
+        ...
 
 class SosMp2Result:
     """Result of a Laplace SOS-MP2 calculation."""
@@ -1101,6 +1129,16 @@ class SosMp2Result:
         """'mo' or 'ao', echoed for provenance."""
         ...
 
+    @property
+    def scf_jk(self) -> str:
+        """How the reference SCF built J/K: "exact", "rijk" or "rijcosx"."""
+        ...
+
+    @property
+    def jk_auxbasis(self) -> str | None:
+        """The SCF's JK-fitting basis (None for "exact")."""
+        ...
+
 class AttenuatedMp2Result:
     """Result of an attenuated RI-MP2 calculation."""
 
@@ -1114,6 +1152,15 @@ class AttenuatedMp2Result:
     def e_os(self) -> float: ...
     @property
     def e_ss(self) -> float: ...
+    @property
+    def scf_jk(self) -> str:
+        """How the reference SCF built J/K: "exact", "rijk" or "rijcosx"."""
+        ...
+
+    @property
+    def jk_auxbasis(self) -> str | None:
+        """The SCF's JK-fitting basis (None for "exact")."""
+        ...
 
 class ScsMp2Result:
     """Result of a spin-component-scaled MP2 calculation."""
@@ -1128,6 +1175,15 @@ class ScsMp2Result:
     def e_os(self) -> float: ...
     @property
     def e_ss(self) -> float: ...
+    @property
+    def scf_jk(self) -> str:
+        """How the reference SCF built J/K: "exact", "rijk" or "rijcosx"."""
+        ...
+
+    @property
+    def jk_auxbasis(self) -> str | None:
+        """The SCF's JK-fitting basis (None for "exact")."""
+        ...
 
 class Mp2VResult:
     """Result of an MP2-V (attenuated MP2 + VV10) calculation."""
@@ -1156,6 +1212,16 @@ class Mp2VResult:
     @property
     def n_nlc_points(self) -> int:
         """Grid points in the VV10 nonlocal integration."""
+        ...
+
+    @property
+    def scf_jk(self) -> str:
+        """How the reference SCF built J/K: "exact", "rijk" or "rijcosx"."""
+        ...
+
+    @property
+    def jk_auxbasis(self) -> str | None:
+        """The SCF's JK-fitting basis (None for "exact")."""
         ...
 
 class RsMp2RpaResult:
@@ -1193,6 +1259,16 @@ class RsMp2RpaResult:
     @property
     def e_delta_drpa_sr(self) -> float | None:
         """Delta-dRPA[erfc] (CoupledRings only)."""
+        ...
+
+    @property
+    def scf_jk(self) -> str:
+        """How the reference SCF built J/K: "exact", "rijk" or "rijcosx"."""
+        ...
+
+    @property
+    def jk_auxbasis(self) -> str | None:
+        """The SCF's JK-fitting basis (None for "exact")."""
         ...
 
 class DftResult:
@@ -3060,6 +3136,8 @@ def run_rimp2(
     omega: float | None = None,
     att_r0: float | None = None,
     att_omega: float | None = None,
+    scf_jk: str | None = None,
+    jk_auxbasis: str | None = None,
 ) -> RiMp2Result:
     """Resolution-of-identity (density-fitted) MP2. Exact by default.
 
@@ -3085,6 +3163,14 @@ def run_rimp2(
     `integral_direct=True` it takes the same `schwarz_skip` cut as the other
     operators (`schwarz_skip=0.0` evaluates every triple). These four are a ValueError on the exact
     method (use `run_terfc_rimp2` / `run_attenuated_rimp2` there).
+
+    `scf_jk` sets how the reference SCF builds J/K: "exact" (default,
+    four-centre), "rijk" (RI-J + RI-K) or "rijcosx" (RI-J + COSX K), fitted on
+    `jk_auxbasis` (a bundled JK-fit name, default "def2-universal-jkfit";
+    never `auxbasis`). The same two kwargs, with the same rules, exist on
+    every MP2-family entry point. Strict: an unknown mode, `jk_auxbasis` with
+    "exact", or a `k_builder` the mode overrides raise ValueError. Echoed as
+    `result.scf_jk` / `result.jk_auxbasis`.
     """
     ...
 
@@ -3099,6 +3185,8 @@ def run_oo_rimp2(
     level_shift: float | None = None,
     diis_size: int | None = None,
     memory_budget_gb: float | None = None,
+    scf_jk: str | None = None,
+    jk_auxbasis: str | None = None,
 ) -> OoRiMp2Result:
     """Orbital-optimized RI-MP2."""
     ...
@@ -3122,6 +3210,8 @@ def run_laplace_mp2(
     frozen_core: int | None = None,
     k_builder: str | None = None,
     memory_budget_gb: float | None = None,
+    scf_jk: str | None = None,
+    jk_auxbasis: str | None = None,
 ) -> LaplaceMp2Result:
     """Laplace-transform RI-MP2."""
     ...
@@ -3137,6 +3227,8 @@ def run_laplace_sos_mp2(
     domain_cutoff_bohr: float | None = None,
     k_builder: str | None = None,
     memory_budget_gb: float | None = None,
+    scf_jk: str | None = None,
+    jk_auxbasis: str | None = None,
 ) -> SosMp2Result:
     """Laplace-transform SOS-MP2: E = c_os * E_OS."""
     ...
@@ -3149,6 +3241,8 @@ def run_attenuated_rimp2(
     frozen_core: int | None = None,
     k_builder: str | None = None,
     memory_budget_gb: float | None = None,
+    scf_jk: str | None = None,
+    jk_auxbasis: str | None = None,
 ) -> AttenuatedMp2Result:
     """Attenuated RI-MP2 (erfc(omega*r)/r). omega in Angstrom^-1."""
     ...
@@ -3161,6 +3255,8 @@ def run_terfc_rimp2(
     frozen_core: int | None = None,
     k_builder: str | None = None,
     memory_budget_gb: float | None = None,
+    scf_jk: str | None = None,
+    jk_auxbasis: str | None = None,
 ) -> RiMp2Result:
     """MP2(terfc): RI-MP2 with exact tempered-erfc operator. r0 in Angstrom."""
     ...
@@ -3174,6 +3270,8 @@ def run_scs_mp2(
     frozen_core: int | None = None,
     k_builder: str | None = None,
     memory_budget_gb: float | None = None,
+    scf_jk: str | None = None,
+    jk_auxbasis: str | None = None,
 ) -> ScsMp2Result:
     """Spin-component-scaled MP2."""
     ...
@@ -3189,6 +3287,8 @@ def run_scs_mp2_2terfc(
     frozen_core: int | None = None,
     k_builder: str | None = None,
     memory_budget_gb: float | None = None,
+    scf_jk: str | None = None,
+    jk_auxbasis: str | None = None,
 ) -> ScsMp2Result:
     """SCS-MP2(2terfc): dual-attenuated SCS-MP2 with exact terfc. r0 in Angstrom."""
     ...
@@ -3206,6 +3306,8 @@ def run_mp2_v(
     frozen_core: int | None = None,
     k_builder: str | None = None,
     memory_budget_gb: float | None = None,
+    scf_jk: str | None = None,
+    jk_auxbasis: str | None = None,
 ) -> Mp2VResult:
     """MP2-V: attenuated MP2 + Eq-11-damped VV10. r0 in Angstrom, omega in Angstrom^-1."""
     ...
@@ -3261,8 +3363,16 @@ def run_rs_mp2_rpa(
     r0: float | None = None,
     terf_omega: float | None = None,
     memory_budget_gb: float | None = None,
+    scf_jk: str | None = None,
+    jk_auxbasis: str | None = None,
 ) -> RsMp2RpaResult:
-    """SR-MP2 + LR-dRPA. omega/terf_omega in Angstrom^-1, r0 in Angstrom."""
+    """SR-MP2 + LR-dRPA. omega/terf_omega in Angstrom^-1, r0 in Angstrom.
+
+    `scf_jk` / `jk_auxbasis` as in `run_rimp2`, but the default differs: this
+    entry point has always used RI-JK, so `scf_jk` defaults to "rijk" (on
+    "def2-universal-jkfit") here, not "exact". A `k_builder` under "rijk" is
+    a ValueError. The mode used is echoed as `result.scf_jk`.
+    """
     ...
 
 @overload

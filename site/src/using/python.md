@@ -464,6 +464,14 @@ See [QM/MM](./qmmm.md) for a worked example.
 | `SosMp2Result` | Scaled and unscaled OS energy, `c_os`, `n_quad` and `formulation` echoed back. | |
 | `DoubleHybridResult` | Result of `run_double_hybrid`: `total_energy`, `e_ks`, `e_corr_scaled`, `e_os`, `e_ss`, `c_os`, `c_ss`. | |
 
+`run_rimp2`, `run_oo_rimp2`, `run_attenuated_rimp2`, `run_terfc_rimp2`,
+`run_scs_mp2`, `run_scs_mp2_2terfc`, `run_mp2_v`, `run_laplace_mp2`,
+`run_laplace_sos_mp2` and `run_rs_mp2_rpa` take `scf_jk="exact"|"rijk"|"rijcosx"`
+and `jk_auxbasis=` to choose how the reference SCF builds J and K, and their
+results echo `scf_jk` and `jk_auxbasis`. The default is `"exact"`, except for
+`run_rs_mp2_rpa`, whose default is `"rijk"`. See
+[The MP2 family](../methods/mp2.md).
+
 ### Exact and local correlation
 
 `run_rimp2`, `run_drpa` and `run_linlccd` name a method and compute it

@@ -2503,6 +2503,16 @@ pub struct ScfCfg {
     pub df_j_aux: Option<String>,
     /// As `df_j_aux`, for exchange (RI-K).
     pub df_k_aux: Option<String>,
+    /// MP2-family kinds ([`SCF_JK_KINDS`]), task = "energy": how the
+    /// reference SCF builds J/K, `"exact"`, `"rijk"` (RI-J + RI-K) or
+    /// `"rijcosx"` (RI-J + COSX K). The same rule as the Python `scf_jk`
+    /// kwarg (`ferric_scf::scf_jk`). Omitted = the kind's historical mode
+    /// (four-centre, except rs-mp2-rpa, which has always used RI-JK).
+    /// Exclusive with `df_j_aux` / `df_k_aux`; see [`ScfCfg::scf_jk_choice`].
+    pub jk: Option<String>,
+    /// JK-fitting basis for `jk = "rijk" | "rijcosx"` (bundled name, default
+    /// def2-universal-jkfit). Never the correlation method's RI aux.
+    pub jk_aux: Option<String>,
     /// Optional virtual-virtual block level shift (Ha) for open-shell SCF
     /// (UHF / ROHF / UKS / ROKS). The shift is rational-damped by the DIIS
     /// error so the converged Fock is the unshifted stationary point. A
@@ -2684,6 +2694,8 @@ impl Default for ScfCfg {
             cosx_fp64_multiplier: None,
             df_j_aux: None,
             df_k_aux: None,
+            jk: None,
+            jk_aux: None,
             level_shift: None,
             mom_after_iter: 0,
             ladder: Vec::new(),
@@ -2842,6 +2854,54 @@ impl ScfCfg {
             .map(ferric_scf::rhf::normalize_df_aux)
     }
 
+    /// `[scf] jk` / `jk_aux` resolved by the shared `ferric_scf::scf_jk`
+    /// rule, or `None` when `jk` is unset (the run is then unchanged).
+    ///
+    /// Hard errors: `jk_aux` without `jk`; `jk` on a kind outside
+    /// [`SCF_JK_KINDS`] or a task other than "energy"; `jk` together with
+    /// `df_j_aux` / `df_k_aux` (two spellings of the same fields); and every
+    /// conflict the shared rule refuses (unknown value, `jk_aux` with
+    /// "exact", a `k_builder` the mode would override).
+    pub fn scf_jk_choice(
+        &self,
+        kind: &str,
+        task: &str,
+    ) -> Result<Option<ferric_scf::scf_jk::ScfJk>, String> {
+        use ferric_scf::scf_jk::{ScfJk, ScfJkKeys, ScfJkMode};
+        let Some(mode) = self.jk.as_deref() else {
+            return match &self.jk_aux {
+                Some(a) => Err(format!(
+                    "[scf] jk_aux = \"{a}\" is only read with [scf] jk = \"rijk\" or \"rijcosx\""
+                )),
+                None => Ok(None),
+            };
+        };
+        if !SCF_JK_KINDS.contains(&kind) || task != "energy" {
+            return Err(format!(
+                "[scf] jk is wired for task = \"energy\" with method.kind = {} only; got \
+                 kind = \"{kind}\", task = \"{task}\". Use [scf] df_j_aux / df_k_aux / \
+                 k_builder there",
+                SCF_JK_KINDS.join(", ")
+            ));
+        }
+        if self.df_j_aux.is_some() || self.df_k_aux.is_some() {
+            return Err(
+                "[scf] jk sets the reference SCF's RI-J/RI-K itself, so it cannot be \
+                        combined with [scf] df_j_aux / df_k_aux; name the fitting basis with \
+                        [scf] jk_aux"
+                    .to_string(),
+            );
+        }
+        ScfJk::resolve(
+            Some(mode),
+            self.jk_aux.as_deref(),
+            self.k_builder.as_deref(),
+            ScfJkMode::Exact,
+            ScfJkKeys::CLI,
+        )
+        .map(Some)
+    }
+
     /// Resolve the `[scf] cosx_*` knobs into a `CosxConfig` (strict).
     ///
     /// A `cosx_grid` / `cosx_overlap_fit` / `cosx_backend` key with
@@ -2857,7 +2917,8 @@ impl ScfCfg {
         router_allowed: bool,
     ) -> Result<ferric_scf::cosx_k::CosxConfig, String> {
         use ferric_scf::cosx_k::{validate_grid, CosxBackend, CosxConfig, CosxHalfTransform};
-        let is_cosx = self.k_builder.as_deref() == Some("cosx");
+        let is_cosx =
+            self.k_builder.as_deref() == Some("cosx") || self.jk.as_deref() == Some("rijcosx");
         let any_cosx_knob = self.cosx_grid.is_some()
             || self.cosx_final_pass.is_some()
             || self.cosx_final_grid.is_some()
@@ -3248,6 +3309,20 @@ const RPA_XC_KINDS: &[&str] = &["pdep-rpa", "rpa", "gw", "tdhf-static-polarizabi
 /// `rhf` -> RKS, `uhf` -> UKS, `rohf` -> ROKS; `ksdft` is KS by definition
 /// (LDA when no functional is named). See [`Config::ks_functional`].
 const SCF_KINDS: &[&str] = &["rhf", "uhf", "rohf", "ksdft"];
+
+/// Kinds whose reference SCF `[scf] jk` / `jk_aux` select: the MP2 family
+/// (the CLI twins of the Python entry points that take `scf_jk`).
+pub const SCF_JK_KINDS: &[&str] = &[
+    "rimp2",
+    "oo-rimp2",
+    "att-rimp2",
+    "mp2-v",
+    "scs-mp2",
+    "scs-mp2-2terfc",
+    "laplace-mp2",
+    "laplace-sos-mp2",
+    "rs-mp2-rpa",
+];
 
 /// The double hybrids: they carry their own functional and WARN when `[dft]
 /// functional` differs (a user naming a functional there has at least asked
@@ -3658,6 +3733,7 @@ impl Config {
         let kind = self.method.kind.as_str();
         let task = self.method.task.as_str();
         let mult = self.molecule.multiplicity;
+        self.scf.scf_jk_choice(kind, task)?;
 
         if let Some(pcm) = &self.pcm {
             pcm.to_pcm_config()?;
@@ -4236,6 +4312,108 @@ mod compat_guard_tests {
         assert_eq!(
             cfg("pdep-rpa", "optimize", "").validate_task_compat(),
             Ok(())
+        );
+    }
+
+    /// `[scf] jk` / `jk_aux` go through the shared `ferric_scf::scf_jk` rule
+    /// (the Python `scf_jk` one): unset is `None` (the run is unchanged),
+    /// each mode lands on the expected `RhfConfig` fields, and every
+    /// conflict is refused with the CLI's own key names.
+    #[test]
+    fn scf_jk_keys_resolve_through_the_shared_rule() {
+        use ferric_scf::scf_jk::ScfJkMode;
+        let choice = |kind: &str, task: &str, extra: &str| {
+            cfg(kind, task, &format!("[scf]\n{extra}"))
+                .scf
+                .scf_jk_choice(kind, task)
+        };
+        assert_eq!(choice("rimp2", "energy", ""), Ok(None));
+        let rijk = choice("scs-mp2", "energy", "jk = \"rijk\"\n")
+            .unwrap()
+            .unwrap();
+        assert_eq!(rijk.mode, ScfJkMode::RiJk);
+        assert_eq!(rijk.aux.as_deref(), Some("def2-universal-jkfit"));
+        let mut rc = ferric_scf::rhf::RhfConfig::default();
+        choice(
+            "rimp2",
+            "energy",
+            "jk = \"rijcosx\"\njk_aux = \"cc-pvtz-jkfit\"\n",
+        )
+        .unwrap()
+        .unwrap()
+        .apply(&mut rc);
+        assert_eq!(rc.df_j_aux.as_deref(), Some("cc-pvtz-jkfit"));
+        assert_eq!((rc.df_k_aux, rc.k_builder.as_deref()), (None, Some("cosx")));
+        let mut rs = ferric_scf::rhf::RhfConfig {
+            df_j_aux: Some("def2-universal-jkfit".into()),
+            df_k_aux: Some("def2-universal-jkfit".into()),
+            ..Default::default()
+        };
+        choice("rs-mp2-rpa", "energy", "jk = \"exact\"\n")
+            .unwrap()
+            .unwrap()
+            .apply(&mut rs);
+        assert_eq!((rs.df_j_aux, rs.df_k_aux), (None, None));
+        for (kind, task, extra, needle) in [
+            (
+                "rimp2",
+                "energy",
+                "jk = \"RIJK\"\n",
+                "[scf] jk: unknown value",
+            ),
+            (
+                "rimp2",
+                "energy",
+                "jk_aux = \"cc-pvtz-jkfit\"\n",
+                "only read with [scf] jk",
+            ),
+            (
+                "rimp2",
+                "energy",
+                "jk = \"exact\"\njk_aux = \"cc-pvtz-jkfit\"\n",
+                "only read",
+            ),
+            (
+                "rimp2",
+                "energy",
+                "jk = \"rijk\"\njk_aux = \"none\"\n",
+                "turns density fitting off",
+            ),
+            (
+                "rimp2",
+                "energy",
+                "jk = \"rijk\"\nk_builder = \"link\"\n",
+                "[scf] k_builder = \"link\" conflicts",
+            ),
+            (
+                "rimp2",
+                "energy",
+                "jk = \"rijcosx\"\nk_builder = \"direct\"\n",
+                "conflicts",
+            ),
+            (
+                "rimp2",
+                "energy",
+                "jk = \"rijk\"\ndf_j_aux = \"def2-universal-jkfit\"\n",
+                "df_j_aux / df_k_aux",
+            ),
+            ("rhf", "energy", "jk = \"rijk\"\n", "wired for task"),
+            ("ccsd", "energy", "jk = \"rijk\"\n", "wired for task"),
+            ("rimp2", "optimize", "jk = \"rijk\"\n", "wired for task"),
+        ] {
+            let e = choice(kind, task, extra).expect_err(extra);
+            assert!(e.contains(needle), "{extra}: {e}");
+        }
+        let e = cfg(
+            "rimp2",
+            "energy",
+            "[scf]\njk = \"rijk\"\nk_builder = \"link\"\n",
+        )
+        .validate_cli_wired_keys()
+        .unwrap_err();
+        assert!(
+            e.contains("conflicts"),
+            "load-time validation must refuse it: {e}"
         );
     }
 
