@@ -545,3 +545,42 @@ fn fock_guess_mos(
     let c_b = crate::driver::diagonalize_rect(&f_b, &x)?.1;
     Ok((c_a, c_b))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ferric_integrals::operator::Operator;
+
+    /// ROHF overlap projection: the whole occupied block (doubly then singly
+    /// occupied) is S_bb-orthonormal, not just each block on its own. A
+    /// same-basis anchor cannot see a missing docc/socc orthogonalisation
+    /// (the projected blocks are already orthogonal there), and neither can a
+    /// symmetric molecule whose singly occupied orbitals share no irrep with
+    /// the doubly occupied ones (O2 and NH2: the cross overlap is zero by
+    /// symmetry). HCO's sigma radical shares a' with the doubly occupied
+    /// orbitals, and 6-31G is projected DOWN onto STO-3G, where the
+    /// projection is far from an isometry.
+    #[test]
+    fn rohf_overlap_occupied_block_is_orthonormal() {
+        let mol = Molecule::parse_xyz("3\n\nC 0 0 0\nO 1.18 0 0\nH -0.55 0.95 0\n", 0, 2).unwrap();
+        let prep =
+            PreparedBasis::new(&mol, &ferric_core::basis::bundled("sto-3g").unwrap()).unwrap();
+        let bounds = SchwarzBounds::compute(Operator::coulomb(), &prep).unwrap();
+        let config = RhfConfig {
+            guess_basis: Some(GuessBasis::bundled("6-31g", "overlap").unwrap()),
+            ..Default::default()
+        };
+        let ctx = ParallelContext::default();
+        let g = build(&ctx, &mol, &prep, &bounds, &config, ScfKind::Rohf).unwrap();
+        let s_bb = ferric_integrals::oneelectron::overlap(&prep);
+        let occ = g.c_a.slice(s![.., ..8]);
+        let m = occ.t().dot(&s_bb).dot(&occ);
+        let dev = (&m - &Array2::<f64>::eye(8))
+            .iter()
+            .fold(0.0f64, |a, x| a.max(x.abs()));
+        assert!(
+            dev < 1e-12,
+            "occupied block deviates from S-orthonormal by {dev:e}"
+        );
+    }
+}

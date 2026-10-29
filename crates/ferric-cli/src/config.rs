@@ -3734,6 +3734,7 @@ impl Config {
         self.memory.validate()?;
         self.gpu.validate()?;
         self.scf.validate()?;
+        self.validate_guess_basis_keys()?;
         self.mp2.linlccd_variant()?;
         self.cc_ladder()?;
         self.local_model()?;
@@ -3868,7 +3869,6 @@ impl Config {
 
         self.scf.validate_accelerators(kind, mult)?;
         self.validate_symmetry_keys()?;
-        self.validate_guess_basis_keys()?;
 
         if self.scf.stability_descent {
             if task != "energy" {
@@ -8189,21 +8189,6 @@ json = [1, 2]
                 "[[scf.ladder]]\nguess = \"hcore\"\n[[scf.ladder]]\nguess = \"sad-smallbasis\"\n",
                 "rung 1",
             ),
-            (
-                "bad_guess_projection.toml",
-                "[scf]\nguess_basis = \"6-31g\"\nguess_projection = \"fop\"\n",
-                "unknown guess_projection 'fop'",
-            ),
-            (
-                "bad_guess_basis.toml",
-                "[scf]\nguess_basis = \"6-31gx\"\n",
-                "[scf] guess_basis",
-            ),
-            (
-                "projection_without_basis.toml",
-                "[scf]\nguess_projection = \"overlap\"\n",
-                "guess_basis is not",
-            ),
         ];
         for (file, extra, want) in cases {
             let p = dir.join(file);
@@ -8222,6 +8207,55 @@ json = [1, 2]
         )
         .unwrap();
         load_config(p.to_str().unwrap()).expect("valid [scf] strings must load");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `[scf] guess_basis` / `guess_projection` fail at load time: unknown
+    /// projection or basis, a projection without a basis, and the guess on a
+    /// periodic `[cell]` system (whose driver runs before the molecular
+    /// validation, so this must be a load-time check).
+    #[test]
+    fn load_config_rejects_bad_guess_basis_keys() {
+        let dir =
+            std::env::temp_dir().join(format!("ferric-cli-guess-basis-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cases = [
+            (
+                "bad_guess_projection.toml",
+                "[scf]\nguess_basis = \"6-31g\"\nguess_projection = \"fop\"\n",
+                "unknown guess_projection 'fop'",
+            ),
+            (
+                "bad_guess_basis.toml",
+                "[scf]\nguess_basis = \"6-31gx\"\n",
+                "[scf] guess_basis",
+            ),
+            (
+                "periodic_guess_basis.toml",
+                "[scf]\nguess_basis = \"sto-3g\"\n[cell]\nlattice = [[10.0, 0.0, 0.0], [0.0, 10.0, 0.0], [0.0, 0.0, 10.0]]\n",
+                "guess_basis is not supported for a periodic",
+            ),
+            (
+                "projection_without_basis.toml",
+                "[scf]\nguess_projection = \"overlap\"\n",
+                "guess_basis is not",
+            ),
+        ];
+        for (file, extra, want) in cases {
+            let p = dir.join(file);
+            std::fs::write(&p, format!("{MINIMAL}{extra}")).unwrap();
+            let Err(err) = load_config(p.to_str().unwrap()) else {
+                panic!("{file}: load_config accepted a bad value");
+            };
+            assert!(err.contains(want), "{file}: expected {want:?} in: {err}");
+        }
+        let p = dir.join("good.toml");
+        std::fs::write(
+            &p,
+            format!("{MINIMAL}[scf]\nguess_basis = \"sto-3g\"\nguess_projection = \"overlap\"\n"),
+        )
+        .unwrap();
+        load_config(p.to_str().unwrap()).expect("valid guess_basis keys must load");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
