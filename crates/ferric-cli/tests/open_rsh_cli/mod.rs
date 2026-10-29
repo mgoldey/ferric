@@ -40,8 +40,8 @@ use ferric_pbc::{
     periodic_hcore, solve_kroks_keep, solve_kuks_keep, Cell, DenseAftEri, ExxDiv, GammaRksConfig,
     GammaUhfIntegrals, GammaUksConfig, KDenseAftConfig, KGradConfig, KJkKind, KPointMesh,
     KRetained, KRksStressConfig, KRsGdfConfig, KScfConfig, KUksConfig, KUksGradConfig,
-    KUksStressConfig, MeshCentring, PeriodicGridConfig, PeriodicHcoreConfig, RsGdf, RsGdfConfig,
-    SrColumnRotation,
+    KUksStressConfig, MeshCentring, PeriodicGridConfig, PeriodicHcoreConfig, RangeSplit, RsGdf,
+    RsGdfConfig, SrColumnRotation,
 };
 use ferric_scf::result::ScfResult;
 use ferric_scf::rhf::RhfConfig;
@@ -125,6 +125,9 @@ pub struct Run<'a> {
     pub sp: bool,
     /// BFGS steps of an optimize run.
     pub steps: usize,
+    /// `[cell] range_split = true` (the RS-GDF split at the default lambda;
+    /// k-point energy runs only).
+    pub range_split: bool,
 }
 
 impl<'a> Run<'a> {
@@ -140,6 +143,7 @@ impl<'a> Run<'a> {
             strain_zz: 0.0,
             sp: false,
             steps: 0,
+            range_split: false,
         }
     }
     fn atoms(&self) -> Vec<[f64; 3]> {
@@ -238,7 +242,11 @@ pub fn write(r: &Run) -> PathBuf {
     } else {
         ""
     };
-    let jk = if r.rsgdf { RSGDF_KEYS } else { "" };
+    let jk = match (r.rsgdf, r.range_split) {
+        (true, true) => format!("{RSGDF_KEYS}\nrange_split = true"),
+        (true, false) => RSGDF_KEYS.to_string(),
+        _ => String::new(),
+    };
     let c = A_BOHR * (1.0 + r.strain_zz);
     let toml = dir.join("in.toml");
     std::fs::write(
@@ -531,6 +539,9 @@ fn with_kscf<T>(r: &Run, x: Option<&[f64]>, f: impl FnOnce(&KOpen<'_>) -> T) -> 
             (c.kuhf.scf, c.kuhf.hcore, c.kuhf.dense, c.grid) =
                 (kscf(), hcore_cfg(rsgdf), kdense(), grid());
             (c.kuhf.jk, c.kuhf.rsgdf) = (jk_kind(rsgdf), krsgdf(rsgdf));
+            c.kuhf.rsgdf.gdf.range_split = r
+                .range_split
+                .then(|| RangeSplit::new(ferric_pbc::rsgdf::DEFAULT_RANGE_SPLIT_LAMBDA));
             let (s, kept) = solve_kuks_keep(&cell, &prep, aux.as_ref(), &mesh, &c).expect("scf");
             let (ao, scf) = (c.xc.ao_threshold, KOpenScf::Uks(&s.scf));
             f(&open(&kept, &c.kuhf.rsgdf, &c.kuhf.hcore, ao, scf))

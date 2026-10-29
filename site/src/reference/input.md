@@ -448,7 +448,7 @@ Kohn-Sham route (RKS, UKS, ROKS; either `jk`); the force
 differentiates the energy's own XC grid (`n_radial`/`n_angular`/`neighbour_cutoff`)
 and, for a hybrid, its `exxdiv`. It is an error for range-separated hybrids
 other than HSE06 / CAM-B3LYP, VV10 functionals, TPSS on RS-GDF or an open-shell route, hybrid
-meta-GGA, meta-GGA forces on ROKS (its SCAN / r2SCAN energy runs, `jk = "dense"`; the library k-point ROKS SCAN / r2SCAN force and stress exist but are not wired, #498) and UKS meta-GGA forces on RS-GDF,
+meta-GGA, meta-GGA forces on ROKS (its SCAN / r2SCAN energy runs, `jk = "dense"`; the library k-point ROKS SCAN / r2SCAN force and stress exist but are not wired, #498) and UKS meta-GGA forces and stress on RS-GDF,
 and for `rimp2`/`pdep-rpa`. Cells whose basis carries an ECP are supported by the
 k-point force and stress of every route above (RHF, UHF, ROHF, RKS, UKS, ROKS). The lattice is fixed in `task = "optimize"` (no
 stress relaxation). The analytic stress of a k-point SCF is printed by a

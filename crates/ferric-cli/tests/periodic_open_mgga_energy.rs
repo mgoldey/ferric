@@ -6,7 +6,8 @@
 //! * Gamma-point UKS and ROKS (no kmesh; library `gamma_rsh::gamma_uks_any` /
 //!   `gamma_roks_any` routing to `dft::gamma_uks` / `rohf::gamma_roks`,
 //!   #581 / #582), dense-AFT J/K only.
-//! * k-point UKS on the RS-GDF J/K (library `solve_kuks`, #579).
+//! * k-point UKS on the RS-GDF J/K (library `solve_kuks`, #579), unsplit and
+//!   with `[cell] range_split = true`.
 //!
 //! EXACTNESS ANCHOR (CLI vs library, BIT FOR BIT): the CLI energy is read at
 //! full precision from the run log's `run_end` record (serde_json parses
@@ -93,4 +94,33 @@ fn kpoint_uks_scan_on_rsgdf_energy_equals_the_library_bit_for_bit() {
     let dense = lib_energy(&r.with("SCAN", false));
     distinct(r.tag, "dense J/K", e, dense);
     assert!((e - dense).abs() < 1e-3, "{}: RS-GDF vs dense", r.tag);
+}
+
+/// The same RS-GDF run with `[cell] range_split = true` (the opt-in split of
+/// the RS-GDF short-range sums at the default lambda): a J-only construction
+/// change for a pure meta-GGA, reachable since the RS-GDF energy is wired.
+/// The split repartitions the same sums (measured 1.5e-14 Ha), so split and
+/// unsplit agree to rounding but differ in the bits: a CLI that dropped the
+/// key would equal the unsplit value and fail the anchor (mutant: the CLI's
+/// `range_split_lambda` forced to `None`, killed).
+#[test]
+fn kpoint_uks_scan_on_range_split_rsgdf_energy_equals_the_library_bit_for_bit() {
+    let r = Run {
+        rsgdf: true,
+        range_split: true,
+        ..Run::new("kuks-scan-rsgdf-split", Spin::Uks, "SCAN", "energy")
+    };
+    let e = energy_anchor(&r);
+    let unsplit = lib_energy(&Run {
+        range_split: false,
+        ..r
+    });
+    eprintln!("{}: split - unsplit {:.3e}", r.tag, e - unsplit);
+    assert!((e - unsplit).abs() < 1e-10, "{}: split vs unsplit", r.tag);
+    assert_ne!(
+        e.to_bits(),
+        unsplit.to_bits(),
+        "{}: split not applied",
+        r.tag
+    );
 }

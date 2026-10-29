@@ -49,6 +49,7 @@ LIB = {
     "guks-scan": -1.5379830514206851,
     "groks-r2scan-sp": -1.5469183586040778,
     "kuks-scan-rsgdf": -1.6228455326685207,
+    "kuks-scan-rsgdf-split": -1.622845532668506,
 }
 
 _H_S = {
@@ -140,3 +141,18 @@ def test_gamma_open_shell_meta_gga_on_rsgdf_is_refused(sto3g):
                 jk="rsgdf",
                 auxbasis="cc-pvdz-ri",
             )
+
+
+def test_kpoint_uks_scan_on_range_split_rsgdf_reaches_the_library(sto3g):
+    # The split moves this energy by 1.5e-14 only (below LIB_BAR), so this pin
+    # checks the route runs and stays on the library value; the CLI anchor
+    # tells split from unsplit by the bits.
+    r = _kpts(
+        ferric.run_uks_kpts,
+        sto3g,
+        "SCAN",
+        jk="rsgdf",
+        auxbasis="cc-pvdz-ri",
+        range_split=True,
+    )
+    _check("kuks-scan-rsgdf-split", r, 3)
