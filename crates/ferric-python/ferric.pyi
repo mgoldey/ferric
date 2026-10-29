@@ -405,7 +405,6 @@ class BasisSet:
         """Load a Basis Set Exchange JSON file (contractions renormalised)."""
         ...
 
-
 class AoIntegrals:
     """AO integrals and J/K builds for one molecule in one basis (numpy).
 
@@ -4046,7 +4045,6 @@ def esp_at_atoms(
 ) -> list[float]:
     """Electrostatic potential at each nucleus (Hartree atomic units)."""
     ...
-
 
 def einsum(
     spec: str,
