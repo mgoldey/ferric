@@ -61,7 +61,7 @@ use crate::dft::{
 };
 use crate::hcore::kpoint::periodic_hcore_kpts;
 use crate::kdense_aft::KDenseAftEri;
-use crate::kdft::{conj, KAoChunk, KPeriodicXc};
+use crate::kdft::{conj, KAoChunk, KPeriodicXc, KXcClocks};
 use crate::kpts::KPointMesh;
 use crate::kscf::{KJkKind, KPointInjection, KPointJk, KRetained, KRetainedJk};
 use crate::kuscf::{
@@ -214,14 +214,20 @@ impl KPeriodicXcPolarized {
     }
 
     /// `(ρ, ∇ρ)` of one spin on one chunk, plus `P_σ[k]` is not kept.
-    fn spin_density(&self, c: &KAoChunk, dm: &[Array2<Complex64>]) -> (Array1<f64>, Array2<f64>) {
+    fn spin_density(
+        &self,
+        c: &KAoChunk,
+        dm: &[Array2<Complex64>],
+        clk: &KXcClocks,
+    ) -> (Array1<f64>, Array2<f64>) {
         let x = &self.inner;
         let np = c.points.len();
         let inv_nk = 1.0 / x.nk as f64;
         let mut rho = Array1::<f64>::zeros(np);
         let mut grad = Array2::<f64>::zeros((3, np));
         for k in 0..x.nk {
-            let p = dm[k].dot(&conj(&c.chi[k]));
+            let p = clk.density_gemm.time(|| dm[k].dot(&conj(&c.chi[k])));
+            let clock = StageClock::start();
             for g in 0..np {
                 let mut r = Complex64::new(0.0, 0.0);
                 for mu in 0..x.nbf {
@@ -238,6 +244,7 @@ impl KPeriodicXcPolarized {
                     }
                 }
             }
+            clk.density_contract.record(&clock);
         }
         (rho, grad)
     }
@@ -247,10 +254,11 @@ impl KPeriodicXcPolarized {
         c: &KAoChunk,
         da: &[Array2<Complex64>],
         db: &[Array2<Complex64>],
+        clk: &KXcClocks,
     ) -> UksDensityGrid {
         let np = c.points.len();
-        let (rho_a, grad_a) = self.spin_density(c, da);
-        let (rho_b, grad_b) = self.spin_density(c, db);
+        let (rho_a, grad_a) = self.spin_density(c, da, clk);
+        let (rho_b, grad_b) = self.spin_density(c, db, clk);
         let mut sigma = Array2::<f64>::zeros((3, np));
         for g in 0..np {
             let dot = |x: &Array2<f64>, y: &Array2<f64>| -> f64 {
@@ -282,7 +290,7 @@ impl KPeriodicXcPolarized {
             .chunks
             .iter()
             .map(|c| {
-                let d = self.chunk_density(c, da, db);
+                let d = self.chunk_density(c, da, db, &KXcClocks::default());
                 c.points
                     .iter()
                     .enumerate()
@@ -352,6 +360,26 @@ impl KPointXcPolarized for KPeriodicXcPolarized {
         da: &[Array2<Complex64>],
         db: &[Array2<Complex64>],
     ) -> Result<(f64, Vec<Array2<Complex64>>, Vec<Array2<Complex64>>), FerricError> {
+        let clock = StageClock::start();
+        let out = self.build_polarized_untimed(da, db);
+        self.inner.clocks.build.record(&clock);
+        out
+    }
+}
+
+impl KPeriodicXcPolarized {
+    /// Every `build_polarized` call's stage and phase timings (see
+    /// [`KPeriodicXc::xc_timings`]).
+    pub fn xc_timings(&self) -> PbcTimings {
+        self.inner.xc_timings()
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn build_polarized_untimed(
+        &self,
+        da: &[Array2<Complex64>],
+        db: &[Array2<Complex64>],
+    ) -> Result<(f64, Vec<Array2<Complex64>>, Vec<Array2<Complex64>>), FerricError> {
         self.check(da)?;
         self.check(db)?;
         let x = &self.inner;
@@ -366,14 +394,16 @@ impl KPointXcPolarized for KPeriodicXcPolarized {
         let mut va = zeros();
         let mut vb = zeros();
         for c in &x.chunks {
-            let dens = self.chunk_density(c, da, db);
+            let dens = self.chunk_density(c, da, db, &x.clocks);
             let np = c.points.len();
             // Per-spin tau of THIS chunk (libxc's 1/2 convention), and the
             // density the libxc kernel sees (only the unpolarized-evaluator
             // mutant alters it).
             let tau = x.mgga.then(|| (x.chunk_tau(c, da), x.chunk_tau(c, db)));
             let (dens, tau_in) = self.kernel_inputs(dens, tau);
-            let kern = polarized_kernel(&dens, tau_in.as_ref().map(|(a, b)| (a, b)), &self.xc_pol);
+            let kern = x.clocks.kernel.time(|| {
+                polarized_kernel(&dens, tau_in.as_ref().map(|(a, b)| (a, b)), &self.xc_pol)
+            });
             for g in 0..np {
                 e += c.points[g].weight * (dens.rho_a[g] + dens.rho_b[g]) * kern.exc[g];
             }
@@ -444,32 +474,18 @@ impl KPointXcPolarized for KPeriodicXcPolarized {
                     Vec::new()
                 };
                 for k in 0..x.nk {
-                    let scale = |fac: &[f64]| {
-                        let mut m = conj(&c.chi[k]);
-                        for g in 0..np {
-                            m.column_mut(g).mapv_inplace(|z| z * fac[g]);
-                        }
-                        m
-                    };
-                    v[k] += &scale(&a).dot(&c.chi[k].t());
+                    x.add_weighted_product(&mut v[k], &c.chi[k], c.chi[k].view(), &a, false);
                     if !f_tau.is_empty() {
                         // V^tau_s(k)_{mn} = sum_g 1/2 w v_tau_s sum_ax (d phi_m)* d phi_n
                         for ax in 0..3 {
                             let d_ax = c.dchi[k].index_axis(ndarray::Axis(0), ax).to_owned();
-                            let mut m = conj(&d_ax);
-                            for g in 0..np {
-                                m.column_mut(g).mapv_inplace(|z| z * f_tau[g]);
-                            }
-                            v[k] += &m.dot(&d_ax.t());
+                            x.add_weighted_product(&mut v[k], &d_ax, d_ax.view(), &f_tau, false);
                         }
                     }
                     if x.gga {
                         for ax in 0..3 {
                             let d_ax = c.dchi[k].index_axis(ndarray::Axis(0), ax);
-                            let m = scale(&f_ax[ax]).dot(&d_ax.t());
-                            let mh = conj(&m).t().to_owned();
-                            v[k] += &m;
-                            v[k] += &mh;
+                            x.add_weighted_product(&mut v[k], &c.chi[k], d_ax, &f_ax[ax], true);
                         }
                     }
                 }

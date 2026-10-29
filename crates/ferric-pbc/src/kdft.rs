@@ -61,7 +61,7 @@ use crate::kscf::{
 use crate::lattice::Cell;
 use crate::rsgdf::kpoint::KRsGdf;
 use crate::rsh::{resolve_periodic_functional_rsh, RshParams};
-use crate::timing::{PbcTimings, StageClock};
+use crate::timing::{CallClock, PbcTimings, StageClock, StageTiming};
 use ferric_core::basis::{num_functions, BasisSet};
 use ferric_core::FerricError;
 use ferric_dft::density_on_grid::DensityGrid;
@@ -96,6 +96,35 @@ pub struct KPeriodicXc {
     rsh: Option<RshParams>,
     /// Meta-GGA: tau (and its Vxc term) is evaluated from `dchi`.
     pub(crate) mgga: bool,
+    /// Wall/CPU of the Bloch AO cache build ([`KPeriodicXc::new`]).
+    ao_cache: StageTiming,
+    /// Per-phase clocks of every XC build ([`KPeriodicXc::xc_timings`]).
+    pub(crate) clocks: KXcClocks,
+}
+
+/// Accumulated per-phase time of the k-point XC builds (closed and open
+/// shell), for [`KPeriodicXc::xc_timings`]. Observation only: the clocks never
+/// touch a number. The phase clocks are summed over every timed call, so
+/// when phases run on several threads their wall time is THREAD-SUMMED (and
+/// their CPU time is the whole process's): compare phases by wall share only.
+#[derive(Debug, Default, Clone)]
+pub(crate) struct KXcClocks {
+    /// One whole `build` / `build_polarized` call.
+    pub(crate) build: CallClock,
+    /// `P(k) = D(k) φ^k*` (complex GEMM, per spin and k).
+    pub(crate) density_gemm: CallClock,
+    /// `ρ`, `∇ρ` from `P` and `φ` (the per-point contraction loops).
+    pub(crate) density_contract: CallClock,
+    /// `τ` (meta-GGA): its own GEMMs and contraction.
+    pub(crate) tau: CallClock,
+    /// The libxc kernel.
+    pub(crate) kernel: CallClock,
+    /// The weighted conjugate AO copies (and `m^H`) of the potential build.
+    pub(crate) vxc_scale: CallClock,
+    /// The potential's complex GEMMs.
+    pub(crate) vxc_gemm: CallClock,
+    /// The potential's accumulation into `V(k)`.
+    pub(crate) vxc_add: CallClock,
 }
 
 impl std::fmt::Debug for KPeriodicXc {
@@ -276,6 +305,7 @@ impl KPeriodicXc {
             .iter()
             .any(|f| !matches!(f.family(), FunctionalFamily::Lda));
         let mut ledger = Ledger::new(crate::budget::resolve(cfg.budget_bytes));
+        let clock = StageClock::start();
         let (chunks, nbf) = build_k_chunks(
             cell,
             bs,
@@ -285,7 +315,15 @@ impl KPeriodicXc {
             gga,
             &mut ledger,
         )?;
+        let (wall_s, cpu_s) = clock.elapsed();
         Ok(Self {
+            ao_cache: StageTiming {
+                name: "k XC AO cache",
+                wall_s,
+                cpu_s,
+                calls: 1,
+            },
+            clocks: KXcClocks::default(),
             name: functional.to_string(),
             xc,
             exx,
@@ -319,6 +357,35 @@ impl KPeriodicXc {
         self.nbf
     }
 
+    /// Stage `"k XC AO cache"` (the one-off Bloch AO evaluation) and stage
+    /// `"k XC build"` (every `build` / `build_polarized` call so far), with
+    /// the build's phases as sub-stages `"k XC build/<phase>"` (density GEMM,
+    /// density contraction, tau, libxc kernel, Vxc scale, Vxc GEMM, Vxc add).
+    /// Phase wall times are thread-summed (see [`KXcClocks`]).
+    pub fn xc_timings(&self) -> PbcTimings {
+        let mut t = PbcTimings::default();
+        t.add_stage(&self.ao_cache);
+        t.add_stage(&self.clocks.build.timing("k XC build"));
+        let c = &self.clocks;
+        for (clock, name) in [
+            (&c.density_gemm, "k XC build/density GEMM"),
+            (&c.density_contract, "k XC build/density contraction"),
+            (&c.tau, "k XC build/tau"),
+            (&c.kernel, "k XC build/libxc kernel"),
+            (&c.vxc_scale, "k XC build/Vxc scale"),
+            (&c.vxc_gemm, "k XC build/Vxc GEMM"),
+            (&c.vxc_add, "k XC build/Vxc add"),
+        ] {
+            if clock.calls() > 0 {
+                let st = clock.timing(name);
+                t.substages.push(st);
+            }
+        }
+        t.set_counter("k XC grid points", self.npoints() as u64);
+        t.set_counter("k XC chunks", self.chunks.len() as u64);
+        t
+    }
+
     pub(crate) fn check(&self, dm: &[Array2<Complex64>]) -> Result<(), FerricError> {
         if dm.len() != self.nk || dm.iter().any(|d| d.dim() != (self.nbf, self.nbf)) {
             return Err(FerricError::General(format!(
@@ -331,14 +398,20 @@ impl KPeriodicXc {
     }
 
     /// `ρ`, `∇ρ`, `σ` of one chunk from the k densities (module doc).
-    fn chunk_density(&self, c: &KAoChunk, dm: &[Array2<Complex64>]) -> DensityGrid {
+    fn chunk_density(
+        &self,
+        c: &KAoChunk,
+        dm: &[Array2<Complex64>],
+        clk: &KXcClocks,
+    ) -> DensityGrid {
         let np = c.points.len();
         let inv_nk = 1.0 / self.nk as f64;
         let mut rho = Array1::<f64>::zeros(np);
         let mut grad = Array2::<f64>::zeros((3, np));
         for k in 0..self.nk {
             // P_{μg} = Σ_ν D_{μν} φ*_{νg}
-            let p = dm[k].dot(&conj(&c.chi[k]));
+            let p = clk.density_gemm.time(|| dm[k].dot(&conj(&c.chi[k])));
+            let clock = StageClock::start();
             for g in 0..np {
                 let mut r = Complex64::new(0.0, 0.0);
                 for mu in 0..self.nbf {
@@ -355,6 +428,7 @@ impl KPeriodicXc {
                     }
                 }
             }
+            clk.density_contract.record(&clock);
         }
         let sigma = (0..np)
             .map(|g| grad[(0, g)].powi(2) + grad[(1, g)].powi(2) + grad[(2, g)].powi(2))
@@ -365,6 +439,10 @@ impl KPeriodicXc {
     /// Total kinetic-energy density of one chunk,
     /// `τ = (1/N_k) Σ_k ½ Σ_ax Re Σ_{μν} D(k)_{μν} ∂_ax φ^k_μ (∂_ax φ^k_ν)*`.
     pub(crate) fn chunk_tau(&self, c: &KAoChunk, dm: &[Array2<Complex64>]) -> Array1<f64> {
+        self.clocks.tau.time(|| self.chunk_tau_untimed(c, dm))
+    }
+
+    fn chunk_tau_untimed(&self, c: &KAoChunk, dm: &[Array2<Complex64>]) -> Array1<f64> {
         let np = c.points.len();
         let w = 0.5 / self.nk as f64;
         let mut tau = Array1::<f64>::zeros(np);
@@ -391,7 +469,7 @@ impl KPeriodicXc {
             .chunks
             .iter()
             .map(|c| {
-                let d = self.chunk_density(c, dm);
+                let d = self.chunk_density(c, dm, &KXcClocks::default());
                 c.points
                     .iter()
                     .zip(d.rho.iter())
@@ -421,6 +499,48 @@ impl KPointXc for KPeriodicXc {
         &mut self,
         dm: &[Array2<Complex64>],
     ) -> Result<(f64, Vec<Array2<Complex64>>), FerricError> {
+        let clock = StageClock::start();
+        let out = self.build_untimed(dm);
+        self.clocks.build.record(&clock);
+        out
+    }
+}
+
+impl KPeriodicXc {
+    /// `(V(k) += (conj(x) · diag(fac)) x'^T)`: the potential term of one
+    /// chunk, timed per phase.
+    pub(crate) fn add_weighted_product(
+        &self,
+        v: &mut Array2<Complex64>,
+        x: &Array2<Complex64>,
+        y: ndarray::ArrayView2<'_, Complex64>,
+        fac: &[f64],
+        with_adjoint: bool,
+    ) {
+        let c = &self.clocks;
+        let m = c.vxc_scale.time(|| {
+            let mut m = conj(x);
+            for (g, f) in fac.iter().enumerate() {
+                m.column_mut(g).mapv_inplace(|z| z * *f);
+            }
+            m
+        });
+        let m = c.vxc_gemm.time(|| m.dot(&y.t()));
+        if with_adjoint {
+            let mh = c.vxc_scale.time(|| conj(&m).t().to_owned());
+            c.vxc_add.time(|| {
+                *v += &m;
+                *v += &mh;
+            });
+        } else {
+            c.vxc_add.time(|| *v += &m);
+        }
+    }
+
+    fn build_untimed(
+        &self,
+        dm: &[Array2<Complex64>],
+    ) -> Result<(f64, Vec<Array2<Complex64>>), FerricError> {
         self.check(dm)?;
         let n = self.nbf;
         let mut e = 0.0;
@@ -428,9 +548,12 @@ impl KPointXc for KPeriodicXc {
             .map(|_| Array2::<Complex64>::zeros((n, n)))
             .collect();
         for c in &self.chunks {
-            let dens = self.chunk_density(c, dm);
+            let dens = self.chunk_density(c, dm, &self.clocks);
             let tau = self.mgga.then(|| self.chunk_tau(c, dm));
-            let kern = closed_kernel(&dens, tau.as_ref(), &self.xc);
+            let kern = self
+                .clocks
+                .kernel
+                .time(|| closed_kernel(&dens, tau.as_ref(), &self.xc));
             let np = c.points.len();
             for g in 0..np {
                 e += c.points[g].weight * dens.rho[g] * kern.exc[g];
@@ -475,32 +598,18 @@ impl KPointXc for KPeriodicXc {
                 Vec::new()
             };
             for k in 0..self.nk {
-                let scale = |fac: &[f64]| {
-                    let mut m = conj(&c.chi[k]);
-                    for g in 0..np {
-                        m.column_mut(g).mapv_inplace(|z| z * fac[g]);
-                    }
-                    m
-                };
-                v[k] += &scale(&a).dot(&c.chi[k].t());
+                self.add_weighted_product(&mut v[k], &c.chi[k], c.chi[k].view(), &a, false);
                 if self.gga {
                     for ax in 0..3 {
                         let d_ax = c.dchi[k].index_axis(ndarray::Axis(0), ax);
-                        let m = scale(&f_ax[ax]).dot(&d_ax.t());
-                        let mh = conj(&m).t().to_owned();
-                        v[k] += &m;
-                        v[k] += &mh;
+                        self.add_weighted_product(&mut v[k], &c.chi[k], d_ax, &f_ax[ax], true);
                     }
                 }
                 if self.mgga {
                     // V^tau(k)_{μν} = Σ_g ½ w v_tau Σ_ax (∂φ_μ)* ∂φ_ν
                     for ax in 0..3 {
                         let d_ax = c.dchi[k].index_axis(ndarray::Axis(0), ax).to_owned();
-                        let mut m = conj(&d_ax);
-                        for g in 0..np {
-                            m.column_mut(g).mapv_inplace(|z| z * f_tau[g]);
-                        }
-                        v[k] += &m.dot(&d_ax.t());
+                        self.add_weighted_product(&mut v[k], &d_ax, d_ax.view(), &f_tau, false);
                     }
                 }
             }

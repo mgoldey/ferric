@@ -1,0 +1,225 @@
+//! Per-iteration k-point XC build benchmark (issue #356, Performance).
+//!
+//! Builds the Bloch AO cache once ([`KPeriodicXc::new`], timed as stage
+//! `"k XC AO cache"`), then calls the closed-shell `build` and the open-shell
+//! `build_polarized` `--reps` times each on a fixed density and prints the
+//! phase breakdown of [`KPeriodicXc::xc_timings`] (density GEMM, density
+//! contraction, tau, libxc kernel, Vxc scale / GEMM / add). Nothing here
+//! feeds an energy; the printed `E_xc` is a fingerprint that two builds of the
+//! same code must reproduce bit for bit.
+//!
+//! The density is `D(k) = c I` with `c` set so that `∫ρ = N_e` (positive,
+//! atom-shaped; the build cost does not depend on its values beyond the
+//! density floor). The open shell uses `D_α = 0.6 D`, `D_β = 0.4 D`.
+//!
+//! Cells (bundled bases, the default atom-centred (75, 302) grid):
+//! * `h2`: the test suite's H2 cell, cubic 4 Bohr, STO-3G;
+//! * `lih`: the triclinic all-electron LiH cell of
+//!   `tests/validation_pbc_kks_core.rs`, STO-3G;
+//! * `diamond`: the fcc primitive diamond of `reference/pbc/bench`, 6-31G.
+//!
+//! ```text
+//! OPENBLAS_NUM_THREADS=1 cargo run --release -p ferric-pbc --example kxc_build_bench -- \
+//!     [--cell h2|lih|diamond] [--mesh 2,2,2] [--functional PBE] [--reps 3] \
+//!     [--radial 75] [--angular 302]
+//! ```
+
+use ferric_core::basis;
+use ferric_core::mol::{Atom, Molecule};
+use ferric_pbc::dft::{PeriodicGrid, PeriodicGridConfig, PeriodicXcConfig};
+use ferric_pbc::kuks::KPeriodicXcPolarized;
+use ferric_pbc::kuscf::KPointXcPolarized;
+use ferric_pbc::timing::{PbcTimings, StageClock};
+use ferric_pbc::{Cell, KPeriodicXc, KPointMesh, KPointXc};
+use ndarray::Array2;
+use num_complex::Complex64;
+
+type Res<T> = Result<T, Box<dyn std::error::Error>>;
+
+struct Args {
+    cell: String,
+    mesh: [usize; 3],
+    functional: String,
+    reps: usize,
+    radial: usize,
+    angular: usize,
+}
+
+fn parse_args() -> Res<Args> {
+    let mut a = Args {
+        cell: "lih".into(),
+        mesh: [2, 2, 2],
+        functional: "PBE".into(),
+        reps: 3,
+        radial: 75,
+        angular: 302,
+    };
+    let argv: Vec<String> = std::env::args().skip(1).collect();
+    let mut it = argv.iter();
+    while let Some(flag) = it.next() {
+        let val = it.next().ok_or(format!("{flag} needs a value"))?;
+        match flag.as_str() {
+            "--cell" => a.cell = val.clone(),
+            "--functional" => a.functional = val.clone(),
+            "--reps" => a.reps = val.parse()?,
+            "--radial" => a.radial = val.parse()?,
+            "--angular" => a.angular = val.parse()?,
+            "--mesh" => {
+                let v: Vec<usize> = val
+                    .split(',')
+                    .map(|x| x.parse())
+                    .collect::<Result<_, _>>()?;
+                a.mesh = v.try_into().map_err(|_| "--mesh takes n1,n2,n3")?;
+            }
+            _ => return Err(format!("unknown flag {flag}").into()),
+        }
+    }
+    Ok(a)
+}
+
+fn atom(symbol: &str, z: i32, r: [f64; 3]) -> Atom {
+    Atom {
+        symbol: symbol.into(),
+        z,
+        x: r[0],
+        y: r[1],
+        zpos: r[2],
+        ghost: false,
+        n_core_ecp: 0,
+    }
+}
+
+/// `(cell, bundled basis name)` of a named benchmark cell.
+fn cell_of(name: &str) -> Res<(Cell, &'static str)> {
+    let mol = |atoms| Molecule {
+        atoms,
+        charge: 0,
+        multiplicity: 1,
+    };
+    Ok(match name {
+        "h2" => (
+            Cell::new(
+                mol(vec![
+                    atom("H", 1, [0.1, 0.2, 0.3]),
+                    atom("H", 1, [0.1, 0.2, 1.7]),
+                ]),
+                [[4.0, 0.0, 0.0], [0.0, 4.0, 0.0], [0.0, 0.0, 4.0]],
+            )?,
+            "sto-3g",
+        ),
+        "lih" => (
+            Cell::new(
+                mol(vec![
+                    atom("Li", 3, [0.3, 0.2, 0.4]),
+                    atom("H", 1, [0.3, 0.2, 3.4]),
+                ]),
+                [[5.0, 0.0, 0.0], [0.0, 5.0, 0.0], [0.4, 0.3, 6.0]],
+            )?,
+            "sto-3g",
+        ),
+        "diamond" => {
+            let a = 3.3703265431617879;
+            let x = 0.89175 / 0.529177210903;
+            (
+                Cell::new(
+                    mol(vec![atom("C", 6, [0.0; 3]), atom("C", 6, [x, x, x])]),
+                    [[0.0, a, a], [a, 0.0, a], [a, a, 0.0]],
+                )?,
+                "6-31g",
+            )
+        }
+        _ => return Err(format!("unknown cell {name} (h2, lih, diamond)").into()),
+    })
+}
+
+fn print_timings(label: &str, t: &PbcTimings, reps: usize) {
+    let build = t.stage("k XC build").map_or(0.0, |s| s.wall_s);
+    let cache = t.stage("k XC AO cache").map_or(0.0, |s| s.wall_s);
+    println!("[{label}] AO cache build {cache:.3} s (once)");
+    println!(
+        "[{label}] build: {:.4} s/call over {reps} calls",
+        build / reps.max(1) as f64
+    );
+    let sub: f64 = t.substages.iter().map(|s| s.wall_s).sum();
+    for s in &t.substages {
+        println!(
+            "[{label}]   {:<34} {:>9.4} s/call  {:>5.1}% of build (thread-summed)",
+            s.name,
+            s.wall_s / reps.max(1) as f64,
+            100.0 * s.wall_s / build.max(1e-300)
+        );
+    }
+    println!(
+        "[{label}]   {:<34} {:>9.4} s/call  {:>5.1}%",
+        "other (finite check, hermitise)",
+        (build - sub) / reps.max(1) as f64,
+        100.0 * (build - sub) / build.max(1e-300)
+    );
+}
+
+fn main() -> Res<()> {
+    let a = parse_args()?;
+    let (cell, bname) = cell_of(&a.cell)?;
+    let bs = basis::bundled(bname)?;
+    let mesh = KPointMesh::gamma_centred(&cell, a.mesh)?;
+    let gcfg = PeriodicGridConfig {
+        n_radial: a.radial,
+        n_angular: a.angular,
+        ..Default::default()
+    };
+    let t = StageClock::start();
+    let grid = PeriodicGrid::build(&cell, &gcfg)?;
+    println!(
+        "cell {} basis {bname} mesh {:?} functional {} grid ({}, {}): {} points, built in {:.2} s; \
+         rayon threads {}",
+        a.cell,
+        a.mesh,
+        a.functional,
+        a.radial,
+        a.angular,
+        grid.len(),
+        t.elapsed().0,
+        rayon::current_num_threads()
+    );
+    let mut xc = KPeriodicXc::new(
+        &cell,
+        &bs,
+        &a.functional,
+        &grid,
+        &mesh,
+        &PeriodicXcConfig::default(),
+    )?;
+    let n = xc.nbasis();
+    println!("nbf {n} nk {}", mesh.nk());
+    let unit: Vec<Array2<Complex64>> = (0..mesh.nk())
+        .map(|_| Array2::<Complex64>::eye(n))
+        .collect();
+    let ne = cell.mol().nelec() as f64;
+    let c = ne / xc.integrate_density(&unit)?;
+    let dm: Vec<Array2<Complex64>> = unit.iter().map(|m| m.mapv(|z| z * c)).collect();
+
+    let mut e = 0.0;
+    for _ in 0..a.reps {
+        e = xc.build(&dm)?.0;
+    }
+    println!("closed E_xc fingerprint {e:.15e}");
+    print_timings("closed", &xc.xc_timings(), a.reps);
+
+    let da: Vec<_> = dm.iter().map(|m| m.mapv(|z| z * 0.6)).collect();
+    let db: Vec<_> = dm.iter().map(|m| m.mapv(|z| z * 0.4)).collect();
+    let fresh = KPeriodicXc::new(
+        &cell,
+        &bs,
+        &a.functional,
+        &grid,
+        &mesh,
+        &PeriodicXcConfig::default(),
+    )?;
+    let mut pol = KPeriodicXcPolarized::from_closed(fresh)?;
+    for _ in 0..a.reps {
+        e = pol.build_polarized(&da, &db)?.0;
+    }
+    println!("open E_xc fingerprint {e:.15e}");
+    print_timings("open", &pol.xc_timings(), a.reps);
+    Ok(())
+}
