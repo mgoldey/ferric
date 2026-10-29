@@ -4230,6 +4230,14 @@ impl PyFrequencyResult {
 /// Harmonic vibrational frequencies, mass-weighted with translations and
 /// rotations projected out.
 ///
+/// `df_j_aux` / `df_k_aux` (default: exact J/K) density-fit the Coulomb and
+/// exchange of every SCF the run does, exactly as in `run_rhf`; the analytic
+/// RHF, UHF and ROHF Hessians then differentiate the fitted energy (RI-J,
+/// RI-K or both; ferric_scf::hessian_df / hessian_df_k), and the
+/// finite-difference path differences the fitted analytic gradient. RI with
+/// `point_charges` / `external_field` takes the finite-difference path under
+/// "auto" (`"analytic"` raises).
+///
 /// `hessian`: "auto" (default) uses the analytic Hessian for RHF (closed
 /// shell) or UHF (any multiplicity) with exact J/K, with or without an ECP,
 /// or ROHF with exact J/K and no external potential (an ECP is analytic for all three, also with RI-J / RI-K),
@@ -4286,6 +4294,7 @@ impl PyFrequencyResult {
     mol, basis_name, reference=None, xc=None, delta=None, multiplicity=None,
     point_charges=None, external_field=None, hessian="auto", dispersion=None,
     max_iter=None, energy_conv=None, density_conv=None,
+    df_j_aux=None, df_k_aux=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_frequencies(
@@ -4302,6 +4311,8 @@ fn run_frequencies(
     max_iter: Option<usize>,
     energy_conv: Option<f64>,
     density_conv: Option<f64>,
+    df_j_aux: Option<&str>,
+    df_k_aux: Option<&str>,
 ) -> PyResult<PyFrequencyResult> {
     use ferric_scf::frequencies::{FrequencyConfig, FrequencyReference, HessianMethod};
 
@@ -4343,6 +4354,9 @@ fn run_frequencies(
     scf_cfg.max_iter = max_iter.unwrap_or(scf_cfg.max_iter);
     scf_cfg.energy_conv = energy_conv.unwrap_or(scf_cfg.energy_conv);
     scf_cfg.density_conv = density_conv.unwrap_or(scf_cfg.density_conv);
+    // Unset = exact J/K (unchanged); same opt-out spellings as run_rhf.
+    scf_cfg.df_j_aux = df_j_aux.map(ferric_scf::rhf::normalize_df_aux);
+    scf_cfg.df_k_aux = df_k_aux.map(ferric_scf::rhf::normalize_df_aux);
     let mut fcfg = FrequencyConfig {
         reference: refr,
         hessian: HessianMethod::parse_config_str(hessian)

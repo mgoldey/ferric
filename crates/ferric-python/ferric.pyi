@@ -3095,8 +3095,16 @@ def run_frequencies(
     max_iter: int | None = None,
     energy_conv: float | None = None,
     density_conv: float | None = None,
+    df_j_aux: str | None = None,
+    df_k_aux: str | None = None,
 ) -> FrequencyResult:
     """Harmonic vibrational frequencies.
+
+    `df_j_aux` / `df_k_aux` (default exact J/K) density-fit every SCF of the
+    run as in `run_rhf`; the analytic RHF/UHF/ROHF Hessian then differentiates
+    the fitted energy (RI-J, RI-K or both) and `"fd"` differences the fitted
+    analytic gradient. RI with point charges / a field takes the
+    finite-difference path under "auto" (`"analytic"` raises).
 
     `hessian="auto"` uses the analytic Hessian for RHF (closed shell) or UHF
     (any multiplicity) with exact J/K, with or without an ECP, or ROHF with
