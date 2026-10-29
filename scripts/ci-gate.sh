@@ -233,7 +233,20 @@ ferric_clear_stale_sccache_lock "$LOCK_FILE"
 #
 # Returns the command's status, 124/137 for a timeout, or LOCK_WAIT_EXPIRED_RC
 # when the wait expired and the command never started.
+#
+# WAS IT A TIMEOUT? The status alone cannot say. A command can exit 124 itself,
+# and 137 is any SIGKILL -- including ferric-limited's cgroup OOM kill
+# (MemoryMax, no swap), which used to be reported as a TIMEOUT (review of
+# #593). So run_locked sets RUN_LOCKED_TIMED_OUT=1 only when `timeout`'s status
+# says expiry (124, or 137 from its --kill-after) AND the command really ran
+# for TIMEOUT_SECS, timed in microseconds from just before `timeout` started
+# (whole-second SECONDS could round a quick exit up to a 1 s timeout). The
+# subshell reports it through a per-gate marker file; report_step reads the
+# variable, not the code.
+RUN_LOCKED_TIMED_OUT=0
 run_locked() {
+    local mark="$LOCK_FILE.timed-out.$$" status=0
+    rm -f "$mark"
     ferric_clear_stale_sccache_lock "$LOCK_FILE" >&"$GATE_OUT_FD"
     (
         sig="" pid="" forwarded=0
@@ -264,6 +277,7 @@ run_locked() {
                 mv -f "$holder_file.$BASHPID" "$holder_file" 2>/dev/null
         fi
         if ((held)) && [[ -z $sig ]]; then
+            started=${EPOCHREALTIME//[!0-9]/}
             timeout --signal=TERM --kill-after=30 "${TIMEOUT_SECS}" \
                 bash -c "$*" {lock_fd}>&- {GATE_OUT_FD}>&- &
             pid=$!  # timeout's pid == its process group id (it calls setpgid)
@@ -290,6 +304,10 @@ run_locked() {
                     sleep 0.2
                 done
             fi
+            if [[ -z $sig ]] && ((rc == 124 || rc == 137)) &&
+                ((${EPOCHREALTIME//[!0-9]/} - started >= TIMEOUT_SECS * 1000000)); then
+                : >"$mark"
+            fi
         fi
         ((held)) && rm -f "$holder_file"
         if [[ -n $sig ]]; then
@@ -298,7 +316,11 @@ run_locked() {
             kill -"$sig" "$BASHPID"
         fi
         exit "$rc"
-    )
+    ) || status=$?
+    RUN_LOCKED_TIMED_OUT=0
+    [[ -e $mark ]] && RUN_LOCKED_TIMED_OUT=1
+    rm -f "$mark"
+    return "$status"
 }
 
 # Name the process(es) that HOLD the lock now. `fuser` would also list every
@@ -326,6 +348,8 @@ lock_holder() {
 }
 
 # Report a locked step's status as one of three outcomes, and record which.
+# TIMEOUT comes from RUN_LOCKED_TIMED_OUT (set by the run_locked just before),
+# never from the status: 124 and 137 alone are ordinary failures.
 report_step() {
     local name="$1" rc="$2"
     if [[ $rc -eq 0 ]]; then
@@ -338,9 +362,13 @@ report_step() {
         echo "   another build held $LOCK_FILE the whole time."
         echo "   Held now by: ${holder:-nobody (it was released just after the wait)} --"
         STEP_LOCK_WAIT_EXPIRED=1
-    elif [[ $rc -eq 124 || $rc -eq 137 ]]; then
+    elif [[ $RUN_LOCKED_TIMED_OUT == 1 ]]; then
         echo "-- $name: TIMEOUT after ${TIMEOUT_SECS}s holding the lock (exit $rc) --"
         STEP_TIMED_OUT=1
+    elif [[ $rc -eq 137 ]]; then
+        echo "-- $name: FAIL -- killed by SIGKILL before the ${TIMEOUT_SECS}s timeout"
+        echo "   (exit 137: likely the ferric-limited memory cap / OOM; see dmesg) --"
+        STEP_CHECK_FAILED=1
     else
         echo "-- $name: FAIL (exit $rc) --"
         STEP_CHECK_FAILED=1
@@ -432,7 +460,8 @@ if [[ "${CI_GATE_SKIP_CLIPPY:-0}" != "1" ]]; then
         "OPENBLAS_NUM_THREADS=1 cargo clippy --workspace --all-targets -j $JOBS --message-format=json" \
         > "$CLIPPY_JSON" 2>&1 || CLIPPY_RC=$?
 
-    if [[ $CLIPPY_RC -eq $LOCK_WAIT_EXPIRED_RC || $CLIPPY_RC -eq 124 || $CLIPPY_RC -eq 137 ]]; then
+    if [[ $CLIPPY_RC -eq $LOCK_WAIT_EXPIRED_RC || $RUN_LOCKED_TIMED_OUT == 1 ||
+          $CLIPPY_RC -eq 137 ]]; then
         report_step "cargo clippy" "$CLIPPY_RC"
     else
         # Build a grep -F -f pattern file from the allow-list, matched against

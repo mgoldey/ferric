@@ -61,13 +61,18 @@ UNGUARDED_RUN_LOCKED = """run_locked() {
 """
 
 
+# The pre-fix report_step test: any 124/137 is a TIMEOUT, so a ferric-limited
+# OOM kill (SIGKILL, 137) or a command's own `exit 124` was mislabelled.
+RAW_CODE_TIMEOUT_TEST = "elif [[ $rc -eq 124 || $rc -eq 137 ]]; then"
+
+
 def _function(src, name):
     m = re.search(rf"^{name}\(\) \{{\n.*?^\}}\n", src, re.MULTILINE | re.DOTALL)
     assert m, f"{name}() not found in {GATE.name} -- this test drives it"
     return m.group(0)
 
 
-def _gate_functions(run_locked=None):
+def _gate_functions(run_locked=None, raw_code_report=False):
     src = GATE.read_text()
     rc = re.search(r"^LOCK_WAIT_EXPIRED_RC=(\d+)$", src, re.MULTILINE)
     assert rc, "LOCK_WAIT_EXPIRED_RC is not defined in the gate"
@@ -76,11 +81,24 @@ def _gate_functions(run_locked=None):
         body = _function(src, name)
         if name == "run_locked" and run_locked is not None:
             body = run_locked
+        if name == "report_step" and raw_code_report:
+            new = body.replace(
+                "elif [[ $RUN_LOCKED_TIMED_OUT == 1 ]]; then", RAW_CODE_TIMEOUT_TEST
+            )
+            assert new != body, "report_step's timeout test moved; update the mutant"
+            body = new
         parts.append(body)
     return "\n".join(parts)
 
 
-def _harness(tmp_path, timeout_secs, lock_wait_secs, run_locked=None, clear=":"):
+def _harness(
+    tmp_path,
+    timeout_secs,
+    lock_wait_secs,
+    run_locked=None,
+    clear=":",
+    raw_code_report=False,
+):
     harness = tmp_path / "harness.sh"
     harness.write_text(
         "set -uo pipefail\n"
@@ -91,7 +109,8 @@ def _harness(tmp_path, timeout_secs, lock_wait_secs, run_locked=None, clear=":")
         f"TIMEOUT_SECS={timeout_secs}\n"
         f"LOCK_WAIT_SECS={lock_wait_secs}\n"
         "FAILED=0 STEP_TIMED_OUT=0 STEP_LOCK_WAIT_EXPIRED=0 STEP_CHECK_FAILED=0\n"
-        + _gate_functions(run_locked)
+        "RUN_LOCKED_TIMED_OUT=0\n"  # the gate's global; the old run_locked never sets it
+        + _gate_functions(run_locked, raw_code_report)
         + '\nrun_step "probe" "$1"; rc=$?\n'
         # An optional second step, as the gate runs several in sequence.
         '[[ -n "${2:-}" ]] && run_step "after" "$2"\n'
@@ -103,9 +122,17 @@ def _harness(tmp_path, timeout_secs, lock_wait_secs, run_locked=None, clear=":")
     return harness
 
 
-def _run(tmp_path, cmd, timeout_secs, lock_wait_secs, run_locked=None):
+def _run(
+    tmp_path, cmd, timeout_secs, lock_wait_secs, run_locked=None, raw_code_report=False
+):
     """Run one gate step; return (exit status, output, flags dict, wall start)."""
-    harness = _harness(tmp_path, timeout_secs, lock_wait_secs, run_locked)
+    harness = _harness(
+        tmp_path,
+        timeout_secs,
+        lock_wait_secs,
+        run_locked,
+        raw_code_report=raw_code_report,
+    )
     t0 = time.time()
     p = subprocess.run(
         ["bash", str(harness), cmd],
@@ -250,14 +277,57 @@ def test_a_build_failure_is_reported_as_fail(tmp_path):
     assert _lock_is_free(tmp_path)
 
 
+# `kill -9 $$` is what a cgroup OOM kill looks like from the gate: the
+# command dies by SIGKILL long before the step timeout.
+SIGKILLED = ["kill -9 $$", "exit 137"]
+
+
+@pytest.mark.parametrize("cmd", SIGKILLED)
+def test_a_quick_sigkill_is_not_reported_as_a_timeout(tmp_path, cmd):
+    """137 without the timeout expiring: a failure that names the likely OOM."""
+    rc, out, flags, _ = _run(tmp_path, cmd, 1, 30)
+    assert rc == 1, out
+    assert "TIMEOUT" not in out, out
+    assert "-- probe: FAIL -- killed by SIGKILL before the 1s timeout" in out, out
+    assert "ferric-limited memory cap / OOM" in out
+    assert flags["STEP_CHECK_FAILED"] == "1"
+    assert flags["STEP_TIMED_OUT"] == "0" and flags["STEP_LOCK_WAIT_EXPIRED"] == "0"
+    assert _lock_is_free(tmp_path)
+
+
+def test_a_quick_exit_124_is_a_fail_not_a_timeout(tmp_path):
+    """A command may exit 124 on its own; only `timeout` expiring is a TIMEOUT."""
+    rc, out, flags, _ = _run(tmp_path, "exit 124", 1, 30)
+    assert rc == 1, out
+    assert "-- probe: FAIL (exit 124) --" in out, out
+    assert "TIMEOUT" not in out
+    assert flags["STEP_CHECK_FAILED"] == "1"
+    assert flags["STEP_TIMED_OUT"] == "0" and flags["STEP_LOCK_WAIT_EXPIRED"] == "0"
+
+
+@pytest.mark.parametrize("cmd", [*SIGKILLED, "exit 124"])
+def test_the_raw_code_report_fails_the_quick_exit_tests(tmp_path, cmd):
+    """Guard the guard: the pre-fix report_step calls each of these a TIMEOUT."""
+    _, out, flags, _ = _run(tmp_path, cmd, 1, 30, raw_code_report=True)
+    assert flags["STEP_TIMED_OUT"] == "1", out
+
+
 def test_the_old_ordering_fails_the_queueing_scenario(tmp_path):
     """Guard the guard: the first test must be able to see the bug.
 
     With `timeout` wrapping `flock -w`, the same 3 s hold / 2 s timeout /
-    1 s command is killed while still queued and reported as a TIMEOUT.
+    1 s command is killed while still queued and reported as a TIMEOUT (by
+    the report_step of that era, which read the raw 124).
     """
     with _HeldLock(tmp_path, 3):
-        rc, out, flags, _ = _run(tmp_path, "sleep 1", 2, 30, run_locked=OLD_RUN_LOCKED)
+        rc, out, flags, _ = _run(
+            tmp_path,
+            "sleep 1",
+            2,
+            30,
+            run_locked=OLD_RUN_LOCKED,
+            raw_code_report=True,
+        )
     assert rc != 0, out
     assert flags["STEP_TIMED_OUT"] == "1", out
 
