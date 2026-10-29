@@ -61,6 +61,53 @@ impl BasisSet {
     pub fn ecp_for_element(&self, z: i32) -> Option<&EcpDef> {
         self.ecps.get(&z)
     }
+
+    /// Atomic numbers this basis has shells for, ascending.
+    pub fn elements(&self) -> Vec<i32> {
+        let mut zs: Vec<i32> = self.shells.keys().copied().collect();
+        zs.sort_unstable();
+        zs
+    }
+
+    /// The covered elements as compact symbol ranges, e.g. `"H-Ar, Ca-Kr"`.
+    ///
+    /// ```
+    /// let bs = ferric_core::basis::bundled("cc-pvtz").unwrap();
+    /// assert_eq!(bs.coverage_summary(), "H-Ar, Ca-Kr"); // no K upstream
+    /// ```
+    pub fn coverage_summary(&self) -> String {
+        let zs = self.elements();
+        let sym = |z: i32| {
+            crate::elements::z_to_symbol(z).map_or_else(|| format!("Z{z}"), str::to_string)
+        };
+        let mut parts = Vec::new();
+        let mut i = 0;
+        while i < zs.len() {
+            let mut j = i;
+            while j + 1 < zs.len() && zs[j + 1] == zs[j] + 1 {
+                j += 1;
+            }
+            parts.push(if i == j {
+                sym(zs[i])
+            } else {
+                format!("{}-{}", sym(zs[i]), sym(zs[j]))
+            });
+            i = j + 1;
+        }
+        parts.join(", ")
+    }
+
+    /// The error for an atom whose element this basis does not cover. Names
+    /// the element, the basis and what the basis does cover, so the user can
+    /// pick another set instead of guessing.
+    pub fn missing_element_error(&self, z: i32) -> FerricError {
+        let sym = crate::elements::z_to_symbol(z).unwrap_or("?");
+        FerricError::Basis(format!(
+            "basis {:?} has no shells for {sym} (Z={z}); it covers {}",
+            self.name,
+            self.coverage_summary()
+        ))
+    }
 }
 
 /// Number of basis functions for a shell with angular momentum `l`.
@@ -132,59 +179,7 @@ fn parse_bse_json(text: &str, name: &str) -> Result<BasisSet, FerricError> {
             ecps.insert(z, parse_ecp_block(z, n_core, pots)?);
         }
         for sh in &elem.electron_shells {
-            let exps = parse_float_list(&sh.exponents)?;
-            let pure = match sh.function_type.as_deref() {
-                Some("gto_spherical") => true,
-                Some("gto_cartesian") => false,
-                _ => false, // "gto" or absent defaults to Cartesian
-            };
-            if sh.angular_momentum.len() == 1 {
-                // Single angular momentum — each coefficient column is a separate contraction
-                let l = sh.angular_momentum[0];
-                let shell_pure = pure && l >= 2;
-                for col in &sh.coefficients {
-                    let mut coefs = parse_float_list(col)?;
-                    if coefs.len() != exps.len() {
-                        return Err(FerricError::Basis(format!(
-                            "{} coeffs vs {} exps",
-                            coefs.len(),
-                            exps.len()
-                        )));
-                    }
-                    renormalize_contraction(&exps, &mut coefs, l);
-                    shells.entry(z).or_default().push(Shell {
-                        l,
-                        pure: shell_pure,
-                        exponents: exps.clone(),
-                        coefficients: coefs,
-                    });
-                }
-            } else {
-                // Multiple angular momenta (e.g. SP) — column k corresponds to angular_momentum[k]
-                for (k, &l) in sh.angular_momentum.iter().enumerate() {
-                    if k >= sh.coefficients.len() {
-                        return Err(FerricError::Basis(format!(
-                            "shell missing coefficient column {k}"
-                        )));
-                    }
-                    let mut coefs = parse_float_list(&sh.coefficients[k])?;
-                    if coefs.len() != exps.len() {
-                        return Err(FerricError::Basis(format!(
-                            "{} coeffs vs {} exps",
-                            coefs.len(),
-                            exps.len()
-                        )));
-                    }
-                    renormalize_contraction(&exps, &mut coefs, l);
-                    let shell_pure = pure && l >= 2;
-                    shells.entry(z).or_default().push(Shell {
-                        l,
-                        pure: shell_pure,
-                        exponents: exps.clone(),
-                        coefficients: coefs,
-                    });
-                }
-            }
+            convert_bse_shell(sh, shells.entry(z).or_default())?;
         }
     }
     Ok(BasisSet {
@@ -192,6 +187,47 @@ fn parse_bse_json(text: &str, name: &str) -> Result<BasisSet, FerricError> {
         shells,
         ecps,
     })
+}
+
+/// Convert one BSE shell into ferric [`Shell`]s, appending to `out`.
+///
+/// A single-l shell yields one [`Shell`] per coefficient column (general
+/// contraction); a multi-l shell (Pople `SP`) yields one per angular momentum,
+/// column k belonging to `angular_momentum[k]`. Every contraction is
+/// renormalized to unit self-overlap. `gto_spherical` makes l >= 2 pure;
+/// "gto", `gto_cartesian` or no type is Cartesian, and l < 2 is never pure.
+fn convert_bse_shell(sh: &BseShell, out: &mut Vec<Shell>) -> Result<(), FerricError> {
+    let exps = parse_float_list(&sh.exponents)?;
+    let pure = sh.function_type.as_deref() == Some("gto_spherical");
+    let multi_l = sh.angular_momentum.len() > 1;
+    let ncol = if multi_l {
+        sh.angular_momentum.len()
+    } else {
+        sh.coefficients.len()
+    };
+    for k in 0..ncol {
+        let l = sh.angular_momentum[if multi_l { k } else { 0 }];
+        let col = sh
+            .coefficients
+            .get(k)
+            .ok_or_else(|| FerricError::Basis(format!("shell missing coefficient column {k}")))?;
+        let mut coefs = parse_float_list(col)?;
+        if coefs.len() != exps.len() {
+            return Err(FerricError::Basis(format!(
+                "{} coeffs vs {} exps",
+                coefs.len(),
+                exps.len()
+            )));
+        }
+        renormalize_contraction(&exps, &mut coefs, l);
+        out.push(Shell {
+            l,
+            pure: pure && l >= 2,
+            exponents: exps.clone(),
+            coefficients: coefs,
+        });
+    }
+    Ok(())
 }
 
 /// Parse a single element's `ecp_potentials` block (BSE-JSON) into an [`EcpDef`].
@@ -391,13 +427,236 @@ fn parse_g94(text: &str, name: &str) -> Result<BasisSet, FerricError> {
 
 // --- Bundled basis sets ---
 
+mod packed;
+
+/// Every loadable bundled basis set: `(file stem in basis/bundled/, names)`.
+///
+/// The first name is the primary one ([`bundled_names`] lists it); the rest
+/// are aliases. Names are matched after ASCII-lowercasing and trimming, so
+/// `"6-31G*"`, `"6-31g(d)"` and `" 6-31G(D) "` are the same set. Aliases
+/// follow the spellings other codes use: `(d,p)` for the Pople stars, `-ri`
+/// and ORCA's `/c` for RIFIT sets, `/jk` for JKFIT sets, and PySCF's
+/// `def2-<x>-jkfit` for the one def2 universal JK set.
+///
+/// Every JSON in `basis/bundled/` must be either a stem here or on
+/// `UNREGISTERED_ALLOWLIST` (enforced by a test). Data, element coverage and
+/// the BSE version of every file are recorded in `basis/provenance.json`,
+/// written by `scripts/fetch_bse_bases.py`.
+const REGISTRY: &[(&str, &[&str])] = &[
+    // Pople. BSE marks 6-31G-family d shells Cartesian (6D) and 6-311G**
+    // d shells spherical except Na-Ar (Cartesian); ferric follows BSE per shell.
+    ("sto-3g", &["sto-3g"]),
+    ("6-31g", &["6-31g"]),
+    ("6-31g_d", &["6-31g*", "6-31g(d)"]),
+    ("6-31g_d_p", &["6-31g**", "6-31g(d,p)"]),
+    ("6-31+g_d", &["6-31+g*", "6-31+g(d)"]),
+    ("6-31+g_d_p", &["6-31+g**", "6-31+g(d,p)"]),
+    ("6-31++g_d_p", &["6-31++g**", "6-31++g(d,p)"]),
+    ("6-311g_d_p", &["6-311g**", "6-311g(d,p)"]),
+    ("6-311++g_d_p", &["6-311++g**", "6-311++g(d,p)"]),
+    // Dunning, all-electron
+    ("cc-pvdz", &["cc-pvdz"]),
+    ("cc-pvtz", &["cc-pvtz"]),
+    ("cc-pvqz", &["cc-pvqz"]),
+    ("aug-cc-pvdz", &["aug-cc-pvdz"]),
+    ("aug-cc-pvtz", &["aug-cc-pvtz"]),
+    ("aug-cc-pvqz", &["aug-cc-pvqz"]),
+    ("cc-pvdz-f12", &["cc-pvdz-f12"]),
+    ("cc-pvdz-f12-optri", &["cc-pvdz-f12-optri"]),
+    // Dunning, small-core pseudopotential (ECP inline) for Z >= 29; the
+    // light elements are the matching all-electron set (Psi4 convention).
+    ("cc-pvdz-pp", &["cc-pvdz-pp"]),
+    ("cc-pvtz-pp", &["cc-pvtz-pp"]),
+    ("cc-pvqz-pp", &["cc-pvqz-pp"]),
+    ("aug-cc-pvdz-pp", &["aug-cc-pvdz-pp"]),
+    ("aug-cc-pvtz-pp", &["aug-cc-pvtz-pp"]),
+    ("aug-cc-pvqz-pp", &["aug-cc-pvqz-pp"]),
+    // Dunning RI fitting. `cc-pvdz-ri.json` IS the BSE set "cc-pVDZ-RIFIT".
+    ("cc-pvdz-ri", &["cc-pvdz-rifit", "cc-pvdz-ri", "cc-pvdz/c"]),
+    (
+        "cc-pvtz-rifit",
+        &["cc-pvtz-rifit", "cc-pvtz-ri", "cc-pvtz/c"],
+    ),
+    (
+        "cc-pvqz-rifit",
+        &["cc-pvqz-rifit", "cc-pvqz-ri", "cc-pvqz/c"],
+    ),
+    (
+        "aug-cc-pvdz-rifit",
+        &["aug-cc-pvdz-rifit", "aug-cc-pvdz-ri", "aug-cc-pvdz/c"],
+    ),
+    (
+        "aug-cc-pvtz-rifit",
+        &["aug-cc-pvtz-rifit", "aug-cc-pvtz-ri", "aug-cc-pvtz/c"],
+    ),
+    (
+        "aug-cc-pvqz-rifit",
+        &["aug-cc-pvqz-rifit", "aug-cc-pvqz-ri", "aug-cc-pvqz/c"],
+    ),
+    (
+        "cc-pvdz-pp-rifit",
+        &["cc-pvdz-pp-rifit", "cc-pvdz-pp-ri", "cc-pvdz-pp/c"],
+    ),
+    (
+        "cc-pvtz-pp-rifit",
+        &["cc-pvtz-pp-rifit", "cc-pvtz-pp-ri", "cc-pvtz-pp/c"],
+    ),
+    (
+        "cc-pvqz-pp-rifit",
+        &["cc-pvqz-pp-rifit", "cc-pvqz-pp-ri", "cc-pvqz-pp/c"],
+    ),
+    (
+        "aug-cc-pvdz-pp-rifit",
+        &[
+            "aug-cc-pvdz-pp-rifit",
+            "aug-cc-pvdz-pp-ri",
+            "aug-cc-pvdz-pp/c",
+        ],
+    ),
+    (
+        "aug-cc-pvtz-pp-rifit",
+        &[
+            "aug-cc-pvtz-pp-rifit",
+            "aug-cc-pvtz-pp-ri",
+            "aug-cc-pvtz-pp/c",
+        ],
+    ),
+    (
+        "aug-cc-pvqz-pp-rifit",
+        &[
+            "aug-cc-pvqz-pp-rifit",
+            "aug-cc-pvqz-pp-ri",
+            "aug-cc-pvqz-pp/c",
+        ],
+    ),
+    // Dunning JK fitting (Weigend). Coverage is only H, B-F, Al-Cl, Ga-Br.
+    ("cc-pvtz-jkfit", &["cc-pvtz-jkfit", "cc-pvtz/jk"]),
+    ("cc-pvqz-jkfit", &["cc-pvqz-jkfit", "cc-pvqz/jk"]),
+    // Weigend's aug-cc-pVXZ-JKFIT. NOT in the Basis Set Exchange: imported
+    // from Psi4 (pinned commit) and checked bit-identical to PySCF's copy by
+    // scripts/import_psi4_jkfit.py. H, B-F, Al-Cl, Ga-Br plus Ne/Ar/Kr, whose
+    // functions are EXTRAPOLATED, not published; the DZ set is the TZ set
+    // truncated, not published either (see provenance.json).
+    (
+        "aug-cc-pvdz-jkfit",
+        &["aug-cc-pvdz-jkfit", "aug-cc-pvdz/jk"],
+    ),
+    (
+        "aug-cc-pvtz-jkfit",
+        &["aug-cc-pvtz-jkfit", "aug-cc-pvtz/jk"],
+    ),
+    (
+        "aug-cc-pvqz-jkfit",
+        &["aug-cc-pvqz-jkfit", "aug-cc-pvqz/jk"],
+    ),
+    // Karlsruhe (ECP inline for Z >= 37)
+    ("def2-svp", &["def2-svp"]),
+    ("def2-svpd", &["def2-svpd"]),
+    ("def2-tzvp", &["def2-tzvp"]),
+    ("def2-tzvpp", &["def2-tzvpp"]),
+    ("def2-tzvpd", &["def2-tzvpd"]),
+    ("def2-tzvppd", &["def2-tzvppd"]),
+    ("def2-qzvp", &["def2-qzvp"]),
+    ("def2-qzvpp", &["def2-qzvpp"]),
+    ("def2-qzvppd", &["def2-qzvppd"]),
+    (
+        "def2-svp-rifit",
+        &["def2-svp-rifit", "def2-svp-ri", "def2-svp/c"],
+    ),
+    (
+        "def2-svpd-rifit",
+        &["def2-svpd-rifit", "def2-svpd-ri", "def2-svpd/c"],
+    ),
+    (
+        "def2-tzvp-rifit",
+        &["def2-tzvp-rifit", "def2-tzvp-ri", "def2-tzvp/c"],
+    ),
+    (
+        "def2-tzvpp-rifit",
+        &["def2-tzvpp-rifit", "def2-tzvpp-ri", "def2-tzvpp/c"],
+    ),
+    (
+        "def2-tzvpd-rifit",
+        &["def2-tzvpd-rifit", "def2-tzvpd-ri", "def2-tzvpd/c"],
+    ),
+    (
+        "def2-tzvppd-rifit",
+        &["def2-tzvppd-rifit", "def2-tzvppd-ri", "def2-tzvppd/c"],
+    ),
+    (
+        "def2-qzvp-rifit",
+        &["def2-qzvp-rifit", "def2-qzvp-ri", "def2-qzvp/c"],
+    ),
+    (
+        "def2-qzvpp-rifit",
+        &["def2-qzvpp-rifit", "def2-qzvpp-ri", "def2-qzvpp/c"],
+    ),
+    (
+        "def2-qzvppd-rifit",
+        &["def2-qzvppd-rifit", "def2-qzvppd-ri", "def2-qzvppd/c"],
+    ),
+    (
+        "def2-universal-jkfit",
+        &[
+            "def2-universal-jkfit",
+            "def2/jk",
+            "def2-svp-jkfit",
+            "def2-svpd-jkfit",
+            "def2-tzvp-jkfit",
+            "def2-tzvpp-jkfit",
+            "def2-tzvpd-jkfit",
+            "def2-tzvppd-jkfit",
+            "def2-qzvp-jkfit",
+            "def2-qzvpp-jkfit",
+            "def2-qzvppd-jkfit",
+        ],
+    ),
+    // Jensen segmented polarization-consistent
+    ("pcseg-0", &["pcseg-0"]),
+    ("pcseg-1", &["pcseg-1"]),
+    ("pcseg-2", &["pcseg-2"]),
+    ("aug-pcseg-1", &["aug-pcseg-1"]),
+    ("aug-pcseg-2", &["aug-pcseg-2"]),
+];
+
+/// JSON files in `basis/bundled/` that are deliberately NOT loadable through
+/// [`bundled`], each with the reason. A test fails if a file is neither here
+/// nor in `REGISTRY`, so a set cannot silently ship unregistered again.
+#[cfg(test)]
+const UNREGISTERED_ALLOWLIST: &[(&str, &str)] = &[(
+    "def2-ecp",
+    "ECP-only data (no electron shells); loaded by ferric_core::ecp::bundled",
+)];
+
+/// Primary names of every bundled basis set, in registry order.
+///
+/// ```
+/// let names = ferric_core::basis::bundled_names();
+/// assert!(names.contains(&"def2-tzvp"));
+/// ```
+pub fn bundled_names() -> Vec<&'static str> {
+    REGISTRY.iter().map(|(_, names)| names[0]).collect()
+}
+
+/// File stem backing a bundled name (after canonicalization), if any.
+fn registry_stem(canonical: &str) -> Option<&'static str> {
+    REGISTRY
+        .iter()
+        .find(|(_, names)| names.contains(&canonical))
+        .map(|(stem, _)| *stem)
+}
+
 /// Load a bundled basis set by name (case-insensitive).
 ///
-/// Only the names matched below are loadable. This is NOT every `.json` in
-/// `basis/bundled/`: as of 2026-09-23, 21 of the 47 files there (e.g.
-/// `cc-pvqz-rifit`, `def2-svpd`, the `*-pp-rifit` sets) ship but are not
-/// registered, so `bundled()` errors for them. Registering one is a one-line
-/// arm here plus a check that its element coverage suits its callers.
+/// The loadable names are [`bundled_names`] plus the aliases in the registry
+/// (e.g. `"6-31g(d)"` for `"6-31g*"`, `"def2-tzvp/c"` for
+/// `"def2-tzvp-rifit"`). The returned set's `name` is the canonicalized name
+/// that was asked for. An unknown name is an error that lists the known ones.
+///
+/// Element coverage is whatever the source set has (see
+/// `basis/provenance.json`); an element the set lacks is not patched, so a
+/// calculation on it fails at basis setup, naming the element and the
+/// covered range (see [`BasisSet::missing_element_error`]).
 ///
 /// # Examples
 ///
@@ -406,70 +665,18 @@ fn parse_g94(text: &str, name: &str) -> Result<BasisSet, FerricError> {
 ///
 /// let bs = bundled("STO-3G").unwrap();
 /// assert!(bs.for_element(1).is_some());
+/// let pople = bundled("6-31G(d,p)").unwrap();
+/// assert_eq!(pople.name, "6-31g(d,p)");
 /// ```
 pub fn bundled(name: &str) -> Result<BasisSet, FerricError> {
     let cn = canonical_name(name);
-    let json = match cn.as_str() {
-        "sto-3g" => include_str!("basis/bundled/sto-3g.json"),
-        "6-31g" => include_str!("basis/bundled/6-31g.json"),
-        "cc-pvdz" => include_str!("basis/bundled/cc-pvdz.json"),
-        "def2-svp" => include_str!("basis/bundled/def2-svp.json"),
-        // `cc-pvdz-ri.json` IS the BSE set named "cc-pVDZ-RIFIT" (its own
-        // `name` field says so; Turbomole 7.3, 2019-01-08, elements 1-18 and
-        // 31-36). Verified 2026-09-23 element-for-element identical to
-        // `basis_set_exchange.get_basis("cc-pvdz-rifit")`. Both spellings
-        // resolve to the one copy of the data: every other RI set here is
-        // registered under its BSE `-rifit` name, and the tda/tddft CLI
-        // default plus examples/water-b2plyp.toml asked for "cc-pvdz-rifit",
-        // which used to be an "unknown bundled basis" error.
-        "cc-pvdz-ri" | "cc-pvdz-rifit" => include_str!("basis/bundled/cc-pvdz-ri.json"),
-        "cc-pvdz-f12" => include_str!("basis/bundled/cc-pvdz-f12.json"),
-        "cc-pvdz-f12-optri" => include_str!("basis/bundled/cc-pvdz-f12-optri.json"),
-        "def2-svp-rifit" => include_str!("basis/bundled/def2-svp-rifit.json"),
-        "def2-tzvp" => include_str!("basis/bundled/def2-tzvp.json"),
-        "def2-tzvp-rifit" => include_str!("basis/bundled/def2-tzvp-rifit.json"),
-        "def2-tzvpp-rifit" => include_str!("basis/bundled/def2-tzvpp-rifit.json"),
-        "def2-qzvp" => include_str!("basis/bundled/def2-qzvp.json"),
-        "def2-qzvp-rifit" => include_str!("basis/bundled/def2-qzvp-rifit.json"),
-        "def2-qzvpp-rifit" => include_str!("basis/bundled/def2-qzvpp-rifit.json"),
-        "aug-cc-pvdz" => include_str!("basis/bundled/aug-cc-pvdz.json"),
-        "aug-cc-pvdz-pp" => include_str!("basis/bundled/aug-cc-pvdz-pp.json"),
-        "aug-cc-pvdz-rifit" => include_str!("basis/bundled/aug-cc-pvdz-rifit.json"),
-        "aug-cc-pvtz" => include_str!("basis/bundled/aug-cc-pvtz.json"),
-        "aug-cc-pvtz-pp" => include_str!("basis/bundled/aug-cc-pvtz-pp.json"),
-        "aug-cc-pvtz-rifit" => include_str!("basis/bundled/aug-cc-pvtz-rifit.json"),
-        // Unaugmented cc-pVTZ + its RI-fit aux. The JSON has shipped in
-        // basis/bundled/ for some time but was never wired into this table,
-        // so `bundled("cc-pvtz")` errored despite the data being present.
-        // Registered for the DZ/TZ two-point X^-3 correlation extrapolation,
-        // which wants the plain cc-pVXZ sequence (aug-cc-pVTZ is a different
-        // sequence, and pairing it with plain cc-pVDZ is not the calibrated
-        // pair). Coverage: cc-pvtz has elements 1-36 EXCEPT K(19); the rifit
-        // is missing K(19) and Ca(20). Not silently patched -- an RI run on a
-        // K/Ca system errors on missing-element lookup rather than mis-fitting.
-        "cc-pvtz" => include_str!("basis/bundled/cc-pvtz.json"),
-        "cc-pvtz-rifit" => include_str!("basis/bundled/cc-pvtz-rifit.json"),
-        // BSE (ccRepo/Grant Hill, 2018-10-03), same source/date as aug-cc-pvtz.
-        // Elements 1-36 (H-Kr), matching aTZ's coverage. The RI-fit aux
-        // (Turbomole 7.3, 2019-01-08) is missing Li(3) and K(19), which aTZ's
-        // rifit has -- a real, minor gap in the upstream BSE data, not
-        // silently patched; RI-MP2/RPA on Li/K-containing systems at aQZ
-        // will error on missing-element lookup rather than mis-fit.
-        "aug-cc-pvqz" => include_str!("basis/bundled/aug-cc-pvqz.json"),
-        "aug-cc-pvqz-rifit" => include_str!("basis/bundled/aug-cc-pvqz-rifit.json"),
-        "def2-universal-jkfit" => include_str!("basis/bundled/def2-universal-jkfit.json"),
-        // Turbomole 7.3 cc-pVXZ-JKFIT. Registered for the #279 aux-basis
-        // enrichment ladder (def2-universal-jkfit -> cc-pvtz-jkfit ->
-        // cc-pvqz-jkfit) of the AURORA response anchor. Coverage of BOTH JSONs is
-        // only H, B-F, Al-Cl, Ga-Br (no He, Li, Be, Ne, Na, Mg, Ar, K-Zn,
-        // Kr); a missing element errors at lookup, it is not patched.
-        "cc-pvtz-jkfit" => include_str!("basis/bundled/cc-pvtz-jkfit.json"),
-        "cc-pvqz-jkfit" => include_str!("basis/bundled/cc-pvqz-jkfit.json"),
-        _ => return Err(FerricError::Basis(format!("unknown bundled basis: {name}"))),
-    };
-    let mut bs = parse_bse_json(json, &cn)?;
-    bs.name = cn;
-    Ok(bs)
+    let stem = registry_stem(&cn).ok_or_else(|| {
+        FerricError::Basis(format!(
+            "unknown bundled basis: {name} (known: {})",
+            bundled_names().join(", ")
+        ))
+    })?;
+    packed::basis_set(stem, &cn)
 }
 
 /// Look up a bundled basis set by name.
@@ -690,13 +897,22 @@ mod tests {
     }
 
     #[test]
-    fn test_bundled_sto3g_all_cartesian() {
+    fn test_bundled_sto3g_light_elements_all_cartesian() {
+        // H-Ar have only s/p shells. The d shells BSE added for Sc-Xe are
+        // `gto_spherical` and are loaded as such (BSE's per-shell type wins).
         let bs = bundled("sto-3g").unwrap();
-        for shells in bs.shells.values() {
-            for sh in shells {
-                assert!(!sh.pure, "STO-3G should be all Cartesian");
+        for z in 1..=18 {
+            for sh in bs.for_element(z).unwrap() {
+                assert!(!sh.pure, "STO-3G Z={z} should be all Cartesian");
             }
         }
+        let fe_d = bs
+            .for_element(26)
+            .unwrap()
+            .iter()
+            .find(|s| s.l == 2)
+            .unwrap();
+        assert!(fe_d.pure, "BSE marks STO-3G Fe d spherical");
     }
 
     #[test]
@@ -800,31 +1016,10 @@ mod tests {
     /// density, Vxc and XC gradient touching that basis.
     #[test]
     fn l_below_2_is_never_pure() {
-        // every bundled orbital/aux set we can load, not a hand-picked few
-        const ALL: [&str; 20] = [
-            "sto-3g",
-            "6-31g",
-            "cc-pvdz",
-            "def2-svp",
-            "cc-pvdz-ri",
-            "cc-pvdz-f12",
-            "cc-pvdz-f12-optri",
-            "def2-svp-rifit",
-            "def2-tzvp",
-            "def2-tzvp-rifit",
-            "def2-tzvpp-rifit",
-            "def2-qzvp",
-            "def2-qzvp-rifit",
-            "def2-qzvpp-rifit",
-            "aug-cc-pvdz",
-            "aug-cc-pvdz-pp",
-            "aug-cc-pvdz-rifit",
-            "aug-cc-pvtz",
-            "aug-cc-pvtz-pp",
-            "aug-cc-pvtz-rifit",
-        ];
+        // every bundled orbital/aux set, not a hand-picked few
+        let all = bundled_names();
         let mut checked = 0usize;
-        for name in ALL {
+        for &name in &all {
             let bs = bundled(name).unwrap_or_else(|e| panic!("bundled({name}): {e}"));
             checked += 1;
             for (z, shells) in &bs.shells {
@@ -841,6 +1036,149 @@ mod tests {
             }
         }
         // reachability: a typo'd list that loads nothing would pass vacuously
-        assert_eq!(checked, ALL.len(), "not every bundled basis was checked");
+        assert_eq!(checked, all.len(), "not every bundled basis was checked");
+        assert!(checked >= 60, "registry shrank to {checked} sets");
+    }
+
+    fn bundled_dir() -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/basis/bundled")
+    }
+
+    fn json_stems_on_disk() -> Vec<String> {
+        let mut v: Vec<String> = fs::read_dir(bundled_dir())
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .filter(|p| p.extension().is_some_and(|x| x == "json"))
+            .map(|p| p.file_stem().unwrap().to_string_lossy().into_owned())
+            .collect();
+        v.sort();
+        v
+    }
+
+    /// Every JSON in basis/bundled/ is registered or allowlisted with a
+    /// reason, every registered stem has a file, and the build packed exactly
+    /// the files it should. 21 sets once shipped unregistered for months.
+    #[test]
+    fn every_bundled_json_is_registered_or_allowlisted() {
+        let on_disk = json_stems_on_disk();
+        let allow: Vec<&str> = UNREGISTERED_ALLOWLIST.iter().map(|(s, _)| *s).collect();
+        for stem in &on_disk {
+            let registered = REGISTRY.iter().any(|(s, _)| s == stem);
+            let allowed = allow.contains(&stem.as_str());
+            assert!(
+                registered ^ allowed,
+                "{stem}.json must be EITHER registered in basis::REGISTRY OR on \
+                 UNREGISTERED_ALLOWLIST with a reason (registered={registered}, \
+                 allowlisted={allowed})"
+            );
+        }
+        for (stem, names) in REGISTRY {
+            assert!(
+                on_disk.iter().any(|s| s == stem),
+                "registered {stem}.json is missing"
+            );
+            assert!(!names.is_empty(), "{stem}: no names");
+        }
+        for (stem, why) in UNREGISTERED_ALLOWLIST {
+            assert!(
+                on_disk.iter().any(|s| s == stem),
+                "allowlisted {stem}.json is missing"
+            );
+            assert!(!why.is_empty(), "{stem}: allowlist entry needs a reason");
+        }
+        let expected_packed: Vec<String> =
+            on_disk.into_iter().filter(|s| s != "def2-ecp").collect();
+        assert_eq!(packed::packed_stems(), expected_packed);
+    }
+
+    /// No name or alias may resolve to two different files, and every name
+    /// must already be in canonical form (or it could never match).
+    #[test]
+    fn bundled_names_are_canonical_and_unambiguous() {
+        let mut seen: HashMap<&str, &str> = HashMap::new();
+        for (stem, names) in REGISTRY {
+            for &n in *names {
+                assert_eq!(canonical_name(n), n, "{n:?} is not canonical");
+                if let Some(prev) = seen.insert(n, stem) {
+                    panic!("{n:?} maps to both {prev} and {stem}");
+                }
+                bundled(n).unwrap_or_else(|e| panic!("bundled({n:?}): {e}"));
+            }
+        }
+        assert_eq!(
+            bundled("6-31G(D,P)").unwrap().shells,
+            bundled("6-31g**").unwrap().shells
+        );
+        assert_eq!(
+            bundled(" def2-TZVP/C ").unwrap().shells,
+            bundled("def2-tzvp-rifit").unwrap().shells
+        );
+    }
+
+    /// The packed library is a faithful copy: every registered set equals the
+    /// same JSON parsed from disk by `load_bse_json`, shell for shell and ECP
+    /// for ECP, so the build-time pooling cannot drop, reorder or alter data.
+    #[test]
+    fn packed_sets_equal_their_json_parsed_from_disk() {
+        for (stem, names) in REGISTRY {
+            let path = bundled_dir().join(format!("{stem}.json"));
+            let disk = load_bse_json(path.to_str().unwrap()).unwrap();
+            let packed = bundled(names[0]).unwrap();
+            assert_eq!(packed.shells, disk.shells, "{stem}: shells differ");
+            assert_eq!(packed.ecps, disk.ecps, "{stem}: ECPs differ");
+            assert!(!packed.shells.is_empty(), "{stem}: no elements");
+        }
+    }
+
+    /// Every contracted shell of every bundled set has unit self-overlap,
+    /// evaluated here from the closed-form Gaussian overlap, independently of
+    /// libint (which renormalizes internally and so cannot see a missing
+    /// renormalization) and of `renormalize_contraction` itself.
+    #[test]
+    fn every_bundled_contraction_has_unit_self_overlap() {
+        fn self_overlap(sh: &Shell) -> f64 {
+            // <g_a|g_b> for unit-normalized primitives of angular momentum l
+            // is (2 sqrt(a b) / (a + b))^(l + 3/2).
+            let l = f64::from(sh.l);
+            let mut s = 0.0;
+            for (a, ca) in sh.exponents.iter().zip(&sh.coefficients) {
+                for (b, cb) in sh.exponents.iter().zip(&sh.coefficients) {
+                    s += ca * cb * ((4.0 * a * b).sqrt() / (a + b)).powf(l + 1.5);
+                }
+            }
+            s
+        }
+        let mut n = 0usize;
+        for name in bundled_names() {
+            let bs = bundled(name).unwrap();
+            for (z, shells) in &bs.shells {
+                for sh in shells {
+                    let s = self_overlap(sh);
+                    assert!((s - 1.0).abs() < 1e-12, "{name} Z={z} l={}: S = {s}", sh.l);
+                    n += 1;
+                }
+            }
+        }
+        assert!(n > 10_000, "only {n} shells checked");
+    }
+
+    #[test]
+    fn unknown_name_lists_known_sets() {
+        let msg = bundled("6-31g***").unwrap_err().to_string();
+        assert!(
+            msg.contains("unknown bundled basis") && msg.contains("def2-tzvp"),
+            "{msg}"
+        );
+    }
+
+    #[test]
+    fn missing_element_error_names_element_and_coverage() {
+        let bs = bundled("cc-pvtz-jkfit").unwrap();
+        assert!(bs.for_element(3).is_none());
+        let msg = bs.missing_element_error(3).to_string();
+        assert!(
+            msg.contains("Li (Z=3)") && msg.contains("H, B-F, Al-Cl, Ga-Br"),
+            "{msg}"
+        );
     }
 }

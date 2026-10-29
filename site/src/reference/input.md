@@ -50,7 +50,7 @@ auxbasis = "cc-pvdz-ri"
 
 | Key | Type | Default | Allowed values | Notes |
 |---|---|---|---|---|
-| `name` | string | — | a bundled name (case-insensitive) | `sto-3g`, `6-31g`, `cc-pvdz`, `cc-pvtz`, `aug-cc-pvdz`, `aug-cc-pvtz`, `aug-cc-pvqz`, `aug-cc-pvdz-pp`, `aug-cc-pvtz-pp`, `def2-svp`, `def2-tzvp`, `def2-qzvp`, `cc-pvdz-f12`. |
+| `name` | string | — | a bundled name (case-insensitive) | e.g. `sto-3g`, `6-31g*`, `6-311++g**`, `cc-pvtz`, `aug-cc-pvqz`, `cc-pvdz-pp`, `def2-tzvpp`, `def2-qzvppd`, `pcseg-1`; the full list of 64 sets and their aliases is in [Bundled basis sets](../using/python.md#bundled-basis-sets). |
 | `path` | string | — | path to a Gaussian-94 file | Used only if `name` is absent. One of `name`/`path` is required. |
 
 Auxiliary basis names used elsewhere (`auxbasis`, `df_*_aux`) come from the

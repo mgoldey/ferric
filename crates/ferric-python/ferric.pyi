@@ -397,7 +397,20 @@ class BasisSet:
 
     @staticmethod
     def bundled(name: str) -> BasisSet:
-        """Load a bundled basis set by name (e.g. 'sto-3g', 'cc-pvdz-ri')."""
+        """Load a bundled basis set by name, case-insensitive (e.g. 'sto-3g',
+        '6-31g(d,p)', 'def2-tzvp', 'cc-pvdz-ri'). Aliases are accepted:
+        '6-31g*'/'6-31g(d)', '-ri' and '/c' for RIFIT sets, '/jk' for JKFIT
+        sets, 'def2/jk' and 'def2-<x>-jkfit' for def2-universal-jkfit.
+        Raises ValueError for an unknown name, listing the known ones."""
+        ...
+
+    @staticmethod
+    def bundled_names() -> list[str]:
+        """Primary names of every bundled basis set (orbital, RI, JK)."""
+        ...
+
+    def elements(self) -> list[int]:
+        """Atomic numbers this basis has shells for, ascending."""
         ...
 
     @staticmethod

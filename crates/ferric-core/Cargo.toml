@@ -14,6 +14,9 @@ thiserror = { workspace = true }
 ndarray = { workspace = true }
 rayon = { workspace = true }
 lapack-sys = { workspace = true }
+# Inflates the packed bundled basis sets (see build.rs). Pure Rust, and
+# already in Cargo.lock through flate2.
+miniz_oxide = "0.8"
 mpi = { workspace = true, optional = true }
 cudarc = { workspace = true, optional = true }
 libloading = { workspace = true, optional = true }
@@ -27,6 +30,11 @@ gpu = ["dep:cudarc", "dep:libloading"]
 # Fault-injection and mutation statics for the device tests (FORCE_KERNEL_FAILURE).
 # Never enabled by a shipped build.
 test-seams = ["gpu"]
+
+[build-dependencies]
+# build.rs packs src/basis/bundled/*.json into one deduplicated, deflated blob.
+serde_json = { workspace = true }
+miniz_oxide = "0.8"
 
 [dev-dependencies]
 serde_json = { workspace = true }

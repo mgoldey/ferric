@@ -205,6 +205,16 @@ impl PyBasisSet {
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("{e}")))?;
         Ok(PyBasisSet { inner: bs })
     }
+    /// Primary names of every bundled basis set (aliases such as
+    /// `"6-31g(d)"` or `"def2-tzvp/c"` are also accepted by `bundled`).
+    #[staticmethod]
+    fn bundled_names() -> Vec<&'static str> {
+        basis::bundled_names()
+    }
+    /// Atomic numbers this basis has shells for, ascending.
+    fn elements(&self) -> Vec<i32> {
+        self.inner.elements()
+    }
     /// Load a basis set from a Basis Set Exchange JSON file (the format of
     /// ferric's bundled sets). Contractions are renormalised to unit
     /// self-overlap exactly as for the bundled sets. Raises `ValueError` on

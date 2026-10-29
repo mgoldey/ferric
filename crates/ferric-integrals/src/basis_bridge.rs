@@ -52,12 +52,43 @@ pub struct PreparedBasis {
 unsafe impl Send for PreparedBasis {}
 unsafe impl Sync for PreparedBasis {}
 
+/// Refuse, at setup, a molecule whose V_ECP the ECP integral code cannot
+/// build: when any real atom carries an ECP, V_ECP couples EVERY shell of the
+/// molecule, and both ECP backends stop at l = [`crate::ecp_quad::MAX_SHELL_L`]
+/// (4, g). Without this the first hcore build panics mid-SCF. Reached by
+/// e.g. Pd or Ag in cc-pVQZ-PP, whose h (l = 5) shells exceed the limit.
+fn check_ecp_shell_l(mol: &Molecule, bs: &BasisSet) -> Result<(), FerricError> {
+    let max_l = crate::ecp_quad::MAX_SHELL_L as i32;
+    let Some(ecp_atom) = mol
+        .atoms
+        .iter()
+        .find(|a| !a.ghost && bs.ecp_for_element(a.z).is_some())
+    else {
+        return Ok(());
+    };
+    for atom in &mol.atoms {
+        let too_high = bs
+            .for_element(atom.z)
+            .and_then(|sh| sh.iter().map(|s| s.l).find(|&l| l > max_l));
+        if let Some(l) = too_high {
+            return Err(FerricError::Basis(format!(
+                "basis {:?} puts an l={l} shell on {} but {} carries an ECP, and ECP \
+                 integrals support shells only up to l={max_l}; use a smaller basis \
+                 (e.g. the TZ member of the family)",
+                bs.name, atom.symbol, ecp_atom.symbol
+            )));
+        }
+    }
+    Ok(())
+}
+
 impl PreparedBasis {
     /// Create a prepared basis from a molecule and basis set.
     ///
     /// Initializes libint2 on first call and constructs the internal C++ basis handle.
     pub fn new(mol: &Molecule, bs: &BasisSet) -> Result<Self, FerricError> {
         ensure_init();
+        check_ecp_shell_l(mol, bs)?;
         // Effective nuclear charge for the `nuclear` 1e operator and point-charge
         // list: 0 for a ghost (basis-only) center so libint2 excludes it from the
         // nuclear-attraction operator; otherwise Z − n_core for ECP atoms, plain Z
@@ -93,12 +124,9 @@ impl PreparedBasis {
         let mut keep_exps = Vec::new();
         let mut keep_coefs = Vec::new();
         for (ai, atom) in mol.atoms.iter().enumerate() {
-            let tmpls = bs.for_element(atom.z).ok_or_else(|| {
-                FerricError::Basis(format!(
-                    "no basis shells for Z={} ({}) in {:?}",
-                    atom.z, atom.symbol, bs.name
-                ))
-            })?;
+            let tmpls = bs
+                .for_element(atom.z)
+                .ok_or_else(|| bs.missing_element_error(atom.z))?;
             for sh in tmpls {
                 let exps: Vec<f64> = sh.exponents.clone();
                 let coefs: Vec<f64> = sh.coefficients.clone();

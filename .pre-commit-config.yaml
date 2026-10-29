@@ -52,7 +52,8 @@ repos:
     hooks:
       - id: detect-secrets
         args: ["--baseline", ".secrets.baseline"]
-        exclude: '^(testdata/|crates/ferric-core/src/basis/bundled/)|\.ipynb$'
+        # provenance.json pins upstream commit SHAs (hex, flagged as entropy).
+        exclude: '^(testdata/|crates/ferric-core/src/basis/(bundled/|provenance\.json$))|\.ipynb$'
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0
     hooks:
@@ -68,6 +69,12 @@ repos:
         # -- not hand-written, and reproducible (the generator runs rustfmt on
         # its own output; two runs give the same md5). Reviewing it as a diff
         # is not the point; reviewing the generator is.
-        exclude: ^crates/ferric-d3/src/tables\.rs$
+        #
+        # The same holds for the bundled basis-set JSONs: they are written by
+        # scripts/fetch_bse_bases.py (or import_psi4_jkfit.py) from the Basis
+        # Set Exchange, recorded in basis/provenance.json, and 15 of them were
+        # already over 500 KB before this exclusion. build.rs packs them into
+        # one 0.6 MB deduplicated blob, so their size never reaches the wheel.
+        exclude: ^(crates/ferric-d3/src/tables\.rs|crates/ferric-core/src/basis/bundled/.*\.json)$
       - id: check-yaml
       - id: check-toml
