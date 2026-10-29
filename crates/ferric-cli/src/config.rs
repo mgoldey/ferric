@@ -2344,6 +2344,10 @@ pub struct ScfCfg {
     /// Secondary-basis guess (Q-Chem `BASIS2`): a bundled basis name. The SCF
     /// is converged in it first and projected into the target basis as the
     /// starting point (`ferric_scf::basis2`). Unset = no secondary stage.
+    /// With it set, `guess` picks only the secondary SCF's starting point. It
+    /// also runs inside the closed-shell DF pre-stage (`df_guess`, on by
+    /// default for the post-HF kinds such as rimp2), and re-runs at every
+    /// geometry of an optimization or finite-difference Hessian.
     pub guess_basis: Option<String>,
     /// Projection for `guess_basis`: "fock" (default; Q-Chem FOPPROJECTION)
     /// or "overlap" (OVPROJECTION). Setting it without `guess_basis` is an
@@ -3802,16 +3806,6 @@ impl Config {
         Ok(())
     }
 
-    /// Kind/task/value checks for the keys that wire Python-only library
-    /// capabilities into the CLI: `[pcm]`, `[scf] stability_descent`,
-    /// `[dft] grid_radial`/`grid_angular` (task side; the kind side is in
-    /// [`Config::validate_dft_section`]), `[mp2] oo_*`, `[mp2] terf_omega`,
-    /// `[mp2] attenuator`/`r0` on `att-rimp2`, and `[gw] reference`.
-    ///
-    /// Every refusal is a key the selected kind/task would otherwise read
-    /// wrongly or not at all. Pure function of the config: the multiplicity
-    /// is `[molecule] multiplicity`, which is what the solved molecule
-    /// carries (with `[qmmm]` too — the QM region takes it).
     /// `[scf] guess_basis` / `guess_projection`: strict parse, and refused
     /// for a periodic `[cell]` system (the secondary-basis guess is molecular).
     fn validate_guess_basis_keys(&self) -> Result<(), String> {
@@ -3826,6 +3820,16 @@ impl Config {
         Ok(())
     }
 
+    /// Kind/task/value checks for the keys that wire Python-only library
+    /// capabilities into the CLI: `[pcm]`, `[scf] stability_descent`,
+    /// `[dft] grid_radial`/`grid_angular` (task side; the kind side is in
+    /// [`Config::validate_dft_section`]), `[mp2] oo_*`, `[mp2] terf_omega`,
+    /// `[mp2] attenuator`/`r0` on `att-rimp2`, and `[gw] reference`.
+    ///
+    /// Every refusal is a key the selected kind/task would otherwise read
+    /// wrongly or not at all. Pure function of the config: the multiplicity
+    /// is `[molecule] multiplicity`, which is what the solved molecule
+    /// carries (with `[qmmm]` too — the QM region takes it).
     pub fn validate_cli_wired_keys(&self) -> Result<(), String> {
         let kind = self.method.kind.as_str();
         let task = self.method.task.as_str();

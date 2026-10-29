@@ -41,16 +41,36 @@
 //!
 //! # Policy
 //!
-//! * The secondary SCF must converge; otherwise the target solve returns an
-//!   error naming the secondary basis. There is no fallback to MINAO.
-//! * An element missing from the secondary basis is an error, as is an ECP
-//!   core count that differs between the two bases (the electron counts would
-//!   differ).
+//! * A secondary SCF that does not converge never aborts the target SCF or a
+//!   convergence ladder. Its last iterate is NOT projected: measured on CN
+//!   UHF/aug-cc-pVDZ from STO-3G (the STO-3G UHF oscillates for 200
+//!   iterations), the target started from that iterate also failed to
+//!   converge in 200 iterations, for both projections, stuck 0.039 Ha above
+//!   the state the default guess reaches in 22. Instead the target starts
+//!   from its default guess (`use_sad_guess`), a warning is printed, and the
+//!   report carries `converged: false`, the exit reason and
+//!   `used_as_guess: false`. (A converged guess is not neutral either: it can
+//!   select WHICH stationary state the target converges to, in either
+//!   direction. See `site/src/methods/scf.md`.)
+//! * Genuinely unusable guesses are errors: an element missing from the
+//!   secondary basis, an ECP core count that differs between the two bases
+//!   (the electron counts would differ), a non-finite secondary density, and
+//!   a projected occupied space that is near-singular in the target basis.
 //! * A secondary basis with more functions than the target is allowed, with
 //!   a warning.
 //! * An explicit starting point (`init_guess_density`, or caller-supplied
 //!   initial MOs) takes precedence over `guess_basis`, exactly as it already
 //!   takes precedence over `use_sad_guess`.
+//! * `use_sad_guess` (`guess = "minao" | "sad" | "hcore"`) is inherited by
+//!   the secondary SCF, so with `guess_basis` set it selects the SECONDARY
+//!   solve's starting point only; the target starts from the projection.
+//! * Every solve that reaches a molecular entry point without an explicit
+//!   starting point re-runs the secondary SCF: each geometry of an
+//!   optimisation or a finite-difference Hessian, each restart rung of a
+//!   ladder. A carried-forward density (ladder rungs after the first, the
+//!   exact stage after a DF pre-stage, a stability-descent step, the cDFT
+//!   λ loop) outranks it, and the first stage's report is carried onto the
+//!   final result.
 //! * The dual-basis energy correction (Q-Chem `DUAL_BASIS_ENERGY`) is not
 //!   implemented: this module only produces a guess.
 
@@ -141,8 +161,33 @@ pub struct GuessBasisReport {
     pub nbasis_target: usize,
     /// Iterations the secondary SCF took.
     pub iterations: usize,
-    /// Converged secondary-basis total energy (Ha).
+    /// Secondary-basis total energy (Ha) of the projected state: the
+    /// converged energy, or the last iterate's when `converged` is false.
     pub energy: f64,
+    /// Whether the secondary SCF converged. An unconverged one is still used
+    /// as the guess (its last iterate); see the module policy.
+    pub converged: bool,
+    /// Why the secondary SCF stopped when it did not converge (its exit
+    /// reason and iteration cap); `None` when it converged.
+    pub unconverged_reason: Option<String>,
+    /// Whether the projected secondary solution seeded the target SCF.
+    /// `false` exactly when the secondary SCF did not converge: the target
+    /// then starts from its default guess (see the module policy).
+    pub used_as_guess: bool,
+}
+
+thread_local! {
+    /// Secondary SCFs run on this thread (test instrumentation).
+    static SECONDARY_RUNS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// How many secondary-basis SCFs have run on the calling thread. The
+/// secondary solve is driven from the thread that called the target solver
+/// (never a rayon worker), so a test can difference this around one call to
+/// assert how often the secondary stage ran.
+#[doc(hidden)]
+pub fn secondary_runs_on_this_thread() -> usize {
+    SECONDARY_RUNS.with(|c| c.get())
 }
 
 /// Which SCF the guess is for; the secondary solve runs the same one.
@@ -168,6 +213,13 @@ pub(crate) struct ProjectedGuess {
     /// Overlap-projected β MOs (UHF); equal to `c_a` otherwise.
     pub c_b: Array2<f64>,
     pub report: GuessBasisReport,
+}
+
+/// What [`build`] produced: a projected guess, or (secondary SCF
+/// unconverged) only the report, with the target left to its default guess.
+pub(crate) enum GuessOutcome {
+    Projected(Box<ProjectedGuess>),
+    Declined(GuessBasisReport),
 }
 
 impl ProjectedGuess {
@@ -342,22 +394,46 @@ fn run_secondary(
     let op = bounds.op;
     let bounds_s = SchwarzBounds::compute(op, prep_s)?;
     let cfg = secondary_config(config);
+    SECONDARY_RUNS.with(|c| c.set(c.get() + 1));
+    // The best-effort entry points: an unconverged secondary SCF returns its
+    // last iterate rather than an error, because a guess need not converge.
     let r = match kind {
         ScfKind::Rhf => crate::rhf::solve_rhf(ctx, mol, prep_s, op, &bounds_s, &cfg),
-        ScfKind::Uhf => crate::uhf::solve_uhf(ctx, mol, prep_s, &bounds_s, &cfg),
-        ScfKind::Rohf => crate::rohf::solve_rohf(ctx, mol, prep_s, op, &bounds_s, &cfg),
-    };
-    match r {
-        Ok(r) if r.converged => Ok(r),
-        Ok(r) => Err(FerricError::ScfConvergence {
-            iterations: r.iterations,
-            last_energy: r.energy,
-        }),
-        Err(e) => Err(e),
+        ScfKind::Uhf => crate::uhf::solve_uhf_best_effort(ctx, mol, prep_s, &bounds_s, &cfg, None),
+        ScfKind::Rohf => crate::rohf::solve_rohf_best_effort(ctx, mol, prep_s, op, &bounds_s, &cfg),
+    }?;
+    let finite = |d: &Array2<f64>| d.iter().all(|x| x.is_finite());
+    if !finite(&r.density_alpha) || !r.density_beta.as_ref().map_or(true, finite) {
+        return Err(FerricError::General(format!(
+            "the secondary SCF produced a non-finite density (exit {:?} after {} iterations)",
+            r.exit, r.iterations
+        )));
     }
+    Ok(r)
 }
 
-/// Converge the secondary-basis SCF of `kind` and project it into `prep`.
+/// Every real atom's element must have shells in the secondary basis.
+fn check_elements(mol: &Molecule, bs: &BasisSet) -> Result<(), FerricError> {
+    let mut missing: Vec<String> = Vec::new();
+    for a in mol.atoms.iter().filter(|a| !a.ghost) {
+        let tag = format!("{} (Z={})", a.symbol, a.z);
+        if bs.for_element(a.z).map_or(true, <[_]>::is_empty) && !missing.contains(&tag) {
+            missing.push(tag);
+        }
+    }
+    if missing.is_empty() {
+        return Ok(());
+    }
+    Err(FerricError::Basis(format!(
+        "guess_basis '{}' has no functions for {}; pick a secondary basis that covers \
+         every element",
+        bs.name,
+        missing.join(", ")
+    )))
+}
+
+/// Converge the secondary-basis SCF of `kind` and project it into `prep`;
+/// [`GuessOutcome::Declined`] when the secondary SCF did not converge.
 pub(crate) fn build(
     ctx: &ParallelContext,
     mol: &Molecule,
@@ -365,7 +441,7 @@ pub(crate) fn build(
     bounds: &SchwarzBounds,
     config: &RhfConfig,
     kind: ScfKind,
-) -> Result<ProjectedGuess, FerricError> {
+) -> Result<GuessOutcome, FerricError> {
     let gb = config.guess_basis.as_ref().ok_or_else(|| {
         FerricError::General("guess_basis::build called without guess_basis".into())
     })?;
@@ -373,6 +449,7 @@ pub(crate) fn build(
     let ctx_err = |what: &str, e: FerricError| {
         FerricError::General(format!("guess_basis '{name}': {what}: {e}"))
     };
+    check_elements(mol, &gb.basis)?;
     if ecp_cores(mol, prep.basis_set()) != ecp_cores(mol, &gb.basis) {
         return Err(FerricError::General(format!(
             "guess_basis '{name}': its ECP core electron counts differ from the target basis \
@@ -390,7 +467,27 @@ pub(crate) fn build(
         );
     }
     let small = run_secondary(ctx, mol, &prep_s, bounds, config, kind)
-        .map_err(|e| ctx_err("the secondary SCF did not converge", e))?;
+        .map_err(|e| ctx_err("the secondary SCF failed", e))?;
+    let report = GuessBasisReport {
+        basis: name,
+        projection: gb.projection,
+        nbasis_guess: ns,
+        nbasis_target: nb,
+        iterations: small.iterations,
+        energy: small.energy,
+        converged: small.converged,
+        unconverged_reason: (!small.converged).then(|| {
+            format!(
+                "exit {:?} after {} iterations (max_iter {})",
+                small.exit, small.iterations, config.max_iter
+            )
+        }),
+        used_as_guess: small.converged,
+    };
+    log_report(ctx, &report);
+    if !small.converged {
+        return Ok(GuessOutcome::Declined(report));
+    }
     let (p, s_bb) = projector(mol, prep, &gb.basis)?;
     let s_ss = ferric_integrals::oneelectron::overlap(&prep_s);
     let d_a_s = small.density_alpha.clone();
@@ -416,33 +513,39 @@ pub(crate) fn build(
             (c.clone(), c)
         }
     };
-    let report = GuessBasisReport {
-        basis: name,
-        projection: gb.projection,
-        nbasis_guess: ns,
-        nbasis_target: nb,
-        iterations: small.iterations,
-        energy: small.energy,
-    };
-    if ctx.is_root() {
-        eprintln!(
-            "[ferric] guess_basis {}: secondary SCF ({} functions) converged in {} iterations, \
-             E = {:.10}; projection = {}",
-            report.basis,
-            ns,
-            report.iterations,
-            report.energy,
-            report.projection.as_str()
-        );
-    }
-    Ok(ProjectedGuess {
+    Ok(GuessOutcome::Projected(Box::new(ProjectedGuess {
         projection: gb.projection,
         d_a: project_density(&p, &d_a_s),
         d_b: project_density(&p, &d_b_s),
         c_a,
         c_b,
         report,
-    })
+    })))
+}
+
+/// One stderr line per secondary stage (root rank only): the converged
+/// summary, or a WARNING that the target falls back to its default guess.
+fn log_report(ctx: &ParallelContext, r: &GuessBasisReport) {
+    if !ctx.is_root() {
+        return;
+    }
+    match r.unconverged_reason.as_deref() {
+        None => eprintln!(
+            "[ferric] guess_basis {}: secondary SCF ({} functions) converged in {} \
+             iterations, E = {:.10}; projection = {}",
+            r.basis,
+            r.nbasis_guess,
+            r.iterations,
+            r.energy,
+            r.projection.as_str()
+        ),
+        Some(why) => eprintln!(
+            "WARNING: guess_basis {}: the secondary SCF ({} functions) did NOT converge \
+             ({why}, last E = {:.10}). Its last iterate is not used; the target SCF starts \
+             from its default guess instead. The report records converged = false.",
+            r.basis, r.nbasis_guess, r.energy
+        ),
+    }
 }
 
 /// ROHF overlap projection: doubly occupied block, then the singly occupied
@@ -468,15 +571,53 @@ fn rohf_overlap_mos(
     complete_mo_set(&occ, s_bb)
 }
 
+/// `r` with `report` attached when `r` carries none of its own.
+///
+/// A stage that replaces the first result (a stability-descent re-solve, a
+/// later ladder rung, the exact stage after a DF pre-stage, the cDFT λ loop)
+/// starts from a carried density or MOs, which outrank `guess_basis`, so it
+/// runs no secondary SCF and reports none. The secondary stage that started
+/// the chain is still the one that ran, so its report is carried forward.
+pub(crate) fn carry_report(mut r: ScfResult, report: Option<GuessBasisReport>) -> ScfResult {
+    if r.guess_basis.is_none() {
+        r.guess_basis = report;
+    }
+    r
+}
+
+/// The open-shell guess for a solve that will start many inner SCFs from the
+/// same point (cDFT): built once, or `None` when `seeded` (explicit MOs
+/// outrank it) or when `guess_basis` is unset.
+pub(crate) fn open_shell_guess_once(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    bounds: &SchwarzBounds,
+    config: &RhfConfig,
+    seeded: bool,
+) -> Result<Option<OpenShellGuess>, FerricError> {
+    if !applies(config, seeded) {
+        return Ok(None);
+    }
+    open_shell_guess(ctx, mol, prep, bounds, config, ScfKind::Uhf).map(Some)
+}
+
 /// Open-shell starting MOs from the secondary-basis guess, with the config
 /// the target solve should run with (`guess_basis` cleared).
 pub(crate) struct OpenShellGuess {
-    /// α MOs (n × n); for ROHF the one MO set.
-    pub c_a: Array2<f64>,
-    /// β MOs (UHF); equal to `c_a` for ROHF.
-    pub c_b: Array2<f64>,
+    /// (α, β) MOs (n × n each; for ROHF both are the one MO set), or `None`
+    /// when the secondary SCF did not converge and the target should start
+    /// from its default guess.
+    pub mos: Option<(Array2<f64>, Array2<f64>)>,
     pub report: GuessBasisReport,
     pub config: RhfConfig,
+}
+
+impl OpenShellGuess {
+    /// The starting MOs as the solvers' `initial_mos` argument.
+    pub(crate) fn initial_mos(&self) -> Option<(&Array2<f64>, &Array2<f64>)> {
+        self.mos.as_ref().map(|(a, b)| (a, b))
+    }
 }
 
 /// Converge the secondary SCF of `kind` (UHF or ROHF) and turn it into
@@ -492,18 +633,26 @@ pub(crate) fn open_shell_guess(
     config: &RhfConfig,
     kind: ScfKind,
 ) -> Result<OpenShellGuess, FerricError> {
-    let g = build(ctx, mol, prep, bounds, config, kind)?;
-    let (c_a, c_b) = match g.projection {
+    let mut cfg = config.clone();
+    cfg.guess_basis = None;
+    let g = match build(ctx, mol, prep, bounds, config, kind)? {
+        GuessOutcome::Projected(g) => *g,
+        GuessOutcome::Declined(report) => {
+            return Ok(OpenShellGuess {
+                mos: None,
+                report,
+                config: cfg,
+            })
+        }
+    };
+    let mos = match g.projection {
         GuessProjection::Overlap => (g.c_a, g.c_b),
         GuessProjection::Fock => {
             fock_guess_mos(ctx, mol, prep, bounds, config, kind, &g.d_a, &g.d_b)?
         }
     };
-    let mut cfg = config.clone();
-    cfg.guess_basis = None;
     Ok(OpenShellGuess {
-        c_a,
-        c_b,
+        mos: Some(mos),
         report: g.report,
         config: cfg,
     })
@@ -551,6 +700,49 @@ mod tests {
     use super::*;
     use ferric_integrals::operator::Operator;
 
+    /// The overlap projection's full MO set is S_bb-orthonormal, virtuals
+    /// included: the completion spans exactly the S-orthogonal complement of
+    /// the projected occupied space. The virtual block is load-bearing: UHF
+    /// with n_α = n_β mixes the β HOMO with the β LUMO column
+    /// (`uhf::mix_beta_homo_lumo`) to break spin symmetry, and the solvers'
+    /// rectangular orthogonalisers assume an orthonormal starting set. A
+    /// completion that took the wrong eigenvector block (e.g. the occupied
+    /// directions, `..m - k`) passes every occupied-only check.
+    #[test]
+    fn overlap_completion_is_the_orthonormal_complement() {
+        let mol = Molecule::parse_xyz(
+            "3\n\nO 0 0 0.117790\nH 0 0.755453 -0.471161\nH 0 -0.755453 -0.471161\n",
+            0,
+            1,
+        )
+        .unwrap();
+        let prep =
+            PreparedBasis::new(&mol, &ferric_core::basis::bundled("cc-pvdz").unwrap()).unwrap();
+        let bounds = SchwarzBounds::compute(Operator::coulomb(), &prep).unwrap();
+        let config = RhfConfig {
+            guess_basis: Some(GuessBasis::bundled("sto-3g", "overlap").unwrap()),
+            ..Default::default()
+        };
+        let ctx = ParallelContext::default();
+        let GuessOutcome::Projected(g) =
+            build(&ctx, &mol, &prep, &bounds, &config, ScfKind::Uhf).unwrap()
+        else {
+            panic!("the secondary SCF must converge here");
+        };
+        let s_bb = ferric_integrals::oneelectron::overlap(&prep);
+        let n = prep.nbasis();
+        for c in [&g.c_a, &g.c_b] {
+            let m = c.t().dot(&s_bb).dot(c);
+            let dev = (&m - &Array2::<f64>::eye(n))
+                .iter()
+                .fold(0.0f64, |a, x| a.max(x.abs()));
+            assert!(
+                dev < 1e-10,
+                "full MO set deviates from S-orthonormal by {dev:e}"
+            );
+        }
+    }
+
     /// ROHF overlap projection: the whole occupied block (doubly then singly
     /// occupied) is S_bb-orthonormal, not just each block on its own. A
     /// same-basis anchor cannot see a missing docc/socc orthogonalisation
@@ -571,7 +763,11 @@ mod tests {
             ..Default::default()
         };
         let ctx = ParallelContext::default();
-        let g = build(&ctx, &mol, &prep, &bounds, &config, ScfKind::Rohf).unwrap();
+        let GuessOutcome::Projected(g) =
+            build(&ctx, &mol, &prep, &bounds, &config, ScfKind::Rohf).unwrap()
+        else {
+            panic!("the secondary SCF must converge here");
+        };
         let s_bb = ferric_integrals::oneelectron::overlap(&prep);
         let occ = g.c_a.slice(s![.., ..8]);
         let m = occ.t().dot(&s_bb).dot(&occ);

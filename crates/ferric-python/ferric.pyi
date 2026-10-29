@@ -855,11 +855,14 @@ class RhfResult:
         ...
 
     @property
-    def guess_basis(self) -> dict[str, float | int | str] | None:
+    def guess_basis(self) -> dict[str, float | int | str | bool | None] | None:
         """The secondary-basis guess (``guess_basis=``): ``{"basis",
         "projection", "iterations", "energy", "nbasis_guess",
-        "nbasis_target"}`` describing the secondary SCF, or None when no
-        secondary-basis guess ran."""
+        "nbasis_target", "converged", "unconverged_reason",
+        "used_as_guess"}`` describing the secondary SCF, or None when no
+        secondary-basis guess ran. When ``converged`` is False the target
+        started from its default guess (``used_as_guess`` False) and
+        ``unconverged_reason`` says why the secondary stopped."""
         ...
 
 class UhfResult:
@@ -909,11 +912,14 @@ class UhfResult:
         ...
 
     @property
-    def guess_basis(self) -> dict[str, float | int | str] | None:
+    def guess_basis(self) -> dict[str, float | int | str | bool | None] | None:
         """The secondary-basis guess (``guess_basis=``): ``{"basis",
         "projection", "iterations", "energy", "nbasis_guess",
-        "nbasis_target"}`` describing the secondary SCF, or None when no
-        secondary-basis guess ran."""
+        "nbasis_target", "converged", "unconverged_reason",
+        "used_as_guess"}`` describing the secondary SCF, or None when no
+        secondary-basis guess ran. When ``converged`` is False the target
+        started from its default guess (``used_as_guess`` False) and
+        ``unconverged_reason`` says why the secondary stopped."""
         ...
 
 class CdftConstraint:
@@ -1687,11 +1693,14 @@ class DftResult:
         ...
 
     @property
-    def guess_basis(self) -> dict[str, float | int | str] | None:
+    def guess_basis(self) -> dict[str, float | int | str | bool | None] | None:
         """The secondary-basis guess (``guess_basis=``): ``{"basis",
         "projection", "iterations", "energy", "nbasis_guess",
-        "nbasis_target"}`` describing the secondary SCF, or None when no
-        secondary-basis guess ran."""
+        "nbasis_target", "converged", "unconverged_reason",
+        "used_as_guess"}`` describing the secondary SCF, or None when no
+        secondary-basis guess ran. When ``converged`` is False the target
+        started from its default guess (``used_as_guess`` False) and
+        ``unconverged_reason`` says why the secondary stopped."""
         ...
 
 class CcResult:
@@ -3126,9 +3135,13 @@ def run_rhf(
     guess_projection is "fock" (default; Q-Chem FOPPROJECTION: build the
     target Fock at the projected density and diagonalise) or "overlap"
     (OVPROJECTION: S_bb^-1 S_bs C, re-orthonormalised). Unknown names, a
-    projection without a basis, or symmetry=True raise ValueError; a secondary
-    SCF that does not converge raises (no fallback to MINAO). The result's
-    guess_basis property reports the secondary SCF's iterations and energy.
+    projection without a basis, or symmetry=True raise ValueError. A
+    secondary SCF that does not converge does not raise: the target starts
+    from its default guess, a warning is printed, and the report says
+    converged=False. With guess_basis set, guess= ("minao"/"sad"/"hcore")
+    selects the SECONDARY SCF's starting point only. The guess can change
+    which SCF state the target converges to. The result's guess_basis
+    property reports the secondary SCF's iterations, energy and convergence.
     """
     ...
 

@@ -297,9 +297,11 @@ pub struct RhfConfig {
     /// [`crate::basis2`]). Honoured by RHF/RKS, UHF/UKS and ROHF/ROKS; refused
     /// by the injected (periodic) and point-group-blocked entry points. An
     /// explicit `init_guess_density` or caller-supplied initial MOs take
-    /// precedence, as they do over `use_sad_guess`. `None` (the default) is
-    /// bit-identical to a build without this field. The secondary SCF must
-    /// converge; otherwise the solve errors (no fallback to MINAO).
+    /// precedence, as they do over `use_sad_guess`, which with this set picks
+    /// only the SECONDARY solve's starting point. `None` (the default) is
+    /// bit-identical to a build without this field. A secondary SCF that does
+    /// not converge never fails the solve: the target starts from its default
+    /// guess and [`crate::basis2::GuessBasisReport::converged`] is `false`.
     pub guess_basis: Option<crate::basis2::GuessBasis>,
     /// When `true` (the default) and no `init_guess_density` is supplied, the SCF
     /// starts from a SAD (superposition-of-atomic-densities) guess computed via
@@ -1189,9 +1191,9 @@ pub fn solve_rhf(
         // Knob off (the default): the single solve, returned untouched.
         return Ok(first);
     }
-    Ok(rhf_stability_descent(
-        ctx, mol, prep, op, bounds, config, first,
-    ))
+    let report = first.guess_basis.clone();
+    let r = rhf_stability_descent(ctx, mol, prep, op, bounds, config, first);
+    Ok(crate::basis2::carry_report(r, report))
 }
 
 /// Externally built one-electron matrices, nuclear energy and J/K builders
@@ -1756,12 +1758,20 @@ fn solve_rhf_routed(
     if !crate::basis2::applies(config, false) {
         return solve_rhf_impl(ctx, mol, prep, op, bounds, config, None, None, None);
     }
-    let g = crate::basis2::build(ctx, mol, prep, bounds, config, crate::basis2::ScfKind::Rhf)?;
+    use crate::basis2::GuessOutcome;
     let mut cfg = config.clone();
     cfg.guess_basis = None;
-    cfg.init_guess_density = Some(g.rhf_density((mol.nelec() / 2) as usize));
+    // Declined (secondary SCF unconverged): the default guess, report kept.
+    let report =
+        match crate::basis2::build(ctx, mol, prep, bounds, config, crate::basis2::ScfKind::Rhf)? {
+            GuessOutcome::Projected(g) => {
+                cfg.init_guess_density = Some(g.rhf_density((mol.nelec() / 2) as usize));
+                g.report
+            }
+            GuessOutcome::Declined(report) => report,
+        };
     let mut r = solve_rhf_impl(ctx, mol, prep, op, bounds, &cfg, None, None, None)?;
-    r.guess_basis = Some(g.report);
+    r.guess_basis = Some(report);
     Ok(r)
 }
 

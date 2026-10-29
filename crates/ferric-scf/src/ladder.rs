@@ -1,6 +1,7 @@
 //! Configurable SCF convergence ladder: walk a sequence of RhfConfig "rungs",
 //! carrying each rung's final density into the next, aborting a stuck rung early.
 
+use crate::basis2::GuessBasisReport;
 use crate::result::{ScfExit, ScfResult};
 use crate::rhf::{solve_rhf, RhfConfig};
 use crate::screening::SchwarzBounds;
@@ -67,6 +68,21 @@ fn log_rung(ctx: &ParallelContext, i: usize, cfg: &RhfConfig, r: &ScfResult) {
     );
 }
 
+/// Remember the most recent secondary-basis report a rung produced. Only a
+/// rung that started without a carried density runs the secondary SCF (rung
+/// 0, or a `restart` rung); later rungs start from the carried density.
+fn note_guess_report(slot: &mut Option<GuessBasisReport>, r: &ScfResult) {
+    if let Some(g) = r.guess_basis.as_ref() {
+        *slot = Some(g.clone());
+    }
+}
+
+/// The ladder's final result with the secondary-basis report attached when a
+/// rung ran the secondary SCF but the returned rung did not.
+fn with_guess_report(r: ScfResult, g: &Option<GuessBasisReport>) -> ScfResult {
+    crate::basis2::carry_report(r, g.clone())
+}
+
 /// Walk the ladder: run each rung, carry density forward unless `restart`, stop
 /// at the first converged rung; else return the best-effort (lowest-energy)
 /// non-converged result.
@@ -85,6 +101,7 @@ pub fn solve_rhf_ladder(
     let mut outcomes = Vec::with_capacity(ladder.len());
     let mut best: Option<ScfResult> = None;
     let mut best_rung = 0usize;
+    let mut guess_report: Option<GuessBasisReport> = None;
 
     for (i, rung) in ladder.iter().enumerate() {
         let mut cfg = rung.config.clone();
@@ -125,9 +142,10 @@ pub fn solve_rhf_ladder(
             final_err_max: f64::NAN,
             final_energy: r.energy,
         });
+        note_guess_report(&mut guess_report, &r);
         if r.converged {
             return Ok(LadderResult {
-                result: r,
+                result: with_guess_report(r, &guess_report),
                 converged: true,
                 rung_reached: i,
                 rung_outcomes: outcomes,
@@ -142,7 +160,10 @@ pub fn solve_rhf_ladder(
         }
     }
 
-    let result = best.expect("non-empty ladder always sets best");
+    let result = with_guess_report(
+        best.expect("non-empty ladder always sets best"),
+        &guess_report,
+    );
     eprintln!(
         "[scf-ladder] EXHAUSTED all {} rungs without convergence; returning the \
          lowest-energy attempt (rung {best_rung}, E = {:.10}). Every rung's \
@@ -347,6 +368,9 @@ pub fn solve_rhf_with_df_guess(
     exact_cfg.use_sad_guess = false;
 
     let result = solve_rhf(ctx, mol, prep, op, bounds, &exact_cfg)?;
+    // The secondary-basis guess (if any) ran inside the DF pre-stage; the
+    // exact stage starts from the DF density, so carry the report forward.
+    let result = crate::basis2::carry_report(result, df_result.guess_basis.clone());
 
     Ok(DfGuessResult {
         result,
@@ -612,6 +636,7 @@ pub fn solve_rohf_ladder(
     let mut outcomes: Vec<RungOutcome> = Vec::new();
     let mut best: Option<ScfResult> = None;
     let mut carry: Option<ndarray::Array2<f64>> = None;
+    let mut guess_report: Option<GuessBasisReport> = None;
 
     for (i, rung) in ladder.iter().enumerate() {
         let mut cfg = rung.config.clone();
@@ -633,9 +658,10 @@ pub fn solve_rohf_ladder(
             final_err_max: f64::NAN,
             final_energy: r.energy,
         });
+        note_guess_report(&mut guess_report, &r);
         if r.converged {
             return Ok(LadderResult {
-                result: r,
+                result: with_guess_report(r, &guess_report),
                 converged: true,
                 rung_reached: i,
                 rung_outcomes: outcomes,
@@ -648,8 +674,10 @@ pub fn solve_rohf_ladder(
         };
     }
 
-    let result =
-        best.ok_or_else(|| FerricError::General("solve_rohf_ladder: empty ladder".into()))?;
+    let result = with_guess_report(
+        best.ok_or_else(|| FerricError::General("solve_rohf_ladder: empty ladder".into()))?,
+        &guess_report,
+    );
     let n = outcomes.len().saturating_sub(1);
     Ok(LadderResult {
         result,

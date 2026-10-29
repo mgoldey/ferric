@@ -548,8 +548,9 @@ fn parse_guess_basis(
 }
 
 /// The secondary-basis guess report as a dict (`basis`, `projection`,
-/// `iterations`, `energy`, `nbasis_guess`, `nbasis_target`), or `None` when
-/// no secondary-basis guess ran.
+/// `iterations`, `energy`, `nbasis_guess`, `nbasis_target`, `converged`,
+/// `unconverged_reason`, `used_as_guess`), or `None` when no
+/// secondary-basis guess ran.
 fn guess_basis_dict(
     py: Python<'_>,
     r: Option<&ferric_scf::basis2::GuessBasisReport>,
@@ -564,6 +565,9 @@ fn guess_basis_dict(
     d.set_item("energy", r.energy)?;
     d.set_item("nbasis_guess", r.nbasis_guess)?;
     d.set_item("nbasis_target", r.nbasis_target)?;
+    d.set_item("converged", r.converged)?;
+    d.set_item("unconverged_reason", r.unconverged_reason.as_deref())?;
+    d.set_item("used_as_guess", r.used_as_guess)?;
     Ok(Some(d.into()))
 }
 
@@ -720,8 +724,9 @@ impl PyRhfResult {
         cosx_final_dict(py, self.scf_data.cosx_final)
     }
     /// The secondary-basis guess (`guess_basis=`): `{"basis", "projection",
-    /// "iterations", "energy", "nbasis_guess", "nbasis_target"}` describing the
-    /// secondary SCF, or `None` when no secondary-basis guess ran.
+    /// "iterations", "energy", "nbasis_guess", "nbasis_target", "converged",
+    /// "unconverged_reason", "used_as_guess"}` describing the secondary SCF,
+    /// or `None` when no secondary-basis guess ran.
     #[getter]
     fn guess_basis(&self, py: Python<'_>) -> PyResult<Option<Py<pyo3::types::PyDict>>> {
         guess_basis_dict(py, self.scf_data.guess_basis.as_ref())
@@ -3063,8 +3068,9 @@ impl PyUhfResult {
         cosx_final_dict(py, self.cosx_final)
     }
     /// The secondary-basis guess (`guess_basis=`): `{"basis", "projection",
-    /// "iterations", "energy", "nbasis_guess", "nbasis_target"}` describing the
-    /// secondary SCF, or `None` when no secondary-basis guess ran.
+    /// "iterations", "energy", "nbasis_guess", "nbasis_target", "converged",
+    /// "unconverged_reason", "used_as_guess"}` describing the secondary SCF,
+    /// or `None` when no secondary-basis guess ran.
     #[getter]
     fn guess_basis(&self, py: Python<'_>) -> PyResult<Option<Py<pyo3::types::PyDict>>> {
         guess_basis_dict(py, self.guess_basis_report.as_ref())
@@ -8197,8 +8203,9 @@ impl PyDftResult {
         cosx_final_dict(py, self.scf_data.cosx_final)
     }
     /// The secondary-basis guess (`guess_basis=`): `{"basis", "projection",
-    /// "iterations", "energy", "nbasis_guess", "nbasis_target"}` describing the
-    /// secondary SCF, or `None` when no secondary-basis guess ran.
+    /// "iterations", "energy", "nbasis_guess", "nbasis_target", "converged",
+    /// "unconverged_reason", "used_as_guess"}` describing the secondary SCF,
+    /// or `None` when no secondary-basis guess ran.
     #[getter]
     fn guess_basis(&self, py: Python<'_>) -> PyResult<Option<Py<pyo3::types::PyDict>>> {
         guess_basis_dict(py, self.scf_data.guess_basis.as_ref())

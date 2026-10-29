@@ -221,7 +221,9 @@ pub fn solve_uhf_best_effort(
     if !config.scf_stability_descent {
         return Ok(first);
     }
-    Ok(stability_descent(ctx, mol, prep, bounds, config, first))
+    let report = first.guess_basis.clone();
+    let r = stability_descent(ctx, mol, prep, bounds, config, first);
+    Ok(crate::basis2::carry_report(r, report))
 }
 
 /// Step sizes tried when following a downhill eigenvector, in radians.
@@ -521,7 +523,7 @@ fn solve_uhf_molecular(
             prep,
             bounds,
             &g.config,
-            Some((&g.c_a, &g.c_b)),
+            g.initial_mos(),
             fock_mod,
             None,
             None,

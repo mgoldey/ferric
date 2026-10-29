@@ -290,7 +290,8 @@ fn solve_rohf_routed(
     }
     let kind = crate::basis2::ScfKind::Rohf;
     let g = crate::basis2::open_shell_guess(ctx, mol, prep, bounds, config, kind)?;
-    let mut r = solve_rohf_impl(ctx, mol, prep, bounds, &g.config, Some(&g.c_a), None, None, None)?;
+    let c0 = g.initial_mos().map(|(c, _)| c);
+    let mut r = solve_rohf_impl(ctx, mol, prep, bounds, &g.config, c0, None, None, None)?;
     r.guess_basis = Some(g.report);
     Ok(r)
 }
@@ -692,11 +693,11 @@ fn solve_rohf_impl(
     // convergence the best one-electron neighbours are evaluated, and a state
     // one of them lowers is not returned.
     let mut c = if let Some(c0) = initial_mos {
-        // Caller-supplied MOs (injected path only; the molecular wrappers
-        // pass None).
+        // Caller-supplied MOs: the injected path's `initial_mos`, or the
+        // secondary-basis guess (`solve_rohf_routed`) on the molecular path.
         if c0.dim() != (n, n) {
             return Err(FerricError::General(format!(
-                "solve_rohf_injected: initial MO shape {:?} != ({n},{n})",
+                "ROHF: initial MO shape {:?} != ({n},{n})",
                 c0.dim()
             )));
         }
