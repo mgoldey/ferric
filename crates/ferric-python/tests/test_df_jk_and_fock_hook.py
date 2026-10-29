@@ -437,3 +437,54 @@ def test_run_uhf_refuses_settings_that_ignore_the_hook(kwargs, match):
     mol, bs, _ = _nh2("sto-3g")
     with pytest.raises(ValueError, match=match):
         ferric.run_uhf(mol, bs, fock_hook=_zero_spin_hook, **kwargs)
+
+
+# ── hooks under density fitting ──
+#
+# The hooked solvers take the same RhfConfig, so df_j_aux / df_k_aux apply
+# to a hooked SCF exactly as to a plain one (run_dft's RI-J/RI-K defaults
+# included). Same anchors as above, with the fits on.
+
+DF = {"df_j_aux": "cc-pvdz-ri", "df_k_aux": "cc-pvdz-ri"}
+
+
+def _field_spin_hook(ints, mol, f, zs):
+    v = f * ints.dipole()[2]
+    e_nuc = -f * sum(z * xyz[2] for z, xyz in zip(zs, mol.coords_bohr()))
+    return lambda d_a, d_b: (float(np.sum((d_a + d_b) * v)) + e_nuc, v, v)
+
+
+@pytest.mark.parametrize("driver", ["rhf", "dft"])
+def test_closed_shell_hooks_under_density_fitting(driver):
+    mol, bs, ints = _water("sto-3g")
+    kw = dict(DF, **TIGHT)
+    if driver == "dft":
+        kw["functional"] = "B3LYP"
+        run = ferric.run_dft
+        energy = lambda r: r.total_energy  # noqa: E731
+    else:
+        run = ferric.run_rhf
+        energy = lambda r: r.energy  # noqa: E731
+    plain = run(mol, bs, **kw)
+    assert energy(run(mol, bs, fock_hook=_zero_hook, **kw)) == energy(plain)
+    f = 0.01
+    ref = run(mol, bs, external_field=(0.0, 0.0, f), **kw)
+    hooked = run(mol, bs, fock_hook=_field_hook(ints, mol, f), **kw)
+    assert abs(energy(hooked) - energy(ref)) < 1e-9
+    exact = dict(kw, df_j_aux="none", df_k_aux="none")
+    assert abs(energy(run(mol, bs, **exact)) - energy(plain)) > 1e-6
+
+
+@pytest.mark.parametrize("kind", SOLVERS)
+def test_open_shell_hooks_under_density_fitting(kind):
+    mol, bs, ints = _nh2("sto-3g")
+    zs = [{"N": 7, "H": 1}[sym] for sym in mol.symbols()]
+    run = SOLVERS[kind]
+    kw = dict(DF, **TIGHT)
+    plain = run(mol, bs, **kw)
+    assert run(mol, bs, fock_hook=_zero_spin_hook, **kw).energy == plain.energy
+    f = 0.01
+    ref = run(mol, bs, external_field=(0.0, 0.0, f), **kw)
+    hooked = run(mol, bs, fock_hook=_field_spin_hook(ints, mol, f, zs), **kw)
+    assert abs(hooked.energy - ref.energy) < 1e-9
+    assert abs(run(mol, bs, **TIGHT).energy - plain.energy) > 1e-6

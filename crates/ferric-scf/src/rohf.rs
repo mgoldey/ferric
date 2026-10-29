@@ -99,7 +99,11 @@ pub(crate) fn xc_is_metagga(xc_name: Option<&str>) -> bool {
     }
 }
 
-pub(crate) enum FxcKernelStore {
+/// The spin-polarized exchange-correlation kernel f_xc at a reference
+/// density, as the Newton steps use it (LDA, GGA, hybrid and range-separated
+/// GGA; meta-GGA and VV10 have no kernel here and must be refused by the
+/// caller).
+pub enum FxcKernelStore {
     Lda {
         kernel: Box<ferric_dft::fxc::LdaFxcKernel>,
         rho_a0: Vec<f64>,
@@ -130,7 +134,7 @@ impl FxcKernelStore {
     /// to 1e-9. `None` means "use the functional's published ω", which is
     /// byte-identical to the former behaviour for every caller that has no
     /// override set.
-    pub(crate) fn build(
+    pub fn build(
         mol: &Molecule,
         prep: &PreparedBasis,
         cfg: &ferric_dft::grid::AtomicGridConfig,
@@ -171,7 +175,7 @@ impl FxcKernelStore {
 
     /// The `Fn(δD_α, δD_β) -> (δV_α, δV_β)` response closure, borrowing `self`.
     #[allow(clippy::type_complexity)]
-    pub(crate) fn response(
+    pub fn response(
         &self,
     ) -> Box<dyn Fn(&Array2<f64>, &Array2<f64>) -> (Array2<f64>, Array2<f64>) + Sync + '_> {
         match self {

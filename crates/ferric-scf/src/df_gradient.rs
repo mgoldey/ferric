@@ -161,6 +161,66 @@ pub(crate) fn density_factor(d: &Array2<f64>) -> Result<Array2<f64>, FerricError
     Ok(x)
 }
 
+/// Gradient of `½ Tr[D K_fit(D)]` at fixed D for ANY symmetric `d`, under
+/// the fit [`df_jk_gradient`] differentiates.
+///
+/// The exchange channels need positive-semidefinite densities (they are
+/// factored as `X Xᵀ`); a response or Z-vector density is indefinite. With
+/// the eigen-split `d = P − N` (`P, N ⪰ 0`) and `Q` the quadratic form,
+/// `Q(P − N) = 2Q(P) + 2Q(N) − Q(P + N)`, and `P`, `N`, `P + N = |d|` are
+/// all PSD, so the energy is three channels with weights `1, 1, −½`. A PSD
+/// `d` (no eigenvalue below `−1e-8·max|λ|`, the factorization's own
+/// tolerance) stays the single channel `(d, ½)`, bit-identical to calling
+/// [`df_jk_gradient`] with it.
+pub fn df_k_gradient_any(
+    natoms: usize,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    d: &Array2<f64>,
+    budget_bytes: usize,
+) -> Result<Array2<f64>, FerricError> {
+    let (evals, evecs) = d
+        .eigh(UPLO::Upper)
+        .map_err(|e| FerricError::Lapack(format!("DF-K gradient: density eigh failed: {e}")))?;
+    let scale = evals.iter().fold(0.0f64, |m, &v| m.max(v.abs()));
+    if evals.iter().all(|&v| v >= -1e-8 * scale) {
+        let ch = [DfKChannel {
+            density: d,
+            alpha: 0.5,
+        }];
+        return df_jk_gradient(natoms, obs, dfbs, op, None, &ch, budget_bytes);
+    }
+    let part = |keep: &dyn Fn(f64) -> bool| -> Array2<f64> {
+        let mut m = Array2::<f64>::zeros(d.dim());
+        for (k, &lam) in evals.iter().enumerate() {
+            if keep(lam) {
+                let v = evecs.column(k);
+                let vv = v.insert_axis(ndarray::Axis(1));
+                m.scaled_add(lam.abs(), &vv.dot(&vv.t()));
+            }
+        }
+        m
+    };
+    let (p, n) = (part(&|l| l > 0.0), part(&|l| l < 0.0));
+    let abs = &p + &n;
+    let ch = [
+        DfKChannel {
+            density: &p,
+            alpha: 1.0,
+        },
+        DfKChannel {
+            density: &n,
+            alpha: 1.0,
+        },
+        DfKChannel {
+            density: &abs,
+            alpha: -0.5,
+        },
+    ];
+    df_jk_gradient(natoms, obs, dfbs, op, None, &ch, budget_bytes)
+}
+
 /// Divided difference of the truncated inverse `f(λ) = 1/λ` (λ kept), `0`
 /// (dropped) — the Daleckii–Krein kernel of `∂M` (see the module doc).
 #[inline]

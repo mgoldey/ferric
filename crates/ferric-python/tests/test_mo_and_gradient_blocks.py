@@ -260,14 +260,14 @@ AUX = "cc-pvdz-ri"
 @pytest.mark.parametrize(
     "operator, omega", [("coulomb", None), ("erfc", 0.4)], ids=["coulomb", "erfc"]
 )
-def test_grad_df_jk_matches_finite_difference_of_the_fitted_energies(operator, omega):
+def test_df_grad_jk_matches_finite_difference_of_the_fitted_energies(operator, omega):
     # Fixed D; moving an atom moves its orbital AND auxiliary functions, so
-    # this differences exactly what grad_df_jk differentiates.
+    # this differences exactly what grad_jk(aux=) differentiates.
     xyz = WATER
     mol, bs, ints = _ints(xyz, "sto-3g")
     aux = ferric.BasisSet.bundled(AUX)
     d = _rhf(mol, bs).density()
-    gj, gk = ints.grad_df_jk(aux, d, operator, omega=omega)
+    gj, gk = ints.grad_jk(d, operator, omega=omega, aux=aux)
     h = 1e-4
     for atom, axis in [(0, 2), (1, 1), (2, 2)]:
         ej, ek = [], []
@@ -292,7 +292,7 @@ def test_ri_jk_rhf_gradient_from_pieces_matches_finite_difference():
     e, c = _canonical(ints, ints.hcore() + j - 0.5 * k)
     nocc = ints.nelec // 2
     w = 2.0 * (c[:, :nocc] * e[:nocc]) @ c[:, :nocc].T
-    gj, gk = ints.grad_df_jk(aux, d)
+    gj, gk = ints.grad_jk(d, aux=aux)
     g = (
         ints.grad_nuclear_repulsion()
         + ints.grad_hcore(d)
@@ -328,21 +328,44 @@ def test_ri_jk_uhf_gradient_from_pieces_matches_finite_difference():
         ints.grad_nuclear_repulsion()
         + ints.grad_hcore(da + db)
         - ints.grad_overlap(w_tot)
-        + ints.grad_df_jk(aux, da + db)[0]
-        - ints.grad_df_jk(aux, da)[1]
-        - ints.grad_df_jk(aux, db)[1]
+        + ints.grad_jk(da + db, aux=aux)[0]
+        - ints.grad_jk(da, aux=aux)[1]
+        - ints.grad_jk(db, aux=aux)[1]
     )
     coords = [(0, 2), (1, 1), (1, 2)]
     for (atom, axis), fd in _fd(NH2, bs, _ri_uhf, coords, multiplicity=2).items():
         assert abs(g[atom, axis] - fd) < 2e-6, (atom, axis, g[atom, axis], fd)
 
 
-def test_df_gradient_pieces_are_translation_invariant_and_refuse_indefinite_d():
+def test_df_gradient_pieces_are_translation_invariant():
     mol, bs, ints = _ints(WATER, "cc-pvdz")
     aux = ferric.BasisSet.bundled(AUX)
     d = _rhf(mol, bs).density()
-    for name, g in zip("JK", ints.grad_df_jk(aux, d)):
+    for name, g in zip("JK", ints.grad_jk(d, aux=aux)):
         np.testing.assert_allclose(g.sum(axis=0), 0.0, atol=1e-9, err_msg=name)
         assert np.abs(g).max() > 1e-3, name
-    with pytest.raises(RuntimeError, match="positive semidefinite"):
-        ints.grad_df_jk(aux, d - 2.0 * np.eye(ints.nao))
+
+
+@pytest.mark.parametrize("fitted", [False, True], ids=["exact", "df"])
+def test_grad_jk_takes_an_indefinite_density(fitted):
+    # A response-like density (indefinite): the DF exchange gradient splits
+    # it as P - N; both paths must match finite differences of the energies.
+    xyz = WATER
+    mol, bs, ints = _ints(xyz, "sto-3g")
+    aux = ferric.BasisSet.bundled(AUX)
+    d0 = _rhf(mol, bs).density()
+    x = _RNG.standard_normal(d0.shape)
+    d = d0 - 1.5 * np.eye(ints.nao) + 0.3 * (x + x.T)
+    assert np.linalg.eigvalsh(d).min() < -0.1
+    kw = {"aux": aux} if fitted else {}
+    gj, gk = ints.grad_jk(d, **kw)
+    h = 1e-4
+    for atom, axis in [(0, 2), (1, 1)]:
+        ej, ek = [], []
+        for step in (h, -h):
+            moved = ferric.AoIntegrals(_displaced(mol, xyz, atom, axis, step, 1), bs)
+            j, k = moved.df_jk(aux).jk(d) if fitted else moved.jk(d)
+            ej.append(0.5 * np.sum(d * j))
+            ek.append(0.5 * np.sum(d * k))
+        assert abs(gj[atom, axis] - (ej[0] - ej[1]) / (2 * h)) < 1e-6
+        assert abs(gk[atom, axis] - (ek[0] - ek[1]) / (2 * h)) < 1e-6

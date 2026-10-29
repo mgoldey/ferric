@@ -502,20 +502,69 @@ class AoIntegrals:
         density: NDArray[np.float64],
         operator: Literal["coulomb", "erf", "erfc"] = "coulomb",
         omega: float | None = None,
-    ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
-        """(gJ, gK) = d/dR of 1/2 Tr[D J(D)] and 1/2 Tr[D K(D)] at fixed D.
-        Closed-shell HF: gJ - 0.5 gK; UHF: gJ(Da+Db) - gK(Da) - gK(Db)."""
-        ...
-    def grad_df_jk(
-        self,
-        aux: BasisSet,
-        density: NDArray[np.float64],
-        operator: Literal["coulomb", "erf", "erfc"] = "coulomb",
-        omega: float | None = None,
+        aux: BasisSet | None = None,
         memory_budget_gb: float | None = None,
     ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
-        """Density-fitted grad_jk: d/dR of 1/2 Tr[D J_fit(D)] and 1/2 Tr[D K_fit(D)]
-        at fixed D, for df_jk(aux)'s fits. D must be positive semidefinite."""
+        """(gJ, gK) = d/dR of 1/2 Tr[D J(D)] and 1/2 Tr[D K(D)] at fixed D (any
+        symmetric D, so bilinear terms follow by polarization). Closed-shell HF:
+        gJ - 0.5 gK; UHF: gJ(Da+Db) - gK(Da) - gK(Db). aux: the df_jk(aux)
+        fits instead (an SCF with df_j_aux=df_k_aux=aux)."""
+        ...
+    def veff(
+        self,
+        density: NDArray[np.float64],
+        xc: XcFunctional | None = None,
+        aux: BasisSet | None = None,
+        memory_budget_gb: float | None = None,
+    ) -> tuple[float, NDArray[np.float64]]:
+        """(E, V): V = J - 0.5 K (xc=None) or J - 0.5 (c_sr K_erfc + c_lr K_erf)
+        + V_xc; E = 0.5 Tr[D (J - 0.5 mix K)] (+ E_xc). Fock = hcore() + V.
+        aux: RI-J/RI-K (as df_j_aux=df_k_aux=aux). Builders cached per (mix, aux)."""
+        ...
+    def veff_polarized(
+        self,
+        d_a: NDArray[np.float64],
+        d_b: NDArray[np.float64],
+        xc: XcFunctional | None = None,
+        aux: BasisSet | None = None,
+        memory_budget_gb: float | None = None,
+    ) -> tuple[float, NDArray[np.float64], NDArray[np.float64]]:
+        """(E, V_a, V_b): V_s = J(D_a + D_b) - mix K(D_s) (+ V_xc,s)."""
+        ...
+    def cphf(
+        self,
+        mo_coeff: NDArray[np.float64],
+        mo_energy: Sequence[float],
+        nocc: int,
+        xc: XcFunctional | None = None,
+        aux: BasisSet | None = None,
+        memory_budget_gb: float | None = None,
+    ) -> Cphf:
+        """Closed-shell CPHF (xc=None) / CPKS for converged MOs; see Cphf.
+        aux: RI-J/RI-K against that basis (as df_j_aux=df_k_aux=aux)."""
+        ...
+    def ucphf(
+        self,
+        mo_coeff_a: NDArray[np.float64],
+        mo_coeff_b: NDArray[np.float64],
+        mo_energy_a: Sequence[float],
+        mo_energy_b: Sequence[float],
+        nocc_a: int,
+        nocc_b: int,
+        xc: XcFunctional | None = None,
+        aux: BasisSet | None = None,
+        memory_budget_gb: float | None = None,
+    ) -> Ucphf:
+        """Open-shell UCPHF / UCPKS for converged per-spin MOs; see Ucphf."""
+        ...
+    def xc_functional(
+        self,
+        functional: str,
+        grid_radial: int | None = None,
+        grid_angular: int | None = None,
+        grid_prune: str | None = None,
+    ) -> XcFunctional:
+        """The functional on run_dft's grid (same grid kwargs), built once."""
         ...
     def df_jk(
         self,
@@ -526,6 +575,75 @@ class AoIntegrals:
     ) -> DfJk:
         """RI-J/RI-K fitters against `aux`, built once and reused per density."""
         ...
+
+class XcFunctional:
+    """An XC functional on one molecule's grid, from AoIntegrals.xc_functional.
+
+    eval / eval_polarized: semilocal (+ VV10) E_xc and V_xc as the SCF adds them;
+    grad / grad_polarized: the XC gradient at fixed density (grid response
+    included). Exact exchange is not included: see exchange_mix."""
+
+    @property
+    def name(self) -> str: ...
+    @property
+    def exchange_mix(self) -> tuple[float, float, float]:
+        """(c_sr, c_lr, omega): closed-shell F = h + J - 0.5 (c_sr K_erfc +
+        c_lr K_erf) + V_xc (omega == 0: h + J - 0.5 c_sr K + V_xc)."""
+        ...
+    def eval(
+        self, density: NDArray[np.float64]
+    ) -> tuple[float, NDArray[np.float64]]: ...
+    def eval_polarized(
+        self, d_a: NDArray[np.float64], d_b: NDArray[np.float64]
+    ) -> tuple[float, NDArray[np.float64], NDArray[np.float64]]: ...
+    def response(
+        self, density: NDArray[np.float64], d1: NDArray[np.float64]
+    ) -> NDArray[np.float64]:
+        """d/dt V_xc(D + t D1) at t = 0 (LDA/GGA/hybrid/RSH-GGA; meta-GGA and
+        VV10 raise ValueError)."""
+        ...
+    def response_polarized(
+        self,
+        d_a: NDArray[np.float64],
+        d_b: NDArray[np.float64],
+        d1_a: NDArray[np.float64],
+        d1_b: NDArray[np.float64],
+    ) -> tuple[NDArray[np.float64], NDArray[np.float64]]: ...
+    def grad(self, density: NDArray[np.float64]) -> NDArray[np.float64]: ...
+    def grad_polarized(
+        self, d_a: NDArray[np.float64], d_b: NDArray[np.float64]
+    ) -> NDArray[np.float64]: ...
+
+class Cphf:
+    """Closed-shell orbital response. Rotations U are (nvir, nocc).
+
+    matvec(U) = (e_a - e_i) U + C_v^T F1(D1) C_o, D1 = density(U) =
+    2 (C_v U C_o^T + h.c.), F1 = J - 0.5 mix K + f_xc. solve(rhs) gives U with
+    matvec(U) = rhs; for a perturbation h1, rhs = -C_v^T h1 C_o."""
+
+    def matvec(self, u: NDArray[np.float64]) -> NDArray[np.float64]: ...
+    def solve(
+        self, rhs: NDArray[np.float64], tol: float = 1e-9, max_iter: int = 100
+    ) -> NDArray[np.float64]: ...
+    def density(self, u: NDArray[np.float64]) -> NDArray[np.float64]: ...
+
+class Ucphf:
+    """Open-shell twin of Cphf on (U_a, U_b); D1_s = C_vs U_s C_os^T + h.c.,
+    F1_s = J(D1_a + D1_b) - mix K(D1_s) + f_xc_s."""
+
+    def matvec(
+        self, u_a: NDArray[np.float64], u_b: NDArray[np.float64]
+    ) -> tuple[NDArray[np.float64], NDArray[np.float64]]: ...
+    def solve(
+        self,
+        rhs_a: NDArray[np.float64],
+        rhs_b: NDArray[np.float64],
+        tol: float = 1e-9,
+        max_iter: int = 100,
+    ) -> tuple[NDArray[np.float64], NDArray[np.float64]]: ...
+    def density(
+        self, u_a: NDArray[np.float64], u_b: NDArray[np.float64]
+    ) -> tuple[NDArray[np.float64], NDArray[np.float64]]: ...
 
 class DfJk:
     """Density-fitted J and K from AoIntegrals.df_jk(aux); TOTAL density in,
