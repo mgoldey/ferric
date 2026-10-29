@@ -396,6 +396,25 @@ impl PyAoIntegrals {
         Ok(map)
     }
 
+    /// The RI-J / RI-K Hessian pieces of the `aux` fits at `d`.
+    fn df_hessian(
+        &self,
+        py: Python<'_>,
+        d: &Array2<f64>,
+        op: Operator,
+        aux: &PyBasisSet,
+        memory_budget_gb: Option<f64>,
+    ) -> PyResult<ferric_scf::hessian::blocks::DfJkHessian> {
+        let budget = ferric_scf::rhf::resolve_three_index_budget(
+            super::budget_bytes_from_gb(memory_budget_gb).unwrap_or(0),
+        );
+        let (mol, prep, abs) = (&self.mol, &self.prep, &aux.inner);
+        py.allow_threads(|| {
+            ferric_scf::hessian::blocks::df_jk_hessian(mol, prep, abs, op, budget, d)
+        })
+        .map_err(make_err)
+    }
+
     /// dV_nn/dR: `oneelectron_gradient` at D = W = 0 is exactly its
     /// nuclear-repulsion term (every other term is linear in D or W).
     fn nuclear_gradient(&self) -> Result<Array2<f64>, FerricError> {
@@ -795,24 +814,36 @@ impl PyAoIntegrals {
     /// `(hJ, hK)`, each (3N, 3N): the second integral derivatives of
     /// ½Tr[D J(D)] and ½Tr[D K(D)] at fixed D, the Hessian twins of
     /// `grad_jk` (closed-shell HF: hJ - 0.5 hK; UHF: hJ(D_a + D_b) - hK(D_a)
-    /// - hK(D_b)). Exact four-centre integrals only.
-    #[pyo3(signature = (density, operator="coulomb", omega=None))]
+    /// - hK(D_b)). `D` may be any symmetric matrix.
+    ///
+    /// `aux` differentiates the fits `df_jk(aux, operator, omega)` builds
+    /// instead (the Hessian of an SCF with `df_j_aux=df_k_aux=aux`, as
+    /// `grad_jk(aux=)`): 3-index integrals, aux centres and metric.
+    #[pyo3(signature = (density, operator="coulomb", omega=None, aux=None, memory_budget_gb=None))]
     fn hess_jk<'py>(
         &self,
         py: Python<'py>,
         density: PyReadonlyArray2<'py, f64>,
         operator: &str,
         omega: Option<f64>,
+        aux: Option<&PyBasisSet>,
+        memory_budget_gb: Option<f64>,
     ) -> PyResult<(Bound<'py, PyArray2<f64>>, Bound<'py, PyArray2<f64>>)> {
         let op = parse_operator(operator, omega)?;
         let d = checked_density(density, self.prep.nbasis())?;
         let (natoms, prep) = (self.mol.atoms.len(), &self.prep);
-        let (hj, hk) = py
-            .allow_threads(|| -> Result<_, FerricError> {
-                let bounds = SchwarzBounds::compute(op, prep)?;
-                ferric_scf::hessian::blocks::hess_jk(prep, op, &bounds, natoms, &d)
-            })
-            .map_err(make_err)?;
+        let (hj, hk) = match aux {
+            None => py
+                .allow_threads(|| -> Result<_, FerricError> {
+                    let bounds = SchwarzBounds::compute(op, prep)?;
+                    ferric_scf::hessian::blocks::hess_jk(prep, op, &bounds, natoms, &d)
+                })
+                .map_err(make_err)?,
+            Some(aux) => {
+                let t = self.df_hessian(py, &d, op, aux, memory_budget_gb)?;
+                (t.hj, t.hk)
+            }
+        };
         Ok((
             PyArray2::from_owned_array(py, hj),
             PyArray2::from_owned_array(py, hk),
@@ -840,23 +871,34 @@ impl PyAoIntegrals {
     /// `(Jx, Kx)`, each (3N, n, n): `Jx[x] = Σ ∂(μν|λσ)/∂x D_λσ` and
     /// `Kx[x] = Σ ∂(μλ|νσ)/∂x D_λσ`, the integral-derivative part of the
     /// first-order Fock matrix at fixed D (closed-shell HF: Jx - 0.5 Kx).
-    #[pyo3(signature = (density, operator="coulomb", omega=None))]
+    /// `aux`: the derivatives of the `df_jk(aux)` fits' J_DF[D] / K_DF[D]
+    /// (it runs the RI Hessian code, skeleton included, so it costs about
+    /// as much as `hess_jk(aux=)`).
+    #[pyo3(signature = (density, operator="coulomb", omega=None, aux=None, memory_budget_gb=None))]
     fn jk_deriv<'py>(
         &self,
         py: Python<'py>,
         density: PyReadonlyArray2<'py, f64>,
         operator: &str,
         omega: Option<f64>,
+        aux: Option<&PyBasisSet>,
+        memory_budget_gb: Option<f64>,
     ) -> PyResult<(Bound<'py, PyArray3<f64>>, Bound<'py, PyArray3<f64>>)> {
         let op = parse_operator(operator, omega)?;
         let d = checked_density(density, self.prep.nbasis())?;
         let (natoms, prep) = (self.mol.atoms.len(), &self.prep);
-        let (j, k) = py
-            .allow_threads(|| -> Result<_, FerricError> {
-                let bounds = SchwarzBounds::compute(op, prep)?;
-                ferric_scf::hessian::blocks::jk_deriv(prep, op, &bounds, natoms, &d)
-            })
-            .map_err(make_err)?;
+        let (j, k) = match aux {
+            None => py
+                .allow_threads(|| -> Result<_, FerricError> {
+                    let bounds = SchwarzBounds::compute(op, prep)?;
+                    ferric_scf::hessian::blocks::jk_deriv(prep, op, &bounds, natoms, &d)
+                })
+                .map_err(make_err)?,
+            Some(aux) => {
+                let t = self.df_hessian(py, &d, op, aux, memory_budget_gb)?;
+                (t.jx, t.kx)
+            }
+        };
         let n = prep.nbasis();
         Ok((
             PyArray3::from_owned_array(py, stack(j, n)),

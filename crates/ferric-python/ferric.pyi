@@ -524,9 +524,12 @@ class AoIntegrals:
         density: NDArray[np.float64],
         operator: Literal["coulomb", "erf", "erfc"] = "coulomb",
         omega: float | None = None,
+        aux: BasisSet | None = None,
+        memory_budget_gb: float | None = None,
     ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
         """(hJ, hK) = second integral derivatives of 1/2 Tr[D J(D)] and
-        1/2 Tr[D K(D)] at fixed D, each (3N, 3N). Closed-shell HF: hJ - 0.5 hK."""
+        1/2 Tr[D K(D)] at fixed D, each (3N, 3N). Closed-shell HF: hJ - 0.5 hK.
+        aux: the df_jk(aux) fits instead (an SCF with df_j_aux=df_k_aux=aux)."""
         ...
     def hcore_deriv(self) -> NDArray[np.float64]:
         """dh/dx for every nuclear coordinate, (3N, nao, nao), incl. V_ECP."""
@@ -539,9 +542,12 @@ class AoIntegrals:
         density: NDArray[np.float64],
         operator: Literal["coulomb", "erf", "erfc"] = "coulomb",
         omega: float | None = None,
+        aux: BasisSet | None = None,
+        memory_budget_gb: float | None = None,
     ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
         """(Jx, Kx), each (3N, nao, nao): sum d(mn|ls)/dx D_ls and
-        sum d(ml|ns)/dx D_ls. Closed-shell first-order Fock: hcore_deriv + Jx - 0.5 Kx."""
+        sum d(ml|ns)/dx D_ls. Closed-shell first-order Fock: hcore_deriv + Jx - 0.5 Kx.
+        aux: d/dx of the df_jk(aux) fits' J[D] and K[D]."""
         ...
     def veff(
         self,

@@ -3038,6 +3038,100 @@ pub mod blocks {
         let j = g.pop().expect("two specs");
         Ok((j, k))
     }
+
+    /// The density-fitted twins of [`hess_jk`] and [`jk_deriv`], from the
+    /// RI-J / RI-K Hessian code `rhf_hessian_parts` runs under an SCF with
+    /// `df_j_aux = df_k_aux = aux`: the derivatives of ½Tr[D J_DF(D)] and
+    /// ½Tr[D K_DF(D)] (fits, aux centres and metric all differentiated).
+    #[derive(Debug, Clone)]
+    pub struct DfJkHessian {
+        /// RI-J skeleton, (3N, 3N).
+        pub hj: Array2<f64>,
+        /// RI-K skeleton, (3N, 3N).
+        pub hk: Array2<f64>,
+        /// `∂J_DF[D]/∂x` (length 3N).
+        pub jx: Vec<Array2<f64>>,
+        /// `∂K_DF[D]/∂x` (length 3N).
+        pub kx: Vec<Array2<f64>>,
+    }
+
+    /// [`DfJkHessian`] for any symmetric `d`. The RI-K code takes an energy
+    /// `α Tr[D K(D)]` through a factor `D = X Xᵀ`, so an indefinite `d = P − N`
+    /// (eigen-split) goes by polarization, `Q(P − N) = 2Q(P) + 2Q(N) −
+    /// Q(P + N)`, as three channels in one pass (as `df_k_gradient_any`).
+    pub fn df_jk_hessian(
+        mol: &Molecule,
+        obs: &PreparedBasis,
+        aux: &ferric_core::basis::BasisSet,
+        op: Operator,
+        budget: usize,
+        d: &Array2<f64>,
+    ) -> Result<DfJkHessian, FerricError> {
+        use crate::hessian_df_k::{rik_channel_terms_with_aux, RikChannel};
+        use ndarray_linalg::{Eigh, UPLO};
+        let natoms = mol.atoms.len();
+        let rij = crate::hessian_df::rij_terms_with_aux(
+            natoms,
+            obs,
+            PreparedBasis::new(mol, aux)?,
+            op,
+            budget,
+            d,
+            &RijMutants::default(),
+        )?;
+        let (evals, evecs) = d
+            .eigh(UPLO::Upper)
+            .map_err(|e| FerricError::Lapack(format!("DF Hessian: density eigh failed: {e}")))?;
+        let scale = evals.iter().fold(0.0f64, |m, &v| m.max(v.abs()));
+        let tol = 1e-8 * scale;
+        // X with X Xᵀ = Σ_{kept λ} |λ| v vᵀ.
+        let factor = |keep: &dyn Fn(f64) -> bool| -> Array2<f64> {
+            let cols: Vec<usize> = (0..evals.len()).filter(|&k| keep(evals[k])).collect();
+            let mut x = Array2::<f64>::zeros((d.nrows(), cols.len()));
+            for (j, &k) in cols.iter().enumerate() {
+                x.column_mut(j)
+                    .assign(&(&evecs.column(k) * evals[k].abs().sqrt()));
+            }
+            x
+        };
+        let (xp, xn) = (factor(&|l| l > tol), factor(&|l| l < -tol));
+        let xa = ndarray::concatenate(ndarray::Axis(1), &[xp.view(), xn.view()])
+            .map_err(|e| FerricError::General(format!("DF Hessian: factor concat: {e}")))?;
+        let channels: Vec<RikChannel<'_>> = if xn.ncols() == 0 {
+            vec![RikChannel { x: &xp, alpha: 0.5 }]
+        } else {
+            vec![
+                RikChannel { x: &xp, alpha: 1.0 },
+                RikChannel { x: &xn, alpha: 1.0 },
+                RikChannel {
+                    x: &xa,
+                    alpha: -0.5,
+                },
+            ]
+        };
+        let mut rik = rik_channel_terms_with_aux(
+            natoms,
+            obs,
+            PreparedBasis::new(mol, aux)?,
+            op,
+            budget,
+            &channels,
+            &RikMutants::default(),
+        )?;
+        // K is linear in D: K^x[P − N] = K^x[P] − K^x[N].
+        let mut kx = rik.channels.remove(0).first_order_k;
+        if xn.ncols() > 0 {
+            for (k, kn) in kx.iter_mut().zip(rik.channels.remove(0).first_order_k) {
+                *k -= &kn;
+            }
+        }
+        Ok(DfJkHessian {
+            hj: rij.skeleton,
+            hk: rik.skeleton,
+            jx: rij.first_order_j,
+            kx,
+        })
+    }
 }
 
 #[cfg(test)]

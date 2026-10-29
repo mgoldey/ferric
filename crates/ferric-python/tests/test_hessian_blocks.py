@@ -123,6 +123,68 @@ def test_every_hessian_piece_is_translation_invariant():
         assert np.abs(h).max() > 1e-2, name
 
 
+AUX = "cc-pvdz-ri"
+
+
+def _densities(ints, mol, bs):
+    """The SCF density (PSD) and an indefinite symmetric one."""
+    d = _scf(mol, bs).density()
+    rng = np.random.default_rng(5)
+    m = rng.standard_normal(d.shape)
+    return {"psd": d, "indefinite": d + 0.3 * (m + m.T)}
+
+
+@pytest.mark.parametrize("kind", ["psd", "indefinite"])
+@pytest.mark.parametrize(
+    "operator, omega", [("coulomb", None), ("erfc", 0.4)], ids=["coulomb", "erfc"]
+)
+def test_df_hess_jk_matches_finite_difference_of_df_grad_jk(operator, omega, kind):
+    mol, bs, ints = _ints(WATER, "sto-3g")
+    aux = ferric.BasisSet.bundled(AUX)
+    d = _densities(ints, mol, bs)[kind]
+    kw = {"operator": operator, "omega": omega, "aux": aux}
+    hj, hk = ints.hess_jk(d, **kw)
+    exact_j, _ = ints.hess_jk(d, operator, omega)
+    assert np.abs(hj - exact_j).max() > 1e-6  # the fit is really in use
+    for name, hess, pick in [("J", hj, 0), ("K", hk, 1)]:
+        np.testing.assert_allclose(hess, hess.T, atol=1e-9, err_msg=name)
+        for atom, axis in COORDS:
+            fd = _richardson(
+                lambda m, p=pick: m.grad_jk(d, **kw)[p], mol, WATER, bs, atom, axis
+            ).reshape(-1)
+            np.testing.assert_allclose(
+                hess[3 * atom + axis], fd, atol=1e-8, err_msg=f"{name} {atom},{axis}"
+            )
+
+
+@pytest.mark.parametrize("kind", ["psd", "indefinite"])
+def test_df_jk_deriv_matches_finite_difference_of_the_fitted_matrices(kind):
+    mol, bs, ints = _ints(WATER, "sto-3g")
+    aux = ferric.BasisSet.bundled(AUX)
+    d = _densities(ints, mol, bs)[kind]
+    jx, kx = ints.jk_deriv(d, aux=aux)
+    gj, gk = ints.grad_jk(d, aux=aux)
+    np.testing.assert_allclose(
+        0.5 * np.einsum("xmn,mn->x", jx, d).reshape(3, 3), gj, atol=1e-10
+    )
+    np.testing.assert_allclose(
+        0.5 * np.einsum("xmn,mn->x", kx, d).reshape(3, 3), gk, atol=1e-10
+    )
+    for name, dm, pick in [("J", jx, "j"), ("K", kx, "k")]:
+        for atom, axis in COORDS:
+            fd = _richardson(
+                lambda m, p=pick: getattr(m.df_jk(aux), p)(d),
+                mol,
+                WATER,
+                bs,
+                atom,
+                axis,
+            )
+            np.testing.assert_allclose(
+                dm[3 * atom + axis], fd, atol=1e-8, err_msg=f"{name} {atom},{axis}"
+            )
+
+
 # ── first-derivative matrices ──
 
 
@@ -176,15 +238,24 @@ def test_deriv_matrices_contract_to_the_gradient_pieces(xyz, basis):
 # ── a full RHF Hessian assembled in numpy ──
 
 
-def _numpy_rhf_hessian(ints, r):
+def _numpy_rhf_hessian(ints, r, aux=None):
     """Skeleton from `hess_*`, response from one `Cphf.solve` per coordinate.
 
     D1 = density(U_vo) - 2 C_o S1_oo C_oᵀ (U_oo = -½ S1_oo); the response
     term is Tr[D1^x F^y] - Tr[W1^x S^y] with W1 = ½(D1 F D + D F D1 + D F1 D)
-    and F1 = F^x + G(D1^x), the total first-order Fock matrix.
+    and F1 = F^x + G(D1^x), the total first-order Fock matrix. `aux`: every
+    J/K (SCF Fock, G, CPHF, skeleton, first-order) from the `aux` fits.
     """
+    if aux is None:
+        jk = ints.jk
+    else:
+        df = ints.df_jk(aux)
+
+        def jk(dm):
+            return df.j(dm), df.k(dm)
+
     d = r.density()
-    j, k = ints.jk(d)
+    j, k = jk(d)
     f = ints.hcore() + j - 0.5 * k
     s = ints.overlap()
     w_, v_ = np.linalg.eigh(s)
@@ -195,7 +266,7 @@ def _numpy_rhf_hessian(ints, r):
     co, cv = c[:, :nocc], c[:, nocc:]
     w = 0.5 * d @ f @ d
 
-    hj, hk = ints.hess_jk(d)
+    hj, hk = ints.hess_jk(d, aux=aux)
     hess = (
         ints.hess_nuclear_repulsion()
         + ints.hess_hcore(d)
@@ -204,13 +275,13 @@ def _numpy_rhf_hessian(ints, r):
         - 0.5 * hk
     )
 
-    jx, kx = ints.jk_deriv(d)
+    jx, kx = ints.jk_deriv(d, aux=aux)
     f1 = ints.hcore_deriv() + jx - 0.5 * kx
     s1 = ints.overlap_deriv()
-    cphf = ints.cphf(c, e, nocc)
+    cphf = ints.cphf(c, e, nocc, aux=aux)
 
     def g(dm):
-        jj, kk = ints.jk(dm)
+        jj, kk = jk(dm)
         return jj - 0.5 * kk
 
     d1 = []
@@ -239,6 +310,21 @@ def test_numpy_rhf_hessian_from_pieces_matches_run_frequencies():
     ref = np.array(ref.cartesian_hessian)
     np.testing.assert_allclose(got, got.T, atol=1e-8)
     np.testing.assert_allclose(got, ref, atol=1e-9)
+
+
+def test_numpy_ri_jk_rhf_hessian_from_pieces_matches_run_frequencies():
+    mol, bs, ints = _ints(WATER, "6-31g")
+    fits = {"df_j_aux": AUX, "df_k_aux": AUX}
+    r = ferric.run_rhf(mol, bs, **fits, **TIGHT)
+    got = _numpy_rhf_hessian(ints, r, aux=ferric.BasisSet.bundled(AUX))
+    ref = ferric.run_frequencies(mol, "6-31g", hessian="analytic", **fits, **TIGHT)
+    assert ref.hessian_source == "analytic"
+    ref = np.array(ref.cartesian_hessian)
+    np.testing.assert_allclose(got, got.T, atol=1e-8)
+    np.testing.assert_allclose(got, ref, atol=1e-9)
+    # The fit is not the exact Hessian (else the test could not tell them apart).
+    exact = _numpy_rhf_hessian(ints, r)
+    assert np.abs(got - exact).max() > 1e-6
 
 
 def test_hessian_pieces_reject_bad_matrices():
