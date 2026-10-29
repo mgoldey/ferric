@@ -58,8 +58,9 @@
 //!   r2SCAN ones pass (no exact exchange: an equivalent mutant there).
 //!
 //! Refusals with exact wording: derivatives of an unvalidated
-//! range-separated hybrid (wB97X; RKS and UKS, k and Gamma), ROKS meta-GGA,
-//! UKS meta-GGA derivatives on RS-GDF. The open-shell range-separated
+//! range-separated hybrid (wB97X; RKS and UKS, k and Gamma), ROKS meta-GGA
+//! derivatives (its energy runs: `periodic_open_mgga_energy.rs`), UKS
+//! meta-GGA derivatives on RS-GDF. The open-shell range-separated
 //! derivatives and the Gamma ones on RS-GDF, refused here before, are wired
 //! (#498) and anchored in `periodic_open_rsh_derivs.rs` and its validation
 //! twin.
@@ -742,21 +743,19 @@ fn refusals_have_exact_wording() {
         });
         assert!(e.contains("optimize") && e.contains(wb), "{tag}: {e}");
     }
-    // ROKS meta-GGA (energy gate) and UKS meta-GGA derivatives on RS-GDF (the
-    // energy gate already names the J/K).
+    // ROKS meta-GGA derivatives (the energy runs, #498: the derivative gate
+    // names them) and UKS meta-GGA derivatives on RS-GDF.
     let e = refused(&Input {
         tag: "roks-scan",
         kind: "rohf",
         functional: "SCAN",
-        task: "energy",
+        task: "optimize",
         kmesh: "[1, 1, 2]",
         cell_extra: "",
     });
     assert!(
-        e.contains(
-            "the k-point ROKS SCAN / r2SCAN meta-GGA energy is validated in the library \
-             (#492) but not yet wired for ROKS in the CLI (#498)"
-        ),
+        e.contains("method.task = \"optimize\" with [cell] kmesh: ")
+            && e.contains("SCAN: the k-point ROKS meta-GGA force and stress"),
         "{e}"
     );
     let e = refused(&Input {

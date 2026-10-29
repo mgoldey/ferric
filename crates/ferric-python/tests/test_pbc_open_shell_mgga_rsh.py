@@ -187,17 +187,24 @@ def test_cam_b3lyp_polarized_gamma_matches_the_pyscf_pin(basis):
     assert abs(d) < CAM_PIN_BAR
 
 
-def test_rsgdf_energy_runs_and_meta_gga_needs_dense(basis):
+def test_rsgdf_energy_runs_and_meta_gga_derivatives_need_dense(basis):
     rs = dict(jk="rsgdf", auxbasis="cc-pvdz-ri")
     r = _uks(H3D_ATOMS, _tri(), basis, "HSE06", (1, 1, 2), **rs)
     d = _uks(H3D_ATOMS, _tri(), basis, "HSE06", (1, 1, 2))
     print(f"HSE06 1x1x2 RS-GDF - dense: {r.energy - d.energy:.2e}")
     assert r.converged and abs(r.energy - d.energy) < 1e-3
+    # The UKS SCAN energy runs on RS-GDF (#498); its force and stress do not.
+    s = _uks(H3D_ATOMS, _tri(), basis, "SCAN", (1, 1, 2), **rs)
+    sd = _uks(H3D_ATOMS, _tri(), basis, "SCAN", (1, 1, 2))
+    print(f"SCAN 1x1x2 RS-GDF - dense: {s.energy - sd.energy:.2e}")
+    assert s.converged and s.jk == "rsgdf" and abs(s.energy - sd.energy) < 1e-3
+    assert abs(s.energy - sd.energy) > 1e-8
     with pytest.raises(
         ValueError,
-        match=r"^run_uks_kpts: functional \"SCAN\": meta-GGA with RS-GDF.*use jk=\"dense\"$",
+        match=r"^run_uks_kpts: with_gradient: .*SCAN: the open-shell \(UKS\) meta-GGA "
+        r"force and stress run on the dense-AFT J/K only",
     ):
-        _uks(H3D_ATOMS, _tri(), basis, "SCAN", (1, 1, 2), **rs)
+        _uks(H3D_ATOMS, _tri(), basis, "SCAN", (1, 1, 2), with_gradient=True, **rs)
     g = ferric.run_uks_gamma(
         _mol(H3D_ATOMS, 2),
         _tri(),
@@ -222,22 +229,38 @@ def test_derivatives_roks_and_gamma_meta_gga_stay_refused(basis):
         _uks(H3_SCAN_ATOMS, lat, basis, wb, (1, 1, 2), with_stress=True)
     with pytest.raises(
         ValueError,
-        match=r'^run_roks_kpts: functional "SCAN": the k-point ROKS SCAN / r2SCAN '
-        r"meta-GGA energy is validated in the library \(#492\) but not yet wired "
-        r"in the bindings \(#498\)",
+        match=r"^run_roks_kpts: with_gradient: .*SCAN: the k-point ROKS meta-GGA "
+        r"force and stress",
     ):
         ferric.run_roks_kpts(
-            _mol(H3_SCAN_ATOMS, 2), lat, basis, "SCAN", (1, 1, 2), omega=OMEGA
+            _mol(H3_SCAN_ATOMS, 2),
+            lat,
+            basis,
+            "SCAN",
+            (1, 1, 2),
+            omega=OMEGA,
+            with_gradient=True,
         )
     with pytest.raises(ValueError, match="validated for HSE06 / CAM-B3LYP"):
         ferric.run_uks_gamma(
             _mol(H3_SCAN_ATOMS, 2), lat, basis, wb, omega=OMEGA, with_stress=True
         )
-    # Gamma UKS / ROKS meta-GGA: library energy only (#492), not wired (#498).
-    with pytest.raises(ValueError, match=r"not yet wired \(#498\).*1x1x1"):
-        ferric.run_uks_gamma(_mol(H3_SCAN_ATOMS, 2), lat, basis, "SCAN", omega=OMEGA)
-    with pytest.raises(ValueError, match=r"Gamma-point ROKS SCAN.*not yet wired"):
-        ferric.run_roks_gamma(_mol(H3_SCAN_ATOMS, 2), lat, basis, "SCAN", omega=OMEGA)
+    # Gamma UKS / ROKS meta-GGA: the energy runs (#498,
+    # test_pbc_open_shell_mgga_energy.py); the force and stress do not.
+    for fn, route in ((ferric.run_uks_gamma, "UKS"), (ferric.run_roks_gamma, "ROKS")):
+        with pytest.raises(
+            ValueError,
+            match=rf"Gamma-point {route} SCAN / r2SCAN force and stress are not "
+            r"implemented.*1x1x1",
+        ):
+            fn(
+                _mol(H3_SCAN_ATOMS, 2),
+                lat,
+                basis,
+                "SCAN",
+                omega=OMEGA,
+                with_gradient=True,
+            )
     with pytest.raises(ValueError, match="range_split"):
         ferric.run_uks_gamma(
             _mol(H3_SCAN_ATOMS, 2),

@@ -26,9 +26,9 @@ use ferric_core::units::BOHR_RADIUS_ANGSTROM;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_pbc::dense_aft::{DEFAULT_DENSE_AFT_MAX_BYTES, DEFAULT_DENSE_AFT_PRECISION};
 use ferric_pbc::gamma_rsh::{
-    gamma_rks_any_keep, gamma_rks_rsh_gradient, gamma_rks_rsh_stress, gamma_roks_any_keep,
-    gamma_roks_rsh_gradient, gamma_uks_any_keep, gamma_uks_rsh_gradient, gamma_uks_rsh_stress,
-    GammaRshExchange, GammaRshSizing,
+    gamma_rks_any_keep, gamma_rks_rsh_gradient, gamma_rks_rsh_stress, gamma_roks_any,
+    gamma_roks_any_keep, gamma_roks_rsh_gradient, gamma_uks_any, gamma_uks_any_keep,
+    gamma_uks_rsh_gradient, gamma_uks_rsh_stress, GammaRshExchange, GammaRshSizing,
 };
 use ferric_pbc::kroks::{KRoScfResult, KRohfConfig, KRoksConfig};
 use ferric_pbc::kstress::KStressConfig;
@@ -40,8 +40,8 @@ use ferric_pbc::{
     periodic_hcore, solve_kroks_keep, solve_kuks_keep, Cell, DenseAftEri, ExxDiv, GammaRksConfig,
     GammaUhfIntegrals, GammaUksConfig, KDenseAftConfig, KGradConfig, KJkKind, KPointMesh,
     KRetained, KRksStressConfig, KRsGdfConfig, KScfConfig, KUksConfig, KUksGradConfig,
-    KUksStressConfig, MeshCentring, PeriodicGridConfig, PeriodicHcoreConfig, RsGdf, RsGdfConfig,
-    SrColumnRotation,
+    KUksStressConfig, MeshCentring, PeriodicGridConfig, PeriodicHcoreConfig, RangeSplit, RsGdf,
+    RsGdfConfig, SrColumnRotation,
 };
 use ferric_scf::result::ScfResult;
 use ferric_scf::rhf::RhfConfig;
@@ -125,6 +125,9 @@ pub struct Run<'a> {
     pub sp: bool,
     /// BFGS steps of an optimize run.
     pub steps: usize,
+    /// `[cell] range_split = true` (the RS-GDF split at the default lambda;
+    /// k-point energy runs only).
+    pub range_split: bool,
 }
 
 impl<'a> Run<'a> {
@@ -140,6 +143,7 @@ impl<'a> Run<'a> {
             strain_zz: 0.0,
             sp: false,
             steps: 0,
+            range_split: false,
         }
     }
     fn atoms(&self) -> Vec<[f64; 3]> {
@@ -238,7 +242,11 @@ pub fn write(r: &Run) -> PathBuf {
     } else {
         ""
     };
-    let jk = if r.rsgdf { RSGDF_KEYS } else { "" };
+    let jk = match (r.rsgdf, r.range_split) {
+        (true, true) => format!("{RSGDF_KEYS}\nrange_split = true"),
+        (true, false) => RSGDF_KEYS.to_string(),
+        _ => String::new(),
+    };
     let c = A_BOHR * (1.0 + r.strain_zz);
     let toml = dir.join("in.toml");
     std::fs::write(
@@ -531,6 +539,9 @@ fn with_kscf<T>(r: &Run, x: Option<&[f64]>, f: impl FnOnce(&KOpen<'_>) -> T) -> 
             (c.kuhf.scf, c.kuhf.hcore, c.kuhf.dense, c.grid) =
                 (kscf(), hcore_cfg(rsgdf), kdense(), grid());
             (c.kuhf.jk, c.kuhf.rsgdf) = (jk_kind(rsgdf), krsgdf(rsgdf));
+            c.kuhf.rsgdf.gdf.range_split = r
+                .range_split
+                .then(|| RangeSplit::new(ferric_pbc::rsgdf::DEFAULT_RANGE_SPLIT_LAMBDA));
             let (s, kept) = solve_kuks_keep(&cell, &prep, aux.as_ref(), &mesh, &c).expect("scf");
             let (ao, scf) = (c.xc.ao_threshold, KOpenScf::Uks(&s.scf));
             f(&open(&kept, &c.kuhf.rsgdf, &c.kuhf.hcore, ao, scf))
@@ -808,4 +819,71 @@ pub fn stress_anchor(r: &Run) -> (f64, Vec<f64>) {
     let c = cli_stress(r);
     assert_stress_bit_equal(r.tag, &c, lib_stress(r));
     c
+}
+
+/// Library Gamma UKS / ROKS energy of an energy run on the dense-AFT J/K
+/// (`crate::periodic::{uks,roks}_config` with `[scf]` unwritten, through the
+/// shared `gamma_*_any` entries the CLI calls).
+fn lib_gamma_open_energy(r: &Run) -> f64 {
+    assert!(
+        !r.rsgdf,
+        "{}: the Gamma open-shell energy helper is dense only",
+        r.tag
+    );
+    let (cell, prep) = cell_at(r, None);
+    let hc = periodic_hcore(&cell, &prep, &hcore_cfg(false)).unwrap();
+    let (max, prec) = (
+        ferric_core::memory::gib_to_bytes(0.5),
+        DEFAULT_DENSE_AFT_PRECISION,
+    );
+    let eri = DenseAftEri::build(&cell, &prep, &hc.s, ExxDiv::Ewald, prec, max).unwrap();
+    let ints = GammaUhfIntegrals::DenseAft(&eri);
+    let (sz, func) = (sizing(false), r.functional);
+    match r.spin {
+        Spin::Uks => {
+            let mut c = GammaUksConfig::new(func);
+            (c.grid, c.exxdiv) = (grid(), ExxDiv::Ewald);
+            c.ewald_start = ferric_pbc::EwaldStart::Staged;
+            c.scf = gamma_scf();
+            gamma_uks_any(&cell, &prep, &hc, ints, None, sz, &c)
+                .expect("scf")
+                .scf
+                .energy
+        }
+        Spin::Roks => {
+            let mut c = GammaRoksConfig::new(func);
+            (c.grid, c.exxdiv) = (grid(), ExxDiv::Ewald);
+            c.ewald_start = ferric_pbc::EwaldStart::Staged;
+            c.scf = RhfConfig {
+                level_shift: c.scf.level_shift,
+                max_iter: c.scf.max_iter,
+                ..gamma_scf()
+            };
+            gamma_roks_any(&cell, &prep, &hc, ints, None, sz, &c)
+                .expect("scf")
+                .scf
+                .energy
+        }
+        Spin::Rks => panic!("open-shell helper"),
+    }
+}
+
+/// Library energy of an open-shell energy run `r`: the k-point
+/// `solve_k*_keep` with the CLI's configs, or the Gamma `gamma_*_any`.
+pub fn lib_energy(r: &Run) -> f64 {
+    if r.kpoints {
+        with_kscf(r, None, |k| k.energy())
+    } else {
+        lib_gamma_open_energy(r)
+    }
+}
+
+/// Run `r` (energy) through the CLI and assert it equals the library bit for
+/// bit; returns the energy.
+pub fn energy_anchor(r: &Run) -> f64 {
+    let e = cli_energy(r);
+    let el = lib_energy(r);
+    eprintln!("{}: CLI E {e:?} library E {el:?}", r.tag);
+    assert_eq!(e.to_bits(), el.to_bits(), "{}: energy {e} vs {el}", r.tag);
+    e
 }

@@ -461,9 +461,9 @@ fn empty_beta_channel_is_finite_or_refused() {
 /// Everything outside the validated envelope is refused BY NAME: other
 /// meta-GGAs (raw TPSS), and (the library gate the Python / CLI bindings
 /// share) the open-shell meta-GGA forces and stress outside the wired UKS
-/// SCAN / r2SCAN on the dense-AFT J/K: UKS on RS-GDF (validated in the
-/// library, `pbc_kuks_mgga_rsgdf.rs`, not yet wired) and every ROKS meta-GGA
-/// derivative.
+/// SCAN / r2SCAN on the dense-AFT J/K: the UKS force and stress on RS-GDF
+/// (validated in the library, `pbc_kuks_mgga_rsgdf.rs`; only the RS-GDF
+/// ENERGY is wired, #498) and every ROKS meta-GGA derivative.
 #[test]
 fn unvalidated_meta_gga_requests_are_refused() {
     let cell = h3_doublet();

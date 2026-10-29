@@ -76,7 +76,7 @@
 //!
 //! Refused by name: range-separated hybrids in every entry but closed-shell
 //! [`gamma_rks_rsh`] (the attenuated K is the k = 0 of the 1x1x1 k-point machinery, [`crate::gamma_rsh`]; open-shell [`gamma_uks_rsh`] and [`crate::rohf::gamma_roks_rsh`] take the same exchange per spin; the closed-shell dense-AFT force and stress are [`crate::gamma_rsh::gamma_rks_rsh_gradient`] and [`crate::gamma_rsh::gamma_rks_rsh_stress`], the open-shell UKS dense-AFT force is [`crate::gamma_rsh::gamma_uks_rsh_gradient`] (wired to the bindings through [`check_gamma_uks_request`]) and the ROKS one [`crate::gamma_rsh::gamma_roks_rsh_gradient`] (library only: the bindings refuse it); the open-shell UKS stress is [`crate::gamma_rsh::gamma_uks_rsh_stress`] (library only)),
-//! meta-GGA except the validated SCAN / r2SCAN / TPSS in closed-shell [`gamma_rks`] (tau from D and ∇χ^Γ, energy anchored to the 1x1x1 k-mesh and PySCF; the force and stress are the 1x1x1 k-point route [`crate::gamma_mgga`] on the dense-AFT J, the native Gamma XC derivatives refuse it; open-shell [`gamma_uks`] and [`crate::rohf::gamma_roks`] take SCAN / r2SCAN only, ENERGY only, with per-spin tau from `D_σ` ([`PeriodicXc::eval_polarized`], anchored to the 1x1x1 k-point UKS and to PySCF `pbc.dft.UKS` / `ROKS`; their force and stress refuse it, and the bindings refuse it through [`check_gamma_uks_request`] / [`check_gamma_roks_request`] until #498 wires it), VV10 / double hybrids, grid pruning, Newton /
+//! meta-GGA except the validated SCAN / r2SCAN / TPSS in closed-shell [`gamma_rks`] (tau from D and ∇χ^Γ, energy anchored to the 1x1x1 k-mesh and PySCF; the force and stress are the 1x1x1 k-point route [`crate::gamma_mgga`] on the dense-AFT J, the native Gamma XC derivatives refuse it; open-shell [`gamma_uks`] and [`crate::rohf::gamma_roks`] take SCAN / r2SCAN only, ENERGY only, with per-spin tau from `D_σ` ([`PeriodicXc::eval_polarized`], anchored to the 1x1x1 k-point UKS and to PySCF `pbc.dft.UKS` / `ROKS`; their force and stress refuse it; the bindings run the energy and refuse the derivatives through [`check_gamma_uks_request`] / [`check_gamma_roks_request`], #498), VV10 / double hybrids, grid pruning, Newton /
 //! TRAH / stability (they rebuild molecular J/K and the f_xc kernel on the
 //! molecular grid — rejected by `validate_injected`), the molecular grid knobs
 //! `RhfConfig.{xc, xc_omega, dft_grid, nlc_grid}`. Nuclear gradients (with
@@ -1766,32 +1766,55 @@ pub(crate) fn refuse_unvalidated_open_shell_mgga(
     Err(PeriodicDftError::Unsupported { feature, reason }.into())
 }
 
-/// The bindings' refusal of a Gamma-point open-shell meta-GGA (`route` is
-/// `"UKS"` or `"ROKS"`): the SCAN / r2SCAN energy is validated in the library
-/// ([`gamma_uks`], [`crate::rohf::gamma_roks`], #492) but not yet wired
-/// (#498), and its force and stress do not exist.
-fn refuse_gamma_open_shell_mgga(name: &str, route: &str) -> Result<(), FerricError> {
+/// The bindings' gate of a Gamma-point open-shell meta-GGA (`route` is
+/// `"UKS"` or `"ROKS"`, `derivs` the requested derivatives): the pure SCAN /
+/// r2SCAN ENERGY runs ([`gamma_uks`], [`crate::rohf::gamma_roks`], #492,
+/// wired #498); its force and stress are not implemented and any other
+/// meta-GGA is unsupported, both refused by name. The J/K half of the gate is
+/// [`check_gamma_open_mgga_jk`].
+fn refuse_gamma_open_shell_mgga(
+    name: &str,
+    route: &str,
+    derivs: &[crate::kxcgrad::Deriv],
+) -> Result<(), FerricError> {
     if !is_meta_gga_name(name) {
         return Ok(());
     }
-    let reason = if crate::kxcgrad::is_validated_mgga(name) {
-        format!(
-            "{name}: the Gamma-point {route} SCAN / r2SCAN energy is validated in the library \
-             (#492), not yet wired (#498), and its force and stress are not implemented; the \
-             k-point UKS on a 1x1x1 mesh (the Gamma point) has SCAN / r2SCAN energies, forces \
-             and stress"
-        )
-    } else {
+    let reason = if !crate::kxcgrad::is_validated_mgga(name) {
         format!(
             "{name}: unsupported at the Gamma-point {route}; only the pure SCAN / r2SCAN \
-             meta-GGAs have an open-shell periodic energy (k-point UKS on a 1x1x1 mesh)"
+             meta-GGAs have an open-shell periodic energy"
         )
+    } else if !derivs.is_empty() {
+        let alternative = if route == "ROKS" {
+            "the k-point ROKS on a 1x1x1 mesh (the Gamma point) has them in the library only \
+             (kuxcgrad::kpoint_roks_gradient / kuxcstress::kpoint_roks_stress), not yet in \
+             Python or the CLI"
+        } else {
+            "the k-point UKS on a 1x1x1 mesh (the Gamma point) has SCAN / r2SCAN forces and \
+             stress"
+        };
+        format!(
+            "{name}: the Gamma-point {route} SCAN / r2SCAN force and stress are not \
+             implemented (its energy is); {alternative}"
+        )
+    } else {
+        return Ok(());
     };
     Err(PeriodicDftError::Unsupported {
         feature: "meta-GGA",
         reason,
     }
     .into())
+}
+
+/// The J/K gate of the Gamma-point open-shell meta-GGA energy for the
+/// bindings (`route` is `"UKS"` or `"ROKS"`; `rsgdf` = the RS-GDF fit),
+/// checked before any integral: the same refusal [`gamma_uks`] and
+/// [`crate::rohf::gamma_roks`] raise later (validated on the dense-AFT J/K
+/// only). Non-meta-GGA names pass.
+pub fn check_gamma_open_mgga_jk(name: &str, route: &str, rsgdf: bool) -> Result<(), FerricError> {
+    refuse_unvalidated_open_shell_mgga(route, name, rsgdf, false)
 }
 
 /// The Gamma UKS request gate, one call for the bindings (Python, CLI), run
@@ -1801,11 +1824,12 @@ fn refuse_gamma_open_shell_mgga(name: &str, route: &str) -> Result<(), FerricErr
 /// on either J/K for the validated functionals
 /// ([`crate::gamma_rsh::gamma_uks_rsh_gradient`],
 /// [`crate::gamma_rsh::gamma_uks_rsh_stress`],
-/// [`crate::kxcgrad::check_validated_rsh_deriv`]). A meta-GGA is refused by
-/// name: the library [`gamma_uks`] has the SCAN / r2SCAN energy, but the
-/// bindings are not wired to it (#498); the message points at the k-point
-/// UKS on a 1x1x1 mesh, which is the Gamma point and has SCAN / r2SCAN.
-/// Everything else passes to [`gamma_uks`]'s own functional check.
+/// [`crate::kxcgrad::check_validated_rsh_deriv`]). The pure SCAN / r2SCAN
+/// run as an energy ([`gamma_uks`]); their force and stress, and every other
+/// meta-GGA, are refused by name (the message points at the k-point UKS on a
+/// 1x1x1 mesh, which is the Gamma point and has the SCAN / r2SCAN
+/// derivatives). Everything else passes to [`gamma_uks`]'s own functional
+/// check.
 pub fn check_gamma_uks_request(
     name: &str,
     derivs: &[crate::kxcgrad::Deriv],
@@ -1813,7 +1837,7 @@ pub fn check_gamma_uks_request(
     if crate::rsh::is_range_separated(name) && !derivs.is_empty() {
         crate::kxcgrad::check_validated_rsh_deriv(name)?;
     }
-    refuse_gamma_open_shell_mgga(name, "UKS")
+    refuse_gamma_open_shell_mgga(name, "UKS", derivs)
 }
 
 /// The Gamma ROKS request gate (Python, CLI). `derivs` lists the requested
@@ -1822,15 +1846,16 @@ pub fn check_gamma_uks_request(
 /// functionals, with a FORCE on either J/K
 /// ([`crate::gamma_rsh::gamma_roks_rsh_gradient`]); its STRESS is refused by
 /// name (no Gamma library entry; the k-point ROKS stress on a 1x1x1 mesh,
-/// which is the Gamma point, differentiates it). A meta-GGA is refused by
-/// name, as in [`check_gamma_uks_request`] (the library
-/// [`crate::rohf::gamma_roks`] has the SCAN / r2SCAN energy, not yet wired).
+/// which is the Gamma point, differentiates it). The pure SCAN / r2SCAN
+/// run as an energy ([`crate::rohf::gamma_roks`]); their force and stress,
+/// and every other meta-GGA, are refused by name as in
+/// [`check_gamma_uks_request`].
 /// Everything else passes to [`crate::rohf::gamma_roks`]'s own functional check.
 pub fn check_gamma_roks_request(
     name: &str,
     derivs: &[crate::kxcgrad::Deriv],
 ) -> Result<(), FerricError> {
-    refuse_gamma_open_shell_mgga(name, "ROKS")?;
+    refuse_gamma_open_shell_mgga(name, "ROKS", derivs)?;
     if derivs.is_empty() || !crate::rsh::is_range_separated(name) {
         return Ok(());
     }
@@ -3467,5 +3492,25 @@ mod switch_tests {
             let e = PeriodicGrid::build(&cell, &bad).unwrap_err().to_string();
             assert!(e.contains("neighbour_switch"), "{e}");
         }
+    }
+}
+
+#[cfg(test)]
+mod open_mgga_refusal_tests {
+    use super::{check_gamma_roks_request, check_gamma_uks_request};
+    use crate::kxcgrad::Deriv;
+
+    #[test]
+    fn each_route_points_to_its_own_kpoint_derivative() {
+        let roks = check_gamma_roks_request("SCAN", &[Deriv::Force])
+            .unwrap_err()
+            .to_string();
+        assert!(roks.contains("k-point ROKS"), "{roks}");
+        assert!(!roks.contains("k-point UKS"), "{roks}");
+        let uks = check_gamma_uks_request("SCAN", &[Deriv::Force])
+            .unwrap_err()
+            .to_string();
+        assert!(uks.contains("k-point UKS"), "{uks}");
+        assert!(!uks.contains("k-point ROKS"), "{uks}");
     }
 }

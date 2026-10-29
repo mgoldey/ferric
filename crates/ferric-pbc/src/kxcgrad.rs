@@ -1008,11 +1008,11 @@ pub enum Deriv {
 /// * UKS: SCAN and r2SCAN on the dense-AFT J/K
 ///   ([`crate::kuxcgrad::kpoint_uks_gradient`],
 ///   [`crate::kuxcstress::kpoint_uks_stress`]).
-/// * ROKS: no meta-GGA. The library k-point ROKS SCAN / r2SCAN force and
-///   stress exist ([`crate::kuxcgrad::kpoint_roks_gradient`],
+/// * ROKS: no meta-GGA. The k-point ROKS SCAN / r2SCAN ENERGY is wired in
+///   the bindings (dense-AFT J/K, #498), and the library force and stress
+///   exist ([`crate::kuxcgrad::kpoint_roks_gradient`],
 ///   [`crate::kuxcstress::kpoint_roks_stress`], dense-AFT J/K, #492), but
-///   neither its energy nor its derivatives are wired in the bindings (#498),
-///   so this gate keeps refusing them.
+///   those derivatives are not wired, so this gate keeps refusing them.
 ///
 /// Refused by name: TPSS on RS-GDF and on UKS / ROKS, SCAN / r2SCAN on the
 /// UKS RS-GDF J/K, hybrid meta-GGA and other range-separated hybrids (wB97X,
@@ -1703,20 +1703,34 @@ mod force_allowlist_tests {
             .expect_err("wB97X")
             .to_string();
         assert!(e.contains("validated for HSE06 / CAM-B3LYP"), "{e}");
-        // Non-RSH names keep their own gates: PBE0 passes; a meta-GGA is
-        // refused for the bindings on both routes, energy included (the
-        // library Gamma UKS / ROKS SCAN energy is not wired yet, #498).
+        // Non-RSH names keep their own gates: PBE0 passes; the SCAN / r2SCAN
+        // energy passes on both routes (#498) while its force and stress are
+        // refused by name; any other meta-GGA (TPSS) is refused, energy
+        // included.
         uks("PBE0", &[F, S]).unwrap();
         roks("PBE0", &[F, S]).unwrap();
-        for d in [&[][..], &[F], &[S]] {
-            for (route, e) in [("UKS", uks("SCAN", d)), ("ROKS", roks("SCAN", d))] {
-                let e = e.expect_err("SCAN").to_string();
-                assert!(
-                    e.contains(&format!("Gamma-point {route} SCAN / r2SCAN energy"))
-                        && e.contains("not yet wired (#498)"),
-                    "{route} {d:?}: {e}"
-                );
+        for f in ["SCAN", "r2SCAN"] {
+            uks(f, &[]).unwrap_or_else(|e| panic!("UKS {f}: {e}"));
+            roks(f, &[]).unwrap_or_else(|e| panic!("ROKS {f}: {e}"));
+            for d in [&[F][..], &[S]] {
+                for (route, e) in [("UKS", uks(f, d)), ("ROKS", roks(f, d))] {
+                    let e = e.expect_err(f).to_string();
+                    assert!(
+                        e.contains(&format!(
+                            "{f}: the Gamma-point {route} SCAN / r2SCAN force and stress are \
+                             not implemented (its energy is)"
+                        )),
+                        "{route} {f} {d:?}: {e}"
+                    );
+                }
             }
+        }
+        for (route, e) in [("UKS", uks("TPSS", &[])), ("ROKS", roks("TPSS", &[]))] {
+            let e = e.expect_err("TPSS").to_string();
+            assert!(
+                e.contains(&format!("TPSS: unsupported at the Gamma-point {route}")),
+                "{route}: {e}"
+            );
         }
     }
 }

@@ -62,9 +62,10 @@
 //! [`crate::kuxcstress::kpoint_roks_stress`]: the k-UKS per-spin tau terms on
 //! the ROHF spin densities, with `W_RO` from the spin Focks that carry
 //! `V^τ_σ` (no ROKS-specific algebra; anchored and finite-differenced in
-//! `tests/pbc_kroks_mgga.rs`). Library only: the Python and CLI gates refuse
-//! the energy and [`crate::kxcgrad::check_deriv_functional`] the derivatives
-//! (wiring is #498).
+//! `tests/pbc_kroks_mgga.rs`). The ENERGY is wired to Python
+//! (`run_roks_kpts`) and the CLI ROKS kmesh route on the dense-AFT J/K
+//! (#498; RS-GDF is refused by name at plan time). The force and stress stay
+//! library-only: [`crate::kxcgrad::check_deriv_functional`] refuses them.
 //!
 //! # Range-separated hybrids
 //!
