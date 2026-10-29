@@ -45,7 +45,10 @@ say() { echo "::error::$*"; exit 0; }
 # (a) The artifact listing.
 if [ -n "${GITHUB_TOKEN:-}" ] && [ -n "${GITHUB_REPOSITORY:-}" ] && [ -n "${GITHUB_RUN_ID:-}" ] \
     && command -v jq >/dev/null; then
-  if LIST=$(curl -fsS --max-time 20 --retry 2 \
+  # Worst case ~31 s (2 x 15 s + 1 s retry delay; --retry-max-time 30
+  # forbids a retry starting later), well inside the callers' `timeout 60`,
+  # so a hung API still leaves time for fallback (b) below.
+  if LIST=$(curl -fsS --connect-timeout 10 --max-time 15 --retry 1 --retry-max-time 30 \
         -K <(printf 'header = "Authorization: Bearer %s"\n' "$GITHUB_TOKEN") \
         -H "Accept: application/vnd.github+json" \
         "$API/repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts?name=$NAME&per_page=100" \
@@ -55,7 +58,14 @@ if [ -n "${GITHUB_TOKEN:-}" ] && [ -n "${GITHUB_REPOSITORY:-}" ] && [ -n "${GITH
      && [[ $COUNTS =~ ^[0-9]+$'\t'[0-9]+$ ]]; then
     live=${COUNTS%%$'\t'*}
     dead=${COUNTS##*$'\t'}
-    [ "$live" -eq 0 ] || say "$RERUN_JOB"
+    if [ "$live" -gt 0 ]; then
+      # Repeated failures against a LIVE archive point at a corrupt upload,
+      # which only a rebuild replaces.
+      if [ "$ATTEMPT" -ge 3 ]; then
+        echo "::error::This is attempt $ATTEMPT: if earlier attempts failed the same way, the uploaded archive itself may be corrupt, and only \"Re-run ALL jobs\" rebuilds it."
+      fi
+      say "$RERUN_JOB"
+    fi
     [ "$dead" -eq 0 ] || say "$RERUN_ALL"
     # Not listed at all. GitHub drops expired artifacts from the listing
     # after a while, so on a re-run attempt (or an old build) that is expiry

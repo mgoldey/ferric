@@ -1104,23 +1104,16 @@ jobs:
           echo "::warning::scripts/ci-download-artifact.sh FAILED (outcome: ${{ steps.download.outcome }}) and the download-artifact fallback ran -- check the 'Download the archive' log; a script that always fails would otherwise hide behind the fallback (#525)."
           echo "- :warning: \`nextest-shard-${{ matrix.partition }}\`: scripted download ${{ steps.download.outcome }}, used the actions/download-artifact fallback (#525)" >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Run shard ${{ matrix.partition }} of 4
-        timeout-minutes: 100
+      # Its own step so the token scripts/ci-archive-advice.sh needs is in
+      # THIS step's environment only: the test step below (every nextest
+      # process) never inherits it (#525).
+      - name: Check the archive
+        timeout-minutes: 5
         env:
-          # Only for scripts/ci-archive-advice.sh's expired-vs-transient
-          # wording on a missing/corrupt archive (#525).
           GITHUB_TOKEN: ${{ github.token }}
           CI_ARCHIVE_UPLOADED_AT: ${{ needs.build-tests.outputs.archives_uploaded_at }}
         run: |
           set -euo pipefail
-          # The deferred set comes from scripts/ci-shard-plan.sh, the ONE
-          # copy of the SLOW list (build-tests and slow-tests read it too). A
-          # hand-maintained copy is exactly how a deferral silently becomes a
-          # deletion, which this repo has already hit once (2026-09-16,
-          # grid_prune_live_scf). build-tests already left these binaries out
-          # of every shard archive; the filter below is a safety net.
-          SLOW="$(scripts/ci-shard-plan.sh slow-filter)"
-          echo "deferring $(scripts/ci-shard-plan.sh slow-names | wc -l) binaries from the fast tier"
           ARCHIVE=/tmp/nextest-shard-${{ matrix.partition }}.tar.zst
           # --long=27: build-tests recompresses the archive with a 128 MiB
           # window (#525); spelled out so an older zstd with a smaller
@@ -1133,6 +1126,21 @@ jobs:
             timeout 60 scripts/ci-archive-advice.sh nextest-shard-${{ matrix.partition }} || true
             exit 1
           fi
+
+      - name: Run shard ${{ matrix.partition }} of 4
+        timeout-minutes: 100
+        run: |
+          set -euo pipefail
+          # The deferred set comes from scripts/ci-shard-plan.sh, the ONE
+          # copy of the SLOW list (build-tests and slow-tests read it too). A
+          # hand-maintained copy is exactly how a deferral silently becomes a
+          # deletion, which this repo has already hit once (2026-09-16,
+          # grid_prune_live_scf). build-tests already left these binaries out
+          # of every shard archive; the filter below is a safety net.
+          SLOW="$(scripts/ci-shard-plan.sh slow-filter)"
+          echo "deferring $(scripts/ci-shard-plan.sh slow-names | wc -l) binaries from the fast tier"
+          # Verified by "Check the archive" above.
+          ARCHIVE=/tmp/nextest-shard-${{ matrix.partition }}.tar.zst
           # Extract to a KNOWN directory (nextest's default is a random temp
           # dir) so the test can be told where the packed probe landed.
           # `runlog_writer` asserts the probe exists rather than skipping.
@@ -1273,9 +1281,11 @@ jobs:
           echo "::warning::scripts/ci-download-artifact.sh FAILED (outcome: ${{ steps.download.outcome }}) and the download-artifact fallback ran -- check the 'Download the canary archive' log; a script that always fails would otherwise hide behind the fallback (#525)."
           echo "- :warning: \`canary-archive\`: scripted download ${{ steps.download.outcome }}, used the actions/download-artifact fallback (#525)" >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Run the canary set under MALLOC_PERTURB_ 1, 170, 2
+      # Its own step so the advice script's token never reaches the canary
+      # processes (#525), as in test-shard.
+      - name: Check the canary archive
+        timeout-minutes: 5
         env:
-          # Only for scripts/ci-archive-advice.sh (#525), as in test-shard.
           GITHUB_TOKEN: ${{ github.token }}
           CI_ARCHIVE_UPLOADED_AT: ${{ needs.build-tests.outputs.archives_uploaded_at }}
         run: |
@@ -1285,6 +1295,10 @@ jobs:
             timeout 60 scripts/ci-archive-advice.sh canary-archive || true
             exit 1
           fi
+
+      - name: Run the canary set under MALLOC_PERTURB_ 1, 170, 2
+        run: |
+          set -euo pipefail
           # Canary binaries as nextest binary ids (crate::binary), from the
           # single list build-tests also archived them from.
           mapfile -t CANARY_IDS < <(scripts/ci-malloc-perturb-canaries.sh ids)
