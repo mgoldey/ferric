@@ -120,3 +120,85 @@ def test_run_rimp2_density_conv_kwarg(system):
         ferric.run_rimp2(
             mol, bs, aux, local="amplitude-threshold", eps=1e-4, density_conv=1e-9
         )
+
+
+# ── scf_jk / jk_auxbasis (#278: the S66 benchmark's SCF is DF-HF) ──────────
+# HOW THESE FAIL IF BROKEN: a binding that builds its SCF config without the
+# shared scf_jk rule returns the exact energy while echoing "rijk" (the >1e-7
+# shift and the run_rhf match both fail); a dropped jk_auxbasis lands on the
+# default def2-universal-jkfit and misses run_rhf(aug-cc-pvtz-jkfit) by
+# ~1e-5 Ha; a default flipped away from "exact" breaks the bitwise default test.
+
+S66_JK = "aug-cc-pvtz-jkfit"
+ENERGY_KEYS = (
+    "rhf_energy",
+    "mp2v_total",
+    "mp2v_att_mp2_corr",
+    "mp2v_vv10_e_nl",
+    "scs_total",
+    "scs_corr",
+    "mp2_total",
+    "mp2_corr",
+)
+
+needs_scf_jk = pytest.mark.skipif(
+    "scf_jk"
+    not in (getattr(ferric.run_mp2_v_and_scs_2terfc, "__text_signature__", "") or ""),
+    reason="loaded ferric build predates scf_jk on run_mp2_v_and_scs_2terfc",
+)
+
+
+def _rhf(mol, bs, **kw):
+    """run_rhf with the MP2 entry points' own SCF defaults (RhfConfig::default)."""
+    return ferric.run_rhf(mol, bs, energy_conv=1e-3, density_conv=1e-6, **kw).energy
+
+
+@needs_scf_jk
+def test_no_scf_jk_is_exact_and_bitwise(system):
+    mol, bs, aux = system
+    default = ferric.run_mp2_v_and_scs_2terfc(mol, bs, aux, frozen_core=2)
+    exact = ferric.run_mp2_v_and_scs_2terfc(mol, bs, aux, frozen_core=2, scf_jk="exact")
+    assert (default["scf_jk"], default["jk_auxbasis"]) == ("exact", None)
+    assert (exact["scf_jk"], exact["jk_auxbasis"]) == ("exact", None)
+    bad = {k: (default[k], exact[k]) for k in ENERGY_KEYS if default[k] != exact[k]}
+    assert not bad, bad
+
+
+@needs_scf_jk
+def test_rijk_reference_is_run_rhf_with_both_fits(system):
+    mol, bs, aux = system
+    rijk = ferric.run_mp2_v_and_scs_2terfc(
+        mol, bs, aux, frozen_core=2, scf_jk="rijk", jk_auxbasis=S66_JK
+    )
+    assert (rijk["scf_jk"], rijk["jk_auxbasis"]) == ("rijk", S66_JK)
+    ref = _rhf(mol, bs, df_j_aux=S66_JK, df_k_aux=S66_JK)
+    assert abs(rijk["rhf_energy"] - ref) <= 1e-10, (rijk["rhf_energy"], ref)
+    exact = _rhf(mol, bs)
+    assert abs(rijk["rhf_energy"] - exact) > 1e-7, "rijk ran the four-centre SCF"
+    # The other two methods ride on the same fitted reference: equal, bit for
+    # bit, to the per-method bindings run with the same scf_jk.
+    mp2 = ferric.run_rimp2(
+        mol, bs, aux, frozen_core=2, scf_jk="rijk", jk_auxbasis=S66_JK
+    )
+    scs = ferric.run_scs_mp2_2terfc(
+        mol, bs, aux, frozen_core=2, scf_jk="rijk", jk_auxbasis=S66_JK
+    )
+    assert rijk["mp2_total"] == mp2.total_energy
+    assert rijk["scs_total"] == scs.total_energy
+
+
+@needs_scf_jk
+@pytest.mark.parametrize(
+    ("kwargs", "needle"),
+    [
+        ({"scf_jk": "RIJK"}, "scf_jk: unknown value"),
+        ({"scf_jk": "exact", "jk_auxbasis": S66_JK}, "only read with scf_jk"),
+        ({"jk_auxbasis": S66_JK}, "only read with scf_jk"),
+        ({"scf_jk": "rijk", "k_builder": "link"}, "conflicts with scf_jk"),
+        ({"scf_jk": "rijk", "jk_auxbasis": "no-such-jkfit"}, "no-such-jkfit"),
+    ],
+)
+def test_scf_jk_is_strict(system, kwargs, needle):
+    with pytest.raises(ValueError, match=needle) as err:
+        ferric.run_mp2_v_and_scs_2terfc(*system, **kwargs)
+    assert "run_mp2_v_and_scs_2terfc" in str(err.value)

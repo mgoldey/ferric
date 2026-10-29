@@ -8,6 +8,10 @@ counterpoise-corrected (CP) and uncorrected:
   mp2v       MP2-V(terfc, aTZ), published parameters (post-HF VV10)
 
 at aug-cc-pVTZ / aug-cc-pvtz-rifit, frozen core = 1 per first-row heavy atom.
+The reference SCF is DF-HF (Matt, 2026-10-29, #278): `--scf-jk rijk` (RI-J +
+RI-K) on `--jk-aux aug-cc-pvtz-jkfit`, the shared MP2-family rule (#595). Every
+record and the run metadata (<out>.runs.jsonl, report provenance) carry both;
+a ferric build without the kwarg is refused before any job, never run as exact.
 All three come from ONE SCF per system via `ferric.run_mp2_v_and_scs_2terfc`
 (the shared-SCF entry point; bit-identical to the per-method bindings, pinned by
 crates/ferric-mp2/tests/terfc_pair_shared_scf.rs and the binding's pytest).
@@ -36,6 +40,7 @@ Subcommands (run from the repo root):
     run          unattended, resumable, load-gated, cheapest-first production run
     report       RMSD/MAD/MSE vs CCSD(T)/CBS, with and without CP, explicit n
     selftest / check-split / unit   (from #474) anchors and split checks
+                 (selftest compares to exact-SCF references, so it runs exact)
 
 Launch (one line; see `run --help`):
     scripts/ferric-limited --max=12G --high=10G -- python \
@@ -72,6 +77,11 @@ HARTREE_TO_KCAL = 627.5094740631  # CODATA 2014 as used by Psi4/BEGDB tables
 ANGSTROM_TO_BOHR = 1.0 / 0.52917721092  # ferric_core::units
 BASIS = "aug-cc-pvtz"
 AUX = "aug-cc-pvtz-rifit"
+SCF_JK = "rijk"  # DF-HF reference SCF (#278 decision 2026-10-29)
+SCF_JK_MODES = ("exact", "rijk", "rijcosx")
+JK_AUX = (
+    "aug-cc-pvtz-jkfit"  # measured RI-JK error on CP IE < 1e-5 kcal/mol (water dimer)
+)
 SMOKE_BASIS, SMOKE_AUX = "cc-pvdz", "cc-pvdz-ri"
 METHODS = ("mp2", "scs2terfc", "mp2v")
 CALCS = ("AB", "A_in_AB", "B_in_AB", "A", "B")
@@ -654,8 +664,12 @@ def cmd_job(a) -> None:
         include_coulomb_mp2=True,
         density_conv=a.density_conv,
         memory_budget_gb=a.mem_gb,
+        **jk_kwargs(a.scf_jk, a.jk_aux),
     )
     wall = time.perf_counter() - t0
+    echo = (r.get("scf_jk"), r.get("jk_auxbasis"))
+    if echo != (a.scf_jk, a.jk_aux):
+        sys.exit(f"SCF J/K echo {echo} != requested {(a.scf_jk, a.jk_aux)}")
     foreign = foreign_cores(busy0, own0, wall)
     so = Path(ferric.__file__).with_name("ferric.cpython-311-x86_64-linux-gnu.so")
     rec = {
@@ -685,6 +699,8 @@ def cmd_job(a) -> None:
             )
         },
         "rhf_energy": r["rhf_energy"],
+        "scf_jk": echo[0],
+        "jk_aux": echo[1],
         "scf_iterations": r["scf_iterations"],
         "density_conv": r["density_conv"],
         "timings": r["timings"],
@@ -709,6 +725,49 @@ def cmd_job(a) -> None:
     print("RESULT " + json.dumps(rec), flush=True)
 
 
+def jk_kwargs(scf_jk: str, jk_aux: str | None) -> dict:
+    """The run_mp2_v_and_scs_2terfc SCF J/K kwargs. `scf_jk` is always passed
+    explicitly, so a build without the kwarg fails (TypeError) instead of
+    silently running its exact default."""
+    return {"scf_jk": scf_jk, **({"jk_auxbasis": jk_aux} if jk_aux else {})}
+
+
+def resolve_jk(a, parser) -> None:
+    """Fill `a.jk_aux` from the mode: JK_AUX for a fitted mode, None for exact
+    (where an explicit --jk-aux is an error, as in the binding)."""
+    if a.scf_jk == "exact" and a.jk_aux is not None:
+        parser.error("--jk-aux is only read with a fitted --scf-jk (rijk/rijcosx)")
+    if a.scf_jk != "exact" and a.jk_aux is None:
+        a.jk_aux = JK_AUX
+
+
+def cmd_probe(a) -> None:
+    """(internal, child) Refuse a ferric build that cannot honour --scf-jk."""
+    ferric = import_frozen_ferric(a.so_dir)
+    fn = getattr(ferric, "run_mp2_v_and_scs_2terfc", None)
+    sig = (getattr(fn, "__text_signature__", "") or "") if fn else ""
+    if not ("scf_jk" in sig and "jk_auxbasis" in sig):
+        sys.exit(
+            f"ferric at {ferric.__file__} (build {getattr(ferric, '__build__', None)}) has no "
+            "run_mp2_v_and_scs_2terfc(scf_jk=, jk_auxbasis=): it needs #595 + the #592 "
+            "follow-up. Refusing to start (never falls back to exact)."
+        )
+    if a.jk_aux:
+        ferric.BasisSet.bundled(a.jk_aux)  # unknown aux (needs #596): raises here
+    print("BUILD " + json.dumps(getattr(ferric, "__build__", None)), flush=True)
+
+
+def probe_build(a, env: dict) -> object:
+    cmd = [sys.executable, str(Path(__file__).resolve()), "probe"]
+    cmd += ["--scf-jk", a.scf_jk] + (["--jk-aux", a.jk_aux] if a.jk_aux else [])
+    cmd += ["--so-dir", a.so_dir] if a.so_dir else []
+    p = subprocess.run(cmd, env=env, capture_output=True, text=True)
+    out = [ln for ln in p.stdout.splitlines() if ln.startswith("BUILD ")]
+    if p.returncode != 0 or not out:
+        sys.exit(f"build probe refused this run:\n{p.stderr.strip()[-2000:]}")
+    return json.loads(out[-1][len("BUILD ") :])
+
+
 # ── scheduler ──────────────────────────────────────────────────────────────
 
 
@@ -727,15 +786,17 @@ def load_pair_records(path: Path, basis: str, aux: str, smoke: bool = False) -> 
     return done
 
 
-def resume_mismatches(done: dict, density_conv: float, so_sha: str | None) -> list[str]:
-    """Settings of existing records that differ from this run's. A resume that
-    mixed SCF thresholds or binaries would put two methods into one statistic."""
+def resume_mismatches(done: dict, want: dict, so_sha: str | None) -> list[str]:
+    """Settings of existing records that differ from this run's (`want`:
+    density_conv, scf_jk, jk_aux). A resume that mixed SCF thresholds, J/K
+    treatments or binaries would put two methods into one statistic."""
     bad = []
     for r in done.values():
-        if r.get("density_conv") != density_conv:
-            bad.append(
-                f"{record_key(r)} density_conv {r.get('density_conv')} != {density_conv}"
-            )
+        bad += [
+            f"{record_key(r)} {k} {r.get(k)} != {v}"
+            for k, v in want.items()
+            if r.get(k) != v
+        ]
         if so_sha is not None and r.get("so_sha256") != so_sha:
             bad.append(
                 f"{record_key(r)} so_sha256 {str(r.get('so_sha256'))[:12]} != {so_sha[:12]}"
@@ -795,16 +856,27 @@ def cmd_run(a) -> None:
             / "ferric/ferric.cpython-311-x86_64-linux-gnu.so"
         )
         so_sha = sha256(so) if so.exists() else None
-    want_dc = a.density_conv if a.density_conv is not None else LIBRARY_DENSITY_CONV
+    want = {
+        "density_conv": a.density_conv
+        if a.density_conv is not None
+        else LIBRARY_DENSITY_CONV,
+        "scf_jk": a.scf_jk,
+        "jk_aux": a.jk_aux,
+    }
+    build = probe_build(a, env)
     bad = resume_mismatches(
-        load_pair_records(out, a.basis, a.aux, a.smoke), want_dc, so_sha
+        load_pair_records(out, a.basis, a.aux, a.smoke), want, so_sha
     )
     if bad:
         sys.exit(
             f"refusing to resume {out}: {len(bad)} existing records were made with other "
-            "settings (use a new --out, or the original --density-conv / --so-dir):\n  "
-            + "\n  ".join(bad[:10])
+            "settings (use a new --out, or the original --density-conv / --scf-jk / "
+            "--jk-aux / --so-dir):\n  " + "\n  ".join(bad[:10])
         )
+    meta = {"t": time.time(), "basis": a.basis, "aux": a.aux, **want}
+    meta |= {"so_sha256": so_sha, "ferric_build": build, "git": git_info()}
+    append_jsonl(out.with_suffix(out.suffix + ".runs.jsonl"), meta)
+    print(f"run settings: {json.dumps(meta)}", flush=True)
     SLOT_LOCK.parent.mkdir(parents=True, exist_ok=True)
     tries: dict[tuple, int] = {}
     for _pass in range(a.max_tries):
@@ -850,6 +922,7 @@ def cmd_run(a) -> None:
                 cmd += ["--so-dir", a.so_dir]
             if a.density_conv is not None:
                 cmd += ["--density-conv", str(a.density_conv)]
+            cmd += ["--scf-jk", a.scf_jk] + (["--jk-aux", a.jk_aux] if a.jk_aux else [])
             if a.smoke:
                 cmd += ["--smoke"]
             # The whole job holds the box-wide heavy slot (run_slot.sh's lock);
@@ -906,6 +979,10 @@ def cmd_report(a) -> None:
     builds = sorted(
         {json.dumps(r.get("ferric_build"), sort_keys=True) for r in done.values()}
     )
+    jk = sorted({(r.get("scf_jk"), r.get("jk_aux")) for r in done.values()}, key=str)
+    if len(jk) > 1:
+        sys.exit(f"records mix SCF J/K settings {jk}: one statistic needs one SCF")
+    scf_jk, jk_aux = jk[0] if jk else (None, None)
     rows, per = {}, {m: {"cp": [], "nocp": []} for m in METHODS}
     for k in sorted({d for d, _, _ in done}):
         e = {c: done.get((k, *CALC_KEY[c])) for c in CALCS}
@@ -934,6 +1011,8 @@ def cmd_report(a) -> None:
         "full_set": n_complete == 66,
         "basis": a.basis,
         "aux": a.aux,
+        "scf_jk": scf_jk,
+        "jk_aux": jk_aux,
         "units": "kcal/mol",
         "published": PUBLISHED,
         "published_caveat": GEOMETRY_CAVEAT,
@@ -946,7 +1025,8 @@ def cmd_report(a) -> None:
             "ferric_builds": builds,
             "hartree_to_kcal": HARTREE_TO_KCAL,
             "reference": "S66x8 1.00 CCSD(T)/CBS CP, BEGDB, testdata/reference/c9_refs/s66x8_ccsdt_cbs.json",
-            "settings": "shared SCF (run_mp2_v_and_scs_2terfc); RI aux per record; frozen core 1/heavy atom; "
+            "settings": f"shared SCF (run_mp2_v_and_scs_2terfc), SCF J/K {scf_jk} on {jk_aux}; "
+            "RI aux per record; frozen core 1/heavy atom; "
             "published default params; ghost atoms carry basis in CP",
             "contended_records": sum(bool(r.get("contended")) for r in done.values()),
         },
@@ -954,7 +1034,8 @@ def cmd_report(a) -> None:
     if a.json:
         Path(a.json).write_text(json.dumps(res, indent=1))
     print(
-        f"{n_complete}/66 dimers complete ({len(rows)} with any record); "
+        f"{n_complete}/66 dimers complete ({len(rows)} with any record), "
+        f"SCF J/K {scf_jk} ({jk_aux}); "
         + (
             "FULL SET"
             if res["full_set"]
@@ -1057,18 +1138,26 @@ def unit_jsonl_and_resume() -> None:
         except ValueError:
             pass
         assert read_jsonl(Path(d) / "missing.jsonl") == []
+    want = {"density_conv": 1e-6, "scf_jk": SCF_JK, "jk_aux": JK_AUX}
     rec = {
         "dimer": 1,
         "fragment": "A",
         "ghosted": False,
-        "density_conv": 1e-6,
         "so_sha256": "ab" * 32,
+        **want,
     }
     done = {record_key(rec): rec}
-    assert resume_mismatches(done, 1e-6, "ab" * 32) == []
-    assert len(resume_mismatches(done, 1e-9, "ab" * 32)) == 1
-    assert len(resume_mismatches(done, 1e-6, "cd" * 32)) == 1
-    assert resume_mismatches(done, 1e-6, None) == []  # smoke: no frozen .so to compare
+    assert resume_mismatches(done, want, "ab" * 32) == []
+    assert len(resume_mismatches(done, {**want, "density_conv": 1e-9}, "ab" * 32)) == 1
+    assert len(resume_mismatches(done, {**want, "scf_jk": "exact"}, "ab" * 32)) == 1
+    assert len(resume_mismatches(done, {**want, "jk_aux": "x-jkfit"}, "ab" * 32)) == 1
+    # A pre-#278-DF-HF record (no scf_jk/jk_aux keys) never resumes into a DF-HF run.
+    old = {k: v for k, v in rec.items() if k not in ("scf_jk", "jk_aux")}
+    assert len(resume_mismatches({record_key(old): old}, want, "ab" * 32)) == 2
+    assert len(resume_mismatches(done, want, "cd" * 32)) == 1
+    assert resume_mismatches(done, want, None) == []  # smoke: no frozen .so to compare
+    assert jk_kwargs("exact", None) == {"scf_jk": "exact"}
+    assert jk_kwargs("rijk", JK_AUX) == {"scf_jk": "rijk", "jk_auxbasis": JK_AUX}
     a = SimpleNamespace(no_load_gate=False, max_load=1.5)
     # A long job's OWN load is never counted: only the measured foreign cores.
     if busy_reason(None) is None:
@@ -1185,7 +1274,13 @@ def main() -> None:
     j.add_argument("--mem-gb", type=float, required=True)
     j.add_argument("--so-dir")
     j.add_argument("--density-conv", type=float)
+    j.add_argument("--scf-jk", choices=SCF_JK_MODES, required=True)
+    j.add_argument("--jk-aux")
     j.add_argument("--smoke", action="store_true")
+    pb = sub.add_parser("probe", help="(internal) refuse a build lacking scf_jk")
+    pb.add_argument("--so-dir")
+    pb.add_argument("--scf-jk", choices=SCF_JK_MODES, required=True)
+    pb.add_argument("--jk-aux")
     r = sub.add_parser("run")
     r.add_argument("--out", required=True)
     r.add_argument(
@@ -1205,6 +1300,16 @@ def main() -> None:
         "--density-conv",
         type=float,
         help="SCF RMS density gate (default: library 1e-6)",
+    )
+    r.add_argument(
+        "--scf-jk",
+        choices=SCF_JK_MODES,
+        default=SCF_JK,
+        help=f"reference SCF J/K (default {SCF_JK} = DF-HF, the #278 decision)",
+    )
+    r.add_argument(
+        "--jk-aux",
+        help=f"JK-fitting basis for a fitted --scf-jk (default {JK_AUX}); refused with exact",
     )
     r.add_argument(
         "--max-load",
@@ -1231,6 +1336,8 @@ def main() -> None:
     rp.add_argument("--basis", default=BASIS)
     rp.add_argument("--aux", default=AUX)
     a = p.parse_args()
+    if a.cmd == "run":
+        resolve_jk(a, p)
     {
         "unit": cmd_unit,
         "selftest": cmd_selftest,
@@ -1238,6 +1345,7 @@ def main() -> None:
         "estimate": cmd_estimate,
         "freeze-so": cmd_freeze_so,
         "job": cmd_job,
+        "probe": cmd_probe,
         "run": cmd_run,
         "report": cmd_report,
     }.get(a.cmd, lambda a: sys.exit(0 if check_split(parse_dimers(a.dimers)) else 1))(a)

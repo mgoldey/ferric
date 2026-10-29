@@ -11550,10 +11550,19 @@ fn checked_density_conv(who: &str, density_conv: Option<f64>) -> PyResult<Option
 /// Returns a dict: `rhf_energy`, `scf_iterations`, `mp2v_total`,
 /// `mp2v_att_mp2_corr`, `mp2v_vv10_e_nl`, `mp2v_e_os`, `mp2v_e_ss`,
 /// `n_nlc_points`, `scs_total`, `scs_corr`, `scs_e_os`, `scs_e_ss`,
-/// `mp2_total`/`mp2_corr` (None when not requested), `density_conv`, and
-/// `timings` = {setup_s, scf_s, mp2v_s, scs_s, mp2_s} wall-clock seconds.
+/// `mp2_total`/`mp2_corr` (None when not requested), `density_conv`,
+/// `scf_jk`/`jk_auxbasis` (the reference SCF's effective J/K mode and fit, as
+/// on every MP2-family result), and `timings` = {setup_s, scf_s, mp2v_s,
+/// scs_s, mp2_s} wall-clock seconds.
+///
+/// `scf_jk` / `jk_auxbasis` follow the shared MP2-family rule
+/// (`ferric_scf::scf_jk`, via `mp2_exact_default_config`): "exact" (default,
+/// four-centre), "rijk" or "rijcosx" fitted on `jk_auxbasis` (default
+/// "def2-universal-jkfit"; never `auxbasis`); strict, ValueError before any
+/// integral. The S66 benchmark uses `scf_jk="rijk"`,
+/// `jk_auxbasis="aug-cc-pvtz-jkfit"`.
 #[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, include_coulomb_mp2=true, density_conv=None, k_builder=None, memory_budget_gb=None))]
+#[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, include_coulomb_mp2=true, density_conv=None, k_builder=None, memory_budget_gb=None, scf_jk=None, jk_auxbasis=None))]
 #[allow(clippy::too_many_arguments)]
 fn run_mp2_v_and_scs_2terfc(
     py: Python<'_>,
@@ -11565,12 +11574,17 @@ fn run_mp2_v_and_scs_2terfc(
     density_conv: Option<f64>,
     k_builder: Option<&str>,
     memory_budget_gb: Option<f64>,
+    scf_jk: Option<&str>,
+    jk_auxbasis: Option<&str>,
 ) -> PyResult<Py<pyo3::types::PyDict>> {
     use ferric_mp2::terfc_pair::mp2_v_and_scs_2terfc;
     use std::time::Instant;
-    let density_conv = checked_density_conv("run_mp2_v_and_scs_2terfc", density_conv)?;
+    const WHO: &str = "run_mp2_v_and_scs_2terfc";
+    let density_conv = checked_density_conv(WHO, density_conv)?;
     let budget = budget_bytes_from_gb(memory_budget_gb);
-    let rcfg = rhf_config_with_density_conv(k_builder, budget, density_conv);
+    let (mut rcfg, jk) =
+        mp2_exact_default_config(WHO, k_builder, memory_budget_gb, scf_jk, jk_auxbasis)?;
+    rcfg.density_conv = density_conv.unwrap_or(rcfg.density_conv);
     let used_density_conv = rcfg.density_conv;
     let mut mp2v_cfg = AttVv10Config::mp2_v_terfc_atz();
     mp2v_cfg.frozen_core = frozen_core.unwrap_or(0);
@@ -11628,6 +11642,8 @@ fn run_mp2_v_and_scs_2terfc(
     d.set_item("rhf_energy", rhf_energy)?;
     d.set_item("scf_iterations", scf_iterations)?;
     d.set_item("density_conv", used_density_conv)?;
+    d.set_item("scf_jk", jk.mode.as_str())?;
+    d.set_item("jk_auxbasis", jk.aux)?;
     d.set_item("mp2v_total", r.mp2_v.total)?;
     d.set_item("mp2v_att_mp2_corr", r.mp2_v.e_c_att_mp2)?;
     d.set_item("mp2v_vv10_e_nl", r.mp2_v.e_nl_vv10)?;
@@ -11648,19 +11664,6 @@ fn run_mp2_v_and_scs_2terfc(
     t.set_item("mp2_s", r.timings.mp2_coulomb_s)?;
     d.set_item("timings", t)?;
     Ok(d.unbind())
-}
-
-/// `rhf_config_budgeted` plus an optional (already validated) `density_conv`.
-fn rhf_config_with_density_conv(
-    k_builder: Option<&str>,
-    budget: Option<usize>,
-    density_conv: Option<f64>,
-) -> RhfConfig {
-    let mut cfg = rhf_config_budgeted(k_builder, budget);
-    if let Some(dc) = density_conv {
-        cfg.density_conv = dc;
-    }
-    cfg
 }
 
 /// `run_rimp2`'s `density_conv`: validated, and refused on the local path

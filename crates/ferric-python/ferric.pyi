@@ -3682,13 +3682,19 @@ def run_mp2_v_and_scs_2terfc(
     density_conv: float | None = None,
     k_builder: str | None = None,
     memory_budget_gb: float | None = None,
+    scf_jk: str | None = None,
+    jk_auxbasis: str | None = None,
 ) -> dict[str, Any]:
     """MP2-V and SCS-MP2(2terfc) (+ plain RI-MP2) from ONE RHF reference.
 
-    Bit-identical (at the default density_conv) to run_mp2_v +
-    run_scs_mp2_2terfc + run_rimp2 with the same frozen_core; published aTZ
-    parameters only. Returns a dict of energies (Hartree) plus `timings`
-    (seconds: setup_s, scf_s, mp2v_s, scs_s, mp2_s). Needs the terfc tables.
+    Bit-identical (at the default density_conv and scf_jk) to run_mp2_v +
+    run_scs_mp2_2terfc + run_rimp2 with the same frozen_core / scf_jk /
+    jk_auxbasis; published aTZ parameters only. `scf_jk="exact"` (default) |
+    "rijk" | "rijcosx" with `jk_auxbasis` (default "def2-universal-jkfit")
+    is the shared MP2-family reference-SCF rule; the dict echoes the
+    effective `scf_jk` and `jk_auxbasis` (None for exact). Returns a dict of
+    energies (Hartree) plus `timings` (seconds: setup_s, scf_s, mp2v_s,
+    scs_s, mp2_s). Needs the terfc tables.
     """
     ...
 
