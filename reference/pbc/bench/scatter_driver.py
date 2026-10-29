@@ -44,6 +44,15 @@ Addendum (issue #228 fourth session, harness hardening):
   with PySCF; the sequence [ferric T1, ..., ferric Tk, pyscf] is rotated by the rep index (rep r
   starts at element r mod (k+1)); with one tag this is the old F P / P F alternation.
   --smoke: no locks, no quiet wait, one attempt, rows labelled smoke=true and valid=false.
+
+Addendum (overnight_228.py): run_ferric / run_pyscf / run_cmd take an optional `ctl` object with
+  `prefix` (argv put in front of `taskset`, e.g. scripts/ferric-limited) and `gate(phase, **ctx)`.
+  With a ctl, the built-in quiet wait is REPLACED by: gate("before") (may wait for hours) WITHOUT
+  the heavy-slot locks, then acquire the locks, then gate("recheck") (one short reading, decides
+  ok_before); if the recheck fails the locks are released and the wait starts again, so a busy box
+  never makes this driver sit on the locks.  gate("after", wall=, cpu_s=, foreign=, threads=) runs
+  right after the child exits.  The recheck and after readings are stored on the row as
+  `gate_before` / `gate_after`.  Without a ctl nothing changes.
 """
 
 from __future__ import annotations
@@ -289,22 +298,33 @@ def run_child(cmd, env):
         return p.returncode, fo.read(), fe.read(), ru.ru_maxrss * 1024
 
 
-def run_cmd(cmd, env, threads, cpus, smoke=False):
-    cmd = ["taskset", "-c", cpus] + list(cmd)
+def run_cmd(cmd, env, threads, cpus, smoke=False, ctl=None):
+    cmd = list(getattr(ctl, "prefix", ())) + ["taskset", "-c", cpus] + list(cmd)
     if smoke:
-        return _run_cmd_locked(cmd, env, threads, None, smoke=True)
-    fds, lock_wait = acquire_locks()
-    try:
-        return _run_cmd_locked(cmd, env, threads, lock_wait)
-    finally:
-        release_locks(fds)
+        gb = ctl.gate("before", threads=threads) if ctl is not None else None
+        return _run_cmd_locked(cmd, env, threads, None, True, ctl, gb)
+    while True:
+        if ctl is not None:
+            ctl.gate("before", threads=threads)  # the long wait: NO locks held
+        fds, lock_wait = acquire_locks()
+        try:
+            gb = ctl.gate("recheck", threads=threads) if ctl is not None else None
+            if gb is not None and not gb["ok"] and gb.get("enforced", True):
+                continue  # `finally` releases the locks; wait again without them
+            return _run_cmd_locked(cmd, env, threads, lock_wait, False, ctl, gb)
+        finally:
+            release_locks(fds)
 
 
-def _run_cmd_locked(cmd, env, threads, lock_wait, smoke=False):
+def _run_cmd_locked(
+    cmd, env, threads, lock_wait, smoke=False, ctl=None, gate_before=None
+):
     full = dict(os.environ)
     full.update(env)
     ok_before = False
-    if smoke:
+    if gate_before is not None:
+        ok_before = bool(gate_before["ok"])
+    elif smoke:
         pass
     elif threads == 1:
         t_end = time.time() + 900
@@ -339,8 +359,15 @@ def _run_cmd_locked(cmd, env, threads, lock_wait, smoke=False):
     if smoke:
         valid = False
     foreign = other / (wall * NCPU)
+    gate_after = (
+        ctl.gate("after", wall=wall, cpu_s=mine, foreign=foreign, threads=threads)
+        if ctl is not None
+        else None
+    )
     p = subprocess.CompletedProcess(cmd, rc, out, err)
     return p, dict(
+        gate_before=gate_before,
+        gate_after=gate_after,
         wall=wall,
         smoke=smoke,
         box_state=box_state(l0, foreign, QUIET["load"], QUIET["foreign"]),
@@ -376,6 +403,7 @@ def run_ferric(
     cpus="1",
     smoke=False,
     expected_sha=None,
+    ctl=None,
 ):
     toml = os.path.join(toml_dir, f"{cell}_{method}{tag}.toml")
     version = ferric_version(binary)
@@ -387,7 +415,7 @@ def run_ferric(
     env = dict(
         OPENBLAS_NUM_THREADS="1", OMP_NUM_THREADS="1", RAYON_NUM_THREADS=str(threads)
     )
-    p, g = run_cmd([binary, toml], env, threads, cpus, smoke)
+    p, g = run_cmd([binary, toml], env, threads, cpus, smoke, ctl)
     rec = dict(
         code="ferric",
         cell=cell,
@@ -423,6 +451,7 @@ def run_pyscf(
     smoke=False,
     match_ferric_conv=False,
     extra=(),
+    ctl=None,
 ):
     env = dict(OPENBLAS_NUM_THREADS=str(threads), OMP_NUM_THREADS=str(threads))
     base, kmesh = split_kmesh(cell)
@@ -442,7 +471,7 @@ def run_pyscf(
     if match_ferric_conv:
         cmd += ["--match-ferric-conv"]
     cmd += list(extra)
-    p, g = run_cmd(cmd, env, threads, cpus, smoke)
+    p, g = run_cmd(cmd, env, threads, cpus, smoke, ctl)
     extra_txt = " ".join(extra)
     rec = dict(
         code="pyscf",

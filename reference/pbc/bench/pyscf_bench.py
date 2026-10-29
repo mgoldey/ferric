@@ -277,7 +277,8 @@ def resolve_max_cycle(max_cycle, match_ferric_conv):
     return FERRIC_PERIODIC_MAX_ITER if match_ferric_conv else 100
 
 
-def main(argv=None):
+def build_parser():
+    """The command-line parser (overnight_228.py --dry-run validates its argv with it)."""
     ap = argparse.ArgumentParser()
     ap.add_argument("cell")
     ap.add_argument("--method", choices=["rhf", "pbe"], default="rhf")
@@ -319,7 +320,11 @@ def main(argv=None):
     )
     ap.add_argument("--tag", default="")
     ap.add_argument("--out", default=None)
-    a = ap.parse_args(argv)
+    return ap
+
+
+def main(argv=None):
+    a = build_parser().parse_args(argv)
     a.max_cycle = resolve_max_cycle(a.max_cycle, a.match_ferric_conv)
     if a.match_ferric_conv and "FERRIC_LINDEP_THRESH" in os.environ:
         sys.exit(
