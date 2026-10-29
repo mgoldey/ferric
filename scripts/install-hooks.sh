@@ -58,8 +58,18 @@ cat > "$HOOK_PATH.tmp" <<'HOOK_EOF'
 # scripts/install-hooks.sh (this wrapper) or scripts/ci-gate.sh (the gate)
 # and re-run install-hooks.sh.
 #
-# git passes ref update info on stdin; we don't need it -- we always run the
-# gate on the working tree of the worktree `git push` was invoked in.
+# git passes ref update info on stdin as:  <local ref> <local sha> <remote ref> <remote sha>
+#
+# The gate can only ever check THE WORKING TREE IT RUNS IN. So if you push a
+# branch that is not the one checked out here, the gate validates code that
+# has nothing to do with what you are pushing. On 2026-09-17 that cost an
+# hour: `git push origin fix/rohf-guess-selection` was run from a checkout
+# sitting on a DIFFERENT branch with uncommitted edits, so the gate spent the
+# whole run on unrelated dirty code, failed on it, and blocked two branches it
+# had never examined.
+#
+# We cannot gate a ref that is not checked out, so we REFUSE instead of
+# silently gating the wrong thing. Push from that branch's own worktree.
 set -uo pipefail
 
 # git sets the cwd of a pre-push hook to the top of the worktree being pushed
@@ -82,14 +92,94 @@ if [[ ! -x "$GATE_SCRIPT" ]]; then
     exit 1
 fi
 
-# Fast tier: the pre-push hook defers the slowest integration binaries so a
-# push is not blocked on the full suite; running scripts/ci-gate.sh by hand
-# still runs EVERYTHING. The gate prints exactly which binaries it deferred,
-# and its PASS line says "FAST TIER" so a fast run can never be misread as
-# full coverage.
-export CI_GATE_FAST=1
-echo "pre-push: gating worktree $TOPLEVEL ($GATE_SCRIPT, fast tier)..." >&2
-echo "          (skip once with: git push --no-verify -- only if you mean it)" >&2
+# Tier selection. The DEFAULT for a push is the LINT tier: clippy
+# (--all-targets, so it also type-checks every target), the complexity gate
+# and rustdoc, with BOTH test steps (cargo test and the soft pytest) skipped.
+#
+# Why tests are not in the default push gate: CI runs the full suite on a
+# dedicated machine, in parallel, and a local pre-push run is therefore pure
+# serialized cost -- it also holds the cargo lock, blocking every other
+# worktree on the box. The lint tier is ~1 minute and catches the classes CI
+# is SLOWEST to report. Rustdoc alone is the headline case: ~15s here versus
+# ~50min of CI, and four separate rustdoc breaks reached CI on 2026-09-17
+# precisely because the all-or-nothing gate was being bypassed wholesale with
+# --no-verify. A gate people actually run beats a thorough one they skip.
+#
+# The soft pytest step is skipped in lint for the same reason, and more so:
+# it cannot block a push (it is advisory), CI runs the same binding suite
+# ("pytest -- Python bindings, with coverage"), and locally it took 34-55 min
+# on a loaded box (2026-10-29) while holding target/release/libferric.so open,
+# so no rebuild in that worktree could start until it finished.
+#
+# Escalate with CI_GATE_TIER (or set the CI_GATE_* knobs directly):
+#   lint  (default)  clippy + complexity + rustdoc, no tests
+#   fast             lint + cargo tests (slowest binaries deferred) + pytest
+#   full             everything
+# ---- refuse to gate a tree that is not what is being pushed -------------
+# Compare each pushed ref's LOCAL SHA against this worktree's HEAD. A match
+# means the gate is about to check the right code. A mismatch means it is
+# not, and a PASS here would be meaningless.
+#
+# Deletes (all-zero local sha) are skipped: nothing is being gated.
+# Comparing SHAs rather than branch NAMES handles a renamed remote branch
+# (`git push origin local:remote`) and a detached HEAD correctly.
+HEAD_SHA="$(git rev-parse HEAD 2>/dev/null || true)"
+MISMATCHED=""
+while read -r local_ref local_sha remote_ref remote_sha; do
+    [[ -z "${local_ref:-}" ]] && continue
+    [[ "$local_sha" =~ ^0+$ ]] && continue          # branch deletion
+    if [[ -n "$HEAD_SHA" && "$local_sha" != "$HEAD_SHA" ]]; then
+        MISMATCHED+="  $local_ref -> ${remote_ref:-?}"$'\n'
+    fi
+done
+if [[ -n "$MISMATCHED" ]]; then
+    echo "pre-push hook: REFUSING -- you are pushing ref(s) that are not checked out here." >&2
+    echo "" >&2
+    echo "  worktree:  $TOPLEVEL" >&2
+    echo "  on branch: $(git rev-parse --abbrev-ref HEAD 2>/dev/null) ($HEAD_SHA)" >&2
+    echo "  pushing:" >&2
+    printf '%s' "$MISMATCHED" >&2
+    echo "" >&2
+    echo "  The gate can only check THE WORKING TREE IT RUNS IN, so it would" >&2
+    echo "  validate this checkout's code and tell you nothing about what you" >&2
+    echo "  are actually pushing. A PASS would be meaningless." >&2
+    echo "" >&2
+    echo "  Push from that branch's own worktree:  git worktree list" >&2
+    echo "  Or bypass deliberately:                git push --no-verify" >&2
+    exit 1
+fi
+
+# Even on the right branch, uncommitted changes mean the gate is checking
+# something other than the commits being pushed. That is usually what you
+# want locally (you are testing your work in progress), so this WARNS rather
+# than refusing -- but it says so, because a PASS on a dirty tree is not a
+# statement about the pushed commits.
+if ! git diff --quiet HEAD 2>/dev/null; then
+    echo "pre-push: NOTE -- working tree is dirty, so the gate is checking your" >&2
+    echo "          uncommitted state, not exactly the commits being pushed." >&2
+fi
+
+CI_GATE_TIER="${CI_GATE_TIER:-lint}"
+case "$CI_GATE_TIER" in
+    lint) export CI_GATE_SKIP_TESTS=1; export CI_GATE_SKIP_PYTEST=1; export CI_GATE_FAST=1 ;;
+    fast) export CI_GATE_FAST=1 ;;
+    full) export CI_GATE_FAST=0 ;;
+    *)
+        echo "pre-push hook: unknown CI_GATE_TIER='$CI_GATE_TIER'" >&2
+        echo "               expected one of: lint, fast, full" >&2
+        exit 1
+        ;;
+esac
+
+echo "pre-push: gating worktree $TOPLEVEL ($CI_GATE_TIER tier)" >&2
+echo "          $GATE_SCRIPT" >&2
+if [[ "$CI_GATE_TIER" == "lint" ]]; then
+    echo "          Tests (cargo test AND pytest) are NOT run here -- CI runs them." >&2
+    echo "          This tier runs clippy/complexity/rustdoc, which CI is slowest to report." >&2
+fi
+echo "          Escalate:  CI_GATE_TIER=fast git push   (lint + most tests + pytest)" >&2
+echo "                     CI_GATE_TIER=full git push   (everything)" >&2
+echo "          Skip once: git push --no-verify         (only if you mean it)" >&2
 "$GATE_SCRIPT"
 exit $?
 HOOK_EOF

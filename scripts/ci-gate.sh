@@ -20,9 +20,10 @@
 #      --cap-lints or otherwise bypasses the workspace lints table) and a
 #      place to fail loudly with a clear message if anything DOES fire.
 #
-# Exit code: 0 = clean, nonzero = a real failure (test or clippy) OR a timeout
-# under heavy machine load (see LOAD AWARENESS below) -- read the final
-# message to tell which.
+# Exit code: 0 = clean, 1 = a real failure (test or clippy), a step that timed
+# out while holding the cargo lock (see LOAD AWARENESS below), OR a step that
+# never got the lock at all and did not run -- read the final RESULT lines to
+# tell which.
 #
 # Env overrides:
 #   CI_GATE_TIMEOUT_SECS   per-step timeout (default 1800 = 30 min; a cold
@@ -30,6 +31,10 @@
 #                          this assumes a warm/incremental build -- see
 #                          scripts/README.md for what to do on a cold-cache OR
 #                          heavily-contended box).
+#   CI_GATE_LOCK_WAIT_SECS how long a step may QUEUE for /tmp/ferric-cargo.lock
+#                          before giving up WITHOUT running (default 14400).
+#                          Separate from the timeout above, which starts only
+#                          once the lock is held.
 #   CI_GATE_JOBS           cargo -j value (default: nproc, capped at 8 to
 #                          leave headroom on a shared box).
 #   CI_GATE_SKIP_CLIPPY=1  skip the clippy step (test-only gate).
@@ -67,7 +72,10 @@ NPROC="$(nproc 2>/dev/null || echo 4)"
 DEFAULT_JOBS=$(( NPROC < 8 ? NPROC : 8 ))
 JOBS="${CI_GATE_JOBS:-$DEFAULT_JOBS}"
 LOCK_FILE="/tmp/ferric-cargo.lock"
-LOCK_WAIT_SECS=14400
+LOCK_WAIT_SECS="${CI_GATE_LOCK_WAIT_SECS:-14400}"
+# flock's exit status when the -w wait expires. Its default is 1, which is
+# indistinguishable from a failed build; 75 is EX_TEMPFAIL (cargo fails with 101).
+LOCK_WAIT_EXPIRED_RC=75
 
 # ---- fast tier --------------------------------------------------------
 # The four slowest INTEGRATION binaries, measured on the 2026-08-22 full
@@ -168,8 +176,14 @@ fi
 echo "   per-step timeout: ${TIMEOUT_SECS}s (CI_GATE_TIMEOUT_SECS to change)"
 echo
 
+# The gate's own stdout, kept so run_locked's notes are not captured by a
+# step's redirect (clippy sends stdout+stderr to its JSON file).
+exec {GATE_OUT_FD}>&1
+
 FAILED=0
-STEP_TIMED_OUT=0
+STEP_TIMED_OUT=0          # (b) a step got the lock, then ran past TIMEOUT_SECS
+STEP_LOCK_WAIT_EXPIRED=0  # (a) a step never got the lock; it did NOT run
+STEP_CHECK_FAILED=0       # (c) a step ran and failed (test, clippy, doc, ...)
 
 # ---- stale sccache lock holder ----------------------------------------
 # Logic lives in scripts/cargo-lock-lib.sh so ad-hoc scripts (scripts/queue/*)
@@ -187,26 +201,188 @@ ferric_clear_stale_sccache_lock "$LOCK_FILE"
 # The startup-only call cannot see that -- it ran before the daemon existed.
 # MEASURED 2026-09-21: `cargo doc` sat on a lock whose only holders were a
 # squatting sccache and this gate's own queued flock.
-run_step() {
-    local name="$1"
-    shift
-    echo "-- $name --"
-    ferric_clear_stale_sccache_lock "$LOCK_FILE"
-    if timeout --signal=TERM --kill-after=30 "${TIMEOUT_SECS}" \
-        flock -o -w "$LOCK_WAIT_SECS" "$LOCK_FILE" -c "$*"; then
+# Run "$*" under the cargo lock. The timeout wraps the COMMAND only, inside the
+# lock: it bounds the build, and LOCK_WAIT_SECS bounds the queue. The old form
+# (`timeout ... flock -w ...`) started the 1800 s clock while still queued, so
+# with several gates waiting a step could be killed before it ever ran and be
+# reported as "TIMEOUT under heavy load" (2026-10-28: five queued gates).
+#
+# WHO HOLDS THE LOCK. A subshell opens the lock file and takes the lock on that
+# fd, so the lock lives exactly as long as the subshell. The command gets the
+# fd closed ({lock_fd}>&-, which is what -o does in the wrapper form), so
+# sccache cannot inherit and squat it. The flock keeps -o too (#591's rule:
+# every acquisition carries it); with a numeric fd it has no command to act on.
+# The command also gets GATE_OUT_FD closed: a daemon it spawns (sccache) would
+# otherwise keep the gate's stdout open, and whatever reads the gate through a
+# pipe (`| tee`, a tool wrapping `git push`) would never see EOF.
+#
+# The holder writes "PID step=NAME since=EPOCH" to $LOCK_FILE.holder while it
+# holds the lock (see lock_holder for why /proc/locks cannot name it).
+#
+# SIGNALS. `timeout` moves itself and the command into a NEW process group, so
+# a Ctrl-C / SIGHUP / SIGTERM aimed at the gate's group does not reach the
+# build. The subshell does get it. It must not just die: with the lock gone,
+# the next queued gate would build alongside the orphaned one (review of #593,
+# reproduced). It traps INT/TERM/HUP and forwards TERM to `timeout`, which
+# signals its whole group (cargo, rustc, test binaries) and sends KILL 30 s
+# later. Expiry works the same way: timeout TERMs, then KILLs, its group. After
+# either, the subshell waits until that group is EMPTY (KILLing it after 30 s),
+# and only then exits and releases the lock. It then re-raises the signal, so
+# the gate stops instead of moving on to the next step. SIGKILL cannot be
+# trapped; a SIGKILL to the gate's group still orphans the build.
+#
+# Returns the command's status, 124/137 for a timeout, or LOCK_WAIT_EXPIRED_RC
+# when the wait expired and the command never started.
+#
+# WAS IT A TIMEOUT? The status alone cannot say. A command can exit 124 itself,
+# and 137 is any SIGKILL -- including ferric-limited's cgroup OOM kill
+# (MemoryMax, no swap), which used to be reported as a TIMEOUT (review of
+# #593). So run_locked sets RUN_LOCKED_TIMED_OUT=1 only when `timeout`'s status
+# says expiry (124, or 137 from its --kill-after) AND the command really ran
+# for TIMEOUT_SECS, timed in microseconds from just before `timeout` started
+# (whole-second SECONDS could round a quick exit up to a 1 s timeout). The
+# subshell reports it through a per-gate marker file; report_step reads the
+# variable, not the code.
+RUN_LOCKED_TIMED_OUT=0
+run_locked() {
+    local mark="$LOCK_FILE.timed-out.$$" status=0
+    rm -f "$mark"
+    ferric_clear_stale_sccache_lock "$LOCK_FILE" >&"$GATE_OUT_FD"
+    (
+        sig="" pid="" forwarded=0
+        # Record the signal; once the build is running, forward it at once.
+        # The loop below forwards too, for a signal that arrived before `pid`
+        # was set. Between them no window is left in which a signal waits out
+        # the whole build.
+        # shellcheck disable=SC2329  # invoked by the traps below
+        on_signal() {
+            sig=$1
+            if [[ -n $pid && $forwarded -eq 0 ]]; then
+                kill -TERM "$pid" 2>/dev/null
+                forwarded=1
+            fi
+        }
+        trap 'on_signal INT' INT
+        trap 'on_signal TERM' TERM
+        trap 'on_signal HUP' HUP
+        holder_file="$LOCK_FILE.holder"
+        exec {lock_fd}>>"$LOCK_FILE" || exit 1
+        flock -o -w "$LOCK_WAIT_SECS" -E "$LOCK_WAIT_EXPIRED_RC" "$lock_fd"
+        rc=$?
+        held=0
+        [[ $rc -eq 0 ]] && held=1
+        if ((held)); then
+            printf '%s step=%s since=%s\n' "$BASHPID" "${RUN_LOCKED_STEP:-unnamed}" \
+                "$(date +%s)" >"$holder_file.$BASHPID" 2>/dev/null &&
+                mv -f "$holder_file.$BASHPID" "$holder_file" 2>/dev/null
+        fi
+        if ((held)) && [[ -z $sig ]]; then
+            started=${EPOCHREALTIME//[!0-9]/}
+            timeout --signal=TERM --kill-after=30 "${TIMEOUT_SECS}" \
+                bash -c "$*" {lock_fd}>&- {GATE_OUT_FD}>&- &
+            pid=$!  # timeout's pid == its process group id (it calls setpgid)
+            while :; do
+                # A signal that landed after the check above but before `pid`
+                # was set is forwarded here rather than ignored until the end.
+                if [[ -n $sig && $forwarded -eq 0 ]]; then
+                    kill -TERM "$pid" 2>/dev/null
+                    forwarded=1
+                fi
+                wait "$pid"
+                rc=$?
+                kill -0 "$pid" 2>/dev/null || break  # exited (and reaped)
+            done
+            # timeout returns when its direct child exits; the rest of its group
+            # can outlive it by a moment after a TERM. Hold the lock until the
+            # group is gone.
+            if [[ -n $sig || $rc -eq 124 || $rc -eq 137 ]]; then
+                deadline=$((SECONDS + 30))
+                while kill -0 -- "-$pid" 2>/dev/null; do
+                    if ((SECONDS >= deadline)); then
+                        kill -KILL -- "-$pid" 2>/dev/null
+                    fi
+                    sleep 0.2
+                done
+            fi
+            if [[ -z $sig ]] && ((rc == 124 || rc == 137)) &&
+                ((${EPOCHREALTIME//[!0-9]/} - started >= TIMEOUT_SECS * 1000000)); then
+                : >"$mark"
+            fi
+        fi
+        ((held)) && rm -f "$holder_file"
+        if [[ -n $sig ]]; then
+            trap - "$sig"
+            exec {lock_fd}>&-
+            kill -"$sig" "$BASHPID"
+        fi
+        exit "$rc"
+    ) || status=$?
+    RUN_LOCKED_TIMED_OUT=0
+    [[ -e $mark ]] && RUN_LOCKED_TIMED_OUT=1
+    rm -f "$mark"
+    return "$status"
+}
+
+# Name the process(es) that HOLD the lock now. `fuser` would also list every
+# queued waiter, which is the wrong answer to "who is building?". /proc/locks
+# is wrong too: it keeps the pid that called flock(2), and for run_locked that
+# is the flock program, which has EXITED by the time anyone asks (measured).
+# The live holders come from fdinfo (ferric_cargo_lock_holders); a run_locked
+# holder is labelled with the step it is running, from $LOCK_FILE.holder. The
+# sidecar is only a label: it is used for a pid that fdinfo confirms holds the
+# lock, so a stale one (its writer was SIGKILLed) never names anyone.
+lock_holder() {
+    local lock="$1" pid spid="" slabel="" out="" args
+    if [[ -r "$lock.holder" ]]; then
+        read -r spid slabel <"$lock.holder" 2>/dev/null || true
+    fi
+    for pid in $(ferric_cargo_lock_holders "$lock"); do
+        args="$(ps -o args= -p "$pid" 2>/dev/null | cut -c1-120)"
+        if [[ "$pid" == "$spid" ]]; then
+            out+="${out:+; }pid $pid ($slabel; $args)"
+        else
+            out+="${out:+; }pid $pid ($args)"
+        fi
+    done
+    printf '%s' "$out"
+}
+
+# Report a locked step's status as one of three outcomes, and record which.
+# TIMEOUT comes from RUN_LOCKED_TIMED_OUT (set by the run_locked just before),
+# never from the status: 124 and 137 alone are ordinary failures.
+report_step() {
+    local name="$1" rc="$2"
+    if [[ $rc -eq 0 ]]; then
         echo "-- $name: PASS --"
         return 0
+    elif [[ $rc -eq $LOCK_WAIT_EXPIRED_RC ]]; then
+        local holder
+        holder="$(lock_holder "$LOCK_FILE")"
+        echo "-- $name: NOT RUN -- never got the cargo lock in ${LOCK_WAIT_SECS}s;"
+        echo "   another build held $LOCK_FILE the whole time."
+        echo "   Held now by: ${holder:-nobody (it was released just after the wait)} --"
+        STEP_LOCK_WAIT_EXPIRED=1
+    elif [[ $RUN_LOCKED_TIMED_OUT == 1 ]]; then
+        echo "-- $name: TIMEOUT after ${TIMEOUT_SECS}s holding the lock (exit $rc) --"
+        STEP_TIMED_OUT=1
+    elif [[ $rc -eq 137 ]]; then
+        echo "-- $name: FAIL -- killed by SIGKILL before the ${TIMEOUT_SECS}s timeout"
+        echo "   (exit 137: likely the ferric-limited memory cap / OOM; see dmesg) --"
+        STEP_CHECK_FAILED=1
     else
-        local rc=$?
-        if [[ $rc -eq 124 || $rc -eq 137 ]]; then
-            echo "-- $name: TIMEOUT after ${TIMEOUT_SECS}s (exit $rc) --"
-            STEP_TIMED_OUT=1
-        else
-            echo "-- $name: FAIL (exit $rc) --"
-        fi
-        FAILED=1
-        return 1
+        echo "-- $name: FAIL (exit $rc) --"
+        STEP_CHECK_FAILED=1
     fi
+    FAILED=1
+    return 1
+}
+
+run_step() {
+    local name="$1" rc=0
+    shift
+    echo "-- $name --"
+    RUN_LOCKED_STEP="$name" run_locked "$@" || rc=$?
+    report_step "$name" "$rc"
 }
 
 # ---- 1. cargo test --workspace (default set, no --ignored) ------------
@@ -279,20 +455,14 @@ ALLOWED_LINTS=(
 if [[ "${CI_GATE_SKIP_CLIPPY:-0}" != "1" ]]; then
     echo "-- cargo clippy --workspace --all-targets --"
     CLIPPY_JSON="$(mktemp /tmp/ferric-ci-gate-clippy.XXXXXX.json)"
-    ferric_clear_stale_sccache_lock "$LOCK_FILE"
-    if timeout --signal=TERM --kill-after=30 "${TIMEOUT_SECS}" \
-        flock -o -w "$LOCK_WAIT_SECS" "$LOCK_FILE" -c \
+    CLIPPY_RC=0
+    RUN_LOCKED_STEP="cargo clippy" run_locked \
         "OPENBLAS_NUM_THREADS=1 cargo clippy --workspace --all-targets -j $JOBS --message-format=json" \
-        > "$CLIPPY_JSON" 2>&1; then
-        CLIPPY_RC=0
-    else
-        CLIPPY_RC=$?
-    fi
+        > "$CLIPPY_JSON" 2>&1 || CLIPPY_RC=$?
 
-    if [[ $CLIPPY_RC -eq 124 || $CLIPPY_RC -eq 137 ]]; then
-        echo "-- cargo clippy: TIMEOUT after ${TIMEOUT_SECS}s (exit $CLIPPY_RC) --"
-        STEP_TIMED_OUT=1
-        FAILED=1
+    if [[ $CLIPPY_RC -eq $LOCK_WAIT_EXPIRED_RC || $RUN_LOCKED_TIMED_OUT == 1 ||
+          $CLIPPY_RC -eq 137 ]]; then
+        report_step "cargo clippy" "$CLIPPY_RC"
     else
         # Build a grep -F -f pattern file from the allow-list, matched against
         # each JSON line's "code":"<lint>" field.
@@ -339,10 +509,12 @@ for line in sys.stdin:
             echo "   elsewhere -- add it to BOTH the allow-list here and the"
             echo "   [workspace.lints] block, with a one-line rationale."
             FAILED=1
+            STEP_CHECK_FAILED=1
         elif [[ $CLIPPY_RC -ne 0 ]]; then
             echo "-- cargo clippy: FAIL (exit $CLIPPY_RC, no parseable violations -- check raw output) --"
             tail -40 "$CLIPPY_JSON"
             FAILED=1
+            STEP_CHECK_FAILED=1
         else
             echo "-- cargo clippy: PASS (no warnings outside the allow-list) --"
         fi
@@ -382,6 +554,7 @@ if [[ "${CI_GATE_SKIP_COMPLEXITY:-0}" != "1" ]]; then
             else
                 echo "-- complexity regression: FAIL --"
                 FAILED=1
+                STEP_CHECK_FAILED=1
             fi
         fi
     else
@@ -509,16 +682,27 @@ echo
 echo "== gate summary =="
 echo "   load avg(1m) at start: $LOAD1 (nproc/2 = $HALF_NPROC, contended=$CONTENDED)"
 if [[ "$FAILED" == "1" ]]; then
+    # One line per outcome that occurred: a gate can hit more than one.
+    if [[ "$STEP_LOCK_WAIT_EXPIRED" == "1" ]]; then
+        echo "   RESULT: NOT RUN -- a step never got the cargo lock in ${LOCK_WAIT_SECS}s;"
+        echo "           another build held $LOCK_FILE the whole time. Nothing was"
+        echo "           tested by that step, so this says nothing about correctness."
+        echo "           Check who holds it (lslocks | grep ferric-cargo) and retry; raise"
+        echo "           CI_GATE_LOCK_WAIT_SECS to queue longer."
+    fi
     if [[ "$STEP_TIMED_OUT" == "1" && "$CONTENDED" == "1" ]]; then
         echo "   RESULT: TIMEOUT under heavy load -- box was busy (load $LOAD1 > nproc/2"
-        echo "           = $HALF_NPROC). This is NOT necessarily a correctness problem."
+        echo "           = $HALF_NPROC). A step held the cargo lock for ${TIMEOUT_SECS}s"
+        echo "           and did not finish. This is NOT necessarily a correctness problem."
         echo "           Retry when the box is quieter, or raise CI_GATE_TIMEOUT_SECS."
         echo "           If you must push now: git push --no-verify (this SKIPS the"
         echo "           gate entirely -- only do this with an explicit note in your"
         echo "           push/PR that the gate was bypassed, not silently passed)."
     elif [[ "$STEP_TIMED_OUT" == "1" ]]; then
         echo "   RESULT: TIMEOUT (load looked normal -- investigate: hung test? deadlock?)."
-    else
+    fi
+    if [[ "$STEP_CHECK_FAILED" == "1" ||
+          ( "$STEP_LOCK_WAIT_EXPIRED" == "0" && "$STEP_TIMED_OUT" == "0" ) ]]; then
         echo "   RESULT: FAIL -- see above for the failing test(s) or clippy violation(s)."
     fi
     exit 1
