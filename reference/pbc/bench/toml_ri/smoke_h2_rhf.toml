@@ -1,0 +1,21 @@
+# overnight_228.py --smoke toy cell: H2 / STO-3G in an 8 Bohr cube, Gamma RS-GDF RHF (aux cc-pvdz-ri).
+# Proves the pipeline end to end in seconds; its timings are NEVER data (rows smoke=true, valid=false).
+
+[molecule]
+xyz = "reference/pbc/bench/smoke_h2.xyz"
+
+[basis]
+name = "sto-3g"
+
+[method]
+kind = "rhf"
+
+[cell]
+unit = "bohr"
+lattice = [[8.0, 0.0, 0.0], [0.0, 8.0, 0.0], [0.0, 0.0, 8.0]]
+exxdiv = "ewald"
+jk = "rsgdf"
+auxbasis = "cc-pvdz-ri"
+
+[memory]
+budget_gb = 2

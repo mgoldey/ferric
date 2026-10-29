@@ -1,5 +1,7 @@
 # ferric vs PySCF matched timing (issue #228 core slice)
 
+> Unattended quiet-window run of the remaining #228 plan: see `OVERNIGHT.md` (`overnight_228.py`, `analyze_228.py`).
+
 Files: `pyscf_bench.py` (PySCF side, one fresh process per call), `scatter_driver.py` (F P F P
 interleaved driver, load gate), `toml_ri/` (ferric inputs, see "Deviation"), `bench_results/*.jsonl`
 (every run, including invalid and discarded ones).  Ferric side reuses `omega_sweep.py`'s box probes.

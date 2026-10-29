@@ -1,0 +1,4 @@
+2
+smoke_h2: overnight_228.py --smoke toy cell (never timing data); lattice (Bohr rows) in smoke_h2.lattice
+H       0.000000000000000      0.000000000000000      0.000000000000000
+H       0.740000000000000      0.000000000000000      0.000000000000000

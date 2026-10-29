@@ -467,3 +467,167 @@ def test_between_session_range_of_5_percent_blocks_quoting():
     p = _session("pyscf", "s1", QUIET5) + _session("pyscf", "s2", QUIET5)
     ok, why = sm.quotable(f, p, "wall", 6)
     assert not ok and why == ["between-session range >= 5%"]
+
+
+# ------------------------------------------------------------- overnight_228 / analyze_228 ----
+import analyze_228 as an  # noqa: E402
+import overnight_228 as ov  # noqa: E402
+
+
+class _Th:
+    max_load, max_busy, max_foreign, max_iowait, max_steal = 1.5, 0.02, 0.02, 0.02, 0.01
+    max_python_cpu, max_proc_cpu, check_steal_iowait = 0.10, 0.25, True
+    window, poll = 0.0, 0.0
+
+
+def _reading(**kw):
+    r = dict(load1=0.3, load1_adj=0.3, busy_frac=0.005, iowait_frac=0.0, steal_frac=0.0)
+    r.update(dict(heavy=[]), **kw)
+    return r
+
+
+def test_own_load_is_the_kernels_exponential_average():
+    assert ov.own_load([], 100.0) == 0.0
+    # 6 busy threads for 10 min -> ~6 right at the end, decaying with a 60 s constant after.
+    assert ov.own_load([(100.0, 6.0, 600.0)], 100.0) == pytest.approx(6.0, abs=1e-3)
+    assert ov.own_load([(100.0, 6.0, 600.0)], 160.0) == pytest.approx(
+        6.0 / math.e, rel=1e-3
+    )
+
+
+def test_judge_names_every_failing_reading():
+    assert ov.judge(_reading(), _Th) == []
+    why = ov.judge(
+        _reading(load1=2.0, load1_adj=1.6, heavy=[dict(pid=1, comm="rustc", cpu=0.9)]),
+        _Th,
+    )
+    assert len(why) == 2 and why[1].startswith("proc rustc")
+
+
+def test_raw_load_mode_is_the_default_and_counts_our_own_tail():
+    r = _reading(load1=1.6, load1_adj=0.4, own_load=1.2)
+    assert (
+        ov.judge(r, _Th)
+        and ov.judge(r, type("T", (_Th,), dict(load_mode="adjusted"))) == []
+    )
+    assert ov.build_parser().parse_args(["--run-dir", "x"]).load_mode == "raw"
+    assert ov.decay_wait(1, 600.0) == 0.0  # one thread never reaches 1.2
+    assert ov.decay_wait(6, 600.0) == pytest.approx(
+        60 * math.log(0.92 * 6 / 1.2), rel=1e-3
+    )
+
+
+def _fake_proc(monkeypatch, procs):
+    """procs: {pid: (comm, cpu cores)} over a 1 s window; the box otherwise idle."""
+    snaps = iter([0, 1])
+    hz = os.sysconf("SC_CLK_TCK")
+
+    def proc_times(own=()):
+        k = next(snaps)
+        return {p: (c, int(k * cpu * hz)) for p, (c, cpu) in procs.items()}
+
+    t = iter([0.0, 1.0, 1.0])
+    monkeypatch.setattr(ov, "proc_times", proc_times)
+    monkeypatch.setattr(ov.time, "time", lambda: next(t))
+    monkeypatch.setattr(ov.time, "sleep", lambda s: None)
+    stats = iter(
+        [dict(total=0, busy=0, iowait=0, steal=0)] * 1
+        + [dict(total=1200, busy=1, iowait=0, steal=0)]
+    )
+    monkeypatch.setattr(ov, "read_stat", lambda: next(stats))
+
+
+def test_gate_ignores_a_cargo_blocked_on_the_lock_but_not_a_compiler(monkeypatch):
+    _fake_proc(monkeypatch, {10: ("cargo", 0.0), 11: ("bash", 0.01)})
+    assert ov.Gate(_Th, 1e18).read()["heavy"] == []
+    _fake_proc(monkeypatch, {10: ("cargo", 0.0), 12: ("cc1plus", 0.0)})
+    assert [p["comm"] for p in ov.Gate(_Th, 1e18).read()["heavy"]] == ["cc1plus"]
+    _fake_proc(monkeypatch, {13: ("python3", 0.2)})
+    assert [p["comm"] for p in ov.Gate(_Th, 1e18).read()["heavy"]] == ["python3"]
+
+
+def test_gate_after_discards_on_foreign_cpu_and_before_raises_at_the_deadline(
+    monkeypatch,
+):
+    g = ov.Gate(_Th, deadline=0.0)
+    monkeypatch.setattr(g, "read", lambda: dict(_reading(), reasons=[], ok=True))
+    monkeypatch.setattr(
+        ov, "read_stat", lambda: dict(total=1, busy=0, iowait=0, steal=0)
+    )
+    assert g.gate("before")["ok"]
+    after = g.gate("after", wall=10.0, cpu_s=10.0, foreign=0.03, threads=1)
+    assert not after["ok"] and "foreign CPU" in after["reasons"][0]
+    assert g.history and g.history[-1][1] == pytest.approx(1.0)
+    monkeypatch.setattr(g, "read", lambda: dict(_reading(), reasons=["busy"], ok=False))
+    with pytest.raises(ov.Deadline):
+        g.gate("before")
+    g.enforce = False  # smoke / anchors: logged, never waited on
+    assert g.gate("before")["enforced"] is False
+
+
+def test_walk_is_rep_major_and_rotates_inside_a_rep():
+    c = ov.Cell("x", "x", "rhf", {6: ("", "_w0.5")}, {6: 2}, "core", {6: (1.0, 1.0)})
+    d = ov.Cell("y", "y", "rhf", {1: ("",)}, {1: 1}, "core", {1: (1.0, 1.0)})
+    got = [(cc.id, code, tag, rep) for cc, code, tag, n, rep in ov.walk([c, d], None)]
+    assert got == [
+        ("x", "ferric", "", 0), ("x", "ferric", "_w0.5", 0), ("x", "pyscf", "", 0),
+        ("y", "ferric", "", 0), ("y", "pyscf", "", 0),
+        ("x", "ferric", "_w0.5", 1), ("x", "pyscf", "", 1), ("x", "ferric", "", 1),
+    ]  # fmt: skip
+
+
+def test_execute_resumes_and_retries_only_discarded_keys(monkeypatch, tmp_path):
+    c = ov.Cell("x", "x", "rhf", {6: ("",)}, {6: 2}, "core", {6: (1.0, 1.0)})
+    calls, verdicts = (
+        [],
+        iter([True, False, True, True, True]),
+    )  # 2nd sample fails its gate once
+
+    def fake(cell, code, tag, threads, rep, attempt, ctx):
+        calls.append((code, rep, attempt))
+        if len(calls) == 3 and ctx.get("die"):
+            raise KeyboardInterrupt  # the box reboots mid-run
+        ok = next(verdicts)
+        return dict(plan_id=cell.id, code=code, variant=tag, threads=threads, rep=rep,
+                    attempt=attempt, exit=0, energy=-1.0, converged=True, gated=ok,
+                    gate_reasons=[], wall=1.0, kind="timed")  # fmt: skip
+
+    monkeypatch.setattr(ov, "run_sample", fake)
+    args = type("A", (), dict(max_attempts=3))
+    out = str(tmp_path / "results.jsonl")
+    gate = ov.Gate(_Th, 1e18)
+    with pytest.raises(KeyboardInterrupt):
+        ov.execute([c], dict(args=args, smoke=False, gate=gate, die=True), out)
+    assert len(ov.load_rows(out)) == 2  # rep 0 ferric gated, rep 0 pyscf discarded
+    calls.clear()
+    ov.execute([c], dict(args=args, smoke=False, gate=gate), out)
+    # resume: rep-0 ferric is done; rep-0 pyscf is retried (attempt 1); rep 1 rotates to P F.
+    assert calls == [("pyscf", 0, 1), ("pyscf", 1, 0), ("ferric", 1, 0)]
+
+
+def test_plan_inputs_parse_and_pyscf_argv_is_well_formed():
+    problems, cmds = ov.check_inputs(ov.PLAN + [ov.SMOKE], 1e-13)
+    assert problems == []
+    assert sum(1 for c in cmds if c[2] == "pyscf") >= len(ov.PLAN)
+
+
+def _arow(code, rep, wall, var="", gated=True, session="s"):
+    return dict(plan_id="p", threads=6, code=code, variant=var, rep=rep, wall=wall,
+                gated=gated, valid=gated, exit=0, kind="timed", session=session,
+                run_id=session, bin_sha256="a" * 64, energy=-1.0, method="rhf")  # fmt: skip
+
+
+def test_analyze_flags_spread_over_the_bar_and_pairs_reps():
+    f = [_arow("ferric", r, w) for r, w in enumerate([10.0, 10.1, 10.05])]
+    p = [_arow("pyscf", r, w) for r, w in enumerate([20.0, 21.0, 20.0])]
+    p.append(_arow("pyscf", 3, 99.0, gated=False))  # discarded: never in a statistic
+    sp, ratios, energies = an.analyze(f + p, n_boot=200)
+    flags = {d["key"][2]: (d["flag"], d["n"], d["discarded"]) for d in sp}
+    assert flags == {"ferric": ("ok", 3, 0), "pyscf": ("SPREAD>2%", 3, 1)}
+    assert ratios[0]["n_pairs"] == 3 and ratios[0]["ratio"] == pytest.approx(
+        10.05 / 20.0
+    )
+    assert ratios[0]["flag"].startswith("ferric ok / pyscf SPREAD")
+    assert energies[0]["flag"] == "ok"
+    sp, _, _ = an.analyze(f[:2] + p, n_boot=10)
+    assert {d["key"][2]: d["flag"] for d in sp}["ferric"] == "n<3"
