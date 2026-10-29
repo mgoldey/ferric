@@ -78,15 +78,25 @@ pub enum MixedKernel {
     /// Named only: not in `SHIPPED`, selectable only through the `df_k_gpu`
     /// settings-override seam until its error map ships.
     DfjPack = 16,
+    /// KS-DFT XC potential: each grid batch's `V_b = A·Xᵀ` (the pass-2 product
+    /// of the screened XC grid) from f32 operands with f64 panel accumulation,
+    /// LDA and GGA only (meta-GGA τ stays on the never-f32 list), and only for
+    /// Fock builds whose density is still moving (the precision ladder in
+    /// `ferric_dft::ks`). The density pass, the functional and E_xc stay f64.
+    /// Opt-in: in [`MixedKernelSet::OPT_IN`], not in `SHIPPED`, so only a
+    /// `mixed_kernels` list that names it runs it (it was slower than the CPU
+    /// on the one device measured; see `ferric_dft::xc_batch`).
+    XcVxc = 32,
 }
 
 impl MixedKernel {
-    pub const ALL: [MixedKernel; 5] = [
+    pub const ALL: [MixedKernel; 6] = [
         MixedKernel::RiMp2Energy,
         MixedKernel::CcsdAmplitudes,
         MixedKernel::DfkOcc,
         MixedKernel::CosxKern,
         MixedKernel::DfjPack,
+        MixedKernel::XcVxc,
     ];
 
     pub const fn name(self) -> &'static str {
@@ -96,6 +106,7 @@ impl MixedKernel {
             MixedKernel::DfkOcc => "dfk-occ",
             MixedKernel::CosxKern => "cosx-kern",
             MixedKernel::DfjPack => "dfj-pack",
+            MixedKernel::XcVxc => "xc-vxc",
         }
     }
 }
@@ -131,6 +142,14 @@ impl MixedKernelSet {
     /// empty refuses `precision = mixed`. Shipping a kernel does not change the
     /// precision default: `PRECISION_DEFAULT` stays f64.
     pub const SHIPPED: Self = Self::EMPTY.with(MixedKernel::RiMp2Energy);
+
+    /// Kernels whose gates have run on hardware but that are not worth
+    /// running by default: an explicit `mixed_kernels` list may name them
+    /// (they are admitted like shipped ones), but they are not in `SHIPPED`,
+    /// so `precision = "mixed"` alone and the `mixed` presets leave them out.
+    /// `XcVxc`: its device tests pass on a GTX 1080 (sm_61), where the device
+    /// XC path was slower than the CPU.
+    pub const OPT_IN: Self = Self::EMPTY.with(MixedKernel::XcVxc);
 
     pub const fn with(self, k: MixedKernel) -> Self {
         Self(self.0 | k as u8)
@@ -271,7 +290,7 @@ mod tests {
         );
         assert!(MixedKernel::ALL.contains(&MixedKernel::CosxKern));
         assert!(!MixedKernelSet::SHIPPED.contains(MixedKernel::CosxKern));
-        assert_eq!(MixedKernel::ALL.len(), 5);
+        assert_eq!(MixedKernel::ALL.len(), 6);
     }
 
     #[test]
@@ -287,6 +306,17 @@ mod tests {
         let set = MixedKernelSet::SHIPPED.with(MixedKernel::DfjPack);
         assert_eq!(set.to_string(), "rimp2-energy,dfj-pack");
         assert_eq!(set.to_string().parse::<MixedKernelSet>().unwrap(), set);
+    }
+
+    #[test]
+    fn xc_vxc_is_named_in_all_and_not_shipped() {
+        assert_eq!(MixedKernel::XcVxc as u8, 32);
+        assert_eq!("xc-vxc".parse::<MixedKernel>().unwrap(), MixedKernel::XcVxc);
+        assert!(MixedKernel::ALL.contains(&MixedKernel::XcVxc));
+        assert!(!MixedKernelSet::SHIPPED.contains(MixedKernel::XcVxc));
+        assert!(MixedKernelSet::OPT_IN.contains(MixedKernel::XcVxc));
+        let set = MixedKernelSet::SHIPPED.with(MixedKernel::XcVxc);
+        assert_eq!(set.to_string(), "rimp2-energy,xc-vxc");
     }
 
     #[test]

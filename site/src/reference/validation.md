@@ -489,6 +489,80 @@ metric is not measured here. Test files:
 `FERRIC_TERF_TABLE_DIR` for the terfc rows) and
 `crates/ferric-mp2/tests/gpu_u_rimp2_mixed_pin.rs`.
 
+**`xc-vxc`** (opt-in, not in the default mixed set: it runs only when
+`mixed_kernels` names it, under `mode = "on"`; on a GTX 1080 the device XC
+path, f64 or mixed, was slower than the CPU, so there is no reason to run it
+by default). It has run on hardware: on a GTX 1080 (Pascal, sm_61)
+`gpu_xc_mixed.rs` passes (device error in the twin's class, no f64
+fallback), with 2 extra SCF iterations on benzene and |ΔE| ≤ 3.4e-13 Eh. The Kohn-Sham XC
+potential matrix of LDA and GGA functionals (closed- and open-shell; hybrids
+included, their exact exchange is untouched): each grid batch's `V_b = A·Xᵀ`
+is formed on the device from f32 `A` (weighted potential factors) and f32 `X`
+(basis-function values and gradients, stored once per grid as f32 next to the
+f64 copy) by f32 panel products of width b = 64 summed into an f64
+accumulator. The density pass, the functional, E_xc and the V accumulation are
+f64. Meta-GGAs never use it (meta-GGA τ is on the never-f32 list; the device
+pass refuses mixed whenever τ is present, independently of the caller). A
+**precision ladder** decides per Fock build: a build is mixed only when the
+RMS change of some spin density since the previous build of the same SCF
+exceeds τ = 1e-5; the first build of every SCF (the ladder is reset when an
+SCF starts) and any one-shot V_xc are f64. At a converged exit whose last
+build was mixed, that build's V_xc is replaced by an f64 rebuild at the same
+density before the Fock matrix is diagonalised, so the Fock matrix and
+orbitals a converged SCF returns come from f64 builds whatever `density_conv`
+is and whichever exit accepted it (the energy needs no rebuild: E_xc comes
+from the f64 density pass and functional). A wave whose panel sums could leave
+the f32 range, or whose `A` does not round to f32, runs f64, and a missing
+flush kernel, an AO value beyond the f32 range or a pool too small for the f32
+copies keep the grid f64 on the device; all are counted (`mixed_fallback_f64`).
+
+| Column | Value |
+|---|---|
+| Accumulation depth | k = ncols per element (the batch's point count, ≤ 128 by default), panels of b = 64 |
+| Bound | per element \|ΔV_ij\| ≤ (2u₃₂ + γ_b(u₃₂) + γ_⌈k/b⌉(u₆₄))·(\|A\|\|X\|ᵀ)_ij, plus the f64 reference's own γ_k(u₆₄); worst measured element 0.10 of it (water / cc-pVDZ, every 7th batch, with synthetic sine-wave potential factors in `A`, not functional output) |
+| Energy | second order: the SCF energy is variational in the density, and only the Fock matrix of unconverged iterations carries the error |
+| Mitigation | f64 panel accumulation, f64 density pass and functional, f64 closing iterations (the ladder), and an f64 V_xc rebuild at a converged exit whose last build was mixed |
+| Precision | f32 operands, f32 panel products, f64 sums |
+
+Why the ladder. With every build mixed, the f32 panel sums act as rounding noise
+that changes with the density, and a tight SCF stalls on it: benzene /
+cc-pVDZ PBE took 77 instead of 12 iterations at `density_conv = 1e-9` and did not
+converge in 200 at 1e-10. Rounding only the basis-function values (a fixed
+perturbation) costs nothing; rounding only `A` costs 2 to 6 iterations; the
+panel accumulation is the rest. τ = 1e-3, 1e-4 and 1e-5 kept 3-4, 4-5 and 6 of
+about 10 builds mixed for at most 3, 3 and 2 extra iterations.
+
+The measured effect on converged SCF energies (host twin of the kernel, the same
+algorithm on OpenBLAS, against the f64 SCF of the same input; default SCF and grid
+settings; measured before the f64 rebuild at a converged exit existed, which
+by construction changes neither: it runs after the exit decision and E_xc
+never depends on the V_xc precision; not re-measured):
+
+| System | basis | functional | density_conv | iterations f64 / mixed | mixed builds | ΔE (Eh) |
+|---|---|---|---|---|---|---|
+| H2O | cc-pVDZ | PBE | 1e-6 | 9 / 9 | 6 | −2.8e-14 |
+| H2O | cc-pVDZ | PBE | 1e-10 | 12 / 12 | 6 | +1.4e-14 |
+| H2O | aug-cc-pVTZ | PBE | 1e-6 | 9 / 9 | 6 | +2.1e-13 |
+| H2O | aug-cc-pVTZ | PBE | 1e-10 | 13 / 13 | 6 | +9.9e-14 |
+| H2O | cc-pVDZ | r2SCAN (meta-GGA: f64) | 1e-10 | 13 / 13 | 0 | 0 |
+| H2O⁺ (UKS) | cc-pVDZ | PBE | 1e-6 | 9 / 9 | 6 | +1.4e-14 |
+| H2O⁺ (UKS) | cc-pVDZ | PBE | 1e-10 | 12 / 13 | 6 | 0 |
+| benzene | cc-pVDZ | PBE | 1e-6 | 10 / 10 | 6 | −6.3e-13 |
+| benzene | cc-pVDZ | PBE | 1e-10 | 13 / 15 | 6 | −5.1e-13 |
+| benzene | cc-pVDZ | B3LYP | 1e-6 | 9 / 9 | 6 | +4.5e-13 |
+| benzene | cc-pVDZ | B3LYP | 1e-10 | 13 / 15 | 6 | −2.8e-13 |
+| n-octane | cc-pVDZ | PBE | 1e-6 | 11 / 11 | 7 | +9.1e-13 |
+| n-octane | cc-pVDZ | PBE | 1e-10 | 18 / 18 | 7 | −9.1e-13 |
+
+These are host-twin figures: the device kernel's own agreement with the twin
+(same error class, within a factor 10 on max|ΔV|) and a device SCF against the
+f64 host SCF are checked by `crates/ferric-dft/tests/gpu_xc_mixed.rs`, which
+needs a device; it passes on a GTX 1080 (sm_61). Test
+files: `crates/ferric-dft/src/xc_batch.rs` (element bound, no device),
+`crates/ferric-scf/tests/xc_mixed_vxc_error_map.rs` (this table, and the
+converged-exit Fock matrix against an independent f64 rebuild at a loose
+`density_conv`, RKS and UKS, no device).
+
 ## Known limits and negatives
 
 Reported rather than omitted:

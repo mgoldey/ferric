@@ -19,6 +19,8 @@ static DFK_DEVICE_BUILDS: AtomicU64 = AtomicU64::new(0);
 static DFK_DECLINED: AtomicU64 = AtomicU64::new(0);
 static DFJ_DEVICE_BUILDS: AtomicU64 = AtomicU64::new(0);
 static DFJ_DECLINED: AtomicU64 = AtomicU64::new(0);
+static XC_DEVICE_PASSES: AtomicU64 = AtomicU64::new(0);
+static XC_DECLINED: AtomicU64 = AtomicU64::new(0);
 
 /// Why a GEMM ran on the CPU although the GPU mode was not `off`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -91,6 +93,24 @@ pub fn note_dfj_declined(reason: &str) {
     DFJ_DECLINED.fetch_add(1, Ordering::Relaxed);
 }
 
+/// One KS-DFT XC grid pass (the density pass of one spin density, or the
+/// potential pass of one V matrix) ran its per-batch GEMMs on the device (`h2d`
+/// = sub-densities / potential factors uploaded, `d2h` = Φ / V blocks
+/// downloaded; they count toward `bytes_h2d` / `bytes_d2h`).
+#[doc(hidden)]
+pub fn note_xc_pass(h2d: usize, d2h: usize) {
+    XC_DEVICE_PASSES.fetch_add(1, Ordering::Relaxed);
+    BYTES_H2D.fetch_add(h2d as u64, Ordering::Relaxed);
+    BYTES_D2H.fetch_add(d2h as u64, Ordering::Relaxed);
+}
+
+/// A screened XC grid that will stay on the CPU for its lifetime. Counting only.
+#[doc(hidden)]
+pub fn note_xc_declined(reason: &str) {
+    let _ = reason; // the dispatcher prints the one-line notice
+    XC_DECLINED.fetch_add(1, Ordering::Relaxed);
+}
+
 /// Mixed was requested and allowed, but the call ran in f64 on the device
 /// (kernel unavailable or a mixed-path CUDA error). Never silent.
 #[doc(hidden)]
@@ -150,6 +170,8 @@ pub struct GpuStatsSnapshot {
     pub dfk_declined: u64,
     pub dfj_device_builds: u64,
     pub dfj_declined: u64,
+    pub xc_device_passes: u64,
+    pub xc_declined: u64,
 }
 
 pub fn stats() -> GpuStatsSnapshot {
@@ -171,5 +193,7 @@ pub fn stats() -> GpuStatsSnapshot {
         dfk_declined: DFK_DECLINED.load(Ordering::Relaxed),
         dfj_device_builds: DFJ_DEVICE_BUILDS.load(Ordering::Relaxed),
         dfj_declined: DFJ_DECLINED.load(Ordering::Relaxed),
+        xc_device_passes: XC_DEVICE_PASSES.load(Ordering::Relaxed),
+        xc_declined: XC_DECLINED.load(Ordering::Relaxed),
     }
 }

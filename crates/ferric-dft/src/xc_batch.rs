@@ -98,6 +98,37 @@ use crate::grid::GridPoint;
 use crate::libxc::{FunctionalFamily, XcDef};
 use crate::vxc::{closed_kernel, deterministic_point_sum, polarized_kernel, DENSITY_FLOOR};
 
+/// Device offload of the per-batch GEMMs (feature `gpu`).
+#[cfg(feature = "gpu")]
+mod gpu;
+#[cfg(feature = "gpu")]
+pub use gpu::xc_grid_routes_to_device;
+#[cfg(feature = "test-seams")]
+pub use gpu::{FORCE_HOST, MIXED_VXC_HOST_TWIN};
+
+/// True when this process asked for V_xc in mixed precision and could run it:
+/// `[gpu] mode = "on"`, `precision = "mixed"` with `xc-vxc` named in
+/// `mixed_kernels` (it is opt-in, not in the default set), and a ready device
+/// (or, in tests, the `MIXED_VXC_HOST_TWIN` seam). Always false without the
+/// `gpu` feature.
+pub(crate) fn mixed_vxc_requested() -> bool {
+    #[cfg(feature = "gpu")]
+    {
+        gpu::mixed_vxc_requested()
+    }
+    #[cfg(not(feature = "gpu"))]
+    {
+        false
+    }
+}
+
+/// What one integration holds of the device: the locked device slot (`gpu`
+/// builds; `None` when this integration runs on the CPU), or nothing.
+#[cfg(feature = "gpu")]
+type DevSession<'a> = Option<std::sync::MutexGuard<'a, gpu::DeviceSlot>>;
+#[cfg(not(feature = "gpu"))]
+type DevSession<'a> = std::marker::PhantomData<&'a ()>;
+
 /// Default per-batch shell-screening threshold on `max(|χ|, |∇χ|)`.
 ///
 /// Chosen by measurement (numpy/PySCF prototype of exactly this algorithm,
@@ -497,11 +528,10 @@ fn group_ranges(nbatches: usize, ngroups: usize) -> Vec<(usize, usize)> {
 /// Add `V_b + V_bᵀ` into `acc[funcs, funcs]`. Both `(i,j)` and `(j,i)` receive
 /// the same increment (fp `+` is commutative), so `acc` stays exactly
 /// symmetric, like the dense path's final `½(V + Vᵀ)`.
-fn scatter_sym(vb: &Array2<f64>, funcs: &[u32], acc: &mut Array2<f64>) {
+fn scatter_sym(v: &[f64], funcs: &[u32], acc: &mut Array2<f64>) {
     let n = funcs.len();
     let nbf = acc.ncols();
-    let vb = vb.as_standard_layout();
-    let v = vb.as_slice().expect("standard layout");
+    debug_assert_eq!(v.len(), n * n);
     let acc_s = acc.as_slice_mut().expect("accumulator is contiguous");
     for i in 0..n {
         let fi = funcs[i] as usize;
@@ -530,29 +560,31 @@ fn batch_density_one(
     nb: usize,
     need_tau: bool,
 ) -> BatchDensity {
-    let nact = ao.nrows();
-    let ld = 4 * nb;
     let ncols = if need_tau { 4 * nb } else { nb };
-    let mut rho = vec![0.0_f64; nb];
-    let mut gx = vec![0.0_f64; nb];
-    let mut gy = vec![0.0_f64; nb];
-    let mut gz = vec![0.0_f64; nb];
-    let mut tau = Vec::new();
-    if nact == 0 {
-        if need_tau {
-            tau = vec![0.0_f64; nb];
-        }
-        return BatchDensity {
-            rho,
-            grad: [gx, gy, gz],
-            tau,
-        };
+    if ao.nrows() == 0 {
+        // No active function: every sum is empty (ρ = ∇ρ = τ = 0).
+        return batch_density_from_phi(ao, &[], nb, need_tau);
     }
     // Φ = D_sub · [χ | (∂χ)] — ONE GEMM, BLAS threads set once by
     // `integrate_*_exec` (1 on rayon workers; see `Exec`).
     let phi = dsub.apply(ao.slice(s![.., ..ncols]));
     let phi = phi.as_standard_layout();
-    let p = phi.as_slice().expect("standard layout");
+    batch_density_from_phi(ao, phi.as_slice().expect("standard layout"), nb, need_tau)
+}
+
+/// The point-local reductions of [`batch_density_one`] for a given row-major
+/// `Φ` (`(nact, ncols)`, `ncols = 4nb` with τ, else `nb`), wherever the GEMM
+/// that produced it ran.
+fn batch_density_from_phi(ao: &Array2<f64>, p: &[f64], nb: usize, need_tau: bool) -> BatchDensity {
+    let nact = ao.nrows();
+    let ld = 4 * nb;
+    let ncols = if need_tau { 4 * nb } else { nb };
+    debug_assert_eq!(p.len(), nact * ncols);
+    let mut rho = vec![0.0_f64; nb];
+    let mut gx = vec![0.0_f64; nb];
+    let mut gy = vec![0.0_f64; nb];
+    let mut gz = vec![0.0_f64; nb];
+    let mut tau = Vec::new();
     let a = ao.as_slice().expect("batch AO block is contiguous");
     let tn = if need_tau { nb } else { 0 };
     let mut t = [vec![0.0_f64; tn], vec![0.0_f64; tn], vec![0.0_f64; tn]];
@@ -616,44 +648,109 @@ fn batch_vxc_one(
     funcs: &[u32],
     nb: usize,
     fac: &BatchFactors,
-    has_gga: bool,
-    has_mgga: bool,
+    (has_gga, has_mgga, mixed): (bool, bool, bool),
     acc: &mut Array2<f64>,
 ) {
     let nact = ao.nrows();
     if nact == 0 {
         return;
     }
-    let ld = 4 * nb;
     let ncols = if has_mgga { 4 * nb } else { nb };
     let mut amat = Array2::<f64>::zeros((nact, ncols));
+    fill_amat(
+        ao,
+        nb,
+        fac,
+        (has_gga, has_mgga),
+        amat.as_slice_mut().expect("contiguous"),
+    );
+    let vb = vb_product(&amat, ao.slice(s![.., ..ncols]), mixed);
+    let vb = vb.as_standard_layout();
+    scatter_sym(vb.as_slice().expect("standard layout"), funcs, acc);
+}
+
+/// Process-wide count of V_xc passes that formed at least one batch product
+/// with the mixed `xc-vxc` kernel: on the device (a pass with at least one
+/// mixed wave) or, under the `MIXED_VXC_HOST_TWIN` test seam, with its host
+/// twin. A pass the ladder approved but that ran f64 throughout (every wave
+/// fell back, or the grid is declined) is not counted. Tests read deltas.
+#[doc(hidden)]
+pub static MIXED_VXC_BUILDS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn note_mixed_vxc_pass() {
+    MIXED_VXC_BUILDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// True when the CPU pass 2 forms mixed products with the host twin (the
+/// `test-seams` seam); always false in a shipped build.
+fn host_twin_active() -> bool {
+    #[cfg(feature = "test-seams")]
     {
-        let am = amat.as_slice_mut().expect("contiguous");
-        let a = ao.as_slice().expect("batch AO block is contiguous");
-        for mu in 0..nact {
-            let crow = &a[mu * ld..(mu + 1) * ld];
-            let arow = &mut am[mu * ncols..(mu + 1) * ncols];
-            for g in 0..nb {
-                let mut v = fac.s_half[g] * crow[g];
-                if has_gga {
-                    v += fac.f[0][g] * crow[nb + g];
-                    v += fac.f[1][g] * crow[2 * nb + g];
-                    v += fac.f[2][g] * crow[3 * nb + g];
-                }
-                arow[g] = v;
+        gpu::mixed_vxc_host_twin()
+    }
+    #[cfg(not(feature = "test-seams"))]
+    {
+        false
+    }
+}
+
+/// `V_b = A · Xᵀ` on the host. A `mixed` build under the `MIXED_VXC_HOST_TWIN`
+/// test seam forms it with the host twin of the device's `xc-vxc` kernel
+/// (operands rounded to f32, f32 panels summed in f64;
+/// `ferric_core::gpu::mixed_host`), so the kernel's error map and its effect on
+/// an SCF are measurable without a device. Otherwise (every shipped CPU build)
+/// it is the f64 product whatever `mixed` says: mixed precision is device-only.
+fn vb_product(amat: &Array2<f64>, x: ArrayView2<f64>, mixed: bool) -> Array2<f64> {
+    #[cfg(feature = "test-seams")]
+    if mixed && host_twin_active() {
+        let mut out = Array2::<f64>::zeros((amat.nrows(), x.nrows()));
+        ferric_core::gpu::mixed_host::gemm_f32_f64acc_host(
+            &amat.view(),
+            &x.t(),
+            &mut out.view_mut(),
+            ferric_core::gpu::mixed::effective_k_panel(),
+        );
+        return out;
+    }
+    let _ = mixed;
+    amat.dot(&x.t())
+}
+
+/// Write the pass-2 left factor `A` of one batch (row-major `(nact, ncols)`,
+/// `ncols = 4nb` for meta-GGA, else `nb`) into `am`.
+fn fill_amat(
+    ao: &Array2<f64>,
+    nb: usize,
+    fac: &BatchFactors,
+    (has_gga, has_mgga): (bool, bool),
+    am: &mut [f64],
+) {
+    let nact = ao.nrows();
+    let ld = 4 * nb;
+    let ncols = if has_mgga { 4 * nb } else { nb };
+    debug_assert_eq!(am.len(), nact * ncols);
+    let a = ao.as_slice().expect("batch AO block is contiguous");
+    for mu in 0..nact {
+        let crow = &a[mu * ld..(mu + 1) * ld];
+        let arow = &mut am[mu * ncols..(mu + 1) * ncols];
+        for g in 0..nb {
+            let mut v = fac.s_half[g] * crow[g];
+            if has_gga {
+                v += fac.f[0][g] * crow[nb + g];
+                v += fac.f[1][g] * crow[2 * nb + g];
+                v += fac.f[2][g] * crow[3 * nb + g];
             }
-            if has_mgga {
-                for ax in 0..3 {
-                    let off = (1 + ax) * nb;
-                    for g in 0..nb {
-                        arow[off + g] = fac.t_half[g] * crow[off + g];
-                    }
+            arow[g] = v;
+        }
+        if has_mgga {
+            for ax in 0..3 {
+                let off = (1 + ax) * nb;
+                for g in 0..nb {
+                    arow[off + g] = fac.t_half[g] * crow[off + g];
                 }
             }
         }
     }
-    let vb = amat.dot(&ao.slice(s![.., ..ncols]).t());
-    scatter_sym(&vb, funcs, acc);
 }
 
 /// How one Fock build is executed.
@@ -687,6 +784,9 @@ fn batch_vxc_one(
 pub(crate) struct Exec {
     serial: bool,
     blas: usize,
+    /// Pass 2 may use the device's mixed-precision `xc-vxc` kernel (see
+    /// `KsXc`'s precision ladder); ignored on the CPU, f64 by default.
+    mixed_vxc: bool,
 }
 
 impl Exec {
@@ -696,6 +796,7 @@ impl Exec {
             Self {
                 serial: true,
                 blas: ferric_integrals::blas_threads::opt_in_blas_threads(),
+                mixed_vxc: false,
             }
         } else {
             Self::parallel()
@@ -705,13 +806,19 @@ impl Exec {
         Self {
             serial: false,
             blas: 1,
+            mixed_vxc: false,
         }
+    }
+    /// This mode with pass 2 allowed (or not) to run in mixed precision.
+    pub(crate) fn with_mixed_vxc(self, mixed_vxc: bool) -> Self {
+        Self { mixed_vxc, ..self }
     }
     #[cfg(test)]
     pub(crate) fn serial_single_blas() -> Self {
         Self {
             serial: true,
             blas: 1,
+            mixed_vxc: false,
         }
     }
 }
@@ -748,6 +855,11 @@ pub(crate) struct ScreenedGrid {
     /// Resident compact AO blocks, one per batch; `None` = recompute.
     ao: Option<Vec<Array2<f64>>>,
     max_batch_pts: usize,
+    /// Device copy of the AO blocks and GEMM staging (feature `gpu`);
+    /// `Untried` until the first integration asks for it. A `Mutex` because
+    /// the integrations take `&self`; one lock per Fock build, uncontended.
+    #[cfg(feature = "gpu")]
+    device: std::sync::Mutex<gpu::DeviceSlot>,
 }
 
 impl ScreenedGrid {
@@ -809,6 +921,8 @@ impl ScreenedGrid {
             batches,
             ao: None,
             max_batch_pts: cfg.max_batch_pts.max(1),
+            #[cfg(feature = "gpu")]
+            device: Default::default(),
         })
     }
 
@@ -877,6 +991,35 @@ impl ScreenedGrid {
         }
     }
 
+    /// The device session for one integration: `None`/inert when this
+    /// integration runs on the CPU (no `gpu` feature, mode off, no device,
+    /// declined, called from a rayon worker). The first call uploads the AO
+    /// blocks.
+    fn device_session(&self, grid: &[GridPoint]) -> DevSession<'_> {
+        #[cfg(feature = "gpu")]
+        {
+            gpu::session(self, grid)
+        }
+        #[cfg(not(feature = "gpu"))]
+        {
+            let _ = grid;
+            std::marker::PhantomData
+        }
+    }
+
+    /// True when the KS XC GEMMs of this grid run on the device (the AO
+    /// blocks are uploaded and no failure has sent the grid back to the CPU).
+    pub(crate) fn on_device(&self) -> bool {
+        #[cfg(feature = "gpu")]
+        {
+            gpu::is_ready(self)
+        }
+        #[cfg(not(feature = "gpu"))]
+        {
+            false
+        }
+    }
+
     /// True when the compact AO blocks are resident.
     pub(crate) fn is_resident(&self) -> bool {
         self.ao.is_some()
@@ -907,6 +1050,93 @@ impl ScreenedGrid {
             gemm_fraction: gemm / (nbf * nbf * npts).max(1.0),
             resident: self.is_resident(),
         }
+    }
+
+    /// Pass 1 for the (spin) densities `ds`: `out[i][bi]` is batch `bi` of
+    /// density `i`. Runs the Φ GEMMs on the device when `dev` holds a ready
+    /// session (see `gpu`), otherwise on the CPU; a device failure falls back
+    /// to the CPU here, for this pass and every later one. Each batch's AO
+    /// block is fetched once for all densities (one evaluation in recompute
+    /// mode).
+    fn density_pass(
+        &self,
+        grid: &[GridPoint],
+        ds: &[DensityInput],
+        need_tau: bool,
+        serial: bool,
+        dev: &mut DevSession<'_>,
+    ) -> Result<Vec<Vec<BatchDensity>>, GtoEvalError> {
+        #[cfg(feature = "gpu")]
+        if let Some(parts) = gpu::density_pass(self, grid, ds, need_tau, serial, dev)? {
+            return Ok(parts);
+        }
+        let _ = dev;
+        let per_batch = map_indexed(serial, self.batches.len(), |bi| {
+            let b = &self.batches[bi];
+            let ao = self.batch_ao(bi, grid)?;
+            Ok(ds
+                .iter()
+                .map(|d| batch_density_one(&ao, &d.gather(&b.funcs), b.idx.len(), need_tau))
+                .collect::<Vec<_>>())
+        })?;
+        let mut out: Vec<Vec<BatchDensity>> = ds
+            .iter()
+            .map(|_| Vec::with_capacity(per_batch.len()))
+            .collect();
+        for parts in per_batch {
+            for (o, p) in out.iter_mut().zip(parts) {
+                o.push(p);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Pass 2: the `nmats` V matrices, `factors(batch, mat)` giving matrix
+    /// `mat`'s per-point factors. Same fixed-group ordered reduction on either
+    /// path; device dispatch and fallback as in [`Self::density_pass`].
+    fn potential_pass<F>(
+        &self,
+        grid: &[GridPoint],
+        nmats: usize,
+        factors: &F,
+        (has_gga, has_mgga): (bool, bool),
+        exec: Exec,
+        dev: &mut DevSession<'_>,
+    ) -> Result<Vec<Array2<f64>>, GtoEvalError>
+    where
+        F: Fn(&XcBatch, usize) -> BatchFactors + Sync,
+    {
+        // Meta-GGA τ is on the never-f32 list: refused here whatever the caller says.
+        let (serial, mixed) = (exec.serial, exec.mixed_vxc && !has_mgga);
+        #[cfg(feature = "gpu")]
+        if let Some(v) = gpu::potential_pass(
+            self,
+            grid,
+            nmats,
+            factors,
+            (has_gga, has_mgga),
+            exec.with_mixed_vxc(mixed),
+            dev,
+        )? {
+            return Ok(v);
+        }
+        let _ = dev;
+        if mixed && host_twin_active() {
+            note_mixed_vxc_pass();
+        }
+        self.reduce_groups(serial, nmats, |bi, accs| {
+            let b = &self.batches[bi];
+            if b.funcs.is_empty() {
+                return Ok(());
+            }
+            let nb = b.idx.len();
+            let ao = self.batch_ao(bi, grid)?;
+            for (mat, acc) in accs.iter_mut().enumerate() {
+                let fac = factors(b, mat);
+                batch_vxc_one(&ao, &b.funcs, nb, &fac, (has_gga, has_mgga, mixed), acc);
+            }
+            Ok(())
+        })
     }
 
     /// Fixed-grouping, ordered reduction of per-batch V contributions.
@@ -949,17 +1179,8 @@ impl ScreenedGrid {
     /// would race): 1 in the rayon-parallel mode, where every GEMM runs on a
     /// worker and a multi-threaded OpenBLAS oversubscribes (and has crashed
     /// before, see `blas_threads.rs`); `opt_in_blas_threads()` in the serial
-    /// mode. See `Exec` for when each is chosen and what is bit-identical.
-    pub(crate) fn integrate_closed(
-        &self,
-        grid: &[GridPoint],
-        d: DensityInput,
-        xc: &XcDef,
-    ) -> Result<(f64, Array2<f64>), GtoEvalError> {
-        self.integrate_closed_exec(grid, d, xc, Exec::auto())
-    }
-
-    /// [`Self::integrate_closed`] with an explicit execution mode.
+    /// mode. See `Exec` for when each is chosen and what is bit-identical
+    /// (`Exec::auto()` is the production mode), and for `mixed_vxc`.
     pub(crate) fn integrate_closed_exec(
         &self,
         grid: &[GridPoint],
@@ -967,9 +1188,7 @@ impl ScreenedGrid {
         xc: &XcDef,
         exec: Exec,
     ) -> Result<(f64, Array2<f64>), GtoEvalError> {
-        with_blas_threads(exec.blas, || {
-            self.integrate_closed_inner(grid, d, xc, exec.serial)
-        })
+        with_blas_threads(exec.blas, || self.integrate_closed_inner(grid, d, xc, exec))
     }
 
     fn integrate_closed_inner(
@@ -977,8 +1196,9 @@ impl ScreenedGrid {
         grid: &[GridPoint],
         d: DensityInput,
         xc: &XcDef,
-        serial: bool,
+        exec: Exec,
     ) -> Result<(f64, Array2<f64>), GtoEvalError> {
+        let serial = exec.serial;
         let npts = self.npts;
         assert_eq!(grid.len(), npts, "grid does not match the screened grid");
         assert!(d.nbf() == self.nbf && d.is_square(), "density matrix shape");
@@ -991,13 +1211,13 @@ impl ScreenedGrid {
             .iter()
             .any(|f| !matches!(f.family(), FunctionalFamily::Lda));
 
+        let mut dev = self.device_session(grid);
+
         // ── Pass 1: density, parallel over batches, disjoint output slots.
-        let parts: Vec<BatchDensity> = map_indexed(serial, self.batches.len(), |bi| {
-            let b = &self.batches[bi];
-            let ao = self.batch_ao(bi, grid)?;
-            let dsub = d.gather(&b.funcs);
-            Ok(batch_density_one(&ao, &dsub, b.idx.len(), has_mgga))
-        })?;
+        let parts = self
+            .density_pass(grid, &[d], has_mgga, serial, &mut dev)?
+            .pop()
+            .expect("one density");
         let mut rho = Array1::<f64>::zeros(npts);
         let mut grad = Array2::<f64>::zeros((3, npts));
         let mut tau = Array1::<f64>::zeros(if has_mgga { npts } else { 0 });
@@ -1026,11 +1246,7 @@ impl ScreenedGrid {
         let e_xc = deterministic_point_sum(npts, |g| grid[g].weight * dens.rho[g] * k.exc[g]);
 
         // ── Pass 2: V, fixed-group ordered reduction.
-        let mut v = self.reduce_groups(serial, 1, |bi, accs| {
-            let b = &self.batches[bi];
-            if b.funcs.is_empty() {
-                return Ok(());
-            }
+        let factors = |b: &XcBatch, _mat: usize| -> BatchFactors {
             let nb = b.idx.len();
             let mut fac = BatchFactors {
                 s_half: vec![0.0; nb],
@@ -1059,26 +1275,14 @@ impl ScreenedGrid {
                     }
                 }
             }
-            let ao = self.batch_ao(bi, grid)?;
-            batch_vxc_one(&ao, &b.funcs, nb, &fac, has_gga, has_mgga, &mut accs[0]);
-            Ok(())
-        })?;
+            fac
+        };
+        let mut v = self.potential_pass(grid, 1, &factors, (has_gga, has_mgga), exec, &mut dev)?;
         Ok((e_xc, v.pop().expect("one matrix")))
     }
 
     /// Spin-polarized `(E_xc, V_α, V_β)` for the spin density matrices. BLAS
-    /// threading and execution mode as in [`Self::integrate_closed`].
-    pub(crate) fn integrate_polarized(
-        &self,
-        grid: &[GridPoint],
-        d_a: DensityInput,
-        d_b: DensityInput,
-        xc: &XcDef,
-    ) -> Result<(f64, Array2<f64>, Array2<f64>), GtoEvalError> {
-        self.integrate_polarized_exec(grid, d_a, d_b, xc, Exec::auto())
-    }
-
-    /// [`Self::integrate_polarized`] with an explicit execution mode.
+    /// threading and execution mode as in [`Self::integrate_closed_exec`].
     pub(crate) fn integrate_polarized_exec(
         &self,
         grid: &[GridPoint],
@@ -1088,7 +1292,7 @@ impl ScreenedGrid {
         exec: Exec,
     ) -> Result<(f64, Array2<f64>, Array2<f64>), GtoEvalError> {
         with_blas_threads(exec.blas, || {
-            self.integrate_polarized_inner(grid, d_a, d_b, xc, exec.serial)
+            self.integrate_polarized_inner(grid, d_a, d_b, xc, exec)
         })
     }
 
@@ -1098,8 +1302,9 @@ impl ScreenedGrid {
         d_a: DensityInput,
         d_b: DensityInput,
         xc: &XcDef,
-        serial: bool,
+        exec: Exec,
     ) -> Result<(f64, Array2<f64>, Array2<f64>), GtoEvalError> {
+        let serial = exec.serial;
         let npts = self.npts;
         assert_eq!(grid.len(), npts, "grid does not match the screened grid");
         assert!(
@@ -1119,16 +1324,12 @@ impl ScreenedGrid {
             .iter()
             .any(|f| !matches!(f.family(), FunctionalFamily::Lda));
 
+        let mut dev = self.device_session(grid);
+
         // ── Pass 1.
-        let parts: Vec<(BatchDensity, BatchDensity)> =
-            map_indexed(serial, self.batches.len(), |bi| {
-                let b = &self.batches[bi];
-                let ao = self.batch_ao(bi, grid)?;
-                let nb = b.idx.len();
-                let pa = batch_density_one(&ao, &d_a.gather(&b.funcs), nb, has_mgga);
-                let pb = batch_density_one(&ao, &d_b.gather(&b.funcs), nb, has_mgga);
-                Ok((pa, pb))
-            })?;
+        let mut parts = self.density_pass(grid, &[d_a, d_b], has_mgga, serial, &mut dev)?;
+        let parts_b = parts.pop().expect("two densities");
+        let parts_a = parts.pop().expect("two densities");
         let mut rho_a = Array1::<f64>::zeros(npts);
         let mut rho_b = Array1::<f64>::zeros(npts);
         let mut grad_a = Array2::<f64>::zeros((3, npts));
@@ -1136,7 +1337,7 @@ impl ScreenedGrid {
         let tn = if has_mgga { npts } else { 0 };
         let mut tau_a = Array1::<f64>::zeros(tn);
         let mut tau_b = Array1::<f64>::zeros(tn);
-        for (b, (pa, pb)) in self.batches.iter().zip(&parts) {
+        for (b, (pa, pb)) in self.batches.iter().zip(parts_a.iter().zip(&parts_b)) {
             for (j, &gi) in b.idx.iter().enumerate() {
                 let g = gi as usize;
                 rho_a[g] = pa.rho[j];
@@ -1151,7 +1352,7 @@ impl ScreenedGrid {
                 }
             }
         }
-        drop(parts);
+        drop((parts_a, parts_b));
         let mut sigma = Array2::<f64>::zeros((3, npts));
         for g in 0..npts {
             let (ax, ay, az) = (grad_a[(0, g)], grad_a[(1, g)], grad_a[(2, g)]);
@@ -1184,7 +1385,8 @@ impl ScreenedGrid {
 
         // ── Pass 2. Spin σ gates on its own ρ_σ, exactly as the dense
         // `semilocal_vxc_polarized_scratch` `build` closure does.
-        let factors = |b: &XcBatch, alpha: bool| -> BatchFactors {
+        let factors = |b: &XcBatch, mat: usize| -> BatchFactors {
+            let alpha = mat == 0;
             let nb = b.idx.len();
             let (rho_s, vrho_s, vs_self, vtau_s, g_self, g_cross) = if alpha {
                 (
@@ -1235,19 +1437,7 @@ impl ScreenedGrid {
             }
             fac
         };
-        let mut v = self.reduce_groups(serial, 2, |bi, accs| {
-            let b = &self.batches[bi];
-            if b.funcs.is_empty() {
-                return Ok(());
-            }
-            let nb = b.idx.len();
-            let ao = self.batch_ao(bi, grid)?;
-            let fa = factors(b, true);
-            batch_vxc_one(&ao, &b.funcs, nb, &fa, has_gga, has_mgga, &mut accs[0]);
-            let fb = factors(b, false);
-            batch_vxc_one(&ao, &b.funcs, nb, &fb, has_gga, has_mgga, &mut accs[1]);
-            Ok(())
-        })?;
+        let mut v = self.potential_pass(grid, 2, &factors, (has_gga, has_mgga), exec, &mut dev)?;
         let v_b = v.pop().expect("two matrices");
         let v_a = v.pop().expect("two matrices");
         Ok((e_xc, v_a, v_b))
@@ -1383,6 +1573,81 @@ mod tests {
                  or a χ-only screen would pass this test"
             );
         }
+    }
+
+    /// The host twin of the device `xc-vxc` kernel (f32 operands, f32 panels of
+    /// 64 summed in f64) against the f64 `V_b = A·Xᵀ` on real batches of a
+    /// screened grid (water/cc-pVDZ AO values, GGA-shaped `A`; meta-GGAs never
+    /// run mixed): every element inside the documented bound
+    /// `|ΔV_ij| ≤ (ε_mixed(ncols, 64) + γ_ncols(u64))·(|A||X|ᵀ)_ij`, and the
+    /// twin not identical to f64 (the comparison is live). The potential
+    /// factors in `A` are synthetic sine waves, not functional output, so the
+    /// printed worst ratio to the bound (0.10 when measured) describes these
+    /// operands, not an SCF.
+    #[test]
+    fn mixed_vxc_host_twin_stays_inside_its_elementwise_bound() {
+        use ferric_core::gpu::mixed_host::{gamma, gemm_f32_f64acc_host, mixed_error_factor, U64};
+        let mol = ferric_core::mol::Molecule::parse_xyz(
+            "3\nH2O\nO 0 0 0\nH 0 0.7572 0.5868\nH 0 -0.7572 0.5868\n",
+            0,
+            1,
+        )
+        .unwrap();
+        let bs = ferric_core::basis::bundled("cc-pvdz").unwrap();
+        let cfg = crate::grid::AtomicGridConfig {
+            n_radial: 30,
+            n_angular: 50,
+            ..Default::default()
+        };
+        let grid = crate::grid::build_atomic_grid_pruned(&mol, &cfg, None).unwrap();
+        let shells = crate::ao_grid::collect_shells(&mol, &bs).unwrap();
+        let nbf = crate::ao_grid::nbasis(&mol, &bs).unwrap();
+        let sg = ScreenedGrid::build(&grid, owned_shells(&shells), nbf, &XcBatchConfig::default())
+            .unwrap();
+        let mut worst = 0.0_f64;
+        let mut changed = false;
+        for bi in (0..sg.batches.len()).step_by(7) {
+            let b = &sg.batches[bi];
+            let (na, nb) = (b.funcs.len(), b.idx.len());
+            if na == 0 {
+                continue;
+            }
+            let ao = sg.eval_batch(bi, &grid).unwrap();
+            for mgga in [false] {
+                let wave = |j: usize, s: f64| ((j as f64 * 0.37 + s).sin()) * 0.3;
+                let fac = BatchFactors {
+                    s_half: (0..nb).map(|j| wave(j, 0.1)).collect(),
+                    f: [
+                        (0..nb).map(|j| wave(j, 1.0)).collect(),
+                        (0..nb).map(|j| wave(j, 2.0)).collect(),
+                        (0..nb).map(|j| wave(j, 3.0)).collect(),
+                    ],
+                    t_half: (0..nb).map(|j| wave(j, 4.0).abs()).collect(),
+                };
+                let nc = if mgga { 4 * nb } else { nb };
+                let mut a = Array2::<f64>::zeros((na, nc));
+                fill_amat(&ao, nb, &fac, (true, mgga), a.as_slice_mut().unwrap());
+                let x = ao.slice(s![.., ..nc]);
+                let exact = a.dot(&x.t());
+                let mut twin = Array2::<f64>::zeros((na, na));
+                gemm_f32_f64acc_host(&a.view(), &x.t(), &mut twin.view_mut(), 64);
+                let mag = a.mapv(f64::abs).dot(&x.mapv(f64::abs).t());
+                let eps = (mixed_error_factor(nc, 64) + gamma(nc, U64)) * 1.01;
+                for ((t, e), m) in twin.iter().zip(exact.iter()).zip(mag.iter()) {
+                    let err = (t - e).abs();
+                    assert!(err <= eps * m, "batch {bi}: |dV| {err:e} > {:e}", eps * m);
+                    if *m > 0.0 {
+                        worst = worst.max(err / (eps * m));
+                    }
+                    changed |= t != e;
+                }
+            }
+        }
+        assert!(
+            changed,
+            "the twin reproduced f64 exactly: the comparison is not live"
+        );
+        eprintln!("worst |dV| / bound = {worst:.3e}");
     }
 
     /// Catches: the serial execution mode (one-thread rayon pool, BLAS opt-in)

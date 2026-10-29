@@ -202,3 +202,24 @@ fn shipping_rimp2_energy_leaves_the_default_f64_and_admits_mixed_with_a_device_m
         "{e}"
     );
 }
+
+/// The opt-in `xc-vxc` from a TOML `[gpu]` section: refused under `mode =
+/// "auto"` with an error naming `mode = "on"` (its consumer, the KS XC grid,
+/// runs on the device only under `on`, so `auto` would report mixed xc-vxc
+/// while running f64 on the CPU).
+#[test]
+fn opt_in_xc_vxc_under_auto_is_refused_naming_mode_on() {
+    let _g = device_lock();
+    let out = run_toml(
+        "prec_xc_vxc_auto",
+        &format!(
+            "{WATER}\n[gpu]\nmode = \"auto\"\nprecision = \"mixed\"\nmixed_kernels = [\"rimp2-energy\", \"xc-vxc\"]\n"
+        ),
+    );
+    assert!(!out.status.success(), "{}", stderr(&out));
+    let e = stderr(&out);
+    assert!(
+        e.contains("xc-vxc is opt-in and needs [gpu] mode = \"on\""),
+        "{e}"
+    );
+}

@@ -25,7 +25,7 @@
 //! accumulate on the host would move ⌈k/b⌉·4 bytes per output element instead
 //! of 8 (4x the traffic at k = 912, b = 128: ⌈912/128⌉ = 8 panels, 8·4/8).
 use cudarc::cublas::{Gemm, GemmConfig};
-use cudarc::driver::{CudaSlice, LaunchConfig, PushKernelArg};
+use cudarc::driver::{CudaSlice, CudaViewMut, LaunchConfig, PushKernelArg};
 use ndarray::{ArrayView2, ArrayViewMut2};
 
 use super::device::{Device, GpuError};
@@ -103,6 +103,29 @@ pub fn gemm_f32_f64acc_dev(
     c64: &mut CudaSlice<f64>,
     k_panel: usize,
 ) -> Result<usize, GpuError> {
+    gemm_f32_f64acc_dev_into(
+        dev,
+        (m, k, n),
+        left,
+        right,
+        &mut c32.slice_mut(..),
+        &mut c64.slice_mut(..),
+        k_panel,
+    )
+}
+
+/// [`gemm_f32_f64acc_dev`] writing into sub-ranges of larger device buffers
+/// (the first m·n elements of `c32` and `c64`; only those are written), so many
+/// small products can share one staging allocation. Same checks, same numerics.
+pub fn gemm_f32_f64acc_dev_into(
+    dev: &Device,
+    (m, k, n): (usize, usize, usize),
+    left: &DevOperand<'_, f32>,
+    right: &DevOperand<'_, f32>,
+    c32: &mut CudaViewMut<'_, f32>,
+    c64: &mut CudaViewMut<'_, f64>,
+    k_panel: usize,
+) -> Result<usize, GpuError> {
     let cuda = |e: std::fmt::Arguments| GpuError::Cuda(e.to_string());
     check_dev_geometry(
         m,
@@ -118,7 +141,7 @@ pub fn gemm_f32_f64acc_dev(
         return Ok(0); // empty product: nothing to compute, nothing to write
     }
     let s = &dev.stream;
-    s.memset_zeros(c64)
+    s.memset_zeros(&mut c64.slice_mut(..m * n))
         .map_err(|e| cuda(format_args!("memset c64: {e:?}")))?;
     if k == 0 {
         return Ok(0); // c64 is now the zero matrix
@@ -155,7 +178,7 @@ pub fn gemm_f32_f64acc_dev(
         unsafe {
             s.launch_builder(func)
                 .arg(&mut *c64)
-                .arg(&*c32)
+                .arg(&mut *c32)
                 .arg(&n_elems)
                 .launch(launch)
         }
