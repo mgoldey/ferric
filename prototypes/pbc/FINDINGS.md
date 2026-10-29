@@ -6178,6 +6178,75 @@ prediction, outside every band).
   still ~20-25% of the residual at n = 6. Readings (i) and (ii) remain unseparated.
 - Not measured: n >= 5 shifted; E3d on shifted meshes; a = 10; the Z3 2x2x2 all-axis PySCF leg.
 
+### Addendum 2026-10-29: FIQ pre-registration and step 0 (issue #230)
+
+Written and committed before any FIQ number (any off-mesh value of the integrand) existed. The full statement is
+the module docstring of `prototypes/pbc/kmp2_head/fiq.py`. The design is the #230 comment of 2026-10-29.
+
+**Construction.** Fixed Inner problem, q-refined (FIQ):
+- Hold fixed the n0 = 3 SCF orbitals, the inner k mesh and bloch_head's band interpolant ('none').
+- Vary only q. The direct channel is 2|V|^2/D = 2 x OS of `cheap_account.kmp2_split`.
+- Stage 1 statistic: Delta = P_num - P_code.
+  - P_num = -Phi[F_lim - r0], the numerical q -> 0 limit of the real integrand. It is Richardson-extrapolated in
+    t^2 and projected on Lebedev 50 (Lebedev 38 as the check).
+  - P_code = -n^3 (L_dir + Qlat_dir), the coded head with Bloch-paired ('true') vectors.
+
+**Step 0 measured** (npz only; `fiq.py step0`, `fiq.py step0n5`). X = (E3d - E_inf) n^3. E_inf is computed per
+channel from the shifted S at n = 3, 4.
+
+| X (x n^-3) | z n0 = 3 | z n0 = 4 | [111] n0 = 3 | [111] n0 = 4 |
+|---|---|---|---|---|
+| direct, fixed ERI head, fixed Fock head | +2.1295e-4 | +2.0400e-4 | -7.8889e-5 | -9.2158e-5 |
+| direct, true ERI, fixed Fock | +2.6128e-4 | +2.4221e-4 | -6.6006e-5 | -8.5770e-5 |
+| **direct, true ERI, true Fock (PRIMARY X_dir)** | **+2.4835e-4** | +2.2244e-4 | **-8.6531e-5** | (no dK npz) |
+| total, fixed, fixed (anchor = FINDINGS) | -5.5494e-5 | -5.5368e-5 | -1.8376e-4 | -1.8861e-4 |
+| total, true, true | -4.0171e-5 | -4.7312e-5 | -1.8373e-4 | |
+| P_code, direct, true vectors | +3.9990e-3 | +4.0122e-3 | +5.3606e-3 | +5.3734e-3 |
+| P_code, direct, fixed vectors | +4.0473e-3 | +4.0504e-3 | +5.3734e-3 | +5.3798e-3 |
+
+- Anchors: the sh, cub1 and fock rows are reproduced to < 1e-14. Qall_OS x 2 == Qc. The fixed-k dK diagonal / 2
+  == npz deo/dev to 9e-19.
+- Orbital relaxation (FINDINGS (e)) has no channel split and needs the V_AO kernels, so it is not included.
+
+z, fixed variant, from the n = 5 npz:
+
+| | n = 3 | n = 4 | n = 5 | rho = D45/D34 | 3-point c3 (c5) | (3,4) c3 |
+|---|---|---|---|---|---|---|
+| E3d direct | -2.652973815e-2 | -2.653443764e-2 | -2.653396195e-2 | -0.101 | -4.64e-4 (+4.66e-3) | +2.19e-4 |
+| E3d exchange | +1.317054457e-2 | +1.317643428e-2 | +1.317656100e-2 | +0.022 | +3.51e-4 (-4.27e-3) | -2.75e-4 |
+| E3d total | -1.335919358e-2 | -1.335800336e-2 | -1.335740095e-2 | +0.506 | -1.124e-4 (+3.87e-4) | -5.56e-5 |
+| S direct | -2.633059156e-2 | -2.645028286e-2 | -2.649084618e-2 | +0.339 | +4.94e-3 | +5.59e-3 |
+
+Pure n^-3 gives rho = 0.356. The total row reproduces e3d_n5.py.
+
+**Step-0 observations (provisional, 2026-10-29).**
+- The design assumed that the direct-channel residual is about the total, -5.8e-5 (z) and -2.0e-4 ([111]). It is not:
+  - at z the direct and exchange residuals are each about 4-5x the total, with opposite signs;
+  - the direct-channel E3d is not monotone over n = 3..5, so the sign of X_dir(z) depends on the E_inf model.
+- Candidate (untested): a per-channel parity term that largely cancels in the sum, like the ~1.4e-7 parity of E1.
+
+**Bands (direct channel, n0 = 3).**
+- "~ X": Delta in [0.45, 1.45] X_dir, same sign.
+  - z: [+1.118e-4, +3.601e-4].
+  - [111]: [-1.255e-4, -3.894e-5].
+- "~ 0": |Delta| <= 0.15 |X|min, where |X|min is the smallest magnitude among the table's definitions.
+  - z: 4.017e-5, giving <= 6.03e-6.
+  - [111]: 6.601e-5, giving <= 9.90e-6.
+  - This is stricter than 0.15 |X_dir|, chosen because X_dir is E_inf-fragile.
+- Precision gates (UNDETERMINED if any fails):
+  - two t-sets: <= 0.05 |X|min;
+  - Lebedev 50 vs 38: <= 0.05 |X|min;
+  - 'ewald' vs 'none' interpolant: <= 0.3 |X|min.
+- Anchors: A0, A1, A2, A4 and A5, as in the docstring.
+- Reachability: injected l = 4 and l = 0 terms of size X_dir must be recovered within 0.05 |X|min.
+- Mutants: no Duffy Jacobian, wrong Bloch phase, interpolant without the Wigner-Seitz half weights. Each must fail an
+  anchor.
+
+**Decision (Stage 1; z and [111] must land in the same row).**
+- Both "~ 0": ERI-side (i) is REFUTED. Stage 2 then separates (ii)-ERI from the mean-field side.
+- Both "~ X": (i) is indicated but reported as UNDETERMINED, pending an E_inf-robust X_dir(z).
+- Anything else: UNDETERMINED.
+
 ## Full timing series on libint 2.13.1: MWE, baseline, ω sweep, column rotation (measured 2026-09-30 16:25-16:55, head 24c53e63)
 
 The box had desktop load (Chrome), so the gate was relaxed to a 1-minute load below 2.5. Start loads were 1.6-2.5.
