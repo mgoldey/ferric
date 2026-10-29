@@ -1523,7 +1523,10 @@ impl std::ops::Div for Dual {
     type Output = Dual;
     fn div(self, o: Dual) -> Dual {
         let q = self.v / o.v;
-        Dual { v: q, d: (self.d - q * o.d) / o.v }
+        Dual {
+            v: q,
+            d: (self.d - q * o.d) / o.v,
+        }
     }
 }
 impl std::ops::AddAssign for Dual {
