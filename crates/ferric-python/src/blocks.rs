@@ -100,6 +100,15 @@ fn asymmetry(a: &Array2<f64>, what: &str) -> PyResult<f64> {
         .fold(0.0f64, |m, (x, y)| m.max((x - y).abs())))
 }
 
+/// Stack `m.len()` (n, n) matrices into an (m.len(), n, n) array.
+fn stack(m: Vec<Array2<f64>>, n: usize) -> Array3<f64> {
+    let mut out = Array3::<f64>::zeros((m.len(), n, n));
+    for (mut dst, src) in out.outer_iter_mut().zip(m) {
+        dst.assign(&src);
+    }
+    out
+}
+
 /// Copy a matrix and check it is `(n, n)` and finite.
 fn checked_square(m: PyReadonlyArray2<'_, f64>, n: usize, what: &str) -> PyResult<Array2<f64>> {
     let m = m.as_array().to_owned();
@@ -747,6 +756,111 @@ impl PyAoIntegrals {
         Ok((
             PyArray2::from_owned_array(py, gj),
             PyArray2::from_owned_array(py, gk),
+        ))
+    }
+    /// Nuclear-repulsion Hessian ∂²V_nn/∂x∂y, shape (3N, 3N), Hartree/Bohr²,
+    /// index `3·atom + xyz` (as every `hess_*` / `*_deriv` block).
+    fn hess_nuclear_repulsion<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
+        let h = ferric_scf::hessian::hess_nuclear_repulsion(&self.mol);
+        PyArray2::from_owned_array(py, h)
+    }
+    /// Σ D_μν ∂²h_μν/∂x∂y at fixed D, (3N, 3N): kinetic, nuclear attraction
+    /// and V_ECP. `D` is the TOTAL density.
+    fn hess_hcore<'py>(
+        &self,
+        py: Python<'py>,
+        density: PyReadonlyArray2<'py, f64>,
+    ) -> PyResult<Bound<'py, PyArray2<f64>>> {
+        let d = checked_density(density, self.prep.nbasis())?;
+        let (mol, prep) = (&self.mol, &self.prep);
+        let h = py
+            .allow_threads(|| ferric_scf::hessian::blocks::hess_hcore(mol, prep, &d))
+            .map_err(make_err)?;
+        Ok(PyArray2::from_owned_array(py, h))
+    }
+    /// Σ W_μν ∂²S_μν/∂x∂y, (3N, 3N), for any (n, n) `W`, used as given (no
+    /// sign: an SCF Hessian subtracts it at the energy-weighted density).
+    fn hess_overlap<'py>(
+        &self,
+        py: Python<'py>,
+        w: PyReadonlyArray2<'py, f64>,
+    ) -> PyResult<Bound<'py, PyArray2<f64>>> {
+        let w = checked_square(w, self.prep.nbasis(), "W")?;
+        let (natoms, prep) = (self.mol.atoms.len(), &self.prep);
+        let h = py
+            .allow_threads(|| ferric_scf::hessian::blocks::hess_overlap(prep, natoms, &w))
+            .map_err(make_err)?;
+        Ok(PyArray2::from_owned_array(py, h))
+    }
+    /// `(hJ, hK)`, each (3N, 3N): the second integral derivatives of
+    /// ½Tr[D J(D)] and ½Tr[D K(D)] at fixed D, the Hessian twins of
+    /// `grad_jk` (closed-shell HF: hJ - 0.5 hK; UHF: hJ(D_a + D_b) - hK(D_a)
+    /// - hK(D_b)). Exact four-centre integrals only.
+    #[pyo3(signature = (density, operator="coulomb", omega=None))]
+    fn hess_jk<'py>(
+        &self,
+        py: Python<'py>,
+        density: PyReadonlyArray2<'py, f64>,
+        operator: &str,
+        omega: Option<f64>,
+    ) -> PyResult<(Bound<'py, PyArray2<f64>>, Bound<'py, PyArray2<f64>>)> {
+        let op = parse_operator(operator, omega)?;
+        let d = checked_density(density, self.prep.nbasis())?;
+        let (natoms, prep) = (self.mol.atoms.len(), &self.prep);
+        let (hj, hk) = py
+            .allow_threads(|| -> Result<_, FerricError> {
+                let bounds = SchwarzBounds::compute(op, prep)?;
+                ferric_scf::hessian::blocks::hess_jk(prep, op, &bounds, natoms, &d)
+            })
+            .map_err(make_err)?;
+        Ok((
+            PyArray2::from_owned_array(py, hj),
+            PyArray2::from_owned_array(py, hk),
+        ))
+    }
+    /// ∂h/∂x for every nuclear coordinate, shape (3N, n, n): kinetic,
+    /// nuclear attraction (including the nuclear-centre derivative) and
+    /// V_ECP. With `overlap_deriv` and `jk_deriv`, the first-order Fock
+    /// matrix of a CPHF right-hand side.
+    fn hcore_deriv<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray3<f64>>> {
+        let (mol, prep) = (&self.mol, &self.prep);
+        let m = py
+            .allow_threads(|| ferric_scf::hessian::blocks::hcore_deriv(mol, prep))
+            .map_err(make_err)?;
+        Ok(PyArray3::from_owned_array(py, stack(m, prep.nbasis())))
+    }
+    /// ∂S/∂x for every nuclear coordinate, shape (3N, n, n).
+    fn overlap_deriv<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray3<f64>>> {
+        let (natoms, prep) = (self.mol.atoms.len(), &self.prep);
+        let m = py
+            .allow_threads(|| ferric_scf::hessian::blocks::overlap_deriv(prep, natoms))
+            .map_err(make_err)?;
+        Ok(PyArray3::from_owned_array(py, stack(m, prep.nbasis())))
+    }
+    /// `(Jx, Kx)`, each (3N, n, n): `Jx[x] = Σ ∂(μν|λσ)/∂x D_λσ` and
+    /// `Kx[x] = Σ ∂(μλ|νσ)/∂x D_λσ`, the integral-derivative part of the
+    /// first-order Fock matrix at fixed D (closed-shell HF: Jx - 0.5 Kx).
+    #[pyo3(signature = (density, operator="coulomb", omega=None))]
+    fn jk_deriv<'py>(
+        &self,
+        py: Python<'py>,
+        density: PyReadonlyArray2<'py, f64>,
+        operator: &str,
+        omega: Option<f64>,
+    ) -> PyResult<(Bound<'py, PyArray3<f64>>, Bound<'py, PyArray3<f64>>)> {
+        let op = parse_operator(operator, omega)?;
+        let d = checked_density(density, self.prep.nbasis())?;
+        let (natoms, prep) = (self.mol.atoms.len(), &self.prep);
+        let (j, k) = py
+            .allow_threads(|| -> Result<_, FerricError> {
+                let bounds = SchwarzBounds::compute(op, prep)?;
+                ferric_scf::hessian::blocks::jk_deriv(prep, op, &bounds, natoms, &d)
+            })
+            .map_err(make_err)?;
+        let n = prep.nbasis();
+        Ok((
+            PyArray3::from_owned_array(py, stack(j, n)),
+            PyArray3::from_owned_array(py, stack(k, n)),
         ))
     }
     /// The exchange-correlation functional `functional` on the grid

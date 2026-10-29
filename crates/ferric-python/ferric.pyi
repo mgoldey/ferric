@@ -510,6 +510,39 @@ class AoIntegrals:
         gJ - 0.5 gK; UHF: gJ(Da+Db) - gK(Da) - gK(Db). aux: the df_jk(aux)
         fits instead (an SCF with df_j_aux=df_k_aux=aux)."""
         ...
+    def hess_nuclear_repulsion(self) -> NDArray[np.float64]:
+        """d2 V_nn / dx dy, shape (3N, 3N), Hartree/Bohr^2, index 3*atom + xyz."""
+        ...
+    def hess_hcore(self, density: NDArray[np.float64]) -> NDArray[np.float64]:
+        """sum D d2h/dx dy at fixed D (kinetic, nuclear attraction, V_ECP), (3N, 3N)."""
+        ...
+    def hess_overlap(self, w: NDArray[np.float64]) -> NDArray[np.float64]:
+        """sum W d2S/dx dy, (3N, 3N), W used as given (an SCF subtracts it)."""
+        ...
+    def hess_jk(
+        self,
+        density: NDArray[np.float64],
+        operator: Literal["coulomb", "erf", "erfc"] = "coulomb",
+        omega: float | None = None,
+    ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+        """(hJ, hK) = second integral derivatives of 1/2 Tr[D J(D)] and
+        1/2 Tr[D K(D)] at fixed D, each (3N, 3N). Closed-shell HF: hJ - 0.5 hK."""
+        ...
+    def hcore_deriv(self) -> NDArray[np.float64]:
+        """dh/dx for every nuclear coordinate, (3N, nao, nao), incl. V_ECP."""
+        ...
+    def overlap_deriv(self) -> NDArray[np.float64]:
+        """dS/dx for every nuclear coordinate, (3N, nao, nao)."""
+        ...
+    def jk_deriv(
+        self,
+        density: NDArray[np.float64],
+        operator: Literal["coulomb", "erf", "erfc"] = "coulomb",
+        omega: float | None = None,
+    ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+        """(Jx, Kx), each (3N, nao, nao): sum d(mn|ls)/dx D_ls and
+        sum d(ml|ns)/dx D_ls. Closed-shell first-order Fock: hcore_deriv + Jx - 0.5 Kx."""
+        ...
     def veff(
         self,
         density: NDArray[np.float64],

@@ -2917,6 +2917,129 @@ fn frequencies_from_parts(
     Ok(result)
 }
 
+/// Fixed-density pieces of the analytic SCF Hessian, for assembling one
+/// outside ferric (the Python `AoIntegrals.hess_*` / `*_deriv` blocks). Every
+/// function wraps the term [`rhf_hessian_parts`] itself uses, nuclei only (no
+/// external charges or field); index `3·atom + xyz` throughout.
+pub mod blocks {
+    use super::*;
+
+    /// `Σ D_μν ∂²h_μν/∂x∂y`, (3N, 3N): kinetic, nuclear attraction (basis-
+    /// and nuclear-centre derivatives) and V_ECP. Term 2 of [`RhfHessianParts`].
+    pub fn hess_hcore(
+        mol: &Molecule,
+        prep: &PreparedBasis,
+        d: &Array2<f64>,
+    ) -> Result<Array2<f64>, FerricError> {
+        if let Some(what) = ecp_refusal(mol, prep) {
+            return Err(FerricError::General(format!(
+                "hess_hcore: not supported for {what}"
+            )));
+        }
+        let mut h = skeleton_hess_1e_nuclei(prep, mol.atoms.len(), d)?;
+        if has_ecp(mol, prep.basis_set()) {
+            h += &ecp_skeleton_hessian(mol, prep.basis_set(), d)?;
+        }
+        Ok(h)
+    }
+
+    /// `Σ W_μν ∂²S_μν/∂x∂y`, (3N, 3N), for any W, with no sign (term 3 of
+    /// [`RhfHessianParts`] is its negative at the energy-weighted density).
+    pub fn hess_overlap(
+        prep: &PreparedBasis,
+        natoms: usize,
+        w: &Array2<f64>,
+    ) -> Result<Array2<f64>, FerricError> {
+        contract_1e_deriv2(prep, natoms, &[], ffi::OP_OVERLAP, w)
+    }
+
+    /// `(hJ, hK)`, each (3N, 3N): the second integral derivatives of
+    /// `½Tr[D J(D)]` and `½Tr[D K(D)]` at fixed D (closed-shell term 4 is
+    /// `hJ − ½hK`).
+    pub fn hess_jk(
+        prep: &PreparedBasis,
+        op: Operator,
+        bounds: &SchwarzBounds,
+        natoms: usize,
+        d: &Array2<f64>,
+    ) -> Result<(Array2<f64>, Array2<f64>), FerricError> {
+        let m = max_abs(d);
+        let gam_j = |mu, nu, la, sg| 0.5 * d[(mu, nu)] * d[(la, sg)];
+        let gam_k = |mu, nu, la, sg| 0.5 * d[(mu, la)] * d[(nu, sg)];
+        let hj = skeleton_hess_2e(prep, op, bounds, natoms, m, &gam_j)?;
+        let hk = skeleton_hess_2e(prep, op, bounds, natoms, m, &gam_k)?;
+        Ok((hj, hk))
+    }
+
+    /// `∂h/∂x` as AO matrices (length 3N): kinetic, nuclear attraction
+    /// (including the nuclear-centre derivatives) and V_ECP.
+    pub fn hcore_deriv(
+        mol: &Molecule,
+        prep: &PreparedBasis,
+    ) -> Result<Vec<Array2<f64>>, FerricError> {
+        let natoms = mol.atoms.len();
+        let mut h1 = deriv1_1e_matrices(prep, natoms, &[], ffi::OP_KINETIC)?;
+        for (h, v) in h1
+            .iter_mut()
+            .zip(deriv1_1e_matrices(prep, natoms, &[], ffi::OP_NUCLEAR)?)
+        {
+            *h += &v;
+        }
+        if has_ecp(mol, prep.basis_set()) {
+            for (h, v) in h1
+                .iter_mut()
+                .zip(ecp_first_derivative_matrices(mol, prep.basis_set())?)
+            {
+                *h += &v;
+            }
+        }
+        Ok(h1)
+    }
+
+    /// `∂S/∂x` as AO matrices (length 3N).
+    pub fn overlap_deriv(
+        prep: &PreparedBasis,
+        natoms: usize,
+    ) -> Result<Vec<Array2<f64>>, FerricError> {
+        deriv1_1e_matrices(prep, natoms, &[], ffi::OP_OVERLAP)
+    }
+
+    /// `(J^x, K^x)` (each length 3N) with `J^x_μν = Σ ∂(μν|λσ)/∂x D_λσ` and
+    /// `K^x_μν = Σ ∂(μλ|νσ)/∂x D_λσ`: the integral-derivative part of the
+    /// first-order Fock matrix at fixed D (closed shell `J^x − ½K^x`).
+    pub fn jk_deriv(
+        prep: &PreparedBasis,
+        op: Operator,
+        bounds: &SchwarzBounds,
+        natoms: usize,
+        d: &Array2<f64>,
+    ) -> Result<(Vec<Array2<f64>>, Vec<Array2<f64>>), FerricError> {
+        let zero = Array2::<f64>::zeros(d.dim());
+        let specs = [
+            FockSpec {
+                coulomb: d,
+                exchange: &zero,
+                k_scale: 0.0,
+            },
+            // G = J − k·K with J = 0 and k = 1 is −K.
+            FockSpec {
+                coulomb: &zero,
+                exchange: d,
+                k_scale: 1.0,
+            },
+        ];
+        let mut g = deriv1_g_matrices(prep, op, bounds, natoms, &specs)?;
+        let k = g
+            .pop()
+            .expect("two specs")
+            .into_iter()
+            .map(|m| -m)
+            .collect();
+        let j = g.pop().expect("two specs");
+        Ok((j, k))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
