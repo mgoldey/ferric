@@ -76,12 +76,22 @@ def test_every_flock_acquisition_closes_the_lock_fd_in_the_command():
 
     The clearer above cannot help once other gates are queued, because their
     waiting flocks count as real consumers (#591: five pushes stuck 20-33 min).
+
+    Two accepted shapes: the wrapper form `flock -o ... FILE CMD`, or the fd
+    form `flock -w ... "$fd"` (#593's run_locked, where a subshell holds the
+    lock) followed by a command that closes the fd with `{fd}>&-`. The
+    behaviour itself is pinned in test_ci_gate_timeout_starts_after_the_lock.py.
     """
-    missing = [
-        ln.strip()
-        for ln in _lines()
-        if re.search(ACQUIRE, ln)
-        and not ln.lstrip().startswith("#")
-        and not re.search(r"\bflock\b[^\n]*\s-o\b", ln)
-    ]
-    assert not missing, f"flock acquisitions without -o: {missing}"
+    lines = _lines()
+    missing = []
+    for i, ln in enumerate(lines):
+        if not re.search(ACQUIRE, ln) or ln.lstrip().startswith("#"):
+            continue
+        if re.search(r"\bflock\b[^\n]*\s-o\b", ln):
+            continue
+        fd = re.search(r'"\$(\w+)"\s*$', ln)
+        after = "\n".join(lines[i + 1 : i + 8])
+        if fd and re.search(r"\{" + fd.group(1) + r"\}>&-", after):
+            continue
+        missing.append(ln.strip())
+    assert not missing, f"flock acquisitions that leak the lock fd: {missing}"

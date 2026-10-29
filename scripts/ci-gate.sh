@@ -176,6 +176,10 @@ fi
 echo "   per-step timeout: ${TIMEOUT_SECS}s (CI_GATE_TIMEOUT_SECS to change)"
 echo
 
+# The gate's own stdout, kept so run_locked's notes are not captured by a
+# step's redirect (clippy sends stdout+stderr to its JSON file).
+exec {GATE_OUT_FD}>&1
+
 FAILED=0
 STEP_TIMED_OUT=0          # (b) a step got the lock, then ran past TIMEOUT_SECS
 STEP_LOCK_WAIT_EXPIRED=0  # (a) a step never got the lock; it did NOT run
@@ -203,18 +207,83 @@ ferric_clear_stale_sccache_lock "$LOCK_FILE"
 # with several gates waiting a step could be killed before it ever ran and be
 # reported as "TIMEOUT under heavy load" (2026-10-28: five queued gates).
 #
-# Signals: timeout puts itself and the command in a new process group and
-# sends TERM (then KILL after 30 s) to that whole group, so cargo/rustc and
-# test binaries die with it. flock sits outside that group and only waits;
-# with -o it does not pass the lock fd to the command, so the lock is released
-# the moment timeout returns and flock exits.
+# WHO HOLDS THE LOCK. A subshell opens the lock file and takes the lock on that
+# fd, so the lock lives exactly as long as the subshell. The command gets the
+# fd closed ({lock_fd}>&-, which is what -o did in the wrapper form), so
+# sccache cannot inherit and squat it.
+#
+# SIGNALS. `timeout` moves itself and the command into a NEW process group, so
+# a Ctrl-C / SIGHUP / SIGTERM aimed at the gate's group does not reach the
+# build. The subshell does get it. It must not just die: with the lock gone,
+# the next queued gate would build alongside the orphaned one (review of #593,
+# reproduced). It traps INT/TERM/HUP and forwards TERM to `timeout`, which
+# signals its whole group (cargo, rustc, test binaries) and sends KILL 30 s
+# later. Expiry works the same way: timeout TERMs, then KILLs, its group. After
+# either, the subshell waits until that group is EMPTY (KILLing it after 30 s),
+# and only then exits and releases the lock. It then re-raises the signal, so
+# the gate stops instead of moving on to the next step. SIGKILL cannot be
+# trapped; a SIGKILL to the gate's group still orphans the build.
 #
 # Returns the command's status, 124/137 for a timeout, or LOCK_WAIT_EXPIRED_RC
 # when the wait expired and the command never started.
 run_locked() {
-    ferric_clear_stale_sccache_lock "$LOCK_FILE"
-    flock -o -w "$LOCK_WAIT_SECS" -E "$LOCK_WAIT_EXPIRED_RC" "$LOCK_FILE" \
-        timeout --signal=TERM --kill-after=30 "${TIMEOUT_SECS}" bash -c "$*"
+    ferric_clear_stale_sccache_lock "$LOCK_FILE" >&"$GATE_OUT_FD"
+    (
+        sig=""
+        trap 'sig=INT' INT
+        trap 'sig=TERM' TERM
+        trap 'sig=HUP' HUP
+        exec {lock_fd}>>"$LOCK_FILE" || exit 1
+        flock -w "$LOCK_WAIT_SECS" -E "$LOCK_WAIT_EXPIRED_RC" "$lock_fd"
+        rc=$?
+        if [[ $rc -eq 0 && -z $sig ]]; then
+            timeout --signal=TERM --kill-after=30 "${TIMEOUT_SECS}" \
+                bash -c "$*" {lock_fd}>&- &
+            pid=$!  # timeout's pid == its process group id (it calls setpgid)
+            forwarded=0
+            while :; do
+                wait "$pid"
+                rc=$?
+                kill -0 "$pid" 2>/dev/null || break  # exited (and reaped)
+                if [[ -n $sig && $forwarded -eq 0 ]]; then
+                    kill -TERM "$pid" 2>/dev/null
+                    forwarded=1
+                fi
+            done
+            # timeout returns when its direct child exits; the rest of its group
+            # can outlive it by a moment after a TERM. Hold the lock until the
+            # group is gone.
+            if [[ -n $sig || $rc -eq 124 || $rc -eq 137 ]]; then
+                deadline=$((SECONDS + 30))
+                while kill -0 -- "-$pid" 2>/dev/null; do
+                    if ((SECONDS >= deadline)); then
+                        kill -KILL -- "-$pid" 2>/dev/null
+                    fi
+                    sleep 0.2
+                done
+            fi
+        fi
+        if [[ -n $sig ]]; then
+            trap - "$sig"
+            exec {lock_fd}>&-
+            kill -"$sig" "$BASHPID"
+        fi
+        exit "$rc"
+    )
+}
+
+# Name the process that HOLDS the lock now. `fuser` would also list every
+# queued waiter, which is the wrong answer to "who is building?". /proc/locks
+# lists holders and waiters ("->") separately, by device and inode.
+lock_holder() {
+    local lock="$1" dev ino pid
+    dev="$(stat -L -c '%Hd %Ld' "$lock" 2>/dev/null)" || return 0
+    ino="$(stat -L -c '%i' "$lock")"
+    # shellcheck disable=SC2086  # split "major minor" into two printf args
+    dev="$(printf '%02x:%02x' $dev)"
+    pid="$(awk -v want="$dev:$ino" '$2 != "->" && $6 == want {print $5; exit}' /proc/locks)"
+    [[ -n "$pid" ]] || return 0
+    printf 'pid %s (%s)' "$pid" "$(ps -o args= -p "$pid" 2>/dev/null | cut -c1-120)"
 }
 
 # Report a locked step's status as one of three outcomes, and record which.
@@ -224,8 +293,11 @@ report_step() {
         echo "-- $name: PASS --"
         return 0
     elif [[ $rc -eq $LOCK_WAIT_EXPIRED_RC ]]; then
+        local holder
+        holder="$(lock_holder "$LOCK_FILE")"
         echo "-- $name: NOT RUN -- never got the cargo lock in ${LOCK_WAIT_SECS}s;"
-        echo "   another build held $LOCK_FILE the whole time (fuser $LOCK_FILE) --"
+        echo "   another build held $LOCK_FILE the whole time."
+        echo "   Held now by: ${holder:-nobody (it was released just after the wait)} --"
         STEP_LOCK_WAIT_EXPIRED=1
     elif [[ $rc -eq 124 || $rc -eq 137 ]]; then
         echo "-- $name: TIMEOUT after ${TIMEOUT_SECS}s holding the lock (exit $rc) --"
@@ -547,7 +619,7 @@ if [[ "$FAILED" == "1" ]]; then
         echo "   RESULT: NOT RUN -- a step never got the cargo lock in ${LOCK_WAIT_SECS}s;"
         echo "           another build held $LOCK_FILE the whole time. Nothing was"
         echo "           tested by that step, so this says nothing about correctness."
-        echo "           Check who holds it (fuser $LOCK_FILE) and retry; raise"
+        echo "           Check who holds it (lslocks | grep ferric-cargo) and retry; raise"
         echo "           CI_GATE_LOCK_WAIT_SECS to queue longer."
     fi
     if [[ "$STEP_TIMED_OUT" == "1" && "$CONTENDED" == "1" ]]; then
