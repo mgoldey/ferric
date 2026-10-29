@@ -896,24 +896,145 @@ fn archive_downloads_go_through_the_stall_detecting_script() {
     let script = workspace_root().join("scripts/ci-download-artifact.sh");
     assert!(script.is_file(), "{} is missing", script.display());
 
+    assert!(
+        workspace_root()
+            .join("scripts/ci-archive-advice.sh")
+            .is_file(),
+        "scripts/ci-archive-advice.sh is missing"
+    );
     let ci = ci_yml();
-    for (job_name, invocation) in [
+    assert!(
+        code_only(&job(&ci, "build-tests"))
+            .contains("archives_uploaded_at: ${{ steps.uploaded.outputs.at }}"),
+        "build-tests must export archives_uploaded_at (#525)"
+    );
+    {
+        let build = code_only(&job(&ci, "build-tests"));
+        assert!(
+            build.contains("archive_digests: ${{ steps.uploaded.outputs.digests }}")
+                && step_text(&build, "Record when the archives were uploaded")
+                    .contains("echo \"digests=$D\" >> \"$GITHUB_OUTPUT\""),
+            "build-tests must export archive_digests from its record step (#525)"
+        );
+    }
+    // The advice's expiry wording and age threshold come from RETENTION_DAYS
+    // in the script; EVERY upload-artifact step in build-tests (the archives
+    // the downstream jobs download) must keep exactly that long. The set is
+    // derived from ci.yml and `retention-days` parsed per step, so a new
+    // upload is checked too and key order does not matter.
+    // MUTATIONS: add a 6th upload with retention-days: 1 -> fails; set one
+    // shard back to 1 -> fails; reorder an upload's `with:` keys -> passes.
+    let advice_path = workspace_root().join("scripts/ci-archive-advice.sh");
+    let advice_src = std::fs::read_to_string(&advice_path)
+        .unwrap_or_else(|e| panic!("{}: {e}", advice_path.display()));
+    let days = advice_src
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("RETENTION_DAYS="))
+        .expect("scripts/ci-archive-advice.sh must set RETENTION_DAYS=");
+    let build = code_only(&job(&ci, "build-tests"));
+    let build_lines: Vec<&str> = build.lines().collect();
+    let step_starts: Vec<usize> = build_lines
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| {
+            let t = l.trim_start();
+            t.starts_with("- name:") || t.starts_with("- uses:")
+        })
+        .map(|(i, _)| i)
+        .collect();
+    let mut uploads = Vec::new();
+    for (k, &a) in step_starts.iter().enumerate() {
+        let b = step_starts.get(k + 1).copied().unwrap_or(build_lines.len());
+        let step = &build_lines[a..b];
+        if !step
+            .iter()
+            .any(|l| l.contains("uses: actions/upload-artifact@"))
+        {
+            continue;
+        }
+        // Skip the step's own `- name:`; the `with:` block's `name:` is the
+        // artifact.
+        let field = |key: &str| -> Option<String> {
+            step[1..]
+                .iter()
+                .find_map(|l| l.trim().strip_prefix(key).map(|v| v.trim().to_owned()))
+        };
+        let name = field("name:").unwrap_or_else(|| step[0].trim().to_owned());
+        let retention = field("retention-days:");
+        assert_eq!(
+            retention.as_deref(),
+            Some(days),
+            "build-tests uploads `{name}` with retention-days {retention:?}; every \
+             archive upload must keep scripts/ci-archive-advice.sh's RETENTION_DAYS={days} (#525)"
+        );
+        uploads.push(name);
+    }
+    assert!(
+        uploads.len() >= 5 && uploads.iter().any(|n| n == "canary-archive"),
+        "found too few build-tests archive uploads to check: {uploads:?}"
+    );
+    for (job_name, invocation, advice, download_step, check_step, run_step) in [
         (
             "test-shard",
             "run: exec scripts/ci-download-artifact.sh nextest-shard-${{ matrix.partition }} \
              nextest-shard-${{ matrix.partition }}.tar.zst /tmp",
+            "timeout 60 scripts/ci-archive-advice.sh nextest-shard-${{ matrix.partition }} \"$ARCHIVE\" || true",
+            "Download the archive",
+            "Check the archive",
+            "Run shard ${{ matrix.partition }} of 4",
         ),
         (
             "malloc-perturb",
             "run: exec scripts/ci-download-artifact.sh canary-archive canary-archive.tar.zst /tmp",
+            "timeout 60 scripts/ci-archive-advice.sh canary-archive /tmp/canary-archive.tar.zst || true",
+            "Download the canary archive",
+            "Check the canary archive",
+            "Run the canary set under MALLOC_PERTURB_ 1, 170, 2",
         ),
     ] {
         let text = code_only(&job(&ci, job_name));
+        // A missing/corrupt archive says WHICH re-run can fix it: an EXPIRED
+        // one (past retention-days) needs "Re-run ALL jobs". Advisory:
+        // `|| true`, the step still exits 1. The check is its OWN step,
+        // the only one besides the download holding the token, so the test
+        // processes never inherit it (#525).
+        // MUTATIONS: move the token onto the run step, or the advice call
+        // into it -> fails.
+        let check = step_text(&text, check_step);
+        for needle in [
+            advice,
+            "exit 1",
+            "GITHUB_TOKEN: ${{ github.token }}",
+            "CI_ARCHIVE_UPLOADED_AT: ${{ needs.build-tests.outputs.archives_uploaded_at }}",
+            // Bytes + sha256 as uploaded: tells a failed transfer (re-run
+            // the job) from a corrupt upload (re-run all jobs).
+            "CI_ARCHIVE_DIGESTS: ${{ needs.build-tests.outputs.archive_digests }}",
+        ] {
+            assert!(
+                check.contains(needle),
+                "{job_name}'s `{check_step}` step must contain `{needle}` (#525)"
+            );
+        }
+        assert_eq!(
+            text.matches("scripts/ci-archive-advice.sh").count(),
+            1,
+            "{job_name} must call the advice script only from `{check_step}`"
+        );
+        let run = step_text(&text, run_step);
+        for leak in ["github.token", "GITHUB_TOKEN", "ci-archive-advice"] {
+            assert!(
+                !run.contains(leak),
+                "{job_name}'s `{run_step}` step runs the tests and must not see `{leak}` (#525)"
+            );
+        }
+        assert!(
+            step_text(&text, download_step).contains("GITHUB_TOKEN: ${{ github.token }}"),
+            "{job_name}'s `{download_step}` step needs GITHUB_TOKEN (#525)"
+        );
         for needle in [
             invocation,
             // The script reads this run's artifacts through the REST API.
             "actions: read",
-            "GITHUB_TOKEN: ${{ github.token }}",
             // The fallback runs only when the script failed, and says so.
             "if: steps.download.outcome != 'success'",
             "name: Report the download-artifact fallback",
