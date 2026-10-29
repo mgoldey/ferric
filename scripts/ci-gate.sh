@@ -193,7 +193,7 @@ run_step() {
     echo "-- $name --"
     ferric_clear_stale_sccache_lock "$LOCK_FILE"
     if timeout --signal=TERM --kill-after=30 "${TIMEOUT_SECS}" \
-        flock -w "$LOCK_WAIT_SECS" "$LOCK_FILE" -c "$*"; then
+        flock -o -w "$LOCK_WAIT_SECS" "$LOCK_FILE" -c "$*"; then
         echo "-- $name: PASS --"
         return 0
     else
@@ -281,7 +281,7 @@ if [[ "${CI_GATE_SKIP_CLIPPY:-0}" != "1" ]]; then
     CLIPPY_JSON="$(mktemp /tmp/ferric-ci-gate-clippy.XXXXXX.json)"
     ferric_clear_stale_sccache_lock "$LOCK_FILE"
     if timeout --signal=TERM --kill-after=30 "${TIMEOUT_SECS}" \
-        flock -w "$LOCK_WAIT_SECS" "$LOCK_FILE" -c \
+        flock -o -w "$LOCK_WAIT_SECS" "$LOCK_FILE" -c \
         "OPENBLAS_NUM_THREADS=1 cargo clippy --workspace --all-targets -j $JOBS --message-format=json" \
         > "$CLIPPY_JSON" 2>&1; then
         CLIPPY_RC=0

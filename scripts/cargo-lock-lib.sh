@@ -13,6 +13,12 @@
 # lived only inside ci-gate.sh. Hence this file.
 #
 # The tell: idle box + lock held + zero rustc.
+#
+# Root fix (2026-10-28): every `flock ... -c` here and in ci-gate.sh uses -o,
+# which closes the lock fd in the command, so sccache can no longer inherit it.
+# The clearer below stays as a backstop, but it cannot fire when other gates
+# are already queued: their waiting `flock`s count as "real consumers". Five
+# queued pushes sat behind one squatting sccache for 30+ minutes that way.
 
 : "${FERRIC_CARGO_LOCK:=/tmp/ferric-cargo.lock}"
 : "${FERRIC_CARGO_LOCK_WAIT_SECS:=14400}"
@@ -63,5 +69,5 @@ ferric_clear_stale_sccache_lock() {
 # Usage: ferric_cargo_locked "OPENBLAS_NUM_THREADS=1 cargo test --workspace -j 6"
 ferric_cargo_locked() {
     ferric_clear_stale_sccache_lock
-    flock -w "$FERRIC_CARGO_LOCK_WAIT_SECS" "$FERRIC_CARGO_LOCK" -c "$*"
+    flock -o -w "$FERRIC_CARGO_LOCK_WAIT_SECS" "$FERRIC_CARGO_LOCK" -c "$*"
 }
