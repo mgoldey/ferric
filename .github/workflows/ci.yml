@@ -431,6 +431,11 @@ jobs:
   build-tests:
     runs-on: ubuntu-22.04
     timeout-minutes: 170
+    # When the archives were uploaded (epoch s). test-shard/malloc-perturb
+    # use it only to word their error when the archive is gone: past
+    # its retention-days, only "Re-run ALL jobs" can rebuild it (#525).
+    outputs:
+      archives_uploaded_at: ${{ steps.uploaded.outputs.at }}
     # NO DEBUG INFO IN THE ARCHIVED BINARIES (#525). Every shard downloads
     # this job's archive, and its size is what made downloads slow or
     # truncated (25-80 min, run 40058633825). The workflow-level
@@ -765,6 +770,11 @@ jobs:
           ls -l /tmp/nextest-shard-*.tar.zst /tmp/canary-archive.tar.zst
           df -h / | tail -1
 
+      # retention-days: 2 (was 1): a "Re-run failed jobs" the next day found
+      # the archives EXPIRED and could never pass (#525, run 40579399666).
+      # ~1.0 GB per run (4 x ~0.22 GB + 0.1 GB canary); public repo, so not
+      # billed. scripts/ci-archive-advice.sh's RETENTION_DAYS must match
+      # (ci_validation_tier_guard checks it).
       # compression-level 0: the archives are already zstd, so re-zipping them
       # at the default level 6 spends upload time for nothing. One artifact
       # per shard; test-shard downloads `nextest-shard-${{ matrix.partition }}`.
@@ -773,7 +783,7 @@ jobs:
         with:
           name: nextest-shard-1
           path: /tmp/nextest-shard-1.tar.zst
-          retention-days: 1
+          retention-days: 2
           compression-level: 0
 
       - name: Upload shard archive 2
@@ -781,7 +791,7 @@ jobs:
         with:
           name: nextest-shard-2
           path: /tmp/nextest-shard-2.tar.zst
-          retention-days: 1
+          retention-days: 2
           compression-level: 0
 
       - name: Upload shard archive 3
@@ -789,7 +799,7 @@ jobs:
         with:
           name: nextest-shard-3
           path: /tmp/nextest-shard-3.tar.zst
-          retention-days: 1
+          retention-days: 2
           compression-level: 0
 
       - name: Upload shard archive 4
@@ -797,7 +807,7 @@ jobs:
         with:
           name: nextest-shard-4
           path: /tmp/nextest-shard-4.tar.zst
-          retention-days: 1
+          retention-days: 2
           compression-level: 0
 
       - name: Upload the canary archive
@@ -805,8 +815,12 @@ jobs:
         with:
           name: canary-archive
           path: /tmp/canary-archive.tar.zst
-          retention-days: 1
+          retention-days: 2
           compression-level: 0
+
+      - name: Record when the archives were uploaded
+        id: uploaded
+        run: echo "at=$(date -u +%s)" >> "$GITHUB_OUTPUT"
 
       - name: Save cargo cache
         if: always() && steps.cache-cargo.outputs.cache-hit != 'true'
@@ -1092,6 +1106,11 @@ jobs:
 
       - name: Run shard ${{ matrix.partition }} of 4
         timeout-minutes: 100
+        env:
+          # Only for scripts/ci-archive-advice.sh's expired-vs-transient
+          # wording on a missing/corrupt archive (#525).
+          GITHUB_TOKEN: ${{ github.token }}
+          CI_ARCHIVE_UPLOADED_AT: ${{ needs.build-tests.outputs.archives_uploaded_at }}
         run: |
           set -euo pipefail
           # The deferred set comes from scripts/ci-shard-plan.sh, the ONE
@@ -1108,8 +1127,10 @@ jobs:
           # default decoder limit cannot misreport it as corrupt.
           if [ ! -f "$ARCHIVE" ] || ! zstd -tq --long=27 "$ARCHIVE"; then
             echo "::error::the nextest archive is missing or corrupt after the download" \
-                 "AND the fallback -- an ARTIFACT DOWNLOAD failure, not a build" \
-                 "or test failure. Re-run this job."
+                 "AND the fallback."
+            # Which re-run can fix it: an EXPIRED archive needs "Re-run ALL
+            # jobs" (#525). Advisory only; this step fails either way.
+            timeout 60 scripts/ci-archive-advice.sh nextest-shard-${{ matrix.partition }} || true
             exit 1
           fi
           # Extract to a KNOWN directory (nextest's default is a random temp
@@ -1253,10 +1274,15 @@ jobs:
           echo "- :warning: \`canary-archive\`: scripted download ${{ steps.download.outcome }}, used the actions/download-artifact fallback (#525)" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Run the canary set under MALLOC_PERTURB_ 1, 170, 2
+        env:
+          # Only for scripts/ci-archive-advice.sh (#525), as in test-shard.
+          GITHUB_TOKEN: ${{ github.token }}
+          CI_ARCHIVE_UPLOADED_AT: ${{ needs.build-tests.outputs.archives_uploaded_at }}
         run: |
           set -euo pipefail
           if [ ! -f /tmp/canary-archive.tar.zst ] || ! zstd -tq /tmp/canary-archive.tar.zst; then
-            echo "::error::the canary archive is missing or corrupt after the download AND the fallback -- an ARTIFACT DOWNLOAD failure, not a test failure. Re-run this job."
+            echo "::error::the canary archive is missing or corrupt after the download AND the fallback."
+            timeout 60 scripts/ci-archive-advice.sh canary-archive || true
             exit 1
           fi
           # Canary binaries as nextest binary ids (crate::binary), from the

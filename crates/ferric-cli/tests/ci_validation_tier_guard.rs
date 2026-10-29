@@ -896,21 +896,66 @@ fn archive_downloads_go_through_the_stall_detecting_script() {
     let script = workspace_root().join("scripts/ci-download-artifact.sh");
     assert!(script.is_file(), "{} is missing", script.display());
 
+    assert!(
+        workspace_root()
+            .join("scripts/ci-archive-advice.sh")
+            .is_file(),
+        "scripts/ci-archive-advice.sh is missing"
+    );
     let ci = ci_yml();
-    for (job_name, invocation) in [
+    assert!(
+        code_only(&job(&ci, "build-tests"))
+            .contains("archives_uploaded_at: ${{ steps.uploaded.outputs.at }}"),
+        "build-tests must export archives_uploaded_at (#525)"
+    );
+    // The advice's expiry wording and age threshold come from RETENTION_DAYS
+    // in the script; every archive upload must keep exactly that long.
+    // MUTATION: set one shard's retention-days back to 1 -> this fails.
+    let advice_path = workspace_root().join("scripts/ci-archive-advice.sh");
+    let advice_src = std::fs::read_to_string(&advice_path)
+        .unwrap_or_else(|e| panic!("{}: {e}", advice_path.display()));
+    let days = advice_src
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("RETENTION_DAYS="))
+        .expect("scripts/ci-archive-advice.sh must set RETENTION_DAYS=");
+    let build = code_only(&job(&ci, "build-tests"));
+    for name in [
+        "nextest-shard-1",
+        "nextest-shard-2",
+        "nextest-shard-3",
+        "nextest-shard-4",
+        "canary-archive",
+    ] {
+        let upload = format!(
+            "name: {name}\n          path: /tmp/{name}.tar.zst\n          retention-days: {days}\n"
+        );
+        assert!(
+            build.contains(&upload),
+            "build-tests must upload {name} with retention-days: {days} \
+             (scripts/ci-archive-advice.sh RETENTION_DAYS, #525)"
+        );
+    }
+    for (job_name, invocation, advice) in [
         (
             "test-shard",
             "run: exec scripts/ci-download-artifact.sh nextest-shard-${{ matrix.partition }} \
              nextest-shard-${{ matrix.partition }}.tar.zst /tmp",
+            "timeout 60 scripts/ci-archive-advice.sh nextest-shard-${{ matrix.partition }} || true",
         ),
         (
             "malloc-perturb",
             "run: exec scripts/ci-download-artifact.sh canary-archive canary-archive.tar.zst /tmp",
+            "timeout 60 scripts/ci-archive-advice.sh canary-archive || true",
         ),
     ] {
         let text = code_only(&job(&ci, job_name));
         for needle in [
             invocation,
+            // A missing/corrupt archive says WHICH re-run can fix it: an
+            // EXPIRED one (past retention-days) needs "Re-run ALL jobs".
+            // Advisory: `|| true`, the step still exits 1 (#525).
+            advice,
+            "CI_ARCHIVE_UPLOADED_AT: ${{ needs.build-tests.outputs.archives_uploaded_at }}",
             // The script reads this run's artifacts through the REST API.
             "actions: read",
             "GITHUB_TOKEN: ${{ github.token }}",
