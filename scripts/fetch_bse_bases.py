@@ -15,7 +15,8 @@ Run it with the pinned BSE release so a re-fetch is reproducible::
 already matches BSE element for element and which elements a re-fetch would
 add or change. A changed shell on an element the file already had is an
 error, because that would silently move every reference energy computed with
-it.
+it. A shipped 6-311G file that still lacks SPHERICAL_OVERRIDE is reported
+STALE and also fails ``--check``.
 
 The one deliberate departure from BSE data is ``SPHERICAL_OVERRIDE``: the
 6-311G family is made spherical on every element (Gaussian's convention).
@@ -27,6 +28,7 @@ consumed by ``ecp.rs``, not a basis set, and it has its own tests.
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import sys
 from datetime import date
@@ -252,21 +254,30 @@ def fetch(stem: str, name: str) -> tuple[dict, dict]:
     return data, record
 
 
-def merge(stem: str, fresh: dict) -> tuple[dict, list[int], list[int], list[int]]:
+def merge(
+    stem: str, fresh: dict
+) -> tuple[dict, list[int], list[int], list[int], list[int]]:
     """Merge a fresh fetch into the shipped file without touching shipped data.
 
     Elements the shipped file already has are kept byte-for-byte (several were
     hand-added and are documented in their revision_description); elements
     only upstream has are appended. Returns (merged, added, kept_extra,
-    changed) where kept_extra are shipped elements upstream lacks and changed
-    are shipped elements that numerically DISAGREE with upstream.
+    changed, respherical) where kept_extra are shipped elements upstream
+    lacks, changed are shipped elements that numerically DISAGREE with
+    upstream, and respherical are shipped elements whose file still carries a
+    non-spherical l >= 2 shell that SPHERICAL_OVERRIDE rewrites (the shipped
+    file is stale even though its numbers agree).
     """
     path = BUNDLED / f"{stem}.json"
     if not path.exists():
-        return fresh, sorted(int(z) for z in fresh["elements"]), [], []
-    old = json.loads(path.read_text())
+        return fresh, sorted(int(z) for z in fresh["elements"]), [], [], []
+    shipped = json.loads(path.read_text())
+    old = copy.deepcopy(shipped)
+    respherical = []
     if stem in SPHERICAL_OVERRIDE:
-        force_spherical(old)  # idempotent; see SPHERICAL_OVERRIDE
+        # Applied to a copy so the override is RECORDED, not silently absorbed:
+        # --check must flag a shipped file that still needs it.
+        respherical = force_spherical(old)
     oe, fe = old["elements"], fresh["elements"]
     added = sorted((z for z in fe if z not in oe), key=int)
     extra = sorted(int(z) for z in oe if z not in fe)
@@ -274,7 +285,7 @@ def merge(stem: str, fresh: dict) -> tuple[dict, list[int], list[int], list[int]
     for z in added:
         oe[z] = fe[z]
     old["elements"] = dict(sorted(oe.items(), key=lambda kv: int(kv[0])))
-    return old, [int(z) for z in added], extra, changed
+    return old, [int(z) for z in added], extra, changed, respherical
 
 
 def kept_non_bse() -> list[dict]:
@@ -289,17 +300,21 @@ def main() -> int:
     args = ap.parse_args()
 
     records = []
-    bad = False
+    bad = stale = False
     for stem, name in SETS.items():
         fresh, rec = fetch(stem, name)
         is_new = not (BUNDLED / f"{stem}.json").exists()
-        merged, added, extra, changed = merge(stem, fresh)
-        status = "new" if is_new else ("updated" if added else "same")
+        merged, added, extra, changed, respherical = merge(stem, fresh)
+        status = "new" if is_new else ("updated" if added or respherical else "same")
+        if respherical and args.check:
+            # The shipped file disagrees with what a fetch would write.
+            status, stale = "STALE", True
         if changed:
             status, bad = "CHANGED", True
         print(
             f"{stem:22s} {status:7s} n_el={len(merged['elements']):3d} "
-            f"added={added} shipped_only={extra} changed={changed}"
+            f"added={added} shipped_only={extra} changed={changed} "
+            f"respherical={respherical}"
         )
         rec["elements"] = sorted(int(z) for z in merged["elements"])
         if extra:
@@ -334,6 +349,12 @@ def main() -> int:
         PROVENANCE.write_text(json.dumps(prov, indent=1) + "\n")
     if bad:
         print("ERROR: shipped elements numerically disagree with upstream")
+        return 1
+    if stale:
+        print(
+            "ERROR: shipped files need an update (SPHERICAL_OVERRIDE not "
+            "applied); re-run without --check"
+        )
         return 1
     return 0
 
