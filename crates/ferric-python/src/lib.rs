@@ -5906,6 +5906,10 @@ fn local_correlation_operator(
 /// `frozen_core` (default 0) excludes that many lowest-energy occupied
 /// orbitals from the correlation treatment.
 ///
+/// `density_conv` (exact method only; default None = the library's 1e-6)
+/// tightens the reference SCF's RMS density-change gate, e.g. 1e-9 for an
+/// exactness anchor against PySCF (the default leaves ~1e-8 Ha in E_corr).
+///
 /// `scf_jk` sets how the reference SCF builds J/K: "exact" (default,
 /// four-centre), "rijk" (RI-J + RI-K) or "rijcosx" (RI-J + COSX K), fitted
 /// on `jk_auxbasis` (a bundled JK-fit name, default "def2-universal-jkfit";
@@ -5921,7 +5925,7 @@ fn local_correlation_operator(
 /// ("RHF" or "UHF") and `local` (`None` for the exact method, else the
 /// local model dict).
 #[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None, memory_budget_gb=None, kappa=None, local=None, eps=None, compute_reference=None, integral_direct=None, aux_radius=None, virt_radius=None, ao_tail=None, schwarz_skip=None, batch_merge=None, gate_cal=None, virt_schwarz_kappa=None, att_operator=None, omega=None, att_r0=None, att_omega=None, scf_jk=None, jk_auxbasis=None))]
+#[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None, memory_budget_gb=None, kappa=None, local=None, eps=None, compute_reference=None, integral_direct=None, aux_radius=None, virt_radius=None, ao_tail=None, schwarz_skip=None, batch_merge=None, gate_cal=None, virt_schwarz_kappa=None, att_operator=None, omega=None, att_r0=None, att_omega=None, density_conv=None, scf_jk=None, jk_auxbasis=None))]
 #[allow(clippy::too_many_arguments)]
 fn run_rimp2(
     py: Python<'_>,
@@ -5947,11 +5951,12 @@ fn run_rimp2(
     omega: Option<f64>,
     att_r0: Option<f64>,
     att_omega: Option<f64>,
+    density_conv: Option<f64>,
     scf_jk: Option<&str>,
     jk_auxbasis: Option<&str>,
 ) -> PyResult<PyRiMp2Result> {
     let (att_keys, sets_att) = att_keys_from_kwargs(att_operator, omega, att_r0, att_omega);
-    let (rhf_config, jk) = mp2_exact_default_config(
+    let (mut rhf_config, jk) = mp2_exact_default_config(
         "run_rimp2",
         k_builder,
         memory_budget_gb,
@@ -5975,6 +5980,10 @@ fn run_rimp2(
             virt_schwarz_kappa,
         },
     )?;
+    // Refused on the local path; on the exact path it tightens the reference
+    // SCF built above (whatever its `scf_jk`).
+    rhf_config.density_conv =
+        rimp2_density_conv(density_conv, model.is_some())?.unwrap_or(rhf_config.density_conv);
     if let Some(model) = model {
         return run_rimp2_local(
             py,
@@ -11507,8 +11516,171 @@ fn run_irc(
 fn register_mp2v_research(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(run_mp2_v_scan, m)?)?;
     m.add_function(wrap_pyfunction!(run_vv10_variants, m)?)?;
+    register_s66_terfc_pair(m)?;
     Ok(())
 }
+
+// ═══ BEGIN #278 S66 shared-SCF block (run_mp2_v_and_scs_2terfc) ═══════════
+// Self-contained: one helper, one binding, one registration function. Kept
+// together so a concurrent edit elsewhere in this file does not interleave.
+
+/// Validate an optional user `density_conv` (RMS density-change gate). `None`
+/// keeps the library default (1e-6).
+fn checked_density_conv(who: &str, density_conv: Option<f64>) -> PyResult<Option<f64>> {
+    match density_conv {
+        Some(x) if !(x.is_finite() && x > 0.0) => Err(pyo3::exceptions::PyValueError::new_err(
+            format!("{who}: density_conv must be finite and > 0 (got {x})"),
+        )),
+        other => Ok(other),
+    }
+}
+
+/// MP2-V and SCS-MP2(2terfc) — and plain RI-MP2 unless
+/// `include_coulomb_mp2=False` — from ONE RHF reference (mgoldey/ferric#278).
+///
+/// Equivalent, bit for bit at the default `density_conv`, to calling
+/// `run_mp2_v`, `run_scs_mp2_2terfc` and `run_rimp2` separately with the same
+/// `frozen_core` (each of which re-runs the SCF). Published parameters only:
+/// MP2-V(terfc, aTZ) (r0 1.00 A, b 11.0, C 0.0089, library NLC grid) and
+/// SCS-MP2(2terfc, aTZ) (r0 0.75/1.05 A, c_OS 1.27, c_SS 4.05). The 3-index
+/// integrals are NOT shared: the four operators (terfc 1.00/0.75/1.05 A and
+/// Coulomb) each need their own (P|op|mu nu) and metric. Closed shell only.
+/// Needs the terfc tables (FERRIC_TERF_TABLE_DIR).
+///
+/// Returns a dict: `rhf_energy`, `scf_iterations`, `mp2v_total`,
+/// `mp2v_att_mp2_corr`, `mp2v_vv10_e_nl`, `mp2v_e_os`, `mp2v_e_ss`,
+/// `n_nlc_points`, `scs_total`, `scs_corr`, `scs_e_os`, `scs_e_ss`,
+/// `mp2_total`/`mp2_corr` (None when not requested), `density_conv`, and
+/// `timings` = {setup_s, scf_s, mp2v_s, scs_s, mp2_s} wall-clock seconds.
+#[pyfunction]
+#[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, include_coulomb_mp2=true, density_conv=None, k_builder=None, memory_budget_gb=None))]
+#[allow(clippy::too_many_arguments)]
+fn run_mp2_v_and_scs_2terfc(
+    py: Python<'_>,
+    mol: &PyMolecule,
+    basis_set: &PyBasisSet,
+    auxbasis: &PyBasisSet,
+    frozen_core: Option<usize>,
+    include_coulomb_mp2: bool,
+    density_conv: Option<f64>,
+    k_builder: Option<&str>,
+    memory_budget_gb: Option<f64>,
+) -> PyResult<Py<pyo3::types::PyDict>> {
+    use ferric_mp2::terfc_pair::mp2_v_and_scs_2terfc;
+    use std::time::Instant;
+    let density_conv = checked_density_conv("run_mp2_v_and_scs_2terfc", density_conv)?;
+    let budget = budget_bytes_from_gb(memory_budget_gb);
+    let rcfg = rhf_config_with_density_conv(k_builder, budget, density_conv);
+    let used_density_conv = rcfg.density_conv;
+    let mut mp2v_cfg = AttVv10Config::mp2_v_terfc_atz();
+    mp2v_cfg.frozen_core = frozen_core.unwrap_or(0);
+    mp2v_cfg.memory_budget_bytes = budget;
+    let scs_cfg = ScsMp2TerfcConfig {
+        frozen_core: frozen_core.unwrap_or(0),
+        memory_budget_bytes: budget,
+        ..ScsMp2TerfcConfig::default()
+    };
+    let emol = mol.inner.clone();
+    let ebasis = basis_set.inner.clone();
+    let eaux = auxbasis.inner.clone();
+    let (rhf_energy, scf_iterations, r, setup_s, scf_s) = py
+        .allow_threads(|| {
+            let t = Instant::now();
+            let prep = PreparedBasis::new(&emol, &ebasis)?;
+            let dfbs = PreparedBasis::new(&emol, &eaux)?;
+            let coul = Operator::coulomb();
+            let bounds = SchwarzBounds::compute(coul, &prep)?;
+            let setup_s = t.elapsed().as_secs_f64();
+            let t = Instant::now();
+            let rhf = solve_rhf(
+                &ParallelContext::default(),
+                &emol,
+                &prep,
+                coul,
+                &bounds,
+                &rcfg,
+            )?;
+            let scf_s = t.elapsed().as_secs_f64();
+            if !rhf.converged {
+                return Err(ferric_core::FerricError::ScfConvergence {
+                    iterations: rhf.iterations,
+                    last_energy: rhf.energy,
+                });
+            }
+            let r = mp2_v_and_scs_2terfc(
+                &emol,
+                &prep,
+                &ebasis,
+                &dfbs,
+                &rhf,
+                &mp2v_cfg,
+                &scs_cfg,
+                include_coulomb_mp2,
+            )?;
+            Ok((rhf.energy, rhf.iterations, r, setup_s, scf_s))
+        })
+        .map_err(make_err)?;
+    let (e_os, e_ss) = match &r.mp2_v.spin_components {
+        AttVv10SpinComponents::Restricted(s) => (s.e_os, s.e_ss),
+        AttVv10SpinComponents::Unrestricted(_) => unreachable!("closed-shell entry point"),
+    };
+    let d = pyo3::types::PyDict::new(py);
+    d.set_item("rhf_energy", rhf_energy)?;
+    d.set_item("scf_iterations", scf_iterations)?;
+    d.set_item("density_conv", used_density_conv)?;
+    d.set_item("mp2v_total", r.mp2_v.total)?;
+    d.set_item("mp2v_att_mp2_corr", r.mp2_v.e_c_att_mp2)?;
+    d.set_item("mp2v_vv10_e_nl", r.mp2_v.e_nl_vv10)?;
+    d.set_item("mp2v_e_os", e_os)?;
+    d.set_item("mp2v_e_ss", e_ss)?;
+    d.set_item("n_nlc_points", r.mp2_v.n_nlc_points)?;
+    d.set_item("scs_total", r.scs_2terfc.total_energy)?;
+    d.set_item("scs_corr", r.scs_2terfc.scs_corr)?;
+    d.set_item("scs_e_os", r.scs_2terfc.e_os)?;
+    d.set_item("scs_e_ss", r.scs_2terfc.e_ss)?;
+    d.set_item("mp2_total", r.mp2_coulomb.as_ref().map(|m| m.total_energy))?;
+    d.set_item("mp2_corr", r.mp2_coulomb.as_ref().map(|m| m.mp2_corr))?;
+    let t = pyo3::types::PyDict::new(py);
+    t.set_item("setup_s", setup_s)?;
+    t.set_item("scf_s", scf_s)?;
+    t.set_item("mp2v_s", r.timings.mp2_v_s)?;
+    t.set_item("scs_s", r.timings.scs_2terfc_s)?;
+    t.set_item("mp2_s", r.timings.mp2_coulomb_s)?;
+    d.set_item("timings", t)?;
+    Ok(d.unbind())
+}
+
+/// `rhf_config_budgeted` plus an optional (already validated) `density_conv`.
+fn rhf_config_with_density_conv(
+    k_builder: Option<&str>,
+    budget: Option<usize>,
+    density_conv: Option<f64>,
+) -> RhfConfig {
+    let mut cfg = rhf_config_budgeted(k_builder, budget);
+    if let Some(dc) = density_conv {
+        cfg.density_conv = dc;
+    }
+    cfg
+}
+
+/// `run_rimp2`'s `density_conv`: validated, and refused on the local path
+/// (which keeps the library-default SCF) rather than silently ignored.
+fn rimp2_density_conv(density_conv: Option<f64>, local: bool) -> PyResult<Option<f64>> {
+    let dc = checked_density_conv("run_rimp2", density_conv)?;
+    if local && dc.is_some() {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "run_rimp2: density_conv is read by the exact RI-MP2 path only; the local \
+             (amplitude-threshold) path keeps the library-default SCF. Omit one of them.",
+        ));
+    }
+    Ok(dc)
+}
+
+fn register_s66_terfc_pair(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(run_mp2_v_and_scs_2terfc, m)?)?;
+    Ok(())
+}
+// ═══ END #278 S66 shared-SCF block ════════════════════════════════════════
 
 #[pymodule]
 fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {

@@ -3488,10 +3488,14 @@ def run_rimp2(
     omega: float | None = None,
     att_r0: float | None = None,
     att_omega: float | None = None,
+    density_conv: float | None = None,
     scf_jk: str | None = None,
     jk_auxbasis: str | None = None,
 ) -> RiMp2Result:
     """Resolution-of-identity (density-fitted) MP2. Exact by default.
+
+    `density_conv` (exact method only) tightens the reference SCF's RMS
+    density gate (default None = library 1e-6).
 
     RHF reference for a singlet; UHF reference + unrestricted RI-MP2 (UMP2)
     for multiplicity > 1 (`result.reference` says which). `kappa` is
@@ -3667,6 +3671,25 @@ def run_mp2_v(
     jk_auxbasis: str | None = None,
 ) -> Mp2VResult:
     """MP2-V: attenuated MP2 + Eq-11-damped VV10. r0 in Angstrom, omega in Angstrom^-1."""
+    ...
+
+def run_mp2_v_and_scs_2terfc(
+    mol: Molecule,
+    basis_set: BasisSet,
+    auxbasis: BasisSet,
+    frozen_core: int | None = None,
+    include_coulomb_mp2: bool = True,
+    density_conv: float | None = None,
+    k_builder: str | None = None,
+    memory_budget_gb: float | None = None,
+) -> dict[str, Any]:
+    """MP2-V and SCS-MP2(2terfc) (+ plain RI-MP2) from ONE RHF reference.
+
+    Bit-identical (at the default density_conv) to run_mp2_v +
+    run_scs_mp2_2terfc + run_rimp2 with the same frozen_core; published aTZ
+    parameters only. Returns a dict of energies (Hartree) plus `timings`
+    (seconds: setup_s, scf_s, mp2v_s, scs_s, mp2_s). Needs the terfc tables.
+    """
     ...
 
 def run_mp2_v_scan(

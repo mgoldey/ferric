@@ -79,6 +79,8 @@ pub mod scs;
 pub mod spinorbital;
 /// Spin-orbital integral/amplitude helpers for unrestricted references.
 pub mod spinorbital_u;
+/// MP2-V and SCS-MP2(2terfc) from one shared RHF reference (S66 benchmark).
+pub mod terfc_pair;
 /// Unrestricted orbital-optimized RI-MP2.
 pub mod u_oo_rimp2;
 /// Unrestricted RI-MP2 (α/β spin channels).
