@@ -40,6 +40,8 @@ def test_run_rhf_echoes_report_and_keeps_energy(water, dz, projection):
     assert rep["projection"] == projection
     assert rep["nbasis_guess"] == 13 and rep["nbasis_target"] == 24
     assert rep["iterations"] > 0 and rep["energy"] > r.energy
+    assert rep["converged"] is True and rep["used_as_guess"] is True
+    assert rep["unconverged_reason"] is None
     assert abs(r.energy - ref.energy) < 1e-8
 
 
@@ -70,3 +72,16 @@ def test_run_dft_takes_the_guess(water, dz):
 def test_bad_kwargs_raise(water, dz, kwargs, needle):
     with pytest.raises(ValueError, match=needle):
         ferric.run_rhf(water, dz, **kwargs)
+
+
+def test_unconverged_secondary_is_reported_not_raised():
+    # STO-3G UHF CN oscillates for 200 iterations; the target starts from the
+    # default guess instead and converges to the default-guess state.
+    cn = ferric.Molecule.from_xyz_string("2\n\nC 0 0 0\nN 0 0 1.172\n", 0, 2)
+    adz = ferric.BasisSet.bundled("aug-cc-pvdz")
+    ref = ferric.run_uhf(cn, adz, **TIGHT)
+    r = ferric.run_uhf(cn, adz, guess_basis="sto-3g", **TIGHT)
+    rep = r.guess_basis
+    assert rep["converged"] is False and rep["used_as_guess"] is False
+    assert "iterations" in rep["unconverged_reason"]
+    assert abs(r.energy - ref.energy) < 1e-8
