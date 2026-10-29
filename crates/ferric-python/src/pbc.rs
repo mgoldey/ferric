@@ -3044,9 +3044,9 @@ fn check_kpoint_ks_support(
         KKsKind::Unrestricted => ferric_pbc::kuks::resolve_kuks_functional(functional),
         KKsKind::RestrictedOpen => ferric_pbc::kroks::resolve_kroks_functional(functional),
     };
-    // The library k-point ROKS takes SCAN / r2SCAN (energy only, #492); the
-    // binding is not wired for it (#498), so refuse it here rather than run
-    // the library path unvalidated.
+    // The library k-point ROKS takes SCAN / r2SCAN (energy, force and stress,
+    // #492); the binding is not wired for any of them (#498), so refuse it
+    // here rather than run the library path through an unvalidated binding.
     if energy.is_ok()
         && kind == KKsKind::RestrictedOpen
         && ferric_pbc::dft::is_meta_gga_name(functional)

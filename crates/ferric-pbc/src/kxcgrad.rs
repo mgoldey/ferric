@@ -1008,8 +1008,11 @@ pub enum Deriv {
 /// * UKS: SCAN and r2SCAN on the dense-AFT J/K
 ///   ([`crate::kuxcgrad::kpoint_uks_gradient`],
 ///   [`crate::kuxcstress::kpoint_uks_stress`]).
-/// * ROKS: no meta-GGA (the library k-point ROKS SCAN / r2SCAN energy exists,
-///   but no ROKS meta-GGA force or stress, #492).
+/// * ROKS: no meta-GGA. The library k-point ROKS SCAN / r2SCAN force and
+///   stress exist ([`crate::kuxcgrad::kpoint_roks_gradient`],
+///   [`crate::kuxcstress::kpoint_roks_stress`], dense-AFT J/K, #492), but
+///   neither its energy nor its derivatives are wired in the bindings (#498),
+///   so this gate keeps refusing them.
 ///
 /// Refused by name: TPSS on RS-GDF and on UKS / ROKS, SCAN / r2SCAN on the
 /// UKS RS-GDF J/K, hybrid meta-GGA and other range-separated hybrids (wB97X,
@@ -1060,8 +1063,8 @@ pub fn check_deriv_functional(
                     .into(),
             ),
             (DerivSpin::RestrictedOpen, _) => err(
-                "the k-point ROKS meta-GGA force and stress are not implemented (only the \
-                 library SCAN / r2SCAN ROKS energy is, #492); the UKS force and stress cover \
+                "the k-point ROKS meta-GGA force and stress are library-only (SCAN / r2SCAN, \
+                 #492) and not wired in the bindings (#498); the UKS force and stress cover \
                  SCAN / r2SCAN on the dense-AFT J/K"
                     .into(),
             ),
@@ -1156,35 +1159,11 @@ pub fn is_validated_mgga_deriv(functional: &str) -> bool {
         .any(|f| functional.eq_ignore_ascii_case(f))
 }
 
-/// Resolve the functional and its global exact-exchange fraction `a`; refuse
-/// what the force does not cover (range-separated hybrids, meta-GGA, VV10 and
-/// double hybrids). Meta-GGA is refused here on purpose: the closed-shell and
-/// UKS entry points use [`resolve_global_mgga`]; the restricted-open-shell
-/// (ROKS) force keeps this refusal (its SCF has the SCAN / r2SCAN energy, but
-/// no ROKS meta-GGA derivative is implemented or validated, #492).
-pub(crate) fn resolve_global(functional: &str) -> Result<(XcDef, f64), FerricError> {
-    let (xc, exx) = resolve_global_mgga(functional)?;
-    if xc
-        .funcs
-        .iter()
-        .any(|f| matches!(f.family(), FunctionalFamily::MetaGga))
-    {
-        return Err(PeriodicDftError::Unsupported {
-            feature: "meta-GGA force at k",
-            reason: format!(
-                "{functional}: the k-point ROKS meta-GGA force is not implemented (the \
-                 SCAN / r2SCAN ROKS energy is, #492); the k-point meta-GGA force covers RKS \
-                 and UKS only"
-            ),
-        }
-        .into());
-    }
-    Ok((xc, exx))
-}
-
-/// [`resolve_global`] that lets meta-GGA (SCAN, r2SCAN) through: the
-/// closed-shell force and stress supply the tau terms. Every other refusal is
-/// shared.
+/// Resolve the functional and its global exact-exchange fraction `a` of a
+/// force or stress; meta-GGA passes (the RKS, UKS and ROKS derivatives supply
+/// the tau terms; the open-shell ones narrow it to SCAN / r2SCAN in
+/// `crate::kuxcgrad::resolve_open_shell`). Range-separated hybrids, VV10 and
+/// double hybrids are refused here.
 pub(crate) fn resolve_global_mgga(functional: &str) -> Result<(XcDef, f64), FerricError> {
     let (xc, exx, rsh) = resolve_global_or_rsh(functional)?;
     if rsh.is_some() {
@@ -1579,29 +1558,19 @@ pub fn kpoint_hartree_gradient(
 mod tests {
     use super::*;
 
-    /// `resolve_global` (the ROKS force: no ROKS meta-GGA derivative) keeps
-    /// refusing meta-GGA with its feature name, while the closed-shell / UKS
-    /// resolver accepts the same names.
+    /// The derivative resolver accepts SCAN / r2SCAN (the RKS, UKS and,
+    /// since #492, ROKS force and stress all carry the tau terms).
     #[test]
-    fn resolve_global_still_refuses_meta_gga() {
+    fn resolve_global_mgga_accepts_meta_gga() {
         for name in ["SCAN", "R2SCAN"] {
-            let e = resolve_global(name).expect_err("meta-GGA must be refused");
-            let msg = e.to_string();
-            assert!(msg.contains("meta-GGA force at k"), "{msg}");
-            assert!(
-                msg.contains(&format!(
-                    "{name}: the k-point ROKS meta-GGA force is not implemented"
-                )),
-                "{msg}"
-            );
-            let (xc, exx) = resolve_global_mgga(name).expect("closed-shell accepts");
+            let (xc, exx) = resolve_global_mgga(name).expect("meta-GGA accepted");
             assert_eq!(exx, 0.0);
             assert!(xc
                 .funcs
                 .iter()
                 .any(|f| matches!(f.family(), FunctionalFamily::MetaGga)));
         }
-        assert!(resolve_global("PBE").is_ok());
+        assert!(resolve_global_mgga("PBE").is_ok());
     }
 }
 
@@ -1681,7 +1650,7 @@ mod force_allowlist_tests {
                 O,
                 false,
                 "SCAN",
-                "ROKS meta-GGA force and stress are not implemented",
+                "ROKS meta-GGA force and stress are library-only",
             ),
             (R, true, "TPSS", "validated on the dense-AFT J only"),
             (U, false, "TPSS", "TPSS is closed-shell only"),
@@ -1689,7 +1658,7 @@ mod force_allowlist_tests {
                 O,
                 false,
                 "TPSS",
-                "ROKS meta-GGA force and stress are not implemented",
+                "ROKS meta-GGA force and stress are library-only",
             ),
         ];
         for &(s, g, f, msg) in refused {

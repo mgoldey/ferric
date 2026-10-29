@@ -69,8 +69,10 @@
 //! derivative algebra: it is the closed-shell kernel per spin (which is why
 //! the singlet UKS force reproduces the RKS one, and why that anchor is blind
 //! to every α/β mix-up; the polarized anchors are in
-//! `tests/pbc_kuxc_mgga.rs`). ROKS refuses meta-GGA (its k-point SCF has
-//! the SCAN / r2SCAN energy, #492, but no meta-GGA force). The tau terms are independent of the J/K route (a pure meta-GGA
+//! `tests/pbc_kuxc_mgga.rs`). ROKS (#492) takes the same terms on its spin
+//! densities: its spin Focks carry `V^τ_σ`, so the Pulay `W_RO` built from
+//! them does too, and no ROKS-specific tau algebra exists (anchors and FD in
+//! `tests/pbc_kroks_mgga.rs`). The tau terms are independent of the J/K route (a pure meta-GGA
 //! has no exact exchange), so the RS-GDF J route composes unchanged: anchored
 //! (exact-aux RS-GDF == dense == PySCF `KUKS` energy, singlet UKS == RKS, FD
 //! of the RS-GDF SCF energy) in `tests/pbc_kuks_mgga_rsgdf.rs`, issue #492.
@@ -214,9 +216,10 @@
 //! # Scope
 //!
 //! LDA, GGA and global hybrids; range-separated hybrids for UKS and ROKS on
-//! the dense-AFT and RS-GDF J/K; for UKS also SCAN / r2SCAN on either J/K
-//! (any other meta-GGA and meta-GGA ROKS are refused). VV10 and double hybrids are refused with the
-//! typed errors of [`crate::kxcgrad`].
+//! the dense-AFT and RS-GDF J/K; SCAN / r2SCAN for UKS on either J/K and for
+//! ROKS on the dense-AFT J/K (the k-ROKS meta-GGA SCF refuses RS-GDF, so no
+//! ROKS state exists there; any other meta-GGA is refused). VV10 and double
+//! hybrids are refused with the typed errors of [`crate::kxcgrad`].
 
 use crate::budget::{bytes_of, Ledger};
 use crate::dense_aft::ExxDiv;
@@ -235,8 +238,8 @@ use crate::kroks::KRoScfResult;
 use crate::kuscf::KUScfResult;
 use crate::kxcgrad::{
     add_vtau, chunk_density, chunk_tau, chunk_vxc, conj, hermitize, hybrid_madelung,
-    resolve_global, resolve_global_mgga, resolve_global_or_rsh, KRksGradConfig, KRksGradient,
-    KXcGrid, KXcMutation, AO_PLANES, CHUNK_TARGET_BYTES, KS_REMEDY, MAX_CHUNK, MIN_CHUNK,
+    resolve_global_mgga, resolve_global_or_rsh, KRksGradConfig, KRksGradient, KXcGrid, KXcMutation,
+    AO_PLANES, CHUNK_TARGET_BYTES, KS_REMEDY, MAX_CHUNK, MIN_CHUNK,
 };
 use crate::lattice::Cell;
 use crate::rsh::RshParams;
@@ -1129,21 +1132,17 @@ impl KUXcResponse for GridXcPol<'_> {
 }
 
 /// Resolve an open-shell derivative's functional and exact-exchange fraction.
-/// `allow_mgga` (UKS) lets the validated pure meta-GGAs SCAN / r2SCAN through
-/// on either J/K (dense-AFT or RS-GDF; `tests/pbc_kuks_mgga_rsgdf.rs`);
-/// ROKS/ROHF keep [`resolve_global`]'s
-/// refusal (no ROKS meta-GGA force or stress; only its energy exists). `base` is the force's or
-/// the stress's own resolver (their refusal wordings differ). Returns `(a, mgga)`;
-/// shared with the open-shell stress. `who` names the entry point.
+/// The validated pure meta-GGAs SCAN / r2SCAN pass (UKS on either J/K,
+/// `tests/pbc_kuks_mgga_rsgdf.rs`; ROKS on the dense-AFT J/K,
+/// `tests/pbc_kroks_mgga.rs`); any other meta-GGA is refused. `base` is the
+/// force's or the stress's own resolver (their refusal wordings differ).
+/// Returns `(a, mgga)`; shared with the open-shell stress. `who` names the
+/// entry point.
 pub(crate) fn resolve_open_shell(
     who: &str,
     functional: &str,
-    allow_mgga: bool,
     base: &dyn Fn(&str) -> Result<(XcDef, f64), FerricError>,
 ) -> Result<(f64, bool), FerricError> {
-    if !allow_mgga {
-        return Ok((resolve_global(functional)?.1, false));
-    }
     let (xc, exch) = base(functional)?;
     let mgga = xc
         .funcs
@@ -1153,8 +1152,8 @@ pub(crate) fn resolve_open_shell(
         return Err(PeriodicDftError::Unsupported {
             feature: "open-shell meta-GGA derivative at k",
             reason: format!(
-                "{who}: {functional}: the k-point UKS force and stress cover the pure SCAN and \
-                 r2SCAN meta-GGAs only (those the k-point UKS SCF accepts)"
+                "{who}: {functional}: the k-point UKS / ROKS force and stress cover the pure \
+                 SCAN and r2SCAN meta-GGAs only (those the k-point UKS / ROKS SCF accepts)"
             ),
         }
         .into());
@@ -1174,21 +1173,20 @@ pub(crate) fn resolve_open_shell(
 /// range-separated hybrid (exchange scale 1, its fractions inside the kernel;
 /// [`resolve_global_or_rsh`] refuses a range-separated meta-GGA, VV10 or
 /// double hybrid; `check_inputs_rsh` checks the J/K carry its parameters).
-/// `allow_mgga` marks the UKS force (SCAN / r2SCAN); ROKS keeps
-/// [`resolve_global`]'s meta-GGA refusal.
+/// Both also take SCAN / r2SCAN ([`resolve_open_shell`]).
 fn grid_response<'a>(
     cell: &'a Cell,
     prep: &'a PreparedBasis,
     mesh: &KPointMesh,
     functional: &str,
     cfg: &'a KUksGradConfig,
-    (who, allow_mgga): (&str, bool),
+    who: &str,
 ) -> Result<(GridXcPol<'a>, f64, Option<RshParams>), FerricError> {
     let rsh = resolve_global_or_rsh(functional)?.2;
     let (exch, is_mgga) = if rsh.is_some() {
         (1.0, false)
     } else {
-        resolve_open_shell(who, functional, allow_mgga, &resolve_global_mgga)?
+        resolve_open_shell(who, functional, &resolve_global_mgga)?
     };
     let mut name = functional.to_string();
     if cfg.base.mutation == Some(KXcMutation::WrongRemainder) {
@@ -1271,14 +1269,8 @@ pub fn kpoint_uks_gradient(
     functional: &str,
     cfg: &KUksGradConfig,
 ) -> Result<KUksGradient, FerricError> {
-    let (resp, exch, rsh) = grid_response(
-        cell,
-        prep,
-        mesh,
-        functional,
-        cfg,
-        ("kpoint_uks_gradient", true),
-    )?;
+    let (resp, exch, rsh) =
+        grid_response(cell, prep, mesh, functional, cfg, "kpoint_uks_gradient")?;
     uks_gradient_with(
         "kpoint_uks_gradient",
         cell,
@@ -1301,8 +1293,9 @@ pub fn kpoint_uks_gradient(
 /// (module doc "ROHF / ROKS"). Arguments and refusals as
 /// [`kpoint_uks_gradient`] (range-separated hybrids included, on the
 /// dense-AFT or RS-GDF J/K built with the functional's [`RshParams`], as `solve_kroks`
-/// builds them; module doc "Range-separated hybrids (UKS, ROKS)"), except
-/// meta-GGA (the k-point ROKS SCAN / r2SCAN energy has no force yet), plus: a state whose ROHF
+/// builds them; module doc "Range-separated hybrids (UKS, ROKS)") and the
+/// pure SCAN / r2SCAN on the dense-AFT J/K (the per-spin tau terms of the UKS
+/// force on the ROHF spin densities; #492, `tests/pbc_kroks_mgga.rs`), plus: a state whose ROHF
 /// orbital gradient (closed-open `f_β`, open-virtual `f_α`, closed-virtual
 /// `f_α + f_β`, any k) exceeds [`crate::grad::RO_ORBITAL_GRADIENT_TOL`] is
 /// refused.
@@ -1328,6 +1321,29 @@ pub fn kpoint_roks_gradient(
     parts.roks_gradient("kpoint_roks_gradient", jk, &ro_input(scf), functional, cfg)
 }
 
+/// Refuse a k-point ROKS meta-GGA derivative on the RS-GDF J/K by name: the
+/// k-ROKS meta-GGA SCF refuses RS-GDF ([`crate::kroks`]), so no such state is
+/// validated, and the derivative must not run on a hand-built one either.
+/// Shared with [`crate::kuxcstress::kpoint_roks_stress`].
+pub(crate) fn refuse_roks_mgga_on_rsgdf(
+    who: &str,
+    functional: &str,
+    rsgdf: bool,
+) -> Result<(), FerricError> {
+    if rsgdf && crate::dft::is_meta_gga_name(functional) {
+        return Err(PeriodicDftError::Unsupported {
+            feature: "ROKS meta-GGA derivative on RS-GDF",
+            reason: format!(
+                "{who}: {functional}: the k-point ROKS SCAN / r2SCAN force and stress are \
+                 validated on the dense-AFT J/K only (the k-ROKS meta-GGA SCF refuses RS-GDF, \
+                 #492)"
+            ),
+        }
+        .into());
+    }
+    Ok(())
+}
+
 /// The cell, basis, mesh and hcore of a ROKS force (the arguments
 /// [`kpoint_roks_gradient`] and the routed Gamma ROKS force share).
 pub(crate) struct RoParts<'a> {
@@ -1348,14 +1364,9 @@ impl RoParts<'_> {
         functional: &str,
         cfg: &KUksGradConfig,
     ) -> Result<KUksGradient, FerricError> {
-        let (resp, exch, rsh) = grid_response(
-            self.cell,
-            self.prep,
-            self.mesh,
-            functional,
-            cfg,
-            (who, false),
-        )?;
+        refuse_roks_mgga_on_rsgdf(who, functional, matches!(jk, KGradJk::RsGdf(_)))?;
+        let (resp, exch, rsh) =
+            grid_response(self.cell, self.prep, self.mesh, functional, cfg, who)?;
         uks_gradient_with(
             who,
             self.cell,

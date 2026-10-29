@@ -478,7 +478,8 @@ fn unvalidated_meta_gga_requests_are_refused() {
         assert!(e.to_string().contains("meta-GGA"), "{f}: {e}");
     }
     // Forces / stress: the Python / CLI derivative gate takes the UKS
-    // meta-GGA on the dense-AFT J/K only, and ROKS never.
+    // meta-GGA on the dense-AFT J/K only, and ROKS not at all (its library
+    // force and stress exist since #492; the bindings are #498).
     use ferric_pbc::kxcgrad::{check_kpoint_deriv_functional, DerivSpin};
     for f in ["SCAN", "R2SCAN"] {
         check_kpoint_deriv_functional(DerivSpin::Unrestricted, false, f, "with_gradient")
@@ -489,7 +490,8 @@ fn unvalidated_meta_gga_requests_are_refused() {
         let e = check_kpoint_deriv_functional(DerivSpin::RestrictedOpen, false, f, "with_stress")
             .expect_err(f);
         assert!(
-            e.contains("ROKS meta-GGA force and stress are not implemented"),
+            e.contains("ROKS meta-GGA force and stress are library-only")
+                && e.contains("not wired in the bindings (#498)"),
             "{f}: {e}"
         );
     }

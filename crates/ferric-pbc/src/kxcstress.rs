@@ -746,32 +746,20 @@ impl KXcStressResponse for GridXc<'_> {
     }
 }
 
-/// Resolve the functional and its global exact-exchange fraction `a`; refuse
-/// what the RESTRICTED-OPEN-SHELL (ROKS) stress does not cover
-/// (range-separated hybrids, meta-GGA, VV10 and double hybrids). The
-/// closed-shell entry point uses [`resolve_global_mgga_stress`], the UKS one
-/// `crate::kuxcgrad::resolve_open_shell`.
-pub(crate) fn resolve_global(functional: &str) -> Result<(XcDef, f64), FerricError> {
-    resolve_open_stress(functional, false)
-}
-
-/// [`resolve_global`] with the meta-GGA refusal lifted when `allow_mgga` (the
-/// UKS stress, which narrows meta-GGA further in
-/// `crate::kuxcgrad::resolve_open_shell`). A range-separated name is refused
-/// here as a defensive guard only: the open-shell stress entries resolve the
-/// range separation before calling this.
-pub(crate) fn resolve_open_stress(
-    functional: &str,
-    allow_mgga: bool,
-) -> Result<(XcDef, f64), FerricError> {
+/// Resolve an open-shell (UKS / ROKS) stress functional and its global
+/// exact-exchange fraction `a`; meta-GGA passes here and is narrowed to
+/// SCAN / r2SCAN in `crate::kuxcgrad::resolve_open_shell`. A range-separated
+/// name is refused here as a defensive guard only: the open-shell stress
+/// entries resolve the range separation before calling this.
+pub(crate) fn resolve_open_stress(functional: &str) -> Result<(XcDef, f64), FerricError> {
     let (xc, exx, rsh) = resolve_periodic_functional_rsh(functional)?;
     if rsh.is_some() {
         return Err(PeriodicDftError::Unsupported {
             feature: "range-separated hybrid stress at k",
             reason: format!(
-                "{functional}: this resolver covers LDA, GGA and GLOBAL hybrid functionals; \
-                 the open-shell range-separated stress resolves its range separation first \
-                 (kpoint_uks_stress / kpoint_roks_stress)"
+                "{functional}: this resolver covers LDA, GGA, meta-GGA and GLOBAL hybrid \
+                 functionals; the open-shell range-separated stress resolves its range \
+                 separation first (kpoint_uks_stress / kpoint_roks_stress)"
             ),
         }
         .into());
@@ -781,26 +769,10 @@ pub(crate) fn resolve_open_stress(
             "{functional}: exact-exchange fraction {exx} outside [0, 1]"
         )));
     }
-    if !allow_mgga
-        && xc
-            .funcs
-            .iter()
-            .any(|f| matches!(f.family(), FunctionalFamily::MetaGga))
-    {
-        return Err(PeriodicDftError::Unsupported {
-            feature: "meta-GGA stress at k",
-            reason: format!(
-                "{functional}: the k-point ROKS meta-GGA stress is not implemented (the \
-                 SCAN / r2SCAN ROKS energy is, #492); the k-point meta-GGA stress covers RKS \
-                 and UKS only"
-            ),
-        }
-        .into());
-    }
     Ok((xc, exx))
 }
 
-/// [`resolve_global`] that lets meta-GGA and range-separated hybrids
+/// [`resolve_open_stress`] that lets range-separated hybrids
 /// through: the closed-shell stress supplies the tau strain term and the
 /// attenuated-exchange strain (dense-AFT or RS-GDF J/K). VV10 and mixing
 /// weights (double hybrids) are refused; the open-shell stress uses it for
