@@ -436,6 +436,10 @@ jobs:
     # its retention-days, only "Re-run ALL jobs" can rebuild it (#525).
     outputs:
       archives_uploaded_at: ${{ steps.uploaded.outputs.at }}
+      # {"<artifact>": {"bytes": N, "sha256": "..."}} of each archive as
+      # uploaded, so a shard can tell a failed TRANSFER (re-run the job) from
+      # a corrupt UPLOAD (re-run all jobs). Diagnostic only (#525).
+      archive_digests: ${{ steps.uploaded.outputs.digests }}
     # NO DEBUG INFO IN THE ARCHIVED BINARIES (#525). Every shard downloads
     # this job's archive, and its size is what made downloads slow or
     # truncated (25-80 min, run 40058633825). The workflow-level
@@ -820,7 +824,19 @@ jobs:
 
       - name: Record when the archives were uploaded
         id: uploaded
-        run: echo "at=$(date -u +%s)" >> "$GITHUB_OUTPUT"
+        run: |
+          echo "at=$(date -u +%s)" >> "$GITHUB_OUTPUT"
+          # Diagnostic only: a failure here leaves the output empty and the
+          # build green (scripts/ci-archive-advice.sh then skips its check).
+          D='{}'
+          for f in /tmp/nextest-shard-*.tar.zst /tmp/canary-archive.tar.zst; do
+            D=$(jq -c --arg n "$(basename "$f" .tar.zst)" \
+                  --argjson b "$(stat -c %s "$f")" \
+                  --arg h "$(sha256sum "$f" | cut -d' ' -f1)" \
+                  '.[$n] = {bytes: $b, sha256: $h}' <<<"$D") || { D=''; break; }
+          done
+          echo "digests=$D" >> "$GITHUB_OUTPUT"
+          echo "archive digests: $D"
 
       - name: Save cargo cache
         if: always() && steps.cache-cargo.outputs.cache-hit != 'true'
@@ -1112,6 +1128,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           CI_ARCHIVE_UPLOADED_AT: ${{ needs.build-tests.outputs.archives_uploaded_at }}
+          CI_ARCHIVE_DIGESTS: ${{ needs.build-tests.outputs.archive_digests }}
         run: |
           set -euo pipefail
           ARCHIVE=/tmp/nextest-shard-${{ matrix.partition }}.tar.zst
@@ -1123,7 +1140,7 @@ jobs:
                  "AND the fallback."
             # Which re-run can fix it: an EXPIRED archive needs "Re-run ALL
             # jobs" (#525). Advisory only; this step fails either way.
-            timeout 60 scripts/ci-archive-advice.sh nextest-shard-${{ matrix.partition }} || true
+            timeout 60 scripts/ci-archive-advice.sh nextest-shard-${{ matrix.partition }} "$ARCHIVE" || true
             exit 1
           fi
 
@@ -1288,11 +1305,12 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           CI_ARCHIVE_UPLOADED_AT: ${{ needs.build-tests.outputs.archives_uploaded_at }}
+          CI_ARCHIVE_DIGESTS: ${{ needs.build-tests.outputs.archive_digests }}
         run: |
           set -euo pipefail
           if [ ! -f /tmp/canary-archive.tar.zst ] || ! zstd -tq /tmp/canary-archive.tar.zst; then
             echo "::error::the canary archive is missing or corrupt after the download AND the fallback."
-            timeout 60 scripts/ci-archive-advice.sh canary-archive || true
+            timeout 60 scripts/ci-archive-advice.sh canary-archive /tmp/canary-archive.tar.zst || true
             exit 1
           fi
 

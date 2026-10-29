@@ -908,6 +908,15 @@ fn archive_downloads_go_through_the_stall_detecting_script() {
             .contains("archives_uploaded_at: ${{ steps.uploaded.outputs.at }}"),
         "build-tests must export archives_uploaded_at (#525)"
     );
+    {
+        let build = code_only(&job(&ci, "build-tests"));
+        assert!(
+            build.contains("archive_digests: ${{ steps.uploaded.outputs.digests }}")
+                && step_text(&build, "Record when the archives were uploaded")
+                    .contains("echo \"digests=$D\" >> \"$GITHUB_OUTPUT\""),
+            "build-tests must export archive_digests from its record step (#525)"
+        );
+    }
     // The advice's expiry wording and age threshold come from RETENTION_DAYS
     // in the script; EVERY upload-artifact step in build-tests (the archives
     // the downstream jobs download) must keep exactly that long. The set is
@@ -969,7 +978,7 @@ fn archive_downloads_go_through_the_stall_detecting_script() {
             "test-shard",
             "run: exec scripts/ci-download-artifact.sh nextest-shard-${{ matrix.partition }} \
              nextest-shard-${{ matrix.partition }}.tar.zst /tmp",
-            "timeout 60 scripts/ci-archive-advice.sh nextest-shard-${{ matrix.partition }} || true",
+            "timeout 60 scripts/ci-archive-advice.sh nextest-shard-${{ matrix.partition }} \"$ARCHIVE\" || true",
             "Download the archive",
             "Check the archive",
             "Run shard ${{ matrix.partition }} of 4",
@@ -977,7 +986,7 @@ fn archive_downloads_go_through_the_stall_detecting_script() {
         (
             "malloc-perturb",
             "run: exec scripts/ci-download-artifact.sh canary-archive canary-archive.tar.zst /tmp",
-            "timeout 60 scripts/ci-archive-advice.sh canary-archive || true",
+            "timeout 60 scripts/ci-archive-advice.sh canary-archive /tmp/canary-archive.tar.zst || true",
             "Download the canary archive",
             "Check the canary archive",
             "Run the canary set under MALLOC_PERTURB_ 1, 170, 2",
@@ -997,6 +1006,9 @@ fn archive_downloads_go_through_the_stall_detecting_script() {
             "exit 1",
             "GITHUB_TOKEN: ${{ github.token }}",
             "CI_ARCHIVE_UPLOADED_AT: ${{ needs.build-tests.outputs.archives_uploaded_at }}",
+            // Bytes + sha256 as uploaded: tells a failed transfer (re-run
+            // the job) from a corrupt upload (re-run all jobs).
+            "CI_ARCHIVE_DIGESTS: ${{ needs.build-tests.outputs.archive_digests }}",
         ] {
             assert!(
                 check.contains(needle),
