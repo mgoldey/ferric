@@ -129,7 +129,7 @@ fn cell_of(name: &str) -> Res<(Cell, &'static str)> {
         ),
         "diamond" => {
             let a = 3.3703265431617879;
-            let x = 0.89175 / 0.529177210903;
+            let x = 0.89175 * ferric_core::units::ANGSTROM_TO_BOHR;
             (
                 Cell::new(
                     mol(vec![atom("C", 6, [0.0; 3]), atom("C", 6, [x, x, x])]),
