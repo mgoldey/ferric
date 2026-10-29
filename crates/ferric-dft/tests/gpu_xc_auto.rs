@@ -58,6 +58,10 @@ fn only_an_explicit_on_routes_the_xc_grid_to_the_device() {
 fn under_auto_a_fock_build_makes_no_device_xc_pass() {
     if !matches!(probe(0), GpuStatus::Ready(_)) {
         eprintln!("skipping the behaviour half: no CUDA device");
+        assert!(
+            std::env::var("FERRIC_GPU_TESTS_REQUIRED").ok().as_deref() != Some("1"),
+            "FERRIC_GPU_TESTS_REQUIRED=1 but no device"
+        );
         return;
     }
     install(GpuSettingsExplicit {
