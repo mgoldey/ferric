@@ -30,12 +30,16 @@ def _lines():
     return GATE.read_text().splitlines()
 
 
+# Any `flock ... -w` acquisition, whatever option order (`flock -o -w`, #591).
+ACQUIRE = r"\bflock\b[^\n]*\s-w\b"
+
+
 def test_the_gate_script_exists_and_takes_the_lock():
     """Guard the guard: if these move, the test below passes vacuously."""
     assert GATE.is_file(), f"{GATE} is missing -- this test selects on it"
     body = GATE.read_text()
     assert CLEAR in body, f"{CLEAR} is not called at all in {GATE.name}"
-    assert re.search(r"flock\s+-w", body), (
+    assert re.search(ACQUIRE, body), (
         "no `flock -w` in the gate -- the serialization this test is about "
         "has moved, and the check below would select nothing"
     )
@@ -47,7 +51,7 @@ def test_every_flock_acquisition_is_preceded_by_a_stale_lock_clear():
     flock_lines = [
         i
         for i, ln in enumerate(lines)
-        if re.search(r"flock\s+-w", ln) and not ln.lstrip().startswith("#")
+        if re.search(ACQUIRE, ln) and not ln.lstrip().startswith("#")
     ]
     assert flock_lines, "found no flock acquisitions to check"
 
@@ -65,3 +69,19 @@ def test_every_flock_acquisition_is_preceded_by_a_stale_lock_clear():
         f"daemon for the full flock wait -- call {CLEAR} immediately before "
         "each one:\n" + "\n".join(unguarded)
     )
+
+
+def test_every_flock_acquisition_closes_the_lock_fd_in_the_command():
+    """Without -o, the sccache cargo spawns inherits the lock and squats it.
+
+    The clearer above cannot help once other gates are queued, because their
+    waiting flocks count as real consumers (#591: five pushes stuck 20-33 min).
+    """
+    missing = [
+        ln.strip()
+        for ln in _lines()
+        if re.search(ACQUIRE, ln)
+        and not ln.lstrip().startswith("#")
+        and not re.search(r"\bflock\b[^\n]*\s-o\b", ln)
+    ]
+    assert not missing, f"flock acquisitions without -o: {missing}"
