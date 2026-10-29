@@ -4,7 +4,9 @@ Anchors are independent constructions:
 
 * the RHF orbital-Hessian action equals the dense (A + B) assembled from
   `ao2mo` integrals, 4(ai|bj) - (ab|ij) - (aj|bi) + (e_a - e_i);
-* the f_xc kernel equals a finite difference of V_xc (closed and polarized);
+* the f_xc kernel equals a finite difference of V_xc (closed and polarized),
+  including the tau-only meta-GGAs, and its quadratic form equals a second
+  finite difference of E_xc;
 * static polarizabilities from `solve` equal finite-field second derivatives
   of `run_rhf` / `run_dft` / `run_uhf` energies (field H' = +F.r);
 * the open-shell solver at U_a = U_b on a closed shell equals the closed one.
@@ -75,7 +77,9 @@ def test_rhf_matvec_equals_the_dense_orbital_hessian():
     )
 
 
-@pytest.mark.parametrize("functional", ["PBE", "B3LYP", WB97X])
+@pytest.mark.parametrize(
+    "functional", ["PBE", "B3LYP", WB97X, "r2SCAN", "SCAN", "TPSS"]
+)
 def test_xc_kernel_is_the_derivative_of_vxc(functional):
     mol, bs, ints = _ints(NH2_ASYM, "6-31g", multiplicity=2)
     xc = ints.xc_functional(functional)
@@ -94,6 +98,32 @@ def test_xc_kernel_is_the_derivative_of_vxc(functional):
     m = xc.eval_polarized(da - h * x, db - h * y)
     np.testing.assert_allclose(va, (p[1] - m[1]) / (2 * h), atol=1e-7)
     np.testing.assert_allclose(vb, (p[2] - m[2]) / (2 * h), atol=1e-7)
+
+
+@pytest.mark.parametrize("functional", ["PBE", "r2SCAN"])
+def test_xc_kernel_quadratic_form_is_the_second_derivative_of_exc(functional):
+    # Independent of V_xc's assembly: only E_xc enters the finite difference,
+    # so a tau factor shared by V_xc and the kernel would show up here.
+    rng = np.random.default_rng(11)
+    mol, bs, ints = _ints(NH2_ASYM, "6-31g", multiplicity=2)
+    xc = ints.xc_functional(functional)
+    r = ferric.run_uhf(mol, bs, **TIGHT)
+    da, db = r.density_alpha(), r.density_beta()
+    n, h = ints.nao, 1e-3
+    x = 1e-2 * rng.standard_normal((n, n))
+    x = x + x.T
+    y = 1e-2 * rng.standard_normal((n, n))
+    y = y + y.T
+    d = da + db
+    e = [xc.eval(d + k * h * x)[0] for k in (-1, 0, 1)]
+    fd = (e[2] - 2 * e[1] + e[0]) / h**2
+    q = np.sum(x * xc.response(d, x))
+    assert abs(fd - q) < 1e-5 * abs(q)
+    ep = [xc.eval_polarized(da + k * h * x, db + k * h * y)[0] for k in (-1, 0, 1)]
+    fd = (ep[2] - 2 * ep[1] + ep[0]) / h**2
+    va, vb = xc.response_polarized(da, db, x, y)
+    q = np.sum(x * va) + np.sum(y * vb)
+    assert abs(fd - q) < 1e-5 * abs(q)
 
 
 def _alpha_closed(ints, cphf, c, no):
@@ -131,7 +161,7 @@ def test_rhf_polarizability_matches_finite_field():
     assert abs(alpha[2, 2] - _alpha_zz_finite_field(run)) < 1e-5 * abs(alpha[2, 2])
 
 
-@pytest.mark.parametrize("functional", ["PBE", "B3LYP"])
+@pytest.mark.parametrize("functional", ["PBE", "B3LYP", "r2SCAN"])
 def test_rks_polarizability_matches_finite_field(functional):
     mol, bs, ints = _ints(WATER, "6-31g")
     xc = ints.xc_functional(functional)
@@ -172,7 +202,75 @@ def test_uhf_polarizability_matches_finite_field():
     assert abs(alpha_zz - _alpha_zz_finite_field(run)) < 1e-5 * abs(alpha_zz)
 
 
-@pytest.mark.parametrize("functional", [None, "PBE"])
+def _numpy_uks(ints, xc, h, guess, nocc):
+    """UKS on `h + veff_polarized` with DIIS, from `guess` densities.
+
+    Returns (energy, [(e, c, n) per spin]) at the converged densities."""
+    s = ints.overlap()
+    w, u = np.linalg.eigh(s)
+    x = u / np.sqrt(w)
+    ds = list(guess)
+    focks, errs = [], []
+    e_old = None
+    for _ in range(200):
+        e2, va, vb = ints.veff_polarized(*ds, xc=xc)
+        e = np.sum((ds[0] + ds[1]) * h) + e2
+        fs = [h + va, h + vb]
+        err = np.concatenate(
+            [(x.T @ (f @ d @ s - s @ d @ f) @ x).ravel() for f, d in zip(fs, ds)]
+        )
+        if e_old is not None and abs(e - e_old) < 1e-12 and np.abs(err).max() < 1e-8:
+            break
+        e_old = e
+        focks.append(fs)
+        errs.append(err)
+        focks, errs = focks[-8:], errs[-8:]
+        m = len(errs)
+        b = -np.ones((m + 1, m + 1))
+        b[m, m] = 0.0
+        b[:m, :m] = [[ei @ ej for ej in errs] for ei in errs]
+        rhs = np.zeros(m + 1)
+        rhs[m] = -1.0
+        coef = np.linalg.lstsq(b, rhs, rcond=None)[0][:m]
+        fs = [sum(cf * fk[i] for cf, fk in zip(coef, focks)) for i in range(2)]
+        ds = []
+        for f, n in zip(fs, nocc):
+            _, c = np.linalg.eigh(x.T @ f @ x)
+            c = x @ c
+            ds.append(c[:, :n] @ c[:, :n].T)
+    else:
+        pytest.fail("numpy UKS did not converge")
+    frames = []
+    for f, n in zip(fs, nocc):
+        ev, c = np.linalg.eigh(x.T @ f @ x)
+        frames.append((ev, x @ c, n))
+    return e, frames
+
+
+def test_uks_meta_gga_polarizability_matches_finite_field():
+    # Open-shell end to end for the tau kernel: ucphf(xc="r2SCAN") against
+    # -d2E/dF2 of a numpy UKS on hcore + F z + veff_polarized (exact J).
+    mol, bs, ints = _ints(NH2_ASYM, "6-31g", multiplicity=2)
+    xc = ints.xc_functional("r2SCAN")
+    dz = ints.dipole()[2]
+    r = ferric.run_uhf(mol, bs, **TIGHT)
+    guess = (r.density_alpha(), r.density_beta())
+    nocc = (5, 4)
+
+    def energy(field):
+        f = 0.0 if field is None else field[2]
+        return _numpy_uks(ints, xc, ints.hcore() + f * dz, guess, nocc)[0]
+
+    _, frames = _numpy_uks(ints, xc, ints.hcore(), guess, nocc)
+    (ea, ca, na), (eb, cb, nb) = frames
+    ucphf = ints.ucphf(ca, cb, list(ea), list(eb), na, nb, xc=xc)
+    rhs = [-(c[:, n:].T @ dz @ c[:, :n]) for _, c, n in frames]
+    d1a, d1b = ucphf.density(*ucphf.solve(*rhs, tol=1e-11))
+    alpha_zz = -np.sum((d1a + d1b) * dz)
+    assert abs(alpha_zz - _alpha_zz_finite_field(energy)) < 1e-4 * abs(alpha_zz)
+
+
+@pytest.mark.parametrize("functional", [None, "PBE", "r2SCAN"])
 def test_open_shell_response_at_equal_spins_equals_closed(functional):
     mol, bs, ints = _ints(WATER, "6-31g")
     xc = ints.xc_functional(functional) if functional else None
@@ -192,9 +290,10 @@ def test_response_refusals():
     mol, bs, ints = _ints(WATER, "sto-3g")
     e, c = _rhf_mos(mol, bs, ints)
     no = ints.nelec // 2
-    for name in ("SCAN", "wB97X-V"):
-        with pytest.raises(RuntimeError, match="no exchange-correlation kernel"):
-            ints.cphf(c, list(e), no, xc=ints.xc_functional(name))
+    with pytest.raises(RuntimeError, match="no exchange-correlation kernel for VV10"):
+        ints.cphf(c, list(e), no, xc=ints.xc_functional("wB97X-V"))
+    # The tau-only meta-GGAs now have a kernel.
+    ints.cphf(c, list(e), no, xc=ints.xc_functional("SCAN"))
     with pytest.raises(ValueError, match="nocc"):
         ints.cphf(c, list(e), c.shape[1])
     cphf = ints.cphf(c, list(e), no)

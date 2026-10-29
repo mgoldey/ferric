@@ -101,8 +101,8 @@ pub(crate) fn xc_is_metagga(xc_name: Option<&str>) -> bool {
 
 /// The spin-polarized exchange-correlation kernel f_xc at a reference
 /// density, as the Newton steps use it (LDA, GGA, hybrid and range-separated
-/// GGA; meta-GGA and VV10 have no kernel here and must be refused by the
-/// caller).
+/// GGA, and τ-only meta-GGA; VV10 has no kernel here and must be refused by
+/// the caller).
 pub enum FxcKernelStore {
     Lda {
         kernel: Box<ferric_dft::fxc::LdaFxcKernel>,
@@ -112,6 +112,14 @@ pub enum FxcKernelStore {
     Gga {
         kernel: Box<ferric_dft::fxc::GgaFxcKernel>,
         ref_dens: Box<ferric_dft::density_on_grid::UksDensityGrid>,
+    },
+    /// τ-only meta-GGA (SCAN / r2SCAN / TPSS). Reachable through `build`, but
+    /// every SCF consumer (Newton, stability, Z-vector) still refuses
+    /// meta-GGA with its own `xc_is_metagga` gate before building; today the
+    /// Python response blocks are the only caller that applies it.
+    Mgga {
+        kernel: Box<ferric_dft::fxc::MggaFxcKernel>,
+        reference: Box<ferric_dft::fxc::MggaFxcReference>,
     },
 }
 
@@ -152,6 +160,13 @@ impl FxcKernelStore {
             .funcs
             .iter()
             .all(|f| f.family() == ferric_dft::libxc::FunctionalFamily::Lda);
+        let is_mgga = xc_def
+            .funcs
+            .iter()
+            .any(|f| f.family() == ferric_dft::libxc::FunctionalFamily::MetaGga);
+        if is_mgga {
+            return Self::build_mgga(mol, prep, cfg, xc_def, (d_a, d_b));
+        }
         if is_lda {
             let kernel = ferric_dft::fxc::LdaFxcKernel::new(mol, prep.basis_set(), xc_def, cfg)
                 .map_err(|e| FerricError::General(format!("LdaFxcKernel: {e}")))?;
@@ -173,6 +188,24 @@ impl FxcKernelStore {
         }
     }
 
+    /// The τ-only meta-GGA kernel at `(d_a, d_b)`.
+    fn build_mgga(
+        mol: &Molecule,
+        prep: &PreparedBasis,
+        cfg: &ferric_dft::grid::AtomicGridConfig,
+        xc_def: ferric_dft::libxc::XcDef,
+        (d_a, d_b): (&Array2<f64>, &Array2<f64>),
+    ) -> Result<Self, FerricError> {
+        let err = |e: String| FerricError::General(format!("MggaFxcKernel: {e}"));
+        let kernel =
+            ferric_dft::fxc::MggaFxcKernel::new(mol, prep.basis_set(), xc_def, cfg).map_err(err)?;
+        let reference = kernel.reference(d_a, d_b).map_err(err)?;
+        Ok(FxcKernelStore::Mgga {
+            kernel: Box::new(kernel),
+            reference: Box::new(reference),
+        })
+    }
+
     /// The `Fn(δD_α, δD_β) -> (δV_α, δV_β)` response closure, borrowing `self`.
     #[allow(clippy::type_complexity)]
     pub fn response(
@@ -189,6 +222,11 @@ impl FxcKernelStore {
             FxcKernelStore::Gga { kernel, ref_dens } => {
                 Box::new(move |dd_a: &Array2<f64>, dd_b: &Array2<f64>| {
                     kernel.apply_with_ref(ref_dens, dd_a, dd_b)
+                })
+            }
+            FxcKernelStore::Mgga { kernel, reference } => {
+                Box::new(move |a: &Array2<f64>, b: &Array2<f64>| {
+                    kernel.apply_with_ref(reference, a, b)
                 })
             }
         }

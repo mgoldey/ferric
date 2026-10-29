@@ -1422,7 +1422,8 @@ impl PyXcFunctional {
     }
     /// Closed-shell kernel response V1 = d/dt V_xc(D + t D1) at t = 0, for
     /// symmetric `density` (total) and `d1`. LDA / GGA / hybrid / RSH-GGA
-    /// only: meta-GGA and VV10 have no kernel here and raise ValueError.
+    /// and tau-only meta-GGA (SCAN, r2SCAN, TPSS); VV10 has no kernel here
+    /// and raises RuntimeError.
     /// Builds the kernel at `density` on each call (`cphf` caches it).
     fn response<'py>(
         &self,
@@ -1482,8 +1483,9 @@ struct XcSpec {
 }
 
 impl XcSpec {
-    /// The f_xc kernel at `(d_a, d_b)`. Meta-GGA (no τ kernel) and VV10 (no
-    /// nonlocal kernel) are refused: the response would silently miss them.
+    /// The f_xc kernel at `(d_a, d_b)`. LDA / GGA / hybrid / RSH-GGA and the
+    /// τ-only meta-GGAs (SCAN, r2SCAN, TPSS). VV10 (no nonlocal kernel) is
+    /// refused: the response would silently miss it.
     fn kernel(
         &self,
         mol: &Molecule,
@@ -1492,16 +1494,11 @@ impl XcSpec {
     ) -> Result<ferric_scf::rohf::FxcKernelStore, FerricError> {
         let def = ferric_dft::libxc::xc_def_from_name(&self.name)
             .map_err(|e| FerricError::General(format!("libxc: {e:?}")))?;
-        let mgga = def
-            .funcs
-            .iter()
-            .any(|f| f.family() == ferric_dft::libxc::FunctionalFamily::MetaGga);
-        if mgga || def.vv10.is_some() {
+        if def.vv10.is_some() {
             return Err(FerricError::General(format!(
-                "functional '{}': no exchange-correlation kernel for {} (LDA, GGA, hybrid and \
-                 range-separated GGA only)",
-                self.name,
-                if mgga { "meta-GGA" } else { "VV10" }
+                "functional '{}': no exchange-correlation kernel for VV10 (LDA, GGA, hybrid, \
+                 range-separated GGA and tau-only meta-GGA only)",
+                self.name
             )));
         }
         ferric_scf::rohf::FxcKernelStore::build(mol, prep, &self.grid, &self.name, None, d_a, d_b)

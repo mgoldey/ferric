@@ -639,8 +639,8 @@ class XcFunctional:
     def response(
         self, density: NDArray[np.float64], d1: NDArray[np.float64]
     ) -> NDArray[np.float64]:
-        """d/dt V_xc(D + t D1) at t = 0 (LDA/GGA/hybrid/RSH-GGA; meta-GGA and
-        VV10 raise ValueError)."""
+        """d/dt V_xc(D + t D1) at t = 0 (LDA/GGA/hybrid/RSH-GGA and the tau-only
+        meta-GGAs SCAN/r2SCAN/TPSS; VV10 raises RuntimeError)."""
         ...
     def response_polarized(
         self,

@@ -48104,8 +48104,8 @@
     "mi": 153.0837736153568
   },
   "crates/ferric-scf/src/rohf.rs::impl:FxcKernelStore::response": {
-    "cc": 5.0,
-    "mi": 90.86841910129827
+    "cc": 6.0,
+    "mi": 84.8
   },
   "crates/ferric-scf/src/rohf.rs::impl:FxcKernelStore::response::<anonymous>": {
     "cc": 1.0,

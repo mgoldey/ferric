@@ -154,6 +154,40 @@ mod ffi {
             v2sigma2: *mut f64,
         );
 
+        /// Second functional derivatives of a meta-GGA. Signature verified
+        /// against the libxc 5.2.3 `/usr/include/xc.h` this crate links:
+        /// ```c
+        /// void xc_mgga_fxc(const xc_func_type *p, size_t np,
+        ///      const double *rho, const double *sigma, const double *lapl, const double *tau,
+        ///      double *v2rho2, double *v2rhosigma, double *v2rholapl, double *v2rhotau,
+        ///      double *v2sigma2, double *v2sigmalapl, double *v2sigmatau, double *v2lapl2,
+        ///      double *v2lapltau, double *v2tau2);
+        /// ```
+        /// libxc `exit(1)`s the PROCESS if the functional lacks
+        /// `XC_FLAGS_HAVE_FXC`, so callers must check
+        /// [`XcFunctional::has_fxc`] first (the safe wrapper does).
+        pub fn xc_mgga_fxc(
+            p: *const XcFuncOpaque,
+            np: usize,
+            rho: *const f64,
+            sigma: *const f64,
+            lapl: *const f64,
+            tau: *const f64,
+            v2rho2: *mut f64,
+            v2rhosigma: *mut f64,
+            v2rholapl: *mut f64,
+            v2rhotau: *mut f64,
+            v2sigma2: *mut f64,
+            v2sigmalapl: *mut f64,
+            v2sigmatau: *mut f64,
+            v2lapl2: *mut f64,
+            v2lapltau: *mut f64,
+            v2tau2: *mut f64,
+        );
+
+        /// `XC_FLAGS_*` bit set of a functional's static info record.
+        pub fn xc_func_info_get_flags(info: *const XcFuncInfoOpaque) -> c_int;
+
         /// Retrieve CAM (range-separated) parameters: ω, α (long-range), β (short-range).
         pub fn xc_hyb_cam_coef(
             p: *const XcFuncOpaque,
@@ -287,6 +321,47 @@ pub struct Vv10Params {
 // ---------------------------------------------------------------------------
 // RAII handle
 // ---------------------------------------------------------------------------
+
+/// τ-only polarized meta-GGA second derivatives of `f = ρ ε_xc` (libxc
+/// packing, per point `g`; the Laplacian blocks are not kept):
+///
+/// * `v2rho2[3g..]`     : (ρα ρα, ρα ρβ, ρβ ρβ)
+/// * `v2rhosigma[6g..]` : ρ_s × σ_c at `6g + 3s + c`, c ∈ (αα, αβ, ββ)
+/// * `v2rhotau[4g..]`   : ρ_s × τ_t at `4g + 2s + t`
+/// * `v2sigma2[6g..]`   : upper triangle of σ×σ, (αα αα, αα αβ, αα ββ, αβ αβ, αβ ββ, ββ ββ)
+/// * `v2sigmatau[6g..]` : σ_c × τ_t at `6g + 2c + t`
+/// * `v2tau2[3g..]`     : (τα τα, τα τβ, τβ τβ)
+///
+/// The packing is pinned by `fxc::tests::mgga_point_hessian_matches_fd_of_libxc_vxc`
+/// (a finite difference of libxc's own first derivatives at spin-asymmetric
+/// points, so a transposed ρ×τ or σ×τ block fails it).
+#[derive(Debug, Clone)]
+pub struct MggaFxcPolarized {
+    pub v2rho2: Vec<f64>,
+    pub v2rhosigma: Vec<f64>,
+    pub v2rhotau: Vec<f64>,
+    pub v2sigma2: Vec<f64>,
+    pub v2sigmatau: Vec<f64>,
+    pub v2tau2: Vec<f64>,
+}
+
+impl MggaFxcPolarized {
+    /// Zeroed buffers for `npts` points.
+    pub fn zeros(npts: usize) -> Self {
+        Self {
+            v2rho2: vec![0.0; 3 * npts],
+            v2rhosigma: vec![0.0; 6 * npts],
+            v2rhotau: vec![0.0; 4 * npts],
+            v2sigma2: vec![0.0; 6 * npts],
+            v2sigmatau: vec![0.0; 6 * npts],
+            v2tau2: vec![0.0; 3 * npts],
+        }
+    }
+    /// Number of grid points the buffers hold.
+    pub fn npts(&self) -> usize {
+        self.v2rho2.len() / 3
+    }
+}
 
 /// RAII handle around a heap-allocated libxc `xc_func_type`.
 pub struct XcFunctional {
@@ -1025,6 +1100,79 @@ impl XcFunctional {
                 );
             }
         });
+    }
+
+    /// Whether libxc implements the second derivative (`XC_FLAGS_HAVE_FXC`)
+    /// for this functional. libxc terminates the process when an fxc routine
+    /// is called on a functional without it, so every fxc caller checks this.
+    pub fn has_fxc(&self) -> bool {
+        const XC_FLAGS_HAVE_FXC: c_int = 1 << 2;
+        // SAFETY: live initialized handle; the info record is static.
+        unsafe {
+            let info = ffi::xc_func_get_info(self.ptr);
+            !info.is_null() && (ffi::xc_func_info_get_flags(info) & XC_FLAGS_HAVE_FXC) != 0
+        }
+    }
+
+    /// Meta-GGA second derivatives, polarized (nspin=2), τ-only (the density
+    /// Laplacian is fed as zero and its derivative blocks are discarded, as on
+    /// the first-derivative path). Inputs interleaved as in
+    /// [`Self::eval_mgga_polarized`]. See [`MggaFxcPolarized`] for the output
+    /// packing. Errors (instead of letting libxc `exit`) when the functional
+    /// has no fxc implementation.
+    pub fn eval_mgga_fxc_polarized(
+        &self,
+        rho: &[f64],
+        sigma: &[f64],
+        tau: &[f64],
+        out: &mut MggaFxcPolarized,
+    ) -> Result<(), LibxcError> {
+        debug_assert!(self.nspin == 2, "eval_mgga_fxc_polarized requires nspin=2");
+        if !self.has_fxc() {
+            return Err(LibxcError::Unsupported(
+                "libxc has no second derivative (fxc) for this meta-GGA".to_string(),
+            ));
+        }
+        let n = out.npts();
+        assert_eq!(rho.len(), 2 * n, "polarized rho buffer must be 2 * npts");
+        assert_eq!(
+            sigma.len(),
+            3 * n,
+            "polarized sigma buffer must be 3 * npts"
+        );
+        assert_eq!(tau.len(), 2 * n, "polarized tau buffer must be 2 * npts");
+        // Laplacian input (zero) and the Laplacian output blocks (discarded).
+        let lapl = vec![0.0_f64; 2 * n];
+        let mut v2rholapl = vec![0.0_f64; 4 * n];
+        let mut v2sigmalapl = vec![0.0_f64; 6 * n];
+        let mut v2lapl2 = vec![0.0_f64; 3 * n];
+        let mut v2lapltau = vec![0.0_f64; 4 * n];
+        // SAFETY: live handle with HAVE_FXC (checked above); every buffer is
+        // sized to libxc's polarized meta-GGA dimensions for n points
+        // (rho 2, sigma 3, lapl 2, tau 2; v2rho2 3, v2rhosigma 6, v2rholapl 4,
+        // v2rhotau 4, v2sigma2 6, v2sigmalapl 6, v2sigmatau 6, v2lapl2 3,
+        // v2lapltau 4, v2tau2 3), lengths verified above / by construction.
+        unsafe {
+            ffi::xc_mgga_fxc(
+                self.ptr as *const _,
+                n,
+                rho.as_ptr(),
+                sigma.as_ptr(),
+                lapl.as_ptr(),
+                tau.as_ptr(),
+                out.v2rho2.as_mut_ptr(),
+                out.v2rhosigma.as_mut_ptr(),
+                v2rholapl.as_mut_ptr(),
+                out.v2rhotau.as_mut_ptr(),
+                out.v2sigma2.as_mut_ptr(),
+                v2sigmalapl.as_mut_ptr(),
+                out.v2sigmatau.as_mut_ptr(),
+                v2lapl2.as_mut_ptr(),
+                v2lapltau.as_mut_ptr(),
+                out.v2tau2.as_mut_ptr(),
+            );
+        }
+        Ok(())
     }
 
     /// Returns CAM (range-separation) coefficients if this is an RSH functional.
