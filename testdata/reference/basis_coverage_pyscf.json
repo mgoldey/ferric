@@ -266,13 +266,28 @@
    "molecule": "hcl",
    "atoms_angstrom": "H 0 0 0; Cl 0 0 1.2746",
    "charge": 0,
-   "cart": true,
+   "cart": false,
    "ecp": false,
-   "nao": 33,
+   "nao": 32,
    "nelectron": 18,
-   "e_rhf": -460.09490654720366,
+   "e_rhf": -460.0945521890073,
    "e_mp2_corr": null,
-   "seconds": 0.67
+   "seconds": 1.29
+  },
+  {
+   "kind": "rhf",
+   "basis": "6-311g**",
+   "auxbasis": null,
+   "molecule": "ch3cl",
+   "atoms_angstrom": "C 0 0 0; Cl 0 0 1.781; H 1.0310 0 -0.3449; H -0.5155 0.8929 -0.3449; H -0.5155 -0.8929 -0.3449",
+   "charge": 0,
+   "cart": false,
+   "ecp": false,
+   "nao": 62,
+   "nelectron": 26,
+   "e_rhf": -499.1305813372532,
+   "e_mp2_corr": null,
+   "seconds": 0.4
   },
   {
    "kind": "rhf",
@@ -296,13 +311,13 @@
    "molecule": "hcl",
    "atoms_angstrom": "H 0 0 0; Cl 0 0 1.2746",
    "charge": 0,
-   "cart": true,
+   "cart": false,
    "ecp": false,
-   "nao": 38,
+   "nao": 37,
    "nelectron": 18,
-   "e_rhf": -460.09575275492915,
+   "e_rhf": -460.09546999572365,
    "e_mp2_corr": null,
-   "seconds": 0.69
+   "seconds": 0.16
   },
   {
    "kind": "rhf",

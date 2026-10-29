@@ -331,3 +331,43 @@ fn every_registered_set_has_a_case() {
         "bundled sets with no PySCF reference case: {missing:?}"
     );
 }
+
+/// The Pople references were computed under ferric's (Gaussian's) d-shell
+/// convention: every 6-31G-family case that has d shells with PySCF
+/// `cart=True`, every 6-311G-family case with PySCF's default `cart=False`
+/// (spherical on every element, Na-Ar included). A mixed C/Cl molecule at
+/// 6-311G** is among them, where BSE's own typing would mix 5D and 6D.
+#[test]
+fn pople_references_use_the_gaussian_d_convention() {
+    let refs = refs();
+    let (mut n_6d, mut n_5d) = (0, 0);
+    for c in refs.cases.iter().filter(|c| c.basis.starts_with("6-31")) {
+        let bs = basis::bundled(&c.basis).unwrap();
+        let has_d = molecule(c)
+            .atoms
+            .iter()
+            .any(|a| bs.for_element(a.z).unwrap().iter().any(|s| s.l == 2));
+        if c.basis.starts_with("6-311") {
+            assert!(!c.cart, "{}: 6-311G family must be cart=False", c.label());
+            n_5d += usize::from(has_d);
+        } else {
+            assert_eq!(
+                c.cart,
+                has_d,
+                "{}: 6-31G family with d must be cart=True",
+                c.label()
+            );
+            n_6d += usize::from(has_d);
+        }
+    }
+    assert!(
+        n_6d >= 6 && n_5d >= 5,
+        "only {n_6d} 6D and {n_5d} 5D d-carrying cases"
+    );
+    assert!(
+        refs.cases
+            .iter()
+            .any(|c| c.basis == "6-311g**" && c.molecule == "ch3cl"),
+        "the mixed C/Cl 6-311G** case is missing"
+    );
+}

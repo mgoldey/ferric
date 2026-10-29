@@ -117,10 +117,13 @@ use with aug-cc-pVTZ.
 Each set covers what its source covers, and an element it lacks is an error
 at basis setup that names the element and the covered range (for example
 `cc-pvtz` has H-Ar and Ca-Kr, with no K; `cc-pvtz-jkfit` and `cc-pvqz-jkfit`
-have only H, B-F, Al-Cl and Ga-Br; the `-pp-rifit` sets cover only Y-Pd and Hf-Pt among the heavy elements). It is
-never patched silently. Spherical or Cartesian follows the Basis Set
-Exchange shell by shell: the 6-31G family has Cartesian d (6D), 6-311G** has
-spherical d except on Na-Ar, and everything else is spherical.
+have only H, B-F, Al-Cl and Ga-Br; the `-pp-rifit` sets cover H-Ar (the aug ones
+without Li and Na), Sc-Ni at TZ and QZ only, Y-Pd and Hf-Pt). It is never patched silently. The Pople sets follow
+Gaussian's d convention: the 6-31G family has Cartesian d (6D), and the
+6-311G family has spherical d (5D) on every element, including Na-Ar, which
+the Basis Set Exchange marks Cartesian. Everything else is spherical, as the
+Basis Set Exchange types it. See
+[For PySCF users](./pyscf-users.md) for matching PySCF.
 `crates/ferric-core/src/basis/provenance.json` records the source, version and
 element list of every set. `BasisSet.from_bse_json(path)` loads any other
 Basis Set Exchange JSON file.

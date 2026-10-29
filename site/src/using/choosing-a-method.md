@@ -56,10 +56,12 @@ your orbital basis. The bundled pairs are:
 |---|---|---|
 | cc-pVDZ / TZ / QZ | `cc-pvdz-rifit` (alias `cc-pvdz-ri`), `cc-pvtz-rifit`, `cc-pvqz-rifit` | `def2-universal-jkfit`; `cc-pvtz-jkfit` / `cc-pvqz-jkfit` (H, B-F, Al-Cl, Ga-Br only) |
 | aug-cc-pVDZ / TZ / QZ | `aug-cc-pvdz-rifit`, `aug-cc-pvtz-rifit`, `aug-cc-pvqz-rifit` | `aug-cc-pvdz-jkfit`, `aug-cc-pvtz-jkfit`, `aug-cc-pvqz-jkfit` (H, B-Ne, Al-Ar, Ga-Kr; Ne/Ar/Kr extrapolated), else `def2-universal-jkfit` |
-| cc-pVXZ-PP, aug-cc-pVXZ-PP | `<orbital>-pp-rifit` (heavy elements Y-Pd and Hf-Pt only; Cu-Sr, Ag-Lu and Au-Rn error) | `def2-universal-jkfit` |
+| cc-pVXZ-PP, aug-cc-pVXZ-PP | `<orbital>-pp-rifit` (H-Ar, without Li and Na in the aug sets; Sc-Ni at TZ and QZ only; Y-Pd; Hf-Pt. K-Ni at DZ, K and Ca at TZ/QZ, Cu-Sr, Ag-Lu and Au-Rn error) | `def2-universal-jkfit` |
 | def2-SVP(D), TZVP(P)(D), QZVP(P)(D) | `def2-<x>-rifit` for each | `def2-universal-jkfit` |
 
-Every set also loads under ORCA's `/c` (RI) and `/jk` spellings. STO-3G, the
+Each RIFIT set in the table also loads under ORCA's `<orbital>/c` name (for
+example `def2-tzvp/c`), each JKFIT set under `<orbital>/jk` (for example
+`aug-cc-pvtz/jk`), and `def2-universal-jkfit` as `def2/jk`. STO-3G, the
 Pople sets and the pcseg family have no matching RI set; pair them with a
 `def2` or `cc` RIFIT set of similar quality. Any other orbital set goes in
 through `[basis] path` as a Gaussian-94 file (orbital basis only).

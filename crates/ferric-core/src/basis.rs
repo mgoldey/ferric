@@ -427,6 +427,8 @@ fn parse_g94(text: &str, name: &str) -> Result<BasisSet, FerricError> {
 
 // --- Bundled basis sets ---
 
+#[cfg(test)]
+mod frozen_fingerprints;
 mod packed;
 
 /// Every loadable bundled basis set: `(file stem in basis/bundled/, names)`.
@@ -443,8 +445,9 @@ mod packed;
 /// the BSE version of every file are recorded in `basis/provenance.json`,
 /// written by `scripts/fetch_bse_bases.py`.
 const REGISTRY: &[(&str, &[&str])] = &[
-    // Pople. BSE marks 6-31G-family d shells Cartesian (6D) and 6-311G**
-    // d shells spherical except Na-Ar (Cartesian); ferric follows BSE per shell.
+    // Pople, in Gaussian's d convention: the 6-31G family is Cartesian (6D),
+    // as BSE marks it; the 6-311G family is spherical (5D) on every element,
+    // which overrides BSE's Cartesian Na-Ar (see `bundled`).
     ("sto-3g", &["sto-3g"]),
     ("6-31g", &["6-31g"]),
     ("6-31g_d", &["6-31g*", "6-31g(d)"]),
@@ -653,6 +656,17 @@ fn registry_stem(canonical: &str) -> Option<&'static str> {
 /// `"def2-tzvp-rifit"`). The returned set's `name` is the canonicalized name
 /// that was asked for. An unknown name is an error that lists the known ones.
 ///
+/// The d-shell type follows Gaussian's convention for the Pople sets: the
+/// 6-31G family (6-31G through 6-31++G**) is Cartesian 6D, as BSE types it;
+/// the 6-311G family is spherical 5D on EVERY element, including Na-Ar,
+/// which BSE types Cartesian (the one deliberate departure from BSE, recorded
+/// in `basis/provenance.json`). Every other set is typed as BSE types it
+/// (spherical for the Dunning, Karlsruhe and Jensen sets). PySCF applies one
+/// `cart` flag to a whole molecule and defaults to spherical, so to match
+/// ferric's 6-31G-family numbers build the PySCF molecule with `cart=True`
+/// (water/6-31G*: about 1.4 mHa apart otherwise); the 6-311G family matches
+/// PySCF's default.
+///
 /// Element coverage is whatever the source set has (see
 /// `basis/provenance.json`); an element the set lacks is not patched, so a
 /// calculation on it fails at basis setup, naming the element and the
@@ -727,8 +741,9 @@ mod tests {
 
     #[test]
     fn test_bundled_augccpvdz_pp_carries_ecp() {
-        // aug-cc-pVDZ-PP bundles heavy atoms (I/Xe/Ag) WITH their inline ECP and
-        // light atoms (H/C/Al/Cl) from regular aug-cc-pVDZ (no ECP). The GW100
+        // aug-cc-pVDZ-PP bundles heavy atoms (Z >= 29, e.g. I/Xe/Ag) WITH their
+        // inline ECP and light atoms (Z < 29, e.g. H/C/Al/Cl) from regular
+        // aug-cc-pVDZ (no ECP). The GW100
         // ECP molecules (I2, CH3I, AlI3, Xe, Ag2, AgCl) need exactly this mix.
         let bs = bundled("aug-cc-pVDZ-PP").unwrap();
         // Heavy atoms present with ECP (28-electron core for all three).
@@ -751,8 +766,9 @@ mod tests {
 
     #[test]
     fn test_bundled_augccpvtz_pp_carries_ecp_and_grows_over_dz() {
-        // aug-cc-pVTZ-PP mirrors the DZ-PP merge: heavy (I/Xe/Ag) WITH inline
-        // 28-core ECP, light (H/C/Al/Cl) from plain aug-cc-pVTZ (no ECP). Each
+        // aug-cc-pVTZ-PP mirrors the DZ-PP merge: heavy (e.g. I/Xe/Ag) WITH
+        // inline 28-core ECP, light (e.g. H/C/Al/Cl) from plain aug-cc-pVTZ
+        // (no ECP). Each
         // element must have strictly MORE orbital shells than at DZ (TZ > DZ).
         let dz = bundled("aug-cc-pVDZ-PP").unwrap();
         let tz = bundled("aug-cc-pVTZ-PP").unwrap();
@@ -913,6 +929,51 @@ mod tests {
             .find(|s| s.l == 2)
             .unwrap();
         assert!(fe_d.pure, "BSE marks STO-3G Fe d spherical");
+    }
+
+    /// The Pople d-shell convention is Gaussian's, pinned per family and for
+    /// every element: the 6-31G family is Cartesian 6D (as BSE types it), the
+    /// 6-311G family is spherical 5D everywhere, including Na-Ar, which BSE
+    /// types Cartesian (`SPHERICAL_OVERRIDE` in scripts/fetch_bse_bases.py).
+    #[test]
+    fn pople_d_shell_type_is_pinned_per_family() {
+        let families: [(&[&str], bool); 2] = [
+            (
+                &[
+                    "6-31g",
+                    "6-31g*",
+                    "6-31g**",
+                    "6-31+g*",
+                    "6-31+g**",
+                    "6-31++g**",
+                ],
+                false,
+            ),
+            (&["6-311g**", "6-311++g**"], true),
+        ];
+        for (names, want_pure) in families {
+            for &name in names {
+                let bs = bundled(name).unwrap();
+                let mut n_d = 0usize;
+                for (z, shells) in &bs.shells {
+                    for sh in shells.iter().filter(|s| s.l == 2) {
+                        assert_eq!(sh.pure, want_pure, "{name} Z={z}: d shell pure={}", sh.pure);
+                        n_d += 1;
+                    }
+                }
+                // reachability: the family must actually carry d shells
+                assert!(n_d >= 8, "{name}: only {n_d} d shells checked");
+            }
+        }
+        // The override's target elements are present (Na-Ar d shells exist).
+        let bs = bundled("6-311g**").unwrap();
+        for z in 11..=18 {
+            assert!(bs
+                .for_element(z)
+                .unwrap()
+                .iter()
+                .any(|s| s.l == 2 && s.pure));
+        }
     }
 
     #[test]

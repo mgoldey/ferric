@@ -401,7 +401,13 @@ class BasisSet:
         '6-31g(d,p)', 'def2-tzvp', 'cc-pvdz-ri'). Aliases are accepted:
         '6-31g*'/'6-31g(d)', '-ri' and '/c' for RIFIT sets, '/jk' for JKFIT
         sets, 'def2/jk' and 'def2-<x>-jkfit' for def2-universal-jkfit.
-        Raises ValueError for an unknown name, listing the known ones."""
+        Raises ValueError for an unknown name, listing the known ones.
+
+        d shells follow Gaussian's convention: the 6-31G family (6-31G
+        through 6-31++G**) is Cartesian 6D; the 6-311G family is spherical 5D
+        on every element (Na-Ar included); all other sets are spherical.
+        PySCF defaults to 5D, so compare 6-31G-family numbers with
+        gto.M(..., cart=True) (water/6-31G*: about 1.4 mHa otherwise)."""
         ...
 
     @staticmethod

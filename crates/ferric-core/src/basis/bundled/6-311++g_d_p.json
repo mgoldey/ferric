@@ -1467,7 +1467,7 @@
      ]
     },
     {
-     "function_type": "gto_cartesian",
+     "function_type": "gto_spherical",
      "region": "polarization",
      "angular_momentum": [
       2
@@ -1712,7 +1712,7 @@
      ]
     },
     {
-     "function_type": "gto_cartesian",
+     "function_type": "gto_spherical",
      "region": "polarization",
      "angular_momentum": [
       2
@@ -1957,7 +1957,7 @@
      ]
     },
     {
-     "function_type": "gto_cartesian",
+     "function_type": "gto_spherical",
      "region": "polarization",
      "angular_momentum": [
       2
@@ -2202,7 +2202,7 @@
      ]
     },
     {
-     "function_type": "gto_cartesian",
+     "function_type": "gto_spherical",
      "region": "polarization",
      "angular_momentum": [
       2
@@ -2447,7 +2447,7 @@
      ]
     },
     {
-     "function_type": "gto_cartesian",
+     "function_type": "gto_spherical",
      "region": "polarization",
      "angular_momentum": [
       2
@@ -2692,7 +2692,7 @@
      ]
     },
     {
-     "function_type": "gto_cartesian",
+     "function_type": "gto_spherical",
      "region": "polarization",
      "angular_momentum": [
       2
@@ -2939,7 +2939,7 @@
      ]
     },
     {
-     "function_type": "gto_cartesian",
+     "function_type": "gto_spherical",
      "region": "polarization",
      "angular_momentum": [
       2
@@ -3186,7 +3186,7 @@
      ]
     },
     {
-     "function_type": "gto_cartesian",
+     "function_type": "gto_spherical",
      "region": "polarization",
      "angular_momentum": [
       2
@@ -3885,7 +3885,6 @@
  "version": "0",
  "function_types": [
   "gto",
-  "gto_cartesian",
   "gto_spherical"
  ],
  "names": [

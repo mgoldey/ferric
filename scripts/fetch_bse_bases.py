@@ -17,6 +17,9 @@ add or change. A changed shell on an element the file already had is an
 error, because that would silently move every reference energy computed with
 it.
 
+The one deliberate departure from BSE data is ``SPHERICAL_OVERRIDE``: the
+6-311G family is made spherical on every element (Gaussian's convention).
+
 ``def2-ecp.json`` is not in the table: it is a hand-trimmed iodine-only ECP
 consumed by ``ecp.rs``, not a basis set, and it has its own tests.
 """
@@ -131,7 +134,43 @@ FILL_FROM: dict[str, str] = {
     "aug-cc-pvqz-pp-rifit": "aug-cc-pVQZ-RIFIT",
 }
 
+# THE one place ferric deliberately departs from BSE's function_type.
+#
+# ferric follows Gaussian's convention for the Pople sets. The 6-31G family
+# stays Cartesian 6D, which is what BSE says too. The 6-311G family is
+# spherical 5D on EVERY element. BSE types the Na-Ar d shells of 6-311G**
+# and 6-311++G** gto_cartesian but every other element spherical, so a
+# molecule such as CH3Cl would carry 5D on C and 6D on Cl, which no other code
+# builds. Every l >= 2 shell of these files is therefore rewritten to
+# gto_spherical, at fetch time AND on the shipped file. The provenance record
+# carries a function_type_override entry that names the changed elements and
+# this reason. scripts/gen_pyscf_basis_coverage_refs.py reads that entry, so
+# its PySCF references use the same convention (cart=False).
+SPHERICAL_OVERRIDE: frozenset[str] = frozenset({"6-311g_d_p", "6-311++g_d_p"})
+SPHERICAL_OVERRIDE_REASON = "Gaussian convention; BSE marks Na-Ar Cartesian"
+
 REL_TOL = 1e-12
+
+
+def force_spherical(data: dict) -> list[int]:
+    """Make every l >= 2 shell gto_spherical; return the elements changed."""
+    changed = set()
+    for z, el in data["elements"].items():
+        for sh in el.get("electron_shells", []):
+            if (
+                max(sh["angular_momentum"]) >= 2
+                and sh["function_type"] != "gto_spherical"
+            ):
+                sh["function_type"] = "gto_spherical"
+                changed.add(int(z))
+    data["function_types"] = sorted(
+        {
+            sh["function_type"]
+            for el in data["elements"].values()
+            for sh in el.get("electron_shells", [])
+        }
+    )
+    return sorted(changed)
 
 
 def _floats(xs: list[str]) -> list[float]:
@@ -204,6 +243,12 @@ def fetch(stem: str, name: str) -> tuple[dict, dict]:
                 data["elements"][z] = el
                 filled.append(int(z))
         record["filled_from"] = {"bse_name": src["name"], "elements": sorted(filled)}
+    if stem in SPHERICAL_OVERRIDE:
+        record["function_type_override"] = {
+            "l_ge_2": "gto_spherical",
+            "elements_changed": force_spherical(data),
+            "reason": SPHERICAL_OVERRIDE_REASON,
+        }
     return data, record
 
 
@@ -220,6 +265,8 @@ def merge(stem: str, fresh: dict) -> tuple[dict, list[int], list[int], list[int]
     if not path.exists():
         return fresh, sorted(int(z) for z in fresh["elements"]), [], []
     old = json.loads(path.read_text())
+    if stem in SPHERICAL_OVERRIDE:
+        force_spherical(old)  # idempotent; see SPHERICAL_OVERRIDE
     oe, fe = old["elements"], fresh["elements"]
     added = sorted((z for z in fe if z not in oe), key=int)
     extra = sorted(int(z) for z in oe if z not in fe)
@@ -258,9 +305,11 @@ def main() -> int:
         if extra:
             rec["shipped_only_elements"] = extra
         records.append(rec)
-        if not args.check and (is_new or added):
-            text = json.dumps(merged, indent=1, ensure_ascii=False) + "\n"
-            (BUNDLED / f"{stem}.json").write_text(text)
+        path = BUNDLED / f"{stem}.json"
+        text = json.dumps(merged, indent=1, ensure_ascii=False) + "\n"
+        # Written when new, extended, or rewritten by SPHERICAL_OVERRIDE.
+        if not args.check and (is_new or text != path.read_text()):
+            path.write_text(text)
 
     if not args.check:
         prov = {
@@ -272,7 +321,11 @@ def main() -> int:
                 "Shipped elements are never rewritten by a re-fetch; "
                 "shipped_only_elements are local extensions documented in each "
                 "file's revision_description. def2-ecp.json is not listed: it "
-                "is an iodine-only def2 ECP used by ecp.rs, not a basis set."
+                "is an iodine-only def2 ECP used by ecp.rs, not a basis set. "
+                "The one deliberate departure from BSE data: every l >= 2 "
+                "shell of the 6-311G family is spherical (see "
+                "function_type_override and SPHERICAL_OVERRIDE in the fetch "
+                "script)."
             ),
             # Sets imported from elsewhere (scripts/import_psi4_jkfit.py)
             # keep their own records.

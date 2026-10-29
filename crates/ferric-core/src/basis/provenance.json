@@ -3,7 +3,7 @@
  "bse_package_version": "0.12",
  "fetched_by": "scripts/fetch_bse_bases.py",
  "fetched_on": "2026-10-29",
- "note": "Shipped elements are never rewritten by a re-fetch; shipped_only_elements are local extensions documented in each file's revision_description. def2-ecp.json is not listed: it is an iodine-only def2 ECP used by ecp.rs, not a basis set.",
+ "note": "Shipped elements are never rewritten by a re-fetch; shipped_only_elements are local extensions documented in each file's revision_description. def2-ecp.json is not listed: it is an iodine-only def2 ECP used by ecp.rs, not a basis set. The one deliberate departure from BSE data: every l >= 2 shell of the 6-311G family is spherical (see function_type_override and SPHERICAL_OVERRIDE in the fetch script).",
  "sets": [
   {
    "file": "sto-3g.json",
@@ -557,6 +557,20 @@
     36,
     53
    ],
+   "function_type_override": {
+    "l_ge_2": "gto_spherical",
+    "elements_changed": [
+     11,
+     12,
+     13,
+     14,
+     15,
+     16,
+     17,
+     18
+    ],
+    "reason": "Gaussian convention; BSE marks Na-Ar Cartesian"
+   },
    "elements": [
     1,
     2,
@@ -615,6 +629,20 @@
     19,
     20
    ],
+   "function_type_override": {
+    "l_ge_2": "gto_spherical",
+    "elements_changed": [
+     11,
+     12,
+     13,
+     14,
+     15,
+     16,
+     17,
+     18
+    ],
+    "reason": "Gaussian convention; BSE marks Na-Ar Cartesian"
+   },
    "elements": [
     1,
     3,

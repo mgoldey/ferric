@@ -20390,5 +20390,5 @@
   "rifit": "aug-cc-pvdz-pp-rifit",
   "optri": "aug-cc-pvdz-pp-optri"
  },
- "name": "aug-cc-pVDZ-PP (heavy: I/Xe/Ag with ECP; light: aug-cc-pVDZ for H/C/Al/Cl)"
+ "name": "aug-cc-pVDZ-PP"
 }

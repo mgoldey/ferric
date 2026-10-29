@@ -199,6 +199,12 @@ impl PyBasisSet {
     /// `"cc-pvdz"`, `"def2-svp"`, or an RI/JK auxiliary set like
     /// `"cc-pvdz-ri"`/`"def2-universal-jkfit"`). Raises `ValueError` if `name`
     /// is not a bundled set.
+    ///
+    /// d shells follow Gaussian's convention: the 6-31G family (6-31G
+    /// through 6-31++G**) is Cartesian 6D; the 6-311G family is spherical 5D
+    /// on every element (Na-Ar included); all other sets are spherical.
+    /// PySCF defaults to 5D, so compare 6-31G-family numbers with
+    /// `gto.M(..., cart=True)` (water/6-31G*: about 1.4 mHa otherwise).
     #[staticmethod]
     fn bundled(name: &str) -> PyResult<Self> {
         let bs = basis::bundled(name)

@@ -22,14 +22,17 @@ are fetched from that set, as recorded in
 
 PySCF's ``cart`` flag is global per molecule while BSE types every shell, so
 each case asserts that all its l >= 2 shells share one type and sets ``cart``
-from it. Run under the pinned environment, one PySCF job at a time::
+from it. The type is BSE's, except for a set whose provenance record carries a
+``function_type_override`` (the 6-311G family, spherical everywhere), so the
+6-31G family is compared with ``cart=True`` and the 6-311G family with
+``cart=False``. Run under the pinned environment, one PySCF job at a time::
 
     flock -o /tmp/ferric-compile.lock \\
       uvx --from basis_set_exchange==0.12 --with pyscf==2.13.1 \\
       python scripts/gen_pyscf_basis_coverage_refs.py [--update]
 
 ``--update`` keeps every case already in the output and computes only new
-ones. The aug-cc-pVXZ-JKFIT sets are not in BSE; for them PySCF's own copy is
+ones; to recompute a case, delete it from the output first. The aug-cc-pVXZ-JKFIT sets are not in BSE; for them PySCF's own copy is
 used (proved bit-identical to ferric's by scripts/import_psi4_jkfit.py).
 """
 
@@ -53,6 +56,13 @@ OUT = ROOT / "testdata/reference/basis_coverage_pyscf.json"
 MOLS = {
     "h2o": ("O 0 0 0.1173; H 0 0.7572 -0.4692; H 0 -0.7572 -0.4692", 0),
     "hcl": ("H 0 0 0; Cl 0 0 1.2746", 0),
+    # C and Cl together: under BSE's own typing 6-311G** would be 5D on C and
+    # 6D on Cl here; ferric makes the whole 6-311G family spherical.
+    "ch3cl": (
+        "C 0 0 0; Cl 0 0 1.781; H 1.0310 0 -0.3449; "
+        "H -0.5155 0.8929 -0.3449; H -0.5155 -0.8929 -0.3449",
+        0,
+    ),
     "hbr": ("H 0 0 0; Br 0 0 1.4145", 0),
     "agh": ("Ag 0 0 0; H 0 0 1.618", 0),
     "hi": ("H 0 0 0; I 0 0 1.609", 0),
@@ -74,6 +84,7 @@ RHF_CASES: list[tuple[str, str]] = [
     ("6-31++g**", "h2o"),
     ("6-311g**", "h2o"),
     ("6-311g**", "hcl"),
+    ("6-311g**", "ch3cl"),
     ("6-311++g**", "h2o"),
     ("6-311++g**", "hcl"),
     ("cc-pvdz", "h2o"),
@@ -196,9 +207,13 @@ def element_basis(bundled: str, symbols: set[str]) -> tuple[dict, dict, set[str]
             continue
         name = source_name(bundled, z)
         data = json.loads(bse.get_basis(name, elements=[z], fmt="json", header=False))
+        # ferric's one deliberate departure from BSE's typing (the 6-311G
+        # family is spherical everywhere; see SPHERICAL_OVERRIDE in
+        # fetch_bse_bases.py), read from the provenance record.
+        override = rec.get("function_type_override", {}).get("l_ge_2")
         for sh in data["elements"][str(z)].get("electron_shells", []):
             if max(sh["angular_momentum"]) >= 2:
-                ftypes.add(sh["function_type"])
+                ftypes.add(override or sh["function_type"])
         text = bse.get_basis(name, elements=[z], fmt="nwchem", header=False)
         # BSE's NWChem output is the basis block followed by an ECP block;
         # each PySCF parser wants only its own.
