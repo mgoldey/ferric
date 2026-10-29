@@ -209,8 +209,9 @@ ferric_clear_stale_sccache_lock "$LOCK_FILE"
 #
 # WHO HOLDS THE LOCK. A subshell opens the lock file and takes the lock on that
 # fd, so the lock lives exactly as long as the subshell. The command gets the
-# fd closed ({lock_fd}>&-, which is what -o did in the wrapper form), so
-# sccache cannot inherit and squat it.
+# fd closed ({lock_fd}>&-, which is what -o does in the wrapper form), so
+# sccache cannot inherit and squat it. The flock keeps -o too (#591's rule:
+# every acquisition carries it); with a numeric fd it has no command to act on.
 #
 # SIGNALS. `timeout` moves itself and the command into a NEW process group, so
 # a Ctrl-C / SIGHUP / SIGTERM aimed at the gate's group does not reach the
@@ -234,7 +235,7 @@ run_locked() {
         trap 'sig=TERM' TERM
         trap 'sig=HUP' HUP
         exec {lock_fd}>>"$LOCK_FILE" || exit 1
-        flock -w "$LOCK_WAIT_SECS" -E "$LOCK_WAIT_EXPIRED_RC" "$lock_fd"
+        flock -o -w "$LOCK_WAIT_SECS" -E "$LOCK_WAIT_EXPIRED_RC" "$lock_fd"
         rc=$?
         if [[ $rc -eq 0 && -z $sig ]]; then
             timeout --signal=TERM --kill-after=30 "${TIMEOUT_SECS}" \
