@@ -24,10 +24,11 @@
 //! (64F compute requires 64F A/B/C), and downloading each f32 panel to
 //! accumulate on the host would move ⌈k/b⌉·4 bytes per output element instead
 //! of 8 (4x the traffic at k = 912, b = 128: ⌈912/128⌉ = 8 panels, 8·4/8).
-use cudarc::cublas::{Gemm, GemmConfig};
+use cudarc::cublas::{Gemm, GemmConfig, StridedBatchedConfig};
 use cudarc::driver::{CudaSlice, CudaViewMut, LaunchConfig, PushKernelArg};
 use ndarray::{ArrayView2, ArrayViewMut2};
 
+use super::batched::{check_batched_geometry, BatchedDims, DevBatchedOperand};
 use super::device::{Device, GpuError};
 use super::gemm::{check_dev_geometry, col_major_desc, DevOperand, Role};
 use super::pool::DevicePool;
@@ -175,6 +176,108 @@ pub fn gemm_f32_f64acc_dev_into(
             .map_err(|e| cuda(format_args!("cublasSgemm panel {k0}..{k1}: {e:?}")))?;
         // SAFETY: the kernel signature is (double*, const float*, u64) and the
         // two buffers hold >= n_elems = m·n elements each (checked above).
+        unsafe {
+            s.launch_builder(func)
+                .arg(&mut *c64)
+                .arg(&mut *c32)
+                .arg(&n_elems)
+                .launch(launch)
+        }
+        .map_err(|e| cuda(format_args!("axpy_f32_to_f64 panel {k0}..{k1}: {e:?}")))?;
+        k0 = k1;
+        panels += 1;
+    }
+    Ok(panels)
+}
+
+/// The strided-batched form of [`gemm_f32_f64acc_dev_into`]: `out_b =
+/// left_b · right_b` for `b in 0..d.batch`, written compactly (`out_b` at
+/// `b·m·n` in the first `batch·m·n` elements of `c64`; `c32` is f32 scratch of
+/// at least as many elements). Per k-panel of `k_panel`: ONE
+/// `cublasSgemmStridedBatched` (beta 0) over every matrix into `c32`, then ONE
+/// flush `c64 += c32` over the whole batch's output. Every matrix sees the same
+/// panel boundaries and the same ascending f64 accumulation of its panels as
+/// the per-matrix kernel, so the per-element bound is unchanged (cuBLAS may
+/// sum inside a panel in another order, so results need not be bit-identical
+/// to it). Geometry is checked first (typed `GpuError::Layout`, nothing
+/// launched); returns the number of panels flushed.
+pub fn gemm_f32_f64acc_strided_batched_dev(
+    dev: &Device,
+    d: BatchedDims,
+    left: &DevBatchedOperand<'_, f32>,
+    right: &DevBatchedOperand<'_, f32>,
+    c32: &mut CudaViewMut<'_, f32>,
+    c64: &mut CudaViewMut<'_, f64>,
+    k_panel: usize,
+) -> Result<usize, GpuError> {
+    let cuda = |e: std::fmt::Arguments| GpuError::Cuda(e.to_string());
+    if left.batch != d.batch || right.batch != d.batch {
+        return Err(GpuError::Layout(format!(
+            "operands were built for batches {} / {} but the product has batch {}",
+            left.batch, right.batch, d.batch
+        )));
+    }
+    let mn = d
+        .m
+        .checked_mul(d.n)
+        .ok_or_else(|| GpuError::Layout(format!("output size {}x{} overflows usize", d.m, d.n)))?;
+    // c32 holds the same compact batch as c64: the shorter of the two bounds it.
+    let c_len = c32.len().min(c64.len());
+    check_batched_geometry(
+        d,
+        (&left.operand.geom, left.operand.view.len(), left.stride),
+        (&right.operand.geom, right.operand.view.len(), right.stride),
+        (c_len, mn),
+    )?;
+    let func = dev.axpy_f32_to_f64()?; // typed Kernel error BEFORE any work
+    if d.batch == 0 || mn == 0 {
+        return Ok(0);
+    }
+    let total = d.batch * mn; // in range: check_batched_geometry bounded it by c_len
+    let s = &dev.stream;
+    s.memset_zeros(&mut c64.slice_mut(..total))
+        .map_err(|e| cuda(format_args!("memset c64: {e:?}")))?;
+    if d.k == 0 {
+        return Ok(0);
+    }
+    let n_elems = total as u64;
+    let launch = flush_launch(total);
+    let blas = dev.blas.lock().unwrap_or_else(|e| e.into_inner());
+    let kb = k_panel.max(1);
+    let (mut k0, mut panels) = (0usize, 0usize);
+    while k0 < d.k {
+        let k1 = (k0 + kb).min(d.k);
+        let cfg = StridedBatchedConfig::<f32> {
+            gemm: GemmConfig {
+                transa: right.operand.geom.op,
+                transb: left.operand.geom.op,
+                m: d.n as i32,
+                n: d.m as i32,
+                k: (k1 - k0) as i32,
+                alpha: 1.0,
+                lda: right.operand.geom.ld,
+                ldb: left.operand.geom.ld,
+                beta: 0.0, // every panel starts fresh in f32; the sum lives in c64
+                ldc: d.n as i32,
+            },
+            batch_size: d.batch as i32,
+            stride_a: right.stride as i64,
+            stride_b: left.stride as i64,
+            stride_c: mn as i64,
+        };
+        let a_view = right.operand.view.slice(k0 * right.operand.geom.k_step..);
+        let b_view = left.operand.view.slice(k0 * left.operand.geom.k_step..);
+        // SAFETY: `check_batched_geometry` proved, for every matrix, that each
+        // operand's full-k read lies inside its view; a panel reads a sub-range
+        // of it starting `k0·k_step` later, inside the same bound. Outputs are
+        // compact and disjoint, and both c32 and c64 hold batch·m·n elements.
+        unsafe { blas.gemm_strided_batched(cfg, &a_view, &b_view, c32) }.map_err(|e| {
+            cuda(format_args!(
+                "cublasSgemmStridedBatched panel {k0}..{k1}: {e:?}"
+            ))
+        })?;
+        // SAFETY: the kernel signature is (double*, const float*, u64) and both
+        // buffers hold >= n_elems = batch·m·n elements (checked above).
         unsafe {
             s.launch_builder(func)
                 .arg(&mut *c64)

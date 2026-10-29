@@ -12,7 +12,7 @@ use ferric_core::gpu::{install, probe, stats, GpuMode, GpuSettingsExplicit, GpuS
 use ferric_core::mol::Molecule;
 use ferric_dft::grid::AtomicGridConfig;
 use ferric_dft::ks::{KsXc, KsXcUks};
-use ferric_dft::xc_batch::FORCE_HOST;
+use ferric_dft::xc_batch::{FORCE_HOST, XC_GEMM_LOOP};
 use ferric_dft::xc_trait::{UksXcContribution, XcContribution};
 use ndarray::Array2;
 use std::sync::atomic::Ordering;
@@ -224,4 +224,85 @@ fn open_shell_meta_gga_on_the_device_matches_the_host() {
         (host_occ.0, &host_occ.2),
         (dev_occ.0, &dev_occ.2),
     );
+}
+
+/// `run()` with the per-batch GEMM loop (`XC_GEMM_LOOP`) set for its duration.
+fn looped<T>(on: bool, run: impl FnOnce() -> T) -> T {
+    XC_GEMM_LOOP.store(on, Ordering::SeqCst);
+    let out = run();
+    XC_GEMM_LOOP.store(false, Ordering::SeqCst);
+    out
+}
+
+/// The strided-batched launches over the zero-padded layout against the
+/// per-batch loop at each batch's true `nact` (same device, same staging):
+/// both are f64 cuBLAS products of the same numbers plus exact zeros, so they
+/// differ only by summation order — rounding of the measured order (≤ 1e-15
+/// relative, asserted at 1e-13) — and the batched result is reproducible.
+#[test]
+fn batched_device_gemms_match_the_per_batch_loop() {
+    let _g = GPU.lock().unwrap_or_else(|e| e.into_inner());
+    if !ready() {
+        return;
+    }
+    let bs = basis::bundled("cc-pvdz").unwrap();
+    let (main, nlc) = grids();
+    let close = |what: &str, (e_l, v_l): (f64, &Array2<f64>), (e_b, v_b): (f64, &Array2<f64>)| {
+        let (de, dv) = ((e_b - e_l).abs(), max_abs(&(v_b - v_l)));
+        eprintln!("{what}: batched vs loop |dE| {de:.2e} max|dV| {dv:.2e}");
+        assert!(de < 1e-13 * e_l.abs().max(1.0), "{what}: |dE| = {de:e}");
+        assert!(
+            dv < 1e-13 * max_abs(v_l).max(1.0),
+            "{what}: max|dV| = {dv:e}"
+        );
+    };
+    // Closed-shell GGA: dense and factored densities (pass-1 forms) and pass 2.
+    let ks = KsXc::new(&water(0, 1), &bs, "PBE", &main, &nlc).unwrap();
+    let nbf = ks.xc_screening_stats().nbf;
+    let c = c_occ(nbf, 5, 7);
+    let d = 2.0 * c.dot(&c.t());
+    let build = |occ: bool| {
+        let mut f = Array2::<f64>::zeros((nbf, nbf));
+        let e = if occ {
+            ks.add_xc_occ(&d, &c, &mut f)
+        } else {
+            ks.add_xc(&d, &mut f)
+        };
+        (e, f)
+    };
+    for occ in [false, true] {
+        let lp = on(false, || looped(true, || build(occ)));
+        let b = on(false, || build(occ));
+        let b2 = on(false, || build(occ));
+        assert!(ks.xc_on_device(), "the grid was not uploaded");
+        close(
+            if occ { "PBE factored" } else { "PBE dense" },
+            (lp.0, &lp.1),
+            (b.0, &b.1),
+        );
+        assert!(
+            b.0.to_bits() == b2.0.to_bits()
+                && b.1
+                    .iter()
+                    .zip(b2.1.iter())
+                    .all(|(x, y)| x.to_bits() == y.to_bits()),
+            "batched build is not reproducible"
+        );
+    }
+    // Open-shell meta-GGA: τ (four padded components) and two V matrices.
+    let ks = KsXcUks::new(&water(1, 2), &bs, "R2SCAN", &main, &nlc).unwrap();
+    let nbf = ks.xc_screening_stats().nbf;
+    let (ca, cb) = (c_occ(nbf, 5, 11), c_occ(nbf, 4, 13));
+    let (da, db) = (ca.dot(&ca.t()), cb.dot(&cb.t()));
+    let build = || {
+        let mut fa = Array2::<f64>::zeros((nbf, nbf));
+        let mut fb = Array2::<f64>::zeros((nbf, nbf));
+        let e = ks.add_xc_uks(&da, &db, &mut fa, &mut fb);
+        (e, fa, fb)
+    };
+    let lp = on(false, || looped(true, build));
+    let b = on(false, build);
+    assert!(ks.xc_on_device(), "the open-shell grid was not uploaded");
+    close("r2SCAN alpha", (lp.0, &lp.1), (b.0, &b.1));
+    close("r2SCAN beta", (lp.0, &lp.2), (b.0, &b.2));
 }

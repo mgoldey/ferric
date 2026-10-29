@@ -104,7 +104,7 @@ mod gpu;
 #[cfg(feature = "gpu")]
 pub use gpu::xc_grid_routes_to_device;
 #[cfg(feature = "test-seams")]
-pub use gpu::{FORCE_HOST, MIXED_VXC_HOST_TWIN};
+pub use gpu::{FORCE_HOST, MIXED_VXC_HOST_TWIN, XC_GEMM_LOOP};
 
 /// True when this process asked for V_xc in mixed precision and could run it:
 /// `[gpu] mode = "on"`, `precision = "mixed"` with `xc-vxc` named in
@@ -529,15 +529,39 @@ fn group_ranges(nbatches: usize, ngroups: usize) -> Vec<(usize, usize)> {
 /// the same increment (fp `+` is commutative), so `acc` stays exactly
 /// symmetric, like the dense path's final `½(V + Vᵀ)`.
 fn scatter_sym(v: &[f64], funcs: &[u32], acc: &mut Array2<f64>) {
+    scatter_sym_ld(v, funcs.len(), funcs, acc);
+}
+
+/// [`scatter_sym`] of a `V_b` whose rows are `ld ≥ nact` apart (the device's
+/// zero-padded blocks); only the leading `nact × nact` block is read.
+fn scatter_sym_ld(v: &[f64], ld: usize, funcs: &[u32], acc: &mut Array2<f64>) {
     let n = funcs.len();
     let nbf = acc.ncols();
-    debug_assert_eq!(v.len(), n * n);
+    debug_assert!(n == 0 || v.len() >= (n - 1) * ld + n);
     let acc_s = acc.as_slice_mut().expect("accumulator is contiguous");
     for i in 0..n {
         let fi = funcs[i] as usize;
         for j in 0..n {
             let fj = funcs[j] as usize;
-            acc_s[fi * nbf + fj] += v[i * n + j] + v[j * n + i];
+            acc_s[fi * nbf + fj] += v[i * ld + j] + v[j * ld + i];
+        }
+    }
+}
+
+/// Where a per-batch row-major block keeps its numbers: rows `ld` apart and
+/// the components (χ, ∂xχ, ∂yχ, ∂zχ, or the matching factor columns) `cs`
+/// columns apart. The CPU path is compact (`cs = nb`); the device pads.
+#[derive(Clone, Copy, Debug)]
+struct BlockLayout {
+    ld: usize,
+    cs: usize,
+}
+
+impl BlockLayout {
+    fn compact(nb: usize, four: bool) -> Self {
+        Self {
+            ld: if four { 4 * nb } else { nb },
+            cs: nb,
         }
     }
 }
@@ -576,10 +600,23 @@ fn batch_density_one(
 /// `Φ` (`(nact, ncols)`, `ncols = 4nb` with τ, else `nb`), wherever the GEMM
 /// that produced it ran.
 fn batch_density_from_phi(ao: &Array2<f64>, p: &[f64], nb: usize, need_tau: bool) -> BatchDensity {
+    debug_assert_eq!(p.len(), ao.nrows() * BlockLayout::compact(nb, need_tau).ld);
+    batch_density_from_phi_in(ao, p, BlockLayout::compact(nb, need_tau), nb, need_tau)
+}
+
+/// [`batch_density_from_phi`] for a `Φ` laid out as `pl` (row `μ` at `μ·ld`,
+/// component `c` at column `c·cs`); the same sums in the same order.
+fn batch_density_from_phi_in(
+    ao: &Array2<f64>,
+    p: &[f64],
+    pl: BlockLayout,
+    nb: usize,
+    need_tau: bool,
+) -> BatchDensity {
     let nact = ao.nrows();
     let ld = 4 * nb;
-    let ncols = if need_tau { 4 * nb } else { nb };
-    debug_assert_eq!(p.len(), nact * ncols);
+    let ncols = if need_tau { 3 * pl.cs + nb } else { nb };
+    debug_assert!(nact == 0 || p.len() >= (nact - 1) * pl.ld + ncols);
     let mut rho = vec![0.0_f64; nb];
     let mut gx = vec![0.0_f64; nb];
     let mut gy = vec![0.0_f64; nb];
@@ -590,7 +627,7 @@ fn batch_density_from_phi(ao: &Array2<f64>, p: &[f64], nb: usize, need_tau: bool
     let mut t = [vec![0.0_f64; tn], vec![0.0_f64; tn], vec![0.0_f64; tn]];
     for mu in 0..nact {
         let crow = &a[mu * ld..(mu + 1) * ld];
-        let prow = &p[mu * ncols..(mu + 1) * ncols];
+        let prow = &p[mu * pl.ld..mu * pl.ld + ncols];
         for g in 0..nb {
             let pv = prow[g];
             rho[g] += crow[g] * pv;
@@ -600,10 +637,10 @@ fn batch_density_from_phi(ao: &Array2<f64>, p: &[f64], nb: usize, need_tau: bool
         }
         if need_tau {
             for ax in 0..3 {
-                let off = (1 + ax) * nb;
+                let (off, poff) = ((1 + ax) * nb, (1 + ax) * pl.cs);
                 let tax = &mut t[ax];
                 for g in 0..nb {
-                    tax[g] += crow[off + g] * prow[off + g];
+                    tax[g] += crow[off + g] * prow[poff + g];
                 }
             }
         }
@@ -718,21 +755,31 @@ fn vb_product(amat: &Array2<f64>, x: ArrayView2<f64>, mixed: bool) -> Array2<f64
 
 /// Write the pass-2 left factor `A` of one batch (row-major `(nact, ncols)`,
 /// `ncols = 4nb` for meta-GGA, else `nb`) into `am`.
-fn fill_amat(
+fn fill_amat(ao: &Array2<f64>, nb: usize, fac: &BatchFactors, flags: (bool, bool), am: &mut [f64]) {
+    let lay = BlockLayout::compact(nb, flags.1);
+    debug_assert_eq!(am.len(), ao.nrows() * lay.ld);
+    fill_amat_in(ao, nb, fac, flags, am, lay);
+}
+
+/// [`fill_amat`] into a block laid out as `lay` (row `μ` at `μ·ld`, factor
+/// component `c` at column `c·cs`). Writes only the real entries; padding is
+/// the caller's.
+fn fill_amat_in(
     ao: &Array2<f64>,
     nb: usize,
     fac: &BatchFactors,
     (has_gga, has_mgga): (bool, bool),
     am: &mut [f64],
+    lay: BlockLayout,
 ) {
     let nact = ao.nrows();
     let ld = 4 * nb;
-    let ncols = if has_mgga { 4 * nb } else { nb };
-    debug_assert_eq!(am.len(), nact * ncols);
+    let ncols = if has_mgga { 3 * lay.cs + nb } else { nb };
+    debug_assert!(nact == 0 || am.len() >= (nact - 1) * lay.ld + ncols);
     let a = ao.as_slice().expect("batch AO block is contiguous");
     for mu in 0..nact {
         let crow = &a[mu * ld..(mu + 1) * ld];
-        let arow = &mut am[mu * ncols..(mu + 1) * ncols];
+        let arow = &mut am[mu * lay.ld..mu * lay.ld + ncols];
         for g in 0..nb {
             let mut v = fac.s_half[g] * crow[g];
             if has_gga {
@@ -744,9 +791,9 @@ fn fill_amat(
         }
         if has_mgga {
             for ax in 0..3 {
-                let off = (1 + ax) * nb;
+                let (off, aoff) = ((1 + ax) * nb, (1 + ax) * lay.cs);
                 for g in 0..nb {
-                    arow[off + g] = fac.t_half[g] * crow[off + g];
+                    arow[aoff + g] = fac.t_half[g] * crow[off + g];
                 }
             }
         }

@@ -23,7 +23,7 @@ use ferric_core::gpu::{
 use ferric_core::mol::Molecule;
 use ferric_dft::grid::AtomicGridConfig;
 use ferric_dft::ks::{KsXc, MIXED_VXC_BUILDS};
-use ferric_dft::xc_batch::{FORCE_HOST, MIXED_VXC_HOST_TWIN};
+use ferric_dft::xc_batch::{FORCE_HOST, MIXED_VXC_HOST_TWIN, XC_GEMM_LOOP};
 use ferric_dft::xc_trait::XcContribution;
 use ndarray::Array2;
 use std::sync::atomic::Ordering;
@@ -358,4 +358,60 @@ fn a_multi_wave_build_sequence_repeats_bit_for_bit() {
         same_bits(&runs[0], &runs[5]),
         "dense f64 after factored differs"
     );
+}
+
+/// The mixed V_xc as one strided-batched SGEMM per k-panel per group (one
+/// flush over the group's whole output) against the per-batch kernel loop:
+/// same panel boundaries, same ascending f64 accumulation of the panels, so
+/// the same error class against the f64 host (each within 10x of the other,
+/// both nonzero and inside the twin's class), and reproducible.
+#[test]
+fn batched_mixed_vxc_is_the_per_batch_loops_error_class() {
+    let _g = GPU.lock().unwrap_or_else(|e| e.into_inner());
+    if !ready() {
+        return;
+    }
+    for xc in ["LDA", "PBE"] {
+        let f64_host = ladder_run(xc, true, false);
+        let twin = ladder_run(xc, true, true);
+        XC_GEMM_LOOP.store(true, Ordering::SeqCst);
+        let lp = ladder_run(xc, false, false);
+        XC_GEMM_LOOP.store(false, Ordering::SeqCst);
+        let (s0, m0) = (stats(), MIXED_VXC_BUILDS.load(Ordering::SeqCst));
+        let b = ladder_run(xc, false, false);
+        let again = ladder_run(xc, false, false);
+        let (s1, m1) = (stats(), MIXED_VXC_BUILDS.load(Ordering::SeqCst));
+        assert_eq!(m1 - m0, 2, "{xc}: one mixed build per ladder run");
+        assert_eq!(
+            s1.mixed_fallback_f64, s0.mixed_fallback_f64,
+            "{xc}: mixed fell back"
+        );
+        for (x, y) in b[1].1.iter().zip(again[1].1.iter()) {
+            assert_eq!(
+                x.to_bits(),
+                y.to_bits(),
+                "{xc}: batched mixed is not reproducible"
+            );
+        }
+        let vmax = max_abs(&f64_host[1].1);
+        let dv = |r: &[(f64, Array2<f64>)]| max_abs(&(&r[1].1 - &f64_host[1].1));
+        let (dv_b, dv_l, dv_t) = (dv(&b), dv(&lp), dv(&twin));
+        eprintln!("{xc}: mixed max|dV| batched {dv_b:.3e}, loop {dv_l:.3e}, twin {dv_t:.3e}");
+        assert!(dv_b > 0.0 && dv_l > 0.0, "{xc}: a mixed build equals f64");
+        assert!(dv_b < 1e-5 * vmax, "{xc}: batched mixed max|dV| {dv_b:e}");
+        assert!(
+            dv_b < 10.0 * dv_l && dv_l < 10.0 * dv_b,
+            "{xc}: batched {dv_b:e} and loop {dv_l:e} are not the same error class"
+        );
+        assert!(
+            dv_b < 10.0 * dv_t && dv_t < 10.0 * dv_b,
+            "{xc}: batched {dv_b:e} and twin {dv_t:e} are not the same error class"
+        );
+        // The f64 builds of the ladder agree to rounding either way.
+        let d0 = max_abs(&(&b[0].1 - &lp[0].1));
+        assert!(
+            d0 < 1e-13 * vmax.max(1.0),
+            "{xc}: f64 batched vs loop {d0:e}"
+        );
+    }
 }
