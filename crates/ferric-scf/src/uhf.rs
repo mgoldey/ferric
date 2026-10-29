@@ -170,6 +170,7 @@ pub fn solve_uhf_injected<'a>(
         None,
         Some(inj),
         None,
+        None,
     )?)
 }
 
@@ -515,7 +516,37 @@ fn solve_uhf_molecular(
         fock_mod,
         None,
         None,
+        None,
     )
+}
+
+/// UHF/UKS with one extra density-dependent term,
+/// `(E_hook, V_α, V_β) = hook(D_α, D_β)`: V_σ is added to F_σ before DIIS
+/// and E_hook to the energy outside the trace, so the converged energy is
+/// variational when V_σ = ∂E_hook/∂D_σ. Settings the hook would bypass are
+/// refused by [`crate::rhf::validate_fock_hook`]; a non-converged SCF is an
+/// error, as for [`solve_uhf`].
+pub fn solve_uhf_with_hook(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    bounds: &SchwarzBounds,
+    config: &UhfConfig,
+    hook: crate::fock::SpinFockHook<'_>,
+) -> Result<ScfResult, FerricError> {
+    crate::rhf::validate_fock_hook(config)?;
+    err_if_unconverged(solve_uhf_impl(
+        ctx,
+        mol,
+        prep,
+        bounds,
+        config,
+        None,
+        None,
+        None,
+        None,
+        Some(hook),
+    )?)
 }
 
 /// The blocked solve of [`crate::symmetric_open::solve_uhf_symmetric`]: `mol`,
@@ -541,6 +572,7 @@ pub(crate) fn solve_uhf_blocked(
         None,
         None,
         Some(specs),
+        None,
     )?)
 }
 
@@ -562,6 +594,7 @@ fn solve_uhf_impl(
         &crate::symmetric::SymmetrySpec,
         &crate::symmetric::SymmetrySpec,
     )>,
+    mut hook: Option<crate::fock::SpinFockHook<'_>>,
 ) -> Result<ScfResult, FerricError> {
     use ferric_dft::ks::KsXcUks;
     use ferric_dft::xc_trait::{KMix, UksXcContribution};
@@ -1257,6 +1290,15 @@ fn solve_uhf_impl(
         } else {
             0.0
         };
+        // Caller-supplied term (`solve_uhf_with_hook`): V_σ into F_σ, its
+        // energy outside the trace (the E_xc convention). `None` adds nothing.
+        let e_hook = crate::fock::apply_spin_fock_hook(
+            hook.as_mut(),
+            "solve_uhf_with_hook",
+            (&d_a, &d_b),
+            &mut f_a,
+            &mut f_b,
+        )?;
         // cDFT (or any external) Fock modifier: add a fixed AO potential to
         // both spin Focks before DIIS sees them. The constraint energy term is
         // accounted for by the outer driver, not here, so `energy` below is the
@@ -1284,7 +1326,7 @@ fn solve_uhf_impl(
         )?;
         last_induced_dipoles = iter_induced_dipoles;
 
-        let energy = e_elec_no_xc + e_xc + e_cosmo + e_pcm + e_pol + vnn;
+        let energy = e_elec_no_xc + e_xc + e_hook + e_cosmo + e_pcm + e_pol + vnn;
 
         // DIIS errors per spin: F_σ D_σ S − S D_σ F_σ
         let err_a = f_a.dot(&d_a).dot(&s) - s.dot(&d_a).dot(&f_a);

@@ -37,7 +37,7 @@ use ferric_scf::noise_floor::SolverFamily;
 use ferric_scf::optimize::{optimize_geometry, optimize_geometry_uhf, OptimizeConfig};
 use ferric_scf::result::ScfResult;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
-use ferric_scf::rohf::{solve_rohf, RohfConfig};
+use ferric_scf::rohf::RohfConfig;
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::uhf::{solve_uhf, UhfConfig};
 // NOTE: the spin-orbital `ferric_cc::ccsd::ccsd` is deliberately NOT imported
@@ -3060,7 +3060,7 @@ impl PyUhfResult {
     point_charges=None, external_field=None, memory_budget_gb=None,
     guess=None, stability_descent=None,
     cosx_grid=None, cosx_final_pass=None, cosx_final_grid=None, cosx_overlap_fit=None,
-    trah_trigger=None,
+    trah_trigger=None, fock_hook=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_uhf(
@@ -3087,6 +3087,7 @@ fn run_uhf(
     cosx_final_grid: Option<&Bound<'_, PyAny>>,
     cosx_overlap_fit: Option<bool>,
     trah_trigger: Option<f64>,
+    fock_hook: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<PyUhfResult> {
     let trah_trigger = check_trah_trigger(trah_trigger)?;
     // The shared strict parser (same as run_rhf and the CLI): a typo must not
@@ -3144,9 +3145,17 @@ fn run_uhf(
         &prep,
         &config,
     );
-    let r = py
-        .allow_threads(|| solve_uhf(&ctx, &emol, &prep, &bounds, &config))
-        .map_err(make_err)?;
+    let r = blocks::solve_open_shell(
+        py,
+        blocks::OpenShell::Uhf,
+        &ctx,
+        &emol,
+        &prep,
+        Operator::coulomb(),
+        &bounds,
+        &config,
+        fock_hook,
+    )?;
     // density_beta / mos_beta / eps_beta are always populated for the UHF path.
     Ok(PyUhfResult {
         energy: r.energy,
@@ -3182,7 +3191,7 @@ fn run_uhf(
     max_iter=None, energy_conv=None, density_conv=None, diis_size=None,
     integral_thresh=None, k_builder=None, df_j_aux=None, df_k_aux=None,
     level_shift=None, mom_after_iter=None,
-    point_charges=None, external_field=None, memory_budget_gb=None,
+    point_charges=None, external_field=None, memory_budget_gb=None, fock_hook=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_rohf(
@@ -3202,6 +3211,7 @@ fn run_rohf(
     point_charges: Option<Vec<(f64, f64, f64, f64)>>,
     external_field: Option<(f64, f64, f64)>,
     memory_budget_gb: Option<f64>,
+    fock_hook: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<PyUhfResult> {
     let mut emol = mol.inner.clone();
     emol.apply_ecp(&basis_set.inner);
@@ -3240,9 +3250,17 @@ fn run_rohf(
         &prep,
         &config,
     );
-    let r = py
-        .allow_threads(|| solve_rohf(&ctx, &emol, &prep, op, &bounds, &config))
-        .map_err(make_err)?;
+    let r = blocks::solve_open_shell(
+        py,
+        blocks::OpenShell::Rohf,
+        &ctx,
+        &emol,
+        &prep,
+        op,
+        &bounds,
+        &config,
+        fock_hook,
+    )?;
     Ok(PyUhfResult {
         energy: r.energy,
         converged: r.converged,

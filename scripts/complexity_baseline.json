@@ -48144,7 +48144,7 @@
     "mi": 106.96474121625049
   },
   "crates/ferric-scf/src/rohf.rs::solve_rohf_impl": {
-    "cc": 170.0,
+    "cc": 174.0,
     "mi": -35.46653081078031
   },
   "crates/ferric-scf/src/rohf.rs::solve_rohf_impl::<anonymous>": {

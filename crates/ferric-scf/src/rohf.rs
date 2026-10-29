@@ -231,7 +231,7 @@ pub fn solve_rohf_best_effort(
     config: &RohfConfig,
 ) -> Result<ScfResult, FerricError> {
     crate::symmetric::require_symmetry_off(config, "solve_rohf")?;
-    solve_rohf_impl(ctx, mol, prep, bounds, config, None, None, None)
+    solve_rohf_impl(ctx, mol, prep, bounds, config, None, None, None, None)
 }
 
 /// Reject every `RohfConfig` feature [`solve_rohf_injected`] cannot honour,
@@ -328,7 +328,44 @@ pub fn solve_rohf_injected<'a>(
             ));
         }
     }
-    let r = solve_rohf_impl(ctx, mol, prep, bounds, config, initial_mos, Some(inj), None)?;
+    let r = solve_rohf_impl(
+        ctx,
+        mol,
+        prep,
+        bounds,
+        config,
+        initial_mos,
+        Some(inj),
+        None,
+        None,
+    )?;
+    if r.converged {
+        Ok(r)
+    } else {
+        Err(FerricError::ScfConvergence {
+            iterations: r.iterations,
+            last_energy: r.energy,
+        })
+    }
+}
+
+/// ROHF/ROKS with one extra density-dependent term,
+/// `(E_hook, V_α, V_β) = hook(D_α, D_β)`: V_σ is added to F_σ before the
+/// Roothaan effective-Fock combination and E_hook to the energy outside the
+/// trace, so the converged energy is stationary under ROHF orbital rotations
+/// when V_σ = ∂E_hook/∂D_σ. Settings the hook would bypass are refused by
+/// [`crate::rhf::validate_fock_hook`]; a non-converged SCF is an error, as
+/// for [`solve_rohf`].
+pub fn solve_rohf_with_hook(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    bounds: &SchwarzBounds,
+    config: &RohfConfig,
+    hook: crate::fock::SpinFockHook<'_>,
+) -> Result<ScfResult, FerricError> {
+    crate::rhf::validate_fock_hook(config)?;
+    let r = solve_rohf_impl(ctx, mol, prep, bounds, config, None, None, None, Some(hook))?;
     if r.converged {
         Ok(r)
     } else {
@@ -349,7 +386,7 @@ pub(crate) fn solve_rohf_blocked(
     config: &RohfConfig,
     spec: &crate::symmetric::SymmetrySpec,
 ) -> Result<ScfResult, FerricError> {
-    let r = solve_rohf_impl(ctx, mol, prep, bounds, config, None, None, Some(spec))?;
+    let r = solve_rohf_impl(ctx, mol, prep, bounds, config, None, None, Some(spec), None)?;
     if r.converged {
         Ok(r)
     } else {
@@ -374,6 +411,7 @@ fn solve_rohf_impl(
     initial_mos: Option<&Array2<f64>>,
     inj: Option<PeriodicInjection<'_>>,
     sym: Option<&crate::symmetric::SymmetrySpec>,
+    mut hook: Option<crate::fock::SpinFockHook<'_>>,
 ) -> Result<ScfResult, FerricError> {
     use ferric_dft::ks::KsXcUks;
     use ferric_dft::xc_trait::{KMix, UksXcContribution};
@@ -1023,6 +1061,16 @@ fn solve_rohf_impl(
             0.0
         };
 
+        // Caller-supplied term (`solve_rohf_with_hook`): V_σ into F_σ before
+        // the Roothaan combination, its energy outside the trace.
+        let e_hook = crate::fock::apply_spin_fock_hook(
+            hook.as_mut(),
+            "solve_rohf_with_hook",
+            (&d_a, &d_b),
+            &mut f_a,
+            &mut f_b,
+        )?;
+
         // COSMO + IEF-PCM reaction fields, built from the total density
         // D_a + D_b and added identically to BOTH spin Focks (before the
         // Roothaan effective-Fock combination, so the coupled single-MO-set
@@ -1040,7 +1088,7 @@ fn solve_rohf_impl(
         )?;
         last_induced_dipoles = iter_induced_dipoles;
 
-        let energy = e_elec_no_xc + e_xc + e_cosmo + e_pcm + e_pol + vnn;
+        let energy = e_elec_no_xc + e_xc + e_hook + e_cosmo + e_pcm + e_pol + vnn;
 
         // Swap witness: while a probe is outstanding, `energy` is the probe
         // determinant's unrelaxed energy (see OccupationGuard::on_energy).

@@ -268,3 +268,172 @@ def test_run_dft_refuses_settings_that_ignore_the_hook(kwargs, match):
     mol, bs, _ = _water("sto-3g")
     with pytest.raises(ValueError, match=match):
         ferric.run_dft(mol, bs, functional="PBE", fock_hook=_zero_hook, **kwargs)
+
+
+# ── open-shell fock_hook (run_uhf / run_rohf) ──
+#
+# hook(D_a, D_b) -> (E, V_a, V_b). The spin-dependent hooks below make a
+# swapped V_a/V_b, a sign error or a missing E_hook visible: Hellmann-Feynman
+# holds only when E and both V_s are wired consistently.
+
+NH2 = "3\n\nN 0 0 0\nH 0 0.802 0.597\nH 0 -0.802 0.597\n"
+# No symmetry: in C2v NH2 the singly occupied orbital is b1, so a totally
+# symmetric hook cannot rotate it and ROHF only sees F_a + F_b, which is
+# blind to a swapped V_a/V_b (measured: that mutation passed on C2v NH2).
+NH2_ASYM = "3\n\nN 0 0 0\nH 0.12 0.80 0.60\nH -0.05 -0.74 0.52\n"
+SOLVERS = {"uhf": ferric.run_uhf, "rohf": ferric.run_rohf}
+
+
+def _nh2(basis: str, xyz: str = NH2):
+    mol = ferric.Molecule.from_xyz_string(xyz, multiplicity=2)
+    bs = ferric.BasisSet.bundled(basis)
+    return mol, bs, ferric.AoIntegrals(mol, bs)
+
+
+def _zero_spin_hook(d_a, d_b):
+    return 0.0, np.zeros_like(d_a), np.zeros_like(d_b)
+
+
+@pytest.mark.parametrize("kind", SOLVERS)
+def test_zero_spin_hook_is_bit_identical_to_no_hook(kind):
+    mol, bs, _ = _nh2("6-31g")
+    plain = SOLVERS[kind](mol, bs, **TIGHT)
+    hooked = SOLVERS[kind](mol, bs, fock_hook=_zero_spin_hook, **TIGHT)
+    assert hooked.energy == plain.energy
+    assert hooked.iterations == plain.iterations
+    np.testing.assert_array_equal(hooked.density_alpha(), plain.density_alpha())
+
+
+@pytest.mark.parametrize("kind", SOLVERS)
+def test_spin_field_hook_reproduces_external_field(kind):
+    mol, bs, ints = _nh2("6-31g")
+    f = 0.01
+    v = f * ints.dipole()[2]
+    zs = [{"N": 7, "H": 1}[sym] for sym in mol.symbols()]
+    e_nuc = -f * sum(z * xyz[2] for z, xyz in zip(zs, mol.coords_bohr()))
+
+    def hook(d_a, d_b):
+        return float(np.sum((d_a + d_b) * v)) + e_nuc, v, v
+
+    ref = SOLVERS[kind](mol, bs, external_field=(0.0, 0.0, f), **TIGHT)
+    hooked = SOLVERS[kind](mol, bs, fock_hook=hook, **TIGHT)
+    assert abs(hooked.energy - ref.energy) < 1e-9
+    assert abs(hooked.energy - SOLVERS[kind](mol, bs, **TIGHT).energy) > 1e-4
+
+
+def _alpha_only_hook(ints, lam):
+    """E = λ Tr[D_a μ_z], V_a = λ μ_z, V_b = 0: acts on one spin only."""
+    m = ints.dipole()[2]
+    return lambda d_a, d_b: (lam * float(np.sum(d_a * m)), lam * m, 0.0 * m)
+
+
+def _spin_coulomb_hook(ints, lam):
+    """E = (λ/2) Tr[Ds J(Ds)], Ds = D_a - D_b: V_a = λ J(Ds), V_b = -V_a."""
+
+    def hook(d_a, d_b):
+        j, _ = ints.jk(d_a - d_b)
+        return 0.5 * lam * float(np.sum((d_a - d_b) * j)), lam * j, -lam * j
+
+    return hook
+
+
+def _alpha_only_derivative(ints, r):
+    return float(np.sum(r.density_alpha() * ints.dipole()[2]))
+
+
+def _spin_coulomb_derivative(ints, r):
+    ds = r.density_alpha() - r.density_beta()
+    return 0.5 * float(np.sum(ds * ints.jk(ds)[0]))
+
+
+@pytest.mark.parametrize("kind", SOLVERS)
+@pytest.mark.parametrize(
+    "make_hook, derivative, lam",
+    [
+        (_alpha_only_hook, _alpha_only_derivative, 0.02),
+        (_spin_coulomb_hook, _spin_coulomb_derivative, 0.1),
+    ],
+    ids=["alpha-only", "spin-coulomb"],
+)
+def test_spin_hook_energy_obeys_hellmann_feynman(kind, make_hook, derivative, lam):
+    # Richardson-extrapolated central difference (error O(h^4)): the plain
+    # one at h = 1e-3 carries an O(h^2) term of ~7e-7 here (measured: it
+    # falls 4x per halving of h), too close to a 1e-6 bar to separate a
+    # wiring error from truncation.
+    mol, bs, ints = _nh2("sto-3g", NH2_ASYM)
+
+    def energy(x):
+        return SOLVERS[kind](mol, bs, fock_hook=make_hook(ints, x), **TIGHT).energy
+
+    def central(h):
+        return (energy(lam + h) - energy(lam - h)) / (2 * h)
+
+    analytic = derivative(
+        ints, SOLVERS[kind](mol, bs, fock_hook=make_hook(ints, lam), **TIGHT)
+    )
+    fd = (4 * central(5e-4) - central(1e-3)) / 3
+    assert abs(fd - analytic) < 1e-8 * max(abs(analytic), 1.0)
+
+
+@pytest.mark.parametrize("kind", SOLVERS)
+def test_spin_hook_sees_the_per_spin_densities(kind):
+    mol, bs, ints = _nh2("sto-3g")
+    seen = []
+
+    def hook(d_a, d_b):
+        s = ints.overlap()
+        seen.append((float(np.trace(d_a @ s)), float(np.trace(d_b @ s))))
+        return _zero_spin_hook(d_a, d_b)
+
+    SOLVERS[kind](mol, bs, fock_hook=hook, **TIGHT)
+    assert seen and all(
+        abs(na - 5) < 1e-8 and abs(nb - 4) < 1e-8 for na, nb in seen[1:]
+    )
+
+
+@pytest.mark.parametrize("kind", SOLVERS)
+def test_spin_hook_exception_propagates_unchanged(kind):
+    mol, bs, _ = _nh2("sto-3g")
+
+    def hook(d_a, d_b):
+        raise KeyError("from the spin hook")
+
+    with pytest.raises(KeyError, match="from the spin hook"):
+        SOLVERS[kind](mol, bs, fock_hook=hook)
+
+
+@pytest.mark.parametrize("kind", SOLVERS)
+@pytest.mark.parametrize(
+    "hook, exc, match",
+    [
+        (lambda a, b: (0.0, np.zeros_like(a)), TypeError, "open-shell fock_hook must"),
+        (
+            lambda a, b: (0.0, np.zeros_like(a), np.zeros((2, 2))),
+            ValueError,
+            "V_b of shape",
+        ),
+        (
+            lambda a, b: (0.0, np.triu(np.ones_like(a)), np.zeros_like(b)),
+            ValueError,
+            "non-symmetric V_a",
+        ),
+    ],
+    ids=["two-tuple", "shape", "asymmetric"],
+)
+def test_bad_spin_hook_returns_are_rejected(kind, hook, exc, match):
+    mol, bs, _ = _nh2("sto-3g")
+    with pytest.raises(exc, match=match):
+        SOLVERS[kind](mol, bs, fock_hook=hook)
+
+
+@pytest.mark.parametrize(
+    "kwargs, match",
+    [
+        ({"stability_descent": True}, "check_stability"),
+        ({"trah_trigger": 1e-2}, "trah_trigger"),
+    ],
+)
+def test_run_uhf_refuses_settings_that_ignore_the_hook(kwargs, match):
+    mol, bs, _ = _nh2("sto-3g")
+    with pytest.raises(ValueError, match=match):
+        ferric.run_uhf(mol, bs, fock_hook=_zero_spin_hook, **kwargs)

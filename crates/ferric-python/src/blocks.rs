@@ -14,7 +14,12 @@
 //!
 //! `PyFockHook` adapts a Python callable `hook(D) -> (E, V)` to
 //! `ferric_scf::rhf::RhfFockHook`, for `run_rhf(fock_hook=)` and
-//! `run_dft(fock_hook=)`.
+//! `run_dft(fock_hook=)`, and `hook(D_a, D_b) -> (E, V_a, V_b)` to
+//! `ferric_scf::fock::SpinFockHook`, for `run_uhf` / `run_rohf(fock_hook=)`.
+//!
+//! Conventions match the drivers: Bohr, Hartree, AOs in ferric's shell order
+//! (`shell_offsets()`), and `jk()` takes the TOTAL density, so the closed-shell
+//! Fock matrix is `hcore() + J - 0.5 * K`.
 //!
 //! Conventions match the drivers: Bohr, Hartree, AOs in ferric's shell order
 //! (`shell_offsets()`), and `jk()` takes the TOTAL density, so the closed-shell
@@ -496,7 +501,8 @@ impl PyFockHook {
     pub(crate) fn new(callable: &Bound<'_, PyAny>, nao: usize) -> PyResult<Self> {
         if !callable.is_callable() {
             return Err(pyo3::exceptions::PyTypeError::new_err(
-                "fock_hook must be callable as hook(D) -> (E, V)",
+                "fock_hook must be callable (hook(D) -> (E, V) closed-shell, \
+                 hook(D_a, D_b) -> (E, V_a, V_b) open-shell)",
             ));
         }
         Ok(PyFockHook {
@@ -506,6 +512,36 @@ impl PyFockHook {
         })
     }
 
+    /// Copy one returned potential and check it is `(nao, nao)` and
+    /// symmetric.
+    fn potential(&self, v: PyReadonlyArray2<'_, f64>, name: &str) -> PyResult<Array2<f64>> {
+        let v = v.as_array().to_owned();
+        let n = self.nao;
+        if v.dim() != (n, n) {
+            return Err(PyValueError::new_err(format!(
+                "fock_hook returned {name} of shape {:?}, expected ({n}, {n})",
+                v.dim()
+            )));
+        }
+        let asym = asymmetry(&v, &format!("fock_hook's {name}"))?;
+        if asym > HOOK_SYMMETRY_TOL {
+            return Err(PyValueError::new_err(format!(
+                "fock_hook returned a non-symmetric {name} (max |{name} - {name}^T| = {asym:.3e})"
+            )));
+        }
+        Ok(v)
+    }
+
+    fn energy(e: f64) -> PyResult<f64> {
+        if e.is_finite() {
+            Ok(e)
+        } else {
+            Err(PyValueError::new_err(format!(
+                "fock_hook returned a non-finite energy {e}"
+            )))
+        }
+    }
+
     fn eval(&self, py: Python<'_>, d: &Array2<f64>) -> PyResult<(f64, Array2<f64>)> {
         let out = self.callable.call1(py, (PyArray2::from_array(py, d),))?;
         let (e, v): (f64, PyReadonlyArray2<'_, f64>) = out.extract(py).map_err(|_| {
@@ -513,34 +549,51 @@ impl PyFockHook {
                 "fock_hook must return (E: float, V: 2-D float array)",
             )
         })?;
-        let v = v.as_array().to_owned();
-        let n = self.nao;
-        if v.dim() != (n, n) {
-            return Err(PyValueError::new_err(format!(
-                "fock_hook returned V of shape {:?}, expected ({n}, {n})",
-                v.dim()
-            )));
-        }
-        if !e.is_finite() {
-            return Err(PyValueError::new_err(format!(
-                "fock_hook returned a non-finite energy {e}"
-            )));
-        }
-        let asym = asymmetry(&v, "fock_hook's V")?;
-        if asym > HOOK_SYMMETRY_TOL {
-            return Err(PyValueError::new_err(format!(
-                "fock_hook returned a non-symmetric V (max |V - V^T| = {asym:.3e})"
-            )));
-        }
-        Ok((e, v))
+        Ok((Self::energy(e)?, self.potential(v, "V")?))
     }
 
-    /// The `FnMut` the SCF calls.
-    pub(crate) fn call(&mut self, d: &Array2<f64>) -> Result<(f64, Array2<f64>), FerricError> {
-        Python::with_gil(|py| self.eval(py, d)).map_err(|e| {
+    fn eval_spin(
+        &self,
+        py: Python<'_>,
+        d_a: &Array2<f64>,
+        d_b: &Array2<f64>,
+    ) -> PyResult<(f64, Array2<f64>, Array2<f64>)> {
+        let args = (PyArray2::from_array(py, d_a), PyArray2::from_array(py, d_b));
+        let out = self.callable.call1(py, args)?;
+        type Ret<'a> = (f64, PyReadonlyArray2<'a, f64>, PyReadonlyArray2<'a, f64>);
+        let (e, v_a, v_b): Ret<'_> = out.extract(py).map_err(|_| {
+            pyo3::exceptions::PyTypeError::new_err(
+                "an open-shell fock_hook must return (E: float, V_a, V_b: 2-D float arrays)",
+            )
+        })?;
+        Ok((
+            Self::energy(e)?,
+            self.potential(v_a, "V_a")?,
+            self.potential(v_b, "V_b")?,
+        ))
+    }
+
+    fn stash<T>(&mut self, r: PyResult<T>) -> Result<T, FerricError> {
+        r.map_err(|e| {
             self.err = Some(e);
             FerricError::General("fock_hook failed".into())
         })
+    }
+
+    /// The closed-shell `FnMut` the SCF calls.
+    pub(crate) fn call(&mut self, d: &Array2<f64>) -> Result<(f64, Array2<f64>), FerricError> {
+        let r = Python::with_gil(|py| self.eval(py, d));
+        self.stash(r)
+    }
+
+    /// The open-shell `FnMut` the SCF calls.
+    pub(crate) fn call_spin(
+        &mut self,
+        d_a: &Array2<f64>,
+        d_b: &Array2<f64>,
+    ) -> Result<(f64, Array2<f64>, Array2<f64>), FerricError> {
+        let r = Python::with_gil(|py| self.eval_spin(py, d_a, d_b));
+        self.stash(r)
     }
 
     /// The hook's own error if it raised, otherwise `scf`'s error as usual.
@@ -550,6 +603,51 @@ impl PyFockHook {
             (None, r) => r.map_err(make_err),
         }
     }
+}
+
+/// Which open-shell solver [`solve_open_shell`] runs.
+#[derive(Clone, Copy)]
+pub(crate) enum OpenShell {
+    Uhf,
+    Rohf,
+}
+
+/// `run_uhf` / `run_rohf`'s SCF: the plain solve, or with a Python
+/// `hook(D_a, D_b) -> (E, V_a, V_b)` the hooked one
+/// (`solve_uhf_with_hook` / `solve_rohf_with_hook`). Unsupported settings
+/// are a `ValueError` before any work. GIL released for the SCF.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn solve_open_shell(
+    py: Python<'_>,
+    kind: OpenShell,
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    config: &ferric_scf::rhf::RhfConfig,
+    fock_hook: Option<&Bound<'_, PyAny>>,
+) -> PyResult<ferric_scf::result::ScfResult> {
+    use ferric_scf::{rohf, uhf};
+    let Some(hook) = fock_hook else {
+        return py
+            .allow_threads(|| match kind {
+                OpenShell::Uhf => uhf::solve_uhf(ctx, mol, prep, bounds, config),
+                OpenShell::Rohf => rohf::solve_rohf(ctx, mol, prep, op, bounds, config),
+            })
+            .map_err(make_err);
+    };
+    ferric_scf::rhf::validate_fock_hook(config)
+        .map_err(|e| PyValueError::new_err(e.to_string()))?;
+    let mut h = PyFockHook::new(hook, prep.nbasis())?;
+    let r = py.allow_threads(|| {
+        let mut f = |d_a: &Array2<f64>, d_b: &Array2<f64>| h.call_spin(d_a, d_b);
+        match kind {
+            OpenShell::Uhf => uhf::solve_uhf_with_hook(ctx, mol, prep, bounds, config, &mut f),
+            OpenShell::Rohf => rohf::solve_rohf_with_hook(ctx, mol, prep, bounds, config, &mut f),
+        }
+    });
+    h.finish(r)
 }
 
 /// `solve_rhf_with_hook` with a Python `hook(D) -> (E, V)`, GIL released

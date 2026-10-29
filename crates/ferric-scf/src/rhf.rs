@@ -1678,45 +1678,50 @@ fn apply_fock_hook(
     Ok(e)
 }
 
-/// Reject every `RhfConfig` setting [`solve_rhf_with_hook`] cannot honour,
-/// naming the first offending field.
+/// Reject every `RhfConfig` setting a Fock hook cannot honour
+/// ([`solve_rhf_with_hook`], [`crate::uhf::solve_uhf_with_hook`],
+/// [`crate::rohf::solve_rohf_with_hook`]), naming the first offending field.
+/// Each one builds an orbital Hessian or a blocked solve that never calls
+/// the hook.
 pub fn validate_fock_hook(config: &RhfConfig) -> Result<(), FerricError> {
-    let reject = |field: &str, reason: &str| -> Result<(), FerricError> {
-        Err(FerricError::General(format!(
-            "solve_rhf_with_hook: RhfConfig.{field} is not supported with a Fock hook: {reason}"
-        )))
-    };
-    if config.symmetry || config.irrep_nelec.is_some() {
-        return reject(
+    let refused = [
+        (
+            config.symmetry || config.irrep_nelec.is_some(),
             "symmetry",
             "the point-group-blocked solve does not call the hook",
-        );
-    }
-    if config.newton_trigger > 0.0 {
-        return reject(
+        ),
+        (
+            config.newton_trigger > 0.0,
             "newton_trigger",
             "the Newton orbital Hessian does not include the hook",
-        );
-    }
-    if config.aurora.enabled {
-        return reject(
+        ),
+        (
+            config.ah_trigger > 0.0,
+            "ah_trigger",
+            "the augmented-Hessian step does not include the hook",
+        ),
+        (
+            config.aurora.enabled,
             "aurora.enabled",
             "the AURORA curvature model does not include the hook",
-        );
-    }
-    if config.trah_trigger.is_some() {
-        return reject(
+        ),
+        (
+            config.trah_trigger.is_some(),
             "trah_trigger",
             "the TRAH orbital Hessian does not include the hook",
-        );
-    }
-    if config.check_stability || config.scf_stability_descent {
-        return reject(
+        ),
+        (
+            config.check_stability || config.scf_stability_descent,
             "check_stability",
             "the stability Hessian does not include the hook",
-        );
+        ),
+    ];
+    match refused.iter().find(|r| r.0) {
+        Some((_, field, reason)) => Err(FerricError::General(format!(
+            "RhfConfig.{field} is not supported with a Fock hook: {reason}"
+        ))),
+        None => Ok(()),
     }
-    Ok(())
 }
 
 /// Title of the `FERRIC_TIMING` phase table printed by `solve_rhf_impl`:

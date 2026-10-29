@@ -9,6 +9,11 @@ from numpy.typing import NDArray
 
 # run_rhf / run_dft fock_hook: hook(D_total) -> (E, V), V = dE/dD symmetric.
 FockHook = Callable[[NDArray[np.float64]], tuple[float, NDArray[np.float64]]]
+# run_uhf / run_rohf fock_hook: hook(D_a, D_b) -> (E, V_a, V_b), V_s = dE/dD_s.
+SpinFockHook = Callable[
+    [NDArray[np.float64], NDArray[np.float64]],
+    tuple[float, NDArray[np.float64], NDArray[np.float64]],
+]
 
 # ── Module-level constants ──
 
@@ -2907,8 +2912,14 @@ def run_uhf(
     cosx_final_grid: tuple[int, int] | tuple[int, int, str] | None = None,
     cosx_overlap_fit: bool | None = None,
     trah_trigger: float | None = None,
+    fock_hook: SpinFockHook | None = None,
 ) -> UhfResult:
-    """Unrestricted Hartree-Fock (open-shell). Note: the exit report (final_* residuals, unmet_criteria, non-convergence RuntimeWarning) is RHF-only today; non-convergence raises. A user-set energy_conv below the estimated (rounding-level) noise floor of dE emits one RuntimeWarning before the SCF starts.
+    """Unrestricted Hartree-Fock (open-shell). fock_hook=hook adds one
+    density-dependent term: hook(D_a, D_b) gets the per-spin densities every
+    iteration and returns (E, V_a, V_b); V_s is added to F_s and E to the
+    energy, so the result is variational when V_s = dE/dD_s. The exception
+    and refusal rules are run_rhf's (stability_descent and trah_trigger raise
+    ValueError with a hook). Note: the exit report (final_* residuals, unmet_criteria, non-convergence RuntimeWarning) is RHF-only today; non-convergence raises. A user-set energy_conv below the estimated (rounding-level) noise floor of dE emits one RuntimeWarning before the SCF starts.
 
 
     cosx_grid / cosx_final_pass / cosx_final_grid / cosx_overlap_fit: COSX
@@ -2940,8 +2951,10 @@ def run_rohf(
     point_charges: list[tuple[float, float, float, float]] | None = None,
     external_field: tuple[float, float, float] | None = None,
     memory_budget_gb: float | None = None,
+    fock_hook: SpinFockHook | None = None,
 ) -> UhfResult:
-    """Restricted Open-Shell Hartree-Fock. Note: the exit report (final_* residuals, unmet_criteria, non-convergence RuntimeWarning) is RHF-only today. A user-set energy_conv below the estimated (rounding-level) noise floor of dE emits one RuntimeWarning before the SCF starts."""
+    """Restricted Open-Shell Hartree-Fock. fock_hook: as for run_uhf; V_a and
+    V_b enter before the Roothaan effective-Fock combination. Note: the exit report (final_* residuals, unmet_criteria, non-convergence RuntimeWarning) is RHF-only today. A user-set energy_conv below the estimated (rounding-level) noise floor of dE emits one RuntimeWarning before the SCF starts."""
     ...
 
 def run_cdft(
