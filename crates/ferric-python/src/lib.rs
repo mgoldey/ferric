@@ -5885,6 +5885,10 @@ fn set_direct_stats(
     d.set_item("batch_work_mean_s", st.batch_work_mean_s)?;
     d.set_item("t_metric_s", st.t_metric_s)?;
     d.set_item("t_pairs_s", st.t_pairs_s)?;
+    d.set_item("n_pair_groups", st.n_pair_groups)?;
+    d.set_item("n_distinct_occ_per_group", st.n_distinct_occ_per_group)?;
+    d.set_item("n_trsm", st.n_trsm)?;
+    d.set_item("n_w_reused", st.n_w_reused)?;
     d.set_item("t_loc_s", st.t_loc_s)
 }
 
@@ -6397,7 +6401,8 @@ fn run_rimp2_local(
         &r,
         &ferric_mp2::lmp2_certificate::SystemShape::new(&mol.inner, &basis_set.inner),
         &op,
-    );
+    )
+    .with_direct_stats(st.as_ref());
     let d = local_dict(py, eps, r.keep_fraction, model.direct.is_some())?;
     set_lmp2_counters(&d, &r, model.reference)?;
     set_certificate(py, &d, &cert)?;

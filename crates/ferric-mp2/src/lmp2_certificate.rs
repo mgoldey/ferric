@@ -18,7 +18,7 @@ use ferric_core::mol::Molecule;
 use ferric_integrals::operator::{Operator, OperatorKind};
 
 use crate::lmp2_amplitude::{AmplitudeLmp2Config, AmplitudeLmp2Result};
-use crate::lmp2_direct::DirectConfig;
+use crate::lmp2_direct::{DirectConfig, DirectStats};
 
 /// Largest ε whose MEASURED recovery is comparable to ORCA DLPNO-MP2
 /// NormalPNO (C4/cc-pVDZ: 99.980% at 1e-5 vs NormalPNO's 99.96-99.98%).
@@ -82,6 +82,28 @@ impl From<&DirectConfig> for DirectMaps {
             schwarz_skip: d.schwarz_skip,
             batch_merge: d.batch_merge,
             virt_schwarz_kappa: d.virt_schwarz_kappa,
+        }
+    }
+}
+
+/// Stage-5 pair-fit work counters of an integral-direct run (from
+/// [`DirectStats`]): pair-domain groups, mean distinct occupieds per group,
+/// triangular solves, and whitenings reused from the κ screen.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PairFitCounters {
+    pub n_pair_groups: usize,
+    pub n_distinct_occ_per_group: f64,
+    pub n_trsm: usize,
+    pub n_w_reused: usize,
+}
+
+impl From<&DirectStats> for PairFitCounters {
+    fn from(st: &DirectStats) -> Self {
+        Self {
+            n_pair_groups: st.n_pair_groups,
+            n_distinct_occ_per_group: st.n_distinct_occ_per_group,
+            n_trsm: st.n_trsm,
+            n_w_reused: st.n_w_reused,
         }
     }
 }
@@ -169,6 +191,9 @@ pub struct Lmp2Certificate {
     pub integral_direct: bool,
     /// `None` on the in-core (global-B) path.
     pub maps: Option<DirectMaps>,
+    /// Stage-5 counters; `None` on the in-core path (set by
+    /// [`Lmp2Certificate::with_direct_stats`]).
+    pub pair_fit: Option<PairFitCounters>,
     /// Arithmetic precision of every kernel; `"f64"` until a mixed kernel
     /// ships.
     pub precision: &'static str,
@@ -208,6 +233,7 @@ impl Lmp2Certificate {
             gate_cal: cfg.pair_gate_cal,
             integral_direct: direct.is_some(),
             maps: direct.map(DirectMaps::from),
+            pair_fit: None,
             precision: "f64",
             cg_relres: r.cg_relres,
             cg_converged: r.cg_converged,
@@ -220,6 +246,13 @@ impl Lmp2Certificate {
             eps_trust: eps_trust(cfg.eps, coulomb),
             warnings: warnings(cfg.eps, cfg.pair_gate_cal, shape, coulomb),
         }
+    }
+
+    /// Attach an integral-direct run's stage-5 counters (`None`, the
+    /// in-core path, leaves `pair_fit` unset).
+    pub fn with_direct_stats(mut self, st: Option<&DirectStats>) -> Self {
+        self.pair_fit = st.map(PairFitCounters::from);
+        self
     }
 
     /// Every certificate entry in serialization order. The single source
@@ -236,6 +269,17 @@ impl Lmp2Certificate {
                 ("virt_schwarz_kappa", m.virt_schwarz_kappa.into()),
             ])
         });
+        let pair_fit = self.pair_fit.map_or(V::Null, |c| {
+            V::Map(vec![
+                ("n_pair_groups", V::Usize(c.n_pair_groups)),
+                (
+                    "n_distinct_occ_per_group",
+                    V::F64(c.n_distinct_occ_per_group),
+                ),
+                ("n_trsm", V::Usize(c.n_trsm)),
+                ("n_w_reused", V::Usize(c.n_w_reused)),
+            ])
+        });
         vec![
             ("scheme", V::Str(self.scheme.to_string())),
             ("eps", V::F64(self.eps)),
@@ -245,6 +289,7 @@ impl Lmp2Certificate {
             ("gate_cal", self.gate_cal.into()),
             ("integral_direct", V::Bool(self.integral_direct)),
             ("maps", maps),
+            ("pair_fit", pair_fit),
             ("precision", V::Str(self.precision.to_string())),
             ("cg_relres", V::F64(self.cg_relres)),
             ("cg_converged", V::Bool(self.cg_converged)),

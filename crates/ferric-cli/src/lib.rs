@@ -2044,6 +2044,22 @@ fn lmp2_local_json(
     j
 }
 
+/// The model certificate of an LMP2 run, with the integral-direct stage-5
+/// counters when `maps` carries the direct stats.
+fn lmp2_certificate<T>(
+    lcfg: &ferric_mp2::lmp2_amplitude::AmplitudeLmp2Config,
+    dcfg: Option<&ferric_mp2::lmp2_direct::DirectConfig>,
+    r: &ferric_mp2::lmp2_amplitude::AmplitudeLmp2Result,
+    maps: &Option<(T, ferric_mp2::lmp2_direct::DirectStats)>,
+    mol: &Molecule,
+    bs: &BasisSet,
+    op: &Operator,
+) -> ferric_mp2::lmp2_certificate::Lmp2Certificate {
+    let shape = ferric_mp2::lmp2_certificate::SystemShape::new(mol, bs);
+    ferric_mp2::lmp2_certificate::Lmp2Certificate::new(lcfg, dcfg, r, &shape, op)
+        .with_direct_stats(maps.as_ref().map(|m| &m.1))
+}
+
 /// The exact-reference lines of a local run's printout.
 ///
 /// `e_ref` is `None` when the (opt-in, `[local] reference = true`) reference
@@ -2148,13 +2164,7 @@ fn run_rimp2_local(
             None,
         ),
     };
-    let cert = ferric_mp2::lmp2_certificate::Lmp2Certificate::new(
-        &lcfg,
-        dcfg.as_ref(),
-        &r,
-        &ferric_mp2::lmp2_certificate::SystemShape::new(mol, bs),
-        &op,
-    );
+    let cert = lmp2_certificate(&lcfg, dcfg.as_ref(), &r, &maps, mol, bs, &op);
     let local = LocalPrint {
         eps,
         keep_fraction: r.keep_fraction,
@@ -6676,7 +6686,9 @@ mod local_printout_tests {
     #[test]
     fn certificate_fields_round_trip() {
         use super::lmp2_local_json;
-        use ferric_mp2::lmp2_certificate::{CertValue, DirectMaps, Lmp2Certificate};
+        use ferric_mp2::lmp2_certificate::{
+            CertValue, DirectMaps, Lmp2Certificate, PairFitCounters,
+        };
         let cert = Lmp2Certificate {
             scheme: "amplitude-threshold",
             eps: 1e-4,
@@ -6692,6 +6704,12 @@ mod local_printout_tests {
                 schwarz_skip: 1e-5,
                 batch_merge: 4,
                 virt_schwarz_kappa: None,
+            }),
+            pair_fit: Some(PairFitCounters {
+                n_pair_groups: 11,
+                n_distinct_occ_per_group: 8.45,
+                n_trsm: 93,
+                n_w_reused: 25,
             }),
             precision: "f64",
             cg_relres: 3.3e-12,
@@ -6728,12 +6746,13 @@ mod local_printout_tests {
             }
         }
         let fields = cert.fields();
-        assert_eq!(fields.len(), 19);
+        assert_eq!(fields.len(), 20);
         for (k, v) in &fields {
             assert!(same(&back[*k], v), "field {k}: {} vs {v:?}", back[*k]);
         }
         assert!(back["maps"]["virt_schwarz_kappa"].is_null());
         assert_eq!(back["maps"]["batch_merge"], 4);
+        assert_eq!(back["pair_fit"]["n_trsm"], 93);
         assert_eq!(back["build_commit"], ferric_build_info::COMMIT);
         assert_eq!(
             back["build_dirty"],

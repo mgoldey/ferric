@@ -17,6 +17,7 @@ CERT_KEYS = [
     "gate_cal",
     "integral_direct",
     "maps",
+    "pair_fit",
     "precision",
     "cg_relres",
     "cg_converged",
@@ -37,6 +38,7 @@ MAP_KEYS = [
     "batch_merge",
     "virt_schwarz_kappa",
 ]
+PAIR_FIT_KEYS = ["n_pair_groups", "n_distinct_occ_per_group", "n_trsm", "n_w_reused"]
 
 
 @pytest.fixture(scope="module")
@@ -78,6 +80,9 @@ def test_certificate_fields_round_trip_direct(water):
     assert sorted(loc["maps"]) == sorted(MAP_KEYS)
     assert loc["maps"]["batch_merge"] == 2
     assert loc["maps"]["virt_schwarz_kappa"] is None
+    assert sorted(loc["pair_fit"]) == sorted(PAIR_FIT_KEYS)
+    assert loc["pair_fit"]["n_pair_groups"] > 0 and loc["pair_fit"]["n_trsm"] > 0
+    assert loc["pair_fit"]["n_w_reused"] == 0  # no kappa screen, nothing to reuse
     assert "not validated" in loc["validation_grade"]
     assert "99.671% at 1e-4" in loc["eps_trust"]
     assert "slope ~1.2" in loc["eps_trust"] and "93.81% at 1e-3" in loc["eps_trust"]
@@ -103,6 +108,7 @@ def test_certificate_in_core_exact_limit(water):
         assert k in loc, f"certificate field {k} missing"
     assert loc["integral_direct"] is False
     assert loc["maps"] is None and loc["gate_cal"] is None
+    assert loc["pair_fit"] is None
     assert loc["validation_grade"].startswith("Proven")
     assert "exact" in loc["eps_trust"]
     assert not any("eps" in w for w in loc["warnings"])
