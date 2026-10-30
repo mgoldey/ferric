@@ -302,9 +302,8 @@ pub fn solve_ragged_budgeted(
             plan_bytes as f64 / 1e9,
             budget_bytes as f64 / 1e9
         );
-        let s = solve_ragged_with_trace(rg, rtol, max_iter, |p, fl| {
-            matvec_indexed(rg, f_oo, p, fl)
-        });
+        let s =
+            solve_ragged_with_trace(rg, rtol, max_iter, |p, fl| matvec_indexed(rg, f_oo, p, fl));
         let d = PlanDecision {
             path: MatvecPath::Indexed,
             plan_bytes,
@@ -557,8 +556,16 @@ fn plan_partners(rg: &Ragged, f_oo: &Array2<f64>, pb: &PairBlock) -> Vec<(usize,
 /// Gather elements of one edge: the matched rows times the matched columns
 /// (the loop in [`gather_into`] visits exactly their product).
 fn edge_len(dst: &PairBlock, src: &PairBlock) -> usize {
-    let rows = dst.da.iter().filter(|&&a| src.pos_da[a] != usize::MAX).count();
-    let cols = dst.db.iter().filter(|&&b| src.pos_db[b] != usize::MAX).count();
+    let rows = dst
+        .da
+        .iter()
+        .filter(|&&a| src.pos_da[a] != usize::MAX)
+        .count();
+    let cols = dst
+        .db
+        .iter()
+        .filter(|&&b| src.pos_db[b] != usize::MAX)
+        .count();
     rows * cols
 }
 

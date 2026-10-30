@@ -146,7 +146,11 @@ fn tiny_budget_falls_back_to_indexed_and_is_bitwise() {
     let (planned, pp) = solve_ragged_budgeted(&c.rg, &c.f_oo, 1e-11, 400, usize::MAX);
     let (indexed, pi) = solve_ragged_budgeted(&c.rg, &c.f_oo, 1e-11, 400, 1);
     assert_eq!(pp.path, MatvecPath::Planned, "ample budget did not plan");
-    assert_eq!(pi.path, MatvecPath::Indexed, "tiny budget did not fall back");
+    assert_eq!(
+        pi.path,
+        MatvecPath::Indexed,
+        "tiny budget did not fall back"
+    );
     assert!(pp.plan_bytes > 1 && pp.plan_bytes == pi.plan_bytes);
     assert!(planned.converged && indexed.converged);
     assert_eq!(planned.iterations, indexed.iterations);
@@ -154,7 +158,9 @@ fn tiny_budget_falls_back_to_indexed_and_is_bitwise() {
     assert_eq!(planned.flops_per_matvec, indexed.flops_per_matvec);
     for (a, b) in planned.t.iter().zip(&indexed.t) {
         assert!(
-            a.iter().zip(b.iter()).all(|(x, y)| x.to_bits() == y.to_bits()),
+            a.iter()
+                .zip(b.iter())
+                .all(|(x, y)| x.to_bits() == y.to_bits()),
             "amplitudes differ between the planned and indexed paths"
         );
     }

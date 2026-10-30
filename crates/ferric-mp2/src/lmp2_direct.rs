@@ -173,7 +173,7 @@ pub struct DirectStats {
     pub t_eri3_fill_thread_s: f64,
     /// The fill split into evaluation and scatter: only with
     /// [`DirectConfig::split_eri3_timers`] (NaN otherwise). The clock is read
-    /// per [`FILL_CHUNK`]-pair chunk, not per triple.
+    /// per 64-shell-pair chunk, not per triple.
     pub t_eri3_eval_thread_s: f64,
     pub t_eri3_scatter_thread_s: f64,
     pub t_eri3_transform_thread_s: f64,

@@ -360,7 +360,7 @@ fn select_pivot(d: &[f64]) -> (usize, f64) {
 }
 
 /// Greedy pivoted Cholesky on a PSD matrix; returns `rank` pivot indices.
-/// Near-ties are broken toward the lowest index ([`select_pivot`]).
+/// Near-ties (within [`PIVOT_TIE_RTOL`] relative) go to the lowest index.
 /// `pub` for ferric-pbc (visibility only; see [`lowdin`]).
 pub fn pivoted_cholesky_order(m: &Array2<f64>, rank: usize) -> Result<Vec<usize>, FerricError> {
     let n = m.nrows();
@@ -1645,7 +1645,10 @@ mod tests {
             (v_old.n_valence, v_old.n_hard)
         );
         assert!(v_new.n_hard > 0, "no hard virtuals: the test is vacuous");
-        assert_eq!(h_new, h_old, "hard-virtual subset/order differs from the oracle");
+        assert_eq!(
+            h_new, h_old,
+            "hard-virtual subset/order differs from the oracle"
+        );
         let (matched, permuted) = match_columns_up_to_sign_and_order(&v_new.c_vloc, &v_old.c_vloc);
         assert!(
             matched && permuted == 0,

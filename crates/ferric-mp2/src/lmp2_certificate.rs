@@ -365,7 +365,10 @@ mod tests {
         assert!(eps_trust(0.0, true).contains("exact"));
         let t = eps_trust(1e-4, true);
         assert!(t.contains("99.671% at 1e-4") && t.contains("inside"), "{t}");
-        assert!(t.contains("slope ~1.2") && t.contains("93.81% at 1e-3"), "{t}");
+        assert!(
+            t.contains("slope ~1.2") && t.contains("93.81% at 1e-3"),
+            "{t}"
+        );
         assert!(!t.contains("1.8") && !t.contains("CAVEAT"), "{t}");
         assert!(eps_trust(1e-6, true).contains("outside"));
         assert!(eps_trust(1e-4, false).contains("CAVEAT"));
@@ -382,7 +385,10 @@ mod tests {
             .collect();
         let s1 = (lost[1] / lost[0]).log10();
         let s2 = (lost[2] / lost[1]).log10();
-        assert!((s1 - 1.22).abs() < 0.01 && (s2 - 1.18).abs() < 0.01, "{s1} {s2}");
+        assert!(
+            (s1 - 1.22).abs() < 0.01 && (s2 - 1.18).abs() < 0.01,
+            "{s1} {s2}"
+        );
         assert!(MEASURED_SLOPE_C4.contains("1.22") && MEASURED_SLOPE_C4.contains("1.18"));
     }
 
