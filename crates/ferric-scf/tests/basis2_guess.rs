@@ -676,3 +676,106 @@ fn lowdin_refuses_a_near_singular_occupied_block() {
     let ok = ndarray::array![[1.0, 1.0], [0.0, 1.0], [0.0, 0.0]];
     assert!(b2::lowdin_orthonormalize(&ok, &s).is_ok());
 }
+
+// --- Fock hooks (`solve_*_with_hook`) -------------------------------------
+//
+// A hook is defined in the TARGET basis's AO space, so it must act on the
+// target solve only: never on the secondary-basis SCF, never on the Fock
+// projection. The hook below records the dimension of every density it sees.
+// Artifact hypothesis: if the hooked entry points bypassed the guess router
+// (the pre-rebase state of #594 + #597), `guess_basis` would be silently
+// ignored and the report would be `None`; if the hook leaked into the
+// secondary SCF it would see a STO-3G-sized (7x7) density.
+
+/// E = lambda * Tr(D) (spin-summed), V = lambda * I: a valid variational term.
+const HOOK_LAMBDA: f64 = 0.01;
+
+fn hooked(
+    kind: Kind,
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    b: &SchwarzBounds,
+    c: &RhfConfig,
+) -> (ScfResult, Vec<usize>) {
+    use ferric_scf::{
+        rhf::solve_rhf_with_hook, rohf::solve_rohf_with_hook, uhf::solve_uhf_with_hook,
+    };
+    let ctx = ParallelContext::default();
+    let mut seen = Vec::new();
+    let r = match kind {
+        Kind::Rhf => {
+            let mut h = |d: &Array2<f64>| {
+                seen.push(d.nrows());
+                let n = d.nrows();
+                Ok((HOOK_LAMBDA * d.diag().sum(), Array2::eye(n) * HOOK_LAMBDA))
+            };
+            solve_rhf_with_hook(&ctx, mol, prep, Operator::coulomb(), b, c, &mut h)
+        }
+        Kind::Uhf | Kind::Rohf => {
+            let mut h = |da: &Array2<f64>, db: &Array2<f64>| {
+                seen.push(da.nrows());
+                let n = da.nrows();
+                let v = Array2::eye(n) * HOOK_LAMBDA;
+                Ok((
+                    HOOK_LAMBDA * (da.diag().sum() + db.diag().sum()),
+                    v.clone(),
+                    v,
+                ))
+            };
+            if matches!(kind, Kind::Uhf) {
+                solve_uhf_with_hook(&ctx, mol, prep, b, c, &mut h)
+            } else {
+                solve_rohf_with_hook(&ctx, mol, prep, b, c, &mut h)
+            }
+        }
+    }
+    .unwrap();
+    (r, seen)
+}
+
+fn hook_skips_the_secondary(kind: Kind, xyz: &str, mult: usize) {
+    let (mol, prep, bounds) = setup(xyz, mult, "6-31g");
+    let nbf = prep.nbasis();
+    let base = tight(None);
+    let (plain, _) = hooked(kind, &mol, &prep, &bounds, &base);
+    for projection in ["fock", "overlap"] {
+        let cfg = with_guess(&base, "sto-3g", projection);
+        let (r, seen) = hooked(kind, &mol, &prep, &bounds, &cfg);
+        assert!(
+            r.converged,
+            "{kind:?}/{projection}: hooked target did not converge"
+        );
+        let report = r.guess_basis.as_ref().unwrap_or_else(|| {
+            panic!("{kind:?}/{projection}: guess_basis was ignored by the hooked solve")
+        });
+        assert_eq!(report.basis, "sto-3g");
+        assert!(!seen.is_empty(), "{kind:?}/{projection}: hook never called");
+        assert!(
+            seen.iter().all(|&n| n == nbf),
+            "{kind:?}/{projection}: hook saw a non-target density dimension: {seen:?} (target {nbf})"
+        );
+        // The hook is in the converged answer: same state as the hooked
+        // default-guess solve (a missing hook would shift E by ~lambda*N).
+        assert!(
+            (r.energy - plain.energy).abs() < 1e-7,
+            "{kind:?}/{projection}: E {} vs hooked default-guess {}",
+            r.energy,
+            plain.energy
+        );
+    }
+}
+
+#[test]
+fn fock_hook_skips_the_secondary_rhf() {
+    hook_skips_the_secondary(Kind::Rhf, WATER, 1);
+}
+
+#[test]
+fn fock_hook_skips_the_secondary_uhf() {
+    hook_skips_the_secondary(Kind::Uhf, NH2, 2);
+}
+
+#[test]
+fn fock_hook_skips_the_secondary_rohf() {
+    hook_skips_the_secondary(Kind::Rohf, NH2, 2);
+}

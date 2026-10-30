@@ -493,11 +493,13 @@ pub fn solve_uhf_fockmod(
     initial_mos: Option<(&Array2<f64>, &Array2<f64>)>,
     fock_mod: Option<UhfFockMod>,
 ) -> Result<ScfResult, FerricError> {
-    solve_uhf_molecular(ctx, mol, prep, bounds, config, initial_mos, fock_mod)
+    solve_uhf_molecular(ctx, mol, prep, bounds, config, initial_mos, fock_mod, None)
 }
 
 /// The molecular (non-injected, unblocked) solver: refuses the symmetry fields,
-/// which only [`solve_uhf_blocked`] honours.
+/// which only [`solve_uhf_blocked`] honours. A Fock `hook` acts on the target
+/// solve only, never on the secondary-basis SCF or the Fock projection behind
+/// `guess_basis` (see `rhf::solve_rhf_routed`).
 fn solve_uhf_molecular(
     ctx: &ParallelContext,
     mol: &Molecule,
@@ -506,6 +508,7 @@ fn solve_uhf_molecular(
     config: &UhfConfig,
     initial_mos: Option<(&Array2<f64>, &Array2<f64>)>,
     fock_mod: Option<UhfFockMod>,
+    hook: Option<crate::fock::SpinFockHook<'_>>,
 ) -> Result<ScfResult, FerricError> {
     crate::symmetric::require_symmetry_off(config, "solve_uhf")?;
     if crate::basis2::applies(config, initial_mos.is_some()) {
@@ -527,7 +530,7 @@ fn solve_uhf_molecular(
             fock_mod,
             None,
             None,
-            None,
+            hook,
         )?;
         r.guess_basis = Some(g.report);
         return Ok(r);
@@ -542,7 +545,7 @@ fn solve_uhf_molecular(
         fock_mod,
         None,
         None,
-        None,
+        hook,
     )
 }
 
@@ -561,14 +564,12 @@ pub fn solve_uhf_with_hook(
     hook: crate::fock::SpinFockHook<'_>,
 ) -> Result<ScfResult, FerricError> {
     crate::rhf::validate_fock_hook(config)?;
-    err_if_unconverged(solve_uhf_impl(
+    err_if_unconverged(solve_uhf_molecular(
         ctx,
         mol,
         prep,
         bounds,
         config,
-        None,
-        None,
         None,
         None,
         Some(hook),

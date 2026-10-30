@@ -1627,7 +1627,7 @@ pub(crate) fn solve_rhf_once(
     bounds: &SchwarzBounds,
     config: &RhfConfig,
 ) -> Result<ScfResult, FerricError> {
-    solve_rhf_routed(ctx, mol, prep, op, bounds, config)
+    solve_rhf_routed(ctx, mol, prep, op, bounds, config, None)
 }
 
 /// The point-group-blocked solve (see [`crate::symmetric`]); `mol`/`prep`/
@@ -1673,7 +1673,7 @@ pub fn solve_rhf_with_hook(
     hook: RhfFockHook<'_>,
 ) -> Result<ScfResult, FerricError> {
     validate_fock_hook(config)?;
-    solve_rhf_impl(ctx, mol, prep, op, bounds, config, None, None, Some(hook))
+    solve_rhf_routed(ctx, mol, prep, op, bounds, config, Some(hook))
 }
 
 /// Add `hook(d)`'s potential to `f` and return its energy (0 without a hook).
@@ -1747,6 +1747,11 @@ pub fn validate_fock_hook(config: &RhfConfig) -> Result<(), FerricError> {
 /// guess when [`RhfConfig::guess_basis`] applies: the projected density
 /// becomes the explicit starting density, so the Fock projection's
 /// build-and-diagonalise step is this solve's first iteration.
+///
+/// A Fock `hook` acts on the TARGET solve only. It is defined in the target
+/// basis's AO space, so the secondary-basis SCF and the Fock projection
+/// (both [`crate::basis2`]) never see it: the guess is the un-hooked one,
+/// and the hooked solve starts from it.
 fn solve_rhf_routed(
     ctx: &ParallelContext,
     mol: &Molecule,
@@ -1754,9 +1759,10 @@ fn solve_rhf_routed(
     op: Operator,
     bounds: &SchwarzBounds,
     config: &RhfConfig,
+    hook: Option<RhfFockHook<'_>>,
 ) -> Result<ScfResult, FerricError> {
     if !crate::basis2::applies(config, false) {
-        return solve_rhf_impl(ctx, mol, prep, op, bounds, config, None, None, None);
+        return solve_rhf_impl(ctx, mol, prep, op, bounds, config, None, None, hook);
     }
     use crate::basis2::GuessOutcome;
     let mut cfg = config.clone();
@@ -1770,7 +1776,7 @@ fn solve_rhf_routed(
             }
             GuessOutcome::Declined(report) => report,
         };
-    let mut r = solve_rhf_impl(ctx, mol, prep, op, bounds, &cfg, None, None, None)?;
+    let mut r = solve_rhf_impl(ctx, mol, prep, op, bounds, &cfg, None, None, hook)?;
     r.guess_basis = Some(report);
     Ok(r)
 }
