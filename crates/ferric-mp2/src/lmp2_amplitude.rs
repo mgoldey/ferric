@@ -173,6 +173,10 @@ pub struct AmplitudeLmp2Result {
     /// Size of the PCG gather plan ([`crate::ragged::SolvePlan::bytes_for`]),
     /// computed before deciding whether to build it; reported either way.
     pub solve_plan_bytes: usize,
+    /// Bytes resident beside the plan for the whole solve (the ragged
+    /// system + the PCG vectors, [`crate::ragged::solve_resident_bytes`]);
+    /// the plan is admitted against the budget minus this.
+    pub solve_resident_bytes: usize,
     /// The matvec the PCG ran: planned when the plan fit the memory budget,
     /// otherwise the plan-free indexed one (bitwise the same result).
     pub matvec_path: MatvecPath,
@@ -1527,6 +1531,7 @@ pub(crate) fn solve_and_count(
         n_pairs_unique: c.n_pairs_unique,
         gate_on: cfg.pair_gate_cal.is_some(),
         solve_plan_bytes: plan.plan_bytes,
+        solve_resident_bytes: plan.resident_bytes,
         matvec_path: plan.path,
         timings: StageTimings::default(),
     })

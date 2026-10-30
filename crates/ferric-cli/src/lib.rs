@@ -2058,6 +2058,22 @@ fn local_reference_lines(
     }
 }
 
+/// The local-MP2 certificate lines of the CLI printout: validation grade,
+/// ε trust, the PCG gather-plan decision, and every out-of-range warning.
+fn print_lmp2_certificate(cert: &ferric_mp2::lmp2_certificate::Lmp2Certificate) {
+    println!("  validation            = {}", cert.validation_grade);
+    println!("  eps trust             = {}", cert.eps_trust);
+    println!(
+        "  PCG gather plan       = {:.3} GB ({} matvec; {:.3} GB resident beside it)",
+        cert.solve_plan_bytes as f64 / 1e9,
+        cert.matvec_path,
+        cert.solve_resident_bytes as f64 / 1e9
+    );
+    for w in &cert.warnings {
+        println!("  out of validated range: {w}");
+    }
+}
+
 /// `method.kind = "rimp2"` with `[local] scheme = "amplitude-threshold"`:
 /// amplitude-threshold local MP2 (`ferric_mp2::lmp2_amplitude`, WSHG23
 /// single-threshold; closed-shell), or with `integral_direct = true` the
@@ -2134,16 +2150,7 @@ fn run_rimp2_local(
         integral_direct: model.direct.is_some(),
     };
     println!("{}", model_label("MP2", Some(&local)));
-    println!("  validation            = {}", cert.validation_grade);
-    println!("  eps trust             = {}", cert.eps_trust);
-    println!(
-        "  PCG gather plan       = {:.3} GB ({} matvec)",
-        cert.solve_plan_bytes as f64 / 1e9,
-        cert.matvec_path
-    );
-    for w in &cert.warnings {
-        println!("  out of validated range: {w}");
-    }
+    print_lmp2_certificate(&cert);
     println!("  basis / aux           = {} / {aux_name}", bs.name);
     if cfg.method.kind == "att-rimp2" {
         // Name the correlation operator: a local number from the attenuated
@@ -6681,6 +6688,7 @@ mod local_printout_tests {
             frozen_core: 4,
             operator: "coulomb".into(),
             solve_plan_bytes: 123_456_789,
+            solve_resident_bytes: 987_654_321,
             matvec_path: "planned",
             validation_grade: "finite eps: measured error map, not validated".into(),
             eps_trust: "measured ...".into(),
@@ -6709,7 +6717,7 @@ mod local_printout_tests {
             }
         }
         let fields = cert.fields();
-        assert_eq!(fields.len(), 18);
+        assert_eq!(fields.len(), 19);
         for (k, v) in &fields {
             assert!(same(&back[*k], v), "field {k}: {} vs {v:?}", back[*k]);
         }

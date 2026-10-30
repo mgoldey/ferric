@@ -181,6 +181,9 @@ pub struct Lmp2Certificate {
     /// ran ("planned" or "indexed", the plan-free fallback when the plan
     /// did not fit the memory budget).
     pub solve_plan_bytes: usize,
+    /// Bytes resident beside the plan for the whole solve (ragged system +
+    /// PCG vectors); the plan was admitted against the budget minus this.
+    pub solve_resident_bytes: usize,
     pub matvec_path: &'static str,
     pub validation_grade: String,
     pub eps_trust: String,
@@ -211,6 +214,7 @@ impl Lmp2Certificate {
             frozen_core: cfg.frozen_core,
             operator: operator_label(op),
             solve_plan_bytes: r.solve_plan_bytes,
+            solve_resident_bytes: r.solve_resident_bytes,
             matvec_path: r.matvec_path.as_str(),
             validation_grade: validation_grade(cfg.eps),
             eps_trust: eps_trust(cfg.eps, coulomb),
@@ -247,6 +251,7 @@ impl Lmp2Certificate {
             ("frozen_core", V::Usize(self.frozen_core)),
             ("operator", V::Str(self.operator.clone())),
             ("solve_plan_bytes", V::Usize(self.solve_plan_bytes)),
+            ("solve_resident_bytes", V::Usize(self.solve_resident_bytes)),
             ("matvec_path", V::Str(self.matvec_path.to_string())),
             ("validation_grade", V::Str(self.validation_grade.clone())),
             ("eps_trust", V::Str(self.eps_trust.clone())),

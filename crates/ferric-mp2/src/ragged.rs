@@ -45,6 +45,87 @@ pub struct Ragged {
     pub by_j: HashMap<usize, Vec<usize>>,
 }
 
+impl PairBlock {
+    /// Heap bytes this block holds (Vec capacities, array lengths); the
+    /// struct itself is counted by its owner's `Vec<PairBlock>`.
+    pub fn heap_bytes(&self) -> usize {
+        let us = std::mem::size_of::<usize>();
+        let f = std::mem::size_of::<f64>();
+        us * (self.da.capacity()
+            + self.db.capacity()
+            + self.pos_da.capacity()
+            + self.pos_db.capacity())
+            + self.pat.capacity()
+            + f * (self.fvv_aa.len() + self.fvv_bb.len() + self.j_blk.len() + self.denom.len())
+    }
+}
+
+impl Ragged {
+    /// Heap bytes the ragged system holds: every block's storage, the
+    /// `pairs` vector, and the two index maps (bucket entries plus their
+    /// index vectors; the hash table's control bytes are approximated as
+    /// one byte per bucket).
+    pub fn heap_bytes(&self) -> usize {
+        let map_bytes = |m: &HashMap<usize, Vec<usize>>| {
+            let entry = std::mem::size_of::<(usize, Vec<usize>)>() + 1;
+            m.capacity() * entry
+                + m.values()
+                    .map(|v| v.capacity() * std::mem::size_of::<usize>())
+                    .sum::<usize>()
+        };
+        self.pairs.capacity() * std::mem::size_of::<PairBlock>()
+            + self.pairs.iter().map(PairBlock::heap_bytes).sum::<usize>()
+            + map_bytes(&self.by_i)
+            + map_bytes(&self.by_j)
+    }
+}
+
+/// Bytes of ONE amplitude-shaped block vector over `rg` (one `|Da|×|Db|`
+/// f64 block per pair plus the outer `Vec`).
+pub fn amplitude_vector_bytes(rg: &Ragged) -> usize {
+    rg.pairs.len() * std::mem::size_of::<Array2<f64>>()
+        + rg.pairs
+            .iter()
+            .map(|pb| pb.da.len() * pb.db.len() * std::mem::size_of::<f64>())
+            .sum::<usize>()
+}
+
+/// The PCG iteration vectors resident for the whole solve: `t`, `r`, `z`,
+/// `p`, `ap` (see `pcg_core`).
+pub const PCG_RESIDENT_VECTORS: usize = 5;
+
+/// Bytes resident for the whole ragged PCG solve BESIDES the gather plan:
+/// the ragged system `rg` itself, the [`PCG_RESIDENT_VECTORS`] iteration
+/// vectors, and the CG coefficient trace (two f64 per iteration, at most
+/// `max_iter`). Per-task matvec temporaries (one block per rayon worker)
+/// are not counted.
+pub fn solve_resident_bytes(rg: &Ragged, max_iter: usize) -> usize {
+    rg.heap_bytes()
+        + PCG_RESIDENT_VECTORS * amplitude_vector_bytes(rg)
+        + 2 * std::mem::size_of::<f64>() * max_iter
+}
+
+/// THE admission gate for the gather plan: the plan is built only when it
+/// fits what the budget has left after the solve's resident footprint
+/// (`plan_bytes <= budget_bytes - resident_bytes`), AND an installed global
+/// pool can hold plan + resident together. Both gates charge the same total,
+/// so they cannot disagree about what the solve holds. `None` means "take
+/// the plan-free indexed matvec". Inert reservation when no pool is
+/// installed.
+fn admit_plan(
+    plan_bytes: usize,
+    resident_bytes: usize,
+    budget_bytes: usize,
+) -> Option<ferric_core::memory::pool::Reservation> {
+    if plan_bytes > budget_bytes.saturating_sub(resident_bytes) {
+        return None;
+    }
+    ferric_core::memory::pool::try_reserve_global(
+        "ragged PCG gather plan + resident solve",
+        plan_bytes.saturating_add(resident_bytes),
+    )
+}
+
 /// Build one pair's ragged block over a CANDIDATE index subset: `g` is
 /// (cand.len(), cand.len()) with local indices mapping to the global
 /// virtual indices `cand[..]`. Every Eq-8-retained element is guaranteed
@@ -254,12 +335,15 @@ impl MatvecPath {
     }
 }
 
-/// The plan decision of one solve: the path taken and the plan's size
-/// ([`SolvePlan::bytes_for`]; reported even when the plan was not built).
+/// The plan decision of one solve: the path taken, the plan's size
+/// ([`SolvePlan::bytes_for`]; reported even when the plan was not built)
+/// and the footprint resident beside it for the whole solve
+/// ([`solve_resident_bytes`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PlanDecision {
     pub path: MatvecPath,
     pub plan_bytes: usize,
+    pub resident_bytes: usize,
 }
 
 /// [`solve_ragged`] that also returns the CG coefficient trace, budgeted
@@ -277,11 +361,14 @@ pub fn solve_ragged_traced(
 }
 
 /// The ragged PCG solve with the [`SolvePlan`] charged to a memory budget.
-/// The plan's size is computed BEFORE it is built ([`SolvePlan::bytes_for`]);
-/// when it exceeds `budget_bytes`, or does not fit what an installed global
-/// memory pool has left, the solve runs on the plan-free [`matvec_indexed`]
-/// instead (logged on stderr). Both paths give bitwise-identical iterates,
-/// so the fallback costs time, never accuracy.
+/// The plan's size is computed BEFORE it is built ([`SolvePlan::bytes_for`]),
+/// and it is admitted against what `budget_bytes` has left after the
+/// solve's resident footprint ([`solve_resident_bytes`]: `rg` plus the PCG
+/// vectors), not against the whole budget. When it does not fit there, or
+/// an installed global memory pool cannot hold plan + resident, the solve
+/// runs on the plan-free [`matvec_indexed`] instead (logged on stderr).
+/// Both paths give bitwise-identical iterates, so the fallback costs time,
+/// never accuracy.
 pub fn solve_ragged_budgeted(
     rg: &Ragged,
     f_oo: &Array2<f64>,
@@ -290,16 +377,14 @@ pub fn solve_ragged_budgeted(
     budget_bytes: usize,
 ) -> (RaggedSolve, PlanDecision) {
     let plan_bytes = SolvePlan::bytes_for(rg, f_oo);
-    let charge = if plan_bytes <= budget_bytes {
-        ferric_core::memory::pool::try_reserve_global("ragged PCG gather plan", plan_bytes)
-    } else {
-        None
-    };
-    let Some(_charge) = charge else {
+    let resident_bytes = solve_resident_bytes(rg, max_iter);
+    let Some(_charge) = admit_plan(plan_bytes, resident_bytes, budget_bytes) else {
         eprintln!(
-            "  ragged PCG: gather plan ({:.3} GB) over the memory budget ({:.3} GB) or the \
-             pool; using the plan-free indexed matvec (same result, slower)",
+            "  ragged PCG: gather plan ({:.3} GB) + resident solve ({:.3} GB) over the memory \
+             budget ({:.3} GB) or the pool; using the plan-free indexed matvec (same result, \
+             slower)",
             plan_bytes as f64 / 1e9,
+            resident_bytes as f64 / 1e9,
             budget_bytes as f64 / 1e9
         );
         let s =
@@ -307,6 +392,7 @@ pub fn solve_ragged_budgeted(
         let d = PlanDecision {
             path: MatvecPath::Indexed,
             plan_bytes,
+            resident_bytes,
         };
         return (s, d);
     };
@@ -317,6 +403,7 @@ pub fn solve_ragged_budgeted(
     let d = PlanDecision {
         path: MatvecPath::Planned,
         plan_bytes,
+        resident_bytes,
     };
     (s, d)
 }

@@ -19,7 +19,9 @@ use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_mp2::lmp2_amplitude::{checked_vvhv, hylleraas_energy, localized_spaces};
 use ferric_mp2::lmp2_direct::{assemble_ragged_direct_local, DirectConfig};
-use ferric_mp2::ragged::{solve_ragged_budgeted, MatvecPath, Ragged, SolvePlan};
+use ferric_mp2::ragged::{
+    solve_ragged_budgeted, solve_resident_bytes, MatvecPath, Ragged, RaggedSolve, SolvePlan,
+};
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 
@@ -169,6 +171,64 @@ fn tiny_budget_falls_back_to_indexed_and_is_bitwise() {
         hylleraas_energy(&c.rg, &indexed.t),
     );
     assert_eq!(ea.to_bits(), eb.to_bits(), "energy differs: {ea} vs {eb}");
+}
+
+fn assert_bitwise(c_rg: &Ragged, a: &RaggedSolve, b: &RaggedSolve) {
+    assert!(a.converged && b.converged);
+    assert_eq!(a.iterations, b.iterations);
+    assert_eq!(a.relres.to_bits(), b.relres.to_bits());
+    for (x, y) in a.t.iter().zip(&b.t) {
+        assert!(
+            x.iter()
+                .zip(y.iter())
+                .all(|(u, v)| u.to_bits() == v.to_bits()),
+            "amplitudes differ between the planned and indexed paths"
+        );
+    }
+    let (ea, eb) = (hylleraas_energy(c_rg, &a.t), hylleraas_energy(c_rg, &b.t));
+    assert_eq!(ea.to_bits(), eb.to_bits(), "energy differs: {ea} vs {eb}");
+}
+
+/// The plan is admitted against the budget LEFT after the solve's resident
+/// footprint (`rg` + the PCG vectors), not the whole budget. A budget that
+/// holds the plan alone but not plan + resident must fall back to the
+/// indexed matvec (bitwise the same energy); a budget holding both plans.
+/// Mutation-checked: reverting the gate to `plan_bytes <= budget_bytes`
+/// makes the first half plan, and this test fails.
+#[test]
+fn plan_is_admitted_against_budget_minus_resident() {
+    const MAX_IT: usize = 400;
+    let c = case("alkane_4.xyz", 4, 1e-4, None);
+    let plan = SolvePlan::bytes_for(&c.rg, &c.f_oo);
+    let resident = solve_resident_bytes(&c.rg, MAX_IT);
+    let amps: usize = c.rg.pairs.iter().map(|pb| pb.j_blk.len()).sum();
+    assert!(
+        resident >= 5 * 8 * amps + c.rg.heap_bytes(),
+        "resident {resident} B misses the PCG vectors or rg"
+    );
+    // the window that distinguishes the gates must exist
+    assert!(plan > 0 && resident > 0);
+
+    let fits_both = plan + resident;
+    let (on_plan, d_on) = solve_ragged_budgeted(&c.rg, &c.f_oo, 1e-11, MAX_IT, fits_both);
+    assert_eq!(
+        d_on.path,
+        MatvecPath::Planned,
+        "plan + resident fits, yet no plan"
+    );
+    assert_eq!((d_on.plan_bytes, d_on.resident_bytes), (plan, resident));
+
+    let plan_only = fits_both - 1; // >= plan, < plan + resident
+    assert!(plan_only >= plan);
+    let (off_plan, d_off) = solve_ragged_budgeted(&c.rg, &c.f_oo, 1e-11, MAX_IT, plan_only);
+    assert_eq!(
+        d_off.path,
+        MatvecPath::Indexed,
+        "budget {plan_only} B holds the plan ({plan} B) but not plan + resident \
+         ({fits_both} B); the plan must not be built"
+    );
+    assert_eq!((d_off.plan_bytes, d_off.resident_bytes), (plan, resident));
+    assert_bitwise(&c.rg, &on_plan, &off_plan);
 }
 
 /// MEASUREMENT (estimate only, nothing is built, no timing): the plan bytes

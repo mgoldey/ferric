@@ -23,6 +23,7 @@ CERT_KEYS = [
     "frozen_core",
     "operator",
     "solve_plan_bytes",
+    "solve_resident_bytes",
     "matvec_path",
     "validation_grade",
     "eps_trust",
