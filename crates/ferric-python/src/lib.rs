@@ -3060,6 +3060,26 @@ struct PyUhfResult {
     guess_basis_report: Option<ferric_scf::basis2::GuessBasisReport>,
 }
 
+/// The open-shell result both `run_uhf` and `run_rohf` return. ROHF leaves
+/// `density_beta`/`eps_beta` unset only when the solve has no β channel, so
+/// the fallbacks keep the accessors total.
+impl From<ScfResult> for PyUhfResult {
+    fn from(r: ScfResult) -> Self {
+        PyUhfResult {
+            energy: r.energy,
+            converged: r.converged,
+            iterations: r.iterations,
+            computed_quartets: r.computed_quartets,
+            density_beta_data: r.density_beta.unwrap_or_else(|| r.density_total.clone()),
+            density_alpha_data: r.density_alpha,
+            cosx_final: r.cosx_final,
+            guess_basis_report: r.guess_basis,
+            eps_alpha_data: r.eps_alpha,
+            eps_beta_data: r.eps_beta.unwrap_or_default(),
+        }
+    }
+}
+
 #[pymethods]
 impl PyUhfResult {
     /// The COSX final-grid pass record (see `RhfResult.cosx_final_pass`).
@@ -3240,19 +3260,7 @@ fn run_uhf(
         &config,
         fock_hook,
     )?;
-    // density_beta / mos_beta / eps_beta are always populated for the UHF path.
-    Ok(PyUhfResult {
-        energy: r.energy,
-        converged: r.converged,
-        iterations: r.iterations,
-        computed_quartets: r.computed_quartets,
-        density_alpha_data: r.density_alpha,
-        density_beta_data: r.density_beta.unwrap_or_else(|| r.density_total.clone()),
-        cosx_final: r.cosx_final,
-        guess_basis_report: r.guess_basis.clone(),
-        eps_alpha_data: r.eps_alpha,
-        eps_beta_data: r.eps_beta.unwrap_or_default(),
-    })
+    Ok(r.into())
 }
 
 // ── ROHF (open-shell, spin-pure) ──
@@ -3351,18 +3359,7 @@ fn run_rohf(
         &config,
         fock_hook,
     )?;
-    Ok(PyUhfResult {
-        energy: r.energy,
-        converged: r.converged,
-        iterations: r.iterations,
-        computed_quartets: r.computed_quartets,
-        density_alpha_data: r.density_alpha,
-        density_beta_data: r.density_beta.unwrap_or_else(|| r.density_total.clone()),
-        cosx_final: r.cosx_final,
-        guess_basis_report: r.guess_basis.clone(),
-        eps_alpha_data: r.eps_alpha,
-        eps_beta_data: r.eps_beta.unwrap_or_default(),
-    })
+    Ok(r.into())
 }
 
 // ── Constrained DFT (cDFT) ──
