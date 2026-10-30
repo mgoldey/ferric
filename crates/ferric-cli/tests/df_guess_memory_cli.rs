@@ -57,7 +57,7 @@ fn run(tag: &str, budget_gb: f64) -> (std::process::Output, f64) {
         .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
         .filter(|r| r["record"] == "scf_iter")
         .filter_map(|r| r["energy"].as_f64())
-        .last()
+        .next_back()
         .unwrap_or(f64::NAN);
     (out, energy)
 }
@@ -66,7 +66,7 @@ fn run(tag: &str, budget_gb: f64) -> (std::process::Output, f64) {
 fn a_tensor_that_fits_the_budget_once_but_not_twice_still_runs_the_guess() {
     let mol = Molecule::load_xyz(
         root()
-            .join("testdata/molecules/water.xyz")
+            .join("testdata/molecules/alkane_4.xyz")
             .to_str()
             .unwrap(),
     )
