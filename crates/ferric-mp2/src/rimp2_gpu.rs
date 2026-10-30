@@ -30,7 +30,8 @@ use ferric_core::gpu::mixed::{effective_k_panel, gemm_f32_f64acc_dev};
 use ferric_core::gpu::pool::DevicePool;
 use ferric_core::gpu::resident::DeviceMatrix;
 use ferric_core::gpu::stats::{
-    note_cpu, note_cpu_detail, note_mixed, note_mixed_fallback, note_offloaded, CpuReason,
+    note_cpu, note_cpu_detail, note_kernel_mixed, note_mixed, note_mixed_fallback, note_offloaded,
+    CpuReason,
 };
 use ferric_core::gpu::{GpuMode, GpuStatus, MixedKernel, Precision};
 use ferric_tensors::einsum::GEMM_K_BLOCK;
@@ -137,7 +138,12 @@ pub fn try_spin_components_on_device(
         )
     };
     match run(precision) {
-        Ok(sc) => Some(sc),
+        Ok(sc) => {
+            if precision == Precision::Mixed {
+                note_kernel_mixed(MixedKernel::RiMp2Energy);
+            }
+            Some(sc)
+        }
         Err(e @ (GpuError::Kernel(_) | GpuError::F32Range(_))) if precision == Precision::Mixed => {
             // Mixed requested but the path is unavailable (flush kernel will
             // not load) or the operand does not survive f32 (a finite value
@@ -146,7 +152,7 @@ pub fn try_spin_components_on_device(
             if ferric_core::gpu::config::gpu_trace() {
                 eprintln!("[gpu] RI-MP2 mixed path unavailable ({e}); running f64 on the device");
             }
-            note_mixed_fallback();
+            note_mixed_fallback(MixedKernel::RiMp2Energy, e.mixed_fallback());
             match run(Precision::F64) {
                 Ok(sc) => Some(sc),
                 Err(e) => {
@@ -852,8 +858,12 @@ fn u_run_with_fallback(
             if ferric_core::gpu::config::gpu_trace() {
                 eprintln!("[gpu] U-RI-MP2 mixed path unavailable ({e}); running f64 on the device");
             }
-            note_mixed_fallback();
+            note_mixed_fallback(MixedKernel::RiMp2Energy, e.mixed_fallback());
             run(Precision::F64)
+        }
+        Ok(e) if precision == Precision::Mixed => {
+            note_kernel_mixed(MixedKernel::RiMp2Energy);
+            Ok(e)
         }
         r => r,
     };

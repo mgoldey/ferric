@@ -110,6 +110,10 @@ pub struct RiMp2Result {
     pub mp2_corr: f64,
     /// Total energy: E_RHF + E_MP2.
     pub total_energy: f64,
+    /// Precision provenance of the correlation energy (the `rimp2-energy`
+    /// kernel; `ferric_core::gpu::provenance`). The reference SCF carries its
+    /// own record in `ScfResult::precision`.
+    pub precision: ferric_core::gpu::provenance::PrecisionRecord,
 }
 
 impl std::fmt::Display for RiMp2Result {
@@ -1259,9 +1263,22 @@ fn dispatch_spin_components(
     ) {
         return sc;
     }
-    #[cfg(not(feature = "gpu"))]
-    let _ = mixed_ok;
+    note_mixed_ran_on_cpu(mixed_ok);
     spin_components_from_b_ov_kappa_cpu(b_ov, eps, nocc, nvir, first_occ, nocc_total, kappa)
+}
+
+/// A call that may use the mixed `rimp2-energy` kernel (`mixed_ok`, and the
+/// installed settings allow it) is about to run its energy in f64 on the CPU:
+/// count it for the precision provenance record. Reads the settings only if
+/// something already installed them, so an f64 run never initialises them.
+pub(crate) fn note_mixed_ran_on_cpu(mixed_ok: bool) {
+    use ferric_core::gpu::{installed_settings, MixedKernel};
+    if mixed_ok && installed_settings().is_some_and(|s| s.mixed_allows(MixedKernel::RiMp2Energy)) {
+        ferric_core::gpu::stats::note_mixed_fallback(
+            MixedKernel::RiMp2Energy,
+            ferric_core::gpu::stats::MixedFallback::CpuF64,
+        );
+    }
 }
 
 /// The unweighted (e_os_ij, e_ss_ij) of one pair from the wide block
@@ -1432,10 +1449,12 @@ pub fn ri_mp2(
     rhf: &ScfResult,
     config: &RiMp2Config,
 ) -> Result<RiMp2Result, FerricError> {
+    let probe = ferric_core::gpu::provenance::PrecisionProbe::start();
     let (sc, _) = ri_mp2_spin_components(mol, obs, dfbs, op, rhf, config)?;
     Ok(RiMp2Result {
         mp2_corr: sc.e_total,
         total_energy: rhf.energy + sc.e_total,
+        precision: probe.finish(ferric_core::gpu::provenance::RIMP2_KERNELS),
     })
 }
 

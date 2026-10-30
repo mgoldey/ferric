@@ -187,6 +187,75 @@ pub fn gpu_trace() -> bool {
     GPU_TRACE.toggle()
 }
 
+/// `[precision]` (CLI) / `ferric.configure_precision` (Python): where the
+/// precision knobs live, independent of the device. `[gpu] precision` and
+/// `[gpu] mixed_kernels` ([`GpuSettingsExplicit::precision`] /
+/// [`GpuSettingsExplicit::mixed_kernels`]) are deprecated aliases of `mode` and
+/// `mixed_kernels` here: either spelling works, both given and equal is
+/// accepted, both given and different is an error. The env spelling of both is
+/// unchanged (`FERRIC_GPU_PRECISION`, `FERRIC_GPU_MIXED_KERNELS`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PrecisionExplicit {
+    /// `[precision] mode`: `f64` or `mixed`.
+    pub mode: Option<Precision>,
+    /// `[precision] mixed_kernels`.
+    pub mixed_kernels: Option<MixedKernelSet>,
+}
+
+impl PrecisionExplicit {
+    /// Whether neither key was given.
+    pub fn is_empty(&self) -> bool {
+        self.mode.is_none() && self.mixed_kernels.is_none()
+    }
+
+    /// Combine two requests for the same keys (`what` names the second for
+    /// the error): a key given by one side only is kept, given equal by both
+    /// is kept, given different is an error.
+    pub fn merge(self, other: PrecisionExplicit, what: &str) -> Result<PrecisionExplicit, String> {
+        Ok(PrecisionExplicit {
+            mode: merge_key(self.mode, other.mode, "mode", what)?,
+            mixed_kernels: merge_key(
+                self.mixed_kernels,
+                other.mixed_kernels,
+                "mixed_kernels",
+                what,
+            )?,
+        })
+    }
+}
+
+fn merge_key<T: PartialEq + fmt::Display + Copy>(
+    a: Option<T>,
+    b: Option<T>,
+    key: &str,
+    what: &str,
+) -> Result<Option<T>, String> {
+    match (a, b) {
+        (Some(x), Some(y)) if x != y => Err(format!(
+            "[precision] {key} = {x} conflicts with {what} = {y}; set it once"
+        )),
+        (Some(x), _) => Ok(Some(x)),
+        (None, y) => Ok(y),
+    }
+}
+
+/// `[precision]` against its deprecated `[gpu]` alias, for one key: the
+/// given value, or an error when both are given and differ.
+fn resolve_alias<T: PartialEq + fmt::Display + Copy>(
+    section: Option<T>,
+    alias: Option<T>,
+    section_key: &str,
+    alias_key: &str,
+) -> Result<Option<T>, String> {
+    match (section, alias) {
+        (Some(s), Some(a)) if s != a => Err(format!(
+            "{section_key} = {s} and {alias_key} = {a} disagree ({alias_key} is a deprecated \
+             alias of {section_key}); set only {section_key}"
+        )),
+        (s, a) => Ok(s.or(a)),
+    }
+}
+
 /// The TOML/kwarg side (already typed; `None` = not given).
 #[derive(Debug, Clone, Copy, Default)]
 pub struct GpuSettingsExplicit {
@@ -198,8 +267,35 @@ pub struct GpuSettingsExplicit {
     pub device: Option<usize>,
     pub memory_gb: Option<f64>,
     pub min_flops: Option<usize>,
+    /// `[gpu] precision`: deprecated alias of `[precision] mode`
+    /// ([`Self::precision_section`]).
     pub precision: Option<Precision>,
+    /// `[gpu] mixed_kernels`: deprecated alias of `[precision] mixed_kernels`.
     pub mixed_kernels: Option<MixedKernelSet>,
+    /// The `[precision]` section (see [`PrecisionExplicit`]).
+    pub precision_section: PrecisionExplicit,
+}
+
+impl GpuSettingsExplicit {
+    /// The `[precision]` keys against their deprecated `[gpu]` aliases: an
+    /// error when a key is given both ways with different values. The same
+    /// check [`GpuSettings::resolve`] runs, exposed so a config loader can
+    /// fail at load time.
+    pub fn check_precision_aliases(&self) -> Result<(), String> {
+        resolve_alias(
+            self.precision_section.mode,
+            self.precision,
+            "[precision] mode",
+            "[gpu] precision",
+        )?;
+        resolve_alias(
+            self.precision_section.mixed_kernels,
+            self.mixed_kernels,
+            "[precision] mixed_kernels",
+            "[gpu] mixed_kernels",
+        )?;
+        Ok(())
+    }
 }
 
 /// Resolved GPU settings.
@@ -221,6 +317,7 @@ fn check_given_kernels(
     kernels: MixedKernelSet,
     shipped: MixedKernelSet,
     mode: GpuMode,
+    key: &str,
 ) -> Result<(), String> {
     let opt_in = MixedKernelSet::OPT_IN;
     let missing: Vec<&str> = kernels
@@ -235,7 +332,7 @@ fn check_given_kernels(
             format!("shipped in this build: {shipped}")
         };
         return Err(format!(
-            "[gpu] mixed_kernels: {} not shipped yet ({have}; opt-in, named explicitly and \
+            "{key}: {} not shipped yet ({have}; opt-in, named explicitly and \
              needing [gpu] mode = \"on\": {opt_in})",
             missing.join(", ")
         ));
@@ -247,12 +344,52 @@ fn check_given_kernels(
         .collect();
     if !needs_on.is_empty() && mode != GpuMode::On {
         return Err(format!(
-            "[gpu] mixed_kernels: {} is opt-in and needs [gpu] mode = \"on\" \
+            "{key}: {} is opt-in and needs [gpu] mode = \"on\" \
              (FERRIC_GPU / [gpu] mode is {mode}; preset \"mixed\" sets it)",
             needs_on.join(", ")
         ));
     }
     Ok(())
+}
+
+/// `precision = mixed` with `[gpu] mode = "off"`: CPU-only mixed precision,
+/// accepted only when every kernel in the resolved set has a CPU mixed path
+/// ([`MixedKernel::runs_on_cpu`]). A device kernel there could never run
+/// mixed, so naming it (or defaulting to it) is a dead knob and refused.
+fn check_cpu_only(
+    kernels: MixedKernelSet,
+    shipped: MixedKernelSet,
+    mode_key: &str,
+) -> Result<(), String> {
+    let device_only: Vec<&str> = kernels
+        .iter()
+        .filter(|k| !k.runs_on_cpu())
+        .map(|k| k.name())
+        .collect();
+    if device_only.is_empty() {
+        return Ok(());
+    }
+    let admissible = shipped.with_set(MixedKernelSet::OPT_IN);
+    let cpu: Vec<&str> = admissible
+        .iter()
+        .filter(|k| k.runs_on_cpu())
+        .map(|k| k.name())
+        .collect();
+    Err(format!(
+        "{mode_key} = mixed requires mode = auto or on (FERRIC_GPU / [gpu] mode is off): \
+         {} {} only on a device; CPU mixed-precision kernels in this build: {}",
+        device_only.join(", "),
+        if device_only.len() == 1 {
+            "runs"
+        } else {
+            "run"
+        },
+        if cpu.is_empty() {
+            "none".to_string()
+        } else {
+            cpu.join(", ")
+        }
+    ))
 }
 
 fn tag<T>(r: Result<Resolved<T>, String>, name: &str) -> Result<Resolved<T>, String> {
@@ -410,21 +547,44 @@ impl GpuSettings {
             parse: GPU_MIXED_KERNELS.parse,
             validate: GPU_MIXED_KERNELS.validate,
         };
-        let mut precision = tag(
-            prec_var.resolve(explicit.precision, &get),
-            "FERRIC_GPU_PRECISION",
+        let sec = explicit.precision_section;
+        // Messages spell the keys the way the request did: the [precision]
+        // section when it was used, else the historical [gpu] spelling (also
+        // for env-only and default values).
+        let (mode_key, kernels_key) = if sec.is_empty() {
+            ("[gpu] precision", "[gpu] mixed_kernels")
+        } else {
+            ("[precision] mode", "[precision] mixed_kernels")
+        };
+        let prec_given = resolve_alias(
+            sec.mode,
+            explicit.precision,
+            "[precision] mode",
+            "[gpu] precision",
         )?;
+        let kern_given = resolve_alias(
+            sec.mixed_kernels,
+            explicit.mixed_kernels,
+            "[precision] mixed_kernels",
+            "[gpu] mixed_kernels",
+        )?;
+        let mut precision = tag(prec_var.resolve(prec_given, &get), "FERRIC_GPU_PRECISION")?;
         if preset_given {
+            let shown = if sec.is_empty() {
+                "FERRIC_GPU_PRECISION / [gpu] precision"
+            } else {
+                "FERRIC_GPU_PRECISION / [precision] mode"
+            };
             merge_preset(
                 &mut precision,
                 implied.precision,
                 (preset.value, preset_label),
-                "FERRIC_GPU_PRECISION / [gpu] precision",
+                shown,
                 "precision",
             )?;
         }
         let mut kernels = tag(
-            kern_var.resolve(explicit.mixed_kernels, &get),
+            kern_var.resolve(kern_given, &get),
             "FERRIC_GPU_MIXED_KERNELS",
         )?;
         // A given list is kept (narrowing is allowed; the unshipped-name check
@@ -461,25 +621,22 @@ impl GpuSettings {
         match precision.value {
             Precision::F64 if kernels_given => {
                 return Err(format!(
-                    "FERRIC_GPU_MIXED_KERNELS / [gpu] mixed_kernels = {} given but the precision is f64; \
-                     set [gpu] precision = \"mixed\" (or use preset = \"mixed\") or drop the list",
+                    "FERRIC_GPU_MIXED_KERNELS / {kernels_key} = {} given but the precision is f64; \
+                     set {mode_key} = \"mixed\" (or use preset = \"mixed\") or drop the list",
                     kernels.value
                 ));
             }
-            Precision::Mixed if mode.value == GpuMode::Off => {
-                return Err(
-                    "[gpu] precision = mixed requires mode = auto or on (FERRIC_GPU / [gpu] mode is off)"
-                        .to_string(),
-                );
-            }
-            Precision::Mixed if kernels_given => {
-                check_given_kernels(kernels.value, shipped, mode.value)?;
-            }
-            Precision::Mixed if kernels.value.is_empty() => {
-                return Err(
-                    "[gpu] precision = mixed but no mixed-precision kernel is available in this build"
-                        .to_string(),
-                );
+            Precision::Mixed => {
+                if kernels_given {
+                    check_given_kernels(kernels.value, shipped, mode.value, kernels_key)?;
+                } else if kernels.value.is_empty() {
+                    return Err(format!(
+                        "{mode_key} = mixed but no mixed-precision kernel is available in this build"
+                    ));
+                }
+                if mode.value == GpuMode::Off {
+                    check_cpu_only(kernels.value, shipped, mode_key)?;
+                }
             }
             _ => {}
         }
@@ -493,7 +650,7 @@ impl GpuSettings {
                 mem.source.label()
             )
         };
-        let audit = vec![
+        let mut audit = vec![
             mode.audit_line(),
             device.audit_line(),
             mem_line,
@@ -505,6 +662,24 @@ impl GpuSettings {
                 preset.env_name, preset.value
             ),
         ];
+        let aliased: Vec<&str> = [
+            (explicit.precision.is_some(), "[gpu] precision"),
+            (explicit.mixed_kernels.is_some(), "[gpu] mixed_kernels"),
+        ]
+        .into_iter()
+        .filter_map(|(given, k)| given.then_some(k))
+        .collect();
+        if !aliased.is_empty() {
+            audit.push(format!(
+                "note: {} deprecated; use [precision] mode / mixed_kernels \
+                 (Python: ferric.configure_precision)",
+                if aliased.len() == 1 {
+                    format!("{} is", aliased[0])
+                } else {
+                    format!("{} are", aliased.join(" and "))
+                }
+            ));
+        }
         Ok((
             GpuSettings {
                 mode: mode.value,

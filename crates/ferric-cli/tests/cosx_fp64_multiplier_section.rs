@@ -62,7 +62,7 @@ fn stderr(out: &std::process::Output) -> String {
     String::from_utf8_lossy(&out.stderr).into_owned()
 }
 
-const DEAD_KNOB: &str = "[scf] cosx_fp64_multiplier requires k_builder = \"cosx\" and [gpu] precision = \"mixed\" with cosx-kern in mixed_kernels";
+const DEAD_KNOB: &str = "[scf] cosx_fp64_multiplier requires k_builder = \"cosx\" and [precision] mode = \"mixed\" with cosx-kern in mixed_kernels";
 
 #[test]
 fn cosx_fp64_multiplier_without_cosx_or_without_mixed_is_refused() {

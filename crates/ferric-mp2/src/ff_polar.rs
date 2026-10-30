@@ -210,6 +210,7 @@ pub(crate) fn solve_rhf_with_external(
                 cosx_final: None,
                 cosx_schedule: None,
                 convergence: None,
+                precision: Default::default(),
             });
         }
         prev_e = energy;

@@ -44,6 +44,10 @@ pub struct Config {
     pub memory: MemoryCfg,
     #[serde(default)]
     pub gpu: GpuSection,
+    /// Optional `[precision]` section: which kernels may run in mixed
+    /// precision, independent of the device (see [`PrecisionCfg`]).
+    #[serde(default)]
+    pub precision: PrecisionCfg,
     #[serde(default)]
     pub external_potential: ExternalPotentialCfg,
     /// Optional `[cosmo]` section: COSMO implicit-solvent configuration.
@@ -244,7 +248,62 @@ impl GpuCfg {
                 .mixed_kernels
                 .as_ref()
                 .and_then(|ks| ks.join(",").parse().ok()),
+            precision_section: Default::default(),
         }
+    }
+}
+
+/// `[precision]` — mixed-precision kernels, independent of the device.
+/// `mode = "f64"` (the default) runs every kernel in f64; `mode = "mixed"`
+/// runs the kernels in `mixed_kernels` (default: the kernels this build
+/// ships) in mixed precision. `[gpu]` chooses only device placement; its
+/// `precision` / `mixed_kernels` keys are deprecated aliases of these, and a
+/// key given both ways with different values is an error. A device kernel
+/// needs `[gpu] mode = "auto"` or `"on"`; with `mode = "off"` only kernels with
+/// a CPU mixed path are accepted (CPU-only mixed precision).
+#[derive(Deserialize, Default, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct PrecisionCfg {
+    /// `"f64"` (default) or `"mixed"`. Env: `FERRIC_GPU_PRECISION`.
+    pub mode: Option<String>,
+    /// Kernels allowed to run in mixed precision; requires `mode = "mixed"`.
+    /// Env: `FERRIC_GPU_MIXED_KERNELS` (comma-separated).
+    pub mixed_kernels: Option<Vec<String>>,
+}
+
+impl PrecisionCfg {
+    /// Strict value checks: `mode` parses, every `mixed_kernels` item is one
+    /// known kernel name (no empty list, no comma inside an item).
+    pub fn validate(&self) -> Result<(), String> {
+        self.typed().map(|_| ())
+    }
+
+    /// The typed `[precision]` request, or the first malformed key.
+    pub fn typed(&self) -> Result<ferric_core::gpu::PrecisionExplicit, String> {
+        let mode = self
+            .mode
+            .as_deref()
+            .map(|s| s.parse::<ferric_core::gpu::Precision>())
+            .transpose()
+            .map_err(|e| format!("[precision] mode: {e}"))?;
+        let mixed_kernels = self
+            .mixed_kernels
+            .as_ref()
+            .map(|ks| {
+                if let Some(item) = ks.iter().find(|k| k.contains(',')) {
+                    return Err(format!(
+                        "[precision] mixed_kernels: kernel names are separate list items, got {item:?}"
+                    ));
+                }
+                ks.join(",")
+                    .parse::<ferric_core::gpu::MixedKernelSet>()
+                    .map_err(|e| format!("[precision] mixed_kernels: {e}"))
+            })
+            .transpose()?;
+        Ok(ferric_core::gpu::PrecisionExplicit {
+            mode,
+            mixed_kernels,
+        })
     }
 }
 
@@ -3065,7 +3124,7 @@ impl ScfCfg {
             Some(m) if !(m >= 0.0) || !m.is_finite() => Err(format!(
                 "[scf] cosx_fp64_multiplier = {m}: must be a finite value >= 0 (0 disables the router)"
             )),
-            Some(_) if !router_allowed => Err("[scf] cosx_fp64_multiplier requires k_builder = \"cosx\" and [gpu] precision = \"mixed\" with cosx-kern in mixed_kernels".into()),
+            Some(_) if !router_allowed => Err("[scf] cosx_fp64_multiplier requires k_builder = \"cosx\" and [precision] mode = \"mixed\" with cosx-kern in mixed_kernels".into()),
             Some(m) if m > 0.0 && !acts => Err("[scf] cosx_fp64_multiplier > 0 needs cosx_backend = \"md3c1e\" and cosx_screen_thresh > 0 (the router classifies by the screen's bound)".into()),
             Some(m) => Ok(m),
             None if router_allowed && acts => Ok(COSX_DEFAULT_FP64_MULTIPLIER),
@@ -3728,6 +3787,16 @@ const COSX_GRADIENT_KINDS: &[&str] = &["rhf", "ksdft", "uhf", "rohf"];
 const PCM_KINDS: &[&str] = &["rhf", "uhf", "rohf", "ksdft", "pdep-rpa"];
 
 impl Config {
+    /// The typed `[gpu]` + `[precision]` request (call after
+    /// `validate_loaded_values`; a malformed `[precision]` key reads as unset
+    /// here). The `--gpu` flag is added by the caller.
+    pub fn gpu_explicit(&self) -> ferric_core::gpu::GpuSettingsExplicit {
+        ferric_core::gpu::GpuSettingsExplicit {
+            precision_section: self.precision.typed().unwrap_or_default(),
+            ..self.gpu.explicit()
+        }
+    }
+
     /// Value checks on `[external_potential]` smeared-charge widths and the
     /// `[pcm]` section, run by [`load_config`] so a bad value fails at load
     /// time on every entry point.
@@ -3737,6 +3806,8 @@ impl Config {
     fn validate_loaded_values(&self) -> Result<(), String> {
         self.memory.validate()?;
         self.gpu.validate()?;
+        self.precision.validate()?;
+        self.gpu_explicit().check_precision_aliases()?;
         self.scf.validate()?;
         self.validate_guess_basis_keys()?;
         self.mp2.linlccd_variant()?;
@@ -8385,7 +8456,7 @@ json = [1, 2]
             .scf
             .cosx_config(false)
             .unwrap_err();
-        assert_eq!(e, "[scf] cosx_fp64_multiplier requires k_builder = \"cosx\" and [gpu] precision = \"mixed\" with cosx-kern in mixed_kernels");
+        assert_eq!(e, "[scf] cosx_fp64_multiplier requires k_builder = \"cosx\" and [precision] mode = \"mixed\" with cosx-kern in mixed_kernels");
         let e = parse("k_builder = \"direct\"\ncosx_fp64_multiplier = 1e5\n")
             .scf
             .cosx_config(true)

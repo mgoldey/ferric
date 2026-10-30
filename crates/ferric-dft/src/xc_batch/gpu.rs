@@ -97,7 +97,7 @@ use rayon::prelude::*;
 use ferric_core::gpu::device::{device, Device, GpuError};
 use ferric_core::gpu::mixed::{effective_k_panel, round_to_f32, round_to_f32_into};
 use ferric_core::gpu::resident::DeviceMatrix;
-use ferric_core::gpu::stats::{self, CpuReason};
+use ferric_core::gpu::stats::{self, CpuReason, MixedFallback};
 use ferric_core::gpu::{GpuMode, GpuStatus, MixedKernel};
 
 use super::{
@@ -640,7 +640,7 @@ fn mixed_unavailable(e: &GpuError) {
         "[ferric] gpu: KS-DFT XC potential runs in f64 on the device (mixed xc-vxc unavailable: {})",
         one_line(e)
     );
-    stats::note_mixed_fallback();
+    stats::note_mixed_fallback(MixedKernel::XcVxc, MixedFallback::DeviceF64);
 }
 
 impl MixedState {
@@ -1073,13 +1073,7 @@ impl DeviceXc {
         };
         let (max_a, rounded) = max_abs_and_round(serial, a, a32.head_mut(n)?);
         if !mixed_panel_fits(k_panel, max_a, m.max_abs_x) || !rounded {
-            // TODO(precision provenance, feat/precision-section-provenance
-            // 5675257e3, unmerged): once that lands, record this as
-            // `note_mixed_fallback(MixedKernel::XcVxc, MixedFallback::F32Range)`
-            // (and `mixed_unavailable` as `MixedFallback::DeviceF64`); its
-            // `note_kernel_mixed(XcVxc)` in `note_mixed_vxc_pass` already
-            // covers this file's mixed passes.
-            stats::note_mixed_fallback();
+            stats::note_mixed_fallback(MixedKernel::XcVxc, MixedFallback::F32Range);
             return Ok(Up::F64(n));
         }
         Ok(Up::F32(n))

@@ -17,6 +17,7 @@
 //!   mixed agrees with the f64 host SCF to 1e-10 Eh.
 use ferric_core::basis;
 use ferric_core::gpu::mixed::effective_k_panel;
+use ferric_core::gpu::stats::{kernel_counters, MixedFallback};
 use ferric_core::gpu::{
     install, probe, stats, GpuMode, GpuSettingsExplicit, GpuStatus, MixedKernel, MixedKernelSet,
     Precision,
@@ -143,8 +144,13 @@ fn the_ladder_runs_moving_builds_mixed_inside_the_twin_error_class() {
         let f64_host = ladder_run(xc, true, false);
         let twin = ladder_run(xc, true, true);
         let (s0, m0) = (stats(), MIXED_VXC_BUILDS.load(Ordering::SeqCst));
+        let k0 = kernel_counters()[MixedKernel::XcVxc.index()];
         let dev = ladder_run(xc, false, false);
         let (s1, m1) = (stats(), MIXED_VXC_BUILDS.load(Ordering::SeqCst));
+        // The provenance record's view of the same three builds.
+        let kc = kernel_counters()[MixedKernel::XcVxc.index()].since(&k0);
+        assert_eq!(kc.ladder_builds, 3, "{xc}: ladder builds in the record");
+        assert_eq!(kc.mixed, 1, "{xc}: mixed passes in the record");
         let again = ladder_run(xc, false, false);
         assert_eq!(m1 - m0, 1, "{xc}: exactly the moving build is mixed");
         assert!(
@@ -185,6 +191,45 @@ fn the_ladder_runs_moving_builds_mixed_inside_the_twin_error_class() {
             "{xc}: device {dv_dev:e} and twin {dv_twin:e} are not the same error class"
         );
     }
+}
+
+/// A moving build whose operands leave the f32 range goes up in f64, and the
+/// provenance record says why. LDA's potential grows as rho^(1/3), so a density
+/// scaled by 1e200 gives operands near 1e66 (beyond `f32::MAX`) while staying
+/// finite in f64. Catches: the `wave_upload` refusal tagged as anything but
+/// `f32_range`, or counted other than once per refused wave. Water fits one
+/// wave per pass (density, potential); a layout that splits it fails here on
+/// the wave count, not silently.
+#[test]
+fn a_wave_beyond_the_f32_range_is_recorded_as_f32_range() {
+    let _g = GPU.lock().unwrap_or_else(|e| e.into_inner());
+    if !ready() {
+        return;
+    }
+    let _host = SeamGuard::set(&FORCE_HOST, false);
+    let k = ks("LDA");
+    let nbf = k.xc_screening_stats().nbf;
+    let d0 = density(nbf, 3);
+    let huge = density(nbf, 5) * 1e200;
+    let mut f = Array2::<f64>::zeros((nbf, nbf));
+    k.add_xc(&d0, &mut f); // the ladder's first build: f64, nothing to refuse
+    let (s0, k0) = (stats(), kernel_counters()[MixedKernel::XcVxc.index()]);
+    k.add_xc(&huge, &mut f);
+    let (s1, kc) = (
+        stats(),
+        kernel_counters()[MixedKernel::XcVxc.index()].since(&k0),
+    );
+    let refused = s1.mixed_fallback_f64 - s0.mixed_fallback_f64;
+    assert_eq!(
+        s1.xc_waves - s0.xc_waves,
+        2,
+        "one density + one potential wave"
+    );
+    assert_eq!(refused, 1, "the one potential wave, counted once");
+    assert_eq!(s1.gemm_mixed, s0.gemm_mixed, "the refused wave ran mixed");
+    assert_eq!(kc.fallback[MixedFallback::F32Range as usize], 1);
+    assert_eq!(kc.fallback[MixedFallback::DeviceF64 as usize], 0);
+    assert_eq!(kc.fallback[MixedFallback::CpuF64 as usize], 0);
 }
 
 #[test]

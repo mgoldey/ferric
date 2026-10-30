@@ -42,6 +42,7 @@ use ferric_core::basis;
 use ferric_core::gpu::config::{GpuSettings, GpuSettingsExplicit};
 use ferric_core::gpu::mixed::effective_k_panel;
 use ferric_core::gpu::mixed_host::{gamma, U32, U64};
+use ferric_core::gpu::stats::{kernel_counters, KernelCounters};
 use ferric_core::gpu::{
     install, probe, stats, GpuMode, GpuStatsSnapshot, GpuStatus, MixedKernel, MixedKernelSet,
     Precision,
@@ -218,7 +219,57 @@ impl System {
 struct Run {
     res: ScfResult,
     ladder: LadderCounters,
+    /// The provenance counters of `dfj-pack`, `dfk-occ` over the run.
+    kernels: [KernelCounters; 2],
     gpu: GpuStatsSnapshot,
+}
+
+/// The per-kernel provenance counters agree with the ladder's own. Catches: a
+/// dropped `note_ladder_build`/`note_kernel_mixed`/`note_exit_rebuild`, a count
+/// per device build instead of per Fock build (UHF forms K twice per iteration),
+/// and a kernel the arm does not allow being credited with anything. ROHF builds
+/// K from the density, not through the `dfk-occ` occupied path, so that kernel
+/// is consulted there but never runs mixed.
+fn check_kernel_provenance(label: &str, kind: Kind, k: Kernels, r: &Run) {
+    let l = r.ladder;
+    let [j_on, k_on] = [k != Kernels::KOnly, k != Kernels::JOnly];
+    for (name, on, c) in [
+        ("dfj-pack", j_on, r.kernels[0]),
+        ("dfk-occ", k_on, r.kernels[1]),
+    ] {
+        if !on {
+            assert_eq!(c, KernelCounters::default(), "{label} {k:?}: {name} ran");
+            continue;
+        }
+        assert_eq!(c.ladder_builds, l.builds_total, "{label} {k:?}: {name}");
+        let reaches_kernel = name != "dfk-occ" || kind != Kind::Rohf;
+        assert_eq!(
+            c.mixed >= 1,
+            reaches_kernel,
+            "{label} {k:?}: {name} recorded {} mixed builds",
+            c.mixed
+        );
+        assert!(
+            c.mixed <= l.builds_mixed,
+            "{label} {k:?}: {name} mixed {} above the ladder's {}",
+            c.mixed,
+            l.builds_mixed
+        );
+        assert!(
+            c.exit_rebuilds <= l.exit_rebuilt_f64,
+            "{label} {k:?}: {name}"
+        );
+    }
+    assert_eq!(
+        r.kernels[0].mixed.max(r.kernels[1].mixed),
+        l.builds_mixed,
+        "{label} {k:?}: a mixed Fock build no kernel recorded"
+    );
+    assert_eq!(
+        r.kernels[0].exit_rebuilds.max(r.kernels[1].exit_rebuilds),
+        l.exit_rebuilt_f64,
+        "{label} {k:?}: an exit veto no kernel recorded"
+    );
 }
 
 fn gpu_delta(a: &GpuStatsSnapshot, b: &GpuStatsSnapshot) -> (u64, u64, u64) {
@@ -245,6 +296,7 @@ fn scf(sys: &System, arm: Arm, k: Kernels) -> Run {
     };
     let _s = Seams::arm(arm, k);
     let (l0, g0) = (counters(LadderSite::Jk), stats());
+    let k0 = kernel_counters();
     let ctx = ParallelContext::default();
     let res = match sys.kind {
         Kind::Rhf => solve_rhf(&ctx, &sys.mol, &sys.obs, op, &bounds, &cfg),
@@ -256,6 +308,8 @@ fn scf(sys: &System, arm: Arm, k: Kernels) -> Run {
     Run {
         res,
         ladder: counters(LadderSite::Jk).since(&l0),
+        kernels: [MixedKernel::DfjPack, MixedKernel::DfkOcc]
+            .map(|m| kernel_counters()[m.index()].since(&k0[m.index()])),
         gpu: {
             let g1 = stats();
             let mut d = g1;
@@ -574,6 +628,7 @@ fn check_f64_default(sys: &System, f64_run: &Run) {
 fn check_arm_counters(sys: &System, arm: Arm, k: Kernels, r: &Run, f64_iterations: usize) {
     let label = sys.label;
     let l = r.ladder;
+    check_kernel_provenance(label, sys.kind, k, r);
     // Every mixed arm really ran mixed device builds of its kernels, and the
     // ladder heard about it (a dropped notification leaves builds_mixed at 0).
     assert!(
@@ -867,6 +922,7 @@ fn open_shell_ladder_exits_in_f64() {
         densities.push((label, dens));
         assert_eq!(t0.ladder.exit_rebuilt_f64, 1, "{label}: no f64 exit");
         assert!(t0.ladder.builds_mixed >= 1, "{label}: never mixed");
+        check_kernel_provenance(label, kind, Kernels::Both, &t0);
         assert!(de <= bar, "{label}: |dE| {de:e} above the bar {bar:e}");
         assert!(
             dm > bar_mu,

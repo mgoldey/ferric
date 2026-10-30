@@ -321,7 +321,7 @@ prevent.
 
 ## Mixed-precision GPU kernels
 
-`[gpu] precision = "mixed"` is opt-in (the default is `f64`) and applies only to
+`[precision] mode = "mixed"` (deprecated alias: `[gpu] precision = "mixed"`) is opt-in (the default is `f64`) and applies only to
 the kernels in `mixed_kernels`. A mixed result is **not Proven**: it is not
 compared with an independent code, and it is not an f64 result. It is graded as
 a **measured error map**: a deterministic bound derived from the operation

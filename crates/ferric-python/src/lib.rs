@@ -372,6 +372,19 @@ fn resolve_cosx_kwargs(
     Ok(cfg)
 }
 
+/// A precision provenance record (`ferric_core::gpu::provenance`) as a
+/// Python dict, through the same JSON the CLI run log writes, so the two
+/// schemas cannot drift: `{"precision": "f64" | "mixed", "kernels": [...]}`.
+fn precision_dict(
+    py: Python<'_>,
+    r: &ferric_core::gpu::provenance::PrecisionRecord,
+) -> PyResult<PyObject> {
+    let json = py.import("json")?;
+    Ok(json
+        .call_method1("loads", (r.to_json().to_string(),))?
+        .unbind())
+}
+
 /// The COSX final-grid pass record as a dict, or `None` when no pass ran.
 fn cosx_final_dict(
     py: Python<'_>,
@@ -730,6 +743,17 @@ impl PyRhfResult {
     #[getter]
     fn guess_basis(&self, py: Python<'_>) -> PyResult<Option<Py<pyo3::types::PyDict>>> {
         guess_basis_dict(py, self.scf_data.guess_basis.as_ref())
+    }
+    /// Precision provenance of this SCF: `{"precision": "f64", "counter_scope": "process", "kernels": []}`
+    /// for an all-f64 run; otherwise one entry per mixed-precision kernel that
+    /// was allowed or ran (`kernel`, `requested`, `mode`, `device` (`None`
+    /// unless `calls_mixed > 0`), `calls_mixed`, `calls_f64_fallback`,
+    /// `ladder`, `error_bound`). `counter_scope = "process"`: the counts are
+    /// process-wide, so a concurrent calculation in this process is counted
+    /// too (sequential runs are exact). See `configure_precision`.
+    #[getter]
+    fn precision(&self, py: Python<'_>) -> PyResult<PyObject> {
+        precision_dict(py, &self.scf_data.precision)
     }
     /// SCF exit reason: the `ScfExit` variant name (`"Converged"`, `"Plateau"`,
     /// `"Stalled"`, `"Diverged"`, `"MaxIter"`). `converged=False` with
@@ -3058,6 +3082,7 @@ struct PyUhfResult {
     eps_beta_data: Vec<f64>,
     cosx_final: Option<ferric_scf::cosx_k::CosxFinalPass>,
     guess_basis_report: Option<ferric_scf::basis2::GuessBasisReport>,
+    precision: ferric_core::gpu::provenance::PrecisionRecord,
 }
 
 /// The open-shell result both `run_uhf` and `run_rohf` return. ROHF leaves
@@ -3074,6 +3099,7 @@ impl From<ScfResult> for PyUhfResult {
             density_alpha_data: r.density_alpha,
             cosx_final: r.cosx_final,
             guess_basis_report: r.guess_basis,
+            precision: r.precision,
             eps_alpha_data: r.eps_alpha,
             eps_beta_data: r.eps_beta.unwrap_or_default(),
         }
@@ -3094,6 +3120,11 @@ impl PyUhfResult {
     #[getter]
     fn guess_basis(&self, py: Python<'_>) -> PyResult<Option<Py<pyo3::types::PyDict>>> {
         guess_basis_dict(py, self.guess_basis_report.as_ref())
+    }
+    /// Precision provenance of this SCF (see `RhfResult.precision`).
+    #[getter]
+    fn precision(&self, py: Python<'_>) -> PyResult<PyObject> {
+        precision_dict(py, &self.precision)
     }
     fn density_alpha<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
         PyArray2::from_array(py, &self.density_alpha_data)
@@ -5758,10 +5789,26 @@ struct PyRiMp2Result {
     /// The SCF's JK-fitting basis (`None` for "exact").
     #[pyo3(get)]
     jk_auxbasis: Option<String>,
+    /// Precision provenance of the correlation energy and of the reference
+    /// SCF; read through the `precision` / `scf_precision` getters.
+    precision_rec: ferric_core::gpu::provenance::PrecisionRecord,
+    scf_precision_rec: ferric_core::gpu::provenance::PrecisionRecord,
 }
 
 #[pymethods]
 impl PyRiMp2Result {
+    /// Precision provenance of the MP2 correlation energy (the
+    /// `rimp2-energy` kernel): `{"precision": "f64", "counter_scope": "process", "kernels": []}` for an
+    /// all-f64 run. See `RhfResult.precision` for the schema.
+    #[getter]
+    fn precision(&self, py: Python<'_>) -> PyResult<PyObject> {
+        precision_dict(py, &self.precision_rec)
+    }
+    /// Precision provenance of the reference SCF (see `RhfResult.precision`).
+    #[getter]
+    fn scf_precision(&self, py: Python<'_>) -> PyResult<PyObject> {
+        precision_dict(py, &self.scf_precision_rec)
+    }
     /// The local model: `None` for the exact RI-MP2, else a dict with
     /// `scheme`, `eps`, `keep_fraction`, `pair_fraction`, `integral_direct`,
     /// `e_corr_canonical_ri` (`None` unless `compute_reference=True`), the
@@ -5946,7 +5993,7 @@ fn rimp2_energies(
     auxbasis: &basis::BasisSet,
     rhf_config: &RhfConfig,
     mp2_config: &RiMp2Config,
-) -> Result<(f64, f64, f64), ferric_core::FerricError> {
+) -> Result<Rimp2Energies, ferric_core::FerricError> {
     let prep = PreparedBasis::new(mol, basis_set)?;
     let dfbs = PreparedBasis::new(mol, auxbasis)?;
     let op = Operator::coulomb();
@@ -5964,13 +6011,29 @@ fn rimp2_energies(
             last_energy: scf.energy,
         });
     }
-    if open_shell {
+    let (mp2_corr, total_energy, precision) = if open_shell {
         let u = ferric_mp2::u_rimp2::u_ri_mp2(mol, &prep, &dfbs, op, &scf, mp2_config)?;
-        Ok((scf.energy, u.mp2_corr, u.total_energy))
+        (u.mp2_corr, u.total_energy, u.precision)
     } else {
         let mp2 = ri_mp2(mol, &prep, &dfbs, op, &scf, mp2_config)?;
-        Ok((scf.energy, mp2.mp2_corr, mp2.total_energy))
-    }
+        (mp2.mp2_corr, mp2.total_energy, mp2.precision)
+    };
+    Ok(Rimp2Energies {
+        scf_energy: scf.energy,
+        mp2_corr,
+        total_energy,
+        precision,
+        scf_precision: scf.precision,
+    })
+}
+
+/// What [`rimp2_energies`] returns: the energies and both precision records.
+struct Rimp2Energies {
+    scf_energy: f64,
+    mp2_corr: f64,
+    total_energy: f64,
+    precision: ferric_core::gpu::provenance::PrecisionRecord,
+    scf_precision: ferric_core::gpu::provenance::PrecisionRecord,
 }
 
 /// The attenuated-correlation kwargs of `run_rimp2` as the CLI's `[mp2]`
@@ -6215,18 +6278,20 @@ fn run_rimp2_exact(
     // Release the GIL for the SCF + RI-MP2 compute. All captured values are
     // owned clones/locals built above, so nothing Python-borrowed crosses
     // the closure boundary.
-    let (scf_energy, mp2_corr, total_energy) = py
+    let r = py
         .allow_threads(|| rimp2_energies(&emol, &ebasis, &eaux, &rhf_config, &mp2_config))
         .map_err(make_err)?;
     Ok(PyRiMp2Result {
-        total_energy,
-        rhf_energy: scf_energy,
-        mp2_corr,
+        total_energy: r.total_energy,
+        rhf_energy: r.scf_energy,
+        mp2_corr: r.mp2_corr,
         reference: if open_shell { "UHF" } else { "RHF" }.to_string(),
         local: None,
         scf_jk: jk.mode.as_str().to_string(),
         jk_label: jk.label(),
         jk_auxbasis: jk.aux,
+        precision_rec: r.precision,
+        scf_precision_rec: r.scf_precision,
     })
 }
 
@@ -6419,6 +6484,10 @@ fn run_rimp2_local(
         scf_jk: jk.mode.as_str().to_string(),
         jk_label: jk.label(),
         jk_auxbasis: jk.aux.clone(),
+        // The local model's energy is its own CPU f64 kernel, not
+        // `rimp2-energy`: nothing in it can run mixed.
+        precision_rec: ferric_core::gpu::provenance::PrecisionRecord::f64(),
+        scf_precision_rec: rhf.precision.clone(),
     })
 }
 
@@ -7537,6 +7606,8 @@ fn run_terfc_rimp2(
         scf_jk: jk.mode.as_str().to_string(),
         jk_label: jk.label(),
         jk_auxbasis: jk.aux,
+        precision_rec: mp2.precision,
+        scf_precision_rec: rhf.precision.clone(),
     })
 }
 
@@ -8268,6 +8339,12 @@ impl PyDftResult {
 
 #[pymethods]
 impl PyDftResult {
+    /// Precision provenance of this KS-DFT SCF (see `RhfResult.precision`;
+    /// the `xc-vxc` kernel carries a `ladder` record).
+    #[getter]
+    fn precision(&self, py: Python<'_>) -> PyResult<PyObject> {
+        precision_dict(py, &self.scf_data.precision)
+    }
     /// Exchange-correlation potential V_xc[D] of the converged density `D`
     /// (`density()`), as an AO matrix (n_bf x n_bf), on the SCF's own XC grid.
     ///
@@ -10874,13 +10951,91 @@ fn non_negative_gpu_key(key: &str, v: Option<i64>) -> PyResult<Option<usize>> {
     .transpose()
 }
 
+/// A `mixed_kernels` kwarg as a kernel set: each list item is one name (a
+/// comma inside an item is refused), unknown names and an empty list are
+/// refused with the valid list. `section` is the error prefix.
+fn parse_kernel_list(section: &str, ks: Vec<String>) -> PyResult<ferric_core::gpu::MixedKernelSet> {
+    let bad = |e: String| {
+        pyo3::exceptions::PyValueError::new_err(format!("{section} mixed_kernels: {e}"))
+    };
+    if let Some(item) = ks.iter().find(|k| k.contains(',')) {
+        return Err(bad(format!(
+            "kernel names are separate list items, got {item:?}"
+        )));
+    }
+    ks.join(",")
+        .parse::<ferric_core::gpu::MixedKernelSet>()
+        .map_err(bad)
+}
+
+/// Choose the mixed-precision kernels for this process (the Python side of
+/// `[precision]`), independently of the device: `mode` is `"f64"` (the
+/// default) or `"mixed"`, `mixed_kernels` a list of kernel names (default: the
+/// kernels this build ships). Strict: an unknown value is a `ValueError`.
+///
+/// The request is staged, not installed: only the next `configure_gpu(...)`
+/// installs it, together with the device settings (call this first; a
+/// `configure_gpu` `precision` / `mixed_kernels` alias that disagrees with it
+/// is a `ValueError`). Until then every calculation raises `RuntimeError`
+/// ("configure_precision staged a request; call configure_gpu() to install
+/// it"). Call `configure_gpu()` with no
+/// arguments to install and check the combination now: `mode = "mixed"` with
+/// a device kernel needs a GPU mode, and with the GPU off only kernels with a
+/// CPU mixed path are accepted. After the settings are installed or read this
+/// is a `RuntimeError`. Every result then reports what ran in its `precision`
+/// record. Returns the staged request, `{"mode", "mixed_kernels"}` (`None`
+/// for a key not given).
+#[pyfunction]
+#[pyo3(signature = (mode=None, mixed_kernels=None))]
+fn configure_precision<'py>(
+    py: Python<'py>,
+    mode: Option<&str>,
+    mixed_kernels: Option<Vec<String>>,
+) -> PyResult<Bound<'py, pyo3::types::PyDict>> {
+    use ferric_core::gpu::{Precision, PrecisionExplicit};
+    let request = PrecisionExplicit {
+        mode: mode
+            .map(|s| {
+                s.parse::<Precision>().map_err(|e| {
+                    pyo3::exceptions::PyValueError::new_err(format!("[precision] mode: {e}"))
+                })
+            })
+            .transpose()?,
+        mixed_kernels: mixed_kernels
+            .map(|ks| parse_kernel_list("[precision]", ks))
+            .transpose()?,
+    };
+    ferric_core::gpu::stage_precision(request).map_err(|e| {
+        if e.starts_with(ferric_core::gpu::SETTINGS_ALREADY_INSTALLED) {
+            pyo3::exceptions::PyRuntimeError::new_err(format!(
+                "{e}; call configure_precision before configure_gpu and before any calculation"
+            ))
+        } else {
+            pyo3::exceptions::PyValueError::new_err(e)
+        }
+    })?;
+    let staged = ferric_core::gpu::staged_precision().unwrap_or_default();
+    let d = pyo3::types::PyDict::new(py);
+    d.set_item("mode", staged.mode.map(|p| p.to_string()))?;
+    d.set_item(
+        "mixed_kernels",
+        staged
+            .mixed_kernels
+            .map(|ks| ks.iter().map(|k| k.name()).collect::<Vec<_>>()),
+    )?;
+    Ok(d)
+}
+
 /// Install the CUDA backend for this process from keyword arguments (the
 /// Python side of `[gpu]`): `preset` is one word, the rest are the fine-grained
 /// keys. Resolved through the same machinery as the CLI (explicit > env >
 /// default); a refusal is a `ValueError` naming the keys. Settings are
 /// process-global: the call must precede the first read of the GPU settings
 /// (`gpu_status()` or any GPU path), and a second call must repeat identical
-/// settings, otherwise `RuntimeError`. Returns `gpu_status()`.
+/// settings, otherwise `RuntimeError`. A request staged by
+/// `configure_precision` is installed with these settings. `precision` and
+/// `mixed_kernels` are deprecated aliases of `configure_precision(mode=...,
+/// mixed_kernels=...)`. Returns `gpu_status()`.
 #[pyfunction]
 #[pyo3(signature = (preset=None, mode=None, precision=None, mixed_kernels=None, device=None, memory_gb=None, min_flops=None))]
 fn configure_gpu<'py>(
@@ -10893,7 +11048,7 @@ fn configure_gpu<'py>(
     memory_gb: Option<f64>,
     min_flops: Option<i64>,
 ) -> PyResult<Bound<'py, pyo3::types::PyDict>> {
-    use ferric_core::gpu::{GpuMode, GpuPreset, GpuSettingsExplicit, MixedKernelSet, Precision};
+    use ferric_core::gpu::{GpuMode, GpuPreset, GpuSettingsExplicit, Precision};
     let bad =
         |k: &str, e: String| pyo3::exceptions::PyValueError::new_err(format!("[gpu] {k}: {e}"));
     let explicit = GpuSettingsExplicit {
@@ -10912,18 +11067,9 @@ fn configure_gpu<'py>(
             .map(|s| s.parse::<Precision>().map_err(|e| bad("precision", e)))
             .transpose()?,
         mixed_kernels: mixed_kernels
-            .map(|ks| {
-                if let Some(item) = ks.iter().find(|k| k.contains(',')) {
-                    return Err(bad(
-                        "mixed_kernels",
-                        format!("kernel names are separate list items, got {item:?}"),
-                    ));
-                }
-                ks.join(",")
-                    .parse::<MixedKernelSet>()
-                    .map_err(|e| bad("mixed_kernels", e))
-            })
+            .map(|ks| parse_kernel_list("[gpu]", ks))
             .transpose()?,
+        precision_section: Default::default(),
     };
     // The device probe may take a while; release the GIL.
     py.allow_threads(|| ferric_core::gpu::install(explicit).map(|_| ()))
@@ -11826,10 +11972,17 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
 
 /// Registration tail of the module: shell geometry and the CUDA backend
 /// (kept out of `ferric` so the module function's complexity stays bounded).
+/// `configure_gpu` (device placement) and `configure_precision` (kernels).
+fn register_configure(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(configure_gpu, m)?)?;
+    m.add_function(wrap_pyfunction!(configure_precision, m)?)?;
+    Ok(())
+}
+
 fn register_device_and_geometry(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(shell_info, m)?)?;
     m.add_function(wrap_pyfunction!(gpu_status, m)?)?;
-    m.add_function(wrap_pyfunction!(configure_gpu, m)?)?;
+    register_configure(m)?;
     // `AoIntegrals` + `einsum`: the building blocks for writing a method in
     // Python (see blocks.rs).
     blocks::register(m)

@@ -27,13 +27,15 @@ pub mod mixed_rules;
 pub mod pool;
 pub mod precision;
 pub mod preset;
+pub mod provenance;
 #[cfg(feature = "gpu")]
 pub mod resident;
 pub mod stats;
 
-use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, OnceLock};
 
-pub use config::{GpuMode, GpuSettings, GpuSettingsExplicit};
+pub use config::{GpuMode, GpuSettings, GpuSettingsExplicit, PrecisionExplicit};
 pub use precision::{MixedKernel, MixedKernelSet, MixedScope, Precision};
 pub use preset::GpuPreset;
 pub use stats::{stats, GpuStatsSnapshot};
@@ -129,6 +131,7 @@ pub fn decide(
 /// or without the `gpu` feature; a second install with different settings, or
 /// an install after `status()`/`settings()` already initialised the lazy state.
 pub fn install(explicit: GpuSettingsExplicit) -> Result<&'static GpuStatus, String> {
+    let explicit = with_staged_precision(explicit)?;
     let (settings, audit) = GpuSettings::resolve(explicit, crate::config::env_lookup)?;
     // A repeated identical install is a no-op: announce only the first one.
     let first = INSTALLED.get().is_none();
@@ -167,6 +170,7 @@ pub fn install(explicit: GpuSettingsExplicit) -> Result<&'static GpuStatus, Stri
     }
     match INSTALLED.set((settings, status)) {
         Ok(()) => {
+            PRECISION_STAGED_INSTALLED.store(true, Ordering::SeqCst);
             let (s, st) = installed();
             if let GpuStatus::Ready(info) = st {
                 install_default_pool(s, info, true);
@@ -176,6 +180,8 @@ pub fn install(explicit: GpuSettingsExplicit) -> Result<&'static GpuStatus, Stri
         Err(_) => {
             let (stored, st) = installed();
             if *stored == settings {
+                // The staged request (if any) is part of the settings in force.
+                PRECISION_STAGED_INSTALLED.store(true, Ordering::SeqCst);
                 Ok(st)
             } else {
                 Err(format!(
@@ -192,6 +198,91 @@ pub fn install(explicit: GpuSettingsExplicit) -> Result<&'static GpuStatus, Stri
 /// the lazy state was read) with different settings; callers match on it.
 pub const SETTINGS_ALREADY_INSTALLED: &str = "[gpu] settings already installed";
 
+/// A `[precision]` request staged by [`stage_precision`] (Python's
+/// `configure_precision`), merged into the next [`install`]. The lazy env
+/// resolution never reads it: a staged request that no `install` took is an
+/// error at the first calculation ([`check_staged_precision_installed`]).
+static PRECISION_STAGED: Mutex<Option<PrecisionExplicit>> = Mutex::new(None);
+
+/// Set once an [`install`] has put the staged request (if any) into the
+/// settings in force.
+static PRECISION_STAGED_INSTALLED: AtomicBool = AtomicBool::new(false);
+
+/// The error of a calculation started while a [`stage_precision`] request is
+/// staged but not installed.
+pub const STAGED_PRECISION_NOT_INSTALLED: &str =
+    "configure_precision staged a request; call configure_gpu() to install it";
+
+/// Stage a `[precision]` request for a library caller that has no TOML (the
+/// Python `configure_precision`). It is merged into the next [`install`]
+/// (whose own `precision_section` must agree with it). Until an `install`
+/// takes it, every calculation refuses to start
+/// ([`check_staged_precision_installed`]); the lazy env resolution never
+/// reads it, so an invalid request can never silently turn a GPU off. Errors:
+/// the settings are already installed or read, or a different request is
+/// already staged. Staging validates nothing beyond the parsed values: the
+/// combination is checked by `install`, which may follow this call (the
+/// documented order is `configure_precision` then `configure_gpu`).
+pub fn stage_precision(p: PrecisionExplicit) -> Result<(), String> {
+    if INSTALLED.get().is_some() {
+        return Err(format!(
+            "{SETTINGS_ALREADY_INSTALLED}; a [precision] request must be staged before the \
+             GPU settings are installed or first read"
+        ));
+    }
+    let mut staged = PRECISION_STAGED.lock().unwrap_or_else(|e| e.into_inner());
+    let merged = match *staged {
+        Some(prev) => prev.merge(p, "the same key staged again")?,
+        None => p,
+    };
+    *staged = Some(merged);
+    Ok(())
+}
+
+/// `Err(`[`STAGED_PRECISION_NOT_INSTALLED`]`)` when a [`stage_precision`]
+/// request is staged and no [`install`] has taken it. Called where every
+/// calculation starts (`PreparedBasis::new`): a request the user made is
+/// either in force or refused, never silently dropped (an f64 run labelled as
+/// the user's request) and never resolved by the lazy path (which would turn
+/// an invalid request into a GPU silently switched off).
+pub fn check_staged_precision_installed() -> Result<(), String> {
+    if staged_precision().is_some() && !PRECISION_STAGED_INSTALLED.load(Ordering::SeqCst) {
+        return Err(STAGED_PRECISION_NOT_INSTALLED.to_string());
+    }
+    Ok(())
+}
+
+/// The staged `[precision]` request, if any.
+pub fn staged_precision() -> Option<PrecisionExplicit> {
+    *PRECISION_STAGED.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// `explicit` with the staged `[precision]` request merged into its
+/// `precision_section` (a key given by both must agree).
+fn with_staged_precision(mut explicit: GpuSettingsExplicit) -> Result<GpuSettingsExplicit, String> {
+    if let Some(staged) = staged_precision() {
+        explicit.precision_section = staged.merge(
+            explicit.precision_section,
+            "the request staged by configure_precision",
+        )?;
+    }
+    Ok(explicit)
+}
+
+/// The installed settings WITHOUT initialising them: `None` when nothing has
+/// installed or read them yet. Every mixed path reads [`settings`] before it
+/// runs mixed, so `None` means no mixed kernel can have run. The precision
+/// provenance record reads this, so producing a result never freezes the
+/// lazy settings (a later `configure_gpu` stays possible after an f64 run).
+pub fn installed_settings() -> Option<&'static GpuSettings> {
+    INSTALLED.get().map(|(s, _)| s)
+}
+
+/// The installed status without initialising it (see [`installed_settings`]).
+pub fn installed_status() -> Option<&'static GpuStatus> {
+    INSTALLED.get().map(|(_, st)| st)
+}
+
 /// Library/Python callers that never called [`install`]: resolve from the env
 /// on first use (mode defaults to `off`, so this touches no device by default).
 /// A malformed env knob degrades to `off` here (the CLI path errors instead).
@@ -207,6 +298,8 @@ pub fn settings() -> &'static GpuSettings {
 fn installed() -> &'static (GpuSettings, GpuStatus) {
     INSTALLED.get_or_init(|| {
         let mut malformed = None;
+        // The env only: a staged `configure_precision` request is installed
+        // by `install` alone (`check_staged_precision_installed`).
         let settings =
             match GpuSettings::resolve(GpuSettingsExplicit::default(), crate::config::env_lookup) {
                 Ok((s, _)) => s,

@@ -246,6 +246,7 @@ pub fn solve_rhf_with_df_increments(
     df_aux: Option<&str>,
 ) -> Result<DfIncrementsResult, FerricError> {
     let aux = df_aux.unwrap_or(DF_GUESS_DEFAULT_AUX);
+    let probe = ferric_core::gpu::provenance::PrecisionProbe::start();
 
     // ---- Stage 1: DF-guess pre-stage -> D0 -------------------------------
     // Reuses the SAME loosened DF pre-stage `solve_rhf_with_df_guess` runs
@@ -470,6 +471,7 @@ pub fn solve_rhf_with_df_increments(
                 cosx_final: None,
                 cosx_schedule: None,
                 convergence: None,
+                precision: probe.finish(ferric_core::gpu::provenance::SCF_KERNELS),
             };
             return Ok(DfIncrementsResult {
                 result,
@@ -512,6 +514,7 @@ pub fn solve_rhf_with_df_increments(
                 cosx_final: None,
                 cosx_schedule: None,
                 convergence: None,
+                precision: probe.finish(ferric_core::gpu::provenance::SCF_KERNELS),
             };
             return Ok(DfIncrementsResult {
                 result,

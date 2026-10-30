@@ -104,6 +104,10 @@ impl PreparedBasis {
     ///
     /// Initializes libint2 on first call and constructs the internal C++ basis handle.
     pub fn new(mol: &Molecule, bs: &BasisSet) -> Result<Self, FerricError> {
+        // Every calculation prepares a basis before any kernel runs, so this
+        // is where a `configure_precision` request that no `configure_gpu`
+        // installed is refused, in every front end, instead of being dropped.
+        ferric_core::gpu::check_staged_precision_installed().map_err(FerricError::General)?;
         ensure_init();
         check_ecp_shell_l(mol, bs)?;
         // Effective nuclear charge for the `nuclear` 1e operator and point-charge

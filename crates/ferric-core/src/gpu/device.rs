@@ -35,6 +35,18 @@ pub enum GpuError {
     F32Range(String),
 }
 
+impl GpuError {
+    /// The provenance reason when this refusal made a mixed path rerun in f64
+    /// on the device: `F32Range` for an operand beyond the f32 range, else
+    /// `DeviceF64` (the mixed kernel was unavailable).
+    pub fn mixed_fallback(&self) -> super::stats::MixedFallback {
+        match self {
+            GpuError::F32Range(_) => super::stats::MixedFallback::F32Range,
+            _ => super::stats::MixedFallback::DeviceF64,
+        }
+    }
+}
+
 pub struct Device {
     pub info: GpuInfo,
     pub ctx: Arc<CudaContext>,

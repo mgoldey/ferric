@@ -247,6 +247,7 @@ fn make_scf_view(
         cosx_final: None,
         cosx_schedule: None,
         convergence: None,
+        precision: Default::default(),
     }
 }
 

@@ -156,6 +156,13 @@ pub struct ScfResult {
     /// projection, and the secondary SCF's iterations and energy. `None` when
     /// no secondary-basis guess ran.
     pub guess_basis: Option<crate::basis2::GuessBasisReport>,
+    /// Precision provenance: which mixed-precision kernels this SCF ran and
+    /// how (`ferric_core::gpu::provenance`). Set by `solve_rhf`/`solve_uhf`/
+    /// `solve_rohf` and their KS-DFT forms from the per-kernel counters over
+    /// the solve; `precision = f64` with no kernels for an all-f64 run (every
+    /// default run) and for hand-built results. Purely a report: nothing reads
+    /// it back, so energies are bit-identical with or without it.
+    pub precision: ferric_core::gpu::provenance::PrecisionRecord,
 }
 
 /// The convergence signals the gate judged at the final iteration, plus the thresholds in force
