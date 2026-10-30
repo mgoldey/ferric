@@ -92,9 +92,9 @@ if [[ ! -x "$GATE_SCRIPT" ]]; then
     exit 1
 fi
 
-# Tier selection. The DEFAULT for a push is the LINT tier: clippy
-# (--all-targets, so it also type-checks every target), the complexity gate
-# and rustdoc, with BOTH test steps (cargo test and the soft pytest) skipped.
+# Tier selection. The DEFAULT for a push is the LINT tier: clippy on the CHANGED
+# crates (--all-targets, so it type-checks their targets; dependents are left to
+# CI, see CLIPPY SCOPE in ci-gate.sh), the complexity gate and rustdoc, with BOTH test steps (cargo test and the soft pytest) skipped.
 #
 # Why tests are not in the default push gate: CI runs the full suite on a
 # dedicated machine, in parallel, and a local pre-push run is therefore pure
@@ -114,7 +114,7 @@ fi
 # Escalate with CI_GATE_TIER (or set the CI_GATE_* knobs directly):
 #   lint  (default)  clippy + complexity + rustdoc, no tests
 #   fast             lint + cargo tests (slowest binaries deferred) + pytest
-#   full             everything
+#   full             everything, including workspace-wide clippy
 # ---- refuse to gate a tree that is not what is being pushed -------------
 # Compare each pushed ref's LOCAL SHA against this worktree's HEAD. A match
 # means the gate is about to check the right code. A mismatch means it is
@@ -163,7 +163,7 @@ CI_GATE_TIER="${CI_GATE_TIER:-lint}"
 case "$CI_GATE_TIER" in
     lint) export CI_GATE_SKIP_TESTS=1; export CI_GATE_SKIP_PYTEST=1; export CI_GATE_FAST=1 ;;
     fast) export CI_GATE_FAST=1 ;;
-    full) export CI_GATE_FAST=0 ;;
+    full) export CI_GATE_FAST=0; export CI_GATE_CLIPPY_WORKSPACE=1 ;;
     *)
         echo "pre-push hook: unknown CI_GATE_TIER='$CI_GATE_TIER'" >&2
         echo "               expected one of: lint, fast, full" >&2
@@ -175,7 +175,7 @@ echo "pre-push: gating worktree $TOPLEVEL ($CI_GATE_TIER tier)" >&2
 echo "          $GATE_SCRIPT" >&2
 if [[ "$CI_GATE_TIER" == "lint" ]]; then
     echo "          Tests (cargo test AND pytest) are NOT run here -- CI runs them." >&2
-    echo "          This tier runs clippy/complexity/rustdoc, which CI is slowest to report." >&2
+    echo "          This tier runs clippy (changed crates)/complexity/rustdoc, which CI is slowest to report." >&2
 fi
 echo "          Escalate:  CI_GATE_TIER=fast git push   (lint + most tests + pytest)" >&2
 echo "                     CI_GATE_TIER=full git push   (everything)" >&2
