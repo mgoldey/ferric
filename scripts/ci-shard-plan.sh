@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # The per-shard archive plan for ci.yml's build-tests and test-shard jobs
 # (#525). build-tests builds the test binaries ONCE and packs one archive per
-# shard; each test-shard job downloads only its own (~1/4 of the bytes the old
-# single archive had), and runs ALL of it -- no `--partition`.
+# shard; each test-shard job downloads only its own (~1/N of the bytes the old
+# single archive had, N = ci.yml's SHARDS), and runs ALL of it -- no
+# `--partition`.
 #
 #   scripts/ci-shard-plan.sh slow-names
 #       The binaries deferred from the fast tier to the nightly slow-tests

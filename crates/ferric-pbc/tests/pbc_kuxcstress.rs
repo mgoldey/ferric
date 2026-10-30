@@ -23,550 +23,23 @@
 //! ROKS/ROHF (see `pbc_kuxcstress_ro.rs`), range-separated hybrids / VV10 (refused), meta-GGA (`pbc_kuxc_mgga.rs`),
 //! shifted meshes except one ignored FD row, the production (75, 302) grid,
 //! no external (PySCF) anchor (its k stress refuses open-shell hybrids).
+//!
+//! WEEKLY HALF: the three tests whose CI time is >= 120 s (the full
+//! refusals / per-spin Fock guard sweep, the 1x1x3 a = 1 wiring anchor and
+//! the spin / scaling mutants against the Gamma anchor) run in
+//! `validation_pbc_kuxcstress.rs`; the helpers are
+//! `kuxcstress_support/mod.rs`. Per-commit canaries for them:
+//! `refusals_and_the_per_spin_fock_guard_canary` (named, exxdiv and
+//! per-spin tamper refusals), `a_equal_one_with_zero_xc_is_the_uhf_stress_on_the_one_point_mesh`
+//! (the same wiring anchor on 1x1x1) and
+//! `xc_spin_swap_mutant_is_caught_on_the_one_point_mesh`.
 
 mod common;
+#[path = "kuxcstress_support/mod.rs"]
+mod support;
 
 use common::*;
-use ferric_core::basis::{BasisSet, Shell};
-use ferric_pbc::dense_aft::ExxDiv;
-use ferric_pbc::dense_aft::{DenseAftEri, DEFAULT_DENSE_AFT_MAX_BYTES};
-use ferric_pbc::dft::{gamma_uks, GammaUksConfig, PeriodicGridConfig};
-use ferric_pbc::hcore::kpoint::{periodic_hcore_kpts, PeriodicHcoreK};
-use ferric_pbc::hcore::periodic_hcore;
-use ferric_pbc::hcore::PeriodicHcoreConfig;
-use ferric_pbc::kdense_aft::{KDenseAftConfig, KDenseAftEri};
-use ferric_pbc::kdft::{solve_krks, KRksConfig};
-use ferric_pbc::kgrad::KRsGdfGradSource;
-use ferric_pbc::kpts::KPointMesh;
-use ferric_pbc::kscf::{KJkKind, KPointInjection, KPointJk};
-use ferric_pbc::kstress::{
-    kpoint_uhf_stress, KStressConfig, KStressJk, KStressMutation, KStressParts,
-};
-use ferric_pbc::kuks::{solve_kuks, KUksConfig, KUksResult};
-use ferric_pbc::kuscf::{solve_kuks_injected, KPointXcPolarized, KUScfResult};
-use ferric_pbc::kuxcstress::{
-    kpoint_null_xc_uks_stress, kpoint_uks_stress, KUStressMutation, KUksStress, KUksStressConfig,
-    UKS_COMMUTATOR_TOL,
-};
-use ferric_pbc::kxcgrad::KXcGrid;
-use ferric_pbc::kxcstress::{kpoint_rks_stress, KRksStressConfig, KXcStressMutation};
-use ferric_pbc::lattice::Cell;
-use ferric_pbc::rsgdf::kpoint::{KRsGdf, KRsGdfConfig};
-use ferric_pbc::rsgdf::RsGdfConfig;
-use ferric_pbc::stress::{gamma_uks_stress, GammaStress, GammaStressConfig, Mat3};
-use ferric_pbc::uhf::GammaUhfIntegrals;
-use ndarray::Array2;
-use num_complex::Complex64;
-use std::collections::HashMap;
-
-const OMEGA: f64 = 0.8;
-const AMPLE: usize = 1 << 31;
-const H2: [[f64; 3]; 2] = [[0.3, 0.2, 0.1], [0.35, 0.12, 1.5]];
-/// H3 doublet (na = 2, nb = 1): a genuinely spin-polarised cell, Da != Db.
-const H3: [[f64; 3]; 3] = [[0.3, 0.2, 0.1], [0.35, 0.12, 1.5], [0.3, 1.9, 0.4]];
-const ALL9: [(usize, usize); 9] = [
-    (0, 0),
-    (0, 1),
-    (0, 2),
-    (1, 0),
-    (1, 1),
-    (1, 2),
-    (2, 0),
-    (2, 1),
-    (2, 2),
-];
-/// Explicit neighbour cutoff shared by every energy and stress here (the default
-/// depends on the cell and puts a one-step discontinuity in the energy).
-const CUTOFF: f64 = 14.0;
-const ANCHOR_PRECISION: f64 = 1e-12;
-/// (energy_conv, grad_conv) of the deliberately loose UKS SCF of the gate test.
-const LOOSE_UKS: (f64, f64) = (1e-5, 1e-2);
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Jk {
-    Dense,
-    Gdf,
-}
-
-#[derive(Clone, Copy)]
-struct Mesh {
-    n: [usize; 3],
-    mp: bool,
-}
-
-const G111: Mesh = Mesh {
-    n: [1, 1, 1],
-    mp: false,
-};
-const G113: Mesh = Mesh {
-    n: [1, 1, 3],
-    mp: false,
-};
-
-fn mesh_of(cell: &Cell, m: Mesh) -> KPointMesh {
-    if m.mp {
-        KPointMesh::monkhorst_pack(cell, m.n).unwrap()
-    } else {
-        KPointMesh::gamma_centred(cell, m.n).unwrap()
-    }
-}
-
-fn et_sp_aux() -> BasisSet {
-    let mut shells = Vec::new();
-    for a in [4.7, 1.9, 0.75, 0.3] {
-        shells.push(Shell {
-            l: 0,
-            pure: false,
-            exponents: vec![a],
-            coefficients: vec![1.0],
-        });
-    }
-    for a in [1.25, 0.5] {
-        shells.push(Shell {
-            l: 1,
-            pure: false,
-            exponents: vec![a],
-            coefficients: vec![1.0],
-        });
-    }
-    let mut m = HashMap::new();
-    m.insert(1, shells);
-    BasisSet {
-        name: "et-sp-aux-H".into(),
-        shells: m,
-        ecps: HashMap::new(),
-    }
-}
-
-fn kgdf_cfg() -> KRsGdfConfig {
-    KRsGdfConfig {
-        gdf: RsGdfConfig {
-            omega: 1.0,
-            exxdiv: ExxDiv::None,
-            budget_bytes: Some(AMPLE),
-            ..Default::default()
-        },
-        mutation: None,
-    }
-}
-
-thread_local! {
-    /// (energy_conv, grad_conv) of the k SCF on THIS test thread; only the
-    /// stationarity-gate test changes the defaults.
-    static SETTINGS: std::cell::Cell<(f64, f64)> = const { std::cell::Cell::new((1e-14, 1e-12)) };
-}
-
-fn grid_cfg() -> PeriodicGridConfig {
-    let mut g = PeriodicGridConfig::with_size(20, 50);
-    g.neighbour_cutoff = Some(CUTOFF);
-    g
-}
-
-fn cell_of(pos: &[[f64; 3]]) -> Cell {
-    let mut mol = hydrogens(pos);
-    mol.multiplicity = if pos.len() % 2 == 1 { 2 } else { 1 };
-    Cell::new(mol, cubic(4.0)).expect("cell")
-}
-
-fn kuks_cfg(cell: &Cell, functional: &str, jk: Jk, exxdiv: ExxDiv) -> KUksConfig {
-    let mut cfg = KUksConfig::new(cell, exxdiv, functional);
-    cfg.kuhf.hcore = PeriodicHcoreConfig::with_omega(OMEGA);
-    let (econv, gconv) = SETTINGS.with(|s| s.get());
-    cfg.kuhf.scf.energy_conv = econv;
-    cfg.kuhf.scf.grad_conv = gconv;
-    cfg.kuhf.scf.max_iter = 300;
-    if jk == Jk::Gdf {
-        cfg.kuhf.jk = KJkKind::RsGdf;
-        cfg.kuhf.rsgdf = kgdf_cfg();
-    }
-    cfg.grid = grid_cfg();
-    cfg
-}
-
-/// Fresh UKS SCF on `cell`.
-fn scf_on(cell: &Cell, m: Mesh, functional: &str, jk: Jk, exxdiv: ExxDiv) -> KUksResult {
-    let prep = prep_for(cell, &pyscf_sto3g_h());
-    let mesh = mesh_of(cell, m);
-    let cfg = kuks_cfg(cell, functional, jk, exxdiv);
-    let aux = (jk == Jk::Gdf).then(|| prep_for(cell, &et_sp_aux()));
-    let r = solve_kuks(cell, &prep, aux.as_ref(), &mesh, &cfg)
-        .unwrap_or_else(|e| panic!("solve_kuks {functional}: {e}"));
-    assert!(r.scf.converged);
-    r
-}
-
-fn energy_on(cell: &Cell, m: Mesh, f: &str, jk: Jk, exxdiv: ExxDiv) -> f64 {
-    scf_on(cell, m, f, jk, exxdiv).scf.energy
-}
-
-struct Fx {
-    cell: Cell,
-    prep: ferric_integrals::basis_bridge::PreparedBasis,
-    aux: ferric_integrals::basis_bridge::PreparedBasis,
-    mesh: KPointMesh,
-    hk: PeriodicHcoreK,
-    res: KUksResult,
-    jk: Jk,
-    exxdiv: ExxDiv,
-    functional: String,
-}
-
-fn fixture_cell(cell: Cell, m: Mesh, functional: &str, jk: Jk, exxdiv: ExxDiv) -> Fx {
-    let prep = prep_for(&cell, &pyscf_sto3g_h());
-    let mesh = mesh_of(&cell, m);
-    let res = scf_on(&cell, m, functional, jk, exxdiv);
-    let hk =
-        periodic_hcore_kpts(&cell, &prep, &mesh, &PeriodicHcoreConfig::with_omega(OMEGA)).unwrap();
-    let aux = prep_for(&cell, &et_sp_aux());
-    Fx {
-        cell,
-        prep,
-        aux,
-        mesh,
-        hk,
-        res,
-        jk,
-        exxdiv,
-        functional: functional.to_string(),
-    }
-}
-
-fn fixture(pos: &[[f64; 3]], m: Mesh, functional: &str, jk: Jk, exxdiv: ExxDiv) -> Fx {
-    fixture_cell(cell_of(pos), m, functional, jk, exxdiv)
-}
-
-fn scfg(
-    exxdiv: Option<ExxDiv>,
-    xm: Option<KXcStressMutation>,
-    sm: Option<KUStressMutation>,
-    hm: Option<KStressMutation>,
-) -> KUksStressConfig {
-    KUksStressConfig {
-        base: KRksStressConfig {
-            stress: KStressConfig {
-                budget_bytes: Some(AMPLE),
-                mutation: hm,
-                ..Default::default()
-            },
-            grid: KXcGrid::Atom(grid_cfg()),
-            exxdiv,
-            mutation: xm,
-            ..Default::default()
-        },
-        spin_mutation: sm,
-    }
-}
-
-fn stress_with(
-    fx: &Fx,
-    functional: &str,
-    scf: &KUScfResult,
-    cfg: &KUksStressConfig,
-) -> Result<KUksStress, ferric_core::FerricError> {
-    let hcfg = PeriodicHcoreConfig::with_omega(OMEGA);
-    match fx.jk {
-        Jk::Dense => {
-            let eri = KDenseAftEri::build(
-                &fx.cell,
-                &fx.prep,
-                &fx.mesh,
-                &fx.hk.s,
-                fx.exxdiv,
-                &Default::default(),
-            )
-            .unwrap();
-            kpoint_uks_stress(
-                &fx.cell,
-                &fx.prep,
-                &fx.mesh,
-                &hcfg,
-                &fx.hk,
-                KStressJk::Dense(&eri),
-                scf,
-                functional,
-                cfg,
-            )
-        }
-        Jk::Gdf => {
-            let kc = kgdf_cfg();
-            let gdf = KRsGdf::build(&fx.cell, &fx.prep, &fx.aux, &fx.mesh, &fx.hk.s, &kc)
-                .unwrap()
-                .with_exxdiv(fx.exxdiv);
-            kpoint_uks_stress(
-                &fx.cell,
-                &fx.prep,
-                &fx.mesh,
-                &hcfg,
-                &fx.hk,
-                KStressJk::RsGdf(KRsGdfGradSource {
-                    gdf: &gdf,
-                    cfg: &kc,
-                    aux: &fx.aux,
-                }),
-                scf,
-                functional,
-                cfg,
-            )
-        }
-    }
-}
-
-fn stress(fx: &Fx) -> KUksStress {
-    stress_with(
-        fx,
-        &fx.functional,
-        &fx.res.scf,
-        &scfg(Some(fx.exxdiv), None, None, None),
-    )
-    .expect("kpoint_uks_stress")
-}
-
-fn stress_mut(
-    fx: &Fx,
-    xm: Option<KXcStressMutation>,
-    sm: Option<KUStressMutation>,
-    hm: Option<KStressMutation>,
-) -> KUksStress {
-    stress_with(
-        fx,
-        &fx.functional,
-        &fx.res.scf,
-        &scfg(Some(fx.exxdiv), xm, sm, hm),
-    )
-    .expect("kpoint_uks_stress")
-}
-
-// ------------------------------------------------------------ small helpers
-
-fn mdiff(a: &Mat3, b: &Mat3) -> f64 {
-    let mut m = 0.0_f64;
-    for i in 0..3 {
-        for j in 0..3 {
-            m = m.max((a[i][j] - b[i][j]).abs());
-        }
-    }
-    m
-}
-
-fn mmax(a: &Mat3) -> f64 {
-    a.iter().flatten().fold(0.0_f64, |m, x| m.max(x.abs()))
-}
-
-fn mscale(a: &Mat3, f: f64) -> Mat3 {
-    let mut o = *a;
-    for r in o.iter_mut() {
-        for x in r.iter_mut() {
-            *x *= f;
-        }
-    }
-    o
-}
-
-fn madd(a: &Mat3, b: &Mat3) -> Mat3 {
-    let mut o = *a;
-    for i in 0..3 {
-        for j in 0..3 {
-            o[i][j] += b[i][j];
-        }
-    }
-    o
-}
-
-fn eps_at(i: usize, j: usize, h: f64) -> Mat3 {
-    let mut e = [[0.0; 3]; 3];
-    e[i][j] = h;
-    e
-}
-
-fn strained(cell: &Cell, i: usize, j: usize, h: f64) -> Cell {
-    cell.strained(&eps_at(i, j, h)).expect("strained cell")
-}
-
-/// Central FD of the UKS SCF energy for the listed components at step `h`.
-fn fd_components(
-    cell: &Cell,
-    m: Mesh,
-    f: &str,
-    jk: Jk,
-    exxdiv: ExxDiv,
-    h: f64,
-    comps: &[(usize, usize)],
-) -> Vec<f64> {
-    comps
-        .iter()
-        .map(|&(i, j)| {
-            let ep = energy_on(&strained(cell, i, j, h), m, f, jk, exxdiv);
-            let em = energy_on(&strained(cell, i, j, -h), m, f, jk, exxdiv);
-            (ep - em) / (2.0 * h)
-        })
-        .collect()
-}
-
-/// Every labelled HF part of a `KStressParts`.
-fn hf_parts(p: &KStressParts) -> Vec<(&'static str, Mat3)> {
-    vec![
-        ("overlap_pulay", p.overlap_pulay),
-        ("overlap_c0", p.overlap_c0),
-        ("overlap_madelung", p.overlap_madelung),
-        ("kinetic", p.kinetic),
-        ("vsr", p.vsr),
-        ("ecp", p.ecp),
-        ("vlr", p.vlr),
-        ("c0_volume", p.c0_volume),
-        ("coulomb", p.coulomb),
-        ("exchange", p.exchange),
-        ("madelung", p.madelung),
-        ("nn_sr", p.nn_sr),
-        ("nn_lr", p.nn_lr),
-        ("nn_background", p.nn_background),
-        ("fit_j3_sr", p.fit_j3_sr),
-        ("fit_j3_lr", p.fit_j3_lr),
-        ("fit_j2_sr", p.fit_j2_sr),
-        ("fit_j2_lr", p.fit_j2_lr),
-        ("fit_g0_overlap", p.fit_g0_overlap),
-        ("fit_j3_g0_volume", p.fit_j3_g0_volume),
-        ("fit_j2_g0_volume", p.fit_j2_g0_volume),
-    ]
-}
-
-fn kcfg() -> KStressConfig {
-    KStressConfig {
-        budget_bytes: Some(AMPLE),
-        ..Default::default()
-    }
-}
-
-// ----------------------------------------------- zero-XC fixed-density SCF
-
-struct ZeroXcPol(usize);
-impl KPointXcPolarized for ZeroXcPol {
-    #[allow(clippy::type_complexity)]
-    fn build_polarized(
-        &mut self,
-        da: &[Array2<Complex64>],
-        _db: &[Array2<Complex64>],
-    ) -> Result<(f64, Vec<Array2<Complex64>>, Vec<Array2<Complex64>>), ferric_core::FerricError>
-    {
-        let z = || da.iter().map(|_| Array2::zeros((self.0, self.0))).collect();
-        Ok((0.0, z(), z()))
-    }
-}
-
-struct Zx {
-    cell: Cell,
-    prep: ferric_integrals::basis_bridge::PreparedBasis,
-    aux: ferric_integrals::basis_bridge::PreparedBasis,
-    mesh: KPointMesh,
-    hk: PeriodicHcoreK,
-    scf: KUScfResult,
-    jk: Jk,
-    exxdiv: ExxDiv,
-}
-
-fn dense_cfg() -> KDenseAftConfig {
-    KDenseAftConfig {
-        precision: ANCHOR_PRECISION,
-        ..Default::default()
-    }
-}
-
-/// Hartree + `a` exact-exchange k UKS with a zero XC (a = 1 is k-point UHF).
-fn zero_xc(pos: &[[f64; 3]], m: Mesh, jk: Jk, exxdiv: ExxDiv, a: f64) -> Zx {
-    let cell = cell_of(pos);
-    let prep = prep_for(&cell, &pyscf_sto3g_h());
-    let aux = prep_for(&cell, &et_sp_aux());
-    let mesh = mesh_of(&cell, m);
-    let hcfg = PeriodicHcoreConfig::with_omega(OMEGA);
-    let hk = periodic_hcore_kpts(&cell, &prep, &mesh, &hcfg).unwrap();
-    let mut sc = ferric_pbc::kscf::KScfConfig::default();
-    sc.energy_conv = 1e-13;
-    sc.grad_conv = 1e-10;
-    sc.max_iter = 300;
-    let vm = match exxdiv {
-        ExxDiv::None => 0.0,
-        ExxDiv::Ewald => mesh.madelung(&cell).unwrap(),
-    };
-    let eri;
-    let gdf;
-    let jkb: Box<dyn KPointJk + '_> = match jk {
-        Jk::Dense => {
-            eri = KDenseAftEri::build(&cell, &prep, &mesh, &hk.s, ExxDiv::None, &dense_cfg())
-                .unwrap();
-            Box::new(eri.jk_builder_with_madelung(vm))
-        }
-        Jk::Gdf => {
-            gdf = KRsGdf::build(&cell, &prep, &aux, &mesh, &hk.s, &kgdf_cfg()).unwrap();
-            Box::new(gdf.jk_builder_with_madelung(vm))
-        }
-    };
-    let inj = KPointInjection {
-        s: hk.s.clone(),
-        h: hk.h.clone(),
-        vnn: hk.enn,
-        jk: jkb,
-    };
-    let ne = cell.mol().nelec() as usize;
-    let (na, nb) = (ne / 2 + ne % 2, ne / 2);
-    let mut z = ZeroXcPol(prep.nbasis());
-    let scf = solve_kuks_injected(&cell, &mesh, &sc, inj, na, nb, &mut z, a).unwrap();
-    assert!(scf.converged);
-    Zx {
-        cell,
-        prep,
-        aux,
-        mesh,
-        hk,
-        scf,
-        jk,
-        exxdiv,
-    }
-}
-
-fn with_jk<R>(z: &Zx, f: impl FnOnce(KStressJk<'_>) -> R) -> R {
-    match z.jk {
-        Jk::Dense => {
-            let eri =
-                KDenseAftEri::build(&z.cell, &z.prep, &z.mesh, &z.hk.s, z.exxdiv, &dense_cfg())
-                    .unwrap();
-            f(KStressJk::Dense(&eri))
-        }
-        Jk::Gdf => {
-            let kc = kgdf_cfg();
-            let gdf = KRsGdf::build(&z.cell, &z.prep, &z.aux, &z.mesh, &z.hk.s, &kc)
-                .unwrap()
-                .with_exxdiv(z.exxdiv);
-            f(KStressJk::RsGdf(KRsGdfGradSource {
-                gdf: &gdf,
-                cfg: &kc,
-                aux: &z.aux,
-            }))
-        }
-    }
-}
-
-fn null_stress(
-    z: &Zx,
-    a: f64,
-    cfg: &KUksStressConfig,
-) -> Result<KUksStress, ferric_core::FerricError> {
-    let hcfg = PeriodicHcoreConfig::with_omega(OMEGA);
-    with_jk(z, |j| {
-        kpoint_null_xc_uks_stress(&z.cell, &z.prep, &z.mesh, &hcfg, &z.hk, j, &z.scf, a, cfg)
-    })
-}
-
-// ------------------------------------------------------------------ (1)
-
-/// (1) WIRING ANCHOR, per part. a = 1 with a zero XC IS the k-point UHF stress:
-/// same `assemble(Unrestricted)`, but the KS entry rebuilds F_sigma itself
-/// (guarded) and takes its exxdiv from the config. Artifact hypothesis: a leaked
-/// XC term, a K scaled by anything but 1, a swapped spin Fock would show as
-/// nonzero; physics predicts 0 to roundoff. BLIND to every a-scaling defect
-/// (ExchUnscaled/ExchScaledTwice are identities at a = 1: asserted EXACTLY 0).
-#[test]
-fn a_equal_one_with_zero_xc_is_the_uhf_stress_per_part() {
-    a_equal_one_case(Jk::Dense, ExxDiv::Ewald);
-}
+use support::*;
 
 #[test]
 #[ignore = "the other three rows (dense none, RS-GDF none/ewald) of the a = 1 anchor; ~90 s"]
@@ -578,101 +51,6 @@ fn a_equal_one_with_zero_xc_is_the_uhf_stress_per_part_other_rows() {
     ] {
         a_equal_one_case(jk, exxdiv);
     }
-}
-
-fn a_equal_one_case(jk: Jk, exxdiv: ExxDiv) {
-    let z = zero_xc(&H3, G113, jk, exxdiv, 1.0);
-    let hcfg = PeriodicHcoreConfig::with_omega(OMEGA);
-    let ks = null_stress(&z, 1.0, &scfg(Some(exxdiv), None, None, None)).unwrap();
-    let hf = with_jk(&z, |j| {
-        kpoint_uhf_stress(
-            &z.cell,
-            &z.prep,
-            &z.mesh,
-            &hcfg,
-            &z.hk,
-            j,
-            &z.scf,
-            exxdiv,
-            &kcfg(),
-        )
-        .unwrap()
-    });
-    let mut worst = 0.0_f64;
-    for ((n, a), (_, b)) in hf_parts(&ks.hf.parts).into_iter().zip(hf_parts(&hf.parts)) {
-        let d = mdiff(&a, &b);
-        eprintln!("{jk:?} {exxdiv:?}: a=1 null-XC vs UHF stress, {n:<18} {d:.1e}");
-        worst = worst.max(d);
-    }
-    let d_tot = mdiff(&ks.de_deps, &hf.de_deps);
-    eprintln!("{jk:?} {exxdiv:?}: total {d_tot:.1e}");
-    assert!(
-        worst < 1e-13 && d_tot < 1e-13,
-        "{jk:?} {exxdiv:?}: {worst:e}"
-    );
-    // Not vacuous: open shell and the exchange walks matter.
-    let nrm = |m: &[Array2<Complex64>]| -> f64 {
-        m.iter()
-            .map(|x| x.iter().map(|y| y.norm()).sum::<f64>())
-            .sum()
-    };
-    assert!((nrm(&z.scf.density_alpha) - nrm(&z.scf.density_beta)).abs() > 0.1);
-    match jk {
-        Jk::Dense => assert!(mmax(&hf.parts.exchange) > 1e-4),
-        Jk::Gdf => assert!(mmax(&hf.parts.fit_j3_sr) > 1e-4),
-    }
-    // The a-scaling mutants are identities here.
-    for xm in [
-        KXcStressMutation::ExchUnscaled,
-        KXcStressMutation::ExchScaledTwice,
-    ] {
-        let m = null_stress(&z, 1.0, &scfg(Some(exxdiv), Some(xm), None, None)).unwrap();
-        assert_eq!(mdiff(&m.de_deps, &ks.de_deps), 0.0, "{xm:?} at a = 1");
-    }
-}
-
-// ------------------------------------------------------------------ (2)
-
-struct RksTwin {
-    stress: ferric_pbc::kxcstress::KRksStress,
-}
-
-fn rks_twin(fx: &Fx, f: &str) -> RksTwin {
-    let cell = &fx.cell;
-    let mut rcfg = KRksConfig::new(cell, ExxDiv::Ewald, f);
-    rcfg.krhf.hcore = PeriodicHcoreConfig::with_omega(OMEGA);
-    rcfg.krhf.scf.energy_conv = 1e-14;
-    rcfg.krhf.scf.grad_conv = 1e-12;
-    rcfg.krhf.scf.max_iter = 200;
-    rcfg.grid = grid_cfg();
-    let r = solve_krks(cell, &fx.prep, None, &fx.mesh, &rcfg).unwrap();
-    let eri = KDenseAftEri::build(
-        cell,
-        &fx.prep,
-        &fx.mesh,
-        &fx.hk.s,
-        ExxDiv::Ewald,
-        &Default::default(),
-    )
-    .unwrap();
-    let s = kpoint_rks_stress(
-        cell,
-        &fx.prep,
-        &fx.mesh,
-        &PeriodicHcoreConfig::with_omega(OMEGA),
-        &fx.hk,
-        KStressJk::Dense(&eri),
-        &r.scf,
-        f,
-        &KRksStressConfig {
-            stress: kcfg(),
-            grid: KXcGrid::Atom(grid_cfg()),
-            exxdiv: Some(ExxDiv::Ewald),
-            ..Default::default()
-        },
-    )
-    .unwrap();
-    RksTwin { stress: s }
 }
 
 /// (2) CLOSED-SHELL LIMIT == the merged RKS stress, per part. Independent SCF
@@ -690,32 +68,6 @@ fn closed_shell_limit_equals_the_rks_stress_per_part() {
 fn closed_shell_limit_equals_the_rks_stress_per_part_lda_pbe() {
     closed_shell_vs_rks(&["LDA", "PBE"]);
 }
-
-fn closed_shell_vs_rks(functionals: &[&str]) {
-    for &f in functionals {
-        let fx = fixture(&H2, G113, f, Jk::Dense, ExxDiv::Ewald);
-        let u = stress(&fx);
-        let r = rks_twin(&fx, f).stress;
-        let mut rows = vec![
-            ("xc_ao", mdiff(&u.xc_ao, &r.xc_ao)),
-            ("xc_weight", mdiff(&u.xc_weight, &r.xc_weight)),
-            ("de_deps", mdiff(&u.de_deps, &r.de_deps)),
-            ("sigma", mdiff(&u.sigma, &r.sigma)),
-        ];
-        for ((n, a), (_, b)) in hf_parts(&u.hf.parts).into_iter().zip(hf_parts(&r.hf.parts)) {
-            rows.push((n, mdiff(&a, &b)));
-        }
-        for (n, d) in rows {
-            eprintln!("{f} closed-shell UKS vs RKS: {n:<18} {d:.2e}");
-            assert!(d < BAR_CLOSED, "{f} {n}: {d:e}");
-        }
-        assert!(mmax(&u.xc_ao) > 1e-4 && mmax(&u.xc_weight) > 1e-4);
-    }
-}
-
-/// Worst correct closed-shell residual 4.6e-15 (overlap_pulay); the smallest
-/// visible mutant miss is 1.8e-2 (XcCrossDropped). Bar 1e-11.
-const BAR_CLOSED: f64 = 1e-11;
 
 /// The closed-shell limit is BLIND to the alpha/beta-asymmetric defects (so
 /// the Gamma/FD anchors, not this one, must carry them): asserted, not assumed.
@@ -756,72 +108,83 @@ fn closed_shell_limit_is_blind_to_spin_swaps_and_sees_dropped_spins() {
     }
 }
 
-// ------------------------------------------------------------------ (3)
-
-fn gamma_side(cell: &Cell, f: &str) -> GammaStress {
-    let prep = prep_for(cell, &pyscf_sto3g_h());
-    let hcfg = PeriodicHcoreConfig::with_omega(OMEGA);
-    let hc = periodic_hcore(cell, &prep, &hcfg).unwrap();
-    let eri = DenseAftEri::build(
-        cell,
-        &prep,
-        &hc.s,
-        ExxDiv::Ewald,
-        ANCHOR_PRECISION,
-        DEFAULT_DENSE_AFT_MAX_BYTES,
-    )
-    .unwrap();
-    let mut gc = GammaUksConfig::new(f);
-    gc.grid = grid_cfg();
-    gc.exxdiv = ExxDiv::Ewald;
-    gc.scf.energy_conv = 1e-13;
-    gc.scf.density_conv = 1e-10;
-    gc.scf.max_iter = 300;
-    let r = gamma_uks(cell, &prep, &hc, GammaUhfIntegrals::DenseAft(&eri), &gc).unwrap();
-    assert!(r.scf.converged);
-    gamma_uks_stress(
-        cell,
-        &prep,
-        &hcfg,
-        &hc,
-        &eri,
-        &r.scf,
-        &gc,
-        &GammaStressConfig {
-            budget_bytes: Some(AMPLE),
-            ..Default::default()
-        },
-    )
-    .unwrap()
+/// Per-commit canary of the weekly (1x1x3)
+/// `a_equal_one_with_zero_xc_is_the_uhf_stress_per_part`
+/// (`validation_pbc_kuxcstress.rs`): the same wiring anchor (a = 1 + zero XC
+/// == `kpoint_uhf_stress` per part, a-scaling mutants exact identities) on the
+/// 1x1x1 mesh of the H3 doublet, dense, exxdiv ewald.
+#[test]
+fn a_equal_one_with_zero_xc_is_the_uhf_stress_on_the_one_point_mesh() {
+    a_equal_one_case_on(Jk::Dense, ExxDiv::Ewald, G111);
 }
 
-/// Rows of (name, |k part - Gamma part|) for `n_cells` cells against the
-/// (super)cell Gamma stress (`dE/de` per cell = supercell value / n_cells).
-fn gamma_rows(k: &KUksStress, g: &GammaStress, n_cells: f64) -> Vec<(&'static str, f64)> {
-    let p = &g.parts;
-    let kp = &k.hf.parts;
-    let s = 1.0 / n_cells;
-    vec![
-        ("xc_ao", mdiff(&k.xc_ao, &mscale(&p.xc_ao, s))),
-        ("xc_weight", mdiff(&k.xc_weight, &mscale(&p.xc_weight, s))),
-        ("overlap", mdiff(&kp.overlap(), &mscale(&p.overlap, s))),
-        ("kinetic", mdiff(&kp.kinetic, &mscale(&p.kinetic, s))),
-        ("vsr", mdiff(&kp.vsr, &mscale(&p.vsr, s))),
-        ("vlr", mdiff(&kp.vlr, &mscale(&p.vlr, s))),
-        ("c0_volume", mdiff(&kp.c0_volume, &mscale(&p.c0_volume, s))),
+/// Per-commit canary of the weekly
+/// `spin_and_scaling_mutants_are_caught_by_the_gamma_anchor`: the XC strain
+/// spin swap (`XcSpinSwap`, 1.6e-1 against the Gamma anchor in the full
+/// sweep) moves the 1x1x1 PBE0 stress of the H3 doublet by far more than the
+/// mutant bar. The production stress it is measured against is the one
+/// `one_point_mesh_matches_the_gamma_uks_stress_per_part` anchors to the
+/// Gamma UKS stress per commit.
+#[test]
+fn xc_spin_swap_mutant_is_caught_on_the_one_point_mesh() {
+    let fx = fixture(&H3, G111, "PBE0", Jk::Dense, ExxDiv::Ewald);
+    let base = stress(&fx);
+    let d = mdiff(
+        &stress_mut(&fx, None, Some(KUStressMutation::XcSpinSwap), None).de_deps,
+        &base.de_deps,
+    );
+    eprintln!("1x1x1 XcSpinSwap: miss {d:.2e}");
+    assert!(d > MUTANT_BAR, "XcSpinSwap survives: {d:e}");
+}
+
+/// Per-commit canary of the weekly `refusals_and_the_per_spin_fock_guard`:
+/// the typed name and exxdiv refusals and the per-spin Fock tampers (each
+/// spin, named), on the H3 doublet PBE0 state. The weekly test adds the
+/// accepted-state checks, the functional-mismatch guard cases, the spin
+/// swap, the pure-functional entry and the exchange-fraction validation.
+#[test]
+fn refusals_and_the_per_spin_fock_guard_canary() {
+    let fx = fixture(&H3, G111, "PBE0", Jk::Dense, ExxDiv::Ewald);
+    let ok_cfg = scfg(Some(ExxDiv::Ewald), None, None, None);
+    let run = |f: &str, s: &KUScfResult, cfg: &KUksStressConfig| stress_with(&fx, f, s, cfg);
+    for (name, key) in [
         (
-            "eri=J+K",
-            mdiff(&madd(&kp.coulomb, &kp.exchange), &mscale(&p.eri, s)),
+            "HSE06",
+            "but the dense kernels carry the bare Coulomb exchange; build the J/K with KDenseAftConfig::rsh set",
         ),
-        ("madelung", mdiff(&kp.madelung, &mscale(&p.madelung, s))),
-        ("sigma", mdiff(&k.sigma, &g.sigma)),
-    ]
+        ("wB97X-V", "VV10"),
+        ("B2PLYP", "double hybrid"),
+    ] {
+        let e = run(name, &fx.res.scf, &ok_cfg)
+            .err()
+            .unwrap_or_else(|| panic!("{name} accepted"))
+            .to_string();
+        assert!(e.contains(key), "{name}: {e}");
+    }
+    let e = run("PBE0", &fx.res.scf, &scfg(None, None, None, None))
+        .expect_err("no exxdiv")
+        .to_string();
+    assert!(
+        e.contains("kpoint_uks_stress: a hybrid functional (exact exchange 0.25) needs KRksStressConfig::exxdiv"),
+        "{e}"
+    );
+    let guard_msg = "kpoint_uks_stress: the Fock matrix rebuilt";
+    let mut t = fx.res.scf.clone();
+    t.fock_alpha[0][(0, 1)] += Complex64::new(1e-6, 0.0);
+    let e = run("PBE0", &t, &ok_cfg)
+        .expect_err("alpha tamper")
+        .to_string();
+    assert!(e.contains(guard_msg) && e.contains("fock_alpha"), "{e}");
+    let mut t = fx.res.scf.clone();
+    t.fock_beta[0][(0, 1)] += Complex64::new(1e-6, 0.0);
+    let e = run("PBE0", &t, &ok_cfg)
+        .expect_err("beta tamper")
+        .to_string();
+    assert!(e.contains(guard_msg) && e.contains("fock_beta"), "{e}");
+    let mut t = fx.res.scf.clone();
+    t.converged = false;
+    assert!(run("PBE0", &t, &ok_cfg).is_err());
 }
-
-/// Worst correct per-part residual against the Gamma anchors 9.8e-12 (J+K,
-/// 1x1x1 PBE), 2.1e-12 (1x1x3 supercell); mutants miss by >= 4.7e-3. Bar 1e-9:
-/// 100x above the floor, 5e6 below the smallest mutant.
-const BAR_GAMMA: f64 = 1e-9;
 
 /// (3a) 1x1x1 == the Gamma UKS stress, PER PART, on the open-shell H3 doublet
 /// (real lattice sums vs complex Bloch AOs; separate SCFs). Sees the spin
@@ -837,44 +200,6 @@ fn one_point_mesh_matches_the_gamma_uks_stress_per_part() {
 fn one_point_mesh_matches_the_gamma_uks_stress_per_part_pbe_lda() {
     one_point_case("PBE");
     one_point_case("LDA");
-}
-
-fn one_point_case(f: &str) {
-    let gam = gamma_side(&cell_of(&H3), f);
-    let fx = fixture(&H3, G111, f, Jk::Dense, ExxDiv::Ewald);
-    let k = stress(&fx);
-    for (n, d) in gamma_rows(&k, &gam, 1.0) {
-        eprintln!("{f} H3 1x1x1 vs Gamma UKS: {n:<10} {d:.2e}");
-        assert!(d < BAR_GAMMA, "{f} {n}: {d:e}");
-    }
-    assert!(mmax(&k.xc_ao) > 1e-4 && mmax(&k.xc_weight) > 1e-4);
-    assert!(mmax(&k.hf.parts.exchange) > 1e-4 || f != "PBE0");
-}
-
-/// Explicit diag(n) supercell of `pos` (copy-major, copy 0 first).
-fn supercell_pos(pos: &[[f64; 3]], a: f64, n: [usize; 3], mult: usize) -> Cell {
-    let mut atoms = Vec::new();
-    for m0 in 0..n[0] {
-        for m1 in 0..n[1] {
-            for m2 in 0..n[2] {
-                for p in pos {
-                    atoms.push([
-                        p[0] + m0 as f64 * a,
-                        p[1] + m1 as f64 * a,
-                        p[2] + m2 as f64 * a,
-                    ]);
-                }
-            }
-        }
-    }
-    let lat = [
-        [a * n[0] as f64, 0.0, 0.0],
-        [0.0, a * n[1] as f64, 0.0],
-        [0.0, 0.0, a * n[2] as f64],
-    ];
-    let mut mol = hydrogens(&atoms);
-    mol.multiplicity = mult;
-    Cell::new(mol, lat).unwrap()
 }
 
 /// (3b) SUPERCELL ANCHOR on the non-TRIM 1x1x3 mesh, open shell: the k stress
@@ -895,18 +220,6 @@ fn k_mesh_uks_stress_is_the_gamma_supercell_stress_per_part() {
     }
     assert!(mmax(&k.hf.parts.madelung) > 1e-6);
 }
-
-// ------------------------------------------------------------------ (4)(5)
-
-/// FD step and bar, from `fd_window_probe` (H3 doublet, PBE0, dense Ewald,
-/// 1x1x3, shared cutoff 14, all nine components): worst |FD - analytic| 5.4e-9
-/// at h = 2.5e-5, 1.5e-8 at 5e-5, 5.4e-8 at 1e-4 (h^2 truncation; the h = 2.5e-5
-/// residual is the SCF-energy noise / 2h floor). All-nine at 2.5e-5: PBE0 Ewald
-/// 5.4e-9, PBE none 5.3e-9; RS-GDF 2.0e-9, Monkhorst-Pack 2.2e-10, uniform grid
-/// 2.0e-9. Bar 3e-8 = 5.6x the worst correct residual and ~1.6e5 below the
-/// smallest mutant miss (NoHessian, 4.7e-3 against the Gamma anchor).
-const FD_H: f64 = 2.5e-5;
-const FD_BAR: f64 = 3e-8;
 
 /// (4) FD of ferric's own UKS energy under symmetric strain at fixed
 /// fractional coordinates (fresh SCF per displaced cell, mesh rebuilt on the
@@ -950,22 +263,6 @@ fn pbe0_uks_stress_matches_fd_on_the_monkhorst_pack_mesh() {
         mp: true,
     };
     fd_case("PBE0", Jk::Dense, ExxDiv::Ewald, m, &[(2, 2), (0, 1)]);
-}
-
-fn fd_case(f: &str, jk: Jk, exxdiv: ExxDiv, m: Mesh, comps: &[(usize, usize)]) {
-    let fx = fixture(&H3, m, f, jk, exxdiv);
-    let s = stress(&fx);
-    let fd = fd_components(&fx.cell, m, f, jk, exxdiv, FD_H, comps);
-    let mut worst = 0.0_f64;
-    for (&(i, j), d) in comps.iter().zip(&fd) {
-        let miss = (s.de_deps[i][j] - d).abs();
-        eprintln!(
-            "{f} {jk:?} {exxdiv:?} eps({i},{j}): analytic {:.9e} FD {d:.9e} miss {miss:.2e}",
-            s.de_deps[i][j]
-        );
-        worst = worst.max(miss);
-    }
-    assert!(worst < FD_BAR, "{f} {jk:?} {exxdiv:?}: {worst:e}");
 }
 
 /// (5) Pressure from isotropic scaling: sum_a dE/de_aa equals the FD of E under
@@ -1043,104 +340,6 @@ fn uks_stress_is_bit_identical_across_threads() {
     assert_eq!(a.e_xc, b.e_xc);
 }
 
-/// Typed refusals (exact wording) and the per-spin Fock guard from every side.
-#[test]
-fn refusals_and_the_per_spin_fock_guard() {
-    let fx = fixture(&H3, G111, "PBE0", Jk::Dense, ExxDiv::Ewald);
-    let ok_cfg = scfg(Some(ExxDiv::Ewald), None, None, None);
-    let run = |f: &str, s: &KUScfResult, cfg: &KUksStressConfig| stress_with(&fx, f, s, cfg);
-    for (name, key) in [
-        // A range-separated name is differentiated since #492 (on J/K that
-        // carry its range separation; `pbc_kuks_rsh_stress.rs`): on these
-        // bare kernels the shared input check refuses it.
-        (
-            "HSE06",
-            "but the dense kernels carry the bare Coulomb exchange; build the J/K with KDenseAftConfig::rsh set",
-        ),
-        // SCAN is covered (`pbc_kuxc_mgga.rs`): a PBE0 state handed in as
-        // SCAN is refused by the Fock guard.
-        ("SCAN", "differs from the SCF's stored fock_alpha"),
-        ("wB97X-V", "VV10"),
-        ("B2PLYP", "double hybrid"),
-    ] {
-        let e = run(name, &fx.res.scf, &ok_cfg)
-            .err()
-            .unwrap_or_else(|| panic!("{name} accepted"))
-            .to_string();
-        eprintln!("{name}: {e}");
-        assert!(e.contains(key), "{name}: {e}");
-    }
-    let e = run("PBE0", &fx.res.scf, &scfg(None, None, None, None))
-        .expect_err("no exxdiv")
-        .to_string();
-    assert!(
-        e.contains("kpoint_uks_stress: a hybrid functional (exact exchange 0.25) needs KRksStressConfig::exxdiv"),
-        "{e}"
-    );
-    let ok = run("PBE0", &fx.res.scf, &ok_cfg).unwrap();
-    assert!(ok.hf.fock_mismatch < 1e-12, "{:e}", ok.hf.fock_mismatch);
-    assert!(ok.hf.commutator < UKS_COMMUTATOR_TOL / 100.0);
-    let pbe = fixture(&H3, G111, "PBE", Jk::Dense, ExxDiv::Ewald);
-    let guard_msg = "kpoint_uks_stress: the Fock matrix rebuilt";
-    let cases: Vec<(&str, Result<KUksStress, ferric_core::FerricError>)> = vec![
-        (
-            "exxdiv None on an Ewald SCF",
-            run(
-                "PBE0",
-                &fx.res.scf,
-                &scfg(Some(ExxDiv::None), None, None, None),
-            ),
-        ),
-        ("B3LYP on a PBE0 SCF", run("B3LYP", &fx.res.scf, &ok_cfg)),
-        ("PBE stress on a PBE0 SCF", run("PBE", &fx.res.scf, &ok_cfg)),
-        (
-            "PBE0 stress on a PBE SCF",
-            run("PBE0", &pbe.res.scf, &ok_cfg),
-        ),
-    ];
-    for (n, r) in cases {
-        let e = r
-            .err()
-            .unwrap_or_else(|| panic!("{n} accepted"))
-            .to_string();
-        eprintln!("{n}: {e}");
-        assert!(e.contains(guard_msg), "{n}: {e}");
-    }
-    // Tampers of each spin's Fock are refused, naming the spin.
-    let mut t = fx.res.scf.clone();
-    t.fock_alpha[0][(0, 1)] += Complex64::new(1e-6, 0.0);
-    let e = run("PBE0", &t, &ok_cfg)
-        .expect_err("alpha tamper")
-        .to_string();
-    assert!(e.contains(guard_msg) && e.contains("fock_alpha"), "{e}");
-    let mut t = fx.res.scf.clone();
-    t.fock_beta[0][(0, 1)] += Complex64::new(1e-6, 0.0);
-    let e = run("PBE0", &t, &ok_cfg)
-        .expect_err("beta tamper")
-        .to_string();
-    assert!(e.contains(guard_msg) && e.contains("fock_beta"), "{e}");
-    let mut t = fx.res.scf.clone();
-    std::mem::swap(&mut t.fock_alpha, &mut t.fock_beta);
-    let e = run("PBE0", &t, &ok_cfg).expect_err("swapped").to_string();
-    assert!(e.contains(guard_msg) && e.contains("fock_alpha"), "{e}");
-    // Unconverged SCF.
-    let mut t = fx.res.scf.clone();
-    t.converged = false;
-    assert!(run("PBE0", &t, &ok_cfg).is_err());
-    // A pure functional needs no exxdiv and has no exchange part.
-    let a = stress_with(&pbe, "PBE", &pbe.res.scf, &scfg(None, None, None, None)).unwrap();
-    assert_eq!(mmax(&a.hf.parts.exchange), 0.0);
-    // The exchange fraction of the diagnostic entry is validated.
-    let z = zero_xc(&H3, G111, Jk::Dense, ExxDiv::None, 0.0);
-    for bad in [-0.1, 1.5, f64::NAN] {
-        let e = null_stress(&z, bad, &scfg(None, None, None, None))
-            .err()
-            .unwrap_or_else(|| panic!("a = {bad} accepted"))
-            .to_string();
-        assert!(e.contains("outside [0, 1]"), "{e}");
-    }
-}
-
 /// A loosely converged UKS state is refused with the commutator message; the
 /// same state with the gate off returns a stress that is wrong by far more than
 /// the FD bar (so the gate matters), and a tight state passes the gate.
@@ -1211,14 +410,6 @@ fn loose_uks_scf_fires_the_stationarity_gate_with_the_exact_message() {
     assert!(c > UKS_COMMUTATOR_TOL, "{c:e}");
 }
 
-// ------------------------------------------------------------------ memory
-
-/// The byte count of a typed ledger error (`... (N bytes; ...`).
-fn charge_of(m: &str) -> usize {
-    let head = &m[..m.find(" bytes;").expect("byte count in the error")];
-    head[head.rfind('(').unwrap() + 1..].parse().unwrap()
-}
-
 /// Budget gates of the UKS stress. (i) A 4 MB budget fails typed and a 16 MB
 /// budget reproduces the AMPLE-budget stress BITWISE (null XC, a = 0.5, no grid
 /// pass). (ii) The Fock-guard reservation is read from the typed error the
@@ -1279,18 +470,6 @@ fn budgets_either_reproduce_the_uks_stress_or_fail_typed() {
     );
     let n = z.prep.nbasis();
     assert_eq!(charge_of(&m), 10 * z.mesh.nk() * n * n * 16, "{m}");
-}
-
-/// J(k), K(k) (K with the build's Madelung shift) of density `d`.
-fn jk_mats(z: &Zx, d: &[Array2<Complex64>]) -> (Vec<Array2<Complex64>>, Vec<Array2<Complex64>>) {
-    let n = z.prep.nbasis();
-    let nk = z.mesh.nk();
-    let mut j: Vec<Array2<Complex64>> = (0..nk).map(|_| Array2::zeros((n, n))).collect();
-    let mut k = j.clone();
-    let eri =
-        KDenseAftEri::build(&z.cell, &z.prep, &z.mesh, &z.hk.s, z.exxdiv, &dense_cfg()).unwrap();
-    eri.jk_builder().build(d, &mut j, &mut k).unwrap();
-    (j, k)
 }
 
 /// The XC chunk charge, read from the typed error of the PRODUCTION PBE0 path.
@@ -1355,25 +534,6 @@ fn xc_chunk_charge_is_read_from_the_production_error() {
     let (nk, n) = (fx.mesh.nk(), fx.prep.nbasis());
     let want = nk * n * pts * 16 * 40 + n * pts * 16 * 8 + nk * n * n * 16 * 4;
     assert_eq!(charge_of(&m), want, "{m}");
-}
-
-// ------------------------------------------------------------------ mutants
-
-const MUTANT_BAR: f64 = 1e-5;
-
-fn all_spin_mutants() -> [KUStressMutation; 9] {
-    use KUStressMutation as U;
-    [
-        U::XcSpinSwap,
-        U::XcDropBeta,
-        U::XcCrossDropped,
-        U::XcCrossOwn,
-        U::XcSpinAveraged,
-        U::PulayFockSwap,
-        U::PulayKSwap,
-        U::PulayJOneSpin,
-        U::PulayNoVxcBeta,
-    ]
 }
 
 /// Production-wired spin-specific, XC and exchange-scale defects against the
@@ -1514,30 +674,4 @@ fn uniform_grid_stress_is_symmetric_and_matches_fd() {
     }
     eprintln!("uniform-grid UKS stress vs FD worst {worst:.2e}");
     assert!(worst < FD_BAR, "{worst:e}");
-}
-
-/// Default-set subset of the mutant sweep: the three defects that most need the
-/// open-shell Gamma anchor (a spin swap in the XC strain, the other spin's
-/// exchange in the Pulay Fock, the exchange fraction applied twice). Each must
-/// miss the Gamma reference by far more than the 1e-5 mutant bar (misses
-/// measured in the full sweep: XcSpinSwap 1.6e-1, PulayKSwap 4.6e-1,
-/// ExchScaledTwice 3.0e-1).
-#[test]
-fn spin_and_scaling_mutants_are_caught_by_the_gamma_anchor() {
-    let f = "PBE0";
-    let gam = gamma_side(&cell_of(&H3), f);
-    let fx = fixture(&H3, G111, f, Jk::Dense, ExxDiv::Ewald);
-    for (label, xm, sm) in [
-        ("XcSpinSwap", None, Some(KUStressMutation::XcSpinSwap)),
-        ("PulayKSwap", None, Some(KUStressMutation::PulayKSwap)),
-        (
-            "ExchScaledTwice",
-            Some(KXcStressMutation::ExchScaledTwice),
-            None,
-        ),
-    ] {
-        let d = mdiff(&stress_mut(&fx, xm, sm, None).de_deps, &gam.de_deps);
-        eprintln!("1x1x1 vs Gamma under {label}: miss {d:.2e}");
-        assert!(d > MUTANT_BAR, "{label} survives the Gamma anchor: {d:e}");
-    }
 }

@@ -13,441 +13,21 @@
 //! H2/STO-3G, s functions only), range-separated hybrids (refused), VV10/double
 //! hybrids (refused; meta-GGA has its own file, `pbc_kxcgrad_mgga.rs`), range-split RS-GDF with a hybrid, heavy atoms / ECP with a
 //! hybrid, shifted meshes, open shell, stress.
+//!
+//! WEEKLY HALF: `smoke_mutants_are_caught` (CI >= 120 s: dense ewald, RS-GDF
+//! ewald and dense none mutant sweeps on 1x1x3) runs in
+//! `validation_pbc_kxcgrad_hybrid.rs`; the helpers are
+//! `kxcgrad_hybrid_support/mod.rs`. Per-commit canary:
+//! `dense_exchange_scale_mutants_are_caught_on_the_one_point_mesh` (every
+//! dense-reachable exchange-scale defect, the remainder defect and the
+//! identity controls, dense ewald, 1x1x1); the RS-GDF fit-scale defects stay
+//! per commit in `gamma_rsgdf_anchor_catches_the_fit_scale_mutants`.
 
 mod common;
+#[path = "kxcgrad_hybrid_support/mod.rs"]
+mod support;
 
-use common::*;
-use ferric_core::basis::{BasisSet, Shell};
-use ferric_pbc::dense_aft::ExxDiv;
-use ferric_pbc::dense_aft::{DenseAftEri, DEFAULT_DENSE_AFT_MAX_BYTES};
-use ferric_pbc::dft::PeriodicGridConfig;
-use ferric_pbc::dft::{gamma_rks, GammaRksConfig};
-use ferric_pbc::grad::{
-    gamma_rks_gradient_rsgdf, gamma_rks_gradient_with, GammaGradConfig, RsGdfGradSource,
-};
-use ferric_pbc::hcore::kpoint::{periodic_hcore_kpts, PeriodicHcoreK};
-use ferric_pbc::hcore::periodic_hcore;
-use ferric_pbc::hcore::PeriodicHcoreConfig;
-use ferric_pbc::kdense_aft::{KDenseAftConfig, KDenseAftEri};
-use ferric_pbc::kdft::{solve_krks, KRksConfig, KRksResult};
-use ferric_pbc::kgrad::{
-    kpoint_rhf_gradient, KGradConfig, KGradJk, KGradMutation, KRsGdfGradSource,
-};
-use ferric_pbc::kpts::KPointMesh;
-use ferric_pbc::kscf::{
-    solve_krks_injected, KJkKind, KPointInjection, KPointJk, KPointXc, KScfResult,
-};
-use ferric_pbc::kxcgrad::{kpoint_null_xc_gradient, kpoint_rks_gradient};
-use ferric_pbc::kxcgrad::{KRksGradConfig, KRksGradient, KXcGrid, KXcMutation};
-use ferric_pbc::lattice::Cell;
-use ferric_pbc::rsgdf::kpoint::{KRsGdf, KRsGdfConfig};
-use ferric_pbc::rsgdf::{RsGdf, RsGdfConfig};
-use ferric_pbc::uhf::GammaUhfIntegrals;
-use ndarray::Array2;
-use num_complex::Complex64;
-use std::collections::HashMap;
-
-const OMEGA: f64 = 0.8;
-const AMPLE: usize = 1 << 31;
-/// Explicit XC neighbour cutoff shared by every energy and force here: the
-/// default depends on the cell and creates one-step energy discontinuities.
-const CUTOFF: f64 = 10.0;
-/// FD bar (see the FD tests for the measured floors on both sides).
-const FD_BAR: f64 = 1e-7;
-const H2: [[f64; 3]; 2] = [[0.3, 0.2, 0.1], [0.35, 0.12, 1.5]];
-const ANCHOR_PRECISION: f64 = 1e-12;
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
-enum Jk {
-    Dense,
-    Gdf,
-    /// RS-GDF with the range split (lambda = 1).
-    GdfSplit,
-}
-
-fn et_sp_aux() -> BasisSet {
-    let mut shells = Vec::new();
-    for a in [4.7, 1.9, 0.75, 0.3] {
-        shells.push(Shell {
-            l: 0,
-            pure: false,
-            exponents: vec![a],
-            coefficients: vec![1.0],
-        });
-    }
-    for a in [1.25, 0.5] {
-        shells.push(Shell {
-            l: 1,
-            pure: false,
-            exponents: vec![a],
-            coefficients: vec![1.0],
-        });
-    }
-    let mut m = HashMap::new();
-    m.insert(1, shells);
-    BasisSet {
-        name: "et-sp-aux-H".into(),
-        shells: m,
-        ecps: HashMap::new(),
-    }
-}
-
-fn kgdf_cfg_of(jk: Jk) -> KRsGdfConfig {
-    KRsGdfConfig {
-        gdf: RsGdfConfig {
-            omega: 1.0,
-            exxdiv: ExxDiv::None,
-            budget_bytes: Some(AMPLE),
-            range_split: (jk == Jk::GdfSplit).then(|| ferric_pbc::rsgdf::RangeSplit::new(1.0)),
-            ..Default::default()
-        },
-        mutation: None,
-    }
-}
-
-thread_local! {
-    /// (radial, angular) of the XC grid on THIS test thread (default (20, 50);
-    /// only the ignored production-class test changes it).
-    static GRID: std::cell::Cell<(usize, usize)> = const { std::cell::Cell::new((20, 50)) };
-}
-
-fn grid_cfg() -> PeriodicGridConfig {
-    let (nr, na) = GRID.with(|g| g.get());
-    let mut g = PeriodicGridConfig::with_size(nr, na);
-    g.neighbour_cutoff = Some(CUTOFF);
-    g
-}
-
-fn cell_of(pos: &[[f64; 3]]) -> Cell {
-    Cell::new(hydrogens(pos), cubic(4.0)).expect("cell")
-}
-
-fn krks_cfg(cell: &Cell, functional: &str, jk: Jk, exxdiv: ExxDiv) -> KRksConfig {
-    let mut cfg = KRksConfig::new(cell, exxdiv, functional);
-    cfg.krhf.hcore = PeriodicHcoreConfig::with_omega(OMEGA);
-    cfg.krhf.scf.energy_conv = 1e-13;
-    cfg.krhf.scf.grad_conv = 1e-10;
-    cfg.krhf.scf.max_iter = 200;
-    if jk != Jk::Dense {
-        cfg.krhf.jk = KJkKind::RsGdf;
-        cfg.krhf.rsgdf = kgdf_cfg_of(jk);
-    }
-    cfg.grid = grid_cfg();
-    cfg
-}
-
-fn scf(
-    pos: &[[f64; 3]],
-    mesh_n: [usize; 3],
-    functional: &str,
-    jk: Jk,
-    exxdiv: ExxDiv,
-) -> KRksResult {
-    let cell = cell_of(pos);
-    let prep = prep_for(&cell, &pyscf_sto3g_h());
-    let mesh = KPointMesh::gamma_centred(&cell, mesh_n).unwrap();
-    let cfg = krks_cfg(&cell, functional, jk, exxdiv);
-    let aux = (jk != Jk::Dense).then(|| prep_for(&cell, &et_sp_aux()));
-    solve_krks(&cell, &prep, aux.as_ref(), &mesh, &cfg)
-        .unwrap_or_else(|e| panic!("solve_krks {functional}: {e}"))
-}
-
-struct Fx {
-    cell: Cell,
-    prep: ferric_integrals::basis_bridge::PreparedBasis,
-    aux: ferric_integrals::basis_bridge::PreparedBasis,
-    mesh: KPointMesh,
-    hk: PeriodicHcoreK,
-    res: KRksResult,
-    jk: Jk,
-    exxdiv: ExxDiv,
-    functional: String,
-}
-
-fn fixture(pos: &[[f64; 3]], mesh_n: [usize; 3], functional: &str, jk: Jk, exxdiv: ExxDiv) -> Fx {
-    let cell = cell_of(pos);
-    let prep = prep_for(&cell, &pyscf_sto3g_h());
-    let mesh = KPointMesh::gamma_centred(&cell, mesh_n).unwrap();
-    let res = scf(pos, mesh_n, functional, jk, exxdiv);
-    let cfg = krks_cfg(&cell, functional, jk, exxdiv);
-    let hk = periodic_hcore_kpts(&cell, &prep, &mesh, &cfg.krhf.hcore).unwrap();
-    let aux = prep_for(&cell, &et_sp_aux());
-    Fx {
-        cell,
-        prep,
-        aux,
-        mesh,
-        hk,
-        res,
-        jk,
-        exxdiv,
-        functional: functional.to_string(),
-    }
-}
-
-fn gcfg(
-    exxdiv: Option<ExxDiv>,
-    xm: Option<KXcMutation>,
-    gm: Option<KGradMutation>,
-) -> KRksGradConfig {
-    KRksGradConfig {
-        grad: KGradConfig {
-            budget_bytes: Some(AMPLE),
-            mutation: gm,
-            ..Default::default()
-        },
-        grid: KXcGrid::Atom(grid_cfg()),
-        exxdiv,
-        mutation: xm,
-        ..Default::default()
-    }
-}
-
-/// The force of `fx` with the J/K object rebuilt the way the SCF built it.
-fn force_with(
-    fx: &Fx,
-    functional: &str,
-    scf: &KScfResult,
-    cfg: &KRksGradConfig,
-) -> Result<KRksGradient, ferric_core::FerricError> {
-    let hcfg = PeriodicHcoreConfig::with_omega(OMEGA);
-    match fx.jk {
-        Jk::Dense => {
-            let eri = KDenseAftEri::build(
-                &fx.cell,
-                &fx.prep,
-                &fx.mesh,
-                &fx.hk.s,
-                fx.exxdiv,
-                &Default::default(),
-            )
-            .unwrap();
-            kpoint_rks_gradient(
-                &fx.cell,
-                &fx.prep,
-                &fx.mesh,
-                &hcfg,
-                &fx.hk,
-                KGradJk::Dense(&eri),
-                scf,
-                functional,
-                cfg,
-            )
-        }
-        Jk::Gdf | Jk::GdfSplit => {
-            let kc = kgdf_cfg_of(fx.jk);
-            let gdf = KRsGdf::build(&fx.cell, &fx.prep, &fx.aux, &fx.mesh, &fx.hk.s, &kc)
-                .unwrap()
-                .with_exxdiv(fx.exxdiv);
-            kpoint_rks_gradient(
-                &fx.cell,
-                &fx.prep,
-                &fx.mesh,
-                &hcfg,
-                &fx.hk,
-                KGradJk::RsGdf(KRsGdfGradSource {
-                    gdf: &gdf,
-                    cfg: &kc,
-                    aux: &fx.aux,
-                }),
-                scf,
-                functional,
-                cfg,
-            )
-        }
-    }
-}
-
-fn force(fx: &Fx) -> KRksGradient {
-    force_with(
-        fx,
-        &fx.functional,
-        &fx.res.scf,
-        &gcfg(Some(fx.exxdiv), None, None),
-    )
-    .unwrap()
-}
-
-fn force_mut(fx: &Fx, xm: Option<KXcMutation>, gm: Option<KGradMutation>) -> KRksGradient {
-    force_with(
-        fx,
-        &fx.functional,
-        &fx.res.scf,
-        &gcfg(Some(fx.exxdiv), xm, gm),
-    )
-    .unwrap()
-}
-
-fn moved(pos: &[[f64; 3]], a: usize, x: usize, h: f64) -> Vec<[f64; 3]> {
-    let mut p = pos.to_vec();
-    p[a][x] += h;
-    p
-}
-
-fn fd(
-    pos: &[[f64; 3]],
-    a: usize,
-    x: usize,
-    h: f64,
-    mesh_n: [usize; 3],
-    f: &str,
-    jk: Jk,
-    exxdiv: ExxDiv,
-) -> f64 {
-    let e = |p: &[[f64; 3]]| scf(p, mesh_n, f, jk, exxdiv).scf.energy;
-    (e(&moved(pos, a, x, h)) - e(&moved(pos, a, x, -h))) / (2.0 * h)
-}
-
-fn max_abs(a: &Array2<f64>) -> f64 {
-    a.iter().fold(0.0_f64, |m, x| m.max(x.abs()))
-}
-
-fn parts_diff(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
-    (a - b).iter().fold(0.0_f64, |m, x| m.max(x.abs()))
-}
-
-// ------------------------------------------------ zero-XC fixed-density SCF
-
-struct ZeroXc(usize);
-impl KPointXc for ZeroXc {
-    fn build(
-        &mut self,
-        dm: &[Array2<Complex64>],
-    ) -> Result<(f64, Vec<Array2<Complex64>>), ferric_core::FerricError> {
-        Ok((
-            0.0,
-            dm.iter().map(|_| Array2::zeros((self.0, self.0))).collect(),
-        ))
-    }
-}
-
-struct Zx {
-    cell: Cell,
-    prep: ferric_integrals::basis_bridge::PreparedBasis,
-    aux: ferric_integrals::basis_bridge::PreparedBasis,
-    mesh: KPointMesh,
-    hk: PeriodicHcoreK,
-    scf: KScfResult,
-    jk: Jk,
-    exxdiv: ExxDiv,
-}
-
-fn dense_cfg() -> KDenseAftConfig {
-    KDenseAftConfig {
-        precision: ANCHOR_PRECISION,
-        ..Default::default()
-    }
-}
-
-/// Hartree + `a`/2 exact-exchange k SCF with a zero XC (a = 1 is k-point HF).
-fn zero_xc(pos: &[[f64; 3]], mesh_n: [usize; 3], jk: Jk, exxdiv: ExxDiv, a: f64) -> Zx {
-    let cell = cell_of(pos);
-    let prep = prep_for(&cell, &pyscf_sto3g_h());
-    let aux = prep_for(&cell, &et_sp_aux());
-    let mesh = KPointMesh::gamma_centred(&cell, mesh_n).unwrap();
-    let hcfg = PeriodicHcoreConfig::with_omega(OMEGA);
-    let hk = periodic_hcore_kpts(&cell, &prep, &mesh, &hcfg).unwrap();
-    let mut sc = ferric_pbc::kscf::KScfConfig::default();
-    sc.energy_conv = 1e-13;
-    sc.grad_conv = 1e-10;
-    sc.max_iter = 200;
-    let eri;
-    let gdf;
-    let jkb: Box<dyn KPointJk + '_> = match jk {
-        Jk::Dense => {
-            eri = KDenseAftEri::build(&cell, &prep, &mesh, &hk.s, exxdiv, &dense_cfg()).unwrap();
-            Box::new(eri.jk_builder())
-        }
-        Jk::Gdf | Jk::GdfSplit => {
-            gdf = KRsGdf::build(&cell, &prep, &aux, &mesh, &hk.s, &kgdf_cfg_of(jk))
-                .unwrap()
-                .with_exxdiv(exxdiv);
-            Box::new(gdf.jk_builder())
-        }
-    };
-    let inj = KPointInjection {
-        s: hk.s.clone(),
-        h: hk.h.clone(),
-        vnn: hk.enn,
-        jk: jkb,
-    };
-    let mut z = ZeroXc(prep.nbasis());
-    let scf = solve_krks_injected(&cell, &mesh, &sc, inj, &mut z, a).unwrap();
-    assert!(scf.converged);
-    Zx {
-        cell,
-        prep,
-        aux,
-        mesh,
-        hk,
-        scf,
-        jk,
-        exxdiv,
-    }
-}
-
-fn with_jk<R>(z: &Zx, f: impl FnOnce(KGradJk<'_>) -> R) -> R {
-    match z.jk {
-        Jk::Dense => {
-            let eri =
-                KDenseAftEri::build(&z.cell, &z.prep, &z.mesh, &z.hk.s, z.exxdiv, &dense_cfg())
-                    .unwrap();
-            f(KGradJk::Dense(&eri))
-        }
-        Jk::Gdf | Jk::GdfSplit => {
-            let kc = kgdf_cfg_of(z.jk);
-            let gdf = KRsGdf::build(&z.cell, &z.prep, &z.aux, &z.mesh, &z.hk.s, &kc)
-                .unwrap()
-                .with_exxdiv(z.exxdiv);
-            f(KGradJk::RsGdf(KRsGdfGradSource {
-                gdf: &gdf,
-                cfg: &kc,
-                aux: &z.aux,
-            }))
-        }
-    }
-}
-
-/// J(k), K(k) (K with the build's Madelung shift) of the SCF density.
-fn jk_mats(z: &Zx) -> (Vec<Array2<Complex64>>, Vec<Array2<Complex64>>) {
-    let n = z.prep.nbasis();
-    let nk = z.mesh.nk();
-    let mut j: Vec<Array2<Complex64>> = (0..nk).map(|_| Array2::zeros((n, n))).collect();
-    let mut k = j.clone();
-    match z.jk {
-        Jk::Dense => {
-            let eri =
-                KDenseAftEri::build(&z.cell, &z.prep, &z.mesh, &z.hk.s, z.exxdiv, &dense_cfg())
-                    .unwrap();
-            eri.jk_builder()
-                .build(&z.scf.densities, &mut j, &mut k)
-                .unwrap();
-        }
-        Jk::Gdf | Jk::GdfSplit => {
-            let gdf = KRsGdf::build(
-                &z.cell,
-                &z.prep,
-                &z.aux,
-                &z.mesh,
-                &z.hk.s,
-                &kgdf_cfg_of(z.jk),
-            )
-            .unwrap()
-            .with_exxdiv(z.exxdiv);
-            gdf.jk_builder()
-                .build(&z.scf.densities, &mut j, &mut k)
-                .unwrap();
-        }
-    }
-    (j, k)
-}
-
-fn kcfg() -> KGradConfig {
-    KGradConfig {
-        budget_bytes: Some(AMPLE),
-        ..Default::default()
-    }
-}
+use support::*;
 
 /// (a) EXACTNESS ANCHOR. a = 1 with a zero XC remainder IS the k-point HF
 /// force: same `assemble`, but the KS entry rebuilds F itself (h + J - K/2 with
@@ -613,44 +193,6 @@ fn force_is_affine_in_the_exchange_fraction_at_fixed_density() {
     }
 }
 
-// ------------------------------------------------------------------- Gamma
-
-fn gamma_pbe0(cell: &Cell, grid: &PeriodicGridConfig, f: &str) -> ferric_pbc::grad::GammaGradient {
-    let prep = prep_for(cell, &pyscf_sto3g_h());
-    let hcfg = PeriodicHcoreConfig::with_omega(OMEGA);
-    let hc = periodic_hcore(cell, &prep, &hcfg).unwrap();
-    let eri = DenseAftEri::build(
-        cell,
-        &prep,
-        &hc.s,
-        ExxDiv::Ewald,
-        ANCHOR_PRECISION,
-        DEFAULT_DENSE_AFT_MAX_BYTES,
-    )
-    .unwrap();
-    let mut gc = GammaRksConfig::new(f);
-    gc.grid = grid.clone();
-    gc.exxdiv = ExxDiv::Ewald;
-    gc.scf.energy_conv = 1e-13;
-    gc.scf.density_conv = 1e-10;
-    gc.scf.max_iter = 200;
-    let r = gamma_rks(cell, &prep, &hc, GammaUhfIntegrals::DenseAft(&eri), &gc).unwrap();
-    gamma_rks_gradient_with(
-        cell,
-        &prep,
-        &hcfg,
-        &hc,
-        &eri,
-        &r.scf,
-        &gc,
-        &GammaGradConfig {
-            budget_bytes: Some(AMPLE),
-            ..Default::default()
-        },
-    )
-    .unwrap()
-}
-
 /// (c) 1x1x1 == the Gamma hybrid KS gradient, per part (Ewald exxdiv, so the
 /// scaled Madelung M-term is inside `overlap`). Independent construction: real
 /// lattice sums vs complex Bloch AOs and a separate SCF. Floor: the two SCFs
@@ -679,29 +221,6 @@ fn one_point_mesh_matches_the_gamma_hybrid_gradient_per_part() {
         assert!(max_abs(&kp.exchange) > 1e-4, "K walks are exercised");
         assert!(max_abs(&k.xc_weight) > 1e-3);
     }
-}
-
-fn supercell_pos(pos: &[[f64; 3]], a: f64, n: [usize; 3]) -> Cell {
-    let mut atoms = Vec::new();
-    for m0 in 0..n[0] {
-        for m1 in 0..n[1] {
-            for m2 in 0..n[2] {
-                for p in pos {
-                    atoms.push([
-                        p[0] + m0 as f64 * a,
-                        p[1] + m1 as f64 * a,
-                        p[2] + m2 as f64 * a,
-                    ]);
-                }
-            }
-        }
-    }
-    let lat = [
-        [a * n[0] as f64, 0.0, 0.0],
-        [0.0, a * n[1] as f64, 0.0],
-        [0.0, 0.0, a * n[2] as f64],
-    ];
-    Cell::new(hydrogens(&atoms), lat).unwrap()
 }
 
 /// (d) SUPERCELL ANCHOR on the non-TRIM 1x1x3 mesh (carries the Bloch phases,
@@ -974,84 +493,6 @@ fn budgets_either_reproduce_the_force_or_fail_typed() {
     assert!(ok > 0 && err > 0);
 }
 
-// ------------------------------------------------------------------ mutants
-
-const MUTANT_BAR: f64 = 1e-5;
-
-fn miss_g(fx: &Fx, gm: KGradMutation, base: &KRksGradient) -> f64 {
-    parts_diff(&force_mut(fx, None, Some(gm)).grad, &base.grad)
-}
-
-/// Production-wired defects of the exchange scale (`KGradConfig::mutation`,
-/// `KRksGradConfig::mutation`), each against the FD-anchored force. Artifact
-/// hypothesis: a mutant that is an IDENTITY on a route/exxdiv must show exactly
-/// 0 there (asserted), otherwise it must miss by far more than the bar.
-#[test]
-fn smoke_mutants_are_caught() {
-    use KGradMutation as G;
-    // Dense AFT + Ewald: every dense-reachable defect.
-    let fx = fixture(&H2, [1, 1, 3], "PBE0", Jk::Dense, ExxDiv::Ewald);
-    let base = force(&fx);
-    for m in [
-        G::ExchDenseUnscaled,
-        G::ExchMadelungUnscaled,
-        G::ExchJScaled,
-        G::ExchScaledTwice,
-        G::ExchSpinFactor,
-    ] {
-        let d = miss_g(&fx, m, &base);
-        eprintln!("dense ewald {m:?}: miss {d:.2e}");
-        assert!(d > MUTANT_BAR, "{m:?} survives: {d:e}");
-    }
-    // The fit-only defect is an IDENTITY on the dense route.
-    assert_eq!(miss_g(&fx, G::ExchFitUnscaled, &base), 0.0);
-    // A wrong remainder ALONE (X1/X3/X4 and the Pulay V_xc with PBE instead
-    // of the PBE0 remainder; only the guard skipped), and the guard-skip alone
-    // as the control (must be exactly 0, so the miss is the remainder's).
-    let d = parts_diff(
-        &force_mut(&fx, Some(KXcMutation::WrongRemainder), None).grad,
-        &base.grad,
-    );
-    eprintln!("WrongRemainder (PBE for PBE0), remainder ALONE: miss {d:.2e}");
-    assert!(d > MUTANT_BAR);
-    let d0 = parts_diff(
-        &force_mut(&fx, Some(KXcMutation::GuardSkippedOnly), None).grad,
-        &base.grad,
-    );
-    assert_eq!(d0, 0.0, "the guard-skip control must not change the force");
-    // RS-GDF + Ewald.
-    let fg = fixture(&H2, [1, 1, 3], "PBE0", Jk::Gdf, ExxDiv::Ewald);
-    let gb = force(&fg);
-    for m in [
-        G::ExchFitUnscaled,
-        G::ExchMadelungUnscaled,
-        G::ExchScaledTwice,
-        G::ExchSpinFactor,
-        G::ExchJScaled,
-    ] {
-        let d = miss_g(&fg, m, &gb);
-        eprintln!("gdf ewald {m:?}: miss {d:.2e}");
-        assert!(d > MUTANT_BAR, "gdf {m:?} survives: {d:e}");
-    }
-    // The dense-only defect is an identity on RS-GDF (no dense K walk exists).
-    assert_eq!(miss_g(&fg, G::ExchDenseUnscaled, &gb), 0.0);
-    // exxdiv None: the Madelung defect is an identity (v_M = 0): BLIND by
-    // construction, asserted so it cannot be mistaken for coverage.
-    let fn0 = fixture(&H2, [1, 1, 3], "PBE0", Jk::Dense, ExxDiv::None);
-    let b0 = force(&fn0);
-    assert_eq!(miss_g(&fn0, G::ExchMadelungUnscaled, &b0), 0.0);
-}
-
-// ------------------------------------------------------------------ ignored
-
-/// FD step of the production-grid test. At (40, 110) the energy has a hard
-/// one-step discontinuity of ~9e-11 Ha along x that a step of 5e-5 or more
-/// crosses (the residual of the lateral components then scales as 1/h: 2.2e-7
-/// at 2e-4, 4.4e-7 at 1e-4, 8.8e-7 at 5e-5, PBE0; plain PBE the same, 2.9e-7
-/// .. 1.2e-6, so it is not a hybrid effect); 2.5e-5 stays inside the smooth
-/// window (residual 1e-10), which the SCF noise floor eps/2h ~ 2.4e-10 bounds.
-const H_STEP: f64 = 2.5e-5;
-
 /// Production-class grid (40, 110) and a 2x2x2 mesh (TRIM-only: phases are
 /// real there; the 1x1x3 row carries them), dense AFT PBE0 with Ewald, FD of
 /// the energy.
@@ -1075,70 +516,6 @@ fn pbe0_force_matches_fd_on_the_production_grid_and_a_2x2x2_mesh() {
         eprintln!("(40,110) {mesh_n:?}: PBE0 analytic vs FD worst {worst:.2e}");
         assert!(worst < FD_BAR, "{mesh_n:?}: {worst:e}");
     }
-}
-
-// -------------------------------------------- RS-GDF Gamma anchor (1x1x1)
-
-/// The Gamma RS-GDF hybrid gradient: separate fit-gradient code
-/// (`gamma_rks_gradient_rsgdf`), the same aux basis and RS-GDF config.
-fn gamma_rsgdf_hybrid(cell: &Cell, f: &str, exxdiv: ExxDiv) -> ferric_pbc::grad::GammaGradient {
-    let prep = prep_for(cell, &pyscf_sto3g_h());
-    let auxp = prep_for(cell, &et_sp_aux());
-    let hcfg = PeriodicHcoreConfig::with_omega(OMEGA);
-    let hc = periodic_hcore(cell, &prep, &hcfg).unwrap();
-    let gdf =
-        RsGdf::build_for_gradient(cell, &prep, &auxp, &hc.s, &kgdf_cfg_of(Jk::Gdf).gdf).unwrap();
-    let mut gc = GammaRksConfig::new(f);
-    gc.grid = grid_cfg();
-    gc.exxdiv = exxdiv;
-    gc.scf.energy_conv = 1e-13;
-    gc.scf.density_conv = 1e-10;
-    gc.scf.max_iter = 200;
-    let r = gamma_rks(cell, &prep, &hc, GammaUhfIntegrals::RsGdf(&gdf), &gc).unwrap();
-    gamma_rks_gradient_rsgdf(
-        cell,
-        &prep,
-        &hcfg,
-        &hc,
-        &RsGdfGradSource {
-            gdf: &gdf,
-            aux: &auxp,
-            aux_jac: None,
-        },
-        &r.scf,
-        &gc,
-        &GammaGradConfig {
-            budget_bytes: Some(AMPLE),
-            ..Default::default()
-        },
-    )
-    .unwrap()
-}
-
-fn fit_rows(k: &KRksGradient, g: &ferric_pbc::grad::GammaGradient) -> Vec<(&'static str, f64)> {
-    let (kp, gp) = (&k.hf.parts, &g.parts);
-    vec![
-        ("xc_ao", parts_diff(&k.xc_ao, &gp.xc_ao)),
-        ("overlap", parts_diff(&kp.overlap, &gp.overlap)),
-        ("fit_orb_sr", parts_diff(&kp.fit_orb_sr, &gp.fit_orb_sr)),
-        ("fit_orb_lr", parts_diff(&kp.fit_orb_lr, &gp.fit_orb_lr)),
-        ("fit_aux_sr", parts_diff(&kp.fit_aux_sr, &gp.fit_aux_sr)),
-        ("fit_aux_lr", parts_diff(&kp.fit_aux_lr, &gp.fit_aux_lr)),
-        (
-            "fit_metric_sr",
-            parts_diff(&kp.fit_metric_sr, &gp.fit_metric_sr),
-        ),
-        (
-            "fit_metric_lr",
-            parts_diff(&kp.fit_metric_lr, &gp.fit_metric_lr),
-        ),
-        ("fit_g0", parts_diff(&kp.fit_g0, &gp.fit_g0)),
-        ("total", parts_diff(&k.grad, &gp_total(g))),
-    ]
-}
-
-fn gp_total(g: &ferric_pbc::grad::GammaGradient) -> Array2<f64> {
-    g.grad.clone()
 }
 
 /// (c') RS-GDF 1x1x1 k force == the Gamma RS-GDF hybrid gradient, per part
@@ -1181,6 +558,43 @@ fn gamma_rsgdf_anchor_catches_the_fit_scale_mutants() {
         eprintln!("{m:?}: miss vs the Gamma RS-GDF gradient {d:.2e} (unmutated {base:.1e})");
         assert!(d > MUTANT_BAR, "{m:?} survives the Gamma anchor: {d:e}");
     }
+}
+
+/// Per-commit canary of the weekly `smoke_mutants_are_caught`
+/// (`validation_pbc_kxcgrad_hybrid.rs`): the dense-AFT + Ewald block of that
+/// sweep on the 1x1x1 mesh. Every dense-reachable exchange-scale defect and
+/// the PBE-for-PBE0 remainder must move the force by more than the mutant
+/// bar; the fit-only defect and the guard-skip control must be EXACTLY 0.
+/// The production force it is measured against is anchored per commit to the
+/// Gamma PBE0 gradient (`one_point_mesh_matches_the_gamma_hybrid_gradient_per_part`).
+#[test]
+fn dense_exchange_scale_mutants_are_caught_on_the_one_point_mesh() {
+    use KGradMutation as G;
+    let fx = fixture(&H2, [1, 1, 1], "PBE0", Jk::Dense, ExxDiv::Ewald);
+    let base = force(&fx);
+    for m in [
+        G::ExchDenseUnscaled,
+        G::ExchMadelungUnscaled,
+        G::ExchJScaled,
+        G::ExchScaledTwice,
+        G::ExchSpinFactor,
+    ] {
+        let d = miss_g(&fx, m, &base);
+        eprintln!("1x1x1 dense ewald {m:?}: miss {d:.2e}");
+        assert!(d > MUTANT_BAR, "{m:?} survives: {d:e}");
+    }
+    assert_eq!(miss_g(&fx, G::ExchFitUnscaled, &base), 0.0);
+    let d = parts_diff(
+        &force_mut(&fx, Some(KXcMutation::WrongRemainder), None).grad,
+        &base.grad,
+    );
+    eprintln!("1x1x1 WrongRemainder: miss {d:.2e}");
+    assert!(d > MUTANT_BAR);
+    let d0 = parts_diff(
+        &force_mut(&fx, Some(KXcMutation::GuardSkippedOnly), None).grad,
+        &base.grad,
+    );
+    assert_eq!(d0, 0.0, "the guard-skip control must not change the force");
 }
 
 // ----------------------------------------------- net force, rsh, validation

@@ -278,3 +278,33 @@ pub fn supercell(pos: &[[f64; 3]], n: [usize; 3]) -> Cell {
     ];
     Cell::new(hydrogens(&atoms), lat).unwrap()
 }
+
+/// The `Rsh*` mutant sweep of `rsh_mutants_are_caught`: on the H2 1x1x3
+/// (non-TRIM) dense-AFT ewald fixture of each `(functional, bar)` case, every
+/// listed mutant must move the FD-validated production force by more than
+/// `bar`. The CAM-B3LYP erf piece must be live on this K set (> 0.1). The
+/// weekly test runs both functionals with every mutant; the per-commit canary
+/// CAM-B3LYP with every mutant.
+pub fn rsh_mutant_sweep(cases: &[(&str, f64)], mutants: &[KGradMutation]) {
+    let cell = cell_of(&H2);
+    let mesh = KPointMesh::gamma_centred(&cell, [1, 1, 3]).unwrap();
+    for &(f, _) in cases {
+        eprintln!(
+            "{f}: max erf weight |c_lr - c_sr| e^(-K^2/4w^2) on the 1x1x3 K set {:.2e}",
+            max_erf_weight(&cell, &mesh, rsh_of(f))
+        );
+    }
+    assert!(max_erf_weight(&cell, &mesh, rsh_of(CAM)) > 0.1);
+    for &(f, bar) in cases {
+        let fx = fixture(&H2, [1, 1, 3], f, ExxDiv::Ewald);
+        let base = force(&fx);
+        for &m in mutants {
+            let miss = diff(&force_m(&fx, Some(m)).unwrap().grad, &base.grad);
+            eprintln!(
+                "{f} 1x1x3 ewald: {m:?} miss {miss:.2e} ({:.0} FD bars)",
+                miss / FD_BAR
+            );
+            assert!(miss > bar, "{f} {m:?}: {miss:e}");
+        }
+    }
+}
