@@ -16,6 +16,7 @@ import os
 import re
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -61,7 +62,7 @@ def _add_crate(root, directory, name):
 
 def _commit(root, message="change"):
     _git(root, "add", "-A")
-    _git(root, "commit", "-q", "-m", message)
+    _git(root, "-c", "commit.gpgsign=false", "commit", "-q", "-m", message)
 
 
 @pytest.fixture
@@ -100,7 +101,7 @@ def _select(repo, *args):
         text=True,
         check=True,
     )
-    mode, crates, reason = r.stdout.split("\n")[:3]
+    mode, crates, reason, _manifests = r.stdout.split("\n")[:4]
     return mode, crates.split(), reason
 
 
@@ -194,26 +195,31 @@ def test_a_failed_cargo_metadata_lints_the_workspace(repo):
     assert "metadata" in reason
 
 
-def test_a_deleted_crate_is_not_passed_to_cargo(repo):
+def test_a_deleted_member_lints_the_workspace_even_without_a_lock_change(repo):
     _write(repo, "crates/alpha/src/lib.rs", "// edit\n")
     shutil.rmtree(repo / "crates/gamma")
     _commit(repo)
-    assert _select(repo)[:2] == ("crates", ["alpha-pkg"])
+    mode, crates, reason = _select(repo)
+    assert (mode, crates) == ("workspace", [])
+    assert "crates/gamma/Cargo.toml" in reason
 
 
-def test_a_renamed_crate_selects_only_the_new_name(repo):
+def test_a_renamed_crate_lints_the_workspace(repo):
     _git(repo, "mv", "crates/gamma", "crates/delta")
     text = (repo / "crates/delta/Cargo.toml").read_text()
     _write(repo, "crates/delta/Cargo.toml", text.replace("gamma-pkg", "delta-pkg"))
     _commit(repo)
-    assert _select(repo)[:2] == ("crates", ["delta-pkg"])
-
-
-def test_a_real_crate_removal_changes_the_lock_so_lints_the_workspace(repo):
-    shutil.rmtree(repo / "crates/gamma")
-    _write(repo, "Cargo.lock", "# lock without gamma\n")
-    _commit(repo)
     assert _select(repo)[0] == "workspace"
+
+
+def test_a_deleted_file_in_a_directory_with_no_manifest_is_not_passed_to_cargo(repo):
+    _write(repo, "crates/orphan/notes.txt")
+    # Force past the unowned-path rule for the commit that adds it.
+    _commit(repo)
+    _git(repo, "push", "-q", "origin", "HEAD:main")
+    shutil.rmtree(repo / "crates/orphan")
+    _commit(repo)
+    assert _select(repo)[:2] == ("none", [])
 
 
 def test_a_file_under_crates_owned_by_no_package_lints_the_workspace(repo):
@@ -229,6 +235,51 @@ def test_testdata_edits_are_neutral_but_a_deletion_can_break_include_str(repo):
     (repo / "testdata/a.xyz").unlink()
     _commit(repo)
     assert _select(repo)[0] == "workspace"
+
+
+def test_a_testdata_rust_file_lints_the_workspace(repo):
+    _write(repo, "testdata/shared/helper.rs", "// edit\n")
+    _commit(repo)
+    assert _select(repo)[0] == "workspace"
+
+
+def test_a_committed_change_reverted_in_the_tree_is_still_selected(repo):
+    original = (repo / "crates/alpha/src/lib.rs").read_text()
+    _write(repo, "crates/alpha/src/lib.rs", "// committed\n")
+    _commit(repo)
+    _write(repo, "crates/alpha/src/lib.rs", original)
+    assert _select(repo)[:2] == ("crates", ["alpha-pkg"])
+
+
+def _in_process_selector(monkeypatch, repo, stub_dir, name, body):
+    """The selector module, on PATH with a stub `name`, with short timeouts."""
+    stub_dir.mkdir(exist_ok=True)
+    stub = stub_dir / name
+    stub.write_text("#!/usr/bin/env bash\n" + body)
+    stub.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{stub_dir}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.chdir(repo)
+    selector = _load_selector()
+    selector.GIT_TIMEOUT_SECS = selector.METADATA_TIMEOUT_SECS = 0.5
+    return selector
+
+
+def test_a_hung_cargo_metadata_lints_the_workspace(repo, tmp_path, monkeypatch):
+    selector = _in_process_selector(
+        monkeypatch, repo, tmp_path / "s", "cargo", "exec sleep 30\n"
+    )
+    started = time.monotonic()
+    result = selector.select(base="HEAD")
+    assert time.monotonic() - started < 10, "the 30 s stub ran to the end: no timeout"
+    assert (result.mode, result.reason) == ("workspace", "cargo metadata failed")
+
+
+def test_a_hung_git_diff_lints_the_workspace(repo, tmp_path, monkeypatch):
+    real = shutil.which("git")
+    body = f'[[ "$1" == diff ]] && exec sleep 30\nexec "{real}" "$@"\n'
+    selector = _in_process_selector(monkeypatch, repo, tmp_path / "s", "git", body)
+    result = selector.select(base="HEAD")
+    assert result.mode == "workspace" and "git diff failed" in result.reason
 
 
 def test_uncommitted_and_untracked_crate_files_count(repo):
@@ -284,6 +335,7 @@ def _load_selector():
 
 
 INCLUDE = re.compile(r'(?:include(?:_str|_bytes)?!\(\s*|#\[path\s*=\s*)"([^"]+)"')
+COMPILED_INCLUDE = re.compile(r'(?:\binclude!\(\s*|#\[path\s*=\s*)"([^"]+)"')
 
 
 @pytest.mark.parametrize(
@@ -314,6 +366,10 @@ def test_no_rust_source_includes_a_path_the_selector_calls_neutral():
             resolved = os.path.normpath(os.path.join(os.path.dirname(rel), target))
             if selector.is_neutral(resolved):
                 offenders.append(f"{rel} -> {resolved}")
+        for target in COMPILED_INCLUDE.findall(text):
+            resolved = os.path.normpath(os.path.join(os.path.dirname(rel), target))
+            if resolved.startswith("testdata/") and not resolved.endswith(".rs"):
+                offenders.append(f"{rel} compiles {resolved}")
     assert not offenders, (
         "a neutral path is now a compile input; take it out of NEUTRAL_* in "
         f"{SELECTOR.name}: {offenders}"
@@ -322,18 +378,18 @@ def test_no_rust_source_includes_a_path_the_selector_calls_neutral():
 
 # ---- the real gate, with a stub cargo --------------------------------------
 
-WARNING = json.dumps(
-    {
-        "reason": "compiler-message",
-        "message": {
-            "level": "warning",
-            "message": "unneeded `return` statement",
-            "code": {"code": "clippy::needless_return", "explanation": None},
-            "spans": [{"is_primary": True, "file_name": "src/lib.rs", "line_start": 1}],
-        },
-    },
-    separators=(",", ":"),
-)
+
+def _warning(manifest):
+    message = {
+        "level": "warning",
+        "message": "unneeded `return` statement",
+        "code": {"code": "clippy::needless_return", "explanation": None},
+        "spans": [{"is_primary": True, "file_name": "src/lib.rs", "line_start": 1}],
+    }
+    record = {"reason": "compiler-message", "message": message}
+    if manifest:
+        record["manifest_path"] = f"/somewhere/{manifest}"
+    return json.dumps(record, separators=(",", ":")) + "\n"
 
 
 def _install_gate(repo, tmp_path):
@@ -357,12 +413,12 @@ def _install_gate(repo, tmp_path):
         f'if [[ "$1" == clippy ]]; then\n'
         f'  echo "$*" >> "{record}"\n'
         f'  [[ -e "{tmp_path}/warn" ]] && cat "{tmp_path}/warn"\n'
+        f'  [[ -e "{tmp_path}/behaviour" ]] && source "{tmp_path}/behaviour"\n'
         "  exit 0\n"
         "fi\n"
         f'exec "{REAL_CARGO}" "$@"\n'
     )
     stub.chmod(0o755)
-    (tmp_path / "warn.json").write_text(WARNING + "\n")
     # Commit the scripts so they read as a scripts-only change, then push them
     # to main: the tests below start from a clean base.
     _commit(repo, "gate")
@@ -393,7 +449,10 @@ def test_gate_lints_only_the_changed_crate_and_prints_it(repo, tmp_path):
     assert r.returncode == 0, r.stdout
     args = record.read_text().split()
     assert args[args.index("-p") + 1] == "alpha-pkg"
-    assert {"--all-targets", "--no-deps", "--message-format=json"} <= set(args)
+    assert {"--all-targets", "--message-format=json"} <= set(args)
+    assert "--no-deps" not in args, (
+        "see CLIPPY SCOPE: it can leave a selected crate unlinted"
+    )
     assert "--workspace" not in args
     assert "clippy linted: crates: alpha-pkg" in r.stdout
 
@@ -402,7 +461,7 @@ def test_gate_still_fails_on_a_warning_in_a_scoped_run(repo, tmp_path):
     gate, _, stub = _install_gate(repo, tmp_path)
     _write(repo, "crates/alpha/src/lib.rs", "// edit\n")
     _commit(repo)
-    shutil.copy(tmp_path / "warn.json", tmp_path / "warn")
+    (tmp_path / "warn").write_text(_warning("crates/alpha/Cargo.toml"))
     r = _run_gate(gate, stub)
     assert r.returncode == 1, r.stdout
     assert "clippy::needless_return" in r.stdout
@@ -426,7 +485,7 @@ def test_the_override_forces_the_workspace(repo, tmp_path):
     r = _run_gate(gate, stub, CI_GATE_CLIPPY_WORKSPACE="1")
     assert r.returncode == 0, r.stdout
     args = record.read_text().split()
-    assert "--workspace" in args and "--no-deps" not in args and "-p" not in args
+    assert "--workspace" in args and "-p" not in args
     assert "clippy linted: workspace (CI_GATE_CLIPPY_WORKSPACE=1)" in r.stdout
 
 
@@ -437,8 +496,17 @@ def test_the_override_forces_the_workspace(repo, tmp_path):
         "print('garbage')\n",
         "print('crates'); print(''); print('no crates listed')\n",
         "print('workspace')\n",
+        "print('none'); print('')\n",
+        "print('crates'); print('alpha-pkg'); print('why')\n",
     ],
-    ids=["crash", "garbage", "crates-without-names", "workspace-without-reason"],
+    ids=[
+        "crash",
+        "garbage",
+        "crates-without-names",
+        "workspace-without-reason",
+        "none-without-reason",
+        "crates-without-manifests",
+    ],
 )
 def test_a_broken_selector_lints_the_workspace(repo, tmp_path, broken):
     gate, record, stub = _install_gate(repo, tmp_path)
@@ -455,3 +523,179 @@ def test_gate_summary_reports_a_skipped_clippy(repo, tmp_path):
     assert r.returncode == 0, r.stdout
     assert not record.exists()
     assert "clippy linted: skipped (CI_GATE_SKIP_CLIPPY=1)" in r.stdout
+
+
+def _alpha_changed(repo, tmp_path):
+    gate, record, stub = _install_gate(repo, tmp_path)
+    _write(repo, "crates/alpha/src/lib.rs", "// edit\n")
+    _commit(repo)
+    return gate, record, stub
+
+
+def test_a_warning_outside_the_scope_is_counted_but_does_not_fail(repo, tmp_path):
+    gate, _, stub = _alpha_changed(repo, tmp_path)
+    (tmp_path / "warn").write_text(_warning("crates/beta/Cargo.toml"))
+    r = _run_gate(gate, stub)
+    assert r.returncode == 0, r.stdout
+    assert "ignored 1 warning(s) in dependencies" in r.stdout
+
+
+def test_a_warning_with_no_manifest_path_still_fails(repo, tmp_path):
+    gate, _, stub = _alpha_changed(repo, tmp_path)
+    (tmp_path / "warn").write_text(_warning(None))
+    assert _run_gate(gate, stub).returncode == 1
+
+
+def test_a_workspace_run_keeps_warnings_from_every_crate(repo, tmp_path):
+    gate, _, stub = _alpha_changed(repo, tmp_path)
+    (tmp_path / "warn").write_text(_warning("crates/beta/Cargo.toml"))
+    assert _run_gate(gate, stub, CI_GATE_CLIPPY_WORKSPACE="1").returncode == 1
+
+
+def test_a_hard_cargo_failure_is_not_reported_as_linted(repo, tmp_path):
+    gate, _, stub = _alpha_changed(repo, tmp_path)
+    (tmp_path / "behaviour").write_text("exit 101\n")
+    r = _run_gate(gate, stub)
+    assert r.returncode == 1
+    assert "clippy did NOT finish: cargo exited 101" in r.stdout
+    assert "clippy linted:" not in r.stdout
+
+
+def test_a_timeout_is_not_reported_as_linted(repo, tmp_path):
+    gate, _, stub = _alpha_changed(repo, tmp_path)
+    (tmp_path / "behaviour").write_text("exec sleep 20\n")
+    r = _run_gate(gate, stub, CI_GATE_TIMEOUT_SECS="1")
+    assert r.returncode == 1
+    assert "clippy did NOT finish: timed out after 1s" in r.stdout
+    assert "clippy linted:" not in r.stdout
+
+
+def test_a_sigkill_is_not_reported_as_linted(repo, tmp_path):
+    gate, _, stub = _alpha_changed(repo, tmp_path)
+    (tmp_path / "behaviour").write_text("kill -KILL $$\n")
+    r = _run_gate(gate, stub)
+    assert r.returncode == 1
+    assert "clippy did NOT finish: killed by SIGKILL" in r.stdout
+    assert "clippy linted:" not in r.stdout
+
+
+def test_an_expired_lock_wait_is_not_reported_as_linted(repo, tmp_path):
+    gate, record, stub = _alpha_changed(repo, tmp_path)
+    lock = tmp_path / "lock"
+    holder = subprocess.Popen(["flock", str(lock), "sleep", "30"])
+    try:
+        deadline = time.monotonic() + 5
+        while subprocess.run(["flock", "-n", str(lock), "true"]).returncode == 0:
+            assert time.monotonic() < deadline, "the holder never took the lock"
+            time.sleep(0.02)
+        r = _run_gate(gate, stub, CI_GATE_LOCK_WAIT_SECS="1")
+    finally:
+        holder.kill()
+        holder.wait()
+    assert r.returncode == 1
+    assert not record.exists()
+    assert "clippy did NOT finish: never ran" in r.stdout
+    assert "clippy linted:" not in r.stdout
+
+
+def test_tier_full_forces_the_workspace_when_the_gate_is_run_directly(repo, tmp_path):
+    gate, record, stub = _alpha_changed(repo, tmp_path)
+    r = _run_gate(gate, stub, CI_GATE_TIER="full")
+    assert r.returncode == 0, r.stdout
+    assert "--workspace" in record.read_text().split()
+    assert "clippy linted: workspace (CI_GATE_TIER=full)" in r.stdout
+
+
+def test_tier_full_forces_the_workspace_through_the_real_hook(repo, tmp_path):
+    gate, record, stub = _alpha_changed(repo, tmp_path)
+    body = re.search(
+        r"<<'HOOK_EOF'\n(.*?)\nHOOK_EOF\n",
+        (SCRIPTS / "install-hooks.sh").read_text(),
+        re.DOTALL,
+    ).group(1)
+    hook = tmp_path / "pre-push"
+    hook.write_text(body + "\n")
+    hook.chmod(0o755)
+    head = _git(repo, "rev-parse", "HEAD")
+    env = {
+        **_env(),
+        "PATH": f"{stub}{os.pathsep}{os.environ['PATH']}",
+        "CI_GATE_TIER": "full",
+        "CI_GATE_SKIP_TESTS": "1",
+        "CI_GATE_SKIP_COMPLEXITY": "1",
+        "CI_GATE_SKIP_DOCS": "1",
+        "CI_GATE_SKIP_PYTEST": "1",
+    }
+    r = subprocess.run(
+        [str(hook)],
+        cwd=repo,
+        env=env,
+        input=f"refs/heads/feature {head} refs/heads/feature {'0' * 40}\n",
+        capture_output=True,
+        text=True,
+    )
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "--workspace" in record.read_text().split()
+
+
+# ---- the real clippy, on a throwaway two-crate workspace -------------------
+
+
+def test_a_crate_first_built_as_a_dependency_is_still_linted_when_selected(
+    repo, tmp_path
+):
+    """clippy's lint pass depends on CARGO_PRIMARY_PACKAGE, outside the fingerprint.
+
+    With --no-deps, a first gate run that builds `alpha` as a dependency of `beta`
+    leaves alpha Fresh, so a later gate selecting alpha reports nothing. Moving
+    origin/main back is how alpha becomes selected with its mtime unchanged.
+
+    The lint sits under cfg(not(test)) because --all-targets also lints alpha's
+    lib-test unit, which is always primary and hides the hole for everything else.
+    """
+    if subprocess.run(
+        [REAL_CARGO, "clippy", "--version"], capture_output=True
+    ).returncode:
+        pytest.skip("needs clippy")
+    gate, _, _ = _install_gate(repo, tmp_path)
+    _write(
+        repo,
+        "crates/beta/Cargo.toml",
+        '[package]\nname = "beta-pkg"\nversion = "0.1.0"\nedition = "2021"\n'
+        '[dependencies]\nalpha-pkg = { path = "../alpha" }\n',
+    )
+    (repo / "Cargo.lock").unlink()
+    _write(repo, ".gitignore", "target/\nCargo.lock\n")
+    _commit(repo, "beta uses alpha; the lock is cargo's")
+    _git(repo, "push", "-q", "origin", "HEAD:main")
+    before_alpha = _git(repo, "rev-parse", "HEAD")
+    _write(
+        repo,
+        "crates/alpha/src/lib.rs",
+        "#[cfg(not(test))]\npub fn a() -> i32 {\n    return 1;\n}\n",
+    )
+    _commit(repo, "alpha gains a lint on main")
+    _git(repo, "push", "-q", "origin", "HEAD:main")
+    _write(
+        repo, "crates/beta/src/lib.rs", "pub fn b() -> i32 {\n    alpha_pkg::a()\n}\n"
+    )
+    _commit(repo, "beta only")
+
+    path = os.pathsep.join(
+        d for d in os.environ["PATH"].split(os.pathsep) if "ferric-cargo-shim" not in d
+    )
+    env = {
+        "PATH": path,
+        "CARGO_TARGET_DIR": str(tmp_path / "target"),
+        "RUSTC_WRAPPER": "",
+        "CI_GATE_JOBS": "2",
+    }
+    first = _run_gate(gate, tmp_path / "no-stub", **env)
+    assert "clippy linted: crates: beta-pkg" in first.stdout, first.stdout
+    assert first.returncode == 0, first.stdout
+
+    _git(repo, "push", "-q", "--force", "origin", f"{before_alpha}:main")
+    second = _run_gate(gate, tmp_path / "no-stub", **env)
+    assert "clippy linted: crates: alpha-pkg beta-pkg" in second.stdout, second.stdout
+    assert second.returncode == 1, second.stdout
+    assert "clippy::needless_return" in second.stdout

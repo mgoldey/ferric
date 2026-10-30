@@ -1,22 +1,26 @@
 #!/usr/bin/env python3
 """Decide what the push gate's clippy step lints: changed crates, all, or nothing.
 
-Run from anywhere inside a checkout. Prints exactly three lines, read by
+Run from anywhere inside a checkout. Prints exactly four lines, read by
 scripts/ci-gate.sh:
 
-    <mode>     crates | workspace | none
-    <crates>   space-separated package names (empty unless mode is crates)
-    <reason>   one line, printed in the gate summary
+    <mode>       crates | workspace | none
+    <crates>     space-separated package names (empty unless mode is crates)
+    <reason>     one line, printed in the gate summary
+    <manifests>  those packages' Cargo.toml paths, relative to the repo root
 
-Changed files are the diff from merge-base(origin/main, HEAD) to the WORKING
-TREE, plus untracked files that cargo could see. The gate lints the working
-tree, so the selection has to describe the working tree too. origin/main is
+Changed files are the union of merge-base(origin/main, HEAD)..HEAD and
+merge-base..WORKING TREE, plus untracked files that cargo could see. The gate
+lints the working tree, but the push carries the commits, so a crate changed in
+either one is selected, including a commit reverted by an uncommitted edit.
+origin/main is
 fetched first; merge-base holds up for rebased, force-pushed and stacked
 branches, because it does not depend on what the remote branch used to be.
 
 FAIL-SAFE RULE: anything uncertain selects the workspace. That covers a failed
-fetch, no merge-base, a git or cargo metadata failure, and any path that is not
-owned by a package and not known to be compile-neutral. NEUTRAL_* below is an
+fetch, no merge-base, a git or cargo metadata failure or timeout, a deleted
+Cargo.toml, and any path that is not owned by a package and not known to be
+compile-neutral. NEUTRAL_* below is an
 allow-list on purpose, so a new top-level path costs a slower gate rather than
 lost coverage.
 
@@ -24,11 +28,12 @@ Compile inputs outside the packages:
   - Cargo.toml, Cargo.lock, .cargo/, clippy.toml, rust-toolchain: by name.
   - pyproject.toml: ferric-build-info/build.rs reads the version from it. Falls
     through to the default, like any path not listed as neutral.
-  - testdata/: tests include_str! a few files, so only a DELETED file is treated
-    as a compile input. Editing one cannot change a lint, and reference data
-    changes in too many PRs to pay for a workspace run each time.
+  - testdata/: tests include_str! a few data files, so a DELETED file is treated
+    as a compile input, and so is any .rs file. Editing a data file cannot change
+    a lint, and reference data changes in too many PRs to pay for a workspace
+    run each time.
 test_ci_gate_clippy_scope.py fails if Rust source starts including from a path
-listed as neutral.
+listed as neutral, or compiles (include!, #[path]) a non-.rs file from testdata/.
 
 --base/--head select a fixed range instead, for dry runs over merged PRs: no
 fetch, no working tree. Packages still come from the current checkout.
@@ -83,6 +88,8 @@ NEUTRAL_GLOBS = ("*.md", "LICENSE-*")
 
 GIT_ENV = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
 FETCH_TIMEOUT_SECS = 60
+GIT_TIMEOUT_SECS = 120
+METADATA_TIMEOUT_SECS = 120
 
 
 @dataclass
@@ -90,6 +97,7 @@ class Selection:
     mode: str
     reason: str
     crates: list = field(default_factory=list)
+    manifests: list = field(default_factory=list)
 
 
 def workspace(reason):
@@ -131,30 +139,39 @@ def classify(changes, packages):
         deleted = status == "D"
         if is_compile_config(path):
             uncertain.append(path)
+        elif deleted and PurePosixPath(path).name == "Cargo.toml":
+            # A package left the workspace. Its dependents may not be selected,
+            # and Cargo.lock may not have been updated to say so.
+            uncertain.append(path)
         elif (name := owner_of(path, packages)) is not None:
             crates.add(name)
         elif path.startswith("testdata/"):
-            if deleted:  # tests include_str! some of these
+            # Tests include_str! some of these; a .rs file would be compiled.
+            if deleted or path.endswith(".rs"):
                 uncertain.append(path)
         elif is_neutral(path):
             pass
         elif path.startswith("crates/") and deleted:
             # Its package is gone from the workspace, so `-p` would make cargo
-            # error. Removing a real member also changes Cargo.lock, which
-            # selects the workspace above; this is only the orphan directory.
+            # error. Removing a real member deletes its Cargo.toml, which selects
+            # the workspace above; this is only a directory with no manifest.
             pass
         else:
             uncertain.append(path)
 
+    count = len({path for _, path in changes})
     if uncertain:
         more = f" (+{len(uncertain) - 1} more)" if len(uncertain) > 1 else ""
         return workspace(
             f"compile input or unclassified path changed: {uncertain[0]}{more}"
         )
     if crates:
-        return Selection("crates", f"{len(changes)} changed file(s)", sorted(crates))
+        by_name = {name: pkg_dir for pkg_dir, name in packages.items()}
+        names = sorted(crates)
+        manifests = [f"{by_name[name]}/Cargo.toml" for name in names]
+        return Selection("crates", f"{count} changed file(s)", names, manifests)
     if changes:
-        return Selection("none", f"{len(changes)} changed file(s), no compile inputs")
+        return Selection("none", f"{count} changed file(s), no compile inputs")
     return Selection("none", "nothing changed against the base")
 
 
@@ -165,7 +182,7 @@ def git(*args, timeout=None):
             ["git", *args],
             capture_output=True,
             text=True,
-            timeout=timeout,
+            timeout=timeout or GIT_TIMEOUT_SECS,
             env=GIT_ENV,
             stdin=subprocess.DEVNULL,
         )
@@ -183,6 +200,7 @@ def load_packages(root):
             text=True,
             cwd=root,
             stdin=subprocess.DEVNULL,
+            timeout=METADATA_TIMEOUT_SECS,
         )
         if r.returncode != 0:
             return None
@@ -194,7 +212,7 @@ def load_packages(root):
             if rel != ".":
                 packages[rel] = pkg["name"]
         return packages
-    except (OSError, ValueError, KeyError):
+    except (OSError, ValueError, KeyError, subprocess.TimeoutExpired):
         return None
 
 
@@ -205,13 +223,17 @@ def parse_name_status(out):
 
 def changed_files(base, head, packages):
     """(status, path) pairs, or None if git failed."""
-    target = [head] if head else []
-    out = git("diff", "--name-status", "--no-renames", "-z", base, *target)
-    if out is None:
+    diff = ("diff", "--name-status", "--no-renames", "-z", base)
+    committed = git(*diff, head or "HEAD")
+    if committed is None:
         return None
-    changes = parse_name_status(out)
+    changes = parse_name_status(committed)
     if head:
         return changes
+    tree = git(*diff)
+    if tree is None:
+        return None
+    changes += [c for c in parse_name_status(tree) if c not in changes]
     # Untracked files count only where cargo would see them, so a stray scratch
     # file at the top of a checkout does not force a workspace run.
     untracked = git("ls-files", "--others", "--exclude-standard", "-z")
@@ -270,6 +292,7 @@ def main():
     print(result.mode)
     print(" ".join(result.crates))
     print(result.reason.replace("\n", " "))
+    print(" ".join(result.manifests))
     return 0
 
 

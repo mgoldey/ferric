@@ -26,12 +26,7 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[3]
 INSTALLER = REPO / "scripts" / "install-hooks.sh"
-KNOBS = (
-    "CI_GATE_SKIP_TESTS",
-    "CI_GATE_SKIP_PYTEST",
-    "CI_GATE_FAST",
-    "CI_GATE_CLIPPY_WORKSPACE",
-)
+KNOBS = ("CI_GATE_SKIP_TESTS", "CI_GATE_SKIP_PYTEST", "CI_GATE_FAST")
 
 
 def _hook_body():
@@ -96,7 +91,6 @@ def _knobs(out):
                 "CI_GATE_SKIP_TESTS": "1",
                 "CI_GATE_SKIP_PYTEST": "1",
                 "CI_GATE_FAST": "1",
-                "CI_GATE_CLIPPY_WORKSPACE": "unset",
             },
         ),
         (
@@ -105,7 +99,6 @@ def _knobs(out):
                 "CI_GATE_SKIP_TESTS": "1",
                 "CI_GATE_SKIP_PYTEST": "1",
                 "CI_GATE_FAST": "1",
-                "CI_GATE_CLIPPY_WORKSPACE": "unset",
             },
         ),
         (
@@ -114,7 +107,6 @@ def _knobs(out):
                 "CI_GATE_SKIP_TESTS": "unset",
                 "CI_GATE_SKIP_PYTEST": "unset",
                 "CI_GATE_FAST": "1",
-                "CI_GATE_CLIPPY_WORKSPACE": "unset",
             },
         ),
         (
@@ -123,7 +115,6 @@ def _knobs(out):
                 "CI_GATE_SKIP_TESTS": "unset",
                 "CI_GATE_SKIP_PYTEST": "unset",
                 "CI_GATE_FAST": "0",
-                "CI_GATE_CLIPPY_WORKSPACE": "1",
             },
         ),
     ],

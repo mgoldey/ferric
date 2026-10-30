@@ -163,7 +163,7 @@ CI_GATE_TIER="${CI_GATE_TIER:-lint}"
 case "$CI_GATE_TIER" in
     lint) export CI_GATE_SKIP_TESTS=1; export CI_GATE_SKIP_PYTEST=1; export CI_GATE_FAST=1 ;;
     fast) export CI_GATE_FAST=1 ;;
-    full) export CI_GATE_FAST=0; export CI_GATE_CLIPPY_WORKSPACE=1 ;;
+    full) export CI_GATE_FAST=0 ;;  # ci-gate.sh reads CI_GATE_TIER=full for clippy
     *)
         echo "pre-push hook: unknown CI_GATE_TIER='$CI_GATE_TIER'" >&2
         echo "               expected one of: lint, fast, full" >&2
