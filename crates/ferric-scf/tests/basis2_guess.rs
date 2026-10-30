@@ -345,6 +345,7 @@ fn injected_path_refuses_guess_basis() {
 // ── 6. An unconverged secondary SCF is a guess, not a failure ─────────────
 
 const CN: &str = "2\n\nC 0 0 0\nN 0 0 1.172\n";
+const NO_STRETCHED: &str = "2\n\nN 0 0 0\nO 0 0 2.5\n";
 
 /// CN UHF/aug-cc-pVDZ from an STO-3G secondary: the STO-3G UHF does not
 /// converge in 200 iterations, while the target converges from the default
@@ -381,6 +382,61 @@ fn unconverged_secondary_still_seeds_a_converging_target() {
         r.energy,
         reference.energy
     );
+}
+
+/// The open-shell solvers report a stall/divergence-monitor exit as
+/// `Err(ScfConvergence)`, not as `Ok` with `converged == false`, and the
+/// secondary SCF inherits the caller's `stall_window` / `divergence_tol` (the
+/// ladders set both). A secondary SCF stopped by that monitor must decline
+/// the guess like any other non-convergence instead of aborting the target.
+/// The reason string tells this path apart from the iteration-cap path.
+fn stalled_secondary_declines(kind: Kind, xyz: &str, target_basis: &str, stall_window: usize) {
+    let (mol, prep, bounds) = setup(xyz, 2, target_basis);
+    let base = RhfConfig {
+        stall_window: Some(stall_window),
+        divergence_tol: Some(0.5),
+        ..tight(None)
+    };
+    let reference = solve(kind, &mol, &prep, &bounds, &base);
+    let r = solve(
+        kind,
+        &mol,
+        &prep,
+        &bounds,
+        &with_guess(&base, "sto-3g", "fock"),
+    );
+    let rep = r.guess_basis.as_ref().expect("report must be echoed");
+    let why = rep.unconverged_reason.as_deref().unwrap_or_default();
+    assert!(
+        why.contains("stalled or diverged"),
+        "the secondary was expected to stop on the stall/divergence monitor: {rep:?}"
+    );
+    assert!(!rep.converged && !rep.used_as_guess, "{rep:?}");
+    assert!(rep.energy.is_finite() && rep.iterations > 0, "{rep:?}");
+    assert!(r.converged);
+    let de = (r.energy - reference.energy).abs();
+    assert!(
+        de < 1e-8,
+        "{} vs default {} (|dE| = {de:e})",
+        r.energy,
+        reference.energy
+    );
+}
+
+/// CN UHF/aug-cc-pVDZ with the ladders' own monitor (window 15, tol 0.5):
+/// the oscillating STO-3G UHF trips it after 32 iterations.
+#[test]
+fn stalled_secondary_declines_uhf() {
+    stalled_secondary_declines(Kind::Uhf, CN, "aug-cc-pvdz", 15);
+}
+
+/// NO at 2.5 Å, ROHF/cc-pVDZ, stall window 3: the STO-3G ROHF trips the
+/// monitor after 6 iterations while the target converges under the same one.
+/// (ROHF/STO-3G converged at every window on CN, O2, NH2, NO and CH2 at
+/// equilibrium, so a stretched bond is needed to make it stall.)
+#[test]
+fn stalled_secondary_declines_rohf() {
+    stalled_secondary_declines(Kind::Rohf, NO_STRETCHED, "cc-pvdz", 3);
 }
 
 /// The convergence ladder with a secondary SCF that fails on rung 0 (the

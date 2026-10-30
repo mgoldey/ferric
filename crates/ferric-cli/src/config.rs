@@ -3807,15 +3807,31 @@ impl Config {
     }
 
     /// `[scf] guess_basis` / `guess_projection`: strict parse, and refused
-    /// for a periodic `[cell]` system (the secondary-basis guess is molecular).
+    /// for a periodic `[cell]` system (the secondary-basis guess is molecular)
+    /// and for the correlated optimizers. `run_optimize` hands
+    /// `optimize_geometry_rimp2` only `rhf_config.external_potential` and
+    /// `optimize_geometry_rpa` no `RhfConfig` at all, so their per-geometry
+    /// RHF solves would never see the secondary basis.
     fn validate_guess_basis_keys(&self) -> Result<(), String> {
         self.scf.guess_basis_config()?;
-        if self.cell.is_some() && self.scf.guess_basis.is_some() {
+        if self.scf.guess_basis.is_none() {
+            return Ok(());
+        }
+        if self.cell.is_some() {
             return Err(
                 "[scf] guess_basis is not supported for a periodic [cell] system: \
                         the secondary-basis guess is molecular only"
                     .into(),
             );
+        }
+        let kind = self.method.kind.as_str();
+        if self.method.task == "optimize" && matches!(kind, "rimp2" | "pdep-rpa") {
+            return Err(format!(
+                "[scf] guess_basis is not supported with method.kind = \"{kind}\", task = \
+                 \"optimize\": that geometry optimizer builds its own RHF reference at each \
+                 geometry and never reads guess_basis, so it would be silently ignored. Remove \
+                 it, or use task = \"energy\""
+            ));
         }
         Ok(())
     }
@@ -8261,6 +8277,35 @@ json = [1, 2]
         .unwrap();
         load_config(p.to_str().unwrap()).expect("valid guess_basis keys must load");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `[scf] guess_basis` with the correlated optimizers is refused: the
+    /// RI-MP2 and PDEP-RPA geometry optimizers build their own RHF at each
+    /// geometry without the caller's `RhfConfig`, so the key would be
+    /// silently ignored. The same kinds with `task = "energy"`, and the SCF
+    /// kinds with `task = "optimize"`, still accept it.
+    #[test]
+    fn guess_basis_is_refused_by_the_correlated_optimizers() {
+        let cfg = |kind: &str, task: &str| {
+            let src = format!(
+                "[molecule]\nxyz = \"testdata/molecules/water.xyz\"\n[basis]\nname = \"sto-3g\"\n\
+                 [method]\nkind = \"{kind}\"\ntask = \"{task}\"\n[scf]\nguess_basis = \"sto-3g\"\n"
+            );
+            toml::from_str::<Config>(&src).expect("test config must parse")
+        };
+        for kind in ["rimp2", "pdep-rpa"] {
+            let e = cfg(kind, "optimize")
+                .validate_guess_basis_keys()
+                .expect_err("guess_basis must be refused on this optimizer");
+            assert!(
+                e.contains("[scf] guess_basis") && e.contains(kind) && e.contains("optimize"),
+                "{e}"
+            );
+            assert_eq!(cfg(kind, "energy").validate_guess_basis_keys(), Ok(()));
+        }
+        for kind in ["rhf", "ksdft", "uhf", "rohf"] {
+            assert_eq!(cfg(kind, "optimize").validate_guess_basis_keys(), Ok(()));
+        }
     }
 
     // ---- deny_unknown_fields on the nested tables that lacked it ----------

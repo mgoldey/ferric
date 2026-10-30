@@ -42,7 +42,12 @@
 //! # Policy
 //!
 //! * A secondary SCF that does not converge never aborts the target SCF or a
-//!   convergence ladder. Its last iterate is NOT projected: measured on CN
+//!   convergence ladder, whether it hit its iteration cap or the caller's
+//!   `stall_window` / `divergence_tol` monitor stopped it early (the
+//!   open-shell solvers report that as `FerricError::ScfConvergence`; it is
+//!   declined like any other non-convergence, and the monitors are kept so a
+//!   hopeless secondary stops early instead of grinding to `max_iter`).
+//!   Its last iterate is NOT projected: measured on CN
 //!   UHF/aug-cc-pVDZ from STO-3G (the STO-3G UHF oscillates for 200
 //!   iterations), the target started from that iterate also failed to
 //!   converge in 200 iterations, for both projections, stuck 0.039 Ha above
@@ -161,11 +166,13 @@ pub struct GuessBasisReport {
     pub nbasis_target: usize,
     /// Iterations the secondary SCF took.
     pub iterations: usize,
-    /// Secondary-basis total energy (Ha) of the projected state: the
-    /// converged energy, or the last iterate's when `converged` is false.
+    /// Secondary-basis total energy (Ha): the converged energy, or the last
+    /// iterate's when `converged` is false.
     pub energy: f64,
-    /// Whether the secondary SCF converged. An unconverged one is still used
-    /// as the guess (its last iterate); see the module policy.
+    /// Whether the secondary SCF converged. An unconverged one (iteration
+    /// cap, stall or divergence) is NOT used as the guess: nothing is
+    /// projected and the target starts from its default guess (see
+    /// `used_as_guess` and the module policy).
     pub converged: bool,
     /// Why the secondary SCF stopped when it did not converge (its exit
     /// reason and iteration cap); `None` when it converged.
@@ -432,6 +439,58 @@ fn check_elements(mol: &Molecule, bs: &BasisSet) -> Result<(), FerricError> {
     )))
 }
 
+/// How the secondary SCF ended: its iteration count and (last) energy, plus
+/// the converged result, or why it stopped without converging.
+struct SecondaryStop {
+    iterations: usize,
+    energy: f64,
+    converged: Option<ScfResult>,
+    reason: Option<String>,
+}
+
+/// Classify the secondary solve. Both ways it can fail to converge decline
+/// the guess: an `Ok` result with `converged == false` (RHF's stall and
+/// divergence exits, every solver's iteration cap) and the open-shell
+/// solvers' `ScfConvergence` error, which `solve_uhf_impl`/`solve_rohf_impl`
+/// return when the caller's `stall_window`/`divergence_tol` monitor fires
+/// (the ladders set both). Every other error stays fatal.
+fn secondary_stop(
+    r: Result<ScfResult, FerricError>,
+    config: &RhfConfig,
+) -> Result<SecondaryStop, FerricError> {
+    match r {
+        Ok(small) if small.converged => Ok(SecondaryStop {
+            iterations: small.iterations,
+            energy: small.energy,
+            converged: Some(small),
+            reason: None,
+        }),
+        Ok(small) => Ok(SecondaryStop {
+            iterations: small.iterations,
+            energy: small.energy,
+            reason: Some(format!(
+                "exit {:?} after {} iterations (max_iter {})",
+                small.exit, small.iterations, config.max_iter
+            )),
+            converged: None,
+        }),
+        Err(FerricError::ScfConvergence {
+            iterations,
+            last_energy,
+        }) => Ok(SecondaryStop {
+            iterations,
+            energy: last_energy,
+            converged: None,
+            reason: Some(format!(
+                "stalled or diverged (stall_window {:?}, divergence_tol {:?}) after \
+                 {iterations} iterations (max_iter {})",
+                config.stall_window, config.divergence_tol, config.max_iter
+            )),
+        }),
+        Err(e) => Err(e),
+    }
+}
+
 /// Converge the secondary-basis SCF of `kind` and project it into `prep`;
 /// [`GuessOutcome::Declined`] when the secondary SCF did not converge.
 pub(crate) fn build(
@@ -466,28 +525,26 @@ pub(crate) fn build(
             prep.basis_set().name
         );
     }
-    let small = run_secondary(ctx, mol, &prep_s, bounds, config, kind)
-        .map_err(|e| ctx_err("the secondary SCF failed", e))?;
+    let stop = secondary_stop(
+        run_secondary(ctx, mol, &prep_s, bounds, config, kind),
+        config,
+    )
+    .map_err(|e| ctx_err("the secondary SCF failed", e))?;
     let report = GuessBasisReport {
         basis: name,
         projection: gb.projection,
         nbasis_guess: ns,
         nbasis_target: nb,
-        iterations: small.iterations,
-        energy: small.energy,
-        converged: small.converged,
-        unconverged_reason: (!small.converged).then(|| {
-            format!(
-                "exit {:?} after {} iterations (max_iter {})",
-                small.exit, small.iterations, config.max_iter
-            )
-        }),
-        used_as_guess: small.converged,
+        iterations: stop.iterations,
+        energy: stop.energy,
+        converged: stop.converged.is_some(),
+        unconverged_reason: stop.reason,
+        used_as_guess: stop.converged.is_some(),
     };
     log_report(ctx, &report);
-    if !small.converged {
+    let Some(small) = stop.converged else {
         return Ok(GuessOutcome::Declined(report));
-    }
+    };
     let (p, s_bb) = projector(mol, prep, &gb.basis)?;
     let s_ss = ferric_integrals::oneelectron::overlap(&prep_s);
     let d_a_s = small.density_alpha.clone();
