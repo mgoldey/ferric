@@ -55,10 +55,10 @@ use ferric_integrals::operator::Operator;
 use ferric_scf::result::ScfResult;
 
 use crate::lmp2_amplitude::{
-    build_vvhv, check_vvhv, hylleraas_energy, localized_spaces, pair_gate_keep,
-    AmplitudeLmp2Config, AmplitudeLmp2Result, LocalizedSpaces, StageTimings, VvHv,
+    checked_vvhv, localized_spaces, pair_gate_keep, solve_and_count, AmplitudeLmp2Config,
+    AmplitudeLmp2Result, LocalizedSpaces, StageTimings, VvHv,
 };
-use crate::ragged::{pair_block_from_g_cand, solve_ragged, PairBlock, Ragged};
+use crate::ragged::{pair_block_from_g_cand, PairBlock, Ragged};
 use crate::rimp2::{ri_mp2, RiMp2Config};
 
 /// Locality knobs of the integral-direct path. Every knob has a trivial
@@ -156,10 +156,41 @@ pub struct DirectStats {
     pub virt_cand_mean: f64,
     pub virt_cand_max: usize,
     pub t_maps_s: f64,
+    /// Stage-3 wall seconds (all batch workers).
     pub t_eri3_s: f64,
+    /// Stage-3 split, thread-seconds summed over the batch workers (each
+    /// worker runs single-threaded BLAS, so these are CPU-seconds): libint
+    /// evaluation, scatter into the integral slab, and the half-transform
+    /// into the strips. Their sum is below the workers' total by the
+    /// per-batch setup (strip/coefficient allocation).
+    pub t_eri3_eval_cpu_s: f64,
+    pub t_eri3_scatter_cpu_s: f64,
+    pub t_eri3_transform_cpu_s: f64,
+    /// Integral batches run, and the max/mean wall seconds of one batch
+    /// worker (the load-balance counter: max ≫ mean is a tail imbalance).
+    pub n_batches: usize,
+    pub batch_work_max_s: f64,
+    pub batch_work_mean_s: f64,
     pub t_metric_s: f64,
     pub t_pairs_s: f64,
+    /// Boys localization + localized-space setup (`localized_spaces`),
+    /// wall seconds; set by the driver (0 when the assembly is called
+    /// directly).
+    pub t_loc_s: f64,
 }
+
+/// One batch worker's stage-3 timers (thread-seconds).
+#[derive(Debug, Clone, Copy, Default)]
+struct BatchTimers {
+    eval_s: f64,
+    scatter_s: f64,
+    transform_s: f64,
+    total_s: f64,
+}
+
+/// One batch's output: its strips, evaluated/skipped triple counts and
+/// timers.
+type BatchOut = (Vec<(usize, Strip)>, u64, u64, BatchTimers);
 
 /// One occupied's sparse unwhitened RI strip: `b[(r, c)] = (P_r | i a_c)`.
 struct Strip {
@@ -429,6 +460,356 @@ fn fit_domain_group(
     Ok(out_group)
 }
 
+/// Cauchy–Schwarz factors for the stage-3 batch triple cut, same-op
+/// kernel: |(P|μν)| ≤ √(P|P) · Q(μν), with the aux factor per aux SHELL
+/// (√ of the max (P|P) diagonal over the shell — conservative at shell
+/// granularity; dropping it makes the cut non-conservative wherever
+/// √(P|P) > 1, found in review before any merge). `None` when the cut is
+/// off. Schwarz bounds exist for Coulomb/erf/erfc/terfc only, so the error
+/// names the `schwarz_skip = 0.0` fix; terfc factors carry the table-error
+/// inflation of `schwarz::bound_inflation`.
+fn schwarz_triple_factors(
+    op: Operator,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    schwarz_skip: f64,
+) -> Result<Option<(Array2<f64>, Vec<f64>)>, FerricError> {
+    if schwarz_skip <= 0.0 {
+        return Ok(None);
+    }
+    let sb = ferric_scf::screening::SchwarzBounds::compute(op, obs).map_err(|e| {
+        FerricError::General(format!(
+            "lmp2_direct: schwarz_skip = {schwarz_skip} requires shell-pair Schwarz bounds, \
+             unavailable for operator {:?} ({e}); set schwarz_skip = 0.0 for this operator",
+            op.kind
+        ))
+    })?;
+    // The aux factor is the library's validated per-shell table (floored,
+    // terfc-inflated), not a private copy.
+    let qp_shell = ferric_integrals::schwarz::schwarz3_aux(op, dfbs)?;
+    Ok(Some((sb.q, qp_shell)))
+}
+
+/// Borrowed, read-only context of the stage-3 batch workers. Extracted from
+/// the assembly driver (complexity ceiling); the per-batch arithmetic is
+/// IDENTICAL to the pre-extraction inline loop.
+struct BatchCtx<'a> {
+    op: Operator,
+    obs: &'a PreparedBasis,
+    dfbs: &'a PreparedBasis,
+    spaces: &'a LocalizedSpaces,
+    aux_ext: &'a [Vec<usize>],
+    virt_ext: &'a [Vec<usize>],
+    occ_supp: &'a [Vec<usize>],
+    virt_supp: &'a [Vec<usize>],
+    /// Shell-pair Schwarz factors (Q(μν), per-aux-shell √max(P|P)) when the
+    /// triple cut is on.
+    qpair: Option<&'a (Array2<f64>, Vec<f64>)>,
+    schwarz_skip: f64,
+    /// Per-worker share of the GLOBAL scratch budget, bytes.
+    worker_budget: usize,
+}
+
+/// One batch's compact AO axes: the occupied-support functions `s` and
+/// the virtual-support functions `n`, with their shell sets and nao-length
+/// inverse maps.
+struct BatchAxes {
+    u_shells: Vec<usize>,
+    in_s: Vec<bool>,
+    in_n: Vec<bool>,
+    s_pos: Vec<usize>,
+    n_pos: Vec<usize>,
+    nsf: usize,
+    nnf: usize,
+}
+
+impl BatchAxes {
+    fn new(ctx: &BatchCtx<'_>, is: &[usize], batch_virts: &[usize]) -> Self {
+        let obs = ctx.obs;
+        let nao = obs.nbasis();
+        let s_shells = sorted_union(is.iter().map(|&i| ctx.occ_supp[i].iter().copied()));
+        let n_shells = sorted_union(
+            batch_virts
+                .iter()
+                .map(|&a| ctx.virt_supp[a].iter().copied()),
+        );
+        let s_funcs = shell_funcs(obs, &s_shells);
+        let n_funcs = shell_funcs(obs, &n_shells);
+        let mut s_pos = vec![usize::MAX; nao];
+        for (k, &f) in s_funcs.iter().enumerate() {
+            s_pos[f] = k;
+        }
+        let mut n_pos = vec![usize::MAX; nao];
+        for (k, &f) in n_funcs.iter().enumerate() {
+            n_pos[f] = k;
+        }
+        let u_shells = sorted_union([s_shells.iter().copied(), n_shells.iter().copied()]);
+        let mut in_s = vec![false; obs.nshells()];
+        for &sh in &s_shells {
+            in_s[sh] = true;
+        }
+        let mut in_n = vec![false; obs.nshells()];
+        for &sh in &n_shells {
+            in_n[sh] = true;
+        }
+        Self {
+            u_shells,
+            in_s,
+            in_n,
+            s_pos,
+            n_pos,
+            nsf: s_funcs.len(),
+            nnf: n_funcs.len(),
+        }
+    }
+}
+
+/// Per-occupied support-masked coefficients on the batch's compact axes:
+/// the occupied column on `s`, and the (nnf, |virt_ext_i|) virtual block.
+fn batch_coefficients(
+    ctx: &BatchCtx<'_>,
+    ax: &BatchAxes,
+    is: &[usize],
+) -> (Vec<Array1<f64>>, Vec<Array2<f64>>) {
+    let dims_obs = ctx.obs.shell_dims();
+    let offs_obs = ctx.obs.shell_offsets();
+    let c_occ: Vec<Array1<f64>> = is
+        .iter()
+        .map(|&i| {
+            let mut c = Array1::<f64>::zeros(ax.nsf);
+            for &sh in &ctx.occ_supp[i] {
+                for f in 0..dims_obs[sh] {
+                    let g = offs_obs[sh] + f;
+                    c[ax.s_pos[g]] = ctx.spaces.c_locc[(g, i)];
+                }
+            }
+            c
+        })
+        .collect();
+    let c_virt: Vec<Array2<f64>> = is
+        .iter()
+        .map(|&i| {
+            let cols = &ctx.virt_ext[i];
+            let mut cv = Array2::<f64>::zeros((ax.nnf, cols.len()));
+            for (k, &a) in cols.iter().enumerate() {
+                for &sh in &ctx.virt_supp[a] {
+                    for f in 0..dims_obs[sh] {
+                        let g = offs_obs[sh] + f;
+                        cv[(ax.n_pos[g], k)] = ctx.spaces.c_vloc[(g, a)];
+                    }
+                }
+            }
+            cv
+        })
+        .collect();
+    (c_occ, c_virt)
+}
+
+/// Zeroed strips (rows = i's extended aux functions, cols = i's extended
+/// virtuals) for the batch's occupieds.
+fn alloc_strips(ctx: &BatchCtx<'_>, is: &[usize]) -> Vec<Strip> {
+    let naux = ctx.dfbs.nbasis();
+    let nv = ctx.spaces.nv;
+    is.iter()
+        .map(|&i| {
+            let rows = shell_funcs(ctx.dfbs, &ctx.aux_ext[i]);
+            let mut row_pos = vec![usize::MAX; naux];
+            for (k, &f) in rows.iter().enumerate() {
+                row_pos[f] = k;
+            }
+            let cols = ctx.virt_ext[i].clone();
+            let mut col_pos = vec![usize::MAX; nv];
+            for (k, &a) in cols.iter().enumerate() {
+                col_pos[a] = k;
+            }
+            let b = Array2::<f64>::zeros((rows.len(), cols.len()));
+            Strip {
+                rows,
+                row_pos,
+                cols,
+                col_pos,
+                b,
+            }
+        })
+        .collect()
+}
+
+/// Evaluate one slab's (P|μν) triples into `t_slab[(pl, s, n)]` (both
+/// orientations a needed shell pair feeds). Returns (evaluated, skipped).
+/// The blocks of one (P shell, μ shell) row are evaluated into `rowbuf`
+/// first and scattered after, so the eval/scatter timers cost two clock
+/// reads per row, not per triple; the writes are plain assignments in the
+/// same per-block order, so the slab is identical to the interleaved loop.
+fn fill_slab(
+    ctx: &BatchCtx<'_>,
+    ax: &BatchAxes,
+    eng: &mut Engine,
+    slab: &[usize],
+    p_local: &[usize],
+    t_slab: &mut Array3<f64>,
+    tm: &mut BatchTimers,
+) -> (u64, u64) {
+    let (obs, dfbs) = (ctx.obs, ctx.dfbs);
+    let dims_obs = obs.shell_dims();
+    let offs_obs = obs.shell_offsets();
+    let dims_df = dfbs.shell_dims();
+    let offs_df = dfbs.shell_offsets();
+    let (mut n_triples, mut n_skipped) = (0u64, 0u64);
+    let mut rowbuf: Vec<f64> = Vec::new();
+    let mut rowmeta: Vec<(usize, bool, bool, usize)> = Vec::new();
+    for &sp in slab {
+        for (ux, &ua) in ax.u_shells.iter().enumerate() {
+            let te = Instant::now();
+            rowbuf.clear();
+            rowmeta.clear();
+            for &ub in &ax.u_shells[..=ux] {
+                let need_ab = ax.in_s[ua] && ax.in_n[ub];
+                let need_ba = ax.in_s[ub] && ax.in_n[ua];
+                if !(need_ab || need_ba) {
+                    continue;
+                }
+                if let Some((q, qp_shell)) = ctx.qpair {
+                    if qp_shell[sp] * q[(ua, ub)] < ctx.schwarz_skip {
+                        n_skipped += 1;
+                        continue;
+                    }
+                }
+                n_triples += 1;
+                if let Some(block) = eng.compute_eri3(obs, dfbs, sp, ua, ub) {
+                    rowmeta.push((ub, need_ab, need_ba, rowbuf.len()));
+                    rowbuf.extend_from_slice(block);
+                }
+            }
+            let ts = Instant::now();
+            tm.eval_s += (ts - te).as_secs_f64();
+            for &(ub, need_ab, need_ba, off) in &rowmeta {
+                let block = &rowbuf[off..];
+                let (n1, n2) = (dims_obs[ua], dims_obs[ub]);
+                for p in 0..dims_df[sp] {
+                    let pl = p_local[offs_df[sp] + p];
+                    for fa in 0..n1 {
+                        let ga = offs_obs[ua] + fa;
+                        for fb in 0..n2 {
+                            let gb = offs_obs[ub] + fb;
+                            let val = block[(p * n1 + fa) * n2 + fb];
+                            if need_ab {
+                                t_slab[(pl, ax.s_pos[ga], ax.n_pos[gb])] = val;
+                            }
+                            if need_ba {
+                                t_slab[(pl, ax.s_pos[gb], ax.n_pos[ga])] = val;
+                            }
+                        }
+                    }
+                }
+            }
+            tm.scatter_s += ts.elapsed().as_secs_f64();
+        }
+    }
+    (n_triples, n_skipped)
+}
+
+/// Half-transform one slab's rows into each batch occupied's strip:
+/// row P of strip i is `c_occ_iᵀ · T_P · C_virt_i`.
+#[allow(clippy::too_many_arguments)]
+fn transform_slab(
+    ctx: &BatchCtx<'_>,
+    is: &[usize],
+    strips: &mut [Strip],
+    c_occ: &[Array1<f64>],
+    c_virt: &[Array2<f64>],
+    p_local: &[usize],
+    t_slab: &Array3<f64>,
+) {
+    let dims_df = ctx.dfbs.shell_dims();
+    let offs_df = ctx.dfbs.shell_offsets();
+    for (k, &i) in is.iter().enumerate() {
+        let strip = &mut strips[k];
+        let ci = &c_occ[k];
+        let cv = &c_virt[k];
+        for &sp in &ctx.aux_ext[i] {
+            let p0 = offs_df[sp];
+            if p_local[p0] == usize::MAX {
+                continue; // shell not in this slab
+            }
+            for f in 0..dims_df[sp] {
+                let gp = p0 + f;
+                let pl = p_local[gp];
+                let tv = t_slab.index_axis(Axis(0), pl);
+                let t1 = ci.dot(&tv); // (nnf)
+                let row = t1.dot(cv); // (ncols_i)
+                let r = strip.row_pos[gp];
+                strip.b.row_mut(r).assign(&row);
+            }
+        }
+    }
+}
+
+/// End of the slab starting at `start`: the longest run of shells whose
+/// function count stays within `max_funcs` (at least one shell).
+fn slab_end(p_shells: &[usize], dims_df: &[usize], start: usize, max_funcs: usize) -> usize {
+    let mut end = start;
+    let mut nfuncs = 0usize;
+    while end < p_shells.len() {
+        let add = dims_df[p_shells[end]];
+        if nfuncs > 0 && nfuncs + add > max_funcs {
+            break;
+        }
+        nfuncs += add;
+        end += 1;
+    }
+    end
+}
+
+/// One stage-3 batch worker: evaluate only the shell triples the batch's
+/// occupieds need, slab by slab under the per-worker scratch share, and
+/// half-transform into their strips.
+fn eval_batch(ctx: &BatchCtx<'_>, is: &[usize]) -> BatchOut {
+    let t_start = Instant::now();
+    let (obs, dfbs) = (ctx.obs, ctx.dfbs);
+    let naux = dfbs.nbasis();
+    let dims_df = dfbs.shell_dims();
+    let offs_df = dfbs.shell_offsets();
+    let mut eng =
+        Engine::new_3center(ctx.op, obs, dfbs, 1e-14).expect("3-center engine (pre-validated)");
+    let mut tm = BatchTimers::default();
+    let (mut n_triples, mut n_skipped) = (0u64, 0u64);
+    let p_shells = sorted_union(is.iter().map(|&i| ctx.aux_ext[i].iter().copied()));
+    let batch_virts = sorted_union(is.iter().map(|&i| ctx.virt_ext[i].iter().copied()));
+    let ax = BatchAxes::new(ctx, is, &batch_virts);
+    let (c_occ, c_virt) = batch_coefficients(ctx, &ax, is);
+    let mut strips = alloc_strips(ctx, is);
+    let per_func = ax.nsf.max(1) * ax.nnf.max(1) * 8;
+    let max_funcs = (ctx.worker_budget / per_func).max(1);
+    let mut slab_start = 0usize;
+    while slab_start < p_shells.len() {
+        let end = slab_end(&p_shells, dims_df, slab_start, max_funcs);
+        let slab = &p_shells[slab_start..end];
+        let mut p_local = vec![usize::MAX; naux];
+        let mut nps = 0usize;
+        for &sp in slab {
+            for f in 0..dims_df[sp] {
+                p_local[offs_df[sp] + f] = nps;
+                nps += 1;
+            }
+        }
+        let mut t_slab = Array3::<f64>::zeros((nps, ax.nsf, ax.nnf));
+        let (nt, ns) = fill_slab(ctx, &ax, &mut eng, slab, &p_local, &mut t_slab, &mut tm);
+        n_triples += nt;
+        n_skipped += ns;
+        let tt = Instant::now();
+        transform_slab(ctx, is, &mut strips, &c_occ, &c_virt, &p_local, &t_slab);
+        tm.transform_s += tt.elapsed().as_secs_f64();
+        slab_start = end;
+    }
+    tm.total_s = t_start.elapsed().as_secs_f64();
+    (
+        is.iter().copied().zip(strips).collect::<Vec<_>>(),
+        n_triples,
+        n_skipped,
+        tm,
+    )
+}
+
 /// Integral-direct ragged assembly: never forms a global 3-index tensor or
 /// a global metric factorization. Returns
 /// `(ragged, gated_unique_pairs, stats)`. See the module doc for the
@@ -447,8 +828,6 @@ pub fn assemble_ragged_direct_local(
 ) -> Result<(Ragged, usize, DirectStats), FerricError> {
     use rayon::prelude::*;
     let (no, nv) = (spaces.no, spaces.nv);
-    let naux = dfbs.nbasis();
-    let nao = obs.nbasis();
     let mut stats = DirectStats::default();
 
     // ---- stage 1+2: gate and maps (integral-free) ----
@@ -570,228 +949,45 @@ pub fn assemble_ragged_direct_local(
     // ---- stage 3: batched integral evaluation + half-transform ----
     let t0 = Instant::now();
     Engine::new_3center(op, obs, dfbs, 1e-14)?; // surface construction errors serially
-                                                // Cauchy–Schwarz factors for the batch triple cut, same-op kernel:
-                                                // |(P|μν)| ≤ √(P|P) · Q(μν). The aux factor is per aux SHELL
-                                                // (√ of the max (P|P) diagonal over the shell — conservative at shell
-                                                // granularity); dropping it would make the cut non-conservative
-                                                // wherever √(P|P) > 1 (found in review before any merge).
-                                                // schwarz() supports Coulomb/erf/erfc/terfc only — name the knob in
-                                                // the error so an unsupported operator knows the fix is
-                                                // schwarz_skip = 0.0. terfc factors (this aux one and sb.q) carry
-                                                // the table-error inflation of schwarz::bound_inflation.
-    let qpair: Option<(Array2<f64>, Vec<f64>)> = if dcfg.schwarz_skip > 0.0 {
-        let sb = ferric_scf::screening::SchwarzBounds::compute(op, obs).map_err(|e| {
-            FerricError::General(format!(
-                "lmp2_direct: schwarz_skip = {} requires shell-pair Schwarz bounds, \
-                 unavailable for operator {:?} ({e}); set schwarz_skip = 0.0 for this operator",
-                dcfg.schwarz_skip, op.kind
-            ))
-        })?;
-        // The aux factor is the library's validated per-shell table (floored,
-        // terfc-inflated), not a private copy.
-        let qp_shell = ferric_integrals::schwarz::schwarz3_aux(op, dfbs)?;
-        Some((sb.q, qp_shell))
-    } else {
-        None
-    };
-    let dims_obs = obs.shell_dims();
-    let offs_obs = obs.shell_offsets();
+    let qpair = schwarz_triple_factors(op, obs, dfbs, dcfg.schwarz_skip)?;
     let dims_df = dfbs.shell_dims();
-    let offs_df = dfbs.shell_offsets();
-
-    let batch_out: Vec<(Vec<(usize, Strip)>, u64, u64)> = batches
+    let n_workers = rayon::current_num_threads()
+        .max(1)
+        .min(batches.len().max(1));
+    let bctx = BatchCtx {
+        op,
+        obs,
+        dfbs,
+        spaces,
+        aux_ext: &aux_ext,
+        virt_ext: &virt_ext,
+        occ_supp: &occ_supp,
+        virt_supp: &virt_supp,
+        qpair: qpair.as_ref(),
+        schwarz_skip: dcfg.schwarz_skip,
+        worker_budget: dcfg.scratch_budget_bytes / n_workers,
+    };
+    let batch_out: Vec<BatchOut> = batches
         .par_iter()
-        .map(|(_, is)| {
-            let mut eng =
-                Engine::new_3center(op, obs, dfbs, 1e-14).expect("3-center engine (pre-validated)");
-            let mut n_triples = 0u64;
-            let mut n_skipped = 0u64;
-            // union sets for the batch
-            let p_shells = sorted_union(is.iter().map(|&i| aux_ext[i].iter().copied()));
-            let s_shells = sorted_union(is.iter().map(|&i| occ_supp[i].iter().copied()));
-            let batch_virts = sorted_union(is.iter().map(|&i| virt_ext[i].iter().copied()));
-            let n_shells = sorted_union(batch_virts.iter().map(|&a| virt_supp[a].iter().copied()));
-            let s_funcs = shell_funcs(obs, &s_shells);
-            let n_funcs = shell_funcs(obs, &n_shells);
-            let (nsf, nnf) = (s_funcs.len(), n_funcs.len());
-            let mut s_pos = vec![usize::MAX; nao];
-            for (k, &f) in s_funcs.iter().enumerate() {
-                s_pos[f] = k;
-            }
-            let mut n_pos = vec![usize::MAX; nao];
-            for (k, &f) in n_funcs.iter().enumerate() {
-                n_pos[f] = k;
-            }
-            let u_shells = sorted_union([s_shells.iter().copied(), n_shells.iter().copied()]);
-            let mut in_s = vec![false; obs.nshells()];
-            for &sh in &s_shells {
-                in_s[sh] = true;
-            }
-            let mut in_n = vec![false; obs.nshells()];
-            for &sh in &n_shells {
-                in_n[sh] = true;
-            }
-
-            // per-occupied masked coefficients on the batch's compact axes
-            let c_occ_masked: Vec<Array1<f64>> = is
-                .iter()
-                .map(|&i| {
-                    let mut c = Array1::<f64>::zeros(nsf);
-                    for &sh in &occ_supp[i] {
-                        for f in 0..dims_obs[sh] {
-                            let g = offs_obs[sh] + f;
-                            c[s_pos[g]] = spaces.c_locc[(g, i)];
-                        }
-                    }
-                    c
-                })
-                .collect();
-            let c_virt_masked: Vec<Array2<f64>> = is
-                .iter()
-                .map(|&i| {
-                    let cols = &virt_ext[i];
-                    let mut cv = Array2::<f64>::zeros((nnf, cols.len()));
-                    for (k, &a) in cols.iter().enumerate() {
-                        for &sh in &virt_supp[a] {
-                            for f in 0..dims_obs[sh] {
-                                let g = offs_obs[sh] + f;
-                                cv[(n_pos[g], k)] = spaces.c_vloc[(g, a)];
-                            }
-                        }
-                    }
-                    cv
-                })
-                .collect();
-
-            // strip allocation
-            let mut strips: Vec<Strip> = is
-                .iter()
-                .map(|&i| {
-                    let rows = shell_funcs(dfbs, &aux_ext[i]);
-                    let mut row_pos = vec![usize::MAX; naux];
-                    for (k, &f) in rows.iter().enumerate() {
-                        row_pos[f] = k;
-                    }
-                    let cols = virt_ext[i].clone();
-                    let mut col_pos = vec![usize::MAX; nv];
-                    for (k, &a) in cols.iter().enumerate() {
-                        col_pos[a] = k;
-                    }
-                    let b = Array2::<f64>::zeros((rows.len(), cols.len()));
-                    Strip {
-                        rows,
-                        row_pos,
-                        cols,
-                        col_pos,
-                        b,
-                    }
-                })
-                .collect();
-
-            // slab the batch's aux shells under the per-worker share of the
-            // GLOBAL scratch budget (workers run concurrently under rayon)
-            let n_workers = rayon::current_num_threads()
-                .max(1)
-                .min(batches.len().max(1));
-            let per_func = nsf.max(1) * nnf.max(1) * 8;
-            let max_funcs = ((dcfg.scratch_budget_bytes / n_workers) / per_func).max(1);
-            let mut slab_start = 0usize;
-            while slab_start < p_shells.len() {
-                let mut slab_end = slab_start;
-                let mut nfuncs = 0usize;
-                while slab_end < p_shells.len() {
-                    let add = dims_df[p_shells[slab_end]];
-                    if nfuncs > 0 && nfuncs + add > max_funcs {
-                        break;
-                    }
-                    nfuncs += add;
-                    slab_end += 1;
-                }
-                let slab = &p_shells[slab_start..slab_end];
-                let mut p_local = vec![usize::MAX; naux];
-                let mut nps = 0usize;
-                for &sp in slab {
-                    for f in 0..dims_df[sp] {
-                        p_local[offs_df[sp] + f] = nps;
-                        nps += 1;
-                    }
-                }
-                let mut t_slab = Array3::<f64>::zeros((nps, nsf, nnf));
-                for &sp in slab {
-                    for (ux, &ua) in u_shells.iter().enumerate() {
-                        for &ub in &u_shells[..=ux] {
-                            let need_ab = in_s[ua] && in_n[ub];
-                            let need_ba = in_s[ub] && in_n[ua];
-                            if !(need_ab || need_ba) {
-                                continue;
-                            }
-                            if let Some((q, qp_shell)) = &qpair {
-                                if qp_shell[sp] * q[(ua, ub)] < dcfg.schwarz_skip {
-                                    n_skipped += 1;
-                                    continue;
-                                }
-                            }
-                            n_triples += 1;
-                            if let Some(block) = eng.compute_eri3(obs, dfbs, sp, ua, ub) {
-                                let (n1, n2) = (dims_obs[ua], dims_obs[ub]);
-                                for p in 0..dims_df[sp] {
-                                    let pl = p_local[offs_df[sp] + p];
-                                    for fa in 0..n1 {
-                                        let ga = offs_obs[ua] + fa;
-                                        for fb in 0..n2 {
-                                            let gb = offs_obs[ub] + fb;
-                                            let val = block[(p * n1 + fa) * n2 + fb];
-                                            if need_ab {
-                                                t_slab[(pl, s_pos[ga], n_pos[gb])] = val;
-                                            }
-                                            if need_ba {
-                                                t_slab[(pl, s_pos[gb], n_pos[ga])] = val;
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                // transform the slab rows into each occupied's strip
-                for (k, &i) in is.iter().enumerate() {
-                    let strip = &mut strips[k];
-                    let ci = &c_occ_masked[k];
-                    let cv = &c_virt_masked[k];
-                    for &sp in &aux_ext[i] {
-                        let p0 = offs_df[sp];
-                        if p_local[p0] == usize::MAX {
-                            continue; // shell not in this slab
-                        }
-                        for f in 0..dims_df[sp] {
-                            let gp = p0 + f;
-                            let pl = p_local[gp];
-                            let tv = t_slab.index_axis(Axis(0), pl);
-                            let t1 = ci.dot(&tv); // (nnf)
-                            let row = t1.dot(cv); // (ncols_i)
-                            let r = strip.row_pos[gp];
-                            strip.b.row_mut(r).assign(&row);
-                        }
-                    }
-                }
-                slab_start = slab_end;
-            }
-            (
-                is.iter().copied().zip(strips).collect::<Vec<_>>(),
-                n_triples,
-                n_skipped,
-            )
-        })
+        .map(|(_, is)| eval_batch(&bctx, is))
         .collect();
 
+    stats.n_batches = batch_out.len();
     let mut strips: Vec<Option<Strip>> = (0..no).map(|_| None).collect();
-    for (batch_strips, n_triples, n_skipped) in batch_out {
+    for (batch_strips, n_triples, n_skipped, tm) in batch_out {
         stats.n_eri3_shell_triples += n_triples;
         stats.n_eri3_skipped += n_skipped;
+        stats.t_eri3_eval_cpu_s += tm.eval_s;
+        stats.t_eri3_scatter_cpu_s += tm.scatter_s;
+        stats.t_eri3_transform_cpu_s += tm.transform_s;
+        stats.batch_work_max_s = stats.batch_work_max_s.max(tm.total_s);
+        stats.batch_work_mean_s += tm.total_s;
         for (i, st) in batch_strips {
             strips[i] = Some(st);
         }
+    }
+    if stats.n_batches > 0 {
+        stats.batch_work_mean_s /= stats.n_batches as f64;
     }
     let strips: Vec<Strip> = strips
         .into_iter()
@@ -1469,15 +1665,11 @@ pub fn amplitude_lmp2_direct(
     cfg: &AmplitudeLmp2Config,
     dcfg: &DirectConfig,
 ) -> Result<(AmplitudeLmp2Result, DirectStats), FerricError> {
-    let vvhv = build_vvhv(mol, obs, obs_bs, rhf)?;
-    let nocc_total = (mol.nelec() as usize) / 2;
-    let (dev_orth, dev_span) = check_vvhv(obs, rhf, nocc_total, &vvhv.c_vloc);
-    if dev_orth > 1e-8 || dev_span > 1e-8 {
-        return Err(FerricError::General(format!(
-            "lmp2_direct: VV-HV construction check failed (orth {dev_orth:.2e}, span {dev_span:.2e})"
-        )));
-    }
-    amplitude_lmp2_direct_with_virtuals(mol, obs, dfbs, op, rhf, cfg, dcfg, &vvhv)
+    let (vvhv, t_spaces_s) = checked_vvhv(mol, obs, obs_bs, rhf, "lmp2_direct")?;
+    let (mut r, st) =
+        amplitude_lmp2_direct_with_virtuals(mol, obs, dfbs, op, rhf, cfg, dcfg, &vvhv)?;
+    r.timings.t_spaces_s = t_spaces_s;
+    Ok((r, st))
 }
 
 /// [`amplitude_lmp2_direct`] with a caller-supplied virtual space (the
@@ -1495,8 +1687,9 @@ pub fn amplitude_lmp2_direct_with_virtuals(
 ) -> Result<(AmplitudeLmp2Result, DirectStats), FerricError> {
     let t0 = Instant::now();
     let spaces = localized_spaces(mol, obs, rhf, cfg.frozen_core, vvhv)?;
+    let t_loc_s = t0.elapsed().as_secs_f64();
     let (no, nv) = (spaces.no, spaces.nv);
-    let (rg, n_pairs_gated, dstats) = assemble_ragged_direct_local(
+    let (rg, n_pairs_gated, mut dstats) = assemble_ragged_direct_local(
         mol,
         obs,
         dfbs,
@@ -1508,6 +1701,7 @@ pub fn amplitude_lmp2_direct_with_virtuals(
         dcfg,
     )?;
     let t_assembly_s = t0.elapsed().as_secs_f64();
+    dstats.t_loc_s = t_loc_s;
 
     let t0 = Instant::now();
     let e_ref = if cfg.compute_reference {
@@ -1534,69 +1728,25 @@ pub fn amplitude_lmp2_direct_with_virtuals(
     };
 
     let t0 = Instant::now();
-    let (t, iters, relres, converged, flops_mv) =
-        solve_ragged(&rg, &spaces.f_oo, cfg.cg_rtol, cfg.cg_max_iter);
-    if !converged {
-        return Err(FerricError::General(format!(
-            "lmp2_direct: ragged CG failed to converge (relres {relres:.2e} after {iters} iters)"
-        )));
-    }
-    let e_corr = hylleraas_energy(&rg, &t);
-
-    let total_el = (no * nv) as u64 * (no * nv) as u64;
-    let kept: u64 = rg
-        .pairs
-        .iter()
-        .map(|pb| pb.pat.iter().filter(|&&x| x).count() as u64)
-        .sum();
-    let dom: Vec<usize> = {
-        let mut per_i: Vec<Vec<bool>> = vec![vec![false; nv]; no];
-        for pb in &rg.pairs {
-            for &a in &pb.da {
-                per_i[pb.i][a] = true;
-            }
-        }
-        per_i
-            .iter()
-            .map(|v| v.iter().filter(|&&x| x).count())
-            .collect()
+    let mut r = solve_and_count(
+        &rg,
+        &spaces.f_oo,
+        rhf.energy,
+        cfg,
+        vvhv,
+        no,
+        nv,
+        "lmp2_direct",
+    )?;
+    r.e_corr_canonical_ri = e_ref;
+    r.n_pairs_gated = n_pairs_gated;
+    r.aux_dom_mean = dstats.strip_rows_mean;
+    r.aux_dom_max = dstats.strip_rows_max;
+    r.timings = StageTimings {
+        t_spaces_s: 0.0,
+        t_assembly_s,
+        t_solve_s: t0.elapsed().as_secs_f64(),
+        t_reference_s,
     };
-    let dom_max = dom.iter().copied().max().unwrap_or(0);
-    let dom_mean = if no > 0 {
-        dom.iter().sum::<usize>() as f64 / no as f64
-    } else {
-        0.0
-    };
-    let dense_flops =
-        2 * ((no * no) as u64 * (nv as u64).pow(3) + (no as u64).pow(3) * (nv * nv) as u64);
-    let t_solve_s = t0.elapsed().as_secs_f64();
-
-    Ok((
-        AmplitudeLmp2Result {
-            e_corr,
-            e_total: rhf.energy + e_corr,
-            e_corr_canonical_ri: e_ref,
-            keep_fraction: kept as f64 / total_el as f64,
-            pair_fraction: rg.pairs.len() as f64 / (no * no) as f64,
-            dom_mean,
-            dom_max,
-            cg_iterations: iters,
-            cg_relres: relres,
-            cg_converged: converged,
-            n_valence_virt: vvhv.n_valence,
-            n_hard_virt: vvhv.n_hard,
-            ragged_flops_per_matvec: flops_mv,
-            dense_flops_per_matvec: dense_flops,
-            n_pairs_gated,
-            aux_dom_mean: dstats.strip_rows_mean,
-            aux_dom_max: dstats.strip_rows_max,
-            timings: StageTimings {
-                t_spaces_s: 0.0,
-                t_assembly_s,
-                t_solve_s,
-                t_reference_s,
-            },
-        },
-        dstats,
-    ))
+    Ok((r, dstats))
 }

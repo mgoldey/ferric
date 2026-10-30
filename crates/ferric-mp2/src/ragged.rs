@@ -211,6 +211,84 @@ pub fn solve_ragged_with<F>(
 where
     F: Fn(&[Array2<f64>], &mut u64) -> Vec<Array2<f64>>,
 {
+    let s = solve_ragged_with_trace(rg, rtol, max_iter, matvec);
+    (s.t, s.iterations, s.relres, s.converged, s.flops_per_matvec)
+}
+
+/// The CG step coefficients of one ragged PCG solve: `alphas[k]` is the
+/// step length of iteration k, `betas[k]` the direction update that
+/// followed it (absent after the converging step). These are the Lanczos
+/// coefficients of the PRECONDITIONED operator, so they give its Ritz
+/// spectrum for free (see [`lanczos_kappa`]).
+#[derive(Debug, Clone, Default)]
+pub struct CgTrace {
+    pub alphas: Vec<f64>,
+    pub betas: Vec<f64>,
+}
+
+/// Everything one ragged PCG solve returns.
+#[derive(Debug, Clone)]
+pub struct RaggedSolve {
+    pub t: Vec<Array2<f64>>,
+    pub iterations: usize,
+    pub relres: f64,
+    pub converged: bool,
+    pub flops_per_matvec: u64,
+    pub trace: CgTrace,
+}
+
+/// [`solve_ragged`] that also returns the CG coefficient trace. The
+/// arithmetic is exactly [`solve_ragged`]'s (same matvec, same loop).
+pub fn solve_ragged_traced(
+    rg: &Ragged,
+    f_oo: &Array2<f64>,
+    rtol: f64,
+    max_iter: usize,
+) -> RaggedSolve {
+    solve_ragged_with_trace(rg, rtol, max_iter, |t, flops| {
+        matvec_indexed(rg, f_oo, t, flops)
+    })
+}
+
+/// Condition-number estimate `λmax/λmin` of the diagonally PRECONDITIONED
+/// operator from the CG coefficients: the Lanczos tridiagonal
+/// `T[k,k] = 1/α_k + β_{k-1}/α_{k-1}`, `T[k,k+1] = √β_k/α_k` has the Ritz
+/// values of the Krylov space as eigenvalues. Ritz values lie inside the
+/// spectrum, so this is a LOWER bound on the true κ (tight once CG has
+/// resolved the extremes). NaN when no iteration ran or when the smallest
+/// Ritz value is not positive (a non-SPD operator).
+pub fn lanczos_kappa(trace: &CgTrace) -> f64 {
+    use ndarray_linalg::Eigh;
+    let k = trace.alphas.len();
+    if k == 0 || trace.betas.len() + 1 < k {
+        return f64::NAN;
+    }
+    let (a, b) = (&trace.alphas, &trace.betas);
+    let mut tri = Array2::<f64>::zeros((k, k));
+    for j in 0..k {
+        tri[(j, j)] = 1.0 / a[j] + if j > 0 { b[j - 1] / a[j - 1] } else { 0.0 };
+        if j + 1 < k {
+            let off = b[j].sqrt() / a[j];
+            tri[(j, j + 1)] = off;
+            tri[(j + 1, j)] = off;
+        }
+    }
+    let Ok((w, _)) = tri.eigh(ndarray_linalg::UPLO::Lower) else {
+        return f64::NAN;
+    };
+    let (lo, hi) = (w[0], w[k - 1]);
+    if lo > 0.0 {
+        hi / lo
+    } else {
+        f64::NAN
+    }
+}
+
+/// The PCG loop behind every ragged solve, recording the CG coefficients.
+pub fn solve_ragged_with_trace<F>(rg: &Ragged, rtol: f64, max_iter: usize, matvec: F) -> RaggedSolve
+where
+    F: Fn(&[Array2<f64>], &mut u64) -> Vec<Array2<f64>>,
+{
     let npair = rg.pairs.len();
     let zeros: Vec<Array2<f64>> = rg
         .pairs
@@ -224,8 +302,16 @@ where
         rhs.push(b);
     }
     let bnorm = dot_blocks(&rhs, &rhs).sqrt();
+    let mut trace = CgTrace::default();
     if bnorm == 0.0 {
-        return (zeros, 0, 0.0, true, 0);
+        return RaggedSolve {
+            t: zeros,
+            iterations: 0,
+            relres: 0.0,
+            converged: true,
+            flops_per_matvec: 0,
+            trace,
+        };
     }
     let precond = |r: &[Array2<f64>]| -> Vec<Array2<f64>> {
         r.iter()
@@ -246,6 +332,7 @@ where
         it += 1;
         let ap = matvec(&p, &mut flops_total);
         let alpha = rz / dot_blocks(&p, &ap);
+        trace.alphas.push(alpha);
         for k in 0..npair {
             t[k].scaled_add(alpha, &p[k]);
             r[k].scaled_add(-alpha, &ap[k]);
@@ -258,6 +345,7 @@ where
         z = precond(&r);
         let rz_new = dot_blocks(&r, &z);
         let beta = rz_new / rz;
+        trace.betas.push(beta);
         for k in 0..npair {
             let mut pk = z[k].clone();
             pk.scaled_add(beta, &p[k]);
@@ -266,7 +354,14 @@ where
         rz = rz_new;
     }
     let flops_per_mv = if it > 0 { flops_total / it as u64 } else { 0 };
-    (t, it, relres, converged, flops_per_mv)
+    RaggedSolve {
+        t,
+        iterations: it,
+        relres,
+        converged,
+        flops_per_matvec: flops_per_mv,
+        trace,
+    }
 }
 
 /// Index-passing form of the ragged matvec (the one actually used).
@@ -680,6 +775,56 @@ pub fn ring_product(rg: &Ragged, x: &[Array2<f64>], y: &[Array2<f64>]) -> Vec<Ar
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// One (1 × m) pair block with a full pattern and the given denominators.
+    fn diag_block(denom: &[f64]) -> Ragged {
+        let m = denom.len();
+        let j_blk = Array2::from_shape_fn((1, m), |(_, c)| 0.3 + 0.1 * c as f64);
+        let pb = PairBlock {
+            i: 0,
+            j: 0,
+            da: vec![0],
+            db: (0..m).collect(),
+            pat: vec![true; m],
+            fvv_aa: Array2::zeros((1, 1)),
+            fvv_bb: Array2::zeros((m, m)),
+            j_blk,
+            denom: Array2::from_shape_vec((1, m), denom.to_vec()).unwrap(),
+            pos_da: vec![0],
+            pos_db: (0..m).collect(),
+        };
+        Ragged {
+            pairs: vec![pb],
+            by_i: HashMap::from([(0, vec![0])]),
+            by_j: HashMap::from([(0, vec![0])]),
+        }
+    }
+
+    /// The CG-coefficient κ estimate on an operator with a KNOWN spectrum:
+    /// A = diag(1..m) with a unit preconditioner is plain CG, which resolves
+    /// all m distinct eigenvalues in m steps, so κ_est must be m; with the
+    /// exact diagonal as preconditioner the preconditioned operator is the
+    /// identity (κ = 1, one step).
+    #[test]
+    fn lanczos_kappa_recovers_a_known_spectrum() {
+        let m = 6;
+        let d: Vec<f64> = (1..=m).map(|x| x as f64).collect();
+        let matvec = |p: &[Array2<f64>], _: &mut u64| -> Vec<Array2<f64>> {
+            vec![Array2::from_shape_fn((1, m), |(_, c)| p[0][(0, c)] * d[c])]
+        };
+        let plain = solve_ragged_with_trace(&diag_block(&[1.0; 6]), 1e-13, 50, matvec);
+        assert!(plain.converged);
+        let k = lanczos_kappa(&plain.trace);
+        assert!(
+            (k - m as f64).abs() < 1e-8 * m as f64,
+            "unit preconditioner: kappa {k} != {m}"
+        );
+        let pre = solve_ragged_with_trace(&diag_block(&d), 1e-13, 50, matvec);
+        assert_eq!(pre.iterations, 1);
+        let k1 = lanczos_kappa(&pre.trace);
+        assert!((k1 - 1.0).abs() < 1e-12, "exact preconditioner: kappa {k1}");
+        assert!(lanczos_kappa(&CgTrace::default()).is_nan());
+    }
 
     /// Byte-identity guard for the ferric-pbc seam: with `gate = g` the gated
     /// builder IS the original (every field bitwise), on a block with

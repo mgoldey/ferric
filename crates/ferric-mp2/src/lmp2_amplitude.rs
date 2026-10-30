@@ -55,7 +55,9 @@ use ferric_integrals::operator::Operator;
 use ferric_scf::result::ScfResult;
 
 use crate::boys::boys_localize;
-use crate::ragged::{pair_block_from_g_cand, solve_ragged, PairBlock, Ragged};
+use crate::ragged::{
+    lanczos_kappa, pair_block_from_g_cand, solve_ragged_traced, PairBlock, Ragged,
+};
 use crate::rimp2::{
     active_occ, eri3_budget_bytes, eri3_mo_ov_blocked, metric_inverse_sqrt, ri_mp2, RiMp2Config,
 };
@@ -155,7 +157,72 @@ pub struct AmplitudeLmp2Result {
     /// ε-linked aux truncation is off).
     pub aux_dom_mean: f64,
     pub aux_dom_max: usize,
+    /// κ estimate of the diagonally preconditioned CG operator from the CG
+    /// coefficients ([`crate::ragged::lanczos_kappa`]; a lower bound, NaN
+    /// when undefined).
+    pub cg_lanczos_kappa_est: f64,
+    /// In-block retained-pattern density (kept / (|Da|·|Db|)) over the pair
+    /// blocks: mean and min (0 when there are no blocks).
+    pub block_density_mean: f64,
+    pub block_density_min: f64,
+    /// Unordered pairs (i ≤ j) that carry a block.
+    pub n_pairs_unique: usize,
+    /// Whether the integral-free pair gate was configured
+    /// (`pair_gate_cal.is_some()`; inert at ε = 0).
+    pub gate_on: bool,
     pub timings: StageTimings,
+}
+
+/// The pattern counters both LMP2 drivers report, computed from the
+/// assembled ragged system.
+pub(crate) struct RaggedCounters {
+    pub keep_fraction: f64,
+    pub pair_fraction: f64,
+    pub dom_mean: f64,
+    pub dom_max: usize,
+    pub dense_flops: u64,
+    pub block_density_mean: f64,
+    pub block_density_min: f64,
+    pub n_pairs_unique: usize,
+}
+
+impl RaggedCounters {
+    pub(crate) fn new(rg: &Ragged, no: usize, nv: usize) -> Self {
+        let total_el = (no * nv) as u64 * (no * nv) as u64;
+        let mut kept = 0u64;
+        let (mut dens_sum, mut dens_min) = (0.0f64, f64::INFINITY);
+        let mut per_i: Vec<Vec<bool>> = vec![vec![false; nv]; no];
+        for pb in &rg.pairs {
+            let k = pb.pat.iter().filter(|&&x| x).count();
+            kept += k as u64;
+            let dens = k as f64 / pb.pat.len().max(1) as f64;
+            dens_sum += dens;
+            dens_min = dens_min.min(dens);
+            for &a in &pb.da {
+                per_i[pb.i][a] = true;
+            }
+        }
+        let dom: Vec<usize> = per_i
+            .iter()
+            .map(|v| v.iter().filter(|&&x| x).count())
+            .collect();
+        let npb = rg.pairs.len();
+        Self {
+            keep_fraction: kept as f64 / total_el as f64,
+            pair_fraction: npb as f64 / (no * no) as f64,
+            dom_mean: if no > 0 {
+                dom.iter().sum::<usize>() as f64 / no as f64
+            } else {
+                0.0
+            },
+            dom_max: dom.iter().copied().max().unwrap_or(0),
+            dense_flops: 2
+                * ((no * no) as u64 * (nv as u64).pow(3) + (no as u64).pow(3) * (nv * nv) as u64),
+            block_density_mean: if npb > 0 { dens_sum / npb as f64 } else { 0.0 },
+            block_density_min: if npb > 0 { dens_min } else { 0.0 },
+            n_pairs_unique: rg.pairs.iter().filter(|pb| pb.i <= pb.j).count(),
+        }
+    }
 }
 
 impl std::fmt::Display for AmplitudeLmp2Result {
@@ -177,6 +244,10 @@ impl std::fmt::Display for AmplitudeLmp2Result {
 /// was not computed.
 #[derive(Debug, Clone, Default)]
 pub struct StageTimings {
+    /// VV-HV virtual construction (`build_vvhv` + `check_vvhv`). Set by the
+    /// drivers that build the space ([`amplitude_lmp2`],
+    /// `lmp2_direct::amplitude_lmp2_direct`); 0 on the `*_with_virtuals`
+    /// entry points, whose caller built it.
     pub t_spaces_s: f64,
     pub t_assembly_s: f64,
     pub t_solve_s: f64,
@@ -588,17 +659,32 @@ pub fn amplitude_lmp2(
     rhf: &ScfResult,
     cfg: &AmplitudeLmp2Config,
 ) -> Result<AmplitudeLmp2Result, FerricError> {
+    let (vvhv, t_spaces_s) = checked_vvhv(mol, obs, obs_bs, rhf, "lmp2_amplitude")?;
+    let mut r = amplitude_lmp2_with_virtuals(mol, obs, dfbs, op, rhf, cfg, &vvhv)?;
+    r.timings.t_spaces_s = t_spaces_s;
+    Ok(r)
+}
+
+/// `build_vvhv` + the orthonormality/span check (both under the 1e-8 bar),
+/// returning the space and the wall seconds both took. `who` names the
+/// driver in the error.
+pub fn checked_vvhv(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    obs_bs: &BasisSet,
+    rhf: &ScfResult,
+    who: &str,
+) -> Result<(VvHv, f64), FerricError> {
+    let t0 = std::time::Instant::now();
     let vvhv = build_vvhv(mol, obs, obs_bs, rhf)?;
-    let (dev_orth, dev_span) = {
-        let nocc_total = (mol.nelec() as usize) / 2;
-        check_vvhv(obs, rhf, nocc_total, &vvhv.c_vloc)
-    };
+    let nocc_total = (mol.nelec() as usize) / 2;
+    let (dev_orth, dev_span) = check_vvhv(obs, rhf, nocc_total, &vvhv.c_vloc);
     if dev_orth > 1e-8 || dev_span > 1e-8 {
         return Err(FerricError::General(format!(
-            "lmp2_amplitude: VV-HV construction check failed (orth {dev_orth:.2e}, span {dev_span:.2e})"
+            "{who}: VV-HV construction check failed (orth {dev_orth:.2e}, span {dev_span:.2e})"
         )));
     }
-    amplitude_lmp2_with_virtuals(mol, obs, dfbs, op, rhf, cfg, &vvhv)
+    Ok((vvhv, t0.elapsed().as_secs_f64()))
 }
 
 /// The assembled localized-basis problem: everything the solver consumes.
@@ -1323,70 +1409,67 @@ pub fn amplitude_lmp2_with_virtuals(
 
     // ---- ragged solve ----
     let t0 = std::time::Instant::now();
-    let (t, iters, relres, converged, flops_mv) =
-        solve_ragged(&rg, f_oo, cfg.cg_rtol, cfg.cg_max_iter);
-    if !converged {
+    let mut r = solve_and_count(&rg, f_oo, rhf.energy, cfg, vvhv, no, nv, "lmp2_amplitude")?;
+    r.e_corr_canonical_ri = e_ref;
+    r.n_pairs_gated = n_pairs_gated;
+    r.aux_dom_mean = aux_dom_mean;
+    r.aux_dom_max = aux_dom_max;
+    r.timings = StageTimings {
+        t_spaces_s: 0.0,
+        t_assembly_s,
+        t_solve_s: t0.elapsed().as_secs_f64(),
+        t_reference_s,
+    };
+    Ok(r)
+}
+
+/// The ragged PCG solve + Hylleraas energy + pattern counters shared by
+/// both LMP2 drivers. The caller fills the reference energy, the gate/aux
+/// counters and the timings (left NaN/0 here).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn solve_and_count(
+    rg: &Ragged,
+    f_oo: &Array2<f64>,
+    e_scf: f64,
+    cfg: &AmplitudeLmp2Config,
+    vvhv: &VvHv,
+    no: usize,
+    nv: usize,
+    who: &str,
+) -> Result<AmplitudeLmp2Result, FerricError> {
+    let s = solve_ragged_traced(rg, f_oo, cfg.cg_rtol, cfg.cg_max_iter);
+    if !s.converged {
         return Err(FerricError::General(format!(
-            "lmp2_amplitude: ragged CG failed to converge (relres {relres:.2e} after {iters} iters)"
+            "{who}: ragged CG failed to converge (relres {:.2e} after {} iters)",
+            s.relres, s.iterations
         )));
     }
-
-    let e_corr = hylleraas_energy(&rg, &t);
-
-    // counters
-    let total_el = (no * nv) as u64 * (no * nv) as u64;
-    let kept: u64 = rg
-        .pairs
-        .iter()
-        .map(|pb| pb.pat.iter().filter(|&&x| x).count() as u64)
-        .sum();
-    let dom: Vec<usize> = {
-        // per-LMO union over j of Da
-        let mut per_i: Vec<Vec<bool>> = vec![vec![false; nv]; no];
-        for pb in &rg.pairs {
-            for &a in &pb.da {
-                per_i[pb.i][a] = true;
-            }
-        }
-        per_i
-            .iter()
-            .map(|v| v.iter().filter(|&&x| x).count())
-            .collect()
-    };
-    let dom_max = dom.iter().copied().max().unwrap_or(0);
-    let dom_mean = if no > 0 {
-        dom.iter().sum::<usize>() as f64 / no as f64
-    } else {
-        0.0
-    };
-    let dense_flops =
-        2 * ((no * no) as u64 * (nv as u64).pow(3) + (no as u64).pow(3) * (nv * nv) as u64);
-
-    let t_solve_s = t0.elapsed().as_secs_f64();
+    let e_corr = hylleraas_energy(rg, &s.t);
+    let c = RaggedCounters::new(rg, no, nv);
     Ok(AmplitudeLmp2Result {
         e_corr,
-        e_total: rhf.energy + e_corr,
-        e_corr_canonical_ri: e_ref,
-        keep_fraction: kept as f64 / total_el as f64,
-        pair_fraction: rg.pairs.len() as f64 / (no * no) as f64,
-        dom_mean,
-        dom_max,
-        cg_iterations: iters,
-        cg_relres: relres,
-        cg_converged: converged,
+        e_total: e_scf + e_corr,
+        e_corr_canonical_ri: f64::NAN,
+        keep_fraction: c.keep_fraction,
+        pair_fraction: c.pair_fraction,
+        dom_mean: c.dom_mean,
+        dom_max: c.dom_max,
+        cg_iterations: s.iterations,
+        cg_relres: s.relres,
+        cg_converged: s.converged,
         n_valence_virt: vvhv.n_valence,
         n_hard_virt: vvhv.n_hard,
-        ragged_flops_per_matvec: flops_mv,
-        dense_flops_per_matvec: dense_flops,
-        n_pairs_gated,
-        aux_dom_mean,
-        aux_dom_max,
-        timings: StageTimings {
-            t_spaces_s: 0.0,
-            t_assembly_s,
-            t_solve_s,
-            t_reference_s,
-        },
+        ragged_flops_per_matvec: s.flops_per_matvec,
+        dense_flops_per_matvec: c.dense_flops,
+        n_pairs_gated: 0,
+        aux_dom_mean: 0.0,
+        aux_dom_max: 0,
+        cg_lanczos_kappa_est: lanczos_kappa(&s.trace),
+        block_density_mean: c.block_density_mean,
+        block_density_min: c.block_density_min,
+        n_pairs_unique: c.n_pairs_unique,
+        gate_on: cfg.pair_gate_cal.is_some(),
+        timings: StageTimings::default(),
     })
 }
 

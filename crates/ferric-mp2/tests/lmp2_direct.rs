@@ -1251,3 +1251,74 @@ fn cpu_time_s() -> f64 {
     let stime: u64 = f[12].parse().unwrap();
     (utime + stime) as f64 / 100.0
 }
+
+/// STAGE-TIMER LIVENESS (perf plan Stage A): every stage timer of both LMP2
+/// drivers is actually measured on C4 — a timer hard-coded to 0.0 (the
+/// pre-Stage-A `t_spaces_s`) fails here — and the new pattern/solver
+/// counters are populated and in range.
+#[test]
+fn stage_timers_are_live() {
+    let su = setup("alkane_4.xyz");
+    let op = Operator::coulomb();
+    let cfg = AmplitudeLmp2Config {
+        eps: 1e-4,
+        frozen_core: 4,
+        pair_gate_cal: Some(0.7),
+        compute_reference: true,
+        ..Default::default()
+    };
+    let dcfg = DirectConfig {
+        aux_radius_bohr: 10.0,
+        virt_radius_bohr: Some(12.0),
+        ao_tail: 1e-3,
+        schwarz_skip: 1e-5,
+        batch_merge: 2,
+        ..Default::default()
+    };
+    let (r, st) = amplitude_lmp2_direct(
+        &su.mol, &su.obs, &su.obs_bs, &su.dfbs, op, &su.rhf, &cfg, &dcfg,
+    )
+    .unwrap();
+    let g = amplitude_lmp2(&su.mol, &su.obs, &su.obs_bs, &su.dfbs, op, &su.rhf, &cfg).unwrap();
+    let timers = [
+        ("direct t_spaces_s", r.timings.t_spaces_s),
+        ("direct t_assembly_s", r.timings.t_assembly_s),
+        ("direct t_solve_s", r.timings.t_solve_s),
+        ("direct t_reference_s", r.timings.t_reference_s),
+        ("t_maps_s", st.t_maps_s),
+        ("t_eri3_s", st.t_eri3_s),
+        ("t_eri3_eval_cpu_s", st.t_eri3_eval_cpu_s),
+        ("t_eri3_scatter_cpu_s", st.t_eri3_scatter_cpu_s),
+        ("t_eri3_transform_cpu_s", st.t_eri3_transform_cpu_s),
+        ("batch_work_max_s", st.batch_work_max_s),
+        ("batch_work_mean_s", st.batch_work_mean_s),
+        ("t_metric_s", st.t_metric_s),
+        ("t_pairs_s", st.t_pairs_s),
+        ("t_loc_s", st.t_loc_s),
+        ("global t_spaces_s", g.timings.t_spaces_s),
+        ("global t_assembly_s", g.timings.t_assembly_s),
+        ("global t_solve_s", g.timings.t_solve_s),
+        ("global t_reference_s", g.timings.t_reference_s),
+    ];
+    eprintln!("{timers:?}");
+    for (name, t) in timers {
+        assert!(t > 0.0 && t.is_finite(), "timer {name} not live: {t}");
+    }
+    let split = st.t_eri3_eval_cpu_s + st.t_eri3_scatter_cpu_s + st.t_eri3_transform_cpu_s;
+    assert!(
+        split <= st.batch_work_mean_s * st.n_batches as f64 * (1.0 + 1e-9),
+        "split {split} exceeds the summed batch work"
+    );
+    assert!(st.n_batches > 0 && st.batch_work_max_s >= st.batch_work_mean_s);
+    for res in [&r, &g] {
+        assert!(res.gate_on);
+        assert!(res.n_pairs_unique > 0);
+        assert!(res.block_density_min > 0.0 && res.block_density_min <= res.block_density_mean);
+        assert!(res.block_density_mean <= 1.0);
+        assert!(
+            res.cg_lanczos_kappa_est >= 1.0 && res.cg_lanczos_kappa_est.is_finite(),
+            "kappa {}",
+            res.cg_lanczos_kappa_est
+        );
+    }
+}
