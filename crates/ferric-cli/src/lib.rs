@@ -6746,7 +6746,7 @@ mod local_printout_tests {
             }
         }
         let fields = cert.fields();
-        assert_eq!(fields.len(), 19);
+        assert_eq!(fields.len(), 20);
         for (k, v) in &fields {
             assert!(same(&back[*k], v), "field {k}: {} vs {v:?}", back[*k]);
         }
