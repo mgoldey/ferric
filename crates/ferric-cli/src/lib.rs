@@ -360,6 +360,31 @@ fn apply_scf_jk(cfg: &Config, task: &str, rhf_config: &mut RhfConfig) -> bool {
 /// extra element away, since `sys.argv` is the shape Python itself commits
 /// to being stable, not an implementation detail of how CPython's runtime
 /// happens to report process argv on this platform/version.
+/// One stderr line saying what the DF-guess stage actually did.
+fn print_df_guess_outcome(
+    dfg: &ferric_scf::ladder::DfGuessResult,
+    aux: Option<&str>,
+    jk_mode: impl std::fmt::Display,
+) {
+    if dfg.fallback.is_some() {
+        eprintln!(
+            "[ferric] SCF: DF-guess pre-stage skipped (out of memory), {jk_mode} J/K stage from \
+             its own guess"
+        );
+        return;
+    }
+    eprintln!(
+        "[ferric] SCF: DF-guess pre-stage via {} ({} iters, {}), {jk_mode} J/K stage from that density",
+        aux.unwrap_or(ferric_scf::ladder::DF_GUESS_DEFAULT_AUX),
+        dfg.df_iterations,
+        if dfg.df_converged {
+            "converged"
+        } else {
+            "did not fully converge"
+        },
+    );
+}
+
 /// `[scf] guess_basis` / `guess_projection`, resolved strictly. They were
 /// already validated when the config loaded, so an error here is a bug; it
 /// still exits rather than silently dropping the guess.
@@ -1067,19 +1092,7 @@ pub fn run(args: Vec<String>) {
             eprintln!("error: DF-guess SCF failed: {e:?}");
             std::process::exit(1);
         });
-        eprintln!(
-            "[ferric] SCF: DF-guess pre-stage via {} ({} iters, {}), {} J/K stage from that density",
-            df_guess_aux
-                .as_deref()
-                .unwrap_or(ferric_scf::ladder::DF_GUESS_DEFAULT_AUX),
-            dfg.df_iterations,
-            if dfg.df_converged {
-                "converged"
-            } else {
-                "did not fully converge"
-            },
-            jk_route.mode,
-        );
+        print_df_guess_outcome(&dfg, df_guess_aux.as_deref(), jk_route.mode);
         let _ = dfg.df_energy; // diagnostic only; the exact-stage result is authoritative
         dfg.result
     } else if cfg.scf.df_increments {

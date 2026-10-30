@@ -223,7 +223,7 @@ pub fn decide(
         JkStorage::Direct => Ok((Tier::Recompute, None)),
         JkStorage::Memory => mem.map(|t| (t, None)).ok_or_else(|| {
             let packed = band * packed_pair_len(nao) * 8;
-            FerricError::General(format!(
+            FerricError::MemoryExhausted(format!(
                 "jk_storage = \"memory\": the 3-index tensor needs {:.2} GB packed \
                  ({:.2} GB unpacked) plus 64 aux rows of scratch, but the memory budget (or what the shared pool has free) is \
                  {:.2} GB. Raise [memory] budget_gb or use jk_storage = \"auto\", \"disk\" \

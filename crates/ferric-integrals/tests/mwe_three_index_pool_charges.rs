@@ -175,3 +175,102 @@ fn two_co_resident_spilled_sources_do_not_refuse_each_other() {
     drop(raw);
     clear_global();
 }
+
+/// A band that fits the budget once but not twice must spill, not be refused.
+///
+/// REGRESSION: C20/6-31G at `FERRIC_MEM_BUDGET_GB=2` died with "memory pool
+/// exhausted: DF 3-index dressed B[P,mn] in-core needs 1.258 GB but only 0.890
+/// GB is free", while C48 at the same budget spilled and ran. `raw` stays
+/// resident (DF-J keeps it), so the band `budget/2 < needed <= budget` is exactly
+/// the one that passes a budget-only test and then cannot be charged.
+#[test]
+fn a_dressed_band_that_fits_the_budget_but_not_the_pool_spills() {
+    let _slot = GlobalPoolGuard::acquire();
+    let (_mol, obs, dfbs) = bases();
+    let op = Operator::coulomb();
+    let (naux, nao) = (dfbs.nbasis(), obs.nbasis());
+    let needed = naux * nao * nao * 8;
+    let m = ndarray::Array2::<f64>::from_shape_fn((naux, naux), |(i, j)| {
+        if i == j {
+            1.5
+        } else {
+            0.01 / ((i as f64 - j as f64).abs() + 1.0)
+        }
+    });
+    let flat = |s: &mut ThreeIndexSource| {
+        let mut out = vec![0.0f64; needed / 8];
+        s.for_each_block(|blk| {
+            for (i, x) in blk.data.iter().enumerate() {
+                out[blk.p0 * nao * nao + i] = *x;
+            }
+            Ok(())
+        })
+        .unwrap();
+        out
+    };
+
+    let mut ample_raw = ThreeIndexSource::build(op, &obs, &dfbs, needed * 4).unwrap();
+    let mut ample = ThreeIndexSource::build_dressed(&mut ample_raw, &m, needed * 4).unwrap();
+    assert!(ample.is_incore());
+    let reference = flat(&mut ample);
+
+    // Deriving the band from the needed bytes: raw leaves `needed / 2` free.
+    let budget = needed + needed / 2;
+    let pool = MemoryPool::with_capacity_bytes(budget);
+    install_global(pool.clone());
+    let mut raw = ThreeIndexSource::build(op, &obs, &dfbs, budget).expect("raw fits");
+    assert!(raw.is_incore(), "the band is the one where raw is in core");
+    let free = pool.available_bytes();
+    assert!(free < needed, "fixture must not fit a second copy");
+
+    let mut dressed = ThreeIndexSource::build_dressed(&mut raw, &m, budget)
+        .expect("must spill, not be refused by the pool");
+    assert!(dressed.is_spilled_for_test(), "must have spilled");
+    let row = nao * nao * 8;
+    assert!(
+        dressed.block_naux() * row <= free,
+        "read-back block {} rows does not fit the {free} bytes free",
+        dressed.block_naux()
+    );
+    assert_eq!(
+        dressed.block_naux() % 2,
+        0,
+        "read-back width must stay even"
+    );
+    let got = flat(&mut dressed);
+    let big = reference.iter().fold(0.0f64, |a, x| a.max(x.abs()));
+    let worst = reference
+        .iter()
+        .zip(&got)
+        .map(|(a, b)| (a - b).abs())
+        .fold(0.0f64, f64::max);
+    assert!(
+        worst <= 64.0 * f64::EPSILON * big,
+        "deviates by {worst:.3e}"
+    );
+    drop((dressed, raw));
+    assert_eq!(pool.outstanding_bytes(), 0, "every charge must be released");
+
+    // Negative control: a pool that holds both keeps the in-core path, so a
+    // run that succeeds today takes the same branch.
+    clear_global();
+    // (4x: the in-core plan also charges 64 rows of `contrib` per worker, and
+    // this band is small enough for that to matter.)
+    let pool = MemoryPool::with_capacity_bytes(4 * needed);
+    install_global(pool.clone());
+    let mut raw = ThreeIndexSource::build(op, &obs, &dfbs, 4 * needed).unwrap();
+    let mut dressed = ThreeIndexSource::build_dressed(&mut raw, &m, 4 * needed).unwrap();
+    assert!(dressed.is_incore(), "room for both must stay in core");
+    assert_eq!(
+        pool.outstanding_bytes(),
+        2 * needed,
+        "both charged, once each"
+    );
+    let same = flat(&mut dressed);
+    assert!(
+        same.iter()
+            .zip(&reference)
+            .all(|(a, b)| a.to_bits() == b.to_bits()),
+        "an in-core dressing under a pool must be bit-identical to one without"
+    );
+}

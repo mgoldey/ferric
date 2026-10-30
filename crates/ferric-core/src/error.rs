@@ -18,4 +18,10 @@ pub enum FerricError {
     Convergence(String),
     #[error("General error: {0}")]
     General(String),
+    /// A memory budget or the shared pool cannot cover a request. Typed so an
+    /// optional stage (a guess) can give way to it without matching on message
+    /// text, and without swallowing any other failure. The message carries the
+    /// occupancy breakdown, so `Display` adds no prefix.
+    #[error("{0}")]
+    MemoryExhausted(String),
 }

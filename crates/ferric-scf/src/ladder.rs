@@ -247,8 +247,12 @@ pub struct DfGuessResult {
     /// see `solve_rhf_with_df_guess` doc) missed speedup.
     pub df_converged: bool,
     /// The DF pre-stage's own final energy (fitted, NOT physically meaningful
-    /// as a final answer — reported for diagnostics/logging only).
+    /// as a final answer — reported for diagnostics/logging only). NaN when the
+    /// pre-stage did not run (see `fallback`).
     pub df_energy: f64,
+    /// `Some(reason)` when the pre-stage ran out of memory and the exact stage
+    /// started from its own guess instead. `df_iterations` is then 0.
+    pub fallback: Option<String>,
 }
 
 /// `max_iter` cap for the DF pre-stage (see `solve_rhf_with_df_guess` doc,
@@ -352,6 +356,14 @@ const DF_GUESS_ENERGY_CONV_FLOOR: f64 = 1e-2;
 /// `max_iter` is capped at [`DF_GUESS_MAX_ITER`]. If the DF stage hits
 /// `max_iter` without converging, its (still much-improved-over-cold-guess)
 /// density is used anyway — see `DfGuessResult::df_converged`.
+///
+/// # Out of memory
+///
+/// The pre-stage only ever chooses a starting density, so a run must not die for
+/// want of memory for it: on [`FerricError::MemoryExhausted`] this warns and runs
+/// the exact stage from the guess `base` would otherwise use, which reaches the
+/// same fixed point. Any other pre-stage error propagates, and so does any error
+/// from the exact stage itself.
 pub fn solve_rhf_with_df_guess(
     ctx: &ParallelContext,
     mol: &Molecule,
@@ -361,8 +373,25 @@ pub fn solve_rhf_with_df_guess(
     base: &RhfConfig,
     df_aux: Option<&str>,
 ) -> Result<DfGuessResult, FerricError> {
-    let df_result = run_df_guess_pre_stage(ctx, mol, prep, op, bounds, base, df_aux)?;
+    match run_df_guess_pre_stage(ctx, mol, prep, op, bounds, base, df_aux) {
+        Ok(df) => solve_rhf_from_df_density(ctx, mol, prep, op, bounds, base, df),
+        Err(FerricError::MemoryExhausted(reason)) => {
+            solve_rhf_without_df_guess(ctx, mol, prep, op, bounds, base, reason)
+        }
+        Err(e) => Err(e),
+    }
+}
 
+/// The exact stage, started from the DF pre-stage's density.
+fn solve_rhf_from_df_density(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    base: &RhfConfig,
+    df_result: ScfResult,
+) -> Result<DfGuessResult, FerricError> {
     let mut exact_cfg = base.clone();
     exact_cfg.init_guess_density = Some(df_result.density_total.clone());
     exact_cfg.use_sad_guess = false;
@@ -377,6 +406,44 @@ pub fn solve_rhf_with_df_guess(
         df_iterations: df_result.iterations,
         df_converged: df_result.converged,
         df_energy: df_result.energy,
+        fallback: None,
+    })
+}
+
+/// The exact stage alone, from the guess `base` would otherwise use, after the
+/// DF pre-stage ran out of memory. Warns and logs what actually ran.
+fn solve_rhf_without_df_guess(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    base: &RhfConfig,
+    reason: String,
+) -> Result<DfGuessResult, FerricError> {
+    let guess = if base.init_guess_density.is_some() {
+        "the supplied density"
+    } else if base.use_sad_guess {
+        "the MINAO guess"
+    } else {
+        "the hcore guess"
+    };
+    eprintln!(
+        "[ferric] WARNING: DF-guess pre-stage ran out of memory; skipping it and starting the \
+         SCF from {guess}. Same converged energy, possibly more iterations.\n{reason}"
+    );
+    if let Some(rl) = crate::runlog::log() {
+        rl.note(
+            "df_guess_fallback",
+            serde_json::json!({ "reason": reason, "guess": guess }),
+        );
+    }
+    Ok(DfGuessResult {
+        result: solve_rhf(ctx, mol, prep, op, bounds, base)?,
+        df_iterations: 0,
+        df_converged: false,
+        df_energy: f64::NAN,
+        fallback: Some(reason),
     })
 }
 
