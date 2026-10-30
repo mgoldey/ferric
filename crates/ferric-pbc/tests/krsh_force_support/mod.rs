@@ -284,7 +284,7 @@ pub fn supercell(pos: &[[f64; 3]], n: [usize; 3]) -> Cell {
 /// listed mutant must move the FD-validated production force by more than
 /// `bar`. The CAM-B3LYP erf piece must be live on this K set (> 0.1). The
 /// weekly test runs both functionals with every mutant; the per-commit canary
-/// CAM-B3LYP with three.
+/// CAM-B3LYP with every mutant.
 pub fn rsh_mutant_sweep(cases: &[(&str, f64)], mutants: &[KGradMutation]) {
     let cell = cell_of(&H2);
     let mesh = KPointMesh::gamma_centred(&cell, [1, 1, 3]).unwrap();

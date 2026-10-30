@@ -4,8 +4,8 @@
 //! al., JCTC 12, 3894 (2016)). It took ~130 s on CI (runs 40957025137 /
 //! 40953725119, mean), above the 120 s per-commit threshold. Per-commit
 //! canary: `properties_hirshfeld.rs::h2o_adhoc_neutral_hirshfeld_charges`
-//! (the same `hirshfeld_i_charges` driver, neutral-only proatoms); the
-//! ion-proatom iteration runs here only. Driver: `hirshfeld_i_support/mod.rs`.
+//! (the same library `hirshfeld_i_charges`, its own neutral-only proatoms,
+//! not this driver); the ion-proatom iteration runs here only. Driver: `hirshfeld_i_support/mod.rs`.
 
 mod hirshfeld_i_support;
 use hirshfeld_i_support::water_hirshfeld_i_charges;

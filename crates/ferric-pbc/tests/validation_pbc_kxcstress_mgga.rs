@@ -6,7 +6,8 @@
 //! `pbc_kxcstress_mgga.rs` and at each test; the helpers are
 //! `kxcstress_mgga_support/mod.rs`. Per-commit canaries that remain:
 //! `tpss_components_xc_stress_matches_fd_of_exc`,
-//! `uniform_grid_fixed_density_xc_stress_canary`, `mutants_are_caught`,
+//! `uniform_grid_fixed_density_xc_stress_canary`,
+//! `uniform_grid_fixed_density_xc_stress_r2scan_canary`, `mutants_are_caught`,
 //! `meta_gga_stress_matches_fd_of_the_scf_energy`,
 //! `tpss_stress_matches_fd_of_the_scf_energy`.
 
@@ -49,7 +50,7 @@ fn fixed_density_xc_stress_matches_fd_of_exc() {
 #[test]
 #[ignore = "validation: k-RKS SCAN/r2SCAN fixed-D XC stress vs FD of E_xc, uniform 24^3, all nine + XC mutants; CI ~201 s"]
 fn fixed_density_xc_stress_matches_fd_on_the_uniform_grid() {
-    uniform_fixed_density_xc_case(&["SCAN", "R2SCAN"], &ALL9);
+    uniform_fixed_density_xc_case(&["SCAN", "R2SCAN"], &ALL9, &XC_MUTANTS);
 }
 
 #[test]

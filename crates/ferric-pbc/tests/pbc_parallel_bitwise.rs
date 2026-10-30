@@ -176,28 +176,37 @@ fn overlap_kinetic_force_walk_is_bitwise_across_threads_and_vs_serial_loop() {
 // ------------------------------------- canaries of the weekly anchors
 
 /// Canary of `rsgdf_sr_sums_are_bitwise_across_threads_and_vs_serial`:
-/// triclinic 4 H in STO-3G (4 shells) with the ET s+p aux, 1/2 threads.
+/// triclinic 4 H in the anchor's STO-3G s + p (8 shells: 1×1, 1×3 and 3×3
+/// blocks and their mirror) with the ET s+p aux instead of def2 jkfit, 1/2
+/// threads.
 #[test]
 fn rsgdf_sr_sums_bitwise_canary() {
-    rsgdf_sr_sums_case(&pyscf_sto3g_h(), &et_sp_aux(), &CANARY_THREADS);
+    rsgdf_sr_sums_case(&sp_basis_h(), &et_sp_aux(), &CANARY_THREADS);
 }
 
 /// Canary of `hcore_sr_attraction_is_bitwise_across_threads_and_vs_serial`:
-/// triclinic 4 H in STO-3G, both screening cases, 1/2 threads.
+/// triclinic 4 H in STO-3G (s only), both screening cases, 1/2 threads.
+/// GAP: the 1×3 / 3×3 block fill and mirror of the Gamma `V_SR` s2 walk is
+/// weekly only (s + p measured 66 s vs 19 s locally, 2026-10-30: not cheap).
 #[test]
 fn hcore_sr_attraction_bitwise_canary() {
     hcore_sr_attraction_case(&pyscf_sto3g_h(), &CANARY_THREADS);
 }
 
 /// Canary of `hcore_kpts_sr_attraction_is_bitwise_across_threads_and_vs_serial`:
-/// triclinic 4 H in STO-3G on MP 1×2×2, 1/2 threads.
+/// triclinic 4 H in STO-3G s + p on MP 1×2×2, 1/2 threads.
 #[test]
 fn hcore_kpts_sr_attraction_bitwise_canary() {
-    hcore_kpts_sr_attraction_case(&pyscf_sto3g_h(), &CANARY_THREADS);
+    hcore_kpts_sr_attraction_case(&sp_basis_h(), &CANARY_THREADS);
 }
 
 /// Canary of `krsgdf_sr_bins_are_bitwise_across_threads_and_vs_serial`:
-/// triclinic 4 H in STO-3G, ET s+p aux, MP 1×2×2, 1/2 threads.
+/// triclinic 4 H in STO-3G (s only), ET s+p aux, MP 1×2×2, 1/2 threads.
+/// GAP: the orbital 1×3 / 3×3 blocks of the k-point s2 bins walk are weekly
+/// only (s + p measured 65 s vs 26 s locally, 2026-10-30: not cheap; the
+/// 2 H s + p twin `pbc_kpair_symmetry.rs::krsgdf_s2_bins_canary` covers the
+/// same walk's p blocks per commit, against the frozen ordered oracle at
+/// 1/2 threads).
 #[test]
 fn krsgdf_sr_bins_bitwise_canary() {
     krsgdf_sr_bins_case(&pyscf_sto3g_h(), &et_sp_aux(), &CANARY_THREADS);
@@ -253,25 +262,30 @@ fn ecp_force_term_bitwise_canary() {
     ecp_force_term_case(&CANARY_THREADS);
 }
 
-/// Canary of `rsgdf_lr_sums_match_frozen_serial_across_threads`: STO-3G s +
-/// p instead of s + p + pure d (so the row-blocked J3 GEMM does not split),
-/// unsplit and split, 1/2 threads.
+/// Canary of `rsgdf_lr_sums_match_frozen_serial_across_threads`: SIX H in
+/// the triclinic cell with STO-3G s + p instead of 4 H with s + p + pure d:
+/// nao = 24, so J3 has 576 rows and the row-blocked J3 GEMM still splits (2
+/// blocks of 512, asserted; the weekly fixture has 3). Unsplit and split,
+/// 1/2 threads.
 #[test]
 fn rsgdf_lr_sums_match_frozen_serial_canary() {
     rsgdf_lr_sums_case(
+        &triclinic_6h_cell(),
         &sp_basis_h(),
         1,
         &[None, Some(RangeSplit::default())],
         &CANARY_THREADS,
-        false,
+        2,
     );
 }
 
 /// Canary of `rsgdf_lr_sums_are_invariant_to_the_g_chunking` (issue #507):
-/// STO-3G s + p instead of s + p + pure d.
+/// STO-3G s + p instead of s + p + pure d. The many-chunk budget is n_g / 10
+/// G vectors (the anchor's n_g / 8 gives only 7 chunks in this basis, below
+/// the asserted ≥ 8; measured 2026-10-30).
 #[test]
 fn rsgdf_lr_g_chunking_canary() {
-    rsgdf_lr_g_chunking_case(&sp_basis_h(), 1);
+    rsgdf_lr_g_chunking_case(&sp_basis_h(), 1, 10);
 }
 
 /// Canary of `rsgdf_b_and_energy_are_bitwise_across_threads_with_several_lr_chunks`:

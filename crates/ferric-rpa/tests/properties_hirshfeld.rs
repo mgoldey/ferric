@@ -23,9 +23,10 @@
 //! TIERS. The full Hirshfeld-I test with ion proatoms in aug-cc-pVDZ
 //! (literature window q(O) = -0.872, ~130 s on CI) runs weekly in
 //! `validation_properties_hirshfeld.rs` (driver: `hirshfeld_i_support/mod.rs`).
-//! Per-commit canary: `h2o_adhoc_neutral_hirshfeld_charges` (the same
-//! `hirshfeld_i_charges` driver with neutral-only proatoms). The ion-proatom
-//! charge iteration itself is exercised weekly only.
+//! Per-commit canary: `h2o_adhoc_neutral_hirshfeld_charges` (the same library
+//! `hirshfeld_i_charges` with its own neutral-only proatom closure; it does
+//! not use `hirshfeld_i_support`). The ion-proatom charge iteration itself is
+//! exercised weekly only.
 
 #![allow(clippy::needless_range_loop)] // index loops over tensor/array axes read clearer with explicit indices
 

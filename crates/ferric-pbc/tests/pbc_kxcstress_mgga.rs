@@ -54,7 +54,9 @@
 //! `kxcstress_mgga_support/mod.rs`. Per-commit canaries for them:
 //! `tpss_components_xc_stress_matches_fd_of_exc` (fixed-D XC FD, atom grid,
 //! all nine), `uniform_grid_fixed_density_xc_stress_canary` (SCAN, uniform
-//! grid, two components, every XC mutant), `mutants_are_caught`, and the
+//! grid, two components, every XC mutant),
+//! `uniform_grid_fixed_density_xc_stress_r2scan_canary` (r2SCAN, uniform
+//! grid, zz, the two tau-strain mutants), `mutants_are_caught`, and the
 //! SCF-energy FD anchors (`meta_gga_stress_matches_fd_of_the_scf_energy`,
 //! `tpss_stress_matches_fd_of_the_scf_energy`). The TPSS libxc name-table
 //! mutant the TPSS PySCF stress pin exists for is also caught per commit by
@@ -112,10 +114,30 @@ fn tpss_components_xc_stress_matches_fd_of_exc() {
 /// (`validation_pbc_kxcstress_mgga.rs`): the same uniform-grid fixed-density
 /// XC FD and the same XC strain defects, SCAN only, on the zz and xz strains
 /// (the bond axis and one shear; the weekly test runs all nine for SCAN and
-/// r2SCAN).
+/// r2SCAN). Measured 81 s locally on a loaded box (2026-10-30).
 #[test]
 fn uniform_grid_fixed_density_xc_stress_canary() {
-    uniform_fixed_density_xc_case(&["SCAN"], &[(2, 2), (0, 2)]);
+    uniform_fixed_density_xc_case(&["SCAN"], &[(2, 2), (0, 2)], &XC_MUTANTS);
+}
+
+/// The r2SCAN row of the same canary, as its own test (in one test with the
+/// SCAN row it took 134 s locally, over the 120 s per-commit line; the
+/// r2SCAN SCF fixture is most of the extra 53 s): zz strain, the two
+/// tau-strain mutants (`NoTauStrain`, `TauDoubled`). It runs r2SCAN's tau
+/// strain path per commit. The FD is of the same name, so a name mis-route
+/// (r2SCAN -> SCAN) is NOT visible here; the CLI force canary
+/// `kpoint_uks_r2scan_force_at_the_input_geometry_differs_from_scan` and
+/// `pbc_krks.rs::gamma_mgga_matches_pinned_pyscf_gamma_rks` see it.
+#[test]
+fn uniform_grid_fixed_density_xc_stress_r2scan_canary() {
+    uniform_fixed_density_xc_case(
+        &["R2SCAN"],
+        &[(2, 2)],
+        &[
+            KXcStressMutation::NoTauStrain,
+            KXcStressMutation::TauDoubled,
+        ],
+    );
 }
 
 // ------------------------------------------------------------ SCF-energy FD

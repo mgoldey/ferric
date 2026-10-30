@@ -585,7 +585,13 @@ pub fn mdiff_on(a: &Mat3, b: &Mat3, comps: &[(usize, usize)]) -> f64 {
 /// 24^3 grid (no partition, no home atom), over `comps`, for each functional
 /// in `fs`; every XC strain defect must miss the same FD. The weekly test runs
 /// SCAN and r2SCAN on all nine components; the per-commit canary SCAN on two.
-pub fn uniform_fixed_density_xc_case(fs: &[&str], comps: &[(usize, usize)]) {
+/// Uniform-grid fixed-density XC stress vs FD of `E_xc` on `comps` for each
+/// functional in `fs`; each of `mutants` must then miss the FD.
+pub fn uniform_fixed_density_xc_case(
+    fs: &[&str],
+    comps: &[(usize, usize)],
+    mutants: &[KXcStressMutation],
+) {
     let grid = KXcGrid::Uniform([24, 24, 24]);
     for &f in fs {
         let fx = fixture(&H2, [1, 1, 3], f, Jk::Dense, grid.clone());
@@ -604,7 +610,7 @@ pub fn uniform_fixed_density_xc_case(fs: &[&str], comps: &[(usize, usize)]) {
         let miss = mdiff_on(&xc_part(&s), &fd, comps);
         eprintln!("{f} uniform 24^3 {comps:?}: |xc - FD| {miss:.2e}");
         assert!(miss < FD_BAR_XC, "{f}: {miss:e}");
-        for m in XC_MUTANTS {
+        for &m in mutants {
             let t = stress(&fx, Some(m));
             let mm = mdiff_on(&xc_part(&t), &fd, comps);
             eprintln!("  {f} uniform {m:?}: |xc - FD| {mm:.2e}");

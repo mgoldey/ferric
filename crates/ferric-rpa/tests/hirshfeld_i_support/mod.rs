@@ -1,7 +1,14 @@
-//! Shared Hirshfeld-I driver of `properties_hirshfeld.rs` (per commit) and
-//! `validation_properties_hirshfeld.rs` (weekly): water's Hirshfeld-I charges
-//! with ad-hoc same-basis NEUTRAL + ION proatoms (atomic SCF per element and
-//! integer charge, spherically averaged on a shared radial grid).
+//! Hirshfeld-I driver of `validation_properties_hirshfeld.rs` (weekly only;
+//! no per-commit test uses this module): water's Hirshfeld-I charges with
+//! ad-hoc same-basis NEUTRAL + ION proatoms (atomic SCF per element and
+//! integer charge, spherically averaged on a shared radial grid). The
+//! per-commit `properties_hirshfeld.rs::h2o_adhoc_neutral_hirshfeld_charges`
+//! calls the same library `hirshfeld_i_charges` with its own NEUTRAL-only
+//! proatom closure, so the ion-proatom charge iteration runs weekly only.
+//! A cc-pVDZ per-commit canary of this driver was measured and not added
+//! (2026-10-30, loaded box): q = [-0.9052, +0.4526, +0.4526] in 48 s at
+//! `n_radii` = 200 and 94 s at 600 (identical charges), over the ~30 s
+//! per-commit budget.
 
 use ferric_core::basis;
 use ferric_core::elements::z_to_symbol;

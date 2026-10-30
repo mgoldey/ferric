@@ -390,6 +390,11 @@ pub fn krsgdf_sr_bins_case(bs: &BasisSet, aux_bs: &BasisSet, threads: &[usize]) 
         .collect();
     let (j2_ref, j3_ref, n2_ref, n3_ref) = &runs[0][0];
     assert_eq!((j2_ref.len(), j3_ref.len()), (4, 64));
+    eprintln!(
+        "live bins: J2 {} of 4, J3 {} of 64",
+        live_bins(j2_ref),
+        live_bins(j3_ref)
+    );
     // Several bins in BOTH dimensions carry sums, so the bin index is live.
     assert!(
         live_bins(j2_ref) >= 2,
@@ -1829,12 +1834,15 @@ pub const LR_CHUNKING_REL_TOL: f64 = 1e-13;
 /// that skips every chunk after the first (`_g0 > 0 => return` in
 /// `Stage::lr_accumulate`'s sink) fails (J3 off by 4.2e-7 absolute).
 pub fn rsgdf_lr_sums_are_invariant_to_the_g_chunking_body() {
-    rsgdf_lr_g_chunking_case(&spd_basis_h(), 2);
+    rsgdf_lr_g_chunking_case(&spd_basis_h(), 2, 8);
 }
 
 /// Issue #507: ≥ 8 G chunks vs one, on the triclinic 4 H cell in basis `bs`
-/// (largest l `lmax`), cc-pvdz-ri aux.
-pub fn rsgdf_lr_g_chunking_case(bs: &BasisSet, lmax: usize) {
+/// (largest l `lmax`), cc-pvdz-ri aux. The many-chunk run's budget is
+/// `n_g / g_div` G vectors at the per-G BOUND; the bound overestimates the
+/// real per-G bytes by a basis-dependent amount, so `g_div` is chosen per
+/// fixture to reach ≥ 8 chunks (s + p + d: 8; s + p: 10, at 8 it gave 7).
+pub fn rsgdf_lr_g_chunking_case(bs: &BasisSet, lmax: usize, g_div: usize) {
     let cell = triclinic_cell();
     let prep = prep_for(&cell, bs);
     let aux = prep_for(&cell, &basis::bundled("cc-pvdz-ri").unwrap());
@@ -1849,7 +1857,7 @@ pub fn rsgdf_lr_g_chunking_case(bs: &BasisSet, lmax: usize) {
             lr_sums_parallel_and_serial(&cell, &prep, &aux, &cfg, budget).expect("LR");
         (j2, j3, c)
     };
-    let (j2m, j3m, cm) = run(per_g * (n_g / 8).max(1));
+    let (j2m, j3m, cm) = run(per_g * (n_g / g_div).max(1));
     let (j2o, j3o, co) = run(per_g * (n_g + 1));
     assert!(cm >= 8 && co == 1, "chunk counts {cm} / {co}");
     assert!(nonzero(&j3o) && nonzero(&j2o), "vacuous LR sums");
@@ -1870,30 +1878,55 @@ pub fn rsgdf_lr_sums_match_frozen_serial_across_threads_body() {
     // nao = 36, so J3 has 1296 rows and the row-blocked LR GEMM
     // (`LR_GEMM_ROW_BLOCK` = 512) really splits.
     rsgdf_lr_sums_case(
+        &triclinic_cell(),
         &spd_basis_h(),
         2,
         &[None, Some(RangeSplit::default())],
         &THREADS,
-        true,
+        3,
     );
 }
 
+/// Rows per task of the production row-blocked LR J3 GEMM: a copy of the
+/// private `rsgdf::LR_GEMM_ROW_BLOCK` (512), so a fixture can assert that
+/// its J3 (`nao²` rows) really splits.
+pub const LR_GEMM_ROW_BLOCK: usize = 512;
+
+/// The triclinic [`TRI_A`] cell with SIX hydrogens ([`TRI_ATOMS`] plus two,
+/// nearest H-H 1.33 Bohr including images): in the s + p `sp_basis_h`,
+/// nao = 24 and J3 has 576 rows, two blocks of [`LR_GEMM_ROW_BLOCK`].
+pub fn triclinic_6h_cell() -> Cell {
+    let mut atoms = TRI_ATOMS.to_vec();
+    atoms.extend([[1.3, 3.4, 1.0], [3.2, 0.9, 3.9]]);
+    Cell::new(hydrogens(&atoms), TRI_A).expect("6 H triclinic cell")
+}
+
 /// The RS-GDF LR stage vs the FROZEN serial stage at the same G chunks
-/// (≥ 4), on the triclinic 4 H cell in basis `bs` (largest l `lmax`), for
-/// each of `splits`, at `threads`; `gemm_split` asserts the row-blocked J3
-/// GEMM really splits.
+/// (≥ 4), on `cell` in basis `bs` (largest l `lmax`), for each of `splits`,
+/// at `threads`. J3 (`nao²` rows) must span at least `min_j3_blocks` blocks
+/// of [`LR_GEMM_ROW_BLOCK`], so with `min_j3_blocks ≥ 2` the production
+/// row-blocked J3 GEMM really splits (at ≤ 1 block it takes the unsplit
+/// call, the oracle's own shape).
 pub fn rsgdf_lr_sums_case(
+    cell: &Cell,
     bs: &BasisSet,
     lmax: usize,
     splits: &[Option<RangeSplit>],
     threads: &[usize],
-    gemm_split: bool,
+    min_j3_blocks: usize,
 ) {
-    let cell = triclinic_cell();
+    let cell = cell.clone();
     let prep = prep_for(&cell, bs);
-    if gemm_split {
-        assert!(prep.nbasis().pow(2) > 2 * 512, "J3 GEMM would not split");
-    }
+    let j3_blocks = prep.nbasis().pow(2).div_ceil(LR_GEMM_ROW_BLOCK);
+    eprintln!(
+        "nao {}: J3 has {} rows, {j3_blocks} LR GEMM block(s)",
+        prep.nbasis(),
+        prep.nbasis().pow(2)
+    );
+    assert!(
+        j3_blocks >= min_j3_blocks,
+        "J3 GEMM spans {j3_blocks} block(s) < {min_j3_blocks}"
+    );
     let aux = prep_for(&cell, &basis::bundled("cc-pvdz-ri").unwrap());
     assert_split_binds_at(&prep, threads);
     let n_g = RsGdf::build(&cell, &prep, &aux, &Array2::eye(prep.nbasis()), &gdf_cfg())

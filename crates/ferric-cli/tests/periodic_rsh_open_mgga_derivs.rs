@@ -70,7 +70,10 @@
 //! 190-245 s each on CI) run weekly in
 //! `validation_periodic_rsh_open_mgga_derivs.rs`. Per commit, each of those
 //! routes keeps a CANARY here: the same CLI == library bit-for-bit force at
-//! the INPUT geometry (`max_steps = 0`, one CLI SCF + gradient, no sibling).
+//! the INPUT geometry (`max_steps = 0`, one CLI SCF + gradient). The r2SCAN
+//! canary also keeps its sibling check (the library SCAN force at the same
+//! geometry must differ), so an r2SCAN -> SCAN mis-route stays visible per
+//! commit; the HSE06 / SCAN / CAM-B3LYP canaries have no sibling.
 //! The canaries still kill the K-swap spin defect and every config mismatch
 //! of the ledger above; the "first gradient instead of the returned one"
 //! mutant is killed per commit by the closed-shell two-step anchors below.
@@ -137,6 +140,19 @@ fn kpoint_uks_scan_force_at_the_input_geometry_equals_the_library() {
     let tag = "kuks-scan-f0";
     let cli = optimize_steps(tag, "uhf", "SCAN", "[1, 1, 2]", "", 0);
     force_bits_anchor(tag, cli, &lib_kuks_force, "SCAN");
+}
+
+/// CANARY of the weekly k-point UKS r2SCAN force anchor, WITH its sibling:
+/// CLI == library bit for bit at the input geometry, and the library SCAN
+/// force at that geometry must differ (measured 1.69e-3 Ha/Bohr here,
+/// 2026-10-30; 1.4e-3 at the weekly test's two-step geometry). A CLI that routed "r2SCAN" to SCAN (the #355 swap
+/// class) would match `lib("SCAN")` and fail the sibling check, which the
+/// bit-equality alone cannot see when the library resolves the same name.
+#[test]
+fn kpoint_uks_r2scan_force_at_the_input_geometry_differs_from_scan() {
+    let tag = "kuks-r2scan-f0";
+    let cli = optimize_steps(tag, "uhf", "r2SCAN", "[1, 1, 2]", "", 0);
+    force_anchor(tag, cli, lib_kuks_force, "r2SCAN", "SCAN");
 }
 
 /// CANARY of the weekly Gamma UKS CAM-B3LYP force anchor (the Gamma UKS

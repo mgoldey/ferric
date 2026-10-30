@@ -551,12 +551,12 @@ pub fn gamma_uks_side(cell: &Cell, grid: &PeriodicGridConfig, f: &str) -> GammaG
 
 /// (c) 1x1x1 == the Gamma UKS gradient, per part, on the open-shell H3 doublet
 /// (real lattice sums vs complex Bloch AOs; separate SCFs). Sees the spin
-/// channels (Da != Db) that the closed-shell limit cannot. With `mutants`, the
-/// same Gamma reference must also reject a spin swap in the XC force
-/// (`XcSpinSwap`), a swapped exchange in the Pulay Fock (`PulayKSwap`) and a
-/// twice-applied exchange fraction (`ExchScaledTwice`): the anchor is the
-/// default-set guard against spin and hybrid-scaling defects.
-pub fn one_point_vs_gamma(f: &str, mutants: bool) {
+/// channels (Da != Db) that the closed-shell limit cannot. Each mutant named
+/// in `mutants` (any of `"XcSpinSwap"`: a spin swap in the XC force,
+/// `"PulayKSwap"`: a swapped exchange in the Pulay Fock, `"ExchScaledTwice"`:
+/// a twice-applied exchange fraction) must then miss the same Gamma reference
+/// by more than 1e-6. BLIND to the Bloch phases (one k-point, all real).
+pub fn one_point_vs_gamma(f: &str, mutants: &[&str]) {
     let gam = gamma_uks_side(&cell_of(&H3, 2), &grid_cfg(), f);
     let fx = fixture(&H3, [1, 1, 1], f, Jk::Dense, ExxDiv::Ewald);
     let k = force(&fx);
@@ -576,21 +576,24 @@ pub fn one_point_vs_gamma(f: &str, mutants: bool) {
         assert!(d < 1e-9, "{f} {n}: {d:e}");
     }
     assert!(max_abs(&k.xc_ao) > 1e-3 && max_abs(&k.xc_weight) > 1e-3);
-    if mutants {
-        for (name, xm, sm, gm) in [
-            ("XcSpinSwap", None, Some(KUSpinMutation::XcSpinSwap), None),
-            ("PulayKSwap", None, Some(KUSpinMutation::PulayKSwap), None),
-            (
-                "ExchScaledTwice",
-                None,
-                None,
-                Some(KGradMutation::ExchScaledTwice),
-            ),
-        ] {
-            let d = parts_diff(&force_mut(&fx, xm, sm, gm).grad, &gam.grad);
-            eprintln!("{f} H3 1x1x1 vs Gamma UKS under {name}: miss {d:.2e}");
-            assert!(d > 1e-6, "{name} survives the Gamma anchor: {d:e}");
-        }
+    let table = [
+        ("XcSpinSwap", None, Some(KUSpinMutation::XcSpinSwap), None),
+        ("PulayKSwap", None, Some(KUSpinMutation::PulayKSwap), None),
+        (
+            "ExchScaledTwice",
+            None,
+            None,
+            Some(KGradMutation::ExchScaledTwice),
+        ),
+    ];
+    for &want in mutants {
+        let &(name, xm, sm, gm) = table
+            .iter()
+            .find(|t| t.0 == want)
+            .unwrap_or_else(|| panic!("unknown mutant {want}"));
+        let d = parts_diff(&force_mut(&fx, xm, sm, gm).grad, &gam.grad);
+        eprintln!("{f} H3 1x1x1 vs Gamma UKS under {name}: miss {d:.2e}");
+        assert!(d > 1e-6, "{name} survives the Gamma anchor: {d:e}");
     }
 }
 

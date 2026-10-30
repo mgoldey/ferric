@@ -9,8 +9,10 @@
 //! `rsh_open_mgga_cli/mod.rs`.
 //!
 //! Per-commit canaries left in `periodic_rsh_open_mgga_derivs.rs`: the same
-//! three routes (k UKS HSE06, k UKS SCAN, Gamma UKS CAM-B3LYP) bit for bit at
-//! the input geometry (`*_force_at_the_input_geometry_equals_the_library`).
+//! four routes (k UKS HSE06, k UKS SCAN, Gamma UKS CAM-B3LYP bit for bit at
+//! the input geometry, `*_force_at_the_input_geometry_equals_the_library`;
+//! k UKS r2SCAN bit for bit there WITH the SCAN sibling check,
+//! `kpoint_uks_r2scan_force_at_the_input_geometry_differs_from_scan`).
 //!
 //! ```text
 //! OPENBLAS_NUM_THREADS=1 cargo test -p ferric-cli \

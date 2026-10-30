@@ -52,8 +52,8 @@
 //! The full FD matrix (both functionals x both exxdiv) and the FD floor sweep
 //! are in `validation_krsh_force.rs`; this file runs one FD row. The full
 //! mutant ledger sweep (`rsh_mutants_are_caught`, CI >= 120 s) is weekly
-//! there too; per commit `rsh_mutants_are_caught_canary` runs three of the
-//! mutants on CAM-B3LYP.
+//! there too; per commit `rsh_mutants_are_caught_canary` runs all seven
+//! mutants on CAM-B3LYP (the HSE06 row is weekly).
 //!
 //! NOT covered here: RS-GDF (`pbc_krsh_rsgdf_force.rs`,
 //! `validation_krsh_rsgdf_force.rs`; open shell `pbc_kuks_rsh_rsgdf_force.rs`;
@@ -336,19 +336,22 @@ fn gamma_rsh_force_is_the_one_point_mesh_force() {
 
 /// Per-commit canary of the weekly `rsh_mutants_are_caught`
 /// (`validation_krsh_force.rs`): on the CAM-B3LYP fixture (erf piece live)
-/// the dropped kernel factor, the dropped erf piece and the plain Madelung
-/// constant each move the FD-validated force by more than 1e-5 (ledger:
-/// 1.48e-1, 3.77e-2, 3.40e-2). The weekly test runs all seven `Rsh*` mutants
-/// on CAM-B3LYP and HSE06 (the HSE06 erf-piece and omega-scale defects at a
-/// 10-FD-bar margin).
+/// every one of the seven `Rsh*` mutants moves the FD-validated force by
+/// more than 1e-5 (ledger, CAM-B3LYP column: 1.48e-1 .. 5.20e-4; the
+/// smallest, `RshOmegaScaled`, is 52x the bar). The weekly test adds the
+/// HSE06 row (its erf-piece and omega-scale defects at a 10-FD-bar margin).
 #[test]
 fn rsh_mutants_are_caught_canary() {
     rsh_mutant_sweep(
         &[(CAM, 1e-5)],
         &[
             KGradMutation::RshNoKernelFactor,
-            KGradMutation::RshNoErfPiece,
+            KGradMutation::RshKernelOnJ,
+            KGradMutation::RshSwapFractions,
             KGradMutation::RshPlainMadelung,
+            KGradMutation::RshOmegaScaled,
+            KGradMutation::RshNoErfPiece,
+            KGradMutation::RshNoMadelungTerm,
         ],
     );
 }

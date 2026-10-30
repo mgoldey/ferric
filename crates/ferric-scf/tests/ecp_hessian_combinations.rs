@@ -60,10 +60,14 @@
 //! `validation_ecp_hessian_combinations.rs`. Its per-commit canary is
 //! `two_ecp_elements_masked_stencil_matches_unmasked_and_is_translation_invariant`
 //! (same system and SCF; the masked skeleton against the unmasked stencil at
-//! 1e-10; it exercises the same per-ECP-centre fold, `hessian_ecp::
-//! folded_first_derivative`, where the `ecp_atom[u] -> ecp_atom[0]` mutant
-//! above lives — not re-mutation-tested when the FD half moved). The
-//! environment FD combinations stay per commit below. Shared harness:
+//! 1e-10). The canary runs the per-ECP-centre fold
+//! (`hessian_ecp::folded_first_derivative`) and catches the `ecp_atom[u] ->
+//! ecp_atom[0]` mutant above (re-measured 2026-10-30: masked vs
+//! unmasked 5.3e-2 under the mutant, bar 1e-10). What only the
+//! weekly FD test sees is the two-ECP CPHF RESPONSE term: the `dV_ECP/dx` of
+//! both ECP centres in `F^x` and the orbital response it drives (the
+//! skeleton-only canary has no response part). The environment FD
+//! combinations stay per commit below. Shared harness:
 //! `ecp_hessian_combinations_support/mod.rs`.
 
 #[path = "ecp_hessian_combinations_support/mod.rs"]

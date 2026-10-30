@@ -80,7 +80,7 @@
 //! `validation_pbc_kpair_symmetry.rs` (harness: `kpair_symmetry_support/`).
 //! Per-commit canaries on the 2 H twin of the fixture (`tri2_sp`):
 //! `krsgdf_s2_bins_canary` (items 1-4, 6 and the exact prescription on the
-//! non-TRIM 1×1×3 at 1/2 threads) and `krsgdf_s2_bin_mutants_canary` (every
+//! non-TRIM 1×1×3 and on MP 1×2×2, at 1/2 threads) and `krsgdf_s2_bin_mutants_canary` (every
 //! bins mutant caught on 1×1×3, `WrongPairBin`'s TRIM blindness on 1×1×2).
 
 mod common;
@@ -345,12 +345,21 @@ fn kpoint_energy_builds_accept_the_column_rotation_and_oracles_refuse() {
 // ------------------------------------------- canaries of the weekly anchors
 
 /// Canary of `krsgdf_s2_bins_are_the_ordered_walk_under_the_minus_rl_map`
-/// (weekly): the 2 H fixture, the non-TRIM 1×1×3 mesh, 1/2 threads.
+/// (weekly): the 2 H fixture, 1/2 threads, on the non-TRIM Gamma 1×1×3 mesh
+/// and on MP 1×2×2, whose pair-image moduli (2N = [1, 4, 4]) differ from the
+/// aux-image moduli (N), so a bin mix-up between the two dimensions fails.
 #[test]
 fn krsgdf_s2_bins_canary() {
     let (cell, prep, aux) = tri2_sp();
-    let mesh = KPointMesh::gamma_centred(&cell, NON_TRIM).unwrap();
-    check_kbins(&cell, &prep, &aux, &mesh, None, "2 H Gamma 1x1x3", &[1, 2]);
+    for (tag, mesh) in [
+        (
+            "2 H Gamma 1x1x3",
+            KPointMesh::gamma_centred(&cell, NON_TRIM),
+        ),
+        ("2 H MP 1x2x2", KPointMesh::monkhorst_pack(&cell, [1, 2, 2])),
+    ] {
+        check_kbins(&cell, &prep, &aux, &mesh.unwrap(), None, tag, &[1, 2]);
+    }
 }
 
 /// Canary of `krsgdf_s2_bin_mutants_fail_and_wrong_pair_bin_needs_a_non_trim_mesh`

@@ -20,9 +20,12 @@
 //! per-spin Fock guard sweep) run in `validation_pbc_kuxcgrad.rs`; the
 //! helpers are `kuxcgrad_support/mod.rs`. Per-commit canaries for them:
 //! `one_point_mesh_matches_the_gamma_uks_gradient_per_part_pbe` (the same
-//! per-part 1x1x1 vs Gamma anchor, PBE: every XC spin channel) and
+//! per-part 1x1x1 vs Gamma anchor, PBE: the polarized semilocal XC force,
+//! no mutants), `one_point_mesh_matches_the_gamma_uks_gradient_per_part_pbe0`
+//! (the polarized PBE0 row itself, exact exchange included, no mutants: its
+//! `XcSpinSwap` / `PulayKSwap` / `ExchScaledTwice` checks are weekly only) and
 //! `refusals_and_the_per_spin_fock_guard_canary` (named, exxdiv and per-spin
-//! tamper refusals).
+//! tamper refusals). All are 1x1x1: blind to the Bloch phases.
 
 mod common;
 #[path = "kuxcgrad_support/mod.rs"]
@@ -131,10 +134,21 @@ fn closed_shell_limit_equals_the_rks_force_per_part_lda_pbe() {
 /// Per-commit canary of the weekly PBE0 row
 /// (`validation_pbc_kuxcgrad.rs::one_point_mesh_matches_the_gamma_uks_gradient_per_part`):
 /// the same per-part 1x1x1 vs Gamma UKS anchor on the H3 doublet with PBE
-/// (every XC spin channel; no exact exchange, so it is the cheap row).
+/// (the polarized semilocal XC force of both spins at one real k-point, no
+/// exact exchange, no mutants; Bloch phases are not exercised).
 #[test]
 fn one_point_mesh_matches_the_gamma_uks_gradient_per_part_pbe() {
-    one_point_vs_gamma("PBE", false);
+    one_point_vs_gamma("PBE", &[]);
+}
+
+/// Per-commit canary of the weekly PBE0 row with its exact exchange: the
+/// polarized PBE0 1x1x1 vs Gamma UKS anchor per part, WITHOUT the weekly
+/// row's three mutants (each adds a force, ~15 s locally; with two of them
+/// this canary would sit near the 120 s per-commit line on CI). Measured
+/// 2026-10-30: 32 s locally alone, worst part 1.2e-11.
+#[test]
+fn one_point_mesh_matches_the_gamma_uks_gradient_per_part_pbe0() {
+    one_point_vs_gamma("PBE0", &[]);
 }
 
 /// Per-commit canary of the weekly `refusals_and_the_per_spin_fock_guard`:

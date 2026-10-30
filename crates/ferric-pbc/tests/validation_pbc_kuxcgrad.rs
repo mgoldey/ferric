@@ -3,8 +3,9 @@
 //! mean 145 / 180 s), moved here so the per-commit shards stay short. Every
 //! test is `#[ignore = "validation: ..."]`. Hypotheses are in the doc of
 //! `pbc_kuxcgrad.rs`; the helpers are `kuxcgrad_support/mod.rs`. Per-commit
-//! canaries that remain: `one_point_mesh_matches_the_gamma_uks_gradient_per_part_pbe`
-//! and `refusals_and_the_per_spin_fock_guard_canary`.
+//! canaries that remain: `one_point_mesh_matches_the_gamma_uks_gradient_per_part_pbe`,
+//! `one_point_mesh_matches_the_gamma_uks_gradient_per_part_pbe0` (PBE0, no
+//! mutants) and `refusals_and_the_per_spin_fock_guard_canary`.
 
 mod common;
 #[path = "kuxcgrad_support/mod.rs"]
@@ -15,7 +16,7 @@ use support::*;
 #[test]
 #[ignore = "validation: k-UKS PBE0 force 1x1x1 vs Gamma UKS per part + spin / scaling mutants; CI ~145 s"]
 fn one_point_mesh_matches_the_gamma_uks_gradient_per_part() {
-    one_point_vs_gamma("PBE0", true);
+    one_point_vs_gamma("PBE0", &["XcSpinSwap", "PulayKSwap", "ExchScaledTwice"]);
 }
 
 #[test]

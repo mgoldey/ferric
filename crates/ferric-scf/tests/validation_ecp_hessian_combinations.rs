@@ -5,7 +5,9 @@
 //! control. It took ~163 s on CI (runs 40957025137 / 40953725119, mean),
 //! above the 120 s per-commit threshold. Per-commit canary:
 //! `two_ecp_elements_masked_stencil_matches_unmasked_and_is_translation_invariant`
-//! (same system, same per-ECP-centre fold in the skeleton). Shared
+//! (same system, same per-ECP-centre fold in the skeleton; it catches the
+//! fold mutant). Weekly only: the two-ECP CPHF response term (`dV_ECP/dx` of
+//! both centres in `F^x`), which only this FD comparison sees. Shared
 //! harness: `ecp_hessian_combinations_support/mod.rs`.
 //!
 //! ```text
