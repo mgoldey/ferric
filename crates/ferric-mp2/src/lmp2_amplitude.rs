@@ -56,7 +56,8 @@ use ferric_scf::result::ScfResult;
 
 use crate::boys::boys_localize;
 use crate::ragged::{
-    lanczos_kappa, pair_block_from_g_cand, solve_ragged_budgeted, MatvecPath, PairBlock, Ragged,
+    check_swap_closed, lanczos_kappa, matvec_indexed, matvec_planned, pair_block_from_g_cand,
+    solve_ragged_budgeted_with, MatvecPath, PairBlock, Ragged, SolvePlan,
 };
 use crate::rimp2::{
     active_occ, eri3_budget_bytes, eri3_mo_ov_blocked, metric_inverse_sqrt, ri_mp2, RiMp2Config,
@@ -107,6 +108,13 @@ pub struct AmplitudeLmp2Config {
     /// original path). r ≥ 1e5 must reproduce the global fit to machine
     /// precision (trivial-limit anchor, tested).
     pub fit_radius_bohr: Option<f64>,
+    /// Adaptive Fvv product of the PCG matvec (perf plan #3e): a pair block
+    /// whose retained-pattern density ρ = kept/(|Da|·|Db|) is BELOW this
+    /// threshold ρ* multiplies Fvv by a sparse column/row scatter over its
+    /// retained elements instead of two dense GEMMs. `0.0` (the default)
+    /// keeps every block dense — byte-identical to the pre-switch path.
+    /// The crossover ρ* is not measured yet (benchmark pending).
+    pub fvv_sparse_rho: f64,
 }
 
 impl Default for AmplitudeLmp2Config {
@@ -121,6 +129,7 @@ impl Default for AmplitudeLmp2Config {
             aux_tail_frac: None,
             compute_reference: false,
             fit_radius_bohr: None,
+            fvv_sparse_rho: 0.0,
         }
     }
 }
@@ -1151,10 +1160,25 @@ where
     (keep, n_gated)
 }
 
-/// Hylleraas energy E = Σ (2 t_iajb − t_ibja) J_iajb over the retained
-/// pattern — t_ibja is read from the SAME pair block at swapped positions
-/// (zero outside the union domains). Shared by every driver in the family.
-pub fn hylleraas_energy(rg: &Ragged, t: &[Array2<f64>]) -> f64 {
+/// The LINEAR energy form E = Σ (2 t_iajb − t_ibja) J_iajb over the
+/// retained pattern — t_ibja is read from the SAME pair block at swapped
+/// positions (zero outside the union domains). Exact at the converged
+/// amplitudes but NOT stationary: its error is first order in the CG
+/// residual. It was the molecular drivers' energy until perf Stage D and is
+/// kept, arithmetic unchanged, as the oracle of [`hylleraas_energy`]
+/// (`hylleraas_is_stationary`). ferric-pbc's Gamma LMP2 still uses it
+/// (its numbers are not changed by Stage D).
+pub fn linear_energy(rg: &Ragged, t: &[Array2<f64>]) -> f64 {
+    swap_contract(rg, t, |p, r, c| rg.pairs[p].j_blk[(r, c)])
+}
+
+/// Σ over the retained pattern of (2 t_iajb − t_ibja)·w_iajb, with the same
+/// accumulation order as the original linear energy (direct and exchange
+/// sums kept apart, combined once at the end).
+fn swap_contract<W>(rg: &Ragged, t: &[Array2<f64>], w: W) -> f64
+where
+    W: Fn(usize, usize, usize) -> f64,
+{
     let mut e_dir = 0.0;
     let mut e_exx = 0.0;
     for (p, pb) in rg.pairs.iter().enumerate() {
@@ -1164,7 +1188,7 @@ pub fn hylleraas_energy(rg: &Ragged, t: &[Array2<f64>]) -> f64 {
                 if !pb.pat[r * nb + c] {
                     continue;
                 }
-                let jv = pb.j_blk[(r, c)];
+                let jv = w(p, r, c);
                 e_dir += t[p][(r, c)] * jv;
                 let sr = pb.pos_da[b];
                 let sc = pb.pos_db[a];
@@ -1175,6 +1199,38 @@ pub fn hylleraas_energy(rg: &Ragged, t: &[Array2<f64>]) -> f64 {
         }
     }
     2.0 * e_dir - e_exx
+}
+
+/// The stationary Hylleraas energy
+/// `E_H(t) = Σ (2 t_iajb − t_ibja)·(2 J_iajb + (A t)_iajb)` over the retained
+/// pattern, where `A` is the pattern-projected Fock superoperator of the
+/// solve (one extra matvec). With the residual R = J + A t this is
+/// E_lin + Σ t̃·R, so it equals [`linear_energy`] at the solution; on a
+/// swap-closed pattern (`crate::ragged::check_swap_closed`) its gradient is
+/// 2(2 − S)R, so the error is second order in the residual and
+/// E_H(t) − E* = ⟨(2 − S)δ, Aδ⟩ ≥ 0 (an upper bound).
+///
+/// `plan`: the [`SolvePlan`] the solve ran through, or `None` when it ran on
+/// the plan-free indexed matvec (the budgeted solve's fallback) — the same
+/// operator either way, bitwise when every Fvv product is dense.
+pub fn hylleraas_energy(
+    rg: &Ragged,
+    f_oo: &Array2<f64>,
+    plan: Option<&SolvePlan>,
+    t: &[Array2<f64>],
+) -> f64 {
+    let mut flops = 0u64;
+    let at = match plan {
+        Some(plan) => {
+            let mut at: Vec<Array2<f64>> = rg.pairs.iter().map(|_| Array2::zeros((0, 0))).collect();
+            matvec_planned(rg, plan, t, &mut at, &mut flops);
+            at
+        }
+        None => matvec_indexed(rg, f_oo, t, &mut flops),
+    };
+    swap_contract(rg, t, |p, r, c| {
+        2.0 * rg.pairs[p].j_blk[(r, c)] + at[p][(r, c)]
+    })
 }
 
 /// Direct (never-dense) ragged assembly shared by the amplitude-threshold
@@ -1522,15 +1578,29 @@ pub(crate) fn solve_and_count(
     nv: usize,
     who: &str,
 ) -> Result<AmplitudeLmp2Result, FerricError> {
+    check_swap_closed(rg).map_err(|e| {
+        FerricError::General(format!(
+            "{who}: amplitude pattern is not swap-closed ({e}); the Hylleraas energy \
+             would not be stationary"
+        ))
+    })?;
     let budget = eri3_budget_bytes(cfg.eri3_budget_bytes);
-    let (s, plan) = solve_ragged_budgeted(rg, f_oo, cfg.cg_rtol, cfg.cg_max_iter, budget);
+    let b = solve_ragged_budgeted_with(
+        rg,
+        f_oo,
+        cfg.cg_rtol,
+        cfg.cg_max_iter,
+        budget,
+        cfg.fvv_sparse_rho,
+    );
+    let (s, plan) = (&b.solve, b.decision);
     if !s.converged {
         return Err(FerricError::General(format!(
             "{who}: ragged CG failed to converge (relres {:.2e} after {} iters)",
             s.relres, s.iterations
         )));
     }
-    let e_corr = hylleraas_energy(rg, &s.t);
+    let e_corr = hylleraas_energy(rg, f_oo, b.plan(), &s.t);
     let c = RaggedCounters::new(rg, no, nv);
     Ok(AmplitudeLmp2Result {
         e_corr,

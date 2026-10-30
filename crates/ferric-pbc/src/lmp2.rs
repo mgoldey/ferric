@@ -6,7 +6,7 @@
 //! reused unchanged: the swap-closed Eq-8 pair blocks
 //! ([`ferric_mp2::ragged::pair_block_from_g_cand_gated`]), the ragged
 //! per-pair PCG ([`ferric_mp2::ragged::solve_ragged`]), the Hylleraas energy
-//! ([`ferric_mp2::lmp2_amplitude::hylleraas_energy`]), the R⁻⁶ pair gate
+//! (the linear form [`ferric_mp2::lmp2_amplitude::linear_energy`]), the R⁻⁶ pair gate
 //! ([`ferric_mp2::lmp2_amplitude::pair_gate_keep_with`]) and the VV-HV
 //! orthonormalisations (`canonical_orth`, `lowdin`, `pivoted_cholesky_order`).
 //! What periodicity changes is implemented here:
@@ -134,7 +134,7 @@ use ferric_core::basis::{BasisSet, Shell};
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_mp2::lmp2_amplitude::{
-    canonical_orth, hylleraas_energy, lowdin, pair_gate_keep_with, pivoted_cholesky_order,
+    canonical_orth, linear_energy, lowdin, pair_gate_keep_with, pivoted_cholesky_order,
 };
 use ferric_mp2::ragged::{pair_block_from_g_cand_gated, solve_ragged, PairBlock, Ragged};
 use ferric_mp2::rimp2::active_occ;
@@ -1751,7 +1751,7 @@ pub fn gamma_lmp2_with_spaces(
             "gamma_lmp2: ragged CG failed to converge (relres {relres:.2e} after {iters} iters)"
         )));
     }
-    let e_corr = hylleraas_energy(&rg, &t);
+    let e_corr = linear_energy(&rg, &t);
     if !e_corr.is_finite() {
         return Err(FerricError::General(format!(
             "gamma_lmp2: non-finite correlation energy {e_corr}"

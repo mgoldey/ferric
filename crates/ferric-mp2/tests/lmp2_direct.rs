@@ -1421,7 +1421,7 @@ fn bits_equal(a: &[ndarray::Array2<f64>], b: &[ndarray::Array2<f64>]) -> bool {
 /// amplitudes, same Hylleraas energy.
 #[test]
 fn matvec_planned_is_bitwise_matvec_indexed() {
-    use ferric_mp2::lmp2_amplitude::{checked_vvhv, hylleraas_energy, localized_spaces};
+    use ferric_mp2::lmp2_amplitude::{checked_vvhv, linear_energy, localized_spaces};
     use ferric_mp2::lmp2_direct::assemble_ragged_direct_local;
     use ferric_mp2::ragged::{
         apply_pattern, matvec_indexed, matvec_planned, solve_ragged, SolvePlan,
@@ -1488,7 +1488,265 @@ fn matvec_planned_is_bitwise_matvec_indexed() {
     assert_eq!(it_old, it_new, "CG iteration count changed");
     assert_eq!(rel_old.to_bits(), rel_new.to_bits(), "final relres changed");
     assert!(bits_equal(&t_old, &t_new), "amplitudes changed");
-    let (e_old, e_new) = (hylleraas_energy(&rg, &t_old), hylleraas_energy(&rg, &t_new));
+    let (e_old, e_new) = (linear_energy(&rg, &t_old), linear_energy(&rg, &t_new));
     eprintln!("planned PCG: {it_new} iters, E {e_new:.12} (oracle {e_old:.12})");
     assert_eq!(e_old.to_bits(), e_new.to_bits(), "energy changed");
+}
+
+/// The production ragged system of an n-alkane (6-31G / cc-pVDZ-RI,
+/// carbon cores frozen, production maps, calibrated Coulomb gate) and its
+/// occupied Fock block — the input of every solver-level test below.
+fn production_ragged(
+    xyz: &str,
+    frozen_core: usize,
+    eps: f64,
+) -> (ferric_mp2::ragged::Ragged, ndarray::Array2<f64>) {
+    use ferric_mp2::lmp2_amplitude::{checked_vvhv, localized_spaces};
+    use ferric_mp2::lmp2_direct::assemble_ragged_direct_local;
+    let su = setup(xyz);
+    let (vvhv, _) = checked_vvhv(&su.mol, &su.obs, &su.obs_bs, &su.rhf, "test").unwrap();
+    let spaces = localized_spaces(&su.mol, &su.obs, &su.rhf, frozen_core, &vvhv).unwrap();
+    let dcfg = DirectConfig {
+        aux_radius_bohr: 10.0,
+        virt_radius_bohr: Some(12.0),
+        ao_tail: 1e-3,
+        schwarz_skip: 1e-5,
+        batch_merge: 4,
+        ..Default::default()
+    };
+    let (rg, _, _) = assemble_ragged_direct_local(
+        &su.mol,
+        &su.obs,
+        &su.dfbs,
+        Operator::coulomb(),
+        &spaces,
+        eps,
+        1.0,
+        Some(0.7),
+        &dcfg,
+    )
+    .unwrap();
+    (rg, spaces.f_oo)
+}
+
+/// Least-squares slope of log10|y| against log10 x.
+fn loglog_slope(pts: &[(f64, f64)]) -> f64 {
+    let n = pts.len() as f64;
+    let (xs, ys): (Vec<f64>, Vec<f64>) = pts
+        .iter()
+        .map(|&(x, y)| (x.log10(), y.abs().log10()))
+        .unzip();
+    let (mx, my) = (xs.iter().sum::<f64>() / n, ys.iter().sum::<f64>() / n);
+    let sxy: f64 = xs.iter().zip(&ys).map(|(x, y)| (x - mx) * (y - my)).sum();
+    let sxx: f64 = xs.iter().map(|x| (x - mx).powi(2)).sum();
+    sxy / sxx
+}
+
+/// D1 STATIONARITY (perf plan #3a). The Hylleraas functional
+/// E_H[t] = Σ (2t − t̃)(2J + A t) on a swap-closed pattern is stationary at
+/// the solution: E_H(t) − E* = ⟨(2 − S)δ, Aδ⟩ with δ = t − t*, i.e. second
+/// order in the CG residual (and ≥ 0: an upper bound), while the linear form
+/// Σ (2t − t̃) J errs at FIRST order. Artifact hypothesis: if the extra
+/// matvec or the swap handling were wrong, E_H would err at first order too.
+/// Measured on C4 and C8 (production maps, ε = 1e-4) by solving at a ladder
+/// of cg_rtol values and fitting log|ΔE| against log(relres) over the
+/// points above the roundoff floor. Mutation (seen to fail): `hylleraas_energy`
+/// returning the linear form.
+#[test]
+fn hylleraas_is_stationary() {
+    use ferric_mp2::lmp2_amplitude::{hylleraas_energy, linear_energy};
+    use ferric_mp2::ragged::{check_swap_closed, solve_ragged_budgeted_with, MatvecPath};
+    const FLOOR: f64 = 1e-12;
+    for (xyz, fc) in [("alkane_4.xyz", 4usize), ("alkane_8.xyz", 8)] {
+        let (rg, f_oo) = production_ragged(xyz, fc, 1e-4);
+        check_swap_closed(&rg).unwrap();
+        // the production (budgeted) solve, ample budget: planned, all dense
+        let solve = |rtol: f64| {
+            let b = solve_ragged_budgeted_with(&rg, &f_oo, rtol, 400, usize::MAX, 0.0);
+            assert_eq!(b.decision.path, MatvecPath::Planned);
+            let e_h = hylleraas_energy(&rg, &f_oo, b.plan(), &b.solve.t);
+            (b.solve, e_h)
+        };
+        let (reference, e_ref) = solve(1e-13);
+        assert!(
+            reference.converged,
+            "{xyz}: reference solve did not converge"
+        );
+        let e_ref_lin = linear_energy(&rg, &reference.t);
+        assert!(
+            (e_ref - e_ref_lin).abs() < 1e-13,
+            "{xyz}: forms disagree at the converged solution: {:.3e}",
+            e_ref - e_ref_lin
+        );
+        let (mut hy, mut lin) = (Vec::new(), Vec::new());
+        let mut seen_iters = Vec::new();
+        let mut c_h_max = 0.0f64;
+        for rtol in [
+            1e-1, 3e-2, 1e-2, 3e-3, 1e-3, 3e-4, 1e-4, 3e-5, 1e-5, 3e-6, 1e-6,
+        ] {
+            let (s, e_h) = solve(rtol);
+            if seen_iters.contains(&s.iterations) {
+                continue;
+            }
+            seen_iters.push(s.iterations);
+            let dh = e_h - e_ref;
+            let dl = linear_energy(&rg, &s.t) - e_ref;
+            eprintln!(
+                "STAT {xyz} rtol {rtol:.0e} iters {:3} relres {:.3e}  dE_H {dh:+.3e}  dE_lin {dl:+.3e}  dE_H/relres^2 {:.3e}",
+                s.iterations,
+                s.relres,
+                dh / (s.relres * s.relres)
+            );
+            assert!(
+                dh > -FLOOR,
+                "{xyz}: E_H fell below the converged energy ({dh:.3e}): not an upper bound"
+            );
+            if dh.abs() > FLOOR {
+                hy.push((s.relres, dh));
+                c_h_max = c_h_max.max(dh / (s.relres * s.relres));
+            }
+            if dl.abs() > FLOOR {
+                lin.push((s.relres, dl));
+            }
+        }
+        assert!(
+            hy.len() >= 4 && lin.len() >= 4,
+            "{xyz}: too few points to fit"
+        );
+        let (sh, sl) = (loglog_slope(&hy), loglog_slope(&lin));
+        eprintln!(
+            "STAT {xyz}: slope E_H {sh:.3} ({} pts), slope E_lin {sl:.3} ({} pts), max dE_H/relres^2 {c_h_max:.3e}",
+            hy.len(),
+            lin.len()
+        );
+        assert!(
+            (1.7..=2.6).contains(&sh),
+            "{xyz}: Hylleraas error slope {sh:.3} is not quadratic"
+        );
+        assert!(
+            (0.6..=1.4).contains(&sl),
+            "{xyz}: linear-form error slope {sl:.3} is not first order"
+        );
+    }
+}
+
+/// D2 (perf plan #3e): the adaptive Fvv product. On C8 at ε = 1e-4
+/// (production maps, gate on): ρ* = 0 puts NO block on the sparse branch and
+/// is bitwise the indexed matvec; a forced ρ* > 1 puts EVERY block on it and
+/// agrees with the dense matvec to ≤ 1e-13·max|out| on a pattern-projected
+/// random operand, and the two full PCG solves agree (same iteration count,
+/// energies ≤ 1e-13); an intermediate ρ* (the median block density) splits
+/// the blocks and still agrees. Mutation (seen to fail): the sparse branch
+/// drops its t·Fvv_bb half.
+#[test]
+fn fvv_sparse_branch_matches_dense() {
+    use ferric_mp2::lmp2_amplitude::hylleraas_energy;
+    use ferric_mp2::ragged::{
+        apply_pattern, matvec_indexed, matvec_planned, solve_ragged_budgeted_with, SolvePlan,
+    };
+    use ndarray::Array2;
+    let (rg, f_oo) = production_ragged("alkane_8.xyz", 8, 1e-4);
+    let mut seed = 11u64;
+    let mut rnd = || {
+        seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        ((seed >> 11) as f64 / (1u64 << 53) as f64) - 0.5
+    };
+    let t: Vec<Array2<f64>> = rg
+        .pairs
+        .iter()
+        .map(|pb| {
+            let mut x = Array2::from_shape_fn((pb.da.len(), pb.db.len()), |_| rnd());
+            apply_pattern(&mut x, &pb.pat, pb.db.len());
+            x
+        })
+        .collect();
+    let empty = || -> Vec<Array2<f64>> { rg.pairs.iter().map(|_| Array2::zeros((0, 0))).collect() };
+    let mut fl = 0u64;
+    let want = matvec_indexed(&rg, &f_oo, &t, &mut fl);
+
+    let dense = SolvePlan::with_fvv_threshold(&rg, &f_oo, 0.0);
+    assert_eq!(
+        dense.n_fvv_sparse(),
+        0,
+        "rho* = 0 must keep every block dense"
+    );
+    let mut got = empty();
+    matvec_planned(&rg, &dense, &t, &mut got, &mut fl);
+    assert!(
+        bits_equal(&want, &got),
+        "rho* = 0 is not bitwise the indexed matvec"
+    );
+
+    let mut dens: Vec<f64> = rg
+        .pairs
+        .iter()
+        .map(|pb| pb.pat.iter().filter(|&&x| x).count() as f64 / pb.pat.len() as f64)
+        .collect();
+    dens.sort_by(f64::total_cmp);
+    let median = dens[dens.len() / 2];
+    eprintln!(
+        "block density: min {:.3} median {median:.3} max {:.3} ({} blocks)",
+        dens[0],
+        dens[dens.len() - 1],
+        dens.len()
+    );
+    let scale = want
+        .iter()
+        .flat_map(|b| b.iter())
+        .fold(0.0f64, |m, x| m.max(x.abs()));
+    for (label, rho) in [("forced", 1.5), ("median", median)] {
+        let plan = SolvePlan::with_fvv_threshold(&rg, &f_oo, rho);
+        let ns = plan.n_fvv_sparse();
+        if label == "forced" {
+            assert_eq!(
+                ns,
+                rg.pairs.len(),
+                "rho* > 1 must put every block on the sparse branch"
+            );
+        } else {
+            assert!(
+                ns > 0 && ns < rg.pairs.len(),
+                "median rho* did not split the blocks ({ns})"
+            );
+        }
+        let mut got = empty();
+        matvec_planned(&rg, &plan, &t, &mut got, &mut fl);
+        let dev = want
+            .iter()
+            .zip(&got)
+            .flat_map(|(a, b)| a.iter().zip(b.iter()).map(|(x, y)| (x - y).abs()))
+            .fold(0.0f64, f64::max)
+            / scale;
+        eprintln!("{label} rho* {rho:.3}: {ns} sparse blocks, matvec dev {dev:.3e} rel");
+        assert!(
+            dev <= 1e-13,
+            "{label}: sparse vs dense matvec {dev:.3e} > 1e-13"
+        );
+
+        // the production (budgeted) solve at rho* = 0 and at this rho*
+        let bd = solve_ragged_budgeted_with(&rg, &f_oo, 1e-11, 400, usize::MAX, 0.0);
+        let bs = solve_ragged_budgeted_with(&rg, &f_oo, 1e-11, 400, usize::MAX, rho);
+        assert_eq!(bs.plan().map(SolvePlan::n_fvv_sparse), Some(ns));
+        let (sd, ss) = (&bd.solve, &bs.solve);
+        assert!(sd.converged && ss.converged);
+        assert_eq!(
+            sd.iterations, ss.iterations,
+            "{label}: CG iteration count differs"
+        );
+        let (ed, es) = (
+            hylleraas_energy(&rg, &f_oo, bd.plan(), &sd.t),
+            hylleraas_energy(&rg, &f_oo, bs.plan(), &ss.t),
+        );
+        eprintln!(
+            "{label}: E dense {ed:.15} sparse {es:.15} |dE| {:.3e}",
+            (ed - es).abs()
+        );
+        assert!(
+            (ed - es).abs() <= 1e-13,
+            "{label}: energies differ by {:.3e}",
+            (ed - es).abs()
+        );
+    }
 }

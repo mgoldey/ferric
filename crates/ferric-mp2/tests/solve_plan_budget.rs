@@ -17,10 +17,11 @@ use ferric_core::basis;
 use ferric_core::mol::Molecule;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
-use ferric_mp2::lmp2_amplitude::{checked_vvhv, hylleraas_energy, localized_spaces};
+use ferric_mp2::lmp2_amplitude::{checked_vvhv, hylleraas_energy, linear_energy, localized_spaces};
 use ferric_mp2::lmp2_direct::{assemble_ragged_direct_local, DirectConfig};
 use ferric_mp2::ragged::{
-    solve_ragged_budgeted, solve_resident_bytes, MatvecPath, Ragged, RaggedSolve, SolvePlan,
+    solve_ragged_budgeted, solve_ragged_budgeted_with, solve_resident_bytes, MatvecPath, Ragged,
+    RaggedSolve, SolvePlan,
 };
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
@@ -136,6 +137,21 @@ fn solve_plan_bytes_for_matches_the_measured_allocation() {
             "estimate {est} vs measured {measured} (ratio {ratio:.4})"
         );
         drop(plan);
+        // Stage D: with every block on the sparse Fvv product the plan also
+        // holds each block's retained (row, col) list; the estimate tracks it.
+        let est_s = SolvePlan::bytes_for_with_threshold(&c.rg, &c.f_oo, 1.5);
+        let before = live();
+        let plan_s = SolvePlan::with_fvv_threshold(&c.rg, &c.f_oo, 1.5);
+        let measured_s = live() - before;
+        eprintln!("C8 gate={gate:?}: sparse-Fvv plan estimate {est_s} B, measured {measured_s} B");
+        assert_eq!(plan_s.n_fvv_sparse(), c.rg.pairs.len());
+        assert!(est_s > est, "the sparse lists are not counted");
+        let ratio = est_s as f64 / measured_s as f64;
+        assert!(
+            (0.99..=1.01).contains(&ratio),
+            "sparse-Fvv estimate {est_s} vs measured {measured_s} (ratio {ratio:.4})"
+        );
+        drop(plan_s);
     }
 }
 
@@ -167,10 +183,24 @@ fn tiny_budget_falls_back_to_indexed_and_is_bitwise() {
         );
     }
     let (ea, eb) = (
-        hylleraas_energy(&c.rg, &planned.t),
-        hylleraas_energy(&c.rg, &indexed.t),
+        linear_energy(&c.rg, &planned.t),
+        linear_energy(&c.rg, &indexed.t),
     );
     assert_eq!(ea.to_bits(), eb.to_bits(), "energy differs: {ea} vs {eb}");
+    // The stationary energy's extra matvec runs on the operator the solve
+    // used (the plan, or the indexed matvec on the fallback): bitwise too.
+    let bp = solve_ragged_budgeted_with(&c.rg, &c.f_oo, 1e-11, 400, usize::MAX, 0.0);
+    let bi = solve_ragged_budgeted_with(&c.rg, &c.f_oo, 1e-11, 400, 1, 0.0);
+    assert!(bp.plan().is_some() && bi.plan().is_none());
+    let (ha, hb) = (
+        hylleraas_energy(&c.rg, &c.f_oo, bp.plan(), &bp.solve.t),
+        hylleraas_energy(&c.rg, &c.f_oo, bi.plan(), &bi.solve.t),
+    );
+    assert_eq!(
+        ha.to_bits(),
+        hb.to_bits(),
+        "Hylleraas energy differs: {ha} vs {hb}"
+    );
 }
 
 fn assert_bitwise(c_rg: &Ragged, a: &RaggedSolve, b: &RaggedSolve) {
@@ -185,7 +215,7 @@ fn assert_bitwise(c_rg: &Ragged, a: &RaggedSolve, b: &RaggedSolve) {
             "amplitudes differ between the planned and indexed paths"
         );
     }
-    let (ea, eb) = (hylleraas_energy(c_rg, &a.t), hylleraas_energy(c_rg, &b.t));
+    let (ea, eb) = (linear_energy(c_rg, &a.t), linear_energy(c_rg, &b.t));
     assert_eq!(ea.to_bits(), eb.to_bits(), "energy differs: {ea} vs {eb}");
 }
 

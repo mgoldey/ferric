@@ -197,6 +197,10 @@ pub struct Lmp2Certificate {
     /// Arithmetic precision of every kernel; `"f64"` until a mixed kernel
     /// ships.
     pub precision: &'static str,
+    /// The PCG relative-residual target the solve ran to. The energy is the
+    /// stationary Hylleraas form, so its solver error is second order in
+    /// the achieved residual (`cg_relres`).
+    pub cg_rtol: f64,
     pub cg_relres: f64,
     pub cg_converged: bool,
     pub frozen_core: usize,
@@ -235,6 +239,7 @@ impl Lmp2Certificate {
             maps: direct.map(DirectMaps::from),
             pair_fit: None,
             precision: "f64",
+            cg_rtol: cfg.cg_rtol,
             cg_relres: r.cg_relres,
             cg_converged: r.cg_converged,
             frozen_core: cfg.frozen_core,
@@ -291,6 +296,7 @@ impl Lmp2Certificate {
             ("maps", maps),
             ("pair_fit", pair_fit),
             ("precision", V::Str(self.precision.to_string())),
+            ("cg_rtol", V::F64(self.cg_rtol)),
             ("cg_relres", V::F64(self.cg_relres)),
             ("cg_converged", V::Bool(self.cg_converged)),
             ("frozen_core", V::Usize(self.frozen_core)),

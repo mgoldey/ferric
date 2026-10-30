@@ -360,15 +360,9 @@ pub fn solve_ragged_traced(
     solve_ragged_budgeted(rg, f_oo, rtol, max_iter, budget).0
 }
 
-/// The ragged PCG solve with the [`SolvePlan`] charged to a memory budget.
-/// The plan's size is computed BEFORE it is built ([`SolvePlan::bytes_for`]),
-/// and it is admitted against what `budget_bytes` has left after the
-/// solve's resident footprint ([`solve_resident_bytes`]: `rg` plus the PCG
-/// vectors), not against the whole budget. When it does not fit there, or
-/// an installed global memory pool cannot hold plan + resident, the solve
-/// runs on the plan-free [`matvec_indexed`] instead (logged on stderr).
-/// Both paths give bitwise-identical iterates, so the fallback costs time,
-/// never accuracy.
+/// The ragged PCG solve with the [`SolvePlan`] charged to a memory budget,
+/// every Fvv product dense: [`solve_ragged_budgeted_with`] at ρ* = 0,
+/// returning the solve and the plan decision only.
 pub fn solve_ragged_budgeted(
     rg: &Ragged,
     f_oo: &Array2<f64>,
@@ -376,9 +370,49 @@ pub fn solve_ragged_budgeted(
     max_iter: usize,
     budget_bytes: usize,
 ) -> (RaggedSolve, PlanDecision) {
-    let plan_bytes = SolvePlan::bytes_for(rg, f_oo);
+    let b = solve_ragged_budgeted_with(rg, f_oo, rtol, max_iter, budget_bytes, 0.0);
+    (b.solve, b.decision)
+}
+
+/// A budgeted ragged solve together with the operator it ran on, kept so a
+/// caller can apply the SAME `A` after the solve (the stationary Hylleraas
+/// energy needs one more matvec). Holds the plan's pool reservation for as
+/// long as the plan lives.
+pub struct BudgetedSolve {
+    pub solve: RaggedSolve,
+    pub decision: PlanDecision,
+    plan: Option<SolvePlan>,
+    _charge: Option<ferric_core::memory::pool::Reservation>,
+}
+
+impl BudgetedSolve {
+    /// The plan the solve ran through; `None` on the indexed fallback.
+    pub fn plan(&self) -> Option<&SolvePlan> {
+        self.plan.as_ref()
+    }
+}
+
+/// The ragged PCG solve with the [`SolvePlan`] charged to a memory budget.
+/// The plan's size, sparse Fvv lists included, is computed BEFORE it is
+/// built ([`SolvePlan::bytes_for_with_threshold`], ρ* = `fvv_rho_star`),
+/// and it is admitted against what `budget_bytes` has left after the
+/// solve's resident footprint ([`solve_resident_bytes`]: `rg` plus the PCG
+/// vectors), not against the whole budget. When it does not fit there, or
+/// an installed global memory pool cannot hold plan + resident, the solve
+/// runs on the plan-free [`matvec_indexed`] instead (logged on stderr; every
+/// Fvv product is then dense). With ρ* = 0 both paths give
+/// bitwise-identical iterates, so the fallback costs time, never accuracy.
+pub fn solve_ragged_budgeted_with(
+    rg: &Ragged,
+    f_oo: &Array2<f64>,
+    rtol: f64,
+    max_iter: usize,
+    budget_bytes: usize,
+    fvv_rho_star: f64,
+) -> BudgetedSolve {
+    let plan_bytes = SolvePlan::bytes_for_with_threshold(rg, f_oo, fvv_rho_star);
     let resident_bytes = solve_resident_bytes(rg, max_iter);
-    let Some(_charge) = admit_plan(plan_bytes, resident_bytes, budget_bytes) else {
+    let Some(charge) = admit_plan(plan_bytes, resident_bytes, budget_bytes) else {
         eprintln!(
             "  ragged PCG: gather plan ({:.3} GB) + resident solve ({:.3} GB) over the memory \
              budget ({:.3} GB) or the pool; using the plan-free indexed matvec (same result, \
@@ -387,25 +421,78 @@ pub fn solve_ragged_budgeted(
             resident_bytes as f64 / 1e9,
             budget_bytes as f64 / 1e9
         );
-        let s =
+        let solve =
             solve_ragged_with_trace(rg, rtol, max_iter, |p, fl| matvec_indexed(rg, f_oo, p, fl));
-        let d = PlanDecision {
-            path: MatvecPath::Indexed,
+        return BudgetedSolve {
+            solve,
+            decision: PlanDecision {
+                path: MatvecPath::Indexed,
+                plan_bytes,
+                resident_bytes,
+            },
+            plan: None,
+            _charge: None,
+        };
+    };
+    let plan = SolvePlan::with_fvv_threshold(rg, f_oo, fvv_rho_star);
+    let solve = solve_ragged_planned(rg, &plan, rtol, max_iter);
+    BudgetedSolve {
+        solve,
+        decision: PlanDecision {
+            path: MatvecPath::Planned,
             plan_bytes,
             resident_bytes,
-        };
-        return (s, d);
-    };
-    let plan = SolvePlan::new(rg, f_oo);
-    let s = pcg_core(rg, rtol, max_iter, |p, ap, flops| {
-        matvec_planned(rg, &plan, p, ap, flops)
-    });
-    let d = PlanDecision {
-        path: MatvecPath::Planned,
-        plan_bytes,
-        resident_bytes,
-    };
-    (s, d)
+        },
+        plan: Some(plan),
+        _charge: Some(charge),
+    }
+}
+
+/// The ragged PCG solve through a caller-built [`SolvePlan`] (UNBUDGETED:
+/// the caller owns the plan's memory). Tests use it to pick the Fvv product
+/// mode ([`SolvePlan::with_fvv_threshold`]) and to reuse the plan after the
+/// solve.
+pub fn solve_ragged_planned(
+    rg: &Ragged,
+    plan: &SolvePlan,
+    rtol: f64,
+    max_iter: usize,
+) -> RaggedSolve {
+    pcg_core(rg, rtol, max_iter, |p, ap, flops| {
+        matvec_planned(rg, plan, p, ap, flops)
+    })
+}
+
+/// Check that every block's retained pattern is closed under the exchange
+/// swap `(a, b) → (b, a)`: the two domains are the same index list and the
+/// pattern is symmetric. The stationary Hylleraas energy needs this — its
+/// gradient is `2(2 − S)·R` only when the swap `S` commutes with the
+/// pattern projection. The Eq-8 test is symmetric in (a, b), so every
+/// molecular builder satisfies it by construction; this is the assertion.
+pub fn check_swap_closed(rg: &Ragged) -> Result<(), String> {
+    for pb in &rg.pairs {
+        if pb.da != pb.db {
+            return Err(format!(
+                "pair ({}, {}): domains differ ({} vs {} virtuals)",
+                pb.i,
+                pb.j,
+                pb.da.len(),
+                pb.db.len()
+            ));
+        }
+        let n = pb.da.len();
+        for r in 0..n {
+            for c in (r + 1)..n {
+                if pb.pat[r * n + c] != pb.pat[c * n + r] {
+                    return Err(format!(
+                        "pair ({}, {}): pattern not swap-closed at ({r}, {c})",
+                        pb.i, pb.j
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Condition-number estimate `λmax/λmin` of the diagonally PRECONDITIONED
@@ -616,9 +703,14 @@ fn flat_u32(k: usize) -> u32 {
 /// every CG iteration by [`gather_into`]) resolved once. Edges with a zero
 /// Fock coupling are dropped at build time, exactly as the indexed matvec
 /// skips them; the edge order is by_j then by_i, as there.
+///
+/// It also fixes each block's Fvv product mode ([`SolvePlan::with_fvv_threshold`]).
 #[derive(Debug, Clone)]
 pub struct SolvePlan {
     edges: Vec<Vec<PlanEdge>>,
+    /// Per block: `None` → the two dense Fvv GEMMs; `Some(nz)` → the sparse
+    /// scatter over the block's retained `(row, col)` elements.
+    fvv_sparse: Vec<Option<Vec<(u32, u32)>>>,
 }
 
 /// The Fock-coupled source pairs of output pair `pb` in [`matvec_indexed`]'s
@@ -656,22 +748,42 @@ fn edge_len(dst: &PairBlock, src: &PairBlock) -> usize {
     rows * cols
 }
 
+/// `Some(kept)` when block `pb` takes the sparse Fvv product at threshold
+/// `rho_star` (retained density `kept / (|Da|·|Db|)` strictly below it).
+fn fvv_sparse_kept(pb: &PairBlock, rho_star: f64) -> Option<usize> {
+    let kept = pb.pat.iter().filter(|&&x| x).count();
+    let rho = kept as f64 / pb.pat.len().max(1) as f64;
+    (rho < rho_star).then_some(kept)
+}
+
 impl SolvePlan {
-    /// Heap bytes a [`SolvePlan`] built on `(rg, f_oo)` holds, computed
-    /// WITHOUT building it: one `(u32, u32)` per gather element of every
-    /// nonzero-coupled edge, plus the per-edge and per-pair vector headers.
-    /// [`SolvePlan::new`] sizes every vector exactly, so this is the plan's
-    /// allocation, not a bound (pinned by `tests/solve_plan_budget.rs`
-    /// against a counting allocator). With the pair gate off it grows like
-    /// `no³ · overlap`; [`matvec_indexed`] needs none of it.
+    /// Heap bytes a [`SolvePlan`] built on `(rg, f_oo)` with every Fvv
+    /// product dense holds; [`SolvePlan::bytes_for_with_threshold`] at ρ* = 0.
     pub fn bytes_for(rg: &Ragged, f_oo: &Array2<f64>) -> usize {
+        Self::bytes_for_with_threshold(rg, f_oo, 0.0)
+    }
+
+    /// Heap bytes [`SolvePlan::with_fvv_threshold`] on `(rg, f_oo, rho_star)`
+    /// holds, computed WITHOUT building it: one `(u32, u32)` per gather
+    /// element of every nonzero-coupled edge, plus the per-edge and per-pair
+    /// vector headers, plus the per-pair Fvv-mode slot and one `(u32, u32)`
+    /// per retained element of every sparse-Fvv block. The plan sizes every
+    /// vector exactly, so this is its allocation, not a bound (pinned by
+    /// `tests/solve_plan_budget.rs` against a counting allocator). With the
+    /// pair gate off it grows like `no³ · overlap`; [`matvec_indexed`] needs
+    /// none of it.
+    pub fn bytes_for_with_threshold(rg: &Ragged, f_oo: &Array2<f64>, rho_star: f64) -> usize {
         let idx = std::mem::size_of::<(u32, u32)>();
         let edge = std::mem::size_of::<PlanEdge>();
         let outer = std::mem::size_of::<Vec<PlanEdge>>();
+        let slot = std::mem::size_of::<Option<Vec<(u32, u32)>>>();
         rg.pairs
             .iter()
             .map(|pb| {
+                let sparse = fvv_sparse_kept(pb, rho_star).map_or(0, |kept| idx * kept);
                 outer
+                    + slot
+                    + sparse
                     + plan_partners(rg, f_oo, pb)
                         .iter()
                         .map(|&(q, _)| edge + idx * edge_len(pb, &rg.pairs[q]))
@@ -680,7 +792,46 @@ impl SolvePlan {
             .sum()
     }
 
+    /// The plan with every Fvv product dense (ρ* = 0): bitwise
+    /// [`matvec_indexed`].
     pub fn new(rg: &Ragged, f_oo: &Array2<f64>) -> Self {
+        Self::with_fvv_threshold(rg, f_oo, 0.0)
+    }
+
+    /// Blocks whose retained-pattern density `kept / (|Da|·|Db|)` is
+    /// strictly below `rho_star` take the sparse Fvv product (cost ∝ kept
+    /// elements × (|Da| + |Db|) instead of |Da|·|Db|·(|Da| + |Db|)); the
+    /// rest stay dense. `rho_star = 0` → every block dense; `rho_star > 1`
+    /// → every block sparse (the forced setting the tests use). The sparse
+    /// product equals the dense one up to rounding ONLY for pattern-projected
+    /// operands, which is what the PCG feeds it.
+    pub fn with_fvv_threshold(rg: &Ragged, f_oo: &Array2<f64>, rho_star: f64) -> Self {
+        let fvv_sparse = rg
+            .pairs
+            .iter()
+            .map(|pb| {
+                fvv_sparse_kept(pb, rho_star).map(|kept| {
+                    let nb = pb.db.len();
+                    let mut nz = Vec::with_capacity(kept);
+                    for (k, _) in pb.pat.iter().enumerate().filter(|(_, &x)| x) {
+                        nz.push((flat_u32(k / nb), flat_u32(k % nb)));
+                    }
+                    nz
+                })
+            })
+            .collect();
+        Self {
+            edges: Self::build_edges(rg, f_oo),
+            fvv_sparse,
+        }
+    }
+
+    /// Number of blocks on the sparse Fvv product.
+    pub fn n_fvv_sparse(&self) -> usize {
+        self.fvv_sparse.iter().filter(|s| s.is_some()).count()
+    }
+
+    fn build_edges(rg: &Ragged, f_oo: &Array2<f64>) -> Vec<Vec<PlanEdge>> {
         let edge = |dst: &PairBlock, q: usize, f: f64| -> PlanEdge {
             let src = &rg.pairs[q];
             let nb_src = src.db.len();
@@ -701,8 +852,7 @@ impl SolvePlan {
             }
             PlanEdge { q, coeff: -f, idx }
         };
-        let edges = rg
-            .pairs
+        rg.pairs
             .iter()
             .map(|pb| {
                 plan_partners(rg, f_oo, pb)
@@ -710,15 +860,16 @@ impl SolvePlan {
                     .map(|&(q, f)| edge(pb, q, f))
                     .collect()
             })
-            .collect();
-        Self { edges }
+            .collect()
     }
 }
 
 /// [`matvec_indexed`] through a [`SolvePlan`], writing into `out` (one
-/// block per pair, any prior contents replaced). Per block: the same two
-/// Fvv GEMMs, the same edge order and per-element `+= coeff·t`, the same
-/// pattern projection — so the result is bitwise [`matvec_indexed`]'s.
+/// block per pair, any prior contents replaced). Per dense block: the same
+/// two Fvv GEMMs, the same edge order and per-element `+= coeff·t`, the
+/// same pattern projection — so with every block dense ([`SolvePlan::new`])
+/// the result is bitwise [`matvec_indexed`]'s. A block the plan put on the
+/// sparse Fvv product agrees with it to rounding (`t` pattern-projected).
 pub fn matvec_planned(
     rg: &Ragged,
     plan: &SolvePlan,
@@ -733,9 +884,17 @@ pub fn matvec_planned(
         .map(|(p_idx, slot)| {
             let pb = &rg.pairs[p_idx];
             let (na, nb) = (pb.da.len(), pb.db.len());
-            let mut fl = (na * na * nb + na * nb * nb) as u64;
-            let mut r = pb.fvv_aa.dot(&t[p_idx]);
-            r += &t[p_idx].dot(&pb.fvv_bb);
+            let (mut r, mut fl) = match &plan.fvv_sparse[p_idx] {
+                None => {
+                    let mut r = pb.fvv_aa.dot(&t[p_idx]);
+                    r += &t[p_idx].dot(&pb.fvv_bb);
+                    (r, (na * na * nb + na * nb * nb) as u64)
+                }
+                Some(nz) => (
+                    fvv_product_sparse(pb, &t[p_idx], nz),
+                    (nz.len() * (na + nb)) as u64,
+                ),
+            };
             if !r.is_standard_layout() {
                 r = r.as_standard_layout().into_owned();
             }
@@ -754,6 +913,26 @@ pub fn matvec_planned(
         })
         .sum();
     *flops += fl;
+}
+
+/// `Fvv_aa · t + t · Fvv_bb` of one block as a scatter over the retained
+/// `(row, col)` elements `nz` of `t` (column `k` of Fvv_aa into output
+/// column `c`, row `c` of Fvv_bb into output row `k`). Equal to the dense
+/// product up to rounding when `t` vanishes off the pattern.
+fn fvv_product_sparse(pb: &PairBlock, t: &Array2<f64>, nz: &[(u32, u32)]) -> Array2<f64> {
+    let (na, nb) = (pb.da.len(), pb.db.len());
+    let mut r = Array2::<f64>::zeros((na, nb));
+    for &(k, c) in nz {
+        let (k, c) = (k as usize, c as usize);
+        let v = t[(k, c)];
+        for (a, &f) in pb.fvv_aa.column(k).iter().enumerate() {
+            r[(a, c)] += f * v;
+        }
+        for (b, &f) in pb.fvv_bb.row(c).iter().enumerate() {
+            r[(k, b)] += v * f;
+        }
+    }
+    r
 }
 
 /// Gather and accumulate a sub-block of the ring product into `out`.
@@ -1164,6 +1343,38 @@ mod tests {
         let k1 = lanczos_kappa(&pre.trace);
         assert!((k1 - 1.0).abs() < 1e-12, "exact preconditioner: kappa {k1}");
         assert!(lanczos_kappa(&CgTrace::default()).is_nan());
+    }
+
+    /// The swap-closure assertion the stationary energy relies on: a block
+    /// built by the Eq-8 builder passes; flipping ONE pattern element (its
+    /// mirror left alone) or giving the block unequal domains fails.
+    #[test]
+    fn swap_closure_check_catches_a_one_sided_pattern() {
+        let nv = 6;
+        let g = Array2::from_shape_fn((nv, nv), |(a, b)| {
+            1e-3 * (((a * 7 + b * 3) % 5) as f64 - 2.0)
+        });
+        let f_vv = Array2::from_shape_fn((nv, nv), |(a, b)| if a == b { 1.0 } else { 0.0 });
+        let fo = vec![-1.0, -0.8];
+        let fv = vec![1.0; nv];
+        let cand: Vec<usize> = (0..nv).collect();
+        let pb = pair_block_from_g_cand(0, 1, &g, &cand, nv, &f_vv, &fo, &fv, 1.5e-3).unwrap();
+        let n = pb.da.len();
+        let rg = |pb: PairBlock| Ragged {
+            pairs: vec![pb],
+            by_i: HashMap::from([(0, vec![0])]),
+            by_j: HashMap::from([(1, vec![0])]),
+        };
+        assert!(check_swap_closed(&rg(pb.clone())).is_ok());
+        let off = (0..n * n)
+            .find(|&k| k / n != k % n && pb.pat[k])
+            .expect("an off-diagonal retained element");
+        let mut broken = pb.clone();
+        broken.pat[off] = false;
+        assert!(check_swap_closed(&rg(broken)).is_err());
+        let mut short = pb;
+        short.db.pop();
+        assert!(check_swap_closed(&rg(short)).is_err());
     }
 
     /// Byte-identity guard for the ferric-pbc seam: with `gate = g` the gated
