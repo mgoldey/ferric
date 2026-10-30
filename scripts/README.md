@@ -30,6 +30,14 @@ tree's `scripts/ci-gate.sh`); if that tree has no gate script the push is
 blocked rather than silently allowed (`PRE_PUSH_ALLOW_NO_GATE=1` to bypass
 once).
 
+**Clippy is scoped to the changed crates** since merge-base with
+`origin/main`, not the workspace (`scripts/ci_gate_clippy_scope.py` chooses; the
+gate summary prints what it linted, and the `CLIPPY SCOPE` block at the top of
+`ci-gate.sh` lists what that drops). Docs- or scripts-only pushes run no clippy.
+Anything uncertain, including a change to `Cargo.toml` or `Cargo.lock`, lints the
+workspace, as does `CI_GATE_CLIPPY_WORKSPACE=1` or `CI_GATE_TIER=full`. CI still
+lints the whole workspace.
+
 Run it by hand any time without pushing:
 
 ```

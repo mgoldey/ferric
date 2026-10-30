@@ -11,8 +11,8 @@
 #      tests -- the 94 `#[ignore]`d tests are deliberately-slow numerical
 #      dispersion/CPKS/BSE benchmarks excluded from routine runs by design;
 #      this gate does not force them).
-#   2. `cargo clippy --workspace --all-targets` warnings, filtered against the
-#      SAME allow-list encoded in root Cargo.toml's [workspace.lints] block
+#   2. `cargo clippy --all-targets` warnings on the CHANGED crates (see CLIPPY
+#      SCOPE below), filtered against the SAME allow-list encoded in root Cargo.toml's [workspace.lints] block
 #      (every member crate opts in via `[lints] workspace = true`). Because
 #      the allow-list already lives in Cargo.toml, `cargo clippy` itself won't
 #      emit allow-listed lints in the first place -- this script's clippy step
@@ -38,6 +38,9 @@
 #   CI_GATE_JOBS           cargo -j value (default: nproc, capped at 8 to
 #                          leave headroom on a shared box).
 #   CI_GATE_SKIP_CLIPPY=1  skip the clippy step (test-only gate).
+#   CI_GATE_CLIPPY_WORKSPACE=1  lint the whole workspace instead of the changed
+#                          crates (see CLIPPY SCOPE below). CI_GATE_TIER=full
+#                          does the same, with or without the pre-push hook.
 #   CI_GATE_SKIP_TESTS=1   skip the test step (clippy-only gate).
 #   CI_GATE_SKIP_COMPLEXITY=1  skip the complexity-regression step.
 #   CI_GATE_SKIP_PYTEST=1  skip the (soft) Python-binding pytest step.
@@ -48,6 +51,44 @@
 #                          scripts/ci-gate.sh by hand still runs EVERYTHING.
 #                          The deferred binaries are listed on every fast run
 #                          along with the command to run them.
+#
+# CLIPPY SCOPE: the clippy step reports only on the crates changed since
+# merge-base(origin/main, HEAD), working tree included, using
+# `-p <crate>... --all-targets`. scripts/ci_gate_clippy_scope.py makes the choice
+# and the gate summary prints it:
+#   - crates: the packages owning the changed files. Cargo also lints their
+#     workspace dependencies, and the gate drops those messages by manifest_path,
+#     counting them on one line. So a warning fails the gate only in a printed
+#     crate, but a hard error in a dependency (a deny-level lint included) still
+#     fails it. NOT --no-deps: clippy's lint pass depends on CARGO_PRIMARY_PACKAGE,
+#     which is not in cargo's fingerprint. A crate first built as a dependency
+#     under --no-deps stays Fresh when later selected, so its lib unit is not
+#     linted. --all-targets still lints the lib-test unit, which leaves code under
+#     cfg(not(test)) and crates with no lib tests exposed (reproduced on a toy
+#     workspace, pinned by test_ci_gate_clippy_scope.py).
+#   - none: no changed file is a compile input (docs, scripts). Clippy does not run.
+#   - workspace (reason): the answer was uncertain, so the old full lint runs: the
+#     base is unknown, cargo metadata failed, or a compile input outside the
+#     packages changed (Cargo.toml, Cargo.lock, .cargo/, clippy.toml,
+#     rust-toolchain, pyproject.toml, a deleted Cargo.toml, a deleted testdata
+#     file, a testdata .rs file, or any path not listed as neutral in that script).
+#     CI_GATE_CLIPPY_WORKSPACE=1 or CI_GATE_TIER=full forces this.
+# DROPPED COVERAGE: dependents of a changed crate are neither linted nor, by this
+# step, type-checked. A public API change that breaks a dependent's code, tests
+# or benches passes this step; so does a new lint in a dependent. Two less obvious
+# cases of the same thing:
+#   - a proc-macro change lints only the macro crate, not its expansions in the
+#     crates that use it;
+#   - a test file shared by #[path] counts as a dependent: a change to it lints the
+#     crate that owns the file, not another crate that includes it (for example
+#     benchmarks/harness/examples/cosx_mixed_error_map.rs).
+# CI's lint job still runs `cargo clippy --workspace --all-targets --locked --
+# -D warnings` on pushes to main and on PRs into main. A PR stacked on another
+# branch gets that only once it targets main, and a branch with no PR gets no CI
+# at all. The optional CI_GATE_GPU=1 clippy stays workspace-wide.
+# COST: `-p` resolves features for that selection, not the whole workspace, so
+# external crates (ndarray's rayon/blas features, say) can rebuild once for each
+# distinct scope, in place of the unified build a workspace run shares.
 #
 # Step 3, complexity regression (scripts/complexity_gate.py): tracks
 # cyclomatic complexity (CC) and maintainability index (MI) per function via
@@ -426,10 +467,10 @@ else
 fi
 echo
 
-# ---- 2. cargo clippy --workspace --all-targets, allow-list checked -----
+# ---- 2. cargo clippy --all-targets (changed crates), allow-list checked -
 # The allow-list lives in root Cargo.toml's [workspace.lints] block (each
 # member crate opts in via `[lints] workspace = true`), so a plain
-# `cargo clippy --workspace --all-targets` already will not emit these lints.
+# `cargo clippy --all-targets` already will not emit these lints.
 # This step re-runs clippy and greps its own JSON output for any
 # `clippy::`-coded warning/error as a redundant, explicit check -- if the
 # lints table and this list ever drift (e.g. someone edits Cargo.toml without
@@ -452,13 +493,102 @@ ALLOWED_LINTS=(
     "unused_parens"
 )
 
+# Set CLIPPY_MODE (crates|workspace|none), CLIPPY_CRATES, CLIPPY_REASON and
+# CLIPPY_MANIFESTS. A selector that crashes or prints something unexpected, or
+# leaves out a line its mode needs, selects the workspace.
+select_clippy_scope() {
+    CLIPPY_MODE="" CLIPPY_CRATES="" CLIPPY_REASON="" CLIPPY_MANIFESTS=""
+    if [[ "${CI_GATE_TIER:-}" == "full" ]]; then
+        CLIPPY_MODE=workspace CLIPPY_REASON="CI_GATE_TIER=full"
+        return 0
+    fi
+    if [[ "${CI_GATE_CLIPPY_WORKSPACE:-0}" == "1" ]]; then
+        CLIPPY_MODE=workspace CLIPPY_REASON="CI_GATE_CLIPPY_WORKSPACE=1"
+        return 0
+    fi
+    {
+        IFS= read -r CLIPPY_MODE
+        IFS= read -r CLIPPY_CRATES
+        IFS= read -r CLIPPY_REASON
+        IFS= read -r CLIPPY_MANIFESTS
+    } < <(python3 "$REPO_ROOT/scripts/ci_gate_clippy_scope.py" </dev/null 2>/dev/null)
+    case "$CLIPPY_MODE" in
+        none) [[ -n "$CLIPPY_REASON" ]] && return 0 ;;
+        crates) [[ -n "$CLIPPY_CRATES" && -n "$CLIPPY_MANIFESTS" ]] && return 0 ;;
+        workspace) [[ -n "$CLIPPY_REASON" ]] && return 0 ;;
+    esac
+    CLIPPY_MODE=workspace CLIPPY_CRATES="" CLIPPY_REASON="scope selector failed"
+    CLIPPY_MANIFESTS=""
+}
+
+# Keep stdin's compiler messages that belong to a selected crate. A message with
+# no manifest_path is kept, so a change in cargo's JSON cannot hide a warning.
+clippy_messages_in_scope() {
+    local msgs m
+    msgs="$(cat)"
+    if [[ "$CLIPPY_MODE" != "crates" ]]; then
+        printf '%s\n' "$msgs"
+        return 0
+    fi
+    for m in $CLIPPY_MANIFESTS; do
+        grep -F "/$m\"" <<<"$msgs"
+    done
+    grep -v '"manifest_path":' <<<"$msgs"
+    return 0
+}
+
+CLIPPY_SCOPE_SUMMARY="skipped (CI_GATE_SKIP_CLIPPY=1)"
+CLIPPY_SUMMARY_LINE=""
+CLIPPY_RUN=0
 if [[ "${CI_GATE_SKIP_CLIPPY:-0}" != "1" ]]; then
-    echo "-- cargo clippy --workspace --all-targets --"
+    select_clippy_scope
+    case "$CLIPPY_MODE" in
+        crates)
+            CLIPPY_SCOPE_SUMMARY="crates: $CLIPPY_CRATES"
+            CLIPPY_ARGS=""
+            for c in $CLIPPY_CRATES; do
+                CLIPPY_ARGS="$CLIPPY_ARGS -p $c"
+            done
+            CLIPPY_ARGS="${CLIPPY_ARGS# }"
+            CLIPPY_RUN=1
+            ;;
+        workspace)
+            CLIPPY_SCOPE_SUMMARY="workspace ($CLIPPY_REASON)"
+            CLIPPY_ARGS="--workspace"
+            CLIPPY_RUN=1
+            ;;
+        none)
+            CLIPPY_SCOPE_SUMMARY="none ($CLIPPY_REASON)"
+            ;;
+    esac
+fi
+
+if [[ "$CLIPPY_RUN" == "1" ]]; then
+    echo "-- cargo clippy $CLIPPY_ARGS --all-targets --"
+    echo "   scope: $CLIPPY_SCOPE_SUMMARY"
     CLIPPY_JSON="$(mktemp /tmp/ferric-ci-gate-clippy.XXXXXX.json)"
     CLIPPY_RC=0
     RUN_LOCKED_STEP="cargo clippy" run_locked \
-        "OPENBLAS_NUM_THREADS=1 cargo clippy --workspace --all-targets -j $JOBS --message-format=json" \
+        "OPENBLAS_NUM_THREADS=1 cargo clippy $CLIPPY_ARGS --all-targets -j $JOBS --message-format=json" \
         > "$CLIPPY_JSON" 2>&1 || CLIPPY_RC=$?
+
+    # "linted" is a claim about a finished run. Report anything else as what it is.
+    CLIPPY_PLANNED="$CLIPPY_SCOPE_SUMMARY"
+    CLIPPY_SCOPE_SUMMARY=""
+    if [[ $CLIPPY_RC -eq $LOCK_WAIT_EXPIRED_RC ]]; then
+        CLIPPY_SCOPE_SUMMARY="never ran, no cargo lock in ${LOCK_WAIT_SECS}s"
+    elif [[ $RUN_LOCKED_TIMED_OUT == 1 ]]; then
+        CLIPPY_SCOPE_SUMMARY="timed out after ${TIMEOUT_SECS}s"
+    elif [[ $CLIPPY_RC -eq 137 ]]; then
+        CLIPPY_SCOPE_SUMMARY="killed by SIGKILL"
+    elif [[ $CLIPPY_RC -ne 0 ]]; then
+        CLIPPY_SCOPE_SUMMARY="cargo exited $CLIPPY_RC"
+    fi
+    if [[ -n "$CLIPPY_SCOPE_SUMMARY" ]]; then
+        CLIPPY_SUMMARY_LINE="clippy did NOT finish: $CLIPPY_SCOPE_SUMMARY (scope: $CLIPPY_PLANNED)"
+    else
+        CLIPPY_SUMMARY_LINE="clippy linted: $CLIPPY_PLANNED"
+    fi
 
     if [[ $CLIPPY_RC -eq $LOCK_WAIT_EXPIRED_RC || $RUN_LOCKED_TIMED_OUT == 1 ||
           $CLIPPY_RC -eq 137 ]]; then
@@ -474,11 +604,17 @@ if [[ "${CI_GATE_SKIP_CLIPPY:-0}" != "1" ]]; then
         # Any compiler-message line with level warning/error whose code is NOT
         # in the allow-list is a gate failure. rustc/clippy JSON puts the code
         # at top level of the "message" object as {"code":{"code":"..."}}.
-        VIOLATIONS="$(grep '"reason":"compiler-message"' "$CLIPPY_JSON" \
+        ALL_VIOLATIONS="$(grep '"reason":"compiler-message"' "$CLIPPY_JSON" \
             | grep -E '"level":"(warning|error)"' \
             | grep -vF -f "$PATTERN_FILE" \
             | grep -E '"code":\{"code":"[a-zA-Z_:]+"' \
             || true)"
+        VIOLATIONS="$(clippy_messages_in_scope <<<"$ALL_VIOLATIONS" | sed '/^$/d')"
+        ALL_COUNT="$(sed '/^$/d' <<<"$ALL_VIOLATIONS" | wc -l)"
+        SCOPED_COUNT="$(sed '/^$/d' <<<"$VIOLATIONS" | wc -l)"
+        if (( ALL_COUNT > SCOPED_COUNT )); then
+            echo "   ignored $(( ALL_COUNT - SCOPED_COUNT )) warning(s) in dependencies outside the scope"
+        fi
 
         if [[ -n "$VIOLATIONS" ]]; then
             echo "-- cargo clippy: FAIL -- non-allow-listed warnings found --"
@@ -522,7 +658,7 @@ for line in sys.stdin:
     fi
     rm -f "$CLIPPY_JSON"
 else
-    echo "-- cargo clippy: SKIPPED (CI_GATE_SKIP_CLIPPY=1) --"
+    echo "-- cargo clippy: NOT RUN -- $CLIPPY_SCOPE_SUMMARY --"
 fi
 echo
 
@@ -680,6 +816,7 @@ echo
 
 # ---- summary ------------------------------------------------------------
 echo "== gate summary =="
+echo "   ${CLIPPY_SUMMARY_LINE:-clippy linted: $CLIPPY_SCOPE_SUMMARY}"
 echo "   load avg(1m) at start: $LOAD1 (nproc/2 = $HALF_NPROC, contended=$CONTENDED)"
 if [[ "$FAILED" == "1" ]]; then
     # One line per outcome that occurred: a gate can hit more than one.
