@@ -25,7 +25,7 @@ use ferric_core::memory::pool::{clear_global, install_global, MemoryPool};
 use ferric_core::mol::Molecule;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
-use ferric_integrals::three_index_source::ThreeIndexSource;
+use ferric_integrals::three_index_source::{spilled_read_rows_for_test, ThreeIndexSource};
 
 /// Serializes the tests in THIS binary, which all install the process-global
 /// pool, and clears the slot on entry and exit.
@@ -226,16 +226,14 @@ fn a_dressed_band_that_fits_the_budget_but_not_the_pool_spills() {
     let mut dressed = ThreeIndexSource::build_dressed(&mut raw, &m, budget)
         .expect("must spill, not be refused by the pool");
     assert!(dressed.is_spilled_for_test(), "must have spilled");
-    let row = nao * nao * 8;
-    assert!(
-        dressed.block_naux() * row <= free,
-        "read-back block {} rows does not fit the {free} bytes free",
-        dressed.block_naux()
-    );
+    // The width comes from the budget and raw's resident bytes, never the live
+    // pool, so a thread-scaled charge in the pool cannot reach it. Its grain is
+    // too coarse to bind on this small a tensor; a shape where it binds is pinned
+    // by `read_width_fits_the_budget_with_df_j_counted_and_ignores_threads`.
+    let _ = free;
     assert_eq!(
-        dressed.block_naux() % 2,
-        0,
-        "read-back width must stay even"
+        dressed.block_naux(),
+        spilled_read_rows_for_test(budget, (needed, 0), nao, naux)
     );
     let got = flat(&mut dressed);
     let big = reference.iter().fold(0.0f64, |a, x| a.max(x.abs()));

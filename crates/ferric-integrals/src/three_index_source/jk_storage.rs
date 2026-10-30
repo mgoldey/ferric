@@ -197,18 +197,34 @@ pub struct Calibration {
 /// spill build overlaps compute with the write, hence the `max`. Ties go to
 /// Recompute, which needs no scratch disk.
 ///
-/// The shared RI-JK path streams the raw tensor one more time to dress it for
-/// K. That pass costs `T_build` under Recompute and `bytes/R_read` under
-/// Spill, one pass in `N + 1`, and is not counted: it cannot move the choice
-/// except within a few percent of the break-even.
-pub fn recompute_is_cheaper(cal: &Calibration, band: usize, packed_bytes: usize) -> bool {
+/// The shared RI-JK path also streams the raw tensor `dress_passes` times to
+/// dress it for K: `T_build` a pass under Recompute, `bytes/R_read` under Spill.
+/// It is counted, because holding the dressing to a small budget can take more
+/// passes than the SCF does. A J-only source is charged for them too, which only
+/// matters near the break-even.
+pub fn recompute_is_cheaper(
+    cal: &Calibration,
+    band: usize,
+    packed_bytes: usize,
+    dress_passes: usize,
+) -> bool {
+    recompute_wins(
+        cal,
+        band,
+        packed_bytes,
+        ASSUMED_PASSES + dress_passes as f64,
+    )
+}
+
+/// `passes` rebuilds, against one overlapped write and `passes` reads.
+fn recompute_wins(cal: &Calibration, band: usize, packed_bytes: usize, passes: f64) -> bool {
     let t_build = cal.build_s_per_row * band as f64;
     let Some((w, r)) = cal.io else {
         return true;
     };
     let bytes = packed_bytes as f64;
-    let spill = t_build.max(bytes / w.max(1.0)) + ASSUMED_PASSES * bytes / r.max(1.0);
-    ASSUMED_PASSES * t_build <= spill
+    let spill = t_build.max(bytes / w.max(1.0)) + passes * bytes / r.max(1.0);
+    passes * t_build <= spill
 }
 
 /// Pick the tier for `policy`. `calibrate` runs only for `auto` over budget.
@@ -223,7 +239,7 @@ pub fn decide(
         JkStorage::Direct => Ok((Tier::Recompute, None)),
         JkStorage::Memory => mem.map(|t| (t, None)).ok_or_else(|| {
             let packed = band * packed_pair_len(nao) * 8;
-            FerricError::MemoryExhausted(format!(
+            FerricError::General(format!(
                 "jk_storage = \"memory\": the 3-index tensor needs {:.2} GB packed \
                  ({:.2} GB unpacked) plus 64 aux rows of scratch, but the memory budget (or what the shared pool has free) is \
                  {:.2} GB. Raise [memory] budget_gb or use jk_storage = \"auto\", \"disk\" \
@@ -238,7 +254,8 @@ pub fn decide(
             None => {
                 let cal = calibrate()?;
                 let packed = band.saturating_mul(packed_pair_len(nao)).saturating_mul(8);
-                let t = if recompute_is_cheaper(&cal, band, packed) {
+                let passes = super::spilled_dress_passes(budget_bytes, band, band, nao);
+                let t = if recompute_is_cheaper(&cal, band, packed, passes) {
                     Tier::Recompute
                 } else {
                     Tier::Spill
@@ -501,6 +518,23 @@ mod tests {
     }
 
     #[test]
+    fn cost_model_counts_the_dressing_passes() {
+        let (band, bytes) = (2256, 2_170_000_000);
+        // A budget tight enough to force many dressing passes moves the choice:
+        // these rates favour spill at one pass, since a re-read is cheap and a
+        // rebuild is not, and the gap only widens with each extra pass.
+        let slow = cal(60.0 / band as f64, Some((80e6, 515e6)));
+        assert!(!recompute_is_cheaper(&slow, band, bytes, 1));
+        assert!(!recompute_is_cheaper(&slow, band, bytes, 100));
+        // Near the break-even a pass count flips it: the one-off write is what
+        // recompute saves, and more passes outweigh it when a rebuild costs more
+        // than a read. Spill's write cost 27 s, a rebuild 5 s, a read 4.2 s.
+        let near = cal(5.0 / band as f64, Some((80e6, 515e6)));
+        assert!(recompute_is_cheaper(&near, band, bytes, 0));
+        assert!(!recompute_is_cheaper(&near, band, bytes, 100));
+    }
+
+    #[test]
     fn cost_model_follows_the_measured_rates() {
         // 2256 rows, 2.17 GB packed (alkane_20 / def2-SVP).
         let (band, bytes) = (2256, 2_170_000_000);
@@ -508,26 +542,40 @@ mod tests {
         assert!(recompute_is_cheaper(
             &cal(3.5 / band as f64, Some((80e6, 515e6))),
             band,
-            bytes
+            bytes,
+            1
         ));
         // A 3 GB/s NVMe reads the tensor in 0.7 s: spill wins.
         assert!(!recompute_is_cheaper(
             &cal(3.5 / band as f64, Some((2e9, 3e9))),
             band,
-            bytes
+            bytes,
+            1
         ));
         // Slow integrals (60 s) against the SATA disk: spill wins.
         assert!(!recompute_is_cheaper(
             &cal(60.0 / band as f64, Some((80e6, 515e6))),
             band,
-            bytes
+            bytes,
+            1
         ));
         // No usable scratch disk: recompute.
         assert!(recompute_is_cheaper(
             &cal(60.0 / band as f64, None),
             band,
-            bytes
+            bytes,
+            1
         ));
+    }
+
+    #[test]
+    fn an_explicit_memory_policy_refusal_is_not_a_fallback_signal() {
+        let never = || -> Result<Calibration, FerricError> { panic!("must not calibrate") };
+        let err = decide(JkStorage::Memory, (100, 400, 1), never).unwrap_err();
+        assert!(
+            matches!(err, FerricError::General(_)),
+            "jk_storage = \"memory\" is the user's instruction, not a guess to drop: {err}"
+        );
     }
 
     #[test]
@@ -677,7 +725,7 @@ mod tests {
         let full = calibrate(op, &obs, &dfbs, band, (usize::MAX, Some(1_000_000))).unwrap();
         assert!(full.io.is_none(), "1 MB free cannot hold the packed tensor");
         let packed = band.1 * packed_pair_len(obs.nbasis()) * 8;
-        assert!(recompute_is_cheaper(&full, band.1, packed));
+        assert!(recompute_is_cheaper(&full, band.1, packed, 1));
     }
 
     /// Calibration rows and its IO buffer obey the budget (the allocations are

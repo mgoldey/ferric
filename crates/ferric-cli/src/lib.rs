@@ -368,7 +368,7 @@ fn print_df_guess_outcome(
 ) {
     if dfg.fallback.is_some() {
         eprintln!(
-            "[ferric] SCF: DF-guess pre-stage skipped (out of memory), {jk_mode} J/K stage from \
+            "[ferric] SCF: DF-guess pre-stage abandoned (out of memory), {jk_mode} J/K stage from \
              its own guess"
         );
         return;
@@ -1089,7 +1089,7 @@ pub fn run(args: Vec<String>) {
             df_guess_aux.as_deref(),
         )
         .unwrap_or_else(|e| {
-            eprintln!("error: DF-guess SCF failed: {e:?}");
+            eprintln!("error: SCF failed (DF-guess pre-stage or the exact stage after it): {e:?}");
             std::process::exit(1);
         });
         print_df_guess_outcome(&dfg, df_guess_aux.as_deref(), jk_route.mode);

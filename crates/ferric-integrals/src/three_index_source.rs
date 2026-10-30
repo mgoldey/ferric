@@ -196,105 +196,173 @@ const DRESS_K_BLOCK: usize = 128;
 /// Split `width` output rows into pieces of `step` rows, `step` rounded down to
 /// a multiple of [`DRESS_ROW_BLOCK`] (at least one).
 ///
-/// Every piece starts at a multiple of 64 rows from the start of `width`, so
-/// each row keeps its vector lane relative to the GEMM that would have covered
-/// the whole of `width`: see [`DRESS_ROW_BLOCK`] for the measurement that makes
-/// such a split exact. A tail shorter than 64 rows joins the piece before it,
-/// so no piece is a short GEMM of a shape `width` itself would not produce.
+/// Every piece starts on the [`DRESS_ROW_BLOCK`] grid the in-core fast path
+/// uses, which is what lets the spilled path reproduce its GEMMs exactly.
 fn dress_row_edges(width: usize, step: usize) -> Vec<(usize, usize)> {
     let step = (step / DRESS_ROW_BLOCK).max(1) * DRESS_ROW_BLOCK;
-    let mut edges = Vec::with_capacity(width / step + 1);
-    let mut l = 0usize;
-    while l < width {
-        let mut r = (l + step).min(width);
-        if width - r < DRESS_ROW_BLOCK {
-            r = width;
-        }
-        edges.push((l, r));
-        l = r;
-    }
-    edges
+    (0..width)
+        .step_by(step)
+        .map(|l| (l, (l + step).min(width)))
+        .collect()
 }
 
-/// The widest piece [`dress_row_edges`] gives `width` rows.
-fn widest_row_piece(width: usize, step: usize) -> usize {
-    dress_row_edges(width, step)
-        .iter()
-        .map(|&(l, r)| r - l)
-        .max()
-        .unwrap_or(0)
+/// DF-K's aux-chunk width. It lives here because the read-back width must be a
+/// multiple of it: a block boundary inside a chunk would change the chunk's
+/// GEMM, and so K's bits.
+pub fn df_chunk_width(nao: usize) -> usize {
+    (4096 / nao.max(1)).clamp(4, 64)
 }
 
-/// Largest `contrib` GEMM result [`dress_rows_packed`] holds: a 64-row piece
-/// plus a merged tail.
-const DRESS_MAX_CONTRIB_ROWS: usize = 2 * DRESS_ROW_BLOCK - 1;
+/// The most DF-K's chunk reduction holds, from `reduce::resolve_band_bytes`:
+/// a quarter of the budget, capped at its 512 MiB default. The per-worker
+/// scratch is taken out of this band by DF-K, so it needs no term of its own,
+/// and that is why this width need not read the thread count.
+fn df_k_band_bytes(budget_bytes: usize) -> usize {
+    (budget_bytes / 4).min(512 * 1024 * 1024)
+}
 
-/// Output rows the spilled dressing may accumulate at once in `avail_bytes`,
-/// given the packed accumulator and one `contrib` block. Never below one
-/// [`DRESS_ROW_BLOCK`]; the caller reports a floor that does not fit.
-fn spilled_accum_rows(avail_bytes: usize, nao: usize) -> usize {
-    let row = nao.saturating_mul(nao).saturating_mul(8);
+/// Read-back block width for a spilled dressed tensor, so the block, its packed
+/// read buffer, DF-J's stream and DF-K's reduction fit `budget_bytes` beside
+/// whatever raw keeps resident.
+///
+/// A pure function of the configuration: never the thread count and never the
+/// live pool, because it sets K's block boundaries. A multiple of twice the
+/// DF-K chunk, so chunks fall exactly as they do in core and the width stays
+/// even. The floor can overshoot a very small budget, and the caller reports it.
+fn spilled_read_rows(
+    budget_bytes: usize,
+    (raw_resident, df_j_stream): (usize, usize),
+    nao: usize,
+    band: usize,
+) -> usize {
+    let per_row = (nao * nao + packed_pair_len(nao)).saturating_mul(8).max(1);
+    let grain = 2 * df_chunk_width(nao);
+    let rows = budget_bytes
+        .saturating_sub(raw_resident)
+        .saturating_sub(df_j_stream)
+        .saturating_sub(df_k_band_bytes(budget_bytes))
+        / per_row;
+    (rows / grain * grain).max(grain).min(band.max(1))
+}
+
+#[doc(hidden)]
+pub fn spilled_read_rows_for_test(
+    budget_bytes: usize,
+    held: (usize, usize),
+    nao: usize,
+    band: usize,
+) -> usize {
+    spilled_read_rows(budget_bytes, held, nao, band)
+}
+
+/// Output rows the spilled dressing may accumulate at once beside `overhead`
+/// bytes. Never below one [`DRESS_ROW_BLOCK`]; the caller reports a floor that
+/// does not fit.
+fn spilled_accum_rows(budget_bytes: usize, overhead: usize, nao: usize) -> usize {
     let packed_row = packed_pair_len(nao).saturating_mul(8).max(1);
-    let rows = avail_bytes.saturating_sub(DRESS_MAX_CONTRIB_ROWS.saturating_mul(row)) / packed_row;
-    // Room for the tail `dress_row_edges` may merge into the last piece.
-    rows.saturating_sub(DRESS_ROW_BLOCK - 1)
-        .max(DRESS_ROW_BLOCK)
+    let rows = budget_bytes.saturating_sub(overhead) / packed_row;
+    (rows / DRESS_ROW_BLOCK * DRESS_ROW_BLOCK).max(DRESS_ROW_BLOCK)
 }
 
-/// Read-back block width for a dressed tensor that spills only because the
-/// pool has too little free: the block plus its packed read buffer (1.5 rows
-/// each) must fit what is free. Even, for the reason [`DRESS_ROW_BLOCK`] gives.
-///
-/// No existing result rests on this width: this case was a hard pool refusal
-/// until it spilled instead.
-fn pool_refused_read_rows(free_bytes: usize, nao: usize, band: usize) -> usize {
-    let rows = block_naux_for(free_bytes / 3 * 2, nao).min(band.max(1));
-    if rows > 1 {
-        rows & !1
-    } else {
-        rows
-    }
+/// Bytes the dressing itself needs beside its packed accumulator: the raw
+/// stream, one unpacked Q block, one `contrib`, and the metric.
+fn dressing_overhead_bytes(raw_held: usize, m_bytes: usize, naux: usize, nao: usize) -> usize {
+    let row = nao.saturating_mul(nao).saturating_mul(8);
+    raw_held
+        .saturating_add(m_bytes)
+        .saturating_add(DRESS_K_BLOCK.min(naux).saturating_mul(row))
+        .saturating_add(DRESS_ROW_BLOCK.min(naux).saturating_mul(row))
 }
 
-/// What the sequential spilled dressing holds, and what reading the result back
-/// will hold; `Some(report)` for whichever phase does not fit `budget_bytes`.
-///
-/// The second plan exists because the first fitting would otherwise silence the
-/// warning for a run whose SCF still overshoots: the read-back block width sets
-/// the DF-K chunk boundaries, so it is not narrowed.
+/// Passes over the raw tensor a spilled dressing of `band` rows will make, when
+/// raw is itself spilled. One piece of the accumulator takes one pass, so this
+/// is the cost of honouring the budget. [`jk_storage::recompute_is_cheaper`]
+/// needs it because a recomputed pass costs far more than a re-read.
+pub(crate) fn spilled_dress_passes(
+    budget_bytes: usize,
+    naux: usize,
+    band: usize,
+    nao: usize,
+) -> usize {
+    let stream = 3 * DRESS_K_BLOCK.min(naux) * packed_pair_len(nao) * 8;
+    let overhead = dressing_overhead_bytes(stream, naux * naux * 16, naux, nao);
+    band.div_ceil(spilled_accum_rows(budget_bytes, overhead, nao).max(1))
+}
+
+/// Above this many passes over raw, say so: each one re-reads or recomputes the
+/// whole tensor.
+const DRESS_PASS_WARN: usize = 8;
+
+/// What each phase of a spilled dressed tensor holds; `Some(report)` for every
+/// phase that does not fit `budget_bytes`. A phase is reported only when the
+/// sizing floors could not bring it in.
 fn spilled_dressing_report(
     budget_bytes: usize,
-    (raw_stream_bytes, m_bytes): (usize, usize),
-    (piece_rows, read_rows): (usize, usize),
-    nao: usize,
+    (raw_resident, raw_stream, m_bytes): (usize, usize, usize),
+    (accum_rows, read_rows, df_j_stream): (usize, usize, usize),
+    (naux, nao): (usize, usize),
 ) -> Option<String> {
     let pair = packed_pair_len(nao);
+    let bytes_as_elems = |b: usize| b / 8;
     let mut dress = MemoryPlan::with_budget_bytes(budget_bytes, "DF dressing (spilled)");
     dress.reserve(
-        "raw stream block + read buffer",
-        raw_stream_bytes / 8,
+        "raw tensor resident",
+        bytes_as_elems(raw_resident),
         Lifetime::Resident,
     );
-    dress.reserve("dressing metric", m_bytes / 8, Lifetime::Resident);
     dress.reserve(
-        "dressing packed accum",
-        piece_rows * pair,
+        "raw packed stream",
+        bytes_as_elems(raw_stream),
+        Lifetime::Resident,
+    );
+    dress.reserve(
+        "dressing metric",
+        bytes_as_elems(m_bytes),
+        Lifetime::Resident,
+    );
+    dress.reserve(
+        "unpacked Q block",
+        DRESS_K_BLOCK.min(naux) * nao * nao,
         Lifetime::Resident,
     );
     dress.reserve(
         "dressing GEMM contrib",
-        widest_row_piece(piece_rows, DRESS_ROW_BLOCK) * nao * nao,
+        DRESS_ROW_BLOCK.min(naux) * nao * nao,
         Lifetime::Resident,
     );
-    let mut read = MemoryPlan::with_budget_bytes(budget_bytes, "DF dressed read-back");
-    read.reserve("read-back block", read_rows * nao * nao, Lifetime::Resident);
-    read.reserve(
-        "read-back packed buffer",
+    dress.reserve(
+        "dressing packed accum",
+        accum_rows * pair,
+        Lifetime::Resident,
+    );
+    let mut scf = MemoryPlan::with_budget_bytes(budget_bytes, "DF J/K read-back in the SCF");
+    scf.reserve(
+        "raw tensor resident",
+        bytes_as_elems(raw_resident),
+        Lifetime::Resident,
+    );
+    scf.reserve(
+        "DF-J packed stream",
+        bytes_as_elems(df_j_stream),
+        Lifetime::Resident,
+    );
+    scf.reserve(
+        "DF-K read-back block",
+        read_rows * nao * nao,
+        Lifetime::Resident,
+    );
+    scf.reserve(
+        "DF-K packed read buffer",
         read_rows * pair,
         Lifetime::Resident,
     );
+    scf.reserve(
+        "DF-K chunk reduction",
+        bytes_as_elems(df_k_band_bytes(budget_bytes)),
+        Lifetime::Resident,
+    );
     let mut out = String::new();
-    for plan in [&dress, &read] {
+    for plan in [&dress, &scf] {
         if plan.check().is_err() {
             out.push_str(&plan.report());
         }
@@ -305,40 +373,37 @@ fn spilled_dressing_report(
 #[doc(hidden)]
 pub fn spilled_dressing_report_for_test(
     budget_bytes: usize,
-    bytes: (usize, usize),
-    rows: (usize, usize),
-    nao: usize,
+    raw: (usize, usize, usize),
+    rows: (usize, usize, usize),
+    shape: (usize, usize),
 ) -> Option<String> {
-    spilled_dressing_report(budget_bytes, bytes, rows, nao)
+    spilled_dressing_report(budget_bytes, raw, rows, shape)
 }
 
 /// `Σ_Q m[P,Q] raw[Q,μν]` for `P` in `[p0, p1)`, returned as the packed lower
 /// triangle `(p1 - p0, pair)`.
 ///
-/// Each element sees the term sequence the historical full-block
-/// `accum += m[p0..p1, Q]·raw[Q]` gave it: the output-row split is a
-/// [`dress_row_edges`] one, the Q blocks are the source's own, and only the
-/// triangle that gets written is kept. That is what lets the spilled path's
-/// memory be cut without moving the tensor, pinned bitwise by
-/// `spilled_dressing_split_is_bit_identical_to_the_whole_block`.
+/// The GEMMs are the in-core fast path's: [`DRESS_ROW_BLOCK`] output rows by
+/// [`DRESS_K_BLOCK`] Q rows, on the same grids, accumulated in ascending Q. Each
+/// element therefore sees the identical term sequence, so at one BLAS thread the
+/// spilled tensor is bitwise the in-core one (with OpenBLAS threaded, splitting
+/// a GEMM moves bits, and that holds for either path).
 fn dress_rows_packed(
     raw: &mut ThreeIndexSource,
     m: &Array2<f64>,
     (p0, p1): (usize, usize),
+    band_p0: usize,
 ) -> Result<Array2<f64>, FerricError> {
     let nao = raw.nao();
     let pair = packed_pair_len(nao);
     let mut accum = Array2::<f64>::zeros((p1 - p0, pair));
     let edges = dress_row_edges(p1 - p0, DRESS_ROW_BLOCK);
-    raw.for_each_block(|rb| {
-        let rb_b = rb.data.shape()[0];
-        let raw_flat = rb
-            .data
-            .into_shape_with_order((rb_b, nao * nao))
-            .map_err(|e| FerricError::General(format!("raw reshape: {e}")))?;
+    debug_assert_eq!((p0 - band_p0) % DRESS_ROW_BLOCK, 0);
+    raw.for_each_dress_k_block(|q0, flat| {
+        let q1 = q0 + flat.nrows();
         for &(r0, r1) in &edges {
-            let msub = m.slice(ndarray::s![p0 + r0..p0 + r1, rb.p0..rb.p0 + rb_b]);
-            let contrib = msub.dot(&raw_flat);
+            let msub = m.slice(ndarray::s![p0 + r0..p0 + r1, q0..q1]);
+            let contrib = msub.dot(&flat);
             for (i, row) in contrib.outer_iter().enumerate() {
                 let mut dst = accum.row_mut(r0 + i);
                 let mut k = 0usize;
@@ -355,30 +420,56 @@ fn dress_rows_packed(
     Ok(accum)
 }
 
-/// Admit a dressed band in core against what the pool has FREE, atomically with
-/// the debit. Returns the charge when admitted, and whether the pool alone is
-/// what refused it.
+/// Can the in-core fast path hold the band plus its per-worker `contrib`? Reads
+/// the thread count, which is safe only because the choice it steers does not
+/// move a bit at one BLAS thread: see [`dress_rows_packed`].
+fn fast_path_plan(budget_bytes: usize, band: usize, n_blocks: usize, nao: usize) -> MemoryPlan {
+    // Concurrency is bounded by the number of blocks as well as by the pool:
+    // charging `nthreads` copies when there are only 3 blocks would over-count.
+    let workers = rayon::current_num_threads().max(1).min(n_blocks.max(1));
+    let mut plan = MemoryPlan::with_budget_bytes(budget_bytes, "DF dressing (in-core)");
+    plan.reserve(
+        "dressed band B[P,mu,nu]",
+        band * nao * nao,
+        Lifetime::Resident,
+    );
+    // Each worker holds one `contrib` GEMM result: `b × nao²`, `b ≤ DRESS_ROW_BLOCK`.
+    plan.reserve_per_worker(
+        "dressing GEMM contrib (per worker)",
+        DRESS_ROW_BLOCK.min(band.max(1)) * nao * nao,
+        workers,
+    );
+    plan
+}
+
+/// Decide in core or spill for a dressed band. Returns the charge when admitted,
+/// and whether memory alone refused a band that fits the budget.
 ///
-/// `raw` is resident throughout (DF-J keeps it for the whole SCF), so a band that
-/// fits the budget once can still not fit it twice. Asking only the budget
-/// admitted those, built the whole tensor, and then died in the charge. Every run
-/// this reroutes used to die there, so no result moves; with no pool the
-/// reservation is inert and this is the budget test.
+/// `raw` stays resident (DF-J keeps it), so a band can fit the budget once and
+/// not twice, or be refused by another plane's thread-scaled charge. Spilling
+/// then costs IO, not bits, so that dependence on the live pool cannot reach a
+/// result at one BLAS thread.
 fn admit_dressed_in_core(
     needed: usize,
     budget_bytes: usize,
+    fast_path_fits: bool,
 ) -> (Option<ferric_core::memory::pool::Reservation>, bool) {
     if needed > budget_bytes {
         return (None, false);
     }
-    let charge =
-        ferric_core::memory::pool::try_reserve_global("DF 3-index dressed B[P,mn] in-core", needed);
+    let charge = fast_path_fits
+        .then(|| {
+            ferric_core::memory::pool::try_reserve_global(
+                "DF 3-index dressed B[P,mn] in-core",
+                needed,
+            )
+        })
+        .flatten();
     if charge.is_none() {
         eprintln!(
-            "[ferric] DF dressed tensor ({:.3} GB) fits the budget but not the {:.3} GB the \
-             memory pool has free beside the raw tensor; spilling it to disk",
+            "[ferric] DF dressed tensor ({:.3} GB) fits the budget but not beside what is \
+             already resident; spilling it to disk",
             needed as f64 / 1e9,
-            ferric_core::memory::pool::global_available_bytes().unwrap_or(0) as f64 / 1e9,
         );
     }
     let refused = charge.is_none();
@@ -431,29 +522,23 @@ fn dress_band_in_core_blocked(
 /// `for_each_block` arm, so the formats must agree. Valid for the same reason as
 /// the raw path: `m` does not touch μν, so a μν-symmetric tensor stays symmetric.
 ///
-/// `block_naux` keeps the block boundaries the output has always had; each
-/// block is accumulated in `accum_rows` pieces, each of which streams `raw`
-/// once, so a narrower piece trades extra passes over `raw` for memory.
+/// Each `accum_rows` piece streams `raw` once. One pass cannot feed more pieces,
+/// because every output row needs every Q, so all rows of a pass are co-resident.
 fn dress_band_to_spill(
     raw: &mut ThreeIndexSource,
     m: &Array2<f64>,
     file: &mut File,
     (band_p0, band_p1): (usize, usize),
-    (block_naux, accum_rows): (usize, usize),
+    accum_rows: usize,
 ) -> Result<(), FerricError> {
-    let mut p0 = band_p0;
-    while p0 < band_p1 {
-        let p1 = (p0 + block_naux).min(band_p1);
-        for (a0, a1) in dress_row_edges(p1 - p0, accum_rows) {
-            let packed = dress_rows_packed(raw, m, (p0 + a0, p0 + a1))?;
-            let slice = packed
-                .as_slice()
-                .ok_or_else(|| FerricError::General("dress out: non-contiguous".into()))?;
-            file.write_all(bytemuck::cast_slice(slice))
-                .map_err(|e| FerricError::General(format!("dress write: {e}")))?;
-            drop_page_cache(file);
-        }
-        p0 = p1;
+    for (a0, a1) in dress_row_edges(band_p1 - band_p0, accum_rows) {
+        let packed = dress_rows_packed(raw, m, (band_p0 + a0, band_p0 + a1), band_p0)?;
+        let slice = packed
+            .as_slice()
+            .ok_or_else(|| FerricError::General("dress out: non-contiguous".into()))?;
+        file.write_all(bytemuck::cast_slice(slice))
+            .map_err(|e| FerricError::General(format!("dress write: {e}")))?;
+        drop_page_cache(file);
     }
     Ok(())
 }
@@ -866,37 +951,19 @@ fn charge_three_index(
     ferric_core::memory::pool::reserve_global(label, bytes)
 }
 
-/// Charge a plane that has NO fallback left and whose size is fixed by
-/// numerics: debit if it fits, and if it does not, record the occupancy
-/// without refusing.
+/// Charge a plane that has no fallback left: debit if it fits, and if it does
+/// not, record nothing rather than refuse.
 ///
-/// # Why this one is soft, when `charge_three_index` is hard
+/// Soft because the spill path holds two sources co-resident by construction:
+/// `DfK::from_raw` borrows `raw` while `build_dressed*` allocates the dressed
+/// source's own block. Hard-charging that refused jobs that run correctly: the
+/// 27-atom terpinyl cation at `budget_gb = 0.10` (6-31G/PBE/RI-JK) errored with
+/// `memory pool exhausted: "DF 3-index dressed B[P,mn] spill scratch"`.
 ///
-/// MEASURED, not assumed. The spill path holds TWO sources co-resident by
-/// construction: `DfK::from_raw` borrows `raw` (whose scratch block is live)
-/// while `build_dressed*` allocates the dressed source's own scratch block,
-/// and each block is sized by `spill_block_naux_for`/`block_naux_for` to
-/// (a fraction of) the WHOLE budget. So the honest co-resident total is
-/// ~2x budget whenever a job spills at all.
-///
-/// Hard-charging that refused jobs that run correctly today: the 27-atom
-/// terpinyl cation at `budget_gb = 0.10` (6-31G/PBE/RI-JK) errored with
-/// `memory pool exhausted: "DF 3-index dressed B[P,mn] spill scratch" needs
-/// 0.107 GB but only 0.054 GB ... is free`, while the same job on the
-/// pre-migration tree runs. Refusing a job that would have completed is as
-/// much a bug as admitting one that OOMs (`CLAUDE.md`: "an over-estimating
-/// guard is also a bug").
-///
-/// The only way to MAKE it fit is to shrink `block_naux` -- which is the
-/// dressing GEMM's m dimension, so it sets BLAS's internal blocking, the
-/// summation order, and hence the dressed tensor and the SCF energy. This
-/// file already refuses to shrink it for exactly that reason (see
-/// `blocked_dressing_overshoot_report`, whose warning says so verbatim), and
-/// `CLAUDE.md`'s "do not perturb numerics" rule forbids doing it silently.
-///
-/// So: REPORTED, not enforced -- the same verdict this file already reached
-/// for the two live dressing blocks. The in-core planes, which is where the
-/// measured 27-atom OOM actually came from, stay hard-gated.
+/// These widths are budget-derived and never read the pool, so a skipped charge
+/// changes the ledger only. The dressing and read-back widths are sized to the
+/// budget directly by [`spilled_accum_rows`] and [`spilled_read_rows`]. In-core
+/// planes stay hard-gated.
 fn charge_three_index_soft(label: &str, bytes: usize) -> ferric_core::memory::pool::Reservation {
     ferric_core::memory::pool::try_reserve_global(label, bytes)
         .unwrap_or_else(|| ferric_core::memory::pool::Reservation::inert(label))
@@ -1340,9 +1407,13 @@ impl ThreeIndexSource {
         // budget admitted those, built the whole tensor, and then died in the
         // charge. Every run this reroutes used to die there, so no result moves;
         // with no pool the reservation is inert and this is the budget test.
-        let (in_core_charge, pool_refused) = admit_dressed_in_core(needed, budget_bytes);
+        let fast_path_fits = !raw.is_incore()
+            || fast_path_plan(budget_bytes, band, band.div_ceil(DRESS_ROW_BLOCK), nao)
+                .check()
+                .is_ok();
+        let (in_core_charge, memory_refused) =
+            admit_dressed_in_core(needed, budget_bytes, fast_path_fits);
         let in_core = in_core_charge.is_some();
-        let pool_free = ferric_core::memory::pool::global_available_bytes();
         if ooc_trace() {
             eprintln!(
                 "[OOC dress] naux={naux} band=[{band_p0},{band_p1}) nao={nao} needed={:.2}GB budget={:.2}GB block_naux={block_naux} -> {}",
@@ -1369,7 +1440,7 @@ impl ThreeIndexSource {
             preflight_spill(spill_bytes).map_err(|e| {
                 // Memory is why this run is spilling at all, so a run the pool
                 // alone refused still reports that, and not only the disk.
-                if pool_refused {
+                if memory_refused {
                     FerricError::MemoryExhausted(format!(
                         "DF dressed tensor fits neither the memory pool nor the spill \
                          directory: {e}"
@@ -1451,28 +1522,6 @@ impl ThreeIndexSource {
                 out_edges.push((l, r));
                 l = r;
             }
-            // Concurrency is bounded by the number of blocks as well as by the
-            // pool: charging `nthreads` copies when there are only 3 blocks
-            // would over-count, and an over-estimating guard refuses jobs that
-            // would have fit — as much a defect as an under-estimate.
-            let workers = rayon::current_num_threads()
-                .max(1)
-                .min(out_edges.len().max(1));
-            let mut plan = MemoryPlan::with_budget_bytes(budget_bytes, "DF dressing (in-core)");
-            plan.reserve(
-                "dressed band B[P,mu,nu]",
-                band * nao * nao,
-                Lifetime::Resident,
-            );
-            // Each worker holds one `contrib` GEMM result: `b × nao²` where
-            // `b ≤ DRESS_ROW_BLOCK`. This is the term the old code never
-            // charged for at all.
-            plan.reserve_per_worker(
-                "dressing GEMM contrib (per worker)",
-                DRESS_ROW_BLOCK.min(band.max(1)) * nao * nao,
-                workers,
-            );
-            plan.check()?;
             // Scatter-free: each block writes its OWN disjoint rows of `arr`.
             // `arr` is a freshly-allocated contiguous `Array3`, so its backing
             // slice is row-major and output row `l` occupies exactly
@@ -1526,28 +1575,19 @@ impl ThreeIndexSource {
             });
         }
 
-        // SEQUENTIAL path accounting. Why `block_naux` is what it is:
-        //
-        // `block_naux` is derived from the budget, so two budgets already give
-        // two GEMM shapes and tensors a few ulp apart (see
-        // `spilled_dressed_tensor_stays_within_a_few_ulp_of_in_core`). What it
-        // must not do is change at a FIXED budget, so the boundaries stay and
-        // the spilled branch below cuts its memory underneath them instead:
-        // packed accumulator, 64-row `contrib` pieces, and as many passes over
-        // `raw` as the pieces need. All of that is bit-identical to one block.
+        // SEQUENTIAL path accounting. Two consumers read these widths: the
+        // dressing below, and DF-K through `read_rows`, its only reader.
         //
         // The in-core branch still holds `accum` + `contrib` over `out_incore`,
         // at most 3x the band; only a spilled or recomputed `raw` reaches it.
         // Reported rather than enforced, printed unconditionally on a failed
-        // `check()` (it was once gated on `FERRIC_OOC_TRACE` and so invisible).
-        // Pure, so `blocked_dressing_overshoot_report_for_test` can pin it.
-        let raw_stream_bytes = raw.stream_resident_bytes();
-        let m_bytes = m.len().saturating_mul(8);
-        let read_rows = if pool_refused {
-            pool_refused_read_rows(pool_free.unwrap_or(0), nao, band)
-        } else {
-            block_naux
-        };
+        // `check()`. Pure, so `blocked_dressing_overshoot_report_for_test` pins it.
+        let raw_resident = raw.tensor_resident_bytes();
+        let raw_stream = raw.dress_stream_bytes();
+        let df_j_stream = raw.df_j_stream_bytes();
+        // Twice: `DfK` keeps the metric alive beside its inverse root `m` here.
+        let m_bytes = m.len().saturating_mul(16);
+        let read_rows = spilled_read_rows(budget_bytes, (raw_resident, df_j_stream), nao, band);
         if let Some(arr) = out_incore.as_mut() {
             if let Some(report) =
                 blocked_dressing_overshoot_report(budget_bytes, in_core, band, block_naux, nao)
@@ -1559,30 +1599,34 @@ impl ThreeIndexSource {
             }
             dress_band_in_core_blocked(raw, m, arr, (band_p0, band_p1), block_naux)?;
         } else if let Some(f) = file.as_mut() {
-            // Sizes only the pieces, which leave the bits alone, so reading the
-            // live pool here cannot move a result.
-            let avail = budget_bytes
-                .saturating_sub(raw_stream_bytes)
-                .saturating_sub(m_bytes)
-                .min(pool_free.unwrap_or(usize::MAX));
-            let accum_rows = spilled_accum_rows(avail, nao);
-            if let Some(report) = spilled_dressing_report(
-                budget_bytes,
-                (raw_stream_bytes, m_bytes),
-                (
-                    widest_row_piece(block_naux.min(band), accum_rows),
-                    read_rows,
-                ),
+            let overhead = dressing_overhead_bytes(
+                raw_resident.saturating_add(raw_stream),
+                m_bytes,
+                naux,
                 nao,
-            ) {
+            );
+            let accum_rows = spilled_accum_rows(budget_bytes, overhead, nao);
+            let passes = band.div_ceil(accum_rows);
+            if passes > DRESS_PASS_WARN && !raw.is_incore() {
                 eprintln!(
-                    "[ferric] WARNING: DF dressing (spilled) exceeds the byte budget in the \
-                     phases below. The dressing phase is cut as far as its 64-row floor \
-                     allows; the read-back block sets the DF-K chunk boundaries, so it is not \
-                     narrowed:\n{report}"
+                    "[ferric] WARNING: holding the DF dressing to the memory budget takes {passes} \
+                     passes over the raw 3-index tensor (~{:.1} GB of IO, or as many integral \
+                     builds under jk_storage = \"direct\"). Raise [memory] budget_gb to reduce it.",
+                    (passes * naux * packed_pair_len(nao) * 8) as f64 / 1e9,
                 );
             }
-            dress_band_to_spill(raw, m, f, (band_p0, band_p1), (block_naux, accum_rows))?;
+            if let Some(report) = spilled_dressing_report(
+                budget_bytes,
+                (raw_resident, raw_stream, m_bytes),
+                (accum_rows, read_rows, df_j_stream),
+                (naux, nao),
+            ) {
+                eprintln!(
+                    "[ferric] WARNING: the spilled DF J/K path cannot fit the byte budget in the \
+                     phases below, even at its minimum widths:\n{report}"
+                );
+            }
+            dress_band_to_spill(raw, m, f, (band_p0, band_p1), accum_rows)?;
         }
         let backend = match (out_incore, file) {
             (Some(arr), _) => Backend::InCore(arr),
@@ -1618,21 +1662,69 @@ impl ThreeIndexSource {
         })
     }
 
-    /// Bytes this source holds beyond its pool-charged tensor during a
-    /// `for_each_block` pass: the block it hands out, plus the packed read
-    /// buffer a spilled source keeps alive across the callback.
-    fn stream_resident_bytes(&self) -> usize {
-        let row = self.nao.saturating_mul(self.nao).saturating_mul(8);
-        let block = self.block_naux.saturating_mul(row);
-        match self.backend {
-            Backend::InCore(_) => 0,
-            Backend::InCorePacked { .. } | Backend::Recompute { .. } => block,
-            Backend::DiskSpill { .. } => block.saturating_add(
-                self.block_naux
-                    .saturating_mul(packed_pair_len(self.nao))
-                    .saturating_mul(8),
-            ),
+    /// Bytes of the tensor itself that stay resident in this source.
+    fn tensor_resident_bytes(&self) -> usize {
+        match &self.backend {
+            Backend::InCore(a) => a.len().saturating_mul(8),
+            Backend::InCorePacked { packed, .. } => packed.len().saturating_mul(8),
+            Backend::DiskSpill { .. } | Backend::Recompute { .. } => 0,
         }
+    }
+
+    /// Bytes a packed stream of `rows` rows holds beyond the tensor.
+    fn packed_stream_bytes(&self, rows: usize) -> usize {
+        let pair = packed_pair_len(self.nao);
+        match self.backend {
+            Backend::DiskSpill { .. } => 3 * rows * pair * 8,
+            Backend::Recompute { .. } => rows * (self.nao * self.nao + pair) * 8,
+            Backend::InCore(_) | Backend::InCorePacked { .. } => 0,
+        }
+    }
+
+    /// What the dressing's stream of this source holds beyond the tensor.
+    fn dress_stream_bytes(&self) -> usize {
+        self.packed_stream_bytes(DRESS_K_BLOCK)
+    }
+
+    /// What DF-J's packed stream of this source holds, once it owns it.
+    fn df_j_stream_bytes(&self) -> usize {
+        self.packed_stream_bytes(self.packed_stream_rows(df_chunk_width(self.nao)))
+    }
+
+    /// Stream the tensor as unpacked `(q, nao²)` blocks of [`DRESS_K_BLOCK`] rows
+    /// on the grid the in-core fast path uses, whatever the backend. Holds one
+    /// unpacked block plus a short read-ahead, not this source's own full block.
+    fn for_each_dress_k_block(
+        &mut self,
+        mut f: impl FnMut(usize, ndarray::ArrayView2<'_, f64>) -> Result<(), FerricError>,
+    ) -> Result<(), FerricError> {
+        let (nao, band) = (self.nao, self.band_naux());
+        if let Some(flat) = self.incore_flat() {
+            for q0 in (0..band).step_by(DRESS_K_BLOCK) {
+                let q1 = (q0 + DRESS_K_BLOCK).min(band);
+                f(q0, flat.slice(ndarray::s![q0..q1, ..]))?;
+            }
+            return Ok(());
+        }
+        let pair = packed_pair_len(nao);
+        let mut scratch = Array3::<f64>::zeros((DRESS_K_BLOCK.min(band.max(1)), nao, nao));
+        self.for_each_packed_rows(DRESS_K_BLOCK, |blk| {
+            let rows = blk.data.nrows();
+            let src = blk
+                .data
+                .as_slice()
+                .ok_or_else(|| FerricError::General("packed block: non-contiguous".into()))?;
+            for l in (0..rows).step_by(DRESS_K_BLOCK) {
+                let b = DRESS_K_BLOCK.min(rows - l);
+                unpack_lower_triangle(&src[l * pair..(l + b) * pair], nao, b, &mut scratch);
+                let flat = scratch
+                    .slice(ndarray::s![0..b, .., ..])
+                    .into_shape_with_order((b, nao * nao))
+                    .map_err(|e| FerricError::General(format!("raw reshape: {e}")))?;
+                f(blk.p0 + l, flat)?;
+            }
+            Ok(())
+        })
     }
 
     /// True when the whole band is resident (no disk spill).
@@ -1703,6 +1795,15 @@ impl ThreeIndexSource {
     ) -> Result<(), FerricError> {
         let align = align.max(1);
         let rows = self.packed_stream_rows(align);
+        self.for_each_packed_rows(rows, f)
+    }
+
+    /// [`Self::for_each_packed_block`] at an explicit block height.
+    fn for_each_packed_rows(
+        &mut self,
+        rows: usize,
+        f: impl FnMut(PackedBlock<'_>) -> Result<(), FerricError>,
+    ) -> Result<(), FerricError> {
         let (band, band_p0, nao) = (self.band_naux(), self.band_p0, self.nao);
         // The read-ahead pipeline holds up to three blocks (one consumed, one
         // queued, one being read) and the recompute backend one unpacked block
@@ -2441,171 +2542,6 @@ mod tests {
     /// boundary. If a specific system/functional shows more, suspect that SCF,
     /// not the tensor — and check it in-core by perturbing `diis_size` first.
     ///
-    /// The memory cut under the spilled dressing must not move a bit. The
-    /// reference is the historical loop, written out here: one `accum` and one
-    /// `contrib` per `block_naux` output rows, `accum` then packed.
-    ///
-    /// Widths are chosen to exercise what could go wrong: odd blocks, multiples
-    /// of 64, tails of 1 and of 63 rows after the 64-row split, and a piece
-    /// narrower than the block.
-    #[test]
-    fn spilled_dressing_split_is_bit_identical_to_the_whole_block() {
-        let mol = Molecule::load_xyz("../../testdata/molecules/benzene.xyz").unwrap();
-        let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
-        let aux = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
-        let op = Operator::coulomb();
-        let (naux, nao) = (aux.nbasis(), obs.nbasis());
-        let row = nao * nao * 8;
-        let pair = packed_pair_len(nao);
-        let mut m = Array2::<f64>::zeros((naux, naux));
-        for i in 0..naux {
-            for j in 0..naux {
-                m[(i, j)] = if i == j {
-                    1.5
-                } else {
-                    0.01 / ((i as f64 - j as f64).abs() + 1.0)
-                };
-            }
-        }
-        // Q-block width is the GEMM's k, and a split may only perturb a product
-        // whose k crosses BLAS's internal blocking, so a narrow k alone could
-        // hide a defect. Production streams ~1000 rows at C48, or the whole band
-        // from an in-core raw tensor.
-        let spilled = |rows: usize| {
-            let tier = jk_storage::Tier::Spill;
-            ThreeIndexSource::build_band_tier(op, &obs, &aux, rows * row * 2, (0, naux), None, tier)
-                .unwrap()
-        };
-        let in_core = ThreeIndexSource::build(op, &obs, &aux, usize::MAX / 4).unwrap();
-        let mut raws = [spilled(60), spilled(300), in_core];
-        assert!(raws[0].is_spilled_for_test() && raws[1].is_spilled_for_test());
-        assert!(raws[2].is_incore(), "the widest k is the in-core raw");
-        assert!(naux > 300, "the middle raw must have a 300-row k");
-
-        let whole_block = |raw: &mut ThreeIndexSource, width: usize| -> Vec<f64> {
-            let mut out = vec![0.0f64; naux * pair];
-            let mut p0 = 0;
-            while p0 < naux {
-                let p1 = (p0 + width).min(naux);
-                let b = p1 - p0;
-                let mut accum = Array3::<f64>::zeros((b, nao, nao));
-                raw.for_each_block(|rb| {
-                    let rb_b = rb.data.shape()[0];
-                    let flat = rb.data.into_shape_with_order((rb_b, nao * nao)).unwrap();
-                    let msub = m.slice(ndarray::s![p0..p1, rb.p0..rb.p0 + rb_b]);
-                    let contrib = msub.dot(&flat);
-                    let mut acc = accum
-                        .view_mut()
-                        .into_shape_with_order((b, nao * nao))
-                        .unwrap();
-                    acc += &contrib;
-                    Ok(())
-                })
-                .unwrap();
-                pack_lower_triangle(&accum.view(), nao, &mut out[p0 * pair..p1 * pair]);
-                p0 = p1;
-            }
-            out
-        };
-
-        let mut split_seen = 0usize;
-        for raw in raws.iter_mut() {
-            // Diagnostic only, since it depends on the BLAS kernel: does an ODD split
-            // move bits at this k? If it never does here, this test cannot see one.
-            let whole = whole_block(raw, naux);
-            let mut odd = vec![0.0f64; naux * pair];
-            for l in (0..naux).step_by(65) {
-                let r = (l + 65).min(naux);
-                let mut acc = Array3::<f64>::zeros((r - l, nao, nao));
-                raw.for_each_block(|rb| {
-                    let rb_b = rb.data.shape()[0];
-                    let flat = rb.data.into_shape_with_order((rb_b, nao * nao)).unwrap();
-                    let msub = m.slice(ndarray::s![l..r, rb.p0..rb.p0 + rb_b]);
-                    let contrib = msub.dot(&flat);
-                    let mut a = acc
-                        .view_mut()
-                        .into_shape_with_order((r - l, nao * nao))
-                        .unwrap();
-                    a += &contrib;
-                    Ok(())
-                })
-                .unwrap();
-                pack_lower_triangle(&acc.view(), nao, &mut odd[l * pair..r * pair]);
-            }
-            let odd_moved = whole
-                .iter()
-                .zip(&odd)
-                .filter(|(a, b)| a.to_bits() != b.to_bits())
-                .count();
-            eprintln!(
-                "q_block={} odd-65-split moved {odd_moved}/{} elements",
-                raw.block_naux(),
-                whole.len()
-            );
-            for (width, piece) in [
-                (129, 64),
-                (129, 128),
-                (193, 128), // tail of 1 row after the split
-                (127, 64),  // tail of 63 rows
-                (200, 64),
-                (151, 64),
-                (65, 64),
-                (40, 64), // below one block: the historical shape, unsplit
-            ] {
-                let reference = whole_block(raw, width);
-                let mut got = vec![0.0f64; naux * pair];
-                let mut p0 = 0;
-                while p0 < naux {
-                    let p1 = (p0 + width).min(naux);
-                    let edges = dress_row_edges(p1 - p0, piece);
-                    split_seen += usize::from(edges.len() > 1);
-                    for (a0, a1) in edges {
-                        let packed = dress_rows_packed(raw, &m, (p0 + a0, p0 + a1)).unwrap();
-                        got[(p0 + a0) * pair..(p0 + a1) * pair]
-                            .copy_from_slice(packed.as_slice().unwrap());
-                    }
-                    p0 = p1;
-                }
-                let differ = reference
-                    .iter()
-                    .zip(&got)
-                    .filter(|(a, b)| a.to_bits() != b.to_bits())
-                    .count();
-                assert_eq!(
-                    differ, 0,
-                    "width={width} piece={piece}: {differ} elements moved"
-                );
-            }
-        }
-        assert!(
-            split_seen >= 8,
-            "too few splits ({split_seen}) to prove anything"
-        );
-
-        // End to end, through the file format and the budget-derived width.
-        let width = 151;
-        let raw = &mut raws[1];
-        let mut dressed = ThreeIndexSource::build_dressed(raw, &m, width * row).unwrap();
-        assert!(dressed.is_spilled_for_test());
-        assert_eq!(dressed.block_naux(), width, "read-back width must not move");
-        let reference = whole_block(raw, width);
-        let mut got = vec![0.0f64; naux * pair];
-        dressed
-            .for_each_block(|blk| {
-                let b = blk.data.shape()[0];
-                pack_lower_triangle(&blk.data, nao, &mut got[blk.p0 * pair..(blk.p0 + b) * pair]);
-                Ok(())
-            })
-            .unwrap();
-        assert!(
-            reference
-                .iter()
-                .zip(&got)
-                .all(|(a, b)| a.to_bits() == b.to_bits()),
-            "the spilled dressed tensor moved"
-        );
-    }
-
     /// A spilled raw source with an output that fits in core takes the blocked
     /// in-core path (`jk_storage = "disk"` reaches it). It must agree with the
     /// fast path to a few ulp: the two sum in differently sized pieces.
@@ -2657,83 +2593,6 @@ mod tests {
             worst <= 64.0 * f64::EPSILON * big,
             "deviates by {worst:.3e}"
         );
-    }
-
-    /// The bare product behind the spilled dressing's split, at the k the real
-    /// fixture cannot reach (C48 streams ~1000 rows per Q block). No integrals,
-    /// so it can afford production-sized k.
-    ///
-    /// The odd-split count is printed, not asserted: whether it moves bits
-    /// depends on the BLAS kernel. A split `dress_row_edges` can produce must be
-    /// exact whatever the kernel does with an odd one.
-    ///
-    /// Measured 2026-10-30: an odd split moved 0 elements at every shape here,
-    /// so the odd-split perturbation `DRESS_ROW_BLOCK` records did not reproduce
-    /// on that box, and on such a kernel this test cannot fail on alignment.
-    #[test]
-    fn dress_row_edges_splits_are_exact_at_production_k() {
-        let mut state = 0x2545_f491_4f6c_dd1du64;
-        let mut next = move || {
-            state ^= state << 13;
-            state ^= state >> 7;
-            state ^= state << 17;
-            (state >> 11) as f64 / (1u64 << 53) as f64 - 0.5
-        };
-        let cols = 2000;
-        for &(rows, k) in &[(558usize, 558usize), (559, 558), (1021, 1020), (1085, 1020)] {
-            let a = Array2::from_shape_simple_fn((rows, k), &mut next);
-            let b = Array2::from_shape_simple_fn((k, cols), &mut next);
-            let whole = a.dot(&b);
-            let moved = |edges: &[(usize, usize)]| -> usize {
-                let mut n = 0;
-                for &(l, r) in edges {
-                    let part = a.slice(ndarray::s![l..r, ..]).dot(&b);
-                    let full = whole.slice(ndarray::s![l..r, ..]);
-                    n += part
-                        .iter()
-                        .zip(full.iter())
-                        .filter(|(x, y)| x.to_bits() != y.to_bits())
-                        .count();
-                }
-                n
-            };
-            let odd: Vec<_> = (0..rows)
-                .step_by(65)
-                .map(|l| (l, (l + 65).min(rows)))
-                .collect();
-            eprintln!("rows={rows} k={k} odd-65-split moved {}", moved(&odd));
-            for step in [64, 128, 320] {
-                let n = moved(&dress_row_edges(rows, step));
-                assert_eq!(n, 0, "rows={rows} k={k} step={step}: {n} elements moved");
-            }
-        }
-    }
-
-    /// The measured C48/6-31G shape from the 6 GiB run that reached RSS 14 GB:
-    /// the dressing phase must now fit, with the read-back block reported.
-    #[test]
-    fn spilled_dressing_phase_honours_the_budget_at_the_measured_shape() {
-        let (nao, naux) = (628usize, 5370usize);
-        let budget = 6_442_450_944usize;
-        let raw_rows = spill_block_naux_for(budget, nao);
-        let raw_bytes = raw_rows * (nao * nao + packed_pair_len(nao)) * 8;
-        let m_bytes = naux * naux * 8;
-        let avail = budget - raw_bytes - m_bytes;
-        let accum = spilled_accum_rows(avail, nao);
-        assert!(accum > DRESS_ROW_BLOCK, "the floor must not be what fits");
-
-        let full_read = block_naux_for(budget, nao);
-        let piece = accum + DRESS_ROW_BLOCK - 1;
-        let report = spilled_dressing_report(budget, (raw_bytes, m_bytes), (piece, full_read), nao)
-            .expect("the unchanged read-back width overshoots and must be reported");
-        assert!(report.contains("read-back"), "{report}");
-        assert!(!report.contains("DF dressing (spilled)"), "{report}");
-
-        // An accumulator of everything available leaves no room for `contrib`,
-        // so the check can fail and the sizing is what makes it pass.
-        let over = avail / (packed_pair_len(nao) * 8);
-        let report = spilled_dressing_report(budget, (raw_bytes, m_bytes), (over, 1), nao).unwrap();
-        assert!(report.contains("DF dressing (spilled)"), "{report}");
     }
 
     #[test]
@@ -3033,17 +2892,80 @@ mod tests {
         // GEMM scratch the old gate ignored entirely.
         let band_bytes = naux * nao * nao * 8;
         let mut raw2 = ThreeIndexSource::build(op, &obs, &dfbs, ample).unwrap();
-        let err = ThreeIndexSource::build_dressed(&mut raw2, &m, band_bytes)
-            .expect_err("band + per-worker scratch exceeds a band-sized budget");
-        let msg = err.to_string();
+        let dressed = ThreeIndexSource::build_dressed(&mut raw2, &m, band_bytes)
+            .expect("a band the fast path cannot hold spills instead of refusing");
+        assert!(dressed.is_spilled_for_test(), "must have spilled");
+    }
+
+    /// The read-back width at the measured C48/6-31G 6 GiB shape: everything the
+    /// SCF holds must fit, and the width must not read the thread count.
+    #[test]
+    fn read_width_fits_the_budget_with_df_j_counted_and_ignores_threads() {
+        let (nao, naux) = (628usize, 5370usize);
+        let budget = 6_442_450_944usize;
+        let pair = packed_pair_len(nao);
+        let df_j = 3 * ((PACKED_STREAM_BLOCK_CAP_BYTES / (pair * 8)) / 6 * 6) * pair * 8;
+        let rows = spilled_read_rows(budget, (0, df_j), nao, naux);
+        let held = rows * (nao * nao + pair) * 8 + df_j + df_k_band_bytes(budget);
+        assert!(held <= budget, "read-back holds {held} of {budget}");
         assert!(
-            msg.contains("DF dressing (in-core)"),
-            "must name the stage: {msg}"
+            (budget - held) < 2 * df_chunk_width(nao) * (nao * nao + pair) * 8,
+            "the width must be as wide as fits, or it is not what makes this pass"
+        );
+        assert_eq!(
+            rows % (2 * df_chunk_width(nao)),
+            0,
+            "chunks must fall as in core"
         );
         assert!(
-            msg.contains("dressing GEMM contrib"),
-            "the breakdown must name the previously-uncharged per-worker term: {msg}"
+            spilled_read_rows(budget, (0, 2 * df_j), nao, naux) < rows,
+            "DF-J's stream must narrow the block"
         );
+        let report = spilled_dressing_report(
+            budget,
+            (0, 3 * DRESS_K_BLOCK * pair * 8, naux * naux * 16),
+            (64, rows, df_j),
+            (naux, nao),
+        );
+        assert!(report.is_none(), "{report:?}");
+
+        for threads in [1, 4] {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .unwrap();
+            let w = pool.install(|| spilled_read_rows(budget, (0, df_j), nao, naux));
+            assert_eq!(w, rows, "width moved at {threads} threads");
+        }
+    }
+
+    /// A shape that cannot fit, even at the floors, must say so.
+    #[test]
+    fn a_budget_below_the_floor_is_reported_in_both_phases() {
+        let (nao, naux) = (628usize, 5370usize);
+        let row = nao * nao * 8;
+        let budget = row; // one row of the tensor
+        let rows = spilled_read_rows(budget, (0, 0), nao, naux);
+        assert_eq!(rows, 2 * df_chunk_width(nao), "the floor is what is left");
+        let report = spilled_dressing_report(budget, (0, 0, 0), (64, rows, 0), (naux, nao))
+            .expect("must be reported");
+        assert!(report.contains("DF dressing (spilled)"), "{report}");
+        assert!(report.contains("read-back"), "{report}");
+    }
+
+    /// InCore raw held beside a spilled dressed tensor is a real overshoot and
+    /// must be counted, as must the metric.
+    #[test]
+    fn the_report_counts_resident_raw_and_the_metric() {
+        let (nao, naux) = (100usize, 200usize);
+        let row = nao * nao * 8;
+        let budget = 400 * row;
+        let fits = spilled_dressing_report(budget, (0, 0, 0), (64, 10, 0), (naux, nao));
+        assert!(fits.is_none(), "{fits:?}");
+        let raw = spilled_dressing_report(budget, (budget, 0, 0), (64, 10, 0), (naux, nao));
+        assert!(raw.is_some_and(|r| r.contains("raw tensor resident")));
+        let metric = spilled_dressing_report(budget, (0, 0, budget), (64, 10, 0), (naux, nao));
+        assert!(metric.is_some_and(|r| r.contains("dressing metric")));
     }
 
     // ------------------------------------------------------------------

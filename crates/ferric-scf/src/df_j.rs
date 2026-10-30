@@ -253,7 +253,7 @@ impl DfJ<'_> {
 /// non-trivial contraction even for small n, capped so per-chunk scratch stays
 /// modest for large n.
 fn chunk_width(n: usize) -> usize {
-    (4096 / n.max(1)).clamp(4, 64)
+    ferric_integrals::three_index_source::df_chunk_width(n)
 }
 
 /// Weights `w` such that `Σ_{μν} B[μν] D[μν] = Σ_k Bp[k] w[k]` for any

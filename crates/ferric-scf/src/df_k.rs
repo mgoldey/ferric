@@ -303,7 +303,7 @@ impl DfK<'_> {
         // Aux-chunk width: wide enough that the (n, c·n)×(c·n, n) contraction
         // below runs at BLAS3 efficiency even for small n, capped so per-task
         // scratch (3·c·n² doubles) stays modest for large n.
-        let chunk = (4096 / n.max(1)).clamp(4, 64);
+        let chunk = ferric_integrals::three_index_source::df_chunk_width(n);
         self.dressed.for_each_block(|blk| {
             let b = blk.data.shape()[0];
             // Contract this block in rayon-parallel aux-chunks, each collapsing
@@ -450,7 +450,7 @@ impl DfK<'_> {
         // Aux-chunk width: same BLAS3-efficiency vs per-task-scratch tradeoff as
         // `build`, but the half-transform scratch scales with nocc, not n, so the
         // trailing GEMM operand is (c·nocc) wide.
-        let chunk = (4096 / n.max(1)).clamp(4, 64);
+        let chunk = ferric_integrals::three_index_source::df_chunk_width(n);
         self.dressed.for_each_block(|blk| {
             let b = blk.data.shape()[0];
             let n_chunks = b.div_ceil(chunk);

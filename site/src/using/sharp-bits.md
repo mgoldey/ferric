@@ -204,8 +204,9 @@ cache, MO-transformed RI blocks, and the large tensors of the MP2, RPA, GW
 and CC methods. Two such allocations alive at the same time therefore cannot
 each claim the whole budget. Nothing else is charged: basis-sized matrices
 (Fock, density, DIIS history), integral engines, BLAS and per-thread scratch,
-allocator overhead. The spill path's two scratch blocks are reported but not
-refused, and together they can reach about twice the budget.
+allocator overhead. The spilled RI-JK path sizes its dressing and read-back
+widths to the budget, with floors of a few hundred aux rows. A budget below
+those floors overshoots with a warning that says which phase and by how much.
 
 When a charged allocation does not fit, the result depends on the allocation:
 
@@ -217,12 +218,28 @@ When a charged allocation does not fit, the result depends on the allocation:
   reread on every iteration, or recomputed on every iteration without
   writing anything. `auto` chooses between those two from a rate measured on
   the machine; `[scf] jk_storage` forces `memory`, `disk` or `direct`.
+  Holding the K dressing to a small budget takes several passes over the raw
+  tensor, and a run making many says so. At `OPENBLAS_NUM_THREADS=1` the
+  dressed tensor and K do not depend on whether they spilled, so running short
+  of memory costs IO, not bits. With threaded BLAS that does not hold.
+- A dressed tensor that fits the budget but not beside the resident raw tensor
+  spills instead of stopping the job.
+- A DF-guess pre-stage that runs out of memory is abandoned with a warning, and
+  the SCF starts from its usual guess. An explicit `jk_storage = "memory"` that
+  does not fit, and any memory failure under MPI, stop the job instead.
 - The DFT grid AO cache is recomputed at every Fock build instead of stored.
   The energy is bit-identical.
 - An allocation with no fallback stops the job with an error naming it. For
   some methods this check comes after the SCF. Benzene RI-MP2/def2-SVP with
   `budget_gb = 0.001` completes the SCF, then exits with
   `RI-MP2 MO-side blocks ... requires 0.01 GB; budget is 0.00 GB`.
+
+**Changed once for spilled and recomputed RI-JK runs:** adopting the widths above
+moved energies by at most 2.84e-13 Ha against the previous build (water/cc-pVDZ
+and butane/6-31G, forced to spill or recompute, `OPENBLAS_NUM_THREADS=1`). In-core
+and exact runs did not move. Iteration counts matched, except water/cc-pVDZ under
+`jk_storage = "direct"`, which went from 13 to 11; that case already varied
+between 11 and 13 from run to run at 2 threads on the previous build.
 
 Some stages print a warning when resident memory passes 110% of the budget.
 The warning never stops the run.

@@ -251,7 +251,8 @@ pub struct DfGuessResult {
     /// pre-stage did not run (see `fallback`).
     pub df_energy: f64,
     /// `Some(reason)` when the pre-stage ran out of memory and the exact stage
-    /// started from its own guess instead. `df_iterations` is then 0.
+    /// started from its own guess instead. It may have failed mid-iteration, so
+    /// `df_iterations` = 0 means "no pre-stage density was used", not "no DF work".
     pub fallback: Option<String>,
 }
 
@@ -361,9 +362,10 @@ const DF_GUESS_ENERGY_CONV_FLOOR: f64 = 1e-2;
 ///
 /// The pre-stage only ever chooses a starting density, so a run must not die for
 /// want of memory for it: on [`FerricError::MemoryExhausted`] this warns and runs
-/// the exact stage from the guess `base` would otherwise use, which reaches the
-/// same fixed point. Any other pre-stage error propagates, and so does any error
-/// from the exact stage itself.
+/// the exact stage from the guess `base` would otherwise use. Any other pre-stage
+/// error propagates, and so does any error from the exact stage itself. Under
+/// MPI memory failure stays a hard error too: one rank falling back while the
+/// others sit in DF collectives would hang the job.
 pub fn solve_rhf_with_df_guess(
     ctx: &ParallelContext,
     mol: &Molecule,
@@ -375,7 +377,7 @@ pub fn solve_rhf_with_df_guess(
 ) -> Result<DfGuessResult, FerricError> {
     match run_df_guess_pre_stage(ctx, mol, prep, op, bounds, base, df_aux) {
         Ok(df) => solve_rhf_from_df_density(ctx, mol, prep, op, bounds, base, df),
-        Err(FerricError::MemoryExhausted(reason)) => {
+        Err(FerricError::MemoryExhausted(reason)) if ctx.size <= 1 => {
             solve_rhf_without_df_guess(ctx, mol, prep, op, bounds, base, reason)
         }
         Err(e) => Err(e),
@@ -423,14 +425,17 @@ fn solve_rhf_without_df_guess(
 ) -> Result<DfGuessResult, FerricError> {
     let guess = if base.init_guess_density.is_some() {
         "the supplied density"
+    } else if base.guess_basis.is_some() {
+        "the secondary-basis guess"
     } else if base.use_sad_guess {
         "the MINAO guess"
     } else {
         "the hcore guess"
     };
     eprintln!(
-        "[ferric] WARNING: DF-guess pre-stage ran out of memory; skipping it and starting the \
-         SCF from {guess}. Same converged energy, possibly more iterations.\n{reason}"
+        "[ferric] WARNING: DF-guess pre-stage ran out of memory and its density is unused; \
+         starting the SCF from {guess}. It may take more iterations, and an SCF with several \
+         solutions may reach a different one.\n{reason}"
     );
     if let Some(rl) = crate::runlog::log() {
         rl.note(

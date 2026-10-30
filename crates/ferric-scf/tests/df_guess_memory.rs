@@ -161,3 +161,29 @@ fn a_run_where_the_guess_works_is_bit_identical_under_an_ample_pool() {
     assert_eq!(free_run.df_iterations, pooled.df_iterations);
     assert_eq!(free_run.df_energy.to_bits(), pooled.df_energy.to_bits());
 }
+
+/// Under MPI a memory failure must stay a hard error: one rank falling back while
+/// the others sit in DF collectives would hang the job.
+#[cfg(not(feature = "mpi"))]
+#[test]
+fn under_mpi_a_memory_failure_of_the_guess_stays_an_error() {
+    let _s = slot();
+    let (mol, prep) = water();
+    let needed = tensor_bytes(&mol, &prep);
+    let op = Operator::coulomb();
+    let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+    let cfg = RhfConfig {
+        three_index_budget_bytes: needed * 4,
+        ..Default::default()
+    };
+    // Two ranks' worth of band, on a pool too small for even one raw tensor.
+    let ctx = ParallelContext { rank: 0, size: 2 };
+    install_global(MemoryPool::with_capacity_bytes(needed / 8));
+    let got = solve_rhf_with_df_guess(&ctx, &mol, &prep, op, &bounds, &cfg, None);
+    clear_global();
+    assert!(
+        matches!(got, Err(FerricError::MemoryExhausted(_))),
+        "must not fall back alone under MPI: {:?}",
+        got.map(|r| r.fallback)
+    );
+}
