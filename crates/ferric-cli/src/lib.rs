@@ -468,6 +468,14 @@ pub fn run(args: Vec<String>) {
         None => ferric_scf::runlog::disable(),
     }
 
+    // Whole-run precision provenance: every mixed-precision kernel call from
+    // here to the end of the run, whichever method (or helper that bypasses a
+    // method's own record) made it. Written at `run_end` (`extra.precision`)
+    // or, for a run that returns before it, as a `precision` note
+    // (`note_run_precision`), so the log can never say f64 when a mixed
+    // kernel ran.
+    let run_probe = ferric_core::gpu::provenance::PrecisionProbe::start();
+
     // `[cell]`: a periodic system. `load_config` already resolved and
     // validated the whole run into `cfg.periodic` (unsupported kinds, meshes
     // and tasks, and every key the periodic path would ignore, are refused
@@ -904,23 +912,29 @@ pub fn run(args: Vec<String>) {
     // `Config::dispatch_kind`.
     let method = cfg.dispatch_kind(mol.multiplicity);
 
+    // The runs below return before this function's `run_end`; each writes
+    // the whole-run `precision` note instead.
     if task == "optimize" {
         run_optimize(method, &cfg, &ctx, &mol, &bs, op, &rhf_config, budget_bytes);
+        note_run_precision(&run_probe);
         return;
     }
 
     if task == "frequencies" {
         run_frequencies(method, &cfg, &ctx, &mol, &bs, op, &rhf_config);
+        note_run_precision(&run_probe);
         return;
     }
 
     if method == "uhf" {
         run_uhf(&cfg, &ctx, &mol, &bs, op, &prep, &bounds, &rhf_config);
+        note_run_precision(&run_probe);
         return;
     }
 
     if method == "rohf" {
         run_rohf(&cfg, &ctx, &mol, &bs, op, &prep, &bounds, &rhf_config);
+        note_run_precision(&run_probe);
         return;
     }
 
@@ -947,6 +961,7 @@ pub fn run(args: Vec<String>) {
             &rhf_config,
             budget_bytes,
         );
+        note_run_precision(&run_probe);
         return;
     }
     if matches!(method, "b2plyp" | "dsd-pbep86") {
@@ -961,6 +976,7 @@ pub fn run(args: Vec<String>) {
             budget_bytes,
             method,
         );
+        note_run_precision(&run_probe);
         return;
     }
 
@@ -983,7 +999,17 @@ pub fn run(args: Vec<String>) {
     if rhf_config.symmetry {
         // `Config::validate_symmetry_keys` admitted only kind "rhf"/"ksdft" + energy
         // on a closed-shell singlet (RHF, or RKS when `rhf_config.xc` is set).
-        run_symmetric_rhf(&cfg, &ctx, &mol, &bs, &prep, op, &bounds, &rhf_config);
+        run_symmetric_rhf(
+            &cfg,
+            &ctx,
+            &mol,
+            &bs,
+            &prep,
+            op,
+            &bounds,
+            &rhf_config,
+            &run_probe,
+        );
         return;
     }
     let result = if method == "rhf" || method == "ksdft" {
@@ -1283,10 +1309,32 @@ pub fn run(args: Vec<String>) {
         if let (Some(f), Some(obj)) = (cosx_final, extra.as_object_mut()) {
             obj.insert("cosx_final_pass".to_string(), cosx_final_json(&f));
         }
-        // Precision provenance of the SCF (`ScfResult::precision`):
-        // `{"precision": "f64", "kernels": []}` for an all-f64 run.
-        extra["precision"] = scf_precision;
+        // Precision provenance of the WHOLE run (every kernel, every caller:
+        // the SCF, the method, and helpers such as SCS-MP2 or terfc RI-MP2
+        // that carry no record of their own), and of the SCF alone
+        // (`ScfResult::precision`). Both read
+        // `{"precision": "f64", "counter_scope": "process", "kernels": []}`
+        // for an all-f64 run.
+        extra["precision"] = run_precision_json(&run_probe);
+        extra["scf_precision"] = scf_precision;
         rl.run_end(energy, scf_converged, &format!("{scf_exit:?}"), extra);
+    }
+}
+
+/// The whole-run precision provenance record: every [`MixedKernel`] call
+/// since `run()` started `probe`, whoever made it.
+///
+/// [`MixedKernel`]: ferric_core::gpu::MixedKernel
+fn run_precision_json(probe: &ferric_core::gpu::provenance::PrecisionProbe) -> serde_json::Value {
+    probe.finish(&ferric_core::gpu::MixedKernel::ALL).to_json()
+}
+
+/// Runs that return before `run()`'s terminal `run_end` (open-shell
+/// UHF/UKS/ROHF/ROKS energies, `optimize`, `frequencies`, the double
+/// hybrids) write the whole-run precision record as a `precision` note.
+fn note_run_precision(probe: &ferric_core::gpu::provenance::PrecisionProbe) {
+    if let Some(rl) = ferric_scf::runlog::log() {
+        rl.note("precision", run_precision_json(probe));
     }
 }
 
@@ -1463,6 +1511,7 @@ fn run_symmetric_rhf(
     op: Operator,
     bounds: &SchwarzBounds,
     rhf_config: &RhfConfig,
+    run_probe: &ferric_core::gpu::provenance::PrecisionProbe,
 ) {
     let sym = ferric_scf::symmetric::solve_rhf_symmetric(ctx, mol, prep, op, bounds, rhf_config)
         .unwrap_or_else(|e| {
@@ -1503,7 +1552,8 @@ fn run_symmetric_rhf(
             "task": cfg.method.task,
             "scf_iterations": scf.iterations,
             "energy_is": "total",
-            "precision": scf.precision.to_json(),
+            "precision": run_precision_json(run_probe),
+            "scf_precision": scf.precision.to_json(),
             "symmetry": {
                 "point_group": sym.group(),
                 "max_symmetrization_shift_bohr": sym.max_symmetrization_shift(),

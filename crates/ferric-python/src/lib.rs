@@ -744,11 +744,13 @@ impl PyRhfResult {
     fn guess_basis(&self, py: Python<'_>) -> PyResult<Option<Py<pyo3::types::PyDict>>> {
         guess_basis_dict(py, self.scf_data.guess_basis.as_ref())
     }
-    /// Precision provenance of this SCF: `{"precision": "f64", "kernels": []}`
+    /// Precision provenance of this SCF: `{"precision": "f64", "counter_scope": "process", "kernels": []}`
     /// for an all-f64 run; otherwise one entry per mixed-precision kernel that
-    /// was allowed or ran (`kernel`, `requested`, `mode`, `device`,
-    /// `calls_mixed`, `calls_f64_fallback`, `ladder`, `error_bound`). See
-    /// `configure_precision`.
+    /// was allowed or ran (`kernel`, `requested`, `mode`, `device` (`None`
+    /// unless `calls_mixed > 0`), `calls_mixed`, `calls_f64_fallback`,
+    /// `ladder`, `error_bound`). `counter_scope = "process"`: the counts are
+    /// process-wide, so a concurrent calculation in this process is counted
+    /// too (sequential runs are exact). See `configure_precision`.
     #[getter]
     fn precision(&self, py: Python<'_>) -> PyResult<PyObject> {
         precision_dict(py, &self.scf_data.precision)
@@ -5796,7 +5798,7 @@ struct PyRiMp2Result {
 #[pymethods]
 impl PyRiMp2Result {
     /// Precision provenance of the MP2 correlation energy (the
-    /// `rimp2-energy` kernel): `{"precision": "f64", "kernels": []}` for an
+    /// `rimp2-energy` kernel): `{"precision": "f64", "counter_scope": "process", "kernels": []}` for an
     /// all-f64 run. See `RhfResult.precision` for the schema.
     #[getter]
     fn precision(&self, py: Python<'_>) -> PyResult<PyObject> {
@@ -10971,11 +10973,12 @@ fn parse_kernel_list(section: &str, ks: Vec<String>) -> PyResult<ferric_core::gp
 /// default) or `"mixed"`, `mixed_kernels` a list of kernel names (default: the
 /// kernels this build ships). Strict: an unknown value is a `ValueError`.
 ///
-/// The request is staged, not installed: it is installed together with the
-/// device settings by the next `configure_gpu(...)` (call this first; a
+/// The request is staged, not installed: only the next `configure_gpu(...)`
+/// installs it, together with the device settings (call this first; a
 /// `configure_gpu` `precision` / `mixed_kernels` alias that disagrees with it
-/// is a `ValueError`), or, without a `configure_gpu` call, at the first
-/// calculation that reads the settings. Call `configure_gpu()` with no
+/// is a `ValueError`). Until then every calculation raises `RuntimeError`
+/// ("configure_precision staged a request; call configure_gpu() to install
+/// it"). Call `configure_gpu()` with no
 /// arguments to install and check the combination now: `mode = "mixed"` with
 /// a device kernel needs a GPU mode, and with the GPU off only kernels with a
 /// CPU mixed path are accepted. After the settings are installed or read this

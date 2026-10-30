@@ -99,8 +99,9 @@ pub struct KernelRecord {
     pub requested: Precision,
     /// What ran: `Mixed` when at least one call ran mixed, else `F64`.
     pub mode: Precision,
-    /// Where the mixed calls ran.
-    pub device: KernelDevice,
+    /// Where the mixed calls ran: `None` when none did (`calls_mixed == 0`),
+    /// so the record never names a device that computed nothing in mixed.
+    pub device: Option<KernelDevice>,
     /// Calls that ran mixed.
     pub calls_mixed: u64,
     /// Calls (or parts of calls) that fell back to f64, per
@@ -145,24 +146,27 @@ impl PrecisionRecord {
         let parts: Vec<String> = self
             .kernels
             .iter()
-            .map(|k| {
-                format!(
-                    "{} {} on {}: {} mixed call(s)",
+            .map(|k| match &k.device {
+                Some(d) => format!(
+                    "{} {} on {d}: {} mixed call(s)",
                     k.kernel.name(),
                     k.mode,
-                    k.device,
                     k.calls_mixed
-                )
+                ),
+                None => format!("{} {}: 0 mixed calls", k.kernel.name(), k.mode),
             })
             .collect();
         format!("{} ({})", self.precision, parts.join("; "))
     }
 
     /// The record as JSON (CLI run log, Python): see the input reference for
-    /// the schema.
+    /// the schema. `counter_scope` is always `"process"`: the counts are
+    /// process-wide, so a calculation running CONCURRENTLY with this one in
+    /// the same process would be counted here too (sequential runs are exact).
     pub fn to_json(&self) -> serde_json::Value {
         serde_json::json!({
             "precision": self.precision.to_string(),
+            "counter_scope": COUNTER_SCOPE,
             "kernels": self.kernels.iter().map(KernelRecord::to_json).collect::<Vec<_>>(),
         })
     }
@@ -171,13 +175,14 @@ impl PrecisionRecord {
 impl KernelRecord {
     pub fn to_json(&self) -> serde_json::Value {
         let device = match &self.device {
-            KernelDevice::Cpu => serde_json::json!("cpu"),
-            KernelDevice::Gpu {
+            None => serde_json::Value::Null,
+            Some(KernelDevice::Cpu) => serde_json::json!("cpu"),
+            Some(KernelDevice::Gpu {
                 ordinal,
                 name,
                 cc_major,
                 cc_minor,
-            } => serde_json::json!({
+            }) => serde_json::json!({
                 "ordinal": ordinal,
                 "name": name,
                 "cc": format!("{cc_major}.{cc_minor}"),
@@ -236,18 +241,21 @@ fn has_ladder(k: MixedKernel) -> bool {
 fn no_bound_reason(k: MixedKernel) -> &'static str {
     match k {
         MixedKernel::RiMp2Energy => {
-            "no per-run bound is computed; the a-posteriori Cauchy-Schwarz energy bound \
-             is designed but not implemented. The kernel's measured error map and \
-             derived per-element bound are on the validation page"
+            "no per-run bound is computed (an a-posteriori Cauchy-Schwarz energy bound \
+             is designed but not implemented); the kernel's measured error map is on \
+             the validation page"
         }
         MixedKernel::XcVxc => {
-            "no per-run bound is computed; a converged SCF rebuilds the last mixed V_xc \
-             in f64 (ladder.exit_rebuilt_f64), so the mixed error enters the energy \
-             only through the convergence path. Measured error map on the validation page"
+            "no per-run bound is computed; ladder.exit_rebuilt_f64 counts the SCF exits \
+             whose last mixed V_xc was rebuilt in f64 (zero when the run did not \
+             converge). Measured error map on the validation page"
         }
         _ => "no per-run bound is computed; this kernel is not shipped and has no runtime bound",
     }
 }
+
+/// The `counter_scope` of every record: the counters are process-wide.
+pub const COUNTER_SCOPE: &str = "process";
 
 /// A snapshot of the per-kernel counters at the start of a method.
 #[derive(Debug, Clone)]
@@ -285,10 +293,10 @@ impl PrecisionProbe {
             if !allowed && !d.any() {
                 continue;
             }
-            let device = match (&gpu, k.runs_on_cpu()) {
+            let device = (d.mixed > 0).then(|| match (&gpu, k.runs_on_cpu()) {
                 (Some(g), false) => g.clone(),
                 _ => KernelDevice::Cpu,
-            };
+            });
             kernels.push(KernelRecord {
                 kernel: k,
                 requested: if allowed {
@@ -337,7 +345,7 @@ mod tests {
         assert!(r.kernels.is_empty());
         assert_eq!(
             r.to_json(),
-            serde_json::json!({"precision": "f64", "kernels": []})
+            serde_json::json!({"precision": "f64", "counter_scope": "process", "kernels": []})
         );
         assert_eq!(r.summary(), "f64");
     }
@@ -385,7 +393,7 @@ mod tests {
         let kr = &r.kernels[0];
         assert_eq!(kr.kernel, k);
         assert_eq!(kr.mode, Precision::Mixed);
-        assert_eq!(kr.device, KernelDevice::Cpu);
+        assert_eq!(kr.device, Some(KernelDevice::Cpu));
         assert_eq!(kr.calls_mixed, 2);
         assert_eq!(kr.calls_f64_fallback, [0, 1, 0]);
         assert_eq!(kr.ladder, None, "cosx-kern has no ladder");
@@ -399,5 +407,21 @@ mod tests {
         assert_eq!(j["kernels"][0]["error_bound"]["kind"], "none_computed");
         // A second probe started now sees none of it.
         assert!(PrecisionProbe::start().finish(&[k]).kernels.is_empty());
+    }
+
+    /// A kernel listed with no mixed call names no device: the record never
+    /// claims a device computed something in mixed when nothing did.
+    #[test]
+    fn a_kernel_with_no_mixed_call_names_no_device() {
+        let k = MixedKernel::CcsdAmplitudes;
+        let probe = PrecisionProbe::start();
+        note_mixed_fallback(k, MixedFallback::CpuF64);
+        let r = probe.finish(&[k]);
+        assert_eq!(r.precision, Precision::F64);
+        assert_eq!(r.kernels[0].device, None);
+        assert_eq!(r.kernels[0].calls_f64_fallback, [0, 0, 1]);
+        let j = r.to_json();
+        assert!(j["kernels"][0]["device"].is_null());
+        assert_eq!(j["counter_scope"], "process");
     }
 }

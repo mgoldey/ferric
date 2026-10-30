@@ -62,7 +62,7 @@ fn f64_scf_results_carry_the_explicit_f64_record() {
     assert_eq!(r.precision, PrecisionRecord::f64());
     assert_eq!(
         r.precision.to_json(),
-        serde_json::json!({"precision": "f64", "kernels": []})
+        serde_json::json!({"precision": "f64", "counter_scope": "process", "kernels": []})
     );
 
     let ks = rhf(
@@ -129,7 +129,7 @@ fn cosx_f32_route_is_recorded_as_cpu_mixed_cosx_kern() {
         Precision::F64,
         "no setting asked for cosx-kern"
     );
-    assert_eq!(k.device, KernelDevice::Cpu);
+    assert_eq!(k.device, Some(KernelDevice::Cpu));
     // One K build per SCF iteration (plus at most a final rebuild); every one
     // computes f32 units on water/SVP at multiplier 1e5.
     assert!(

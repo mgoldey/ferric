@@ -137,11 +137,14 @@ def configure_precision(
 
     ``mode`` is ``"f64"`` (default) or ``"mixed"``; ``mixed_kernels`` lists
     kernel names, one per item (default: the kernels this build ships).
-    The request is staged and installed with the device settings by the next
-    ``configure_gpu(...)`` (call this first), or at the first calculation.
-    Call ``configure_gpu()`` with no arguments to install and check it now:
-    with the GPU off, only kernels with a CPU mixed path are accepted.
-    Returns ``{"mode": str | None, "mixed_kernels": list[str] | None}``.
+    The request is staged; only the next ``configure_gpu(...)`` installs it,
+    together with the device settings (call this first). Until then every
+    calculation raises ``RuntimeError("... configure_precision staged a
+    request; call configure_gpu() to install it")``: a staged request is never
+    dropped and never resolved implicitly. Call ``configure_gpu()`` with no
+    arguments to install and check it with the GPU off: only kernels with a
+    CPU mixed path are accepted then. Returns
+    ``{"mode": str | None, "mixed_kernels": list[str] | None}``.
 
     Raises:
         ValueError: an unknown mode or kernel name, an empty list, a comma
@@ -795,11 +798,15 @@ class RhfResult:
 
     @property
     def precision(self) -> dict[str, Any]:
-        """Precision provenance: ``{"precision": "f64" | "mixed", "kernels": [...]}``,
-        one kernel entry per mixed-precision kernel allowed or run (``kernel``,
-        ``requested``, ``mode``, ``device``, ``calls_mixed``,
-        ``calls_f64_fallback``, ``ladder``, ``error_bound``). An all-f64 run is
-        ``{"precision": "f64", "kernels": []}``."""
+        """Precision provenance: ``{"precision": "f64" | "mixed",
+        "counter_scope": "process", "kernels": [...]}``, one kernel entry per
+        mixed-precision kernel allowed or run (``kernel``, ``requested``,
+        ``mode``, ``device`` (``None`` unless ``calls_mixed > 0``),
+        ``calls_mixed``, ``calls_f64_fallback``, ``ladder``, ``error_bound``).
+        ``counter_scope`` is ``"process"``: the counts are process-wide, so a
+        calculation running concurrently in this process is counted too
+        (sequential runs are exact). An all-f64 run is
+        ``{"precision": "f64", "counter_scope": "process", "kernels": []}``."""
         ...
 
     @property
@@ -906,11 +913,15 @@ class UhfResult:
 
     @property
     def precision(self) -> dict[str, Any]:
-        """Precision provenance: ``{"precision": "f64" | "mixed", "kernels": [...]}``,
-        one kernel entry per mixed-precision kernel allowed or run (``kernel``,
-        ``requested``, ``mode``, ``device``, ``calls_mixed``,
-        ``calls_f64_fallback``, ``ladder``, ``error_bound``). An all-f64 run is
-        ``{"precision": "f64", "kernels": []}``."""
+        """Precision provenance: ``{"precision": "f64" | "mixed",
+        "counter_scope": "process", "kernels": [...]}``, one kernel entry per
+        mixed-precision kernel allowed or run (``kernel``, ``requested``,
+        ``mode``, ``device`` (``None`` unless ``calls_mixed > 0``),
+        ``calls_mixed``, ``calls_f64_fallback``, ``ladder``, ``error_bound``).
+        ``counter_scope`` is ``"process"``: the counts are process-wide, so a
+        calculation running concurrently in this process is counted too
+        (sequential runs are exact). An all-f64 run is
+        ``{"precision": "f64", "counter_scope": "process", "kernels": []}``."""
         ...
 
     @property
@@ -1390,11 +1401,15 @@ class RiMp2Result:
 
     @property
     def precision(self) -> dict[str, Any]:
-        """Precision provenance: ``{"precision": "f64" | "mixed", "kernels": [...]}``,
-        one kernel entry per mixed-precision kernel allowed or run (``kernel``,
-        ``requested``, ``mode``, ``device``, ``calls_mixed``,
-        ``calls_f64_fallback``, ``ladder``, ``error_bound``). An all-f64 run is
-        ``{"precision": "f64", "kernels": []}``."""
+        """Precision provenance: ``{"precision": "f64" | "mixed",
+        "counter_scope": "process", "kernels": [...]}``, one kernel entry per
+        mixed-precision kernel allowed or run (``kernel``, ``requested``,
+        ``mode``, ``device`` (``None`` unless ``calls_mixed > 0``),
+        ``calls_mixed``, ``calls_f64_fallback``, ``ladder``, ``error_bound``).
+        ``counter_scope`` is ``"process"``: the counts are process-wide, so a
+        calculation running concurrently in this process is counted too
+        (sequential runs are exact). An all-f64 run is
+        ``{"precision": "f64", "counter_scope": "process", "kernels": []}``."""
         ...
 
     @property
@@ -1681,11 +1696,15 @@ class DftResult:
 
     @property
     def precision(self) -> dict[str, Any]:
-        """Precision provenance: ``{"precision": "f64" | "mixed", "kernels": [...]}``,
-        one kernel entry per mixed-precision kernel allowed or run (``kernel``,
-        ``requested``, ``mode``, ``device``, ``calls_mixed``,
-        ``calls_f64_fallback``, ``ladder``, ``error_bound``). An all-f64 run is
-        ``{"precision": "f64", "kernels": []}``."""
+        """Precision provenance: ``{"precision": "f64" | "mixed",
+        "counter_scope": "process", "kernels": [...]}``, one kernel entry per
+        mixed-precision kernel allowed or run (``kernel``, ``requested``,
+        ``mode``, ``device`` (``None`` unless ``calls_mixed > 0``),
+        ``calls_mixed``, ``calls_f64_fallback``, ``ladder``, ``error_bound``).
+        ``counter_scope`` is ``"process"``: the counts are process-wide, so a
+        calculation running concurrently in this process is counted too
+        (sequential runs are exact). An all-f64 run is
+        ``{"precision": "f64", "counter_scope": "process", "kernels": []}``."""
         ...
 
     @property

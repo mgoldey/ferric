@@ -5,7 +5,7 @@
 //! * No `[precision]`, `[precision] mode = "f64"` and the deprecated alias
 //!   `[gpu] precision = "f64"` give bit-identical energies (the JSON log's
 //!   shortest round-trip decimal, equal strings ⇔ equal bits) and every SCF /
-//!   RI-MP2 record reads `{"precision": "f64", "kernels": []}`.
+//!   RI-MP2 record reads `{"precision": "f64", "counter_scope": "process", "kernels": []}`.
 //! * Parsing is strict (unknown key, bad mode, bad / empty / comma-joined
 //!   kernel list).
 //! * The alias against the section: equal accepted (with the deprecation
@@ -98,7 +98,7 @@ fn water(kind: &str, extra: &str) -> String {
 }
 
 fn f64_record() -> serde_json::Value {
-    serde_json::json!({"precision": "f64", "kernels": []})
+    serde_json::json!({"precision": "f64", "counter_scope": "process", "kernels": []})
 }
 
 /// The energy as written (a string compare of serde_json's shortest
@@ -272,4 +272,97 @@ fn cpu_only_mixed_is_refused_for_device_kernels_with_the_reason() {
         "{}",
         stderr(&out)
     );
+}
+
+/// A mixed `rimp2-energy` request on this CPU build (`[gpu] mode = "auto"`,
+/// no device).
+const MIXED_RIMP2: &str = "[gpu]\nmode = \"auto\"\n[precision]\nmode = \"mixed\"\n\
+                           mixed_kernels = [\"rimp2-energy\"]\n";
+
+/// The `rimp2-energy` entry of a whole-run record, asserting the record's
+/// shape: f64 overall (nothing ran mixed without a device), the request
+/// recorded as mixed, the energy counted as run in f64 on the CPU, and no
+/// device named.
+fn assert_rimp2_requested_mixed_ran_f64(rec: &serde_json::Value, ctx: &str) {
+    assert_eq!(rec["precision"], "f64", "{ctx}: {rec}");
+    assert_eq!(rec["counter_scope"], "process", "{ctx}: {rec}");
+    let k = rec["kernels"]
+        .as_array()
+        .and_then(|ks| ks.iter().find(|k| k["kernel"] == "rimp2-energy"))
+        .unwrap_or_else(|| panic!("{ctx}: no rimp2-energy entry in {rec}"));
+    assert_eq!(k["requested"], "mixed", "{ctx}: {k}");
+    assert_eq!(k["mode"], "f64", "{ctx}: {k}");
+    assert_eq!(k["calls_mixed"], 0, "{ctx}: {k}");
+    assert!(
+        k["device"].is_null(),
+        "{ctx}: no mixed call, no device: {k}"
+    );
+    assert!(
+        k["calls_f64_fallback"]["cpu_f64"].as_u64().unwrap_or(0) > 0,
+        "{ctx}: the MP2 energy ran in f64 on the CPU and must be counted: {k}"
+    );
+}
+
+/// SCS-MP2 (like SCS-MP2(2terfc), terfc `att-rimp2` and the double hybrids)
+/// calls the RI-MP2 energy kernel directly, with no `RiMp2Result` record of
+/// its own. The run log's `run_end.extra.precision` is the WHOLE-RUN record,
+/// so it still lists the `rimp2-energy` request and the CPU f64 calls; the
+/// SCF-only record would list nothing and read as if no MP2 kernel had been
+/// asked for. The double hybrid `b2plyp` returns before `run_end` and writes
+/// the same whole-run record as a `precision` record.
+#[test]
+fn the_run_log_record_covers_mp2_kernels_with_no_record_of_their_own() {
+    let mp2 = "[mp2]\nauxbasis = \"cc-pvdz-ri\"\n";
+    let (out, recs) = run(
+        "whole_run_scs_mp2",
+        &water("scs-mp2", &format!("{mp2}{MIXED_RIMP2}")),
+        true,
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    let end = record(&recs, "run_end");
+    assert_rimp2_requested_mixed_ran_f64(&end["extra"]["precision"], "scs-mp2");
+    // The SCF's own record stays alongside: the SCF ran no MP2 kernel.
+    assert_eq!(
+        end["extra"]["scf_precision"],
+        f64_record(),
+        "{}",
+        end["extra"]
+    );
+
+    let (out, recs) = run(
+        "whole_run_b2plyp",
+        &water("b2plyp", &format!("{mp2}{MIXED_RIMP2}")),
+        true,
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_rimp2_requested_mixed_ran_f64(record(&recs, "precision"), "b2plyp");
+}
+
+/// Open-shell energies return before `run()`'s `run_end`: they write the
+/// whole-run record as a `precision` record.
+#[test]
+fn open_shell_runs_write_the_whole_run_precision_record() {
+    let oh = |kind: &str, extra: &str| {
+        format!(
+            "[molecule]\nxyz = \"testdata/molecules/oh.xyz\"\nmultiplicity = 2\n[basis]\n\
+             name = \"sto-3g\"\n[method]\nkind = \"{kind}\"\n{extra}"
+        )
+    };
+    for kind in ["uhf", "rohf"] {
+        let (out, recs) = run(&format!("open_shell_{kind}_f64"), &oh(kind, ""), true);
+        assert!(out.status.success(), "{kind}: {}", stderr(&out));
+        let p = record(&recs, "precision");
+        assert_eq!(p["precision"], "f64", "{kind}: {p}");
+        assert_eq!(p["counter_scope"], "process", "{kind}: {p}");
+        assert_eq!(p["kernels"], serde_json::json!([]), "{kind}: {p}");
+    }
+    // A UHF run under a mixed rimp2-energy request: the record lists the
+    // request (the SCF ran no MP2, so zero calls of any kind).
+    let (out, recs) = run("open_shell_uhf_mixed", &oh("uhf", MIXED_RIMP2), true);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let p = record(&recs, "precision");
+    assert_eq!(p["precision"], "f64", "{p}");
+    assert_eq!(p["kernels"][0]["kernel"], "rimp2-energy", "{p}");
+    assert_eq!(p["kernels"][0]["requested"], "mixed", "{p}");
+    assert!(p["kernels"][0]["device"].is_null(), "{p}");
 }

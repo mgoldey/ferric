@@ -12,7 +12,7 @@ import sys
 
 import ferric
 
-F64_RECORD = {"precision": "f64", "kernels": []}
+F64_RECORD = {"precision": "f64", "counter_scope": "process", "kernels": []}
 
 _WATER = (
     "m = ferric.Molecule.from_xyz_string("
@@ -20,8 +20,9 @@ _WATER = (
 )
 
 
-def _run(code):
+def _run(code, **extra_env):
     env = {k: v for k, v in os.environ.items() if not k.startswith("FERRIC_GPU")}
+    env.update(extra_env)
     p = subprocess.run(
         [sys.executable, "-c", code], env=env, capture_output=True, text=True
     )
@@ -35,8 +36,8 @@ def _ok(code):
     return json.loads(out)
 
 
-def _refusal(code, exc="ValueError"):
-    rc, _, err = _run(code)
+def _refusal(code, exc="ValueError", **extra_env):
+    rc, _, err = _run(code, **extra_env)
     assert rc != 0
     last = err.strip().splitlines()[-1]
     assert last.startswith(exc + ": "), last
@@ -169,7 +170,85 @@ def test_cpu_only_mixed_names_the_device_kernels():
 def test_a_staged_f64_request_keeps_the_record_f64():
     rec = _ok(
         "import json, ferric; ferric.configure_precision(mode='f64'); "
+        "ferric.configure_gpu(); "
         + _WATER
         + "print(json.dumps(ferric.run_rhf(m, ferric.BasisSet.bundled('sto-3g')).precision))"
     )
     assert rec == F64_RECORD
+
+
+STAGED_NOT_INSTALLED = (
+    "configure_precision staged a request; call configure_gpu() to install it"
+)
+
+
+def test_an_uninstalled_staged_request_raises_at_the_first_calculation():
+    # Staged but never installed: the calculation refuses to start rather
+    # than run with the request silently dropped (or silently resolved).
+    for request in ("mode='f64'", "mode='mixed', mixed_kernels=['rimp2-energy']"):
+        msg = _refusal(
+            f"import ferric; ferric.configure_precision({request}); "
+            + _WATER
+            + "ferric.run_rhf(m, ferric.BasisSet.bundled('sto-3g'))",
+            exc="RuntimeError",
+        )
+        assert STAGED_NOT_INSTALLED in msg, msg
+    msg = _refusal(
+        "import ferric; ferric.configure_precision(mode='mixed'); "
+        + _WATER
+        + "ferric.run_rimp2(m, ferric.BasisSet.bundled('sto-3g'), "
+        "ferric.BasisSet.bundled('cc-pvdz-ri'))",
+        exc="RuntimeError",
+    )
+    assert STAGED_NOT_INSTALLED in msg, msg
+
+
+def test_an_invalid_staged_request_never_turns_a_user_enabled_gpu_off():
+    # FERRIC_GPU=auto enables the GPU; the staged request is invalid
+    # (cosx-kern is not shipped). The lazy settings read must not resolve the
+    # staged request, which used to fail and degrade the whole GPU to `off`:
+    # the env's mode stands, and the calculation raises instead.
+    rc, out, err = _run(
+        "import json, ferric; "
+        "ferric.configure_precision(mode='mixed', mixed_kernels=['cosx-kern']); "
+        "s = ferric.gpu_status(); print(json.dumps([s['mode'], s['precision']]))",
+        FERRIC_GPU="auto",
+    )
+    assert rc == 0, err
+    assert json.loads(out) == ["auto", "f64"]
+    assert "GPU disabled" not in err, err
+    msg = _refusal(
+        "import ferric; "
+        "ferric.configure_precision(mode='mixed', mixed_kernels=['cosx-kern']); "
+        + _WATER
+        + "ferric.run_rhf(m, ferric.BasisSet.bundled('sto-3g'))",
+        exc="RuntimeError",
+        FERRIC_GPU="auto",
+    )
+    assert STAGED_NOT_INSTALLED in msg, msg
+
+
+def test_a_mixed_rimp2_request_on_the_cpu_build_is_recorded():
+    # The request side of the record: mixed requested and installed, no
+    # device, so the MP2 energy runs in f64 on the CPU and says so.
+    rec = _ok(
+        "import json, ferric; "
+        "ferric.configure_precision(mode='mixed', mixed_kernels=['rimp2-energy']); "
+        "ferric.configure_gpu(mode='auto'); "
+        + _WATER
+        + "r = ferric.run_rimp2(m, ferric.BasisSet.bundled('sto-3g'), "
+        "ferric.BasisSet.bundled('cc-pvdz-ri')); "
+        "print(json.dumps([r.precision, r.scf_precision]))"
+    )
+    mp2, scf = rec
+    assert mp2["precision"] == "f64", mp2
+    assert mp2["counter_scope"] == "process", mp2
+    assert len(mp2["kernels"]) == 1, mp2
+    k = mp2["kernels"][0]
+    assert k["kernel"] == "rimp2-energy"
+    assert k["requested"] == "mixed", k
+    assert k["mode"] == "f64", k
+    assert k["calls_mixed"] == 0, k
+    assert k["device"] is None, k
+    assert k["calls_f64_fallback"]["cpu_f64"] > 0, k
+    assert scf == F64_RECORD, scf

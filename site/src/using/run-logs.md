@@ -129,16 +129,24 @@ doesn't mean the run failed (MEASURED on `examples/h2-lda-opt.toml`,
 
 ### Precision provenance (`precision`)
 
-`run_end.extra.precision` records which mixed-precision kernels the SCF ran, and
-a `rimp2` run's `result.components.precision` does the same for the MP2
-correlation energy (closed shell and unrestricted). The Python results carry
+`run_end.extra.precision` records which mixed-precision kernels the **whole
+run** went through: every kernel, counted from the start of the run to
+`run_end`, whichever code called it (the SCF, the method, and MP2 variants such
+as SCS-MP2, SCS-MP2(2terfc), terfc `att-rimp2` and the double hybrids, which
+carry no record of their own). `run_end.extra.scf_precision` is the SCF's own
+record. A run that writes no `run_end` from the molecular dispatch (open-shell
+`uhf`/`rohf` energies and their KS forms, `task = "optimize"`,
+`task = "frequencies"`, `wb97x-l-v`, `b2plyp`, `dsd-pbep86`) writes the
+whole-run record as a `precision` record instead. A `rimp2` run's
+`result.components.precision` covers the MP2 correlation energy alone (closed
+shell and unrestricted). The Python results carry
 the same object as `RhfResult.precision`, `UhfResult.precision`,
 `DftResult.precision`, `RiMp2Result.precision` and
 `RiMp2Result.scf_precision`. An all-f64 run, which is every run that does not
 set `[precision] mode = "mixed"`, says so explicitly:
 
 ```json
-{"precision": "f64", "kernels": []}
+{"precision": "f64", "counter_scope": "process", "kernels": []}
 ```
 
 Otherwise `kernels` has one entry per kernel that was allowed to run mixed
@@ -149,16 +157,17 @@ for that result, or that ran mixed:
 | `kernel` | the kernel name (`rimp2-energy`, `xc-vxc`, `dfj-pack`, `dfk-occ`, `cosx-kern`) |
 | `requested` | `mixed` when `[precision]` allowed it, `f64` when only a test seam ran it |
 | `mode` | `mixed` when at least one call ran mixed, else `f64` (allowed, but nothing ran mixed) |
-| `device` | `"cpu"`, or `{"ordinal", "name", "cc"}` of the CUDA device |
+| `device` | where the mixed calls ran: `"cpu"`, or `{"ordinal", "name", "cc"}` of the CUDA device; `null` when `calls_mixed` is 0 |
 | `calls_mixed` | calls that ran mixed: one RI-MP2 energy (per spin block when unrestricted), one XC potential pass, one RI-J or DF-K build, one COSX K build with f32 units |
 | `calls_f64_fallback` | `{"device_f64", "f32_range", "cpu_f64"}`: calls, or parts of calls, that ran f64 instead (mixed kernel unavailable on the device, a value beyond the f32 range, or the whole call on the CPU) |
 | `ladder` | for `xc-vxc`, `dfj-pack` and `dfk-occ`: `{"builds_mixed", "builds_total", "exit_rebuilt_f64"}` of the SCF precision ladder; `null` for the other kernels |
 | `error_bound` | `{"kind": "none_computed", "why": ...}` for every kernel today. No kernel computes a per-run error bound yet; the `why` says what exists instead (the measured error maps on the [validation page](../reference/validation.md)). A computed bound would read `{"kind": "a_posteriori", "eh", "method"}`; a number is never invented |
 
 `precision` is `mixed` when any kernel's `mode` is `mixed`. The counts are
-process-wide counter differences over the call, so two calculations running at
-the same time in one Python process can see each other's counts; a sequential
-run is exact. The record is observation only: an f64 energy is bit-identical
+process-wide counter differences over the call, which `counter_scope:
+"process"` states in every record: two calculations running at the same time
+in one Python process can see each other's counts; a sequential run is
+exact. The record is observation only: an f64 energy is bit-identical
 with or without it.
 
 ### `frequencies`
@@ -228,7 +237,7 @@ A water/STO-3G RHF run, abridged:
 {"record":"scf_iter","seq":5,"t":0.017,"method":"rhf","iter":1,"energy":-74.68273456362847,"de":74.68273456362847,"dp_rms":"inf","dp_max":"inf","err_max":1.6088693243641559,"grad_rms":0.5469406324593924,"rung":0}
 {"record":"scf_iter","seq":13,"t":0.019,"method":"rhf","iter":9,"energy":-74.9631468000391,"de":5.684341886080802e-14,"dp_rms":1.356320515468342e-10,"dp_max":4.726057323267696e-10,"err_max":3.5214886562329184e-14,"grad_rms":1.2777284834157483e-14,"rung":0}
 {"record":"ladder_rung","seq":14,"t":0.019,"rung":0,"tricks":["diis"],"max_iter":60,"iterations":9,"exit":"Converged","energy":-74.9631468000391,"converged":true}
-{"record":"run_end","seq":15,"t":0.019,"energy":-74.9631468000391,"converged":true,"exit":"Converged","wall_s":0.0189,"cpu_s":0.05,"peak_rss_bytes":128815104,"extra":{"method":"rhf","task":"energy","scf_iterations":9,"energy_is":"total","precision":{"precision":"f64","kernels":[]}}}
+{"record":"run_end","seq":15,"t":0.019,"energy":-74.9631468000391,"converged":true,"exit":"Converged","wall_s":0.0189,"cpu_s":0.05,"peak_rss_bytes":128815104,"extra":{"method":"rhf","task":"energy","scf_iterations":9,"energy_is":"total","precision":{"precision":"f64","counter_scope":"process","kernels":[]}}}
 ```
 
 ## Periodic k-point stress
