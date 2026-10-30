@@ -25,7 +25,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
+import tempfile
 from pathlib import Path
 
 from pyscf import gto
@@ -152,11 +154,35 @@ def provenance_record(stem: str, data: dict, sha: str) -> dict:
     return rec
 
 
+def _target_mode(path: Path) -> int:
+    """Mode for the replacement: the destination's own, or 0o666 under the umask."""
+    try:
+        return path.stat().st_mode & 0o777
+    except FileNotFoundError:
+        umask = os.umask(0)
+        os.umask(umask)
+        return 0o666 & ~umask
+
+
+def write_atomic(path: Path, text: str) -> None:
+    """Write via a unique sibling temp file and rename, so a crash or a concurrent
+    writer leaves either the old or the new file, never a partial one."""
+    fd, tmp = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w") as fh:
+            fh.write(text)
+        os.chmod(tmp, _target_mode(path))
+        os.replace(tmp, path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
+
+
 def update_provenance(records: list[dict]) -> None:
     prov = json.loads(PROVENANCE.read_text())
     files = {r["file"] for r in records}
     prov["sets"] = [r for r in prov["sets"] if r["file"] not in files] + records
-    PROVENANCE.write_text(json.dumps(prov, indent=1) + "\n")
+    write_atomic(PROVENANCE, json.dumps(prov, indent=1) + "\n")
 
 
 def main() -> int:
@@ -164,7 +190,11 @@ def main() -> int:
     ap.add_argument("--psi4-dir", type=Path, required=True)
     ap.add_argument("--sha", required=True, help="psi4 commit the files came from")
     args = ap.parse_args()
-    bad, records = [], []
+    # All-or-nothing: every set is converted and cross-checked in memory, and
+    # nothing (JSON or provenance) is written unless the whole batch passes.
+    # Writing as we go left an earlier set's JSON on disk with no provenance
+    # record whenever a later set failed.
+    bad, docs, records = [], {}, []
     for stem in NAMES:
         data = parse_gbs((args.psi4_dir / f"{stem}.gbs").read_text())
         problems = same_as_pyscf(stem, data)
@@ -174,11 +204,13 @@ def main() -> int:
         if problems:
             bad += problems
             continue
-        doc = to_bse_json(stem, data, args.sha)
-        (BUNDLED / f"{stem}.json").write_text(json.dumps(doc, indent=1) + "\n")
+        docs[stem] = to_bse_json(stem, data, args.sha)
         records.append(provenance_record(stem, data, args.sha))
     if bad:
+        print("ERROR: cross-check failed; nothing written")
         return 1
+    for stem, doc in docs.items():
+        write_atomic(BUNDLED / f"{stem}.json", json.dumps(doc, indent=1) + "\n")
     update_provenance(records)
     return 0
 
