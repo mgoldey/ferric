@@ -272,3 +272,25 @@ fn a_dressed_band_that_fits_the_budget_but_not_the_pool_spills() {
         "an in-core dressing under a pool must be bit-identical to one without"
     );
 }
+
+/// The route C20 really took: the fast path's plan admits the band and the POOL
+/// refuses it. A small tensor at `pool == budget` never gets this far, because
+/// 64 rows of `contrib` per worker already fail the plan, so the pool is smaller
+/// than the budget here.
+#[test]
+fn the_pool_alone_can_refuse_a_band_the_plan_admits() {
+    let _slot = GlobalPoolGuard::acquire();
+    let (_mol, obs, dfbs) = bases();
+    let op = Operator::coulomb();
+    let (naux, nao) = (dfbs.nbasis(), obs.nbasis());
+    let needed = naux * nao * nao * 8;
+    let budget = 16 * needed;
+    let pool = MemoryPool::with_capacity_bytes(needed + needed / 2);
+    install_global(pool.clone());
+    let mut raw = ThreeIndexSource::build(op, &obs, &dfbs, budget).expect("raw fits");
+    assert!(raw.is_incore());
+    let m = ndarray::Array2::<f64>::eye(naux);
+    let dressed = ThreeIndexSource::build_dressed(&mut raw, &m, budget)
+        .expect("the pool's refusal must spill, not end the run");
+    assert!(dressed.is_spilled_for_test(), "must have spilled");
+}

@@ -2963,7 +2963,9 @@ mod tests {
         let fits = spilled_dressing_report(budget, (0, 0, 0), (64, 10, 0), (naux, nao));
         assert!(fits.is_none(), "{fits:?}");
         let raw = spilled_dressing_report(budget, (budget, 0, 0), (64, 10, 0), (naux, nao));
-        assert!(raw.is_some_and(|r| r.contains("raw tensor resident")));
+        let raw = raw.expect("resident raw must be reported");
+        assert!(raw.contains("DF dressing (spilled)"), "{raw}");
+        assert!(raw.contains("DF J/K read-back"), "{raw}");
         let metric = spilled_dressing_report(budget, (0, 0, budget), (64, 10, 0), (naux, nao));
         assert!(metric.is_some_and(|r| r.contains("dressing metric")));
     }

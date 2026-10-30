@@ -153,27 +153,33 @@ fn spilled_k_is_bitwise_in_core_and_thread_independent() {
     }
 }
 
-/// The read-back width, directly: binding, and equal at 1 and 4 threads. A
-/// thread-derived width would be invisible to the K test above precisely because
-/// K is exact across widths.
+/// The read-back width, directly, at 1 and 4 threads. A thread-derived width is
+/// invisible to the K test above precisely because K is exact across widths. The
+/// width must sit well above its floor here: at the floor, dividing by the thread
+/// count changes nothing and this test would pass with the defect live.
 #[test]
 fn read_back_width_does_not_read_the_thread_count() {
     let _s = slot();
-    let s = benzene();
+    let mol = Molecule::load_xyz("../../testdata/molecules/alkane_12.xyz").unwrap();
+    let obs = PreparedBasis::new(&mol, &basis::bundled("6-31g").unwrap()).unwrap();
+    let aux = PreparedBasis::new(&mol, &basis::bundled("def2-universal-jkfit").unwrap()).unwrap();
     let op = Operator::coulomb();
-    let (naux, nao) = (s.aux.nbasis(), s.obs.nbasis());
-    let budget = (naux * nao * nao * 8) as f64 * 0.45;
+    let (naux, nao) = (aux.nbasis(), obs.nbasis());
+    let budget = (naux as f64 * (nao * nao * 8) as f64 * 0.99) as usize;
     let m = metric(naux);
     let width = |threads| {
         with_threads(threads, || {
-            let mut raw = ThreeIndexSource::build(op, &s.obs, &s.aux, budget as usize).unwrap();
-            ThreeIndexSource::build_dressed(&mut raw, &m, budget as usize)
+            let mut raw = ThreeIndexSource::build(op, &obs, &aux, budget).unwrap();
+            ThreeIndexSource::build_dressed(&mut raw, &m, budget)
                 .unwrap()
                 .block_naux()
         })
     };
     let (one, four) = (width(1), width(4));
-    assert!(one < naux, "the width must bind");
+    let floor = 2 * ferric_integrals::three_index_source::df_chunk_width(nao);
+    assert!(one < naux, "the width must bind: {one} of {naux}");
+    // Twice the floor is enough: a quarter of this lands on the floor, not here.
+    assert!(one >= 2 * floor, "{one} is too near the floor {floor}");
     assert_eq!(one, four);
 }
 

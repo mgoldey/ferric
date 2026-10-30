@@ -105,6 +105,27 @@ fn the_budget_band_runs_the_guess_on_a_spilled_tensor() {
     same_energy(got.result.energy, ample.result.energy);
 }
 
+/// The same, with the pool as the only thing refusing: at `pool == budget` a
+/// tensor this small is already turned away by the fast path's per-worker plan.
+#[test]
+fn a_band_only_the_pool_refuses_runs_the_guess_on_a_spilled_tensor() {
+    let _s = slot();
+    let (mol, prep) = water();
+    let needed = tensor_bytes(&mol, &prep);
+    let ample = run(needed * 16, None).expect("ample");
+    let pool = MemoryPool::with_capacity_bytes(needed + needed / 2);
+    install_global(pool.clone());
+    let got = run(needed * 16, None).expect("the pool must not refuse the run");
+    clear_global();
+    assert!(
+        got.fallback.is_none(),
+        "guess fell back: {:?}",
+        got.fallback
+    );
+    assert!(got.df_iterations > 0);
+    same_energy(got.result.energy, ample.result.energy);
+}
+
 /// A guess that genuinely cannot get its memory gives way, says so in the
 /// result, and reaches the same energy. Reachable through the pool: a pool too
 /// small for even the raw tensor, under a budget that admits it in core.
