@@ -25,7 +25,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
+import tempfile
 from pathlib import Path
 
 from pyscf import gto
@@ -153,10 +155,16 @@ def provenance_record(stem: str, data: dict, sha: str) -> dict:
 
 
 def write_atomic(path: Path, text: str) -> None:
-    """Write via a sibling temp file and rename, so a crash leaves old or new."""
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(text)
-    tmp.replace(path)
+    """Write via a unique sibling temp file and rename, so a crash or a concurrent
+    writer leaves either the old or the new file, never a partial one."""
+    fd, tmp = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w") as fh:
+            fh.write(text)
+        os.replace(tmp, path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
 
 
 def update_provenance(records: list[dict]) -> None:
