@@ -23,6 +23,17 @@
 //! `tests/lmp2_amplitude.rs` together with the construction mutation test
 //! (dropping one hard virtual must break the anchor).
 //!
+//! # PCG tolerance
+//!
+//! The energy is the stationary Hylleraas form, so its solver error is second
+//! order in the residual and bounded per run by
+//! [`cg_energy_error_bound`](crate::lmp2_amplitude::cg_energy_error_bound). The
+//! default solve therefore stops at relres 1e-6 and continues, on the same
+//! Krylov sequence, only if the bound at the achieved residual exceeds 1e-10
+//! Ha ([`CgRtolPolicy`](crate::lmp2_amplitude::CgRtolPolicy)). ferric-cc's
+//! LinLCCD and ferric-pbc's Gamma LMP2 share the PCG but use the LINEAR energy,
+//! whose error is first order, and keep their own 1e-11.
+//!
 //! # Documented deviations from the paper (match the Python rig's wiki note)
 //!
 //! - Hard virtuals: spread-weighted pivoted-Cholesky selection of
@@ -56,12 +67,26 @@ use ferric_scf::result::ScfResult;
 
 use crate::boys::boys_localize;
 use crate::ragged::{
-    lanczos_kappa, pair_block_from_g_cand, solve_ragged_budgeted, MatvecPath, PairBlock, Ragged,
+    check_swap_closed, lanczos_kappa, matvec_indexed, matvec_planned, pair_block_from_g_cand,
+    solve_ragged_budgeted_steered, BudgetedSolve, MatvecPath, PairBlock, Ragged, SolvePlan,
 };
 use crate::rimp2::{
     active_occ, eri3_budget_bytes, eri3_mo_ov_blocked, metric_inverse_sqrt, ri_mp2, RiMp2Config,
 };
 use ferric_integrals::threeindex::coulomb_metric_2c;
+
+/// The default PCG relative-residual target of local MP2. The Hylleraas
+/// energy's solver error is second order in the residual, so this is enough
+/// while the per-run bound holds ([`LMP2_CG_ENERGY_ERROR_TARGET`]).
+pub const LMP2_CG_RTOL_DEFAULT: f64 = 1e-6;
+/// The tightest tolerance the default policy goes to, and the one it uses when
+/// the bound is undefined (no positive gap).
+pub const LMP2_CG_RTOL_STRICT: f64 = 1e-11;
+/// The Hylleraas solver-error bound (Ha) the default policy keeps a run under.
+pub const LMP2_CG_ENERGY_ERROR_TARGET: f64 = 1e-10;
+/// Safety factor on the residual when tightening: the bound lands at a quarter
+/// of the target instead of on it.
+const CG_TIGHTEN_SAFETY: f64 = 0.5;
 
 /// Configuration for amplitude-threshold local MP2 (WSHG23 single-threshold scheme).
 #[derive(Debug, Clone)]
@@ -70,7 +95,14 @@ pub struct AmplitudeLmp2Config {
     /// ε = 0 keeps everything (the exactness-anchor limit).
     pub eps: f64,
     pub frozen_core: usize,
-    pub cg_rtol: f64,
+    /// PCG relative-residual target. `None` (the default) is the adaptive
+    /// policy: [`LMP2_CG_RTOL_DEFAULT`], continued to a tighter tolerance if
+    /// [`cg_energy_error_bound`] at the achieved residual exceeds
+    /// [`LMP2_CG_ENERGY_ERROR_TARGET`], never tighter than
+    /// [`LMP2_CG_RTOL_STRICT`]. `Some(x)` runs at exactly `x` with no
+    /// tightening. Rust API only: the CLI and Python do not expose it.
+    pub cg_rtol: Option<f64>,
+    /// Iteration limit over the whole solve, tightening included.
     pub cg_max_iter: usize,
     /// 3-index working-memory budget; `None` → the shared rimp2 default.
     pub eri3_budget_bytes: Option<usize>,
@@ -107,6 +139,13 @@ pub struct AmplitudeLmp2Config {
     /// original path). r ≥ 1e5 must reproduce the global fit to machine
     /// precision (trivial-limit anchor, tested).
     pub fit_radius_bohr: Option<f64>,
+    /// Adaptive Fvv product of the PCG matvec (perf plan #3e): a pair block
+    /// whose retained-pattern density ρ = kept/(|Da|·|Db|) is BELOW this
+    /// threshold ρ* multiplies Fvv by a sparse column/row scatter over its
+    /// retained elements instead of two dense GEMMs. `0.0` (the default)
+    /// keeps every block dense — byte-identical to the pre-switch path.
+    /// The crossover ρ* is not measured yet (benchmark pending).
+    pub fvv_sparse_rho: f64,
 }
 
 impl Default for AmplitudeLmp2Config {
@@ -114,13 +153,14 @@ impl Default for AmplitudeLmp2Config {
         Self {
             eps: 1e-4,
             frozen_core: 0,
-            cg_rtol: 1e-11,
+            cg_rtol: None,
             cg_max_iter: 400,
             eri3_budget_bytes: None,
             pair_gate_cal: None,
             aux_tail_frac: None,
             compute_reference: false,
             fit_radius_bohr: None,
+            fvv_sparse_rho: 0.0,
         }
     }
 }
@@ -141,7 +181,10 @@ pub struct AmplitudeLmp2Result {
     pub dom_mean: f64,
     pub dom_max: usize,
     pub cg_iterations: usize,
+    /// The PCG's recursive relative residual.
     pub cg_relres: f64,
+    /// The true relative residual `‖J + A t‖ / ‖PJ‖`, from the energy's matvec.
+    pub cg_true_relres: f64,
     pub cg_converged: bool,
     pub n_valence_virt: usize,
     pub n_hard_virt: usize,
@@ -159,7 +202,8 @@ pub struct AmplitudeLmp2Result {
     pub aux_dom_max: usize,
     /// κ estimate of the diagonally preconditioned CG operator from the CG
     /// coefficients ([`crate::ragged::lanczos_kappa`]; a lower bound, NaN
-    /// when undefined).
+    /// when undefined). The 1e-6 default gives it fewer iterations, so values
+    /// are not comparable with runs from before that default.
     pub cg_lanczos_kappa_est: f64,
     /// In-block retained-pattern density (kept / (|Da|·|Db|)) over the pair
     /// blocks: mean and min (0 when there are no blocks).
@@ -177,10 +221,79 @@ pub struct AmplitudeLmp2Result {
     /// system + the PCG vectors, [`crate::ragged::solve_resident_bytes`]);
     /// the plan is admitted against the budget minus this.
     pub solve_resident_bytes: usize,
+    /// Bound (Ha) on the Hylleraas energy's CG solver error at the final TRUE
+    /// residual, `3·‖PJ‖²·relres²/λ_min` with λ_min ≥ 2(ε_LUMO −
+    /// ε_HOMO) ([`cg_energy_error_bound`]); NaN if the gap is not positive.
+    pub cg_energy_error_bound: f64,
+    /// Which tolerance the solve ran to, and why.
+    pub cg_rtol_outcome: CgRtolOutcome,
     /// The matvec the PCG ran: planned when the plan fit the memory budget,
     /// otherwise the plan-free indexed one (bitwise the same result).
     pub matvec_path: MatvecPath,
     pub timings: StageTimings,
+}
+
+/// Where a solve's PCG tolerance came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CgRtolSource {
+    /// The adaptive default, with its bound defined.
+    AdaptiveDefault,
+    /// The adaptive default with no positive gap: the bound is undefined, so
+    /// the solve ran at [`LMP2_CG_RTOL_STRICT`].
+    StrictNoGap,
+    /// `cg_rtol: Some(x)`, taken literally.
+    Explicit,
+}
+
+impl CgRtolSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CgRtolSource::AdaptiveDefault => "adaptive-default",
+            CgRtolSource::StrictNoGap => "strict-no-gap",
+            CgRtolSource::Explicit => "explicit",
+        }
+    }
+}
+
+/// What the tolerance policy did on one solve.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CgRtolOutcome {
+    pub source: CgRtolSource,
+    /// The last tolerance the PCG ran to.
+    pub rtol_used: f64,
+    /// Whether the bound forced a continuation past the starting tolerance.
+    pub tightened: bool,
+    /// The bound target (Ha); `None` unless the bound governed the solve.
+    pub target_ha: Option<f64>,
+    /// Whether the final bound met the target and the PCG converged; `None`
+    /// when no target applied.
+    pub target_met: Option<bool>,
+}
+
+/// The tolerance rule [`solve_under_rtol_policy`] applies. Production builds
+/// it from `AmplitudeLmp2Config::cg_rtol`; tests reach the tightening branch
+/// by lowering `target_ha`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum CgRtolPolicy {
+    Explicit(f64),
+    Adaptive {
+        start: f64,
+        floor: f64,
+        target_ha: f64,
+    },
+}
+
+impl CgRtolPolicy {
+    pub fn from_config(cg_rtol: Option<f64>) -> Self {
+        cg_rtol.map_or(
+            CgRtolPolicy::Adaptive {
+                start: LMP2_CG_RTOL_DEFAULT,
+                floor: LMP2_CG_RTOL_STRICT,
+                target_ha: LMP2_CG_ENERGY_ERROR_TARGET,
+            },
+            CgRtolPolicy::Explicit,
+        )
+    }
 }
 
 /// The pattern counters both LMP2 drivers report, computed from the
@@ -1151,10 +1264,25 @@ where
     (keep, n_gated)
 }
 
-/// Hylleraas energy E = Σ (2 t_iajb − t_ibja) J_iajb over the retained
-/// pattern — t_ibja is read from the SAME pair block at swapped positions
-/// (zero outside the union domains). Shared by every driver in the family.
-pub fn hylleraas_energy(rg: &Ragged, t: &[Array2<f64>]) -> f64 {
+/// The LINEAR energy form E = Σ (2 t_iajb − t_ibja) J_iajb over the
+/// retained pattern — t_ibja is read from the SAME pair block at swapped
+/// positions (zero outside the union domains). Exact at the converged
+/// amplitudes but NOT stationary: its error is first order in the CG
+/// residual. It was the molecular drivers' energy until perf Stage D and is
+/// kept, arithmetic unchanged, as the oracle of [`hylleraas_energy`]
+/// (`hylleraas_is_stationary`). ferric-pbc's Gamma LMP2 still uses it
+/// (its numbers are not changed by Stage D).
+pub fn linear_energy(rg: &Ragged, t: &[Array2<f64>]) -> f64 {
+    swap_contract(rg, t, |p, r, c| rg.pairs[p].j_blk[(r, c)])
+}
+
+/// Σ over the retained pattern of (2 t_iajb − t_ibja)·w_iajb, with the same
+/// accumulation order as the original linear energy (direct and exchange
+/// sums kept apart, combined once at the end).
+fn swap_contract<W>(rg: &Ragged, t: &[Array2<f64>], w: W) -> f64
+where
+    W: Fn(usize, usize, usize) -> f64,
+{
     let mut e_dir = 0.0;
     let mut e_exx = 0.0;
     for (p, pb) in rg.pairs.iter().enumerate() {
@@ -1164,7 +1292,7 @@ pub fn hylleraas_energy(rg: &Ragged, t: &[Array2<f64>]) -> f64 {
                 if !pb.pat[r * nb + c] {
                     continue;
                 }
-                let jv = pb.j_blk[(r, c)];
+                let jv = w(p, r, c);
                 e_dir += t[p][(r, c)] * jv;
                 let sr = pb.pos_da[b];
                 let sc = pb.pos_db[a];
@@ -1175,6 +1303,238 @@ pub fn hylleraas_energy(rg: &Ragged, t: &[Array2<f64>]) -> f64 {
         }
     }
     2.0 * e_dir - e_exx
+}
+
+/// The stationary Hylleraas energy
+/// `E_H(t) = Σ (2 t_iajb − t_ibja)·(2 J_iajb + (A t)_iajb)` over the retained
+/// pattern, where `A` is the pattern-projected Fock superoperator of the
+/// solve (one extra matvec). With the residual R = J + A t this is
+/// E_lin + Σ t̃·R, so it equals [`linear_energy`] at the solution; on a
+/// swap-closed pattern (`crate::ragged::check_swap_closed`) its gradient is
+/// 2(2 − S)R, so the error is second order in the residual and
+/// E_H(t) − E* = ⟨(2 − S)δ, Aδ⟩ ≥ 0 (an upper bound).
+///
+/// `plan`: the [`SolvePlan`] the solve ran through, or `None` when it ran on
+/// the plan-free indexed matvec (the budgeted solve's fallback) — the same
+/// operator either way, bitwise when every Fvv product is dense.
+///
+/// Stationarity needs a swap-closed pattern, so this function CHECKS it
+/// ([`check_swap_closed`], O(Σ|D|²) comparisons, small beside the matvec)
+/// and errors instead of returning a non-stationary number.
+pub fn hylleraas_energy(
+    rg: &Ragged,
+    f_oo: &Array2<f64>,
+    plan: Option<&SolvePlan>,
+    t: &[Array2<f64>],
+) -> Result<f64, FerricError> {
+    hylleraas_energy_and_residual(rg, f_oo, plan, t).map(|(e, _)| e)
+}
+
+/// [`hylleraas_energy`] plus the norm of the TRUE residual `‖J + A t‖` over the
+/// pattern, read from the energy's own matvec (no extra one). The PCG's relres
+/// is its recursive residual, which can drift from this one.
+pub fn hylleraas_energy_and_residual(
+    rg: &Ragged,
+    f_oo: &Array2<f64>,
+    plan: Option<&SolvePlan>,
+    t: &[Array2<f64>],
+) -> Result<(f64, f64), FerricError> {
+    check_swap_closed(rg).map_err(|e| {
+        FerricError::General(format!(
+            "hylleraas_energy: amplitude pattern is not swap-closed ({e}); the Hylleraas \
+             energy would not be stationary"
+        ))
+    })?;
+    let mut flops = 0u64;
+    let at = match plan {
+        Some(plan) => {
+            let mut at: Vec<Array2<f64>> = rg.pairs.iter().map(|_| Array2::zeros((0, 0))).collect();
+            matvec_planned(rg, plan, t, &mut at, &mut flops);
+            at
+        }
+        None => matvec_indexed(rg, f_oo, t, &mut flops),
+    };
+    let energy = swap_contract(rg, t, |p, r, c| {
+        2.0 * rg.pairs[p].j_blk[(r, c)] + at[p][(r, c)]
+    });
+    let r2: f64 = rg
+        .pairs
+        .iter()
+        .zip(&at)
+        .map(|(pb, a)| {
+            pb.j_blk
+                .iter()
+                .zip(a.iter())
+                .zip(&pb.pat)
+                .filter(|(_, &k)| k)
+                .map(|((j, av), _)| (j + av) * (j + av))
+                .sum::<f64>()
+        })
+        .sum();
+    Ok((energy, r2.sqrt()))
+}
+
+/// `‖P J‖`: the 2-norm of the pattern-projected right-hand side over every
+/// block — the `bnorm` the PCG's `relres` is relative to.
+pub fn pattern_rhs_norm(rg: &Ragged) -> f64 {
+    rg.pairs
+        .iter()
+        .map(|pb| {
+            pb.j_blk
+                .iter()
+                .zip(&pb.pat)
+                .filter(|(_, &k)| k)
+                .map(|(j, _)| j * j)
+                .sum::<f64>()
+        })
+        .sum::<f64>()
+        .sqrt()
+}
+
+/// A rigorous lower bound on λ_min of the pattern-projected PCG operator
+/// `A`: `2·(ε_LUMO − ε_HOMO)` from the eigenvalues of the localized-space
+/// Fock blocks (`f_vv` spans the whole virtual space, `f_oo` the active
+/// occupieds). The unprojected operator's eigenvalues are ε_a + ε_b − ε_i −
+/// ε_j ≥ 2(ε_LUMO − ε_HOMO), and the pattern/domain projection is a
+/// compression, so by Cauchy interlacing its λ_min is no smaller. (The CG
+/// Lanczos Ritz values are NOT used: the smallest Ritz value is an UPPER
+/// bound on λ_min, and of the preconditioned operator.) NaN if not positive.
+pub fn operator_lambda_min_lower_bound(
+    f_oo: &Array2<f64>,
+    f_vv: &Array2<f64>,
+) -> Result<f64, FerricError> {
+    let (eo, _) = eigh(f_oo)?;
+    let (ev, _) = eigh(f_vv)?;
+    let (Some(&homo), Some(&lumo)) = (eo.last(), ev.first()) else {
+        return Ok(f64::NAN);
+    };
+    let lb = 2.0 * (lumo - homo);
+    Ok(if lb > 0.0 { lb } else { f64::NAN })
+}
+
+/// A-priori bound on the Hylleraas energy's solver error at the achieved
+/// residual: `E_H(t) − E* = ⟨(2 − S)A⁻¹R, R⟩ ≤ 3·‖R‖²/λ_min(A)`, with the
+/// swap `S` (eigenvalues ±1, so ‖2 − S‖ = 3) commuting with `A`, and
+/// ‖R‖ = relres·‖PJ‖. Hence `3·‖PJ‖²·relres²/λ_min`, with λ_min from
+/// [`operator_lambda_min_lower_bound`]. Holds for the recursive CG residual
+/// the solve reports (to rounding).
+pub fn cg_energy_error_bound(rhs_norm: f64, relres: f64, lambda_min: f64) -> f64 {
+    3.0 * (rhs_norm * relres).powi(2) / lambda_min
+}
+
+/// The tolerance to continue to when the bound at `relres` exceeds `target_ha`:
+/// the residual that puts the bound at a quarter of the target, capped at
+/// `floor`. `None` when the bound already holds, or when the residual is
+/// already at the floor (the target is then unreachable; the caller reports it).
+pub fn tightened_cg_rtol(
+    relres: f64,
+    rhs_norm: f64,
+    lambda_min: f64,
+    floor: f64,
+    target_ha: f64,
+) -> Option<f64> {
+    if cg_energy_error_bound(rhs_norm, relres, lambda_min) <= target_ha {
+        return None;
+    }
+    let needed = CG_TIGHTEN_SAFETY * (target_ha * lambda_min / 3.0).sqrt() / rhs_norm;
+    let next = needed.max(floor);
+    (relres >= next).then_some(next)
+}
+
+/// What [`solve_under_rtol_policy`] returns.
+pub struct PolicySolve {
+    pub budgeted: BudgetedSolve,
+    pub outcome: CgRtolOutcome,
+    /// The stationary energy of the final amplitudes.
+    pub e_hylleraas: f64,
+    /// `‖J + A t‖ / ‖PJ‖` from the energy's matvec (0 when `‖PJ‖` is 0).
+    pub true_relres: f64,
+    /// [`cg_energy_error_bound`] at `true_relres` (NaN with no positive gap).
+    pub bound: f64,
+}
+
+/// The budgeted ragged solve under a tolerance policy, its energy, and the
+/// bound at the final TRUE residual. Tightening is steered by the PCG's
+/// recursive residual (a stop costs no matvec) and continues the same Krylov
+/// sequence, so its result is bitwise a straight solve at the final tolerance.
+/// The target verdict uses the true residual. If that misses where the
+/// recursive one passed, the run is reported as not meeting the target and is
+/// not iterated further: the two differ only once the recursion has drifted,
+/// and more steps of the same recursion would not reduce the true residual.
+pub fn solve_under_rtol_policy(
+    rg: &Ragged,
+    f_oo: &Array2<f64>,
+    f_vv: &Array2<f64>,
+    policy: CgRtolPolicy,
+    max_iter: usize,
+    budget_bytes: usize,
+    fvv_rho_star: f64,
+) -> Result<PolicySolve, FerricError> {
+    let lambda_min = operator_lambda_min_lower_bound(f_oo, f_vv)?;
+    let rhs_norm = pattern_rhs_norm(rg);
+    let (start, source, governing) = match policy {
+        CgRtolPolicy::Explicit(x) => (x, CgRtolSource::Explicit, None),
+        CgRtolPolicy::Adaptive { floor, .. } if lambda_min.is_nan() => {
+            (floor, CgRtolSource::StrictNoGap, None)
+        }
+        CgRtolPolicy::Adaptive {
+            start,
+            floor,
+            target_ha,
+        } => (
+            start,
+            CgRtolSource::AdaptiveDefault,
+            Some((floor, target_ha)),
+        ),
+    };
+    let (mut rtol_used, mut tightened) = (start, false);
+    let b = solve_ragged_budgeted_steered(
+        rg,
+        f_oo,
+        start,
+        max_iter,
+        budget_bytes,
+        fvv_rho_star,
+        |relres| {
+            let (floor, target_ha) = governing?;
+            let next = tightened_cg_rtol(relres, rhs_norm, lambda_min, floor, target_ha)?;
+            rtol_used = next;
+            tightened = true;
+            Some(next)
+        },
+    );
+    let (e_hylleraas, r_true) = hylleraas_energy_and_residual(rg, f_oo, b.plan(), &b.solve.t)?;
+    let true_relres = if rhs_norm > 0.0 {
+        r_true / rhs_norm
+    } else {
+        0.0
+    };
+    let bound = cg_energy_error_bound(rhs_norm, true_relres, lambda_min);
+    let outcome = CgRtolOutcome {
+        source,
+        rtol_used,
+        tightened,
+        target_ha: governing.map(|(_, t)| t),
+        target_met: governing.map(|(_, t)| b.solve.converged && bound <= t),
+    };
+    Ok(PolicySolve {
+        budgeted: b,
+        outcome,
+        e_hylleraas,
+        true_relres,
+        bound,
+    })
+}
+
+/// `fvv_sparse_rho` must be a finite ρ* ≥ 0 (a density threshold): NaN or a
+/// negative value is a configuration error, not a silent "all dense".
+pub fn validate_fvv_sparse_rho(rho: f64) -> Result<(), FerricError> {
+    if rho.is_nan() || rho < 0.0 {
+        return Err(FerricError::General(format!(
+            "fvv_sparse_rho must be >= 0 (a pattern-density threshold), got {rho}"
+        )));
+    }
+    Ok(())
 }
 
 /// Direct (never-dense) ragged assembly shared by the amplitude-threshold
@@ -1494,7 +1854,17 @@ pub fn amplitude_lmp2_with_virtuals(
 
     // ---- ragged solve ----
     let t0 = std::time::Instant::now();
-    let mut r = solve_and_count(&rg, f_oo, rhf.energy, cfg, vvhv, no, nv, "lmp2_amplitude")?;
+    let mut r = solve_and_count(
+        &rg,
+        f_oo,
+        &lb.f_vv,
+        rhf.energy,
+        cfg,
+        vvhv,
+        no,
+        nv,
+        "lmp2_amplitude",
+    )?;
     r.e_corr_canonical_ri = e_ref;
     r.n_pairs_gated = n_pairs_gated;
     r.aux_dom_mean = aux_dom_mean;
@@ -1515,6 +1885,7 @@ pub fn amplitude_lmp2_with_virtuals(
 pub(crate) fn solve_and_count(
     rg: &Ragged,
     f_oo: &Array2<f64>,
+    f_vv: &Array2<f64>,
     e_scf: f64,
     cfg: &AmplitudeLmp2Config,
     vvhv: &VvHv,
@@ -1522,15 +1893,50 @@ pub(crate) fn solve_and_count(
     nv: usize,
     who: &str,
 ) -> Result<AmplitudeLmp2Result, FerricError> {
+    validate_fvv_sparse_rho(cfg.fvv_sparse_rho)?;
+    // fail fast, before the solve (hylleraas_energy checks it again)
+    check_swap_closed(rg).map_err(|e| {
+        FerricError::General(format!(
+            "{who}: amplitude pattern is not swap-closed ({e}); the Hylleraas energy \
+             would not be stationary"
+        ))
+    })?;
     let budget = eri3_budget_bytes(cfg.eri3_budget_bytes);
-    let (s, plan) = solve_ragged_budgeted(rg, f_oo, cfg.cg_rtol, cfg.cg_max_iter, budget);
-    if !s.converged {
+    let PolicySolve {
+        budgeted: b,
+        outcome,
+        e_hylleraas: e_corr,
+        true_relres,
+        bound,
+    } = solve_under_rtol_policy(
+        rg,
+        f_oo,
+        f_vv,
+        CgRtolPolicy::from_config(cfg.cg_rtol),
+        cfg.cg_max_iter,
+        budget,
+        cfg.fvv_sparse_rho,
+    )?;
+    let (s, plan) = (&b.solve, b.decision);
+    // Not reaching the first tolerance is a failed solve. Running out of
+    // iterations while tightening leaves a usable energy with a known, larger
+    // bound: it is returned with cg_converged = false and a warning.
+    if !s.converged && !outcome.tightened {
         return Err(FerricError::General(format!(
             "{who}: ragged CG failed to converge (relres {:.2e} after {} iters)",
             s.relres, s.iterations
         )));
     }
-    let e_corr = hylleraas_energy(rg, &s.t);
+    if outcome.target_met == Some(false) {
+        eprintln!(
+            "warning: {who}: solver-error bound {bound:.2e} Ha is above the {:.0e} Ha target \
+             (true relres {true_relres:.2e}, recursive {:.2e}, after {} iters, rtol {:.0e})",
+            outcome.target_ha.unwrap_or(f64::NAN),
+            s.relres,
+            s.iterations,
+            outcome.rtol_used
+        );
+    }
     let c = RaggedCounters::new(rg, no, nv);
     Ok(AmplitudeLmp2Result {
         e_corr,
@@ -1542,6 +1948,7 @@ pub(crate) fn solve_and_count(
         dom_max: c.dom_max,
         cg_iterations: s.iterations,
         cg_relres: s.relres,
+        cg_true_relres: true_relres,
         cg_converged: s.converged,
         n_valence_virt: vvhv.n_valence,
         n_hard_virt: vvhv.n_hard,
@@ -1557,6 +1964,8 @@ pub(crate) fn solve_and_count(
         gate_on: cfg.pair_gate_cal.is_some(),
         solve_plan_bytes: plan.plan_bytes,
         solve_resident_bytes: plan.resident_bytes,
+        cg_energy_error_bound: bound,
+        cg_rtol_outcome: outcome,
         matvec_path: plan.path,
         timings: StageTimings::default(),
     })

@@ -530,3 +530,83 @@ fn orca_dlpno_ballpark_c4h10_ccpvdz() {
 fn orca_dlpno_ballpark_c8h18_ccpvdz() {
     orca_ballpark("c8h18");
 }
+
+/// The size rows of the PCG tolerance claim (the small rows are
+/// `lmp2_direct::default_rtol_energy_is_within_its_bound`): the default against
+/// an explicit 1e-11 from the same code, ε = 1e-4, production maps, 6-31G /
+/// cc-pVDZ-RI. Whether tightening fires is what the row reports; |ΔE| ≤ bound
+/// ≤ 1e-10 Ha is asserted either way.
+#[test]
+#[ignore = "validation: Amplitude-threshold LMP2"]
+fn default_cg_rtol_size_rows_are_within_their_bound() {
+    for (carbons, xyz) in [(16usize, "alkane_16.xyz"), (20, "alkane_20.xyz")] {
+        let mol = Molecule::load_xyz(
+            workspace_root()
+                .join("testdata/molecules")
+                .join(xyz)
+                .to_str()
+                .unwrap(),
+        )
+        .unwrap();
+        let obs_bs = basis::bundled("6-31g").unwrap();
+        let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
+        let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
+        let coul = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(coul, &obs).unwrap();
+        let rhf = solve_rhf(
+            &ParallelContext::default(),
+            &mol,
+            &obs,
+            coul,
+            &bounds,
+            &RhfConfig {
+                energy_conv: 1e-10,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        for (name, op, cal) in [("coul", coul, 0.7), ("erfc", Operator::erfc(1.0), 0.02)] {
+            let run = |rtol| {
+                let cfg = AmplitudeLmp2Config {
+                    eps: 1e-4,
+                    frozen_core: carbons,
+                    pair_gate_cal: Some(cal),
+                    cg_rtol: rtol,
+                    ..Default::default()
+                };
+                amplitude_lmp2_direct(
+                    &mol,
+                    &obs,
+                    &obs_bs,
+                    &dfbs,
+                    op,
+                    &rhf,
+                    &cfg,
+                    &production_maps(),
+                )
+                .unwrap()
+                .0
+            };
+            let (new, strict) = (run(None), run(Some(1e-11)));
+            let de = new.e_corr - strict.e_corr;
+            let bound = new.cg_energy_error_bound;
+            eprintln!(
+                "RTOLROW {xyz} {name} direct: dE {de:+.3e} bound {bound:.3e} iters {} vs {} true \
+                 relres {:.3e} recursive {:.3e} tightened {}",
+                new.cg_iterations,
+                strict.cg_iterations,
+                new.cg_true_relres,
+                new.cg_relres,
+                new.cg_rtol_outcome.tightened
+            );
+            assert!(
+                new.cg_converged && bound <= 1e-10,
+                "{xyz} {name}: {bound:.3e}"
+            );
+            assert!(
+                de.abs() <= bound,
+                "{xyz} {name}: |dE| {de:.3e} > {bound:.3e}"
+            );
+        }
+    }
+}

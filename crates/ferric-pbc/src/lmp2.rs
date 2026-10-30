@@ -5,8 +5,9 @@
 //! The solver half is ferric-mp2's molecular amplitude-threshold machinery,
 //! reused unchanged: the swap-closed Eq-8 pair blocks
 //! ([`ferric_mp2::ragged::pair_block_from_g_cand_gated`]), the ragged
-//! per-pair PCG ([`ferric_mp2::ragged::solve_ragged`]), the Hylleraas energy
-//! ([`ferric_mp2::lmp2_amplitude::hylleraas_energy`]), the R⁻⁶ pair gate
+//! per-pair PCG ([`ferric_mp2::ragged::solve_ragged`]), the pair energy
+//! (the LINEAR, non-stationary form [`ferric_mp2::lmp2_amplitude::linear_energy`];
+//! switching to the stationary Hylleraas form is an open decision), the R⁻⁶ pair gate
 //! ([`ferric_mp2::lmp2_amplitude::pair_gate_keep_with`]) and the VV-HV
 //! orthonormalisations (`canonical_orth`, `lowdin`, `pivoted_cholesky_order`).
 //! What periodicity changes is implemented here:
@@ -134,7 +135,7 @@ use ferric_core::basis::{BasisSet, Shell};
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_mp2::lmp2_amplitude::{
-    canonical_orth, hylleraas_energy, lowdin, pair_gate_keep_with, pivoted_cholesky_order,
+    canonical_orth, linear_energy, lowdin, pair_gate_keep_with, pivoted_cholesky_order,
 };
 use ferric_mp2::ragged::{pair_block_from_g_cand_gated, solve_ragged, PairBlock, Ragged};
 use ferric_mp2::rimp2::active_occ;
@@ -236,6 +237,9 @@ pub struct GammaLmp2Config {
     pub reference_exxdiv: ExxDiv,
     /// Denominator convention (the physical one is `MadelungShifted`).
     pub denominators: Mp2Denominators,
+    /// Strict by design: this energy is the LINEAR form, first order in the
+    /// residual, so the molecular LMP2's relaxed Hylleraas default does not
+    /// apply.
     pub cg_rtol: f64,
     pub cg_max_iter: usize,
     /// Integral-free R⁻⁶ pair gate constant (molecular `pair_gate_cal`),
@@ -1751,7 +1755,7 @@ pub fn gamma_lmp2_with_spaces(
             "gamma_lmp2: ragged CG failed to converge (relres {relres:.2e} after {iters} iters)"
         )));
     }
-    let e_corr = hylleraas_energy(&rg, &t);
+    let e_corr = linear_energy(&rg, &t);
     if !e_corr.is_finite() {
         return Err(FerricError::General(format!(
             "gamma_lmp2: non-finite correlation energy {e_corr}"

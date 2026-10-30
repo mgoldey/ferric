@@ -2152,8 +2152,19 @@ fn print_lmp2_certificate(cert: &ferric_mp2::lmp2_certificate::Lmp2Certificate) 
         cert.matvec_path,
         cert.solve_resident_bytes as f64 / 1e9
     );
+    println!(
+        "  PCG tolerance         = {:.0e} ({}{}), true relres {:.2e}, solver-error bound {:.2e} Ha",
+        cert.cg_rtol,
+        cert.cg_rtol_source,
+        if cert.cg_tightened { ", tightened" } else { "" },
+        cert.cg_true_relres,
+        cert.cg_energy_error_bound
+    );
     for w in &cert.warnings {
         println!("  out of validated range: {w}");
+    }
+    for w in &cert.solver_warnings {
+        println!("  PCG solver warning: {w}");
     }
 }
 
@@ -6770,7 +6781,14 @@ mod local_printout_tests {
                 n_w_reused: 25,
             }),
             precision: "f64",
-            cg_relres: 3.3e-12,
+            cg_rtol: 1e-6,
+            cg_rtol_source: "adaptive-default",
+            cg_tightened: false,
+            cg_energy_error_target: Some(1e-10),
+            cg_energy_target_met: Some(true),
+            cg_relres: 3.3e-7,
+            cg_true_relres: 3.3e-7,
+            cg_energy_error_bound: 2.5e-13,
             cg_converged: true,
             frozen_core: 4,
             operator: "coulomb".into(),
@@ -6780,6 +6798,7 @@ mod local_printout_tests {
             validation_grade: "finite eps: measured error map, not validated".into(),
             eps_trust: "measured ...".into(),
             warnings: vec!["w1".into(), "w2".into()],
+            solver_warnings: vec!["s1".into()],
         };
         let local = LocalPrint {
             eps: 1e-4,
@@ -6804,7 +6823,7 @@ mod local_printout_tests {
             }
         }
         let fields = cert.fields();
-        assert_eq!(fields.len(), 20);
+        assert_eq!(fields.len(), 28);
         for (k, v) in &fields {
             assert!(same(&back[*k], v), "field {k}: {} vs {v:?}", back[*k]);
         }

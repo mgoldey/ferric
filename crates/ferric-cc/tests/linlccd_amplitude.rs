@@ -198,3 +198,30 @@ fn masked_sweep_is_one_sided_hh() {
     assert!(r.keep_fraction < 1.0, "mask did not bite");
     assert!(de > 0.0, "threshold error must be one-sided, got {de:+.3e}");
 }
+
+/// LinLCCD's energy is LINEAR, first order in the CG residual, so it must not
+/// pick up the molecular LMP2's relaxed Hylleraas tolerance: the default stays
+/// 1e-11 and the solve actually runs to it.
+#[test]
+fn linear_energy_keeps_the_strict_cg_tolerance() {
+    let cfg = AmplitudeLinLccdConfig {
+        eps: 1e-4,
+        frozen_core: 1,
+        ..Default::default()
+    };
+    assert_eq!(cfg.cg_rtol, 1e-11);
+    let su = setup("water.xyz");
+    let r = amplitude_linlccd(
+        &su.mol,
+        &su.obs,
+        &su.obs_bs,
+        &su.dfbs,
+        Operator::coulomb(),
+        &su.rhf,
+        &cfg,
+        LadderVariant::Hh,
+    )
+    .unwrap();
+    assert!(r.cg_converged);
+    assert!(r.cg_relres < 1e-11, "relres {:.3e}", r.cg_relres);
+}

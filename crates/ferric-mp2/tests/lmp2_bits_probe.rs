@@ -91,6 +91,9 @@ fn lmp2_bits_probe() {
                     eps,
                     frozen_core: fc,
                     pair_gate_cal: gate.then_some(cal),
+                    // the historical tolerance, so a run stays comparable to
+                    // bases older than the adaptive default
+                    cg_rtol: Some(1e-11),
                     ..Default::default()
                 };
                 let tag = format!(

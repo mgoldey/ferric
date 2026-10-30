@@ -699,16 +699,90 @@ fn bench_schwarz_skip_sweep() {
     }
 }
 
+/// A bench knob's raw value: `None` when unset. A set but non-Unicode value
+/// panics, like any other unusable value.
+fn bench_env(name: &str) -> Option<String> {
+    match std::env::var(name) {
+        Ok(raw) => Some(raw),
+        Err(std::env::VarError::NotPresent) => None,
+        Err(e) => panic!("{name}: {e}"),
+    }
+}
+
+/// FERRIC_LMP2_BENCH_EPS: `None` is the default list; an unparsable, negative
+/// or non-finite entry (including an empty one) panics.
+fn bench_eps_list(raw: Option<&str>) -> Vec<f64> {
+    let Some(raw) = raw else {
+        return vec![1e-3, 1e-4];
+    };
+    raw.split(',')
+        .map(|item| match item.trim().parse::<f64>() {
+            Ok(eps) if eps.is_finite() && eps >= 0.0 => eps,
+            _ => panic!("FERRIC_LMP2_BENCH_EPS: bad eps {item:?} in {raw:?}"),
+        })
+        .collect()
+}
+
+/// FERRIC_LMP2_BENCH_OPS: `None` is both operators; an unknown name (including
+/// an empty one) panics. Each entry is (name, operator, pair-gate calibration).
+fn bench_op_list(raw: Option<&str>) -> Vec<(&'static str, Operator, f64)> {
+    raw.unwrap_or("coul,erfc1")
+        .split(',')
+        .map(|item| match item.trim() {
+            "coul" => ("coul", Operator::coulomb(), 0.7),
+            "erfc1" => ("erfc1", Operator::erfc(1.0), 0.02),
+            _ => panic!("FERRIC_LMP2_BENCH_OPS: unknown op {item:?} in {raw:?}"),
+        })
+        .collect()
+}
+
+#[test]
+fn bench_knobs_default_to_the_historical_sweep() {
+    assert_eq!(bench_eps_list(None), vec![1e-3, 1e-4]);
+    let names: Vec<_> = bench_op_list(None).iter().map(|o| o.0).collect();
+    assert_eq!(names, ["coul", "erfc1"]);
+}
+
+#[test]
+fn bench_knobs_parse_lists_in_order() {
+    assert_eq!(bench_eps_list(Some("1e-5, 1e-6")), vec![1e-5, 1e-6]);
+    let ops = bench_op_list(Some("erfc1"));
+    assert_eq!((ops.len(), ops[0].0, ops[0].2), (1, "erfc1", 0.02));
+}
+
+#[test]
+#[should_panic(expected = "FERRIC_LMP2_BENCH_EPS: bad eps")]
+fn bench_eps_parse_failure_panics() {
+    bench_eps_list(Some("1e-3,oops"));
+}
+
+#[test]
+#[should_panic(expected = "FERRIC_LMP2_BENCH_EPS: bad eps")]
+fn bench_eps_empty_value_panics() {
+    bench_eps_list(Some(""));
+}
+
+#[test]
+#[should_panic(expected = "FERRIC_LMP2_BENCH_OPS: unknown op")]
+fn bench_ops_unknown_value_panics() {
+    bench_op_list(Some("coul,erf"));
+}
+
 /// Wall-clock + saturation sweep over the alkane series, integral-direct
 /// path vs canonical ri_mp2 (the payoff/crossover measurement).
 /// #[ignore]d — release, quiet box:
 ///   OPENBLAS_NUM_THREADS=1 cargo test -p ferric-mp2 --release \
 ///     --test lmp2_direct -- --ignored --nocapture bench_direct_alkane_series
 /// FERRIC_LMP2_BENCH_MAX_C caps the series (default 20; set 32/48 for the
-/// past-onset tail).
+/// past-onset tail). FERRIC_LMP2_BENCH_EPS (comma list, default "1e-3,1e-4";
+/// the canonical reference runs on the FIRST entry) and FERRIC_LMP2_BENCH_OPS
+/// (comma list of coul,erfc1, default both) select the sweep; a bad value
+/// panics rather than silently measuring the default.
 #[test]
 #[ignore]
 fn bench_direct_alkane_series() {
+    let eps_list = bench_eps_list(bench_env("FERRIC_LMP2_BENCH_EPS").as_deref());
+    let ops = bench_op_list(bench_env("FERRIC_LMP2_BENCH_OPS").as_deref());
     let max_c: usize = std::env::var("FERRIC_LMP2_BENCH_MAX_C")
         .ok()
         .and_then(|s| s.parse().ok())
@@ -745,12 +819,9 @@ fn bench_direct_alkane_series() {
             break;
         }
         let su = setup(&format!("alkane_{nc}.xyz"));
-        for (opname, op, cal) in [
-            ("coul", Operator::coulomb(), 0.7),
-            ("erfc1", Operator::erfc(1.0), 0.02),
-        ] {
+        for &(opname, op, cal) in &ops {
             let mut e_can = f64::NAN;
-            for eps in [1e-3, 1e-4] {
+            for (i_eps, &eps) in eps_list.iter().enumerate() {
                 let cfg = AmplitudeLmp2Config {
                     eps,
                     frozen_core: nc,
@@ -760,7 +831,7 @@ fn bench_direct_alkane_series() {
                     // No reference at C48: its ~2 GB B doesn't fit the
                     // contended box's headroom and its wall would be
                     // throttle-noise; the crossover is decided at C32.
-                    compute_reference: eps == 1e-3 && nc <= 32,
+                    compute_reference: i_eps == 0 && nc <= 32,
                     ..Default::default()
                 };
                 let (mut r, st) = amplitude_lmp2_direct(
@@ -1421,7 +1492,7 @@ fn bits_equal(a: &[ndarray::Array2<f64>], b: &[ndarray::Array2<f64>]) -> bool {
 /// amplitudes, same Hylleraas energy.
 #[test]
 fn matvec_planned_is_bitwise_matvec_indexed() {
-    use ferric_mp2::lmp2_amplitude::{checked_vvhv, hylleraas_energy, localized_spaces};
+    use ferric_mp2::lmp2_amplitude::{checked_vvhv, linear_energy, localized_spaces};
     use ferric_mp2::lmp2_direct::assemble_ragged_direct_local;
     use ferric_mp2::ragged::{
         apply_pattern, matvec_indexed, matvec_planned, solve_ragged, SolvePlan,
@@ -1488,7 +1559,896 @@ fn matvec_planned_is_bitwise_matvec_indexed() {
     assert_eq!(it_old, it_new, "CG iteration count changed");
     assert_eq!(rel_old.to_bits(), rel_new.to_bits(), "final relres changed");
     assert!(bits_equal(&t_old, &t_new), "amplitudes changed");
-    let (e_old, e_new) = (hylleraas_energy(&rg, &t_old), hylleraas_energy(&rg, &t_new));
+    let (e_old, e_new) = (linear_energy(&rg, &t_old), linear_energy(&rg, &t_new));
     eprintln!("planned PCG: {it_new} iters, E {e_new:.12} (oracle {e_old:.12})");
     assert_eq!(e_old.to_bits(), e_new.to_bits(), "energy changed");
+}
+
+/// The production ragged system of an n-alkane (6-31G / cc-pVDZ-RI,
+/// carbon cores frozen, production maps, calibrated Coulomb gate) and its
+/// occupied Fock block — the input of every solver-level test below.
+fn production_ragged(
+    xyz: &str,
+    frozen_core: usize,
+    eps: f64,
+) -> (ferric_mp2::ragged::Ragged, ndarray::Array2<f64>) {
+    let (rg, f_oo, _) = production_ragged_op(xyz, frozen_core, eps, Operator::coulomb(), 0.7);
+    (rg, f_oo)
+}
+
+/// [`production_ragged`] for any molecule, operator and gate calibration;
+/// also returns the virtual Fock block (for the λ_min bound).
+fn production_ragged_op(
+    xyz: &str,
+    frozen_core: usize,
+    eps: f64,
+    op: Operator,
+    gate_cal: f64,
+) -> (
+    ferric_mp2::ragged::Ragged,
+    ndarray::Array2<f64>,
+    ndarray::Array2<f64>,
+) {
+    use ferric_mp2::lmp2_amplitude::{checked_vvhv, localized_spaces};
+    use ferric_mp2::lmp2_direct::assemble_ragged_direct_local;
+    let su = setup(xyz);
+    let (vvhv, _) = checked_vvhv(&su.mol, &su.obs, &su.obs_bs, &su.rhf, "test").unwrap();
+    let spaces = localized_spaces(&su.mol, &su.obs, &su.rhf, frozen_core, &vvhv).unwrap();
+    let dcfg = DirectConfig {
+        aux_radius_bohr: 10.0,
+        virt_radius_bohr: Some(12.0),
+        ao_tail: 1e-3,
+        schwarz_skip: 1e-5,
+        batch_merge: 4,
+        ..Default::default()
+    };
+    let (rg, _, _) = assemble_ragged_direct_local(
+        &su.mol,
+        &su.obs,
+        &su.dfbs,
+        op,
+        &spaces,
+        eps,
+        1.0,
+        Some(gate_cal),
+        &dcfg,
+    )
+    .unwrap();
+    (rg, spaces.f_oo, spaces.f_vv)
+}
+
+/// Least-squares slope of log10|y| against log10 x.
+fn loglog_slope(pts: &[(f64, f64)]) -> f64 {
+    let n = pts.len() as f64;
+    let (xs, ys): (Vec<f64>, Vec<f64>) = pts
+        .iter()
+        .map(|&(x, y)| (x.log10(), y.abs().log10()))
+        .unzip();
+    let (mx, my) = (xs.iter().sum::<f64>() / n, ys.iter().sum::<f64>() / n);
+    let sxy: f64 = xs.iter().zip(&ys).map(|(x, y)| (x - mx) * (y - my)).sum();
+    let sxx: f64 = xs.iter().map(|x| (x - mx).powi(2)).sum();
+    sxy / sxx
+}
+
+/// D1 STATIONARITY (perf plan #3a). The Hylleraas functional
+/// E_H[t] = Σ (2t − t̃)(2J + A t) on a swap-closed pattern is stationary at
+/// the solution: E_H(t) − E* = ⟨(2 − S)δ, Aδ⟩ with δ = t − t*, i.e. second
+/// order in the CG residual (and ≥ 0: an upper bound), while the linear form
+/// Σ (2t − t̃) J errs at FIRST order. Artifact hypothesis: if the extra
+/// matvec or the swap handling were wrong, E_H would err at first order too.
+/// Measured at ε = 1e-4 (production maps) on C4 and C8 Coulomb, C4 and C8
+/// erfc(ω = 1), and the 3-D S22 water dimer (Coulomb), by solving at a
+/// ladder of cg_rtol values and fitting log|ΔE| against log(relres) over the
+/// points above the roundoff floor.
+///
+/// THE PER-RUN BOUND: at every rung, ΔE_H ≤ 3·‖PJ‖²·relres²/λ_min with
+/// λ_min ≥ 2(ε_LUMO − ε_HOMO) (`cg_energy_error_bound`, the certificate's
+/// `cg_energy_error_bound`) is asserted. Mutations (seen to fail):
+/// `hylleraas_energy` returning the linear form; the bound's factor 3
+/// replaced by 0.01.
+#[test]
+fn hylleraas_is_stationary() {
+    let cases = [
+        ("alkane_4.xyz", 4usize, "coul", Operator::coulomb(), 0.7),
+        ("alkane_8.xyz", 8, "coul", Operator::coulomb(), 0.7),
+        ("alkane_4.xyz", 4, "erfc", Operator::erfc(1.0), 0.02),
+        ("alkane_8.xyz", 8, "erfc", Operator::erfc(1.0), 0.02),
+        ("s22/water_dimer.xyz", 2, "coul", Operator::coulomb(), 0.7),
+    ];
+    for (xyz, fc, opn, op, cal) in cases {
+        stationarity_case(xyz, fc, opn, op, cal);
+    }
+}
+
+/// One [`hylleraas_is_stationary`] system: slopes, the upper-bound sign,
+/// and the per-run a-priori bound at every rtol rung.
+fn stationarity_case(xyz: &str, fc: usize, opn: &str, op: Operator, cal: f64) {
+    use ferric_mp2::lmp2_amplitude::{
+        cg_energy_error_bound, hylleraas_energy, linear_energy, operator_lambda_min_lower_bound,
+        pattern_rhs_norm,
+    };
+    use ferric_mp2::ragged::{check_swap_closed, solve_ragged_budgeted_with, MatvecPath};
+    const FLOOR: f64 = 1e-12;
+    let (rg, f_oo, f_vv) = production_ragged_op(xyz, fc, 1e-4, op, cal);
+    check_swap_closed(&rg).unwrap();
+    let lam = operator_lambda_min_lower_bound(&f_oo, &f_vv).unwrap();
+    let bnorm = pattern_rhs_norm(&rg);
+    assert!(lam > 0.0, "{xyz}: no positive gap");
+    // the production (budgeted) solve, ample budget: planned, all dense
+    let solve = |rtol: f64| {
+        let b = solve_ragged_budgeted_with(&rg, &f_oo, rtol, 400, usize::MAX, 0.0);
+        assert_eq!(b.decision.path, MatvecPath::Planned);
+        let e_h = hylleraas_energy(&rg, &f_oo, b.plan(), &b.solve.t).unwrap();
+        (b.solve, e_h)
+    };
+    let (reference, e_ref) = solve(1e-13);
+    assert!(
+        reference.converged,
+        "{xyz}: reference solve did not converge"
+    );
+    let e_ref_lin = linear_energy(&rg, &reference.t);
+    assert!(
+        (e_ref - e_ref_lin).abs() < 1e-13,
+        "{xyz}: forms disagree at the converged solution: {:.3e}",
+        e_ref - e_ref_lin
+    );
+    let (mut hy, mut lin) = (Vec::new(), Vec::new());
+    let mut seen_iters = Vec::new();
+    let (mut c_h_max, mut use_max) = (0.0f64, 0.0f64);
+    for rtol in [
+        1e-1, 3e-2, 1e-2, 3e-3, 1e-3, 3e-4, 1e-4, 3e-5, 1e-5, 3e-6, 1e-6,
+    ] {
+        let (s, e_h) = solve(rtol);
+        if seen_iters.contains(&s.iterations) {
+            continue;
+        }
+        seen_iters.push(s.iterations);
+        let dh = e_h - e_ref;
+        let dl = linear_energy(&rg, &s.t) - e_ref;
+        let bound = cg_energy_error_bound(bnorm, s.relres, lam);
+        eprintln!(
+            "STAT {xyz} {opn} rtol {rtol:.0e} iters {:3} relres {:.3e}  dE_H {dh:+.3e}  \
+             bound {bound:.3e} (dE_H/bound {:.3})  dE_lin {dl:+.3e}  dE_H/relres^2 {:.3e}",
+            s.iterations,
+            s.relres,
+            dh / bound,
+            dh / (s.relres * s.relres)
+        );
+        assert!(
+            dh > -FLOOR,
+            "{xyz}: E_H fell below the converged energy ({dh:.3e}): not an upper bound"
+        );
+        assert!(
+            dh <= bound + FLOOR,
+            "{xyz} {opn}: dE_H {dh:.3e} exceeds the a-priori bound {bound:.3e}"
+        );
+        if dh.abs() > FLOOR {
+            hy.push((s.relres, dh));
+            c_h_max = c_h_max.max(dh / (s.relres * s.relres));
+            use_max = use_max.max(dh / bound);
+        }
+        if dl.abs() > FLOOR {
+            lin.push((s.relres, dl));
+        }
+    }
+    assert!(
+        hy.len() >= 4 && lin.len() >= 4,
+        "{xyz}: too few points to fit"
+    );
+    let (sh, sl) = (loglog_slope(&hy), loglog_slope(&lin));
+    eprintln!(
+        "STAT {xyz} {opn}: slope E_H {sh:.3} ({} pts), slope E_lin {sl:.3} ({} pts), \
+         max dE_H/relres^2 {c_h_max:.3e} Ha, bound constant 3*|PJ|^2/lam {:.3e} Ha \
+         (|PJ| {bnorm:.3e}, lam_lb {lam:.3e}), max dE_H/bound {use_max:.3}",
+        hy.len(),
+        lin.len(),
+        3.0 * bnorm * bnorm / lam
+    );
+    assert!(
+        (1.7..=2.6).contains(&sh),
+        "{xyz}: Hylleraas error slope {sh:.3} is not quadratic"
+    );
+    assert!(
+        (0.6..=1.4).contains(&sl),
+        "{xyz}: linear-form error slope {sl:.3} is not first order"
+    );
+}
+
+/// D2 (perf plan #3e): the adaptive Fvv product. On C8 at ε = 1e-4
+/// (production maps, gate on): ρ* = 0 puts NO block on the sparse branch and
+/// is bitwise the indexed matvec; a forced ρ* > 1 puts EVERY block on it and
+/// agrees with the dense matvec to ≤ 1e-13·max|out| on a pattern-projected
+/// random operand, and the two full PCG solves agree (same iteration count,
+/// energies ≤ 1e-13); an intermediate ρ* (the median block density) splits
+/// the blocks and still agrees. Mutation (seen to fail): the sparse branch
+/// drops its t·Fvv_bb half.
+#[test]
+fn fvv_sparse_branch_matches_dense() {
+    use ferric_mp2::lmp2_amplitude::hylleraas_energy;
+    use ferric_mp2::ragged::{
+        apply_pattern, matvec_indexed, matvec_planned, solve_ragged_budgeted_with, SolvePlan,
+    };
+    use ndarray::Array2;
+    let (rg, f_oo) = production_ragged("alkane_8.xyz", 8, 1e-4);
+    let mut seed = 11u64;
+    let mut rnd = || {
+        seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        ((seed >> 11) as f64 / (1u64 << 53) as f64) - 0.5
+    };
+    let t: Vec<Array2<f64>> = rg
+        .pairs
+        .iter()
+        .map(|pb| {
+            let mut x = Array2::from_shape_fn((pb.da.len(), pb.db.len()), |_| rnd());
+            apply_pattern(&mut x, &pb.pat, pb.db.len());
+            x
+        })
+        .collect();
+    let empty = || -> Vec<Array2<f64>> { rg.pairs.iter().map(|_| Array2::zeros((0, 0))).collect() };
+    let mut fl = 0u64;
+    let want = matvec_indexed(&rg, &f_oo, &t, &mut fl);
+
+    let dense = SolvePlan::with_fvv_threshold(&rg, &f_oo, 0.0);
+    assert_eq!(
+        dense.n_fvv_sparse(),
+        0,
+        "rho* = 0 must keep every block dense"
+    );
+    let mut got = empty();
+    matvec_planned(&rg, &dense, &t, &mut got, &mut fl);
+    assert!(
+        bits_equal(&want, &got),
+        "rho* = 0 is not bitwise the indexed matvec"
+    );
+
+    // the sparse branch reads Fvv_aa's column k as row k: Fvv must be
+    // symmetric (to rounding — it is a block of Cᵀ F C)
+    let (mut asym, mut fmax) = (0.0f64, 0.0f64);
+    for pb in &rg.pairs {
+        for m in [&pb.fvv_aa, &pb.fvv_bb] {
+            asym = asym.max((m - &m.t()).iter().fold(0.0f64, |a, x| a.max(x.abs())));
+            fmax = fmax.max(m.iter().fold(0.0f64, |a, x| a.max(x.abs())));
+        }
+    }
+    eprintln!("Fvv block asymmetry {asym:.3e} (max |Fvv| {fmax:.3e})");
+    assert!(
+        asym <= 1e-13 * fmax,
+        "Fvv blocks are not symmetric: {asym:.3e}"
+    );
+    let mut dens: Vec<f64> = rg
+        .pairs
+        .iter()
+        .map(|pb| pb.pat.iter().filter(|&&x| x).count() as f64 / pb.pat.len() as f64)
+        .collect();
+    dens.sort_by(f64::total_cmp);
+    let median = dens[dens.len() / 2];
+    eprintln!(
+        "block density: min {:.3} median {median:.3} max {:.3} ({} blocks)",
+        dens[0],
+        dens[dens.len() - 1],
+        dens.len()
+    );
+    let scale = want
+        .iter()
+        .flat_map(|b| b.iter())
+        .fold(0.0f64, |m, x| m.max(x.abs()));
+    for (label, rho) in [("forced", 1.5), ("median", median)] {
+        let plan = SolvePlan::with_fvv_threshold(&rg, &f_oo, rho);
+        let ns = plan.n_fvv_sparse();
+        if label == "forced" {
+            assert_eq!(
+                ns,
+                rg.pairs.len(),
+                "rho* > 1 must put every block on the sparse branch"
+            );
+        } else {
+            assert!(
+                ns > 0 && ns < rg.pairs.len(),
+                "median rho* did not split the blocks ({ns})"
+            );
+        }
+        let mut got = empty();
+        matvec_planned(&rg, &plan, &t, &mut got, &mut fl);
+        let dev = want
+            .iter()
+            .zip(&got)
+            .flat_map(|(a, b)| a.iter().zip(b.iter()).map(|(x, y)| (x - y).abs()))
+            .fold(0.0f64, f64::max)
+            / scale;
+        eprintln!("{label} rho* {rho:.3}: {ns} sparse blocks, matvec dev {dev:.3e} rel");
+        assert!(
+            dev <= 1e-13,
+            "{label}: sparse vs dense matvec {dev:.3e} > 1e-13"
+        );
+
+        // the production (budgeted) solve at rho* = 0 and at this rho*
+        let bd = solve_ragged_budgeted_with(&rg, &f_oo, 1e-11, 400, usize::MAX, 0.0);
+        let bs = solve_ragged_budgeted_with(&rg, &f_oo, 1e-11, 400, usize::MAX, rho);
+        assert_eq!(bs.plan().map(SolvePlan::n_fvv_sparse), Some(ns));
+        let (sd, ss) = (&bd.solve, &bs.solve);
+        assert!(sd.converged && ss.converged);
+        assert_eq!(
+            sd.iterations, ss.iterations,
+            "{label}: CG iteration count differs"
+        );
+        let (ed, es) = (
+            hylleraas_energy(&rg, &f_oo, bd.plan(), &sd.t).unwrap(),
+            hylleraas_energy(&rg, &f_oo, bs.plan(), &ss.t).unwrap(),
+        );
+        eprintln!(
+            "{label}: E dense {ed:.15} sparse {es:.15} |dE| {:.3e}",
+            (ed - es).abs()
+        );
+        assert!(
+            (ed - es).abs() <= 1e-13,
+            "{label}: energies differ by {:.3e}",
+            (ed - es).abs()
+        );
+    }
+}
+
+/// `hylleraas_energy` checks swap closure ITSELF: a pattern made one-sided
+/// in one block (C4 production system) is an error, not a non-stationary
+/// number. Mutation (seen to fail): the check removed from
+/// `hylleraas_energy`.
+#[test]
+fn hylleraas_energy_rejects_a_one_sided_pattern() {
+    use ferric_mp2::lmp2_amplitude::hylleraas_energy;
+    use ferric_mp2::ragged::solve_ragged_budgeted_with;
+    let (mut rg, f_oo) = production_ragged("alkane_4.xyz", 4, 1e-4);
+    let b = solve_ragged_budgeted_with(&rg, &f_oo, 1e-8, 400, usize::MAX, 0.0);
+    assert!(hylleraas_energy(&rg, &f_oo, b.plan(), &b.solve.t).is_ok());
+    let t = b.solve.t.clone();
+    drop(b);
+    let pb = rg
+        .pairs
+        .iter_mut()
+        .find(|pb| {
+            let n = pb.da.len();
+            (0..n).any(|r| ((r + 1)..n).any(|c| pb.pat[r * n + c] && pb.pat[c * n + r]))
+        })
+        .expect("a block with an off-diagonal kept element");
+    let n = pb.da.len();
+    let (r, c) = (0..n)
+        .flat_map(|r| ((r + 1)..n).map(move |c| (r, c)))
+        .find(|&(r, c)| pb.pat[r * n + c] && pb.pat[c * n + r])
+        .unwrap();
+    pb.pat[c * n + r] = false;
+    let err = hylleraas_energy(&rg, &f_oo, None, &t).unwrap_err();
+    assert!(format!("{err}").contains("swap-closed"), "{err}");
+}
+
+/// `fvv_sparse_rho` must be a finite ρ* ≥ 0: NaN and negative values are a
+/// configuration error from the driver (water, ε = 1e-4), and the validator
+/// accepts 0 and any positive value. Mutation (seen to fail): the
+/// validation call removed from `solve_and_count`.
+#[test]
+fn fvv_sparse_rho_rejects_nan_and_negative() {
+    use ferric_mp2::lmp2_amplitude::validate_fvv_sparse_rho;
+    assert!(validate_fvv_sparse_rho(0.0).is_ok() && validate_fvv_sparse_rho(1.5).is_ok());
+    let su = setup("water.xyz");
+    for bad in [f64::NAN, -0.1] {
+        assert!(validate_fvv_sparse_rho(bad).is_err());
+        let cfg = AmplitudeLmp2Config {
+            eps: 1e-4,
+            frozen_core: 1,
+            fvv_sparse_rho: bad,
+            ..Default::default()
+        };
+        let err = amplitude_lmp2_direct(
+            &su.mol,
+            &su.obs,
+            &su.obs_bs,
+            &su.dfbs,
+            Operator::coulomb(),
+            &su.rhf,
+            &cfg,
+            &DirectConfig::default(),
+        )
+        .unwrap_err();
+        assert!(format!("{err}").contains("fvv_sparse_rho"), "{err}");
+    }
+}
+
+// ---- the adaptive PCG tolerance ----
+
+/// One row of the tolerance claim: the default against an explicit 1e-11 from
+/// the same code. `check` asserts |ΔE| <= reported bound <= 1e-10 Ha, no
+/// tightening, and the certificate-facing outcome. Matvecs = iterations + 1
+/// (the Hylleraas energy's own). Artifact hypothesis: a bound or energy that
+/// did not track the residual would break |ΔE| <= bound on some row, and an
+/// energy linear in the residual would miss it by orders of magnitude.
+fn rtol_row(xyz: &str, fc: usize, opn: &str, op: Operator, cal: f64, in_core: bool, check: bool) {
+    use ferric_mp2::lmp2_amplitude::{AmplitudeLmp2Result, CgRtolSource};
+    let su = setup(xyz);
+    let dcfg = DirectConfig {
+        aux_radius_bohr: 10.0,
+        virt_radius_bohr: Some(12.0),
+        ao_tail: 1e-3,
+        schwarz_skip: 1e-5,
+        batch_merge: 4,
+        ..Default::default()
+    };
+    let cfg = |rtol: Option<f64>| AmplitudeLmp2Config {
+        eps: 1e-4,
+        frozen_core: fc,
+        pair_gate_cal: Some(cal),
+        cg_rtol: rtol,
+        ..Default::default()
+    };
+    let run_direct = |rtol| {
+        amplitude_lmp2_direct(
+            &su.mol,
+            &su.obs,
+            &su.obs_bs,
+            &su.dfbs,
+            op,
+            &su.rhf,
+            &cfg(rtol),
+            &dcfg,
+        )
+        .unwrap()
+        .0
+    };
+    let run_core = |rtol| {
+        amplitude_lmp2(
+            &su.mol,
+            &su.obs,
+            &su.obs_bs,
+            &su.dfbs,
+            op,
+            &su.rhf,
+            &cfg(rtol),
+        )
+        .unwrap()
+    };
+    let assess = |path: &str, new: AmplitudeLmp2Result, strict: AmplitudeLmp2Result| {
+        let de = new.e_corr - strict.e_corr;
+        let (o, bound) = (new.cg_rtol_outcome, new.cg_energy_error_bound);
+        eprintln!(
+            "RTOLROW {xyz} {opn} {path}: dE {de:+.3e} bound {bound:.3e} iters {} vs {} matvecs \
+             {} vs {} relres {:.3e} true {:.3e} true/recursive-1 {:+.2e} tightened {} rtol {:.0e}",
+            new.cg_iterations,
+            strict.cg_iterations,
+            new.cg_iterations + 1,
+            strict.cg_iterations + 1,
+            new.cg_relres,
+            new.cg_true_relres,
+            new.cg_true_relres / new.cg_relres - 1.0,
+            o.tightened,
+            o.rtol_used
+        );
+        assert!(new.cg_converged && strict.cg_converged);
+        assert_eq!(strict.cg_rtol_outcome.source, CgRtolSource::Explicit);
+        assert_eq!(strict.cg_rtol_outcome.rtol_used, 1e-11);
+        assert_eq!(o.source, CgRtolSource::AdaptiveDefault);
+        assert_eq!(o.target_met, Some(true), "{xyz} {opn} {path}");
+        assert!(bound <= 1e-10, "{xyz} {opn} {path}: bound {bound:.3e}");
+        assert!(
+            de.abs() <= bound,
+            "{xyz} {opn} {path}: |dE| {de:.3e} > bound {bound:.3e}"
+        );
+        if check {
+            assert!(!o.tightened, "{xyz} {opn} {path}: tightening fired");
+            assert_eq!(o.rtol_used, 1e-6);
+            assert!(new.cg_iterations < strict.cg_iterations);
+        }
+    };
+    assess("direct", run_direct(None), run_direct(Some(1e-11)));
+    if in_core {
+        assess("in-core", run_core(None), run_core(Some(1e-11)));
+    }
+}
+
+#[test]
+fn default_rtol_energy_is_within_its_bound() {
+    let coul = Operator::coulomb();
+    let erfc = Operator::erfc(1.0);
+    rtol_row("alkane_4.xyz", 4, "coul", coul, 0.7, true, true);
+    rtol_row("alkane_4.xyz", 4, "erfc", erfc, 0.02, true, true);
+    rtol_row("alkane_8.xyz", 8, "coul", coul, 0.7, false, true);
+    rtol_row("alkane_8.xyz", 8, "erfc", erfc, 0.02, false, true);
+    rtol_row("s22/water_dimer.xyz", 2, "coul", coul, 0.7, true, true);
+}
+
+fn adaptive(start: f64, floor: f64, target_ha: f64) -> ferric_mp2::lmp2_amplitude::CgRtolPolicy {
+    ferric_mp2::lmp2_amplitude::CgRtolPolicy::Adaptive {
+        start,
+        floor,
+        target_ha,
+    }
+}
+
+/// Continuing is not restarting: stopping at 1e-6 and carrying on to 1e-9 is
+/// bitwise the straight 1e-9 solve, on both matvec paths, with no extra
+/// iterations.
+#[test]
+fn continued_pcg_is_bitwise_a_straight_solve() {
+    use ferric_mp2::ragged::{solve_ragged_budgeted_steered, solve_ragged_budgeted_with};
+    let (rg, f_oo) = production_ragged("alkane_4.xyz", 4, 1e-4);
+    for budget in [usize::MAX, 1] {
+        let straight = solve_ragged_budgeted_with(&rg, &f_oo, 1e-9, 400, budget, 0.0);
+        let mut stops = Vec::new();
+        let cont = solve_ragged_budgeted_steered(&rg, &f_oo, 1e-6, 400, budget, 0.0, |relres| {
+            stops.push(relres);
+            (stops.len() == 1).then_some(1e-9)
+        });
+        assert_eq!(stops.len(), 2, "one stop per tolerance");
+        assert!(stops[0] < 1e-6 && stops[0] > 1e-9);
+        assert!(cont.solve.converged);
+        assert_eq!(cont.solve.iterations, straight.solve.iterations);
+        assert_eq!(cont.solve.relres.to_bits(), straight.solve.relres.to_bits());
+        assert!(bits_equal(&cont.solve.t, &straight.solve.t));
+    }
+}
+
+/// A target low enough to force tightening: it fires, lands at the derived
+/// tolerance, meets the target, and the energy error obeys the final bound.
+/// Mutants seen to fail: tightening never fires; the threshold check inverted.
+#[test]
+fn tightening_fires_and_meets_a_low_target() {
+    use ferric_mp2::lmp2_amplitude::{
+        hylleraas_energy, operator_lambda_min_lower_bound, pattern_rhs_norm,
+        solve_under_rtol_policy, CgRtolSource, PolicySolve, LMP2_CG_ENERGY_ERROR_TARGET,
+    };
+    let (rg, f_oo, f_vv) = production_ragged_op("alkane_4.xyz", 4, 1e-4, Operator::coulomb(), 0.7);
+    let run = |p| solve_under_rtol_policy(&rg, &f_oo, &f_vv, p, 400, usize::MAX, 0.0).unwrap();
+    let reference = run(adaptive(1e-13, 1e-13, 1.0)).budgeted;
+    let e_ref = hylleraas_energy(&rg, &f_oo, reference.plan(), &reference.solve.t).unwrap();
+
+    // the default target does not fire on this system, from the same start
+    let PolicySolve {
+        budgeted: at_start,
+        outcome: o0,
+        bound: b0,
+        ..
+    } = run(adaptive(1e-3, 1e-11, 1.0));
+    assert!(!o0.tightened && o0.target_met == Some(true));
+    assert!(
+        b0 > 1e-9,
+        "start bound {b0:.3e} must exceed the targets below"
+    );
+
+    for target in [1e-8, LMP2_CG_ENERGY_ERROR_TARGET, 1e-13] {
+        let PolicySolve {
+            budgeted: b,
+            outcome: o,
+            bound,
+            ..
+        } = run(adaptive(1e-3, 1e-11, target));
+        let e = hylleraas_energy(&rg, &f_oo, b.plan(), &b.solve.t).unwrap();
+        let de = e - e_ref;
+        eprintln!(
+            "TIGHTEN target {target:.0e}: rtol {:.3e} iters {} (start {}) relres {:.3e} bound \
+             {bound:.3e} dE {de:+.3e}",
+            o.rtol_used, b.solve.iterations, at_start.solve.iterations, b.solve.relres
+        );
+        let lam = operator_lambda_min_lower_bound(&f_oo, &f_vv).unwrap();
+        let derived = 0.5 * (target * lam / 3.0).sqrt() / pattern_rhs_norm(&rg);
+        assert_eq!(o.source, CgRtolSource::AdaptiveDefault);
+        assert!(o.tightened, "target {target:.0e} did not fire");
+        assert_eq!(o.rtol_used, derived.max(1e-11));
+        assert_eq!(o.target_met, Some(true));
+        assert!(b.solve.converged && bound <= target);
+        assert!(b.solve.iterations > at_start.solve.iterations);
+        assert!(de.abs() <= bound + 1e-14, "dE {de:.3e} bound {bound:.3e}");
+    }
+}
+
+/// An unreachable target is reported, at the floor and at the iteration limit,
+/// and the floor is never passed.
+#[test]
+fn unreachable_target_is_reported() {
+    use ferric_mp2::lmp2_amplitude::{solve_under_rtol_policy, PolicySolve};
+    let (rg, f_oo, f_vv) = production_ragged_op("alkane_4.xyz", 4, 1e-4, Operator::coulomb(), 0.7);
+    let PolicySolve {
+        budgeted: b,
+        outcome: o,
+        bound,
+        ..
+    } = solve_under_rtol_policy(
+        &rg,
+        &f_oo,
+        &f_vv,
+        adaptive(1e-6, 1e-9, 1e-40),
+        400,
+        usize::MAX,
+        0.0,
+    )
+    .unwrap();
+    assert!(b.solve.converged && o.tightened);
+    assert_eq!(o.rtol_used, 1e-9);
+    assert_eq!(o.target_met, Some(false));
+    assert!(bound > 1e-40 && b.solve.relres > 1e-11);
+
+    let PolicySolve { budgeted: s, .. } = solve_under_rtol_policy(
+        &rg,
+        &f_oo,
+        &f_vv,
+        adaptive(1e-6, 1e-11, 1.0),
+        400,
+        usize::MAX,
+        0.0,
+    )
+    .unwrap();
+    let limit = s.solve.iterations + 1;
+    let PolicySolve {
+        budgeted: b,
+        outcome: o,
+        bound,
+        ..
+    } = solve_under_rtol_policy(
+        &rg,
+        &f_oo,
+        &f_vv,
+        adaptive(1e-6, 1e-11, 1e-30),
+        limit,
+        usize::MAX,
+        0.0,
+    )
+    .unwrap();
+    assert!(!b.solve.converged && o.tightened);
+    assert_eq!(b.solve.iterations, limit);
+    assert_eq!(o.target_met, Some(false));
+    assert!(bound > 1e-30);
+}
+
+/// With no positive gap the bound is undefined: the adaptive policy runs at
+/// the strict tolerance from the start and never reports a met target.
+#[test]
+fn no_gap_uses_the_strict_tolerance() {
+    use ferric_mp2::lmp2_amplitude::{
+        solve_under_rtol_policy, CgRtolPolicy, CgRtolSource, PolicySolve,
+    };
+    use ferric_mp2::ragged::solve_ragged_budgeted_with;
+    let (rg, f_oo, f_vv) = production_ragged_op("alkane_4.xyz", 4, 1e-4, Operator::coulomb(), 0.7);
+    // only the bound reads f_vv: the operator lives in the pair blocks
+    let closed = &f_vv - &(ndarray::Array2::<f64>::eye(f_vv.nrows()) * 100.0);
+    let PolicySolve {
+        budgeted: b,
+        outcome: o,
+        bound,
+        ..
+    } = solve_under_rtol_policy(
+        &rg,
+        &f_oo,
+        &closed,
+        CgRtolPolicy::from_config(None),
+        400,
+        usize::MAX,
+        0.0,
+    )
+    .unwrap();
+    assert_eq!(o.source, CgRtolSource::StrictNoGap);
+    assert_eq!(o.rtol_used, 1e-11);
+    assert!(!o.tightened && o.target_met.is_none() && bound.is_nan());
+    let straight = solve_ragged_budgeted_with(&rg, &f_oo, 1e-11, 400, usize::MAX, 0.0);
+    assert!(bits_equal(&b.solve.t, &straight.solve.t));
+}
+
+/// An explicit tolerance is literal: the driver stops at it even with the
+/// bound far above the default target, and the certificate says so.
+#[test]
+fn explicit_rtol_is_literal() {
+    use ferric_mp2::lmp2_amplitude::CgRtolSource;
+    use ferric_mp2::lmp2_certificate::{Lmp2Certificate, SystemShape};
+    let su = setup("alkane_4.xyz");
+    let cfg = AmplitudeLmp2Config {
+        eps: 1e-4,
+        frozen_core: 4,
+        cg_rtol: Some(1e-3),
+        ..Default::default()
+    };
+    let r = amplitude_lmp2(
+        &su.mol,
+        &su.obs,
+        &su.obs_bs,
+        &su.dfbs,
+        Operator::coulomb(),
+        &su.rhf,
+        &cfg,
+    )
+    .unwrap();
+    let o = r.cg_rtol_outcome;
+    assert_eq!(o.source, CgRtolSource::Explicit);
+    assert!(!o.tightened && o.rtol_used == 1e-3 && o.target_met.is_none());
+    assert!(r.cg_relres > 1e-6 && r.cg_energy_error_bound > 1e-10);
+    let shape = SystemShape::new(&su.mol, &su.obs_bs);
+    let cert = Lmp2Certificate::new(&cfg, None, &r, &shape, &Operator::coulomb());
+    assert_eq!(cert.cg_rtol, 1e-3);
+    assert_eq!(cert.cg_rtol_source, "explicit");
+    assert!(
+        cert.solver_warnings
+            .iter()
+            .any(|w| w.contains("not tightened")),
+        "{:?}",
+        cert.solver_warnings
+    );
+}
+
+/// The reported bound is a posteriori: it sits on the TRUE residual, which an
+/// independent matvec reproduces, and the true residual is what the helper
+/// reads even when `t` is not the PCG's own iterate. Mutants seen to fail: the
+/// bound fed a scaled-down residual; the bound on the recursive residual; the
+/// helper's residual dropping `J`.
+#[test]
+fn reported_bound_uses_the_true_residual() {
+    use ferric_mp2::lmp2_amplitude::{
+        cg_energy_error_bound, hylleraas_energy_and_residual, operator_lambda_min_lower_bound,
+        pattern_rhs_norm, solve_under_rtol_policy, CgRtolPolicy,
+    };
+    use ferric_mp2::ragged::matvec_indexed;
+    let (rg, f_oo, f_vv) = production_ragged_op("alkane_4.xyz", 4, 1e-4, Operator::coulomb(), 0.7);
+    let oracle = |t: &[ndarray::Array2<f64>]| {
+        let mut fl = 0u64;
+        let at = matvec_indexed(&rg, &f_oo, t, &mut fl);
+        let mut r2 = 0.0;
+        for (pb, a) in rg.pairs.iter().zip(&at) {
+            let n = pb.db.len();
+            for r in 0..pb.da.len() {
+                for c in 0..n {
+                    if pb.pat[r * n + c] {
+                        r2 += (pb.j_blk[(r, c)] + a[(r, c)]).powi(2);
+                    }
+                }
+            }
+        }
+        r2.sqrt()
+    };
+    let (bnorm, lam) = (
+        pattern_rhs_norm(&rg),
+        operator_lambda_min_lower_bound(&f_oo, &f_vv).unwrap(),
+    );
+    let p = solve_under_rtol_policy(
+        &rg,
+        &f_oo,
+        &f_vv,
+        CgRtolPolicy::from_config(None),
+        400,
+        usize::MAX,
+        0.0,
+    )
+    .unwrap();
+    let true_r = oracle(&p.budgeted.solve.t) / bnorm;
+    assert!(
+        (p.true_relres / true_r - 1.0).abs() < 1e-13,
+        "{} vs {true_r}",
+        p.true_relres
+    );
+    let want = cg_energy_error_bound(bnorm, true_r, lam);
+    // tight enough to tell it from the recursive residual, ~1e-12 away here
+    assert!(
+        (p.bound / want - 1.0).abs() < 1e-13,
+        "{} vs {want}",
+        p.bound
+    );
+    assert_ne!(p.true_relres.to_bits(), p.budgeted.solve.relres.to_bits());
+
+    // a t the recursion knows nothing about: the helper must see its residual
+    let t: Vec<_> = p.budgeted.solve.t.iter().map(|b| b * 1.01).collect();
+    let (_, r) = hylleraas_energy_and_residual(&rg, &f_oo, None, &t).unwrap();
+    assert!((r / oracle(&t) - 1.0).abs() < 1e-12);
+    assert!(r / bnorm > 1e-3, "perturbation not visible: {}", r / bnorm);
+
+    // a target set exactly at the recursive bound does not tighten, and the
+    // verdict follows the true residual
+    let target = cg_energy_error_bound(bnorm, p.budgeted.solve.relres, lam);
+    let q = solve_under_rtol_policy(
+        &rg,
+        &f_oo,
+        &f_vv,
+        adaptive(1e-6, 1e-11, target),
+        400,
+        usize::MAX,
+        0.0,
+    )
+    .unwrap();
+    eprintln!(
+        "TRUEVERDICT recursive-bound target {target:.6e} true bound {:.6e} met {:?}",
+        q.bound, q.outcome.target_met
+    );
+    assert!(!q.outcome.tightened);
+    assert_eq!(q.outcome.target_met, Some(q.bound <= target));
+}
+
+/// Pins both constants of `3·‖PJ‖²·relres²/λ_min` on a small system whose
+/// operator is built densely. λ_min: the true smallest eigenvalue is never
+/// below the lower bound, and on the full pattern equals it, so a wrong factor
+/// of 2 fails either way. The 3: a perturbation along the lowest swap-ANTISYMMETRIC
+/// eigenvector, where 2 − S = 3, gives an actual energy error above what a bound
+/// without the 3 would allow. Mutants seen to fail: the factor 3 replaced by 1;
+/// the gap's factor 2 replaced by 1 and by 4.
+#[test]
+fn bound_constants_are_pinned_on_a_dense_system() {
+    use ferric_mp2::lmp2_amplitude::{
+        cg_energy_error_bound, hylleraas_energy_and_residual, operator_lambda_min_lower_bound,
+        pattern_rhs_norm,
+    };
+    use ferric_mp2::ragged::{matvec_indexed, solve_ragged_budgeted_with};
+    use ndarray::{Array1, Array2};
+    use ndarray_linalg::{Eigh, UPLO};
+    for (eps, full) in [(0.0, true), (1e-4, false)] {
+        let (rg, f_oo, f_vv) = production_ragged_op("water.xyz", 1, eps, Operator::coulomb(), 0.7);
+        let idx: Vec<(usize, usize, usize)> = rg
+            .pairs
+            .iter()
+            .enumerate()
+            .flat_map(|(p, pb)| {
+                let n = pb.db.len();
+                (0..pb.da.len()).flat_map(move |r| (0..n).map(move |c| (p, r, c)))
+            })
+            .filter(|&(p, r, c)| rg.pairs[p].pat[r * rg.pairs[p].db.len() + c])
+            .collect();
+        let dim = idx.len();
+        let zeros: Vec<Array2<f64>> = rg
+            .pairs
+            .iter()
+            .map(|pb| Array2::zeros((pb.da.len(), pb.db.len())))
+            .collect();
+        let mut a = Array2::<f64>::zeros((dim, dim));
+        for (col, &(p, r, c)) in idx.iter().enumerate() {
+            let mut e = zeros.clone();
+            e[p][(r, c)] = 1.0;
+            let mut fl = 0u64;
+            let ae = matvec_indexed(&rg, &f_oo, &e, &mut fl);
+            for (row, &(q, s, d)) in idx.iter().enumerate() {
+                a[(row, col)] = ae[q][(s, d)];
+            }
+        }
+        let asym = (&a - &a.t()).iter().fold(0.0f64, |m, x| m.max(x.abs()));
+        assert!(asym < 1e-10, "A not symmetric: {asym:.2e}");
+        let (w, _) = a.eigh(UPLO::Lower).unwrap();
+        let lb = operator_lambda_min_lower_bound(&f_oo, &f_vv).unwrap();
+        eprintln!(
+            "DENSE eps {eps:e} dim {dim}: lambda_min {:.10} lower bound {lb:.10}",
+            w[0]
+        );
+        assert!(w[0] >= lb - 1e-10, "lambda_min {} below {lb}", w[0]);
+        if !full {
+            continue;
+        }
+        assert_eq!(dim, rg.pairs.iter().map(|p| p.pat.len()).sum::<usize>());
+        assert!((w[0] - lb).abs() < 1e-9, "full pattern: {} vs {lb}", w[0]);
+
+        // lowest eigenvector with S = -1: lift the S = +1 sector out of the way
+        let pos: std::collections::HashMap<_, _> =
+            idx.iter().enumerate().map(|(i, &k)| (k, i)).collect();
+        let swap: Vec<usize> = idx.iter().map(|&(p, r, c)| pos[&(p, c, r)]).collect();
+        let mut lifted = a.clone();
+        for (i, &si) in swap.iter().enumerate() {
+            lifted[(i, i)] += 50.0;
+            lifted[(i, si)] += 50.0;
+        }
+        let (wl, vl) = lifted.eigh(UPLO::Lower).unwrap();
+        let lam_anti = wl[0];
+        let v: Array1<f64> = vl.column(0).to_owned();
+        let sv = swap.iter().map(|&s| v[s]).collect::<Array1<f64>>();
+        assert!((&sv + &v).iter().all(|x| x.abs() < 1e-8), "not S = -1");
+        assert!(
+            lam_anti < 3.0 * lb,
+            "a bound without the 3 would still hold"
+        );
+
+        let star = solve_ragged_budgeted_with(&rg, &f_oo, 1e-13, 400, usize::MAX, 0.0);
+        let (e_star, _) =
+            hylleraas_energy_and_residual(&rg, &f_oo, star.plan(), &star.solve.t).unwrap();
+        let c = 1e-3;
+        let mut t = star.solve.t.clone();
+        for (i, &(p, r, d)) in idx.iter().enumerate() {
+            t[p][(r, d)] += c * v[i];
+        }
+        let (e, r) = hylleraas_energy_and_residual(&rg, &f_oo, None, &t).unwrap();
+        let de = e - e_star;
+        let bnorm = pattern_rhs_norm(&rg);
+        let bound = cg_energy_error_bound(bnorm, r / bnorm, lb);
+        let exact = 3.0 * c * c * lam_anti;
+        eprintln!(
+            "DENSE lam_anti {lam_anti:.8} dE {de:.6e} exact {exact:.6e} bound {bound:.6e} ratio {:.3}",
+            de / bound
+        );
+        assert!((de / exact - 1.0).abs() < 1e-6, "{de:.6e} vs {exact:.6e}");
+        assert!(de <= bound, "dE {de:.3e} > bound {bound:.3e}");
+    }
 }

@@ -1165,3 +1165,16 @@ fn a_drop_1x1x8_reproduces_the_prototype_rows() {
     eprintln!("b = 2E4 - E8: canonical {b_can:+.3e}, head restored {b_head:+.3e}");
     assert!(b_can > 3e-3 && b_head > 0.5e-3 && b_head < 1.6e-3);
 }
+
+/// Gamma LMP2's energy is LINEAR, first order in the CG residual, so it must
+/// not pick up the molecular LMP2's relaxed Hylleraas tolerance: the default
+/// stays 1e-11 and the solve actually runs to it.
+#[test]
+fn linear_energy_keeps_the_strict_cg_tolerance() {
+    let c = cfg(1e-4);
+    assert_eq!(c.cg_rtol, 1e-11);
+    let sys = wrapped4();
+    let r = sys.run(&c, &sys.spaces(&c));
+    assert!(r.cg_converged);
+    assert!(r.cg_relres < 1e-11, "relres {:.3e}", r.cg_relres);
+}
