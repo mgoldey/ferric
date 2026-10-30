@@ -25,6 +25,9 @@
 //! 5. Per-pair domain-local same-kernel fit `J_ij = A_i^T V_DD⁻¹ A_j`
 //!    (identical formulation to `domain_fit_pair`) → Eq-8 mask →
 //!    `PairBlock`s. Solve and energy are the unchanged ragged machinery.
+//!    Evaluated without an inverse: `L = chol(V_DD)` once per pair-domain
+//!    group, `W_k = L⁻¹ A_k` once per distinct occupied in the group, and
+//!    `J_ij = W_iᵀ W_j` per pair.
 //!
 //! # Exactness anchor (written BEFORE any sweep — Experimental Protocol)
 //!
@@ -44,7 +47,7 @@
 //! DIAMETER. These predictions differ, so the sweep can distinguish them.
 
 use ndarray::{Array1, Array2, Array3, Axis};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::time::Instant;
 
 use ferric_core::error::FerricError;
@@ -184,6 +187,18 @@ pub struct DirectStats {
     pub batch_work_mean_s: f64,
     pub t_metric_s: f64,
     pub t_pairs_s: f64,
+    /// Stage-5 pair-domain groups (one V_DD Cholesky each).
+    pub n_pair_groups: usize,
+    /// Mean distinct occupieds over a group's pairs (each is whitened once
+    /// per group, `W_k = L⁻¹ A_k`, instead of once per pair).
+    pub n_distinct_occ_per_group: f64,
+    /// Stage-5 triangular solves (multi-RHS): one per occupied for the κ
+    /// screen when it is on, plus one per (group, distinct occupied) not
+    /// reused from it.
+    pub n_trsm: usize,
+    /// (group, occupied) whitenings taken from the κ screen's own-domain
+    /// `W` (pair (i,i)'s group has domain exactly D_i) instead of a solve.
+    pub n_w_reused: usize,
     /// Boys localization + localized-space setup (`localized_spaces`),
     /// wall seconds; set by the driver (0 when the assembly is called
     /// directly).
@@ -367,12 +382,69 @@ fn shell_funcs(prep: &PreparedBasis, shells: &[usize]) -> Vec<usize> {
     out
 }
 
-/// Per-occupied Schwarz magnitudes q_ia = √(b_ia^T V_{D_i D_i}⁻¹ b_ia)
-/// over each i's OWN distance domain, from strip-local rows — the
-/// `virt_schwarz_kappa` screen's inputs (stage 5a). Returns (q per i,
-/// qmax per i). Extracted from the assembly driver (complexity ceiling).
+/// `L` with `V = L Lᵀ` (lower Cholesky factor) of a gathered `V_DD`.
+fn chol_lower(vdd: &Array2<f64>, what: &str) -> Result<Array2<f64>, FerricError> {
+    use ndarray_linalg::{Cholesky, UPLO};
+    vdd.cholesky(UPLO::Lower)
+        .map_err(|e| FerricError::General(format!("lmp2_direct V_DD Cholesky ({what}): {e}")))
+}
+
+/// `W = L⁻¹ A` (one triangular solve with many right-hand sides).
+fn whiten(l: &Array2<f64>, a: &Array2<f64>, what: &str) -> Result<Array2<f64>, FerricError> {
+    use ndarray_linalg::{Diag, SolveTriangular, UPLO};
+    l.solve_triangular(UPLO::Lower, Diag::NonUnit, a)
+        .map_err(|e| FerricError::General(format!("lmp2_direct triangular solve ({what}): {e}")))
+}
+
+/// Rows `dfuncs` of occupied `k`'s strip, over the global virtuals `cols`
+/// (`None`: every strip column, in strip order). A row or column missing
+/// from the strip is a construction bug (the extended domains must cover
+/// every pair domain and candidate set) and errors loudly.
+fn gather_strip(
+    strips: &[Strip],
+    k: usize,
+    dfuncs: &[usize],
+    cols: Option<&[usize]>,
+    what: &str,
+) -> Result<Array2<f64>, FerricError> {
+    let st = &strips[k];
+    let ncols = cols.map_or(st.cols.len(), <[usize]>::len);
+    let mut a = Array2::<f64>::zeros((dfuncs.len(), ncols));
+    for (r, &gp) in dfuncs.iter().enumerate() {
+        let sr = st.row_pos[gp];
+        if sr == usize::MAX {
+            return Err(FerricError::General(format!(
+                "lmp2_direct: strip {k} missing aux row {gp} for {what} — extended domain does \
+                 not cover the fit domain (construction bug)"
+            )));
+        }
+        match cols {
+            None => a.row_mut(r).assign(&st.b.row(sr)),
+            Some(cols) => {
+                for (c, &av) in cols.iter().enumerate() {
+                    let sc = st.col_pos[av];
+                    if sc == usize::MAX {
+                        return Err(FerricError::General(format!(
+                            "lmp2_direct: strip {k} missing virtual {av} for {what}"
+                        )));
+                    }
+                    a[(r, c)] = st.b[(sr, sc)];
+                }
+            }
+        }
+    }
+    Ok(a)
+}
+
+/// The κ-screen inputs from one whitening per occupied over its OWN
+/// distance domain D_i (stage 5a): `W_i = L_i⁻¹ B_i[D_i, all strip cols]`
+/// with `L_i = chol(V_{D_i D_i})`, so `q_ia = √scale · ‖W_i[:, a]‖ =
+/// √(scale · b_iaᵀ V⁻¹ b_ia)` with no explicit inverse. Returns
+/// `(q per i, qmax per i, W_i per i)`. `W_i` is kept because pair (i,i)'s
+/// domain group has domain exactly D_i: [`fit_domain_group`] reuses its
+/// columns there instead of re-solving (memory ≤ the strips' own).
 #[allow(clippy::too_many_arguments)]
-fn schwarz_virtual_q(
+fn whiten_own_domains(
     no: usize,
     scale: f64,
     aux_dom: &[Vec<usize>],
@@ -381,11 +453,10 @@ fn schwarz_virtual_q(
     metric_blocks: &MetricBlocks,
     dfbs: &PreparedBasis,
     aux_radius_bohr: f64,
-) -> Result<(Vec<Vec<f64>>, Vec<f64>), FerricError> {
-    use ndarray_linalg::InverseC;
+) -> Result<OwnWhitened, FerricError> {
     use rayon::prelude::*;
     let sq = scale.abs().sqrt();
-    let per_i: Vec<Result<(Vec<f64>, f64), FerricError>> = (0..no)
+    let per_i: Vec<Result<(Vec<f64>, f64, Array2<f64>), FerricError>> = (0..no)
         .into_par_iter()
         .map(|i| {
             let dfuncs = shell_funcs(dfbs, &aux_dom[i]);
@@ -395,57 +466,58 @@ fn schwarz_virtual_q(
                      Bohr (virt_schwarz_kappa needs a nonempty D_i)"
                 )));
             }
-            let vdd = gather_vdd(
-                &aux_dom[i],
-                dims_df,
-                metric_blocks,
-                &format!("occupied {i} Schwarz diagonal"),
-            )?;
-            let vdd_inv = vdd.invc().map_err(|e| {
-                FerricError::General(format!(
-                    "lmp2_direct V_DD Cholesky inverse (Schwarz diagonal, occupied {i}): {e}"
-                ))
-            })?;
-            let st = &strips[i];
-            let mut b = Array2::<f64>::zeros((dfuncs.len(), st.cols.len()));
-            for (r, &gp) in dfuncs.iter().enumerate() {
-                let sr = st.row_pos[gp];
-                if sr == usize::MAX {
-                    return Err(FerricError::General(format!(
-                        "lmp2_direct: strip {i} missing aux row {gp} for the Schwarz diagonal — \
-                         D_i not covered by the extended domain (construction bug)"
-                    )));
-                }
-                b.row_mut(r).assign(&st.b.row(sr));
-            }
-            let x = vdd_inv.dot(&b); // (d, ncols)
-            let mut q = vec![0.0f64; st.cols.len()];
-            let mut qm = 0.0f64;
-            for (c, qc) in q.iter_mut().enumerate() {
-                let v = sq * b.column(c).dot(&x.column(c)).max(0.0).sqrt();
-                *qc = v;
-                qm = qm.max(v);
-            }
-            Ok((q, qm))
+            let what = format!("occupied {i} Schwarz diagonal");
+            let vdd = gather_vdd(&aux_dom[i], dims_df, metric_blocks, &what)?;
+            let l = chol_lower(&vdd, &what)?;
+            let w = whiten(&l, &gather_strip(strips, i, &dfuncs, None, &what)?, &what)?;
+            let q: Vec<f64> = w
+                .columns()
+                .into_iter()
+                .map(|c| sq * c.dot(&c).sqrt())
+                .collect();
+            let qm = q.iter().copied().fold(0.0f64, f64::max);
+            Ok((q, qm, w))
         })
         .collect();
-    let mut qs = Vec::with_capacity(no);
-    let mut qmax = Vec::with_capacity(no);
+    let mut out = OwnWhitened {
+        q: Vec::with_capacity(no),
+        qmax: Vec::with_capacity(no),
+        w: Vec::with_capacity(no),
+    };
     for r in per_i {
-        let (q, qm) = r?;
-        qs.push(q);
-        qmax.push(qm);
+        let (q, qm, w) = r?;
+        out.q.push(q);
+        out.qmax.push(qm);
+        out.w.push(w);
     }
-    Ok((qs, qmax))
+    Ok(out)
+}
+
+/// [`whiten_own_domains`]' output: the κ-screen magnitudes and the
+/// own-domain whitened strips they came from.
+struct OwnWhitened {
+    q: Vec<Vec<f64>>,
+    qmax: Vec<f64>,
+    w: Vec<Array2<f64>>,
 }
 
 /// Per-slot output of one domain group's pair fits.
 type SlotOut = Vec<(usize, Vec<PairBlock>)>;
 
+/// One domain group's work counters (summed into [`DirectStats`]).
+#[derive(Debug, Clone, Copy, Default)]
+struct GroupCounts {
+    /// Distinct occupieds over the group's pairs.
+    n_occ: usize,
+    /// Triangular solves run (one per distinct occupied not reused).
+    n_trsm: usize,
+    /// Distinct occupieds whose `W` came from the own-domain κ whitening.
+    n_reused: usize,
+}
+
 /// Borrowed context for [`fit_domain_group`] — everything stage 5's group
 /// workers read but never write. Extracted from the assembly driver
-/// (complexity ceiling); the per-pair arithmetic is IDENTICAL to the
-/// pre-extraction inline loop, so blocks and energies are unchanged.
+/// (complexity ceiling).
 struct PairFitCtx<'a> {
     unique: &'a [(usize, usize)],
     pair_cands: &'a [Vec<usize>],
@@ -460,16 +532,125 @@ struct PairFitCtx<'a> {
     nv: usize,
     aux_radius_bohr: f64,
     dfbs: &'a PreparedBasis,
+    /// Each occupied's distance domain D_i (shell list), for the reuse test.
+    aux_dom: &'a [Vec<usize>],
+    /// Own-domain whitened strips from the κ screen (`None` when off).
+    own_w: Option<&'a [Array2<f64>]>,
 }
 
-/// One domain group's pair fits: V_DD Cholesky inverse ONCE, then every
-/// pair in the group gathers its strip blocks, fits, and Eq-8-masks.
+/// One whitened occupied inside a group: `w` over the sorted global
+/// virtuals `cols` (the union of its pairs' candidate sets in the group).
+struct GroupW {
+    cols: Vec<usize>,
+    w: Array2<f64>,
+}
+
+impl GroupW {
+    /// Columns of `w` for the sorted subset `cij ⊆ cols`.
+    fn select(&self, cij: &[usize]) -> Array2<f64> {
+        let pos: Vec<usize> = cij
+            .iter()
+            .map(|a| {
+                self.cols
+                    .binary_search(a)
+                    .expect("C_ij inside the group column union (construction)")
+            })
+            .collect();
+        self.w.select(Axis(1), &pos)
+    }
+}
+
+/// The Eq-8-masked blocks of pair (i,j) — and of (j,i) when i ≠ j — from
+/// the fitted `g = J_ij` over the candidate set `cij`.
+fn mask_pair(
+    ctx: &PairFitCtx<'_>,
+    i: usize,
+    j: usize,
+    mut g: Array2<f64>,
+    cij: &[usize],
+) -> Vec<PairBlock> {
+    if ctx.scale != 1.0 {
+        g.mapv_inplace(|x| ctx.scale * x);
+    }
+    let mut out = Vec::with_capacity(2);
+    if let Some(pb) =
+        pair_block_from_g_cand(i, j, &g, cij, ctx.nv, ctx.f_vv, ctx.fo, ctx.fv, ctx.eps)
+    {
+        out.push(pb);
+    }
+    if i != j {
+        let gt = g.t().to_owned();
+        if let Some(pb) =
+            pair_block_from_g_cand(j, i, &gt, cij, ctx.nv, ctx.f_vv, ctx.fo, ctx.fv, ctx.eps)
+        {
+            out.push(pb);
+        }
+    }
+    out
+}
+
+/// Whitened strips `W_k = L⁻¹ A_k[D, C_k]` for every distinct occupied `k`
+/// of a group, over the union `C_k` of its pairs' candidate sets. A `k`
+/// whose own domain D_k IS the group domain takes the columns of its
+/// κ-screen `W` instead of a new solve.
+fn whiten_group_occupieds(
+    ctx: &PairFitCtx<'_>,
+    dsh: &[usize],
+    dfuncs: &[usize],
+    l: &Array2<f64>,
+    pxs: &[usize],
+) -> Result<(HashMap<usize, GroupW>, GroupCounts), FerricError> {
+    let mut want: BTreeMap<usize, BTreeSet<usize>> = BTreeMap::new();
+    for &px in pxs.iter().filter(|&&px| !ctx.pair_cands[px].is_empty()) {
+        let (i, j) = ctx.unique[px];
+        for k in [i, j] {
+            want.entry(k)
+                .or_default()
+                .extend(ctx.pair_cands[px].iter().copied());
+        }
+    }
+    let mut counts = GroupCounts::default();
+    let mut ws = HashMap::with_capacity(want.len());
+    for (k, cols) in want {
+        let cols: Vec<usize> = cols.into_iter().collect();
+        counts.n_occ += 1;
+        let w = match ctx.own_w {
+            Some(own) if ctx.aux_dom[k] == dsh => {
+                counts.n_reused += 1;
+                let st = &ctx.strips[k];
+                let pos: Vec<usize> = cols.iter().map(|&a| st.col_pos[a]).collect();
+                if pos.contains(&usize::MAX) {
+                    return Err(FerricError::General(format!(
+                        "lmp2_direct: strip {k} missing a candidate virtual (construction bug)"
+                    )));
+                }
+                own[k].select(Axis(1), &pos)
+            }
+            _ => {
+                counts.n_trsm += 1;
+                let what = format!("occupied {k} in a group of {} pairs", pxs.len());
+                whiten(
+                    l,
+                    &gather_strip(ctx.strips, k, dfuncs, Some(&cols), &what)?,
+                    &what,
+                )?
+            }
+        };
+        ws.insert(k, GroupW { cols, w });
+    }
+    Ok((ws, counts))
+}
+
+/// One domain group's pair fits: `L = chol(V_DD)` once, `W_k = L⁻¹ A_k`
+/// once per distinct occupied, then `J_ij = W_iᵀ W_j` per pair and the
+/// Eq-8 mask. Same fit as `A_iᵀ V_DD⁻¹ A_j` without the explicit inverse
+/// (the pre-Stage-C path survives as the test oracle
+/// `fit_domain_group_inverse_oracle`).
 fn fit_domain_group(
     ctx: &PairFitCtx<'_>,
     dsh: &[usize],
     pxs: &[usize],
-) -> Result<SlotOut, FerricError> {
-    use ndarray_linalg::InverseC;
+) -> Result<(SlotOut, GroupCounts), FerricError> {
     let (i0, j0) = ctx.unique[pxs[0]];
     let dfuncs = shell_funcs(ctx.dfbs, dsh);
     if dfuncs.is_empty() {
@@ -478,19 +659,10 @@ fn fit_domain_group(
             ctx.aux_radius_bohr
         )));
     }
-    let d = dfuncs.len();
-    // V_DD gathered block-wise from the sparse metric, ONCE per group
-    let vdd = gather_vdd(
-        dsh,
-        ctx.dims_df,
-        ctx.metric_blocks,
-        &format!("pair ({i0},{j0})"),
-    )?;
-    let vdd_inv = vdd.invc().map_err(|e| {
-        FerricError::General(format!(
-            "lmp2_direct V_DD Cholesky inverse (group of pair ({i0},{j0})): {e}"
-        ))
-    })?;
+    let what = format!("group of pair ({i0},{j0})");
+    let vdd = gather_vdd(dsh, ctx.dims_df, ctx.metric_blocks, &what)?;
+    let l = chol_lower(&vdd, &what)?;
+    let (ws, counts) = whiten_group_occupieds(ctx, dsh, &dfuncs, &l, pxs)?;
     let mut out_group: SlotOut = Vec::with_capacity(pxs.len());
     for &px in pxs {
         let (i, j) = ctx.unique[px];
@@ -499,53 +671,15 @@ fn fit_domain_group(
             out_group.push((px, Vec::new()));
             continue;
         }
-        // gather A_i, A_j from the strips (rows D_ij, cols C_ij)
-        let gather = |k: usize| -> Result<Array2<f64>, FerricError> {
-            let st = &ctx.strips[k];
-            let mut a = Array2::<f64>::zeros((d, cij.len()));
-            for (r, &gp) in dfuncs.iter().enumerate() {
-                let sr = st.row_pos[gp];
-                if sr == usize::MAX {
-                    return Err(FerricError::General(format!(
-                        "lmp2_direct: strip {k} missing aux row {gp} for pair ({i},{j}) — \
-                         extended domain does not cover the pair domain (construction bug)"
-                    )));
-                }
-                for (c, &av) in cij.iter().enumerate() {
-                    let sc = st.col_pos[av];
-                    if sc == usize::MAX {
-                        return Err(FerricError::General(format!(
-                            "lmp2_direct: strip {k} missing virtual {av} for pair ({i},{j})"
-                        )));
-                    }
-                    a[(r, c)] = st.b[(sr, sc)];
-                }
-            }
-            Ok(a)
+        let w_i = ws[&i].select(cij);
+        let g = if i == j {
+            w_i.t().dot(&w_i)
+        } else {
+            w_i.t().dot(&ws[&j].select(cij))
         };
-        let a_i = gather(i)?;
-        let a_j = gather(j)?;
-        let mut g = a_i.t().dot(&vdd_inv.dot(&a_j));
-        if ctx.scale != 1.0 {
-            g.mapv_inplace(|x| ctx.scale * x);
-        }
-        let mut out = Vec::with_capacity(2);
-        if let Some(pb) =
-            pair_block_from_g_cand(i, j, &g, cij, ctx.nv, ctx.f_vv, ctx.fo, ctx.fv, ctx.eps)
-        {
-            out.push(pb);
-        }
-        if i != j {
-            let gt = g.t().to_owned();
-            if let Some(pb) =
-                pair_block_from_g_cand(j, i, &gt, cij, ctx.nv, ctx.f_vv, ctx.fo, ctx.fv, ctx.eps)
-            {
-                out.push(pb);
-            }
-        }
-        out_group.push((px, out));
+        out_group.push((px, mask_pair(ctx, i, j, g, cij)));
     }
-    Ok(out_group)
+    Ok((out_group, counts))
 }
 
 /// Cauchy–Schwarz factors for the stage-3 batch triple cut, same-op
@@ -1151,11 +1285,60 @@ pub fn assemble_ragged_direct_local(
     pair_gate_cal: Option<f64>,
     dcfg: &DirectConfig,
 ) -> Result<(Ragged, usize, DirectStats), FerricError> {
-    use rayon::prelude::*;
-    let (no, nv) = (spaces.no, spaces.nv);
     let mut stats = DirectStats::default();
+    let pre = strips_and_metric(
+        mol,
+        obs,
+        dfbs,
+        op,
+        spaces,
+        eps,
+        pair_gate_cal,
+        dcfg,
+        &mut stats,
+    )?;
+    let ragged = fit_pairs(
+        &pre,
+        dfbs,
+        spaces,
+        eps,
+        scale,
+        dcfg,
+        FitPath::Cholesky,
+        &mut stats,
+    )?;
+    Ok((ragged, pre.n_gated, stats))
+}
 
-    // ---- stage 1+2: gate and maps (integral-free) ----
+/// What stages 1–4 hand to stage 5: the gate, the distance domains, the
+/// unwhitened strips and the domain-restricted metric.
+struct StripsAndMetric {
+    keep: Vec<bool>,
+    n_gated: usize,
+    aux_dom: Vec<Vec<usize>>,
+    virt_dom: Vec<Vec<usize>>,
+    strips: Vec<Strip>,
+    metric_blocks: MetricBlocks,
+}
+
+/// Stages 1–4 of [`assemble_ragged_direct_local`]: gate and maps
+/// (integral-free), the batched 3-index evaluation + half-transform into
+/// per-occupied strips, and the domain-restricted 2-center metric. Fills
+/// the stage-1–4 counters and timers of `stats`.
+#[allow(clippy::too_many_arguments)]
+fn strips_and_metric(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    spaces: &LocalizedSpaces,
+    eps: f64,
+    pair_gate_cal: Option<f64>,
+    dcfg: &DirectConfig,
+    stats: &mut DirectStats,
+) -> Result<StripsAndMetric, FerricError> {
+    use rayon::prelude::*;
+    let no = spaces.no;
     let t0 = Instant::now();
     let LocalityMaps {
         keep,
@@ -1170,11 +1353,9 @@ pub fn assemble_ragged_direct_local(
     } = build_locality_maps(mol, obs, dfbs, spaces, eps, pair_gate_cal, dcfg);
     stats.t_maps_s = t0.elapsed().as_secs_f64();
 
-    // ---- stage 3: batched integral evaluation + half-transform ----
     let t0 = Instant::now();
     Engine::new_3center(op, obs, dfbs, 1e-14)?; // surface construction errors serially
     let qpair = schwarz_triple_factors(op, obs, dfbs, dcfg.schwarz_skip)?;
-    let dims_df = dfbs.shell_dims();
     let n_workers = rayon::current_num_threads()
         .max(1)
         .min(batches.len().max(1));
@@ -1196,9 +1377,34 @@ pub fn assemble_ragged_direct_local(
         .par_iter()
         .map(|(_, is)| eval_batch(&bctx, is, fill_slab))
         .collect();
+    let strips = collect_strips(no, batch_out, dcfg.split_eri3_timers, stats)?;
+    stats.t_eri3_s = t0.elapsed().as_secs_f64();
 
+    let t0 = Instant::now();
+    let need = metric_need_pairs(&aux_ext, dfbs.nshells());
+    stats.n_metric_shell_pairs = need.len();
+    let metric_blocks = eval_metric_blocks(op, dfbs, &need)?;
+    stats.t_metric_s = t0.elapsed().as_secs_f64();
+    Ok(StripsAndMetric {
+        keep,
+        n_gated,
+        aux_dom,
+        virt_dom,
+        strips,
+        metric_blocks,
+    })
+}
+
+/// Batch outputs → one strip per occupied (an occupied no batch built is a
+/// construction bug), summing the stage-3 counters, timers and strip sizes.
+fn collect_strips(
+    no: usize,
+    batch_out: Vec<BatchOut>,
+    split_timers: bool,
+    stats: &mut DirectStats,
+) -> Result<Vec<Strip>, FerricError> {
     stats.n_batches = batch_out.len();
-    if !dcfg.split_eri3_timers {
+    if !split_timers {
         stats.t_eri3_eval_thread_s = f64::NAN;
         stats.t_eri3_scatter_thread_s = f64::NAN;
     }
@@ -1237,69 +1443,78 @@ pub fn assemble_ragged_direct_local(
         stats.strip_rows_mean /= no as f64;
         stats.strip_cols_mean /= no as f64;
     }
-    stats.t_eri3_s = t0.elapsed().as_secs_f64();
+    Ok(strips)
+}
 
-    // ---- stage 4: domain-restricted 2-center metric ----
-    let t0 = Instant::now();
-    let need = metric_need_pairs(&aux_ext, dfbs.nshells());
-    stats.n_metric_shell_pairs = need.len();
-    let metric_blocks = eval_metric_blocks(op, dfbs, &need)?;
-    stats.t_metric_s = t0.elapsed().as_secs_f64();
+/// Which stage-5 fit runs: the production Cholesky/triangular-solve path,
+/// or (tests only) the frozen pre-Stage-C explicit-inverse oracle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FitPath {
+    Cholesky,
+    #[cfg(test)]
+    InverseOracle,
+}
 
-    // ---- stage 5: per-pair domain fits + Eq-8 mask, GROUPED BY DOMAIN ----
-    // The C20-C48 maps put 6-9× more surviving pairs than DISTINCT pair
-    // domains (`scripts/queue/proto_batch_amortization.py`), so the d³
-    // V_DD Cholesky inverse is hoisted to once per group. The inverse is
-    // held per worker and dropped after its group (no cache memory);
-    // results are written back into original-pair-order slots, and the
-    // per-pair arithmetic is unchanged, so the assembled blocks — and the
-    // energies — are bit-identical to the ungrouped loop.
-    let t0 = Instant::now();
-    let fo: Vec<f64> = (0..no).map(|i| spaces.f_oo[(i, i)]).collect();
-    let fv: Vec<f64> = (0..nv).map(|a| spaces.f_vv[(a, a)]).collect();
-    let unique: Vec<(usize, usize)> = (0..no)
-        .flat_map(|i| (i..no).map(move |j| (i, j)))
-        .filter(|&(i, j)| keep[i * no + j])
-        .collect();
+/// Stage 5a, the ε-linked Schwarz virtual-candidate screen
+/// (WIKI-APPEND-eps-linked-maps.md). `q_ia = √(b_iaᵀ V_{D_i D_i}⁻¹ b_ia)`
+/// from the strip rows over i's OWN distance domain D_i (inside the strip's
+/// extended rows, since i is its own partner); `a` stays in C_ij iff
+/// `scale·q_ia·qmax_j ≥ κε` or `scale·q_ja·qmax_i ≥ κε` — both Eq-8
+/// orientations, Cauchy–Schwarz-exact on a global Gram fit and measured
+/// escape-free against the domain-local fit at κ ≤ 1. Off (ε = 0 or no κ):
+/// `None`. Also returns the own-domain whitened strips for reuse.
+#[allow(clippy::type_complexity)]
+fn schwarz_screen(
+    pre: &StripsAndMetric,
+    dfbs: &PreparedBasis,
+    no: usize,
+    scale: f64,
+    dcfg: &DirectConfig,
+    path: FitPath,
+) -> Result<(Option<(Vec<Vec<f64>>, Vec<f64>)>, Option<Vec<Array2<f64>>>), FerricError> {
+    let (dims_df, mb, r) = (dfbs.shell_dims(), &pre.metric_blocks, dcfg.aux_radius_bohr);
+    match path {
+        FitPath::Cholesky => {
+            let o = whiten_own_domains(no, scale, &pre.aux_dom, &pre.strips, dims_df, mb, dfbs, r)?;
+            Ok((Some((o.q, o.qmax)), Some(o.w)))
+        }
+        #[cfg(test)]
+        FitPath::InverseOracle => {
+            let q = inverse_oracle::schwarz_virtual_q_inverse_oracle(
+                no,
+                scale,
+                &pre.aux_dom,
+                &pre.strips,
+                dims_df,
+                mb,
+                dfbs,
+                r,
+            )?;
+            Ok((Some(q), None))
+        }
+    }
+}
 
-    // ---- stage 5a: ε-linked Schwarz virtual candidates (prototype GO,
-    // WIKI-APPEND-eps-linked-maps.md). q_ia = √(b_ia^T V_{D_i D_i}⁻¹ b_ia)
-    // from the strip rows over i's OWN distance domain D_i (⊆ the strip's
-    // extended rows since i is its own partner); a stays in C_ij iff
-    // scale·q_ia·qmax_j ≥ κ·ε or scale·q_ja·qmax_i ≥ κ·ε — both Eq-8
-    // orientations, Cauchy–Schwarz-exact on a global Gram fit and measured
-    // escape-free vs the domain-local fit at κ ≤ 1. ε = 0 or None: no-op.
-    let kappa_eps: Option<f64> = match dcfg.virt_schwarz_kappa {
-        Some(k) if eps > 0.0 => Some(k * eps),
-        _ => None,
-    };
-    let qvirt: Option<(Vec<Vec<f64>>, Vec<f64>)> = match kappa_eps {
-        None => None,
-        Some(_) => Some(schwarz_virtual_q(
-            no,
-            scale,
-            &aux_dom,
-            &strips,
-            dims_df,
-            &metric_blocks,
-            dfbs,
-            dcfg.aux_radius_bohr,
-        )?),
-    };
-    // per-pair candidate sets C_ij (screened union; the screen only ever
-    // SHRINKS the union, so the strip-coverage invariant is untouched)
-    let pair_cands: Vec<Vec<usize>> = unique
+/// Per-pair candidate sets C_ij = V_i ∪ V_j, screened by `qvirt` when the
+/// κ screen is on. The screen only ever SHRINKS the union, so the
+/// strip-coverage invariant is untouched; `a ∈ V_i ∪ V_j` lies in both
+/// strips' extended columns (i, j are mutual partners), so a missing
+/// column position is a construction bug and panics loudly.
+fn pair_candidates(
+    unique: &[(usize, usize)],
+    virt_dom: &[Vec<usize>],
+    strips: &[Strip],
+    qvirt: Option<&(Vec<Vec<f64>>, Vec<f64>)>,
+    kappa_eps: Option<f64>,
+) -> Vec<Vec<usize>> {
+    unique
         .iter()
         .map(|&(i, j)| {
             let cij = sorted_union([virt_dom[i].iter().copied(), virt_dom[j].iter().copied()]);
-            match (&qvirt, kappa_eps) {
+            match (qvirt, kappa_eps) {
                 (Some((q, qmax)), Some(th)) => cij
                     .into_iter()
                     .filter(|&a| {
-                        // a ∈ virt_dom[i] ∪ virt_dom[j] ⊆ virt_ext of BOTH
-                        // strips (i, j are mutual partners), so both col
-                        // positions exist; usize::MAX would be a
-                        // construction bug and panics loudly here.
                         let qia = q[i][strips[i].col_pos[a]];
                         let qja = q[j][strips[j].col_pos[a]];
                         qia * qmax[j] >= th || qja * qmax[i] >= th
@@ -1308,7 +1523,55 @@ pub fn assemble_ragged_direct_local(
                 _ => cij,
             }
         })
+        .collect()
+}
+
+/// Stage 5 of [`assemble_ragged_direct_local`]: per-pair domain fits + the
+/// Eq-8 mask, GROUPED BY PAIR DOMAIN. The C20–C48 maps put 6–9× more
+/// surviving pairs than distinct pair domains
+/// (`scripts/queue/proto_batch_amortization.py`), so the V_DD Cholesky is
+/// done once per group and each distinct occupied is whitened once per
+/// group ([`fit_domain_group`]); per-group work is held per worker and
+/// dropped after its group. Results are written back into original-pair
+/// order slots, so the assembled pair order is the ungrouped loop's.
+#[allow(clippy::too_many_arguments)]
+fn fit_pairs(
+    pre: &StripsAndMetric,
+    dfbs: &PreparedBasis,
+    spaces: &LocalizedSpaces,
+    eps: f64,
+    scale: f64,
+    dcfg: &DirectConfig,
+    path: FitPath,
+    stats: &mut DirectStats,
+) -> Result<Ragged, FerricError> {
+    use rayon::prelude::*;
+    let (no, nv) = (spaces.no, spaces.nv);
+    let t0 = Instant::now();
+    let fo: Vec<f64> = (0..no).map(|i| spaces.f_oo[(i, i)]).collect();
+    let fv: Vec<f64> = (0..nv).map(|a| spaces.f_vv[(a, a)]).collect();
+    let unique: Vec<(usize, usize)> = (0..no)
+        .flat_map(|i| (i..no).map(move |j| (i, j)))
+        .filter(|&(i, j)| pre.keep[i * no + j])
         .collect();
+    let kappa_eps: Option<f64> = match dcfg.virt_schwarz_kappa {
+        Some(k) if eps > 0.0 => Some(k * eps),
+        _ => None,
+    };
+    let (qvirt, own_w) = match kappa_eps {
+        None => (None, None),
+        Some(_) => schwarz_screen(pre, dfbs, no, scale, dcfg, path)?,
+    };
+    if own_w.is_some() {
+        stats.n_trsm += no;
+    }
+    let pair_cands = pair_candidates(
+        &unique,
+        &pre.virt_dom,
+        &pre.strips,
+        qvirt.as_ref(),
+        kappa_eps,
+    );
     for c in &pair_cands {
         stats.virt_cand_mean += c.len() as f64;
         stats.virt_cand_max = stats.virt_cand_max.max(c.len());
@@ -1319,7 +1582,10 @@ pub fn assemble_ragged_direct_local(
 
     let mut dom_groups: HashMap<Vec<usize>, Vec<usize>> = HashMap::new();
     for (px, &(i, j)) in unique.iter().enumerate() {
-        let dsh = sorted_union([aux_dom[i].iter().copied(), aux_dom[j].iter().copied()]);
+        let dsh = sorted_union([
+            pre.aux_dom[i].iter().copied(),
+            pre.aux_dom[j].iter().copied(),
+        ]);
         dom_groups.entry(dsh).or_default().push(px);
     }
     let mut group_list: Vec<(Vec<usize>, Vec<usize>)> = dom_groups.into_iter().collect();
@@ -1327,9 +1593,9 @@ pub fn assemble_ragged_direct_local(
     let ctx = PairFitCtx {
         unique: &unique,
         pair_cands: &pair_cands,
-        strips: &strips,
-        dims_df,
-        metric_blocks: &metric_blocks,
+        strips: &pre.strips,
+        dims_df: dfbs.shell_dims(),
+        metric_blocks: &pre.metric_blocks,
         f_vv: &spaces.f_vv,
         fo: &fo,
         fv: &fv,
@@ -1338,16 +1604,46 @@ pub fn assemble_ragged_direct_local(
         nv,
         aux_radius_bohr: dcfg.aux_radius_bohr,
         dfbs,
+        aux_dom: &pre.aux_dom,
+        own_w: own_w.as_deref(),
     };
-    let group_out: Vec<Result<SlotOut, FerricError>> = group_list
+    let group_out: Vec<Result<(SlotOut, GroupCounts), FerricError>> = group_list
         .par_iter()
-        .map(|(dsh, pxs)| fit_domain_group(&ctx, dsh, pxs))
+        .map(|(dsh, pxs)| match path {
+            FitPath::Cholesky => fit_domain_group(&ctx, dsh, pxs),
+            #[cfg(test)]
+            FitPath::InverseOracle => {
+                inverse_oracle::fit_domain_group_inverse_oracle(&ctx, dsh, pxs)
+                    .map(|s| (s, GroupCounts::default()))
+            }
+        })
         .collect();
-    let mut slots: Vec<Option<Vec<PairBlock>>> = (0..unique.len()).map(|_| None).collect();
+    let ragged = ragged_from_groups(unique.len(), group_out, stats)?;
+    stats.t_pairs_s = t0.elapsed().as_secs_f64();
+    Ok(ragged)
+}
+
+/// Group outputs → the ragged pair list in original-pair order (an unfilled
+/// slot is a grouping bug), summing the per-group counters into `stats`.
+fn ragged_from_groups(
+    n_unique: usize,
+    group_out: Vec<Result<(SlotOut, GroupCounts), FerricError>>,
+    stats: &mut DirectStats,
+) -> Result<Ragged, FerricError> {
+    stats.n_pair_groups = group_out.len();
+    let mut n_occ = 0usize;
+    let mut slots: Vec<Option<Vec<PairBlock>>> = (0..n_unique).map(|_| None).collect();
     for r in group_out {
-        for (px, blocks) in r? {
+        let (slot_out, counts) = r?;
+        n_occ += counts.n_occ;
+        stats.n_trsm += counts.n_trsm;
+        stats.n_w_reused += counts.n_reused;
+        for (px, blocks) in slot_out {
             slots[px] = Some(blocks);
         }
+    }
+    if stats.n_pair_groups > 0 {
+        stats.n_distinct_occ_per_group = n_occ as f64 / stats.n_pair_groups as f64;
     }
     let mut pairs: Vec<PairBlock> = Vec::new();
     for (px, s) in slots.into_iter().enumerate() {
@@ -1363,8 +1659,7 @@ pub fn assemble_ragged_direct_local(
         by_i.entry(pb.i).or_default().push(pidx);
         by_j.entry(pb.j).or_default().push(pidx);
     }
-    stats.t_pairs_s = t0.elapsed().as_secs_f64();
-    Ok((Ragged { pairs, by_i, by_j }, n_gated, stats))
+    Ok(Ragged { pairs, by_i, by_j })
 }
 
 /// Compact whitened occ-occ Gram `(ik|jl)` for the LinLCCD hh ladder —
@@ -2136,5 +2431,402 @@ mod stage_b_tests {
             tot_skip > 0 && tot_trip > 0,
             "cut inactive: test is vacuous"
         );
+    }
+}
+
+/// The pre-Stage-C stage-5 kernels, FROZEN as the oracle of the
+/// Cholesky/triangular-solve path (the `OoGram::dense` pattern): an
+/// explicit `V_DD⁻¹` per group and per κ-screen occupied, then a per-pair
+/// `A_iᵀ (V⁻¹ A_j)`. Do not edit — the Stage-C tests measure the
+/// production path against exactly this arithmetic.
+#[cfg(test)]
+mod inverse_oracle {
+    use super::*;
+
+    /// Frozen `schwarz_virtual_q` (pre-Stage-C).
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn schwarz_virtual_q_inverse_oracle(
+        no: usize,
+        scale: f64,
+        aux_dom: &[Vec<usize>],
+        strips: &[Strip],
+        dims_df: &[usize],
+        metric_blocks: &MetricBlocks,
+        dfbs: &PreparedBasis,
+        aux_radius_bohr: f64,
+    ) -> Result<(Vec<Vec<f64>>, Vec<f64>), FerricError> {
+        use ndarray_linalg::InverseC;
+        use rayon::prelude::*;
+        let sq = scale.abs().sqrt();
+        let per_i: Vec<Result<(Vec<f64>, f64), FerricError>> = (0..no)
+            .into_par_iter()
+            .map(|i| {
+                let dfuncs = shell_funcs(dfbs, &aux_dom[i]);
+                if dfuncs.is_empty() {
+                    return Err(FerricError::General(format!(
+                        "lmp2_direct: empty aux domain for occupied {i} at radius {aux_radius_bohr} \
+                         Bohr (virt_schwarz_kappa needs a nonempty D_i)"
+                    )));
+                }
+                let vdd = gather_vdd(
+                    &aux_dom[i],
+                    dims_df,
+                    metric_blocks,
+                    &format!("occupied {i} Schwarz diagonal"),
+                )?;
+                let vdd_inv = vdd.invc().map_err(|e| {
+                    FerricError::General(format!(
+                        "lmp2_direct V_DD Cholesky inverse (Schwarz diagonal, occupied {i}): {e}"
+                    ))
+                })?;
+                let st = &strips[i];
+                let mut b = Array2::<f64>::zeros((dfuncs.len(), st.cols.len()));
+                for (r, &gp) in dfuncs.iter().enumerate() {
+                    let sr = st.row_pos[gp];
+                    if sr == usize::MAX {
+                        return Err(FerricError::General(format!(
+                            "lmp2_direct: strip {i} missing aux row {gp} for the Schwarz diagonal — \
+                             D_i not covered by the extended domain (construction bug)"
+                        )));
+                    }
+                    b.row_mut(r).assign(&st.b.row(sr));
+                }
+                let x = vdd_inv.dot(&b); // (d, ncols)
+                let mut q = vec![0.0f64; st.cols.len()];
+                let mut qm = 0.0f64;
+                for (c, qc) in q.iter_mut().enumerate() {
+                    let v = sq * b.column(c).dot(&x.column(c)).max(0.0).sqrt();
+                    *qc = v;
+                    qm = qm.max(v);
+                }
+                Ok((q, qm))
+            })
+            .collect();
+        let mut qs = Vec::with_capacity(no);
+        let mut qmax = Vec::with_capacity(no);
+        for r in per_i {
+            let (q, qm) = r?;
+            qs.push(q);
+            qmax.push(qm);
+        }
+        Ok((qs, qmax))
+    }
+
+    /// Frozen `fit_domain_group` (pre-Stage-C): V_DD Cholesky inverse ONCE
+    /// per group, then every pair gathers its strip blocks, fits, and
+    /// Eq-8-masks.
+    pub(super) fn fit_domain_group_inverse_oracle(
+        ctx: &PairFitCtx<'_>,
+        dsh: &[usize],
+        pxs: &[usize],
+    ) -> Result<SlotOut, FerricError> {
+        use ndarray_linalg::InverseC;
+        let (i0, j0) = ctx.unique[pxs[0]];
+        let dfuncs = shell_funcs(ctx.dfbs, dsh);
+        if dfuncs.is_empty() {
+            return Err(FerricError::General(format!(
+                "lmp2_direct: empty aux domain for pair ({i0},{j0}) at radius {} Bohr",
+                ctx.aux_radius_bohr
+            )));
+        }
+        let d = dfuncs.len();
+        // V_DD gathered block-wise from the sparse metric, ONCE per group
+        let vdd = gather_vdd(
+            dsh,
+            ctx.dims_df,
+            ctx.metric_blocks,
+            &format!("pair ({i0},{j0})"),
+        )?;
+        let vdd_inv = vdd.invc().map_err(|e| {
+            FerricError::General(format!(
+                "lmp2_direct V_DD Cholesky inverse (group of pair ({i0},{j0})): {e}"
+            ))
+        })?;
+        let mut out_group: SlotOut = Vec::with_capacity(pxs.len());
+        for &px in pxs {
+            let (i, j) = ctx.unique[px];
+            let cij = &ctx.pair_cands[px];
+            if cij.is_empty() {
+                out_group.push((px, Vec::new()));
+                continue;
+            }
+            // gather A_i, A_j from the strips (rows D_ij, cols C_ij)
+            let gather = |k: usize| -> Result<Array2<f64>, FerricError> {
+                let st = &ctx.strips[k];
+                let mut a = Array2::<f64>::zeros((d, cij.len()));
+                for (r, &gp) in dfuncs.iter().enumerate() {
+                    let sr = st.row_pos[gp];
+                    if sr == usize::MAX {
+                        return Err(FerricError::General(format!(
+                            "lmp2_direct: strip {k} missing aux row {gp} for pair ({i},{j}) — \
+                             extended domain does not cover the pair domain (construction bug)"
+                        )));
+                    }
+                    for (c, &av) in cij.iter().enumerate() {
+                        let sc = st.col_pos[av];
+                        if sc == usize::MAX {
+                            return Err(FerricError::General(format!(
+                                "lmp2_direct: strip {k} missing virtual {av} for pair ({i},{j})"
+                            )));
+                        }
+                        a[(r, c)] = st.b[(sr, sc)];
+                    }
+                }
+                Ok(a)
+            };
+            let a_i = gather(i)?;
+            let a_j = gather(j)?;
+            let mut g = a_i.t().dot(&vdd_inv.dot(&a_j));
+            if ctx.scale != 1.0 {
+                g.mapv_inplace(|x| ctx.scale * x);
+            }
+            let mut out = Vec::with_capacity(2);
+            if let Some(pb) =
+                pair_block_from_g_cand(i, j, &g, cij, ctx.nv, ctx.f_vv, ctx.fo, ctx.fv, ctx.eps)
+            {
+                out.push(pb);
+            }
+            if i != j {
+                let gt = g.t().to_owned();
+                if let Some(pb) = pair_block_from_g_cand(
+                    j, i, &gt, cij, ctx.nv, ctx.f_vv, ctx.fo, ctx.fv, ctx.eps,
+                ) {
+                    out.push(pb);
+                }
+            }
+            out_group.push((px, out));
+        }
+        Ok(out_group)
+    }
+}
+
+#[cfg(test)]
+mod stage_c_tests {
+    use super::*;
+    use crate::lmp2_amplitude::checked_vvhv;
+    use ferric_core::parallel::ParallelContext;
+    use ferric_scf::rhf::{solve_rhf, RhfConfig};
+    use ferric_scf::screening::SchwarzBounds;
+
+    /// RHF + localized spaces of an n-alkane / 6-31G / cc-pVDZ-RI, carbon
+    /// cores frozen.
+    fn setup(xyz: &str, fc: usize) -> (Molecule, PreparedBasis, PreparedBasis, LocalizedSpaces) {
+        let mol = Molecule::load_xyz(&format!(
+            "{}/../../testdata/molecules/{xyz}",
+            env!("CARGO_MANIFEST_DIR")
+        ))
+        .unwrap();
+        let obs_bs = ferric_core::basis::bundled("6-31g").unwrap();
+        let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
+        let dfbs =
+            PreparedBasis::new(&mol, &ferric_core::basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
+        let bounds = SchwarzBounds::compute(Operator::coulomb(), &obs).unwrap();
+        let cfg = RhfConfig {
+            energy_conv: 1e-10,
+            ..Default::default()
+        };
+        let rhf = solve_rhf(
+            &ParallelContext::default(),
+            &mol,
+            &obs,
+            Operator::coulomb(),
+            &bounds,
+            &cfg,
+        )
+        .unwrap();
+        let (vvhv, _) = checked_vvhv(&mol, &obs, &obs_bs, &rhf, "test").unwrap();
+        let spaces = localized_spaces(&mol, &obs, &rhf, fc, &vvhv).unwrap();
+        (mol, obs, dfbs, spaces)
+    }
+
+    /// Production maps (Schwarz cut, k = 4 batches) with screen `kappa`.
+    fn production_maps(kappa: Option<f64>) -> DirectConfig {
+        DirectConfig {
+            aux_radius_bohr: 10.0,
+            virt_radius_bohr: Some(12.0),
+            ao_tail: 1e-3,
+            schwarz_skip: 1e-5,
+            batch_merge: 4,
+            virt_schwarz_kappa: kappa,
+            ..Default::default()
+        }
+    }
+
+    /// Largest 2-norm condition number κ(V_DD) over the pair-domain groups
+    /// stage 5 forms (the conditioning that sets both routes' rounding).
+    fn max_group_condition(pre: &StripsAndMetric, dfbs: &PreparedBasis, no: usize) -> f64 {
+        use ndarray_linalg::{EighInto, UPLO};
+        let mut doms: BTreeSet<Vec<usize>> = BTreeSet::new();
+        for i in 0..no {
+            for j in i..no {
+                if pre.keep[i * no + j] {
+                    doms.insert(sorted_union([
+                        pre.aux_dom[i].iter().copied(),
+                        pre.aux_dom[j].iter().copied(),
+                    ]));
+                }
+            }
+        }
+        doms.iter()
+            .map(|dsh| {
+                let v = gather_vdd(dsh, dfbs.shell_dims(), &pre.metric_blocks, "test").unwrap();
+                let (w, _) = v.eigh_into(UPLO::Lower).unwrap();
+                w[w.len() - 1] / w[0]
+            })
+            .fold(0.0f64, f64::max)
+    }
+
+    /// Max |ΔJ| over every assembled block, and max |J| of the oracle;
+    /// panics if the two assemblies differ in structure (pair order,
+    /// retained axes or Eq-8 pattern).
+    fn block_error(new: &Ragged, old: &Ragged) -> (f64, f64) {
+        assert_eq!(new.pairs.len(), old.pairs.len(), "pair count differs");
+        let (mut dmax, mut jmax) = (0.0f64, 0.0f64);
+        for (a, b) in new.pairs.iter().zip(&old.pairs) {
+            assert_eq!((a.i, a.j), (b.i, b.j), "pair order differs");
+            assert_eq!((&a.da, &a.db), (&b.da, &b.db), "retained axes differ");
+            assert_eq!(a.pat, b.pat, "Eq-8 pattern differs for ({},{})", a.i, a.j);
+            for (x, y) in a.j_blk.iter().zip(b.j_blk.iter()) {
+                dmax = dmax.max((x - y).abs());
+                jmax = jmax.max(y.abs());
+            }
+        }
+        (dmax, jmax)
+    }
+
+    /// STAGE C ANCHOR: the Cholesky/triangular-solve pair fits (with the
+    /// κ-screen whitening reused for pair (i,i)'s group) reproduce the
+    /// frozen explicit-inverse path with the same pairs, retained axes and
+    /// Eq-8 pattern, and blocks within κ(V_DD)·u·max|J| (capped at 1e-10),
+    /// on C4 and C8, Coulomb and erfc, κ off and κ = 1; with κ on, the q
+    /// magnitudes agree to κ(V_DD)·u·max q. Counters: one solve per distinct
+    /// occupied per group, less the reused ones.
+    ///
+    /// The bar is the conditioning floor, not 1e-12: two correct f64 routes
+    /// differ by O(κ·u). Measured (2026-10-30): Coulomb C4/C8 1.8e-12 /
+    /// 2.9e-12 relative at κ(V_DD) = 9.9e5 / 1.7e6; erfc 2.3e-13 / 6.5e-13
+    /// at κ = 4.2e4 / 4.8e4 — 0.8–6% of κ·u. A wrong W is an O(1) miss.
+    #[test]
+    fn pair_fit_cholesky_matches_inverse_oracle() {
+        let mut worst = 0.0f64;
+        let eps = 1e-4;
+        for (xyz, fc) in [("alkane_4.xyz", 4usize), ("alkane_8.xyz", 8)] {
+            let (mol, obs, dfbs, spaces) = setup(xyz, fc);
+            for (opn, op, cal) in [
+                ("coul", Operator::coulomb(), 0.7),
+                ("erfc", Operator::erfc(1.0), 0.02),
+            ] {
+                let mut st = DirectStats::default();
+                let pre = strips_and_metric(
+                    &mol,
+                    &obs,
+                    &dfbs,
+                    op,
+                    &spaces,
+                    eps,
+                    Some(cal),
+                    &production_maps(None),
+                    &mut st,
+                )
+                .unwrap();
+                for kappa in [None, Some(1.0)] {
+                    let dcfg = production_maps(kappa);
+                    let mut s_new = DirectStats::default();
+                    let mut s_old = DirectStats::default();
+                    let new = fit_pairs(
+                        &pre,
+                        &dfbs,
+                        &spaces,
+                        eps,
+                        1.0,
+                        &dcfg,
+                        FitPath::Cholesky,
+                        &mut s_new,
+                    )
+                    .unwrap();
+                    let old = fit_pairs(
+                        &pre,
+                        &dfbs,
+                        &spaces,
+                        eps,
+                        1.0,
+                        &dcfg,
+                        FitPath::InverseOracle,
+                        &mut s_old,
+                    )
+                    .unwrap();
+                    let (dmax, jmax) = block_error(&new, &old);
+                    let rel = dmax / jmax;
+                    worst = worst.max(rel);
+                    eprintln!(
+                        "STAGE-C {xyz} {opn} kappa={kappa:?}: pairs {} groups {} trsm {} \
+                         reused {} occ/group {:.2} cand {:.1}/{} max|dJ| {dmax:.3e} \
+                         max|J| {jmax:.3e} rel {rel:.3e}",
+                        new.pairs.len(),
+                        s_new.n_pair_groups,
+                        s_new.n_trsm,
+                        s_new.n_w_reused,
+                        s_new.n_distinct_occ_per_group,
+                        s_new.virt_cand_mean,
+                        s_new.virt_cand_max,
+                    );
+                    let ku = max_group_condition(&pre, &dfbs, spaces.no) * f64::EPSILON;
+                    eprintln!(
+                        "STAGE-C kappa(V_DD)*u {ku:.3e}: rel/(kappa*u) {:.3e}",
+                        rel / ku
+                    );
+                    assert!(
+                        rel <= ku.min(1e-10),
+                        "blocks differ from the oracle beyond kappa(V_DD)*u: rel {rel:.3e}"
+                    );
+                    assert_eq!(s_new.virt_cand_max, s_old.virt_cand_max);
+                    assert!((s_new.virt_cand_mean - s_old.virt_cand_mean).abs() < 1e-12);
+                    let no = spaces.no;
+                    let own = usize::from(kappa.is_some()) * no;
+                    let occ_slots =
+                        (s_new.n_distinct_occ_per_group * s_new.n_pair_groups as f64).round();
+                    assert_eq!(
+                        (s_new.n_trsm - own + s_new.n_w_reused) as f64,
+                        occ_slots,
+                        "one solve per distinct occupied per group, less reuse"
+                    );
+                    assert_eq!(kappa.is_some(), s_new.n_w_reused > 0, "reuse arm inert");
+                    if kappa.is_some() {
+                        let o = whiten_own_domains(
+                            no,
+                            1.0,
+                            &pre.aux_dom,
+                            &pre.strips,
+                            dfbs.shell_dims(),
+                            &pre.metric_blocks,
+                            &dfbs,
+                            dcfg.aux_radius_bohr,
+                        )
+                        .unwrap();
+                        let (q_old, _) = inverse_oracle::schwarz_virtual_q_inverse_oracle(
+                            no,
+                            1.0,
+                            &pre.aux_dom,
+                            &pre.strips,
+                            dfbs.shell_dims(),
+                            &pre.metric_blocks,
+                            &dfbs,
+                            dcfg.aux_radius_bohr,
+                        )
+                        .unwrap();
+                        let qmax = o.qmax.iter().copied().fold(0.0f64, f64::max);
+                        let dq =
+                            o.q.iter()
+                                .flatten()
+                                .zip(q_old.iter().flatten())
+                                .map(|(a, b)| (a - b).abs())
+                                .fold(0.0f64, f64::max);
+                        eprintln!("STAGE-C {xyz} {opn} q: max|dq| {dq:.3e} max q {qmax:.3e}");
+                        assert!(dq <= ku * qmax, "q differs: {dq:.3e} vs max q {qmax:.3e}");
+                    }
+                }
+            }
+        }
+        eprintln!("STAGE-C worst block error {worst:.3e} (relative to max|J|)");
     }
 }
