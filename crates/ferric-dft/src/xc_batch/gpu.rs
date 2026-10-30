@@ -960,7 +960,7 @@ impl DeviceXc {
                 }
                 Ok(())
             })?;
-            let up = self.wave_upload(w.total[0], mixed_req, k_panel)?;
+            let up = self.wave_upload(w.total[0], mixed_req, k_panel, serial)?;
             let is32 = matches!(up, Up::F32(_));
             self.round_trip(up, w.total[2], |me| {
                 for (j, off) in w.off.iter().enumerate() {
@@ -1026,7 +1026,13 @@ impl DeviceXc {
     /// f32 when the ladder asked for mixed (`mixed_req`), the f32 state exists,
     /// no panel sum can leave the f32 range and every element rounds to a
     /// finite f32; otherwise f64. Each refusal is counted (`mixed_fallback_f64`).
-    fn wave_upload(&mut self, n: usize, mixed_req: bool, k_panel: usize) -> Result<Up, GpuError> {
+    fn wave_upload(
+        &mut self,
+        n: usize,
+        mixed_req: bool,
+        k_panel: usize,
+        serial: bool,
+    ) -> Result<Up, GpuError> {
         let (Some(m), true) = (&self.mixed, mixed_req) else {
             return Ok(Up::F64(n));
         };
@@ -1035,9 +1041,8 @@ impl DeviceXc {
         let Some(a32) = host.inp32.as_mut() else {
             return Ok(Up::F64(n));
         };
-        if !mixed_panel_fits(k_panel, max_abs_nan(a), m.max_abs_x)
-            || round_to_f32_into("XC A", a, a32.head_mut(n)?).is_err()
-        {
+        let (max_a, rounded) = max_abs_and_round(serial, a, a32.head_mut(n)?);
+        if !mixed_panel_fits(k_panel, max_a, m.max_abs_x) || !rounded {
             stats::note_mixed_fallback();
             return Ok(Up::F64(n));
         }
@@ -1111,6 +1116,38 @@ impl DeviceXc {
     }
 }
 
+/// Elements per chunk of [`max_abs_and_round`].
+const SCAN_CHUNK: usize = 1 << 16;
+
+/// `max |a|` (NaN if any element is NaN) and whether every element of `a`
+/// rounds to a finite f32 (written to `a32`), in one pass over fixed chunks of
+/// [`SCAN_CHUNK`], on rayon unless `serial`. Both reductions are order-free
+/// (a maximum and a conjunction), so the outcome does not depend on the
+/// chunking or the thread count.
+fn max_abs_and_round(serial: bool, a: &[f64], a32: &mut [f32]) -> (f64, bool) {
+    let one =
+        |(x, y): (&[f64], &mut [f32])| (max_abs_nan(x), round_to_f32_into("XC A", x, y).is_ok());
+    let join = |(m1, ok1): (f64, bool), (m2, ok2): (f64, bool)| {
+        let m = if m1.is_nan() || m2.is_nan() {
+            f64::NAN
+        } else {
+            m1.max(m2)
+        };
+        (m, ok1 && ok2)
+    };
+    if serial {
+        a.chunks(SCAN_CHUNK)
+            .zip(a32.chunks_mut(SCAN_CHUNK))
+            .map(one)
+            .fold((0.0, true), join)
+    } else {
+        a.par_chunks(SCAN_CHUNK)
+            .zip(a32.par_chunks_mut(SCAN_CHUNK))
+            .map(one)
+            .reduce(|| (0.0, true), join)
+    }
+}
+
 /// `max |x|`, NaN if any element is NaN.
 fn max_abs_nan(x: &[f64]) -> f64 {
     x.iter().fold(0.0_f64, |m, &v| {
@@ -1171,6 +1208,39 @@ mod tests {
         assert!(max_abs_nan(&[1.0, -3.0, 2.0]) == 3.0);
         assert!(max_abs_nan(&[1.0, f64::NAN, 5.0]).is_nan());
         assert_eq!(max_abs_nan(&[]), 0.0);
+    }
+
+    #[test]
+    fn the_chunked_scan_matches_the_serial_one_at_any_thread_count() {
+        let n = 3 * SCAN_CHUNK + 17;
+        let a: Vec<f64> = (0..n)
+            .map(|i| ((i * 7919) % 1013) as f64 * 1e-3 - 0.5)
+            .collect();
+        let want_max = max_abs_nan(&a);
+        let want: Vec<f32> = round_to_f32("a", &a).unwrap();
+        for threads in [1, 2, 5] {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .unwrap();
+            for serial in [true, false] {
+                let mut a32 = vec![0.0f32; n];
+                let (m, ok) = pool.install(|| max_abs_and_round(serial, &a, &mut a32));
+                assert_eq!((m.to_bits(), ok), (want_max.to_bits(), true));
+                assert_eq!(a32, want);
+            }
+        }
+        // A NaN or an f32 overflow in any chunk, including the short tail.
+        let mut b = a.clone();
+        b[n - 1] = f64::NAN;
+        let mut a32 = vec![0.0f32; n];
+        assert!(max_abs_and_round(false, &b, &mut a32).0.is_nan());
+        b[n - 1] = 1e300;
+        let (m, ok) = max_abs_and_round(false, &b, &mut a32);
+        assert_eq!((m, ok), (1e300, false));
+        b[n - 1] = 0.0;
+        b[SCAN_CHUNK] = -1e39;
+        assert!(!max_abs_and_round(true, &b, &mut a32).1);
     }
 
     #[test]
