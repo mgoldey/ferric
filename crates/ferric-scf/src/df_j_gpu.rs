@@ -762,7 +762,7 @@ fn upload_band_resolved(
             if ferric_core::gpu::config::gpu_trace() {
                 eprintln!("[gpu] RI-J mixed path unavailable ({e}); running f64 on the device");
             }
-            stats::note_mixed_fallback();
+            stats::note_mixed_fallback(MixedKernel::DfjPack, e.mixed_fallback());
             upload_band(dev, pool, src, DfjPrecision::F64)
         }
         other => other,
@@ -786,7 +786,7 @@ fn ladder_wants_host(slot: &DeviceSlot) -> bool {
 /// Count one finished device build (and, for the f32 tensor, tell the ladder).
 fn note_build(dd: &DeviceDfJ) {
     if dd.is_mixed() {
-        crate::jk_ladder::note_mixed_build();
+        crate::jk_ladder::note_mixed_build(MixedKernel::DfjPack);
     }
     let (naux, pair) = (dd.naux(), dd.pair());
     stats::note_dfj_build(8 * (pair + naux), 8 * (naux + pair));

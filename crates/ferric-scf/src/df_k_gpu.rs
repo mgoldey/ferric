@@ -311,7 +311,7 @@ impl DeviceDfK {
                             "[gpu] DF-K mixed path unavailable ({e}); running f64 on the device"
                         );
                     }
-                    stats::note_mixed_fallback();
+                    stats::note_mixed_fallback(MixedKernel::DfkOcc, e.mixed_fallback());
                     ResidentB::F64(upload_f64_b(dev, pool, b_flat)?)
                 }
                 Err(e) => return Err(e),
@@ -709,7 +709,7 @@ fn ladder_wants_host(slot: &DeviceSlot) -> bool {
 /// the f64 exit).
 fn note_ladder_build(mixed: bool) {
     if mixed {
-        crate::jk_ladder::note_mixed_build();
+        crate::jk_ladder::note_mixed_build(MixedKernel::DfkOcc);
     }
 }
 

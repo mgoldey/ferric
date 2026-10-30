@@ -716,6 +716,7 @@ pub static MIXED_VXC_BUILDS: std::sync::atomic::AtomicU64 = std::sync::atomic::A
 
 fn note_mixed_vxc_pass() {
     MIXED_VXC_BUILDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    ferric_core::gpu::stats::note_kernel_mixed(ferric_core::gpu::MixedKernel::XcVxc);
 }
 
 /// True when the CPU pass 2 forms mixed products with the host twin (the

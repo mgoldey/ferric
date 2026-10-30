@@ -160,7 +160,7 @@ pub fn solve_uhf_injected<'a>(
             ));
         }
     }
-    err_if_unconverged(solve_uhf_impl(
+    err_if_unconverged(solve_uhf_impl_recorded(
         ctx,
         mol,
         prep,
@@ -520,7 +520,7 @@ fn solve_uhf_molecular(
             config,
             crate::basis2::ScfKind::Uhf,
         )?;
-        let mut r = solve_uhf_impl(
+        let mut r = solve_uhf_impl_recorded(
             ctx,
             mol,
             prep,
@@ -535,7 +535,7 @@ fn solve_uhf_molecular(
         r.guess_basis = Some(g.report);
         return Ok(r);
     }
-    solve_uhf_impl(
+    solve_uhf_impl_recorded(
         ctx,
         mol,
         prep,
@@ -589,7 +589,7 @@ pub(crate) fn solve_uhf_blocked(
         &crate::symmetric::SymmetrySpec,
     ),
 ) -> Result<ScfResult, FerricError> {
-    err_if_unconverged(solve_uhf_impl(
+    err_if_unconverged(solve_uhf_impl_recorded(
         ctx,
         mol,
         prep,
@@ -601,6 +601,42 @@ pub(crate) fn solve_uhf_blocked(
         Some(specs),
         None,
     )?)
+}
+
+/// [`solve_uhf_impl`] plus its precision provenance record
+/// ([`ScfResult::precision`]): the per-kernel counter delta over this solve.
+/// The record observes only; it changes no number.
+#[allow(clippy::too_many_arguments)]
+fn solve_uhf_impl_recorded(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    bounds: &SchwarzBounds,
+    config: &UhfConfig,
+    initial_mos: Option<(&Array2<f64>, &Array2<f64>)>,
+    fock_mod: Option<UhfFockMod>,
+    inj: Option<PeriodicInjection<'_>>,
+    sym: Option<(
+        &crate::symmetric::SymmetrySpec,
+        &crate::symmetric::SymmetrySpec,
+    )>,
+    hook: Option<crate::fock::SpinFockHook<'_>>,
+) -> Result<ScfResult, FerricError> {
+    let probe = ferric_core::gpu::provenance::PrecisionProbe::start();
+    let mut r = solve_uhf_impl(
+        ctx,
+        mol,
+        prep,
+        bounds,
+        config,
+        initial_mos,
+        fock_mod,
+        inj,
+        sym,
+        hook,
+    )?;
+    r.precision = probe.finish(ferric_core::gpu::provenance::SCF_KERNELS);
+    Ok(r)
 }
 
 /// Shared body of [`solve_uhf_fockmod`] (`inj = None`: the molecular solver,
@@ -1613,6 +1649,7 @@ fn solve_uhf_impl(
                 cosx_final,
                 cosx_schedule: crate::cosx_schedule::record(&cosx_sched),
                 convergence: last_report,
+                precision: Default::default(),
             });
         }
         mon.note_energy(energy);
@@ -2103,6 +2140,7 @@ fn solve_uhf_impl(
         cosx_final: None,
         cosx_schedule: crate::cosx_schedule::record(&cosx_sched),
         convergence: last_report,
+        precision: Default::default(),
     })
 }
 

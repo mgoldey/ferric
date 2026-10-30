@@ -99,6 +99,20 @@ impl MixedKernel {
         MixedKernel::XcVxc,
     ];
 
+    /// Whether this kernel's mixed path runs on the CPU. Only such a kernel
+    /// may run mixed with `[gpu] mode = "off"` (CPU-only mixed precision);
+    /// every other kernel's mixed path is a device kernel. `cosx-kern` is the
+    /// CPU `md3c1e` f32 block (`Md3c1e::pair_block_f32`).
+    pub const fn runs_on_cpu(self) -> bool {
+        matches!(self, MixedKernel::CosxKern)
+    }
+
+    /// Bit position of this kernel in [`MixedKernelSet`] (0-based), the index
+    /// of its per-kernel counters in [`crate::gpu::stats`](mod@crate::gpu::stats).
+    pub const fn index(self) -> usize {
+        (self as u8).trailing_zeros() as usize
+    }
+
     pub const fn name(self) -> &'static str {
         match self {
             MixedKernel::RiMp2Energy => "rimp2-energy",
@@ -153,6 +167,10 @@ impl MixedKernelSet {
 
     pub const fn with(self, k: MixedKernel) -> Self {
         Self(self.0 | k as u8)
+    }
+    /// The union of two sets.
+    pub const fn with_set(self, other: Self) -> Self {
+        Self(self.0 | other.0)
     }
     pub const fn contains(self, k: MixedKernel) -> bool {
         self.0 & (k as u8) != 0
@@ -317,6 +335,15 @@ mod tests {
         assert!(MixedKernelSet::OPT_IN.contains(MixedKernel::XcVxc));
         let set = MixedKernelSet::SHIPPED.with(MixedKernel::XcVxc);
         assert_eq!(set.to_string(), "rimp2-energy,xc-vxc");
+    }
+
+    #[test]
+    fn kernel_index_is_its_bit_and_only_cosx_runs_on_the_cpu() {
+        for (i, k) in MixedKernel::ALL.into_iter().enumerate() {
+            assert_eq!(k.index(), i, "{}", k.name());
+            assert_eq!(1u8 << k.index(), k as u8);
+            assert_eq!(k.runs_on_cpu(), k == MixedKernel::CosxKern, "{}", k.name());
+        }
     }
 
     #[test]

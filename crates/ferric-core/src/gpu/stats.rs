@@ -2,6 +2,8 @@
 //! than grepping log text, so a path that is "on" but never taken is visible.
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use super::precision::MixedKernel;
+
 static GEMM_OFFLOADED: AtomicU64 = AtomicU64::new(0);
 static GEMM_CPU_INSIDE_WORKER: AtomicU64 = AtomicU64::new(0);
 static GEMM_CPU_BELOW_THRESHOLD: AtomicU64 = AtomicU64::new(0);
@@ -127,11 +129,138 @@ pub fn note_xc_wave() {
     XC_WAVES.fetch_add(1, Ordering::Relaxed);
 }
 
-/// Mixed was requested and allowed, but the call ran in f64 on the device
-/// (kernel unavailable or a mixed-path CUDA error). Never silent.
+/// Mixed was requested and allowed for `kernel`, but the call (or a part of
+/// it) ran in f64 for the reason `why`. Counted process-wide
+/// (`mixed_fallback_f64`) and per kernel (the precision provenance record,
+/// [`crate::gpu::provenance`]). Never silent.
 #[doc(hidden)]
-pub fn note_mixed_fallback() {
-    MIXED_FALLBACK_F64.fetch_add(1, Ordering::Relaxed);
+pub fn note_mixed_fallback(kernel: MixedKernel, why: MixedFallback) {
+    note_mixed_fallbacks(kernel, why, 1);
+}
+
+/// [`note_mixed_fallback`] for `n` units at once (a kernel that counts its
+/// fallbacks per work unit, e.g. COSX's per-(pair, sub-batch) f32 units).
+#[doc(hidden)]
+pub fn note_mixed_fallbacks(kernel: MixedKernel, why: MixedFallback, n: u64) {
+    MIXED_FALLBACK_F64.fetch_add(n, Ordering::Relaxed);
+    KERNEL_FALLBACK[kernel.index()][why as usize].fetch_add(n, Ordering::Relaxed);
+}
+
+/// Why a call that was allowed to run a mixed kernel ran (part of) it in f64.
+/// The discriminant indexes the per-kernel fallback counters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MixedFallback {
+    /// f64 on the device: the mixed path was unavailable (its kernel would
+    /// not load, or a CUDA error on the mixed path).
+    DeviceF64 = 0,
+    /// An operand held a finite value beyond `f32::MAX`.
+    F32Range = 1,
+    /// f64 on the CPU: no usable device, pool refusal, a rayon worker, a
+    /// layout refusal or a CUDA error moved the whole call to the CPU.
+    CpuF64 = 2,
+}
+
+impl MixedFallback {
+    pub const ALL: [MixedFallback; 3] = [
+        MixedFallback::DeviceF64,
+        MixedFallback::F32Range,
+        MixedFallback::CpuF64,
+    ];
+
+    /// The provenance-record spelling.
+    pub const fn name(self) -> &'static str {
+        match self {
+            MixedFallback::DeviceF64 => "device_f64",
+            MixedFallback::F32Range => "f32_range",
+            MixedFallback::CpuF64 => "cpu_f64",
+        }
+    }
+}
+
+const NKERNEL: usize = MixedKernel::ALL.len();
+const NFALLBACK: usize = MixedFallback::ALL.len();
+
+static KERNEL_MIXED: [AtomicU64; NKERNEL] = [const { AtomicU64::new(0) }; NKERNEL];
+static KERNEL_FALLBACK: [[AtomicU64; NFALLBACK]; NKERNEL] =
+    [const { [const { AtomicU64::new(0) }; NFALLBACK] }; NKERNEL];
+static KERNEL_LADDER_BUILDS: [AtomicU64; NKERNEL] = [const { AtomicU64::new(0) }; NKERNEL];
+static KERNEL_EXIT_REBUILDS: [AtomicU64; NKERNEL] = [const { AtomicU64::new(0) }; NKERNEL];
+
+/// One call of `kernel` ran (at least partly) in mixed precision: one RI-MP2
+/// energy, one XC potential pass, one RI-J or DF-K build, one COSX K build
+/// with f32 units. The unit is the kernel's own call, not a GEMM.
+#[doc(hidden)]
+pub fn note_kernel_mixed(kernel: MixedKernel) {
+    KERNEL_MIXED[kernel.index()].fetch_add(1, Ordering::Relaxed);
+}
+
+/// One Fock build of an SCF whose precision ladder was consulted for
+/// `kernel` while mixed precision was requested (mixed or kept f64 by the
+/// ladder; the mixed ones are also counted by [`note_kernel_mixed`]).
+#[doc(hidden)]
+pub fn note_ladder_build(kernel: MixedKernel) {
+    KERNEL_LADDER_BUILDS[kernel.index()].fetch_add(1, Ordering::Relaxed);
+}
+
+/// A converged SCF replaced `kernel`'s last mixed contribution by an f64
+/// rebuild before returning (the exit rebuild).
+#[doc(hidden)]
+pub fn note_exit_rebuild(kernel: MixedKernel) {
+    KERNEL_EXIT_REBUILDS[kernel.index()].fetch_add(1, Ordering::Relaxed);
+}
+
+/// Per-kernel precision counters at one instant (process-wide, monotone).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct KernelCounters {
+    /// Calls that ran mixed ([`note_kernel_mixed`]).
+    pub mixed: u64,
+    /// Fallbacks to f64, indexed by `MixedFallback as usize`.
+    pub fallback: [u64; NFALLBACK],
+    /// Ladder-gated builds while mixed was requested ([`note_ladder_build`]).
+    pub ladder_builds: u64,
+    /// Exit rebuilds in f64 ([`note_exit_rebuild`]).
+    pub exit_rebuilds: u64,
+}
+
+impl KernelCounters {
+    /// `self - before`, field by field (saturating: the counters only grow).
+    pub fn since(&self, before: &KernelCounters) -> KernelCounters {
+        let mut fallback = [0u64; NFALLBACK];
+        for (i, f) in fallback.iter_mut().enumerate() {
+            *f = self.fallback[i].saturating_sub(before.fallback[i]);
+        }
+        KernelCounters {
+            mixed: self.mixed.saturating_sub(before.mixed),
+            fallback,
+            ladder_builds: self.ladder_builds.saturating_sub(before.ladder_builds),
+            exit_rebuilds: self.exit_rebuilds.saturating_sub(before.exit_rebuilds),
+        }
+    }
+
+    /// Whether any counter is non-zero.
+    pub fn any(&self) -> bool {
+        self.mixed > 0
+            || self.fallback.iter().any(|&f| f > 0)
+            || self.ladder_builds > 0
+            || self.exit_rebuilds > 0
+    }
+}
+
+/// The per-kernel counters of every [`MixedKernel`], indexed by
+/// [`MixedKernel::index`].
+pub fn kernel_counters() -> [KernelCounters; NKERNEL] {
+    std::array::from_fn(|i| {
+        let mut fallback = [0u64; NFALLBACK];
+        for (j, f) in fallback.iter_mut().enumerate() {
+            *f = KERNEL_FALLBACK[i][j].load(Ordering::Relaxed);
+        }
+        KernelCounters {
+            mixed: KERNEL_MIXED[i].load(Ordering::Relaxed),
+            fallback,
+            ladder_builds: KERNEL_LADDER_BUILDS[i].load(Ordering::Relaxed),
+            exit_rebuilds: KERNEL_EXIT_REBUILDS[i].load(Ordering::Relaxed),
+        }
+    })
 }
 
 /// `FERRIC_GPU_TRACE`, read once: the per-fallback print costs one cached load

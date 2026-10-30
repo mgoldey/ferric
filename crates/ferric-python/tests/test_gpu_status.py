@@ -336,7 +336,8 @@ def test_configure_gpu_mixed_needs_a_device_mode():
     msg = _refusal("import ferric; ferric.configure_gpu(precision='mixed')")
     assert msg == (
         "[gpu] precision = mixed requires mode = auto or on "
-        "(FERRIC_GPU / [gpu] mode is off)"
+        "(FERRIC_GPU / [gpu] mode is off): rimp2-energy runs only on a device; "
+        "CPU mixed-precision kernels in this build: none"
     )
 
 

@@ -41,6 +41,9 @@ pub struct URiMp2Result {
     pub components: URiMp2Components,
     pub mp2_corr: f64,
     pub total_energy: f64,
+    /// Precision provenance of the correlation energy (see
+    /// `RiMp2Result::precision`).
+    pub precision: ferric_core::gpu::provenance::PrecisionRecord,
 }
 
 impl std::fmt::Display for URiMp2Result {
@@ -161,6 +164,7 @@ pub fn u_ri_mp2(
     scf: &ScfResult,
     config: &RiMp2Config,
 ) -> Result<URiMp2Result, FerricError> {
+    let probe = ferric_core::gpu::provenance::PrecisionProbe::start();
     if matches!(scf.spin, Spin::Restricted) {
         return Err(FerricError::General(
             "u_ri_mp2: requires UHF or ROHF reference".into(),
@@ -290,6 +294,7 @@ pub fn u_ri_mp2(
         },
         mp2_corr: e_total,
         total_energy: scf.energy + e_total,
+        precision: probe.finish(ferric_core::gpu::provenance::RIMP2_KERNELS),
     })
 }
 
@@ -650,8 +655,7 @@ fn same_spin_energy_only(ch: SpinChannel, mixed_ok: bool) -> f64 {
     if let Some(e) = crate::rimp2_gpu::try_u_same_spin_on_device(ch, mixed_ok) {
         return e;
     }
-    #[cfg(not(feature = "gpu"))]
-    let _ = mixed_ok;
+    crate::rimp2::note_mixed_ran_on_cpu(mixed_ok);
     // Energy-only: no t tensor to write, so the per-i partial is just a
     // scalar — no allocation/collection of a Vec<Option<..>> needed at all.
     //
@@ -773,8 +777,7 @@ fn opposite_spin_energy_only(ch_a: SpinChannel, ch_b: SpinChannel, mixed_ok: boo
     if let Some(e) = crate::rimp2_gpu::try_u_opposite_spin_on_device(ch_a, ch_b, mixed_ok) {
         return e;
     }
-    #[cfg(not(feature = "gpu"))]
-    let _ = mixed_ok;
+    crate::rimp2::note_mixed_ran_on_cpu(mixed_ok);
     let (b_a, b_b, nvir_a) = (ch_a.b, ch_b.b, ch_a.nvir);
     let partials: Vec<f64> = (0..ch_a.nocc)
         .into_par_iter()

@@ -120,6 +120,33 @@ def configure_gpu(
             the keys involved.
         RuntimeError: the settings were already installed or read with
             different values.
+
+    ``precision`` and ``mixed_kernels`` are deprecated aliases of
+    ``configure_precision(mode=..., mixed_kernels=...)``; a request staged by
+    ``configure_precision`` is installed with these settings, and an alias
+    that disagrees with it is a ``ValueError``.
+    """
+    ...
+
+def configure_precision(
+    mode: str | None = None,
+    mixed_kernels: list[str] | None = None,
+) -> dict[str, Any]:
+    """Choose the mixed-precision kernels for this process (the Python side
+    of the ``[precision]`` input section), independently of the device.
+
+    ``mode`` is ``"f64"`` (default) or ``"mixed"``; ``mixed_kernels`` lists
+    kernel names, one per item (default: the kernels this build ships).
+    The request is staged and installed with the device settings by the next
+    ``configure_gpu(...)`` (call this first), or at the first calculation.
+    Call ``configure_gpu()`` with no arguments to install and check it now:
+    with the GPU off, only kernels with a CPU mixed path are accepted.
+    Returns ``{"mode": str | None, "mixed_kernels": list[str] | None}``.
+
+    Raises:
+        ValueError: an unknown mode or kernel name, an empty list, a comma
+            inside a list item, or a key staged twice with different values.
+        RuntimeError: the settings were already installed or read.
     """
     ...
 
@@ -767,6 +794,15 @@ class RhfResult:
     """Result of a closed-shell RHF (or run_ksdft KS-DFT) calculation."""
 
     @property
+    def precision(self) -> dict[str, Any]:
+        """Precision provenance: ``{"precision": "f64" | "mixed", "kernels": [...]}``,
+        one kernel entry per mixed-precision kernel allowed or run (``kernel``,
+        ``requested``, ``mode``, ``device``, ``calls_mixed``,
+        ``calls_f64_fallback``, ``ladder``, ``error_bound``). An all-f64 run is
+        ``{"precision": "f64", "kernels": []}``."""
+        ...
+
+    @property
     def energy(self) -> float:
         """Total SCF energy in Hartree."""
         ...
@@ -867,6 +903,15 @@ class RhfResult:
 
 class UhfResult:
     """Result of an open-shell UHF or ROHF calculation."""
+
+    @property
+    def precision(self) -> dict[str, Any]:
+        """Precision provenance: ``{"precision": "f64" | "mixed", "kernels": [...]}``,
+        one kernel entry per mixed-precision kernel allowed or run (``kernel``,
+        ``requested``, ``mode``, ``device``, ``calls_mixed``,
+        ``calls_f64_fallback``, ``ladder``, ``error_bound``). An all-f64 run is
+        ``{"precision": "f64", "kernels": []}``."""
+        ...
 
     @property
     def energy(self) -> float:
@@ -1344,6 +1389,20 @@ class RiMp2Result:
     """Result of a run_rimp2 calculation."""
 
     @property
+    def precision(self) -> dict[str, Any]:
+        """Precision provenance: ``{"precision": "f64" | "mixed", "kernels": [...]}``,
+        one kernel entry per mixed-precision kernel allowed or run (``kernel``,
+        ``requested``, ``mode``, ``device``, ``calls_mixed``,
+        ``calls_f64_fallback``, ``ladder``, ``error_bound``). An all-f64 run is
+        ``{"precision": "f64", "kernels": []}``."""
+        ...
+
+    @property
+    def scf_precision(self) -> dict[str, Any]:
+        """Precision provenance of the reference SCF (see ``precision``)."""
+        ...
+
+    @property
     def total_energy(self) -> float:
         """Reference SCF + MP2 correlation energy, Hartree."""
         ...
@@ -1619,6 +1678,15 @@ class RsMp2RpaResult:
 
 class DftResult:
     """Result of a KS-DFT calculation."""
+
+    @property
+    def precision(self) -> dict[str, Any]:
+        """Precision provenance: ``{"precision": "f64" | "mixed", "kernels": [...]}``,
+        one kernel entry per mixed-precision kernel allowed or run (``kernel``,
+        ``requested``, ``mode``, ``device``, ``calls_mixed``,
+        ``calls_f64_fallback``, ``ladder``, ``error_bound``). An all-f64 run is
+        ``{"precision": "f64", "kernels": []}``."""
+        ...
 
     @property
     def total_energy(self) -> float:

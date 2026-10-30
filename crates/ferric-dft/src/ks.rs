@@ -440,8 +440,11 @@ impl MixedLadder {
     /// shared [`PrecisionLadder::step_with`] with this kernel's request and
     /// threshold).
     fn step(&self, ds: &[&Array2<f64>]) -> bool {
-        self.0
-            .step_with(mixed_vxc_requested(), MIXED_VXC_LADDER_THRESH, ds)
+        let requested = mixed_vxc_requested();
+        if requested {
+            ferric_core::gpu::stats::note_ladder_build(ferric_core::gpu::MixedKernel::XcVxc);
+        }
+        self.0.step_with(requested, MIXED_VXC_LADDER_THRESH, ds)
     }
 
     /// Forget every earlier build: the next one has no previous build.
@@ -815,6 +818,7 @@ impl XcContribution for KsXc {
             )
             .expect(EVAL_INFALLIBLE);
         swap_in_f64(&mut [f], &b.vs, &[&v64]);
+        ferric_core::gpu::stats::note_exit_rebuild(ferric_core::gpu::MixedKernel::XcVxc);
         true
     }
 
@@ -1075,6 +1079,7 @@ impl UksXcContribution for KsXcUks {
             )
             .expect(EVAL_INFALLIBLE);
         swap_in_f64(&mut [f_a, f_b], &b.vs, &[&v_a, &v_b]);
+        ferric_core::gpu::stats::note_exit_rebuild(ferric_core::gpu::MixedKernel::XcVxc);
         true
     }
 

@@ -1420,6 +1420,7 @@ impl<'a> CosxK<'a> {
         t.route_points = acc.route_points.load(Ordering::Relaxed);
         t.f32_blocks = acc.f32_blocks.load(Ordering::Relaxed);
         t.f32_fallbacks = acc.f32_fallbacks.load(Ordering::Relaxed);
+        note_cosx_precision(t.f32_blocks, t.f32_fallbacks);
         t.route_f32_units = acc.route_f32_units.load(Ordering::Relaxed);
         let (fl, fl32) = (
             acc.route_flops.load(Ordering::Relaxed),
@@ -2010,6 +2011,24 @@ impl BatchScreen<'_> {
     #[cfg(test)]
     fn keep(&mut self, s1: usize, s2: usize) -> bool {
         self.classify(s1, s2) != Route::Drop
+    }
+}
+
+/// Precision provenance of one K build: a build that computed any unit with
+/// the f32 block counts as one mixed `cosx-kern` call; its non-finite f32
+/// units (recomputed in f64) count as `f32_range` fallbacks.
+fn note_cosx_precision(f32_blocks: usize, f32_fallbacks: usize) {
+    use ferric_core::gpu::stats::{note_kernel_mixed, note_mixed_fallbacks, MixedFallback};
+    use ferric_core::gpu::MixedKernel;
+    if f32_blocks > 0 {
+        note_kernel_mixed(MixedKernel::CosxKern);
+    }
+    if f32_fallbacks > 0 {
+        note_mixed_fallbacks(
+            MixedKernel::CosxKern,
+            MixedFallback::F32Range,
+            f32_fallbacks as u64,
+        );
     }
 }
 

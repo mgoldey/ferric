@@ -1438,7 +1438,7 @@ pub fn solve_rhf_injected<'a>(
 ) -> Result<ScfResult, FerricError> {
     validate_injected(config)?;
     check_injection_shapes("solve_rhf_injected", &inj, prep.nbasis())?;
-    solve_rhf_impl(ctx, mol, prep, op, bounds, config, Some(inj), None, None)
+    solve_rhf_impl_recorded(ctx, mol, prep, op, bounds, config, Some(inj), None, None)
 }
 
 /// Shape/finiteness checks shared by [`solve_rhf_injected`] and
@@ -1641,7 +1641,7 @@ pub(crate) fn solve_rhf_blocked(
     config: &RhfConfig,
     spec: &crate::symmetric::SymmetrySpec,
 ) -> Result<ScfResult, FerricError> {
-    solve_rhf_impl(ctx, mol, prep, op, bounds, config, None, Some(spec), None)
+    solve_rhf_impl_recorded(ctx, mol, prep, op, bounds, config, None, Some(spec), None)
 }
 
 /// A density-dependent closed-shell Fock term for [`solve_rhf_with_hook`]:
@@ -1762,7 +1762,7 @@ fn solve_rhf_routed(
     hook: Option<RhfFockHook<'_>>,
 ) -> Result<ScfResult, FerricError> {
     if !crate::basis2::applies(config, false) {
-        return solve_rhf_impl(ctx, mol, prep, op, bounds, config, None, None, hook);
+        return solve_rhf_impl_recorded(ctx, mol, prep, op, bounds, config, None, None, hook);
     }
     use crate::basis2::GuessOutcome;
     let mut cfg = config.clone();
@@ -1776,7 +1776,7 @@ fn solve_rhf_routed(
             }
             GuessOutcome::Declined(report) => report,
         };
-    let mut r = solve_rhf_impl(ctx, mol, prep, op, bounds, &cfg, None, None, hook)?;
+    let mut r = solve_rhf_impl_recorded(ctx, mol, prep, op, bounds, &cfg, None, None, hook)?;
     r.guess_basis = Some(report);
     Ok(r)
 }
@@ -1864,6 +1864,27 @@ pub fn ks_vxc_closed(
     let mut v = Array2::<f64>::zeros(d.raw_dim());
     let e = ks.add_xc(d, &mut v);
     Ok((e, v))
+}
+
+/// [`solve_rhf_impl`] plus its precision provenance record
+/// ([`ScfResult::precision`]): the per-kernel counter delta over this solve.
+/// The record observes only; it changes no number.
+#[allow(clippy::too_many_arguments)]
+fn solve_rhf_impl_recorded(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    config: &RhfConfig,
+    inj: Option<PeriodicInjection<'_>>,
+    sym: Option<&crate::symmetric::SymmetrySpec>,
+    hook: Option<RhfFockHook<'_>>,
+) -> Result<ScfResult, FerricError> {
+    let probe = ferric_core::gpu::provenance::PrecisionProbe::start();
+    let mut r = solve_rhf_impl(ctx, mol, prep, op, bounds, config, inj, sym, hook)?;
+    r.precision = probe.finish(ferric_core::gpu::provenance::SCF_KERNELS);
+    Ok(r)
 }
 
 /// Shared body of [`solve_rhf`] (`inj = None`, byte-identical to the
@@ -2409,6 +2430,7 @@ fn solve_rhf_impl(
             cosx_final: None,
             cosx_schedule,
             convergence,
+            precision: Default::default(),
         }
     };
 
@@ -3042,6 +3064,7 @@ fn solve_rhf_impl(
                     cosx_final,
                     cosx_schedule: crate::cosx_schedule::record(&cosx_sched),
                     convergence: last_report,
+                    precision: Default::default(),
                 });
             }
         }

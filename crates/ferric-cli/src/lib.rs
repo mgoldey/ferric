@@ -282,7 +282,7 @@ pub fn main() {
 fn install_gpu_or_exit(cfg: &Config, cli_preset: Option<ferric_core::gpu::GpuPreset>) {
     let explicit = ferric_core::gpu::GpuSettingsExplicit {
         cli_preset,
-        ..cfg.gpu.explicit()
+        ..cfg.gpu_explicit()
     };
     if let Err(e) = ferric_core::gpu::install(explicit) {
         eprintln!("error: {e}");
@@ -1141,6 +1141,8 @@ pub fn run(args: Vec<String>) {
     let scf_exit = result.exit;
     let scf_iterations = result.iterations;
     let cosx_final = result.cosx_final;
+    // A few small records (empty for an f64 run), not a matrix: cheap.
+    let scf_precision = result.precision.to_json();
     // `[dft] dispersion` is admitted only on a Kohn-Sham SCF (guarded above),
     // and the closed-shell KS route dispatches as "ksdft". Evaluated ONCE here
     // and shared by the printout and the terminal `run_end` record.
@@ -1281,6 +1283,9 @@ pub fn run(args: Vec<String>) {
         if let (Some(f), Some(obj)) = (cosx_final, extra.as_object_mut()) {
             obj.insert("cosx_final_pass".to_string(), cosx_final_json(&f));
         }
+        // Precision provenance of the SCF (`ScfResult::precision`):
+        // `{"precision": "f64", "kernels": []}` for an all-f64 run.
+        extra["precision"] = scf_precision;
         rl.run_end(energy, scf_converged, &format!("{scf_exit:?}"), extra);
     }
 }
@@ -1498,6 +1503,7 @@ fn run_symmetric_rhf(
             "task": cfg.method.task,
             "scf_iterations": scf.iterations,
             "energy_is": "total",
+            "precision": scf.precision.to_json(),
             "symmetry": {
                 "point_group": sym.group(),
                 "max_symmetrization_shift_bohr": sym.max_symmetrization_shift(),
@@ -2366,6 +2372,7 @@ fn run_rimp2(
                 "e_scf_reference": result.energy,
                 "scf_converged": result.converged,
                 "local": local_json(None),
+                "precision": mp2_result.precision.to_json(),
             }),
         );
     }
@@ -2473,6 +2480,7 @@ fn run_u_rimp2(
                 "e_scf_reference": result.energy,
                 "scf_converged": result.converged,
                 "local": local_json(None),
+                "precision": r.precision.to_json(),
             }),
         );
     }

@@ -23,11 +23,10 @@
 //! the builds the ladder was consulted for while mixed was requested, the
 //! builds that kept a mixed contribution, and the converged exits whose last
 //! mixed contribution was rebuilt in f64.
-// TODO(feat/precision-section-provenance): when that branch lands, report these
-// through `ferric_core::gpu::stats::{note_ladder_build, note_kernel_mixed,
-// note_exit_rebuild}` per kernel (its `LadderRecord {builds_mixed, builds_total,
-// exit_rebuilt_f64}` has the same three fields) and add `dfj-pack`/`dfk-occ` to
-// its `has_ladder`.
+//!
+//! The per-kernel provenance counters are separate
+//! ([`gpu::stats`](mod@crate::gpu::stats)): each ladder's user reports to them, as
+//! `LadderSite::Jk` here covers two kernels.
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 

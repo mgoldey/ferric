@@ -27,13 +27,14 @@ pub mod mixed_rules;
 pub mod pool;
 pub mod precision;
 pub mod preset;
+pub mod provenance;
 #[cfg(feature = "gpu")]
 pub mod resident;
 pub mod stats;
 
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
-pub use config::{GpuMode, GpuSettings, GpuSettingsExplicit};
+pub use config::{GpuMode, GpuSettings, GpuSettingsExplicit, PrecisionExplicit};
 pub use precision::{MixedKernel, MixedKernelSet, MixedScope, Precision};
 pub use preset::GpuPreset;
 pub use stats::{stats, GpuStatsSnapshot};
@@ -129,6 +130,7 @@ pub fn decide(
 /// or without the `gpu` feature; a second install with different settings, or
 /// an install after `status()`/`settings()` already initialised the lazy state.
 pub fn install(explicit: GpuSettingsExplicit) -> Result<&'static GpuStatus, String> {
+    let explicit = with_staged_precision(explicit)?;
     let (settings, audit) = GpuSettings::resolve(explicit, crate::config::env_lookup)?;
     // A repeated identical install is a no-op: announce only the first one.
     let first = INSTALLED.get().is_none();
@@ -192,6 +194,66 @@ pub fn install(explicit: GpuSettingsExplicit) -> Result<&'static GpuStatus, Stri
 /// the lazy state was read) with different settings; callers match on it.
 pub const SETTINGS_ALREADY_INSTALLED: &str = "[gpu] settings already installed";
 
+/// A `[precision]` request staged by [`stage_precision`] (Python's
+/// `configure_precision`), merged into the next [`install`] or into the lazy
+/// env resolution, whichever comes first.
+static PRECISION_STAGED: Mutex<Option<PrecisionExplicit>> = Mutex::new(None);
+
+/// Stage a `[precision]` request for a library caller that has no TOML (the
+/// Python `configure_precision`). It is merged into the next [`install`]
+/// (whose own `precision_section` must agree with it) or, when nothing calls
+/// `install`, into the lazy resolution at first use. Errors: the settings are
+/// already installed or read, or a different request is already staged.
+/// Staging validates nothing beyond the parsed values; the combination is
+/// checked where it is resolved (`install` errors, the lazy path degrades to
+/// `off` with the reason, as for the env knobs).
+pub fn stage_precision(p: PrecisionExplicit) -> Result<(), String> {
+    if INSTALLED.get().is_some() {
+        return Err(format!(
+            "{SETTINGS_ALREADY_INSTALLED}; a [precision] request must be staged before the \
+             GPU settings are installed or first read"
+        ));
+    }
+    let mut staged = PRECISION_STAGED.lock().unwrap_or_else(|e| e.into_inner());
+    let merged = match *staged {
+        Some(prev) => prev.merge(p, "the same key staged again")?,
+        None => p,
+    };
+    *staged = Some(merged);
+    Ok(())
+}
+
+/// The staged `[precision]` request, if any.
+pub fn staged_precision() -> Option<PrecisionExplicit> {
+    *PRECISION_STAGED.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// `explicit` with the staged `[precision]` request merged into its
+/// `precision_section` (a key given by both must agree).
+fn with_staged_precision(mut explicit: GpuSettingsExplicit) -> Result<GpuSettingsExplicit, String> {
+    if let Some(staged) = staged_precision() {
+        explicit.precision_section = staged.merge(
+            explicit.precision_section,
+            "the request staged by configure_precision",
+        )?;
+    }
+    Ok(explicit)
+}
+
+/// The installed settings WITHOUT initialising them: `None` when nothing has
+/// installed or read them yet. Every mixed path reads [`settings`] before it
+/// runs mixed, so `None` means no mixed kernel can have run. The precision
+/// provenance record reads this, so producing a result never freezes the
+/// lazy settings (a later `configure_gpu` stays possible after an f64 run).
+pub fn installed_settings() -> Option<&'static GpuSettings> {
+    INSTALLED.get().map(|(s, _)| s)
+}
+
+/// The installed status without initialising it (see [`installed_settings`]).
+pub fn installed_status() -> Option<&'static GpuStatus> {
+    INSTALLED.get().map(|(_, st)| st)
+}
+
 /// Library/Python callers that never called [`install`]: resolve from the env
 /// on first use (mode defaults to `off`, so this touches no device by default).
 /// A malformed env knob degrades to `off` here (the CLI path errors instead).
@@ -207,15 +269,18 @@ pub fn settings() -> &'static GpuSettings {
 fn installed() -> &'static (GpuSettings, GpuStatus) {
     INSTALLED.get_or_init(|| {
         let mut malformed = None;
-        let settings =
-            match GpuSettings::resolve(GpuSettingsExplicit::default(), crate::config::env_lookup) {
-                Ok((s, _)) => s,
-                Err(e) => {
-                    eprintln!("[ferric] gpu: {e}; GPU disabled");
-                    malformed = Some(e);
-                    GpuSettings::degraded_off()
-                }
-            };
+        let lazy = GpuSettingsExplicit {
+            precision_section: staged_precision().unwrap_or_default(),
+            ..Default::default()
+        };
+        let settings = match GpuSettings::resolve(lazy, crate::config::env_lookup) {
+            Ok((s, _)) => s,
+            Err(e) => {
+                eprintln!("[ferric] gpu: {e}; GPU disabled");
+                malformed = Some(e);
+                GpuSettings::degraded_off()
+            }
+        };
         let st = match malformed {
             Some(reason) if gpu_compiled() => GpuStatus::Unavailable { reason },
             _ => decide(&settings, probe).unwrap_or_else(|reason| {

@@ -289,12 +289,12 @@ fn solve_rohf_routed(
     hook: Option<crate::fock::SpinFockHook<'_>>,
 ) -> Result<ScfResult, FerricError> {
     if !crate::basis2::applies(config, false) {
-        return solve_rohf_impl(ctx, mol, prep, bounds, config, None, None, None, hook);
+        return solve_rohf_impl_recorded(ctx, mol, prep, bounds, config, None, None, None, hook);
     }
     let kind = crate::basis2::ScfKind::Rohf;
     let g = crate::basis2::open_shell_guess(ctx, mol, prep, bounds, config, kind)?;
     let c0 = g.initial_mos().map(|(c, _)| c);
-    let mut r = solve_rohf_impl(ctx, mol, prep, bounds, &g.config, c0, None, None, hook)?;
+    let mut r = solve_rohf_impl_recorded(ctx, mol, prep, bounds, &g.config, c0, None, None, hook)?;
     r.guess_basis = Some(g.report);
     Ok(r)
 }
@@ -393,7 +393,7 @@ pub fn solve_rohf_injected<'a>(
             ));
         }
     }
-    let r = solve_rohf_impl(
+    let r = solve_rohf_impl_recorded(
         ctx,
         mol,
         prep,
@@ -451,7 +451,7 @@ pub(crate) fn solve_rohf_blocked(
     config: &RohfConfig,
     spec: &crate::symmetric::SymmetrySpec,
 ) -> Result<ScfResult, FerricError> {
-    let r = solve_rohf_impl(ctx, mol, prep, bounds, config, None, None, Some(spec), None)?;
+    let r = solve_rohf_impl_recorded(ctx, mol, prep, bounds, config, None, None, Some(spec), None)?;
     if r.converged {
         Ok(r)
     } else {
@@ -460,6 +460,27 @@ pub(crate) fn solve_rohf_blocked(
             last_energy: r.energy,
         })
     }
+}
+
+/// [`solve_rohf_impl`] plus its precision provenance record
+/// ([`ScfResult::precision`]): the per-kernel counter delta over this solve.
+/// The record observes only; it changes no number.
+#[allow(clippy::too_many_arguments)]
+fn solve_rohf_impl_recorded(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    bounds: &SchwarzBounds,
+    config: &RohfConfig,
+    initial_mos: Option<&Array2<f64>>,
+    inj: Option<PeriodicInjection<'_>>,
+    sym: Option<&crate::symmetric::SymmetrySpec>,
+    hook: Option<crate::fock::SpinFockHook<'_>>,
+) -> Result<ScfResult, FerricError> {
+    let probe = ferric_core::gpu::provenance::PrecisionProbe::start();
+    let mut r = solve_rohf_impl(ctx, mol, prep, bounds, config, initial_mos, inj, sym, hook)?;
+    r.precision = probe.finish(ferric_core::gpu::provenance::SCF_KERNELS);
+    Ok(r)
 }
 
 /// Shared body of [`solve_rohf_best_effort`] (`inj = None`, `initial_mos =
@@ -1354,6 +1375,7 @@ fn solve_rohf_impl(
                 cosx_final: None,
                 cosx_schedule: None,
                 convergence: None,
+                precision: Default::default(),
             };
             // Swap witness (F6): returned now, or held while its best
             // single-swap neighbours are evaluated on the next passes.
@@ -1604,6 +1626,7 @@ fn solve_rohf_impl(
         cosx_final: None,
         cosx_schedule: None,
         convergence: None,
+        precision: Default::default(),
     })
 }
 

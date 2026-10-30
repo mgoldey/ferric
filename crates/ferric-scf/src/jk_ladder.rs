@@ -124,6 +124,8 @@
 //! DIIS, diagonalisation, the energy trace, every build after the exit veto.
 use std::cell::Cell;
 
+use ferric_core::gpu::stats::{note_exit_rebuild, note_kernel_mixed};
+use ferric_core::gpu::MixedKernel;
 use ferric_core::precision_ladder::{LadderSite, PrecisionLadder};
 use ndarray::Array2;
 
@@ -144,9 +146,12 @@ thread_local! {
     /// The ladder's decision for the J/K build in progress on this thread:
     /// `None` outside any [`JkBuildScope`].
     static SCOPE: Cell<Option<bool>> = const { Cell::new(None) };
-    /// Builds on this thread that ran a mixed device kernel (monotone).
-    static RAN_MIXED: Cell<u64> = const { Cell::new(0) };
+    /// Device builds on this thread that ran mixed, per [`JK_KERNELS`] (monotone).
+    static RAN_MIXED: Cell<[u64; 2]> = const { Cell::new([0; 2]) };
 }
+
+/// The kernels behind this ladder, in the order of [`RAN_MIXED`].
+const JK_KERNELS: [MixedKernel; 2] = [MixedKernel::DfjPack, MixedKernel::DfkOcc];
 
 /// The ladder's decision for the J/K build in progress on this thread:
 /// `Some(true)` mixed allowed, `Some(false)` f64 required, `None` no ladder
@@ -155,17 +160,29 @@ pub fn scope_allows_mixed() -> Option<bool> {
     SCOPE.with(Cell::get)
 }
 
-/// A device kernel ran this build mixed (`dfj-pack` or `dfk-occ`). Called by
-/// the device dispatchers; the enclosing guard keeps the build for the exit.
-pub fn note_mixed_build() {
+/// `kernel` (`dfj-pack` or `dfk-occ`) ran a device build mixed. Called by the
+/// device dispatchers; the enclosing guard keeps the build for the exit.
+///
+/// Provenance: inside a scope the guard's drop counts the kernel once for the
+/// whole Fock build, however many device builds it took (UHF forms K twice per
+/// iteration, RSH twice more), so `ladder.builds_mixed` and `builds_total` count
+/// the same thing. Outside any scope each call counts.
+pub fn note_mixed_build(kernel: MixedKernel) {
     debug_assert_ne!(
         scope_allows_mixed(),
         Some(false),
         "a J/K kernel ran mixed inside a scope that requires f64"
     );
-    RAN_MIXED.with(|c| c.set(c.get().wrapping_add(1)));
-    // TODO(feat/precision-section-provenance): note_kernel_mixed(kernel) here,
-    // with the kernel passed in by the dispatcher.
+    debug_assert!(JK_KERNELS.contains(&kernel), "{kernel:?} has no J/K ladder");
+    let i = usize::from(kernel == JK_KERNELS[1]);
+    RAN_MIXED.with(|c| {
+        let mut ran = c.get();
+        ran[i] = ran[i].wrapping_add(1);
+        c.set(ran);
+    });
+    if scope_allows_mixed().is_none() {
+        note_kernel_mixed(kernel);
+    }
 }
 
 /// Test seams (`test-seams` feature). Never set by a shipped build.
@@ -225,9 +242,23 @@ fn mixed_requested() -> bool {
     false
 }
 
+/// One Fock build consulted the ladder: count it for each requested kernel.
+#[cfg(feature = "gpu")]
+fn note_ladder_builds() {
+    for k in JK_KERNELS {
+        if crate::df_k_gpu::mixed_kernel_allowed(k) {
+            ferric_core::gpu::stats::note_ladder_build(k);
+        }
+    }
+}
+
+#[cfg(not(feature = "gpu"))]
+fn note_ladder_builds() {}
+
 /// One SCF's J/K precision ladder (see the module docs).
 pub struct JkLadder {
-    ladder: PrecisionLadder<()>,
+    /// The kept record of a mixed build: which of [`JK_KERNELS`] ran mixed.
+    ladder: PrecisionLadder<[bool; 2]>,
     /// Whether this SCF can reach a device J/K kernel at all.
     has_df: bool,
     /// Set by an exit veto: every later build of this SCF is f64.
@@ -255,11 +286,10 @@ impl JkLadder {
             return JkBuildScope {
                 ladder: None,
                 prev: None,
-                ran0: 0,
+                ran0: [0; 2],
             };
         }
-        // TODO(feat/precision-section-provenance): note_ladder_build(DfjPack /
-        // DfkOcc) here (counted today by the shared ladder under LadderSite::Jk).
+        note_ladder_builds();
         let moving = self.ladder.step_with(true, thresh(), ds);
         let mixed = moving && !self.latched_f64.get();
         let prev = SCOPE.with(|s| s.replace(Some(mixed)));
@@ -277,9 +307,12 @@ impl JkLadder {
     /// redo the iteration at the same density (see [`JkExit`]). Otherwise
     /// `conv` is returned unchanged ([`JkExit::Proceed`]).
     pub fn veto_mixed_exit<E>(&self, conv: Option<E>) -> JkExit<E> {
-        if conv.is_none() || self.ladder.take_mixed().is_none() {
+        if conv.is_none() {
             return JkExit::Proceed(conv);
         }
+        let Some(ran) = self.ladder.take_mixed() else {
+            return JkExit::Proceed(conv);
+        };
         // A latched ladder publishes `Some(false)` to every later build, so a
         // mixed record here means a dispatcher ignored the scope (caught in
         // debug builds by `note_mixed_build` and the guard's drop). Refuse
@@ -289,8 +322,11 @@ impl JkLadder {
             "a J/K build ran mixed after the ladder latched to f64"
         );
         self.latched_f64.set(true);
-        // TODO(feat/precision-section-provenance): note_exit_rebuild(kernel)
-        // here (counted today by the shared ladder under LadderSite::Jk).
+        for (k, ran) in JK_KERNELS.into_iter().zip(ran) {
+            if ran {
+                note_exit_rebuild(k);
+            }
+        }
         JkExit::RedoInF64
     }
 
@@ -328,7 +364,7 @@ pub enum JkExit<E> {
 pub struct JkBuildScope<'a> {
     ladder: Option<&'a JkLadder>,
     prev: Option<bool>,
-    ran0: u64,
+    ran0: [u64; 2],
 }
 
 impl Drop for JkBuildScope<'_> {
@@ -337,12 +373,19 @@ impl Drop for JkBuildScope<'_> {
             return;
         };
         SCOPE.with(|s| s.set(self.prev));
-        if RAN_MIXED.with(Cell::get) != self.ran0 {
+        let now = RAN_MIXED.with(Cell::get);
+        let ran = [now[0] != self.ran0[0], now[1] != self.ran0[1]];
+        if ran.contains(&true) {
             debug_assert!(
                 !l.latched_f64.get(),
                 "a J/K build ran mixed while the ladder was latched to f64"
             );
-            l.ladder.keep_mixed(());
+            for (k, ran) in JK_KERNELS.into_iter().zip(ran) {
+                if ran {
+                    note_kernel_mixed(k);
+                }
+            }
+            l.ladder.keep_mixed(ran);
         }
     }
 }
@@ -383,7 +426,7 @@ mod tests {
         // A kernel ran mixed: a non-exit is untouched, the exit is refused once.
         {
             let _g = guard_with(&l, true);
-            note_mixed_build();
+            note_mixed_build(MixedKernel::DfjPack);
         }
         assert_eq!(l.veto_mixed_exit(None::<u8>), JkExit::Proceed(None));
         assert!(!l.latched_f64(), "a non-exit latched");
@@ -409,7 +452,7 @@ mod tests {
         let l = JkLadder::new([true]);
         l.latched_f64.set(true);
         let _g = guard_with(&l, true);
-        note_mixed_build();
+        note_mixed_build(MixedKernel::DfjPack);
     }
 
     /// Catches: a device kernel that runs mixed inside a scope requiring f64.
@@ -419,7 +462,46 @@ mod tests {
     fn a_mixed_kernel_in_an_f64_scope_is_a_bug() {
         let l = JkLadder::new([true]);
         let _g = guard_with(&l, false);
-        note_mixed_build();
+        note_mixed_build(MixedKernel::DfjPack);
+    }
+
+    /// Catches: a provenance count per device build instead of per Fock build
+    /// (`builds_mixed` above `builds_total` under UHF), a kernel credited with
+    /// another's exit rebuild, and an unscoped call that goes uncounted. Only
+    /// this test notes `dfk-occ` in this binary, so its deltas are exact.
+    #[test]
+    fn provenance_counts_each_kernel_once_per_fock_build() {
+        use ferric_core::gpu::stats::kernel_counters;
+        let k = MixedKernel::DfkOcc.index();
+        let c0 = kernel_counters()[k];
+        note_mixed_build(MixedKernel::DfkOcc);
+        note_mixed_build(MixedKernel::DfkOcc);
+        assert_eq!(kernel_counters()[k].mixed, c0.mixed + 2, "unscoped");
+
+        let l = JkLadder::new([true]);
+        {
+            let _g = guard_with(&l, true);
+            note_mixed_build(MixedKernel::DfkOcc);
+            note_mixed_build(MixedKernel::DfkOcc);
+            assert_eq!(
+                kernel_counters()[k].mixed,
+                c0.mixed + 2,
+                "counted mid-scope"
+            );
+        }
+        assert_eq!(kernel_counters()[k].mixed, c0.mixed + 3, "per Fock build");
+        assert_eq!(l.veto_mixed_exit(Some(1)), JkExit::RedoInF64);
+        assert_eq!(kernel_counters()[k].exit_rebuilds, c0.exit_rebuilds + 1);
+
+        // A `dfj-pack`-only build must not credit `dfk-occ` with its exit.
+        let l = JkLadder::new([true]);
+        {
+            let _g = guard_with(&l, true);
+            note_mixed_build(MixedKernel::DfjPack);
+        }
+        assert_eq!(l.veto_mixed_exit(Some(1)), JkExit::RedoInF64);
+        assert_eq!(kernel_counters()[k].mixed, c0.mixed + 3);
+        assert_eq!(kernel_counters()[k].exit_rebuilds, c0.exit_rebuilds + 1);
     }
 
     /// Pins τ. Catches: a change of `JK_LADDER_THRESH` (or of the `xc-vxc`
