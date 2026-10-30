@@ -81,7 +81,9 @@ pub enum ErrorBound {
 /// carry one: `xc-vxc`, `dfj-pack`, `dfk-occ`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LadderRecord {
-    /// Builds that ran mixed.
+    /// Builds that ran mixed. Not bounded by `builds_total`: a J/K kernel's calls
+    /// outside the ladder (one-shot builds, the second-order solvers, which
+    /// `ferric_scf::jk_ladder` does not wire) count here but consult no ladder.
     pub builds_mixed: u64,
     /// Builds the ladder was consulted for while mixed was requested.
     pub builds_total: u64,
