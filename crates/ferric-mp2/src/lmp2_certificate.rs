@@ -202,6 +202,9 @@ pub struct Lmp2Certificate {
     /// the achieved residual (`cg_relres`).
     pub cg_rtol: f64,
     pub cg_relres: f64,
+    /// A-priori bound (Ha) on the Hylleraas energy's solver error at
+    /// `cg_relres`: `3·‖PJ‖²·relres²/λ_min`, λ_min ≥ 2(ε_LUMO − ε_HOMO).
+    pub cg_energy_error_bound: f64,
     pub cg_converged: bool,
     pub frozen_core: usize,
     /// [`operator_label`] of the run's operator; the ε record is Coulomb.
@@ -241,6 +244,7 @@ impl Lmp2Certificate {
             precision: "f64",
             cg_rtol: cfg.cg_rtol,
             cg_relres: r.cg_relres,
+            cg_energy_error_bound: r.cg_energy_error_bound,
             cg_converged: r.cg_converged,
             frozen_core: cfg.frozen_core,
             operator: operator_label(op),
@@ -298,6 +302,7 @@ impl Lmp2Certificate {
             ("precision", V::Str(self.precision.to_string())),
             ("cg_rtol", V::F64(self.cg_rtol)),
             ("cg_relres", V::F64(self.cg_relres)),
+            ("cg_energy_error_bound", V::F64(self.cg_energy_error_bound)),
             ("cg_converged", V::Bool(self.cg_converged)),
             ("frozen_core", V::Usize(self.frozen_core)),
             ("operator", V::Str(self.operator.clone())),

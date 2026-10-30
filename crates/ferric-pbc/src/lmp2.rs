@@ -5,8 +5,9 @@
 //! The solver half is ferric-mp2's molecular amplitude-threshold machinery,
 //! reused unchanged: the swap-closed Eq-8 pair blocks
 //! ([`ferric_mp2::ragged::pair_block_from_g_cand_gated`]), the ragged
-//! per-pair PCG ([`ferric_mp2::ragged::solve_ragged`]), the Hylleraas energy
-//! (the linear form [`ferric_mp2::lmp2_amplitude::linear_energy`]), the R⁻⁶ pair gate
+//! per-pair PCG ([`ferric_mp2::ragged::solve_ragged`]), the pair energy
+//! (the LINEAR, non-stationary form [`ferric_mp2::lmp2_amplitude::linear_energy`];
+//! switching to the stationary Hylleraas form is an open decision), the R⁻⁶ pair gate
 //! ([`ferric_mp2::lmp2_amplitude::pair_gate_keep_with`]) and the VV-HV
 //! orthonormalisations (`canonical_orth`, `lowdin`, `pivoted_cholesky_order`).
 //! What periodicity changes is implemented here:

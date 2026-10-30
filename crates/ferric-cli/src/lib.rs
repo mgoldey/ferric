@@ -6714,6 +6714,7 @@ mod local_printout_tests {
             precision: "f64",
             cg_rtol: 1e-11,
             cg_relres: 3.3e-12,
+            cg_energy_error_bound: 2.5e-24,
             cg_converged: true,
             frozen_core: 4,
             operator: "coulomb".into(),
@@ -6747,7 +6748,7 @@ mod local_printout_tests {
             }
         }
         let fields = cert.fields();
-        assert_eq!(fields.len(), 21);
+        assert_eq!(fields.len(), 22);
         for (k, v) in &fields {
             assert!(same(&back[*k], v), "field {k}: {} vs {v:?}", back[*k]);
         }

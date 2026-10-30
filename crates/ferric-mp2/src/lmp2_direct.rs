@@ -2387,6 +2387,7 @@ pub fn amplitude_lmp2_direct_with_virtuals(
     let mut r = solve_and_count(
         &rg,
         &spaces.f_oo,
+        &spaces.f_vv,
         rhf.energy,
         cfg,
         vvhv,
@@ -3261,8 +3262,18 @@ mod stage_c_tests {
         let (no, nv) = (su.spaces.no, su.spaces.nv);
         let e = |path| {
             let (rg, st) = fit(&su, &pre, eps, &dcfg, path);
-            let r = solve_and_count(&rg, &su.spaces.f_oo, su.e_hf, &cfg, &su.vvhv, no, nv, "t")
-                .unwrap();
+            let r = solve_and_count(
+                &rg,
+                &su.spaces.f_oo,
+                &su.spaces.f_vv,
+                su.e_hf,
+                &cfg,
+                &su.vvhv,
+                no,
+                nv,
+                "t",
+            )
+            .unwrap();
             (r.e_corr, st.n_w_reused)
         };
         let (e_new, reused) = e(FitPath::Cholesky);

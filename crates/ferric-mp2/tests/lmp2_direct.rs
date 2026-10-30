@@ -1501,6 +1501,23 @@ fn production_ragged(
     frozen_core: usize,
     eps: f64,
 ) -> (ferric_mp2::ragged::Ragged, ndarray::Array2<f64>) {
+    let (rg, f_oo, _) = production_ragged_op(xyz, frozen_core, eps, Operator::coulomb(), 0.7);
+    (rg, f_oo)
+}
+
+/// [`production_ragged`] for any molecule, operator and gate calibration;
+/// also returns the virtual Fock block (for the λ_min bound).
+fn production_ragged_op(
+    xyz: &str,
+    frozen_core: usize,
+    eps: f64,
+    op: Operator,
+    gate_cal: f64,
+) -> (
+    ferric_mp2::ragged::Ragged,
+    ndarray::Array2<f64>,
+    ndarray::Array2<f64>,
+) {
     use ferric_mp2::lmp2_amplitude::{checked_vvhv, localized_spaces};
     use ferric_mp2::lmp2_direct::assemble_ragged_direct_local;
     let su = setup(xyz);
@@ -1518,15 +1535,15 @@ fn production_ragged(
         &su.mol,
         &su.obs,
         &su.dfbs,
-        Operator::coulomb(),
+        op,
         &spaces,
         eps,
         1.0,
-        Some(0.7),
+        Some(gate_cal),
         &dcfg,
     )
     .unwrap();
-    (rg, spaces.f_oo)
+    (rg, spaces.f_oo, spaces.f_vv)
 }
 
 /// Least-squares slope of log10|y| against log10 x.
@@ -1548,86 +1565,122 @@ fn loglog_slope(pts: &[(f64, f64)]) -> f64 {
 /// order in the CG residual (and ≥ 0: an upper bound), while the linear form
 /// Σ (2t − t̃) J errs at FIRST order. Artifact hypothesis: if the extra
 /// matvec or the swap handling were wrong, E_H would err at first order too.
-/// Measured on C4 and C8 (production maps, ε = 1e-4) by solving at a ladder
-/// of cg_rtol values and fitting log|ΔE| against log(relres) over the
-/// points above the roundoff floor. Mutation (seen to fail): `hylleraas_energy`
-/// returning the linear form.
+/// Measured at ε = 1e-4 (production maps) on C4 and C8 Coulomb, C4 and C8
+/// erfc(ω = 1), and the 3-D S22 water dimer (Coulomb), by solving at a
+/// ladder of cg_rtol values and fitting log|ΔE| against log(relres) over the
+/// points above the roundoff floor.
+///
+/// THE PER-RUN BOUND: at every rung, ΔE_H ≤ 3·‖PJ‖²·relres²/λ_min with
+/// λ_min ≥ 2(ε_LUMO − ε_HOMO) (`cg_energy_error_bound`, the certificate's
+/// `cg_energy_error_bound`) is asserted. Mutations (seen to fail):
+/// `hylleraas_energy` returning the linear form; the bound's factor 3
+/// replaced by 0.01.
 #[test]
 fn hylleraas_is_stationary() {
-    use ferric_mp2::lmp2_amplitude::{hylleraas_energy, linear_energy};
+    let cases = [
+        ("alkane_4.xyz", 4usize, "coul", Operator::coulomb(), 0.7),
+        ("alkane_8.xyz", 8, "coul", Operator::coulomb(), 0.7),
+        ("alkane_4.xyz", 4, "erfc", Operator::erfc(1.0), 0.02),
+        ("alkane_8.xyz", 8, "erfc", Operator::erfc(1.0), 0.02),
+        ("s22/water_dimer.xyz", 2, "coul", Operator::coulomb(), 0.7),
+    ];
+    for (xyz, fc, opn, op, cal) in cases {
+        stationarity_case(xyz, fc, opn, op, cal);
+    }
+}
+
+/// One [`hylleraas_is_stationary`] system: slopes, the upper-bound sign,
+/// and the per-run a-priori bound at every rtol rung.
+fn stationarity_case(xyz: &str, fc: usize, opn: &str, op: Operator, cal: f64) {
+    use ferric_mp2::lmp2_amplitude::{
+        cg_energy_error_bound, hylleraas_energy, linear_energy, operator_lambda_min_lower_bound,
+        pattern_rhs_norm,
+    };
     use ferric_mp2::ragged::{check_swap_closed, solve_ragged_budgeted_with, MatvecPath};
     const FLOOR: f64 = 1e-12;
-    for (xyz, fc) in [("alkane_4.xyz", 4usize), ("alkane_8.xyz", 8)] {
-        let (rg, f_oo) = production_ragged(xyz, fc, 1e-4);
-        check_swap_closed(&rg).unwrap();
-        // the production (budgeted) solve, ample budget: planned, all dense
-        let solve = |rtol: f64| {
-            let b = solve_ragged_budgeted_with(&rg, &f_oo, rtol, 400, usize::MAX, 0.0);
-            assert_eq!(b.decision.path, MatvecPath::Planned);
-            let e_h = hylleraas_energy(&rg, &f_oo, b.plan(), &b.solve.t);
-            (b.solve, e_h)
-        };
-        let (reference, e_ref) = solve(1e-13);
-        assert!(
-            reference.converged,
-            "{xyz}: reference solve did not converge"
-        );
-        let e_ref_lin = linear_energy(&rg, &reference.t);
-        assert!(
-            (e_ref - e_ref_lin).abs() < 1e-13,
-            "{xyz}: forms disagree at the converged solution: {:.3e}",
-            e_ref - e_ref_lin
-        );
-        let (mut hy, mut lin) = (Vec::new(), Vec::new());
-        let mut seen_iters = Vec::new();
-        let mut c_h_max = 0.0f64;
-        for rtol in [
-            1e-1, 3e-2, 1e-2, 3e-3, 1e-3, 3e-4, 1e-4, 3e-5, 1e-5, 3e-6, 1e-6,
-        ] {
-            let (s, e_h) = solve(rtol);
-            if seen_iters.contains(&s.iterations) {
-                continue;
-            }
-            seen_iters.push(s.iterations);
-            let dh = e_h - e_ref;
-            let dl = linear_energy(&rg, &s.t) - e_ref;
-            eprintln!(
-                "STAT {xyz} rtol {rtol:.0e} iters {:3} relres {:.3e}  dE_H {dh:+.3e}  dE_lin {dl:+.3e}  dE_H/relres^2 {:.3e}",
-                s.iterations,
-                s.relres,
-                dh / (s.relres * s.relres)
-            );
-            assert!(
-                dh > -FLOOR,
-                "{xyz}: E_H fell below the converged energy ({dh:.3e}): not an upper bound"
-            );
-            if dh.abs() > FLOOR {
-                hy.push((s.relres, dh));
-                c_h_max = c_h_max.max(dh / (s.relres * s.relres));
-            }
-            if dl.abs() > FLOOR {
-                lin.push((s.relres, dl));
-            }
+    let (rg, f_oo, f_vv) = production_ragged_op(xyz, fc, 1e-4, op, cal);
+    check_swap_closed(&rg).unwrap();
+    let lam = operator_lambda_min_lower_bound(&f_oo, &f_vv).unwrap();
+    let bnorm = pattern_rhs_norm(&rg);
+    assert!(lam > 0.0, "{xyz}: no positive gap");
+    // the production (budgeted) solve, ample budget: planned, all dense
+    let solve = |rtol: f64| {
+        let b = solve_ragged_budgeted_with(&rg, &f_oo, rtol, 400, usize::MAX, 0.0);
+        assert_eq!(b.decision.path, MatvecPath::Planned);
+        let e_h = hylleraas_energy(&rg, &f_oo, b.plan(), &b.solve.t).unwrap();
+        (b.solve, e_h)
+    };
+    let (reference, e_ref) = solve(1e-13);
+    assert!(
+        reference.converged,
+        "{xyz}: reference solve did not converge"
+    );
+    let e_ref_lin = linear_energy(&rg, &reference.t);
+    assert!(
+        (e_ref - e_ref_lin).abs() < 1e-13,
+        "{xyz}: forms disagree at the converged solution: {:.3e}",
+        e_ref - e_ref_lin
+    );
+    let (mut hy, mut lin) = (Vec::new(), Vec::new());
+    let mut seen_iters = Vec::new();
+    let (mut c_h_max, mut use_max) = (0.0f64, 0.0f64);
+    for rtol in [
+        1e-1, 3e-2, 1e-2, 3e-3, 1e-3, 3e-4, 1e-4, 3e-5, 1e-5, 3e-6, 1e-6,
+    ] {
+        let (s, e_h) = solve(rtol);
+        if seen_iters.contains(&s.iterations) {
+            continue;
         }
-        assert!(
-            hy.len() >= 4 && lin.len() >= 4,
-            "{xyz}: too few points to fit"
-        );
-        let (sh, sl) = (loglog_slope(&hy), loglog_slope(&lin));
+        seen_iters.push(s.iterations);
+        let dh = e_h - e_ref;
+        let dl = linear_energy(&rg, &s.t) - e_ref;
+        let bound = cg_energy_error_bound(bnorm, s.relres, lam);
         eprintln!(
-            "STAT {xyz}: slope E_H {sh:.3} ({} pts), slope E_lin {sl:.3} ({} pts), max dE_H/relres^2 {c_h_max:.3e}",
-            hy.len(),
-            lin.len()
+            "STAT {xyz} {opn} rtol {rtol:.0e} iters {:3} relres {:.3e}  dE_H {dh:+.3e}  \
+             bound {bound:.3e} (dE_H/bound {:.3})  dE_lin {dl:+.3e}  dE_H/relres^2 {:.3e}",
+            s.iterations,
+            s.relres,
+            dh / bound,
+            dh / (s.relres * s.relres)
         );
         assert!(
-            (1.7..=2.6).contains(&sh),
-            "{xyz}: Hylleraas error slope {sh:.3} is not quadratic"
+            dh > -FLOOR,
+            "{xyz}: E_H fell below the converged energy ({dh:.3e}): not an upper bound"
         );
         assert!(
-            (0.6..=1.4).contains(&sl),
-            "{xyz}: linear-form error slope {sl:.3} is not first order"
+            dh <= bound + FLOOR,
+            "{xyz} {opn}: dE_H {dh:.3e} exceeds the a-priori bound {bound:.3e}"
         );
+        if dh.abs() > FLOOR {
+            hy.push((s.relres, dh));
+            c_h_max = c_h_max.max(dh / (s.relres * s.relres));
+            use_max = use_max.max(dh / bound);
+        }
+        if dl.abs() > FLOOR {
+            lin.push((s.relres, dl));
+        }
     }
+    assert!(
+        hy.len() >= 4 && lin.len() >= 4,
+        "{xyz}: too few points to fit"
+    );
+    let (sh, sl) = (loglog_slope(&hy), loglog_slope(&lin));
+    eprintln!(
+        "STAT {xyz} {opn}: slope E_H {sh:.3} ({} pts), slope E_lin {sl:.3} ({} pts), \
+         max dE_H/relres^2 {c_h_max:.3e} Ha, bound constant 3*|PJ|^2/lam {:.3e} Ha \
+         (|PJ| {bnorm:.3e}, lam_lb {lam:.3e}), max dE_H/bound {use_max:.3}",
+        hy.len(),
+        lin.len(),
+        3.0 * bnorm * bnorm / lam
+    );
+    assert!(
+        (1.7..=2.6).contains(&sh),
+        "{xyz}: Hylleraas error slope {sh:.3} is not quadratic"
+    );
+    assert!(
+        (0.6..=1.4).contains(&sl),
+        "{xyz}: linear-form error slope {sl:.3} is not first order"
+    );
 }
 
 /// D2 (perf plan #3e): the adaptive Fvv product. On C8 at ε = 1e-4
@@ -1679,6 +1732,20 @@ fn fvv_sparse_branch_matches_dense() {
         "rho* = 0 is not bitwise the indexed matvec"
     );
 
+    // the sparse branch reads Fvv_aa's column k as row k: Fvv must be
+    // symmetric (to rounding — it is a block of Cᵀ F C)
+    let (mut asym, mut fmax) = (0.0f64, 0.0f64);
+    for pb in &rg.pairs {
+        for m in [&pb.fvv_aa, &pb.fvv_bb] {
+            asym = asym.max((m - &m.t()).iter().fold(0.0f64, |a, x| a.max(x.abs())));
+            fmax = fmax.max(m.iter().fold(0.0f64, |a, x| a.max(x.abs())));
+        }
+    }
+    eprintln!("Fvv block asymmetry {asym:.3e} (max |Fvv| {fmax:.3e})");
+    assert!(
+        asym <= 1e-13 * fmax,
+        "Fvv blocks are not symmetric: {asym:.3e}"
+    );
     let mut dens: Vec<f64> = rg
         .pairs
         .iter()
@@ -1736,8 +1803,8 @@ fn fvv_sparse_branch_matches_dense() {
             "{label}: CG iteration count differs"
         );
         let (ed, es) = (
-            hylleraas_energy(&rg, &f_oo, bd.plan(), &sd.t),
-            hylleraas_energy(&rg, &f_oo, bs.plan(), &ss.t),
+            hylleraas_energy(&rg, &f_oo, bd.plan(), &sd.t).unwrap(),
+            hylleraas_energy(&rg, &f_oo, bs.plan(), &ss.t).unwrap(),
         );
         eprintln!(
             "{label}: E dense {ed:.15} sparse {es:.15} |dE| {:.3e}",
@@ -1748,5 +1815,68 @@ fn fvv_sparse_branch_matches_dense() {
             "{label}: energies differ by {:.3e}",
             (ed - es).abs()
         );
+    }
+}
+
+/// `hylleraas_energy` checks swap closure ITSELF: a pattern made one-sided
+/// in one block (C4 production system) is an error, not a non-stationary
+/// number. Mutation (seen to fail): the check removed from
+/// `hylleraas_energy`.
+#[test]
+fn hylleraas_energy_rejects_a_one_sided_pattern() {
+    use ferric_mp2::lmp2_amplitude::hylleraas_energy;
+    use ferric_mp2::ragged::solve_ragged_budgeted_with;
+    let (mut rg, f_oo) = production_ragged("alkane_4.xyz", 4, 1e-4);
+    let b = solve_ragged_budgeted_with(&rg, &f_oo, 1e-8, 400, usize::MAX, 0.0);
+    assert!(hylleraas_energy(&rg, &f_oo, b.plan(), &b.solve.t).is_ok());
+    let t = b.solve.t.clone();
+    drop(b);
+    let pb = rg
+        .pairs
+        .iter_mut()
+        .find(|pb| {
+            let n = pb.da.len();
+            (0..n).any(|r| ((r + 1)..n).any(|c| pb.pat[r * n + c] && pb.pat[c * n + r]))
+        })
+        .expect("a block with an off-diagonal kept element");
+    let n = pb.da.len();
+    let (r, c) = (0..n)
+        .flat_map(|r| ((r + 1)..n).map(move |c| (r, c)))
+        .find(|&(r, c)| pb.pat[r * n + c] && pb.pat[c * n + r])
+        .unwrap();
+    pb.pat[c * n + r] = false;
+    let err = hylleraas_energy(&rg, &f_oo, None, &t).unwrap_err();
+    assert!(format!("{err}").contains("swap-closed"), "{err}");
+}
+
+/// `fvv_sparse_rho` must be a finite ρ* ≥ 0: NaN and negative values are a
+/// configuration error from the driver (water, ε = 1e-4), and the validator
+/// accepts 0 and any positive value. Mutation (seen to fail): the
+/// validation call removed from `solve_and_count`.
+#[test]
+fn fvv_sparse_rho_rejects_nan_and_negative() {
+    use ferric_mp2::lmp2_amplitude::validate_fvv_sparse_rho;
+    assert!(validate_fvv_sparse_rho(0.0).is_ok() && validate_fvv_sparse_rho(1.5).is_ok());
+    let su = setup("water.xyz");
+    for bad in [f64::NAN, -0.1] {
+        assert!(validate_fvv_sparse_rho(bad).is_err());
+        let cfg = AmplitudeLmp2Config {
+            eps: 1e-4,
+            frozen_core: 1,
+            fvv_sparse_rho: bad,
+            ..Default::default()
+        };
+        let err = amplitude_lmp2_direct(
+            &su.mol,
+            &su.obs,
+            &su.obs_bs,
+            &su.dfbs,
+            Operator::coulomb(),
+            &su.rhf,
+            &cfg,
+            &DirectConfig::default(),
+        )
+        .unwrap_err();
+        assert!(format!("{err}").contains("fvv_sparse_rho"), "{err}");
     }
 }

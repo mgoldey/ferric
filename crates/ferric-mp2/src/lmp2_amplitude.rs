@@ -186,6 +186,10 @@ pub struct AmplitudeLmp2Result {
     /// system + the PCG vectors, [`crate::ragged::solve_resident_bytes`]);
     /// the plan is admitted against the budget minus this.
     pub solve_resident_bytes: usize,
+    /// A-priori bound (Ha) on the Hylleraas energy's CG solver error at the
+    /// achieved residual, `3·‖PJ‖²·relres²/λ_min` with λ_min ≥ 2(ε_LUMO −
+    /// ε_HOMO) ([`cg_energy_error_bound`]); NaN if the gap is not positive.
+    pub cg_energy_error_bound: f64,
     /// The matvec the PCG ran: planned when the plan fit the memory budget,
     /// otherwise the plan-free indexed one (bitwise the same result).
     pub matvec_path: MatvecPath,
@@ -1213,12 +1217,22 @@ where
 /// `plan`: the [`SolvePlan`] the solve ran through, or `None` when it ran on
 /// the plan-free indexed matvec (the budgeted solve's fallback) — the same
 /// operator either way, bitwise when every Fvv product is dense.
+///
+/// Stationarity needs a swap-closed pattern, so this function CHECKS it
+/// ([`check_swap_closed`], O(Σ|D|²) comparisons, small beside the matvec)
+/// and errors instead of returning a non-stationary number.
 pub fn hylleraas_energy(
     rg: &Ragged,
     f_oo: &Array2<f64>,
     plan: Option<&SolvePlan>,
     t: &[Array2<f64>],
-) -> f64 {
+) -> Result<f64, FerricError> {
+    check_swap_closed(rg).map_err(|e| {
+        FerricError::General(format!(
+            "hylleraas_energy: amplitude pattern is not swap-closed ({e}); the Hylleraas \
+             energy would not be stationary"
+        ))
+    })?;
     let mut flops = 0u64;
     let at = match plan {
         Some(plan) => {
@@ -1228,9 +1242,68 @@ pub fn hylleraas_energy(
         }
         None => matvec_indexed(rg, f_oo, t, &mut flops),
     };
-    swap_contract(rg, t, |p, r, c| {
+    Ok(swap_contract(rg, t, |p, r, c| {
         2.0 * rg.pairs[p].j_blk[(r, c)] + at[p][(r, c)]
-    })
+    }))
+}
+
+/// `‖P J‖`: the 2-norm of the pattern-projected right-hand side over every
+/// block — the `bnorm` the PCG's `relres` is relative to.
+pub fn pattern_rhs_norm(rg: &Ragged) -> f64 {
+    rg.pairs
+        .iter()
+        .map(|pb| {
+            pb.j_blk
+                .iter()
+                .zip(&pb.pat)
+                .filter(|(_, &k)| k)
+                .map(|(j, _)| j * j)
+                .sum::<f64>()
+        })
+        .sum::<f64>()
+        .sqrt()
+}
+
+/// A rigorous lower bound on λ_min of the pattern-projected PCG operator
+/// `A`: `2·(ε_LUMO − ε_HOMO)` from the eigenvalues of the localized-space
+/// Fock blocks (`f_vv` spans the whole virtual space, `f_oo` the active
+/// occupieds). The unprojected operator's eigenvalues are ε_a + ε_b − ε_i −
+/// ε_j ≥ 2(ε_LUMO − ε_HOMO), and the pattern/domain projection is a
+/// compression, so by Cauchy interlacing its λ_min is no smaller. (The CG
+/// Lanczos Ritz values are NOT used: the smallest Ritz value is an UPPER
+/// bound on λ_min, and of the preconditioned operator.) NaN if not positive.
+pub fn operator_lambda_min_lower_bound(
+    f_oo: &Array2<f64>,
+    f_vv: &Array2<f64>,
+) -> Result<f64, FerricError> {
+    let (eo, _) = eigh(f_oo)?;
+    let (ev, _) = eigh(f_vv)?;
+    let (Some(&homo), Some(&lumo)) = (eo.last(), ev.first()) else {
+        return Ok(f64::NAN);
+    };
+    let lb = 2.0 * (lumo - homo);
+    Ok(if lb > 0.0 { lb } else { f64::NAN })
+}
+
+/// A-priori bound on the Hylleraas energy's solver error at the achieved
+/// residual: `E_H(t) − E* = ⟨(2 − S)A⁻¹R, R⟩ ≤ 3·‖R‖²/λ_min(A)`, with the
+/// swap `S` (eigenvalues ±1, so ‖2 − S‖ = 3) commuting with `A`, and
+/// ‖R‖ = relres·‖PJ‖. Hence `3·‖PJ‖²·relres²/λ_min`, with λ_min from
+/// [`operator_lambda_min_lower_bound`]. Holds for the recursive CG residual
+/// the solve reports (to rounding).
+pub fn cg_energy_error_bound(rhs_norm: f64, relres: f64, lambda_min: f64) -> f64 {
+    3.0 * (rhs_norm * relres).powi(2) / lambda_min
+}
+
+/// `fvv_sparse_rho` must be a finite ρ* ≥ 0 (a density threshold): NaN or a
+/// negative value is a configuration error, not a silent "all dense".
+pub fn validate_fvv_sparse_rho(rho: f64) -> Result<(), FerricError> {
+    if rho.is_nan() || rho < 0.0 {
+        return Err(FerricError::General(format!(
+            "fvv_sparse_rho must be >= 0 (a pattern-density threshold), got {rho}"
+        )));
+    }
+    Ok(())
 }
 
 /// Direct (never-dense) ragged assembly shared by the amplitude-threshold
@@ -1550,7 +1623,17 @@ pub fn amplitude_lmp2_with_virtuals(
 
     // ---- ragged solve ----
     let t0 = std::time::Instant::now();
-    let mut r = solve_and_count(&rg, f_oo, rhf.energy, cfg, vvhv, no, nv, "lmp2_amplitude")?;
+    let mut r = solve_and_count(
+        &rg,
+        f_oo,
+        &lb.f_vv,
+        rhf.energy,
+        cfg,
+        vvhv,
+        no,
+        nv,
+        "lmp2_amplitude",
+    )?;
     r.e_corr_canonical_ri = e_ref;
     r.n_pairs_gated = n_pairs_gated;
     r.aux_dom_mean = aux_dom_mean;
@@ -1571,6 +1654,7 @@ pub fn amplitude_lmp2_with_virtuals(
 pub(crate) fn solve_and_count(
     rg: &Ragged,
     f_oo: &Array2<f64>,
+    f_vv: &Array2<f64>,
     e_scf: f64,
     cfg: &AmplitudeLmp2Config,
     vvhv: &VvHv,
@@ -1578,6 +1662,8 @@ pub(crate) fn solve_and_count(
     nv: usize,
     who: &str,
 ) -> Result<AmplitudeLmp2Result, FerricError> {
+    validate_fvv_sparse_rho(cfg.fvv_sparse_rho)?;
+    // fail fast, before the solve (hylleraas_energy checks it again)
     check_swap_closed(rg).map_err(|e| {
         FerricError::General(format!(
             "{who}: amplitude pattern is not swap-closed ({e}); the Hylleraas energy \
@@ -1600,7 +1686,12 @@ pub(crate) fn solve_and_count(
             s.relres, s.iterations
         )));
     }
-    let e_corr = hylleraas_energy(rg, f_oo, b.plan(), &s.t);
+    let e_corr = hylleraas_energy(rg, f_oo, b.plan(), &s.t)?;
+    let bound = cg_energy_error_bound(
+        pattern_rhs_norm(rg),
+        s.relres,
+        operator_lambda_min_lower_bound(f_oo, f_vv)?,
+    );
     let c = RaggedCounters::new(rg, no, nv);
     Ok(AmplitudeLmp2Result {
         e_corr,
@@ -1627,6 +1718,7 @@ pub(crate) fn solve_and_count(
         gate_on: cfg.pair_gate_cal.is_some(),
         solve_plan_bytes: plan.plan_bytes,
         solve_resident_bytes: plan.resident_bytes,
+        cg_energy_error_bound: bound,
         matvec_path: plan.path,
         timings: StageTimings::default(),
     })

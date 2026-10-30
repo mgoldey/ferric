@@ -15,8 +15,12 @@
 //!
 //! and that the system is linear with a symmetric PD operator (Fock part PD
 //! for gapped systems; both ladder blocks are RI Gram matrices, hence PSD),
-//! so the masked solve carries MP2-style Hylleraas protection — solver error
-//! enters quadratically, only dropped integrals enter linearly.
+//! so a Hylleraas (stationary) functional of the masked solve WOULD make the
+//! solver error enter quadratically. NOTE: the energy computed here is the
+//! LINEAR form E = Σ (ia|jb)(2T − T̃) (see `masked_solve`), whose solver
+//! error is FIRST order in the CG residual; switching it to the stationary
+//! form (as the molecular LMP2 drivers did in perf Stage D) is an open
+//! decision, alongside ferric-pbc's Gamma LMP2.
 //!
 //! MEASURED CORRECTION to the notebook's PSD claim (2026-09-06,
 //! proto_linlccd_pp_psd.py / WIKI-APPEND-linlccd-direct.md): in the
@@ -258,7 +262,9 @@ pub fn amplitude_linlccd_with_virtuals(
 /// extracted verbatim (the `riccati_masked_solve` pattern from the dRPA
 /// port): F(t) + optional hh gather (coefficients via [`OoGram`]) +
 /// optional pp per-pair domain Grams from a whitened global Bvv, then the
-/// Hylleraas energy on the pattern. Non-convergence is a hard error, so
+/// LINEAR energy form Σ (ia|jb)(2T − T̃) on the pattern (not the stationary
+/// Hylleraas functional: its solver error is first order in the residual).
+/// Non-convergence is a hard error, so
 /// `Ok` implies convergence.
 /// pp-ladder source for the shared solver.
 enum PpSource<'a> {
@@ -376,7 +382,10 @@ fn linlccd_masked_solve(
         )));
     }
 
-    // E = Σ (ia|jb)(2 T_iajb − T_ibja) over the pattern (proof notebook §1)
+    // E = Σ (ia|jb)(2 T_iajb − T_ibja) over the pattern (proof notebook §1):
+    // the LINEAR form, exact at convergence but NOT stationary (its error is
+    // first order in the CG residual, which cg_rtol must keep small). The
+    // stationary Hylleraas form is an open decision (see the module doc).
     let mut e_corr = 0.0;
     for (p, pb) in rg.pairs.iter().enumerate() {
         let nbb = pb.db.len();

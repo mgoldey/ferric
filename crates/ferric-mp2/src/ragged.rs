@@ -918,14 +918,17 @@ pub fn matvec_planned(
 /// `Fvv_aa · t + t · Fvv_bb` of one block as a scatter over the retained
 /// `(row, col)` elements `nz` of `t` (column `k` of Fvv_aa into output
 /// column `c`, row `c` of Fvv_bb into output row `k`). Equal to the dense
-/// product up to rounding when `t` vanishes off the pattern.
+/// product up to rounding when `t` vanishes off the pattern. Fvv is
+/// symmetric (a principal block of `Cᵀ F C`, symmetric to rounding — the
+/// `fvv_sparse_branch_matches_dense` test asserts it), so column `k` of
+/// Fvv_aa is read as the contiguous ROW `k`: the same values to rounding.
 fn fvv_product_sparse(pb: &PairBlock, t: &Array2<f64>, nz: &[(u32, u32)]) -> Array2<f64> {
     let (na, nb) = (pb.da.len(), pb.db.len());
     let mut r = Array2::<f64>::zeros((na, nb));
     for &(k, c) in nz {
         let (k, c) = (k as usize, c as usize);
         let v = t[(k, c)];
-        for (a, &f) in pb.fvv_aa.column(k).iter().enumerate() {
+        for (a, &f) in pb.fvv_aa.row(k).iter().enumerate() {
             r[(a, c)] += f * v;
         }
         for (b, &f) in pb.fvv_bb.row(c).iter().enumerate() {

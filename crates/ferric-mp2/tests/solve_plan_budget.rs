@@ -193,8 +193,8 @@ fn tiny_budget_falls_back_to_indexed_and_is_bitwise() {
     let bi = solve_ragged_budgeted_with(&c.rg, &c.f_oo, 1e-11, 400, 1, 0.0);
     assert!(bp.plan().is_some() && bi.plan().is_none());
     let (ha, hb) = (
-        hylleraas_energy(&c.rg, &c.f_oo, bp.plan(), &bp.solve.t),
-        hylleraas_energy(&c.rg, &c.f_oo, bi.plan(), &bi.solve.t),
+        hylleraas_energy(&c.rg, &c.f_oo, bp.plan(), &bp.solve.t).unwrap(),
+        hylleraas_energy(&c.rg, &c.f_oo, bi.plan(), &bi.solve.t).unwrap(),
     );
     assert_eq!(
         ha.to_bits(),
