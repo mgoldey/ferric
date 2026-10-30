@@ -619,6 +619,13 @@ impl KsXc {
         self.screened.stats()
     }
 
+    /// `(nact, nb)` of every screened batch of the main grid, in batch order
+    /// (the raw screening data; tests derive expected launch counts from it).
+    #[doc(hidden)]
+    pub fn xc_batch_shapes(&self) -> Vec<(usize, usize)> {
+        self.screened.batch_shapes()
+    }
+
     /// True when the main-grid XC GEMMs run on the device (feature `gpu`: the
     /// AO blocks were uploaded by an earlier Fock build and no failure has
     /// declined the grid since). Always false without the feature.

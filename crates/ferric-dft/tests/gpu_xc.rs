@@ -12,10 +12,9 @@ use ferric_core::gpu::{install, probe, stats, GpuMode, GpuSettingsExplicit, GpuS
 use ferric_core::mol::Molecule;
 use ferric_dft::grid::AtomicGridConfig;
 use ferric_dft::ks::{KsXc, KsXcUks};
-use ferric_dft::xc_batch::{FORCE_HOST, POISON_XC_STAGING, XC_GEMM_LOOP};
+use ferric_dft::xc_batch::{SeamGuard, FORCE_HOST, POISON_XC_STAGING, XC_GEMM_LOOP};
 use ferric_dft::xc_trait::{UksXcContribution, XcContribution};
 use ndarray::Array2;
-use std::sync::atomic::Ordering;
 
 static GPU: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -91,10 +90,8 @@ fn assert_close(what: &str, (e_h, v_h): (f64, &Array2<f64>), (e_d, v_d): (f64, &
 
 /// `run(host)` with `FORCE_HOST` set for its duration.
 fn on<T>(host: bool, run: impl FnOnce() -> T) -> T {
-    FORCE_HOST.store(host, Ordering::SeqCst);
-    let out = run();
-    FORCE_HOST.store(false, Ordering::SeqCst);
-    out
+    let _seam = SeamGuard::set(&FORCE_HOST, host);
+    run()
 }
 
 #[test]
@@ -228,10 +225,8 @@ fn open_shell_meta_gga_on_the_device_matches_the_host() {
 
 /// `run()` with the per-batch GEMM loop (`XC_GEMM_LOOP`) set for its duration.
 fn looped<T>(on: bool, run: impl FnOnce() -> T) -> T {
-    XC_GEMM_LOOP.store(on, Ordering::SeqCst);
-    let out = run();
-    XC_GEMM_LOOP.store(false, Ordering::SeqCst);
-    out
+    let _seam = SeamGuard::set(&XC_GEMM_LOOP, on);
+    run()
 }
 
 /// The strided-batched launches over the zero-padded layout against the
@@ -310,10 +305,8 @@ fn batched_device_gemms_match_the_per_batch_loop() {
 /// `run()` with the reused operand staging NaN-filled before every wave
 /// (`POISON_XC_STAGING`) for its duration.
 fn poisoned<T>(run: impl FnOnce() -> T) -> T {
-    POISON_XC_STAGING.store(true, Ordering::SeqCst);
-    let out = run();
-    POISON_XC_STAGING.store(false, Ordering::SeqCst);
-    out
+    let _seam = SeamGuard::set(&POISON_XC_STAGING, true);
+    run()
 }
 
 fn bits_equal(a: &Array2<f64>, b: &Array2<f64>) -> bool {

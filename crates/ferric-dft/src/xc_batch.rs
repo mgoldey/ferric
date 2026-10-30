@@ -104,7 +104,7 @@ mod gpu;
 #[cfg(feature = "gpu")]
 pub use gpu::xc_grid_routes_to_device;
 #[cfg(feature = "test-seams")]
-pub use gpu::{FORCE_HOST, MIXED_VXC_HOST_TWIN, POISON_XC_STAGING, XC_GEMM_LOOP};
+pub use gpu::{SeamGuard, FORCE_HOST, MIXED_VXC_HOST_TWIN, POISON_XC_STAGING, XC_GEMM_LOOP};
 
 /// True when this process asked for V_xc in mixed precision and could run it:
 /// `[gpu] mode = "on"`, `precision = "mixed"` with `xc-vxc` named in
@@ -1088,6 +1088,14 @@ impl ScreenedGrid {
     /// Maximum points per batch.
     pub(crate) fn max_batch_pts(&self) -> usize {
         self.max_batch_pts
+    }
+
+    /// `(nact, nb)` of every batch, in batch order.
+    pub(crate) fn batch_shapes(&self) -> Vec<(usize, usize)> {
+        self.batches
+            .iter()
+            .map(|b| (b.funcs.len(), b.idx.len()))
+            .collect()
     }
 
     /// Screening/batching summary.

@@ -16,6 +16,7 @@
 //! * A whole SCF (water PBE/cc-pVDZ, `density_conv` 1e-10) on the device in
 //!   mixed agrees with the f64 host SCF to 1e-10 Eh.
 use ferric_core::basis;
+use ferric_core::gpu::mixed::effective_k_panel;
 use ferric_core::gpu::{
     install, probe, stats, GpuMode, GpuSettingsExplicit, GpuStatus, MixedKernel, MixedKernelSet,
     Precision,
@@ -23,7 +24,9 @@ use ferric_core::gpu::{
 use ferric_core::mol::Molecule;
 use ferric_dft::grid::AtomicGridConfig;
 use ferric_dft::ks::{KsXc, MIXED_VXC_BUILDS};
-use ferric_dft::xc_batch::{FORCE_HOST, MIXED_VXC_HOST_TWIN, POISON_XC_STAGING, XC_GEMM_LOOP};
+use ferric_dft::xc_batch::{
+    SeamGuard, FORCE_HOST, MIXED_VXC_HOST_TWIN, POISON_XC_STAGING, XC_GEMM_LOOP,
+};
 use ferric_dft::xc_trait::XcContribution;
 use ndarray::Array2;
 use std::sync::atomic::Ordering;
@@ -102,21 +105,18 @@ fn max_abs(a: &Array2<f64>) -> f64 {
 
 /// Builds at D0, D1, D1 on a fresh evaluator: (E, V) of each.
 fn ladder_run(xc: &str, host: bool, twin: bool) -> Vec<(f64, Array2<f64>)> {
-    FORCE_HOST.store(host, Ordering::SeqCst);
-    MIXED_VXC_HOST_TWIN.store(twin, Ordering::SeqCst);
+    let _host = SeamGuard::set(&FORCE_HOST, host);
+    let _twin = SeamGuard::set(&MIXED_VXC_HOST_TWIN, twin);
     let k = ks(xc);
     let nbf = k.xc_screening_stats().nbf;
     let (d0, d1) = (density(nbf, 3), density(nbf, 5));
-    let out = [&d0, &d1, &d1]
+    [&d0, &d1, &d1]
         .iter()
         .map(|d| {
             let mut f = Array2::<f64>::zeros((nbf, nbf));
             (k.add_xc(d, &mut f), f)
         })
-        .collect();
-    FORCE_HOST.store(false, Ordering::SeqCst);
-    MIXED_VXC_HOST_TWIN.store(false, Ordering::SeqCst);
-    out
+        .collect()
 }
 
 #[test]
@@ -209,10 +209,8 @@ fn a_mixed_device_scf_matches_the_f64_host_scf() {
         ..Default::default()
     };
     let run = |host: bool| {
-        FORCE_HOST.store(host, Ordering::SeqCst);
-        let r = solve_rhf(&ParallelContext::default(), &mol, &prep, op, &bounds, &cfg);
-        FORCE_HOST.store(false, Ordering::SeqCst);
-        r.unwrap()
+        let _seam = SeamGuard::set(&FORCE_HOST, host);
+        solve_rhf(&ParallelContext::default(), &mol, &prep, op, &bounds, &cfg).unwrap()
     };
     let host = run(true);
     let (s0, m0) = (stats(), MIXED_VXC_BUILDS.load(Ordering::SeqCst));
@@ -360,25 +358,71 @@ fn a_multi_wave_build_sequence_repeats_bit_for_bit() {
     );
 }
 
+/// `‖a − b‖_F`.
+fn frob_diff(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
+    a.iter()
+        .zip(b.iter())
+        .map(|(x, y)| (x - y) * (x - y))
+        .sum::<f64>()
+        .sqrt()
+}
+
+/// Mixed panels one pass 2 of `nmats` V matrices flushes when every batch
+/// fits one wave, derived from the raw screening shapes `(nact, nb)` alone
+/// (not from the launch code's layout): `k = NB`, the most points of any
+/// batch with an active function, split into `⌈NB/b⌉` panels; batched, one
+/// launch per (nact bucket of 16, matrix); per batch, one per (batch, matrix).
+fn expected_panels(shapes: &[(usize, usize)], nmats: usize, b: usize) -> (u64, u64) {
+    let live: Vec<(usize, usize)> = shapes.iter().copied().filter(|s| s.0 > 0).collect();
+    let nb = live.iter().map(|s| s.1).max().unwrap_or(0);
+    let mut buckets: Vec<usize> = live.iter().map(|s| s.0.div_ceil(16)).collect();
+    buckets.sort_unstable();
+    buckets.dedup();
+    let per = nb.div_ceil(b) as u64;
+    let nmats = nmats as u64;
+    (
+        buckets.len() as u64 * nmats * per,
+        live.len() as u64 * nmats * per,
+    )
+}
+
 /// The mixed V_xc as one strided-batched SGEMM per k-panel per group (one
 /// flush over the group's whole output) against the per-batch kernel loop:
-/// same panel boundaries, same ascending f64 accumulation of the panels, so
-/// the same error class against the f64 host (each within 10x of the other,
-/// both nonzero and inside the twin's class), and reproducible.
+/// same panel boundaries, same ascending f64 accumulation of the panels.
+///
+/// * Panel count: the mixed build records exactly the panels the production
+///   width `effective_k_panel()` implies (see [`expected_panels`]), batched
+///   and looped. MUTATION CHECK: passing the whole `k` as the panel width
+///   (one panel) fails it.
+/// * Error class, as `‖V − V_f64host‖_F` ratios against the host twin (the
+///   algorithm whose per-element bound `xc_batch`'s unit test pins), with
+///   bands derived from both sides (see the constants). The batched kernel is
+///   2.5-4x less accurate than the per-matrix loop (cuBLAS's strided-batched
+///   SGEMM sums less accurately inside a panel) yet stays in the twin's class.
+///   MUTATION CHECK: the one-panel mutant also fails the batched band, on LDA
+///   (2.585) and PBE (1.893).
+/// * Reproducible, and the f64 builds agree to rounding.
 #[test]
 fn batched_mixed_vxc_is_the_per_batch_loops_error_class() {
     let _g = GPU.lock().unwrap_or_else(|e| e.into_inner());
     if !ready() {
         return;
     }
+    let b = effective_k_panel();
     for xc in ["LDA", "PBE"] {
+        let shapes = ks(xc).xc_batch_shapes();
+        let (want_batched, want_loop) = expected_panels(&shapes, 1, b);
         let f64_host = ladder_run(xc, true, false);
         let twin = ladder_run(xc, true, true);
-        XC_GEMM_LOOP.store(true, Ordering::SeqCst);
-        let lp = ladder_run(xc, false, false);
-        XC_GEMM_LOOP.store(false, Ordering::SeqCst);
+        let sl0 = stats();
+        let lp = {
+            let _seam = SeamGuard::set(&XC_GEMM_LOOP, true);
+            ladder_run(xc, false, false)
+        };
+        let sl1 = stats();
         let (s0, m0) = (stats(), MIXED_VXC_BUILDS.load(Ordering::SeqCst));
-        let b = ladder_run(xc, false, false);
+        let bt = ladder_run(xc, false, false);
+        let sb = stats();
         let again = ladder_run(xc, false, false);
         let (s1, m1) = (stats(), MIXED_VXC_BUILDS.load(Ordering::SeqCst));
         assert_eq!(m1 - m0, 2, "{xc}: one mixed build per ladder run");
@@ -386,35 +430,92 @@ fn batched_mixed_vxc_is_the_per_batch_loops_error_class() {
             s1.mixed_fallback_f64, s0.mixed_fallback_f64,
             "{xc}: mixed fell back"
         );
-        for (x, y) in b[1].1.iter().zip(again[1].1.iter()) {
+        // The panel formula assumes one wave per pass (water fits one stage).
+        for (what, a, z) in [("loop", &sl0, &sl1), ("batched", &s0, &sb)] {
+            assert_eq!(
+                z.xc_waves - a.xc_waves,
+                z.xc_device_passes - a.xc_device_passes,
+                "{xc} {what}: a pass ran several waves; expected_panels assumes one"
+            );
+        }
+        let (got_b, got_l) = (
+            sb.mixed_panels - s0.mixed_panels,
+            sl1.mixed_panels - sl0.mixed_panels,
+        );
+        eprintln!(
+            "{xc}: panel width {b}, mixed panels batched {got_b} (want {want_batched}), loop {got_l} (want {want_loop})"
+        );
+        assert_eq!(got_b, want_batched, "{xc}: batched mixed panel count");
+        assert_eq!(got_l, want_loop, "{xc}: per-batch mixed panel count");
+        for (x, y) in bt[1].1.iter().zip(again[1].1.iter()) {
             assert_eq!(
                 x.to_bits(),
                 y.to_bits(),
                 "{xc}: batched mixed is not reproducible"
             );
         }
-        let vmax = max_abs(&f64_host[1].1);
-        let dv = |r: &[(f64, Array2<f64>)]| max_abs(&(&r[1].1 - &f64_host[1].1));
-        let (dv_b, dv_l, dv_t) = (dv(&b), dv(&lp), dv(&twin));
-        eprintln!("{xc}: mixed max|dV| batched {dv_b:.3e}, loop {dv_l:.3e}, twin {dv_t:.3e}");
-        assert!(dv_b > 0.0 && dv_l > 0.0, "{xc}: a mixed build equals f64");
+        let (vmax, vref) = (max_abs(&f64_host[1].1), &f64_host[1].1);
+        let dv_b = max_abs(&(&bt[1].1 - vref));
         assert!(dv_b < 1e-5 * vmax, "{xc}: batched mixed max|dV| {dv_b:e}");
-        assert!(
-            dv_b < 10.0 * dv_l && dv_l < 10.0 * dv_b,
-            "{xc}: batched {dv_b:e} and loop {dv_l:e} are not the same error class"
+        let (fb, fl, ft) = (
+            frob_diff(&bt[1].1, vref),
+            frob_diff(&lp[1].1, vref),
+            frob_diff(&twin[1].1, vref),
+        );
+        let (r_bt, r_lt) = (fb / ft, fl / ft);
+        eprintln!(
+            "{xc}: mixed ||dV||_F batched {fb:.4e}, loop {fl:.4e}, twin {ft:.4e}; batched/twin {r_bt:.4}, loop/twin {r_lt:.4}, batched/loop {:.4}",
+            fb / fl
         );
         assert!(
-            dv_b < 10.0 * dv_t && dv_t < 10.0 * dv_b,
-            "{xc}: batched {dv_b:e} and twin {dv_t:e} are not the same error class"
+            fb > 0.0 && fl > 0.0 && ft > 0.0,
+            "{xc}: a mixed build equals f64"
+        );
+        assert!(
+            (BATCHED_OVER_TWIN.0..BATCHED_OVER_TWIN.1).contains(&r_bt),
+            "{xc}: ||dV||_F batched/twin {r_bt:.4} outside {BATCHED_OVER_TWIN:?}"
+        );
+        assert!(
+            (LOOP_OVER_TWIN.0..LOOP_OVER_TWIN.1).contains(&r_lt),
+            "{xc}: ||dV||_F loop/twin {r_lt:.4} outside {LOOP_OVER_TWIN:?}"
         );
         // The f64 builds of the ladder agree to rounding either way.
-        let d0 = max_abs(&(&b[0].1 - &lp[0].1));
+        let d0 = max_abs(&(&bt[0].1 - &lp[0].1));
         assert!(
             d0 < 1e-13 * vmax.max(1.0),
             "{xc}: f64 batched vs loop {d0:e}"
         );
     }
 }
+
+/// `‖dV_batched‖_F / ‖dV_twin‖_F` band (`dV` against the f64 host V of the
+/// mixed build, water cc-pVDZ, 50×110 grid, `NB` ≤ 128 so 2 panels of 64).
+///
+/// Measured 2026-10-30, GTX 1080 (results are bit-reproducible run to run):
+///
+/// ```text
+///                                     LDA     PBE
+/// batched (correct)                  1.343   1.611
+/// batched, one panel (k_panel = k)   2.585   1.893   <- defect, high side
+/// per-batch loop (correct)           0.348   0.483   <- defect, low side
+/// ```
+///
+/// The ceiling 1.75 sits near the geometric mean of the highest correct
+/// reading and the lowest one-panel reading (√(1.611·1.893) = 1.746); the
+/// floor 0.8 near that of the lowest correct reading and the highest loop
+/// reading (√(1.343·0.483) = 0.805), so "the batched entry point silently ran
+/// the per-matrix kernel" fails too. The PBE margins are narrow (−8% / +9%
+/// around 1.75): a cuBLAS or device change that moves the in-panel order can
+/// move these ratios, and the band must then be re-measured from both sides,
+/// not widened from one.
+const BATCHED_OVER_TWIN: (f64, f64) = (0.8, 1.75);
+
+/// `‖dV_loop‖_F / ‖dV_twin‖_F` band: correct 0.348 (LDA) / 0.483 (PBE). The
+/// ceiling 0.8 separates the loop from the batched class (≥ 1.343 above); the
+/// floor 0.2 has no measured defect below it other than an f64 build (0, caught
+/// separately). It does NOT catch the loop's own one-panel mutant (0.453 /
+/// 0.657 measured, inside the band); the per-batch panel count pins that.
+const LOOP_OVER_TWIN: (f64, f64) = (0.2, 0.8);
 
 /// The mixed pass 2 with its reused operand staging NaN-filled before every
 /// wave (`POISON_XC_STAGING`, see `gpu_xc.rs`): the f32 decision, the f32
@@ -431,9 +532,10 @@ fn nan_poisoned_staging_leaves_the_mixed_build_bit_identical() {
     for xc in ["LDA", "PBE"] {
         let clean = ladder_run(xc, false, false);
         let s0 = stats();
-        POISON_XC_STAGING.store(true, Ordering::SeqCst);
-        let dirty = ladder_run(xc, false, false);
-        POISON_XC_STAGING.store(false, Ordering::SeqCst);
+        let dirty = {
+            let _seam = SeamGuard::set(&POISON_XC_STAGING, true);
+            ladder_run(xc, false, false)
+        };
         assert_eq!(
             stats().mixed_fallback_f64,
             s0.mixed_fallback_f64,

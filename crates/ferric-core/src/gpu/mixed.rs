@@ -200,7 +200,23 @@ pub fn gemm_f32_f64acc_dev_into(
 /// the per-matrix kernel, so the per-element bound is unchanged (cuBLAS may
 /// sum inside a panel in another order, so results need not be bit-identical
 /// to it). Geometry is checked first (typed `GpuError::Layout`, nothing
-/// launched); returns the number of panels flushed.
+/// launched); returns the number of panels flushed (`⌈k/k_panel⌉`, once for
+/// the whole batch, not per matrix).
+///
+/// Accuracy (measured, not just bounded): this kernel is about 2.5-4x LESS
+/// accurate than [`gemm_f32_f64acc_dev_into`] called per matrix, because
+/// cuBLAS's strided-batched SGEMM sums less accurately inside a panel than its
+/// single-matrix SGEMM. RMS(err/S) against the host twin (`mixed_host`, the
+/// reference algorithm) is 1.065x at the XC shape and 1.18x at k = 2048 for
+/// this kernel, 0.40-0.45x for the per-matrix one
+/// (`tests/gpu_mixed_batched_gemm.rs`); at the XC level `‖ΔV‖_F` is 1.34x
+/// (LDA) / 1.61x (PBE) the twin's against 0.35x / 0.48x for the per-matrix
+/// loop (`ferric-dft/tests/gpu_xc_mixed.rs`). So it sits in the host twin's
+/// error class (1.0-1.6x), still inside the per-element bound above (the panel
+/// boundaries are unchanged and any order of a b-term sum obeys γ_b), and
+/// inside what callers calibrated with the twin (the XC ladder's
+/// `MIXED_VXC_LADDER_THRESH` was chosen on the twin). It forfeits the extra
+/// accuracy the per-matrix SGEMM happened to deliver below that bound.
 pub fn gemm_f32_f64acc_strided_batched_dev(
     dev: &Device,
     d: BatchedDims,

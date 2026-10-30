@@ -66,7 +66,15 @@
 //! SGEMM per panel over a bucket, then one flush over its whole output, so each
 //! `V_b` keeps the same panel boundaries and ascending f64 panel sum). Per element
 //! `|ΔV_ij| ≤ (2u32 + γ_64(u32) + γ_⌈k/64⌉(u64))·(|A||X|ᵀ)_ij`, `k = ncols`
-//! (the host twin's bound, pinned by `xc_batch`'s unit test). Pass 1 (ρ, ∇ρ),
+//! (the host twin's bound, pinned by `xc_batch`'s unit test). The batched
+//! kernel meets that bound but is about 2.5-4x less accurate than the
+//! per-batch kernel loop it replaced (cuBLAS's strided-batched SGEMM sums less
+//! accurately inside a panel than its single-matrix SGEMM): on water
+//! cc-pVDZ `‖ΔV‖_F` is 1.34x (LDA) / 1.61x (PBE) the host twin's, against
+//! 0.35x / 0.48x for the loop. It is therefore in the twin's error class
+//! (1.0-1.6x), within the per-element γ budget, and within the ladder
+//! threshold `ks::MIXED_VXC_LADDER_THRESH`, which was calibrated with the
+//! twin (`tests/gpu_xc_mixed.rs` pins the band from both sides). Pass 1 (ρ, ∇ρ),
 //! the functional and E_xc stay f64. A wave whose panel sums could leave the
 //! f32 range (`k_panel·max|A|·max|X| ≥ f32::MAX/2`, or a NaN) runs f64, and a
 //! missing flush kernel, an AO value beyond the f32 range or a pool too small
@@ -131,6 +139,31 @@ pub static FORCE_HOST: std::sync::atomic::AtomicBool = std::sync::atomic::Atomic
 #[doc(hidden)]
 pub static MIXED_VXC_HOST_TWIN: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
+
+/// Test seam guard (`test-seams` feature): sets one of the seam flags above
+/// (or [`XC_GEMM_LOOP`], [`POISON_XC_STAGING`]) for its lifetime and clears it
+/// on drop, so a panicking test cannot leave a seam set for the later tests
+/// of the same binary.
+#[cfg(feature = "test-seams")]
+#[doc(hidden)]
+#[must_use = "the seam is cleared when the guard drops"]
+pub struct SeamGuard(&'static std::sync::atomic::AtomicBool);
+
+#[cfg(feature = "test-seams")]
+impl SeamGuard {
+    /// Stores `on` in `flag` until the guard drops (then `false`).
+    pub fn set(flag: &'static std::sync::atomic::AtomicBool, on: bool) -> Self {
+        flag.store(on, std::sync::atomic::Ordering::SeqCst);
+        Self(flag)
+    }
+}
+
+#[cfg(feature = "test-seams")]
+impl Drop for SeamGuard {
+    fn drop(&mut self) {
+        self.0.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+}
 
 #[cfg(feature = "test-seams")]
 pub(super) fn mixed_vxc_host_twin() -> bool {
@@ -512,12 +545,14 @@ where
 }
 
 /// Per-batch item lengths of pass 1 for a batch padded to `np` rows: per
-/// density, `[D_sub or C_sub, Ψ (factored only), Φ]`.
+/// density, `[D_sub or C_sub, Ψ (factored only), Φ]`. A batch without active
+/// functions (`np = 0`) owns no staging, `Ψ` included.
 fn density_items(np: usize, nc_p: usize, ds: &[DensityInput]) -> [Vec<usize>; 3] {
     let mut l = [Vec::new(), Vec::new(), Vec::new()];
     for d in ds {
         let (inp, mid) = match d {
             DensityInput::Dense(_) => (np * np, 0),
+            DensityInput::Factored { .. } if np == 0 => (0, 0),
             DensityInput::Factored { c_occ, .. } => (np * c_occ.ncols(), c_occ.ncols() * nc_p),
         };
         l[0].push(inp);
@@ -650,11 +685,7 @@ impl DeviceXc {
         sg: &ScreenedGrid,
         grid: &[GridPoint],
     ) -> Result<Self, GpuError> {
-        let shapes: Vec<(usize, usize)> = sg
-            .batches
-            .iter()
-            .map(|b| (b.funcs.len(), b.idx.len()))
-            .collect();
+        let shapes = sg.batch_shapes();
         let layout = AoLayout::new(&shapes)?;
         let total = layout.total;
         if total == 0 {
@@ -1132,6 +1163,26 @@ mod tests {
             b0 = w.end;
         }
         assert_eq!(seen, needs.len());
+    }
+
+    #[test]
+    fn a_batch_without_active_functions_reserves_no_density_staging() {
+        let (d, c) = (Array2::<f64>::zeros((6, 6)), Array2::<f64>::zeros((6, 3)));
+        let ds = [
+            DensityInput::Dense(&d),
+            DensityInput::Factored {
+                c_occ: &c,
+                scale: 2.0,
+            },
+        ];
+        assert_eq!(
+            density_items(0, 40, &ds),
+            [vec![0, 0], vec![0, 0], vec![0, 0]]
+        );
+        assert_eq!(
+            density_items(16, 40, &ds),
+            [vec![256, 48], vec![0, 120], vec![640, 640]]
+        );
     }
 
     #[test]
