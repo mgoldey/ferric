@@ -699,16 +699,90 @@ fn bench_schwarz_skip_sweep() {
     }
 }
 
+/// A bench knob's raw value: `None` when unset. A set but non-Unicode value
+/// panics, like any other unusable value.
+fn bench_env(name: &str) -> Option<String> {
+    match std::env::var(name) {
+        Ok(raw) => Some(raw),
+        Err(std::env::VarError::NotPresent) => None,
+        Err(e) => panic!("{name}: {e}"),
+    }
+}
+
+/// FERRIC_LMP2_BENCH_EPS: `None` is the default list; an unparsable, negative
+/// or non-finite entry (including an empty one) panics.
+fn bench_eps_list(raw: Option<&str>) -> Vec<f64> {
+    let Some(raw) = raw else {
+        return vec![1e-3, 1e-4];
+    };
+    raw.split(',')
+        .map(|item| match item.trim().parse::<f64>() {
+            Ok(eps) if eps.is_finite() && eps >= 0.0 => eps,
+            _ => panic!("FERRIC_LMP2_BENCH_EPS: bad eps {item:?} in {raw:?}"),
+        })
+        .collect()
+}
+
+/// FERRIC_LMP2_BENCH_OPS: `None` is both operators; an unknown name (including
+/// an empty one) panics. Each entry is (name, operator, pair-gate calibration).
+fn bench_op_list(raw: Option<&str>) -> Vec<(&'static str, Operator, f64)> {
+    raw.unwrap_or("coul,erfc1")
+        .split(',')
+        .map(|item| match item.trim() {
+            "coul" => ("coul", Operator::coulomb(), 0.7),
+            "erfc1" => ("erfc1", Operator::erfc(1.0), 0.02),
+            _ => panic!("FERRIC_LMP2_BENCH_OPS: unknown op {item:?} in {raw:?}"),
+        })
+        .collect()
+}
+
+#[test]
+fn bench_knobs_default_to_the_historical_sweep() {
+    assert_eq!(bench_eps_list(None), vec![1e-3, 1e-4]);
+    let names: Vec<_> = bench_op_list(None).iter().map(|o| o.0).collect();
+    assert_eq!(names, ["coul", "erfc1"]);
+}
+
+#[test]
+fn bench_knobs_parse_lists_in_order() {
+    assert_eq!(bench_eps_list(Some("1e-5, 1e-6")), vec![1e-5, 1e-6]);
+    let ops = bench_op_list(Some("erfc1"));
+    assert_eq!((ops.len(), ops[0].0, ops[0].2), (1, "erfc1", 0.02));
+}
+
+#[test]
+#[should_panic(expected = "FERRIC_LMP2_BENCH_EPS: bad eps")]
+fn bench_eps_parse_failure_panics() {
+    bench_eps_list(Some("1e-3,oops"));
+}
+
+#[test]
+#[should_panic(expected = "FERRIC_LMP2_BENCH_EPS: bad eps")]
+fn bench_eps_empty_value_panics() {
+    bench_eps_list(Some(""));
+}
+
+#[test]
+#[should_panic(expected = "FERRIC_LMP2_BENCH_OPS: unknown op")]
+fn bench_ops_unknown_value_panics() {
+    bench_op_list(Some("coul,erf"));
+}
+
 /// Wall-clock + saturation sweep over the alkane series, integral-direct
 /// path vs canonical ri_mp2 (the payoff/crossover measurement).
 /// #[ignore]d — release, quiet box:
 ///   OPENBLAS_NUM_THREADS=1 cargo test -p ferric-mp2 --release \
 ///     --test lmp2_direct -- --ignored --nocapture bench_direct_alkane_series
 /// FERRIC_LMP2_BENCH_MAX_C caps the series (default 20; set 32/48 for the
-/// past-onset tail).
+/// past-onset tail). FERRIC_LMP2_BENCH_EPS (comma list, default "1e-3,1e-4";
+/// the canonical reference runs on the FIRST entry) and FERRIC_LMP2_BENCH_OPS
+/// (comma list of coul,erfc1, default both) select the sweep; a bad value
+/// panics rather than silently measuring the default.
 #[test]
 #[ignore]
 fn bench_direct_alkane_series() {
+    let eps_list = bench_eps_list(bench_env("FERRIC_LMP2_BENCH_EPS").as_deref());
+    let ops = bench_op_list(bench_env("FERRIC_LMP2_BENCH_OPS").as_deref());
     let max_c: usize = std::env::var("FERRIC_LMP2_BENCH_MAX_C")
         .ok()
         .and_then(|s| s.parse().ok())
@@ -745,12 +819,9 @@ fn bench_direct_alkane_series() {
             break;
         }
         let su = setup(&format!("alkane_{nc}.xyz"));
-        for (opname, op, cal) in [
-            ("coul", Operator::coulomb(), 0.7),
-            ("erfc1", Operator::erfc(1.0), 0.02),
-        ] {
+        for &(opname, op, cal) in &ops {
             let mut e_can = f64::NAN;
-            for eps in [1e-3, 1e-4] {
+            for (i_eps, &eps) in eps_list.iter().enumerate() {
                 let cfg = AmplitudeLmp2Config {
                     eps,
                     frozen_core: nc,
@@ -760,7 +831,7 @@ fn bench_direct_alkane_series() {
                     // No reference at C48: its ~2 GB B doesn't fit the
                     // contended box's headroom and its wall would be
                     // throttle-noise; the crossover is decided at C32.
-                    compute_reference: eps == 1e-3 && nc <= 32,
+                    compute_reference: i_eps == 0 && nc <= 32,
                     ..Default::default()
                 };
                 let (mut r, st) = amplitude_lmp2_direct(
