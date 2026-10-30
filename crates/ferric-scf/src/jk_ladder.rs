@@ -17,9 +17,19 @@
 //! FIRST-order in the J/K error (unlike `xc-vxc`, whose E_xc comes from an f64
 //! pass), so swapping the Fock matrix alone would not do: a converged exit whose
 //! last build ran mixed is REFUSED ([`JkLadder::veto_mixed_exit`](crate::jk_ladder::JkLadder::veto_mixed_exit)), the ladder
-//! is latched to f64, and the SCF continues; the iterations from there to the
-//! exit, the returned energy, Fock matrix, orbitals and density are all f64.
-//! The latched ladder never returns to mixed in that SCF.
+//! is latched to f64, and the solver redoes that iteration ([`JkExit::RedoInF64`](crate::jk_ladder::JkExit::RedoInF64)):
+//! it resets DIIS (whose history holds mixed Fock matrices), invalidates ΔP and
+//! ΔE (both compare points of the mixed Fock map), and rebuilds J/K in f64 at
+//! the same density without diagonalizing the mixed Fock matrix. The next exit
+//! therefore needs a ΔP whose newer density came from diagonalizing an f64 Fock
+//! matrix extrapolated from an all-f64 DIIS history: the returned energy, Fock
+//! matrix, orbitals AND density are f64. (Without the reset and invalidation,
+//! one f64 build after the veto passed a ΔP between two mixed-map densities
+//! and the returned density was the mixed solution's: max|D − D_f64| 2.7e-6
+//! on water and 6.6e-5 on benzene at τ = 0, `dfj-pack` only, equal to the
+//! no-exit mutant's; after the fix 3.4e-9 and 2.8e-9, at 4-5 more
+//! iterations than before it, 19 vs 13 for the f64 run on both.) The latched
+//! ladder never returns to mixed in that SCF.
 //!
 //! Scope. The solvers bracket each iteration's J/K build in a
 //! [`JkLadder::begin_build`](crate::jk_ladder::JkLadder::begin_build) guard, which publishes the ladder's decision to the
@@ -51,10 +61,18 @@
 //! `F ∋ J(D) − (c_x/2) K(D)` (closed shell, `K(D) = 2 K(C_occ)`):
 //!
 //! * J. `E_J = ½ wᵀJ = ½ cᵀd`. With `B̂ = B + δB`, `|δB| ≤ u32|B|`, first order
-//!   `½ wᵀ(δBᵀc + Bᵀ V⁻¹ δB w) = cᵀ δB w`: the metric enters through `c` only,
-//!   so the energy carries NO 1/λ_min(V) (the Fock matrix does). Per build
-//!   `|δE_J| ≤ ε_EJ · S_J`, `S_J = |c|ᵀ|B||w|`, `ε_EJ = u32 + γ_pair(u64) +
-//!   γ_naux(u64)` (+ O(u²)); κ_EJ = S_J / |cᵀBw| = S_J / (2|E_J|).
+//!   `½ wᵀ(δBᵀc + Bᵀ V⁻¹ δB w) = cᵀ δB w`: at FIRST order the metric enters
+//!   through `c` only, so the first-order energy error carries no 1/λ_min(V)
+//!   (the Fock matrix does). Per build, first order, `|δE_J| ≤ ε_EJ · S_J`,
+//!   `S_J = |c|ᵀ|B||w|`, `ε_EJ = u32 + γ_pair(u64) + γ_naux(u64)`;
+//!   κ_EJ = S_J / |cᵀBw| = S_J / (2|E_J|). Both passes use the same rounded
+//!   `B̂`, so the computed `E_J = ½ d̂ᵀV⁻¹d̂` with `d̂ = d + δd` EXACTLY, and the
+//!   second-order term is `½ δdᵀV⁻¹δd ∈ [0, ½‖δd‖²/λ_min(V)]`: it DOES carry
+//!   1/λ_min. For def2-universal-jkfit λ_min(V) = 1.1e-5 (H2O/cc-pVDZ), 1.6e-6
+//!   (C6H6/def2-SVP), 2.8e-6 (C10H22/def2-SVP) (PySCF `int2c2e`, same aux
+//!   basis and naux), so the worst-case second-order bound
+//!   `½ (ε_d ‖|B||w|‖)² / λ_min` is not negligible against the first-order
+//!   one, and `M` below is a first-order ESTIMATE, not a rigorous bound.
 //! * K. `|δE_K| ≤ (c_x/2) · ε_K · Σ_μν |D_μν| S_μν` (UHF: `(c_x/2) ε_K Σ_σ
 //!   Σ|D_σ| S_σ` with `K_σ = K(C_σ)`).
 //!
@@ -72,8 +90,10 @@
 //! veto can only act once the exit gate is reached, so τ is what keeps
 //! `dfk-occ` convergent, and the veto what keeps the energy f64.
 //!
-//! With the ladder and the f64 exit the returned energy is evaluated with f64
-//! J/K at a density converged under f64 J/K, so no u32 term remains: its budget
+//! With the ladder and the f64 exit (veto, DIIS reset, ΔP/ΔE invalidated, f64
+//! redo) the returned energy is evaluated with f64 J/K at a density produced by
+//! diagonalizing an f64 Fock matrix and converged under the ΔP gate between two
+//! such densities, so no u32 term remains: its budget
 //! against an all-f64 SCF of the same system is the f64 floor of either code
 //! path, twice (each run is within it of exact arithmetic),
 //!
@@ -86,14 +106,19 @@
 //! remaining density error into E at second order only). The configured
 //! `energy_conv` is NOT used: under RI it is a loose "not still descending"
 //! bound, orders of magnitude above both sides of the gate. Without the exit
-//! (the mutant) the first-order u32 term
+//! (the mutant) the error is estimated by the first-order u32 term
 //! `M = ε_EJ·S_J + (c_x/2)ε_K Σ|D|S`
-//! bounds the error from above; the gap between the two is
+//! (first order only: the second-order J term above carries 1/λ_min(V) and is
+//! not in `M`; the measured mutant errors sit 2-3 orders below `M`, so the
+//! test's `≤ M + bar` check is a consistency check of the model, not a proof
+//! of a bound); the gap between the two is
 //! `u32 / (γ_pair(u64)+γ_naux(u64)) ≈ u32 / (pair·u64) ≈ 5e8 / pair`, about
 //! 1.6e4 at pair ≈ 3.1e4 (C10H22/def2-SVP), shrinking as 1/nbf² (the
 //! worst-case f64 floor grows with the depth while the u32 term does not).
 //! `tests/gpu_jk_ladder.rs` computes `S_J`, `S` and `T_γ` per system and
-//! asserts the bar on both sides.
+//! asserts the bar on both sides, and asserts that the returned density of
+//! every f64-exit arm is within `10·density_conv` of the f64 reference's and
+//! of `n·C_occ C_occᵀ` of its own returned orbitals.
 //!
 //! Must stay f64: the metric Cholesky and solve, the V^{-1/2} lindep dressing,
 //! DIIS, diagonalisation, the energy trace, every build after the exit veto.
@@ -108,8 +133,11 @@ use ndarray::Array2;
 /// The `xc-vxc` threshold (`ferric_dft::ks::MIXED_VXC_LADDER_THRESH`, chosen by
 /// measurement there) and the switch point of Laqua/Kussmann/Ochsenfeld's
 /// i-sn-LinK (fp32 until the DIIS RMS error reaches 1e-5, JCP 154, 214116
-/// (2021)). Its role here is convergence, not accuracy: the f64 exit makes the
-/// returned energy independent of τ (any τ, including 0, gives an f64 exit).
+/// (2021)). Its role here is convergence, not accuracy: when the exit gate is
+/// reached the f64 exit makes the returned energy and density f64 whatever τ
+/// was. τ decides whether the gate is reached: at τ = 0 (every build mixed)
+/// `dfk-occ`'s per-build noise kept C6H6/def2-SVP from converging in 200
+/// iterations, so τ = 0 does NOT give an f64 exit in general.
 pub const JK_LADDER_THRESH: f64 = 1e-5;
 
 thread_local! {
@@ -130,6 +158,11 @@ pub fn scope_allows_mixed() -> Option<bool> {
 /// A device kernel ran this build mixed (`dfj-pack` or `dfk-occ`). Called by
 /// the device dispatchers; the enclosing guard keeps the build for the exit.
 pub fn note_mixed_build() {
+    debug_assert_ne!(
+        scope_allows_mixed(),
+        Some(false),
+        "a J/K kernel ran mixed inside a scope that requires f64"
+    );
     RAN_MIXED.with(|c| c.set(c.get().wrapping_add(1)));
     // TODO(feat/precision-section-provenance): note_kernel_mixed(kernel) here,
     // with the kernel passed in by the dispatcher.
@@ -239,23 +272,53 @@ impl JkLadder {
 
     /// The f64 exit: `conv` is the solver's converged-exit decision for this
     /// iteration. When the iteration's J/K build ran a mixed kernel the exit is
-    /// refused (`None`), the ladder is latched to f64 for the rest of this SCF,
-    /// and the SCF iterates on with f64 J/K; otherwise `conv` is returned
-    /// unchanged.
-    pub fn veto_mixed_exit<E>(&self, conv: Option<E>) -> Option<E> {
-        if conv.is_some() && self.ladder.take_mixed().is_some() {
-            self.latched_f64.set(true);
-            // TODO(feat/precision-section-provenance): note_exit_rebuild(kernel)
-            // here (counted today by the shared ladder under LadderSite::Jk).
-            return None;
+    /// refused ([`JkExit::RedoInF64`]): the ladder is latched to f64 for the
+    /// rest of this SCF, and the solver must reset DIIS, invalidate ΔP/ΔE and
+    /// redo the iteration at the same density (see [`JkExit`]). Otherwise
+    /// `conv` is returned unchanged ([`JkExit::Proceed`]).
+    pub fn veto_mixed_exit<E>(&self, conv: Option<E>) -> JkExit<E> {
+        if conv.is_none() || self.ladder.take_mixed().is_none() {
+            return JkExit::Proceed(conv);
         }
-        conv
+        // A latched ladder publishes `Some(false)` to every later build, so a
+        // mixed record here means a dispatcher ignored the scope (caught in
+        // debug builds by `note_mixed_build` and the guard's drop). Refuse
+        // the exit again rather than return a mixed energy.
+        debug_assert!(
+            !self.latched_f64.get(),
+            "a J/K build ran mixed after the ladder latched to f64"
+        );
+        self.latched_f64.set(true);
+        // TODO(feat/precision-section-provenance): note_exit_rebuild(kernel)
+        // here (counted today by the shared ladder under LadderSite::Jk).
+        JkExit::RedoInF64
     }
 
     /// Whether an exit veto has latched this SCF to f64.
     pub fn latched_f64(&self) -> bool {
         self.latched_f64.get()
     }
+}
+
+/// What the solver does after [`JkLadder::veto_mixed_exit`].
+#[must_use = "a refused exit obliges the solver to redo the iteration"]
+#[derive(Debug, PartialEq, Eq)]
+pub enum JkExit<E> {
+    /// Go on with this exit decision (`None`: not converged).
+    Proceed(Option<E>),
+    /// The exit was refused because this iteration's J/K build ran mixed. The
+    /// solver must, before anything else of this iteration:
+    /// * reset DIIS: its history holds Fock matrices of mixed builds, and any
+    ///   extrapolation from them leaves a mixed component in the next density;
+    /// * invalidate ΔP and ΔE (`ScfMonitor::invalidate_deltas`): both compare
+    ///   densities and energies of the mixed Fock map;
+    /// * `continue` without diagonalizing this iteration's (mixed) Fock
+    ///   matrix, so the next iteration rebuilds J/K in f64 at the SAME density.
+    ///
+    /// The next exit then needs a ΔP between two densities the second of
+    /// which came from diagonalizing an f64 Fock matrix with an all-f64 DIIS
+    /// history, and the returned density, orbitals and energy are f64.
+    RedoInF64,
 }
 
 /// The scope of one J/K build (see [`JkLadder::begin_build`]). On drop it
@@ -275,6 +338,10 @@ impl Drop for JkBuildScope<'_> {
         };
         SCOPE.with(|s| s.set(self.prev));
         if RAN_MIXED.with(Cell::get) != self.ran0 {
+            debug_assert!(
+                !l.latched_f64.get(),
+                "a J/K build ran mixed while the ladder was latched to f64"
+            );
             l.ladder.keep_mixed(());
         }
     }
@@ -312,17 +379,59 @@ mod tests {
         }
         assert_eq!(scope_allows_mixed(), None);
         // No kernel ran mixed: the exit stands.
-        assert_eq!(l.veto_mixed_exit(Some(1)), Some(1));
+        assert_eq!(l.veto_mixed_exit(Some(1)), JkExit::Proceed(Some(1)));
         // A kernel ran mixed: a non-exit is untouched, the exit is refused once.
         {
             let _g = guard_with(&l, true);
             note_mixed_build();
         }
-        assert_eq!(l.veto_mixed_exit(None::<u8>), None);
+        assert_eq!(l.veto_mixed_exit(None::<u8>), JkExit::Proceed(None));
         assert!(!l.latched_f64(), "a non-exit latched");
-        assert_eq!(l.veto_mixed_exit(Some(2)), None, "mixed exit accepted");
+        assert_eq!(
+            l.veto_mixed_exit(Some(2)),
+            JkExit::RedoInF64,
+            "mixed exit accepted"
+        );
         assert!(l.latched_f64());
-        assert_eq!(l.veto_mixed_exit(Some(3)), Some(3), "vetoed twice");
+        assert_eq!(
+            l.veto_mixed_exit(Some(3)),
+            JkExit::Proceed(Some(3)),
+            "vetoed twice"
+        );
+    }
+
+    /// Catches: a mixed build accepted after the ladder latched to f64 (the
+    /// guard's drop must refuse to keep it).
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "latched to f64")]
+    fn a_mixed_build_while_latched_is_a_bug() {
+        let l = JkLadder::new([true]);
+        l.latched_f64.set(true);
+        let _g = guard_with(&l, true);
+        note_mixed_build();
+    }
+
+    /// Catches: a device kernel that runs mixed inside a scope requiring f64.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "requires f64")]
+    fn a_mixed_kernel_in_an_f64_scope_is_a_bug() {
+        let l = JkLadder::new([true]);
+        let _g = guard_with(&l, false);
+        note_mixed_build();
+    }
+
+    /// Pins τ. Catches: a change of `JK_LADDER_THRESH` (or of the `xc-vxc`
+    /// threshold it shares) without a new measurement. τ is what keeps
+    /// `dfk-occ` convergent: at τ = 0 its per-build noise kept C6H6/def2-SVP
+    /// from converging in 200 iterations, while at 1e-5 it converges in the
+    /// f64 count (the behavioural pin is the `Ladder KOnly` arm of
+    /// `tests/gpu_jk_ladder.rs`).
+    #[test]
+    fn production_tau_is_pinned() {
+        assert_eq!(JK_LADDER_THRESH, 1e-5);
+        assert_eq!(JK_LADDER_THRESH, ferric_dft::ks::MIXED_VXC_LADDER_THRESH);
     }
 
     /// Catches: an inert ladder that opens a scope (the f64 default must run

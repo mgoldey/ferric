@@ -1434,9 +1434,17 @@ fn solve_uhf_impl(
             ctx.is_root(),
             &mut last_report,
         );
-        // A converged exit after a mixed J/K build is refused; the SCF goes on
-        // in f64 (see `crate::jk_ladder`).
-        let conv_exit = jk_ladder.veto_mixed_exit(conv_exit);
+        // A converged exit after a mixed J/K build is refused: this iteration
+        // is redone in f64 at the same density, from a clean DIIS history and
+        // with ΔP/ΔE invalidated (see `crate::jk_ladder::JkExit`).
+        let conv_exit = match jk_ladder.veto_mixed_exit(conv_exit) {
+            crate::jk_ladder::JkExit::Proceed(c) => c,
+            crate::jk_ladder::JkExit::RedoInF64 => {
+                diis.reset();
+                mon.invalidate_deltas();
+                continue;
+            }
+        };
 
         // Divergence / stall early exits (shared driver::ScfMonitor; both are
         // no-ops at the None defaults — UHF previously ignored these knobs).

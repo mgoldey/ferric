@@ -25,10 +25,15 @@
 //!     that a converged energy keeps when its last build was mixed.
 //!
 //! Asserted per system: the f64 default never consults the ladder and is
-//! bit-identical to the no-ladder seam; the production ladder (τ = 1e-5, both
-//! kernels) and the stress ladder (τ = 0: every build after the first mixed
-//! until the exit; `dfj-pack` only beyond water, see `Kernels::JOnly`) land
-//! inside the bar, with counters showing mixed builds AND the f64 exit; the
+//! bit-identical to the no-ladder seam (structural) and, for water and
+//! benzene, to bits recorded at the pre-ladder merge base
+//! (`f64_default_matches_pre_ladder_golden`); the production ladder (τ = 1e-5,
+//! both kernels, and `dfk-occ` alone, which pins τ by behaviour and makes a
+//! dropped `dfk-occ` notification visible) and the stress ladder (τ = 0: every
+//! build after the first mixed until the exit; `dfj-pack` only beyond water,
+//! see `Kernels::JOnly`) land inside the bar AND return a density within
+//! `10·density_conv` of the f64 reference's and of their own orbitals, with
+//! counters showing mixed builds AND the f64 exit; the
 //! mutant without the exit rebuild (τ = 0) lands OUTSIDE the bar and inside
 //! `M + bar` (the error model, not just its size); the mutant whose exit
 //! criterion never fires is caught by the counters (the τ test must end the
@@ -66,6 +71,11 @@ static GPU: Mutex<()> = Mutex::new(());
 
 const AUX: &str = "def2-universal-jkfit";
 
+/// The SCF's `density_conv`: the returned density of every arm that exits in
+/// f64 must sit within `10 · DENSITY_CONV` of the f64 reference's and of its
+/// own orbitals (`ΔP_max < 10 · density_conv` is the exit gate).
+const DENSITY_CONV: f64 = 1e-9;
+
 fn ready() -> bool {
     if !matches!(probe(0), GpuStatus::Ready(_)) {
         eprintln!("skipping: no CUDA device");
@@ -98,14 +108,19 @@ enum Kernels {
     /// (measured), so the exit gate the veto acts on was never reached. The
     /// production ladder stops mixing at ΔD_rms ≤ 1e-5 and has no such stall.
     JOnly,
+    /// `dfk-occ` only: the arm in which a dropped `dfk-occ` ladder notification
+    /// (`df_k_gpu::note_ladder_build`) is visible, since under `Both` the
+    /// `dfj-pack` notification alone keeps the counters and the veto going.
+    KOnly,
 }
 
 /// The build's shipped set plus the arm's J/K kernels.
 fn jk_kernels(k: Kernels) -> MixedKernelSet {
-    let s = MixedKernelSet::SHIPPED.with(MixedKernel::DfjPack);
+    let s = MixedKernelSet::SHIPPED;
     match k {
-        Kernels::Both => s.with(MixedKernel::DfkOcc),
-        Kernels::JOnly => s,
+        Kernels::Both => s.with(MixedKernel::DfjPack).with(MixedKernel::DfkOcc),
+        Kernels::JOnly => s.with(MixedKernel::DfjPack),
+        Kernels::KOnly => s.with(MixedKernel::DfkOcc),
     }
 }
 
@@ -221,7 +236,7 @@ fn scf(sys: &System, arm: Arm, k: Kernels) -> Run {
         // dP is the real gate; energy_conv is only a "not still descending" bound
         // (an RI energy never settles to 1e-10, see the noise-floor notes).
         energy_conv: 1e-6,
-        density_conv: 1e-9,
+        density_conv: DENSITY_CONV,
         max_iter: 200,
         df_j_aux: Some(AUX.into()),
         df_k_aux: Some(AUX.into()),
@@ -260,6 +275,66 @@ fn bar_of(b: &Budget, f64_run: &ScfResult) -> f64 {
 
 fn last_de(r: &ScfResult) -> f64 {
     r.convergence.as_ref().map(|c| c.de.abs()).unwrap_or(0.0)
+}
+
+fn max_abs_diff(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
+    a.iter()
+        .zip(b.iter())
+        .fold(0.0_f64, |m, (x, y)| m.max((x - y).abs()))
+}
+
+/// `max |D − D_f64|` over the returned total and spin densities.
+fn density_error(r: &ScfResult, f64_run: &ScfResult) -> f64 {
+    let mut m = max_abs_diff(&r.density_total, &f64_run.density_total)
+        .max(max_abs_diff(&r.density_alpha, &f64_run.density_alpha));
+    if let (Some(a), Some(b)) = (&r.density_beta, &f64_run.density_beta) {
+        m = m.max(max_abs_diff(a, b));
+    }
+    m
+}
+
+/// `max |D_σ − n_σ C_σ,occ C_σ,occᵀ|`: the returned density against the
+/// returned orbitals (RHF `|D − 2CCᵀ|`; UHF/ROHF per spin with `n_σ = 1`).
+/// The orbitals come from the exit's Fock matrix, the density from the step
+/// before it, so a density produced by a different (mixed) Fock map shows here.
+fn density_orbital_gap(sys: &System, r: &ScfResult) -> f64 {
+    let occ_factor = if sys.kind == Kind::Rhf { 2.0 } else { 1.0 };
+    spin_blocks(sys, r)
+        .iter()
+        .map(|(d, c, _)| max_abs_diff(d, &(occ_factor * c.dot(&c.t()))))
+        .fold(0.0, f64::max)
+}
+
+/// The two density measures of one arm against the f64 reference.
+#[derive(Clone, Copy, Debug)]
+struct DensityErr {
+    /// `max |D − D_f64|`.
+    vs_f64: f64,
+    /// `max |D − n C Cᵀ|` (see [`density_orbital_gap`]).
+    vs_orbitals: f64,
+}
+
+fn density_err(sys: &System, r: &ScfResult, f64_run: &ScfResult) -> DensityErr {
+    DensityErr {
+        vs_f64: density_error(r, f64_run),
+        vs_orbitals: density_orbital_gap(sys, r),
+    }
+}
+
+/// An arm that exits in f64 returns an f64 density: within `10·density_conv`
+/// of the f64 reference's and of its own orbitals.
+fn assert_f64_density(label: &str, what: &str, e: DensityErr) {
+    let tol = 10.0 * DENSITY_CONV;
+    assert!(
+        e.vs_f64 <= tol,
+        "{label} {what}: max|D - D_f64| {:e} above {tol:e}",
+        e.vs_f64
+    );
+    assert!(
+        e.vs_orbitals <= tol,
+        "{label} {what}: max|D - nCC^T| {:e} above {tol:e} (density not from the f64 Fock map)",
+        e.vs_orbitals
+    );
 }
 
 // ---------------------------------------------------------------- the budget
@@ -441,20 +516,42 @@ fn sized_systems() -> Vec<System> {
     ]
 }
 
-/// One sweep row: label, nbf, then `(arm, kernels, |dE|, bar)` per arm, and M.
-type Row = (String, usize, Vec<(Arm, Kernels, f64, f64)>, f64);
+/// One arm of a sweep row.
+#[derive(Clone, Copy, Debug)]
+struct ArmResult {
+    arm: Arm,
+    k: Kernels,
+    /// `|E − E_f64|`.
+    de: f64,
+    bar: f64,
+    dens: DensityErr,
+    iterations: usize,
+}
 
-/// One system through every arm (production ladder with both kernels, the τ = 0
-/// stress and both mutants with `stress` kernels).
-fn sweep(sys: &System, stress: &[Kernels]) -> Row {
+/// One sweep row: label, nbf, the f64 run's iterations and density gap, the
+/// arms, and M.
+struct Row {
+    label: String,
+    nbf: usize,
+    f64_iterations: usize,
+    f64_gap: f64,
+    arms: Vec<ArmResult>,
+    m: f64,
+}
+
+/// The f64 default: never consults the ladder, and runs the pre-ladder code.
+fn check_f64_default(sys: &System, f64_run: &Run) {
     let label = sys.label;
-    let f64_run = scf(sys, Arm::F64, Kernels::Both);
-    // The f64 default never consults the ladder and runs the pre-ladder code.
+    // Not circular: the counters are the ladder's own record of being stepped,
+    // and they stay at zero only if `begin_build` returned before stepping it.
     assert_eq!(
         f64_run.ladder,
         LadderCounters::default(),
         "{label}: an f64 SCF stepped the ladder"
     );
+    // Structural only: `JK_LADDER_OFF` is the ladder's own seam, so this pins
+    // "inert" == "off", not "off" == origin/main (see
+    // `f64_default_matches_pre_ladder_golden` for that).
     let off = scf(sys, Arm::F64NoLadder, Kernels::Both);
     assert_eq!(
         f64_run.res.energy.to_bits(),
@@ -471,8 +568,75 @@ fn sweep(sys: &System, stress: &[Kernels]) -> Row {
             .all(|(a, b)| a.to_bits() == b.to_bits()),
         "{label}: f64 Fock matrices differ"
     );
+}
+
+/// The counter and device assertions of one mixed arm.
+fn check_arm_counters(sys: &System, arm: Arm, k: Kernels, r: &Run, f64_iterations: usize) {
+    let label = sys.label;
+    let l = r.ladder;
+    // Every mixed arm really ran mixed device builds of its kernels, and the
+    // ladder heard about it (a dropped notification leaves builds_mixed at 0).
+    assert!(
+        l.builds_mixed >= 1,
+        "{label} {arm:?} {k:?}: no build ran mixed"
+    );
+    if k != Kernels::KOnly {
+        assert!(
+            r.gpu.dfj_device_builds >= 1,
+            "{label} {arm:?}: RI-J never on the device"
+        );
+    }
+    if sys.kind == Kind::Rhf && k != Kernels::JOnly {
+        assert!(
+            r.gpu.mixed_panels > 0,
+            "{label} {arm:?} {k:?}: DF-K never ran mixed"
+        );
+    }
+    // Consulted on every build of this SCF (the counters are process-wide, so
+    // the SAD guess's free-atom SCFs add their own, all f64: they run inside
+    // a rayon pool, where the device path never runs).
+    assert!(
+        l.builds_total as usize >= r.res.iterations,
+        "{label} {arm:?}: the ladder skipped a build"
+    );
+    match arm {
+        Arm::Ladder => {
+            // The τ test ends the mixed builds by itself (no exit veto), and
+            // at least two builds are f64: the first and the settled tail.
+            assert_eq!(
+                l.exit_rebuilt_f64, 0,
+                "{label} {k:?}: the ladder never exited by itself"
+            );
+            assert!(l.builds_total >= l.builds_mixed + 2, "{label}: no f64 tail");
+            // Pins the production τ by behaviour: at JK_LADDER_THRESH = 1e-5
+            // every kernel set (dfk-occ included, whose τ = 0 run of C6H6
+            // never converged) converges within the f64 count + 2.
+            assert!(
+                r.res.iterations <= f64_iterations + 2,
+                "{label} {k:?}: production ladder took {} iterations vs f64 {f64_iterations}",
+                r.res.iterations
+            );
+        }
+        Arm::LadderTau0 | Arm::NeverExit => {
+            // Mixed up to the exit, which the veto turned into f64 iterations.
+            assert_eq!(l.exit_rebuilt_f64, 1, "{label} {arm:?}: no f64 exit");
+            assert!(l.builds_total >= l.builds_mixed + 2);
+        }
+        Arm::NoExitRebuild => assert_eq!(l.exit_rebuilt_f64, 0),
+        Arm::F64 | Arm::F64NoLadder => unreachable!(),
+    }
+}
+
+/// One system through every arm: the production ladder with `both` and with
+/// `dfk-occ` alone, then the τ = 0 stress and both mutants per `stress` kernel
+/// set.
+fn sweep(sys: &System, stress: &[Kernels]) -> Row {
+    let label = sys.label;
+    let f64_run = scf(sys, Arm::F64, Kernels::Both);
+    check_f64_default(sys, &f64_run);
     let b = budget(sys, &f64_run.res);
-    let mut arms = vec![(Arm::Ladder, Kernels::Both)];
+    let f64_gap = density_orbital_gap(sys, &f64_run.res);
+    let mut arms = vec![(Arm::Ladder, Kernels::Both), (Arm::Ladder, Kernels::KOnly)];
     for &k in stress {
         arms.extend([
             (Arm::LadderTau0, k),
@@ -480,9 +644,8 @@ fn sweep(sys: &System, stress: &[Kernels]) -> Row {
             (Arm::NeverExit, k),
         ]);
     }
-    let mut out = Vec::new();
     eprintln!(
-        "{label}: nbf {} naux {}  E_f64 {:.12} ({} it)  S_J {:.3e}  S_K {:.3e}  T_gamma {:.3e}  M {:.3e}",
+        "{label}: nbf {} naux {}  E_f64 {:.12} ({} it, max|D-2CC^T| {f64_gap:.2e})  S_J {:.3e}  S_K {:.3e}  T_gamma {:.3e}  M {:.3e}",
         sys.obs.nbasis(),
         sys.dfbs.nbasis(),
         f64_run.res.energy,
@@ -492,88 +655,46 @@ fn sweep(sys: &System, stress: &[Kernels]) -> Row {
         b.t_gamma,
         b.m_mixed
     );
+    let bar = bar_of(&b, &f64_run.res);
+    let mut out = Vec::new();
     for (arm, k) in arms {
         let r = scf(sys, arm, k);
         let de = (r.res.energy - f64_run.res.energy).abs();
-        let bar = bar_of(&b, &f64_run.res);
-        out.push((arm, k, de, bar));
+        let dens = density_err(sys, &r.res, &f64_run.res);
         let l = r.ladder;
         eprintln!(
-            "{label}: {arm:?} {k:?}: |dE| {de:.3e}  bar {bar:.3e}  ({} it; ladder builds {} mixed {} exit-f64 {}; device J {} K {} mixed panels {})",
+            "{label}: {arm:?} {k:?}: |dE| {de:.3e}  bar {bar:.3e}  max|D-D_f64| {:.2e}  max|D-2CC^T| {:.2e}  ({} it; ladder builds {} mixed {} exit-f64 {}; device J {} K {} mixed panels {})",
+            dens.vs_f64, dens.vs_orbitals,
             r.res.iterations, l.builds_total, l.builds_mixed, l.exit_rebuilt_f64,
             r.gpu.dfj_device_builds, r.gpu.dfk_device_builds, r.gpu.mixed_panels
         );
-        // Every mixed arm really ran mixed device builds of BOTH kernels.
-        assert!(l.builds_mixed >= 1, "{label} {arm:?}: no build ran mixed");
-        assert!(
-            r.gpu.dfj_device_builds >= 1,
-            "{label} {arm:?}: RI-J never on the device"
-        );
-        if sys.kind == Kind::Rhf && k == Kernels::Both {
-            assert!(
-                r.gpu.mixed_panels > 0,
-                "{label} {arm:?}: DF-K never ran mixed"
-            );
-        }
-        // Consulted on every build of this SCF (the counters are process-wide, so
-        // the SAD guess's free-atom SCFs add their own, all f64: they run inside
-        // a rayon pool, where the device path never runs).
-        assert!(
-            l.builds_total as usize >= r.res.iterations,
-            "{label} {arm:?}: the ladder skipped a build"
-        );
-        match arm {
-            Arm::Ladder => {
-                // The τ test ends the mixed builds by itself (no exit veto), and
-                // at least two builds are f64: the first and the settled tail.
-                assert_eq!(
-                    l.exit_rebuilt_f64, 0,
-                    "{label}: the ladder never exited by itself"
-                );
-                assert!(l.builds_total >= l.builds_mixed + 2, "{label}: no f64 tail");
-            }
-            Arm::LadderTau0 | Arm::NeverExit => {
-                // Mixed up to the exit, which the veto turned into f64 iterations.
-                assert_eq!(l.exit_rebuilt_f64, 1, "{label} {arm:?}: no f64 exit");
-                assert!(l.builds_total >= l.builds_mixed + 2);
-            }
-            Arm::NoExitRebuild => assert_eq!(l.exit_rebuilt_f64, 0),
-            Arm::F64 | Arm::F64NoLadder => unreachable!(),
-        }
+        check_arm_counters(sys, arm, k, &r, f64_run.res.iterations);
+        out.push(ArmResult {
+            arm,
+            k,
+            de,
+            bar,
+            dens,
+            iterations: r.res.iterations,
+        });
     }
-    (label.to_string(), sys.obs.nbasis(), out, b.m_mixed)
+    Row {
+        label: label.to_string(),
+        nbf: sys.obs.nbasis(),
+        f64_iterations: f64_run.res.iterations,
+        f64_gap,
+        arms: out,
+        m: b.m_mixed,
+    }
 }
 
-/// The size sweep (H2O/cc-pVDZ, C6H6, C8H18, C10H22 at def2-SVP; RHF, RI-J and
-/// DF-K from def2-universal-jkfit): see the file docs for what is asserted.
-#[test]
-fn ladder_energy_is_f64_quality_across_system_size_and_mutants_fail() {
-    let _g = GPU.lock().unwrap_or_else(|e| e.into_inner());
-    if !ready() {
-        return;
-    }
-    let mut rows = Vec::new();
-    for (i, sys) in sized_systems().into_iter().enumerate() {
-        // Water also runs the stress with both kernels (it converges there).
-        let stress: &[Kernels] = if i == 0 {
-            &[Kernels::JOnly, Kernels::Both]
-        } else {
-            &[Kernels::JOnly]
-        };
-        rows.push(sweep(&sys, stress));
-    }
-    eprintln!("system            nbf  arm             kernels  |dE|        bar         M");
-    for (label, n, arms, m) in &rows {
-        for (arm, k, de, bar) in arms {
-            eprintln!(
-                "{label:<17} {n:>4}  {:<15} {:<8} {de:.3e}   {bar:.3e}   {m:.3e}",
-                format!("{arm:?}"),
-                format!("{k:?}")
-            );
-        }
-    }
-    for (label, _, arms, m) in &rows {
-        for &(arm, k, de, bar) in arms {
+/// The energy and density assertions of a finished sweep (after the table, so
+/// a failure still prints every row).
+fn check_rows(rows: &[Row]) {
+    for row in rows {
+        let (label, m) = (&row.label, row.m);
+        for a in &row.arms {
+            let (arm, k, de, bar) = (a.arm, a.k, a.de, a.bar);
             if arm == Arm::NoExitRebuild {
                 // The mutant without the exit rebuild keeps the first-order
                 // mixed term: outside the bar, inside its derived budget.
@@ -591,8 +712,113 @@ fn ladder_energy_is_f64_quality_across_system_size_and_mutants_fail() {
                     de <= bar,
                     "{label} {arm:?} {k:?}: |dE| {de:e} above the bar {bar:e}"
                 );
+                assert_f64_density(label, &format!("{arm:?} {k:?}"), a.dens);
             }
         }
+    }
+}
+
+/// The size sweep (H2O/cc-pVDZ, C6H6, C8H18, C10H22 at def2-SVP; RHF, RI-J and
+/// DF-K from def2-universal-jkfit): see the file docs for what is asserted.
+#[test]
+fn ladder_energy_is_f64_quality_across_system_size_and_mutants_fail() {
+    let _g = GPU.lock().unwrap_or_else(|e| e.into_inner());
+    if !ready() {
+        return;
+    }
+    let mut rows = Vec::new();
+    for (i, sys) in sized_systems().into_iter().enumerate() {
+        // Water also runs the stress with both kernels and with dfk-occ alone
+        // (it converges there).
+        let stress: &[Kernels] = if i == 0 {
+            &[Kernels::JOnly, Kernels::Both, Kernels::KOnly]
+        } else {
+            &[Kernels::JOnly]
+        };
+        rows.push(sweep(&sys, stress));
+    }
+    eprintln!(
+        "system            nbf  arm             kernels  it (f64)   |dE|        bar         M           max|D-D_f64|  max|D-2CC^T| (f64)"
+    );
+    for row in &rows {
+        for a in &row.arms {
+            eprintln!(
+                "{:<17} {:>4}  {:<15} {:<8} {:>3} ({:>3})  {:.3e}   {:.3e}   {:.3e}   {:.2e}      {:.2e} ({:.2e})",
+                row.label,
+                row.nbf,
+                format!("{:?}", a.arm),
+                format!("{:?}", a.k),
+                a.iterations,
+                row.f64_iterations,
+                a.de,
+                a.bar,
+                row.m,
+                a.dens.vs_f64,
+                a.dens.vs_orbitals,
+                row.f64_gap
+            );
+        }
+    }
+    check_rows(&rows);
+}
+
+/// FNV-1a over the bits of a matrix (row-major).
+fn fnv_bits(xs: &Array2<f64>) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for x in xs.iter() {
+        for b in x.to_bits().to_le_bytes() {
+            h ^= u64::from(b);
+            h = h.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    }
+    h
+}
+
+/// The f64 default against bits recorded WITHOUT the ladder code: the same
+/// SCFs (this file's `scf` config, `Arm::F64`) run at b2ec65a9b, the merge
+/// base of this branch, which has no `jk_ladder` and no ladder hooks in the
+/// device dispatchers. Unlike the `F64NoLadder` comparison (the ladder's own
+/// off seam, structural only) this would catch a change the ladder made to
+/// the f64 path itself. Recorded on this box's GTX 1080 (device f64 RI-J runs
+/// in the f64 default), identical in two processes; another device or BLAS
+/// may differ in the last bit, in which case re-record at the merge base.
+#[test]
+fn f64_default_matches_pre_ladder_golden() {
+    let _g = GPU.lock().unwrap_or_else(|e| e.into_inner());
+    if !ready() {
+        return;
+    }
+    let golden: [(&str, Molecule, &str, u64, usize, u64); 2] = [
+        (
+            "H2O/cc-pVDZ",
+            water(),
+            "cc-pvdz",
+            0xc053_01b6_0893_26f6,
+            13,
+            0xfc4a_4853_5d7b_36c8,
+        ),
+        (
+            "C6H6/def2-SVP",
+            Molecule::load_xyz("../../testdata/molecules/benzene.xyz").unwrap(),
+            "def2-svp",
+            0xc06c_d123_b8a0_0188,
+            13,
+            0xc14a_c70f_78cc_d86d,
+        ),
+    ];
+    for (label, mol, obs, e_bits, iters, fock) in golden {
+        let sys = System::new(label, mol, obs, Kind::Rhf);
+        let r = scf(&sys, Arm::F64, Kernels::Both);
+        assert_eq!(r.ladder, LadderCounters::default(), "{label}: stepped");
+        assert_eq!(
+            r.res.energy.to_bits(),
+            e_bits,
+            "{label}: f64 energy {:.15} differs from the pre-ladder golden {:.15}",
+            r.res.energy,
+            f64::from_bits(e_bits)
+        );
+        assert_eq!(r.res.iterations, iters, "{label}: iterations");
+        assert_eq!(fnv_bits(&r.res.fock_alpha), fock, "{label}: Fock bits");
     }
 }
 
@@ -606,6 +832,7 @@ fn open_shell_ladder_exits_in_f64() {
     }
     let cation =
         || Molecule::load_xyz_with_charge("../../testdata/molecules/water.xyz", 1, 2).unwrap();
+    let mut densities = Vec::new();
     for kind in [Kind::Uhf, Kind::Rohf] {
         let label = if kind == Kind::Uhf {
             "UHF H2O+"
@@ -628,6 +855,16 @@ fn open_shell_ladder_exits_in_f64() {
             "{label}: |dE| tau=0 {de:.3e}  no-exit {dm:.3e}  bar {bar:.3e}  M {:.3e}  (ladder {:?})",
             b.m_mixed, t0.ladder
         );
+        let dens = density_err(&sys, &t0.res, &f.res);
+        eprintln!(
+            "{label}: tau=0 {} it (f64 {})  max|D-D_f64| {:.2e}  max|D-CC^T| {:.2e} (f64 {:.2e})",
+            t0.res.iterations,
+            f.res.iterations,
+            dens.vs_f64,
+            dens.vs_orbitals,
+            density_orbital_gap(&sys, &f.res)
+        );
+        densities.push((label, dens));
         assert_eq!(t0.ladder.exit_rebuilt_f64, 1, "{label}: no f64 exit");
         assert!(t0.ladder.builds_mixed >= 1, "{label}: never mixed");
         assert!(de <= bar, "{label}: |dE| {de:e} above the bar {bar:e}");
@@ -636,5 +873,9 @@ fn open_shell_ladder_exits_in_f64() {
             "{label}: the no-exit mutant {dm:e} is inside its bar {bar_mu:e}"
         );
         assert!(dm <= b.m_mixed + bar_mu, "{label}: mutant above its budget");
+    }
+    // After both kinds, so a failure still prints both.
+    for (label, dens) in densities {
+        assert_f64_density(label, "tau=0", dens);
     }
 }

@@ -1181,9 +1181,18 @@ fn solve_rohf_impl(
         // gradient noise floor at aTZ, so the old `err_max < density_conv` gate
         // would grind to MaxIter there too. See rhf::scf_converged.
         let conv_exit = crate::rhf::scf_converged(sig, config.energy_conv, config.density_conv);
-        // A converged exit after a mixed J/K build is refused; the SCF goes on
-        // in f64 (see `crate::jk_ladder`).
-        let conv_exit = jk_ladder.veto_mixed_exit(conv_exit);
+        // A converged exit after a mixed J/K build is refused: this iteration
+        // is redone in f64 at the same density, from a clean DIIS history and
+        // with ΔP/ΔE invalidated (see `crate::jk_ladder::JkExit`).
+        let conv_exit = match jk_ladder.veto_mixed_exit(conv_exit) {
+            crate::jk_ladder::JkExit::Proceed(c) => c,
+            crate::jk_ladder::JkExit::RedoInF64 => {
+                diis.reset();
+                mon.invalidate_deltas();
+                prev_d_total = None;
+                continue;
+            }
+        };
         let converged = conv_exit.is_some();
 
         // Divergence / stall early exits (shared driver::ScfMonitor; both are
