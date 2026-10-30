@@ -194,17 +194,32 @@ pub fn gemm_f32_f64acc_dev_into(
 /// Existing inf/NaN inputs pass through unchanged (they are the caller's data).
 #[doc(hidden)]
 pub fn round_to_f32(label: &str, x: &[f64]) -> Result<Vec<f32>, GpuError> {
-    let mut out = Vec::with_capacity(x.len());
-    for (i, &v) in x.iter().enumerate() {
+    let mut out = vec![0.0f32; x.len()];
+    round_to_f32_into(label, x, &mut out)?;
+    Ok(out)
+}
+
+/// [`round_to_f32`] into a caller's buffer (`out.len() == x.len()`, else a
+/// typed `Layout` error). On an `F32Range` refusal `out` is partly written.
+#[doc(hidden)]
+pub fn round_to_f32_into(label: &str, x: &[f64], out: &mut [f32]) -> Result<(), GpuError> {
+    if out.len() != x.len() {
+        return Err(GpuError::Layout(format!(
+            "{label}: f32 buffer of {} for {} elements",
+            out.len(),
+            x.len()
+        )));
+    }
+    for (i, (o, &v)) in out.iter_mut().zip(x).enumerate() {
         let r = v as f32;
         if v.is_finite() && !r.is_finite() {
             return Err(GpuError::F32Range(format!(
                 "{label}[{i}] = {v:e} exceeds f32::MAX"
             )));
         }
-        out.push(r);
+        *o = r;
     }
-    Ok(out)
+    Ok(())
 }
 
 /// Host-view convenience (einsum path, tests): rounds and uploads the
