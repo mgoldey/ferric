@@ -2126,6 +2126,7 @@ fn run_rimp2_local(
         dcfg.as_ref(),
         &r,
         &ferric_mp2::lmp2_certificate::SystemShape::new(mol, bs),
+        &op,
     );
     let local = LocalPrint {
         eps,
@@ -2135,6 +2136,11 @@ fn run_rimp2_local(
     println!("{}", model_label("MP2", Some(&local)));
     println!("  validation            = {}", cert.validation_grade);
     println!("  eps trust             = {}", cert.eps_trust);
+    println!(
+        "  PCG gather plan       = {:.3} GB ({} matvec)",
+        cert.solve_plan_bytes as f64 / 1e9,
+        cert.matvec_path
+    );
     for w in &cert.warnings {
         println!("  out of validated range: {w}");
     }
@@ -6673,6 +6679,9 @@ mod local_printout_tests {
             cg_relres: 3.3e-12,
             cg_converged: true,
             frozen_core: 4,
+            operator: "coulomb".into(),
+            solve_plan_bytes: 123_456_789,
+            matvec_path: "planned",
             validation_grade: "finite eps: measured error map, not validated".into(),
             eps_trust: "measured ...".into(),
             warnings: vec!["w1".into(), "w2".into()],
@@ -6700,7 +6709,7 @@ mod local_printout_tests {
             }
         }
         let fields = cert.fields();
-        assert_eq!(fields.len(), 15);
+        assert_eq!(fields.len(), 18);
         for (k, v) in &fields {
             assert!(same(&back[*k], v), "field {k}: {} vs {v:?}", back[*k]);
         }

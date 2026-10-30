@@ -113,6 +113,12 @@ pub struct DirectConfig {
     /// (measured C8/erfc/1e-3: kappa=3 cut |C_ij| 40% at +2.9e-6 Ha,
     /// 1600× below the ε truncation).
     pub virt_schwarz_kappa: Option<f64>,
+    /// Stats flag: split the integral-fill timer into libint evaluation and
+    /// slab scatter (`t_eri3_eval_thread_s` / `t_eri3_scatter_thread_s`).
+    /// Splitting buffers each chunk's blocks (an extra copy), so it is OFF
+    /// by default; off, only their sum `t_eri3_fill_thread_s` is timed and
+    /// the two split timers are NaN. Never changes a result.
+    pub split_eri3_timers: bool,
 }
 
 impl Default for DirectConfig {
@@ -125,6 +131,7 @@ impl Default for DirectConfig {
             batch_merge: 1,
             scratch_budget_bytes: 2usize << 30,
             virt_schwarz_kappa: None,
+            split_eri3_timers: false,
         }
     }
 }
@@ -158,14 +165,18 @@ pub struct DirectStats {
     pub t_maps_s: f64,
     /// Stage-3 wall seconds (all batch workers).
     pub t_eri3_s: f64,
-    /// Stage-3 split, thread-seconds summed over the batch workers (each
-    /// worker runs single-threaded BLAS, so these are CPU-seconds): libint
-    /// evaluation, scatter into the integral slab, and the half-transform
-    /// into the strips. Their sum is below the workers' total by the
-    /// per-batch setup (strip/coefficient allocation).
-    pub t_eri3_eval_cpu_s: f64,
-    pub t_eri3_scatter_cpu_s: f64,
-    pub t_eri3_transform_cpu_s: f64,
+    /// Stage-3 split, wall seconds measured on each batch worker's thread
+    /// and summed over workers (thread-seconds; NOT CPU time — a descheduled
+    /// worker still accrues): the integral fill (libint evaluation +
+    /// scatter into the slab) and the half-transform into the strips. Their
+    /// sum is below the workers' total by the per-batch setup.
+    pub t_eri3_fill_thread_s: f64,
+    /// The fill split into evaluation and scatter: only with
+    /// [`DirectConfig::split_eri3_timers`] (NaN otherwise). The clock is read
+    /// per [`FILL_CHUNK`]-pair chunk, not per triple.
+    pub t_eri3_eval_thread_s: f64,
+    pub t_eri3_scatter_thread_s: f64,
+    pub t_eri3_transform_thread_s: f64,
     /// Integral batches run, and the max/mean wall seconds of one batch
     /// worker (the load-balance counter: max ≫ mean is a tail imbalance).
     pub n_batches: usize,
@@ -182,6 +193,7 @@ pub struct DirectStats {
 /// One batch worker's stage-3 timers (thread-seconds).
 #[derive(Debug, Clone, Copy, Default)]
 struct BatchTimers {
+    fill_s: f64,
     eval_s: f64,
     scatter_s: f64,
     transform_s: f64,
@@ -584,6 +596,8 @@ struct BatchCtx<'a> {
     schwarz_skip: f64,
     /// Per-worker share of the GLOBAL scratch budget, bytes.
     worker_budget: usize,
+    /// [`DirectConfig::split_eri3_timers`].
+    split_timers: bool,
 }
 
 /// One batch's compact AO axes: the occupied-support functions `s` and
@@ -722,7 +736,8 @@ struct NeedPair {
     q: f64,
 }
 
-/// Scatter granularity of [`fill_slab`]'s eval/scatter timers.
+/// Timer granularity of [`fill_slab`]: the clock is read once per chunk of
+/// this many shell pairs (twice when the eval/scatter split is on).
 const FILL_CHUNK: usize = 64;
 
 /// The batch's needed shell pairs, built ONCE per batch (was: every
@@ -753,14 +768,49 @@ fn batch_pairs(ctx: &BatchCtx<'_>, ax: &BatchAxes) -> Vec<NeedPair> {
     pairs
 }
 
+/// Write one (P|μν) block of aux shell `sp` into `t_slab[(pl, s, n)]` (both
+/// orientations the pair needs).
+fn scatter_block(
+    ctx: &BatchCtx<'_>,
+    ax: &BatchAxes,
+    pr: &NeedPair,
+    sp: usize,
+    block: &[f64],
+    p_local: &[usize],
+    t_slab: &mut Array3<f64>,
+) {
+    let dims_obs = ctx.obs.shell_dims();
+    let offs_obs = ctx.obs.shell_offsets();
+    let n_p = ctx.dfbs.shell_dims()[sp];
+    let off_p = ctx.dfbs.shell_offsets()[sp];
+    let (n1, n2) = (dims_obs[pr.ua], dims_obs[pr.ub]);
+    for p in 0..n_p {
+        let pl = p_local[off_p + p];
+        for fa in 0..n1 {
+            let ga = offs_obs[pr.ua] + fa;
+            for fb in 0..n2 {
+                let gb = offs_obs[pr.ub] + fb;
+                let val = block[(p * n1 + fa) * n2 + fb];
+                if pr.need_ab {
+                    t_slab[(pl, ax.s_pos[ga], ax.n_pos[gb])] = val;
+                }
+                if pr.need_ba {
+                    t_slab[(pl, ax.s_pos[gb], ax.n_pos[ga])] = val;
+                }
+            }
+        }
+    }
+}
+
 /// Evaluate one slab's (P|μν) triples into `t_slab[(pl, s, n)]`. Returns
 /// (evaluated, skipped). Per aux shell, the pairs passing the Schwarz cut
 /// `√(P|P)·Q(μν) ≥ schwarz_skip` are the prefix of the Q-sorted list (the
 /// SAME product and comparison as the unsorted test, so the same triples
 /// are evaluated and the same ones counted as skipped). Every slab entry is
 /// written only by its own shell pair, so evaluation order cannot change
-/// the slab. Blocks are buffered per [`FILL_CHUNK`] pairs so the eval /
-/// scatter timers cost two clock reads per chunk, not per triple.
+/// the slab. The fill timer reads the clock once per [`FILL_CHUNK`] pairs;
+/// with `ctx.split_timers` each chunk's blocks are buffered so evaluation
+/// and scatter are timed apart (an extra copy, hence opt-in).
 #[allow(clippy::too_many_arguments)]
 fn fill_slab(
     ctx: &BatchCtx<'_>,
@@ -773,10 +823,6 @@ fn fill_slab(
     tm: &mut BatchTimers,
 ) -> (u64, u64) {
     let (obs, dfbs) = (ctx.obs, ctx.dfbs);
-    let dims_obs = obs.shell_dims();
-    let offs_obs = obs.shell_offsets();
-    let dims_df = dfbs.shell_dims();
-    let offs_df = dfbs.shell_offsets();
     let (mut n_triples, mut n_skipped) = (0u64, 0u64);
     let mut buf: Vec<f64> = Vec::new();
     let mut meta: Vec<(NeedPair, usize)> = Vec::new();
@@ -792,6 +838,15 @@ fn fill_slab(
         n_triples += kept as u64;
         for chunk in pairs[..kept].chunks(FILL_CHUNK) {
             let te = Instant::now();
+            if !ctx.split_timers {
+                for pr in chunk {
+                    if let Some(block) = eng.compute_eri3(obs, dfbs, sp, pr.ua, pr.ub) {
+                        scatter_block(ctx, ax, pr, sp, block, p_local, t_slab);
+                    }
+                }
+                tm.fill_s += te.elapsed().as_secs_f64();
+                continue;
+            }
             buf.clear();
             meta.clear();
             for pr in chunk {
@@ -801,28 +856,13 @@ fn fill_slab(
                 }
             }
             let ts = Instant::now();
-            tm.eval_s += (ts - te).as_secs_f64();
-            for &(pr, off) in &meta {
-                let block = &buf[off..];
-                let (n1, n2) = (dims_obs[pr.ua], dims_obs[pr.ub]);
-                for p in 0..dims_df[sp] {
-                    let pl = p_local[offs_df[sp] + p];
-                    for fa in 0..n1 {
-                        let ga = offs_obs[pr.ua] + fa;
-                        for fb in 0..n2 {
-                            let gb = offs_obs[pr.ub] + fb;
-                            let val = block[(p * n1 + fa) * n2 + fb];
-                            if pr.need_ab {
-                                t_slab[(pl, ax.s_pos[ga], ax.n_pos[gb])] = val;
-                            }
-                            if pr.need_ba {
-                                t_slab[(pl, ax.s_pos[gb], ax.n_pos[ga])] = val;
-                            }
-                        }
-                    }
-                }
+            for (pr, off) in &meta {
+                scatter_block(ctx, ax, pr, sp, &buf[*off..], p_local, t_slab);
             }
-            tm.scatter_s += ts.elapsed().as_secs_f64();
+            let tf = Instant::now();
+            tm.eval_s += (ts - te).as_secs_f64();
+            tm.scatter_s += (tf - ts).as_secs_f64();
+            tm.fill_s += (tf - te).as_secs_f64();
         }
     }
     (n_triples, n_skipped)
@@ -1150,6 +1190,7 @@ pub fn assemble_ragged_direct_local(
         qpair: qpair.as_ref(),
         schwarz_skip: dcfg.schwarz_skip,
         worker_budget: dcfg.scratch_budget_bytes / n_workers,
+        split_timers: dcfg.split_eri3_timers,
     };
     let batch_out: Vec<BatchOut> = batches
         .par_iter()
@@ -1157,13 +1198,18 @@ pub fn assemble_ragged_direct_local(
         .collect();
 
     stats.n_batches = batch_out.len();
+    if !dcfg.split_eri3_timers {
+        stats.t_eri3_eval_thread_s = f64::NAN;
+        stats.t_eri3_scatter_thread_s = f64::NAN;
+    }
     let mut strips: Vec<Option<Strip>> = (0..no).map(|_| None).collect();
     for (batch_strips, n_triples, n_skipped, tm) in batch_out {
         stats.n_eri3_shell_triples += n_triples;
         stats.n_eri3_skipped += n_skipped;
-        stats.t_eri3_eval_cpu_s += tm.eval_s;
-        stats.t_eri3_scatter_cpu_s += tm.scatter_s;
-        stats.t_eri3_transform_cpu_s += tm.transform_s;
+        stats.t_eri3_fill_thread_s += tm.fill_s;
+        stats.t_eri3_eval_thread_s += tm.eval_s;
+        stats.t_eri3_scatter_thread_s += tm.scatter_s;
+        stats.t_eri3_transform_thread_s += tm.transform_s;
         stats.batch_work_max_s = stats.batch_work_max_s.max(tm.total_s);
         stats.batch_work_mean_s += tm.total_s;
         for (i, st) in batch_strips {
@@ -2065,6 +2111,7 @@ mod stage_b_tests {
             qpair: qpair.as_ref(),
             schwarz_skip: dcfg.schwarz_skip,
             worker_budget: 2 << 20,
+            split_timers: false,
         };
         let (mut tot_trip, mut tot_skip) = (0u64, 0u64);
         for (_, is) in &maps.batches {

@@ -56,7 +56,7 @@ use ferric_scf::result::ScfResult;
 
 use crate::boys::boys_localize;
 use crate::ragged::{
-    lanczos_kappa, pair_block_from_g_cand, solve_ragged_traced, PairBlock, Ragged,
+    lanczos_kappa, pair_block_from_g_cand, solve_ragged_budgeted, MatvecPath, PairBlock, Ragged,
 };
 use crate::rimp2::{
     active_occ, eri3_budget_bytes, eri3_mo_ov_blocked, metric_inverse_sqrt, ri_mp2, RiMp2Config,
@@ -170,6 +170,12 @@ pub struct AmplitudeLmp2Result {
     /// Whether the integral-free pair gate was configured
     /// (`pair_gate_cal.is_some()`; inert at ε = 0).
     pub gate_on: bool,
+    /// Size of the PCG gather plan ([`crate::ragged::SolvePlan::bytes_for`]),
+    /// computed before deciding whether to build it; reported either way.
+    pub solve_plan_bytes: usize,
+    /// The matvec the PCG ran: planned when the plan fit the memory budget,
+    /// otherwise the plan-free indexed one (bitwise the same result).
+    pub matvec_path: MatvecPath,
     pub timings: StageTimings,
 }
 
@@ -332,7 +338,29 @@ pub fn canonical_orth(
     Ok(out)
 }
 
+/// Relative width inside which residual diagonals count as TIED in
+/// [`pivoted_cholesky_order`]. Symmetry-equivalent candidates tie exactly in
+/// exact arithmetic but differ in the last bits under any change of
+/// summation order (e.g. the Stage-B1 Cholesky vs LU solve); without a
+/// tolerance the pivot then follows rounding noise.
+pub const PIVOT_TIE_RTOL: f64 = 1e-12;
+
+/// Index of the pivot: the LOWEST index whose residual diagonal is within
+/// [`PIVOT_TIE_RTOL`] (relative) of the maximum, so near-ties are broken
+/// deterministically by position rather than by rounding.
+fn select_pivot(d: &[f64]) -> (usize, f64) {
+    assert!(
+        d.iter().all(|x| !x.is_nan()),
+        "NaN in pivoted Cholesky diagonal"
+    );
+    let dmax = d.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    let floor = dmax - PIVOT_TIE_RTOL * dmax.abs();
+    let j = d.iter().position(|&x| x >= floor).expect("empty diagonal");
+    (j, d[j])
+}
+
 /// Greedy pivoted Cholesky on a PSD matrix; returns `rank` pivot indices.
+/// Near-ties are broken toward the lowest index ([`select_pivot`]).
 /// `pub` for ferric-pbc (visibility only; see [`lowdin`]).
 pub fn pivoted_cholesky_order(m: &Array2<f64>, rank: usize) -> Result<Vec<usize>, FerricError> {
     let n = m.nrows();
@@ -340,14 +368,7 @@ pub fn pivoted_cholesky_order(m: &Array2<f64>, rank: usize) -> Result<Vec<usize>
     let mut l = Array2::<f64>::zeros((rank, n));
     let mut piv = Vec::with_capacity(rank);
     for k in 0..rank {
-        let (j, &dj) = d
-            .iter()
-            .enumerate()
-            .max_by(|a, b| {
-                a.1.partial_cmp(b.1)
-                    .expect("NaN in pivoted Cholesky diagonal")
-            })
-            .expect("empty diagonal");
+        let (j, dj) = select_pivot(&d);
         if dj <= 0.0 {
             return Err(FerricError::General(format!(
                 "lmp2_amplitude: pivoted Cholesky broke down at k={k}"
@@ -487,6 +508,19 @@ fn build_vvhv_with(
     rhf: &ScfResult,
     solve: SpdSolve,
 ) -> Result<VvHv, FerricError> {
+    build_vvhv_traced(mol, obs, obs_bs, rhf, solve).map(|(v, _)| v)
+}
+
+/// [`build_vvhv_with`] that also returns the AO index of every selected
+/// hard-virtual candidate, in pivot order (the hard-virtual SUBSET, which
+/// tests compare across solvers).
+fn build_vvhv_traced(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    obs_bs: &BasisSet,
+    rhf: &ScfResult,
+    solve: SpdSolve,
+) -> Result<(VvHv, Vec<usize>), FerricError> {
     let s = overlap(obs);
     let nao = obs.nbasis();
     let nocc_total = (mol.nelec() as usize) / 2;
@@ -513,6 +547,7 @@ fn build_vvhv_with(
     // hard virtuals: project occ+valence out of each AO, select by pivoted
     // Cholesky, Löwdin, per-atom pseudo-canonicalize
     let n_h = nao - nocc_total - n_l;
+    let mut hard_aos = Vec::with_capacity(n_h);
     let c_h = if n_h > 0 {
         let mut c_e = Array2::<f64>::zeros((nao, nocc_total + n_l));
         c_e.slice_mut(s![.., ..nocc_total]).assign(&c_occ_all);
@@ -564,6 +599,7 @@ fn build_vvhv_with(
         for (k, &p) in piv.iter().enumerate() {
             sel.column_mut(k).assign(&xn.column(p));
             sel_parents.push(parents[p]);
+            hard_aos.push(keep_cols[p].0);
         }
         let mut ch = lowdin(&sel, &s)?;
         // per-atom pseudo-canonicalization (block-diagonal — cannot
@@ -601,11 +637,12 @@ fn build_vvhv_with(
     let mut c_vloc = Array2::<f64>::zeros((nao, n_l + n_h));
     c_vloc.slice_mut(s![.., ..n_l]).assign(&c_l);
     c_vloc.slice_mut(s![.., n_l..]).assign(&c_h);
-    Ok(VvHv {
+    let v = VvHv {
         c_vloc,
         n_valence: n_l,
         n_hard: n_h,
-    })
+    };
+    Ok((v, hard_aos))
 }
 
 /// `S⁻¹·B` for SPD `S`: ONE Cholesky factorization, then a forward/back
@@ -1456,7 +1493,8 @@ pub(crate) fn solve_and_count(
     nv: usize,
     who: &str,
 ) -> Result<AmplitudeLmp2Result, FerricError> {
-    let s = solve_ragged_traced(rg, f_oo, cfg.cg_rtol, cfg.cg_max_iter);
+    let budget = eri3_budget_bytes(cfg.eri3_budget_bytes);
+    let (s, plan) = solve_ragged_budgeted(rg, f_oo, cfg.cg_rtol, cfg.cg_max_iter, budget);
     if !s.converged {
         return Err(FerricError::General(format!(
             "{who}: ragged CG failed to converge (relres {:.2e} after {} iters)",
@@ -1488,6 +1526,8 @@ pub(crate) fn solve_and_count(
         block_density_min: c.block_density_min,
         n_pairs_unique: c.n_pairs_unique,
         gate_on: cfg.pair_gate_cal.is_some(),
+        solve_plan_bytes: plan.plan_bytes,
+        matvec_path: plan.path,
         timings: StageTimings::default(),
     })
 }
@@ -1514,9 +1554,9 @@ mod tests {
         Ok(out)
     }
 
-    fn c4_631g() -> (Molecule, PreparedBasis, BasisSet, ScfResult) {
+    fn rhf_631g(xyz: &str) -> (Molecule, PreparedBasis, BasisSet, ScfResult) {
         let mol = Molecule::load_xyz(&format!(
-            "{}/../../testdata/molecules/alkane_4.xyz",
+            "{}/../../testdata/molecules/{xyz}",
             env!("CARGO_MANIFEST_DIR")
         ))
         .unwrap();
@@ -1530,6 +1570,10 @@ mod tests {
         };
         let rhf = solve_rhf(&ParallelContext::default(), &mol, &obs, op, &bounds, &cfg).unwrap();
         (mol, obs, bs, rhf)
+    }
+
+    fn c4_631g() -> (Molecule, PreparedBasis, BasisSet, ScfResult) {
+        rhf_631g("alkane_4.xyz")
     }
 
     /// Every column of `a` equals a DISTINCT column of `b` up to sign within
@@ -1564,9 +1608,10 @@ mod tests {
     /// B1 anchor: the one-Cholesky multi-RHS `solve_spd` reproduces the
     /// frozen per-column-LU oracle on C4/6-31G's projected-minimal system
     /// (≤ 1e-10 relative), and the VV-HV space built on it matches the
-    /// oracle-built space column by column (sign-fixed, ≤ 1e-10, up
-    /// to a reordering among exactly tied symmetry-equivalent hard virtuals)
-    /// and passes the orthonormality/span check.
+    /// oracle-built space column by column (sign-fixed, ≤ 1e-10, same
+    /// hard-virtual subset in the same order — before the near-tie pivot
+    /// rule, four tied columns swapped order here) and passes the
+    /// orthonormality/span check.
     #[test]
     fn solve_spd_cholesky_matches_lu_oracle_and_vvhv_is_unchanged() {
         let (mol, obs, bs, rhf) = c4_631g();
@@ -1578,25 +1623,66 @@ mod tests {
         let dev = (&new - &old).iter().fold(0.0f64, |m, x| m.max(x.abs())) / scale;
         assert!(dev <= 1e-10, "solve_spd vs LU oracle: {dev:.3e}");
 
-        let v_new = build_vvhv(&mol, &obs, &bs, &rhf).unwrap();
-        let v_old = build_vvhv_with(&mol, &obs, &bs, &rhf, solve_spd_lu_oracle).unwrap();
+        assert_vvhv_matches_lu_oracle(&mol, &obs, &bs, &rhf);
+    }
+
+    /// The VV-HV space built on the Cholesky `solve_spd` against the one
+    /// built on the frozen LU oracle: the SAME hard-virtual subset in the
+    /// same pivot order (AO indices of the selected candidates), the same
+    /// columns (sign-fixed, <= 1e-10, no reordering), and the
+    /// orthonormality/span check.
+    fn assert_vvhv_matches_lu_oracle(
+        mol: &Molecule,
+        obs: &PreparedBasis,
+        bs: &BasisSet,
+        rhf: &ScfResult,
+    ) {
+        let (v_new, h_new) = build_vvhv_traced(mol, obs, bs, rhf, solve_spd).unwrap();
+        let (v_old, h_old) = build_vvhv_traced(mol, obs, bs, rhf, solve_spd_lu_oracle).unwrap();
         assert_eq!(v_new.c_vloc.dim(), v_old.c_vloc.dim());
         assert_eq!(
             (v_new.n_valence, v_new.n_hard),
             (v_old.n_valence, v_old.n_hard)
         );
+        assert!(v_new.n_hard > 0, "no hard virtuals: the test is vacuous");
+        assert_eq!(h_new, h_old, "hard-virtual subset/order differs from the oracle");
         let (matched, permuted) = match_columns_up_to_sign_and_order(&v_new.c_vloc, &v_old.c_vloc);
-        eprintln!("VV-HV vs oracle: {permuted} columns reordered among exact ties");
         assert!(
-            matched,
-            "c_vloc is not the oracle's columns (<= 1e-10, sign/order)"
+            matched && permuted == 0,
+            "c_vloc is not the oracle's columns (<= 1e-10, sign; {permuted} reordered)"
         );
         let nocc = (mol.nelec() as usize) / 2;
-        let (o, sp) = check_vvhv(&obs, &rhf, nocc, &v_new.c_vloc);
+        let (o, sp) = check_vvhv(obs, rhf, nocc, &v_new.c_vloc);
         assert!(
             o <= 1e-8 && sp <= 1e-8,
             "VV-HV check: orth {o:.2e} span {sp:.2e}"
         );
+    }
+
+    /// B1 oracle on symmetric non-alkanes, where symmetry-equivalent hard
+    /// candidates (water's two H, benzene's six CH) tie exactly: with the
+    /// near-tie rule the Cholesky- and LU-built spaces select the same
+    /// hard-virtual subset in the same order.
+    #[test]
+    fn vvhv_matches_lu_oracle_on_symmetric_molecules() {
+        for xyz in ["water.xyz", "benzene.xyz"] {
+            let (mol, obs, bs, rhf) = rhf_631g(xyz);
+            assert_vvhv_matches_lu_oracle(&mol, &obs, &bs, &rhf);
+        }
+    }
+
+    /// Near-ties (within PIVOT_TIE_RTOL relative) go to the LOWEST index,
+    /// so a last-bit perturbation cannot move the pivot; a real gap still
+    /// wins; eliminated (-inf) entries are never chosen.
+    #[test]
+    fn select_pivot_breaks_near_ties_toward_the_lowest_index() {
+        let tie = [1.0, 2.0, 2.0 * (1.0 + 1e-14), 0.5];
+        assert_eq!(select_pivot(&tie).0, 1);
+        let mut flipped = tie;
+        flipped.swap(1, 2);
+        assert_eq!(select_pivot(&flipped).0, 1);
+        assert_eq!(select_pivot(&[1.0, 2.0, 2.0 + 1e-6]).0, 2);
+        assert_eq!(select_pivot(&[f64::NEG_INFINITY, 0.3, 0.3]).0, 1);
     }
 
     /// Byte-identity guard for the ferric-pbc seam: the closure form with

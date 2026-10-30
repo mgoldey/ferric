@@ -5762,7 +5762,7 @@ fn set_lmp2_counters(
     d.set_item("dom_mean", r.dom_mean)?;
     d.set_item("dom_max", r.dom_max)?;
     d.set_item("cg_iterations", r.cg_iterations)?;
-    d.set_item("cg_lanczos_kappa_est", r.cg_lanczos_kappa_est)?;
+    d.set_item("cg_lanczos_kappa_lower", r.cg_lanczos_kappa_est)?;
     d.set_item("block_density_mean", r.block_density_mean)?;
     d.set_item("block_density_min", r.block_density_min)?;
     d.set_item("n_pairs_unique", r.n_pairs_unique)?;
@@ -5788,9 +5788,10 @@ fn set_direct_stats(
     d.set_item("virt_cand_max", st.virt_cand_max)?;
     d.set_item("t_maps_s", st.t_maps_s)?;
     d.set_item("t_eri3_s", st.t_eri3_s)?;
-    d.set_item("t_eri3_eval_cpu_s", st.t_eri3_eval_cpu_s)?;
-    d.set_item("t_eri3_scatter_cpu_s", st.t_eri3_scatter_cpu_s)?;
-    d.set_item("t_eri3_transform_cpu_s", st.t_eri3_transform_cpu_s)?;
+    d.set_item("t_eri3_fill_thread_s", st.t_eri3_fill_thread_s)?;
+    d.set_item("t_eri3_eval_thread_s", st.t_eri3_eval_thread_s)?;
+    d.set_item("t_eri3_scatter_thread_s", st.t_eri3_scatter_thread_s)?;
+    d.set_item("t_eri3_transform_thread_s", st.t_eri3_transform_thread_s)?;
     d.set_item("n_batches", st.n_batches)?;
     d.set_item("batch_work_max_s", st.batch_work_max_s)?;
     d.set_item("batch_work_mean_s", st.batch_work_mean_s)?;
@@ -6307,6 +6308,7 @@ fn run_rimp2_local(
         dcfg.as_ref(),
         &r,
         &ferric_mp2::lmp2_certificate::SystemShape::new(&mol.inner, &basis_set.inner),
+        &op,
     );
     let d = local_dict(py, eps, r.keep_fraction, model.direct.is_some())?;
     set_lmp2_counters(&d, &r, model.reference)?;

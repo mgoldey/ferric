@@ -21,6 +21,9 @@ CERT_KEYS = [
     "cg_relres",
     "cg_converged",
     "frozen_core",
+    "operator",
+    "solve_plan_bytes",
+    "matvec_path",
     "validation_grade",
     "eps_trust",
     "warnings",
@@ -76,6 +79,11 @@ def test_certificate_fields_round_trip_direct(water):
     assert loc["maps"]["virt_schwarz_kappa"] is None
     assert "not validated" in loc["validation_grade"]
     assert "99.671% at 1e-4" in loc["eps_trust"]
+    assert "slope ~1.2" in loc["eps_trust"] and "93.81% at 1e-3" in loc["eps_trust"]
+    assert loc["operator"] == "coulomb" and "CAVEAT" not in loc["eps_trust"]
+    assert loc["solve_plan_bytes"] > 0 and loc["matvec_path"] == "planned"
+    assert loc["cg_lanczos_kappa_lower"] >= 1.0
+    assert loc["t_eri3_fill_thread_s"] > 0.0
     # eps 1e-4 > 1e-5 and the gate is on: both out-of-range warnings fire
     assert any("1.0e-4" in w for w in loc["warnings"])
     assert any("gate" in w for w in loc["warnings"])
@@ -98,3 +106,23 @@ def test_certificate_in_core_exact_limit(water):
     assert "exact" in loc["eps_trust"]
     assert not any("eps" in w for w in loc["warnings"])
     assert loc["t_spaces_s"] > 0.0
+
+
+def test_certificate_flags_a_non_coulomb_operator(water):
+    """The measured eps record is Coulomb: an erfc (att-rimp2) run gets the
+    caveat in its trust line and a warning."""
+    mol, obs, aux = water
+    r = ferric.run_rimp2(
+        mol,
+        obs,
+        aux,
+        frozen_core=1,
+        local="amplitude-threshold",
+        eps=1e-5,
+        att_operator="erfc",
+        omega=0.42,
+    )
+    loc = r.local
+    assert loc["operator"].startswith("erfc(")
+    assert "CAVEAT" in loc["eps_trust"]
+    assert any("non-Coulomb" in w for w in loc["warnings"])

@@ -731,6 +731,7 @@ fn bench_direct_alkane_series() {
         // OFF here: the sweep measures the distance-map configuration the
         // §28-§29 rows were recorded with (screen rows get their own sweep)
         virt_schwarz_kappa: None,
+        split_eri3_timers: false,
     };
     println!(
         "sys        op     eps    E_corr        dE_vs_can  keep    npair/gated dom(mn/mx) \
@@ -1189,6 +1190,7 @@ fn bench_scaling_decisive() {
         batch_merge: 4,
         scratch_budget_bytes: budget,
         virt_schwarz_kappa: None,
+        split_eri3_timers: false,
     };
 
     println!(
@@ -1273,12 +1275,26 @@ fn stage_timers_are_live() {
         ao_tail: 1e-3,
         schwarz_skip: 1e-5,
         batch_merge: 2,
+        split_eri3_timers: true,
         ..Default::default()
     };
     let (r, st) = amplitude_lmp2_direct(
         &su.mol, &su.obs, &su.obs_bs, &su.dfbs, op, &su.rhf, &cfg, &dcfg,
     )
     .unwrap();
+    // the default (split off): only the fill sum is timed, the split is NaN,
+    // and the stats flag never changes the result
+    let plain = DirectConfig {
+        split_eri3_timers: false,
+        ..dcfg.clone()
+    };
+    let (r0, st0) = amplitude_lmp2_direct(
+        &su.mol, &su.obs, &su.obs_bs, &su.dfbs, op, &su.rhf, &cfg, &plain,
+    )
+    .unwrap();
+    assert_eq!(r0.e_corr.to_bits(), r.e_corr.to_bits());
+    assert!(st0.t_eri3_fill_thread_s > 0.0);
+    assert!(st0.t_eri3_eval_thread_s.is_nan() && st0.t_eri3_scatter_thread_s.is_nan());
     let g = amplitude_lmp2(&su.mol, &su.obs, &su.obs_bs, &su.dfbs, op, &su.rhf, &cfg).unwrap();
     let timers = [
         ("direct t_spaces_s", r.timings.t_spaces_s),
@@ -1287,9 +1303,10 @@ fn stage_timers_are_live() {
         ("direct t_reference_s", r.timings.t_reference_s),
         ("t_maps_s", st.t_maps_s),
         ("t_eri3_s", st.t_eri3_s),
-        ("t_eri3_eval_cpu_s", st.t_eri3_eval_cpu_s),
-        ("t_eri3_scatter_cpu_s", st.t_eri3_scatter_cpu_s),
-        ("t_eri3_transform_cpu_s", st.t_eri3_transform_cpu_s),
+        ("t_eri3_fill_thread_s", st.t_eri3_fill_thread_s),
+        ("t_eri3_eval_thread_s", st.t_eri3_eval_thread_s),
+        ("t_eri3_scatter_thread_s", st.t_eri3_scatter_thread_s),
+        ("t_eri3_transform_thread_s", st.t_eri3_transform_thread_s),
         ("batch_work_max_s", st.batch_work_max_s),
         ("batch_work_mean_s", st.batch_work_mean_s),
         ("t_metric_s", st.t_metric_s),
@@ -1304,7 +1321,13 @@ fn stage_timers_are_live() {
     for (name, t) in timers {
         assert!(t > 0.0 && t.is_finite(), "timer {name} not live: {t}");
     }
-    let split = st.t_eri3_eval_cpu_s + st.t_eri3_scatter_cpu_s + st.t_eri3_transform_cpu_s;
+    let fill_split = st.t_eri3_eval_thread_s + st.t_eri3_scatter_thread_s;
+    assert!(
+        (fill_split - st.t_eri3_fill_thread_s).abs() <= 1e-6 * st.t_eri3_fill_thread_s.max(1.0),
+        "fill {} != eval + scatter {fill_split}",
+        st.t_eri3_fill_thread_s
+    );
+    let split = st.t_eri3_fill_thread_s + st.t_eri3_transform_thread_s;
     assert!(
         split <= st.batch_work_mean_s * st.n_batches as f64 * (1.0 + 1e-9),
         "split {split} exceeds the summed batch work"
@@ -1320,11 +1343,14 @@ fn stage_timers_are_live() {
             "kappa {}",
             res.cg_lanczos_kappa_est
         );
+        assert!(res.solve_plan_bytes > 0);
+        assert_eq!(res.matvec_path, ferric_mp2::ragged::MatvecPath::Planned);
     }
 }
 
 /// The pre-Stage-B PCG loop (fresh `z`/`p`/`ap` every iteration, indexed
-/// matvec), frozen as the oracle of the planned, allocation-free solve.
+/// matvec), frozen as the oracle of the planned solve (CG vectors preallocated;
+/// the matvec still allocates one output block per pair per call).
 fn pcg_oracle(
     rg: &ferric_mp2::ragged::Ragged,
     f_oo: &ndarray::Array2<f64>,
@@ -1390,8 +1416,9 @@ fn bits_equal(a: &[ndarray::Array2<f64>], b: &[ndarray::Array2<f64>]) -> bool {
 
 /// B3 anchor: on C8 at ε = 1e-4 (production maps, gate on) the planned
 /// matvec is BITWISE the indexed one (and counts the same flops), and the
-/// planned allocation-free PCG reproduces the frozen pre-change loop bit for
-/// bit: same iteration count, same amplitudes, same Hylleraas energy.
+/// planned PCG (preallocated CG vectors, not allocation-free) reproduces
+/// the frozen pre-change loop bit for bit: same iteration count, same
+/// amplitudes, same Hylleraas energy.
 #[test]
 fn matvec_planned_is_bitwise_matvec_indexed() {
     use ferric_mp2::lmp2_amplitude::{checked_vvhv, hylleraas_energy, localized_spaces};

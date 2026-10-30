@@ -236,19 +236,90 @@ pub struct RaggedSolve {
     pub trace: CgTrace,
 }
 
-/// [`solve_ragged`] that also returns the CG coefficient trace. The Fock
-/// matvec runs through a [`SolvePlan`] built once per solve (bitwise
-/// [`matvec_indexed`]).
+/// Which matvec a ragged PCG solve ran: through a [`SolvePlan`] (the
+/// gather intersections resolved once) or [`matvec_indexed`] (recomputed
+/// every matvec, no extra memory). Bitwise the same result either way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MatvecPath {
+    Planned,
+    Indexed,
+}
+
+impl MatvecPath {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            MatvecPath::Planned => "planned",
+            MatvecPath::Indexed => "indexed",
+        }
+    }
+}
+
+/// The plan decision of one solve: the path taken and the plan's size
+/// ([`SolvePlan::bytes_for`]; reported even when the plan was not built).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PlanDecision {
+    pub path: MatvecPath,
+    pub plan_bytes: usize,
+}
+
+/// [`solve_ragged`] that also returns the CG coefficient trace, budgeted
+/// against the resolved default memory budget
+/// ([`ferric_core::memory::resolve_budget_bytes`]); see
+/// [`solve_ragged_budgeted`].
 pub fn solve_ragged_traced(
     rg: &Ragged,
     f_oo: &Array2<f64>,
     rtol: f64,
     max_iter: usize,
 ) -> RaggedSolve {
+    let budget = ferric_core::memory::resolve_budget_bytes(None);
+    solve_ragged_budgeted(rg, f_oo, rtol, max_iter, budget).0
+}
+
+/// The ragged PCG solve with the [`SolvePlan`] charged to a memory budget.
+/// The plan's size is computed BEFORE it is built ([`SolvePlan::bytes_for`]);
+/// when it exceeds `budget_bytes`, or does not fit what an installed global
+/// memory pool has left, the solve runs on the plan-free [`matvec_indexed`]
+/// instead (logged on stderr). Both paths give bitwise-identical iterates,
+/// so the fallback costs time, never accuracy.
+pub fn solve_ragged_budgeted(
+    rg: &Ragged,
+    f_oo: &Array2<f64>,
+    rtol: f64,
+    max_iter: usize,
+    budget_bytes: usize,
+) -> (RaggedSolve, PlanDecision) {
+    let plan_bytes = SolvePlan::bytes_for(rg, f_oo);
+    let charge = if plan_bytes <= budget_bytes {
+        ferric_core::memory::pool::try_reserve_global("ragged PCG gather plan", plan_bytes)
+    } else {
+        None
+    };
+    let Some(_charge) = charge else {
+        eprintln!(
+            "  ragged PCG: gather plan ({:.3} GB) over the memory budget ({:.3} GB) or the \
+             pool; using the plan-free indexed matvec (same result, slower)",
+            plan_bytes as f64 / 1e9,
+            budget_bytes as f64 / 1e9
+        );
+        let s = solve_ragged_with_trace(rg, rtol, max_iter, |p, fl| {
+            matvec_indexed(rg, f_oo, p, fl)
+        });
+        let d = PlanDecision {
+            path: MatvecPath::Indexed,
+            plan_bytes,
+        };
+        return (s, d);
+    };
     let plan = SolvePlan::new(rg, f_oo);
-    pcg_core(rg, rtol, max_iter, |p, ap, flops| {
+    let s = pcg_core(rg, rtol, max_iter, |p, ap, flops| {
         matvec_planned(rg, &plan, p, ap, flops)
-    })
+    });
+    let d = PlanDecision {
+        path: MatvecPath::Planned,
+        plan_bytes,
+    };
+    (s, d)
 }
 
 /// Condition-number estimate `λmax/λmin` of the diagonally PRECONDITIONED
@@ -464,13 +535,63 @@ pub struct SolvePlan {
     edges: Vec<Vec<PlanEdge>>,
 }
 
+/// The Fock-coupled source pairs of output pair `pb` in [`matvec_indexed`]'s
+/// order (by_j then by_i), zero couplings dropped: `(q, f_oo coefficient)`.
+fn plan_partners(rg: &Ragged, f_oo: &Array2<f64>, pb: &PairBlock) -> Vec<(usize, f64)> {
+    let mut out = Vec::new();
+    for &q in &rg.by_j[&pb.j] {
+        let f = f_oo[(pb.i, rg.pairs[q].i)];
+        if f != 0.0 {
+            out.push((q, f));
+        }
+    }
+    for &q in &rg.by_i[&pb.i] {
+        let f = f_oo[(rg.pairs[q].j, pb.j)];
+        if f != 0.0 {
+            out.push((q, f));
+        }
+    }
+    out
+}
+
+/// Gather elements of one edge: the matched rows times the matched columns
+/// (the loop in [`gather_into`] visits exactly their product).
+fn edge_len(dst: &PairBlock, src: &PairBlock) -> usize {
+    let rows = dst.da.iter().filter(|&&a| src.pos_da[a] != usize::MAX).count();
+    let cols = dst.db.iter().filter(|&&b| src.pos_db[b] != usize::MAX).count();
+    rows * cols
+}
+
 impl SolvePlan {
+    /// Heap bytes a [`SolvePlan`] built on `(rg, f_oo)` holds, computed
+    /// WITHOUT building it: one `(u32, u32)` per gather element of every
+    /// nonzero-coupled edge, plus the per-edge and per-pair vector headers.
+    /// [`SolvePlan::new`] sizes every vector exactly, so this is the plan's
+    /// allocation, not a bound (pinned by `tests/solve_plan_budget.rs`
+    /// against a counting allocator). With the pair gate off it grows like
+    /// `no³ · overlap`; [`matvec_indexed`] needs none of it.
+    pub fn bytes_for(rg: &Ragged, f_oo: &Array2<f64>) -> usize {
+        let idx = std::mem::size_of::<(u32, u32)>();
+        let edge = std::mem::size_of::<PlanEdge>();
+        let outer = std::mem::size_of::<Vec<PlanEdge>>();
+        rg.pairs
+            .iter()
+            .map(|pb| {
+                outer
+                    + plan_partners(rg, f_oo, pb)
+                        .iter()
+                        .map(|&(q, _)| edge + idx * edge_len(pb, &rg.pairs[q]))
+                        .sum::<usize>()
+            })
+            .sum()
+    }
+
     pub fn new(rg: &Ragged, f_oo: &Array2<f64>) -> Self {
         let edge = |dst: &PairBlock, q: usize, f: f64| -> PlanEdge {
             let src = &rg.pairs[q];
             let nb_src = src.db.len();
             let nb = dst.db.len();
-            let mut idx = Vec::new();
+            let mut idx = Vec::with_capacity(edge_len(dst, src));
             for (r, &a) in dst.da.iter().enumerate() {
                 let sr = src.pos_da[a];
                 if sr == usize::MAX {
@@ -490,20 +611,10 @@ impl SolvePlan {
             .pairs
             .iter()
             .map(|pb| {
-                let mut out = Vec::new();
-                for &q in &rg.by_j[&pb.j] {
-                    let f = f_oo[(pb.i, rg.pairs[q].i)];
-                    if f != 0.0 {
-                        out.push(edge(pb, q, f));
-                    }
-                }
-                for &q in &rg.by_i[&pb.i] {
-                    let f = f_oo[(rg.pairs[q].j, pb.j)];
-                    if f != 0.0 {
-                        out.push(edge(pb, q, f));
-                    }
-                }
-                out
+                plan_partners(rg, f_oo, pb)
+                    .iter()
+                    .map(|&(q, f)| edge(pb, q, f))
+                    .collect()
             })
             .collect();
         Self { edges }

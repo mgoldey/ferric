@@ -6,18 +6,24 @@
 //! so the two surfaces cannot drift; each adds the build commit/dirty flag
 //! (the library does not link `ferric-build-info`).
 //!
-//! The ε-trust line quotes the MEASURED local-error record (C4/cc-pVDZ,
-//! `wiki/amplitude-threshold-lmp2.md`; memory "local error is superlinear
-//! in eps"). It is a record of measurements on n-alkanes, not a bound.
+//! The ε-trust line quotes the MEASURED local-error record (C4/cc-pVDZ and
+//! C8 at ε = 1e-3, Coulomb operator; `wiki/amplitude-threshold-lmp2.md`;
+//! memory "local error is superlinear in eps"). It is a record of
+//! measurements on n-alkanes, not a bound, and it was measured for the
+//! Coulomb operator only: a run on any other operator (`att-rimp2`, erfc)
+//! gets the same table plus an explicit caveat and warning.
 
 use ferric_core::basis::BasisSet;
 use ferric_core::mol::Molecule;
+use ferric_integrals::operator::{Operator, OperatorKind};
 
 use crate::lmp2_amplitude::{AmplitudeLmp2Config, AmplitudeLmp2Result};
 use crate::lmp2_direct::DirectConfig;
 
-/// Largest ε inside the range whose accuracy matches DLPNO NormalPNO on
-/// the measured record (C4/cc-pVDZ: 99.980% recovery at 1e-5).
+/// Largest ε whose MEASURED recovery is comparable to ORCA DLPNO-MP2
+/// NormalPNO (C4/cc-pVDZ: 99.980% at 1e-5 vs NormalPNO's 99.96-99.98%).
+/// One system, one basis, no independent finite-ε reference: a comparison
+/// point, NOT a validated range (the name is kept for API stability).
 pub const VALIDATED_EPS_MAX: f64 = 1e-5;
 
 /// Heuristic "alkane-like 1-D" cut on √(λ₂/λ₁) of the unweighted atomic
@@ -35,6 +41,26 @@ pub const DIFFUSE_EXPONENT_MIN: f64 = 0.08;
 /// energy, as (ε, percent as recorded).
 pub const MEASURED_RECOVERY_C4: [(f64, &str); 3] =
     [(1e-5, "99.980"), (1e-4, "99.671"), (1e-3, "94.99")];
+
+/// The measured C8 recovery at ε = 1e-3 (the size trend: it LOSES more
+/// than C4 at the same ε), as (ε, percent as recorded).
+pub const MEASURED_RECOVERY_C8: (f64, &str) = (1e-3, "93.81");
+
+/// Log-log slope of the C4 lost fraction per decade of ε, from
+/// [`MEASURED_RECOVERY_C4`]: 0.020% -> 0.329% -> 5.01% lost gives 1.22 and
+/// 1.18, i.e. ~1.2 (superlinear). The 1.2-1.8 range sometimes quoted is the
+/// octane local-dRPA record, not MP2.
+pub const MEASURED_SLOPE_C4: &str = "~1.2 (1.22, 1.18)";
+
+/// Short label of the two-electron operator, for the certificate.
+pub fn operator_label(op: &Operator) -> String {
+    match op.kind {
+        OperatorKind::Coulomb => "coulomb".to_string(),
+        OperatorKind::ErfcCoulomb => format!("erfc(omega={})", op.omega),
+        OperatorKind::ErfCoulomb => format!("erf(omega={})", op.omega),
+        k => format!("{k:?}(omega={}, distance={})", op.omega, op.distance).to_lowercase(),
+    }
+}
 
 /// The integral-direct locality maps of a run.
 #[derive(Debug, Clone, PartialEq)]
@@ -149,6 +175,13 @@ pub struct Lmp2Certificate {
     pub cg_relres: f64,
     pub cg_converged: bool,
     pub frozen_core: usize,
+    /// [`operator_label`] of the run's operator; the ε record is Coulomb.
+    pub operator: String,
+    /// Size of the PCG gather plan (bytes) and the matvec path the solve
+    /// ran ("planned" or "indexed", the plan-free fallback when the plan
+    /// did not fit the memory budget).
+    pub solve_plan_bytes: usize,
+    pub matvec_path: &'static str,
     pub validation_grade: String,
     pub eps_trust: String,
     pub warnings: Vec<String>,
@@ -160,7 +193,9 @@ impl Lmp2Certificate {
         direct: Option<&DirectConfig>,
         r: &AmplitudeLmp2Result,
         shape: &SystemShape,
+        op: &Operator,
     ) -> Self {
+        let coulomb = op.kind == OperatorKind::Coulomb;
         Self {
             scheme: "amplitude-threshold",
             eps: cfg.eps,
@@ -174,9 +209,12 @@ impl Lmp2Certificate {
             cg_relres: r.cg_relres,
             cg_converged: r.cg_converged,
             frozen_core: cfg.frozen_core,
+            operator: operator_label(op),
+            solve_plan_bytes: r.solve_plan_bytes,
+            matvec_path: r.matvec_path.as_str(),
             validation_grade: validation_grade(cfg.eps),
-            eps_trust: eps_trust(cfg.eps),
-            warnings: warnings(cfg.eps, cfg.pair_gate_cal, shape),
+            eps_trust: eps_trust(cfg.eps, coulomb),
+            warnings: warnings(cfg.eps, cfg.pair_gate_cal, shape, coulomb),
         }
     }
 
@@ -207,6 +245,9 @@ impl Lmp2Certificate {
             ("cg_relres", V::F64(self.cg_relres)),
             ("cg_converged", V::Bool(self.cg_converged)),
             ("frozen_core", V::Usize(self.frozen_core)),
+            ("operator", V::Str(self.operator.clone())),
+            ("solve_plan_bytes", V::Usize(self.solve_plan_bytes)),
+            ("matvec_path", V::Str(self.matvec_path.to_string())),
             ("validation_grade", V::Str(self.validation_grade.clone())),
             ("eps_trust", V::Str(self.eps_trust.clone())),
             ("warnings", V::StrList(self.warnings.clone())),
@@ -223,7 +264,7 @@ fn validation_grade(eps: f64) -> String {
     }
 }
 
-fn eps_trust(eps: f64) -> String {
+fn eps_trust(eps: f64, coulomb: bool) -> String {
     if eps == 0.0 {
         return "eps = 0: nothing truncated (exact limit)".to_string();
     }
@@ -238,20 +279,35 @@ fn eps_trust(eps: f64) -> String {
     } else {
         "inside the measured range"
     };
+    let (e8, pct8) = MEASURED_RECOVERY_C8;
+    let op_note = if coulomb {
+        ""
+    } else {
+        "; CAVEAT: the record is the Coulomb operator and this run's operator is not, so \
+         it does not cover this run"
+    };
     format!(
-        "measured C4/cc-pVDZ recovery of the canonical DF-MP2 correlation energy: {table}; \
-         error superlinear in eps (slope 1.2-1.8 per decade); this run's eps = {eps:.1e} is \
-         {where_}"
+        "measured Coulomb C4/cc-pVDZ recovery of the canonical DF-MP2 correlation energy: \
+         {table}; error superlinear in eps (C4 slope {MEASURED_SLOPE_C4} per decade); \
+         larger systems lose more (C8 recovers {pct8}% at {e8:.0e}); this run's eps = \
+         {eps:.1e} is {where_}{op_note}"
     )
 }
 
-fn warnings(eps: f64, gate_cal: Option<f64>, shape: &SystemShape) -> Vec<String> {
+fn warnings(eps: f64, gate_cal: Option<f64>, shape: &SystemShape, coulomb: bool) -> Vec<String> {
     let mut w = Vec::new();
     if eps > VALIDATED_EPS_MAX {
         w.push(format!(
             "eps = {eps:.1e} > {VALIDATED_EPS_MAX:.0e}: looser than the DLPNO-NormalPNO-comparable \
              range (C4/cc-pVDZ loses 0.33% of the correlation energy at 1e-4, 5.0% at 1e-3)"
         ));
+    }
+    if !coulomb && eps > 0.0 {
+        w.push(
+            "non-Coulomb operator: the finite-eps error record is Coulomb only; this \
+             operator's local error is unmeasured"
+                .to_string(),
+        );
     }
     if let (Some(cal), true) = (gate_cal, eps > 0.0) {
         w.push(format!(
@@ -290,23 +346,49 @@ mod tests {
     /// in-range run (eps <= 1e-5, no gate, 1-D, compact basis) raises none.
     #[test]
     fn warnings_fire_exactly_on_their_conditions() {
-        assert!(warnings(1e-5, None, &shape(0.3, 0.12)).is_empty());
-        assert!(warnings(0.0, Some(0.7), &shape(0.3, 0.12)).is_empty());
-        let w = warnings(1e-4, Some(0.7), &shape(0.9, 0.03));
-        assert_eq!(w.len(), 4, "{w:?}");
-        assert!(w[0].contains("1.0e-4") && w[1].contains("gate") && w[2].contains("1-D"));
-        assert!(w[3].contains("diffuse"));
-        assert_eq!(warnings(1e-6, None, &shape(0.51, 0.12)).len(), 1);
-        assert_eq!(warnings(1e-6, None, &shape(0.3, 0.079)).len(), 1);
+        assert!(warnings(1e-5, None, &shape(0.3, 0.12), true).is_empty());
+        assert!(warnings(0.0, Some(0.7), &shape(0.3, 0.12), true).is_empty());
+        assert!(warnings(0.0, None, &shape(0.3, 0.12), false).is_empty());
+        let w = warnings(1e-4, Some(0.7), &shape(0.9, 0.03), false);
+        assert_eq!(w.len(), 5, "{w:?}");
+        assert!(w[0].contains("1.0e-4") && w[1].contains("Coulomb") && w[2].contains("gate"));
+        assert!(w[3].contains("1-D") && w[4].contains("diffuse"));
+        assert_eq!(warnings(1e-6, None, &shape(0.51, 0.12), true).len(), 1);
+        assert_eq!(warnings(1e-6, None, &shape(0.3, 0.079), true).len(), 1);
+        assert_eq!(warnings(1e-6, None, &shape(0.3, 0.12), false).len(), 1);
     }
 
     #[test]
     fn grade_and_trust_distinguish_the_exact_limit() {
         assert!(validation_grade(0.0).starts_with("Proven"));
         assert!(validation_grade(1e-6).contains("not validated"));
-        assert!(eps_trust(0.0).contains("exact"));
-        let t = eps_trust(1e-4);
+        assert!(eps_trust(0.0, true).contains("exact"));
+        let t = eps_trust(1e-4, true);
         assert!(t.contains("99.671% at 1e-4") && t.contains("inside"), "{t}");
-        assert!(eps_trust(1e-6).contains("outside"));
+        assert!(t.contains("slope ~1.2") && t.contains("93.81% at 1e-3"), "{t}");
+        assert!(!t.contains("1.8") && !t.contains("CAVEAT"), "{t}");
+        assert!(eps_trust(1e-6, true).contains("outside"));
+        assert!(eps_trust(1e-4, false).contains("CAVEAT"));
+        assert!(!eps_trust(0.0, false).contains("CAVEAT"));
+    }
+
+    /// The quoted slope is the one the C4 table implies (lost fraction,
+    /// log10 ratio per decade), not a constant typed in separately.
+    #[test]
+    fn quoted_slope_matches_the_c4_table() {
+        let lost: Vec<f64> = MEASURED_RECOVERY_C4
+            .iter()
+            .map(|(_, p)| 100.0 - p.parse::<f64>().unwrap())
+            .collect();
+        let s1 = (lost[1] / lost[0]).log10();
+        let s2 = (lost[2] / lost[1]).log10();
+        assert!((s1 - 1.22).abs() < 0.01 && (s2 - 1.18).abs() < 0.01, "{s1} {s2}");
+        assert!(MEASURED_SLOPE_C4.contains("1.22") && MEASURED_SLOPE_C4.contains("1.18"));
+    }
+
+    #[test]
+    fn operator_labels() {
+        assert_eq!(operator_label(&Operator::coulomb()), "coulomb");
+        assert_eq!(operator_label(&Operator::erfc(0.5)), "erfc(omega=0.5)");
     }
 }
