@@ -50,7 +50,10 @@
 //! smallest mutant miss), FD_BAR 1e-7 for FD (35x the 2.9e-9 h^2 floor).
 //!
 //! The full FD matrix (both functionals x both exxdiv) and the FD floor sweep
-//! are in `validation_krsh_force.rs`; this file runs one FD row.
+//! are in `validation_krsh_force.rs`; this file runs one FD row. The full
+//! mutant ledger sweep (`rsh_mutants_are_caught`, CI >= 120 s) is weekly
+//! there too; per commit `rsh_mutants_are_caught_canary` runs three of the
+//! mutants on CAM-B3LYP.
 //!
 //! NOT covered here: RS-GDF (`pbc_krsh_rsgdf_force.rs`,
 //! `validation_krsh_rsgdf_force.rs`; open shell `pbc_kuks_rsh_rsgdf_force.rs`;
@@ -70,7 +73,6 @@ use ferric_pbc::gamma_rsh::{gamma_rks_rsh_gradient, GammaRshExchange};
 use ferric_pbc::hcore::{periodic_hcore, PeriodicHcoreConfig};
 use ferric_pbc::kdense_aft::{KDenseAftConfig, KDenseAftEri};
 use ferric_pbc::kgrad::{KGradConfig, KGradJk, KGradMutation};
-use ferric_pbc::kpts::KPointMesh;
 use ferric_pbc::kscf::KScfResult;
 use ferric_pbc::kxcgrad::{kpoint_null_xc_gradient_rsh, kpoint_rks_gradient, KRksGradient};
 use ferric_pbc::lattice::Cell;
@@ -332,43 +334,23 @@ fn gamma_rsh_force_is_the_one_point_mesh_force() {
 
 // ----------------------------------------------------------------- mutants
 
-/// The erf piece is live on the CAM-B3LYP fixture and nearly dead for HSE06
-/// at this cell (measured max weight printed); every `Rsh*` mutant moves the
-/// FD-validated CAM-B3LYP force by far more than the FD bar.
+/// Per-commit canary of the weekly `rsh_mutants_are_caught`
+/// (`validation_krsh_force.rs`): on the CAM-B3LYP fixture (erf piece live)
+/// the dropped kernel factor, the dropped erf piece and the plain Madelung
+/// constant each move the FD-validated force by more than 1e-5 (ledger:
+/// 1.48e-1, 3.77e-2, 3.40e-2). The weekly test runs all seven `Rsh*` mutants
+/// on CAM-B3LYP and HSE06 (the HSE06 erf-piece and omega-scale defects at a
+/// 10-FD-bar margin).
 #[test]
-fn rsh_mutants_are_caught() {
-    let cell = cell_of(&H2);
-    let mesh = KPointMesh::gamma_centred(&cell, [1, 1, 3]).unwrap();
-    for f in ["HSE06", CAM] {
-        eprintln!(
-            "{f}: max erf weight |c_lr - c_sr| e^(-K^2/4w^2) on the 1x1x3 K set {:.2e}",
-            max_erf_weight(&cell, &mesh, rsh_of(f))
-        );
-    }
-    assert!(max_erf_weight(&cell, &mesh, rsh_of(CAM)) > 0.1);
-    // Each functional's production force is FD-validated (FD_BAR) in
-    // `validation_krsh_force.rs` (and CAM-B3LYP per commit above), so a miss
-    // against it is a miss against FD to within 2.9e-9.
-    for (f, bar) in [(CAM, 1e-5), ("HSE06", 10.0 * FD_BAR)] {
-        let fx = fixture(&H2, [1, 1, 3], f, ExxDiv::Ewald);
-        let base = force(&fx);
-        for m in [
+fn rsh_mutants_are_caught_canary() {
+    rsh_mutant_sweep(
+        &[(CAM, 1e-5)],
+        &[
             KGradMutation::RshNoKernelFactor,
-            KGradMutation::RshKernelOnJ,
-            KGradMutation::RshSwapFractions,
-            KGradMutation::RshPlainMadelung,
-            KGradMutation::RshOmegaScaled,
             KGradMutation::RshNoErfPiece,
-            KGradMutation::RshNoMadelungTerm,
-        ] {
-            let miss = diff(&force_m(&fx, Some(m)).unwrap().grad, &base.grad);
-            eprintln!(
-                "{f} 1x1x3 ewald: {m:?} miss {miss:.2e} ({:.0} FD bars)",
-                miss / FD_BAR
-            );
-            assert!(miss > bar, "{f} {m:?}: {miss:e}");
-        }
-    }
+            KGradMutation::RshPlainMadelung,
+        ],
+    );
 }
 
 // --------------------------------------------------------------- refusals

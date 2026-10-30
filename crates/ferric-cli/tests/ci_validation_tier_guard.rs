@@ -981,7 +981,7 @@ fn archive_downloads_go_through_the_stall_detecting_script() {
             "timeout 60 scripts/ci-archive-advice.sh nextest-shard-${{ matrix.partition }} \"$ARCHIVE\" || true",
             "Download the archive",
             "Check the archive",
-            "Run shard ${{ matrix.partition }} of 4",
+            "Run shard ${{ matrix.partition }} of 8",
         ),
         (
             "malloc-perturb",

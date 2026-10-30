@@ -71,3 +71,27 @@ fn cam_b3lyp_fd_residual_follows_h_squared() {
     assert!(r2 / r1 > 3.5 && r2 / r1 < 6.0, "not h^2: ratio {}", r2 / r1);
     assert!(r05.abs() < FD_BAR);
 }
+
+/// The erf piece is live on the CAM-B3LYP fixture and nearly dead for HSE06
+/// at this cell (measured max weight printed); every `Rsh*` mutant moves the
+/// FD-validated force by far more than the FD bar (ledger in the doc of
+/// `pbc_krsh_force.rs`; per-commit canary `rsh_mutants_are_caught_canary`).
+#[test]
+#[ignore = "validation: every Rsh* force mutant on CAM-B3LYP and HSE06, H2 1x1x3 dense ewald; CI ~162 s"]
+fn rsh_mutants_are_caught() {
+    use ferric_pbc::kgrad::KGradMutation;
+    // Each functional's production force is FD-validated (FD_BAR) above, so a
+    // miss against it is a miss against FD to within 2.9e-9.
+    rsh_mutant_sweep(
+        &[(CAM, 1e-5), ("HSE06", 10.0 * FD_BAR)],
+        &[
+            KGradMutation::RshNoKernelFactor,
+            KGradMutation::RshKernelOnJ,
+            KGradMutation::RshSwapFractions,
+            KGradMutation::RshPlainMadelung,
+            KGradMutation::RshOmegaScaled,
+            KGradMutation::RshNoErfPiece,
+            KGradMutation::RshNoMadelungTerm,
+        ],
+    );
+}

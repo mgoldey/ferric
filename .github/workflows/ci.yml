@@ -666,7 +666,7 @@ jobs:
           fi
           echo "debug-info guard: ${#BINS[@]} test binaries checked, none carry .debug_info"
           # PER-SHARD ARCHIVES (#525). One archive per test-shard job, split
-          # at the BINARY level, so each shard downloads ~1/4 of the bytes
+          # at the BINARY level, so each shard downloads ~1/SHARDS of the bytes
           # (the single 7.6 GB archive could not be fetched in 20 min at the
           # 5 MB/s slow runners reach; run 40364869971). `--partition hash`
           # split by TEST, so every shard needed every binary; nextest has no
@@ -681,7 +681,7 @@ jobs:
           # job if one is ever missing.
           # SHARDS must equal test-shard's matrix (ci_validation_tier_guard
           # `shard_archives_match_the_matrix`).
-          SHARDS=4
+          SHARDS=8
           SLOW="$(scripts/ci-shard-plan.sh slow-filter)"
           PLAN=/tmp/shard-plan
           cargo nextest list --workspace --all-targets --locked \
@@ -776,7 +776,9 @@ jobs:
 
       # retention-days: 2 (was 1): a "Re-run failed jobs" the next day found
       # the archives EXPIRED and could never pass (#525, run 40579399666).
-      # ~1.0 GB per run (4 x ~0.22 GB + 0.1 GB canary); public repo, so not
+      # ~1.0 GB per run at 4 shards (4 x ~0.22 GB + 0.1 GB canary); at 8 a
+      # little more, since --long=27 dedups less across fewer binaries per
+      # archive (not yet measured); public repo, so not
       # billed. scripts/ci-archive-advice.sh's RETENTION_DAYS must match
       # (ci_validation_tier_guard checks it).
       # compression-level 0: the archives are already zstd, so re-zipping them
@@ -814,6 +816,38 @@ jobs:
           retention-days: 2
           compression-level: 0
 
+      - name: Upload shard archive 5
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: nextest-shard-5
+          path: /tmp/nextest-shard-5.tar.zst
+          retention-days: 2
+          compression-level: 0
+
+      - name: Upload shard archive 6
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: nextest-shard-6
+          path: /tmp/nextest-shard-6.tar.zst
+          retention-days: 2
+          compression-level: 0
+
+      - name: Upload shard archive 7
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: nextest-shard-7
+          path: /tmp/nextest-shard-7.tar.zst
+          retention-days: 2
+          compression-level: 0
+
+      - name: Upload shard archive 8
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: nextest-shard-8
+          path: /tmp/nextest-shard-8.tar.zst
+          retention-days: 2
+          compression-level: 0
+
       - name: Upload the canary archive
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -847,18 +881,35 @@ jobs:
             ~/.cargo/git
           key: cargo-v3-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
 
-  # ── RUN: the archived binaries, in 4 parallel shards ──────────────────────
+  # ── RUN: the archived binaries, in 8 parallel shards ──────────────────────
   #
-  # WHY 4. MEASURED per-binary times from run 35377097468 (324 binaries paired
-  # to their `finished in Ns` lines), LPT-partitioned:
+  # WHY 8 (2026-10-29). Runners have 4 vCPUs and the ci profile runs
+  # test-threads = num-cpus, so a shard is CPU-saturated: on the last green
+  # main run before this change (40957025137) every shard ran at 4.0x its
+  # wall time (shard 1: 11,385 s of per-test time in 2,848 s), and the four
+  # shards summed 33,901 s (39,618 s on #597's run 40953725119), so wall
+  # time only falls by adding runners. At 4 shards the slowest took 55 min
+  # (its weights were stale; fresh ones balance LPT to ~8,475 s/shard). The
+  # same change moved every test with a mean CI time >= 120 s over those two
+  # runs, plus the thread-invariance (`*_bitwise*`) family, to the weekly
+  # validation tier with a cheap canary left here for each family
+  # (~9,030 s of the 33,901; one exception stays,
+  # pbc_gamma_mgga_derivs::r2scan_and_scan_are_distinguished_..., the only
+  # per-commit guard of the #355 swap in the Gamma derivative path). LPT
+  # over the remaining ~24,870 s with the regenerated weights predicts
+  # ~3,110 s per shard at 8 (max/min 1.00: the largest binary is now
+  # ~1,050 s), i.e. ~13 min of tests per shard at 4x plus ~3-7 min of
+  # download/setup. The new canaries are not in those weights (unmeasured
+  # when written; the next scripts/ci-shard-weights.sh run picks them up).
+  #
+  # The old measurement (run 35377097468, before the per-shard archives):
   #
   #     2 shards -> 26.1 min    3 shards -> 17.4 min
   #     4 shards -> 13.4 min    6 shards -> 13.4 min  (no further gain)
   #
-  # The curve flattens at 4 because the floor is `cdft_coupling_hene` at
-  # 13.4 min on its own. With the cdft/cosx/qqr3 binaries deferred to nightly
-  # (they are in SLOW, scripts/ci-shard-plan.sh), the remaining 26.1 min
-  # divides to ~6.5 min/shard.
+  # flattened at 4 only because `cdft_coupling_hene` alone was 13.4 min; it
+  # and the cdft/cosx/qqr3 binaries are deferred to nightly (they are in
+  # SLOW, scripts/ci-shard-plan.sh).
   #
   # CRATE-level sharding does NOT work here and was measured before this was
   # written: ferric-scf alone is 33.7 of the 52.3 min (64%), so a
@@ -867,10 +918,7 @@ jobs:
   # BINARY-level sharding (#525, replaced `--partition hash:i/4`, which split
   # by TEST and so made every shard download every binary). Each shard runs
   # ALL of its own archive, `nextest-shard-<k>`, which build-tests packed
-  # from scripts/ci-shard-plan.sh's LPT assignment. On run 40346982823's
-  # timings (45,347 s of tests over 516 binaries) that assignment balances
-  # to ~11,337 s per shard; the largest single binary, pbc_parallel_bitwise,
-  # is 2,090 s, so binaries are fine-grained enough at 4. Stale weights
+  # from scripts/ci-shard-plan.sh's LPT assignment. Stale weights
   # (scripts/ci-shard-weights.tsv; regenerate with
   # scripts/ci-shard-weights.sh <green-run-id>) only worsen the balance;
   # build-tests' exactly-once guard makes sure no test is lost or doubled.
@@ -892,7 +940,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        partition: [1, 2, 3, 4]
+        partition: [1, 2, 3, 4, 5, 6, 7, 8]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
@@ -1144,7 +1192,7 @@ jobs:
             exit 1
           fi
 
-      - name: Run shard ${{ matrix.partition }} of 4
+      - name: Run shard ${{ matrix.partition }} of 8
         timeout-minutes: 100
         run: |
           set -euo pipefail
@@ -1461,47 +1509,57 @@ jobs:
   # `cargo nextest run --workspace` would build all ~300 test binaries for a
   # handful of tests, on a runner whose binding constraint is disk.
   validation:
-    name: validation (weekly, external references, shard ${{ matrix.partition }}/4)
+    name: validation (weekly, external references, shard ${{ matrix.partition }}/8)
     if: github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && github.event.schedule == '17 4 * * 0')
     runs-on: ubuntu-22.04
     # 300, not 170: no shard has ever finished inside 170. Shard 2 holds
     # ecp_gradient_ch2i_uhf, ~85 min on CI by itself (.config/nextest.toml
-    # gives the measurement); with the tests scheduled before it, shard 2 is
-    # modelled at ~150 min of tests (per-test CI durations from the three
-    # October 2026 dispatches, dealt out as `count:K/4` deals them) plus up
-    # to 17 min of setup, and CI wall time for the same shard has varied 1.6x
-    # between runs: ~150 x 1.6 + 17 = ~254 of 300 min at the worst spread
-    # seen, under GitHub's 360-min cap. Adding a heavy test to shard 2 eats
-    # that headroom; the fallback is moving ecp_gradient_ch2i_uhf to its own
-    # single-test job (or running its stability analysis only on the
+    # gives the measurement); with the tests scheduled before it, shard 2 was
+    # modelled at ~150 min of tests at 4 shards (per-test CI durations from
+    # the three October 2026 dispatches, dealt out as `count:K/4` deals
+    # them). At 8 shards, with the tests moved here from the per-commit tier,
+    # the heaviest shard (1) models at ~155 min and shard 2 at ~140 (see
+    # below), plus up to 17 min of setup; CI wall time for the same shard has
+    # varied 1.6x between runs: ~155 x 1.6 + 17 = ~265 of 300 min at the
+    # worst spread seen, under GitHub's 360-min cap. Adding a heavy test to
+    # shard 1 or 2 eats that headroom; the fallback is moving
+    # ecp_gradient_ch2i_uhf (or ag2_augccpvdzpp) to its own single-test job (or running its stability analysis only on the
     # undisplaced SCF). Hung tests are bounded per test by nextest's
     # terminate-after, so this is a backstop, not the hang guard.
     timeout-minutes: 300
-    # SHARDED, because one runner no longer fits the tier (~566 tests, ~13 h
+    # SHARDED, because one runner no longer fits the tier (~645 tests, ~16 h
     # of summed per-test time on CI, run at test-threads = 2). nextest's
     # `count:` partition is applied AFTER the filter and deals each binary's
     # selected tests out round-robin in NAME order: test i of a binary goes
-    # to shard (i mod 4) + 1, counting i from 0. Two consequences:
+    # to shard (i mod 8) + 1, counting i from 0. Two consequences:
     # * it separates NAME-ADJACENT tests of one binary, which is why
     #   ecp_gradient_ch2i_uhf (shard 2) and ecp_gradient_ch2i_uks_pbe
     #   (shard 3) do not share a runner; it does NOT spread heavy tests in
     #   general (that would need per-test weights nextest does not take);
     # * every binary's alphabetically first test lands on shard 1, so shard 1
-    #   carries the most tests (180 of ~566) and, with ag2_augccpvdzpp, the
-    #   second-heaviest load. The Python half therefore runs on the LAST
-    #   shard, the lightest one.
+    #   carries the most tests and, with ag2_augccpvdzpp, the heaviest load.
+    #   The Python half therefore runs on the LAST shard, one of the lightest.
+    # 8 shards, not 4 (2026-10-29): the per-commit tier moved ~70 tests of
+    # >= 120 s CI time (and the thread-invariance family) here, ~10,000 s of
+    # per-test time, mostly in binaries of one or two tests, which the rule
+    # above deals to shards 1 and 2. Modelled with run 40506601960's
+    # per-test durations (the model reproduces that run's 645 test-to-shard
+    # placements exactly) at test-threads = 2, the summed test time per shard
+    # would have been 213 / 180 / 97 / 101 min at 4 shards, i.e. ~230 min
+    # on shard 1 with setup, inside the 1.6x spread of the 300-min timeout
+    # below; at 8 it is 155 / 140 / 61 / 61 / 58 / 40 / 36 / 40 min.
     # A test that cannot fit on any shard runs in its own `validation-*` job
     # and is excluded here by `and not (...)` in the filter: today only the
     # Cr(CO)6 SCF ladder (validation-cr-co6), which would have landed on
     # shard 1.
     # The union of the shards is the whole tier (checked with nextest 0.9.145
     # on a three-binary toy crate). Every shard builds the same binaries
-    # (~4 min) and runs a disjoint quarter of the tests. fail-fast off: one
+    # (~4 min) and runs a disjoint eighth of the tests. fail-fast off: one
     # shard's failure must not cancel the others' results.
     strategy:
       fail-fast: false
       matrix:
-        partition: [1, 2, 3, 4]
+        partition: [1, 2, 3, 4, 5, 6, 7, 8]
     # Builds and runs third-party build scripts and proc-macros, pushes
     # nothing and only RESTORES caches: read-only token, not persisted in the
     # checkout's .git/config.
@@ -1581,34 +1639,34 @@ jobs:
           # (validation-cr-co6), so each runs exactly once. The guard checks
           # this exclusion list against those jobs' filters.
           cargo nextest run --profile validation --locked "${ARGS[@]}" \
-            --partition "count:${{ matrix.partition }}/4" \
+            --partition "count:${{ matrix.partition }}/8" \
             --run-ignored only -E 'binary(/^validation_/) and not (binary_id(=ferric-scf::validation_scf_ladder) and test(=cr_co6_default_ladder_reaches_stable_rhf_minimum))'
 
       # ── Python half of the tier: `@pytest.mark.validation` tests ──────────
       # Excluded everywhere else by pyproject's `addopts = -m "not validation"`
       # (a later `-m` on the command line overrides it). These drive the
       # compiled extension (and, for the NPZ row, the CLI through it), so the
-      # job builds ferric-python in release, on shard 4 only (the lightest
-      # shard; it is not partitioned). `!cancelled()` so a Rust-tier failure still reports the
+      # job builds ferric-python in release, on shard 8 only (the last shard,
+      # one of the lightest; it is not partitioned). `!cancelled()` so a Rust-tier failure still reports the
       # Python half. The pytest path list below is
       # checked by ci_validation_tier_guard.rs against every file that carries
       # the marker, so a validation pytest outside it fails a normal PR.
       - name: Free the validation test binaries before the release build
         # The debug test binaries above and the release extension below are
         # two full builds; the runner's binding constraint is disk.
-        if: ${{ !cancelled() && matrix.partition == 4 }}
+        if: ${{ !cancelled() && matrix.partition == 8 }}
         run: rm -rf target/debug
 
       - name: Install uv
-        if: ${{ !cancelled() && matrix.partition == 4 }}
+        if: ${{ !cancelled() && matrix.partition == 8 }}
         run: pip install uv
 
       - name: uv sync (dev + build extras)
-        if: ${{ !cancelled() && matrix.partition == 4 }}
+        if: ${{ !cancelled() && matrix.partition == 8 }}
         run: uv sync --extra dev --extra build --no-install-project
 
       - name: Build ferric-python extension (release)
-        if: ${{ !cancelled() && matrix.partition == 4 }}
+        if: ${{ !cancelled() && matrix.partition == 8 }}
         run: |
           # --no-sync: a plain `uv run` first does its OWN PEP 517 editable build,
           # so maturin develop then builds a second time with cargo fresh; maturin
@@ -1623,11 +1681,11 @@ jobs:
       # points them at it, and they FAIL rather than skip when it is set but
       # missing.
       - name: Build ferric-cli (release)
-        if: ${{ !cancelled() && matrix.partition == 4 }}
+        if: ${{ !cancelled() && matrix.partition == 8 }}
         run: cargo build --release -p ferric-cli --locked
 
       - name: Run Python validation tests
-        if: ${{ !cancelled() && matrix.partition == 4 }}
+        if: ${{ !cancelled() && matrix.partition == 8 }}
         run: |
           set -euo pipefail
           # conftest.py turns a failed `import ferric` into a whole-suite SKIP

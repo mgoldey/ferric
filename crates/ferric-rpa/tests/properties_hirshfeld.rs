@@ -19,6 +19,13 @@
 //! already centred near the origin, which masked the gauge-origin bug fixed
 //! here (renormalizing per-atom pieces to the lab-frame analytical dipole is
 //! itself the bug, not a correctness check).
+//!
+//! TIERS. The full Hirshfeld-I test with ion proatoms in aug-cc-pVDZ
+//! (literature window q(O) = -0.872, ~130 s on CI) runs weekly in
+//! `validation_properties_hirshfeld.rs` (driver: `hirshfeld_i_support/mod.rs`).
+//! Per-commit canary: `h2o_adhoc_neutral_hirshfeld_charges` (the same
+//! `hirshfeld_i_charges` driver with neutral-only proatoms). The ion-proatom
+//! charge iteration itself is exercised weekly only.
 
 #![allow(clippy::needless_range_loop)] // index loops over tensor/array axes read clearer with explicit indices
 
@@ -168,120 +175,6 @@ fn h2o_hirshfeld_origin_independence_and_symmetry() {
         iso_o,
         iso(&alpha_atomic[h_idxs[0]]),
         iso(&alpha_atomic[h_idxs[1]]),
-    );
-}
-
-/// Full Hirshfeld-I with ad-hoc same-basis NEUTRAL+ION proatoms.
-///
-/// The CANONICAL published Hirshfeld-I charge for water oxygen is q(O) = −0.872
-/// (Verstraelen et al., JCTC 12, 3894 (2016), Table 1, BLYP/6-311+G(2df,p);
-/// MBIS gives −0.885). Hirshfeld-I is *designed* to be over-ionic — it amplifies
-/// plain-Hirshfeld charges to reproduce the ESP/dipole — so q(O) near −0.87 is
-/// CORRECT; the −0.6..−0.7 numbers are CM5/ESP-class, not raw HI. (My earlier
-/// −0.92 with a 15-Bohr radial grid was anion-tail truncation; the grid now
-/// extends to 30 Bohr to capture the diffuse anion reference.)
-#[test]
-fn h2o_hirshfeld_i_adhoc_charges_physical() {
-    use ferric_core::elements::z_to_symbol;
-    use ferric_rpa::properties::{
-        hirshfeld_i_charges, spherically_averaged_proatom, RadialProatom,
-    };
-
-    // Augmented basis so the O⁻ anion proatom binds (Hirshfeld-I requirement).
-    let mol = Molecule::load_xyz("../../testdata/molecules/water.xyz").unwrap();
-    let obs_bs = basis::bundled("aug-cc-pvdz").unwrap();
-    let op = Operator::coulomb();
-    let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
-    let ctx0 = ParallelContext::default();
-    let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-    let rhf = solve_rhf(&ctx0, &mol, &obs, op, &bounds, &RhfConfig::default()).unwrap();
-    let ctx = ParallelContext::default();
-
-    // Shared radial grid for proatoms. Extend to 30 Bohr: the anion reference
-    // (O⁻) has a diffuse tail that, if truncated, mis-normalizes the
-    // interpolated proatom and over-polarizes the charge.
-    let radii: Vec<f64> = (1..=600).map(|k| k as f64 * 0.05).collect(); // 0.05..30 Bohr
-
-    // Ground-state multiplicity (2S+1) of an atom/ion with N electrons, from the
-    // aufbau filling + Hund's rule on the open subshell (good for N ≤ 18).
-    let mult_for_n = |n: i32| -> usize {
-        if n <= 0 {
-            return 1;
-        }
-        // (subshell capacity) in aufbau order through 3p.
-        let shells = [2, 2, 6, 2, 6]; // 1s,2s,2p,3s,3p
-        let mut rem = n;
-        let mut unpaired = 0i32;
-        for &cap in &shells {
-            let inshell = rem.min(cap);
-            rem -= inshell;
-            // unpaired in this subshell by Hund: cap/2 orbitals, fill singly first.
-            let norb = cap / 2;
-            unpaired = if inshell <= norb {
-                inshell
-            } else {
-                cap - inshell
-            };
-            if rem == 0 {
-                break;
-            }
-        }
-        (unpaired.unsigned_abs() as usize) + 1
-    };
-
-    // Proatom closure: run an atomic SCF for element z at integer charge qi
-    // (N = z − qi electrons) in the molecule's basis, spherically average to a
-    // radial proatom. Neutral + ions for full Hirshfeld-I charge interpolation.
-    let bs = obs_bs.clone();
-    let proatom = |z: i32, qi: i32| -> Option<RadialProatom> {
-        let n_elec = z - qi;
-        if n_elec <= 0 {
-            // Bare nucleus (e.g. H+): zero electron density.
-            return RadialProatom::new(radii.clone(), vec![0.0; radii.len()]).ok();
-        }
-        let mult = mult_for_n(n_elec);
-        let sym = z_to_symbol(z).unwrap_or("X");
-        let xyz = format!("1\n{sym}\n{sym} 0 0 0\n");
-        let amol = Molecule::parse_xyz(&xyz, qi, mult).ok()?;
-        let aobs = PreparedBasis::new(&amol, &bs).ok()?;
-        let abounds = SchwarzBounds::compute(op, &aobs).ok()?;
-        let mut cfg = RhfConfig::default();
-        // Closed-shell singlet → RHF; open-shell → UHF with MOM. Anions in a
-        // non-augmented basis may not bind the extra electron; if SCF fails the
-        // `?`/.ok() returns None and hirshfeld_i falls back to the nearest state.
-        let dens = if mult == 1 {
-            solve_rhf(&ctx, &amol, &aobs, op, &abounds, &cfg)
-                .ok()?
-                .density_r()
-                .to_owned()
-        } else {
-            cfg.mom_after_iter = 5;
-            ferric_scf::uhf::solve_uhf(&ctx, &amol, &aobs, &abounds, &cfg)
-                .ok()?
-                .density_total()
-                .to_owned()
-        };
-        spherically_averaged_proatom(z, &bs, &dens, &radii).ok()
-    };
-
-    let q = hirshfeld_i_charges(&mol, &obs_bs, rhf.density_r(), &proatom).unwrap();
-    let (q_o, q_h1, q_h2) = (q[0], q[1], q[2]);
-    eprintln!("H2O Hirshfeld-I (ad-hoc, neutral+ion proatoms): O={q_o:.4} H={q_h1:.4} H={q_h2:.4}");
-    // Literature Hirshfeld-I water oxygen is −0.872 (Verstraelen 2016). HI is
-    // intentionally over-ionic; accept the published HI window. (Plain neutral
-    // Hirshfeld gives −0.32 — see the neutral test; HI sharpens it toward ESP.)
-    assert!(
-        (-0.95..=-0.78).contains(&q_o),
-        "O charge outside Hirshfeld-I range: {q_o:.3} (lit -0.872)"
-    );
-    assert!(
-        (0.39..=0.48).contains(&q_h1),
-        "H charge outside Hirshfeld-I range: {q_h1:.3} (lit +0.436)"
-    );
-    assert!((q_o + q_h1 + q_h2).abs() < 1e-6, "charges must sum to 0");
-    assert!(
-        (q_h1 - q_h2).abs() < 1e-3,
-        "equivalent H must have equal charge"
     );
 }
 

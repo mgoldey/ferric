@@ -50,6 +50,7 @@ mod uks;
 
 use ferric_pbc::dense_aft::ExxDiv;
 use ferric_pbc::kpts::KPointMesh;
+use ferric_pbc::kuxcgrad::KUSpinMutation;
 use ro::*;
 use uks::*;
 
@@ -201,4 +202,70 @@ fn hse06_singlet_roks_is_the_rks_rsh_force() {
         eprintln!("HSE06 singlet ROKS vs RKS {n}: {d:.2e}");
         assert!(d < ANCHOR_TOL, "{n}: {d:e}");
     }
+}
+
+/// The unrestricted-form `W = Σ_σ D_σ F_σ D_σ` instead of `W_RO`
+/// (`RoWUhfForm`) is an identity at a converged ROKS state (they differ by ½
+/// the closed-open β orbital gradient) and is therefore NOT a defect there;
+/// off stationarity it is wrong, and the orbital-gradient gate is what
+/// refuses that state. On the H4 triplet (1x1x1, CAM-B3LYP; NOT the H3
+/// doublet, whose inversion symmetry makes the closed-open block, and with
+/// it this difference, vanish for any state: measured 1.1e-16 on a loose
+/// one): the production force and `RoWUhfForm` on a loosely converged state
+/// are refused with the gate message. With the gate off neither `W` form is
+/// right on that state (both miss the tight force by more than 10 FD bars:
+/// the state is not stationary), and the two forms differ (`RoWUhfFormGateOff`
+/// vs `RoGateOff`), which is the assertion that sees the swap. Measured
+/// (loose SCF 1e-3 / 1e-1): g 3.6e-5, gate-off miss 1.0e-5 (W_UKS) and
+/// 1.5e-5 (W_RO), W_UKS - W_RO 4.9e-6; at convergence 1.1e-14.
+#[test]
+#[ignore = "validation: ROKS RSH unrestricted-form W identity at convergence and refused / distinguishable off it (H4 triplet, tight + loose SCFs); CI ~128 s"]
+fn unrestricted_w_is_an_identity_at_convergence_and_refused_off_it() {
+    let tight = ro_fixture(Kind::Tri(3), &H4T, [1, 1, 1], CAM, ExxDiv::Ewald);
+    let gt = ro_force(&tight);
+    let id = diff(
+        &ro_force_m(&tight, None, Some(KUSpinMutation::RoWUhfForm))
+            .unwrap()
+            .grad,
+        &gt.grad,
+    );
+    eprintln!(
+        "RoWUhfForm at convergence: {id:.2e} (gate value {:.1e})",
+        gt.hf.commutator
+    );
+    assert!(id < 1e-8, "identity at convergence: {id:e}");
+    let loose = ro_fixture_conv(
+        cell_of(Kind::Tri(3), &H4T),
+        [1, 1, 1],
+        CAM,
+        ExxDiv::Ewald,
+        LOOSE,
+    );
+    for sm in [None, Some(KUSpinMutation::RoWUhfForm)] {
+        let e = ro_force_m(&loose, None, sm)
+            .expect_err("loose state accepted")
+            .to_string();
+        assert!(e.contains("ROHF orbital gradient"), "{sm:?}: {e}");
+    }
+    let off = ro_force_m(&loose, None, Some(KUSpinMutation::RoGateOff)).unwrap();
+    let uhf = ro_force_m(&loose, None, Some(KUSpinMutation::RoWUhfFormGateOff)).unwrap();
+    let g = off.hf.commutator;
+    let (err_uhf, err_ro) = (diff(&uhf.grad, &gt.grad), diff(&off.grad, &gt.grad));
+    let w_gap = diff(&uhf.grad, &off.grad);
+    eprintln!(
+        "loose CAM-B3LYP ROKS H4: g = {g:.2e}; gate-off error W_UKS {err_uhf:.2e}, W_RO \
+         {err_ro:.2e}; W_UKS - W_RO {w_gap:.2e}"
+    );
+    // Off stationarity NEITHER form is right (both gate-off forces miss the
+    // tight one); the gate's refusal is the protection. What distinguishes
+    // the two W forms there is their gap.
+    assert!(g > 1e-5, "state is not past the gate: {g:e}");
+    assert!(
+        err_ro > 10.0 * FD_BAR,
+        "the loose state is not off stationarity: {err_ro:e}"
+    );
+    assert!(
+        w_gap > 1e-6,
+        "the two W forms coincide off stationarity: {w_gap:e}"
+    );
 }

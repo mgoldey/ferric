@@ -38,37 +38,16 @@
 //! (refused before the SCF by the binding gate and by the Fock guard after
 //! it), a caller-supplied grid (`gamma_rks_on_grid`; the Fock guard refuses a
 //! mismatched grid), p/d shells, the (75, 302) production grid.
+//!
+//! The shared helpers are `pbc_gamma_mgga_derivs_support/mod.rs`.
 
 mod common;
+#[path = "pbc_gamma_mgga_derivs_support/mod.rs"]
+mod derivs;
 #[path = "gamma_mgga_support/mod.rs"]
 mod support;
 
-use common::*;
-use ferric_pbc::dense_aft::ExxDiv;
-use ferric_pbc::dft::{gamma_rks, PeriodicGridConfig};
-use ferric_pbc::gamma_mgga::{gamma_rks_mgga_gradient, GammaMggaDerivConfig};
-use ferric_pbc::grad::{gamma_rks_gradient_with, GammaGradConfig};
-use ferric_pbc::hcore::periodic_hcore;
-use ferric_pbc::kdense_aft::KDenseAftEri;
-use ferric_pbc::kdft::{solve_krks, KRksConfig};
-use ferric_pbc::kgrad::KGradJk;
-use ferric_pbc::kpts::KPointMesh;
-use ferric_pbc::kxcgrad::{kpoint_rks_gradient, KRksGradConfig, KXcGrid, KXcMutation};
-use ferric_pbc::kxcstress::KXcStressMutation;
-use ferric_pbc::lattice::Cell;
-use ferric_pbc::rsgdf::{RsGdf, RsGdfConfig};
-use ferric_pbc::stress::{gamma_rks_stress, GammaStressConfig};
-use ferric_pbc::uhf::GammaUhfIntegrals;
-use support::*;
-
-/// Per-commit FD rows: the two force components and two strain components
-/// on which every ledger mutant misses (the full three-functional matrix and
-/// the h sweeps are in `validation_pbc_mgga_derivs.rs`).
-const FORCE_ROW: [(usize, usize); 2] = [(0, 2), (1, 1)];
-const STRAIN_ROW: [(usize, usize); 2] = [(0, 0), (2, 2)];
-/// Gamma vs 1x1x1 on the two-orbital cell (two separately converged SCFs):
-/// measured 1.7e-12 (2026-10-22); the SCAN vs r2SCAN force gap there is 1.5e-3.
-const H4_GLUE_BAR: f64 = 1e-10;
+use derivs::*;
 
 // ------------------------------------------------------------------ FD oracles
 
@@ -213,76 +192,6 @@ fn gamma_mgga_force_is_the_one_point_mesh_force() {
     }
 }
 
-/// `solve_krks` + `kpoint_rks_gradient` at 1x1x1 on `g`'s cell, grid and
-/// hcore: `(force, energy)`.
-fn one_point_force(g: &G, f: &str) -> (ferric_pbc::kxcgrad::KRksGradient, f64) {
-    let mesh = KPointMesh::gamma_centred(&g.cell, [1, 1, 1]).unwrap();
-    let mut kc = KRksConfig::new(&g.cell, ExxDiv::Ewald, f);
-    kc.krhf.hcore = hcfg();
-    kc.krhf.scf.energy_conv = 1e-13;
-    kc.krhf.scf.grad_conv = 1e-10;
-    kc.krhf.scf.max_iter = 300;
-    kc.grid = grid();
-    let k = solve_krks(&g.cell, &g.prep, None, &mesh, &kc).unwrap();
-    let hk =
-        ferric_pbc::hcore::kpoint::periodic_hcore_kpts(&g.cell, &g.prep, &mesh, &hcfg()).unwrap();
-    let eri = KDenseAftEri::build(
-        &g.cell,
-        &g.prep,
-        &mesh,
-        &hk.s,
-        ExxDiv::Ewald,
-        &Default::default(),
-    )
-    .unwrap();
-    let kg = kpoint_rks_gradient(
-        &g.cell,
-        &g.prep,
-        &mesh,
-        &hcfg(),
-        &hk,
-        KGradJk::Dense(&eri),
-        &k.scf,
-        f,
-        &KRksGradConfig {
-            grad: dcfg().grad,
-            grid: KXcGrid::Atom(grid()),
-            exxdiv: Some(ExxDiv::Ewald),
-            ..Default::default()
-        },
-    )
-    .unwrap();
-    (kg, k.scf.energy)
-}
-
-/// The two-orbital H4 triclinic cell, where alpha != 0 and SCAN and r2SCAN
-/// DIFFER (on the one-orbital H2 cell they coincide exactly, so a SCAN /
-/// r2SCAN swap anywhere in the Gamma derivative path passes every H2 test).
-/// The routed Gamma r2SCAN force equals the 1x1x1 one; the SCAN force on the
-/// same cell differs by far more than the glue bar; and a SCAN config on the
-/// r2SCAN Gamma SCF is refused by the Fock guard (on H2 it would be accepted).
-#[test]
-fn r2scan_and_scan_are_distinguished_on_the_two_orbital_cell() {
-    let tri = Cell::new(hydrogens(&TRI_ATOMS), TRI_A).expect("triclinic cell");
-    let g = gamma(tri.clone(), "R2SCAN");
-    let routed = force(&g, None);
-    let (kg, ek) = one_point_force(&g, "R2SCAN");
-    let d = diff(&routed.grad, &kg.grad);
-    eprintln!(
-        "H4 tri r2SCAN: Gamma vs 1x1x1 force {d:.2e}; E {:.2e}",
-        g.scf.energy - ek
-    );
-    assert!(d < H4_GLUE_BAR, "{d:e}");
-    let scan = force(&gamma(tri, "SCAN"), None);
-    let gap = diff(&routed.grad, &scan.grad);
-    eprintln!("H4 tri Gamma SCAN vs r2SCAN force {gap:.2e}");
-    assert!(gap > MUTANT_BAR, "{gap:e}");
-    let e = try_force(&g, &rks_cfg("SCAN"), &g.scf, &dcfg())
-        .expect_err("SCAN config on the r2SCAN SCF accepted")
-        .to_string();
-    assert!(e.contains("differs"), "{e}");
-}
-
 // ------------------------------------------------------ refusals and guard
 
 #[test]
@@ -390,6 +299,39 @@ fn an_rsgdf_gamma_scf_is_refused_by_the_fock_guard() {
         .expect_err("RS-GDF Gamma SCF accepted")
         .to_string();
     eprintln!("RS-GDF Gamma SCAN: {e}");
+    assert!(e.contains("differs"), "{e}");
+}
+
+/// KEPT IN THE FAST TIER although its CI time is ~170 s (mean of runs
+/// 40957025137 and 40953725119): it is the only per-commit guard against a
+/// SCAN / r2SCAN swap in the Gamma DERIVATIVE path (#355); no shrunk canary
+/// fits (a reduced H4 Fock-guard variant ran > 90 s locally).
+///
+/// The two-orbital H4 triclinic cell, where alpha != 0 and SCAN and r2SCAN
+/// DIFFER (on the one-orbital H2 cell they coincide exactly, so a SCAN /
+/// r2SCAN swap anywhere in the Gamma derivative path passes every H2 test).
+/// The routed Gamma r2SCAN force equals the 1x1x1 one; the SCAN force on the
+/// same cell differs by far more than the glue bar; and a SCAN config on the
+/// r2SCAN Gamma SCF is refused by the Fock guard (on H2 it would be accepted).
+#[test]
+fn r2scan_and_scan_are_distinguished_on_the_two_orbital_cell() {
+    let tri = Cell::new(hydrogens(&TRI_ATOMS), TRI_A).expect("triclinic cell");
+    let g = gamma(tri.clone(), "R2SCAN");
+    let routed = force(&g, None);
+    let (kg, ek) = one_point_force(&g, "R2SCAN");
+    let d = diff(&routed.grad, &kg.grad);
+    eprintln!(
+        "H4 tri r2SCAN: Gamma vs 1x1x1 force {d:.2e}; E {:.2e}",
+        g.scf.energy - ek
+    );
+    assert!(d < H4_GLUE_BAR, "{d:e}");
+    let scan = force(&gamma(tri, "SCAN"), None);
+    let gap = diff(&routed.grad, &scan.grad);
+    eprintln!("H4 tri Gamma SCAN vs r2SCAN force {gap:.2e}");
+    assert!(gap > MUTANT_BAR, "{gap:e}");
+    let e = try_force(&g, &rks_cfg("SCAN"), &g.scf, &dcfg())
+        .expect_err("SCAN config on the r2SCAN SCF accepted")
+        .to_string();
     assert!(e.contains("differs"), "{e}");
 }
 

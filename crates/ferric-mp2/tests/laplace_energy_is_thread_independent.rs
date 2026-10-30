@@ -71,85 +71,17 @@
 //!
 //! Run with `OPENBLAS_NUM_THREADS=1` per the project's rayon/BLAS convention —
 //! these paths run GEMMs under a rayon map.
+//!
+//! TIERS. CONTRACT 2 (the same bit identity at n_quad = 7, ~134 s on CI)
+//! runs weekly in `validation_laplace_energy_is_thread_independent.rs`. It
+//! catches nothing CONTRACT 1 misses: the restored ambient divisor fails
+//! CONTRACT 1 here, and the rayon tree-fold mutant passes both (mutation
+//! record above). CONTRACT 1 is the per-commit canary. Shared fixture:
+//! `laplace_thread_support/mod.rs`.
 
-use ferric_core::basis;
-use ferric_core::mol::Molecule;
-use ferric_integrals::basis_bridge::PreparedBasis;
-use ferric_integrals::operator::Operator;
-use ferric_mp2::laplace::laplace_ri_mp2;
-use ferric_scf::result::ScfResult;
-use ferric_scf::rhf::{solve_rhf, RhfConfig};
-use ferric_scf::screening::SchwarzBounds;
-
-/// Worker counts to compare. 1 vs 12 spans the interesting range on this box;
-/// 3 is included because an odd split exercises a different rayon tree shape
-/// than a power of two, which is what the `.reduce()` defect keyed on.
-const THREAD_COUNTS: [usize; 4] = [1, 2, 3, 12];
-
-/// 0.5 GiB: chosen so the panel widths BIND at this fixture (see the module
-/// doc). Held FIXED across every run — the budget is allowed to affect the
-/// numerics, the thread count is not.
-const BUDGET: Option<usize> = Some(512 * 1024 * 1024);
-
-/// The fixture's shape, for the reachability guard. Benzene/cc-pVDZ.
-const NBAS: usize = 114;
-const NAUX: usize = 420;
-const NOCC: usize = 21;
-
-struct Fixture {
-    mol: Molecule,
-    obs: PreparedBasis,
-    dfbs: PreparedBasis,
-    rhf: ScfResult,
-}
-
-/// Benzene/cc-pVDZ: the smallest system where the panel widths actually bind
-/// (see the module doc). Water leaves them clamped at full width for every
-/// worker count, so the mechanism is inert there and the test measures nothing
-/// — the "a passing test may be measuring inertness" failure mode, hit for real
-/// by this test's first version.
-fn fixture() -> Fixture {
-    let mol = Molecule::load_xyz(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../testdata/molecules/benzene.xyz"
-    ))
-    .unwrap();
-    let obs_bs = basis::bundled("cc-pvdz").unwrap();
-    let dfbs_bs = basis::bundled("cc-pvdz-ri").unwrap();
-    let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
-    let dfbs = PreparedBasis::new(&mol, &dfbs_bs).unwrap();
-    let op = Operator::coulomb();
-    let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-    let ctx = ferric_core::parallel::ParallelContext::default();
-    let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &RhfConfig::default()).unwrap();
-    Fixture {
-        mol,
-        obs,
-        dfbs,
-        rhf,
-    }
-}
-
-fn energy_at(f: &Fixture, n_quad: usize, threads: usize) -> f64 {
-    rayon::ThreadPoolBuilder::new()
-        .num_threads(threads)
-        .build()
-        .unwrap()
-        .install(|| {
-            laplace_ri_mp2(
-                &f.mol,
-                &f.obs,
-                &f.dfbs,
-                Operator::coulomb(),
-                &f.rhf,
-                n_quad,
-                0,
-                BUDGET,
-            )
-            .unwrap()
-            .mp2_corr
-        })
-}
+#[path = "laplace_thread_support/mod.rs"]
+mod support;
+use support::*;
 
 /// CONTRACT 1: same config, same bits, at every worker count.
 ///
@@ -174,27 +106,6 @@ fn the_laplace_correlation_energy_is_bit_identical_across_worker_counts() {
              The thread count is not a physical parameter — a budget-derived k-blocking \
              width or a rayon tree fold has leaked the ambient pool size into the energy.",
             (got - reference).abs()
-        );
-    }
-}
-
-/// CONTRACT 2: the same holds at a different quadrature order.
-///
-/// `n_quad` sets how many terms the point-sum folds, so it is the axis the
-/// `.reduce()` tree-fold defect is most sensitive to: with n_quad = 1 there is
-/// nothing to reassociate and any tree shape agrees, which would make a
-/// single-order test pass while the defect was live. Use an order with enough
-/// terms to have distinguishable tree shapes.
-#[test]
-fn bit_identity_holds_at_a_higher_quadrature_order() {
-    let f = fixture();
-    let n_quad = 7;
-    let reference = energy_at(&f, n_quad, 1);
-    for n in THREAD_COUNTS {
-        assert_eq!(
-            energy_at(&f, n_quad, n).to_bits(),
-            reference.to_bits(),
-            "n_quad={n_quad}: the energy is not bit-identical between 1 and {n} workers"
         );
     }
 }

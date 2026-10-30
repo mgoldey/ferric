@@ -90,3 +90,25 @@ fn polarized_rsgdf_stress_matches_fd_all_components() {
         }
     }
 }
+
+/// Singlet k-UKS == k-RKS on the RS-GDF J/K, 1x1x3 (H2 / STO-3G, et-sp aux,
+/// atom grid): energy, force and stress from independent SCF loops, and the
+/// three asymmetric derivative defects (`TauDropBeta`, `TauDoubled`,
+/// `PulayJOneSpin`) must break it. Blind to the alpha / beta exchanges by
+/// construction (module doc of `pbc_kuks_mgga_rsgdf.rs`). Per-commit canary:
+/// `singlet_rsgdf_uks_equals_rks_on_the_one_point_mesh`.
+#[test]
+#[ignore = "validation: k-UKS SCAN singlet == k-RKS on RS-GDF, energy / force / stress + 3 defects, H2 1x1x3; CI ~161 s"]
+fn singlet_rsgdf_uks_equals_rks() {
+    singlet_rsgdf_case([1, 1, 3]);
+}
+
+/// The polarized H3 doublet RS-GDF state on 1x1x3: force (translation sum)
+/// and stress through their gates, the zz strain against central FD of the
+/// RS-GDF SCF energy, and the `TauNoVxcBeta` defect missing that FD.
+/// Per-commit canary: `polarized_rsgdf_force_and_stress_canary_on_the_one_point_mesh`.
+#[test]
+#[ignore = "validation: k-UKS SCAN polarized RS-GDF force / stress gates + zz strain vs FD + TauNoVxcBeta, H3 1x1x3; CI ~162 s"]
+fn polarized_rsgdf_force_and_stress_run_and_one_strain_matches_fd() {
+    polarized_rsgdf_case([1, 1, 3]);
+}

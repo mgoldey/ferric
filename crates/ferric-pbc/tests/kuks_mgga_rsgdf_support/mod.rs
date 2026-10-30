@@ -613,3 +613,90 @@ pub fn pyscf_pin(key: &str) -> f64 {
     assert_eq!(doc["pyscf_version"], "2.13.1");
     doc["e_tot"][key].as_f64().expect("pinned energy")
 }
+
+// ------------- force and stress bodies (per-commit 1x1x1, weekly 1x1x3)
+
+/// Singlet k-UKS == k-RKS on the RS-GDF J/K: energy, force and stress from
+/// independent SCF loops (H2 / STO-3G, et-sp aux, 1x1x3, atom grid). Blind to
+/// the alpha / beta EXCHANGE (`TauSpinSwap`, 1.4e-15 / 2.6e-15 force / stress)
+/// by construction (module doc). The asymmetric defects must break it; three
+/// run here, the rest were measured once (2026-10-27, |UKS - RKS| force /
+/// stress): `TauNoAo` / `NoTauStrain` 1.15e-2 / 5.2e-2, `TauDoubled` 1.15e-2
+/// / 5.2e-2, `TauDropBeta` 5.7e-3 / 2.6e-2, `TauTotalBothChannels` 2.4e-3 /
+/// 1.6e-2, `TauNoVxcBeta` 2.8e-3 / 1.2e-2, `PulayJOneSpin` 1.8e-2 / 8.9e-2.
+pub fn singlet_rsgdf_case(n: [usize; 3]) {
+    let fx = fixture(h_cell(&H2), n, "SCAN", Jk::Gdf, atom_grid());
+    let g = force(&fx, None, None);
+    let s = stress(&fx, None, None);
+    let (e, rg, rs) = rks_twin(&fx);
+    let rows = [
+        ("energy", (fx.res.scf.energy - e).abs()),
+        ("force", diff(&g.grad, &rg.grad)),
+        ("force xc_ao", diff(&g.xc_ao, &rg.xc_ao)),
+        ("stress", mdiff(&s.de_deps, &rs.de_deps)),
+        ("stress xc_ao", mdiff(&s.xc_ao, &rs.xc_ao)),
+    ];
+    assert!(amax(&g.xc_ao) > 1e-3 && mmax(&s.xc_ao) > 1e-3);
+    for (name, d) in rows {
+        eprintln!("SCAN RS-GDF singlet UKS vs RKS: {name:<13} {d:.2e}");
+        assert!(d < SINGLET_BAR, "{name}: {d:e}");
+    }
+    use KUSpinMutation as U;
+    use KUStressMutation as V;
+    let fm = [
+        ("TauDropBeta", None, Some(U::TauDropBeta)),
+        ("TauDoubled", Some(KXcMutation::TauDoubled), None),
+        ("PulayJOneSpin", None, Some(U::PulayJOneSpin)),
+    ];
+    for (name, xm, sm) in fm {
+        let d = diff(&force(&fx, xm, sm).grad, &rg.grad);
+        eprintln!("  singlet force {name}: |UKS - RKS| {d:.2e}");
+        assert!(d > MUTANT_BAR, "{name} survives the singlet force: {d:e}");
+    }
+    let sm = [
+        ("TauDropBeta", None, Some(V::TauDropBeta)),
+        ("TauDoubled", Some(KXcStressMutation::TauDoubled), None),
+        ("PulayJOneSpin", None, Some(V::PulayJOneSpin)),
+    ];
+    for (name, xm, sm) in sm {
+        let d = mdiff(&stress(&fx, xm, sm).de_deps, &rs.de_deps);
+        eprintln!("  singlet stress {name}: |UKS - RKS| {d:.2e}");
+        assert!(d > MUTANT_BAR, "{name} survives the singlet stress: {d:e}");
+    }
+}
+
+/// Bar a defect must exceed (the anchors pass at <= 1e-10 / 5e-7).
+pub const MUTANT_BAR: f64 = 1e-5;
+
+/// One cheap POLARIZED derivative check per commit (the weekly file has every
+/// component): on the H3 doublet RS-GDF state (atom grid 20x50, cutoff 14;
+/// the uniform grid costs ~2.5x per derivative here) the force (translation
+/// sum checked) and the stress run, so their Fock and
+/// commutator gates see a polarized state; one strain component against the
+/// central FD of the RS-GDF SCF energy; and the `TauNoVxcBeta` defect (beta
+/// `V^tau` missing from the Pulay Fock, guard skipped) misses that FD.
+pub fn polarized_rsgdf_case(n: [usize; 3]) {
+    let fx = fixture(h_cell(&H3), n, "SCAN", Jk::Gdf, atom_grid());
+    assert!(spin_asymmetry(&fx) > 0.1, "not polarized");
+    let g = force(&fx, None, None);
+    let sum = (0..3)
+        .map(|x| g.grad.column(x).sum().abs())
+        .fold(0.0, f64::max);
+    assert!(amax(&g.grad) > 1e-3 && sum < 1e-10, "sum_A F_A = {sum:e}");
+    let comps = [(2, 2)];
+    let fd = fd_scf_stress(&fx, 1e-4, &comps);
+    let ok = stress_miss(&stress(&fx, None, None).de_deps, &fd, &comps);
+    let bad = stress_miss(
+        &stress(&fx, None, Some(KUStressMutation::TauNoVxcBeta)).de_deps,
+        &fd,
+        &comps,
+    );
+    eprintln!(
+        "SCAN RS-GDF polarized: |sum_A F_A| {sum:.1e}; stress (2,2) vs FD {ok:.2e}; \
+         TauNoVxcBeta {bad:.2e}"
+    );
+    assert!(ok < 5e-7, "{ok:e}");
+    assert!(bad > MUTANT_BAR, "TauNoVxcBeta survives: {bad:e}");
+}
+
+pub const SINGLET_BAR: f64 = 1e-10;
