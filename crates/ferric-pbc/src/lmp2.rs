@@ -237,6 +237,9 @@ pub struct GammaLmp2Config {
     pub reference_exxdiv: ExxDiv,
     /// Denominator convention (the physical one is `MadelungShifted`).
     pub denominators: Mp2Denominators,
+    /// Strict by design: this energy is the LINEAR form, first order in the
+    /// residual, so the molecular LMP2's relaxed Hylleraas default does not
+    /// apply.
     pub cg_rtol: f64,
     pub cg_max_iter: usize,
     /// Integral-free R⁻⁶ pair gate constant (molecular `pair_gate_cal`),

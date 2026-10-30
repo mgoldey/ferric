@@ -1951,3 +1951,301 @@ fn fvv_sparse_rho_rejects_nan_and_negative() {
         assert!(format!("{err}").contains("fvv_sparse_rho"), "{err}");
     }
 }
+
+// ---- the adaptive PCG tolerance ----
+
+/// One row of the tolerance claim: the default against an explicit 1e-11 from
+/// the same code. `check` asserts |ΔE| <= reported bound <= 1e-10 Ha, no
+/// tightening, and the certificate-facing outcome. Matvecs = iterations + 1
+/// (the Hylleraas energy's own). Artifact hypothesis: a bound or energy that
+/// did not track the residual would break |ΔE| <= bound on some row, and an
+/// energy linear in the residual would miss it by orders of magnitude.
+fn rtol_row(xyz: &str, fc: usize, opn: &str, op: Operator, cal: f64, in_core: bool, check: bool) {
+    use ferric_mp2::lmp2_amplitude::{AmplitudeLmp2Result, CgRtolSource};
+    let su = setup(xyz);
+    let dcfg = DirectConfig {
+        aux_radius_bohr: 10.0,
+        virt_radius_bohr: Some(12.0),
+        ao_tail: 1e-3,
+        schwarz_skip: 1e-5,
+        batch_merge: 4,
+        ..Default::default()
+    };
+    let cfg = |rtol: Option<f64>| AmplitudeLmp2Config {
+        eps: 1e-4,
+        frozen_core: fc,
+        pair_gate_cal: Some(cal),
+        cg_rtol: rtol,
+        ..Default::default()
+    };
+    let run_direct = |rtol| {
+        amplitude_lmp2_direct(
+            &su.mol,
+            &su.obs,
+            &su.obs_bs,
+            &su.dfbs,
+            op,
+            &su.rhf,
+            &cfg(rtol),
+            &dcfg,
+        )
+        .unwrap()
+        .0
+    };
+    let run_core = |rtol| {
+        amplitude_lmp2(
+            &su.mol,
+            &su.obs,
+            &su.obs_bs,
+            &su.dfbs,
+            op,
+            &su.rhf,
+            &cfg(rtol),
+        )
+        .unwrap()
+    };
+    let assess = |path: &str, new: AmplitudeLmp2Result, strict: AmplitudeLmp2Result| {
+        let de = new.e_corr - strict.e_corr;
+        let (o, bound) = (new.cg_rtol_outcome, new.cg_energy_error_bound);
+        eprintln!(
+            "RTOLROW {xyz} {opn} {path}: dE {de:+.3e} bound {bound:.3e} iters {} vs {} matvecs \
+             {} vs {} relres {:.2e} tightened {} rtol {:.0e}",
+            new.cg_iterations,
+            strict.cg_iterations,
+            new.cg_iterations + 1,
+            strict.cg_iterations + 1,
+            new.cg_relres,
+            o.tightened,
+            o.rtol_used
+        );
+        assert!(new.cg_converged && strict.cg_converged);
+        assert_eq!(strict.cg_rtol_outcome.source, CgRtolSource::Explicit);
+        assert_eq!(strict.cg_rtol_outcome.rtol_used, 1e-11);
+        assert_eq!(o.source, CgRtolSource::AdaptiveDefault);
+        assert_eq!(o.target_met, Some(true), "{xyz} {opn} {path}");
+        assert!(bound <= 1e-10, "{xyz} {opn} {path}: bound {bound:.3e}");
+        assert!(
+            de.abs() <= bound,
+            "{xyz} {opn} {path}: |dE| {de:.3e} > bound {bound:.3e}"
+        );
+        if check {
+            assert!(!o.tightened, "{xyz} {opn} {path}: tightening fired");
+            assert_eq!(o.rtol_used, 1e-6);
+            assert!(new.cg_iterations < strict.cg_iterations);
+        }
+    };
+    assess("direct", run_direct(None), run_direct(Some(1e-11)));
+    if in_core {
+        assess("in-core", run_core(None), run_core(Some(1e-11)));
+    }
+}
+
+#[test]
+fn default_rtol_energy_is_within_its_bound() {
+    let coul = Operator::coulomb();
+    let erfc = Operator::erfc(1.0);
+    rtol_row("alkane_4.xyz", 4, "coul", coul, 0.7, true, true);
+    rtol_row("alkane_4.xyz", 4, "erfc", erfc, 0.02, true, true);
+    rtol_row("alkane_8.xyz", 8, "coul", coul, 0.7, false, true);
+    rtol_row("alkane_8.xyz", 8, "erfc", erfc, 0.02, false, true);
+    rtol_row("s22/water_dimer.xyz", 2, "coul", coul, 0.7, true, true);
+}
+
+/// The size rows of the tolerance claim. `check = false`: whether tightening
+/// fires is what the row reports; the bound and |ΔE| are still asserted.
+#[test]
+#[ignore = "size rows (minutes); run with --ignored --nocapture"]
+fn default_rtol_size_rows() {
+    let coul = Operator::coulomb();
+    let erfc = Operator::erfc(1.0);
+    for (xyz, fc) in [("alkane_16.xyz", 16), ("alkane_20.xyz", 20)] {
+        rtol_row(xyz, fc, "coul", coul, 0.7, false, false);
+        rtol_row(xyz, fc, "erfc", erfc, 0.02, false, false);
+    }
+}
+
+fn adaptive(start: f64, floor: f64, target_ha: f64) -> ferric_mp2::lmp2_amplitude::CgRtolPolicy {
+    ferric_mp2::lmp2_amplitude::CgRtolPolicy::Adaptive {
+        start,
+        floor,
+        target_ha,
+    }
+}
+
+/// Continuing is not restarting: stopping at 1e-6 and carrying on to 1e-9 is
+/// bitwise the straight 1e-9 solve, on both matvec paths, with no extra
+/// iterations.
+#[test]
+fn continued_pcg_is_bitwise_a_straight_solve() {
+    use ferric_mp2::ragged::{solve_ragged_budgeted_steered, solve_ragged_budgeted_with};
+    let (rg, f_oo) = production_ragged("alkane_4.xyz", 4, 1e-4);
+    for budget in [usize::MAX, 1] {
+        let straight = solve_ragged_budgeted_with(&rg, &f_oo, 1e-9, 400, budget, 0.0);
+        let mut stops = Vec::new();
+        let cont = solve_ragged_budgeted_steered(&rg, &f_oo, 1e-6, 400, budget, 0.0, |relres| {
+            stops.push(relres);
+            (stops.len() == 1).then_some(1e-9)
+        });
+        assert_eq!(stops.len(), 2, "one stop per tolerance");
+        assert!(stops[0] < 1e-6 && stops[0] > 1e-9);
+        assert!(cont.solve.converged);
+        assert_eq!(cont.solve.iterations, straight.solve.iterations);
+        assert_eq!(cont.solve.relres.to_bits(), straight.solve.relres.to_bits());
+        assert!(bits_equal(&cont.solve.t, &straight.solve.t));
+    }
+}
+
+/// A target low enough to force tightening: it fires, lands at the derived
+/// tolerance, meets the target, and the energy error obeys the final bound.
+/// Mutants seen to fail: tightening never fires; the threshold check inverted.
+#[test]
+fn tightening_fires_and_meets_a_low_target() {
+    use ferric_mp2::lmp2_amplitude::{
+        hylleraas_energy, operator_lambda_min_lower_bound, pattern_rhs_norm,
+        solve_under_rtol_policy, CgRtolSource, LMP2_CG_ENERGY_ERROR_TARGET,
+    };
+    let (rg, f_oo, f_vv) = production_ragged_op("alkane_4.xyz", 4, 1e-4, Operator::coulomb(), 0.7);
+    let run = |p| solve_under_rtol_policy(&rg, &f_oo, &f_vv, p, 400, usize::MAX, 0.0).unwrap();
+    let (reference, _, _) = run(adaptive(1e-13, 1e-13, 1.0));
+    let e_ref = hylleraas_energy(&rg, &f_oo, reference.plan(), &reference.solve.t).unwrap();
+
+    // the default target does not fire on this system, from the same start
+    let (at_start, o0, b0) = run(adaptive(1e-3, 1e-11, 1.0));
+    assert!(!o0.tightened && o0.target_met == Some(true));
+    assert!(
+        b0 > 1e-9,
+        "start bound {b0:.3e} must exceed the targets below"
+    );
+
+    for target in [1e-8, LMP2_CG_ENERGY_ERROR_TARGET, 1e-13] {
+        let (b, o, bound) = run(adaptive(1e-3, 1e-11, target));
+        let e = hylleraas_energy(&rg, &f_oo, b.plan(), &b.solve.t).unwrap();
+        let de = e - e_ref;
+        eprintln!(
+            "TIGHTEN target {target:.0e}: rtol {:.3e} iters {} (start {}) relres {:.3e} bound \
+             {bound:.3e} dE {de:+.3e}",
+            o.rtol_used, b.solve.iterations, at_start.solve.iterations, b.solve.relres
+        );
+        let lam = operator_lambda_min_lower_bound(&f_oo, &f_vv).unwrap();
+        let derived = 0.5 * (target * lam / 3.0).sqrt() / pattern_rhs_norm(&rg);
+        assert_eq!(o.source, CgRtolSource::AdaptiveDefault);
+        assert!(o.tightened, "target {target:.0e} did not fire");
+        assert_eq!(o.rtol_used, derived.max(1e-11));
+        assert_eq!(o.target_met, Some(true));
+        assert!(b.solve.converged && bound <= target);
+        assert!(b.solve.iterations > at_start.solve.iterations);
+        assert!(de.abs() <= bound + 1e-14, "dE {de:.3e} bound {bound:.3e}");
+    }
+}
+
+/// An unreachable target is reported, at the floor and at the iteration limit,
+/// and the floor is never passed.
+#[test]
+fn unreachable_target_is_reported() {
+    use ferric_mp2::lmp2_amplitude::solve_under_rtol_policy;
+    let (rg, f_oo, f_vv) = production_ragged_op("alkane_4.xyz", 4, 1e-4, Operator::coulomb(), 0.7);
+    let (b, o, bound) = solve_under_rtol_policy(
+        &rg,
+        &f_oo,
+        &f_vv,
+        adaptive(1e-6, 1e-9, 1e-40),
+        400,
+        usize::MAX,
+        0.0,
+    )
+    .unwrap();
+    assert!(b.solve.converged && o.tightened);
+    assert_eq!(o.rtol_used, 1e-9);
+    assert_eq!(o.target_met, Some(false));
+    assert!(bound > 1e-40 && b.solve.relres > 1e-11);
+
+    let (s, _, _) = solve_under_rtol_policy(
+        &rg,
+        &f_oo,
+        &f_vv,
+        adaptive(1e-6, 1e-11, 1.0),
+        400,
+        usize::MAX,
+        0.0,
+    )
+    .unwrap();
+    let limit = s.solve.iterations + 1;
+    let (b, o, bound) = solve_under_rtol_policy(
+        &rg,
+        &f_oo,
+        &f_vv,
+        adaptive(1e-6, 1e-11, 1e-30),
+        limit,
+        usize::MAX,
+        0.0,
+    )
+    .unwrap();
+    assert!(!b.solve.converged && o.tightened);
+    assert_eq!(b.solve.iterations, limit);
+    assert_eq!(o.target_met, Some(false));
+    assert!(bound > 1e-30);
+}
+
+/// With no positive gap the bound is undefined: the adaptive policy runs at
+/// the strict tolerance from the start and never reports a met target.
+#[test]
+fn no_gap_uses_the_strict_tolerance() {
+    use ferric_mp2::lmp2_amplitude::{solve_under_rtol_policy, CgRtolPolicy, CgRtolSource};
+    use ferric_mp2::ragged::solve_ragged_budgeted_with;
+    let (rg, f_oo, f_vv) = production_ragged_op("alkane_4.xyz", 4, 1e-4, Operator::coulomb(), 0.7);
+    // only the bound reads f_vv: the operator lives in the pair blocks
+    let closed = &f_vv - &(ndarray::Array2::<f64>::eye(f_vv.nrows()) * 100.0);
+    let (b, o, bound) = solve_under_rtol_policy(
+        &rg,
+        &f_oo,
+        &closed,
+        CgRtolPolicy::from_config(None),
+        400,
+        usize::MAX,
+        0.0,
+    )
+    .unwrap();
+    assert_eq!(o.source, CgRtolSource::StrictNoGap);
+    assert_eq!(o.rtol_used, 1e-11);
+    assert!(!o.tightened && o.target_met.is_none() && bound.is_nan());
+    let straight = solve_ragged_budgeted_with(&rg, &f_oo, 1e-11, 400, usize::MAX, 0.0);
+    assert!(bits_equal(&b.solve.t, &straight.solve.t));
+}
+
+/// An explicit tolerance is literal: the driver stops at it even with the
+/// bound far above the default target, and the certificate says so.
+#[test]
+fn explicit_rtol_is_literal() {
+    use ferric_mp2::lmp2_amplitude::CgRtolSource;
+    use ferric_mp2::lmp2_certificate::{Lmp2Certificate, SystemShape};
+    let su = setup("alkane_4.xyz");
+    let cfg = AmplitudeLmp2Config {
+        eps: 1e-4,
+        frozen_core: 4,
+        cg_rtol: Some(1e-3),
+        ..Default::default()
+    };
+    let r = amplitude_lmp2(
+        &su.mol,
+        &su.obs,
+        &su.obs_bs,
+        &su.dfbs,
+        Operator::coulomb(),
+        &su.rhf,
+        &cfg,
+    )
+    .unwrap();
+    let o = r.cg_rtol_outcome;
+    assert_eq!(o.source, CgRtolSource::Explicit);
+    assert!(!o.tightened && o.rtol_used == 1e-3 && o.target_met.is_none());
+    assert!(r.cg_relres > 1e-6 && r.cg_energy_error_bound > 1e-10);
+    let shape = SystemShape::new(&su.mol, &su.obs_bs);
+    let cert = Lmp2Certificate::new(&cfg, None, &r, &shape, &Operator::coulomb());
+    assert_eq!(cert.cg_rtol, 1e-3);
+    assert_eq!(cert.cg_rtol_source, "explicit");
+    assert!(
+        cert.warnings.iter().any(|w| w.contains("not tightened")),
+        "{:?}",
+        cert.warnings
+    );
+}

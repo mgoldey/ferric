@@ -77,6 +77,8 @@ pub struct AmplitudeLinLccdConfig {
     /// everything (the exactness-anchor limit).
     pub eps: f64,
     pub frozen_core: usize,
+    /// Strict by design: LinLCCD's energy is the LINEAR form, first order in
+    /// the residual, so LMP2's relaxed Hylleraas default does not apply.
     pub cg_rtol: f64,
     pub cg_max_iter: usize,
     pub eri3_budget_bytes: Option<usize>,

@@ -410,6 +410,29 @@ pub fn solve_ragged_budgeted_with(
     budget_bytes: usize,
     fvv_rho_star: f64,
 ) -> BudgetedSolve {
+    solve_ragged_budgeted_steered(rg, f_oo, rtol, max_iter, budget_bytes, fvv_rho_star, |_| {
+        None
+    })
+}
+
+/// [`solve_ragged_budgeted_with`] with a CONTINUATION rule. Each time the PCG
+/// reaches its current tolerance, `steer(relres)` may return a tighter one;
+/// the SAME Krylov sequence then carries on (no restart, no extra matvec), so
+/// the iterates are bitwise those of a straight solve at the final tolerance.
+/// `cg_max_iter` bounds the iterations over all the stages together.
+#[allow(clippy::too_many_arguments)]
+pub fn solve_ragged_budgeted_steered<S>(
+    rg: &Ragged,
+    f_oo: &Array2<f64>,
+    rtol: f64,
+    max_iter: usize,
+    budget_bytes: usize,
+    fvv_rho_star: f64,
+    steer: S,
+) -> BudgetedSolve
+where
+    S: FnMut(f64) -> Option<f64>,
+{
     let plan_bytes = SolvePlan::bytes_for_with_threshold(rg, f_oo, fvv_rho_star);
     let resident_bytes = solve_resident_bytes(rg, max_iter);
     let Some(charge) = admit_plan(plan_bytes, resident_bytes, budget_bytes) else {
@@ -421,8 +444,17 @@ pub fn solve_ragged_budgeted_with(
             resident_bytes as f64 / 1e9,
             budget_bytes as f64 / 1e9
         );
-        let solve =
-            solve_ragged_with_trace(rg, rtol, max_iter, |p, fl| matvec_indexed(rg, f_oo, p, fl));
+        let solve = pcg_steered(
+            rg,
+            rtol,
+            max_iter,
+            |p, ap, flops| {
+                for (slot, v) in ap.iter_mut().zip(matvec_indexed(rg, f_oo, p, flops)) {
+                    *slot = v;
+                }
+            },
+            steer,
+        );
         return BudgetedSolve {
             solve,
             decision: PlanDecision {
@@ -435,7 +467,13 @@ pub fn solve_ragged_budgeted_with(
         };
     };
     let plan = SolvePlan::with_fvv_threshold(rg, f_oo, fvv_rho_star);
-    let solve = solve_ragged_planned(rg, &plan, rtol, max_iter);
+    let solve = pcg_steered(
+        rg,
+        rtol,
+        max_iter,
+        |p, ap, flops| matvec_planned(rg, &plan, p, ap, flops),
+        steer,
+    );
     BudgetedSolve {
         solve,
         decision: PlanDecision {
@@ -548,9 +586,29 @@ where
 /// the per-element expression of the original allocating loop
 /// (`z = r / denom`, `p = z + β·p`), and the reductions still go through
 /// [`dot_blocks`], so the iterates are bitwise those of that loop.
-fn pcg_core<F>(rg: &Ragged, rtol: f64, max_iter: usize, mut matvec_into: F) -> RaggedSolve
+fn pcg_core<F>(rg: &Ragged, rtol: f64, max_iter: usize, matvec_into: F) -> RaggedSolve
 where
     F: FnMut(&[Array2<f64>], &mut [Array2<f64>], &mut u64),
+{
+    pcg_steered(rg, rtol, max_iter, matvec_into, |_| None)
+}
+
+/// [`pcg_core`] with a continuation rule: on reaching the current tolerance,
+/// `steer(relres)` may name a tighter one and the loop carries on from the
+/// same `t`, `r`, `p`; the direction update is simply the next pass's first
+/// step, so stopping and continuing changes no iterate. A tolerance the
+/// current residual already meets ends the solve. Exhausting `max_iter`
+/// leaves `converged` false.
+fn pcg_steered<F, S>(
+    rg: &Ragged,
+    rtol: f64,
+    max_iter: usize,
+    mut matvec_into: F,
+    mut steer: S,
+) -> RaggedSolve
+where
+    F: FnMut(&[Array2<f64>], &mut [Array2<f64>], &mut u64),
+    S: FnMut(f64) -> Option<f64>,
 {
     use ndarray::Zip;
     let zeros: Vec<Array2<f64>> = rg
@@ -594,32 +652,45 @@ where
     let mut p = z.clone();
     let mut ap = zeros;
     let mut rz = dot_blocks(&r, &z);
-    let (mut it, mut relres, mut converged) = (0, 1.0, false);
-    while it < max_iter {
-        it += 1;
-        matvec_into(&p, &mut ap, &mut flops_total);
-        let alpha = rz / dot_blocks(&p, &ap);
-        trace.alphas.push(alpha);
-        for k in 0..p.len() {
-            t[k].scaled_add(alpha, &p[k]);
-            r[k].scaled_add(-alpha, &ap[k]);
+    let (mut it, mut relres) = (0, 1.0);
+    let mut target = rtol;
+    let converged = loop {
+        let mut reached = false;
+        while it < max_iter {
+            if it > 0 {
+                precond_into(&r, &mut z);
+                let rz_new = dot_blocks(&r, &z);
+                let beta = rz_new / rz;
+                trace.betas.push(beta);
+                for (pk, zk) in p.iter_mut().zip(&z) {
+                    Zip::from(pk)
+                        .and(zk)
+                        .for_each(|pv, &zv| *pv = zv + beta * *pv);
+                }
+                rz = rz_new;
+            }
+            it += 1;
+            matvec_into(&p, &mut ap, &mut flops_total);
+            let alpha = rz / dot_blocks(&p, &ap);
+            trace.alphas.push(alpha);
+            for k in 0..p.len() {
+                t[k].scaled_add(alpha, &p[k]);
+                r[k].scaled_add(-alpha, &ap[k]);
+            }
+            relres = dot_blocks(&r, &r).sqrt() / bnorm;
+            if relres < target {
+                reached = true;
+                break;
+            }
         }
-        relres = dot_blocks(&r, &r).sqrt() / bnorm;
-        if relres < rtol {
-            converged = true;
-            break;
+        if !reached {
+            break false;
         }
-        precond_into(&r, &mut z);
-        let rz_new = dot_blocks(&r, &z);
-        let beta = rz_new / rz;
-        trace.betas.push(beta);
-        for (pk, zk) in p.iter_mut().zip(&z) {
-            Zip::from(pk)
-                .and(zk)
-                .for_each(|pv, &zv| *pv = zv + beta * *pv);
+        match steer(relres) {
+            Some(tighter) if relres >= tighter => target = tighter,
+            _ => break true,
         }
-        rz = rz_new;
-    }
+    };
     let flops_per_mv = if it > 0 { flops_total / it as u64 } else { 0 };
     RaggedSolve {
         t,

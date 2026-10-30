@@ -17,7 +17,10 @@ use ferric_core::basis::BasisSet;
 use ferric_core::mol::Molecule;
 use ferric_integrals::operator::{Operator, OperatorKind};
 
-use crate::lmp2_amplitude::{AmplitudeLmp2Config, AmplitudeLmp2Result};
+use crate::lmp2_amplitude::{
+    AmplitudeLmp2Config, AmplitudeLmp2Result, CgRtolOutcome, CgRtolSource,
+    LMP2_CG_ENERGY_ERROR_TARGET,
+};
 use crate::lmp2_direct::{DirectConfig, DirectStats};
 
 /// Largest ε whose MEASURED recovery is comparable to ORCA DLPNO-MP2
@@ -197,10 +200,18 @@ pub struct Lmp2Certificate {
     /// Arithmetic precision of every kernel; `"f64"` until a mixed kernel
     /// ships.
     pub precision: &'static str,
-    /// The PCG relative-residual target the solve ran to. The energy is the
-    /// stationary Hylleraas form, so its solver error is second order in
+    /// The last PCG relative-residual target the solve ran to. The energy is
+    /// the stationary Hylleraas form, so its solver error is second order in
     /// the achieved residual (`cg_relres`).
     pub cg_rtol: f64,
+    /// Where it came from ([`CgRtolSource::as_str`]).
+    pub cg_rtol_source: &'static str,
+    /// Whether the error bound forced the PCG past its starting tolerance.
+    pub cg_tightened: bool,
+    /// The bound target (Ha); `None` unless the bound governed the solve.
+    pub cg_energy_error_target: Option<f64>,
+    /// Whether the target was met; `None` when no target applied.
+    pub cg_energy_target_met: Option<bool>,
     pub cg_relres: f64,
     /// A-priori bound (Ha) on the Hylleraas energy's solver error at
     /// `cg_relres`: `3·‖PJ‖²·relres²/λ_min`, λ_min ≥ 2(ε_LUMO − ε_HOMO).
@@ -242,7 +253,11 @@ impl Lmp2Certificate {
             maps: direct.map(DirectMaps::from),
             pair_fit: None,
             precision: "f64",
-            cg_rtol: cfg.cg_rtol,
+            cg_rtol: r.cg_rtol_outcome.rtol_used,
+            cg_rtol_source: r.cg_rtol_outcome.source.as_str(),
+            cg_tightened: r.cg_rtol_outcome.tightened,
+            cg_energy_error_target: r.cg_rtol_outcome.target_ha,
+            cg_energy_target_met: r.cg_rtol_outcome.target_met,
             cg_relres: r.cg_relres,
             cg_energy_error_bound: r.cg_energy_error_bound,
             cg_converged: r.cg_converged,
@@ -253,7 +268,15 @@ impl Lmp2Certificate {
             matvec_path: r.matvec_path.as_str(),
             validation_grade: validation_grade(cfg.eps),
             eps_trust: eps_trust(cfg.eps, coulomb),
-            warnings: warnings(cfg.eps, cfg.pair_gate_cal, shape, coulomb),
+            warnings: {
+                let mut w = warnings(cfg.eps, cfg.pair_gate_cal, shape, coulomb);
+                w.extend(solver_warnings(
+                    &r.cg_rtol_outcome,
+                    r.cg_energy_error_bound,
+                    r.cg_relres,
+                ));
+                w
+            },
         }
     }
 
@@ -301,6 +324,13 @@ impl Lmp2Certificate {
             ("pair_fit", pair_fit),
             ("precision", V::Str(self.precision.to_string())),
             ("cg_rtol", V::F64(self.cg_rtol)),
+            ("cg_rtol_source", V::Str(self.cg_rtol_source.to_string())),
+            ("cg_tightened", V::Bool(self.cg_tightened)),
+            ("cg_energy_error_target", self.cg_energy_error_target.into()),
+            (
+                "cg_energy_target_met",
+                self.cg_energy_target_met.map_or(V::Null, V::Bool),
+            ),
             ("cg_relres", V::F64(self.cg_relres)),
             ("cg_energy_error_bound", V::F64(self.cg_energy_error_bound)),
             ("cg_converged", V::Bool(self.cg_converged)),
@@ -392,9 +422,67 @@ fn warnings(eps: f64, gate_cal: Option<f64>, shape: &SystemShape, coulomb: bool)
     w
 }
 
+/// Every way the solve's tolerance leaves its energy error unbounded by the
+/// default target.
+fn solver_warnings(o: &CgRtolOutcome, bound: f64, relres: f64) -> Vec<String> {
+    let mut w = Vec::new();
+    match o.source {
+        CgRtolSource::StrictNoGap => w.push(format!(
+            "no positive orbital gap: the PCG energy-error bound is undefined, so the solve ran \
+             at the strict cg_rtol = {:.0e}",
+            o.rtol_used
+        )),
+        CgRtolSource::AdaptiveDefault if o.target_met == Some(false) => w.push(format!(
+            "PCG energy-error target NOT met: bound {bound:.2e} Ha > {:.0e} Ha at relres \
+             {relres:.2e} (cg_rtol {:.0e}; floor or iteration limit reached)",
+            o.target_ha.unwrap_or(f64::NAN),
+            o.rtol_used
+        )),
+        CgRtolSource::Explicit if bound.is_nan() => w.push(format!(
+            "explicit cg_rtol = {:.0e}: no positive orbital gap, the PCG energy-error bound is \
+             undefined",
+            o.rtol_used
+        )),
+        CgRtolSource::Explicit if bound > LMP2_CG_ENERGY_ERROR_TARGET => w.push(format!(
+            "explicit cg_rtol = {:.0e}: PCG energy-error bound {bound:.2e} Ha exceeds \
+             {LMP2_CG_ENERGY_ERROR_TARGET:.0e} Ha; not tightened, as asked",
+            o.rtol_used
+        )),
+        _ => {}
+    }
+    w
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn outcome(source: CgRtolSource, met: Option<bool>) -> CgRtolOutcome {
+        CgRtolOutcome {
+            source,
+            rtol_used: 1e-6,
+            tightened: false,
+            target_ha: met.map(|_| 1e-10),
+            target_met: met,
+        }
+    }
+
+    /// Each tolerance outcome that weakens or voids the bound says so; a run
+    /// inside it says nothing.
+    #[test]
+    fn solver_warnings_fire_exactly_on_their_conditions() {
+        use CgRtolSource::*;
+        assert!(solver_warnings(&outcome(AdaptiveDefault, Some(true)), 1e-13, 5e-7).is_empty());
+        assert!(solver_warnings(&outcome(Explicit, None), 1e-13, 5e-7).is_empty());
+        let w = solver_warnings(&outcome(AdaptiveDefault, Some(false)), 1e-9, 5e-7);
+        assert!(w.len() == 1 && w[0].contains("NOT met"), "{w:?}");
+        let w = solver_warnings(&outcome(StrictNoGap, None), f64::NAN, 1e-12);
+        assert!(w.len() == 1 && w[0].contains("undefined"), "{w:?}");
+        let w = solver_warnings(&outcome(Explicit, None), 1e-9, 5e-7);
+        assert!(w.len() == 1 && w[0].contains("not tightened"), "{w:?}");
+        let w = solver_warnings(&outcome(Explicit, None), f64::NAN, 5e-7);
+        assert!(w.len() == 1 && w[0].contains("undefined"), "{w:?}");
+    }
 
     fn shape(ratio: f64, emin: f64) -> SystemShape {
         SystemShape {

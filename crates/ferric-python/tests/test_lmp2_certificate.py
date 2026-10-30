@@ -20,6 +20,10 @@ CERT_KEYS = [
     "pair_fit",
     "precision",
     "cg_rtol",
+    "cg_rtol_source",
+    "cg_tightened",
+    "cg_energy_error_target",
+    "cg_energy_target_met",
     "cg_relres",
     "cg_energy_error_bound",
     "cg_converged",
@@ -76,9 +80,13 @@ def test_certificate_fields_round_trip_direct(water):
     assert loc["gate_cal"] == 0.7
     assert loc["precision"] == "f64"
     assert loc["frozen_core"] == 1
-    assert loc["cg_converged"] is True and 0.0 <= loc["cg_relres"] < 1e-9
-    assert loc["cg_rtol"] == 1e-11 and loc["cg_relres"] < loc["cg_rtol"]
-    assert 0.0 <= loc["cg_energy_error_bound"] < 1e-12
+    assert loc["cg_converged"] is True and 0.0 <= loc["cg_relres"] < 1e-6
+    assert loc["cg_rtol"] == 1e-6 and loc["cg_relres"] < loc["cg_rtol"]
+    assert loc["cg_rtol_source"] == "adaptive-default"
+    assert loc["cg_tightened"] is False
+    assert loc["cg_energy_error_target"] == 1e-10
+    assert loc["cg_energy_target_met"] is True
+    assert 0.0 <= loc["cg_energy_error_bound"] <= 1e-10
     assert 0.0 < loc["keep_fraction"] <= 1.0 and 0.0 < loc["pair_fraction"] <= 1.0
     assert isinstance(loc["n_pairs_gated"], int)
     assert sorted(loc["maps"]) == sorted(MAP_KEYS)
