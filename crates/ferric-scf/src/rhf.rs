@@ -2448,6 +2448,14 @@ fn solve_rhf_impl(
     if let Some(x) = xc_contrib.as_ref() {
         x.start_scf();
     }
+    // Mixed `dfj-pack`/`dfk-occ` builds only while the density moves, and an
+    // f64 exit (see `crate::jk_ladder`); inert unless one of them is requested.
+    let jk_ladder = crate::jk_ladder::JkLadder::new([
+        df_j.is_some(),
+        df_k.is_some(),
+        dfk_sr.is_some(),
+        dfk_lr.is_some(),
+    ]);
 
     for iter in 1..=config.max_iter {
         ctx.check_interrupted()?;
@@ -2486,6 +2494,7 @@ fn solve_rhf_impl(
         // call sequence as the pluggable-K arm (J, update_density, K).
         // The rayon fan-out lives INSIDE the builders and has fully returned
         // before `stop`.
+        let jk_scope = jk_ladder.begin_build(&[&d]);
         let jk_t = phases.begin("jk_build");
         if let Some((ij, ik)) = inj_jk.as_mut() {
             total_quartets += ij.build(&d, &mut j_buf)?;
@@ -2622,6 +2631,7 @@ fn solve_rhf_impl(
             // Plain hybrid or pure HF: K already built by the builder path above.
             f.scaled_add(-0.5 * k_mix.sr, &k_buf);
         }
+        drop(jk_scope);
 
         // Electronic energy BEFORE adding V_xc (V_xc is one-body in F but
         // E_xc is its own integral) and BEFORE adding the COSMO reaction
@@ -2823,6 +2833,9 @@ fn solve_rhf_impl(
             ctx.is_root(),
             &mut last_report,
         );
+        // A converged exit after a mixed J/K build is refused; the SCF goes on
+        // in f64 (see `crate::jk_ladder`).
+        let conv_exit = jk_ladder.veto_mixed_exit(conv_exit);
 
         // Divergence: energy climbing for consecutive iters (see ScfMonitor).
         if mon.diverging(energy, config.divergence_tol) {

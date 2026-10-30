@@ -22,6 +22,7 @@ use thiserror::Error;
 use ferric_core::basis::BasisSet;
 use ferric_core::memory::pool::Reservation;
 use ferric_core::mol::Molecule;
+use ferric_core::precision_ladder::{LadderSite, PrecisionLadder};
 
 use crate::ao_grid::{collect_shells, eval_basis_and_grad_on_points, nbasis, GtoEvalError};
 use crate::density_on_grid::{eval_density_closed, DensityGrid};
@@ -413,10 +414,18 @@ pub use crate::xc_batch::MIXED_VXC_BUILDS;
 /// So a mixed build keeps its densities and V_xc here, and the solvers call
 /// `refine_last_to_f64` at a converged exit, which swaps that V_xc for an f64
 /// rebuild before the Fock matrix is diagonalised.
-#[derive(Debug, Default)]
-struct MixedLadder {
-    prev: Mutex<Vec<Array2<f64>>>,
-    last_mixed: Mutex<Option<MixedBuild>>,
+///
+/// The step/reset/keep/take logic is the shared
+/// [`ferric_core::precision_ladder::PrecisionLadder`] (extracted from here
+/// without a change of arithmetic; the RI-J/DF-K ladder of `ferric_scf::jk_ladder`
+/// uses the same type).
+#[derive(Debug)]
+struct MixedLadder(PrecisionLadder<MixedBuild>);
+
+impl Default for MixedLadder {
+    fn default() -> Self {
+        Self(PrecisionLadder::new(LadderSite::XcVxc))
+    }
 }
 
 /// A build the ladder ran mixed: its dense spin densities and the V_xc it added.
@@ -427,42 +436,22 @@ struct MixedBuild {
 }
 
 impl MixedLadder {
-    /// Record `ds` and say whether this build may use the mixed kernel.
+    /// Record `ds` and say whether this build may use the mixed kernel (the
+    /// shared [`PrecisionLadder::step_with`] with this kernel's request and
+    /// threshold).
     fn step(&self, ds: &[&Array2<f64>]) -> bool {
-        self.step_with(mixed_vxc_requested(), MIXED_VXC_LADDER_THRESH, ds)
-    }
-
-    /// [`Self::step`] with the request and threshold injected. Nothing is
-    /// recorded when mixed precision is not requested (no nbf² copies). Every
-    /// step forgets the previous build's mixed V_xc.
-    fn step_with(&self, requested: bool, thresh: f64, ds: &[&Array2<f64>]) -> bool {
-        *self.last_mixed.lock().unwrap_or_else(|e| e.into_inner()) = None;
-        if !requested {
-            return false;
-        }
-        let mut prev = self.prev.lock().unwrap_or_else(|e| e.into_inner());
-        let same_shape =
-            prev.len() == ds.len() && prev.iter().zip(ds).all(|(p, d)| p.dim() == d.dim());
-        let moving = same_shape && prev.iter().zip(ds).any(|(p, d)| rms_diff(p, d) > thresh);
-        if same_shape {
-            for (p, d) in prev.iter_mut().zip(ds) {
-                p.assign(d);
-            }
-        } else {
-            *prev = ds.iter().map(|d| (*d).clone()).collect();
-        }
-        moving
+        self.0
+            .step_with(mixed_vxc_requested(), MIXED_VXC_LADDER_THRESH, ds)
     }
 
     /// Forget every earlier build: the next one has no previous build.
     fn reset(&self) {
-        self.prev.lock().unwrap_or_else(|e| e.into_inner()).clear();
-        *self.last_mixed.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        self.0.reset();
     }
 
     /// Keep the mixed build just made (dense densities `ds`, potentials `vs`).
     fn keep_mixed(&self, ds: &[&Array2<f64>], vs: &[&Array2<f64>]) {
-        *self.last_mixed.lock().unwrap_or_else(|e| e.into_inner()) = Some(MixedBuild {
+        self.0.keep_mixed(MixedBuild {
             ds: ds.iter().map(|d| (*d).clone()).collect(),
             vs: vs.iter().map(|v| (*v).clone()).collect(),
         });
@@ -470,10 +459,7 @@ impl MixedLadder {
 
     /// The last build, if it was mixed (and forget it).
     fn take_mixed(&self) -> Option<MixedBuild> {
-        self.last_mixed
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .take()
+        self.0.take_mixed()
     }
 }
 
@@ -501,17 +487,6 @@ fn mixed_vxc_allowed(xc: &XcDef, ladder: &MixedLadder, ds: &[&Array2<f64>]) -> b
         .iter()
         .any(|f| matches!(f.family(), FunctionalFamily::MetaGga));
     !mgga && ladder.step(ds)
-}
-
-/// `sqrt(Σ (a − b)² / len)`; NaN propagates (and then compares false, so a
-/// NaN density never selects the mixed kernel).
-fn rms_diff(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
-    let n = a.len().max(1) as f64;
-    let ss = a
-        .iter()
-        .zip(b.iter())
-        .fold(0.0_f64, |acc, (x, y)| acc + (x - y) * (x - y));
-    (ss / n).sqrt()
 }
 
 /// Closed-shell Kohn-Sham XC evaluator: Becke-Lebedev grid + screened batches
@@ -1102,58 +1077,6 @@ impl UksXcContribution for KsXcUks {
             lr: 0.0,
             omega: 0.0,
         }
-    }
-}
-
-#[cfg(test)]
-mod ladder_tests {
-    use super::*;
-
-    fn m(v: f64) -> Array2<f64> {
-        Array2::from_elem((3, 3), v)
-    }
-
-    #[test]
-    fn first_build_is_f64_and_only_a_moving_density_is_mixed() {
-        let l = MixedLadder::default();
-        let t = 1e-5;
-        assert!(!l.step_with(true, t, &[&m(0.0)]), "no previous build: f64");
-        assert!(l.step_with(true, t, &[&m(1e-3)]), "moved by 1e-3: mixed");
-        assert!(
-            !l.step_with(true, t, &[&m(1e-3 + 1e-6)]),
-            "moved by 1e-6: f64"
-        );
-        assert!(!l.step_with(true, t, &[&m(1e-3 + 1e-6)]), "unchanged: f64");
-        // Exactly τ is not "more than τ".
-        let l = MixedLadder::default();
-        l.step_with(true, 0.25, &[&m(0.0)]);
-        assert!(!l.step_with(true, 0.25, &[&m(0.25)]));
-    }
-
-    #[test]
-    fn any_moving_spin_counts_and_a_shape_change_restarts() {
-        let l = MixedLadder::default();
-        let t = 1e-5;
-        l.step_with(true, t, &[&m(0.0), &m(0.0)]);
-        assert!(l.step_with(true, t, &[&m(0.0), &m(1.0)]), "beta moved");
-        // A different number of spins, or a different nbf, has no previous build.
-        assert!(!l.step_with(true, t, &[&m(5.0)]));
-        assert!(!l.step_with(true, t, &[&Array2::from_elem((4, 4), 9.0)]));
-        assert!(l.step_with(true, t, &[&Array2::from_elem((4, 4), 0.0)]));
-    }
-
-    #[test]
-    fn not_requested_records_nothing_and_nan_is_never_mixed() {
-        let l = MixedLadder::default();
-        assert!(!l.step_with(false, 1e-5, &[&m(0.0)]));
-        assert!(
-            l.prev.lock().unwrap().is_empty(),
-            "no copy when not requested"
-        );
-        assert!(!l.step_with(false, 1e-5, &[&m(1.0)]));
-        let l = MixedLadder::default();
-        l.step_with(true, 1e-5, &[&m(0.0)]);
-        assert!(!l.step_with(true, 1e-5, &[&m(f64::NAN)]));
     }
 }
 

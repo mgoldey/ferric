@@ -949,6 +949,14 @@ fn solve_rohf_impl(
     if let Some(x) = xc_contrib.as_ref() {
         x.start_scf();
     }
+    // Mixed `dfj-pack`/`dfk-occ` builds only while the density moves, and an
+    // f64 exit (see `crate::jk_ladder`); inert unless one of them is requested.
+    let jk_ladder = crate::jk_ladder::JkLadder::new([
+        df_j.is_some(),
+        df_k.is_some(),
+        dfk_sr.is_some(),
+        dfk_lr.is_some(),
+    ]);
 
     let mut iter = 0usize;
     loop {
@@ -981,6 +989,7 @@ fn solve_rohf_impl(
         }
         prev_d_total = Some(d_total.clone());
 
+        let jk_scope = jk_ladder.begin_build(&[&d_a, &d_b]);
         // Combined single-pass J + K_α + K_β when enabled; otherwise J alone here.
         // An injected (periodic) J pre-empts all of them (validate_injected_rohf
         // guarantees no DF/pluggable builder was requested alongside it).
@@ -1078,6 +1087,7 @@ fn solve_rohf_impl(
             f_a.scaled_add(-c_k, &k_a_buf);
             f_b.scaled_add(-c_k, &k_b_buf);
         }
+        drop(jk_scope);
 
         // Pre-XC electronic energy.
         let e_elec_no_xc: f64 = 0.5 * ((&(&h + &f_a) * &d_a).sum() + (&(&h + &f_b) * &d_b).sum());
@@ -1171,6 +1181,9 @@ fn solve_rohf_impl(
         // gradient noise floor at aTZ, so the old `err_max < density_conv` gate
         // would grind to MaxIter there too. See rhf::scf_converged.
         let conv_exit = crate::rhf::scf_converged(sig, config.energy_conv, config.density_conv);
+        // A converged exit after a mixed J/K build is refused; the SCF goes on
+        // in f64 (see `crate::jk_ladder`).
+        let conv_exit = jk_ladder.veto_mixed_exit(conv_exit);
         let converged = conv_exit.is_some();
 
         // Divergence / stall early exits (shared driver::ScfMonitor; both are

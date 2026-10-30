@@ -37,6 +37,10 @@
 //! The mixed bound assumes IEEE binary32 SGEMM (cuBLAS default math mode, no TF32)
 //! and operands in the f32 normal range (the underflow term is omitted).
 //! `resident_bytes` is the f64 figure; the mixed charge is `4·band·n²` + `8·n²`.
+//! Inside an SCF the mixed tensor is used only for the builds the SCF precision
+//! ladder allows (`crate::jk_ladder`: mixed while the density moves, f64 exit);
+//! a build the ladder keeps f64 runs the host path. Outside an SCF (no ladder
+//! scope) every build of a mixed `DfK` is mixed.
 //! Open-shell builds reuse the alpha-sized scratch for beta: every mixed copy and
 //! slice uses `nocc`, never the scratch capacity.
 //! Where C2's budget row will need more than this file measures: the shipping bar
@@ -687,6 +691,28 @@ fn upload_band(
     DeviceDfK::upload_with_precision(dev, pool, &view, src.nao(), dfk_precision())
 }
 
+/// The SCF precision ladder (`crate::jk_ladder`) requires an f64 build and the
+/// resident dressed tensor is (or, not uploaded yet, would be) f32: run the host
+/// path. The upload waits for a mixed build.
+fn ladder_wants_host(slot: &DeviceSlot) -> bool {
+    if crate::jk_ladder::scope_allows_mixed() != Some(false) {
+        return false;
+    }
+    match slot {
+        DeviceSlot::Untried => dfk_precision() == DfkPrecision::Mixed,
+        DeviceSlot::Ready(d) => d.is_mixed(),
+        DeviceSlot::Declined => false,
+    }
+}
+
+/// A finished device build ran mixed: tell the ladder (it keeps the build for
+/// the f64 exit).
+fn note_ladder_build(mixed: bool) {
+    if mixed {
+        crate::jk_ladder::note_mixed_build();
+    }
+}
+
 /// Try the device. `true` means `k` holds this rank's band contribution (the
 /// caller then runs the cross-rank reduction exactly as for the CPU path);
 /// `false` means run the CPU path (`k` untouched by this call). Never panics;
@@ -722,6 +748,9 @@ pub fn try_build_from_occ(
     let Some(pool) = ferric_core::gpu::pool() else {
         return false;
     };
+    if ladder_wants_host(slot) {
+        return false;
+    }
     if matches!(slot, DeviceSlot::Untried) {
         let uploaded = device(info.ordinal).and_then(|dev| upload_band(&dev, &pool, src));
         match uploaded {
@@ -748,11 +777,14 @@ pub fn try_build_from_occ(
         }
     }
     let outcome = match slot {
-        DeviceSlot::Ready(d) => d.build_from_occ(&c_occ.view(), k),
+        DeviceSlot::Ready(d) => d.build_from_occ(&c_occ.view(), k).map(|_| d.is_mixed()),
         _ => return false,
     };
     match outcome {
-        Ok(_) => true,
+        Ok(mixed) => {
+            note_ladder_build(mixed);
+            true
+        }
         Err(e) => {
             count_cpu_fallback(&e);
             decline(slot, &one_line(&e));

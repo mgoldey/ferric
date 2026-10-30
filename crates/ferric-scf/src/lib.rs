@@ -129,6 +129,9 @@ pub mod df_k_gpu;
 pub mod diis;
 /// Initial guess generators: core Hamiltonian, SAD, read-in.
 pub mod guess;
+/// SCF precision ladder for the mixed J/K device kernels (`dfj-pack`,
+/// `dfk-occ`): mixed only while the density moves, f64 exit.
+pub mod jk_ladder;
 /// LinK exchange builder: linear-scaling K via Schwarz-screened column lists.
 pub mod link_k;
 
