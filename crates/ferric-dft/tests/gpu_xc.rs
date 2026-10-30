@@ -5,7 +5,8 @@
 //! GGA and meta-GGA (τ), closed and open shell. The device products are cuBLAS
 //! dgemm (not bit-identical to OpenBLAS), so E_xc and V_xc agree to rounding:
 //! the bars below are ~10³ above the measured-order γ_k·|A||B| bound and far
-//! below any physical effect. Two device builds are bit-identical.
+//! below any physical effect. Two device builds are bit-identical. The host
+//! staging of the waves is page-locked (no heap fallback, bytes held).
 use ferric_core::basis;
 use ferric_core::gpu::{install, probe, stats, GpuMode, GpuSettingsExplicit, GpuStatus};
 use ferric_core::mol::Molecule;
@@ -138,6 +139,16 @@ fn closed_shell_gga_on_the_device_matches_the_host() {
         2,
         "density + potential pass"
     );
+    // The host stage really is page-locked: no buffer fell back to the heap,
+    // and the grid holds page-locked bytes (operands + results, f64).
+    assert_eq!(
+        s2.xc_pinned_fallback - s1.xc_pinned_fallback,
+        0,
+        "a page-locked staging buffer fell back to heap memory"
+    );
+    let pinned = ks.xc_pinned_staging_bytes();
+    eprintln!("page-locked XC staging: {pinned} bytes");
+    assert!(pinned > 0, "the XC host stage is not page-locked");
     let dev_occ = on(false, || build(true));
     let dev_again = on(false, || build(false));
     assert_close("PBE dense", (host.0, &host.1), (dev.0, &dev.1));

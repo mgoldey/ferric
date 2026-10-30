@@ -234,3 +234,128 @@ fn a_mixed_device_scf_matches_the_f64_host_scf() {
     );
     assert!(de < 1e-10, "|dE| = {de:e}");
 }
+
+/// `(2·C·Cᵀ, C)` for a deterministic `(nbf, nocc)` block, entries in `[-s, s]`.
+fn density_and_c(nbf: usize, nocc: usize, seed: u64, s: f64) -> (Array2<f64>, Array2<f64>) {
+    let mut x = seed;
+    let c = Array2::from_shape_fn((nbf, nocc), |_| {
+        x = x
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        ((x >> 11) as f64 / (1u64 << 53) as f64 - 0.5) * 2.0 * s
+    });
+    (2.0 * c.dot(&c.t()), c)
+}
+
+fn same_bits(a: &(f64, Array2<f64>), b: &(f64, Array2<f64>)) -> bool {
+    a.0.to_bits() == b.0.to_bits()
+        && a.1
+            .iter()
+            .zip(b.1.iter())
+            .all(|(x, y)| x.to_bits() == y.to_bits())
+}
+
+/// The reused host stage carries nothing from one build into the next: on a
+/// grid whose passes run several waves (benzene PBE/cc-pVDZ, default 75×110
+/// grid), the sequence dense f64 → dense mixed → dense f64 → factored f64 →
+/// factored mixed → dense f64 gives bit-identical E_xc and V_xc wherever the
+/// configuration repeats (the three dense f64 builds at the same density),
+/// with every staging buffer page-locked and each build in the mode the
+/// ladder chose (`start_scf` makes the next build f64; a moved density makes
+/// it mixed).
+#[test]
+fn a_multi_wave_build_sequence_repeats_bit_for_bit() {
+    let _g = GPU.lock().unwrap_or_else(|e| e.into_inner());
+    if !ready() {
+        return;
+    }
+    let mol = Molecule::load_xyz(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../testdata/molecules/benzene.xyz"
+    ))
+    .unwrap();
+    let nlc = AtomicGridConfig {
+        n_radial: 50,
+        n_angular: 50,
+        ..Default::default()
+    };
+    let k = KsXc::new(
+        &mol,
+        &basis::bundled("cc-pvdz").unwrap(),
+        "PBE",
+        &AtomicGridConfig::default(),
+        &nlc,
+    )
+    .unwrap();
+    let nbf = k.xc_screening_stats().nbf;
+    let (d0, c0) = density_and_c(nbf, 21, 3, 0.15);
+    let (d1, c1) = density_and_c(nbf, 21, 5, 0.15);
+    // (reset the ladder first, factored input, density, expect a mixed build)
+    let plan: [(bool, bool, usize, bool); 6] = [
+        (true, false, 0, false),
+        (false, false, 1, true),
+        (true, false, 0, false),
+        (true, true, 0, false),
+        (false, true, 1, true),
+        (true, false, 0, false),
+    ];
+    let s0 = stats();
+    let mut runs = Vec::with_capacity(plan.len());
+    for (i, &(reset, factored, which, want_mixed)) in plan.iter().enumerate() {
+        let (d, c) = if which == 0 { (&d0, &c0) } else { (&d1, &c1) };
+        if reset {
+            k.start_scf();
+        }
+        let (sa, ma) = (stats(), MIXED_VXC_BUILDS.load(Ordering::SeqCst));
+        let mut f = Array2::<f64>::zeros((nbf, nbf));
+        let e = if factored {
+            k.add_xc_occ(d, c, &mut f)
+        } else {
+            k.add_xc(d, &mut f)
+        };
+        let (sb, mb) = (stats(), MIXED_VXC_BUILDS.load(Ordering::SeqCst));
+        let (passes, waves) = (
+            sb.xc_device_passes - sa.xc_device_passes,
+            sb.xc_waves - sa.xc_waves,
+        );
+        eprintln!(
+            "build {i} (factored {factored}, D{which}, mixed {}): {passes} passes, {waves} waves, E_xc {e:.14}",
+            mb - ma
+        );
+        assert_eq!(
+            passes, 2,
+            "build {i}: not density + potential on the device"
+        );
+        assert!(
+            waves > passes,
+            "build {i}: {waves} waves for {passes} passes; this grid is meant to run several waves per pass"
+        );
+        assert_eq!(mb - ma, u64::from(want_mixed), "build {i}: wrong precision");
+        runs.push((e, f));
+    }
+    let s1 = stats();
+    assert!(k.xc_on_device(), "the grid left the device");
+    assert_eq!(
+        s1.mixed_fallback_f64, s0.mixed_fallback_f64,
+        "mixed fell back"
+    );
+    assert!(
+        s1.gemm_mixed > s0.gemm_mixed,
+        "no mixed GEMM ran on the device"
+    );
+    assert_eq!(
+        s1.xc_pinned_fallback, s0.xc_pinned_fallback,
+        "pinned fell back"
+    );
+    let pinned = k.xc_pinned_staging_bytes();
+    eprintln!("page-locked XC staging: {pinned} bytes");
+    assert!(pinned > 0, "the XC host stage is not page-locked");
+    assert!(
+        same_bits(&runs[0], &runs[2]),
+        "dense f64 after dense mixed differs"
+    );
+    assert!(
+        same_bits(&runs[0], &runs[5]),
+        "dense f64 after factored differs"
+    );
+}

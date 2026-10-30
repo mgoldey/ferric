@@ -1020,6 +1020,19 @@ impl ScreenedGrid {
         }
     }
 
+    /// Page-locked host staging bytes held for this grid's device waves (0
+    /// without the `gpu` feature or off the device).
+    pub(crate) fn pinned_staging_bytes(&self) -> usize {
+        #[cfg(feature = "gpu")]
+        {
+            gpu::pinned_bytes(self)
+        }
+        #[cfg(not(feature = "gpu"))]
+        {
+            0
+        }
+    }
+
     /// True when the compact AO blocks are resident.
     pub(crate) fn is_resident(&self) -> bool {
         self.ao.is_some()

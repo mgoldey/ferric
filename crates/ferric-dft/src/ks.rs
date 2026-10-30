@@ -627,6 +627,13 @@ impl KsXc {
         self.screened.on_device()
     }
 
+    /// Page-locked host staging bytes the device XC waves hold (feature `gpu`;
+    /// 0 off the device or when the driver refused page-locked memory).
+    #[doc(hidden)]
+    pub fn xc_pinned_staging_bytes(&self) -> usize {
+        self.screened.pinned_staging_bytes()
+    }
+
     /// Build a closed-shell XC evaluator: resolve the functional, construct the Becke-Lebedev grid, and screen it.
     pub fn new(
         mol: &Molecule,
@@ -901,6 +908,13 @@ impl KsXcUks {
     #[doc(hidden)]
     pub fn xc_on_device(&self) -> bool {
         self.screened.on_device()
+    }
+
+    /// Page-locked host staging bytes the device XC waves hold (feature `gpu`;
+    /// 0 off the device or when the driver refused page-locked memory).
+    #[doc(hidden)]
+    pub fn xc_pinned_staging_bytes(&self) -> usize {
+        self.screened.pinned_staging_bytes()
     }
 
     /// Build an open-shell (UKS) XC evaluator with spin-resolved libxc response.

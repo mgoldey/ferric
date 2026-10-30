@@ -8,7 +8,11 @@
 //! grid's total stays within [`PINNED_CAP_BYTES`] and the driver grants it;
 //! otherwise ordinary heap memory, still allocated once. Each refused
 //! page-locked allocation is counted (`stats::xc_pinned_fallback`). They are
-//! released with the grid's device state (decline or drop).
+//! held for the life of the evaluator (`KsXc` / `KsXcUks`) that owns the grid
+//! and released with the grid's device state (decline or drop). The page-locked
+//! bytes are NOT charged to `[memory] budget_gb`, cannot be swapped, and each
+//! concurrent calculation pins its own copy (see the parent module's
+//! "Page-locked host memory").
 //!
 //! Only memory changes: the same values go up and come back, so results are
 //! bit-identical to per-wave heap buffers.

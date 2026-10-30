@@ -22,6 +22,7 @@ static DFJ_DECLINED: AtomicU64 = AtomicU64::new(0);
 static XC_DEVICE_PASSES: AtomicU64 = AtomicU64::new(0);
 static XC_DECLINED: AtomicU64 = AtomicU64::new(0);
 static XC_PINNED_FALLBACK: AtomicU64 = AtomicU64::new(0);
+static XC_WAVES: AtomicU64 = AtomicU64::new(0);
 
 /// Why a GEMM ran on the CPU although the GPU mode was not `off`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -119,6 +120,13 @@ pub fn note_xc_pinned_fallback() {
     XC_PINNED_FALLBACK.fetch_add(1, Ordering::Relaxed);
 }
 
+/// One wave (one upload, its launches, one download and one sync) of a KS XC
+/// device pass. Counting only.
+#[doc(hidden)]
+pub fn note_xc_wave() {
+    XC_WAVES.fetch_add(1, Ordering::Relaxed);
+}
+
 /// Mixed was requested and allowed, but the call ran in f64 on the device
 /// (kernel unavailable or a mixed-path CUDA error). Never silent.
 #[doc(hidden)]
@@ -181,6 +189,7 @@ pub struct GpuStatsSnapshot {
     pub xc_device_passes: u64,
     pub xc_declined: u64,
     pub xc_pinned_fallback: u64,
+    pub xc_waves: u64,
 }
 
 pub fn stats() -> GpuStatsSnapshot {
@@ -205,5 +214,6 @@ pub fn stats() -> GpuStatsSnapshot {
         xc_device_passes: XC_DEVICE_PASSES.load(Ordering::Relaxed),
         xc_declined: XC_DECLINED.load(Ordering::Relaxed),
         xc_pinned_fallback: XC_PINNED_FALLBACK.load(Ordering::Relaxed),
+        xc_waves: XC_WAVES.load(Ordering::Relaxed),
     }
 }

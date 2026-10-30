@@ -26,7 +26,18 @@
 //! wave (operands, results and, mixed only, the f32 operands; one staging
 //! buffer's worth each, 64 MiB of f64 at most by default) is allocated once
 //! per grid, page-locked within a cap, and reused by every wave and every Fock
-//! build (see `host_stage`); it is not charged to the host pool.
+//! build (see `host_stage`).
+//!
+//! # Page-locked host memory
+//!
+//! The page-locked stage (at most `host_stage::PINNED_CAP_BYTES` = 256 MiB per
+//! grid; at the default stage size 2 × 64 MiB f64 + 32 MiB f32 ≈ 168 MB with
+//! mixed `xc-vxc` on, ≈ 134 MB without, less for a grid that needs less) is
+//! held for the whole life of the `KsXc` / `KsXcUks` that owns the grid, not
+//! per build. It is NOT charged to `[memory] budget_gb` (nor
+//! to the device pool), it cannot be swapped out, and nothing is shared: every
+//! concurrent calculation (each evaluator, each process) pins its own copy. It
+//! is released when the grid is declined or dropped.
 //!
 //! # Numerics and determinism
 //!
@@ -334,6 +345,16 @@ fn note_rayon_worker(sg: &ScreenedGrid) {
 pub(super) fn is_ready(sg: &ScreenedGrid) -> bool {
     let slot = sg.device.lock().unwrap_or_else(|e| e.into_inner());
     matches!(*slot, DeviceSlot::Ready(_))
+}
+
+/// Page-locked host staging bytes `sg`'s device state holds (0 when the grid
+/// is not on the device, or its stage fell back to heap memory).
+pub(super) fn pinned_bytes(sg: &ScreenedGrid) -> usize {
+    let slot = sg.device.lock().unwrap_or_else(|e| e.into_inner());
+    match &*slot {
+        DeviceSlot::Ready(dx) => dx.host.pinned_bytes(),
+        _ => 0,
+    }
 }
 
 /// Run `pass` on the session's device state. `Ok(None)` = run the CPU path:
@@ -686,6 +707,17 @@ impl DeviceXc {
     /// operand staging buffer, launches by `launch`, then `out_len` results
     /// back into the host stage. One synchronisation; on an error the stream
     /// is drained first, so no copy still targets the host stage.
+    ///
+    /// # The host-stage rule
+    ///
+    /// Nothing may read or write `self.host` between `upload_operands` and the
+    /// stream synchronisation that ends this call (`launch` must not touch it
+    /// either). The stage is handed to cudarc as plain slices, and cudarc
+    /// records no event and does no synchronisation for a plain host slice: a
+    /// copy from or into page-locked memory is truly asynchronous, so the H2D
+    /// may still be reading `host.inp`/`host.inp32` and the D2H still writing
+    /// `host.out` after `memcpy_*` returns. Safety rests entirely on the
+    /// explicit `synchronize()` below, and on the drain in the error path.
     fn round_trip(
         &mut self,
         up: Up,
@@ -695,6 +727,8 @@ impl DeviceXc {
         let r = self.round_trip_inner(up, out_len, launch);
         if r.is_err() {
             let _ = self.dev.stream.synchronize();
+        } else {
+            stats::note_xc_wave();
         }
         r
     }
