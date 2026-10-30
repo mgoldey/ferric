@@ -103,6 +103,8 @@ mod launch;
 mod layout;
 use host_stage::HostStage;
 #[cfg(feature = "test-seams")]
+pub use host_stage::POISON_XC_STAGING;
+#[cfg(feature = "test-seams")]
 pub use launch::XC_GEMM_LOOP;
 use layout::{pad_nact, AoLayout, WaveLayout};
 
@@ -854,7 +856,7 @@ impl DeviceXc {
             let w = plan_wave(b0, nbat, &need, self.stage())?;
             let n = w.end - b0;
             let wl = WaveLayout::new(&self.layout, b0, n, &items)?;
-            let parts = wl.split(0, n, self.host.inp.head_mut(w.total[0])?);
+            let parts = wl.split(0, n, self.host.inp_for_wave(w.total[0])?);
             fill_parts(serial, parts, |j, chunks| {
                 let funcs = &sg.batches[b0 + j].funcs;
                 let np = pad_nact(funcs.len());
@@ -947,7 +949,7 @@ impl DeviceXc {
             let w = plan_wave(b0, nbat, &need, self.stage())?;
             let n = w.end - b0;
             let wl = WaveLayout::new(&self.layout, b0, n, &items)?;
-            let parts = wl.split(0, n, self.host.inp.head_mut(w.total[0])?);
+            let parts = wl.split(0, n, self.host.inp_for_wave(w.total[0])?);
             fill_parts(serial, parts, |j, chunks| {
                 let b = &sg.batches[b0 + j];
                 if b.funcs.is_empty() {
@@ -1040,6 +1042,12 @@ impl DeviceXc {
         };
         let (max_a, rounded) = max_abs_and_round(serial, a, a32.head_mut(n)?);
         if !mixed_panel_fits(k_panel, max_a, m.max_abs_x) || !rounded {
+            // TODO(precision provenance, feat/precision-section-provenance
+            // 5675257e3, unmerged): once that lands, record this as
+            // `note_mixed_fallback(MixedKernel::XcVxc, MixedFallback::F32Range)`
+            // (and `mixed_unavailable` as `MixedFallback::DeviceF64`); its
+            // `note_kernel_mixed(XcVxc)` in `note_mixed_vxc_pass` already
+            // covers this file's mixed passes.
             stats::note_mixed_fallback();
             return Ok(Up::F64(n));
         }
@@ -1205,5 +1213,80 @@ mod tests {
         }
         assert!(single_big() > STAGE_ELEMS);
         assert!(stage_elems(usize::MAX, &[(usize::MAX, 2)]).is_err());
+    }
+
+    /// The k index of the mixed pass 2 (`V_b = A·Xᵀ`, k = `lay.ld` = `NB`
+    /// points; τ, the only layout with components inside k, is never mixed)
+    /// under the device padding: every real element of `A` (from
+    /// `fill_amat_padded`) and of `X`'s χ columns (from `pad_ao_block`) keeps
+    /// the k index it has in the compact CPU layout, so it falls in the same
+    /// k-panel at every panel width; every other element up to `NB` is an exact
+    /// zero; the panels past ⌈nb/b⌉ are whole zero panels; padded rows (past
+    /// `nact`) are zero and lie outside k. The padded buffers start as NaN, so
+    /// an element the fill does not write fails too.
+    /// MUTATION CHECK: right-aligning the χ columns in `pad_ao_block`
+    /// (`to + nb_pad - nb`) fails it.
+    #[test]
+    fn padding_appends_whole_zero_panels_and_never_shifts_a_panel_boundary() {
+        use crate::xc_batch::fill_amat;
+        use ferric_core::gpu::mixed::MIXED_K_PANEL_DEFAULT;
+        let val = |i: usize, salt: usize| ((i * 7919 + salt * 104_729) % 1013) as f64 * 1e-3 + 0.1;
+        for nb_pad in [128usize, 100] {
+            for nb in [1usize, 37, 63, 64, 65, 99, 100, 127, 128] {
+                if nb > nb_pad {
+                    continue;
+                }
+                for na in [1usize, 5, 16, 17] {
+                    let ao = Array2::from_shape_fn((na, 4 * nb), |(r, c)| val(r * 4 * nb + c, 1));
+                    let fac = BatchFactors {
+                        s_half: (0..nb).map(|g| val(g, 2)).collect(),
+                        f: [0, 1, 2].map(|a| (0..nb).map(|g| val(g, 3 + a)).collect()),
+                        t_half: Vec::new(),
+                    };
+                    let mut compact = vec![f64::NAN; na * nb];
+                    fill_amat(&ao, nb, &fac, (true, false), &mut compact);
+                    let np = pad_nact(na);
+                    let lay = BlockLayout {
+                        ld: nb_pad,
+                        cs: nb_pad,
+                    };
+                    let mut a = vec![f64::NAN; np * nb_pad];
+                    fill_amat_padded(&ao, nb, &fac, (true, false), &mut a, lay);
+                    let src = ao.as_slice().unwrap();
+                    let x = pad_ao_block(src, (na, nb), nb_pad);
+                    for r in 0..np {
+                        for g in 0..nb_pad {
+                            let (pa, real) = (a[r * nb_pad + g], r < na && g < nb);
+                            if real {
+                                // same k index g, hence the same panel g / b
+                                assert_eq!(pa.to_bits(), compact[r * nb + g].to_bits());
+                                assert_eq!(
+                                    x[r * 4 * nb_pad + g].to_bits(),
+                                    src[r * 4 * nb + g].to_bits()
+                                );
+                            } else {
+                                assert_eq!(pa.to_bits(), 0, "A[{r},{g}] nb={nb} NB={nb_pad}");
+                            }
+                            if r < na && g >= nb {
+                                assert_eq!(x[r * 4 * nb_pad + g].to_bits(), 0, "X[{r},{g}]");
+                            }
+                        }
+                    }
+                    for kp in [1usize, 16, 48, MIXED_K_PANEL_DEFAULT, 100] {
+                        let live = |buf: &[f64], ld: usize, rows: usize, p: usize| {
+                            (0..rows).any(|r| {
+                                (p * kp..((p + 1) * kp).min(nb_pad)).any(|g| buf[r * ld + g] != 0.0)
+                            })
+                        };
+                        let panels = nb_pad.div_ceil(kp);
+                        for p in 0..panels {
+                            let want = p < nb.div_ceil(kp);
+                            assert_eq!(live(&a, nb_pad, np, p), want, "A panel {p} b={kp}");
+                            assert_eq!(live(&x, 4 * nb_pad, na, p), want, "X panel {p} b={kp}");
+                        }
+                    }
+                }
+            }
+        }
     }
 }

@@ -23,7 +23,7 @@ use ferric_core::gpu::{
 use ferric_core::mol::Molecule;
 use ferric_dft::grid::AtomicGridConfig;
 use ferric_dft::ks::{KsXc, MIXED_VXC_BUILDS};
-use ferric_dft::xc_batch::{FORCE_HOST, MIXED_VXC_HOST_TWIN, XC_GEMM_LOOP};
+use ferric_dft::xc_batch::{FORCE_HOST, MIXED_VXC_HOST_TWIN, POISON_XC_STAGING, XC_GEMM_LOOP};
 use ferric_dft::xc_trait::XcContribution;
 use ndarray::Array2;
 use std::sync::atomic::Ordering;
@@ -413,5 +413,42 @@ fn batched_mixed_vxc_is_the_per_batch_loops_error_class() {
             d0 < 1e-13 * vmax.max(1.0),
             "{xc}: f64 batched vs loop {d0:e}"
         );
+    }
+}
+
+/// The mixed pass 2 with its reused operand staging NaN-filled before every
+/// wave (`POISON_XC_STAGING`, see `gpu_xc.rs`): the f32 decision, the f32
+/// operands and V are those of the clean run, bit for bit (a padded element
+/// left unwritten would make the wave's `max |A|` NaN, fall back to f64 and
+/// still make V NaN). MUTATION CHECK: deleting `fill_amat_padded`'s
+/// zero-fills fails it.
+#[test]
+fn nan_poisoned_staging_leaves_the_mixed_build_bit_identical() {
+    let _g = GPU.lock().unwrap_or_else(|e| e.into_inner());
+    if !ready() {
+        return;
+    }
+    for xc in ["LDA", "PBE"] {
+        let clean = ladder_run(xc, false, false);
+        let s0 = stats();
+        POISON_XC_STAGING.store(true, Ordering::SeqCst);
+        let dirty = ladder_run(xc, false, false);
+        POISON_XC_STAGING.store(false, Ordering::SeqCst);
+        assert_eq!(
+            stats().mixed_fallback_f64,
+            s0.mixed_fallback_f64,
+            "{xc}: the poisoned mixed build fell back to f64"
+        );
+        for (i, (c, d)) in clean.iter().zip(&dirty).enumerate() {
+            assert!(
+                c.0.to_bits() == d.0.to_bits()
+                    && c.1
+                        .iter()
+                        .zip(d.1.iter())
+                        .all(|(x, y)| x.to_bits() == y.to_bits()),
+                "{xc} build {i}: the poisoned build differs from the clean one (E {})",
+                d.0
+            );
+        }
     }
 }

@@ -12,7 +12,7 @@ use ferric_core::gpu::{install, probe, stats, GpuMode, GpuSettingsExplicit, GpuS
 use ferric_core::mol::Molecule;
 use ferric_dft::grid::AtomicGridConfig;
 use ferric_dft::ks::{KsXc, KsXcUks};
-use ferric_dft::xc_batch::{FORCE_HOST, XC_GEMM_LOOP};
+use ferric_dft::xc_batch::{FORCE_HOST, POISON_XC_STAGING, XC_GEMM_LOOP};
 use ferric_dft::xc_trait::{UksXcContribution, XcContribution};
 use ndarray::Array2;
 use std::sync::atomic::Ordering;
@@ -305,4 +305,94 @@ fn batched_device_gemms_match_the_per_batch_loop() {
     assert!(ks.xc_on_device(), "the open-shell grid was not uploaded");
     close("r2SCAN alpha", (lp.0, &lp.1), (b.0, &b.1));
     close("r2SCAN beta", (lp.0, &lp.2), (b.0, &b.2));
+}
+
+/// `run()` with the reused operand staging NaN-filled before every wave
+/// (`POISON_XC_STAGING`) for its duration.
+fn poisoned<T>(run: impl FnOnce() -> T) -> T {
+    POISON_XC_STAGING.store(true, Ordering::SeqCst);
+    let out = run();
+    POISON_XC_STAGING.store(false, Ordering::SeqCst);
+    out
+}
+
+fn bits_equal(a: &Array2<f64>, b: &Array2<f64>) -> bool {
+    a.iter()
+        .zip(b.iter())
+        .all(|(x, y)| x.to_bits() == y.to_bits())
+}
+
+/// Every padded element of a wave's operands (rows past `nact`, columns past
+/// `nact` or `nb`, the gaps between τ's components) must be written as an
+/// exact zero by the wave itself: the staging is reused, so a missing
+/// zero-fill would read an earlier wave's numbers (or, on a first wave, the
+/// allocation's zeros, which hid the defect). With the staging NaN-filled
+/// before every wave, a padded operand element is NaN unless the fill zeroes
+/// it, and NaN times the AO copy's zero padding is NaN in a real element, so
+/// a missing zero-fill makes E or V NaN. Poisoned builds must equal clean
+/// ones bit for bit (dense and factored GGA, open-shell meta-GGA).
+/// MUTATION CHECK: deleting the zero-fills of `fill_amat_padded`, of the dense
+/// branch of `gather_padded`, or of its factored branch (one at a time) makes
+/// this test fail; the other tests in this file pass under each of them.
+#[test]
+fn nan_poisoned_staging_gives_the_clean_result_bit_for_bit() {
+    let _g = GPU.lock().unwrap_or_else(|e| e.into_inner());
+    if !ready() {
+        return;
+    }
+    let bs = basis::bundled("cc-pvdz").unwrap();
+    let (main, nlc) = grids();
+    let ks = KsXc::new(&water(0, 1), &bs, "PBE", &main, &nlc).unwrap();
+    let nbf = ks.xc_screening_stats().nbf;
+    let c = c_occ(nbf, 5, 7);
+    let d = 2.0 * c.dot(&c.t());
+    let build = |occ: bool| {
+        let mut f = Array2::<f64>::zeros((nbf, nbf));
+        let e = if occ {
+            ks.add_xc_occ(&d, &c, &mut f)
+        } else {
+            ks.add_xc(&d, &mut f)
+        };
+        (e, f)
+    };
+    for occ in [false, true] {
+        let clean = on(false, || build(occ));
+        let dirty = on(false, || poisoned(|| build(occ)));
+        assert!(ks.xc_on_device(), "the grid was not uploaded");
+        assert!(
+            dirty.0.is_finite() && dirty.1.iter().all(|v| v.is_finite()),
+            "PBE occ={occ}: a padded staging element was not zero-filled (E {})",
+            dirty.0
+        );
+        assert!(
+            dirty.0.to_bits() == clean.0.to_bits() && bits_equal(&dirty.1, &clean.1),
+            "PBE occ={occ}: the poisoned build differs from the clean one"
+        );
+    }
+    let ks = KsXcUks::new(&water(1, 2), &bs, "R2SCAN", &main, &nlc).unwrap();
+    let nbf = ks.xc_screening_stats().nbf;
+    let (ca, cb) = (c_occ(nbf, 5, 11), c_occ(nbf, 4, 13));
+    let (da, db) = (ca.dot(&ca.t()), cb.dot(&cb.t()));
+    let build = |occ: bool| {
+        let mut fa = Array2::<f64>::zeros((nbf, nbf));
+        let mut fb = Array2::<f64>::zeros((nbf, nbf));
+        let e = if occ {
+            ks.add_xc_uks_occ((&da, &db), (Some(&ca), Some(&cb)), &mut fa, &mut fb)
+        } else {
+            ks.add_xc_uks(&da, &db, &mut fa, &mut fb)
+        };
+        (e, fa, fb)
+    };
+    for occ in [false, true] {
+        let clean = on(false, || build(occ));
+        let dirty = on(false, || poisoned(|| build(occ)));
+        assert!(ks.xc_on_device(), "the open-shell grid was not uploaded");
+        assert!(
+            dirty.0.to_bits() == clean.0.to_bits()
+                && bits_equal(&dirty.1, &clean.1)
+                && bits_equal(&dirty.2, &clean.2),
+            "r2SCAN occ={occ}: the poisoned build differs from the clean one (E {})",
+            dirty.0
+        );
+    }
 }

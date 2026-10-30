@@ -104,7 +104,7 @@ mod gpu;
 #[cfg(feature = "gpu")]
 pub use gpu::xc_grid_routes_to_device;
 #[cfg(feature = "test-seams")]
-pub use gpu::{FORCE_HOST, MIXED_VXC_HOST_TWIN, XC_GEMM_LOOP};
+pub use gpu::{FORCE_HOST, MIXED_VXC_HOST_TWIN, POISON_XC_STAGING, XC_GEMM_LOOP};
 
 /// True when this process asked for V_xc in mixed precision and could run it:
 /// `[gpu] mode = "on"`, `precision = "mixed"` with `xc-vxc` named in
