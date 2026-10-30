@@ -258,6 +258,8 @@ pub fn solve_rhf_with_df_increments(
     let df_guess_iterations = df_guess.iterations;
     let df_guess_converged = df_guess.converged;
     let df_guess_energy = df_guess.energy;
+    // A secondary-basis guess, if configured, ran inside the DF pre-stage.
+    let guess_basis_report = df_guess.guess_basis.clone();
 
     let n = prep.nbasis();
     let nelec = mol.nelec();
@@ -443,6 +445,7 @@ pub fn solve_rhf_with_df_increments(
         if let Some(exit) = conv {
             let density_alpha = 0.5 * &d_cur;
             let result = ScfResult {
+                guess_basis: guess_basis_report.clone(),
                 spin: Spin::Restricted,
                 energy,
                 density_total: d_cur,
@@ -484,6 +487,7 @@ pub fn solve_rhf_with_df_increments(
         if exact_cleanup_iterations > DF_INCREMENTS_CLEANUP_MAX_ITER {
             let density_alpha = 0.5 * &d_new;
             let result = ScfResult {
+                guess_basis: guess_basis_report.clone(),
                 spin: Spin::Restricted,
                 energy,
                 density_total: d_new,

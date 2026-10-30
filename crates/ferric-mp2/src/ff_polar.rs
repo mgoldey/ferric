@@ -186,6 +186,7 @@ pub(crate) fn solve_rhf_with_external(
             let (orb_e, c) = diag(&f)?;
             let density_alpha = 0.5 * &d;
             return Ok(ScfResult {
+                guess_basis: None,
                 spin: Spin::Restricted,
                 energy,
                 density_total: d,

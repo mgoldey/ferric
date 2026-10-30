@@ -571,6 +571,89 @@ gates on the density RMS change instead.
 can drive the overlap matrix near-singular; the canonical-orthogonalization
 threshold is tunable via `FERRIC_LINDEP_THRESH`.
 
+### Secondary-basis guess (Q-Chem `BASIS2`)
+
+`[scf] guess_basis = "6-31g"` (Python `guess_basis="6-31g"` on `run_rhf`,
+`run_uhf`, `run_rohf`, `run_dft`, `run_ksdft`) converges the same SCF
+(method, functional, charge, multiplicity and settings) in the named basis
+first, projects the result into the target basis, and starts the target SCF
+from it. `guess_projection` picks how the projection is done:
+
+- `"fock"` (default; Q-Chem `FOPPROJECTION`): the small-basis spin densities
+  are projected, `D = P D_small Pᵀ` with `P = S_bb⁻¹ S_bs`, and the target
+  Fock built at that density is diagonalised. Closed shell, that Fock build
+  is the target SCF's first iteration. Open shell, the guess Fock is
+  `h + J − K_σ` with no XC term, which is the form ferric's MINAO
+  open-shell guess also uses.
+- `"overlap"` (Q-Chem `OVPROJECTION`): the occupied MOs are mapped,
+  `C = S_bb⁻¹ S_bs C_small`, and re-orthonormalised in the target metric. For
+  ROHF, the doubly occupied block is orthonormalised first and the singly
+  occupied block is made orthogonal to it.
+
+`S_bb⁻¹` is the lindep-filtered pseudo-inverse from the canonical
+orthogonalizer. A secondary basis missing an element, a mismatched ECP core
+count, or a projected occupied space that is near-singular in the target
+basis are errors. A secondary basis larger than the target is allowed, with
+a warning. The guess is refused with `symmetry = true` and on periodic
+systems. An explicit starting density or MOs take precedence, just as they
+do over `guess = "minao"`. With `guess_basis` set, `guess = "minao" | "sad" |
+"hcore"` selects the starting point of the *secondary* SCF only; the target
+starts from the projection. The dual-basis energy correction (Q-Chem
+`DUAL_BASIS_ENERGY`) is not implemented.
+
+**A secondary SCF that does not converge never stops the run.** The target
+SCF then starts from its default guess, a warning is printed, and the report
+says `converged = false`, why, and `used_as_guess = false`. Projecting the
+unconverged last iterate was tried and rejected: on CN UHF/aug-cc-pVDZ with
+an STO-3G secondary (which oscillates for 200 iterations), the target
+started from it failed to converge as well, for both projections, while the
+default guess converges in 22 iterations. The result reports the secondary
+SCF's iterations, energy and convergence (Python: `result.guess_basis`). The
+report is kept when a later stage supplies the final result: a stability
+descent, a later ladder rung, or the exact stage after a DF pre-stage.
+
+**Cost on re-solves.** Every solve without an explicit starting point runs
+the secondary SCF again: each geometry of an optimization and each displaced
+geometry of a finite-difference Hessian. A ladder's later rungs, the
+stability descent's re-solves and the cDFT λ loop start from a carried
+density or MOs, so they do not repeat it (cDFT builds the guess once, before
+the λ loop).
+
+**The guess can select the state.** The converged energy is *not*
+guaranteed to equal the default-guess energy. Like any guess, it decides
+which stationary state the SCF falls into, in either direction:
+
+- NO UKS-PBE/aug-cc-pVDZ: MINAO −129.7833808133, BASIS2 −129.7833798480
+  Ha. These are two states 0.97 µHa apart, and BASIS2 lands on the higher.
+- He₂ at 0.3 Å RHF/aug-cc-pVTZ: BASIS2 and the core guess give
+  −3.2458864766 Ha, while MINAO gives −3.2388590827 Ha. Here BASIS2 lands 7
+  mHa *lower*.
+
+Use `check_stability` (and `stability_descent`) when the state matters.
+
+What it buys, measured in ferric (build 352eabab9, `density_conv` 1e-8;
+target-SCF iterations, with the secondary SCF's own iterations listed
+separately; converged energies agree to ≤ 3e-11 Ha in every row; wall times
+were taken on a loaded machine and are not quoted):
+
+| system | MINAO | hcore | BASIS2 fock | BASIS2 overlap | secondary SCF |
+|---|---|---|---|---|---|
+| NH₂ UHF 6-31G→aDZ | 14 | 18 (other state, +0.081 Ha) | 13 | 14 | 13 |
+| NH₂ ROHF 6-31G→aDZ | 12 | – | 11 | 12 | 11 |
+| CN UHF 6-31G→aDZ | 22 | no convergence in 200 | 15 | 16 | 24 |
+| CN ROHF 6-31G→aDZ | 18 | – | 13 | 14 | 18 |
+| O₂ UHF triplet 6-31G→aDZ | 12 | 14 | 10 | 11 | 11 |
+| water dimer RHF 6-31G→aDZ | 14 | 17 | 13 | 13 | 13 |
+| water dimer RHF 6-31G→aTZ | 14 | 17 | 14 | 14 | 13 |
+| water dimer RHF cc-pVDZ→aTZ | 14 | 17 | 14 | 14 | 14 |
+
+On closed shells the saving over MINAO is 0 to 1 target iterations, so there
+is no wall-time win. On open-shell radicals it saves up to 7 target
+iterations (CN), but the secondary SCF costs about as many iterations as it
+saves, or more; they are cheap iterations in a small basis. The value is a
+better starting point on hard open-shell cases, not a faster closed-shell
+SCF. Fock projection beats overlap projection by 0 to 1 iterations.
+
 ## Screening
 
 - **Schwarz** bounds on every 4-centre path, built so they can never

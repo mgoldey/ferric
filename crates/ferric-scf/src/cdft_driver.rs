@@ -820,6 +820,21 @@ pub fn solve_cdft_uhf_seeded(
         }
     };
 
+    // The secondary-basis guess (`guess_basis`) is built ONCE, here, and fed
+    // to every inner solve as its starting MOs. Left to the inner solver it
+    // would re-run the whole secondary SCF at every λ step (and every FD
+    // Jacobian probe). The result is the same guess either way: the
+    // secondary solve is unconstrained and deterministic. An explicit seed
+    // outranks it, as caller MOs outrank it everywhere else. From here on
+    // `config` has `guess_basis` cleared, so a declined guess (secondary SCF
+    // unconverged) means the default guess, not a re-run per λ.
+    let b2 =
+        crate::basis2::open_shell_guess_once(ctx, mol, prep, bounds, config, seed.mos.is_some())?;
+    let (config, b2_mos, report) = match b2.as_ref() {
+        Some(g) => (&g.config, g.initial_mos(), Some(g.report.clone())),
+        None => (config, None, None),
+    };
+
     // Build the DFT grid + AO values once, then W^C per constraint once.
     // The weight quadrature must be converged tighter than cdft_lambda_tol or
     // the constraint can never be satisfied; the default (75,110) grid plateaus
@@ -1026,20 +1041,12 @@ pub fn solve_cdft_uhf_seeded(
     let lambda_newton =
         |guess: Option<(&Array2<f64>, &Array2<f64>)>| lambda_newton_from(guess, &zero_lambdas);
 
-    let first = lambda_newton_from(seed.mos, lam_start)?;
-    if !config.cdft_stability_descent {
-        return Ok(first);
+    let mut out = lambda_newton_from(seed.mos.or(b2_mos), lam_start)?;
+    if config.cdft_stability_descent {
+        out = stability_descent(ctx, mol, prep, bounds, config, &w_mats, out, &lambda_newton);
     }
-    Ok(stability_descent(
-        ctx,
-        mol,
-        prep,
-        bounds,
-        config,
-        &w_mats,
-        first,
-        &lambda_newton,
-    ))
+    out.scf = crate::basis2::carry_report(out.scf, report);
+    Ok(out)
 }
 
 /// Step sizes tried when following a downhill eigenvector, in radians.

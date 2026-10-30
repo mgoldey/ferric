@@ -291,6 +291,18 @@ pub struct RhfConfig {
     /// hcore or SAD guess internally. Shape must match `(nbasis, nbasis)`. The
     /// primary use-case is a SAD guess built by `guess::sad_guess(...)`.
     pub init_guess_density: Option<Array2<f64>>,
+    /// Secondary-basis ("BASIS2") guess, after Q-Chem's `BASIS2` /
+    /// `BASISPROJTYPE`: converge the same SCF in this basis first, project
+    /// the result into the target basis and start from it (see
+    /// [`crate::basis2`]). Honoured by RHF/RKS, UHF/UKS and ROHF/ROKS; refused
+    /// by the injected (periodic) and point-group-blocked entry points. An
+    /// explicit `init_guess_density` or caller-supplied initial MOs take
+    /// precedence, as they do over `use_sad_guess`, which with this set picks
+    /// only the SECONDARY solve's starting point. `None` (the default) is
+    /// bit-identical to a build without this field. A secondary SCF that does
+    /// not converge never fails the solve: the target starts from its default
+    /// guess and [`crate::basis2::GuessBasisReport::converged`] is `false`.
+    pub guess_basis: Option<crate::basis2::GuessBasis>,
     /// When `true` (the default) and no `init_guess_density` is supplied, the SCF
     /// starts from a SAD (superposition-of-atomic-densities) guess computed via
     /// `guess::sad_guess`, falling back to the hcore guess if SAD fails. SAD cures
@@ -493,6 +505,7 @@ impl Default for RhfConfig {
             // 0 = "unset" → resolve_three_index_budget auto-detects (0.8×RAM).
             three_index_budget_bytes: 0,
             init_guess_density: None,
+            guess_basis: None,
             use_sad_guess: true,
             stall_window: None,
             divergence_tol: None,
@@ -1178,9 +1191,9 @@ pub fn solve_rhf(
         // Knob off (the default): the single solve, returned untouched.
         return Ok(first);
     }
-    Ok(rhf_stability_descent(
-        ctx, mol, prep, op, bounds, config, first,
-    ))
+    let report = first.guess_basis.clone();
+    let r = rhf_stability_descent(ctx, mol, prep, op, bounds, config, first);
+    Ok(crate::basis2::carry_report(r, report))
 }
 
 /// Externally built one-electron matrices, nuclear energy and J/K builders
@@ -1367,6 +1380,12 @@ pub fn validate_injected(config: &RhfConfig) -> Result<(), InjectedConfigError> 
         return reject(
             "trah_trigger",
             "the TRAH orbital Hessian rebuilds molecular J/K from prep/bounds",
+        );
+    }
+    if config.guess_basis.is_some() {
+        return reject(
+            "guess_basis",
+            "the secondary-basis SCF needs molecular integrals in a second basis",
         );
     }
     if config.init_guess_density.is_none() && config.use_sad_guess {
@@ -1608,7 +1627,7 @@ pub(crate) fn solve_rhf_once(
     bounds: &SchwarzBounds,
     config: &RhfConfig,
 ) -> Result<ScfResult, FerricError> {
-    solve_rhf_impl(ctx, mol, prep, op, bounds, config, None, None, None)
+    solve_rhf_routed(ctx, mol, prep, op, bounds, config, None)
 }
 
 /// The point-group-blocked solve (see [`crate::symmetric`]); `mol`/`prep`/
@@ -1654,7 +1673,7 @@ pub fn solve_rhf_with_hook(
     hook: RhfFockHook<'_>,
 ) -> Result<ScfResult, FerricError> {
     validate_fock_hook(config)?;
-    solve_rhf_impl(ctx, mol, prep, op, bounds, config, None, None, Some(hook))
+    solve_rhf_routed(ctx, mol, prep, op, bounds, config, Some(hook))
 }
 
 /// Add `hook(d)`'s potential to `f` and return its energy (0 without a hook).
@@ -1722,6 +1741,44 @@ pub fn validate_fock_hook(config: &RhfConfig) -> Result<(), FerricError> {
         ))),
         None => Ok(()),
     }
+}
+
+/// The molecular closed-shell solve, routed through the secondary-basis
+/// guess when [`RhfConfig::guess_basis`] applies: the projected density
+/// becomes the explicit starting density, so the Fock projection's
+/// build-and-diagonalise step is this solve's first iteration.
+///
+/// A Fock `hook` acts on the TARGET solve only. It is defined in the target
+/// basis's AO space, so the secondary-basis SCF and the Fock projection
+/// (both [`crate::basis2`]) never see it: the guess is the un-hooked one,
+/// and the hooked solve starts from it.
+fn solve_rhf_routed(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    config: &RhfConfig,
+    hook: Option<RhfFockHook<'_>>,
+) -> Result<ScfResult, FerricError> {
+    if !crate::basis2::applies(config, false) {
+        return solve_rhf_impl(ctx, mol, prep, op, bounds, config, None, None, hook);
+    }
+    use crate::basis2::GuessOutcome;
+    let mut cfg = config.clone();
+    cfg.guess_basis = None;
+    // Declined (secondary SCF unconverged): the default guess, report kept.
+    let report =
+        match crate::basis2::build(ctx, mol, prep, bounds, config, crate::basis2::ScfKind::Rhf)? {
+            GuessOutcome::Projected(g) => {
+                cfg.init_guess_density = Some(g.rhf_density((mol.nelec() / 2) as usize));
+                g.report
+            }
+            GuessOutcome::Declined(report) => report,
+        };
+    let mut r = solve_rhf_impl(ctx, mol, prep, op, bounds, &cfg, None, None, hook)?;
+    r.guess_basis = Some(report);
+    Ok(r)
 }
 
 /// Title of the `FERRIC_TIMING` phase table printed by `solve_rhf_impl`:
@@ -2325,6 +2382,7 @@ fn solve_rhf_impl(
                               convergence: Option<crate::result::ConvergenceReport>|
      -> ScfResult {
         ScfResult {
+            guess_basis: None,
             spin: Spin::Restricted,
             energy,
             density_total: d.clone(),
@@ -2939,6 +2997,7 @@ fn solve_rhf_impl(
                     _ => (energy, None),
                 };
                 return Ok(ScfResult {
+                    guess_basis: None,
                     spin: Spin::Restricted,
                     energy,
                     density_total: d,

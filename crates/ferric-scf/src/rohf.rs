@@ -273,7 +273,30 @@ pub fn solve_rohf_best_effort(
     config: &RohfConfig,
 ) -> Result<ScfResult, FerricError> {
     crate::symmetric::require_symmetry_off(config, "solve_rohf")?;
-    solve_rohf_impl(ctx, mol, prep, bounds, config, None, None, None, None)
+    solve_rohf_routed(ctx, mol, prep, bounds, config, None)
+}
+
+/// The molecular ROHF solve, started from the secondary-basis guess MOs when
+/// [`RhfConfig::guess_basis`] applies. A Fock `hook` acts on the target solve
+/// only, never on the secondary-basis SCF or the Fock projection (see
+/// `rhf::solve_rhf_routed`).
+fn solve_rohf_routed(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    bounds: &SchwarzBounds,
+    config: &RohfConfig,
+    hook: Option<crate::fock::SpinFockHook<'_>>,
+) -> Result<ScfResult, FerricError> {
+    if !crate::basis2::applies(config, false) {
+        return solve_rohf_impl(ctx, mol, prep, bounds, config, None, None, None, hook);
+    }
+    let kind = crate::basis2::ScfKind::Rohf;
+    let g = crate::basis2::open_shell_guess(ctx, mol, prep, bounds, config, kind)?;
+    let c0 = g.initial_mos().map(|(c, _)| c);
+    let mut r = solve_rohf_impl(ctx, mol, prep, bounds, &g.config, c0, None, None, hook)?;
+    r.guess_basis = Some(g.report);
+    Ok(r)
 }
 
 /// Reject every `RohfConfig` feature [`solve_rohf_injected`] cannot honour,
@@ -407,7 +430,7 @@ pub fn solve_rohf_with_hook(
     hook: crate::fock::SpinFockHook<'_>,
 ) -> Result<ScfResult, FerricError> {
     crate::rhf::validate_fock_hook(config)?;
-    let r = solve_rohf_impl(ctx, mol, prep, bounds, config, None, None, None, Some(hook))?;
+    let r = solve_rohf_routed(ctx, mol, prep, bounds, config, Some(hook))?;
     if r.converged {
         Ok(r)
     } else {
@@ -673,11 +696,11 @@ fn solve_rohf_impl(
     // convergence the best one-electron neighbours are evaluated, and a state
     // one of them lowers is not returned.
     let mut c = if let Some(c0) = initial_mos {
-        // Caller-supplied MOs (injected path only; the molecular wrappers
-        // pass None).
+        // Caller-supplied MOs: the injected path's `initial_mos`, or the
+        // secondary-basis guess (`solve_rohf_routed`) on the molecular path.
         if c0.dim() != (n, n) {
             return Err(FerricError::General(format!(
-                "solve_rohf_injected: initial MO shape {:?} != ({n},{n})",
+                "ROHF: initial MO shape {:?} != ({n},{n})",
                 c0.dim()
             )));
         }
@@ -1283,6 +1306,7 @@ fn solve_rohf_impl(
                 );
             }
             let result = ScfResult {
+                guess_basis: None,
                 spin: Spin::RestrictedOpen,
                 energy,
                 density_total,
@@ -1534,6 +1558,7 @@ fn solve_rohf_impl(
     let (eps_last, c_last) = guard.relabel(&c, eps_last, c_last, &s);
     let density_total = &d_a + &d_b;
     Ok(ScfResult {
+        guess_basis: None,
         spin: Spin::RestrictedOpen,
         energy: mon.prev_e,
         density_total,

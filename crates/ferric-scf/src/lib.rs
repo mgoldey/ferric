@@ -111,6 +111,7 @@ pub mod reduce;
 pub use ferric_integrals::engine_pool;
 /// Closed-shell restricted Hartree-Fock solver.
 pub mod aurora;
+pub mod basis2;
 /// Analytic nuclear gradient of the COSX exchange energy (plain, and overlap-fitted via a Z-vector).
 pub mod cosx_gradient;
 /// COSX seminumerical exchange builder (grid-based K, overlap-fitted).

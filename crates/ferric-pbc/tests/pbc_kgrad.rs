@@ -295,6 +295,7 @@ fn unfold(mesh: &KPointMesh, dk: &[Array2<Complex64>]) -> Array2<f64> {
 fn gamma_restricted(d: Array2<f64>) -> ScfResult {
     let n = d.nrows();
     ScfResult {
+        guess_basis: None,
         spin: Spin::Restricted,
         energy: 0.0,
         density_alpha: &d * 0.5,
@@ -324,6 +325,7 @@ fn gamma_restricted(d: Array2<f64>) -> ScfResult {
 fn gamma_unrestricted(da: Array2<f64>, db: Array2<f64>) -> ScfResult {
     let n = da.nrows();
     ScfResult {
+        guess_basis: None,
         spin: Spin::Unrestricted,
         energy: 0.0,
         density_total: &da + &db,

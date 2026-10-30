@@ -582,6 +582,12 @@ pub(crate) fn validate_config(config: &RhfConfig) -> Result<(), FerricError> {
             "constraint weights are not symmetrized",
         );
     }
+    if config.guess_basis.is_some() {
+        return no(
+            "guess_basis",
+            "the secondary-basis SCF runs unblocked in the input frame",
+        );
+    }
     if config.init_guess_density.is_some() {
         return no(
             "init_guess_density",

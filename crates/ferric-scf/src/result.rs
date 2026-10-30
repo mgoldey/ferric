@@ -152,6 +152,10 @@ pub struct ScfResult {
     /// hand-built results. Purely a report: nothing reads it back, so
     /// energies and iteration counts are bit-identical with or without it.
     pub convergence: Option<ConvergenceReport>,
+    /// The secondary-basis guess stage (`RhfConfig::guess_basis`): basis,
+    /// projection, and the secondary SCF's iterations and energy. `None` when
+    /// no secondary-basis guess ran.
+    pub guess_basis: Option<crate::basis2::GuessBasisReport>,
 }
 
 /// The convergence signals the gate judged at the final iteration, plus the thresholds in force

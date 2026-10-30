@@ -529,6 +529,48 @@ fn parse_guess(guess: Option<&str>) -> PyResult<bool> {
     }
 }
 
+/// Parse the `guess_basis` / `guess_projection` kwargs (strict, shared with
+/// the CLI's `[scf] guess_basis`): an unknown basis or projection, or a
+/// projection without a basis, is a `ValueError`. Both `None` = no
+/// secondary-basis guess.
+fn parse_guess_basis(
+    guess_basis: Option<&str>,
+    guess_projection: Option<&str>,
+) -> PyResult<Option<ferric_scf::basis2::GuessBasis>> {
+    let bad = |e: String| pyo3::exceptions::PyValueError::new_err(e);
+    match (guess_basis, guess_projection) {
+        (None, None) => Ok(None),
+        (None, Some(_)) => Err(bad("guess_projection is set but guess_basis is not".into())),
+        (Some(b), p) => ferric_scf::basis2::GuessBasis::bundled(b, p.unwrap_or("fock"))
+            .map(Some)
+            .map_err(|e| bad(e.to_string())),
+    }
+}
+
+/// The secondary-basis guess report as a dict (`basis`, `projection`,
+/// `iterations`, `energy`, `nbasis_guess`, `nbasis_target`, `converged`,
+/// `unconverged_reason`, `used_as_guess`), or `None` when no
+/// secondary-basis guess ran.
+fn guess_basis_dict(
+    py: Python<'_>,
+    r: Option<&ferric_scf::basis2::GuessBasisReport>,
+) -> PyResult<Option<Py<pyo3::types::PyDict>>> {
+    let Some(r) = r else {
+        return Ok(None);
+    };
+    let d = pyo3::types::PyDict::new(py);
+    d.set_item("basis", &r.basis)?;
+    d.set_item("projection", r.projection.as_str())?;
+    d.set_item("iterations", r.iterations)?;
+    d.set_item("energy", r.energy)?;
+    d.set_item("nbasis_guess", r.nbasis_guess)?;
+    d.set_item("nbasis_target", r.nbasis_target)?;
+    d.set_item("converged", r.converged)?;
+    d.set_item("unconverged_reason", r.unconverged_reason.as_deref())?;
+    d.set_item("used_as_guess", r.used_as_guess)?;
+    Ok(Some(d.into()))
+}
+
 /// Convert the Python `point_charges` / `external_field` kwargs into an
 /// `ExternalPotential`. Returns `None` when both are unset (no perturbation),
 /// matching `RhfConfig`'s "None = no external potential" convention.
@@ -680,6 +722,14 @@ impl PyRhfResult {
     #[getter]
     fn cosx_final_pass(&self, py: Python<'_>) -> PyResult<Option<Py<pyo3::types::PyDict>>> {
         cosx_final_dict(py, self.scf_data.cosx_final)
+    }
+    /// The secondary-basis guess (`guess_basis=`): `{"basis", "projection",
+    /// "iterations", "energy", "nbasis_guess", "nbasis_target", "converged",
+    /// "unconverged_reason", "used_as_guess"}` describing the secondary SCF,
+    /// or `None` when no secondary-basis guess ran.
+    #[getter]
+    fn guess_basis(&self, py: Python<'_>) -> PyResult<Option<Py<pyo3::types::PyDict>>> {
+        guess_basis_dict(py, self.scf_data.guess_basis.as_ref())
     }
     /// SCF exit reason: the `ScfExit` variant name (`"Converged"`, `"Plateau"`,
     /// `"Stalled"`, `"Diverged"`, `"MaxIter"`). `converged=False` with
@@ -916,6 +966,7 @@ fn warn_rhf_not_converged(py: Python<'_>, r: &ferric_scf::result::ScfResult, con
     cosx_grid=None, cosx_final_pass=None, cosx_final_grid=None, cosx_overlap_fit=None,
     aurora=None, trah_trigger=None, symmetry=false, irrep_nelec=None,
     fock_hook=None,
+    guess_basis=None, guess_projection=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_rhf(
@@ -952,7 +1003,10 @@ fn run_rhf(
     symmetry: bool,
     irrep_nelec: Option<std::collections::BTreeMap<String, usize>>,
     fock_hook: Option<&Bound<'_, PyAny>>,
+    guess_basis: Option<&str>,
+    guess_projection: Option<&str>,
 ) -> PyResult<PyObject> {
+    let guess_basis = parse_guess_basis(guess_basis, guess_projection)?;
     // The descent needs a stability verdict to act on, so the kwarg turns on
     // both halves (as run_uhf does).
     let descent = stability_descent.unwrap_or(false);
@@ -988,6 +1042,7 @@ fn run_rhf(
         smearing_sigma,
         newton_trigger: if soscf.unwrap_or(false) { 1e-3 } else { 0.0 },
         use_sad_guess: parse_guess(guess)?,
+        guess_basis,
         external_potential: build_external_potential_with_smeared(
             point_charges,
             smeared_charges,
@@ -3002,6 +3057,27 @@ struct PyUhfResult {
     eps_alpha_data: Vec<f64>,
     eps_beta_data: Vec<f64>,
     cosx_final: Option<ferric_scf::cosx_k::CosxFinalPass>,
+    guess_basis_report: Option<ferric_scf::basis2::GuessBasisReport>,
+}
+
+/// The open-shell result both `run_uhf` and `run_rohf` return. ROHF leaves
+/// `density_beta`/`eps_beta` unset only when the solve has no β channel, so
+/// the fallbacks keep the accessors total.
+impl From<ScfResult> for PyUhfResult {
+    fn from(r: ScfResult) -> Self {
+        PyUhfResult {
+            energy: r.energy,
+            converged: r.converged,
+            iterations: r.iterations,
+            computed_quartets: r.computed_quartets,
+            density_beta_data: r.density_beta.unwrap_or_else(|| r.density_total.clone()),
+            density_alpha_data: r.density_alpha,
+            cosx_final: r.cosx_final,
+            guess_basis_report: r.guess_basis,
+            eps_alpha_data: r.eps_alpha,
+            eps_beta_data: r.eps_beta.unwrap_or_default(),
+        }
+    }
 }
 
 #[pymethods]
@@ -3010,6 +3086,14 @@ impl PyUhfResult {
     #[getter]
     fn cosx_final_pass(&self, py: Python<'_>) -> PyResult<Option<Py<pyo3::types::PyDict>>> {
         cosx_final_dict(py, self.cosx_final)
+    }
+    /// The secondary-basis guess (`guess_basis=`): `{"basis", "projection",
+    /// "iterations", "energy", "nbasis_guess", "nbasis_target", "converged",
+    /// "unconverged_reason", "used_as_guess"}` describing the secondary SCF,
+    /// or `None` when no secondary-basis guess ran.
+    #[getter]
+    fn guess_basis(&self, py: Python<'_>) -> PyResult<Option<Py<pyo3::types::PyDict>>> {
+        guess_basis_dict(py, self.guess_basis_report.as_ref())
     }
     fn density_alpha<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
         PyArray2::from_array(py, &self.density_alpha_data)
@@ -3076,7 +3160,7 @@ impl PyUhfResult {
     point_charges=None, external_field=None, memory_budget_gb=None,
     guess=None, stability_descent=None,
     cosx_grid=None, cosx_final_pass=None, cosx_final_grid=None, cosx_overlap_fit=None,
-    trah_trigger=None, fock_hook=None,
+    trah_trigger=None, fock_hook=None, guess_basis=None, guess_projection=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_uhf(
@@ -3104,8 +3188,11 @@ fn run_uhf(
     cosx_overlap_fit: Option<bool>,
     trah_trigger: Option<f64>,
     fock_hook: Option<&Bound<'_, PyAny>>,
+    guess_basis: Option<&str>,
+    guess_projection: Option<&str>,
 ) -> PyResult<PyUhfResult> {
     let trah_trigger = check_trah_trigger(trah_trigger)?;
+    let guess_basis = parse_guess_basis(guess_basis, guess_projection)?;
     // The shared strict parser (same as run_rhf and the CLI): a typo must not
     // silently select a different SCF state (on O2/STO-3G the two guesses
     // land on states 0.255 Ha apart).
@@ -3143,6 +3230,7 @@ fn run_uhf(
         // omitted kwarg preserves the previous auto-detect behaviour.
         three_index_budget_bytes: budget_bytes_from_gb(memory_budget_gb).unwrap_or(0),
         use_sad_guess,
+        guess_basis,
         trah_trigger,
         check_stability: descent,
         scf_stability_descent: descent,
@@ -3172,18 +3260,7 @@ fn run_uhf(
         &config,
         fock_hook,
     )?;
-    // density_beta / mos_beta / eps_beta are always populated for the UHF path.
-    Ok(PyUhfResult {
-        energy: r.energy,
-        converged: r.converged,
-        iterations: r.iterations,
-        computed_quartets: r.computed_quartets,
-        density_alpha_data: r.density_alpha,
-        density_beta_data: r.density_beta.unwrap_or_else(|| r.density_total.clone()),
-        cosx_final: r.cosx_final,
-        eps_alpha_data: r.eps_alpha,
-        eps_beta_data: r.eps_beta.unwrap_or_default(),
-    })
+    Ok(r.into())
 }
 
 // ── ROHF (open-shell, spin-pure) ──
@@ -3208,6 +3285,7 @@ fn run_uhf(
     integral_thresh=None, k_builder=None, df_j_aux=None, df_k_aux=None,
     level_shift=None, mom_after_iter=None,
     point_charges=None, external_field=None, memory_budget_gb=None, fock_hook=None,
+    guess_basis=None, guess_projection=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_rohf(
@@ -3228,7 +3306,10 @@ fn run_rohf(
     external_field: Option<(f64, f64, f64)>,
     memory_budget_gb: Option<f64>,
     fock_hook: Option<&Bound<'_, PyAny>>,
+    guess_basis: Option<&str>,
+    guess_projection: Option<&str>,
 ) -> PyResult<PyUhfResult> {
+    let guess_basis = parse_guess_basis(guess_basis, guess_projection)?;
     let mut emol = mol.inner.clone();
     emol.apply_ecp(&basis_set.inner);
     let prep = PreparedBasis::new(&emol, &basis_set.inner).map_err(make_err)?;
@@ -3251,6 +3332,7 @@ fn run_rohf(
         // 0 means "unset -> auto" (resolve_three_index_budget), so an
         // omitted kwarg preserves the previous auto-detect behaviour.
         three_index_budget_bytes: budget_bytes_from_gb(memory_budget_gb).unwrap_or(0),
+        guess_basis,
         ..Default::default()
     };
     let ctx = ParallelContext::default();
@@ -3277,17 +3359,7 @@ fn run_rohf(
         &config,
         fock_hook,
     )?;
-    Ok(PyUhfResult {
-        energy: r.energy,
-        converged: r.converged,
-        iterations: r.iterations,
-        computed_quartets: r.computed_quartets,
-        density_alpha_data: r.density_alpha,
-        density_beta_data: r.density_beta.unwrap_or_else(|| r.density_total.clone()),
-        cosx_final: r.cosx_final,
-        eps_alpha_data: r.eps_alpha,
-        eps_beta_data: r.eps_beta.unwrap_or_default(),
-    })
+    Ok(r.into())
 }
 
 // ── Constrained DFT (cDFT) ──
@@ -8127,6 +8199,14 @@ impl PyDftResult {
     fn cosx_final_pass(&self, py: Python<'_>) -> PyResult<Option<Py<pyo3::types::PyDict>>> {
         cosx_final_dict(py, self.scf_data.cosx_final)
     }
+    /// The secondary-basis guess (`guess_basis=`): `{"basis", "projection",
+    /// "iterations", "energy", "nbasis_guess", "nbasis_target", "converged",
+    /// "unconverged_reason", "used_as_guess"}` describing the secondary SCF,
+    /// or `None` when no secondary-basis guess ran.
+    #[getter]
+    fn guess_basis(&self, py: Python<'_>) -> PyResult<Option<Py<pyo3::types::PyDict>>> {
+        guess_basis_dict(py, self.scf_data.guess_basis.as_ref())
+    }
 
     fn density<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
         PyArray2::from_array(py, &self.density_data)
@@ -8302,6 +8382,7 @@ fn run_double_hybrid(
     grid_radial=None, grid_angular=None, grid_prune=None,
     cosx_grid=None, cosx_final_pass=None, cosx_final_grid=None, cosx_overlap_fit=None,
     symmetry=false, irrep_nelec=None, fock_hook=None,
+    guess_basis=None, guess_projection=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_dft(
@@ -8332,7 +8413,10 @@ fn run_dft(
     symmetry: bool,
     irrep_nelec: Option<std::collections::BTreeMap<String, usize>>,
     fock_hook: Option<&Bound<'_, PyAny>>,
+    guess_basis: Option<&str>,
+    guess_projection: Option<&str>,
 ) -> PyResult<PyObject> {
+    let guess_basis = parse_guess_basis(guess_basis, guess_projection)?;
     // Refuse an (E, grad-E) pair that does not belong to the same surface.
     //
     // `total_energy` below is `e_scf + e_dispersion`, but `gradient_data` is
@@ -8344,24 +8428,15 @@ fn run_dft(
     let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
     let ctx = ParallelContext::default();
     let mut cfg = rhf_config_budgeted(k_builder, budget_bytes_from_gb(memory_budget_gb));
-    if let Some(v) = max_iter {
-        cfg.max_iter = v;
-    }
-    if let Some(v) = energy_conv {
-        cfg.energy_conv = v;
-    }
-    if let Some(v) = density_conv {
-        cfg.density_conv = v;
-    }
-    if let Some(v) = level_shift {
-        cfg.level_shift = v;
-    }
-    if let Some(v) = mom_after_iter {
-        cfg.mom_after_iter = v;
-    }
+    cfg.max_iter = max_iter.unwrap_or(cfg.max_iter);
+    cfg.energy_conv = energy_conv.unwrap_or(cfg.energy_conv);
+    cfg.density_conv = density_conv.unwrap_or(cfg.density_conv);
+    cfg.level_shift = level_shift.unwrap_or(cfg.level_shift);
+    cfg.mom_after_iter = mom_after_iter.unwrap_or(cfg.mom_after_iter);
     cfg.external_potential = build_external_potential(point_charges, external_field);
     let xc_name = functional.unwrap_or("LDA").to_string();
     cfg.xc = Some(xc_name.clone());
+    cfg.guess_basis = guess_basis;
     // Resolve `dispersion=` BEFORE the SCF: an unknown spelling or a
     // functional with no published parameters must not cost an SCF first.
     let dispersion = dispersion
@@ -8772,7 +8847,7 @@ fn evaluate_dispersion(
     point_charges=None, external_field=None, memory_budget_gb=None,
     dispersion=None, df_j_aux=None, df_k_aux=None,
     grid_radial=None, grid_angular=None, grid_prune=None,
-    symmetry=false, irrep_nelec=None,
+    symmetry=false, irrep_nelec=None, guess_basis=None, guess_projection=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_ksdft(
@@ -8798,6 +8873,8 @@ fn run_ksdft(
     grid_prune: Option<&str>,
     symmetry: bool,
     irrep_nelec: Option<std::collections::BTreeMap<String, usize>>,
+    guess_basis: Option<&str>,
+    guess_projection: Option<&str>,
 ) -> PyResult<PyObject> {
     run_dft(
         py,
@@ -8827,6 +8904,8 @@ fn run_ksdft(
         symmetry,
         irrep_nelec,
         None,
+        guess_basis,
+        guess_projection,
     )
 }
 

@@ -381,6 +381,7 @@ impl SemicanonicalOrbitals {
         let d_a = occ_dens(&self.mos_alpha, self.nocc_alpha);
         let d_b = occ_dens(&self.mos_beta, self.nocc_beta);
         ScfResult {
+            guess_basis: None,
             spin: Spin::Unrestricted,
             energy: rohf.energy,
             density_total: &d_a + &d_b,

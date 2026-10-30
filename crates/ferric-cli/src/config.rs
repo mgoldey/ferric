@@ -2341,6 +2341,18 @@ pub struct ScfCfg {
     /// SCF initial guess: "minao" (default, no per-element free-atom SCF for
     /// heavy atoms), "sad" (legacy free-atom-SCF superposition), or "hcore".
     pub guess: Option<String>,
+    /// Secondary-basis guess (Q-Chem `BASIS2`): a bundled basis name. The SCF
+    /// is converged in it first and projected into the target basis as the
+    /// starting point (`ferric_scf::basis2`). Unset = no secondary stage.
+    /// With it set, `guess` picks only the secondary SCF's starting point. It
+    /// also runs inside the closed-shell DF pre-stage (`df_guess`, on by
+    /// default for the post-HF kinds such as rimp2), and re-runs at every
+    /// geometry of an optimization or finite-difference Hessian.
+    pub guess_basis: Option<String>,
+    /// Projection for `guess_basis`: "fock" (default; Q-Chem FOPPROJECTION)
+    /// or "overlap" (OVPROJECTION). Setting it without `guess_basis` is an
+    /// error.
+    pub guess_projection: Option<String>,
     /// Enable the closed-shell second-order (Newton/SOSCF) step in the SCF tail
     /// (sets newton_trigger). Default false.
     #[serde(default)]
@@ -2675,6 +2687,8 @@ impl Default for ScfCfg {
             diis_switch_thresh: None,
             smearing_sigma: None,
             guess: None,
+            guess_basis: None,
+            guess_projection: None,
             soscf: false,
             aurora: false,
             trah_trigger: None,
@@ -3083,6 +3097,20 @@ impl ScfCfg {
             Some(s) => ferric_scf::guess::InitialGuess::parse_config_str(s)
                 .map(|g| g.use_sad_guess())
                 .map_err(|e| format!("[scf] guess: {e}")),
+        }
+    }
+    /// Resolve `[scf] guess_basis` / `guess_projection` (strict): an unknown
+    /// basis or projection, or a projection without a basis, is an error.
+    pub fn guess_basis_config(&self) -> Result<Option<ferric_scf::basis2::GuessBasis>, String> {
+        match (
+            self.guess_basis.as_deref(),
+            self.guess_projection.as_deref(),
+        ) {
+            (None, None) => Ok(None),
+            (None, Some(_)) => Err("[scf] guess_projection is set but guess_basis is not".into()),
+            (Some(b), p) => ferric_scf::basis2::GuessBasis::bundled(b, p.unwrap_or("fock"))
+                .map(Some)
+                .map_err(|e| format!("[scf] guess_basis: {e}")),
         }
     }
     /// The `[scf] jk_storage` policy, strictly parsed.
@@ -3710,6 +3738,7 @@ impl Config {
         self.memory.validate()?;
         self.gpu.validate()?;
         self.scf.validate()?;
+        self.validate_guess_basis_keys()?;
         self.mp2.linlccd_variant()?;
         self.cc_ladder()?;
         self.local_model()?;
@@ -3772,6 +3801,36 @@ impl Config {
             return Err(format!(
                 "[cc] applies to closed-shell CCSD only; multiplicity = {mult} would take an \
                  open-shell route with no ladder choice"
+            ));
+        }
+        Ok(())
+    }
+
+    /// `[scf] guess_basis` / `guess_projection`: strict parse, and refused
+    /// for a periodic `[cell]` system (the secondary-basis guess is molecular)
+    /// and for the correlated optimizers. `run_optimize` hands
+    /// `optimize_geometry_rimp2` only `rhf_config.external_potential` and
+    /// `optimize_geometry_rpa` no `RhfConfig` at all, so their per-geometry
+    /// RHF solves would never see the secondary basis.
+    fn validate_guess_basis_keys(&self) -> Result<(), String> {
+        self.scf.guess_basis_config()?;
+        if self.scf.guess_basis.is_none() {
+            return Ok(());
+        }
+        if self.cell.is_some() {
+            return Err(
+                "[scf] guess_basis is not supported for a periodic [cell] system: \
+                        the secondary-basis guess is molecular only"
+                    .into(),
+            );
+        }
+        let kind = self.method.kind.as_str();
+        if self.method.task == "optimize" && matches!(kind, "rimp2" | "pdep-rpa") {
+            return Err(format!(
+                "[scf] guess_basis is not supported with method.kind = \"{kind}\", task = \
+                 \"optimize\": that geometry optimizer builds its own RHF reference at each \
+                 geometry and never reads guess_basis, so it would be silently ignored. Remove \
+                 it, or use task = \"energy\""
             ));
         }
         Ok(())
@@ -8068,6 +8127,23 @@ json = [1, 2]
         }
     }
 
+    /// `[scf] guess_basis` / `guess_projection` resolve strictly: projection
+    /// defaults to "fock", both spellings parse case-insensitively.
+    #[test]
+    fn scf_guess_basis_resolves() {
+        assert_eq!(scf_cfg("").guess_basis_config(), Ok(None));
+        let g = scf_cfg("guess_basis = \"6-31g\"")
+            .guess_basis_config()
+            .unwrap()
+            .unwrap();
+        assert_eq!(g.projection, ferric_scf::basis2::GuessProjection::Fock);
+        let g = scf_cfg("guess_basis = \"sto-3g\"\nguess_projection = \"Overlap\"")
+            .guess_basis_config()
+            .unwrap()
+            .unwrap();
+        assert_eq!(g.projection, ferric_scf::basis2::GuessProjection::Overlap);
+    }
+
     /// A NaN `[scf] diis_switch_thresh` is refused: it would compare below no
     /// error and disable the ADIIS/EDIIS commutator veto; +inf stays supported.
     #[test]
@@ -8152,6 +8228,84 @@ json = [1, 2]
         .unwrap();
         load_config(p.to_str().unwrap()).expect("valid [scf] strings must load");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `[scf] guess_basis` / `guess_projection` fail at load time: unknown
+    /// projection or basis, a projection without a basis, and the guess on a
+    /// periodic `[cell]` system (whose driver runs before the molecular
+    /// validation, so this must be a load-time check).
+    #[test]
+    fn load_config_rejects_bad_guess_basis_keys() {
+        let dir =
+            std::env::temp_dir().join(format!("ferric-cli-guess-basis-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cases = [
+            (
+                "bad_guess_projection.toml",
+                "[scf]\nguess_basis = \"6-31g\"\nguess_projection = \"fop\"\n",
+                "unknown guess_projection 'fop'",
+            ),
+            (
+                "bad_guess_basis.toml",
+                "[scf]\nguess_basis = \"6-31gx\"\n",
+                "[scf] guess_basis",
+            ),
+            (
+                "periodic_guess_basis.toml",
+                "[scf]\nguess_basis = \"sto-3g\"\n[cell]\nlattice = [[10.0, 0.0, 0.0], [0.0, 10.0, 0.0], [0.0, 0.0, 10.0]]\n",
+                "guess_basis is not supported for a periodic",
+            ),
+            (
+                "projection_without_basis.toml",
+                "[scf]\nguess_projection = \"overlap\"\n",
+                "guess_basis is not",
+            ),
+        ];
+        for (file, extra, want) in cases {
+            let p = dir.join(file);
+            std::fs::write(&p, format!("{MINIMAL}{extra}")).unwrap();
+            let Err(err) = load_config(p.to_str().unwrap()) else {
+                panic!("{file}: load_config accepted a bad value");
+            };
+            assert!(err.contains(want), "{file}: expected {want:?} in: {err}");
+        }
+        let p = dir.join("good.toml");
+        std::fs::write(
+            &p,
+            format!("{MINIMAL}[scf]\nguess_basis = \"sto-3g\"\nguess_projection = \"overlap\"\n"),
+        )
+        .unwrap();
+        load_config(p.to_str().unwrap()).expect("valid guess_basis keys must load");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `[scf] guess_basis` with the correlated optimizers is refused: the
+    /// RI-MP2 and PDEP-RPA geometry optimizers build their own RHF at each
+    /// geometry without the caller's `RhfConfig`, so the key would be
+    /// silently ignored. The same kinds with `task = "energy"`, and the SCF
+    /// kinds with `task = "optimize"`, still accept it.
+    #[test]
+    fn guess_basis_is_refused_by_the_correlated_optimizers() {
+        let cfg = |kind: &str, task: &str| {
+            let src = format!(
+                "[molecule]\nxyz = \"testdata/molecules/water.xyz\"\n[basis]\nname = \"sto-3g\"\n\
+                 [method]\nkind = \"{kind}\"\ntask = \"{task}\"\n[scf]\nguess_basis = \"sto-3g\"\n"
+            );
+            toml::from_str::<Config>(&src).expect("test config must parse")
+        };
+        for kind in ["rimp2", "pdep-rpa"] {
+            let e = cfg(kind, "optimize")
+                .validate_guess_basis_keys()
+                .expect_err("guess_basis must be refused on this optimizer");
+            assert!(
+                e.contains("[scf] guess_basis") && e.contains(kind) && e.contains("optimize"),
+                "{e}"
+            );
+            assert_eq!(cfg(kind, "energy").validate_guess_basis_keys(), Ok(()));
+        }
+        for kind in ["rhf", "ksdft", "uhf", "rohf"] {
+            assert_eq!(cfg(kind, "optimize").validate_guess_basis_keys(), Ok(()));
+        }
     }
 
     // ---- deny_unknown_fields on the nested tables that lacked it ----------
