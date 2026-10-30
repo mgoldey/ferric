@@ -154,6 +154,16 @@ def provenance_record(stem: str, data: dict, sha: str) -> dict:
     return rec
 
 
+def _target_mode(path: Path) -> int:
+    """Mode for the replacement: the destination's own, or 0o666 under the umask."""
+    try:
+        return path.stat().st_mode & 0o777
+    except FileNotFoundError:
+        umask = os.umask(0)
+        os.umask(umask)
+        return 0o666 & ~umask
+
+
 def write_atomic(path: Path, text: str) -> None:
     """Write via a unique sibling temp file and rename, so a crash or a concurrent
     writer leaves either the old or the new file, never a partial one."""
@@ -161,6 +171,7 @@ def write_atomic(path: Path, text: str) -> None:
     try:
         with os.fdopen(fd, "w") as fh:
             fh.write(text)
+        os.chmod(tmp, _target_mode(path))
         os.replace(tmp, path)
     except BaseException:
         Path(tmp).unlink(missing_ok=True)

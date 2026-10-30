@@ -147,3 +147,15 @@ def test_check_passes_an_already_spherical_6311g_file(bse_check):
     mod, ship, _ = bse_check
     ship("gto_spherical")
     assert mod.main() == 0
+
+
+def test_write_atomic_keeps_the_destination_mode(tmp_path):
+    pytest.importorskip("pyscf")
+    mod = _load("import_psi4_jkfit")
+    dest = tmp_path / "set.json"
+    dest.write_text("old")
+    dest.chmod(0o644)
+    mod.write_atomic(dest, "new")
+    assert dest.read_text() == "new"
+    assert dest.stat().st_mode & 0o777 == 0o644
+    assert not list(tmp_path.glob("*.tmp"))
