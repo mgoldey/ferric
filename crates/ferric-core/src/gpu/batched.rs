@@ -17,7 +17,7 @@
 //! 128 only to mirror the CPU's structure).
 use cudarc::cublas::sys::{self, cublasFillMode_t, cublasOperation_t};
 use cudarc::cublas::{Gemm, GemmConfig, StridedBatchedConfig};
-use cudarc::driver::{CudaSlice, CudaView, DevicePtr, DevicePtrMut};
+use cudarc::driver::{CudaSlice, CudaView, CudaViewMut, DevicePtr, DevicePtrMut};
 use ndarray::ArrayView2;
 
 use super::device::{Device, GpuError};
@@ -191,6 +191,20 @@ pub fn gemm_f64_strided_batched_dev(
     left: &DevBatchedOperand<'_, f64>,
     right: &DevBatchedOperand<'_, f64>,
     c: &mut CudaSlice<f64>,
+    c_stride: usize,
+) -> Result<(), GpuError> {
+    gemm_f64_strided_batched_dev_into(dev, d, left, right, &mut c.slice_mut(..), c_stride)
+}
+
+/// [`gemm_f64_strided_batched_dev`] writing into a sub-range of a larger
+/// device buffer (`out_b` at `b·c_stride` from the start of `c`), so several
+/// batched products can share one staging allocation. Same checks, same numerics.
+pub fn gemm_f64_strided_batched_dev_into(
+    dev: &Device,
+    d: BatchedDims,
+    left: &DevBatchedOperand<'_, f64>,
+    right: &DevBatchedOperand<'_, f64>,
+    c: &mut CudaViewMut<'_, f64>,
     c_stride: usize,
 ) -> Result<(), GpuError> {
     if left.batch != d.batch || right.batch != d.batch {

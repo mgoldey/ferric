@@ -16,9 +16,20 @@
 //!
 //! Only memory changes: the same values go up and come back, so results are
 //! bit-identical to per-wave heap buffers.
-use ferric_core::gpu::device::Device;
+use ferric_core::gpu::device::{Device, GpuError};
 use ferric_core::gpu::host::{HostBuf, HostElem};
 use ferric_core::gpu::stats;
+
+/// Test seam (`test-seams` feature): fill a wave's operand staging with NaN
+/// before the wave writes it. The buffers are reused, so an element a wave
+/// fails to write (the zero-fill of the padding, say) would otherwise hold
+/// whatever an earlier wave left there, or the allocation's zeros on the first
+/// one; with the seam set it is NaN, and NaN times the AO copy's zero padding
+/// is NaN in the real part of the result.
+#[cfg(feature = "test-seams")]
+#[doc(hidden)]
+pub static POISON_XC_STAGING: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 /// Most page-locked bytes one grid's staging may hold (all buffers together).
 pub(crate) const PINNED_CAP_BYTES: usize = 256 << 20;
@@ -64,6 +75,17 @@ impl HostStage {
             out: buf(dev, stage, po),
             inp32: with_f32.then(|| buf(dev, stage, p32)),
         }
+    }
+
+    /// The first `n` operand elements, for a new wave to fill (NaN first under
+    /// the [`POISON_XC_STAGING`] seam).
+    pub(crate) fn inp_for_wave(&mut self, n: usize) -> Result<&mut [f64], GpuError> {
+        let s = self.inp.head_mut(n)?;
+        #[cfg(feature = "test-seams")]
+        if POISON_XC_STAGING.load(std::sync::atomic::Ordering::Relaxed) {
+            s.fill(f64::NAN);
+        }
+        Ok(s)
     }
 
     /// Page-locked bytes held.

@@ -16,13 +16,14 @@
 //!   scaled on the host after the download (the scale is 1 or 2: exact);
 //! * pass 2: `V_b = A · Xᵀ`.
 //!
-//! Every batch's compact AO block is uploaded ONCE per [`ScreenedGrid`] (the
-//! first integration that asks for the device), concatenated in batch order,
-//! under the pool label [`AO_LABEL`]. Per pass only the per-batch operands move:
+//! Every batch's AO block is uploaded ONCE per [`ScreenedGrid`] (the first
+//! integration that asks for the device), zero-padded and stored bucket by
+//! bucket (see `layout`), under the pool label [`AO_LABEL`]. Per pass only the per-batch operands move:
 //! `D_sub`/`C_sub` or `A` up, `Φ` or `V_b` down. Batches are processed in
 //! WAVES — maximal contiguous batch ranges whose operands fit three fixed
-//! staging buffers — so one wave costs one upload, a run of stream-ordered
-//! GEMM launches, one download and one synchronisation. The host side of a
+//! staging buffers — so one wave costs one upload, one strided-batched GEMM
+//! per (nact bucket, density or V matrix) — a few dozen launches where there
+//! were two per batch — one download and one synchronisation. The host side of a
 //! wave (operands, results and, mixed only, the f32 operands; one staging
 //! buffer's worth each, 64 MiB of f64 at most by default) is allocated once
 //! per grid, page-locked within a cap, and reused by every wave and every Fock
@@ -41,10 +42,11 @@
 //!
 //! # Numerics and determinism
 //!
-//! The device products are plain f64 `cublasDgemm`, one call per product with
-//! no k blocking — except the pass-2 product of a build the precision ladder
-//! marks mixed (see below). They are NOT bit-identical to the host GEMMs (cuBLAS orders its
-//! sums its own way); each product obeys the classical bound
+//! The device products are plain f64 `cublasDgemmStridedBatched` with no k
+//! blocking — except the pass-2 product of a build the precision ladder marks
+//! mixed (see below). The padding adds exact zeros to every real element and is
+//! never read back. They are NOT bit-identical to the host GEMMs (cuBLAS orders
+//! its sums its own way); each product obeys the classical bound
 //! `|ĉ − c| ≤ γ_k (|A||B|)` (Higham, ASNA §3.5) with `k = nact` (pass 1 dense,
 //! pass 1 `Ψ`), `k = nocc` (pass 1 `Φ` from `Ψ`) or `k = ncols` (pass 2), the
 //! same order of error as the host dgemm. Everything downstream is the host
@@ -60,9 +62,19 @@
 //! half the bytes again), and a pass 2 that `KsXc`'s precision ladder marks
 //! mixed (LDA/GGA only, density still moving; see `ks::MIXED_VXC_LADDER_THRESH`)
 //! forms each `V_b = A·Xᵀ` from f32 `A` and `X` with the k-panelled SGEMM and
-//! f64 flush of `ferric_core::gpu::mixed` (panels of 64). Per element
+//! f64 flush of `ferric_core::gpu::mixed` (panels of 64; one strided-batched
+//! SGEMM per panel over a bucket, then one flush over its whole output, so each
+//! `V_b` keeps the same panel boundaries and ascending f64 panel sum). Per element
 //! `|ΔV_ij| ≤ (2u32 + γ_64(u32) + γ_⌈k/64⌉(u64))·(|A||X|ᵀ)_ij`, `k = ncols`
-//! (the host twin's bound, pinned by `xc_batch`'s unit test). Pass 1 (ρ, ∇ρ),
+//! (the host twin's bound, pinned by `xc_batch`'s unit test). The batched
+//! kernel meets that bound but is about 2.5-4x less accurate than the
+//! per-batch kernel loop it replaced (cuBLAS's strided-batched SGEMM sums less
+//! accurately inside a panel than its single-matrix SGEMM): on water
+//! cc-pVDZ `‖ΔV‖_F` is 1.34x (LDA) / 1.61x (PBE) the host twin's, against
+//! 0.35x / 0.48x for the loop. It is therefore in the twin's error class
+//! (1.0-1.6x), within the per-element γ budget, and within the ladder
+//! threshold `ks::MIXED_VXC_LADDER_THRESH`, which was calibrated with the
+//! twin (`tests/gpu_xc_mixed.rs` pins the band from both sides). Pass 1 (ρ, ∇ρ),
 //! the functional and E_xc stay f64. A wave whose panel sums could leave the
 //! f32 range (`k_panel·max|A|·max|X| ≥ f32::MAX/2`, or a NaN) runs f64, and a
 //! missing flush kernel, an AO value beyond the f32 range or a pool too small
@@ -79,26 +91,30 @@
 use std::borrow::Cow;
 use std::sync::Arc;
 
-use ndarray::{s, Array2};
+use ndarray::Array2;
 use rayon::prelude::*;
 
 use ferric_core::gpu::device::{device, Device, GpuError};
-use ferric_core::gpu::gemm::{dev_left, dev_right, dev_right_padded, gemm_f64_dev_into};
-use ferric_core::gpu::mixed::{
-    effective_k_panel, gemm_f32_f64acc_dev_into, round_to_f32, round_to_f32_into,
-};
+use ferric_core::gpu::mixed::{effective_k_panel, round_to_f32, round_to_f32_into};
 use ferric_core::gpu::resident::DeviceMatrix;
 use ferric_core::gpu::stats::{self, CpuReason};
 use ferric_core::gpu::{GpuMode, GpuStatus, MixedKernel};
 
 use super::{
-    batch_density_from_phi, fill_amat, group_ranges, map_indexed, n_groups, scatter_sym,
-    BatchDensity, BatchFactors, DensityInput, DevSession, GridPoint, GtoEvalError, ScreenedGrid,
-    XcBatch,
+    batch_density_from_phi_in, fill_amat_in, group_ranges, map_indexed, n_groups, scatter_sym_ld,
+    BatchDensity, BatchFactors, BlockLayout, DensityInput, DevSession, GridPoint, GtoEvalError,
+    ScreenedGrid, XcBatch,
 };
 
 mod host_stage;
+mod launch;
+mod layout;
 use host_stage::HostStage;
+#[cfg(feature = "test-seams")]
+pub use host_stage::POISON_XC_STAGING;
+#[cfg(feature = "test-seams")]
+pub use launch::XC_GEMM_LOOP;
+use layout::{pad_nact, AoLayout, WaveLayout};
 
 /// Pool label of the device copy of the compact AO blocks.
 pub const AO_LABEL: &str = "KS-DFT grid AO blocks (device)";
@@ -123,6 +139,31 @@ pub static FORCE_HOST: std::sync::atomic::AtomicBool = std::sync::atomic::Atomic
 #[doc(hidden)]
 pub static MIXED_VXC_HOST_TWIN: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
+
+/// Test seam guard (`test-seams` feature): sets one of the seam flags above
+/// (or [`XC_GEMM_LOOP`], [`POISON_XC_STAGING`]) for its lifetime and clears it
+/// on drop, so a panicking test cannot leave a seam set for the later tests
+/// of the same binary.
+#[cfg(feature = "test-seams")]
+#[doc(hidden)]
+#[must_use = "the seam is cleared when the guard drops"]
+pub struct SeamGuard(&'static std::sync::atomic::AtomicBool);
+
+#[cfg(feature = "test-seams")]
+impl SeamGuard {
+    /// Stores `on` in `flag` until the guard drops (then `false`).
+    pub fn set(flag: &'static std::sync::atomic::AtomicBool, on: bool) -> Self {
+        flag.store(on, std::sync::atomic::Ordering::SeqCst);
+        Self(flag)
+    }
+}
+
+#[cfg(feature = "test-seams")]
+impl Drop for SeamGuard {
+    fn drop(&mut self) {
+        self.0.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+}
 
 #[cfg(feature = "test-seams")]
 pub(super) fn mixed_vxc_host_twin() -> bool {
@@ -185,10 +226,10 @@ impl std::fmt::Debug for DeviceSlot {
 /// The resident AO blocks plus the three staging buffers.
 pub(crate) struct DeviceXc {
     dev: Arc<Device>,
-    /// Every batch's `(nact, 4nb)` row-major block, concatenated in batch order.
+    /// Every batch's AO block, zero-padded and bucketed (see `layout`).
     ao: DeviceMatrix<f64>,
-    /// Element offset of batch `bi`'s block in `ao`.
-    ao_off: Vec<usize>,
+    /// Where each batch's block lives in `ao` (and `ao32`).
+    layout: AoLayout,
     /// Per-batch left operands (`D_sub`, `C_sub` or `A`).
     stage_in: DeviceMatrix<f64>,
     /// Per-batch `Ψ = C_subᵀ·X` (factored densities only).
@@ -215,9 +256,9 @@ struct MixedState {
     ao32: DeviceMatrix<f32>,
     /// Per-batch `A` rounded to f32 (the pass-2 left operands).
     stage_in32: DeviceMatrix<f32>,
-    /// f32 panel scratch, `max nact²` elements: one batch at a time (the
-    /// launches are stream-ordered, so a batch's panels and flushes finish
-    /// before the next batch's first panel overwrites it).
+    /// f32 panel scratch, one staging buffer's worth: one strided batch at a
+    /// time (the launches are stream-ordered, so a batch's panels and flushes
+    /// finish before the next batch's first panel overwrites it).
     c32: DeviceMatrix<f32>,
     /// `max |χ|, |∇χ|` over every AO block (the panel-overflow guard).
     max_abs_x: f64,
@@ -443,13 +484,11 @@ pub(crate) fn stage_elems(nbf: usize, batches: &[(usize, usize)]) -> Result<usiz
     Ok(single.max(sum.min(STAGE_ELEMS)))
 }
 
-/// One wave: batches `[b0, end)`, each batch's `[in, mid, out]` offsets and
-/// lengths in the staging buffers, and the per-buffer totals.
+/// One wave: batches `[b0, end)` and the per-buffer totals of their
+/// `[in, mid, out]` needs (laid out by `layout::WaveLayout`).
 #[derive(Debug, PartialEq)]
 pub(crate) struct Wave {
     pub end: usize,
-    pub off: Vec<[usize; 3]>,
-    pub len: Vec<[usize; 3]>,
     pub total: [usize; 3],
 }
 
@@ -464,8 +503,6 @@ pub(crate) fn plan_wave(
 ) -> Result<Wave, GpuError> {
     let mut w = Wave {
         end: b0,
-        off: Vec::new(),
-        len: Vec::new(),
         total: [0; 3],
     };
     while w.end < nbatches {
@@ -479,8 +516,6 @@ pub(crate) fn plan_wave(
         if (0..3).any(|i| w.total[i] + n[i] > stage) {
             break;
         }
-        w.off.push(w.total);
-        w.len.push(n);
         for i in 0..3 {
             w.total[i] += n[i];
         }
@@ -489,43 +524,59 @@ pub(crate) fn plan_wave(
     Ok(w)
 }
 
-/// Run `f(j, chunk_j)` over consecutive chunks of `buf` (lengths `lens`),
-/// serially or on rayon; each chunk is written by exactly one call.
-fn fill_chunks<F>(serial: bool, buf: &mut [f64], lens: &[usize], f: F) -> Result<(), GtoEvalError>
+/// Run `f(j, items_j)` for every wave-local batch `j` (its pieces of one
+/// staging buffer, see `WaveLayout::split`), serially or on rayon; each piece
+/// is written by exactly one call.
+fn fill_parts<F>(serial: bool, parts: Vec<Vec<&mut [f64]>>, f: F) -> Result<(), GtoEvalError>
 where
-    F: Fn(usize, &mut [f64]) -> Result<(), GtoEvalError> + Sync + Send,
+    F: Fn(usize, &mut [&mut [f64]]) -> Result<(), GtoEvalError> + Sync + Send,
 {
-    let mut chunks = Vec::with_capacity(lens.len());
-    let mut rest = buf;
-    for &len in lens {
-        let (head, tail) = rest.split_at_mut(len);
-        chunks.push(head);
-        rest = tail;
-    }
     if serial {
-        chunks
+        parts
             .into_iter()
             .enumerate()
-            .try_for_each(|(j, c)| f(j, c))
+            .try_for_each(|(j, mut p)| f(j, &mut p))
     } else {
-        chunks
+        parts
             .into_par_iter()
             .enumerate()
-            .try_for_each(|(j, c)| f(j, c))
+            .try_for_each(|(j, mut p)| f(j, &mut p))
     }
 }
 
-/// `D[funcs, funcs]` (dense) or `C[funcs, :]` (factored), row-major, into `out`
-/// — the values `DensityInput::gather` produces.
-fn gather_into(d: &DensityInput, funcs: &[u32], out: &mut [f64]) {
+/// Per-batch item lengths of pass 1 for a batch padded to `np` rows: per
+/// density, `[D_sub or C_sub, Ψ (factored only), Φ]`. A batch without active
+/// functions (`np = 0`) owns no staging, `Ψ` included.
+fn density_items(np: usize, nc_p: usize, ds: &[DensityInput]) -> [Vec<usize>; 3] {
+    let mut l = [Vec::new(), Vec::new(), Vec::new()];
+    for d in ds {
+        let (inp, mid) = match d {
+            DensityInput::Dense(_) => (np * np, 0),
+            DensityInput::Factored { .. } if np == 0 => (0, 0),
+            DensityInput::Factored { c_occ, .. } => (np * c_occ.ncols(), c_occ.ncols() * nc_p),
+        };
+        l[0].push(inp);
+        l[1].push(mid);
+        l[2].push(np * nc_p);
+    }
+    l
+}
+
+/// `D[funcs, funcs]` (dense, rows `np` apart) or `C[funcs, :]` (factored)
+/// into `out`, zero-padded to `np` rows (and, dense, `np` columns): the values
+/// `DensityInput::gather` produces, plus exact zeros.
+fn gather_padded(d: &DensityInput, funcs: &[u32], np: usize, out: &mut [f64]) {
+    let na = funcs.len();
     match d {
         DensityInput::Dense(m) => {
-            let n = funcs.len();
             for (i, &fi) in funcs.iter().enumerate() {
-                for (j, &fj) in funcs.iter().enumerate() {
-                    out[i * n + j] = m[(fi as usize, fj as usize)];
+                let row = &mut out[i * np..(i + 1) * np];
+                for (o, &fj) in row.iter_mut().zip(funcs) {
+                    *o = m[(fi as usize, fj as usize)];
                 }
+                row[na..].fill(0.0);
             }
+            out[na * np..].fill(0.0);
         }
         DensityInput::Factored { c_occ, .. } => {
             let k = c_occ.ncols();
@@ -535,8 +586,51 @@ fn gather_into(d: &DensityInput, funcs: &[u32], out: &mut [f64]) {
                     *o = v;
                 }
             }
+            out[na * k..].fill(0.0);
         }
     }
+}
+
+/// `fill_amat` into a zero-padded `(np, lay.ld)` block: the real entries at
+/// their padded positions, exact zeros everywhere else.
+fn fill_amat_padded(
+    ao: &Array2<f64>,
+    nb: usize,
+    fac: &BatchFactors,
+    flags: (bool, bool),
+    out: &mut [f64],
+    lay: BlockLayout,
+) {
+    let na = ao.nrows();
+    if nb == lay.cs {
+        // Full batch: every real row is dense up to its used width.
+        let used = if flags.1 { 4 * nb } else { nb };
+        for r in 0..na {
+            out[r * lay.ld + used..(r + 1) * lay.ld].fill(0.0);
+        }
+        out[na * lay.ld..].fill(0.0);
+    } else {
+        out.fill(0.0);
+    }
+    fill_amat_in(ao, nb, fac, flags, out, lay);
+}
+
+/// An `(na, 4nb)` AO block in the padded layout's `(na, 4·nb_pad)` form
+/// (component `c` at column `c·nb_pad`, zeros between); the block itself when
+/// `nb == nb_pad`. Rows past `na` are the device copy's (zeroed) padding.
+fn pad_ao_block(src: &[f64], (na, nb): (usize, usize), nb_pad: usize) -> Cow<'_, [f64]> {
+    if nb == nb_pad {
+        return Cow::Borrowed(src);
+    }
+    let mut out = vec![0.0; na * 4 * nb_pad];
+    for r in 0..na {
+        for c in 0..4 {
+            let from = r * 4 * nb + c * nb;
+            let to = r * 4 * nb_pad + c * nb_pad;
+            out[to..to + nb].copy_from_slice(&src[from..from + nb]);
+        }
+    }
+    Cow::Owned(out)
 }
 
 /// Mixed precision was requested but this grid runs its V_xc in f64 on the
@@ -557,11 +651,10 @@ impl MixedState {
         pool: &ferric_core::gpu::pool::DevicePool,
         ao_len: usize,
         stage: usize,
-        max_na2: usize,
     ) -> Result<Self, GpuError> {
         dev.axpy_f32_to_f64()?;
         let z = |label: &str, len: usize| DeviceMatrix::<f32>::zeros(dev, pool, label, len, 1);
-        let c32 = z("KS-DFT XC mixed panel scratch (f32)", max_na2.max(1))?;
+        let c32 = z("KS-DFT XC mixed panel scratch (f32)", stage)?;
         let stage_in32 = z("KS-DFT XC staging (operands, f32)", stage)?;
         let ao32 = z("KS-DFT grid AO blocks (device, f32)", ao_len)?;
         Ok(Self {
@@ -592,37 +685,23 @@ impl DeviceXc {
         sg: &ScreenedGrid,
         grid: &[GridPoint],
     ) -> Result<Self, GpuError> {
-        let overflow = || GpuError::Layout("XC AO block sizes overflow usize".into());
-        let mut ao_off = Vec::with_capacity(sg.batches.len());
-        let mut total = 0usize;
-        for b in &sg.batches {
-            ao_off.push(total);
-            let len = b
-                .funcs
-                .len()
-                .checked_mul(4 * b.idx.len())
-                .ok_or_else(overflow)?;
-            total = total.checked_add(len).ok_or_else(overflow)?;
-        }
+        let shapes = sg.batch_shapes();
+        let layout = AoLayout::new(&shapes)?;
+        let total = layout.total;
         if total == 0 {
             return Err(GpuError::Layout(
                 "no basis function is significant on any batch; nothing to offload".into(),
             ));
         }
-        let shapes: Vec<(usize, usize)> = sg
-            .batches
-            .iter()
-            .map(|b| (b.funcs.len(), b.idx.len()))
-            .collect();
-        let stage = stage_elems(sg.nbf, &shapes)?;
+        let padded: Vec<(usize, usize)> = (0..shapes.len()).map(|bi| layout.padded(bi)).collect();
+        let stage = stage_elems(sg.nbf, &padded)?;
         let z = |label: &str, len: usize| DeviceMatrix::<f64>::zeros(dev, pool, label, len, 1);
         let stage_in = z("KS-DFT XC staging (operands)", stage)?;
         let stage_mid = z("KS-DFT XC staging (psi)", stage)?;
         let stage_out = z("KS-DFT XC staging (results)", stage)?;
         let mut ao = z(AO_LABEL, total)?;
         let mut mixed = if mixed_vxc_requested() {
-            let max_na2 = shapes.iter().map(|&(na, _)| na * na).max().unwrap_or(0);
-            match MixedState::reserve(dev, pool, total, stage, max_na2) {
+            match MixedState::reserve(dev, pool, total, stage) {
                 Ok(m) => Some(m),
                 Err(e) => {
                     mixed_unavailable(&e);
@@ -652,18 +731,18 @@ impl DeviceXc {
                 .map_err(|e| GpuError::Layout(format!("AO evaluation for the upload: {e:?}")))?;
             for (j, blk) in blocks.iter().enumerate() {
                 let bi = b0 + j;
+                let Some(at) = layout.offset(bi) else {
+                    continue;
+                };
                 let src = blk
                     .as_slice()
                     .ok_or_else(|| GpuError::Layout("AO block not contiguous".into()))?;
-                if src.is_empty() {
-                    continue;
-                }
-                let at = ao_off[bi];
+                let src = pad_ao_block(src, shapes[bi], layout.nb_pad);
                 dev.stream
-                    .memcpy_htod(src, &mut ao.buf_mut().slice_mut(at..at + src.len()))
+                    .memcpy_htod(&*src, &mut ao.buf_mut().slice_mut(at..at + src.len()))
                     .map_err(|e| cuda(&format!("H2D XC AO block {bi}"), e))?;
                 if let Some(m) = mixed.as_mut() {
-                    match m.write_block(dev, at, src) {
+                    match m.write_block(dev, at, &src) {
                         Ok(()) => {}
                         Err(MixedSetup::Soft(e)) => {
                             mixed_unavailable(&e);
@@ -686,7 +765,7 @@ impl DeviceXc {
         Ok(Self {
             dev: Arc::clone(dev),
             ao,
-            ao_off,
+            layout,
             stage_in,
             stage_mid,
             stage_out,
@@ -796,75 +875,56 @@ impl DeviceXc {
         serial: bool,
     ) -> Result<Vec<Vec<BatchDensity>>, Fail> {
         let nbat = sg.batches.len();
-        let ncols = |nb: usize| if need_tau { 4 * nb } else { nb };
-        let need = |bi: usize| -> [usize; 3] {
-            let b = &sg.batches[bi];
-            let (na, nc) = (b.funcs.len(), ncols(b.idx.len()));
-            let mut n = [0usize; 3];
-            if na == 0 {
-                return n;
-            }
-            for d in ds {
-                match d {
-                    DensityInput::Dense(_) => n[0] = n[0].saturating_add(na.saturating_mul(na)),
-                    DensityInput::Factored { c_occ, .. } => {
-                        let k = c_occ.ncols();
-                        n[0] = n[0].saturating_add(na.saturating_mul(k));
-                        n[1] = n[1].saturating_add(k.saturating_mul(nc));
-                    }
-                }
-                n[2] = n[2].saturating_add(na.saturating_mul(nc));
-            }
-            n
-        };
+        let nb_pad = self.layout.nb_pad;
+        let nc_p = if need_tau { 4 * nb_pad } else { nb_pad };
+        let np_of: Vec<usize> = (0..nbat).map(|bi| self.layout.padded(bi).0).collect();
+        let items = |bi: usize| density_items(np_of[bi], nc_p, ds);
+        let need = |bi: usize| items(bi).map(|l| l.iter().sum());
         let mut out: Vec<Vec<BatchDensity>> = ds.iter().map(|_| Vec::with_capacity(nbat)).collect();
         let (mut h2d, mut d2h) = (0usize, 0usize);
         let mut b0 = 0usize;
         while b0 < nbat {
             let w = plan_wave(b0, nbat, &need, self.stage())?;
-            let in_lens: Vec<usize> = w.len.iter().map(|l| l[0]).collect();
-            let host_in = self.host.inp.head_mut(w.total[0])?;
-            fill_chunks(serial, host_in, &in_lens, |j, chunk| {
+            let n = w.end - b0;
+            let wl = WaveLayout::new(&self.layout, b0, n, &items)?;
+            let parts = wl.split(0, n, self.host.inp_for_wave(w.total[0])?);
+            fill_parts(serial, parts, |j, chunks| {
                 let funcs = &sg.batches[b0 + j].funcs;
-                let mut at = 0usize;
-                for d in ds {
-                    let len = match d {
-                        DensityInput::Dense(_) => funcs.len() * funcs.len(),
-                        DensityInput::Factored { c_occ, .. } => funcs.len() * c_occ.ncols(),
-                    };
-                    gather_into(d, funcs, &mut chunk[at..at + len]);
-                    at += len;
+                let np = pad_nact(funcs.len());
+                for (d, c) in ds.iter().zip(chunks) {
+                    gather_padded(d, funcs, np, c);
                 }
                 Ok(())
             })?;
             self.round_trip(Up::F64(w.total[0]), w.total[2], |me| {
-                for (j, off) in w.off.iter().enumerate() {
-                    me.launch_density(sg, b0 + j, *off, ds, &ncols)?;
-                }
-                Ok(())
+                me.launch_density_wave(sg, b0, &wl, ds, nc_p)
             })?;
             h2d += 8 * w.total[0];
             d2h += 8 * w.total[2];
             let host_out = self.host.out.head(w.total[2])?;
-            let parts = map_indexed(serial, w.end - b0, |j| {
-                let bi = b0 + j;
-                let b = &sg.batches[bi];
+            let pl = BlockLayout {
+                ld: nc_p,
+                cs: nb_pad,
+            };
+            let parts = map_indexed(serial, n, |j| {
+                let b = &sg.batches[b0 + j];
                 let (na, nb) = (b.funcs.len(), b.idx.len());
-                let len = na * ncols(nb);
-                let ao = sg.batch_ao(bi, grid)?;
-                let mut at = w.off[j][2];
+                let ao = sg.batch_ao(b0 + j, grid)?;
                 Ok(ds
                     .iter()
-                    .map(|d| {
-                        let p = &host_out[at..at + len];
-                        at += len;
-                        match d {
+                    .enumerate()
+                    .map(|(d, dd)| {
+                        let at = wl.off(j, 2, d);
+                        let p = &host_out[at..at + na * nc_p];
+                        match dd {
                             DensityInput::Factored { scale, .. } => {
                                 // `scale` is 1 or 2 (exact in binary): no rounding.
                                 let scaled: Vec<f64> = p.iter().map(|&x| x * *scale).collect();
-                                batch_density_from_phi(&ao, &scaled, nb, need_tau)
+                                batch_density_from_phi_in(&ao, &scaled, pl, nb, need_tau)
                             }
-                            DensityInput::Dense(_) => batch_density_from_phi(&ao, p, nb, need_tau),
+                            DensityInput::Dense(_) => {
+                                batch_density_from_phi_in(&ao, p, pl, nb, need_tau)
+                            }
                         }
                     })
                     .collect::<Vec<_>>())
@@ -878,65 +938,6 @@ impl DeviceXc {
         }
         stats::note_xc_pass(h2d, d2h);
         Ok(out)
-    }
-
-    /// Launch batch `bi`'s pass-1 products (stream-ordered, no sync).
-    fn launch_density(
-        &mut self,
-        sg: &ScreenedGrid,
-        bi: usize,
-        [mut ii, mut mm, mut oo]: [usize; 3],
-        ds: &[DensityInput],
-        ncols: impl Fn(usize) -> usize,
-    ) -> Result<(), GpuError> {
-        let b = &sg.batches[bi];
-        let (na, nb) = (b.funcs.len(), b.idx.len());
-        if na == 0 {
-            return Ok(());
-        }
-        let nc = ncols(nb);
-        let Self {
-            dev,
-            ao,
-            ao_off,
-            stage_in,
-            stage_mid,
-            stage_out,
-            ..
-        } = self;
-        let at = ao_off[bi];
-        let ao_tw = twin(na, 4 * nb);
-        let x_tw = ao_tw.slice(s![.., ..nc]);
-        for d in ds {
-            let x = dev_right_padded(ao.buf().slice(at..at + na * 4 * nb), &x_tw)?;
-            let mut phi = stage_out.buf_mut().slice_mut(oo..oo + na * nc);
-            match d {
-                DensityInput::Dense(_) => {
-                    let dtw = twin(na, na);
-                    let dsub = dev_left(stage_in.buf().slice(ii..ii + na * na), &dtw.view())?;
-                    gemm_f64_dev_into(dev, na, na, nc, &dsub, &x, &mut phi, na.max(1))?;
-                    ii += na * na;
-                }
-                DensityInput::Factored { c_occ, .. } => {
-                    let k = c_occ.ncols();
-                    let ctw = twin(na, k);
-                    let csub = || stage_in.buf().slice(ii..ii + na * k);
-                    {
-                        let csub_t = dev_left(csub(), &ctw.t())?;
-                        let mut psi = stage_mid.buf_mut().slice_mut(mm..mm + k * nc);
-                        gemm_f64_dev_into(dev, k, na, nc, &csub_t, &x, &mut psi, na.max(1))?;
-                    }
-                    let ptw = twin(k, nc);
-                    let psi = dev_right(stage_mid.buf().slice(mm..mm + k * nc), &ptw.view())?;
-                    let c = dev_left(csub(), &ctw.view())?;
-                    gemm_f64_dev_into(dev, na, k, nc, &c, &psi, &mut phi, k.max(1))?;
-                    ii += na * k;
-                    mm += k * nc;
-                }
-            }
-            oo += na * nc;
-        }
-        Ok(())
     }
 
     /// Pass 2: the `nmats` V matrices, reduced in the CPU path's fixed groups.
@@ -962,44 +963,40 @@ impl DeviceXc {
             .iter()
             .map(|_| (0..nmats).map(|_| Array2::zeros((nbf, nbf))).collect())
             .collect();
-        let ncols = |nb: usize| if flags.1 { 4 * nb } else { nb };
-        let need = |bi: usize| -> [usize; 3] {
-            let b = &sg.batches[bi];
-            let na = b.funcs.len();
-            let nc = ncols(b.idx.len());
-            [
-                nmats.saturating_mul(na).saturating_mul(nc),
-                0,
-                nmats.saturating_mul(na).saturating_mul(na),
-            ]
+        let nb_pad = self.layout.nb_pad;
+        let lay = BlockLayout {
+            ld: if flags.1 { 4 * nb_pad } else { nb_pad },
+            cs: nb_pad,
         };
+        let np_of: Vec<usize> = (0..nbat).map(|bi| self.layout.padded(bi).0).collect();
+        let items = |bi: usize| {
+            let np = np_of[bi];
+            [vec![np * lay.ld; nmats], Vec::new(), vec![np * np; nmats]]
+        };
+        let need = |bi: usize| items(bi).map(|l| l.iter().sum());
         let (mut h2d, mut d2h) = (0usize, 0usize);
         let mut b0 = 0usize;
         while b0 < nbat {
             let w = plan_wave(b0, nbat, &need, self.stage())?;
-            let in_lens: Vec<usize> = w.len.iter().map(|l| l[0]).collect();
-            let host_in = self.host.inp.head_mut(w.total[0])?;
-            fill_chunks(serial, host_in, &in_lens, |j, chunk| {
-                let bi = b0 + j;
-                let b = &sg.batches[bi];
+            let n = w.end - b0;
+            let wl = WaveLayout::new(&self.layout, b0, n, &items)?;
+            let parts = wl.split(0, n, self.host.inp_for_wave(w.total[0])?);
+            fill_parts(serial, parts, |j, chunks| {
+                let b = &sg.batches[b0 + j];
                 if b.funcs.is_empty() {
                     return Ok(());
                 }
-                let nb = b.idx.len();
-                let len = b.funcs.len() * ncols(nb);
-                let ao = sg.batch_ao(bi, grid)?;
-                for mat in 0..nmats {
+                let ao = sg.batch_ao(b0 + j, grid)?;
+                for (mat, c) in chunks.iter_mut().enumerate() {
                     let fac = factors(b, mat);
-                    fill_amat(&ao, nb, &fac, flags, &mut chunk[mat * len..(mat + 1) * len]);
+                    fill_amat_padded(&ao, b.idx.len(), &fac, flags, c, lay);
                 }
                 Ok(())
             })?;
             let up = self.wave_upload(w.total[0], mixed_req, k_panel, serial)?;
             let is32 = matches!(up, Up::F32(_));
             self.round_trip(up, w.total[2], |me| {
-                for (j, off) in w.off.iter().enumerate() {
-                    panels += me.launch_potential(sg, b0 + j, *off, (nmats, is32), &ncols)?;
-                }
+                panels += me.launch_potential_wave(sg, b0, &wl, (nmats, is32), lay.ld)?;
                 Ok(())
             })?;
             h2d += match up {
@@ -1015,14 +1012,13 @@ impl DeviceXc {
                 let (r0, r1) = ranges[gi];
                 for bi in r0.max(b0)..r1.min(w.end) {
                     let funcs = &sg.batches[bi].funcs;
-                    let na = funcs.len();
-                    if na == 0 {
+                    if funcs.is_empty() {
                         continue;
                     }
-                    let base = w.off[bi - b0][2];
+                    let np = pad_nact(funcs.len());
                     for (mat, a) in acc.iter_mut().enumerate() {
-                        let at = base + mat * na * na;
-                        scatter_sym(&host_out[at..at + na * na], funcs, a);
+                        let at = wl.off(bi - b0, 2, mat);
+                        scatter_sym_ld(&host_out[at..at + np * np], np, funcs, a);
                     }
                 }
             };
@@ -1077,76 +1073,16 @@ impl DeviceXc {
         };
         let (max_a, rounded) = max_abs_and_round(serial, a, a32.head_mut(n)?);
         if !mixed_panel_fits(k_panel, max_a, m.max_abs_x) || !rounded {
+            // TODO(precision provenance, feat/precision-section-provenance
+            // 5675257e3, unmerged): once that lands, record this as
+            // `note_mixed_fallback(MixedKernel::XcVxc, MixedFallback::F32Range)`
+            // (and `mixed_unavailable` as `MixedFallback::DeviceF64`); its
+            // `note_kernel_mixed(XcVxc)` in `note_mixed_vxc_pass` already
+            // covers this file's mixed passes.
             stats::note_mixed_fallback();
             return Ok(Up::F64(n));
         }
         Ok(Up::F32(n))
-    }
-
-    /// Launch batch `bi`'s pass-2 products `V_b = A·Xᵀ` (stream-ordered, no
-    /// sync): f64 dgemm, or with `mixed` the f32-operand / f64-accumulate
-    /// kernel on `ao32` and `stage_in32`. Returns the mixed panels flushed.
-    fn launch_potential(
-        &mut self,
-        sg: &ScreenedGrid,
-        bi: usize,
-        [ii, _, oo]: [usize; 3],
-        (nmats, mixed): (usize, bool),
-        ncols: impl Fn(usize) -> usize,
-    ) -> Result<usize, GpuError> {
-        let b = &sg.batches[bi];
-        let (na, nb) = (b.funcs.len(), b.idx.len());
-        if na == 0 {
-            return Ok(0);
-        }
-        let nc = ncols(nb);
-        let Self {
-            dev,
-            ao,
-            ao_off,
-            stage_in,
-            stage_out,
-            mixed: mixed_state,
-            ..
-        } = self;
-        let at = ao_off[bi];
-        let ao_tw = twin(na, 4 * nb);
-        let xt_tw = ao_tw.slice(s![.., ..nc]);
-        let xt_tw = xt_tw.t();
-        let atw = twin(na, nc);
-        let mut panels = 0usize;
-        for mat in 0..nmats {
-            let a0 = ii + mat * na * nc;
-            let o0 = oo + mat * na * na;
-            let mut vb = stage_out.buf_mut().slice_mut(o0..o0 + na * na);
-            match (mixed, mixed_state.as_mut()) {
-                (true, Some(m)) => {
-                    let xt = dev_right_padded(m.ao32.buf().slice(at..at + na * 4 * nb), &xt_tw)?;
-                    let a = dev_left(m.stage_in32.buf().slice(a0..a0 + na * nc), &atw.view())?;
-                    let mut c32 = m.c32.buf_mut().slice_mut(..na * na);
-                    panels += gemm_f32_f64acc_dev_into(
-                        dev,
-                        (na, nc, na),
-                        &a,
-                        &xt,
-                        &mut c32,
-                        &mut vb,
-                        effective_k_panel(),
-                    )?;
-                }
-                (true, None) => {
-                    return Err(GpuError::Layout(
-                        "mixed XC launch without the f32 state".into(),
-                    ))
-                }
-                (false, _) => {
-                    let xt = dev_right_padded(ao.buf().slice(at..at + na * 4 * nb), &xt_tw)?;
-                    let a = dev_left(stage_in.buf().slice(a0..a0 + na * nc), &atw.view())?;
-                    gemm_f64_dev_into(dev, na, nc, na, &a, &xt, &mut vb, nc.max(1))?;
-                }
-            }
-        }
-        Ok(panels)
     }
 }
 
@@ -1209,14 +1145,12 @@ mod tests {
             let w = plan_wave(b0, needs.len(), |bi| needs[bi], stage).unwrap();
             assert!(w.end > b0, "a wave must make progress");
             let mut run = [0usize; 3];
-            for (j, (off, len)) in w.off.iter().zip(&w.len).enumerate() {
-                assert_eq!(*len, needs[b0 + j]);
-                assert_eq!(*off, run, "offsets are the running totals");
+            for need in &needs[b0..w.end] {
                 for i in 0..3 {
-                    run[i] += len[i];
+                    run[i] += need[i];
                 }
             }
-            assert_eq!(run, w.total);
+            assert_eq!(run, w.total, "totals are the sums of the wave's needs");
             assert!(w.total.iter().all(|&t| t <= stage));
             if w.end < needs.len() {
                 let n = needs[w.end];
@@ -1229,6 +1163,26 @@ mod tests {
             b0 = w.end;
         }
         assert_eq!(seen, needs.len());
+    }
+
+    #[test]
+    fn a_batch_without_active_functions_reserves_no_density_staging() {
+        let (d, c) = (Array2::<f64>::zeros((6, 6)), Array2::<f64>::zeros((6, 3)));
+        let ds = [
+            DensityInput::Dense(&d),
+            DensityInput::Factored {
+                c_occ: &c,
+                scale: 2.0,
+            },
+        ];
+        assert_eq!(
+            density_items(0, 40, &ds),
+            [vec![0, 0], vec![0, 0], vec![0, 0]]
+        );
+        assert_eq!(
+            density_items(16, 40, &ds),
+            [vec![256, 48], vec![0, 120], vec![640, 640]]
+        );
     }
 
     #[test]
@@ -1310,5 +1264,80 @@ mod tests {
         }
         assert!(single_big() > STAGE_ELEMS);
         assert!(stage_elems(usize::MAX, &[(usize::MAX, 2)]).is_err());
+    }
+
+    /// The k index of the mixed pass 2 (`V_b = A·Xᵀ`, k = `lay.ld` = `NB`
+    /// points; τ, the only layout with components inside k, is never mixed)
+    /// under the device padding: every real element of `A` (from
+    /// `fill_amat_padded`) and of `X`'s χ columns (from `pad_ao_block`) keeps
+    /// the k index it has in the compact CPU layout, so it falls in the same
+    /// k-panel at every panel width; every other element up to `NB` is an exact
+    /// zero; the panels past ⌈nb/b⌉ are whole zero panels; padded rows (past
+    /// `nact`) are zero and lie outside k. The padded buffers start as NaN, so
+    /// an element the fill does not write fails too.
+    /// MUTATION CHECK: right-aligning the χ columns in `pad_ao_block`
+    /// (`to + nb_pad - nb`) fails it.
+    #[test]
+    fn padding_appends_whole_zero_panels_and_never_shifts_a_panel_boundary() {
+        use crate::xc_batch::fill_amat;
+        use ferric_core::gpu::mixed::MIXED_K_PANEL_DEFAULT;
+        let val = |i: usize, salt: usize| ((i * 7919 + salt * 104_729) % 1013) as f64 * 1e-3 + 0.1;
+        for nb_pad in [128usize, 100] {
+            for nb in [1usize, 37, 63, 64, 65, 99, 100, 127, 128] {
+                if nb > nb_pad {
+                    continue;
+                }
+                for na in [1usize, 5, 16, 17] {
+                    let ao = Array2::from_shape_fn((na, 4 * nb), |(r, c)| val(r * 4 * nb + c, 1));
+                    let fac = BatchFactors {
+                        s_half: (0..nb).map(|g| val(g, 2)).collect(),
+                        f: [0, 1, 2].map(|a| (0..nb).map(|g| val(g, 3 + a)).collect()),
+                        t_half: Vec::new(),
+                    };
+                    let mut compact = vec![f64::NAN; na * nb];
+                    fill_amat(&ao, nb, &fac, (true, false), &mut compact);
+                    let np = pad_nact(na);
+                    let lay = BlockLayout {
+                        ld: nb_pad,
+                        cs: nb_pad,
+                    };
+                    let mut a = vec![f64::NAN; np * nb_pad];
+                    fill_amat_padded(&ao, nb, &fac, (true, false), &mut a, lay);
+                    let src = ao.as_slice().unwrap();
+                    let x = pad_ao_block(src, (na, nb), nb_pad);
+                    for r in 0..np {
+                        for g in 0..nb_pad {
+                            let (pa, real) = (a[r * nb_pad + g], r < na && g < nb);
+                            if real {
+                                // same k index g, hence the same panel g / b
+                                assert_eq!(pa.to_bits(), compact[r * nb + g].to_bits());
+                                assert_eq!(
+                                    x[r * 4 * nb_pad + g].to_bits(),
+                                    src[r * 4 * nb + g].to_bits()
+                                );
+                            } else {
+                                assert_eq!(pa.to_bits(), 0, "A[{r},{g}] nb={nb} NB={nb_pad}");
+                            }
+                            if r < na && g >= nb {
+                                assert_eq!(x[r * 4 * nb_pad + g].to_bits(), 0, "X[{r},{g}]");
+                            }
+                        }
+                    }
+                    for kp in [1usize, 16, 48, MIXED_K_PANEL_DEFAULT, 100] {
+                        let live = |buf: &[f64], ld: usize, rows: usize, p: usize| {
+                            (0..rows).any(|r| {
+                                (p * kp..((p + 1) * kp).min(nb_pad)).any(|g| buf[r * ld + g] != 0.0)
+                            })
+                        };
+                        let panels = nb_pad.div_ceil(kp);
+                        for p in 0..panels {
+                            let want = p < nb.div_ceil(kp);
+                            assert_eq!(live(&a, nb_pad, np, p), want, "A panel {p} b={kp}");
+                            assert_eq!(live(&x, 4 * nb_pad, na, p), want, "X panel {p} b={kp}");
+                        }
+                    }
+                }
+            }
+        }
     }
 }
