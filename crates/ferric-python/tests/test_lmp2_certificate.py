@@ -25,6 +25,7 @@ CERT_KEYS = [
     "cg_energy_error_target",
     "cg_energy_target_met",
     "cg_relres",
+    "cg_true_relres",
     "cg_energy_error_bound",
     "cg_converged",
     "frozen_core",
@@ -35,6 +36,7 @@ CERT_KEYS = [
     "validation_grade",
     "eps_trust",
     "warnings",
+    "solver_warnings",
 ]
 MAP_KEYS = [
     "aux_radius",
@@ -82,6 +84,8 @@ def test_certificate_fields_round_trip_direct(water):
     assert loc["frozen_core"] == 1
     assert loc["cg_converged"] is True and 0.0 <= loc["cg_relres"] < 1e-6
     assert loc["cg_rtol"] == 1e-6 and loc["cg_relres"] < loc["cg_rtol"]
+    assert 0.0 < loc["cg_true_relres"] < 1e-5
+    assert loc["solver_warnings"] == []
     assert loc["cg_rtol_source"] == "adaptive-default"
     assert loc["cg_tightened"] is False
     assert loc["cg_energy_error_target"] == 1e-10

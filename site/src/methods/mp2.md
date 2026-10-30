@@ -233,15 +233,21 @@ fraction of amplitudes kept.
 
 The amplitude equations are solved by preconditioned conjugate gradients to a
 relative residual of 1e-6 by default. The energy is the stationary Hylleraas
-form, so its solver error is second order in that residual, and each run
-computes a rigorous bound on it, `3‖PJ‖²·relres²/λ_min` with
-`λ_min ≥ 2(ε_LUMO − ε_HOMO)`. If the bound exceeds 1e-10 Ha, the solve continues
-from where it stopped to a tighter tolerance, never past 1e-11; with no positive
-orbital gap the bound is undefined and the solve runs at 1e-11 from the start.
-The certificate (`result.local` in Python, `"local"` in the CLI JSON) records
-`cg_rtol`, `cg_rtol_source`, `cg_tightened`, `cg_energy_error_bound`,
-`cg_energy_error_target` and `cg_energy_target_met`, and warns if the target was
-not met. The bound limits solver error only, not the truncation error of `eps`.
+form, so its solver error is second order in that residual. Using that form with
+a loose stop comes from the method's authors: Wang et al. (JCTC 19, 7577, 2023;
+Eq. 10 and Sec. 3.1) stop at an absolute `‖r‖ < 2.5·√eps`, and the 2025 follow-up
+(ChemRxiv preprint of JCTC 21, 10910) at `5·√eps`. ferric uses a fixed relative tolerance instead and
+gates it on a per-run bound, `3‖PJ‖²·relres²/λ_min` with
+`λ_min ≥ 2(ε_LUMO − ε_HOMO)`. The bound holds for the true residual, up to rounding,
+so it is evaluated on `‖J + At‖` from the energy's own matvec, not on the solver's
+recursive residual. If the bound at the solver's stop exceeds 1e-10 Ha, the solve
+continues from where it stopped to a tighter tolerance, never past 1e-11; with no
+positive orbital gap the bound is undefined and the solve runs at 1e-11 from the
+start. The certificate (`result.local` in Python, `"local"` in the CLI JSON) records
+`cg_rtol`, `cg_rtol_source`, `cg_tightened`, `cg_relres`, `cg_true_relres`,
+`cg_energy_error_bound`, `cg_energy_error_target` and `cg_energy_target_met`, and
+`solver_warnings` says if the target was not met. The bound limits solver error
+only, not the truncation error of `eps`.
 
 The exact RI-MP2 reference that measures that error is **opt-in**. It is a
 full canonical RI-MP2 and forms the global `(naux, nocc·nvir)` tensor, so a

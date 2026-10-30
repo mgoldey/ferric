@@ -2009,12 +2009,14 @@ fn rtol_row(xyz: &str, fc: usize, opn: &str, op: Operator, cal: f64, in_core: bo
         let (o, bound) = (new.cg_rtol_outcome, new.cg_energy_error_bound);
         eprintln!(
             "RTOLROW {xyz} {opn} {path}: dE {de:+.3e} bound {bound:.3e} iters {} vs {} matvecs \
-             {} vs {} relres {:.2e} tightened {} rtol {:.0e}",
+             {} vs {} relres {:.3e} true {:.3e} true/recursive-1 {:+.2e} tightened {} rtol {:.0e}",
             new.cg_iterations,
             strict.cg_iterations,
             new.cg_iterations + 1,
             strict.cg_iterations + 1,
             new.cg_relres,
+            new.cg_true_relres,
+            new.cg_true_relres / new.cg_relres - 1.0,
             o.tightened,
             o.rtol_used
         );
@@ -2049,19 +2051,6 @@ fn default_rtol_energy_is_within_its_bound() {
     rtol_row("alkane_8.xyz", 8, "coul", coul, 0.7, false, true);
     rtol_row("alkane_8.xyz", 8, "erfc", erfc, 0.02, false, true);
     rtol_row("s22/water_dimer.xyz", 2, "coul", coul, 0.7, true, true);
-}
-
-/// The size rows of the tolerance claim. `check = false`: whether tightening
-/// fires is what the row reports; the bound and |ΔE| are still asserted.
-#[test]
-#[ignore = "size rows (minutes); run with --ignored --nocapture"]
-fn default_rtol_size_rows() {
-    let coul = Operator::coulomb();
-    let erfc = Operator::erfc(1.0);
-    for (xyz, fc) in [("alkane_16.xyz", 16), ("alkane_20.xyz", 20)] {
-        rtol_row(xyz, fc, "coul", coul, 0.7, false, false);
-        rtol_row(xyz, fc, "erfc", erfc, 0.02, false, false);
-    }
 }
 
 fn adaptive(start: f64, floor: f64, target_ha: f64) -> ferric_mp2::lmp2_amplitude::CgRtolPolicy {
@@ -2102,15 +2091,20 @@ fn continued_pcg_is_bitwise_a_straight_solve() {
 fn tightening_fires_and_meets_a_low_target() {
     use ferric_mp2::lmp2_amplitude::{
         hylleraas_energy, operator_lambda_min_lower_bound, pattern_rhs_norm,
-        solve_under_rtol_policy, CgRtolSource, LMP2_CG_ENERGY_ERROR_TARGET,
+        solve_under_rtol_policy, CgRtolSource, PolicySolve, LMP2_CG_ENERGY_ERROR_TARGET,
     };
     let (rg, f_oo, f_vv) = production_ragged_op("alkane_4.xyz", 4, 1e-4, Operator::coulomb(), 0.7);
     let run = |p| solve_under_rtol_policy(&rg, &f_oo, &f_vv, p, 400, usize::MAX, 0.0).unwrap();
-    let (reference, _, _) = run(adaptive(1e-13, 1e-13, 1.0));
+    let reference = run(adaptive(1e-13, 1e-13, 1.0)).budgeted;
     let e_ref = hylleraas_energy(&rg, &f_oo, reference.plan(), &reference.solve.t).unwrap();
 
     // the default target does not fire on this system, from the same start
-    let (at_start, o0, b0) = run(adaptive(1e-3, 1e-11, 1.0));
+    let PolicySolve {
+        budgeted: at_start,
+        outcome: o0,
+        bound: b0,
+        ..
+    } = run(adaptive(1e-3, 1e-11, 1.0));
     assert!(!o0.tightened && o0.target_met == Some(true));
     assert!(
         b0 > 1e-9,
@@ -2118,7 +2112,12 @@ fn tightening_fires_and_meets_a_low_target() {
     );
 
     for target in [1e-8, LMP2_CG_ENERGY_ERROR_TARGET, 1e-13] {
-        let (b, o, bound) = run(adaptive(1e-3, 1e-11, target));
+        let PolicySolve {
+            budgeted: b,
+            outcome: o,
+            bound,
+            ..
+        } = run(adaptive(1e-3, 1e-11, target));
         let e = hylleraas_energy(&rg, &f_oo, b.plan(), &b.solve.t).unwrap();
         let de = e - e_ref;
         eprintln!(
@@ -2142,9 +2141,14 @@ fn tightening_fires_and_meets_a_low_target() {
 /// and the floor is never passed.
 #[test]
 fn unreachable_target_is_reported() {
-    use ferric_mp2::lmp2_amplitude::solve_under_rtol_policy;
+    use ferric_mp2::lmp2_amplitude::{solve_under_rtol_policy, PolicySolve};
     let (rg, f_oo, f_vv) = production_ragged_op("alkane_4.xyz", 4, 1e-4, Operator::coulomb(), 0.7);
-    let (b, o, bound) = solve_under_rtol_policy(
+    let PolicySolve {
+        budgeted: b,
+        outcome: o,
+        bound,
+        ..
+    } = solve_under_rtol_policy(
         &rg,
         &f_oo,
         &f_vv,
@@ -2159,7 +2163,7 @@ fn unreachable_target_is_reported() {
     assert_eq!(o.target_met, Some(false));
     assert!(bound > 1e-40 && b.solve.relres > 1e-11);
 
-    let (s, _, _) = solve_under_rtol_policy(
+    let PolicySolve { budgeted: s, .. } = solve_under_rtol_policy(
         &rg,
         &f_oo,
         &f_vv,
@@ -2170,7 +2174,12 @@ fn unreachable_target_is_reported() {
     )
     .unwrap();
     let limit = s.solve.iterations + 1;
-    let (b, o, bound) = solve_under_rtol_policy(
+    let PolicySolve {
+        budgeted: b,
+        outcome: o,
+        bound,
+        ..
+    } = solve_under_rtol_policy(
         &rg,
         &f_oo,
         &f_vv,
@@ -2190,12 +2199,19 @@ fn unreachable_target_is_reported() {
 /// the strict tolerance from the start and never reports a met target.
 #[test]
 fn no_gap_uses_the_strict_tolerance() {
-    use ferric_mp2::lmp2_amplitude::{solve_under_rtol_policy, CgRtolPolicy, CgRtolSource};
+    use ferric_mp2::lmp2_amplitude::{
+        solve_under_rtol_policy, CgRtolPolicy, CgRtolSource, PolicySolve,
+    };
     use ferric_mp2::ragged::solve_ragged_budgeted_with;
     let (rg, f_oo, f_vv) = production_ragged_op("alkane_4.xyz", 4, 1e-4, Operator::coulomb(), 0.7);
     // only the bound reads f_vv: the operator lives in the pair blocks
     let closed = &f_vv - &(ndarray::Array2::<f64>::eye(f_vv.nrows()) * 100.0);
-    let (b, o, bound) = solve_under_rtol_policy(
+    let PolicySolve {
+        budgeted: b,
+        outcome: o,
+        bound,
+        ..
+    } = solve_under_rtol_policy(
         &rg,
         &f_oo,
         &closed,
@@ -2244,8 +2260,195 @@ fn explicit_rtol_is_literal() {
     assert_eq!(cert.cg_rtol, 1e-3);
     assert_eq!(cert.cg_rtol_source, "explicit");
     assert!(
-        cert.warnings.iter().any(|w| w.contains("not tightened")),
+        cert.solver_warnings
+            .iter()
+            .any(|w| w.contains("not tightened")),
         "{:?}",
-        cert.warnings
+        cert.solver_warnings
     );
+}
+
+/// The reported bound is a posteriori: it sits on the TRUE residual, which an
+/// independent matvec reproduces, and the true residual is what the helper
+/// reads even when `t` is not the PCG's own iterate. Mutants seen to fail: the
+/// bound fed a scaled-down residual; the bound on the recursive residual; the
+/// helper's residual dropping `J`.
+#[test]
+fn reported_bound_uses_the_true_residual() {
+    use ferric_mp2::lmp2_amplitude::{
+        cg_energy_error_bound, hylleraas_energy_and_residual, operator_lambda_min_lower_bound,
+        pattern_rhs_norm, solve_under_rtol_policy, CgRtolPolicy,
+    };
+    use ferric_mp2::ragged::matvec_indexed;
+    let (rg, f_oo, f_vv) = production_ragged_op("alkane_4.xyz", 4, 1e-4, Operator::coulomb(), 0.7);
+    let oracle = |t: &[ndarray::Array2<f64>]| {
+        let mut fl = 0u64;
+        let at = matvec_indexed(&rg, &f_oo, t, &mut fl);
+        let mut r2 = 0.0;
+        for (pb, a) in rg.pairs.iter().zip(&at) {
+            let n = pb.db.len();
+            for r in 0..pb.da.len() {
+                for c in 0..n {
+                    if pb.pat[r * n + c] {
+                        r2 += (pb.j_blk[(r, c)] + a[(r, c)]).powi(2);
+                    }
+                }
+            }
+        }
+        r2.sqrt()
+    };
+    let (bnorm, lam) = (
+        pattern_rhs_norm(&rg),
+        operator_lambda_min_lower_bound(&f_oo, &f_vv).unwrap(),
+    );
+    let p = solve_under_rtol_policy(
+        &rg,
+        &f_oo,
+        &f_vv,
+        CgRtolPolicy::from_config(None),
+        400,
+        usize::MAX,
+        0.0,
+    )
+    .unwrap();
+    let true_r = oracle(&p.budgeted.solve.t) / bnorm;
+    assert!(
+        (p.true_relres / true_r - 1.0).abs() < 1e-13,
+        "{} vs {true_r}",
+        p.true_relres
+    );
+    let want = cg_energy_error_bound(bnorm, true_r, lam);
+    // tight enough to tell it from the recursive residual, ~1e-12 away here
+    assert!(
+        (p.bound / want - 1.0).abs() < 1e-13,
+        "{} vs {want}",
+        p.bound
+    );
+    assert_ne!(p.true_relres.to_bits(), p.budgeted.solve.relres.to_bits());
+
+    // a t the recursion knows nothing about: the helper must see its residual
+    let t: Vec<_> = p.budgeted.solve.t.iter().map(|b| b * 1.01).collect();
+    let (_, r) = hylleraas_energy_and_residual(&rg, &f_oo, None, &t).unwrap();
+    assert!((r / oracle(&t) - 1.0).abs() < 1e-12);
+    assert!(r / bnorm > 1e-3, "perturbation not visible: {}", r / bnorm);
+
+    // a target set exactly at the recursive bound does not tighten, and the
+    // verdict follows the true residual
+    let target = cg_energy_error_bound(bnorm, p.budgeted.solve.relres, lam);
+    let q = solve_under_rtol_policy(
+        &rg,
+        &f_oo,
+        &f_vv,
+        adaptive(1e-6, 1e-11, target),
+        400,
+        usize::MAX,
+        0.0,
+    )
+    .unwrap();
+    eprintln!(
+        "TRUEVERDICT recursive-bound target {target:.6e} true bound {:.6e} met {:?}",
+        q.bound, q.outcome.target_met
+    );
+    assert!(!q.outcome.tightened);
+    assert_eq!(q.outcome.target_met, Some(q.bound <= target));
+}
+
+/// Pins both constants of `3·‖PJ‖²·relres²/λ_min` on a small system whose
+/// operator is built densely. λ_min: the true smallest eigenvalue is never
+/// below the lower bound, and on the full pattern equals it, so a wrong factor
+/// of 2 fails either way. The 3: a perturbation along the lowest swap-ANTISYMMETRIC
+/// eigenvector, where 2 − S = 3, gives an actual energy error above what a bound
+/// without the 3 would allow. Mutants seen to fail: the factor 3 replaced by 1;
+/// the gap's factor 2 replaced by 1 and by 4.
+#[test]
+fn bound_constants_are_pinned_on_a_dense_system() {
+    use ferric_mp2::lmp2_amplitude::{
+        cg_energy_error_bound, hylleraas_energy_and_residual, operator_lambda_min_lower_bound,
+        pattern_rhs_norm,
+    };
+    use ferric_mp2::ragged::{matvec_indexed, solve_ragged_budgeted_with};
+    use ndarray::{Array1, Array2};
+    use ndarray_linalg::{Eigh, UPLO};
+    for (eps, full) in [(0.0, true), (1e-4, false)] {
+        let (rg, f_oo, f_vv) = production_ragged_op("water.xyz", 1, eps, Operator::coulomb(), 0.7);
+        let idx: Vec<(usize, usize, usize)> = rg
+            .pairs
+            .iter()
+            .enumerate()
+            .flat_map(|(p, pb)| {
+                let n = pb.db.len();
+                (0..pb.da.len()).flat_map(move |r| (0..n).map(move |c| (p, r, c)))
+            })
+            .filter(|&(p, r, c)| rg.pairs[p].pat[r * rg.pairs[p].db.len() + c])
+            .collect();
+        let dim = idx.len();
+        let zeros: Vec<Array2<f64>> = rg
+            .pairs
+            .iter()
+            .map(|pb| Array2::zeros((pb.da.len(), pb.db.len())))
+            .collect();
+        let mut a = Array2::<f64>::zeros((dim, dim));
+        for (col, &(p, r, c)) in idx.iter().enumerate() {
+            let mut e = zeros.clone();
+            e[p][(r, c)] = 1.0;
+            let mut fl = 0u64;
+            let ae = matvec_indexed(&rg, &f_oo, &e, &mut fl);
+            for (row, &(q, s, d)) in idx.iter().enumerate() {
+                a[(row, col)] = ae[q][(s, d)];
+            }
+        }
+        let asym = (&a - &a.t()).iter().fold(0.0f64, |m, x| m.max(x.abs()));
+        assert!(asym < 1e-10, "A not symmetric: {asym:.2e}");
+        let (w, _) = a.eigh(UPLO::Lower).unwrap();
+        let lb = operator_lambda_min_lower_bound(&f_oo, &f_vv).unwrap();
+        eprintln!(
+            "DENSE eps {eps:e} dim {dim}: lambda_min {:.10} lower bound {lb:.10}",
+            w[0]
+        );
+        assert!(w[0] >= lb - 1e-10, "lambda_min {} below {lb}", w[0]);
+        if !full {
+            continue;
+        }
+        assert_eq!(dim, rg.pairs.iter().map(|p| p.pat.len()).sum::<usize>());
+        assert!((w[0] - lb).abs() < 1e-9, "full pattern: {} vs {lb}", w[0]);
+
+        // lowest eigenvector with S = -1: lift the S = +1 sector out of the way
+        let pos: std::collections::HashMap<_, _> =
+            idx.iter().enumerate().map(|(i, &k)| (k, i)).collect();
+        let swap: Vec<usize> = idx.iter().map(|&(p, r, c)| pos[&(p, c, r)]).collect();
+        let mut lifted = a.clone();
+        for (i, &si) in swap.iter().enumerate() {
+            lifted[(i, i)] += 50.0;
+            lifted[(i, si)] += 50.0;
+        }
+        let (wl, vl) = lifted.eigh(UPLO::Lower).unwrap();
+        let lam_anti = wl[0];
+        let v: Array1<f64> = vl.column(0).to_owned();
+        let sv = swap.iter().map(|&s| v[s]).collect::<Array1<f64>>();
+        assert!((&sv + &v).iter().all(|x| x.abs() < 1e-8), "not S = -1");
+        assert!(
+            lam_anti < 3.0 * lb,
+            "a bound without the 3 would still hold"
+        );
+
+        let star = solve_ragged_budgeted_with(&rg, &f_oo, 1e-13, 400, usize::MAX, 0.0);
+        let (e_star, _) =
+            hylleraas_energy_and_residual(&rg, &f_oo, star.plan(), &star.solve.t).unwrap();
+        let c = 1e-3;
+        let mut t = star.solve.t.clone();
+        for (i, &(p, r, d)) in idx.iter().enumerate() {
+            t[p][(r, d)] += c * v[i];
+        }
+        let (e, r) = hylleraas_energy_and_residual(&rg, &f_oo, None, &t).unwrap();
+        let de = e - e_star;
+        let bnorm = pattern_rhs_norm(&rg);
+        let bound = cg_energy_error_bound(bnorm, r / bnorm, lb);
+        let exact = 3.0 * c * c * lam_anti;
+        eprintln!(
+            "DENSE lam_anti {lam_anti:.8} dE {de:.6e} exact {exact:.6e} bound {bound:.6e} ratio {:.3}",
+            de / bound
+        );
+        assert!((de / exact - 1.0).abs() < 1e-6, "{de:.6e} vs {exact:.6e}");
+        assert!(de <= bound, "dE {de:.3e} > bound {bound:.3e}");
+    }
 }

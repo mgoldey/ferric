@@ -212,9 +212,12 @@ pub struct Lmp2Certificate {
     pub cg_energy_error_target: Option<f64>,
     /// Whether the target was met; `None` when no target applied.
     pub cg_energy_target_met: Option<bool>,
+    /// The PCG's recursive residual.
     pub cg_relres: f64,
-    /// A-priori bound (Ha) on the Hylleraas energy's solver error at
-    /// `cg_relres`: `3·‖PJ‖²·relres²/λ_min`, λ_min ≥ 2(ε_LUMO − ε_HOMO).
+    /// The true residual `‖J + A t‖ / ‖PJ‖`, from the energy's own matvec.
+    pub cg_true_relres: f64,
+    /// Bound (Ha) on the Hylleraas energy's solver error at `cg_true_relres`:
+    /// `3·‖PJ‖²·relres²/λ_min`, λ_min ≥ 2(ε_LUMO − ε_HOMO).
     pub cg_energy_error_bound: f64,
     pub cg_converged: bool,
     pub frozen_core: usize,
@@ -231,6 +234,9 @@ pub struct Lmp2Certificate {
     pub validation_grade: String,
     pub eps_trust: String,
     pub warnings: Vec<String>,
+    /// Where the solve's tolerance leaves the energy error above, or without,
+    /// its bound. Separate from `warnings`, which describe the measured record.
+    pub solver_warnings: Vec<String>,
 }
 
 impl Lmp2Certificate {
@@ -259,6 +265,7 @@ impl Lmp2Certificate {
             cg_energy_error_target: r.cg_rtol_outcome.target_ha,
             cg_energy_target_met: r.cg_rtol_outcome.target_met,
             cg_relres: r.cg_relres,
+            cg_true_relres: r.cg_true_relres,
             cg_energy_error_bound: r.cg_energy_error_bound,
             cg_converged: r.cg_converged,
             frozen_core: cfg.frozen_core,
@@ -268,15 +275,13 @@ impl Lmp2Certificate {
             matvec_path: r.matvec_path.as_str(),
             validation_grade: validation_grade(cfg.eps),
             eps_trust: eps_trust(cfg.eps, coulomb),
-            warnings: {
-                let mut w = warnings(cfg.eps, cfg.pair_gate_cal, shape, coulomb);
-                w.extend(solver_warnings(
-                    &r.cg_rtol_outcome,
-                    r.cg_energy_error_bound,
-                    r.cg_relres,
-                ));
-                w
-            },
+            warnings: warnings(cfg.eps, cfg.pair_gate_cal, shape, coulomb),
+            solver_warnings: solver_warnings(
+                &r.cg_rtol_outcome,
+                r.cg_energy_error_bound,
+                r.cg_true_relres,
+                r.cg_relres,
+            ),
         }
     }
 
@@ -332,6 +337,7 @@ impl Lmp2Certificate {
                 self.cg_energy_target_met.map_or(V::Null, V::Bool),
             ),
             ("cg_relres", V::F64(self.cg_relres)),
+            ("cg_true_relres", V::F64(self.cg_true_relres)),
             ("cg_energy_error_bound", V::F64(self.cg_energy_error_bound)),
             ("cg_converged", V::Bool(self.cg_converged)),
             ("frozen_core", V::Usize(self.frozen_core)),
@@ -342,6 +348,7 @@ impl Lmp2Certificate {
             ("validation_grade", V::Str(self.validation_grade.clone())),
             ("eps_trust", V::Str(self.eps_trust.clone())),
             ("warnings", V::StrList(self.warnings.clone())),
+            ("solver_warnings", V::StrList(self.solver_warnings.clone())),
         ]
     }
 }
@@ -424,7 +431,7 @@ fn warnings(eps: f64, gate_cal: Option<f64>, shape: &SystemShape, coulomb: bool)
 
 /// Every way the solve's tolerance leaves its energy error unbounded by the
 /// default target.
-fn solver_warnings(o: &CgRtolOutcome, bound: f64, relres: f64) -> Vec<String> {
+fn solver_warnings(o: &CgRtolOutcome, bound: f64, true_relres: f64, relres: f64) -> Vec<String> {
     let mut w = Vec::new();
     match o.source {
         CgRtolSource::StrictNoGap => w.push(format!(
@@ -433,8 +440,9 @@ fn solver_warnings(o: &CgRtolOutcome, bound: f64, relres: f64) -> Vec<String> {
             o.rtol_used
         )),
         CgRtolSource::AdaptiveDefault if o.target_met == Some(false) => w.push(format!(
-            "PCG energy-error target NOT met: bound {bound:.2e} Ha > {:.0e} Ha at relres \
-             {relres:.2e} (cg_rtol {:.0e}; floor or iteration limit reached)",
+            "PCG energy-error target NOT met: bound {bound:.2e} Ha > {:.0e} Ha at true relres \
+             {true_relres:.2e}, recursive {relres:.2e} (cg_rtol {:.0e}; floor, iteration limit \
+             or residual drift)",
             o.target_ha.unwrap_or(f64::NAN),
             o.rtol_used
         )),
@@ -472,15 +480,17 @@ mod tests {
     #[test]
     fn solver_warnings_fire_exactly_on_their_conditions() {
         use CgRtolSource::*;
-        assert!(solver_warnings(&outcome(AdaptiveDefault, Some(true)), 1e-13, 5e-7).is_empty());
-        assert!(solver_warnings(&outcome(Explicit, None), 1e-13, 5e-7).is_empty());
-        let w = solver_warnings(&outcome(AdaptiveDefault, Some(false)), 1e-9, 5e-7);
+        assert!(
+            solver_warnings(&outcome(AdaptiveDefault, Some(true)), 1e-13, 5e-7, 5e-7).is_empty()
+        );
+        assert!(solver_warnings(&outcome(Explicit, None), 1e-13, 5e-7, 5e-7).is_empty());
+        let w = solver_warnings(&outcome(AdaptiveDefault, Some(false)), 1e-9, 5e-7, 5e-7);
         assert!(w.len() == 1 && w[0].contains("NOT met"), "{w:?}");
-        let w = solver_warnings(&outcome(StrictNoGap, None), f64::NAN, 1e-12);
+        let w = solver_warnings(&outcome(StrictNoGap, None), f64::NAN, 1e-12, 1e-12);
         assert!(w.len() == 1 && w[0].contains("undefined"), "{w:?}");
-        let w = solver_warnings(&outcome(Explicit, None), 1e-9, 5e-7);
+        let w = solver_warnings(&outcome(Explicit, None), 1e-9, 5e-7, 5e-7);
         assert!(w.len() == 1 && w[0].contains("not tightened"), "{w:?}");
-        let w = solver_warnings(&outcome(Explicit, None), f64::NAN, 5e-7);
+        let w = solver_warnings(&outcome(Explicit, None), f64::NAN, 5e-7, 5e-7);
         assert!(w.len() == 1 && w[0].contains("undefined"), "{w:?}");
     }
 
