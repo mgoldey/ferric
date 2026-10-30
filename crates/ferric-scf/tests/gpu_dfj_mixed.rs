@@ -52,6 +52,7 @@ use ferric_scf::df_j_gpu::{
 };
 use ferric_scf::df_k_gpu::MIXED_SETTINGS_OVERRIDE;
 use ferric_scf::fock::JBuilder;
+use ferric_scf::jk_ladder::seams::JK_LADDER_OFF;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 use ndarray::{Array1, Array2, ArrayView2};
@@ -141,6 +142,7 @@ impl Drop for Seams {
             f.store(false, Ordering::SeqCst);
         }
         FORCE_KERNEL_FAILURE.store(false, Ordering::SeqCst);
+        JK_LADDER_OFF.store(false, Ordering::SeqCst);
     }
 }
 
@@ -731,6 +733,9 @@ fn rhf(mol: &Molecule, prep: &PreparedBasis, arm: Arm) -> Run {
         Seams::none()
     };
     FORCE_HOST.store(arm == Arm::HostJ, Ordering::SeqCst);
+    // These SCFs measure the kernel itself (every device build mixed, no f64
+    // exit), so the SCF precision ladder (`ferric_scf::jk_ladder`) is off.
+    JK_LADDER_OFF.store(true, Ordering::SeqCst);
     ROUND_B_TO_F32.store(arm == Arm::Twin, Ordering::SeqCst);
     TRUNCATE_B_TO_F32.store(arm == Arm::Truncated, Ordering::SeqCst);
     let r = solve_rhf(&ParallelContext::default(), mol, prep, op, &bounds, &cfg);

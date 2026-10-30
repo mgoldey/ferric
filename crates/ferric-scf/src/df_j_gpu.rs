@@ -54,6 +54,11 @@
 //! kernel that will not load (`GpuError::Kernel`) re-uploads as f64 for that `DfJ`,
 //! counted once (`mixed_fallback_f64`), never the CPU.
 //!
+//! Inside an SCF the mixed tensor is used only for the builds the SCF precision
+//! ladder allows (`crate::jk_ladder`: mixed while the density moves, f64 exit);
+//! a build the ladder keeps f64 runs the host path. Outside an SCF (no ladder
+//! scope) every build of a mixed `DfJ` is mixed.
+//!
 //! Test seams (`test-seams` feature): `ROUND_B_TO_F32` makes the f64 upload store
 //! `Bp` rounded through f32 (the "twin" of the mixed tensor: same values, f64
 //! arithmetic), `TRUNCATE_B_TO_F32` makes the mixed upload round toward zero (the
@@ -764,6 +769,29 @@ fn upload_band_resolved(
     }
 }
 
+/// The SCF precision ladder (`crate::jk_ladder`) requires an f64 build and the
+/// resident tensor is (or, not uploaded yet, would be) f32: run the host path,
+/// which holds or recomputes the f64 tensor. The upload waits for a mixed build.
+fn ladder_wants_host(slot: &DeviceSlot) -> bool {
+    if crate::jk_ladder::scope_allows_mixed() != Some(false) {
+        return false;
+    }
+    match slot {
+        DeviceSlot::Untried => dfj_precision() == DfjPrecision::Mixed,
+        DeviceSlot::Ready(dd) => dd.is_mixed(),
+        DeviceSlot::Declined => false,
+    }
+}
+
+/// Count one finished device build (and, for the f32 tensor, tell the ladder).
+fn note_build(dd: &DeviceDfJ) {
+    if dd.is_mixed() {
+        crate::jk_ladder::note_mixed_build();
+    }
+    let (naux, pair) = (dd.naux(), dd.pair());
+    stats::note_dfj_build(8 * (pair + naux), 8 * (naux + pair));
+}
+
 /// One device J build: `Ok(true)` means `j` holds the full J (no cross-rank
 /// reduction is needed: the device path never runs under MPI); `Ok(false)` means
 /// run the CPU path (`j` untouched by this call). `solve` is `DfJ`'s own metric
@@ -802,6 +830,9 @@ pub fn try_build(
     let Some(pool) = ferric_core::gpu::pool() else {
         return Ok(false);
     };
+    if ladder_wants_host(slot) {
+        return Ok(false);
+    }
     if matches!(slot, DeviceSlot::Untried) {
         let precision = dfj_precision();
         if let Some(why) = yields_to_k(&pool, src, k_reserve, precision) {
@@ -853,8 +884,7 @@ pub fn try_build(
     match outcome {
         Ok(packed) => {
             crate::df_j::unpack_symmetric(&packed, n, j);
-            let (naux, pair) = (dd.naux(), dd.pair());
-            stats::note_dfj_build(8 * (pair + naux), 8 * (naux + pair));
+            note_build(dd);
             Ok(true)
         }
         Err(e) => {

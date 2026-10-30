@@ -43,6 +43,9 @@ pub mod mol;
 pub mod orbitals;
 /// Parallelism context: thread pools, optional MPI world handle.
 pub mod parallel;
+/// The SCF precision ladder shared by the mixed-precision Fock-build kernels
+/// (`xc-vxc`, `dfj-pack`, `dfk-occ`): mixed only while the density moves, f64 exit.
+pub mod precision_ladder;
 /// Abelian point-group detection (D2h and subgroups), AO representation, SO bases.
 pub mod symmetry;
 /// Opt-in stage/phase timing (`FERRIC_TIMING`): one-shot [`Stage`](timing::Stage)

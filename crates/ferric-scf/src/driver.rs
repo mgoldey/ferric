@@ -427,6 +427,11 @@ pub(crate) struct ScfMonitor {
     pub dp_max: f64,
     errmax_history: Vec<f64>,
     divergence_streak: usize,
+    /// Set by [`Self::invalidate_deltas`] to the bits of the `prev_e` it
+    /// invalidated: while `prev_e` still holds them, ΔE reads INFINITY. The
+    /// next `note_energy` replaces `prev_e` and so lifts it (a new energy
+    /// equal to the old to the bit keeps it one iteration longer: conservative).
+    de_invalid_at: Option<u64>,
 }
 
 impl ScfMonitor {
@@ -438,16 +443,36 @@ impl ScfMonitor {
             dp_max: f64::INFINITY,
             errmax_history: Vec::new(),
             divergence_streak: 0,
+            de_invalid_at: None,
         }
+    }
+
+    /// Discard the carried ΔP and ΔE: the next convergence decision sees both
+    /// as INFINITY, so the gate cannot fire until a new density change and a
+    /// new energy pair have been recorded. ΔP returns with the next
+    /// `record_density_change`, ΔE once `note_energy` has replaced `prev_e`.
+    /// Used by the J/K ladder's f64 redo (`crate::jk_ladder`).
+    pub fn invalidate_deltas(&mut self) {
+        self.dp_rms = f64::INFINITY;
+        self.dp_max = f64::INFINITY;
+        self.de_invalid_at = Some(self.prev_e.to_bits());
     }
 
     /// The settled signals for this iteration's convergence decision.
     pub fn signals(&self, energy: f64) -> ConvergenceSignals {
         ConvergenceSignals {
-            de: (energy - self.prev_e).abs(),
+            de: self.delta_e(energy),
             dp_rms: self.dp_rms,
             dp_max: self.dp_max,
         }
+    }
+
+    /// `|energy − prev_e|`, or INFINITY while `prev_e` is invalidated.
+    fn delta_e(&self, energy: f64) -> f64 {
+        if self.de_invalid_at == Some(self.prev_e.to_bits()) {
+            return f64::INFINITY;
+        }
+        (energy - self.prev_e).abs()
     }
 
     /// Record this iteration's ΔP from the old/new densities (call after the
@@ -483,5 +508,32 @@ impl ScfMonitor {
     /// Bank this iteration's energy as `prev_e` for the next iteration.
     pub fn note_energy(&mut self, energy: f64) {
         self.prev_e = energy;
+    }
+}
+
+#[cfg(test)]
+mod monitor_tests {
+    use super::ScfMonitor;
+    use ndarray::Array2;
+
+    /// Catches: an invalidation that leaves a finite ΔP or ΔE for the next
+    /// decision, or one that never lifts (the gate could then never fire).
+    #[test]
+    fn invalidated_deltas_read_infinite_until_both_are_recorded_again() {
+        let mut m = ScfMonitor::new();
+        let (a, b) = (
+            Array2::<f64>::zeros((2, 2)),
+            Array2::from_elem((2, 2), 1e-3),
+        );
+        m.note_energy(-1.0);
+        m.record_density_change(&b, &a);
+        assert!(m.signals(-1.0 + 1e-9).de < 1e-8);
+        m.invalidate_deltas();
+        let s = m.signals(-1.0);
+        assert!(s.de.is_infinite() && s.dp_rms.is_infinite() && s.dp_max.is_infinite());
+        m.note_energy(-1.5);
+        m.record_density_change(&a, &b);
+        let s = m.signals(-1.5 + 1e-9);
+        assert!(s.de < 1e-8 && s.dp_rms.is_finite() && s.dp_max.is_finite());
     }
 }

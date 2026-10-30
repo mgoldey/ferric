@@ -1141,6 +1141,14 @@ fn solve_uhf_impl(
     if let Some(x) = xc_contrib.as_ref() {
         x.start_scf();
     }
+    // Mixed `dfj-pack`/`dfk-occ` builds only while the density moves, and an
+    // f64 exit (see `crate::jk_ladder`); inert unless one of them is requested.
+    let jk_ladder = crate::jk_ladder::JkLadder::new([
+        df_j.is_some(),
+        df_k.is_some(),
+        dfk_sr.is_some(),
+        dfk_lr.is_some(),
+    ]);
 
     for iter in 1..=config.max_iter {
         ctx.check_interrupted()?;
@@ -1167,6 +1175,7 @@ fn solve_uhf_impl(
             k_b_buf.fill(0.0);
         }
 
+        let jk_scope = jk_ladder.begin_build(&[&d_a, &d_b]);
         // Combined single-pass J + K_α + K_β when enabled; otherwise J alone
         // here (DF-J or DirectJ) and K below, as before. An injected
         // (periodic) J pre-empts all of them (validate_injected_uhf guarantees
@@ -1284,6 +1293,7 @@ fn solve_uhf_impl(
             f_a.scaled_add(-c_k, &k_a_buf);
             f_b.scaled_add(-c_k, &k_b_buf);
         }
+        drop(jk_scope);
 
         // Electronic energy BEFORE adding V_xc (V_xc is one-body in F_σ but
         // E_xc is its own integral).
@@ -1451,6 +1461,17 @@ fn solve_uhf_impl(
             ctx.is_root(),
             &mut last_report,
         );
+        // A converged exit after a mixed J/K build is refused: this iteration
+        // is redone in f64 at the same density, from a clean DIIS history and
+        // with ΔP/ΔE invalidated (see `crate::jk_ladder::JkExit`).
+        let conv_exit = match jk_ladder.veto_mixed_exit(conv_exit) {
+            crate::jk_ladder::JkExit::Proceed(c) => c,
+            crate::jk_ladder::JkExit::RedoInF64 => {
+                diis.reset();
+                mon.invalidate_deltas();
+                continue;
+            }
+        };
 
         // Divergence / stall early exits (shared driver::ScfMonitor; both are
         // no-ops at the None defaults — UHF previously ignored these knobs).
