@@ -22,9 +22,11 @@
 //! `D_sub`/`C_sub` or `A` up, `Φ` or `V_b` down. Batches are processed in
 //! WAVES — maximal contiguous batch ranges whose operands fit three fixed
 //! staging buffers — so one wave costs one upload, a run of stream-ordered
-//! GEMM launches, one download and one synchronisation. The host copies of
-//! one wave's operands and results (at most two staging buffers' worth, 64 MiB
-//! each by default) are transient and not charged to the host pool.
+//! GEMM launches, one download and one synchronisation. The host side of a
+//! wave (operands, results and, mixed only, the f32 operands; one staging
+//! buffer's worth each, 64 MiB of f64 at most by default) is allocated once
+//! per grid, page-locked within a cap, and reused by every wave and every Fock
+//! build (see `host_stage`); it is not charged to the host pool.
 //!
 //! # Numerics and determinism
 //!
@@ -71,7 +73,9 @@ use rayon::prelude::*;
 
 use ferric_core::gpu::device::{device, Device, GpuError};
 use ferric_core::gpu::gemm::{dev_left, dev_right, dev_right_padded, gemm_f64_dev_into};
-use ferric_core::gpu::mixed::{effective_k_panel, gemm_f32_f64acc_dev_into, round_to_f32};
+use ferric_core::gpu::mixed::{
+    effective_k_panel, gemm_f32_f64acc_dev_into, round_to_f32, round_to_f32_into,
+};
 use ferric_core::gpu::resident::DeviceMatrix;
 use ferric_core::gpu::stats::{self, CpuReason};
 use ferric_core::gpu::{GpuMode, GpuStatus, MixedKernel};
@@ -81,6 +85,9 @@ use super::{
     BatchDensity, BatchFactors, DensityInput, DevSession, GridPoint, GtoEvalError, ScreenedGrid,
     XcBatch,
 };
+
+mod host_stage;
+use host_stage::HostStage;
 
 /// Pool label of the device copy of the compact AO blocks.
 pub const AO_LABEL: &str = "KS-DFT grid AO blocks (device)";
@@ -180,6 +187,15 @@ pub(crate) struct DeviceXc {
     /// The f32 operands of the mixed `xc-vxc` kernel; `None` when mixed
     /// precision was not requested or could not be set up (f64 only).
     mixed: Option<MixedState>,
+    /// The host side of every wave, allocated once (see `host_stage`).
+    host: HostStage,
+}
+
+/// What a wave sends up: its first `n` f64 operands, or their f32 rounding.
+#[derive(Clone, Copy)]
+enum Up {
+    F64(usize),
+    F32(usize),
 }
 
 /// Device state of the mixed `xc-vxc` kernel.
@@ -284,11 +300,12 @@ pub(super) fn session<'a>(sg: &'a ScreenedGrid, grid: &[GridPoint]) -> DevSessio
         match device(info.ordinal).and_then(|dev| DeviceXc::upload(&dev, &pool, sg, grid)) {
             Ok(dx) => {
                 eprintln!(
-                    "[ferric] gpu: KS-DFT XC grid on device {} ({:.3} GB AO blocks, {} batches, nbf {})",
+                    "[ferric] gpu: KS-DFT XC grid on device {} ({:.3} GB AO blocks, {} batches, nbf {}, {:.0} MB page-locked staging)",
                     info.ordinal,
                     dx.ao.bytes() as f64 / 1e9,
                     sg.batches.len(),
-                    sg.nbf
+                    sg.nbf,
+                    dx.host.pinned_bytes() as f64 / 1e6
                 );
                 *slot = DeviceSlot::Ready(Box::new(dx));
             }
@@ -644,6 +661,7 @@ impl DeviceXc {
         if let Some(m) = &mixed {
             stats::note_resident_upload(m.ao32.bytes());
         }
+        let host = HostStage::new(dev, stage, mixed.is_some());
         Ok(Self {
             dev: Arc::clone(dev),
             ao,
@@ -652,6 +670,7 @@ impl DeviceXc {
             stage_mid,
             stage_out,
             mixed,
+            host,
         })
     }
 
@@ -663,36 +682,74 @@ impl DeviceXc {
             .min(self.stage_out.buf().len())
     }
 
-    /// `host[..]` into the operand staging buffer, launches by `launch`, then
-    /// `out_len` results back. One synchronisation.
+    /// The wave's operands (`up`, already in the host stage) into the
+    /// operand staging buffer, launches by `launch`, then `out_len` results
+    /// back into the host stage. One synchronisation; on an error the stream
+    /// is drained first, so no copy still targets the host stage.
     fn round_trip(
         &mut self,
-        host_in: &[f64],
+        up: Up,
         out_len: usize,
         launch: impl FnOnce(&mut Self) -> Result<(), GpuError>,
-    ) -> Result<Vec<f64>, GpuError> {
-        if !host_in.is_empty() {
-            self.dev
-                .stream
-                .memcpy_htod(
-                    host_in,
-                    &mut self.stage_in.buf_mut().slice_mut(..host_in.len()),
-                )
-                .map_err(|e| cuda("H2D XC operands", e))?;
+    ) -> Result<(), GpuError> {
+        let r = self.round_trip_inner(up, out_len, launch);
+        if r.is_err() {
+            let _ = self.dev.stream.synchronize();
         }
+        r
+    }
+
+    fn round_trip_inner(
+        &mut self,
+        up: Up,
+        out_len: usize,
+        launch: impl FnOnce(&mut Self) -> Result<(), GpuError>,
+    ) -> Result<(), GpuError> {
+        self.upload_operands(up)?;
         launch(self)?;
-        let mut out = vec![0.0f64; out_len];
         if out_len > 0 {
-            self.dev
-                .stream
-                .memcpy_dtoh(&self.stage_out.buf().slice(..out_len), &mut out)
+            let Self {
+                dev,
+                stage_out,
+                host,
+                ..
+            } = self;
+            dev.stream
+                .memcpy_dtoh(
+                    &stage_out.buf().slice(..out_len),
+                    host.out.head_mut(out_len)?,
+                )
                 .map_err(|e| cuda("D2H XC results", e))?;
         }
         self.dev
             .stream
             .synchronize()
-            .map_err(|e| cuda("sync after an XC wave", e))?;
-        Ok(out)
+            .map_err(|e| cuda("sync after an XC wave", e))
+    }
+
+    fn upload_operands(&mut self, up: Up) -> Result<(), GpuError> {
+        let Self {
+            dev,
+            stage_in,
+            mixed,
+            host,
+            ..
+        } = self;
+        match up {
+            Up::F64(n) if n > 0 => dev
+                .stream
+                .memcpy_htod(host.inp.head(n)?, &mut stage_in.buf_mut().slice_mut(..n))
+                .map_err(|e| cuda("H2D XC operands", e)),
+            Up::F32(n) if n > 0 => {
+                let (Some(m), Some(src)) = (mixed.as_mut(), host.inp32.as_ref()) else {
+                    return Err(GpuError::Layout("f32 XC wave without the f32 state".into()));
+                };
+                dev.stream
+                    .memcpy_htod(src.head(n)?, &mut m.stage_in32.buf_mut().slice_mut(..n))
+                    .map_err(|e| cuda("H2D XC operands (f32)", e))
+            }
+            _ => Ok(()),
+        }
     }
 
     /// Pass 1 for every density in `ds`: `out[i][bi]`.
@@ -732,8 +789,8 @@ impl DeviceXc {
         while b0 < nbat {
             let w = plan_wave(b0, nbat, &need, self.stage())?;
             let in_lens: Vec<usize> = w.len.iter().map(|l| l[0]).collect();
-            let mut host_in = vec![0.0f64; w.total[0]];
-            fill_chunks(serial, &mut host_in, &in_lens, |j, chunk| {
+            let host_in = self.host.inp.head_mut(w.total[0])?;
+            fill_chunks(serial, host_in, &in_lens, |j, chunk| {
                 let funcs = &sg.batches[b0 + j].funcs;
                 let mut at = 0usize;
                 for d in ds {
@@ -746,14 +803,15 @@ impl DeviceXc {
                 }
                 Ok(())
             })?;
-            let host_out = self.round_trip(&host_in, w.total[2], |me| {
+            self.round_trip(Up::F64(w.total[0]), w.total[2], |me| {
                 for (j, off) in w.off.iter().enumerate() {
                     me.launch_density(sg, b0 + j, *off, ds, &ncols)?;
                 }
                 Ok(())
             })?;
-            h2d += 8 * host_in.len();
-            d2h += 8 * host_out.len();
+            h2d += 8 * w.total[0];
+            d2h += 8 * w.total[2];
+            let host_out = self.host.out.head(w.total[2])?;
             let parts = map_indexed(serial, w.end - b0, |j| {
                 let bi = b0 + j;
                 let b = &sg.batches[bi];
@@ -886,8 +944,8 @@ impl DeviceXc {
         while b0 < nbat {
             let w = plan_wave(b0, nbat, &need, self.stage())?;
             let in_lens: Vec<usize> = w.len.iter().map(|l| l[0]).collect();
-            let mut host_in = vec![0.0f64; w.total[0]];
-            fill_chunks(serial, &mut host_in, &in_lens, |j, chunk| {
+            let host_in = self.host.inp.head_mut(w.total[0])?;
+            fill_chunks(serial, host_in, &in_lens, |j, chunk| {
                 let bi = b0 + j;
                 let b = &sg.batches[bi];
                 if b.funcs.is_empty() {
@@ -902,51 +960,21 @@ impl DeviceXc {
                 }
                 Ok(())
             })?;
-            // Mixed for this wave only when the ladder asked for it, the f32
-            // state exists, and no panel sum can leave the f32 range.
-            let mixed_wave = match (&self.mixed, mixed_req) {
-                (Some(m), true) => {
-                    let fits = mixed_panel_fits(k_panel, max_abs_nan(&host_in), m.max_abs_x);
-                    if !fits {
-                        stats::note_mixed_fallback();
-                    }
-                    fits
+            let up = self.wave_upload(w.total[0], mixed_req, k_panel)?;
+            let is32 = matches!(up, Up::F32(_));
+            self.round_trip(up, w.total[2], |me| {
+                for (j, off) in w.off.iter().enumerate() {
+                    panels += me.launch_potential(sg, b0 + j, *off, (nmats, is32), &ncols)?;
                 }
-                _ => false,
+                Ok(())
+            })?;
+            h2d += match up {
+                Up::F64(n) => 8 * n,
+                Up::F32(n) => 4 * n,
             };
-            let a32 = if mixed_wave {
-                wave_a_f32(&host_in)
-            } else {
-                None
-            };
-            let host_out = if let Some(a32) = a32 {
-                let out = self.round_trip(&[], w.total[2], |me| {
-                    let m = me.mixed.as_mut().expect("mixed_wave implies the f32 state");
-                    if !a32.is_empty() {
-                        me.dev
-                            .stream
-                            .memcpy_htod(&a32, &mut m.stage_in32.buf_mut().slice_mut(..a32.len()))
-                            .map_err(|e| cuda("H2D XC operands (f32)", e))?;
-                    }
-                    for (j, off) in w.off.iter().enumerate() {
-                        panels += me.launch_potential(sg, b0 + j, *off, (nmats, true), &ncols)?;
-                    }
-                    Ok(())
-                })?;
-                h2d += 4 * a32.len();
-                mixed_waves += 1;
-                out
-            } else {
-                let out = self.round_trip(&host_in, w.total[2], |me| {
-                    for (j, off) in w.off.iter().enumerate() {
-                        me.launch_potential(sg, b0 + j, *off, (nmats, false), &ncols)?;
-                    }
-                    Ok(())
-                })?;
-                h2d += 8 * host_in.len();
-                out
-            };
-            d2h += 8 * host_out.len();
+            mixed_waves += usize::from(is32);
+            d2h += 8 * w.total[2];
+            let host_out = self.host.out.head(w.total[2])?;
             // Scatter: every group touched by this wave, its batches in
             // ascending order (waves ascend too), groups independent.
             let scatter = |(gi, acc): (usize, &mut Vec<Array2<f64>>)| {
@@ -992,6 +1020,28 @@ impl DeviceXc {
             super::note_mixed_vxc_pass();
         }
         Ok(out)
+    }
+
+    /// How a pass-2 wave of `n` operands (already in the host stage) goes up:
+    /// f32 when the ladder asked for mixed (`mixed_req`), the f32 state exists,
+    /// no panel sum can leave the f32 range and every element rounds to a
+    /// finite f32; otherwise f64. Each refusal is counted (`mixed_fallback_f64`).
+    fn wave_upload(&mut self, n: usize, mixed_req: bool, k_panel: usize) -> Result<Up, GpuError> {
+        let (Some(m), true) = (&self.mixed, mixed_req) else {
+            return Ok(Up::F64(n));
+        };
+        let host = &mut self.host;
+        let a = host.inp.head(n)?;
+        let Some(a32) = host.inp32.as_mut() else {
+            return Ok(Up::F64(n));
+        };
+        if !mixed_panel_fits(k_panel, max_abs_nan(a), m.max_abs_x)
+            || round_to_f32_into("XC A", a, a32.head_mut(n)?).is_err()
+        {
+            stats::note_mixed_fallback();
+            return Ok(Up::F64(n));
+        }
+        Ok(Up::F32(n))
     }
 
     /// Launch batch `bi`'s pass-2 products `V_b = A·Xᵀ` (stream-ordered, no
@@ -1058,18 +1108,6 @@ impl DeviceXc {
             }
         }
         Ok(panels)
-    }
-}
-
-/// A mixed wave's `A` rounded to f32, or `None` (counted in
-/// `mixed_fallback_f64`) when some element does not fit: the wave then runs f64.
-fn wave_a_f32(host_in: &[f64]) -> Option<Vec<f32>> {
-    match round_to_f32("XC A", host_in) {
-        Ok(a32) => Some(a32),
-        Err(_) => {
-            stats::note_mixed_fallback();
-            None
-        }
     }
 }
 
