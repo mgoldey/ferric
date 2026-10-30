@@ -1999,6 +1999,51 @@ fn local_json(local: Option<&LocalPrint>) -> serde_json::Value {
     }
 }
 
+/// A certificate value as JSON (non-finite floats become `null`, as
+/// serde_json does for any NaN).
+fn cert_value_json(v: &ferric_mp2::lmp2_certificate::CertValue) -> serde_json::Value {
+    use ferric_mp2::lmp2_certificate::CertValue as V;
+    match v {
+        V::Null => serde_json::Value::Null,
+        V::Bool(b) => serde_json::json!(b),
+        V::Usize(n) => serde_json::json!(n),
+        V::F64(x) => serde_json::json!(x),
+        V::Str(s) => serde_json::json!(s),
+        V::StrList(l) => serde_json::json!(l),
+        V::Map(m) => serde_json::Value::Object(
+            m.iter()
+                .map(|(k, x)| (k.to_string(), cert_value_json(x)))
+                .collect(),
+        ),
+    }
+}
+
+/// The run-log `local` component of an amplitude-threshold LMP2 result:
+/// [`local_json`] plus every certificate field
+/// ([`ferric_mp2::lmp2_certificate::Lmp2Certificate::fields`]) and the
+/// build that produced the number (`build_commit`, `build_dirty`: `null`
+/// when unknown).
+fn lmp2_local_json(
+    local: &LocalPrint,
+    cert: &ferric_mp2::lmp2_certificate::Lmp2Certificate,
+) -> serde_json::Value {
+    let mut j = local_json(Some(local));
+    if let Some(obj) = j.as_object_mut() {
+        for (k, v) in cert.fields() {
+            obj.insert(k.to_string(), cert_value_json(&v));
+        }
+        obj.insert(
+            "build_commit".to_string(),
+            serde_json::json!(ferric_build_info::COMMIT),
+        );
+        obj.insert(
+            "build_dirty".to_string(),
+            serde_json::json!(ferric_build_info::DIRTY),
+        );
+    }
+    j
+}
+
 /// The exact-reference lines of a local run's printout.
 ///
 /// `e_ref` is `None` when the (opt-in, `[local] reference = true`) reference
@@ -2021,6 +2066,22 @@ fn local_reference_lines(
         None => vec![format!(
             "  {ref_label:<22}= not computed (opt-in: set [local] reference = true)"
         )],
+    }
+}
+
+/// The local-MP2 certificate lines of the CLI printout: validation grade,
+/// ε trust, the PCG gather-plan decision, and every out-of-range warning.
+fn print_lmp2_certificate(cert: &ferric_mp2::lmp2_certificate::Lmp2Certificate) {
+    println!("  validation            = {}", cert.validation_grade);
+    println!("  eps trust             = {}", cert.eps_trust);
+    println!(
+        "  PCG gather plan       = {:.3} GB ({} matvec; {:.3} GB resident beside it)",
+        cert.solve_plan_bytes as f64 / 1e9,
+        cert.matvec_path,
+        cert.solve_resident_bytes as f64 / 1e9
+    );
+    for w in &cert.warnings {
+        println!("  out of validated range: {w}");
     }
 }
 
@@ -2061,38 +2122,46 @@ fn run_rimp2_local(
         pair_gate_cal: model.direct.as_ref().and_then(|d| d.gate_cal),
         ..Default::default()
     };
-    let (r, maps) = match &model.direct {
-        None => (
-            amplitude_lmp2(mol, prep, bs, &dfbs, op, result, &lcfg).unwrap_or_else(|e| {
-                eprintln!("error: {e}");
-                std::process::exit(1);
-            }),
-            None,
-        ),
-        Some(d) => {
-            let dcfg = DirectConfig {
-                aux_radius_bohr: d.aux_radius,
-                virt_radius_bohr: Some(d.virt_radius),
-                ao_tail: d.ao_tail,
-                schwarz_skip: d.schwarz_skip,
-                batch_merge: d.batch_merge,
-                virt_schwarz_kappa: d.virt_schwarz_kappa,
-                ..Default::default()
-            };
-            let (r, st) = amplitude_lmp2_direct(mol, prep, bs, &dfbs, op, result, &lcfg, &dcfg)
+    let dcfg = model.direct.as_ref().map(|d| DirectConfig {
+        aux_radius_bohr: d.aux_radius,
+        virt_radius_bohr: Some(d.virt_radius),
+        ao_tail: d.ao_tail,
+        schwarz_skip: d.schwarz_skip,
+        batch_merge: d.batch_merge,
+        virt_schwarz_kappa: d.virt_schwarz_kappa,
+        ..Default::default()
+    });
+    let (r, maps) = match (&model.direct, &dcfg) {
+        (Some(d), Some(dc)) => {
+            let (r, st) = amplitude_lmp2_direct(mol, prep, bs, &dfbs, op, result, &lcfg, dc)
                 .unwrap_or_else(|e| {
                     eprintln!("error: {e}");
                     std::process::exit(1);
                 });
             (r, Some((d, st)))
         }
+        _ => (
+            amplitude_lmp2(mol, prep, bs, &dfbs, op, result, &lcfg).unwrap_or_else(|e| {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            }),
+            None,
+        ),
     };
+    let cert = ferric_mp2::lmp2_certificate::Lmp2Certificate::new(
+        &lcfg,
+        dcfg.as_ref(),
+        &r,
+        &ferric_mp2::lmp2_certificate::SystemShape::new(mol, bs),
+        &op,
+    );
     let local = LocalPrint {
         eps,
         keep_fraction: r.keep_fraction,
         integral_direct: model.direct.is_some(),
     };
     println!("{}", model_label("MP2", Some(&local)));
+    print_lmp2_certificate(&cert);
     println!("  basis / aux           = {} / {aux_name}", bs.name);
     if cfg.method.kind == "att-rimp2" {
         // Name the correlation operator: a local number from the attenuated
@@ -2179,7 +2248,7 @@ fn run_rimp2_local(
                 "e_corr_canonical_ri": e_ref,
                 "e_scf_reference": result.energy,
                 "scf_converged": result.converged,
-                "local": local_json(Some(&local)),
+                "local": lmp2_local_json(&local, &cert),
             }),
         );
     }
@@ -6599,6 +6668,77 @@ mod local_printout_tests {
         assert_eq!(j["eps"], 1e-4);
         assert_eq!(j["keep_fraction"], 0.023);
         assert_eq!(j["integral_direct"], true);
+    }
+
+    /// Every certificate field survives the run-log JSON round trip
+    /// (serialize to text, parse back) with its exact value, the maps nest
+    /// with `null` for an unset knob, and the build stamp is attached.
+    #[test]
+    fn certificate_fields_round_trip() {
+        use super::lmp2_local_json;
+        use ferric_mp2::lmp2_certificate::{CertValue, DirectMaps, Lmp2Certificate};
+        let cert = Lmp2Certificate {
+            scheme: "amplitude-threshold",
+            eps: 1e-4,
+            keep_fraction: 0.1234567890123,
+            pair_fraction: 0.75,
+            n_pairs_gated: 7,
+            gate_cal: Some(0.7),
+            integral_direct: true,
+            maps: Some(DirectMaps {
+                aux_radius: 10.0,
+                virt_radius: Some(12.0),
+                ao_tail: 1e-3,
+                schwarz_skip: 1e-5,
+                batch_merge: 4,
+                virt_schwarz_kappa: None,
+            }),
+            precision: "f64",
+            cg_relres: 3.3e-12,
+            cg_converged: true,
+            frozen_core: 4,
+            operator: "coulomb".into(),
+            solve_plan_bytes: 123_456_789,
+            solve_resident_bytes: 987_654_321,
+            matvec_path: "planned",
+            validation_grade: "finite eps: measured error map, not validated".into(),
+            eps_trust: "measured ...".into(),
+            warnings: vec!["w1".into(), "w2".into()],
+        };
+        let local = LocalPrint {
+            eps: 1e-4,
+            keep_fraction: cert.keep_fraction,
+            integral_direct: true,
+        };
+        let text = serde_json::to_string(&lmp2_local_json(&local, &cert)).unwrap();
+        let back: serde_json::Value = serde_json::from_str(&text).unwrap();
+        fn same(j: &serde_json::Value, v: &CertValue) -> bool {
+            match v {
+                CertValue::Null => j.is_null(),
+                CertValue::Bool(b) => j.as_bool() == Some(*b),
+                CertValue::Usize(n) => j.as_u64() == Some(*n as u64),
+                CertValue::F64(x) => j.as_f64().map(f64::to_bits) == Some(x.to_bits()),
+                CertValue::Str(s) => j.as_str() == Some(s.as_str()),
+                CertValue::StrList(l) => {
+                    j.as_array()
+                        .map(|a| a.iter().map(|x| x.as_str()).collect::<Vec<_>>())
+                        == Some(l.iter().map(|s| Some(s.as_str())).collect())
+                }
+                CertValue::Map(m) => m.iter().all(|(k, x)| same(&j[*k], x)),
+            }
+        }
+        let fields = cert.fields();
+        assert_eq!(fields.len(), 19);
+        for (k, v) in &fields {
+            assert!(same(&back[*k], v), "field {k}: {} vs {v:?}", back[*k]);
+        }
+        assert!(back["maps"]["virt_schwarz_kappa"].is_null());
+        assert_eq!(back["maps"]["batch_merge"], 4);
+        assert_eq!(back["build_commit"], ferric_build_info::COMMIT);
+        assert_eq!(
+            back["build_dirty"],
+            serde_json::json!(ferric_build_info::DIRTY)
+        );
     }
 }
 

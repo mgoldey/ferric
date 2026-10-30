@@ -24,6 +24,8 @@ pub mod drpa_amplitude;
 pub mod lccd_cepa0;
 /// Amplitude-threshold local MP2 (WSHG23 single-threshold scheme).
 pub mod lmp2_amplitude;
+/// Model certificate carried by every amplitude-threshold LMP2 result.
+pub mod lmp2_certificate;
 /// Ring-CCD family: rCCD, drCCD amplitude solvers.
 pub mod rccd_family;
 

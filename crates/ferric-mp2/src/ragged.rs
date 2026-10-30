@@ -45,6 +45,87 @@ pub struct Ragged {
     pub by_j: HashMap<usize, Vec<usize>>,
 }
 
+impl PairBlock {
+    /// Heap bytes this block holds (Vec capacities, array lengths); the
+    /// struct itself is counted by its owner's `Vec<PairBlock>`.
+    pub fn heap_bytes(&self) -> usize {
+        let us = std::mem::size_of::<usize>();
+        let f = std::mem::size_of::<f64>();
+        us * (self.da.capacity()
+            + self.db.capacity()
+            + self.pos_da.capacity()
+            + self.pos_db.capacity())
+            + self.pat.capacity()
+            + f * (self.fvv_aa.len() + self.fvv_bb.len() + self.j_blk.len() + self.denom.len())
+    }
+}
+
+impl Ragged {
+    /// Heap bytes the ragged system holds: every block's storage, the
+    /// `pairs` vector, and the two index maps (bucket entries plus their
+    /// index vectors; the hash table's control bytes are approximated as
+    /// one byte per bucket).
+    pub fn heap_bytes(&self) -> usize {
+        let map_bytes = |m: &HashMap<usize, Vec<usize>>| {
+            let entry = std::mem::size_of::<(usize, Vec<usize>)>() + 1;
+            m.capacity() * entry
+                + m.values()
+                    .map(|v| v.capacity() * std::mem::size_of::<usize>())
+                    .sum::<usize>()
+        };
+        self.pairs.capacity() * std::mem::size_of::<PairBlock>()
+            + self.pairs.iter().map(PairBlock::heap_bytes).sum::<usize>()
+            + map_bytes(&self.by_i)
+            + map_bytes(&self.by_j)
+    }
+}
+
+/// Bytes of ONE amplitude-shaped block vector over `rg` (one `|Da|×|Db|`
+/// f64 block per pair plus the outer `Vec`).
+pub fn amplitude_vector_bytes(rg: &Ragged) -> usize {
+    rg.pairs.len() * std::mem::size_of::<Array2<f64>>()
+        + rg.pairs
+            .iter()
+            .map(|pb| pb.da.len() * pb.db.len() * std::mem::size_of::<f64>())
+            .sum::<usize>()
+}
+
+/// The PCG iteration vectors resident for the whole solve: `t`, `r`, `z`,
+/// `p`, `ap` (see `pcg_core`).
+pub const PCG_RESIDENT_VECTORS: usize = 5;
+
+/// Bytes resident for the whole ragged PCG solve BESIDES the gather plan:
+/// the ragged system `rg` itself, the [`PCG_RESIDENT_VECTORS`] iteration
+/// vectors, and the CG coefficient trace (two f64 per iteration, at most
+/// `max_iter`). Per-task matvec temporaries (one block per rayon worker)
+/// are not counted.
+pub fn solve_resident_bytes(rg: &Ragged, max_iter: usize) -> usize {
+    rg.heap_bytes()
+        + PCG_RESIDENT_VECTORS * amplitude_vector_bytes(rg)
+        + 2 * std::mem::size_of::<f64>() * max_iter
+}
+
+/// THE admission gate for the gather plan: the plan is built only when it
+/// fits what the budget has left after the solve's resident footprint
+/// (`plan_bytes <= budget_bytes - resident_bytes`), AND an installed global
+/// pool can hold plan + resident together. Both gates charge the same total,
+/// so they cannot disagree about what the solve holds. `None` means "take
+/// the plan-free indexed matvec". Inert reservation when no pool is
+/// installed.
+fn admit_plan(
+    plan_bytes: usize,
+    resident_bytes: usize,
+    budget_bytes: usize,
+) -> Option<ferric_core::memory::pool::Reservation> {
+    if plan_bytes > budget_bytes.saturating_sub(resident_bytes) {
+        return None;
+    }
+    ferric_core::memory::pool::try_reserve_global(
+        "ragged PCG gather plan + resident solve",
+        plan_bytes.saturating_add(resident_bytes),
+    )
+}
+
 /// Build one pair's ragged block over a CANDIDATE index subset: `g` is
 /// (cand.len(), cand.len()) with local indices mapping to the global
 /// virtual indices `cand[..]`. Every Eq-8-retained element is guaranteed
@@ -193,9 +274,8 @@ pub fn solve_ragged(
     rtol: f64,
     max_iter: usize,
 ) -> (Vec<Array2<f64>>, usize, f64, bool, u64) {
-    solve_ragged_with(rg, rtol, max_iter, |t, flops| {
-        matvec_indexed(rg, f_oo, t, flops)
-    })
+    let s = solve_ragged_traced(rg, f_oo, rtol, max_iter);
+    (s.t, s.iterations, s.relres, s.converged, s.flops_per_matvec)
 }
 
 /// [`solve_ragged`] with a caller-supplied pattern-projected SPD matvec —
@@ -211,42 +291,229 @@ pub fn solve_ragged_with<F>(
 where
     F: Fn(&[Array2<f64>], &mut u64) -> Vec<Array2<f64>>,
 {
-    let npair = rg.pairs.len();
+    let s = solve_ragged_with_trace(rg, rtol, max_iter, matvec);
+    (s.t, s.iterations, s.relres, s.converged, s.flops_per_matvec)
+}
+
+/// The CG step coefficients of one ragged PCG solve: `alphas[k]` is the
+/// step length of iteration k, `betas[k]` the direction update that
+/// followed it (absent after the converging step). These are the Lanczos
+/// coefficients of the PRECONDITIONED operator, so they give its Ritz
+/// spectrum for free (see [`lanczos_kappa`]).
+#[derive(Debug, Clone, Default)]
+pub struct CgTrace {
+    pub alphas: Vec<f64>,
+    pub betas: Vec<f64>,
+}
+
+/// Everything one ragged PCG solve returns.
+#[derive(Debug, Clone)]
+pub struct RaggedSolve {
+    pub t: Vec<Array2<f64>>,
+    pub iterations: usize,
+    pub relres: f64,
+    pub converged: bool,
+    pub flops_per_matvec: u64,
+    pub trace: CgTrace,
+}
+
+/// Which matvec a ragged PCG solve ran: through a [`SolvePlan`] (the
+/// gather intersections resolved once) or [`matvec_indexed`] (recomputed
+/// every matvec, no extra memory). Bitwise the same result either way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MatvecPath {
+    Planned,
+    Indexed,
+}
+
+impl MatvecPath {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            MatvecPath::Planned => "planned",
+            MatvecPath::Indexed => "indexed",
+        }
+    }
+}
+
+/// The plan decision of one solve: the path taken, the plan's size
+/// ([`SolvePlan::bytes_for`]; reported even when the plan was not built)
+/// and the footprint resident beside it for the whole solve
+/// ([`solve_resident_bytes`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PlanDecision {
+    pub path: MatvecPath,
+    pub plan_bytes: usize,
+    pub resident_bytes: usize,
+}
+
+/// [`solve_ragged`] that also returns the CG coefficient trace, budgeted
+/// against the resolved default memory budget
+/// ([`ferric_core::memory::resolve_budget_bytes`]); see
+/// [`solve_ragged_budgeted`].
+pub fn solve_ragged_traced(
+    rg: &Ragged,
+    f_oo: &Array2<f64>,
+    rtol: f64,
+    max_iter: usize,
+) -> RaggedSolve {
+    let budget = ferric_core::memory::resolve_budget_bytes(None);
+    solve_ragged_budgeted(rg, f_oo, rtol, max_iter, budget).0
+}
+
+/// The ragged PCG solve with the [`SolvePlan`] charged to a memory budget.
+/// The plan's size is computed BEFORE it is built ([`SolvePlan::bytes_for`]),
+/// and it is admitted against what `budget_bytes` has left after the
+/// solve's resident footprint ([`solve_resident_bytes`]: `rg` plus the PCG
+/// vectors), not against the whole budget. When it does not fit there, or
+/// an installed global memory pool cannot hold plan + resident, the solve
+/// runs on the plan-free [`matvec_indexed`] instead (logged on stderr).
+/// Both paths give bitwise-identical iterates, so the fallback costs time,
+/// never accuracy.
+pub fn solve_ragged_budgeted(
+    rg: &Ragged,
+    f_oo: &Array2<f64>,
+    rtol: f64,
+    max_iter: usize,
+    budget_bytes: usize,
+) -> (RaggedSolve, PlanDecision) {
+    let plan_bytes = SolvePlan::bytes_for(rg, f_oo);
+    let resident_bytes = solve_resident_bytes(rg, max_iter);
+    let Some(_charge) = admit_plan(plan_bytes, resident_bytes, budget_bytes) else {
+        eprintln!(
+            "  ragged PCG: gather plan ({:.3} GB) + resident solve ({:.3} GB) over the memory \
+             budget ({:.3} GB) or the pool; using the plan-free indexed matvec (same result, \
+             slower)",
+            plan_bytes as f64 / 1e9,
+            resident_bytes as f64 / 1e9,
+            budget_bytes as f64 / 1e9
+        );
+        let s =
+            solve_ragged_with_trace(rg, rtol, max_iter, |p, fl| matvec_indexed(rg, f_oo, p, fl));
+        let d = PlanDecision {
+            path: MatvecPath::Indexed,
+            plan_bytes,
+            resident_bytes,
+        };
+        return (s, d);
+    };
+    let plan = SolvePlan::new(rg, f_oo);
+    let s = pcg_core(rg, rtol, max_iter, |p, ap, flops| {
+        matvec_planned(rg, &plan, p, ap, flops)
+    });
+    let d = PlanDecision {
+        path: MatvecPath::Planned,
+        plan_bytes,
+        resident_bytes,
+    };
+    (s, d)
+}
+
+/// Condition-number estimate `λmax/λmin` of the diagonally PRECONDITIONED
+/// operator from the CG coefficients: the Lanczos tridiagonal
+/// `T[k,k] = 1/α_k + β_{k-1}/α_{k-1}`, `T[k,k+1] = √β_k/α_k` has the Ritz
+/// values of the Krylov space as eigenvalues. Ritz values lie inside the
+/// spectrum, so this is a LOWER bound on the true κ (tight once CG has
+/// resolved the extremes). NaN when no iteration ran or when the smallest
+/// Ritz value is not positive (a non-SPD operator).
+pub fn lanczos_kappa(trace: &CgTrace) -> f64 {
+    use ndarray_linalg::Eigh;
+    let k = trace.alphas.len();
+    if k == 0 || trace.betas.len() + 1 < k {
+        return f64::NAN;
+    }
+    let (a, b) = (&trace.alphas, &trace.betas);
+    let mut tri = Array2::<f64>::zeros((k, k));
+    for j in 0..k {
+        tri[(j, j)] = 1.0 / a[j] + if j > 0 { b[j - 1] / a[j - 1] } else { 0.0 };
+        if j + 1 < k {
+            let off = b[j].sqrt() / a[j];
+            tri[(j, j + 1)] = off;
+            tri[(j + 1, j)] = off;
+        }
+    }
+    let Ok((w, _)) = tri.eigh(ndarray_linalg::UPLO::Lower) else {
+        return f64::NAN;
+    };
+    let (lo, hi) = (w[0], w[k - 1]);
+    if lo > 0.0 {
+        hi / lo
+    } else {
+        f64::NAN
+    }
+}
+
+/// The PCG loop behind every ragged solve, recording the CG coefficients.
+pub fn solve_ragged_with_trace<F>(rg: &Ragged, rtol: f64, max_iter: usize, matvec: F) -> RaggedSolve
+where
+    F: Fn(&[Array2<f64>], &mut u64) -> Vec<Array2<f64>>,
+{
+    pcg_core(rg, rtol, max_iter, |p, ap, flops| {
+        for (slot, v) in ap.iter_mut().zip(matvec(p, flops)) {
+            *slot = v;
+        }
+    })
+}
+
+/// The shared PCG loop on the fixed pattern, solving `P A P t = −P J` with
+/// the diagonal (denominator) preconditioner. `matvec_into(p, ap, flops)`
+/// overwrites every block of `ap` with `A·p`. The iteration vectors `z`,
+/// `p`, `ap` are allocated once and updated in place; every update keeps
+/// the per-element expression of the original allocating loop
+/// (`z = r / denom`, `p = z + β·p`), and the reductions still go through
+/// [`dot_blocks`], so the iterates are bitwise those of that loop.
+fn pcg_core<F>(rg: &Ragged, rtol: f64, max_iter: usize, mut matvec_into: F) -> RaggedSolve
+where
+    F: FnMut(&[Array2<f64>], &mut [Array2<f64>], &mut u64),
+{
+    use ndarray::Zip;
     let zeros: Vec<Array2<f64>> = rg
         .pairs
         .iter()
         .map(|pb| Array2::<f64>::zeros((pb.da.len(), pb.db.len())))
         .collect();
-    let mut rhs: Vec<Array2<f64>> = Vec::with_capacity(npair);
-    for pb in &rg.pairs {
-        let mut b = -pb.j_blk.clone();
-        apply_pattern(&mut b, &pb.pat, pb.db.len());
-        rhs.push(b);
-    }
-    let bnorm = dot_blocks(&rhs, &rhs).sqrt();
+    let mut r: Vec<Array2<f64>> = rg
+        .pairs
+        .iter()
+        .map(|pb| {
+            let mut b = -pb.j_blk.clone();
+            apply_pattern(&mut b, &pb.pat, pb.db.len());
+            b
+        })
+        .collect();
+    let bnorm = dot_blocks(&r, &r).sqrt();
+    let mut trace = CgTrace::default();
     if bnorm == 0.0 {
-        return (zeros, 0, 0.0, true, 0);
+        return RaggedSolve {
+            t: zeros,
+            iterations: 0,
+            relres: 0.0,
+            converged: true,
+            flops_per_matvec: 0,
+            trace,
+        };
     }
-    let precond = |r: &[Array2<f64>]| -> Vec<Array2<f64>> {
-        r.iter()
-            .zip(&rg.pairs)
-            .map(|(rb, pb)| rb / &pb.denom)
-            .collect()
+    let precond_into = |r: &[Array2<f64>], z: &mut [Array2<f64>]| {
+        for ((zb, rb), pb) in z.iter_mut().zip(r).zip(&rg.pairs) {
+            Zip::from(zb)
+                .and(rb)
+                .and(&pb.denom)
+                .for_each(|zv, &rv, &dv| *zv = rv / dv);
+        }
     };
     let mut flops_total = 0u64;
     let mut t = zeros.clone();
-    let mut r = rhs.clone();
-    let mut z = precond(&r);
-    let mut p: Vec<Array2<f64>> = z.to_vec();
+    let mut z = zeros.clone();
+    precond_into(&r, &mut z);
+    let mut p = z.clone();
+    let mut ap = zeros;
     let mut rz = dot_blocks(&r, &z);
-    let mut it = 0;
-    let mut relres = 1.0;
-    let mut converged = false;
+    let (mut it, mut relres, mut converged) = (0, 1.0, false);
     while it < max_iter {
         it += 1;
-        let ap = matvec(&p, &mut flops_total);
+        matvec_into(&p, &mut ap, &mut flops_total);
         let alpha = rz / dot_blocks(&p, &ap);
-        for k in 0..npair {
+        trace.alphas.push(alpha);
+        for k in 0..p.len() {
             t[k].scaled_add(alpha, &p[k]);
             r[k].scaled_add(-alpha, &ap[k]);
         }
@@ -255,18 +522,26 @@ where
             converged = true;
             break;
         }
-        z = precond(&r);
+        precond_into(&r, &mut z);
         let rz_new = dot_blocks(&r, &z);
         let beta = rz_new / rz;
-        for k in 0..npair {
-            let mut pk = z[k].clone();
-            pk.scaled_add(beta, &p[k]);
-            p[k] = pk;
+        trace.betas.push(beta);
+        for (pk, zk) in p.iter_mut().zip(&z) {
+            Zip::from(pk)
+                .and(zk)
+                .for_each(|pv, &zv| *pv = zv + beta * *pv);
         }
         rz = rz_new;
     }
     let flops_per_mv = if it > 0 { flops_total / it as u64 } else { 0 };
-    (t, it, relres, converged, flops_per_mv)
+    RaggedSolve {
+        t,
+        iterations: it,
+        relres,
+        converged,
+        flops_per_matvec: flops_per_mv,
+        trace,
+    }
 }
 
 /// Index-passing form of the ragged matvec (the one actually used).
@@ -319,6 +594,166 @@ pub fn matvec_indexed(
         out.push(r);
     }
     out
+}
+
+/// One Fock-coupling edge of an output pair's matvec, pre-resolved from the
+/// pattern: source pair `q`, coefficient `-f_oo[..]`, and the
+/// `(destination, source)` flat-index pairs [`gather_into`] would visit, in
+/// its order.
+#[derive(Debug, Clone)]
+struct PlanEdge {
+    q: usize,
+    coeff: f64,
+    idx: Vec<(u32, u32)>,
+}
+
+fn flat_u32(k: usize) -> u32 {
+    u32::try_from(k).expect("pair block larger than 2^32 elements")
+}
+
+/// The hoisted gather plan of [`matvec_indexed`] for a FIXED pattern and
+/// `f_oo`: every edge's index intersections (recomputed on every call and
+/// every CG iteration by [`gather_into`]) resolved once. Edges with a zero
+/// Fock coupling are dropped at build time, exactly as the indexed matvec
+/// skips them; the edge order is by_j then by_i, as there.
+#[derive(Debug, Clone)]
+pub struct SolvePlan {
+    edges: Vec<Vec<PlanEdge>>,
+}
+
+/// The Fock-coupled source pairs of output pair `pb` in [`matvec_indexed`]'s
+/// order (by_j then by_i), zero couplings dropped: `(q, f_oo coefficient)`.
+fn plan_partners(rg: &Ragged, f_oo: &Array2<f64>, pb: &PairBlock) -> Vec<(usize, f64)> {
+    let mut out = Vec::new();
+    for &q in &rg.by_j[&pb.j] {
+        let f = f_oo[(pb.i, rg.pairs[q].i)];
+        if f != 0.0 {
+            out.push((q, f));
+        }
+    }
+    for &q in &rg.by_i[&pb.i] {
+        let f = f_oo[(rg.pairs[q].j, pb.j)];
+        if f != 0.0 {
+            out.push((q, f));
+        }
+    }
+    out
+}
+
+/// Gather elements of one edge: the matched rows times the matched columns
+/// (the loop in [`gather_into`] visits exactly their product).
+fn edge_len(dst: &PairBlock, src: &PairBlock) -> usize {
+    let rows = dst
+        .da
+        .iter()
+        .filter(|&&a| src.pos_da[a] != usize::MAX)
+        .count();
+    let cols = dst
+        .db
+        .iter()
+        .filter(|&&b| src.pos_db[b] != usize::MAX)
+        .count();
+    rows * cols
+}
+
+impl SolvePlan {
+    /// Heap bytes a [`SolvePlan`] built on `(rg, f_oo)` holds, computed
+    /// WITHOUT building it: one `(u32, u32)` per gather element of every
+    /// nonzero-coupled edge, plus the per-edge and per-pair vector headers.
+    /// [`SolvePlan::new`] sizes every vector exactly, so this is the plan's
+    /// allocation, not a bound (pinned by `tests/solve_plan_budget.rs`
+    /// against a counting allocator). With the pair gate off it grows like
+    /// `no³ · overlap`; [`matvec_indexed`] needs none of it.
+    pub fn bytes_for(rg: &Ragged, f_oo: &Array2<f64>) -> usize {
+        let idx = std::mem::size_of::<(u32, u32)>();
+        let edge = std::mem::size_of::<PlanEdge>();
+        let outer = std::mem::size_of::<Vec<PlanEdge>>();
+        rg.pairs
+            .iter()
+            .map(|pb| {
+                outer
+                    + plan_partners(rg, f_oo, pb)
+                        .iter()
+                        .map(|&(q, _)| edge + idx * edge_len(pb, &rg.pairs[q]))
+                        .sum::<usize>()
+            })
+            .sum()
+    }
+
+    pub fn new(rg: &Ragged, f_oo: &Array2<f64>) -> Self {
+        let edge = |dst: &PairBlock, q: usize, f: f64| -> PlanEdge {
+            let src = &rg.pairs[q];
+            let nb_src = src.db.len();
+            let nb = dst.db.len();
+            let mut idx = Vec::with_capacity(edge_len(dst, src));
+            for (r, &a) in dst.da.iter().enumerate() {
+                let sr = src.pos_da[a];
+                if sr == usize::MAX {
+                    continue;
+                }
+                for (c, &b) in dst.db.iter().enumerate() {
+                    let sc = src.pos_db[b];
+                    if sc == usize::MAX {
+                        continue;
+                    }
+                    idx.push((flat_u32(r * nb + c), flat_u32(sr * nb_src + sc)));
+                }
+            }
+            PlanEdge { q, coeff: -f, idx }
+        };
+        let edges = rg
+            .pairs
+            .iter()
+            .map(|pb| {
+                plan_partners(rg, f_oo, pb)
+                    .iter()
+                    .map(|&(q, f)| edge(pb, q, f))
+                    .collect()
+            })
+            .collect();
+        Self { edges }
+    }
+}
+
+/// [`matvec_indexed`] through a [`SolvePlan`], writing into `out` (one
+/// block per pair, any prior contents replaced). Per block: the same two
+/// Fvv GEMMs, the same edge order and per-element `+= coeff·t`, the same
+/// pattern projection — so the result is bitwise [`matvec_indexed`]'s.
+pub fn matvec_planned(
+    rg: &Ragged,
+    plan: &SolvePlan,
+    t: &[Array2<f64>],
+    out: &mut [Array2<f64>],
+    flops: &mut u64,
+) {
+    use rayon::prelude::*;
+    let fl: u64 = out
+        .par_iter_mut()
+        .enumerate()
+        .map(|(p_idx, slot)| {
+            let pb = &rg.pairs[p_idx];
+            let (na, nb) = (pb.da.len(), pb.db.len());
+            let mut fl = (na * na * nb + na * nb * nb) as u64;
+            let mut r = pb.fvv_aa.dot(&t[p_idx]);
+            r += &t[p_idx].dot(&pb.fvv_bb);
+            if !r.is_standard_layout() {
+                r = r.as_standard_layout().into_owned();
+            }
+            let rs = r.as_slice_mut().expect("standard layout");
+            for e in &plan.edges[p_idx] {
+                let src_std = t[e.q].as_standard_layout();
+                let src = src_std.as_slice().expect("standard layout");
+                for &(d, s) in &e.idx {
+                    rs[d as usize] += e.coeff * src[s as usize];
+                }
+                fl += e.idx.len() as u64;
+            }
+            apply_pattern(&mut r, &pb.pat, nb);
+            *slot = r;
+            fl
+        })
+        .sum();
+    *flops += fl;
 }
 
 /// Gather and accumulate a sub-block of the ring product into `out`.
@@ -680,6 +1115,56 @@ pub fn ring_product(rg: &Ragged, x: &[Array2<f64>], y: &[Array2<f64>]) -> Vec<Ar
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// One (1 × m) pair block with a full pattern and the given denominators.
+    fn diag_block(denom: &[f64]) -> Ragged {
+        let m = denom.len();
+        let j_blk = Array2::from_shape_fn((1, m), |(_, c)| 0.3 + 0.1 * c as f64);
+        let pb = PairBlock {
+            i: 0,
+            j: 0,
+            da: vec![0],
+            db: (0..m).collect(),
+            pat: vec![true; m],
+            fvv_aa: Array2::zeros((1, 1)),
+            fvv_bb: Array2::zeros((m, m)),
+            j_blk,
+            denom: Array2::from_shape_vec((1, m), denom.to_vec()).unwrap(),
+            pos_da: vec![0],
+            pos_db: (0..m).collect(),
+        };
+        Ragged {
+            pairs: vec![pb],
+            by_i: HashMap::from([(0, vec![0])]),
+            by_j: HashMap::from([(0, vec![0])]),
+        }
+    }
+
+    /// The CG-coefficient κ estimate on an operator with a KNOWN spectrum:
+    /// A = diag(1..m) with a unit preconditioner is plain CG, which resolves
+    /// all m distinct eigenvalues in m steps, so κ_est must be m; with the
+    /// exact diagonal as preconditioner the preconditioned operator is the
+    /// identity (κ = 1, one step).
+    #[test]
+    fn lanczos_kappa_recovers_a_known_spectrum() {
+        let m = 6;
+        let d: Vec<f64> = (1..=m).map(|x| x as f64).collect();
+        let matvec = |p: &[Array2<f64>], _: &mut u64| -> Vec<Array2<f64>> {
+            vec![Array2::from_shape_fn((1, m), |(_, c)| p[0][(0, c)] * d[c])]
+        };
+        let plain = solve_ragged_with_trace(&diag_block(&[1.0; 6]), 1e-13, 50, matvec);
+        assert!(plain.converged);
+        let k = lanczos_kappa(&plain.trace);
+        assert!(
+            (k - m as f64).abs() < 1e-8 * m as f64,
+            "unit preconditioner: kappa {k} != {m}"
+        );
+        let pre = solve_ragged_with_trace(&diag_block(&d), 1e-13, 50, matvec);
+        assert_eq!(pre.iterations, 1);
+        let k1 = lanczos_kappa(&pre.trace);
+        assert!((k1 - 1.0).abs() < 1e-12, "exact preconditioner: kappa {k1}");
+        assert!(lanczos_kappa(&CgTrace::default()).is_nan());
+    }
 
     /// Byte-identity guard for the ferric-pbc seam: with `gate = g` the gated
     /// builder IS the original (every field bitwise), on a block with

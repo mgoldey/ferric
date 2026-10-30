@@ -5744,8 +5744,10 @@ struct PyRiMp2Result {
     /// The local model: `None` for the exact RI-MP2, else a dict with
     /// `scheme`, `eps`, `keep_fraction`, `pair_fraction`, `integral_direct`,
     /// `e_corr_canonical_ri` (the exact reference, or `None` unless
-    /// `compute_reference=True`) and the solver counters. Read through the
-    /// `local` getter.
+    /// `compute_reference=True`), the solver counters, and the model
+    /// certificate (`ferric_mp2::lmp2_certificate`: maps, precision, CG
+    /// state, validation grade, eps trust line, warnings, build stamp).
+    /// Read through the `local` getter.
     local: Option<Py<pyo3::types::PyDict>>,
     /// How the reference SCF built J/K: "exact", "rijk" or "rijcosx".
     #[pyo3(get)]
@@ -5762,8 +5764,10 @@ struct PyRiMp2Result {
 impl PyRiMp2Result {
     /// The local model: `None` for the exact RI-MP2, else a dict with
     /// `scheme`, `eps`, `keep_fraction`, `pair_fraction`, `integral_direct`,
-    /// `e_corr_canonical_ri` (`None` unless `compute_reference=True`) and the
-    /// solver counters.
+    /// `e_corr_canonical_ri` (`None` unless `compute_reference=True`), the
+    /// solver counters and the model certificate (maps, precision, CG
+    /// state, `validation_grade`, `eps_trust`, `warnings`, `build_commit`,
+    /// `build_dirty`).
     #[getter]
     fn local(&self, py: Python<'_>) -> Option<Py<pyo3::types::PyDict>> {
         self.local.as_ref().map(|d| d.clone_ref(py))
@@ -5829,6 +5833,102 @@ fn local_dict<'py>(
     d.set_item("keep_fraction", keep_fraction)?;
     d.set_item("integral_direct", integral_direct)?;
     Ok(d)
+}
+
+/// The solver/pattern counters and stage timings of an LMP2 result, into
+/// its `local` dict.
+fn set_lmp2_counters(
+    d: &Bound<'_, pyo3::types::PyDict>,
+    r: &ferric_mp2::lmp2_amplitude::AmplitudeLmp2Result,
+    reference: bool,
+) -> PyResult<()> {
+    d.set_item("pair_fraction", r.pair_fraction)?;
+    d.set_item(
+        "e_corr_canonical_ri",
+        reference.then_some(r.e_corr_canonical_ri),
+    )?;
+    d.set_item("dom_mean", r.dom_mean)?;
+    d.set_item("dom_max", r.dom_max)?;
+    d.set_item("cg_iterations", r.cg_iterations)?;
+    d.set_item("cg_lanczos_kappa_lower", r.cg_lanczos_kappa_est)?;
+    d.set_item("block_density_mean", r.block_density_mean)?;
+    d.set_item("block_density_min", r.block_density_min)?;
+    d.set_item("n_pairs_unique", r.n_pairs_unique)?;
+    d.set_item("gate_on", r.gate_on)?;
+    d.set_item("t_spaces_s", r.timings.t_spaces_s)?;
+    d.set_item("t_assembly_s", r.timings.t_assembly_s)?;
+    d.set_item("t_solve_s", r.timings.t_solve_s)
+}
+
+/// The integral-direct assembly counters and stage timers, into an LMP2
+/// result's `local` dict.
+fn set_direct_stats(
+    d: &Bound<'_, pyo3::types::PyDict>,
+    st: &ferric_mp2::lmp2_direct::DirectStats,
+) -> PyResult<()> {
+    d.set_item("strip_rows_mean", st.strip_rows_mean)?;
+    d.set_item("strip_rows_max", st.strip_rows_max)?;
+    d.set_item("strip_cols_mean", st.strip_cols_mean)?;
+    d.set_item("strip_cols_max", st.strip_cols_max)?;
+    d.set_item("n_eri3_shell_triples", st.n_eri3_shell_triples)?;
+    d.set_item("n_eri3_skipped", st.n_eri3_skipped)?;
+    d.set_item("virt_cand_mean", st.virt_cand_mean)?;
+    d.set_item("virt_cand_max", st.virt_cand_max)?;
+    d.set_item("t_maps_s", st.t_maps_s)?;
+    d.set_item("t_eri3_s", st.t_eri3_s)?;
+    d.set_item("t_eri3_fill_thread_s", st.t_eri3_fill_thread_s)?;
+    d.set_item("t_eri3_eval_thread_s", st.t_eri3_eval_thread_s)?;
+    d.set_item("t_eri3_scatter_thread_s", st.t_eri3_scatter_thread_s)?;
+    d.set_item("t_eri3_transform_thread_s", st.t_eri3_transform_thread_s)?;
+    d.set_item("n_batches", st.n_batches)?;
+    d.set_item("batch_work_max_s", st.batch_work_max_s)?;
+    d.set_item("batch_work_mean_s", st.batch_work_mean_s)?;
+    d.set_item("t_metric_s", st.t_metric_s)?;
+    d.set_item("t_pairs_s", st.t_pairs_s)?;
+    d.set_item("t_loc_s", st.t_loc_s)
+}
+
+/// Set one certificate entry on `d` (`None`, bool, int, float, str, list of
+/// str, or a nested dict).
+fn set_cert_item(
+    py: Python<'_>,
+    d: &Bound<'_, pyo3::types::PyDict>,
+    k: &str,
+    v: &ferric_mp2::lmp2_certificate::CertValue,
+) -> PyResult<()> {
+    use ferric_mp2::lmp2_certificate::CertValue as V;
+    match v {
+        V::Null => d.set_item(k, py.None()),
+        V::Bool(b) => d.set_item(k, *b),
+        V::Usize(n) => d.set_item(k, *n),
+        V::F64(x) => d.set_item(k, *x),
+        V::Str(s) => d.set_item(k, s),
+        V::StrList(l) => d.set_item(k, l),
+        V::Map(m) => {
+            let sub = pyo3::types::PyDict::new(py);
+            for (sk, x) in m {
+                set_cert_item(py, &sub, sk, x)?;
+            }
+            d.set_item(k, sub)
+        }
+    }
+}
+
+/// Put every LMP2 certificate field
+/// ([`ferric_mp2::lmp2_certificate::Lmp2Certificate::fields`]) and the
+/// build stamp (`build_commit`, `build_dirty`) into a result's `local`
+/// dict — the same entries the CLI writes to its run-log JSON.
+fn set_certificate(
+    py: Python<'_>,
+    d: &Bound<'_, pyo3::types::PyDict>,
+    cert: &ferric_mp2::lmp2_certificate::Lmp2Certificate,
+) -> PyResult<()> {
+    for (k, v) in cert.fields() {
+        set_cert_item(py, d, k, &v)?;
+    }
+    d.set_item("build_commit", ferric_build_info::COMMIT)?;
+    d.set_item("build_dirty", ferric_build_info::DIRTY)?;
+    Ok(())
 }
 
 /// `run_rimp2`'s compute: `(reference SCF energy, MP2 correlation, total)`.
@@ -6261,22 +6361,22 @@ fn run_rimp2_local(
         compute_reference: model.reference,
         ..Default::default()
     };
-    let (r, st) = match &model.direct {
+    let dcfg = model.direct.as_ref().map(|d| DirectConfig {
+        aux_radius_bohr: d.aux_radius,
+        virt_radius_bohr: Some(d.virt_radius),
+        ao_tail: d.ao_tail,
+        schwarz_skip: d.schwarz_skip,
+        batch_merge: d.batch_merge,
+        virt_schwarz_kappa: d.virt_schwarz_kappa,
+        ..Default::default()
+    });
+    let (r, st) = match &dcfg {
         None => (
             amplitude_lmp2(&mol.inner, &prep, &basis_set.inner, &dfbs, op, &rhf, &lcfg)
                 .map_err(make_err)?,
             None,
         ),
-        Some(d) => {
-            let dcfg = DirectConfig {
-                aux_radius_bohr: d.aux_radius,
-                virt_radius_bohr: Some(d.virt_radius),
-                ao_tail: d.ao_tail,
-                schwarz_skip: d.schwarz_skip,
-                batch_merge: d.batch_merge,
-                virt_schwarz_kappa: d.virt_schwarz_kappa,
-                ..Default::default()
-            };
+        Some(dc) => {
             let (r, st) = amplitude_lmp2_direct(
                 &mol.inner,
                 &prep,
@@ -6285,35 +6385,25 @@ fn run_rimp2_local(
                 op,
                 &rhf,
                 &lcfg,
-                &dcfg,
+                dc,
             )
             .map_err(make_err)?;
             (r, Some(st))
         }
     };
+    let cert = ferric_mp2::lmp2_certificate::Lmp2Certificate::new(
+        &lcfg,
+        dcfg.as_ref(),
+        &r,
+        &ferric_mp2::lmp2_certificate::SystemShape::new(&mol.inner, &basis_set.inner),
+        &op,
+    );
     let d = local_dict(py, eps, r.keep_fraction, model.direct.is_some())?;
-    d.set_item("pair_fraction", r.pair_fraction)?;
-    d.set_item(
-        "e_corr_canonical_ri",
-        model.reference.then_some(r.e_corr_canonical_ri),
-    )?;
-    d.set_item("dom_mean", r.dom_mean)?;
-    d.set_item("dom_max", r.dom_max)?;
-    d.set_item("cg_iterations", r.cg_iterations)?;
+    set_lmp2_counters(&d, &r, model.reference)?;
+    set_certificate(py, &d, &cert)?;
     if let Some(st) = st {
         d.set_item("n_pairs_gated", r.n_pairs_gated)?;
-        d.set_item("strip_rows_mean", st.strip_rows_mean)?;
-        d.set_item("strip_rows_max", st.strip_rows_max)?;
-        d.set_item("strip_cols_mean", st.strip_cols_mean)?;
-        d.set_item("strip_cols_max", st.strip_cols_max)?;
-        d.set_item("n_eri3_shell_triples", st.n_eri3_shell_triples)?;
-        d.set_item("n_eri3_skipped", st.n_eri3_skipped)?;
-        d.set_item("virt_cand_mean", st.virt_cand_mean)?;
-        d.set_item("virt_cand_max", st.virt_cand_max)?;
-        d.set_item("t_maps_s", st.t_maps_s)?;
-        d.set_item("t_eri3_s", st.t_eri3_s)?;
-        d.set_item("t_metric_s", st.t_metric_s)?;
-        d.set_item("t_pairs_s", st.t_pairs_s)?;
+        set_direct_stats(&d, &st)?;
     }
     Ok(PyRiMp2Result {
         total_energy: r.e_total,

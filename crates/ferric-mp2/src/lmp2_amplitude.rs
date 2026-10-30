@@ -55,7 +55,9 @@ use ferric_integrals::operator::Operator;
 use ferric_scf::result::ScfResult;
 
 use crate::boys::boys_localize;
-use crate::ragged::{pair_block_from_g_cand, solve_ragged, PairBlock, Ragged};
+use crate::ragged::{
+    lanczos_kappa, pair_block_from_g_cand, solve_ragged_budgeted, MatvecPath, PairBlock, Ragged,
+};
 use crate::rimp2::{
     active_occ, eri3_budget_bytes, eri3_mo_ov_blocked, metric_inverse_sqrt, ri_mp2, RiMp2Config,
 };
@@ -155,7 +157,82 @@ pub struct AmplitudeLmp2Result {
     /// ε-linked aux truncation is off).
     pub aux_dom_mean: f64,
     pub aux_dom_max: usize,
+    /// κ estimate of the diagonally preconditioned CG operator from the CG
+    /// coefficients ([`crate::ragged::lanczos_kappa`]; a lower bound, NaN
+    /// when undefined).
+    pub cg_lanczos_kappa_est: f64,
+    /// In-block retained-pattern density (kept / (|Da|·|Db|)) over the pair
+    /// blocks: mean and min (0 when there are no blocks).
+    pub block_density_mean: f64,
+    pub block_density_min: f64,
+    /// Unordered pairs (i ≤ j) that carry a block.
+    pub n_pairs_unique: usize,
+    /// Whether the integral-free pair gate was configured
+    /// (`pair_gate_cal.is_some()`; inert at ε = 0).
+    pub gate_on: bool,
+    /// Size of the PCG gather plan ([`crate::ragged::SolvePlan::bytes_for`]),
+    /// computed before deciding whether to build it; reported either way.
+    pub solve_plan_bytes: usize,
+    /// Bytes resident beside the plan for the whole solve (the ragged
+    /// system + the PCG vectors, [`crate::ragged::solve_resident_bytes`]);
+    /// the plan is admitted against the budget minus this.
+    pub solve_resident_bytes: usize,
+    /// The matvec the PCG ran: planned when the plan fit the memory budget,
+    /// otherwise the plan-free indexed one (bitwise the same result).
+    pub matvec_path: MatvecPath,
     pub timings: StageTimings,
+}
+
+/// The pattern counters both LMP2 drivers report, computed from the
+/// assembled ragged system.
+pub(crate) struct RaggedCounters {
+    pub keep_fraction: f64,
+    pub pair_fraction: f64,
+    pub dom_mean: f64,
+    pub dom_max: usize,
+    pub dense_flops: u64,
+    pub block_density_mean: f64,
+    pub block_density_min: f64,
+    pub n_pairs_unique: usize,
+}
+
+impl RaggedCounters {
+    pub(crate) fn new(rg: &Ragged, no: usize, nv: usize) -> Self {
+        let total_el = (no * nv) as u64 * (no * nv) as u64;
+        let mut kept = 0u64;
+        let (mut dens_sum, mut dens_min) = (0.0f64, f64::INFINITY);
+        let mut per_i: Vec<Vec<bool>> = vec![vec![false; nv]; no];
+        for pb in &rg.pairs {
+            let k = pb.pat.iter().filter(|&&x| x).count();
+            kept += k as u64;
+            let dens = k as f64 / pb.pat.len().max(1) as f64;
+            dens_sum += dens;
+            dens_min = dens_min.min(dens);
+            for &a in &pb.da {
+                per_i[pb.i][a] = true;
+            }
+        }
+        let dom: Vec<usize> = per_i
+            .iter()
+            .map(|v| v.iter().filter(|&&x| x).count())
+            .collect();
+        let npb = rg.pairs.len();
+        Self {
+            keep_fraction: kept as f64 / total_el as f64,
+            pair_fraction: npb as f64 / (no * no) as f64,
+            dom_mean: if no > 0 {
+                dom.iter().sum::<usize>() as f64 / no as f64
+            } else {
+                0.0
+            },
+            dom_max: dom.iter().copied().max().unwrap_or(0),
+            dense_flops: 2
+                * ((no * no) as u64 * (nv as u64).pow(3) + (no as u64).pow(3) * (nv * nv) as u64),
+            block_density_mean: if npb > 0 { dens_sum / npb as f64 } else { 0.0 },
+            block_density_min: if npb > 0 { dens_min } else { 0.0 },
+            n_pairs_unique: rg.pairs.iter().filter(|pb| pb.i <= pb.j).count(),
+        }
+    }
 }
 
 impl std::fmt::Display for AmplitudeLmp2Result {
@@ -177,6 +254,10 @@ impl std::fmt::Display for AmplitudeLmp2Result {
 /// was not computed.
 #[derive(Debug, Clone, Default)]
 pub struct StageTimings {
+    /// VV-HV virtual construction (`build_vvhv` + `check_vvhv`). Set by the
+    /// drivers that build the space ([`amplitude_lmp2`],
+    /// `lmp2_direct::amplitude_lmp2_direct`); 0 on the `*_with_virtuals`
+    /// entry points, whose caller built it.
     pub t_spaces_s: f64,
     pub t_assembly_s: f64,
     pub t_solve_s: f64,
@@ -261,7 +342,29 @@ pub fn canonical_orth(
     Ok(out)
 }
 
+/// Relative width inside which residual diagonals count as TIED in
+/// [`pivoted_cholesky_order`]. Symmetry-equivalent candidates tie exactly in
+/// exact arithmetic but differ in the last bits under any change of
+/// summation order (e.g. the Stage-B1 Cholesky vs LU solve); without a
+/// tolerance the pivot then follows rounding noise.
+pub const PIVOT_TIE_RTOL: f64 = 1e-12;
+
+/// Index of the pivot: the LOWEST index whose residual diagonal is within
+/// [`PIVOT_TIE_RTOL`] (relative) of the maximum, so near-ties are broken
+/// deterministically by position rather than by rounding.
+fn select_pivot(d: &[f64]) -> (usize, f64) {
+    assert!(
+        d.iter().all(|x| !x.is_nan()),
+        "NaN in pivoted Cholesky diagonal"
+    );
+    let dmax = d.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    let floor = dmax - PIVOT_TIE_RTOL * dmax.abs();
+    let j = d.iter().position(|&x| x >= floor).expect("empty diagonal");
+    (j, d[j])
+}
+
 /// Greedy pivoted Cholesky on a PSD matrix; returns `rank` pivot indices.
+/// Near-ties (within [`PIVOT_TIE_RTOL`] relative) go to the lowest index.
 /// `pub` for ferric-pbc (visibility only; see [`lowdin`]).
 pub fn pivoted_cholesky_order(m: &Array2<f64>, rank: usize) -> Result<Vec<usize>, FerricError> {
     let n = m.nrows();
@@ -269,14 +372,7 @@ pub fn pivoted_cholesky_order(m: &Array2<f64>, rank: usize) -> Result<Vec<usize>
     let mut l = Array2::<f64>::zeros((rank, n));
     let mut piv = Vec::with_capacity(rank);
     for k in 0..rank {
-        let (j, &dj) = d
-            .iter()
-            .enumerate()
-            .max_by(|a, b| {
-                a.1.partial_cmp(b.1)
-                    .expect("NaN in pivoted Cholesky diagonal")
-            })
-            .expect("empty diagonal");
+        let (j, dj) = select_pivot(&d);
         if dj <= 0.0 {
             return Err(FerricError::General(format!(
                 "lmp2_amplitude: pivoted Cholesky broke down at k={k}"
@@ -427,6 +523,33 @@ pub fn build_vvhv(
     obs_bs: &BasisSet,
     rhf: &ScfResult,
 ) -> Result<VvHv, FerricError> {
+    build_vvhv_with(mol, obs, obs_bs, rhf, solve_spd)
+}
+
+/// The SPD solve `S⁻¹·B` [`build_vvhv`] uses (a seam so tests can build the
+/// space with a frozen oracle solver).
+type SpdSolve = fn(&Array2<f64>, &Array2<f64>) -> Result<Array2<f64>, FerricError>;
+
+fn build_vvhv_with(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    obs_bs: &BasisSet,
+    rhf: &ScfResult,
+    solve: SpdSolve,
+) -> Result<VvHv, FerricError> {
+    build_vvhv_traced(mol, obs, obs_bs, rhf, solve).map(|(v, _)| v)
+}
+
+/// [`build_vvhv_with`] that also returns the AO index of every selected
+/// hard-virtual candidate, in pivot order (the hard-virtual SUBSET, which
+/// tests compare across solvers).
+fn build_vvhv_traced(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    obs_bs: &BasisSet,
+    rhf: &ScfResult,
+    solve: SpdSolve,
+) -> Result<(VvHv, Vec<usize>), FerricError> {
     let s = overlap(obs);
     let nao = obs.nbasis();
     let nocc_total = (mol.nelec() as usize) / 2;
@@ -434,7 +557,7 @@ pub fn build_vvhv(
 
     // valence virtuals: projected STO-3G minus the occupied span
     let (s_x, nmin) = cross_overlap_with_minimal(mol, obs, obs_bs)?;
-    let t = solve_spd(&s, &s_x)?; // S⁻¹ S_x : projected minimal in obs AO space
+    let t = solve(&s, &s_x)?; // S⁻¹ S_x : projected minimal in obs AO space
     let q_occ = c_occ_all.dot(&c_occ_all.t().dot(&s));
     let tv = &t - &q_occ.dot(&t);
     let n_l = nmin.checked_sub(nocc_total).ok_or_else(|| {
@@ -453,6 +576,7 @@ pub fn build_vvhv(
     // hard virtuals: project occ+valence out of each AO, select by pivoted
     // Cholesky, Löwdin, per-atom pseudo-canonicalize
     let n_h = nao - nocc_total - n_l;
+    let mut hard_aos = Vec::with_capacity(n_h);
     let c_h = if n_h > 0 {
         let mut c_e = Array2::<f64>::zeros((nao, nocc_total + n_l));
         c_e.slice_mut(s![.., ..nocc_total]).assign(&c_occ_all);
@@ -504,6 +628,7 @@ pub fn build_vvhv(
         for (k, &p) in piv.iter().enumerate() {
             sel.column_mut(k).assign(&xn.column(p));
             sel_parents.push(parents[p]);
+            hard_aos.push(keep_cols[p].0);
         }
         let mut ch = lowdin(&sel, &s)?;
         // per-atom pseudo-canonicalization (block-diagonal — cannot
@@ -541,22 +666,28 @@ pub fn build_vvhv(
     let mut c_vloc = Array2::<f64>::zeros((nao, n_l + n_h));
     c_vloc.slice_mut(s![.., ..n_l]).assign(&c_l);
     c_vloc.slice_mut(s![.., n_l..]).assign(&c_h);
-    Ok(VvHv {
+    let v = VvHv {
         c_vloc,
         n_valence: n_l,
         n_hard: n_h,
-    })
+    };
+    Ok((v, hard_aos))
 }
 
+/// `S⁻¹·B` for SPD `S`: ONE Cholesky factorization, then a forward/back
+/// triangular solve per right-hand side (the previous version LU-factorized
+/// S once per column — nmin factorizations of an nao² matrix).
 fn solve_spd(a: &Array2<f64>, b: &Array2<f64>) -> Result<Array2<f64>, FerricError> {
-    use ndarray_linalg::Solve;
-    let n = b.ncols();
-    let mut out = Array2::<f64>::zeros((a.nrows(), n));
-    for c in 0..n {
-        let col = a
-            .solve(&b.column(c).to_owned())
+    use ndarray_linalg::{FactorizeC, SolveC, UPLO};
+    let f = a
+        .factorizec(UPLO::Lower)
+        .map_err(|e| FerricError::General(format!("lmp2_amplitude Cholesky of S: {e}")))?;
+    let mut out = Array2::<f64>::zeros((a.nrows(), b.ncols()));
+    for (c, mut oc) in out.columns_mut().into_iter().enumerate() {
+        let col = f
+            .solvec(&b.column(c))
             .map_err(|e| FerricError::General(format!("lmp2_amplitude solve: {e}")))?;
-        out.column_mut(c).assign(&col);
+        oc.assign(&col);
     }
     Ok(out)
 }
@@ -613,17 +744,32 @@ pub fn amplitude_lmp2(
     rhf: &ScfResult,
     cfg: &AmplitudeLmp2Config,
 ) -> Result<AmplitudeLmp2Result, FerricError> {
+    let (vvhv, t_spaces_s) = checked_vvhv(mol, obs, obs_bs, rhf, "lmp2_amplitude")?;
+    let mut r = amplitude_lmp2_with_virtuals(mol, obs, dfbs, op, rhf, cfg, &vvhv)?;
+    r.timings.t_spaces_s = t_spaces_s;
+    Ok(r)
+}
+
+/// `build_vvhv` + the orthonormality/span check (both under the 1e-8 bar),
+/// returning the space and the wall seconds both took. `who` names the
+/// driver in the error.
+pub fn checked_vvhv(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    obs_bs: &BasisSet,
+    rhf: &ScfResult,
+    who: &str,
+) -> Result<(VvHv, f64), FerricError> {
+    let t0 = std::time::Instant::now();
     let vvhv = build_vvhv(mol, obs, obs_bs, rhf)?;
-    let (dev_orth, dev_span) = {
-        let nocc_total = (mol.nelec() as usize) / 2;
-        check_vvhv(obs, rhf, nocc_total, &vvhv.c_vloc)
-    };
+    let nocc_total = (mol.nelec() as usize) / 2;
+    let (dev_orth, dev_span) = check_vvhv(obs, rhf, nocc_total, &vvhv.c_vloc);
     if dev_orth > 1e-8 || dev_span > 1e-8 {
         return Err(FerricError::General(format!(
-            "lmp2_amplitude: VV-HV construction check failed (orth {dev_orth:.2e}, span {dev_span:.2e})"
+            "{who}: VV-HV construction check failed (orth {dev_orth:.2e}, span {dev_span:.2e})"
         )));
     }
-    amplitude_lmp2_with_virtuals(mol, obs, dfbs, op, rhf, cfg, &vvhv)
+    Ok((vvhv, t0.elapsed().as_secs_f64()))
 }
 
 /// The assembled localized-basis problem: everything the solver consumes.
@@ -1348,76 +1494,229 @@ pub fn amplitude_lmp2_with_virtuals(
 
     // ---- ragged solve ----
     let t0 = std::time::Instant::now();
-    let (t, iters, relres, converged, flops_mv) =
-        solve_ragged(&rg, f_oo, cfg.cg_rtol, cfg.cg_max_iter);
-    if !converged {
+    let mut r = solve_and_count(&rg, f_oo, rhf.energy, cfg, vvhv, no, nv, "lmp2_amplitude")?;
+    r.e_corr_canonical_ri = e_ref;
+    r.n_pairs_gated = n_pairs_gated;
+    r.aux_dom_mean = aux_dom_mean;
+    r.aux_dom_max = aux_dom_max;
+    r.timings = StageTimings {
+        t_spaces_s: 0.0,
+        t_assembly_s,
+        t_solve_s: t0.elapsed().as_secs_f64(),
+        t_reference_s,
+    };
+    Ok(r)
+}
+
+/// The ragged PCG solve + Hylleraas energy + pattern counters shared by
+/// both LMP2 drivers. The caller fills the reference energy, the gate/aux
+/// counters and the timings (left NaN/0 here).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn solve_and_count(
+    rg: &Ragged,
+    f_oo: &Array2<f64>,
+    e_scf: f64,
+    cfg: &AmplitudeLmp2Config,
+    vvhv: &VvHv,
+    no: usize,
+    nv: usize,
+    who: &str,
+) -> Result<AmplitudeLmp2Result, FerricError> {
+    let budget = eri3_budget_bytes(cfg.eri3_budget_bytes);
+    let (s, plan) = solve_ragged_budgeted(rg, f_oo, cfg.cg_rtol, cfg.cg_max_iter, budget);
+    if !s.converged {
         return Err(FerricError::General(format!(
-            "lmp2_amplitude: ragged CG failed to converge (relres {relres:.2e} after {iters} iters)"
+            "{who}: ragged CG failed to converge (relres {:.2e} after {} iters)",
+            s.relres, s.iterations
         )));
     }
-
-    let e_corr = hylleraas_energy(&rg, &t);
-
-    // counters
-    let total_el = (no * nv) as u64 * (no * nv) as u64;
-    let kept: u64 = rg
-        .pairs
-        .iter()
-        .map(|pb| pb.pat.iter().filter(|&&x| x).count() as u64)
-        .sum();
-    let dom: Vec<usize> = {
-        // per-LMO union over j of Da
-        let mut per_i: Vec<Vec<bool>> = vec![vec![false; nv]; no];
-        for pb in &rg.pairs {
-            for &a in &pb.da {
-                per_i[pb.i][a] = true;
-            }
-        }
-        per_i
-            .iter()
-            .map(|v| v.iter().filter(|&&x| x).count())
-            .collect()
-    };
-    let dom_max = dom.iter().copied().max().unwrap_or(0);
-    let dom_mean = if no > 0 {
-        dom.iter().sum::<usize>() as f64 / no as f64
-    } else {
-        0.0
-    };
-    let dense_flops =
-        2 * ((no * no) as u64 * (nv as u64).pow(3) + (no as u64).pow(3) * (nv * nv) as u64);
-
-    let t_solve_s = t0.elapsed().as_secs_f64();
+    let e_corr = hylleraas_energy(rg, &s.t);
+    let c = RaggedCounters::new(rg, no, nv);
     Ok(AmplitudeLmp2Result {
         e_corr,
-        e_total: rhf.energy + e_corr,
-        e_corr_canonical_ri: e_ref,
-        keep_fraction: kept as f64 / total_el as f64,
-        pair_fraction: rg.pairs.len() as f64 / (no * no) as f64,
-        dom_mean,
-        dom_max,
-        cg_iterations: iters,
-        cg_relres: relres,
-        cg_converged: converged,
+        e_total: e_scf + e_corr,
+        e_corr_canonical_ri: f64::NAN,
+        keep_fraction: c.keep_fraction,
+        pair_fraction: c.pair_fraction,
+        dom_mean: c.dom_mean,
+        dom_max: c.dom_max,
+        cg_iterations: s.iterations,
+        cg_relres: s.relres,
+        cg_converged: s.converged,
         n_valence_virt: vvhv.n_valence,
         n_hard_virt: vvhv.n_hard,
-        ragged_flops_per_matvec: flops_mv,
-        dense_flops_per_matvec: dense_flops,
-        n_pairs_gated,
-        aux_dom_mean,
-        aux_dom_max,
-        timings: StageTimings {
-            t_spaces_s: 0.0,
-            t_assembly_s,
-            t_solve_s,
-            t_reference_s,
-        },
+        ragged_flops_per_matvec: s.flops_per_matvec,
+        dense_flops_per_matvec: c.dense_flops,
+        n_pairs_gated: 0,
+        aux_dom_mean: 0.0,
+        aux_dom_max: 0,
+        cg_lanczos_kappa_est: lanczos_kappa(&s.trace),
+        block_density_mean: c.block_density_mean,
+        block_density_min: c.block_density_min,
+        n_pairs_unique: c.n_pairs_unique,
+        gate_on: cfg.pair_gate_cal.is_some(),
+        solve_plan_bytes: plan.plan_bytes,
+        solve_resident_bytes: plan.resident_bytes,
+        matvec_path: plan.path,
+        timings: StageTimings::default(),
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use ferric_core::parallel::ParallelContext;
+    use ferric_scf::rhf::{solve_rhf, RhfConfig};
+    use ferric_scf::screening::SchwarzBounds;
+
+    /// The pre-Stage-B `solve_spd`: one LU factorization per column. Frozen
+    /// here as the oracle of the Cholesky version.
+    fn solve_spd_lu_oracle(a: &Array2<f64>, b: &Array2<f64>) -> Result<Array2<f64>, FerricError> {
+        use ndarray_linalg::Solve;
+        let mut out = Array2::<f64>::zeros((a.nrows(), b.ncols()));
+        for c in 0..b.ncols() {
+            let col = a
+                .solve(&b.column(c).to_owned())
+                .map_err(|e| FerricError::General(format!("oracle solve: {e}")))?;
+            out.column_mut(c).assign(&col);
+        }
+        Ok(out)
+    }
+
+    fn rhf_631g(xyz: &str) -> (Molecule, PreparedBasis, BasisSet, ScfResult) {
+        let mol = Molecule::load_xyz(&format!(
+            "{}/../../testdata/molecules/{xyz}",
+            env!("CARGO_MANIFEST_DIR")
+        ))
+        .unwrap();
+        let bs = ferric_core::basis::bundled("6-31g").unwrap();
+        let obs = PreparedBasis::new(&mol, &bs).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+        let cfg = RhfConfig {
+            energy_conv: 1e-10,
+            ..Default::default()
+        };
+        let rhf = solve_rhf(&ParallelContext::default(), &mol, &obs, op, &bounds, &cfg).unwrap();
+        (mol, obs, bs, rhf)
+    }
+
+    fn c4_631g() -> (Molecule, PreparedBasis, BasisSet, ScfResult) {
+        rhf_631g("alkane_4.xyz")
+    }
+
+    /// Every column of `a` equals a DISTINCT column of `b` up to sign within
+    /// 1e-10 (a bijection), and the number of columns whose partner is not
+    /// at the same index. Symmetry-equivalent hard-virtual candidates tie
+    /// exactly in the pivoted Cholesky, so a last-bit change may swap their
+    /// ORDER; a reordering of the virtual set leaves every energy invariant,
+    /// while any genuinely different column fails here.
+    fn match_columns_up_to_sign_and_order(a: &Array2<f64>, b: &Array2<f64>) -> (bool, usize) {
+        let mut used = vec![false; b.ncols()];
+        let mut permuted = 0;
+        for (k, ca) in a.columns().into_iter().enumerate() {
+            let hit = b.columns().into_iter().enumerate().find(|(j, cb)| {
+                let sign = if ca.dot(cb) < 0.0 { -1.0 } else { 1.0 };
+                !used[*j]
+                    && ca
+                        .iter()
+                        .zip(cb.iter())
+                        .all(|(x, y)| (x - sign * y).abs() <= 1e-10)
+            });
+            match hit {
+                Some((j, _)) => {
+                    used[j] = true;
+                    permuted += usize::from(j != k);
+                }
+                None => return (false, permuted),
+            }
+        }
+        (true, permuted)
+    }
+
+    /// B1 anchor: the one-Cholesky multi-RHS `solve_spd` reproduces the
+    /// frozen per-column-LU oracle on C4/6-31G's projected-minimal system
+    /// (≤ 1e-10 relative), and the VV-HV space built on it matches the
+    /// oracle-built space column by column (sign-fixed, ≤ 1e-10, same
+    /// hard-virtual subset in the same order — before the near-tie pivot
+    /// rule, four tied columns swapped order here) and passes the
+    /// orthonormality/span check.
+    #[test]
+    fn solve_spd_cholesky_matches_lu_oracle_and_vvhv_is_unchanged() {
+        let (mol, obs, bs, rhf) = c4_631g();
+        let s = overlap(&obs);
+        let (s_x, _) = cross_overlap_with_minimal(&mol, &obs, &bs).unwrap();
+        let new = solve_spd(&s, &s_x).unwrap();
+        let old = solve_spd_lu_oracle(&s, &s_x).unwrap();
+        let scale = old.iter().fold(0.0f64, |m, x| m.max(x.abs()));
+        let dev = (&new - &old).iter().fold(0.0f64, |m, x| m.max(x.abs())) / scale;
+        assert!(dev <= 1e-10, "solve_spd vs LU oracle: {dev:.3e}");
+
+        assert_vvhv_matches_lu_oracle(&mol, &obs, &bs, &rhf);
+    }
+
+    /// The VV-HV space built on the Cholesky `solve_spd` against the one
+    /// built on the frozen LU oracle: the SAME hard-virtual subset in the
+    /// same pivot order (AO indices of the selected candidates), the same
+    /// columns (sign-fixed, <= 1e-10, no reordering), and the
+    /// orthonormality/span check.
+    fn assert_vvhv_matches_lu_oracle(
+        mol: &Molecule,
+        obs: &PreparedBasis,
+        bs: &BasisSet,
+        rhf: &ScfResult,
+    ) {
+        let (v_new, h_new) = build_vvhv_traced(mol, obs, bs, rhf, solve_spd).unwrap();
+        let (v_old, h_old) = build_vvhv_traced(mol, obs, bs, rhf, solve_spd_lu_oracle).unwrap();
+        assert_eq!(v_new.c_vloc.dim(), v_old.c_vloc.dim());
+        assert_eq!(
+            (v_new.n_valence, v_new.n_hard),
+            (v_old.n_valence, v_old.n_hard)
+        );
+        assert!(v_new.n_hard > 0, "no hard virtuals: the test is vacuous");
+        assert_eq!(
+            h_new, h_old,
+            "hard-virtual subset/order differs from the oracle"
+        );
+        let (matched, permuted) = match_columns_up_to_sign_and_order(&v_new.c_vloc, &v_old.c_vloc);
+        assert!(
+            matched && permuted == 0,
+            "c_vloc is not the oracle's columns (<= 1e-10, sign; {permuted} reordered)"
+        );
+        let nocc = (mol.nelec() as usize) / 2;
+        let (o, sp) = check_vvhv(obs, rhf, nocc, &v_new.c_vloc);
+        assert!(
+            o <= 1e-8 && sp <= 1e-8,
+            "VV-HV check: orth {o:.2e} span {sp:.2e}"
+        );
+    }
+
+    /// B1 oracle on symmetric non-alkanes, where symmetry-equivalent hard
+    /// candidates (water's two H, benzene's six CH) tie exactly: with the
+    /// near-tie rule the Cholesky- and LU-built spaces select the same
+    /// hard-virtual subset in the same order.
+    #[test]
+    fn vvhv_matches_lu_oracle_on_symmetric_molecules() {
+        for xyz in ["water.xyz", "benzene.xyz"] {
+            let (mol, obs, bs, rhf) = rhf_631g(xyz);
+            assert_vvhv_matches_lu_oracle(&mol, &obs, &bs, &rhf);
+        }
+    }
+
+    /// Near-ties (within PIVOT_TIE_RTOL relative) go to the LOWEST index,
+    /// so a last-bit perturbation cannot move the pivot; a real gap still
+    /// wins; eliminated (-inf) entries are never chosen.
+    #[test]
+    fn select_pivot_breaks_near_ties_toward_the_lowest_index() {
+        let tie = [1.0, 2.0, 2.0 * (1.0 + 1e-14), 0.5];
+        assert_eq!(select_pivot(&tie).0, 1);
+        let mut flipped = tie;
+        flipped.swap(1, 2);
+        assert_eq!(select_pivot(&flipped).0, 1);
+        assert_eq!(select_pivot(&[1.0, 2.0, 2.0 + 1e-6]).0, 2);
+        assert_eq!(select_pivot(&[f64::NEG_INFINITY, 0.3, 0.3]).0, 1);
+    }
 
     /// Byte-identity guard for the ferric-pbc seam: the closure form with
     /// the Euclidean distance reproduces `pair_gate_keep` exactly (mask and
