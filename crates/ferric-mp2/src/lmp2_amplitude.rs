@@ -473,6 +473,20 @@ pub fn build_vvhv(
     obs_bs: &BasisSet,
     rhf: &ScfResult,
 ) -> Result<VvHv, FerricError> {
+    build_vvhv_with(mol, obs, obs_bs, rhf, solve_spd)
+}
+
+/// The SPD solve `S⁻¹·B` [`build_vvhv`] uses (a seam so tests can build the
+/// space with a frozen oracle solver).
+type SpdSolve = fn(&Array2<f64>, &Array2<f64>) -> Result<Array2<f64>, FerricError>;
+
+fn build_vvhv_with(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    obs_bs: &BasisSet,
+    rhf: &ScfResult,
+    solve: SpdSolve,
+) -> Result<VvHv, FerricError> {
     let s = overlap(obs);
     let nao = obs.nbasis();
     let nocc_total = (mol.nelec() as usize) / 2;
@@ -480,7 +494,7 @@ pub fn build_vvhv(
 
     // valence virtuals: projected STO-3G minus the occupied span
     let (s_x, nmin) = cross_overlap_with_minimal(mol, obs, obs_bs)?;
-    let t = solve_spd(&s, &s_x)?; // S⁻¹ S_x : projected minimal in obs AO space
+    let t = solve(&s, &s_x)?; // S⁻¹ S_x : projected minimal in obs AO space
     let q_occ = c_occ_all.dot(&c_occ_all.t().dot(&s));
     let tv = &t - &q_occ.dot(&t);
     let n_l = nmin.checked_sub(nocc_total).ok_or_else(|| {
@@ -594,15 +608,20 @@ pub fn build_vvhv(
     })
 }
 
+/// `S⁻¹·B` for SPD `S`: ONE Cholesky factorization, then a forward/back
+/// triangular solve per right-hand side (the previous version LU-factorized
+/// S once per column — nmin factorizations of an nao² matrix).
 fn solve_spd(a: &Array2<f64>, b: &Array2<f64>) -> Result<Array2<f64>, FerricError> {
-    use ndarray_linalg::Solve;
-    let n = b.ncols();
-    let mut out = Array2::<f64>::zeros((a.nrows(), n));
-    for c in 0..n {
-        let col = a
-            .solve(&b.column(c).to_owned())
+    use ndarray_linalg::{FactorizeC, SolveC, UPLO};
+    let f = a
+        .factorizec(UPLO::Lower)
+        .map_err(|e| FerricError::General(format!("lmp2_amplitude Cholesky of S: {e}")))?;
+    let mut out = Array2::<f64>::zeros((a.nrows(), b.ncols()));
+    for (c, mut oc) in out.columns_mut().into_iter().enumerate() {
+        let col = f
+            .solvec(&b.column(c))
             .map_err(|e| FerricError::General(format!("lmp2_amplitude solve: {e}")))?;
-        out.column_mut(c).assign(&col);
+        oc.assign(&col);
     }
     Ok(out)
 }
@@ -1476,6 +1495,109 @@ pub(crate) fn solve_and_count(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use ferric_core::parallel::ParallelContext;
+    use ferric_scf::rhf::{solve_rhf, RhfConfig};
+    use ferric_scf::screening::SchwarzBounds;
+
+    /// The pre-Stage-B `solve_spd`: one LU factorization per column. Frozen
+    /// here as the oracle of the Cholesky version.
+    fn solve_spd_lu_oracle(a: &Array2<f64>, b: &Array2<f64>) -> Result<Array2<f64>, FerricError> {
+        use ndarray_linalg::Solve;
+        let mut out = Array2::<f64>::zeros((a.nrows(), b.ncols()));
+        for c in 0..b.ncols() {
+            let col = a
+                .solve(&b.column(c).to_owned())
+                .map_err(|e| FerricError::General(format!("oracle solve: {e}")))?;
+            out.column_mut(c).assign(&col);
+        }
+        Ok(out)
+    }
+
+    fn c4_631g() -> (Molecule, PreparedBasis, BasisSet, ScfResult) {
+        let mol = Molecule::load_xyz(&format!(
+            "{}/../../testdata/molecules/alkane_4.xyz",
+            env!("CARGO_MANIFEST_DIR")
+        ))
+        .unwrap();
+        let bs = ferric_core::basis::bundled("6-31g").unwrap();
+        let obs = PreparedBasis::new(&mol, &bs).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+        let cfg = RhfConfig {
+            energy_conv: 1e-10,
+            ..Default::default()
+        };
+        let rhf = solve_rhf(&ParallelContext::default(), &mol, &obs, op, &bounds, &cfg).unwrap();
+        (mol, obs, bs, rhf)
+    }
+
+    /// Every column of `a` equals a DISTINCT column of `b` up to sign within
+    /// 1e-10 (a bijection), and the number of columns whose partner is not
+    /// at the same index. Symmetry-equivalent hard-virtual candidates tie
+    /// exactly in the pivoted Cholesky, so a last-bit change may swap their
+    /// ORDER; a reordering of the virtual set leaves every energy invariant,
+    /// while any genuinely different column fails here.
+    fn match_columns_up_to_sign_and_order(a: &Array2<f64>, b: &Array2<f64>) -> (bool, usize) {
+        let mut used = vec![false; b.ncols()];
+        let mut permuted = 0;
+        for (k, ca) in a.columns().into_iter().enumerate() {
+            let hit = b.columns().into_iter().enumerate().find(|(j, cb)| {
+                let sign = if ca.dot(cb) < 0.0 { -1.0 } else { 1.0 };
+                !used[*j]
+                    && ca
+                        .iter()
+                        .zip(cb.iter())
+                        .all(|(x, y)| (x - sign * y).abs() <= 1e-10)
+            });
+            match hit {
+                Some((j, _)) => {
+                    used[j] = true;
+                    permuted += usize::from(j != k);
+                }
+                None => return (false, permuted),
+            }
+        }
+        (true, permuted)
+    }
+
+    /// B1 anchor: the one-Cholesky multi-RHS `solve_spd` reproduces the
+    /// frozen per-column-LU oracle on C4/6-31G's projected-minimal system
+    /// (≤ 1e-10 relative), and the VV-HV space built on it matches the
+    /// oracle-built space column by column (sign-fixed, ≤ 1e-10, up
+    /// to a reordering among exactly tied symmetry-equivalent hard virtuals)
+    /// and passes the orthonormality/span check.
+    #[test]
+    fn solve_spd_cholesky_matches_lu_oracle_and_vvhv_is_unchanged() {
+        let (mol, obs, bs, rhf) = c4_631g();
+        let s = overlap(&obs);
+        let (s_x, _) = cross_overlap_with_minimal(&mol, &obs, &bs).unwrap();
+        let new = solve_spd(&s, &s_x).unwrap();
+        let old = solve_spd_lu_oracle(&s, &s_x).unwrap();
+        let scale = old.iter().fold(0.0f64, |m, x| m.max(x.abs()));
+        let dev = (&new - &old).iter().fold(0.0f64, |m, x| m.max(x.abs())) / scale;
+        assert!(dev <= 1e-10, "solve_spd vs LU oracle: {dev:.3e}");
+
+        let v_new = build_vvhv(&mol, &obs, &bs, &rhf).unwrap();
+        let v_old = build_vvhv_with(&mol, &obs, &bs, &rhf, solve_spd_lu_oracle).unwrap();
+        assert_eq!(v_new.c_vloc.dim(), v_old.c_vloc.dim());
+        assert_eq!(
+            (v_new.n_valence, v_new.n_hard),
+            (v_old.n_valence, v_old.n_hard)
+        );
+        let (matched, permuted) = match_columns_up_to_sign_and_order(&v_new.c_vloc, &v_old.c_vloc);
+        eprintln!("VV-HV vs oracle: {permuted} columns reordered among exact ties");
+        assert!(
+            matched,
+            "c_vloc is not the oracle's columns (<= 1e-10, sign/order)"
+        );
+        let nocc = (mol.nelec() as usize) / 2;
+        let (o, sp) = check_vvhv(&obs, &rhf, nocc, &v_new.c_vloc);
+        assert!(
+            o <= 1e-8 && sp <= 1e-8,
+            "VV-HV check: orth {o:.2e} span {sp:.2e}"
+        );
+    }
 
     /// Byte-identity guard for the ferric-pbc seam: the closure form with
     /// the Euclidean distance reproduces `pair_gate_keep` exactly (mask and

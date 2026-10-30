@@ -229,12 +229,88 @@ fn supp_shells(prep: &PreparedBasis, col: ndarray::ArrayView1<f64>, tail: f64) -
         .collect()
 }
 
+/// The evaluated `(P|Q)` metric shell-pair blocks, keyed `(sp ≥ sq)` through
+/// a dense `nsh_df²` id table (was a `HashMap<(usize, usize), Array2>`).
+struct MetricBlocks {
+    nsh: usize,
+    id: Vec<u32>,
+    blocks: Vec<Array2<f64>>,
+}
+
+impl MetricBlocks {
+    /// Block `(sp, sq)` with `sp ≥ sq`; `None` when it was never evaluated.
+    fn get(&self, sp: usize, sq: usize) -> Option<&Array2<f64>> {
+        let k = self.id[sp * self.nsh + sq];
+        (k != u32::MAX).then(|| &self.blocks[k as usize])
+    }
+}
+
+/// The metric shell pairs `(sp ≥ sq)` inside some `D̃_i²`, in lexicographic
+/// `(sp, sq)` order (the order the former `BTreeSet` produced), marked in a
+/// lower-triangle bitmap instead of a tree. Each `aux_ext` list is sorted.
+fn metric_need_pairs(aux_ext: &[Vec<usize>], nsh: usize) -> Vec<(usize, usize)> {
+    let mut mark = vec![false; nsh * nsh];
+    for shells in aux_ext {
+        for (x, &sp) in shells.iter().enumerate() {
+            for &sq in &shells[..=x] {
+                mark[sp * nsh + sq] = true;
+            }
+        }
+    }
+    let mut need = Vec::new();
+    for sp in 0..nsh {
+        for sq in 0..=sp {
+            if mark[sp * nsh + sq] {
+                need.push((sp, sq));
+            }
+        }
+    }
+    need
+}
+
+/// Evaluate the needed metric blocks (rayon, one 2-center engine per
+/// worker) into a [`MetricBlocks`] store.
+fn eval_metric_blocks(
+    op: Operator,
+    dfbs: &PreparedBasis,
+    need: &[(usize, usize)],
+) -> Result<MetricBlocks, FerricError> {
+    use rayon::prelude::*;
+    let dims_df = dfbs.shell_dims();
+    let nsh = dfbs.nshells();
+    Engine::new_2center(op, dfbs, 1e-14)?;
+    let blocks: Vec<Array2<f64>> = need
+        .par_iter()
+        .map_init(
+            || Engine::new_2center(op, dfbs, 1e-14).expect("2-center engine (pre-validated)"),
+            |eng, &(sp, sq)| {
+                let (np, nq) = (dims_df[sp], dims_df[sq]);
+                let vals = eng.compute_eri2(dfbs, sp, sq);
+                let mut blk = Array2::<f64>::zeros((np, nq));
+                for p in 0..np {
+                    for q in 0..nq {
+                        blk[(p, q)] = vals[p * nq + q];
+                    }
+                }
+                blk
+            },
+        )
+        .collect();
+    let mut id = vec![u32::MAX; nsh * nsh];
+    for (k, &(sp, sq)) in need.iter().enumerate() {
+        id[sp * nsh + sq] = u32::try_from(k).map_err(|_| {
+            FerricError::General("lmp2_direct: more than 2^32 metric shell pairs".to_string())
+        })?;
+    }
+    Ok(MetricBlocks { nsh, id, blocks })
+}
+
 /// Gather the dense V_DD metric block for a sorted aux-shell list from the
 /// sparse per-shell-pair block map (upper-triangle keys, sp >= sq).
 fn gather_vdd(
     dsh: &[usize],
     dims_df: &[usize],
-    metric_blocks: &HashMap<(usize, usize), Array2<f64>>,
+    metric_blocks: &MetricBlocks,
     ctx: &str,
 ) -> Result<Array2<f64>, FerricError> {
     let d: usize = dsh.iter().map(|&sh| dims_df[sh]).sum();
@@ -252,7 +328,7 @@ fn gather_vdd(
             } else {
                 ((sq, sp), true)
             };
-            let blk = metric_blocks.get(&key).ok_or_else(|| {
+            let blk = metric_blocks.get(key.0, key.1).ok_or_else(|| {
                 FerricError::General(format!(
                     "lmp2_direct: metric block ({sp},{sq}) missing for {ctx}"
                 ))
@@ -290,7 +366,7 @@ fn schwarz_virtual_q(
     aux_dom: &[Vec<usize>],
     strips: &[Strip],
     dims_df: &[usize],
-    metric_blocks: &HashMap<(usize, usize), Array2<f64>>,
+    metric_blocks: &MetricBlocks,
     dfbs: &PreparedBasis,
     aux_radius_bohr: f64,
 ) -> Result<(Vec<Vec<f64>>, Vec<f64>), FerricError> {
@@ -363,7 +439,7 @@ struct PairFitCtx<'a> {
     pair_cands: &'a [Vec<usize>],
     strips: &'a [Strip],
     dims_df: &'a [usize],
-    metric_blocks: &'a HashMap<(usize, usize), Array2<f64>>,
+    metric_blocks: &'a MetricBlocks,
     f_vv: &'a Array2<f64>,
     fo: &'a [f64],
     fv: &'a [f64],
@@ -634,15 +710,62 @@ fn alloc_strips(ctx: &BatchCtx<'_>, is: &[usize]) -> Vec<Strip> {
         .collect()
 }
 
-/// Evaluate one slab's (P|μν) triples into `t_slab[(pl, s, n)]` (both
-/// orientations a needed shell pair feeds). Returns (evaluated, skipped).
-/// The blocks of one (P shell, μ shell) row are evaluated into `rowbuf`
-/// first and scattered after, so the eval/scatter timers cost two clock
-/// reads per row, not per triple; the writes are plain assignments in the
-/// same per-block order, so the slab is identical to the interleaved loop.
+/// One (μ, ν) shell pair a batch needs: the shells, which slab orientations
+/// it feeds (μ∈s,ν∈n and/or ν∈s,μ∈n), and its Schwarz factor `Q(μν)`
+/// (0 when the triple cut is off).
+#[derive(Debug, Clone, Copy)]
+struct NeedPair {
+    ua: usize,
+    ub: usize,
+    need_ab: bool,
+    need_ba: bool,
+    q: f64,
+}
+
+/// Scatter granularity of [`fill_slab`]'s eval/scatter timers.
+const FILL_CHUNK: usize = 64;
+
+/// The batch's needed shell pairs, built ONCE per batch (was: every
+/// `u_shells²` pair re-tested per aux shell). With the triple cut on they
+/// are stably sorted by `Q(μν)` descending, so for each aux shell the
+/// surviving pairs are a prefix found by binary search.
+fn batch_pairs(ctx: &BatchCtx<'_>, ax: &BatchAxes) -> Vec<NeedPair> {
+    let mut pairs = Vec::new();
+    for (ux, &ua) in ax.u_shells.iter().enumerate() {
+        for &ub in &ax.u_shells[..=ux] {
+            let need_ab = ax.in_s[ua] && ax.in_n[ub];
+            let need_ba = ax.in_s[ub] && ax.in_n[ua];
+            if need_ab || need_ba {
+                let q = ctx.qpair.map_or(0.0, |(q, _)| q[(ua, ub)]);
+                pairs.push(NeedPair {
+                    ua,
+                    ub,
+                    need_ab,
+                    need_ba,
+                    q,
+                });
+            }
+        }
+    }
+    if ctx.qpair.is_some() {
+        pairs.sort_by(|a, b| b.q.partial_cmp(&a.q).expect("NaN Schwarz factor"));
+    }
+    pairs
+}
+
+/// Evaluate one slab's (P|μν) triples into `t_slab[(pl, s, n)]`. Returns
+/// (evaluated, skipped). Per aux shell, the pairs passing the Schwarz cut
+/// `√(P|P)·Q(μν) ≥ schwarz_skip` are the prefix of the Q-sorted list (the
+/// SAME product and comparison as the unsorted test, so the same triples
+/// are evaluated and the same ones counted as skipped). Every slab entry is
+/// written only by its own shell pair, so evaluation order cannot change
+/// the slab. Blocks are buffered per [`FILL_CHUNK`] pairs so the eval /
+/// scatter timers cost two clock reads per chunk, not per triple.
+#[allow(clippy::too_many_arguments)]
 fn fill_slab(
     ctx: &BatchCtx<'_>,
     ax: &BatchAxes,
+    pairs: &[NeedPair],
     eng: &mut Engine,
     slab: &[usize],
     p_local: &[usize],
@@ -655,47 +778,44 @@ fn fill_slab(
     let dims_df = dfbs.shell_dims();
     let offs_df = dfbs.shell_offsets();
     let (mut n_triples, mut n_skipped) = (0u64, 0u64);
-    let mut rowbuf: Vec<f64> = Vec::new();
-    let mut rowmeta: Vec<(usize, bool, bool, usize)> = Vec::new();
+    let mut buf: Vec<f64> = Vec::new();
+    let mut meta: Vec<(NeedPair, usize)> = Vec::new();
     for &sp in slab {
-        for (ux, &ua) in ax.u_shells.iter().enumerate() {
+        let kept = match ctx.qpair {
+            Some((_, qp_shell)) => {
+                let qp = qp_shell[sp];
+                pairs.partition_point(|pr| qp * pr.q >= ctx.schwarz_skip)
+            }
+            None => pairs.len(),
+        };
+        n_skipped += (pairs.len() - kept) as u64;
+        n_triples += kept as u64;
+        for chunk in pairs[..kept].chunks(FILL_CHUNK) {
             let te = Instant::now();
-            rowbuf.clear();
-            rowmeta.clear();
-            for &ub in &ax.u_shells[..=ux] {
-                let need_ab = ax.in_s[ua] && ax.in_n[ub];
-                let need_ba = ax.in_s[ub] && ax.in_n[ua];
-                if !(need_ab || need_ba) {
-                    continue;
-                }
-                if let Some((q, qp_shell)) = ctx.qpair {
-                    if qp_shell[sp] * q[(ua, ub)] < ctx.schwarz_skip {
-                        n_skipped += 1;
-                        continue;
-                    }
-                }
-                n_triples += 1;
-                if let Some(block) = eng.compute_eri3(obs, dfbs, sp, ua, ub) {
-                    rowmeta.push((ub, need_ab, need_ba, rowbuf.len()));
-                    rowbuf.extend_from_slice(block);
+            buf.clear();
+            meta.clear();
+            for pr in chunk {
+                if let Some(block) = eng.compute_eri3(obs, dfbs, sp, pr.ua, pr.ub) {
+                    meta.push((*pr, buf.len()));
+                    buf.extend_from_slice(block);
                 }
             }
             let ts = Instant::now();
             tm.eval_s += (ts - te).as_secs_f64();
-            for &(ub, need_ab, need_ba, off) in &rowmeta {
-                let block = &rowbuf[off..];
-                let (n1, n2) = (dims_obs[ua], dims_obs[ub]);
+            for &(pr, off) in &meta {
+                let block = &buf[off..];
+                let (n1, n2) = (dims_obs[pr.ua], dims_obs[pr.ub]);
                 for p in 0..dims_df[sp] {
                     let pl = p_local[offs_df[sp] + p];
                     for fa in 0..n1 {
-                        let ga = offs_obs[ua] + fa;
+                        let ga = offs_obs[pr.ua] + fa;
                         for fb in 0..n2 {
-                            let gb = offs_obs[ub] + fb;
+                            let gb = offs_obs[pr.ub] + fb;
                             let val = block[(p * n1 + fa) * n2 + fb];
-                            if need_ab {
+                            if pr.need_ab {
                                 t_slab[(pl, ax.s_pos[ga], ax.n_pos[gb])] = val;
                             }
-                            if need_ba {
+                            if pr.need_ba {
                                 t_slab[(pl, ax.s_pos[gb], ax.n_pos[ga])] = val;
                             }
                         }
@@ -707,6 +827,19 @@ fn fill_slab(
     }
     (n_triples, n_skipped)
 }
+
+/// The slab-fill kernel signature (a seam so tests can run the frozen
+/// pre-B4 scan through the same batch worker).
+type FillFn = fn(
+    &BatchCtx<'_>,
+    &BatchAxes,
+    &[NeedPair],
+    &mut Engine,
+    &[usize],
+    &[usize],
+    &mut Array3<f64>,
+    &mut BatchTimers,
+) -> (u64, u64);
 
 /// Half-transform one slab's rows into each batch occupied's strip:
 /// row P of strip i is `c_occ_iᵀ · T_P · C_virt_i`.
@@ -763,7 +896,7 @@ fn slab_end(p_shells: &[usize], dims_df: &[usize], start: usize, max_funcs: usiz
 /// One stage-3 batch worker: evaluate only the shell triples the batch's
 /// occupieds need, slab by slab under the per-worker scratch share, and
 /// half-transform into their strips.
-fn eval_batch(ctx: &BatchCtx<'_>, is: &[usize]) -> BatchOut {
+fn eval_batch(ctx: &BatchCtx<'_>, is: &[usize], fill: FillFn) -> BatchOut {
     let t_start = Instant::now();
     let (obs, dfbs) = (ctx.obs, ctx.dfbs);
     let naux = dfbs.nbasis();
@@ -778,6 +911,7 @@ fn eval_batch(ctx: &BatchCtx<'_>, is: &[usize]) -> BatchOut {
     let ax = BatchAxes::new(ctx, is, &batch_virts);
     let (c_occ, c_virt) = batch_coefficients(ctx, &ax, is);
     let mut strips = alloc_strips(ctx, is);
+    let pairs = batch_pairs(ctx, &ax);
     let per_func = ax.nsf.max(1) * ax.nnf.max(1) * 8;
     let max_funcs = (ctx.worker_budget / per_func).max(1);
     let mut slab_start = 0usize;
@@ -793,7 +927,16 @@ fn eval_batch(ctx: &BatchCtx<'_>, is: &[usize]) -> BatchOut {
             }
         }
         let mut t_slab = Array3::<f64>::zeros((nps, ax.nsf, ax.nnf));
-        let (nt, ns) = fill_slab(ctx, &ax, &mut eng, slab, &p_local, &mut t_slab, &mut tm);
+        let (nt, ns) = fill(
+            ctx,
+            &ax,
+            &pairs,
+            &mut eng,
+            slab,
+            &p_local,
+            &mut t_slab,
+            &mut tm,
+        );
         n_triples += nt;
         n_skipped += ns;
         let tt = Instant::now();
@@ -808,6 +951,148 @@ fn eval_batch(ctx: &BatchCtx<'_>, is: &[usize]) -> BatchOut {
         n_skipped,
         tm,
     )
+}
+
+/// Stage 1+2 products (integral-free): the pair gate, the per-occupied
+/// distance/support maps, their partner-extended unions and the integral
+/// batches. Extracted from the assembly driver (complexity ceiling); the
+/// construction is unchanged.
+struct LocalityMaps {
+    keep: Vec<bool>,
+    n_gated: usize,
+    aux_dom: Vec<Vec<usize>>,
+    virt_dom: Vec<Vec<usize>>,
+    occ_supp: Vec<Vec<usize>>,
+    virt_supp: Vec<Vec<usize>>,
+    aux_ext: Vec<Vec<usize>>,
+    virt_ext: Vec<Vec<usize>>,
+    batches: Vec<(usize, Vec<usize>)>,
+}
+
+fn centers(m: &Array2<f64>) -> Vec<[f64; 3]> {
+    m.rows().into_iter().map(|r| [r[0], r[1], r[2]]).collect()
+}
+
+/// Occupieds grouped by the atom nearest their Boys centroid; with
+/// `batch_merge > 1`, ordered along the axis of maximal atomic spread and
+/// merged in consecutive runs (amortizes the shell triples neighboring
+/// batches re-evaluate — see `DirectConfig::batch_merge`).
+fn integral_batches(
+    atom_xyz: &[[f64; 3]],
+    occ_xyz: &[[f64; 3]],
+    batch_merge: usize,
+) -> Vec<(usize, Vec<usize>)> {
+    let mut batch_map: HashMap<usize, Vec<usize>> = HashMap::new();
+    for (i, oc) in occ_xyz.iter().enumerate() {
+        let (amin, _) = atom_xyz
+            .iter()
+            .enumerate()
+            .map(|(ai, &axyz)| (ai, dist2(axyz, *oc)))
+            .min_by(|a, b| a.1.partial_cmp(&b.1).expect("NaN centroid distance"))
+            .expect("molecule has no atoms");
+        batch_map.entry(amin).or_default().push(i);
+    }
+    let mut batches: Vec<(usize, Vec<usize>)> = batch_map.into_iter().collect();
+    batches.sort_unstable_by_key(|(a, _)| *a);
+    if batch_merge <= 1 {
+        return batches;
+    }
+    let axis = {
+        let n = atom_xyz.len().max(1) as f64;
+        let mut best = (0usize, -1.0f64);
+        for x in 0..3 {
+            let mean = atom_xyz.iter().map(|a| a[x]).sum::<f64>() / n;
+            let var = atom_xyz.iter().map(|a| (a[x] - mean).powi(2)).sum::<f64>();
+            if var > best.1 {
+                best = (x, var);
+            }
+        }
+        best.0
+    };
+    batches.sort_unstable_by(|(a1, _), (a2, _)| {
+        atom_xyz[*a1][axis]
+            .partial_cmp(&atom_xyz[*a2][axis])
+            .expect("NaN atom coordinate")
+            .then(a1.cmp(a2))
+    });
+    batches
+        .chunks(batch_merge)
+        .map(|ch| {
+            (
+                ch[0].0,
+                ch.iter().flat_map(|(_, is)| is.iter().copied()).collect(),
+            )
+        })
+        .collect()
+}
+
+fn build_locality_maps(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    spaces: &LocalizedSpaces,
+    eps: f64,
+    pair_gate_cal: Option<f64>,
+    dcfg: &DirectConfig,
+) -> LocalityMaps {
+    let (no, nv) = (spaces.no, spaces.nv);
+    let (keep, n_gated) = match pair_gate_cal {
+        Some(cal) => pair_gate_keep(&spaces.occ_centers, &spaces.occ_spreads, no, eps, cal),
+        None => (vec![true; no * no], 0),
+    };
+    let partners: Vec<Vec<usize>> = (0..no)
+        .map(|i| (0..no).filter(|&j| keep[i * no + j]).collect())
+        .collect();
+    let atom_xyz: Vec<[f64; 3]> = mol.atoms.iter().map(|a| [a.x, a.y, a.zpos]).collect();
+    let occ_xyz = centers(&spaces.occ_centers);
+    let virt_xyz = centers(&spaces.virt_centers);
+    let df_shell_atom = dfbs.shell_to_atom();
+    let r_aux2 = dcfg.aux_radius_bohr * dcfg.aux_radius_bohr;
+    let aux_dom: Vec<Vec<usize>> = occ_xyz
+        .iter()
+        .map(|oc| {
+            (0..dfbs.nshells())
+                .filter(|&sp| dist2(atom_xyz[df_shell_atom[sp]], *oc) <= r_aux2)
+                .collect()
+        })
+        .collect();
+    let virt_dom: Vec<Vec<usize>> = match dcfg.virt_radius_bohr {
+        None => (0..no).map(|_| (0..nv).collect()).collect(),
+        Some(rv) => occ_xyz
+            .iter()
+            .map(|oc| {
+                (0..nv)
+                    .filter(|&a| dist2(virt_xyz[a], *oc) <= rv * rv)
+                    .collect()
+            })
+            .collect(),
+    };
+    let occ_supp = (0..no)
+        .map(|i| supp_shells(obs, spaces.c_locc.column(i), dcfg.ao_tail))
+        .collect();
+    let virt_supp = (0..nv)
+        .map(|a| supp_shells(obs, spaces.c_vloc.column(a), dcfg.ao_tail))
+        .collect();
+    // extended per-occupied unions over surviving partners (pair sets are
+    // D_ij = D_i ∪ D_j and C_ij = V_i ∪ V_j, both ⊆ the extended sets)
+    let aux_ext = (0..no)
+        .map(|i| sorted_union(partners[i].iter().map(|&j| aux_dom[j].iter().copied())))
+        .collect();
+    let virt_ext = (0..no)
+        .map(|i| sorted_union(partners[i].iter().map(|&j| virt_dom[j].iter().copied())))
+        .collect();
+    let batches = integral_batches(&atom_xyz, &occ_xyz, dcfg.batch_merge);
+    LocalityMaps {
+        keep,
+        n_gated,
+        aux_dom,
+        virt_dom,
+        occ_supp,
+        virt_supp,
+        aux_ext,
+        virt_ext,
+        batches,
+    }
 }
 
 /// Integral-direct ragged assembly: never forms a global 3-index tensor or
@@ -832,118 +1117,17 @@ pub fn assemble_ragged_direct_local(
 
     // ---- stage 1+2: gate and maps (integral-free) ----
     let t0 = Instant::now();
-    let (keep, n_gated) = match pair_gate_cal {
-        Some(cal) => pair_gate_keep(&spaces.occ_centers, &spaces.occ_spreads, no, eps, cal),
-        None => (vec![true; no * no], 0),
-    };
-    let partners: Vec<Vec<usize>> = (0..no)
-        .map(|i| (0..no).filter(|&j| keep[i * no + j]).collect())
-        .collect();
-
-    let atom_xyz: Vec<[f64; 3]> = mol.atoms.iter().map(|a| [a.x, a.y, a.zpos]).collect();
-    let occ_xyz: Vec<[f64; 3]> = (0..no)
-        .map(|i| {
-            [
-                spaces.occ_centers[(i, 0)],
-                spaces.occ_centers[(i, 1)],
-                spaces.occ_centers[(i, 2)],
-            ]
-        })
-        .collect();
-    let virt_xyz: Vec<[f64; 3]> = (0..nv)
-        .map(|a| {
-            [
-                spaces.virt_centers[(a, 0)],
-                spaces.virt_centers[(a, 1)],
-                spaces.virt_centers[(a, 2)],
-            ]
-        })
-        .collect();
-
-    let nsh_df = dfbs.nshells();
-    let df_shell_atom = dfbs.shell_to_atom();
-    let r_aux2 = dcfg.aux_radius_bohr * dcfg.aux_radius_bohr;
-    let aux_dom: Vec<Vec<usize>> = (0..no)
-        .map(|i| {
-            (0..nsh_df)
-                .filter(|&sp| dist2(atom_xyz[df_shell_atom[sp]], occ_xyz[i]) <= r_aux2)
-                .collect()
-        })
-        .collect();
-    let virt_dom: Vec<Vec<usize>> = match dcfg.virt_radius_bohr {
-        None => (0..no).map(|_| (0..nv).collect()).collect(),
-        Some(rv) => {
-            let rv2 = rv * rv;
-            (0..no)
-                .map(|i| {
-                    (0..nv)
-                        .filter(|&a| dist2(virt_xyz[a], occ_xyz[i]) <= rv2)
-                        .collect()
-                })
-                .collect()
-        }
-    };
-    let occ_supp: Vec<Vec<usize>> = (0..no)
-        .map(|i| supp_shells(obs, spaces.c_locc.column(i), dcfg.ao_tail))
-        .collect();
-    let virt_supp: Vec<Vec<usize>> = (0..nv)
-        .map(|a| supp_shells(obs, spaces.c_vloc.column(a), dcfg.ao_tail))
-        .collect();
-
-    // extended per-occupied unions over surviving partners (pair sets are
-    // D_ij = D_i ∪ D_j and C_ij = V_i ∪ V_j, both ⊆ the extended sets)
-    let aux_ext: Vec<Vec<usize>> = (0..no)
-        .map(|i| sorted_union(partners[i].iter().map(|&j| aux_dom[j].iter().copied())))
-        .collect();
-    let virt_ext: Vec<Vec<usize>> = (0..no)
-        .map(|i| sorted_union(partners[i].iter().map(|&j| virt_dom[j].iter().copied())))
-        .collect();
-
-    // per-atom batches: occupieds grouped by nearest atom to their centroid
-    let mut batch_map: HashMap<usize, Vec<usize>> = HashMap::new();
-    for i in 0..no {
-        let (amin, _) = atom_xyz
-            .iter()
-            .enumerate()
-            .map(|(ai, &axyz)| (ai, dist2(axyz, occ_xyz[i])))
-            .min_by(|a, b| a.1.partial_cmp(&b.1).expect("NaN centroid distance"))
-            .expect("molecule has no atoms");
-        batch_map.entry(amin).or_default().push(i);
-    }
-    let mut batches: Vec<(usize, Vec<usize>)> = batch_map.into_iter().collect();
-    batches.sort_unstable_by_key(|(a, _)| *a);
-    if dcfg.batch_merge > 1 {
-        // order batches along the axis of maximal atomic spread, then merge
-        // consecutive runs of `batch_merge` — amortizes the shared shell
-        // triples neighboring batches re-evaluate (see the field doc)
-        let axis = {
-            let n = atom_xyz.len().max(1) as f64;
-            let mut best = (0usize, -1.0f64);
-            for x in 0..3 {
-                let mean = atom_xyz.iter().map(|a| a[x]).sum::<f64>() / n;
-                let var = atom_xyz.iter().map(|a| (a[x] - mean).powi(2)).sum::<f64>();
-                if var > best.1 {
-                    best = (x, var);
-                }
-            }
-            best.0
-        };
-        batches.sort_unstable_by(|(a1, _), (a2, _)| {
-            atom_xyz[*a1][axis]
-                .partial_cmp(&atom_xyz[*a2][axis])
-                .expect("NaN atom coordinate")
-                .then(a1.cmp(a2))
-        });
-        batches = batches
-            .chunks(dcfg.batch_merge)
-            .map(|ch| {
-                (
-                    ch[0].0,
-                    ch.iter().flat_map(|(_, is)| is.iter().copied()).collect(),
-                )
-            })
-            .collect();
-    }
+    let LocalityMaps {
+        keep,
+        n_gated,
+        aux_dom,
+        virt_dom,
+        occ_supp,
+        virt_supp,
+        aux_ext,
+        virt_ext,
+        batches,
+    } = build_locality_maps(mol, obs, dfbs, spaces, eps, pair_gate_cal, dcfg);
     stats.t_maps_s = t0.elapsed().as_secs_f64();
 
     // ---- stage 3: batched integral evaluation + half-transform ----
@@ -969,7 +1153,7 @@ pub fn assemble_ragged_direct_local(
     };
     let batch_out: Vec<BatchOut> = batches
         .par_iter()
-        .map(|(_, is)| eval_batch(&bctx, is))
+        .map(|(_, is)| eval_batch(&bctx, is, fill_slab))
         .collect();
 
     stats.n_batches = batch_out.len();
@@ -1011,36 +1195,9 @@ pub fn assemble_ragged_direct_local(
 
     // ---- stage 4: domain-restricted 2-center metric ----
     let t0 = Instant::now();
-    let mut need: BTreeSet<(usize, usize)> = BTreeSet::new();
-    for shells in &aux_ext {
-        for (x, &sp) in shells.iter().enumerate() {
-            for &sq in &shells[..=x] {
-                need.insert((sp, sq)); // sp >= sq (sorted list)
-            }
-        }
-    }
-    let need: Vec<(usize, usize)> = need.into_iter().collect();
+    let need = metric_need_pairs(&aux_ext, dfbs.nshells());
     stats.n_metric_shell_pairs = need.len();
-    Engine::new_2center(op, dfbs, 1e-14)?;
-    let metric_blocks: HashMap<(usize, usize), Array2<f64>> = need
-        .par_iter()
-        .map_init(
-            || Engine::new_2center(op, dfbs, 1e-14).expect("2-center engine (pre-validated)"),
-            |eng, &(sp, sq)| {
-                let (np, nq) = (dims_df[sp], dims_df[sq]);
-                let vals = eng.compute_eri2(dfbs, sp, sq);
-                let mut blk = Array2::<f64>::zeros((np, nq));
-                for p in 0..np {
-                    for q in 0..nq {
-                        blk[(p, q)] = vals[p * nq + q];
-                    }
-                }
-                ((sp, sq), blk)
-            },
-        )
-        .collect::<Vec<_>>()
-        .into_iter()
-        .collect();
+    let metric_blocks = eval_metric_blocks(op, dfbs, &need)?;
     stats.t_metric_s = t0.elapsed().as_secs_f64();
 
     // ---- stage 5: per-pair domain fits + Eq-8 mask, GROUPED BY DOMAIN ----
@@ -1749,4 +1906,188 @@ pub fn amplitude_lmp2_direct_with_virtuals(
         t_reference_s,
     };
     Ok((r, dstats))
+}
+
+#[cfg(test)]
+mod stage_b_tests {
+    use super::*;
+    use crate::lmp2_amplitude::checked_vvhv;
+    use ferric_core::parallel::ParallelContext;
+    use ferric_scf::rhf::{solve_rhf, RhfConfig};
+    use ferric_scf::screening::SchwarzBounds;
+
+    /// The pre-Stage-B metric pair set: a BTreeSet over every i's extended
+    /// list — the oracle of the bitmap version.
+    fn metric_need_oracle(aux_ext: &[Vec<usize>]) -> Vec<(usize, usize)> {
+        let mut need = std::collections::BTreeSet::new();
+        for shells in aux_ext {
+            for (x, &sp) in shells.iter().enumerate() {
+                for &sq in &shells[..=x] {
+                    need.insert((sp, sq));
+                }
+            }
+        }
+        need.into_iter().collect()
+    }
+
+    /// B2 anchor: the bitmap pair list is exactly the BTreeSet oracle's
+    /// (same pairs, same order, so the same `n_metric_shell_pairs` and the
+    /// same evaluation order) on overlapping random sorted domains, with
+    /// diagonal and boundary shells present.
+    #[test]
+    fn metric_bitmap_matches_btreeset_oracle() {
+        let nsh = 37;
+        let mut seed = 11u64;
+        let mut rnd = |m: usize| {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (seed >> 33) as usize % m
+        };
+        let aux_ext: Vec<Vec<usize>> = (0..9)
+            .map(|_| {
+                let lo = rnd(nsh);
+                let len = 1 + rnd(nsh - lo);
+                let mut v: Vec<usize> = (lo..lo + len).filter(|_| rnd(4) > 0).collect();
+                v.push(nsh - 1);
+                v.sort_unstable();
+                v.dedup();
+                v
+            })
+            .collect();
+        let want = metric_need_oracle(&aux_ext);
+        assert_eq!(metric_need_pairs(&aux_ext, nsh), want);
+        assert!(want.iter().any(|&(p, q)| p == q) && want.len() > 50);
+    }
+
+    /// The pre-B4 slab fill: every `u_shells²` pair re-tested per aux shell,
+    /// in loop order (the Stage-A loop) — the oracle of the sorted list.
+    #[allow(clippy::too_many_arguments)]
+    fn fill_slab_unsorted_oracle(
+        ctx: &BatchCtx<'_>,
+        ax: &BatchAxes,
+        _pairs: &[NeedPair],
+        eng: &mut Engine,
+        slab: &[usize],
+        p_local: &[usize],
+        t_slab: &mut Array3<f64>,
+        _tm: &mut BatchTimers,
+    ) -> (u64, u64) {
+        let (obs, dfbs) = (ctx.obs, ctx.dfbs);
+        let (dims_obs, offs_obs) = (obs.shell_dims(), obs.shell_offsets());
+        let (dims_df, offs_df) = (dfbs.shell_dims(), dfbs.shell_offsets());
+        let (mut n_triples, mut n_skipped) = (0u64, 0u64);
+        for &sp in slab {
+            for (ux, &ua) in ax.u_shells.iter().enumerate() {
+                for &ub in &ax.u_shells[..=ux] {
+                    let need_ab = ax.in_s[ua] && ax.in_n[ub];
+                    let need_ba = ax.in_s[ub] && ax.in_n[ua];
+                    if !(need_ab || need_ba) {
+                        continue;
+                    }
+                    if let Some((q, qp_shell)) = ctx.qpair {
+                        if qp_shell[sp] * q[(ua, ub)] < ctx.schwarz_skip {
+                            n_skipped += 1;
+                            continue;
+                        }
+                    }
+                    n_triples += 1;
+                    let Some(block) = eng.compute_eri3(obs, dfbs, sp, ua, ub) else {
+                        continue;
+                    };
+                    let (n1, n2) = (dims_obs[ua], dims_obs[ub]);
+                    for p in 0..dims_df[sp] {
+                        let pl = p_local[offs_df[sp] + p];
+                        for fa in 0..n1 {
+                            let ga = offs_obs[ua] + fa;
+                            for fb in 0..n2 {
+                                let gb = offs_obs[ub] + fb;
+                                let val = block[(p * n1 + fa) * n2 + fb];
+                                if need_ab {
+                                    t_slab[(pl, ax.s_pos[ga], ax.n_pos[gb])] = val;
+                                }
+                                if need_ba {
+                                    t_slab[(pl, ax.s_pos[gb], ax.n_pos[ga])] = val;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        (n_triples, n_skipped)
+    }
+
+    /// B4 anchor: on C4/6-31G with production maps (gate on, Schwarz cut
+    /// 1e-5, merged batches, a scratch share small enough to force several
+    /// slabs per batch), the Q-sorted pair list with the binary-searched
+    /// cut evaluates exactly the oracle's triples (same evaluated and
+    /// skipped counts per batch) and builds bitwise-identical strips.
+    #[test]
+    fn sorted_pair_list_matches_unsorted_scan() {
+        let mol = Molecule::load_xyz(&format!(
+            "{}/../../testdata/molecules/alkane_4.xyz",
+            env!("CARGO_MANIFEST_DIR")
+        ))
+        .unwrap();
+        let obs_bs = ferric_core::basis::bundled("6-31g").unwrap();
+        let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
+        let dfbs =
+            PreparedBasis::new(&mol, &ferric_core::basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+        let cfg = RhfConfig {
+            energy_conv: 1e-10,
+            ..Default::default()
+        };
+        let rhf = solve_rhf(&ParallelContext::default(), &mol, &obs, op, &bounds, &cfg).unwrap();
+        let (vvhv, _) = checked_vvhv(&mol, &obs, &obs_bs, &rhf, "test").unwrap();
+        let spaces = localized_spaces(&mol, &obs, &rhf, 4, &vvhv).unwrap();
+        let dcfg = DirectConfig {
+            aux_radius_bohr: 10.0,
+            virt_radius_bohr: Some(12.0),
+            ao_tail: 1e-3,
+            schwarz_skip: 1e-5,
+            batch_merge: 2,
+            ..Default::default()
+        };
+        let maps = build_locality_maps(&mol, &obs, &dfbs, &spaces, 1e-4, Some(0.7), &dcfg);
+        let qpair = schwarz_triple_factors(op, &obs, &dfbs, dcfg.schwarz_skip).unwrap();
+        let ctx = BatchCtx {
+            op,
+            obs: &obs,
+            dfbs: &dfbs,
+            spaces: &spaces,
+            aux_ext: &maps.aux_ext,
+            virt_ext: &maps.virt_ext,
+            occ_supp: &maps.occ_supp,
+            virt_supp: &maps.virt_supp,
+            qpair: qpair.as_ref(),
+            schwarz_skip: dcfg.schwarz_skip,
+            worker_budget: 2 << 20,
+        };
+        let (mut tot_trip, mut tot_skip) = (0u64, 0u64);
+        for (_, is) in &maps.batches {
+            let (sa, ta, ka, _) = eval_batch(&ctx, is, fill_slab);
+            let (sb, tb, kb, _) = eval_batch(&ctx, is, fill_slab_unsorted_oracle);
+            assert_eq!((ta, ka), (tb, kb), "triple/skip counters differ");
+            for ((ia, a), (ib, b)) in sa.iter().zip(&sb) {
+                assert_eq!(ia, ib);
+                assert_eq!((&a.rows, &a.cols), (&b.rows, &b.cols));
+                assert!(
+                    a.b.iter()
+                        .zip(b.b.iter())
+                        .all(|(x, y)| x.to_bits() == y.to_bits()),
+                    "strip {ia} not bitwise identical"
+                );
+            }
+            tot_trip += ta;
+            tot_skip += ka;
+        }
+        eprintln!("sorted pair list: {tot_trip} triples, {tot_skip} skipped");
+        assert!(
+            tot_skip > 0 && tot_trip > 0,
+            "cut inactive: test is vacuous"
+        );
+    }
 }

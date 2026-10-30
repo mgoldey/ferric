@@ -1322,3 +1322,146 @@ fn stage_timers_are_live() {
         );
     }
 }
+
+/// The pre-Stage-B PCG loop (fresh `z`/`p`/`ap` every iteration, indexed
+/// matvec), frozen as the oracle of the planned, allocation-free solve.
+fn pcg_oracle(
+    rg: &ferric_mp2::ragged::Ragged,
+    f_oo: &ndarray::Array2<f64>,
+    rtol: f64,
+    max_iter: usize,
+) -> (Vec<ndarray::Array2<f64>>, usize, f64) {
+    use ferric_mp2::ragged::{apply_pattern, dot_blocks, matvec_indexed};
+    use ndarray::Array2;
+    let mut rhs: Vec<Array2<f64>> = Vec::new();
+    for pb in &rg.pairs {
+        let mut b = -pb.j_blk.clone();
+        apply_pattern(&mut b, &pb.pat, pb.db.len());
+        rhs.push(b);
+    }
+    let bnorm = dot_blocks(&rhs, &rhs).sqrt();
+    let precond = |r: &[Array2<f64>]| -> Vec<Array2<f64>> {
+        r.iter()
+            .zip(&rg.pairs)
+            .map(|(rb, pb)| rb / &pb.denom)
+            .collect()
+    };
+    let mut fl = 0u64;
+    let mut t: Vec<Array2<f64>> = rhs.iter().map(|b| Array2::zeros(b.dim())).collect();
+    let mut r = rhs.clone();
+    let mut z = precond(&r);
+    let mut p = z.clone();
+    let mut rz = dot_blocks(&r, &z);
+    let (mut it, mut relres) = (0, 1.0);
+    while it < max_iter {
+        it += 1;
+        let ap = matvec_indexed(rg, f_oo, &p, &mut fl);
+        let alpha = rz / dot_blocks(&p, &ap);
+        for k in 0..p.len() {
+            t[k].scaled_add(alpha, &p[k]);
+            r[k].scaled_add(-alpha, &ap[k]);
+        }
+        relres = dot_blocks(&r, &r).sqrt() / bnorm;
+        if relres < rtol {
+            break;
+        }
+        z = precond(&r);
+        let rz_new = dot_blocks(&r, &z);
+        let beta = rz_new / rz;
+        for k in 0..p.len() {
+            let mut pk = z[k].clone();
+            pk.scaled_add(beta, &p[k]);
+            p[k] = pk;
+        }
+        rz = rz_new;
+    }
+    (t, it, relres)
+}
+
+fn bits_equal(a: &[ndarray::Array2<f64>], b: &[ndarray::Array2<f64>]) -> bool {
+    a.len() == b.len()
+        && a.iter().zip(b).all(|(x, y)| {
+            x.dim() == y.dim()
+                && x.iter()
+                    .zip(y.iter())
+                    .all(|(p, q)| p.to_bits() == q.to_bits())
+        })
+}
+
+/// B3 anchor: on C8 at ε = 1e-4 (production maps, gate on) the planned
+/// matvec is BITWISE the indexed one (and counts the same flops), and the
+/// planned allocation-free PCG reproduces the frozen pre-change loop bit for
+/// bit: same iteration count, same amplitudes, same Hylleraas energy.
+#[test]
+fn matvec_planned_is_bitwise_matvec_indexed() {
+    use ferric_mp2::lmp2_amplitude::{checked_vvhv, hylleraas_energy, localized_spaces};
+    use ferric_mp2::lmp2_direct::assemble_ragged_direct_local;
+    use ferric_mp2::ragged::{
+        apply_pattern, matvec_indexed, matvec_planned, solve_ragged, SolvePlan,
+    };
+    let su = setup("alkane_8.xyz");
+    let op = Operator::coulomb();
+    let (vvhv, _) = checked_vvhv(&su.mol, &su.obs, &su.obs_bs, &su.rhf, "test").unwrap();
+    let spaces = localized_spaces(&su.mol, &su.obs, &su.rhf, 8, &vvhv).unwrap();
+    let dcfg = DirectConfig {
+        aux_radius_bohr: 10.0,
+        virt_radius_bohr: Some(12.0),
+        ao_tail: 1e-3,
+        schwarz_skip: 1e-5,
+        batch_merge: 4,
+        ..Default::default()
+    };
+    let (rg, _, _) = assemble_ragged_direct_local(
+        &su.mol,
+        &su.obs,
+        &su.dfbs,
+        op,
+        &spaces,
+        1e-4,
+        1.0,
+        Some(0.7),
+        &dcfg,
+    )
+    .unwrap();
+    assert!(rg.pairs.len() > 20, "too few pairs to exercise the plan");
+    let mut seed = 7u64;
+    let mut rnd = || {
+        seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        ((seed >> 11) as f64 / (1u64 << 53) as f64) - 0.5
+    };
+    let t: Vec<ndarray::Array2<f64>> = rg
+        .pairs
+        .iter()
+        .map(|pb| {
+            let mut x = ndarray::Array2::from_shape_fn((pb.da.len(), pb.db.len()), |_| rnd());
+            apply_pattern(&mut x, &pb.pat, pb.db.len());
+            x
+        })
+        .collect();
+    let (mut f1, mut f2) = (0u64, 0u64);
+    let want = matvec_indexed(&rg, &spaces.f_oo, &t, &mut f1);
+    let plan = SolvePlan::new(&rg, &spaces.f_oo);
+    let mut got: Vec<ndarray::Array2<f64>> = rg
+        .pairs
+        .iter()
+        .map(|_| ndarray::Array2::zeros((0, 0)))
+        .collect();
+    matvec_planned(&rg, &plan, &t, &mut got, &mut f2);
+    assert!(
+        bits_equal(&want, &got),
+        "planned matvec differs from indexed"
+    );
+    assert_eq!(f1, f2, "flop counters differ");
+
+    let (t_old, it_old, rel_old) = pcg_oracle(&rg, &spaces.f_oo, 1e-11, 400);
+    let (t_new, it_new, rel_new, conv, _) = solve_ragged(&rg, &spaces.f_oo, 1e-11, 400);
+    assert!(conv);
+    assert_eq!(it_old, it_new, "CG iteration count changed");
+    assert_eq!(rel_old.to_bits(), rel_new.to_bits(), "final relres changed");
+    assert!(bits_equal(&t_old, &t_new), "amplitudes changed");
+    let (e_old, e_new) = (hylleraas_energy(&rg, &t_old), hylleraas_energy(&rg, &t_new));
+    eprintln!("planned PCG: {it_new} iters, E {e_new:.12} (oracle {e_old:.12})");
+    assert_eq!(e_old.to_bits(), e_new.to_bits(), "energy changed");
+}

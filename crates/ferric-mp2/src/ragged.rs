@@ -193,9 +193,8 @@ pub fn solve_ragged(
     rtol: f64,
     max_iter: usize,
 ) -> (Vec<Array2<f64>>, usize, f64, bool, u64) {
-    solve_ragged_with(rg, rtol, max_iter, |t, flops| {
-        matvec_indexed(rg, f_oo, t, flops)
-    })
+    let s = solve_ragged_traced(rg, f_oo, rtol, max_iter);
+    (s.t, s.iterations, s.relres, s.converged, s.flops_per_matvec)
 }
 
 /// [`solve_ragged`] with a caller-supplied pattern-projected SPD matvec —
@@ -237,16 +236,18 @@ pub struct RaggedSolve {
     pub trace: CgTrace,
 }
 
-/// [`solve_ragged`] that also returns the CG coefficient trace. The
-/// arithmetic is exactly [`solve_ragged`]'s (same matvec, same loop).
+/// [`solve_ragged`] that also returns the CG coefficient trace. The Fock
+/// matvec runs through a [`SolvePlan`] built once per solve (bitwise
+/// [`matvec_indexed`]).
 pub fn solve_ragged_traced(
     rg: &Ragged,
     f_oo: &Array2<f64>,
     rtol: f64,
     max_iter: usize,
 ) -> RaggedSolve {
-    solve_ragged_with_trace(rg, rtol, max_iter, |t, flops| {
-        matvec_indexed(rg, f_oo, t, flops)
+    let plan = SolvePlan::new(rg, f_oo);
+    pcg_core(rg, rtol, max_iter, |p, ap, flops| {
+        matvec_planned(rg, &plan, p, ap, flops)
     })
 }
 
@@ -289,19 +290,40 @@ pub fn solve_ragged_with_trace<F>(rg: &Ragged, rtol: f64, max_iter: usize, matve
 where
     F: Fn(&[Array2<f64>], &mut u64) -> Vec<Array2<f64>>,
 {
-    let npair = rg.pairs.len();
+    pcg_core(rg, rtol, max_iter, |p, ap, flops| {
+        for (slot, v) in ap.iter_mut().zip(matvec(p, flops)) {
+            *slot = v;
+        }
+    })
+}
+
+/// The shared PCG loop on the fixed pattern, solving `P A P t = −P J` with
+/// the diagonal (denominator) preconditioner. `matvec_into(p, ap, flops)`
+/// overwrites every block of `ap` with `A·p`. The iteration vectors `z`,
+/// `p`, `ap` are allocated once and updated in place; every update keeps
+/// the per-element expression of the original allocating loop
+/// (`z = r / denom`, `p = z + β·p`), and the reductions still go through
+/// [`dot_blocks`], so the iterates are bitwise those of that loop.
+fn pcg_core<F>(rg: &Ragged, rtol: f64, max_iter: usize, mut matvec_into: F) -> RaggedSolve
+where
+    F: FnMut(&[Array2<f64>], &mut [Array2<f64>], &mut u64),
+{
+    use ndarray::Zip;
     let zeros: Vec<Array2<f64>> = rg
         .pairs
         .iter()
         .map(|pb| Array2::<f64>::zeros((pb.da.len(), pb.db.len())))
         .collect();
-    let mut rhs: Vec<Array2<f64>> = Vec::with_capacity(npair);
-    for pb in &rg.pairs {
-        let mut b = -pb.j_blk.clone();
-        apply_pattern(&mut b, &pb.pat, pb.db.len());
-        rhs.push(b);
-    }
-    let bnorm = dot_blocks(&rhs, &rhs).sqrt();
+    let mut r: Vec<Array2<f64>> = rg
+        .pairs
+        .iter()
+        .map(|pb| {
+            let mut b = -pb.j_blk.clone();
+            apply_pattern(&mut b, &pb.pat, pb.db.len());
+            b
+        })
+        .collect();
+    let bnorm = dot_blocks(&r, &r).sqrt();
     let mut trace = CgTrace::default();
     if bnorm == 0.0 {
         return RaggedSolve {
@@ -313,27 +335,28 @@ where
             trace,
         };
     }
-    let precond = |r: &[Array2<f64>]| -> Vec<Array2<f64>> {
-        r.iter()
-            .zip(&rg.pairs)
-            .map(|(rb, pb)| rb / &pb.denom)
-            .collect()
+    let precond_into = |r: &[Array2<f64>], z: &mut [Array2<f64>]| {
+        for ((zb, rb), pb) in z.iter_mut().zip(r).zip(&rg.pairs) {
+            Zip::from(zb)
+                .and(rb)
+                .and(&pb.denom)
+                .for_each(|zv, &rv, &dv| *zv = rv / dv);
+        }
     };
     let mut flops_total = 0u64;
     let mut t = zeros.clone();
-    let mut r = rhs.clone();
-    let mut z = precond(&r);
-    let mut p: Vec<Array2<f64>> = z.to_vec();
+    let mut z = zeros.clone();
+    precond_into(&r, &mut z);
+    let mut p = z.clone();
+    let mut ap = zeros;
     let mut rz = dot_blocks(&r, &z);
-    let mut it = 0;
-    let mut relres = 1.0;
-    let mut converged = false;
+    let (mut it, mut relres, mut converged) = (0, 1.0, false);
     while it < max_iter {
         it += 1;
-        let ap = matvec(&p, &mut flops_total);
+        matvec_into(&p, &mut ap, &mut flops_total);
         let alpha = rz / dot_blocks(&p, &ap);
         trace.alphas.push(alpha);
-        for k in 0..npair {
+        for k in 0..p.len() {
             t[k].scaled_add(alpha, &p[k]);
             r[k].scaled_add(-alpha, &ap[k]);
         }
@@ -342,14 +365,14 @@ where
             converged = true;
             break;
         }
-        z = precond(&r);
+        precond_into(&r, &mut z);
         let rz_new = dot_blocks(&r, &z);
         let beta = rz_new / rz;
         trace.betas.push(beta);
-        for k in 0..npair {
-            let mut pk = z[k].clone();
-            pk.scaled_add(beta, &p[k]);
-            p[k] = pk;
+        for (pk, zk) in p.iter_mut().zip(&z) {
+            Zip::from(pk)
+                .and(zk)
+                .for_each(|pv, &zv| *pv = zv + beta * *pv);
         }
         rz = rz_new;
     }
@@ -414,6 +437,118 @@ pub fn matvec_indexed(
         out.push(r);
     }
     out
+}
+
+/// One Fock-coupling edge of an output pair's matvec, pre-resolved from the
+/// pattern: source pair `q`, coefficient `-f_oo[..]`, and the
+/// `(destination, source)` flat-index pairs [`gather_into`] would visit, in
+/// its order.
+#[derive(Debug, Clone)]
+struct PlanEdge {
+    q: usize,
+    coeff: f64,
+    idx: Vec<(u32, u32)>,
+}
+
+fn flat_u32(k: usize) -> u32 {
+    u32::try_from(k).expect("pair block larger than 2^32 elements")
+}
+
+/// The hoisted gather plan of [`matvec_indexed`] for a FIXED pattern and
+/// `f_oo`: every edge's index intersections (recomputed on every call and
+/// every CG iteration by [`gather_into`]) resolved once. Edges with a zero
+/// Fock coupling are dropped at build time, exactly as the indexed matvec
+/// skips them; the edge order is by_j then by_i, as there.
+#[derive(Debug, Clone)]
+pub struct SolvePlan {
+    edges: Vec<Vec<PlanEdge>>,
+}
+
+impl SolvePlan {
+    pub fn new(rg: &Ragged, f_oo: &Array2<f64>) -> Self {
+        let edge = |dst: &PairBlock, q: usize, f: f64| -> PlanEdge {
+            let src = &rg.pairs[q];
+            let nb_src = src.db.len();
+            let nb = dst.db.len();
+            let mut idx = Vec::new();
+            for (r, &a) in dst.da.iter().enumerate() {
+                let sr = src.pos_da[a];
+                if sr == usize::MAX {
+                    continue;
+                }
+                for (c, &b) in dst.db.iter().enumerate() {
+                    let sc = src.pos_db[b];
+                    if sc == usize::MAX {
+                        continue;
+                    }
+                    idx.push((flat_u32(r * nb + c), flat_u32(sr * nb_src + sc)));
+                }
+            }
+            PlanEdge { q, coeff: -f, idx }
+        };
+        let edges = rg
+            .pairs
+            .iter()
+            .map(|pb| {
+                let mut out = Vec::new();
+                for &q in &rg.by_j[&pb.j] {
+                    let f = f_oo[(pb.i, rg.pairs[q].i)];
+                    if f != 0.0 {
+                        out.push(edge(pb, q, f));
+                    }
+                }
+                for &q in &rg.by_i[&pb.i] {
+                    let f = f_oo[(rg.pairs[q].j, pb.j)];
+                    if f != 0.0 {
+                        out.push(edge(pb, q, f));
+                    }
+                }
+                out
+            })
+            .collect();
+        Self { edges }
+    }
+}
+
+/// [`matvec_indexed`] through a [`SolvePlan`], writing into `out` (one
+/// block per pair, any prior contents replaced). Per block: the same two
+/// Fvv GEMMs, the same edge order and per-element `+= coeff·t`, the same
+/// pattern projection — so the result is bitwise [`matvec_indexed`]'s.
+pub fn matvec_planned(
+    rg: &Ragged,
+    plan: &SolvePlan,
+    t: &[Array2<f64>],
+    out: &mut [Array2<f64>],
+    flops: &mut u64,
+) {
+    use rayon::prelude::*;
+    let fl: u64 = out
+        .par_iter_mut()
+        .enumerate()
+        .map(|(p_idx, slot)| {
+            let pb = &rg.pairs[p_idx];
+            let (na, nb) = (pb.da.len(), pb.db.len());
+            let mut fl = (na * na * nb + na * nb * nb) as u64;
+            let mut r = pb.fvv_aa.dot(&t[p_idx]);
+            r += &t[p_idx].dot(&pb.fvv_bb);
+            if !r.is_standard_layout() {
+                r = r.as_standard_layout().into_owned();
+            }
+            let rs = r.as_slice_mut().expect("standard layout");
+            for e in &plan.edges[p_idx] {
+                let src_std = t[e.q].as_standard_layout();
+                let src = src_std.as_slice().expect("standard layout");
+                for &(d, s) in &e.idx {
+                    rs[d as usize] += e.coeff * src[s as usize];
+                }
+                fl += e.idx.len() as u64;
+            }
+            apply_pattern(&mut r, &pb.pat, nb);
+            *slot = r;
+            fl
+        })
+        .sum();
+    *flops += fl;
 }
 
 /// Gather and accumulate a sub-block of the ring product into `out`.
