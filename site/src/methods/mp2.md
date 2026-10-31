@@ -243,10 +243,14 @@ so it is evaluated on `‖J + At‖` from the energy's own matvec, not on the so
 recursive residual. If the bound at the solver's stop exceeds 1e-10 Ha, the solve
 continues from where it stopped to a tighter tolerance, never past 1e-11; with no
 positive orbital gap the bound is undefined and the solve runs at 1e-11 from the
-start. The certificate (`result.local` in Python, `"local"` in the CLI JSON) records
+start. Running out of iterations before the tolerance being sought, first or
+tighter, stops the run with an error; `cg_max_iter` and an explicit `cg_rtol` are
+fields of the Rust `AmplitudeLmp2Config`, not CLI or Python options. The certificate (`result.local` in Python, `"local"` in the CLI JSON) records
 `cg_rtol`, `cg_rtol_source`, `cg_tightened`, `cg_relres`, `cg_true_relres`,
 `cg_energy_error_bound`, `cg_energy_error_target` and `cg_energy_target_met`, and
-`solver_warnings` says if the target was not met. The bound limits solver error
+`solver_warnings` says if a converged solve did not meet the target, because the
+target needs more than the 1e-11 floor or the true residual drifted from the
+recursive one. The bound limits solver error
 only, not the truncation error of `eps`.
 
 The exact RI-MP2 reference that measures that error is **opt-in**. It is a

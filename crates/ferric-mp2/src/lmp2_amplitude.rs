@@ -30,7 +30,8 @@
 //! [`cg_energy_error_bound`](crate::lmp2_amplitude::cg_energy_error_bound). The
 //! default solve therefore stops at relres 1e-6 and continues, on the same
 //! Krylov sequence, only if the bound at the achieved residual exceeds 1e-10
-//! Ha ([`CgRtolPolicy`](crate::lmp2_amplitude::CgRtolPolicy)). ferric-cc's
+//! Ha ([`CgRtolPolicy`](crate::lmp2_amplitude::CgRtolPolicy)). Running out of
+//! iterations at either stage is an error. ferric-cc's
 //! LinLCCD and ferric-pbc's Gamma LMP2 share the PCG but use the LINEAR energy,
 //! whose error is first order, and keep their own 1e-11.
 //!
@@ -185,6 +186,10 @@ pub struct AmplitudeLmp2Result {
     pub cg_relres: f64,
     /// The true relative residual `‖J + A t‖ / ‖PJ‖`, from the energy's matvec.
     pub cg_true_relres: f64,
+    /// Always true on a returned result: a PCG that runs out of iterations,
+    /// at the first tolerance or while tightening, is an `Err`
+    /// ([`solve_under_rtol_policy`]). Whether the energy-error target was met
+    /// is a separate question: [`CgRtolOutcome::target_met`].
     pub cg_converged: bool,
     pub n_valence_virt: usize,
     pub n_hard_virt: usize,
@@ -265,8 +270,9 @@ pub struct CgRtolOutcome {
     pub tightened: bool,
     /// The bound target (Ha); `None` unless the bound governed the solve.
     pub target_ha: Option<f64>,
-    /// Whether the final bound met the target and the PCG converged; `None`
-    /// when no target applied.
+    /// Whether the bound at the final true residual met the target; `None`
+    /// when no target applied. `Some(false)` means the PCG did converge, either
+    /// at the floor or with a true residual that drifted from the recursive one.
     pub target_met: Option<bool>,
 }
 
@@ -1441,7 +1447,7 @@ pub fn tightened_cg_rtol(
     (relres >= next).then_some(next)
 }
 
-/// What [`solve_under_rtol_policy`] returns.
+/// What [`solve_under_rtol_policy`] returns; its PCG always converged.
 pub struct PolicySolve {
     pub budgeted: BudgetedSolve,
     pub outcome: CgRtolOutcome,
@@ -1461,6 +1467,13 @@ pub struct PolicySolve {
 /// recursive one passed, the run is reported as not meeting the target and is
 /// not iterated further: the two differ only once the recursion has drifted,
 /// and more steps of the same recursion would not reduce the true residual.
+/// The same holds at the floor: a target that needs more than the floor is
+/// reported through `target_met`, not as an error.
+///
+/// Running out of iterations is an error whichever tolerance was being sought:
+/// the first one, or a tighter one the bound asked for. The message of the
+/// second names the residual, the tolerance, the iterations, the bound and the
+/// remedy.
 pub fn solve_under_rtol_policy(
     rg: &Ragged,
     f_oo: &Array2<f64>,
@@ -1515,8 +1528,17 @@ pub fn solve_under_rtol_policy(
         rtol_used,
         tightened,
         target_ha: governing.map(|(_, t)| t),
-        target_met: governing.map(|(_, t)| b.solve.converged && bound <= t),
+        target_met: governing.map(|(_, t)| bound <= t),
     };
+    if !b.solve.converged {
+        return Err(FerricError::General(unconverged_message(
+            b.solve.relres,
+            b.solve.iterations,
+            &outcome,
+            true_relres,
+            bound,
+        )));
+    }
     Ok(PolicySolve {
         budgeted: b,
         outcome,
@@ -1524,6 +1546,30 @@ pub fn solve_under_rtol_policy(
         true_relres,
         bound,
     })
+}
+
+/// Why a PCG that ran out of iterations failed the solve.
+fn unconverged_message(
+    relres: f64,
+    iterations: usize,
+    o: &CgRtolOutcome,
+    true_relres: f64,
+    bound: f64,
+) -> String {
+    if !o.tightened {
+        return format!(
+            "ragged CG failed to converge (relres {relres:.2e} after {iterations} iters)"
+        );
+    }
+    format!(
+        "ragged CG ran out of iterations while tightening: relres {relres:.2e} (true \
+         {true_relres:.2e}) after {iterations} iters, seeking cg_rtol {:.2e}; the solver-error \
+         bound is still {bound:.2e} Ha against the {:.0e} Ha target. Raise \
+         AmplitudeLmp2Config::cg_max_iter, or set an explicit AmplitudeLmp2Config::cg_rtol to \
+         accept the looser tolerance",
+        o.rtol_used,
+        o.target_ha.unwrap_or(f64::NAN),
+    )
 }
 
 /// `fvv_sparse_rho` must be a finite ρ* ≥ 0 (a density threshold): NaN or a
@@ -1916,17 +1962,12 @@ pub(crate) fn solve_and_count(
         cfg.cg_max_iter,
         budget,
         cfg.fvv_sparse_rho,
-    )?;
+    )
+    .map_err(|e| match e {
+        FerricError::General(m) => FerricError::General(format!("{who}: {m}")),
+        e => e,
+    })?;
     let (s, plan) = (&b.solve, b.decision);
-    // Not reaching the first tolerance is a failed solve. Running out of
-    // iterations while tightening leaves a usable energy with a known, larger
-    // bound: it is returned with cg_converged = false and a warning.
-    if !s.converged && !outcome.tightened {
-        return Err(FerricError::General(format!(
-            "{who}: ragged CG failed to converge (relres {:.2e} after {} iters)",
-            s.relres, s.iterations
-        )));
-    }
     if outcome.target_met == Some(false) {
         eprintln!(
             "warning: {who}: solver-error bound {bound:.2e} Ha is above the {:.0e} Ha target \
