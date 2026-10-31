@@ -66,6 +66,7 @@ const _: () = assert!(
      it) instead of ferric-core/mpi alone."
 );
 
+pub mod checkpoint;
 /// SCF convergence result types and spin-channel descriptor.
 pub mod result;
 pub use result::{DfJkRoute, ScfResult, Spin};
