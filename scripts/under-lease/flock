@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# First on PATH for a command under `box-lease run`. Its own lease already holds the heavy locks, so
+# a `flock` on one of them would wait on its own ancestor: the standing `flock -o <slot> pytest`
+# wrapper, or ci-gate.sh under `box-lease run -- git push`. Those PASS: the command just runs. Any
+# other flock, or any flock once that lease has gone (a process outliving it), is the real one.
+# An absolute /usr/bin/flock cannot be caught here.
+args=("$@")
+self_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
+real_path=""
+IFS=: read -ra dirs <<<"$PATH"
+for d in "${dirs[@]}"; do
+    [[ $d -ef $self_dir ]] || real_path+="${real_path:+:}$d"
+done
+real_flock() { PATH=$real_path exec flock "${args[@]}"; }
+
+lock_dir=${FERRIC_LOCK_DIR:-/tmp}
+lease_is_live() {
+    local maj min ino
+    [[ -n ${FERRIC_BOX_LEASE_PID:-} ]] || return 1
+    read -r maj min ino < <(stat -L -c '%Hd %Ld %i' "$lock_dir/ferric-box.lease" 2>/dev/null) || return 1
+    grep -qsE "^lock:.* $(printf '%02x:%02x:%s' "$maj" "$min" "$ino") " "/proc/$FERRIC_BOX_LEASE_PID/fdinfo/"*
+}
+lease_is_live || real_flock
+
+while (($#)); do
+    case $1 in
+        -w | --wait | --timeout | -E | --conflict-exit-code | -*[wE]) shift 2 || real_flock ;;
+        --) shift; break ;;
+        -*) shift ;;
+        *) break ;;
+    esac
+done
+(($#)) || real_flock
+target=$1
+shift
+path=$target
+if [[ $target =~ ^[0-9]+$ ]] && (($# == 0)); then path=/proc/self/fd/$target; fi
+for lock in ferric-cargo.lock ferric-compile.lock ferric-compile.2.lock; do
+    if [[ $path -ef $lock_dir/$lock ]]; then
+        (($#)) || exit 0 # fd form: the caller "has" the lock, go on
+        case $1 in
+            -c | --command) exec "${SHELL:-/bin/sh}" -c "$2" ;;
+            --) shift ;;
+        esac
+        exec "$@"
+    fi
+done
+real_flock

@@ -1,0 +1,133 @@
+#!/usr/bin/env bash
+# Cargo wrapper agents and the gate run through: serializes heavy cargo work (see scripts/README.md).
+# Installed by scripts/install-cargo-shim.sh to /tmp/ferric-cargo-shim/cargo; put that directory
+# first on PATH. FERRIC_LOCK_DIR moves the locks (tests only); it must match scripts/box-lease.
+LOCK_DIR=${FERRIC_LOCK_DIR:-/tmp}
+LEASE=$LOCK_DIR/ferric-box.lease
+POLL=${FERRIC_SHIM_POLL_SECS:-3}
+DIRECT=$LOCK_DIR/ferric-box.direct
+CARGO_LOCK=$LOCK_DIR/ferric-cargo.lock
+SLOT0=$LOCK_DIR/ferric-compile.lock
+SLOT1=$LOCK_DIR/ferric-compile.2.lock
+# The real cargo: first on PATH that is not a shim, by name or by being this very directory (a shim
+# installed under another name would otherwise exec itself forever).
+SELF_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
+REAL=""
+IFS=: read -ra path_dirs <<<"$PATH"
+for d in "${path_dirs[@]}"; do
+  case "$d" in *ferric-cargo-shim*) continue;; esac
+  [ "$d" -ef "$SELF_DIR" ] && continue
+  if [ -x "$d/cargo" ]; then REAL=$d/cargo; break; fi
+done
+[ -n "$REAL" ] || { echo "cargo shim: no real cargo on PATH" >&2; exit 127; }
+# The subcommand, skipping global options and their values. Anything not known to be trivial is
+# heavy, so an alias (`b`, `t`), `install` or a plugin (`llvm-cov`) waits rather than slipping past.
+sub=""; skip=0
+for a in "$@"; do
+  if [ $skip = 1 ]; then skip=0; continue; fi
+  case "$a" in
+    --manifest-path|--config|--color|--target-dir|--lockfile-path|--explain|-C|-Z) skip=1;;
+    -*|+*) ;;
+    *) sub=$a; break;;
+  esac
+done
+# sccache cross-worktree sharing: C/C++ cache keys embed the absolute worktree path, so identical
+# shim/libecpint sources miss in every new worktree. SCCACHE_BASEDIRS (server-side only) strips each
+# worktree root; the server reads it at startup, so use a dedicated server whose port is keyed on the
+# worktree list (a new worktree => new list => new port/server, same on-disk cache).
+if [ -z "${FERRIC_SCCACHE_BASEDIRS_SET:-}" ]; then
+  BD=$(git -C "${PWD}" worktree list --porcelain 2>/dev/null | sed -n 's/^worktree //p' | sort | paste -sd: -)
+  if [ -n "$BD" ]; then
+    export SCCACHE_BASEDIRS="$BD"
+    export SCCACHE_SERVER_PORT=$((4400 + $(printf '%s' "$BD" | cksum | cut -d' ' -f1) % 400))
+    export SCCACHE_CACHE_SIZE=${SCCACHE_CACHE_SIZE:-50G}
+    export FERRIC_SCCACHE_BASEDIRS_SET=1
+  fi
+fi
+# Start the (dedicated) sccache server HERE with inherited lock fds closed: an auto-started server
+# otherwise inherits flock'd fds (e.g. /tmp/ferric-cargo.lock held by scripts/ci-gate.sh) and holds the
+# lock for its whole lifetime, jamming every later gate step (observed 2026-10-17: 15+ min stall).
+if [ -n "${SCCACHE_SERVER_PORT:-}" ]; then
+  sccache --start-server 3>&- 4>&- 5>&- 6>&- 7>&- 8>&- 9>&- >/dev/null 2>&1 || true
+fi
+lock=1
+# ONE CPU-heavy op at a time across all agents (user rule 2026-10-18): every build AND test/run
+# holds the same lock, for the whole of the cargo process, so tests run under it. Wrap heavy
+# non-cargo work (PySCF, pytest, long python) the same way:
+#   flock -o /tmp/ferric-compile.lock <cmd>
+case "$sub" in
+  ""|metadata|fmt|version|help|tree|locate-project|pkgid|read-manifest|verify-project|search|fetch|update|generate-lockfile|add|remove|clean|vendor|init|new|login|logout|owner|yank|info) lock=0;;
+esac
+export RUST_TEST_THREADS=${RUST_TEST_THREADS:-3} RAYON_NUM_THREADS=${RAYON_NUM_THREADS:-3} OPENBLAS_NUM_THREADS=1 CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-3}
+# Does an ancestor hold one of these flocks? Read from fdinfo, the actual lock, never from a command
+# line that merely mentions it.
+ancestor_holds() {
+  local f alt="" maj min ino p=$PPID stat
+  for f in "$@"; do
+    read -r maj min ino < <(stat -L -c '%Hd %Ld %i' "$f" 2>/dev/null) || continue
+    alt+=$(printf '|%02x:%02x:%s' "$maj" "$min" "$ino")
+  done
+  [ -n "$alt" ] || return 1
+  while [ "${p:-0}" -gt 1 ]; do
+    grep -qsE "^lock:.* (${alt#|}) " "/proc/$p/fdinfo/"* && return 0
+    stat=$(cat "/proc/$p/stat" 2>/dev/null) || return 1
+    stat=${stat##*) }
+    p=${stat#* }; p=${p%% *}
+  done
+  return 1
+}
+# FERRIC_HEAVY_LOCK_HELD is the pid of whoever holds the lock for us, and counts only while that pid
+# lives: a process outliving its holder must queue like anyone else. (1 was the old constant.)
+held_is_live() {
+  case "${FERRIC_HEAVY_LOCK_HELD:-}" in ""|*[!0-9]*|1) return 1;; esac
+  [ -d "/proc/$FERRIC_HEAVY_LOCK_HELD" ]
+}
+if [ $lock = 1 ]; then
+  if held_is_live; then
+    lock=0
+  # Holding a slot up the chain (a `flock` wrapper, a script holding it by fd, or a lease, which holds
+  # both, reached through `env -i`), we already own what we would queue for.
+  elif ancestor_holds "$SLOT0" "$SLOT1"; then
+    lock=0
+  fi
+fi
+# BOX LEASE (scripts/box-lease): a lease holds $LEASE from the moment it is REQUESTED, so a compile
+# that checks it here queues behind a pending lease as well as an active one. The check is a shared
+# try: compiles never block each other on it. It is deliberately not held past the check; the lease
+# also holds every heavy slot once active, so a compile that slips past can only be in flight.
+lease_busy() { flock -s -n -E 75 "$LEASE" true 2>/dev/null; [ $? = 75 ]; }
+say_waiting_for_lease() {
+  local label="" start="" since=""
+  { IFS=$'\t' read -r label _ start _ <"$LEASE.info"; } 2>/dev/null
+  [ -n "$start" ] && since=$(date -d "@$start" '+%F %T' 2>/dev/null)
+  echo "cargo shim: waiting for box lease held by ${label:-unknown} since ${since:-unknown}" >&2
+}
+# TWO heavy slots (user 2026-10-18): slot 0 = /tmp/ferric-compile.lock (also what agents wrap
+# PySCF/pytest in), slot 1 = /tmp/ferric-compile.2.lock. Each op is capped at 3 threads/jobs.
+if [ $lock = 1 ]; then
+  export FERRIC_HEAVY_LOCK_HELD=$$
+  deadline=$(( $(date +%s) + 28800 ))
+  told=0
+  # flock's "slot busy" 75 and the real cargo's own exit 75 look the same, so the command marks that
+  # it ran. Without this a cargo exiting 75 would be rerun as if the slot had been busy.
+  ran=$LOCK_DIR/.ferric-shim-ran.$$
+  rm -f "$ran"
+  while :; do
+    # An ancestor holding the cargo lock (a gate step) or the exec lock is in-flight work that a
+    # pending lease is draining: waiting for that lease would deadlock. An active lease holds both,
+    # so neither can then be ours.
+    if lease_busy && ! ancestor_holds "$CARGO_LOCK" "$DIRECT"; then
+      [ $told = 1 ] || say_waiting_for_lease
+      told=1
+    else
+      for f in "$SLOT0" "$SLOT1"; do
+        # shellcheck disable=SC2016  # expanded by the inner bash
+        flock -n -o -E 75 "$f" bash -c ': >"$1"; shift; exec "$@"' _ "$ran" "$REAL" "$@"; rc=$?
+        if [ $rc -ne 75 ] || [ -e "$ran" ]; then rm -f "$ran"; exit $rc; fi
+      done
+    fi
+    [ "$(date +%s)" -ge "$deadline" ] && { echo "cargo shim: no heavy slot free after 8h" >&2; exit 75; }
+    sleep "$POLL"
+  done
+fi
+exec "$REAL" "$@"

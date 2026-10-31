@@ -234,6 +234,7 @@ STEP_CHECK_FAILED=0       # (c) a step ran and failed (test, clippy, doc, ...)
 # shellcheck source=scripts/cargo-lock-lib.sh
 source "$REPO_ROOT/scripts/cargo-lock-lib.sh"
 
+ferric_ensure_cargo_shim "$REPO_ROOT"
 ferric_clear_stale_sccache_lock "$LOCK_FILE"
 
 # Clear again before EVERY lock acquisition, not just once at startup.

@@ -83,6 +83,12 @@ if [[ -z "$TOPLEVEL" ]]; then
     exit 1
 fi
 GATE_SCRIPT="$TOPLEVEL/scripts/ci-gate.sh"
+# A missing cargo shim silently drops the compile locks: reinstall it, or say so.
+if [[ -r "$TOPLEVEL/scripts/cargo-lock-lib.sh" ]]; then
+    # shellcheck source=/dev/null
+    source "$TOPLEVEL/scripts/cargo-lock-lib.sh"
+    if declare -F ferric_ensure_cargo_shim >/dev/null; then ferric_ensure_cargo_shim "$TOPLEVEL"; fi
+fi
 
 if [[ ! -x "$GATE_SCRIPT" ]]; then
     echo "pre-push hook: $GATE_SCRIPT not found or not executable in the worktree being pushed." >&2

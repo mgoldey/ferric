@@ -99,6 +99,61 @@ python3 scripts/complexity_gate.py --update-baseline
 This step **soft-skips** (does not fail the gate) if `rust-code-analysis-cli`
 isn't installed, or if `CI_GATE_SKIP_COMPLEXITY=1` is set.
 
+## Box lease and the cargo shim (`box-lease`, `cargo-shim`)
+
+`cargo-shim` is the wrapper agents and the gate run as `cargo`: it serializes
+heavy cargo work through two slots (`/tmp/ferric-compile.lock`,
+`/tmp/ferric-compile.2.lock`), capped at 3 threads each. Anything but a known
+trivial subcommand (`metadata`, `fmt`, `--version`...) counts as heavy.
+
+Install or update it with `scripts/install-cargo-shim.sh` (atomic, safe under
+running builds), then put `/tmp/ferric-cargo-shim` first on `PATH`. It carries
+`box-lease` too. `/tmp` is wiped at boot and a dead `PATH` entry falls through to
+the real cargo with no error, so the pre-push hook and `ci-gate.sh` reinstall a
+missing shim and warn when `cargo` would bypass it. Between pushes nothing does:
+after a reboot, run the installer. (The hook part needs `scripts/install-hooks.sh`
+re-run once.)
+
+For a timing job, take the lease rather than polling for a quiet box:
+
+```
+box-lease run --label lmp2-bench -- python bench.py   # waits for in-flight work, then holds the locks
+box-lease exec -- ./target/release/some_test          # a direct binary a lease will wait for
+box-lease status                                      # holder, phase, and who holds each lock
+box-lease wait                                        # block until free; holds NOTHING afterwards
+```
+
+The lease does not own the machine:
+
+| | Waits for a lease | A lease drains it |
+|---|---|---|
+| cargo through the shim, incl. a whole `cargo test` | yes | yes |
+| `flock -o /tmp/ferric-compile.lock CMD` | yes | yes |
+| gate steps (timeout not yet started) | yes | yes |
+| `box-lease exec CMD` | yes | yes |
+| test binary, pytest or python started directly | no | no |
+| the gate's soft pytest step (runs outside the lock) | no | no |
+| `box-lease wait; CMD` | once, then no | no |
+| other sessions, non-cargo load (a bench's own load gate stays) | no | no |
+
+- **Under a lease** cargo passes straight through, and so does `flock` on a heavy
+  lock, through `under-lease/flock` on `PATH`. So `flock -o` wrappers and
+  `box-lease run -- git push` run rather than wait on themselves. An absolute
+  `/usr/bin/flock` on a heavy lock is not caught and hangs. The shim's 3-thread
+  defaults still apply unless the job sets them.
+- **Pending:** all shim compiles queue from the moment a lease is requested. So the
+  wait is bounded: `--wait-secs`, default 1 h, then exit 75 naming the holders with
+  the command not run. A stale sccache squatter is cleared as the gate does.
+- **Overtaking:** the lease holds no compile lock while waiting (holding one
+  deadlocks against nested wrappers), so a blocking `flock -o` or a queued gate can
+  overtake it. The wait bound is what limits this.
+- **Ending:** INT/TERM/HUP go to the job's process group and the lease is held until
+  the group is gone. `--max-hold` warns and never kills. `kill -9` of the wrapper
+  frees the locks and orphans the job.
+
+To wait in a script, use `box-lease wait` and plain `sleep`. Never read from
+`/dev/zero` to pass time.
+
 ## What belongs in git
 
 - **Reference generators** (`gen_pyscf_*.py`, `cc/`, `cpks/`, `minimax/`): scripts
