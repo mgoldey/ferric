@@ -1286,7 +1286,11 @@ def test_a_shim_behind_the_real_cargo_warns(tmp_path):
 def test_a_shim_differing_from_this_tree_warns(tmp_path):
     dest, _ = _ensure(tmp_path)
     (dest / "cargo").write_text("#!/bin/sh\n# old\n")
-    env = {**os.environ, "FERRIC_SHIM_DIR": str(dest), "PATH": f"{dest}:{os.environ['PATH']}"}
+    env = {
+        **os.environ,
+        "FERRIC_SHIM_DIR": str(dest),
+        "PATH": f"{dest}:{os.environ['PATH']}",
+    }
     cmd = f'source {LIB}; ferric_ensure_cargo_shim "{REPO}"'
     p = subprocess.run(["bash", "-c", cmd], env=env, capture_output=True, text=True)
     assert "differs from this tree" in p.stderr, p.stderr
@@ -1301,13 +1305,16 @@ def test_the_default_shim_dir_is_stable_and_survives_an_unset_home(tmp_path):
     env = {k: v for k, v in os.environ.items() if k != "FERRIC_SHIM_DIR"}
     cmd = f'source {LIB}; ferric_ensure_cargo_shim "{REPO}"; echo rc=$?'
     p = subprocess.run(
-        ["bash", "-c", cmd], env={**env, "HOME": str(home)}, capture_output=True, text=True
+        ["bash", "-c", cmd],
+        env={**env, "HOME": str(home)},
+        capture_output=True,
+        text=True,
     )
-    assert "rc=0" in p.stdout and f"{shim} is not first" in p.stderr, p.stdout + p.stderr
+    assert "rc=0" in p.stdout and f"{shim} is not first" in p.stderr, (
+        p.stdout + p.stderr
+    )
     env.pop("HOME", None)
-    p = subprocess.run(
-        ["bash", "-uc", cmd], env=env, capture_output=True, text=True
-    )
+    p = subprocess.run(["bash", "-uc", cmd], env=env, capture_output=True, text=True)
     assert "rc=0" in p.stdout, p.stdout + p.stderr
 
 
