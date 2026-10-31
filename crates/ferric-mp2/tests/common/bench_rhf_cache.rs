@@ -11,6 +11,10 @@
 //! and `format!("{:?}", RhfConfig)`. It does NOT cover the build or the thread
 //! counts: reading a cache from another build asserts that build's SCF gives
 //! the same result, which `bench_rhf_cache_matches_fresh_scf` checks.
+//! Nor does it cover environment knobs that change SCF numerics, such as
+//! `FERRIC_SCF_INCREMENTAL`, `FERRIC_SCF_COMBINED_JK` or `FERRIC_DF_GUESS_TIGHT`:
+//! a warm cache ignores them. Warm the cache serially before parallel cells, since
+//! the last of two cold writers wins.
 //!
 //! This file depends on nothing else in the tests, so it can be copied into a
 //! frozen baseline worktree. Before #603 `ScfResult` has no `precision` field;
