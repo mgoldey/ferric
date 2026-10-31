@@ -219,7 +219,26 @@ naming the `kind`. The methods that do write `result` are `rimp2`,
 `scs-mp2-2terfc`, `mp3`, `ccsd`, `ccd`, `ccsd(t)`, `linlccd`, `drpa`, `mp2-v` and
 `rs-mp2-rpa`. For `rimp2`, `drpa` and `linlccd` the record's `components`
 carry `"local"`: `null` for the exact method, else `{"scheme", "eps",
-"keep_fraction", "integral_direct"}`.
+"keep_fraction", "integral_direct"}`. A `rimp2` record also carries
+`"timings"`. A local `att-rimp2` record carries both keys under
+`kind: "att-rimp2"`, and an exact `att-rimp2` record has neither key, so read
+them with a default. `"timings"` is `null` for the exact method; for a local run, the per-stage
+wall-clock seconds `{"t_spaces_s", "t_assembly_s", "t_solve_s",
+"t_reference_s", "direct"}`, where `direct` is `null` in core and, with
+`integral_direct = true`, every integral-direct assembly counter and timer
+(`strip_rows_mean`/`_max`, `strip_cols_mean`/`_max`, `strip_bytes_total`,
+`n_eri3_shell_triples`, `n_eri3_skipped`, `n_metric_shell_pairs`,
+`virt_cand_mean`/`_max`, `t_maps_s`, `t_eri3_s`, `t_eri3_fill_thread_s`,
+`t_eri3_eval_thread_s`, `t_eri3_scatter_thread_s`,
+`t_eri3_transform_thread_s`, `n_batches`, `batch_work_max_s`,
+`batch_work_mean_s`, `t_metric_s`, `t_pairs_s`, `n_pair_groups`,
+`n_distinct_occ_per_group`, `n_trsm`, `n_w_reused`, `own_w_bytes`,
+`own_w_bytes_held`, `group_scratch_bytes_max`, `t_loc_s`). The
+`*_thread_s` fields are summed over batch workers (thread-seconds), the
+eval/scatter split is `null` unless it was measured, and `t_reference_s` is
+`0` when the opt-in reference was off. `t_loc_s` is counted inside
+`t_assembly_s`, so do not add it to the other stages. Timings are not
+reproducible run to run.
 
 It exists because **silence is ambiguous**: a log with no `result` record could
 mean the method does not record one yet, or that the run died before producing

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Install scripts/cargo-shim and scripts/box-lease into the shim directory (/tmp, so it is gone
-# after a reboot: re-run this). Then: export PATH=/tmp/ferric-cargo-shim:$PATH
+# Install scripts/cargo-shim and scripts/box-lease into the shim directory, which survives a reboot.
+# Then: export PATH="$HOME/.local/share/ferric-cargo-shim:$PATH". The name must keep "ferric-cargo-shim":
+# the shim skips PATH entries matching it when looking for the real cargo.
 #
 # Atomic on purpose. Agents and the gate use the shim live, and bash reads a script as it runs, so
 # overwriting it in place would corrupt every running shim. A rename leaves those on the old inode.
@@ -10,7 +11,8 @@
 set -euo pipefail
 
 src="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-dest="${FERRIC_SHIM_DIR:-/tmp/ferric-cargo-shim}"
+home="${HOME:-$(getent passwd "$(id -u)" | cut -d: -f6)}"
+dest="${FERRIC_SHIM_DIR:-$home/.local/share/ferric-cargo-shim}"
 mkdir -p "$dest/under-lease"
 
 install_one() { # SOURCE NAME
