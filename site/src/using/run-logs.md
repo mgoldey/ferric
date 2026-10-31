@@ -220,7 +220,9 @@ naming the `kind`. The methods that do write `result` are `rimp2`,
 `rs-mp2-rpa`. For `rimp2`, `drpa` and `linlccd` the record's `components`
 carry `"local"`: `null` for the exact method, else `{"scheme", "eps",
 "keep_fraction", "integral_direct"}`. A `rimp2` record also carries
-`"timings"`: `null` for the exact method; for a local run, the per-stage
+`"timings"`. A local `att-rimp2` record carries both keys under
+`kind: "att-rimp2"`, and an exact `att-rimp2` record has neither key, so read
+them with a default. `"timings"` is `null` for the exact method; for a local run, the per-stage
 wall-clock seconds `{"t_spaces_s", "t_assembly_s", "t_solve_s",
 "t_reference_s", "direct"}`, where `direct` is `null` in core and, with
 `integral_direct = true`, every integral-direct assembly counter and timer
@@ -234,8 +236,9 @@ wall-clock seconds `{"t_spaces_s", "t_assembly_s", "t_solve_s",
 `own_w_bytes_held`, `group_scratch_bytes_max`, `t_loc_s`). The
 `*_thread_s` fields are summed over batch workers (thread-seconds), the
 eval/scatter split is `null` unless it was measured, and `t_reference_s` is
-`0` when the opt-in reference was off. Timings are not reproducible run to
-run.
+`0` when the opt-in reference was off. `t_loc_s` is counted inside
+`t_assembly_s`, so do not add it to the other stages. Timings are not
+reproducible run to run.
 
 It exists because **silence is ambiguous**: a log with no `result` record could
 mean the method does not record one yet, or that the run died before producing
