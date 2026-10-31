@@ -210,7 +210,9 @@ pub struct Lmp2Certificate {
     pub cg_tightened: bool,
     /// The bound target (Ha); `None` unless the bound governed the solve.
     pub cg_energy_error_target: Option<f64>,
-    /// Whether the target was met; `None` when no target applied.
+    /// Whether the target was met; `None` when no target applied. A run that
+    /// reaches a certificate converged, so `false` means the floor or residual
+    /// drift, never the iteration limit.
     pub cg_energy_target_met: Option<bool>,
     /// The PCG's recursive residual.
     pub cg_relres: f64,
@@ -219,6 +221,8 @@ pub struct Lmp2Certificate {
     /// Bound (Ha) on the Hylleraas energy's solver error at `cg_true_relres`:
     /// `3·‖PJ‖²·relres²/λ_min`, λ_min ≥ 2(ε_LUMO − ε_HOMO).
     pub cg_energy_error_bound: f64,
+    /// Always true: a PCG that runs out of iterations fails the run, so no
+    /// certificate is written for it.
     pub cg_converged: bool,
     pub frozen_core: usize,
     /// [`operator_label`] of the run's operator; the ε record is Coulomb.
@@ -441,8 +445,7 @@ fn solver_warnings(o: &CgRtolOutcome, bound: f64, true_relres: f64, relres: f64)
         )),
         CgRtolSource::AdaptiveDefault if o.target_met == Some(false) => w.push(format!(
             "PCG energy-error target NOT met: bound {bound:.2e} Ha > {:.0e} Ha at true relres \
-             {true_relres:.2e}, recursive {relres:.2e} (cg_rtol {:.0e}; floor, iteration limit \
-             or residual drift)",
+             {true_relres:.2e}, recursive {relres:.2e} (cg_rtol {:.0e}; floor or residual drift)",
             o.target_ha.unwrap_or(f64::NAN),
             o.rtol_used
         )),
@@ -486,6 +489,7 @@ mod tests {
         assert!(solver_warnings(&outcome(Explicit, None), 1e-13, 5e-7, 5e-7).is_empty());
         let w = solver_warnings(&outcome(AdaptiveDefault, Some(false)), 1e-9, 5e-7, 5e-7);
         assert!(w.len() == 1 && w[0].contains("NOT met"), "{w:?}");
+        assert!(!w[0].contains("iteration limit"), "{w:?}");
         let w = solver_warnings(&outcome(StrictNoGap, None), f64::NAN, 1e-12, 1e-12);
         assert!(w.len() == 1 && w[0].contains("undefined"), "{w:?}");
         let w = solver_warnings(&outcome(Explicit, None), 1e-9, 5e-7, 5e-7);

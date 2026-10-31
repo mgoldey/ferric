@@ -2137,8 +2137,8 @@ fn tightening_fires_and_meets_a_low_target() {
     }
 }
 
-/// An unreachable target is reported, at the floor and at the iteration limit,
-/// and the floor is never passed.
+/// A target beyond the floor is a converged solve that reports the miss, and
+/// the floor is never passed.
 #[test]
 fn unreachable_target_is_reported() {
     use ferric_mp2::lmp2_amplitude::{solve_under_rtol_policy, PolicySolve};
@@ -2162,37 +2162,144 @@ fn unreachable_target_is_reported() {
     assert_eq!(o.rtol_used, 1e-9);
     assert_eq!(o.target_met, Some(false));
     assert!(bound > 1e-40 && b.solve.relres > 1e-11);
+}
 
-    let PolicySolve { budgeted: s, .. } = solve_under_rtol_policy(
-        &rg,
-        &f_oo,
-        &f_vv,
-        adaptive(1e-6, 1e-11, 1.0),
-        400,
-        usize::MAX,
-        0.0,
+/// Running out of iterations while tightening fails the solve, and the message
+/// carries the numbers of that solve, rebuilt here from the same iterates. A
+/// limit that lets the floor be reached is still an `Ok`, target unmet.
+/// Mutant seen to fail: this branch returning `Ok` again.
+#[test]
+fn out_of_iterations_while_tightening_is_an_error() {
+    use ferric_mp2::lmp2_amplitude::{
+        cg_energy_error_bound, hylleraas_energy_and_residual, operator_lambda_min_lower_bound,
+        pattern_rhs_norm, solve_under_rtol_policy,
+    };
+    use ferric_mp2::ragged::solve_ragged_budgeted_with;
+    let (rg, f_oo, f_vv) = production_ragged_op("alkane_4.xyz", 4, 1e-4, Operator::coulomb(), 0.7);
+    let run = |target, limit| {
+        solve_under_rtol_policy(
+            &rg,
+            &f_oo,
+            &f_vv,
+            adaptive(1e-6, 1e-11, target),
+            limit,
+            usize::MAX,
+            0.0,
+        )
+    };
+    let first = run(1.0, 400).unwrap().budgeted.solve.iterations;
+    let limit = first + 1;
+
+    let msg = run(1e-30, limit)
+        .err()
+        .expect("out of iterations while tightening must be an error")
+        .to_string();
+    let straight = solve_ragged_budgeted_with(&rg, &f_oo, 1e-11, limit, usize::MAX, 0.0);
+    assert!(!straight.solve.converged && straight.solve.iterations == limit);
+    let (_, r) =
+        hylleraas_energy_and_residual(&rg, &f_oo, straight.plan(), &straight.solve.t).unwrap();
+    let bnorm = pattern_rhs_norm(&rg);
+    let lam = operator_lambda_min_lower_bound(&f_oo, &f_vv).unwrap();
+    let bound = cg_energy_error_bound(bnorm, r / bnorm, lam);
+    for want in [
+        "while tightening".to_string(),
+        format!("relres {:.2e} ", straight.solve.relres),
+        format!("after {limit} iters"),
+        "seeking cg_rtol 1.00e-11".to_string(),
+        format!("bound is still {bound:.2e} Ha"),
+        "cg_max_iter".to_string(),
+        "explicit AmplitudeLmp2Config::cg_rtol".to_string(),
+    ] {
+        assert!(msg.contains(&want), "missing {want:?} in: {msg}");
+    }
+
+    // with iterations to spare, the same target stops at the floor as an Ok
+    let floor = run(1e-30, 400).expect("the floor case stays an Ok");
+    assert!(floor.budgeted.solve.converged && floor.outcome.tightened);
+    assert_eq!(floor.outcome.rtol_used, 1e-11);
+    assert_eq!(floor.outcome.target_met, Some(false));
+}
+
+/// Tightening aims at a quarter of the target, so the iterations can run out
+/// with the bound already met. That is still an error, and the message must not
+/// say the bound is above the target. Here the stop lands in [needed, 2*needed).
+/// Mutant seen to fail: the message always saying the bound is "still" above.
+#[test]
+fn out_of_iterations_with_the_bound_already_met_says_so() {
+    use ferric_mp2::lmp2_amplitude::{
+        cg_energy_error_bound, operator_lambda_min_lower_bound, pattern_rhs_norm,
+        solve_under_rtol_policy,
+    };
+    use ferric_mp2::ragged::solve_ragged_budgeted_with;
+    let (rg, f_oo, f_vv) = production_ragged_op("alkane_4.xyz", 4, 1e-4, Operator::coulomb(), 0.7);
+    let policy = |target| adaptive(1e-6, 1e-11, target);
+    let solve = |p, limit| solve_under_rtol_policy(&rg, &f_oo, &f_vv, p, limit, usize::MAX, 0.0);
+    let first = solve(policy(1.0), 400).unwrap().budgeted.solve;
+    let limit = first.iterations + 1;
+    let at_limit = solve_ragged_budgeted_with(&rg, &f_oo, 1e-13, limit, usize::MAX, 0.0)
+        .solve
+        .relres;
+    // the target whose derived tolerance is 0.7 of the residual at the limit
+    let (bnorm, lam) = (
+        pattern_rhs_norm(&rg),
+        operator_lambda_min_lower_bound(&f_oo, &f_vv).unwrap(),
+    );
+    let needed = 0.7 * at_limit;
+    let target = cg_energy_error_bound(bnorm, 2.0 * needed, lam);
+    assert!(needed > 1e-11, "the floor must not set the tolerance");
+    assert!(
+        cg_energy_error_bound(bnorm, first.relres, lam) > target,
+        "the first stop must tighten"
+    );
+
+    let msg = solve(policy(target), limit)
+        .err()
+        .expect("out of iterations while tightening must be an error")
+        .to_string();
+    assert!(msg.contains("while tightening"), "{msg}");
+    assert!(msg.contains("meets the"), "{msg}");
+    assert!(msg.contains("tightened tolerance was not reached"), "{msg}");
+    assert!(!msg.contains("is still"), "{msg}");
+    assert!(
+        msg.contains(&format!("seeking cg_rtol {needed:.2e}")),
+        "{msg}"
+    );
+    assert!(msg.contains("cg_max_iter"), "{msg}");
+}
+
+/// Not reaching the first tolerance stays an error, under the policy and through
+/// the driver, which names itself; it is not worded as a tightening.
+#[test]
+fn out_of_iterations_at_the_first_tolerance_is_an_error() {
+    use ferric_mp2::lmp2_amplitude::{solve_under_rtol_policy, CgRtolPolicy};
+    let (rg, f_oo, f_vv) = production_ragged_op("alkane_4.xyz", 4, 1e-4, Operator::coulomb(), 0.7);
+    for policy in [adaptive(1e-6, 1e-11, 1e-10), CgRtolPolicy::Explicit(1e-6)] {
+        let msg = solve_under_rtol_policy(&rg, &f_oo, &f_vv, policy, 1, usize::MAX, 0.0)
+            .err()
+            .expect("one iteration cannot reach 1e-6")
+            .to_string();
+        assert!(msg.contains("failed to converge"), "{msg}");
+        assert!(!msg.contains("tightening"), "{msg}");
+    }
+    let su = setup("alkane_4.xyz");
+    let cfg = AmplitudeLmp2Config {
+        eps: 1e-4,
+        frozen_core: 4,
+        cg_max_iter: 1,
+        ..Default::default()
+    };
+    let msg = amplitude_lmp2(
+        &su.mol,
+        &su.obs,
+        &su.obs_bs,
+        &su.dfbs,
+        Operator::coulomb(),
+        &su.rhf,
+        &cfg,
     )
-    .unwrap();
-    let limit = s.solve.iterations + 1;
-    let PolicySolve {
-        budgeted: b,
-        outcome: o,
-        bound,
-        ..
-    } = solve_under_rtol_policy(
-        &rg,
-        &f_oo,
-        &f_vv,
-        adaptive(1e-6, 1e-11, 1e-30),
-        limit,
-        usize::MAX,
-        0.0,
-    )
-    .unwrap();
-    assert!(!b.solve.converged && o.tightened);
-    assert_eq!(b.solve.iterations, limit);
-    assert_eq!(o.target_met, Some(false));
-    assert!(bound > 1e-30);
+    .expect_err("one iteration cannot reach 1e-6")
+    .to_string();
+    assert!(msg.contains(": ragged CG failed to converge"), "{msg}");
 }
 
 /// With no positive gap the bound is undefined: the adaptive policy runs at
