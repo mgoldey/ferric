@@ -16,8 +16,8 @@
 //! so the guards below require that the sweep reached both XC modes, and the
 //! butane window requires a pool tier that XC-first demonstrably changes.
 //!
-//! Pure functional only: on a tree where the dressed tensor charges hard, a
-//! hybrid has a separate refusal at `[T, 2T)` that has nothing to do with XC.
+//! VV10 is only reachable through a range-separated hybrid, so its sweep runs on
+//! butane, where the cache is small against the tensor.
 //!
 //! Own binary: these install the process-global pool, and the mutex keeps them
 //! apart.
@@ -27,6 +27,7 @@ use ferric_core::memory::pool::{clear_global, install_global, MemoryPool};
 use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
 use ferric_dft::grid::AtomicGridConfig;
+use ferric_dft::xc_trait::XcContribution;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_scf::rhf::{solve_rhf, solve_rhf_with_hook, RhfConfig};
@@ -132,6 +133,10 @@ fn admits(s: &Sys, solver: Solver, c: &RhfConfig) -> Result<(), String> {
 }
 
 fn sweep(solver: Solver) {
+    sweep_with(solver, cfg);
+}
+
+fn sweep_with(solver: Solver, cfg: impl Fn(usize, usize) -> RhfConfig + Sync) {
     let s = water();
     for t in THREADS {
         let mut admitted_at = None;
@@ -159,6 +164,17 @@ fn sweep(solver: Solver) {
 fn raising_the_budget_never_turns_a_running_rhf_job_into_a_refused_one() {
     let _s = slot();
     sweep(Solver::Rhf);
+}
+
+/// Hybrids also build a dressed tensor, which spills rather than refuses.
+#[test]
+fn raising_the_budget_never_turns_a_running_hybrid_job_into_a_refused_one() {
+    let _s = slot();
+    sweep_with(Solver::Rhf, |p, n| RhfConfig {
+        xc: Some("B3LYP".into()),
+        df_k_aux: Some(AUX.into()),
+        ..cfg(p, n)
+    });
 }
 
 #[test]
@@ -282,7 +298,136 @@ fn energy_is_the_same_for_every_xc_mode_and_thread_count() {
         (recompute, 12),
     ] {
         let (e1, it1) = e(Some(p), t);
-        assert!((e1 - e0).abs() < 1e-10, "P={p} t={t}: {e1} vs {e0}");
+        assert_eq!(e1.to_bits(), e0.to_bits(), "P={p} t={t}: {e1} vs {e0}");
         assert_eq!(it1, it0, "P={p} t={t}");
     }
+}
+
+fn vv10_cfg(budget: usize, max_iter: usize) -> RhfConfig {
+    RhfConfig {
+        xc: Some("wB97X-V".into()),
+        df_j_aux: Some(AUX.into()),
+        df_k_aux: Some(AUX.into()),
+        three_index_budget_bytes: budget,
+        max_iter,
+        dft_grid: Some(AtomicGridConfig {
+            n_radial: 30,
+            n_angular: 50,
+            prune: None,
+        }),
+        nlc_grid: Some(AtomicGridConfig {
+            n_radial: 10,
+            n_angular: 14,
+            prune: None,
+        }),
+        ..Default::default()
+    }
+}
+
+fn nlc_cache(s: &Sys, c: &RhfConfig) -> usize {
+    let bs = basis::bundled("def2-svp").unwrap();
+    let main = c.dft_grid.clone().unwrap();
+    let nlc = c.nlc_grid.clone().unwrap();
+    let pool = MemoryPool::with_capacity_bytes(8_000_000_000);
+    install_global(pool.clone());
+    let ks = ferric_dft::ks::KsXc::new_deferred(&s.mol, &bs, "wB97X-V", &main, &nlc, None, None);
+    let held = ks.unwrap().memory_plan().held_bytes;
+    clear_global();
+    held
+}
+
+/// Below `T`, raw has soft tiers and the NLC cache has none. If raw decided first
+/// it would take the packed tier here, leaving the cache unable to fit.
+#[test]
+fn a_budget_that_holds_the_nlc_cache_beside_a_soft_raw_tier_runs() {
+    let _s = slot();
+    let s = sys("../../testdata/molecules/alkane_4.xyz", "def2-svp");
+    let aux = PreparedBasis::new(&s.mol, &basis::bundled(AUX).unwrap()).unwrap();
+    let n = s.prep.nbasis();
+    let packed = aux.nbasis() * n * (n + 1) / 2 * 8;
+    let head = 64 * n * n * 8;
+    let c0 = vv10_cfg(0, 1);
+    let nlc = nlc_cache(&s, &c0);
+    assert!(
+        nlc > head,
+        "needs NLC {nlc} > head {head} to reach the band"
+    );
+    let p = packed + nlc - 1000;
+    assert!(p < s.tensor && p >= packed + head, "P={p} outside the band");
+    install_global(MemoryPool::with_capacity_bytes(p));
+    let got = admits(&s, Solver::Rhf, &vv10_cfg(p, 1));
+    clear_global();
+    got.expect("must run");
+}
+
+/// A budget the cache cannot fit alone stops before any integrals, with the
+/// pool's own error, naming the plane.
+#[test]
+fn an_nlc_cache_that_cannot_fit_is_refused_up_front_by_name() {
+    let _s = slot();
+    let s = sys("../../testdata/molecules/alkane_4.xyz", "def2-svp");
+    let nlc = nlc_cache(&s, &vv10_cfg(0, 1));
+    // Just short of the cache, and short of the AO buffer inside it, whose own guard
+    // would otherwise refuse first with an error that names neither the cache nor
+    // the pool.
+    for p in [nlc - 1, nlc / 2] {
+        let pool = MemoryPool::with_capacity_bytes(p);
+        install_global(pool.clone());
+        let got = admits(&s, Solver::Rhf, &vv10_cfg(p, 1));
+        let peak = pool.peak_bytes();
+        clear_global();
+        let e = got.expect_err("must refuse");
+        assert!(e.contains("VV10 NLC cache"), "P={p}: {e}");
+        assert!(peak < nlc, "P={p}: no plane took memory first: peak {peak}");
+    }
+}
+
+/// From `P/T` = 0.3, where the NLC cache fits, a VV10 job runs at every budget.
+#[test]
+fn a_vv10_job_runs_at_every_budget_that_holds_its_cache() {
+    let _s = slot();
+    let s = sys("../../testdata/molecules/alkane_4.xyz", "def2-svp");
+    for t in [1usize, 4] {
+        for i in 3..=40 {
+            let p = i * s.tensor / 10;
+            install_global(MemoryPool::with_capacity_bytes(p));
+            let got = in_pool(t, || admits(&s, Solver::Rhf, &vv10_cfg(p, 1)));
+            clear_global();
+            if let Err(e) = got {
+                panic!("t={t}: refused at P/T={}: {e}", f64::from(i as u32) * 0.1);
+            }
+        }
+    }
+}
+
+/// A deferred evaluator reports what RI-J/K must allow for.
+#[test]
+fn a_deferred_evaluator_plans_its_memory() {
+    let _s = slot();
+    let s = water();
+    let bs = basis::bundled("cc-pvdz").unwrap();
+    let main = AtomicGridConfig::default();
+    let nlc = AtomicGridConfig::default_nlc();
+    let new = |name, budget| {
+        ferric_dft::ks::KsXc::new_deferred(&s.mol, &bs, name, &main, &nlc, None, budget).unwrap()
+    };
+    let plan = new("PBE", Some(8_000_000_000)).memory_plan();
+    assert!(
+        plan.resident_if_alone > 0 && plan.nlc_bytes == 0,
+        "{plan:?}"
+    );
+    let plan = new("PBE", Some(1000)).memory_plan();
+    assert_eq!(plan.resident_if_alone, 0, "too small to be resident");
+    install_global(MemoryPool::with_capacity_bytes(8_000_000_000));
+    let plan = new("wB97X-V", None).memory_plan();
+    clear_global();
+    assert!(
+        plan.nlc_bytes > 0 && plan.held_bytes == plan.nlc_bytes,
+        "{plan:?}"
+    );
+    let plan = new("wB97X-V", Some(8_000_000_000)).memory_plan();
+    assert!(
+        plan.nlc_bytes > 0 && plan.held_bytes == 0,
+        "no pool holds nothing: {plan:?}"
+    );
 }

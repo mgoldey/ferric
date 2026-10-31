@@ -6,6 +6,26 @@
 
 use ndarray::Array2;
 
+/// What a deferred XC evaluator means to hold, known before RI-J/K setup.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct XcMemoryPlan {
+    /// Already charged to the pool: the VV10 NLC cache, which has no fallback.
+    pub held_bytes: usize,
+    /// The NLC cache, charged or not. Already allocated.
+    pub nlc_bytes: usize,
+    /// AO blocks it would keep if nothing else were competing for memory.
+    /// An auto-detected budget subtracts them (see `driver::raw_budget`).
+    pub resident_if_alone: usize,
+}
+
+/// What `commit_storage` decided.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct XcCommit {
+    pub resident: bool,
+    /// Bytes that run without a pool charge.
+    pub uncharged_bytes: usize,
+}
+
 /// How exact exchange is mixed into the Fock matrix.
 ///
 /// The SCF loop builds K according to:
@@ -69,13 +89,13 @@ pub trait XcContribution: Send + Sync {
     /// after RI-J/K setup and before the first Fock build, so that XC, which can
     /// always recompute, gets what the 3-index tensors leave. Err is a refusal.
     /// The default holds nothing.
-    fn commit_storage(
-        &mut self,
-        mol: &ferric_core::mol::Molecule,
-        bs: &ferric_core::basis::BasisSet,
-    ) -> Result<(), String> {
-        let _ = (mol, bs);
-        Ok(())
+    fn commit_storage(&mut self) -> Result<XcCommit, String> {
+        Ok(XcCommit::default())
+    }
+
+    /// What RI-J/K setup must allow for before `commit_storage`.
+    fn memory_plan(&self) -> XcMemoryPlan {
+        XcMemoryPlan::default()
     }
 
     /// Called at a converged SCF exit with the Fock matrix of the exit
@@ -128,13 +148,13 @@ pub trait UksXcContribution: Send + Sync {
     /// after RI-J/K setup and before the first Fock build, so that XC, which can
     /// always recompute, gets what the 3-index tensors leave. Err is a refusal.
     /// The default holds nothing.
-    fn commit_storage(
-        &mut self,
-        mol: &ferric_core::mol::Molecule,
-        bs: &ferric_core::basis::BasisSet,
-    ) -> Result<(), String> {
-        let _ = (mol, bs);
-        Ok(())
+    fn commit_storage(&mut self) -> Result<XcCommit, String> {
+        Ok(XcCommit::default())
+    }
+
+    /// What RI-J/K setup must allow for before `commit_storage`.
+    fn memory_plan(&self) -> XcMemoryPlan {
+        XcMemoryPlan::default()
     }
 
     /// [`XcContribution::refine_last_to_f64`] for the two spin Fock matrices.

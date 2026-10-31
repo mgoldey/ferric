@@ -82,6 +82,39 @@ pub(crate) struct ScfEnv<'a> {
     pub dfk_lr: Option<RefCell<DfK<'a>>>,
 }
 
+/// The budget RI-J/K setup decides against, allowing for what a deferred XC
+/// evaluator (which allocates only after that setup) means to hold.
+///
+/// - An auto-detected budget reads live `MemAvailable`, which those bytes are not
+///   yet out of. Without this it would rise by 0.8 of them and the job would
+///   commit that memory twice: with no pool, nothing else would notice.
+/// - An NLC cache already charged to the pool leaves that much less for raw. Raw
+///   picks `InCore` from this figure alone and refuses if the pool cannot pay, so
+///   the figure has to tell it. Otherwise a budget just above the tensor is
+///   refused where a smaller one, which gets a soft tier, runs.
+///
+/// Nothing here reads the thread count at an explicit budget.
+pub(crate) fn raw_budget(config_bytes: usize, plan: ferric_dft::xc_trait::XcMemoryPlan) -> usize {
+    let explicit = (config_bytes != 0).then_some(config_bytes);
+    ferric_core::memory::resolve_budget_after(explicit, plan.resident_if_alone)
+        .bytes
+        .saturating_sub(plan.held_bytes)
+}
+
+/// Record what XC storage decided, so that an uncharged amount reaches the run
+/// log and not only stderr.
+pub(crate) fn note_xc_commit(done: &ferric_dft::xc_trait::XcCommit) {
+    if let Some(rl) = crate::runlog::log() {
+        rl.note(
+            "xc_storage",
+            serde_json::json!({
+                "resident": done.resident,
+                "uncharged_bytes": done.uncharged_bytes,
+            }),
+        );
+    }
+}
+
 /// Build the shared [`ScfEnv`]. `k_mix` comes from the solver's XC contribution
 /// (closed- and open-shell XC are different trait objects, so XC itself stays
 /// with the solver). The hcore always folds the ECP projector in via
@@ -97,6 +130,7 @@ pub(crate) fn prepare<'a>(
     config: &RhfConfig,
     k_mix: &ferric_dft::xc_trait::KMix,
     pre: Option<(Array2<f64>, Array2<f64>, f64)>,
+    xc_plan: ferric_dft::xc_trait::XcMemoryPlan,
 ) -> Result<ScfEnv<'a>, FerricError> {
     // `pre` = caller-supplied (S, h, V_nn) — the periodic injection path
     // (`rhf::solve_rhf_injected`). `None` runs exactly the molecular build
@@ -138,7 +172,7 @@ pub(crate) fn prepare<'a>(
         }
         _ => None,
     };
-    let ooc_budget = crate::rhf::resolve_three_index_budget(config.three_index_budget_bytes);
+    let ooc_budget = raw_budget(config.three_index_budget_bytes, xc_plan);
     let (dfk_sr, dfk_lr) = if k_mix.omega > 0.0 {
         // RSH exchange is density-fitted ONLY: there is no conventional
         // four-centre erf/erfc exchange path. The explicit opt-out
@@ -535,5 +569,52 @@ mod monitor_tests {
         m.record_density_change(&a, &b);
         let s = m.signals(-1.5 + 1e-9);
         assert!(s.de < 1e-8 && s.dp_rms.is_finite() && s.dp_max.is_finite());
+    }
+}
+
+#[cfg(test)]
+mod raw_budget_tests {
+    use super::*;
+    use ferric_dft::xc_trait::XcMemoryPlan;
+
+    /// An explicit budget is a fixed number: only a held cache moves it.
+    #[test]
+    fn explicit_budget_moves_only_by_what_the_pool_holds() {
+        let plan = |held_bytes, nlc_bytes| XcMemoryPlan {
+            held_bytes,
+            nlc_bytes,
+            resident_if_alone: 3000,
+        };
+        assert_eq!(raw_budget(10_000, plan(0, 0)), 10_000);
+        assert_eq!(raw_budget(10_000, plan(0, 500)), 10_000);
+        assert_eq!(raw_budget(10_000, plan(500, 500)), 9_500);
+    }
+
+    /// The auto budget gives up 0.8 of what XC will hold, as it would if the bytes
+    /// were already allocated. Skipped where the live figure cannot move.
+    #[test]
+    fn auto_budget_allows_for_planned_xc_memory() {
+        let res = ferric_core::memory::resolve_budget(None);
+        let meminfo = std::fs::read_to_string("/proc/meminfo")
+            .ok()
+            .and_then(|s| ferric_core::memory::parse_meminfo_available(&s));
+        let live = ferric_core::memory::detect_available_bytes();
+        if res.source != ferric_core::memory::BudgetSource::AutoDetected
+            || meminfo.is_none()
+            || live.unwrap_or(0) + (1 << 26) < meminfo.unwrap_or(0)
+        {
+            return; // a fixed source, or a cgroup limit below MemAvailable
+        }
+        let x = 1usize << 30;
+        let plan = XcMemoryPlan {
+            resident_if_alone: x,
+            ..Default::default()
+        };
+        let drop = raw_budget(0, XcMemoryPlan::default()).saturating_sub(raw_budget(0, plan));
+        let want = 0.8 * x as f64;
+        assert!(
+            (drop as f64 - want).abs() < 0.25 * want,
+            "budget fell by {drop}, want about {want}"
+        );
     }
 }

@@ -1841,7 +1841,7 @@ fn molecular_ks_xc(
     };
     built
         .map(Some)
-        .map_err(|e| FerricError::General(format!("KsXc init for {name}: {e:?}")))
+        .map_err(|e| e.into_ferric(&format!("KsXc init for {name}")))
 }
 
 /// Closed-shell `(E_xc, V_xc)` of the total density `d` (tr(D S) = N), with
@@ -1997,7 +1997,17 @@ fn solve_rhf_impl(
         polarizable_site_basis,
         dfk_sr,
         dfk_lr,
-    } = crate::driver::prepare(ctx, mol, prep, config, &k_mix, pre_env)?;
+    } = crate::driver::prepare(
+        ctx,
+        mol,
+        prep,
+        config,
+        &k_mix,
+        pre_env,
+        xc_contrib
+            .as_ref()
+            .map_or_else(Default::default, |x| x.memory_plan()),
+    )?;
     phases.stop(prepare_t);
 
     // The ONE SR/LR exchange response every Hessian matvec in this solve uses —
@@ -2533,8 +2543,10 @@ fn solve_rhf_impl(
     const INCREMENTAL_FULL_REBUILD_EVERY: usize = 8;
 
     if let Some(x) = xc_contrib.as_mut() {
-        x.commit_storage(mol, prep.basis_set())
+        let done = x
+            .commit_storage()
             .map_err(|e| FerricError::General(format!("XC grid storage: {e}")))?;
+        crate::driver::note_xc_commit(&done);
     }
     crate::driver::warn_if_rss_over_at_stage("RHF", "setup", ooc_budget);
     if let Some(x) = xc_contrib.as_ref() {

@@ -34,7 +34,7 @@ use crate::xc_batch::{
     mixed_vxc_requested, owned_shells, AoStorage, DensityInput, Exec, ScreenedGrid, XcBatchConfig,
     XcScreeningStats,
 };
-use crate::xc_trait::{KMix, UksXcContribution, XcContribution};
+use crate::xc_trait::{KMix, UksXcContribution, XcCommit, XcContribution, XcMemoryPlan};
 
 /// Errors from the Kohn-Sham exchange-correlation integration path.
 #[derive(Error, Debug)]
@@ -44,6 +44,9 @@ pub enum KsXcError {
     Eval(GtoEvalError),
     #[error("libxc resolver failed: {0}")]
     Libxc(LibxcError),
+    /// The pool refused a plane with no fallback.
+    #[error("{0}")]
+    Pool(ferric_core::FerricError),
     #[error(
         "DFT grid AO cache needs {needed_gb:.2} GB (nbf={nbf}, npts={npts}{vv10}) \
          but the budget is {budget_gb:.2} GB — raise [memory] budget_gb / \
@@ -104,12 +107,27 @@ fn nlc_cache_bytes(nbf: usize, npts_nlc: usize) -> usize {
 /// Contains "grid AO cache" so occupancy reports keep naming the plane.
 const RESIDENT_LABEL: &str = "KS-DFT grid AO cache (screened batches)";
 
+/// Label for the VV10 NLC cache when it is charged ahead of the other planes.
+const NLC_LABEL: &str = "KS-DFT VV10 NLC cache";
+
 /// Label for the recompute-mode charge (per-Fock-build working set + NLC).
 const RECOMPUTE_LABEL: &str = "KS-DFT grid working set (screened batches, recompute)";
 
 /// Stable phrase of the warning printed when the budget forces recompute.
 /// `ferric-cli`'s budget MWE asserts on it, so keep it verbatim.
 pub const RECOMPUTE_WARNING: &str = "KS-DFT grid AO blocks recomputed every Fock build";
+
+impl KsXcError {
+    /// A pool refusal keeps its own type, so a DF guess can give way to it;
+    /// anything else becomes a general error naming the evaluator.
+    #[must_use]
+    pub fn into_ferric(self, what: &str) -> ferric_core::FerricError {
+        match self {
+            Self::Pool(e) => e,
+            e => ferric_core::FerricError::General(format!("{what}: {e:?}")),
+        }
+    }
+}
 
 /// Outcome of [`decide_storage`].
 #[derive(Debug)]
@@ -267,6 +285,8 @@ struct GridBuild {
     nlc_chi: Option<Array2<f64>>,
     nlc_dchi: Option<Array3<f64>>,
     pending: Option<PendingStorage>,
+    nlc_charge: Reservation,
+    plan: XcMemoryPlan,
 }
 
 /// The storage decision a deferred evaluator has not taken yet.
@@ -280,6 +300,13 @@ struct GridBuild {
 /// evaluator with `new_deferred`, set up RI-J/K, then call `commit_storage`, and
 /// XC gets what is left. That also keeps the raw decision off `transient_bytes`,
 /// which reads the thread count.
+///
+/// # The VV10 NLC cache does not wait
+///
+/// It has no fallback, and below the size of the unpacked tensor raw DOES have
+/// one (packed, spill, recompute). So the cache is charged at construction and
+/// the raw decision is made against what it leaves. See `driver::raw_budget`. It
+/// is evaluated then too, as it always was, so an auto budget already sees it.
 #[derive(Debug, Clone, Copy)]
 struct PendingStorage {
     storage: AoStorage,
@@ -289,24 +316,91 @@ struct PendingStorage {
     budget: usize,
     nbf: usize,
     is_uks: bool,
+    /// The NLC cache is already charged, so the decision below must not see it.
+    nlc_held: bool,
+}
+
+/// What [`PendingStorage::settle`] took and decided.
+struct Settled {
+    charge: Reservation,
+    commit: XcCommit,
+}
+
+/// The last recompute warning printed, as `(resident, uncharged)`. The SCF ladder
+/// builds an evaluator per rung, and the same numbers need saying once.
+static LAST_RECOMPUTE_WARNING: Mutex<Option<(usize, usize)>> = Mutex::new(None);
+
+/// True the first time this pair of sizes is seen in a row.
+fn is_new_warning(last: &Mutex<Option<(usize, usize)>>, sizes: (usize, usize)) -> bool {
+    let mut last = last.lock().unwrap_or_else(|e| e.into_inner());
+    if *last == Some(sizes) {
+        return false;
+    }
+    *last = Some(sizes);
+    true
+}
+
+/// The recompute warning. An `uncharged` that includes the NLC cache says so, and
+/// only a pool has anything "already resident" to be beside.
+fn recompute_warning_text(
+    resident_bytes: usize,
+    uncharged: usize,
+    nlc_uncharged: bool,
+    has_pool: bool,
+) -> String {
+    let beside = if has_pool {
+        " beside what is already resident"
+    } else {
+        ""
+    };
+    let extra = if uncharged > 0 {
+        let what = if nlc_uncharged {
+            "per-build working set and VV10 cache"
+        } else {
+            "per-build working set"
+        };
+        format!(
+            "; the {:.3} GB {what} does not fit either and runs uncharged, so the job can \
+             exceed its budget by at least that much (other scratch is not charged either)",
+            uncharged as f64 / 1e9
+        )
+    } else {
+        String::new()
+    };
+    format!(
+        "warning: {RECOMPUTE_WARNING} (bit-identical, slower): the screened AO blocks need \
+         {:.3} GB, which the memory budget cannot hold{beside}{extra}",
+        resident_bytes as f64 / 1e9
+    )
+}
+
+/// Says that recompute was forced, once per distinct pair of sizes.
+fn warn_recompute(resident_bytes: usize, uncharged: usize, nlc_uncharged: bool) {
+    if is_new_warning(&LAST_RECOMPUTE_WARNING, (resident_bytes, uncharged)) {
+        let has_pool = ferric_core::memory::pool::global().is_some();
+        eprintln!(
+            "{}",
+            recompute_warning_text(resident_bytes, uncharged, nlc_uncharged, has_pool)
+        );
+    }
 }
 
 impl PendingStorage {
-    /// Charge the pool, keep or skip the AO blocks, evaluate the NLC cache.
+    /// Charge the pool, and keep or skip the AO blocks.
     fn settle(
         self,
         screened: &mut ScreenedGrid,
         grid: &[GridPoint],
         nlc_grid: Option<&[GridPoint]>,
-        (mol, bs): (&Molecule, &BasisSet),
-    ) -> Result<(Reservation, Option<Array2<f64>>, Option<Array3<f64>>), KsXcError> {
+    ) -> Result<Settled, KsXcError> {
         let nlc_bytes = nlc_grid.map(|g| nlc_cache_bytes(self.nbf, g.len()));
+        let nlc_for_decision = if self.nlc_held { None } else { nlc_bytes };
         let resident_bytes = screened.resident_ao_bytes();
         let decision = decide_storage(
             self.storage,
             resident_bytes,
             screened.transient_bytes(self.is_uks),
-            nlc_bytes,
+            nlc_for_decision,
             self.budget,
             self.nbf,
             grid.len(),
@@ -316,30 +410,19 @@ impl PendingStorage {
         } else if self.storage == AoStorage::Auto {
             // The budget, not the caller, forced recompute: say so. Results are
             // bit-identical to resident mode; only speed changes.
-            let extra = if decision.uncharged > 0 {
-                format!(
-                    "; the {:.3} GB per-build working set does not fit what is left either \
-                     and runs uncharged, so the job can exceed its budget by that much",
-                    decision.uncharged as f64 / 1e9
-                )
-            } else {
-                String::new()
-            };
-            eprintln!(
-                "warning: {RECOMPUTE_WARNING} (bit-identical, slower): the screened AO blocks \
-                 need {:.3} GB, which the memory budget cannot hold beside what is already \
-                 resident{extra}",
-                resident_bytes as f64 / 1e9
+            warn_recompute(
+                resident_bytes,
+                decision.uncharged,
+                nlc_for_decision.is_some(),
             );
         }
-        let (nlc_chi, nlc_dchi) = if let Some(g) = nlc_grid {
-            let p: Vec<[f64; 3]> = g.iter().map(|gp| gp.xyz).collect();
-            let (c, dc) = eval_basis_and_grad_on_points(mol, bs, &p)?;
-            (Some(c), Some(dc))
-        } else {
-            (None, None)
-        };
-        Ok((decision.charge, nlc_chi, nlc_dchi))
+        Ok(Settled {
+            commit: XcCommit {
+                resident: decision.resident,
+                uncharged_bytes: decision.uncharged,
+            },
+            charge: decision.charge,
+        })
     }
 }
 
@@ -357,6 +440,21 @@ fn nlc_precheck(nlc_bytes: usize, budget: usize, nbf: usize, npts: usize) -> Res
         npts,
         vv10: ", +VV10 NLC grid (not batchable, and does not fit alone)",
     })
+}
+
+/// The VV10 AO values and gradients on the NLC grid, if there is one.
+#[allow(clippy::type_complexity)]
+fn eval_nlc_cache(
+    grid: Option<&[GridPoint]>,
+    mol: &Molecule,
+    bs: &BasisSet,
+) -> Result<(Option<Array2<f64>>, Option<Array3<f64>>), KsXcError> {
+    let Some(g) = grid else {
+        return Ok((None, None));
+    };
+    let p: Vec<[f64; 3]> = g.iter().map(|gp| gp.xyz).collect();
+    let (c, dc) = eval_basis_and_grad_on_points(mol, bs, &p)?;
+    Ok((Some(c), Some(dc)))
 }
 
 /// Shared constructor body for the closed- and open-shell evaluators.
@@ -420,31 +518,68 @@ fn build_grids(
         budget,
         nbf,
         is_uks,
+        nlc_held: defer && ferric_core::memory::pool::global().is_some(),
     };
     if defer {
+        // Ask first, so a cache that cannot fit costs no evaluation. Released for
+        // the evaluation itself, whose own guard debits the same bytes.
         if let Some(n) = nlc_bytes {
-            nlc_precheck(n, budget, nbf, grid.len())?;
+            match ferric_core::memory::pool::global() {
+                Some(p) => drop(p.reserve(NLC_LABEL, n).map_err(KsXcError::Pool)?),
+                None => nlc_precheck(n, budget, nbf, grid.len())?,
+            }
         }
+        let (nlc_chi, nlc_dchi) = eval_nlc_cache(nlc_grid.as_deref(), mol, bs)?;
+        let mut nlc_charge = Reservation::inert(NLC_LABEL);
+        if let (Some(n), Some(p)) = (nlc_bytes, ferric_core::memory::pool::global()) {
+            nlc_charge = p.reserve(NLC_LABEL, n).map_err(KsXcError::Pool)?;
+        }
+        let room = match ferric_core::memory::pool::global() {
+            Some(p) => p.available_bytes(),
+            None => budget.saturating_sub(nlc_bytes.unwrap_or(0)),
+        };
+        let resident = screened.resident_ao_bytes();
+        let lean = screened.transient_bytes(is_uks);
+        let resident_if_alone = match batch.storage {
+            AoStorage::Recompute => 0,
+            AoStorage::Resident => resident,
+            AoStorage::Auto => {
+                if resident.saturating_add(lean) <= room {
+                    resident
+                } else {
+                    0
+                }
+            }
+        };
+        let plan = XcMemoryPlan {
+            held_bytes: nlc_charge.bytes(),
+            nlc_bytes: nlc_bytes.unwrap_or(0),
+            resident_if_alone,
+        };
         return Ok(GridBuild {
             grid,
             screened,
             charge: Reservation::inert(RECOMPUTE_LABEL),
             nlc_grid,
-            nlc_chi: None,
-            nlc_dchi: None,
+            nlc_chi,
+            nlc_dchi,
             pending: Some(pending),
+            nlc_charge,
+            plan,
         });
     }
-    let (charge, nlc_chi, nlc_dchi) =
-        pending.settle(&mut screened, &grid, nlc_grid.as_deref(), (mol, bs))?;
+    let done = pending.settle(&mut screened, &grid, nlc_grid.as_deref())?;
+    let (nlc_chi, nlc_dchi) = eval_nlc_cache(nlc_grid.as_deref(), mol, bs)?;
     Ok(GridBuild {
         grid,
         screened,
-        charge,
+        charge: done.charge,
         nlc_grid,
         nlc_chi,
         nlc_dchi,
         pending: None,
+        nlc_charge: Reservation::inert(NLC_LABEL),
+        plan: XcMemoryPlan::default(),
     })
 }
 
@@ -592,6 +727,9 @@ pub struct KsXc {
     ladder: MixedLadder,
     /// Set until `commit_storage` on an evaluator built with `new_deferred`.
     pending: Option<PendingStorage>,
+    /// The NLC cache's charge when it was taken ahead of the storage decision.
+    _nlc_charge: Reservation,
+    plan: XcMemoryPlan,
 }
 
 /// The working budget the grid cache sizes itself against.
@@ -841,6 +979,8 @@ impl KsXc {
             nlc_scratch: Mutex::new(VxcScratch::new()),
             ladder: MixedLadder::default(),
             pending: b.pending,
+            _nlc_charge: b.nlc_charge,
+            plan: b.plan,
         })
     }
 }
@@ -937,22 +1077,19 @@ impl XcContribution for KsXc {
         self.ladder.reset();
     }
 
-    fn commit_storage(&mut self, mol: &Molecule, bs: &BasisSet) -> Result<(), String> {
+    fn memory_plan(&self) -> XcMemoryPlan {
+        self.plan
+    }
+
+    fn commit_storage(&mut self) -> Result<XcCommit, String> {
         let Some(p) = self.pending.take() else {
-            return Ok(());
+            return Ok(XcCommit::default());
         };
-        let (charge, chi, dchi) = p
-            .settle(
-                &mut self.screened,
-                &self.grid,
-                self.nlc_grid.as_deref(),
-                (mol, bs),
-            )
+        let done = p
+            .settle(&mut self.screened, &self.grid, self.nlc_grid.as_deref())
             .map_err(|e| e.to_string())?;
-        self._charge = charge;
-        self.nlc_chi = chi;
-        self.nlc_dchi = dchi;
-        Ok(())
+        self._charge = done.charge;
+        Ok(done.commit)
     }
 
     fn refine_last_to_f64(&self, f: &mut Array2<f64>) -> bool {
@@ -1022,6 +1159,9 @@ pub struct KsXcUks {
     ladder: MixedLadder,
     /// Set until `commit_storage` on an evaluator built with `new_deferred`.
     pending: Option<PendingStorage>,
+    /// The NLC cache's charge when it was taken ahead of the storage decision.
+    _nlc_charge: Reservation,
+    plan: XcMemoryPlan,
 }
 
 impl KsXcUks {
@@ -1182,6 +1322,8 @@ impl KsXcUks {
             nlc_scratch: Mutex::new(VxcScratch::new()),
             ladder: MixedLadder::default(),
             pending: b.pending,
+            _nlc_charge: b.nlc_charge,
+            plan: b.plan,
         })
     }
 }
@@ -1272,22 +1414,19 @@ impl UksXcContribution for KsXcUks {
         self.ladder.reset();
     }
 
-    fn commit_storage(&mut self, mol: &Molecule, bs: &BasisSet) -> Result<(), String> {
+    fn memory_plan(&self) -> XcMemoryPlan {
+        self.plan
+    }
+
+    fn commit_storage(&mut self) -> Result<XcCommit, String> {
         let Some(p) = self.pending.take() else {
-            return Ok(());
+            return Ok(XcCommit::default());
         };
-        let (charge, chi, dchi) = p
-            .settle(
-                &mut self.screened,
-                &self.grid,
-                self.nlc_grid.as_deref(),
-                (mol, bs),
-            )
+        let done = p
+            .settle(&mut self.screened, &self.grid, self.nlc_grid.as_deref())
             .map_err(|e| e.to_string())?;
-        self._charge = charge;
-        self.nlc_chi = chi;
-        self.nlc_dchi = dchi;
-        Ok(())
+        self._charge = done.charge;
+        Ok(done.commit)
     }
 
     fn refine_last_to_f64_uks(&self, f_a: &mut Array2<f64>, f_b: &mut Array2<f64>) -> bool {
@@ -1510,12 +1649,79 @@ mod storage_tests {
         let eager =
             KsXc::new_with_omega_budgeted(&mol, &bs, "PBE", &main, &nlc, None, budget).unwrap();
         let mut late = KsXc::new_deferred(&mol, &bs, "PBE", &main, &nlc, None, budget).unwrap();
-        late.commit_storage(&mol, &bs).unwrap();
+        late.commit_storage().unwrap();
         assert_eq!(late.batch_pts_for_test(), eager.batch_pts_for_test());
         let (mut fa, mut fb) = (Array2::zeros(d.raw_dim()), Array2::zeros(d.raw_dim()));
         let (ea, eb) = (eager.add_xc(&d, &mut fa), late.add_xc(&d, &mut fb));
         assert_eq!(ea.to_bits(), eb.to_bits());
         assert!(fa.iter().zip(&fb).all(|(a, b)| a.to_bits() == b.to_bits()));
+    }
+
+    #[test]
+    fn the_recompute_warning_says_only_what_is_true() {
+        let t = recompute_warning_text;
+        assert!(t(1, 0, false, true).contains("beside what is already resident"));
+        assert!(
+            !t(1, 0, false, false).contains("beside"),
+            "no pool, no ledger"
+        );
+        assert!(!t(1, 0, false, true).contains("uncharged"));
+        let lean = t(1, 2_000_000_000, false, true);
+        assert!(
+            lean.contains("2.000 GB per-build working set does"),
+            "{lean}"
+        );
+        assert!(lean.contains("at least that much"), "{lean}");
+        let both = t(1, 2_000_000_000, true, false);
+        assert!(
+            both.contains("per-build working set and VV10 cache"),
+            "{both}"
+        );
+    }
+
+    #[test]
+    fn a_repeated_warning_is_said_once_and_a_new_one_is_not_lost() {
+        let last = Mutex::new(None);
+        assert!(is_new_warning(&last, (1, 2)));
+        assert!(!is_new_warning(&last, (1, 2)), "the next ladder rung");
+        assert!(is_new_warning(&last, (3, 2)), "another molecule");
+    }
+
+    /// UKS twin of `deferred_storage_matches_eager_after_commit`.
+    #[test]
+    fn deferred_storage_matches_eager_after_commit_uks() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_budget_env();
+        let mol = water();
+        let bs = basis::bundled("sto-3g").unwrap();
+        let d = rhf_density(&mol, &bs).mapv(|x| 0.5 * x);
+        let (main, nlc) = small_grids();
+        let budget = Some(8_000_000_000);
+        let eager =
+            KsXcUks::new_with_omega_budgeted(&mol, &bs, "PBE", &main, &nlc, None, budget).unwrap();
+        let mut late = KsXcUks::new_deferred(&mol, &bs, "PBE", &main, &nlc, None, budget).unwrap();
+        late.commit_storage().unwrap();
+        let z = || Array2::<f64>::zeros(d.raw_dim());
+        let (mut a1, mut b1, mut a2, mut b2) = (z(), z(), z(), z());
+        let e1 = eager.add_xc_uks(&d, &d, &mut a1, &mut b1);
+        let e2 = late.add_xc_uks(&d, &d, &mut a2, &mut b2);
+        assert_eq!(e1.to_bits(), e2.to_bits());
+        for (x, y) in [(&a1, &a2), (&b1, &b2)] {
+            assert!(x.iter().zip(y).all(|(p, q)| p.to_bits() == q.to_bits()));
+        }
+    }
+
+    /// UKS twin of `add_xc_before_commit_is_refused`.
+    #[test]
+    #[should_panic(expected = "commit_storage must run")]
+    fn add_xc_before_commit_is_refused_uks() {
+        let mol = water();
+        let bs = basis::bundled("sto-3g").unwrap();
+        let (main, nlc) = small_grids();
+        let late = KsXcUks::new_deferred(&mol, &bs, "PBE", &main, &nlc, None, None).unwrap();
+        let n = nbasis(&mol, &bs).unwrap();
+        let d = Array2::<f64>::zeros((n, n));
+        late.add_xc_uks(&d, &d, &mut d.clone(), &mut d.clone());
     }
 
     /// VV10's cache is built at commit, so a missed commit must not silently

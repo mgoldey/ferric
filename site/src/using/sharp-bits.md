@@ -231,19 +231,20 @@ When a charged allocation does not fit, the result depends on the allocation:
 - A dressed tensor that fits the budget but not beside the resident raw tensor
   spills instead of stopping the job, unless `jk_storage = "memory"`.
 - A DF-guess pre-stage that runs out of memory is abandoned with a warning, and
-  the SCF starts from its usual guess. Near the limit this can depend on the
-  thread count, because some ledger charges scale with it: one run may use the
-  guess and another fall back, which changes iterations and can select a different
-  SCF solution, a larger effect than any bit-level one. An explicit
+  the SCF starts from its usual guess. That changes iterations and can select a
+  different SCF solution, a larger effect than any bit-level one. An explicit
   `jk_storage = "memory"` that does not fit, and any memory failure under MPI, stop
   the job instead. A spill directory that is full also stops it, and
   `df_increments` has no fallback.
 - The DFT grid AO cache is recomputed at every Fock build instead of stored.
   The energy is bit-identical. XC takes its memory after the RI-J/K tensors, so
   it never pushes them out. If what is left cannot hold its per-build working
-  set either, that set runs uncharged and a warning says the job can exceed its
-  budget by that much. It scales with the thread count, and is usually a small
-  fraction of the raw tensor on molecules of drug size.
+  set either, that set runs uncharged, a warning gives its size, and the run log
+  records it. The job can exceed its budget by more than that figure, because
+  other scratch is not charged either: danuglipron/def2-SVP warned of 0.46 GB and
+  peaked 0.92 GB over a 15.3 GB budget. The working set scales with the thread
+  count. The VV10 NLC cache has no fallback and is charged before RI-J/K, so a
+  budget that cannot hold it alone stops the job before any integrals are built.
 - An allocation with no fallback stops the job with an error naming it. For
   some methods this check comes after the SCF. Benzene RI-MP2/def2-SVP with
   `budget_gb = 0.001` completes the SCF, then exits with

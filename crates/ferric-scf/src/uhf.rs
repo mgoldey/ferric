@@ -707,7 +707,7 @@ fn solve_uhf_impl(
                 config.xc_omega,
                 (config.three_index_budget_bytes != 0).then_some(config.three_index_budget_bytes),
             )
-            .map_err(|e| FerricError::General(format!("KsXcUks init for {name}: {e:?}")))?;
+            .map_err(|e| e.into_ferric(&format!("KsXcUks init for {name}")))?;
             Some(Box::new(ks) as Box<dyn UksXcContribution>)
         } else {
             None
@@ -769,7 +769,17 @@ fn solve_uhf_impl(
         polarizable_site_basis,
         dfk_sr,
         dfk_lr,
-    } = crate::driver::prepare(ctx, mol, prep, config, &k_mix, pre_env)?;
+    } = crate::driver::prepare(
+        ctx,
+        mol,
+        prep,
+        config,
+        &k_mix,
+        pre_env,
+        xc_contrib
+            .as_ref()
+            .map_or_else(Default::default, |x| x.memory_plan()),
+    )?;
 
     // The ONE SR/LR exchange response every Hessian matvec in this solve uses —
     // Newton steps, TRAH steps and the post-SCF stability eigensolve alike. It
@@ -1176,8 +1186,10 @@ fn solve_uhf_impl(
     // fractional occupation they stay off (see second_order_blocked_by_fractional_occ).
     let fractional_blocks_second_order = second_order_blocked_by_fractional_occ(config);
     if let Some(x) = xc_contrib.as_mut() {
-        x.commit_storage(mol, prep.basis_set())
+        let done = x
+            .commit_storage()
             .map_err(|e| FerricError::General(format!("XC grid storage: {e}")))?;
+        crate::driver::note_xc_commit(&done);
     }
     if let Some(x) = xc_contrib.as_ref() {
         x.start_scf();
