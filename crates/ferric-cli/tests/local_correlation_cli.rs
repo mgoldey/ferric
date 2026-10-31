@@ -66,12 +66,17 @@ struct Run {
 /// Run water/6-31G under `kind` with the given extra TOML sections, logging
 /// JSON to a per-test file.
 fn run(tag: &str, kind: &str, extra: &str) -> Run {
+    run_molecule(tag, "xyz = \"testdata/molecules/water.xyz\"", kind, extra)
+}
+
+/// [`run`] on the given `[molecule]` section body.
+fn run_molecule(tag: &str, molecule: &str, kind: &str, extra: &str) -> Run {
     let root = workspace_root();
     let toml_path = root.join("target").join(format!("local_cli_{tag}.toml"));
     let log_path = root.join("target").join(format!("local_cli_{tag}.jsonl"));
     let _ = std::fs::remove_file(&log_path);
     let body = format!(
-        "[molecule]\nxyz = \"testdata/molecules/water.xyz\"\n\n\
+        "[molecule]\n{molecule}\n\n\
          [basis]\nname = \"6-31g\"\n\n\
          [method]\nkind = \"{kind}\"\n\n\
          [scf]\nmax_iter = 200\ndensity_conv = 1e-10\ndf_guess = false\n\n\
@@ -118,7 +123,10 @@ fn run(tag: &str, kind: &str, extra: &str) -> Run {
 }
 
 fn ok_run(tag: &str, kind: &str, extra: &str) -> Run {
-    let r = run(tag, kind, extra);
+    assert_ok(run(tag, kind, extra), kind)
+}
+
+fn assert_ok(r: Run, kind: &str) -> Run {
     assert!(
         r.ok,
         "{kind} run failed.\nstdout:\n{}\nstderr:\n{}",
@@ -237,6 +245,135 @@ fn rimp2_and_linlccd_state_their_model() {
         (c["e_corr_exact"].as_f64().unwrap() - b).abs() < 1e-9,
         "{c}"
     );
+}
+
+/// Keys of the run-log `timings` object (`StageTimings` fields) and of its
+/// `direct` sub-object (`DirectStats` fields). Written out here, not derived
+/// from the serializer, so a dropped key fails.
+const STAGE_KEYS: &[&str] = &["t_spaces_s", "t_assembly_s", "t_solve_s", "t_reference_s"];
+const DIRECT_KEYS: &[&str] = &[
+    "strip_rows_mean",
+    "strip_rows_max",
+    "strip_cols_mean",
+    "strip_cols_max",
+    "strip_bytes_total",
+    "n_eri3_shell_triples",
+    "n_eri3_skipped",
+    "n_metric_shell_pairs",
+    "virt_cand_mean",
+    "virt_cand_max",
+    "t_maps_s",
+    "t_eri3_s",
+    "t_eri3_fill_thread_s",
+    "t_eri3_eval_thread_s",
+    "t_eri3_scatter_thread_s",
+    "t_eri3_transform_thread_s",
+    "t_eri3_setup_s",
+    "n_eri3_slabs",
+    "transform_flops",
+    "transform_flops_own_support",
+    "n_eri3_integrals",
+    "n_eri3_null_blocks",
+    "aux_major_task_bytes_max",
+    "aux_major_concurrency",
+    "aux_major_in_flight_peak",
+    "aux_major_coeff_bytes",
+    "n_batches",
+    "batch_work_max_s",
+    "batch_work_mean_s",
+    "t_metric_s",
+    "t_pairs_s",
+    "n_pair_groups",
+    "n_distinct_occ_per_group",
+    "n_trsm",
+    "n_w_reused",
+    "own_w_bytes",
+    "own_w_bytes_held",
+    "group_scratch_bytes_max",
+    "t_loc_s",
+];
+/// The eval/scatter split of the eri3 fill is only measured with
+/// `DirectConfig::split_eri3_timers`, which the CLI leaves off: NaN in the
+/// library, `null` in the log.
+const SPLIT_ONLY: &[&str] = &["t_eri3_eval_thread_s", "t_eri3_scatter_thread_s"];
+
+/// Every key of `keys` is present in `obj` with a finite, non-negative
+/// number (`SPLIT_ONLY` keys may instead be `null`), and `obj` has no others
+/// beyond `extra`.
+fn assert_timing_keys(obj: &serde_json::Value, keys: &[&str], extra: &[&str]) {
+    let o = obj
+        .as_object()
+        .unwrap_or_else(|| panic!("not an object: {obj}"));
+    for k in keys {
+        let v = o.get(*k).unwrap_or_else(|| panic!("missing {k}: {obj}"));
+        if SPLIT_ONLY.contains(k) && v.is_null() {
+            continue;
+        }
+        let x = v
+            .as_f64()
+            .unwrap_or_else(|| panic!("{k} is not a number: {obj}"));
+        assert!(x.is_finite() && x >= 0.0, "{k} = {x}: {obj}");
+    }
+    assert_eq!(o.len(), keys.len() + extra.len(), "unexpected keys: {obj}");
+}
+
+/// A local `rimp2` run logs every stage timing in `components.timings`
+/// (`direct: null` in core, every `DirectStats` field when integral-direct);
+/// the exact run logs `timings: null`, as it logs `local: null`. Values are
+/// wall-clock, so only their presence and sign are checked, never equality.
+#[test]
+fn rimp2_local_logs_every_stage_timing() {
+    let ex = ok_run("rimp2_timings_exact", "rimp2", MP2);
+    let c = &ex.results[0]["components"];
+    assert!(
+        c.as_object().unwrap().contains_key("timings") && c["timings"].is_null(),
+        "{c}"
+    );
+    // the open-shell exact path writes its own record
+    let oh = assert_ok(
+        run_molecule(
+            "rimp2_timings_exact_uhf",
+            "xyz = \"testdata/molecules/oh.xyz\"\nmultiplicity = 2",
+            "rimp2",
+            MP2,
+        ),
+        "rimp2",
+    );
+    let c = &oh.results[0]["components"];
+    assert!(
+        c.as_object().unwrap().contains_key("timings") && c["timings"].is_null(),
+        "{c}"
+    );
+
+    for (tag, direct) in [
+        ("rimp2_timings_incore", false),
+        ("rimp2_timings_direct", true),
+    ] {
+        let extra = if direct {
+            "integral_direct = true\n"
+        } else {
+            ""
+        };
+        let lo = ok_run(tag, "rimp2", &local(&format!("eps = 1e-3\n{extra}")));
+        let t = &lo.results[0]["components"]["timings"];
+        assert_timing_keys(t, STAGE_KEYS, &["direct"]);
+        // these stages really ran, so a timer left at its default 0 is a bug
+        for k in ["t_spaces_s", "t_assembly_s", "t_solve_s"] {
+            assert!(t[k].as_f64().unwrap() > 0.0, "{k}: {t}");
+        }
+        // the reference is off, so its timer is exactly zero
+        assert_eq!(t["t_reference_s"], 0.0, "{t}");
+        if direct {
+            assert_timing_keys(&t["direct"], DIRECT_KEYS, &[]);
+            assert!(t["direct"]["n_batches"].as_u64().unwrap() >= 1, "{t}");
+            assert!(
+                t["direct"]["n_eri3_shell_triples"].as_u64().unwrap() >= 1,
+                "{t}"
+            );
+        } else {
+            assert!(t["direct"].is_null(), "{t}");
+        }
+    }
 }
 
 /// Refused configurations fail through the binary, before any SCF output:

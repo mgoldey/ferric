@@ -704,10 +704,13 @@ dependencies = [
  "mpi",
  "ndarray",
  "ndarray-linalg",
+ "ndarray-npy",
  "openblas-src",
  "rayon",
  "serde",
  "serde_json",
+ "thiserror 2.0.18",
+ "zip",
 ]
 
 [[package]]

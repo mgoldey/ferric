@@ -11,7 +11,7 @@ use ferric_core::mol::Molecule;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_mp2::lmp2_amplitude::{amplitude_lmp2, AmplitudeLmp2Config};
-use ferric_mp2::lmp2_direct::{amplitude_lmp2_direct, DirectConfig};
+use ferric_mp2::lmp2_direct::{amplitude_lmp2_direct, DirectConfig, Eri3Pass};
 #[allow(dead_code)]
 #[path = "common/bench_rhf_cache.rs"]
 mod bench_rhf_cache;
@@ -766,6 +766,69 @@ fn bench_op_list(raw: Option<&str>) -> Vec<(&'static str, Operator, f64)> {
         .collect()
 }
 
+/// FERRIC_LMP2_BENCH_SPLIT_ERI3: unset or `0` keeps the eval/scatter timer
+/// split off, `1` turns it on; anything else panics.
+fn bench_split_eri3(raw: Option<&str>) -> bool {
+    match raw {
+        None | Some("0") => false,
+        Some("1") => true,
+        Some(other) => panic!("FERRIC_LMP2_BENCH_SPLIT_ERI3: want 0 or 1, got {other:?}"),
+    }
+}
+
+/// FERRIC_LMP2_BENCH_ERI3_PASS: unset or `batches` is the shipped pass with
+/// k = 4, `aux-major` the single-evaluation pass; anything else panics.
+fn bench_eri3_pass(raw: Option<&str>) -> (Eri3Pass, usize) {
+    match raw {
+        None | Some("batches") => (Eri3Pass::Batches, 4),
+        Some("aux-major") => (Eri3Pass::AuxMajor, 1),
+        Some(other) => panic!("FERRIC_LMP2_BENCH_ERI3_PASS: unknown pass {other:?}"),
+    }
+}
+
+#[test]
+fn bench_pass_knob_is_strict() {
+    assert_eq!(bench_eri3_pass(None), (Eri3Pass::Batches, 4));
+    assert_eq!(bench_eri3_pass(Some("aux-major")), (Eri3Pass::AuxMajor, 1));
+    assert!(std::panic::catch_unwind(|| bench_eri3_pass(Some("aux"))).is_err());
+}
+
+/// The anchors of the aux-major pass: eps = 0 with trivial maps equals
+/// canonical ri_mp2 (same bar as the batch-pass anchors), both operators.
+#[test]
+fn aux_major_trivial_limit_matches_canonical() {
+    let su = setup("alkane_4.xyz");
+    for op in [Operator::coulomb(), Operator::erfc(1.0)] {
+        let cfg = AmplitudeLmp2Config {
+            eps: 0.0,
+            frozen_core: 4,
+            compute_reference: true,
+            ..Default::default()
+        };
+        let dcfg = DirectConfig {
+            eri3_pass: Eri3Pass::AuxMajor,
+            ..trivial_maps()
+        };
+        let (r, _) = amplitude_lmp2_direct(
+            &su.mol, &su.obs, &su.obs_bs, &su.dfbs, op, &su.rhf, &cfg, &dcfg,
+        )
+        .unwrap();
+        let d = (r.e_corr - r.e_corr_canonical_ri).abs();
+        eprintln!("aux-major eps=0 {:?}: |dE| {d:.2e}", op.kind);
+        assert!(d <= 1e-9, "{d:e}");
+    }
+}
+
+#[test]
+fn bench_split_knob_is_strict_and_off_by_default() {
+    assert!(!bench_split_eri3(None));
+    assert!(!bench_split_eri3(Some("0")));
+    assert!(bench_split_eri3(Some("1")));
+    for bad in ["", "on", "true", " 1"] {
+        assert!(std::panic::catch_unwind(|| bench_split_eri3(Some(bad))).is_err());
+    }
+}
+
 #[test]
 fn bench_knobs_default_to_the_historical_sweep() {
     assert_eq!(bench_eps_list(None), vec![1e-3, 1e-4]);
@@ -808,6 +871,9 @@ fn bench_ops_unknown_value_panics() {
 /// the canonical reference runs on the FIRST entry) and FERRIC_LMP2_BENCH_OPS
 /// (comma list of coul,erfc1, default both) select the sweep; a bad value
 /// panics rather than silently measuring the default.
+/// FERRIC_LMP2_BENCH_SPLIT_ERI3=1 turns on the eval/scatter timer split (see
+/// `bench_split_eri3`). Every row is followed by an `ERI3` line with the stage-3
+/// split and the energy bits, so split-on and split-off runs can be diffed.
 #[test]
 #[ignore]
 fn bench_direct_alkane_series() {
@@ -821,6 +887,8 @@ fn bench_direct_alkane_series() {
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(4);
+    let (eri3_pass, batch_merge) =
+        bench_eri3_pass(bench_env("FERRIC_LMP2_BENCH_ERI3_PASS").as_deref());
     let prod = DirectConfig {
         aux_radius_bohr: 10.0,
         virt_radius_bohr: Some(12.0),
@@ -828,14 +896,15 @@ fn bench_direct_alkane_series() {
         schwarz_skip: 1e-5, // calibrated: 66-69% triples cut for ~1e-8 Ha at C16
         // merged batches (2026-09-05b): rows recorded before this date used
         // batch_merge=1 — expect ~0.4× the eri3 evaluations vs those rows
-        batch_merge: 4,
+        batch_merge,
         // pinned: the auto budget (0.8×RAM) ignores the bench's cgroup cap
         // and memcg-OOMs the C32 reference — the budget-vs-enforcement trap
         scratch_budget_bytes: 1usize << 30,
         // OFF here: the sweep measures the distance-map configuration the
         // §28-§29 rows were recorded with (screen rows get their own sweep)
         virt_schwarz_kappa: None,
-        split_eri3_timers: false,
+        split_eri3_timers: bench_split_eri3(bench_env("FERRIC_LMP2_BENCH_SPLIT_ERI3").as_deref()),
+        eri3_pass,
     };
     println!(
         "sys        op     eps    E_corr        dE_vs_can  keep    npair/gated dom(mn/mx) \
@@ -899,6 +968,31 @@ fn bench_direct_alkane_series() {
                     r.timings.t_assembly_s,
                     r.timings.t_solve_s,
                     r.timings.t_reference_s,
+                );
+                println!(
+                    "ERI3 c={nc} op={opname} eps={eps:.0e} wall={:.4} setup={:.4} fill={:.4} eval={:.4} \
+                     scatter={:.4} transform={:.4} batch_max={:.4} batch_mean={:.4} n_batches={} \
+                     n_slabs={} workers={} triples={} skipped={} integrals={} null={} tflops={:.5e} \
+                     tflops_own={:.5e} cg={} e_bits={:016x}",
+                    st.t_eri3_s,
+                    st.t_eri3_setup_s,
+                    st.t_eri3_fill_thread_s,
+                    st.t_eri3_eval_thread_s,
+                    st.t_eri3_scatter_thread_s,
+                    st.t_eri3_transform_thread_s,
+                    st.batch_work_max_s,
+                    st.batch_work_mean_s,
+                    st.n_batches,
+                    st.n_eri3_slabs,
+                    rayon::current_num_threads(),
+                    st.n_eri3_shell_triples,
+                    st.n_eri3_skipped,
+                    st.n_eri3_integrals,
+                    st.n_eri3_null_blocks,
+                    st.transform_flops,
+                    st.transform_flops_own_support,
+                    r.cg_iterations,
+                    r.e_corr.to_bits(),
                 );
             }
         }
@@ -1292,6 +1386,7 @@ fn bench_scaling_decisive() {
         scratch_budget_bytes: budget,
         virt_schwarz_kappa: None,
         split_eri3_timers: false,
+        ..Default::default()
     };
 
     println!(

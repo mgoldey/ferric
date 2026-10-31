@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Cargo wrapper agents and the gate run through: serializes heavy cargo work (see scripts/README.md).
-# Installed by scripts/install-cargo-shim.sh to /tmp/ferric-cargo-shim/cargo; put that directory
+# Installed by scripts/install-cargo-shim.sh to ~/.local/share/ferric-cargo-shim/cargo; put that directory
 # first on PATH. FERRIC_LOCK_DIR moves the locks (tests only); it must match scripts/box-lease.
 LOCK_DIR=${FERRIC_LOCK_DIR:-/tmp}
 LEASE=$LOCK_DIR/ferric-box.lease

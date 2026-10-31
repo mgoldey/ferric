@@ -2129,6 +2129,120 @@ fn lmp2_certificate<T>(
         .with_direct_stats(maps.as_ref().map(|m| &m.1))
 }
 
+/// The run-log `timings` component of an amplitude-threshold LMP2 result:
+/// every [`ferric_mp2::lmp2_amplitude::StageTimings`] field (seconds), plus
+/// `"direct"`: every [`ferric_mp2::lmp2_direct::DirectStats`] field (seconds
+/// and counts) on the integral-direct path, `null` on the in-core one. Keys
+/// are the Rust field names. Wall-clock: NOT reproducible, so no test may
+/// compare it bitwise. A NaN (the eval/scatter split when
+/// `split_eri3_timers` is off) is logged as `null`. Exact runs log
+/// `"timings": null`, as they log `"local": null`.
+///
+/// Both structs are destructured exhaustively, so a new field is a compile
+/// error here rather than a silently unlogged timer.
+fn lmp2_timings_json(
+    t: &ferric_mp2::lmp2_amplitude::StageTimings,
+    direct: Option<&ferric_mp2::lmp2_direct::DirectStats>,
+) -> serde_json::Value {
+    let ferric_mp2::lmp2_amplitude::StageTimings {
+        t_spaces_s,
+        t_assembly_s,
+        t_solve_s,
+        t_reference_s,
+    } = t;
+    let direct = direct.map_or(serde_json::Value::Null, |d| {
+        let ferric_mp2::lmp2_direct::DirectStats {
+            strip_rows_mean,
+            strip_rows_max,
+            strip_cols_mean,
+            strip_cols_max,
+            strip_bytes_total,
+            n_eri3_shell_triples,
+            n_eri3_skipped,
+            n_metric_shell_pairs,
+            virt_cand_mean,
+            virt_cand_max,
+            t_maps_s,
+            t_eri3_s,
+            t_eri3_fill_thread_s,
+            t_eri3_eval_thread_s,
+            t_eri3_scatter_thread_s,
+            t_eri3_transform_thread_s,
+            t_eri3_setup_s,
+            n_eri3_slabs,
+            transform_flops,
+            transform_flops_own_support,
+            n_eri3_integrals,
+            n_eri3_null_blocks,
+            aux_major_task_bytes_max,
+            aux_major_concurrency,
+            aux_major_in_flight_peak,
+            aux_major_coeff_bytes,
+            n_batches,
+            batch_work_max_s,
+            batch_work_mean_s,
+            t_metric_s,
+            t_pairs_s,
+            n_pair_groups,
+            n_distinct_occ_per_group,
+            n_trsm,
+            n_w_reused,
+            own_w_bytes,
+            own_w_bytes_held,
+            group_scratch_bytes_max,
+            t_loc_s,
+        } = d;
+        serde_json::json!({
+            "strip_rows_mean": strip_rows_mean,
+            "strip_rows_max": strip_rows_max,
+            "strip_cols_mean": strip_cols_mean,
+            "strip_cols_max": strip_cols_max,
+            "strip_bytes_total": strip_bytes_total,
+            "n_eri3_shell_triples": n_eri3_shell_triples,
+            "n_eri3_skipped": n_eri3_skipped,
+            "n_metric_shell_pairs": n_metric_shell_pairs,
+            "virt_cand_mean": virt_cand_mean,
+            "virt_cand_max": virt_cand_max,
+            "t_maps_s": t_maps_s,
+            "t_eri3_s": t_eri3_s,
+            "t_eri3_fill_thread_s": t_eri3_fill_thread_s,
+            "t_eri3_eval_thread_s": t_eri3_eval_thread_s,
+            "t_eri3_scatter_thread_s": t_eri3_scatter_thread_s,
+            "t_eri3_transform_thread_s": t_eri3_transform_thread_s,
+            "t_eri3_setup_s": t_eri3_setup_s,
+            "n_eri3_slabs": n_eri3_slabs,
+            "transform_flops": transform_flops,
+            "transform_flops_own_support": transform_flops_own_support,
+            "n_eri3_integrals": n_eri3_integrals,
+            "n_eri3_null_blocks": n_eri3_null_blocks,
+            "aux_major_task_bytes_max": aux_major_task_bytes_max,
+            "aux_major_concurrency": aux_major_concurrency,
+            "aux_major_in_flight_peak": aux_major_in_flight_peak,
+            "aux_major_coeff_bytes": aux_major_coeff_bytes,
+            "n_batches": n_batches,
+            "batch_work_max_s": batch_work_max_s,
+            "batch_work_mean_s": batch_work_mean_s,
+            "t_metric_s": t_metric_s,
+            "t_pairs_s": t_pairs_s,
+            "n_pair_groups": n_pair_groups,
+            "n_distinct_occ_per_group": n_distinct_occ_per_group,
+            "n_trsm": n_trsm,
+            "n_w_reused": n_w_reused,
+            "own_w_bytes": own_w_bytes,
+            "own_w_bytes_held": own_w_bytes_held,
+            "group_scratch_bytes_max": group_scratch_bytes_max,
+            "t_loc_s": t_loc_s,
+        })
+    });
+    serde_json::json!({
+        "t_spaces_s": t_spaces_s,
+        "t_assembly_s": t_assembly_s,
+        "t_solve_s": t_solve_s,
+        "t_reference_s": t_reference_s,
+        "direct": direct,
+    })
+}
+
 /// The exact-reference lines of a local run's printout.
 ///
 /// `e_ref` is `None` when the (opt-in, `[local] reference = true`) reference
@@ -2339,6 +2453,7 @@ fn run_rimp2_local(
                 "e_scf_reference": result.energy,
                 "scf_converged": result.converged,
                 "local": lmp2_local_json(&local, &cert),
+                "timings": lmp2_timings_json(&r.timings, maps.as_ref().map(|(_, st)| st)),
             }),
         );
     }
@@ -2447,6 +2562,7 @@ fn run_rimp2(
                 "scf_converged": result.converged,
                 "local": local_json(None),
                 "precision": mp2_result.precision.to_json(),
+                "timings": serde_json::Value::Null,
             }),
         );
     }
@@ -2555,6 +2671,7 @@ fn run_u_rimp2(
                 "scf_converged": result.converged,
                 "local": local_json(None),
                 "precision": r.precision.to_json(),
+                "timings": serde_json::Value::Null,
             }),
         );
     }
@@ -6760,6 +6877,130 @@ mod local_printout_tests {
         assert_eq!(j["eps"], 1e-4);
         assert_eq!(j["keep_fraction"], 0.023);
         assert_eq!(j["integral_direct"], true);
+    }
+
+    /// The run-log `timings` object carries every StageTimings field and,
+    /// on the direct path, every DirectStats field, each with its own value
+    /// (distinct per field, so a swapped key fails), and `direct: null` on
+    /// the in-core path. A NaN timer is logged as `null`.
+    #[test]
+    fn lmp2_timings_json_carries_every_field() {
+        use super::lmp2_timings_json;
+        use ferric_mp2::lmp2_amplitude::StageTimings;
+        use ferric_mp2::lmp2_direct::DirectStats;
+        let t = StageTimings {
+            t_spaces_s: 1.5,
+            t_assembly_s: 2.5,
+            t_solve_s: 3.5,
+            t_reference_s: 4.5,
+        };
+        let d = DirectStats {
+            strip_rows_mean: 10.5,
+            strip_rows_max: 11,
+            strip_cols_mean: 12.5,
+            strip_cols_max: 13,
+            strip_bytes_total: 14,
+            n_eri3_shell_triples: 15,
+            n_eri3_skipped: 16,
+            n_metric_shell_pairs: 17,
+            virt_cand_mean: 18.5,
+            virt_cand_max: 19,
+            t_maps_s: 20.5,
+            t_eri3_s: 21.5,
+            t_eri3_fill_thread_s: 22.5,
+            t_eri3_eval_thread_s: f64::NAN,
+            t_eri3_scatter_thread_s: 24.5,
+            t_eri3_transform_thread_s: 25.5,
+            t_eri3_setup_s: 40.5,
+            n_eri3_slabs: 41,
+            transform_flops: 42.5,
+            transform_flops_own_support: 43.5,
+            n_eri3_integrals: 44,
+            n_eri3_null_blocks: 45,
+            aux_major_task_bytes_max: 46,
+            aux_major_concurrency: 47,
+            aux_major_in_flight_peak: 48,
+            aux_major_coeff_bytes: 49,
+            n_batches: 26,
+            batch_work_max_s: 27.5,
+            batch_work_mean_s: 28.5,
+            t_metric_s: 29.5,
+            t_pairs_s: 30.5,
+            n_pair_groups: 32,
+            n_distinct_occ_per_group: 33.5,
+            n_trsm: 34,
+            n_w_reused: 35,
+            own_w_bytes: 36,
+            own_w_bytes_held: 37,
+            group_scratch_bytes_max: 38,
+            t_loc_s: 31.5,
+        };
+        let stage: &[(&str, f64)] = &[
+            ("t_spaces_s", 1.5),
+            ("t_assembly_s", 2.5),
+            ("t_solve_s", 3.5),
+            ("t_reference_s", 4.5),
+        ];
+        let direct: &[(&str, f64)] = &[
+            ("strip_rows_mean", 10.5),
+            ("strip_rows_max", 11.0),
+            ("strip_cols_mean", 12.5),
+            ("strip_cols_max", 13.0),
+            ("strip_bytes_total", 14.0),
+            ("n_eri3_shell_triples", 15.0),
+            ("n_eri3_skipped", 16.0),
+            ("n_metric_shell_pairs", 17.0),
+            ("virt_cand_mean", 18.5),
+            ("virt_cand_max", 19.0),
+            ("t_maps_s", 20.5),
+            ("t_eri3_s", 21.5),
+            ("t_eri3_fill_thread_s", 22.5),
+            ("t_eri3_scatter_thread_s", 24.5),
+            ("t_eri3_transform_thread_s", 25.5),
+            ("t_eri3_setup_s", 40.5),
+            ("n_eri3_slabs", 41.0),
+            ("transform_flops", 42.5),
+            ("transform_flops_own_support", 43.5),
+            ("n_eri3_integrals", 44.0),
+            ("n_eri3_null_blocks", 45.0),
+            ("aux_major_task_bytes_max", 46.0),
+            ("aux_major_concurrency", 47.0),
+            ("aux_major_in_flight_peak", 48.0),
+            ("aux_major_coeff_bytes", 49.0),
+            ("n_batches", 26.0),
+            ("batch_work_max_s", 27.5),
+            ("batch_work_mean_s", 28.5),
+            ("t_metric_s", 29.5),
+            ("t_pairs_s", 30.5),
+            ("n_pair_groups", 32.0),
+            ("n_distinct_occ_per_group", 33.5),
+            ("n_trsm", 34.0),
+            ("n_w_reused", 35.0),
+            ("own_w_bytes", 36.0),
+            ("own_w_bytes_held", 37.0),
+            ("group_scratch_bytes_max", 38.0),
+            ("t_loc_s", 31.5),
+        ];
+        // round trip through text, as a log reader sees it
+        let j: serde_json::Value =
+            serde_json::from_str(&lmp2_timings_json(&t, Some(&d)).to_string()).unwrap();
+        let obj = j.as_object().unwrap();
+        assert_eq!(obj.len(), stage.len() + 1, "{j}");
+        for (k, v) in stage {
+            assert_eq!(j[*k].as_f64(), Some(*v), "{k}: {j}");
+        }
+        let dj = j["direct"].as_object().unwrap();
+        assert_eq!(dj.len(), direct.len() + 1, "{j}");
+        for (k, v) in direct {
+            assert_eq!(j["direct"][*k].as_f64(), Some(*v), "{k}: {j}");
+        }
+        assert!(
+            dj.contains_key("t_eri3_eval_thread_s") && dj["t_eri3_eval_thread_s"].is_null(),
+            "{j}"
+        );
+        let incore = lmp2_timings_json(&t, None);
+        assert!(incore["direct"].is_null(), "{incore}");
+        assert_eq!(incore["t_solve_s"], 3.5);
     }
 
     /// Every certificate field survives the run-log JSON round trip

@@ -16,10 +16,14 @@ ferric-pcm = { path = "../ferric-pcm" }
 ferric-quadrature = { path = "../ferric-quadrature" }
 ndarray = { workspace = true }
 ndarray-linalg = { workspace = true }
+ndarray-npy = "0.9"
 openblas-src = { workspace = true }
 rayon = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+thiserror = { workspace = true }
+# Same version ndarray-npy uses: checks each member's header before it is read.
+zip = { version = "2", default-features = false }
 mpi = { workspace = true, optional = true }
 
 [features]
