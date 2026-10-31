@@ -104,19 +104,21 @@ ferric_cargo_locked() {
         "$FERRIC_CARGO_LOCK" -c "$*"
 }
 
-# /tmp is wiped at boot and a dead PATH entry falls through to the real cargo without a word, so the
-# compile locks and the box lease silently stop applying. Reinstall a missing shim from this tree, and
-# warn loudly when this process's cargo would bypass it. Never fails the caller.
+# A dead or shadowed PATH entry falls through to the real cargo without a word, so the compile locks
+# and the box lease silently stop applying. Reinstall a missing shim from this tree, and warn loudly
+# when this process's cargo would bypass it or the install differs from this tree. Never fails the caller.
 ferric_ensure_cargo_shim() { # REPO_ROOT
-    local repo="$1" dir="${FERRIC_SHIM_DIR:-/tmp/ferric-cargo-shim}"
+    local repo="$1" home="${HOME:-$(getent passwd "$(id -u)" | cut -d: -f6)}"
+    local dir="${FERRIC_SHIM_DIR:-$home/.local/share/ferric-cargo-shim}"
     if [[ ! -x "$dir/cargo" ]]; then
-        echo "WARNING: the cargo shim is missing from $dir (wiped at boot?); reinstalling." >&2
+        echo "WARNING: the cargo shim is missing from $dir; reinstalling." >&2
         "$repo/scripts/install-cargo-shim.sh" >&2 ||
             echo "WARNING: could not reinstall it: cargo here takes no compile lock and ignores box leases." >&2
+    elif [[ -r "$repo/scripts/cargo-shim" ]] && ! cmp -s "$repo/scripts/cargo-shim" "$dir/cargo"; then
+        echo "WARNING: $dir/cargo differs from this tree; if this tree is current, run scripts/install-cargo-shim.sh." >&2
     fi
-    case ":$PATH:" in
-        *":$dir:"*) ;;
-        *) echo "WARNING: $dir is not on PATH: cargo here takes no compile lock and ignores box leases." >&2 ;;
-    esac
+    if [[ "$(command -v cargo)" != "$dir/cargo" ]]; then
+        echo "WARNING: $dir/cargo is not first on PATH: cargo here takes no compile lock and ignores box leases." >&2
+    fi
     return 0
 }

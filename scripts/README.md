@@ -107,12 +107,14 @@ heavy cargo work through two slots (`/tmp/ferric-compile.lock`,
 trivial subcommand (`metadata`, `fmt`, `--version`...) counts as heavy.
 
 Install or update it with `scripts/install-cargo-shim.sh` (atomic, safe under
-running builds), then put `/tmp/ferric-cargo-shim` first on `PATH`. It carries
-`box-lease` too. `/tmp` is wiped at boot and a dead `PATH` entry falls through to
-the real cargo with no error, so the pre-push hook and `ci-gate.sh` reinstall a
-missing shim and warn when `cargo` would bypass it. Between pushes nothing does:
-after a reboot, run the installer. (The hook part needs `scripts/install-hooks.sh`
-re-run once.)
+running builds), then put `~/.local/share/ferric-cargo-shim` first on `PATH` in your
+shell startup files. It carries `box-lease` too. The directory survives a reboot; the
+locks in `/tmp` do not need to, since nothing holds them across one. A dead `PATH` entry
+falls through to the real cargo with no error, so the pre-push hook and `ci-gate.sh`
+reinstall a missing shim, and warn when `cargo` would bypass it or the install differs
+from the pushing tree. Nothing refreshes a stale shim for you: after a change to these
+scripts merges, re-run the installer. Keep `ferric-cargo-shim`
+in the directory name: the shim skips matching `PATH` entries to find the real cargo.
 
 For a timing job, take the lease rather than polling for a quiet box:
 
