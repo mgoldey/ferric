@@ -266,6 +266,97 @@ struct GridBuild {
     nlc_grid: Option<Vec<GridPoint>>,
     nlc_chi: Option<Array2<f64>>,
     nlc_dchi: Option<Array3<f64>>,
+    pending: Option<PendingStorage>,
+}
+
+/// The storage decision a deferred evaluator has not taken yet.
+///
+/// # Why the decision can wait
+///
+/// The SCF needs the functional (`k_mix`) before it can set up RI-J/K, but not
+/// the grid's memory. Deciding storage first let XC take the pool from the raw
+/// 3-index tensor, the one plane with no bit-identical alternative: XC can
+/// always recompute, raw can only stop the job. So the SCF drivers build the
+/// evaluator with `new_deferred`, set up RI-J/K, then call `commit_storage`, and
+/// XC gets what is left. That also keeps the raw decision off `transient_bytes`,
+/// which reads the thread count.
+#[derive(Debug, Clone, Copy)]
+struct PendingStorage {
+    storage: AoStorage,
+    /// Resolved once, at construction: see `grid_working_budget`. Without a pool
+    /// it subtracts live RSS, and reading it later would move the no-pool
+    /// resident-or-recompute choice.
+    budget: usize,
+    nbf: usize,
+    is_uks: bool,
+}
+
+impl PendingStorage {
+    /// Charge the pool, keep or skip the AO blocks, evaluate the NLC cache.
+    fn settle(
+        self,
+        screened: &mut ScreenedGrid,
+        grid: &[GridPoint],
+        nlc_grid: Option<&[GridPoint]>,
+        (mol, bs): (&Molecule, &BasisSet),
+    ) -> Result<(Reservation, Option<Array2<f64>>, Option<Array3<f64>>), KsXcError> {
+        let nlc_bytes = nlc_grid.map(|g| nlc_cache_bytes(self.nbf, g.len()));
+        let resident_bytes = screened.resident_ao_bytes();
+        let decision = decide_storage(
+            self.storage,
+            resident_bytes,
+            screened.transient_bytes(self.is_uks),
+            nlc_bytes,
+            self.budget,
+            self.nbf,
+            grid.len(),
+        )?;
+        if decision.resident {
+            screened.materialize(grid)?;
+        } else if self.storage == AoStorage::Auto {
+            // The budget, not the caller, forced recompute: say so. Results are
+            // bit-identical to resident mode; only speed changes.
+            let extra = if decision.uncharged > 0 {
+                format!(
+                    "; the {:.3} GB per-build working set does not fit what is left either \
+                     and runs uncharged, so the job can exceed its budget by that much",
+                    decision.uncharged as f64 / 1e9
+                )
+            } else {
+                String::new()
+            };
+            eprintln!(
+                "warning: {RECOMPUTE_WARNING} (bit-identical, slower): the screened AO blocks \
+                 need {:.3} GB, which the memory budget cannot hold beside what is already \
+                 resident{extra}",
+                resident_bytes as f64 / 1e9
+            );
+        }
+        let (nlc_chi, nlc_dchi) = if let Some(g) = nlc_grid {
+            let p: Vec<[f64; 3]> = g.iter().map(|gp| gp.xyz).collect();
+            let (c, dc) = eval_basis_and_grad_on_points(mol, bs, &p)?;
+            (Some(c), Some(dc))
+        } else {
+            (None, None)
+        };
+        Ok((decision.charge, nlc_chi, nlc_dchi))
+    }
+}
+
+/// Stop before any expensive setup when the VV10 NLC cache, which has no
+/// fallback, cannot fit even an empty ledger. Takes nothing.
+fn nlc_precheck(nlc_bytes: usize, budget: usize, nbf: usize, npts: usize) -> Result<(), KsXcError> {
+    let room = ferric_core::memory::pool::global_available_bytes().unwrap_or(budget);
+    if nlc_bytes <= room {
+        return Ok(());
+    }
+    Err(KsXcError::OverBudget {
+        needed_gb: nlc_bytes as f64 / 1e9,
+        budget_gb: room as f64 / 1e9,
+        nbf,
+        npts,
+        vv10: ", +VV10 NLC grid (not batchable, and does not fit alone)",
+    })
 }
 
 /// Shared constructor body for the closed- and open-shell evaluators.
@@ -279,6 +370,7 @@ fn build_grids(
     memory_budget_bytes: Option<usize>,
     is_uks: bool,
     batch: &XcBatchConfig,
+    defer: bool,
 ) -> Result<GridBuild, KsXcError> {
     // Config honesty: a NaN threshold would compare false against every value
     // and silently drop every shell (E_xc = 0); a zero batch cap is meaningless.
@@ -323,45 +415,28 @@ fn build_grids(
     };
     let nlc_bytes = nlc_grid.as_ref().map(|g| nlc_cache_bytes(nbf, g.len()));
 
-    let resident_bytes = screened.resident_ao_bytes();
-    let decision = decide_storage(
-        batch.storage,
-        resident_bytes,
-        screened.transient_bytes(is_uks),
-        nlc_bytes,
+    let pending = PendingStorage {
+        storage: batch.storage,
         budget,
         nbf,
-        grid.len(),
-    )?;
-    if decision.resident {
-        screened.materialize(&grid)?;
-    } else if batch.storage == AoStorage::Auto {
-        // The budget, not the caller, forced recompute: say so. Results are
-        // bit-identical to resident mode; only speed changes.
-        let extra = if decision.uncharged > 0 {
-            format!(
-                "; the {:.3} GB per-build working set also exceeds it and runs uncharged",
-                decision.uncharged as f64 / 1e9
-            )
-        } else {
-            String::new()
-        };
-        eprintln!(
-            "warning: {RECOMPUTE_WARNING} (bit-identical, slower): the screened AO blocks \
-             need {:.3} GB, which the memory budget cannot hold{extra}",
-            resident_bytes as f64 / 1e9
-        );
-    }
-    let charge = decision.charge;
-
-    let (nlc_chi, nlc_dchi) = if let Some(g) = nlc_grid.as_ref() {
-        let p: Vec<[f64; 3]> = g.iter().map(|gp| gp.xyz).collect();
-        let (c, dc) = eval_basis_and_grad_on_points(mol, bs, &p)?;
-        (Some(c), Some(dc))
-    } else {
-        (None, None)
+        is_uks,
     };
-
+    if defer {
+        if let Some(n) = nlc_bytes {
+            nlc_precheck(n, budget, nbf, grid.len())?;
+        }
+        return Ok(GridBuild {
+            grid,
+            screened,
+            charge: Reservation::inert(RECOMPUTE_LABEL),
+            nlc_grid,
+            nlc_chi: None,
+            nlc_dchi: None,
+            pending: Some(pending),
+        });
+    }
+    let (charge, nlc_chi, nlc_dchi) =
+        pending.settle(&mut screened, &grid, nlc_grid.as_deref(), (mol, bs))?;
     Ok(GridBuild {
         grid,
         screened,
@@ -369,6 +444,7 @@ fn build_grids(
         nlc_grid,
         nlc_chi,
         nlc_dchi,
+        pending: None,
     })
 }
 
@@ -514,6 +590,8 @@ pub struct KsXc {
     nlc_scratch: Mutex<VxcScratch>,
     /// When a Fock build may form V_xc in mixed precision (see [`MixedLadder`]).
     ladder: MixedLadder,
+    /// Set until `commit_storage` on an evaluator built with `new_deferred`.
+    pending: Option<PendingStorage>,
 }
 
 /// The working budget the grid cache sizes itself against.
@@ -697,11 +775,61 @@ impl KsXc {
         memory_budget_bytes: Option<usize>,
         batch: XcBatchConfig,
     ) -> Result<Self, KsXcError> {
+        Self::construct(
+            (mol, bs, xc_name),
+            (main, nlc),
+            omega,
+            memory_budget_bytes,
+            batch,
+            false,
+        )
+    }
+
+    /// [`Self::new_with_omega_budgeted`] that takes no memory yet. Call
+    /// [`XcContribution::commit_storage`] before the first `add_xc`; see
+    /// `PendingStorage` for why the SCF drivers want this.
+    pub fn new_deferred(
+        mol: &Molecule,
+        bs: &BasisSet,
+        xc_name: &str,
+        main: &AtomicGridConfig,
+        nlc: &AtomicGridConfig,
+        omega: Option<f64>,
+        memory_budget_bytes: Option<usize>,
+    ) -> Result<Self, KsXcError> {
+        Self::construct(
+            (mol, bs, xc_name),
+            (main, nlc),
+            omega,
+            memory_budget_bytes,
+            XcBatchConfig::default(),
+            true,
+        )
+    }
+
+    fn construct(
+        (mol, bs, xc_name): (&Molecule, &BasisSet, &str),
+        (main, nlc): (&AtomicGridConfig, &AtomicGridConfig),
+        omega: Option<f64>,
+        memory_budget_bytes: Option<usize>,
+        batch: XcBatchConfig,
+        defer: bool,
+    ) -> Result<Self, KsXcError> {
         let xc = match omega {
             None => xc_def_from_name(xc_name)?,
             Some(w) => crate::libxc::xc_def_from_name_nspin_omega(xc_name, 1, w)?,
         };
-        let b = build_grids(mol, bs, &xc, main, nlc, memory_budget_bytes, false, &batch)?;
+        let b = build_grids(
+            mol,
+            bs,
+            &xc,
+            main,
+            nlc,
+            memory_budget_bytes,
+            false,
+            &batch,
+            defer,
+        )?;
         Ok(Self {
             xc,
             grid: b.grid,
@@ -712,6 +840,7 @@ impl KsXc {
             nlc_dchi: b.nlc_dchi,
             nlc_scratch: Mutex::new(VxcScratch::new()),
             ladder: MixedLadder::default(),
+            pending: b.pending,
         })
     }
 }
@@ -753,6 +882,10 @@ impl KsXc {
     /// Shared body of [`XcContribution::add_xc`] and `add_xc_occ`: semilocal
     /// XC from `input`, VV10 (if any) from the dense `d`.
     fn add_xc_input(&self, d: &Array2<f64>, input: DensityInput, f: &mut Array2<f64>) -> f64 {
+        assert!(
+            self.pending.is_none(),
+            "commit_storage must run before the first add_xc on a deferred evaluator"
+        );
         let mixed = mixed_vxc_allowed(&self.xc, &self.ladder, &[d]);
         let (e_xc, vxc) = self
             .screened
@@ -802,6 +935,24 @@ impl XcContribution for KsXc {
 
     fn start_scf(&self) {
         self.ladder.reset();
+    }
+
+    fn commit_storage(&mut self, mol: &Molecule, bs: &BasisSet) -> Result<(), String> {
+        let Some(p) = self.pending.take() else {
+            return Ok(());
+        };
+        let (charge, chi, dchi) = p
+            .settle(
+                &mut self.screened,
+                &self.grid,
+                self.nlc_grid.as_deref(),
+                (mol, bs),
+            )
+            .map_err(|e| e.to_string())?;
+        self._charge = charge;
+        self.nlc_chi = chi;
+        self.nlc_dchi = dchi;
+        Ok(())
     }
 
     fn refine_last_to_f64(&self, f: &mut Array2<f64>) -> bool {
@@ -869,6 +1020,8 @@ pub struct KsXcUks {
     nlc_scratch: Mutex<VxcScratch>,
     /// When a Fock build may form V_xc in mixed precision (see [`MixedLadder`]).
     ladder: MixedLadder,
+    /// Set until `commit_storage` on an evaluator built with `new_deferred`.
+    pending: Option<PendingStorage>,
 }
 
 impl KsXcUks {
@@ -963,11 +1116,61 @@ impl KsXcUks {
         memory_budget_bytes: Option<usize>,
         batch: XcBatchConfig,
     ) -> Result<Self, KsXcError> {
+        Self::construct(
+            (mol, bs, xc_name),
+            (main, nlc),
+            omega,
+            memory_budget_bytes,
+            batch,
+            false,
+        )
+    }
+
+    /// UKS twin of `KsXc::new_deferred`: [`Self::new_with_omega_budgeted`] that takes no memory yet. Call
+    /// [`UksXcContribution::commit_storage`] before the first `add_xc`; see
+    /// `PendingStorage` for why the SCF drivers want this.
+    pub fn new_deferred(
+        mol: &Molecule,
+        bs: &BasisSet,
+        xc_name: &str,
+        main: &AtomicGridConfig,
+        nlc: &AtomicGridConfig,
+        omega: Option<f64>,
+        memory_budget_bytes: Option<usize>,
+    ) -> Result<Self, KsXcError> {
+        Self::construct(
+            (mol, bs, xc_name),
+            (main, nlc),
+            omega,
+            memory_budget_bytes,
+            XcBatchConfig::default(),
+            true,
+        )
+    }
+
+    fn construct(
+        (mol, bs, xc_name): (&Molecule, &BasisSet, &str),
+        (main, nlc): (&AtomicGridConfig, &AtomicGridConfig),
+        omega: Option<f64>,
+        memory_budget_bytes: Option<usize>,
+        batch: XcBatchConfig,
+        defer: bool,
+    ) -> Result<Self, KsXcError> {
         let xc = match omega {
             None => xc_def_from_name_nspin(xc_name, 2)?,
             Some(w) => crate::libxc::xc_def_from_name_nspin_omega(xc_name, 2, w)?,
         };
-        let b = build_grids(mol, bs, &xc, main, nlc, memory_budget_bytes, true, &batch)?;
+        let b = build_grids(
+            mol,
+            bs,
+            &xc,
+            main,
+            nlc,
+            memory_budget_bytes,
+            true,
+            &batch,
+            defer,
+        )?;
         Ok(Self {
             xc,
             grid: b.grid,
@@ -978,6 +1181,7 @@ impl KsXcUks {
             nlc_dchi: b.nlc_dchi,
             nlc_scratch: Mutex::new(VxcScratch::new()),
             ladder: MixedLadder::default(),
+            pending: b.pending,
         })
     }
 }
@@ -992,6 +1196,10 @@ impl KsXcUks {
         f_a: &mut Array2<f64>,
         f_b: &mut Array2<f64>,
     ) -> f64 {
+        assert!(
+            self.pending.is_none(),
+            "commit_storage must run before the first add_xc on a deferred evaluator"
+        );
         // Semilocal: (ρ_α, ρ_β, σ_αα, σ_αβ, σ_ββ[, τ_α, τ_β]) on the screened
         // batches, then the polarized libxc kernel.
         let mixed = mixed_vxc_allowed(&self.xc, &self.ladder, &[d_a, d_b]);
@@ -1062,6 +1270,24 @@ impl UksXcContribution for KsXcUks {
 
     fn start_scf(&self) {
         self.ladder.reset();
+    }
+
+    fn commit_storage(&mut self, mol: &Molecule, bs: &BasisSet) -> Result<(), String> {
+        let Some(p) = self.pending.take() else {
+            return Ok(());
+        };
+        let (charge, chi, dchi) = p
+            .settle(
+                &mut self.screened,
+                &self.grid,
+                self.nlc_grid.as_deref(),
+                (mol, bs),
+            )
+            .map_err(|e| e.to_string())?;
+        self._charge = charge;
+        self.nlc_chi = chi;
+        self.nlc_dchi = dchi;
+        Ok(())
     }
 
     fn refine_last_to_f64_uks(&self, f_a: &mut Array2<f64>, f_b: &mut Array2<f64>) -> bool {
@@ -1271,6 +1497,41 @@ mod storage_tests {
     /// Catches: any divergence between the resident and recompute code paths
     /// (e.g. a stale resident block, a different evaluation order), and a
     /// budget that fails to reach the storage decision.
+    /// A deferred evaluator ends up as the eager one: same storage, same bits.
+    #[test]
+    fn deferred_storage_matches_eager_after_commit() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_budget_env();
+        let mol = water();
+        let bs = basis::bundled("sto-3g").unwrap();
+        let d = rhf_density(&mol, &bs);
+        let (main, nlc) = small_grids();
+        let budget = Some(8_000_000_000);
+        let eager =
+            KsXc::new_with_omega_budgeted(&mol, &bs, "PBE", &main, &nlc, None, budget).unwrap();
+        let mut late = KsXc::new_deferred(&mol, &bs, "PBE", &main, &nlc, None, budget).unwrap();
+        late.commit_storage(&mol, &bs).unwrap();
+        assert_eq!(late.batch_pts_for_test(), eager.batch_pts_for_test());
+        let (mut fa, mut fb) = (Array2::zeros(d.raw_dim()), Array2::zeros(d.raw_dim()));
+        let (ea, eb) = (eager.add_xc(&d, &mut fa), late.add_xc(&d, &mut fb));
+        assert_eq!(ea.to_bits(), eb.to_bits());
+        assert!(fa.iter().zip(&fb).all(|(a, b)| a.to_bits() == b.to_bits()));
+    }
+
+    /// VV10's cache is built at commit, so a missed commit must not silently
+    /// lose V_nl.
+    #[test]
+    #[should_panic(expected = "commit_storage must run")]
+    fn add_xc_before_commit_is_refused() {
+        let mol = water();
+        let bs = basis::bundled("sto-3g").unwrap();
+        let (main, nlc) = small_grids();
+        let late = KsXc::new_deferred(&mol, &bs, "PBE", &main, &nlc, None, None).unwrap();
+        let n = nbasis(&mol, &bs).unwrap();
+        let d = Array2::<f64>::zeros((n, n));
+        late.add_xc(&d, &mut d.clone());
+    }
+
     #[test]
     fn budget_selected_storage_modes_are_bit_identical_closed_shell() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());

@@ -1805,6 +1805,7 @@ fn molecular_ks_xc(
     mol: &Molecule,
     bs: &ferric_core::basis::BasisSet,
     config: &RhfConfig,
+    defer_storage: bool,
 ) -> Result<Option<ferric_dft::ks::KsXc>, FerricError> {
     let Some(name) = config.xc.as_deref() else {
         return Ok(None);
@@ -1824,17 +1825,23 @@ fn molecular_ks_xc(
     // ~51 GB"), i.e. the documented primary knob did nothing while
     // FERRIC_MEM_BUDGET_GB worked. 0 means unset, matching
     // `rhf::resolve_three_index_budget`.
-    ferric_dft::ks::KsXc::new_with_omega_budgeted(
-        mol,
-        bs,
-        name,
-        &main,
-        &nlc,
-        config.xc_omega,
-        (config.three_index_budget_bytes != 0).then_some(config.three_index_budget_bytes),
-    )
-    .map(Some)
-    .map_err(|e| FerricError::General(format!("KsXc init for {name}: {e:?}")))
+    let budget = (config.three_index_budget_bytes != 0).then_some(config.three_index_budget_bytes);
+    let built = if defer_storage {
+        ferric_dft::ks::KsXc::new_deferred(mol, bs, name, &main, &nlc, config.xc_omega, budget)
+    } else {
+        ferric_dft::ks::KsXc::new_with_omega_budgeted(
+            mol,
+            bs,
+            name,
+            &main,
+            &nlc,
+            config.xc_omega,
+            budget,
+        )
+    };
+    built
+        .map(Some)
+        .map_err(|e| FerricError::General(format!("KsXc init for {name}: {e:?}")))
 }
 
 /// Closed-shell `(E_xc, V_xc)` of the total density `d` (tr(D S) = N), with
@@ -1858,7 +1865,7 @@ pub fn ks_vxc_closed(
     d: &Array2<f64>,
 ) -> Result<(f64, Array2<f64>), FerricError> {
     use ferric_dft::xc_trait::XcContribution;
-    let ks = molecular_ks_xc(mol, bs, config)?.ok_or_else(|| {
+    let ks = molecular_ks_xc(mol, bs, config, false)?.ok_or_else(|| {
         FerricError::General("ks_vxc_closed: config.xc is None (no functional)".to_string())
     })?;
     let mut v = Array2::<f64>::zeros(d.raw_dim());
@@ -1921,11 +1928,12 @@ fn solve_rhf_impl(
 
     // Build the XC contribution once. None for pure HF. Built FIRST so the
     // shared driver env can size the RSH fitter pair from k_mix, and so the
-    // JK-aux auto-defaults below can see hybrid/RSH-ness.
+    // JK-aux auto-defaults below can see hybrid/RSH-ness. It takes its memory
+    // only at `commit_storage` below, after RI-J/K setup.
     use ferric_dft::xc_trait::{KMix, XcContribution};
 
-    let xc_contrib: Option<Box<dyn XcContribution>> =
-        molecular_ks_xc(mol, prep.basis_set(), config)?
+    let mut xc_contrib: Option<Box<dyn XcContribution>> =
+        molecular_ks_xc(mol, prep.basis_set(), config, true)?
             .map(|ks| Box::new(ks) as Box<dyn XcContribution>);
     // Injected (periodic) KS: a global hybrid scales the injected K by its
     // exact-exchange fraction (validate_injected guarantees `xc_contrib` is
@@ -2524,6 +2532,10 @@ fn solve_rhf_impl(
     // and whenever `d_last_fock` is None.
     const INCREMENTAL_FULL_REBUILD_EVERY: usize = 8;
 
+    if let Some(x) = xc_contrib.as_mut() {
+        x.commit_storage(mol, prep.basis_set())
+            .map_err(|e| FerricError::General(format!("XC grid storage: {e}")))?;
+    }
     crate::driver::warn_if_rss_over_at_stage("RHF", "setup", ooc_budget);
     if let Some(x) = xc_contrib.as_ref() {
         x.start_scf();

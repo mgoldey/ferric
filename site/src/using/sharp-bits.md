@@ -239,7 +239,11 @@ When a charged allocation does not fit, the result depends on the allocation:
   the job instead. A spill directory that is full also stops it, and
   `df_increments` has no fallback.
 - The DFT grid AO cache is recomputed at every Fock build instead of stored.
-  The energy is bit-identical.
+  The energy is bit-identical. XC takes its memory after the RI-J/K tensors, so
+  it never pushes them out. If what is left cannot hold its per-build working
+  set either, that set runs uncharged and a warning says the job can exceed its
+  budget by that much. It scales with the thread count, and is usually a small
+  fraction of the raw tensor on molecules of drug size.
 - An allocation with no fallback stops the job with an error naming it. For
   some methods this check comes after the SCF. Benzene RI-MP2/def2-SVP with
   `budget_gb = 0.001` completes the SCF, then exits with

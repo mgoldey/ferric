@@ -518,36 +518,37 @@ fn solve_rohf_impl(
     let injected = inj_jk.is_some();
 
     // Build UKS XC contribution once. None for pure ROHF.
-    let xc_contrib: Option<Box<dyn UksXcContribution>> = if let Some(name) = config.xc.as_deref() {
-        let main = config.dft_grid.clone().unwrap_or_default();
-        let nlc = config
-            .nlc_grid
-            .clone()
-            .unwrap_or_else(ferric_dft::grid::AtomicGridConfig::default_nlc);
-        // Thread the caller's `[memory] budget_gb` into the grid AO cache --
-        // the largest single allocation in a DFT job. This used to call the
-        // UNbudgeted `new_with_omega`, which resolves from env/auto-detect
-        // and so silently DISCARDED `config.three_index_budget_bytes`. The
-        // budgeted constructor existed for exactly this and had ZERO
-        // production callers; its own doc records the symptom ("Setting
-        // `budget_gb = 4` on a 64 GB box still sized the grid cache against
-        // ~51 GB"), i.e. the documented primary knob did nothing while
-        // FERRIC_MEM_BUDGET_GB worked. 0 means unset, matching
-        // `rhf::resolve_three_index_budget`.
-        let ks = KsXcUks::new_with_omega_budgeted(
-            mol,
-            prep.basis_set(),
-            name,
-            &main,
-            &nlc,
-            config.xc_omega,
-            (config.three_index_budget_bytes != 0).then_some(config.three_index_budget_bytes),
-        )
-        .map_err(|e| FerricError::General(format!("KsXcUks init for {name}: {e:?}")))?;
-        Some(Box::new(ks) as Box<dyn UksXcContribution>)
-    } else {
-        None
-    };
+    let mut xc_contrib: Option<Box<dyn UksXcContribution>> =
+        if let Some(name) = config.xc.as_deref() {
+            let main = config.dft_grid.clone().unwrap_or_default();
+            let nlc = config
+                .nlc_grid
+                .clone()
+                .unwrap_or_else(ferric_dft::grid::AtomicGridConfig::default_nlc);
+            // Thread the caller's `[memory] budget_gb` into the grid AO cache --
+            // the largest single allocation in a DFT job. This used to call the
+            // UNbudgeted `new_with_omega`, which resolves from env/auto-detect
+            // and so silently DISCARDED `config.three_index_budget_bytes`. The
+            // budgeted constructor existed for exactly this and had ZERO
+            // production callers; its own doc records the symptom ("Setting
+            // `budget_gb = 4` on a 64 GB box still sized the grid cache against
+            // ~51 GB"), i.e. the documented primary knob did nothing while
+            // FERRIC_MEM_BUDGET_GB worked. 0 means unset, matching
+            // `rhf::resolve_three_index_budget`.
+            let ks = KsXcUks::new_deferred(
+                mol,
+                prep.basis_set(),
+                name,
+                &main,
+                &nlc,
+                config.xc_omega,
+                (config.three_index_budget_bytes != 0).then_some(config.three_index_budget_bytes),
+            )
+            .map_err(|e| FerricError::General(format!("KsXcUks init for {name}: {e:?}")))?;
+            Some(Box::new(ks) as Box<dyn UksXcContribution>)
+        } else {
+            None
+        };
 
     // Injected (periodic) ROKS: a global hybrid scales the injected K by its
     // exact-exchange fraction (validate_injected_rohf guarantees `xc_contrib`
@@ -990,6 +991,10 @@ fn solve_rohf_impl(
     // Injected (periodic) path: no continuity lock (it can hold a periodic
     // hole state the unrelaxed witness cannot refute); molecular path unchanged.
     .with_continuity_lock(!injected);
+    if let Some(x) = xc_contrib.as_mut() {
+        x.commit_storage(mol, prep.basis_set())
+            .map_err(|e| FerricError::General(format!("XC grid storage: {e}")))?;
+    }
     if let Some(x) = xc_contrib.as_ref() {
         x.start_scf();
     }

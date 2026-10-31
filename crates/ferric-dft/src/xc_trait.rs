@@ -65,6 +65,19 @@ pub trait XcContribution: Send + Sync {
     /// build is decided as a first build. The default does nothing.
     fn start_scf(&self) {}
 
+    /// Take the memory this contribution holds through the SCF. Called once,
+    /// after RI-J/K setup and before the first Fock build, so that XC, which can
+    /// always recompute, gets what the 3-index tensors leave. Err is a refusal.
+    /// The default holds nothing.
+    fn commit_storage(
+        &mut self,
+        mol: &ferric_core::mol::Molecule,
+        bs: &ferric_core::basis::BasisSet,
+    ) -> Result<(), String> {
+        let _ = (mol, bs);
+        Ok(())
+    }
+
     /// Called at a converged SCF exit with the Fock matrix of the exit
     /// iteration. If the most recent `add_xc*` call formed V_xc in reduced
     /// precision, replace it in `f` by the f64 V_xc of the same density and
@@ -110,6 +123,19 @@ pub trait UksXcContribution: Send + Sync {
 
     /// See [`XcContribution::start_scf`].
     fn start_scf(&self) {}
+
+    /// Take the memory this contribution holds through the SCF. Called once,
+    /// after RI-J/K setup and before the first Fock build, so that XC, which can
+    /// always recompute, gets what the 3-index tensors leave. Err is a refusal.
+    /// The default holds nothing.
+    fn commit_storage(
+        &mut self,
+        mol: &ferric_core::mol::Molecule,
+        bs: &ferric_core::basis::BasisSet,
+    ) -> Result<(), String> {
+        let _ = (mol, bs);
+        Ok(())
+    }
 
     /// [`XcContribution::refine_last_to_f64`] for the two spin Fock matrices.
     fn refine_last_to_f64_uks(&self, f_a: &mut Array2<f64>, f_b: &mut Array2<f64>) -> bool {
