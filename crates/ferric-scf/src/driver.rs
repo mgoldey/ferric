@@ -88,17 +88,42 @@ pub(crate) struct ScfEnv<'a> {
 /// - An auto-detected budget reads live `MemAvailable`, which those bytes are not
 ///   yet out of. Without this it would rise by 0.8 of them and the job would
 ///   commit that memory twice: with no pool, nothing else would notice.
-/// - An NLC cache already charged to the pool leaves that much less for raw. Raw
-///   picks `InCore` from this figure alone and refuses if the pool cannot pay, so
-///   the figure has to tell it. Otherwise a budget just above the tensor is
-///   refused where a smaller one, which gets a soft tier, runs.
+/// - The NLC cache is already allocated, and raw must leave room for it: see
+///   [`budget_beside_nlc`].
 ///
 /// Nothing here reads the thread count at an explicit budget.
 pub(crate) fn raw_budget(config_bytes: usize, plan: ferric_dft::xc_trait::XcMemoryPlan) -> usize {
+    use ferric_core::memory::{pool, resolve_budget_after, BudgetSource};
     let explicit = (config_bytes != 0).then_some(config_bytes);
-    ferric_core::memory::resolve_budget_after(explicit, plan.resident_if_alone)
-        .bytes
-        .saturating_sub(plan.held_bytes)
+    let res = resolve_budget_after(explicit, plan.resident_if_alone);
+    budget_beside_nlc(
+        res.bytes,
+        res.source == BudgetSource::AutoDetected,
+        plan.nlc_bytes,
+        pool::global().map(|p| p.capacity_bytes()),
+    )
+}
+
+/// `budget` less the NLC cache, counted once.
+///
+/// A fixed budget has not seen the cache, so it comes off, with or without a pool:
+/// the tensor and the cache must fit together. A live auto budget has already fallen
+/// with the allocated cache, so subtracting it again would send a tensor that fits to
+/// a slower tier. It only has to stay within what the pool, sized before the cache
+/// existed, has left: raw picks `InCore` from this figure alone and refuses if the
+/// pool cannot pay, so otherwise a budget just above the tensor is refused where a
+/// smaller one, which gets a soft tier, runs.
+fn budget_beside_nlc(budget: usize, live: bool, nlc: usize, pool: Option<usize>) -> usize {
+    if nlc == 0 {
+        return budget;
+    }
+    if !live {
+        return budget.saturating_sub(nlc);
+    }
+    match pool {
+        Some(capacity) => budget.min(capacity.saturating_sub(nlc)),
+        None => budget,
+    }
 }
 
 /// Say that the MINAO guess failed and the SCF starts from hcore, on stderr and in
@@ -708,17 +733,33 @@ mod raw_budget_tests {
     use super::*;
     use ferric_dft::xc_trait::XcMemoryPlan;
 
-    /// An explicit budget is a fixed number: only a held cache moves it.
+    /// A fixed budget loses the cache whether or not a pool holds it, and only that.
     #[test]
-    fn explicit_budget_moves_only_by_what_the_pool_holds() {
+    fn explicit_budget_moves_only_by_the_nlc_cache() {
         let plan = |held_bytes, nlc_bytes| XcMemoryPlan {
             held_bytes,
             nlc_bytes,
             resident_if_alone: 3000,
         };
         assert_eq!(raw_budget(10_000, plan(0, 0)), 10_000);
-        assert_eq!(raw_budget(10_000, plan(0, 500)), 10_000);
-        assert_eq!(raw_budget(10_000, plan(500, 500)), 9_500);
+        assert_eq!(raw_budget(10_000, plan(0, 500)), 9_500, "no pool");
+        assert_eq!(raw_budget(10_000, plan(500, 500)), 9_500, "pool");
+    }
+
+    #[test]
+    fn a_live_budget_does_not_count_the_cache_twice() {
+        // Live, no pool: the live figure has already fallen with the cache.
+        assert_eq!(budget_beside_nlc(9_000, true, 500, None), 9_000);
+        // Live, ample pool: the same.
+        assert_eq!(budget_beside_nlc(9_000, true, 500, Some(10_000)), 9_000);
+        // Live, tight pool: held to what the pool has left, once.
+        assert_eq!(budget_beside_nlc(9_800, true, 500, Some(10_000)), 9_500);
+        // Fixed: the cache comes off.
+        assert_eq!(budget_beside_nlc(9_000, false, 500, None), 8_500);
+        // No cache: nothing moves, however small the pool. A pool that cannot pay
+        // for an in-core tensor must still refuse it, not quietly reroute it.
+        assert_eq!(budget_beside_nlc(9_000, true, 0, Some(200)), 9_000);
+        assert_eq!(budget_beside_nlc(9_000, false, 0, Some(200)), 9_000);
     }
 
     /// The auto budget gives up 0.8 of what XC will hold, as it would if the bytes
