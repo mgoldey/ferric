@@ -150,7 +150,7 @@ impl<'a> DfJ<'a> {
             Some(c) => c.aux_band(naux),
             None => (0, naux),
         };
-        let source = ThreeIndexSource::build_for_jk(op, mol, obs, dfbs, budget_bytes, band)?;
+        let source = ThreeIndexSource::build_for_jk(op, mol, obs, dfbs, budget_bytes, band, false)?;
         Self::from_source(source, op, dfbs, budget_bytes, ctx)
     }
 

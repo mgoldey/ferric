@@ -360,6 +360,16 @@ fn apply_scf_jk(cfg: &Config, task: &str, rhf_config: &mut RhfConfig) -> bool {
 /// extra element away, since `sys.argv` is the shape Python itself commits
 /// to being stable, not an implementation detail of how CPython's runtime
 /// happens to report process argv on this platform/version.
+/// `[scf] guess_basis` / `guess_projection`, resolved strictly. They were
+/// already validated when the config loaded, so an error here is a bug; it
+/// still exits rather than silently dropping the guess.
+fn guess_basis_or_exit(cfg: &Config) -> Option<ferric_scf::basis2::GuessBasis> {
+    cfg.scf.guess_basis_config().unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    })
+}
+
 /// One stderr line saying what the DF-guess stage actually did.
 fn print_df_guess_outcome(
     dfg: &ferric_scf::ladder::DfGuessResult,
@@ -383,16 +393,6 @@ fn print_df_guess_outcome(
             "did not fully converge"
         },
     );
-}
-
-/// `[scf] guess_basis` / `guess_projection`, resolved strictly. They were
-/// already validated when the config loaded, so an error here is a bug; it
-/// still exits rather than silently dropping the guess.
-fn guess_basis_or_exit(cfg: &Config) -> Option<ferric_scf::basis2::GuessBasis> {
-    cfg.scf.guess_basis_config().unwrap_or_else(|e| {
-        eprintln!("error: {e}");
-        std::process::exit(1);
-    })
 }
 
 pub fn run(args: Vec<String>) {

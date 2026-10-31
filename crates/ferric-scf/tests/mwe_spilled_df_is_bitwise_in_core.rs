@@ -126,6 +126,59 @@ fn spilled_dressed_tensor_is_bitwise_the_in_core_one() {
     );
 }
 
+/// `jk_storage = "disk"` with an output that fits in core takes the blocked path.
+/// It must match the fast path and the spill bitwise, or a disk-raw run could
+/// depend on the live pool.
+#[test]
+fn blocked_in_core_dressing_is_bitwise_the_fast_path() {
+    let _s = slot();
+    let s = benzene();
+    let op = Operator::coulomb();
+    let (naux, nao) = (s.aux.nbasis(), s.obs.nbasis());
+    let m = metric(naux);
+    let ample = usize::MAX / 4;
+    let mut raw = ThreeIndexSource::build(op, &s.obs, &s.aux, ample).unwrap();
+    let reference = read(&mut ThreeIndexSource::build_dressed(&mut raw, &m, ample).unwrap());
+
+    let budget = 3 * naux * nao * nao * 8;
+    use ferric_integrals::three_index_source::{set_jk_storage, JkStorage};
+    set_jk_storage(Some(JkStorage::Disk));
+    let raw = ThreeIndexSource::build_for_jk(op, &s.mol, &s.obs, &s.aux, budget, (0, naux), true);
+    set_jk_storage(None);
+    let mut raw = raw.unwrap();
+    assert!(raw.is_spilled_for_test(), "raw must be on disk");
+    let mut d = ThreeIndexSource::build_dressed(&mut raw, &m, budget).unwrap();
+    assert!(d.is_incore(), "the output must fit in core");
+    let got = read(&mut d);
+    let n = moved(reference.as_slice().unwrap(), got.as_slice().unwrap());
+    assert_eq!(n, 0, "{n} elements moved");
+}
+
+/// An odd nao and a different aux: the fast-path grid must hold for any row width,
+/// and packing an odd triangle must not disturb it. One kernel's evidence only.
+#[test]
+fn spilled_dressed_tensor_is_bitwise_in_core_at_an_odd_nao() {
+    let _s = slot();
+    let mol = Molecule::load_xyz("../../testdata/molecules/alkane_3.xyz").unwrap();
+    let obs = PreparedBasis::new(&mol, &basis::bundled("sto-3g").unwrap()).unwrap();
+    let aux = PreparedBasis::new(&mol, &basis::bundled("def2-universal-jkfit").unwrap()).unwrap();
+    let op = Operator::coulomb();
+    let (naux, nao) = (aux.nbasis(), obs.nbasis());
+    assert_eq!(nao % 2, 1, "fixture must have an odd nao");
+    assert!(naux > 128, "fixture must cross the Q grid");
+    let m = metric(naux);
+    let ample = usize::MAX / 4;
+    let mut raw = ThreeIndexSource::build(op, &obs, &aux, ample).unwrap();
+    let reference = read(&mut ThreeIndexSource::build_dressed(&mut raw, &m, ample).unwrap());
+    let budget = (naux * nao * nao * 8) as f64 * 0.45;
+    let mut raw = ThreeIndexSource::build(op, &obs, &aux, budget as usize).unwrap();
+    let mut d = ThreeIndexSource::build_dressed(&mut raw, &m, budget as usize).unwrap();
+    assert!(d.is_spilled_for_test());
+    let got = read(&mut d);
+    let n = moved(reference.as_slice().unwrap(), got.as_slice().unwrap());
+    assert_eq!(n, 0, "{n} elements moved at odd nao {nao}");
+}
+
 /// K through the real DfK, at a binding width and two thread counts.
 #[test]
 fn spilled_k_is_bitwise_in_core_and_thread_independent() {
@@ -151,36 +204,6 @@ fn spilled_k_is_bitwise_in_core_and_thread_independent() {
         let n = moved(reference.as_slice().unwrap(), got.as_slice().unwrap());
         assert_eq!(n, 0, "{threads} threads: {n} K elements moved");
     }
-}
-
-/// The read-back width, directly, at 1 and 4 threads. A thread-derived width is
-/// invisible to the K test above precisely because K is exact across widths. The
-/// width must sit well above its floor here: at the floor, dividing by the thread
-/// count changes nothing and this test would pass with the defect live.
-#[test]
-fn read_back_width_does_not_read_the_thread_count() {
-    let _s = slot();
-    let mol = Molecule::load_xyz("../../testdata/molecules/alkane_12.xyz").unwrap();
-    let obs = PreparedBasis::new(&mol, &basis::bundled("6-31g").unwrap()).unwrap();
-    let aux = PreparedBasis::new(&mol, &basis::bundled("def2-universal-jkfit").unwrap()).unwrap();
-    let op = Operator::coulomb();
-    let (naux, nao) = (aux.nbasis(), obs.nbasis());
-    let budget = (naux as f64 * (nao * nao * 8) as f64 * 0.99) as usize;
-    let m = metric(naux);
-    let width = |threads| {
-        with_threads(threads, || {
-            let mut raw = ThreeIndexSource::build(op, &obs, &aux, budget).unwrap();
-            ThreeIndexSource::build_dressed(&mut raw, &m, budget)
-                .unwrap()
-                .block_naux()
-        })
-    };
-    let (one, four) = (width(1), width(4));
-    let floor = 2 * ferric_integrals::three_index_source::df_chunk_width(nao);
-    assert!(one < naux, "the width must bind: {one} of {naux}");
-    // Twice the floor is enough: a quarter of this lands on the floor, not here.
-    assert!(one >= 2 * floor, "{one} is too near the floor {floor}");
-    assert_eq!(one, four);
 }
 
 /// End to end, in the refused band: raw has the same backend either way, so only

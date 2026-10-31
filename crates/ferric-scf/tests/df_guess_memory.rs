@@ -208,3 +208,50 @@ fn under_mpi_a_memory_failure_of_the_guess_stays_an_error() {
         got.map(|r| r.fallback)
     );
 }
+
+/// `jk_storage = "memory"` is the user's instruction, so it must stop the job
+/// instead of falling back or quietly going to disk.
+struct MemoryPolicy;
+impl MemoryPolicy {
+    fn set() -> Self {
+        ferric_integrals::three_index_source::set_jk_storage(Some(
+            ferric_integrals::three_index_source::JkStorage::Memory,
+        ));
+        Self
+    }
+}
+impl Drop for MemoryPolicy {
+    fn drop(&mut self) {
+        ferric_integrals::three_index_source::set_jk_storage(None);
+    }
+}
+
+#[test]
+fn memory_policy_refusal_stops_a_guess_run_for_the_raw_tensor() {
+    let _s = slot();
+    let (mol, prep) = water();
+    let needed = tensor_bytes(&mol, &prep);
+    let _policy = MemoryPolicy::set();
+    install_global(MemoryPool::with_capacity_bytes(needed / 2));
+    let got = run(needed * 16, None);
+    clear_global();
+    let err = got.map(|r| r.fallback).expect_err("must not fall back");
+    assert!(matches!(err, FerricError::General(_)), "{err}");
+}
+
+#[test]
+fn memory_policy_refusal_stops_a_guess_run_for_the_dressed_tensor() {
+    let _s = slot();
+    let (mol, prep) = water();
+    let needed = tensor_bytes(&mol, &prep);
+    let _policy = MemoryPolicy::set();
+    // Raw fits, its dressed twin does not: this used to spill to disk.
+    install_global(MemoryPool::with_capacity_bytes(needed + needed / 2));
+    let got = run(needed * 16, None);
+    clear_global();
+    let err = got
+        .map(|r| r.fallback)
+        .expect_err("must not spill or fall back");
+    assert!(matches!(err, FerricError::General(_)), "{err}");
+    assert!(err.to_string().contains("jk_storage"), "{err}");
+}

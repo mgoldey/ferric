@@ -195,9 +195,6 @@ impl<'a> DfK<'a> {
         budget_bytes: usize,
         ctx: Option<&'a ParallelContext>,
     ) -> Result<Self, FerricError> {
-        let v = coulomb_metric_2c(op, dfbs)?;
-        let v_inv_sqrt = v_inv_sqrt_lindep(&v)?;
-
         let naux = dfbs.nbasis();
         let (p0, p1) = match ctx {
             Some(c) => c.aux_band(naux),
@@ -206,8 +203,11 @@ impl<'a> DfK<'a> {
 
         // Build the FULL raw source (dressing a band sums over all Q). The raw is
         // budget-bounded / spillable, so its full footprint need not be resident;
-        // only this rank's dressed BAND is retained.
+        // only this rank's dressed BAND is retained. Before the metric, because a
+        // spilling build already uses the whole budget.
         let mut raw = ThreeIndexSource::build(op, obs, dfbs, budget_bytes)?;
+        let v = coulomb_metric_2c(op, dfbs)?;
+        let v_inv_sqrt = v_inv_sqrt_lindep(&v)?;
         Self::from_raw(&mut raw, dfbs, v_inv_sqrt, budget_bytes, ctx, p0, p1)
     }
 
@@ -378,6 +378,9 @@ impl DfK<'_> {
             )?;
             Ok(())
         })?;
+        // J runs between K passes and an RSH K pair shares the budget, so a spilled
+        // block must not stay resident between them.
+        self.dressed.release_scratch();
 
         // MPI: `build` accumulated only this rank's aux-band contribution to K
         // (K = Σ_P B_P D B_Pᵀ is a plain sum over P, and bands are disjoint).
@@ -580,6 +583,7 @@ impl DfK<'_> {
             )?;
             Ok(())
         })?;
+        self.dressed.release_scratch();
 
         self.reduce_k_across_ranks(k);
         Ok(0)

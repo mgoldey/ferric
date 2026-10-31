@@ -435,7 +435,8 @@ fn solve_rhf_without_df_guess(
     eprintln!(
         "[ferric] WARNING: DF-guess pre-stage ran out of memory and its density is unused; \
          starting the SCF from {guess}. It may take more iterations, and an SCF with several \
-         solutions may reach a different one.\n{reason}"
+         solutions may reach a different one. Under a tight budget this can depend on the \
+         thread count, because some pool charges scale with it.\n{reason}"
     );
     if let Some(rl) = crate::runlog::log() {
         rl.note(

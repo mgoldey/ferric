@@ -197,11 +197,10 @@ pub struct Calibration {
 /// spill build overlaps compute with the write, hence the `max`. Ties go to
 /// Recompute, which needs no scratch disk.
 ///
-/// The shared RI-JK path also streams the raw tensor `dress_passes` times to
-/// dress it for K: `T_build` a pass under Recompute, `bytes/R_read` under Spill.
-/// It is counted, because holding the dressing to a small budget can take more
-/// passes than the SCF does. A J-only source is charged for them too, which only
-/// matters near the break-even.
+/// A source shared with K is also streamed `dress_passes` times to dress it:
+/// `T_build` a pass under Recompute, `bytes/R_read` under Spill. It is counted,
+/// because holding the dressing to a small budget can take more passes than the
+/// SCF does. A J-only source passes 0.
 pub fn recompute_is_cheaper(
     cal: &Calibration,
     band: usize,
@@ -232,6 +231,7 @@ pub fn decide(
     policy: JkStorage,
     (nao, band, budget_bytes): (usize, usize, usize),
     calibrate: impl FnOnce() -> Result<Calibration, FerricError>,
+    dressed_for_k: bool,
 ) -> Result<(Tier, Option<Calibration>), FerricError> {
     let mem = memory_tier(nao, band, budget_bytes);
     match policy {
@@ -254,7 +254,11 @@ pub fn decide(
             None => {
                 let cal = calibrate()?;
                 let packed = band.saturating_mul(packed_pair_len(nao)).saturating_mul(8);
-                let passes = super::spilled_dress_passes(budget_bytes, band, band, nao);
+                let passes = if dressed_for_k {
+                    super::spilled_dress_passes(budget_bytes, band, band, nao)
+                } else {
+                    0
+                };
                 let t = if recompute_is_cheaper(&cal, band, packed, passes) {
                     Tier::Recompute
                 } else {
@@ -392,18 +396,24 @@ impl ThreeIndexSource {
         dfbs: &PreparedBasis,
         budget_bytes: usize,
         (band_p0, band_p1): (usize, usize),
+        dressed_for_k: bool,
     ) -> Result<Self, FerricError> {
         let policy = jk_storage();
         let nao = obs.nbasis();
         let band = band_p1 - band_p0;
-        let (tier, cal) = decide(policy, (nao, band, budget_bytes), || {
-            let dir = super::spill_dir();
-            let key = (nao, dfbs.nbasis(), band_p0, budget_bytes, dir.clone());
-            cached_calibration(key, || {
-                let free = super::free_bytes_at(&dir);
-                calibrate(op, obs, dfbs, (band_p0, band_p1), (budget_bytes, free))
-            })
-        })?;
+        let (tier, cal) = decide(
+            policy,
+            (nao, band, budget_bytes),
+            || {
+                let dir = super::spill_dir();
+                let key = (nao, dfbs.nbasis(), band_p0, budget_bytes, dir.clone());
+                cached_calibration(key, || {
+                    let free = super::free_bytes_at(&dir);
+                    calibrate(op, obs, dfbs, (band_p0, band_p1), (budget_bytes, free))
+                })
+            },
+            dressed_for_k,
+        )?;
         if super::ooc_trace() {
             let c = cal.map_or(String::new(), |c| {
                 format!(
@@ -442,7 +452,13 @@ impl ThreeIndexSource {
                 None,
             );
         }
-        Self::build_band_tier(op, obs, dfbs, budget_bytes, (band_p0, band_p1), None, tier)
+        Self::build_band_tier(op, obs, dfbs, budget_bytes, (band_p0, band_p1), None, tier).map_err(
+            |e| match (policy, e) {
+                // The user's instruction, not a guess to drop: never a fallback signal.
+                (JkStorage::Memory, FerricError::MemoryExhausted(m)) => FerricError::General(m),
+                (_, e) => e,
+            },
+        )
     }
 
     /// The recompute backend over the band `[band_p0, band_p1)`, always (it
@@ -569,9 +585,26 @@ mod tests {
     }
 
     #[test]
+    fn a_j_only_source_is_not_charged_for_dressing_passes() {
+        let (nao, band) = (100, 400);
+        let bytes = (band * packed_pair_len(nao) * 8) as f64;
+        // A read is 1 s, the one-off write 10 s and a rebuild 1.3 s, so recompute
+        // wins up to 33 passes: at the 30 assumed for J, but not with 7 dressing
+        // passes on top, which is what a one-byte budget's 64-row floor needs here.
+        let tier = |dressed| {
+            let rates = cal(1.3 / band as f64, Some((bytes / 10.0, bytes)));
+            decide(JkStorage::Auto, (nao, band, 1), || Ok(rates), dressed)
+                .unwrap()
+                .0
+        };
+        assert_eq!(tier(false), Tier::Recompute);
+        assert_eq!(tier(true), Tier::Spill);
+    }
+
+    #[test]
     fn an_explicit_memory_policy_refusal_is_not_a_fallback_signal() {
         let never = || -> Result<Calibration, FerricError> { panic!("must not calibrate") };
-        let err = decide(JkStorage::Memory, (100, 400, 1), never).unwrap_err();
+        let err = decide(JkStorage::Memory, (100, 400, 1), never, true).unwrap_err();
         assert!(
             matches!(err, FerricError::General(_)),
             "jk_storage = \"memory\" is the user's instruction, not a guess to drop: {err}"
@@ -587,41 +620,47 @@ mod tests {
         let never = || -> Result<Calibration, FerricError> { panic!("must not calibrate") };
         let sz = |budget| (nao, band, budget);
         assert_eq!(
-            decide(JkStorage::Auto, sz(unpacked), never).unwrap().0,
+            decide(JkStorage::Auto, sz(unpacked), never, true)
+                .unwrap()
+                .0,
             Tier::InCore
         );
         assert_eq!(
-            decide(JkStorage::Auto, sz((unpacked + packed) / 2), never)
+            decide(JkStorage::Auto, sz((unpacked + packed) / 2), never, true)
                 .unwrap()
                 .0,
             Tier::InCorePacked
         );
         assert_eq!(
-            decide(JkStorage::Memory, sz((unpacked + packed) / 2), never)
+            decide(JkStorage::Memory, sz((unpacked + packed) / 2), never, true)
                 .unwrap()
                 .0,
             Tier::InCorePacked
         );
-        let e = decide(JkStorage::Memory, sz(packed / 2), never).unwrap_err();
+        let e = decide(JkStorage::Memory, sz(packed / 2), never, true).unwrap_err();
         assert!(format!("{e}").contains("jk_storage = \"memory\""), "{e}");
         assert_eq!(
-            decide(JkStorage::Disk, sz(unpacked * 10), never).unwrap().0,
+            decide(JkStorage::Disk, sz(unpacked * 10), never, true)
+                .unwrap()
+                .0,
             Tier::Spill
         );
         assert_eq!(
-            decide(JkStorage::Direct, sz(unpacked * 10), never)
+            decide(JkStorage::Direct, sz(unpacked * 10), never, true)
                 .unwrap()
                 .0,
             Tier::Recompute
         );
         // Over budget in auto: calibration decides.
         let fast_disk = || Ok(cal(1.0, Some((1e12, 1e12))));
-        let (t, c) = decide(JkStorage::Auto, sz(packed / 2), fast_disk).unwrap();
+        let (t, c) = decide(JkStorage::Auto, sz(packed / 2), fast_disk, true).unwrap();
         assert_eq!(t, Tier::Spill);
         assert!(c.is_some());
         let no_disk = || Ok(cal(1.0, None));
         assert_eq!(
-            decide(JkStorage::Auto, sz(packed / 2), no_disk).unwrap().0,
+            decide(JkStorage::Auto, sz(packed / 2), no_disk, true)
+                .unwrap()
+                .0,
             Tier::Recompute
         );
     }

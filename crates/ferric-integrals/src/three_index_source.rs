@@ -87,23 +87,12 @@ fn packed_scratch_rows(packed_bytes: usize, nao: usize, budget_bytes: usize) -> 
     block_naux_for(head, nao)
 }
 
-/// Pure decision + report for the SEQUENTIAL blocked/spilled DF-dressing
-/// path's over-budget-by-construction warning (see the comment at its call
-/// site in `build_dressed_band`).
+/// Pure decision + report for the blocked dressing into an in-core output: the
+/// band, plus the GEMM result and its operand at `block_naux` rows each.
 ///
-/// Mirrors the exact `MemoryPlan` reservations the sequential dressing loop
-/// makes: the optional in-core `dressed band` (only when `in_core`), plus the
-/// TWO co-resident `block_naux·nao²` blocks (`accum` and the `contrib` GEMM
-/// result added into it every iteration) — this is the same shape as
-/// `spill_block_naux_for` halves for on the RAW path, but `block_naux` here
-/// comes from the UN-halved `block_naux_for`, so the pair is ~2x budget by
-/// construction on a spilled source.
-///
-/// Returns `Some(report)` (the human-readable breakdown) when the plan does
-/// NOT fit the budget, `None` when it does. Extracted as a pure function
-/// (explicit shape arguments, no disk I/O, no `PreparedBasis`) so the
-/// warn-unconditionally behavior can be pinned in milliseconds instead of via
-/// the full spill machinery.
+/// Returns `Some(report)` when the plan does not fit the budget, `None` when it
+/// does. Pure (explicit shape arguments, no disk I/O, no `PreparedBasis`) so the
+/// warn-unconditionally behaviour can be pinned in milliseconds.
 fn blocked_dressing_overshoot_report(
     budget_bytes: usize,
     in_core: bool,
@@ -214,45 +203,52 @@ pub fn df_chunk_width(nao: usize) -> usize {
 }
 
 /// The most DF-K's chunk reduction holds, from `reduce::resolve_band_bytes`:
-/// a quarter of the budget, capped at its 512 MiB default. The per-worker
-/// scratch is taken out of this band by DF-K, so it needs no term of its own,
-/// and that is why this width need not read the thread count.
+/// a quarter of the budget, capped at its 512 MiB default.
 fn df_k_band_bytes(budget_bytes: usize) -> usize {
     (budget_bytes / 4).min(512 * 1024 * 1024)
 }
 
 /// Read-back block width for a spilled dressed tensor, so the block, its packed
-/// read buffer, DF-J's stream and DF-K's reduction fit `budget_bytes` beside
-/// whatever raw keeps resident.
+/// read buffer and [`k_phase_fixed_bytes`] fit `budget_bytes` beside whatever raw
+/// keeps resident. DF-J's stream is not in this sum: J and K run in sequence and DF-K
+/// frees its block after each pass, which also lets range-separated K instances
+/// share the budget.
 ///
-/// A pure function of the configuration: never the thread count and never the
-/// live pool, because it sets K's block boundaries. A multiple of twice the
-/// DF-K chunk, so chunks fall exactly as they do in core and the width stays
-/// even. The floor can overshoot a very small budget, and the caller reports it.
+/// Never reads the thread count or the live pool directly, because it sets K's
+/// block boundaries. It can still follow the pool at one remove: `raw_resident`
+/// depends on raw's backend, and `packed_in_core_fits` consults the pool. K's bits
+/// do not depend on the width at one BLAS thread, which is what makes that safe.
+/// A multiple of twice the DF-K chunk, so chunks fall exactly as they do in core
+/// and the width stays even. The floor can overshoot a very small budget, and the
+/// caller reports it.
 fn spilled_read_rows(
     budget_bytes: usize,
-    (raw_resident, df_j_stream): (usize, usize),
-    nao: usize,
+    raw_resident: usize,
+    (naux, nao): (usize, usize),
     band: usize,
 ) -> usize {
     let per_row = (nao * nao + packed_pair_len(nao)).saturating_mul(8).max(1);
     let grain = 2 * df_chunk_width(nao);
     let rows = budget_bytes
         .saturating_sub(raw_resident)
-        .saturating_sub(df_j_stream)
-        .saturating_sub(df_k_band_bytes(budget_bytes))
+        .saturating_sub(k_phase_fixed_bytes(budget_bytes, naux, nao))
         / per_row;
     (rows / grain * grain).max(grain).min(band.max(1))
 }
 
-#[doc(hidden)]
-pub fn spilled_read_rows_for_test(
-    budget_bytes: usize,
-    held: (usize, usize),
-    nao: usize,
-    band: usize,
-) -> usize {
-    spilled_read_rows(budget_bytes, held, nao, band)
+/// Workers assumed when sizing the read-back width. A named constant, because
+/// that width must not read the thread count; a run with more workers is warned
+/// about separately. Same reasoning as `laplace.rs`'s `NOMINAL_TASK_WORKERS`.
+const NOMINAL_K_WORKERS: usize = 8;
+
+/// What the DF-K phase holds besides its block and read buffer: DF-J's factored
+/// metric, DF-K's reduction band, and three chunks of scratch per worker. That
+/// scratch can exceed the band it is notionally taken out of, so it counts here.
+fn k_phase_fixed_bytes(budget_bytes: usize, naux: usize, nao: usize) -> usize {
+    let scratch = NOMINAL_K_WORKERS * 3 * df_chunk_width(nao) * nao * nao * 8;
+    (naux * naux * 8)
+        .saturating_add(df_k_band_bytes(budget_bytes))
+        .saturating_add(scratch)
 }
 
 /// Output rows the spilled dressing may accumulate at once beside `overhead`
@@ -292,6 +288,17 @@ pub(crate) fn spilled_dress_passes(
 /// Above this many passes over raw, say so: each one re-reads or recomputes the
 /// whole tensor.
 const DRESS_PASS_WARN: usize = 8;
+
+/// What each extra pass over `raw` costs, for the warning; `None` when a pass
+/// reads memory and so costs little.
+fn dress_pass_cost(raw: &ThreeIndexSource, passes: usize) -> Option<String> {
+    let bytes = passes * raw.naux() * packed_pair_len(raw.nao()) * 8;
+    match raw.backend {
+        Backend::DiskSpill { .. } => Some(format!("~{:.1} GB of IO", bytes as f64 / 1e9)),
+        Backend::Recompute { .. } => Some(format!("{passes} rebuilds of the integrals")),
+        Backend::InCore(_) | Backend::InCorePacked { .. } => None,
+    }
+}
 
 /// What each phase of a spilled dressed tensor holds; `Some(report)` for every
 /// phase that does not fit `budget_bytes`. A phase is reported only when the
@@ -335,34 +342,40 @@ fn spilled_dressing_report(
         accum_rows * pair,
         Lifetime::Resident,
     );
-    let mut scf = MemoryPlan::with_budget_bytes(budget_bytes, "DF J/K read-back in the SCF");
-    scf.reserve(
+    let mut j = MemoryPlan::with_budget_bytes(budget_bytes, "DF-J stream in the SCF");
+    j.reserve(
         "raw tensor resident",
         bytes_as_elems(raw_resident),
         Lifetime::Resident,
     );
-    scf.reserve(
+    j.reserve(
         "DF-J packed stream",
         bytes_as_elems(df_j_stream),
         Lifetime::Resident,
     );
-    scf.reserve(
+    let mut k = MemoryPlan::with_budget_bytes(budget_bytes, "DF-K read-back in the SCF");
+    k.reserve(
+        "raw tensor resident",
+        bytes_as_elems(raw_resident),
+        Lifetime::Resident,
+    );
+    k.reserve(
         "DF-K read-back block",
         read_rows * nao * nao,
         Lifetime::Resident,
     );
-    scf.reserve(
+    k.reserve(
         "DF-K packed read buffer",
         read_rows * pair,
         Lifetime::Resident,
     );
-    scf.reserve(
-        "DF-K chunk reduction",
-        bytes_as_elems(df_k_band_bytes(budget_bytes)),
+    k.reserve(
+        "DF-J metric, DF-K reduction and worker scratch",
+        bytes_as_elems(k_phase_fixed_bytes(budget_bytes, naux, nao)),
         Lifetime::Resident,
     );
     let mut out = String::new();
-    for plan in [&dress, &scf] {
+    for plan in [&dress, &j, &k] {
         if plan.check().is_err() {
             out.push_str(&plan.report());
         }
@@ -442,6 +455,49 @@ fn fast_path_plan(budget_bytes: usize, band: usize, n_blocks: usize, nao: usize)
     plan
 }
 
+/// One fast-path block: an ascending Q sweep, sub-blocked to [`DRESS_K_BLOCK`]. The
+/// outer edges follow the source's own blocks; the inner split is a fixed constant,
+/// which both pins the summation order and improves accuracy (see
+/// [`DRESS_K_BLOCK`]). `dst` starts at zero, so `acc += contrib` accumulates the
+/// identical term sequence a private buffer would, in the identical order.
+fn dress_block_in_place(
+    dst: &mut [f64],
+    (l0, l1): (usize, usize),
+    band_p0: usize,
+    q_edges: &[(usize, usize)],
+    (m, raw_flat, raw_p0): (&Array2<f64>, &ndarray::ArrayView2<'_, f64>, usize),
+) -> Result<(), FerricError> {
+    let b = l1 - l0;
+    let p0 = band_p0 + l0;
+    let row_elems = raw_flat.ncols();
+    let mut acc = ndarray::ArrayViewMut2::from_shape((b, row_elems), dst)
+        .map_err(|e| FerricError::General(format!("dress out reshape: {e}")))?;
+    for &(q0, q1) in q_edges {
+        let mut qa = q0;
+        while qa < q1 {
+            let qb = (qa + DRESS_K_BLOCK).min(q1);
+            let msub = m.slice(ndarray::s![p0..p0 + b, qa..qb]);
+            let rblk = raw_flat.slice(ndarray::s![qa - raw_p0..qb - raw_p0, ..]);
+            let contrib: Array2<f64> = msub.dot(&rblk);
+            acc += &contrib;
+            qa = qb;
+        }
+    }
+    Ok(())
+}
+
+/// Memory is why a refused band is spilling at all, so when the disk then refuses
+/// too, say so, and let a guess give way as it would to the memory failure itself.
+fn spill_refusal(e: FerricError, memory_refused: bool) -> FerricError {
+    if memory_refused {
+        FerricError::MemoryExhausted(format!(
+            "DF dressed tensor fits neither the memory pool nor the spill directory: {e}"
+        ))
+    } else {
+        e
+    }
+}
+
 /// Decide in core or spill for a dressed band. Returns the charge when admitted,
 /// and whether memory alone refused a band that fits the budget.
 ///
@@ -476,44 +532,31 @@ fn admit_dressed_in_core(
     (charge, refused)
 }
 
-/// The in-core output of a source that is not itself in core: `out[P] = Σ_Q
-/// m[P,Q] raw[Q]`, one `accum` + `contrib` pair per `block_naux` output rows.
+/// The in-core output of a source that is not itself in core, on the fast path's
+/// GEMM grid: every element sees the same term sequence as there and as in
+/// [`dress_rows_packed`], so at one BLAS thread the three routes agree bitwise.
+/// One pass over `raw`, since all the output rows are already resident.
 fn dress_band_in_core_blocked(
     raw: &mut ThreeIndexSource,
     m: &Array2<f64>,
     arr: &mut Array3<f64>,
     (band_p0, band_p1): (usize, usize),
-    block_naux: usize,
 ) -> Result<(), FerricError> {
     let nao = raw.nao();
-    let mut p0 = band_p0;
-    while p0 < band_p1 {
-        let p1 = (p0 + block_naux).min(band_p1);
-        let b = p1 - p0;
-        let mut accum = Array3::<f64>::zeros((b, nao, nao));
-        // `raw` is the full source, streamed block-by-block. Only this band's
-        // output rows [p0, p1) are accumulated.
-        raw.for_each_block(|rb| {
-            let rb_b = rb.data.shape()[0];
-            let raw_flat = rb
-                .data
-                .into_shape_with_order((rb_b, nao * nao))
-                .map_err(|e| FerricError::General(format!("raw reshape: {e}")))?;
-            let msub = m.slice(ndarray::s![p0..p1, rb.p0..rb.p0 + rb_b]); // (b, rb_b)
-            let contrib = msub.dot(&raw_flat); // (b, nao*nao)
-            let mut acc_flat = accum
-                .view_mut()
-                .into_shape_with_order((b, nao * nao))
-                .unwrap();
-            acc_flat += &contrib;
-            Ok(())
-        })?;
-        // Band-local destination: global P maps to row (P - band_p0).
-        arr.slice_mut(ndarray::s![p0 - band_p0..p1 - band_p0, .., ..])
-            .assign(&accum);
-        p0 = p1;
-    }
-    Ok(())
+    let edges = dress_row_edges(band_p1 - band_p0, DRESS_ROW_BLOCK);
+    raw.for_each_dress_k_block(|q0, flat| {
+        let q1 = q0 + flat.nrows();
+        for &(l0, l1) in &edges {
+            let msub = m.slice(ndarray::s![band_p0 + l0..band_p0 + l1, q0..q1]);
+            let contrib = msub.dot(&flat);
+            let mut dst = arr
+                .slice_mut(ndarray::s![l0..l1, .., ..])
+                .into_shape_with_order((l1 - l0, nao * nao))
+                .map_err(|e| FerricError::General(format!("dress out reshape: {e}")))?;
+            dst += &contrib;
+        }
+        Ok(())
+    })
 }
 
 /// Write the dressed band to `file` in the packed spill format.
@@ -773,6 +816,26 @@ fn pack_lower_triangle(src: &ArrayView3<'_, f64>, nao: usize, dst: &mut [f64]) {
         }
         debug_assert_eq!(k, pair);
     }
+}
+
+/// [`pack_lower_triangle`] over `blk`'s own storage, returning the packed length.
+/// A packed element's index never exceeds its source's, so the ascending walk
+/// only ever overwrites what it has already read.
+fn pack_lower_triangle_in_place(blk: &mut Array3<f64>, nao: usize) -> Result<usize, FerricError> {
+    let b = blk.shape()[0];
+    let flat = blk
+        .as_slice_mut()
+        .ok_or_else(|| FerricError::General("spill: non-contiguous block".into()))?;
+    let mut k = 0usize;
+    for pl in 0..b {
+        for mu in 0..nao {
+            for nu in 0..=mu {
+                flat[k] = flat[(pl * nao + mu) * nao + nu];
+                k += 1;
+            }
+        }
+    }
+    Ok(k)
 }
 
 /// Inverse of [`pack_lower_triangle`]: expand `src` back into the full
@@ -1040,7 +1103,7 @@ impl ThreeIndexSource {
                 .saturating_mul(nao)
                 .saturating_mul(8),
         );
-        let scratch = Array3::<f64>::zeros((block_naux, nao, nao));
+        let scratch = unallocated_block(nao);
         Ok(Self {
             naux,
             nao,
@@ -1260,19 +1323,21 @@ impl ThreeIndexSource {
             });
 
             // Consumer (this thread): write each block as it arrives. Pure I/O.
-            // Reused across blocks so the pack buffer is allocated once.
-            let mut packbuf: Vec<f64> = Vec::new();
             for blk in rx.iter() {
-                let blk = blk?;
+                let mut blk = blk?;
                 // Store the PACKED μν triangle: half the bytes written, and
                 // half the bytes re-read on every subsequent streaming pass
                 // (which for DfK is every SCF iteration -- the cost the
-                // spill warning quantifies).
+                // spill warning quantifies). Packed in place, because a separate
+                // buffer would be a third live block beside the two this
+                // pipeline is sized for.
                 let b = blk.shape()[0];
-                let pair = packed_pair_len(nao);
-                packbuf.resize(b * pair, 0.0);
-                pack_lower_triangle(&blk.view(), nao, &mut packbuf);
-                let bytes: &[u8] = bytemuck::cast_slice(&packbuf[..b * pair]);
+                let n = pack_lower_triangle_in_place(&mut blk, nao)?;
+                debug_assert_eq!(n, b * packed_pair_len(nao));
+                let flat = blk
+                    .as_slice()
+                    .ok_or_else(|| FerricError::General("spill: non-contiguous block".into()))?;
+                let bytes: &[u8] = bytemuck::cast_slice(&flat[..n]);
                 file.write_all(bytes)
                     .map_err(|e| FerricError::General(format!("spill write: {e}")))?;
                 // Evict just-written pages so the cgroup-charged page cache does
@@ -1293,7 +1358,7 @@ impl ThreeIndexSource {
                 .saturating_mul(nao)
                 .saturating_mul(8),
         );
-        let scratch = Array3::<f64>::zeros((block_naux, nao, nao));
+        let scratch = unallocated_block(nao);
         Ok(Self {
             naux,
             nao,
@@ -1414,6 +1479,14 @@ impl ThreeIndexSource {
         let (in_core_charge, memory_refused) =
             admit_dressed_in_core(needed, budget_bytes, fast_path_fits);
         let in_core = in_core_charge.is_some();
+        if memory_refused && jk_storage() == JkStorage::Memory {
+            return Err(FerricError::General(format!(
+                "jk_storage = \"memory\": the dressed 3-index tensor ({:.3} GB) fits the budget \
+                 but not beside what is already resident. Raise [memory] budget_gb or use \
+                 jk_storage = \"auto\", \"disk\" or \"direct\".",
+                needed as f64 / 1e9,
+            )));
+        }
         if ooc_trace() {
             eprintln!(
                 "[OOC dress] naux={naux} band=[{band_p0},{band_p1}) nao={nao} needed={:.2}GB budget={:.2}GB block_naux={block_naux} -> {}",
@@ -1437,18 +1510,7 @@ impl ThreeIndexSource {
             // number would refuse spills that fit and overstate the IO time
             // in the warning by 2x.
             let spill_bytes = band.saturating_mul(packed_pair_len(nao)).saturating_mul(8);
-            preflight_spill(spill_bytes).map_err(|e| {
-                // Memory is why this run is spilling at all, so a run the pool
-                // alone refused still reports that, and not only the disk.
-                if memory_refused {
-                    FerricError::MemoryExhausted(format!(
-                        "DF dressed tensor fits neither the memory pool nor the spill \
-                         directory: {e}"
-                    ))
-                } else {
-                    e
-                }
-            })?;
+            preflight_spill(spill_bytes).map_err(|e| spill_refusal(e, memory_refused))?;
             Some(tempfile::tempfile().map_err(|e| FerricError::General(format!("tempfile: {e}")))?)
         };
         // FAST PATH: raw and output both fully in core. Each output block is an
@@ -1536,33 +1598,9 @@ impl ThreeIndexSource {
             arr_slice
                 .par_chunks_mut(DRESS_ROW_BLOCK * row_elems)
                 .enumerate()
-                .try_for_each(|(bi, dst)| -> Result<(), FerricError> {
-                    let (l0, l1) = out_edges[bi];
-                    let b = l1 - l0;
-                    let p0 = band_p0 + l0;
-                    let mut acc = ndarray::ArrayViewMut2::from_shape((b, row_elems), dst)
-                        .map_err(|e| FerricError::General(format!("dress out reshape: {e}")))?;
-                    // Ascending Q sweep, sub-blocked to DRESS_K_BLOCK. The outer
-                    // edges follow the source's own blocks (so a spilled source
-                    // keeps its streaming order); the inner split is a fixed
-                    // constant, which both pins the summation order and improves
-                    // accuracy (see DRESS_K_BLOCK).
-                    //
-                    // `acc` starts at zero (`arr` was zero-initialised), so
-                    // `acc += contrib` accumulates the identical term sequence
-                    // the old private buffer did, in the identical order.
-                    for &(q0, q1) in q_edges.iter() {
-                        let mut qa = q0;
-                        while qa < q1 {
-                            let qb = (qa + DRESS_K_BLOCK).min(q1);
-                            let msub = m.slice(ndarray::s![p0..p0 + b, qa..qb]);
-                            let rblk = raw_flat.slice(ndarray::s![qa - raw_p0..qb - raw_p0, ..]);
-                            let contrib: Array2<f64> = msub.dot(&rblk);
-                            acc += &contrib;
-                            qa = qb;
-                        }
-                    }
-                    Ok(())
+                .try_for_each(|(bi, dst)| {
+                    let edge = out_edges[bi];
+                    dress_block_in_place(dst, edge, band_p0, &q_edges, (m, &raw_flat, raw_p0))
                 })?;
             return Ok(Self {
                 naux,
@@ -1578,26 +1616,27 @@ impl ThreeIndexSource {
         // SEQUENTIAL path accounting. Two consumers read these widths: the
         // dressing below, and DF-K through `read_rows`, its only reader.
         //
-        // The in-core branch still holds `accum` + `contrib` over `out_incore`,
-        // at most 3x the band; only a spilled or recomputed `raw` reaches it.
-        // Reported rather than enforced, printed unconditionally on a failed
-        // `check()`. Pure, so `blocked_dressing_overshoot_report_for_test` pins it.
+        // The in-core branch holds a Q block and a `contrib` over `out_incore`;
+        // only a spilled, packed or recomputed `raw` reaches it. Reported rather
+        // than enforced, printed unconditionally on a failed `check()`. Pure, so
+        // `blocked_dressing_overshoot_report_for_test` pins it.
         let raw_resident = raw.tensor_resident_bytes();
         let raw_stream = raw.dress_stream_bytes();
         let df_j_stream = raw.df_j_stream_bytes();
         // Twice: `DfK` keeps the metric alive beside its inverse root `m` here.
         let m_bytes = m.len().saturating_mul(16);
-        let read_rows = spilled_read_rows(budget_bytes, (raw_resident, df_j_stream), nao, band);
+        let read_rows = spilled_read_rows(budget_bytes, raw_resident, (naux, nao), band);
         if let Some(arr) = out_incore.as_mut() {
+            let grid_rows = DRESS_K_BLOCK.min(band);
             if let Some(report) =
-                blocked_dressing_overshoot_report(budget_bytes, in_core, band, block_naux, nao)
+                blocked_dressing_overshoot_report(budget_bytes, in_core, band, grid_rows, nao)
             {
                 eprintln!(
                     "[ferric] WARNING: DF dressing (blocked, in-core output) exceeds the byte \
                      budget:\n{report}"
                 );
             }
-            dress_band_in_core_blocked(raw, m, arr, (band_p0, band_p1), block_naux)?;
+            dress_band_in_core_blocked(raw, m, arr, (band_p0, band_p1))?;
         } else if let Some(f) = file.as_mut() {
             let overhead = dressing_overhead_bytes(
                 raw_resident.saturating_add(raw_stream),
@@ -1607,12 +1646,11 @@ impl ThreeIndexSource {
             );
             let accum_rows = spilled_accum_rows(budget_bytes, overhead, nao);
             let passes = band.div_ceil(accum_rows);
-            if passes > DRESS_PASS_WARN && !raw.is_incore() {
+            if let Some(cost) = dress_pass_cost(raw, passes).filter(|_| passes > DRESS_PASS_WARN) {
                 eprintln!(
                     "[ferric] WARNING: holding the DF dressing to the memory budget takes {passes} \
-                     passes over the raw 3-index tensor (~{:.1} GB of IO, or as many integral \
-                     builds under jk_storage = \"direct\"). Raise [memory] budget_gb to reduce it.",
-                    (passes * naux * packed_pair_len(nao) * 8) as f64 / 1e9,
+                     passes over the raw 3-index tensor ({cost}). Raise [memory] budget_gb to \
+                     reduce it."
                 );
             }
             if let Some(report) = spilled_dressing_report(
@@ -1626,6 +1664,13 @@ impl ThreeIndexSource {
                      phases below, even at its minimum widths:\n{report}"
                 );
             }
+            if rayon::current_num_threads() > NOMINAL_K_WORKERS {
+                eprintln!(
+                    "[ferric] note: the spilled DF-K read-back is sized for {NOMINAL_K_WORKERS} \
+                     workers; with {} its per-worker scratch can overshoot the byte budget.",
+                    rayon::current_num_threads(),
+                );
+            }
             dress_band_to_spill(raw, m, f, (band_p0, band_p1), accum_rows)?;
         }
         let backend = match (out_incore, file) {
@@ -1634,7 +1679,7 @@ impl ThreeIndexSource {
                 f.sync_all().ok();
                 Backend::DiskSpill {
                     file: f,
-                    scratch: Array3::zeros((read_rows, nao, nao)),
+                    scratch: unallocated_block(nao),
                 }
             }
             _ => unreachable!(),
@@ -1846,20 +1891,13 @@ impl ThreeIndexSource {
     /// it so the block is not held for the rest of the SCF. A no-op for every
     /// other tier.
     pub fn release_scratch(&mut self) {
-        if let Backend::InCorePacked { scratch, .. } = &mut self.backend {
-            *scratch = None;
-        }
+        drop_stream_block(&mut self.backend, self.nao);
     }
 
-    /// Bytes of the unpacked scratch block currently held (0 unless a packed
-    /// in-core source has streamed and not released it).
+    /// Bytes of the unpacked scratch block currently held (0 until a source has
+    /// streamed with `for_each_block`, and again after `release_scratch`).
     pub fn scratch_bytes(&self) -> usize {
-        match &self.backend {
-            Backend::InCorePacked {
-                scratch: Some(s), ..
-            } => s.len() * 8,
-            _ => 0,
-        }
+        stream_block_bytes(&self.backend)
     }
 
     /// Is this source the packed in-core tier? Test hook, paired with
@@ -1968,12 +2006,48 @@ impl ThreeIndexSource {
                 screen,
             } => {
                 let scr = screen.as_ref().map(|(b, t)| (b.as_ref(), *t));
+                ensure_block(scratch, step, nao);
                 stream_recompute((*op, obs, dfbs, scr), scratch, band, band_p0, step, f)
             }
             Backend::DiskSpill { file, scratch } => {
+                ensure_block(scratch, step, nao);
                 stream_spill(file, scratch, nao, band, band_p0, step, f)
             }
         }
+    }
+}
+
+/// A block not yet allocated: `for_each_block` makes it on first use, so a consumer
+/// of the packed stream never pays for it and `release_scratch` can hand it back.
+fn unallocated_block(nao: usize) -> Array3<f64> {
+    Array3::zeros((0, nao, nao))
+}
+
+fn drop_stream_block(backend: &mut Backend, nao: usize) {
+    match backend {
+        Backend::InCorePacked { scratch, .. } => *scratch = None,
+        Backend::DiskSpill { scratch, .. } | Backend::Recompute { scratch, .. } => {
+            *scratch = unallocated_block(nao);
+        }
+        Backend::InCore(_) => {}
+    }
+}
+
+fn stream_block_bytes(backend: &Backend) -> usize {
+    match backend {
+        Backend::InCorePacked {
+            scratch: Some(s), ..
+        } => s.len() * 8,
+        Backend::DiskSpill { scratch, .. } | Backend::Recompute { scratch, .. } => {
+            scratch.len() * 8
+        }
+        _ => 0,
+    }
+}
+
+fn ensure_block(scratch: &mut Array3<f64>, step: usize, nao: usize) {
+    if scratch.shape()[0] < step {
+        *scratch = Array3::zeros((step, nao, nao));
     }
 }
 
@@ -2543,8 +2617,8 @@ mod tests {
     /// not the tensor — and check it in-core by perturbing `diis_size` first.
     ///
     /// A spilled raw source with an output that fits in core takes the blocked
-    /// in-core path (`jk_storage = "disk"` reaches it). It must agree with the
-    /// fast path to a few ulp: the two sum in differently sized pieces.
+    /// in-core path (`jk_storage = "disk"` reaches it). It forms the fast path's
+    /// GEMMs, so it must agree with it exactly.
     #[test]
     fn blocked_in_core_dressing_agrees_with_the_fast_path() {
         let mol = Molecule::load_xyz("../../testdata/molecules/water.xyz").unwrap();
@@ -2589,9 +2663,9 @@ mod tests {
             .zip(&b)
             .fold(0.0f64, |x, (p, q)| x.max((p - q).abs()));
         assert!(big > 1.0, "the dressed tensor must not be ~zero");
-        assert!(
-            worst <= 64.0 * f64::EPSILON * big,
-            "deviates by {worst:.3e}"
+        assert_eq!(
+            worst, 0.0,
+            "the blocked route must match the fast path exactly"
         );
     }
 
@@ -2867,7 +2941,7 @@ mod tests {
     /// ample budget still runs (an over-estimating guard that refuses a job
     /// which would have fit is as much a defect as an under-estimate).
     #[test]
-    fn dressed_over_budget_is_refused_and_named_ample_budget_still_runs() {
+    fn a_band_the_fast_path_plan_refuses_spills_and_ample_budget_stays_in_core() {
         let (mol,) = water();
         let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
         let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
@@ -2897,16 +2971,17 @@ mod tests {
         assert!(dressed.is_spilled_for_test(), "must have spilled");
     }
 
-    /// The read-back width at the measured C48/6-31G 6 GiB shape: everything the
-    /// SCF holds must fit, and the width must not read the thread count.
+    /// The read-back width at the measured C48/6-31G 6 GiB shape: what K holds must
+    /// fit, J's stream must fit on its own turn, and the width must not read the
+    /// thread count.
     #[test]
-    fn read_width_fits_the_budget_with_df_j_counted_and_ignores_threads() {
+    fn read_width_fits_the_budget_and_ignores_threads() {
         let (nao, naux) = (628usize, 5370usize);
         let budget = 6_442_450_944usize;
         let pair = packed_pair_len(nao);
         let df_j = 3 * ((PACKED_STREAM_BLOCK_CAP_BYTES / (pair * 8)) / 6 * 6) * pair * 8;
-        let rows = spilled_read_rows(budget, (0, df_j), nao, naux);
-        let held = rows * (nao * nao + pair) * 8 + df_j + df_k_band_bytes(budget);
+        let rows = spilled_read_rows(budget, 0, (naux, nao), naux);
+        let held = rows * (nao * nao + pair) * 8 + k_phase_fixed_bytes(budget, naux, nao);
         assert!(held <= budget, "read-back holds {held} of {budget}");
         assert!(
             (budget - held) < 2 * df_chunk_width(nao) * (nao * nao + pair) * 8,
@@ -2918,8 +2993,8 @@ mod tests {
             "chunks must fall as in core"
         );
         assert!(
-            spilled_read_rows(budget, (0, 2 * df_j), nao, naux) < rows,
-            "DF-J's stream must narrow the block"
+            spilled_read_rows(budget, budget / 2, (naux, nao), naux) < rows,
+            "resident raw must narrow the block"
         );
         let report = spilled_dressing_report(
             budget,
@@ -2934,9 +3009,31 @@ mod tests {
                 .num_threads(threads)
                 .build()
                 .unwrap();
-            let w = pool.install(|| spilled_read_rows(budget, (0, df_j), nao, naux));
+            let w = pool.install(|| spilled_read_rows(budget, 0, (naux, nao), naux));
             assert_eq!(w, rows, "width moved at {threads} threads");
         }
+    }
+
+    /// The warning must name what a pass really costs, and stay quiet when a pass
+    /// only reads memory.
+    #[test]
+    fn dress_pass_cost_names_the_real_cost_by_backend() {
+        let (mol,) = water();
+        let obs = PreparedBasis::new(&mol, &basis::bundled("sto-3g").unwrap()).unwrap();
+        let aux = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
+        let op = Operator::coulomb();
+        let (naux, nao) = (aux.nbasis(), obs.nbasis());
+        let row = nao * nao * 8;
+        let build = |tier| {
+            ThreeIndexSource::build_band_tier(op, &obs, &aux, row * 40, (0, naux), None, tier)
+                .unwrap()
+        };
+        use jk_storage::Tier;
+        assert!(dress_pass_cost(&build(Tier::Spill), 9)
+            .unwrap()
+            .contains("IO"));
+        assert!(dress_pass_cost(&build(Tier::InCore), 9).is_none());
+        assert!(dress_pass_cost(&build(Tier::InCorePacked), 9).is_none());
     }
 
     /// A shape that cannot fit, even at the floors, must say so.
@@ -2945,7 +3042,7 @@ mod tests {
         let (nao, naux) = (628usize, 5370usize);
         let row = nao * nao * 8;
         let budget = row; // one row of the tensor
-        let rows = spilled_read_rows(budget, (0, 0), nao, naux);
+        let rows = spilled_read_rows(budget, 0, (naux, nao), naux);
         assert_eq!(rows, 2 * df_chunk_width(nao), "the floor is what is left");
         let report = spilled_dressing_report(budget, (0, 0, 0), (64, rows, 0), (naux, nao))
             .expect("must be reported");
@@ -2959,13 +3056,14 @@ mod tests {
     fn the_report_counts_resident_raw_and_the_metric() {
         let (nao, naux) = (100usize, 200usize);
         let row = nao * nao * 8;
-        let budget = 400 * row;
+        let budget = 4000 * row;
         let fits = spilled_dressing_report(budget, (0, 0, 0), (64, 10, 0), (naux, nao));
         assert!(fits.is_none(), "{fits:?}");
-        let raw = spilled_dressing_report(budget, (budget, 0, 0), (64, 10, 0), (naux, nao));
+        let raw = spilled_dressing_report(budget, (budget + 8, 0, 0), (64, 10, 0), (naux, nao));
         let raw = raw.expect("resident raw must be reported");
         assert!(raw.contains("DF dressing (spilled)"), "{raw}");
-        assert!(raw.contains("DF J/K read-back"), "{raw}");
+        assert!(raw.contains("DF-K read-back"), "{raw}");
+        assert!(raw.contains("DF-J stream"), "{raw}");
         let metric = spilled_dressing_report(budget, (0, 0, budget), (64, 10, 0), (naux, nao));
         assert!(metric.is_some_and(|r| r.contains("dressing metric")));
     }
