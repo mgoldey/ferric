@@ -78,9 +78,14 @@ highly polarizable excitations, such as π-stacked and other π systems, that
 uncoupled response over-polarizes, and MP2 overbinds. This is documented in the
 literature that replaces MP2's uncoupled dispersion with a coupled one
 (Cybulski & Lytle 2007; Heßelmann 2008; Pitoňák & Heßelmann 2010). The size of
-that coupling correction varies from system to system, and ferric has no
-coupled-dispersion (MP2C-style) implementation of its own, so read this as the
-literature's diagnosis, not a ferric measurement.
+that coupling correction varies from system to system. ferric has two
+library-only relatives: a supermolecular ΔdRPA-corrected MP2, which is not
+MP2C (it swaps each system's whole direct-ring correlation, not just the
+intermolecular dispersion), and an experimental SAPT-style MP2C that does not
+yet reproduce
+the published corrections (its coupled response is unstable in the dimer
+basis; see the [validation page](../reference/validation.md#anchors)). Read
+this as the literature's diagnosis, not a ferric measurement.
 
 Attenuated MP2 takes a blunter route: it removes the long-range correlation
 altogether and relies on a fitted short-range operator plus the basis-set

@@ -32,6 +32,10 @@ pub mod boys_localize;
 pub mod budget;
 /// Per-spin RPA channel (B_ov, orbital energies) for unrestricted dispatch.
 pub mod channel;
+/// Coupled-Kohn-Sham (CKS) Casimir-Polder dispersion between two monomers
+/// (EXPERIMENTAL: the static coupled response is unstable, near a pole, in the
+/// dimer basis on every complex measured; see the module docs).
+pub mod cks_dispersion;
 /// PDEP-RPA configuration: eigensolver, quadrature, chi0 backend, sparsity.
 pub mod config;
 /// Davidson eigensolver for the static dielectric matrix.
@@ -50,6 +54,11 @@ pub mod gradient;
 pub mod lanczos;
 /// Laplace-separable chi0 kernel for the PDEP dielectric matvec.
 pub mod laplace_chi0;
+/// Supermolecular ΔdRPA-corrected MP2 (MP2C-inspired; not published MP2C).
+pub mod mp2c;
+/// MP2C with a SAPT-style (RHF orbitals, ALDAX kernel) CKS Casimir-Polder
+/// dispersion swap (EXPERIMENTAL).
+pub mod mp2c_cks;
 /// MPI-distributed PDEP-RPA frequency quadrature.
 #[cfg(feature = "mpi")]
 pub mod mpi_rpa;
@@ -85,11 +94,20 @@ use ferric_mp2::rimp2::{compute_rpa_intermediates, RiMp2Config};
 use ferric_scf::ScfResult;
 use ndarray::{Array1, Array2};
 
+pub use cks_dispersion::{
+    build_monomer_response, cks_dispersion_energy, CksCoupling, CksDispersionConfig,
+    CksDispersionResult, MonomerResponse,
+};
 pub use config::{Chi0Backend, Chi0Sparsity, Eigensolver, PdepRpaConfig};
 pub use dispersion::{
     casimir_polder_c6, pdep_dynamic_polarizability, ts_dynamic_polarizability, C6Result,
     DispersionPartition, DynamicPolarizability,
 };
+pub use mp2c::{
+    mp2c_energy, mp2c_interaction_energy, Mp2cConfig, Mp2cDispersionRange, Mp2cInteraction,
+    Mp2cResult,
+};
+pub use mp2c_cks::{mp2c_cks_interaction, MonomerInput, Mp2cCksConfig, Mp2cCksInteraction};
 pub use screen::{build_screened_bov, build_screened_bov_boys, ScreenedBov};
 
 /// Crate-wide serialization for tests that SET or transitively READ the
