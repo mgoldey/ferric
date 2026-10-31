@@ -22,7 +22,7 @@ def parse_run(path):
             head, tail = body.rsplit(" | ", 1)
             parts = head.split()
             t = tail.split()
-            cur = {"t_maps": float(parts[-5]), "t_metric": float(parts[-3]), "t_pairs": float(parts[-2]),
+            cur = {"t_maps": float(parts[-4]), "t_metric": float(parts[-2]), "t_pairs": float(parts[-1]),
                    "t_asm": float(t[0]), "t_solve": float(t[1]), "e_corr": parts[3], "keep": parts[5]}
         elif line.startswith("ERI3 "):
             d = dict(kv.split("=") for kv in line.split()[1:])
