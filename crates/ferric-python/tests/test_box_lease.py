@@ -1249,7 +1249,66 @@ def test_a_failed_reinstall_warns_and_does_not_fail_the_gate(tmp_path):
 
 def test_a_shim_not_on_path_warns(tmp_path):
     _, err = _ensure(tmp_path, on_path=False)
-    assert "not on PATH" in err, err
+    assert "not first on PATH" in err, err
+
+
+def test_a_shim_behind_the_real_cargo_warns(tmp_path):
+    dest = tmp_path / "shim-dir"
+    other = tmp_path / "real-bin"
+    other.mkdir()
+    (other / "cargo").write_text("#!/bin/sh\n")
+    (other / "cargo").chmod(0o755)
+    subprocess.run(
+        [SCRIPTS / "install-cargo-shim.sh"],
+        env={**os.environ, "FERRIC_SHIM_DIR": str(dest)},
+        check=True,
+        capture_output=True,
+    )
+    lib = LIB.read_text()
+    env = {
+        **os.environ,
+        "FERRIC_SHIM_DIR": str(dest),
+        "PATH": f"{other}:{dest}:{os.environ['PATH']}",
+    }
+    cmd = f'source {LIB}; ferric_ensure_cargo_shim "{REPO}"'
+    p = subprocess.run(["bash", "-c", cmd], env=env, capture_output=True, text=True)
+    assert "not first on PATH" in p.stderr, p.stderr
+    # The old on-PATH-anywhere check stays silent here, so this test can tell them apart.
+    old = 'if [[ "$(command -v cargo)" != "$dir/cargo" ]]; then'
+    assert old in lib
+    copy = tmp_path / "mutant.sh"
+    copy.write_text(lib.replace(old, 'if [[ ":$PATH:" != *":$dir:"* ]]; then'))
+    cmd = f'source {copy}; ferric_ensure_cargo_shim "{REPO}"'
+    p = subprocess.run(["bash", "-c", cmd], env=env, capture_output=True, text=True)
+    assert "not first on PATH" not in p.stderr, p.stderr
+
+
+def test_a_shim_differing_from_this_tree_warns(tmp_path):
+    dest, _ = _ensure(tmp_path)
+    (dest / "cargo").write_text("#!/bin/sh\n# old\n")
+    env = {**os.environ, "FERRIC_SHIM_DIR": str(dest), "PATH": f"{dest}:{os.environ['PATH']}"}
+    cmd = f'source {LIB}; ferric_ensure_cargo_shim "{REPO}"'
+    p = subprocess.run(["bash", "-c", cmd], env=env, capture_output=True, text=True)
+    assert "differs from this tree" in p.stderr, p.stderr
+
+
+def test_the_default_shim_dir_is_stable_and_survives_an_unset_home(tmp_path):
+    home = tmp_path / "home"
+    (home / ".local/share/ferric-cargo-shim").mkdir(parents=True)
+    shim = home / ".local/share/ferric-cargo-shim/cargo"
+    shim.write_text("#!/bin/sh\n")
+    shim.chmod(0o755)
+    env = {k: v for k, v in os.environ.items() if k != "FERRIC_SHIM_DIR"}
+    cmd = f'source {LIB}; ferric_ensure_cargo_shim "{REPO}"; echo rc=$?'
+    p = subprocess.run(
+        ["bash", "-c", cmd], env={**env, "HOME": str(home)}, capture_output=True, text=True
+    )
+    assert "rc=0" in p.stdout and f"{shim} is not first" in p.stderr, p.stdout + p.stderr
+    env.pop("HOME", None)
+    p = subprocess.run(
+        ["bash", "-uc", cmd], env=env, capture_output=True, text=True
+    )
+    assert "rc=0" in p.stdout, p.stdout + p.stderr
 
 
 def test_the_gate_and_the_hook_both_check_for_the_shim():

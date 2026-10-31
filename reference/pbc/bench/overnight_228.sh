@@ -37,7 +37,7 @@ if ((BUILD)); then
   fi
   git -C "$MAINLINE" fetch -q origin
   git -C "$MAINLINE" checkout -q --detach origin/main
-  (cd "$MAINLINE" && PATH=/tmp/ferric-cargo-shim:$PATH \
+  (cd "$MAINLINE" && PATH=$HOME/.local/share/ferric-cargo-shim:$PATH \
     cargo build --release -p ferric-cli -p ferric-python)
 fi
 
