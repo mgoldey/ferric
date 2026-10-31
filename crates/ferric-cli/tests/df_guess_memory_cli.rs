@@ -13,17 +13,45 @@ use ferric_integrals::basis_bridge::PreparedBasis;
 use std::path::PathBuf;
 use std::process::Command;
 
+/// The compile-time `CARGO_BIN_EXE_` path does not exist where a nextest archive
+/// is unpacked, so prefer the sibling of the running test binary; see
+/// `ccsd_dispatch.rs`.
+fn ferric_cli_bin() -> PathBuf {
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(profile_dir) = exe.parent().and_then(std::path::Path::parent) {
+            let p = profile_dir.join("ferric-cli");
+            if p.is_file() {
+                return p;
+            }
+        }
+    }
+    PathBuf::from(env!("CARGO_BIN_EXE_ferric-cli"))
+}
+
+/// `CARGO_MANIFEST_DIR` is stale in an unpacked nextest archive as well.
 fn root() -> PathBuf {
+    let looks_like_root = |p: &std::path::Path| {
+        p.join("Cargo.toml").is_file() && p.join("examples").is_dir() && p.join("testdata").is_dir()
+    };
+    if let Ok(cwd) = std::env::current_dir() {
+        let mut here: Option<&std::path::Path> = Some(cwd.as_path());
+        while let Some(p) = here {
+            if looks_like_root(p) {
+                return p.to_path_buf();
+            }
+            here = p.parent();
+        }
+    }
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .and_then(|p| p.parent())
-        .expect("workspace root")
+        .expect("ferric-cli manifest dir should be workspace_root/crates/ferric-cli")
         .to_path_buf()
 }
 
 fn run(tag: &str, budget_gb: f64) -> (std::process::Output, f64) {
-    let dir = root().join("target");
-    std::fs::create_dir_all(&dir).expect("create target/");
+    let dir = std::env::temp_dir().join(format!("ferric_df_guess_mem_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("create scratch dir");
     let (toml, log) = (
         dir.join(format!("df_guess_mem_{tag}.toml")),
         dir.join(format!("df_guess_mem_{tag}.jsonl")),
@@ -40,7 +68,7 @@ fn run(tag: &str, budget_gb: f64) -> (std::process::Output, f64) {
         ),
     )
     .expect("write toml");
-    let out = Command::new(env!("CARGO_BIN_EXE_ferric-cli"))
+    let out = Command::new(ferric_cli_bin())
         .arg(&toml)
         .arg("--json")
         .arg(&log)
