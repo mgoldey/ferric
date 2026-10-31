@@ -46,8 +46,10 @@
 //! sets), exactness will instead demand radii that track the molecular
 //! DIAMETER. These predictions differ, so the sweep can distinguish them.
 
-use ndarray::{Array1, Array2, Array3, Axis};
+use ndarray::{Array1, Array2, Array3, ArrayView2, Axis};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
 use std::time::Instant;
 
 use ferric_core::error::FerricError;
@@ -122,6 +124,24 @@ pub struct DirectConfig {
     /// by default; off, only their sum `t_eri3_fill_thread_s` is timed and
     /// the two split timers are NaN. Never changes a result.
     pub split_eri3_timers: bool,
+    /// How stage 3 walks the (P|μν) triples. See [`Eri3Pass`].
+    pub eri3_pass: Eri3Pass,
+}
+
+/// Stage-3 integral pass. Both build the same strips to round-off: every strip
+/// element sums the same integrals with the same coefficients and the same
+/// Schwarz cut. They differ in how often a triple is evaluated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Eri3Pass {
+    /// Occupied batches, each with its own union slab
+    /// ([`DirectConfig::batch_merge`]). A triple needed by several batches is
+    /// evaluated once per batch.
+    #[default]
+    Batches,
+    /// One task per aux shell, over the union of the supports of the occupieds
+    /// that need that shell: each needed triple is evaluated once. Rejects
+    /// `batch_merge > 1`, which has no meaning here.
+    AuxMajor,
 }
 
 impl Default for DirectConfig {
@@ -135,6 +155,7 @@ impl Default for DirectConfig {
             scratch_budget_bytes: 2usize << 30,
             virt_schwarz_kappa: None,
             split_eri3_timers: false,
+            eri3_pass: Eri3Pass::Batches,
         }
     }
 }
@@ -180,7 +201,35 @@ pub struct DirectStats {
     pub t_eri3_eval_thread_s: f64,
     pub t_eri3_scatter_thread_s: f64,
     pub t_eri3_transform_thread_s: f64,
-    /// Integral batches run, and the max/mean wall seconds of one batch
+    /// The serial prefix of `t_eri3_s`, wall seconds: the construction check
+    /// and the shell-pair / aux Schwarz factors, before any batch worker runs.
+    pub t_eri3_setup_s: f64,
+    /// Integral slabs filled, over all batches.
+    pub n_eri3_slabs: usize,
+    /// Half-transform floating-point operations actually done
+    /// (`Σ_i Σ_{P∈slab} 2·nsf·nnf + 2·nnf·|V_i|`, batch-union axes), and what
+    /// the same contraction would cost restricted to i's OWN occupied and
+    /// virtual AO support (a counter for the sparsity the transform does not
+    /// exploit; batch pass only). On the aux-major pass `transform_flops` counts
+    /// its own contraction and the second counter stays 0.
+    pub transform_flops: f64,
+    pub transform_flops_own_support: f64,
+    /// Integrals libint wrote, and shell triples it screened to nothing. Only
+    /// with [`DirectConfig::split_eri3_timers`] (0 otherwise).
+    pub n_eri3_integrals: u64,
+    pub n_eri3_null_blocks: u64,
+    /// [`Eri3Pass::AuxMajor`]: largest one-task scratch (slab + half-transformed
+    /// slab + occupied coefficients), and how many tasks the scratch budget lets
+    /// run at once. 0 on the batch pass.
+    pub aux_major_task_bytes_max: usize,
+    pub aux_major_concurrency: usize,
+    /// [`Eri3Pass::AuxMajor`]: the most tasks actually observed in flight at once
+    /// (0 on the batch pass). Never above `aux_major_concurrency`.
+    pub aux_major_in_flight_peak: usize,
+    /// [`Eri3Pass::AuxMajor`]: bytes of the per-occupied virtual coefficient
+    /// blocks, resident for all of stage 3 (0 on the batch pass).
+    pub aux_major_coeff_bytes: usize,
+    /// Integral batches run (aux-shell tasks on the aux-major pass), and the max/mean wall seconds of one batch
     /// worker (the load-balance counter: max ≫ mean is a tail imbalance).
     pub n_batches: usize,
     pub batch_work_max_s: f64,
@@ -230,6 +279,11 @@ struct BatchTimers {
     scatter_s: f64,
     transform_s: f64,
     total_s: f64,
+    n_slabs: usize,
+    transform_flops: f64,
+    transform_flops_own_support: f64,
+    n_integrals: u64,
+    n_null_blocks: u64,
 }
 
 /// One batch's output: its strips, evaluated/skipped triple counts and
@@ -1081,6 +1135,8 @@ fn fill_slab(
                 if let Some(block) = eng.compute_eri3(obs, dfbs, sp, pr.ua, pr.ub) {
                     meta.push((*pr, buf.len()));
                     buf.extend_from_slice(block);
+                } else {
+                    tm.n_null_blocks += 1;
                 }
             }
             let ts = Instant::now();
@@ -1088,6 +1144,7 @@ fn fill_slab(
                 scatter_block(ctx, ax, pr, sp, &buf[*off..], p_local, t_slab);
             }
             let tf = Instant::now();
+            tm.n_integrals += buf.len() as u64;
             tm.eval_s += (ts - te).as_secs_f64();
             tm.scatter_s += (tf - ts).as_secs_f64();
             tm.fill_s += (tf - te).as_secs_f64();
@@ -1161,6 +1218,29 @@ fn slab_end(p_shells: &[usize], dims_df: &[usize], start: usize, max_funcs: usiz
     end
 }
 
+/// Half-transform flops of one batch per aux function, per occupied: on the
+/// batch-union axes as coded, and on i's own AO support (stats only).
+fn transform_flop_rates(ctx: &BatchCtx<'_>, ax: &BatchAxes, is: &[usize]) -> Vec<(f64, f64)> {
+    let dims = ctx.obs.shell_dims();
+    let nfuncs = |shells: &[usize]| shells.iter().map(|&sh| dims[sh]).sum::<usize>() as f64;
+    is.iter()
+        .map(|&i| {
+            let ncols = ctx.virt_ext[i].len() as f64;
+            let own_n = sorted_union(
+                ctx.virt_ext[i]
+                    .iter()
+                    .map(|&a| ctx.virt_supp[a].iter().copied()),
+            );
+            let (ns, nn) = (nfuncs(&ctx.occ_supp[i]), nfuncs(&own_n));
+            let (bs, bn) = (ax.nsf as f64, ax.nnf as f64);
+            (
+                2.0 * bs * bn + 2.0 * bn * ncols,
+                2.0 * ns * nn + 2.0 * nn * ncols,
+            )
+        })
+        .collect()
+}
+
 /// One stage-3 batch worker: evaluate only the shell triples the batch's
 /// occupieds need, slab by slab under the per-worker scratch share, and
 /// half-transform into their strips.
@@ -1180,6 +1260,11 @@ fn eval_batch(ctx: &BatchCtx<'_>, is: &[usize], fill: FillFn) -> BatchOut {
     let (c_occ, c_virt) = batch_coefficients(ctx, &ax, is);
     let mut strips = alloc_strips(ctx, is);
     let pairs = batch_pairs(ctx, &ax);
+    for (k, (full, own)) in transform_flop_rates(ctx, &ax, is).into_iter().enumerate() {
+        let n_rows = strips[k].rows.len() as f64;
+        tm.transform_flops += full * n_rows;
+        tm.transform_flops_own_support += own * n_rows;
+    }
     let per_func = ax.nsf.max(1) * ax.nnf.max(1) * 8;
     let max_funcs = (ctx.worker_budget / per_func).max(1);
     let mut slab_start = 0usize;
@@ -1207,6 +1292,7 @@ fn eval_batch(ctx: &BatchCtx<'_>, is: &[usize], fill: FillFn) -> BatchOut {
         );
         n_triples += nt;
         n_skipped += ns;
+        tm.n_slabs += 1;
         let tt = Instant::now();
         transform_slab(ctx, is, &mut strips, &c_occ, &c_virt, &p_local, &t_slab);
         tm.transform_s += tt.elapsed().as_secs_f64();
@@ -1219,6 +1305,408 @@ fn eval_batch(ctx: &BatchCtx<'_>, is: &[usize], fill: FillFn) -> BatchOut {
         n_skipped,
         tm,
     )
+}
+
+/// One occupied's coefficients on its OWN AO support, built once for the whole
+/// aux-major pass: the support mask per column is the same as
+/// [`batch_coefficients`]'s.
+struct OwnCoeffs {
+    /// (shell, function within the shell, coefficient) of the occupied column.
+    occ: Vec<(usize, usize, f64)>,
+    /// Shells the virtual block covers.
+    n_shells: Vec<usize>,
+    /// Their functions, and the `(|n_funcs|, |virt_ext_i|)` virtual block.
+    n_funcs: Vec<usize>,
+    c_virt: Array2<f64>,
+}
+
+fn own_coeffs(ctx: &BatchCtx<'_>, i: usize) -> OwnCoeffs {
+    let obs = ctx.obs;
+    let (dims, offs) = (obs.shell_dims(), obs.shell_offsets());
+    let occ = ctx.occ_supp[i]
+        .iter()
+        .flat_map(|&sh| (0..dims[sh]).map(move |f| (sh, f)))
+        .map(|(sh, f)| (sh, f, ctx.spaces.c_locc[(offs[sh] + f, i)]))
+        .collect();
+    let cols = &ctx.virt_ext[i];
+    let n_shells = sorted_union(cols.iter().map(|&a| ctx.virt_supp[a].iter().copied()));
+    let n_funcs = shell_funcs(obs, &n_shells);
+    let mut pos = vec![usize::MAX; obs.nbasis()];
+    for (k, &g) in n_funcs.iter().enumerate() {
+        pos[g] = k;
+    }
+    let mut c_virt = Array2::<f64>::zeros((n_funcs.len(), cols.len()));
+    for (k, &a) in cols.iter().enumerate() {
+        for &sh in &ctx.virt_supp[a] {
+            for f in 0..dims[sh] {
+                let g = offs[sh] + f;
+                c_virt[(pos[g], k)] = ctx.spaces.c_vloc[(g, a)];
+            }
+        }
+    }
+    OwnCoeffs {
+        occ,
+        n_shells,
+        n_funcs,
+        c_virt,
+    }
+}
+
+/// One aux shell's compact axes: the union of the supports of the occupieds
+/// that need it. A shell's functions are consecutive on both axes.
+struct AuxAxes {
+    s_shells: Vec<usize>,
+    n_shells: Vec<usize>,
+    nsf: usize,
+    nnf: usize,
+}
+
+impl AuxAxes {
+    fn new(ctx: &BatchCtx<'_>, own: &[OwnCoeffs], is: &[usize]) -> Self {
+        let dims = ctx.obs.shell_dims();
+        let s_shells = sorted_union(is.iter().map(|&i| ctx.occ_supp[i].iter().copied()));
+        let n_shells = sorted_union(is.iter().map(|&i| own[i].n_shells.iter().copied()));
+        let nsf = s_shells.iter().map(|&sh| dims[sh]).sum();
+        let nnf = n_shells.iter().map(|&sh| dims[sh]).sum();
+        Self {
+            s_shells,
+            n_shells,
+            nsf,
+            nnf,
+        }
+    }
+
+    /// Slab, half-transformed slab and occupied-coefficient bytes of one task.
+    fn task_bytes(&self, np: usize, nocc: usize) -> usize {
+        8 * (np * self.nsf * self.nnf + nocc * np * self.nnf + nocc * self.nsf)
+    }
+}
+
+/// A worker's reusable per-task storage. The slab is kept between tasks so a
+/// task's memset replaces a fresh mapping's page faults.
+struct AuxWorker {
+    eng: Engine,
+    slab: Vec<f64>,
+    /// Per shell: start on the `s` and `n` axes (usize::MAX = not on the axis).
+    s_start: Vec<usize>,
+    n_start: Vec<usize>,
+    buf: Vec<f64>,
+    meta: Vec<(NeedPair, usize)>,
+}
+
+/// Record each axis shell's start position; [`clear_starts`] undoes it.
+fn set_starts(start: &mut [usize], shells: &[usize], dims: &[usize]) {
+    let mut at = 0;
+    for &sh in shells {
+        start[sh] = at;
+        at += dims[sh];
+    }
+}
+
+fn clear_starts(start: &mut [usize], shells: &[usize]) {
+    for &sh in shells {
+        start[sh] = usize::MAX;
+    }
+}
+
+/// Write one (P|μν) block into the slab, laid out `[s, (p, n)]`, both
+/// orientations the pair needs.
+fn scatter_aux_block(
+    slab: &mut [f64],
+    nnf: usize,
+    np: usize,
+    (n1, n2): (usize, usize),
+    (ab, ba): (Option<(usize, usize)>, Option<(usize, usize)>),
+    block: &[f64],
+) {
+    let s_stride = np * nnf;
+    for p in 0..np {
+        let plane = &block[p * n1 * n2..(p + 1) * n1 * n2];
+        if let Some((s0, n0)) = ab {
+            for (fa, row) in plane.chunks_exact(n2).enumerate() {
+                let d = (s0 + fa) * s_stride + p * nnf + n0;
+                slab[d..d + n2].copy_from_slice(row);
+            }
+        }
+        if let Some((s0, n0)) = ba {
+            for fb in 0..n2 {
+                let d = (s0 + fb) * s_stride + p * nnf + n0;
+                for fa in 0..n1 {
+                    slab[d + fa] = plane[fa * n2 + fb];
+                }
+            }
+        }
+    }
+}
+
+/// The needed shell pairs of aux shell `sp` that survive the Schwarz cut, plus
+/// the count cut. Same product and comparison as the batch pass.
+fn aux_pairs(ctx: &BatchCtx<'_>, ax: &AuxAxes, w: &AuxWorker, sp: usize) -> (Vec<NeedPair>, u64) {
+    let u_shells = sorted_union([ax.s_shells.iter().copied(), ax.n_shells.iter().copied()]);
+    let qp = ctx.qpair.map(|(q, qp_shell)| (q, qp_shell[sp]));
+    let mut kept = Vec::new();
+    let mut cut = 0u64;
+    for (ux, &ua) in u_shells.iter().enumerate() {
+        for &ub in &u_shells[..=ux] {
+            let need_ab = w.s_start[ua] != usize::MAX && w.n_start[ub] != usize::MAX;
+            let need_ba = w.s_start[ub] != usize::MAX && w.n_start[ua] != usize::MAX;
+            if !(need_ab || need_ba) {
+                continue;
+            }
+            if let Some((q, qp)) = qp {
+                if qp * q[(ua, ub)] < ctx.schwarz_skip {
+                    cut += 1;
+                    continue;
+                }
+            }
+            kept.push(NeedPair {
+                ua,
+                ub,
+                need_ab,
+                need_ba,
+                q: 0.0,
+            });
+        }
+    }
+    (kept, cut)
+}
+
+/// Evaluate the kept pairs of `sp` into the worker's slab.
+fn fill_aux_slab(
+    ctx: &BatchCtx<'_>,
+    ax: &AuxAxes,
+    w: &mut AuxWorker,
+    pairs: &[NeedPair],
+    sp: usize,
+    tm: &mut BatchTimers,
+) {
+    let (obs, dfbs) = (ctx.obs, ctx.dfbs);
+    let dims = obs.shell_dims();
+    let np = dfbs.shell_dims()[sp];
+    let AuxWorker {
+        eng,
+        slab,
+        s_start,
+        n_start,
+        buf,
+        meta,
+    } = w;
+    let place = |pr: &NeedPair| {
+        (
+            pr.need_ab.then(|| (s_start[pr.ua], n_start[pr.ub])),
+            pr.need_ba.then(|| (s_start[pr.ub], n_start[pr.ua])),
+        )
+    };
+    for chunk in pairs.chunks(FILL_CHUNK) {
+        let te = Instant::now();
+        if !ctx.split_timers {
+            for pr in chunk {
+                if let Some(block) = eng.compute_eri3(obs, dfbs, sp, pr.ua, pr.ub) {
+                    let shape = (dims[pr.ua], dims[pr.ub]);
+                    scatter_aux_block(slab, ax.nnf, np, shape, place(pr), block);
+                }
+            }
+            tm.fill_s += te.elapsed().as_secs_f64();
+            continue;
+        }
+        buf.clear();
+        meta.clear();
+        for pr in chunk {
+            if let Some(block) = eng.compute_eri3(obs, dfbs, sp, pr.ua, pr.ub) {
+                meta.push((*pr, buf.len()));
+                buf.extend_from_slice(block);
+            } else {
+                tm.n_null_blocks += 1;
+            }
+        }
+        let ts = Instant::now();
+        for (pr, off) in meta.iter() {
+            let shape = (dims[pr.ua], dims[pr.ub]);
+            scatter_aux_block(slab, ax.nnf, np, shape, place(pr), &buf[*off..]);
+        }
+        let tf = Instant::now();
+        tm.n_integrals += buf.len() as u64;
+        tm.eval_s += (ts - te).as_secs_f64();
+        tm.scatter_s += (tf - ts).as_secs_f64();
+        tm.fill_s += (tf - te).as_secs_f64();
+    }
+}
+
+/// Half-transform `sp`'s slab into the strip rows of its occupieds: one wide
+/// GEMM over the occupieds, `H = C_occ · T`, then per occupied the block on its
+/// own virtual support times its virtual coefficients. Rows of different aux
+/// shells are disjoint, so the lock order cannot change any strip.
+fn transform_aux_slab(
+    ctx: &BatchCtx<'_>,
+    ax: &AuxAxes,
+    w: &AuxWorker,
+    (own, strips): (&[OwnCoeffs], &[Mutex<Strip>]),
+    sp: usize,
+    is: &[usize],
+    tm: &mut BatchTimers,
+) {
+    let dims = ctx.obs.shell_dims();
+    let np = ctx.dfbs.shell_dims()[sp];
+    let off_p = ctx.dfbs.shell_offsets()[sp];
+    let mut c_occ = Array2::<f64>::zeros((is.len(), ax.nsf));
+    for (k, &i) in is.iter().enumerate() {
+        for &(sh, f, c) in &own[i].occ {
+            c_occ[(k, w.s_start[sh] + f)] = c;
+        }
+    }
+    let t = ArrayView2::from_shape((ax.nsf, np * ax.nnf), &w.slab[..ax.nsf * np * ax.nnf])
+        .expect("aux slab shape");
+    let h = c_occ.dot(&t);
+    for (k, &i) in is.iter().enumerate() {
+        let o = &own[i];
+        let mut g_block = Array2::<f64>::zeros((np, o.n_funcs.len()));
+        let mut col = 0;
+        for &sh in &o.n_shells {
+            let n0 = w.n_start[sh];
+            for f in 0..dims[sh] {
+                for p in 0..np {
+                    g_block[(p, col)] = h[(k, p * ax.nnf + n0 + f)];
+                }
+                col += 1;
+            }
+        }
+        let rows = g_block.dot(&o.c_virt);
+        let mut strip = strips[i].lock().expect("strip lock");
+        for p in 0..np {
+            let r = strip.row_pos[off_p + p];
+            strip.b.row_mut(r).assign(&rows.row(p));
+        }
+    }
+    tm.transform_flops += 2.0 * (is.len() * ax.nsf * np * ax.nnf) as f64
+        + is.iter()
+            .map(|&i| 2.0 * (np * own[i].n_funcs.len() * own[i].c_virt.ncols()) as f64)
+            .sum::<f64>();
+}
+
+/// One aux-shell task. Timers and counters land in the returned [`BatchOut`];
+/// its strip list stays empty because the rows went straight to the strips.
+#[allow(clippy::too_many_arguments)]
+fn aux_task(
+    ctx: &BatchCtx<'_>,
+    w: &mut AuxWorker,
+    own: &[OwnCoeffs],
+    strips: &[Mutex<Strip>],
+    sp: usize,
+    is: &[usize],
+    ax: &AuxAxes,
+) -> BatchOut {
+    let t_start = Instant::now();
+    let dims = ctx.obs.shell_dims();
+    let np = ctx.dfbs.shell_dims()[sp];
+    let mut tm = BatchTimers {
+        n_slabs: 1,
+        ..Default::default()
+    };
+    set_starts(&mut w.s_start, &ax.s_shells, dims);
+    set_starts(&mut w.n_start, &ax.n_shells, dims);
+    let (pairs, cut) = aux_pairs(ctx, ax, w, sp);
+    let len = ax.nsf * np * ax.nnf;
+    w.slab.clear();
+    w.slab.resize(len, 0.0);
+    fill_aux_slab(ctx, ax, w, &pairs, sp, &mut tm);
+    let tt = Instant::now();
+    transform_aux_slab(ctx, ax, w, (own, strips), sp, is, &mut tm);
+    tm.transform_s += tt.elapsed().as_secs_f64();
+    clear_starts(&mut w.s_start, &ax.s_shells);
+    clear_starts(&mut w.n_start, &ax.n_shells);
+    tm.total_s = t_start.elapsed().as_secs_f64();
+    (Vec::new(), pairs.len() as u64, cut, tm)
+}
+
+/// [`Eri3Pass::AuxMajor`]: one evaluation per needed triple. The budget bounds
+/// the co-resident task scratch by limiting how many tasks run at once, so it
+/// sets concurrency only and no arithmetic depends on it or on the thread
+/// count. A single aux shell cannot be split: one over-budget task still runs
+/// alone, the same floor as the batch pass's one-shell slab.
+fn aux_major_pass(
+    ctx: &BatchCtx<'_>,
+    budget_bytes: usize,
+    stats: &mut DirectStats,
+) -> Vec<BatchOut> {
+    use rayon::prelude::*;
+    let dfbs = ctx.dfbs;
+    let no = ctx.spaces.no;
+    let own: Vec<OwnCoeffs> = (0..no)
+        .into_par_iter()
+        .map(|i| own_coeffs(ctx, i))
+        .collect();
+    stats.aux_major_coeff_bytes = own.iter().map(|o| 8 * o.c_virt.len()).sum();
+    let mut owners: Vec<Vec<usize>> = vec![Vec::new(); dfbs.nshells()];
+    for (i, shells) in ctx.aux_ext.iter().enumerate() {
+        for &sp in shells {
+            owners[sp].push(i);
+        }
+    }
+    let tasks: Vec<(usize, &[usize], AuxAxes)> = owners
+        .iter()
+        .enumerate()
+        .filter(|(_, is)| !is.is_empty())
+        .map(|(sp, is)| (sp, is.as_slice(), AuxAxes::new(ctx, &own, is)))
+        .collect();
+    let dims_df = dfbs.shell_dims();
+    let task_max = tasks
+        .iter()
+        .map(|(sp, is, ax)| ax.task_bytes(dims_df[*sp], is.len()))
+        .max()
+        .unwrap_or(0);
+    let concurrent = (budget_bytes / task_max.max(1)).clamp(1, rayon::current_num_threads().max(1));
+    stats.aux_major_task_bytes_max = task_max;
+    stats.aux_major_concurrency = concurrent;
+    let all: Vec<usize> = (0..no).collect();
+    let strips: Vec<Mutex<Strip>> = alloc_strips(ctx, &all)
+        .into_iter()
+        .map(Mutex::new)
+        .collect();
+    let nsh = ctx.obs.nshells();
+    let mut out: Vec<BatchOut> = Vec::with_capacity(tasks.len() + 1);
+    let (in_flight, peak) = (AtomicUsize::new(0), AtomicUsize::new(0));
+    // Fewer than a full pool only when the budget says so: a chunk at a time
+    // keeps at most `concurrent` slabs alive.
+    let chunk = if concurrent >= rayon::current_num_threads() {
+        tasks.len().max(1)
+    } else {
+        concurrent
+    };
+    for group in tasks.chunks(chunk) {
+        let done: Vec<BatchOut> = group
+            .par_iter()
+            .map_init(
+                || AuxWorker {
+                    eng: Engine::new_3center(ctx.op, ctx.obs, dfbs, 1e-14)
+                        .expect("3-center engine (pre-validated)"),
+                    slab: Vec::new(),
+                    s_start: vec![usize::MAX; nsh],
+                    n_start: vec![usize::MAX; nsh],
+                    buf: Vec::new(),
+                    meta: Vec::new(),
+                },
+                |w, (sp, is, ax)| {
+                    let now = in_flight.fetch_add(1, Ordering::Relaxed) + 1;
+                    peak.fetch_max(now, Ordering::Relaxed);
+                    let done = aux_task(ctx, w, &own, &strips, *sp, is, ax);
+                    in_flight.fetch_sub(1, Ordering::Relaxed);
+                    done
+                },
+            )
+            .collect();
+        out.extend(done);
+    }
+    stats.aux_major_in_flight_peak = peak.into_inner();
+    let built: Vec<(usize, Strip)> = strips
+        .into_iter()
+        .enumerate()
+        .map(|(i, m)| (i, m.into_inner().expect("strip lock")))
+        .collect();
+    match out.first_mut() {
+        Some(first) => first.0 = built,
+        None => out.push((built, 0, 0, BatchTimers::default())),
+    }
+    out
 }
 
 /// Stage 1+2 products (integral-free): the pair gate, the per-occupied
@@ -1448,8 +1936,16 @@ fn strips_and_metric(
     stats.t_maps_s = t0.elapsed().as_secs_f64();
 
     let t0 = Instant::now();
+    if dcfg.eri3_pass == Eri3Pass::AuxMajor && dcfg.batch_merge > 1 {
+        return Err(FerricError::General(format!(
+            "lmp2_direct: eri3_pass = AuxMajor has no batches, so batch_merge = {} means nothing; \
+             set batch_merge = 1",
+            dcfg.batch_merge
+        )));
+    }
     Engine::new_3center(op, obs, dfbs, 1e-14)?; // surface construction errors serially
     let qpair = schwarz_triple_factors(op, obs, dfbs, dcfg.schwarz_skip)?;
+    stats.t_eri3_setup_s = t0.elapsed().as_secs_f64();
     let n_workers = rayon::current_num_threads()
         .max(1)
         .min(batches.len().max(1));
@@ -1467,10 +1963,13 @@ fn strips_and_metric(
         worker_budget: dcfg.scratch_budget_bytes / n_workers,
         split_timers: dcfg.split_eri3_timers,
     };
-    let batch_out: Vec<BatchOut> = batches
-        .par_iter()
-        .map(|(_, is)| eval_batch(&bctx, is, fill_slab))
-        .collect();
+    let batch_out: Vec<BatchOut> = match dcfg.eri3_pass {
+        Eri3Pass::Batches => batches
+            .par_iter()
+            .map(|(_, is)| eval_batch(&bctx, is, fill_slab))
+            .collect(),
+        Eri3Pass::AuxMajor => aux_major_pass(&bctx, dcfg.scratch_budget_bytes, stats),
+    };
     let strips = collect_strips(no, batch_out, dcfg.split_eri3_timers, stats)?;
     stats.t_eri3_s = t0.elapsed().as_secs_f64();
 
@@ -1510,6 +2009,11 @@ fn collect_strips(
         stats.t_eri3_eval_thread_s += tm.eval_s;
         stats.t_eri3_scatter_thread_s += tm.scatter_s;
         stats.t_eri3_transform_thread_s += tm.transform_s;
+        stats.n_eri3_slabs += tm.n_slabs;
+        stats.transform_flops += tm.transform_flops;
+        stats.transform_flops_own_support += tm.transform_flops_own_support;
+        stats.n_eri3_integrals += tm.n_integrals;
+        stats.n_eri3_null_blocks += tm.n_null_blocks;
         stats.batch_work_max_s = stats.batch_work_max_s.max(tm.total_s);
         stats.batch_work_mean_s += tm.total_s;
         for (i, st) in batch_strips {
@@ -2516,6 +3020,378 @@ mod stage_b_tests {
             }
         }
         (n_triples, n_skipped)
+    }
+
+    struct AuxCase {
+        mol: Molecule,
+        obs: PreparedBasis,
+        dfbs: PreparedBasis,
+        spaces: LocalizedSpaces,
+    }
+
+    fn aux_case(nc: usize) -> AuxCase {
+        let mol = Molecule::load_xyz(&format!(
+            "{}/../../testdata/molecules/alkane_{nc}.xyz",
+            env!("CARGO_MANIFEST_DIR")
+        ))
+        .unwrap();
+        let obs_bs = ferric_core::basis::bundled("6-31g").unwrap();
+        let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
+        let dfbs =
+            PreparedBasis::new(&mol, &ferric_core::basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
+        let bounds = SchwarzBounds::compute(Operator::coulomb(), &obs).unwrap();
+        let cfg = RhfConfig {
+            energy_conv: 1e-10,
+            ..Default::default()
+        };
+        let rhf = solve_rhf(
+            &ParallelContext::default(),
+            &mol,
+            &obs,
+            Operator::coulomb(),
+            &bounds,
+            &cfg,
+        )
+        .unwrap();
+        let (vvhv, _) = checked_vvhv(&mol, &obs, &obs_bs, &rhf, "test").unwrap();
+        let spaces = localized_spaces(&mol, &obs, &rhf, nc, &vvhv).unwrap();
+        AuxCase {
+            mol,
+            obs,
+            dfbs,
+            spaces,
+        }
+    }
+
+    fn aux_strips(
+        c: &AuxCase,
+        op: Operator,
+        cal: f64,
+        dcfg: &DirectConfig,
+    ) -> (Vec<Strip>, DirectStats) {
+        let mut st = DirectStats::default();
+        let pre = strips_and_metric(
+            &c.mol,
+            &c.obs,
+            &c.dfbs,
+            op,
+            &c.spaces,
+            1e-4,
+            Some(cal),
+            dcfg,
+            &mut st,
+        )
+        .unwrap();
+        (pre.strips, st)
+    }
+
+    fn production(pass: Eri3Pass, batch_merge: usize) -> DirectConfig {
+        DirectConfig {
+            aux_radius_bohr: 10.0,
+            virt_radius_bohr: Some(12.0),
+            ao_tail: 1e-3,
+            schwarz_skip: 1e-5,
+            batch_merge,
+            eri3_pass: pass,
+            ..Default::default()
+        }
+    }
+
+    /// Largest strip-element difference over the largest element.
+    fn strip_rel_diff(a: &[Strip], b: &[Strip]) -> f64 {
+        let (mut d, mut m) = (0f64, 0f64);
+        assert_eq!(a.len(), b.len());
+        for (x, y) in a.iter().zip(b) {
+            assert_eq!((&x.rows, &x.cols), (&y.rows, &y.cols));
+            for (u, v) in x.b.iter().zip(y.b.iter()) {
+                d = d.max((u - v).abs());
+                m = m.max(u.abs());
+            }
+        }
+        d / m
+    }
+
+    /// Independent construction: the aux-major strips equal the batch pass's
+    /// element by element, at production maps, for both operators and both
+    /// sizes, while evaluating strictly fewer triples than merged batches.
+    #[test]
+    fn aux_major_strips_match_batches() {
+        for nc in [4, 8] {
+            let c = aux_case(nc);
+            for (op, cal) in [(Operator::coulomb(), 0.7), (Operator::erfc(1.0), 0.02)] {
+                let (a, sa) = aux_strips(&c, op, cal, &production(Eri3Pass::AuxMajor, 1));
+                let (b, sb) = aux_strips(&c, op, cal, &production(Eri3Pass::Batches, 4));
+                let rel = strip_rel_diff(&a, &b);
+                eprintln!(
+                    "C{nc} {:?}: rel {rel:.2e}, triples aux {} batches {}",
+                    op.kind, sa.n_eri3_shell_triples, sb.n_eri3_shell_triples
+                );
+                assert!(rel <= 1e-13, "C{nc} strips differ: {rel:e}");
+                assert!(sa.n_eri3_shell_triples < sb.n_eri3_shell_triples);
+                assert_eq!(sa.n_batches, sa.n_eri3_slabs);
+            }
+        }
+    }
+
+    /// The results depend on neither the thread count nor the budget: both set
+    /// concurrency only, so the strips are bitwise equal. A budget of one byte
+    /// must drop to one task at a time; an ample one must not.
+    #[test]
+    fn aux_major_strips_ignore_threads_and_budget() {
+        let c = aux_case(4);
+        let op = Operator::coulomb();
+        let run = |threads: usize, budget: usize| {
+            let dcfg = DirectConfig {
+                scratch_budget_bytes: budget,
+                ..production(Eri3Pass::AuxMajor, 1)
+            };
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .unwrap()
+                .install(|| aux_strips(&c, op, 0.7, &dcfg))
+        };
+        let ample = 1usize << 32;
+        let (base, st) = run(4, ample);
+        assert_eq!(st.aux_major_concurrency, 4);
+        assert!(st.aux_major_task_bytes_max > 0 && st.aux_major_coeff_bytes > 0);
+        for (threads, budget, want) in [(1, ample, 1), (4, 1, 1), (3, ample, 3)] {
+            let (s, st) = run(threads, budget);
+            assert_eq!(st.aux_major_concurrency, want);
+            assert_eq!(strip_rel_diff(&base, &s), 0.0, "t={threads} b={budget}");
+        }
+    }
+
+    /// The budget limits the tasks really in flight, not just the number the
+    /// pass computes. The ample run must exceed one task, or this test could not
+    /// see a limit being ignored.
+    #[test]
+    fn aux_major_budget_limits_tasks_in_flight() {
+        let c = aux_case(4);
+        let op = Operator::coulomb();
+        let run = |budget: usize| {
+            let dcfg = DirectConfig {
+                scratch_budget_bytes: budget,
+                ..production(Eri3Pass::AuxMajor, 1)
+            };
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(4)
+                .build()
+                .unwrap()
+                .install(|| aux_strips(&c, op, 0.7, &dcfg))
+                .1
+        };
+        let ample = run(1usize << 32);
+        assert_eq!(ample.aux_major_concurrency, 4);
+        assert!(ample.aux_major_in_flight_peak > 1 && ample.aux_major_in_flight_peak <= 4);
+        let one = run(1);
+        assert_eq!(one.aux_major_in_flight_peak, 1);
+        let two = run(2 * ample.aux_major_task_bytes_max);
+        assert_eq!(two.aux_major_concurrency, 2);
+        assert!(
+            two.aux_major_in_flight_peak <= 2,
+            "{}",
+            two.aux_major_in_flight_peak
+        );
+    }
+
+    #[test]
+    fn aux_major_rejects_batch_merge() {
+        let c = aux_case(2);
+        let mut st = DirectStats::default();
+        let r = strips_and_metric(
+            &c.mol,
+            &c.obs,
+            &c.dfbs,
+            Operator::coulomb(),
+            &c.spaces,
+            1e-4,
+            Some(0.7),
+            &production(Eri3Pass::AuxMajor, 2),
+            &mut st,
+        );
+        assert!(r.is_err());
+    }
+
+    /// Integral-work counters for the aux-major idea (plan stage F0): what the
+    /// shipped merged batches evaluate, how many of those triples are distinct,
+    /// and what one evaluation per aux shell over the union of its occupieds'
+    /// supports would evaluate and transform. Integral-free. The batch row is
+    /// the check on the counter: it must reproduce the bench's triples and
+    /// transform flops. FERRIC_LMP2_COUNT_SIZES selects the alkanes.
+    #[test]
+    #[ignore = "counter probe: one SCF per size, minutes"]
+    fn aux_major_counter_probe() {
+        let sizes = std::env::var("FERRIC_LMP2_COUNT_SIZES").unwrap_or_else(|_| "32,48".into());
+        for nc in sizes.split(',').map(|t| t.parse::<usize>().unwrap()) {
+            let mol = Molecule::load_xyz(&format!(
+                "{}/../../testdata/molecules/alkane_{nc}.xyz",
+                env!("CARGO_MANIFEST_DIR")
+            ))
+            .unwrap();
+            let obs_bs = ferric_core::basis::bundled("6-31g").unwrap();
+            let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
+            let dfbs =
+                PreparedBasis::new(&mol, &ferric_core::basis::bundled("cc-pvdz-ri").unwrap())
+                    .unwrap();
+            let bounds = SchwarzBounds::compute(Operator::coulomb(), &obs).unwrap();
+            let cfg = RhfConfig {
+                energy_conv: 1e-10,
+                ..Default::default()
+            };
+            let rhf = solve_rhf(
+                &ParallelContext::default(),
+                &mol,
+                &obs,
+                Operator::coulomb(),
+                &bounds,
+                &cfg,
+            )
+            .unwrap();
+            let (vvhv, _) = checked_vvhv(&mol, &obs, &obs_bs, &rhf, "probe").unwrap();
+            let spaces = localized_spaces(&mol, &obs, &rhf, nc, &vvhv).unwrap();
+            let dcfg = DirectConfig {
+                aux_radius_bohr: 10.0,
+                virt_radius_bohr: Some(12.0),
+                ao_tail: 1e-3,
+                schwarz_skip: 1e-5,
+                batch_merge: 4,
+                ..Default::default()
+            };
+            for (name, op, cal) in [
+                ("coul", Operator::coulomb(), 0.7),
+                ("erfc1", Operator::erfc(1.0), 0.02),
+            ] {
+                let qpair = schwarz_triple_factors(op, &obs, &dfbs, dcfg.schwarz_skip)
+                    .unwrap()
+                    .unwrap();
+                for eps in [1e-3, 1e-4] {
+                    let maps =
+                        build_locality_maps(&mol, &obs, &dfbs, &spaces, eps, Some(cal), &dcfg);
+                    count_row(
+                        nc,
+                        name,
+                        eps,
+                        &obs,
+                        &dfbs,
+                        &spaces,
+                        &maps,
+                        &qpair,
+                        dcfg.schwarz_skip,
+                    );
+                }
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn count_row(
+        nc: usize,
+        name: &str,
+        eps: f64,
+        obs: &PreparedBasis,
+        dfbs: &PreparedBasis,
+        spaces: &LocalizedSpaces,
+        maps: &LocalityMaps,
+        qpair: &(Array2<f64>, Vec<f64>),
+        skip: f64,
+    ) {
+        let (q, qp) = qpair;
+        let (dobs, ddf) = (obs.shell_dims(), dfbs.shell_dims());
+        let (nsh, nshdf) = (obs.nshells(), dfbs.nshells());
+        let funcs = |shs: &[usize]| shs.iter().map(|&s| dobs[s]).sum::<usize>() as f64;
+        let mark = |shs: &[usize]| {
+            let mut v = vec![false; nsh];
+            shs.iter().for_each(|&s| v[s] = true);
+            v
+        };
+        let own_n: Vec<Vec<usize>> = maps
+            .virt_ext
+            .iter()
+            .map(|vs| sorted_union(vs.iter().map(|&a| maps.virt_supp[a].iter().copied())))
+            .collect();
+        let npairs = nsh * (nsh + 1) / 2;
+        let mut seen = vec![false; npairs * nshdf];
+        // triples, integrals, (for each map) in order
+        let (mut t_b, mut i_b, mut t_u, mut i_u, mut fl_b) = (0u64, 0f64, 0u64, 0f64, 0f64);
+        for (_, is) in &maps.batches {
+            let ss = sorted_union(is.iter().map(|&i| maps.occ_supp[i].iter().copied()));
+            let nn = sorted_union(is.iter().map(|&i| own_n[i].iter().copied()));
+            let ps = sorted_union(is.iter().map(|&i| maps.aux_ext[i].iter().copied()));
+            let (ins, inn) = (mark(&ss), mark(&nn));
+            let (nsf, nnf) = (funcs(&ss), funcs(&nn));
+            for &i in is {
+                let rows: usize = maps.aux_ext[i].iter().map(|&p| ddf[p]).sum();
+                fl_b += rows as f64 * (2.0 * nsf * nnf + 2.0 * nnf * maps.virt_ext[i].len() as f64);
+            }
+            for ua in 0..nsh {
+                for ub in 0..=ua {
+                    if !((ins[ua] && inn[ub]) || (ins[ub] && inn[ua])) {
+                        continue;
+                    }
+                    let id = ua * (ua + 1) / 2 + ub;
+                    for &sp in &ps {
+                        if qp[sp] * q[(ua, ub)] >= skip {
+                            let w = (ddf[sp] * dobs[ua] * dobs[ub]) as f64;
+                            t_b += 1;
+                            i_b += w;
+                            if !seen[id * nshdf + sp] {
+                                seen[id * nshdf + sp] = true;
+                                t_u += 1;
+                                i_u += w;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let (mut t_p, mut i_p, mut fl_p, mut fl_po) = (0u64, 0f64, 0f64, 0f64);
+        let (mut mx_s, mut mx_n) = (0f64, 0f64);
+        for sp in 0..nshdf {
+            let is: Vec<usize> = (0..spaces.no)
+                .filter(|&i| maps.aux_ext[i].binary_search(&sp).is_ok())
+                .collect();
+            if is.is_empty() {
+                continue;
+            }
+            let ss = sorted_union(is.iter().map(|&i| maps.occ_supp[i].iter().copied()));
+            let nn = sorted_union(is.iter().map(|&i| own_n[i].iter().copied()));
+            let (ins, inn) = (mark(&ss), mark(&nn));
+            let (nsf, nnf) = (funcs(&ss), funcs(&nn));
+            mx_s = mx_s.max(nsf);
+            mx_n = mx_n.max(nnf);
+            for &i in &is {
+                let nv = maps.virt_ext[i].len() as f64;
+                fl_p += ddf[sp] as f64 * (2.0 * nsf * nnf + 2.0 * nnf * nv);
+                let (ni, nni) = (funcs(&maps.occ_supp[i]), funcs(&own_n[i]));
+                fl_po += ddf[sp] as f64 * (2.0 * ni * nni + 2.0 * nni * nv);
+            }
+            for ua in 0..nsh {
+                for ub in 0..=ua {
+                    if ((ins[ua] && inn[ub]) || (ins[ub] && inn[ua]))
+                        && qp[sp] * q[(ua, ub)] >= skip
+                    {
+                        t_p += 1;
+                        i_p += (ddf[sp] * dobs[ua] * dobs[ub]) as f64;
+                    }
+                }
+            }
+        }
+        println!(
+            "COUNT c={nc} op={name} eps={eps:.0e} batches={} batch_Mt={:.2} batch_Mi={:.0} uniq_Mt={:.2} \
+             uniq_Mi={:.0} pmajor_Mt={:.2} pmajor_Mi={:.0} batch_tG={:.1} pmajor_tG={:.1} pmajor_own_tG={:.1} \
+             pmajor_max_nsf={mx_s} pmajor_max_nnf={mx_n}",
+            maps.batches.len(),
+            t_b as f64 / 1e6,
+            i_b / 1e6,
+            t_u as f64 / 1e6,
+            i_u / 1e6,
+            t_p as f64 / 1e6,
+            i_p / 1e6,
+            fl_b / 1e9,
+            fl_p / 1e9,
+            fl_po / 1e9,
+        );
     }
 
     /// B4 anchor: on C4/6-31G with production maps (gate on, Schwarz cut

@@ -20,12 +20,30 @@ use ferric_core::mol::Molecule;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_mp2::lmp2_amplitude::{amplitude_lmp2, AmplitudeLmp2Config};
-use ferric_mp2::lmp2_direct::{amplitude_lmp2_direct, DirectConfig};
+use ferric_mp2::lmp2_direct::{amplitude_lmp2_direct, DirectConfig, Eri3Pass};
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 
+/// FERRIC_LMP2_PROBE_PASS: unset or `batches` is the shipped pass, `aux-major`
+/// runs every direct row on the aux-major pass (which forces k = 1; the row keeps
+/// its label so the lines diff against a batch-pass run).
+fn probe_pass() -> Eri3Pass {
+    match std::env::var("FERRIC_LMP2_PROBE_PASS").as_deref() {
+        Err(_) | Ok("batches") => Eri3Pass::Batches,
+        Ok("aux-major") => Eri3Pass::AuxMajor,
+        Ok(other) => panic!("FERRIC_LMP2_PROBE_PASS: unknown pass {other:?}"),
+    }
+}
+
 fn direct(k: usize, kappa: Option<f64>) -> DirectConfig {
+    let eri3_pass = probe_pass();
+    let k = if eri3_pass == Eri3Pass::AuxMajor {
+        1
+    } else {
+        k
+    };
     DirectConfig {
+        eri3_pass,
         aux_radius_bohr: 10.0,
         virt_radius_bohr: Some(12.0),
         ao_tail: 1e-3,
