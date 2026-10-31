@@ -639,6 +639,33 @@ mod tests {
     use ferric_core::mol::Molecule;
     use ferric_core::parallel::ParallelContext;
 
+    /// J runs between K passes, and a range-separated pair holds two of these under
+    /// one budget, so a spilled block must not outlive either kind of pass.
+    #[test]
+    fn a_spilled_k_frees_its_block_after_each_pass() {
+        let mol = Molecule::load_xyz("../../testdata/molecules/water.xyz").unwrap();
+        let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
+        let aux = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
+        let (naux, nao) = (aux.nbasis(), obs.nbasis());
+        let budget = naux * nao * nao * 8 * 45 / 100;
+        let mut dfk = DfK::new(Operator::coulomb(), &obs, &aux, budget).unwrap();
+        assert!(!dfk.dressed.is_incore(), "fixture must spill");
+        assert_eq!(dfk.dressed.scratch_bytes(), 0, "allocated before first use");
+
+        let d = Array2::<f64>::eye(nao);
+        let mut k = Array2::<f64>::zeros((nao, nao));
+        dfk.build(&d, &mut k).unwrap();
+        assert_eq!(dfk.dressed.scratch_bytes(), 0, "kept after a density pass");
+
+        let c_occ = d.slice(ndarray::s![.., 0..5]).to_owned();
+        dfk.build_from_occ(&c_occ, &mut k).unwrap();
+        assert_eq!(
+            dfk.dressed.scratch_bytes(),
+            0,
+            "kept after an occupied pass"
+        );
+    }
+
     /// Dressing is the one streaming pass over a shared packed `raw`; the
     /// unpacked scratch block it allocated must be gone once `from_full_raw`
     /// returns, since `raw` then lives on inside DfJ for the whole SCF.
