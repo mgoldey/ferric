@@ -15,9 +15,11 @@ Conventions (crates/ferric-mp2/src/lmp2_amplitude.rs): t~ = (2 - S) t with S the
 a<->b exchange swap, R = J + A t the residual, A the SPD pattern-projected Fock
 superoperator, stationary point t* = -A^-1 J.
 
-Claims 1-3 hold in any dimension, by a line-restriction argument in symbols for
-the bilinear forms. Claims 4-6 use an explicit one-pair, two-virtual model.
-Every claim asserts; a false claim raises. NEGATIVE CONTROLS are included.
+Claim 1 holds in any dimension, by a line-restriction argument in symbols for
+the bilinear forms. Claim 2 is a one-line identity, stated for the record. Claim
+3 is a derivation in comments, checked numerically in claim 6. Claims 4-6 use an
+explicit one-pair, two-virtual model. Claims 1, 4, 5, 6 assert; negative
+controls are included.
 Claim 7 evaluates the two stopping rules and is arithmetic on inputs quoted from
 the wiki and #605, not a proof.
 
@@ -80,7 +82,10 @@ section("Claim 3: E_H - E* = <(2-S) A^-1 R, R> >= 0, bounded by 3 ||R||^2 / lmin
 # On commuting S, A, the eigenvalues of (2-S)A^-1 are c/l with c in {1, 3} and
 # l in spec(A). The 3 is ||2-S||, from S^2 = 1, and it is checked in claim 4.
 print("Hence ||R||^2/lmax <= E_H - E* <= 3 ||R||^2/lmin (lmin of the PROJECTED A).")
-print("Interlacing: lmin(PAP on range P) >= lmin(A) >= 2(e_LUMO - e_HOMO).")
+print(
+    "Interlacing gives lmin(PAP on range P) >= lmin(A); the code's 2(e_LUMO - e_HOMO)"
+)
+print("estimate is not derived here (this model has diagonal f_oo). See the #605 test.")
 
 # ---------------------------------------------------------------------------
 # Explicit model: one pair (i != j), two virtuals. Amplitudes t_ab live in a
@@ -105,6 +110,15 @@ assert S * S == sp.eye(4)
 assert sp.simplify(S * A - A * S) == sp.zeros(4)
 assert sp.simplify((C * A).T - C * A) == sp.zeros(4)
 assert sorted(C.eigenvals().keys()) == [1, 3]
+# The exchange sign is pinned against the energy expression the code evaluates,
+# E = sum (2 t_ab - t_ba) J_ab: 2+S has the same spectrum and would pass the rest.
+_t = sp.Matrix(sp.symbols("t11 t12 t21 t22", real=True))
+_code_energy = sum(
+    2 * _t[a * 2 + b] * J[a * 2 + b] - _t[b * 2 + a] * J[a * 2 + b]
+    for a in range(2)
+    for b in range(2)
+)
+assert sp.expand((C * _t).dot(J) - _code_energy) == 0
 print("S^2 = 1; [S, A] = 0; (2-S)A symmetric; eig(2-S) = {1, 3}, so ||2-S|| = 3")
 
 
@@ -160,9 +174,13 @@ assert open_coeff != 0, "non-closed mask should NOT be stationary"
 print(
     "non-closed mask (11,12): s^1 coeff =", open_coeff, " (first-order error survives)"
 )
+# This model contracts over the full space while the code's swap_contract sums over
+# pattern positions only; on this mask both are non-stationary.
 print("So check_swap_closed is required for the E_H error claims, not decoration.")
 
-section("Claim 6: the bound of claim 3 holds numerically on the model")
+section(
+    "Claim 6: the bound of claim 3 holds numerically on five directions of the model"
+)
 values = {f1: 1, f2: sp.Rational(3, 2), g: sp.Rational(1, 5), e: -1}
 A_v = A.subs(values)
 lams = [sp.N(ev) for ev in A_v.eigenvals(multiple=True)]
@@ -207,6 +225,9 @@ for eps in (1e-3, 1e-4, 1e-5, 1e-6, 1e-7):
     print(
         f"WSHG23 eps={eps:.0e}          {bound:.1e}  (= 18.75 eps / lmin; absolute ||r||)"
     )
+print(
+    "WLLH25 (preprint) later uses 5 sqrt(eps); the constant only scales these rows by 4."
+)
 print("Reading (interpretation): WSHG23 ties solver error to the truncation level eps,")
 print(
     "ferric D fixes it absolutely, far tighter. Same functional, different stopping rule."
