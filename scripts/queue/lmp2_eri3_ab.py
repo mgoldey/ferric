@@ -7,6 +7,7 @@ The energy column compares that row's 8-decimal prints, so 0 means agreement to 
 comparison is the bits probe. The flagged column counts runs whose gate timed out, and
 a run with no gate record shows as ?; neither is dropped from the means.
 """
+
 import glob
 import json
 import os
@@ -21,14 +22,21 @@ def rows(path):
     for line in open(path):
         if "alkane_" not in line or " | " not in line:
             continue
-        body = line[line.index("alkane_"):]
+        body = line[line.index("alkane_") :]
         head, tail = body.rsplit(" | ", 1)
         m = ROW.match(head)
         if not m:
             continue
         p, t = head.split(), tail.split()
-        yield (int(m[1]), m[2], m[3]), {"e": float(m[4]), "eri3": float(p[-3]), "total": float(t[0]) + float(t[1]),
-                                        "triples": float(p[-5])}
+        yield (
+            (int(m[1]), m[2], m[3]),
+            {
+                "e": float(m[4]),
+                "eri3": float(p[-3]),
+                "total": float(t[0]) + float(t[1]),
+                "triples": float(p[-5]),
+            },
+        )
 
 
 def main():
@@ -46,7 +54,9 @@ def main():
         for key, r in rows(path):
             r["flagged"] = meta.get(name, {}).get("gate_flagged")
             g.setdefault((key, arm), []).append(r)
-    print("| C | op | eps | t_eri3 main | t_eri3 aux | ratio | total main | total aux | ratio | Mtriples main | aux | max dE (8-decimal prints, about 1e-8 resolution) | flagged runs |")
+    print(
+        "| C | op | eps | t_eri3 main | t_eri3 aux | ratio | total main | total aux | ratio | Mtriples main | aux | max dE (8-decimal prints, about 1e-8 resolution) | flagged runs |"
+    )
     print("|" + "---|" * 13)
     for key in sorted({k for k, _ in g}):
         a, b = g.get((key, "main")), g.get((key, "aux"))
@@ -61,9 +71,11 @@ def main():
         marks = [r["flagged"] for r in a + b]
         flagged = "?" if None in marks else sum(marks)
         d = max(abs(u["e"] - w["e"]) for u in a for w in b)
-        print(f"| {key[0]} | {key[1]} | {key[2]} | {v(a, 'eri3')} | {v(b, 'eri3')} | {m(a, 'eri3') / m(b, 'eri3'):.2f} | "
-              f"{v(a, 'total')} | {v(b, 'total')} | {m(a, 'total') / m(b, 'total'):.2f} | "
-              f"{a[0]['triples']:.2f} | {b[0]['triples']:.2f} | {d:.1e} | {flagged} |")
+        print(
+            f"| {key[0]} | {key[1]} | {key[2]} | {v(a, 'eri3')} | {v(b, 'eri3')} | {m(a, 'eri3') / m(b, 'eri3'):.2f} | "
+            f"{v(a, 'total')} | {v(b, 'total')} | {m(a, 'total') / m(b, 'total'):.2f} | "
+            f"{a[0]['triples']:.2f} | {b[0]['triples']:.2f} | {d:.1e} | {flagged} |"
+        )
 
 
 if __name__ == "__main__":
