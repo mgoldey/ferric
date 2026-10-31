@@ -5,7 +5,8 @@ row, which the frozen binary also prints. Usage: lmp2_eri3_ab.py AB_OUTDIR
 The energy column compares that row's 8-decimal prints, so 0 means agreement to about
 1e-8 Ha, not exact agreement; the frozen baseline prints nothing tighter. The tight
 comparison is the bits probe. The flagged column counts runs whose gate timed out, and
-a run with no gate record shows as ?; neither is dropped from the means.
+a run with no gate record shows as ?; neither is dropped from the means. A run recorded
+with a nonzero exit code is dropped, since it may have printed only some rows.
 """
 
 import glob
@@ -50,6 +51,9 @@ def main():
         name = os.path.basename(path)[:-4]
         arm = name.split("_")[-1]
         if "split" in name:
+            continue
+        if meta.get(name, {}).get("rc", 0) != 0:
+            print(f"skipping failed run {name}", file=sys.stderr)
             continue
         for key, r in rows(path):
             r["flagged"] = meta.get(name, {}).get("gate_flagged")

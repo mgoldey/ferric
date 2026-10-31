@@ -85,10 +85,14 @@ def main():
     for path in sorted(glob.glob(os.path.join(o, "runs", "*.out"))):
         name = os.path.basename(path)[:-4]
         m = meta.get(name, {})
+        if m.get("rc", 0) != 0:
+            print(f"skipping failed run {name}", file=sys.stderr)
+            continue
         for r in parse_run(path):
             derive(r)
             mode = m.get("bin") if ab else m.get("split")
-            groups.setdefault((r["c"], r["op"], r["eps"], mode), []).append(r)
+            key = (r["c"], r["op"], r["eps"], mode, m.get("pass"))
+            groups.setdefault(key, []).append(r)
             print(
                 f"{name} {r['c']} {r['op']} {r['eps']} | {r['wall']:.2f} {r['setup']:.2f} {r['total']:.2f} | "
                 f"{r['thread']:.1f} {r['fill']:.1f} {r['eval']:.1f} {r['scatter']:.1f} {r['transform']:.1f} "
@@ -97,7 +101,7 @@ def main():
                 f"{r['integrals'] / 1e6:.0f} {r['null']} | {r['tflops'] / 1e9:.0f} {r['tflops_own'] / 1e9:.0f} | "
                 f"{r['e_bits']} {r['cg']} | {m.get('foreign_cpu_s', '?')}"
             )
-    print("\n# pooled: mean (spread = max-min) by config and mode")
+    print("\n# pooled: mean (spread = max-min) by config, mode and pass")
     for key in sorted(groups, key=str):
         g = groups[key]
 

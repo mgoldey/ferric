@@ -98,10 +98,11 @@ run() {
   p_after=$(psi)
   own=$(awk '{print $1+$2}' "$out.time" | tail -1)
   foreign=$(awk -v a="$j0" -v b="$j1" -v o="$own" 'BEGIN{printf "%.1f", (b-a)/100-o}')
-  printf '{"name":"%s","bin":"%s","c":%s,"split":"%s","rc":%s,"wall_s":%s,"own_cpu_s":%s,"foreign_cpu_s":%s,"load_before":%s,"load_after":%s,"psi_before":%s,"psi_after":%s,"gate_flagged":%s}\n' \
-    "$name" "$bin" "$size" "$split" "$rc" "$wall" "$own" "$foreign" "$l_before" "$l_after" "$p_before" "$p_after" "$GATE_FLAGGED" >> "$O/rows.jsonl"
+  printf '{"name":"%s","bin":"%s","c":%s,"split":"%s","pass":"%s","rc":%s,"wall_s":%s,"own_cpu_s":%s,"foreign_cpu_s":%s,"load_before":%s,"load_after":%s,"psi_before":%s,"psi_after":%s,"gate_flagged":%s}\n' \
+    "$name" "$bin" "$size" "$split" "$pass" "$rc" "$wall" "$own" "$foreign" "$l_before" "$l_after" "$p_before" "$p_after" "$GATE_FLAGGED" >> "$O/rows.jsonl"
   log "end $name rc=$rc wall=${wall}s foreign_cpu=${foreign}s load_after=$l_after psi_after=$p_after"
-  echo "$rc" > "$out.done"
+  # A failed run stays unmarked so a rerun retries it; rows.jsonl keeps the failure.
+  (( rc == 0 )) && echo "$rc" > "$out.done"
 }
 
 for spec in "$@"; do
