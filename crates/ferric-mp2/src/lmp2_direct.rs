@@ -48,6 +48,7 @@
 
 use ndarray::{Array1, Array2, Array3, ArrayView2, Axis};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::time::Instant;
 
@@ -222,6 +223,9 @@ pub struct DirectStats {
     /// run at once. 0 on the batch pass.
     pub aux_major_task_bytes_max: usize,
     pub aux_major_concurrency: usize,
+    /// [`Eri3Pass::AuxMajor`]: the most tasks actually observed in flight at once
+    /// (0 on the batch pass). Never above `aux_major_concurrency`.
+    pub aux_major_in_flight_peak: usize,
     /// [`Eri3Pass::AuxMajor`]: bytes of the per-occupied virtual coefficient
     /// blocks, resident for all of stage 3 (0 on the batch pass).
     pub aux_major_coeff_bytes: usize,
@@ -1660,6 +1664,7 @@ fn aux_major_pass(
         .collect();
     let nsh = ctx.obs.nshells();
     let mut out: Vec<BatchOut> = Vec::with_capacity(tasks.len() + 1);
+    let (in_flight, peak) = (AtomicUsize::new(0), AtomicUsize::new(0));
     // Fewer than a full pool only when the budget says so: a chunk at a time
     // keeps at most `concurrent` slabs alive.
     let chunk = if concurrent >= rayon::current_num_threads() {
@@ -1680,11 +1685,18 @@ fn aux_major_pass(
                     buf: Vec::new(),
                     meta: Vec::new(),
                 },
-                |w, (sp, is, ax)| aux_task(ctx, w, &own, &strips, *sp, is, ax),
+                |w, (sp, is, ax)| {
+                    let now = in_flight.fetch_add(1, Ordering::Relaxed) + 1;
+                    peak.fetch_max(now, Ordering::Relaxed);
+                    let done = aux_task(ctx, w, &own, &strips, *sp, is, ax);
+                    in_flight.fetch_sub(1, Ordering::Relaxed);
+                    done
+                },
             )
             .collect();
         out.extend(done);
     }
+    stats.aux_major_in_flight_peak = peak.into_inner();
     let built: Vec<(usize, Strip)> = strips
         .into_iter()
         .enumerate()
@@ -3148,6 +3160,39 @@ mod stage_b_tests {
             assert_eq!(st.aux_major_concurrency, want);
             assert_eq!(strip_rel_diff(&base, &s), 0.0, "t={threads} b={budget}");
         }
+    }
+
+    /// The budget limits the tasks really in flight, not just the number the
+    /// pass computes. The ample run must exceed one task, or this test could not
+    /// see a limit being ignored.
+    #[test]
+    fn aux_major_budget_limits_tasks_in_flight() {
+        let c = aux_case(4);
+        let op = Operator::coulomb();
+        let run = |budget: usize| {
+            let dcfg = DirectConfig {
+                scratch_budget_bytes: budget,
+                ..production(Eri3Pass::AuxMajor, 1)
+            };
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(4)
+                .build()
+                .unwrap()
+                .install(|| aux_strips(&c, op, 0.7, &dcfg))
+                .1
+        };
+        let ample = run(1usize << 32);
+        assert_eq!(ample.aux_major_concurrency, 4);
+        assert!(ample.aux_major_in_flight_peak > 1 && ample.aux_major_in_flight_peak <= 4);
+        let one = run(1);
+        assert_eq!(one.aux_major_in_flight_peak, 1);
+        let two = run(2 * ample.aux_major_task_bytes_max);
+        assert_eq!(two.aux_major_concurrency, 2);
+        assert!(
+            two.aux_major_in_flight_peak <= 2,
+            "{}",
+            two.aux_major_in_flight_peak
+        );
     }
 
     #[test]
