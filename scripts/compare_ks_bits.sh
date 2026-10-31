@@ -17,9 +17,18 @@ if [[ ! -e $dest ]]; then
 fi
 trap '[[ $copied == 1 ]] && rm -f "$dest"; rm -rf "$out"' EXIT
 run() {
-  (cd "$1" && OPENBLAS_NUM_THREADS=1 cargo test -j 4 -p ferric-scf --test ks_bits_table \
-    -- --ignored --nocapture --test-threads=1 2>/dev/null) \
-    | grep -aoE 'BITS .*' | cut -c1-140 >"$2"
+  local log="$2.log"
+  if ! (cd "$1" && OPENBLAS_NUM_THREADS=1 cargo test -j 4 -p ferric-scf --test ks_bits_table \
+    -- --ignored --nocapture --test-threads=1) >"$log" 2>&1; then
+    echo "compare_ks_bits: the table failed to build or run in $1:" >&2
+    tail -n 30 "$log" >&2
+    exit 1
+  fi
+  if ! grep -aoE 'BITS .*' "$log" | cut -c1-140 >"$2" || [[ ! -s $2 ]]; then
+    echo "compare_ks_bits: no BITS lines from $1:" >&2
+    tail -n 30 "$log" >&2
+    exit 1
+  fi
 }
 run "$base" "$out/base"
 run "$new" "$out/new"

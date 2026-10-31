@@ -30,8 +30,12 @@ const CHILD: &str = "FERRIC_GUESS_FALLBACK_CHILD";
 const WATER: &str = "../../testdata/molecules/water.xyz";
 
 fn run(solver: &str, ratio: Option<f64>) {
-    let (charge, mult) = if solver == "RHF" { (0, 1) } else { (1, 2) };
-    let mol = Molecule::load_xyz_with_charge(WATER, charge, mult).unwrap();
+    let mol = match solver {
+        "RHF" => Molecule::load_xyz_with_charge(WATER, 0, 1),
+        "ATOM" => Molecule::parse_xyz("1\n\nO 0 0 0\n", 0, 3),
+        _ => Molecule::load_xyz_with_charge(WATER, 1, 2),
+    }
+    .unwrap();
     let prep = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
     let aux = PreparedBasis::new(&mol, &basis::bundled(AUX).unwrap()).unwrap();
     let tensor = aux.nbasis() * prep.nbasis() * prep.nbasis() * 8;
@@ -57,13 +61,17 @@ fn run(solver: &str, ratio: Option<f64>) {
         ..Default::default()
     };
     let ctx = ParallelContext::default();
-    // One iteration is enough: the guess comes first, and not converging is not
-    // what this is about.
-    let _ = match solver {
+    // One iteration is enough: the guess comes first. RHF returns Ok unconverged,
+    // UHF and ROHF return this error. Anything else is a real failure, and must not
+    // pass as an absent warning.
+    let got = match solver {
         "RHF" => solve_rhf(&ctx, &mol, &prep, op, &bounds, &c),
-        "UHF" => solve_uhf(&ctx, &mol, &prep, &bounds, &c),
+        "UHF" | "ATOM" => solve_uhf(&ctx, &mol, &prep, &bounds, &c),
         _ => solve_rohf(&ctx, &mol, &prep, op, &bounds, &c),
     };
+    if let Err(e) = got {
+        assert!(e.to_string().contains("did not converge"), "{solver}: {e}");
+    }
     clear_global();
 }
 
@@ -117,6 +125,16 @@ fn a_block_lost_to_memory_is_reported_by_every_solver() {
             .unwrap_or_else(|| panic!("{solver}: no record:\n{records}"));
         assert!(noted.contains("DF 3-index"), "{noted}");
     }
+}
+
+/// With one element there is nothing left of the guess, so "partial" would be false.
+#[test]
+fn a_lost_block_of_the_only_element_says_the_guess_is_empty() {
+    let (stderr, records) = in_child("ATOM", "1.15");
+    assert!(stderr.contains("failed for O (Z=8)"), "{stderr}");
+    assert!(stderr.contains("first Fock matrix is hcore"), "{stderr}");
+    assert!(!stderr.contains("partial MINAO"), "{stderr}");
+    assert!(records.contains("\"all_elements_lost\":true"), "{records}");
 }
 
 #[test]

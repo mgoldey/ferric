@@ -249,7 +249,9 @@ When a charged allocation does not fit, the result depends on the allocation:
   budget that cannot hold it alone stops the job before any integrals are built.
   It also leaves the MINAO guess's free-atom solves less room. If one runs out, that
   element's block of the guess is left zero, so the SCF starts from a partial MINAO
-  guess rather than from hcore. A warning names the element, the run log records it,
+  guess rather than from hcore. If that was every element in the molecule, the density
+  is zero and the first Fock matrix is hcore. A warning names the element and says
+  which, the run log records it,
   and the SCF may take more iterations. Very near that limit, repeat runs of one
   input have differed in whether this happens. `jk_storage = "memory"` with a VV10 functional is held to the
   budget less the cache, so it refuses some budgets that an earlier build ran over.

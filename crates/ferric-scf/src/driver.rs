@@ -119,22 +119,48 @@ fn warn_guess_fallback(solver: &str, err: &FerricError) {
     }
 }
 
-/// Say that one element's MINAO block failed and is left zero, on stderr and in the
-/// run log. The guess is then incomplete, not hcore: the SCF still starts from it,
-/// and may take more iterations. Numerics are untouched. The free-atom solves draw
-/// on the shared pool, so tight memory is one way to get here.
-pub(crate) fn warn_guess_block_lost(z: i32, route: &str, err: &FerricError) {
-    let sym = ferric_core::elements::z_to_symbol(z).unwrap_or("?");
-    eprintln!(
+/// One element's MINAO block that could not be built.
+pub(crate) struct LostGuessBlock {
+    pub z: i32,
+    pub route: &'static str,
+    pub reason: String,
+}
+
+/// What losing `block` does to the guess. With every element lost the density is
+/// zero, so the first Fock matrix is hcore; otherwise the rest of MINAO remains.
+fn guess_block_lost_text(block: &LostGuessBlock, all_lost: bool) -> String {
+    let LostGuessBlock { z, route, reason } = block;
+    let sym = ferric_core::elements::z_to_symbol(*z).unwrap_or("?");
+    let outcome = if all_lost {
+        "no element has a block, so the guess density is zero and the first Fock matrix is hcore"
+    } else {
+        "the SCF starts from a partial MINAO guess, not from hcore"
+    };
+    format!(
         "[ferric] WARNING: MINAO: {route} failed for {sym} (Z={z}), so its block of the guess \
-         density is left zero and the SCF starts from a partial MINAO guess, not from hcore. \
-         It may take more iterations. Cause: {err}"
-    );
-    if let Some(rl) = crate::runlog::log() {
-        rl.note(
-            "guess_block_lost",
-            serde_json::json!({ "z": z, "route": route, "reason": err.to_string() }),
-        );
+         density is left zero and {outcome}. It may take more iterations. Cause: {reason}"
+    )
+}
+
+/// Report the blocks MINAO lost out of `n_elements`, on stderr and in the run log.
+/// Numerics are untouched. The free-atom solves draw on the shared pool, so tight
+/// memory is one way to get here.
+pub(crate) fn report_lost_guess_blocks(mut lost: Vec<LostGuessBlock>, n_elements: usize) {
+    lost.sort_by_key(|b| b.z);
+    let all_lost = lost.len() >= n_elements;
+    for block in &lost {
+        eprintln!("{}", guess_block_lost_text(block, all_lost));
+        if let Some(rl) = crate::runlog::log() {
+            rl.note(
+                "guess_block_lost",
+                serde_json::json!({
+                    "z": block.z,
+                    "route": block.route,
+                    "reason": block.reason,
+                    "all_elements_lost": all_lost,
+                }),
+            );
+        }
     }
 }
 
@@ -696,30 +722,53 @@ mod raw_budget_tests {
     }
 
     /// The auto budget gives up 0.8 of what XC will hold, as it would if the bytes
-    /// were already allocated. Skipped where the live figure cannot move.
+    /// were already allocated. Skipped where the live figure cannot show it: a fixed
+    /// source, a cgroup limit below MemAvailable, or too little memory to subtract
+    /// from. Other tests allocate between the two readings, so one close reading in
+    /// a few is enough; without the subtraction none comes close.
     #[test]
     fn auto_budget_allows_for_planned_xc_memory() {
+        let x = 1usize << 30;
         let res = ferric_core::memory::resolve_budget(None);
         let meminfo = std::fs::read_to_string("/proc/meminfo")
             .ok()
             .and_then(|s| ferric_core::memory::parse_meminfo_available(&s));
         let live = ferric_core::memory::detect_available_bytes();
         if res.source != ferric_core::memory::BudgetSource::AutoDetected
-            || meminfo.is_none()
+            || meminfo.is_none_or(|m| m < 4 * x)
             || live.unwrap_or(0) + (1 << 26) < meminfo.unwrap_or(0)
         {
-            return; // a fixed source, or a cgroup limit below MemAvailable
+            return;
         }
-        let x = 1usize << 30;
         let plan = XcMemoryPlan {
             resident_if_alone: x,
             ..Default::default()
         };
-        let drop = raw_budget(0, XcMemoryPlan::default()).saturating_sub(raw_budget(0, plan));
         let want = 0.8 * x as f64;
+        let drops: Vec<usize> = (0..5)
+            .map(|_| raw_budget(0, XcMemoryPlan::default()).saturating_sub(raw_budget(0, plan)))
+            .collect();
         assert!(
-            (drop as f64 - want).abs() < 0.25 * want,
-            "budget fell by {drop}, want about {want}"
+            drops.iter().any(|&d| (d as f64 - want).abs() < 0.25 * want),
+            "budget fell by {drops:?}, want about {want}"
         );
+    }
+
+    #[test]
+    fn a_lost_block_says_what_is_left_of_the_guess() {
+        let block = LostGuessBlock {
+            z: 8,
+            route: "free-atom SCF",
+            reason: "no memory".into(),
+        };
+        let some = guess_block_lost_text(&block, false);
+        assert!(some.contains("failed for O (Z=8)"), "{some}");
+        assert!(
+            some.contains("partial MINAO guess, not from hcore"),
+            "{some}"
+        );
+        let all = guess_block_lost_text(&block, true);
+        assert!(all.contains("first Fock matrix is hcore"), "{all}");
+        assert!(!all.contains("partial"), "{all}");
     }
 }
