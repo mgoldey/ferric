@@ -942,15 +942,12 @@ pub fn minao_projection_guess(
         match built {
             Ok(full) => full.slice(ndarray::s![..nao, ..nao]).to_owned(),
             Err(e) => {
-                if crate::rhf::scf_trace() {
-                    let sym = ferric_core::elements::z_to_symbol(z).unwrap_or("?");
-                    let route = if use_no_scf {
-                        "GWH no-SCF"
-                    } else {
-                        "free-atom SCF"
-                    };
-                    eprintln!("MINAO: {route} atomic density failed for {sym} (Z={z}): {e:?}; block left zero");
-                }
+                let route = if use_no_scf {
+                    "GWH no-SCF"
+                } else {
+                    "free-atom SCF"
+                };
+                crate::driver::warn_guess_block_lost(z, route, &e);
                 Array2::zeros((nao, nao))
             }
         }

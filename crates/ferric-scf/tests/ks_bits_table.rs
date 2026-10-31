@@ -52,6 +52,8 @@ const CASES: &[(&str, &str, &str, f64, &str)] = &[
     ("rhf", "butane", "wB97X-V", 0.0, "auto"),
     ("rhf", "butane", "wB97X-V", 0.70, "auto"),
     ("rhf", "butane", "wB97X-V", 0.95, "auto"),
+    ("uhf", "butane", "wB97X-V", 0.70, "auto"),
+    ("rohf", "butane", "wB97X-V", 0.70, "auto"),
 ];
 
 #[test]

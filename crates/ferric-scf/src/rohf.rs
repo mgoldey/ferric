@@ -1825,9 +1825,7 @@ fn rohf_guess_mos(
         match crate::guess::minao_projection_guess(mol, prep, prep.basis_set()) {
             Ok(d) => d,
             Err(e) => {
-                if crate::rhf::scf_trace() {
-                    eprintln!("ROHF guess: MINAO projection failed ({e:?}); falling back to hcore");
-                }
+                crate::driver::warn_guess_fallback("ROHF", &e);
                 return Ok(None);
             }
         }

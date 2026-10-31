@@ -101,6 +101,43 @@ pub(crate) fn raw_budget(config_bytes: usize, plan: ferric_dft::xc_trait::XcMemo
         .saturating_sub(plan.held_bytes)
 }
 
+/// Say that the MINAO guess failed and the SCF starts from hcore, on stderr and in
+/// the run log. Numerics are untouched, but hcore can take more iterations and can
+/// reach a different energy at the bit level, so it must not pass silently. The
+/// free-atom solves behind MINAO draw on the shared pool, so tight memory is one
+/// way to get here.
+pub(crate) fn warn_guess_fallback(solver: &str, err: &FerricError) {
+    eprintln!(
+        "[ferric] WARNING: {solver}: the MINAO guess failed, so the SCF starts from the hcore \
+         guess. It may take more iterations. Cause: {err}"
+    );
+    if let Some(rl) = crate::runlog::log() {
+        rl.note(
+            "guess_fallback",
+            serde_json::json!({ "solver": solver, "guess": "hcore", "reason": err.to_string() }),
+        );
+    }
+}
+
+/// Say that one element's MINAO block failed and is left zero, on stderr and in the
+/// run log. The guess is then incomplete, not hcore: the SCF still starts from it,
+/// and may take more iterations. Numerics are untouched. The free-atom solves draw
+/// on the shared pool, so tight memory is one way to get here.
+pub(crate) fn warn_guess_block_lost(z: i32, route: &str, err: &FerricError) {
+    let sym = ferric_core::elements::z_to_symbol(z).unwrap_or("?");
+    eprintln!(
+        "[ferric] WARNING: MINAO: {route} failed for {sym} (Z={z}), so its block of the guess \
+         density is left zero and the SCF starts from a partial MINAO guess, not from hcore. \
+         It may take more iterations. Cause: {err}"
+    );
+    if let Some(rl) = crate::runlog::log() {
+        rl.note(
+            "guess_block_lost",
+            serde_json::json!({ "z": z, "route": route, "reason": err.to_string() }),
+        );
+    }
+}
+
 /// Record what XC storage decided, so that an uncharged amount reaches the run
 /// log and not only stderr.
 pub(crate) fn note_xc_commit(done: &ferric_dft::xc_trait::XcCommit) {

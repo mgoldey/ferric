@@ -2051,7 +2051,10 @@ fn solve_rhf_impl(
         // API/config compatibility but now selects MINAO.
         match crate::guess::minao_projection_guess(mol, prep, prep.basis_set()) {
             Ok(d_minao) => d_minao,
-            Err(_) => hcore_guess(&s, &h, nocc)?,
+            Err(e) => {
+                crate::driver::warn_guess_fallback("RHF", &e);
+                hcore_guess(&s, &h, nocc)?
+            }
         }
     } else {
         hcore_guess(&s, &h, nocc)?
