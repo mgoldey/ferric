@@ -99,6 +99,38 @@ python3 scripts/complexity_gate.py --update-baseline
 This step **soft-skips** (does not fail the gate) if `rust-code-analysis-cli`
 isn't installed, or if `CI_GATE_SKIP_COMPLEXITY=1` is set.
 
+## Box lease and the cargo shim (`box-lease`, `cargo-shim`)
+
+`cargo-shim` is the wrapper agents and the gate run as `cargo`: it serializes
+heavy cargo work through two slots (`/tmp/ferric-compile.lock`,
+`/tmp/ferric-compile.2.lock`), capped at 3 threads each. Install or update it,
+atomically and safely under running builds, with `scripts/install-cargo-shim.sh`
+(to `/tmp/ferric-cargo-shim`, so again after a reboot), then put that directory
+first on `PATH`. It carries `box-lease` too.
+
+For a timing job, take the lease rather than polling for a quiet box:
+
+```
+box-lease run --label lmp2-bench -- python bench.py   # waits for in-flight work, then owns the box
+box-lease status                                      # who holds it, since when; which locks are busy
+box-lease wait                                        # one line for a script that starts test binaries itself
+```
+
+New cargo builds and tests queue behind a pending or held lease and print once who
+they wait for. A killed holder releases it (kernel flock); the info file is for
+messages only. `--max-hold` warns and never kills. A bench may call cargo under its
+own lease, though the shim's 3-thread defaults still apply unless it sets them.
+
+- **Covered:** cargo through the shim, including the whole of a `cargo test` run;
+  anything wrapped in `flock -o /tmp/ferric-compile.lock`; gate steps, which queue
+  on the cargo lock with their timeout not yet started.
+- **Not covered:** test binaries, pytest or python started directly (`box-lease wait`
+  first), other sessions and non-cargo load. A bench's own load gate stays.
+- **Do not** `flock` a compile lock from inside a lease: its own lease holds it.
+
+To wait in a script, use `box-lease wait` and plain `sleep`. Never read from
+`/dev/zero` to pass time.
+
 ## What belongs in git
 
 - **Reference generators** (`gen_pyscf_*.py`, `cc/`, `cpks/`, `minimax/`): scripts
