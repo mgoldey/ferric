@@ -68,3 +68,36 @@ Wall time per dimer (3 methods x 5 calcs): 01 ~710 s, 59 ~1450 s, 02 ~2050 s,
 * The 5e-8 Ha selftest bar is about 3.6x the largest measured diff (1.4e-8); it was not derived from the defect side.
 * An uncommitted pilot of dimer 01 gave the same energies; I cannot establish it ran after the pre-registration commit, so a dimer-01 number may have been seen before it. No committed run-twice evidence exists.
 * Cost: ~12-41 min per dimer under load for 6-10 atom dimers; three methods repeat the SCF (no shared-SCF Python entry point). Timings are loaded-box upper bounds. Whether the full 66 (up to 24 heavy atoms) is feasible is undetermined; it would likely need a shared-SCF entry point, and the bindings' `k_builder` options (link/cosx) were not evaluated.
+
+## All-66 production run (val/s66-all66-278; protocol, no results yet)
+
+Scope per the maintainer (2026-10-26): all 66 `_1.00` dimers, low priority; the
+aug-cc-pVDZ arm is NOT a substitute negative control for CP.
+
+* **Shared SCF.** Each system (AB, A, B, A-in-AB basis, B-in-AB basis) runs ONE
+  RHF and all three methods via `ferric.run_mp2_v_and_scs_2terfc` (library:
+  `ferric_mp2::terfc_pair::mp2_v_and_scs_2terfc`). Pinned bitwise against the
+  per-method bindings (`crates/ferric-mp2/tests/terfc_pair_shared_scf.rs`,
+  `crates/ferric-python/tests/test_mp2_v_and_scs_2terfc.py`). The 3-index
+  integrals are NOT shared: terfc 1.00/0.75/1.05 A and Coulomb are four
+  operators, each with its own (P|op|mu nu) and metric. So the saving is two
+  SCFs per system, bounded by the cheapest method's record: about 1.7-2x in the
+  pilot's size range, not the ~3x guessed before the build (`estimate` prints the
+  range; it is an estimate, never a measurement).
+* **Records.** Append-only JSONL, one line per (dimer, fragment, ghosted) with all
+  three energies, components, SCF iterations, per-phase timings, load at start,
+  `ferric.__build__` and the sha256 of the frozen `.so`. Resumable: completed
+  keys are skipped. Failures go to `<out>.failures`; each job runs in a child
+  process, so a crash loses one job.
+* **Scheduling.** Single instance (flock on `<out>.lock`); before each job waits
+  for load1 < 1.5 and no `cargo`/`rustc` process (read from /proc); cheapest
+  dimer first, all five jobs of a dimer together; `<out>.heartbeat` carries the
+  state. Run under `scripts/ferric-limited` from a frozen `.so` copy (`freeze-so`),
+  never the shared target `.so`.
+* **Statistics** (`report`): RMSD/MAD/MSE vs S66x8 CCSD(T)/CBS per method, no-CP
+  and CP, with explicit n and complete-dimer count. No-CP is the fit-reproduction
+  check (the published fits are no-CP: SCS-MP2(2terfc) 0.228, MP2-V 0.202 post-HF
+  / 0.199 self-consistent, MP2/aTZ 1.533 kcal/mol); CP is the physics check.
+  Partial coverage is labelled as such and never compared as "matches".
+* **Smoke** (`run --smoke`): smallest dimer at cc-pVDZ, records labelled
+  "SMOKE: not a result" and excluded from `report`.
