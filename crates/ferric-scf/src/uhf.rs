@@ -659,8 +659,7 @@ fn solve_uhf_impl(
     )>,
     mut hook: Option<crate::fock::SpinFockHook<'_>>,
 ) -> Result<ScfResult, FerricError> {
-    use ferric_dft::ks::KsXcUks;
-    use ferric_dft::xc_trait::{KMix, UksXcContribution};
+    use ferric_dft::xc_trait::KMix;
 
     // Split the injection: (S, h, V_nn) go to the shared env builder, the J/K
     // builders are driven in the iteration loop (as in rhf::solve_rhf_impl).
@@ -681,37 +680,7 @@ fn solve_uhf_impl(
     let injected = inj_jk.is_some();
 
     // Build UKS XC contribution once. None for pure UHF.
-    let mut xc_contrib: Option<Box<dyn UksXcContribution>> =
-        if let Some(name) = config.xc.as_deref() {
-            let main = config.dft_grid.clone().unwrap_or_default();
-            let nlc = config
-                .nlc_grid
-                .clone()
-                .unwrap_or_else(ferric_dft::grid::AtomicGridConfig::default_nlc);
-            // Thread the caller's `[memory] budget_gb` into the grid AO cache --
-            // the largest single allocation in a DFT job. This used to call the
-            // UNbudgeted `new_with_omega`, which resolves from env/auto-detect
-            // and so silently DISCARDED `config.three_index_budget_bytes`. The
-            // budgeted constructor existed for exactly this and had ZERO
-            // production callers; its own doc records the symptom ("Setting
-            // `budget_gb = 4` on a 64 GB box still sized the grid cache against
-            // ~51 GB"), i.e. the documented primary knob did nothing while
-            // FERRIC_MEM_BUDGET_GB worked. 0 means unset, matching
-            // `rhf::resolve_three_index_budget`.
-            let ks = KsXcUks::new_deferred(
-                mol,
-                prep.basis_set(),
-                name,
-                &main,
-                &nlc,
-                config.xc_omega,
-                (config.three_index_budget_bytes != 0).then_some(config.three_index_budget_bytes),
-            )
-            .map_err(|e| e.into_ferric(&format!("KsXcUks init for {name}")))?;
-            Some(Box::new(ks) as Box<dyn UksXcContribution>)
-        } else {
-            None
-        };
+    let mut xc_contrib = crate::driver::uks_xc_contribution(mol, prep, config)?;
 
     // Injected (periodic) UKS: a global hybrid scales the injected K by its
     // exact-exchange fraction (validate_injected_uhf guarantees `xc_contrib`
@@ -776,9 +745,7 @@ fn solve_uhf_impl(
         config,
         &k_mix,
         pre_env,
-        xc_contrib
-            .as_ref()
-            .map_or_else(Default::default, |x| x.memory_plan()),
+        crate::driver::xc_plan(xc_contrib.as_deref()),
     )?;
 
     // The ONE SR/LR exchange response every Hessian matvec in this solve uses —
@@ -1185,12 +1152,7 @@ fn solve_uhf_impl(
     // Newton and TRAH rebuild an integer density after each step; under
     // fractional occupation they stay off (see second_order_blocked_by_fractional_occ).
     let fractional_blocks_second_order = second_order_blocked_by_fractional_occ(config);
-    if let Some(x) = xc_contrib.as_mut() {
-        let done = x
-            .commit_storage()
-            .map_err(|e| FerricError::General(format!("XC grid storage: {e}")))?;
-        crate::driver::note_xc_commit(&done);
-    }
+    crate::driver::commit_xc(xc_contrib.as_deref_mut())?;
     if let Some(x) = xc_contrib.as_ref() {
         x.start_scf();
     }
@@ -2954,12 +2916,9 @@ fn uhf_guess_mos(
         }
         d0.clone()
     } else if config.use_sad_guess {
-        match crate::guess::minao_projection_guess(mol, prep, prep.basis_set()) {
-            Ok(d) => d,
-            Err(e) => {
-                crate::driver::warn_guess_fallback("UHF", &e);
-                return Ok(None);
-            }
+        match crate::driver::minao_or_report("UHF", mol, prep) {
+            Some(d) => d,
+            None => return Ok(None),
         }
     } else {
         return Ok(None);

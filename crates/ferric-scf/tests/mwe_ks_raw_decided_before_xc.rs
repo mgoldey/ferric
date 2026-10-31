@@ -27,7 +27,7 @@ use ferric_core::memory::pool::{clear_global, install_global, MemoryPool};
 use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
 use ferric_dft::grid::AtomicGridConfig;
-use ferric_dft::xc_trait::XcContribution;
+use ferric_dft::xc_trait::XcStorage;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_scf::rhf::{solve_rhf, solve_rhf_with_hook, RhfConfig};

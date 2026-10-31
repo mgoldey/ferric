@@ -2004,9 +2004,7 @@ fn solve_rhf_impl(
         config,
         &k_mix,
         pre_env,
-        xc_contrib
-            .as_ref()
-            .map_or_else(Default::default, |x| x.memory_plan()),
+        crate::driver::xc_plan(xc_contrib.as_deref()),
     )?;
     phases.stop(prepare_t);
 
@@ -2049,12 +2047,9 @@ fn solve_rhf_impl(
         // GWH atomic-hcore block for Z≥21/g-function elements). Falls back to
         // hcore if it fails. The `use_sad_guess` field name is retained for
         // API/config compatibility but now selects MINAO.
-        match crate::guess::minao_projection_guess(mol, prep, prep.basis_set()) {
-            Ok(d_minao) => d_minao,
-            Err(e) => {
-                crate::driver::warn_guess_fallback("RHF", &e);
-                hcore_guess(&s, &h, nocc)?
-            }
+        match crate::driver::minao_or_report("RHF", mol, prep) {
+            Some(d_minao) => d_minao,
+            None => hcore_guess(&s, &h, nocc)?,
         }
     } else {
         hcore_guess(&s, &h, nocc)?
@@ -2545,12 +2540,7 @@ fn solve_rhf_impl(
     // and whenever `d_last_fock` is None.
     const INCREMENTAL_FULL_REBUILD_EVERY: usize = 8;
 
-    if let Some(x) = xc_contrib.as_mut() {
-        let done = x
-            .commit_storage()
-            .map_err(|e| FerricError::General(format!("XC grid storage: {e}")))?;
-        crate::driver::note_xc_commit(&done);
-    }
+    crate::driver::commit_xc(xc_contrib.as_deref_mut())?;
     crate::driver::warn_if_rss_over_at_stage("RHF", "setup", ooc_budget);
     if let Some(x) = xc_contrib.as_ref() {
         x.start_scf();

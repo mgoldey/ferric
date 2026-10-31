@@ -26,6 +26,23 @@ pub struct XcCommit {
     pub uncharged_bytes: usize,
 }
 
+/// When an XC contribution takes its memory, shared by the closed- and open-shell
+/// contributions so the SCF drivers can treat them alike.
+pub trait XcStorage {
+    /// Take the memory this contribution holds through the SCF. Called once,
+    /// after RI-J/K setup and before the first Fock build, so that XC, which can
+    /// always recompute, gets what the 3-index tensors leave. Err is a refusal.
+    /// The default holds nothing.
+    fn commit_storage(&mut self) -> Result<XcCommit, String> {
+        Ok(XcCommit::default())
+    }
+
+    /// What RI-J/K setup must allow for before `commit_storage`.
+    fn memory_plan(&self) -> XcMemoryPlan {
+        XcMemoryPlan::default()
+    }
+}
+
 /// How exact exchange is mixed into the Fock matrix.
 ///
 /// The SCF loop builds K according to:
@@ -62,7 +79,7 @@ impl Default for KMix {
 /// The caller (SCF) handles J and K itself; this trait covers only the V_xc
 /// (and any VV10 V_nl) addition to F. The trait's `k_mix()` method tells the
 /// caller how to build K.
-pub trait XcContribution: Send + Sync {
+pub trait XcContribution: XcStorage + Send + Sync {
     /// Adds V_xc (semilocal) + V_nl (VV10, if any) to `f` in place.
     /// Returns the corresponding energy contribution E_xc + E_nl in Ha.
     fn add_xc(&self, d: &Array2<f64>, f: &mut Array2<f64>) -> f64;
@@ -85,19 +102,6 @@ pub trait XcContribution: Send + Sync {
     /// build is decided as a first build. The default does nothing.
     fn start_scf(&self) {}
 
-    /// Take the memory this contribution holds through the SCF. Called once,
-    /// after RI-J/K setup and before the first Fock build, so that XC, which can
-    /// always recompute, gets what the 3-index tensors leave. Err is a refusal.
-    /// The default holds nothing.
-    fn commit_storage(&mut self) -> Result<XcCommit, String> {
-        Ok(XcCommit::default())
-    }
-
-    /// What RI-J/K setup must allow for before `commit_storage`.
-    fn memory_plan(&self) -> XcMemoryPlan {
-        XcMemoryPlan::default()
-    }
-
     /// Called at a converged SCF exit with the Fock matrix of the exit
     /// iteration. If the most recent `add_xc*` call formed V_xc in reduced
     /// precision, replace it in `f` by the f64 V_xc of the same density and
@@ -112,7 +116,7 @@ pub trait XcContribution: Send + Sync {
 
 /// Spin-polarized analog of `XcContribution`. Takes separate α/β densities
 /// (each tr(D_σ) = N_σ) and adds V^σ_xc + V^σ_nl to the corresponding spin Fock.
-pub trait UksXcContribution: Send + Sync {
+pub trait UksXcContribution: XcStorage + Send + Sync {
     /// Adds V^α_xc + V^α_nl to `f_a` and V^β_xc + V^β_nl to `f_b` in place.
     /// Returns the (spin-summed) energy E_xc + E_nl.
     fn add_xc_uks(
@@ -143,19 +147,6 @@ pub trait UksXcContribution: Send + Sync {
 
     /// See [`XcContribution::start_scf`].
     fn start_scf(&self) {}
-
-    /// Take the memory this contribution holds through the SCF. Called once,
-    /// after RI-J/K setup and before the first Fock build, so that XC, which can
-    /// always recompute, gets what the 3-index tensors leave. Err is a refusal.
-    /// The default holds nothing.
-    fn commit_storage(&mut self) -> Result<XcCommit, String> {
-        Ok(XcCommit::default())
-    }
-
-    /// What RI-J/K setup must allow for before `commit_storage`.
-    fn memory_plan(&self) -> XcMemoryPlan {
-        XcMemoryPlan::default()
-    }
 
     /// [`XcContribution::refine_last_to_f64`] for the two spin Fock matrices.
     fn refine_last_to_f64_uks(&self, f_a: &mut Array2<f64>, f_b: &mut Array2<f64>) -> bool {

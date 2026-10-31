@@ -34,7 +34,7 @@ use crate::xc_batch::{
     mixed_vxc_requested, owned_shells, AoStorage, DensityInput, Exec, ScreenedGrid, XcBatchConfig,
     XcScreeningStats,
 };
-use crate::xc_trait::{KMix, UksXcContribution, XcCommit, XcContribution, XcMemoryPlan};
+use crate::xc_trait::{KMix, UksXcContribution, XcCommit, XcContribution, XcMemoryPlan, XcStorage};
 
 /// Errors from the Kohn-Sham exchange-correlation integration path.
 #[derive(Error, Debug)]
@@ -457,6 +457,103 @@ fn eval_nlc_cache(
     Ok((Some(c), Some(dc)))
 }
 
+/// Config honesty: a NaN threshold would compare false against every value and
+/// silently drop every shell (E_xc = 0); a zero batch cap is meaningless.
+fn validate_batch_config(batch: &XcBatchConfig) -> Result<(), KsXcError> {
+    if !batch.screen_thresh.is_finite() {
+        return Err(KsXcError::BatchConfig(format!(
+            "screen_thresh must be finite, got {}",
+            batch.screen_thresh
+        )));
+    }
+    if batch.max_batch_pts == 0 {
+        return Err(KsXcError::BatchConfig(
+            "max_batch_pts must be >= 1".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// The VV10 NLC cache ahead of the storage decision: evaluated, and charged if a
+/// pool is installed.
+#[allow(clippy::type_complexity)]
+fn charge_nlc_early(
+    nlc_grid: Option<&[GridPoint]>,
+    nlc_bytes: Option<usize>,
+    pending: PendingStorage,
+    (mol, bs): (&Molecule, &BasisSet),
+) -> Result<(Option<Array2<f64>>, Option<Array3<f64>>, Reservation), KsXcError> {
+    let pool = ferric_core::memory::pool::global();
+    // Ask first, so a cache that cannot fit costs no evaluation. Released for the
+    // evaluation itself, whose own guard debits the same bytes.
+    if let (Some(n), Some(g)) = (nlc_bytes, nlc_grid) {
+        match &pool {
+            Some(p) => drop(p.reserve(NLC_LABEL, n).map_err(KsXcError::Pool)?),
+            None => nlc_precheck(n, pending.budget, pending.nbf, g.len())?,
+        }
+    }
+    let (chi, dchi) = eval_nlc_cache(nlc_grid, mol, bs)?;
+    let charge = match (nlc_bytes, &pool) {
+        (Some(n), Some(p)) => p.reserve(NLC_LABEL, n).map_err(KsXcError::Pool)?,
+        _ => Reservation::inert(NLC_LABEL),
+    };
+    Ok((chi, dchi, charge))
+}
+
+/// What a deferred evaluator will ask for, given what is left after its cache.
+fn plan_memory(
+    screened: &ScreenedGrid,
+    pending: PendingStorage,
+    nlc_bytes: Option<usize>,
+    nlc_charge: &Reservation,
+) -> XcMemoryPlan {
+    let nlc = nlc_bytes.unwrap_or(0);
+    let room = match ferric_core::memory::pool::global() {
+        Some(p) => p.available_bytes(),
+        None => pending.budget.saturating_sub(nlc),
+    };
+    let resident = screened.resident_ao_bytes();
+    let lean = screened.transient_bytes(pending.is_uks);
+    let resident_if_alone = match pending.storage {
+        AoStorage::Recompute => 0,
+        AoStorage::Resident => resident,
+        AoStorage::Auto if resident.saturating_add(lean) <= room => resident,
+        AoStorage::Auto => 0,
+    };
+    XcMemoryPlan {
+        held_bytes: nlc_charge.bytes(),
+        nlc_bytes: nlc,
+        resident_if_alone,
+    }
+}
+
+/// Take the storage decision a deferred evaluator put off, once.
+fn commit_pending(
+    pending: &mut Option<PendingStorage>,
+    screened: &mut ScreenedGrid,
+    grid: &[GridPoint],
+    nlc_grid: Option<&[GridPoint]>,
+    charge: &mut Reservation,
+) -> Result<XcCommit, String> {
+    let Some(p) = pending.take() else {
+        return Ok(XcCommit::default());
+    };
+    let done = p
+        .settle(screened, grid, nlc_grid)
+        .map_err(|e| e.to_string())?;
+    *charge = done.charge;
+    Ok(done.commit)
+}
+
+/// VV10's cache and the AO blocks are settled at commit, so a missed commit must
+/// not run on silently.
+fn assert_committed(pending: Option<&PendingStorage>) {
+    assert!(
+        pending.is_none(),
+        "commit_storage must run before the first add_xc on a deferred evaluator"
+    );
+}
+
 /// Shared constructor body for the closed- and open-shell evaluators.
 #[allow(clippy::too_many_arguments)]
 fn build_grids(
@@ -470,19 +567,7 @@ fn build_grids(
     batch: &XcBatchConfig,
     defer: bool,
 ) -> Result<GridBuild, KsXcError> {
-    // Config honesty: a NaN threshold would compare false against every value
-    // and silently drop every shell (E_xc = 0); a zero batch cap is meaningless.
-    if !batch.screen_thresh.is_finite() {
-        return Err(KsXcError::BatchConfig(format!(
-            "screen_thresh must be finite, got {}",
-            batch.screen_thresh
-        )));
-    }
-    if batch.max_batch_pts == 0 {
-        return Err(KsXcError::BatchConfig(
-            "max_batch_pts must be >= 1".to_string(),
-        ));
-    }
+    validate_batch_config(batch)?;
 
     // Honour `main.prune`. `prune = None` (the default) delegates to
     // `build_atomic_grid` and is bit-identical to the historical grid;
@@ -521,41 +606,9 @@ fn build_grids(
         nlc_held: defer && ferric_core::memory::pool::global().is_some(),
     };
     if defer {
-        // Ask first, so a cache that cannot fit costs no evaluation. Released for
-        // the evaluation itself, whose own guard debits the same bytes.
-        if let Some(n) = nlc_bytes {
-            match ferric_core::memory::pool::global() {
-                Some(p) => drop(p.reserve(NLC_LABEL, n).map_err(KsXcError::Pool)?),
-                None => nlc_precheck(n, budget, nbf, grid.len())?,
-            }
-        }
-        let (nlc_chi, nlc_dchi) = eval_nlc_cache(nlc_grid.as_deref(), mol, bs)?;
-        let mut nlc_charge = Reservation::inert(NLC_LABEL);
-        if let (Some(n), Some(p)) = (nlc_bytes, ferric_core::memory::pool::global()) {
-            nlc_charge = p.reserve(NLC_LABEL, n).map_err(KsXcError::Pool)?;
-        }
-        let room = match ferric_core::memory::pool::global() {
-            Some(p) => p.available_bytes(),
-            None => budget.saturating_sub(nlc_bytes.unwrap_or(0)),
-        };
-        let resident = screened.resident_ao_bytes();
-        let lean = screened.transient_bytes(is_uks);
-        let resident_if_alone = match batch.storage {
-            AoStorage::Recompute => 0,
-            AoStorage::Resident => resident,
-            AoStorage::Auto => {
-                if resident.saturating_add(lean) <= room {
-                    resident
-                } else {
-                    0
-                }
-            }
-        };
-        let plan = XcMemoryPlan {
-            held_bytes: nlc_charge.bytes(),
-            nlc_bytes: nlc_bytes.unwrap_or(0),
-            resident_if_alone,
-        };
+        let (nlc_chi, nlc_dchi, nlc_charge) =
+            charge_nlc_early(nlc_grid.as_deref(), nlc_bytes, pending, (mol, bs))?;
+        let plan = plan_memory(&screened, pending, nlc_bytes, &nlc_charge);
         return Ok(GridBuild {
             grid,
             screened,
@@ -924,7 +977,7 @@ impl KsXc {
     }
 
     /// [`Self::new_with_omega_budgeted`] that takes no memory yet. Call
-    /// [`XcContribution::commit_storage`] before the first `add_xc`; see
+    /// [`XcStorage::commit_storage`] before the first `add_xc`; see
     /// `PendingStorage` for why the SCF drivers want this.
     pub fn new_deferred(
         mol: &Molecule,
@@ -1022,10 +1075,7 @@ impl KsXc {
     /// Shared body of [`XcContribution::add_xc`] and `add_xc_occ`: semilocal
     /// XC from `input`, VV10 (if any) from the dense `d`.
     fn add_xc_input(&self, d: &Array2<f64>, input: DensityInput, f: &mut Array2<f64>) -> f64 {
-        assert!(
-            self.pending.is_none(),
-            "commit_storage must run before the first add_xc on a deferred evaluator"
-        );
+        assert_committed(self.pending.as_ref());
         let mixed = mixed_vxc_allowed(&self.xc, &self.ladder, &[d]);
         let (e_xc, vxc) = self
             .screened
@@ -1064,6 +1114,22 @@ impl KsXc {
     }
 }
 
+impl XcStorage for KsXc {
+    fn memory_plan(&self) -> XcMemoryPlan {
+        self.plan
+    }
+
+    fn commit_storage(&mut self) -> Result<XcCommit, String> {
+        commit_pending(
+            &mut self.pending,
+            &mut self.screened,
+            &self.grid,
+            self.nlc_grid.as_deref(),
+            &mut self._charge,
+        )
+    }
+}
+
 impl XcContribution for KsXc {
     fn add_xc(&self, d: &Array2<f64>, f: &mut Array2<f64>) -> f64 {
         self.add_xc_input(d, DensityInput::Dense(d), f)
@@ -1075,21 +1141,6 @@ impl XcContribution for KsXc {
 
     fn start_scf(&self) {
         self.ladder.reset();
-    }
-
-    fn memory_plan(&self) -> XcMemoryPlan {
-        self.plan
-    }
-
-    fn commit_storage(&mut self) -> Result<XcCommit, String> {
-        let Some(p) = self.pending.take() else {
-            return Ok(XcCommit::default());
-        };
-        let done = p
-            .settle(&mut self.screened, &self.grid, self.nlc_grid.as_deref())
-            .map_err(|e| e.to_string())?;
-        self._charge = done.charge;
-        Ok(done.commit)
     }
 
     fn refine_last_to_f64(&self, f: &mut Array2<f64>) -> bool {
@@ -1267,7 +1318,7 @@ impl KsXcUks {
     }
 
     /// UKS twin of `KsXc::new_deferred`: [`Self::new_with_omega_budgeted`] that takes no memory yet. Call
-    /// [`UksXcContribution::commit_storage`] before the first `add_xc`; see
+    /// [`XcStorage::commit_storage`] before the first `add_xc`; see
     /// `PendingStorage` for why the SCF drivers want this.
     pub fn new_deferred(
         mol: &Molecule,
@@ -1338,10 +1389,7 @@ impl KsXcUks {
         f_a: &mut Array2<f64>,
         f_b: &mut Array2<f64>,
     ) -> f64 {
-        assert!(
-            self.pending.is_none(),
-            "commit_storage must run before the first add_xc on a deferred evaluator"
-        );
+        assert_committed(self.pending.as_ref());
         // Semilocal: (ρ_α, ρ_β, σ_αα, σ_αβ, σ_ββ[, τ_α, τ_β]) on the screened
         // batches, then the polarized libxc kernel.
         let mixed = mixed_vxc_allowed(&self.xc, &self.ladder, &[d_a, d_b]);
@@ -1387,6 +1435,22 @@ impl KsXcUks {
     }
 }
 
+impl XcStorage for KsXcUks {
+    fn memory_plan(&self) -> XcMemoryPlan {
+        self.plan
+    }
+
+    fn commit_storage(&mut self) -> Result<XcCommit, String> {
+        commit_pending(
+            &mut self.pending,
+            &mut self.screened,
+            &self.grid,
+            self.nlc_grid.as_deref(),
+            &mut self._charge,
+        )
+    }
+}
+
 impl UksXcContribution for KsXcUks {
     fn add_xc_uks(
         &self,
@@ -1412,21 +1476,6 @@ impl UksXcContribution for KsXcUks {
 
     fn start_scf(&self) {
         self.ladder.reset();
-    }
-
-    fn memory_plan(&self) -> XcMemoryPlan {
-        self.plan
-    }
-
-    fn commit_storage(&mut self) -> Result<XcCommit, String> {
-        let Some(p) = self.pending.take() else {
-            return Ok(XcCommit::default());
-        };
-        let done = p
-            .settle(&mut self.screened, &self.grid, self.nlc_grid.as_deref())
-            .map_err(|e| e.to_string())?;
-        self._charge = done.charge;
-        Ok(done.commit)
     }
 
     fn refine_last_to_f64_uks(&self, f_a: &mut Array2<f64>, f_b: &mut Array2<f64>) -> bool {

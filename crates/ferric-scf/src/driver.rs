@@ -106,7 +106,7 @@ pub(crate) fn raw_budget(config_bytes: usize, plan: ferric_dft::xc_trait::XcMemo
 /// reach a different energy at the bit level, so it must not pass silently. The
 /// free-atom solves behind MINAO draw on the shared pool, so tight memory is one
 /// way to get here.
-pub(crate) fn warn_guess_fallback(solver: &str, err: &FerricError) {
+fn warn_guess_fallback(solver: &str, err: &FerricError) {
     eprintln!(
         "[ferric] WARNING: {solver}: the MINAO guess failed, so the SCF starts from the hcore \
          guess. It may take more iterations. Cause: {err}"
@@ -138,9 +138,77 @@ pub(crate) fn warn_guess_block_lost(z: i32, route: &str, err: &FerricError) {
     }
 }
 
+/// What a deferred XC evaluator means to hold; nothing without one.
+pub(crate) fn xc_plan<X>(xc: Option<&X>) -> ferric_dft::xc_trait::XcMemoryPlan
+where
+    X: ferric_dft::xc_trait::XcStorage + ?Sized,
+{
+    xc.map_or_else(Default::default, |x| x.memory_plan())
+}
+
+/// XC takes its memory, after RI-J/K setup. Records what it decided.
+pub(crate) fn commit_xc<X>(xc: Option<&mut X>) -> Result<(), FerricError>
+where
+    X: ferric_dft::xc_trait::XcStorage + ?Sized,
+{
+    if let Some(x) = xc {
+        let done = x
+            .commit_storage()
+            .map_err(|e| FerricError::General(format!("XC grid storage: {e}")))?;
+        note_xc_commit(&done);
+    }
+    Ok(())
+}
+
+/// The MINAO guess density, or `None` after saying it failed.
+pub(crate) fn minao_or_report(
+    solver: &str,
+    mol: &Molecule,
+    prep: &PreparedBasis,
+) -> Option<Array2<f64>> {
+    crate::guess::minao_projection_guess(mol, prep, prep.basis_set())
+        .map_err(|e| warn_guess_fallback(solver, &e))
+        .ok()
+}
+
+/// The UKS/ROKS XC evaluator for `config`, or `None` for plain UHF/ROHF. It takes
+/// no memory but its NLC cache until `commit_xc`.
+///
+/// `[memory] budget_gb` is threaded through because this is the largest single
+/// allocation in a DFT job. It used to call the unbudgeted `new_with_omega`, which
+/// resolves from env/auto-detect and so silently discarded
+/// `config.three_index_budget_bytes`: `budget_gb = 4` on a 64 GB box still sized the
+/// grid cache against ~51 GB. 0 means unset, matching
+/// `rhf::resolve_three_index_budget`.
+pub(crate) fn uks_xc_contribution(
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    config: &RhfConfig,
+) -> Result<Option<Box<dyn ferric_dft::xc_trait::UksXcContribution>>, FerricError> {
+    let Some(name) = config.xc.as_deref() else {
+        return Ok(None);
+    };
+    let main = config.dft_grid.clone().unwrap_or_default();
+    let nlc = config
+        .nlc_grid
+        .clone()
+        .unwrap_or_else(ferric_dft::grid::AtomicGridConfig::default_nlc);
+    let ks = ferric_dft::ks::KsXcUks::new_deferred(
+        mol,
+        prep.basis_set(),
+        name,
+        &main,
+        &nlc,
+        config.xc_omega,
+        (config.three_index_budget_bytes != 0).then_some(config.three_index_budget_bytes),
+    )
+    .map_err(|e| e.into_ferric(&format!("KsXcUks init for {name}")))?;
+    Ok(Some(Box::new(ks)))
+}
+
 /// Record what XC storage decided, so that an uncharged amount reaches the run
 /// log and not only stderr.
-pub(crate) fn note_xc_commit(done: &ferric_dft::xc_trait::XcCommit) {
+fn note_xc_commit(done: &ferric_dft::xc_trait::XcCommit) {
     if let Some(rl) = crate::runlog::log() {
         rl.note(
             "xc_storage",
