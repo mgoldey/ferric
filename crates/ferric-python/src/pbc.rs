@@ -72,9 +72,17 @@ fn val_err(m: String) -> PyErr {
 /// Map a `ferric-pbc` error: refusals (`General`) are `ValueError`s with the
 /// Rust message, anything numerical is a `RuntimeError`.
 fn pbc_err(fname: &'static str) -> impl Fn(FerricError) -> PyErr {
-    move |e| match e {
-        FerricError::General(m) => PyValueError::new_err(format!("{fname}: {m}")),
-        other => PyRuntimeError::new_err(format!("{fname}: {other}")),
+    move |e| match refusal_text(e) {
+        Ok(m) => PyValueError::new_err(format!("{fname}: {m}")),
+        Err(other) => PyRuntimeError::new_err(format!("{fname}: {other}")),
+    }
+}
+
+/// The message of a refusal, or the error back when it is not one.
+fn refusal_text(e: FerricError) -> Result<String, FerricError> {
+    match e {
+        FerricError::General(m) | FerricError::MemoryExhausted(m) => Ok(m),
+        other => Err(other),
     }
 }
 

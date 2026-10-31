@@ -378,7 +378,7 @@ impl MemoryPlan {
         if peak <= self.budget_bytes {
             return Ok(());
         }
-        Err(FerricError::General(format!(
+        Err(FerricError::MemoryExhausted(format!(
             "{} requires {:.2} GB; budget is {:.2} GB — raise [memory] budget_gb / \
              FERRIC_MEM_BUDGET_GB or shrink the system\n{}",
             self.label,

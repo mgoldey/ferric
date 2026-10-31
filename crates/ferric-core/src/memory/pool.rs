@@ -194,7 +194,7 @@ impl MemoryPool {
                     bytes,
                 })
             }
-            Err(cur) => Err(FerricError::General(format!(
+            Err(cur) => Err(FerricError::MemoryExhausted(format!(
                 "memory pool exhausted: \"{label}\" needs {:.3} GB but only {:.3} GB of the \
                  {:.3} GB pool is free (short by {:.3} GB) — raise [memory] budget_gb / \
                  FERRIC_MEM_BUDGET_GB, or shrink the system\n{}",

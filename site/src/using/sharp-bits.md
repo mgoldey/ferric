@@ -204,8 +204,12 @@ cache, MO-transformed RI blocks, and the large tensors of the MP2, RPA, GW
 and CC methods. Two such allocations alive at the same time therefore cannot
 each claim the whole budget. Nothing else is charged: basis-sized matrices
 (Fock, density, DIIS history), integral engines, BLAS and per-thread scratch,
-allocator overhead. The spill path's two scratch blocks are reported but not
-refused, and together they can reach about twice the budget.
+allocator overhead. The spilled RI-JK path sizes its dressing and DF-K read-back
+widths to the budget. Below a floor of about 200 aux rows for the dressing (raw
+stream, one unpacked block and one GEMM result) and two DF-K chunks for the
+read-back, a budget overshoots, with a warning naming the phase. The read-back is
+sized for 8 workers; a run with more can overshoot by the extra per-worker
+scratch, and says so.
 
 When a charged allocation does not fit, the result depends on the allocation:
 
@@ -217,12 +221,38 @@ When a charged allocation does not fit, the result depends on the allocation:
   reread on every iteration, or recomputed on every iteration without
   writing anything. `auto` chooses between those two from a rate measured on
   the machine; `[scf] jk_storage` forces `memory`, `disk` or `direct`.
+  Holding the K dressing to a small budget takes several passes over the raw
+  tensor, and a run making many says so when a pass costs IO or integrals. The
+  dressing and K are designed to be bitwise the same spilled or in core, and tests
+  confirm that at `OPENBLAS_NUM_THREADS=1` on one OpenBLAS kernel (Haswell).
+  Threaded BLAS moves bits, and other kernels are untested. J is a separate
+  matter: which storage raw gets can follow the shared ledger, so J can differ by
+  a few ulp between runs that charge the ledger differently.
+- A dressed tensor that fits the budget but not beside the resident raw tensor
+  spills instead of stopping the job, unless `jk_storage = "memory"`.
+- A DF-guess pre-stage that runs out of memory is abandoned with a warning, and
+  the SCF starts from its usual guess. Near the limit this can depend on the
+  thread count, because some ledger charges scale with it: one run may use the
+  guess and another fall back, which changes iterations and can select a different
+  SCF solution, a larger effect than any bit-level one. An explicit
+  `jk_storage = "memory"` that does not fit, and any memory failure under MPI, stop
+  the job instead. A spill directory that is full also stops it, and
+  `df_increments` has no fallback.
 - The DFT grid AO cache is recomputed at every Fock build instead of stored.
   The energy is bit-identical.
 - An allocation with no fallback stops the job with an error naming it. For
   some methods this check comes after the SCF. Benzene RI-MP2/def2-SVP with
   `budget_gb = 0.001` completes the SCF, then exits with
   `RI-MP2 MO-side blocks ... requires 0.01 GB; budget is 0.00 GB`.
+
+**Changed once for spilled, recomputed and `jk_storage = "disk"` RI-JK runs:**
+adopting the widths above moved energies by at most 2.84e-13 Ha against the
+previous build (water/cc-pVDZ and butane/6-31G, `OPENBLAS_NUM_THREADS=1`, on one
+OpenBLAS kernel). `auto` runs that stayed in core, and exact runs, did not move.
+Iteration counts matched in every case but one, water/cc-pVDZ under
+`jk_storage = "direct"`, and that case is not a clean before and after: the
+previous build was not reproducible there with BLAS pinned, giving 13 iterations
+in 9 of 10 runs and 11 in the other, while this build gave 11 in 15 of 15.
 
 Some stages print a warning when resident memory passes 110% of the budget.
 The warning never stops the run.

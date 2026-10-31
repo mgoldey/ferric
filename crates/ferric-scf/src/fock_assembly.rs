@@ -141,6 +141,7 @@ fn build_df_jk_impl<'a>(
                     &dfbs,
                     ooc_budget,
                     (0, naux),
+                    true,
                 )?;
                 let df_k = Some(DfK::from_full_raw(
                     &mut raw,
