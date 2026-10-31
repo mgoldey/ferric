@@ -1,12 +1,15 @@
 //! Sparse PDEP-RPA scaling experiment.
 //!
 //! Sweeps a set of test systems (linear alkanes, compact 3D, drug-scale)
-//! across `Chi0Sparsity` configurations (Dense, BoysScreened{1e-3, 1e-4, 1e-5}).
+//! across `Chi0Sparsity` configurations (Dense, BoysScreened{1e-3, 1e-4, 1e-5};
+//! with `--features spike-cholesky-seed`, also CholeskyScreened at the same
+//! thresholds).
 //! Emits CSV-formatted rows to stdout with per-stage wall-clock timings,
 //! retained pair counts, and RPA energies.
 //!
 //! Usage:
-//!   cargo run --release -p ferric-rpa --example sparse_scaling
+//!   cargo run --release -p ferric-benchmarks --example sparse_scaling
+//!   (add `--features spike-cholesky-seed` for the Cholesky-seeded configs)
 //!
 //! Tip: set OPENBLAS_NUM_THREADS=1 to avoid the rayon × BLAS oversubscription
 //! discussed in `ferric-rpa::lib`'s threading note.
@@ -29,7 +32,8 @@ struct SparsityCfg {
 }
 
 fn cfgs() -> Vec<SparsityCfg> {
-    vec![
+    #[allow(unused_mut)] // pushed to only under the spike feature
+    let mut v = vec![
         SparsityCfg {
             label: "Dense",
             sparsity: Chi0Sparsity::Dense,
@@ -55,7 +59,36 @@ fn cfgs() -> Vec<SparsityCfg> {
                 dist_cutoff: f64::INFINITY,
             },
         },
-    ]
+    ];
+    // Research spike (`--features spike-cholesky-seed`): the same thresholds
+    // seeded by pivoted-Cholesky orbitals instead of Boys. See
+    // reference/spikes/cholesky-vs-boys-pdep-seed.md.
+    // thresh = 0 disables every prescreen (aux rows and OBS shell pairs), so
+    // the screened operator is exact; used to separate screening error from
+    // operator error.
+    #[cfg(feature = "spike-cholesky-seed")]
+    v.push(SparsityCfg {
+        label: "Boys-0",
+        sparsity: Chi0Sparsity::BoysScreened {
+            thresh: 0.0,
+            dist_cutoff: f64::INFINITY,
+        },
+    });
+    #[cfg(feature = "spike-cholesky-seed")]
+    for (label, thresh) in [
+        ("Cholesky-1e-3", 1e-3),
+        ("Cholesky-1e-4", 1e-4),
+        ("Cholesky-1e-5", 1e-5),
+    ] {
+        v.push(SparsityCfg {
+            label,
+            sparsity: Chi0Sparsity::CholeskyScreened {
+                thresh,
+                dist_cutoff: f64::INFINITY,
+            },
+        });
+    }
+    v
 }
 
 struct System {
@@ -259,6 +292,28 @@ fn main() {
                     dist_cutoff,
                 } => {
                     match screen::build_screened_bov_boys(
+                        &mol,
+                        &obs,
+                        &dfbs,
+                        op,
+                        &rhf,
+                        sys.frozen_core,
+                        thresh,
+                        dist_cutoff,
+                    ) {
+                        Ok((sb, _)) => (sb.total_retained, sb.n_occ_loc * sb.naux, thresh),
+                        Err(e) => {
+                            eprintln!("  screen failed ({}): {e}", cfg.label);
+                            (0, 0, thresh)
+                        }
+                    }
+                }
+                #[cfg(feature = "spike-cholesky-seed")]
+                Chi0Sparsity::CholeskyScreened {
+                    thresh,
+                    dist_cutoff,
+                } => {
+                    match ferric_rpa::cholesky_localize::build_screened_bov_cholesky(
                         &mol,
                         &obs,
                         &dfbs,

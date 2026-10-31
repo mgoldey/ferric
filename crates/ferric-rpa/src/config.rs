@@ -75,6 +75,17 @@ pub enum Chi0Sparsity {
         atom_cutoff: usize,
         dist_cutoff: f64,
     },
+    /// RESEARCH SPIKE, compiled only with the `spike-cholesky-seed` feature:
+    /// identical to `BoysScreened` except the localized occupied orbitals come
+    /// from a pivoted Cholesky factorization of the occupied density
+    /// ([`crate::cholesky_localize`]) instead of Foster-Boys. Not reachable from
+    /// `parse_config_str`, the CLI or Python. See
+    /// `reference/spikes/cholesky-vs-boys-pdep-seed.md`.
+    #[cfg(feature = "spike-cholesky-seed")]
+    CholeskyScreened {
+        thresh: f64,
+        dist_cutoff: f64,
+    },
 }
 
 impl Chi0Sparsity {

@@ -32,6 +32,10 @@ pub mod boys_localize;
 pub mod budget;
 /// Per-spin RPA channel (B_ov, orbital energies) for unrestricted dispatch.
 pub mod channel;
+/// RESEARCH SPIKE (feature `spike-cholesky-seed`): pivoted-Cholesky localized
+/// occupied orbitals as an alternative sparse-PDEP screening seed to Boys.
+#[cfg(feature = "spike-cholesky-seed")]
+pub mod cholesky_localize;
 /// PDEP-RPA configuration: eigensolver, quadrature, chi0 backend, sparsity.
 pub mod config;
 /// Davidson eigensolver for the static dielectric matrix.
@@ -673,6 +677,23 @@ pub(crate) fn run_pdep_rpa_eigensolve(
             dist_cutoff,
         } => {
             let (sb, _boys) = screen::build_screened_bov_boys(
+                mol,
+                obs,
+                dfbs,
+                op,
+                rhf,
+                config.frozen_core,
+                thresh,
+                dist_cutoff,
+            )?;
+            Some(sb)
+        }
+        #[cfg(feature = "spike-cholesky-seed")]
+        Chi0Sparsity::CholeskyScreened {
+            thresh,
+            dist_cutoff,
+        } => {
+            let (sb, _chol) = cholesky_localize::build_screened_bov_cholesky(
                 mol,
                 obs,
                 dfbs,
