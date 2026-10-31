@@ -143,15 +143,16 @@ def energies(mask):
     A_num = A_m.subs(values)
     J_num = (P.T * J).subs(values)
     t_star = -(A_num.inv() * J_num)
-    C_num = C
+
+    # Contract over the retained pattern only: t_ba reads as 0 outside it, as in
+    # ferric's swap_contract.
+    Q = P.T * C * P
 
     def e_lin(t_m):
-        return ((C_num * (P * t_m)).T * J.subs(values))[0]
+        return ((Q * t_m).T * J_num)[0]
 
     def e_h(t_m):
-        return (
-            (C_num * (P * t_m)).T * (2 * J.subs(values) + A.subs(values) * (P * t_m))
-        )[0]
+        return ((Q * t_m).T * (2 * J_num + A_num * t_m))[0]
 
     return A_num, t_star, e_lin, e_h, len(idx)
 
@@ -174,8 +175,6 @@ assert open_coeff != 0, "non-closed mask should NOT be stationary"
 print(
     "non-closed mask (11,12): s^1 coeff =", open_coeff, " (first-order error survives)"
 )
-# This model contracts over the full space while the code's swap_contract sums over
-# pattern positions only; on this mask both are non-stationary.
 print("So check_swap_closed is required for the E_H error claims, not decoration.")
 
 section(
