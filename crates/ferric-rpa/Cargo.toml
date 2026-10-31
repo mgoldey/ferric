@@ -32,6 +32,9 @@ default = []
 # those crates' OWN mpi features must be enabled transitively, not just
 # ferric-core's.
 mpi = ["dep:mpi", "ferric-core/mpi", "ferric-scf/mpi", "ferric-mp2/mpi"]
+# EXPERIMENTAL THC-factorized chi0 contraction kernel (crate::thc_chi0); no
+# molecular builder exists. See reference/thc/thc-lane-2026-10.md.
+thc = []
 
 [dev-dependencies]
 ferric-pcm = { path = "../ferric-pcm" }

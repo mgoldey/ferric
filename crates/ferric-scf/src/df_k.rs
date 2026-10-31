@@ -131,7 +131,7 @@ pub(crate) const DFK_LINDEP_THRESH: f64 = 1e-10;
 /// some eigenvalues can be near-zero and turn slightly negative under
 /// floating-point roundoff. Drop those modes — equivalent to PySCF's
 /// `lindep` threshold in `df.aux_e2`.
-fn v_inv_sqrt_lindep(v: &Array2<f64>) -> Result<Array2<f64>, FerricError> {
+pub(crate) fn v_inv_sqrt_lindep(v: &Array2<f64>) -> Result<Array2<f64>, FerricError> {
     let naux = v.nrows();
     // One-time (naux, naux) setup factorization, called once per SCF
     // construction outside any rayon region. Opt-in BLAS raise via
