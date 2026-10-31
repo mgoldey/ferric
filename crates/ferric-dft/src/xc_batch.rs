@@ -988,9 +988,10 @@ impl ScreenedGrid {
     /// and per-worker batch scratch.
     ///
     /// Reads the rayon thread count for the worker-scratch term. That is safe
-    /// here and ONLY here: this figure steers the resident-vs-recompute
-    /// choice, and the two modes are bit-identical by construction, so no
-    /// energy can depend on it. (Contrast `ks.rs`'s old `resolve_batch_size`,
+    /// only while this figure steers nothing but the resident-vs-recompute
+    /// choice, whose two modes are bit-identical. It is also charged to the
+    /// pool, so a plane whose tier reads the pool (the raw 3-index tensor) must
+    /// be decided BEFORE this charge: the SCF drivers commit XC storage last. (Contrast `ks.rs`'s old `resolve_batch_size`,
     /// whose output fixed a summation order and therefore must not.)
     pub(crate) fn transient_bytes(&self, is_uks: bool) -> usize {
         let nmats = if is_uks { 2 } else { 1 };

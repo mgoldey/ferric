@@ -398,6 +398,42 @@ pub fn warn_if_rss_over(label: &str, budget_bytes: usize, over_factor: f64) {
     }
 }
 
+/// [`resolve_budget`], as if `planned_bytes` were already resident.
+///
+/// An auto-detected budget reads live `MemAvailable`, so it falls by 0.8 x
+/// whatever the process has already allocated. A caller that resolves it BEFORE
+/// allocating something it has already committed to would otherwise count those
+/// bytes twice over: this applies the fall in advance. A cgroup limit does not
+/// move with usage, and every other source is fixed, so neither changes.
+pub fn resolve_budget_after(explicit: Option<usize>, planned_bytes: usize) -> BudgetResolution {
+    let res = resolve_budget(explicit);
+    if res.source != BudgetSource::AutoDetected {
+        return res;
+    }
+    let meminfo = std::fs::read_to_string("/proc/meminfo")
+        .ok()
+        .and_then(|s| parse_meminfo_available(&s));
+    match auto_budget_after(detect_cgroup_limit_bytes(), meminfo, planned_bytes) {
+        Some(bytes) if bytes > 0 => BudgetResolution { bytes, ..res },
+        _ => res,
+    }
+}
+
+/// The arithmetic of [`resolve_budget_after`].
+#[must_use]
+pub fn auto_budget_after(
+    cgroup: Option<usize>,
+    meminfo: Option<usize>,
+    planned_bytes: usize,
+) -> Option<usize> {
+    let meminfo = meminfo.map(|m| m.saturating_sub(planned_bytes));
+    let avail = match (cgroup, meminfo) {
+        (Some(c), Some(m)) => c.min(m),
+        (c, m) => c.or(m)?,
+    };
+    Some((avail as f64 * AUTO_FRACTION) as usize)
+}
+
 /// Detect available memory in bytes: the minimum of any active cgroup memory
 /// limit and `/proc/meminfo`'s `MemAvailable`. Returns `None` if nothing can be
 /// read (non-Linux, sandboxed, or missing files) so the caller falls back.
@@ -576,6 +612,19 @@ fn clamp_u64_to_usize(v: u64) -> usize {
 mod tests {
     use super::*;
     use std::sync::Mutex;
+
+    /// Planned bytes come off live MemAvailable, not off a cgroup limit, and the
+    /// tier a budget selects then matches what an already-allocated plane leaves.
+    #[test]
+    fn auto_budget_after_treats_planned_bytes_as_already_resident() {
+        assert_eq!(auto_budget_after(None, Some(1000), 0), Some(800));
+        assert_eq!(auto_budget_after(None, Some(1000), 500), Some(400));
+        assert_eq!(auto_budget_after(Some(600), Some(1000), 0), Some(480));
+        assert_eq!(auto_budget_after(Some(600), Some(1000), 300), Some(480));
+        assert_eq!(auto_budget_after(Some(600), Some(1000), 500), Some(400));
+        assert_eq!(auto_budget_after(Some(600), None, 500), Some(480));
+        assert_eq!(auto_budget_after(None, None, 0), None);
+    }
 
     // FERRIC_* budget env vars are process-global; the default harness runs
     // tests in parallel. Serialize every test that reads/writes them.

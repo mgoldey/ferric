@@ -499,8 +499,7 @@ fn solve_rohf_impl(
     sym: Option<&crate::symmetric::SymmetrySpec>,
     mut hook: Option<crate::fock::SpinFockHook<'_>>,
 ) -> Result<ScfResult, FerricError> {
-    use ferric_dft::ks::KsXcUks;
-    use ferric_dft::xc_trait::{KMix, UksXcContribution};
+    use ferric_dft::xc_trait::KMix;
 
     // Split the injection: (S, h, V_nn) go to the shared env builder, the J/K
     // (and XC) builders are driven in the loop — as in uhf::solve_uhf_impl.
@@ -518,36 +517,7 @@ fn solve_rohf_impl(
     let injected = inj_jk.is_some();
 
     // Build UKS XC contribution once. None for pure ROHF.
-    let xc_contrib: Option<Box<dyn UksXcContribution>> = if let Some(name) = config.xc.as_deref() {
-        let main = config.dft_grid.clone().unwrap_or_default();
-        let nlc = config
-            .nlc_grid
-            .clone()
-            .unwrap_or_else(ferric_dft::grid::AtomicGridConfig::default_nlc);
-        // Thread the caller's `[memory] budget_gb` into the grid AO cache --
-        // the largest single allocation in a DFT job. This used to call the
-        // UNbudgeted `new_with_omega`, which resolves from env/auto-detect
-        // and so silently DISCARDED `config.three_index_budget_bytes`. The
-        // budgeted constructor existed for exactly this and had ZERO
-        // production callers; its own doc records the symptom ("Setting
-        // `budget_gb = 4` on a 64 GB box still sized the grid cache against
-        // ~51 GB"), i.e. the documented primary knob did nothing while
-        // FERRIC_MEM_BUDGET_GB worked. 0 means unset, matching
-        // `rhf::resolve_three_index_budget`.
-        let ks = KsXcUks::new_with_omega_budgeted(
-            mol,
-            prep.basis_set(),
-            name,
-            &main,
-            &nlc,
-            config.xc_omega,
-            (config.three_index_budget_bytes != 0).then_some(config.three_index_budget_bytes),
-        )
-        .map_err(|e| FerricError::General(format!("KsXcUks init for {name}: {e:?}")))?;
-        Some(Box::new(ks) as Box<dyn UksXcContribution>)
-    } else {
-        None
-    };
+    let mut xc_contrib = crate::driver::uks_xc_contribution(mol, prep, config)?;
 
     // Injected (periodic) ROKS: a global hybrid scales the injected K by its
     // exact-exchange fraction (validate_injected_rohf guarantees `xc_contrib`
@@ -600,7 +570,15 @@ fn solve_rohf_impl(
         polarizable_site_basis,
         dfk_sr,
         dfk_lr,
-    } = crate::driver::prepare(ctx, mol, prep, config, &k_mix, pre_env)?;
+    } = crate::driver::prepare(
+        ctx,
+        mol,
+        prep,
+        config,
+        &k_mix,
+        pre_env,
+        crate::driver::xc_plan(xc_contrib.as_deref()),
+    )?;
 
     // The ONE SR/LR exchange response every Hessian matvec in this solve uses —
     // Newton steps, TRAH steps and the post-SCF stability eigensolve alike. It
@@ -990,6 +968,7 @@ fn solve_rohf_impl(
     // Injected (periodic) path: no continuity lock (it can hold a periodic
     // hole state the unrelaxed witness cannot refute); molecular path unchanged.
     .with_continuity_lock(!injected);
+    crate::driver::commit_xc(xc_contrib.as_deref_mut())?;
     if let Some(x) = xc_contrib.as_ref() {
         x.start_scf();
     }
@@ -1805,14 +1784,9 @@ fn rohf_guess_mos(
         }
         d0.clone()
     } else if config.use_sad_guess {
-        match crate::guess::minao_projection_guess(mol, prep, prep.basis_set()) {
-            Ok(d) => d,
-            Err(e) => {
-                if crate::rhf::scf_trace() {
-                    eprintln!("ROHF guess: MINAO projection failed ({e:?}); falling back to hcore");
-                }
-                return Ok(None);
-            }
+        match crate::driver::minao_or_report("ROHF", mol, prep) {
+            Some(d) => d,
+            None => return Ok(None),
         }
     } else {
         return Ok(None);
