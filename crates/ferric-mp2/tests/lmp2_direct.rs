@@ -2220,6 +2220,53 @@ fn out_of_iterations_while_tightening_is_an_error() {
     assert_eq!(floor.outcome.target_met, Some(false));
 }
 
+/// Tightening aims at a quarter of the target, so the iterations can run out
+/// with the bound already met. That is still an error, and the message must not
+/// say the bound is above the target. Here the stop lands in [needed, 2*needed).
+/// Mutant seen to fail: the message always saying the bound is "still" above.
+#[test]
+fn out_of_iterations_with_the_bound_already_met_says_so() {
+    use ferric_mp2::lmp2_amplitude::{
+        cg_energy_error_bound, operator_lambda_min_lower_bound, pattern_rhs_norm,
+        solve_under_rtol_policy,
+    };
+    use ferric_mp2::ragged::solve_ragged_budgeted_with;
+    let (rg, f_oo, f_vv) = production_ragged_op("alkane_4.xyz", 4, 1e-4, Operator::coulomb(), 0.7);
+    let policy = |target| adaptive(1e-6, 1e-11, target);
+    let solve = |p, limit| solve_under_rtol_policy(&rg, &f_oo, &f_vv, p, limit, usize::MAX, 0.0);
+    let first = solve(policy(1.0), 400).unwrap().budgeted.solve;
+    let limit = first.iterations + 1;
+    let at_limit = solve_ragged_budgeted_with(&rg, &f_oo, 1e-13, limit, usize::MAX, 0.0)
+        .solve
+        .relres;
+    // the target whose derived tolerance is 0.7 of the residual at the limit
+    let (bnorm, lam) = (
+        pattern_rhs_norm(&rg),
+        operator_lambda_min_lower_bound(&f_oo, &f_vv).unwrap(),
+    );
+    let needed = 0.7 * at_limit;
+    let target = cg_energy_error_bound(bnorm, 2.0 * needed, lam);
+    assert!(needed > 1e-11, "the floor must not set the tolerance");
+    assert!(
+        cg_energy_error_bound(bnorm, first.relres, lam) > target,
+        "the first stop must tighten"
+    );
+
+    let msg = solve(policy(target), limit)
+        .err()
+        .expect("out of iterations while tightening must be an error")
+        .to_string();
+    assert!(msg.contains("while tightening"), "{msg}");
+    assert!(msg.contains("meets the"), "{msg}");
+    assert!(msg.contains("tightened tolerance was not reached"), "{msg}");
+    assert!(!msg.contains("is still"), "{msg}");
+    assert!(
+        msg.contains(&format!("seeking cg_rtol {needed:.2e}")),
+        "{msg}"
+    );
+    assert!(msg.contains("cg_max_iter"), "{msg}");
+}
+
 /// Not reaching the first tolerance stays an error, under the policy and through
 /// the driver, which names itself; it is not worded as a tightening.
 #[test]

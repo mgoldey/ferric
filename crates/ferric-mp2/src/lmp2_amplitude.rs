@@ -1561,14 +1561,23 @@ fn unconverged_message(
             "ragged CG failed to converge (relres {relres:.2e} after {iterations} iters)"
         );
     }
+    // Tightening aims below the target, so the iterations can run out after the
+    // bound has already met it.
+    let target = o.target_ha.unwrap_or(f64::NAN);
+    let bound_state = if bound <= target {
+        format!(
+            "the solver-error bound {bound:.2e} Ha meets the {target:.0e} Ha target, but the \
+             tightened tolerance was not reached"
+        )
+    } else {
+        format!("the solver-error bound is still {bound:.2e} Ha against the {target:.0e} Ha target")
+    };
     format!(
         "ragged CG ran out of iterations while tightening: relres {relres:.2e} (true \
-         {true_relres:.2e}) after {iterations} iters, seeking cg_rtol {:.2e}; the solver-error \
-         bound is still {bound:.2e} Ha against the {:.0e} Ha target. Raise \
-         AmplitudeLmp2Config::cg_max_iter, or set an explicit AmplitudeLmp2Config::cg_rtol to \
-         accept the looser tolerance",
+         {true_relres:.2e}) after {iterations} iters, seeking cg_rtol {:.2e}; {bound_state}. \
+         Raise AmplitudeLmp2Config::cg_max_iter, or set an explicit \
+         AmplitudeLmp2Config::cg_rtol to accept the looser tolerance",
         o.rtol_used,
-        o.target_ha.unwrap_or(f64::NAN),
     )
 }
 
