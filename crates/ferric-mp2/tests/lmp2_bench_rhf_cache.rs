@@ -94,6 +94,7 @@ fn lmp2_signature(
         scratch_budget_bytes: 1usize << 30,
         virt_schwarz_kappa: None,
         split_eri3_timers: false,
+        eri3_pass: Default::default(),
     };
     let (r, st) =
         amplitude_lmp2_direct(&s.mol, &s.obs, &s.obs_bs, &s.dfbs, op, rhf, &cfg, &dcfg).unwrap();
