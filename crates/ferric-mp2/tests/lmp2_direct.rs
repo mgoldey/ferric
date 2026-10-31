@@ -12,8 +12,9 @@ use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_mp2::lmp2_amplitude::{amplitude_lmp2, AmplitudeLmp2Config};
 use ferric_mp2::lmp2_direct::{amplitude_lmp2_direct, DirectConfig};
-use ferric_scf::rhf::{solve_rhf, RhfConfig};
-use ferric_scf::screening::SchwarzBounds;
+#[allow(dead_code)]
+#[path = "common/bench_rhf_cache.rs"]
+mod bench_rhf_cache;
 
 struct Setup {
     mol: Molecule,
@@ -23,35 +24,64 @@ struct Setup {
     rhf: ferric_scf::result::ScfResult,
 }
 
+/// FERRIC_LMP2_BENCH_RHF_CACHE=<dir> reuses the RHF across processes; see
+/// `common/bench_rhf_cache.rs`. No bench stage timer covers this function.
 fn setup(xyz: &str) -> Setup {
-    let mol = Molecule::load_xyz(&format!(
+    let xyz_path = format!(
         "{}/../../testdata/molecules/{xyz}",
         env!("CARGO_MANIFEST_DIR")
-    ))
-    .unwrap();
+    );
+    let mol = Molecule::load_xyz(&xyz_path).unwrap();
     let obs_bs = basis::bundled("6-31g").unwrap();
     let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
-    let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
-    let op = Operator::coulomb();
-    let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-    let rhf = solve_rhf(
-        &ferric_core::parallel::ParallelContext::default(),
+    let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
+    let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
+    let rhf = bench_rhf_cache::setup_rhf(
+        &xyz_path,
         &mol,
         &obs,
-        op,
-        &bounds,
-        &RhfConfig {
-            energy_conv: 1e-10,
-            ..Default::default()
-        },
-    )
-    .unwrap();
+        ("6-31g", &obs_bs),
+        ("cc-pvdz-ri", &aux_bs),
+    );
     Setup {
         mol,
         obs,
         obs_bs,
         dfbs,
         rhf,
+    }
+}
+
+/// Is this build's SCF the one that wrote the cache? Solves fresh and compares
+/// to the bit, for each cached alkane between FERRIC_LMP2_BENCH_MIN_C and
+/// FERRIC_LMP2_BENCH_MAX_C (default C4-C8). Run it in a build before trusting
+/// a cache written by another. Thread counts must match the writer's.
+#[test]
+#[ignore]
+fn bench_rhf_cache_matches_fresh_scf() {
+    let dir = bench_rhf_cache::dir_from_env().expect("FERRIC_LMP2_BENCH_RHF_CACHE must be set");
+    let env_c = |name: &str, default: usize| -> usize {
+        std::env::var(name).map_or(default, |s| s.parse().expect(name))
+    };
+    let (min_c, max_c) = (
+        env_c("FERRIC_LMP2_BENCH_MIN_C", 4),
+        env_c("FERRIC_LMP2_BENCH_MAX_C", 8),
+    );
+    for nc in [4usize, 8, 12, 16, 20, 32, 48] {
+        if nc < min_c || nc > max_c {
+            continue;
+        }
+        let stem = format!("alkane_{nc}");
+        let path = bench_rhf_cache::cache_path(&dir, &stem, "6-31g", "cc-pvdz-ri");
+        assert!(path.exists(), "{} is not cached", path.display());
+        let su = setup(&format!("{stem}.xyz"));
+        let fresh = bench_rhf_cache::solve_fresh(&su.mol, &su.obs);
+        let diff = bench_rhf_cache::rhf_bits_diff(&su.rhf, &fresh);
+        println!(
+            "{stem}: fresh E={:.12} iters={} quartets={} exit={:?}; differences from cache: {diff:?}",
+            fresh.energy, fresh.iterations, fresh.computed_quartets, fresh.exit
+        );
+        assert!(diff.is_empty(), "{stem}: {diff:?}");
     }
 }
 
