@@ -103,3 +103,20 @@ ferric_cargo_locked() {
     flock -o -w "$FERRIC_CARGO_LOCK_WAIT_SECS" -E "$FERRIC_CARGO_LOCK_WAIT_EXPIRED_RC" \
         "$FERRIC_CARGO_LOCK" -c "$*"
 }
+
+# /tmp is wiped at boot and a dead PATH entry falls through to the real cargo without a word, so the
+# compile locks and the box lease silently stop applying. Reinstall a missing shim from this tree, and
+# warn loudly when this process's cargo would bypass it. Never fails the caller.
+ferric_ensure_cargo_shim() { # REPO_ROOT
+    local repo="$1" dir="${FERRIC_SHIM_DIR:-/tmp/ferric-cargo-shim}"
+    if [[ ! -x "$dir/cargo" ]]; then
+        echo "WARNING: the cargo shim is missing from $dir (wiped at boot?); reinstalling." >&2
+        "$repo/scripts/install-cargo-shim.sh" >&2 ||
+            echo "WARNING: could not reinstall it: cargo here takes no compile lock and ignores box leases." >&2
+    fi
+    case ":$PATH:" in
+        *":$dir:"*) ;;
+        *) echo "WARNING: $dir is not on PATH: cargo here takes no compile lock and ignores box leases." >&2 ;;
+    esac
+    return 0
+}

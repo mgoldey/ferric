@@ -1,30 +1,43 @@
 #!/usr/bin/env bash
-# box-lease: let a timing job own the box; cargo builds and tests wait for it.
+# box-lease: a timing job holds the build locks; cargo builds and tests wait for it.
 #
 #   box-lease run --label NAME [--wait-secs N] [--max-hold N] -- CMD...
-#   box-lease wait [--wait-secs N]    block until no lease is pending or held
+#   box-lease exec [--] CMD...        run a direct binary under a shared lock a lease waits for
+#   box-lease wait [--wait-secs N]    block until no lease is pending or held; holds nothing after
 #   box-lease status
 #
-# `run` takes, in this order: the lease, the gate's cargo lock, both heavy slots. It waits for
-# whatever is in flight to finish, then runs CMD holding all four, and returns CMD's status (75 if
-# the wait expired and CMD never ran). The order is load-bearing: the gate holds the cargo lock
-# while its cargo takes a slot, so a lease holding a slot while waiting on the cargo lock would
-# deadlock. The lease comes first so that new compiles (scripts/cargo-shim) queue behind a pending
-# lease rather than starving it.
+# This does NOT own the machine. Holding out:
+#   HELD OUT and drained: cargo through the shim (all but trivial subcommands, for the whole run,
+#     tests included); `flock -o /tmp/ferric-compile.lock CMD`; gate steps, before their timeout
+#     starts; `box-lease exec CMD`.
+#   NOT held out or drained: a test binary, pytest or python started directly, the gate's soft pytest
+#     step, other sessions, any non-cargo load. A bench's own load gate stays.
+#
+# `run` holds the lease from the moment it is requested, so new compiles (scripts/cargo-shim) queue
+# behind it. It then polls for the gate's cargo lock, both heavy slots and the exec lock ALL TOGETHER,
+# keeping none while any is busy. Holding one while waiting for another deadlocks against flock
+# wrappers and gate steps, which nest these locks in several orders; holding none makes a cycle
+# impossible. The cost: a blocking `flock -o <slot>` or a queued gate can overtake a pending lease.
+# So the wait is bounded (--wait-secs, default 1 h, since all compiles queue meanwhile), then exit 75
+# naming the holders, with CMD not run. `status` names them during the wait.
 #
 # These are kernel flocks on fds only this script holds, so they vanish with this process and cannot
-# go stale, and CMD gets them closed, so a daemon it spawns (sccache) cannot squat them. Hence:
-#   - `kill -9` of THIS process frees the box while CMD runs on, orphaned. Plain TERM/INT/HUP are
-#     forwarded to CMD and the lease is held until CMD exits.
+# go stale, and CMD gets them closed, so a daemon it spawns (sccache) cannot squat them.
+#   - CMD runs in its own session. INT/TERM/HUP go to its whole process group and the lease is held
+#     until that group is gone. A process that left the group (a daemon) does not hold the lease.
+#   - `kill -9` of THIS process frees the locks while CMD runs on, orphaned.
 #   - --max-hold only warns. Nothing here ever kills a job for holding too long.
 #   - $LEASE.info holds label/pid/start for messages. It is never consulted to decide anything.
 #
-# COVERS cargo through the shim (including `cargo test`, whose whole run is under the lock) and
-# anything wrapped in `flock -o /tmp/ferric-compile.lock`. DOES NOT COVER a test binary, pytest or
-# python started directly: put `box-lease wait` first in such a script. Nor other sessions or
-# non-cargo load; a bench's own load gate stays. Under a lease, cargo runs straight through, but
-# CMD must not itself `flock` a compile lock: that lock is held by its own lease.
+# Under a lease, cargo passes straight through the shim, and `flock` on a heavy lock passes through
+# scripts/under-lease/flock, so CMD may be `git push` or a `flock -o` wrapper (not /usr/bin/flock).
 set -uo pipefail
+
+HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+UNDER_LEASE=$HERE/under-lease
+PATH=${PATH//"$UNDER_LEASE:"/} # our own probes must always see the real flock
+# shellcheck source=scripts/cargo-lock-lib.sh
+source "$HERE/cargo-lock-lib.sh" || exit 2
 
 LOCK_DIR=${FERRIC_LOCK_DIR:-/tmp}
 LEASE=$LOCK_DIR/ferric-box.lease
@@ -32,16 +45,18 @@ INFO=$LEASE.info
 CARGO_LOCK=$LOCK_DIR/ferric-cargo.lock
 SLOT0=$LOCK_DIR/ferric-compile.lock
 SLOT1=$LOCK_DIR/ferric-compile.2.lock
+DIRECT=$LOCK_DIR/ferric-box.direct
 POLL=${FERRIC_BOX_LEASE_POLL_SECS:-1}
 EXPIRED=75 # same status the gate and the shim use for "never got the lock"
-DEFAULT_WAIT=28800 # the shim's own 8 h
+DEFAULT_RUN_WAIT=3600
+DEFAULT_WAIT=28800 # the shim's own 8 h, for `wait` and `exec`
 DEFAULT_MAX_HOLD=14400
+STALE_CLEAR_EVERY=30
 
 die() { echo "box-lease: $*" >&2; exit 2; }
 
 # ERE matching the fdinfo line of a held flock on any of the given files. Same source as
-# ferric_cargo_lock_holders (cargo-lock-lib.sh), and for the same reason: /proc/locks can name a pid
-# that has exited. Fails if none of the files exists yet.
+# ferric_cargo_lock_holders, and for the same reason: /proc/locks can name a pid that has exited.
 lock_pattern() {
     local f maj min ino alt=""
     for f in "$@"; do
@@ -79,9 +94,18 @@ under_own_lease() {
     ancestor_holds "$LEASE"
 }
 
-is_busy() { # FILE: true when someone holds it. Shared, so probes do not collide with each other.
-    flock -s -n -E "$EXPIRED" "$1" true
-    [[ $? -eq $EXPIRED ]]
+exec_under_own_lease() {
+    export FERRIC_HEAVY_LOCK_HELD=${FERRIC_BOX_LEASE_PID:-$PPID} PATH=$UNDER_LEASE:$PATH
+    exec "$@"
+}
+
+probe() { # MODE FILE: 0 busy, 1 free, 2 cannot tell. Shared where every holder is exclusive.
+    flock "$1" -n -E "$EXPIRED" "$2" true 2>/dev/null
+    case $? in
+        "$EXPIRED") return 0 ;;
+        0) return 1 ;;
+        *) return 2 ;;
+    esac
 }
 
 write_info() { # PHASE
@@ -91,29 +115,95 @@ write_info() { # PHASE
 
 holder_text() {
     local label="" pid="" start="" phase="" since=""
-    IFS=$'\t' read -r label pid start phase _ <"$INFO" 2>/dev/null
+    { IFS=$'\t' read -r label pid start phase _ <"$INFO"; } 2>/dev/null
     [[ -n $start ]] && since=$(date -d "@$start" '+%F %T' 2>/dev/null)
     printf '%s (pid %s, %s since %s)' "${label:-unknown}" "${pid:-?}" "${phase:-?}" "${since:-unknown}"
 }
 
-# Take the lock on an already-open fd, waiting for the time left. The waiting flock gets every other
-# fd closed: killed while pending, this process must not leave it holding the lease.
-take() { # FD WHAT
-    local fd=$1 what=$2 close="" o left
-    flock -n "$fd" && return 0
-    echo "box-lease: $LABEL waiting for $what" >&2
-    left=$((DEADLINE - $(date +%s)))
-    ((left > 0)) || left=0
-    for o in 200 201 202 203; do
-        [[ $o == "$fd" ]] || close+=" $o>&-"
+holders_of() { # FILE: who holds it, one line each
+    local pid
+    while read -r pid; do
+        [[ $pid == "$$" ]] && continue
+        printf '  pid %s: %s\n' "$pid" "$(ps -o args= -p "$pid" 2>/dev/null | cut -c1-100)"
+    done < <(ferric_cargo_lock_holders "$1")
+}
+
+blockers() { # the busy heavy locks, by file
+    local f
+    for f in "$CARGO_LOCK" "$SLOT0" "$SLOT1"; do
+        if probe -s "$f"; then echo "$f"; fi
     done
-    eval "flock -o -w $left -E $EXPIRED $fd $close" && return 0
-    echo "box-lease: $LABEL gave up waiting for $what after ${WAIT_SECS}s; command NOT run" >&2
+    if probe -x "$DIRECT"; then echo "$DIRECT"; fi
+}
+
+take_lease() {
+    flock -n 200 && return 0
+    echo "box-lease: $LABEL waiting for the box lease, held by $(holder_text)" >&2
+    local left=$((DEADLINE - $(date +%s)))
+    ((left > 0)) || left=0
+    flock -o -w "$left" -E "$EXPIRED" 200 201>&- 202>&- 203>&- 204>&- && return 0
+    echo "box-lease: $LABEL gave up on the lease after ${WAIT_SECS}s; command NOT run" >&2
     exit "$EXPIRED"
 }
 
+# Everything or nothing: see the header. A wedged squatter is cleared as the gate does.
+drain() {
+    local said="" now f last_clear=-$STALE_CLEAR_EVERY
+    SECONDS=0
+    while :; do
+        if flock -n 201 && flock -n 202 && flock -n 203 && flock -n 204; then
+            return 0
+        fi
+        flock -u 201; flock -u 202; flock -u 203; flock -u 204
+        if ((SECONDS - last_clear >= STALE_CLEAR_EVERY)); then
+            last_clear=$SECONDS
+            for f in "$CARGO_LOCK" "$SLOT0" "$SLOT1"; do
+                ferric_clear_stale_sccache_lock "$f" >&2
+            done
+        fi
+        now=$(blockers)
+        if [[ -n $now && $now != "$said" ]]; then
+            echo "box-lease: $LABEL waiting for in-flight work on:" $now >&2
+            said=$now
+        fi
+        if (($(date +%s) >= DEADLINE)); then
+            echo "box-lease: $LABEL gave up after ${WAIT_SECS}s; command NOT run. Still busy:" >&2
+            for f in $now; do
+                echo " $f" >&2
+                holders_of "$f" >&2
+            done
+            exit "$EXPIRED"
+        fi
+        sleep "$POLL" 200>&- 201>&- 202>&- 203>&- 204>&-
+    done
+}
+
+# Run CMD in its own session and process group with no lock fd, until that group is gone. Returns
+# only to exit. `&` in a script makes CMD ignore INT and QUIT, and setsid would leave that in place,
+# so restore them: a job must die on ^C like any other. ($! IS the group: bash does not make a
+# background job a group leader here, so setsid does not need to fork.)
+run_held() {
+    env --default-signal=INT,QUIT setsid "$@" <&0 200>&- 201>&- 202>&- 203>&- 204>&- &
+    local child=$! warned=0 lingering=0
+    trap 'kill -TERM -- "-$child" 2>/dev/null || kill -TERM "$child" 2>/dev/null' INT TERM HUP
+    SECONDS=0
+    while kill -0 "$child" 2>/dev/null || kill -0 -- "-$child" 2>/dev/null; do
+        if ((!warned && MAX_HOLD > 0 && SECONDS >= MAX_HOLD)); then
+            echo "box-lease: WARNING: $LABEL has held the box for ${SECONDS}s (--max-hold $MAX_HOLD). Not killing it." >&2
+            warned=1
+        fi
+        if ((!lingering)) && ! kill -0 "$child" 2>/dev/null; then
+            echo "box-lease: $LABEL exited but its process group lives on; still holding until it is gone" >&2
+            lingering=1
+        fi
+        sleep "$POLL" 200>&- 201>&- 202>&- 203>&- 204>&-
+    done
+    wait "$child"
+    exit $?
+}
+
 cmd_run() {
-    LABEL="" WAIT_SECS=$DEFAULT_WAIT MAX_HOLD=${FERRIC_BOX_LEASE_MAX_HOLD:-$DEFAULT_MAX_HOLD}
+    LABEL="" WAIT_SECS=$DEFAULT_RUN_WAIT MAX_HOLD=${FERRIC_BOX_LEASE_MAX_HOLD:-$DEFAULT_MAX_HOLD}
     while (($#)); do
         case $1 in
             --label) LABEL=${2:-}; shift 2 || die "--label needs a value" ;;
@@ -128,44 +218,56 @@ cmd_run() {
     [[ $WAIT_SECS =~ ^[0-9]+$ && $MAX_HOLD =~ ^[0-9]+$ ]] || die "--wait-secs and --max-hold take whole seconds"
     LABEL=${LABEL//[$'\t\n']/ }
 
-    if under_own_lease; then
-        export FERRIC_HEAVY_LOCK_HELD=1
-        exec "$@"
+    if under_own_lease; then exec_under_own_lease "$@"; fi
+    # This could never get them: it would wait on its own ancestor.
+    if ancestor_holds "$CARGO_LOCK" "$SLOT0" "$SLOT1" "$DIRECT"; then
+        die "an ancestor holds a compile, cargo or exec lock; take the lease outside it"
     fi
-    # This would wait on its own ancestor forever.
-    ancestor_holds "$CARGO_LOCK" "$SLOT0" "$SLOT1" &&
-        die "an ancestor holds a compile or cargo lock; take the lease outside it"
 
     DEADLINE=$(($(date +%s) + WAIT_SECS))
-    exec 200>>"$LEASE" 201>>"$CARGO_LOCK" 202>>"$SLOT0" 203>>"$SLOT1" || die "cannot open locks in $LOCK_DIR"
+    exec 200>>"$LEASE" 201>>"$CARGO_LOCK" 202>>"$SLOT0" 203>>"$SLOT1" 204>>"$DIRECT" ||
+        die "cannot open locks in $LOCK_DIR"
 
-    take 200 "the box lease, held by $(holder_text)"
+    take_lease
     trap 'rm -f "$INFO"' EXIT
     write_info draining
-    take 201 "the gate's cargo lock"
-    take 202 "compile slot 0"
-    take 203 "compile slot 1"
+    drain
     write_info active
 
-    # Cargo under this lease runs straight through the shim: the slots are already ours.
-    export FERRIC_BOX_LEASE_PID=$$ FERRIC_HEAVY_LOCK_HELD=1
-    "$@" <&0 200>&- 201>&- 202>&- 203>&- &
-    local child=$! warned=0
-    trap 'kill -TERM "$child" 2>/dev/null' INT TERM HUP
-    SECONDS=0
-    while kill -0 "$child" 2>/dev/null; do
-        if ((!warned && SECONDS >= MAX_HOLD)); then
-            echo "box-lease: WARNING: $LABEL has held the box for ${SECONDS}s (--max-hold $MAX_HOLD). Not killing it." >&2
-            warned=1
+    cat >&2 <<NOTE
+box-lease: $LABEL holds the lease, the cargo lock and both compile slots.
+box-lease: NOT drained or held out: direct binaries (unless under 'box-lease exec'), the gate's soft pytest, other sessions, non-cargo load. 'box-lease wait' holds nothing.
+NOTE
+    export FERRIC_BOX_LEASE_PID=$$ FERRIC_HEAVY_LOCK_HELD=$$ PATH=$UNDER_LEASE:$PATH
+    run_held "$@"
+}
+
+cmd_exec() {
+    [[ ${1:-} == -- ]] && shift
+    (($#)) || die "exec needs a command"
+    LABEL=exec MAX_HOLD=0
+    if under_own_lease; then exec_under_own_lease "$@"; fi
+    # Already counted as in flight; waiting for a pending lease would deadlock with it.
+    if ancestor_holds "$CARGO_LOCK" "$SLOT0" "$SLOT1" "$DIRECT"; then exec "$@"; fi
+
+    exec 204>>"$DIRECT" || die "cannot open $DIRECT"
+    local deadline=$(($(date +%s) + DEFAULT_WAIT)) told=0
+    while :; do
+        if ! probe -s "$LEASE" && flock -s -n 204; then
+            break
         fi
-        sleep "$POLL" 200>&- 201>&- 202>&- 203>&-
+        if ((!told)); then
+            echo "box-lease: exec waiting for box lease held by $(holder_text)" >&2
+            told=1
+        fi
+        (($(date +%s) < deadline)) || { echo "box-lease: exec gave up after ${DEFAULT_WAIT}s; command NOT run" >&2; exit "$EXPIRED"; }
+        sleep "$POLL" 204>&-
     done
-    wait "$child"
-    exit $?
+    run_held "$@"
 }
 
 cmd_wait() {
-    local wait_secs=$DEFAULT_WAIT
+    local wait_secs=$DEFAULT_WAIT rc
     while (($#)); do
         case $1 in
             --wait-secs) wait_secs=${2:-}; shift 2 || die "--wait-secs needs a value" ;;
@@ -175,33 +277,49 @@ cmd_wait() {
     [[ $wait_secs =~ ^[0-9]+$ ]] || die "--wait-secs takes whole seconds"
     under_own_lease && return 0
     # Holding a heavy lock, we are what a pending lease is draining.
-    ancestor_holds "$CARGO_LOCK" "$SLOT0" "$SLOT1" && return 0
-    if is_busy "$LEASE"; then
-        echo "box-lease: waiting for box lease held by $(holder_text)" >&2
-        flock -s -w "$wait_secs" -E "$EXPIRED" "$LEASE" true || {
-            echo "box-lease: lease still held after ${wait_secs}s" >&2
-            exit "$EXPIRED"
-        }
-    fi
+    ancestor_holds "$CARGO_LOCK" "$SLOT0" "$SLOT1" "$DIRECT" && return 0
+    probe -s "$LEASE"
+    rc=$?
+    ((rc == 2)) && die "cannot open $LEASE"
+    ((rc == 1)) && return 0
+    echo "box-lease: waiting for box lease held by $(holder_text)" >&2
+    flock -s -w "$wait_secs" -E "$EXPIRED" "$LEASE" true || {
+        echo "box-lease: lease still held after ${wait_secs}s" >&2
+        exit "$EXPIRED"
+    }
 }
 
 cmd_status() {
-    local f label pid start phase max age
-    if is_busy "$LEASE"; then
-        IFS=$'\t' read -r label pid start phase max <"$INFO" 2>/dev/null
-        age=$(($(date +%s) - ${start:-$(date +%s)}))
-        echo "lease: HELD by $(holder_text), ${age}s"
-        ((age >= ${max:-$DEFAULT_MAX_HOLD})) && echo "WARNING: past its max-hold of ${max}s. Nothing kills it; ask its owner."
-    else
-        echo "lease: free"
-    fi
-    for f in "$CARGO_LOCK" "$SLOT0" "$SLOT1"; do
-        if is_busy "$f"; then echo "$f: held (lsof it for the holder)"; else echo "$f: free"; fi
+    local f mode rc bad=0 start phase max age
+    probe -s "$LEASE"
+    rc=$?
+    case $rc in
+        0)
+            { IFS=$'\t' read -r _ _ start phase max <"$INFO"; } 2>/dev/null
+            age=$(($(date +%s) - ${start:-$(date +%s)}))
+            echo "lease: HELD by $(holder_text), ${age}s"
+            [[ ${phase:-} == draining ]] && echo "  waiting on whatever is held below; compiles queue meanwhile"
+            ((age >= ${max:-$DEFAULT_MAX_HOLD})) && echo "WARNING: past its max-hold of ${max}s. Nothing kills it; ask its owner."
+            ;;
+        1) echo "lease: free" ;;
+        *) echo "lease: UNKNOWN: cannot open $LEASE"; bad=1 ;;
+    esac
+    for f in "$CARGO_LOCK" "$SLOT0" "$SLOT1" "$DIRECT"; do
+        mode=-s
+        [[ $f == "$DIRECT" ]] && mode=-x # its holders are shared, so only exclusive sees them
+        probe "$mode" "$f"
+        case $? in
+            0) echo "$f: held"; holders_of "$f" ;;
+            1) echo "$f: free" ;;
+            *) echo "$f: UNKNOWN: cannot open it"; bad=1 ;;
+        esac
     done
+    return "$bad"
 }
 
 case ${1:-} in
     run) shift; cmd_run "$@" ;;
+    exec) shift; cmd_exec "$@" ;;
     wait) shift; cmd_wait "$@" ;;
     status) cmd_status ;;
     *) sed -n '2,8p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;

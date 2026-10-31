@@ -20,7 +20,7 @@ from pathlib import Path
 
 import pytest
 
-from test_ci_gate_timeout_starts_after_the_lock import LIB, _gate_functions
+from test_ci_gate_timeout_starts_after_the_lock import LIB, _alive, _gate_functions
 
 REPO = Path(__file__).resolve().parents[3]
 SCRIPTS = REPO / "scripts"
@@ -35,8 +35,10 @@ pytestmark = pytest.mark.skipif(
 
 STUB_CARGO = """#!/usr/bin/env bash
 echo "start ${STUB_NAME:-cargo} $*" >> "$EVENTS"
+eval "${STUB_BODY:-}"
 if [ -n "${STUB_UNTIL:-}" ]; then
-  until [ -e "$STUB_UNTIL" ]; do sleep 0.02; done
+  SECONDS=0  # bounded, so a killed test run leaves nothing behind for long
+  until [ -e "$STUB_UNTIL" ] || [ $SECONDS -gt 120 ]; do sleep 0.02; done
 fi
 echo "end ${STUB_NAME:-cargo}" >> "$EVENTS"
 exit "${STUB_RC:-0}"
@@ -46,17 +48,20 @@ exit "${STUB_RC:-0}"
 class Box:
     """A private shim directory, stub cargo and lock directory."""
 
-    def __init__(self, tmp_path, lease_edit=None, shim_edit=None):
+    def __init__(self, tmp_path, lease_edit=None, shim_edit=None, flock_edit=None):
         self.tmp = tmp_path
         self.locks = tmp_path / "locks"
         self.events = tmp_path / "events"
         self.shim_dir = tmp_path / "ferric-cargo-shim"
-        real = tmp_path / "real"
+        real = self.real = tmp_path / "real"
         for d in (self.locks, self.shim_dir, real):
             d.mkdir()
         self.events.touch()
         self._copy("box-lease", "box-lease", lease_edit)
         self._copy("cargo-shim", "cargo", shim_edit)
+        self._copy("cargo-lock-lib.sh", "cargo-lock-lib.sh", None)
+        (self.shim_dir / "under-lease").mkdir()
+        self._copy("under-lease/flock", "under-lease/flock", flock_edit)
         self._executable(real / "cargo", STUB_CARGO)
         self._executable(real / "sccache", "#!/bin/sh\n")
         self.lease = self.locks / "ferric-box.lease"
@@ -64,11 +69,9 @@ class Box:
         self.cargo_lock = self.locks / "ferric-cargo.lock"
         self.slot0 = self.locks / "ferric-compile.lock"
         self.slot1 = self.locks / "ferric-compile.2.lock"
-        self.env = {
-            k: v
-            for k, v in os.environ.items()
-            if k not in ("FERRIC_HEAVY_LOCK_HELD", "FERRIC_BOX_LEASE_PID", "STUB_NAME")
-        }
+        self.direct = self.locks / "ferric-box.direct"
+        dropped = ("FERRIC_HEAVY_LOCK_HELD", "FERRIC_BOX_LEASE_PID", "FERRIC_LOCK_DIR")
+        self.env = {k: v for k, v in os.environ.items() if k not in dropped}
         self.env.update(
             PATH=f"{self.shim_dir}:{real}:{os.environ['PATH']}",
             EVENTS=str(self.events),
@@ -123,7 +126,7 @@ class Box:
             "bash",
             "-c",
             f'echo "start {name}" >> "$EVENTS"; {body}\n'
-            f"until [ -e {release} ]; do sleep 0.02; done\n"
+            f"SECONDS=0; until [ -e {release} ] || [ $SECONDS -gt 120 ]; do sleep 0.02; done\n"
             f'echo "end {name}" >> "$EVENTS"',
         ]
 
@@ -138,6 +141,11 @@ class Box:
                 "--",
                 *self.job_argv(name, body),
             ]
+        )
+
+    def popen_lease(self, label, argv):
+        return self.popen(
+            [self.shim_dir / "box-lease", "run", "--label", label, "--", *argv]
         )
 
     def lines(self):
@@ -168,6 +176,13 @@ class Box:
     def wait_lease_requested(self):
         self.wait_until(lambda: self.busy(self.lease), "lease requested")
 
+    def settle_on(self, lock, limit=3):
+        """Give a polling lease time to reach `lock`. Only a hold-and-wait lease
+        stays on it, so this is not a requirement, just time for a mutant to show."""
+        deadline = time.monotonic() + limit
+        while time.monotonic() < deadline and not self.busy(lock):
+            time.sleep(0.01)
+
     def index(self, event):
         return next(
             i
@@ -179,13 +194,32 @@ class Box:
         out, _ = proc.communicate(timeout=limit)
         return proc.returncode, out
 
+    def done(self, proc, limit):
+        """The exit status, or None if it is still stuck after `limit` seconds."""
+        try:
+            return self.finish(proc, limit)[0]
+        except subprocess.TimeoutExpired:
+            return None
+
+    def status(self):
+        return subprocess.run(
+            [self.shim_dir / "box-lease", "status"],
+            env=self.env,
+            capture_output=True,
+            text=True,
+        )
+
     def cleanup(self):
+        """Kill whatever is left, jobs live in their own sessions: by exact pid,
+        found by the private events path in its environment."""
+        needle = f"EVENTS={self.events}".encode()
+        for proc_dir in Path("/proc").glob("[0-9]*"):
+            try:
+                if needle in (proc_dir / "environ").read_bytes().split(b"\0"):
+                    os.kill(int(proc_dir.name), signal.SIGKILL)
+            except (OSError, ValueError):
+                pass
         for p in self.procs:
-            if p.poll() is None:
-                try:
-                    os.killpg(p.pid, signal.SIGKILL)  # its own session, by pid
-                except ProcessLookupError:
-                    pass
             p.communicate()
 
 
@@ -265,8 +299,8 @@ def cargo_under_own_lease(box):
     return box.finish(job)
 
 
-def gate_step(box, command, timeout_secs, lock_wait_secs=60):
-    """Run the gate's REAL run_step on `command`, in its own bash."""
+def gate_script(box, command, timeout_secs, lock_wait_secs=60):
+    """Write a script running the gate's REAL run_step on its first argument."""
     harness = box.tmp / "gate.sh"
     harness.write_text(
         "set -uo pipefail\n"
@@ -278,6 +312,11 @@ def gate_step(box, command, timeout_secs, lock_wait_secs=60):
         "FAILED=0 STEP_TIMED_OUT=0 STEP_LOCK_WAIT_EXPIRED=0 STEP_CHECK_FAILED=0\n"
         "RUN_LOCKED_TIMED_OUT=0\n" + _gate_functions() + '\nrun_step "probe" "$1"\n'
     )
+    return harness
+
+
+def gate_step(box, command, timeout_secs, lock_wait_secs=60):
+    harness = gate_script(box, command, timeout_secs, lock_wait_secs)
     return box.popen(["bash", harness, command], STUB_NAME="G")
 
 
@@ -298,11 +337,11 @@ def gate_step_calls_cargo_with_a_lease_pending(box):
 
 
 def gate_step_during_an_active_lease(box):
-    """Lease held past the step's 1 s timeout. Return (gate output, events)."""
+    """Lease held past the step's 3 s timeout. Return (gate output, events)."""
     job = box.lease_job("L")
     box.wait_for("start L")
-    gate = gate_step(box, "cargo build", 1)
-    time.sleep(2.5)
+    gate = gate_step(box, "cargo build", 3)
+    time.sleep(4.5)
     box.open("L")
     box.finish(job)
     _, out = box.finish(gate)
@@ -332,12 +371,7 @@ def test_a_killed_holder_releases(make_box):
     assert not box.busy(box.lease)
     c = box.compile("C", hold=False)
     assert box.finish(c)[0] == 0
-    status = subprocess.run(
-        [box.shim_dir / "box-lease", "status"],
-        env=box.env,
-        capture_output=True,
-        text=True,
-    )
+    status = box.status()
     assert "lease: free" in status.stdout, status.stdout
     box.open("L")
 
@@ -418,7 +452,7 @@ def test_the_gate_step_still_runs_with_a_lease_pending(make_box):
 
 
 def test_a_gate_step_clock_does_not_burn_during_a_lease(make_box):
-    """The 1 s step timeout starts only after the lease freed the cargo lock."""
+    """The 3 s step timeout starts only after the lease freed the cargo lock."""
     out, events = gate_step_during_an_active_lease(make_box())
     assert "-- probe: PASS --" in out, out
     assert events.index("end L") < events.index("start G build"), events
@@ -499,12 +533,7 @@ def test_max_hold_warns_and_never_kills(make_box):
     box.wait_for("start L")
     time.sleep(1.5)
     assert job.poll() is None, "max-hold killed the job"
-    status = subprocess.run(
-        [box.shim_dir / "box-lease", "status"],
-        env=box.env,
-        capture_output=True,
-        text=True,
-    )
+    status = box.status()
     assert "HELD by L" in status.stdout and "max-hold" in status.stdout, status.stdout
     box.open("L")
     rc, out = box.finish(job)
@@ -516,22 +545,17 @@ def test_status_names_the_holder_and_the_locks(make_box):
     box = make_box()
 
     def status():
-        return subprocess.run(
-            [box.shim_dir / "box-lease", "status"],
-            env=box.env,
-            capture_output=True,
-            text=True,
-        ).stdout
+        return box.status().stdout
 
-    assert status().count(": free") == 4
+    assert status().count(": free") == 5
     job = box.lease_job("L")
     box.wait_for("start L")
     out = status()
     assert "lease: HELD by L (pid " in out and "active since" in out, out
-    assert out.count(": held") == 3, out
+    assert out.count(": held") == 4, out
     box.open("L")
     box.finish(job)
-    assert status().count(": free") == 4
+    assert status().count(": free") == 5
     assert not box.info.exists()
 
 
@@ -618,42 +642,82 @@ def test_the_installer_replaces_by_rename_and_keeps_the_previous(tmp_path):
     assert (dest / "cargo").stat().st_ino != old_inode
     assert (dest / "cargo.prev").read_text() == "old\n"
     assert os.access(dest / "box-lease", os.X_OK)
-    assert sorted(p.name for p in dest.iterdir()) == [
-        "box-lease",
-        "cargo",
-        "cargo.prev",
-    ]
+    assert (dest / "under-lease" / "flock").exists()
+    # Same content again must not overwrite the rollback with itself.
+    subprocess.run([SCRIPTS / "install-cargo-shim.sh"], env=env, check=True)
+    assert (dest / "cargo.prev").read_text() == "old\n"
+    leftovers = [p.name for p in dest.rglob("*.new.*")]
+    assert not leftovers, leftovers
 
 
 # ---- mutants: each scenario must SEE the defect it exists for ---------------
 
+ALL_LOCKS = "if flock -n 201 && flock -n 202 && flock -n 203 && flock -n 204; then"
 NO_WAIT = (
-    "if lease_busy && ! ancestor_holds_heavy_lock; then",
+    'if lease_busy && ! ancestor_holds "$CARGO_LOCK" "$DIRECT"; then',
     "if false; then",
 )
 NO_ANCESTOR_CHECK = (
-    "if lease_busy && ! ancestor_holds_heavy_lock; then",
+    'if lease_busy && ! ancestor_holds "$CARGO_LOCK" "$DIRECT"; then',
     "if lease_busy; then",
 )
-NO_DRAIN = ('    take 202 "compile slot 0"\n    take 203 "compile slot 1"\n', "")
-ONE_SLOT = ('    take 203 "compile slot 1"\n', "")
-NO_CARGO_LOCK = ('    take 201 "the gate\'s cargo lock"\n', "")
-# The order is what prevents the gate deadlock: slots first, then the cargo lock.
-SLOTS_BEFORE_CARGO_LOCK = (
-    '    take 201 "the gate\'s cargo lock"\n'
-    '    take 202 "compile slot 0"\n'
-    '    take 203 "compile slot 1"\n',
-    '    take 202 "compile slot 0"\n'
-    '    take 203 "compile slot 1"\n'
-    '    take 201 "the gate\'s cargo lock"\n',
-)
+NO_DRAIN = (ALL_LOCKS, "if flock -n 201 && flock -n 204; then")
+ONE_SLOT = (ALL_LOCKS, "if flock -n 201 && flock -n 202 && flock -n 204; then")
+NO_CARGO_LOCK = (ALL_LOCKS, "if flock -n 202 && flock -n 203 && flock -n 204; then")
+NO_EXEC_LOCK = (ALL_LOCKS, "if flock -n 201 && flock -n 202 && flock -n 203; then")
+# Keep what it got while waiting for the rest: the lock cycles come back.
+HOLD_AND_WAIT = ("        flock -u 201; flock -u 202; flock -u 203; flock -u 204\n", "")
 # Nothing marks the lease as pending, so it cannot hold compiles back.
-LEASE_NOT_HELD = (
-    '    take 200 "the box lease, held by $(holder_text)"\n',
+LEASE_NOT_HELD = ("    take_lease\n", "")
+NO_REENTRY = (
+    "export FERRIC_BOX_LEASE_PID=$$ FERRIC_HEAVY_LOCK_HELD=$$ PATH=$UNDER_LEASE:$PATH",
+    "export PATH=$UNDER_LEASE:$PATH",
+)
+NO_FLOCK_WRAPPER = (
+    "export FERRIC_BOX_LEASE_PID=$$ FERRIC_HEAVY_LOCK_HELD=$$ PATH=$UNDER_LEASE:$PATH",
+    "export FERRIC_BOX_LEASE_PID=$$ FERRIC_HEAVY_LOCK_HELD=$$",
+)
+LEAKS_FDS = (
+    '"$@" <&0 200>&- 201>&- 202>&- 203>&- 204>&- &',
+    '"$@" <&0 &',
+)
+OLD_SIGNAL = (
+    """trap 'kill -TERM -- "-$child" 2>/dev/null || kill -TERM "$child" 2>/dev/null' INT""",
+    """trap 'kill -TERM "$child" 2>/dev/null' INT""",
+)
+NO_GROUP_WAIT = (
+    'while kill -0 "$child" 2>/dev/null || kill -0 -- "-$child" 2>/dev/null; do',
+    'while kill -0 "$child" 2>/dev/null; do',
+)
+KEEPS_IGNORED_SIGNALS = ("env --default-signal=INT,QUIT setsid", "setsid")
+NO_STALE_CLEAR = (
+    'ferric_clear_stale_sccache_lock "$f" >&2',
+    ":",
+)
+NO_NOTICE = ("box-lease: NOT drained or held out", "box-lease: note")
+OLD_SUBCOMMAND_PARSE = (
+    """    --manifest-path|--config|--color|--target-dir|--lockfile-path|--explain|-C|-Z) skip=1;;
+""",
     "",
 )
-NO_REENTRY = ("export FERRIC_BOX_LEASE_PID=$$ FERRIC_HEAVY_LOCK_HELD=1", "true")
-LEAKS_FDS = ('"$@" <&0 200>&- 201>&- 202>&- 203>&- &', '"$@" <&0 &')
+HELD_ALWAYS = (
+    """case "${FERRIC_HEAVY_LOCK_HELD:-}" in ""|*[!0-9]*|1) return 1;; esac
+  [ -d "/proc/$FERRIC_HEAVY_LOCK_HELD" ]""",
+    """[ -n "${FERRIC_HEAVY_LOCK_HELD:-}" ]""",
+)
+NO_ANCESTOR_SLOT_CHECK = (
+    'elif ancestor_holds "$SLOT0" "$SLOT1"; then',
+    "elif false; then",
+)
+CMDLINE_TEXT_CHECK = (
+    'elif ancestor_holds "$SLOT0" "$SLOT1"; then',
+    "elif tr '\\0' ' ' < \"/proc/$PPID/cmdline\" | grep -q ferric-compile; then",
+)
+READS_75_AS_BUSY = (
+    'if [ $rc -ne 75 ] || [ -e "$ran" ]; then',
+    "if [ $rc -ne 75 ]; then",
+)
+SHIM_FINDS_ITSELF = ('  [ "$d" -ef "$SELF_DIR" ] && continue\n', "")
 
 
 def test_mutant_no_lease_wait_does_not_say_why_it_waits(make_box):
@@ -700,7 +764,8 @@ def test_mutant_without_the_drain_runs_over_compiles(make_box, edit, expected):
 
 
 def test_mutant_no_reentry_deadlocks_under_its_own_lease(make_box):
-    box = make_box(lease_edit=NO_REENTRY)
+    # Two routes pass cargo under a lease: the env and the ancestor check.
+    box = make_box(lease_edit=NO_REENTRY, shim_edit=NO_ANCESTOR_SLOT_CHECK)
     job = box.lease_job("L", body="cargo build")
     time.sleep(HOLD_OFF)
     assert box.happened("start L") and not box.happened("start cargo")
@@ -709,12 +774,6 @@ def test_mutant_no_reentry_deadlocks_under_its_own_lease(make_box):
 
 def test_mutant_no_ancestor_check_deadlocks_the_gate(make_box):
     box = make_box(shim_edit=NO_ANCESTOR_CHECK)
-    out, _ = gate_step_calls_cargo_with_a_lease_pending(box)
-    assert "-- probe: TIMEOUT" in out, out
-
-
-def test_mutant_slots_before_cargo_lock_deadlocks_the_gate(make_box):
-    box = make_box(lease_edit=SLOTS_BEFORE_CARGO_LOCK)
     out, _ = gate_step_calls_cargo_with_a_lease_pending(box)
     assert "-- probe: TIMEOUT" in out, out
 
@@ -736,3 +795,468 @@ def test_mutant_leaked_fds_let_a_daemon_squat(make_box):
         assert box.busy(box.lease), "the daemon should have kept the lease"
     finally:
         os.kill(daemon, signal.SIGKILL)
+
+
+# ---- review of 98acff2d9: each scenario returns True when the behaviour holds,
+# and is run against the real scripts and against the mutant that removes it. --
+
+
+def flock_on_a_slot_under_a_lease(box):
+    """Item 1: the standing wrapper must run, not wait on its own lease."""
+    marker = box.tmp / "ran"
+    wrapper = ["flock", "-o", box.slot0, "touch", marker]
+    return box.done(box.popen_lease("L", wrapper), 5) == 0 and marker.exists()
+
+
+def flock_c_on_the_cargo_lock_under_a_lease(box):
+    marker = box.tmp / "ran"
+    wrapper = ["flock", "-o", "-w", "1", box.cargo_lock, "-c", f"touch {marker}"]
+    return box.done(box.popen_lease("L", wrapper), 5) == 0 and marker.exists()
+
+
+def the_gate_under_a_lease(box):
+    """Item 1: `box-lease run -- git push`: fd-form flock on its own lease's lock."""
+    gate_script(box, "cargo build", timeout_secs=5, lock_wait_secs=1)
+    p = box.popen_lease("L", ["bash", box.tmp / "gate.sh", "cargo build"])
+    rc, out = box.finish(p, LIMIT)
+    return rc == 0 and "-- probe: PASS --" in out
+
+
+def term_with_a_grandchild(box):
+    """Item 4: wrapper TERMed while CMD (a script) runs a slow-dying process.
+    Fail if that process is ever alive with the lease free."""
+    pidfile = box.tmp / "worker.pid"
+    worker = box.tmp / "worker.sh"
+    worker.write_text(
+        f"#!/bin/bash\ntrap 'sleep 1; exit' TERM; echo $$ > {pidfile}; sleep 30 & wait\n"
+    )
+    worker.chmod(0o755)
+    script = box.tmp / "script.sh"
+    script.write_text(f"#!/bin/bash\n{worker}\n")
+    script.chmod(0o755)
+    job = box.popen_lease("L", [script])
+    box.wait_until(lambda: pidfile.exists() and pidfile.read_text(), "worker up")
+    worker_pid = int(pidfile.read_text())
+    os.kill(job.pid, signal.SIGTERM)
+    # It must be STOPPED (the worker takes 1 s, it would otherwise live 30), and
+    # never run on with the lease free.
+    deadline = time.monotonic() + 20
+    while _alive(worker_pid):
+        assert box.busy(box.lease), "worker alive with the lease free"
+        assert time.monotonic() < deadline, "worker survived the signal"
+        time.sleep(0.02)
+    assert box.done(job, 20) is not None, "wrapper did not exit"
+    assert not box.busy(box.lease), "lease still held after the wrapper exited"
+    return True
+
+
+def straggler_holds_the_lease(box):
+    """Item 4: CMD exits leaving a background process in its group."""
+    go = box.tmp / "go"
+    body = f"until [ -e {go} ]; do sleep 0.02; done"
+    cmd = f"""bash -c '{body}' & echo "start L" >> "$EVENTS"; exit 0"""
+    job = box.popen_lease("L", ["bash", "-c", cmd])
+    box.wait_for("start L")
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline:
+        if job.poll() is not None or not box.busy(box.lease):
+            go.touch()
+            return False
+        time.sleep(0.02)
+    go.touch()
+    return box.done(job, 10) == 0
+
+
+def wrapper_slot_then_cargo_lock(box):
+    """Item 5: slot 0 then the cargo lock, the opposite of the gate's order."""
+    go, step = box.tmp / "go", box.tmp / "step"
+    inner = (
+        f"until [ -e {go} ]; do sleep 0.02; done; "
+        f"flock -o -w 3 {box.cargo_lock} touch {step}"
+    )
+    w = box.popen(["flock", "-o", box.slot0, "bash", "-c", inner])
+    box.wait_until(lambda: box.busy(box.slot0), "wrapper holds slot 0")
+    job = box.popen_lease("L", ["true"])
+    box.wait_lease_requested()
+    box.settle_on(box.cargo_lock)
+    go.touch()
+    box.done(w, 10)
+    return step.exists() and box.done(job, 10) == 0
+
+
+def cargo_in_slot1_whose_child_takes_slot0(box):
+    """Item 5: slot 1 then slot 0, the opposite of the lease's order."""
+    go, step = box.tmp / "go", box.tmp / "step"
+    a = box.compile("A")
+    box.wait_for("start A")
+    body = (
+        f"until [ -e {go} ]; do sleep 0.02; done; flock -w 3 {box.slot0} touch {step}"
+    )
+    b = box.popen(["cargo", "build"], STUB_NAME="B", STUB_BODY=body)
+    box.wait_for("start B")
+    job = box.popen_lease("L", ["true"])
+    box.wait_lease_requested()
+    box.open("A")
+    box.done(a, 10)
+    box.settle_on(box.slot0)
+    go.touch()
+    box.done(b, 10)
+    return step.exists() and box.done(job, 10) == 0
+
+
+def a_squatter_is_cleared(box):
+    """Item 6: an sccache alone on a slot must not stall the lease."""
+    squatter = box.tmp / "sccache"
+    shutil.copy(shutil.which("sleep"), squatter)
+    d = box.popen(
+        ["bash", "-c", f'exec 9>>"{box.slot0}"; flock 9; exec {squatter} 60'],
+    )
+    box.wait_until(lambda: box.busy(box.slot0), "squatter up")
+    time.sleep(0.2)
+    job = box.popen(
+        [box.shim_dir / "box-lease", "run", "--label", "L", "--wait-secs", "10"]
+        + ["--", "true"]
+    )
+    ok = box.done(job, 30) == 0
+    if d.poll() is None:
+        d.kill()
+    return ok
+
+
+def the_notice_lists_what_is_not_drained(box):
+    """Item 3."""
+    _, out = box.finish(box.popen_lease("L", ["true"]))
+    return "NOT drained or held out: direct binaries" in out
+
+
+def a_lease_waits_for_exec(box):
+    """Item 3: a direct binary under `box-lease exec` is drained."""
+    d = box.popen([box.shim_dir / "box-lease", "exec", "--", *box.job_argv("D")])
+    box.wait_for("start D")
+    job = box.lease_job("L")
+    time.sleep(HOLD_OFF)
+    early = box.happened("start L")
+    box.open("D")
+    box.wait_for("start L")
+    box.open("L")
+    box.finish(d)
+    box.finish(job)
+    return not early
+
+
+CHECKS = {
+    "flock_slot": (flock_on_a_slot_under_a_lease, {"lease_edit": NO_FLOCK_WRAPPER}),
+    "flock_c": (
+        flock_c_on_the_cargo_lock_under_a_lease,
+        {"lease_edit": NO_FLOCK_WRAPPER},
+    ),
+    "gate_under": (the_gate_under_a_lease, {"lease_edit": NO_FLOCK_WRAPPER}),
+    "term": (term_with_a_grandchild, {"lease_edit": OLD_SIGNAL}),
+    "term_hold": (term_with_a_grandchild, {"lease_edit": NO_GROUP_WAIT}),
+    "straggler": (straggler_holds_the_lease, {"lease_edit": NO_GROUP_WAIT}),
+    "inv_cargo": (wrapper_slot_then_cargo_lock, {"lease_edit": HOLD_AND_WAIT}),
+    "inv_slot": (cargo_in_slot1_whose_child_takes_slot0, {"lease_edit": HOLD_AND_WAIT}),
+    "squatter": (a_squatter_is_cleared, {"lease_edit": NO_STALE_CLEAR}),
+    "notice": (the_notice_lists_what_is_not_drained, {"lease_edit": NO_NOTICE}),
+    "exec": (a_lease_waits_for_exec, {"lease_edit": NO_EXEC_LOCK}),
+}
+
+
+@pytest.mark.parametrize("name", CHECKS)
+def test_holds(make_box, name):
+    assert CHECKS[name][0](make_box())
+
+
+@pytest.mark.parametrize("name", CHECKS)
+def test_mutant_is_seen(make_box, name):
+    check, edit = CHECKS[name]
+    try:
+        assert not check(make_box(**edit))
+    except (subprocess.TimeoutExpired, AssertionError) as e:
+        # A mutant that wedges or misses a step has been seen too, but not an
+        # assertion from the line above.
+        if "assert not" in str(e):
+            raise
+
+
+def test_job_gets_int_and_quit_back(make_box):
+    """Item 13: `&` makes a job ignore them; it must die on ^C like any other."""
+
+    def ignored(box):
+        # grep itself: a bash here would report the QUIT it ignores on its own.
+        rc, out = box.finish(
+            box.popen_lease("L", ["grep", "SigIgn", "/proc/self/status"])
+        )
+        assert rc == 0, out
+        line = next(ln for ln in out.splitlines() if ln.startswith("SigIgn"))
+        return int(line.split()[1], 16) & 0b110
+
+    assert ignored(make_box()) == 0
+    assert ignored(make_box(lease_edit=KEEPS_IGNORED_SIGNALS)) == 0b110
+
+
+HEAVY_FORMS = [
+    ["b"],
+    ["t"],
+    ["--manifest-path", "x", "build"],
+    ["--manifest-path", "metadata", "build"],
+    ["-C", "d", "test"],
+    ["--config", "a=b", "build"],
+    ["llvm-cov"],
+    ["install", "x"],
+]
+
+
+@pytest.mark.parametrize("args", HEAVY_FORMS)
+def test_every_spelling_of_a_heavy_command_waits(make_box, args):
+    box = make_box()
+    job = box.lease_job("L")
+    box.wait_for("start L")
+    c = box.popen(["cargo", *args], STUB_NAME="C")
+    time.sleep(0.3)
+    early = box.happened("start C")
+    box.open("L")
+    box.finish(job)
+    box.finish(c)
+    assert not early, args
+
+
+def test_mutant_the_old_parse_lets_a_value_spell_a_trivial_command(make_box):
+    box = make_box(shim_edit=OLD_SUBCOMMAND_PARSE)
+    job = box.lease_job("L")
+    box.wait_for("start L")
+    c = box.popen(["cargo", "--manifest-path", "metadata", "build"], STUB_NAME="C")
+    box.wait_for("start C")
+    box.open("L")
+    box.finish(job)
+    box.finish(c)
+
+
+@pytest.mark.parametrize("args", [["--version"], ["-V"], ["--help"], ["metadata"]])
+def test_trivial_commands_pass_a_held_lease(make_box, args):
+    box = make_box()
+    job = box.lease_job("L")
+    box.wait_for("start L")
+    assert box.done(box.popen(["cargo", *args]), 5) == 0
+    box.open("L")
+    box.finish(job)
+
+
+def _dead_pid():
+    p = subprocess.Popen(["true"])
+    p.wait()
+    return str(p.pid)
+
+
+def _held_env_is_held_out(box, value):
+    job = box.lease_job("L")
+    box.wait_for("start L")
+    c = box.popen(["cargo", "build"], STUB_NAME="C", FERRIC_HEAVY_LOCK_HELD=value)
+    time.sleep(HOLD_OFF)
+    early = box.happened("start C")
+    box.open("L")
+    box.finish(job)
+    box.finish(c)
+    return not early
+
+
+@pytest.mark.parametrize("value", ["dead", "1", "yes"])
+def test_a_held_env_outliving_its_holder_does_not_pass(make_box, value):
+    """Item 8."""
+    assert _held_env_is_held_out(make_box(), _dead_pid() if value == "dead" else value)
+
+
+def test_mutant_an_unconditional_held_env_passes(make_box):
+    assert not _held_env_is_held_out(make_box(shim_edit=HELD_ALWAYS), _dead_pid())
+
+
+def _env_i_cargo_under_lease(box):
+    """Item 9: FERRIC_LOCK_DIR and PATH stay only because the test needs them."""
+    env_i = (
+        f"env -i PATH={box.env['PATH']} FERRIC_LOCK_DIR={box.locks} "
+        f"EVENTS={box.events} FERRIC_SCCACHE_BASEDIRS_SET=1 cargo build"
+    )
+    return box.done(box.popen_lease("L", ["bash", "-c", env_i]), 3)
+
+
+def test_env_i_cargo_under_its_own_lease_runs(make_box):
+    assert _env_i_cargo_under_lease(make_box()) == 0
+
+
+def test_mutant_env_i_cargo_waits_on_itself(make_box):
+    assert _env_i_cargo_under_lease(make_box(shim_edit=NO_ANCESTOR_SLOT_CHECK)) is None
+
+
+def _flock_mentioning_the_name(box):
+    """Item 10: a flock on some other file whose command mentions ferric-compile."""
+    a, b = box.compile("A"), None
+    box.wait_for("start A")
+    b = box.compile("B")
+    box.wait_for("start B")
+    other = box.tmp / "other.lock"
+    p = box.popen(["flock", other, "cargo", "build", "ferric-compile"], STUB_NAME="C")
+    time.sleep(HOLD_OFF)
+    early = box.happened("start C")
+    box.open("A")
+    box.open("B")
+    for x in (a, b, p):
+        box.finish(x)
+    return not early
+
+
+def test_only_the_lock_itself_counts_not_text_in_a_command_line(make_box):
+    assert _flock_mentioning_the_name(make_box())
+
+
+def test_mutant_matching_the_command_line_skips_the_slot(make_box):
+    assert not _flock_mentioning_the_name(make_box(shim_edit=CMDLINE_TEXT_CHECK))
+
+
+def test_a_flock_wrapper_found_through_fdinfo_is_not_queued(make_box):
+    """Item 10's other half: fd-held, no flock in the chain's text at all."""
+    box = make_box()
+    a = box.compile("A")
+    box.wait_for("start A")
+    box.open("A")
+    box.finish(a)
+    script = f'exec 9>>"{box.slot0}"; flock 9; cargo build'
+    p = box.popen(["bash", "-c", script], STUB_NAME="F")
+    assert box.done(p, 5) == 0
+
+
+def _runs_of_a_cargo_exiting_75(box):
+    box.done(box.popen(["cargo", "build"], STUB_RC="75", STUB_NAME="R"), 1)
+    return sum(ln.startswith("start R") for ln in box.lines())
+
+
+def test_a_real_cargo_exit_75_is_final(make_box):
+    """Item 11."""
+    box = make_box()
+    p = box.popen(["cargo", "build"], STUB_RC="75", STUB_NAME="R")
+    assert box.done(p, 5) == 75
+    assert sum(ln.startswith("start R") for ln in box.lines()) == 1
+
+
+def test_mutant_reading_75_as_busy_reruns_it(make_box):
+    assert _runs_of_a_cargo_exiting_75(make_box(shim_edit=READS_75_AS_BUSY)) > 1
+
+
+def test_a_pending_lease_gives_up_naming_the_holder(make_box):
+    """Item 6: the exit is 75, nothing ran, and it says who it waited for."""
+    box = make_box()
+    a = box.compile("A")
+    box.wait_for("start A")
+    marker = box.tmp / "ran"
+    p = box.popen(
+        [box.shim_dir / "box-lease", "run", "--label", "L", "--wait-secs", "1"]
+        + ["--", "touch", marker]
+    )
+    box.wait_until(lambda: box.info.exists(), "pending")
+    out = box.status().stdout
+    assert "draining since" in out and "waiting on whatever" in out, out
+    assert f"{box.slot0}: held\n  pid " in out, out
+    rc, out = box.finish(p)
+    assert rc == 75 and "NOT run" in out and f"{box.slot0}\n  pid " in out, out
+    assert not marker.exists()
+    box.open("A")
+    box.finish(a)
+
+
+def test_the_default_wait_is_bounded(make_box):
+    assert "DEFAULT_RUN_WAIT=3600\n" in (SCRIPTS / "box-lease").read_text()
+    box = make_box(lease_edit=("DEFAULT_RUN_WAIT=3600", "DEFAULT_RUN_WAIT=1"))
+    a = box.compile("A")
+    box.wait_for("start A")
+    rc, _ = box.finish(box.popen_lease("L", ["true"]))
+    assert rc == 75
+    box.open("A")
+    box.finish(a)
+
+
+def test_status_says_unknown_when_a_lock_cannot_open(tmp_path, make_box):
+    """Item 15: never "free" when it could not tell."""
+    box = make_box()
+    box.env["FERRIC_LOCK_DIR"] = str(tmp_path / "no" / "such")
+    s = box.status()
+    assert s.returncode == 1 and "UNKNOWN" in s.stdout, s.stdout
+    assert "free" not in s.stdout, s.stdout
+
+
+def test_an_uncontended_lease_prints_no_error(make_box):
+    """Item 15: the false "No such file" from reading an info file not yet there."""
+    box = make_box()
+    p = box.popen([box.shim_dir / "box-lease", "run", "--label", "L", "--", "true"])
+    rc, out = box.finish(p)
+    assert rc == 0 and "No such file" not in out, out
+
+
+def _shim_under_another_name(box):
+    other = box.tmp / "elsewhere"
+    other.mkdir()
+    shutil.copy(box.shim_dir / "cargo", other / "cargo")
+    env = {"PATH": f"{other}:{box.real}:{os.environ['PATH']}"}
+    # Under `timeout`: the mutant exec-loops forever, and must not outlive a killed run.
+    return box.done(box.popen(["timeout", "3", "cargo", "--version"], **env), 10)
+
+
+def test_a_misnamed_shim_dir_finds_the_real_cargo(make_box):
+    """Item 15."""
+    box = make_box()
+    assert _shim_under_another_name(box) == 0
+    assert box.happened("start cargo")
+
+
+def test_mutant_a_misnamed_shim_dir_execs_itself(make_box):
+    assert _shim_under_another_name(make_box(shim_edit=SHIM_FINDS_ITSELF)) == 124
+
+
+def _ensure(tmp_path, repo_scripts_ok=True, on_path=True, mutate=False):
+    """Item 2: run the REAL lib's check with a private shim directory."""
+    dest = tmp_path / "shim-dir"
+    lib = LIB.read_text()
+    if mutate:
+        old = 'if [[ ! -x "$dir/cargo" ]]; then'
+        assert old in lib
+        lib = lib.replace(old, "if false; then")
+    copy = tmp_path / "lib.sh"
+    copy.write_text(lib)
+    repo = REPO if repo_scripts_ok else tmp_path / "no-repo"
+    path = f"{dest}:{os.environ['PATH']}" if on_path else os.environ["PATH"]
+    p = subprocess.run(
+        ["bash", "-c", f'source {copy}; ferric_ensure_cargo_shim "{repo}"; echo rc=$?'],
+        env={**os.environ, "FERRIC_SHIM_DIR": str(dest), "PATH": path},
+        capture_output=True,
+        text=True,
+    )
+    assert "rc=0" in p.stdout, p.stdout + p.stderr  # never fails the gate
+    return dest, p.stderr
+
+
+def test_a_missing_shim_is_reinstalled_and_said(tmp_path):
+    dest, err = _ensure(tmp_path)
+    assert (dest / "cargo").exists() and "missing" in err, err
+
+
+def test_mutant_a_missing_shim_stays_missing(tmp_path):
+    dest, _ = _ensure(tmp_path, mutate=True)
+    assert not (dest / "cargo").exists()
+
+
+def test_a_failed_reinstall_warns_and_does_not_fail_the_gate(tmp_path):
+    _, err = _ensure(tmp_path, repo_scripts_ok=False)
+    assert "could not reinstall" in err, err
+
+
+def test_a_shim_not_on_path_warns(tmp_path):
+    _, err = _ensure(tmp_path, on_path=False)
+    assert "not on PATH" in err, err
+
+
+def test_the_gate_and_the_hook_both_check_for_the_shim():
+    assert (
+        'ferric_ensure_cargo_shim "$REPO_ROOT"' in (SCRIPTS / "ci-gate.sh").read_text()
+    )
+    assert (
+        'ferric_ensure_cargo_shim "$TOPLEVEL"'
+        in (SCRIPTS / "install-hooks.sh").read_text()
+    )
