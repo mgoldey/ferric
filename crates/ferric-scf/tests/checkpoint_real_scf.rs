@@ -9,7 +9,7 @@ use ferric_core::basis::bundled;
 use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
 use ferric_integrals::basis_bridge::PreparedBasis;
-use ferric_integrals::oneelectron::{hcore, overlap};
+use ferric_integrals::oneelectron::{hcore as hcore_matrix, overlap};
 use ferric_integrals::operator::Operator;
 use ferric_scf::checkpoint::{BuildStamp, Checkpoint, ReadMode, ScfIdentity};
 use ferric_scf::result::{ScfResult, Spin};
@@ -143,7 +143,7 @@ fn check_case(case: &Case, dir: &std::path::Path) {
     let result = solve(case, &mol, &prep);
     let op = Operator::coulomb();
     let identity = ScfIdentity::new(&mol, &basis, case.spin, &op, &case.config).unwrap();
-    let e1 = (&result.density_total * &hcore(&prep)).sum();
+    let e1 = (&result.density_total * &hcore_matrix(&prep)).sum();
     let vnn = mol.nuclear_repulsion();
     let ck = Checkpoint::from_result(&result, e1, vnn, identity.clone(), build()).unwrap();
     let path = dir.join("real.npz");
@@ -200,6 +200,55 @@ fn real_scf_results_round_trip_and_clear_the_provisional_orthonormality_gate() {
         check_case(&case, &dir);
     }
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Two starting points, two converged states, on the same molecule and settings.
+/// If the guess were path-only, skip could restore either for either, and every
+/// rerun would repeat the wrong number exactly. So the identity must see it.
+#[test]
+fn a_different_guess_can_converge_to_a_different_state_and_identity_sees_it() {
+    let n2_plus = "2\n\nN 0 0 0\nN 0 0 1.116\n";
+    let mol = Molecule::parse_xyz(n2_plus, 1, 2).unwrap();
+    let basis = bundled("6-31g").unwrap();
+    let prep = PreparedBasis::new(&mol, &basis).unwrap();
+    let case = |config: RhfConfig| Case {
+        name: "N2+",
+        xyz: n2_plus,
+        mult: 2,
+        basis: "6-31g",
+        spin: Spin::Unrestricted,
+        config,
+    };
+    let default = tight();
+    let hcore = RhfConfig {
+        use_sad_guess: false,
+        ..tight()
+    };
+    let (from_default, from_hcore) = (
+        solve(&case(default.clone()), &mol, &prep),
+        solve(&case(hcore.clone()), &mol, &prep),
+    );
+    println!(
+        "STATES N2+/6-31G: default {:.6} {:?}, hcore {:.6} {:?}",
+        from_default.energy, from_default.exit, from_hcore.energy, from_hcore.exit
+    );
+    assert!(from_default.converged && from_hcore.converged);
+    assert!((from_default.energy - from_hcore.energy).abs() > 1e-3);
+
+    let op = Operator::coulomb();
+    let spin = Spin::Unrestricted;
+    let file_identity = ScfIdentity::new(&mol, &basis, spin, &op, &default).unwrap();
+    let current = ScfIdentity::new(&mol, &basis, spin, &op, &hcore).unwrap();
+    let e1 = (&from_default.density_total * &hcore_matrix(&prep)).sum();
+    let vnn = mol.nuclear_repulsion();
+    let ck = Checkpoint::from_result(&from_default, e1, vnn, file_identity, build()).unwrap();
+    let skip = ReadMode::Skip {
+        allow_other_build: false,
+    };
+    let err = ck.check(&current, &build(), skip).unwrap_err();
+    assert!(err.to_string().contains("use_sad_guess"), "{err}");
+    let guess = ck.check(&current, &build(), ReadMode::Guess).unwrap();
+    assert_eq!(guess.warnings[0].name, "use_sad_guess");
 }
 
 #[test]

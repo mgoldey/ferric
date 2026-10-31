@@ -1,12 +1,14 @@
 //! What a checkpoint must match, and what happens when it does not.
 
 use super::{Checkpoint, CheckpointError, FORMAT_VERSION};
+use crate::basis2::GuessBasis;
 use crate::result::{ScfExit, Spin};
 use crate::rhf::RhfConfig;
 use ferric_core::basis::{BasisSet, Shell};
 use ferric_core::ecp::{EcpDef, EcpShell, EcpTerm};
 use ferric_core::mol::{Atom, Molecule};
 use ferric_integrals::operator::Operator;
+use ndarray::Array2;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
@@ -25,6 +27,12 @@ pub enum FieldClass {
     Method,
     /// How J, K and the integrals are built: same state, different numbers.
     Route,
+    /// Which converged state the iteration lands in. These look like solver
+    /// settings but are not path-only: all three of these runs report
+    /// `converged = true` for UHF N2+/6-31G (review of this module, 2026-10-31):
+    /// default -108.289540, hcore guess -107.937501, `trah_trigger = 0.1`
+    /// -108.318684. A field stays here until it is measured to be path-only.
+    StateSelecting,
 }
 
 /// One compared field. `value` is canonical text, compared exactly.
@@ -229,10 +237,35 @@ fn molecule_fields(mol: &Molecule, out: &mut Vec<IdentityField>) -> Vec<[f64; 3]
     coords
 }
 
+/// `guess_basis` holds a `BasisSet`, whose `{:?}` order changes per process, so
+/// it gets the same explicit text as the target basis, for all its elements.
+fn guess_basis_value(guess: &GuessBasis) -> String {
+    let GuessBasis { basis, projection } = guess;
+    let mut text = String::new();
+    for z in basis.elements() {
+        let _ = writeln!(text, "Z={z}");
+        text.push_str(&shells_text(basis.for_element(z).unwrap_or_default()));
+        if let Some(ecp) = basis.ecp_for_element(z) {
+            text.push_str(&ecp_text(ecp));
+        }
+    }
+    format!("{projection:?} fnv={:016x}", hash_text(&text))
+}
+
+/// By content in logical order, so memory layout does not count.
+fn density_value(density: &Array2<f64>) -> String {
+    let mut h = Fnv::new();
+    for v in density {
+        h.update(&v.to_le_bytes());
+    }
+    format!("shape={:?} fnv={:016x}", density.shape(), h.0)
+}
+
 /// Classify every `RhfConfig` field. No `..`: a new field does not compile until
-/// it appears here. Values use `{:?}`, which is deterministic for these types
-/// because none holds a map (the two-process test populates all of them), and
-/// prints an f64 so that it round-trips, sign of zero included.
+/// it appears here. Values use `{:?}`, which is deterministic for the types it is
+/// used on because none holds a map (`full_config` in the tests populates them
+/// across processes), and prints an f64 so that it round-trips, sign of zero
+/// included. `guess_basis` does hold maps, and has its own text.
 ///
 /// Returns `(energy_conv, density_conv)`, which are compared by inequality.
 fn config_fields(config: &RhfConfig, out: &mut Vec<IdentityField>) -> (f64, f64) {
@@ -267,18 +300,24 @@ fn config_fields(config: &RhfConfig, out: &mut Vec<IdentityField>) -> (f64, f64)
         df_k_aux,
         integral_thresh,
         screening,
-        // Unchecked. These steer the iteration or the resources, not what the SCF
-        // solves for, so a file from a different setting is still the same answer.
+        // Which converged state the iteration lands in: see `StateSelecting`. Only
+        // `use_sad_guess` and `trah_trigger` have a measured difference. The rest
+        // are here because nothing shows them to be path-only.
+        use_sad_guess,
+        init_guess_density,
+        guess_basis,
+        trah_trigger,
+        trah,
+        newton_trigger,
+        ah_trigger,
+        aurora,
+        diis_flavor,
+        diis_size,
+        diis_switch_thresh,
+        level_shift,
+        // Unchecked. Stop rules decide when an iteration ends, and the exit gate
+        // judges where it ended. The rest are resources.
         max_iter: _,
-        diis_size: _,
-        diis_flavor: _,
-        diis_switch_thresh: _,
-        level_shift: _,
-        newton_trigger: _,
-        aurora: _,
-        ah_trigger: _,
-        trah_trigger: _,
-        trah: _,
         stall_window: _,
         divergence_tol: _,
         cdft_max_outer: _,
@@ -287,10 +326,6 @@ fn config_fields(config: &RhfConfig, out: &mut Vec<IdentityField>) -> (f64, f64)
         // Asks for a post-SCF diagnostic, whose absence on a restored result reads
         // "not checked".
         check_stability: _,
-        // Starting points: a file replaces them.
-        init_guess_density: _,
-        guess_basis: _,
-        use_sad_guess: _,
     } = config;
     // An empty potential is the same physics as none: every consumer treats it as
     // a no-op, and QM/MM with no MM atoms produces either.
@@ -335,10 +370,31 @@ fn config_fields(config: &RhfConfig, out: &mut Vec<IdentityField>) -> (f64, f64)
         ("integral_thresh", format!("{integral_thresh:?}")),
         ("screening", format!("{screening:?}")),
     ];
+    let state_selecting = [
+        ("use_sad_guess", format!("{use_sad_guess:?}")),
+        (
+            "init_guess_density",
+            format!("{:?}", init_guess_density.as_ref().map(density_value)),
+        ),
+        (
+            "guess_basis",
+            format!("{:?}", guess_basis.as_ref().map(guess_basis_value)),
+        ),
+        ("trah_trigger", format!("{trah_trigger:?}")),
+        ("trah", format!("{trah:?}")),
+        ("newton_trigger", format!("{newton_trigger:?}")),
+        ("ah_trigger", format!("{ah_trigger:?}")),
+        ("aurora", format!("{aurora:?}")),
+        ("diis_flavor", format!("{diis_flavor:?}")),
+        ("diis_size", format!("{diis_size:?}")),
+        ("diis_switch_thresh", format!("{diis_switch_thresh:?}")),
+        ("level_shift", format!("{level_shift:?}")),
+    ];
     for (class, group) in [
         (FieldClass::Environment, &environment[..]),
         (FieldClass::Method, &method[..]),
         (FieldClass::Route, &route[..]),
+        (FieldClass::StateSelecting, &state_selecting[..]),
     ] {
         for (name, value) in group {
             field(out, name, class, value.clone());
@@ -347,10 +403,109 @@ fn config_fields(config: &RhfConfig, out: &mut Vec<IdentityField>) -> (f64, f64)
     (*energy_conv, *density_conv)
 }
 
+/// Environment switches an SCF reads directly, with raw values compared. None has
+/// a measured effect on the answer here, so they are in on suspicion: a false
+/// refusal costs a rerun, and a false accept costs a wrong number. `1` and `on`
+/// count as different.
+///
+/// Left out on purpose: thread counts and memory budgets (unchecked by design),
+/// trace toggles, MPI band sizes, and `FERRIC_TEST_*`.
+const ENV_SWITCHES: [(&str, FieldClass); 8] = [
+    ("FERRIC_SCF_INCREMENTAL", FieldClass::Route),
+    ("FERRIC_SCF_UHF_INCREMENTAL", FieldClass::Route),
+    ("FERRIC_SCF_COMBINED_JK", FieldClass::Route),
+    ("FERRIC_SHELLPAIR_CACHE", FieldClass::Route),
+    ("FERRIC_DFK_FORCE_DENSITY", FieldClass::Route),
+    ("FERRIC_JK_STORAGE", FieldClass::Route),
+    ("FERRIC_TERF_TABLE_DIR", FieldClass::Route),
+    ("FERRIC_DF_GUESS_TIGHT", FieldClass::StateSelecting),
+];
+
+/// Process-wide state that changes an SCF's numbers and is not in `RhfConfig`. An
+/// exact commit match does not cover it: these are runtime settings, the libint
+/// version comes from the machine, and features come from the build command.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct ProcessSettings {
+    /// Water/cc-pVDZ moved 1.48e-5 Ha (review, 2026-10-31).
+    pub(super) eri_precision: f64,
+    /// HI/def2-SVP moved 2.3e-8 Ha (review, 2026-10-31).
+    pub(super) ecp_backend: String,
+    /// Changes the variational space, so it is `Method`, not `Route`. Water/
+    /// aug-cc-pVDZ at 3e-3 moved 5.0e-4 Ha but did not converge (review,
+    /// 2026-10-31): an effect, not a converged-to-converged shift.
+    pub(super) lindep_thresh: f64,
+    pub(super) precision: String,
+    /// Unmeasured: no device on the box this was written on.
+    pub(super) gpu_mode: String,
+    pub(super) libint_version: String,
+    pub(super) cargo_features: String,
+    /// Parallel to [`ENV_SWITCHES`]: `None` when unset.
+    pub(super) env: Vec<Option<String>>,
+}
+
+impl ProcessSettings {
+    fn current() -> Result<Self, CheckpointError> {
+        // No `..`: a new GPU setting must be classified here to compile.
+        let ferric_core::gpu::GpuSettings {
+            mode,
+            precision,
+            mixed_kernels,
+            // Which device and when to use it: the kernels chosen are in `mode`
+            // and `precision`.
+            device: _,
+            memory_gb: _,
+            min_flops: _,
+        } = *ferric_core::gpu::settings();
+        let ecp_backend = ferric_integrals::ecp::ecp_backend()
+            .map_err(|e| CheckpointError::Format(e.to_string()))?;
+        Ok(Self {
+            eri_precision: ferric_integrals::engine_pool::eri_precision(),
+            ecp_backend: ecp_backend.to_string(),
+            lindep_thresh: crate::rhf::lindep_thresh(),
+            precision: format!("{precision:?} {mixed_kernels:?}"),
+            gpu_mode: format!("{mode:?}"),
+            libint_version: ferric_integrals::libint_version().to_string(),
+            cargo_features: format!(
+                "mpi={} gpu={} cfmm-incomplete={}",
+                cfg!(feature = "mpi"),
+                cfg!(feature = "gpu"),
+                cfg!(feature = "cfmm-incomplete"),
+            ),
+            env: ENV_SWITCHES
+                .iter()
+                .map(|(name, _)| std::env::var(name).ok())
+                .collect(),
+        })
+    }
+
+    fn fields(&self, out: &mut Vec<IdentityField>) {
+        let Self {
+            eri_precision,
+            ecp_backend,
+            lindep_thresh,
+            precision,
+            gpu_mode,
+            libint_version,
+            cargo_features,
+            env,
+        } = self;
+        use FieldClass::{Method, Route};
+        field(out, "eri_precision", Route, format!("{eri_precision:?}"));
+        field(out, "ecp_backend", Route, ecp_backend.clone());
+        field(out, "lindep_thresh", Method, format!("{lindep_thresh:?}"));
+        field(out, "precision", Route, precision.clone());
+        field(out, "gpu_mode", Route, gpu_mode.clone());
+        field(out, "libint_version", Route, libint_version.clone());
+        field(out, "cargo_features", Route, cargo_features.clone());
+        for ((name, class), value) in ENV_SWITCHES.iter().zip(env) {
+            field(out, name, *class, format!("{value:?}"));
+        }
+    }
+}
+
 impl ScfIdentity {
     /// Identity of an SCF on `mol`/`basis` with this spin treatment, two-electron
-    /// operator and configuration, under the process's installed precision
-    /// settings.
+    /// operator and configuration, under this process's global settings.
     pub fn new(
         mol: &Molecule,
         basis: &BasisSet,
@@ -358,18 +513,17 @@ impl ScfIdentity {
         op: &Operator,
         config: &RhfConfig,
     ) -> Result<Self, CheckpointError> {
-        let settings = ferric_core::gpu::settings();
-        let precision = format!("{:?} {:?}", settings.precision, settings.mixed_kernels);
-        Self::with_precision(mol, basis, spin, op, config, precision)
+        let process = ProcessSettings::current()?;
+        Self::with_process(mol, basis, spin, op, config, &process)
     }
 
-    pub(super) fn with_precision(
+    pub(super) fn with_process(
         mol: &Molecule,
         basis: &BasisSet,
         spin: Spin,
         op: &Operator,
         config: &RhfConfig,
-        precision: String,
+        process: &ProcessSettings,
     ) -> Result<Self, CheckpointError> {
         let mut fields = Vec::new();
         let coords_bohr = molecule_fields(mol, &mut fields);
@@ -387,7 +541,7 @@ impl ScfIdentity {
             FieldClass::Method,
             format!("{op:?}"),
         );
-        field(&mut fields, "precision", FieldClass::Route, precision);
+        process.fields(&mut fields);
         let (energy_conv, density_conv) = config_fields(config, &mut fields);
         Ok(Self {
             fields,
@@ -448,6 +602,9 @@ pub struct ReadVerdict {
     /// Largest per-axis coordinate difference in Bohr, when positions differ.
     pub max_coord_shift_bohr: Option<f64>,
     /// The file's exit state, to echo. `None` for a mid-run file.
+    // TODO(PR 3): a guess accepts any exit, including `NotCertified`. The caller
+    // must echo this, and a guess from a `NotCertified` file must not report
+    // `Converged` without a fresh witness pass.
     pub file_exit: Option<ScfExit>,
     /// The file's build, always.
     pub file_build: BuildStamp,
@@ -527,7 +684,10 @@ fn disposition(class: FieldClass, mode: ReadMode) -> Disposition {
         (ReadMode::Skip { .. }, _) | (ReadMode::Guess, FieldClass::Structure) => Disposition::Error,
         (
             ReadMode::Guess,
-            FieldClass::Coordinates | FieldClass::Environment | FieldClass::Method,
+            FieldClass::Coordinates
+            | FieldClass::Environment
+            | FieldClass::Method
+            | FieldClass::StateSelecting,
         ) => Disposition::Warn,
         (ReadMode::Guess, FieldClass::Route) => Disposition::Log,
     }
@@ -553,6 +713,11 @@ fn check_skip_gates(
     if !exit_replaces_scf(state.exit) {
         return Err(CheckpointError::ExitRefused {
             exit: format!("{:?}", state.exit),
+        });
+    }
+    if !state.converged {
+        return Err(CheckpointError::ExitRefused {
+            exit: format!("{:?} with converged = false", state.exit),
         });
     }
     let blocking: Vec<String> = state

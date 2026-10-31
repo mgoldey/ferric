@@ -3837,7 +3837,7 @@ pub(crate) fn scf_trace() -> bool {
 /// than a global bump because a blanket 1e-4 would also drop legitimate in-band
 /// modes on well-conditioned aromatics (C6H6/aug-cc-pVTZ has 19 modes in
 /// [1e-6,1e-4) that DIIS drains fine), perturbing their banked energies.
-fn lindep_thresh() -> f64 {
+pub(crate) fn lindep_thresh() -> f64 {
     static LINDEP: ferric_core::config::ConfigVar<f64> = ferric_core::config::ConfigVar {
         env_name: "FERRIC_LINDEP_THRESH",
         default: LINDEP_THRESH,

@@ -43,6 +43,10 @@
 //! [`Checkpoint::from_result`] does the same for `ScfResult`, so a new field on
 //! either does not compile until someone decides what it means here.
 //!
+//! Identity also covers process-wide state outside `RhfConfig`: the libint
+//! precision, ECP backend, linear-dependence threshold, GPU mode and precision,
+//! libint version, cargo features, and the environment switches the SCF reads.
+//!
 //! # What a mismatch does ([`Checkpoint::check`])
 //!
 //! | | guess | skip |
@@ -50,9 +54,10 @@
 //! | [`FieldClass::Structure`] | error | error |
 //! | [`FieldClass::Coordinates`] | warn, with the max shift | error, bitwise |
 //! | [`FieldClass::Environment`], [`FieldClass::Method`] | warn | error |
+//! | [`FieldClass::StateSelecting`] | warn | error |
 //! | [`FieldClass::Route`] | log | error |
 //! | `energy_conv`, `density_conv` | ignored | file at least as tight |
-//! | file exit state | any | `Converged` or `Plateau` (echoed) |
+//! | file exit state | any | `Converged` or `Plateau` (echoed), with `converged = true` |
 //! | build | log | error unless overridden, and the override is recorded |
 //!
 //! A read that fails is always `Err`: there is no return value that means "start
@@ -297,7 +302,10 @@ impl Checkpoint {
     /// Write atomically: same-directory temp file, `sync_all`, rename, fsync of
     /// the directory. At every instant `path` holds the old complete file or the
     /// new complete file. A kill can leave a `.<name>.tmp.<pid>.<seq>` sibling
-    /// behind; nothing reads those. Returns the checksum.
+    /// behind; nothing reads those, and the next write to `path` removes any no
+    /// live writer holds locked. A symlink at `path` is refused, because the
+    /// rename would replace the link and leave its target stale. Returns the
+    /// checksum.
     pub fn write(&self, path: &Path) -> Result<u64, CheckpointError> {
         format::write(self, path, &mut |_| {})
     }

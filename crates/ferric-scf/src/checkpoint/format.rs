@@ -548,11 +548,13 @@ impl Drop for TempGuard {
     }
 }
 
-static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
+pub(super) static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
-/// A sibling of `path`, unique per writer so two writers cannot share one, and
-/// never matching `path` itself.
-fn temp_path(path: &Path) -> Result<PathBuf, CheckpointError> {
+/// How many taken temp names a write steps past before giving up.
+const MAX_TEMP_ATTEMPTS: usize = 4096;
+
+/// Every temp file of `path` starts with this.
+fn temp_prefix(path: &Path) -> Result<String, CheckpointError> {
     let name = path
         .file_name()
         .ok_or_else(|| CheckpointError::Io {
@@ -560,8 +562,83 @@ fn temp_path(path: &Path) -> Result<PathBuf, CheckpointError> {
             detail: "the path has no file name".to_string(),
         })?
         .to_string_lossy();
+    Ok(format!(".{name}.tmp."))
+}
+
+/// A sibling of `path` for this writer, never matching `path` itself. The PID and
+/// sequence do not make it unique: a restarted job in a container can have the
+/// PID of the job it replaced, and its sequence starts at 0 again.
+fn temp_path(path: &Path, prefix: &str) -> PathBuf {
     let seq = TEMP_SEQ.fetch_add(1, Ordering::Relaxed);
-    Ok(path.with_file_name(format!(".{name}.tmp.{}.{seq}", std::process::id())))
+    path.with_file_name(format!("{prefix}{}.{seq}", std::process::id()))
+}
+
+/// The open file is still what `temp` names, so no cleaner removed it between its
+/// creation and its lock.
+fn still_named(file: &File, temp: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    match (file.metadata(), fs::symlink_metadata(temp)) {
+        (Ok(a), Ok(b)) => a.dev() == b.dev() && a.ino() == b.ino(),
+        _ => false,
+    }
+}
+
+/// Create and lock a new temp file. The lock is what marks a writer as alive: the
+/// kernel drops it when the process dies, however it dies.
+fn create_temp(path: &Path, prefix: &str) -> Result<(PathBuf, File), CheckpointError> {
+    for _ in 0..MAX_TEMP_ATTEMPTS {
+        let temp = temp_path(path, prefix);
+        let file = match OpenOptions::new().write(true).create_new(true).open(&temp) {
+            Ok(file) => file,
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(io_error(path, "cannot create the temp file", &e)),
+        };
+        if file.try_lock().is_ok() && still_named(&file, &temp) {
+            return Ok((temp, file));
+        }
+    }
+    Err(CheckpointError::Io {
+        path: path.display().to_string(),
+        detail: format!("no free temp file name in {MAX_TEMP_ATTEMPTS} attempts"),
+    })
+}
+
+/// Remove temp files of `path` that no live writer holds. Best effort: a file that
+/// cannot be inspected is left, and failing here must not fail the write.
+fn remove_stale_temps(path: &Path, prefix: &str) {
+    let parent = match path.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p,
+        _ => Path::new("."),
+    };
+    let Ok(entries) = fs::read_dir(parent) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let is_temp = entry.file_name().to_string_lossy().starts_with(prefix);
+        let is_file = entry.file_type().is_ok_and(|t| t.is_file());
+        if !is_temp || !is_file {
+            continue;
+        }
+        let Ok(file) = File::open(entry.path()) else {
+            continue;
+        };
+        if file.try_lock().is_ok() {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
+}
+
+/// `rename` would replace a link at `path` and leave its target holding the old
+/// contents, so a later read through the target would see stale data.
+fn refuse_symlink(path: &Path) -> Result<(), CheckpointError> {
+    let is_link = fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink());
+    if is_link {
+        return Err(CheckpointError::Io {
+            path: path.display().to_string(),
+            detail: "refusing to write through a symlink; name its target instead".to_string(),
+        });
+    }
+    Ok(())
 }
 
 pub(super) fn write(
@@ -589,12 +666,10 @@ pub(super) fn write_atomic(
     members: &Members,
     observer: &mut dyn FnMut(WriteStage),
 ) -> Result<(), CheckpointError> {
-    let temp = temp_path(path)?;
-    let file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&temp)
-        .map_err(|e| io_error(path, "cannot create the temp file", &e))?;
+    refuse_symlink(path)?;
+    let prefix = temp_prefix(path)?;
+    remove_stale_temps(path, &prefix);
+    let (temp, file) = create_temp(path, &prefix)?;
     let guard = TempGuard(temp.clone());
     let sink = Observed {
         file,
@@ -607,10 +682,11 @@ pub(super) fn write_atomic(
     observer(WriteStage::TempWritten);
     file.sync_all()
         .map_err(|e| io_error(path, "cannot sync the temp file", &e))?;
-    drop(file);
     observer(WriteStage::BeforeRename);
     fs::rename(&temp, path).map_err(|e| io_error(path, "cannot rename into place", &e))?;
     std::mem::forget(guard);
+    // Held until here: unlocked before the rename, a cleaner could remove it.
+    drop(file);
     observer(WriteStage::Renamed);
     sync_parent(path)
 }
@@ -640,9 +716,101 @@ fn read_scalar_u64<R: io::Read + Seek>(
     }
 }
 
+/// `(bytes per element, shape)` from an NPY header in exactly the form this
+/// format's writer emits. Anything else is refused rather than interpreted: the
+/// real parser accepts more spellings than this one, and a spelling only it
+/// understood could carry a shape that this check never saw.
+fn parse_npy_header(header: &str) -> Option<(u64, Vec<u64>)> {
+    let rest = header.strip_prefix("{'descr': '")?;
+    let (descr, rest) = rest.split_once("', 'fortran_order': ")?;
+    let element_bytes = match descr {
+        "<f8" | "<u8" => 8,
+        "|u1" => 1,
+        _ => return None,
+    };
+    let rest = rest
+        .strip_prefix("False, 'shape': (")
+        .or_else(|| rest.strip_prefix("True, 'shape': ("))?;
+    let (dims, tail) = rest.split_once(")}")?;
+    if !tail.trim_end_matches('\n').trim_end_matches(' ').is_empty() {
+        return None;
+    }
+    let shape = dims
+        .split(',')
+        .map(str::trim)
+        .filter(|d| !d.is_empty())
+        .map(|d| {
+            d.bytes()
+                .all(|b| b.is_ascii_digit())
+                .then(|| d.parse().ok())?
+        })
+        .collect::<Option<Vec<u64>>>()?;
+    Some((element_bytes, shape))
+}
+
+/// The bytes a member's header says its data occupies; `None` on overflow.
+fn npy_data_bytes(element_bytes: u64, shape: &[u64]) -> Option<u64> {
+    shape
+        .iter()
+        .try_fold(element_bytes, |total, &d| total.checked_mul(d))
+}
+
+/// Check one member's header against its zip size before anything allocates from
+/// that header. The NPY reader sizes its buffer from the shape alone, so a 517-byte
+/// file claiming 2^63 bytes aborts the process, which no `Result` can report.
+fn check_member(member: &mut zip::read::ZipFile<'_>, file_len: u64) -> Result<(), CheckpointError> {
+    use std::io::Read as _;
+    let name = member.name().to_string();
+    let bad = |why: &str| CheckpointError::Format(format!("member {name}: {why}"));
+    if member.compression() != zip::CompressionMethod::Stored {
+        return Err(bad(
+            "is compressed; this format stores members uncompressed",
+        ));
+    }
+    let size = member.size();
+    if size > file_len {
+        return Err(bad("claims to be larger than the file"));
+    }
+    let mut preamble = [0_u8; 10];
+    member
+        .read_exact(&mut preamble)
+        .map_err(|_| bad("is too short to be an NPY array"))?;
+    if preamble[..8] != *b"\x93NUMPY\x01\x00" {
+        return Err(bad("is not an NPY 1.0 array"));
+    }
+    let header_len = u64::from(u16::from_le_bytes([preamble[8], preamble[9]]));
+    let mut header = vec![0_u8; header_len as usize];
+    member
+        .read_exact(&mut header)
+        .map_err(|_| bad("has a truncated NPY header"))?;
+    let (element_bytes, shape) = std::str::from_utf8(&header)
+        .ok()
+        .and_then(parse_npy_header)
+        .ok_or_else(|| bad("has an NPY header this format does not write"))?;
+    let expected = npy_data_bytes(element_bytes, &shape)
+        .and_then(|data| data.checked_add(10 + header_len))
+        .ok_or_else(|| bad("has a shape that overflows"))?;
+    if expected != size {
+        return Err(bad(&format!(
+            "header shape {shape:?} needs {expected} bytes but the member holds {size}"
+        )));
+    }
+    Ok(())
+}
+
+fn check_all_members(bytes: &[u8]) -> Result<(), CheckpointError> {
+    let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).map_err(npz_error)?;
+    for i in 0..zip.len() {
+        let mut member = zip.by_index(i).map_err(npz_error)?;
+        check_member(&mut member, bytes.len() as u64)?;
+    }
+    Ok(())
+}
+
 /// Version first, so that a future format reports its version rather than
 /// whatever else about it this build cannot parse.
 fn read_members(bytes: Vec<u8>) -> Result<Members, CheckpointError> {
+    check_all_members(&bytes)?;
     let mut npz = NpzReader::new(Cursor::new(bytes)).map_err(npz_error)?;
     let version = read_scalar_u64(&mut npz, VERSION_MEMBER)?;
     if version != FORMAT_VERSION {
@@ -914,6 +1082,16 @@ fn validate_final(s: &FinalState, nao: usize) -> Result<(), CheckpointError> {
 
 pub(super) fn validate(ck: &Checkpoint) -> Result<(), CheckpointError> {
     let id = &ck.identity;
+    let spin = format!("{:?}", ck.orbitals.spin);
+    if !id
+        .fields
+        .iter()
+        .any(|f| f.name == "spin" && f.value == spin)
+    {
+        return Err(CheckpointError::Format(format!(
+            "the orbitals are {spin} but the identity does not say so"
+        )));
+    }
     check_finite("coords_bohr", id.coords_bohr.iter().flatten())?;
     check_finite("energy_conv", std::iter::once(&id.energy_conv))?;
     check_finite("density_conv", std::iter::once(&id.density_conv))?;

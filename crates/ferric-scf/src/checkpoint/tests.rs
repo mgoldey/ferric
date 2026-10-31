@@ -3,6 +3,7 @@
 //! process's writes survive in the page cache, so only power loss would differ.
 
 use super::format::{self, Members, WriteStage};
+use super::identity::ProcessSettings;
 use super::*;
 use crate::diis::DiisFlavor;
 use crate::result::{ConvergenceReport, DfJkRoute, DiisFallback, GradientVetoes, ScfExit, Spin};
@@ -68,7 +69,21 @@ struct Scenario {
     spin: Spin,
     op: Operator,
     config: RhfConfig,
-    precision: String,
+    process: ProcessSettings,
+}
+
+/// Fixed, so these tests do not depend on the environment they run in.
+fn fixed_process() -> ProcessSettings {
+    ProcessSettings {
+        eri_precision: 1e-20,
+        ecp_backend: "quadrature".to_string(),
+        lindep_thresh: 1e-6,
+        precision: "F64 MixedKernelSet(0)".to_string(),
+        gpu_mode: "Off".to_string(),
+        libint_version: "2.7.2".to_string(),
+        cargo_features: "mpi=false gpu=false cfmm-incomplete=false".to_string(),
+        env: vec![None; 8],
+    }
 }
 
 impl Scenario {
@@ -79,17 +94,17 @@ impl Scenario {
             spin,
             op: Operator::coulomb(),
             config: RhfConfig::default(),
-            precision: "F64 MixedKernelSet(0)".to_string(),
+            process: fixed_process(),
         }
     }
     fn identity(&self) -> ScfIdentity {
-        ScfIdentity::with_precision(
+        ScfIdentity::with_process(
             &self.mol,
             &self.basis,
             self.spin,
             &self.op,
             &self.config,
-            self.precision.clone(),
+            &self.process,
         )
         .unwrap()
     }
@@ -754,7 +769,7 @@ type Mutator = fn(&mut Scenario);
 /// One row per compared field: changing it must produce exactly that field's
 /// mismatch. `every_identity_field_has_a_row` keeps this complete.
 fn identity_table() -> Vec<(&'static str, FieldClass, Mutator)> {
-    use FieldClass::{Environment, Method, Route, Structure};
+    use FieldClass::{Environment, Method, Route, StateSelecting, Structure};
     vec![
         ("atoms", Structure, |s| s.mol.atoms[1].ghost = true),
         ("charge", Structure, |s| s.mol.charge = 1),
@@ -767,7 +782,78 @@ fn identity_table() -> Vec<(&'static str, FieldClass, Mutator)> {
             s.basis.shells.get_mut(&8).unwrap()[0].coefficients[0] *= 1.0 + f64::EPSILON;
         }),
         ("operator", Method, |s| s.op = Operator::erfc(0.4)),
-        ("precision", Route, |s| s.precision = "Mixed".to_string()),
+        ("precision", Route, |s| {
+            s.process.precision = "Mixed".to_string();
+        }),
+        ("eri_precision", Route, |s| s.process.eri_precision = 1e-14),
+        ("ecp_backend", Route, |s| {
+            s.process.ecp_backend = "libecpint".to_string();
+        }),
+        ("lindep_thresh", Method, |s| s.process.lindep_thresh = 3e-3),
+        ("gpu_mode", Route, |s| {
+            s.process.gpu_mode = "Auto".to_string()
+        }),
+        ("libint_version", Route, |s| {
+            s.process.libint_version = "2.13.1".to_string();
+        }),
+        ("cargo_features", Route, |s| {
+            s.process.cargo_features = "mpi=true".to_string();
+        }),
+        ("FERRIC_SCF_INCREMENTAL", Route, |s| {
+            s.process.env[0] = Some("0".to_string());
+        }),
+        ("FERRIC_SCF_UHF_INCREMENTAL", Route, |s| {
+            s.process.env[1] = Some("1".to_string());
+        }),
+        ("FERRIC_SCF_COMBINED_JK", Route, |s| {
+            s.process.env[2] = Some("0".to_string());
+        }),
+        ("FERRIC_SHELLPAIR_CACHE", Route, |s| {
+            s.process.env[3] = Some("0".to_string());
+        }),
+        ("FERRIC_DFK_FORCE_DENSITY", Route, |s| {
+            s.process.env[4] = Some("1".to_string());
+        }),
+        ("FERRIC_JK_STORAGE", Route, |s| {
+            s.process.env[5] = Some("disk".to_string());
+        }),
+        ("FERRIC_TERF_TABLE_DIR", Route, |s| {
+            s.process.env[6] = Some("/elsewhere".to_string());
+        }),
+        ("FERRIC_DF_GUESS_TIGHT", StateSelecting, |s| {
+            s.process.env[7] = Some("0".to_string());
+        }),
+        ("use_sad_guess", StateSelecting, |s| {
+            s.config.use_sad_guess = false;
+        }),
+        ("init_guess_density", StateSelecting, |s| {
+            s.config.init_guess_density = Some(Array2::zeros((7, 7)));
+        }),
+        ("guess_basis", StateSelecting, |s| {
+            s.config.guess_basis = Some(crate::basis2::GuessBasis {
+                basis: bundled("sto-3g").unwrap(),
+                projection: crate::basis2::GuessProjection::Fock,
+            });
+        }),
+        ("trah_trigger", StateSelecting, |s| {
+            s.config.trah_trigger = Some(0.1);
+        }),
+        ("trah", StateSelecting, |s| s.config.trah.radius0 = 0.11),
+        ("newton_trigger", StateSelecting, |s| {
+            s.config.newton_trigger = 1e-2;
+        }),
+        ("ah_trigger", StateSelecting, |s| s.config.ah_trigger = 1e-3),
+        ("aurora", StateSelecting, |s| s.config.aurora.enabled = true),
+        ("diis_flavor", StateSelecting, |s| {
+            s.config.diis_flavor = DiisFlavor::Ediis;
+        }),
+        ("diis_size", StateSelecting, |s| s.config.diis_size = 3),
+        ("diis_switch_thresh", StateSelecting, |s| {
+            s.config.diis_switch_thresh = 0.7;
+        }),
+        ("level_shift", StateSelecting, |s| {
+            s.config.level_shift = 0.2
+        }),
         ("external_potential", Environment, |s| {
             s.config.external_potential = Some(ExternalPotential {
                 field: Some([0.0, 0.0, 1e-3]),
@@ -969,7 +1055,10 @@ fn expect_guess(class: FieldClass, verdict: &ReadVerdict, name: &str) {
     let names = |v: &[Mismatch]| v.iter().map(|m| m.name.clone()).collect::<Vec<_>>();
     let want = vec![name.to_string()];
     match class {
-        FieldClass::Environment | FieldClass::Method | FieldClass::Coordinates => {
+        FieldClass::Environment
+        | FieldClass::Method
+        | FieldClass::Coordinates
+        | FieldClass::StateSelecting => {
             assert_eq!(names(&verdict.warnings), want);
             assert!(verdict.logged.is_empty(), "{name}");
         }
@@ -1094,13 +1183,13 @@ fn basis_identity_is_the_data_of_this_molecules_elements() {
 
     let mut no_oxygen = base.clone();
     no_oxygen.basis.shells.remove(&8);
-    assert!(ScfIdentity::with_precision(
+    assert!(ScfIdentity::with_process(
         &no_oxygen.mol,
         &no_oxygen.basis,
         no_oxygen.spin,
         &no_oxygen.op,
         &no_oxygen.config,
-        no_oxygen.precision,
+        &no_oxygen.process,
     )
     .is_err());
 }
@@ -1154,25 +1243,429 @@ fn unchecked_settings_do_not_touch_the_identity() {
     let mut s = base.clone();
     let c = &mut s.config;
     c.max_iter = 7;
-    c.diis_size = 3;
-    c.diis_flavor = DiisFlavor::Ediis;
-    c.diis_switch_thresh = 0.7;
-    c.level_shift = 0.2;
-    c.newton_trigger = 1e-2;
-    c.aurora.enabled = true;
-    c.ah_trigger = 1e-3;
-    c.trah_trigger = Some(1e-3);
-    c.trah.radius0 = 0.11;
     c.stall_window = Some(4);
     c.divergence_tol = Some(1.0);
     c.cdft_max_outer = 9;
     c.three_index_budget_bytes = 1;
     c.verbose = true;
     c.check_stability = true;
-    c.init_guess_density = Some(Array2::zeros((7, 7)));
-    c.use_sad_guess = false;
     assert_eq!(s.identity(), base.identity());
 }
+
+/// The table moves these from `None`, which would pass if only presence counted.
+#[test]
+fn a_state_selecting_field_is_compared_by_its_contents() {
+    let mut base = Scenario::water(Spin::Restricted);
+    base.config.guess_basis = Some(crate::basis2::GuessBasis {
+        basis: bundled("sto-3g").unwrap(),
+        projection: crate::basis2::GuessProjection::Fock,
+    });
+    base.config.init_guess_density = Some(c_order(1.0, 7, 7));
+    let file = base.identity();
+    let differs = |s: &Scenario| -> Vec<String> {
+        s.identity()
+            .fields
+            .iter()
+            .zip(&file.fields)
+            .filter(|(a, b)| a != b)
+            .map(|(a, _)| a.name.clone())
+            .collect()
+    };
+    let mut exponent = base.clone();
+    let guess = exponent.config.guess_basis.as_mut().unwrap();
+    guess.basis.shells.get_mut(&1).unwrap()[0].exponents[0] *= 1.0 + f64::EPSILON;
+    assert_eq!(differs(&exponent), ["guess_basis"]);
+    let mut projection = base.clone();
+    projection.config.guess_basis.as_mut().unwrap().projection =
+        crate::basis2::GuessProjection::Overlap;
+    assert_eq!(differs(&projection), ["guess_basis"]);
+    let mut density = base.clone();
+    density.config.init_guess_density = Some(c_order(1.5, 7, 7));
+    assert_eq!(differs(&density), ["init_guess_density"]);
+    // The same matrix in the other memory order is the same guess.
+    let mut layout = base.clone();
+    layout.config.init_guess_density = Some(f_order(1.0, 7, 7));
+    assert!(differs(&layout).is_empty());
+}
+
+#[test]
+fn skip_refuses_a_converged_exit_whose_flag_says_otherwise() {
+    let current = Scenario::water(Spin::Restricted).identity();
+    let mut ck = final_ck(Spin::Restricted);
+    ck.final_state.as_mut().unwrap().converged = false;
+    for allow_other_build in [false, true] {
+        let mode = ReadMode::Skip { allow_other_build };
+        let err = ck.check(&current, &clean_build(), mode).unwrap_err();
+        assert!(matches!(err, CheckpointError::ExitRefused { .. }), "{err}");
+    }
+    assert!(ck.check(&current, &clean_build(), ReadMode::Guess).is_ok());
+}
+
+#[test]
+fn orbitals_of_another_spin_kind_than_the_identity_are_refused() {
+    let dir = Scratch::new();
+    let mut ck = final_ck(Spin::Restricted);
+    ck.identity = Scenario::water(Spin::Unrestricted).identity();
+    let err = ck.write(&dir.file()).unwrap_err();
+    assert!(
+        is_format(&err) && err.to_string().contains("Restricted"),
+        "{err}"
+    );
+    forged(&final_ck(Spin::Restricted), &dir.file(), |m| {
+        let text = String::from_utf8(m.meta.clone()).unwrap();
+        let changed = text.replacen(
+            "\"name\":\"spin\",\"class\":\"Structure\",\"value\":\"Restricted\"",
+            "\"name\":\"spin\",\"class\":\"Structure\",\"value\":\"Unrestricted\"",
+            1,
+        );
+        assert_ne!(changed, text, "the edit must apply");
+        m.meta = changed.into_bytes();
+    });
+    assert!(is_format(&Checkpoint::read(&dir.file()).unwrap_err()));
+}
+
+// ------------------------------------------------------- hostile member headers
+
+/// An NPY 1.0 member with this header text and data, unpadded.
+fn npy(header: &str, data: &[u8]) -> Vec<u8> {
+    let mut out = b"\x93NUMPY\x01\x00".to_vec();
+    out.extend_from_slice(&(header.len() as u16).to_le_bytes());
+    out.extend_from_slice(header.as_bytes());
+    out.extend_from_slice(data);
+    out
+}
+
+/// Write these members as a stored zip, with no checksum or validation at all.
+fn raw_npz(path: &Path, members: &[(&str, Vec<u8>)]) {
+    use std::io::Write as _;
+    let mut zip = zip::ZipWriter::new(std::fs::File::create(path).unwrap());
+    let options =
+        zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    for (name, bytes) in members {
+        zip.start_file(format!("{name}.npy"), options).unwrap();
+        zip.write_all(bytes).unwrap();
+    }
+    zip.finish().unwrap();
+}
+
+fn good_version() -> (&'static str, Vec<u8>) {
+    let header = "{'descr': '<u8', 'fortran_order': False, 'shape': (1,)}\n";
+    let data = FORMAT_VERSION.to_le_bytes();
+    ("format_version", npy(header, &data))
+}
+
+/// A header that asks for far more than the file holds reached `vec![0; len]` and
+/// aborted the process. It must come back through `Checkpoint::read` as `Err`.
+#[test]
+fn a_huge_shape_in_a_header_is_an_error_not_an_abort() {
+    let dir = Scratch::new();
+    let f8 = "{'descr': '<f8', 'fortran_order': False, 'shape': (1152921504606846975,)}\n";
+    let u8_ = "{'descr': '<u8', 'fortran_order': False, 'shape': (1152921504606846975,)}\n";
+    let u1 = "{'descr': '|u1', 'fortran_order': False, 'shape': (9223372036854775807,)}\n";
+    let cases: Vec<Vec<(&str, Vec<u8>)>> = vec![
+        vec![("format_version", npy(u8_, &[0; 8]))],
+        vec![good_version(), ("checksum", npy(u8_, &[0; 8]))],
+        vec![good_version(), ("meta", npy(u1, &[0; 8]))],
+        vec![good_version(), ("density_total", npy(f8, &[0; 8]))],
+    ];
+    for members in cases {
+        raw_npz(&dir.file(), &members);
+        let err = Checkpoint::read(&dir.file()).unwrap_err();
+        assert!(
+            is_format(&err) && err.to_string().contains("shape"),
+            "{err}"
+        );
+    }
+}
+
+#[test]
+fn a_shape_that_overflows_or_disagrees_with_the_member_size_is_an_error() {
+    let dir = Scratch::new();
+    let overflow = "{'descr': '<f8', 'fortran_order': False, 'shape': (4294967296, 4294967296)}\n";
+    let too_long = "{'descr': '<f8', 'fortran_order': False, 'shape': (2,)}\n";
+    let too_short = "{'descr': '<f8', 'fortran_order': False, 'shape': (1,)}\n";
+    // (2^61 + 1) * 8 wraps to exactly the 8 bytes present, so only a checked
+    // multiplication catches it: a wrapping one sees a consistent member.
+    let wraps_to_fit =
+        "{'descr': '<f8', 'fortran_order': False, 'shape': (2305843009213693953,)}\n";
+    let cases = [
+        npy(overflow, &[0; 8]),
+        npy(too_long, &[0; 8]),
+        npy(too_short, &[0; 16]),
+        npy(wraps_to_fit, &[0; 8]),
+    ];
+    for bytes in cases {
+        raw_npz(&dir.file(), &[good_version(), ("density_total", bytes)]);
+        let err = Checkpoint::read(&dir.file()).unwrap_err();
+        // Named: without `density_total` this could be the missing checksum.
+        assert!(
+            is_format(&err) && err.to_string().contains("density_total"),
+            "{err}"
+        );
+    }
+}
+
+/// Spellings the real parser may accept must not get past a check that cannot read
+/// them. The escaped key here spells `shape`, hiding it from a substring search.
+#[test]
+fn a_header_this_format_does_not_write_is_refused() {
+    let dir = Scratch::new();
+    let hidden_shape =
+        "{'descr': '<f8', 'fortran_order': False, 'sh\\x61pe': (9,), 'shape': (1,)}\n";
+    // Consistent if read as NPY 1.0, so only the version byte can refuse it. NPY 2.0
+    // has a longer length field, so reading it as 1.0 would misplace the header.
+    let mut version_2 = npy(
+        "{'descr': '<f8', 'fortran_order': False, 'shape': (1,)}\n",
+        &[0; 8],
+    );
+    version_2[6] = 2;
+    let cases = [
+        npy(
+            "{'descr':'<f8','fortran_order':False,'shape':(1,),}\n",
+            &[0; 8],
+        ),
+        npy(
+            // One element: a mutant treating every dtype as 8 bytes finds this
+            // consistent, so the dtype itself has to refuse it.
+            "{'descr': '<f4', 'fortran_order': False, 'shape': (1,)}\n",
+            &[0; 8],
+        ),
+        npy(
+            "{'descr': '<f8', 'fortran_order': False, 'shape': (0x1,)}\n",
+            &[0; 8],
+        ),
+        npy(
+            "{'descr': '<f8', 'fortran_order': False, 'shape': (1,)} x\n",
+            &[0; 8],
+        ),
+        npy(hidden_shape, &[0; 8]),
+        b"not an npy file at all".to_vec(),
+        version_2,
+    ];
+    for bytes in cases {
+        raw_npz(&dir.file(), &[good_version(), ("density_total", bytes)]);
+        let err = Checkpoint::read(&dir.file()).unwrap_err();
+        assert!(
+            is_format(&err) && err.to_string().contains("density_total"),
+            "{err}"
+        );
+    }
+}
+
+/// The zip's own size field is a claim too. Here it agrees with a large header
+/// shape, so only the bound against the real file length stops the allocation.
+#[test]
+fn a_member_size_larger_than_the_file_is_refused() {
+    let dir = Scratch::new();
+    let header = "{'descr': '<f8', 'fortran_order': False, 'shape': (100000000,)}\n";
+    let bytes = npy(header, &[0; 8]);
+    let claimed = (10 + header.len() + 800_000_000) as u32;
+    raw_npz(&dir.file(), &[("density_total", bytes)]);
+    let mut file = std::fs::read(dir.file()).unwrap();
+    let central = file
+        .windows(4)
+        .position(|w| w == b"PK\x01\x02")
+        .expect("a central directory entry");
+    // Uncompressed size in the central directory, then in the local header.
+    file[central + 24..central + 28].copy_from_slice(&claimed.to_le_bytes());
+    file[22..26].copy_from_slice(&claimed.to_le_bytes());
+    std::fs::write(dir.file(), &file).unwrap();
+    let err = Checkpoint::read(&dir.file()).unwrap_err();
+    assert!(
+        is_format(&err) && err.to_string().contains("larger than the file"),
+        "{err}"
+    );
+}
+
+/// A deflated member's stored size says nothing about what it expands to.
+#[test]
+fn a_compressed_member_is_refused() {
+    let dir = Scratch::new();
+    let file = std::fs::File::create(dir.file()).unwrap();
+    let mut npz = ndarray_npy::NpzWriter::new_compressed(file);
+    npz.add_array("format_version", &ndarray::arr1(&[FORMAT_VERSION]))
+        .unwrap();
+    npz.finish().unwrap();
+    let err = Checkpoint::read(&dir.file()).unwrap_err();
+    assert!(
+        is_format(&err) && err.to_string().contains("compressed"),
+        "{err}"
+    );
+}
+
+// ---------------------------------------------------------------- temp files
+
+/// `count` names this process's next writes could pick, as a restarted job with a
+/// reused PID would find them: its sequence restarts while the old files remain.
+fn planted_names(dir: &Scratch, count: u64) -> Vec<PathBuf> {
+    let start = format::TEMP_SEQ.load(Ordering::Relaxed);
+    (start..start + count)
+        .map(|seq| {
+            let name = format!(".state.npz.tmp.{}.{seq}", std::process::id());
+            dir.0.join(name)
+        })
+        .collect()
+}
+
+#[test]
+fn a_leftover_temp_file_from_a_reused_pid_is_removed_and_does_not_block_the_write() {
+    let dir = Scratch::new();
+    for path in planted_names(&dir, 64) {
+        std::fs::write(path, b"from a job that was killed").unwrap();
+    }
+    let ck = final_ck(Spin::Restricted);
+    ck.write(&dir.file()).unwrap();
+    assert!(same_checkpoint(
+        &ck,
+        &Checkpoint::read(&dir.file()).unwrap()
+    ));
+    assert_eq!(dir.names(), ["state.npz"]);
+}
+
+/// A name taken by a locked file belongs to a live writer, here standing in for one
+/// in another PID namespace: the write steps past it and leaves it alone.
+#[test]
+fn a_temp_file_a_live_writer_holds_survives_and_its_name_is_stepped_past() {
+    let dir = Scratch::new();
+    let planted = planted_names(&dir, 64);
+    let mut held = Vec::new();
+    for path in &planted {
+        let file = std::fs::File::create(path).unwrap();
+        file.try_lock().unwrap();
+        held.push(file);
+    }
+    let ck = final_ck(Spin::Restricted);
+    ck.write(&dir.file()).unwrap();
+    assert!(same_checkpoint(
+        &ck,
+        &Checkpoint::read(&dir.file()).unwrap()
+    ));
+    for path in &planted {
+        assert!(path.exists(), "{path:?} was removed under a live writer");
+    }
+    assert_eq!(dir.names().len(), planted.len() + 1);
+}
+
+#[test]
+fn cleanup_touches_only_this_paths_temp_files() {
+    let dir = Scratch::new();
+    std::fs::write(dir.0.join(".other.npz.tmp.1.1"), b"keep").unwrap();
+    std::fs::write(dir.0.join("state.npz.bak"), b"keep").unwrap();
+    std::fs::create_dir(dir.0.join(".state.npz.tmp.dir")).unwrap();
+    final_ck(Spin::Restricted).write(&dir.file()).unwrap();
+    assert_eq!(
+        dir.names(),
+        [
+            ".other.npz.tmp.1.1",
+            ".state.npz.tmp.dir",
+            "state.npz",
+            "state.npz.bak"
+        ]
+    );
+}
+
+/// The real thing rather than a planted file: a writer stopped mid-write, alive.
+#[test]
+fn a_write_does_not_remove_the_temp_file_of_a_writer_still_running() {
+    // The last stage matters most: the lock must outlast the sync, up to the rename.
+    for stage in BEFORE_RENAME_STAGES {
+        let dir = Scratch::new();
+        let mut running = writer_stopped_at(&dir.file(), stage);
+        final_ck(Spin::Restricted).write(&dir.file()).unwrap();
+        let names = dir.names();
+        running.kill().unwrap();
+        running.wait().unwrap();
+        assert_eq!(names.len(), 2, "{stage}: {names:?}");
+        assert!(
+            names.iter().any(|n| n.contains(".tmp.")),
+            "{stage}: {names:?}"
+        );
+    }
+}
+
+#[test]
+fn a_symlink_at_the_path_is_refused_and_left_as_it_was() {
+    let dir = Scratch::new();
+    let target = dir.0.join("target.npz");
+    let old = final_ck(Spin::Restricted);
+    old.write(&target).unwrap();
+    let before = std::fs::read(&target).unwrap();
+    std::os::unix::fs::symlink(&target, dir.file()).unwrap();
+    let err = newer_ck().write(&dir.file()).unwrap_err();
+    assert!(
+        matches!(&err, CheckpointError::Io { detail, .. } if detail.contains("symlink")),
+        "{err}"
+    );
+    assert!(std::fs::symlink_metadata(dir.file())
+        .unwrap()
+        .file_type()
+        .is_symlink());
+    assert_eq!(std::fs::read(&target).unwrap(), before);
+    assert_eq!(dir.names(), ["state.npz", "target.npz"]);
+    // Reading through a link is harmless and still works.
+    assert!(same_checkpoint(
+        &old,
+        &Checkpoint::read(&dir.file()).unwrap()
+    ));
+    // A dangling link is refused too, instead of being replaced.
+    std::fs::remove_file(&target).unwrap();
+    assert!(newer_ck().write(&dir.file()).is_err());
+}
+
+// -------------------------------------------------- process-wide settings, live
+
+/// Set one variable on a real child and see which identity fields move. Children
+/// because `set_var` would race every other test in this process.
+#[test]
+fn each_process_setting_reaches_the_identity_from_the_environment() {
+    let test = "checkpoint::tests::child_prints_identity";
+    let key = |envs: &[(&str, &str)]| -> ScfIdentity {
+        let lines = child(test, envs);
+        let line = lines.iter().find(|l| l.starts_with("KEY ")).unwrap();
+        serde_json::from_str(&line["KEY ".len()..]).unwrap()
+    };
+    let base = key(&[]);
+    for (variable, value, name) in [
+        ("FERRIC_ERI_PRECISION", "1e-14", "eri_precision"),
+        ("FERRIC_ECP_BACKEND", "libecpint", "ecp_backend"),
+        ("FERRIC_LINDEP_THRESH", "0.003", "lindep_thresh"),
+        ("FERRIC_GPU", "auto", "gpu_mode"),
+        ("FERRIC_SCF_INCREMENTAL", "0", "FERRIC_SCF_INCREMENTAL"),
+        (
+            "FERRIC_SCF_UHF_INCREMENTAL",
+            "1",
+            "FERRIC_SCF_UHF_INCREMENTAL",
+        ),
+        ("FERRIC_SCF_COMBINED_JK", "0", "FERRIC_SCF_COMBINED_JK"),
+        ("FERRIC_SHELLPAIR_CACHE", "0", "FERRIC_SHELLPAIR_CACHE"),
+        ("FERRIC_DFK_FORCE_DENSITY", "1", "FERRIC_DFK_FORCE_DENSITY"),
+        ("FERRIC_JK_STORAGE", "disk", "FERRIC_JK_STORAGE"),
+        (
+            "FERRIC_TERF_TABLE_DIR",
+            "/elsewhere",
+            "FERRIC_TERF_TABLE_DIR",
+        ),
+        ("FERRIC_DF_GUESS_TIGHT", "0", "FERRIC_DF_GUESS_TIGHT"),
+    ] {
+        let changed = key(&[(variable, value)]);
+        let moved: Vec<&str> = changed
+            .fields
+            .iter()
+            .zip(&base.fields)
+            .filter(|(a, b)| a != b)
+            .map(|(a, _)| a.name.as_str())
+            .collect();
+        assert_eq!(moved, [name], "{variable}={value}");
+    }
+    let field = |name: &str| base.fields.iter().find(|f| f.name == name).unwrap();
+    assert_eq!(
+        field("libint_version").value,
+        ferric_integrals::libint_version()
+    );
+    assert!(field("cargo_features").value.contains("mpi="));
+}
+
+// ------------------------------------------------------------ identity, continued
 
 #[test]
 fn coordinates_warn_with_the_shift_under_guess_and_fail_bitwise_under_skip() {
@@ -1477,6 +1970,18 @@ fn full_config() -> RhfConfig {
             target: 1.0,
         }],
         cdft_lambda_init: Some(vec![0.5]),
+        // Holds a `BasisSet`, which is the one with maps in it.
+        guess_basis: Some(crate::basis2::GuessBasis {
+            basis: bundled("def2-svp").unwrap(),
+            projection: crate::basis2::GuessProjection::Overlap,
+        }),
+        init_guess_density: Some(c_order(1.0, 3, 3)),
+        use_sad_guess: false,
+        trah_trigger: Some(0.1),
+        newton_trigger: 1e-2,
+        ah_trigger: 1e-3,
+        diis_flavor: DiisFlavor::Ediis,
+        level_shift: 0.2,
         ..Default::default()
     }
 }
@@ -1550,8 +2055,8 @@ fn child_stops_in_a_write() {
     panic!("the write finished without reaching {stage}");
 }
 
-/// Start a real writer, wait until it is inside `stage`, SIGKILL it.
-fn kill_writer_at(path: &Path, stage: &str) {
+/// Start a real writer and wait until it is inside `stage`, where it sleeps.
+fn writer_stopped_at(path: &Path, stage: &str) -> std::process::Child {
     let mut child = Command::new(std::env::current_exe().unwrap())
         .args([
             "--exact",
@@ -1570,9 +2075,15 @@ fn kill_writer_at(path: &Path, stage: &str) {
     let reached = BufReader::new(stdout)
         .lines()
         .any(|line| line.is_ok_and(|l| l.contains(READY)));
+    assert!(reached, "the writer never reached {stage}");
+    child
+}
+
+/// Start a real writer, wait until it is inside `stage`, SIGKILL it.
+fn kill_writer_at(path: &Path, stage: &str) {
+    let mut child = writer_stopped_at(path, stage);
     child.kill().unwrap();
     let status = child.wait().unwrap();
-    assert!(reached, "the writer never reached {stage}");
     use std::os::unix::process::ExitStatusExt;
     assert_eq!(status.signal(), Some(9), "{stage}: {status:?}");
 }
@@ -1604,6 +2115,8 @@ fn a_kill_before_the_rename_leaves_the_old_file_byte_identical() {
             &newer,
             &Checkpoint::read(&dir.file()).unwrap()
         ));
+        // A dead writer holds no lock, so its leftover goes.
+        assert_eq!(dir.names(), ["state.npz"], "{stage}");
     }
 }
 
@@ -1688,7 +2201,10 @@ fn failed_writes_are_errors_and_clean_up() {
 // -------------------------------------------------- the frozen file for numpy
 
 fn golden_path() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../testdata/checkpoint/synthetic_rohf_v1.npz")
+    // At run time: a compile-time path is wrong for a test archive run elsewhere,
+    // and cargo and nextest both set this for the process, remapped.
+    Path::new(&std::env::var("CARGO_MANIFEST_DIR").expect("run this through cargo or nextest"))
+        .join("../../testdata/checkpoint/synthetic_rohf_v1.npz")
 }
 
 fn golden_ck() -> Checkpoint {
