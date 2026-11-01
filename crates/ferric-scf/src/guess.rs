@@ -918,6 +918,7 @@ pub fn minao_projection_guess(
     // serial in ascending atom order, so the result is bit-identical to the
     // old fully-serial cache-build — only the WALL-CLOCK order of the
     // independent per-Z builds changes, not the math or the placement.
+    let lost = std::sync::Mutex::new(Vec::new());
     let build_one = |z: i32| -> Array2<f64> {
         let nao = seen[&z];
         // Choose the no-SCF (GWH) route for the atoms whose free-atom SCF is
@@ -942,15 +943,18 @@ pub fn minao_projection_guess(
         match built {
             Ok(full) => full.slice(ndarray::s![..nao, ..nao]).to_owned(),
             Err(e) => {
-                if crate::rhf::scf_trace() {
-                    let sym = ferric_core::elements::z_to_symbol(z).unwrap_or("?");
-                    let route = if use_no_scf {
-                        "GWH no-SCF"
-                    } else {
-                        "free-atom SCF"
-                    };
-                    eprintln!("MINAO: {route} atomic density failed for {sym} (Z={z}): {e:?}; block left zero");
-                }
+                let route = if use_no_scf {
+                    "GWH no-SCF"
+                } else {
+                    "free-atom SCF"
+                };
+                lost.lock().unwrap_or_else(|p| p.into_inner()).push(
+                    crate::driver::LostGuessBlock {
+                        z,
+                        route,
+                        reason: e.to_string(),
+                    },
+                );
                 Array2::zeros((nao, nao))
             }
         }
@@ -993,6 +997,11 @@ pub fn minao_projection_guess(
             .into_iter()
             .collect()
     };
+
+    crate::driver::report_lost_guess_blocks(
+        lost.into_inner().unwrap_or_else(|p| p.into_inner()),
+        unique_zs.len(),
+    );
 
     for (ai, atom) in mol.atoms.iter().enumerate() {
         if atom.ghost {

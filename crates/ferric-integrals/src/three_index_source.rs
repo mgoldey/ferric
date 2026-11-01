@@ -502,7 +502,7 @@ fn spill_refusal(e: FerricError, memory_refused: bool) -> FerricError {
 /// and whether memory alone refused a band that fits the budget.
 ///
 /// `raw` stays resident (DF-J keeps it), so a band can fit the budget once and
-/// not twice, or be refused by another plane's thread-scaled charge. Spilling
+/// not twice, or be refused by the fast path's own per-worker plan. Spilling
 /// then costs IO, not bits, so that dependence on the live pool cannot reach a
 /// result at one BLAS thread.
 fn admit_dressed_in_core(

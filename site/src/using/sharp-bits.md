@@ -231,15 +231,30 @@ When a charged allocation does not fit, the result depends on the allocation:
 - A dressed tensor that fits the budget but not beside the resident raw tensor
   spills instead of stopping the job, unless `jk_storage = "memory"`.
 - A DF-guess pre-stage that runs out of memory is abandoned with a warning, and
-  the SCF starts from its usual guess. Near the limit this can depend on the
-  thread count, because some ledger charges scale with it: one run may use the
-  guess and another fall back, which changes iterations and can select a different
-  SCF solution, a larger effect than any bit-level one. An explicit
+  the SCF starts from its usual guess. That changes iterations and can select a
+  different SCF solution, a larger effect than any bit-level one. An explicit
   `jk_storage = "memory"` that does not fit, and any memory failure under MPI, stop
   the job instead. A spill directory that is full also stops it, and
   `df_increments` has no fallback.
 - The DFT grid AO cache is recomputed at every Fock build instead of stored.
-  The energy is bit-identical.
+  The energy is bit-identical. Under an explicit budget, XC takes its memory after
+  the RI-J/K tensors, so it never pushes them out. An auto-detected budget first
+  gives up 0.8 of the AO blocks XC expects to keep, so the raw tensor can drop to a
+  packed or spilled tier while XC stays resident. If what is left cannot hold its per-build working
+  set either, that set runs uncharged, a warning gives its size, and the run log
+  records it. The job can exceed its budget by more than that figure, because
+  other scratch is not charged either: danuglipron/def2-SVP warned of 0.46 GB and
+  peaked 0.92 GB over a 15.3 GB budget. The working set scales with the thread
+  count. The VV10 NLC cache has no fallback and is charged before RI-J/K, so a
+  budget that cannot hold it alone stops the job before any integrals are built.
+  It also leaves the MINAO guess's free-atom solves less room. If one runs out, that
+  element's block of the guess is left zero, so the SCF starts from a partial MINAO
+  guess rather than from hcore. If that was every element in the molecule, the density
+  is zero and the first Fock matrix is hcore. A warning names the element and says
+  which, the run log records it,
+  and the SCF may take more iterations. Very near that limit, repeat runs of one
+  input have differed in whether this happens. `jk_storage = "memory"` with a VV10 functional is held to the
+  budget less the cache, so it refuses some budgets that an earlier build ran over.
 - An allocation with no fallback stops the job with an error naming it. For
   some methods this check comes after the SCF. Benzene RI-MP2/def2-SVP with
   `budget_gb = 0.001` completes the SCF, then exits with
