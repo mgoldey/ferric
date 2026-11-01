@@ -419,6 +419,13 @@ pub fn resolve_budget_after(explicit: Option<usize>, planned_bytes: usize) -> Bu
     }
 }
 
+/// The most an auto-detected budget can be under this process's cgroup limit, if it
+/// has one. Unlike `MemAvailable` this does not fall as the process allocates.
+#[must_use]
+pub fn auto_cgroup_ceiling_bytes() -> Option<usize> {
+    detect_cgroup_limit_bytes().map(|c| (c as f64 * AUTO_FRACTION) as usize)
+}
+
 /// The arithmetic of [`resolve_budget_after`].
 #[must_use]
 pub fn auto_budget_after(

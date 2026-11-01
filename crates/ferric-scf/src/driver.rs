@@ -93,35 +93,50 @@ pub(crate) struct ScfEnv<'a> {
 ///
 /// Nothing here reads the thread count at an explicit budget.
 pub(crate) fn raw_budget(config_bytes: usize, plan: ferric_dft::xc_trait::XcMemoryPlan) -> usize {
-    use ferric_core::memory::{pool, resolve_budget_after, BudgetSource};
+    use ferric_core::memory::{
+        auto_cgroup_ceiling_bytes, pool, resolve_budget_after, BudgetSource,
+    };
     let explicit = (config_bytes != 0).then_some(config_bytes);
     let res = resolve_budget_after(explicit, plan.resident_if_alone);
     budget_beside_nlc(
         res.bytes,
         res.source == BudgetSource::AutoDetected,
         plan.nlc_bytes,
-        pool::global().map(|p| p.capacity_bytes()),
+        lowest_ceiling(
+            pool::global().map(|p| p.capacity_bytes()),
+            auto_cgroup_ceiling_bytes(),
+        ),
     )
+}
+
+/// The tighter of two optional ceilings.
+fn lowest_ceiling(a: Option<usize>, b: Option<usize>) -> Option<usize> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    }
 }
 
 /// `budget` less the NLC cache, counted once.
 ///
 /// A fixed budget has not seen the cache, so it comes off, with or without a pool:
 /// the tensor and the cache must fit together. A live auto budget has already fallen
-/// with the allocated cache, so subtracting it again would send a tensor that fits to
-/// a slower tier. It only has to stay within what the pool, sized before the cache
-/// existed, has left: raw picks `InCore` from this figure alone and refuses if the
-/// pool cannot pay, so otherwise a budget just above the tensor is refused where a
-/// smaller one, which gets a soft tier, runs.
-fn budget_beside_nlc(budget: usize, live: bool, nlc: usize, pool: Option<usize>) -> usize {
+/// with the allocated cache as far as `MemAvailable` goes, so subtracting it again
+/// would send a tensor that fits to a slower tier. It only has to stay within what
+/// `ceiling` leaves beside the cache. The ceiling is whatever does not move with
+/// usage: the pool, sized before the cache existed (raw picks `InCore` from this
+/// figure alone and refuses if the pool cannot pay, so otherwise a budget just above
+/// the tensor is refused where a smaller one, which gets a soft tier, runs), and the
+/// cgroup limit, which the cache counts toward.
+fn budget_beside_nlc(budget: usize, live: bool, nlc: usize, ceiling: Option<usize>) -> usize {
     if nlc == 0 {
         return budget;
     }
     if !live {
         return budget.saturating_sub(nlc);
     }
-    match pool {
-        Some(capacity) => budget.min(capacity.saturating_sub(nlc)),
+    match ceiling {
+        Some(ceiling) => budget.min(ceiling.saturating_sub(nlc)),
         None => budget,
     }
 }
@@ -756,6 +771,15 @@ mod raw_budget_tests {
         assert_eq!(budget_beside_nlc(9_800, true, 500, Some(10_000)), 9_500);
         // Fixed: the cache comes off.
         assert_eq!(budget_beside_nlc(9_000, false, 500, None), 8_500);
+        // a 10,000 cgroup sets an 8,000 auto budget that the cache does not lower
+        assert_eq!(budget_beside_nlc(8_000, true, 3_000, Some(8_000)), 5_000);
+        // MemAvailable already binds below that ceiling
+        assert_eq!(budget_beside_nlc(4_000, true, 3_000, Some(8_000)), 4_000);
+        assert_eq!(lowest_ceiling(Some(7), Some(5)), Some(5));
+        assert_eq!(lowest_ceiling(Some(5), Some(7)), Some(5));
+        assert_eq!(lowest_ceiling(None, Some(7)), Some(7));
+        assert_eq!(lowest_ceiling(Some(7), None), Some(7));
+        assert_eq!(lowest_ceiling(None, None), None);
         // No cache: nothing moves, however small the pool. A pool that cannot pay
         // for an in-core tensor must still refuse it, not quietly reroute it.
         assert_eq!(budget_beside_nlc(9_000, true, 0, Some(200)), 9_000);
