@@ -104,9 +104,15 @@ pub(crate) fn raw_budget(config_bytes: usize, plan: ferric_dft::xc_trait::XcMemo
         plan.nlc_bytes,
         lowest_ceiling(
             pool::global().map(|p| p.capacity_bytes()),
-            auto_cgroup_ceiling_bytes(),
+            ceiling_beside_ao(auto_cgroup_ceiling_bytes(), plan.resident_if_alone),
         ),
     )
+}
+
+/// A cgroup ceiling less the AO blocks XC plans to keep. Those are charged later
+/// against a budget that has not seen the tensor, so they must be left room here.
+fn ceiling_beside_ao(ceiling: Option<usize>, resident_if_alone: usize) -> Option<usize> {
+    ceiling.map(|c| c.saturating_sub(resident_if_alone))
 }
 
 /// The tighter of two optional ceilings.
@@ -775,6 +781,13 @@ mod raw_budget_tests {
         assert_eq!(budget_beside_nlc(8_000, true, 3_000, Some(8_000)), 5_000);
         // MemAvailable already binds below that ceiling
         assert_eq!(budget_beside_nlc(4_000, true, 3_000, Some(8_000)), 4_000);
+        // the planned AO blocks come off a cgroup ceiling before the cache does
+        let ceiling = ceiling_beside_ao(Some(8_000), 2_000);
+        assert_eq!(ceiling, Some(6_000));
+        assert_eq!(budget_beside_nlc(8_000, true, 500, ceiling), 5_500);
+        assert_eq!(ceiling_beside_ao(Some(1_000), 2_000), Some(0));
+        assert_eq!(ceiling_beside_ao(Some(8_000), 0), Some(8_000));
+        assert_eq!(ceiling_beside_ao(None, 2_000), None);
         assert_eq!(lowest_ceiling(Some(7), Some(5)), Some(5));
         assert_eq!(lowest_ceiling(Some(5), Some(7)), Some(5));
         assert_eq!(lowest_ceiling(None, Some(7)), Some(7));
