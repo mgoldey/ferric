@@ -326,49 +326,178 @@ fn bisect(xyz: &[[f64; 3]], idx: &mut [u32], max_pts: usize, out: &mut Vec<Vec<u
     bisect(xyz, right, max_pts, out);
 }
 
+/// Largest sum of `|coefficient|` over the terms of any angular polynomial `A` of
+/// `ao_grid::eval_shell_and_grad` at each `l`, pure or Cartesian. Each monomial of
+/// degree `k` is at most `r^k` in size, so `|A| <= K r^l`. Read off the code; the
+/// largest are pure `d` `m=0` (2), pure `f` `m=0` (4), pure `g` `m=-2` (8.94).
+const ANGULAR_VALUE_BOUND: [f64; 5] = [1.0, 1.0, 2.0, 4.0, 9.0];
+/// The same for each `∂A/∂x_i`, so `|∂A| <= K r^(l-1)`. The largest are Cartesian
+/// `xx` and pure `d` `m=0` (2), pure `f` `m=0` in `∂z` (6), pure `g` `m=0` in `∂z`
+/// (16).
+const ANGULAR_GRAD_BOUND: [f64; 5] = [0.0, 1.0, 2.0, 6.0, 16.0];
+/// [`shell_screen_radius`] aims this far below the threshold. It has to exceed
+/// the rounding of the evaluator against the exact bound, a relative `1e-11` at
+/// most: `exp` is within an ulp, `r²` is off by 3u, which moves `exp(-a r²)` by at
+/// most `745 * 3u` before it underflows, and a shell of fewer than a thousand
+/// primitives adds under `1e-12`.
+const SCREEN_RADIUS_MARGIN: f64 = 1e-6;
+/// Takes the rounding of the box distance and of `r²` out of the comparison.
+const SCREEN_DIST2_MARGIN: f64 = 1e-12;
+/// Below this a term of the evaluator can lose all its precision to underflow.
+const SCREEN_MIN_THRESH: f64 = 1e-290;
+
+/// Upper bound at distance `r` on `|χ|` and `|∂χ|` of every function of `sh`.
+///
+/// With `R = Σ|c N e^(-a r²)|` and `D = Σ|c N a e^(-a r²)|`, `χ = rad A` and
+/// `∂_iχ = 2 drad d_i A + rad ∂_iA` give `|χ| <= K_v r^l R` and
+/// `|∂_iχ| <= 2 K_v r^(l+1) D + K_g r^(l-1) R`. `e` is clamped at the smallest
+/// normal so that an underflow cannot make the bound less than the true value.
+fn shell_bound_at(sh: &OwnedShell, r: f64) -> f64 {
+    let l = sh.l as usize;
+    let pi = std::f64::consts::PI;
+    let dbl_fact: f64 = [1.0, 1.0, 3.0, 15.0, 105.0][l];
+    let (mut rad, mut drad) = (0.0_f64, 0.0_f64);
+    for (a, c) in sh.exponents.iter().zip(&sh.coefficients) {
+        let n = (2.0 * a / pi).powf(0.75) * (4.0 * a).powi(sh.l).sqrt() / dbl_fact.sqrt();
+        let t = c.abs() * n * (-a * r * r).exp().max(f64::MIN_POSITIVE);
+        rad += t;
+        drad += a * t;
+    }
+    let rl = r.powi(sh.l);
+    let value = ANGULAR_VALUE_BOUND[l] * rl * rad;
+    let lower = if l > 0 {
+        ANGULAR_GRAD_BOUND[l] * r.powi(sh.l - 1) * rad
+    } else {
+        0.0
+    };
+    value.max(2.0 * ANGULAR_VALUE_BOUND[l] * rl * r * drad + lower)
+}
+
+/// A distance beyond which no value or gradient component of `sh`, as
+/// `eval_shell_and_grad` computes it, exceeds `thresh`. `INFINITY` says nothing
+/// is known, so the shell is always evaluated.
+///
+/// Every term of [`shell_bound_at`] is `r^k e^(-a r²)` with `k <= l + 1`, which
+/// decreases for `r >= √(k / 2a)`. So from `√((l+1) / 2 a_min)` outward the bound
+/// decreases, and a radius at which it is below the target holds for all larger
+/// distances. Below that floor it may still rise, which is why the search never
+/// goes there.
+fn shell_screen_radius(sh: &OwnedShell, thresh: f64) -> f64 {
+    let valid = (0..=4).contains(&sh.l)
+        && thresh >= SCREEN_MIN_THRESH
+        && thresh.is_finite()
+        && sh.exponents.iter().all(|a| a.is_finite() && *a > 0.0)
+        && sh.coefficients.iter().all(|c| c.is_finite());
+    if !valid {
+        return f64::INFINITY;
+    }
+    let target = thresh * (1.0 - SCREEN_RADIUS_MARGIN);
+    let a_min = sh.exponents.iter().copied().fold(f64::INFINITY, f64::min);
+    let floor = (f64::from(sh.l + 1) / (2.0 * a_min)).sqrt();
+    if shell_bound_at(sh, floor) <= target {
+        return floor;
+    }
+    let (mut lo, mut hi) = (floor, floor * 2.0);
+    while shell_bound_at(sh, hi) > target {
+        (lo, hi) = (hi, hi * 2.0);
+        if !hi.is_finite() || hi > 1e9 {
+            return f64::INFINITY;
+        }
+    }
+    for _ in 0..60 {
+        let mid = 0.5 * (lo + hi);
+        if shell_bound_at(sh, mid) <= target {
+            hi = mid;
+        } else {
+            lo = mid;
+        }
+    }
+    hi
+}
+
+/// Squared [`shell_screen_radius`] of each shell, the form [`screen_batch`] reads.
+pub(crate) fn shell_screen_radii2(shells: &[OwnedShell], thresh: f64) -> Vec<f64> {
+    shells
+        .iter()
+        .map(|sh| shell_screen_radius(sh, thresh).powi(2))
+        .collect()
+}
+
+/// Does any value or gradient component of `sh` on `pts` strictly exceed `thresh`?
+fn shell_significant(sh: &OwnedShell, pts: &[[f64; 3]], thresh: f64) -> Result<bool, GtoEvalError> {
+    let mut buf = [0.0f64; 15];
+    let mut gbuf: [[f64; 15]; 3] = [[0.0; 15]; 3];
+    let loc = sh.located();
+    let n = sh.nfunc;
+    let mut m = 0.0_f64;
+    for p in pts {
+        buf.fill(0.0);
+        for row in gbuf.iter_mut() {
+            row.fill(0.0);
+        }
+        eval_shell_and_grad(
+            &loc,
+            p[0] - sh.center[0],
+            p[1] - sh.center[1],
+            p[2] - sh.center[2],
+            &mut buf[..n],
+            &mut gbuf,
+        )?;
+        for i in 0..n {
+            m = m
+                .max(buf[i].abs())
+                .max(gbuf[0][i].abs())
+                .max(gbuf[1][i].abs())
+                .max(gbuf[2][i].abs());
+        }
+        if m > thresh {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Bounding box of `pts`. NaN coordinates are ignored, as `f64::max` ignores them
+/// in the screening value.
+fn points_box(pts: &[[f64; 3]]) -> ([f64; 3], [f64; 3]) {
+    let (mut lo, mut hi) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
+    for p in pts {
+        for a in 0..3 {
+            lo[a] = lo[a].min(p[a]);
+            hi[a] = hi[a].max(p[a]);
+        }
+    }
+    (lo, hi)
+}
+
 /// Indices of the shells significant on `pts`: `max(|χ|, |∂xχ|, |∂yχ|, |∂zχ|)`
 /// over the points and the shell's functions strictly exceeds `thresh`.
 /// `thresh <= 0` keeps every shell (no evaluation needed). Serial.
+///
+/// A shell whose center is further from the box of `pts` than its radius in
+/// `radii2` ([`shell_screen_radii2`]) is rejected without evaluation. Such a
+/// shell fails the test above at every point, so the list is the same.
 pub(crate) fn screen_batch(
     shells: &[OwnedShell],
+    radii2: &[f64],
     pts: &[[f64; 3]],
     thresh: f64,
 ) -> Result<Vec<u32>, GtoEvalError> {
     if thresh <= 0.0 {
         return Ok((0..shells.len() as u32).collect());
     }
+    let (lo, hi) = points_box(pts);
     let mut keep = Vec::new();
-    let mut buf = [0.0f64; 15];
-    let mut gbuf: [[f64; 15]; 3] = [[0.0; 15]; 3];
     for (si, sh) in shells.iter().enumerate() {
-        let loc = sh.located();
-        let n = sh.nfunc;
-        let mut m = 0.0_f64;
-        for p in pts {
-            buf.fill(0.0);
-            for row in gbuf.iter_mut() {
-                row.fill(0.0);
-            }
-            eval_shell_and_grad(
-                &loc,
-                p[0] - sh.center[0],
-                p[1] - sh.center[1],
-                p[2] - sh.center[2],
-                &mut buf[..n],
-                &mut gbuf,
-            )?;
-            for i in 0..n {
-                m = m
-                    .max(buf[i].abs())
-                    .max(gbuf[0][i].abs())
-                    .max(gbuf[1][i].abs())
-                    .max(gbuf[2][i].abs());
-            }
-            if m > thresh {
-                break;
-            }
+        let mut d2 = 0.0_f64;
+        for a in 0..3 {
+            let e = (lo[a] - sh.center[a]).max(sh.center[a] - hi[a]).max(0.0);
+            d2 += e * e;
         }
-        if m > thresh {
+        if d2 > radii2[si] * (1.0 + SCREEN_DIST2_MARGIN) {
+            continue;
+        }
+        if shell_significant(sh, pts, thresh)? {
             keep.push(si as u32);
         }
     }
@@ -943,11 +1072,12 @@ impl ScreenedGrid {
         let xyz: Vec<[f64; 3]> = grid.iter().map(|g| g.xyz).collect();
         let parts = partition_points(&xyz, cfg.max_batch_pts);
         let thresh = cfg.screen_thresh;
+        let radii2 = shell_screen_radii2(&shells, thresh);
         let batches = parts
             .into_par_iter()
             .map(|idx| -> Result<XcBatch, GtoEvalError> {
                 let pts: Vec<[f64; 3]> = idx.iter().map(|&i| xyz[i as usize]).collect();
-                let kept = screen_batch(&shells, &pts, thresh)?;
+                let kept = screen_batch(&shells, &radii2, &pts, thresh)?;
                 let funcs: Vec<u32> = kept
                     .iter()
                     .flat_map(|&s| {
@@ -1527,6 +1657,224 @@ mod tests {
             ((x >> 11) as f64 / (1u64 << 53) as f64) * 20.0 - 10.0
         };
         (0..n).map(|_| [next(), next(), next()]).collect()
+    }
+
+    /// One shell at the origin, of every kind the evaluator accepts: each `l`,
+    /// pure and Cartesian (`l < 2` is never pure), with a single primitive, a tight
+    /// and a diffuse one of opposite sign, and a long contraction.
+    fn all_shell_kinds() -> Vec<(String, OwnedShell)> {
+        let contractions: [(&str, &[f64], &[f64]); 4] = [
+            ("single", &[1.1], &[1.0]),
+            ("diffuse", &[0.05], &[0.7]),
+            ("mixed-sign", &[30.0, 0.4], &[0.8, -0.6]),
+            (
+                "long",
+                &[1200.0, 180.0, 40.0, 11.0, 3.5, 1.2, 0.4, 0.12],
+                &[0.002, 0.016, -0.08, 0.2, 0.4, -0.3, 0.6, 0.25],
+            ),
+        ];
+        let mut out = Vec::new();
+        for l in 0..=4 {
+            for pure in [false, true] {
+                if pure && l < 2 {
+                    continue;
+                }
+                for (name, exps, coefs) in contractions {
+                    out.push((
+                        format!("l={l} pure={pure} {name}"),
+                        OwnedShell {
+                            l,
+                            pure,
+                            exponents: exps.to_vec(),
+                            coefficients: coefs.to_vec(),
+                            center: [0.0; 3],
+                            nfunc: ferric_core::basis::num_functions(l, pure),
+                            offset: 0,
+                        },
+                    ));
+                }
+            }
+        }
+        out
+    }
+
+    /// Unit vectors: axes, face and body diagonals, and a Lebedev sphere, where the
+    /// angular polynomials reach their largest values.
+    fn directions() -> Vec<[f64; 3]> {
+        let mut d = ferric_quadrature::lebedev::lebedev(590).0;
+        for x in [-1.0_f64, 0.0, 1.0] {
+            for y in [-1.0_f64, 0.0, 1.0] {
+                for z in [-1.0_f64, 0.0, 1.0] {
+                    let n = (x * x + y * y + z * z).sqrt();
+                    if n > 0.0 {
+                        d.push([x / n, y / n, z / n]);
+                    }
+                }
+            }
+        }
+        d
+    }
+
+    const SCREEN_THRESHOLDS: [f64; 7] = [1e-14, 1e-12, 1e-10, 1e-8, 1e-6, 1e-3, 1e-1];
+
+    /// Largest screening value of `sh` over the sphere of radius `r`.
+    fn largest_on_sphere(sh: &OwnedShell, r: f64, dirs: &[[f64; 3]]) -> f64 {
+        let mut m = 0.0_f64;
+        for d in dirs {
+            let (mut buf, mut gbuf) = ([0.0f64; 15], [[0.0f64; 15]; 3]);
+            eval_shell_and_grad(
+                &sh.located(),
+                r * d[0],
+                r * d[1],
+                r * d[2],
+                &mut buf,
+                &mut gbuf,
+            )
+            .unwrap();
+            for i in 0..sh.nfunc {
+                m = m
+                    .max(buf[i].abs())
+                    .max(gbuf[0][i].abs())
+                    .max(gbuf[1][i].abs())
+                    .max(gbuf[2][i].abs());
+            }
+        }
+        m
+    }
+
+    /// The claim the prefilter rests on, checked against the evaluator for every
+    /// shell kind: at and beyond the radius nothing exceeds the threshold, out to
+    /// where the shell has vanished. Also that the bound is not vacuous: within 40%
+    /// of the radius something does exceed it, unless the shell never reaches the
+    /// threshold anywhere.
+    #[test]
+    fn nothing_exceeds_the_threshold_beyond_the_screen_radius() {
+        let dirs = directions();
+        let mut tightest = 0.0_f64;
+        let mut widest = 1.0_f64;
+        for (name, sh) in all_shell_kinds() {
+            for thresh in SCREEN_THRESHOLDS {
+                let r = shell_screen_radius(&sh, thresh);
+                assert!(r.is_finite() && r > 0.0, "{name} at {thresh:e}: radius {r}");
+                for factor in [1.0, 1.0001, 1.001, 1.01, 1.05, 1.2, 1.5, 2.0, 4.0, 16.0] {
+                    let m = largest_on_sphere(&sh, r * factor, &dirs);
+                    assert!(
+                        m <= thresh,
+                        "{name} at {thresh:e}: {m:e} at {factor} of radius {r}"
+                    );
+                }
+                let inside = (1..200)
+                    .map(|k| f64::from(k) * r / 200.0)
+                    .find(|&q| largest_on_sphere(&sh, r - q, &dirs) > thresh)
+                    .map_or(0.0, |q| q / r);
+                if inside > 0.0 {
+                    tightest = tightest.max(1.0 - inside);
+                    widest = widest.min(1.0 - inside);
+                    assert!(
+                        inside < 0.4 || thresh >= 1e-3,
+                        "{name} at {thresh:e}: radius {r} is {inside} too wide"
+                    );
+                } else {
+                    assert!(thresh >= 1e-3, "{name} at {thresh:e} never exceeded it");
+                }
+            }
+        }
+        eprintln!("true / bound radius over all kinds: {widest:.3} .. {tightest:.4}");
+        assert!(tightest > 0.99, "the bound is loose everywhere: {tightest}");
+    }
+
+    /// The anchor: the keep list with the prefilter is the keep list without it, on
+    /// batches placed across each radius for every kind of shell and threshold. An
+    /// infinite radius is the existing screen by construction.
+    #[test]
+    fn prefilter_keeps_the_list_of_the_exhaustive_screen() {
+        let dirs = directions();
+        let (mut skipped, mut kept) = (0usize, 0usize);
+        for thresh in SCREEN_THRESHOLDS {
+            let kinds = all_shell_kinds();
+            let shells: Vec<OwnedShell> = kinds.iter().map(|(_, s)| s.clone()).collect();
+            let radii2 = shell_screen_radii2(&shells, thresh);
+            let exhaustive = vec![f64::INFINITY; shells.len()];
+            for (i, r2) in radii2.iter().enumerate() {
+                let r = r2.sqrt();
+                for factor in [0.5, 0.9, 0.97, 0.999, 1.0, 1.001, 1.03, 1.3] {
+                    for d in dirs.iter().step_by(37) {
+                        let q = [r * factor * d[0], r * factor * d[1], r * factor * d[2]];
+                        // One point; the nearest point last, so a box that missed
+                        // it would look further away than it is; and a box around
+                        // the shell's center, at distance zero.
+                        let far = [q[0] + 9.0 * d[0], q[1] + 9.0 * d[1], q[2] + 9.0 * d[2]];
+                        let across = [-40.0 * d[0], -40.0 * d[1], -40.0 * d[2]];
+                        let batches = [vec![q], vec![far, q], vec![q, far], vec![q, across]];
+                        for pts in &batches {
+                            let a = screen_batch(&shells, &radii2, pts, thresh).unwrap();
+                            let b = screen_batch(&shells, &exhaustive, pts, thresh).unwrap();
+                            assert_eq!(
+                                a, b,
+                                "{} at {factor} of its radius, {thresh:e}",
+                                kinds[i].0
+                            );
+                            kept += a.len();
+                            skipped += shells.len() - a.len();
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            kept > 1000 && skipped > 1000,
+            "kept {kept}, skipped {skipped}"
+        );
+    }
+
+    /// The prefilter must actually avoid evaluations on a molecule, or it is not
+    /// worth having: count the shells a distant batch rules out from the box.
+    #[test]
+    fn prefilter_rules_out_distant_shells_on_a_molecule() {
+        let mol = water_dimer_far();
+        let bs = ferric_core::basis::bundled("cc-pvdz").unwrap();
+        let shells = owned_shells(&crate::ao_grid::collect_shells(&mol, &bs).unwrap());
+        let radii2 = shell_screen_radii2(&shells, DEFAULT_SCREEN_THRESH);
+        let near_first = [[0.0, 0.1, 0.0], [0.2, 0.0, 0.1]];
+        let (lo, hi) = points_box(&near_first);
+        let ruled_out = shells
+            .iter()
+            .zip(&radii2)
+            .filter(|(sh, r2)| {
+                let d2: f64 = (0..3)
+                    .map(|a| {
+                        (lo[a] - sh.center[a])
+                            .max(sh.center[a] - hi[a])
+                            .max(0.0)
+                            .powi(2)
+                    })
+                    .sum();
+                d2 > **r2
+            })
+            .count();
+        assert!(ruled_out > 0, "no shell of {} ruled out", shells.len());
+    }
+
+    /// Nonsense inputs must fall through to evaluation, not to a radius that drops
+    /// something: bad `l`, a thresh out of range, bad exponents and coefficients.
+    #[test]
+    fn screen_radius_is_infinite_when_nothing_can_be_proved() {
+        let sh = all_shell_kinds().remove(0).1;
+        let with = |f: &dyn Fn(&mut OwnedShell)| {
+            let mut s = sh.clone();
+            f(&mut s);
+            shell_screen_radius(&s, 1e-10)
+        };
+        assert!(with(&|s| s.l = 5).is_infinite());
+        assert!(with(&|s| s.l = -1).is_infinite());
+        assert!(with(&|s| s.exponents[0] = 0.0).is_infinite());
+        assert!(with(&|s| s.exponents[0] = -1.0).is_infinite());
+        assert!(with(&|s| s.exponents[0] = f64::NAN).is_infinite());
+        assert!(with(&|s| s.coefficients[0] = f64::INFINITY).is_infinite());
+        assert!(shell_screen_radius(&sh, 1e-300).is_infinite());
+        assert!(shell_screen_radius(&sh, f64::NAN).is_infinite());
+        // A real shell at a real threshold gets a finite one, so this is not all.
+        assert!(shell_screen_radius(&sh, 1e-10).is_finite());
     }
 
     fn water_dimer_far() -> ferric_core::mol::Molecule {

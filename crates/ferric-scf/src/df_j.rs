@@ -22,9 +22,9 @@
 //!   (disjoint writes, not summed partials).
 //!
 //!   Pass 2: J\[μν\] = Σ_P B\[P,μν\] c_P is a true reduction (every P contributes
-//!   to the same μν output), so it uses `crate::reduce::grouped_deterministic_sum`
-//!   — the same bounded, thread-count-independent accumulator DF-K uses — over
-//!   the same rayon aux-chunks.
+//!   to the same μν output), so it uses
+//!   `crate::reduce::grouped_deterministic_fold_columns`, which has the bits of the
+//!   serial accumulator DF-K uses, over the same rayon aux-chunks.
 //!
 //! Block streaming (and its disk IO on the spill path) stays sequential in
 //! `for_each_block`, exactly as DF-K; only the in-memory contraction of the
@@ -37,6 +37,7 @@ use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_integrals::three_index_source::ThreeIndexSource;
 use ferric_integrals::threeindex::coulomb_metric_2c;
+use ndarray::linalg::general_mat_vec_mul;
 use ndarray::{Array1, Array2, OwnedRepr};
 use ndarray_linalg::cholesky::{CholeskyFactorized, FactorizeC, SolveC};
 use ndarray_linalg::UPLO;
@@ -256,6 +257,43 @@ fn chunk_width(n: usize) -> usize {
     ferric_integrals::three_index_source::df_chunk_width(n)
 }
 
+/// Partials pass 2 keeps at once: what the band budget affords, at most
+/// [`crate::reduce::MAX_FOLD_PARTIALS`]. Sized with `n²` per partial on the packed
+/// path as well, which is only cautious. A result cannot depend on it.
+fn pass2_band(n: usize, budget_bytes: usize) -> usize {
+    let band_bytes = crate::reduce::resolve_band_bytes(budget_bytes);
+    crate::reduce::band_width(n, band_bytes).min(crate::reduce::MAX_FOLD_PARTIALS)
+}
+
+/// `acc += flat^T c` for one block, one fixed-width aux chunk at a time. Chunk
+/// edges depend only on the block height and `chunk`.
+fn pass2_block(
+    acc: &mut [f64],
+    flat: ndarray::ArrayView2<'_, f64>,
+    c: ndarray::ArrayView1<'_, f64>,
+    chunk: usize,
+    band: usize,
+    scratch: &mut Vec<Vec<f64>>,
+) {
+    let b = flat.nrows();
+    crate::reduce::grouped_deterministic_fold_columns(
+        acc,
+        b.div_ceil(chunk),
+        band,
+        scratch,
+        |ci, y| {
+            let q0 = ci * chunk;
+            let q1 = (q0 + chunk).min(b);
+            let sub = flat.slice(ndarray::s![q0..q1, ..]);
+            let c_sub = c.slice(ndarray::s![q0..q1]);
+            // contrib[μν] = Σ_{P in chunk} B[P,μν] c_P, as `sub.t().dot(&c_sub)`
+            // computes it. beta = 0, so `y`'s old contents are not read.
+            let mut y = ndarray::ArrayViewMut1::from(y);
+            general_mat_vec_mul(1.0, &sub.t(), &c_sub, 0.0, &mut y);
+        },
+    );
+}
+
 /// Weights `w` such that `Σ_{μν} B[μν] D[μν] = Σ_k Bp[k] w[k]` for any
 /// μν-symmetric `B` stored as its packed lower triangle `Bp` in `(μ, ν≤μ)`
 /// row-major order: `w[μμ] = D[μμ]` and `w[μν] = D[μν] + D[νμ]` off the
@@ -327,31 +365,15 @@ impl DfJ<'_> {
         self.reduce_d_p(&mut d_p);
         let c_p = self.solve_metric(&d_p)?;
 
-        let mut acc = Array2::<f64>::zeros((1, pair));
-        let band_bytes = crate::reduce::resolve_band_bytes(self.budget_bytes);
+        let mut acc = vec![0.0_f64; pair];
+        let band = pass2_band(n, self.budget_bytes);
+        let mut scratch = Vec::new();
         self.source.for_each_packed_block(chunk, |blk| {
-            let b = blk.data.nrows();
-            crate::reduce::grouped_deterministic_sum(
-                &mut acc,
-                b.div_ceil(chunk),
-                n,
-                band_bytes,
-                |ci| -> Result<Array2<f64>, FerricError> {
-                    let q0 = ci * chunk;
-                    let q1 = (q0 + chunk).min(b);
-                    let sub = blk.data.slice(ndarray::s![q0..q1, ..]);
-                    let c_sub = c_p.slice(ndarray::s![blk.p0 + q0..blk.p0 + q1]);
-                    sub.t()
-                        .dot(&c_sub)
-                        .into_shape_with_order((1, pair))
-                        .map_err(|e| FerricError::General(format!("contrib reshape: {e}")))
-                },
-            )
+            let c_blk = c_p.slice(ndarray::s![blk.p0..blk.p0 + blk.data.nrows()]);
+            pass2_block(&mut acc, blk.data, c_blk, chunk, band, &mut scratch);
+            Ok(())
         })?;
-        let acc_flat = acc
-            .as_slice()
-            .ok_or_else(|| FerricError::General("packed J accumulator not contiguous".into()))?;
-        unpack_symmetric(acc_flat, n, j);
+        unpack_symmetric(&acc, n, j);
         Ok(())
     }
 
@@ -469,40 +491,24 @@ impl JBuilder for DfJ<'_> {
         let c_p = self.solve_metric(&d_p)?;
 
         // Pass 2: J[μν] = Σ_P B[P,μν] c_P. This IS a true reduction (every P
-        // contributes to every μν), so accumulate via grouped_deterministic_sum
-        // — the same bounded, thread-count-independent accumulator DF-K uses —
-        // over rayon-parallel aux-chunks within each block.
-        j.fill(0.0);
+        // contributes to every μν), so accumulate through the ordered column
+        // fold, over rayon-parallel aux-chunks within each block.
+        let band = pass2_band(n, self.budget_bytes);
+        let mut scratch = Vec::new();
+        let mut acc = vec![0.0_f64; n * n];
         self.source.for_each_block(|blk| {
             let b = blk.data.shape()[0];
             let flat = blk
                 .data
                 .into_shape_with_order((b, n * n))
                 .map_err(|e| FerricError::General(format!("blk reshape: {e}")))?;
-            let c_blk_full = c_p.slice(ndarray::s![blk.p0..blk.p0 + b]);
-            let n_chunks = b.div_ceil(chunk);
-            let band_bytes = crate::reduce::resolve_band_bytes(self.budget_bytes);
-            crate::reduce::grouped_deterministic_sum(
-                j,
-                n_chunks,
-                n,
-                band_bytes,
-                |ci| -> Result<Array2<f64>, FerricError> {
-                    let q0 = ci * chunk;
-                    let q1 = (q0 + chunk).min(b);
-                    let sub = flat.slice(ndarray::s![q0..q1, ..]);
-                    let c_sub = c_blk_full.slice(ndarray::s![q0..q1]);
-                    // contrib[μν] = Σ_{P in chunk} B[P,μν] c_P — one
-                    // (n*n, c)×(c,) GEMV.
-                    let contrib_flat = sub.t().dot(&c_sub); // (n*n,)
-                    let contrib = contrib_flat
-                        .into_shape_with_order((n, n))
-                        .map_err(|e| FerricError::General(format!("contrib reshape: {e}")))?;
-                    Ok(contrib)
-                },
-            )?;
+            let c_blk = c_p.slice(ndarray::s![blk.p0..blk.p0 + b]);
+            pass2_block(&mut acc, flat, c_blk, chunk, band, &mut scratch);
             Ok(())
         })?;
+        let acc = ndarray::ArrayView2::from_shape((n, n), &acc)
+            .map_err(|e| FerricError::General(format!("J reshape: {e}")))?;
+        j.assign(&acc);
 
         self.reduce_j(j);
 
@@ -521,6 +527,70 @@ mod tests {
     use ferric_core::mol::Molecule;
     use ferric_core::parallel::ParallelContext;
     use ndarray::Array2;
+
+    /// Pass 2 has the bits of the accumulator it replaced (`grouped_deterministic_sum`
+    /// over `dot`), at any thread count and band, from a dirty scratch, over several
+    /// aux chunks. The tensor is synthetic, with no μν symmetry and a wide range of
+    /// sizes, so that a transposed result or a reordered sum would show.
+    #[test]
+    fn pass2_has_the_bits_of_the_grouped_sum_over_dot() {
+        let (n, naux) = (23usize, 611usize);
+        let chunk = chunk_width(n);
+        assert!(naux > 4 * chunk, "too few aux functions for several chunks");
+        let flat = Array2::from_shape_fn((naux, n * n), |(p, k)| {
+            let x = ((p * 13 + k * 7) % 29) as f64 - 14.0;
+            x * 10.0_f64.powi(((p + 2 * k) % 13) as i32 - 6) / (1.3 + k as f64)
+        });
+        let c = Array1::from_shape_fn(naux, |p| ((p * 5 % 17) as f64 - 8.0) * 0.37);
+        let mut reference = Array2::<f64>::zeros((n, n));
+        crate::reduce::grouped_deterministic_sum(
+            &mut reference,
+            naux.div_ceil(chunk),
+            n,
+            1 << 30,
+            |ci| {
+                let q0 = ci * chunk;
+                let q1 = (q0 + chunk).min(naux);
+                let sub = flat.slice(ndarray::s![q0..q1, ..]);
+                let part = sub.t().dot(&c.slice(ndarray::s![q0..q1]));
+                Ok(part.into_shape_with_order((n, n)).unwrap())
+            },
+        )
+        .unwrap();
+        let expected: Vec<u64> = reference.iter().map(|x| x.to_bits()).collect();
+        for threads in [1usize, 2, 3, 8] {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .unwrap();
+            for band in [1usize, 5, crate::reduce::MAX_FOLD_PARTIALS] {
+                let mut acc = vec![0.0_f64; n * n];
+                let mut scratch = vec![vec![f64::NAN; n * n]; band];
+                pool.install(|| {
+                    pass2_block(&mut acc, flat.view(), c.view(), chunk, band, &mut scratch);
+                });
+                let got: Vec<u64> = acc.iter().map(|x| x.to_bits()).collect();
+                assert!(got == expected, "threads {threads} band {band}");
+            }
+        }
+    }
+
+    /// The band can never pass the fixed cap or the budget's share, and it does not
+    /// read the thread count.
+    #[test]
+    fn pass2_band_is_capped_and_ignores_the_pool() {
+        let gib = 1usize << 30;
+        for threads in [1usize, 2, 12] {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .unwrap();
+            pool.install(|| {
+                assert_eq!(pass2_band(490, 16 * gib), crate::reduce::MAX_FOLD_PARTIALS);
+                assert_eq!(pass2_band(490, 1), 1);
+            });
+        }
+    }
 
     #[test]
     fn df_j_matches_direct_j_within_fit_error() {
