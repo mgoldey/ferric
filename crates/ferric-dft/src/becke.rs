@@ -204,9 +204,9 @@ pub fn becke_weights_all(mol: &Molecule, r: [f64; 3]) -> Vec<f64> {
 ///   Then the rounding of `r_A - r_B` moves `|μ|` past the triangle inequality by
 ///   less than `2^-20`. `ν = μ + a(1 - μ²)` with `|a| <= 0.5` is monotone in `μ` with
 ///   `ν(±1) = ±1`, so `|ν| <= 1 + 2^-18`.
-/// - `x = 1 - d`, `0 < d`, `x >= 1/√2`. `x` is a multiple of `2u` and so is
-///   `1 - 2d`, which is representable and below `x²`, so `x * x` rounds to at
-///   least it: `x² - (x * x) <= d²`. The subtraction rounds by at most `2^-52`. So
+/// - `x = 1 - d`, `0 < d`, `x >= 1/√2`. `x` is a multiple of `u`, so `1 - 2d =
+///   2x - 1` is a multiple of `2u`, which is representable and below `x²`, so
+///   `x * x` rounds to at least it: `x² - (x * x) <= d²`. The subtraction rounds by at most `2^-52`. So
 ///   before the last rounding the product is at most `1 - d² + 2^-53(1 - d)`, below
 ///   the midpoint `1 + 2^-53`, and it rounds to at most `1.0`.
 /// - `x = 1 + d`, `0 <= d < 2^-17`. The same argument gives at most
@@ -279,12 +279,11 @@ impl BeckeTable {
         }
     }
 
-    /// `becke_weights_all(mol, r)[home]`, bit for bit.
-    pub(crate) fn weight(&self, r: [f64; 3], home: usize, scratch: &mut BeckeScratch) -> f64 {
-        let n = self.n;
-        let BeckeScratch { r: rd, p: pc } = scratch;
+    /// Fill `rd` with the distances from `r` to each atom, and say whether a cell
+    /// may stop at an exact zero for this point (see [`BeckeTable`]).
+    fn distances(&self, r: [f64; 3], rd: &mut [f64]) -> bool {
         let mut may_stop = true;
-        for x in 0..n {
+        for x in 0..self.n {
             let dx = r[0] - self.xyz[x][0];
             let dy = r[1] - self.xyz[x][1];
             let dz = r[2] - self.xyz[x][2];
@@ -292,6 +291,15 @@ impl BeckeTable {
             // Written so a NaN distance also clears it.
             may_stop &= rd[x] < self.stop_limit;
         }
+        may_stop
+    }
+
+    /// `becke_weights_all(mol, r)[home]`, bit for bit. The one exception is the sign
+    /// of a NaN result when an atom coordinate is itself NaN.
+    pub(crate) fn weight(&self, r: [f64; 3], home: usize, scratch: &mut BeckeScratch) -> f64 {
+        let n = self.n;
+        let BeckeScratch { r: rd, p: pc } = scratch;
+        let may_stop = self.distances(r, rd);
         for a in 0..n {
             let ra = rd[a];
             let rab = &self.r_ab[a * n..a * n + n];
@@ -1829,6 +1837,53 @@ mod partition_over_tests {
         assert!(
             negative_zero > 0,
             "no -0.0 in {checked} weights, so this test cannot see the guard"
+        );
+    }
+
+    /// The stop is allowed exactly below `2^30 * R_min`, for a point just inside and
+    /// just outside, with `R_min` the smallest pair a cell does not skip. The bits at
+    /// this boundary cannot show a wrong ratio, because rounding only reaches a
+    /// negative factor at far larger ratios, so this pins the decision itself.
+    #[test]
+    fn stop_is_allowed_only_inside_the_guard_ratio() {
+        let ratio = 2.0_f64.powi(30);
+        let at = |x: f64| [x, 0.0, 0.0];
+        let unit = Molecule {
+            atoms: vec![atom(6, "C", at(0.0)), atom(6, "C", at(1.0))],
+            charge: 0,
+            multiplicity: 1,
+        };
+        let table = BeckeTable::new(&unit);
+        let mut rd = vec![0.0; 2];
+        assert!(table.distances(at(ratio - 2.0), &mut rd), "just inside");
+        assert!(!table.distances(at(ratio + 2.0), &mut rd), "just outside");
+        assert!(!table.distances(at(f64::NAN), &mut rd), "a NaN distance");
+        for x in [ratio - 2.0, ratio + 2.0] {
+            let reference = becke_weights_all(&unit, at(x));
+            let mut scratch = table.scratch();
+            for (h, w) in reference.iter().enumerate() {
+                assert_eq!(table.weight(at(x), h, &mut scratch).to_bits(), w.to_bits());
+            }
+        }
+        // A pair under the 1e-12 skip does not set R_min: it is never divided by.
+        let skipped = Molecule {
+            atoms: vec![
+                atom(6, "C", at(0.0)),
+                atom(6, "C", at(5e-13)),
+                atom(6, "C", at(3.0)),
+            ],
+            charge: 0,
+            multiplicity: 1,
+        };
+        let table = BeckeTable::new(&skipped);
+        let mut rd = vec![0.0; 3];
+        assert!(
+            table.distances(at(2.0 * ratio), &mut rd),
+            "R_min is about 3"
+        );
+        assert!(
+            !table.distances(at(4.0 * ratio), &mut rd),
+            "R_min is about 3"
         );
     }
 

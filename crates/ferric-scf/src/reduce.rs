@@ -62,6 +62,10 @@ const DEFAULT_BAND_BYTES: usize = 512 * 1024 * 1024;
 ///
 /// Band width affects ONLY the live set and the degree of parallelism, never
 /// the fold order (see [`band_width`]), so this cannot perturb any result.
+///
+/// RI-J pass 2 applies a further cap of [`MAX_FOLD_PARTIALS`] partials to whatever
+/// this returns (`df_j::pass2_band`), so for J the env override does not widen the
+/// band past that.
 pub fn resolve_band_bytes(mem_budget_bytes: usize) -> usize {
     static BAND_BYTES: ferric_core::config::ConfigVar<usize> = ferric_core::config::ConfigVar {
         env_name: "FERRIC_REDUCE_BAND_BYTES",

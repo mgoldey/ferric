@@ -430,6 +430,10 @@ fn shell_significant(sh: &OwnedShell, pts: &[[f64; 3]], thresh: f64) -> Result<b
     let loc = sh.located();
     let n = sh.nfunc;
     let mut m = 0.0_f64;
+    #[cfg(test)]
+    if sh.exponents.first() == Some(&tests::COUNTED_EXPONENT) {
+        tests::COUNTED_EVALUATIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
     for p in pts {
         buf.fill(0.0);
         for row in gbuf.iter_mut() {
@@ -1825,6 +1829,79 @@ mod tests {
             kept > 1000 && skipped > 1000,
             "kept {kept}, skipped {skipped}"
         );
+    }
+
+    /// Exponent of the shells [`COUNTED_EVALUATIONS`] counts. No basis has it, so
+    /// tests running alongside cannot touch the counter.
+    pub(super) const COUNTED_EXPONENT: f64 = 987.654321;
+    /// Times `shell_significant` was entered for a shell of [`COUNTED_EXPONENT`].
+    pub(super) static COUNTED_EVALUATIONS: std::sync::atomic::AtomicUsize =
+        std::sync::atomic::AtomicUsize::new(0);
+
+    fn s_shell(exponent: f64, center: [f64; 3], offset: usize) -> OwnedShell {
+        OwnedShell {
+            l: 0,
+            pure: false,
+            exponents: vec![exponent],
+            coefficients: vec![1.0],
+            center,
+            nfunc: 1,
+            offset,
+        }
+    }
+
+    /// Production goes through the prefilter: `ScreenedGrid::build` must reject
+    /// shells far from a batch without evaluating them, on each side of the box, and
+    /// keep the same list. The counter is seen to move when the same shells are near
+    /// a batch, and when `screen_batch` is handed infinite radii.
+    #[test]
+    fn screened_grid_build_does_not_evaluate_shells_beyond_their_radius() {
+        use crate::grid::GridPoint;
+        use std::sync::atomic::Ordering::Relaxed;
+        let evals = || COUNTED_EVALUATIONS.load(Relaxed);
+        let shells: Vec<OwnedShell> = vec![
+            s_shell(0.5, [0.0; 3], 0),
+            s_shell(COUNTED_EXPONENT, [50.0, 0.0, 0.0], 1),
+            s_shell(COUNTED_EXPONENT, [-50.0, 0.0, 0.0], 2),
+            s_shell(COUNTED_EXPONENT, [0.0, 50.0, 0.0], 3),
+            s_shell(COUNTED_EXPONENT, [0.0, -50.0, 0.0], 4),
+            s_shell(COUNTED_EXPONENT, [0.0, 0.0, 50.0], 5),
+            s_shell(COUNTED_EXPONENT, [0.0, 0.0, -50.0], 6),
+        ];
+        let grid_at = |c: [f64; 3]| -> Vec<GridPoint> {
+            let mut pts = lcg_points(300, 7);
+            pts.push([0.01, 0.0, 0.0]); // On top of a shell at `c`, whatever its exponent.
+            pts.iter()
+                .map(|p| GridPoint {
+                    xyz: [c[0] + p[0] * 0.1, c[1] + p[1] * 0.1, c[2] + p[2] * 0.1],
+                    weight: 1.0,
+                    home_atom: 0,
+                })
+                .collect()
+        };
+        let cfg = XcBatchConfig {
+            max_batch_pts: 64,
+            ..Default::default()
+        };
+        let before = evals();
+        let sg = ScreenedGrid::build(&grid_at([0.0; 3]), shells.clone(), 7, &cfg).unwrap();
+        assert_eq!(evals(), before, "a far shell was evaluated by build");
+        assert!(sg.batches.len() > 1);
+        for b in &sg.batches {
+            assert_eq!(b.shells, vec![0], "only the shell at the origin is near");
+        }
+        // Near a counted shell, it is evaluated: the counter can move.
+        let before = evals();
+        let sg = ScreenedGrid::build(&grid_at([50.0, 0.0, 0.0]), shells.clone(), 7, &cfg).unwrap();
+        assert!(evals() > before, "the counter did not see a near shell");
+        assert!(sg.batches.iter().any(|b| b.shells.contains(&1)));
+        // Without radii the same far batch evaluates them all, to the same list.
+        let pts: Vec<[f64; 3]> = grid_at([0.0; 3]).iter().map(|g| g.xyz).collect();
+        let before = evals();
+        let none = vec![f64::INFINITY; shells.len()];
+        let kept = screen_batch(&shells, &none, &pts, DEFAULT_SCREEN_THRESH).unwrap();
+        assert_eq!(evals() - before, 6);
+        assert_eq!(kept, vec![0]);
     }
 
     /// The prefilter must actually avoid evaluations on a molecule, or it is not

@@ -261,7 +261,10 @@ fn chunk_width(n: usize) -> usize {
 /// [`crate::reduce::MAX_FOLD_PARTIALS`]. Sized with `n²` per partial on the packed
 /// path as well, which is only cautious. A result cannot depend on it.
 fn pass2_band(n: usize, budget_bytes: usize) -> usize {
-    let band_bytes = crate::reduce::resolve_band_bytes(budget_bytes);
+    pass2_band_for_bytes(n, crate::reduce::resolve_band_bytes(budget_bytes))
+}
+
+fn pass2_band_for_bytes(n: usize, band_bytes: usize) -> usize {
     crate::reduce::band_width(n, band_bytes).min(crate::reduce::MAX_FOLD_PARTIALS)
 }
 
@@ -575,10 +578,74 @@ mod tests {
         }
     }
 
+    /// The unpacked path places a block by its global aux index. An in-core band
+    /// starting past zero is the case where getting that wrong shows, in pass 1 and in
+    /// pass 2: without a reduction, this J is exactly the band's own contribution.
+    #[test]
+    fn unpacked_j_uses_the_global_aux_index_of_a_band() {
+        let mol = alkane(2);
+        let obs = PreparedBasis::new(&mol, &basis::bundled("def2-svp").unwrap()).unwrap();
+        let dfbs =
+            PreparedBasis::new(&mol, &basis::bundled("def2-universal-jkfit").unwrap()).unwrap();
+        let op = Operator::coulomb();
+        let (n, naux) = (obs.nbasis(), dfbs.nbasis());
+        let p0 = naux / 3;
+        assert!(p0 > 0);
+        let d = dense_density(n, false);
+
+        let mut full = DfJ::new(op, &obs, &dfbs, usize::MAX).unwrap();
+        assert!(
+            !full.source.supports_packed_stream(),
+            "not the unpacked path"
+        );
+        let mut b = Array2::<f64>::zeros((naux, n * n));
+        full.source
+            .for_each_block(|blk| {
+                for (i, slab) in blk.data.outer_iter().enumerate() {
+                    let row = slab.as_standard_layout().to_owned();
+                    let row = row.into_shape_with_order(n * n).unwrap();
+                    b.row_mut(blk.p0 + i).assign(&row);
+                }
+                Ok(())
+            })
+            .unwrap();
+
+        let d_flat = d.view().into_shape_with_order(n * n).unwrap();
+        let mut d_p = Array1::<f64>::zeros(naux);
+        for p in p0..naux {
+            d_p[p] = b.row(p).dot(&d_flat);
+        }
+        let c = full.solve_metric(&d_p).unwrap();
+        let mut expected = Array1::<f64>::zeros(n * n);
+        for p in p0..naux {
+            expected.scaled_add(c[p], &b.row(p));
+        }
+
+        let src = ThreeIndexSource::build_band(op, &obs, &dfbs, usize::MAX, p0, naux).unwrap();
+        assert!(!src.supports_packed_stream(), "not the unpacked path");
+        let mut band = DfJ::from_source(src, op, &dfbs, usize::MAX, None).unwrap();
+        let mut j = Array2::<f64>::zeros((n, n));
+        band.build(&d, &mut j).unwrap();
+        let worst = j
+            .iter()
+            .zip(expected.iter())
+            .map(|(a, e)| (a - e).abs())
+            .fold(0.0, f64::max);
+        // Relative: the band's d_P makes c large, and its solve carries that rounding.
+        let scale = expected.iter().map(|x| x.abs()).fold(0.0, f64::max);
+        assert!(scale > 1e-3, "a vacuous J");
+        assert!(
+            worst < 1e-8 * scale,
+            "band J differs by {worst:e} of {scale:e}"
+        );
+    }
+
     /// The band can never pass the fixed cap or the budget's share, and it does not
     /// read the thread count.
     #[test]
     fn pass2_band_is_capped_and_ignores_the_pool() {
+        // Takes the bytes directly: `resolve_band_bytes` reads an env var other tests
+        // set, and this test is about what happens after it.
         let gib = 1usize << 30;
         for threads in [1usize, 2, 12] {
             let pool = rayon::ThreadPoolBuilder::new()
@@ -586,8 +653,12 @@ mod tests {
                 .build()
                 .unwrap();
             pool.install(|| {
-                assert_eq!(pass2_band(490, 16 * gib), crate::reduce::MAX_FOLD_PARTIALS);
-                assert_eq!(pass2_band(490, 1), 1);
+                assert_eq!(
+                    pass2_band_for_bytes(490, gib),
+                    crate::reduce::MAX_FOLD_PARTIALS
+                );
+                assert_eq!(pass2_band_for_bytes(490, 490 * 490 * 8 * 3), 3);
+                assert_eq!(pass2_band_for_bytes(490, 1), 1);
             });
         }
     }
