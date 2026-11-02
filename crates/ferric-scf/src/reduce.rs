@@ -62,6 +62,10 @@ const DEFAULT_BAND_BYTES: usize = 512 * 1024 * 1024;
 ///
 /// Band width affects ONLY the live set and the degree of parallelism, never
 /// the fold order (see [`band_width`]), so this cannot perturb any result.
+///
+/// RI-J pass 2 applies a further cap of [`MAX_FOLD_PARTIALS`] partials to whatever
+/// this returns (`df_j::pass2_band`), so for J the env override does not widen the
+/// band past that.
 pub fn resolve_band_bytes(mem_budget_bytes: usize) -> usize {
     static BAND_BYTES: ferric_core::config::ConfigVar<usize> = ferric_core::config::ConfigVar {
         env_name: "FERRIC_REDUCE_BAND_BYTES",
@@ -229,14 +233,76 @@ where
         // the sum returns different bits than this linear scan and would shift
         // every SCF energy in the codebase. The guarantee documented above —
         // identical results across RAYON_NUM_THREADS and across band budgets —
-        // is exactly this ascending order. Parallelism here is only available
-        // at the cost of the invariant, which is not a trade worth making.
+        // is that each ELEMENT receives its additions in ascending group order.
+        // What must not change is that per-element order, not the seriality:
+        // splitting the elements among threads keeps it, as
+        // [`grouped_deterministic_fold_columns`] does.
         for p in &partials {
             *acc += p;
         }
         g0 = g1;
     }
     Ok(())
+}
+
+/// Most partials [`grouped_deterministic_fold_columns`]'s caller keeps at once.
+/// More than this adds memory and no speed at the core counts in use. Never read
+/// from the thread count, though here it could not change a result.
+pub const MAX_FOLD_PARTIALS: usize = 24;
+
+/// Elements of the accumulator one worker folds at a time.
+const FOLD_COLUMN_SLAB: usize = 4096;
+
+/// [`grouped_deterministic_sum`] over flat partials, with the same bits, reusing
+/// `scratch` between bands and folding in parallel.
+///
+/// `fill(g, y)` overwrites `y` with group `g`'s partial, without reading it: the
+/// buffers hold the previous band's values. Each band's partials are folded with
+/// the accumulator split into disjoint slabs of elements, and within a slab the
+/// partials are added in ascending group order. So every element sees exactly the
+/// additions of the serial fold, in the same order, whichever thread runs its
+/// slab, and neither the thread count, nor `band`, nor the slab width can change a
+/// bit. It is a different thing from a tree fold, which adds partials to each
+/// other first and so re-brackets each element's sum.
+///
+/// Live set: `min(band, n_groups)` buffers of `acc.len()`, kept in `scratch`.
+pub fn grouped_deterministic_fold_columns<F>(
+    acc: &mut [f64],
+    n_groups: usize,
+    band: usize,
+    scratch: &mut Vec<Vec<f64>>,
+    fill: F,
+) where
+    F: Fn(usize, &mut [f64]) + Sync,
+{
+    let cols = acc.len();
+    let band = band.max(1).min(n_groups);
+    scratch.truncate(band);
+    for y in scratch.iter_mut() {
+        y.resize(cols, 0.0);
+    }
+    scratch.resize_with(band, || vec![0.0; cols]);
+    let mut g0 = 0usize;
+    while g0 < n_groups {
+        let g1 = (g0 + band).min(n_groups);
+        let live = &mut scratch[..g1 - g0];
+        live.par_iter_mut()
+            .enumerate()
+            .for_each(|(k, y)| fill(g0 + k, y));
+        let live = &*live;
+        acc.par_chunks_mut(FOLD_COLUMN_SLAB)
+            .enumerate()
+            .for_each(|(s, slab)| {
+                let c0 = s * FOLD_COLUMN_SLAB;
+                let c1 = c0 + slab.len();
+                for p in live {
+                    for (a, b) in slab.iter_mut().zip(&p[c0..c1]) {
+                        *a += *b;
+                    }
+                }
+            });
+        g0 = g1;
+    }
 }
 
 /// Like [`grouped_deterministic_sum`] but each group yields a **pair** of
@@ -537,6 +603,107 @@ mod tests {
             r1, r8,
             "must be bit-identical across thread counts (1 vs 8)"
         );
+    }
+
+    /// Partials of very different size, so that the sum depends on its order, and
+    /// a run of exact cancellations that would show a wrong sign of zero.
+    fn order_sensitive_partial(g: usize, cols: usize) -> Vec<f64> {
+        (0..cols)
+            .map(|c| {
+                let x = ((g * 7 + c * 3) % 19) as f64 - 9.0;
+                let scale = 10.0_f64.powi(((g * 5 + c) % 17) as i32 - 8);
+                if c % 11 == 0 {
+                    -0.0
+                } else {
+                    x * scale / ((g as f64) + 1.7)
+                }
+            })
+            .collect()
+    }
+
+    fn serial_reference(n_groups: usize, cols: usize, start: f64) -> Vec<f64> {
+        let mut acc = vec![start; cols];
+        for g in 0..n_groups {
+            for (a, b) in acc.iter_mut().zip(order_sensitive_partial(g, cols)) {
+                *a += b;
+            }
+        }
+        acc
+    }
+
+    fn bits(v: &[f64]) -> Vec<u64> {
+        v.iter().map(|x| x.to_bits()).collect()
+    }
+
+    /// The column fold has the bits of the serial fold at any thread count and
+    /// band, over more than one slab, with buffers that start full of garbage.
+    #[test]
+    fn column_fold_has_the_bits_of_the_serial_fold() {
+        let n_groups = 53;
+        let cols = FOLD_COLUMN_SLAB * 2 + 123;
+        // `-0.0` start: the first `+` decides the sign of an all-zero element.
+        for start in [0.0_f64, -0.0, 1.0e3] {
+            let expected = bits(&serial_reference(n_groups, cols, start));
+            for threads in [1usize, 2, 3, 8] {
+                let pool = rayon::ThreadPoolBuilder::new()
+                    .num_threads(threads)
+                    .build()
+                    .unwrap();
+                for band in [1usize, 2, 7, 24, 53, 500] {
+                    let mut acc = vec![start; cols];
+                    let mut scratch = vec![vec![f64::NAN; cols]; 3];
+                    pool.install(|| {
+                        grouped_deterministic_fold_columns(
+                            &mut acc,
+                            n_groups,
+                            band,
+                            &mut scratch,
+                            |g, y| y.copy_from_slice(&order_sensitive_partial(g, cols)),
+                        );
+                    });
+                    assert_eq!(
+                        bits(&acc),
+                        expected,
+                        "start {start} threads {threads} band {band}"
+                    );
+                    assert!(scratch.len() <= band, "live set above the band");
+                }
+            }
+        }
+    }
+
+    /// This fixture sees the order of the sum: reversing it changes bits. Without
+    /// that, the test above would pass whatever the fold did.
+    #[test]
+    fn column_fold_fixture_is_order_sensitive() {
+        let (n_groups, cols) = (53, 400);
+        let forward = serial_reference(n_groups, cols, 0.0);
+        let mut reversed = vec![0.0; cols];
+        for g in (0..n_groups).rev() {
+            for (a, b) in reversed.iter_mut().zip(order_sensitive_partial(g, cols)) {
+                *a += b;
+            }
+        }
+        let differ = forward
+            .iter()
+            .zip(&reversed)
+            .filter(|(a, b)| a.to_bits() != b.to_bits())
+            .count();
+        assert!(differ > cols / 4, "only {differ} of {cols} elements differ");
+    }
+
+    #[test]
+    fn column_fold_handles_no_groups_and_short_scratch() {
+        let mut acc = vec![2.5; 8];
+        let mut scratch = vec![vec![1.0; 3]];
+        grouped_deterministic_fold_columns(&mut acc, 0, 4, &mut scratch, |_, _| {
+            panic!("no group to make")
+        });
+        assert_eq!(acc, vec![2.5; 8]);
+        grouped_deterministic_fold_columns(&mut acc, 2, 4, &mut scratch, |g, y| {
+            y.fill(g as f64 + 1.0)
+        });
+        assert_eq!(acc, vec![5.5; 8]);
     }
 
     #[test]

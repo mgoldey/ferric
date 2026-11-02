@@ -184,6 +184,153 @@ pub fn becke_weights_all(mol: &Molecule, r: [f64; 3]) -> Vec<f64> {
     p_cell.iter().map(|p| p / total).collect()
 }
 
+/// [`becke_weights_all`] for one molecule and many points: the per-pair geometry
+/// once, and no allocation per point.
+///
+/// Every intermediate is the same expression on the same inputs as
+/// [`becke_weights_all`], and the factors of each cell multiply in the same
+/// ascending order, so [`Self::weight`] returns the same bits.
+///
+/// # Why stopping a cell at an exact zero keeps the bits
+///
+/// A cell whose product reached exactly `0.0` skips its remaining factors. That
+/// could only matter through the sign of the zero: `+0.0 * s` is `-0.0` if a
+/// later factor `s` were negative, and the sign would reach `P_home / total`. No
+/// factor is negative, because `s = 0.5 * (1.0 - smoothed)` and `smoothed <= 1.0`
+/// in round-to-nearest doubles, as follows. Write `f(x) = (0.5 * x) * (3.0 - x * x)`,
+/// as [`becke_smoothing`] evaluates it, and `u = 2^-53`.
+///
+/// - Domain. [`Self::stop_limit`] admits a stop only if every `r_X < 2^30 * R_min`.
+///   Then the rounding of `r_A - r_B` moves `|μ|` past the triangle inequality by
+///   less than `2^-20`. `ν = μ + a(1 - μ²)` with `|a| <= 0.5` is monotone in `μ` with
+///   `ν(±1) = ±1`, so `|ν| <= 1 + 2^-18`.
+/// - `x = 1 - d`, `0 < d`, `x >= 1/√2`. `x` is a multiple of `u`, so `1 - 2d =
+///   2x - 1` is a multiple of `2u`, which is representable and below `x²`, so
+///   `x * x` rounds to at least it: `x² - (x * x) <= d²`. The subtraction rounds by at most `2^-52`. So
+///   before the last rounding the product is at most `1 - d² + 2^-53(1 - d)`, below
+///   the midpoint `1 + 2^-53`, and it rounds to at most `1.0`.
+/// - `x = 1 + d`, `0 <= d < 2^-17`. The same argument gives at most
+///   `1 - d² + 2^-54(1 + d)`, again below that midpoint.
+/// - `|x| < 1/√2`. `|f(x)|` is below `0.89`. `f(-x) = -f(x)` exactly, since
+///   round-to-nearest is symmetric, which gives the negative side.
+///
+/// So `f` maps the domain into `[-1, 1]`, and `[-1, 1]` into itself, which makes
+/// `smoothed <= 1.0` and `s` in `[+0.0, 1.0]` after all three iterations. `1.0 -
+/// smoothed` is `+0.0` when they are equal. A product of such factors from `1.0`
+/// is never `-0.0` and stays `+0.0` once there.
+///
+/// Atoms under 2^-30 of the point's distance apart leave that domain (`f(-2.055)`
+/// is `1.26`), as do non-finite coordinates. Such points run every factor.
+pub(crate) struct BeckeTable {
+    n: usize,
+    xyz: Vec<[f64; 3]>,
+    r_ab: Vec<f64>,
+    a_corr: Vec<f64>,
+    stop_limit: f64,
+}
+
+/// Per-thread work space of [`BeckeTable::weight`].
+pub(crate) struct BeckeScratch {
+    r: Vec<f64>,
+    p: Vec<f64>,
+}
+
+impl BeckeTable {
+    pub(crate) fn new(mol: &Molecule) -> Self {
+        let n = mol.atoms.len();
+        let mut r_ab = vec![0.0; n * n];
+        let mut a_corr = vec![0.0; n * n];
+        let mut r_min = f64::INFINITY;
+        for a in 0..n {
+            let r_a_bs = bragg_slater_bohr(mol.atoms[a].z);
+            for b in 0..n {
+                if a == b {
+                    continue;
+                }
+                let r_b_bs = bragg_slater_bohr(mol.atoms[b].z);
+                let dx = mol.atoms[a].x - mol.atoms[b].x;
+                let dy = mol.atoms[a].y - mol.atoms[b].y;
+                let dz = mol.atoms[a].zpos - mol.atoms[b].zpos;
+                let r = (dx * dx + dy * dy + dz * dz).sqrt();
+                r_ab[a * n + b] = r;
+                if r.is_nan() {
+                    r_min = 0.0;
+                } else if r >= 1e-12 {
+                    r_min = r_min.min(r);
+                }
+                let chi = r_a_bs / r_b_bs;
+                let u = (chi - 1.0) / (chi + 1.0);
+                a_corr[a * n + b] = (u / (u * u - 1.0)).clamp(-0.5, 0.5);
+            }
+        }
+        Self {
+            n,
+            xyz: mol.atoms.iter().map(|at| [at.x, at.y, at.zpos]).collect(),
+            r_ab,
+            a_corr,
+            stop_limit: BECKE_STOP_RATIO * r_min,
+        }
+    }
+
+    pub(crate) fn scratch(&self) -> BeckeScratch {
+        BeckeScratch {
+            r: vec![0.0; self.n],
+            p: vec![0.0; self.n],
+        }
+    }
+
+    /// Fill `rd` with the distances from `r` to each atom, and say whether a cell
+    /// may stop at an exact zero for this point (see [`BeckeTable`]).
+    fn distances(&self, r: [f64; 3], rd: &mut [f64]) -> bool {
+        let mut may_stop = true;
+        for x in 0..self.n {
+            let dx = r[0] - self.xyz[x][0];
+            let dy = r[1] - self.xyz[x][1];
+            let dz = r[2] - self.xyz[x][2];
+            rd[x] = (dx * dx + dy * dy + dz * dz).sqrt();
+            // Written so a NaN distance also clears it.
+            may_stop &= rd[x] < self.stop_limit;
+        }
+        may_stop
+    }
+
+    /// `becke_weights_all(mol, r)[home]`, bit for bit. The one exception is the sign
+    /// of a NaN result when an atom coordinate is itself NaN.
+    pub(crate) fn weight(&self, r: [f64; 3], home: usize, scratch: &mut BeckeScratch) -> f64 {
+        let n = self.n;
+        let BeckeScratch { r: rd, p: pc } = scratch;
+        let may_stop = self.distances(r, rd);
+        for a in 0..n {
+            let ra = rd[a];
+            let rab = &self.r_ab[a * n..a * n + n];
+            let ac = &self.a_corr[a * n..a * n + n];
+            let mut p = 1.0_f64;
+            for b in 0..n {
+                if a == b || rab[b] < 1e-12 {
+                    continue;
+                }
+                let mu = (ra - rd[b]) / rab[b];
+                let nu = mu + ac[b] * (1.0 - mu * mu);
+                let smoothed = becke_smoothing(nu, 3);
+                p *= 0.5 * (1.0 - smoothed);
+                if may_stop && p == 0.0 {
+                    break;
+                }
+            }
+            pc[a] = p;
+        }
+        let total: f64 = pc.iter().sum();
+        if total < 1e-30 {
+            return 0.0;
+        }
+        pc[home] / total
+    }
+}
+
+/// See [`BeckeTable`]: `2^30`, the point-to-atom over atom-to-atom distance ratio
+/// below which a cell may stop at an exact zero.
+const BECKE_STOP_RATIO: f64 = 1_073_741_824.0;
+
 /// Becke fuzzy weights and their **lab-fixed-r** nuclear gradients.
 ///
 /// Returns `(weights, dw)` where:
@@ -1572,6 +1719,189 @@ mod partition_over_tests {
             if scheme == PartitionScheme::Becke {
                 // Measured 9.3e-8: the hard mask really jumps here.
                 assert!((hard - hard_base).abs() > 1e-8);
+            }
+        }
+    }
+    /// Evenly spread points around and far from `mol`, in a fixed order.
+    fn probe_points(mol: &Molecule, reach: &[f64]) -> Vec<(usize, [f64; 3])> {
+        let mut out = Vec::new();
+        let (pts, _) = ferric_quadrature::lebedev::lebedev(110);
+        for (home, at) in mol.atoms.iter().enumerate() {
+            for &r in reach {
+                for p in &pts {
+                    let q = [at.x + r * p[0], at.y + r * p[1], at.zpos + r * p[2]];
+                    out.push((home, q));
+                }
+                // On the axes, where Lebedev has points too, plus an exact atom hit.
+                out.push((home, [at.x + r, at.y, at.zpos]));
+            }
+            out.push((home, [at.x, at.y, at.zpos]));
+        }
+        out
+    }
+
+    fn assert_table_matches_reference(mol: &Molecule, reach: &[f64]) -> (usize, usize) {
+        let table = BeckeTable::new(mol);
+        let mut scratch = table.scratch();
+        let (mut zero_cells, mut pts) = (0, 0);
+        for (home, q) in probe_points(mol, reach) {
+            let reference = becke_weights_all(mol, q);
+            for (h, w) in reference.iter().enumerate() {
+                let got = table.weight(q, h, &mut scratch);
+                assert_eq!(
+                    got.to_bits(),
+                    w.to_bits(),
+                    "atom {h} at {q:?} near {home}: {got:e} vs {w:e}"
+                );
+                zero_cells += usize::from(*w == 0.0);
+            }
+            pts += 1;
+        }
+        (zero_cells, pts)
+    }
+
+    fn chain(n: usize, sym: &str, spacing: f64, bent: bool) -> Molecule {
+        let mut s = format!("{n}\nchain\n");
+        for i in 0..n {
+            let y = if bent && i % 2 == 1 { 0.63 } else { 0.0 };
+            s.push_str(&format!("{sym} {:.6} {y} 0.1\n", i as f64 * spacing));
+        }
+        Molecule::parse_xyz(&s, 0, if n.is_multiple_of(2) { 1 } else { 2 }).unwrap()
+    }
+
+    /// The table with its exact-zero stop must return the reference bits, sign of
+    /// zero included, and the stop must actually be reached: a long chain drives
+    /// far cells to exactly zero.
+    #[test]
+    fn table_weight_has_the_bits_of_becke_weights_all() {
+        let reach = [0.001, 0.3, 1.0, 2.5, 7.0, 40.0, 1e4];
+        let long = chain(24, "C", 1.54, true);
+        let (zeros, _) = assert_table_matches_reference(&long, &reach);
+        assert!(
+            zeros > 1000,
+            "the exact-zero stop was not exercised: {zeros}"
+        );
+        // Unequal radii (a_corr at its clamp), a collinear molecule (μ reaches ±1
+        // up to rounding), one atom, and two coincident atoms (a skipped pair).
+        let mixed = Molecule::parse_xyz(
+            "5\nmixed\nH 0 0 0\nK 3 0 0\nF 0 2 0\nBr 0 0 4\nH 1 1 1\n",
+            0,
+            2,
+        )
+        .unwrap();
+        assert_table_matches_reference(&mixed, &reach);
+        assert_table_matches_reference(&chain(9, "H", 0.74, false), &reach);
+        let one = Molecule::parse_xyz("1\nne\nNe 0 0 0\n", 0, 1).unwrap();
+        assert_table_matches_reference(&one, &reach);
+        let same = Molecule::parse_xyz("3\nsame\nH 0 0 0\nH 0 0 0\nH 0 0 1\n", 0, 2).unwrap();
+        assert_table_matches_reference(&same, &reach);
+    }
+
+    /// Atoms nearly on top of each other seen from far away leave the domain of
+    /// the argument on [`BeckeTable`]: rounding pushes |μ| far past 1 and a factor
+    /// can go negative. The guard must then run every factor, so the sign of a
+    /// zero still matches the reference.
+    #[test]
+    fn table_weight_keeps_the_sign_of_zero_outside_the_stop_domain() {
+        // At x near 2^29 the spacing of doubles is 2^-23. The two near atoms sit
+        // either side of half of that, 1.2e-12 apart, so r - R rounds apart by a whole
+        // spacing: |μ| is about 1e5. Beyond the atom at 60 the last cell first meets
+        // that atom (μ = 1, an exact zero), then its neighbour (μ < 0, a negative
+        // factor), which makes the cell -0.0.
+        let half = 2.0_f64.powi(-24);
+        let mol = Molecule {
+            atoms: vec![
+                atom(6, "C", [60.0, 0.0, 0.0]),
+                atom(6, "C", [half - 6e-13, 0.0, 0.0]),
+                atom(6, "C", [half + 6e-13, 0.0, 0.0]),
+            ],
+            charge: 0,
+            multiplicity: 1,
+        };
+        let table = BeckeTable::new(&mol);
+        let mut scratch = table.scratch();
+        let (mut negative_zero, mut checked) = (0usize, 0usize);
+        for k in 0..2000u32 {
+            let q = [
+                2.0_f64.powi(29) + f64::from(k) * 2.0_f64.powi(-20),
+                0.0,
+                0.0,
+            ];
+            let reference = becke_weights_all(&mol, q);
+            for (h, w) in reference.iter().enumerate() {
+                assert_eq!(table.weight(q, h, &mut scratch).to_bits(), w.to_bits());
+                negative_zero += usize::from(w.to_bits() == (-0.0f64).to_bits());
+                checked += 1;
+            }
+        }
+        assert!(
+            negative_zero > 0,
+            "no -0.0 in {checked} weights, so this test cannot see the guard"
+        );
+    }
+
+    /// The stop is allowed exactly below `2^30 * R_min`, for a point just inside and
+    /// just outside, with `R_min` the smallest pair a cell does not skip. The bits at
+    /// this boundary cannot show a wrong ratio, because rounding only reaches a
+    /// negative factor at far larger ratios, so this pins the decision itself.
+    #[test]
+    fn stop_is_allowed_only_inside_the_guard_ratio() {
+        let ratio = 2.0_f64.powi(30);
+        let at = |x: f64| [x, 0.0, 0.0];
+        let unit = Molecule {
+            atoms: vec![atom(6, "C", at(0.0)), atom(6, "C", at(1.0))],
+            charge: 0,
+            multiplicity: 1,
+        };
+        let table = BeckeTable::new(&unit);
+        let mut rd = vec![0.0; 2];
+        assert!(table.distances(at(ratio - 2.0), &mut rd), "just inside");
+        assert!(!table.distances(at(ratio + 2.0), &mut rd), "just outside");
+        assert!(!table.distances(at(f64::NAN), &mut rd), "a NaN distance");
+        for x in [ratio - 2.0, ratio + 2.0] {
+            let reference = becke_weights_all(&unit, at(x));
+            let mut scratch = table.scratch();
+            for (h, w) in reference.iter().enumerate() {
+                assert_eq!(table.weight(at(x), h, &mut scratch).to_bits(), w.to_bits());
+            }
+        }
+        // A pair under the 1e-12 skip does not set R_min: it is never divided by.
+        let skipped = Molecule {
+            atoms: vec![
+                atom(6, "C", at(0.0)),
+                atom(6, "C", at(5e-13)),
+                atom(6, "C", at(3.0)),
+            ],
+            charge: 0,
+            multiplicity: 1,
+        };
+        let table = BeckeTable::new(&skipped);
+        let mut rd = vec![0.0; 3];
+        assert!(
+            table.distances(at(2.0 * ratio), &mut rd),
+            "R_min is about 3"
+        );
+        assert!(
+            !table.distances(at(4.0 * ratio), &mut rd),
+            "R_min is about 3"
+        );
+    }
+
+    /// `f` as the code evaluates it stays at or below 1 where the argument on
+    /// [`BeckeTable`] says it does, on the scales where the rounding could matter.
+    #[test]
+    fn smoothing_never_exceeds_one_in_its_domain() {
+        for e in 1..60 {
+            let w = 2.0_f64.powi(-e);
+            for k in 0..200_000u64 {
+                // A fixed low-discrepancy walk through (0, w).
+                let d =
+                    w * ((k.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 11) as f64) * 2.0_f64.powi(-53);
+                for x in [1.0 - d, 1.0 + d * 2.0_f64.powi(-18)] {
+                    assert!(becke_smoothing(x, 1) <= 1.0, "f({x:e}) exceeds 1");
+                    assert!(becke_smoothing(-x, 1) >= -1.0, "f({:e}) below -1", -x);
+                    assert!(becke_smoothing(x, 3) <= 1.0, "f3({x:e}) exceeds 1");
+                }
             }
         }
     }

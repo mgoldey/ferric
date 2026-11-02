@@ -24,7 +24,7 @@ use ferric_core::memory::plan::{Lifetime, MemoryPlan};
 use ferric_core::mol::Molecule;
 use rayon::prelude::*;
 
-use crate::becke::{becke_weights_all, becke_weights_and_grad};
+use crate::becke::{becke_weights_all, becke_weights_and_grad, BeckeScratch, BeckeTable};
 use crate::lebedev::lebedev;
 use crate::prune::{angular_orders_for_atom, PruneScheme};
 use crate::radial::treutler_ahlrichs_m4;
@@ -171,28 +171,33 @@ impl AtomicGridConfig {
 /// The Becke-weight evaluation at each point is independent of every other
 /// point (it only reads `mol` and that point's `xyz`), so this is a pure map
 /// over the point axis: build the un-weighted `(home_atom, xyz, w_r*w_l)`
-/// list first (cheap, serial — radial/angular quadrature only), then map
-/// `becke_weights_all` over it with an order-preserving `into_par_iter().
-/// map().collect()`. Collecting in index order makes the output bit-identical
-/// to the old serial loop regardless of thread count — no reduction, so no
-/// nondeterminism to guard against.
+/// list first (cheap, serial — radial/angular quadrature only), then map the
+/// weight over it with an order-preserving parallel map. Collecting in index
+/// order makes the output bit-identical to a serial loop regardless of thread
+/// count — no reduction, so no nondeterminism to guard against.
 pub fn build_atomic_grid(mol: &Molecule, cfg: &AtomicGridConfig) -> Vec<GridPoint> {
     let pre = atomic_quadrature_points(mol, cfg);
 
-    let build_point = |&(a_idx, xyz, w_rl): &(usize, [f64; 3], f64)| -> GridPoint {
-        let becke = becke_weights_all(mol, xyz);
-        let weight = w_rl * becke[a_idx];
-        GridPoint {
-            xyz,
-            weight,
-            home_atom: a_idx,
-        }
-    };
+    weigh_points(mol, &pre)
+}
 
+/// `w_rl * becke_weights_all(mol, xyz)[home]` for each point of `pre`, in order,
+/// with the same bits, through one [`BeckeTable`] and per-thread scratch.
+fn weigh_points(mol: &Molecule, pre: &[(usize, [f64; 3], f64)]) -> Vec<GridPoint> {
+    let table = BeckeTable::new(mol);
+    let build_point =
+        |s: &mut BeckeScratch, &(a_idx, xyz, w_rl): &(usize, [f64; 3], f64)| GridPoint {
+            xyz,
+            weight: w_rl * table.weight(xyz, a_idx, s),
+            home_atom: a_idx,
+        };
     if pre.len() >= PAR_WORK_THRESHOLD {
-        pre.par_iter().map(build_point).collect()
+        pre.par_iter()
+            .map_init(|| table.scratch(), build_point)
+            .collect()
     } else {
-        pre.iter().map(build_point).collect()
+        let mut s = table.scratch();
+        pre.iter().map(|p| build_point(&mut s, p)).collect()
     }
 }
 
@@ -279,21 +284,7 @@ pub fn build_atomic_grid_pruned(
         }
     }
 
-    // Same order-preserving parallel map as build_atomic_grid.
-    let build_point = |&(a_idx, xyz, w_rl): &(usize, [f64; 3], f64)| -> GridPoint {
-        let becke = becke_weights_all(mol, xyz);
-        GridPoint {
-            xyz,
-            weight: w_rl * becke[a_idx],
-            home_atom: a_idx,
-        }
-    };
-
-    Ok(if pre.len() >= PAR_WORK_THRESHOLD {
-        pre.par_iter().map(build_point).collect()
-    } else {
-        pre.iter().map(build_point).collect()
-    })
+    Ok(weigh_points(mol, &pre))
 }
 
 /// Lebedev order of each radial shell `rs` of an atom with charge `z`: the
