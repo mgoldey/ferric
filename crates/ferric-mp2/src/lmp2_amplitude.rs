@@ -60,6 +60,7 @@ use std::collections::HashMap;
 
 use ferric_core::basis::BasisSet;
 use ferric_core::error::FerricError;
+use ferric_core::memory::trace;
 use ferric_core::mol::Molecule;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::oneelectron::{dipole, overlap, r2_moment};
@@ -1862,6 +1863,12 @@ pub fn amplitude_lmp2_with_virtuals(
     cfg: &AmplitudeLmp2Config,
     vvhv: &VvHv,
 ) -> Result<AmplitudeLmp2Result, FerricError> {
+    if trace::trace_enabled() {
+        eprintln!(
+            "[ferric-mem] lmp2-amplitude entry rss={}",
+            trace::rss_for_trace()
+        );
+    }
     // ---- basis stage: NO 4-index object is formed here ----
     let t0 = std::time::Instant::now();
     let lb = assemble_basis(mol, obs, dfbs, op, rhf, cfg, vvhv)?;

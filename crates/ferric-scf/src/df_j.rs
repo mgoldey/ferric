@@ -35,7 +35,7 @@ use ferric_core::parallel::ParallelContext;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
-use ferric_integrals::three_index_source::ThreeIndexSource;
+use ferric_integrals::three_index_source::{PairScreen, ThreeIndexSource};
 use ferric_integrals::threeindex::coulomb_metric_2c;
 use ndarray::linalg::general_mat_vec_mul;
 use ndarray::{Array1, Array2, OwnedRepr};
@@ -138,6 +138,14 @@ impl<'a> DfJ<'a> {
     /// Same as [`DfJ::new_banded`] but places the raw tensor by the effective
     /// `[scf] jk_storage` policy (memory, disk spill or recompute), which
     /// needs the molecule to re-prepare the bases for the recompute backend.
+    ///
+    /// `pair_thresh > 0` stores only the AO pairs whose rows can exceed it
+    /// (Schwarz, see [`PairScreen`]) whenever that compressed tensor fits in
+    /// core; `<= 0` keeps every pair and is byte-identical to the unscreened
+    /// build, as is a screen that would drop nothing (small molecules). The
+    /// screen is skipped when the device path may take J (its
+    /// upload expects the full packed triangle) and for an operator without a
+    /// Schwarz table.
     pub fn new_for_jk(
         op: Operator,
         mol: &ferric_core::mol::Molecule,
@@ -145,14 +153,15 @@ impl<'a> DfJ<'a> {
         dfbs: &PreparedBasis,
         budget_bytes: usize,
         ctx: Option<&'a ParallelContext>,
+        pair_thresh: f64,
     ) -> Result<Self, FerricError> {
         let naux = dfbs.nbasis();
         let band = match ctx {
             Some(c) => c.aux_band(naux),
             None => (0, naux),
         };
-        let source = ThreeIndexSource::build_for_jk(op, mol, obs, dfbs, budget_bytes, band, false)?;
-        Self::from_source(source, op, dfbs, budget_bytes, ctx)
+        let (source, v) = jk_source(op, mol, (obs, dfbs), budget_bytes, band, pair_thresh)?;
+        Self::from_source_and_metric(source, v, budget_bytes, ctx)
     }
 
     /// Same as [`DfJ::new_banded`] but adopts an ALREADY-BUILT raw `(P|μν)`
@@ -179,6 +188,16 @@ impl<'a> DfJ<'a> {
         ctx: Option<&'a ParallelContext>,
     ) -> Result<Self, FerricError> {
         let v = coulomb_metric_2c(op, dfbs)?;
+        Self::from_source_and_metric(source, v, budget_bytes, ctx)
+    }
+
+    /// [`DfJ::from_source`] with the `(naux, naux)` metric `v` already built.
+    fn from_source_and_metric(
+        source: ThreeIndexSource,
+        v: Array2<f64>,
+        budget_bytes: usize,
+        ctx: Option<&'a ParallelContext>,
+    ) -> Result<Self, FerricError> {
         // Cholesky (dpotrf), NOT the LU inverse this used to form: see the
         // `v_chol` field doc for why an explicit inverse is numerically wrong
         // here. Also sidesteps the multi-threaded dgetrf_parallel stack
@@ -246,6 +265,70 @@ impl DfJ<'_> {
         self.v_chol
             .solvec(d_p)
             .map_err(|e| FerricError::Lapack(format!("DF-J metric solve failed: {e}")))
+    }
+}
+
+/// The raw tensor `new_for_jk` holds, and the aux metric it built on the way:
+/// the pair-screened in-core tier when [`pair_screen_for`] screens and the
+/// compressed band fits, otherwise the full tensor under `[scf] jk_storage`.
+fn jk_source(
+    op: Operator,
+    mol: &ferric_core::mol::Molecule,
+    (obs, dfbs): (&PreparedBasis, &PreparedBasis),
+    budget_bytes: usize,
+    band: (usize, usize),
+    pair_thresh: f64,
+) -> Result<(ThreeIndexSource, Array2<f64>), FerricError> {
+    let v = coulomb_metric_2c(op, dfbs)?;
+    if let Some(screen) = pair_screen_for(op, obs, &v, pair_thresh) {
+        let built = ThreeIndexSource::build_pair_screened_for_jk(
+            op,
+            obs,
+            dfbs,
+            budget_bytes,
+            band,
+            screen,
+        )?;
+        if let Some(source) = built {
+            return Ok((source, v));
+        }
+    }
+    let source = ThreeIndexSource::build_for_jk(op, mol, obs, dfbs, budget_bytes, band, false)?;
+    Ok((source, v))
+}
+
+/// The RI-J pair screen for `pair_thresh`, or `None` to keep every pair:
+/// `pair_thresh <= 0`, a device path that may take J, or an operator with no
+/// Schwarz table. `v` is the operator's own aux metric; its diagonal gives
+/// `max_P sqrt((P|P))`.
+fn pair_screen_for(
+    op: Operator,
+    obs: &PreparedBasis,
+    v: &Array2<f64>,
+    pair_thresh: f64,
+) -> Option<std::sync::Arc<PairScreen>> {
+    if pair_thresh <= 0.0 || device_may_take_j() {
+        return None;
+    }
+    let q_aux_max = v.diag().iter().fold(0.0_f64, |m, &x| m.max(x.abs().sqrt()));
+    PairScreen::schwarz(op, obs, q_aux_max, pair_thresh)
+        .ok()
+        // Nothing dropped: keep the packed tier, whose bits every other tier
+        // reproduces, rather than the same values in a different column order.
+        .filter(|s| s.ncols() < s.total_pairs())
+        .map(std::sync::Arc::new)
+}
+
+/// Could the device path build this J? Its upload reads the full packed
+/// triangle, so a pair-screened source would only make it decline.
+fn device_may_take_j() -> bool {
+    #[cfg(feature = "gpu")]
+    {
+        ferric_core::gpu::settings().mode != ferric_core::gpu::GpuMode::Off
+    }
+    #[cfg(not(feature = "gpu"))]
+    {
+        false
     }
 }
 
@@ -317,6 +400,33 @@ pub(crate) fn packed_density_weights(d: &Array2<f64>, n: usize) -> Array1<f64> {
     w
 }
 
+/// [`packed_density_weights`] at the stored columns of a pair-screened tensor:
+/// `w[k] = D[μμ]` on a diagonal pair, `D[μν] + D[νμ]` off it, for
+/// `cols[k] = (μ, ν)`.
+fn pair_density_weights(d: &Array2<f64>, cols: &[(u32, u32)]) -> Array1<f64> {
+    cols.iter()
+        .map(|&(mu, nu)| {
+            let (mu, nu) = (mu as usize, nu as usize);
+            if mu == nu {
+                d[(mu, mu)]
+            } else {
+                d[(mu, nu)] + d[(nu, mu)]
+            }
+        })
+        .collect()
+}
+
+/// Write the per-column accumulator of a pair-screened J into the full
+/// symmetric `j`; every pair the screen dropped is zero.
+fn scatter_pair_cols(acc: &[f64], cols: &[(u32, u32)], j: &mut Array2<f64>) {
+    j.fill(0.0);
+    for (&v, &(mu, nu)) in acc.iter().zip(cols) {
+        let (mu, nu) = (mu as usize, nu as usize);
+        j[(mu, nu)] = v;
+        j[(nu, mu)] = v;
+    }
+}
+
 /// Expand a packed lower triangle into the full symmetric matrix `j`.
 pub(crate) fn unpack_symmetric(packed: &[f64], n: usize, j: &mut Array2<f64>) {
     let mut k = 0usize;
@@ -377,6 +487,48 @@ impl DfJ<'_> {
             Ok(())
         })?;
         unpack_symmetric(&acc, n, j);
+        Ok(())
+    }
+
+    /// Two-pass J over the pair-screened in-core tensor (see [`PairScreen`]).
+    ///
+    /// [`Self::build_packed`] restricted to the stored columns: pass 1 dots
+    /// each fixed aux chunk with the packed density weights gathered at the
+    /// kept pairs (disjoint `d_P` slices), pass 2 folds the same chunks into
+    /// one accumulator per kept pair. Chunk edges depend only on the band
+    /// height and `n`, so the bits are thread-count independent. A dropped
+    /// pair's J is zero; its true magnitude is at most
+    /// `thresh · Σ_P |c_P| · Q_P / max_P Q_P` (the `pair_screen` module doc).
+    fn build_pair_screened(&self, d: &Array2<f64>, j: &mut Array2<f64>) -> Result<(), FerricError> {
+        let (data, screen) = self
+            .source
+            .pair_screened()
+            .ok_or_else(|| FerricError::General("DF-J: source is not pair-screened".into()))?;
+        let (naux, n, p0) = (self.source.naux(), self.source.nao(), self.source.band().0);
+        let chunk = chunk_width(n);
+        let w = pair_density_weights(d, screen.cols());
+        let b = data.nrows();
+
+        let parts: Vec<Array1<f64>> = (0..b.div_ceil(chunk))
+            .into_par_iter()
+            .map(|ci| {
+                let q1 = ((ci + 1) * chunk).min(b);
+                data.slice(ndarray::s![ci * chunk..q1, ..]).dot(&w)
+            })
+            .collect();
+        let mut d_p = Array1::<f64>::zeros(naux);
+        for (ci, part) in parts.iter().enumerate() {
+            let q0 = p0 + ci * chunk;
+            d_p.slice_mut(ndarray::s![q0..q0 + part.len()]).assign(part);
+        }
+        self.reduce_d_p(&mut d_p);
+        let c_p = self.solve_metric(&d_p)?;
+
+        let mut acc = vec![0.0_f64; screen.ncols()];
+        let band = pass2_band(n, self.budget_bytes);
+        let c_blk = c_p.slice(ndarray::s![p0..p0 + b]);
+        pass2_block(&mut acc, data, c_blk, chunk, band, &mut Vec::new());
+        scatter_pair_cols(&acc, screen.cols(), j);
         Ok(())
     }
 
@@ -442,6 +594,11 @@ impl JBuilder for DfJ<'_> {
             )? {
                 return Ok(0);
             }
+        }
+        if self.source.pair_screened().is_some() {
+            self.build_pair_screened(d, j)?;
+            self.reduce_j(j);
+            return Ok(0);
         }
         if self.source.supports_packed_stream() {
             self.build_packed(d, j)?;
@@ -1251,6 +1408,201 @@ mod tests {
             best_before,
             best_after,
             best_before / best_after
+        );
+    }
+
+    /// Pair-screened DF-J fixture: a six-carbon chain in def2-SVP with the JK-fit
+    /// aux basis, screened at `thresh` (loose enough that pairs ARE dropped).
+    struct PairFixture {
+        obs: PreparedBasis,
+        dfbs: PreparedBasis,
+        mol: Molecule,
+        op: Operator,
+    }
+
+    fn pair_fixture() -> PairFixture {
+        let mol = alkane(6);
+        let obs = PreparedBasis::new(&mol, &basis::bundled("def2-svp").unwrap()).unwrap();
+        let dfbs =
+            PreparedBasis::new(&mol, &basis::bundled("def2-universal-jkfit").unwrap()).unwrap();
+        PairFixture {
+            obs,
+            dfbs,
+            mol,
+            op: Operator::coulomb(),
+        }
+    }
+
+    impl PairFixture {
+        fn dfj(&self, budget: usize, thresh: f64) -> DfJ<'static> {
+            DfJ::new_for_jk(
+                self.op, &self.mol, &self.obs, &self.dfbs, budget, None, thresh,
+            )
+            .unwrap()
+        }
+    }
+
+    /// `kept[μ][ν]` for the screen's stored pairs, symmetric.
+    fn kept_mask(screen: &PairScreen, n: usize) -> Array2<bool> {
+        let mut m = Array2::from_elem((n, n), false);
+        for &(mu, nu) in screen.cols() {
+            m[(mu as usize, nu as usize)] = true;
+            m[(nu as usize, mu as usize)] = true;
+        }
+        m
+    }
+
+    /// Dense RI-J from the one-shot `eri3_tensor`, over the pairs `mask` admits:
+    /// `d_P = Σ B[P,μν] D[μν]`, `c = V⁻¹ d`, `J = Σ_P B[P] c_P`. Returns `(J, c)`.
+    fn dense_rij(
+        dfj: &DfJ<'_>,
+        b: &ndarray::Array3<f64>,
+        d: &Array2<f64>,
+        mask: &Array2<bool>,
+    ) -> (Array2<f64>, Array1<f64>) {
+        let (naux, n, _) = b.dim();
+        let dm = Array2::from_shape_fn((n, n), |(i, k)| if mask[(i, k)] { d[(i, k)] } else { 0.0 });
+        let d_p = Array1::from_shape_fn(naux, |p| (&b.index_axis(ndarray::Axis(0), p) * &dm).sum());
+        let c = dfj.solve_metric(&d_p).unwrap();
+        let mut j = Array2::<f64>::zeros((n, n));
+        for p in 0..naux {
+            j.scaled_add(c[p], &b.index_axis(ndarray::Axis(0), p));
+        }
+        j.zip_mut_with(mask, |x, &k| {
+            if !k {
+                *x = 0.0;
+            }
+        });
+        (j, c)
+    }
+
+    /// The stored rows are the unscreened integrals, bit for bit, at exactly
+    /// `ncols · naux · 8` bytes, and J is the dense contraction restricted to
+    /// the kept pairs (to summation-order rounding).
+    #[test]
+    fn pair_screened_j_is_the_dense_contraction_over_the_kept_pairs() {
+        let f = pair_fixture();
+        let mut dfj = f.dfj(usize::MAX, 1e-6);
+        let n = f.obs.nbasis();
+        let b = ferric_integrals::threeindex::eri3_tensor(f.op, &f.obs, &f.dfbs).unwrap();
+        let (data, screen) = dfj.source.pair_screened().expect("pair-screened tier");
+        assert!(
+            screen.ncols() < screen.total_pairs(),
+            "nothing dropped: a vacuous fixture"
+        );
+        assert_eq!(
+            data.len() * 8,
+            ThreeIndexSource::pair_screened_bytes(f.dfbs.nbasis(), screen)
+        );
+        for (k, &(mu, nu)) in screen.cols().iter().enumerate() {
+            for p in 0..f.dfbs.nbasis() {
+                assert_eq!(
+                    data[(p, k)].to_bits(),
+                    b[(p, mu as usize, nu as usize)].to_bits(),
+                    "stored (P={p}|{mu},{nu}) differs from the unscreened integral"
+                );
+            }
+        }
+        let mask = kept_mask(screen, n);
+        let d = dense_density(n, false);
+        let (j_ref, _) = dense_rij(&dfj, &b, &d, &mask);
+        let mut j = Array2::<f64>::zeros((n, n));
+        dfj.build(&d, &mut j).unwrap();
+        let scale = j_ref.iter().fold(0.0_f64, |m, x| m.max(x.abs()));
+        let err = (&j - &j_ref).iter().fold(0.0_f64, |m, x| m.max(x.abs()));
+        assert!(
+            err <= 1e-12 * scale,
+            "max |J - J_ref| = {err:e} (scale {scale:e})"
+        );
+        assert!(mask.iter().zip(j.iter()).all(|(&k, &x)| k || x == 0.0));
+    }
+
+    /// Every dropped pair's unscreened J obeys the documented bound
+    /// `|J_μν| <= thresh · Σ_P |c_P| · Q_P / max_P Q_P`.
+    #[test]
+    fn dropped_pairs_obey_the_schwarz_bound() {
+        let f = pair_fixture();
+        let thresh = 1e-6;
+        let dfj = f.dfj(usize::MAX, thresh);
+        let n = f.obs.nbasis();
+        let b = ferric_integrals::threeindex::eri3_tensor(f.op, &f.obs, &f.dfbs).unwrap();
+        let (_, screen) = dfj.source.pair_screened().expect("pair-screened tier");
+        let kept = kept_mask(screen, n);
+        let all = Array2::from_elem((n, n), true);
+        let d = dense_density(n, true);
+        let (j_full, c) = dense_rij(&dfj, &b, &d, &all);
+        let q = coulomb_metric_2c(f.op, &f.dfbs)
+            .unwrap()
+            .diag()
+            .mapv(|x| x.abs().sqrt());
+        let q_max = q.iter().fold(0.0_f64, |m, &x| m.max(x));
+        let bound = thresh
+            * c.iter()
+                .zip(&q)
+                .map(|(c, q)| c.abs() * q / q_max)
+                .sum::<f64>();
+        let mut worst = 0.0_f64;
+        for ((i, k), &x) in j_full.indexed_iter() {
+            if !kept[(i, k)] {
+                worst = worst.max(x.abs());
+            }
+        }
+        assert!(
+            worst > 0.0,
+            "no dropped pair carries any J: a vacuous check"
+        );
+        assert!(
+            worst <= bound,
+            "dropped |J| {worst:e} exceeds the bound {bound:e}"
+        );
+    }
+
+    /// `pair_thresh <= 0` keeps every pair and gives the unscreened build's bits.
+    #[test]
+    fn zero_pair_threshold_is_byte_identical_to_the_unscreened_build() {
+        let f = pair_fixture();
+        let n = f.obs.nbasis();
+        let d = dense_density(n, false);
+        let mut off = f.dfj(usize::MAX, 0.0);
+        assert!(off.source.pair_screened().is_none());
+        let mut plain = DfJ::new(f.op, &f.obs, &f.dfbs, usize::MAX).unwrap();
+        let (mut a, mut z) = (Array2::zeros((n, n)), Array2::zeros((n, n)));
+        off.build(&d, &mut a).unwrap();
+        plain.build(&d, &mut z).unwrap();
+        assert!(a
+            .iter()
+            .zip(z.iter())
+            .all(|(x, y)| x.to_bits() == y.to_bits()));
+    }
+
+    /// The in-core decision is made on the COMPRESSED size: a budget between
+    /// the compressed and the packed footprint keeps the screened tensor in
+    /// core, while the unscreened one cannot stay there.
+    #[test]
+    fn in_core_decision_uses_the_compressed_size() {
+        let f = pair_fixture();
+        let (naux, n) = (f.dfbs.nbasis(), f.obs.nbasis());
+        let screen = f
+            .dfj(usize::MAX, 1e-6)
+            .source
+            .pair_screened()
+            .unwrap()
+            .1
+            .clone();
+        let compressed = ThreeIndexSource::pair_screened_bytes(naux, &screen);
+        let packed = naux * n * (n + 1) / 2 * 8;
+        assert!(compressed < packed);
+        let budget = (compressed + packed) / 2;
+        let screened = f.dfj(budget, 1e-6);
+        assert!(
+            screened.source.pair_screened().is_some(),
+            "compressed tensor left core"
+        );
+        let unscreened = f.dfj(budget, 0.0);
+        assert!(unscreened.source.pair_screened().is_none());
+        assert!(
+            !unscreened.source.is_incore() && !unscreened.source.is_packed_incore_for_test(),
+            "the full tensor should not fit this budget"
         );
     }
 }

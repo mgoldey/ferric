@@ -356,11 +356,13 @@ impl From<ferric_core::error::FerricError> for KsGradError {
 /// # Where this is deliberately conservative
 ///
 /// `xc_gradient_uks_from_density` builds one spin's `m`/`mdchi` at a time in
-/// its AO-derivative phase (4 planes + 3 transient) and only later holds both
-/// spins' (8 planes + 2 transient); its true peak is 23, not the 24 declared
-/// here. One plane of slack out of 24 is worth not making the caller reason
-/// about which phase it is in — but it is slack, not an unaccounted term, and
-/// it is stated so nobody "fixes" it by shaving the real terms.
+/// its AO-derivative phase (4 planes + 3 transient). Its Hessian phase holds
+/// both spins' `m` but only one spin's `mdchi` at a time (`uks_gga_batch`
+/// drops `mdchi_a` before allocating `mdchi_b`): 2 + 3 planes + 1 transient.
+/// So its true peak is the AO-derivative phase, 13 + 7 = 20 planes, not the 24
+/// declared here. That slack is worth not making the caller reason about which
+/// phase it is in — but it is slack, not an unaccounted term, and it is stated
+/// so nobody "fixes" it by shaving the real terms.
 ///
 /// `natoms` is only used for the grid-response `weight1` term; pass
 /// `with_grid_response = false` for the paths (VV10) that do not build it.
@@ -1750,15 +1752,14 @@ fn uks_gga_batch(
     // FERRIC_BLAS_THREADS (default 1, unchanged behavior).
     let m_a: Array2<f64> = with_blas_threads(opt_in_blas_threads(), || d_a.dot(&chi));
     let m_b: Array2<f64> = with_blas_threads(opt_in_blas_threads(), || d_b.dot(&chi));
-    let mut mdchi_a = Array3::<f64>::zeros((3, nbf, npts));
-    let mut mdchi_b = Array3::<f64>::zeros((3, nbf, npts));
-    for b in 0..3 {
-        let slice = dchi.index_axis(ndarray::Axis(0), b);
-        let pa: Array2<f64> = with_blas_threads(opt_in_blas_threads(), || d_a.dot(&slice));
-        let pb: Array2<f64> = with_blas_threads(opt_in_blas_threads(), || d_b.dot(&slice));
-        mdchi_a.index_axis_mut(ndarray::Axis(0), b).assign(&pa);
-        mdchi_b.index_axis_mut(ndarray::Axis(0), b).assign(&pb);
-    }
+
+    // One spin's mdchi at a time: build mdchi_a, reduce it into hess_a and
+    // drop it before mdchi_b is allocated. Neither is read after its
+    // hess_cols call, so this halves the batch's mdchi peak (3 planes, not 6).
+    // Each D_σ·∂χ product and each hess_cols reduction sees the same inputs as
+    // before; only independent GEMMs are reordered, so the gradient should be
+    // bit-identical (not yet verified by a test run).
+    let mdchi_a = build_mdchi(d_a, &dchi);
 
     // ∂²_{αb} ρ_σ(r_g) = 2 Σ_μ [ ∂_α χ_μ · (D_σ ∂_b χ)_μ + (D_σ χ)_μ · ∂²_{αb} χ_μ ].
     // (Factor 2 from the μ↔ν symmetry of the per-spin density; see the original
@@ -1779,6 +1780,9 @@ fn uks_gga_batch(
         })
     };
     let hess_a = hess_cols(&m_a, &mdchi_a);
+    drop(mdchi_a);
+
+    let mdchi_b = build_mdchi(d_b, &dchi);
     let hess_b = hess_cols(&m_b, &mdchi_b);
 
     // (1) weight response.

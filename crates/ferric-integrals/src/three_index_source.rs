@@ -5,7 +5,9 @@
 //! Consumers apply their own metric (V^{-1} for J, V^{-1/2} for K).
 
 pub mod jk_storage;
+pub mod pair_screen;
 pub use jk_storage::{jk_storage, set_jk_storage, validate_jk_storage, JkStorage};
+pub use pair_screen::PairScreen;
 
 use crate::basis_bridge::PreparedBasis;
 use crate::operator::Operator;
@@ -296,7 +298,9 @@ fn dress_pass_cost(raw: &ThreeIndexSource, passes: usize) -> Option<String> {
     match raw.backend {
         Backend::DiskSpill { .. } => Some(format!("~{:.1} GB of IO", bytes as f64 / 1e9)),
         Backend::Recompute { .. } => Some(format!("{passes} rebuilds of the integrals")),
-        Backend::InCore(_) | Backend::InCorePacked { .. } => None,
+        Backend::InCore(_) | Backend::InCorePacked { .. } | Backend::InCorePairScreened { .. } => {
+            None
+        }
     }
 }
 
@@ -970,6 +974,15 @@ enum Backend {
         file: File,
         scratch: Array3<f64>,
     },
+    /// The whole band resident, but only the AO pairs that survive a Schwarz
+    /// screen: `(band_naux, screen.ncols())`, columns in
+    /// [`PairScreen::cols`] order. RI-J only: it is read through
+    /// [`ThreeIndexSource::pair_screened`], never streamed or unpacked, so a
+    /// consumer that needs every pair (DF-K dressing) cannot be handed one.
+    InCorePairScreened {
+        data: Array2<f64>,
+        screen: std::sync::Arc<PairScreen>,
+    },
     /// Rebuild each aux block on demand instead of storing the tensor.
     ///
     /// The middle ground this type used to lack. There were only two modes --
@@ -1491,6 +1504,40 @@ impl ThreeIndexSource {
         })
     }
 
+    /// Bytes the pair-screened tier stores for a band of `band` aux rows.
+    pub fn pair_screened_bytes(band: usize, screen: &PairScreen) -> usize {
+        band.saturating_mul(screen.ncols()).saturating_mul(8)
+    }
+
+    /// Build the band `[band_p0, band_p1)` as the pair-screened in-core tier:
+    /// only `screen`'s kept pairs, computed straight into the compressed layout
+    /// (no unpacked block, no scratch). Hard-charged like the packed tier.
+    pub fn build_pair_screened_in_core(
+        op: Operator,
+        obs: &PreparedBasis,
+        dfbs: &PreparedBasis,
+        (band_p0, band_p1): (usize, usize),
+        screen: std::sync::Arc<PairScreen>,
+    ) -> Result<Self, FerricError> {
+        pair_screen::check_band(dfbs, (band_p0, band_p1))?;
+        let rows = band_p1 - band_p0;
+        let _charge = charge_three_index(
+            "DF 3-index (P|mn) in-core packed, pair-screened",
+            Self::pair_screened_bytes(rows, &screen),
+        )?;
+        let mut data = Array2::<f64>::zeros((rows, screen.ncols()));
+        pair_screen::fill_eri3_pairs(op, obs, dfbs, (band_p0, band_p1), &screen, &mut data)?;
+        Ok(Self {
+            naux: dfbs.nbasis(),
+            nao: obs.nbasis(),
+            block_naux: rows.max(1),
+            band_p0,
+            band_p1,
+            backend: Backend::InCorePairScreened { data, screen },
+            _charge,
+        })
+    }
+
     /// Build a DRESSED source: `out[P,:,:] = Σ_Q m[P,Q] · raw[Q,:,:]`, honoring budget.
     /// `raw` is consumed (streamed) and `m` is (naux, naux). Produces the FULL
     /// aux range `[0, naux)`.
@@ -1783,6 +1830,7 @@ impl ThreeIndexSource {
         match &self.backend {
             Backend::InCore(a) => a.len().saturating_mul(8),
             Backend::InCorePacked { packed, .. } => packed.len().saturating_mul(8),
+            Backend::InCorePairScreened { data, .. } => data.len().saturating_mul(8),
             Backend::DiskSpill { .. } | Backend::Recompute { .. } => 0,
         }
     }
@@ -1793,7 +1841,9 @@ impl ThreeIndexSource {
         match self.backend {
             Backend::DiskSpill { .. } => 3 * rows * pair * 8,
             Backend::Recompute { .. } => rows * (self.nao * self.nao + pair) * 8,
-            Backend::InCore(_) | Backend::InCorePacked { .. } => 0,
+            Backend::InCore(_)
+            | Backend::InCorePacked { .. }
+            | Backend::InCorePairScreened { .. } => 0,
         }
     }
 
@@ -1873,11 +1923,22 @@ impl ThreeIndexSource {
         }
     }
 
+    /// The resident pair-screened tensor `(band_naux, screen.ncols())` and its
+    /// column layout; `None` unless this source is the pair-screened tier.
+    /// Rows are band-local, columns in [`PairScreen::cols`] order.
+    pub fn pair_screened(&self) -> Option<(ndarray::ArrayView2<'_, f64>, &PairScreen)> {
+        match &self.backend {
+            Backend::InCorePairScreened { data, screen } => Some((data.view(), screen.as_ref())),
+            _ => None,
+        }
+    }
+
     /// Can [`Self::for_each_packed_block`] serve this source? True for the
     /// packed in-core tier, the disk spill and the recompute backend; false for
-    /// the unpacked in-core tensor, which has no packed rows to hand out.
+    /// the unpacked in-core tensor, which has no packed rows to hand out, and
+    /// for the pair-screened tier, whose rows lack the dropped pairs.
     pub fn supports_packed_stream(&self) -> bool {
-        !matches!(self.backend, Backend::InCore(_))
+        streams_packed(&self.backend)
     }
 
     /// Aux rows per packed block for a streamed backend: a third of the
@@ -1936,7 +1997,7 @@ impl ThreeIndexSource {
             _ => None,
         };
         match &mut self.backend {
-            Backend::InCore(_) => Err(FerricError::General(
+            Backend::InCore(_) | Backend::InCorePairScreened { .. } => Err(FerricError::General(
                 "packed streaming needs a packed, spilled or recompute source".into(),
             )),
             Backend::InCorePacked { packed, .. } => stream_packed_whole(packed, band_p0, f),
@@ -2057,6 +2118,10 @@ impl ThreeIndexSource {
         let step = self.block_naux.max(1);
         match &mut self.backend {
             Backend::InCore(eri) => stream_in_core(eri, band, band_p0, step, f),
+            Backend::InCorePairScreened { .. } => Err(FerricError::General(
+                "a pair-screened source has no unpacked blocks: read it through pair_screened()"
+                    .into(),
+            )),
             Backend::InCorePacked { packed, scratch } => {
                 // The unpacked block is allocated on this first pass; charge it
                 // while the pass runs (soft: the packed tensor already holds the
@@ -2088,6 +2153,14 @@ impl ThreeIndexSource {
     }
 }
 
+/// [`ThreeIndexSource::supports_packed_stream`] for a backend.
+fn streams_packed(backend: &Backend) -> bool {
+    !matches!(
+        backend,
+        Backend::InCore(_) | Backend::InCorePairScreened { .. }
+    )
+}
+
 /// A block not yet allocated: `for_each_block` makes it on first use, so a consumer
 /// of the packed stream never pays for it and `release_scratch` can hand it back.
 fn unallocated_block(nao: usize) -> Array3<f64> {
@@ -2100,7 +2173,7 @@ fn drop_stream_block(backend: &mut Backend, nao: usize) {
         Backend::DiskSpill { scratch, .. } | Backend::Recompute { scratch, .. } => {
             *scratch = unallocated_block(nao);
         }
-        Backend::InCore(_) => {}
+        Backend::InCore(_) | Backend::InCorePairScreened { .. } => {}
     }
 }
 

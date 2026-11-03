@@ -75,9 +75,10 @@
 //! evidence that it is. What changed is that the question can now be asked at a
 //! size where the answer might be interesting.
 
-use crate::local_pno::{build_pno_transforms, PnoTransforms};
+use crate::local_pno::{check_t_cut_pno, pno_for_pair, PnoPair};
 use crate::pair_domains::PairDomains;
 use crate::rimp2::SpinComponents;
+use ferric_core::memory::trace;
 use ferric_core::FerricError;
 use ndarray::{Array2, ArrayView2};
 
@@ -386,11 +387,17 @@ pub fn dlpno_mp2_spin_components(
             g[(i * nvir + a, j * nvir + b)] / d
         })
     };
-    let pnos: PnoTransforms = build_pno_transforms(domains, nvir, cfg.t_cut_pno, amp)?;
+    check_t_cut_pno(cfg.t_cut_pno)?;
+    trace_entry("dlpno-mp2 (dense g)", nocc, nvir, domains.pairs.len());
 
     let mut e_os = 0.0;
     let mut e_ss = 0.0;
-    for (p, &(i, j)) in domains.pairs.iter().enumerate() {
+    let mut tally = PnoTally::default();
+    for &(i, j) in &domains.pairs {
+        // This pair's PNOs, built and dropped inside the iteration so only one
+        // pair's transform is resident (see `PnoTally`).
+        let pno = pno_for_pair((i, j), &amp(i, j), nvir, cfg.t_cut_pno)?;
+        tally.add(&pno);
         // Slice this pair's (nvir x nvir) blocks out of the dense matrix and hand
         // them to the SHARED kernel, so the dense and pair-driven paths cannot
         // drift apart: only the SOURCE of the blocks differs between them.
@@ -405,7 +412,7 @@ pub fn dlpno_mp2_spin_components(
         let (e_os_ij, e_ss_ij) = pair_energy_in_pno_basis(
             g_ij.view(),
             g_ji.view(),
-            &pnos.pairs[p].transform,
+            &pno.transform,
             eps,
             (i, j),
             nvir,
@@ -416,12 +423,7 @@ pub fn dlpno_mp2_spin_components(
         e_ss += e_ss_ij;
     }
 
-    let diag = DlpnoDiagnostics {
-        pair_retention: domains.pair_retention(),
-        virtual_retention: pnos.virtual_retention(),
-        max_discarded_weight: pnos.max_discarded_weight(),
-        n_pairs: domains.pairs.len(),
-    };
+    let diag = tally.diagnostics(domains, nvir);
     Ok((
         SpinComponents {
             e_os,
@@ -430,6 +432,58 @@ pub fn dlpno_mp2_spin_components(
         },
         diag,
     ))
+}
+
+/// Running totals for [`DlpnoDiagnostics`] when each pair's PNOs are built,
+/// used and dropped one at a time instead of collected into a
+/// [`crate::local_pno::PnoTransforms`].
+///
+/// # Why
+///
+/// Collecting every retained pair's `(nvir × n_pno)` transform before the
+/// energy loop holds up to `n_pairs · nvir² · 8` bytes at once — at exact
+/// truncation on danuglipron (≈14.5k pairs, nvir 760) that is ~67 GB. Building
+/// each pair's transform inside the loop bounds it to one pair. Pairs are
+/// independent and the loop order is unchanged, so the energy is unchanged;
+/// these totals reproduce `PnoTransforms::virtual_retention` and
+/// `PnoTransforms::max_discarded_weight` exactly (the same integer sum and the
+/// same `f64::max` fold from 0.0).
+#[derive(Debug, Default)]
+struct PnoTally {
+    kept: usize,
+    max_discarded: f64,
+}
+
+impl PnoTally {
+    fn add(&mut self, pno: &PnoPair) {
+        self.kept += pno.transform.ncols();
+        self.max_discarded = self.max_discarded.max(pno.discarded_weight);
+    }
+
+    fn diagnostics(&self, domains: &PairDomains, nvir: usize) -> DlpnoDiagnostics {
+        let n_pairs = domains.pairs.len();
+        let virtual_retention = if n_pairs == 0 || nvir == 0 {
+            1.0
+        } else {
+            self.kept as f64 / (n_pairs * nvir) as f64
+        };
+        DlpnoDiagnostics {
+            pair_retention: domains.pair_retention(),
+            virtual_retention,
+            max_discarded_weight: self.max_discarded,
+            n_pairs,
+        }
+    }
+}
+
+/// `FERRIC_MEM_TRACE` line at a DLPNO driver's entry (no-op when unset).
+fn trace_entry(path: &str, nocc: usize, nvir: usize, npairs: usize) {
+    if trace::trace_enabled() {
+        eprintln!(
+            "[ferric-mem] {path} nocc={nocc} nvir={nvir} npairs={npairs} rss={}",
+            trace::rss_for_trace()
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -638,11 +692,10 @@ pub fn dlpno_mp2_from_b_ov(
 
     // --- PNOs from the first-order amplitudes of each RETAINED pair. ---
     //
-    // build_pno_transforms already takes a per-pair CLOSURE rather than a packed
-    // tensor, precisely so a large system can build blocks on demand. It only
-    // ever calls it for pairs in `domains`, so a screened-out pair's block is
-    // never built at all -- the screening now actually saves work, which is the
-    // whole point of the restructuring.
+    // The amplitude block is built on demand, one pair at a time, and only for
+    // pairs in `domains`, so a screened-out pair's block is never built at all
+    // -- the screening actually saves work, which is the whole point of the
+    // restructuring.
     let amp = |i: usize, j: usize| -> Array2<f64> {
         let e_i = eps[first_occ + i];
         let e_j = eps[first_occ + j];
@@ -655,11 +708,17 @@ pub fn dlpno_mp2_from_b_ov(
         }
         t
     };
-    let pnos: PnoTransforms = build_pno_transforms(domains, nvir, cfg.t_cut_pno, amp)?;
+    check_t_cut_pno(cfg.t_cut_pno)?;
+    trace_entry("dlpno-mp2 (pair-driven)", nocc, nvir, domains.pairs.len());
 
     let mut e_os = 0.0;
     let mut e_ss = 0.0;
-    for (p, &(i, j)) in domains.pairs.iter().enumerate() {
+    let mut tally = PnoTally::default();
+    for &(i, j) in &domains.pairs {
+        // This pair's PNOs, built and dropped inside the iteration so only one
+        // pair's transform is resident (see `PnoTally`).
+        let pno = pno_for_pair((i, j), &amp(i, j), nvir, cfg.t_cut_pno)?;
+        tally.add(&pno);
         // ONE nvir x nvir GEMM for this pair, dropped before the next iteration.
         //
         // The same-spin partner needs no second GEMM and no second allocation:
@@ -670,7 +729,7 @@ pub fn dlpno_mp2_from_b_ov(
         let (e_os_ij, e_ss_ij) = pair_energy_in_pno_basis(
             g_ij.view(),
             g_ij.t(),
-            &pnos.pairs[p].transform,
+            &pno.transform,
             eps,
             (i, j),
             nvir,
@@ -681,12 +740,7 @@ pub fn dlpno_mp2_from_b_ov(
         e_ss += e_ss_ij;
     }
 
-    let diag = DlpnoDiagnostics {
-        pair_retention: domains.pair_retention(),
-        virtual_retention: pnos.virtual_retention(),
-        max_discarded_weight: pnos.max_discarded_weight(),
-        n_pairs: domains.pairs.len(),
-    };
+    let diag = tally.diagnostics(domains, nvir);
     Ok((
         SpinComponents {
             e_os,
@@ -700,6 +754,7 @@ pub fn dlpno_mp2_from_b_ov(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::local_pno::build_pno_transforms;
     use crate::pair_domains::{build_pair_domains, complete_pair_domains};
     use crate::rimp2::spin_components_from_g;
     use ndarray::array;

@@ -309,8 +309,16 @@ pub fn solve_rhf_with_df_increments(
     // DENSITY path only (`JBuilder::build`/`KBuilder::build`) — `D - D0` is
     // not a rank-nocc C.Cᵀ product, so `DfK::build_from_occ` cannot represent
     // it (see that method's doc); we never call it here.
-    let (df_j_opt, df_k_opt) =
-        crate::fock_assembly::build_df_jk(ctx, mol, op, prep, Some(aux), Some(aux), ooc_budget)?;
+    let (df_j_opt, df_k_opt) = crate::fock_assembly::build_df_jk(
+        ctx,
+        mol,
+        op,
+        prep,
+        Some(aux),
+        Some(aux),
+        ooc_budget,
+        0.0,
+    )?;
     let mut df_j = df_j_opt.ok_or_else(|| {
         FerricError::General(
             "solve_rhf_with_df_increments: DF-J builder failed to construct".into(),
