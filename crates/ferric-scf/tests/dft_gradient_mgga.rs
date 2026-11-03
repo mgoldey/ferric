@@ -148,7 +148,15 @@ fn run_closed(label: &str, xyz: &str, basis_name: &str, xc: &str, tol: f64) {
     );
 
     let g_ana = ks_gradient_closed_with_exchange_on_grids(
-        &mol, &prep, &bs, op, &bounds, xc, &res, None, None,
+        &mol,
+        &prep,
+        &bs,
+        op,
+        &bounds,
+        xc,
+        &res,
+        None,
+        None,
         &KsGradGrids::from_config(&cfg_for(xc)),
     )
     .unwrap();
@@ -285,7 +293,15 @@ fn run_vs_pyscf(label: &str, xyz: &str, basis_name: &str, xc: &str, ref_file: &s
     assert!(res.converged, "{label} {xc}: SCF did not converge");
 
     let g_ana = ks_gradient_closed_with_exchange_on_grids(
-        &mol, &prep, &bs, op, &bounds, xc, &res, None, None,
+        &mol,
+        &prep,
+        &bs,
+        op,
+        &bounds,
+        xc,
+        &res,
+        None,
+        None,
         &KsGradGrids::from_config(&cfg_for(xc)),
     )
     .unwrap();
@@ -459,7 +475,15 @@ fn run_uks_vs_pyscf(
     assert!(res.converged, "{label} {xc}: UKS did not converge");
 
     let g_ana = ks_gradient_uks_with_exchange_on_grids(
-        &mol, &prep, &bs, op, &bounds, xc, &res, None, None,
+        &mol,
+        &prep,
+        &bs,
+        op,
+        &bounds,
+        xc,
+        &res,
+        None,
+        None,
         &KsGradGrids::from_config(&uhf_cfg(xc)),
     )
     .unwrap();
@@ -514,7 +538,15 @@ fn pbe_gradient_oh_sto3g_uks_vs_pyscf() {
     .unwrap();
     assert!(res.converged);
     let g = ks_gradient_uks_with_exchange_on_grids(
-        &mol, &prep, &bs, op, &bounds, "PBE", &res, None, None,
+        &mol,
+        &prep,
+        &bs,
+        op,
+        &bounds,
+        "PBE",
+        &res,
+        None,
+        None,
         &KsGradGrids::from_config(&uhf_cfg("PBE")),
     )
     .unwrap();
