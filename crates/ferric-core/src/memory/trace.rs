@@ -16,6 +16,13 @@ pub fn current_rss_bytes() -> Option<usize> {
     crate::memory::read_own_rss_bytes()
 }
 
+/// [`current_rss_bytes`] formatted for a trace line: the byte count, or
+/// `"unavailable"` when it cannot be read. Never `0`, which would read as a
+/// real measurement of zero memory.
+pub fn rss_for_trace() -> String {
+    current_rss_bytes().map_or_else(|| "unavailable".to_string(), |b| b.to_string())
+}
+
 /// Whether lightweight memory tracing is enabled via the `FERRIC_MEM_TRACE`
 /// environment variable.
 ///

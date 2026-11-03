@@ -591,14 +591,20 @@ impl PyAoIntegrals {
             .map_err(make_err)?;
         Ok(PyArray2::from_owned_array(py, q))
     }
-    /// CSAM table `X[i, j] = max |(μμ|νν)| / sqrt(|(μμ|μμ)| |(νν|νν)|)` over
-    /// μ ∈ shell i, ν ∈ shell j, shape (nshell, nshell), symmetric, with an
-    /// exact `1.0` diagonal and every entry in [0, 1].
+    /// CSAM table, shape (nshell, nshell), symmetric, exact `1.0` diagonal:
+    /// `X[i, j] = min(1, max |(μμ|νν)| / min (n_μ n_ν))` for i ≠ j, with both
+    /// the max and the min taken over μ ∈ shell i, ν ∈ shell j, and
+    /// `n_μ = sqrt(|(μμ|μμ)|)`. This is the largest numerator over the
+    /// smallest norm product, not the largest per-pair ratio; the two coincide
+    /// when every function in a shell has the same norm (spherical shells) and
+    /// differ for Cartesian d and higher.
     ///
-    /// NOT a bound: CSAM multiplies Schwarz by this table to ESTIMATE a quartet
-    /// (Thompson & Ochsenfeld), and the estimate can fall below the true
-    /// integral. It is the table `[scf] screening = "csam"` uses. `"erfc"` is
-    /// refused (the error names the rigorous `"csb"` alternative).
+    /// NOT a bound. CSAM ESTIMATES the quartet (ij|kl) as
+    /// `Q[i,j] * Q[k,l] * sqrt(max(X[i,k] * X[j,l], X[i,l] * X[j,k]))`
+    /// (Thompson & Ochsenfeld), with `Q` from `schwarz()`, and the estimate can
+    /// fall below the true integral. It is the table `[scf] screening = "csam"`
+    /// uses. `"erfc"` is refused (the error names the rigorous `"csb"`
+    /// alternative).
     #[pyo3(signature = (operator="coulomb", omega=None))]
     fn csam_x<'py>(
         &self,

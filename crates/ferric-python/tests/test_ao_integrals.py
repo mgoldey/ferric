@@ -190,24 +190,41 @@ def test_schwarz_bounds_the_three_index_tensor():
     assert np.all(np.abs(b) <= q_aux[:, None, None] * q_ao[None] * (1 + 1e-12) + 1e-15)
 
 
-def test_csam_x_matches_its_definition():
-    """`csam_x()` against the dense `eri()`: X[i, j] is the shell-pair max of
-    |(μμ|νν)| / sqrt((μμ|μμ)(νν|νν)), with an exact unit diagonal."""
-    _, _, ints = _water("def2-svp")
+def _shell_reduce(ufunc, values, sh, init):
+    """Reduce an AO-pair array to shell pairs with `ufunc` (max or min)."""
+    nsh = sh[-1] + 1
+    out = np.full((nsh, nsh), init)
+    ufunc.at(out, (sh[:, None], sh[None, :]), values)
+    return out
+
+
+@pytest.mark.parametrize("basis,nao", [("def2-svp", 24), ("6-31g*", 19)])
+def test_csam_x_matches_its_definition(basis, nao):
+    """`csam_x()` against the dense `eri()`: off the diagonal,
+    X[i, j] = min(1, max |(μμ|νν)| / min n_μ n_ν) over the shell pair, with
+    n_μ = sqrt((μμ|μμ)) and an exact unit diagonal. 6-31G* has Cartesian d
+    shells, whose functions have unequal norms: there this definition differs
+    from the max of per-pair ratios, and the test asserts that it does."""
+    _, _, ints = _water(basis)
+    assert ints.nao == nao  # 19 = Cartesian d on O; spherical would be 18
     sh = _ao_shell(ints)
     nsh = sh[-1] + 1
     x = ints.csam_x()
     assert x.shape == (nsh, nsh)
     np.testing.assert_array_equal(x, x.T)
     np.testing.assert_array_equal(np.diag(x), 1.0)
-    eri = ints.eri()
-    coul = np.abs(np.einsum("aabb->ab", eri))
+    coul = np.abs(np.einsum("aabb->ab", ints.eri()))
     norm = np.sqrt(np.diag(coul))
-    ratio = coul / np.outer(norm, norm)
-    want = np.zeros((nsh, nsh))
-    np.maximum.at(want, (sh[:, None], sh[None, :]), ratio)
+    num = _shell_reduce(np.maximum, coul, sh, 0.0)
+    den = _shell_reduce(np.minimum, np.outer(norm, norm), sh, np.inf)
+    want = np.minimum(1.0, num / den)
+    np.fill_diagonal(want, 1.0)
     np.testing.assert_allclose(x, want, rtol=1e-12, atol=1e-15)
     assert np.all((x >= 0.0) & (x <= 1.0))
+    per_pair_max = _shell_reduce(np.maximum, coul / np.outer(norm, norm), sh, 0.0)
+    np.fill_diagonal(per_pair_max, 1.0)
+    if basis == "6-31g*":
+        assert not np.allclose(x, per_pair_max, rtol=1e-12, atol=1e-15)
 
 
 def test_csam_x_refuses_erfc_and_names_csb():

@@ -1866,7 +1866,7 @@ pub fn amplitude_lmp2_with_virtuals(
     if trace::trace_enabled() {
         eprintln!(
             "[ferric-mem] lmp2-amplitude entry rss={}",
-            trace::current_rss_bytes().unwrap_or(0)
+            trace::rss_for_trace()
         );
     }
     // ---- basis stage: NO 4-index object is formed here ----

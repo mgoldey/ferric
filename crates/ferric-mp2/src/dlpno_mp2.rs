@@ -481,7 +481,7 @@ fn trace_entry(path: &str, nocc: usize, nvir: usize, npairs: usize) {
     if trace::trace_enabled() {
         eprintln!(
             "[ferric-mem] {path} nocc={nocc} nvir={nvir} npairs={npairs} rss={}",
-            trace::current_rss_bytes().unwrap_or(0)
+            trace::rss_for_trace()
         );
     }
 }
