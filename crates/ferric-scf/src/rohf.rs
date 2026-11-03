@@ -1100,8 +1100,8 @@ fn solve_rohf_impl(
                     &mut k_b_buf,
                 )?;
             } else if let Some(dfk) = df_k.as_mut() {
-                dfk.build(&d_a, &mut k_a_buf)?;
-                dfk.build(&d_b, &mut k_b_buf)?;
+                dfk.build_from_density_factor(&d_a, &mut k_a_buf)?;
+                dfk.build_from_density_factor(&d_b, &mut k_b_buf)?;
             } else {
                 let dk = direct_k.as_mut().expect("DirectK built before loop");
                 total_quartets += <DirectK as KBuilder>::build(dk, &d_a, &mut k_a_buf)?;

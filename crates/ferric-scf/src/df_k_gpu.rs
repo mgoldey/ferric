@@ -55,8 +55,8 @@
 //! the ln(error) vs ln(N) slope) is on the validation page, under "Mixed-precision
 //! GPU kernels"; the tests here pin the kernel, not that map. `dfk-occ` is opt-in
 //! (`MixedKernelSet::OPT_IN`), not shipped: on the one device measured it saved
-//! about 5% of the wall time against the f64 device DF-K at def2-TZVP and was
-//! 5-9% slower with diffuse basis sets.
+//! about 4% of the wall time against the f64 device DF-K at def2-TZVP and was
+//! 3-6% slower with diffuse basis sets.
 use std::sync::Arc;
 
 use ferric_core::gpu::batched::{

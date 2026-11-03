@@ -240,9 +240,9 @@ struct Run {
 /// The per-kernel provenance counters agree with the ladder's own. Catches: a
 /// dropped `note_ladder_build`/`note_kernel_mixed`/`note_exit_rebuild`, a count
 /// per device build instead of per Fock build (UHF forms K twice per iteration),
-/// and a kernel the arm does not allow being credited with anything. ROHF builds
-/// K from the density, not through the `dfk-occ` occupied path, so that kernel
-/// is consulted there but never runs mixed.
+/// and a kernel the arm does not allow being credited with anything. ROHF
+/// reaches the `dfk-occ` occupied path through its factored spin densities
+/// (`DfK::build_from_density_factor`), like RHF and UHF.
 fn check_kernel_provenance(label: &str, kind: Kind, k: Kernels, r: &Run) {
     let l = r.ladder;
     let [j_on, k_on] = [k != Kernels::KOnly, k != Kernels::JOnly];
@@ -255,10 +255,9 @@ fn check_kernel_provenance(label: &str, kind: Kind, k: Kernels, r: &Run) {
             continue;
         }
         assert_eq!(c.ladder_builds, l.builds_total, "{label} {k:?}: {name}");
-        let reaches_kernel = name != "dfk-occ" || kind != Kind::Rohf;
-        assert_eq!(
+        let _ = kind;
+        assert!(
             c.mixed >= 1,
-            reaches_kernel,
             "{label} {k:?}: {name} recorded {} mixed builds",
             c.mixed
         );
@@ -661,13 +660,14 @@ fn check_arm_counters(sys: &System, arm: Arm, k: Kernels, r: &Run, f64_iteration
         );
     }
     // The f64 builds the ladder asks for run on the device too (the DfK holds
-    // the f64 copy of B beside the f32 one), so every occupied-path build of
-    // this SCF is a device build: all but iteration 1 (K from the guess
-    // density, no C_occ yet), once per spin. Before the f64 copy those builds
-    // ran the host path and only the mixed ones were counted here.
-    if sys.kind != Kind::Rohf && k != Kernels::JOnly {
-        let spins = if sys.kind == Kind::Uhf { 2 } else { 1 };
-        let want = spins * (r.res.iterations as u64 - 1);
+    // the f64 copy of B beside the f32 one), and iteration 1 (K from the guess
+    // density) and ROHF's spin densities go through the occupied path by
+    // factoring the density, so every K build of this SCF is a device build,
+    // once per spin. Before the f64 copy the ladder's f64 builds ran the host
+    // path; before the factor, iteration 1 and every ROHF build did.
+    if k != Kernels::JOnly {
+        let spins = if sys.kind == Kind::Rhf { 1 } else { 2 };
+        let want = spins * r.res.iterations as u64;
         assert!(
             r.gpu.dfk_device_builds >= want,
             "{label} {arm:?} {k:?}: {} device DF-K builds, want >= {want} ({} iterations, {} mixed)",
@@ -866,6 +866,13 @@ fn fnv_bits(xs: &Array2<f64>) -> u64 {
 /// the f64 path itself. Recorded on this box's GTX 1080 (device f64 RI-J runs
 /// in the f64 default), identical in two processes; another device or BLAS
 /// may differ in the last bit, in which case re-record at the merge base.
+/// The Fock hashes were re-recorded on this branch after two intended f64
+/// changes: the DF-K dressing over the μν triangle (exactly symmetric, within
+/// the k-block summation bound of the full-square product but not bitwise) and
+/// iteration 1's K from the factored guess density (`build_from_density_factor`,
+/// equal to the density path to reassociation). The energies and iteration
+/// counts are still the merge base's, bit for bit. Re-record only for an
+/// intended change to the f64 path, and say which here.
 #[test]
 fn f64_default_matches_pre_ladder_golden() {
     let _g = GPU.lock().unwrap_or_else(|e| e.into_inner());
@@ -879,7 +886,7 @@ fn f64_default_matches_pre_ladder_golden() {
             "cc-pvdz",
             0xc053_01b6_0893_26f6,
             13,
-            0xfc4a_4853_5d7b_36c8,
+            0xeba9_589b_6e11_4033,
         ),
         (
             "C6H6/def2-SVP",
@@ -887,7 +894,7 @@ fn f64_default_matches_pre_ladder_golden() {
             "def2-svp",
             0xc06c_d123_b8a0_0188,
             13,
-            0xc14a_c70f_78cc_d86d,
+            0x4823_b275_5a25_d48f,
         ),
     ];
     for (label, mol, obs, e_bits, iters, fock) in golden {
@@ -906,8 +913,9 @@ fn f64_default_matches_pre_ladder_golden() {
     }
 }
 
-/// Open shell: UHF (RI-J and both spin DF-K builds) and ROHF (RI-J only; its
-/// DF-K uses the density path) on H2O⁺/cc-pVDZ at τ = 0, against the derived bar.
+/// Open shell: UHF and ROHF (RI-J and both spin DF-K builds; ROHF reaches the
+/// occupied path through its factored spin densities) on H2O⁺/cc-pVDZ at τ = 0,
+/// against the derived bar.
 #[test]
 fn open_shell_ladder_exits_in_f64() {
     let _g = GPU.lock().unwrap_or_else(|e| e.into_inner());
@@ -971,8 +979,10 @@ fn open_shell_ladder_exits_in_f64() {
 /// returning to mixed and the SCF stalled. With it the mixed SCF converges
 /// within a few iterations of the f64 one, and its energy within the f64 bar.
 /// The iteration counts are MEASUREMENTS on this device (GTX 1080; this file's
-/// `density_conv` 1e-9): f64 16, ladder 21, two-way 173. The bounds leave
-/// slack on both sides: ladder ≤ f64 + 10, two-way ≥ 2·f64 and ≥ ladder + 10.
+/// `density_conv` 1e-9): f64 16, ladder 17, two-way 53 (173 before the
+/// factored first build: the stalled mutant's count is chaotic, it hangs on
+/// the last bits of K). The bounds leave slack on both sides: ladder ≤ f64 +
+/// 10, two-way ≥ 2·f64 and ≥ ladder + 10.
 #[test]
 fn a_diffuse_basis_does_not_stall_the_ladder_and_the_two_way_mutant_does() {
     let _g = GPU.lock().unwrap_or_else(|e| e.into_inner());
