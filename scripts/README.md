@@ -168,6 +168,8 @@ To wait in a script, use `box-lease wait` and plain `sleep`. Never read from
 - **The CI gate** (`ci-gate.sh`, `install-hooks.sh`, `complexity_gate.py`,
   `complexity_baseline.json`): the only local correctness-gate mechanism this
   repo has (see above). Always committed.
+- **Measurement helpers** (`measure_mem.sh`): reusable wrappers that run
+  ferric-cli with a diagnostic switched on (here `FERRIC_MEM_TRACE=1`).
 
 ## What does NOT belong in git
 
