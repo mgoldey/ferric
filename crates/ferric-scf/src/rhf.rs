@@ -2235,6 +2235,7 @@ fn solve_rhf_impl(
         df_j_aux_eff.as_deref(),
         df_k_aux_eff.as_deref(),
         ooc_budget,
+        config.integral_thresh,
     )?;
     phases.stop(df_fitters_t);
     // Record the builders that actually produced the energy, from the SAME

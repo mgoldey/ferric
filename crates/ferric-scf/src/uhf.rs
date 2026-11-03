@@ -978,7 +978,14 @@ fn solve_uhf_impl(
         None
     };
     let (mut df_j, mut df_k) = crate::fock_assembly::build_df_jk(
-        ctx, mol, coulomb_op, prep, j_aux_eff, k_aux_eff, ooc_budget,
+        ctx,
+        mol,
+        coulomb_op,
+        prep,
+        j_aux_eff,
+        k_aux_eff,
+        ooc_budget,
+        config.integral_thresh,
     )?;
     // Record the builders that produced the energy (same effective names as
     // `build_df_jk` above and `driver::prepare`'s RSH pair) so the analytic

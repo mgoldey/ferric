@@ -163,6 +163,20 @@ impl AtomicGridConfig {
             prune: None,
         }
     }
+
+    /// Opt-in pruned production grid: same 75×110 base as [`Self::default`],
+    /// but with [`PruneScheme::NwchemLike`] angular pruning enabled (~23% fewer
+    /// points). Not valid where a 50-point angular order is needed; see the
+    /// `prune` field's CAUTION notes. A gradient taken on this grid must be
+    /// built from the same config (see the field's "Gradients" note).
+    #[must_use]
+    pub fn nwchem_pruned() -> Self {
+        Self {
+            n_radial: 75,
+            n_angular: 110,
+            prune: Some(PruneScheme::NwchemLike),
+        }
+    }
 }
 
 /// Build the full molecular grid for `mol`. Returns a flat Vec of GridPoints
@@ -818,6 +832,41 @@ mod tests {
         let err_pruned = (integrate(&pruned) - exact).abs() / exact;
         eprintln!("Gaussian relerr: flat {err_flat:.2e}, pruned {err_pruned:.2e}");
         assert!(err_pruned < 1e-3, "pruned Gaussian relerr {err_pruned:.2e}");
+    }
+
+    #[test]
+    fn nwchem_pruned_is_smaller() {
+        // Opt-in constructor: 75x110 with NWChem-like pruning must yield fewer
+        // points than the (unpruned) default grid.
+        let mol = h2();
+        let pruned_cfg = AtomicGridConfig::nwchem_pruned();
+        assert_eq!(pruned_cfg.n_radial, 75);
+        assert_eq!(pruned_cfg.n_angular, 110);
+        assert!(pruned_cfg.prune.is_some());
+        let flat = build_atomic_grid(&mol, &AtomicGridConfig::default());
+        let pruned = build_atomic_grid_pruned(&mol, &pruned_cfg, pruned_cfg.prune).unwrap();
+        assert!(
+            pruned.len() < flat.len(),
+            "pruned {} not smaller than flat {}",
+            pruned.len(),
+            flat.len()
+        );
+    }
+
+    #[test]
+    fn nwchem_pruned_is_smaller_on_water() {
+        // Medium-system sanity check for the pruning reduction (Knuth: a 3-atom
+        // H2 test is not evidence for larger systems).
+        let mol = water();
+        let flat = build_atomic_grid(&mol, &AtomicGridConfig::default());
+        let pruned_cfg = AtomicGridConfig::nwchem_pruned();
+        let pruned = build_atomic_grid_pruned(&mol, &pruned_cfg, pruned_cfg.prune).unwrap();
+        assert!(
+            pruned.len() < flat.len(),
+            "pruned {} not smaller than flat {}",
+            pruned.len(),
+            flat.len()
+        );
     }
 
     #[test]

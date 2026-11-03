@@ -43,8 +43,16 @@ pub mod plan;
 /// whole ceiling. `plan` describes; `pool` accounts.
 pub mod pool;
 
+/// Lightweight, opt-in memory measurement helpers (`trace::current_rss_bytes`,
+/// `trace::trace_enabled`).
+pub mod trace;
+
 /// Final fallback budget when nothing else resolves: 2 GiB.
 pub const DEFAULT_BUDGET_BYTES: usize = 2 * 1024 * 1024 * 1024;
+
+/// Re-export the trace helpers at the `memory::` level so callers can write
+/// `ferric_core::memory::trace_enabled()` / `ferric_core::memory::current_rss_bytes()`.
+pub use trace::{current_rss_bytes, trace_enabled};
 
 /// The new unified budget env var (value in GiB, e.g. `FERRIC_MEM_BUDGET_GB=8`).
 pub const ENV_UNIFIED: &str = "FERRIC_MEM_BUDGET_GB";
