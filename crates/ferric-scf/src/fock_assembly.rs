@@ -58,6 +58,13 @@ pub(crate) const DEFAULT_JK_AUX: &str = "def2-universal-jkfit";
 /// gates each output on its own `Option`, so `(Some(aux), None)` still skips
 /// building a DF-K fitter entirely (no wasted `PreparedBasis` when only one
 /// side is requested).
+///
+/// `j_pair_thresh` is the Schwarz threshold for RI-J's pair-screened storage
+/// (callers pass `[scf] integral_thresh`): a J-only source keeps just the AO
+/// pairs whose rows can exceed it, see
+/// [`PairScreen`](ferric_integrals::three_index_source::PairScreen). `<= 0`
+/// keeps every pair. A source shared with DF-K is never screened.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn build_df_jk<'a>(
     ctx: &'a ParallelContext,
     mol: &Molecule,
@@ -66,8 +73,9 @@ pub(crate) fn build_df_jk<'a>(
     j_aux: Option<&str>,
     k_aux: Option<&str>,
     ooc_budget: usize,
+    j_pair_thresh: f64,
 ) -> Result<(Option<DfJ<'a>>, Option<DfK<'a>>), FerricError> {
-    let out = build_df_jk_impl(ctx, mol, op, prep, j_aux, k_aux, ooc_budget)?;
+    let out = build_df_jk_impl(ctx, mol, op, prep, j_aux, k_aux, ooc_budget, j_pair_thresh)?;
     note_df_k_built(out.1.is_some());
     Ok(out)
 }
@@ -94,6 +102,7 @@ fn note_df_k_built(built: bool) {
 #[inline(always)]
 fn note_df_k_built(_built: bool) {}
 
+#[allow(clippy::too_many_arguments)]
 fn build_df_jk_impl<'a>(
     ctx: &'a ParallelContext,
     mol: &Molecule,
@@ -102,6 +111,7 @@ fn build_df_jk_impl<'a>(
     j_aux: Option<&str>,
     k_aux: Option<&str>,
     ooc_budget: usize,
+    j_pair_thresh: f64,
 ) -> Result<(Option<DfJ<'a>>, Option<DfK<'a>>), FerricError> {
     // `Some("")` is the explicit "do not density-fit" sentinel (see
     // `solve_rhf`); UHF/ROHF pass the config straight through, so honour it
@@ -162,6 +172,7 @@ fn build_df_jk_impl<'a>(
                 &dfbs,
                 ooc_budget,
                 Some(ctx),
+                j_pair_thresh,
             )?);
             let df_k = Some(DfK::new_banded(op, prep, &dfbs, ooc_budget, Some(ctx))?);
             return Ok((df_j, df_k));
@@ -177,6 +188,7 @@ fn build_df_jk_impl<'a>(
             &dfbs,
             ooc_budget,
             Some(ctx),
+            j_pair_thresh,
         )?)
     } else {
         None

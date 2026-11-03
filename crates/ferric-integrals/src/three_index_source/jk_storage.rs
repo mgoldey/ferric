@@ -163,6 +163,45 @@ pub fn memory_tier(nao: usize, band: usize, budget_bytes: usize) -> Option<Tier>
     }
 }
 
+/// Does the pair-screened band fit? Memory policies only (`disk`/`direct` are
+/// the user's instruction to keep the tensor out of core), and the compressed
+/// bytes must fit both the budget and what the shared pool has free, as the
+/// packed tier's check does; it needs no unpack scratch.
+fn pair_screened_fits(
+    policy: JkStorage,
+    band: usize,
+    screen: &super::PairScreen,
+    budget_bytes: usize,
+) -> bool {
+    if !matches!(policy, JkStorage::Auto | JkStorage::Memory) {
+        return false;
+    }
+    let need = ThreeIndexSource::pair_screened_bytes(band, screen);
+    let pool_free = ferric_core::memory::pool::global_available_bytes().unwrap_or(usize::MAX);
+    need <= budget_bytes && need <= pool_free
+}
+
+/// `FERRIC_OOC_TRACE` line for the pair-screened tier.
+fn trace_pair_screened(
+    policy: JkStorage,
+    (nao, band_p0, band_p1): (usize, usize, usize),
+    budget_bytes: usize,
+    screen: &super::PairScreen,
+) {
+    if !super::ooc_trace() {
+        return;
+    }
+    let (kept, total) = screen.shell_pair_counts();
+    eprintln!(
+        "[OOC build] jk_storage={policy} nao={nao} band=[{band_p0},{band_p1}) budget={:.2}GB \
+         -> InCorePairScreened ({kept}/{total} shell pairs, {}/{} function pairs, thresh {:e})",
+        budget_bytes as f64 / 1e9,
+        screen.ncols(),
+        screen.total_pairs(),
+        screen.thresh()
+    );
+}
+
 /// SCF J passes (two per Fock build) times the iterations a converging SCF
 /// typically takes. The cost model's only assumed number; a run that needs
 /// many more iterations favours Recompute over Spill's one-off write only if
@@ -459,6 +498,33 @@ impl ThreeIndexSource {
                 (_, e) => e,
             },
         )
+    }
+
+    /// The Schwarz pair-screened in-core tier for an RI-J-only source
+    /// ([`super::PairScreen`]), or `Ok(None)` when it is not taken: the policy
+    /// is `disk`/`direct` (the user's instruction to keep the tensor out of
+    /// core), or the COMPRESSED band does not fit the budget and the pool. The
+    /// caller then places the full tensor with [`Self::build_for_jk`]. Never
+    /// for a source shared with DF-K, whose dressing needs every pair.
+    pub fn build_pair_screened_for_jk(
+        op: Operator,
+        obs: &PreparedBasis,
+        dfbs: &PreparedBasis,
+        budget_bytes: usize,
+        band: (usize, usize),
+        screen: Arc<super::PairScreen>,
+    ) -> Result<Option<Self>, FerricError> {
+        let policy = jk_storage();
+        if !pair_screened_fits(policy, band.1 - band.0, &screen, budget_bytes) {
+            return Ok(None);
+        }
+        trace_pair_screened(
+            policy,
+            (obs.nbasis(), band.0, band.1),
+            budget_bytes,
+            &screen,
+        );
+        Self::build_pair_screened_in_core(op, obs, dfbs, band, screen).map(Some)
     }
 
     /// The recompute backend over the band `[band_p0, band_p1)`, always (it
