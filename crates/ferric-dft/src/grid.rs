@@ -648,6 +648,48 @@ pub fn build_atomic_grid_with_response_pruned(
     let npts = uncut_point_count(mol, cfg, cfg.prune)?;
     grid_response_plan(npts, natoms).check()?;
 
+    let pre = response_staging(mol, cfg, npts)?;
+
+    // Per-point work is O(natoms³) via becke_weights_and_grad and independent
+    // across points — same order-preserving parallel map as build_atomic_grid
+    // (bit-identical to the serial loop; no reduction).
+    //
+    // `None` = dropped by the weight cutoff (never, when `cut` is `None`).
+    let build_point =
+        |&(a_idx, xyz, scale): &(usize, [f64; 3], f64)| -> Option<(GridPoint, Vec<[f64; 3]>)> {
+            // The weight VALUE comes from the same `becke_weights_all` the
+            // energy grids use, so this grid is the energy grid bit for bit
+            // (`becke_weights_and_grad`'s own value differs by ulps), and the
+            // cutoff decision below is the energy builders' decision.
+            let weight = scale * becke_weights_all(mol, xyz)[a_idx];
+            if let Some(cut) = cut {
+                if !survives_weight_cut(weight, cut) {
+                    return None;
+                }
+            }
+            let (_, dw_lab) = becke_weights_and_grad(mol, xyz);
+            let gp = GridPoint {
+                xyz,
+                weight,
+                home_atom: a_idx,
+            };
+
+            let row = home_weight_row(&dw_lab, a_idx, natoms, scale);
+            Some((gp, row))
+        };
+
+    let (grid, weight1) = map_response_points(&pre, cut.is_some(), build_point);
+    Ok((grid, weight1))
+}
+
+/// The un-partitioned points of [`build_atomic_grid_with_response_pruned`]:
+/// `(home atom, xyz, w_r · w_l)` atom-major, then radial, then angular, with
+/// the per-atom radial count and per-shell Lebedev orders of `cfg.prune`.
+fn response_staging(
+    mol: &Molecule,
+    cfg: &AtomicGridConfig,
+    npts: usize,
+) -> Result<Vec<(usize, [f64; 3], f64)>, FerricError> {
     let mut cache: Vec<(usize, Vec<[f64; 3]>, Vec<f64>)> = Vec::new();
     let mut pre: Vec<(usize, [f64; 3], f64)> = Vec::with_capacity(npts);
 
@@ -677,74 +719,70 @@ pub fn build_atomic_grid_with_response_pruned(
         }
     }
 
-    // Per-point work is O(natoms³) via becke_weights_and_grad and independent
-    // across points — same order-preserving parallel map as build_atomic_grid
-    // (bit-identical to the serial loop; no reduction).
-    //
-    // `None` = dropped by the weight cutoff (never, when `cut` is `None`).
-    let build_point =
-        |&(a_idx, xyz, scale): &(usize, [f64; 3], f64)| -> Option<(GridPoint, Vec<[f64; 3]>)> {
-            // The weight VALUE comes from the same `becke_weights_all` the
-            // energy grids use, so this grid is the energy grid bit for bit
-            // (`becke_weights_and_grad`'s own value differs by ulps), and the
-            // cutoff decision below is the energy builders' decision.
-            let weight = scale * becke_weights_all(mol, xyz)[a_idx];
-            if let Some(cut) = cut {
-                if !survives_weight_cut(weight, cut) {
-                    return None;
-                }
-            }
-            let (_, dw_lab) = becke_weights_and_grad(mol, xyz);
-            let gp = GridPoint {
-                xyz,
-                weight,
-                home_atom: a_idx,
-            };
+    Ok(pre)
+}
 
-            // Lab-fixed partition derivative for the HOME atom's weight:
-            // dw_lab[a_idx][c][k] is ∂w_becke^{a_idx}/∂R_c^k at fixed r.
-            // PySCF's weight1 adds ∇_r w_becke to the home-atom row, then
-            // multiplies through by the radial-angular Jacobian.
-            let mut grad_r = [0.0_f64; 3]; // = -Σ_c dw_lab[a_idx][c]
-            for c in 0..natoms {
-                grad_r[0] -= dw_lab[a_idx][c][0];
-                grad_r[1] -= dw_lab[a_idx][c][1];
-                grad_r[2] -= dw_lab[a_idx][c][2];
-            }
-            let mut row = Vec::with_capacity(natoms);
-            for b in 0..natoms {
-                let mut entry = [
-                    scale * dw_lab[a_idx][b][0],
-                    scale * dw_lab[a_idx][b][1],
-                    scale * dw_lab[a_idx][b][2],
-                ];
-                if b == a_idx {
-                    entry[0] += scale * grad_r[0];
-                    entry[1] += scale * grad_r[1];
-                    entry[2] += scale * grad_r[2];
-                }
-                row.push(entry);
-            }
-            Some((gp, row))
-        };
+/// Row `a_idx` of `weight1` for one point: the lab-fixed partition derivative
+/// of the home atom's Becke weight, plus `∇_r w` on the home row (PySCF's
+/// `weight1`), times the radial-angular Jacobian `scale`.
+fn home_weight_row(
+    dw_lab: &[Vec<[f64; 3]>],
+    a_idx: usize,
+    natoms: usize,
+    scale: f64,
+) -> Vec<[f64; 3]> {
+    // Lab-fixed partition derivative for the HOME atom's weight:
+    // dw_lab[a_idx][c][k] is ∂w_becke^{a_idx}/∂R_c^k at fixed r.
+    // PySCF's weight1 adds ∇_r w_becke to the home-atom row, then
+    // multiplies through by the radial-angular Jacobian.
+    let mut grad_r = [0.0_f64; 3]; // = -Σ_c dw_lab[a_idx][c]
+    for c in 0..natoms {
+        grad_r[0] -= dw_lab[a_idx][c][0];
+        grad_r[1] -= dw_lab[a_idx][c][1];
+        grad_r[2] -= dw_lab[a_idx][c][2];
+    }
+    let mut row = Vec::with_capacity(natoms);
+    for b in 0..natoms {
+        let mut entry = [
+            scale * dw_lab[a_idx][b][0],
+            scale * dw_lab[a_idx][b][1],
+            scale * dw_lab[a_idx][b][2],
+        ];
+        if b == a_idx {
+            entry[0] += scale * grad_r[0];
+            entry[1] += scale * grad_r[1];
+            entry[2] += scale * grad_r[2];
+        }
+        row.push(entry);
+    }
+    row
+}
 
+/// Map `build_point` over the staged points in order: the indexed map when no
+/// cutoff can drop a point (the historical path), `filter_map` otherwise;
+/// parallel above [`PAR_WORK_THRESHOLD`]. rayon's `filter_map(..).unzip()`
+/// keeps the input order, like the serial one.
+fn map_response_points<F>(
+    pre: &[(usize, [f64; 3], f64)],
+    has_cut: bool,
+    build_point: F,
+) -> (Vec<GridPoint>, Vec<Vec<[f64; 3]>>)
+where
+    F: Fn(&(usize, [f64; 3], f64)) -> Option<(GridPoint, Vec<[f64; 3]>)> + Sync + Send,
+{
     let par = pre.len() >= PAR_WORK_THRESHOLD;
-    let (grid, weight1): (Vec<GridPoint>, Vec<Vec<[f64; 3]>>) = match (cut, par) {
-        // No cutoff: every point is kept; the indexed map is the historical path.
-        (None, true) => pre
+    match (has_cut, par) {
+        (false, true) => pre
             .par_iter()
             .map(|p| build_point(p).expect("no weight cutoff: every point is kept"))
             .unzip(),
-        (None, false) => pre
+        (false, false) => pre
             .iter()
             .map(|p| build_point(p).expect("no weight cutoff: every point is kept"))
             .unzip(),
-        // rayon's `filter_map(..).unzip()` keeps the input order, like the
-        // serial `Iterator` one.
-        (Some(_), true) => pre.par_iter().filter_map(build_point).unzip(),
-        (Some(_), false) => pre.iter().filter_map(build_point).unzip(),
-    };
-    Ok((grid, weight1))
+        (true, true) => pre.par_iter().filter_map(build_point).unzip(),
+        (true, false) => pre.iter().filter_map(build_point).unzip(),
+    }
 }
 
 #[cfg(test)]

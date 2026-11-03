@@ -74,10 +74,10 @@
 //!
 //! # ORCA DefGrid (`grid_prune = "defgrid1" | "defgrid2" | "defgrid3"`)
 //!
-//! [`PruneScheme::DefGrid`] gives the SCF XC grid of ORCA 6.1's `DEFGRID1/2/3`
+//! [`PruneScheme::DefGrid`](crate::prune::PruneScheme::DefGrid) gives the SCF XC grid of ORCA 6.1's `DEFGRID1/2/3`
 //! (manual, "Numerical Integration", Table 2.48: XC AngularGrid 3 / 4 / 6).
 //! The grid FIXES both sizes, so the config's `n_radial` and `n_angular` are
-//! ignored (see [`validate_xc_scheme`]). Per atom:
+//! ignored (see [`validate_xc_scheme`](crate::prune::validate_xc_scheme)). Per atom:
 //!
 //! * **Radial shells**: `floor((15·IntAcc − 40) + b·ROW)`, `ROW` = period of
 //!   the element (H-He 1, Li-Ne 2, ..., Cs-Rn 6, Fr+ 7). The formula and the
@@ -91,7 +91,7 @@
 //!   rounding as `floor` (nearest-integer rounding fits no single `b` at
 //!   AngularGrid 4). Row 7 is the formula's extrapolation, as in ORCA.
 //! * **Angular orders**: the five region orders of the atom's AngularGrid
-//!   (Table 2.46 = [`SGX_REGION_ORDERS`], all on ferric's Lebedev set, so
+//!   (Table 2.46 = [`SGX_REGION_ORDERS`](crate::prune::SGX_REGION_ORDERS), all on ferric's Lebedev set, so
 //!   nothing is snapped). H and He use the AngularGrid one level lower
 //!   (`HGridReduced true`, ORCA's default) with the SAME radial count:
 //!   ORCA's H atom at DEFGRID2 has 35 shells either way and only the

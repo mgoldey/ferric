@@ -51,9 +51,9 @@
 //! `Σ|B̂||x| ≤ (1+u32)Σ|B||x| + ηΣ|x|`. So, for whatever vector a pass is given,
 //!
 //!   pass 1: `|d̂_P − (Bw)_P| ≤ ε_d·(|B||w|)_P + (1+γ)·η·Σ|w|`,
-//!           `ε_d = u32 + γ_cols(u64)(1+u32)`             ([`dfj_f32_d_error_factor`])
+//!           `ε_d = u32 + γ_cols(u64)(1+u32)`             ([`dfj_f32_d_error_factor`](crate::df_j::dfj_f32_d_error_factor))
 //!   pass 2: `|Ĵ_k − (Bᵀc)_k| ≤ ε_J·(|B|ᵀ|c|)_k + (1+γ)·η·Σ|c|`,
-//!           `ε_J = u32 + γ_band(u64)(1+u32)`             ([`dfj_f32_j_error_factor`])
+//!           `ε_J = u32 + γ_band(u64)(1+u32)`             ([`dfj_f32_j_error_factor`](crate::df_j::dfj_f32_j_error_factor))
 //!
 //! `cols` = stored columns (n(n+1)/2 or the kept pairs), `band` = aux rows of
 //! this rank. These are the factors of the device kernel `dfj-pack`
@@ -66,7 +66,7 @@
 //! EXACTLY (both passes read the same `B̂`), so
 //! `Ê_J − E_J = cᵀ δB w + ½ δdᵀV⁻¹δd`; the first term is
 //! `≤ ε_EJ·S_J`, `S_J = |c|ᵀ|B||w|`, `ε_EJ = u32 + γ_cols(u64) + γ_naux(u64)`
-//! ([`dfj_f32_energy_error_factor`], the `jk_ladder` budget's ε_EJ); the second
+//! ([`dfj_f32_energy_error_factor`](crate::df_j::dfj_f32_energy_error_factor), the `jk_ladder` budget's ε_EJ); the second
 //! is ≥ 0 and carries 1/λ_min(V), so `ε_EJ·S_J` is a first-order ESTIMATE.
 //!
 //! Converged energy. With no f64 copy the SCF converges to the stationary
@@ -79,7 +79,7 @@
 //! (`E'(D') ≤ E'(D*)`, `E(D*) ≤ E(D')`, and `E' − E = E'_J − E_J` at any D):
 //! the f32 SCF's energy error is FIRST order, `|U|, |L| ≲ ε_EJ·S_J` (measured
 //! µEh-scale, the `dfj-pack` no-exit mutant's 1.2-5.1 µEh), and `U − L` is
-//! second order. The f64 EXIT is energy-only ([`DfJ::f64_exit_coulomb_energy`]):
+//! second order. The f64 EXIT is energy-only ([`DfJ::f64_exit_coulomb_energy`](crate::df_j::DfJ::f64_exit_coulomb_energy)):
 //! one recomputed f64 pass 1 at `D'` (no f64 tensor kept, one block resident)
 //! gives `E_J(D')`, and `E'(D') − L = E(D')` is the exact functional at `D'`,
 //! `0 ≤ E(D') − E(D*) ≤ U − L`: SECOND order. It costs one integral
@@ -275,7 +275,12 @@ fn dot_f32_f64(a: &[f32], x: &[f64]) -> f64 {
     }
     let n4 = a.len().min(x.len()) / 4 * 4;
     let mut s = [0.0f64; 4];
-    for (ac, xc) in a[..n4].as_chunks::<4>().0.iter().zip(x[..n4].as_chunks::<4>().0) {
+    for (ac, xc) in a[..n4]
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(x[..n4].as_chunks::<4>().0)
+    {
         s[0] += f64::from(ac[0]) * xc[0];
         s[1] += f64::from(ac[1]) * xc[1];
         s[2] += f64::from(ac[2]) * xc[2];
@@ -420,29 +425,62 @@ impl<'a> DfJ<'a> {
             Some(c) => c.aux_band(naux),
             None => (0, naux),
         };
-        let v = coulomb_metric_2c(op, dfbs)?;
+        let mut v = coulomb_metric_2c(op, dfbs)?;
         if dfj_f32_requested() {
-            let screen = pair_screen_with(op, obs, &v, pair_thresh, false);
-            let built = ThreeIndexSource::build_ri_j_f32(
+            match Self::try_new_f32(
                 op,
-                obs,
-                dfbs,
+                mol,
+                (obs, dfbs),
                 budget_bytes,
                 band,
-                screen,
-                f32_rounding(),
-            )?;
-            match built {
-                Ok(source) => {
-                    let mut me = Self::from_source_and_metric(source, v, budget_bytes, ctx)?;
-                    me.enable_f64_exit(op, mol, obs, dfbs)?;
-                    return Ok(me);
-                }
-                Err(why) => note_f32_declined(&why),
+                ctx,
+                pair_thresh,
+                v,
+            )? {
+                Ok(me) => return Ok(me),
+                Err(back) => v = back,
             }
         }
         let source = jk_source(op, mol, (obs, dfbs), budget_bytes, band, pair_thresh, &v)?;
         Self::from_source_and_metric(source, v, budget_bytes, ctx)
+    }
+
+    /// The `dfj-f32` build of [`new_for_jk`](Self::new_for_jk): the tensor built
+    /// straight into f32 (with the f64 exit armed), or the metric handed back
+    /// (`Err`, counted, with a notice) when the f32 tier declines, so the caller
+    /// builds the f64 tensor without recomputing or copying the metric.
+    #[allow(clippy::too_many_arguments)]
+    fn try_new_f32(
+        op: Operator,
+        mol: &ferric_core::mol::Molecule,
+        (obs, dfbs): (&PreparedBasis, &PreparedBasis),
+        budget_bytes: usize,
+        band: (usize, usize),
+        ctx: Option<&'a ParallelContext>,
+        pair_thresh: f64,
+        v: Array2<f64>,
+    ) -> Result<Result<Self, Array2<f64>>, FerricError> {
+        let screen = pair_screen_with(op, obs, &v, pair_thresh, false);
+        let built = ThreeIndexSource::build_ri_j_f32(
+            op,
+            obs,
+            dfbs,
+            budget_bytes,
+            band,
+            screen,
+            f32_rounding(),
+        )?;
+        match built {
+            Ok(source) => {
+                let mut me = Self::from_source_and_metric(source, v, budget_bytes, ctx)?;
+                me.enable_f64_exit(op, mol, obs, dfbs)?;
+                Ok(Ok(me))
+            }
+            Err(why) => {
+                note_f32_declined(&why);
+                Ok(Err(v))
+            }
+        }
     }
 
     /// Same as [`DfJ::new_banded`] but adopts an ALREADY-BUILT raw `(P|μν)`

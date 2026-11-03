@@ -580,35 +580,15 @@ impl DftCfg {
         &self,
         prune: Option<ferric_dft::prune::PruneScheme>,
     ) -> Result<Option<ferric_dft::grid::AtomicGridConfig>, String> {
-        use ferric_dft::prune::{validate_xc_scheme, PruneScheme, SUPPORTED_LEBEDEV_ORDERS};
         let weight_cut = self.grid_weight_cut()?;
-        if matches!(prune, Some(PruneScheme::DefGrid(_)))
-            && (self.grid_radial.is_some() || self.grid_angular.is_some())
-        {
-            return Err(
-                "[dft] grid_prune = \"defgrid1/2/3\" fixes the radial and angular \
-                        grid; remove grid_radial / grid_angular"
-                    .to_string(),
-            );
-        }
+        self.refuse_sizes_with_defgrid(prune)?;
         if !self.sets_grid_size() && prune.is_none() && weight_cut.is_none() {
             return Ok(None);
         }
         let default = ferric_dft::grid::AtomicGridConfig::default();
         let n_radial = self.grid_radial.unwrap_or(default.n_radial);
         let n_angular = self.grid_angular.unwrap_or(default.n_angular);
-        if n_radial == 0 {
-            return Err("[dft] grid_radial must be > 0".to_string());
-        }
-        if !SUPPORTED_LEBEDEV_ORDERS.contains(&n_angular) {
-            return Err(format!(
-                "[dft] grid_angular = {n_angular} is not a supported Lebedev order \
-                 (supported: {SUPPORTED_LEBEDEV_ORDERS:?})"
-            ));
-        }
-        if let Some(scheme) = prune {
-            validate_xc_scheme(scheme, n_angular).map_err(|e| format!("[dft] grid_prune: {e}"))?;
-        }
+        validate_grid_sizes(n_radial, n_angular, prune)?;
         Ok(Some(ferric_dft::grid::AtomicGridConfig {
             n_radial,
             n_angular,
@@ -616,6 +596,46 @@ impl DftCfg {
             weight_cut,
         }))
     }
+
+    /// `grid_prune = "defgrid1/2/3"` fixes both grid sizes, so an explicit
+    /// `grid_radial` / `grid_angular` beside it is an error, not ignored.
+    fn refuse_sizes_with_defgrid(
+        &self,
+        prune: Option<ferric_dft::prune::PruneScheme>,
+    ) -> Result<(), String> {
+        let defgrid = matches!(prune, Some(ferric_dft::prune::PruneScheme::DefGrid(_)));
+        if defgrid && (self.grid_radial.is_some() || self.grid_angular.is_some()) {
+            return Err(
+                "[dft] grid_prune = \"defgrid1/2/3\" fixes the radial and angular \
+                        grid; remove grid_radial / grid_angular"
+                    .to_string(),
+            );
+        }
+        Ok(())
+    }
+}
+
+/// The checks every explicit `[dft]` grid passes: a positive radial count, a
+/// supported Lebedev order, and a prune scheme that has a table for it.
+fn validate_grid_sizes(
+    n_radial: usize,
+    n_angular: usize,
+    prune: Option<ferric_dft::prune::PruneScheme>,
+) -> Result<(), String> {
+    use ferric_dft::prune::{validate_xc_scheme, SUPPORTED_LEBEDEV_ORDERS};
+    if n_radial == 0 {
+        return Err("[dft] grid_radial must be > 0".to_string());
+    }
+    if !SUPPORTED_LEBEDEV_ORDERS.contains(&n_angular) {
+        return Err(format!(
+            "[dft] grid_angular = {n_angular} is not a supported Lebedev order \
+             (supported: {SUPPORTED_LEBEDEV_ORDERS:?})"
+        ));
+    }
+    if let Some(scheme) = prune {
+        validate_xc_scheme(scheme, n_angular).map_err(|e| format!("[dft] grid_prune: {e}"))?;
+    }
+    Ok(())
 }
 
 /// What `[dft] dispersion` asked for, after strict parsing.
