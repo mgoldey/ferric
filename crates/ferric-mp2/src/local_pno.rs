@@ -102,6 +102,106 @@ impl PnoTransforms {
     }
 }
 
+/// Reject a negative PNO occupation threshold (`0.0` disables truncation).
+///
+/// # Errors
+///
+/// [`FerricError::General`] when `t_cut_pno < 0`.
+pub fn check_t_cut_pno(t_cut_pno: f64) -> Result<(), FerricError> {
+    if t_cut_pno < 0.0 {
+        return Err(FerricError::General(format!(
+            "t_cut_pno must be >= 0 (got {t_cut_pno}); use 0.0 to disable truncation"
+        )));
+    }
+    Ok(())
+}
+
+/// Build ONE pair's PNO basis from its `(nvir × nvir)` amplitude block `t`.
+///
+/// The per-pair body of [`build_pno_transforms`], exposed so a driver can
+/// build, use and drop each pair's transform in turn instead of holding every
+/// retained pair's `(nvir × n_pno)` transform at once. Pairs are independent,
+/// so the result equals the matching entry of [`build_pno_transforms`].
+/// Callers must have validated `t_cut_pno` with [`check_t_cut_pno`].
+///
+/// # Errors
+///
+/// [`FerricError::General`] on a mis-sized `t` or an eigensolver failure, with
+/// the pair named.
+pub fn pno_for_pair(
+    (i, j): (usize, usize),
+    t: &Array2<f64>,
+    nvir: usize,
+    t_cut_pno: f64,
+) -> Result<PnoPair, FerricError> {
+    if t.nrows() != nvir || t.ncols() != nvir {
+        return Err(FerricError::General(format!(
+            "t2_pair({i},{j}) returned {:?}, expected ({nvir}, {nvir})",
+            t.dim()
+        )));
+    }
+
+    // Pair density D^ij = T Tᵀ + Tᵀ T, explicitly symmetrized. Both terms are
+    // needed for an off-diagonal pair: T^ij is not symmetric when i != j, and
+    // using T Tᵀ alone would privilege the a index over b.
+    let d = t.dot(&t.t()) + t.t().dot(t);
+    let mut d_sym = Array2::<f64>::zeros((nvir, nvir));
+    for a in 0..nvir {
+        for b in 0..nvir {
+            d_sym[(a, b)] = 0.5 * (d[(a, b)] + d[(b, a)]);
+        }
+    }
+
+    // Ascending eigenvalues, eigenvectors in columns -- same convention as
+    // ndarray_linalg's eigh, but returning Result (a panic here would surface
+    // much later as a wrong energy).
+    let (eigs, vecs) = eigh_dc(&d_sym, Uplo::Upper)
+        .map_err(|e| FerricError::General(format!("PNO eigh failed for pair ({i},{j}): {e}")))?;
+
+    // eigh returns ascending; we want the largest occupations first.
+    let mut order: Vec<usize> = (0..nvir).collect();
+    order.sort_by(|&x, &y| {
+        eigs[y]
+            .partial_cmp(&eigs[x])
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    let keep: Vec<usize> = order
+        .iter()
+        .copied()
+        .filter(|&k| eigs[k].abs() >= t_cut_pno)
+        .collect();
+    // Never empty a pair: an empty virtual space silently zeroes that pair's
+    // correlation rather than approximating it.
+    let keep = if keep.is_empty() {
+        vec![order[0]]
+    } else {
+        keep
+    };
+    let discarded_weight: f64 = order
+        .iter()
+        .copied()
+        .filter(|k| !keep.contains(k))
+        .map(|k| eigs[k].abs())
+        .sum();
+
+    let mut transform = Array2::<f64>::zeros((nvir, keep.len()));
+    let mut occupations = Array1::<f64>::zeros(keep.len());
+    for (slot, &k) in keep.iter().enumerate() {
+        occupations[slot] = eigs[k];
+        for a in 0..nvir {
+            transform[(a, slot)] = vecs[(a, k)];
+        }
+    }
+
+    Ok(PnoPair {
+        ij: (i, j),
+        transform,
+        occupations,
+        discarded_weight,
+    })
+}
+
 /// Build per-pair PNO transforms from semicanonical first-order amplitudes.
 ///
 /// `t2_pair(i, j)` must return the `(nvir × nvir)` amplitude block `T^{ij}_{ab}` for
@@ -127,82 +227,11 @@ pub fn build_pno_transforms<F>(
 where
     F: FnMut(usize, usize) -> Array2<f64>,
 {
-    if t_cut_pno < 0.0 {
-        return Err(FerricError::General(format!(
-            "t_cut_pno must be >= 0 (got {t_cut_pno}); use 0.0 to disable truncation"
-        )));
-    }
+    check_t_cut_pno(t_cut_pno)?;
 
     let mut pairs = Vec::with_capacity(domains.pairs.len());
     for &(i, j) in &domains.pairs {
-        let t = t2_pair(i, j);
-        if t.nrows() != nvir || t.ncols() != nvir {
-            return Err(FerricError::General(format!(
-                "t2_pair({i},{j}) returned {:?}, expected ({nvir}, {nvir})",
-                t.dim()
-            )));
-        }
-
-        // Pair density D^ij = T Tᵀ + Tᵀ T, explicitly symmetrized. Both terms are
-        // needed for an off-diagonal pair: T^ij is not symmetric when i != j, and
-        // using T Tᵀ alone would privilege the a index over b.
-        let d = t.dot(&t.t()) + t.t().dot(&t);
-        let mut d_sym = Array2::<f64>::zeros((nvir, nvir));
-        for a in 0..nvir {
-            for b in 0..nvir {
-                d_sym[(a, b)] = 0.5 * (d[(a, b)] + d[(b, a)]);
-            }
-        }
-
-        // Ascending eigenvalues, eigenvectors in columns -- same convention as
-        // ndarray_linalg's eigh, but returning Result (a panic here would surface
-        // much later as a wrong energy).
-        let (eigs, vecs) = eigh_dc(&d_sym, Uplo::Upper).map_err(|e| {
-            FerricError::General(format!("PNO eigh failed for pair ({i},{j}): {e}"))
-        })?;
-
-        // eigh returns ascending; we want the largest occupations first.
-        let mut order: Vec<usize> = (0..nvir).collect();
-        order.sort_by(|&x, &y| {
-            eigs[y]
-                .partial_cmp(&eigs[x])
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-
-        let keep: Vec<usize> = order
-            .iter()
-            .copied()
-            .filter(|&k| eigs[k].abs() >= t_cut_pno)
-            .collect();
-        // Never empty a pair: an empty virtual space silently zeroes that pair's
-        // correlation rather than approximating it.
-        let keep = if keep.is_empty() {
-            vec![order[0]]
-        } else {
-            keep
-        };
-        let discarded_weight: f64 = order
-            .iter()
-            .copied()
-            .filter(|k| !keep.contains(k))
-            .map(|k| eigs[k].abs())
-            .sum();
-
-        let mut transform = Array2::<f64>::zeros((nvir, keep.len()));
-        let mut occupations = Array1::<f64>::zeros(keep.len());
-        for (slot, &k) in keep.iter().enumerate() {
-            occupations[slot] = eigs[k];
-            for a in 0..nvir {
-                transform[(a, slot)] = vecs[(a, k)];
-            }
-        }
-
-        pairs.push(PnoPair {
-            ij: (i, j),
-            transform,
-            occupations,
-            discarded_weight,
-        });
+        pairs.push(pno_for_pair((i, j), &t2_pair(i, j), nvir, t_cut_pno)?);
     }
 
     Ok(PnoTransforms {
