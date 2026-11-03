@@ -567,8 +567,8 @@ converged-exit Fock matrix against an independent f64 rebuild at a loose
 
 **`dfk-occ`** (opt-in, not in the default mixed set: it runs only when
 `mixed_kernels` names it, under `mode = "on"`; on a GTX 1080 a mixed SCF saved
-about 2% of the wall time against the f64 device DF-K at def2-TZVP, nothing
-measurable at def2-SVP, and was 3-7% slower with diffuse basis sets, so there is
+about 1 s (5%) of the wall time against the f64 device DF-K at def2-TZVP, nothing
+measurable at def2-SVP, and was 5-9% slower with diffuse basis sets, so there is
 no reason to run it by default). The DF-K occupied path with the dressed `B`
 resident on the device as f32 and `C_occ` rounded to f32 on every build: each
 `Y_P = C_occᵀ·B_P` is a k-panelled f32 product of width b = 64 flushed into f64,
@@ -634,18 +634,21 @@ repeats each, whole-run wall time):
 
 | basis | nbf | CPU | device f64 | device mixed `dfk-occ` |
 |---|---|---|---|---|
-| def2-SVP | 298 | 10.1, 10.0 s | 10.0, 10.7 s | 9.9, 10.4 s |
-| def2-TZVP | 528 | 35.5, 28.7 s | 27.6, 27.6 s | 26.9, 27.0 s |
+| def2-SVP | 298 | 7.9, 8.1 s | 8.0, 8.1 s | 7.9, 8.0 s |
+| def2-TZVP | 528 | 25.5, 22.3 s | 21.4, 21.3 s | 20.3, 20.5 s |
 
-About 21 s of the def2-TZVP run is setup before the first SCF iteration, the
-same in every device arm; the SCF loop took 5.3 s mixed against 5.9 s in f64.
+The def2-TZVP run spends 8.7 s in setup (the 3-index integrals and the
+V^-1/2 dressing of the DF-K tensor), the same in every arm, and 4.2 s on the
+first Fock build, whose K comes from the guess density on the host (there are
+no occupied orbitals yet); the SCF loop after it took 5.3 s mixed against
+5.9 s in f64.
 A mixed iteration took 0.47-0.48 s against 0.60 s, the iterations the ladder
 keeps f64 0.60-0.61 s (the f64 device path), and the first device build, which
 uploads the f64 `B` and rounds its f32 copy on the device, 1.02 s against
 1.12 s. Holding both copies costs device memory: 4.58 GB of dressed `B` at
 def2-TZVP against 1.53 GB for the f32 copy alone and 3.05 GB in f64. On the
-benzene rows above the mixed SCF took 1.9 s against 1.8 s (aug-cc-pVDZ) and
-6.2 s against 6.0 s (aug-cc-pVTZ).
+benzene rows above the mixed SCF took 1.90-1.94 s against 1.74-1.85 s
+(aug-cc-pVDZ) and 5.5-5.6 s against 5.2-5.3 s (aug-cc-pVTZ).
 
 The kernel itself (the derived K bound, the exact cross-panel flush and C_occ
 rounding pins, the multi-chunk build, the operand-class twin gate, every

@@ -416,24 +416,18 @@ fn dress_rows_packed(
         let q1 = q0 + flat.nrows();
         for &(r0, r1) in &edges {
             let msub = m.slice(ndarray::s![p0 + r0..p0 + r1, q0..q1]);
-            let contrib = msub.dot(&flat);
-            for (i, row) in contrib.outer_iter().enumerate() {
-                let mut dst = accum.row_mut(r0 + i);
-                let mut k = 0usize;
-                for mu in 0..nao {
-                    for nu in 0..=mu {
-                        dst[k] += row[mu * nao + nu];
-                        k += 1;
-                    }
-                }
-            }
+            let mut dst = accum.slice_mut(ndarray::s![r0..r1, ..]);
+            dress_lower_accumulate(&msub, &flat, &mut dst, nao, TriOut::Packed);
         }
         Ok(())
     })?;
     Ok(accum)
 }
 
-/// Can the in-core fast path hold the band plus its per-worker `contrib`? Reads
+/// Can the in-core fast path hold the band plus its per-worker `contrib`? The
+/// dressing now accumulates in place ([`dress_lower_accumulate`]) and holds no
+/// `contrib`, so this charge is an overestimate, kept so the choice of path
+/// (and of storage tier, which shares these figures) does not move. Reads
 /// the thread count, which is safe only because the choice it steers does not
 /// move a bit at one BLAS thread: see [`dress_rows_packed`].
 fn fast_path_plan(budget_bytes: usize, band: usize, n_blocks: usize, nao: usize) -> MemoryPlan {
@@ -455,11 +449,69 @@ fn fast_path_plan(budget_bytes: usize, band: usize, n_blocks: usize, nao: usize)
     plan
 }
 
+/// Where row μ's lower-triangle segment `ν ∈ 0..=μ` starts in an output row:
+/// the full square (`μ·nao`, the same column as in the raw row) or the packed
+/// triangle (`μ(μ+1)/2`).
+#[derive(Clone, Copy)]
+enum TriOut {
+    Square,
+    Packed,
+}
+
+/// `out[:, seg(μ)] += msub · flat[:, μ·nao ..= μ·nao + μ]` for every μ: the
+/// dressing GEMM over the LOWER μν triangle only (`(P|μν)` is exactly symmetric,
+/// `eri3_block` writes both halves from one value), accumulated straight into
+/// `out` (`β = 1`), with no per-block temporary.
+///
+/// Bit-identical to the full-square `contrib = msub·flat; out += contrib` it
+/// replaces: `matrixmultiply` forms each element's k-sum (k ≤ `DRESS_K_BLOCK` =
+/// 128, inside one k-panel) the same way whatever its column, and `β = 1` adds
+/// it to `out` once, as `+=` did. Half the FLOPs and none of the temporary's
+/// bytes. A full-square `out` needs [`mirror_lower_to_upper`] once every Q
+/// block has been added.
+fn dress_lower_accumulate(
+    msub: &ndarray::ArrayView2<'_, f64>,
+    flat: &ndarray::ArrayView2<'_, f64>,
+    out: &mut ndarray::ArrayViewMut2<'_, f64>,
+    nao: usize,
+    layout: TriOut,
+) {
+    use ndarray::linalg::general_mat_mul;
+    for mu in 0..nao {
+        let src = mu * nao;
+        let dst = match layout {
+            TriOut::Square => src,
+            TriOut::Packed => mu * (mu + 1) / 2,
+        };
+        let rseg = flat.slice(ndarray::s![.., src..=src + mu]);
+        let mut oseg = out.slice_mut(ndarray::s![.., dst..=dst + mu]);
+        general_mat_mul(1.0, msub, &rseg, 1.0, &mut oseg);
+    }
+}
+
+/// Copy the lower μν triangle of each `nao × nao` row of `rows` onto its upper
+/// triangle (in square tiles, so both the reads and the writes stay in cache).
+fn mirror_lower_to_upper(rows: &mut [f64], nao: usize) {
+    const T: usize = 32;
+    for sq in rows.chunks_exact_mut(nao * nao) {
+        for i0 in (0..nao).step_by(T) {
+            for j0 in (0..=i0).step_by(T) {
+                for i in i0..(i0 + T).min(nao) {
+                    for j in j0..(j0 + T).min(i) {
+                        sq[j * nao + i] = sq[i * nao + j];
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// One fast-path block: an ascending Q sweep, sub-blocked to [`DRESS_K_BLOCK`]. The
 /// outer edges follow the source's own blocks; the inner split is a fixed constant,
 /// which both pins the summation order and improves accuracy (see
-/// [`DRESS_K_BLOCK`]). `dst` starts at zero, so `acc += contrib` accumulates the
-/// identical term sequence a private buffer would, in the identical order.
+/// [`DRESS_K_BLOCK`]). `dst` starts at zero, so accumulating each sub-block into
+/// it ([`dress_lower_accumulate`]) adds the identical term sequence a private
+/// buffer would, in the identical order; the upper triangle is mirrored last.
 fn dress_block_in_place(
     dst: &mut [f64],
     (l0, l1): (usize, usize),
@@ -470,7 +522,13 @@ fn dress_block_in_place(
     let b = l1 - l0;
     let p0 = band_p0 + l0;
     let row_elems = raw_flat.ncols();
-    let mut acc = ndarray::ArrayViewMut2::from_shape((b, row_elems), dst)
+    let nao = (row_elems as f64).sqrt().round() as usize;
+    if nao * nao != row_elems {
+        return Err(FerricError::General(format!(
+            "dress: raw row of {row_elems} is not a square"
+        )));
+    }
+    let mut acc = ndarray::ArrayViewMut2::from_shape((b, row_elems), &mut *dst)
         .map_err(|e| FerricError::General(format!("dress out reshape: {e}")))?;
     for &(q0, q1) in q_edges {
         let mut qa = q0;
@@ -478,11 +536,11 @@ fn dress_block_in_place(
             let qb = (qa + DRESS_K_BLOCK).min(q1);
             let msub = m.slice(ndarray::s![p0..p0 + b, qa..qb]);
             let rblk = raw_flat.slice(ndarray::s![qa - raw_p0..qb - raw_p0, ..]);
-            let contrib: Array2<f64> = msub.dot(&rblk);
-            acc += &contrib;
+            dress_lower_accumulate(&msub, &rblk, &mut acc, nao, TriOut::Square);
             qa = qb;
         }
     }
+    mirror_lower_to_upper(dst, nao);
     Ok(())
 }
 
@@ -548,15 +606,23 @@ fn dress_band_in_core_blocked(
         let q1 = q0 + flat.nrows();
         for &(l0, l1) in &edges {
             let msub = m.slice(ndarray::s![band_p0 + l0..band_p0 + l1, q0..q1]);
-            let contrib = msub.dot(&flat);
             let mut dst = arr
                 .slice_mut(ndarray::s![l0..l1, .., ..])
                 .into_shape_with_order((l1 - l0, nao * nao))
                 .map_err(|e| FerricError::General(format!("dress out reshape: {e}")))?;
-            dst += &contrib;
+            dress_lower_accumulate(&msub, &flat, &mut dst, nao, TriOut::Square);
         }
         Ok(())
-    })
+    })?;
+    let rows = arr
+        .as_slice_mut()
+        .ok_or_else(|| FerricError::General("dress out: non-contiguous output band".into()))?;
+    {
+        use rayon::prelude::*;
+        rows.par_chunks_mut(nao * nao)
+            .for_each(|sq| mirror_lower_to_upper(sq, nao));
+    }
+    Ok(())
 }
 
 /// Write the dressed band to `file` in the packed spill format.
