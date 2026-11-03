@@ -115,6 +115,30 @@ pub enum PruneScheme {
     /// FINAL grid) and PySCF's SGX level 2. Every order in the table is
     /// tabulated, so no snapping happens.
     Sgx,
+    /// [`NwchemLike`](Self::NwchemLike)'s angular table plus fewer radial
+    /// shells for light elements ([`radial_shells`]): H and He get
+    /// `round(n_radial · 50/75)`, Li-Ne `round(n_radial · 66/75)`, Na and
+    /// heavier the full `n_radial` (50 / 66 / 75 at the default 75).
+    /// Measured against the flat 75x110 grid (def2-SVP): live PBE SCFs moved
+    /// by -1.8e-7 Ha on n-C20H42 and -4.3e-6 Ha on danuglipron (71 atoms,
+    /// C/H/N/O/F), against the flat grid's own 4.5e-4 to 3.3e-3 Ha error
+    /// relative to a 99x590 reference on the alkanes; iteration counts
+    /// unchanged; C20 wall time 17.7 -> 13.6 s. Li-Ne at 60 shells moved
+    /// danuglipron by 9.2e-6 Ha, and 50 shells for Cl and S cost 4e-5 Ha on
+    /// CCl4 (fixed-density E_xc probe), so second-row atoms keep the full grid.
+    NwchemRadial,
+}
+
+/// Radial shells for an atom of nuclear charge `z` on a grid of `n_radial`
+/// shells under `prune` (see [`PruneScheme::NwchemRadial`]); every other
+/// scheme, and the flat grid, use `n_radial` for every atom. At least 1.
+pub fn radial_shells(z: i32, n_radial: usize, prune: Option<PruneScheme>) -> usize {
+    let scaled = |num: usize| ((n_radial * num + 37) / 75).max(1);
+    match prune {
+        Some(PruneScheme::NwchemRadial) if z <= 2 => scaled(50),
+        Some(PruneScheme::NwchemRadial) if z <= 10 => scaled(66),
+        _ => n_radial,
+    }
 }
 
 /// Region orders (innermost -> outermost) of [`PruneScheme::Sgx`], one row
@@ -155,9 +179,11 @@ impl PruneScheme {
         match s.trim().to_ascii_lowercase().as_str() {
             "none" | "off" | "flat" => Ok(None),
             "nwchem" | "nwchem-like" | "nwchem_like" => Ok(Some(Self::NwchemLike)),
+            "nwchem-radial" | "nwchem_radial" => Ok(Some(Self::NwchemRadial)),
             "sgx" => Ok(Some(Self::Sgx)),
             other => Err(FerricError::General(format!(
-                "unknown grid prune scheme '{other}' (expected 'none', 'nwchem' or 'sgx')"
+                "unknown grid prune scheme '{other}' (expected 'none', 'nwchem', \
+                 'nwchem-radial' or 'sgx')"
             ))),
         }
     }
@@ -273,7 +299,7 @@ pub fn angular_orders_for_atom(
     scheme: PruneScheme,
 ) -> Result<Vec<usize>> {
     let table = match scheme {
-        PruneScheme::NwchemLike => region_orders(n_ang)?,
+        PruneScheme::NwchemLike | PruneScheme::NwchemRadial => region_orders(n_ang)?,
         PruneScheme::Sgx => sgx_region_orders(n_ang)?,
     };
     let alphas = region_alphas(z);
@@ -418,6 +444,31 @@ mod tests {
                 assert!(orders.contains(&n_ang));
             }
         }
+    }
+
+    /// Catches: a scheme that thins the radial grid of every element, of
+    /// second-row atoms, or of the flat grid, and a rounding that drops a
+    /// light atom to zero shells.
+    #[test]
+    fn nwchem_radial_thins_only_light_elements() {
+        let r = |z, n| radial_shells(z, n, Some(PruneScheme::NwchemRadial));
+        assert_eq!(
+            [r(1, 75), r(2, 75), r(3, 75), r(8, 75), r(10, 75)],
+            [50, 50, 60, 60, 60]
+        );
+        assert_eq!(
+            [r(11, 75), r(16, 75), r(17, 75), r(35, 75)],
+            [75, 75, 75, 75]
+        );
+        assert_eq!([r(1, 99), r(6, 99), r(17, 99)], [66, 87, 99]);
+        assert_eq!(r(1, 1), 1);
+        for p in [None, Some(PruneScheme::NwchemLike), Some(PruneScheme::Sgx)] {
+            assert_eq!(radial_shells(1, 75, p), 75, "{p:?}");
+        }
+        assert_eq!(
+            PruneScheme::parse_config_str("nwchem-radial").unwrap(),
+            Some(PruneScheme::NwchemRadial)
+        );
     }
 
     #[test]

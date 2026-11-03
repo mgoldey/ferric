@@ -572,7 +572,7 @@ pub fn run(args: Vec<String>) {
     if grid_prune == Some(ferric_dft::prune::PruneScheme::Sgx) {
         eprintln!(
             "error: [dft] grid_prune = \"sgx\" is the COSX exchange grid's scheme \
-             ([scf] cosx_grid); the XC grid is validated with \"nwchem\" or \"none\" only."
+             ([scf] cosx_grid); the XC grid is validated with \"nwchem\", \"nwchem-radial\" or \"none\" only."
         );
         std::process::exit(1);
     }

@@ -276,7 +276,10 @@ pub fn build_atomic_grid_pruned(
     let mut pre: Vec<(usize, [f64; 3], f64)> = Vec::new();
 
     for (a_idx, atom) in mol.atoms.iter().enumerate() {
-        let (rs, ws) = treutler_ahlrichs_m4(atom.z, cfg.n_radial);
+        let (rs, ws) = treutler_ahlrichs_m4(
+            atom.z,
+            crate::prune::radial_shells(atom.z, cfg.n_radial, Some(scheme)),
+        );
         let orders = shell_angular_orders(atom.z, &rs, cfg, Some(scheme))?;
         for ((r, w_r), &order) in rs.iter().zip(ws.iter()).zip(orders.iter()) {
             if !cache.iter().any(|(o, _, _)| *o == order) {
@@ -335,7 +338,10 @@ pub fn atomic_grid_point_count(
     let mut rule_len: Vec<(usize, usize)> = Vec::new();
     let mut total = 0usize;
     for atom in &mol.atoms {
-        let (rs, _) = treutler_ahlrichs_m4(atom.z, cfg.n_radial);
+        let (rs, _) = treutler_ahlrichs_m4(
+            atom.z,
+            crate::prune::radial_shells(atom.z, cfg.n_radial, prune),
+        );
         for order in shell_angular_orders(atom.z, &rs, cfg, prune)? {
             let n = match rule_len.iter().find(|(o, _)| *o == order) {
                 Some(&(_, n)) => n,
@@ -422,7 +428,10 @@ pub fn build_atomic_grid_with_response_pruned(
     let mut pre: Vec<(usize, [f64; 3], f64)> = Vec::with_capacity(npts);
 
     for (a_idx, atom) in mol.atoms.iter().enumerate() {
-        let (rs, ws) = treutler_ahlrichs_m4(atom.z, cfg.n_radial);
+        let (rs, ws) = treutler_ahlrichs_m4(
+            atom.z,
+            crate::prune::radial_shells(atom.z, cfg.n_radial, cfg.prune),
+        );
         let orders = shell_angular_orders(atom.z, &rs, cfg, cfg.prune)?;
         for ((r, w_r), &order) in rs.iter().zip(ws.iter()).zip(orders.iter()) {
             if !cache.iter().any(|(o, _, _)| *o == order) {

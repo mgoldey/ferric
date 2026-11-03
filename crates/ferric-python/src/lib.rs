@@ -450,7 +450,7 @@ fn resolve_dft_grid(
     if prune == Some(PruneScheme::Sgx) {
         return Err(pyo3::exceptions::PyValueError::new_err(
             "grid_prune = \"sgx\" is the COSX exchange grid's scheme (cosx_grid=); the XC \
-             grid is validated with \"nwchem\" or \"none\" only",
+             grid is validated with \"nwchem\", \"nwchem-radial\" or \"none\" only",
         ));
     }
     if prune.is_some() {

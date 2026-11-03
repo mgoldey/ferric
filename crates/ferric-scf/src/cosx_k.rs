@@ -245,7 +245,10 @@ pub fn validate_grid(grid: &AtomicGridConfig) -> Result<(), FerricError> {
             ferric_dft::prune::sgx_region_orders(grid.n_angular)
                 .map_err(|e| FerricError::General(format!("cosx grid: {e}")))?;
         }
-        Some(ferric_dft::prune::PruneScheme::NwchemLike) => {
+        Some(
+            ferric_dft::prune::PruneScheme::NwchemLike
+            | ferric_dft::prune::PruneScheme::NwchemRadial,
+        ) => {
             ferric_dft::prune::region_orders(grid.n_angular)
                 .map_err(|e| FerricError::General(format!("cosx grid: {e}")))?;
         }
