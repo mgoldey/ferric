@@ -333,6 +333,9 @@ impl GgaFxcKernel {
         }
 
         // Sum the second-derivative arrays over all sub-functionals.
+        // Per-matvec scratch: these six buffers are 30·npts doubles (3+6+6
+        // for v2rho2/v2rhosigma/v2sigma2, the same again for the t_* sums),
+        // allocated fresh on every apply_with_ref call — NOT persisted.
         let mut v2rho2 = vec![0.0f64; 3 * npts];
         let mut v2rhosigma = vec![0.0f64; 6 * npts];
         let mut v2sigma2 = vec![0.0f64; 6 * npts];
