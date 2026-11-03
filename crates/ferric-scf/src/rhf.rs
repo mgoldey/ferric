@@ -2626,8 +2626,9 @@ fn solve_rhf_impl(
                 // O(naux·n²·nocc) C_occ half-transform instead of the
                 // O(naux·n³) density contraction. `d_occ` is None on iteration 1
                 // (no diagonalization yet) and whenever fractional occupations
-                // make D non-idempotent (smearing), so those fall back to the
-                // density path.
+                // make D non-idempotent (smearing); those factor D itself
+                // (`build_from_density_factor`: the occupied path over D's
+                // eigenvectors, the density path only when that is no cheaper).
                 //
                 // `d_occ` caches BARE C_occ while the RHF density is
                 // D = 2·C_occ·C_occᵀ, and `build_from_occ` applies no scaling —
@@ -2646,7 +2647,7 @@ fn solve_rhf_impl(
                         k_buf *= 2.0;
                     }
                     None => {
-                        dfk.build(&d, &mut k_buf)?;
+                        dfk.build_from_density_factor(&d, &mut k_buf)?;
                     }
                 }
             } else if let Some(dk) = direct_k.as_mut() {

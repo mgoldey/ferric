@@ -291,8 +291,8 @@ fn explicit_mode_off_under_a_mixed_preset_is_refused_naming_both() {
 fn an_unshipped_name_in_a_narrower_list_under_mixed_is_refused() {
     let list = MixedKernelSet::EMPTY
         .with(MixedKernel::RiMp2Energy)
-        .with(MixedKernel::DfkOcc);
-    assert!(!MixedKernelSet::SHIPPED.contains(MixedKernel::DfkOcc));
+        .with(MixedKernel::CcsdAmplitudes);
+    assert!(!MixedKernelSet::SHIPPED.contains(MixedKernel::CcsdAmplitudes));
     let e = GpuSettings::resolve(
         GpuSettingsExplicit {
             preset: Some(GpuPreset::Mixed),
@@ -304,8 +304,8 @@ fn an_unshipped_name_in_a_narrower_list_under_mixed_is_refused() {
     .unwrap_err();
     assert_eq!(
         e,
-        "[gpu] mixed_kernels: dfk-occ not shipped yet (shipped in this build: rimp2-energy; \
-         opt-in, named explicitly and needing [gpu] mode = \"on\": xc-vxc; opt-in CPU \
+        "[gpu] mixed_kernels: ccsd-amplitudes not shipped yet (shipped in this build: rimp2-energy; \
+         opt-in, named explicitly and needing [gpu] mode = \"on\": dfk-occ,xc-vxc; opt-in CPU \
          kernels, named explicitly: dfj-f32)"
     );
 }

@@ -131,6 +131,50 @@ pub(crate) const DFK_LINDEP_THRESH: f64 = 1e-10;
 /// some eigenvalues can be near-zero and turn slightly negative under
 /// floating-point roundoff. Drop those modes — equivalent to PySCF's
 /// `lindep` threshold in `df.aux_e2`.
+/// Relative eigenvalue cut of [`DfK::build_from_density_factor`]: a guess or
+/// projector density's spectrum is its rank's worth of O(1) eigenvalues and a
+/// floor at the `eigh` rounding level (about `nao · u64 · max|λ|`, 1e-13 at
+/// nao = 528), so 1e-11 keeps every real eigenvalue and drops the floor; a
+/// dropped `λ` changes `K` by at most `|λ| · max_P ‖B_P v‖²`.
+const DENSITY_FACTOR_REL_CUT: f64 = 1e-11;
+
+/// `(X₊, X₋)` with `D = X₊X₊ᵀ − X₋X₋ᵀ`, or `None` when the factor would not be
+/// cheaper than the density path or `D` is not symmetric (see
+/// [`DfK::build_from_density_factor`]).
+fn density_factor(d: &Array2<f64>) -> Option<(Array2<f64>, Array2<f64>)> {
+    let n = d.nrows();
+    if n == 0 || d.ncols() != n {
+        return None;
+    }
+    let scale = d.iter().fold(0.0f64, |m, v| m.max(v.abs()));
+    let asym = (0..n)
+        .flat_map(|i| (0..i).map(move |j| (i, j)))
+        .fold(0.0f64, |m, (i, j)| m.max((d[(i, j)] - d[(j, i)]).abs()));
+    if !scale.is_finite() || asym > 1e-12 * scale.max(f64::MIN_POSITIVE) {
+        return None;
+    }
+    let (evals, evecs) = with_blas_threads(opt_in_blas_threads(), || d.eigh(UPLO::Lower)).ok()?;
+    let lmax = evals.iter().fold(0.0f64, |m, v| m.max(v.abs()));
+    if lmax == 0.0 {
+        return Some((Array2::zeros((n, 0)), Array2::zeros((n, 0))));
+    }
+    let cut = DENSITY_FACTOR_REL_CUT * lmax;
+    let pos: Vec<usize> = (0..n).filter(|&i| evals[i] > cut).collect();
+    let neg: Vec<usize> = (0..n).filter(|&i| evals[i] < -cut).collect();
+    if 4 * (pos.len() + neg.len()) > 3 * n {
+        return None;
+    }
+    let columns = |idx: &[usize]| {
+        let mut x = Array2::<f64>::zeros((n, idx.len()));
+        for (c, &i) in idx.iter().enumerate() {
+            let w = evals[i].abs().sqrt();
+            x.column_mut(c).assign(&evecs.column(i).mapv(|v| v * w));
+        }
+        x
+    };
+    Some((columns(&pos), columns(&neg)))
+}
+
 fn v_inv_sqrt_lindep(v: &Array2<f64>) -> Result<Array2<f64>, FerricError> {
     let naux = v.nrows();
     // One-time (naux, naux) setup factorization, called once per SCF
@@ -276,6 +320,44 @@ impl<'a> DfK<'a> {
 }
 
 impl DfK<'_> {
+    /// `K(D)` for a symmetric `D` with no orbital factor at hand (the first Fock
+    /// build from a guess density, ROHF's spin densities, a fractionally occupied
+    /// density), through the occupied path. `D = V Λ Vᵀ` gives `D = X₊X₊ᵀ − X₋X₋ᵀ`
+    /// with `X± = V·√|λ|` over the eigenvalues of each sign, and K is linear in D,
+    /// so `K(D) = K(X₊X₊ᵀ) − K(X₋X₋ᵀ)`: two [`build_from_occ`](KBuilder::build_from_occ)
+    /// calls whose cost scales with the columns kept (a guess density's rank is
+    /// the minimal-basis size; a spin projector's is its occupation) instead of
+    /// the density path's `nao`.
+    ///
+    /// Eigenvalues with `|λ| ≤ DENSITY_FACTOR_REL_CUT · max|λ|` are dropped (the
+    /// rank-deficient part of the spectrum, rounding noise of `eigh`). Falls back
+    /// to [`build`](KBuilder::build) (the density path) when `D` is not
+    /// symmetric to rounding, when the kept columns exceed `3·nao/4`, or when
+    /// `eigh` fails. The occupied path costs about `m/nao` of the density path
+    /// for `m` columns (two `naux·nao²·m` stages against two `naux·nao³`), so a
+    /// factor pays up to `m ≈ nao`; the margin covers its narrower GEMMs. A
+    /// guess density keeps more columns than the minimal basis (158 of 298 at
+    /// n-dodecane / def2-SVP, 180 of 414 at benzene / aug-cc-pVTZ). Not bit-identical to the density path: it
+    /// agrees with it to the DF-K reassociation floor, as the occupied path does.
+    pub fn build_from_density_factor(
+        &mut self,
+        d: &Array2<f64>,
+        k: &mut Array2<f64>,
+    ) -> Result<usize, FerricError> {
+        match density_factor(d) {
+            Some((x_pos, x_neg)) => {
+                self.build_from_occ_impl(&x_pos, k)?;
+                if x_neg.ncols() > 0 {
+                    let mut k_neg = Array2::<f64>::zeros(k.raw_dim());
+                    self.build_from_occ_impl(&x_neg, &mut k_neg)?;
+                    *k -= &k_neg;
+                }
+                Ok(0)
+            }
+            None => self.build_impl(d, k),
+        }
+    }
+
     /// Device bytes this builder's resident tensor needs under `gpu = on`: the
     /// dressed band plus the K accumulator when the dressed tensor is in core, 0
     /// when it is spilled or recomputed (the device path declines it).
@@ -638,6 +720,66 @@ mod tests {
     use ferric_core::basis;
     use ferric_core::mol::Molecule;
     use ferric_core::parallel::ParallelContext;
+
+    /// Catches: a factor of the wrong rank or sign (a dropped negative part, a
+    /// missing √λ, a wrong cut), a factored K that differs from the density
+    /// path beyond reassociation, and a fallback that is not the density path
+    /// itself (a full-rank or a non-symmetric D must take `build` bit for bit).
+    #[test]
+    fn a_factored_density_gives_the_density_path_k_and_falls_back_when_it_should() {
+        let mol = Molecule::load_xyz("../../testdata/molecules/water.xyz").unwrap();
+        let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
+        let aux =
+            PreparedBasis::new(&mol, &basis::bundled("def2-universal-jkfit").unwrap()).unwrap();
+        let n = obs.nbasis();
+        let mut dfk = DfK::new(Operator::coulomb(), &obs, &aux, usize::MAX).unwrap();
+        let cols = |m: usize, salt: usize| {
+            Array2::from_shape_fn((n, m), |(i, j)| {
+                0.1 * ((((i + 1) * (j + 3) * 7 + salt * 11) % 23) as f64 - 11.0)
+            })
+        };
+        let (a, b) = (cols(3, 1), cols(2, 2));
+        let psd = cols(5, 3).dot(&cols(5, 3).t()) * 2.0;
+        let indefinite = a.dot(&a.t()) - b.dot(&b.t());
+        let k_of = |dfk: &mut DfK, d: &Array2<f64>, factored: bool| {
+            let mut k = Array2::<f64>::zeros((n, n));
+            if factored {
+                dfk.build_from_density_factor(d, &mut k).unwrap();
+            } else {
+                dfk.build(d, &mut k).unwrap();
+            }
+            k
+        };
+        for (d, want) in [(&psd, (5, 0)), (&indefinite, (3, 2))] {
+            let (xp, xn) = density_factor(d).expect("low rank: factored");
+            assert_eq!((xp.ncols(), xn.ncols()), want);
+            let back = xp.dot(&xp.t()) - xn.dot(&xn.t());
+            let scale = d.iter().fold(0.0f64, |m, v| m.max(v.abs()));
+            let err = (&back - d).iter().fold(0.0f64, |m, v| m.max(v.abs()));
+            assert!(err <= 1e-12 * scale, "X₊X₊ᵀ − X₋X₋ᵀ misses D by {err:e}");
+            let (kf, kd) = (k_of(&mut dfk, d, true), k_of(&mut dfk, d, false));
+            let big = kd.iter().fold(0.0f64, |m, v| m.max(v.abs()));
+            let diff = (&kf - &kd).iter().fold(0.0f64, |m, v| m.max(v.abs()));
+            assert!(big > 1e-3, "K must not be ~zero");
+            assert!(
+                diff <= 1e-12 * big,
+                "factored K off by {diff:e} (max |K| {big:e})"
+            );
+        }
+        let full = Array2::<f64>::eye(n);
+        let mut skew = psd.clone();
+        skew[(0, 1)] += 1e-6;
+        for d in [&full, &skew] {
+            assert!(density_factor(d).is_none());
+            let (kf, kd) = (k_of(&mut dfk, d, true), k_of(&mut dfk, d, false));
+            assert!(
+                kf.iter()
+                    .zip(kd.iter())
+                    .all(|(x, y)| x.to_bits() == y.to_bits()),
+                "the fallback must be the density path itself"
+            );
+        }
+    }
 
     /// J runs between K passes, and a range-separated pair holds two of these under
     /// one budget, so a spilled block must not outlive either kind of pass.

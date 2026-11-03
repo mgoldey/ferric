@@ -423,24 +423,18 @@ fn dress_rows_packed(
         let q1 = q0 + flat.nrows();
         for &(r0, r1) in &edges {
             let msub = m.slice(ndarray::s![p0 + r0..p0 + r1, q0..q1]);
-            let contrib = msub.dot(&flat);
-            for (i, row) in contrib.outer_iter().enumerate() {
-                let mut dst = accum.row_mut(r0 + i);
-                let mut k = 0usize;
-                for mu in 0..nao {
-                    for nu in 0..=mu {
-                        dst[k] += row[mu * nao + nu];
-                        k += 1;
-                    }
-                }
-            }
+            let mut dst = accum.slice_mut(ndarray::s![r0..r1, ..]);
+            dress_lower_accumulate(&msub, &flat, &mut dst, nao, TriOut::Packed);
         }
         Ok(())
     })?;
     Ok(accum)
 }
 
-/// Can the in-core fast path hold the band plus its per-worker `contrib`? Reads
+/// Can the in-core fast path hold the band plus its per-worker `contrib`? The
+/// dressing now accumulates in place ([`dress_lower_accumulate`]) and holds no
+/// `contrib`, so this charge is an overestimate, kept so the choice of path
+/// (and of storage tier, which shares these figures) does not move. Reads
 /// the thread count, which is safe only because the choice it steers does not
 /// move a bit at one BLAS thread: see [`dress_rows_packed`].
 fn fast_path_plan(budget_bytes: usize, band: usize, n_blocks: usize, nao: usize) -> MemoryPlan {
@@ -462,11 +456,74 @@ fn fast_path_plan(budget_bytes: usize, band: usize, n_blocks: usize, nao: usize)
     plan
 }
 
+/// Where row μ's lower-triangle segment `ν ∈ 0..=μ` starts in an output row:
+/// the full square (`μ·nao`, the same column as in the raw row) or the packed
+/// triangle (`μ(μ+1)/2`).
+#[derive(Clone, Copy)]
+enum TriOut {
+    Square,
+    Packed,
+}
+
+/// `out[:, seg(μ)] += msub · flat[:, μ·nao ..= μ·nao + μ]` for every μ: the
+/// dressing GEMM over the LOWER μν triangle only (`(P|μν)` is exactly symmetric,
+/// `eri3_block` writes both halves from one value), accumulated straight into
+/// `out` (`β = 1`), with no per-block temporary.
+///
+/// NOT bit-identical to the full-square `contrib = msub·flat; out += contrib`
+/// it replaces. ndarray's `blas` feature is on workspace-wide (through
+/// `ndarray-linalg`), so these GEMMs are OpenBLAS, which forms an element's
+/// k-sum differently for narrow GEMMs (here `nao × (μ+1)` segments; an
+/// even-width variant still moved 9 elements of water / cc-pVDZ) than for the
+/// full row; and `β = 1` rounds `out + ab` once where `+=` rounded the product
+/// first. Both are within the k-block summation bound the tests derive, the
+/// result is still independent of the thread count (the blocks are fixed), and
+/// the tensor is now exactly symmetric. Half the FLOPs and none of the
+/// temporary's bytes. A full-square `out` needs [`mirror_lower_to_upper`] once
+/// every Q block has been added.
+fn dress_lower_accumulate(
+    msub: &ndarray::ArrayView2<'_, f64>,
+    flat: &ndarray::ArrayView2<'_, f64>,
+    out: &mut ndarray::ArrayViewMut2<'_, f64>,
+    nao: usize,
+    layout: TriOut,
+) {
+    use ndarray::linalg::general_mat_mul;
+    for mu in 0..nao {
+        let src = mu * nao;
+        let dst = match layout {
+            TriOut::Square => src,
+            TriOut::Packed => mu * (mu + 1) / 2,
+        };
+        let rseg = flat.slice(ndarray::s![.., src..=src + mu]);
+        let mut oseg = out.slice_mut(ndarray::s![.., dst..=dst + mu]);
+        general_mat_mul(1.0, msub, &rseg, 1.0, &mut oseg);
+    }
+}
+
+/// Copy the lower μν triangle of each `nao × nao` row of `rows` onto its upper
+/// triangle (in square tiles, so both the reads and the writes stay in cache).
+fn mirror_lower_to_upper(rows: &mut [f64], nao: usize) {
+    const T: usize = 32;
+    for sq in rows.chunks_exact_mut(nao * nao) {
+        for i0 in (0..nao).step_by(T) {
+            for j0 in (0..=i0).step_by(T) {
+                for i in i0..(i0 + T).min(nao) {
+                    for j in j0..(j0 + T).min(i) {
+                        sq[j * nao + i] = sq[i * nao + j];
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// One fast-path block: an ascending Q sweep, sub-blocked to [`DRESS_K_BLOCK`]. The
 /// outer edges follow the source's own blocks; the inner split is a fixed constant,
 /// which both pins the summation order and improves accuracy (see
-/// [`DRESS_K_BLOCK`]). `dst` starts at zero, so `acc += contrib` accumulates the
-/// identical term sequence a private buffer would, in the identical order.
+/// [`DRESS_K_BLOCK`]). `dst` starts at zero and each sub-block is accumulated
+/// into it ([`dress_lower_accumulate`]) in ascending Q order; the upper triangle
+/// is mirrored last.
 fn dress_block_in_place(
     dst: &mut [f64],
     (l0, l1): (usize, usize),
@@ -477,7 +534,13 @@ fn dress_block_in_place(
     let b = l1 - l0;
     let p0 = band_p0 + l0;
     let row_elems = raw_flat.ncols();
-    let mut acc = ndarray::ArrayViewMut2::from_shape((b, row_elems), dst)
+    let nao = (row_elems as f64).sqrt().round() as usize;
+    if nao * nao != row_elems {
+        return Err(FerricError::General(format!(
+            "dress: raw row of {row_elems} is not a square"
+        )));
+    }
+    let mut acc = ndarray::ArrayViewMut2::from_shape((b, row_elems), &mut *dst)
         .map_err(|e| FerricError::General(format!("dress out reshape: {e}")))?;
     for &(q0, q1) in q_edges {
         let mut qa = q0;
@@ -485,11 +548,11 @@ fn dress_block_in_place(
             let qb = (qa + DRESS_K_BLOCK).min(q1);
             let msub = m.slice(ndarray::s![p0..p0 + b, qa..qb]);
             let rblk = raw_flat.slice(ndarray::s![qa - raw_p0..qb - raw_p0, ..]);
-            let contrib: Array2<f64> = msub.dot(&rblk);
-            acc += &contrib;
+            dress_lower_accumulate(&msub, &rblk, &mut acc, nao, TriOut::Square);
             qa = qb;
         }
     }
+    mirror_lower_to_upper(dst, nao);
     Ok(())
 }
 
@@ -555,15 +618,23 @@ fn dress_band_in_core_blocked(
         let q1 = q0 + flat.nrows();
         for &(l0, l1) in &edges {
             let msub = m.slice(ndarray::s![band_p0 + l0..band_p0 + l1, q0..q1]);
-            let contrib = msub.dot(&flat);
             let mut dst = arr
                 .slice_mut(ndarray::s![l0..l1, .., ..])
                 .into_shape_with_order((l1 - l0, nao * nao))
                 .map_err(|e| FerricError::General(format!("dress out reshape: {e}")))?;
-            dst += &contrib;
+            dress_lower_accumulate(&msub, &flat, &mut dst, nao, TriOut::Square);
         }
         Ok(())
-    })
+    })?;
+    let rows = arr
+        .as_slice_mut()
+        .ok_or_else(|| FerricError::General("dress out: non-contiguous output band".into()))?;
+    {
+        use rayon::prelude::*;
+        rows.par_chunks_mut(nao * nao)
+            .for_each(|sq| mirror_lower_to_upper(sq, nao));
+    }
+    Ok(())
 }
 
 /// Write the dressed band to `file` in the packed spill format.
@@ -2490,6 +2561,120 @@ mod tests {
         (Molecule::parse_xyz("3\nH2O\nO 0 0 0\nH 0 0 0.96\nH 0.93 0 -0.26\n", 0, 1).unwrap(),)
     }
 
+    /// The old full-square dressing (`contrib = msub·raw; acc += contrib` over
+    /// the same row and Q blocks): the reference for the triangle dressing.
+    fn full_square_reference(raw: &ThreeIndexSource, m: &Array2<f64>) -> Array3<f64> {
+        let (naux, nao) = (raw.naux(), raw.nao());
+        let q_edges = raw.block_edges();
+        let raw_flat = raw.incore_flat().expect("in-core");
+        let raw_p0 = raw.band().0;
+        let mut expect = Array3::<f64>::zeros((naux, nao, nao));
+        let mut l = 0usize;
+        while l < naux {
+            let r = (l + DRESS_ROW_BLOCK).min(naux);
+            let b = r - l;
+            let mut acc = Array2::<f64>::zeros((b, nao * nao));
+            for &(q0, q1) in q_edges.iter() {
+                let mut qa = q0;
+                while qa < q1 {
+                    let qb = (qa + DRESS_K_BLOCK).min(q1);
+                    let msub = m.slice(ndarray::s![l..l + b, qa..qb]);
+                    let rblk = raw_flat.slice(ndarray::s![qa - raw_p0..qb - raw_p0, ..]);
+                    let contrib: Array2<f64> = msub.dot(&rblk);
+                    acc += &contrib;
+                    qa = qb;
+                }
+            }
+            expect
+                .slice_mut(ndarray::s![l..l + b, .., ..])
+                .into_shape_with_order((b, nao * nao))
+                .unwrap()
+                .assign(&acc);
+            l = r;
+        }
+        expect
+    }
+
+    /// The triangle dressing against the full-square one it replaced, on odd and
+    /// even `nao` and on band sizes that leave a partial last row block, for both
+    /// raw constructors the SCF uses: the tensor is EXACTLY symmetric in μν, and
+    /// each element is within the summation bound of the reference. Both sum
+    /// the same Q terms in the same `DRESS_K_BLOCK` blocks, each block a dot of
+    /// depth ≤ `kb` and the blocks added in order, so each is within
+    /// `γ_{kb+nb}·S` of the exact value (Higham §3.1, `S = Σ_Q |m_PQ||raw_Q,μν|`,
+    /// `nb` blocks) and the two within `2·γ_{kb+nb}·S` of each other. Not
+    /// bitwise: OpenBLAS (ndarray's `blas` feature is on workspace-wide) forms a
+    /// narrow GEMM's k-sum differently from the full row's. Catches: a missing
+    /// mirror, a segment of the wrong length or offset, a dropped Q block, and an
+    /// upper triangle computed separately (not mirrored).
+    #[test]
+    fn triangle_dressing_is_symmetric_and_within_the_bound_of_the_full_square_one() {
+        let water = "3\nH2O\nO 0 0 0\nH 0 0 0.96\nH 0.93 0 -0.26\n";
+        let cases: [(&str, usize, &str); 6] = [
+            (water, 1, "cc-pvdz"),
+            (water, 1, "sto-3g"),
+            (water, 1, "aug-cc-pvdz"),
+            (water, 1, "def2-svp"),
+            ("1\nO\nO 0 0 0\n", 3, "cc-pvdz"),
+            ("1\nH\nH 0 0 0\n", 2, "cc-pvdz"),
+        ];
+        for (xyz, mult, ob) in cases {
+            let mol = Molecule::parse_xyz(xyz, 0, mult).unwrap();
+            let obs = PreparedBasis::new(&mol, &basis::bundled(ob).unwrap()).unwrap();
+            let dfbs =
+                PreparedBasis::new(&mol, &basis::bundled("def2-universal-jkfit").unwrap()).unwrap();
+            let op = Operator::coulomb();
+            let (naux, nao) = (dfbs.nbasis(), obs.nbasis());
+            // A dense metric-like m with full-precision entries of both signs.
+            let m = Array2::<f64>::from_shape_fn((naux, naux), |(p, q)| {
+                let x = ((p * 31 + q * 17) % 101) as f64 / 101.0 - 0.5;
+                if p == q {
+                    1.0 + x
+                } else {
+                    0.03 * x / (1.0 + (p as f64 - q as f64).abs()).sqrt()
+                }
+            });
+            let budget = usize::MAX / 4;
+            for jk in [false, true] {
+                let mut raw = if jk {
+                    ThreeIndexSource::build_for_jk(op, &mol, &obs, &dfbs, budget, (0, naux), true)
+                        .unwrap()
+                } else {
+                    ThreeIndexSource::build(op, &obs, &dfbs, budget).unwrap()
+                };
+                let expect = full_square_reference(&raw, &m);
+                let dressed = ThreeIndexSource::build_dressed(&mut raw, &m, budget).unwrap();
+                let Backend::InCore(ref got) = dressed.backend else {
+                    panic!("expected the in-core fast path");
+                };
+                let raw_flat = raw.incore_flat().unwrap();
+                let s_abs = m.mapv(f64::abs).dot(&raw_flat.mapv(f64::abs));
+                let kb = DRESS_K_BLOCK.min(naux);
+                let nb = naux.div_ceil(DRESS_K_BLOCK);
+                let kk = (kb + nb) as f64 * f64::EPSILON / 2.0;
+                let eps = 2.0 * kk / (1.0 - kk);
+                let (mut worst, mut asym) = (0.0f64, 0usize);
+                for p in 0..naux {
+                    for i in 0..nao {
+                        for j in 0..nao {
+                            let (x, y) = (got[(p, i, j)], expect[(p, i, j)]);
+                            let bound = eps * s_abs[(p, i * nao + j)] + f64::MIN_POSITIVE;
+                            worst = worst.max((x - y).abs() / bound);
+                            if x.to_bits() != got[(p, j, i)].to_bits() {
+                                asym += 1;
+                            }
+                        }
+                    }
+                }
+                assert_eq!(asym, 0, "{ob} (nao {nao}, jk {jk}): not exactly symmetric");
+                assert!(
+                    worst <= 1.0,
+                    "{ob} (nao {nao}, naux {naux}, jk {jk}): |Δ|/bound = {worst:.3}"
+                );
+            }
+        }
+    }
+
     /// The dressed tensor must not depend on RAYON_NUM_THREADS.
     ///
     /// `build_dressed_band`'s parallel fast path splits OUTPUT aux rows across
@@ -2934,94 +3119,6 @@ mod tests {
                 },
             );
         }
-    }
-
-    /// REGRESSION (defect A): removing the second copy must not move a bit.
-    ///
-    /// `build_dressed_band`'s parallel fast path used to `collect()` every
-    /// output block into a `Vec<(usize, Array2)>` and then scatter, so at the
-    /// instant the collect finished a FULL SECOND COPY of the dressed band was
-    /// co-resident with `out_incore` — while the `in_core` gate above charged
-    /// for only ONE. It now accumulates straight into the destination rows via
-    /// `par_chunks_mut`.
-    ///
-    /// `dressed_tensor_bitidentical_across_thread_counts` proves the new path
-    /// agrees with ITSELF at every thread count; it cannot prove it agrees with
-    /// the code that was replaced. This does: the reference below reproduces
-    /// the OLD structure literally (a private zeroed `Array2` per block,
-    /// accumulated, then assigned into the output), so any change to the GEMM
-    /// boundaries, the Q sweep, or the accumulation order shows up as a
-    /// differing bit.
-    #[test]
-    fn dressed_fast_path_bitidentical_to_owned_buffer_reference() {
-        let (mol,) = water();
-        let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
-        let dfbs =
-            PreparedBasis::new(&mol, &basis::bundled("def2-universal-jkfit").unwrap()).unwrap();
-        let op = Operator::coulomb();
-        let naux = dfbs.nbasis();
-        let nao = obs.nbasis();
-        let mut m = Array2::<f64>::zeros((naux, naux));
-        for p in 0..naux {
-            for q in 0..naux {
-                m[(p, q)] =
-                    0.001 * (((p * 7 + q * 3) % 13) as f64) + if p == q { 1.0 } else { 0.0 };
-            }
-        }
-        let budget = usize::MAX / 4; // force the in-core fast path
-
-        // Live path.
-        let mut raw = ThreeIndexSource::build(op, &obs, &dfbs, budget).unwrap();
-        let dressed = ThreeIndexSource::build_dressed(&mut raw, &m, budget).unwrap();
-        let got = match dressed.backend {
-            Backend::InCore(ref a) => a.clone(),
-            _ => panic!("expected the in-core fast path"),
-        };
-
-        // Reference: the OLD collect-into-owned-buffer-then-scatter structure,
-        // written out by hand and run SERIALLY.
-        let raw_ref = ThreeIndexSource::build(op, &obs, &dfbs, budget).unwrap();
-        let q_edges = raw_ref.block_edges();
-        let raw_flat = raw_ref.incore_flat().expect("in-core");
-        let raw_p0 = raw_ref.band().0;
-        let mut expect = Array3::<f64>::zeros((naux, nao, nao));
-        let mut l = 0usize;
-        while l < naux {
-            let r = (l + DRESS_ROW_BLOCK).min(naux);
-            let b = r - l;
-            // A PRIVATE owned buffer, exactly as the removed code allocated.
-            let mut acc = Array2::<f64>::zeros((b, nao * nao));
-            for &(q0, q1) in q_edges.iter() {
-                let mut qa = q0;
-                while qa < q1 {
-                    let qb = (qa + DRESS_K_BLOCK).min(q1);
-                    let msub = m.slice(ndarray::s![l..l + b, qa..qb]);
-                    let rblk = raw_flat.slice(ndarray::s![qa - raw_p0..qb - raw_p0, ..]);
-                    let contrib: Array2<f64> = msub.dot(&rblk);
-                    acc += &contrib;
-                    qa = qb;
-                }
-            }
-            // ...then scattered into the output.
-            let mut dst = expect
-                .slice_mut(ndarray::s![l..l + b, .., ..])
-                .into_shape_with_order((b, nao * nao))
-                .unwrap();
-            dst.assign(&acc);
-            l = r;
-        }
-
-        assert_eq!(got.dim(), expect.dim());
-        let differing = got
-            .iter()
-            .zip(expect.iter())
-            .filter(|(x, y)| x.to_bits() != y.to_bits())
-            .count();
-        assert_eq!(
-            differing, 0,
-            "removing the redundant second copy changed {differing} elements — the \
-             scatter-free path must be a pure memory fix, never a numerical one"
-        );
     }
 
     /// Defect A, the accounting half: the in-core dressing gate must refuse a

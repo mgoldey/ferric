@@ -248,6 +248,11 @@ fn no_bound_reason(k: MixedKernel) -> &'static str {
              is designed but not implemented); the kernel's measured error map is on \
              the validation page"
         }
+        MixedKernel::DfkOcc => {
+            "no per-run bound is computed; a converged SCF's energy and density come \
+             from f64 builds (the SCF precision ladder's f64 exit). Measured error map \
+             on the validation page"
+        }
         MixedKernel::DfjF32 => {
             "no per-run bound is computed; every RI-J build read the f32-stored tensor (not behind \
              the SCF ladder, no f64 exit unless DfJ::f64_exit_coulomb_energy was applied); \

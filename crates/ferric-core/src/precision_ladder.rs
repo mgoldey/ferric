@@ -125,6 +125,9 @@ pub struct PrecisionLadder<T> {
     site: LadderSite,
     prev: Mutex<Vec<Array2<f64>>>,
     last_mixed: Mutex<Option<T>>,
+    /// The largest per-spin [`rms_diff`] the last [`step_with`](Self::step_with)
+    /// measured (`None`: no previous build of the same shape, or not requested).
+    last_change: Mutex<Option<f64>>,
 }
 
 impl<T> PrecisionLadder<T> {
@@ -134,6 +137,7 @@ impl<T> PrecisionLadder<T> {
             site,
             prev: Mutex::new(Vec::new()),
             last_mixed: Mutex::new(None),
+            last_change: Mutex::new(None),
         }
     }
 
@@ -145,6 +149,7 @@ impl<T> PrecisionLadder<T> {
     /// forgets the previous build's mixed record.
     pub fn step_with(&self, requested: bool, thresh: f64, ds: &[&Array2<f64>]) -> bool {
         *self.last_mixed.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        *self.last_change.lock().unwrap_or_else(|e| e.into_inner()) = None;
         if !requested {
             return false;
         }
@@ -152,6 +157,19 @@ impl<T> PrecisionLadder<T> {
         let mut prev = self.prev.lock().unwrap_or_else(|e| e.into_inner());
         let same_shape =
             prev.len() == ds.len() && prev.iter().zip(ds).all(|(p, d)| p.dim() == d.dim());
+        let change = same_shape.then(|| {
+            prev.iter()
+                .zip(ds)
+                .map(|(p, d)| rms_diff(p, d))
+                .fold(f64::NEG_INFINITY, |a, b| {
+                    if b.is_nan() || a.is_nan() {
+                        f64::NAN
+                    } else {
+                        a.max(b)
+                    }
+                })
+        });
+        *self.last_change.lock().unwrap_or_else(|e| e.into_inner()) = change;
         let moving = same_shape
             && (never_exit() || prev.iter().zip(ds).any(|(p, d)| rms_diff(p, d) > thresh));
         if same_shape {
@@ -164,9 +182,17 @@ impl<T> PrecisionLadder<T> {
         moving
     }
 
+    /// The largest per-spin density change [`step_with`](Self::step_with) last
+    /// measured (NaN if any spin's was NaN), or `None` (first build, a shape
+    /// change, or mixed not requested).
+    pub fn last_change(&self) -> Option<f64> {
+        *self.last_change.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     /// Forget every earlier build: the next one has no previous build.
     pub fn reset(&self) {
         self.prev.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        *self.last_change.lock().unwrap_or_else(|e| e.into_inner()) = None;
         *self.last_mixed.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
 

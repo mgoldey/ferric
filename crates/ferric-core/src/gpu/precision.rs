@@ -68,7 +68,13 @@ pub enum MixedKernel {
     RiMp2Energy = 1,
     /// Closed-shell CCSD amplitude-update contractions (Task 4.3).
     CcsdAmplitudes = 2,
-    /// DF-K occupied path with f32-resident dressed B (Task 4.4).
+    /// DF-K occupied path with f32-resident dressed B (Task 4.4), behind the
+    /// SCF precision ladder (`ferric_scf::jk_ladder`). Opt-in: in
+    /// [`MixedKernelSet::OPT_IN`], not in `SHIPPED`. Its converged energies sit
+    /// at the f64 SCF's own termination noise, but on the one device measured
+    /// (GTX 1080) a mixed SCF saved only about 4% of the wall time against the
+    /// f64 device DF-K (n-dodecane def2-TZVP) and was 3-6% slower with diffuse
+    /// basis sets; see the validation page.
     DfkOcc = 4,
     /// COSX 3-centre kernel (`md3c1e`), routed per (pair, sub-batch) by the
     /// Hölder bound (Workstream D). Named only: not in `SHIPPED`.
@@ -169,7 +175,8 @@ impl MixedKernelSet {
     /// The kernels whose error-budget row has shipped. Each Phase 4 task that
     /// ships a row extends this constant in the same commit as its gates:
     /// `RiMp2Energy` is shipped (its budget row is in the `gpu_rimp2_mixed`
-    /// test docstring); Task 4.3 adds `CcsdAmplitudes`, Task 4.4 `DfkOcc`.
+    /// test docstring); Task 4.3 adds `CcsdAmplitudes`. `DfkOcc` (Task 4.4) has
+    /// its budget row but is [`Self::OPT_IN`], not shipped.
     /// It is the default of `FERRIC_GPU_MIXED_KERNELS`; a build whose set is
     /// empty refuses `precision = mixed`. Shipping a kernel does not change the
     /// precision default: `PRECISION_DEFAULT` stays f64.
@@ -180,13 +187,16 @@ impl MixedKernelSet {
     /// (they are admitted like shipped ones), but they are not in `SHIPPED`,
     /// so `precision = "mixed"` alone and the `mixed` presets leave them out.
     /// `XcVxc`: its device tests pass on a GTX 1080 (sm_61), where the device
-    /// XC path was slower than the CPU. `DfjF32`: a CPU kernel that trades a
-    /// first-order (µEh-scale) energy error for half the RI-J tensor memory, a
-    /// trade the user must ask for (`ferric_scf::df_j`, tests
+    /// XC path was slower than the CPU. `DfkOcc`: its device tests pass on the
+    /// same card, where a mixed SCF saved about 4% against the f64 device
+    /// DF-K and was 3-6% slower with diffuse basis sets. `DfjF32`: a CPU kernel
+    /// that trades a first-order (µEh-scale) energy error for half the RI-J
+    /// tensor memory, a trade the user must ask for (`ferric_scf::df_j`, tests
     /// `dfj_f32_storage.rs`). An opt-in kernel that runs on the CPU needs no
     /// device mode.
     pub const OPT_IN: Self = Self::EMPTY
         .with(MixedKernel::XcVxc)
+        .with(MixedKernel::DfkOcc)
         .with(MixedKernel::DfjF32);
 
     pub const fn with(self, k: MixedKernel) -> Self {
@@ -348,6 +358,13 @@ mod tests {
         let set = MixedKernelSet::SHIPPED.with(MixedKernel::DfjPack);
         assert_eq!(set.to_string(), "rimp2-energy,dfj-pack");
         assert_eq!(set.to_string().parse::<MixedKernelSet>().unwrap(), set);
+    }
+
+    #[test]
+    fn dfk_occ_is_opt_in_and_not_shipped() {
+        assert!(!MixedKernelSet::SHIPPED.contains(MixedKernel::DfkOcc));
+        assert!(MixedKernelSet::OPT_IN.contains(MixedKernel::DfkOcc));
+        assert_eq!(MixedKernelSet::OPT_IN.to_string(), "dfk-occ,xc-vxc,dfj-f32");
     }
 
     #[test]
