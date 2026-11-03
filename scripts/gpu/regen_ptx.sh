@@ -5,7 +5,7 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 dir=crates/ferric-core/src/gpu/kernels
 nvcc --version | tail -1
-for name in axpy_f32_to_f64 gemv_f32_f64; do
+for name in axpy_f32_to_f64 gemv_f32_f64 round_f64_to_f32; do
     src="$dir/$name.cu"
     out="$dir/$name.ptx"
     nvcc -arch=compute_61 -O3 -ptx -o "$out" "$src"
@@ -15,3 +15,4 @@ done
 grep -q '\.entry axpy_f32_to_f64' "$dir/axpy_f32_to_f64.ptx"
 grep -q '\.entry gemv_f32_f64_n' "$dir/gemv_f32_f64.ptx"
 grep -q '\.entry gemv_f32_f64_t' "$dir/gemv_f32_f64.ptx"
+grep -q '\.entry round_f64_to_f32' "$dir/round_f64_to_f32.ptx"

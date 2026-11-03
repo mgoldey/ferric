@@ -1301,11 +1301,11 @@ fn solve_uhf_impl(
                 // the fractional-occupation ensemble path falls back to build(D_σ).
                 match d_occ_a.as_ref() {
                     Some(c) => dfk.build_from_occ(c, &mut k_a_buf)?,
-                    None => dfk.build(&d_a, &mut k_a_buf)?,
+                    None => dfk.build_from_density_factor(&d_a, &mut k_a_buf)?,
                 };
                 match d_occ_b.as_ref() {
                     Some(c) => dfk.build_from_occ(c, &mut k_b_buf)?,
-                    None => dfk.build(&d_b, &mut k_b_buf)?,
+                    None => dfk.build_from_density_factor(&d_b, &mut k_b_buf)?,
                 };
             } else {
                 let dk = direct_k.as_mut().expect("DirectK built before loop");

@@ -38,17 +38,25 @@
 //! and operands in the f32 normal range (the underflow term is omitted).
 //! `resident_bytes` is the f64 figure; the mixed charge is `4·band·n²` + `8·n²`.
 //! Inside an SCF the mixed tensor is used only for the builds the SCF precision
-//! ladder allows (`crate::jk_ladder`: mixed while the density moves, f64 exit);
-//! a build the ladder keeps f64 runs the host path. Outside an SCF (no ladder
-//! scope) every build of a mixed `DfK` is mixed.
+//! ladder allows (`crate::jk_ladder`: mixed while the density moves, f64 exit).
+//! A mixed `DfK` first used inside a ladder scope uploads BOTH copies when the
+//! pool holds them (`DfkPrecision::Ladder`, `12·band·n²` + `8·n²`): the f64 `B`
+//! from the host and the f32 `B` rounded from it on the device
+//! (`DeviceMatrix::round_from_device`, round-to-nearest-even, bit-identical to
+//! the host-rounded upload), so the builds the ladder keeps f64 (the first, the
+//! settled tail, the exit redo) run the f64 device path above, not the host.
+//! Without room for both it uploads the f32 `B` alone and those f64 builds run
+//! the host path. Outside an SCF (no ladder scope) the upload is f32 alone and
+//! every build of a mixed `DfK` is mixed.
 //! Open-shell builds reuse the alpha-sized scratch for beta: every mixed copy and
 //! slice uses `nocc`, never the scratch capacity.
-//! Where C2's budget row will need more than this file measures: the shipping bar
-//! is |dE_total| <= 1.0e-3 Eh with error growing no faster than linearly in N, so
-//! the map needs the error per atom and the slope of ln(error) vs ln(N) with its
-//! standard error and degrees of freedom, over the dfk-occ ladder (H2O, butane,
-//! octane, dodecane, benzene aDZ/aTZ, UKS, RSH); the tests here pin the kernel,
-//! not that map.
+//! The kernel's budget row (|dE_total| against the f64 device SCF over H2O, the
+//! C4-C20 alkanes, benzene aDZ/aTZ, UHF, UKS and RSH, with the error per atom and
+//! the ln(error) vs ln(N) slope) is on the validation page, under "Mixed-precision
+//! GPU kernels"; the tests here pin the kernel, not that map. `dfk-occ` is opt-in
+//! (`MixedKernelSet::OPT_IN`), not shipped: on the one device measured it saved
+//! about 4% of the wall time against the f64 device DF-K at def2-TZVP and was
+//! 3-6% slower with diffuse basis sets.
 use std::sync::Arc;
 
 use ferric_core::gpu::batched::{
@@ -112,6 +120,11 @@ pub static MIXED_SETTINGS_OVERRIDE: std::sync::Mutex<Option<ferric_core::gpu::Gp
 pub enum DfkPrecision {
     F64,
     Mixed,
+    /// Both copies when the pool has room for them: the f64 `B` (uploaded) for
+    /// the builds the SCF precision ladder keeps f64, and the f32 `B` (rounded
+    /// from it on the device, bit-identical to the [`Mixed`](Self::Mixed) upload) for
+    /// its mixed builds. Without room for both it is [`Mixed`](Self::Mixed).
+    Ladder,
 }
 
 /// The precision this process allows for DF-K: mixed iff `precision = mixed`
@@ -130,8 +143,8 @@ fn dfk_occ_allowed() -> bool {
 
 /// Is `kernel` in the allowlist this process runs under? With the `test-seams`
 /// feature the [`MIXED_SETTINGS_OVERRIDE`] settings replace the installed ones for
-/// this one decision (the unshipped kernels `dfk-occ` and `dfj-pack` are not in any
-/// installed setting).
+/// this one decision (so a test can enable the unshipped `dfj-pack`, or the
+/// opt-in `dfk-occ` without installing `mode = "on"`).
 #[cfg(feature = "test-seams")]
 pub(crate) fn mixed_kernel_allowed(kernel: MixedKernel) -> bool {
     let over = MIXED_SETTINGS_OVERRIDE
@@ -230,10 +243,30 @@ pub fn k_error_factor_mixed(n: usize, k_panel: usize, k_chunk: usize, nchunks: u
     2.0 * e1 + e1 * e1 + gl * (1.0 + e1) * (1.0 + e1)
 }
 
-/// Resident `B`: f64, or f32 (half the bytes) under the mixed kernel.
+/// Resident `B`: f64, f32 (half the bytes) under the mixed kernel, or both
+/// (the ladder upload).
 enum ResidentB {
     F64(DeviceMatrix<f64>),
     F32(DeviceMatrix<f32>),
+    Both {
+        b64: DeviceMatrix<f64>,
+        b32: DeviceMatrix<f32>,
+    },
+}
+
+impl ResidentB {
+    fn b64(&self) -> Option<&DeviceMatrix<f64>> {
+        match self {
+            Self::F64(b) | Self::Both { b64: b, .. } => Some(b),
+            Self::F32(_) => None,
+        }
+    }
+    fn b32(&self) -> Option<&DeviceMatrix<f32>> {
+        match self {
+            Self::F32(b) | Self::Both { b32: b, .. } => Some(b),
+            Self::F64(_) => None,
+        }
+    }
 }
 
 /// Mixed-path scratch: `C_occ` as f32 (n × nocc), the per-P f32 panel product
@@ -303,6 +336,7 @@ impl DeviceDfK {
         let k_dev = DeviceMatrix::<f64>::zeros(dev, pool, "DF-K K accumulator", n, n)?;
         let b = match precision {
             DfkPrecision::F64 => ResidentB::F64(upload_f64_b(dev, pool, b_flat)?),
+            DfkPrecision::Ladder => upload_both_b(dev, pool, b_flat, n)?,
             DfkPrecision::Mixed => match upload_f32_b(dev, pool, b_flat) {
                 Ok(b32) => ResidentB::F32(b32),
                 Err(e @ (GpuError::F32Range(_) | GpuError::Kernel(_))) => {
@@ -330,9 +364,14 @@ impl DeviceDfK {
         })
     }
 
-    /// `true` when the resident `B` is f32.
+    /// `true` when an f32 `B` is resident (a build can run mixed).
     pub fn is_mixed(&self) -> bool {
-        matches!(self.b, ResidentB::F32(_))
+        self.b.b32().is_some()
+    }
+
+    /// `true` when an f64 `B` is resident (a build can run f64 on the device).
+    pub fn has_f64(&self) -> bool {
+        self.b.b64().is_some()
     }
 
     /// Override the scratch ceiling (tests force many chunks).
@@ -390,13 +429,38 @@ impl DeviceDfK {
 
     /// `K = Σ_P (B_P C)(B_P C)ᵀ` for this band, written into `k` (n × n, any
     /// layout). `nocc = 0` writes zeros without touching the device. On error `k`
-    /// is untouched.
+    /// is untouched. Mixed whenever an f32 `B` is resident
+    /// ([`build_from_occ_with`](Self::build_from_occ_with) chooses per build).
     pub fn build_from_occ(
         &mut self,
         c_occ: &ArrayView2<f64>,
         k: &mut Array2<f64>,
     ) -> Result<ChunkPlan, GpuError> {
+        let mixed = self.is_mixed();
+        self.build_from_occ_with(c_occ, k, mixed)
+    }
+
+    /// [`build_from_occ`](Self::build_from_occ) with the precision of this build:
+    /// `mixed` uses the f32 `B`, otherwise the f64 `B`. A precision whose copy
+    /// is not resident is a typed `Layout` error (nothing launched, `k` untouched).
+    pub fn build_from_occ_with(
+        &mut self,
+        c_occ: &ArrayView2<f64>,
+        k: &mut Array2<f64>,
+        mixed: bool,
+    ) -> Result<ChunkPlan, GpuError> {
         let n = self.n;
+        let resident = if mixed {
+            self.b.b32().is_some()
+        } else {
+            self.b.b64().is_some()
+        };
+        if !resident {
+            return Err(GpuError::Layout(format!(
+                "DF-K {} build asked of a DfK without that copy of B",
+                if mixed { "mixed" } else { "f64" }
+            )));
+        }
         let lay = |s: String| GpuError::Layout(s);
         if c_occ.nrows() != n || k.dim() != (n, n) {
             return Err(lay(format!(
@@ -437,7 +501,7 @@ impl DeviceDfK {
             .as_slice()
             .ok_or_else(|| lay("C_occ not contiguous".into()))?;
         let cuda = |what: &str, e: &dyn std::fmt::Debug| GpuError::Cuda(format!("{what}: {e:?}"));
-        let up_bytes = upload_c_occ(dev, sc, c_host)?;
+        let up_bytes = upload_c_occ(dev, sc, c_host, mixed)?;
         let twin_b = ArrayView2::from_shape((n, n), &twin[..n2]).map_err(|e| lay(e.to_string()))?;
         let twin_c =
             ArrayView2::from_shape((n, nocc), &twin[..n * nocc]).map_err(|e| lay(e.to_string()))?;
@@ -448,7 +512,7 @@ impl DeviceDfK {
         while p0 < *band {
             let c = chunk.min(*band - p0);
             let at = ChunkAt { p0, c, n, nocc };
-            half_transform_chunk(dev, b, sc, at, (&twin_b, &c_t), k_panel)?;
+            half_transform_chunk(dev, b, sc, at, (&twin_b, &c_t), k_panel, mixed)?;
             let y_view = sc.y.buf().slice(..c * nocc * n);
             syrk_f64_dev(dev, n, c * nocc, &y_view, k_dev.buf_mut(), p0 != 0)?;
             p0 += c;
@@ -491,10 +555,15 @@ struct ChunkAt {
 /// Move this build's `C_occ` to the device (f64, or rounded to f32 for the mixed
 /// path; a finite element beyond `f32::MAX` is an `F32Range` error because the
 /// resident `B` is already f32). Returns the bytes sent.
-fn upload_c_occ(dev: &Device, sc: &mut Scratch, c_host: &[f64]) -> Result<usize, GpuError> {
+fn upload_c_occ(
+    dev: &Device,
+    sc: &mut Scratch,
+    c_host: &[f64],
+    mixed: bool,
+) -> Result<usize, GpuError> {
     let cuda = |what: &str, e: &dyn std::fmt::Debug| GpuError::Cuda(format!("{what}: {e:?}"));
     let up = c_host.len();
-    match sc.mixed.as_mut() {
+    match sc.mixed.as_mut().filter(|_| mixed) {
         None => {
             dev.stream
                 .memcpy_htod(c_host, &mut sc.c_dev.buf_mut().slice_mut(..up))
@@ -519,23 +588,35 @@ fn half_transform_chunk(
     at: ChunkAt,
     twins: (&ArrayView2<f64>, &ArrayView2<f64>),
     k_panel: usize,
+    mixed: bool,
+) -> Result<(), GpuError> {
+    let missing = || GpuError::Layout("DF-K: the requested copy of B is not resident".into());
+    if mixed {
+        let b = b.b32().ok_or_else(missing)?;
+        return half_transform_chunk_mixed(dev, b, sc, at, twins, k_panel);
+    }
+    half_transform_chunk_f64(dev, b.b64().ok_or_else(missing)?, sc, at, twins)
+}
+
+/// The f64 chunk: one strided-batched DGEMM over the chunk's aux rows.
+fn half_transform_chunk_f64(
+    dev: &Device,
+    b: &DeviceMatrix<f64>,
+    sc: &mut Scratch,
+    at: ChunkAt,
+    twins: (&ArrayView2<f64>, &ArrayView2<f64>),
 ) -> Result<(), GpuError> {
     let ChunkAt { p0, c, n, nocc } = at;
-    match b {
-        ResidentB::F64(b) => {
-            let n2 = n * n;
-            let right = dev_batched_right(b.buf().slice(p0 * n2..(p0 + c) * n2), twins.0, c, n2)?;
-            let left = dev_batched_left(sc.c_dev.buf().slice(..n * nocc), twins.1, c, 0)?;
-            let dims = BatchedDims {
-                m: nocc,
-                k: n,
-                n,
-                batch: c,
-            };
-            gemm_f64_strided_batched_dev(dev, dims, &left, &right, sc.y.buf_mut(), nocc * n)
-        }
-        ResidentB::F32(b) => half_transform_chunk_mixed(dev, b, sc, at, twins, k_panel),
-    }
+    let n2 = n * n;
+    let right = dev_batched_right(b.buf().slice(p0 * n2..(p0 + c) * n2), twins.0, c, n2)?;
+    let left = dev_batched_left(sc.c_dev.buf().slice(..n * nocc), twins.1, c, 0)?;
+    let dims = BatchedDims {
+        m: nocc,
+        k: n,
+        n,
+        batch: c,
+    };
+    gemm_f64_strided_batched_dev(dev, dims, &left, &right, sc.y.buf_mut(), nocc * n)
 }
 
 /// The mixed per-P loop: each `Y_P` is one `gemm_f32_f64acc_dev` (f32 panels of
@@ -613,6 +694,69 @@ fn upload_f32_b(
     DeviceMatrix::<f32>::upload_rounded(dev, pool, "DF-K dressed B (f32)", b_flat)
 }
 
+/// Bytes the ladder upload leaves free beyond both copies of `B`: the worst
+/// one-aux-row build (`nocc ≤ n`: C_occ f64 + f32, one Y row, the per-P f32
+/// and f64 panels) with room to spare, so holding both copies never turns a
+/// build that fits beside the f32 copy alone into a scratch refusal.
+fn ladder_headroom(n: usize) -> usize {
+    64 * n * n
+}
+
+/// The [`DfkPrecision::Ladder`] upload: the f64 `B` from the host, then its f32
+/// copy rounded on the device. Falls back to the [`DfkPrecision::Mixed`] upload
+/// (f32 only, from the host) when the pool cannot hold both copies plus
+/// [`ladder_headroom`], and to f64 only (counted once, as for `Mixed`) when the
+/// rounding refuses (`F32Range`) or a kernel will not load.
+fn upload_both_b(
+    dev: &Device,
+    pool: &DevicePool,
+    b_flat: &ArrayView2<f64>,
+    n: usize,
+) -> Result<ResidentB, GpuError> {
+    let elems = b_flat.len();
+    let fits = elems
+        .checked_mul(12)
+        .and_then(|b| b.checked_add(ladder_headroom(n)))
+        .is_some_and(|need| need <= pool.available_bytes());
+    let mixed_only = || -> Result<ResidentB, GpuError> {
+        match upload_f32_b(dev, pool, b_flat) {
+            Ok(b32) => Ok(ResidentB::F32(b32)),
+            Err(e @ (GpuError::F32Range(_) | GpuError::Kernel(_))) => {
+                stats::note_mixed_fallback(MixedKernel::DfkOcc, e.mixed_fallback());
+                Ok(ResidentB::F64(upload_f64_b(dev, pool, b_flat)?))
+            }
+            Err(e) => Err(e),
+        }
+    };
+    if !fits {
+        return mixed_only();
+    }
+    let b64 = upload_f64_b(dev, pool, b_flat)?;
+    let b32 = if truncate_b_to_f32() {
+        // The mutation seam rounds on the host (toward zero).
+        upload_f32_b(dev, pool, b_flat)
+    } else {
+        dev.axpy_f32_to_f64().and_then(|_| {
+            DeviceMatrix::<f32>::round_from_device(dev, pool, "DF-K dressed B (f32)", &b64)
+        })
+    };
+    match b32 {
+        Ok(b32) => Ok(ResidentB::Both { b64, b32 }),
+        Err(e @ (GpuError::F32Range(_) | GpuError::Kernel(_))) => {
+            if ferric_core::gpu::config::gpu_trace() {
+                eprintln!("[gpu] DF-K mixed path unavailable ({e}); running f64 on the device");
+            }
+            stats::note_mixed_fallback(MixedKernel::DfkOcc, e.mixed_fallback());
+            Ok(ResidentB::F64(b64))
+        }
+        Err(GpuError::PoolFull { .. }) => {
+            drop(b64);
+            mixed_only()
+        }
+        Err(e) => Err(e),
+    }
+}
+
 /// Per-`DfK` device state. `Declined` is sticky (and has released the device memory).
 #[derive(Default)]
 pub enum DeviceSlot {
@@ -677,6 +821,7 @@ fn upload_band(
     dev: &Arc<Device>,
     pool: &DevicePool,
     src: &ThreeIndexSource,
+    precision: DfkPrecision,
 ) -> Result<DeviceDfK, GpuError> {
     let flat = src
         .incore_flat()
@@ -688,21 +833,31 @@ fn upload_band(
     } else {
         flat
     };
-    DeviceDfK::upload_with_precision(dev, pool, &view, src.nao(), dfk_precision())
+    DeviceDfK::upload_with_precision(dev, pool, &view, src.nao(), precision)
 }
 
-/// The SCF precision ladder (`crate::jk_ladder`) requires an f64 build and the
-/// resident dressed tensor is (or, not uploaded yet, would be) f32: run the host
-/// path. The upload waits for a mixed build.
-fn ladder_wants_host(slot: &DeviceSlot) -> bool {
-    if crate::jk_ladder::scope_allows_mixed() != Some(false) {
-        return false;
+/// The upload precision for this process and call site: a mixed `DfK` first
+/// used inside an SCF precision ladder scope keeps both copies (the ladder
+/// will ask for f64 builds); outside one every build is mixed, so f32 alone.
+fn upload_precision() -> DfkPrecision {
+    match dfk_precision() {
+        DfkPrecision::Mixed if crate::jk_ladder::scope_allows_mixed().is_some() => {
+            DfkPrecision::Ladder
+        }
+        p => p,
     }
-    match slot {
-        DeviceSlot::Untried => dfk_precision() == DfkPrecision::Mixed,
-        DeviceSlot::Ready(d) => d.is_mixed(),
-        DeviceSlot::Declined => false,
-    }
+}
+
+/// Does the SCF precision ladder (`crate::jk_ladder`) let this build run mixed?
+/// `true` outside any ladder scope (every build of a mixed `DfK` is mixed).
+fn ladder_allows_mixed() -> bool {
+    crate::jk_ladder::scope_allows_mixed() != Some(false)
+}
+
+/// The ladder requires an f64 build and only the f32 `B` is resident (the pool
+/// had no room for both copies): run the host path.
+fn ladder_wants_host(d: &DeviceDfK) -> bool {
+    !ladder_allows_mixed() && !d.has_f64()
 }
 
 /// A finished device build ran mixed: tell the ladder (it keeps the build for
@@ -710,6 +865,43 @@ fn ladder_wants_host(slot: &DeviceSlot) -> bool {
 fn note_ladder_build(mixed: bool) {
     if mixed {
         crate::jk_ladder::note_mixed_build(MixedKernel::DfkOcc);
+    }
+}
+
+/// First use of an untried slot: upload the band (both copies of `B` inside a
+/// ladder scope when they fit), announce it, and make the slot `Ready`; on a
+/// refusal, count it, decline the slot (sticky) and return `false`.
+fn upload_slot(
+    slot: &mut DeviceSlot,
+    ordinal: usize,
+    pool: &DevicePool,
+    src: &ThreeIndexSource,
+) -> bool {
+    let precision = upload_precision();
+    match device(ordinal).and_then(|dev| upload_band(&dev, pool, src, precision)) {
+        Ok(d) => {
+            let (word, bytes) = match (d.is_mixed(), d.has_f64()) {
+                (true, true) => (
+                    "mixed: f32 B, f64 panels, f64 B for the ladder's f64 builds; ",
+                    12.0,
+                ),
+                (true, false) => ("mixed: f32 B, f64 panels; ", 4.0),
+                _ => ("", 8.0),
+            };
+            eprintln!(
+                "[ferric] gpu: DF-K resident on device {ordinal} ({word}{:.3} GB dressed B, {} aux rows, nbf {})",
+                bytes * (src.band_naux() * src.nao() * src.nao()) as f64 / 1e9,
+                src.band_naux(),
+                src.nao()
+            );
+            *slot = DeviceSlot::Ready(Box::new(d));
+            true
+        }
+        Err(e) => {
+            count_cpu_fallback(&e);
+            decline(slot, &one_line(&e));
+            false
+        }
     }
 }
 
@@ -748,36 +940,16 @@ pub fn try_build_from_occ(
     let Some(pool) = ferric_core::gpu::pool() else {
         return false;
     };
-    if ladder_wants_host(slot) {
+    if matches!(slot, DeviceSlot::Untried) && !upload_slot(slot, info.ordinal, &pool, src) {
         return false;
     }
-    if matches!(slot, DeviceSlot::Untried) {
-        let uploaded = device(info.ordinal).and_then(|dev| upload_band(&dev, &pool, src));
-        match uploaded {
-            Ok(d) => {
-                let (word, bytes) = if d.is_mixed() {
-                    ("mixed: f32 B, f64 panels; ", 4.0)
-                } else {
-                    ("", 8.0)
-                };
-                eprintln!(
-                    "[ferric] gpu: DF-K resident on device {} ({word}{:.3} GB dressed B, {} aux rows, nbf {})",
-                    info.ordinal,
-                    bytes * (src.band_naux() * src.nao() * src.nao()) as f64 / 1e9,
-                    src.band_naux(),
-                    src.nao()
-                );
-                *slot = DeviceSlot::Ready(Box::new(d));
-            }
-            Err(e) => {
-                count_cpu_fallback(&e);
-                decline(slot, &one_line(&e));
-                return false;
-            }
-        }
-    }
     let outcome = match slot {
-        DeviceSlot::Ready(d) => d.build_from_occ(&c_occ.view(), k).map(|_| d.is_mixed()),
+        DeviceSlot::Ready(d) if ladder_wants_host(d) => return false,
+        DeviceSlot::Ready(d) => {
+            let mixed = d.is_mixed() && ladder_allows_mixed();
+            d.build_from_occ_with(&c_occ.view(), k, mixed)
+                .map(|_| mixed)
+        }
         _ => return false,
     };
     match outcome {

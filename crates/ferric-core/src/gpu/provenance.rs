@@ -247,6 +247,11 @@ fn no_bound_reason(k: MixedKernel) -> &'static str {
              is designed but not implemented); the kernel's measured error map is on \
              the validation page"
         }
+        MixedKernel::DfkOcc => {
+            "no per-run bound is computed; a converged SCF's energy and density come \
+             from f64 builds (the SCF precision ladder's f64 exit). Measured error map \
+             on the validation page"
+        }
         MixedKernel::XcVxc => {
             "no per-run bound is computed; ladder.exit_rebuilt_f64 counts the SCF exits \
              whose last mixed V_xc was rebuilt in f64 (zero when the run did not \
