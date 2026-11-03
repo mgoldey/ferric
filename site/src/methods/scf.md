@@ -53,8 +53,12 @@ multiplicity > 1), and in Python through
   Lebedev angular grids, **75 × 110** points per atom, **unpruned**.
 - Pruning is **opt-in**: `[dft] grid_prune = "nwchem"`
   (`examples/water-pbe-pruned-grid.toml`) removes about 23% of points at
-  75 × 110. Optimization and frequency runs differentiate the grid the SCF
-  ran on (pruned or not, including `grid_radial` / `grid_angular`).
+  75 × 110; `"nwchem-radial"` also gives light atoms fewer radial shells
+  (42-47% fewer points on organic molecules, energies within a few µHa of
+  the flat grid); `"defgrid1"`-`"defgrid3"` are ORCA-style grids. A grid
+  weight cutoff (`grid_weight_cut`, like ORCA's `WeightCut`) is opt-in too.
+  Optimization and frequency runs differentiate the grid the SCF ran on
+  (pruned or not, including `grid_radial` / `grid_angular`).
 - Density fitting: **RI-J and RI-K are on by default** for `ksdft` and
   `run_dft` (`def2-universal-jkfit`), while `rhf` is exact by default. In
   Python, `df_j_aux=""` selects exact Coulomb. The fitting error grows with

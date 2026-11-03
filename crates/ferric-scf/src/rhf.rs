@@ -821,11 +821,14 @@ pub(crate) struct ConvergenceSignals {
     pub dp_max: f64,
 }
 
-/// Decide SCF convergence from the settled signals — the ORCA `ConvCheckMode=2`
-/// design, where the **density change ΔP is the primary (tight) signal** and the
-/// energy change is only a *loose* "not still descending" sanity bound. Both
-/// ORCA and PySCF use ΔP-primary in place of gating on the DIIS/orbital-gradient
-/// commutator, and ORCA's default checks energy *stability*, not a tight ΔE.
+/// Decide SCF convergence from the settled signals. ferric's rule: the
+/// **density change ΔP is the primary (tight) signal** and the energy change is
+/// only a *loose* "not still descending" sanity bound. This is ferric's own
+/// design, not ORCA's or PySCF's: ORCA's default (`ConvCheckMode 2`, "medium
+/// rigor", ORCA 6.1 manual §SCF) checks the change in the total energy and in
+/// the one-electron energy (`TolE` 1e-6 at Medium, 3e-7 at Strong), and PySCF
+/// checks the energy change (`conv_tol`) and the orbital-gradient norm
+/// (`conv_tol_grad`). Neither gates on ΔP first.
 ///
 /// # Why ΔP, and why ΔE only loosely
 ///
@@ -2897,8 +2900,8 @@ fn solve_rhf_impl(
             );
         }
 
-        // Convergence decision: energy + density change (ORCA ConvCheckMode-2 /
-        // PySCF), NOT the DIIS commutator. Under RI-J/RI-JK the commutator parks
+        // Convergence decision: density change primary, energy change as a loose
+        // bound (ferric's rule; see `scf_converged`), NOT the DIIS commutator. Under RI-J/RI-JK the commutator parks
         // on a naux-dependent noise floor and never drains; ΔP does (MEASURED),
         // so we gate on ΔP and treat the commutator as diagnostic only. See
         // scf_converged. ΔP is INFINITY until the first density rebuild (iter
@@ -4850,7 +4853,7 @@ mod tests {
         assert!(r.density_total.iter().all(|v| v.is_finite()));
     }
 
-    // --- scf_converged: pure-decision tests (ΔE + ΔP gate, ORCA ConvCheckMode-2) ---
+    // --- scf_converged: pure-decision tests (ΔP-primary gate with a loose ΔE bound) ---
 
     fn sig(de: f64, dp_rms: f64, dp_max: f64) -> ConvergenceSignals {
         ConvergenceSignals { de, dp_rms, dp_max }
