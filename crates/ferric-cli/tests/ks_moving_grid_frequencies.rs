@@ -238,15 +238,6 @@ fn cli_refusals_are_named() {
             "an ECP or an external potential",
         ),
         (
-            "prune",
-            WATER,
-            "ksdft",
-            "LDA",
-            "",
-            "sto-3g",
-            "an angular-pruned XC grid",
-        ),
-        (
             "disp",
             WATER,
             "ksdft",
@@ -261,9 +252,6 @@ fn cli_refusals_are_named() {
         let mut dft = String::new();
         if !xc.is_empty() {
             dft = format!("[dft]\nfunctional = \"{xc}\"\n");
-            if label == "prune" {
-                dft.push_str("grid_prune = \"nwchem\"\n");
-            }
             if label == "disp" {
                 dft.push_str("dispersion = \"d3bj\"\n");
             }

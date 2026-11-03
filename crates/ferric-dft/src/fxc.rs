@@ -30,7 +30,7 @@
 
 use crate::ao_grid::eval_basis_and_grad_on_points;
 use crate::density_on_grid::{eval_density_closed, eval_density_uks, eval_tau_uks};
-use crate::grid::{build_atomic_grid, AtomicGridConfig, GridPoint};
+use crate::grid::{build_atomic_grid_pruned, AtomicGridConfig, GridPoint};
 use crate::libxc::{FunctionalFamily, XcDef};
 use crate::vxc::{scale_columns_into, VxcScratch, DENSITY_FLOOR};
 use ferric_core::basis::BasisSet;
@@ -67,7 +67,9 @@ impl LdaFxcKernel {
                     .to_string(),
             );
         }
-        let grid = build_atomic_grid(mol, cfg);
+        // The SCF's grid, pruned or not (`build_atomic_grid` ignores
+        // `cfg.prune`), so the kernel integrates on the density's quadrature.
+        let grid = build_atomic_grid_pruned(mol, cfg, cfg.prune).map_err(|e| e.to_string())?;
         let pts: Vec<[f64; 3]> = grid.iter().map(|g| g.xyz).collect();
         let (chi, dchi) =
             eval_basis_and_grad_on_points(mol, bs, &pts).map_err(|e| format!("{e:?}"))?;
@@ -244,7 +246,9 @@ impl GgaFxcKernel {
                     .to_string(),
             );
         }
-        let grid = build_atomic_grid(mol, cfg);
+        // The SCF's grid, pruned or not (`build_atomic_grid` ignores
+        // `cfg.prune`), so the kernel integrates on the density's quadrature.
+        let grid = build_atomic_grid_pruned(mol, cfg, cfg.prune).map_err(|e| e.to_string())?;
         let pts: Vec<[f64; 3]> = grid.iter().map(|g| g.xyz).collect();
         let (chi, dchi) =
             eval_basis_and_grad_on_points(mol, bs, &pts).map_err(|e| format!("{e:?}"))?;
@@ -836,7 +840,9 @@ impl MggaFxcKernel {
                 "MggaFxcKernel: libxc has no second derivative for {f:?}"
             ));
         }
-        let grid = build_atomic_grid(mol, cfg);
+        // The SCF's grid, pruned or not (`build_atomic_grid` ignores
+        // `cfg.prune`), so the kernel integrates on the density's quadrature.
+        let grid = build_atomic_grid_pruned(mol, cfg, cfg.prune).map_err(|e| e.to_string())?;
         let pts: Vec<[f64; 3]> = grid.iter().map(|g| g.xyz).collect();
         let (chi, dchi) =
             eval_basis_and_grad_on_points(mol, bs, &pts).map_err(|e| format!("{e:?}"))?;

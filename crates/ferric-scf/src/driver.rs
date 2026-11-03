@@ -260,7 +260,10 @@ pub(crate) fn uks_xc_contribution(
     let Some(name) = config.xc.as_deref() else {
         return Ok(None);
     };
-    let main = config.dft_grid.clone().unwrap_or_default();
+    let main = config
+        .dft_grid
+        .clone()
+        .unwrap_or_else(ferric_dft::grid::AtomicGridConfig::production);
     let nlc = config
         .nlc_grid
         .clone()

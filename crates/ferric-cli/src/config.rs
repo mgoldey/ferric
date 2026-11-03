@@ -499,7 +499,7 @@ pub struct DftCfg {
     /// converged (the XC grid-response term is built on the pruned grid).
     pub grid_prune: Option<String>,
     /// Radial points per atom on the MAIN DFT grid. Omitted = the library
-    /// default (`AtomicGridConfig::default()`, 75). Must be > 0. Same meaning
+    /// default (`AtomicGridConfig::production()`, 75). Must be > 0. Same meaning
     /// as the Python `grid_radial=` kwarg.
     ///
     /// Optimize / frequency runs use the same grid for the analytic XC
@@ -569,25 +569,42 @@ impl DftCfg {
     /// `[dft] grid_weight_cut` (see [`Self::grid_weight_cut`]) sets the
     /// config's `weight_cut`.
     ///
-    /// All four unset (or the cutoff `0`) returns `None`, which keeps
-    /// `AtomicGridConfig::default()` (75x110, unpruned, uncut) and so is
-    /// byte-identical to a run without these keys.
-    /// Any one set materialises an explicit config, the unset sizes taken from
-    /// that same default. Mirrors the Python `resolve_dft_grid` (same checks,
-    /// same defaults), so `[dft] grid_radial = 99` and `grid_radial=99` build
-    /// the same grid.
+    /// All four unset returns `None`: the production grid
+    /// (`AtomicGridConfig::production`, 75x110, nwchem-radial, 1e-14 weight
+    /// cutoff), which every KS path resolves `None` to. Any one set
+    /// materialises an explicit config: unset sizes from that grid, and an
+    /// unset `grid_prune` / `grid_weight_cut` keeps its scheme / cutoff
+    /// (`AtomicGridConfig::production_sized`; `"none"` / `0` turn them off).
+    /// Mirrors the Python `resolve_dft_grid` (same checks, same defaults), so
+    /// `[dft] grid_radial = 99` and `grid_radial=99` build the same grid.
     pub fn grid_config(
         &self,
         prune: Option<ferric_dft::prune::PruneScheme>,
     ) -> Result<Option<ferric_dft::grid::AtomicGridConfig>, String> {
+        // Absent grid keys mean the production grid (`AtomicGridConfig::
+        // production`): `None` here, which every KS path resolves to it. An
+        // explicit size keeps the default scheme and cutoff unless
+        // `grid_prune` / `grid_weight_cut` say otherwise ("none", 0).
+        let cut_set = self.grid_weight_cut.is_some();
         let weight_cut = self.grid_weight_cut()?;
         self.refuse_sizes_with_defgrid(prune)?;
-        if !self.sets_grid_size() && prune.is_none() && weight_cut.is_none() {
+        if !self.sets_grid_size() && self.grid_prune.is_none() && !cut_set {
             return Ok(None);
         }
-        let default = ferric_dft::grid::AtomicGridConfig::default();
+        let default = ferric_dft::grid::AtomicGridConfig::production();
         let n_radial = self.grid_radial.unwrap_or(default.n_radial);
         let n_angular = self.grid_angular.unwrap_or(default.n_angular);
+        let sized = ferric_dft::grid::AtomicGridConfig::production_sized(n_radial, n_angular);
+        let prune = if self.grid_prune.is_some() {
+            prune
+        } else {
+            sized.prune
+        };
+        let weight_cut = if cut_set {
+            weight_cut
+        } else {
+            sized.weight_cut
+        };
         validate_grid_sizes(n_radial, n_angular, prune)?;
         Ok(Some(ferric_dft::grid::AtomicGridConfig {
             n_radial,

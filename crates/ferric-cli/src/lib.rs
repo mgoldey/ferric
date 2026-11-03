@@ -762,11 +762,12 @@ pub fn run(args: Vec<String>) {
                 df_k_default
             }),
         xc,
-        // `None` keeps `AtomicGridConfig::default()` (75x110, unpruned) —
-        // byte-identical to the historical path. Only a `[dft] grid_prune`
-        // setting materialises an explicit config, and it touches the MAIN
-        // grid only: `nlc_grid` stays `None` so the VV10/NLC grid keeps its
-        // 50x50 unpruned default, where pruning has no valid table.
+        // `None` is the production grid (`AtomicGridConfig::production`:
+        // 75x110, nwchem-radial, 1e-14 weight cutoff), which every KS path
+        // resolves `None` to. A `[dft]` grid key materialises an explicit
+        // config, and it touches the MAIN grid only: `nlc_grid` stays `None` so
+        // the VV10/NLC grid keeps its flat 50x50 default, where pruning has no
+        // valid table.
         // `[dft] grid_radial`/`grid_angular` size the same main grid (unset
         // sizes keep the 75x110 default); all three keys unset is `None`.
         dft_grid: cfg.dft.grid_config(grid_prune).unwrap_or_else(|e| {
@@ -6760,7 +6761,10 @@ fn run_tddft_arm(
         // parameter used to be `_budget_bytes`, accepted and dropped.
         memory_budget_bytes: budget_bytes,
         xc: cfg.tddft.xc.clone(),
-        grid: rhf_config.dft_grid.clone().unwrap_or_default(),
+        grid: rhf_config
+            .dft_grid
+            .clone()
+            .unwrap_or_else(ferric_dft::grid::AtomicGridConfig::production),
         c_hf_override: cfg.tddft.c_hf,
     };
 

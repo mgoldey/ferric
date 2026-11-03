@@ -227,8 +227,7 @@ fn ecp_or_embedding_refusal(
 /// The refusals of [`rks_moving_grid_hessian`] that need no SCF, so a driver
 /// can refuse an unsupported request before paying for one: no functional
 /// (Hartree-Fock has no XC grid), meta-GGA, VV10, range-separated or double
-/// hybrids, an ECP, an external potential, an angular-pruned grid
-/// (`AtomicGridConfig::prune`), and everything the closed-shell RHF Hessian
+/// hybrids, an ECP, an external potential, and everything the closed-shell RHF Hessian
 /// refuses before its SCF (a non-Coulomb operator, COSX, implicit solvation,
 /// polarizable embedding, fractional occupations, cDFT, MOM). The production
 /// SCF grid is always the atom-centred one, so an explicit-point grid cannot
@@ -253,12 +252,6 @@ pub fn rks_moving_grid_hessian_preflight(
         .map_err(|e| FerricError::General(format!("moving-grid KS Hessian: libxc: {e:?}")))?;
     functional_refusal(name, &xc)?;
     ecp_or_embedding_refusal(mol, bs, config)?;
-    if config.dft_grid.as_ref().is_some_and(|g| g.prune.is_some()) {
-        return Err(unsupported(
-            "an angular-pruned XC grid (AtomicGridConfig::prune, [dft] grid_prune)",
-            "the pruned grid's weight response",
-        ));
-    }
     // Everything but the functional is the closed-shell checklist (operator,
     // COSX, solvation, embedding, fractional occupations, cDFT, MOM), which
     // the Hessian runs again after the SCF.
@@ -299,7 +292,14 @@ pub fn rks_moving_grid_hessian_available(
 ) -> Result<(), FerricError> {
     rks_moving_grid_hessian_preflight(mol, prep.basis_set(), op, config)?;
     let name = config.xc.as_deref().unwrap_or_default();
-    let grid = FixedGridKs::new(mol, name, &config.dft_grid.clone().unwrap_or_default())?;
+    let grid = FixedGridKs::new(
+        mol,
+        name,
+        &config
+            .dft_grid
+            .clone()
+            .unwrap_or_else(ferric_dft::grid::AtomicGridConfig::production),
+    )?;
     grid.check_response_table(prep.nbasis())?;
     let resolve = |requested: &Option<String>, needed: bool| match requested.as_deref() {
         None if needed => Some(crate::fock_assembly::DEFAULT_JK_AUX.to_string()),
@@ -574,7 +574,10 @@ pub fn rks_fixed_grid_hessian_parts(
 ) -> Result<RhfHessianParts, FerricError> {
     ks_refusal(mol, prep, rks, config)?;
     let name = config.xc.as_deref().unwrap_or_default();
-    let cfg = config.dft_grid.clone().unwrap_or_default();
+    let cfg = config
+        .dft_grid
+        .clone()
+        .unwrap_or_else(ferric_dft::grid::AtomicGridConfig::production);
     let grid = FixedGridKs::new(mol, name, &cfg)?;
     rks_fixed_grid_hessian_parts_with(
         ctx,
@@ -652,7 +655,10 @@ pub fn rks_moving_grid_hessian_parts(
 ) -> Result<RhfHessianParts, FerricError> {
     ks_refusal(mol, prep, rks, config)?;
     let name = config.xc.as_deref().unwrap_or_default();
-    let cfg = config.dft_grid.clone().unwrap_or_default();
+    let cfg = config
+        .dft_grid
+        .clone()
+        .unwrap_or_else(ferric_dft::grid::AtomicGridConfig::production);
     let grid = FixedGridKs::new(mol, name, &cfg)?;
     rks_moving_grid_hessian_parts_with(
         ctx,
@@ -1030,8 +1036,9 @@ fn rks_fixed_grid_hessian_core(
 /// differentiates.
 ///
 /// Refused with the Hessian's own typed errors: meta-GGA, VV10, range-
-/// separated and double hybrids, unequal short/long-range exchange, an
-/// angular-pruned grid and ghost atoms. These are closed-shell only (no
+/// separated and double hybrids, unequal short/long-range exchange and ghost
+/// atoms. A pruned grid is supported: every point still rides its home atom
+/// (`atomic_quadrature_points` follows `cfg.prune`). These are closed-shell only (no
 /// spin-polarized moving-grid skeleton exists).
 pub mod xc_blocks {
     use super::*;
@@ -1042,17 +1049,13 @@ pub mod xc_blocks {
     pub fn check(
         mol: &Molecule,
         xc_name: &str,
-        cfg: &ferric_dft::grid::AtomicGridConfig,
+        // Every grid is supported (pruned or flat, with or without a weight
+        // cutoff); the argument is kept so callers state the grid they mean.
+        _cfg: &ferric_dft::grid::AtomicGridConfig,
     ) -> Result<(), FerricError> {
         let xc = xc_def_from_name(xc_name)
             .map_err(|e| FerricError::General(format!("XC Hessian pieces: libxc: {e:?}")))?;
         functional_refusal(xc_name, &xc)?;
-        if cfg.prune.is_some() {
-            return Err(unsupported(
-                "an angular-pruned XC grid (grid_prune)",
-                "the pruned grid's weight response",
-            ));
-        }
         if mol.atoms.iter().any(|a| a.ghost) {
             return Err(unsupported("ghost atoms", "ghost-atom XC grid response"));
         }

@@ -973,8 +973,8 @@ impl PyAoIntegrals {
         grid_prune: Option<&str>,
     ) -> PyResult<PyXcFunctional> {
         use ferric_dft::xc_trait::XcContribution;
-        let main =
-            super::resolve_dft_grid(grid_radial, grid_angular, grid_prune)?.unwrap_or_default();
+        let main = super::resolve_dft_grid(grid_radial, grid_angular, grid_prune)?
+            .unwrap_or_else(ferric_dft::grid::AtomicGridConfig::production);
         let grids = ferric_scf::ks_gradient::KsGradGrids {
             main,
             nlc: ferric_dft::grid::AtomicGridConfig::default_nlc(),

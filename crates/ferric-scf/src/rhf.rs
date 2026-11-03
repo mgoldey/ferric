@@ -644,7 +644,10 @@ fn stability_rhf<'r>(
     // The f_xc response kernel, at the same restricted reference the RKS Newton
     // path uses (d_α = d_β = ½·D). `None` only for pure HF.
     let fxc_store = if has_xc {
-        let grid = config.dft_grid.clone().unwrap_or_default();
+        let grid = config
+            .dft_grid
+            .clone()
+            .unwrap_or_else(ferric_dft::grid::AtomicGridConfig::production);
         let name = config.xc.as_deref().expect("has_xc implies Some(xc)");
         let d_half = 0.5 * d;
         match crate::rohf::FxcKernelStore::build(
@@ -1813,7 +1816,10 @@ fn molecular_ks_xc(
     let Some(name) = config.xc.as_deref() else {
         return Ok(None);
     };
-    let main = config.dft_grid.clone().unwrap_or_default();
+    let main = config
+        .dft_grid
+        .clone()
+        .unwrap_or_else(ferric_dft::grid::AtomicGridConfig::production);
     let nlc = config
         .nlc_grid
         .clone()
@@ -3247,7 +3253,10 @@ fn solve_rhf_impl(
                 let f_mo = c_cur.t().dot(&f).dot(&c_cur);
 
                 let fxc_store = if xc_contrib.is_some() {
-                    let main = config.dft_grid.clone().unwrap_or_default();
+                    let main = config
+                        .dft_grid
+                        .clone()
+                        .unwrap_or_else(ferric_dft::grid::AtomicGridConfig::production);
                     let name = config.xc.as_deref().expect("xc_contrib implies Some(xc)");
                     let d_half = 0.5 * &d;
                     Some(crate::rohf::FxcKernelStore::build(
@@ -3477,7 +3486,10 @@ fn solve_rhf_impl(
             // Build the f_xc kernel (LDA or GGA) at the current restricted
             // reference (d_α = d_β = ½·d) once per Newton step; None for pure HF.
             let fxc_store = if xc_contrib.is_some() {
-                let main = config.dft_grid.clone().unwrap_or_default();
+                let main = config
+                    .dft_grid
+                    .clone()
+                    .unwrap_or_else(ferric_dft::grid::AtomicGridConfig::production);
                 let name = config.xc.as_deref().expect("xc_contrib implies Some(xc)");
                 let d_half = 0.5 * &d;
                 Some(crate::rohf::FxcKernelStore::build(

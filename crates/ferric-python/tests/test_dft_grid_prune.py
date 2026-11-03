@@ -3,8 +3,8 @@
 `PruneScheme::NwchemLike` existed in ferric-dft (and the CLI's `[dft]
 grid_prune`) but no Python caller could reach it. These pin:
 
-  1. The trivial limit: spelling out the default grid (75, 110, "none") is
-     BYTE-identical to passing nothing.
+  1. The trivial limit: spelling out the default grid (75, 110,
+     "nwchem-radial", weight cutoff 1e-14) is BYTE-identical to passing nothing.
   2. Pruning really reaches the grid (fewer points) and the SCF (a different,
      but close, energy).
   3. Every unsupported value raises ValueError instead of being defaulted.
@@ -36,6 +36,9 @@ PRUNE_TOL = 1e-7
 
 SCF = dict(energy_conv=1e-10, density_conv=1e-8)
 
+# The flat 75 x 110 grid: no pruning and no weight cutoff.
+FLAT = dict(grid_prune="none", grid_weight_cut=0.0)
+
 
 @pytest.fixture(scope="module")
 def water():
@@ -52,7 +55,14 @@ def test_explicit_default_grid_is_byte_identical_to_no_kwargs(water, sto3g):
     implicit default in anything (sizes, prune, or a grid rebuilt differently)."""
     e_none = ferric.run_dft(water, sto3g, "PBE", **SCF).total_energy
     e_explicit = ferric.run_dft(
-        water, sto3g, "PBE", grid_radial=75, grid_angular=110, grid_prune="none", **SCF
+        water,
+        sto3g,
+        "PBE",
+        grid_radial=75,
+        grid_angular=110,
+        grid_prune="nwchem-radial",
+        grid_weight_cut=1e-14,
+        **SCF,
     ).total_energy
     assert e_none == e_explicit, f"{e_none!r} != {e_explicit!r}"
 
@@ -60,12 +70,14 @@ def test_explicit_default_grid_is_byte_identical_to_no_kwargs(water, sto3g):
 def test_pruned_grid_has_fewer_points(water):
     """Measured 23.4% fewer on H2O at 75x110 (ferric-dft/tests/grid_prune.rs).
     Fails if `grid_prune` is parsed but never reaches the grid builder."""
-    flat = ferric.dft_grid_point_count(water)
-    assert flat == ferric.dft_grid_point_count(water, grid_prune="none")
+    flat = ferric.dft_grid_point_count(water, **FLAT)
     assert flat == 3 * 75 * 110  # no weight screening between build and use
-    pruned = ferric.dft_grid_point_count(water, grid_prune="nwchem")
+    pruned = ferric.dft_grid_point_count(water, grid_prune="nwchem", grid_weight_cut=0.0)
     saved = 1.0 - pruned / flat
     assert saved > 0.15, f"pruning removed only {100 * saved:.1f}% of {flat} points"
+    # The default also thins the hydrogens' radial shells, so it is smaller still.
+    default = ferric.dft_grid_point_count(water)
+    assert default < pruned, (default, pruned)
 
 
 @pytest.mark.parametrize("run", ["run_dft", "run_ksdft"])
@@ -74,8 +86,10 @@ def test_pruned_energy_is_close_but_really_pruned(water, sto3g, run):
     so the same grid gives the same bits), and on the tolerance if the pruned
     table is wrong."""
     fn = getattr(ferric, run)
-    e_flat = fn(water, sto3g, "PBE", **SCF).total_energy
-    e_pruned = fn(water, sto3g, "PBE", grid_prune="nwchem", **SCF).total_energy
+    e_flat = fn(water, sto3g, "PBE", **FLAT, **SCF).total_energy
+    e_pruned = fn(
+        water, sto3g, "PBE", grid_prune="nwchem", grid_weight_cut=0.0, **SCF
+    ).total_energy
     d = abs(e_pruned - e_flat)
     assert e_pruned != e_flat, "grid_prune='nwchem' did not change the SCF grid"
     assert d < PRUNE_TOL, f"pruned vs flat |dE| = {d:.3e} Ha > {PRUNE_TOL:.0e}"

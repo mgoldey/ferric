@@ -177,6 +177,10 @@ pub struct AtomicGridConfig {
     pub weight_cut: Option<f64>,
 }
 
+/// The production KS grid's weight cutoff ([`AtomicGridConfig::weight_cut`]):
+/// ORCA's `WeightCut` value.
+pub const DEFAULT_WEIGHT_CUT: f64 = 1e-14;
+
 impl Default for AtomicGridConfig {
     fn default() -> Self {
         // "Fine" production grid: 75 radial × 110 angular = 8250 pts/atom.
@@ -198,6 +202,47 @@ impl AtomicGridConfig {
     /// The default VV10 nonlocal grid (50 x 50, unpruned): the one every SCF
     /// driver and the KS gradient use when `nlc_grid` is `None`.
     #[must_use]
+    /// The KS SCF's default XC grid, used wherever a KS code path finds no
+    /// explicit grid (`RhfConfig::dft_grid = None`: the SCF, its gradients,
+    /// Hessians, response and TDDFT, so they all see the same grid): 75 radial
+    /// × 110 angular per atom, pruned with [`PruneScheme::NwchemRadial`] (H/He
+    /// 50 and Li-Ne 66 radial shells, NWChem angular regions) and a
+    /// [`DEFAULT_WEIGHT_CUT`] weight cutoff. 42-47% fewer points than the flat
+    /// 75x110 grid on organic molecules. Measured on live PBE/def2-SVP SCFs:
+    /// within 2e-7 to 4e-6 Ha of the flat grid, whose own error against a
+    /// 99x590 grid is 4.5e-4 to 3.3e-3 Ha on C10-C32 alkanes; the cutoff moved
+    /// energies by under 1e-9 Ha.
+    ///
+    /// [`Default`] stays the flat, uncut 75x110 grid: the analysis quadratures
+    /// (Hirshfeld volumes, partitions, property grids) and the tests that pin
+    /// flat-grid numbers build on it.
+    pub fn production() -> Self {
+        Self {
+            n_radial: 75,
+            n_angular: 110,
+            prune: Some(PruneScheme::NwchemRadial),
+            weight_cut: Some(DEFAULT_WEIGHT_CUT),
+        }
+    }
+
+    /// [`production`](Self::production) at `n_radial` x `n_angular`: the
+    /// default scheme when it has a region table for `n_angular` (it has none
+    /// at 50, and leaves orders below 50 flat), else the flat grid, with the
+    /// default weight cutoff either way. What an explicit grid size with no
+    /// explicit `grid_prune` means, in the CLI and in Python.
+    pub fn production_sized(n_radial: usize, n_angular: usize) -> Self {
+        let p = Self::production();
+        let prune = p
+            .prune
+            .filter(|&s| crate::prune::validate_xc_scheme(s, n_angular).is_ok());
+        Self {
+            n_radial,
+            n_angular,
+            prune,
+            weight_cut: p.weight_cut,
+        }
+    }
+
     pub fn default_nlc() -> Self {
         Self {
             n_radial: 50,
@@ -318,7 +363,9 @@ fn weigh_points(mol: &Molecule, pre: &[(usize, [f64; 3], f64)]) -> Vec<GridPoint
 /// [`build_atomic_grid`] keeps (same order), so the two stay index-aligned;
 /// deciding that needs each point's Becke weight, i.e. one full weight pass
 /// (the cost of [`build_atomic_grid`] itself). Without a cutoff it computes no
-/// Becke weights. Ignores `cfg.prune`, like [`build_atomic_grid`].
+/// Becke weights. With `cfg.prune` set it gives the pruned grid's points, in
+/// [`build_atomic_grid_pruned`]'s order (which ignores nothing; the flat
+/// [`build_atomic_grid`] ignores `cfg.prune`).
 ///
 /// # Panics
 ///
@@ -327,7 +374,17 @@ pub fn atomic_quadrature_points(
     mol: &Molecule,
     cfg: &AtomicGridConfig,
 ) -> Vec<(usize, [f64; 3], f64)> {
-    let mut pre = flat_quadrature_points(mol, cfg);
+    let mut pre = if cfg.prune.is_some() {
+        // The pruned grid's points in [`build_atomic_grid_pruned`]'s order: the
+        // same per-atom radial counts and per-shell Lebedev orders. Each point
+        // still rides its home atom, so the moving-grid Hessian applies as is.
+        let n = uncut_point_count(mol, cfg, cfg.prune)
+            .expect("atomic_quadrature_points: a pruned cfg its caller validated");
+        response_staging(mol, cfg, n)
+            .expect("atomic_quadrature_points: a pruned cfg its caller validated")
+    } else {
+        flat_quadrature_points(mol, cfg)
+    };
     if let Some(cut) = active_weight_cut(cfg) {
         let weighed = weigh_points(mol, &pre);
         let mut weights = weighed.iter().map(|p| p.weight);

@@ -120,7 +120,6 @@ pub mod cosx_k;
 pub mod cosx_schedule;
 /// Density-fitted Coulomb (J) matrix builder (RI-J).
 pub mod df_j;
-pub mod split_rij;
 #[cfg(feature = "gpu")]
 pub mod df_j_gpu;
 /// Density-fitted exchange (K) matrix builder (RI-K).
@@ -136,6 +135,7 @@ pub mod guess;
 pub mod jk_ladder;
 /// LinK exchange builder: linear-scaling K via Schwarz-screened column lists.
 pub mod link_k;
+pub mod split_rij;
 
 pub mod rhf;
 /// Newton-step RHF solver with exact orbital Hessian.

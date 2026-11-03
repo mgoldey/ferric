@@ -405,12 +405,13 @@ fn cosx_final_dict(
 /// Resolve the `grid_radial` / `grid_angular` / `grid_prune` kwargs into the
 /// main KS grid config (`RhfConfig::dft_grid`).
 ///
-/// All three `None` returns `None`, which keeps `AtomicGridConfig::default()`
-/// (75x110, unpruned) and so is byte-identical to the path before these kwargs
-/// existed. Any one set materialises an explicit config, with the unset sizes
-/// taken from that same default. It touches the MAIN grid only: the VV10/NLC
-/// grid keeps its own 50x50 unpruned default, where pruning has no valid table
-/// (same scoping as the CLI's `[dft] grid_prune`).
+/// All `None` returns `None`, which every KS path resolves to
+/// `AtomicGridConfig::production()` (75x110, nwchem-radial, 1e-14 weight
+/// cutoff). Any one set materialises an explicit config: unset sizes from that
+/// same grid, and an unset `grid_prune` / `grid_weight_cut` keeps the default
+/// scheme / cutoff (`AtomicGridConfig::production_sized`). It touches the MAIN
+/// grid only: the VV10/NLC grid keeps its own flat 50x50 default, where pruning
+/// has no valid table (same scoping as the CLI's `[dft] grid_prune`).
 ///
 /// Everything is validated HERE, as a `ValueError`, rather than downstream:
 /// `lebedev()` PANICS on an unsupported angular order, and a prune scheme with
@@ -454,16 +455,31 @@ fn resolve_dft_grid_with_cut(
             )))
         }
     };
+    // Absent keywords mean the production grid (`None`, which every KS path
+    // resolves to `AtomicGridConfig::production`). An explicit size keeps the
+    // default scheme and cutoff unless grid_prune / grid_weight_cut say
+    // otherwise ("none", 0), exactly as the CLI's `[dft]` section does.
     if grid_radial.is_none()
         && grid_angular.is_none()
         && grid_prune.is_none()
-        && weight_cut.is_none()
+        && grid_weight_cut.is_none()
     {
         return Ok(None);
     }
-    let default = ferric_dft::grid::AtomicGridConfig::default();
+    let default = ferric_dft::grid::AtomicGridConfig::production();
     let n_radial = grid_radial.unwrap_or(default.n_radial);
     let n_angular = grid_angular.unwrap_or(default.n_angular);
+    let sized = ferric_dft::grid::AtomicGridConfig::production_sized(n_radial, n_angular);
+    let prune = if grid_prune.is_some() {
+        prune
+    } else {
+        sized.prune
+    };
+    let weight_cut = if grid_weight_cut.is_some() {
+        weight_cut
+    } else {
+        sized.weight_cut
+    };
     if n_radial == 0 {
         return Err(pyo3::exceptions::PyValueError::new_err(
             "grid_radial must be > 0",
@@ -8890,7 +8906,7 @@ fn dft_grid_point_count(
     grid_weight_cut: Option<f64>,
 ) -> PyResult<usize> {
     let cfg = resolve_dft_grid_with_cut(grid_radial, grid_angular, grid_prune, grid_weight_cut)?
-        .unwrap_or_default();
+        .unwrap_or_else(ferric_dft::grid::AtomicGridConfig::production);
     ferric_dft::grid::atomic_grid_point_count(&mol.inner, &cfg, cfg.prune).map_err(make_err)
 }
 
@@ -10732,7 +10748,10 @@ fn run_tddft(
         cfg.xc = Some(xc_name.to_string());
         cfg.df_j_aux = Some("def2-universal-jkfit".to_string());
         cfg.df_k_aux = Some("def2-universal-jkfit".to_string());
-        let grid = cfg.dft_grid.clone().unwrap_or_default();
+        let grid = cfg
+            .dft_grid
+            .clone()
+            .unwrap_or_else(ferric_dft::grid::AtomicGridConfig::production);
         let ladder = ferric_scf::ladder::ksdft_ladder(&cfg);
         let lr =
             ferric_scf::ladder::solve_rhf_ladder(&ctx, &mol.inner, &prep, op, &bounds, &ladder)

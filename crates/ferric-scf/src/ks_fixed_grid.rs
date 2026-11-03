@@ -73,7 +73,7 @@ use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
 use ferric_dft::becke::becke_weights_and_grad;
 use ferric_dft::becke_hessian::becke_home_weight_hess;
-use ferric_dft::grid::{atomic_quadrature_points, build_atomic_grid, AtomicGridConfig};
+use ferric_dft::grid::{atomic_quadrature_points, build_atomic_grid_pruned, AtomicGridConfig};
 use ferric_dft::libxc::{k_mix_from_xc_def, xc_def_from_name, FunctionalFamily, XcDef};
 use ferric_dft::vxc::DENSITY_FLOOR;
 use ferric_integrals::ao_grid::{
@@ -495,15 +495,9 @@ impl FixedGridKs {
     /// Build the grid of `mol` (the reference geometry) with `cfg`. A functional
     /// outside closed-shell LDA/GGA, pure or global hybrid, is a typed error.
     pub fn new(mol: &Molecule, xc_name: &str, cfg: &AtomicGridConfig) -> Result<Self, FerricError> {
-        if cfg.prune.is_some() {
-            return Err(FerricError::General(
-                "fixed-grid XC: an angular-pruned grid (AtomicGridConfig::prune) is not \
-                 supported; the production SCF builds the pruned grid but this unit freezes \
-                 the flat grid, so the two would silently differ (use prune = None)"
-                    .into(),
-            ));
-        }
-        let grid = build_atomic_grid(mol, cfg);
+        // The SCF's grid, pruned or not, with its home-atom quadrature points
+        // in the same order (`atomic_quadrature_points` follows `cfg.prune`).
+        let grid = build_atomic_grid_pruned(mol, cfg, cfg.prune)?;
         let quad = atomic_quadrature_points(mol, cfg);
         debug_assert!(grid
             .iter()

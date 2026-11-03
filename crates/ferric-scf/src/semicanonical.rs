@@ -72,7 +72,10 @@ impl<'a> XcSpec<'a> {
         mol: &ferric_core::mol::Molecule,
         prep: &PreparedBasis,
     ) -> Result<Box<dyn ferric_dft::xc_trait::UksXcContribution>, FerricError> {
-        let main = self.grid.clone().unwrap_or_default();
+        let main = self
+            .grid
+            .clone()
+            .unwrap_or_else(ferric_dft::grid::AtomicGridConfig::production);
         let nlc = self
             .nlc_grid
             .clone()

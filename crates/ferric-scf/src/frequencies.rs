@@ -168,7 +168,7 @@ pub enum HessianMethod {
     /// [`crate::hessian::rks_moving_grid_hessian_available`] accepts the
     /// system; otherwise central differences of the analytic gradient (always
     /// for UKS, ROKS, meta-GGA, VV10, range-separated hybrids, ECPs, external
-    /// potentials, pruned grids, a response AO table above its size cap (large
+    /// potentials, a response AO table above its size cap (large
     /// basis times grid) and every other configuration that predicate
     /// refuses). The choice is made before the SCF; an error the chosen
     /// analytic path raises after it (a non-converged SCF included) is
@@ -188,7 +188,7 @@ pub enum HessianMethod {
     /// RI-K. Everything else is refused with a typed error before the SCF
     /// ([`crate::hessian::rks_moving_grid_hessian_available`]): Hartree-Fock,
     /// open-shell references, meta-GGA, VV10, range-separated hybrids, ECPs,
-    /// external potentials and angular-pruned grids. `Auto` selects it for
+    /// and external potentials. `Auto` selects it for
     /// every closed-shell KS system that predicate accepts; `Analytic` never
     /// does (it stays the Hartree-Fock analytic Hessian).
     AnalyticMovingGrid,
@@ -787,7 +787,7 @@ pub fn harmonic_frequencies_analytic_rohf(
 /// [`FrequencyReference::Rhf`] (UKS/ROKS), and everything
 /// [`crate::hessian::rks_moving_grid_hessian_available`] refuses (no `xc`,
 /// meta-GGA, VV10, range-separated or double hybrids, ECPs, external
-/// potentials, angular-pruned grids, and the closed-shell RHF Hessian's
+/// potentials, and the closed-shell RHF Hessian's
 /// configuration refusals: non-Coulomb operator, COSX, solvation, polarizable
 /// embedding, fractional occupations, cDFT, MOM). The checks that need the
 /// SCF (the recorded density-fitting route, Fock consistency) fire after it,

@@ -689,7 +689,8 @@ impl CosxConfig {
             grid: AtomicGridConfig {
                 n_radial: 50,
                 n_angular: 110,
-                ..Default::default()
+                prune: None,
+                weight_cut: None,
             },
             overlap_fit: true,
             screen_thresh: Some(COSX_DEFAULT_SCREEN_THRESH),

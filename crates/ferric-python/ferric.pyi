@@ -717,8 +717,8 @@ class XcFunctional:
         """d2 E_xc / dx dy at fixed total density, (3N, 3N), index 3*atom + xyz:
         the XC skeleton of run_frequencies(hessian="analytic-moving-grid"),
         grid response included (the derivative of grad). Closed-shell LDA/GGA,
-        pure or global hybrid, unpruned grid; meta-GGA, VV10, range-separated
-        or double hybrids, grid_prune and ghost atoms raise ValueError."""
+        pure or global hybrid, on any grid (pruned or flat); meta-GGA, VV10,
+        range-separated or double hybrids and ghost atoms raise ValueError."""
         ...
     def vxc_deriv(self, density: NDArray[np.float64]) -> NDArray[np.float64]:
         """dV_xc / dx at fixed total density, (3N, n, n), same moving grid as
@@ -3942,17 +3942,20 @@ def run_dft(
     a zero correction".
 
     `grid_radial` / `grid_angular` / `grid_prune` set the main XC grid. All
-    `None` (the default) is the 75x110 unpruned grid, unchanged. `grid_angular`
+    `None` (the default) is the production grid: 75x110 pruned with
+    `"nwchem-radial"` (50 radial shells for H/He, 66 for Li-Ne) and a 1e-14
+    weight cutoff. A size given alone keeps that scheme at that size. `grid_angular`
     must be a supported Lebedev order (6, 14, 26, 50, 110, 194, 302, 434, 590).
     `grid_prune="nwchem"` applies NWChem-style radial-region angular pruning
-    (~23% fewer points at 75x110, ~1e-10 Ha); `"none"` is the flat grid, and
+    (~23% fewer points at 75x110, ~1e-10 Ha), `"nwchem-radial"` (the
+    default) also thins light atoms' radial grids; `"none"` is the flat grid, and
     any other value raises ValueError. Pruning has no table at
     `grid_angular=50`. With `with_gradient=True` the analytic gradient
     differentiates the grid the SCF ran on (including a pruned one).
     `grid_weight_cut` (ORCA's WeightCut, e.g. 1e-14) drops every main-grid
     point whose final weight (radial x angular x Becke partition) has
-    absolute value below it; `None` (the default) or 0.0 is no cutoff and the
-    grid is unchanged bit for bit, and a negative, NaN or infinite value
+    absolute value below it; `None` (the default) is 1e-14, and 0.0 is no
+    cutoff (the grid is then the uncut one bit for bit), and a negative, NaN or infinite value
     raises ValueError. The gradient drops the same points, so it is the
     gradient of the cut energy (which jumps where a weight crosses the cutoff
     under displacement, by about cutoff x integrand).
@@ -4053,9 +4056,9 @@ def dft_grid_point_count(
 ) -> int:
     """Number of points in the main XC grid `run_dft` builds with these kwargs.
 
-    Without `grid_weight_cut` this is a closed-form count (no grid is built);
-    with it, every point's Becke weight is evaluated (about the cost of
-    building the grid, without its memory)."""
+    With the default 1e-14 weight cutoff every point's Becke weight is
+    evaluated (about the cost of building the grid, without its memory);
+    with `grid_weight_cut=0.0` it is a closed-form count (no grid is built)."""
     ...
 
 def cosx_grid_point_count(
