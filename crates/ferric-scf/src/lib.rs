@@ -21,7 +21,6 @@
 /// A test seam: a `pub static AtomicBool` plus its private getter. With the
 /// `test-seams` feature off neither the static nor any load of it exists and the
 /// getter is a constant `false`, so a shipped build carries no mutable global.
-#[cfg(feature = "gpu")]
 macro_rules! seam_flag {
     ($(#[$doc:meta])* $name:ident, $getter:ident) => {
         $(#[$doc])*
@@ -121,6 +120,7 @@ pub mod cosx_k;
 pub mod cosx_schedule;
 /// Density-fitted Coulomb (J) matrix builder (RI-J).
 pub mod df_j;
+pub mod split_rij;
 #[cfg(feature = "gpu")]
 pub mod df_j_gpu;
 /// Density-fitted exchange (K) matrix builder (RI-K).

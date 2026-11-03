@@ -28,6 +28,7 @@
 use crate::df_j::DfJ;
 use crate::df_k::DfK;
 use crate::fock::KBuilder;
+use crate::split_rij::RiJ;
 use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
 use ferric_core::FerricError;
@@ -74,7 +75,7 @@ pub(crate) fn build_df_jk<'a>(
     k_aux: Option<&str>,
     ooc_budget: usize,
     j_pair_thresh: f64,
-) -> Result<(Option<DfJ<'a>>, Option<DfK<'a>>), FerricError> {
+) -> Result<(Option<RiJ<'a>>, Option<DfK<'a>>), FerricError> {
     let out = build_df_jk_impl(ctx, mol, op, prep, j_aux, k_aux, ooc_budget, j_pair_thresh)?;
     note_df_k_built(out.1.is_some());
     Ok(out)
@@ -112,7 +113,7 @@ fn build_df_jk_impl<'a>(
     k_aux: Option<&str>,
     ooc_budget: usize,
     j_pair_thresh: f64,
-) -> Result<(Option<DfJ<'a>>, Option<DfK<'a>>), FerricError> {
+) -> Result<(Option<RiJ<'a>>, Option<DfK<'a>>), FerricError> {
     // `Some("")` is the explicit "do not density-fit" sentinel (see
     // `solve_rhf`); UHF/ROHF pass the config straight through, so honour it
     // here rather than letting it reach `basis::bundled("")`.
@@ -161,11 +162,17 @@ fn build_df_jk_impl<'a>(
                     ooc_budget,
                     Some(ctx),
                 )?);
-                let mut df_j = Some(DfJ::from_source(raw, op, &dfbs, ooc_budget, Some(ctx))?);
+                let mut df_j = Some(RiJ::Stored(DfJ::from_source(
+                    raw,
+                    op,
+                    &dfbs,
+                    ooc_budget,
+                    Some(ctx),
+                )?));
                 yield_device_to_k(&mut df_j, &df_k);
                 return Ok((df_j, df_k));
             }
-            let df_j = Some(DfJ::new_for_jk(
+            let df_j = Some(RiJ::Stored(DfJ::new_for_jk(
                 op,
                 mol,
                 prep,
@@ -173,7 +180,7 @@ fn build_df_jk_impl<'a>(
                 ooc_budget,
                 Some(ctx),
                 j_pair_thresh,
-            )?);
+            )?));
             let df_k = Some(DfK::new_banded(op, prep, &dfbs, ooc_budget, Some(ctx))?);
             return Ok((df_j, df_k));
         }
@@ -181,15 +188,30 @@ fn build_df_jk_impl<'a>(
     let mut df_j = if let Some(aux_name) = j_aux {
         let dfbs_set = ferric_core::basis::bundled(aux_name)?;
         let dfbs = PreparedBasis::new(mol, &dfbs_set)?;
-        Some(DfJ::new_for_jk(
-            op,
-            mol,
-            prep,
-            &dfbs,
-            ooc_budget,
-            Some(ctx),
-            j_pair_thresh,
-        )?)
+        // `jk_storage = "split"`: Split-RI-J recomputes the three-centre
+        // integrals in contracted form every build, so no J tensor is stored.
+        // Single rank only (it does not stripe the aux band).
+        let use_split = ferric_integrals::three_index_source::jk_storage()
+            == ferric_integrals::three_index_source::JkStorage::Split
+            && ctx.size <= 1;
+        Some(if use_split {
+            RiJ::Split(Box::new(crate::split_rij::SplitRiJ::new(
+                op,
+                prep,
+                &dfbs,
+                j_pair_thresh,
+            )?))
+        } else {
+            RiJ::Stored(DfJ::new_for_jk(
+                op,
+                mol,
+                prep,
+                &dfbs,
+                ooc_budget,
+                Some(ctx),
+                j_pair_thresh,
+            )?)
+        })
     } else {
         None
     };
@@ -207,14 +229,14 @@ fn build_df_jk_impl<'a>(
 /// RI-J is built before DF-K every iteration, so under `gpu = on` its device
 /// upload would take the pool first. Tell it how much DF-K will want.
 #[cfg(feature = "gpu")]
-fn yield_device_to_k(df_j: &mut Option<DfJ<'_>>, df_k: &Option<DfK<'_>>) {
-    if let (Some(j), Some(k)) = (df_j.as_mut(), df_k.as_ref()) {
+fn yield_device_to_k(df_j: &mut Option<RiJ<'_>>, df_k: &Option<DfK<'_>>) {
+    if let (Some(j), Some(k)) = (df_j.as_mut().and_then(RiJ::as_stored_mut), df_k.as_ref()) {
         j.reserve_device_for_k(k.device_footprint_bytes());
     }
 }
 
 #[cfg(not(feature = "gpu"))]
-fn yield_device_to_k(_df_j: &mut Option<DfJ<'_>>, _df_k: &Option<DfK<'_>>) {}
+fn yield_device_to_k(_df_j: &mut Option<RiJ<'_>>, _df_k: &Option<DfK<'_>>) {}
 
 /// Build the geometry-only SR/LR [`DfK`] fitter pair for a range-separated
 /// hybrid: `(K[erfc(ω)], K[erf(ω)])`. Called once before the SCF loop; only
