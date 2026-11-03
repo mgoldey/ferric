@@ -647,6 +647,22 @@ fn check_arm_counters(sys: &System, arm: Arm, k: Kernels, r: &Run, f64_iteration
             "{label} {arm:?} {k:?}: DF-K never ran mixed"
         );
     }
+    // The f64 builds the ladder asks for run on the device too (the DfK holds
+    // the f64 copy of B beside the f32 one), so every occupied-path build of
+    // this SCF is a device build: all but iteration 1 (K from the guess
+    // density, no C_occ yet), once per spin. Before the f64 copy those builds
+    // ran the host path and only the mixed ones were counted here.
+    if sys.kind != Kind::Rohf && k != Kernels::JOnly {
+        let spins = if sys.kind == Kind::Uhf { 2 } else { 1 };
+        let want = spins * (r.res.iterations as u64 - 1);
+        assert!(
+            r.gpu.dfk_device_builds >= want,
+            "{label} {arm:?} {k:?}: {} device DF-K builds, want >= {want} ({} iterations, {} mixed)",
+            r.gpu.dfk_device_builds,
+            r.res.iterations,
+            l.builds_mixed
+        );
+    }
     // Consulted on every build of this SCF (the counters are process-wide, so
     // the SAD guess's free-atom SCFs add their own, all f64: they run inside
     // a rayon pool, where the device path never runs).

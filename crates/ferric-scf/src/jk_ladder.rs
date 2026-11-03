@@ -7,9 +7,11 @@
 //! requested for one of the two kernels, a previous build of the same SCF
 //! exists, and some spin density moved by more than [`JK_LADDER_THRESH`](crate::jk_ladder::JK_LADDER_THRESH) (RMS
 //! over the AO matrix) since it. The first build of every SCF is f64. When the
-//! ladder says f64 and the resident device tensor is f32, the build runs the
-//! host f64 path (the host `DfJ`/`DfK` still holds, or recomputes, the f64
-//! tensor), so the device needs no f64 copy.
+//! ladder says f64, `dfk-occ` runs the f64 device path on the f64 copy of `B`
+//! it keeps beside the f32 one when the pool holds both (`crate::df_k_gpu`);
+//! otherwise, and always for `dfj-pack`, an f64 build with an f32 resident
+//! tensor runs the host f64 path (the host `DfJ`/`DfK` still holds, or
+//! recomputes, the f64 tensor).
 //!
 //! The f64 exit. The SCF exit gate (ΔP below `density_conv`) is a different
 //! test from the ladder's, so an exit can follow a mixed build (always under a

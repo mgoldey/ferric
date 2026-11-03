@@ -952,3 +952,115 @@ fn the_resolver_admits_dfk_occ_only_as_opt_in_under_mode_on_and_refuses_it_with_
     .unwrap_err();
     assert!(e.contains("f64"), "{e}");
 }
+
+/// The ladder upload (`DfkPrecision::Ladder`) holds both copies of `B`: its f64
+/// builds are the f64 upload's K bit for bit and its mixed builds the mixed
+/// upload's (the f32 copy is rounded on the device, bit-identical to the host
+/// rounding), whichever order the builds come in. Only the f64 copy crosses
+/// PCIe.
+#[test]
+fn the_ladder_upload_holds_both_copies_and_each_build_matches_its_single_copy_twin() {
+    let _g = GPU.lock().unwrap_or_else(|e| e.into_inner());
+    if !ready() {
+        return;
+    }
+    let (dfk0, n) = dfk_for(&alkane(4), "def2-svp");
+    let flat = dfk0.dressed_incore_flat_for_test().unwrap().to_owned();
+    let band = flat.nrows();
+    let dev = ferric_core::gpu::device::device(0).unwrap();
+    let pool = pool().unwrap();
+    let c = c_occ(n, 17, 5);
+    let twin = |p: DfkPrecision| {
+        let mut d = DeviceDfK::upload_with_precision(&dev, &pool, &flat.view(), n, p).unwrap();
+        let mut k = Array2::zeros((n, n));
+        d.build_from_occ(&c.view(), &mut k).unwrap();
+        k
+    };
+    let (k_f64, k_mixed) = (twin(DfkPrecision::F64), twin(DfkPrecision::Mixed));
+    assert_ne!(bits(&k_f64), bits(&k_mixed), "the two twins must differ");
+
+    let held0 = pool.available_bytes();
+    let s0 = stats();
+    let mut d =
+        DeviceDfK::upload_with_precision(&dev, &pool, &flat.view(), n, DfkPrecision::Ladder)
+            .unwrap();
+    let s1 = stats();
+    assert!(d.is_mixed() && d.has_f64(), "both copies resident");
+    assert_eq!(
+        s1.bytes_h2d - s0.bytes_h2d,
+        (8 * band * n * n) as u64,
+        "only the f64 B crosses PCIe"
+    );
+    assert_eq!(
+        held0 - pool.available_bytes(),
+        12 * band * n * n + 8 * n * n,
+        "f64 B + f32 B + the K accumulator"
+    );
+    assert_eq!(s1.mixed_fallback_f64, s0.mixed_fallback_f64);
+    let report = pool.occupancy_report();
+    assert!(report.contains("DF-K dressed B (f32)"), "{report}");
+    assert!(report.contains("DF-K dressed B\n"), "{report}");
+    for mixed in [false, true, true, false, true] {
+        let p0 = stats().mixed_panels;
+        let mut k = Array2::zeros((n, n));
+        d.build_from_occ_with(&c.view(), &mut k, mixed).unwrap();
+        let ran_panels = stats().mixed_panels > p0;
+        assert_eq!(
+            ran_panels, mixed,
+            "mixed = {mixed}: panels ran = {ran_panels}"
+        );
+        let want = if mixed { &k_mixed } else { &k_f64 };
+        assert_eq!(bits(&k), bits(want), "mixed = {mixed}");
+    }
+    // The single-copy build keeps its old meaning: mixed when f32 is resident.
+    let mut k = Array2::zeros((n, n));
+    d.build_from_occ(&c.view(), &mut k).unwrap();
+    assert_eq!(bits(&k), bits(&k_mixed));
+}
+
+/// Without room for both copies (plus a build's headroom) the ladder upload is
+/// the mixed one: f32 alone, from the host, and an f64 build of it is a typed
+/// refusal that leaves `k` alone (the dispatcher sends those builds to the host).
+/// An F32Range `B` leaves the f64 copy alone, counted once, as for `Mixed`.
+#[test]
+fn the_ladder_upload_degrades_to_f32_alone_or_f64_alone() {
+    let _g = GPU.lock().unwrap_or_else(|e| e.into_inner());
+    if !ready() {
+        return;
+    }
+    let (dfk0, n) = dfk_for(WATER, "cc-pvdz");
+    let mut flat = dfk0.dressed_incore_flat_for_test().unwrap().to_owned();
+    let band = flat.nrows();
+    let dev = ferric_core::gpu::device::device(0).unwrap();
+    let c = c_occ(n, 5, 6);
+    // Room for the f32 B, the K accumulator and a build (4·band·n² + 64·n²
+    // spare), not for both copies plus the ladder headroom (12·band·n² + 72·n²).
+    let tight =
+        ferric_core::gpu::pool::DevicePool::with_capacity_bytes(8 * band * n * n + 72 * n * n);
+    let s0 = stats();
+    let mut d =
+        DeviceDfK::upload_with_precision(&dev, &tight, &flat.view(), n, DfkPrecision::Ladder)
+            .unwrap();
+    let s1 = stats();
+    assert!(d.is_mixed() && !d.has_f64(), "f32 alone");
+    assert_eq!(s1.bytes_h2d - s0.bytes_h2d, (4 * band * n * n) as u64);
+    let mut k = Array2::from_elem((n, n), 7.0);
+    let e = d.build_from_occ_with(&c.view(), &mut k, false).unwrap_err();
+    assert!(
+        matches!(e, ferric_core::gpu::device::GpuError::Layout(_)),
+        "{e:?}"
+    );
+    assert!(k.iter().all(|&v| v == 7.0), "k untouched");
+    d.build_from_occ_with(&c.view(), &mut k, true).unwrap();
+    drop(d);
+
+    flat[(band / 2, 3)] = 1e39; // finite in f64, beyond f32::MAX
+    let pool = pool().unwrap();
+    let s0 = stats();
+    let d = DeviceDfK::upload_with_precision(&dev, &pool, &flat.view(), n, DfkPrecision::Ladder)
+        .unwrap();
+    let s1 = stats();
+    assert!(!d.is_mixed() && d.has_f64(), "f64 alone");
+    assert_eq!(s1.mixed_fallback_f64 - s0.mixed_fallback_f64, 1);
+    assert_eq!(s1.bytes_h2d - s0.bytes_h2d, (8 * band * n * n) as u64);
+}

@@ -72,8 +72,9 @@ pub enum MixedKernel {
     /// SCF precision ladder (`ferric_scf::jk_ladder`). Opt-in: in
     /// [`MixedKernelSet::OPT_IN`], not in `SHIPPED`. Its converged energies sit
     /// at the f64 SCF's own termination noise, but on the one device measured
-    /// (GTX 1080) a mixed SCF was no faster than the f64 device DF-K and took
-    /// 2-4x the iterations with diffuse basis sets; see the validation page.
+    /// (GTX 1080) a mixed SCF saved only about 2% of the wall time against the
+    /// f64 device DF-K (n-dodecane def2-TZVP) and took 2-4x the iterations with
+    /// diffuse basis sets; see the validation page.
     DfkOcc = 4,
     /// COSX 3-centre kernel (`md3c1e`), routed per (pair, sub-batch) by the
     /// Hölder bound (Workstream D). Named only: not in `SHIPPED`.
@@ -169,7 +170,8 @@ impl MixedKernelSet {
     /// so `precision = "mixed"` alone and the `mixed` presets leave them out.
     /// `XcVxc`: its device tests pass on a GTX 1080 (sm_61), where the device
     /// XC path was slower than the CPU. `DfkOcc`: its device tests pass on the
-    /// same card, where a mixed SCF was no faster than the f64 device DF-K.
+    /// same card, where a mixed SCF saved about 2% against the f64 device
+    /// DF-K and was slower with diffuse basis sets.
     pub const OPT_IN: Self = Self::EMPTY
         .with(MixedKernel::XcVxc)
         .with(MixedKernel::DfkOcc);
