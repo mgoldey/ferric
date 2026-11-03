@@ -158,6 +158,8 @@ pub fn fill_eri3_pairs(
 ) -> Result<(), FerricError> {
     use rayon::prelude::*;
 
+    check_band(dfbs, (p0, p1))?;
+    check_layout(obs, screen)?;
     let ncols = screen.ncols();
     if out.dim() != (p1 - p0, ncols) {
         return Err(FerricError::General(format!(
@@ -195,6 +197,45 @@ pub fn fill_eri3_pairs(
             }
         },
     );
+    Ok(())
+}
+
+/// Refuse an aux band that is reversed or runs past `dfbs`. Called before any
+/// `p1 - p0`, so a bad band is an error, not an underflow panic or silently
+/// zero trailing rows.
+pub(crate) fn check_band(
+    dfbs: &PreparedBasis,
+    (p0, p1): (usize, usize),
+) -> Result<(), FerricError> {
+    if p0 > p1 || p1 > dfbs.nbasis() {
+        return Err(FerricError::General(format!(
+            "pair-screened block: invalid aux band [{p0}, {p1}) for naux = {}",
+            dfbs.nbasis()
+        )));
+    }
+    Ok(())
+}
+
+/// Refuse a screen built for a different orbital basis: every kept shell pair
+/// must index a shell of `obs` and own exactly as many stored columns as that
+/// pair has function pairs. This is what keeps every `scatter_pair_row` write
+/// inside its row, since `PairScreen` is public and could be built from other
+/// shell dimensions.
+fn check_layout(obs: &PreparedBasis, screen: &PairScreen) -> Result<(), FerricError> {
+    let dims = obs.shell_dims();
+    let width = |s1: usize, s2: usize| -> Option<usize> {
+        let (a, b) = (*dims.get(s1)?, *dims.get(s2)?);
+        Some(if s1 == s2 { a * (a + 1) / 2 } else { a * b })
+    };
+    for (k, &(s1, s2)) in screen.shell_pairs.iter().enumerate() {
+        let stored = screen.col_start[k + 1] - screen.col_start[k];
+        if width(s1 as usize, s2 as usize) != Some(stored) {
+            return Err(FerricError::General(format!(
+                "pair-screened block: the screen does not match the orbital basis \
+                 (shell pair ({s1}, {s2}) stores {stored} columns)"
+            )));
+        }
+    }
     Ok(())
 }
 
@@ -257,5 +298,55 @@ mod tests {
         );
         assert_eq!(s.ncols(), 3 + 3);
         assert!(s.cols().iter().all(|&(mu, nu)| (mu < 2) == (nu < 2)));
+    }
+
+    fn water(basis: &str) -> PreparedBasis {
+        let mol = ferric_core::mol::Molecule::parse_xyz(
+            "3\n\nO 0 0 0.117\nH 0 0.757 -0.467\nH 0 -0.757 -0.467\n",
+            0,
+            1,
+        )
+        .unwrap();
+        PreparedBasis::new(&mol, &ferric_core::basis::bundled(basis).unwrap()).unwrap()
+    }
+
+    fn fill_err(
+        obs: &PreparedBasis,
+        dfbs: &PreparedBasis,
+        band: (usize, usize),
+        screen: &PairScreen,
+    ) -> String {
+        let mut out = Array2::<f64>::zeros((1, screen.ncols()));
+        fill_eri3_pairs(Operator::coulomb(), obs, dfbs, band, screen, &mut out)
+            .expect_err("must be refused")
+            .to_string()
+    }
+
+    /// `PairScreen` and `fill_eri3_pairs` are public, so a screen built for a
+    /// different orbital basis must be refused before the raw-pointer scatter,
+    /// not written past its rows.
+    #[test]
+    fn a_screen_for_another_basis_is_refused() {
+        let (svp, sto, aux) = (
+            water("def2-svp"),
+            water("sto-3g"),
+            water("def2-universal-jkfit"),
+        );
+        let screen = PairScreen::schwarz(Operator::coulomb(), &svp, 1.0, 0.0).unwrap();
+        let msg = fill_err(&sto, &aux, (0, 1), &screen);
+        assert!(msg.contains("does not match the orbital basis"), "{msg}");
+    }
+
+    /// A reversed band or one past naux is an error, not an underflow panic or
+    /// silently zero trailing rows.
+    #[test]
+    fn an_invalid_aux_band_is_refused() {
+        let (obs, aux) = (water("sto-3g"), water("def2-universal-jkfit"));
+        let screen = PairScreen::schwarz(Operator::coulomb(), &obs, 1.0, 0.0).unwrap();
+        let naux = aux.nbasis();
+        for band in [(3, 1), (0, naux + 1)] {
+            let msg = fill_err(&obs, &aux, band, &screen);
+            assert!(msg.contains("invalid aux band"), "{band:?}: {msg}");
+        }
     }
 }

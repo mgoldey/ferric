@@ -1448,6 +1448,7 @@ impl ThreeIndexSource {
         (band_p0, band_p1): (usize, usize),
         screen: std::sync::Arc<PairScreen>,
     ) -> Result<Self, FerricError> {
+        pair_screen::check_band(dfbs, (band_p0, band_p1))?;
         let rows = band_p1 - band_p0;
         let _charge = charge_three_index(
             "DF 3-index (P|mn) in-core packed, pair-screened",

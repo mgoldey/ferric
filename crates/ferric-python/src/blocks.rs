@@ -595,14 +595,16 @@ impl PyAoIntegrals {
     /// `X[i, j] = min(1, max |(μμ|νν)| / min (n_μ n_ν))` for i ≠ j, with both
     /// the max and the min taken over μ ∈ shell i, ν ∈ shell j, and
     /// `n_μ = sqrt(|(μμ|μμ)|)`. This is the largest numerator over the
-    /// smallest norm product, not the largest per-pair ratio; the two coincide
-    /// when every function in a shell has the same norm (spherical shells) and
-    /// differ for Cartesian d and higher.
+    /// smallest norm product, not the largest per-pair ratio. The two agree
+    /// only when every function in each shell has the same norm; they can
+    /// differ whenever a shell's functions have unequal norms (Cartesian d, for
+    /// example, and spherical f and higher can too).
     ///
     /// NOT a bound. CSAM ESTIMATES the quartet (ij|kl) as
     /// `Q[i,j] * Q[k,l] * sqrt(max(X[i,k] * X[j,l], X[i,l] * X[j,k]))`
-    /// (Thompson & Ochsenfeld), with `Q` from `schwarz()`, and the estimate can
-    /// fall below the true integral. It is the table `[scf] screening = "csam"`
+    /// (Thompson & Ochsenfeld), with `Q` from `schwarz()` called with the SAME
+    /// `operator` and `omega` as this table (an erf estimate needs erf `Q`, not
+    /// the default Coulomb one). The estimate can fall below the true integral. It is the table `[scf] screening = "csam"`
     /// uses. `"erfc"` is refused (the error names the rigorous `"csb"`
     /// alternative).
     #[pyo3(signature = (operator="coulomb", omega=None))]
