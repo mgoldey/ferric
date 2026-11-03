@@ -46,7 +46,7 @@ use ferric_integrals::operator::Operator;
 use ferric_integrals::threeindex::coulomb_metric_2c;
 use ferric_scf::df_j::DfJ;
 use ferric_scf::fock::JBuilder;
-use ferric_scf::split_rij::SplitRiJ;
+use ferric_scf::split_rij::{SplitRiJ, FAR_EPS};
 use ndarray::{Array1, Array2, Array3};
 use ndarray_linalg::{Cholesky, Diag, SolveTriangular, UPLO};
 
@@ -169,7 +169,10 @@ fn check_system(xyz: &str, orb: &str) {
     let d_split = sr.fit_rhs(&d).unwrap();
     let d_ref = b2.dot(&dflat);
     let s_d = sr.fit_rhs_abs(&d).unwrap();
-    let tol_d = s_d.mapv(|x| (gamma(k) + gamma(s.nao * s.nao + 64)) * x + FLOOR);
+    // FAR: the far-field terms' relative error (`FAR_EPS` per term, bounded by
+    // the same |term| sums), with a factor 2 margin.
+    let far = 2.0 * FAR_EPS;
+    let tol_d = s_d.mapv(|x| (gamma(k) + gamma(s.nao * s.nao + 64) + far) * x + FLOOR);
     let wd = check("d_P", d_split.iter(), d_ref.iter(), tol_d.iter());
 
     // --- J pass at fixed coefficients -------------------------------------
@@ -179,7 +182,7 @@ fn check_system(xyz: &str, orb: &str) {
     let j_c_ref = b2.t().dot(&c_ref);
     let mut s_j = Array2::<f64>::zeros((s.nao, s.nao));
     sr.coulomb_abs(&c_ref, &mut s_j).unwrap();
-    let tol_jc = s_j.mapv(|x| (gamma(k) + gamma(s.naux + 64)) * x + FLOOR);
+    let tol_jc = s_j.mapv(|x| (gamma(k) + gamma(s.naux + 64) + far) * x + FLOOR);
     let wjc = check("J(c)", j_c.iter(), j_c_ref.iter(), tol_jc.iter());
 
     // --- end to end --------------------------------------------------------
@@ -203,7 +206,7 @@ fn check_system(xyz: &str, orb: &str) {
     let tol_j: Vec<f64> = s_j2
         .iter()
         .zip(prop.iter().zip(ref_dot.iter()))
-        .map(|(&sj, (&pr, &rd))| (gamma(k) + gamma(s.naux + 64)) * sj + pr + rd + FLOOR)
+        .map(|(&sj, (&pr, &rd))| (gamma(k) + gamma(s.naux + 64) + far) * sj + pr + rd + FLOOR)
         .collect();
     let wj = check("J", j.iter(), j_c_ref.iter(), tol_j.iter());
 
@@ -277,7 +280,8 @@ fn split_rij_lane_kernel_is_bit_identical_to_the_scalar_kernel() {
     let bits = |a: &[f64]| a.iter().map(|x| x.to_bits()).collect::<Vec<u64>>();
     for (xyz, orb) in [("benzene.xyz", "def2-svp"), ("water.xyz", "def2-qzvp")] {
         let s = system(xyz, orb);
-        let sr = SplitRiJ::new(Operator::coulomb(), &s.obs, &s.aux, 1e-12).unwrap();
+        let mut sr = SplitRiJ::new(Operator::coulomb(), &s.obs, &s.aux, 1e-12).unwrap();
+        sr.set_far_field(false); // both sides on the exact kernel
         let d = test_density(s.nao);
         let c = Array1::from_shape_fn(s.naux, |p| ((p * 13 % 17) as f64 - 8.0) * 0.01);
         let (lane, scalar) = (sr.fit_rhs(&d).unwrap(), sr.fit_rhs_scalar(&d).unwrap());
@@ -298,6 +302,43 @@ fn split_rij_lane_kernel_is_bit_identical_to_the_scalar_kernel() {
             "{xyz}/{orb}: J(c)"
         );
     }
+}
+
+/// The far-field terms (large-T Boys form, one derivative tensor per
+/// primitive pair and aux atom) change d_P and J(c), so the test is not
+/// vacuous, and stay within their bound: `FAR_EPS` relative per term, summed
+/// as `|terms|` (the `_abs` passes), plus both runs' rounding.
+#[test]
+fn split_rij_far_field_is_within_its_bound_of_the_exact_kernel() {
+    let s = system("alkane_10.xyz", "def2-svp");
+    let mut sr = SplitRiJ::new(Operator::coulomb(), &s.obs, &s.aux, 1e-12).unwrap();
+    let k = sr.rounding_depth();
+    let d = test_density(s.nao);
+    let c = Array1::from_shape_fn(s.naux, |p| ((p * 13 % 17) as f64 - 8.0) * 0.01);
+    let d_far = sr.fit_rhs(&d).unwrap();
+    let mut j_far = Array2::<f64>::zeros((s.nao, s.nao));
+    sr.coulomb_from_coefficients(&c, &mut j_far).unwrap();
+    sr.set_far_field(false);
+    let d_exact = sr.fit_rhs(&d).unwrap();
+    let mut j_exact = Array2::<f64>::zeros((s.nao, s.nao));
+    sr.coulomb_from_coefficients(&c, &mut j_exact).unwrap();
+    let s_d = sr.fit_rhs_abs(&d).unwrap();
+    let mut s_j = Array2::<f64>::zeros((s.nao, s.nao));
+    sr.coulomb_abs(&c, &mut s_j).unwrap();
+    let scale = 2.0 * FAR_EPS + 2.0 * gamma(k);
+    let changed_d = d_far.iter().zip(&d_exact).filter(|(a, b)| a != b).count();
+    let changed_j = j_far.iter().zip(&j_exact).filter(|(a, b)| a != b).count();
+    assert!(changed_d > 0 && changed_j > 0, "far field never engaged");
+    let tol_d = s_d.mapv(|x| scale * x + FLOOR);
+    let wd = check("d_P far", d_far.iter(), d_exact.iter(), tol_d.iter());
+    let tol_j = s_j.mapv(|x| scale * x + FLOOR);
+    let wj = check("J(c) far", j_far.iter(), j_exact.iter(), tol_j.iter());
+    eprintln!(
+        "alkane_10/def2-svp: far field changed {changed_d} of {} d_P and {changed_j} of {} J; \
+         worst |diff|/tol d {wd:.2e} J {wj:.2e}",
+        d_far.len(),
+        j_far.len()
+    );
 }
 
 /// Fixed work partition, fixed summation order: the bits of d_P, J(c) and the

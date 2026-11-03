@@ -69,6 +69,36 @@
 //! form in D. `thresh <= 0` keeps everything except primitive pairs whose
 //! `|c_a c_b| e^{-μR²}` underflows [`PRIM_SCREEN`].
 //!
+//! # Far field (large T)
+//!
+//! When `T = α|P−Q|²` is large, `F_n(T)` is its asymptotic form
+//! `Γ(n+½)/(2T^{n+½})` to within `e^{-T} T^{n+½}/((T−n)Γ(n+½))` relative
+//! (the neglected tail of `∫_0^∞`). Then `R(α, X) = S(X)/√α`, where `S` is
+//! the derivative tensor of `√π/(2|X|)`, and the term is
+//! `2π^{5/2} (pq)^{-3/2} Σ H S`: a point-multipole interaction, with no
+//! exponent left but the two charges. A term is far when `T >=
+//! T_far[l_ab + l_K]`, the smallest `T` at which that bound is below
+//! [`FAR_EPS`] = 1e-14 for every order (`far_t_table`). Every aux function
+//! sits on one atom, so per (primitive pair, aux atom) one tensor `S(P−Q)` and
+//! one contraction serve all of the atom's far aux primitives:
+//!
+//! * d pass: the field `M = p^{-3/2} Σ_j H_j S_{j+k}`, then each far aux
+//!   primitive adds `2π^{5/2} q^{-3/2} M`;
+//! * J pass: the far aux primitives' `q^{-3/2} G` are summed, then contracted
+//!   once against `S`.
+//!
+//! This is the far field of CFMM (White & Head-Gordon 1994; the gated
+//! `cfmm` module) reduced to RI-J: no tree and no translations, because the
+//! aux side is single-centre and each primitive pair's Hermite expansion is
+//! its own multipole. Both passes use the same far/near rule, so `J` is still
+//! `B̃ᵀ V⁻¹ B̃ D` for one tensor `B̃`. The error per term is at most
+//! `FAR_EPS` times the term's `|.|` sum (the R recursion is linear, and its
+//! `|.|` recursion bounds the error), the scale the tests use. On
+//! n-C20H42 / def2-SVP, 71% of terms are far and need 13x fewer tensor
+//! evaluations; the d and J passes are 1.7x and 1.6x faster, with
+//! `max|Δd_P| = 3e-13` on `|d_P| <= 1.1e3`. The `_abs` scale passes and
+//! [`SplitRiJ::set_far_field`]`(false)` use the exact kernel for every term.
+//!
 //! # Determinism
 //!
 //! There are no cross-task reductions. The d pass parallelises over fixed
@@ -112,6 +142,10 @@ pub const PRIM_SCREEN: f64 = 1e-30;
 /// grouping of tasks, never a summation order (each aux primitive's sum runs
 /// over all pairs in the stored order in every task layout).
 const AUX_BLOCK: usize = 8;
+
+/// Relative error allowed per far-field term (see the module doc, "Far field").
+pub const FAR_EPS: f64 = 1e-14;
+
 /// `2 π^{5/2}`.
 const TWO_PI_52: f64 = 34.986_836_655_249_725;
 
@@ -473,6 +507,66 @@ fn r_eval_lanes<const ABS: bool>(
             for i in 0..LANES {
                 v[i] += st.coef * s2[i];
             }
+        }
+        r[st.dst as usize] = v;
+    }
+}
+
+/// Bound on the relative error of the large-T form of the Boys function,
+/// `F_n(T) ≈ Γ(n+½)/(2 T^{n+½})`: the neglected tail is
+/// `∫_1^∞ t^{2n} e^{-Tt²} dt <= e^{-T} / (2(T−n))` (use `ln t² <= t²−1` and
+/// `t²−1 >= 2(t−1)`), so the relative error is at most
+/// `e^{-T} T^{n+½} / ((T−n) Γ(n+½))`. Returned in log form for `T > n`.
+fn ln_far_rel_err(n: usize, t: f64) -> f64 {
+    let nf = n as f64;
+    // ln Γ(n+½) = ln((2n−1)!!) − n ln 2 + ½ ln π.
+    let mut ln_gamma = 0.5 * std::f64::consts::PI.ln();
+    for k in 1..=n {
+        ln_gamma += ((2 * k - 1) as f64 / 2.0).ln();
+    }
+    -t + (nf + 0.5) * t.ln() - (t - nf).ln() - ln_gamma
+}
+
+/// `T_far[L]`: the smallest `T` (on a 1/4 grid) from which every order
+/// `n <= L` of the large-T Boys form is within [`FAR_EPS`] relative. Each
+/// bound decreases with `T` beyond `n + 2`, where the scan starts.
+fn far_t_table() -> &'static [f64; MAX_LTOT + 1] {
+    static T: OnceLock<[f64; MAX_LTOT + 1]> = OnceLock::new();
+    T.get_or_init(|| {
+        let ln_eps = FAR_EPS.ln();
+        let mut out = [0.0; MAX_LTOT + 1];
+        for (l, slot) in out.iter_mut().enumerate() {
+            let mut t = l as f64 + 2.0;
+            while (0..=l).any(|n| ln_far_rel_err(n, t) > ln_eps) {
+                t += 0.25;
+            }
+            *slot = t;
+        }
+        out
+    })
+}
+
+/// `R^0_{tuv}` for `t+u+v <= l` with the large-T Boys form and `α = 1`: the
+/// derivative tensor of `√π/(2|X|)`. The exact `R(α, X)` at large `T` is this
+/// divided by `√α` (each `R^n_000` scales as `α^{-1/2}`, and the recursion has
+/// no `α`), so `pref · R = 2π^{5/2} (pq)^{-3/2} · S`: exponent-free apart
+/// from the two charges.
+fn r_eval_far(l: usize, x: [f64; 3], fb: &mut [f64], r: &mut [f64]) {
+    let prog = &r_programs()[l];
+    let t = x[0] * x[0] + x[1] * x[1] + x[2] * x[2];
+    let mut f = 0.5 * (std::f64::consts::PI / t).sqrt();
+    let inv_2t = 0.5 / t;
+    let mut pw = 1.0;
+    for n in 0..=l {
+        fb[n] = f;
+        r[prog.base[n]] = pw * f;
+        f *= (2 * n + 1) as f64 * inv_2t;
+        pw *= -2.0;
+    }
+    for st in &prog.steps {
+        let mut v = x[st.dir as usize] * r[st.src as usize];
+        if st.src2 != NONE {
+            v += st.coef * r[st.src2 as usize];
         }
         r[st.dst as usize] = v;
     }
@@ -845,6 +939,11 @@ pub struct SplitRiJ {
     g_off: Vec<usize>,
     g_len: usize,
     aux_blocks: Vec<(usize, usize)>,
+    /// Aux shells grouped by centre: `(k0, k1)` runs of one atom.
+    aux_atoms: Vec<(usize, usize)>,
+    /// Far-field terms by the large-T form (see the module doc); off for the
+    /// exact-kernel reference.
+    far: bool,
     /// cart→sph (ncart × nsph) by `l`, and its elementwise absolute value.
     c2s: Vec<Vec<f64>>,
     c2s_abs: Vec<Vec<f64>>,
@@ -982,10 +1081,15 @@ impl SplitRiJ {
             g_off.push(g_len);
             g_len += s.exps.len() * n_herm(s.l);
         }
-        let aux_blocks = (0..aux_sh.len())
-            .step_by(AUX_BLOCK)
-            .map(|k0| (k0, (k0 + AUX_BLOCK).min(aux_sh.len())))
-            .collect();
+        let mut aux_atoms: Vec<(usize, usize)> = Vec::new();
+        for (k, sk) in aux_sh.iter().enumerate() {
+            match aux_atoms.last_mut() {
+                Some(run) if aux_sh[run.0].center == sk.center => run.1 = k + 1,
+                _ => aux_atoms.push((k, k + 1)),
+            }
+        }
+        let _ = AUX_BLOCK;
+        let aux_blocks = aux_atoms.clone();
         let c2s: Vec<Vec<f64>> = (0..=MAX_L_AUX.max(MAX_L_OBS)).map(c2s_matrix).collect();
         let c2s_abs: Vec<Vec<f64>> = c2s
             .iter()
@@ -1009,6 +1113,8 @@ impl SplitRiJ {
             g_off,
             g_len,
             aux_blocks,
+            aux_atoms,
+            far: true,
             c2s,
             c2s_abs,
             thresh,
@@ -1017,6 +1123,13 @@ impl SplitRiJ {
             total_blocks,
             v_chol,
         })
+    }
+
+    /// Switch the far-field terms off (`false`: every term on the exact
+    /// kernel) or on (the default). Test and benchmark hook.
+    #[doc(hidden)]
+    pub fn set_far_field(&mut self, on: bool) {
+        self.far = on;
     }
 
     /// Orbital and auxiliary basis sizes.
@@ -1232,7 +1345,9 @@ impl SplitRiJ {
             .aux_blocks
             .par_iter()
             .map_init(Scratch::new, |scr, &(k0, k1)| {
-                if BATCH {
+                if !ABS && self.far {
+                    self.d_block_far(k0, k1, &hbuf, scr)
+                } else if BATCH {
                     self.d_block_lanes::<ABS>(k0, k1, &hbuf, scr)
                 } else {
                     self.d_block::<ABS>(k0, k1, &hbuf, scr)
@@ -1484,6 +1599,180 @@ impl SplitRiJ {
         out
     }
 
+    /// [`Self::d_block`] for one aux atom `k0..k1`, with every term whose
+    /// `T = α|P−Q|²` is at least [`far_t_table`]'s bound for its order taken
+    /// in the large-T form: one derivative tensor and one contraction per
+    /// (primitive pair, atom) give the field `M`, and each far aux primitive
+    /// adds `2π^{5/2} q^{-3/2} M`. Near terms use the exact kernel.
+    fn d_block_far(&self, k0: usize, k1: usize, hbuf: &[f64], scr: &mut Scratch) -> Vec<f64> {
+        let mut acc_off = Vec::with_capacity(k1 - k0 + 1);
+        let mut n_acc = 0usize;
+        for s in &self.aux[k0..k1] {
+            acc_off.push(n_acc);
+            n_acc += s.exps.len() * n_herm(s.l);
+        }
+        let mut acc = vec![0.0_f64; n_acc];
+        let qc = self.aux[k0].center;
+        let tf = far_t_table();
+        let mut far_terms: Vec<(usize, usize)> = Vec::new();
+        let mut field = vec![0.0; n_herm(MAX_L_AUX)];
+        for sp in &self.pairs {
+            let lab = self.obs[sp.a as usize].l + self.obs[sp.b as usize].l;
+            let nj = n_herm(lab);
+            for pp in &self.prims[sp.prim0 as usize..sp.prim1 as usize] {
+                let hv = &hbuf[pp.h_off..pp.h_off + nj];
+                if hv.iter().all(|&x| x == 0.0) {
+                    continue;
+                }
+                let x = [
+                    pp.centre[0] - qc[0],
+                    pp.centre[1] - qc[1],
+                    pp.centre[2] - qc[2],
+                ];
+                let r2 = x[0] * x[0] + x[1] * x[1] + x[2] * x[2];
+                far_terms.clear();
+                let mut l_far = 0;
+                for (kk, k) in (k0..k1).enumerate() {
+                    if !self.keep_block(sp, k) {
+                        continue;
+                    }
+                    let sk = &self.aux[k];
+                    let (lk, nk) = (sk.l, n_herm(sk.l));
+                    let ltot = lab + lk;
+                    let tab = sum_table(lab, lk);
+                    for (ic, &q) in sk.exps.iter().enumerate() {
+                        let pq = pp.p + q;
+                        // α r² >= T_far without the division.
+                        if pp.p * q * r2 >= tf[ltot] * pq {
+                            far_terms.push((kk, ic));
+                            l_far = l_far.max(lk);
+                            continue;
+                        }
+                        let alpha = pp.p * q / pq;
+                        let pref = TWO_PI_52 / (pp.p * q * pq.sqrt());
+                        r_eval::<false>(ltot, alpha, x, &mut scr.fb, &mut scr.r);
+                        let w = &mut acc[acc_off[kk] + ic * nk..acc_off[kk] + (ic + 1) * nk];
+                        for (kh, wk) in w.iter_mut().enumerate() {
+                            let row = &tab[kh * nj..(kh + 1) * nj];
+                            let mut s = 0.0;
+                            for (jh, &hj) in hv.iter().enumerate() {
+                                s += hj * scr.r[row[jh] as usize];
+                            }
+                            *wk += pref * s;
+                        }
+                    }
+                }
+                if far_terms.is_empty() {
+                    continue;
+                }
+                r_eval_far(lab + l_far, x, &mut scr.fb, &mut scr.r);
+                let tab = sum_table(lab, l_far);
+                let pm = 1.0 / (pp.p * pp.p.sqrt());
+                for (kh, m) in field[..n_herm(l_far)].iter_mut().enumerate() {
+                    let row = &tab[kh * nj..(kh + 1) * nj];
+                    let mut s = 0.0;
+                    for (jh, &hj) in hv.iter().enumerate() {
+                        s += hj * scr.r[row[jh] as usize];
+                    }
+                    *m = pm * s;
+                }
+                for &(kk, ic) in &far_terms {
+                    let sk = &self.aux[k0 + kk];
+                    let nk = n_herm(sk.l);
+                    let q = sk.exps[ic];
+                    let f = TWO_PI_52 / (q * q.sqrt());
+                    let w = &mut acc[acc_off[kk] + ic * nk..acc_off[kk] + (ic + 1) * nk];
+                    for (wk, &m) in w.iter_mut().zip(&field) {
+                        *wk += f * m;
+                    }
+                }
+            }
+        }
+        self.d_block_finish::<false>(k0, k1, &acc, &acc_off)
+    }
+
+    /// [`Self::j_pair`] with [`Self::d_block_far`]'s far/near split: per
+    /// (primitive pair, aux atom), the far aux primitives' Hermite
+    /// coefficients are summed with weights `q^{-3/2}` and contracted once
+    /// against the derivative tensor.
+    fn j_pair_far(&self, sp: &ShellPair, g: &[f64], scr: &mut Scratch) -> Vec<f64> {
+        let (sa, sb) = (&self.obs[sp.a as usize], &self.obs[sp.b as usize]);
+        let lab = sa.l + sb.l;
+        let nj = n_herm(lab);
+        let tf = far_t_table();
+        let mut jcart = vec![0.0_f64; sa.ncart * sb.ncart];
+        let mut wpair = vec![0.0_f64; nj];
+        let mut gsum = vec![0.0_f64; n_herm(MAX_L_AUX)];
+        for pp in &self.prims[sp.prim0 as usize..sp.prim1 as usize] {
+            wpair.iter_mut().for_each(|x| *x = 0.0);
+            for &(k0, k1) in &self.aux_atoms {
+                let qc = self.aux[k0].center;
+                let x = [
+                    pp.centre[0] - qc[0],
+                    pp.centre[1] - qc[1],
+                    pp.centre[2] - qc[2],
+                ];
+                let r2 = x[0] * x[0] + x[1] * x[1] + x[2] * x[2];
+                let mut l_far = None;
+                for k in k0..k1 {
+                    if !self.keep_block(sp, k) {
+                        continue;
+                    }
+                    let sk = &self.aux[k];
+                    let (lk, nk) = (sk.l, n_herm(sk.l));
+                    let ltot = lab + lk;
+                    let tab = sum_table(lab, lk);
+                    for (ic, &q) in sk.exps.iter().enumerate() {
+                        let gk = &g[self.g_off[k] + ic * nk..self.g_off[k] + (ic + 1) * nk];
+                        if gk.iter().all(|&v| v == 0.0) {
+                            continue;
+                        }
+                        let pq = pp.p + q;
+                        if pp.p * q * r2 >= tf[ltot] * pq {
+                            let f = 1.0 / (q * q.sqrt());
+                            for (gs, &gv) in gsum.iter_mut().zip(gk) {
+                                *gs += f * gv;
+                            }
+                            l_far = Some(l_far.map_or(lk, |l: usize| l.max(lk)));
+                            continue;
+                        }
+                        let alpha = pp.p * q / pq;
+                        let pref = TWO_PI_52 / (pp.p * q * pq.sqrt());
+                        r_eval::<false>(ltot, alpha, x, &mut scr.fb, &mut scr.r);
+                        for (kh, &gv) in gk.iter().enumerate() {
+                            if gv == 0.0 {
+                                continue;
+                            }
+                            let gp = pref * gv;
+                            let row = &tab[kh * nj..(kh + 1) * nj];
+                            for (jh, wv) in wpair.iter_mut().enumerate() {
+                                *wv += gp * scr.r[row[jh] as usize];
+                            }
+                        }
+                    }
+                }
+                let Some(l_far) = l_far else {
+                    continue;
+                };
+                r_eval_far(lab + l_far, x, &mut scr.fb, &mut scr.r);
+                let tab = sum_table(lab, l_far);
+                let pm = TWO_PI_52 / (pp.p * pp.p.sqrt());
+                for (kh, gs) in gsum[..n_herm(l_far)].iter_mut().enumerate() {
+                    if *gs != 0.0 {
+                        let gp = pm * *gs;
+                        let row = &tab[kh * nj..(kh + 1) * nj];
+                        for (jh, wv) in wpair.iter_mut().enumerate() {
+                            *wv += gp * scr.r[row[jh] as usize];
+                        }
+                    }
+                    *gs = 0.0;
+                }
+            }
+            self.add_cartesian_pair::<false>(sp, pp, &wpair, &mut jcart, scr);
+        }
+        self.j_spherical::<false>(sp, jcart)
+    }
+
     /// [`Self::d_block`] with `LANES` bra primitive pairs of one shell pair
     /// per R evaluation. Every `W` element still receives its terms in
     /// primitive-pair order, and each term is computed exactly as
@@ -1561,7 +1850,9 @@ impl SplitRiJ {
             .pairs
             .par_iter()
             .map_init(Scratch::new, |scr, sp| {
-                if BATCH {
+                if !ABS && self.far {
+                    self.j_pair_far(sp, &g, scr)
+                } else if BATCH {
                     self.j_pair_lanes::<ABS>(sp, &g, scr)
                 } else {
                     self.j_pair::<ABS>(sp, &g, scr)

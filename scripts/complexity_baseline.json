@@ -69007,6 +69007,18 @@
     "cc": 1.0,
     "mi": 154.40593499075717
   },
+  "crates/ferric-scf/src/split_rij.rs::far_t_table": {
+    "cc": 5.0,
+    "mi": 93.35672631440397
+  },
+  "crates/ferric-scf/src/split_rij.rs::far_t_table::<anonymous>": {
+    "cc": 4.0,
+    "mi": 99.43808130487133
+  },
+  "crates/ferric-scf/src/split_rij.rs::far_t_table::<anonymous>::<anonymous>": {
+    "cc": 1.0,
+    "mi": 153.0837736153568
+  },
   "crates/ferric-scf/src/split_rij.rs::generated_pure_functions_are_orthonormal": {
     "cc": 9.0,
     "mi": 81.60272344824756
@@ -69107,6 +69119,14 @@
     "cc": 1.0,
     "mi": 156.27079806218674
   },
+  "crates/ferric-scf/src/split_rij.rs::impl:SplitRiJ#1::d_block_far": {
+    "cc": 17.0,
+    "mi": 50.79918512889981
+  },
+  "crates/ferric-scf/src/split_rij.rs::impl:SplitRiJ#1::d_block_far::<anonymous>": {
+    "cc": 1.0,
+    "mi": 156.27079806218674
+  },
   "crates/ferric-scf/src/split_rij.rs::impl:SplitRiJ#1::d_block_finish": {
     "cc": 16.0,
     "mi": 58.831485840221134
@@ -69128,16 +69148,16 @@
     "mi": 156.27079806218674
   },
   "crates/ferric-scf/src/split_rij.rs::impl:SplitRiJ#1::d_pass": {
-    "cc": 7.0,
-    "mi": 74.53834043400302
+    "cc": 9.0,
+    "mi": 72.75106426508853
   },
   "crates/ferric-scf/src/split_rij.rs::impl:SplitRiJ#1::d_pass::<anonymous>": {
     "cc": 1.0,
     "mi": 132.10127718970193
   },
   "crates/ferric-scf/src/split_rij.rs::impl:SplitRiJ#1::d_pass::<anonymous>#1": {
-    "cc": 2.0,
-    "mi": 112.74782499353955
+    "cc": 4.0,
+    "mi": 105.9455883303185
   },
   "crates/ferric-scf/src/split_rij.rs::impl:SplitRiJ#1::dims": {
     "cc": 1.0,
@@ -69171,6 +69191,22 @@
     "cc": 1.0,
     "mi": 156.27079806218674
   },
+  "crates/ferric-scf/src/split_rij.rs::impl:SplitRiJ#1::j_pair_far": {
+    "cc": 18.0,
+    "mi": 52.94120395447702
+  },
+  "crates/ferric-scf/src/split_rij.rs::impl:SplitRiJ#1::j_pair_far::<anonymous>": {
+    "cc": 1.0,
+    "mi": 156.27079806218674
+  },
+  "crates/ferric-scf/src/split_rij.rs::impl:SplitRiJ#1::j_pair_far::<anonymous>#1": {
+    "cc": 1.0,
+    "mi": 156.27079806218674
+  },
+  "crates/ferric-scf/src/split_rij.rs::impl:SplitRiJ#1::j_pair_far::<anonymous>#2": {
+    "cc": 1.0,
+    "mi": 155.01840677617037
+  },
   "crates/ferric-scf/src/split_rij.rs::impl:SplitRiJ#1::j_pair_lanes": {
     "cc": 14.0,
     "mi": 61.80566949835344
@@ -69184,12 +69220,12 @@
     "mi": 157.8484854211024
   },
   "crates/ferric-scf/src/split_rij.rs::impl:SplitRiJ#1::j_pass": {
-    "cc": 8.0,
-    "mi": 77.41848514541778
+    "cc": 10.0,
+    "mi": 75.49847199248272
   },
   "crates/ferric-scf/src/split_rij.rs::impl:SplitRiJ#1::j_pass::<anonymous>": {
-    "cc": 2.0,
-    "mi": 114.0423684410784
+    "cc": 4.0,
+    "mi": 107.03350947457871
   },
   "crates/ferric-scf/src/split_rij.rs::impl:SplitRiJ#1::j_spherical": {
     "cc": 9.0,
@@ -69247,6 +69283,10 @@
     "cc": 1.0,
     "mi": 157.04690188600065
   },
+  "crates/ferric-scf/src/split_rij.rs::impl:SplitRiJ#1::set_far_field": {
+    "cc": 1.0,
+    "mi": 132.0866712701303
+  },
   "crates/ferric-scf/src/split_rij.rs::impl:SplitRiJ#1::shell_pair_counts": {
     "cc": 1.0,
     "mi": 131.4185623295971
@@ -69260,8 +69300,8 @@
     "mi": 153.0837736153568
   },
   "crates/ferric-scf/src/split_rij.rs::impl:SplitRiJ#1::with_metric": {
-    "cc": 26.0,
-    "mi": 40.93174394937695
+    "cc": 29.0,
+    "mi": 39.0383737243519
   },
   "crates/ferric-scf/src/split_rij.rs::impl:SplitRiJ#1::with_metric::<anonymous>": {
     "cc": 2.0,
@@ -69272,18 +69312,14 @@
     "mi": 149.48344897182878
   },
   "crates/ferric-scf/src/split_rij.rs::impl:SplitRiJ#1::with_metric::<anonymous>#2": {
-    "cc": 1.0,
-    "mi": 150.97535505319436
-  },
-  "crates/ferric-scf/src/split_rij.rs::impl:SplitRiJ#1::with_metric::<anonymous>#3": {
     "cc": 2.0,
     "mi": 148.99569942276403
   },
-  "crates/ferric-scf/src/split_rij.rs::impl:SplitRiJ#1::with_metric::<anonymous>#3::<anonymous>": {
+  "crates/ferric-scf/src/split_rij.rs::impl:SplitRiJ#1::with_metric::<anonymous>#2::<anonymous>": {
     "cc": 1.0,
     "mi": 157.8484854211024
   },
-  "crates/ferric-scf/src/split_rij.rs::impl:SplitRiJ#1::with_metric::<anonymous>#4": {
+  "crates/ferric-scf/src/split_rij.rs::impl:SplitRiJ#1::with_metric::<anonymous>#3": {
     "cc": 1.0,
     "mi": 123.27515995041077
   },
@@ -69310,6 +69346,10 @@
   "crates/ferric-scf/src/split_rij.rs::lane_offsets": {
     "cc": 3.0,
     "mi": 102.66175788290731
+  },
+  "crates/ferric-scf/src/split_rij.rs::ln_far_rel_err": {
+    "cc": 2.0,
+    "mi": 104.40994934188107
   },
   "crates/ferric-scf/src/split_rij.rs::load_shells": {
     "cc": 11.0,
@@ -69338,6 +69378,10 @@
   "crates/ferric-scf/src/split_rij.rs::r_eval": {
     "cc": 6.0,
     "mi": 82.46275056143361
+  },
+  "crates/ferric-scf/src/split_rij.rs::r_eval_far": {
+    "cc": 4.0,
+    "mi": 85.71821625951345
   },
   "crates/ferric-scf/src/split_rij.rs::r_eval_lanes": {
     "cc": 11.0,
