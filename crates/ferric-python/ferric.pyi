@@ -507,6 +507,16 @@ class AoIntegrals:
         operator: Literal["coulomb", "erf", "erfc"] = "coulomb",
         omega: float | None = None,
     ) -> NDArray[np.float64]: ...
+    def schwarz(
+        self,
+        operator: Literal["coulomb", "erf", "erfc"] = "coulomb",
+        omega: float | None = None,
+    ) -> NDArray[np.float64]: ...
+    def csam_x(
+        self,
+        operator: Literal["coulomb", "erf"] = "coulomb",
+        omega: float | None = None,
+    ) -> NDArray[np.float64]: ...
     def jk(
         self,
         density: NDArray[np.float64],

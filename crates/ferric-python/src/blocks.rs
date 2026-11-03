@@ -569,6 +569,50 @@ impl PyAoIntegrals {
             .map_err(make_err)?;
         Ok(PyArray2::from_owned_array(py, m))
     }
+    /// Shell-pair Schwarz factors `Q[i, j] = sqrt(max |(μν|μν)|)` over
+    /// μ ∈ shell i, ν ∈ shell j, shape (nshell, nshell), symmetric. Shell `i`
+    /// is AOs `shell_offsets()[i]..shell_offsets()[i + 1]`.
+    ///
+    /// A rigorous bound (Cauchy-Schwarz): `Q[i, j] * Q[k, l]` bounds every
+    /// |(μν|λσ)| in the quartet (ij|kl), and `Q[i, j] * sqrt((P|P))`, with
+    /// `(P|P)` from `eri2`'s diagonal, bounds every 3-index |(μν|P)|. This is
+    /// the table the direct J/K builders screen with.
+    #[pyo3(signature = (operator="coulomb", omega=None))]
+    fn schwarz<'py>(
+        &self,
+        py: Python<'py>,
+        operator: &str,
+        omega: Option<f64>,
+    ) -> PyResult<Bound<'py, PyArray2<f64>>> {
+        let op = parse_operator(operator, omega)?;
+        let prep = &self.prep;
+        let q = py
+            .allow_threads(|| ferric_integrals::schwarz::schwarz(op, prep))
+            .map_err(make_err)?;
+        Ok(PyArray2::from_owned_array(py, q))
+    }
+    /// CSAM table `X[i, j] = max |(μμ|νν)| / sqrt(|(μμ|μμ)| |(νν|νν)|)` over
+    /// μ ∈ shell i, ν ∈ shell j, shape (nshell, nshell), symmetric, with an
+    /// exact `1.0` diagonal and every entry in [0, 1].
+    ///
+    /// NOT a bound: CSAM multiplies Schwarz by this table to ESTIMATE a quartet
+    /// (Thompson & Ochsenfeld), and the estimate can fall below the true
+    /// integral. It is the table `[scf] screening = "csam"` uses. `"erfc"` is
+    /// refused (the error names the rigorous `"csb"` alternative).
+    #[pyo3(signature = (operator="coulomb", omega=None))]
+    fn csam_x<'py>(
+        &self,
+        py: Python<'py>,
+        operator: &str,
+        omega: Option<f64>,
+    ) -> PyResult<Bound<'py, PyArray2<f64>>> {
+        let op = parse_operator(operator, omega)?;
+        let prep = &self.prep;
+        let x = py
+            .allow_threads(|| ferric_integrals::csam::csam_x_table(op, prep))
+            .map_err(make_err)?;
+        Ok(PyArray2::from_owned_array(py, x))
+    }
     /// Coulomb and exchange matrices `(J, K)` for a symmetric AO density,
     /// built by the same Schwarz-screened direct J/K the SCF uses.
     ///
