@@ -164,7 +164,7 @@ fn boys_table() -> &'static [f64] {
 /// every `n <= MAX_LTOT = 14` at `T >= 35`.
 pub fn boys(nmax: usize, t: f64, out: &mut [f64]) {
     debug_assert!(nmax <= MAX_LTOT && out.len() > nmax);
-    let expt = (-t).exp();
+    let expt = exp_neg(t);
     if t < BOYS_T_SWITCH {
         let tab = boys_table();
         let k = (t * 8.0 + 0.5) as usize;
@@ -187,6 +187,75 @@ pub fn boys(nmax: usize, t: f64, out: &mut [f64]) {
         for n in 0..nmax {
             f = ((2 * n + 1) as f64 * f - expt) * inv_2t;
             out[n + 1] = f;
+        }
+    }
+}
+
+/// `e^{-t}`, skipping the call where it is exactly zero: `exp` underflows
+/// to `+0.0` for every argument below about `-745.13`, so `t >= 746` gives
+/// the same bits without the call (16% of the Boys calls on n-C20H42).
+#[inline]
+fn exp_neg(t: f64) -> f64 {
+    if t >= 746.0 {
+        0.0
+    } else {
+        (-t).exp()
+    }
+}
+
+/// [`boys`] for `LANES` arguments, into `out[n][lane]`. When every lane takes
+/// the same branch the lanes run in lockstep (their division chains overlap);
+/// otherwise each lane calls [`boys`]. Either way every lane performs
+/// [`boys`]'s operations in its order, so the bits are the same.
+#[inline]
+fn boys_lanes(nmax: usize, t: &Lane, out: &mut [Lane]) {
+    let small = t.map(|x| x < BOYS_T_SWITCH);
+    let expt = t.map(exp_neg);
+    if small.iter().all(|&b| b) {
+        let tab = boys_table();
+        let mut nd = [0.0; LANES];
+        let mut base = [0usize; LANES];
+        for i in 0..LANES {
+            let k = (t[i] * 8.0 + 0.5) as usize;
+            nd[i] = k as f64 * 0.125 - t[i];
+            base[i] = k * BOYS_STRIDE + nmax;
+        }
+        let mut f = [0.0; LANES];
+        for i in 0..LANES {
+            f[i] = tab[base[i] + BOYS_TAYLOR - 1] * INV_FACT[BOYS_TAYLOR - 1];
+        }
+        for j in (0..BOYS_TAYLOR - 1).rev() {
+            for i in 0..LANES {
+                f[i] = f[i] * nd[i] + tab[base[i] + j] * INV_FACT[j];
+            }
+        }
+        out[nmax] = f;
+        let two_t = t.map(|x| 2.0 * x);
+        for n in (0..nmax).rev() {
+            let d = (2 * n + 1) as f64;
+            for i in 0..LANES {
+                f[i] = (two_t[i] * f[i] + expt[i]) / d;
+            }
+            out[n] = f;
+        }
+    } else if small.iter().all(|&b| !b) {
+        let mut f = t.map(|x| 0.5 * (std::f64::consts::PI / x).sqrt());
+        out[0] = f;
+        let inv_2t = t.map(|x| 0.5 / x);
+        for n in 0..nmax {
+            let c = (2 * n + 1) as f64;
+            for i in 0..LANES {
+                f[i] = (c * f[i] - expt[i]) * inv_2t[i];
+            }
+            out[n + 1] = f;
+        }
+    } else {
+        let mut fb = [0.0; MAX_LTOT + 1];
+        for i in 0..LANES {
+            boys(nmax, t[i], &mut fb);
+            for n in 0..=nmax {
+                out[n][i] = fb[n];
+            }
         }
     }
 }
@@ -358,6 +427,84 @@ fn r_eval<const ABS: bool>(l: usize, alpha: f64, x: [f64; 3], fb: &mut [f64], r:
         }
         r[st.dst as usize] = v;
     }
+}
+
+/// Primitive pairs evaluated together by [`r_eval_lanes`] and the batched
+/// contractions: one `RStep` decode and one gather index serve every lane.
+const LANES: usize = 4;
+
+type Lane = [f64; LANES];
+
+/// [`r_eval`] for `LANES` independent `(α, X)` at once, into `r[idx][lane]`.
+/// Each lane runs exactly [`r_eval`]'s operations in the same order, so lane
+/// `i` is bit-identical to a scalar call with `(alpha[i], x[.][i])`.
+#[inline]
+fn r_eval_lanes<const ABS: bool>(
+    l: usize,
+    alpha: &Lane,
+    x: &[Lane; 3],
+    fb: &mut [Lane],
+    r: &mut [Lane],
+) {
+    let prog = &r_programs()[l];
+    let mut t = [0.0; LANES];
+    for i in 0..LANES {
+        t[i] = alpha[i] * (x[0][i] * x[0][i] + x[1][i] * x[1][i] + x[2][i] * x[2][i]);
+    }
+    boys_lanes(l, &t, fb);
+    for i in 0..LANES {
+        let m = if ABS { 2.0 * alpha[i] } else { -2.0 * alpha[i] };
+        let mut pw = 1.0;
+        for n in 0..=l {
+            r[prog.base[n]][i] = pw * fb[n][i];
+            pw *= m;
+        }
+    }
+    let xs = if ABS { x.map(|d| d.map(f64::abs)) } else { *x };
+    for st in &prog.steps {
+        let xd = &xs[st.dir as usize];
+        let src = r[st.src as usize];
+        let mut v = [0.0; LANES];
+        for i in 0..LANES {
+            v[i] = xd[i] * src[i];
+        }
+        if st.src2 != NONE {
+            let s2 = r[st.src2 as usize];
+            for i in 0..LANES {
+                v[i] += st.coef * s2[i];
+            }
+        }
+        r[st.dst as usize] = v;
+    }
+}
+
+/// `P − Q` per lane for the primitive pairs of `chunk` (lanes past
+/// `chunk.len()` repeat the first, and their results are discarded).
+#[inline]
+fn lane_offsets(chunk: &[&PrimPair], q: [f64; 3]) -> [Lane; 3] {
+    let mut x = [[0.0; LANES]; 3];
+    for i in 0..LANES {
+        let pp = chunk.get(i).unwrap_or(&chunk[0]);
+        for d in 0..3 {
+            x[d][i] = pp.centre[d] - q[d];
+        }
+    }
+    x
+}
+
+/// The reduced exponent `α = pq/(p+q)` and `2π^{5/2}/(pq√(p+q))` per lane,
+/// written exactly as the scalar kernel writes them.
+#[inline]
+fn lane_alpha_pref(chunk: &[&PrimPair], qc: f64) -> (Lane, Lane) {
+    let mut alpha = [0.0; LANES];
+    let mut pref = [0.0; LANES];
+    for i in 0..LANES {
+        let p = chunk.get(i).unwrap_or(&chunk[0]).p;
+        let pq = p + qc;
+        alpha[i] = p * qc / pq;
+        pref[i] = TWO_PI_52 / (p * qc * pq.sqrt());
+    }
+    (alpha, pref)
 }
 
 // ---------------------------------------------------------------------------
@@ -652,6 +799,11 @@ struct Scratch {
     w: Vec<f64>,
     cart: Vec<f64>,
     tmp: Vec<f64>,
+    /// Lane-major R tensor, Hermite densities and Hermite potentials.
+    rl: Vec<Lane>,
+    fbl: Vec<Lane>,
+    hl: Vec<Lane>,
+    wl: Vec<Lane>,
 }
 
 impl Scratch {
@@ -666,6 +818,10 @@ impl Scratch {
             w: Vec::new(),
             cart: Vec::new(),
             tmp: Vec::new(),
+            rl: vec![[0.0; LANES]; r_programs()[MAX_LTOT].nvec],
+            fbl: vec![[0.0; LANES]; MAX_LTOT + 1],
+            hl: Vec::new(),
+            wl: Vec::new(),
         }
     }
 }
@@ -898,7 +1054,7 @@ impl SplitRiJ {
     /// as DfJ's packed tier: `D_μν + D_νμ` off the diagonal shell pair).
     pub fn fit_rhs(&self, d: &Array2<f64>) -> Result<Array1<f64>, FerricError> {
         self.check_d(d)?;
-        Ok(self.d_pass::<false>(d))
+        Ok(self.d_pass::<false, true>(d))
     }
 
     /// `c = V⁻¹ d` by the backward-stable Cholesky solve DfJ uses.
@@ -916,7 +1072,7 @@ impl SplitRiJ {
         j: &mut Array2<f64>,
     ) -> Result<(), FerricError> {
         self.check_cj(c, j)?;
-        self.j_pass::<false>(c, j);
+        self.j_pass::<false, true>(c, j);
         Ok(())
     }
 
@@ -928,7 +1084,7 @@ impl SplitRiJ {
     #[doc(hidden)]
     pub fn fit_rhs_abs(&self, d: &Array2<f64>) -> Result<Array1<f64>, FerricError> {
         self.check_d(d)?;
-        Ok(self.d_pass::<true>(d))
+        Ok(self.d_pass::<true, true>(d))
     }
 
     /// Running-error scale of [`Self::coulomb_from_coefficients`] (see
@@ -936,7 +1092,23 @@ impl SplitRiJ {
     #[doc(hidden)]
     pub fn coulomb_abs(&self, c: &Array1<f64>, j: &mut Array2<f64>) -> Result<(), FerricError> {
         self.check_cj(c, j)?;
-        self.j_pass::<true>(c, j);
+        self.j_pass::<true, true>(c, j);
+        Ok(())
+    }
+
+    /// [`Self::fit_rhs`] on the one-primitive-at-a-time kernel the lane
+    /// kernel must reproduce bit for bit. Test hook.
+    #[doc(hidden)]
+    pub fn fit_rhs_scalar(&self, d: &Array2<f64>) -> Result<Array1<f64>, FerricError> {
+        self.check_d(d)?;
+        Ok(self.d_pass::<false, false>(d))
+    }
+
+    /// [`Self::coulomb_from_coefficients`] on the scalar kernel. Test hook.
+    #[doc(hidden)]
+    pub fn coulomb_scalar(&self, c: &Array1<f64>, j: &mut Array2<f64>) -> Result<(), FerricError> {
+        self.check_cj(c, j)?;
+        self.j_pass::<false, false>(c, j);
         Ok(())
     }
 
@@ -1040,7 +1212,7 @@ impl SplitRiJ {
 
     // ----------------------------------------------------------------- d pass
 
-    fn d_pass<const ABS: bool>(&self, d: &Array2<f64>) -> Array1<f64> {
+    fn d_pass<const ABS: bool, const BATCH: bool>(&self, d: &Array2<f64>) -> Array1<f64> {
         // Hermite densities, one slice per primitive pair, in stored order.
         let parts: Vec<Vec<f64>> = self
             .pairs
@@ -1060,7 +1232,11 @@ impl SplitRiJ {
             .aux_blocks
             .par_iter()
             .map_init(Scratch::new, |scr, &(k0, k1)| {
-                self.d_block::<ABS>(k0, k1, &hbuf, scr)
+                if BATCH {
+                    self.d_block_lanes::<ABS>(k0, k1, &hbuf, scr)
+                } else {
+                    self.d_block::<ABS>(k0, k1, &hbuf, scr)
+                }
             })
             .collect();
         let mut d_p = Array1::<f64>::zeros(self.naux);
@@ -1238,7 +1414,18 @@ impl SplitRiJ {
             }
         }
 
-        // Aux Hermite -> Cartesian -> spherical, once per aux primitive.
+        self.d_block_finish::<ABS>(k0, k1, &acc, &acc_off)
+    }
+
+    /// Aux Hermite -> Cartesian -> spherical for [`Self::d_block`]'s
+    /// accumulators, once per aux primitive.
+    fn d_block_finish<const ABS: bool>(
+        &self,
+        k0: usize,
+        k1: usize,
+        acc: &[f64],
+        acc_off: &[usize],
+    ) -> Vec<f64> {
         let h = hermite();
         let nout: usize = self.aux[k0..k1].iter().map(|s| s.nfun).sum();
         let mut out = Vec::with_capacity(nout);
@@ -1297,14 +1484,89 @@ impl SplitRiJ {
         out
     }
 
+    /// [`Self::d_block`] with `LANES` bra primitive pairs of one shell pair
+    /// per R evaluation. Every `W` element still receives its terms in
+    /// primitive-pair order, and each term is computed exactly as
+    /// [`Self::d_block`] does, so the result is bit-identical.
+    fn d_block_lanes<const ABS: bool>(
+        &self,
+        k0: usize,
+        k1: usize,
+        hbuf: &[f64],
+        scr: &mut Scratch,
+    ) -> Vec<f64> {
+        let mut acc_off = Vec::with_capacity(k1 - k0 + 1);
+        let mut n_acc = 0usize;
+        for s in &self.aux[k0..k1] {
+            acc_off.push(n_acc);
+            n_acc += s.exps.len() * n_herm(s.l);
+        }
+        let mut acc = vec![0.0_f64; n_acc];
+        let mut live: Vec<&PrimPair> = Vec::new();
+        for sp in &self.pairs {
+            let lab = self.obs[sp.a as usize].l + self.obs[sp.b as usize].l;
+            let nj = n_herm(lab);
+            live.clear();
+            live.extend(
+                self.prims[sp.prim0 as usize..sp.prim1 as usize]
+                    .iter()
+                    .filter(|pp| hbuf[pp.h_off..pp.h_off + nj].iter().any(|&x| x != 0.0)),
+            );
+            for chunk in live.chunks(LANES) {
+                let n = chunk.len();
+                scr.hl.clear();
+                scr.hl.resize(nj, [0.0; LANES]);
+                for (i, pp) in chunk.iter().enumerate() {
+                    for (jh, &hv) in hbuf[pp.h_off..pp.h_off + nj].iter().enumerate() {
+                        scr.hl[jh][i] = hv;
+                    }
+                }
+                for (kk, k) in (k0..k1).enumerate() {
+                    if !self.keep_block(sp, k) {
+                        continue;
+                    }
+                    let sk = &self.aux[k];
+                    let (lk, nk) = (sk.l, n_herm(sk.l));
+                    let tab = sum_table(lab, lk);
+                    let x = lane_offsets(chunk, sk.center);
+                    for (ic, &qc) in sk.exps.iter().enumerate() {
+                        let (alpha, pref) = lane_alpha_pref(chunk, qc);
+                        r_eval_lanes::<ABS>(lab + lk, &alpha, &x, &mut scr.fbl, &mut scr.rl);
+                        let w = &mut acc[acc_off[kk] + ic * nk..acc_off[kk] + (ic + 1) * nk];
+                        for (kh, wk) in w.iter_mut().enumerate() {
+                            let row = &tab[kh * nj..(kh + 1) * nj];
+                            let mut sv = [0.0; LANES];
+                            for (hj, &ri) in scr.hl.iter().zip(row) {
+                                let rr = &scr.rl[ri as usize];
+                                for i in 0..LANES {
+                                    sv[i] += hj[i] * rr[i];
+                                }
+                            }
+                            for i in 0..n {
+                                *wk += pref[i] * sv[i];
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        self.d_block_finish::<ABS>(k0, k1, &acc, &acc_off)
+    }
+
     // ----------------------------------------------------------------- J pass
 
-    fn j_pass<const ABS: bool>(&self, c: &Array1<f64>, j: &mut Array2<f64>) {
+    fn j_pass<const ABS: bool, const BATCH: bool>(&self, c: &Array1<f64>, j: &mut Array2<f64>) {
         let g = self.aux_hermite_coefficients::<ABS>(c);
         let blocks: Vec<Vec<f64>> = self
             .pairs
             .par_iter()
-            .map_init(Scratch::new, |scr, sp| self.j_pair::<ABS>(sp, &g, scr))
+            .map_init(Scratch::new, |scr, sp| {
+                if BATCH {
+                    self.j_pair_lanes::<ABS>(sp, &g, scr)
+                } else {
+                    self.j_pair::<ABS>(sp, &g, scr)
+                }
+            })
             .collect();
         j.fill(0.0);
         for (sp, blk) in self.pairs.iter().zip(&blocks) {
@@ -1398,11 +1660,7 @@ impl SplitRiJ {
         let (sa, sb) = (&self.obs[sp.a as usize], &self.obs[sp.b as usize]);
         let lab = sa.l + sb.l;
         let nj = n_herm(lab);
-        let (nca, ncb, nfa, nfb) = (sa.ncart, sb.ncart, sa.nfun, sb.nfun);
-        let h = hermite();
-        let sl = lab + 1;
-        let si = (sb.l + 1) * sl;
-        let mut jcart = vec![0.0_f64; nca * ncb];
+        let mut jcart = vec![0.0_f64; sa.ncart * sb.ncart];
         let mut wpair = vec![0.0_f64; nj];
         for pp in &self.prims[sp.prim0 as usize..sp.prim1 as usize] {
             wpair.iter_mut().for_each(|x| *x = 0.0);
@@ -1439,36 +1697,118 @@ impl SplitRiJ {
                     }
                 }
             }
-            // Hermite potential -> Cartesian pair.
-            self.e_tables::<ABS>(sp, pp, scr);
-            let cab = if ABS { pp.cab.abs() } else { pp.cab };
-            for (ia, ca) in sa.comps.iter().enumerate() {
-                for (ib, cb) in sb.comps.iter().enumerate() {
-                    let (ix, iy, iz) = (ca[0] as usize, ca[1] as usize, ca[2] as usize);
-                    let (jx, jy, jz) = (cb[0] as usize, cb[1] as usize, cb[2] as usize);
-                    let rx = &scr.ex[ix * si + jx * sl..ix * si + jx * sl + ix + jx + 1];
-                    let ry = &scr.ey[iy * si + jy * sl..iy * si + jy * sl + iy + jy + 1];
-                    let rz = &scr.ez[iz * si + jz * sl..iz * si + jz * sl + iz + jz + 1];
-                    let mut s = 0.0;
-                    for (t, &etx) in rx.iter().enumerate() {
-                        if etx == 0.0 {
+            self.add_cartesian_pair::<ABS>(sp, pp, &wpair, &mut jcart, scr);
+        }
+        self.j_spherical::<ABS>(sp, jcart)
+    }
+
+    /// [`Self::j_pair`] with `LANES` bra primitive pairs per R evaluation.
+    /// Each lane's Hermite potential receives its terms in the scalar order,
+    /// and the lanes are transformed into `jcart` in primitive-pair order, so
+    /// the block is bit-identical.
+    fn j_pair_lanes<const ABS: bool>(
+        &self,
+        sp: &ShellPair,
+        g: &[f64],
+        scr: &mut Scratch,
+    ) -> Vec<f64> {
+        let (sa, sb) = (&self.obs[sp.a as usize], &self.obs[sp.b as usize]);
+        let lab = sa.l + sb.l;
+        let nj = n_herm(lab);
+        let mut jcart = vec![0.0_f64; sa.ncart * sb.ncart];
+        let mut wpair = vec![0.0_f64; nj];
+        let prims: Vec<&PrimPair> = self.prims[sp.prim0 as usize..sp.prim1 as usize]
+            .iter()
+            .collect();
+        for chunk in prims.chunks(LANES) {
+            scr.wl.clear();
+            scr.wl.resize(nj, [0.0; LANES]);
+            for (k, sk) in self.aux.iter().enumerate() {
+                if !self.keep_block(sp, k) {
+                    continue;
+                }
+                let (lk, nk) = (sk.l, n_herm(sk.l));
+                let tab = sum_table(lab, lk);
+                let x = lane_offsets(chunk, sk.center);
+                for (ic, &qc) in sk.exps.iter().enumerate() {
+                    let gk = &g[self.g_off[k] + ic * nk..self.g_off[k] + (ic + 1) * nk];
+                    if gk.iter().all(|&v| v == 0.0) {
+                        continue;
+                    }
+                    let (alpha, pref) = lane_alpha_pref(chunk, qc);
+                    r_eval_lanes::<ABS>(lab + lk, &alpha, &x, &mut scr.fbl, &mut scr.rl);
+                    for (kh, &gv) in gk.iter().enumerate() {
+                        if gv == 0.0 {
                             continue;
                         }
-                        for (u, &ety) in ry.iter().enumerate() {
-                            let a2 = etx * ety;
-                            if a2 == 0.0 {
-                                continue;
-                            }
-                            for (v, &etz) in rz.iter().enumerate() {
-                                s += a2 * etz * wpair[h.index(t, u, v)];
+                        let gp = pref.map(|p| p * gv);
+                        let row = &tab[kh * nj..(kh + 1) * nj];
+                        for (wv, &ri) in scr.wl.iter_mut().zip(row) {
+                            let rr = &scr.rl[ri as usize];
+                            for i in 0..LANES {
+                                wv[i] += gp[i] * rr[i];
                             }
                         }
                     }
-                    jcart[ia * ncb + ib] += cab * s;
                 }
             }
+            for (i, pp) in chunk.iter().enumerate() {
+                for (w, wl) in wpair.iter_mut().zip(&scr.wl) {
+                    *w = wl[i];
+                }
+                self.add_cartesian_pair::<ABS>(sp, pp, &wpair, &mut jcart, scr);
+            }
         }
-        // Spherical: J_sph = C_Aᵀ J_cart C_B.
+        self.j_spherical::<ABS>(sp, jcart)
+    }
+
+    /// `jcart += c_a c_b Σ_tuv E^{μν}_{tuv} W_tuv` for one primitive pair.
+    fn add_cartesian_pair<const ABS: bool>(
+        &self,
+        sp: &ShellPair,
+        pp: &PrimPair,
+        wpair: &[f64],
+        jcart: &mut [f64],
+        scr: &mut Scratch,
+    ) {
+        let (sa, sb) = (&self.obs[sp.a as usize], &self.obs[sp.b as usize]);
+        let ncb = sb.ncart;
+        let h = hermite();
+        let sl = sa.l + sb.l + 1;
+        let si = (sb.l + 1) * sl;
+        self.e_tables::<ABS>(sp, pp, scr);
+        let cab = if ABS { pp.cab.abs() } else { pp.cab };
+        for (ia, ca) in sa.comps.iter().enumerate() {
+            for (ib, cb) in sb.comps.iter().enumerate() {
+                let (ix, iy, iz) = (ca[0] as usize, ca[1] as usize, ca[2] as usize);
+                let (jx, jy, jz) = (cb[0] as usize, cb[1] as usize, cb[2] as usize);
+                let rx = &scr.ex[ix * si + jx * sl..ix * si + jx * sl + ix + jx + 1];
+                let ry = &scr.ey[iy * si + jy * sl..iy * si + jy * sl + iy + jy + 1];
+                let rz = &scr.ez[iz * si + jz * sl..iz * si + jz * sl + iz + jz + 1];
+                let mut s = 0.0;
+                for (t, &etx) in rx.iter().enumerate() {
+                    if etx == 0.0 {
+                        continue;
+                    }
+                    for (u, &ety) in ry.iter().enumerate() {
+                        let a2 = etx * ety;
+                        if a2 == 0.0 {
+                            continue;
+                        }
+                        for (v, &etz) in rz.iter().enumerate() {
+                            s += a2 * etz * wpair[h.index(t, u, v)];
+                        }
+                    }
+                }
+                jcart[ia * ncb + ib] += cab * s;
+            }
+        }
+    }
+
+    /// The spherical block `J_sph = C_Aᵀ J_cart C_B` of shell pair `sp`.
+    fn j_spherical<const ABS: bool>(&self, sp: &ShellPair, jcart: Vec<f64>) -> Vec<f64> {
+        let (sa, sb) = (&self.obs[sp.a as usize], &self.obs[sp.b as usize]);
+        let (nca, ncb, nfa, nfb) = (sa.ncart, sb.ncart, sa.nfun, sb.nfun);
         let right: Vec<f64> = if sb.pure {
             let cb = self.c2s_for::<ABS>(sb.l);
             let mut t = vec![0.0; nca * nfb];
@@ -1506,9 +1846,14 @@ impl SplitRiJ {
 
 impl JBuilder for SplitRiJ {
     fn build(&mut self, d: &Array2<f64>, j: &mut Array2<f64>) -> Result<usize, FerricError> {
+        use ferric_core::timing::Stage;
+        let t = Stage::start("split-rij: d pass");
         let d_p = self.fit_rhs(d)?;
+        t.end();
         let c_p = self.solve_metric(&d_p)?;
+        let t = Stage::start("split-rij: J pass");
         self.coulomb_from_coefficients(&c_p, j)?;
+        t.end();
         Ok(0)
     }
 

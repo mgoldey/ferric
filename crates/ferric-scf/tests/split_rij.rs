@@ -267,6 +267,39 @@ fn split_rij_matches_libint_water_def2qzvp() {
     check_system("water.xyz", "def2-qzvp");
 }
 
+/// The lane kernel (4 bra primitive pairs per R evaluation) reproduces the
+/// one-primitive-at-a-time kernel bit for bit: every lane runs the scalar
+/// operations, and every accumulator still receives its terms in
+/// primitive-pair order. Benzene/def2-SVP has contracted s and p shells
+/// (full and partial lane groups); water/def2-QZVP reaches l_tot = 12.
+#[test]
+fn split_rij_lane_kernel_is_bit_identical_to_the_scalar_kernel() {
+    let bits = |a: &[f64]| a.iter().map(|x| x.to_bits()).collect::<Vec<u64>>();
+    for (xyz, orb) in [("benzene.xyz", "def2-svp"), ("water.xyz", "def2-qzvp")] {
+        let s = system(xyz, orb);
+        let sr = SplitRiJ::new(Operator::coulomb(), &s.obs, &s.aux, 1e-12).unwrap();
+        let d = test_density(s.nao);
+        let c = Array1::from_shape_fn(s.naux, |p| ((p * 13 % 17) as f64 - 8.0) * 0.01);
+        let (lane, scalar) = (sr.fit_rhs(&d).unwrap(), sr.fit_rhs_scalar(&d).unwrap());
+        assert!(lane.iter().any(|&x| x != 0.0), "{xyz}/{orb}: vacuous d_P");
+        assert_eq!(
+            bits(lane.as_slice().unwrap()),
+            bits(scalar.as_slice().unwrap()),
+            "{xyz}/{orb}: d_P"
+        );
+        let mut jl = Array2::<f64>::zeros((s.nao, s.nao));
+        let mut js = Array2::<f64>::zeros((s.nao, s.nao));
+        sr.coulomb_from_coefficients(&c, &mut jl).unwrap();
+        sr.coulomb_scalar(&c, &mut js).unwrap();
+        assert!(jl.iter().any(|&x| x != 0.0), "{xyz}/{orb}: vacuous J");
+        assert_eq!(
+            bits(jl.as_slice().unwrap()),
+            bits(js.as_slice().unwrap()),
+            "{xyz}/{orb}: J(c)"
+        );
+    }
+}
+
 /// Fixed work partition, fixed summation order: the bits of d_P, J(c) and the
 /// full build do not depend on the rayon pool size.
 #[test]
