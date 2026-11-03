@@ -510,6 +510,17 @@ pub struct DftCfg {
     /// (`ferric_dft::prune::SUPPORTED_LEBEDEV_ORDERS`); anything else is an
     /// error here rather than a panic inside the grid build.
     pub grid_angular: Option<usize>,
+    /// Grid weight cutoff on the MAIN DFT grid (ORCA's `WeightCut`): drop every
+    /// grid point whose final weight (radial x angular x Becke partition) has
+    /// `|w| < grid_weight_cut`. Omitted = no cutoff, byte-identical to a run
+    /// without this key; `0` is also "off". Must be finite and `>= 0`
+    /// (anything else is an error). A typical value is `1e-14`. Same meaning
+    /// as the Python `grid_weight_cut=` kwarg.
+    ///
+    /// Optimize / frequency runs differentiate the cut energy they converged
+    /// (the XC grid-response term drops the same points). Applies to the main
+    /// grid only; the VV10/NLC grid is uncut.
+    pub grid_weight_cut: Option<f64>,
     /// Empirical dispersion correction to ADD to the SCF energy.
     ///
     ///   omitted / absent  — no correction. The reported energy is the plain
@@ -538,11 +549,29 @@ impl DftCfg {
         self.grid_radial.is_some() || self.grid_angular.is_some()
     }
 
+    /// `[dft] grid_weight_cut`, strictly checked: `Ok(None)` when unset or
+    /// `0` (off), `Ok(Some(cut))` for a finite `cut > 0`, and an error for a
+    /// negative, NaN or infinite value (never silently "off").
+    pub fn grid_weight_cut(&self) -> Result<Option<f64>, String> {
+        match self.grid_weight_cut {
+            None => Ok(None),
+            Some(c) if c.is_finite() && c >= 0.0 => Ok((c > 0.0).then_some(c)),
+            Some(c) => Err(format!(
+                "[dft] grid_weight_cut = {c} is invalid: it must be a finite number >= 0 \
+                 (e.g. 1e-14; 0 or omitted = no cutoff)"
+            )),
+        }
+    }
+
     /// The main KS grid for `RhfConfig::dft_grid`, from `grid_radial` /
     /// `grid_angular` and an already-parsed `grid_prune` scheme.
     ///
-    /// All three unset returns `None`, which keeps `AtomicGridConfig::default()`
-    /// (75x110, unpruned) and so is byte-identical to a run without these keys.
+    /// `[dft] grid_weight_cut` (see [`Self::grid_weight_cut`]) sets the
+    /// config's `weight_cut`.
+    ///
+    /// All four unset (or the cutoff `0`) returns `None`, which keeps
+    /// `AtomicGridConfig::default()` (75x110, unpruned, uncut) and so is
+    /// byte-identical to a run without these keys.
     /// Any one set materialises an explicit config, the unset sizes taken from
     /// that same default. Mirrors the Python `resolve_dft_grid` (same checks,
     /// same defaults), so `[dft] grid_radial = 99` and `grid_radial=99` build
@@ -551,8 +580,18 @@ impl DftCfg {
         &self,
         prune: Option<ferric_dft::prune::PruneScheme>,
     ) -> Result<Option<ferric_dft::grid::AtomicGridConfig>, String> {
-        use ferric_dft::prune::{region_orders, SUPPORTED_LEBEDEV_ORDERS};
-        if !self.sets_grid_size() && prune.is_none() {
+        use ferric_dft::prune::{validate_xc_scheme, PruneScheme, SUPPORTED_LEBEDEV_ORDERS};
+        let weight_cut = self.grid_weight_cut()?;
+        if matches!(prune, Some(PruneScheme::DefGrid(_)))
+            && (self.grid_radial.is_some() || self.grid_angular.is_some())
+        {
+            return Err(
+                "[dft] grid_prune = \"defgrid1/2/3\" fixes the radial and angular \
+                        grid; remove grid_radial / grid_angular"
+                    .to_string(),
+            );
+        }
+        if !self.sets_grid_size() && prune.is_none() && weight_cut.is_none() {
             return Ok(None);
         }
         let default = ferric_dft::grid::AtomicGridConfig::default();
@@ -567,13 +606,14 @@ impl DftCfg {
                  (supported: {SUPPORTED_LEBEDEV_ORDERS:?})"
             ));
         }
-        if prune.is_some() {
-            region_orders(n_angular).map_err(|e| format!("[dft] grid_prune: {e}"))?;
+        if let Some(scheme) = prune {
+            validate_xc_scheme(scheme, n_angular).map_err(|e| format!("[dft] grid_prune: {e}"))?;
         }
         Ok(Some(ferric_dft::grid::AtomicGridConfig {
             n_radial,
             n_angular,
             prune,
+            weight_cut,
         }))
     }
 }
@@ -1868,6 +1908,7 @@ impl Mp2Cfg {
             // Deliberately unpruned: `PruneScheme::NwchemLike` hard-errors at
             // n_angular = 50, which is this grid's default.
             prune: None,
+            weight_cut: None,
         };
 
         cfg.frozen_core = self.frozen_core.resolve(mol);
@@ -3639,6 +3680,25 @@ impl Config {
                      \"{kind}\" runs no exchange-correlation functional here, so the key would \
                      be silently ignored"
                 ));
+            }
+        }
+        // Value first (an error on any kind); a cutoff of 0 asks for nothing,
+        // so it is harmless anywhere.
+        if let Some(cut) = self.dft.grid_weight_cut()? {
+            if !self.runs_a_ks_grid() {
+                return Err(format!(
+                    "[dft] grid_weight_cut = {cut:e} has no Kohn-Sham grid to cut: method.kind = \
+                     \"{kind}\" runs no exchange-correlation functional here, so the key would \
+                     be silently ignored"
+                ));
+            }
+            if kind == "gw" {
+                return Err(
+                    "[dft] grid_weight_cut is not supported with method.kind = \"gw\": \
+                     the Sigma_x - v_xc correction evaluates v_xc on the DEFAULT grid, so it \
+                     would not match a reference SCF run on this one"
+                        .to_string(),
+                );
             }
         }
         Ok(())
@@ -11050,6 +11110,105 @@ mod cli_wired_keys_tests {
             "energy",
             1,
             "[dft]\ngrid_radial = 99\n[rpa]\nxc = \"PBE\"\n",
+        );
+        assert!(gw.validate_dft_section().unwrap_err().contains("gw"));
+    }
+
+    // ---- [dft] grid_weight_cut ----
+
+    /// `[dft] grid_weight_cut` parses strictly: absent (and `0`) is no cutoff
+    /// and keeps the default-grid `None`; a valid value lands on the grid
+    /// config alone or next to the other grid keys; negative / NaN / infinite
+    /// values are errors (never a silent "off"); and a cutoff on a kind with no
+    /// KS grid, or on `gw`, is refused like the size keys.
+    #[test]
+    fn grid_weight_cut_parses_strictly() {
+        // Absent: no cutoff, and no explicit grid config at all.
+        let c = cfg("ksdft", "energy", 1, "[dft]\nfunctional = \"PBE\"\n");
+        assert!(c.dft.grid_weight_cut.is_none());
+        assert!(c.dft.grid_config(None).unwrap().is_none());
+
+        // Present and valid: the default grid sizes with the cutoff set.
+        let c = cfg(
+            "ksdft",
+            "energy",
+            1,
+            "[dft]\nfunctional = \"PBE\"\ngrid_weight_cut = 1e-14\n",
+        );
+        c.validate_dft_section().unwrap();
+        c.validate_cli_wired_keys().unwrap();
+        let g = c.dft.grid_config(None).unwrap().unwrap();
+        let d = ferric_dft::grid::AtomicGridConfig::default();
+        assert_eq!(
+            (g.n_radial, g.n_angular, g.prune),
+            (d.n_radial, d.n_angular, None)
+        );
+        assert_eq!(g.weight_cut, Some(1e-14));
+        // Next to the other grid keys and a prune scheme.
+        let c = cfg(
+            "ksdft",
+            "energy",
+            1,
+            "[dft]\ngrid_radial = 99\ngrid_angular = 302\ngrid_weight_cut = 1e-12\n",
+        );
+        let g = c
+            .dft
+            .grid_config(Some(ferric_dft::prune::PruneScheme::NwchemLike))
+            .unwrap()
+            .unwrap();
+        assert_eq!((g.n_radial, g.n_angular), (99, 302));
+        assert_eq!(g.prune, Some(ferric_dft::prune::PruneScheme::NwchemLike));
+        assert_eq!(g.weight_cut, Some(1e-12));
+        // Optimize differentiates the cut energy: allowed.
+        cfg("ksdft", "optimize", 1, "[dft]\ngrid_weight_cut = 1e-14\n")
+            .validate_cli_wired_keys()
+            .unwrap();
+
+        // Zero (float or integer TOML) is "off": no config, harmless anywhere.
+        for zero in ["0.0", "0"] {
+            let c = cfg(
+                "rhf",
+                "energy",
+                1,
+                &format!("[dft]\ngrid_weight_cut = {zero}\n"),
+            );
+            assert_eq!(c.dft.grid_weight_cut(), Ok(None), "{zero}");
+            assert!(c.dft.grid_config(None).unwrap().is_none(), "{zero}");
+            c.validate_dft_section().unwrap();
+        }
+
+        // Invalid values: hard errors from both the accessor and the grid build.
+        for bad in ["-1e-14", "nan", "inf", "-inf"] {
+            let c = cfg(
+                "ksdft",
+                "energy",
+                1,
+                &format!("[dft]\nfunctional = \"PBE\"\ngrid_weight_cut = {bad}\n"),
+            );
+            let e = c.dft.grid_weight_cut().unwrap_err();
+            assert!(e.contains("grid_weight_cut"), "{bad}: {e}");
+            assert!(c.dft.grid_config(None).is_err(), "{bad}");
+            assert!(c.validate_dft_section().is_err(), "{bad}");
+        }
+
+        // A string is not a number: the TOML itself is rejected.
+        assert!(toml::from_str::<Config>(
+            "[molecule]\nxyz = \"water.xyz\"\n[basis]\nname = \"sto-3g\"\n\
+             [method]\nkind = \"ksdft\"\n[dft]\ngrid_weight_cut = \"1e-14\"\n"
+        )
+        .is_err());
+
+        // No KS grid to cut, and gw's v_xc on the default grid: refused.
+        let hf = cfg("rhf", "energy", 1, "[dft]\ngrid_weight_cut = 1e-14\n");
+        assert!(hf
+            .validate_dft_section()
+            .unwrap_err()
+            .contains("no Kohn-Sham grid"));
+        let gw = cfg(
+            "gw",
+            "energy",
+            1,
+            "[dft]\ngrid_weight_cut = 1e-14\n[rpa]\nxc = \"PBE\"\n",
         );
         assert!(gw.validate_dft_section().unwrap_err().contains("gw"));
     }

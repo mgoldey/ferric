@@ -2016,6 +2016,7 @@ mod degenerate_somo_investigation {
                 n_radial: 75,
                 n_angular: ang,
                 prune: None,
+                weight_cut: None,
             }),
             ..Default::default()
         };

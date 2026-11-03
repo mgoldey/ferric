@@ -180,6 +180,7 @@ fn test_grid() -> AtomicGridConfig {
         n_radial: 20,
         n_angular: 26,
         prune: None,
+        weight_cut: None,
     }
 }
 

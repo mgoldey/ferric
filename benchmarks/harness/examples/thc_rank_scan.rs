@@ -169,6 +169,7 @@ fn scan_system(label: &str, mol: &Molecule, obs_name: &str, n_rad: usize, n_ang:
         n_radial: n_rad,
         n_angular: n_ang,
         prune: None,
+        weight_cut: None,
     };
     let grid = build_atomic_grid(mol, &cfg);
     let points: Vec<[f64; 3]> = grid.iter().map(|p| p.xyz).collect();

@@ -424,6 +424,7 @@ fn dft_grid_keys_match_the_library_grid() {
                 n_radial: 99,
                 n_angular: 302,
                 prune: None,
+                weight_cut: None,
             }),
             ..tight()
         },

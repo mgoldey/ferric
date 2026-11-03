@@ -240,6 +240,7 @@ fn the_raw_tier_does_not_read_the_thread_count() {
         n_radial: 30,
         n_angular: 50,
         prune: None,
+        weight_cut: None,
     };
     let p = s.tensor * 95 / 100;
     let mut rows = Vec::new();
@@ -314,11 +315,13 @@ fn vv10_cfg(budget: usize, max_iter: usize) -> RhfConfig {
             n_radial: 30,
             n_angular: 50,
             prune: None,
+            weight_cut: None,
         }),
         nlc_grid: Some(AtomicGridConfig {
             n_radial: 10,
             n_angular: 14,
             prune: None,
+            weight_cut: None,
         }),
         ..Default::default()
     }

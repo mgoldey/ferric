@@ -3906,6 +3906,7 @@ def run_dft(
     grid_radial: int | None = None,
     grid_angular: int | None = None,
     grid_prune: str | None = None,
+    grid_weight_cut: float | None = None,
     cosx_grid: tuple[int, int] | tuple[int, int, str] | None = None,
     cosx_final_pass: bool | None = None,
     cosx_final_grid: tuple[int, int] | tuple[int, int, str] | None = None,
@@ -3948,6 +3949,13 @@ def run_dft(
     any other value raises ValueError. Pruning has no table at
     `grid_angular=50`. With `with_gradient=True` the analytic gradient
     differentiates the grid the SCF ran on (including a pruned one).
+    `grid_weight_cut` (ORCA's WeightCut, e.g. 1e-14) drops every main-grid
+    point whose final weight (radial x angular x Becke partition) has
+    absolute value below it; `None` (the default) or 0.0 is no cutoff and the
+    grid is unchanged bit for bit, and a negative, NaN or infinite value
+    raises ValueError. The gradient drops the same points, so it is the
+    gradient of the cut energy (which jumps where a weight crosses the cutoff
+    under displacement, by about cutoff x integrand).
     With `k_builder="cosx"` and `with_gradient=True` the gradient
     differentiates the COSX energy; the overlap fit with a functional is not
     differentiable (its response needs the XC Fock nuclear derivative), so
@@ -3992,6 +4000,7 @@ def run_dft(
     grid_radial: int | None = None,
     grid_angular: int | None = None,
     grid_prune: str | None = None,
+    grid_weight_cut: float | None = None,
     cosx_grid: tuple[int, int] | tuple[int, int, str] | None = None,
     cosx_final_pass: bool | None = None,
     cosx_final_grid: tuple[int, int] | tuple[int, int, str] | None = None,
@@ -4024,6 +4033,7 @@ def run_dft(
     grid_radial: int | None = None,
     grid_angular: int | None = None,
     grid_prune: str | None = None,
+    grid_weight_cut: float | None = None,
     cosx_grid: tuple[int, int] | tuple[int, int, str] | None = None,
     cosx_final_pass: bool | None = None,
     cosx_final_grid: tuple[int, int] | tuple[int, int, str] | None = None,
@@ -4039,8 +4049,13 @@ def dft_grid_point_count(
     grid_radial: int | None = None,
     grid_angular: int | None = None,
     grid_prune: str | None = None,
+    grid_weight_cut: float | None = None,
 ) -> int:
-    """Number of points in the main XC grid `run_dft` builds with these kwargs."""
+    """Number of points in the main XC grid `run_dft` builds with these kwargs.
+
+    Without `grid_weight_cut` this is a closed-form count (no grid is built);
+    with it, every point's Becke weight is evaluated (about the cost of
+    building the grid, without its memory)."""
     ...
 
 def cosx_grid_point_count(
@@ -4072,12 +4087,14 @@ def run_ksdft(
     grid_radial: int | None = None,
     grid_angular: int | None = None,
     grid_prune: str | None = None,
+    grid_weight_cut: float | None = None,
     symmetry: Literal[False] = False,
     irrep_nelec: None = None,
     guess_basis: str | None = None,
     guess_projection: str | None = None,
 ) -> DftResult:
-    """Kohn-Sham DFT (closed-shell). Alias of run_dft (same grid_* kwargs).
+    """Kohn-Sham DFT (closed-shell). Alias of run_dft (same grid_* kwargs,
+    grid_weight_cut included).
 
     `dispersion` adds a dispersion correction to the SCF energy (and, with
     `with_gradient=True`, its analytic gradient to the gradient):
@@ -4115,6 +4132,7 @@ def run_ksdft(
     grid_radial: int | None = None,
     grid_angular: int | None = None,
     grid_prune: str | None = None,
+    grid_weight_cut: float | None = None,
     *,
     symmetry: Literal[True],
     irrep_nelec: dict[str, int] | None = None,
@@ -4142,6 +4160,7 @@ def run_ksdft(
     grid_radial: int | None = None,
     grid_angular: int | None = None,
     grid_prune: str | None = None,
+    grid_weight_cut: float | None = None,
     symmetry: bool = False,
     irrep_nelec: dict[str, int] | None = None,
     guess_basis: str | None = None,

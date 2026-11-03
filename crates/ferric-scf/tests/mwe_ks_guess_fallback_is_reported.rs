@@ -48,6 +48,7 @@ fn run(solver: &str, ratio: Option<f64>) {
             n_radial,
             n_angular,
             prune: None,
+            weight_cut: None,
         })
     };
     let c = RhfConfig {

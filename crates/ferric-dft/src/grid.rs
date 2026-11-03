@@ -135,6 +135,46 @@ pub struct AtomicGridConfig {
     /// gradient differentiates the pruned energy when the caller passes the
     /// SCF's grid (`ferric_scf::ks_gradient::KsGradGrids::from_config`).
     pub prune: Option<crate::prune::PruneScheme>,
+    /// Grid weight cutoff (ORCA's `WeightCut`), or `None` for no cutoff.
+    ///
+    /// With `Some(cut)`, every builder in this module drops each grid point
+    /// whose FINAL weight `w_g = w_r · w_l · w_becke^{home}(r_g)` (the value
+    /// stored in [`GridPoint::weight`]) has `|w_g| < cut`. The comparison is on
+    /// the absolute value (Becke weights are non-negative, so the sign never
+    /// matters in practice); a NaN weight is never `< cut`, so it is kept and
+    /// still poisons the integral visibly. Kept points keep their order and
+    /// their bits. `None` and `Some(0.0)` are both "off" and build the grid
+    /// bit for bit as without this field. A negative, NaN or infinite cutoff is
+    /// an error from the fallible builders ([`build_atomic_grid_pruned`],
+    /// [`atomic_grid_point_count`], the response builders) and a panic from
+    /// the infallible ones ([`build_atomic_grid`],
+    /// [`atomic_quadrature_points`]); the CLI and Python front ends validate it
+    /// first. See [`weight_cut_threshold`].
+    ///
+    /// Which points go: (a) the innermost radial shells, where `w_r ∝ r² dr`
+    /// is tiny, and (b) points deep inside another atom's Becke cell, where the
+    /// home atom's partition weight underflows towards zero. (b) is most of a
+    /// large molecule's grid, so the fraction dropped grows with molecule size.
+    /// A dropped point contributes `|w_g · f(r_g)| < cut · |f(r_g)|` to every
+    /// quadrature, so at `1e-14` the change in any integral is far below the
+    /// grid's own quadrature error.
+    ///
+    /// Gradients: the response builders drop exactly the same points (same
+    /// weight bits, same predicate), so the analytic gradient is the gradient
+    /// of the cut energy the SCF converged. A dropped point's weight
+    /// DERIVATIVE is not necessarily small; it is dropped anyway, so that the
+    /// gradient stays consistent with the energy. The cut energy is
+    /// discontinuous where a point's weight crosses `cut` under a nuclear
+    /// displacement, so a finite-difference gradient can disagree with the
+    /// analytic one by such a jump (of order `cut · |f|`); nothing smooths it.
+    ///
+    /// Cost: with a cutoff set, [`atomic_grid_point_count`] must evaluate the
+    /// Becke weight of every point (it is no longer the cheap closed-form
+    /// count); see its doc.
+    ///
+    /// Settable from the CLI via `[dft] grid_weight_cut = 1e-14` and from
+    /// Python via `grid_weight_cut=`. NOT the default.
+    pub weight_cut: Option<f64>,
 }
 
 impl Default for AtomicGridConfig {
@@ -148,6 +188,8 @@ impl Default for AtomicGridConfig {
             // field doc for why pruning is opt-in until it is validated
             // through a live KS SCF against the reference suites.
             prune: None,
+            // No weight cutoff: every (shell, angular point) pair is kept.
+            weight_cut: None,
         }
     }
 }
@@ -161,6 +203,7 @@ impl AtomicGridConfig {
             n_radial: 50,
             n_angular: 50,
             prune: None,
+            weight_cut: None,
         }
     }
 
@@ -175,6 +218,7 @@ impl AtomicGridConfig {
             n_radial: 75,
             n_angular: 110,
             prune: Some(PruneScheme::NwchemLike),
+            weight_cut: None,
         }
     }
 }
@@ -189,10 +233,59 @@ impl AtomicGridConfig {
 /// weight over it with an order-preserving parallel map. Collecting in index
 /// order makes the output bit-identical to a serial loop regardless of thread
 /// count — no reduction, so no nondeterminism to guard against.
+///
+/// Honours `cfg.weight_cut` (dropping points after weighing them, order
+/// kept) but NOT `cfg.prune`: this is the flat grid by contract.
+///
+/// # Panics
+///
+/// On an invalid `cfg.weight_cut` (negative, NaN or infinite); see
+/// [`weight_cut_threshold`].
 pub fn build_atomic_grid(mol: &Molecule, cfg: &AtomicGridConfig) -> Vec<GridPoint> {
-    let pre = atomic_quadrature_points(mol, cfg);
+    let cut = active_weight_cut(cfg);
+    let pre = flat_quadrature_points(mol, cfg);
 
-    weigh_points(mol, &pre)
+    apply_weight_cut(weigh_points(mol, &pre), cut)
+}
+
+/// The active weight cutoff of `cfg`: `Ok(None)` when off (`weight_cut` unset
+/// or `Some(0.0)`), `Ok(Some(cut))` with a finite `cut > 0` when on, and `Err`
+/// for a negative, NaN or infinite cutoff (config honesty: an invalid cutoff is
+/// never silently treated as off). See [`AtomicGridConfig::weight_cut`].
+pub fn weight_cut_threshold(cfg: &AtomicGridConfig) -> Result<Option<f64>, FerricError> {
+    match cfg.weight_cut {
+        None => Ok(None),
+        Some(c) if c.is_finite() && c >= 0.0 => Ok((c > 0.0).then_some(c)),
+        Some(c) => Err(FerricError::General(format!(
+            "grid weight cutoff (AtomicGridConfig::weight_cut) must be finite and >= 0, got {c}"
+        ))),
+    }
+}
+
+/// [`weight_cut_threshold`] for the infallible builders.
+fn active_weight_cut(cfg: &AtomicGridConfig) -> Option<f64> {
+    weight_cut_threshold(cfg).unwrap_or_else(|e| panic!("{e}"))
+}
+
+/// Whether a point of final weight `weight` survives the cutoff `cut`:
+/// everything except `|weight| < cut` (so a NaN weight is kept).
+#[inline]
+fn survives_weight_cut(weight: f64, cut: f64) -> bool {
+    weight.is_nan() || weight.abs() >= cut
+}
+
+/// Drop the points of `grid` below `cut` (in place, order kept); `None` returns
+/// `grid` untouched.
+fn apply_weight_cut(mut grid: Vec<GridPoint>, cut: Option<f64>) -> Vec<GridPoint> {
+    if let Some(cut) = cut {
+        let before = grid.len();
+        grid.retain(|p| survives_weight_cut(p.weight, cut));
+        if grid.len() < before {
+            // The grid is held for the whole SCF; give the dropped tail back.
+            grid.shrink_to_fit();
+        }
+    }
+    grid
 }
 
 /// `w_rl * becke_weights_all(mol, xyz)[home]` for each point of `pre`, in order,
@@ -220,10 +313,34 @@ fn weigh_points(mol: &Molecule, pre: &[(usize, [f64; 3], f64)]) -> Vec<GridPoint
 /// angular), before the Becke weight of the home atom multiplies the last
 /// entry. Each point rides its home atom (`xyz = R_home + r · Ω`), which is
 /// what the moving-grid Hessian differentiates.
+///
+/// With `cfg.weight_cut` set, it keeps exactly the points
+/// [`build_atomic_grid`] keeps (same order), so the two stay index-aligned;
+/// deciding that needs each point's Becke weight, i.e. one full weight pass
+/// (the cost of [`build_atomic_grid`] itself). Without a cutoff it computes no
+/// Becke weights. Ignores `cfg.prune`, like [`build_atomic_grid`].
+///
+/// # Panics
+///
+/// On an invalid `cfg.weight_cut`; see [`weight_cut_threshold`].
 pub fn atomic_quadrature_points(
     mol: &Molecule,
     cfg: &AtomicGridConfig,
 ) -> Vec<(usize, [f64; 3], f64)> {
+    let mut pre = flat_quadrature_points(mol, cfg);
+    if let Some(cut) = active_weight_cut(cfg) {
+        let weighed = weigh_points(mol, &pre);
+        let mut weights = weighed.iter().map(|p| p.weight);
+        // `retain` visits every element once, in order.
+        pre.retain(|_| survives_weight_cut(weights.next().expect("same length"), cut));
+        pre.shrink_to_fit();
+    }
+    pre
+}
+
+/// [`atomic_quadrature_points`] before any weight cutoff: every (atom, shell,
+/// angular point) of the flat grid.
+fn flat_quadrature_points(mol: &Molecule, cfg: &AtomicGridConfig) -> Vec<(usize, [f64; 3], f64)> {
     let (lebedev_pts, lebedev_w) = lebedev(cfg.n_angular);
     let mut pre: Vec<(usize, [f64; 3], f64)> =
         Vec::with_capacity(mol.atoms.len() * cfg.n_radial * lebedev_pts.len());
@@ -261,11 +378,15 @@ pub fn atomic_quadrature_points(
 /// Lebedev weights are normalised to `Σ w = 1` at every order, so mixing
 /// orders across radial shells leaves `Σ_r Σ_Ω w_r w_Ω` unchanged shell by
 /// shell. No renormalisation is applied or needed.
+///
+/// `cfg.weight_cut` is honoured in both branches (see
+/// [`AtomicGridConfig::weight_cut`]); an invalid cutoff is an `Err`.
 pub fn build_atomic_grid_pruned(
     mol: &Molecule,
     cfg: &AtomicGridConfig,
     prune: Option<PruneScheme>,
 ) -> std::result::Result<Vec<GridPoint>, FerricError> {
+    let cut = weight_cut_threshold(cfg)?;
     let Some(scheme) = prune else {
         return Ok(build_atomic_grid(mol, cfg));
     };
@@ -301,7 +422,7 @@ pub fn build_atomic_grid_pruned(
         }
     }
 
-    Ok(weigh_points(mol, &pre))
+    Ok(apply_weight_cut(weigh_points(mol, &pre), cut))
 }
 
 /// Lebedev order of each radial shell `rs` of an atom with charge `z`: the
@@ -321,14 +442,39 @@ fn shell_angular_orders(
     }
 }
 
-/// Number of points [`build_atomic_grid_pruned`]`(mol, cfg, prune)` returns,
-/// without generating the points or their Becke weights (the builder applies
-/// no weight screening, so every (shell, angular point) pair is kept).
+/// Number of points [`build_atomic_grid_pruned`]`(mol, cfg, prune)` returns
+/// (and, for `prune = None`, [`build_atomic_grid`]`(mol, cfg)`), exactly.
 ///
-/// Cost is the radial quadrature per atom plus one Lebedev rule per distinct
-/// order — O(natoms · n_radial), independent of the grid size. Errors exactly
-/// where the builder errors (e.g. pruning at `n_angular = 50`).
+/// Without a weight cutoff (`cfg.weight_cut` `None` or `Some(0.0)`) every
+/// (shell, angular point) pair is kept, so the count needs neither the points
+/// nor their Becke weights: the cost is the radial quadrature per atom plus one
+/// Lebedev rule per distinct order — O(natoms · n_radial), independent of the
+/// grid size.
+///
+/// WITH a cutoff the count depends on every point's Becke weight, so it
+/// evaluates all of them: the same O(npts · natoms²) Becke pass as the
+/// builder (parallel over radial shells), but streamed — no point list, no
+/// grid, nothing npts-sized is allocated. Callers that count and then build
+/// therefore pay the Becke pass twice. The kept-or-dropped decision uses the
+/// builder's exact weight bits, so the count cannot drift from the grid.
+///
+/// Errors exactly where the builder errors (e.g. pruning at `n_angular = 50`,
+/// or an invalid cutoff).
 pub fn atomic_grid_point_count(
+    mol: &Molecule,
+    cfg: &AtomicGridConfig,
+    prune: Option<PruneScheme>,
+) -> std::result::Result<usize, FerricError> {
+    match weight_cut_threshold(cfg)? {
+        None => uncut_point_count(mol, cfg, prune),
+        Some(cut) => count_points_surviving_cut(mol, cfg, prune, cut),
+    }
+}
+
+/// [`atomic_grid_point_count`] ignoring `cfg.weight_cut`: the closed-form
+/// count of every (shell, angular point) pair. Also an upper bound on the cut
+/// grid's size.
+fn uncut_point_count(
     mol: &Molecule,
     cfg: &AtomicGridConfig,
     prune: Option<PruneScheme>,
@@ -354,6 +500,71 @@ pub fn atomic_grid_point_count(
             total += n;
         }
     }
+    Ok(total)
+}
+
+/// The number of points of the `prune` grid whose final weight survives
+/// `cut` (> 0), streamed shell by shell: each point's `xyz`, `w_r · w_l` and
+/// Becke weight are formed exactly as the builders form them (same
+/// expressions, same [`BeckeTable`]), so the decision matches theirs bit for
+/// bit. Integer sum, so the parallel reduction is exact.
+fn count_points_surviving_cut(
+    mol: &Molecule,
+    cfg: &AtomicGridConfig,
+    prune: Option<PruneScheme>,
+    cut: f64,
+) -> std::result::Result<usize, FerricError> {
+    // One Lebedev rule per distinct order, and one (atom, r, w_r, rule) entry
+    // per radial shell — O(natoms · n_radial), the only allocations.
+    let mut rules: Vec<(usize, Vec<[f64; 3]>, Vec<f64>)> = Vec::new();
+    let mut shells: Vec<(usize, f64, f64, usize)> = Vec::new();
+    for (a_idx, atom) in mol.atoms.iter().enumerate() {
+        let (rs, ws) = treutler_ahlrichs_m4(
+            atom.z,
+            crate::prune::radial_shells(atom.z, cfg.n_radial, prune),
+        );
+        let orders = shell_angular_orders(atom.z, &rs, cfg, prune)?;
+        for ((&r, &w_r), &order) in rs.iter().zip(ws.iter()).zip(orders.iter()) {
+            let rule = match rules.iter().position(|(o, _, _)| *o == order) {
+                Some(i) => i,
+                None => {
+                    let (p, w) = lebedev(order);
+                    rules.push((order, p, w));
+                    rules.len() - 1
+                }
+            };
+            shells.push((a_idx, r, w_r, rule));
+        }
+    }
+
+    let table = BeckeTable::new(mol);
+    let count_shell = |s: &mut BeckeScratch, &(a_idx, r, w_r, rule): &(usize, f64, f64, usize)| {
+        let atom = &mol.atoms[a_idx];
+        let (_, lebedev_pts, lebedev_w) = &rules[rule];
+        lebedev_pts
+            .iter()
+            .zip(lebedev_w.iter())
+            .filter(|(pt, w_l)| {
+                let xyz = [
+                    atom.x + r * pt[0],
+                    atom.y + r * pt[1],
+                    atom.zpos + r * pt[2],
+                ];
+                let w_rl = w_r * *w_l;
+                survives_weight_cut(w_rl * table.weight(xyz, a_idx, s), cut)
+            })
+            .count()
+    };
+    let n_pre: usize = shells.iter().map(|sh| rules[sh.3].1.len()).sum();
+    let total: usize = if n_pre >= PAR_WORK_THRESHOLD {
+        shells
+            .par_iter()
+            .map_init(|| table.scratch(), count_shell)
+            .sum()
+    } else {
+        let mut s = table.scratch();
+        shells.iter().map(|sh| count_shell(&mut s, sh)).sum()
+    };
     Ok(total)
 }
 
@@ -415,13 +626,26 @@ pub fn build_atomic_grid_with_response(
 /// points exist; each point's weight derivative is the same Becke expression
 /// (`weight1` treats every point as riding its home atom rigidly, whatever
 /// its angular rule), so no extra term arises from pruning.
+///
+/// `cfg.weight_cut` is honoured the same way: a point is dropped from BOTH
+/// `grid` and `weight1` exactly when the energy builders drop it (same weight
+/// bits, same predicate), so the gradient differentiates the cut energy. A
+/// dropped point's `weight1` row is not necessarily small; dropping it anyway
+/// is what keeps energy and gradient consistent, and the cut energy is
+/// discontinuous where a weight crosses the threshold under displacement (see
+/// [`AtomicGridConfig::weight_cut`]). Dropped points skip the O(natoms³)
+/// weight-derivative evaluation. The memory check is sized on the UNCUT point
+/// count (an upper bound, and what the staging list really holds), so it never
+/// needs the Becke pass that an exact cut count would cost.
 pub fn build_atomic_grid_with_response_pruned(
     mol: &Molecule,
     cfg: &AtomicGridConfig,
 ) -> Result<(Vec<GridPoint>, Vec<Vec<[f64; 3]>>), FerricError> {
     let natoms = mol.atoms.len();
-    // Exact: the builder applies no weight screening.
-    let npts = atomic_grid_point_count(mol, cfg, cfg.prune)?;
+    let cut = weight_cut_threshold(cfg)?;
+    // Exact without a cutoff; with one, an upper bound (the staging list `pre`
+    // really is this long, and the cut grid and `weight1` are no longer).
+    let npts = uncut_point_count(mol, cfg, cfg.prune)?;
     grid_response_plan(npts, natoms).check()?;
 
     let mut cache: Vec<(usize, Vec<[f64; 3]>, Vec<f64>)> = Vec::new();
@@ -456,13 +680,21 @@ pub fn build_atomic_grid_with_response_pruned(
     // Per-point work is O(natoms³) via becke_weights_and_grad and independent
     // across points — same order-preserving parallel map as build_atomic_grid
     // (bit-identical to the serial loop; no reduction).
+    //
+    // `None` = dropped by the weight cutoff (never, when `cut` is `None`).
     let build_point =
-        |&(a_idx, xyz, scale): &(usize, [f64; 3], f64)| -> (GridPoint, Vec<[f64; 3]>) {
-            let (_, dw_lab) = becke_weights_and_grad(mol, xyz);
+        |&(a_idx, xyz, scale): &(usize, [f64; 3], f64)| -> Option<(GridPoint, Vec<[f64; 3]>)> {
             // The weight VALUE comes from the same `becke_weights_all` the
             // energy grids use, so this grid is the energy grid bit for bit
-            // (`becke_weights_and_grad`'s own value differs by ulps).
+            // (`becke_weights_and_grad`'s own value differs by ulps), and the
+            // cutoff decision below is the energy builders' decision.
             let weight = scale * becke_weights_all(mol, xyz)[a_idx];
+            if let Some(cut) = cut {
+                if !survives_weight_cut(weight, cut) {
+                    return None;
+                }
+            }
+            let (_, dw_lab) = becke_weights_and_grad(mol, xyz);
             let gp = GridPoint {
                 xyz,
                 weight,
@@ -493,13 +725,24 @@ pub fn build_atomic_grid_with_response_pruned(
                 }
                 row.push(entry);
             }
-            (gp, row)
+            Some((gp, row))
         };
 
-    let (grid, weight1): (Vec<GridPoint>, Vec<Vec<[f64; 3]>>) = if pre.len() >= PAR_WORK_THRESHOLD {
-        pre.par_iter().map(build_point).unzip()
-    } else {
-        pre.iter().map(build_point).unzip()
+    let par = pre.len() >= PAR_WORK_THRESHOLD;
+    let (grid, weight1): (Vec<GridPoint>, Vec<Vec<[f64; 3]>>) = match (cut, par) {
+        // No cutoff: every point is kept; the indexed map is the historical path.
+        (None, true) => pre
+            .par_iter()
+            .map(|p| build_point(p).expect("no weight cutoff: every point is kept"))
+            .unzip(),
+        (None, false) => pre
+            .iter()
+            .map(|p| build_point(p).expect("no weight cutoff: every point is kept"))
+            .unzip(),
+        // rayon's `filter_map(..).unzip()` keeps the input order, like the
+        // serial `Iterator` one.
+        (Some(_), true) => pre.par_iter().filter_map(build_point).unzip(),
+        (Some(_), false) => pre.iter().filter_map(build_point).unzip(),
     };
     Ok((grid, weight1))
 }
@@ -545,6 +788,7 @@ mod tests {
                 n_radial: 35,
                 n_angular: 194,
                 prune,
+                weight_cut: None,
             };
             let e = build_atomic_grid_pruned(&mol, &cfg, cfg.prune).unwrap();
             let (g, w1) = build_atomic_grid_with_response_pruned(&mol, &cfg).unwrap();
@@ -567,6 +811,7 @@ mod tests {
             n_radial: 35,
             n_angular: 194,
             prune: None,
+            weight_cut: None,
         };
         let sgx = AtomicGridConfig {
             prune: Some(PruneScheme::Sgx),
@@ -1006,5 +1251,255 @@ mod tests {
             (sum_atoms - total).abs() < 1e-12,
             "Becke partition sum mismatch: per-atom {sum_atoms}, total {total}"
         );
+    }
+
+    /// Bitwise equality of two grids: same length, order, home atoms, points
+    /// and weights.
+    fn assert_grids_bit_identical(got: &[GridPoint], want: &[GridPoint], what: &str) {
+        assert_eq!(got.len(), want.len(), "{what}: point counts differ");
+        for (g, (a, b)) in got.iter().zip(want).enumerate() {
+            assert_eq!(a.home_atom, b.home_atom, "{what}: home_atom at {g}");
+            for k in 0..3 {
+                assert_eq!(
+                    a.xyz[k].to_bits(),
+                    b.xyz[k].to_bits(),
+                    "{what}: xyz[{k}] at {g}"
+                );
+            }
+            assert_eq!(
+                a.weight.to_bits(),
+                b.weight.to_bits(),
+                "{what}: weight at {g}"
+            );
+        }
+    }
+
+    fn with_cut(cfg: &AtomicGridConfig, weight_cut: Option<f64>) -> AtomicGridConfig {
+        AtomicGridConfig {
+            weight_cut,
+            ..cfg.clone()
+        }
+    }
+
+    /// Serial reference for the (optionally pruned) grid, written against the
+    /// primitives (radial rule, per-shell orders, Lebedev rule,
+    /// `becke_weights_all`) rather than `weigh_points` / the cutoff helpers.
+    fn pruned_serial_ref(
+        mol: &Molecule,
+        cfg: &AtomicGridConfig,
+        prune: Option<PruneScheme>,
+    ) -> Vec<GridPoint> {
+        let mut grid = Vec::new();
+        for (a_idx, atom) in mol.atoms.iter().enumerate() {
+            let (rs, ws) = treutler_ahlrichs_m4(
+                atom.z,
+                crate::prune::radial_shells(atom.z, cfg.n_radial, prune),
+            );
+            let orders = shell_angular_orders(atom.z, &rs, cfg, prune).unwrap();
+            for ((r, w_r), &order) in rs.iter().zip(ws.iter()).zip(orders.iter()) {
+                let (pts, wl) = lebedev(order);
+                for (pt, w_l) in pts.iter().zip(wl.iter()) {
+                    let xyz = [
+                        atom.x + r * pt[0],
+                        atom.y + r * pt[1],
+                        atom.zpos + r * pt[2],
+                    ];
+                    grid.push(GridPoint {
+                        xyz,
+                        weight: w_r * w_l * becke_weights_all(mol, xyz)[a_idx],
+                        home_atom: a_idx,
+                    });
+                }
+            }
+        }
+        grid
+    }
+
+    /// THE OPT-IN GUARANTEE: with the cutoff off (`None` or `Some(0.0)`) every
+    /// builder returns the historical grid bit for bit — flat (against the
+    /// verbatim pre-P2 loop) and pruned (against a primitive-level serial
+    /// reference) — and the count is the closed-form one.
+    #[test]
+    fn weight_cut_off_is_bit_identical_to_the_uncut_grid() {
+        let mol = water();
+        let base = AtomicGridConfig {
+            n_radial: 35,
+            n_angular: 194,
+            ..Default::default()
+        };
+        let flat_ref = build_atomic_grid_serial_ref(&mol, &base);
+        assert_grids_bit_identical(&pruned_serial_ref(&mol, &base, None), &flat_ref, "ref/ref");
+        for off in [None, Some(0.0)] {
+            let cfg = with_cut(&base, off);
+            assert_eq!(weight_cut_threshold(&cfg).unwrap(), None);
+            assert_grids_bit_identical(&build_atomic_grid(&mol, &cfg), &flat_ref, "flat");
+            assert_grids_bit_identical(
+                &build_atomic_grid_pruned(&mol, &cfg, None).unwrap(),
+                &flat_ref,
+                "flat via pruned builder",
+            );
+            assert_eq!(
+                atomic_grid_point_count(&mol, &cfg, None).unwrap(),
+                flat_ref.len()
+            );
+            let quad = atomic_quadrature_points(&mol, &cfg);
+            assert_eq!(quad.len(), flat_ref.len(), "quadrature points");
+            let (rg, rw1) = build_atomic_grid_with_response_pruned(&mol, &cfg).unwrap();
+            assert_grids_bit_identical(&rg, &flat_ref, "flat response");
+            assert_eq!(rw1.len(), flat_ref.len());
+            for prune in [Some(PruneScheme::NwchemLike), Some(PruneScheme::Sgx)] {
+                let want = pruned_serial_ref(&mol, &base, prune);
+                let got = build_atomic_grid_pruned(&mol, &cfg, prune).unwrap();
+                assert_grids_bit_identical(&got, &want, &format!("{prune:?} off={off:?}"));
+                assert_eq!(
+                    atomic_grid_point_count(&mol, &cfg, prune).unwrap(),
+                    want.len()
+                );
+                let pcfg = AtomicGridConfig {
+                    prune,
+                    ..cfg.clone()
+                };
+                let (rg, _) = build_atomic_grid_with_response_pruned(&mol, &pcfg).unwrap();
+                assert_grids_bit_identical(&rg, &want, &format!("{prune:?} response"));
+            }
+        }
+    }
+
+    /// With a cutoff: the cut grid is EXACTLY the uncut grid's subsequence of
+    /// points with `|w| >= cut` (so every kept `|w| >= cut`, every dropped
+    /// `|w| < cut`, order and bits kept); the count equals the built length;
+    /// the response builder keeps the same points with the uncut `weight1`
+    /// rows of those points; and the quadrature points stay index-aligned
+    /// with the flat cut grid. Large (parallel) and small (serial) grids.
+    #[test]
+    fn weight_cut_drops_exactly_the_points_below_the_cut() {
+        let mol = water();
+        let cases: [(usize, usize, Option<PruneScheme>); 4] = [
+            (35, 194, None),
+            (35, 194, Some(PruneScheme::NwchemLike)),
+            (35, 194, Some(PruneScheme::Sgx)),
+            // 3 · 8 · 26 = 624 points: below PAR_WORK_THRESHOLD, serial paths.
+            (8, 26, None),
+        ];
+        for (n_radial, n_angular, prune) in cases {
+            let base = AtomicGridConfig {
+                n_radial,
+                n_angular,
+                prune,
+                weight_cut: None,
+            };
+            let full = build_atomic_grid_pruned(&mol, &base, prune).unwrap();
+            let (full_g, full_w1) = build_atomic_grid_with_response_pruned(&mol, &base).unwrap();
+            assert_grids_bit_identical(&full_g, &full, "uncut response");
+            for cut in [1e-14, 1e-8] {
+                let what = format!("{n_radial}x{n_angular} {prune:?} cut {cut:e}");
+                let cfg = with_cut(&base, Some(cut));
+                let keep = |p: &GridPoint| p.weight.abs() >= cut;
+                let kept: Vec<GridPoint> = full.iter().copied().filter(keep).collect();
+                let dropped: Vec<GridPoint> = full.iter().copied().filter(|p| !keep(p)).collect();
+                assert!(dropped.iter().all(|p| p.weight.abs() < cut), "{what}");
+                assert_eq!(kept.len() + dropped.len(), full.len());
+
+                let got = build_atomic_grid_pruned(&mol, &cfg, prune).unwrap();
+                assert!(
+                    got.iter().all(|p| p.weight.abs() >= cut),
+                    "{what}: kept below cut"
+                );
+                assert_grids_bit_identical(&got, &kept, &what);
+                assert_eq!(
+                    atomic_grid_point_count(&mol, &cfg, prune).unwrap(),
+                    got.len(),
+                    "{what}: count"
+                );
+                // 35 shells put the innermost r ~ 1e-4 bohr, so w_r ~ r^2 dr << 1e-8.
+                if cut == 1e-8 && n_radial >= 35 {
+                    assert!(!dropped.is_empty(), "{what}: nothing dropped at 1e-8");
+                }
+
+                let (rg, rw1) = build_atomic_grid_with_response_pruned(&mol, &cfg).unwrap();
+                assert_grids_bit_identical(&rg, &got, &format!("{what} response"));
+                let want_w1: Vec<&Vec<[f64; 3]>> = full_g
+                    .iter()
+                    .zip(&full_w1)
+                    .filter(|(p, _)| keep(p))
+                    .map(|(_, r)| r)
+                    .collect();
+                assert_eq!(rw1.len(), want_w1.len(), "{what}: weight1 rows");
+                for (g, (a, b)) in rw1.iter().zip(&want_w1).enumerate() {
+                    for (ea, eb) in a.iter().zip(b.iter()) {
+                        for k in 0..3 {
+                            assert_eq!(ea[k].to_bits(), eb[k].to_bits(), "{what}: weight1 at {g}");
+                        }
+                    }
+                }
+
+                if prune.is_none() {
+                    assert_grids_bit_identical(&build_atomic_grid(&mol, &cfg), &got, &what);
+                    let quad = atomic_quadrature_points(&mol, &cfg);
+                    assert_eq!(quad.len(), got.len(), "{what}: quadrature points");
+                    for (q, p) in quad.iter().zip(&got) {
+                        assert_eq!(q.0, p.home_atom);
+                        assert_eq!(q.1, p.xyz);
+                    }
+                }
+            }
+        }
+    }
+
+    /// A negative, NaN or infinite cutoff is an error (never silently "off"),
+    /// from every fallible entry point, and a panic from the infallible ones.
+    #[test]
+    fn invalid_weight_cut_is_refused() {
+        let mol = h2();
+        for bad in [-1e-14, f64::NAN, f64::INFINITY] {
+            let cfg = AtomicGridConfig {
+                n_radial: 8,
+                n_angular: 26,
+                weight_cut: Some(bad),
+                ..Default::default()
+            };
+            assert!(weight_cut_threshold(&cfg).is_err(), "{bad}");
+            assert!(build_atomic_grid_pruned(&mol, &cfg, None).is_err(), "{bad}");
+            assert!(atomic_grid_point_count(&mol, &cfg, None).is_err(), "{bad}");
+            assert!(
+                build_atomic_grid_with_response_pruned(&mol, &cfg).is_err(),
+                "{bad}"
+            );
+            assert!(std::panic::catch_unwind(|| build_atomic_grid(&mol, &cfg)).is_err());
+            assert!(std::panic::catch_unwind(|| atomic_quadrature_points(&mol, &cfg)).is_err());
+        }
+    }
+
+    /// Benzene at the default 75x110 grid, flat and NWChem-pruned: ORCA's
+    /// `WeightCut 1e-14` drops a nonzero number of points, and the count
+    /// equals the built length. Prints the fraction dropped.
+    #[test]
+    fn weight_cut_drops_points_on_benzene() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../testdata/molecules/benzene.xyz");
+        let mol = Molecule::load_xyz(path.to_str().unwrap()).unwrap();
+        for prune in [None, Some(PruneScheme::NwchemLike)] {
+            let base = AtomicGridConfig {
+                prune,
+                ..Default::default()
+            };
+            let cfg = with_cut(&base, Some(1e-14));
+            let n_full = atomic_grid_point_count(&mol, &base, prune).unwrap();
+            let grid = build_atomic_grid_pruned(&mol, &cfg, prune).unwrap();
+            assert_eq!(
+                atomic_grid_point_count(&mol, &cfg, prune).unwrap(),
+                grid.len()
+            );
+            assert!(grid.iter().all(|p| p.weight.abs() >= 1e-14));
+            let dropped = n_full - grid.len();
+            eprintln!(
+                "benzene 75x110 {prune:?}: {n_full} pts, {dropped} dropped at 1e-14 ({:.2}%)",
+                100.0 * dropped as f64 / n_full as f64
+            );
+            assert!(
+                dropped > 0,
+                "{prune:?}: weight cut 1e-14 dropped nothing on benzene"
+            );
+        }
     }
 }

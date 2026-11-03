@@ -138,6 +138,7 @@ fn run_scf(xyz: &str, basis_name: &str, xc: &str, prune: Option<PruneScheme>) ->
             n_radial: 75,
             n_angular: 110,
             prune,
+            weight_cut: None,
         }),
         ..Default::default()
     };
@@ -354,6 +355,7 @@ fn prune_none_reproduces_the_flat_grid_bit_for_bit() {
         n_radial: 75,
         n_angular: 110,
         prune: None,
+        weight_cut: None,
     };
     let flat = build_atomic_grid(&mol, &cfg);
     let none = build_atomic_grid_pruned(&mol, &cfg, None).unwrap();
@@ -391,6 +393,7 @@ fn the_pruned_scf_really_uses_fewer_points() {
             n_radial: 75,
             n_angular: 110,
             prune: None,
+            weight_cut: None,
         };
         let flat = build_atomic_grid(&mol, &cfg);
         let pruned = build_atomic_grid_pruned(&mol, &cfg, Some(PruneScheme::NwchemLike)).unwrap();
@@ -435,6 +438,7 @@ fn vv10_nlc_grid_survives_a_pruned_main_grid() {
         n_radial: 50,
         n_angular: 50,
         prune: None,
+        weight_cut: None,
     };
     assert!(
         build_atomic_grid_pruned(&mol, &nlc_pruned, Some(PruneScheme::NwchemLike)).is_err(),
@@ -473,11 +477,13 @@ fn vv10_nlc_grid_survives_a_pruned_main_grid() {
             n_radial: 75,
             n_angular: 110,
             prune: Some(PruneScheme::NwchemLike),
+            weight_cut: None,
         }),
         nlc_grid: Some(AtomicGridConfig {
             n_radial: 50,
             n_angular: 50,
             prune: None,
+            weight_cut: None,
         }),
         ..Default::default()
     };
@@ -506,6 +512,7 @@ fn gradient_grid_is_the_pruned_energy_grid() {
         n_radial: 75,
         n_angular: 110,
         prune: Some(PruneScheme::NwchemLike),
+        weight_cut: None,
     };
     let (grid, weight1) = build_atomic_grid_with_response(&mol, &pruned).unwrap();
     let energy_grid = build_atomic_grid_pruned(&mol, &pruned, pruned.prune).unwrap();

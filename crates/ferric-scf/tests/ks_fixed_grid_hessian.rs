@@ -72,6 +72,7 @@ fn grid_cfg() -> AtomicGridConfig {
         n_radial: 50,
         n_angular: 110,
         prune: None,
+        weight_cut: None,
     }
 }
 

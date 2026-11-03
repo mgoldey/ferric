@@ -424,13 +424,41 @@ fn resolve_dft_grid(
     grid_angular: Option<usize>,
     grid_prune: Option<&str>,
 ) -> PyResult<Option<ferric_dft::grid::AtomicGridConfig>> {
-    use ferric_dft::prune::{region_orders, PruneScheme, SUPPORTED_LEBEDEV_ORDERS};
+    resolve_dft_grid_with_cut(grid_radial, grid_angular, grid_prune, None)
+}
+
+/// [`resolve_dft_grid`] plus the `grid_weight_cut=` kwarg (ORCA's `WeightCut`,
+/// `AtomicGridConfig::weight_cut`): drop main-grid points whose final weight
+/// has `|w| < grid_weight_cut`. `None` or `0.0` is "off" (and alone keeps the
+/// `None` = default-grid result); a negative, NaN or infinite value is a
+/// `ValueError`, mirroring the CLI's `[dft] grid_weight_cut`.
+fn resolve_dft_grid_with_cut(
+    grid_radial: Option<usize>,
+    grid_angular: Option<usize>,
+    grid_prune: Option<&str>,
+    grid_weight_cut: Option<f64>,
+) -> PyResult<Option<ferric_dft::grid::AtomicGridConfig>> {
+    use ferric_dft::prune::{validate_xc_scheme, PruneScheme, SUPPORTED_LEBEDEV_ORDERS};
     let prune = match grid_prune {
         None => None,
         Some(s) => PruneScheme::parse_config_str(s)
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("grid_prune: {e}")))?,
     };
-    if grid_radial.is_none() && grid_angular.is_none() && grid_prune.is_none() {
+    let weight_cut = match grid_weight_cut {
+        None => None,
+        Some(c) if c.is_finite() && c >= 0.0 => (c > 0.0).then_some(c),
+        Some(c) => {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "grid_weight_cut = {c} is invalid: it must be a finite number >= 0 \
+                 (e.g. 1e-14; 0 or None = no cutoff)"
+            )))
+        }
+    };
+    if grid_radial.is_none()
+        && grid_angular.is_none()
+        && grid_prune.is_none()
+        && weight_cut.is_none()
+    {
         return Ok(None);
     }
     let default = ferric_dft::grid::AtomicGridConfig::default();
@@ -450,17 +478,26 @@ fn resolve_dft_grid(
     if prune == Some(PruneScheme::Sgx) {
         return Err(pyo3::exceptions::PyValueError::new_err(
             "grid_prune = \"sgx\" is the COSX exchange grid's scheme (cosx_grid=); the XC \
-             grid is validated with \"nwchem\", \"nwchem-radial\" or \"none\" only",
+             grid takes \"none\", \"nwchem\", \"nwchem-radial\" or \"defgrid1/2/3\"",
         ));
     }
-    if prune.is_some() {
-        region_orders(n_angular)
+    if matches!(prune, Some(PruneScheme::DefGrid(_)))
+        && (grid_radial.is_some() || grid_angular.is_some())
+    {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "grid_prune = \"defgrid1/2/3\" fixes the radial and angular grid; \
+             remove grid_radial / grid_angular",
+        ));
+    }
+    if let Some(scheme) = prune {
+        validate_xc_scheme(scheme, n_angular)
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("grid_prune: {e}")))?;
     }
     Ok(Some(ferric_dft::grid::AtomicGridConfig {
         n_radial,
         n_angular,
         prune,
+        weight_cut,
     }))
 }
 
@@ -8082,6 +8119,7 @@ fn run_vv10_variants(
         n_radial: 50,
         n_angular: 50,
         prune: None,
+        weight_cut: None,
     };
     if let Some((nr, na)) = nlc_grid {
         grid.n_radial = nr;
@@ -8551,7 +8589,7 @@ fn run_double_hybrid(
     level_shift=None, mom_after_iter=None,
     point_charges=None, external_field=None, memory_budget_gb=None,
     dispersion=None, df_j_aux=None, df_k_aux=None,
-    grid_radial=None, grid_angular=None, grid_prune=None,
+    grid_radial=None, grid_angular=None, grid_prune=None, grid_weight_cut=None,
     cosx_grid=None, cosx_final_pass=None, cosx_final_grid=None, cosx_overlap_fit=None,
     symmetry=false, irrep_nelec=None, fock_hook=None,
     guess_basis=None, guess_projection=None,
@@ -8578,6 +8616,7 @@ fn run_dft(
     grid_radial: Option<usize>,
     grid_angular: Option<usize>,
     grid_prune: Option<&str>,
+    grid_weight_cut: Option<f64>,
     cosx_grid: Option<&Bound<'_, PyAny>>,
     cosx_final_pass: Option<bool>,
     cosx_final_grid: Option<&Bound<'_, PyAny>>,
@@ -8641,7 +8680,10 @@ fn run_dft(
     )?;
     // Main KS grid. `None` (no grid kwarg) keeps the historical 75x110 flat
     // grid byte-for-byte; `ksdft_ladder` clones `cfg`, so every rung uses it.
-    cfg.dft_grid = resolve_dft_grid(grid_radial, grid_angular, grid_prune)?;
+    // `grid_weight_cut=` (off by default) rides the same config, so the
+    // gradient's grid response drops the same points as the SCF grid.
+    cfg.dft_grid =
+        resolve_dft_grid_with_cut(grid_radial, grid_angular, grid_prune, grid_weight_cut)?;
     if symmetry || irrep_nelec.is_some() {
         blocks::refuse_symmetric_dft(
             symmetry,
@@ -8830,21 +8872,25 @@ fn refuse_dft_symmetry_extras(
 }
 
 /// Number of points in the main KS integration grid `run_dft` would build for
-/// `mol` with the same `grid_*` kwargs (same resolver, same builder, no
-/// weight screening in between). Lets a caller see what pruning saves on
-/// their own molecule without running an SCF. Counts per radial shell via
-/// `ferric_dft::grid::atomic_grid_point_count`, which resolves the same
-/// per-shell angular orders as the builder but never generates points or
-/// Becke weights.
+/// `mol` with the same `grid_*` kwargs (same resolver, same builder). Lets a
+/// caller see what pruning or a weight cutoff saves on their own molecule
+/// without running an SCF. Counts via
+/// `ferric_dft::grid::atomic_grid_point_count`: without `grid_weight_cut` it
+/// resolves the same per-shell angular orders as the builder but never
+/// generates points or Becke weights; WITH a cutoff it must evaluate every
+/// point's Becke weight (streamed, no grid allocated), so it costs about as
+/// much as building the grid.
 #[pyfunction]
-#[pyo3(signature = (mol, grid_radial=None, grid_angular=None, grid_prune=None))]
+#[pyo3(signature = (mol, grid_radial=None, grid_angular=None, grid_prune=None, grid_weight_cut=None))]
 fn dft_grid_point_count(
     mol: &PyMolecule,
     grid_radial: Option<usize>,
     grid_angular: Option<usize>,
     grid_prune: Option<&str>,
+    grid_weight_cut: Option<f64>,
 ) -> PyResult<usize> {
-    let cfg = resolve_dft_grid(grid_radial, grid_angular, grid_prune)?.unwrap_or_default();
+    let cfg = resolve_dft_grid_with_cut(grid_radial, grid_angular, grid_prune, grid_weight_cut)?
+        .unwrap_or_default();
     ferric_dft::grid::atomic_grid_point_count(&mol.inner, &cfg, cfg.prune).map_err(make_err)
 }
 
@@ -9018,7 +9064,7 @@ fn evaluate_dispersion(
     level_shift=None, mom_after_iter=None,
     point_charges=None, external_field=None, memory_budget_gb=None,
     dispersion=None, df_j_aux=None, df_k_aux=None,
-    grid_radial=None, grid_angular=None, grid_prune=None,
+    grid_radial=None, grid_angular=None, grid_prune=None, grid_weight_cut=None,
     symmetry=false, irrep_nelec=None, guess_basis=None, guess_projection=None,
 ))]
 #[allow(clippy::too_many_arguments)]
@@ -9043,6 +9089,7 @@ fn run_ksdft(
     grid_radial: Option<usize>,
     grid_angular: Option<usize>,
     grid_prune: Option<&str>,
+    grid_weight_cut: Option<f64>,
     symmetry: bool,
     irrep_nelec: Option<std::collections::BTreeMap<String, usize>>,
     guess_basis: Option<&str>,
@@ -9069,6 +9116,7 @@ fn run_ksdft(
         grid_radial,
         grid_angular,
         grid_prune,
+        grid_weight_cut,
         None,
         None,
         None,

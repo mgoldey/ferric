@@ -444,6 +444,7 @@ fn default_nlc_grid() -> AtomicGridConfig {
         n_radial: 50,
         n_angular: 50,
         prune: None,
+        weight_cut: None,
     }
 }
 

@@ -82,6 +82,7 @@ impl Default for CosxGridSchedule {
                 n_radial,
                 n_angular,
                 prune,
+                weight_cut: None,
             },
             switch_dp_max: COSX_DEFAULT_SWITCH_DP_MAX,
         }
@@ -371,6 +372,7 @@ mod tests {
                 n_radial: 25,
                 n_angular: 26,
                 prune: Some(ferric_dft::prune::PruneScheme::Sgx),
+                weight_cut: None,
             },
             ..Default::default()
         };

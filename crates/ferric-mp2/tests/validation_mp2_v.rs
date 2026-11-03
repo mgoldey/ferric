@@ -428,6 +428,7 @@ fn check_vv10(c: &Case) {
             n_radial: 75,
             n_angular: 110,
             prune: None,
+            weight_cut: None,
         };
         let off_grid = e_nl(&l, b, damping, &other_grid);
         check_misses(&ctx, "(75,110) grid vs (50,50) ref", off_grid, damped_ref);

@@ -3518,6 +3518,7 @@ pub fn hirshfeld_volume_grid_config() -> ferric_dft::grid::AtomicGridConfig {
         // Pruning reduces the angular order exactly where this integrand needs
         // it most (the far tail, which `r³` weights up).
         prune: None,
+        weight_cut: None,
     }
 }
 

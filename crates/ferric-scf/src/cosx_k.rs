@@ -252,6 +252,12 @@ pub fn validate_grid(grid: &AtomicGridConfig) -> Result<(), FerricError> {
             ferric_dft::prune::region_orders(grid.n_angular)
                 .map_err(|e| FerricError::General(format!("cosx grid: {e}")))?;
         }
+        Some(ferric_dft::prune::PruneScheme::DefGrid(_)) => {
+            return Err(FerricError::General(
+                "cosx grid: 'defgrid1/2/3' is an XC grid scheme; use 'sgx', 'nwchem' or 'none'"
+                    .into(),
+            ));
+        }
     }
     Ok(())
 }
@@ -273,6 +279,7 @@ pub fn grid_from_parts(
         n_radial,
         n_angular,
         prune,
+        weight_cut: None,
     };
     validate_grid(&grid)?;
     Ok(grid)
@@ -332,6 +339,7 @@ pub fn default_final_grid() -> AtomicGridConfig {
         n_radial,
         n_angular,
         prune,
+        weight_cut: None,
     }
 }
 
@@ -662,6 +670,7 @@ impl Default for CosxConfig {
                 n_radial,
                 n_angular,
                 prune,
+                weight_cut: None,
             },
             final_grid: Some(default_final_grid()),
             final_pass_explicit: false,
@@ -2583,6 +2592,7 @@ mod tests {
             n_radial: 35,
             n_angular: 194,
             prune: Some(ferric_dft::prune::PruneScheme::Sgx),
+            weight_cut: None,
         };
         assert!(validate_grid(&sgx).is_ok());
         assert!(validate_grid(&AtomicGridConfig {

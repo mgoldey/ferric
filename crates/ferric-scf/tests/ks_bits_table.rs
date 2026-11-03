@@ -89,11 +89,13 @@ fn print_ks_bits_table() {
                     n_radial: 30,
                     n_angular: 50,
                     prune: None,
+                    weight_cut: None,
                 }),
                 nlc_grid: small.then_some(AtomicGridConfig {
                     n_radial: 10,
                     n_angular: 14,
                     prune: None,
+                    weight_cut: None,
                 }),
                 ..Default::default()
             };
