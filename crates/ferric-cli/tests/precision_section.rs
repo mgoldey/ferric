@@ -166,7 +166,7 @@ fn the_precision_section_is_parsed_strictly() {
         (
             "bad_kernel",
             "[precision]\nmode = \"mixed\"\nmixed_kernels = [\"diis\"]\n",
-            "[precision] mixed_kernels: unknown mixed-precision kernel \"diis\" (valid: rimp2-energy, ccsd-amplitudes, dfk-occ, cosx-kern, dfj-pack, xc-vxc)",
+            "[precision] mixed_kernels: unknown mixed-precision kernel \"diis\" (valid: rimp2-energy, ccsd-amplitudes, dfk-occ, cosx-kern, dfj-pack, xc-vxc, dfj-f32)",
         ),
         (
             "empty_list",
@@ -253,7 +253,7 @@ fn cpu_only_mixed_is_refused_for_device_kernels_with_the_reason() {
         stderr(&out).contains(
             "[precision] mode = mixed requires mode = auto or on (FERRIC_GPU / [gpu] mode is \
              off): rimp2-energy runs only on a device; CPU mixed-precision kernels in this \
-             build: none"
+             build: dfj-f32"
         ),
         "{}",
         stderr(&out)

@@ -87,24 +87,41 @@ pub enum MixedKernel {
     /// `mixed_kernels` list that names it runs it (it was slower than the CPU
     /// on the one device measured; see `ferric_dft::xc_batch`).
     XcVxc = 32,
+    /// CPU RI-J with the raw 3-index tensor STORED as f32 (packed triangle or
+    /// Schwarz pair-screened columns, `ferric_integrals::three_index_source::
+    /// f32_store`) and both passes accumulated in f64 against f64 vectors
+    /// (`ferric_scf::df_j`): half the resident RI-J tensor. A CPU kernel
+    /// ([`Self::runs_on_cpu`]), so `[gpu] mode = "off"` admits it; opt-in
+    /// ([`MixedKernelSet::OPT_IN`]), never in `SHIPPED`.
+    ///
+    /// Not `dfj-pack`: that is the device kernel, behind the SCF precision
+    /// ladder with an f64 exit (the host keeps the f64 tensor for it). This one
+    /// keeps NO f64 copy, so every build of the SCF is f32-stored and the
+    /// converged energy is that of the rounded-B Coulomb operator (first-order
+    /// error `≤ (u32 + γ_pair + γ_naux)·|c|ᵀ|B||w|`, see `ferric_scf::df_j`)
+    /// unless the caller applies the f64 energy exit pass. A separate name keeps
+    /// the precision provenance record from claiming the ladder's f64 exit.
+    DfjF32 = 64,
 }
 
 impl MixedKernel {
-    pub const ALL: [MixedKernel; 6] = [
+    pub const ALL: [MixedKernel; 7] = [
         MixedKernel::RiMp2Energy,
         MixedKernel::CcsdAmplitudes,
         MixedKernel::DfkOcc,
         MixedKernel::CosxKern,
         MixedKernel::DfjPack,
         MixedKernel::XcVxc,
+        MixedKernel::DfjF32,
     ];
 
     /// Whether this kernel's mixed path runs on the CPU. Only such a kernel
     /// may run mixed with `[gpu] mode = "off"` (CPU-only mixed precision);
     /// every other kernel's mixed path is a device kernel. `cosx-kern` is the
-    /// CPU `md3c1e` f32 block (`Md3c1e::pair_block_f32`).
+    /// CPU `md3c1e` f32 block (`Md3c1e::pair_block_f32`); `dfj-f32` the CPU
+    /// RI-J with f32 tensor storage.
     pub const fn runs_on_cpu(self) -> bool {
-        matches!(self, MixedKernel::CosxKern)
+        matches!(self, MixedKernel::CosxKern | MixedKernel::DfjF32)
     }
 
     /// Bit position of this kernel in [`MixedKernelSet`] (0-based), the index
@@ -121,6 +138,7 @@ impl MixedKernel {
             MixedKernel::CosxKern => "cosx-kern",
             MixedKernel::DfjPack => "dfj-pack",
             MixedKernel::XcVxc => "xc-vxc",
+            MixedKernel::DfjF32 => "dfj-f32",
         }
     }
 }
@@ -162,8 +180,14 @@ impl MixedKernelSet {
     /// (they are admitted like shipped ones), but they are not in `SHIPPED`,
     /// so `precision = "mixed"` alone and the `mixed` presets leave them out.
     /// `XcVxc`: its device tests pass on a GTX 1080 (sm_61), where the device
-    /// XC path was slower than the CPU.
-    pub const OPT_IN: Self = Self::EMPTY.with(MixedKernel::XcVxc);
+    /// XC path was slower than the CPU. `DfjF32`: a CPU kernel that trades a
+    /// first-order (µEh-scale) energy error for half the RI-J tensor memory, a
+    /// trade the user must ask for (`ferric_scf::df_j`, tests
+    /// `dfj_f32_storage.rs`). An opt-in kernel that runs on the CPU needs no
+    /// device mode.
+    pub const OPT_IN: Self = Self::EMPTY
+        .with(MixedKernel::XcVxc)
+        .with(MixedKernel::DfjF32);
 
     pub const fn with(self, k: MixedKernel) -> Self {
         Self(self.0 | k as u8)
@@ -308,7 +332,7 @@ mod tests {
         );
         assert!(MixedKernel::ALL.contains(&MixedKernel::CosxKern));
         assert!(!MixedKernelSet::SHIPPED.contains(MixedKernel::CosxKern));
-        assert_eq!(MixedKernel::ALL.len(), 6);
+        assert_eq!(MixedKernel::ALL.len(), 7);
     }
 
     #[test]
@@ -338,12 +362,33 @@ mod tests {
     }
 
     #[test]
-    fn kernel_index_is_its_bit_and_only_cosx_runs_on_the_cpu() {
+    fn kernel_index_is_its_bit_and_only_cosx_and_dfj_f32_run_on_the_cpu() {
         for (i, k) in MixedKernel::ALL.into_iter().enumerate() {
             assert_eq!(k.index(), i, "{}", k.name());
             assert_eq!(1u8 << k.index(), k as u8);
-            assert_eq!(k.runs_on_cpu(), k == MixedKernel::CosxKern, "{}", k.name());
+            let cpu = matches!(k, MixedKernel::CosxKern | MixedKernel::DfjF32);
+            assert_eq!(k.runs_on_cpu(), cpu, "{}", k.name());
         }
+    }
+
+    /// Catches: `dfj-f32` shipped (on by default under `precision = mixed`),
+    /// not opt-in, sharing a bit or a name with `dfj-pack`, or not a CPU kernel.
+    #[test]
+    fn dfj_f32_is_an_opt_in_cpu_kernel_distinct_from_dfj_pack() {
+        assert_eq!(MixedKernel::DfjF32 as u8, 64);
+        assert_eq!(MixedKernel::DfjF32.name(), "dfj-f32");
+        assert_eq!(
+            "dfj-f32".parse::<MixedKernel>().unwrap(),
+            MixedKernel::DfjF32
+        );
+        assert_ne!(MixedKernel::DfjF32.name(), MixedKernel::DfjPack.name());
+        assert!(MixedKernel::DfjF32.runs_on_cpu());
+        assert!(!MixedKernel::DfjPack.runs_on_cpu());
+        assert!(!MixedKernelSet::SHIPPED.contains(MixedKernel::DfjF32));
+        assert!(MixedKernelSet::OPT_IN.contains(MixedKernel::DfjF32));
+        let set = MixedKernelSet::EMPTY.with(MixedKernel::DfjF32);
+        assert_eq!(set.to_string(), "dfj-f32");
+        assert_eq!("dfj-f32".parse::<MixedKernelSet>().unwrap(), set);
     }
 
     #[test]

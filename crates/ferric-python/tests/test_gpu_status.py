@@ -328,7 +328,7 @@ def test_configure_gpu_unknown_values_are_value_errors_naming_the_key():
     msg = _refusal("import ferric; ferric.configure_gpu(mixed_kernels=['nope'])")
     assert msg == (
         '[gpu] mixed_kernels: unknown mixed-precision kernel "nope" '
-        "(valid: rimp2-energy, ccsd-amplitudes, dfk-occ, cosx-kern, dfj-pack, xc-vxc)"
+        "(valid: rimp2-energy, ccsd-amplitudes, dfk-occ, cosx-kern, dfj-pack, xc-vxc, dfj-f32)"
     )
 
 
@@ -337,7 +337,7 @@ def test_configure_gpu_mixed_needs_a_device_mode():
     assert msg == (
         "[gpu] precision = mixed requires mode = auto or on "
         "(FERRIC_GPU / [gpu] mode is off): rimp2-energy runs only on a device; "
-        "CPU mixed-precision kernels in this build: none"
+        "CPU mixed-precision kernels in this build: dfj-f32"
     )
 
 
@@ -446,7 +446,7 @@ def test_configure_gpu_a_comma_inside_a_kernel_item_is_refused():
 def test_configure_gpu_empty_kernel_list_keeps_the_core_refusal():
     assert _refusal("import ferric; ferric.configure_gpu(mixed_kernels=[])") == (
         '[gpu] mixed_kernels: unknown mixed-precision kernel "" '
-        "(valid: rimp2-energy, ccsd-amplitudes, dfk-occ, cosx-kern, dfj-pack, xc-vxc)"
+        "(valid: rimp2-energy, ccsd-amplitudes, dfk-occ, cosx-kern, dfj-pack, xc-vxc, dfj-f32)"
     )
 
 
