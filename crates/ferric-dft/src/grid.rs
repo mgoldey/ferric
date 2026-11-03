@@ -353,6 +353,20 @@ fn weigh_points(mol: &Molecule, pre: &[(usize, [f64; 3], f64)]) -> Vec<GridPoint
     }
 }
 
+/// `atomic_quadrature_points` before the weight cutoff. With `cfg.prune` set,
+/// the pruned grid's points in [`build_atomic_grid_pruned`]'s order (the same
+/// per-atom radial counts and per-shell Lebedev orders); each point still
+/// rides its home atom, so the moving-grid Hessian applies as is.
+fn uncut_quadrature_points(mol: &Molecule, cfg: &AtomicGridConfig) -> Vec<(usize, [f64; 3], f64)> {
+    if cfg.prune.is_none() {
+        return flat_quadrature_points(mol, cfg);
+    }
+    let n = uncut_point_count(mol, cfg, cfg.prune)
+        .expect("atomic_quadrature_points: a pruned cfg its caller validated");
+    response_staging(mol, cfg, n)
+        .expect("atomic_quadrature_points: a pruned cfg its caller validated")
+}
+
 /// The un-partitioned points of the flat grid [`build_atomic_grid`] builds:
 /// `(home atom, xyz, w_r · w_l)` in its order (atom-major, then radial, then
 /// angular), before the Becke weight of the home atom multiplies the last
@@ -374,17 +388,7 @@ pub fn atomic_quadrature_points(
     mol: &Molecule,
     cfg: &AtomicGridConfig,
 ) -> Vec<(usize, [f64; 3], f64)> {
-    let mut pre = if cfg.prune.is_some() {
-        // The pruned grid's points in [`build_atomic_grid_pruned`]'s order: the
-        // same per-atom radial counts and per-shell Lebedev orders. Each point
-        // still rides its home atom, so the moving-grid Hessian applies as is.
-        let n = uncut_point_count(mol, cfg, cfg.prune)
-            .expect("atomic_quadrature_points: a pruned cfg its caller validated");
-        response_staging(mol, cfg, n)
-            .expect("atomic_quadrature_points: a pruned cfg its caller validated")
-    } else {
-        flat_quadrature_points(mol, cfg)
-    };
+    let mut pre = uncut_quadrature_points(mol, cfg);
     if let Some(cut) = active_weight_cut(cfg) {
         let weighed = weigh_points(mol, &pre);
         let mut weights = weighed.iter().map(|p| p.weight);

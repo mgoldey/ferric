@@ -581,37 +581,37 @@ impl DftCfg {
         &self,
         prune: Option<ferric_dft::prune::PruneScheme>,
     ) -> Result<Option<ferric_dft::grid::AtomicGridConfig>, String> {
-        // Absent grid keys mean the production grid (`AtomicGridConfig::
-        // production`): `None` here, which every KS path resolves to it. An
-        // explicit size keeps the default scheme and cutoff unless
-        // `grid_prune` / `grid_weight_cut` say otherwise ("none", 0).
-        let cut_set = self.grid_weight_cut.is_some();
         let weight_cut = self.grid_weight_cut()?;
         self.refuse_sizes_with_defgrid(prune)?;
-        if !self.sets_grid_size() && self.grid_prune.is_none() && !cut_set {
+        if !self.sets_grid_size() && self.grid_prune.is_none() && self.grid_weight_cut.is_none() {
             return Ok(None);
         }
+        self.explicit_grid(prune, weight_cut).map(Some)
+    }
+
+    /// The explicit grid [`Self::grid_config`] builds once any grid key is
+    /// set: unset sizes from the production grid, and an unset `grid_prune` /
+    /// `grid_weight_cut` keeps the production scheme / cutoff at that size.
+    fn explicit_grid(
+        &self,
+        prune: Option<ferric_dft::prune::PruneScheme>,
+        weight_cut: Option<f64>,
+    ) -> Result<ferric_dft::grid::AtomicGridConfig, String> {
         let default = ferric_dft::grid::AtomicGridConfig::production();
         let n_radial = self.grid_radial.unwrap_or(default.n_radial);
         let n_angular = self.grid_angular.unwrap_or(default.n_angular);
         let sized = ferric_dft::grid::AtomicGridConfig::production_sized(n_radial, n_angular);
-        let prune = if self.grid_prune.is_some() {
-            prune
-        } else {
-            sized.prune
-        };
-        let weight_cut = if cut_set {
-            weight_cut
-        } else {
-            sized.weight_cut
-        };
+        let prune = self.grid_prune.as_ref().map_or(sized.prune, |_| prune);
+        let weight_cut = self
+            .grid_weight_cut
+            .map_or(sized.weight_cut, |_| weight_cut);
         validate_grid_sizes(n_radial, n_angular, prune)?;
-        Ok(Some(ferric_dft::grid::AtomicGridConfig {
+        Ok(ferric_dft::grid::AtomicGridConfig {
             n_radial,
             n_angular,
             prune,
             weight_cut,
-        }))
+        })
     }
 
     /// `grid_prune = "defgrid1/2/3"` fixes both grid sizes, so an explicit
@@ -11112,13 +11112,15 @@ mod cli_wired_keys_tests {
         c.validate_dft_section().unwrap();
         c.validate_cli_wired_keys().unwrap();
         let g = c.dft.grid_config(None).unwrap().unwrap();
-        assert_eq!((g.n_radial, g.n_angular, g.prune), (99, 302, None));
-        // One key alone keeps the other at the library default.
+        let sized = ferric_dft::grid::AtomicGridConfig::production_sized(99, 302);
+        assert_eq!((g.n_radial, g.n_angular, g.prune), (99, 302, sized.prune));
+        assert_eq!(g.weight_cut, sized.weight_cut);
+        // One key alone keeps the other at the production default.
         let c = cfg("ksdft", "energy", 1, "[dft]\ngrid_angular = 302\n");
         let g = c.dft.grid_config(None).unwrap().unwrap();
-        let d = ferric_dft::grid::AtomicGridConfig::default();
+        let d = ferric_dft::grid::AtomicGridConfig::production();
         assert_eq!((g.n_radial, g.n_angular), (d.n_radial, 302));
-        // No key at all: None, byte-identical to the historical default path.
+        // No key at all: None, which every KS path resolves to the production grid.
         assert!(cfg("ksdft", "energy", 1, "")
             .dft
             .grid_config(None)
@@ -11165,7 +11167,7 @@ mod cli_wired_keys_tests {
         assert!(c.dft.grid_weight_cut.is_none());
         assert!(c.dft.grid_config(None).unwrap().is_none());
 
-        // Present and valid: the default grid sizes with the cutoff set.
+        // Present and valid: the production grid with this cutoff.
         let c = cfg(
             "ksdft",
             "energy",
@@ -11175,10 +11177,10 @@ mod cli_wired_keys_tests {
         c.validate_dft_section().unwrap();
         c.validate_cli_wired_keys().unwrap();
         let g = c.dft.grid_config(None).unwrap().unwrap();
-        let d = ferric_dft::grid::AtomicGridConfig::default();
+        let d = ferric_dft::grid::AtomicGridConfig::production();
         assert_eq!(
             (g.n_radial, g.n_angular, g.prune),
-            (d.n_radial, d.n_angular, None)
+            (d.n_radial, d.n_angular, d.prune)
         );
         assert_eq!(g.weight_cut, Some(1e-14));
         // Next to the other grid keys and a prune scheme.
@@ -11186,7 +11188,7 @@ mod cli_wired_keys_tests {
             "ksdft",
             "energy",
             1,
-            "[dft]\ngrid_radial = 99\ngrid_angular = 302\ngrid_weight_cut = 1e-12\n",
+            "[dft]\ngrid_radial = 99\ngrid_angular = 302\ngrid_prune = \"nwchem\"\ngrid_weight_cut = 1e-12\n",
         );
         let g = c
             .dft
@@ -11201,7 +11203,8 @@ mod cli_wired_keys_tests {
             .validate_cli_wired_keys()
             .unwrap();
 
-        // Zero (float or integer TOML) is "off": no config, harmless anywhere.
+        // Zero (float or integer TOML) is "off": the production grid without a
+        // cutoff, and harmless on a kind with no KS grid.
         for zero in ["0.0", "0"] {
             let c = cfg(
                 "rhf",
@@ -11210,7 +11213,13 @@ mod cli_wired_keys_tests {
                 &format!("[dft]\ngrid_weight_cut = {zero}\n"),
             );
             assert_eq!(c.dft.grid_weight_cut(), Ok(None), "{zero}");
-            assert!(c.dft.grid_config(None).unwrap().is_none(), "{zero}");
+            let g = c.dft.grid_config(None).unwrap().unwrap();
+            assert_eq!(g.weight_cut, None, "{zero}");
+            assert_eq!(
+                g.prune,
+                ferric_dft::grid::AtomicGridConfig::production().prune,
+                "{zero}"
+            );
             c.validate_dft_section().unwrap();
         }
 
