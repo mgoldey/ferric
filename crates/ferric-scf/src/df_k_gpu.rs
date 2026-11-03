@@ -56,7 +56,7 @@
 //! GPU kernels"; the tests here pin the kernel, not that map. `dfk-occ` is opt-in
 //! (`MixedKernelSet::OPT_IN`), not shipped: on the one device measured it saved
 //! about 2% of the wall time against the f64 device DF-K at def2-TZVP and was
-//! slower with diffuse basis sets.
+//! 3-7% slower with diffuse basis sets.
 use std::sync::Arc;
 
 use ferric_core::gpu::batched::{

@@ -6,7 +6,12 @@
 //! J/K build may run a mixed device kernel only when mixed precision was
 //! requested for one of the two kernels, a previous build of the same SCF
 //! exists, and some spin density moved by more than [`JK_LADDER_THRESH`](crate::jk_ladder::JK_LADDER_THRESH) (RMS
-//! over the AO matrix) since it. The first build of every SCF is f64. When the
+//! over the AO matrix) since it, and the density has not yet settled: the
+//! first build that finds it moved by at most τ after a mixed build latches the
+//! SCF to f64 for good (one way; without it each mixed build's error could move
+//! the density back above τ, and with diffuse basis sets the SCF flipped
+//! between mixed and f64 builds with DIIS stalled near τ). The first build of
+//! every SCF is f64. When the
 //! ladder says f64, `dfk-occ` runs the f64 device path on the f64 copy of `B`
 //! it keeps beside the f32 one when the pool holds both (`crate::df_k_gpu`);
 //! otherwise, and always for `dfj-pack`, an f64 build with an f32 resident
@@ -197,6 +202,10 @@ pub mod seams {
     /// before the ladder (every device build mixed, no f64 exit). The kernel
     /// error maps measure the kernel itself with this.
     pub static JK_LADDER_OFF: AtomicBool = AtomicBool::new(false);
+    /// Mutation, and the stress arms that exercise the exit veto: no one-way
+    /// latch (neither a settled nor a non-contracting density after mixed
+    /// builds latches the SCF to f64; later movement re-enables mixed).
+    pub static NO_SETTLE_LATCH: AtomicBool = AtomicBool::new(false);
     /// Replace [`super::JK_LADDER_THRESH`] (e.g. 0: every build after the
     /// first is mixed until the exit).
     pub static JK_LADDER_THRESH_OVERRIDE: Mutex<Option<f64>> = Mutex::new(None);
@@ -211,6 +220,17 @@ fn thresh() -> f64 {
         return t;
     }
     JK_LADDER_THRESH
+}
+
+fn no_settle_latch() -> bool {
+    #[cfg(feature = "test-seams")]
+    {
+        seams::NO_SETTLE_LATCH.load(std::sync::atomic::Ordering::Relaxed)
+    }
+    #[cfg(not(feature = "test-seams"))]
+    {
+        false
+    }
 }
 
 fn ladder_off() -> bool {
@@ -263,8 +283,15 @@ pub struct JkLadder {
     ladder: PrecisionLadder<[bool; 2]>,
     /// Whether this SCF can reach a device J/K kernel at all.
     has_df: bool,
-    /// Set by an exit veto: every later build of this SCF is f64.
+    /// Set by an exit veto, or by the first build that finds the density
+    /// settled (moved by at most τ) after a mixed build: every later build of
+    /// this SCF is f64.
     latched_f64: Cell<bool>,
+    /// Some build of this SCF was allowed to run mixed.
+    allowed_mixed: Cell<bool>,
+    /// The previous build was allowed to run mixed, and the density change
+    /// the ladder measured for it.
+    prev: Cell<(bool, Option<f64>)>,
 }
 
 impl JkLadder {
@@ -276,6 +303,8 @@ impl JkLadder {
             ladder: PrecisionLadder::new(LadderSite::Jk),
             has_df: df_builders.contains(&true),
             latched_f64: Cell::new(false),
+            allowed_mixed: Cell::new(false),
+            prev: Cell::new((false, None)),
         }
     }
 
@@ -293,13 +322,38 @@ impl JkLadder {
         }
         note_ladder_builds();
         let moving = self.ladder.step_with(true, thresh(), ds);
-        let mixed = moving && !self.latched_f64.get();
+        let mixed = self.decide(moving, self.ladder.last_change());
         let prev = SCOPE.with(|s| s.replace(Some(mixed)));
         JkBuildScope {
             ladder: Some(self),
             prev,
             ran0: RAN_MIXED.with(Cell::get),
         }
+    }
+
+    /// This build's precision from the ladder's `moving` verdict and the
+    /// density change `change` it measured. One way: the SCF latches to f64 for
+    /// good at the first build, after a mixed one, that finds the density
+    /// settled (moved by at most τ) or not contracting (`change` at least the
+    /// previous build's, when that build was mixed). A converging SCF's
+    /// density change shrinks build to build; once it stops shrinking under
+    /// mixed builds, their own error is what moves the density. Without the
+    /// latch that error kept the change above τ with diffuse basis sets (DIIS
+    /// error at 1e-7, density change stuck at 5e-5 to 1e-4 on benzene /
+    /// aug-cc-pVDZ), so the SCF flipped between mixed and f64 builds near τ.
+    /// Latching early costs only the speed of the remaining builds.
+    fn decide(&self, moving: bool, change: Option<f64>) -> bool {
+        let (prev_mixed, prev_change) = self.prev.get();
+        let stalled = prev_mixed && matches!((prev_change, change), (Some(a), Some(b)) if b >= a);
+        if (!moving || stalled) && self.allowed_mixed.get() && !no_settle_latch() {
+            self.latched_f64.set(true);
+        }
+        let mixed = moving && !self.latched_f64.get();
+        if mixed {
+            self.allowed_mixed.set(true);
+        }
+        self.prev.set((mixed, change));
+        mixed
     }
 
     /// The f64 exit: `conv` is the solver's converged-exit decision for this
@@ -332,7 +386,8 @@ impl JkLadder {
         JkExit::RedoInF64
     }
 
-    /// Whether an exit veto has latched this SCF to f64.
+    /// Whether an exit veto, or the density settling after a mixed build, has
+    /// latched this SCF to f64.
     pub fn latched_f64(&self) -> bool {
         self.latched_f64.get()
     }
@@ -396,6 +451,10 @@ impl Drop for JkBuildScope<'_> {
 mod tests {
     use super::*;
 
+    /// Serialises the tests that call `decide` against the one that sets the
+    /// process-wide `NO_SETTLE_LATCH` seam.
+    static DECIDE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     fn guard_with(l: &JkLadder, mixed: bool) -> JkBuildScope<'_> {
         // A scope as `begin_build` opens it when mixed is requested.
         let prev = SCOPE.with(|s| s.replace(Some(mixed)));
@@ -404,6 +463,77 @@ mod tests {
             prev,
             ran0: RAN_MIXED.with(Cell::get),
         }
+    }
+
+    /// Catches: a ladder that returns to mixed after the density settled, and
+    /// a first build (no previous density, so not "moving") that latches
+    /// before any mixed build. The seam restores the old two-way ladder.
+    #[test]
+    fn a_settled_density_latches_f64_one_way() {
+        let _g = DECIDE.lock().unwrap_or_else(|e| e.into_inner());
+        let l = JkLadder::new([true]);
+        assert!(!l.decide(false, None), "first build: f64");
+        assert!(!l.latched_f64(), "the first build must not latch");
+        assert!(
+            l.decide(true, Some(1e-2)) && l.decide(true, Some(1e-3)),
+            "moving: mixed"
+        );
+        assert!(!l.decide(false, Some(1e-6)), "settled: f64");
+        assert!(l.latched_f64(), "settled after mixed: latched");
+        assert!(!l.decide(true, Some(1e-4)), "moving again: still f64");
+        assert!(!l.decide(false, Some(1e-7)));
+    }
+
+    /// Catches: a ladder that keeps running mixed while the density change
+    /// stops shrinking (the mixed error's own floor above τ), one that latches
+    /// on a shrinking change, and one that does not stay latched.
+    #[test]
+    fn a_density_change_that_stops_shrinking_under_mixed_builds_latches_f64() {
+        let _g = DECIDE.lock().unwrap_or_else(|e| e.into_inner());
+        let l = JkLadder::new([true]);
+        assert!(!l.decide(false, None));
+        assert!(l.decide(true, Some(1e-2)));
+        assert!(l.decide(true, Some(3e-3)), "shrinking: mixed");
+        assert!(
+            l.decide(true, Some(2.9e-3)),
+            "barely shrinking is still shrinking"
+        );
+        assert!(!l.latched_f64());
+        assert!(!l.decide(true, Some(2.9e-3)), "not shrinking: f64");
+        assert!(l.latched_f64());
+        assert!(!l.decide(true, Some(1e-3)), "latched for good");
+
+        // The NaN change of a broken density never counts as "not shrinking"
+        // by itself; a NaN density is not "moving" either, so it settles.
+        let m = JkLadder::new([true]);
+        assert!(!m.decide(false, None));
+        assert!(m.decide(true, Some(1e-3)));
+        assert!(!m.decide(false, Some(f64::NAN)) && m.latched_f64());
+    }
+
+    #[cfg(feature = "test-seams")]
+    #[test]
+    fn the_no_settle_latch_seam_restores_the_two_way_ladder() {
+        let _g = DECIDE.lock().unwrap_or_else(|e| e.into_inner());
+        seams::NO_SETTLE_LATCH.store(true, std::sync::atomic::Ordering::SeqCst);
+        let two_way = JkLadder::new([true]);
+        // Moving, still shrinking-or-not, settled, moving again: never latched.
+        let got: Vec<bool> = [
+            (false, None),
+            (true, Some(1e-3)),
+            (true, Some(2e-3)),
+            (false, Some(1e-6)),
+            (true, Some(1e-3)),
+        ]
+        .map(|(m, c)| two_way.decide(m, c))
+        .to_vec();
+        seams::NO_SETTLE_LATCH.store(false, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(
+            got,
+            [false, true, true, false, true],
+            "the mutant is two-way"
+        );
+        assert!(!two_way.latched_f64());
     }
 
     /// Catches: a scope that leaks past its guard, a build kept for the exit

@@ -568,13 +568,14 @@ converged-exit Fock matrix against an independent f64 rebuild at a loose
 **`dfk-occ`** (opt-in, not in the default mixed set: it runs only when
 `mixed_kernels` names it, under `mode = "on"`; on a GTX 1080 a mixed SCF saved
 about 2% of the wall time against the f64 device DF-K at def2-TZVP, nothing
-measurable at def2-SVP, and was slower with diffuse basis sets, so there is no
-reason to run it by default). The DF-K occupied path with the dressed `B`
+measurable at def2-SVP, and was 3-7% slower with diffuse basis sets, so there is
+no reason to run it by default). The DF-K occupied path with the dressed `B`
 resident on the device as f32 and `C_occ` rounded to f32 on every build: each
 `Y_P = C_occᵀ·B_P` is a k-panelled f32 product of width b = 64 flushed into f64,
 and the SYRK and everything after it are f64. It runs behind the SCF precision
 ladder (`crates/ferric-scf/src/jk_ladder.rs`), shared with `dfj-pack`: a build is
-mixed only while the density moves (τ = 1e-5), a build the ladder keeps f64 runs
+mixed only while the density moves by more than τ = 1e-5 and still contracts
+(one way: once it settles or stops contracting the SCF stays f64), a build the ladder keeps f64 runs
 the f64 device path on an f64 copy of `B` held beside the f32 one (rounded from
 it on the device, bit-identical to rounding on the host; when the pool cannot
 hold both copies, the f32 copy alone and the host f64 path), and a converged exit whose last build was mixed is refused
@@ -605,10 +606,10 @@ scale of its own termination noise:
 | n-dodecane | def2-SVP | RHF | 38 | 298 | 10 / 10 | 5 / 21 | 6.8e-13 | 1.8e-14 | 6.0e-11 |
 | n-hexadecane | def2-SVP | RHF | 50 | 394 | 10 / 10 | 5 / 21 | 1.6e-12 | 3.2e-14 | 9.1e-11 |
 | n-icosane | def2-SVP | RHF | 62 | 490 | 10 / 10 | 5 / 21 | 5.0e-12 | 8.1e-14 | 1.1e-10 |
-| benzene | aug-cc-pVDZ | RHF | 12 | 192 | 11 / 103 (60 + 43) | 25 / 43 (last rung) | 2.8e-13 | 2.4e-14 | 4.6e-13 |
-| benzene | aug-cc-pVTZ | RHF | 12 | 414 | 10 / 20 | 13 / 33 | 1.5e-12 | 1.3e-13 | 7.4e-12 |
+| benzene | aug-cc-pVDZ | RHF | 12 | 192 | 11 / 15 | 8 / 26 | 5.7e-14 | 4.7e-15 | 4.6e-13 |
+| benzene | aug-cc-pVTZ | RHF | 12 | 414 | 10 / 12 | 6 / 25 | 1.6e-12 | 1.3e-13 | 7.4e-12 |
 | OH (UHF) | cc-pVDZ | UHF | 2 | 19 | 10 / 10 | 7 / 22 | 2.8e-14 | 1.4e-14 | 2.2e-10 |
-| OH (UKS) | cc-pVDZ | B3LYP | 2 | 19 | 24 / 23 | 16 / 35 | 2.8e-14 | 1.4e-14 | 2.8e-14 |
+| OH (UKS) | cc-pVDZ | B3LYP | 2 | 19 | 24 / 23 | 6 / 35 | 1.4e-14 | 7.1e-15 | 2.8e-14 |
 | benzene | def2-SVP | ωB97X (RSH) | 12 | 114 | 9 / 9 | 6 / 20 | 1.1e-13 | 9.5e-15 | 5.0e-10 |
 
 The largest \|ΔE\| is 5.0e-12 Eh, against the 1.0e-3 Eh shipping bar, with no
@@ -616,16 +617,17 @@ f64 fallback in any run. In every row it is below the f64 run's own exit
 \|dE\|, so what it measures is the two runs' termination noise, not the
 kernel's error. The slope of ln \|ΔE\| against ln N is 1.85 ± 0.51 (standard
 error, 2 degrees of freedom) over the four alkanes with a nonzero \|ΔE\| and
-1.32 ± 0.20 (8 degrees of freedom) over the ten such systems; it is the slope of
+1.40 ± 0.25 (8 degrees of freedom) over the ten such systems; it is the slope of
 that noise floor (the f64 exit \|dE\| grows with N too), not a growth law of
 the mixed error, which the ladder's f64 exit removes from the converged energy.
-The cost is in the iterations: with diffuse basis sets the mixed builds stall
-DIIS (2x the iterations at aug-cc-pVTZ). At aug-cc-pVDZ the density change
-hovers around τ, so the builds keep switching between mixed and f64 and each
-mixed build's error moves the density back above τ; whether the stall ends in
-rung 0 is then sensitive to the last bits of the f64 K (44 iterations when the
-ladder's f64 builds ran the host K, 60 and a second, ADIIS rung of 43 with the
-f64 device K, against 11 for the f64 SCF).
+With diffuse basis sets the mixed builds' own error holds the density change
+between builds at 5e-5 to 1e-4, above τ, while the DIIS error keeps falling.
+The ladder is therefore one way: the first build after a mixed one that finds
+the density settled (changed by at most τ) or not contracting (a change at least
+the previous build's) latches the SCF to f64 for good. Before the latch the
+ladder kept returning to mixed and DIIS stalled near τ: benzene / aug-cc-pVDZ
+took 44 to 103 iterations (the count depended on the last bits of the f64 K),
+and aug-cc-pVTZ 20, against 11 and 10 in f64; with it, 15 and 12.
 
 Speed, n-dodecane RHF (RI-JK, the same card, 6 Rayon threads, two interleaved
 repeats each, whole-run wall time):
@@ -642,9 +644,8 @@ keeps f64 0.60-0.61 s (the f64 device path), and the first device build, which
 uploads the f64 `B` and rounds its f32 copy on the device, 1.02 s against
 1.12 s. Holding both copies costs device memory: 4.58 GB of dressed `B` at
 def2-TZVP against 1.53 GB for the f32 copy alone and 3.05 GB in f64. On the
-benzene rows above the mixed SCF took 6.6 s against 1.8 s (aug-cc-pVDZ) and
-7.5 s against 5.9 s (aug-cc-pVTZ); with the host K for the ladder's f64
-builds they took 3.0 s and 8.0 s.
+benzene rows above the mixed SCF took 1.9 s against 1.8 s (aug-cc-pVDZ) and
+6.2 s against 6.0 s (aug-cc-pVTZ).
 
 The kernel itself (the derived K bound, the exact cross-panel flush and C_occ
 rounding pins, the multi-chunk build, the operand-class twin gate, every
