@@ -565,6 +565,82 @@ files: `crates/ferric-dft/src/xc_batch.rs` (element bound, no device),
 converged-exit Fock matrix against an independent f64 rebuild at a loose
 `density_conv`, RKS and UKS, no device).
 
+**`dfk-occ`** (opt-in, not in the default mixed set: it runs only when
+`mixed_kernels` names it, under `mode = "on"`; on a GTX 1080 a mixed SCF was no
+faster than the f64 device DF-K, and slower with diffuse basis sets, so there is
+no reason to run it by default). The DF-K occupied path with the dressed `B`
+resident on the device as f32 and `C_occ` rounded to f32 on every build: each
+`Y_P = C_occᵀ·B_P` is a k-panelled f32 product of width b = 64 flushed into f64,
+and the SYRK and everything after it are f64. It runs behind the SCF precision
+ladder (`crates/ferric-scf/src/jk_ladder.rs`), shared with `dfj-pack`: a build is
+mixed only while the density moves (τ = 1e-5), a build the ladder keeps f64 runs
+the host f64 path, and a converged exit whose last build was mixed is refused
+and the iteration redone in f64. The energy is first-order in the K error, so
+that f64 exit, not a Fock-matrix swap, is what makes the returned energy and
+density f64 builds. A `B` element beyond the f32 range or a flush kernel that
+will not load runs the f64 device upload instead, counted (`mixed_fallback_f64`).
+
+| Column | Value |
+|---|---|
+| Accumulation depth | stage 1: k = nbf per element, panels of b = 64; stage 2 (f64): `k_chunk + nchunks` |
+| Bound | \|K̂ − K\| ≤ ε·S, `S = Σ_{P,i} (\|B_P\|\|C\|)(\|B_P\|\|C\|)ᵀ`, ε = `k_error_factor_mixed` (two f32 operand roundings, f32 panel sums, f64 flush), plus the f64 reference's own factor (`crates/ferric-scf/src/df_k_gpu.rs`) |
+| Energy | first order in K, so a converged SCF's energy comes from f64 builds (the ladder's f64 exit); only unconverged iterations carry the mixed error |
+| Mitigation | f64 panel flush, f64 SYRK, the precision ladder and its f64 exit |
+| Precision | f32 `B` and `C_occ`, f32 panel products, f64 sums |
+
+The measured effect on converged SCF energies: the device SCF with `dfk-occ`
+mixed against the f64 device SCF of the same input (RI-JK, def2-universal-jkfit,
+`[gpu] mode = "on"`, default SCF settings, GTX 1080, the release CLI).
+"f64 exit \|dE\|" is the f64 run's energy change at its last iteration, the
+scale of its own termination noise:
+
+| System | basis | method | atoms | nbf | iterations f64 / mixed | mixed K builds / total | \|ΔE\| (Eh) | \|ΔE\| per atom (Eh) | f64 exit \|dE\| (Eh) |
+|---|---|---|---|---|---|---|---|---|---|
+| H2O | cc-pVDZ | RHF | 3 | 24 | 10 / 10 | 7 / 22 | 2.8e-14 | 9.5e-15 | 1.1e-11 |
+| n-butane | def2-SVP | RHF | 14 | 106 | 10 / 10 | 6 / 21 | 1.7e-13 | 1.2e-14 | 2.2e-11 |
+| n-octane | def2-SVP | RHF | 26 | 202 | 10 / 10 | 5 / 21 | 6.8e-13 | 2.6e-14 | 6.4e-11 |
+| n-dodecane | def2-SVP | RHF | 38 | 298 | 10 / 10 | 5 / 21 | 2.0e-12 | 5.4e-14 | 6.0e-11 |
+| n-hexadecane | def2-SVP | RHF | 50 | 394 | 10 / 10 | 5 / 21 | 1.6e-12 | 3.2e-14 | 9.1e-11 |
+| n-icosane | def2-SVP | RHF | 62 | 490 | 10 / 10 | 5 / 21 | 5.0e-12 | 8.1e-14 | 1.1e-10 |
+| benzene | aug-cc-pVDZ | RHF | 12 | 192 | 11 / 44 | 30 / 55 | 3.9e-12 | 3.2e-13 | 4.6e-13 |
+| benzene | aug-cc-pVTZ | RHF | 12 | 414 | 10 / 20 | 13 / 33 | 9.1e-13 | 7.6e-14 | 7.4e-12 |
+| OH (UHF) | cc-pVDZ | UHF | 2 | 19 | 10 / 10 | 7 / 22 | 4.3e-14 | 2.1e-14 | 2.2e-10 |
+| OH (UKS) | cc-pVDZ | B3LYP | 2 | 19 | 24 / 23 | 16 / 35 | 1.4e-14 | 7.1e-15 | 2.8e-14 |
+| benzene | def2-SVP | ωB97X (RSH) | 12 | 114 | 9 / 9 | 6 / 20 | 1.1e-13 | 9.5e-15 | 5.0e-10 |
+
+The largest \|ΔE\| is 5.0e-12 Eh, against the 1.0e-3 Eh shipping bar, with no
+f64 fallback in any run. In every row but benzene / aug-cc-pVDZ it is below the
+f64 run's own exit \|dE\|, so what it measures is the two runs' termination
+noise, not the kernel's error. The slope of ln \|ΔE\| against ln N is 2.10 ±
+0.31 (standard error, 3 degrees of freedom) over the five alkanes and 1.46 ±
+0.28 (9 degrees of freedom) over all eleven systems; it is the slope of that
+noise floor (the f64 exit \|dE\| grows with N too), not a growth law of the
+mixed error, which the ladder's f64 exit removes from the converged energy.
+The cost is in the iterations: with diffuse basis sets the mixed builds stall
+DIIS until the ladder switches to f64 (4x the iterations at aug-cc-pVDZ, 2x at
+aug-cc-pVTZ).
+
+Speed, n-dodecane RHF (RI-JK, the same card, 6 Rayon threads, two interleaved
+repeats each, whole-run wall time):
+
+| basis | nbf | CPU | device f64 | device mixed `dfk-occ` |
+|---|---|---|---|---|
+| def2-SVP | 298 | 10.0, 10.7 s | 10.5, 10.7 s | 10.8, 10.9 s |
+| def2-TZVP | 528 | 31.5, 30.8 s | 28.9, 29.2 s | 30.3, 29.8 s |
+
+At def2-TZVP a mixed iteration took 0.48-0.49 s against 0.60-0.62 s in f64,
+but the first mixed build cost 1.95 s against 1.11 s, and the iterations the
+ladder keeps f64 ran the host K at 0.72-0.76 s, so the mixed SCF finished no
+sooner. On the benzene rows above the mixed SCF took 3.0 s against 2.0 s
+(aug-cc-pVDZ) and 8.0 s against 6.2 s (aug-cc-pVTZ).
+
+The kernel itself (the derived K bound, the exact cross-panel flush and C_occ
+rounding pins, the multi-chunk build, the operand-class twin gate, every
+fallback) is checked by `crates/ferric-scf/tests/gpu_dfk_mixed_kernel.rs`, and
+the laddered SCF energy against a bar derived from the f64 floor by
+`crates/ferric-scf/tests/gpu_jk_ladder.rs`; both need a device and pass on a GTX
+1080 (sm_61).
+
 ## Known limits and negatives
 
 Reported rather than omitted:

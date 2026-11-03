@@ -43,12 +43,12 @@
 //! scope) every build of a mixed `DfK` is mixed.
 //! Open-shell builds reuse the alpha-sized scratch for beta: every mixed copy and
 //! slice uses `nocc`, never the scratch capacity.
-//! Where C2's budget row will need more than this file measures: the shipping bar
-//! is |dE_total| <= 1.0e-3 Eh with error growing no faster than linearly in N, so
-//! the map needs the error per atom and the slope of ln(error) vs ln(N) with its
-//! standard error and degrees of freedom, over the dfk-occ ladder (H2O, butane,
-//! octane, dodecane, benzene aDZ/aTZ, UKS, RSH); the tests here pin the kernel,
-//! not that map.
+//! The kernel's budget row (|dE_total| against the f64 device SCF over H2O, the
+//! C4-C20 alkanes, benzene aDZ/aTZ, UHF, UKS and RSH, with the error per atom and
+//! the ln(error) vs ln(N) slope) is on the validation page, under "Mixed-precision
+//! GPU kernels"; the tests here pin the kernel, not that map. `dfk-occ` is opt-in
+//! (`MixedKernelSet::OPT_IN`), not shipped: it was no faster than the f64 device
+//! DF-K on the one device measured.
 use std::sync::Arc;
 
 use ferric_core::gpu::batched::{
@@ -130,8 +130,8 @@ fn dfk_occ_allowed() -> bool {
 
 /// Is `kernel` in the allowlist this process runs under? With the `test-seams`
 /// feature the [`MIXED_SETTINGS_OVERRIDE`] settings replace the installed ones for
-/// this one decision (the unshipped kernels `dfk-occ` and `dfj-pack` are not in any
-/// installed setting).
+/// this one decision (so a test can enable the unshipped `dfj-pack`, or the
+/// opt-in `dfk-occ` without installing `mode = "on"`).
 #[cfg(feature = "test-seams")]
 pub(crate) fn mixed_kernel_allowed(kernel: MixedKernel) -> bool {
     let over = MIXED_SETTINGS_OVERRIDE

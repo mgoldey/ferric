@@ -223,3 +223,22 @@ fn opt_in_xc_vxc_under_auto_is_refused_naming_mode_on() {
         "{e}"
     );
 }
+
+/// The opt-in `dfk-occ` follows the same admission rule as `xc-vxc`: named under
+/// `mode = "auto"` it is refused with an error naming `mode = "on"`.
+#[test]
+fn opt_in_dfk_occ_under_auto_is_refused_naming_mode_on() {
+    let _g = device_lock();
+    let out = run_toml(
+        "prec_dfk_occ_auto",
+        &format!(
+            "{WATER}\n[gpu]\nmode = \"auto\"\nprecision = \"mixed\"\nmixed_kernels = [\"dfk-occ\"]\n"
+        ),
+    );
+    assert!(!out.status.success(), "{}", stderr(&out));
+    let e = stderr(&out);
+    assert!(
+        e.contains("dfk-occ is opt-in and needs [gpu] mode = \"on\""),
+        "{e}"
+    );
+}

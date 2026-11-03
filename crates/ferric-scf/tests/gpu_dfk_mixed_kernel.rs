@@ -1,6 +1,6 @@
 #![cfg(all(feature = "gpu", feature = "test-seams"))]
 //! Mixed `dfk-occ`: f32-resident dressed B and C_occ, f32 k-panels flushed into f64,
-//! f64 SYRK. The kernel is NOT in `MixedKernelSet::SHIPPED`, so these tests enable
+//! f64 SYRK. The kernel is opt-in, NOT in `MixedKernelSet::SHIPPED`, so these tests enable
 //! it through `GpuSettings::resolve_with_default(.., shipped + dfk-occ)` (the real
 //! resolver, so the allowlist logic under test is the production one) and hand the
 //! result to the `MIXED_SETTINGS_OVERRIDE` seam of `df_k_gpu`, which the DF-K
@@ -63,7 +63,7 @@
 //! Also pinned: resident bytes (4*band*n^2 + 4*n*nocc on the first build), mixed
 //! panels per build, the allowlist (precision = mixed with only rimp2-energy
 //! leaves DF-K f64 and moves no mixed counter), the f64 path's K bits when mixed
-//! is not allowed, and the resolver's refusal of dfk-occ in this build.
+//! is not allowed, and the resolver's opt-in rule for dfk-occ (mode on only).
 use ferric_core::basis;
 use ferric_core::gpu::config::{GpuSettings, GpuSettingsExplicit};
 use ferric_core::gpu::device::FORCE_KERNEL_FAILURE;
@@ -111,7 +111,9 @@ fn ready() -> bool {
     true
 }
 
-/// The build's shipped set plus dfk-occ: what the C3 commit will make real.
+/// The build's shipped set plus dfk-occ. `dfk-occ` is opt-in, which needs mode
+/// "on"; these tests resolve under the installed "auto", so they pass it as
+/// shipped instead.
 fn shipped_plus_dfk() -> MixedKernelSet {
     MixedKernelSet::SHIPPED.with(MixedKernel::DfkOcc)
 }
@@ -907,18 +909,37 @@ fn default_config_keeps_the_f64_path_bit_for_bit_and_moves_no_mixed_counter() {
 }
 
 #[test]
-fn the_resolver_refuses_dfk_occ_in_this_build_and_a_kernel_list_with_f64() {
+fn the_resolver_admits_dfk_occ_only_as_opt_in_under_mode_on_and_refuses_it_with_f64() {
     let _g = GPU.lock().unwrap_or_else(|e| e.into_inner());
-    // This build ships no dfk-occ row: naming it is a refusal, so no config can
-    // reach the mixed DF-K path before the C3 commit.
+    // dfk-occ is opt-in: not shipped, so `precision = mixed` alone leaves it out,
+    // and a list naming it is admitted under mode on and refused under auto.
     assert!(!MixedKernelSet::SHIPPED.contains(MixedKernel::DfkOcc));
+    assert!(MixedKernelSet::OPT_IN.contains(MixedKernel::DfkOcc));
+    let s = resolve(None, MixedKernelSet::SHIPPED).unwrap();
+    assert!(!s.mixed_allows(MixedKernel::DfkOcc));
     let e = resolve(
         Some(MixedKernelSet::EMPTY.with(MixedKernel::DfkOcc)),
         MixedKernelSet::SHIPPED,
     )
     .unwrap_err();
-    assert!(e.contains("dfk-occ") && e.contains("not shipped"), "{e}");
-    // mode off + kernel named + f64 precision is refused as well
+    assert!(
+        e.contains("dfk-occ is opt-in and needs [gpu] mode = \"on\""),
+        "{e}"
+    );
+    let (s, _) = GpuSettings::resolve_with_default(
+        GpuSettingsExplicit {
+            mode: Some(GpuMode::On),
+            precision: Some(Precision::Mixed),
+            mixed_kernels: Some(MixedKernelSet::EMPTY.with(MixedKernel::DfkOcc)),
+            ..Default::default()
+        },
+        |_| None,
+        Precision::F64,
+        MixedKernelSet::SHIPPED,
+    )
+    .unwrap();
+    assert!(s.mixed_allows(MixedKernel::DfkOcc));
+    // a kernel named with f64 precision is refused as well
     let e = GpuSettings::resolve_with_default(
         GpuSettingsExplicit {
             mixed_kernels: Some(MixedKernelSet::EMPTY.with(MixedKernel::DfkOcc)),

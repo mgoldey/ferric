@@ -311,8 +311,9 @@ pub struct GpuSettings {
 
 /// A `mixed_kernels` list given under `precision = mixed`: every name must be
 /// shipped or opt-in ([`MixedKernelSet::OPT_IN`]), and an opt-in kernel needs
-/// `mode = on` (the KS XC grid, the one opt-in consumer, uses the device only
-/// then; under `auto` it would silently run f64 on the CPU).
+/// `mode = on` (the KS XC grid uses the device only then, so under `auto`
+/// `xc-vxc` would silently run f64 on the CPU; `dfk-occ` follows the same rule
+/// so that every opt-in kernel is admitted the same way).
 fn check_given_kernels(
     kernels: MixedKernelSet,
     shipped: MixedKernelSet,

@@ -303,6 +303,27 @@ fn an_explicit_unshipped_kernel_is_refused_and_a_shipped_one_admitted() {
     ]);
     let (s, _) = GpuSettings::resolve(GpuSettingsExplicit::default(), &env_xc).unwrap();
     assert!(s.mixed_allows(MixedKernel::XcVxc) && s.mixed_allows(MixedKernel::RiMp2Energy));
+    // dfk-occ is opt-in on the same terms: `mixed` alone leaves it out, a list
+    // naming it under mode on admits it, and under auto it is refused.
+    let (s, _) = GpuSettings::resolve(GpuSettingsExplicit::default(), &mixed_only).unwrap();
+    assert!(!s.mixed_allows(MixedKernel::DfkOcc));
+    let env_dfk = lookup(&[
+        ("FERRIC_GPU", "on"),
+        ("FERRIC_GPU_PRECISION", "mixed"),
+        ("FERRIC_GPU_MIXED_KERNELS", "dfk-occ"),
+    ]);
+    let (s, _) = GpuSettings::resolve(GpuSettingsExplicit::default(), &env_dfk).unwrap();
+    assert!(s.mixed_allows(MixedKernel::DfkOcc) && !s.mixed_allows(MixedKernel::RiMp2Energy));
+    let env_dfk_auto = lookup(&[
+        ("FERRIC_GPU", "auto"),
+        ("FERRIC_GPU_PRECISION", "mixed"),
+        ("FERRIC_GPU_MIXED_KERNELS", "dfk-occ"),
+    ]);
+    let e = GpuSettings::resolve(GpuSettingsExplicit::default(), &env_dfk_auto).unwrap_err();
+    assert!(
+        e.contains("dfk-occ is opt-in and needs [gpu] mode = \"on\""),
+        "{e}"
+    );
     // An empty shipped set says none are shipped.
     let e = GpuSettings::resolve_with_default(
         GpuSettingsExplicit::default(),
