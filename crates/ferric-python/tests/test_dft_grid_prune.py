@@ -72,7 +72,9 @@ def test_pruned_grid_has_fewer_points(water):
     Fails if `grid_prune` is parsed but never reaches the grid builder."""
     flat = ferric.dft_grid_point_count(water, **FLAT)
     assert flat == 3 * 75 * 110  # no weight screening between build and use
-    pruned = ferric.dft_grid_point_count(water, grid_prune="nwchem", grid_weight_cut=0.0)
+    pruned = ferric.dft_grid_point_count(
+        water, grid_prune="nwchem", grid_weight_cut=0.0
+    )
     saved = 1.0 - pruned / flat
     assert saved > 0.15, f"pruning removed only {100 * saved:.1f}% of {flat} points"
     # The default also thins the hydrogens' radial shells, so it is smaller still.
