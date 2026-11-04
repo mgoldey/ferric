@@ -774,6 +774,21 @@ jobs:
           ls -l /tmp/nextest-shard-*.tar.zst /tmp/canary-archive.tar.zst
           df -h / | tail -1
 
+      # The tiered-test filter (scripts/ci_test_tiers.py) must select EVERY
+      # tiered test and nothing else: a tier string the scanner misread, a
+      # macro-generated test it did not expand, or a name collision with a
+      # precondition-ignored test would otherwise drop or add tests silently.
+      # Checked here, over the whole workspace (SLOW binaries included), on
+      # every run.
+      - name: Check the tier filter
+        run: |
+          set -euo pipefail
+          TIER="$(python3 scripts/ci_test_tiers.py filter)"
+          cargo nextest list --workspace --all-targets --locked \
+            --run-ignored only -E "($TIER)" \
+            --message-format json > /tmp/tier-list.json
+          python3 scripts/ci_test_tiers.py check /tmp/tier-list.json
+
       # retention-days: 2 (was 1): a "Re-run failed jobs" the next day found
       # the archives EXPIRED and could never pass (#525, run 40579399666).
       # ~1.0 GB per run at 4 shards (4 x ~0.22 GB + 0.1 GB canary); at 8 a
@@ -943,6 +958,11 @@ jobs:
         partition: [1, 2, 3, 4, 5, 6, 7, 8]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # A pull_request run checks out the PR's MERGE commit; depth 2
+          # brings its first parent, the base branch tip, which is what
+          # "Tiered tests" below diffs against.
+          fetch-depth: 2
 
       # The ubuntu-22.04 image ships toolchains this job never uses (.NET,
       # Android SDK, GHC, CodeQL, Swift). Deleting them freed 21 GB (87 ->
@@ -1225,6 +1245,61 @@ jobs:
             --no-tests=fail \
             -E "not ($SLOW)"
 
+      # TIERED TESTS. A test that took >=10 s (release build, 2026-11) carries
+      # `#[ignore = "tier <name>: CI runs it when an affected crate changes
+      # (scripts/ci_test_tiers.py)"]`, so the run above
+      # skips it. This step runs the tiered tests of this shard's archive that
+      # the change could break, at crate level: the packages owning the
+      # changed files (vs the base branch for a PR, vs the previous main tip
+      # for a push), every package that depends on them, and the packages
+      # whose tests READ a changed file outside the crates
+      # (scripts/ci_test_scope.py). The nightly schedule and a manual
+      # dispatch run every tier. Anything uncertain widens to all().
+      #
+      # ONLY tiered tests: the filter is built from the exact tier strings
+      # (scripts/ci_test_tiers.py), so a precondition #[ignore] ("quiet box",
+      # "validation: ...") is never swept in; ci_validation_tier_guard pins
+      # this step's shape. Tiered tests in SLOW binaries are not in any shard
+      # archive; slow-tests runs those nightly.
+      # Cost: on main these tests ran untiered inside the same ~25 min shards
+      # (run 41831617425: 16.5-29.1 min per shard), so even all() adds about
+      # one shard's worth of tiered tests plus a second archive extraction.
+      - name: Tiered tests affected by the change, shard ${{ matrix.partition }}
+        timeout-minutes: 60
+        env:
+          EVENT: ${{ github.event_name }}
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          case "$EVENT" in
+            pull_request) BASE="$(git rev-parse HEAD^1 2>/dev/null || true)" ;;
+            push)
+              BASE="$PUSH_BEFORE"
+              git fetch --quiet --depth=1 origin "$BASE" 2>/dev/null || BASE="" ;;
+            *) BASE="" ;;
+          esac
+          if [ "$EVENT" = schedule ] || [ "$EVENT" = workflow_dispatch ]; then
+            SCOPE="all()"
+          else
+            SCOPE="$(python3 scripts/ci_test_scope.py --base "$BASE")"
+          fi
+          echo "tiered-test scope ($EVENT, base ${BASE:-unknown}): $SCOPE"
+          TIER="$(python3 scripts/ci_test_tiers.py filter)"
+          SLOW="$(scripts/ci-shard-plan.sh slow-filter)"
+          ARCHIVE=/tmp/nextest-shard-${{ matrix.partition }}.tar.zst
+          EXTRACT=$(mktemp -d)
+          export FERRIC_RUNLOG_PROBE="$EXTRACT/target/debug/examples/runlog_probe"
+          # --no-tests=pass: a change outside this shard's crates selects
+          # nothing here, which is correct, not a failure.
+          cargo nextest run \
+            --profile ci \
+            --archive-file "$ARCHIVE" \
+            --extract-to "$EXTRACT" \
+            --workspace-remap . \
+            --no-tests=pass \
+            --run-ignored only \
+            -E "($TIER) & ($SCOPE) & not ($SLOW)"
+
       # nextest does NOT run doctests -- `cargo nextest run` skips them
       # silently. Without this step doctest coverage would vanish the moment
       # this workflow landed, which is the same failure mode as a SLOW entry
@@ -1484,6 +1559,25 @@ jobs:
             echo "::error::one or more deferred test commands failed -- see the FAILED lines above"
             exit 1
           fi
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@26e9283f268b880168bdbd2c545dfcd60ec2c6ab # v2.87.13
+        with:
+          tool: cargo-nextest
+
+      # The tiered tests (see test-shard's "Tiered tests" step) that live in
+      # the SLOW binaries above: those binaries are in no shard archive, so
+      # their tiered tests run here, nightly, all of them.
+      - name: Tiered tests in the deferred binaries
+        run: |
+          set -euo pipefail
+          TIER="$(python3 scripts/ci_test_tiers.py filter)"
+          SLOW="$(scripts/ci-shard-plan.sh slow-filter)"
+          cargo nextest run --workspace --all-targets --locked \
+            --profile ci \
+            --no-tests=pass \
+            --run-ignored only \
+            -E "($TIER) & ($SLOW)"
 
   # ── VALIDATION TIER: ferric vs committed external references, weekly ─────
   #

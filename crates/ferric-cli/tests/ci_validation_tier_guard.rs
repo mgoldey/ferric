@@ -395,12 +395,50 @@ fn the_job_is_weekly_and_manual_only() {
     );
 }
 
+/// (job, step name) of every step allowed to run TIERED ignored tests.
+/// MUTATION: drop `($TIER) &` from test-shard's tiered `-E` →
+/// `no_other_job_runs_ignored_tests` fails.
+const TIER_STEPS: [(&str, &str); 3] = [
+    ("build-tests", "Check the tier filter"),
+    (
+        "test-shard",
+        "Tiered tests affected by the change, shard ${{ matrix.partition }}",
+    ),
+    ("slow-tests", "Tiered tests in the deferred binaries"),
+];
+
 #[test]
 fn no_other_job_runs_ignored_tests() {
     let ci = ci_yml();
     let mut outside = ci.replacen(&validation_job(&ci), "", 1);
     for (_, solo) in solo_validation_jobs(&ci) {
         outside = outside.replacen(&solo, "", 1);
+    }
+    // The TIERED-test steps may pass `--run-ignored only`, because their
+    // filter is the tier filter: scripts/ci_test_tiers.py selects only the
+    // exact `#[ignore = "tier <name>: ..."]` tests and refuses a
+    // tier tag in a validation_* binary. Each exempted step must build TIER
+    // from that script and AND it into every `-E`, so the exemption cannot
+    // cover a step that runs anything else.
+    for (job_name, step_name) in TIER_STEPS {
+        let step = step_text(&job(&ci, job_name), step_name);
+        let code = code_only(&step);
+        assert!(
+            code.contains("TIER=\"$(python3 scripts/ci_test_tiers.py filter)\""),
+            "`{step_name}` must take its filter from scripts/ci_test_tiers.py"
+        );
+        assert!(
+            code.contains("--run-ignored only"),
+            "`{step_name}` must run ONLY ignored tests (the tiered ones)"
+        );
+        for e in code.split("-E ").skip(1) {
+            assert!(
+                e.starts_with("\"($TIER) &") || e.starts_with("\"($TIER)\""),
+                "`{step_name}`: every -E must start with the tier filter, got `-E {}`",
+                e.lines().next().unwrap_or("")
+            );
+        }
+        outside = outside.replacen(&step, "", 1);
     }
     // nextest's `--run-ignored` AND libtest's `-- --ignored` /
     // `-- --include-ignored`: any of them in another job would run the
