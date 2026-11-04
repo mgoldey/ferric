@@ -512,10 +512,10 @@ pub struct DftCfg {
     pub grid_angular: Option<usize>,
     /// Grid weight cutoff on the MAIN DFT grid (ORCA's `WeightCut`): drop every
     /// grid point whose final weight (radial x angular x Becke partition) has
-    /// `|w| < grid_weight_cut`. Omitted = no cutoff, byte-identical to a run
-    /// without this key; `0` is also "off". Must be finite and `>= 0`
-    /// (anything else is an error). A typical value is `1e-14`. Same meaning
-    /// as the Python `grid_weight_cut=` kwarg.
+    /// `|w| < grid_weight_cut`. Omitted = the production cutoff,
+    /// `ferric_dft::grid::DEFAULT_WEIGHT_CUT` (1e-14); `0` turns it off. Must
+    /// be finite and `>= 0` (anything else is an error). Same meaning as the
+    /// Python `grid_weight_cut=` kwarg.
     ///
     /// Optimize / frequency runs differentiate the cut energy they converged
     /// (the XC grid-response term drops the same points). Applies to the main
@@ -3718,6 +3718,17 @@ impl Config {
                      be silently ignored"
                 ));
             }
+        }
+        // GW's Sigma_x - v_xc correction evaluates v_xc on the default grid,
+        // so ANY grid key, even one that turns pruning or the cutoff off
+        // ("none", 0), would move the reference SCF off that grid.
+        if kind == "gw" && (self.dft.grid_prune.is_some() || self.dft.grid_weight_cut.is_some()) {
+            return Err(
+                "[dft] grid_prune / grid_weight_cut are not supported with method.kind = \
+                 \"gw\": the Sigma_x - v_xc correction evaluates v_xc on the DEFAULT grid, \
+                 so any other reference grid (\"none\" and 0 included) would not match it"
+                    .to_string(),
+            );
         }
         // Value first (an error on any kind); a cutoff of 0 asks for nothing,
         // so it is harmless anywhere.
@@ -11257,6 +11268,17 @@ mod cli_wired_keys_tests {
             "[dft]\ngrid_weight_cut = 1e-14\n[rpa]\nxc = \"PBE\"\n",
         );
         assert!(gw.validate_dft_section().unwrap_err().contains("gw"));
+        // "Off" values still move a gw reference off the default grid.
+        for key in ["grid_prune = \"none\"", "grid_weight_cut = 0"] {
+            let gw = cfg(
+                "gw",
+                "energy",
+                1,
+                &format!("[dft]\n{key}\n[rpa]\nxc = \"PBE\"\n"),
+            );
+            let e = gw.validate_dft_section().unwrap_err();
+            assert!(e.contains("gw"), "{key}: {e}");
+        }
     }
 
     // ---- smeared [external_potential] charges ----
