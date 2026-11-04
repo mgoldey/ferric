@@ -50,11 +50,29 @@ multiplicity > 1), and in Python through
 
 - Functional: LDA if `[dft] functional` is omitted.
 - Grid: Becke partitioning of atom-centred Treutler–Ahlrichs radial ×
-  Lebedev angular grids, **75 × 110** points per atom, **unpruned**.
-- Pruning is **opt-in**: `[dft] grid_prune = "nwchem"`
-  (`examples/water-pbe-pruned-grid.toml`) removes about 23% of points at
-  75 × 110. Optimization and frequency runs differentiate the grid the SCF
-  ran on (pruned or not, including `grid_radial` / `grid_angular`).
+  Lebedev angular grids, up to **75 × 110** points per atom, **pruned** by
+  default (`grid_prune = "nwchem-radial"`: NWChem angular regions, and 50
+  radial shells for H and He, 66 for Li–Ne, 75 for heavier atoms) with a
+  **1e-14 weight cutoff** (`grid_weight_cut`, ORCA's `WeightCut`). That is
+  42-47% fewer points than the flat 75 × 110 grid on organic molecules, with
+  energies within 2e-7 to 4e-6 Ha of it on PBE/def2-SVP (the flat grid's own
+  error against a 99 × 590 grid is 4.5e-4 to 3.3e-3 Ha on C10–C32 alkanes).
+- The flat 75 × 110 grid is `grid_prune = "none"` with `grid_weight_cut = 0`.
+  `"nwchem"` prunes the angular grid only (about 23% fewer points,
+  `examples/water-pbe-pruned-grid.toml`); `"defgrid1"`–`"defgrid3"` are
+  ORCA 6.1's DEFGRIDs, with their own sizes: fewer radial shells than the
+  default (H 30/35/44, Li–Ne 38/44/53, Na–Ar 46/54/63 against 50/66/75) but
+  more angular points (peak orders 194/302/590 for heavier atoms and 110/194/434
+  for H and He, against 110). `defgrid2`, ORCA's default, moved PBE/def2-SVP
+  energies by 1e-3 to 4e-3 Ha from the flat grid. Setting only `grid_radial` /
+  `grid_angular` keeps the default scheme at that size. Optimization,
+  frequency (including the analytic moving-grid Hessian) and TDDFT runs use
+  the grid the SCF ran on.
+- SCAN is the exception to "pruning costs nothing". On water/6-31G its
+  gradient error against a 99 × 590 grid is 2.1e-4 Ha/Bohr on the flat grid
+  and 5.6e-4 on the default, because the hydrogens lose radial shells.
+  r2SCAN (3.7e-4 flat, 3.6e-4 default) and PBE (unchanged) are not
+  affected. For SCAN, use `grid_prune = "nwchem"` or a larger grid.
 - Density fitting: **RI-J and RI-K are on by default** for `ksdft` and
   `run_dft` (`def2-universal-jkfit`), while `rhf` is exact by default. In
   Python, `df_j_aux=""` selects exact Coulomb. The fitting error grows with

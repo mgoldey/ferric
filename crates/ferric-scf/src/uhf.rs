@@ -1771,7 +1771,10 @@ fn solve_uhf_impl(
                 // `FxcKernelStore::build` allocates a SECOND chi+dchi cache on
                 // the live KS grid, and `check_ao_grid_budget` cannot see it.
                 let fxc_store = if xc_contrib.is_some() {
-                    let main = config.dft_grid.clone().unwrap_or_default();
+                    let main = config
+                        .dft_grid
+                        .clone()
+                        .unwrap_or_else(ferric_dft::grid::AtomicGridConfig::production);
                     let name = config.xc.as_deref().expect("xc_contrib implies Some(xc)");
                     let needed = fxc_kernel_duplicate_bytes(n, mol.atoms.len(), &main);
                     let avail = ferric_core::memory::available_budget_now(
@@ -1962,7 +1965,10 @@ fn solve_uhf_impl(
             // scope for this file) — it only makes the ALREADY-EXISTING
             // second allocation honestly accounted for before it happens.
             let fxc_store = if xc_contrib.is_some() {
-                let main = config.dft_grid.clone().unwrap_or_default();
+                let main = config
+                    .dft_grid
+                    .clone()
+                    .unwrap_or_else(ferric_dft::grid::AtomicGridConfig::production);
                 let name = config.xc.as_deref().expect("xc_contrib implies Some(xc)");
                 let needed = fxc_kernel_duplicate_bytes(n, mol.atoms.len(), &main);
                 let avail = ferric_core::memory::available_budget_now(
@@ -2184,7 +2190,10 @@ fn stability_uhf<'r>(
     }
 
     let fxc_store = if has_xc {
-        let grid = config.dft_grid.clone().unwrap_or_default();
+        let grid = config
+            .dft_grid
+            .clone()
+            .unwrap_or_else(ferric_dft::grid::AtomicGridConfig::production);
         let name = config.xc.as_deref().expect("has_xc implies Some(xc)");
         match crate::rohf::FxcKernelStore::build(mol, prep, &grid, name, config.xc_omega, d_a, d_b)
         {

@@ -21,7 +21,6 @@
 /// A test seam: a `pub static AtomicBool` plus its private getter. With the
 /// `test-seams` feature off neither the static nor any load of it exists and the
 /// getter is a constant `false`, so a shipped build carries no mutable global.
-#[cfg(feature = "gpu")]
 macro_rules! seam_flag {
     ($(#[$doc:meta])* $name:ident, $getter:ident) => {
         $(#[$doc])*
@@ -136,6 +135,7 @@ pub mod guess;
 pub mod jk_ladder;
 /// LinK exchange builder: linear-scaling K via Schwarz-screened column lists.
 pub mod link_k;
+pub mod split_rij;
 
 pub mod rhf;
 /// Newton-step RHF solver with exact orbital Hessian.

@@ -20,7 +20,9 @@ use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
-use ferric_scf::ks_gradient::{ks_gradient_closed, ks_gradient_uks};
+use ferric_scf::ks_gradient::{
+    ks_gradient_closed_with_exchange_on_grids, ks_gradient_uks_with_exchange_on_grids, KsGradGrids,
+};
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::uhf::solve_uhf;
@@ -36,6 +38,8 @@ use std::path::PathBuf;
 /// a stale density, poisoning the FD reference.
 fn cfg_for(xc: &str) -> RhfConfig {
     RhfConfig {
+        // PySCF references were generated on the flat 75 x 110 grid.
+        dft_grid: Some(ferric_dft::grid::AtomicGridConfig::default()),
         xc: Some(xc.into()),
         df_j_aux: Some("def2-universal-jkfit".into()),
         energy_conv: 1e-9,
@@ -143,7 +147,19 @@ fn run_closed(label: &str, xyz: &str, basis_name: &str, xc: &str, tol: f64) {
         "{label} {xc}: reference SCF did not converge"
     );
 
-    let g_ana = ks_gradient_closed(&mol, &prep, &bs, op, &bounds, xc, &res, None).unwrap();
+    let g_ana = ks_gradient_closed_with_exchange_on_grids(
+        &mol,
+        &prep,
+        &bs,
+        op,
+        &bounds,
+        xc,
+        &res,
+        None,
+        None,
+        &KsGradGrids::from_config(&cfg_for(xc)),
+    )
+    .unwrap();
     let g_fd = fd_gradient_closed(xyz, basis_name, xc, 1e-3);
 
     eprintln!("=== {label} {xc} RKS gradient (analytic vs FD) ===");
@@ -276,7 +292,19 @@ fn run_vs_pyscf(label: &str, xyz: &str, basis_name: &str, xc: &str, ref_file: &s
     .unwrap();
     assert!(res.converged, "{label} {xc}: SCF did not converge");
 
-    let g_ana = ks_gradient_closed(&mol, &prep, &bs, op, &bounds, xc, &res, None).unwrap();
+    let g_ana = ks_gradient_closed_with_exchange_on_grids(
+        &mol,
+        &prep,
+        &bs,
+        op,
+        &bounds,
+        xc,
+        &res,
+        None,
+        None,
+        &KsGradGrids::from_config(&cfg_for(xc)),
+    )
+    .unwrap();
     let r = load_ref(ref_file);
 
     eprintln!("=== {label} {xc} RKS gradient (ferric vs PySCF) ===");
@@ -410,6 +438,8 @@ fn scan_gradient_h2o_631g_vs_pyscf() {
 
 fn uhf_cfg(xc: &str) -> RhfConfig {
     RhfConfig {
+        // PySCF references were generated on the flat 75 x 110 grid.
+        dft_grid: Some(ferric_dft::grid::AtomicGridConfig::default()),
         xc: Some(xc.into()),
         df_j_aux: Some("def2-universal-jkfit".into()),
         energy_conv: 1e-9,
@@ -444,7 +474,19 @@ fn run_uks_vs_pyscf(
     .unwrap();
     assert!(res.converged, "{label} {xc}: UKS did not converge");
 
-    let g_ana = ks_gradient_uks(&mol, &prep, &bs, op, &bounds, xc, &res, None).unwrap();
+    let g_ana = ks_gradient_uks_with_exchange_on_grids(
+        &mol,
+        &prep,
+        &bs,
+        op,
+        &bounds,
+        xc,
+        &res,
+        None,
+        None,
+        &KsGradGrids::from_config(&uhf_cfg(xc)),
+    )
+    .unwrap();
     let r = load_ref(ref_file);
 
     eprintln!("=== {label} {xc} UKS gradient (ferric vs PySCF) ===");
@@ -495,7 +537,19 @@ fn pbe_gradient_oh_sto3g_uks_vs_pyscf() {
     )
     .unwrap();
     assert!(res.converged);
-    let g = ks_gradient_uks(&mol, &prep, &bs, op, &bounds, "PBE", &res, None).unwrap();
+    let g = ks_gradient_uks_with_exchange_on_grids(
+        &mol,
+        &prep,
+        &bs,
+        op,
+        &bounds,
+        "PBE",
+        &res,
+        None,
+        None,
+        &KsGradGrids::from_config(&uhf_cfg("PBE")),
+    )
+    .unwrap();
     let e_diff = (res.energy - (-74.5726577938)).abs();
     let g_diff = (g[(0, 2)] - 9.6437700e-2).abs();
     eprintln!("OH/sto-3g PBE UKS: dE={e_diff:.2e}  d(gz)={g_diff:.2e}");

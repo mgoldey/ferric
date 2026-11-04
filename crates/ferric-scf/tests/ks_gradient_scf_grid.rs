@@ -152,6 +152,7 @@ fn flat() -> Option<AtomicGridConfig> {
         n_radial: 40,
         n_angular: 194,
         prune: None,
+        weight_cut: None,
     })
 }
 
@@ -164,6 +165,7 @@ fn pruned() -> Option<AtomicGridConfig> {
         n_radial: 20,
         n_angular: 194,
         prune: Some(PruneScheme::Sgx),
+        weight_cut: None,
     })
 }
 
@@ -172,6 +174,7 @@ fn pruned_nwchem() -> Option<AtomicGridConfig> {
         n_radial: 30,
         n_angular: 194,
         prune: Some(PruneScheme::NwchemLike),
+        weight_cut: None,
     })
 }
 
@@ -384,6 +387,7 @@ fn nlc_grid_reaches_the_vv10_gradient() {
         n_radial: 30,
         n_angular: 50,
         prune: None,
+        weight_cut: None,
     });
     let default = grad(AtomicGridConfig::default_nlc());
     let diff = coarse

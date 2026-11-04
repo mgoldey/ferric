@@ -671,6 +671,7 @@ fn h_atom_sto3g_pbe0_box_limit_is_hyb_times_the_uhf_c3() {
                 n_radial: 75,
                 n_angular: 302,
                 prune: None,
+                weight_cut: None,
             }),
             df_j_aux: Some(String::new()),
             df_k_aux: Some(String::new()),

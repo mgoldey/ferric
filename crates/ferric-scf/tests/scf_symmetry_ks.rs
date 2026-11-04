@@ -387,6 +387,7 @@ fn ks_coarse_grid_is_refused() {
             n_radial: 50,
             n_angular: ang,
             prune,
+            weight_cut: None,
         });
         let r = run_sym(&mol, "sto-3g", &c);
         match (ok, r) {

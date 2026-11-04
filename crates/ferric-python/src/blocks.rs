@@ -961,9 +961,12 @@ impl PyAoIntegrals {
         ))
     }
     /// The exchange-correlation functional `functional` on the grid
-    /// `run_dft` uses (same `grid_radial` / `grid_angular` / `grid_prune`
-    /// kwargs and defaults), built once and reused per density.
-    #[pyo3(signature = (functional, grid_radial=None, grid_angular=None, grid_prune=None))]
+    /// `run_dft` uses (same `grid_radial` / `grid_angular` / `grid_prune` /
+    /// `grid_weight_cut` kwargs and defaults), built once and reused per
+    /// density.
+    #[pyo3(signature = (
+        functional, grid_radial=None, grid_angular=None, grid_prune=None, grid_weight_cut=None,
+    ))]
     fn xc_functional(
         &self,
         py: Python<'_>,
@@ -971,10 +974,16 @@ impl PyAoIntegrals {
         grid_radial: Option<usize>,
         grid_angular: Option<usize>,
         grid_prune: Option<&str>,
+        grid_weight_cut: Option<f64>,
     ) -> PyResult<PyXcFunctional> {
         use ferric_dft::xc_trait::XcContribution;
-        let main =
-            super::resolve_dft_grid(grid_radial, grid_angular, grid_prune)?.unwrap_or_default();
+        let main = super::resolve_dft_grid_with_cut(
+            grid_radial,
+            grid_angular,
+            grid_prune,
+            grid_weight_cut,
+        )?
+        .unwrap_or_else(ferric_dft::grid::AtomicGridConfig::production);
         let grids = ferric_scf::ks_gradient::KsGradGrids {
             main,
             nlc: ferric_dft::grid::AtomicGridConfig::default_nlc(),

@@ -39,9 +39,10 @@
 //!    * The libxc kernel runs ONCE over the whole grid through
 //!      `crate::vxc::closed_kernel` / `crate::vxc::polarized_kernel` —
 //!      the very functions the dense path calls, so the two paths cannot drift.
-//!      (Per-batch libxc calls from rayon workers would need per-worker libxc
-//!      handles; the global call already parallelizes safely and is
-//!      bit-identical to a serial call — see `libxc.rs::eval_chunked`.)
+//!      The global call parallelizes safely and is bit-identical to a serial
+//!      call — see `libxc.rs::eval_chunked`. (Recompute mode instead calls the
+//!      same kernel per batch, on per-group libxc handles: see "Resident vs
+//!      recompute".)
 //!    * `E_xc` uses the dense path's own `deterministic_point_sum` over the
 //!      original point order.
 //!    * Pass 2 (potential): per batch, ONE GEMM `V_b = A · Bᵀ` with
@@ -77,13 +78,38 @@
 //!
 //! Per-batch compact AO arrays `(nact, 4·nb)` are either held resident (the
 //! default when they fit the memory budget) or re-evaluated each Fock build.
-//! Recompute mode evaluates each batch's AO block TWICE per Fock build — once
-//! for pass 1 and once for pass 2, because the global libxc call sits between
-//! them — trading ~2 serial-per-batch AO evaluations for the resident memory.
-//! Both modes call the same serial evaluator on the same (shell, point) pairs,
-//! and every downstream operation sees identically-shaped inputs, so the two
-//! modes are bit-identical by construction — the storage decision can move
-//! memory and time, never an energy.
+//!
+//! Recompute mode on the CPU evaluates each batch's AO block ONCE per Fock
+//! build: the passes are FUSED per batch (`integrate_*_fused`). Inside one
+//! fixed reduction group, batch by batch in ascending order: evaluate the AO
+//! block, form that batch's ρ/∇ρ/τ, call libxc on the batch's own points
+//! (through the same `closed_kernel` / `polarized_kernel`, on one libxc handle
+//! set per group — `XcDef::worker_copy`), keep the batch's per-point `E_xc`
+//! terms, form `V_b` and add it to the group's accumulator, then drop the
+//! block. That is bit-identical to the two-pass order because
+//! * libxc is pointwise: a point's outputs depend only on that point's inputs
+//!   and the handle's parameters, never on which other points share the call
+//!   (libxc's `work_{lda,gga,mgga}` loop each point independently, after
+//!   zeroing the outputs; `eval_chunked` already relies on this, and
+//!   `libxc_kernel_is_pointwise_across_call_splits` pins it);
+//! * the `E_xc` terms are the same per-point products, scattered to their
+//!   original slots and summed by the same `deterministic_point_sum`;
+//! * pass 2 uses the same fixed groups, the same ascending batch order inside a
+//!   group and the same ascending cross-group sum, and the factors come from
+//!   the same per-point helpers (`closed_point_factors`,
+//!   `polarized_point_factors`).
+//!
+//! The fused order needs no O(npts) density or kernel vectors, but its
+//! parallelism is the group count, not the batch count. So it is used only
+//! when there are at least as many groups as rayon threads, or in the serial
+//! mode. The group count is at most `TARGET_GROUPS` (64) and at most the batch
+//! count, and `ACCUM_CAP_BYTES` shrinks it for large `nbf`; with more rayon
+//! threads than groups (more than 64 threads, or a grid with fewer batches
+//! than threads) the fused order is not used. Otherwise, and when the device
+//! runs the GEMMs, recompute
+//! keeps the two-pass order, which evaluates each AO block twice (once per
+//! pass, because the global libxc call sits between them). Either way the
+//! storage decision can move memory and time, never an energy.
 
 use std::borrow::Cow;
 
@@ -96,7 +122,10 @@ use crate::ao_grid::{eval_shell_and_grad, GtoEvalError, LocatedShell};
 use crate::density_on_grid::{DensityGrid, UksDensityGrid};
 use crate::grid::GridPoint;
 use crate::libxc::{FunctionalFamily, XcDef};
-use crate::vxc::{closed_kernel, deterministic_point_sum, polarized_kernel, DENSITY_FLOOR};
+use crate::vxc::{
+    closed_kernel, deterministic_point_sum, polarized_kernel, ClosedKernel, PolarizedKernel,
+    DENSITY_FLOOR,
+};
 
 /// Device offload of the per-batch GEMMs (feature `gpu`).
 #[cfg(feature = "gpu")]
@@ -128,6 +157,16 @@ pub(crate) fn mixed_vxc_requested() -> bool {
 type DevSession<'a> = Option<std::sync::MutexGuard<'a, gpu::DeviceSlot>>;
 #[cfg(not(feature = "gpu"))]
 type DevSession<'a> = std::marker::PhantomData<&'a ()>;
+
+/// True when `dev` holds no device session (the GEMMs run on the CPU).
+#[cfg(feature = "gpu")]
+fn dev_is_inert(dev: &DevSession<'_>) -> bool {
+    dev.is_none()
+}
+#[cfg(not(feature = "gpu"))]
+fn dev_is_inert(_dev: &DevSession<'_>) -> bool {
+    true
+}
 
 /// Default per-batch shell-screening threshold on `max(|χ|, |∇χ|)`.
 ///
@@ -811,6 +850,74 @@ struct BatchFactors {
     t_half: Vec<f64>,
 }
 
+impl BatchFactors {
+    /// All-zero factors for `nb` points (a point at or below the density floor
+    /// keeps them).
+    fn zeros(nb: usize, has_gga: bool, has_mgga: bool) -> Self {
+        Self {
+            s_half: vec![0.0; nb],
+            f: if has_gga {
+                [vec![0.0; nb], vec![0.0; nb], vec![0.0; nb]]
+            } else {
+                [Vec::new(), Vec::new(), Vec::new()]
+            },
+            t_half: if has_mgga { vec![0.0; nb] } else { Vec::new() },
+        }
+    }
+}
+
+/// Closed-shell pass-2 factors of batch point `j` from its weight `w`, density
+/// `r`, gradient `grad` and kernel values. Both orders (two-pass and fused)
+/// call this, so they form the same numbers. Same expressions as the dense
+/// path, then an exact ×½.
+#[inline]
+fn closed_point_factors(
+    fac: &mut BatchFactors,
+    j: usize,
+    (w, r, grad): (f64, f64, [f64; 3]),
+    (vrho, vsigma, vtau): (f64, f64, f64),
+    (has_gga, has_mgga): (bool, bool),
+) {
+    if r > DENSITY_FLOOR {
+        fac.s_half[j] = 0.5 * (w * vrho);
+        if has_gga {
+            for (ax, ga) in grad.iter().enumerate() {
+                fac.f[ax][j] = 2.0 * w * vsigma * ga;
+            }
+        }
+        if has_mgga {
+            fac.t_half[j] = 0.5 * (0.5 * w * vtau);
+        }
+    }
+}
+
+/// Spin-σ pass-2 factors of batch point `j`: σ gates on its own `ρ_σ`, exactly
+/// as the dense `semilocal_vxc_polarized_scratch` `build` closure does.
+/// `vs_self` is `∂f/∂σ_σσ`, `vc` is `∂f/∂σ_αβ`, `g_self`/`g_cross` are `∇ρ_σ`
+/// and the other spin's gradient. Shared by both orders, like [`closed_point_factors`].
+#[inline]
+fn polarized_point_factors(
+    fac: &mut BatchFactors,
+    j: usize,
+    (w, rho_s, g_self, g_cross): (f64, f64, [f64; 3], [f64; 3]),
+    (vrho_s, vs_self, vc, vtau_s): (f64, f64, f64, f64),
+    (has_gga, has_mgga): (bool, bool),
+) {
+    if rho_s > DENSITY_FLOOR {
+        fac.s_half[j] = 0.5 * (w * vrho_s);
+        if has_gga {
+            for (ax, (gs, gc)) in g_self.iter().zip(&g_cross).enumerate() {
+                let mut f = 2.0 * w * vs_self * gs;
+                f += w * vc * gc;
+                fac.f[ax][j] = f;
+            }
+        }
+        if has_mgga {
+            fac.t_half[j] = 0.5 * (0.5 * w * vtau_s);
+        }
+    }
+}
+
 /// One `V_b = A · Bᵀ` for a batch and one spin channel, scattered as
 /// `V_b + V_bᵀ` into `acc`.
 fn batch_vxc_one(
@@ -1018,6 +1125,33 @@ where
     }
 }
 
+/// The libxc handles one reduction group of the fused recompute order
+/// evaluates with: its own fresh copy on a rayon worker (libxc handles are
+/// never shared across threads here, as in `libxc.rs::eval_chunked`), the
+/// caller's in the serial mode. A copy has the same id, spin and external
+/// parameters, so its per-point output is the same.
+enum KernelXc<'a> {
+    Shared(&'a XcDef),
+    Own(XcDef),
+}
+
+impl<'a> KernelXc<'a> {
+    fn for_group(xc: &'a XcDef, serial: bool) -> Self {
+        if serial {
+            Self::Shared(xc)
+        } else {
+            Self::Own(xc.worker_copy())
+        }
+    }
+
+    fn get(&self) -> &XcDef {
+        match self {
+            Self::Shared(x) => x,
+            Self::Own(x) => x,
+        }
+    }
+}
+
 /// One spatial batch: original point indices, active shells, active functions.
 #[derive(Debug)]
 pub(crate) struct XcBatch {
@@ -1036,6 +1170,12 @@ pub(crate) struct ScreenedGrid {
     /// Resident compact AO blocks, one per batch; `None` = recompute.
     ao: Option<Vec<Array2<f64>>>,
     max_batch_pts: usize,
+    /// AO blocks evaluated for a pass (recompute mode) since construction;
+    /// `materialize` is not counted. Tests read deltas.
+    recomputed_blocks: std::sync::atomic::AtomicUsize,
+    /// Test seam: recompute in the two-pass order even where the fused one
+    /// applies. Always false outside tests.
+    two_pass_recompute: bool,
     /// Device copy of the AO blocks and GEMM staging (feature `gpu`);
     /// `Untried` until the first integration asks for it. A `Mutex` because
     /// the integrations take `&self`; one lock per Fock build, uncontended.
@@ -1103,6 +1243,8 @@ impl ScreenedGrid {
             batches,
             ao: None,
             max_batch_pts: cfg.max_batch_pts.max(1),
+            recomputed_blocks: std::sync::atomic::AtomicUsize::new(0),
+            two_pass_recompute: false,
             #[cfg(feature = "gpu")]
             device: Default::default(),
         })
@@ -1136,12 +1278,16 @@ impl ScreenedGrid {
         // totals 4 + one functional's temporaries 4 + pass-1 batch copies 5
         // (+ slack) ≈ 20+6; UKS = UksDensityGrid 11 + τ 2 + interleaved
         // inputs 7 + totals 8 + temporaries 8 + pass-1 copies 10 ≈ 40+10.
+        // The fused recompute order holds far less (2 per point: the
+        // per-batch E_xc terms and their scatter), so this covers both orders.
         let per_pt = if is_uks { 50 } else { 26 };
         let companion = self.npts * per_pt * 8;
         // Per worker, bounded with nbf for nact: recomputed AO block (4 planes)
-        // + Φ (4 planes, ×2 UKS) + A (4 planes) + D_sub/V_b (nbf² each, ×2 UKS).
+        // + Φ (4 planes, ×2 UKS) + A (4 planes) + D_sub/V_b (nbf² each, ×2 UKS)
+        // + the fused order's per-batch density and kernel vectors, the same
+        // per-point count as the global ones above, on one batch's points.
         let nb = self.max_batch_pts;
-        let worker = (4 + 4 * nmats + 4) * self.nbf * nb * 8 + 2 * nmats * mat;
+        let worker = (4 + 4 * nmats + 4) * self.nbf * nb * 8 + 2 * nmats * mat + per_pt * nb * 8;
         companion + accum + rayon::current_num_threads() * worker
     }
 
@@ -1170,8 +1316,37 @@ impl ScreenedGrid {
     ) -> Result<Cow<'_, Array2<f64>>, GtoEvalError> {
         match &self.ao {
             Some(v) => Ok(Cow::Borrowed(&v[bi])),
-            None => Ok(Cow::Owned(self.eval_batch(bi, grid)?)),
+            None => {
+                self.recomputed_blocks
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                Ok(Cow::Owned(self.eval_batch(bi, grid)?))
+            }
         }
+    }
+
+    /// AO blocks evaluated for a pass in recompute mode since construction.
+    #[cfg(test)]
+    pub(crate) fn recomputed_blocks(&self) -> usize {
+        self.recomputed_blocks
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Test seam: recompute in the old two-pass order (each AO block evaluated
+    /// once per pass) even where the fused order applies.
+    #[cfg(test)]
+    pub(crate) fn set_two_pass_recompute(&mut self, on: bool) {
+        self.two_pass_recompute = on;
+    }
+
+    /// True when this integration recomputes in the fused order (see "Resident
+    /// vs recompute"): AO blocks not resident, the GEMMs on the CPU, and at
+    /// least as many fixed groups as rayon threads (or the serial mode). Reads
+    /// the thread count, which is safe because both orders are bit-identical.
+    fn fuses_recompute(&self, dev: &DevSession<'_>, exec: Exec, nmats: usize) -> bool {
+        if self.ao.is_some() || self.two_pass_recompute || !dev_is_inert(dev) {
+            return false;
+        }
+        exec.serial || n_groups(self.batches.len(), self.nbf, nmats) >= rayon::current_num_threads()
     }
 
     /// The device session for one integration: `None`/inert when this
@@ -1354,26 +1529,261 @@ impl ScreenedGrid {
     where
         F: Fn(usize, &mut [Array2<f64>]) -> Result<(), GtoEvalError> + Sync + Send,
     {
+        self.reduce_groups_with(serial, nmats, || (), |_, bi, accs| body(bi, accs))
+            .map(|(v, _)| v)
+    }
+
+    /// [`Self::reduce_groups`] whose `body(ctx, bi, accs)` also returns a
+    /// per-batch value, collected in batch order. `init()` makes one `ctx` per
+    /// group (the fused order keeps its libxc handles there). The V
+    /// accumulation is exactly `reduce_groups`'s.
+    fn reduce_groups_with<C, T, I, F>(
+        &self,
+        serial: bool,
+        nmats: usize,
+        init: I,
+        body: F,
+    ) -> Result<(Vec<Array2<f64>>, Vec<T>), GtoEvalError>
+    where
+        T: Send,
+        I: Fn() -> C + Sync + Send,
+        F: Fn(&mut C, usize, &mut [Array2<f64>]) -> Result<T, GtoEvalError> + Sync + Send,
+    {
         let nbf = self.nbf;
         let ngroups = n_groups(self.batches.len(), nbf, nmats);
         let ranges = group_ranges(self.batches.len(), ngroups);
-        let partials: Vec<Vec<Array2<f64>>> = map_indexed(serial, ranges.len(), |gi| {
+        let partials: Vec<(Vec<Array2<f64>>, Vec<T>)> = map_indexed(serial, ranges.len(), |gi| {
             let (b0, b1) = ranges[gi];
+            let mut ctx = init();
             let mut accs: Vec<Array2<f64>> =
                 (0..nmats).map(|_| Array2::zeros((nbf, nbf))).collect();
+            let mut outs = Vec::with_capacity(b1 - b0);
             for bi in b0..b1 {
-                body(bi, &mut accs[..])?;
+                outs.push(body(&mut ctx, bi, &mut accs[..])?);
             }
-            Ok(accs)
+            Ok((accs, outs))
         })?;
         // Ascending group order — the one and only cross-group summation.
         let mut out: Vec<Array2<f64>> = (0..nmats).map(|_| Array2::zeros((nbf, nbf))).collect();
-        for accs in &partials {
-            for (o, a) in out.iter_mut().zip(accs) {
+        let mut per_batch = Vec::with_capacity(self.batches.len());
+        for (accs, outs) in partials {
+            for (o, a) in out.iter_mut().zip(&accs) {
                 *o += a;
             }
+            per_batch.extend(outs);
         }
-        Ok(out)
+        Ok((out, per_batch))
+    }
+
+    /// Pass-1 densities of batch `bi` for `ds`, from an AO block the caller
+    /// already holds (the fused order's single evaluation).
+    fn batch_densities(
+        &self,
+        bi: usize,
+        ao: &Array2<f64>,
+        ds: &[DensityInput],
+        need_tau: bool,
+    ) -> Vec<BatchDensity> {
+        let b = &self.batches[bi];
+        ds.iter()
+            .map(|d| batch_density_one(ao, &d.gather(&b.funcs), b.idx.len(), need_tau))
+            .collect()
+    }
+
+    /// Closed-shell `(E_xc, V_xc)` in the fused recompute order (module docs,
+    /// "Resident vs recompute"): one AO evaluation per batch per call.
+    fn integrate_closed_fused(
+        &self,
+        grid: &[GridPoint],
+        d: DensityInput,
+        xc: &XcDef,
+        (has_gga, has_mgga): (bool, bool),
+        exec: Exec,
+    ) -> Result<(f64, Array2<f64>), GtoEvalError> {
+        let serial = exec.serial;
+        // Meta-GGA τ is on the never-f32 list, as in `potential_pass`.
+        let mixed = exec.mixed_vxc && !has_mgga;
+        if mixed && host_twin_active() {
+            note_mixed_vxc_pass();
+        }
+        let (mut v, terms) = self.reduce_groups_with(
+            serial,
+            1,
+            || KernelXc::for_group(xc, serial),
+            |kxc, bi, accs| -> Result<Vec<f64>, GtoEvalError> {
+                let b = &self.batches[bi];
+                let nb = b.idx.len();
+                let ao = self.batch_ao(bi, grid)?;
+                let p = self
+                    .batch_densities(bi, &ao, &[d], has_mgga)
+                    .pop()
+                    .expect("one density");
+                // The global pass's arrays, restricted to this batch's points
+                // (same values, same σ expression).
+                let grad = Array2::from_shape_fn((3, nb), |(ax, j)| p.grad[ax][j]);
+                let sigma = Array1::from_shape_fn(nb, |j| {
+                    let (gx, gy, gz) = (grad[(0, j)], grad[(1, j)], grad[(2, j)]);
+                    gx * gx + gy * gy + gz * gz
+                });
+                let rho = Array1::from(p.rho);
+                let tau = Array1::from(p.tau);
+                let dens = DensityGrid { rho, grad, sigma };
+                let k: ClosedKernel =
+                    closed_kernel(&dens, if has_mgga { Some(&tau) } else { None }, kxc.get());
+                let eterm: Vec<f64> = b
+                    .idx
+                    .iter()
+                    .enumerate()
+                    .map(|(j, &gi)| grid[gi as usize].weight * dens.rho[j] * k.exc[j])
+                    .collect();
+                if !b.funcs.is_empty() {
+                    let mut fac = BatchFactors::zeros(nb, has_gga, has_mgga);
+                    for (j, &gi) in b.idx.iter().enumerate() {
+                        let gv = [dens.grad[(0, j)], dens.grad[(1, j)], dens.grad[(2, j)]];
+                        closed_point_factors(
+                            &mut fac,
+                            j,
+                            (grid[gi as usize].weight, dens.rho[j], gv),
+                            (k.vrho[j], k.vsigma[j], k.vtau[j]),
+                            (has_gga, has_mgga),
+                        );
+                    }
+                    batch_vxc_one(
+                        &ao,
+                        &b.funcs,
+                        nb,
+                        &fac,
+                        (has_gga, has_mgga, mixed),
+                        &mut accs[0],
+                    );
+                }
+                Ok(eterm)
+            },
+        )?;
+        let e_xc = self.sum_point_terms(&terms);
+        Ok((e_xc, v.pop().expect("one matrix")))
+    }
+
+    /// Spin-polarized `(E_xc, V_α, V_β)` in the fused recompute order.
+    fn integrate_polarized_fused(
+        &self,
+        grid: &[GridPoint],
+        (d_a, d_b): (DensityInput, DensityInput),
+        xc: &XcDef,
+        (has_gga, has_mgga): (bool, bool),
+        exec: Exec,
+    ) -> Result<(f64, Array2<f64>, Array2<f64>), GtoEvalError> {
+        let serial = exec.serial;
+        let mixed = exec.mixed_vxc && !has_mgga;
+        if mixed && host_twin_active() {
+            note_mixed_vxc_pass();
+        }
+        let (mut v, terms) = self.reduce_groups_with(
+            serial,
+            2,
+            || KernelXc::for_group(xc, serial),
+            |kxc, bi, accs| -> Result<Vec<f64>, GtoEvalError> {
+                let b = &self.batches[bi];
+                let nb = b.idx.len();
+                let ao = self.batch_ao(bi, grid)?;
+                let mut parts = self.batch_densities(bi, &ao, &[d_a, d_b], has_mgga);
+                let pb = parts.pop().expect("two densities");
+                let pa = parts.pop().expect("two densities");
+                let grad_a = Array2::from_shape_fn((3, nb), |(ax, j)| pa.grad[ax][j]);
+                let grad_b = Array2::from_shape_fn((3, nb), |(ax, j)| pb.grad[ax][j]);
+                let sigma = Array2::from_shape_fn((3, nb), |(c, j)| {
+                    let (ax, ay, az) = (grad_a[(0, j)], grad_a[(1, j)], grad_a[(2, j)]);
+                    let (bx, by, bz) = (grad_b[(0, j)], grad_b[(1, j)], grad_b[(2, j)]);
+                    match c {
+                        0 => ax * ax + ay * ay + az * az,
+                        1 => ax * bx + ay * by + az * bz,
+                        _ => bx * bx + by * by + bz * bz,
+                    }
+                });
+                let (tau_a, tau_b) = (Array1::from(pa.tau), Array1::from(pb.tau));
+                let dens = UksDensityGrid {
+                    rho_a: Array1::from(pa.rho),
+                    rho_b: Array1::from(pb.rho),
+                    grad_a,
+                    grad_b,
+                    sigma,
+                };
+                let k: PolarizedKernel = polarized_kernel(
+                    &dens,
+                    if has_mgga {
+                        Some((&tau_a, &tau_b))
+                    } else {
+                        None
+                    },
+                    kxc.get(),
+                );
+                let eterm: Vec<f64> = b
+                    .idx
+                    .iter()
+                    .enumerate()
+                    .map(|(j, &gi)| {
+                        grid[gi as usize].weight * (dens.rho_a[j] + dens.rho_b[j]) * k.exc[j]
+                    })
+                    .collect();
+                if !b.funcs.is_empty() {
+                    for (mat, acc) in accs.iter_mut().enumerate() {
+                        let alpha = mat == 0;
+                        let (rho_s, vrho_s, vs_self, vtau_s, g_self, g_cross) = if alpha {
+                            (
+                                &dens.rho_a,
+                                &k.vrho_a,
+                                &k.vsigma_aa,
+                                &k.vtau_a,
+                                &dens.grad_a,
+                                &dens.grad_b,
+                            )
+                        } else {
+                            (
+                                &dens.rho_b,
+                                &k.vrho_b,
+                                &k.vsigma_bb,
+                                &k.vtau_b,
+                                &dens.grad_b,
+                                &dens.grad_a,
+                            )
+                        };
+                        let mut fac = BatchFactors::zeros(nb, has_gga, has_mgga);
+                        for (j, &gi) in b.idx.iter().enumerate() {
+                            polarized_point_factors(
+                                &mut fac,
+                                j,
+                                (
+                                    grid[gi as usize].weight,
+                                    rho_s[j],
+                                    [g_self[(0, j)], g_self[(1, j)], g_self[(2, j)]],
+                                    [g_cross[(0, j)], g_cross[(1, j)], g_cross[(2, j)]],
+                                ),
+                                (vrho_s[j], vs_self[j], k.vsigma_ab[j], vtau_s[j]),
+                                (has_gga, has_mgga),
+                            );
+                        }
+                        batch_vxc_one(&ao, &b.funcs, nb, &fac, (has_gga, has_mgga, mixed), acc);
+                    }
+                }
+                Ok(eterm)
+            },
+        )?;
+        let e_xc = self.sum_point_terms(&terms);
+        let v_b = v.pop().expect("two matrices");
+        let v_a = v.pop().expect("two matrices");
+        Ok((e_xc, v_a, v_b))
+    }
+
+    /// `E_xc` from per-batch point terms: scattered to the original point
+    /// order, then the two-pass order's `deterministic_point_sum`.
+    fn sum_point_terms(&self, terms: &[Vec<f64>]) -> f64 {
+        let mut term = vec![0.0_f64; self.npts];
+        for (b, t) in self.batches.iter().zip(terms) {
+            for (j, &gi) in b.idx.iter().enumerate() {
+                term[gi as usize] = t[j];
+            }
+        }
+        deterministic_point_sum(self.npts, |g| term[g])
     }
 
     /// Closed-shell `(E_xc, V_xc)` for the total density matrix `d`.
@@ -1416,6 +1826,9 @@ impl ScreenedGrid {
             .any(|f| !matches!(f.family(), FunctionalFamily::Lda));
 
         let mut dev = self.device_session(grid);
+        if self.fuses_recompute(&dev, exec, 1) {
+            return self.integrate_closed_fused(grid, d, xc, (has_gga, has_mgga), exec);
+        }
 
         // ── Pass 1: density, parallel over batches, disjoint output slots.
         let parts = self
@@ -1451,33 +1864,17 @@ impl ScreenedGrid {
 
         // ── Pass 2: V, fixed-group ordered reduction.
         let factors = |b: &XcBatch, _mat: usize| -> BatchFactors {
-            let nb = b.idx.len();
-            let mut fac = BatchFactors {
-                s_half: vec![0.0; nb],
-                f: if has_gga {
-                    [vec![0.0; nb], vec![0.0; nb], vec![0.0; nb]]
-                } else {
-                    [Vec::new(), Vec::new(), Vec::new()]
-                },
-                t_half: if has_mgga { vec![0.0; nb] } else { Vec::new() },
-            };
+            let mut fac = BatchFactors::zeros(b.idx.len(), has_gga, has_mgga);
             for (j, &gi) in b.idx.iter().enumerate() {
                 let g = gi as usize;
-                let r = dens.rho[g];
-                if r > DENSITY_FLOOR {
-                    let w = grid[g].weight;
-                    // Same expressions as the dense path, then an exact ×½.
-                    fac.s_half[j] = 0.5 * (w * k.vrho[g]);
-                    if has_gga {
-                        let vs = k.vsigma[g];
-                        for ax in 0..3 {
-                            fac.f[ax][j] = 2.0 * w * vs * dens.grad[(ax, g)];
-                        }
-                    }
-                    if has_mgga {
-                        fac.t_half[j] = 0.5 * (0.5 * w * k.vtau[g]);
-                    }
-                }
+                let gv = [dens.grad[(0, g)], dens.grad[(1, g)], dens.grad[(2, g)]];
+                closed_point_factors(
+                    &mut fac,
+                    j,
+                    (grid[g].weight, dens.rho[g], gv),
+                    (k.vrho[g], k.vsigma[g], k.vtau[g]),
+                    (has_gga, has_mgga),
+                );
             }
             fac
         };
@@ -1529,6 +1926,9 @@ impl ScreenedGrid {
             .any(|f| !matches!(f.family(), FunctionalFamily::Lda));
 
         let mut dev = self.device_session(grid);
+        if self.fuses_recompute(&dev, exec, 2) {
+            return self.integrate_polarized_fused(grid, (d_a, d_b), xc, (has_gga, has_mgga), exec);
+        }
 
         // ── Pass 1.
         let mut parts = self.density_pass(grid, &[d_a, d_b], has_mgga, serial, &mut dev)?;
@@ -1611,33 +2011,21 @@ impl ScreenedGrid {
                     &dens.grad_a,
                 )
             };
-            let mut fac = BatchFactors {
-                s_half: vec![0.0; nb],
-                f: if has_gga {
-                    [vec![0.0; nb], vec![0.0; nb], vec![0.0; nb]]
-                } else {
-                    [Vec::new(), Vec::new(), Vec::new()]
-                },
-                t_half: if has_mgga { vec![0.0; nb] } else { Vec::new() },
-            };
+            let mut fac = BatchFactors::zeros(nb, has_gga, has_mgga);
             for (j, &gi) in b.idx.iter().enumerate() {
                 let g = gi as usize;
-                if rho_s[g] > DENSITY_FLOOR {
-                    let w = grid[g].weight;
-                    fac.s_half[j] = 0.5 * (w * vrho_s[g]);
-                    if has_gga {
-                        let vs = vs_self[g];
-                        let vc = k.vsigma_ab[g];
-                        for ax in 0..3 {
-                            let mut f = 2.0 * w * vs * g_self[(ax, g)];
-                            f += w * vc * g_cross[(ax, g)];
-                            fac.f[ax][j] = f;
-                        }
-                    }
-                    if has_mgga {
-                        fac.t_half[j] = 0.5 * (0.5 * w * vtau_s[g]);
-                    }
-                }
+                polarized_point_factors(
+                    &mut fac,
+                    j,
+                    (
+                        grid[g].weight,
+                        rho_s[g],
+                        [g_self[(0, g)], g_self[(1, g)], g_self[(2, g)]],
+                        [g_cross[(0, g)], g_cross[(1, g)], g_cross[(2, g)]],
+                    ),
+                    (vrho_s[g], vs_self[g], k.vsigma_ab[g], vtau_s[g]),
+                    (has_gga, has_mgga),
+                );
             }
             fac
         };
@@ -2343,5 +2731,337 @@ mod tests {
         }
         // Huge nbf shrinks the group count (memory cap) but never below 1.
         assert_eq!(n_groups(1000, 100_000, 2), 1);
+    }
+
+    /// The far water dimer on a small cc-pVDZ grid: shells, nbf, and a
+    /// symmetric "density matrix" pair (only the arithmetic path is under test).
+    #[allow(clippy::type_complexity)]
+    fn fused_fixture() -> (
+        Vec<GridPoint>,
+        Vec<OwnedShell>,
+        usize,
+        Array2<f64>,
+        Array2<f64>,
+    ) {
+        use crate::ao_grid::{collect_shells, nbasis};
+        use crate::grid::{build_atomic_grid, AtomicGridConfig};
+        let mol = water_dimer_far();
+        let bs = ferric_core::basis::bundled("cc-pvdz").unwrap();
+        let grid = build_atomic_grid(
+            &mol,
+            &AtomicGridConfig {
+                n_radial: 30,
+                n_angular: 50,
+                ..Default::default()
+            },
+        );
+        let shells = owned_shells(&collect_shells(&mol, &bs).unwrap());
+        let nbf = nbasis(&mol, &bs).unwrap();
+        let c = Array2::from_shape_fn((nbf, 6), |(i, j)| {
+            ((i * 7 + j * 3) % 11) as f64 * 0.05 - 0.2
+        });
+        let d = 2.0 * c.dot(&c.t());
+        let cb = c.slice(s![.., ..4]).to_owned();
+        let d_b = cb.dot(&cb.t());
+        (grid, shells, nbf, d, d_b)
+    }
+
+    fn bits(m: &Array2<f64>) -> Vec<u64> {
+        m.iter().map(|x| x.to_bits()).collect()
+    }
+
+    /// Catches: the fused recompute order (one AO evaluation per batch, libxc
+    /// per batch on per-group handles) drifting by even one bit from the
+    /// resident and two-pass orders — a different point order into the E_xc
+    /// sum, a factor formed from the wrong point, a batch skipped or added
+    /// twice, a per-batch libxc call that is not pointwise, a worker handle that
+    /// lost a parameter. LDA, GGA, hybrid GGA (its semilocal part) and meta-GGA
+    /// (τ), closed shell (dense and factored density) and open shell, the
+    /// parallel mode at 1, 2 and 4 rayon threads and the serial mode.
+    #[test]
+    fn fused_recompute_is_bit_identical_to_resident_and_two_pass() {
+        let (grid, shells, nbf, d, d_b) = fused_fixture();
+        let build =
+            || ScreenedGrid::build(&grid, shells.clone(), nbf, &XcBatchConfig::default()).unwrap();
+        let mut resident = build();
+        resident.materialize(&grid).unwrap();
+        let fused = build();
+        let mut two_pass = build();
+        two_pass.set_two_pass_recompute(true);
+        assert!(
+            n_groups(fused.batches.len(), nbf, 2) >= 4,
+            "fixture too small to fuse"
+        );
+        let c = Array2::from_shape_fn((nbf, 6), |(i, j)| {
+            ((i * 7 + j * 3) % 11) as f64 * 0.05 - 0.2
+        });
+        let grids = [
+            ("resident", &resident),
+            ("fused", &fused),
+            ("two-pass", &two_pass),
+        ];
+        for name in ["LDA", "PBE", "B3LYP", "SCAN"] {
+            let xc1 = crate::libxc::xc_def_from_name(name).unwrap();
+            let xc2 = crate::libxc::xc_def_from_name_nspin(name, 2).unwrap();
+            let (mut closed, mut factored, mut open) = (None, None, None);
+            for threads in [1usize, 2, 4] {
+                let pool = rayon::ThreadPoolBuilder::new()
+                    .num_threads(threads)
+                    .build()
+                    .unwrap();
+                for (label, sg) in grids {
+                    for (mode, exec) in [
+                        ("parallel", Exec::parallel()),
+                        ("serial", Exec::serial_single_blas()),
+                    ] {
+                        let what = format!("{name} {label} {mode} {threads}t");
+                        let (e, v) = pool
+                            .install(|| {
+                                sg.integrate_closed_exec(&grid, DensityInput::Dense(&d), &xc1, exec)
+                            })
+                            .unwrap();
+                        let got = (e.to_bits(), bits(&v));
+                        match &closed {
+                            None => closed = Some(got),
+                            Some(r) => assert!(*r == got, "closed: {what}"),
+                        }
+                        let fd = DensityInput::Factored {
+                            c_occ: &c,
+                            scale: 2.0,
+                        };
+                        let (e, v) = pool
+                            .install(|| sg.integrate_closed_exec(&grid, fd, &xc1, exec))
+                            .unwrap();
+                        let got = (e.to_bits(), bits(&v));
+                        match &factored {
+                            None => factored = Some(got),
+                            Some(r) => assert!(*r == got, "factored: {what}"),
+                        }
+                        let (e, va, vb) = pool
+                            .install(|| {
+                                sg.integrate_polarized_exec(
+                                    &grid,
+                                    DensityInput::Dense(&d),
+                                    DensityInput::Dense(&d_b),
+                                    &xc2,
+                                    exec,
+                                )
+                            })
+                            .unwrap();
+                        let got = (e.to_bits(), bits(&va), bits(&vb));
+                        match &open {
+                            None => open = Some(got),
+                            Some(r) => assert!(*r == got, "open: {what}"),
+                        }
+                    }
+                }
+            }
+            let e = f64::from_bits(closed.unwrap().0);
+            assert!(e.is_finite() && e != 0.0, "{name}: E_xc {e}");
+        }
+    }
+
+    /// Recompute evaluates each batch's AO block ONCE per Fock build in the
+    /// fused order, closed and open shell, GGA and meta-GGA, at 1 and 4
+    /// threads; the two-pass order (the seam) evaluates it once per pass, so
+    /// the count is seen to move; resident evaluates none. A grid of fewer
+    /// groups than threads keeps the two-pass order (the parallelism guard),
+    /// and fuses again on one thread.
+    #[test]
+    fn recompute_evaluates_each_ao_block_once_per_fock_build() {
+        let (grid, shells, nbf, d, d_b) = fused_fixture();
+        let build =
+            |cfg: &XcBatchConfig| ScreenedGrid::build(&grid, shells.clone(), nbf, cfg).unwrap();
+        let cfg = XcBatchConfig::default();
+        let fused = build(&cfg);
+        let mut two_pass = build(&cfg);
+        two_pass.set_two_pass_recompute(true);
+        let mut resident = build(&cfg);
+        resident.materialize(&grid).unwrap();
+        // Two batches: two groups, fewer than four threads.
+        let coarse = build(&XcBatchConfig {
+            max_batch_pts: grid.len().div_ceil(2),
+            ..XcBatchConfig::default()
+        });
+        assert_eq!(coarse.batches.len(), 2);
+        let per_pass = |sg: &ScreenedGrid| sg.batches.len();
+        let nonempty =
+            |sg: &ScreenedGrid| sg.batches.iter().filter(|b| !b.funcs.is_empty()).count();
+        assert!(nonempty(&fused) > 0 && nonempty(&coarse) > 0);
+        let count = |sg: &ScreenedGrid, threads: usize, xc1: &XcDef, xc2: &XcDef| -> [usize; 2] {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .unwrap();
+            let before = sg.recomputed_blocks();
+            pool.install(|| {
+                sg.integrate_closed_exec(&grid, DensityInput::Dense(&d), xc1, Exec::parallel())
+            })
+            .unwrap();
+            let mid = sg.recomputed_blocks();
+            pool.install(|| {
+                sg.integrate_polarized_exec(
+                    &grid,
+                    DensityInput::Dense(&d),
+                    DensityInput::Dense(&d_b),
+                    xc2,
+                    Exec::parallel(),
+                )
+            })
+            .unwrap();
+            [mid - before, sg.recomputed_blocks() - mid]
+        };
+        for name in ["PBE", "SCAN"] {
+            let xc1 = crate::libxc::xc_def_from_name(name).unwrap();
+            let xc2 = crate::libxc::xc_def_from_name_nspin(name, 2).unwrap();
+            for threads in [1usize, 4] {
+                let once = per_pass(&fused);
+                assert_eq!(
+                    count(&fused, threads, &xc1, &xc2),
+                    [once; 2],
+                    "{name} fused {threads}t"
+                );
+                let twice = per_pass(&two_pass) + nonempty(&two_pass);
+                assert_eq!(
+                    count(&two_pass, threads, &xc1, &xc2),
+                    [twice; 2],
+                    "{name} two-pass {threads}t"
+                );
+                assert!(twice > once);
+                assert_eq!(
+                    count(&resident, threads, &xc1, &xc2),
+                    [0; 2],
+                    "{name} resident"
+                );
+            }
+            let twice = per_pass(&coarse) + nonempty(&coarse);
+            assert_eq!(
+                count(&coarse, 4, &xc1, &xc2),
+                [twice; 2],
+                "{name} coarse 4t"
+            );
+            assert_eq!(
+                count(&coarse, 1, &xc1, &xc2),
+                [per_pass(&coarse); 2],
+                "{name} coarse 1t"
+            );
+        }
+    }
+
+    /// THE PREMISE of the fused order: libxc's output for a point does not
+    /// depend on which other points share its call. One kernel call over a
+    /// grid above `libxc.rs`'s chunking threshold (so it takes the chunked
+    /// parallel path) against the same points in ragged pieces of 1 to 1000
+    /// points on fresh worker handles, bit for bit, every output, for LDA, GGA,
+    /// hybrid GGA and meta-GGA, closed and open shell. The densities run from
+    /// below libxc's density threshold up to 1e2.
+    #[test]
+    fn libxc_kernel_is_pointwise_across_call_splits() {
+        let n = 50_000 + 1_237;
+        let wave = |g: usize, s: f64| ((g as f64 * 0.618_034 + s).sin()) * 0.5 + 0.5;
+        let rho = Array1::from_shape_fn(n, |g| 10f64.powf(-14.0 + 16.0 * wave(g, 0.0)));
+        let grad = Array2::from_shape_fn((3, n), |(a, g)| {
+            (wave(g, 1.0 + a as f64) - 0.5) * 2.0 * rho[g]
+        });
+        let sig = |gr: &Array2<f64>, h: &Array2<f64>, g: usize| {
+            gr[(0, g)] * h[(0, g)] + gr[(1, g)] * h[(1, g)] + gr[(2, g)] * h[(2, g)]
+        };
+        let sigma = Array1::from_shape_fn(n, |g| sig(&grad, &grad, g));
+        // At or above the von Weizsäcker bound σ/8ρ.
+        let tau = Array1::from_shape_fn(n, |g| sigma[g] / (8.0 * rho[g]) * (1.0 + wave(g, 7.0)));
+        let rho_b = Array1::from_shape_fn(n, |g| rho[g] * wave(g, 3.0));
+        let grad_b = Array2::from_shape_fn((3, n), |(a, g)| {
+            (wave(g, 4.0 + a as f64) - 0.5) * 2.0 * rho_b[g]
+        });
+        let sigma_ab = Array2::from_shape_fn((3, n), |(c, g)| match c {
+            0 => sig(&grad, &grad, g),
+            1 => sig(&grad, &grad_b, g),
+            _ => sig(&grad_b, &grad_b, g),
+        });
+        let tau_b =
+            Array1::from_shape_fn(n, |g| sigma_ab[(2, g)] / (8.0 * rho_b[g].max(1e-300)) * 1.5);
+        let sizes = [1usize, 7, 128, 129, 33, 1000, 2];
+        let pieces: Vec<(usize, usize)> = {
+            let (mut v, mut g0, mut k) = (Vec::new(), 0usize, 0usize);
+            while g0 < n {
+                let g1 = (g0 + sizes[k % sizes.len()]).min(n);
+                v.push((g0, g1));
+                (g0, k) = (g1, k + 1);
+            }
+            v
+        };
+        let same = |a: &Array1<f64>, b: &Array1<f64>, g0: usize, what: &str| {
+            for (j, y) in b.iter().enumerate() {
+                assert_eq!(
+                    a[g0 + j].to_bits(),
+                    y.to_bits(),
+                    "{what} at point {}",
+                    g0 + j
+                );
+            }
+        };
+        let mut live = 0usize;
+        for name in ["LDA", "PBE", "B3LYP", "SCAN"] {
+            let xc = crate::libxc::xc_def_from_name(name).unwrap();
+            let whole = closed_kernel(
+                &DensityGrid {
+                    rho: rho.clone(),
+                    grad: grad.clone(),
+                    sigma: sigma.clone(),
+                },
+                Some(&tau),
+                &xc,
+            );
+            live += whole.exc.iter().filter(|e| **e != 0.0).count();
+            let copy = xc.worker_copy();
+            for &(g0, g1) in &pieces {
+                let part = closed_kernel(
+                    &DensityGrid {
+                        rho: rho.slice(s![g0..g1]).to_owned(),
+                        grad: grad.slice(s![.., g0..g1]).to_owned(),
+                        sigma: sigma.slice(s![g0..g1]).to_owned(),
+                    },
+                    Some(&tau.slice(s![g0..g1]).to_owned()),
+                    &copy,
+                );
+                same(&whole.exc, &part.exc, g0, &format!("{name} exc"));
+                same(&whole.vrho, &part.vrho, g0, &format!("{name} vrho"));
+                same(&whole.vsigma, &part.vsigma, g0, &format!("{name} vsigma"));
+                same(&whole.vtau, &part.vtau, g0, &format!("{name} vtau"));
+            }
+            let xc2 = crate::libxc::xc_def_from_name_nspin(name, 2).unwrap();
+            let uks = |g0: usize, g1: usize| UksDensityGrid {
+                rho_a: rho.slice(s![g0..g1]).to_owned(),
+                rho_b: rho_b.slice(s![g0..g1]).to_owned(),
+                grad_a: grad.slice(s![.., g0..g1]).to_owned(),
+                grad_b: grad_b.slice(s![.., g0..g1]).to_owned(),
+                sigma: sigma_ab.slice(s![.., g0..g1]).to_owned(),
+            };
+            let whole = polarized_kernel(&uks(0, n), Some((&tau, &tau_b)), &xc2);
+            let copy = xc2.worker_copy();
+            for &(g0, g1) in &pieces {
+                let (ta, tb) = (
+                    tau.slice(s![g0..g1]).to_owned(),
+                    tau_b.slice(s![g0..g1]).to_owned(),
+                );
+                let part = polarized_kernel(&uks(g0, g1), Some((&ta, &tb)), &copy);
+                for (w, p, what) in [
+                    (&whole.exc, &part.exc, "exc"),
+                    (&whole.vrho_a, &part.vrho_a, "vrho_a"),
+                    (&whole.vrho_b, &part.vrho_b, "vrho_b"),
+                    (&whole.vsigma_aa, &part.vsigma_aa, "vsigma_aa"),
+                    (&whole.vsigma_ab, &part.vsigma_ab, "vsigma_ab"),
+                    (&whole.vsigma_bb, &part.vsigma_bb, "vsigma_bb"),
+                    (&whole.vtau_a, &part.vtau_a, "vtau_a"),
+                    (&whole.vtau_b, &part.vtau_b, "vtau_b"),
+                ] {
+                    same(w, p, g0, &format!("{name} uks {what}"));
+                }
+            }
+        }
+        assert!(
+            live > n,
+            "the kernels returned almost nothing: {live} nonzero"
+        );
     }
 }

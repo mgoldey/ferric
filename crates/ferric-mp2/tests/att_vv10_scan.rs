@@ -49,6 +49,7 @@ fn scan_matches_all_in_one_for_every_arm_and_b() {
             n_radial: 20,
             n_angular: 26,
             prune: None,
+            weight_cut: None,
         },
         frozen_core: 1,
         ..AttVv10Config::mp2_v_terfc_atz()

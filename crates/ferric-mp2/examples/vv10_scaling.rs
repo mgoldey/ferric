@@ -71,6 +71,7 @@ fn main() {
         n_radial,
         n_angular,
         prune: None,
+        weight_cut: None,
     };
     let d = rhf.density_total();
     for spec in &a[5..] {

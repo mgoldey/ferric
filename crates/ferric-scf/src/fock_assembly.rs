@@ -28,6 +28,7 @@
 use crate::df_j::DfJ;
 use crate::df_k::DfK;
 use crate::fock::KBuilder;
+use crate::split_rij::RiJ;
 use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
 use ferric_core::FerricError;
@@ -74,7 +75,7 @@ pub(crate) fn build_df_jk<'a>(
     k_aux: Option<&str>,
     ooc_budget: usize,
     j_pair_thresh: f64,
-) -> Result<(Option<DfJ<'a>>, Option<DfK<'a>>), FerricError> {
+) -> Result<(Option<RiJ<'a>>, Option<DfK<'a>>), FerricError> {
     let out = build_df_jk_impl(ctx, mol, op, prep, j_aux, k_aux, ooc_budget, j_pair_thresh)?;
     note_df_k_built(out.1.is_some());
     Ok(out)
@@ -112,7 +113,7 @@ fn build_df_jk_impl<'a>(
     k_aux: Option<&str>,
     ooc_budget: usize,
     j_pair_thresh: f64,
-) -> Result<(Option<DfJ<'a>>, Option<DfK<'a>>), FerricError> {
+) -> Result<(Option<RiJ<'a>>, Option<DfK<'a>>), FerricError> {
     // `Some("")` is the explicit "do not density-fit" sentinel (see
     // `solve_rhf`); UHF/ROHF pass the config straight through, so honour it
     // here rather than letting it reach `basis::bundled("")`.
@@ -126,6 +127,9 @@ fn build_df_jk_impl<'a>(
     // side, same as before).
     if let (Some(ja), Some(ka)) = (j_aux, k_aux) {
         if ja == ka {
+            warn_split_bypassed(
+                "J and K use the same auxiliary basis, so J reads DF-K's stored tensor",
+            );
             let dfbs_set = ferric_core::basis::bundled(ja)?;
             let dfbs = PreparedBasis::new(mol, &dfbs_set)?;
             // Same aux basis on both sides: build the raw (P|μν) tensor ONCE and
@@ -161,11 +165,17 @@ fn build_df_jk_impl<'a>(
                     ooc_budget,
                     Some(ctx),
                 )?);
-                let mut df_j = Some(DfJ::from_source(raw, op, &dfbs, ooc_budget, Some(ctx))?);
+                let mut df_j = Some(RiJ::Stored(DfJ::from_source(
+                    raw,
+                    op,
+                    &dfbs,
+                    ooc_budget,
+                    Some(ctx),
+                )?));
                 yield_device_to_k(&mut df_j, &df_k);
                 return Ok((df_j, df_k));
             }
-            let df_j = Some(DfJ::new_for_jk(
+            let df_j = Some(RiJ::Stored(DfJ::new_for_jk(
                 op,
                 mol,
                 prep,
@@ -173,7 +183,7 @@ fn build_df_jk_impl<'a>(
                 ooc_budget,
                 Some(ctx),
                 j_pair_thresh,
-            )?);
+            )?));
             let df_k = Some(DfK::new_banded(op, prep, &dfbs, ooc_budget, Some(ctx))?);
             return Ok((df_j, df_k));
         }
@@ -181,15 +191,33 @@ fn build_df_jk_impl<'a>(
     let mut df_j = if let Some(aux_name) = j_aux {
         let dfbs_set = ferric_core::basis::bundled(aux_name)?;
         let dfbs = PreparedBasis::new(mol, &dfbs_set)?;
-        Some(DfJ::new_for_jk(
-            op,
-            mol,
-            prep,
-            &dfbs,
-            ooc_budget,
-            Some(ctx),
-            j_pair_thresh,
-        )?)
+        // `jk_storage = "split"`: Split-RI-J recomputes the three-centre
+        // integrals in contracted form every build, so no J tensor is stored.
+        // Single rank only (it does not stripe the aux band).
+        let use_split = ferric_integrals::three_index_source::jk_storage()
+            == ferric_integrals::three_index_source::JkStorage::Split
+            && ctx.size <= 1;
+        if ctx.size > 1 {
+            warn_split_bypassed("it runs on one rank only, and this run has several");
+        }
+        Some(if use_split {
+            RiJ::Split(Box::new(crate::split_rij::SplitRiJ::new(
+                op,
+                prep,
+                &dfbs,
+                j_pair_thresh,
+            )?))
+        } else {
+            RiJ::Stored(DfJ::new_for_jk(
+                op,
+                mol,
+                prep,
+                &dfbs,
+                ooc_budget,
+                Some(ctx),
+                j_pair_thresh,
+            )?)
+        })
     } else {
         None
     };
@@ -204,17 +232,31 @@ fn build_df_jk_impl<'a>(
     Ok((df_j, df_k))
 }
 
+/// `jk_storage = "split"` asked for, but J is built from a stored tensor:
+/// say why, once per process. No-op for every other policy.
+fn warn_split_bypassed(why: &str) {
+    use ferric_integrals::three_index_source::{jk_storage, JkStorage};
+    static WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if jk_storage() == JkStorage::Split && !WARNED.swap(true, std::sync::atomic::Ordering::Relaxed)
+    {
+        eprintln!(
+            "[ferric] warning: jk_storage = \"split\" not used for RI-J: {why}; \
+             the RI-J tensor is stored as under \"auto\""
+        );
+    }
+}
+
 /// RI-J is built before DF-K every iteration, so under `gpu = on` its device
 /// upload would take the pool first. Tell it how much DF-K will want.
 #[cfg(feature = "gpu")]
-fn yield_device_to_k(df_j: &mut Option<DfJ<'_>>, df_k: &Option<DfK<'_>>) {
-    if let (Some(j), Some(k)) = (df_j.as_mut(), df_k.as_ref()) {
+fn yield_device_to_k(df_j: &mut Option<RiJ<'_>>, df_k: &Option<DfK<'_>>) {
+    if let (Some(j), Some(k)) = (df_j.as_mut().and_then(RiJ::as_stored_mut), df_k.as_ref()) {
         j.reserve_device_for_k(k.device_footprint_bytes());
     }
 }
 
 #[cfg(not(feature = "gpu"))]
-fn yield_device_to_k(_df_j: &mut Option<DfJ<'_>>, _df_k: &Option<DfK<'_>>) {}
+fn yield_device_to_k(_df_j: &mut Option<RiJ<'_>>, _df_k: &Option<DfK<'_>>) {}
 
 /// Build the geometry-only SR/LR [`DfK`] fitter pair for a range-separated
 /// hybrid: `(K[erfc(ω)], K[erf(ω)])`. Called once before the SCF loop; only

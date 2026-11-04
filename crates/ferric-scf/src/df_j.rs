@@ -29,19 +29,84 @@
 //! Block streaming (and its disk IO on the spill path) stays sequential in
 //! `for_each_block`, exactly as DF-K; only the in-memory contraction of the
 //! current block fans out over chunks.
+//!
+//! # f32 tensor storage (`dfj-f32`, opt-in, OFF by default)
+//!
+//! With `[precision] mode = "mixed"` and `mixed_kernels` naming `dfj-f32` (a CPU
+//! kernel: any `[gpu] mode`), the raw tensor is STORED as f32
+//! (`ferric_integrals::three_index_source::f32_store`): the packed triangle, or
+//! the Schwarz pair-screened columns when the screen drops pairs, at 4 bytes
+//! per element, half the f64 tier. Both passes multiply the f32 entries by the
+//! f64 vectors `w`, `c` and accumulate in f64; `w`, `d_P`, `c`, the metric
+//! solve and `J` are never rounded. The device RI-J is not used for such a
+//! tensor (it would need the f64 one), and the build is not behind the SCF
+//! precision ladder (`crate::jk_ladder`): there is no f64 copy to fall back to,
+//! so EVERY build is f32-stored.
+//!
+//! Per-build contract, elementwise (Higham, ASNA 2nd ed., §2.2, §3.1, §3.5;
+//! u32 = 2⁻²⁴, u64 = 2⁻⁵³, γ_k(u) = ku/(1−ku), η = 2⁻¹⁵⁰ the f32 underflow
+//! error). Each stored `B̂ = B(1+δ) + ε`, `|δ| ≤ u32`, `|ε| ≤ η`; the f64 sums of
+//! `k` products `f64(B̂)·x` (exact upcast, one rounding per product and per
+//! addition, ANY order) err by at most `γ_k(u64)·Σ|B̂||x|`, and
+//! `Σ|B̂||x| ≤ (1+u32)Σ|B||x| + ηΣ|x|`. So, for whatever vector a pass is given,
+//!
+//!   pass 1: `|d̂_P − (Bw)_P| ≤ ε_d·(|B||w|)_P + (1+γ)·η·Σ|w|`,
+//!           `ε_d = u32 + γ_cols(u64)(1+u32)`             ([`dfj_f32_d_error_factor`](crate::df_j::dfj_f32_d_error_factor))
+//!   pass 2: `|Ĵ_k − (Bᵀc)_k| ≤ ε_J·(|B|ᵀ|c|)_k + (1+γ)·η·Σ|c|`,
+//!           `ε_J = u32 + γ_band(u64)(1+u32)`             ([`dfj_f32_j_error_factor`](crate::df_j::dfj_f32_j_error_factor))
+//!
+//! `cols` = stored columns (n(n+1)/2 or the kept pairs), `band` = aux rows of
+//! this rank. These are the factors of the device kernel `dfj-pack`
+//! (`df_j_gpu::d_error_factor_mixed`/`j_error_factor_mixed`, the same f32-matrix
+//! f64-vector GEMV model); only the summation order differs. End to end the
+//! metric couples the passes: `ĉ − c = V⁻¹(d̂ − d)` carries ‖V⁻¹‖ (the Fock
+//! matrix does), so `|Ĵ_k − J_k| ≤ ε_J(|B|ᵀ|ĉ|)_k + (|B|ᵀ|ĉ − c|)_k + …`.
+//!
+//! Energy, per build, first order: `E_J = ½ d̂ᵀV⁻¹d̂` with `d̂ = d + δB w`
+//! EXACTLY (both passes read the same `B̂`), so
+//! `Ê_J − E_J = cᵀ δB w + ½ δdᵀV⁻¹δd`; the first term is
+//! `≤ ε_EJ·S_J`, `S_J = |c|ᵀ|B||w|`, `ε_EJ = u32 + γ_cols(u64) + γ_naux(u64)`
+//! ([`dfj_f32_energy_error_factor`](crate::df_j::dfj_f32_energy_error_factor), the `jk_ladder` budget's ε_EJ); the second
+//! is ≥ 0 and carries 1/λ_min(V), so `ε_EJ·S_J` is a first-order ESTIMATE.
+//!
+//! Converged energy. With no f64 copy the SCF converges to the stationary
+//! point `D'` of `E'`, the energy functional with the rounded-`B̂` Coulomb
+//! operator (still symmetric positive semidefinite: `E'_J = ½|L⁻¹B̂w|²`). With
+//! `D*` the f64 SCF's minimum and both runs at their minima,
+//!
+//!   `L := E'_J(D') − E_J(D') ≤ E'(D') − E(D*) ≤ E'_J(D*) − E_J(D*) =: U`,
+//!
+//! (`E'(D') ≤ E'(D*)`, `E(D*) ≤ E(D')`, and `E' − E = E'_J − E_J` at any D):
+//! the f32 SCF's energy error is FIRST order, `|U|, |L| ≲ ε_EJ·S_J` (measured
+//! µEh-scale, the `dfj-pack` no-exit mutant's 1.2-5.1 µEh), and `U − L` is
+//! second order. The f64 EXIT is energy-only ([`DfJ::f64_exit_coulomb_energy`](crate::df_j::DfJ::f64_exit_coulomb_energy)):
+//! one recomputed f64 pass 1 at `D'` (no f64 tensor kept, one block resident)
+//! gives `E_J(D')`, and `E'(D') − L = E(D')` is the exact functional at `D'`,
+//! `0 ≤ E(D') − E(D*) ≤ U − L`: SECOND order. It costs one integral
+//! evaluation of the stored columns; the density, orbitals and Fock matrix
+//! stay those of the f32 SCF (first-order in δB). A full f64 exit (the ladder's
+//! veto, DIIS reset and f64 rebuilds to re-converge) would cost one integral
+//! recompute per extra iteration and is not implemented.
 
 use crate::fock::JBuilder;
+use ferric_core::gpu::mixed_host::{gamma, U32, U64};
+use ferric_core::gpu::stats::{note_kernel_mixed, note_mixed_fallback, MixedFallback};
+use ferric_core::gpu::MixedKernel;
 use ferric_core::parallel::ParallelContext;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
-use ferric_integrals::three_index_source::{PairScreen, ThreeIndexSource};
+use ferric_integrals::three_index_source::{
+    F32Declined, F32Rounding, PairScreen, ThreeIndexSource,
+};
 use ferric_integrals::threeindex::coulomb_metric_2c;
 use ndarray::linalg::general_mat_vec_mul;
 use ndarray::{Array1, Array2, OwnedRepr};
 use ndarray_linalg::cholesky::{CholeskyFactorized, FactorizeC, SolveC};
 use ndarray_linalg::UPLO;
 use rayon::prelude::*;
+use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::Arc;
 
 /// DF-J Coulomb builder. Uses a budget-bounded ThreeIndexSource for raw (P|μν).
 ///
@@ -90,6 +155,195 @@ pub struct DfJ<'a> {
     /// the J build that runs first each iteration.
     #[cfg(feature = "gpu")]
     k_reserve_bytes: usize,
+    /// The bases the f64 exit pass recomputes the integrals from; `Some` only
+    /// for an f32-stored tensor whose builder had them (see
+    /// [`DfJ::enable_f64_exit`]).
+    f64_exit: Option<ExitBases>,
+}
+
+/// What [`DfJ::f64_exit_coulomb_energy`] recomputes the integrals from.
+struct ExitBases {
+    op: Operator,
+    obs: Arc<PreparedBasis>,
+    dfbs: Arc<PreparedBasis>,
+}
+
+/// The two Coulomb energies `E_J = ½ dᵀV⁻¹d` of one density: from the stored
+/// f32 tensor and from the f64 integrals recomputed for the exit.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DfjF32Exit {
+    /// `½ d̂ᵀV⁻¹d̂`, `d̂` from the f32 tensor (what the SCF's energy holds).
+    pub e_j_f32: f64,
+    /// `½ dᵀV⁻¹d`, `d` from the f64 integrals of the same columns.
+    pub e_j_f64: f64,
+}
+
+impl DfjF32Exit {
+    /// What to add to an energy whose Coulomb part is `e_j_f32` to make it the
+    /// f64 functional at the same density.
+    pub fn correction(&self) -> f64 {
+        self.e_j_f64 - self.e_j_f32
+    }
+}
+
+seam_flag!(
+    /// Test seam (`test-seams` feature, mutation): the f32 tier rounds the
+    /// integrals toward zero instead of to nearest.
+    TRUNCATE_DFJ_F32,
+    truncate_dfj_f32
+);
+seam_flag!(
+    /// Test seam (`test-seams` feature, mutation): both f32-tier passes
+    /// accumulate in f32 instead of f64.
+    ACCUMULATE_DFJ_F32_IN_F32,
+    accumulate_dfj_f32_in_f32
+);
+
+const F32_UNSET: u8 = u8::MAX;
+static DFJ_F32_OVERRIDE: AtomicU8 = AtomicU8::new(F32_UNSET);
+
+/// Force the `dfj-f32` decision of every DfJ built from now on (`Some(true)`
+/// on, `Some(false)` off) or return it to the installed precision settings
+/// (`None`). Test hook: process-wide, so tests that use it serialise.
+#[doc(hidden)]
+pub fn set_dfj_f32_for_test(on: Option<bool>) {
+    let v = match on {
+        None => F32_UNSET,
+        Some(false) => 0,
+        Some(true) => 1,
+    };
+    DFJ_F32_OVERRIDE.store(v, Ordering::SeqCst);
+}
+
+/// Is f32 storage of the RI-J tensor requested: `[precision] mode = "mixed"`
+/// with `dfj-f32` in `mixed_kernels`, in the INSTALLED settings (read without
+/// initialising them, as the precision provenance record reads them; with
+/// nothing installed it is off).
+pub fn dfj_f32_requested() -> bool {
+    match DFJ_F32_OVERRIDE.load(Ordering::SeqCst) {
+        0 => false,
+        1 => true,
+        _ => ferric_core::gpu::installed_settings()
+            .is_some_and(|s| s.mixed_allows(MixedKernel::DfjF32)),
+    }
+}
+
+fn f32_rounding() -> F32Rounding {
+    if truncate_dfj_f32() {
+        F32Rounding::TowardZero
+    } else {
+        F32Rounding::Nearest
+    }
+}
+
+/// An f32 request that could not be honoured: say so once per builder and
+/// count it in the precision provenance (`f32_range` for a value beyond the
+/// f32 range, `cpu_f64` otherwise).
+fn note_f32_declined(why: &F32Declined) {
+    eprintln!("[ferric] RI-J: dfj-f32 requested but the tensor stays f64 ({why})");
+    let reason = match why {
+        F32Declined::OutOfRange { .. } => MixedFallback::F32Range,
+        _ => MixedFallback::CpuF64,
+    };
+    note_mixed_fallback(MixedKernel::DfjF32, reason);
+}
+
+/// ε of pass 1 on the f32 tensor: `|d̂_P − (Bw)_P| ≤ ε·(|B||w|)_P` (plus the
+/// underflow term, module docs), `ε = u32 + γ_cols(u64)(1+u32)`.
+pub fn dfj_f32_d_error_factor(cols: usize) -> f64 {
+    U32 + gamma(cols, U64) * (1.0 + U32)
+}
+
+/// ε of pass 2 on the f32 tensor: `|Ĵ_k − (Bᵀc)_k| ≤ ε·(|B|ᵀ|c|)_k` (plus the
+/// underflow term), `ε = u32 + γ_band(u64)(1+u32)`.
+pub fn dfj_f32_j_error_factor(band_naux: usize) -> f64 {
+    U32 + gamma(band_naux, U64) * (1.0 + U32)
+}
+
+/// First-order ε of one build's Coulomb energy: `|Ê_J − E_J| ≲ ε·|c|ᵀ|B||w|`,
+/// `ε = u32 + γ_cols(u64) + γ_naux(u64)` (module docs; an estimate, the
+/// second-order term carries 1/λ_min(V)).
+pub fn dfj_f32_energy_error_factor(cols: usize, naux: usize) -> f64 {
+    U32 + gamma(cols, U64) + gamma(naux, U64)
+}
+
+/// `Σ_k f64(a_k)·x_k` with f64 products and sums: four interleaved partial
+/// sums, then the tail, in a fixed order (deterministic, vectorisable).
+fn dot_f32_f64(a: &[f32], x: &[f64]) -> f64 {
+    if accumulate_dfj_f32_in_f32() {
+        return dot_f32_acc_f32(a, x);
+    }
+    let n4 = a.len().min(x.len()) / 4 * 4;
+    let mut s = [0.0f64; 4];
+    for (ac, xc) in a[..n4]
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(x[..n4].as_chunks::<4>().0)
+    {
+        s[0] += f64::from(ac[0]) * xc[0];
+        s[1] += f64::from(ac[1]) * xc[1];
+        s[2] += f64::from(ac[2]) * xc[2];
+        s[3] += f64::from(ac[3]) * xc[3];
+    }
+    let mut tail = 0.0f64;
+    for (&b, &v) in a[n4..].iter().zip(&x[n4..]) {
+        tail += f64::from(b) * v;
+    }
+    ((s[0] + s[1]) + (s[2] + s[3])) + tail
+}
+
+/// The `ACCUMULATE_DFJ_F32_IN_F32` mutant of [`dot_f32_f64`].
+fn dot_f32_acc_f32(a: &[f32], x: &[f64]) -> f64 {
+    let mut s = 0.0f32;
+    for (&b, &v) in a.iter().zip(x) {
+        s += b * v as f32;
+    }
+    f64::from(s)
+}
+
+/// Columns per tile of the pass-2 row update (a 8 KiB slab of `y`, kept in L1
+/// while the chunk's rows stream through it).
+const F32_PASS2_TILE: usize = 1024;
+
+/// `y = Σ_r f64(rows[r])·c[r]` over the `rows.len() / cols` rows of one aux
+/// chunk, overwriting `y` (its old contents are not read). f64 products and
+/// sums, rows in ascending order for every element.
+fn f32_rows_t_dot(rows: &[f32], cols: usize, c: &[f64], y: &mut [f64]) {
+    let nrows = c.len();
+    if accumulate_dfj_f32_in_f32() {
+        let mut t = vec![0.0f32; cols];
+        for (r, &cp) in rows.chunks_exact(cols).zip(c) {
+            for (t, &b) in t.iter_mut().zip(r) {
+                *t += b * cp as f32;
+            }
+        }
+        for (y, t) in y.iter_mut().zip(&t) {
+            *y = f64::from(*t);
+        }
+        return;
+    }
+    let mut k0 = 0usize;
+    while k0 < cols {
+        let k1 = (k0 + F32_PASS2_TILE).min(cols);
+        let yt = &mut y[k0..k1];
+        if nrows == 0 {
+            yt.fill(0.0);
+        }
+        for (r, &cp) in c.iter().enumerate() {
+            let bt = &rows[r * cols + k0..r * cols + k1];
+            if r == 0 {
+                for (y, &b) in yt.iter_mut().zip(bt) {
+                    *y = f64::from(b) * cp;
+                }
+            } else {
+                for (y, &b) in yt.iter_mut().zip(bt) {
+                    *y += f64::from(b) * cp;
+                }
+            }
+        }
+        k0 = k1;
+    }
 }
 
 impl<'a> std::fmt::Debug for DfJ<'a> {
@@ -132,7 +386,10 @@ impl<'a> DfJ<'a> {
             None => (0, naux),
         };
         let source = ThreeIndexSource::build_band(op, obs, dfbs, budget_bytes, p0, p1)?;
-        Self::from_source(source, op, dfbs, budget_bytes, ctx)
+        // Always f64: `new`/`new_banded` serve the response and gradient J
+        // builds, which `dfj-f32` does not cover (it is an SCF-path storage).
+        let v = coulomb_metric_2c(op, dfbs)?;
+        Self::from_source_and_metric(source, v, budget_bytes, ctx)
     }
 
     /// Same as [`DfJ::new_banded`] but places the raw tensor by the effective
@@ -146,6 +403,14 @@ impl<'a> DfJ<'a> {
     /// screen is skipped when the device path may take J (its
     /// upload expects the full packed triangle) and for an operator without a
     /// Schwarz table.
+    ///
+    /// With `dfj-f32` requested ([`dfj_f32_requested`]) the tensor is built
+    /// straight into the f32 tier (pair-screened when the screen drops pairs,
+    /// else packed; the device path is then not used, so the screen is not
+    /// skipped for it), sized at 4 bytes per element, and the f64 exit pass is
+    /// enabled. When the f32 tensor does not fit, or `jk_storage` is
+    /// `disk`/`direct`, the request is reported (stderr and provenance
+    /// fallback count) and the f64 placement below is used.
     pub fn new_for_jk(
         op: Operator,
         mol: &ferric_core::mol::Molecule,
@@ -160,8 +425,62 @@ impl<'a> DfJ<'a> {
             Some(c) => c.aux_band(naux),
             None => (0, naux),
         };
-        let (source, v) = jk_source(op, mol, (obs, dfbs), budget_bytes, band, pair_thresh)?;
+        let mut v = coulomb_metric_2c(op, dfbs)?;
+        if dfj_f32_requested() {
+            match Self::try_new_f32(
+                op,
+                mol,
+                (obs, dfbs),
+                budget_bytes,
+                band,
+                ctx,
+                pair_thresh,
+                v,
+            )? {
+                Ok(me) => return Ok(me),
+                Err(back) => v = back,
+            }
+        }
+        let source = jk_source(op, mol, (obs, dfbs), budget_bytes, band, pair_thresh, &v)?;
         Self::from_source_and_metric(source, v, budget_bytes, ctx)
+    }
+
+    /// The `dfj-f32` build of [`new_for_jk`](Self::new_for_jk): the tensor built
+    /// straight into f32 (with the f64 exit armed), or the metric handed back
+    /// (`Err`, counted, with a notice) when the f32 tier declines, so the caller
+    /// builds the f64 tensor without recomputing or copying the metric.
+    #[allow(clippy::too_many_arguments)]
+    fn try_new_f32(
+        op: Operator,
+        mol: &ferric_core::mol::Molecule,
+        (obs, dfbs): (&PreparedBasis, &PreparedBasis),
+        budget_bytes: usize,
+        band: (usize, usize),
+        ctx: Option<&'a ParallelContext>,
+        pair_thresh: f64,
+        v: Array2<f64>,
+    ) -> Result<Result<Self, Array2<f64>>, FerricError> {
+        let screen = pair_screen_with(op, obs, &v, pair_thresh, false);
+        let built = ThreeIndexSource::build_ri_j_f32(
+            op,
+            obs,
+            dfbs,
+            budget_bytes,
+            band,
+            screen,
+            f32_rounding(),
+        )?;
+        match built {
+            Ok(source) => {
+                let mut me = Self::from_source_and_metric(source, v, budget_bytes, ctx)?;
+                me.enable_f64_exit(op, mol, obs, dfbs)?;
+                Ok(Ok(me))
+            }
+            Err(why) => {
+                note_f32_declined(&why);
+                Ok(Err(v))
+            }
+        }
     }
 
     /// Same as [`DfJ::new_banded`] but adopts an ALREADY-BUILT raw `(P|μν)`
@@ -180,6 +499,12 @@ impl<'a> DfJ<'a> {
     /// contract the wrong rows. Single-rank (`ctx` None or size 1) is the only
     /// case where DfJ's band and DfK's full range coincide; `build_df_jk` gates
     /// the sharing on exactly that.
+    ///
+    /// With `dfj-f32` requested the adopted f64 tensor is converted to the f32
+    /// tier (`ThreeIndexSource::into_ri_j_f32`) and dropped; a conversion that
+    /// does not fit keeps the f64 tensor and is reported. No f64 exit is
+    /// enabled here (the orbital basis is not passed): call
+    /// [`DfJ::enable_f64_exit`].
     pub fn from_source(
         source: ThreeIndexSource,
         op: Operator,
@@ -187,8 +512,42 @@ impl<'a> DfJ<'a> {
         budget_bytes: usize,
         ctx: Option<&'a ParallelContext>,
     ) -> Result<Self, FerricError> {
+        let source = if dfj_f32_requested() {
+            let (s, declined) = source.into_ri_j_f32(budget_bytes, f32_rounding())?;
+            if let Some(why) = declined {
+                note_f32_declined(&why);
+            }
+            s
+        } else {
+            source
+        };
         let v = coulomb_metric_2c(op, dfbs)?;
         Self::from_source_and_metric(source, v, budget_bytes, ctx)
+    }
+
+    /// Let [`Self::f64_exit_coulomb_energy`] recompute this f32 tensor's
+    /// integrals in f64: re-prepares the two bases from `mol` (the recompute
+    /// tier's own recipe) and keeps them. A no-op for an f64 tensor. The bases
+    /// must be the ones the tensor was built from (checked by size).
+    pub fn enable_f64_exit(
+        &mut self,
+        op: Operator,
+        mol: &ferric_core::mol::Molecule,
+        obs: &PreparedBasis,
+        dfbs: &PreparedBasis,
+    ) -> Result<(), FerricError> {
+        if !self.source.is_ri_j_f32() {
+            return Ok(());
+        }
+        let obs = Arc::new(PreparedBasis::new(mol, obs.basis_set())?);
+        let dfbs = Arc::new(PreparedBasis::new(mol, dfbs.basis_set())?);
+        if obs.nbasis() != self.source.nao() || dfbs.nbasis() != self.source.naux() {
+            return Err(FerricError::General(
+                "DF-J f64 exit: re-prepared bases differ from the tensor's".into(),
+            ));
+        }
+        self.f64_exit = Some(ExitBases { op, obs, dfbs });
+        Ok(())
     }
 
     /// [`DfJ::from_source`] with the `(naux, naux)` metric `v` already built.
@@ -223,6 +582,7 @@ impl<'a> DfJ<'a> {
             device: crate::df_j_gpu::DeviceSlot::default(),
             #[cfg(feature = "gpu")]
             k_reserve_bytes: 0,
+            f64_exit: None,
         })
     }
 
@@ -244,7 +604,6 @@ impl<'a> DfJ<'a> {
     }
 
     /// `V⁻¹ d` through the stored Cholesky factor (the solve `build` uses). Test hook.
-    #[cfg(feature = "gpu")]
     #[doc(hidden)]
     pub fn solve_metric_for_test(&self, d_p: &Array1<f64>) -> Result<Array1<f64>, FerricError> {
         self.solve_metric(d_p)
@@ -268,9 +627,9 @@ impl DfJ<'_> {
     }
 }
 
-/// The raw tensor `new_for_jk` holds, and the aux metric it built on the way:
-/// the pair-screened in-core tier when [`pair_screen_for`] screens and the
-/// compressed band fits, otherwise the full tensor under `[scf] jk_storage`.
+/// The f64 raw tensor `new_for_jk` holds: the pair-screened in-core tier when
+/// [`pair_screen_for`] screens and the compressed band fits, otherwise the full
+/// tensor under `[scf] jk_storage`. `v` is the operator's aux metric.
 fn jk_source(
     op: Operator,
     mol: &ferric_core::mol::Molecule,
@@ -278,9 +637,9 @@ fn jk_source(
     budget_bytes: usize,
     band: (usize, usize),
     pair_thresh: f64,
-) -> Result<(ThreeIndexSource, Array2<f64>), FerricError> {
-    let v = coulomb_metric_2c(op, dfbs)?;
-    if let Some(screen) = pair_screen_for(op, obs, &v, pair_thresh) {
+    v: &Array2<f64>,
+) -> Result<ThreeIndexSource, FerricError> {
+    if let Some(screen) = pair_screen_for(op, obs, v, pair_thresh) {
         let built = ThreeIndexSource::build_pair_screened_for_jk(
             op,
             obs,
@@ -290,11 +649,10 @@ fn jk_source(
             screen,
         )?;
         if let Some(source) = built {
-            return Ok((source, v));
+            return Ok(source);
         }
     }
-    let source = ThreeIndexSource::build_for_jk(op, mol, obs, dfbs, budget_bytes, band, false)?;
-    Ok((source, v))
+    ThreeIndexSource::build_for_jk(op, mol, obs, dfbs, budget_bytes, band, false)
 }
 
 /// The RI-J pair screen for `pair_thresh`, or `None` to keep every pair:
@@ -307,7 +665,20 @@ fn pair_screen_for(
     v: &Array2<f64>,
     pair_thresh: f64,
 ) -> Option<std::sync::Arc<PairScreen>> {
-    if pair_thresh <= 0.0 || device_may_take_j() {
+    pair_screen_with(op, obs, v, pair_thresh, device_may_take_j())
+}
+
+/// [`pair_screen_for`] with the device decision given: `device` true keeps
+/// every pair (the device upload reads the full triangle). The f32 tier passes
+/// false: it never goes to the device.
+fn pair_screen_with(
+    op: Operator,
+    obs: &PreparedBasis,
+    v: &Array2<f64>,
+    pair_thresh: f64,
+    device: bool,
+) -> Option<std::sync::Arc<PairScreen>> {
+    if pair_thresh <= 0.0 || device {
         return None;
     }
     let q_aux_max = v.diag().iter().fold(0.0_f64, |m, &x| m.max(x.abs().sqrt()));
@@ -317,6 +688,20 @@ fn pair_screen_for(
         // reproduces, rather than the same values in a different column order.
         .filter(|s| s.ncols() < s.total_pairs())
         .map(std::sync::Arc::new)
+}
+
+/// The pair screen [`DfJ::new_for_jk`] stores its tensor under, from the same
+/// metric and `pair_screen_for` it uses; `None` when it keeps every pair. Test
+/// hook: lets a memory-plan test size the RI-J plane without building it.
+#[doc(hidden)]
+pub fn ri_j_pair_screen_for_test(
+    op: Operator,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    pair_thresh: f64,
+) -> Result<Option<std::sync::Arc<PairScreen>>, FerricError> {
+    let v = coulomb_metric_2c(op, dfbs)?;
+    Ok(pair_screen_for(op, obs, &v, pair_thresh))
 }
 
 /// Could the device path build this J? Its upload reads the full packed
@@ -532,6 +917,173 @@ impl DfJ<'_> {
         Ok(())
     }
 
+    /// Pass 1 over the f32 tensor: `d_P = Σ_k f64(B̂_Pk) w_k` for this rank's
+    /// band, written at the GLOBAL aux index into a zero `naux` vector (no
+    /// reduction yet). One fixed-order dot per row: deterministic, thread-count
+    /// independent.
+    fn f32_pass1(&self, w: &[f64]) -> Result<Array1<f64>, FerricError> {
+        let (data, _) = self
+            .source
+            .ri_j_f32()
+            .ok_or_else(|| FerricError::General("DF-J: source is not f32".into()))?;
+        let cols = data.ncols();
+        if w.len() != cols {
+            return Err(FerricError::General(format!(
+                "DF-J f32: {} weights for {cols} stored columns",
+                w.len()
+            )));
+        }
+        let flat = data
+            .as_slice()
+            .ok_or_else(|| FerricError::General("DF-J f32 tensor not contiguous".into()))?;
+        let p0 = self.source.band().0;
+        let band: Vec<f64> = flat
+            .par_chunks(cols.max(1))
+            .with_min_len(chunk_width(self.source.nao()))
+            .map(|row| dot_f32_f64(row, w))
+            .collect();
+        let mut d_p = Array1::<f64>::zeros(self.source.naux());
+        d_p.slice_mut(ndarray::s![p0..p0 + band.len()])
+            .assign(&Array1::from(band));
+        Ok(d_p)
+    }
+
+    /// Pass 2 over the f32 tensor: `acc_k = Σ_P f64(B̂_Pk) c_P` over this rank's
+    /// band (`c` is the FULL `naux` vector), in the fixed aux chunks of the f64
+    /// tiers through the ordered column fold (deterministic).
+    fn f32_pass2(&self, c: &Array1<f64>) -> Result<Vec<f64>, FerricError> {
+        let (data, _) = self
+            .source
+            .ri_j_f32()
+            .ok_or_else(|| FerricError::General("DF-J: source is not f32".into()))?;
+        let (b, cols) = data.dim();
+        let flat = data
+            .as_slice()
+            .ok_or_else(|| FerricError::General("DF-J f32 tensor not contiguous".into()))?;
+        let p0 = self.source.band().0;
+        let c = c
+            .as_slice()
+            .ok_or_else(|| FerricError::General("DF-J c not contiguous".into()))?;
+        let c_band = &c[p0..p0 + b];
+        let n = self.source.nao();
+        let chunk = chunk_width(n);
+        let mut acc = vec![0.0_f64; cols];
+        crate::reduce::grouped_deterministic_fold_columns(
+            &mut acc,
+            b.div_ceil(chunk),
+            pass2_band(n, self.budget_bytes),
+            &mut Vec::new(),
+            |ci, y| {
+                let q0 = ci * chunk;
+                let q1 = (q0 + chunk).min(b);
+                f32_rows_t_dot(&flat[q0 * cols..q1 * cols], cols, &c_band[q0..q1], y);
+            },
+        );
+        Ok(acc)
+    }
+
+    /// The packed or pair weights of `d` for the f32 tensor's columns.
+    fn f32_weights(&self, d: &Array2<f64>) -> Result<Array1<f64>, FerricError> {
+        let (_, screen) = self
+            .source
+            .ri_j_f32()
+            .ok_or_else(|| FerricError::General("DF-J: source is not f32".into()))?;
+        Ok(match screen {
+            None => packed_density_weights(d, self.source.nao()),
+            Some(s) => pair_density_weights(d, s.cols()),
+        })
+    }
+
+    /// Write the f32 tensor's per-column accumulator into the full `j`.
+    fn f32_scatter(&self, acc: &[f64], j: &mut Array2<f64>) {
+        match self.source.ri_j_f32().and_then(|(_, s)| s) {
+            None => unpack_symmetric(acc, self.source.nao(), j),
+            Some(s) => scatter_pair_cols(acc, s.cols(), j),
+        }
+    }
+
+    /// Two-pass J over the f32 tensor (module docs, "f32 tensor storage"): the
+    /// same structure as the packed and pair-screened f64 builds, f32 entries,
+    /// f64 vectors and accumulation. Counts one mixed `dfj-f32` call.
+    fn build_f32(&self, d: &Array2<f64>, j: &mut Array2<f64>) -> Result<(), FerricError> {
+        let w = self.f32_weights(d)?;
+        let w = w.as_slice().unwrap_or(&[]);
+        let mut d_p = self.f32_pass1(w)?;
+        self.reduce_d_p(&mut d_p);
+        let c_p = self.solve_metric(&d_p)?;
+        let acc = self.f32_pass2(&c_p)?;
+        self.f32_scatter(&acc, j);
+        note_kernel_mixed(MixedKernel::DfjF32);
+        Ok(())
+    }
+
+    /// Is the raw tensor stored as f32 (`dfj-f32`)?
+    pub fn is_f32_storage(&self) -> bool {
+        self.source.is_ri_j_f32()
+    }
+
+    /// The raw source. Test hook (tier, charged bytes, stored rows).
+    #[doc(hidden)]
+    pub fn source_mut_for_test(&mut self) -> &mut ThreeIndexSource {
+        &mut self.source
+    }
+
+    /// The production f32 passes for a test: pass 1 on the weights of `d`
+    /// (`d_P` before any cross-rank reduction, zero outside this rank's band) and
+    /// pass 2 on the GIVEN full `c`, scattered into the full `J`. Test hook.
+    #[doc(hidden)]
+    pub fn f32_passes_for_test(
+        &self,
+        d: &Array2<f64>,
+        c: &Array1<f64>,
+    ) -> Result<(Array1<f64>, Array2<f64>), FerricError> {
+        let w = self.f32_weights(d)?;
+        let d_p = self.f32_pass1(w.as_slice().unwrap_or(&[]))?;
+        let acc = self.f32_pass2(c)?;
+        let n = self.source.nao();
+        let mut j = Array2::<f64>::zeros((n, n));
+        self.f32_scatter(&acc, &mut j);
+        Ok((d_p, j))
+    }
+
+    /// The f64 energy exit of an f32-stored tensor (module docs, "Converged
+    /// energy"): `E_J = ½ dᵀV⁻¹d` at `d` from the stored f32 tensor AND from the
+    /// f64 integrals of the same columns, recomputed one block at a time (no f64
+    /// tensor is kept). An SCF that returns `E + correction()` at its final
+    /// density returns the f64 functional there, whose error against the f64 SCF
+    /// is second order. `Ok(None)` for an f64 tensor or when the exit bases were
+    /// not given ([`Self::enable_f64_exit`]). Costs one integral evaluation of
+    /// the stored columns.
+    pub fn f64_exit_coulomb_energy(
+        &self,
+        d: &Array2<f64>,
+    ) -> Result<Option<DfjF32Exit>, FerricError> {
+        let Some(bases) = self.f64_exit.as_ref() else {
+            return Ok(None);
+        };
+        if !self.source.is_ri_j_f32() {
+            return Ok(None);
+        }
+        let w = self.f32_weights(d)?;
+        let mut d32 = self.f32_pass1(w.as_slice().unwrap_or(&[]))?;
+        self.reduce_d_p(&mut d32);
+        let e_j_f32 = 0.5 * d32.dot(&self.solve_metric(&d32)?);
+        let mut d64 = Array1::<f64>::zeros(self.source.naux());
+        self.source.for_each_ri_j_f64_block_recomputed(
+            (bases.op, &*bases.obs, &*bases.dfbs),
+            self.budget_bytes,
+            |q0, rows| {
+                let part = rows.dot(&w);
+                d64.slice_mut(ndarray::s![q0..q0 + part.len()])
+                    .assign(&part);
+                Ok(())
+            },
+        )?;
+        self.reduce_d_p(&mut d64);
+        let e_j_f64 = 0.5 * d64.dot(&self.solve_metric(&d64)?);
+        Ok(Some(DfjF32Exit { e_j_f32, e_j_f64 }))
+    }
+
     /// MPI: sum the per-rank partial `d_P` (disjoint bands, zero elsewhere) so
     /// every rank holds the FULL `d_P` before the global V^{-1} coupling.
     fn reduce_d_p(&self, d_p: &mut Array1<f64>) {
@@ -574,6 +1126,13 @@ impl DfJ<'_> {
 
 impl JBuilder for DfJ<'_> {
     fn build(&mut self, d: &Array2<f64>, j: &mut Array2<f64>) -> Result<usize, FerricError> {
+        // f32-stored tensor (`dfj-f32`): a CPU kernel, never the device (whose
+        // upload would need the f64 tensor this source no longer holds).
+        if self.source.is_ri_j_f32() {
+            self.build_f32(d, j)?;
+            self.reduce_j(j);
+            return Ok(0);
+        }
         // Device-resident path (opt-in `gpu` feature, `[gpu] mode` != off). It
         // declines to the host path below for every reason it cannot run.
         #[cfg(feature = "gpu")]
@@ -1604,5 +2163,46 @@ mod tests {
             !unscreened.source.is_incore() && !unscreened.source.is_packed_incore_for_test(),
             "the full tensor should not fit this budget"
         );
+    }
+
+    /// Catches: the CPU f32 error factors drifting from the device kernel's
+    /// (`dfj-pack`, the same f32-matrix f64-vector model).
+    #[cfg(feature = "gpu")]
+    #[test]
+    fn f32_error_factors_are_the_device_kernels() {
+        for k in [1usize, 300, 6555, 262_450] {
+            assert_eq!(
+                dfj_f32_d_error_factor(k),
+                crate::df_j_gpu::d_error_factor_mixed(k)
+            );
+            assert_eq!(
+                dfj_f32_j_error_factor(k),
+                crate::df_j_gpu::j_error_factor_mixed(k)
+            );
+        }
+    }
+
+    /// Catches: a pass-2 tile loop that skips or repeats a column, reads `y`'s
+    /// old contents, or reorders the rows of an element's sum (the result must
+    /// be the sequential row-ascending f64 sum, bit for bit).
+    #[test]
+    fn f32_rows_t_dot_is_the_sequential_row_sum() {
+        let (rows, cols) = (5usize, 2 * F32_PASS2_TILE + 37);
+        let b: Vec<f32> = (0..rows * cols)
+            .map(|i| ((i * 37 % 101) as f32 - 50.0) * 1.0e-3)
+            .collect();
+        let c: Vec<f64> = (0..rows).map(|r| 0.3 - 0.17 * r as f64).collect();
+        let mut y = vec![f64::NAN; cols];
+        f32_rows_t_dot(&b, cols, &c, &mut y);
+        for (k, got) in y.iter().enumerate() {
+            let mut want = f64::from(b[k]) * c[0];
+            for (r, &cr) in c.iter().enumerate().skip(1) {
+                want += f64::from(b[r * cols + k]) * cr;
+            }
+            assert_eq!(got.to_bits(), want.to_bits(), "column {k}");
+        }
+        let mut y0 = vec![f64::NAN; cols];
+        f32_rows_t_dot(&[], cols, &[], &mut y0);
+        assert!(y0.iter().all(|&v| v == 0.0), "an empty chunk must zero y");
     }
 }

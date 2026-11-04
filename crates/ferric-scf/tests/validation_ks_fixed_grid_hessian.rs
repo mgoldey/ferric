@@ -88,6 +88,7 @@ fn reference_grid_matches_the_grid_ferric_builds() {
         n_radial: 30,
         n_angular: 50,
         prune: None,
+        weight_cut: None,
     };
     let grid = ferric_scf::ks_fixed_grid::FixedGridKs::new(&mol, "LDA", &cfg).unwrap();
     let (pts, w) = grid.points_and_weights();

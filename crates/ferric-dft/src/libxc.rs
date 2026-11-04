@@ -700,6 +700,19 @@ impl XcFunctional {
         );
     }
 
+    /// A fresh handle for the same functional (same id, `nspin`, family and
+    /// external parameters), for a caller that evaluates from several rayon
+    /// workers at once and wants one handle per worker, as `eval_chunked`
+    /// does. Its per-point output is the same as `self`'s.
+    pub(crate) fn worker_copy(&self) -> XcFunctional {
+        XcFunctional::from_id(
+            self.libxc_id,
+            self.nspin,
+            self.family,
+            self.ext_params.as_deref(),
+        )
+    }
+
     /// LDA: feed ρ, get ε_xc and v_ρ.
     pub fn eval_lda_unpolarized(&self, rho: &[f64], exc: &mut [f64], vrho: &mut [f64]) {
         let n = rho.len();
@@ -1298,6 +1311,18 @@ impl XcDef {
     /// not.
     pub fn is_double_hybrid(&self) -> bool {
         self.weights.is_some()
+    }
+
+    /// The same definition on fresh libxc handles
+    /// ([`XcFunctional::worker_copy`]), for one rayon worker's evaluations.
+    pub(crate) fn worker_copy(&self) -> XcDef {
+        XcDef {
+            funcs: self.funcs.iter().map(XcFunctional::worker_copy).collect(),
+            cam: self.cam,
+            vv10: self.vv10,
+            b3lyp_mix: self.b3lyp_mix,
+            weights: self.weights.clone(),
+        }
     }
 }
 

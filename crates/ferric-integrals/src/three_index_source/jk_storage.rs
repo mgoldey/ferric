@@ -40,6 +40,13 @@ pub enum JkStorage {
     Disk,
     /// Always recompute each block per pass, even when memory would hold it.
     Direct,
+    /// RI-J by Split-RI-J (`ferric_scf::split_rij`): no stored J tensor, its
+    /// three-centre integrals recomputed in contracted form every build. Any
+    /// tensor still needed (DF-K's) is stored as under [`Auto`](Self::Auto).
+    /// Single rank, with J and K on different auxiliary bases (or no DF-K):
+    /// otherwise J is built from a stored tensor as under `Auto`, with a
+    /// warning.
+    Split,
 }
 
 impl JkStorage {
@@ -50,8 +57,9 @@ impl JkStorage {
             "memory" => Ok(Self::Memory),
             "disk" => Ok(Self::Disk),
             "direct" => Ok(Self::Direct),
+            "split" => Ok(Self::Split),
             other => Err(format!(
-                "unknown jk_storage {other:?} (expected \"auto\", \"memory\", \"disk\" or \"direct\")"
+                "unknown jk_storage {other:?} (expected \"auto\", \"memory\", \"disk\", \"direct\" or \"split\")"
             )),
         }
     }
@@ -63,6 +71,7 @@ impl JkStorage {
             Self::Memory => "memory",
             Self::Disk => "disk",
             Self::Direct => "direct",
+            Self::Split => "split",
         }
     }
 
@@ -71,9 +80,15 @@ impl JkStorage {
     }
 
     fn from_code(c: u8) -> Option<Self> {
-        [Self::Auto, Self::Memory, Self::Disk, Self::Direct]
-            .into_iter()
-            .find(|v| v.code() == c)
+        [
+            Self::Auto,
+            Self::Memory,
+            Self::Disk,
+            Self::Direct,
+            Self::Split,
+        ]
+        .into_iter()
+        .find(|v| v.code() == c)
     }
 }
 
@@ -173,7 +188,10 @@ fn pair_screened_fits(
     screen: &super::PairScreen,
     budget_bytes: usize,
 ) -> bool {
-    if !matches!(policy, JkStorage::Auto | JkStorage::Memory) {
+    if !matches!(
+        policy,
+        JkStorage::Auto | JkStorage::Memory | JkStorage::Split
+    ) {
         return false;
     }
     let need = ThreeIndexSource::pair_screened_bytes(band, screen);
@@ -288,7 +306,7 @@ pub fn decide(
                 budget_bytes as f64 / 1e9,
             ))
         }),
-        JkStorage::Auto => match mem {
+        JkStorage::Auto | JkStorage::Split => match mem {
             Some(t) => Ok((t, None)),
             None => {
                 let cal = calibrate()?;
@@ -583,6 +601,7 @@ mod tests {
             JkStorage::Memory,
             JkStorage::Disk,
             JkStorage::Direct,
+            JkStorage::Split,
         ] {
             assert_eq!(JkStorage::parse(v.as_str()).unwrap(), v);
             assert_eq!(JkStorage::from_code(v.code()), Some(v));

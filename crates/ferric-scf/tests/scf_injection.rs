@@ -261,7 +261,8 @@ fn injected_xc_builder_reproduces_molecular_ks() {
 
     let su = setup("sto-3g");
     let bs = basis::bundled("sto-3g").expect("basis");
-    let main = AtomicGridConfig::default();
+    // The grid the molecular SCF it reproduces uses by default.
+    let main = AtomicGridConfig::production();
     let nlc = AtomicGridConfig {
         n_radial: 50,
         n_angular: 50,
@@ -1169,7 +1170,8 @@ fn injected_polarized_xc_builder_reproduces_molecular_roks() {
 
     let su = setup_spin("sto-3g", 1, 2);
     let bs = basis::bundled("sto-3g").expect("basis");
-    let main = AtomicGridConfig::default();
+    // The grid the molecular SCF it reproduces uses by default.
+    let main = AtomicGridConfig::production();
     let nlc = AtomicGridConfig {
         n_radial: 50,
         n_angular: 50,

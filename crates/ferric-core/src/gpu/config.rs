@@ -310,10 +310,11 @@ pub struct GpuSettings {
 }
 
 /// A `mixed_kernels` list given under `precision = mixed`: every name must be
-/// shipped or opt-in ([`MixedKernelSet::OPT_IN`]), and an opt-in kernel needs
-/// `mode = on` (the KS XC grid uses the device only then, so under `auto`
+/// shipped or opt-in ([`MixedKernelSet::OPT_IN`]), and an opt-in DEVICE kernel
+/// needs `mode = on` (the KS XC grid uses the device only then, so under `auto`
 /// `xc-vxc` would silently run f64 on the CPU; `dfk-occ` follows the same rule
-/// so that every opt-in kernel is admitted the same way).
+/// so that every opt-in device kernel is admitted the same way). An opt-in CPU
+/// kernel ([`MixedKernel::runs_on_cpu`], `dfj-f32`) runs in every mode.
 fn check_given_kernels(
     kernels: MixedKernelSet,
     shipped: MixedKernelSet,
@@ -332,15 +333,28 @@ fn check_given_kernels(
         } else {
             format!("shipped in this build: {shipped}")
         };
+        let (mut device_opt_in, mut cpu_opt_in) = (MixedKernelSet::EMPTY, MixedKernelSet::EMPTY);
+        for k in opt_in.iter() {
+            if k.runs_on_cpu() {
+                cpu_opt_in = cpu_opt_in.with(k);
+            } else {
+                device_opt_in = device_opt_in.with(k);
+            }
+        }
+        let cpu_note = if cpu_opt_in.is_empty() {
+            String::new()
+        } else {
+            format!("; opt-in CPU kernels, named explicitly: {cpu_opt_in}")
+        };
         return Err(format!(
             "{key}: {} not shipped yet ({have}; opt-in, named explicitly and \
-             needing [gpu] mode = \"on\": {opt_in})",
+             needing [gpu] mode = \"on\": {device_opt_in}{cpu_note})",
             missing.join(", ")
         ));
     }
     let needs_on: Vec<&str> = kernels
         .iter()
-        .filter(|&k| opt_in.contains(k) && !shipped.contains(k))
+        .filter(|&k| opt_in.contains(k) && !shipped.contains(k) && !k.runs_on_cpu())
         .map(|k| k.name())
         .collect();
     if !needs_on.is_empty() && mode != GpuMode::On {

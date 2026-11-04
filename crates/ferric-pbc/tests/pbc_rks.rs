@@ -618,6 +618,7 @@ fn pbe0_box_limit_is_hyb_times_the_hf_madelung_term() {
                 n_radial: 75,
                 n_angular: 302,
                 prune: None,
+                weight_cut: None,
             }),
             // Exact four-centre J/K (no RI fitting error).
             df_j_aux: Some(String::new()),

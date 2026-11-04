@@ -72,6 +72,7 @@ fn grid_cfg() -> AtomicGridConfig {
         n_radial: 50,
         n_angular: 110,
         prune: None,
+        weight_cut: None,
     }
 }
 
@@ -844,22 +845,25 @@ fn double_hybrids_are_refused_by_the_grid_constructor() {
 // Wrong-reference guards, pruned grids, ECP and point charges
 // ---------------------------------------------------------------------------
 
+/// A pruned grid is honoured, not silently flattened: the fixed-grid object
+/// carries exactly the points and weights the pruned SCF grid has.
 #[test]
-fn a_pruned_grid_is_refused_not_silently_flattened() {
+fn a_pruned_grid_is_honoured_not_silently_flattened() {
     let mol = water();
     let cfg = AtomicGridConfig {
         prune: Some(ferric_dft::prune::PruneScheme::NwchemLike),
         ..grid_cfg()
     };
-    let msg = FixedGridKs::new(&mol, "LDA", &cfg)
-        .err()
-        .expect("a pruned grid must be refused")
-        .to_string();
-    eprintln!("{msg}");
-    assert!(
-        msg.contains("pruned") && msg.contains("prune = None"),
-        "{msg}"
-    );
+    let ks = FixedGridKs::new(&mol, "LDA", &cfg).expect("pruned grids are supported");
+    let scf_grid = ferric_dft::grid::build_atomic_grid_pruned(&mol, &cfg, cfg.prune).unwrap();
+    let flat = ferric_dft::grid::build_atomic_grid(&mol, &grid_cfg());
+    assert!(scf_grid.len() < flat.len(), "pruning must remove points");
+    assert_eq!(ks.npts(), scf_grid.len());
+    let (pts, w) = ks.points_and_weights();
+    for (i, g) in scf_grid.iter().enumerate() {
+        assert_eq!(pts[i], g.xyz, "point {i}");
+        assert_eq!(w[i], g.weight, "weight {i}");
+    }
 }
 
 /// The configuration only NAMES the functional; the result must really be the

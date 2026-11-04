@@ -75,7 +75,7 @@ pub struct TddftConfig {
     /// complete kernel (meta-GGA, VV10, range-separated) is refused.
     pub xc: Option<String>,
     /// Integration grid for the f_xc kernel. Must match the grid the reference
-    /// SCF used (`RhfConfig::dft_grid`; `AtomicGridConfig::default()` when that
+    /// SCF used (`RhfConfig::dft_grid`; `AtomicGridConfig::production()` when that
     /// is `None`), or the kernel is evaluated on a different quadrature than
     /// the density it linearizes. Ignored for an HF reference.
     pub grid: AtomicGridConfig,
@@ -96,7 +96,7 @@ impl TddftConfig {
             method,
             memory_budget_bytes: None,
             xc: None,
-            grid: AtomicGridConfig::default(),
+            grid: AtomicGridConfig::production(),
             c_hf_override: None,
         }
     }

@@ -305,7 +305,8 @@ fn an_unshipped_name_in_a_narrower_list_under_mixed_is_refused() {
     assert_eq!(
         e,
         "[gpu] mixed_kernels: ccsd-amplitudes not shipped yet (shipped in this build: rimp2-energy; \
-         opt-in, named explicitly and needing [gpu] mode = \"on\": dfk-occ,xc-vxc)"
+         opt-in, named explicitly and needing [gpu] mode = \"on\": dfk-occ,xc-vxc; opt-in CPU \
+         kernels, named explicitly: dfj-f32)"
     );
 }
 

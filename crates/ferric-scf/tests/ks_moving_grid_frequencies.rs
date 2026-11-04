@@ -20,8 +20,9 @@
 //! `auto_is_the_moving_grid_hessian_for_closed_shell_ks`: `Auto` ==
 //! `AnalyticMovingGrid` bit for bit (water/STO-3G, LDA and PBE).
 //! `auto_falls_back_to_finite_differences_where_unsupported`: `Auto` ==
-//! `FiniteDifference` bit for bit for meta-GGA (SCAN), an open-shell UKS
-//! reference and a pruned grid (H2/STO-3G). The dispersion surface is a
+//! `FiniteDifference` bit for bit for meta-GGA (SCAN) and an open-shell UKS
+//! reference (H2/STO-3G). The default (pruned, weight-cut) grid takes the
+//! moving-grid route. The dispersion surface is a
 //! separate driver (`harmonic_frequencies_with_scf_correction`, always finite
 //! differences); its `Auto` is pinned through the CLI and Python.
 //!
@@ -34,8 +35,7 @@
 //! SCF runs and the RHF Hessian's post-SCF message lacks the KS prefix); the
 //! `check_scf_correction_config` branch deleted fails
 //! `the_dispersion_driver_refuses_it`; the preflight call
-//! deleted from `harmonic_frequencies_ks_moving_grid` fails the HF and
-//! pruned-grid cases here (the post-SCF messages differ) and every preflight
+//! deleted from `harmonic_frequencies_ks_moving_grid` fails the HF case here (the post-SCF messages differ) and every preflight
 //! case of the CLI test (SCF iterations logged). `Auto` routed back to finite
 //! differences for KS (the `Auto` arm of `analytic_route` deleted) fails
 //! `auto_is_the_moving_grid_hessian_for_closed_shell_ks` (`hessian_source`
@@ -126,13 +126,6 @@ fn every_refusal_is_named() {
     let mut hi = Molecule::parse_xyz("2\nHI\nH 0 0 0\nI 0 0 1.75\n", 0, 1).unwrap();
     hi.apply_ecp(&svp);
     let rhf = FrequencyReference::Rhf;
-    let pruned = RhfConfig {
-        dft_grid: Some(AtomicGridConfig {
-            prune: Some(ferric_dft::prune::PruneScheme::NwchemLike),
-            ..Default::default()
-        }),
-        ..ks("LDA")
-    };
     let embedded = RhfConfig {
         external_potential: Some(ExternalPotential {
             point_charges: vec![PointCharge {
@@ -186,11 +179,6 @@ fn every_refusal_is_named() {
             "external potential",
             run(&water, "sto-3g", embedded, rhf),
             vec![PREFIX, "an ECP or an external potential"],
-        ),
-        (
-            "pruned grid",
-            run(&water, "sto-3g", pruned, rhf),
-            vec![PREFIX, "an angular-pruned XC grid"],
         ),
         (
             "MOM",
@@ -381,17 +369,9 @@ fn auto_is_the_moving_grid_hessian_for_closed_shell_ks() {
 #[test]
 fn auto_falls_back_to_finite_differences_where_unsupported() {
     let h2 = Molecule::parse_xyz("2\nh2\nH 0 0 0\nH 0 0 0.74\n", 0, 1).unwrap();
-    let pruned = RhfConfig {
-        dft_grid: Some(AtomicGridConfig {
-            prune: Some(ferric_dft::prune::PruneScheme::NwchemLike),
-            ..Default::default()
-        }),
-        ..ks("LDA")
-    };
     let cases = [
         ("meta-GGA (SCAN)", ks("SCAN"), FrequencyReference::Rhf),
         ("open-shell UKS", ks("LDA"), FrequencyReference::Uhf),
-        ("pruned grid", pruned, FrequencyReference::Rhf),
     ];
     for (label, cfg, reference) in cases {
         let auto = freq(&h2, &cfg, reference, HessianMethod::Auto);
@@ -427,7 +407,11 @@ fn auto_sends_a_system_above_the_response_table_cap_to_fd_before_the_scf() {
     }
     use ferric_scf::ks_fixed_grid::ResponseTableCapOverride;
     let h2 = Molecule::parse_xyz("2\nh2\nH 0 0 0\nH 0 0 0.74\n", 0, 1).unwrap();
-    let cfg = ks("LDA");
+    // The flat 75 x 110 grid, so the point count (2 x 8250) is derivable.
+    let cfg = RhfConfig {
+        dft_grid: Some(AtomicGridConfig::default()),
+        ..ks("LDA")
+    };
     let rhf = FrequencyReference::Rhf;
     {
         let _cap = ResponseTableCapOverride::new(263_999);
@@ -435,7 +419,7 @@ fn auto_sends_a_system_above_the_response_table_cap_to_fd_before_the_scf() {
             max_iter: 1,
             energy_conv: 1e-14,
             density_conv: 1e-14,
-            ..ks("LDA")
+            ..cfg.clone()
         };
         let msg = run(&h2, "sto-3g", one_iteration, rhf);
         assert!(

@@ -465,6 +465,7 @@ fn cosx_flat() -> ferric_scf::cosx_k::CosxConfig {
             n_radial: 50,
             n_angular: 110,
             prune: None,
+            weight_cut: None,
         },
         final_grid: None,
         ..ferric_scf::cosx_k::CosxConfig::flat_reference()

@@ -82,7 +82,7 @@ pub struct KsGradGrids {
 impl Default for KsGradGrids {
     fn default() -> Self {
         Self {
-            main: AtomicGridConfig::default(),
+            main: AtomicGridConfig::production(),
             nlc: AtomicGridConfig::default_nlc(),
         }
     }

@@ -311,7 +311,10 @@ pub fn rsh_uks_lowest_hessian_eigenvalue(
         let o = c_b.slice(ndarray::s![.., ..nocc_b]);
         o.dot(&o.t())
     };
-    let grid = config.dft_grid.clone().unwrap_or_default();
+    let grid = config
+        .dft_grid
+        .clone()
+        .unwrap_or_else(ferric_dft::grid::AtomicGridConfig::production);
     let store =
         crate::rohf::FxcKernelStore::build(mol, prep, &grid, xc, config.xc_omega, &d_a, &d_b)?;
     let fxc = store.response();

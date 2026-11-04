@@ -1407,7 +1407,10 @@ fn solve_rohf_impl(
             let f_b_mo = c_now.t().dot(&f_b).dot(&c_now);
 
             let fxc_store = if xc_supports_newton_fxc {
-                let main = config.dft_grid.clone().unwrap_or_default();
+                let main = config
+                    .dft_grid
+                    .clone()
+                    .unwrap_or_else(ferric_dft::grid::AtomicGridConfig::production);
                 let name = config
                     .xc
                     .as_deref()
@@ -1471,7 +1474,10 @@ fn solve_rohf_impl(
             // target). Kept here so the response closure borrows it; the heavy
             // grid/AO evaluation happens once per Newton step, not per matvec.
             let fxc_store = if xc_supports_newton_fxc {
-                let main = config.dft_grid.clone().unwrap_or_default();
+                let main = config
+                    .dft_grid
+                    .clone()
+                    .unwrap_or_else(ferric_dft::grid::AtomicGridConfig::production);
                 let name = config
                     .xc
                     .as_deref()

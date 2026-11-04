@@ -4,8 +4,10 @@
 //! budget. In-core when the full tensor fits the budget; disk-spill otherwise.
 //! Consumers apply their own metric (V^{-1} for J, V^{-1/2} for K).
 
+pub mod f32_store;
 pub mod jk_storage;
 pub mod pair_screen;
+pub use f32_store::{F32Declined, F32Outcome, F32Rounding, F32_UNDERFLOW_ABS};
 pub use jk_storage::{jk_storage, set_jk_storage, validate_jk_storage, JkStorage};
 pub use pair_screen::PairScreen;
 
@@ -298,9 +300,10 @@ fn dress_pass_cost(raw: &ThreeIndexSource, passes: usize) -> Option<String> {
     match raw.backend {
         Backend::DiskSpill { .. } => Some(format!("~{:.1} GB of IO", bytes as f64 / 1e9)),
         Backend::Recompute { .. } => Some(format!("{passes} rebuilds of the integrals")),
-        Backend::InCore(_) | Backend::InCorePacked { .. } | Backend::InCorePairScreened { .. } => {
-            None
-        }
+        Backend::InCore(_)
+        | Backend::InCorePacked { .. }
+        | Backend::InCorePairScreened { .. }
+        | Backend::InCoreF32 { .. } => None,
     }
 }
 
@@ -982,6 +985,15 @@ enum Backend {
     InCorePairScreened {
         data: Array2<f64>,
         screen: std::sync::Arc<PairScreen>,
+    },
+    /// RI-J only, opt-in (`dfj-f32`): the band resident as f32, one rounding of
+    /// each f64 integral ([`f32_store`]). `screen` None: the packed lower
+    /// triangle, `(band_naux, nao(nao+1)/2)`; `Some`: the kept pairs, columns in
+    /// [`PairScreen::cols`] order. Read through [`ThreeIndexSource::ri_j_f32`],
+    /// never streamed, unpacked or dressed.
+    InCoreF32 {
+        data: Array2<f32>,
+        screen: Option<std::sync::Arc<PairScreen>>,
     },
     /// Rebuild each aux block on demand instead of storing the tensor.
     ///
@@ -1831,6 +1843,7 @@ impl ThreeIndexSource {
             Backend::InCore(a) => a.len().saturating_mul(8),
             Backend::InCorePacked { packed, .. } => packed.len().saturating_mul(8),
             Backend::InCorePairScreened { data, .. } => data.len().saturating_mul(8),
+            Backend::InCoreF32 { data, .. } => data.len().saturating_mul(4),
             Backend::DiskSpill { .. } | Backend::Recompute { .. } => 0,
         }
     }
@@ -1843,7 +1856,8 @@ impl ThreeIndexSource {
             Backend::Recompute { .. } => rows * (self.nao * self.nao + pair) * 8,
             Backend::InCore(_)
             | Backend::InCorePacked { .. }
-            | Backend::InCorePairScreened { .. } => 0,
+            | Backend::InCorePairScreened { .. }
+            | Backend::InCoreF32 { .. } => 0,
         }
     }
 
@@ -1997,9 +2011,11 @@ impl ThreeIndexSource {
             _ => None,
         };
         match &mut self.backend {
-            Backend::InCore(_) | Backend::InCorePairScreened { .. } => Err(FerricError::General(
-                "packed streaming needs a packed, spilled or recompute source".into(),
-            )),
+            Backend::InCore(_) | Backend::InCorePairScreened { .. } | Backend::InCoreF32 { .. } => {
+                Err(FerricError::General(
+                    "packed streaming needs a packed, spilled or recompute source".into(),
+                ))
+            }
             Backend::InCorePacked { packed, .. } => stream_packed_whole(packed, band_p0, f),
             Backend::DiskSpill { file, .. } => {
                 stream_spill_packed(file, packed_pair_len(nao), (band, band_p0, rows), f)
@@ -2122,6 +2138,9 @@ impl ThreeIndexSource {
                 "a pair-screened source has no unpacked blocks: read it through pair_screened()"
                     .into(),
             )),
+            Backend::InCoreF32 { .. } => Err(FerricError::General(
+                "the f32 RI-J tier has no f64 blocks: read it through ri_j_f32()".into(),
+            )),
             Backend::InCorePacked { packed, scratch } => {
                 // The unpacked block is allocated on this first pass; charge it
                 // while the pass runs (soft: the packed tensor already holds the
@@ -2157,7 +2176,7 @@ impl ThreeIndexSource {
 fn streams_packed(backend: &Backend) -> bool {
     !matches!(
         backend,
-        Backend::InCore(_) | Backend::InCorePairScreened { .. }
+        Backend::InCore(_) | Backend::InCorePairScreened { .. } | Backend::InCoreF32 { .. }
     )
 }
 
@@ -2173,7 +2192,7 @@ fn drop_stream_block(backend: &mut Backend, nao: usize) {
         Backend::DiskSpill { scratch, .. } | Backend::Recompute { scratch, .. } => {
             *scratch = unallocated_block(nao);
         }
-        Backend::InCore(_) | Backend::InCorePairScreened { .. } => {}
+        Backend::InCore(_) | Backend::InCorePairScreened { .. } | Backend::InCoreF32 { .. } => {}
     }
 }
 

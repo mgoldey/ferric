@@ -28,23 +28,41 @@ use ndarray::Array1;
 /// than reaching into the AO/χ tensors directly (which are a private
 /// implementation detail of `KsXc`/`KsXcUks`, not guaranteed to be
 /// eagerly-materialized).
+///
+/// For an SCF on the default grids (`AtomicGridConfig::production()` and
+/// `default_nlc()`); a reference SCF on other grids must use
+/// [`vxc_diagonal_mo_on_grids`] with them, or V_xc is not the potential that
+/// entered its Fock matrix.
 pub fn vxc_diagonal_mo(
     mol: &Molecule,
     bs: &BasisSet,
     xc_name: &str,
     scf: &ScfResult,
 ) -> Result<(Array1<f64>, Array1<f64>), FerricError> {
+    vxc_diagonal_mo_on_grids(
+        mol,
+        bs,
+        xc_name,
+        scf,
+        &AtomicGridConfig::production(),
+        &AtomicGridConfig::default_nlc(),
+    )
+}
+
+/// [`vxc_diagonal_mo`] on the reference SCF's own main and VV10 grids.
+pub fn vxc_diagonal_mo_on_grids(
+    mol: &Molecule,
+    bs: &BasisSet,
+    xc_name: &str,
+    scf: &ScfResult,
+    main_grid: &AtomicGridConfig,
+    nlc_grid: &AtomicGridConfig,
+) -> Result<(Array1<f64>, Array1<f64>), FerricError> {
     if matches!(scf.spin, Spin::Restricted) {
         // Full closed-shell density: solve_rhf stores density_alpha = 0.5·D_full,
         // so the physical density matrix is 2·density_alpha (rhf.rs).
         let d_full = 2.0 * &scf.density_alpha;
-        let main_grid = AtomicGridConfig::default();
-        let nlc_grid = AtomicGridConfig {
-            n_radial: 50,
-            n_angular: 50,
-            ..Default::default()
-        };
-        let ks_xc = KsXc::new(mol, bs, xc_name, &main_grid, &nlc_grid)
+        let ks_xc = KsXc::new(mol, bs, xc_name, main_grid, nlc_grid)
             .map_err(|e| FerricError::General(format!("KsXc::new: {e:?}")))?;
         let mut vxc_ao = ndarray::Array2::<f64>::zeros((d_full.nrows(), d_full.ncols()));
         let _e_xc_plus_nl = ks_xc.add_xc(&d_full, &mut vxc_ao);
@@ -59,13 +77,9 @@ pub fn vxc_diagonal_mo(
 
     // Build the same grid + AO values KsXcUks uses for SCF — guarantees the
     // v_xc we subtract matches what entered the KS Fock.
-    let main_grid = AtomicGridConfig::default();
-    let nlc_grid = AtomicGridConfig {
-        n_radial: 50,
-        n_angular: 50,
-        ..Default::default()
-    };
-    let ks_xc = KsXcUks::new(mol, bs, xc_name, &main_grid, &nlc_grid)
+    // The SCF's grids, so V_xc is evaluated on the quadrature the density was
+    // converged on.
+    let ks_xc = KsXcUks::new(mol, bs, xc_name, main_grid, nlc_grid)
         .map_err(|e| FerricError::General(format!("KsXcUks::new: {e:?}")))?;
 
     let mut vxc_a = ndarray::Array2::<f64>::zeros((d_a.nrows(), d_a.ncols()));

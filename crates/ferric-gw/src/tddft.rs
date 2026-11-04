@@ -150,7 +150,8 @@ impl Default for TdaDftConfig {
         Self {
             include_fxc: true,
             c_hf_override: None,
-            grid: AtomicGridConfig::default(),
+            // The SCF drivers' default grid (the reference's quadrature).
+            grid: AtomicGridConfig::production(),
             frozen_core: 0,
             memory_budget_bytes: None,
         }

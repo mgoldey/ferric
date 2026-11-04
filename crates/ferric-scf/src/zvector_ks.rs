@@ -349,7 +349,10 @@ impl<'a> ResponseFock<'a> {
         } else {
             k_mix.sr
         };
-        let grid = config.dft_grid.clone().unwrap_or_default();
+        let grid = config
+            .dft_grid
+            .clone()
+            .unwrap_or_else(ferric_dft::grid::AtomicGridConfig::production);
         // `ks_hessian_unsupported_reason` refuses an `xc_omega` run outright, so
         // this is always `None` in practice; passed through rather than hardcoded
         // so the two places cannot drift apart silently.
@@ -2016,6 +2019,7 @@ mod degenerate_somo_investigation {
                 n_radial: 75,
                 n_angular: ang,
                 prune: None,
+                weight_cut: None,
             }),
             ..Default::default()
         };
