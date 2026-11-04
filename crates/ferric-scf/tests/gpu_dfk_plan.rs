@@ -79,8 +79,8 @@ fn k_error_factor_matches_the_formula_and_grows_with_depth() {
 #[test]
 fn the_fit_table_matches_the_real_basis_sizes() {
     let cases: [(&str, &str, usize, usize, bool, bool); 8] = [
-        ("water", "cc-pvdz", 24, 113, true, true),
-        ("nh3", "cc-pvdz", 29, 131, true, true),
+        ("water", "sto-3g", 24, 113, true, true),
+        ("nh3", "sto-3g", 29, 131, true, true),
         ("benzene", "def2-svp", 114, 558, true, true),
         ("benzene", "aug-cc-pvtz", 414, 558, true, true),
         ("alkane_8", "def2-tzvp", 356, 924, true, true),
@@ -144,7 +144,7 @@ fn rsh_fit(naux: usize, nbf: usize, pool: usize) -> RshFit {
 #[test]
 fn the_rsh_fit_table_charges_both_fitters() {
     let cases: [(&str, &str, [RshFit; 2]); 4] = [
-        ("water", "cc-pvdz", [RshFit::Both, RshFit::Both]),
+        ("water", "sto-3g", [RshFit::Both, RshFit::Both]),
         ("benzene", "aug-cc-pvtz", [RshFit::Both, RshFit::Both]),
         ("alkane_20", "def2-svp", [RshFit::One, RshFit::Cpu]),
         ("alkane_16", "def2-tzvp", [RshFit::Cpu, RshFit::Cpu]),

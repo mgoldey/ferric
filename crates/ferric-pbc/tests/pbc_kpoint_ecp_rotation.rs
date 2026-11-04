@@ -640,6 +640,7 @@ const ROT_VS_OFF_H_BAR: f64 = 1e-10;
 /// vacuous test (no rotation, or rotation that also moved V_ECP) would pass
 /// every anchor below; so the counts and the BITWISE equality of S, T and
 /// V_ECP(k) between the rotated and unrotated builds are asserted first.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn rotating_ecp_basis_rotates_and_leaves_the_ecp_untouched() {
     let bs = rot_basis();

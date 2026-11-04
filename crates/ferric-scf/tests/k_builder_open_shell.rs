@@ -189,6 +189,7 @@ fn uhf_link_matches_direct_ch3_ccpvdz() {
     check_link("UHF CH3/cc-pVDZ link", &direct, &link);
 }
 
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn uhf_cosx_within_grid_error_ch3_ccpvdz() {
     let direct = run_uhf_ch3(None);
@@ -205,6 +206,7 @@ fn rohf_link_matches_direct_ch3_ccpvdz() {
     check_link("ROHF CH3/cc-pVDZ link", &direct, &link);
 }
 
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn rohf_cosx_within_grid_error_ch3_ccpvdz() {
     let direct = run_rohf_ch3(None);
@@ -231,6 +233,7 @@ fn rohf_cosx_within_grid_error_ch3_ccpvdz() {
 /// surfaces. Absolute bit patterns are a machine fingerprint, not a regression
 /// test. The relative bars below hold on any hardware and still go red if the
 /// refactor perturbs the closed-shell path.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn rhf_closed_shell_matches_direct_across_builders() {
     let (mol, prep, bounds) = setup(WATER_XYZ, 0, 1, "cc-pvdz", Operator::coulomb());
@@ -684,6 +687,7 @@ fn uks_rsh_with_cosx_builder_warns_and_skips() {
 /// reproduce a fresh-instance β build EXACTLY. That last equality is the real
 /// contract, and it fails if `update_density` is fed the wrong density AND the
 /// list matters.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn link_per_spin_pair_lists_recorded_and_beta_matches_fresh_instance() {
     let mol = Molecule::parse_xyz(&strip_last_h(BUTYL_XYZ), 0, 2).expect("butyl");

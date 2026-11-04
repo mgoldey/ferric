@@ -129,6 +129,7 @@ fn lmp2_signature(
 /// EXACTNESS ANCHOR. Catches: a cache that loses, reorders or re-lays-out
 /// anything the driver reads. Also pins the driver's own run-to-run determinism,
 /// without which a bitwise comparison of two runs could not mean anything.
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn cached_rhf_gives_bitwise_equal_lmp2() {
     let dir = scratch("anchor");

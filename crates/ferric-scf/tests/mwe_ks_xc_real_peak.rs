@@ -50,6 +50,7 @@ unsafe impl GlobalAlloc for Counting {
 #[global_allocator]
 static A: Counting = Counting;
 
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn a_ks_job_with_xc_uncharged_peaks_near_its_budget() {
     let mol = Molecule::load_xyz("../../testdata/molecules/alkane_4.xyz").unwrap();

@@ -148,6 +148,7 @@ fn assert_declines_null_steps(what: &str, cfg_diis: RhfConfig) {
 
 /// ONE test, two sequential cases, so the counter deltas belong to each case
 /// alone (see the module doc).
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn closed_shell_trah_declines_null_steps_instead_of_cycling() {
     assert_declines_null_steps(

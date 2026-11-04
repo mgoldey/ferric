@@ -558,6 +558,7 @@ fn injecting_a_converged_solution_returns_it() {
 /// Prints the table and asserts only the H-ARTIFACT stop condition: the rows
 /// must not be bit-identical. The physics verdict is drawn in the report, not
 /// asserted here, because this test's job is to MEASURE the pre-fix landscape.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn hene_svp_six_guess_table() {
     let sys = diatomic("He", "Ne", 2.0, 1, 2, "def2-svp");
@@ -601,6 +602,7 @@ fn hene_svp_six_guess_table() {
 /// is the measurement that decides which fix is correct. Its assertion is only
 /// that every system actually converged — an unconverged row would make the
 /// comparison meaningless.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn systemic_sweep_default_guess_vs_pyscf() {
     let cases: Vec<(&str, Sys, f64, &str)> = vec![
@@ -712,6 +714,7 @@ fn n2_cation_is_multi_valued_in_pyscf_as_well() {
 /// Runs MINAO on every system in the sweep and reports whether it reaches the
 /// PySCF reference AND whether its own stability check calls it stable.
 /// Printing only — this is the measurement the Part-2 decision rests on.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn does_minao_alone_reach_the_reference_everywhere() {
     let cases: Vec<(&str, Sys, f64)> = vec![
@@ -805,6 +808,7 @@ pub fn descent_cfg() -> RhfConfig {
 /// cannot satisfy −130.5053405386 and −130.6043266127 and −149.5455745334 and
 /// −108.3186843228 simultaneously, so this assertion responds to inputs a
 /// fabricator does not read.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn the_fixed_path_reaches_every_reference() {
     let cases: Vec<(&str, Sys, f64, f64)> = vec![
@@ -956,6 +960,7 @@ fn descent_never_accepts_a_higher_state() {
 /// EXACTLY**, not approximately: the descent block is skipped entirely, so the
 /// two runs are the same arithmetic. Bit-identity is asserted, because anything
 /// looser would hide a descent that ran and returned something "close".
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn descent_off_is_bit_identical_to_no_descent() {
     for (name, sys) in [
@@ -1023,6 +1028,7 @@ fn hcore_config_reproduces_the_old_pi_saddle() {
 /// reader cannot attribute the whole repair to either half alone:
 ///   * guess alone (descent off): 0.7931 eV ABOVE the reference, UNSTABLE;
 ///   * guess + descent:            at the reference, STABLE.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn n2_cation_needs_the_descent_not_just_the_guess() {
     let sys = diatomic("N", "N", 1.1160, 1, 2, "6-31g");
@@ -1166,6 +1172,7 @@ fn oh_reaches_the_pyscf_reference_after_the_fix() {
 /// A range-separated functional is used because `ks_reference_is_analysable`
 /// rejects it outright, so the skip is reached deterministically rather than
 /// depending on a kernel build happening to fail.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn the_descent_skips_a_reference_it_cannot_analyse() {
     let sys = diatomic("O", "H", 0.97, 0, 2, "6-31g");
@@ -1231,6 +1238,7 @@ fn the_descent_skips_a_reference_it_cannot_analyse() {
 /// not — on some systems it costs a few more, because it starts in a different
 /// (and correct) basin. Asserting a speedup would be asserting something the
 /// data does not support.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn the_guess_change_costs_iterations_but_never_convergence() {
     let cases: Vec<(&str, Sys)> = vec![

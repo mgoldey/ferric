@@ -104,6 +104,7 @@ fn ghost_ecp_atom_matches_an_ecp_free_basis() {
 /// ghost Xe, against the same run with ONLY Xe's ECP deleted from the basis.
 /// Unlike the all-ghost case, both runs build a V_ECP here, so the ghost really
 /// goes through the per-atom filter rather than the empty-list early return.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn ghost_ecp_atom_beside_a_real_ecp_atom_matches_a_basis_without_its_ecp() {
     let bs = def2_svp();

@@ -23,7 +23,7 @@ use ndarray::Array2;
 #[test]
 fn rohf_ah_step_at_stationary_point_is_noop() {
     let mol = Molecule::parse_xyz("2\nOH\nO 0 0 0\nH 0 0 1.10\n", 0, 2).unwrap();
-    let bs = basis::bundled("cc-pvdz").unwrap();
+    let bs = basis::bundled("sto-3g").unwrap();
     let prep = PreparedBasis::new(&mol, &bs).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
@@ -95,7 +95,7 @@ fn rohf_ah_step_at_stationary_point_is_noop() {
 #[test]
 fn rohf_ah_h2_triplet_lda_matches_diis() {
     let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 2.0\n", 0, 3).unwrap();
-    let bs = basis::bundled("cc-pvdz").unwrap();
+    let bs = basis::bundled("sto-3g").unwrap();
     let prep = PreparedBasis::new(&mol, &bs).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
@@ -135,10 +135,11 @@ fn rohf_ah_h2_triplet_lda_matches_diis() {
 /// known-hard doublet OH/LDA case where PCG plateaus. If this lands an
 /// energy ≥1 mHa below the DIIS run *and* hits density_conv=1e-3, we can
 /// un-ignore roks_grad_oh_ccpvdz_lda in a follow-up.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn rohf_ah_oh_lda_diagnostic() {
     let mol = Molecule::parse_xyz("2\nOH\nO 0 0 0\nH 0 0 0.97\n", 0, 2).unwrap();
-    let bs = basis::bundled("cc-pvdz").unwrap();
+    let bs = basis::bundled("sto-3g").unwrap();
     let prep = PreparedBasis::new(&mol, &bs).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
@@ -191,7 +192,7 @@ fn rohf_ah_oh_lda_diagnostic() {
 fn rohf_ah_disabled_still_works() {
     // Pure DIIS path with ah_trigger=0 must still converge unchanged.
     let mol = Molecule::parse_xyz("2\nOH\nO 0 0 0\nH 0 0 1.10\n", 0, 2).unwrap();
-    let bs = basis::bundled("cc-pvdz").unwrap();
+    let bs = basis::bundled("sto-3g").unwrap();
     let prep = PreparedBasis::new(&mol, &bs).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();

@@ -302,6 +302,7 @@ fn pbe_density_meta_xc_fd(
 /// Null-tau limit. Artifact hypothesis: a tau path that perturbed the
 /// non-tau terms (a mis-sized plane, a stray accumulation) would shift the PBE
 /// force; physics predicts exactly 0 because `v_tau = 0`.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn null_tau_path_reproduces_the_gga_force_exactly() {
     let fx = fixture(&H2, [1, 1, 3], "PBE", atom_grid(20, 50));
@@ -313,6 +314,7 @@ fn null_tau_path_reproduces_the_gga_force_exactly() {
 }
 
 /// XC force (X1 + X3 + X4) against FD of `E_xc[D_fixed]`.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn fixed_density_xc_force_matches_fd_of_exc() {
     let grid_cfg = PeriodicGridConfig::with_size(20, 50);
@@ -338,6 +340,7 @@ fn fixed_density_xc_force_matches_fd_of_exc() {
 }
 
 /// Total force against FD of the converged SCF energy.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn meta_gga_force_matches_fd_of_the_scf_energy() {
     let grid = atom_grid(20, 50);
@@ -399,6 +402,7 @@ fn supercell_identity_per_part() {
 
 /// Uniform grid: X3 and X4 absent exactly; the AO term (tau included) alone
 /// matches FD.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn uniform_grid_force_matches_fd() {
     let grid = KXcGrid::Uniform([24, 24, 24]);
@@ -425,6 +429,7 @@ fn uniform_grid_force_matches_fd() {
 
 // ----------------------------------------------------- bitwise and budgets
 
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn chunk_cap_is_bit_identical_and_the_chunk_gate_trips() {
     let fx = fixture(&H2, [1, 1, 3], "R2SCAN", atom_grid(20, 50));
@@ -476,6 +481,7 @@ fn chunk_gate_bytes(fx: &Fx, functional: &str, mutation: Option<KXcMutation>) ->
 /// `TauNoPoint` mutant, the only owner of a separate tau plane, charges that
 /// plane (`chunk_points * natoms * 3 * 8` bytes) on top. A ledger term added
 /// for production meta-GGA breaks the first assertion.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn meta_gga_chunk_charge_is_the_gga_charge_and_the_tau_plane_is_mutant_only() {
     let fx = fixture(&H2, [1, 1, 3], "R2SCAN", atom_grid(20, 50));
@@ -495,6 +501,7 @@ fn meta_gga_chunk_charge_is_the_gga_charge_and_the_tau_plane_is_mutant_only() {
 
 // ------------------------------------------------- refusals and Fock guard
 
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn refusals_and_the_fock_guard() {
     let fx = fixture(&H2, [1, 1, 3], "SCAN", atom_grid(20, 50));
@@ -527,6 +534,7 @@ fn refusals_and_the_fock_guard() {
 
 // ------------------------------------------------------------------ mutants
 
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn mutants_are_caught() {
     let fx = fixture(&H2, [1, 1, 3], "R2SCAN", atom_grid(20, 50));
@@ -563,6 +571,7 @@ fn mutants_are_caught() {
 /// TPSS through its raw single-component names: each is checked as its own
 /// `E_xc` (exchange-only, correlation-only), which exercises TPSS's tau
 /// kernels without a TPSS SCF.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn tpss_components_xc_force_matches_fd_of_exc() {
     let bs = pyscf_sto3g_h();
@@ -601,6 +610,7 @@ fn tpss_components_xc_force_matches_fd_of_exc() {
 /// reverted): FD is BLIND to it (2.5e-9, both sides move); this test fails it
 /// at the guard check (the SCAN config is then accepted on the "TPSS" SCF),
 /// and the PySCF stress pin misses by 7.8e-5 (`pbc_kxcstress_mgga.rs`).
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn tpss_force_matches_fd_of_the_scf_energy() {
     let grid = atom_grid(20, 50);

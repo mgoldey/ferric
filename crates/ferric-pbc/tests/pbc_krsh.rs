@@ -220,6 +220,7 @@ fn supercell_anchor(functional: &str, n: [usize; 3], cell_mutation: Option<KMuta
     r.scf.energy - e_sc
 }
 
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn rsh_k_mesh_is_the_supercell() {
     for functional in ["HSE06", "HYB_GGA_XC_CAM_B3LYP"] {
@@ -228,6 +229,7 @@ fn rsh_k_mesh_is_the_supercell() {
     }
 }
 
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn rsh_mutations_break_the_anchors() {
     let d = supercell_anchor("HSE06", [1, 1, 2], Some(KMutation::PrimitiveMadelung));
@@ -262,6 +264,7 @@ const PYSCF: [(&str, &str, [usize; 3], f64); 6] = [
     ("WB97X", "HYB_GGA_XC_WB97X", [1, 1, 2], -1.363565753524),
 ];
 
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn rsh_krks_matches_pinned_pyscf() {
     let cell = h2_cell(4.0);

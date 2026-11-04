@@ -342,6 +342,7 @@ fn report(tag: &str, pts: &[Point]) {
 /// Asserts only that the experiment was actually performed (both series
 /// produced points at a common R). The verdict is drawn from the printed
 /// numbers by the tests below, each of which asserts exactly one thing.
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn s_ab_pre_fix_versus_post_fix() {
     let pi_ref = series(false);
@@ -380,6 +381,7 @@ fn s_ab_pre_fix_versus_post_fix() {
 /// If this ever fails because such a point no longer exists, the correct
 /// response is to RE-DERIVE the explanation from the new data, not to delete
 /// the test — the failure message says so.
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn a_sigma_sigma_hole_pair_still_has_tiny_overlap() {
     let sigma_ref = series(true);
@@ -426,6 +428,7 @@ fn a_sigma_sigma_hole_pair_still_has_tiny_overlap() {
 /// Pinning this matters because it is what distinguishes "the overlap is small
 /// for a physical reason we understand" from "the pairing hit a degenerate
 /// branch". Only the former licenses reporting the lane as explained.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn s_ab_is_carried_by_a_single_beta_singular_value() {
     use ferric_scf::cdft_coupling::biorth_pairing;

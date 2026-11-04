@@ -270,6 +270,7 @@ fn noise_floor_flag_fires_on_a_pathological_threshold_only() {
 
 /// τ below every eigenvalue: nothing dropped and X X^H = S(k)^{-1}
 /// (S X X^H = 1; tolerance ε·κ with κ(S(Γ)) ~ 1e2/2e-7).
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn orthogonalizer_below_every_eigenvalue_is_the_full_inverse() {
     let k = kmesh();

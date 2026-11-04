@@ -1229,6 +1229,7 @@ fn assert_genuinely_constrained(
 /// λ = +1.631409, E = −130.36185950; B (hole on Ne) N(He) = 1.99999993,
 /// λ = −2.439010, E = −130.42670717. Unconstrained: −130.50034664 (²Π, hcore)
 /// and −130.50534054 (σ, MINAO).
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn hene_plus_constrained_states_carry_the_requested_charge() {
     let sys = hene();
@@ -1263,6 +1264,7 @@ fn hene_plus_constrained_states_carry_the_requested_charge() {
 /// energies 3.861e-6 Ha apart (both residuals are inside the 1e-5 population
 /// tolerance, so the routes agree to ~λ·1e-5, not to machine precision). The
 /// 1e-4 bar is 650× tighter than the 0.0648 Ha gap to the other diabat.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn hene_plus_hole_on_he_is_reachable_through_either_fragment() {
     let sys = hene();
@@ -1331,6 +1333,7 @@ fn hene_plus_hole_on_he_is_reachable_through_either_fragment() {
 /// The gap is ferric-partition specific: a different radius ratio constrains a
 /// different population. Its asymptote at this level is the UHF ΔIP 3.6305 eV
 /// (`hene_atomic_ip_anchor.rs`), not the experimental 3.022 eV.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn hene_plus_hole_prefers_the_lower_ip_atom() {
     /// NWChem 7.2.2, Becke partition relabelled to ferric's radius ratio.
@@ -1401,6 +1404,7 @@ fn hene_plus_hole_prefers_the_lower_ip_atom() {
 /// state's stability does not matter. No |H_ab| magnitude is asserted.
 ///
 /// MEASURED (main, 2026-10-27): H_ab = −3.036e-2 Ha, S_ab = 2.946e-2.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn hene_plus_coupling_is_invariant_under_constraint_offset() {
     let sys = hene();

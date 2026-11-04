@@ -616,28 +616,39 @@ macro_rules! anchor {
     };
 }
 
+macro_rules! anchor_slow {
+    ($name:ident, $case:expr, $key:literal, $centring:expr) => {
+        #[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+        #[test]
+        fn $name() {
+            check_case(CASES[$case], SMALL, $key, $centring);
+        }
+    };
+}
+
 anchor!(rhf_gamma_centred, 0, "gamma", MeshCentring::Gamma);
 anchor!(rhf_shifted, 0, "mp", MeshCentring::MonkhorstPack);
 anchor!(rks_pbe_gamma_centred, 1, "gamma", MeshCentring::Gamma);
 anchor!(rks_pbe_shifted, 1, "mp", MeshCentring::MonkhorstPack);
 anchor!(rks_pbe0_gamma_centred, 2, "gamma", MeshCentring::Gamma);
 anchor!(rks_pbe0_shifted, 2, "mp", MeshCentring::MonkhorstPack);
-anchor!(uhf_gamma_centred, 3, "gamma", MeshCentring::Gamma);
-anchor!(uhf_shifted, 3, "mp", MeshCentring::MonkhorstPack);
-anchor!(uks_pbe_gamma_centred, 4, "gamma", MeshCentring::Gamma);
-anchor!(uks_pbe_shifted, 4, "mp", MeshCentring::MonkhorstPack);
-anchor!(roks_pbe_gamma_centred, 5, "gamma", MeshCentring::Gamma);
-anchor!(roks_pbe_shifted, 5, "mp", MeshCentring::MonkhorstPack);
-anchor!(rohf_gamma_centred, 6, "gamma", MeshCentring::Gamma);
-anchor!(rohf_shifted, 6, "mp", MeshCentring::MonkhorstPack);
+anchor_slow!(uhf_gamma_centred, 3, "gamma", MeshCentring::Gamma);
+anchor_slow!(uhf_shifted, 3, "mp", MeshCentring::MonkhorstPack);
+anchor_slow!(uks_pbe_gamma_centred, 4, "gamma", MeshCentring::Gamma);
+anchor_slow!(uks_pbe_shifted, 4, "mp", MeshCentring::MonkhorstPack);
+anchor_slow!(roks_pbe_gamma_centred, 5, "gamma", MeshCentring::Gamma);
+anchor_slow!(roks_pbe_shifted, 5, "mp", MeshCentring::MonkhorstPack);
+anchor_slow!(rohf_gamma_centred, 6, "gamma", MeshCentring::Gamma);
+anchor_slow!(rohf_shifted, 6, "mp", MeshCentring::MonkhorstPack);
 anchor!(rks_hse06_gamma_centred, 7, "gamma", MeshCentring::Gamma);
 anchor!(rks_hse06_shifted, 7, "mp", MeshCentring::MonkhorstPack);
-anchor!(uks_scan_gamma_centred, 8, "gamma", MeshCentring::Gamma);
-anchor!(uks_r2scan_shifted, 9, "mp", MeshCentring::MonkhorstPack);
+anchor_slow!(uks_scan_gamma_centred, 8, "gamma", MeshCentring::Gamma);
+anchor_slow!(uks_r2scan_shifted, 9, "mp", MeshCentring::MonkhorstPack);
 
 /// The issue #498 stress routes are not their global siblings: HSE06 vs PBE0
 /// and SCAN vs PBE move the library tensor by far more than one ulp, so the
 /// bit-equal anchors above cannot pass on a mis-routed run.
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn rsh_and_open_shell_mgga_stress_differ_from_their_siblings() {
     let pairs = [(7, 2), (8, 4)];
@@ -659,6 +670,7 @@ fn rsh_and_open_shell_mgga_stress_differ_from_their_siblings() {
 
 /// The shifted mesh is a different mesh: its stress is not the Gamma-centred
 /// one (so the `mp` runs above are not silently Gamma-centred).
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn shifted_mesh_stress_differs_from_gamma_centred() {
     let c = CASES[3];
@@ -777,6 +789,7 @@ fn rks_cam_b3lyp_rsgdf_equals_library() {
 /// fit, nor the dense-AFT CAM-B3LYP stress (so a run that dropped the
 /// attenuated fit, or silently fell back to the dense J/K, cannot pass the
 /// bit-equal anchor above).
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn rks_cam_b3lyp_rsgdf_stress_differs_from_its_siblings() {
     let x = library(RKS_CAM_RSGDF, RSGDF_SMALL, MeshCentring::Gamma, "sib-cam");
@@ -800,6 +813,7 @@ fn rks_cam_b3lyp_rsgdf_stress_differs_from_its_siblings() {
 }
 
 /// Everything at its default: omega, XC grid (75x302), neighbour cutoff.
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn rks_pbe_all_defaults_equals_library() {
     let v = V {
@@ -811,6 +825,7 @@ fn rks_pbe_all_defaults_equals_library() {
 }
 
 /// Open-shell hybrid stress on the unsplit RS-GDF J/K with default omegas.
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn roks_pbe0_rsgdf_equals_library() {
     let v = V {

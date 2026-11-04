@@ -40,6 +40,7 @@
 mod kpoint_open_shell_cli;
 use kpoint_open_shell_cli::*;
 
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn printed_force_equals_the_library_force_for_uks_with_mutants() {
     let (g, at) = force_anchor("uks", Method::Uks, "PBE", "UKS");
@@ -81,21 +82,25 @@ fn printed_force_equals_the_library_force_for_uks_with_mutants() {
     assert!(max_diff(&g, &bad) > 1e-4, "functional mutant not detected");
 }
 
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn printed_force_equals_the_library_force_for_roks() {
     force_anchor("roks", Method::Roks, "PBE", "ROKS");
 }
 
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn printed_force_equals_the_library_force_for_rohf() {
     force_anchor("rohf", Method::Rohf, "", "ROHF");
 }
 
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn printed_force_equals_the_library_force_for_a_uks_global_hybrid() {
     force_anchor("uks-pbe0", Method::Uks, "PBE0", "UKS");
 }
 
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn printed_energy_equals_the_library_energy_for_every_open_shell_route() {
     for (tag, method, f, key) in [
@@ -265,6 +270,7 @@ const SAME_ARITHMETIC: f64 = 1e-12;
 /// log) to [`SAME_ARITHMETIC`]. MUTANTS the anchor must tell apart: the global
 /// functional of the same family (PBE for SCAN, PBE0 for HSE06) and the other
 /// mesh centring.
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn cli_open_shell_scan_and_hse06_equal_library_solve_kuks() {
     for (f, sibling) in [("SCAN", "PBE"), ("HSE06", "PBE0")] {

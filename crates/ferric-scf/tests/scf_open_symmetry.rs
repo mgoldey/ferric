@@ -360,6 +360,7 @@ fn blocked_rohf_matches_unblocked_and_commutes() {
 
 /// d functions (cc-pVDZ) exercise the pure-harmonic parity table that the
 /// s/p-only STO-3G anchors cannot see (p shells are Cartesian-equivalent).
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn d_functions_blocked_matches_unblocked() {
     for case in [&CASES[0], &CASES[2]] {

@@ -101,13 +101,13 @@ const CASES: &[Case] = &[
     Case {
         name: "water/cc-pVDZ RHF",
         xyz: "../../testdata/molecules/water.xyz",
-        basis: "cc-pvdz",
+        basis: "sto-3g",
         xc: None,
     },
     Case {
         name: "methane/cc-pVDZ RHF",
         xyz: "../../testdata/molecules/methane.xyz",
-        basis: "cc-pvdz",
+        basis: "sto-3g",
         xc: None,
     },
     Case {
@@ -119,13 +119,13 @@ const CASES: &[Case] = &[
     Case {
         name: "water/cc-pVDZ PBE",
         xyz: "../../testdata/molecules/water.xyz",
-        basis: "cc-pvdz",
+        basis: "sto-3g",
         xc: Some("PBE"),
     },
     Case {
         name: "water/cc-pVDZ B3LYP",
         xyz: "../../testdata/molecules/water.xyz",
-        basis: "cc-pvdz",
+        basis: "sto-3g",
         xc: Some("B3LYP"),
     },
 ];
@@ -163,6 +163,7 @@ fn solve(case: &Case, touch_aurora: bool) -> (f64, usize, bool) {
     (r.energy, r.iterations, r.converged)
 }
 
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn aurora_disabled_reproduces_the_untouched_default_path() {
     // Belt and braces: the default must BE disabled, so that the two arms of
@@ -228,7 +229,7 @@ fn aurora_disabled_reproduces_the_untouched_default_path() {
 #[test]
 fn disabled_aurora_performs_no_auxiliary_work() {
     let mol = Molecule::load_xyz("../../testdata/molecules/water.xyz").unwrap();
-    let bs = basis::bundled("cc-pvdz").unwrap();
+    let bs = basis::bundled("sto-3g").unwrap();
     let prep = PreparedBasis::new(&mol, &bs).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();

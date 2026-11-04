@@ -85,6 +85,7 @@ fn assert_decline_does_not_declare_convergence(what: &str, cfg_diis: RhfConfig) 
 
 /// ONE test, two sequential cases, so the counter delta belongs to each case
 /// alone (see the module doc).
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn declined_null_step_does_not_declare_convergence() {
     assert_decline_does_not_declare_convergence(

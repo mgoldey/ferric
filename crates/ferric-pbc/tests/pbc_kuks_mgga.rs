@@ -122,6 +122,7 @@ fn kuks_on(
 /// AOs) and 2x2x2 meshes.
 /// Blind to a tau/spin-channel error by construction (module doc), so it is
 /// necessary, not sufficient.
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn singlet_k_uks_is_k_rks() {
     let bs = pyscf_sto3g_h();
@@ -167,6 +168,7 @@ fn singlet_k_uks_is_k_rks() {
 
 /// The 1x1x1 singlet against the Gamma-point `gamma_rks` (real
 /// lattice-summed AOs; the Gamma entry has no open-shell meta-GGA).
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn one_point_mesh_singlet_is_gamma_rks() {
     let cell = triclinic_cell();
@@ -281,6 +283,7 @@ fn fd_vs_v_worst_rel(
 /// needed): energy pins are inherently weak for Fock-only errors (dropping
 /// beta `V^tau` is second order in the energy, 2.0e-5 at 1x1x1 and 2.1e-6 at
 /// 1x1x2), the FD check is first order.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn polarized_vxc_is_the_derivative_of_exc() {
     let cell = h3_doublet();
@@ -362,6 +365,7 @@ fn supercell(cell: &Cell, n: [usize; 3], mult: usize) -> (Cell, Vec<[f64; 3]>) {
 /// the k-point code (the supercell at 1x1x1 on the replicated grid; there is
 /// no open-shell Gamma meta-GGA to compare with). Open shell, multiplicity
 /// `(N_a - N_b) N_k + 1`.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn polarized_k_mesh_is_the_supercell() {
     let cell = h3_doublet();
@@ -423,6 +427,7 @@ fn kuks_uniform(
 /// `scripts/gen_pyscf_kuks_mgga_refs.py`). The other seven pins and the
 /// mutant-versus-pin checks live in `validation_pbc_kuks_mgga.rs` (weekly).
 /// Measured miss 4.0e-13; bar 1e-9.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn h3_scan_matches_pinned_pyscf() {
     let cell = pin_cell("h3");

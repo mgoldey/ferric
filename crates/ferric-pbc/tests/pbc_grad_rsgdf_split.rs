@@ -586,6 +586,7 @@ fn h2_cell() -> Cell {
 
 /// λ = 0 and λ = 1e-8 move nothing: the split force (both exxdiv) and
 /// stress equal the unsplit Iteration-18/19 results, bitwise (module doc).
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn nothing_moved_split_force_and_stress_are_the_unsplit_ones() {
     let un = setup(h2_cell(), &pyscf_sto3g_h(), &et40(), None);
@@ -662,6 +663,7 @@ fn h2_fd() -> &'static Fd {
     })
 }
 
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn h2_split_force_matches_fd_and_the_unsplit_force() {
     let sp = setup(h2_cell(), &pyscf_sto3g_h(), &et40(), split(1.0));
@@ -741,6 +743,7 @@ fn h3_fd() -> &'static Fd {
     })
 }
 
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn h3_uhf_split_force_matches_fd_and_catches_the_split_mutants() {
     let sp = h3_setup(split(1.0));
@@ -774,6 +777,7 @@ fn h3_uhf_split_force_matches_fd_and_catches_the_split_mutants() {
 }
 
 /// F(ewald) ≡ F(none) on ONE open-shell density (split fit).
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn h3_uhf_split_ewald_and_none_forces_agree_on_one_density() {
     let sp = h3_setup(split(1.0));
@@ -919,6 +923,7 @@ fn exact_span_everything_moved_split_force_equals_dense_aft() {
 /// zero only for a symmetric Wm (unsymmetrised: 2.2e-11; symmetrised
 /// 2.2e-16). Asserted on that part alone so the other terms' own
 /// translation noise cannot hide it.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn split_supercell_metric_force_is_translation_invariant() {
     let pos: Vec<[f64; 3]> = (0..3)

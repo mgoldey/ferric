@@ -91,6 +91,7 @@ fn cosx_default() -> CosxConfig {
     }
 }
 
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn cosx_rhf_water_ccpvdz_vs_direct() {
     let direct = run(tight());
@@ -131,6 +132,7 @@ fn cosx_rhf_water_ccpvdz_vs_direct() {
 
 /// Refinement: the SCF energy error must fall with the grid (the SCF-level
 /// echo of anchor (a)).
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn cosx_rhf_energy_error_falls_with_grid() {
     let direct = run(tight());

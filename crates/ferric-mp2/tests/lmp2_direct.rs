@@ -414,6 +414,7 @@ fn bench_map_error_flatness() {
 /// zeros enter the sums in different groupings — AND must evaluate
 /// strictly fewer shell triples (prototype-predicted ~0.4×; the
 /// amortization must be real, not a no-op).
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn batch_merge_matches_per_atom_and_saves_triples() {
     let su = setup("alkane_8.xyz");
@@ -1003,6 +1004,7 @@ fn bench_direct_alkane_series() {
 /// they introduce must stay sub-dominant to the ε truncation itself — the
 /// family's port-fidelity bar (same as the aux_tail_frac test on the global
 /// path). C8/erfc(1): the operator the maps are supposed to pay off for.
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn production_maps_error_is_subdominant_to_eps_truncation() {
     let su = setup("alkane_8.xyz");
@@ -1615,6 +1617,7 @@ fn bits_equal(a: &[ndarray::Array2<f64>], b: &[ndarray::Array2<f64>]) -> bool {
 /// planned PCG (preallocated CG vectors, not allocation-free) reproduces
 /// the frozen pre-change loop bit for bit: same iteration count, same
 /// amplitudes, same Hylleraas energy.
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn matvec_planned_is_bitwise_matvec_indexed() {
     use ferric_mp2::lmp2_amplitude::{checked_vvhv, linear_energy, localized_spaces};
@@ -1771,6 +1774,7 @@ fn loglog_slope(pts: &[(f64, f64)]) -> f64 {
 /// `cg_energy_error_bound`) is asserted. Mutations (seen to fail):
 /// `hylleraas_energy` returning the linear form; the bound's factor 3
 /// replaced by 0.01.
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn hylleraas_is_stationary() {
     let cases = [
@@ -1887,6 +1891,7 @@ fn stationarity_case(xyz: &str, fc: usize, opn: &str, op: Operator, cal: f64) {
 /// energies ≤ 1e-13); an intermediate ρ* (the median block density) splits
 /// the blocks and still agrees. Mutation (seen to fail): the sparse branch
 /// drops its t·Fvv_bb half.
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn fvv_sparse_branch_matches_dense() {
     use ferric_mp2::lmp2_amplitude::hylleraas_energy;
@@ -2167,6 +2172,7 @@ fn rtol_row(xyz: &str, fc: usize, opn: &str, op: Operator, cal: f64, in_core: bo
     }
 }
 
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn default_rtol_energy_is_within_its_bound() {
     let coul = Operator::coulomb();

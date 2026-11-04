@@ -117,6 +117,7 @@ fn translation_drift(aux: &BasisSet, atts: &[Option<f64>]) -> Vec<f64> {
         .collect()
 }
 
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn fit_force_is_translation_invariant_with_near_singular_metric() {
     let aux = et_sp_dup_aux(3e-4);

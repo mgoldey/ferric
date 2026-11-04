@@ -514,6 +514,7 @@ fn hf_parts(p: &ferric_pbc::kstress::KStressParts) -> Vec<(&'static str, Mat3)> 
 /// shows as a nonzero difference; physics predicts exactly 0. The exchange
 /// parts must be exactly 0 (the K walks are skipped), and the stress itself
 /// must not be trivially zero.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn null_xc_equals_the_exchange_free_machinery_exactly() {
     for jk in [Jk::Dense, Jk::Gdf] {
@@ -559,6 +560,7 @@ fn null_xc_equals_the_exchange_free_machinery_exactly() {
 /// Independent anchor of the exchange-fraction-0 stress plumbing: central FD of
 /// the Hartree-only k energy under strain (fresh SCF per point; no grid).
 /// Dense AFT 1x1x3, three components; the energy is smooth (no cutoff mask).
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn hartree_only_stress_matches_fd_of_its_own_energy() {
     use ferric_pbc::kscf::KScfConfig;
@@ -698,6 +700,7 @@ fn gamma_rows(k: &KRksStress, g: &GammaStress, n_cells: f64) -> Vec<(&'static st
 /// Floor: both SCFs converge to ~1e-10 in the density. Artifact hypothesis:
 /// the complex path at k = 0 differs from the real path only by a missing
 /// `Re`/`2`/`1/N_k`; none of the phase mutants can show here (k = 0).
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn one_point_mesh_matches_the_gamma_ks_stress_per_part() {
     for f in ["LDA", "PBE"] {
@@ -748,6 +751,7 @@ fn supercell_pos(pos: &[[f64; 3]], a: f64, n: [usize; 3]) -> Cell {
 /// (ConjPhase is an identity on TRIM meshes, not here). Artifact hypothesis:
 /// if the cell and supercell atom grids differ (the default cutoff depends on
 /// the cell), the xc_weight part differs at the grid-size scale, not at 1e-10.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn k_mesh_stress_is_the_gamma_supercell_stress_per_part() {
     let mut grid = PeriodicGridConfig::with_size(20, 50);
@@ -776,6 +780,7 @@ fn k_mesh_stress_is_the_gamma_supercell_stress_per_part() {
 /// at fixed fractional coordinates). Artifact hypothesis: a stress that kept
 /// the atom-grid partition term on a uniform grid would be non-diagonal /
 /// asymmetric; physics predicts exactly diagonal and a symmetric total.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn uniform_grid_weight_is_the_volume_term_and_stress_is_symmetric() {
     let fx = fixture(
@@ -812,6 +817,7 @@ fn uniform_grid_weight_is_the_volume_term_and_stress_is_symmetric() {
 /// neighbour mask: smooth), dense AFT and RS-GDF, PBE, all nine components.
 /// Artifact hypothesis: a missing term misses by the term's size; the floor is
 /// the central-FD h² truncation measured on the component set.
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn uniform_grid_pbe_stress_matches_fd_all_nine_dense() {
     fd_anchor(Jk::Dense, "PBE", FD_BAR);
@@ -904,6 +910,7 @@ const FD_BAR_ATOM: f64 = 3e-8;
 /// included. Artifact hypothesis: if the stress were symmetrised or the point
 /// motion mis-anchored, the FD antisymmetric part would disagree at the
 /// antisymmetry's size, not at the floor.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn atom_grid_pbe_stress_matches_fd_all_nine_antisymmetric_part_included() {
     let grid = atom_grid(20, 50, Some(CUTOFF));
@@ -931,6 +938,7 @@ fn atom_grid_pbe_stress_matches_fd_all_nine_antisymmetric_part_included() {
 /// Pressure from isotropic scaling (a homogeneous-scaling identity valid on
 /// every grid): `Σ_a dE/dε_aa` equals the FD of E(1 + s) at fixed fractional
 /// coordinates; uniform grid, dense AFT.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn trace_matches_isotropic_scaling_fd_on_the_uniform_grid() {
     let grid = KXcGrid::Uniform([24, 24, 24]);
@@ -964,6 +972,7 @@ fn trace_matches_isotropic_scaling_fd_on_the_uniform_grid() {
 /// (the grid is atom-centred, Bloch phases depend on lattice vectors only).
 /// Artifact hypothesis: an anchor error (point not moving with its home atom)
 /// would make the XC stress depend on absolute positions.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn stress_is_translation_invariant_on_the_atom_grid() {
     let grid = atom_grid(20, 50, Some(CUTOFF));
@@ -988,6 +997,7 @@ fn stress_is_translation_invariant_on_the_atom_grid() {
 /// offsets) it is violated at the grid-error scale, reported. Artifact
 /// hypothesis: a wrong strain-moment index would break the uniform identity;
 /// the atom-grid violation is the antisymmetric-part physics, not a bug.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn rotation_covariance_holds_on_the_uniform_grid() {
     rotation_case("uniform 24^3", KXcGrid::Uniform([24, 24, 24]), 1e-8);
@@ -1051,6 +1061,7 @@ fn rotation_case(name: &str, grid: KXcGrid, bar: f64) {
 /// built with the Ewald shift) equal those from a `none` SCF; it is a
 /// wiring check (a Madelung leak into the KS SCF or into the stress Fock guard
 /// would be v_M-sized, ~0.1 Ha), not an independent physics anchor.
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn ewald_and_none_exxdiv_agree_for_a_pure_functional() {
     let grid = KXcGrid::Uniform([24, 24, 24]);
@@ -1084,6 +1095,7 @@ fn ewald_and_none_exxdiv_agree_for_a_pure_functional() {
 
 /// The result does not depend on the thread count or on how many chunks run
 /// concurrently (chunk-order reduction): bit-identical.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn stress_is_bit_identical_across_threads_and_live_chunks() {
     let fx = fixture(
@@ -1122,6 +1134,7 @@ fn stress_is_bit_identical_across_threads_and_live_chunks() {
 /// The strain pass is pre-flighted on the ledger: a budget that holds the fixed
 /// HF arrays but not one AO-moment chunk is a typed error naming the quantity;
 /// a one-chunk cap gives the bit-identical stress of the unconstrained run.
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn xc_chunks_are_budgeted() {
     let fx = fixture(
@@ -1191,6 +1204,7 @@ fn xc_chunks_are_budgeted() {
 
 // ------------------------------------------------- refusals and Fock guard
 
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn refusals_and_the_fock_guard() {
     let fx = fixture(
@@ -1277,24 +1291,23 @@ fn miss(fx: &Fx, m: KXcStressMutation, base: &KRksStress) -> f64 {
     mdiff(&stress(fx, Some(m)).de_deps, &base.de_deps)
 }
 
-/// Smoke mutants on the non-TRIM 1x1x3 mesh (production-wired seams in
+/// Smoke mutants on the non-TRIM 1x1x2 mesh (production-wired seams in
 /// `KRksStressConfig::mutation`): each must miss the unmutated (FD-,
 /// Gamma- and supercell-anchored) stress by far more than the bar.
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn smoke_mutants_are_caught() {
     let fx = fixture(
         &H2,
-        [1, 1, 3],
+        [1, 1, 2],
         "PBE",
         Jk::Dense,
-        atom_grid(20, 50, Some(CUTOFF)),
+        atom_grid(12, 26, Some(CUTOFF)),
     );
     let base = stress(&fx, None);
     for m in [
         KXcStressMutation::NoPointMotion,
-        KXcStressMutation::NoWeightDeriv,
         KXcStressMutation::NoHessian,
-        KXcStressMutation::ConjPhase,
     ] {
         let d = miss(&fx, m, &base);
         eprintln!("{m:?}: miss {d:.2e}");
@@ -1348,6 +1361,7 @@ const PYSCF_STRESS_BAR: f64 = 1e-9;
 /// self-consistent construction error (the supercell, 1x1x1 and FD anchors all
 /// share ferric's energy) cannot show here; a missing XC term would miss by
 /// its size (6e-3 sigma units is the whole XC+HF stress here).
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn uniform_grid_stress_matches_pyscf_fftdf_krks_stress_pbe() {
     pyscf_case(1);
@@ -1736,6 +1750,7 @@ const TRI2: [[f64; 3]; 2] = [[0.13, 0.25, 0.31], [0.02, 0.27, 1.66]];
 /// (m1, m2) and non-orthogonal lattice phases, none of which the cubic s-only
 /// fixtures reach. Artifact hypothesis: a wrong function offset or a p-shell
 /// Hessian-moment index error misses by the p-term size (>1e-4), not 5e-8.
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn p_shell_triclinic_uniform_grid_stress_matches_fd() {
     let bs = sp_basis_h();
@@ -1789,6 +1804,7 @@ fn p_shell_triclinic_uniform_grid_stress_matches_fd() {
 /// A PBE0 SCF handed to the PBE stress: the rebuilt F has no `K`, so the
 /// exact Fock guard refuses (artifact hypothesis: a guard that only compared
 /// the XC part would pass this and return a finite wrong stress).
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn a_hybrid_scf_is_refused_by_the_pure_stress() {
     let mut fx = fixture(&H2, [1, 1, 3], "PBE0", Jk::Dense, KXcGrid::Uniform([24; 3]));

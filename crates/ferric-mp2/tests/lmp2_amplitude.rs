@@ -795,6 +795,7 @@ fn schwarz_candidates_cover_every_retained_element() {
 /// below the ε-threshold truncation itself (the family's port-fidelity
 /// bar); (c) mutation — an absurd budget must gut the aux domains and
 /// wreck the energy, proving the selection actually drops rows.
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn aux_truncation_trivial_limit_subdominance_and_mutation() {
     let su = setup("alkane_8.xyz");

@@ -107,6 +107,7 @@ fn bits(k: &Array2<f64>) -> Vec<u64> {
     k.iter().map(|v| v.to_bits()).collect()
 }
 
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn multiplier_zero_routes_nothing_and_k_is_bit_identical_to_the_unrouted_build() {
     let s = butane();
@@ -184,6 +185,7 @@ fn routed_share_is_zero_at_multiplier_zero_one_at_infinity_and_monotone_between(
     eprintln!("butane/def2-SVP router shares (0, 1e2..1e6, inf): {shares:?}");
 }
 
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn the_router_never_routes_a_unit_the_screen_dropped() {
     let s = butane();

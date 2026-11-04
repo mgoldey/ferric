@@ -1351,6 +1351,7 @@ fn constrained_state_stability(
 ///
 /// This test ASSERTS the signs it measures, so it is a pinned result, not a
 /// print: if either state's stability ever flips, this fails.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn hene_diabats_are_minima_of_their_constrained_manifolds() {
     let sys = build_sys(&hene_xyz(), 1, 2, "def2-svp");
@@ -1422,6 +1423,7 @@ fn hene_diabats_are_minima_of_their_constrained_manifolds() {
 /// H-PHYSICS predicts both stable.
 ///
 /// Reported either way; asserted only on what is measured.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn state_b_natural_target_vs_integer_target() {
     let sys = build_sys(&hene_xyz(), 1, 2, "def2-svp");
@@ -1498,6 +1500,7 @@ fn state_b_natural_target_vs_integer_target() {
 ///
 /// The energy difference it finds is how wrong the reported diabat energy — and
 /// therefore the 1.0975 eV gap — is.
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn following_state_b_instability_reaches_a_lower_energy() {
     let sys = build_sys(&hene_xyz(), 1, 2, "def2-svp");

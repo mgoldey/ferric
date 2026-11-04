@@ -569,6 +569,7 @@ fn h2_1x1x3_mesh_is_the_gamma_supercell() {
     check_anchor("H2 1x1x3", &a, 1e-11);
 }
 
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn h2_2x2x2_mesh_is_the_gamma_supercell() {
     let a = build_anchor(&h2_cell(4.0), &pyscf_sto3g_h(), [2, 2, 2], ANCHOR_PRECISION);

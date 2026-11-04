@@ -120,6 +120,7 @@ fn pin_run<'a>(
 /// E_dense| 2.0e-13 / 2.0e-13 (1x1x1 SCAN / r2SCAN), 3.7e-14 / 3.5e-14
 /// (1x1x3), |dE_xc| <= 4.9e-15; incomplete aux 2.1e-3 (1x1x1) and 5.2e-4
 /// (1x1x3), >= 5e6 x the bar.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn polarized_mgga_rsgdf_equals_dense_in_the_trivial_aux_limit() {
     let cell = cube_cell(&H3, 2);
@@ -162,6 +163,7 @@ const ANCHOR_BAR: f64 = 1e-10;
 /// defects of `solve_kuks` run on the RS-GDF route miss the same pin.
 ///
 /// Measured: see `PIN_BAR` and the ledger in the module doc.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn polarized_mgga_rsgdf_matches_pinned_pyscf() {
     let cell = cube_cell(&H3, 2);
@@ -210,6 +212,7 @@ const PIN_BAR: f64 = 1e-9;
 /// k-RKS anchor on the RS-GDF J/K (energy, force, stress, separate SCF
 /// loops) with the same three asymmetric derivative defects, on the 1x1x1
 /// mesh.
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn singlet_rsgdf_uks_equals_rks_on_the_one_point_mesh() {
     singlet_rsgdf_case([1, 1, 1]);
@@ -220,6 +223,7 @@ fn singlet_rsgdf_uks_equals_rks_on_the_one_point_mesh() {
 /// the same polarized H3 doublet RS-GDF check (force translation sum, force
 /// and stress through their gates, the zz strain against FD of the SCF
 /// energy, the `TauNoVxcBeta` defect) on the 1x1x1 mesh.
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn polarized_rsgdf_force_and_stress_canary_on_the_one_point_mesh() {
     polarized_rsgdf_case([1, 1, 1]);

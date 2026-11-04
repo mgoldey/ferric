@@ -354,6 +354,7 @@ const NO_STRETCHED: &str = "2\n\nN 0 0 0\nO 0 0 2.5\n";
 /// default-guess state, and the report says the secondary did not converge,
 /// why, and that it did not seed the target. (Seeding from the secondary's
 /// last iterate was measured and rejected: the target then fails too.)
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn unconverged_secondary_still_seeds_a_converging_target() {
     let (mol, prep, bounds) = setup(CN, 2, "aug-cc-pvdz");
@@ -425,6 +426,7 @@ fn stalled_secondary_declines(kind: Kind, xyz: &str, target_basis: &str, stall_w
 
 /// CN UHF/aug-cc-pVDZ with the ladders' own monitor (window 15, tol 0.5):
 /// the oscillating STO-3G UHF trips it after 32 iterations.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn stalled_secondary_declines_uhf() {
     stalled_secondary_declines(Kind::Uhf, CN, "aug-cc-pvdz", 15);
@@ -434,6 +436,7 @@ fn stalled_secondary_declines_uhf() {
 /// monitor after 6 iterations while the target converges under the same one.
 /// (ROHF/STO-3G converged at every window on CN, O2, NH2, NO and CH2 at
 /// equilibrium, so a stretched bond is needed to make it stall.)
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn stalled_secondary_declines_rohf() {
     stalled_secondary_declines(Kind::Rohf, NO_STRETCHED, "cc-pvdz", 3);

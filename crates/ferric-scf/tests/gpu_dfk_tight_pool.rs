@@ -182,7 +182,7 @@ fn scf_energy_under_a_refusing_pool_is_bit_identical_to_the_forced_host_run() {
         return;
     }
     let mol = Molecule::load_xyz("../../testdata/molecules/water.xyz").unwrap();
-    let prep = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
+    let prep = PreparedBasis::new(&mol, &basis::bundled("sto-3g").unwrap()).unwrap();
     let aux = PreparedBasis::new(&mol, &basis::bundled("def2-universal-jkfit").unwrap()).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
@@ -263,7 +263,7 @@ fn scf_energy_under_a_refusing_pool_is_bit_identical_to_the_forced_host_run() {
 
 fn water_dfk(budget: usize) -> (DfK<'static>, usize) {
     let mol = Molecule::load_xyz("../../testdata/molecules/water.xyz").unwrap();
-    let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
+    let obs = PreparedBasis::new(&mol, &basis::bundled("sto-3g").unwrap()).unwrap();
     let aux = PreparedBasis::new(&mol, &basis::bundled("def2-universal-jkfit").unwrap()).unwrap();
     let n = obs.nbasis();
     (

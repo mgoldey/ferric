@@ -123,6 +123,7 @@ fn omega_override_on_pbe_is_rejected() {
 /// The tuner end-to-end on H2/6-31G: converges within the bracket, the
 /// tuned |J| beats both bracket endpoints, and every evaluation carries a
 /// negative IP-consistent HOMO.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn tune_omega_h2_converges_and_improves_j() {
     let (mol, prep, bounds) = h2_631g();

@@ -156,6 +156,7 @@ fn residue_strain_kernel_is_gamma_kernel_summed_and_fd_per_residue() {
 /// + c0 (volume AND `c0 Z_tot Σ D dS`) + Ewald. ARTIFACT: a missing/wrong
 /// phase weight (NoPhase), a missing 1/N_k, or a pair vector without its
 /// image shift (NoSrImages) all leave 1×1×1 intact but move this by O(1).
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn hcore_strain_at_fixed_density_matches_fd_h2_1x1x3() {
     let bs = pyscf_sto3g_h();
@@ -282,6 +283,7 @@ fn one_point_mesh_hcore_parts_are_the_gamma_parts() {
 /// constructions (half-sphere real Gamma kernel vs full-sphere complex
 /// residue kernel; image-summed vs phase-folded weights), but BLIND to the
 /// phases (all 1), to 1/N_k (N_k = 1) and to the supercell Madelung.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn one_point_mesh_rhf_stress_is_the_gamma_stress() {
     one_point_rhf(("H2", h2_cell_g(), pyscf_sto3g_h(), ANTISYM_BAR));
@@ -293,6 +295,7 @@ fn one_point_mesh_rhf_stress_is_the_gamma_stress_triclinic_sp() {
     one_point_rhf(("tri2 s+p", triclinic_cell(), sp_basis_h(), P_ANTISYM_BAR));
 }
 
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn one_point_mesh_uhf_stress_is_the_gamma_stress() {
     let bs = pyscf_sto3g_h();
@@ -318,6 +321,7 @@ fn one_point_mesh_uhf_stress_is_the_gamma_stress() {
 /// that `e_vlr`, `e_coulomb`, `e_exchange`, `e_madelung` are the energy's
 /// terms with the energy's prefactors (the strain of a mis-scaled `Φ` would
 /// still be self-consistent against nothing).
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn stress_energy_pieces_sum_to_the_scf_energy_h2_1x1x3() {
     let bs = pyscf_sto3g_h();
@@ -442,6 +446,7 @@ fn h2_2x2x2_trim_mesh_is_blind_to_phase_mutants() {
 }
 
 /// closed-shell kUHF(D/2, D/2) ≡ kRHF(D).
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn closed_shell_kuhf_stress_is_the_krhf_stress() {
     let bs = pyscf_sto3g_h();
@@ -468,6 +473,7 @@ fn closed_shell_kuhf_stress_is_the_krhf_stress() {
 /// sets frozen, k at fixed fractional coordinates), all nine components, both
 /// exxdiv, with a fresh SCF at every strained point (the analytic value is at
 /// the converged density, so the density response drops out by stationarity).
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn h2_1x1x3_stress_matches_fd_of_own_k_energy_all_nine() {
     let bs = pyscf_sto3g_h();
@@ -597,6 +603,7 @@ fn h3_uhf_1x1x3_stress_matches_fd_of_own_k_energy_all_nine() {
 /// or a KS result both give a FINITE σ (nothing else fails), so the guard is
 /// the stored-Fock comparison. Measured mismatches are printed below; the
 /// matching case sits at the 1e-12 level (see `FOCK_CONSISTENCY_BAR`).
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn stress_refuses_a_wrong_exxdiv_and_a_ks_result() {
     let bs = pyscf_sto3g_h();
@@ -742,6 +749,7 @@ fn term_mutants_miss_the_one_point_gamma_anchor() {
 /// FD of ferric's own k energy on the zz and xz strains only (h = 1e-4, both
 /// exxdiv), and the NoPhase / NoInvNk / Madelung mutants against the same
 /// two components.
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn h2_mp_1x1x2_stress_matches_fd_of_own_k_energy_zz_and_xz() {
     let bs = pyscf_sto3g_h();
@@ -854,6 +862,7 @@ fn h2_sp_1x1x3_stress_matches_fd_of_own_k_energy_all_nine() {
 /// complex per-q LR; one Y vs per-(l, t) bins; `Y q` vs `Z`-based `M_g0`), but
 /// the anchor is BLIND to phases, 1/N_k, q != 0 (only the q = 0 class exists)
 /// and the supercell Madelung; the 1x1x3 supercell anchor covers those.
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn one_point_mesh_rsgdf_stress_is_the_gamma_rsgdf_stress() {
     let bs = pyscf_sto3g_h();
@@ -965,6 +974,7 @@ fn h2_1x1x3_rsgdf_term_mutants_miss_the_supercell_anchor() {
 /// not; a piecewise energy (a metric eigenvalue crossing `lindep`, a K at the
 /// sphere edge flipping) would show as FD(h) vs FD(2h) disagreeing faster than
 /// h², asserted below.
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn h2_1x1x3_rsgdf_stress_matches_fd_of_own_k_energy_all_nine() {
     let bs = pyscf_sto3g_h();
@@ -1004,6 +1014,7 @@ fn h2_1x1x3_rsgdf_stress_matches_fd_of_own_k_energy_all_nine() {
 
 /// PHYSICS/ARTIFACT as the RHF 1x1x1 anchor, on the H3 doublet (per-spin
 /// exchange pairs `D_s Z^H D_s`, spin-summed Coulomb).
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn one_point_mesh_rsgdf_uhf_stress_is_the_gamma_rsgdf_stress() {
     let bs = pyscf_sto3g_h();
@@ -1032,6 +1043,7 @@ fn one_point_mesh_rsgdf_uhf_stress_is_the_gamma_rsgdf_stress() {
 }
 
 /// closed-shell kUHF(D/2, D/2) ≡ kRHF(D) on the fitted path.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn closed_shell_kuhf_rsgdf_stress_is_the_krhf_stress() {
     let bs = pyscf_sto3g_h();
@@ -1111,6 +1123,7 @@ fn h3_uhf_1x1x3_rsgdf_stress_is_the_supercell_stress_per_cell() {
 /// carry, on the unsplit AND the range-split source (a range-split build
 /// itself is supported). Column-rotation request refusals live in
 /// `pbc_sr_rotation_kderiv.rs`.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn rsgdf_stress_refuses_ecp() {
     let bs = pyscf_sto3g_h();
@@ -1149,6 +1162,7 @@ fn rsgdf_stress_refuses_ecp() {
 /// whose stored Fock was perturbed by 1e-6, and ACCEPT the matching input.
 /// Both sides of the bar: matching inputs 1e-15-level (printed), the wrong
 /// exxdiv / wrong fit orders of magnitude above `FOCK_CONSISTENCY_BAR`.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn rsgdf_stress_fock_guard_refuses_inconsistent_inputs() {
     let bs = pyscf_sto3g_h();
@@ -1348,6 +1362,7 @@ fn h2_1x1x3_rsgdf_stress_with_a_d_aux_is_the_supercell_stress() {
 /// at omega 1.3 is NOT inconsistent: the guard must accept it (mismatch far
 /// below the bar) and the stress must agree with the omega-1.0 stress to the
 /// measured level (printed; the two splits differ by the SR/LR truncation).
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn rsgdf_stress_accepts_a_fit_at_another_omega() {
     let bs = pyscf_sto3g_h();
@@ -1486,6 +1501,7 @@ fn h3_uhf_1x1x3_rsgdf_stress_matches_fd_of_own_k_energy_all_nine() {
 /// part (SR3, SR2, LR3, LR2, G0 overlap incl. the smooth-overlap virial, both
 /// G0 volumes). ARTIFACT: independent constructions (half sphere real with
 /// weight 2 vs full sphere complex), but BLIND to phases, 1/N_k and q != 0.
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn one_point_mesh_split_rsgdf_stress_is_the_gamma_split_stress() {
     let bs = pyscf_sto3g_h();
@@ -1531,6 +1547,7 @@ fn one_point_mesh_split_rsgdf_stress_is_the_gamma_split_stress() {
 /// k-specific defect of the energy, 1.05e-3 Ha) or mis-binned the smooth
 /// pairs could not reproduce an explicit supercell; the 1x1x1 anchor cannot
 /// see either (q = 0 only). NON-TRIM mesh (n_2 = 3).
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn h2_1x1x3_split_rsgdf_stress_is_the_supercell_stress_per_cell() {
     let bs = pyscf_sto3g_h();
@@ -1613,6 +1630,7 @@ fn h2_1x1x3_split_mutants_miss_the_supercell_anchor() {
 /// own tolerance (each side at its own converged density). ARTIFACT: equality
 /// to 1e-13 would mean the split ran the unsplit path (the moved counters are
 /// asserted); the difference is the split's truncation, MEASURED here.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn h2_1x1x3_split_k_stress_matches_the_unsplit_k_stress() {
     let bs = pyscf_sto3g_h();
@@ -1677,6 +1695,7 @@ fn h2_mp_1x1x2_split_stress_matches_fd_of_own_k_energy_all_nine() {
 // ------------------------------------------------------------ split UHF
 
 /// 1x1x1 H3 doublet: the k split UHF stress is the Gamma split UHF stress.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn one_point_mesh_split_rsgdf_uhf_stress_is_the_gamma_split_stress() {
     let bs = pyscf_sto3g_h();
@@ -1801,6 +1820,7 @@ fn h2_1x1x3_split_stress_with_a_d_aux_is_the_supercell_stress() {
 /// refuses the wrong exxdiv and a perturbed Fock. The split SCF against the
 /// UNSPLIT source is NOT inconsistent (an exact decomposition): the printed
 /// mismatch is the split tolerance, far below the 1e-8 bar.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn split_stress_fock_guard_accepts_matching_and_refuses_inconsistent_inputs() {
     let bs = pyscf_sto3g_h();
@@ -1887,6 +1907,7 @@ fn d_aux_part_floor_collapses_when_the_near_null_mode_is_dropped() {
 /// the single near-null metric direction (eigenvalue 2.1e-4) dropped by
 /// `lindep` = 1e-3 on both sides every part collapses to <= 4.3e-14, so the
 /// floor is that mode's sensitivity, not a defect. Both are asserted.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn one_point_mesh_split_d_aux_stress_is_the_gamma_split_stress() {
     let (part, total, dropped, emin) = one_point_part_floor(&et_spd_aux(), &split_gdf_cfg(1.0));
@@ -1940,6 +1961,7 @@ fn h2_1x1x3_split_k_stress_matches_the_unsplit_one_at_omega_1p3_lambda_0p7() {
 /// ORBITALS move, aux does not (aux s(1.9, 0.5), lambda 0.4: orbital 0.1689
 /// <= 0.2 but the smallest aux exponent 0.5 > 0.4): the unsplit LR pass plus
 /// the smooth-pair pass with `Xc = X`. Each agrees with the unsplit stress.
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn split_k_stress_partial_move_branches_match_the_unsplit_stress() {
     let split = |l: f64| Some(RangeSplit::new(l));
@@ -1980,6 +2002,7 @@ fn split_k_stress_partial_move_branches_match_the_unsplit_stress() {
 /// k stress (every part and the total) is the unsplit one BIT FOR BIT (the
 /// LR strain is the unsplit pass, every libint factor is 1, `q_c` is `q`, no
 /// smooth overlap).
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn nothing_moved_split_k_stress_is_the_unsplit_stress_bitwise() {
     let bs = pyscf_sto3g_h();
@@ -2054,6 +2077,7 @@ fn split_stress_refuses_a_mismatched_config_and_lambda_above_one() {
 /// non-TRIM mesh: zz (the mesh direction) and xz (off-diagonal), both exxdiv.
 /// A reduced version of the all-nine FD (which stays ignored) so the q != 0
 /// split strain is pinned by an independent anchor in the default test run.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn h2_1x1x3_split_stress_matches_fd_for_zz_and_xz() {
     let bs = pyscf_sto3g_h();
@@ -2084,6 +2108,7 @@ fn h2_1x1x3_split_stress_matches_fd_for_zz_and_xz() {
     }
 }
 
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn open_shell_p_h2_triplet_one_point_mesh_uhf_stress_is_the_gamma_stress() {
     open_shell_p_one_point(s1_h2_triplet());

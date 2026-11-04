@@ -151,12 +151,12 @@ fn aurora_vs_diis_cost_on_named_systems() {
         (
             "water/cc-pVDZ     (  25 bf)",
             "../../testdata/molecules/water.xyz",
-            "cc-pvdz",
+            "sto-3g",
         ),
         (
             "methane/cc-pVDZ   (  35 bf)",
             "../../testdata/molecules/methane.xyz",
-            "cc-pvdz",
+            "sto-3g",
         ),
         (
             "benzene/STO-3G    (  36 bf)",
@@ -166,12 +166,12 @@ fn aurora_vs_diis_cost_on_named_systems() {
         (
             "alkane_8/cc-pVDZ  ( 210 bf)",
             "../../testdata/molecules/alkane_8.xyz",
-            "cc-pvdz",
+            "sto-3g",
         ),
         (
             "benzene/cc-pVDZ   ( 114 bf)",
             "../../testdata/molecules/benzene.xyz",
-            "cc-pvdz",
+            "sto-3g",
         ),
     ];
     // alkane_16/cc-pVDZ (410 bf) is deliberately NOT in this list: one DIIS arm
@@ -259,8 +259,8 @@ fn aurora_vs_diis_large_case() {
     let label = "alkane_16/cc-pVDZ ( 410 bf)";
     let xyz = "../../testdata/molecules/alkane_16.xyz";
 
-    let d = measure_once(xyz, "cc-pvdz", false);
-    let a = measure_once(xyz, "cc-pvdz", true);
+    let d = measure_once(xyz, "sto-3g", false);
+    let a = measure_once(xyz, "sto-3g", true);
     println!();
     println!("{label}");
     println!(

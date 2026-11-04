@@ -169,6 +169,7 @@ fn wb97xv_h2_ccpvdz_vs_pyscf_grad() {
     );
 }
 
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn wb97xv_h2o_ccpvdz_vs_pyscf_grad() {
     run_case(

@@ -322,6 +322,7 @@ const TOL_HESS_FD: f64 = 5e-7;
 /// A broken construction must miss by this multiple of the bar.
 const MUTANT_FACTOR: f64 = 10.0;
 
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn rik_gradient_matches_central_difference_of_the_fixed_grid_energy() {
     for (basis_name, xc, j) in [
@@ -357,6 +358,7 @@ fn fd_case(basis_name: &str, xc: &str, j: Option<&str>, k: &str, tol: f64) -> (R
     (r, fd)
 }
 
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn rik_hessian_matches_fd_pbe0_sto3g_rij() {
     if has_deriv2() {
@@ -364,6 +366,7 @@ fn rik_hessian_matches_fd_pbe0_sto3g_rij() {
     }
 }
 
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn rik_hessian_matches_fd_pbe0_sto3g_exact_j() {
     if has_deriv2() {
@@ -371,6 +374,7 @@ fn rik_hessian_matches_fd_pbe0_sto3g_exact_j() {
     }
 }
 
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn rik_hessian_matches_fd_b3lyp_sto3g_rij() {
     if has_deriv2() {
@@ -378,6 +382,7 @@ fn rik_hessian_matches_fd_b3lyp_sto3g_rij() {
     }
 }
 
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn rik_hessian_matches_fd_hybrid_lda_631g_rij() {
     if has_deriv2() {
@@ -395,6 +400,7 @@ const TOL_HESS_FD_STO3G: f64 = 1e-9;
 /// mutants fit the RI-K skeleton / `K^x`, or the CPHF `DfK`, over the J basis,
 /// and the response-side exact-K fallbacks are measured here against the
 /// tighter STO-3G bar.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn rik_hessian_with_distinct_j_and_k_bases_and_its_mutants() {
     if !has_deriv2() {
@@ -512,6 +518,7 @@ fn ri_k_adds_nothing_to_a_pure_functional() {
 /// fit's floor for this orbital basis), so the assertion is a 10x drop from
 /// the jkfit difference for BOTH richer fits and a monotone energy, not a
 /// monotone Hessian difference (1.41e-6 vs 1.53e-6 is inside that floor).
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn rik_vs_exact_k_is_the_fitting_error_and_shrinks_with_the_aux_basis() {
     if !has_deriv2() {
@@ -553,6 +560,7 @@ fn rik_vs_exact_k_is_the_fitting_error_and_shrinks_with_the_aux_basis() {
     }
 }
 
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn production_wired_rik_mutants_each_fail_the_hessian_anchor() {
     if !has_deriv2() {

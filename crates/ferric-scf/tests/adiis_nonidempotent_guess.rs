@@ -151,6 +151,7 @@ fn adiis_and_ediis_match_plain_diis_from_the_default_guess() {
 /// trace but occupations above 1, and its energy lies ~1.5 Ha below the ground
 /// state on this molecule, so before the veto ADIIS and EDIIS both stopped at
 /// iteration 3 with `converged = true` 0.42 Ha too high.
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn adiis_and_ediis_do_not_falsely_converge_from_the_default_minao_guess() {
     let mol = Molecule::load_xyz("../../testdata/molecules/sulfamethoxazole.xyz").unwrap();

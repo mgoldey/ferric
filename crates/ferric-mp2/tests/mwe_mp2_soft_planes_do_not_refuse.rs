@@ -190,6 +190,7 @@ impl Fixture {
 /// mutation to find -- the capacity must also clear `check_mo_side_alloc`'s
 /// pre-existing CEILING check, or the run dies there and the contract
 /// measures a gate that has nothing to do with the pool.
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn the_contract_budget_sits_inside_the_measured_refusal_window() {
     let f = fixture();
@@ -232,6 +233,7 @@ fn the_contract_budget_sits_inside_the_measured_refusal_window() {
 /// This is the contract mutation M3 (turn the soft gate hard) must fail. It is
 /// the direct encoding of the standing decision: the pre-migration tree runs
 /// this job, so the migrated tree must too.
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn a_budget_inside_the_refusal_window_still_completes() {
     let _s = CleanSlot::acquire();

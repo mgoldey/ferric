@@ -113,6 +113,7 @@ const H2_OFF_AXIS: [[f64; 3]; 2] = [[0.3, 0.2, 0.1], [0.35, 0.12, 1.5]];
 
 // ------------------------------------------------- kept unchanged (cheap)
 
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn rsgdf_rhf_energy_is_bitwise_across_threads() {
     rsgdf_rhf_energy_is_bitwise_across_threads_body();
@@ -133,16 +134,19 @@ fn pair_ft_kernels_match_frozen_serial_kernels_in_partial_windows() {
     pair_ft_kernels_match_frozen_serial_kernels_in_partial_windows_body();
 }
 
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn pair_ft_kernels_match_frozen_serial_kernels_with_general_contraction() {
     pair_ft_kernels_match_frozen_serial_kernels_with_general_contraction_body();
 }
 
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn hcore_overlap_kinetic_is_bitwise_across_threads_and_vs_serial() {
     hcore_overlap_kinetic_is_bitwise_across_threads_and_vs_serial_body();
 }
 
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn hcore_kpts_overlap_kinetic_is_bitwise_across_threads_and_vs_serial() {
     hcore_kpts_overlap_kinetic_is_bitwise_across_threads_and_vs_serial_body();
@@ -163,6 +167,7 @@ fn krsgdf_exchange_is_bitwise_across_threads_and_within_rounding_of_serial() {
     krsgdf_exchange_is_bitwise_across_threads_and_within_rounding_of_serial_body();
 }
 
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn rsgdf_k_builder_is_the_grouped_exchange_on_a_real_b() {
     rsgdf_k_builder_is_the_grouped_exchange_on_a_real_b_body();
@@ -179,6 +184,7 @@ fn overlap_kinetic_force_walk_is_bitwise_across_threads_and_vs_serial_loop() {
 /// triclinic 4 H in the anchor's STO-3G s + p (8 shells: 1×1, 1×3 and 3×3
 /// blocks and their mirror) with the ET s+p aux instead of def2 jkfit, 1/2
 /// threads.
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn rsgdf_sr_sums_bitwise_canary() {
     rsgdf_sr_sums_case(&sp_basis_h(), &et_sp_aux(), &CANARY_THREADS);
@@ -188,6 +194,7 @@ fn rsgdf_sr_sums_bitwise_canary() {
 /// triclinic 4 H in STO-3G (s only), both screening cases, 1/2 threads.
 /// GAP: the 1×3 / 3×3 block fill and mirror of the Gamma `V_SR` s2 walk is
 /// weekly only (s + p measured 66 s vs 19 s locally, 2026-10-30: not cheap).
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn hcore_sr_attraction_bitwise_canary() {
     hcore_sr_attraction_case(&pyscf_sto3g_h(), &CANARY_THREADS);
@@ -195,6 +202,7 @@ fn hcore_sr_attraction_bitwise_canary() {
 
 /// Canary of `hcore_kpts_sr_attraction_is_bitwise_across_threads_and_vs_serial`:
 /// triclinic 4 H in STO-3G s + p on MP 1×2×2, 1/2 threads.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn hcore_kpts_sr_attraction_bitwise_canary() {
     hcore_kpts_sr_attraction_case(&sp_basis_h(), &CANARY_THREADS);
@@ -207,6 +215,7 @@ fn hcore_kpts_sr_attraction_bitwise_canary() {
 /// 2 H s + p twin `pbc_kpair_symmetry.rs::krsgdf_s2_bins_canary` covers the
 /// same walk's p blocks per commit, against the frozen ordered oracle at
 /// 1/2 threads).
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn krsgdf_sr_bins_bitwise_canary() {
     krsgdf_sr_bins_case(&pyscf_sto3g_h(), &et_sp_aux(), &CANARY_THREADS);
@@ -215,6 +224,7 @@ fn krsgdf_sr_bins_bitwise_canary() {
 /// Canary of `krsgdf_blocks_and_krhf_energy_are_bitwise_across_threads`:
 /// H2 STO-3G (a = 4), ET s+p aux, 1×1×3 only (complex q phases), 1/2
 /// threads, no pin (the Gamma pin is `rsgdf_rhf_energy_…` above).
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn krsgdf_blocks_and_krhf_energy_bitwise_canary() {
     let cell = h2_cell(4.0);
@@ -226,6 +236,7 @@ fn krsgdf_blocks_and_krhf_energy_bitwise_canary() {
 /// Canary of the Gamma RS-GDF FORCE walks (`gamma_rhf_rsgdf_force_…`,
 /// `gamma_uks_rsgdf_force_…`): off-axis H2 STO-3G in a = 4, cc-pvdz-ri aux,
 /// 1/2 threads, serial oracle at 1 and 2.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn gamma_rhf_rsgdf_force_bitwise_canary() {
     let sys = gdf_sys(cell_of(&H2_OFF_AXIS, cubic(4.0), 1), &pyscf_sto3g_h());
@@ -234,6 +245,7 @@ fn gamma_rhf_rsgdf_force_bitwise_canary() {
 
 /// Canary of `gamma_rhf_rsgdf_stress_is_bitwise_across_threads_and_vs_serial_walks`:
 /// the same H2 system.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn gamma_rhf_rsgdf_stress_bitwise_canary() {
     let sys = gdf_sys(cell_of(&H2_OFF_AXIS, cubic(4.0), 1), &pyscf_sto3g_h());
@@ -242,6 +254,7 @@ fn gamma_rhf_rsgdf_stress_bitwise_canary() {
 
 /// Canary of `kpoint_rhf_rsgdf_force_is_bitwise_across_threads_and_vs_serial_walks`:
 /// 1×1×2 instead of 1×1×3, 1/2 threads.
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn kpoint_rhf_rsgdf_force_bitwise_canary() {
     kpoint_rhf_rsgdf_force_case([1, 1, 2], &CANARY_THREADS);
@@ -250,6 +263,7 @@ fn kpoint_rhf_rsgdf_force_bitwise_canary() {
 /// Canary of the k-point RS-GDF STRESS (`kpoint_rhf_rsgdf_stress_…` and
 /// `kpoint_rhf_split_rsgdf_stress_…`): the range-split one (it runs the
 /// unsplit kept-call walks too), 1/2 threads.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn kpoint_rhf_split_rsgdf_stress_bitwise_canary() {
     kpoint_rhf_rsgdf_stress_bitwise(Some(RangeSplit::new(1.0)), &CANARY_THREADS);
@@ -257,6 +271,7 @@ fn kpoint_rhf_split_rsgdf_stress_bitwise_canary() {
 
 /// Canary of `ecp_force_term_is_bitwise_across_threads_and_vs_serial_loop`:
 /// 1/2 threads.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn ecp_force_term_bitwise_canary() {
     ecp_force_term_case(&CANARY_THREADS);
@@ -267,6 +282,7 @@ fn ecp_force_term_bitwise_canary() {
 /// nao = 24, so J3 has 576 rows and the row-blocked J3 GEMM still splits (2
 /// blocks of 512, asserted; the weekly fixture has 3). Unsplit and split,
 /// 1/2 threads.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn rsgdf_lr_sums_match_frozen_serial_canary() {
     rsgdf_lr_sums_case(
@@ -283,6 +299,7 @@ fn rsgdf_lr_sums_match_frozen_serial_canary() {
 /// STO-3G s + p instead of s + p + pure d. The many-chunk budget is n_g / 10
 /// G vectors (the anchor's n_g / 8 gives only 7 chunks in this basis, below
 /// the asserted ≥ 8; measured 2026-10-30).
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn rsgdf_lr_g_chunking_canary() {
     rsgdf_lr_g_chunking_case(&sp_basis_h(), 1, 10);
@@ -290,6 +307,7 @@ fn rsgdf_lr_g_chunking_canary() {
 
 /// Canary of `rsgdf_b_and_energy_are_bitwise_across_threads_with_several_lr_chunks`:
 /// STO-3G s + p, unsplit, 1/2 threads.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn rsgdf_b_and_energy_several_lr_chunks_canary() {
     rsgdf_b_and_energy_case(&sp_basis_h(), 1, &[None], &CANARY_THREADS);

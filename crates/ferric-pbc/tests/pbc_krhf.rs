@@ -735,6 +735,7 @@ fn h2_shifted_mp_1x1x2_matches_pinned_pyscf_krhf_aftdf() {
 }
 
 /// Time unmeasured in Rust (module doc).
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn triclinic_sp_1x1x2_matches_pinned_pyscf_krhf_aftdf() {
     let cell = triclinic_cell();

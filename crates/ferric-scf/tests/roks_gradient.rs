@@ -127,6 +127,7 @@ fn run_case(label: &str, xc: &str, xyz: &str, mult: usize, basis_name: &str, tol
 }
 
 // OH stretched to 1.10 Å so the gradient is well above FD noise.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn roks_grad_oh_ccpvdz_b3lyp() {
     run_case(
@@ -142,6 +143,7 @@ fn roks_grad_oh_ccpvdz_b3lyp() {
 // LDA / PBE ROKS on doublet OH used to plateau at err_max ~ 1e-3 and were
 // #[ignore]'d. MOM (mom_after_iter=5 in cfg()) now converges them tightly;
 // analytic-vs-FD agrees to ~1.1e-3 Ha/Bohr, well under the 5e-3 tol.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn roks_grad_oh_ccpvdz_pbe() {
     run_case(
@@ -154,6 +156,7 @@ fn roks_grad_oh_ccpvdz_pbe() {
     );
 }
 
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn roks_grad_oh_ccpvdz_lda() {
     run_case(
@@ -166,6 +169,7 @@ fn roks_grad_oh_ccpvdz_lda() {
     );
 }
 
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn roks_rsh_grad_oh_ccpvdz_wb97x_v() {
     run_case(

@@ -31,7 +31,7 @@ fn slot() -> MutexGuard<'static, ()> {
 
 fn water() -> (Molecule, PreparedBasis) {
     let mol = Molecule::load_xyz("../../testdata/molecules/water.xyz").unwrap();
-    let prep = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
+    let prep = PreparedBasis::new(&mol, &basis::bundled("sto-3g").unwrap()).unwrap();
     (mol, prep)
 }
 

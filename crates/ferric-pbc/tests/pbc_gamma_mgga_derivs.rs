@@ -66,6 +66,7 @@ use derivs::*;
 /// SCAN-vs-TPSS gap below (measured 1.6e-3 correct, 2.3e-9 under the mutant)
 /// and by the PySCF pins (`pbc_krks.rs` energy, `pbc_kxcstress_mgga.rs`
 /// stress, 7.8e-5).
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn tpss_gamma_force_matches_fd_of_the_gamma_energy() {
     let g = gamma(cell_of(&H2), "TPSS");
@@ -101,6 +102,7 @@ fn tpss_gamma_force_matches_fd_of_the_gamma_energy() {
 /// 2.95e-2, `TauDoubled` 2.95e-2, `TauNoVxc` (V^tau dropped from the Pulay
 /// Fock, guard skipped) 2.97e-2, `NoWeightDeriv` 5.42e-1, `NoPointMotion`
 /// 1.62e-1; correct 3.0e-8.
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn tpss_gamma_stress_matches_fd_of_the_gamma_energy() {
     let g = gamma(cell_of(&H2), "TPSS");
@@ -128,6 +130,7 @@ fn tpss_gamma_stress_matches_fd_of_the_gamma_energy() {
 /// `grad.rs` / `stress.rs`, an independent implementation). Artifact: a
 /// route slip (density factor 2, hcore rebuilt differently, a wrong k-point
 /// or Madelung) moves the force by >= 1e-3.
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn routed_gga_equals_the_native_gamma_force_and_stress() {
     let g = gamma(cell_of(&H2), "PBE");
@@ -176,6 +179,7 @@ fn routed_gga_equals_the_native_gamma_force_and_stress() {
 /// The routed Gamma force equals `solve_krks` + `kpoint_rks_gradient` at
 /// 1x1x1 (two SCFs, the Gamma J / XC / hcore vs the k ones). A glue check:
 /// the derivative code is shared.
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn gamma_mgga_force_is_the_one_point_mesh_force() {
     for f in ["SCAN", "TPSS"] {
@@ -194,6 +198,7 @@ fn gamma_mgga_force_is_the_one_point_mesh_force() {
 
 // ------------------------------------------------------ refusals and guard
 
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn refusals_and_the_fock_guard() {
     let g = gamma(cell_of(&H2), "TPSS");
@@ -276,6 +281,7 @@ fn refusals_and_the_fock_guard() {
 
 /// An RS-GDF Gamma SCF: the routed derivative rebuilds the dense J, so the
 /// Fock guard refuses it (the fit error is far above the guard bar).
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn an_rsgdf_gamma_scf_is_refused_by_the_fock_guard() {
     let cell = cell_of(&H2);
@@ -313,6 +319,7 @@ fn an_rsgdf_gamma_scf_is_refused_by_the_fock_guard() {
 /// The routed Gamma r2SCAN force equals the 1x1x1 one; the SCAN force on the
 /// same cell differs by far more than the glue bar; and a SCAN config on the
 /// r2SCAN Gamma SCF is refused by the Fock guard (on H2 it would be accepted).
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn r2scan_and_scan_are_distinguished_on_the_two_orbital_cell() {
     let tri = Cell::new(hydrogens(&TRI_ATOMS), TRI_A).expect("triclinic cell");

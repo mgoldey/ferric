@@ -164,6 +164,7 @@ fn wb97x_gradient_h2_ccpvdz_vs_fd() {
     );
 }
 
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn wb97x_gradient_h2o_ccpvdz_vs_fd() {
     run_case(

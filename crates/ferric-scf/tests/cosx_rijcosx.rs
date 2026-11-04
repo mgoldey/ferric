@@ -332,6 +332,7 @@ const CROSS_ABS_FLOOR: f64 = 1e-10;
 
 /// HF water/6-31G, RIJCOSX with the fit off, at the (50,110) and a coarse
 /// (30,50) COSX grid: the cross term must scale with the COSX error.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn rijcosx_energy_is_rij_plus_the_cosx_error_hf() {
     let mol = mol_of(WATER, 1);
@@ -462,6 +463,7 @@ fn rhf_rijcosx_fd_case(basis: &str, cosx: CosxConfig, tol: f64) {
     );
 }
 
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn rhf_rijcosx_gradient_matches_fd_sto3g() {
     rhf_rijcosx_fd_case("sto-3g", cosx_exact(), TOL_FD);
@@ -548,6 +550,7 @@ fn uhf_rijcosx_gradient_matches_fd_ho2_sto3g() {
 /// SCF-free anchor on the PRUNED grid: at a fixed density, the COSX exchange
 /// gradient is the derivative of `tr[D K(D; R)]` (4-point stencil). Same bar as
 /// the flat-grid anchor in `cosx_gradient.rs` (measured 7e-11 there).
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn pruned_grid_exchange_gradient_is_the_derivative_at_fixed_density() {
     let basis = "6-31g";
@@ -599,6 +602,7 @@ fn pruned_grid_exchange_gradient_is_the_derivative_at_fixed_density() {
 /// SCF-grid energy BIT FOR BIT (RHF and UHF), and the record says so.
 /// Fails if the pass reads a stale K (K of the previous density) or builds
 /// with different knobs.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn final_pass_on_the_scf_grid_is_bit_identical() {
     let mol = mol_of(WATER, 1);

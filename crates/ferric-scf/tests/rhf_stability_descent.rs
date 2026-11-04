@@ -78,6 +78,7 @@ fn run(mol: &Molecule, prep: &PreparedBasis, bounds: &SchwarzBounds, cfg: &RhfCo
     r
 }
 
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn descent_leaves_the_n2_saddle() {
     let (mol, prep, bounds) = n2();

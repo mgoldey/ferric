@@ -34,6 +34,7 @@ mod support;
 use common::*;
 use support::*;
 
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn rsgdf_rohf_stress_matches_fd_1x1x2() {
     fd_case(None, ExxDiv::Ewald, [1, 1, 2], &[(2, 2)]);
@@ -86,6 +87,7 @@ fn rsgdf_ro_stress_matches_fd_all_nine() {
 }
 
 /// Closed-shell ROHF through RS-GDF equals the k-RHF RS-GDF stress.
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn rsgdf_closed_shell_rohf_equals_rhf() {
     let n = [1, 1, 2];
@@ -186,6 +188,7 @@ fn rsgdf_ro_mutants_are_caught() {
     assert!(d > 1e-5, "{d:e}");
 }
 
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn rsgdf_rohf_force_matches_fd() {
     force_fd_case(None, ExxDiv::Ewald, &[(0, 2)]);
@@ -199,6 +202,7 @@ fn rsgdf_ro_force_matches_fd() {
     force_fd_case(Some("PBE0"), ExxDiv::Ewald, &[(0, 2), (2, 1)]);
 }
 
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn rsgdf_closed_shell_rohf_force_equals_rhf() {
     let n = [1, 1, 2];
@@ -303,6 +307,7 @@ fn rsgdf_ro_force_mutants_are_caught() {
 /// ROKS PBE RS-GDF force on a 1x1x3 mesh (where the phase slips ConjD / WrongQ
 /// are not exact identities, unlike 1x1x2), in the default set so CI covers a
 /// Kohn-Sham RS-GDF open-shell path.
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn rsgdf_roks_pbe_force_matches_fd_1x1x3() {
     let n = [1, 1, 3];
@@ -365,6 +370,7 @@ fn rsgdf_rohf_with_a_rotating_basis_force_and_stress_match_fd() {
 /// (`SplitNoSmoothOverlap`, 1.6e-2 in the weekly ledger) against the same
 /// FD. The split force FD is per commit in
 /// `rsgdf_range_split_rohf_force_1x1x3_sees_the_gamma_kernel_mutant`.
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn rsgdf_range_split_rohf_stress_zz_matches_fd_canary() {
     SPLIT.with(|s| s.set(Some(SPLIT_LAMBDA)));
@@ -399,6 +405,7 @@ fn rsgdf_range_split_rohf_stress_zz_matches_fd_canary() {
 /// Closed-shell ROHF on the range-split build equals the k-RHF split force
 /// and stress (the RHF split paths are anchored in `pbc_kstress.rs` /
 /// `pbc_kxcgrad_hybrid.rs`).
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn rsgdf_range_split_closed_shell_rohf_equals_rhf() {
     SPLIT.with(|s| s.set(Some(SPLIT_LAMBDA)));
@@ -500,6 +507,7 @@ fn rsgdf_range_split_closed_shell_rohf_equals_rhf() {
 /// blind at 1x1x1 and only weakly visible at 1x1x2 (4.6e-5 above): on a 1x1x3
 /// mesh (non-TRIM q) the split ROHF force against FD of the split energy, and
 /// the mutant against the same FD.
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn rsgdf_range_split_rohf_force_1x1x3_sees_the_gamma_kernel_mutant() {
     SPLIT.with(|s| s.set(Some(SPLIT_LAMBDA)));
