@@ -294,6 +294,9 @@ fn hybrid_ks_energy_ignores_threads_across_the_refused_band() {
                 df_j_aux: Some(aux.into()),
                 df_k_aux: Some(aux.into()),
                 three_index_budget_bytes: cap,
+                // The capacity scan below sits where the flat 75 x 110 grid's
+                // thread-scaled XC charge leaves room; pin that grid.
+                dft_grid: Some(ferric_dft::grid::AtomicGridConfig::default()),
                 ..Default::default()
             };
             let r = solve_rhf(&ctx, &mol, &obs, op, &bounds, &cfg);
