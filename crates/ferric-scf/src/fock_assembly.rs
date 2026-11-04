@@ -127,6 +127,9 @@ fn build_df_jk_impl<'a>(
     // side, same as before).
     if let (Some(ja), Some(ka)) = (j_aux, k_aux) {
         if ja == ka {
+            warn_split_bypassed(
+                "J and K use the same auxiliary basis, so J reads DF-K's stored tensor",
+            );
             let dfbs_set = ferric_core::basis::bundled(ja)?;
             let dfbs = PreparedBasis::new(mol, &dfbs_set)?;
             // Same aux basis on both sides: build the raw (P|μν) tensor ONCE and
@@ -194,6 +197,9 @@ fn build_df_jk_impl<'a>(
         let use_split = ferric_integrals::three_index_source::jk_storage()
             == ferric_integrals::three_index_source::JkStorage::Split
             && ctx.size <= 1;
+        if ctx.size > 1 {
+            warn_split_bypassed("it runs on one rank only, and this run has several");
+        }
         Some(if use_split {
             RiJ::Split(Box::new(crate::split_rij::SplitRiJ::new(
                 op,
@@ -224,6 +230,20 @@ fn build_df_jk_impl<'a>(
     };
     yield_device_to_k(&mut df_j, &df_k);
     Ok((df_j, df_k))
+}
+
+/// `jk_storage = "split"` asked for, but J is built from a stored tensor:
+/// say why, once per process. No-op for every other policy.
+fn warn_split_bypassed(why: &str) {
+    use ferric_integrals::three_index_source::{jk_storage, JkStorage};
+    static WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if jk_storage() == JkStorage::Split && !WARNED.swap(true, std::sync::atomic::Ordering::Relaxed)
+    {
+        eprintln!(
+            "[ferric] warning: jk_storage = \"split\" not used for RI-J: {why}; \
+             the RI-J tensor is stored as under \"auto\""
+        );
+    }
 }
 
 /// RI-J is built before DF-K every iteration, so under `gpu = on` its device

@@ -254,8 +254,10 @@ fn no_bound_reason(k: MixedKernel) -> &'static str {
              on the validation page"
         }
         MixedKernel::DfjF32 => {
-            "no per-run bound is computed; every RI-J build read the f32-stored tensor (not behind \
-             the SCF ladder, no f64 exit unless DfJ::f64_exit_coulomb_energy was applied); \
+            "no per-run bound is computed; each mixed call is an SCF RI-J build that read the \
+             f32-stored tensor (calls_f64_fallback counts a declined f32 tier; response and \
+             gradient RI-J builds stay f64; not behind the SCF ladder, no f64 exit unless \
+             DfJ::f64_exit_coulomb_energy was applied); \
              per-build first-order energy error <= (u32+gamma_pair+gamma_naux)*|c|^T|B||w| \
              (ferric_scf::df_j)"
         }

@@ -661,6 +661,7 @@ class AoIntegrals:
         grid_radial: int | None = None,
         grid_angular: int | None = None,
         grid_prune: str | None = None,
+        grid_weight_cut: float | None = None,
     ) -> XcFunctional:
         """The functional on run_dft's grid (same grid kwargs), built once."""
         ...
@@ -3906,7 +3907,6 @@ def run_dft(
     grid_radial: int | None = None,
     grid_angular: int | None = None,
     grid_prune: str | None = None,
-    grid_weight_cut: float | None = None,
     cosx_grid: tuple[int, int] | tuple[int, int, str] | None = None,
     cosx_final_pass: bool | None = None,
     cosx_final_grid: tuple[int, int] | tuple[int, int, str] | None = None,
@@ -3916,6 +3916,7 @@ def run_dft(
     fock_hook: FockHook | None = None,
     guess_basis: str | None = None,
     guess_projection: str | None = None,
+    grid_weight_cut: float | None = None,
 ) -> DftResult:
     """Kohn-Sham DFT (closed-shell). fock_hook: as for run_rhf; with a
     hook only the first convergence-ladder rung runs, and with_gradient,
@@ -3948,9 +3949,11 @@ def run_dft(
     must be a supported Lebedev order (6, 14, 26, 50, 110, 194, 302, 434, 590).
     `grid_prune="nwchem"` applies NWChem-style radial-region angular pruning
     (~23% fewer points at 75x110, ~1e-10 Ha), `"nwchem-radial"` (the
-    default) also thins light atoms' radial grids; `"none"` is the flat grid, and
-    any other value raises ValueError. Pruning has no table at
-    `grid_angular=50`. With `with_gradient=True` the analytic gradient
+    default) also thins light atoms' radial grids; `"none"` is the flat grid;
+    `"defgrid1"` / `"defgrid2"` / `"defgrid3"` are ORCA's DEFGRIDs, which fix
+    both grid sizes themselves, so combining one with `grid_radial` or
+    `grid_angular` raises ValueError. Any other value raises ValueError.
+    Pruning has no table at `grid_angular=50`. With `with_gradient=True` the analytic gradient
     differentiates the grid the SCF ran on (including a pruned one).
     `grid_weight_cut` (ORCA's WeightCut, e.g. 1e-14) drops every main-grid
     point whose final weight (radial x angular x Becke partition) has
@@ -4003,7 +4006,6 @@ def run_dft(
     grid_radial: int | None = None,
     grid_angular: int | None = None,
     grid_prune: str | None = None,
-    grid_weight_cut: float | None = None,
     cosx_grid: tuple[int, int] | tuple[int, int, str] | None = None,
     cosx_final_pass: bool | None = None,
     cosx_final_grid: tuple[int, int] | tuple[int, int, str] | None = None,
@@ -4014,6 +4016,7 @@ def run_dft(
     fock_hook: None = None,
     guess_basis: str | None = None,
     guess_projection: str | None = None,
+    grid_weight_cut: float | None = None,
 ) -> SymmetricRhfResult: ...
 @overload
 def run_dft(
@@ -4036,7 +4039,6 @@ def run_dft(
     grid_radial: int | None = None,
     grid_angular: int | None = None,
     grid_prune: str | None = None,
-    grid_weight_cut: float | None = None,
     cosx_grid: tuple[int, int] | tuple[int, int, str] | None = None,
     cosx_final_pass: bool | None = None,
     cosx_final_grid: tuple[int, int] | tuple[int, int, str] | None = None,
@@ -4046,6 +4048,7 @@ def run_dft(
     fock_hook: FockHook | None = None,
     guess_basis: str | None = None,
     guess_projection: str | None = None,
+    grid_weight_cut: float | None = None,
 ) -> DftResult | SymmetricRhfResult: ...
 def dft_grid_point_count(
     mol: Molecule,
@@ -4090,11 +4093,11 @@ def run_ksdft(
     grid_radial: int | None = None,
     grid_angular: int | None = None,
     grid_prune: str | None = None,
-    grid_weight_cut: float | None = None,
     symmetry: Literal[False] = False,
     irrep_nelec: None = None,
     guess_basis: str | None = None,
     guess_projection: str | None = None,
+    grid_weight_cut: float | None = None,
 ) -> DftResult:
     """Kohn-Sham DFT (closed-shell). Alias of run_dft (same grid_* kwargs,
     grid_weight_cut included).
@@ -4135,12 +4138,12 @@ def run_ksdft(
     grid_radial: int | None = None,
     grid_angular: int | None = None,
     grid_prune: str | None = None,
-    grid_weight_cut: float | None = None,
     *,
     symmetry: Literal[True],
     irrep_nelec: dict[str, int] | None = None,
     guess_basis: str | None = None,
     guess_projection: str | None = None,
+    grid_weight_cut: float | None = None,
 ) -> SymmetricRhfResult: ...
 @overload
 def run_ksdft(
@@ -4163,11 +4166,11 @@ def run_ksdft(
     grid_radial: int | None = None,
     grid_angular: int | None = None,
     grid_prune: str | None = None,
-    grid_weight_cut: float | None = None,
     symmetry: bool = False,
     irrep_nelec: dict[str, int] | None = None,
     guess_basis: str | None = None,
     guess_projection: str | None = None,
+    grid_weight_cut: float | None = None,
 ) -> DftResult | SymmetricRhfResult: ...
 def d3bj_energy(mol: Molecule, functional: str) -> float:
     """Grimme D3(BJ) dispersion energy in Hartree (two-body term).

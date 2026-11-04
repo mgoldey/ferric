@@ -199,9 +199,6 @@ impl Default for AtomicGridConfig {
 }
 
 impl AtomicGridConfig {
-    /// The default VV10 nonlocal grid (50 x 50, unpruned): the one every SCF
-    /// driver and the KS gradient use when `nlc_grid` is `None`.
-    #[must_use]
     /// The KS SCF's default XC grid, used wherever a KS code path finds no
     /// explicit grid (`RhfConfig::dft_grid = None`: the SCF, its gradients,
     /// Hessians, response and TDDFT, so they all see the same grid): 75 radial
@@ -216,6 +213,7 @@ impl AtomicGridConfig {
     /// [`Default`] stays the flat, uncut 75x110 grid: the analysis quadratures
     /// (Hirshfeld volumes, partitions, property grids) and the tests that pin
     /// flat-grid numbers build on it.
+    #[must_use]
     pub fn production() -> Self {
         Self {
             n_radial: 75,
@@ -243,6 +241,9 @@ impl AtomicGridConfig {
         }
     }
 
+    /// The default VV10 nonlocal grid (50 x 50, unpruned): the one every SCF
+    /// driver and the KS gradient use when `nlc_grid` is `None`.
+    #[must_use]
     pub fn default_nlc() -> Self {
         Self {
             n_radial: 50,

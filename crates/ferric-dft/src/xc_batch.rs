@@ -101,9 +101,12 @@
 //!
 //! The fused order needs no O(npts) density or kernel vectors, but its
 //! parallelism is the group count, not the batch count. So it is used only
-//! when there are at least as many groups as rayon threads (always, unless
-//! `nbf` is so large that `ACCUM_CAP_BYTES` shrinks the group count), or in
-//! the serial mode. Otherwise, and when the device runs the GEMMs, recompute
+//! when there are at least as many groups as rayon threads, or in the serial
+//! mode. The group count is at most `TARGET_GROUPS` (64) and at most the batch
+//! count, and `ACCUM_CAP_BYTES` shrinks it for large `nbf`; with more rayon
+//! threads than groups (more than 64 threads, or a grid with fewer batches
+//! than threads) the fused order is not used. Otherwise, and when the device
+//! runs the GEMMs, recompute
 //! keeps the two-pass order, which evaluates each AO block twice (once per
 //! pass, because the global libxc call sits between them). Either way the
 //! storage decision can move memory and time, never an energy.

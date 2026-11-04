@@ -43,6 +43,9 @@ pub enum JkStorage {
     /// RI-J by Split-RI-J (`ferric_scf::split_rij`): no stored J tensor, its
     /// three-centre integrals recomputed in contracted form every build. Any
     /// tensor still needed (DF-K's) is stored as under [`Auto`](Self::Auto).
+    /// Single rank, with J and K on different auxiliary bases (or no DF-K):
+    /// otherwise J is built from a stored tensor as under `Auto`, with a
+    /// warning.
     Split,
 }
 

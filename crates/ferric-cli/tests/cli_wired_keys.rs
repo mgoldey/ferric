@@ -407,9 +407,10 @@ fn stability_descent_is_refused_off_the_rhf_uhf_ksdft_route() {
 // ─── [dft] grid_radial / grid_angular ───────────────────────────────────────
 
 /// `ksdft` PBE with a 99x302 grid is the library KS solve on
-/// `AtomicGridConfig { n_radial: 99, n_angular: 302, prune: None }` (the
-/// Python `grid_radial=99, grid_angular=302` grid), under the CLI's default
-/// RI-JK aux for KS. Negative control: the default 75x110 grid differs.
+/// `AtomicGridConfig::production_sized(99, 302)` (the default scheme and cutoff
+/// at that size, as the Python `grid_radial=99, grid_angular=302` grid), under
+/// the CLI's default RI-JK aux for KS. Negative control: the default 75x110
+/// grid differs.
 #[test]
 fn dft_grid_keys_match_the_library_grid() {
     let l = lib("water.xyz", 1, "sto-3g");
@@ -420,12 +421,9 @@ fn dft_grid_keys_match_the_library_grid() {
             xc: Some("PBE".into()),
             df_j_aux: jk.clone(),
             df_k_aux: jk,
-            dft_grid: Some(ferric_dft::grid::AtomicGridConfig {
-                n_radial: 99,
-                n_angular: 302,
-                prune: None,
-                weight_cut: None,
-            }),
+            dft_grid: Some(ferric_dft::grid::AtomicGridConfig::production_sized(
+                99, 302,
+            )),
             ..tight()
         },
     )

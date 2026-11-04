@@ -24,8 +24,9 @@
 //!
 //! The f32 tier is in-core only and RI-J only: it cannot be streamed, unpacked
 //! or dressed (DF-K needs the f64 tensor), and it is taken only under the
-//! memory policies (`[scf] jk_storage = "auto"` or `"memory"`), the user's
-//! `disk`/`direct` being an instruction to keep the tensor out of core.
+//! memory policies (`[scf] jk_storage = "auto"` or `"memory"`, and `"split"`
+//! where a stored J tensor is still built), the user's `disk`/`direct` being an
+//! instruction to keep the tensor out of core.
 //!
 //! Memory: the tensor is hard-charged at 4 bytes per element under labels that
 //! end in "f32". The transient f64 block it is computed through (at most
@@ -284,7 +285,12 @@ impl ThreeIndexSource {
         rounding: F32Rounding,
     ) -> Result<F32Outcome<Self>, FerricError> {
         let policy = jk_storage();
-        if !matches!(policy, JkStorage::Auto | JkStorage::Memory) {
+        // `split` stores a J tensor only where Split-RI-J cannot run (it is then
+        // placed as under `auto`), so it takes the f32 tier the same way.
+        if !matches!(
+            policy,
+            JkStorage::Auto | JkStorage::Memory | JkStorage::Split
+        ) {
             return Ok(Err(F32Declined::Policy(policy)));
         }
         pair_screen::check_band(dfbs, (band_p0, band_p1))?;
@@ -363,7 +369,12 @@ impl ThreeIndexSource {
             return Ok((self, None));
         }
         let policy = jk_storage();
-        if !matches!(policy, JkStorage::Auto | JkStorage::Memory) {
+        // `split` stores a J tensor only where Split-RI-J cannot run (it is then
+        // placed as under `auto`), so it takes the f32 tier the same way.
+        if !matches!(
+            policy,
+            JkStorage::Auto | JkStorage::Memory | JkStorage::Split
+        ) {
             return Ok((self, Some(F32Declined::Policy(policy))));
         }
         let (rows, nao, p0) = (self.band_naux(), self.nao, self.band_p0);

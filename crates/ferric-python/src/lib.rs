@@ -402,37 +402,29 @@ fn cosx_final_dict(
     Ok(Some(d.into()))
 }
 
-/// Resolve the `grid_radial` / `grid_angular` / `grid_prune` kwargs into the
-/// main KS grid config (`RhfConfig::dft_grid`).
+/// Resolve the `grid_radial` / `grid_angular` / `grid_prune` /
+/// `grid_weight_cut` kwargs into the main KS grid config (`RhfConfig::dft_grid`).
 ///
 /// All `None` returns `None`, which every KS path resolves to
 /// `AtomicGridConfig::production()` (75x110, nwchem-radial, 1e-14 weight
 /// cutoff). Any one set materialises an explicit config: unset sizes from that
 /// same grid, and an unset `grid_prune` / `grid_weight_cut` keeps the default
-/// scheme / cutoff (`AtomicGridConfig::production_sized`). It touches the MAIN
-/// grid only: the VV10/NLC grid keeps its own flat 50x50 default, where pruning
-/// has no valid table (same scoping as the CLI's `[dft] grid_prune`).
+/// scheme / cutoff (`AtomicGridConfig::production_sized`); `"none"` / `0.0`
+/// turn them off. It touches the MAIN grid only: the VV10/NLC grid keeps its
+/// own flat 50x50 default, where pruning has no valid table (same scoping as
+/// the CLI's `[dft] grid_prune`).
+///
+/// `grid_weight_cut` is ORCA's `WeightCut` (`AtomicGridConfig::weight_cut`):
+/// main-grid points whose final weight has `|w| < grid_weight_cut` are dropped.
 ///
 /// Everything is validated HERE, as a `ValueError`, rather than downstream:
 /// `lebedev()` PANICS on an unsupported angular order, and a prune scheme with
 /// no table at the requested order (`n_angular = 50`) would otherwise surface
 /// only as a generic SCF error after the GIL is released. `grid_prune` goes
-/// through the same strict parser as the CLI (`PruneScheme::parse_config_str`:
-/// "none"/"off"/"flat" or "nwchem"), so an unknown value is an error, never a
-/// silent flat grid.
-fn resolve_dft_grid(
-    grid_radial: Option<usize>,
-    grid_angular: Option<usize>,
-    grid_prune: Option<&str>,
-) -> PyResult<Option<ferric_dft::grid::AtomicGridConfig>> {
-    resolve_dft_grid_with_cut(grid_radial, grid_angular, grid_prune, None)
-}
-
-/// [`resolve_dft_grid`] plus the `grid_weight_cut=` kwarg (ORCA's `WeightCut`,
-/// `AtomicGridConfig::weight_cut`): drop main-grid points whose final weight
-/// has `|w| < grid_weight_cut`. `None` or `0.0` is "off" (and alone keeps the
-/// `None` = default-grid result); a negative, NaN or infinite value is a
-/// `ValueError`, mirroring the CLI's `[dft] grid_weight_cut`.
+/// through the same strict parser as the CLI (`PruneScheme::parse_config_str`),
+/// so an unknown value is an error, never a silent flat grid; a negative, NaN
+/// or infinite `grid_weight_cut` is a `ValueError`, mirroring the CLI's
+/// `[dft] grid_weight_cut`.
 fn resolve_dft_grid_with_cut(
     grid_radial: Option<usize>,
     grid_angular: Option<usize>,
@@ -8605,10 +8597,10 @@ fn run_double_hybrid(
     level_shift=None, mom_after_iter=None,
     point_charges=None, external_field=None, memory_budget_gb=None,
     dispersion=None, df_j_aux=None, df_k_aux=None,
-    grid_radial=None, grid_angular=None, grid_prune=None, grid_weight_cut=None,
+    grid_radial=None, grid_angular=None, grid_prune=None,
     cosx_grid=None, cosx_final_pass=None, cosx_final_grid=None, cosx_overlap_fit=None,
     symmetry=false, irrep_nelec=None, fock_hook=None,
-    guess_basis=None, guess_projection=None,
+    guess_basis=None, guess_projection=None, grid_weight_cut=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_dft(
@@ -8632,7 +8624,6 @@ fn run_dft(
     grid_radial: Option<usize>,
     grid_angular: Option<usize>,
     grid_prune: Option<&str>,
-    grid_weight_cut: Option<f64>,
     cosx_grid: Option<&Bound<'_, PyAny>>,
     cosx_final_pass: Option<bool>,
     cosx_final_grid: Option<&Bound<'_, PyAny>>,
@@ -8642,6 +8633,7 @@ fn run_dft(
     fock_hook: Option<&Bound<'_, PyAny>>,
     guess_basis: Option<&str>,
     guess_projection: Option<&str>,
+    grid_weight_cut: Option<f64>,
 ) -> PyResult<PyObject> {
     let guess_basis = parse_guess_basis(guess_basis, guess_projection)?;
     // Refuse an (E, grad-E) pair that does not belong to the same surface.
@@ -9080,8 +9072,9 @@ fn evaluate_dispersion(
     level_shift=None, mom_after_iter=None,
     point_charges=None, external_field=None, memory_budget_gb=None,
     dispersion=None, df_j_aux=None, df_k_aux=None,
-    grid_radial=None, grid_angular=None, grid_prune=None, grid_weight_cut=None,
+    grid_radial=None, grid_angular=None, grid_prune=None,
     symmetry=false, irrep_nelec=None, guess_basis=None, guess_projection=None,
+    grid_weight_cut=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_ksdft(
@@ -9105,11 +9098,11 @@ fn run_ksdft(
     grid_radial: Option<usize>,
     grid_angular: Option<usize>,
     grid_prune: Option<&str>,
-    grid_weight_cut: Option<f64>,
     symmetry: bool,
     irrep_nelec: Option<std::collections::BTreeMap<String, usize>>,
     guess_basis: Option<&str>,
     guess_projection: Option<&str>,
+    grid_weight_cut: Option<f64>,
 ) -> PyResult<PyObject> {
     run_dft(
         py,
@@ -9132,7 +9125,6 @@ fn run_ksdft(
         grid_radial,
         grid_angular,
         grid_prune,
-        grid_weight_cut,
         None,
         None,
         None,
@@ -9142,6 +9134,7 @@ fn run_ksdft(
         None,
         guess_basis,
         guess_projection,
+        grid_weight_cut,
     )
 }
 
@@ -9839,7 +9832,7 @@ fn run_gw(
     chi0_sparsity: Option<&str>,
     memory_budget_gb: Option<f64>,
 ) -> PyResult<PyGwResult> {
-    use ferric_gw::{run_gw as run_gw_inner, vxc_mo::vxc_diagonal_mo, GwConfig, GwMethod};
+    use ferric_gw::{run_gw as run_gw_inner, vxc_mo::vxc_diagonal_mo_on_grids, GwConfig, GwMethod};
     use ferric_rpa::config::{QuadratureConfig, QuadratureScheme, SternheimerConfig};
     use ferric_rpa::PdepRpaConfig;
 
@@ -9880,8 +9873,19 @@ fn run_gw(
                 last_energy: scf.energy,
             }));
         }
-        let (diag, _beta) =
-            vxc_diagonal_mo(&mol.inner, &basis_set.inner, xc_name, &scf).map_err(make_err)?;
+        let (diag, _beta) = {
+            // The grids this reference SCF ran on.
+            let grids = ferric_scf::ks_gradient::KsGradGrids::from_config(&cfg);
+            vxc_diagonal_mo_on_grids(
+                &mol.inner,
+                &basis_set.inner,
+                xc_name,
+                &scf,
+                &grids.main,
+                &grids.nlc,
+            )
+            .map_err(make_err)?
+        };
         (scf, Some(diag))
     } else {
         let scf = solve_rhf(&ctx, &mol.inner, &prep, op, &bounds, &cfg).map_err(make_err)?;
@@ -10124,7 +10128,9 @@ fn run_u_gw(
     chi0_sparsity: Option<&str>,
     memory_budget_gb: Option<f64>,
 ) -> PyResult<PyUGwResult> {
-    use ferric_gw::{run_u_gw as run_u_gw_inner, vxc_mo::vxc_diagonal_mo, GwConfig, GwMethod};
+    use ferric_gw::{
+        run_u_gw as run_u_gw_inner, vxc_mo::vxc_diagonal_mo_on_grids, GwConfig, GwMethod,
+    };
     use ferric_rpa::config::{QuadratureConfig, QuadratureScheme, SternheimerConfig};
     use ferric_rpa::PdepRpaConfig;
     use ferric_scf::rohf::solve_rohf;
@@ -10181,8 +10187,19 @@ fn run_u_gw(
         let scf = ferric_scf::semicanonical::unrestricted_reference(&mol.inner, &scf)
             .map_err(make_err)?
             .into_owned();
-        let (diag_a, diag_b) =
-            vxc_diagonal_mo(&mol.inner, &basis_set.inner, xc_name, &scf).map_err(make_err)?;
+        let (diag_a, diag_b) = {
+            // The grids this reference SCF ran on.
+            let grids = ferric_scf::ks_gradient::KsGradGrids::from_config(&cfg);
+            vxc_diagonal_mo_on_grids(
+                &mol.inner,
+                &basis_set.inner,
+                xc_name,
+                &scf,
+                &grids.main,
+                &grids.nlc,
+            )
+            .map_err(make_err)?
+        };
         (scf, Some((diag_a, diag_b)))
     } else {
         let scf = if reference == "rohf" {

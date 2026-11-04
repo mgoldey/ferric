@@ -60,7 +60,11 @@ multiplicity > 1), and in Python through
 - The flat 75 × 110 grid is `grid_prune = "none"` with `grid_weight_cut = 0`.
   `"nwchem"` prunes the angular grid only (about 23% fewer points,
   `examples/water-pbe-pruned-grid.toml`); `"defgrid1"`–`"defgrid3"` are
-  ORCA-style grids, coarser than the default. Setting only `grid_radial` /
+  ORCA 6.1's DEFGRIDs, with their own sizes: fewer radial shells than the
+  default (H 30/35/44, Li–Ne 38/44/53, Na–Ar 46/54/63 against 50/66/75) but
+  more angular points (peak orders 194/302/590 for heavier atoms and 110/194/434
+  for H and He, against 110). `defgrid2`, ORCA's default, moved PBE/def2-SVP
+  energies by 1e-3 to 4e-3 Ha from the flat grid. Setting only `grid_radial` /
   `grid_angular` keeps the default scheme at that size. Optimization,
   frequency (including the analytic moving-grid Hessian) and TDDFT runs use
   the grid the SCF ran on.
