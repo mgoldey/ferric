@@ -87,7 +87,7 @@ use ferric_pbc::kroks::KRohfMutation;
 
 /// H4 singlet in the triclinic cell (4 AOs, 2 occupied orbitals not fixed by
 /// symmetry): ROKS must be RKS at Gamma and on a 1x1x2 mesh.
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn closed_h4_singlet_roks_is_rks_at_gamma_and_on_a_mesh() {
     let c = cell_h4_singlet();
@@ -106,7 +106,7 @@ fn closed_h4_singlet_roks_is_rks_at_gamma_and_on_a_mesh() {
 
 // ------------------------------------------------ polarized pins
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn gamma_roks_matches_pyscf_h3_doublet() {
     let cell = cell_named("h3d");
@@ -130,7 +130,7 @@ fn gamma_roks_matches_pyscf_h3_doublet() {
     }
 }
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn kpoint_roks_cam_b3lyp_1x1x2_doublet_matches_pyscf() {
     let cell = cell_named("h3d");
@@ -145,7 +145,7 @@ fn kpoint_roks_cam_b3lyp_1x1x2_doublet_matches_pyscf() {
     assert!(d.abs() < PIN_TOL, "{d:.2e}");
 }
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn one_point_mesh_is_gamma_roks_rsh() {
     let cell = cell_named("h3d");
@@ -176,7 +176,7 @@ const ROKS_MUT_MIN: f64 = 1e-4;
 
 /// Each is the mutant's polarized CAM-B3LYP energy minus the PySCF pin; a
 /// mutant must move E by more than `ROKS_MUT_MIN`.
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn roks_mutants_fail_the_polarized_cam_pin() {
     let cell = cell_named("h3d");
@@ -223,7 +223,7 @@ fn roks_mutants_fail_the_polarized_cam_pin() {
 /// `gamma_rsh::gamma_roks_rsh_gradient`): without the SCF's exxdiv each is a
 /// typed refusal, with it and the SCF's own grid each differentiates this
 /// state (Fock guard and orbital-gradient gate passed).
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn plain_gamma_roks_and_roks_rsh_derivatives_refuse_by_name() {
     use ferric_pbc::kgrad::KGradJk;

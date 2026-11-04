@@ -363,7 +363,7 @@ const D_BAR: f64 = 1e-7;
 
 /// (a) EXACTNESS ANCHOR, forces and stress, per part. Prints the measured
 /// sizes (the bar is derived from them in the test doc).
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn rotated_k_derivative_walks_equal_the_unrotated_walks_per_part() {
     walk_anchor(&[([1, 1, 3], None, ExxDiv::None)]);
@@ -371,7 +371,7 @@ fn rotated_k_derivative_walks_equal_the_unrotated_walks_per_part() {
 
 /// (a) on the range-split build (1x1x2, exxdiv none): the split derivative
 /// walks have a non-ignored correctness test.
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn rotated_k_derivative_walks_equal_the_unrotated_walks_per_part_split() {
     walk_anchor(&[([1, 1, 2], Some(RangeSplit::default()), ExxDiv::None)]);
@@ -469,7 +469,7 @@ const STRESS_MUTANTS: [KStressMutation; 7] = [
 const MUTANT_FLOOR: f64 = 1e-6;
 
 /// (f): every mutant misses the rotated force, per part where it acts.
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn rotation_mutants_miss_the_rotated_force() {
     let r = run(cell_h2(&H2_ATOMS), [1, 1, 2], None, on(), DEFAULT_PREC);
@@ -555,7 +555,7 @@ const FD_H: f64 = 1e-4;
 /// (b) PHYSICS ANCHOR, forces: rotated analytic force == central FD of the
 /// rotated k energy (rotation explicitly `On` in the energy), fresh hcore,
 /// fit and SCF at every displacement. Mutants must miss the FD too.
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn rotated_k_force_matches_fd_of_the_rotated_k_energy() {
     fd_force(None);
@@ -832,7 +832,7 @@ fn gs_parts_vsr(g: &GammaGradient, basis: bool) -> Array2<f64> {
 }
 
 /// (c) 1x1x1 mesh == the Gamma rotated force and stress (both exxdiv).
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn one_point_mesh_rotated_force_and_stress_are_the_gamma_ones() {
     let (hp, gp) = (1e-11, 1e-12);
@@ -878,7 +878,7 @@ fn in_pool<R: Send>(n: usize, f: impl FnOnce() -> R + Send) -> R {
 }
 
 /// (e) force and stress (rotated, range split) are bitwise across threads.
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn rotated_k_force_and_stress_are_bitwise_across_thread_counts() {
     let outs: Vec<(Array2<f64>, Mat3)> = [1usize, 3]
@@ -920,7 +920,7 @@ fn rotated_k_force_and_stress_are_bitwise_across_thread_counts() {
 
 /// (g) a derivative call that disagrees with the energy build it differentiates
 /// is refused by name, never silently run on another walk.
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn inconsistent_rotation_requests_are_refused() {
     let rot = run(cell_h2(&H2_ATOMS), [1, 1, 1], None, on(), DEFAULT_PREC);
@@ -991,7 +991,7 @@ fn inconsistent_rotation_requests_are_refused() {
 /// irrelevant to the derivative, `RotOff` would run and FD would not tell ON
 /// from OFF; if ON is the exact derivative of the rotated screened energy,
 /// ON-vs-FD stays near the FD floor at the loose screen and OFF is refused.
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn loose_screen_refuses_the_unrotated_rebuild_and_the_rotated_force_matches_fd() {
     let n = [1, 1, 2];
@@ -1027,7 +1027,7 @@ fn loose_screen_refuses_the_unrotated_rebuild_and_the_rotated_force_matches_fd()
 /// UHF shares the rotated walks: a closed-shell k-UHF at `(D/2, D/2)` gives
 /// the k-RHF rotated force and stress (the spin sums and the per-spin
 /// exchange `Z` collapse to the restricted ones), rotation on, range split.
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn closed_shell_kuhf_rotated_force_and_stress_are_the_krhf_ones() {
     let split = Some(RangeSplit::default());
@@ -1085,7 +1085,7 @@ fn closed_shell_kuhf_rotated_force_and_stress_are_the_krhf_ones() {
 /// on the hcore side with the fit still rotated, and `RotOff` reports 0 on
 /// both. Force and stress. Cheap (1x1x1 mesh): the rotated-column plumbing
 /// does not depend on the mesh.
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn hcore_only_unrotated_walk_is_caught_by_the_walked_column_counters() {
     let r = run(cell_h2(&H2_ATOMS), [1, 1, 1], None, on(), DEFAULT_PREC);
@@ -1125,7 +1125,7 @@ fn hcore_only_unrotated_walk_is_caught_by_the_walked_column_counters() {
 /// only gap between either walk and the derivative of the screened energy is
 /// the screen; the FD miss of each is that gap, and what separates the two
 /// walks is printed, not asserted beyond a sanity bound.
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn loose_screen_hcore_side_gap_rotated_vs_unrotated_vs_fd() {
     let n = [1, 1, 2];
@@ -1454,7 +1454,7 @@ fn mp_energy(pos: &[[f64; 3]], strain: Option<&Mat3>) -> f64 {
 
 /// Anchor (exactness, run first): the rotated walks equal the unrotated ones
 /// of the same energy and density on the MP mesh, force and stress, per part.
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn mp_mesh_rotated_walks_equal_the_unrotated_walks() {
     let r = mp_cell_run();

@@ -214,7 +214,7 @@ fn unmasked_skeleton(mol: &Molecule, bs: &BasisSet, d: &Array2<f64>, h: f64) -> 
     out
 }
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn masked_stencil_matches_unmasked_stencil_of_the_gradient_matrices() {
     let bs = basis::bundled("def2-svp").unwrap();
@@ -250,7 +250,7 @@ fn translational_invariance() {
     assert!(worst < 1e-10, "column sum {worst:.3e}");
 }
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn stencil_step_sweep() {
     let bs = basis::bundled("def2-svp").unwrap();
@@ -306,7 +306,7 @@ fn check_against_fd(open_shell: bool, xyz: &str, charge: i32, mult: usize, cols:
     );
 }
 
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn rhf_hessian_matches_fd_of_analytic_gradient() {
     if !has_deriv2() {
@@ -315,7 +315,7 @@ fn rhf_hessian_matches_fd_of_analytic_gradient() {
     check_against_fd(false, HOI, 0, 1, &[4]);
 }
 
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn uhf_hessian_matches_fd_of_analytic_gradient() {
     if !has_deriv2() {

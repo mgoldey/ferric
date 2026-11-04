@@ -41,12 +41,12 @@ fn jk_energies(
     (0.5 * (d * &j).sum(), (d * &k).sum())
 }
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn scf_eri_precision_matches_unscreened_integrals() {
     let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../testdata/molecules");
     let mol = Molecule::load_xyz(&format!("{root}/cs2.xyz")).unwrap();
-    let bs = basis::bundled("sto-3g").unwrap();
+    let bs = basis::bundled("cc-pvdz").unwrap();
     let prep = PreparedBasis::new(&mol, &bs).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();

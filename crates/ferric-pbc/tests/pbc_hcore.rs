@@ -233,7 +233,7 @@ fn periodic_hcore_matches_prototype_h2_sto3g_a4() {
     }
 }
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn periodic_hcore_is_omega_independent_triclinic_sp() {
     let cell = triclinic_cell();

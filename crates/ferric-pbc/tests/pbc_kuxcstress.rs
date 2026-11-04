@@ -58,7 +58,7 @@ fn a_equal_one_with_zero_xc_is_the_uhf_stress_per_part_other_rows() {
 /// Artifact hypothesis: a spin-factor slip (2 vs 1) or a mishandled gate breaks
 /// equality; physics predicts agreement at the SCF-density floor. BLIND to the
 /// alpha/beta asymmetric defects (see `closed_shell_limit_is_blind_to_...`).
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn closed_shell_limit_equals_the_rks_stress_per_part() {
     closed_shell_vs_rks(&["PBE0"]);
@@ -114,7 +114,7 @@ fn closed_shell_limit_is_blind_to_spin_swaps_and_sees_dropped_spins() {
 /// (`validation_pbc_kuxcstress.rs`): the same wiring anchor (a = 1 + zero XC
 /// == `kpoint_uhf_stress` per part, a-scaling mutants exact identities) on the
 /// 1x1x1 mesh of the H3 doublet, dense, exxdiv ewald.
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn a_equal_one_with_zero_xc_is_the_uhf_stress_on_the_one_point_mesh() {
     a_equal_one_case_on(Jk::Dense, ExxDiv::Ewald, G111);
@@ -127,7 +127,7 @@ fn a_equal_one_with_zero_xc_is_the_uhf_stress_on_the_one_point_mesh() {
 /// mutant bar. The production stress it is measured against is the one
 /// `one_point_mesh_matches_the_gamma_uks_stress_per_part` anchors to the
 /// Gamma UKS stress per commit.
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn xc_spin_swap_mutant_is_caught_on_the_one_point_mesh() {
     let fx = fixture(&H3, G111, "PBE0", Jk::Dense, ExxDiv::Ewald);
@@ -145,7 +145,7 @@ fn xc_spin_swap_mutant_is_caught_on_the_one_point_mesh() {
 /// spin, named), on the H3 doublet PBE0 state. The weekly test adds the
 /// accepted-state checks, the functional-mismatch guard cases, the spin
 /// swap, the pure-functional entry and the exchange-fraction validation.
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn refusals_and_the_per_spin_fock_guard_canary() {
     let fx = fixture(&H3, G111, "PBE0", Jk::Dense, ExxDiv::Ewald);
@@ -194,7 +194,7 @@ fn refusals_and_the_per_spin_fock_guard_canary() {
 /// (real lattice sums vs complex Bloch AOs; separate SCFs). Sees the spin
 /// channels (Da != Db) that the closed-shell limit cannot. Prediction: every
 /// part <= 1e-9 (both SCFs converge to ~1e-10 in the density).
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn one_point_mesh_matches_the_gamma_uks_stress_per_part() {
     one_point_case("PBE0");
@@ -272,7 +272,7 @@ fn pbe0_uks_stress_matches_fd_on_the_monkhorst_pack_mesh() {
 
 /// (5) Pressure from isotropic scaling: sum_a dE/de_aa equals the FD of E under
 /// eps = h*I (PBE, dense, none: the pure-GGA twin of the PBE0 FD above).
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn trace_matches_isotropic_scaling_fd() {
     let fx = fixture(&H3, G113, "PBE", Jk::Dense, ExxDiv::None);
@@ -397,7 +397,7 @@ fn loose_uks_scf_is_refused_by_the_stationarity_gate() {
 /// The stationarity gate fires in the DEFAULT set: a deliberately loose SCF
 /// (one SCF, one stress) is refused with the exact message. Deleting the gate
 /// in `uks_stress_with` makes this fail (the stress is returned).
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn loose_uks_scf_fires_the_stationarity_gate_with_the_exact_message() {
     SETTINGS.with(|s| s.set(LOOSE_UKS));

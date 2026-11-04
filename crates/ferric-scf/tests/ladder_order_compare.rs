@@ -196,7 +196,7 @@ fn easy_systems() {
         1,
     )
     .unwrap();
-    run("water RHF/cc-pVDZ", &water, "sto-3g", &hf(true), true);
+    run("water RHF/cc-pVDZ", &water, "cc-pvdz", &hf(true), true);
     let benz = Molecule::load_xyz(&format!(
         "{}/../../testdata/molecules/benzene.xyz",
         env!("CARGO_MANIFEST_DIR")
@@ -211,7 +211,7 @@ fn easy_systems() {
 #[ignore = "measurement: release build, quiet box, RAYON_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1; prints timings, asserts nothing"]
 fn stretched_n2_saddle() {
     let mol = Molecule::parse_xyz("2\nn2\nN 0 0 0\nN 0 0 1.6\n", 0, 1).unwrap();
-    run("N2 1.6A RHF/cc-pVDZ", &mol, "sto-3g", &hf(true), true);
+    run("N2 1.6A RHF/cc-pVDZ", &mol, "cc-pvdz", &hf(true), true);
 }
 
 /// Diagnose the documented failure: CURRENT ladder only, terpinyl+ PBE/6-31G.

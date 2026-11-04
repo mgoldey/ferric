@@ -466,7 +466,7 @@ fn qmax_spread_is_small_enough_to_explain_the_vacuous_dp_list() {
 /// negative result measured below the onset would be meaningless (repo rule:
 /// "do not declare a negative below the onset"); this system is chosen so that
 /// the measurement is licensed.
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn link_screens_below_build_jk_alkane_16() {
     check_reachability("alkane_16", "def2-svp", true);
@@ -498,7 +498,7 @@ fn link_screens_below_build_jk_alkane_20() {
 /// locality effect, so it must pay off at C8 too (measured 1.082 over-evaluation
 /// pre-fix). Keeping the dp requirement off here is what stops this test from
 /// making a locality claim the system size cannot support.
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn link_screens_below_build_jk_alkane_8() {
     check_reachability("alkane_8", "def2-svp", false);

@@ -225,7 +225,7 @@ fn close(got: f64, want: f64, tol: f64, what: &str) {
 
 // ============================================================== (a)
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn closed_shell_kuhf_equals_krhf_and_catches_spin_mutants() {
     let cell = h2_cell(4.0);
@@ -315,7 +315,7 @@ fn closed_shell_kuhf_equals_krhf_and_catches_spin_mutants() {
 
 // ============================================================== (b)
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn one_point_mesh_is_the_gamma_uhf() {
     let cell = cell_cm(&TRI_ATOMS, TRI_A, 0, 3);
@@ -628,7 +628,7 @@ fn h2_triplet_1x1x2_matches_pinned_pyscf_kuhf_aftdf() {
 
 // ============================================================== (g)
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn ewald_trap_at_1x1x2_direct_lands_high_and_is_flagged_staged_reaches_ground_state() {
     let cell = cell_cm(&TRI_ATOMS, TRI_A, 0, 3);

@@ -53,13 +53,13 @@ fn quick(route: Route, pos: &[[f64; 3]]) {
     );
 }
 
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn rks_pbe_ecp_force_and_stress_match_fd() {
     quick(Route::Rks("PBE"), &HI_POS);
 }
 
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn uks_pbe_ecp_force_and_stress_match_fd() {
     quick(Route::Uks("PBE"), &H2I_POS);

@@ -30,7 +30,7 @@ use support::*;
 
 // ---------------------------------------------------------------- Bloch AOs
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn bloch_ao_overlap_on_grid_matches_s_of_k() {
     for (cell, bs, mesh_n, name) in [
@@ -66,7 +66,7 @@ fn bloch_ao_overlap_on_grid_matches_s_of_k() {
 
 // ------------------------------------------------------ 1-point mesh = Gamma
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn one_point_mesh_is_gamma_rks() {
     let cell = h2_cell(4.0);
@@ -106,7 +106,7 @@ fn one_point_mesh_is_gamma_rks() {
     }
 }
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn k_mesh_is_the_gamma_supercell() {
     let cell = h2_cell(4.0);
@@ -119,7 +119,7 @@ fn k_mesh_is_the_gamma_supercell() {
 
 // ------------------------------------------------------------- PySCF pins
 
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn uniform_grid_krks_matches_pinned_pyscf() {
     let cell = h2_cell(4.0);
@@ -143,7 +143,7 @@ fn uniform_grid_krks_matches_pinned_pyscf() {
 /// The Gamma entry's XC (`PeriodicXc::new_closed_mgga`, real lattice-summed
 /// AOs, the object `gamma_rks` injects) against PySCF's DIRECT Gamma-point RKS
 /// on the same uniform grid: a pin that does not pass through the k-point code.
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn gamma_mgga_matches_pinned_pyscf_gamma_rks() {
     let cell = triclinic_cell();
@@ -168,7 +168,7 @@ fn gamma_mgga_matches_pinned_pyscf_gamma_rks() {
 /// name `TPSS` mapped to the SCAN pair misses by 1.41e-2 Ha (the TPSS - SCAN
 /// gap, also asserted below); V^tau zeroed in `KPeriodicXc` misses by 2.38e-5
 /// Ha at 1x1x1.
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn tpss_krks_and_gamma_match_pinned_pyscf() {
     let cell = triclinic_cell();
@@ -207,7 +207,7 @@ fn tpss_krks_and_gamma_match_pinned_pyscf() {
 /// 1x1x1 k-mesh (complex Bloch AOs) on the same grid (issue #355): two
 /// independent energy constructions (the Gamma meta-GGA force and stress are
 /// the k-point code routed through 1x1x1, `pbc_gamma_mgga_derivs.rs`).
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn mgga_one_point_mesh_is_gamma_rks() {
     let cell = triclinic_cell();
@@ -247,7 +247,7 @@ fn mgga_one_point_mesh_is_gamma_rks() {
 /// Meta-GGA k-mesh == supercell / N: the supercell is solved by the same
 /// k-point code at a 1x1x1 mesh on the replicated grid (the Gamma meta-GGA
 /// comparison is `mgga_one_point_mesh_is_gamma_rks`).
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn mgga_k_mesh_is_the_supercell() {
     let cell = h2_cell(4.0);
@@ -294,7 +294,7 @@ fn mgga_k_mesh_is_the_supercell() {
 /// `V_xc(k)` is the derivative of `E_xc` w.r.t. `D(k)`: central finite
 /// difference of `E_xc` along a Hermitian perturbation against `Re Tr(V Δ)`.
 /// Exercises the tau term of `V` independently of any SCF.
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn mgga_vxc_is_the_derivative_of_exc() {
     use ferric_pbc::kscf::KPointXc;

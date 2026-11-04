@@ -148,7 +148,7 @@ fn worst_violation(
 /// table is wrong (most likely a floored/prescreened zero, or the wrong
 /// sub-block of `(PP|QQ)`), and a safety factor applied to a `min` of exact
 /// bounds would be covering up a bug rather than accounting for a model error.
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn csb_is_a_valid_upper_bound() {
     let cases: &[(&str, &str, Operator)] = &[

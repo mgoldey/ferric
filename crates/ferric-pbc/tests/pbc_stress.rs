@@ -532,7 +532,7 @@ fn pair_ft_strain_matches_fd_at_fixed_miller_index() {
 
 // --------------------------------------------------------------- H2 RHF
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn h2_rhf_stress_matches_fd_of_own_energy_all_nine_both_exxdiv() {
     let su = setup(h2_cell_g(), &pyscf_sto3g_h());
@@ -591,7 +591,7 @@ fn h2_rhf_stress_matches_fd_of_own_energy_all_nine_both_exxdiv() {
 
 /// `dE/dε(ewald) − dE/dε(none) = −(N/2) dv_M/dε` (RHF, α = 1; the S-term
 /// cancels as for the forces) and the Madelung part's trace is `N v_M/2`.
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn h2_rhf_ewald_minus_none_is_the_madelung_strain() {
     let su = setup(h2_cell_g(), &pyscf_sto3g_h());
@@ -650,7 +650,7 @@ fn h2_rhf_pressure_matches_isotropic_scaling() {
 }
 
 /// UHF(D/2, D/2) ≡ RHF(D) on ONE density, both exxdiv.
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn closed_shell_uhf_stress_is_the_rhf_stress() {
     let su = setup(h2_cell_g(), &pyscf_sto3g_h());
@@ -667,7 +667,7 @@ fn closed_shell_uhf_stress_is_the_rhf_stress() {
 /// Every mutant must miss FD on at least one component; the volume-only
 /// ones are diagonal by construction (their off-diagonal residual is the FD
 /// floor).
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn h2_fd_anchor_catches_each_mutant() {
     let su = setup(h2_cell_g(), &pyscf_sto3g_h());

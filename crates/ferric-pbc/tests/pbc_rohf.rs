@@ -79,7 +79,7 @@ use support::*;
 // (1) Closed shell: ROHF ≡ Gamma RHF, ROKS ≡ gamma_rks.
 // ===========================================================================
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn closed_shell_rohf_equals_gamma_rhf_both_exxdiv() {
     for (label, su) in [
@@ -311,7 +311,7 @@ fn rohf_ewald_trap_is_flagged_when_hit() {
 // (3) ROKS tri 4H s+p triplet vs the prototype construction and PySCF.
 // ===========================================================================
 
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn roks_tri_triplet_matches_the_prototype_construction_and_pyscf() {
     let su = setup(cell_mult(&TRI_ATOMS, TRI_A, 3), sp_basis_h());

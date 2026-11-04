@@ -75,7 +75,7 @@ fn cfg(basis_cfg: RhfConfig, lo: f64, hi: f64) -> OmegaTuneConfig {
 /// tuner's every evaluation must be bit-identical to an independent `eval_j`
 /// at the same ω — that is the definition of "seeding does nothing", and it is
 /// what makes the pre-change J values reproducible on demand.
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn continuation_off_is_bit_identical_to_independent_eval_j() {
     let (mol, prep, bounds) = load("h2.xyz", "6-31g");
@@ -178,7 +178,7 @@ fn spin_asymmetry_is_zero_when_no_atoms_are_equivalent() {
 /// ANCHOR 3: the first evaluation has no neighbour and therefore uses the
 /// default guess; `nearest_evaluated` says so, and the tuner's first eval
 /// records it.
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn the_first_evaluation_has_no_seed() {
     assert_eq!(nearest_evaluated(&[], 0.4), None);
@@ -276,7 +276,7 @@ fn a_different_cation_seed_changes_the_solver_path() {
 /// The observable that does distinguish them is the SCF iteration count:
 /// seeding the cation from its own converged orbitals at a nearby ω must make
 /// it converge in fewer iterations than from the default guess.
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn the_continuation_seed_reaches_the_cation_through_eval_j_seeded() {
     let (mol, prep, bounds) = load("n2.xyz", "sto-3g");
@@ -368,7 +368,7 @@ fn the_continuation_seed_reaches_the_cation_through_eval_j_seeded() {
 /// every ω — a 1e-14 tolerance cannot fire there however the check behaves,
 /// so H2 would have made this test unreachable by construction. (It did: the
 /// first version of this test failed for exactly that reason.)
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn an_impossibly_tight_branch_tolerance_fires() {
     let (mol, prep, bounds) = load("n2.xyz", "sto-3g");
@@ -423,7 +423,7 @@ fn an_impossibly_tight_branch_tolerance_fires() {
 /// Same system as the reachability test, for the same reason: on H2 the
 /// asymmetry is identically zero, so `None` and "checked and consistent"
 /// agree there and the test would prove nothing.
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn branch_tol_none_disables_the_check_entirely() {
     let (mol, prep, bounds) = load("n2.xyz", "sto-3g");

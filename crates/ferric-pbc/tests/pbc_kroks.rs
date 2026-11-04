@@ -175,7 +175,7 @@ fn kroks_on_grid(
 
 // ---------------------------------------------------- closed-shell limit
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn closed_shell_limit_is_krhf_and_krks() {
     let cell = h2_cell(4.0);
@@ -252,7 +252,7 @@ fn closed_shell_limit_is_krhf_and_krks() {
 
 // ----------------------------------------------------------- 1x1x1 = Gamma
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn one_point_mesh_is_gamma_rohf_and_roks() {
     let cell = h3_cell();
@@ -358,7 +358,7 @@ fn supercell(cell: &Cell, n: [usize; 3], mult: usize) -> (Cell, Vec<[f64; 3]>) {
     (cell_cm(&atoms, lat, 0, mult), shifts)
 }
 
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn k_mesh_is_the_gamma_supercell() {
     let cell = h3_cell();
@@ -465,7 +465,7 @@ fn zchain() -> Cell {
     )
 }
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn n_beta_zero_is_kuhf_and_pyscf() {
     let cell = cell_cm(&H_ATOM, cubic(4.0), 0, 2);
@@ -534,7 +534,7 @@ fn n_beta_zero_is_kuhf_and_pyscf() {
 /// same two energies this implementation's alpha-energy rule alternates
 /// between. The default Roothaan-order rule converges to the supercell state
 /// (`k_mesh_is_the_gamma_supercell`).
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn alpha_energy_rule_is_pyscf_get_occ_including_its_cycle() {
     let cell = h3_cell();
@@ -565,7 +565,7 @@ fn alpha_energy_rule_is_pyscf_get_occ_including_its_cycle() {
 
 // ------------------------------------------------------------- PySCF pins
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn pyscf_krohf_kroks_pins() {
     let cell = h3_cell();
@@ -619,7 +619,7 @@ fn pyscf_krohf_kroks_pins() {
 /// shift tried (0, and 0.05-0.5 ramped or 0.1-0.5 constant; 300-600
 /// iterations) — that needs a second-order k-ROKS solver, which does not
 /// exist yet.
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn kroks_hybrid_default_level_shift_converges_the_roothaan_trap() {
     const TRI_ROKS_PBE0_NONE: f64 = -1.465458280448; // pbc_rohf.rs

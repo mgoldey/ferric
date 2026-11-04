@@ -215,7 +215,7 @@ fn aux_curvature_operator_is_symmetric() {
 /// energy bit-identical and SURVIVED an energy-only test while the trace showed
 /// 8 TRAH steps had run. So this asserts BOTH the bits AND that the aux matvec
 /// counter never moved.
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn trah_aux_off_is_bit_identical() {
     let _g = COUNTER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -340,7 +340,7 @@ fn stale_aux_tangent_space_is_not_observable_here() {
 /// Also proves the path is REACHED (the aux counter moves), so a future
 /// mutation of the gate is detectable rather than silently passing on an
 /// unexercised branch.
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn trah_aux_reaches_the_same_fixed_point() {
     let _g = COUNTER_LOCK.lock().unwrap_or_else(|e| e.into_inner());

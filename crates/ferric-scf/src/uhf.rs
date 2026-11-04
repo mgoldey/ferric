@@ -3506,7 +3506,7 @@ mod tests {
         );
     }
 
-    #[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+    #[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
     #[test]
     fn external_point_charge_changes_uks_pbe_energy() {
         // Reuses the test_uks_pbe_bromine_atom_converges fixture verbatim (free

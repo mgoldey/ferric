@@ -203,7 +203,7 @@ fn check_sr3_common<'a>(runs: &'a [[Sr3Parts; 2]], n: usize, tag: &str) -> &'a [
     &runs[0]
 }
 
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn rsgdf_sr3_s2_is_the_ordered_walk_mirrored() {
     let (cell, prep) = tri_sp();
@@ -231,7 +231,7 @@ fn rsgdf_sr3_s2_is_the_ordered_walk_mirrored() {
     );
 }
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn rsgdf_sr3_s2_split_takes_the_cheaper_orientation() {
     let (cell, prep) = tri_sp();
@@ -303,7 +303,7 @@ fn rsgdf_sr3_s2_split_takes_the_cheaper_orientation() {
     );
 }
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn hcore_s2_is_the_ordered_loop_mirrored_and_exactly_symmetric() {
     let (cell, prep) = tri_sp();
@@ -376,7 +376,7 @@ fn hcore_s2_is_the_ordered_loop_mirrored_and_exactly_symmetric() {
     assert!(hc.n_sr_triplets < old.n_sr_triplets);
 }
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn rhf_energy_matches_the_frozen_pre_s2_build() {
     let (tri, tri_prep) = tri_sp();

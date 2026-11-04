@@ -432,7 +432,7 @@ fn stencil_is_translationally_invariant_and_symmetric() {
 
 // ----------------------------------------------------------- accuracy
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn oracle_step_sweep() {
     let sys = water();

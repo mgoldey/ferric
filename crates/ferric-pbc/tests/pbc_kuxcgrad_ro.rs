@@ -313,7 +313,7 @@ fn one_point_vs_gamma_ro(f: Option<&str>, w_mutant: bool) {
     }
 }
 
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn one_point_mesh_matches_the_gamma_rohf_gradient_per_part() {
     one_point_vs_gamma_ro(None, true);
@@ -397,7 +397,7 @@ fn w_ro_mutants_and_the_fock_guard() {
 /// message, NOT the Fock-guard message (the stored Fock is the density's own);
 /// the same state with the gate off returns a force wrong by far more than
 /// the FD bar, so the gate matters.
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn the_orbital_gradient_gate_fires_and_matters() {
     let tight = fixture(&H3, [1, 1, 1], Some("PBE"), ExxDiv::None);
@@ -499,7 +499,7 @@ fn gate_error_is_first_order_in_g_between_two_states() {
 /// ROHF force path (zero XC, so no chunk gate precedes it): the charge must be
 /// `RO_GATE_N2_ARRAYS` `n^2` complex arrays and at least the 22 the gate's code
 /// holds; the old eight fails both.
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn the_force_gate_scratch_charge_is_read_from_the_production_error() {
     let fx = fixture(&H3, [1, 1, 1], None, ExxDiv::Ewald);
@@ -573,7 +573,7 @@ fn ro_gate_probe() {
 }
 
 /// A short MO set is a typed refusal.
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn short_mos_are_refused() {
     let fx = fixture(&H3, [1, 1, 1], Some("PBE"), ExxDiv::None);

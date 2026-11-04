@@ -340,7 +340,7 @@ fn full_hessian_matches_fd_ch2_triplet_631g_ri_jk() {
     check_full(CH2_DISTORTED, 3, "6-31g", "cc-pvdz-ri", "cc-pvdz-ri");
 }
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn full_hessian_matches_fd_ho2_sto3g_ri_jk() {
     check_full(
@@ -624,7 +624,7 @@ fn all_mutants() -> Vec<Mutant> {
     v
 }
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn every_wired_mutant_misses_by_more_than_ten_bars() {
     if !has_deriv2() {

@@ -256,7 +256,7 @@ const EXX: [ExxDiv; 2] = [ExxDiv::None, ExxDiv::Ewald];
 // (1) Closed shell UKS ≡ RKS.
 // ===========================================================================
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn closed_shell_uks_equals_rks_lda_pbe_pbe0_both_exxdiv() {
     let cases: [(&str, Setup, &[&str], &[ExxDiv]); 2] = [
@@ -437,7 +437,7 @@ fn uks_with_an_hf_equivalent_builder_is_gamma_uhf() {
 // (3) Open-shell pins: prototype construction (tight) + PySCF (grid gap).
 // ===========================================================================
 
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn open_shell_uks_matches_the_prototype_construction_and_pyscf() {
     type Row = (
@@ -656,7 +656,7 @@ fn polarized_vxc_is_the_derivative_of_exc_per_spin() {
 /// LDA dE 3.1e-14. Artifacts: Madelung on the full K → a 1/a term; K unscaled
 /// → 4× c3. Molecular UKS on the identical grid rules (TA-M4 75 × Lebedev
 /// 302; one atom, so every partition weight is 1 near it), exact J/K.
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn h_atom_sto3g_pbe0_box_limit_is_hyb_times_the_uhf_c3() {
     let c3 = -(2.0 * PI / 3.0) * 0.25 * H_OMEGA_A;

@@ -61,7 +61,7 @@ use support::*;
 /// The anchor is not vacuous: `ExchDropBeta` / `ExchClosedShellFactor` move
 /// it by 3.1e-2, and the source mutants of `KSpins::exch_terms` fail it
 /// (validation file header).
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn singlet_uks_is_the_rks_rsgdf_rsh_force() {
     let cell = rs::tri2(&rs::TRI2_ATOMS);
@@ -162,7 +162,7 @@ fn equal_fraction_case(spin: Spin) {
 }
 
 /// (b) on the UKS route (measured 3.6e-14).
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn uks_equal_fractions_are_the_global_hybrid_on_rsgdf() {
     equal_fraction_case(Spin::Uks);
@@ -170,7 +170,7 @@ fn uks_equal_fractions_are_the_global_hybrid_on_rsgdf() {
 
 /// (b) on the RestrictedOpen (ROKS) route, guarding it per commit (measured
 /// 1.9e-14); plus the ROKS `W_RO` cross-term defect.
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn roks_equal_fractions_are_the_global_hybrid_on_rsgdf() {
     equal_fraction_case(Spin::Roks);
@@ -182,7 +182,7 @@ fn roks_equal_fractions_are_the_global_hybrid_on_rsgdf() {
 /// 3.9e-9 (bar 2e-8), `max|F|` 6.1e-2. The spin and attenuated-scale
 /// mutants miss the production force by >= 1e-5 (smallest measured 3.1e-3,
 /// ExchBetaUsesAlpha); the full ledger is weekly.
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn polarized_cam_type_uks_force_matches_fd_and_sees_the_ledger() {
     let z = zx_open(

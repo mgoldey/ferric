@@ -90,7 +90,7 @@ fn grad_cfg(exx: ExxDiv, budget: Option<usize>) -> KRksGradConfig {
     }
 }
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn keep_is_bitwise_the_plain_solve_krks() {
     let cell = cell_at(&ATOMS);
@@ -132,7 +132,7 @@ fn moved(a: usize, x: usize, d: f64) -> Vec<[f64; 3]> {
     p
 }
 
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn retained_force_matches_fd_and_a_stale_hcore_does_not() {
     let cell = cell_at(&ATOMS);
@@ -210,7 +210,7 @@ fn retained_force_matches_fd_and_a_stale_hcore_does_not() {
     }
 }
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn retained_bytes_are_charged_against_the_derivative_budget() {
     let cell = cell_at(&ATOMS);

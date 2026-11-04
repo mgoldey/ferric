@@ -149,7 +149,7 @@ fn uhf_dfjk_energy(mol: &Molecule, prep: &PreparedBasis, force_density: bool) ->
 /// This compares against the genuine density contraction `DfK::build(&D)` at a
 /// fixed converged C_occ — one Fock build, no SCF trajectory in the loop — so
 /// any caller-side factor shows up directly as a K-matrix mismatch.
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn dfk_occ_path_caller_scaling_matches_true_density_build() {
     use ferric_scf::fock::KBuilder;

@@ -169,7 +169,7 @@ fn wb97xv_h2_ccpvdz_vs_pyscf_grad() {
     );
 }
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn wb97xv_h2o_ccpvdz_vs_pyscf_grad() {
     run_case(

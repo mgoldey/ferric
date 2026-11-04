@@ -52,7 +52,7 @@ fn energy(cell: &Cell, mesh: &KPointMesh, f: &str, exxdiv: ExxDiv) -> f64 {
     r.scf.energy
 }
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn krks_2x2x1_matches_pinned_pyscf() {
     let j: serde_json::Value =
@@ -83,7 +83,7 @@ fn krks_2x2x1_matches_pinned_pyscf() {
 }
 
 /// Mutant guard: PBE0 without the exxdiv term misses the pin by >> bar.
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn dropped_madelung_misses_the_2x2x1_pin() {
     let cell = h2_cell(4.0);

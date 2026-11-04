@@ -78,7 +78,7 @@ fn probe(backend: &str) -> Result<(), ferric_core::FerricError> {
     r
 }
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn libecpint_backend_is_refused_by_the_probe_and_its_skeleton_agrees_on_hoi() {
     // Typed refusal on libecpint, before any SCF and whatever the libint.

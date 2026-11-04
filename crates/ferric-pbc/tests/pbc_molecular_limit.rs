@@ -46,7 +46,7 @@ use std::f64::consts::PI;
 const PRECISION: f64 = 1e-11;
 const OMEGA: f64 = 0.9;
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn box_residual_is_the_makov_payne_exchange_term() {
     let basis = pyscf_sto3g_h();

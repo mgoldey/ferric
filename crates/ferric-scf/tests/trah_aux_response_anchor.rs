@@ -377,7 +377,7 @@ fn step_diff(auxbasis: &str, rot: f64, radius: f64) -> StepDiff {
 /// block is `f_oo`) and `rhf_trah_step_aux_cached` (`refresh_orbitals` onto the
 /// rotated orbitals), and it needs a NONZERO gradient, so it starts off the
 /// converged point. Mutants of each give an O(1) step difference.
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn aux_trah_step_matches_full_gap_exact_step_off_canonical() {
     let d = step_diff("def2-universal-jkfit", 0.1, 0.3);

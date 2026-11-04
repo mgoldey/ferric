@@ -100,7 +100,7 @@ use support::*;
 /// k-ROKS (H2, one s per H, 1x1x3, complex Bloch AOs) equals k-RKS, energy
 /// and `E_xc`. Blind to every spin-channel and coupling defect (module doc);
 /// it must catch a tau dropped from the kernel input.
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn singlet_k_roks_is_k_rks() {
     let cell = cube_cell(&H2, 1);
@@ -140,7 +140,7 @@ fn singlet_k_roks_is_k_rks() {
 /// H so virtuals exist, 1x1x3; `N_beta = 0`) has no closed shell, so its ROKS and
 /// UKS minima coincide: k-ROKS == k-UKS. Unlike anchor 1 the XC kernel is
 /// genuinely polarized (`ρ_β = τ_β = 0`).
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn fully_polarized_k_roks_is_k_uks() {
     let cell = cube_cell(&H2, 3);
@@ -187,7 +187,7 @@ fn fully_polarized_k_roks_is_k_uks() {
 /// per H, FFTDF 40^3, UniformGrids 32^3; `scripts/gen_pyscf_kroks_mgga_refs.py`)
 /// at 1x1x3 for both functionals, against ferric's dense-AFT J on the same
 /// uniform grid. Every defect of [`DEFECTS`] must miss the SCAN pin.
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn h3_kroks_matches_pinned_pyscf() {
     let cell = cube_cell(&H3, 2);
@@ -245,7 +245,7 @@ const MUTANT_BAR: f64 = 1e-5;
 /// unpolarized kernel and total tau). Blind to a swap of `v_τα` and `v_τβ`
 /// (equal here); the uniform grid has no grid response, so `xc_point` and
 /// `xc_weight` are zero on both sides.
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn singlet_k_roks_scan_force_and_stress_equal_k_rks_per_part() {
     let cell = cube_cell(&H2, 1);
@@ -273,7 +273,7 @@ fn singlet_k_roks_scan_force_and_stress_equal_k_rks_per_part() {
 /// F_α D_α` is the UKS `W` and the ROKS force and stress equal the k-UKS ones
 /// of an independent k-UKS SCF, per part. Polarized tau terms; blind to the
 /// `W_RO` cross term (it multiplies `D_β = 0`) and to a dropped beta tau term.
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn fully_polarized_k_roks_scan_force_and_stress_equal_k_uks() {
     let cell = cube_cell(&H2, 3);
@@ -305,7 +305,7 @@ fn fully_polarized_k_roks_scan_force_and_stress_equal_k_uks() {
 /// is refused by the ROHF orbital-gradient gate, and `V^τ` dropped with the
 /// gate off misses the same row; the full ledger is in
 /// `validation_pbc_kroks_mgga.rs`.
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn h3_kroks_scan_force_and_stress_match_fd_row() {
     let cell = cube_cell(&H3, 2);

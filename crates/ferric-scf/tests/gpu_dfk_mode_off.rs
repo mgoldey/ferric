@@ -20,7 +20,7 @@ fn mode_off_leaves_every_counter_alone_and_k_is_reproducible() {
         return;
     }
     let mol = Molecule::parse_xyz("3\nH2O\nO 0 0 0\nH 0 0 0.96\nH 0.93 0 -0.26\n", 0, 1).unwrap();
-    let obs = PreparedBasis::new(&mol, &basis::bundled("sto-3g").unwrap()).unwrap();
+    let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
     let aux = PreparedBasis::new(&mol, &basis::bundled("def2-universal-jkfit").unwrap()).unwrap();
     let n = obs.nbasis();
     let c = Array2::from_shape_fn((n, 5), |(mu, i)| {

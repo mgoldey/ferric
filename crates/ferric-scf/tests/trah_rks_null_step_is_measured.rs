@@ -85,7 +85,7 @@ fn assert_decline_does_not_declare_convergence(what: &str, cfg_diis: RhfConfig) 
 
 /// ONE test, two sequential cases, so the counter delta belongs to each case
 /// alone (see the module doc).
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn declined_null_step_does_not_declare_convergence() {
     assert_decline_does_not_declare_convergence(

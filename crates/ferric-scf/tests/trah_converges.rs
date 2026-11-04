@@ -67,7 +67,7 @@ fn assert_trah_engaged(before: usize, what: &str) -> usize {
 }
 
 /// RHF: TRAH must reach the same energy DIIS reaches, and must actually engage.
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn rhf_trah_matches_diis_and_engages() {
     let mol = water();
@@ -108,7 +108,7 @@ fn rhf_trah_matches_diis_and_engages() {
 
 /// RKS/PBE: the closed-shell KS path, where TRAH additionally has to build and
 /// use the GGA f_xc kernel in its Hessian matvec.
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn rks_pbe_trah_matches_diis_and_engages_the_gga_kernel() {
     let mol = water();
@@ -172,7 +172,7 @@ fn rks_pbe_trah_matches_diis_and_engages_the_gga_kernel() {
 /// radical whose endpoint depends on the arithmetic — the CI runner lands
 /// 4.9e-7 Ha above the local −75.6449107465 (16 iterations), and DIIS lands
 /// 1.1e-6 above it — so a 1e-8 bar against one machine's number is not portable.
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn uks_trah_defers_to_diis_instead_of_cycling_null_steps() {
     let mol = oh_doublet();
@@ -261,7 +261,7 @@ fn uhf_trah_matches_diis_and_engages() {
 }
 
 /// UKS/PBE: the open-shell KS path.
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn uks_pbe_trah_matches_diis_and_engages() {
     let mol = oh_doublet();
@@ -491,7 +491,7 @@ fn trah_rho_is_order_unity_on_a_real_scf() {
 /// one would be measuring its own contrivance. The per-branch ρ arithmetic is
 /// instead exercised exhaustively, and mutation-checked branch by branch, in
 /// `trah.rs`'s own unit tests.
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn trah_rejection_is_wired_into_the_loop() {
     let mol = water();

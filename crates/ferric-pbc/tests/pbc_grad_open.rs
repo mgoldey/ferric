@@ -54,7 +54,7 @@ mod support;
 
 use support::*;
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn h3_uhf_force_matches_fd_of_own_energy_both_exxdiv() {
     let su = setup(h3_cell(), &pyscf_sto3g_h());
@@ -76,7 +76,7 @@ fn h3_uhf_force_matches_fd_of_own_energy_both_exxdiv() {
     }
 }
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn h3_uhf_fd_anchor_catches_each_spin_mutant() {
     let su = setup(h3_cell(), &pyscf_sto3g_h());
@@ -112,7 +112,7 @@ fn h3_uhf_fd_anchor_catches_each_spin_mutant() {
 /// F(ewald) ≡ F(none) on ONE open-shell idempotent density (the per-spin
 /// Madelung term cancels `−v_M D_σ` inside `W_σ` exactly), and the RHF-form
 /// Madelung mutant breaks it.
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn h3_uhf_ewald_and_none_forces_agree_on_one_density() {
     let su = setup(h3_cell(), &pyscf_sto3g_h());
@@ -137,7 +137,7 @@ fn h3_uhf_ewald_and_none_forces_agree_on_one_density() {
     assert!(dm > MUTANT_BAR, "{dm:e}");
 }
 
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn h3_uks_force_matches_fd_of_own_energy_with_grid_response() {
     let su = setup(h3_cell(), &pyscf_sto3g_h());
@@ -170,7 +170,7 @@ fn h3_uks_force_matches_fd_of_own_energy_with_grid_response() {
 /// that moves it this far would miss that FD; the exchange / Madelung
 /// mutants are caught on the same exchange code by
 /// `h3_uhf_fd_anchor_catches_each_spin_mutant`.
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn h3_uks_pbe_mutants_move_the_force() {
     let su = setup(h3_cell(), &pyscf_sto3g_h());
@@ -197,7 +197,7 @@ fn h3_uks_pbe_mutants_move_the_force() {
     }
 }
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn h3_pbe0_ewald_and_none_forces_agree_on_one_density() {
     let su = setup(h3_cell(), &pyscf_sto3g_h());
@@ -224,7 +224,7 @@ fn h3_pbe0_ewald_and_none_forces_agree_on_one_density() {
 /// UHF(D/2, D/2) ≡ RHF(D) on one density, and the three spin mutants are
 /// exactly blind on it (their difference from the correct form is zero
 /// algebraically for `D_α = D_β`, `F_α = F_β`).
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn closed_shell_uhf_gradient_is_the_rhf_gradient() {
     let cell = cell_at(&GRAD_H2_ATOMS, cubic(4.0), 1);
@@ -263,7 +263,7 @@ fn closed_shell_uhf_gradient_is_the_rhf_gradient() {
 
 /// UKS(D/2, D/2) ≡ RKS(D) on one density (polarized vs unpolarized libxc
 /// kernel and the per-spin bookkeeping), PBE and PBE0 with ewald.
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn closed_shell_uks_gradient_is_the_rks_gradient() {
     let cell = cell_at(&GRAD_H2_ATOMS, cubic(4.0), 1);
@@ -287,7 +287,7 @@ fn closed_shell_uks_gradient_is_the_rks_gradient() {
 }
 
 /// Closed-shell RKS on H2 a = 4 at h = 5e-5 (module doc), LDA and PBE0.
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn h2_rks_force_matches_fd_of_own_energy() {
     let su = setup(cell_at(&GRAD_H2_ATOMS, cubic(4.0), 1), &pyscf_sto3g_h());

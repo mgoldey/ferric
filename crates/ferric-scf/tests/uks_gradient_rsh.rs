@@ -107,7 +107,7 @@ fn run_case(label: &str, xyz: &str, mult: usize, basis_name: &str, tol: f64) {
     }
 }
 
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn uks_rsh_grad_oh_ccpvdz_wb97x_v() {
     run_case(

@@ -57,7 +57,7 @@ use support::*;
 
 // ======================================================= (1) 1×1×1 ≡ Gamma
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn one_point_mesh_rhf_is_the_gamma_force() {
     for (name, cell, bs) in [
@@ -86,7 +86,7 @@ fn one_point_mesh_rhf_is_the_gamma_force() {
     }
 }
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn one_point_mesh_uhf_is_the_gamma_force() {
     let bs = pyscf_sto3g_h();
@@ -108,7 +108,7 @@ fn one_point_mesh_uhf_is_the_gamma_force() {
     }
 }
 
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn one_point_mesh_rsgdf_is_the_gamma_rsgdf_force() {
     let bs = pyscf_sto3g_h();
@@ -154,7 +154,7 @@ fn one_point_mesh_rsgdf_is_the_gamma_rsgdf_force() {
     }
 }
 
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn h2_1x1x3_force_is_the_supercell_force_on_one_copy() {
     let (ks, eri, scf, refs) =
@@ -168,7 +168,7 @@ fn h2_1x1x3_force_is_the_supercell_force_on_one_copy() {
 /// and NoInvNk still move the force by > MUTANT_BAR. The phases themselves are
 /// pinned on the non-TRIM 1x1x3 mesh by
 /// `h2_1x1x3_force_is_the_supercell_force_on_one_copy`.
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn h2_1x1x2_trim_mesh_is_blind_to_phase_mutants() {
     let ks = ksys(h2_cell_g(), &pyscf_sto3g_h(), [1, 1, 2]);
@@ -210,7 +210,7 @@ fn triclinic_sp_1x1x3_force_is_the_supercell_force_on_one_copy() {
     assert_rhf_mutants_fail("tri2 1x1x3", &ks, &eri, &scf, &refs, nuc, SC_BAR);
 }
 
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn closed_shell_kuhf_force_is_the_krhf_force() {
     let bs = pyscf_sto3g_h();
@@ -230,7 +230,7 @@ fn closed_shell_kuhf_force_is_the_krhf_force() {
     }
 }
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn h2_1x1x3_dense_force_matches_fd_of_own_k_energy() {
     let ks = ksys(h2_cell_g(), &pyscf_sto3g_h(), [1, 1, 3]);
@@ -262,7 +262,7 @@ fn h2_1x1x3_dense_force_matches_fd_of_own_k_energy() {
     }
 }
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn h2_1x1x3_rsgdf_force_matches_fd_of_own_k_energy() {
     let cell = h2_cell_g();
@@ -297,7 +297,7 @@ fn h2_1x1x3_rsgdf_force_matches_fd_of_own_k_energy() {
 
 // ================================================ RS-GDF supercell anchors
 
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn h2_1x1x3_rsgdf_force_is_the_supercell_rsgdf_force_and_catches_fit_mutants() {
     let n = [1, 1, 3];
@@ -345,7 +345,7 @@ fn h2_1x1x3_rsgdf_force_is_the_supercell_rsgdf_force_and_catches_fit_mutants() {
     }
 }
 
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn h3_uhf_1x1x3_rsgdf_force_is_the_supercell_rsgdf_force() {
     let n = [1, 1, 3];

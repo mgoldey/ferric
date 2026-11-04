@@ -523,7 +523,7 @@ fn run_thresh_sweep(kind: BoundKind, stem: &str, basis_name: &str) {
 /// alkane_8 (C8H18, 26 atoms, 202 cc-pVDZ functions) is long enough that
 /// Schwarz screening removes a real fraction of the shell-pair triangle at
 /// loose thresholds — unlike the water/CH4 cases the old in-module tests use.
-#[ignore = "nightly exhaustive; see TEST_REVIEW.md"]
+#[ignore = "tier exhaustive: CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn link_k_thresh_sweep_alkane_8_schwarz() {
     run_thresh_sweep(BoundKind::Schwarz, "alkane_8", "cc-pvdz");
@@ -539,7 +539,7 @@ fn link_k_thresh_sweep_alkane_8_schwarz() {
 ///
 /// It shares `LINK_VS_DENSE_BAR` with the Schwarz arm deliberately: a QQR-
 /// specific, looser bar would let a genuine QQR over-screening regression pass.
-#[ignore = "nightly exhaustive; see TEST_REVIEW.md"]
+#[ignore = "tier exhaustive: CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn link_k_thresh_sweep_alkane_8_qqr() {
     run_thresh_sweep(BoundKind::Qqr, "alkane_8", "cc-pvdz");
@@ -550,7 +550,7 @@ fn link_k_thresh_sweep_alkane_8_qqr() {
 /// `#[ignore]`d because it runs the dense O(N^4) `build_jk` reference five
 /// times; that is minutes of work, too slow for the default gate. Invocation
 /// is in this file's module doc comment.
-#[ignore = "nightly exhaustive; see TEST_REVIEW.md"]
+#[ignore = "expensive: 5x dense O(N^4) build_jk on 298 basis functions; see module doc for invocation"]
 #[test]
 fn link_k_thresh_sweep_alkane_12() {
     run_thresh_sweep(BoundKind::Schwarz, "alkane_12", "cc-pvdz");
@@ -569,7 +569,7 @@ fn link_k_thresh_sweep_alkane_12() {
 /// That is the trivial-limit exactness anchor for the pair builder itself (a
 /// screen that does nothing must retain everything), and it makes the strict
 /// inequality above a measurement of screening rather than of an off-by-one.
-#[ignore = "nightly exhaustive; see TEST_REVIEW.md"]
+#[ignore = "tier exhaustive: CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn significant_pairs_actually_screens_alkane_8() {
     let mol = load_mol("alkane_8");
@@ -1046,7 +1046,7 @@ fn directjk_matches_pyscf_alkane_4() {
 /// The old note about the shift's sign being negative on both systems is moot
 /// now that the shift is zero, and was only ever reported as measured on two
 /// systems rather than as a general property.
-#[ignore = "nightly exhaustive; see TEST_REVIEW.md"]
+#[ignore = "tier exhaustive: CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn directjk_matches_pyscf_alkane_8() {
     check_directjk_vs_pyscf("alkane_8", 1e-8, 1e-8, false);
@@ -1064,7 +1064,7 @@ fn directjk_matches_pyscf_alkane_8() {
 ///   cargo test -p ferric-scf --test screening_exactness --release \
 ///   -- --ignored --nocapture directjk_matches_pyscf_alkane_8_unscreened
 /// ```
-#[ignore = "nightly exhaustive; see TEST_REVIEW.md"]
+#[ignore = "expensive: unscreened (thresh=0) J/K on 202 basis functions; >69 min measured"]
 #[test]
 fn directjk_matches_pyscf_alkane_8_unscreened() {
     check_directjk_vs_pyscf("alkane_8", 1e-8, 1e-8, true);
@@ -1146,7 +1146,7 @@ fn directjk_matches_pyscf_alkane_8_unscreened() {
 /// halving of the ORDERED pair count, not a residual defect: all 10404 ordered
 /// pairs are retained. It is asserted as a floor rather than an equality for
 /// that reason.
-#[ignore = "nightly exhaustive; see TEST_REVIEW.md"]
+#[ignore = "tier exhaustive: CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn link_k_matches_dense_in_the_trivial_limit() {
     let mol = load_mol("alkane_8");
@@ -1241,7 +1241,7 @@ fn link_k_matches_dense_in_the_trivial_limit() {
 /// off) and nothing more. Envelope VALIDITY is a separate question, covered by
 /// `link_k_qqr_matches_schwarz_at_production_thresh` below, which runs at a
 /// live threshold where the inner test actually fires.
-#[ignore = "nightly exhaustive; see TEST_REVIEW.md"]
+#[ignore = "tier exhaustive: CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn link_k_qqr_matches_dense_in_the_trivial_limit() {
     let mol = load_mol("alkane_8");
@@ -1368,7 +1368,7 @@ fn link_k_qqr_matches_dense_in_the_trivial_limit() {
 /// equally against both references. Those two complementary guards live in
 /// `qqr_schwarz_thresh_sweep.rs` and catch what this one cannot: an error floor
 /// and a direction error.
-#[ignore = "nightly exhaustive; see TEST_REVIEW.md"]
+#[ignore = "tier exhaustive: CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn link_k_qqr_matches_schwarz_at_production_thresh() {
     let mol = load_mol("alkane_8");
@@ -1452,7 +1452,7 @@ fn link_k_qqr_matches_schwarz_at_production_thresh() {
 /// `link_k_matches_dense_in_the_trivial_limit`): Q entries stored as exactly
 /// 0.0 are invalid bounds — they UNDERestimate — and caused every quartet on
 /// that shell pair to be screened at any threshold, including 0.
-#[ignore = "nightly exhaustive; see TEST_REVIEW.md"]
+#[ignore = "tier exhaustive: CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn screening_does_not_shift_the_energy_at_production_thresh() {
     let mut shifts = Vec::new();

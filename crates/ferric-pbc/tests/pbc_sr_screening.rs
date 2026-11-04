@@ -52,7 +52,7 @@ use ferric_pbc::hcore::{
 };
 use ferric_pbc::lattice::Cell;
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn sr_screen_threshold_to_zero_is_the_unscreened_sum() {
     let cell = h2_cell(4.0);

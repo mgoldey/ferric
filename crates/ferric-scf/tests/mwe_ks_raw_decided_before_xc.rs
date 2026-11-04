@@ -77,7 +77,7 @@ fn sys(xyz: &str, name: &str) -> Sys {
 }
 
 fn water() -> Sys {
-    sys("../../testdata/molecules/water.xyz", "sto-3g")
+    sys("../../testdata/molecules/water.xyz", "cc-pvdz")
 }
 
 fn cfg(budget: usize, max_iter: usize) -> RhfConfig {
@@ -160,7 +160,7 @@ fn sweep_with(solver: Solver, cfg: impl Fn(usize, usize) -> RhfConfig + Sync) {
     }
 }
 
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn raising_the_budget_never_turns_a_running_rhf_job_into_a_refused_one() {
     let _s = slot();
@@ -168,7 +168,7 @@ fn raising_the_budget_never_turns_a_running_rhf_job_into_a_refused_one() {
 }
 
 /// Hybrids also build a dressed tensor, which spills rather than refuses.
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn raising_the_budget_never_turns_a_running_hybrid_job_into_a_refused_one() {
     let _s = slot();
@@ -179,14 +179,14 @@ fn raising_the_budget_never_turns_a_running_hybrid_job_into_a_refused_one() {
     });
 }
 
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn raising_the_budget_never_turns_a_running_uhf_job_into_a_refused_one() {
     let _s = slot();
     sweep(Solver::Uhf);
 }
 
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn raising_the_budget_never_turns_a_running_rohf_job_into_a_refused_one() {
     let _s = slot();
@@ -345,7 +345,7 @@ fn nlc_cache(s: &Sys, c: &RhfConfig) -> usize {
 
 /// Below `T`, raw has soft tiers and the NLC cache has none. If raw decided first
 /// it would take the packed tier here, leaving the cache unable to fit.
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn a_budget_that_holds_the_nlc_cache_beside_a_soft_raw_tier_runs() {
     let _s = slot();
@@ -391,7 +391,7 @@ fn an_nlc_cache_that_cannot_fit_is_refused_up_front_by_name() {
 }
 
 /// From `P/T` = 0.3, where the NLC cache fits, a VV10 job runs at every budget.
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn a_vv10_job_runs_at_every_budget_that_holds_its_cache() {
     let _s = slot();
@@ -414,7 +414,7 @@ fn a_vv10_job_runs_at_every_budget_that_holds_its_cache() {
 fn a_deferred_evaluator_plans_its_memory() {
     let _s = slot();
     let s = water();
-    let bs = basis::bundled("sto-3g").unwrap();
+    let bs = basis::bundled("cc-pvdz").unwrap();
     let main = AtomicGridConfig::default();
     let nlc = AtomicGridConfig::default_nlc();
     let new = |name, budget| {

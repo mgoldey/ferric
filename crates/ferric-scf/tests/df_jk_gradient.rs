@@ -371,7 +371,7 @@ fn pbe_default_ri_j_gradient_matches_fd() {
     );
 }
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn b3lyp_default_ri_jk_gradient_matches_fd() {
     // Hybrid default: RI-J and RI-K both auto-default. Predicted 6.0e-6.
@@ -391,7 +391,7 @@ fn b3lyp_default_ri_jk_gradient_matches_fd() {
     );
 }
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn uks_b3lyp_ri_jk_gradient_matches_fd() {
     // Open-shell KS: no auto-default on the UHF path, so name the aux basis.
@@ -721,7 +721,7 @@ fn rohf_exact_gradient_matches_fd_on_a_coupled_radical() {
     exact_open_shell_vs_fd("ROHF exact HO2/STO-3G", Kind::Rohf, None, "sto-3g", TOL);
 }
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn roks_exact_gradient_matches_fd_on_a_coupled_radical() {
     exact_open_shell_vs_fd(

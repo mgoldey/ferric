@@ -396,7 +396,7 @@ fn run(sys: &Sys, cfg: &RhfConfig) -> Result<f64, String> {
 /// This test asserts CONVERGENCE and the H-ARTIFACT exclusion only. It does NOT
 /// assert the deltas, because the deltas are the measurement; the accuracy
 /// assertions live in `the_fixed_rohf_path_reaches_every_reference`.
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn rohf_guess_by_system_table() {
     println!("\n=== ROHF guess x system, vs PySCF 2.13.0 ROHF ===");
@@ -501,7 +501,7 @@ fn rohf_guess_by_system_table() {
 /// (6-31G) from 5 of 40 randomized starts, and −92.1818724 (cc-pVDZ) from its
 /// own random starts. CN has at least three ROHF solutions at 6-31G and four at
 /// cc-pVDZ. This is basin selection on a genuinely multi-solution system.
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn the_fixed_rohf_path_reaches_every_reference() {
     // 1e-6 Ha. Loose enough for ferric's own SCF exit criteria against a
@@ -598,7 +598,7 @@ fn the_fixed_rohf_path_reaches_every_reference() {
 /// ROHF has no stability analysis in this workspace (see the module doc), so
 /// there is no descent available to recover the lower basin — the honest report
 /// is this assertion.
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn cn_is_the_system_the_guess_fix_costs() {
     let sys = diatomic("C", "N", 1.1718, 0, 2, "6-31g");
@@ -734,7 +734,7 @@ fn ferric_finds_lower_rohf_states_than_pyscfs_standard_guesses() {
 /// guess. From MINAO both converge, and HeNe⁺/6-31G lands on its PySCF
 /// reference. So the fix is not only about which state is found — on these two
 /// the old path produced no answer at all.
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn the_guess_fix_repairs_two_non_convergences() {
     for (name, sys, e_ref) in [

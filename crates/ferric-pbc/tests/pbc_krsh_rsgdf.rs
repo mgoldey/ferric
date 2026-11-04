@@ -159,7 +159,7 @@ fn small_omega_is_the_global_hybrid_without_exxdiv() {
     }
 }
 
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn mutants_break_the_energy() {
     let cell = h2_cell(4.0);
@@ -198,7 +198,7 @@ fn mutants_break_the_energy() {
 /// The k-mesh/supercell identity is a statement about the fit construction
 /// (the mesh fit IS the supercell Gamma fit), so it holds to round-off, not to
 /// the fit error. Non-TRIM 1x1x3 (`-1 != 1 mod 3`) and the TRIM 1x1x2.
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn rsgdf_rsh_k_mesh_is_the_supercell() {
     for f in ["HSE06", "HYB_GGA_XC_CAM_B3LYP"] {
@@ -210,7 +210,7 @@ fn rsgdf_rsh_k_mesh_is_the_supercell() {
     }
 }
 
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn supercell_anchor_sees_every_mutant() {
     use KRshMutant::*;
@@ -237,7 +237,7 @@ fn supercell_anchor_sees_every_mutant() {
 /// Per-commit canary of the weekly `rsgdf_rsh_is_the_dense_rsh_to_the_fit_error`
 /// (`validation_pbc_krsh_rsgdf.rs`): the RS-GDF vs dense RSH energy gap is the
 /// plain-Coulomb fit error, 1x1x1, cc-pVDZ-RI, HSE06 and CAM-B3LYP.
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn rsgdf_rsh_is_the_dense_rsh_to_the_fit_error_canary() {
     fit_error_case(
@@ -250,7 +250,7 @@ fn rsgdf_rsh_is_the_dense_rsh_to_the_fit_error_canary() {
 /// Per-commit canary of the weekly
 /// `rsgdf_rsh_matches_pinned_pyscf_to_the_fit_error`: the HSE06 1x1x1 PySCF
 /// KRKS pin (the first of the six), to the cc-pVDZ-RI fit error.
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn rsgdf_rsh_matches_one_pinned_pyscf_energy() {
     pyscf_pin_case(&PYSCF[..1]);
@@ -260,7 +260,7 @@ fn rsgdf_rsh_matches_one_pinned_pyscf_energy() {
 /// entry with another functional refuse the attenuated J/K (typed); the
 /// closed-shell RKS force and stress with the functional's own range
 /// separation run on them. The Python / CLI allowlist still refuses the name.
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn rsh_rsgdf_derivatives_need_the_rks_entry_with_the_functionals_rsh() {
     use ferric_pbc::kdft::solve_krks_keep_on_grid;
@@ -386,7 +386,7 @@ fn rsh_rsgdf_derivatives_need_the_rks_entry_with_the_functionals_rsh() {
 /// k-point ROKS takes the attenuated RS-GDF K per spin as well
 /// (mgoldey/ferric#354): in the closed-shell limit it must be the RKS energy
 /// on the same fit.
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn roks_rsgdf_closed_shell_rsh_is_krks() {
     use ferric_pbc::kroks::{solve_kroks_on_grid, KRoksConfig};
@@ -434,7 +434,7 @@ fn rsgdf_hse06_matches_the_python_binding_pin() {
 /// The class contributes below the build precision, so the fit must run, agree
 /// with the dense RSH to the plain-Coulomb fit scale, and give a sane HSE06 vs
 /// PBE0 gap.
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn hse06_rsgdf_runs_when_every_erf_weight_is_below_lindep() {
     let cell = h2_cell(5.3);

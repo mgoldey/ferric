@@ -193,7 +193,7 @@ fn both_endpoints_are_downhill_from_the_saddle() {
 /// saddle you found. Nothing new is needed: `follow_irc` takes the same
 /// closure as `find_saddle`, so the embedding enters through `RhfConfig`
 /// exactly as it does there.
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn the_irc_runs_under_qmmm_embedding() {
     let a: f64 = 120.0_f64.to_radians();
@@ -268,7 +268,7 @@ fn the_irc_runs_under_qmmm_embedding() {
 /// Damping the step to `min(step, 2*|g|)` fixed it: all three now converge, in
 /// 71/71/89 steps. That near-invariance in the step COUNT is the real evidence
 /// the integrator is following one path rather than three.
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn the_endpoints_do_not_depend_on_the_step_size() {
     let mut results = Vec::new();

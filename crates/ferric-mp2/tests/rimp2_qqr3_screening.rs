@@ -95,7 +95,7 @@ fn zero_threshold_is_bit_identical_to_dense_for_terfc() {
 /// Screening must actually cost something bounded, and the error must FALL as
 /// the threshold tightens. An invariant beats a point bar: a single tolerance
 /// can pass while the mechanism is inert, but a monotone trend cannot.
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn screening_error_falls_with_threshold() {
     let s = setup("alkane_10");

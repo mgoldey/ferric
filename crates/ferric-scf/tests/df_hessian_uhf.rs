@@ -881,7 +881,7 @@ fn full_hessian_matches_fd_ch2_631g_ri_jk() {
     check_full(&ch2(), "6-31g", "cc-pvdz-ri", "cc-pvdz-ri", BAR_OWN);
 }
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn full_hessian_matches_fd_nh2_631g_ri_k() {
     check_full(&nh2(), "6-31g", "", "cc-pvdz-ri", BAR_OWN);
@@ -935,7 +935,7 @@ fn broken_symmetry_singlet_with_unequal_spin_densities() {
     check_full_with(&mol, "6-31g", k, k, BAR_OWN, true);
 }
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn high_spin_quartet_with_many_more_alpha_than_beta_electrons() {
     // CH 4-Sigma-: n_alpha = 5, n_beta = 2 (three unpaired).
@@ -1273,7 +1273,7 @@ fn all_mutants() -> Vec<Mutant> {
     ]
 }
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn every_wired_mutant_misses_by_more_than_ten_bars() {
     if !has_deriv2() {
@@ -1348,7 +1348,7 @@ fn production_agrees_with_fd_at_the_mutation_bar() {
     assert!(prod < BAR_MUT);
 }
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn negative_controls_miss_the_ri_jk_reference() {
     // Exact-integral, RI-J-only and RI-K-only Hessians of the same molecule

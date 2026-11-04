@@ -491,7 +491,7 @@ fn supercell(cell: &Cell, n: [usize; 3]) -> Cell {
     Cell::new(hydrogens(&atoms), lat).expect("supercell")
 }
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn kmesh_rsgdf_is_the_gamma_rsgdf_of_the_supercell() {
     let n = [1, 1, 3];
@@ -612,7 +612,7 @@ fn pinned(name: &str, cell: &Cell, obs: &BasisSet, aux: &str, naux: usize, pins:
     }
 }
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn h2_1x1x2_matches_pinned_kgdf_cc_pvdz_ri_and_jkfit() {
     let cell = h2_cell(4.0);
@@ -659,7 +659,7 @@ fn triclinic_sp_1x1x2_matches_pinned_kgdf() {
 
 // ---------------------------------------------------------------- (e)
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn gamma_sr_sums_are_bitwise_the_single_bin_walk() {
     let cell = h2_cell(4.0);

@@ -197,7 +197,7 @@ fn assert_arms(label: &str, a: &Arms) {
 #[test]
 fn ch3_doublet_uhf_energy_matches_three_pass_baseline() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let (mol, prep, bounds) = setup(CH3_XYZ, 0, 2, "sto-3g");
+    let (mol, prep, bounds) = setup(CH3_XYZ, 0, 2, "cc-pvdz");
     let arms = run_arms(&mol, &prep, &bounds, false);
     assert_arms("CH3/UHF/cc-pVDZ", &arms);
 }
@@ -208,7 +208,7 @@ fn ch3_doublet_uhf_energy_matches_three_pass_baseline() {
 #[test]
 fn o2_triplet_uhf_energy_matches_three_pass_baseline() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let (mol, prep, bounds) = setup_file("../../testdata/molecules/o2.xyz", 0, 3, "sto-3g");
+    let (mol, prep, bounds) = setup_file("../../testdata/molecules/o2.xyz", 0, 3, "cc-pvdz");
     let arms = run_arms(&mol, &prep, &bounds, false);
     assert_arms("O2/UHF/cc-pVDZ", &arms);
 }
@@ -219,7 +219,7 @@ fn o2_triplet_uhf_energy_matches_three_pass_baseline() {
 #[test]
 fn oh_doublet_rohf_energy_matches_three_pass_baseline() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let (mol, prep, bounds) = setup_file("../../testdata/molecules/oh.xyz", 0, 2, "sto-3g");
+    let (mol, prep, bounds) = setup_file("../../testdata/molecules/oh.xyz", 0, 2, "cc-pvdz");
     let arms = run_arms(&mol, &prep, &bounds, true);
     assert_arms("OH/ROHF/cc-pVDZ", &arms);
 }
@@ -236,7 +236,7 @@ fn oh_doublet_rohf_energy_matches_three_pass_baseline() {
 #[test]
 fn combined_build_cuts_quartet_count_versus_three_pass() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let (mol, prep, bounds) = setup(CH3_XYZ, 0, 2, "sto-3g");
+    let (mol, prep, bounds) = setup(CH3_XYZ, 0, 2, "cc-pvdz");
     let base = with_switches(false, false, || run_uhf(&mol, &prep, &bounds));
     let comb = with_switches(true, false, || run_uhf(&mol, &prep, &bounds));
     assert!(base.converged && comb.converged);
@@ -275,7 +275,7 @@ fn combined_build_cuts_quartet_count_versus_three_pass() {
 #[test]
 fn incremental_fock_does_not_regress_work_or_iterations() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let (mol, prep, bounds) = setup(CH3_XYZ, 0, 2, "sto-3g");
+    let (mol, prep, bounds) = setup(CH3_XYZ, 0, 2, "cc-pvdz");
     let full = with_switches(true, false, || run_uhf(&mol, &prep, &bounds));
     let incr = with_switches(true, true, || run_uhf(&mol, &prep, &bounds));
     assert!(full.converged && incr.converged);
@@ -309,7 +309,7 @@ fn incremental_fock_does_not_regress_work_or_iterations() {
 #[test]
 fn open_shell_energy_bit_identical_across_thread_counts() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let (mol, prep, bounds) = setup(CH3_XYZ, 0, 2, "sto-3g");
+    let (mol, prep, bounds) = setup(CH3_XYZ, 0, 2, "cc-pvdz");
     let run = |threads: usize| -> f64 {
         let pool = rayon::ThreadPoolBuilder::new()
             .num_threads(threads)

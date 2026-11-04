@@ -131,7 +131,7 @@ fn load_mol(stem: &str) -> Molecule {
 #[test]
 fn csam_matches_schwarz_pairlist_at_threshold_zero() {
     let mol = load_mol("alkane_8");
-    let bs = basis::bundled("sto-3g").expect("basis");
+    let bs = basis::bundled("cc-pvdz").expect("basis");
     let prep = PreparedBasis::new(&mol, &bs).expect("PreparedBasis");
     let nsh = prep.nshells();
     let op = Operator::coulomb();
@@ -278,7 +278,7 @@ fn check_validity_and_tightening(path: &str, basis_name: &str, op: Operator) -> 
 fn csam_underestimates_on_water_coulomb_as_expected_for_a_nonrigorous_estimate() {
     let (worst_ratio, _) = check_validity_and_tightening(
         "../../testdata/molecules/water.xyz",
-        "sto-3g",
+        "cc-pvdz",
         Operator::coulomb(),
     );
     eprintln!("water/cc-pVDZ Coulomb: worst |true|/estimate = {worst_ratio:.4}");
@@ -307,9 +307,9 @@ fn csam_underestimates_on_water_coulomb_as_expected_for_a_nonrigorous_estimate()
 /// first, since diffuse shells have the widest dynamic range in the X ratios).
 #[test]
 fn csam_underestimate_is_bounded_on_water_aug_cc_pvdz_coulomb() {
-    let (worst_ratio, _) = check_validity_and_tightening(
+    let (worst_ratio, found_tighter) = check_validity_and_tightening(
         "../../testdata/molecules/water.xyz",
-        "sto-3g",
+        "aug-cc-pvdz",
         Operator::coulomb(),
     );
     eprintln!("water/aug-cc-pVDZ Coulomb: worst |true|/estimate = {worst_ratio:.4}");
@@ -320,19 +320,38 @@ fn csam_underestimate_is_bounded_on_water_aug_cc_pvdz_coulomb() {
         "water/aug-cc-pVDZ Coulomb: worst |true|/estimate = {worst_ratio} far exceeds the ~2x \
          underestimate CSAM is known to produce — suspect a defect beyond the documented non-rigor"
     );
-    // (removed) `found_tighter` assertion here is redundant with the `any_engaged`
-    // check in `check_validity_and_tightening` for the all-ones X-table mutant
-    // class; that helper already guards this mutant for every caller. Kept as
-    // the representative for this class: see `csam_underestimates_on_water_coulomb...`
-    // (worst_ratio > 1.0) and the sweep's `errors[0] > 0`.
+    assert!(
+        found_tighter,
+        "aug-cc-pVDZ: CSAM was never strictly tighter than Schwarz anywhere — an all-ones X \
+         table would produce exactly this symptom (see the mutation-resistance note on (c))"
+    );
 }
 
-/// (c) TIGHTENING: the STRICT half is still enforced inside
-/// `check_validity_and_tightening` (via `any_engaged`) for every caller, and
-/// the all-ones X-table mutant class is represented by that helper rather
-/// than by a standalone benzene case. The benzene standalone case was removed
-/// as a redundant mutant guard (its only assertion, `found_tighter`, duplicated
-/// `any_engaged`); no unique assertion was lost.
+/// (c) TIGHTENING, explicit standalone assertion (the per-quartet check
+/// inside `check_validity_and_tightening` already enforces `<=` everywhere;
+/// this test isolates the STRICT half so a regression to "CSAM == Schwarz
+/// always" fails here specifically, independent of (b)'s validity bar).
+///
+/// (e) MUTATION-RESISTANCE: if `ferric_integrals::csam::csam_x_table` were
+/// mutated to always return an all-ones table (X collapses to the trivial
+/// Cauchy-Schwarz maximum), `refinement_factor` would be `sqrt(1*1) = 1`
+/// everywhere and CSAM would be bit-identical to Schwarz — `found_tighter`
+/// below would be `false` and this test would fail. This is the test that
+/// specific mutant is designed to be caught by.
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
+#[test]
+fn csam_is_strictly_tighter_than_schwarz_somewhere_benzene() {
+    let (_, found_tighter) = check_validity_and_tightening(
+        "../../testdata/molecules/benzene.xyz",
+        "cc-pvdz",
+        Operator::coulomb(),
+    );
+    assert!(
+        found_tighter,
+        "benzene/cc-pVDZ: CSAM was never strictly tighter than Schwarz anywhere sampled — \
+         either the composition is a no-op (all-ones X table mutant) or the sample is too small"
+    );
+}
 
 /// (d) PER-OPERATOR: `erfc` is ROUTED TO CSB; `erf` and Coulomb are accepted.
 ///
@@ -377,7 +396,7 @@ fn csam_underestimate_is_bounded_on_water_aug_cc_pvdz_coulomb() {
 #[test]
 fn csam_routes_erfc_to_csb_and_accepts_erf_at_the_scf_seam() {
     let mol = load_mol("water");
-    let bs = basis::bundled("sto-3g").expect("basis");
+    let bs = basis::bundled("cc-pvdz").expect("basis");
     let prep = PreparedBasis::new(&mol, &bs).expect("PreparedBasis");
 
     // erfc: routed away, at BOTH seams, rather than silently degrading.
@@ -445,11 +464,11 @@ fn csam_routes_erfc_to_csb_and_accepts_erf_at_the_scf_seam() {
 /// see `RhfConfig::screening`'s doc for why only the LinK path is wired at
 /// all in this change).
 /// ---------------------------------------------------------------------
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn csam_screening_rhf_energy_matches_schwarz() {
     let mol = load_mol("alkane_4");
-    let bs = basis::bundled("sto-3g").expect("basis");
+    let bs = basis::bundled("cc-pvdz").expect("basis");
     let prep = PreparedBasis::new(&mol, &bs).expect("PreparedBasis");
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).expect("Schwarz bounds");
@@ -555,11 +574,11 @@ fn solve_rhf_direct_full_rebuild(
 /// its own known-good Schwarz-at-threshold-zero baseline, so a failure here
 /// cannot be blamed on an unfamiliar system/basis combination.
 /// ---------------------------------------------------------------------
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn csam_screening_computes_fewer_quartets_than_schwarz_on_default_path() {
     let mol = load_mol("alkane_8");
-    let bs = basis::bundled("sto-3g").expect("basis");
+    let bs = basis::bundled("cc-pvdz").expect("basis");
     let prep = PreparedBasis::new(&mol, &bs).expect("PreparedBasis");
     let op = Operator::coulomb();
     let ctx = ParallelContext::default();
@@ -622,11 +641,11 @@ fn csam_screening_computes_fewer_quartets_than_schwarz_on_default_path() {
 /// above, but through `DirectJK` (via `compute_for_screening`) rather than
 /// LinK — the actual path (g) just proved CSAM changes the quartet count on.
 /// ---------------------------------------------------------------------
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn csam_screening_rhf_energy_matches_schwarz_on_default_path() {
     let mol = load_mol("alkane_4");
-    let bs = basis::bundled("sto-3g").expect("basis");
+    let bs = basis::bundled("cc-pvdz").expect("basis");
     let prep = PreparedBasis::new(&mol, &bs).expect("PreparedBasis");
     let op = Operator::coulomb();
     let ctx = ParallelContext::default();
@@ -681,11 +700,11 @@ fn csam_screening_rhf_energy_matches_schwarz_on_default_path() {
 /// floating-point operation on the path anyone not opting into `"csam"`
 /// exercises.
 /// ---------------------------------------------------------------------
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn schwarz_screening_default_path_is_byte_identical_to_pre_csam_behavior() {
     let mol = load_mol("alkane_4");
-    let bs = basis::bundled("sto-3g").expect("basis");
+    let bs = basis::bundled("cc-pvdz").expect("basis");
     let prep = PreparedBasis::new(&mol, &bs).expect("PreparedBasis");
     let op = Operator::coulomb();
     let ctx = ParallelContext::default();
@@ -733,13 +752,13 @@ fn schwarz_screening_default_path_is_byte_identical_to_pre_csam_behavior() {
 /// against `DirectJK` (bypassing the SCF loop, matching how the existing
 /// Schwarz-only thread-count guards in `direct_jk.rs` are structured).
 /// ---------------------------------------------------------------------
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn csam_screening_direct_jk_bit_identical_across_thread_counts() {
     use ferric_scf::direct_jk::DirectJK;
 
     let mol = load_mol("alkane_4");
-    let bs = basis::bundled("sto-3g").expect("basis");
+    let bs = basis::bundled("cc-pvdz").expect("basis");
     let prep = PreparedBasis::new(&mol, &bs).expect("PreparedBasis");
     let op = Operator::coulomb();
     let bounds =
@@ -822,22 +841,19 @@ fn csam_screening_direct_jk_bit_identical_across_thread_counts() {
 /// "estimate is actually engaged" assertion below (nonzero error at the
 /// LOOSEST threshold) would fail — so this test cannot pass by inertness.
 /// ---------------------------------------------------------------------
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn csam_energy_error_shrinks_with_the_screening_threshold() {
     let mol = load_mol("alkane_4");
-    let bs = basis::bundled("sto-3g").expect("basis");
+    let bs = basis::bundled("cc-pvdz").expect("basis");
     let prep = PreparedBasis::new(&mol, &bs).expect("PreparedBasis");
     let op = Operator::coulomb();
     let ctx = ParallelContext::default();
 
-    // Loose -> tight. Reduced from four points to the two extremes (loosest and
-    // tightest): the load-bearing claims are engagement at the loosest
-    // threshold and shrinkage toward the tightest, both of which only need the
-    // endpoints. Intermediate points added no discriminating power beyond
-    // what the endpoints already provide.
-    // Removed points: 1e-8, 1e-10 (no unique assertion depended on them).
-    let thresholds = [1e-6, 1e-12];
+    // Loose -> tight. The loosest is deliberately loose enough that the
+    // non-rigorous estimate discards real weight and a measurable error
+    // appears; the tightest is production-scale.
+    let thresholds = [1e-6, 1e-8, 1e-10, 1e-12];
 
     let mut errors = Vec::new();
     // MEASURED INTERACTION (2026-09-14): with the libint2 ShellPair cache

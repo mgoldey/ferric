@@ -192,7 +192,7 @@ fn check_case(case: &Case, dir: &std::path::Path) {
     assert!(beta.unwrap_or(0.0) < PROVISIONAL_GATE, "{name}: {beta:?}");
 }
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn real_scf_results_round_trip_and_clear_the_provisional_orthonormality_gate() {
     let dir = std::env::temp_dir().join(format!("ferric-ckpt-real-{}", std::process::id()));

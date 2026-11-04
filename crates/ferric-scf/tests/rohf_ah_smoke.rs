@@ -135,7 +135,7 @@ fn rohf_ah_h2_triplet_lda_matches_diis() {
 /// known-hard doublet OH/LDA case where PCG plateaus. If this lands an
 /// energy ≥1 mHa below the DIIS run *and* hits density_conv=1e-3, we can
 /// un-ignore roks_grad_oh_ccpvdz_lda in a follow-up.
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn rohf_ah_oh_lda_diagnostic() {
     let mol = Molecule::parse_xyz("2\nOH\nO 0 0 0\nH 0 0 0.97\n", 0, 2).unwrap();

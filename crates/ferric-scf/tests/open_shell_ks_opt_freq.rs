@@ -173,7 +173,7 @@ fn roks_geometry_optimization_runs_and_lowers_the_energy() {
 /// translations/rotations and must be projected out. That structure is the
 /// check: a broken projection shows up as spurious large-magnitude modes, not
 /// as a wrong number in the last digit.
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn uks_frequencies_run_and_give_one_vibrational_mode_for_a_diatomic() {
     let ctx = ParallelContext::default();

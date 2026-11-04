@@ -150,7 +150,7 @@ fn ecp_rhf_energy(mol: &Molecule, bs: &ferric_core::basis::BasisSet) -> f64 {
 /// distinguishable: an atom-id misattribution in the derivative (libecpint
 /// indexes by its own inferred centers, not ferric's atom order) shows up here
 /// but would cancel in a homonuclear I2.
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn ecp_rhf_gradient_matches_finite_difference_hi() {
     let ctx = ParallelContext::default();

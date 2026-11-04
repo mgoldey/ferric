@@ -259,9 +259,9 @@ fn mixed_k_is_inside_its_bound_and_the_operand_class_gate_separates_truncation()
         ("hexane/cc-pVDZ", alkane(6)),
         ("octane/cc-pVDZ", alkane(8)),
     ] {
-        let (c, _) = scf_occ(&xyz, 1, "sto-3g");
+        let (c, _) = scf_occ(&xyz, 1, "cc-pvdz");
         let nocc = c.ncols();
-        let (mut dfk0, n) = dfk_for(&xyz, "sto-3g");
+        let (mut dfk0, n) = dfk_for(&xyz, "cc-pvdz");
         let flat = dfk0.dressed_incore_flat_for_test().unwrap().to_owned();
         let naux = flat.nrows();
         let s = s_matrix(&flat.view(), n, &c);
@@ -271,7 +271,7 @@ fn mixed_k_is_inside_its_bound_and_the_operand_class_gate_separates_truncation()
 
         let _m = Mixed::with(shipped_plus_dfk());
         let s0 = stats();
-        let k_clean = dispatched_k(&xyz, "sto-3g", &c);
+        let k_clean = dispatched_k(&xyz, "cc-pvdz", &c);
         let panels = stats().mixed_panels - s0.mixed_panels;
         assert_eq!(
             panels,
@@ -281,7 +281,7 @@ fn mixed_k_is_inside_its_bound_and_the_operand_class_gate_separates_truncation()
         let clean = max_ratio(&k_clean, &k_host, &s, eps);
 
         TRUNCATE_B_TO_F32.store(true, Ordering::SeqCst);
-        let k_b = dispatched_k(&xyz, "sto-3g", &c);
+        let k_b = dispatched_k(&xyz, "cc-pvdz", &c);
         TRUNCATE_B_TO_F32.store(false, Ordering::SeqCst);
         let k_twin = twin_k(&flat.view(), &c, None);
         let (tc, tb) = (
@@ -292,7 +292,7 @@ fn mixed_k_is_inside_its_bound_and_the_operand_class_gate_separates_truncation()
         // cross-panel pin below is the guarantee)
         let prev = std::env::var("FERRIC_GPU_MIXED_K_PANEL").ok();
         std::env::set_var("FERRIC_GPU_MIXED_K_PANEL", n.to_string());
-        let k_a = dispatched_k(&xyz, "sto-3g", &c);
+        let k_a = dispatched_k(&xyz, "cc-pvdz", &c);
         match prev {
             Some(v) => std::env::set_var("FERRIC_GPU_MIXED_K_PANEL", v),
             None => std::env::remove_var("FERRIC_GPU_MIXED_K_PANEL"),
@@ -448,9 +448,9 @@ fn a_mixed_build_over_many_chunks_matches_the_single_chunk_build() {
     if !ready() {
         return;
     }
-    let (c, _) = scf_occ(WATER, 1, "sto-3g");
+    let (c, _) = scf_occ(WATER, 1, "cc-pvdz");
     let nocc = c.ncols();
-    let (mut dfk0, n) = dfk_for(WATER, "sto-3g");
+    let (mut dfk0, n) = dfk_for(WATER, "cc-pvdz");
     let flat = dfk0.dressed_incore_flat_for_test().unwrap().to_owned();
     let band = flat.nrows();
     let s = s_matrix(&flat.view(), n, &c);
@@ -562,17 +562,17 @@ fn mixed_alpha_beta_reuse_with_unequal_nocc_neither_panics_nor_accumulates() {
     }
     // Converged UHF orbitals of OH: alpha 5, beta 4. The scratch is sized by alpha
     // and reused for beta (nocc_cap 5 > 4): every mixed copy must use nocc, not nocc_cap.
-    let (ca, cb) = scf_occ(OH, 2, "sto-3g");
+    let (ca, cb) = scf_occ(OH, 2, "cc-pvdz");
     let cb = cb.expect("UHF");
     assert_eq!((ca.ncols(), cb.ncols()), (5, 4));
-    let (mut dfk0, n) = dfk_for(OH, "sto-3g");
+    let (mut dfk0, n) = dfk_for(OH, "cc-pvdz");
     let flat = dfk0.dressed_incore_flat_for_test().unwrap().to_owned();
     let band = flat.nrows();
     let b = effective_k_panel();
     let hk = [host_k(&mut dfk0, &ca), host_k(&mut dfk0, &cb)];
 
     let _m = Mixed::with(shipped_plus_dfk());
-    let (mut dfk, _) = dfk_for(OH, "sto-3g");
+    let (mut dfk, _) = dfk_for(OH, "cc-pvdz");
     let (mut ka1, mut kb, mut ka2) = (
         Array2::zeros((n, n)),
         Array2::zeros((n, n)),
@@ -614,7 +614,7 @@ fn mixed_uploads_half_the_bytes_and_counts_panels() {
         return;
     }
     let _m = Mixed::with(shipped_plus_dfk());
-    let (mut dfk, n) = dfk_for(WATER, "sto-3g");
+    let (mut dfk, n) = dfk_for(WATER, "cc-pvdz");
     let nocc = 5;
     let band = dfk.dressed_incore_flat_for_test().unwrap().nrows();
     let b = effective_k_panel();
@@ -656,7 +656,7 @@ fn an_f32_range_violation_in_b_runs_the_f64_device_path_once_and_counts_it() {
     if !ready() {
         return;
     }
-    let (dfk0, n) = dfk_for(WATER, "sto-3g");
+    let (dfk0, n) = dfk_for(WATER, "cc-pvdz");
     let mut flat = dfk0.dressed_incore_flat_for_test().unwrap().to_owned();
     let band = flat.nrows();
     flat[(band / 2, 7)] = 1e39; // finite in f64, beyond f32::MAX (3.4e38)
@@ -702,10 +702,10 @@ fn a_missing_flush_kernel_at_upload_runs_the_f64_device_path_and_counts_it() {
     if !ready() {
         return;
     }
-    let (dfk0, n) = dfk_for(WATER, "sto-3g");
+    let (dfk0, n) = dfk_for(WATER, "cc-pvdz");
     let flat = dfk0.dressed_incore_flat_for_test().unwrap().to_owned();
     let band = flat.nrows();
-    let (c, _) = scf_occ(WATER, 1, "sto-3g");
+    let (c, _) = scf_occ(WATER, 1, "cc-pvdz");
     let dev = ferric_core::gpu::device::device(0).unwrap();
     let pool = pool().unwrap();
     let mut direct = DeviceDfK::upload(&dev, &pool, &flat.view(), n).unwrap();
@@ -740,9 +740,9 @@ fn a_flush_kernel_lost_after_a_mixed_upload_declines_sticky_and_leaves_k_alone()
     if !ready() {
         return;
     }
-    let (mut dfk0, n) = dfk_for(WATER, "sto-3g");
+    let (mut dfk0, n) = dfk_for(WATER, "cc-pvdz");
     let flat = dfk0.dressed_incore_flat_for_test().unwrap().to_owned();
-    let (c, _) = scf_occ(WATER, 1, "sto-3g");
+    let (c, _) = scf_occ(WATER, 1, "cc-pvdz");
     let k_host = host_k(&mut dfk0, &c);
     let dev = ferric_core::gpu::device::device(0).unwrap();
     // (a) the device object: the build errors and k is untouched
@@ -768,7 +768,7 @@ fn a_flush_kernel_lost_after_a_mixed_upload_declines_sticky_and_leaves_k_alone()
     FORCE_KERNEL_FAILURE.store(false, Ordering::SeqCst);
 
     // (b) the dispatcher: first build mixed, then the kernel is lost
-    let (mut dfk, _) = dfk_for(WATER, "sto-3g");
+    let (mut dfk, _) = dfk_for(WATER, "cc-pvdz");
     let s0 = stats();
     let mut k1 = Array2::zeros((n, n));
     dfk.build_from_occ(&c, &mut k1).unwrap();
@@ -803,9 +803,9 @@ fn a_c_occ_element_beyond_f32_declines_to_the_cpu_sticky_and_is_counted_by_reaso
     if !ready() {
         return;
     }
-    let (mut dfk0, n) = dfk_for(WATER, "sto-3g");
+    let (mut dfk0, n) = dfk_for(WATER, "cc-pvdz");
     let flat = dfk0.dressed_incore_flat_for_test().unwrap().to_owned();
-    let (mut c, _) = scf_occ(WATER, 1, "sto-3g");
+    let (mut c, _) = scf_occ(WATER, 1, "cc-pvdz");
     c[(3, 1)] = 1e39; // finite in f64, beyond f32::MAX
     let k_host = host_k(&mut dfk0, &c);
     let dev = ferric_core::gpu::device::device(0).unwrap();
@@ -827,7 +827,7 @@ fn a_c_occ_element_beyond_f32_declines_to_the_cpu_sticky_and_is_counted_by_reaso
     assert!(k.iter().all(|&v| v == 7.0), "k must be untouched on error");
     drop(d);
 
-    let (mut dfk, _) = dfk_for(WATER, "sto-3g");
+    let (mut dfk, _) = dfk_for(WATER, "cc-pvdz");
     let s0 = stats();
     let mut k1 = Array2::zeros((n, n));
     dfk.build_from_occ(&c, &mut k1).unwrap();
@@ -856,7 +856,7 @@ fn mixed_is_never_used_unless_the_allowlist_says_so() {
     }
     // precision = mixed, but only rimp2-energy listed: DF-K must stay f64.
     let _m = Mixed::with(MixedKernelSet::EMPTY.with(MixedKernel::RiMp2Energy));
-    let (mut dfk, n) = dfk_for(WATER, "sto-3g");
+    let (mut dfk, n) = dfk_for(WATER, "cc-pvdz");
     let nocc = 5;
     let band = dfk.dressed_incore_flat_for_test().unwrap().nrows();
     let flat = dfk.dressed_incore_flat_for_test().unwrap().to_owned();
@@ -888,7 +888,7 @@ fn default_config_keeps_the_f64_path_bit_for_bit_and_moves_no_mixed_counter() {
         return;
     }
     // no override: the installed settings (precision f64) decide
-    let (mut dfk, n) = dfk_for(WATER, "sto-3g");
+    let (mut dfk, n) = dfk_for(WATER, "cc-pvdz");
     let flat = dfk.dressed_incore_flat_for_test().unwrap().to_owned();
     let c = c_occ(n, 5, 6);
     let mut k = Array2::zeros((n, n));
@@ -1028,7 +1028,7 @@ fn the_ladder_upload_degrades_to_f32_alone_or_f64_alone() {
     if !ready() {
         return;
     }
-    let (dfk0, n) = dfk_for(WATER, "sto-3g");
+    let (dfk0, n) = dfk_for(WATER, "cc-pvdz");
     let mut flat = dfk0.dressed_incore_flat_for_test().unwrap().to_owned();
     let band = flat.nrows();
     let dev = ferric_core::gpu::device::device(0).unwrap();

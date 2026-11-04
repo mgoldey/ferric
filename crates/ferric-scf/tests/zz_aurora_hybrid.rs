@@ -55,13 +55,13 @@ fn zz_aurora_on_hybrids() {
         (
             "water/cc-pVDZ   B3LYP",
             "../../testdata/molecules/water.xyz",
-            "sto-3g",
+            "cc-pvdz",
             "B3LYP",
         ),
         (
             "methane/cc-pVDZ B3LYP",
             "../../testdata/molecules/methane.xyz",
-            "sto-3g",
+            "cc-pvdz",
             "B3LYP",
         ),
         (

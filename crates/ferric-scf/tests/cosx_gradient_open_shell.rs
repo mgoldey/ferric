@@ -291,7 +291,7 @@ fn open_case(
     (rel_new, abs_new, rel_old)
 }
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn uks_b3lyp_cosx_gradient_matches_fd_nh2_flat() {
     open_case(
@@ -369,7 +369,7 @@ fn roks_b3lyp_cosx_gradient_matches_fd_ho2_pruned() {
     );
 }
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn rohf_cosx_gradient_matches_fd_nh2_flat() {
     open_case(
@@ -419,7 +419,7 @@ fn as_restricted_open(r: &ScfResult) -> ScfResult {
 /// instead of `-c_x/2`, a dropped spin, or J from the wrong density — each moves
 /// the increment by the size of a COSX exchange term, O(0.1); the
 /// reachability check asserts that term is that large here.
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn open_shell_cosx_gradients_reduce_to_the_closed_shell_one() {
     let basis = "sto-3g";

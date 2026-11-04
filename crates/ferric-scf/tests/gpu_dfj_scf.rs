@@ -46,7 +46,7 @@ fn rhf_ri_j_through_the_solve_path_reaches_the_device() {
         return;
     }
     let mol = Molecule::load_xyz("../../testdata/molecules/water.xyz").unwrap();
-    let prep = PreparedBasis::new(&mol, &basis::bundled("sto-3g").unwrap()).unwrap();
+    let prep = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let cfg = RhfConfig {

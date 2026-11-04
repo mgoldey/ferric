@@ -816,7 +816,7 @@ fn null_stress(z: &Zx, a: f64, scf: &KScfResult, cfg: &KRksStressConfig) -> KRks
 /// (`MadelungUnscaled` and `ExchScaledTwice` are identities at a = 1). The
 /// a-scaling is covered by the affine-in-a test, the 1x1x1 and supercell Gamma
 /// anchors, the FD tests and the mutants.
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn a_equal_one_with_zero_xc_is_the_hf_stress_per_part() {
     a_equal_one_case(Jk::Dense);
@@ -885,7 +885,7 @@ fn a_equal_one_case(jk: Jk) {
 /// exchange and Madelung parts to be exactly 0. The merged suite
 /// `pbc_kxcstress.rs` (FD, Gamma, supercell, PySCF anchors) pins the pure value
 /// itself.
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn a_zero_reproduces_the_recorded_pure_gga_stress() {
     a_zero_case(Jk::Dense);
@@ -1001,7 +1001,7 @@ fn affine_case(jk: Jk) {
 /// from da = 1e-6 (MEASURED mismatch 1.25e-6, 125x the bar) and da = 0.25
 /// (3.1e-1). Prediction: a = 0.5 passes with mismatch < 1e-12; a = 0.5 + 1e-6
 /// and a = 0.25 are refused with the Fock-guard message.
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn the_guard_refuses_a_wrong_exchange_fraction_alone() {
     let z = zero_xc(G113, Jk::Dense, ExxDiv::Ewald, 0.5);
@@ -1097,7 +1097,7 @@ fn gamma_rows(k: &KRksStress, g: &GammaStress, n_cells: f64) -> Vec<(&'static st
 /// MEASURED (PBE0 none/Ewald, B3LYP Ewald): xc_ao 2.2e-16, xc_weight 5.6e-17,
 /// overlap 4.1e-13..4.3e-13, kinetic <= 5.6e-17, vsr <= 1.3e-15, vlr 1.8e-15,
 /// c0_volume 0, J+K 1.85e-12..1.90e-12, madelung <= 6.9e-18, sigma 2.4e-14.
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn one_point_mesh_matches_the_gamma_hybrid_stress_per_part() {
     one_point_case(&[("PBE0", ExxDiv::Ewald)]);
@@ -1166,7 +1166,7 @@ fn supercell_pos(pos: &[[f64; 3]], a: f64, n: [usize; 3]) -> Cell {
 /// 6.3e-14 / 6.7e-14, xc_weight 5.1e-15, overlap 1.9e-13, kinetic 1.3e-14, vsr
 /// 2.0e-13, vlr 3.6e-14 / 3.8e-14, J+K 1.25e-12, madelung 0 / 2.8e-17, sigma
 /// 2.1e-14.
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn k_mesh_hybrid_stress_is_the_gamma_supercell_stress_per_part() {
     supercell_case(ExxDiv::Ewald);
@@ -1210,7 +1210,7 @@ const FD_BAR: f64 = 3e-8;
 /// agree at the floor; artifact hypothesis: a stress that is the right stress
 /// of a different energy (an unscaled exchange or Madelung, a stale K) misses
 /// at 1e-3..1e-1, not at the floor.
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn pbe0_stress_matches_fd_dense_ewald_1x1x3() {
     let fx = fixture(G113, "PBE0", Jk::Dense, ExxDiv::Ewald);
@@ -1242,7 +1242,7 @@ fn pbe0_stress_matches_fd_dense_ewald_1x1x3() {
 /// 3 * FD_BAR: the trace error is the sum of three diagonal-component errors,
 /// each allowed FD_BAR; measured 1.6e-9 (three components at the all-nine floor
 /// of ~1e-9 would give 3e-9).
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn trace_matches_isotropic_scaling_fd() {
     let fx = fixture(G113, "B3LYP", Jk::Dense, ExxDiv::Ewald);
@@ -1333,7 +1333,7 @@ fn pbe0_stress_matches_fd_on_the_monkhorst_pack_mesh() {
 /// exchange pieces and the Madelung at a = 1: the stress is the right stress of
 /// a different energy, so it must miss the FD-anchored base by far more than
 /// the bar 1e-5 (measured 6.6e-1; the correct residual is ~2e-10).
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn pbe0_rsgdf_stress_matches_fd_and_catches_the_unscaled_fit_exchange() {
     let fx = fixture(G113, "PBE0", Jk::Gdf, ExxDiv::Ewald);
@@ -1370,7 +1370,7 @@ fn hybrid_stress_is_bit_identical_across_threads() {
 }
 
 /// Typed refusals and the Fock guard from every side.
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn refusals_and_the_hybrid_fock_guard() {
     let fx = fixture(G113, "PBE0", Jk::Dense, ExxDiv::Ewald);
@@ -1456,7 +1456,7 @@ fn refusals_and_the_hybrid_fock_guard() {
 /// the error names "Fock-guard matrices" and parse its byte count, which must be
 /// five N_k n^2 complex arrays (D, J, K, F, V_xc) = 5 * 3 * 4 * 16 = 960 B. A
 /// guard that reverted to the four-array charge (768 B) fails the equality.
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn budgets_either_reproduce_the_hybrid_stress_or_fail_typed() {
     let z = zero_xc(G113, Jk::Dense, ExxDiv::Ewald, 0.5);
@@ -1570,7 +1570,7 @@ fn miss(
 /// smallest mutant miss below is the wrong-density K at 1.1e-2, so the bar 1e-5
 /// sits between with margins of 1e4 (above the correct) and 1e3 (below the
 /// smallest mutant).
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn smoke_mutants_are_caught() {
     use KStressMutation as S;

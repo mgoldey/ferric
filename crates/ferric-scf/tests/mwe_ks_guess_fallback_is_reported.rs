@@ -36,7 +36,7 @@ fn run(solver: &str, ratio: Option<f64>) {
         _ => Molecule::load_xyz_with_charge(WATER, 1, 2),
     }
     .unwrap();
-    let prep = PreparedBasis::new(&mol, &basis::bundled("sto-3g").unwrap()).unwrap();
+    let prep = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
     let aux = PreparedBasis::new(&mol, &basis::bundled(AUX).unwrap()).unwrap();
     let tensor = aux.nbasis() * prep.nbasis() * prep.nbasis() * 8;
     let op = Operator::coulomb();
@@ -106,7 +106,7 @@ fn in_child(solver: &str, ratio: &str) -> (String, String) {
     (stderr, records)
 }
 
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn a_block_lost_to_memory_is_reported_by_every_solver() {
     for solver in ["RHF", "UHF", "ROHF"] {
@@ -130,7 +130,7 @@ fn a_block_lost_to_memory_is_reported_by_every_solver() {
 }
 
 /// With one element there is nothing left of the guess, so "partial" would be false.
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn a_lost_block_of_the_only_element_says_the_guess_is_empty() {
     let (stderr, records) = in_child("ATOM", "1.15");
