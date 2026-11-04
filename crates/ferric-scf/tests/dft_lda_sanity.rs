@@ -9,7 +9,7 @@ use ferric_scf::screening::SchwarzBounds;
 #[test]
 fn lda_h2_converges_and_is_lower_than_hf() {
     let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 0.74\n", 0, 1).unwrap();
-    let bs = basis::bundled("sto-3g").unwrap();
+    let bs = basis::bundled("cc-pvdz").unwrap();
     let obs = PreparedBasis::new(&mol, &bs).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();

@@ -101,13 +101,13 @@ const CASES: &[Case] = &[
     Case {
         name: "water/cc-pVDZ RHF",
         xyz: "../../testdata/molecules/water.xyz",
-        basis: "sto-3g",
+        basis: "cc-pvdz",
         xc: None,
     },
     Case {
         name: "methane/cc-pVDZ RHF",
         xyz: "../../testdata/molecules/methane.xyz",
-        basis: "sto-3g",
+        basis: "cc-pvdz",
         xc: None,
     },
     Case {
@@ -119,13 +119,13 @@ const CASES: &[Case] = &[
     Case {
         name: "water/cc-pVDZ PBE",
         xyz: "../../testdata/molecules/water.xyz",
-        basis: "sto-3g",
+        basis: "cc-pvdz",
         xc: Some("PBE"),
     },
     Case {
         name: "water/cc-pVDZ B3LYP",
         xyz: "../../testdata/molecules/water.xyz",
-        basis: "sto-3g",
+        basis: "cc-pvdz",
         xc: Some("B3LYP"),
     },
 ];
@@ -229,7 +229,7 @@ fn aurora_disabled_reproduces_the_untouched_default_path() {
 #[test]
 fn disabled_aurora_performs_no_auxiliary_work() {
     let mol = Molecule::load_xyz("../../testdata/molecules/water.xyz").unwrap();
-    let bs = basis::bundled("sto-3g").unwrap();
+    let bs = basis::bundled("cc-pvdz").unwrap();
     let prep = PreparedBasis::new(&mol, &bs).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();

@@ -104,7 +104,7 @@ fn assert_bit_identical(a: f64, b: f64, what: &str) {
 #[test]
 fn rhf_trah_off_is_bit_identical() {
     let mol = water();
-    let bs = basis::bundled("sto-3g").unwrap();
+    let bs = basis::bundled("cc-pvdz").unwrap();
     let prep = PreparedBasis::new(&mol, &bs).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
@@ -161,7 +161,7 @@ fn rhf_trah_off_is_bit_identical() {
 #[test]
 fn rks_pbe_trah_off_is_bit_identical() {
     let mol = water();
-    let bs = basis::bundled("sto-3g").unwrap();
+    let bs = basis::bundled("cc-pvdz").unwrap();
     let prep = PreparedBasis::new(&mol, &bs).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
@@ -288,7 +288,7 @@ fn uks_pbe_trah_off_is_bit_identical() {
 #[test]
 fn newton_trigger_path_is_unaffected_by_trah_being_compiled_in() {
     let mol = water();
-    let bs = basis::bundled("sto-3g").unwrap();
+    let bs = basis::bundled("cc-pvdz").unwrap();
     let prep = PreparedBasis::new(&mol, &bs).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
@@ -331,7 +331,7 @@ fn newton_trigger_path_is_unaffected_by_trah_being_compiled_in() {
 #[test]
 fn trah_off_is_bit_identical_across_rayon_widths() {
     let mol = water();
-    let bs = basis::bundled("sto-3g").unwrap();
+    let bs = basis::bundled("cc-pvdz").unwrap();
     let prep = PreparedBasis::new(&mol, &bs).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
