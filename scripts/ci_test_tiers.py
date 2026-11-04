@@ -98,6 +98,16 @@ def owner(path, roots, src_dirs):
 def scan(root):
     """{binary_id: set of (module prefix, test fn name)}, and the count found."""
     roots, src_dirs = targets(root)
+    canaries = set(
+        subprocess.run(
+            [os.path.join(root, "scripts/ci-malloc-perturb-canaries.sh"), "ids"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.split()
+    )
+    if not canaries:
+        die("scripts/ci-malloc-perturb-canaries.sh ids printed nothing")
     found = defaultdict(set)
     files = subprocess.run(
         ["git", "ls-files", "-z", "--", "*.rs"],
@@ -120,6 +130,15 @@ def scan(root):
                 f"{rel}: a tier tag in validation binary {bid}; validation tests keep "
                 '#[ignore = "validation: <row>"]'
             )
+        if bid.split("::")[-1].startswith("mpi_"):
+            # ci.yml's mpi job runs these binaries itself under mpirun and
+            # asserts an exact passing-test count per rank; a tier tag makes
+            # that count 0 (PR #626, mpi_df_b3lyp_water_and_benzene_banded).
+            die(f"{rel}: a tier tag in MPI binary {bid}; the mpi job runs it by name")
+        if bid in canaries:
+            # malloc-perturb runs these binaries' NON-ignored tests under
+            # MALLOC_PERTURB_; a tier tag silently drops a test from that set.
+            die(f"{rel}: a tier tag in malloc-perturb canary binary {bid}")
         for i in hits:
             name = None
             for line in lines[i + 1 : i + 40]:

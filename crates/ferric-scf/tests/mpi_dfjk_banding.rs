@@ -143,7 +143,6 @@ fn assert_all_ranks_agree(ctx: &ParallelContext, label: &str, energy: f64) {
     let _ = (ctx, label, energy);
 }
 
-#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn mpi_df_b3lyp_water_and_benzene_banded() {
     let ctx = ParallelContext::default();

@@ -65,12 +65,12 @@ O      0.010000    -0.020000     0.120000\n\
 H      0.030000     0.770000    -0.460000\n\
 H     -0.020000    -0.740000    -0.490000\n";
 
-/// Grid for the SCF-based anchors: 50 radial x 50 angular per atom (the
+/// Grid for the SCF-based anchors: 50 radial x 110 angular per atom (the
 /// physics is grid-independent; this keeps the 18+ displaced SCFs cheap).
 fn grid_cfg() -> AtomicGridConfig {
     AtomicGridConfig {
         n_radial: 50,
-        n_angular: 50,
+        n_angular: 110,
         prune: None,
         weight_cut: None,
     }
