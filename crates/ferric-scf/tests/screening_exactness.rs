@@ -550,8 +550,8 @@ fn link_k_thresh_sweep_alkane_8_qqr() {
 /// `#[ignore]`d because it runs the dense O(N^4) `build_jk` reference five
 /// times; that is minutes of work, too slow for the default gate. Invocation
 /// is in this file's module doc comment.
-#[ignore = "expensive: 5x dense O(N^4) build_jk on 298 basis functions; see module doc for invocation"]
 #[test]
+#[ignore = "expensive: 5x dense O(N^4) build_jk on 298 basis functions; see module doc for invocation"]
 fn link_k_thresh_sweep_alkane_12() {
     run_thresh_sweep(BoundKind::Schwarz, "alkane_12", "cc-pvdz");
 }
@@ -1064,8 +1064,8 @@ fn directjk_matches_pyscf_alkane_8() {
 ///   cargo test -p ferric-scf --test screening_exactness --release \
 ///   -- --ignored --nocapture directjk_matches_pyscf_alkane_8_unscreened
 /// ```
-#[ignore = "expensive: unscreened (thresh=0) J/K on 202 basis functions; >69 min measured"]
 #[test]
+#[ignore = "expensive: unscreened (thresh=0) J/K on 202 basis functions; >69 min measured"]
 fn directjk_matches_pyscf_alkane_8_unscreened() {
     check_directjk_vs_pyscf("alkane_8", 1e-8, 1e-8, true);
 }
