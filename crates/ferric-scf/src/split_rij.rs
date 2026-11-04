@@ -1360,20 +1360,23 @@ impl SplitRiJ {
     // ----------------------------------------------------------------- d pass
 
     fn d_pass<const ABS: bool, const BATCH: bool>(&self, d: &Array2<f64>) -> Array1<f64> {
-        // Hermite densities, one slice per primitive pair, in stored order.
-        let parts: Vec<Vec<f64>> = self
-            .pairs
-            .par_iter()
-            .map_init(Scratch::new, |scr, sp| {
-                self.pair_hermite_density::<ABS>(sp, d, scr)
-            })
-            .collect();
-        let mut hbuf = Vec::with_capacity(self.h_len);
-        for p in &parts {
-            hbuf.extend_from_slice(p);
+        // Hermite densities, one slice per primitive pair, in stored order,
+        // each shell pair writing its own range of `hbuf` (no second copy).
+        let mut hbuf = vec![0.0; self.h_len];
+        let mut ranges: Vec<&mut [f64]> = Vec::with_capacity(self.pairs.len());
+        let mut rest = hbuf.as_mut_slice();
+        for sp in &self.pairs {
+            let (mine, tail) = std::mem::take(&mut rest).split_at_mut(self.pair_h_len(sp));
+            ranges.push(mine);
+            rest = tail;
         }
-        drop(parts);
-        debug_assert_eq!(hbuf.len(), self.h_len);
+        debug_assert!(rest.is_empty());
+        self.pairs
+            .par_iter()
+            .zip(ranges)
+            .for_each_init(Scratch::new, |scr, (sp, out)| {
+                self.pair_hermite_density::<ABS>(sp, d, scr, out);
+            });
 
         let blocks: Vec<Vec<f64>> = self
             .aux_blocks
@@ -1398,13 +1401,21 @@ impl SplitRiJ {
         d_p
     }
 
-    /// `H_tuv` for every primitive pair of `sp`, concatenated.
+    /// Length of shell pair `sp`'s Hermite densities in the d-pass buffer.
+    fn pair_h_len(&self, sp: &ShellPair) -> usize {
+        let lab = self.obs[sp.a as usize].l + self.obs[sp.b as usize].l;
+        (sp.prim1 - sp.prim0) as usize * n_herm(lab)
+    }
+
+    /// `H_tuv` for every primitive pair of `sp`, concatenated, into `out`
+    /// (zeroed, `pair_h_len(sp)` long).
     fn pair_hermite_density<const ABS: bool>(
         &self,
         sp: &ShellPair,
         d: &Array2<f64>,
         scr: &mut Scratch,
-    ) -> Vec<f64> {
+        out: &mut [f64],
+    ) {
         let (sa, sb) = (&self.obs[sp.a as usize], &self.obs[sp.b as usize]);
         let diag = sp.a == sp.b;
         let (nfa, nfb, nca, ncb) = (sa.nfun, sb.nfun, sa.ncart, sb.ncart);
@@ -1466,7 +1477,7 @@ impl SplitRiJ {
         let h = hermite();
         let nh = n_herm(sa.l + sb.l);
         let (p0, p1) = (sp.prim0 as usize, sp.prim1 as usize);
-        let mut out = vec![0.0; (p1 - p0) * nh];
+        debug_assert_eq!(out.len(), (p1 - p0) * nh);
         let sl = sa.l + sb.l + 1;
         let si = (sb.l + 1) * sl;
         for (k, pp) in self.prims[p0..p1].iter().enumerate() {
@@ -1503,7 +1514,6 @@ impl SplitRiJ {
                 }
             }
         }
-        out
     }
 
     /// `d_P` for the aux functions of shells `k0..k1`.
