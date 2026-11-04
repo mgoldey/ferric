@@ -43,9 +43,9 @@ pub enum JkStorage {
     /// RI-J by Split-RI-J (`ferric_scf::split_rij`): no stored J tensor, its
     /// three-centre integrals recomputed in contracted form every build. Any
     /// tensor still needed (DF-K's) is stored as under [`Auto`](Self::Auto).
-    /// Single rank, with J and K on different auxiliary bases (or no DF-K):
-    /// otherwise J is built from a stored tensor as under `Auto`, with a
-    /// warning.
+    /// Single rank only (with J and K on one auxiliary basis, the raw tensor
+    /// DF-K needs is freed once DF-K's copy is made); on several ranks J is
+    /// built from a stored tensor as under `Auto`, with a warning.
     Split,
 }
 
@@ -443,6 +443,21 @@ fn cached_calibration(
 }
 
 impl ThreeIndexSource {
+    /// Would RI-J's f64 tensor for a band of `rows` aux functions be held in
+    /// memory under `auto`? The checks [`Self::build_pair_screened_for_jk`]
+    /// and [`Self::build_for_jk`] run (pair-screened when `screen` is given,
+    /// else packed or dense), without building anything. `false` means `auto`
+    /// would spill it to disk or recompute it every pass.
+    pub fn ri_j_fits_in_memory(
+        nao: usize,
+        rows: usize,
+        screen: Option<&super::PairScreen>,
+        budget_bytes: usize,
+    ) -> bool {
+        screen.is_some_and(|s| pair_screened_fits(JkStorage::Auto, rows, s, budget_bytes))
+            || memory_tier(nao, rows, budget_bytes).is_some()
+    }
+
     /// Build the raw tensor for the SCF RI-J/K path under the effective
     /// [`jk_storage`] policy. `mol` is needed only to re-prepare the bases for
     /// the recompute backend, which owns them.

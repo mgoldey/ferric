@@ -258,6 +258,28 @@ fn f64_rows(
 }
 
 impl ThreeIndexSource {
+    /// Would [`Self::build_ri_j_f32`] take a band of `rows` aux functions
+    /// (its fit check, without building)?
+    pub fn ri_j_f32_fits_in_memory(
+        nao: usize,
+        rows: usize,
+        screen: Option<&PairScreen>,
+        budget_bytes: usize,
+    ) -> bool {
+        let cols = screen.map_or(packed_pair_len(nao), |s| s.ncols());
+        let scratch_row = match screen {
+            None => nao.saturating_mul(nao).saturating_mul(8),
+            Some(_) => cols.saturating_mul(8),
+        };
+        f32_fits(
+            Self::ri_j_f32_bytes(rows, cols),
+            rows,
+            scratch_row,
+            budget_bytes,
+        )
+        .is_ok()
+    }
+
     /// Bytes of an f32 tensor of `band` rows and `cols` stored columns.
     pub fn ri_j_f32_bytes(band: usize, cols: usize) -> usize {
         band.saturating_mul(cols).saturating_mul(4)
