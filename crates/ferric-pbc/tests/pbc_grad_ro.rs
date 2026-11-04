@@ -54,7 +54,7 @@ mod support;
 
 use support::*;
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn h3_rohf_force_matches_fd_of_own_energy_both_exxdiv() {
     let su = setup(h3_cell(), &pyscf_sto3g_h());
@@ -78,7 +78,7 @@ fn h3_rohf_force_matches_fd_of_own_energy_both_exxdiv() {
     }
 }
 
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn h3_rohf_fd_anchor_catches_each_mutant() {
     let su = setup(h3_cell(), &pyscf_sto3g_h());
@@ -128,7 +128,7 @@ fn h3_rohf_fd_anchor_catches_each_mutant() {
 /// `W_RO − Σ_σ D_σ F_σ D_σ = ½[C_o (f_β)_oc C_cᵀ + h.c.]`, zero where the
 /// closed–open β gradient vanishes. Pinned so that a change breaking it (or
 /// a W_RO that stops being the Lagrangian) turns red; NOT a must-fail mutant.
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn h3_rohf_uhf_form_w_is_an_identity_at_convergence() {
     let su = setup(h3_cell(), &pyscf_sto3g_h());
@@ -161,7 +161,7 @@ fn h3_rohf_uhf_form_w_is_an_identity_at_convergence() {
 
 /// F(ewald) ≡ F(none) on ONE ROHF density; the RHF-form Madelung mutant
 /// breaks it.
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn h3_rohf_ewald_and_none_forces_agree_on_one_density() {
     let su = setup(h3_cell(), &pyscf_sto3g_h());
@@ -189,7 +189,7 @@ fn h3_rohf_ewald_and_none_forces_agree_on_one_density() {
 /// ROHF and UHF forces at the same geometry differ at the size of the spin
 /// contamination (prototype H3 HF: ΔE 5.06e-4, max|ΔF| 8.45e-3). Reported;
 /// asserted only above the FD floor, with E_RO ≥ E_U.
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn h3_rohf_and_uhf_forces_differ() {
     let su = setup(h3_cell(), &pyscf_sto3g_h());
@@ -230,7 +230,7 @@ fn h3_rohf_and_uhf_forces_differ() {
     assert!(df > RO_VS_U_FLOOR, "{df:e}");
 }
 
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn h3_roks_force_matches_fd_of_own_energy_with_grid_response() {
     let su = setup(h3_cell(), &pyscf_sto3g_h());
@@ -259,7 +259,7 @@ fn h3_roks_force_matches_fd_of_own_energy_with_grid_response() {
 /// pinned to the FD of the own energy by
 /// `h3_roks_force_matches_fd_of_own_energy_with_grid_response`; the exchange /
 /// Madelung mutants by `h3_rohf_fd_anchor_catches_each_mutant`.
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn h3_roks_pbe_mutants_move_the_force_and_uhf_form_w_is_an_identity() {
     let su = setup(h3_cell(), &pyscf_sto3g_h());
@@ -283,7 +283,7 @@ fn h3_roks_pbe_mutants_move_the_force_and_uhf_form_w_is_an_identity() {
     assert!(df < W_IDENTITY_FORCE_BAR, "{df:e}");
 }
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn h3_roks_pbe0_ewald_and_none_forces_agree_on_one_density() {
     let su = setup(h3_cell(), &pyscf_sto3g_h());
@@ -297,7 +297,7 @@ fn h3_roks_pbe0_ewald_and_none_forces_agree_on_one_density() {
 }
 
 /// ROHF(D/2, D/2) ≡ RHF(D) on one density, both exxdiv.
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn closed_shell_rohf_gradient_is_the_rhf_gradient() {
     let su = setup(cell_at(&GRAD_H2_ATOMS, cubic(4.0), 1), &pyscf_sto3g_h());
@@ -324,7 +324,7 @@ fn closed_shell_rohf_gradient_is_the_rhf_gradient() {
 }
 
 /// ROKS(D/2, D/2) ≡ RKS(D) on one density, PBE and PBE0 with ewald.
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn closed_shell_roks_gradient_is_the_rks_gradient() {
     let su = setup(cell_at(&GRAD_H2_ATOMS, cubic(4.0), 1), &pyscf_sto3g_h());
@@ -432,7 +432,7 @@ fn ro_gradients_refuse_wrong_kind_unconverged_and_non_stationary() {
 /// H3 ROHF with RS-GDF J/K (cc-pvdz-ri, prototype 2.8e-9), both exxdiv, and
 /// the two W mutants the fit path shares with dense AFT (prototype
 /// 4.1e-2 / 1.7e-1 and 1.1e-2).
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn h3_rohf_rsgdf_force_matches_fd_and_catches_w_mutants() {
     let bs = pyscf_sto3g_h();

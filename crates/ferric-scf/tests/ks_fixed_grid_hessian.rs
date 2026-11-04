@@ -65,18 +65,12 @@ O      0.010000    -0.020000     0.120000\n\
 H      0.030000     0.770000    -0.460000\n\
 H     -0.020000    -0.740000    -0.490000\n";
 
-/// Grid for the SCF-based anchors: 50 radial x 50 angular per atom (reduced
-/// from 50 x 110 angular; the physics is grid-independent, this keeps the
-/// displaced SCFs cheap). Frozen-density checks share this grid.
-const SCF_GRID_RADIAL: usize = 50;
-const SCF_GRID_ANGULAR: usize = 50;
-/// Number of displaced geometries (coordinates) used in the SCF-based anchors.
-const N_SCF_DISP: usize = 3;
-
+/// Grid for the SCF-based anchors: 50 radial x 50 angular per atom (the
+/// physics is grid-independent; this keeps the 18+ displaced SCFs cheap).
 fn grid_cfg() -> AtomicGridConfig {
     AtomicGridConfig {
-        n_radial: SCF_GRID_RADIAL,
-        n_angular: SCF_GRID_ANGULAR,
+        n_radial: 50,
+        n_angular: 50,
         prune: None,
         weight_cut: None,
     }
@@ -179,22 +173,6 @@ fn max_abs_diff(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
     max_abs(&(a - b))
 }
 
-
-fn max_abs_diff_grad(an: &Array2<f64>, fd: &Array2<f64>) -> f64 {
-    max_abs_diff(
-        &an.slice(ndarray::s![0..1, ..]).to_owned(),
-        &fd.slice(ndarray::s![0..1, ..]).to_owned(),
-    )
-}
-
-fn max_abs_diff_hess(an: &Array2<f64>, fd: &Array2<f64>) -> f64 {
-    max_abs_diff(
-        &an.slice(ndarray::s![.., 0..N_SCF_DISP]).to_owned(),
-        &fd.slice(ndarray::s![.., 0..N_SCF_DISP]).to_owned(),
-    )
-}
-
-
 fn flat(g: &Array2<f64>) -> Array2<f64> {
     Array2::from_shape_vec((g.len(), 1), g.iter().copied().collect()).unwrap()
 }
@@ -250,7 +228,7 @@ fn gradient_at(r: &Ref, pt: &Pt) -> Array2<f64> {
 fn fd_hessian_of_gradient(r: &Ref, h: f64) -> Array2<f64> {
     let n3 = 3 * r.mol.atoms.len();
     let mut out = Array2::<f64>::zeros((n3, n3));
-    for b in 0..N_SCF_DISP {
+    for b in 0..n3 {
         let col = rich(h, |s| {
             let pt = fixed_grid_scf(&r.grid, &displaced(&r.mol, b, s), &r.bs_name);
             flat(&gradient_at(r, &pt))
@@ -262,8 +240,9 @@ fn fd_hessian_of_gradient(r: &Ref, h: f64) -> Array2<f64> {
 
 /// Central difference of the fixed-grid ENERGY, (natoms, 3).
 fn fd_gradient_of_energy(r: &Ref, h: f64) -> Array2<f64> {
+    let n3 = 3 * r.mol.atoms.len();
     let mut out = Array2::<f64>::zeros((r.mol.atoms.len(), 3));
-    for b in 0..N_SCF_DISP {
+    for b in 0..n3 {
         let e = rich(h, |s| {
             let pt = fixed_grid_scf(&r.grid, &displaced(&r.mol, b, s), &r.bs_name);
             Array2::from_elem((1, 1), pt.res.energy)
@@ -370,7 +349,7 @@ fn frozen_pieces(xc: &str) {
 /// a missing term: halving the step must shrink it by close to 2^4 = 16 (the
 /// Richardson-extrapolated stencil), which a wrong or missing term (a constant
 /// miss, independent of the step) cannot do.
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn xc_skeleton_difference_error_is_truncation_that_scales_with_the_step() {
     skeleton_truncation_scales("LDA");
@@ -477,14 +456,14 @@ fn fixed_grid_scf_reproduces_the_production_energy_at_the_reference_geometry() {
     assert!(de < 1e-8, "{de:.3e}");
 }
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn gradient_matches_central_difference_of_the_fixed_grid_energy() {
     for basis_name in ["sto-3g", "6-31g"] {
         let r = reference(basis_name);
         let an = gradient_at(&r, &r.fixed);
         let fd = fd_gradient_of_energy(&r, H_FROZEN);
-        let diff = max_abs_diff_grad(&an, &fd);
+        let diff = max_abs_diff(&an, &fd);
         eprintln!(
             "{basis_name}: |grad_analytic - FD(E_fixed)| = {diff:.3e} (max |g| {:.3e})",
             max_abs(&an)
@@ -493,7 +472,7 @@ fn gradient_matches_central_difference_of_the_fixed_grid_energy() {
     }
 }
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn hessian_matches_central_difference_of_the_fixed_grid_gradient() {
     if !has_deriv2() {
@@ -503,7 +482,7 @@ fn hessian_matches_central_difference_of_the_fixed_grid_gradient() {
         let r = reference(basis_name);
         let an = analytic(&r, &KsFixedGridMutants::default());
         let fd = fd_hessian_of_gradient(&r, H_FROZEN);
-        let diff = max_abs_diff_hess(&an, &fd);
+        let diff = max_abs_diff(&an, &fd);
         eprintln!(
             "{basis_name}: |H_analytic - FD(g_fixed)| = {diff:.3e} (max |H| {:.3e})",
             max_abs(&an)
@@ -554,7 +533,7 @@ const TOL_SCF_NOISE: f64 = 5e-11;
 /// miss of at least `MUTANT_FACTOR` times the agreement bar.
 const MUTANT_FACTOR: f64 = 10.0;
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn production_wired_mutants_each_fail_the_hessian_anchor() {
     if !has_deriv2() {
@@ -562,7 +541,7 @@ fn production_wired_mutants_each_fail_the_hessian_anchor() {
     }
     let r = reference("6-31g");
     let fd = fd_hessian_of_gradient(&r, H_FROZEN);
-    let good = max_abs_diff_hess(&analytic(&r, &KsFixedGridMutants::default()), &fd);
+    let good = max_abs_diff(&analytic(&r, &KsFixedGridMutants::default()), &fd);
     assert!(good < TOL_HESS_FD, "production {good:.3e}");
     let xc = |f: fn(&mut XcMutants)| {
         let mut m = KsFixedGridMutants::default();
@@ -598,7 +577,7 @@ fn production_wired_mutants_each_fail_the_hessian_anchor() {
     ];
     let mut weakest = f64::INFINITY;
     for (name, m) in cases {
-        let miss = max_abs_diff_hess(&analytic(&r, &m), &fd);
+        let miss = max_abs_diff(&analytic(&r, &m), &fd);
         eprintln!(
             "mutant [{name}]: misses the FD Hessian by {miss:.3e} ({:.1e} x bar)",
             miss / TOL_HESS_FD
@@ -630,7 +609,7 @@ fn production_wired_mutants_each_fail_the_hessian_anchor() {
 /// #428), so a smaller SCF grid here would pair the SCF and this call on
 /// different grids. The gap includes the default grid's own quadrature
 /// error, which closes with grid refinement along with the weight response.
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn production_gradient_difference_differs_by_the_weight_response_scale() {
     if !has_deriv2() {
@@ -832,7 +811,7 @@ fn without_second_derivative_integrals_the_hessian_is_a_typed_error() {
 /// d functions (the second-derivative path at l = 2 for both the XC AO
 /// derivatives and the integrals) at a step small enough for the tight cc-pVDZ
 /// oxygen s functions.
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn hessian_with_d_functions_matches_the_fixed_grid_gradient_difference() {
     if !has_deriv2() {
@@ -845,7 +824,7 @@ fn hessian_with_d_functions_matches_the_fixed_grid_gradient_difference() {
         let r = reference_for("cc-pvdz", xc);
         let an = analytic(&r, &KsFixedGridMutants::default());
         let fd = fd_hessian_of_gradient(&r, h);
-        let diff = max_abs_diff_hess(&an, &fd);
+        let diff = max_abs_diff(&an, &fd);
         eprintln!(
             "{xc} cc-pvdz: |H_analytic - FD(g_fixed)| = {diff:.3e} (max |H| {:.3e})",
             max_abs(&an)
@@ -1060,20 +1039,20 @@ fn the_grid_reports_the_exact_exchange_fraction() {
     assert_eq!(pure.exact_exchange(), 0.0);
 }
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn hybrid_gradient_matches_central_difference_of_the_fixed_grid_energy() {
     for basis_name in ["sto-3g", "6-31g"] {
         let r = reference_for(basis_name, HYBRID);
         let an = gradient_at(&r, &r.fixed);
         let fd = fd_gradient_of_energy(&r, H_FROZEN);
-        let diff = max_abs_diff_grad(&an, &fd);
+        let diff = max_abs_diff(&an, &fd);
         eprintln!("hybrid {basis_name}: |grad - FD(E)| = {diff:.3e}");
         assert!(diff < TOL_GRAD_FD, "{basis_name}: {diff:.3e}");
     }
 }
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn hybrid_hessian_matches_central_difference_of_the_fixed_grid_gradient() {
     if !has_deriv2() {
@@ -1083,14 +1062,14 @@ fn hybrid_hessian_matches_central_difference_of_the_fixed_grid_gradient() {
         let r = reference_for(basis_name, HYBRID);
         let an = analytic(&r, &KsFixedGridMutants::default());
         let fd = fd_hessian_of_gradient(&r, H_FROZEN);
-        let diff = max_abs_diff_hess(&an, &fd);
+        let diff = max_abs_diff(&an, &fd);
         eprintln!("hybrid {basis_name}: |H - FD(g)| = {diff:.3e}");
         assert!(diff < TOL_HESS_FD, "{basis_name}: {diff:.3e}");
     }
 }
 
 /// Each exact-exchange scaling site, dropped or doubled, fails the FD anchor.
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn hybrid_exchange_mutants_each_fail_the_hessian_anchor() {
     if !has_deriv2() {
@@ -1098,7 +1077,7 @@ fn hybrid_exchange_mutants_each_fail_the_hessian_anchor() {
     }
     let r = reference_for("6-31g", HYBRID);
     let fd = fd_hessian_of_gradient(&r, H_FROZEN);
-    let good = max_abs_diff_hess(&analytic(&r, &KsFixedGridMutants::default()), &fd);
+    let good = max_abs_diff(&analytic(&r, &KsFixedGridMutants::default()), &fd);
     assert!(good < TOL_HESS_FD, "production {good:.3e}");
     let m = |f: fn(&mut KsFixedGridMutants)| {
         let mut m = KsFixedGridMutants::default();
@@ -1115,7 +1094,7 @@ fn hybrid_exchange_mutants_each_fail_the_hessian_anchor() {
         ("exchange in the CPHF G x2", m(|m| m.response_exx = 2.0)),
     ];
     for (name, mutant) in cases {
-        let miss = max_abs_diff_hess(&analytic(&r, &mutant), &fd);
+        let miss = max_abs_diff(&analytic(&r, &mutant), &fd);
         eprintln!(
             "mutant [{name}]: misses by {miss:.3e} ({:.1e} x bar)",
             miss / TOL_HESS_FD
@@ -1131,7 +1110,7 @@ fn hybrid_exchange_mutants_each_fail_the_hessian_anchor() {
 // GGA and hybrid-GGA (PBE, PBE0, B3LYP): third AO derivatives, the sigma kernel
 // ---------------------------------------------------------------------------
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn gga_xc_pieces_match_frozen_density_differences() {
     frozen_pieces("PBE0");
@@ -1144,14 +1123,14 @@ fn gga_kernel_response_matches_difference_of_vxc_in_the_density() {
     kernel_response("PBE");
 }
 
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn gga_gradient_matches_central_difference_of_the_fixed_grid_energy() {
     for basis_name in ["sto-3g", "6-31g"] {
         let r = reference_for(basis_name, "PBE0");
         let an = gradient_at(&r, &r.fixed);
         let fd = fd_gradient_of_energy(&r, H_FROZEN);
-        let diff = max_abs_diff_grad(&an, &fd);
+        let diff = max_abs_diff(&an, &fd);
         eprintln!("PBE0 {basis_name}: |grad - FD(E)| = {diff:.3e}");
         assert!(diff < TOL_GRAD_FD, "{basis_name}: {diff:.3e}");
     }
@@ -1179,7 +1158,7 @@ fn gga_fixed_grid_scf_reproduces_the_production_energy() {
     assert!(de < 1e-8, "{de:.3e}");
 }
 
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn gga_hessian_matches_central_difference_of_the_fixed_grid_gradient() {
     if !has_deriv2() {
@@ -1194,7 +1173,7 @@ fn gga_hessian_matches_central_difference_of_the_fixed_grid_gradient() {
         let r = reference_for(basis_name, xc);
         let an = analytic(&r, &KsFixedGridMutants::default());
         let fd = fd_hessian_of_gradient(&r, H_FROZEN);
-        let diff = max_abs_diff_hess(&an, &fd);
+        let diff = max_abs_diff(&an, &fd);
         eprintln!("{xc} {basis_name}: |H - FD(g)| = {diff:.3e}");
         assert!(diff < TOL_HESS_FD, "{xc} {basis_name}: {diff:.3e}");
     }
@@ -1227,7 +1206,7 @@ fn lda_through_the_gradient_path_equals_the_lda_path() {
 
 /// Each GGA-specific and exchange site, dropped or distorted, fails the FD
 /// anchor on a hybrid GGA.
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn gga_mutants_each_fail_the_hessian_anchor() {
     if !has_deriv2() {
@@ -1235,7 +1214,7 @@ fn gga_mutants_each_fail_the_hessian_anchor() {
     }
     let r = reference_for("6-31g", "PBE0");
     let fd = fd_hessian_of_gradient(&r, H_FROZEN);
-    let good = max_abs_diff_hess(&analytic(&r, &KsFixedGridMutants::default()), &fd);
+    let good = max_abs_diff(&analytic(&r, &KsFixedGridMutants::default()), &fd);
     assert!(good < TOL_HESS_FD, "production {good:.3e}");
     let xc = |f: fn(&mut XcMutants)| {
         let mut m = KsFixedGridMutants::default();
@@ -1275,7 +1254,7 @@ fn gga_mutants_each_fail_the_hessian_anchor() {
         ("exchange in the CPHF G x2", top(|m| m.response_exx = 2.0)),
     ];
     for (name, mutant) in cases {
-        let miss = max_abs_diff_hess(&analytic(&r, &mutant), &fd);
+        let miss = max_abs_diff(&analytic(&r, &mutant), &fd);
         eprintln!(
             "mutant [{name}]: misses by {miss:.3e} ({:.1e} x bar)",
             miss / TOL_HESS_FD

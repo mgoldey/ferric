@@ -71,7 +71,7 @@ use uks::*;
 /// (a ½ on the spin exchange terms, a scale other than 1, half of `W`) is
 /// O(1e-2) (ExchDropBeta, RoWDropCross). The spin-assignment defects are
 /// INVISIBLE here (`D_α = D_β`), asserted.
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn singlet_roks_is_the_rks_rsh_force() {
     let (rows, fx, u) = ro_singlet_rows(CAM);
@@ -101,7 +101,7 @@ fn singlet_roks_is_the_rks_rsh_force() {
 /// 1x1x2, exxdiv ewald, two components. Physics: the h^2 floor (weekly
 /// sweep); artifact: every ledger mutant misses by > 100 FD bars
 /// (`full_mutation_ledger`).
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn cam_b3lyp_roks_force_matches_fd() {
     let fx = ro_fixture(Kind::Tri(2), &H3D, [1, 1, 2], CAM, ExxDiv::Ewald);
@@ -138,7 +138,7 @@ fn cam_b3lyp_roks_force_matches_fd() {
 /// plain Madelung, the M-term on the total density, or `D_α` in the β
 /// exchange walk move it by > 1e-3 (the Madelung ones are blind under exxdiv
 /// none by construction).
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn equal_fractions_is_the_global_hybrid_roks_force() {
     // exxdiv none (where the Madelung defects are blind) runs weekly.
@@ -161,7 +161,7 @@ fn equal_fractions_is_the_global_hybrid_roks_force() {
 /// Roothaan fallback (no stored spin Focks) gives the same force and still
 /// refuses another grid. Also: an unrestricted result, an RS-GDF exchange on
 /// this dense-J SCF (Fock guard).
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn gamma_roks_rsh_force_is_the_one_point_mesh_force() {
     let g = ro_gamma_fixture(CAM, ExxDiv::Ewald);
@@ -306,7 +306,7 @@ fn gamma_roks_rsh_force_is_the_one_point_mesh_force() {
 /// 1x1x2, ewald; the full ledger for both functionals is weekly): each moves
 /// the FD-validated force by > 100 FD bars, and the erf piece is live on this
 /// K set (largest weight 0.172).
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn open_shell_spin_erf_and_w_ro_mutants_are_caught() {
     let cell = cell_of(Kind::Tri(2), &H3D);
@@ -332,7 +332,7 @@ fn open_shell_spin_erf_and_w_ro_mutants_are_caught() {
 /// production force and the unrestricted-form `W` (`RoWUhfForm`) are both
 /// refused by the ROHF orbital-gradient gate, which is the protection the
 /// weekly test establishes (off stationarity neither `W` form is right).
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn loose_roks_rsh_state_is_refused_by_the_orbital_gradient_gate() {
     let loose = ro_fixture_conv(
@@ -358,7 +358,7 @@ fn loose_roks_rsh_state_is_refused_by_the_orbital_gradient_gate() {
 /// separation (open-shell), a missing exxdiv; the ROKS stress's Fock guard
 /// and exxdiv refusals on a range-separated source; and the Python / CLI
 /// derivative gate (unchanged).
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn roks_rsh_force_refusals() {
     use ferric_pbc::kuxcstress::{kpoint_roks_stress, KUksStressConfig};

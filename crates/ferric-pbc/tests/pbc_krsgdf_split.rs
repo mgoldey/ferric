@@ -613,7 +613,7 @@ fn report(tag: &str, g: &KGradient) {
 /// λ = 0 and λ = 1e-8 move nothing on H2 1x1x3: every `B(k, k')`, the SR
 /// counts, the energy (both exxdiv) and the force are the unsplit ones BIT
 /// FOR BIT (module doc).
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn nothing_moved_split_k_build_energy_and_force_are_the_unsplit_ones() {
     let ks = ksys(h2_cell_k(), &pyscf_sto3g_h(), &et_sp_aux(), [1, 1, 3]);
@@ -692,7 +692,7 @@ fn nothing_moved_split_k_build_energy_and_force_are_the_unsplit_ones() {
 /// the Gamma split's; the k split force equals the Gamma split force at the
 /// same density (both exxdiv); the Gamma-kernel mutants are IDENTITIES at
 /// q = 0 (energy B bitwise, force ≤ 1e-12).
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn one_point_mesh_split_is_the_gamma_split_rhf() {
     let (bs, aux_bs) = (pyscf_sto3g_h(), et_sp_aux());
@@ -786,7 +786,7 @@ fn one_point_mesh_split_is_the_gamma_split_rhf() {
 
 /// H3 UHF (2,1) at 1x1x1, λ = 1: the k split force equals the Gamma split
 /// force at the same spin densities (prototype 4.4e-13 / 6.7e-13).
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn one_point_mesh_split_is_the_gamma_split_uhf() {
     let (bs, aux_bs) = (pyscf_sto3g_h(), et_sp_aux());

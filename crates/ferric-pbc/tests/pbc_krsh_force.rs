@@ -85,7 +85,7 @@ use support::*;
 /// displacement, h = 1e-4), dense AFT, 1x1x3 (non-TRIM), exxdiv ewald, two
 /// components. Physics: the h^2 floor (2.9e-9 measured); artifact: every
 /// ledger mutant misses by >= 3e-2.
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn cam_b3lyp_force_matches_fd() {
     let fx = fixture(&H2, [1, 1, 3], CAM, ExxDiv::Ewald);
@@ -134,7 +134,7 @@ fn null_force(
 /// two force paths (kernel factor vs exchange-coefficient scaling) must give
 /// the same force to the SCF floor. Artifact: a factor applied to J, dropped,
 /// or a plain Madelung in the M-term each move it by >= 1e-3 (asserted).
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn rsh_with_equal_fractions_is_the_global_hybrid_force() {
     let c = 0.4;
@@ -181,7 +181,7 @@ fn rsh_with_equal_fractions_is_the_global_hybrid_force() {
 /// supercell's own primitive Madelung constants). Physics: equal to the SCF
 /// floor; artifact: a wrong q-dependent kernel argument or a mesh-vs-primitive
 /// Madelung mix-up shows as an O(1e-3) gap.
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn rsh_k_mesh_force_is_the_supercell_force() {
     for f in ["HSE06", CAM] {
@@ -317,7 +317,7 @@ fn gamma_refusals(
 /// routed into the 1x1x1 force) against the 1x1x1 k SCF + force. Physics: the
 /// SCF floor (~1e-10); artifact: a glue slip (wrong density factor, Fock,
 /// k-point, Madelung) shows as O(1e-3), a grid mismatch fails the Fock guard.
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn gamma_rsh_force_is_the_one_point_mesh_force() {
     for f in ["HSE06", CAM] {
@@ -344,7 +344,7 @@ fn gamma_rsh_force_is_the_one_point_mesh_force() {
 /// more than 1e-5 (ledger, CAM-B3LYP column: 1.48e-1 .. 5.20e-4; the
 /// smallest, `RshOmegaScaled`, is 52x the bar). The weekly test adds the
 /// HSE06 row (its erf-piece and omega-scale defects at a 10-FD-bar margin).
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn rsh_mutants_are_caught_canary() {
     rsh_mutant_sweep(

@@ -164,7 +164,7 @@ fn wb97x_gradient_h2_ccpvdz_vs_fd() {
     );
 }
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn wb97x_gradient_h2o_ccpvdz_vs_fd() {
     run_case(

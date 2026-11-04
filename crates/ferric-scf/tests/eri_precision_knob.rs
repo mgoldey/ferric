@@ -35,7 +35,7 @@ fn dk_via_knob(
     (d * &k).sum()
 }
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn eri_precision_knob_reaches_build_jk() {
     let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../testdata/molecules");

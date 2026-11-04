@@ -930,7 +930,7 @@ fn frequencies_hessian_key_selects_the_construction() {
 /// `memory`), a spill (`disk`) and recompute (`direct`); all four agree with
 /// the unconstrained run. `memory` under a budget that holds neither the
 /// unpacked nor the packed tensor is refused with the key named.
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn jk_storage_places_the_tensor_without_changing_the_energy() {
     let job = |storage: &str, budget: &str| {

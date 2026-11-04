@@ -121,7 +121,7 @@ fn madelung_strains_match_fd_of_the_constants() {
 /// the mesh axis. Physics: the FD floor (all-nine sweep in the validation
 /// file); artifact: every ledger mutant misses by orders of magnitude more.
 /// MEASURED: 7.2e-10 / 1.7e-10 / 7.0e-10 (bar 3e-8).
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn cam_b3lyp_stress_matches_fd() {
     let fx = fixture(&H2, [1, 1, 3], CAM, ExxDiv::Ewald);
@@ -152,7 +152,7 @@ fn cam_b3lyp_stress_matches_fd() {
 /// Madelung strain, moves it by >= 1e-3 (asserted; blind for the slope,
 /// fraction swap and v_M^LR defects, which vanish at `c_sr = c_lr`, and for
 /// the Madelung defects under exxdiv none).
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn rsh_with_equal_fractions_is_the_global_hybrid_stress() {
     let c = 0.4;
@@ -202,7 +202,7 @@ fn rsh_with_equal_fractions_is_the_global_hybrid_stress() {
 /// mixed Madelung constant and strain are the primitive ones of the
 /// supercell lattice. Physics: the SCF floor; artifact: a q-dependent kernel
 /// slip or a mesh-vs-primitive Madelung strain mix-up shows as O(1e-3).
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn rsh_k_mesh_stress_is_the_supercell_stress() {
     {
@@ -302,7 +302,7 @@ fn gamma_stress(f: &str, exxdiv: ExxDiv) -> KRksStress {
 /// routed into the 1x1x1 stress) against the 1x1x1 k SCF + stress. A GLUE
 /// check (the kernel is shared): the SCF floor; a glue slip (density factor,
 /// Fock, Madelung) is O(1e-3), a grid mismatch fails the Fock guard.
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn gamma_rsh_stress_is_the_one_point_mesh_stress() {
     for (f, exxdiv) in [(CAM, ExxDiv::Ewald), ("HSE06", ExxDiv::None)] {
@@ -329,7 +329,7 @@ fn gamma_rsh_stress_is_the_one_point_mesh_stress() {
 /// analytic Madelung strain and of the M-term / Pulay cancellation).
 /// Artifact: the plain or LR-less Madelung strain misses by the full
 /// difference of the constants' strains (asserted > 1e-3).
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn ewald_minus_none_stress_is_the_mixed_madelung_strain() {
     let f = CAM;
@@ -394,7 +394,7 @@ fn ewald_minus_none_stress_is_the_mixed_madelung_strain() {
 /// FD bars for the kernel-slope defect: the small-K (q != 0) terms carry
 /// `f'`. The supercell anchor catches the primitive-cell Madelung strain
 /// (`GammaMadelungStrain`, printed there).
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn rsh_stress_mutants_are_caught() {
     for (f, bar) in [(CAM, 1e-5), ("HSE06", 10.0 * STRESS_FD_BAR)] {
@@ -422,7 +422,7 @@ fn rsh_stress_mutants_are_caught() {
 /// Typed refusals: bare kernels with a range-separated name, kernels with
 /// another functional's parameters, the HF stress on range-separated kernels,
 /// a range-separated name on RS-GDF J/K, and the open-shell allowlist.
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn rsh_stress_refusals() {
     let fx = fixture(&H2, [1, 1, 1], "HSE06", ExxDiv::Ewald);

@@ -5419,7 +5419,7 @@ mod tests {
     /// the cached ShellPair's directed AB vector actually participates in the
     /// VRR/HRR recurrence coordinates (see engine.rs's shellpair_cache_*
     /// tests for why s-shell-only systems cannot exercise this).
-    #[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+    #[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
     #[test]
     fn shellpair_cache_matches_uncached_rhf_energy_bit_identical_benzene_ccpvdz() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());

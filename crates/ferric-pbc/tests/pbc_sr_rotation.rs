@@ -122,7 +122,7 @@ use ferric_pbc::sr_rotation::{ColumnRotationMutant, SrColumnRotation};
 use ndarray::Array2;
 use support::*;
 
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn identity_rotation_is_bitwise_todays_build() {
     let cell = triclinic_cell();
@@ -186,7 +186,7 @@ fn identity_rotation_is_bitwise_todays_build() {
     }
 }
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn rotated_sr_blocks_back_transform_to_the_parent_basis() {
     let cell = cell_of(WATER, 8.0);
@@ -306,7 +306,7 @@ fn rotated_walk_counts_shrink() {
     assert_eq!(w1.n_sr2_pairs, w0.n_sr2_pairs, "SR metric untouched");
 }
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn rhf_energy_matches_the_unrotated_build() {
     let cell = cell_of(FORMALDEHYDE, 9.0);
@@ -377,7 +377,7 @@ fn rotated_builds_are_bitwise_across_thread_counts() {
     }
 }
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn mutants_fail_the_covariance_anchor() {
     let cell = cell_of(WATER, 8.0);
@@ -437,7 +437,7 @@ fn mutants_fail_the_covariance_anchor() {
     );
 }
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn builds_that_must_walk_the_parent_shells_refuse_the_rotation() {
     let cell = cell_of(WATER, 8.0);
@@ -539,7 +539,7 @@ fn default_gamma_energy_build_rotates() {
 
 /// ANCHOR (finite differences): the analytic force of the ROTATED energy
 /// equals the central FD of the rotated energy.
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn rotated_force_matches_fd_of_the_rotated_energy() {
     let h = 1e-4;
@@ -582,7 +582,7 @@ fn rotated_force_matches_fd_of_the_rotated_energy() {
 /// `Auto` (the library default) rotates the force path: hcore, fit and the
 /// derivative walks, bitwise the explicit-`On` run, and the force really
 /// used fewer SR derivative calls than the unrotated walk.
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn default_force_path_rotates() {
     let cell = h2_off_axis(&H2_OFF_AXIS);
@@ -611,7 +611,7 @@ fn default_force_path_rotates() {
 
 /// Typed refusals of the force path: configurations that would differentiate
 /// another walk than the energy ran.
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn force_path_refuses_inconsistent_rotation_requests() {
     let cell = h2_off_axis(&H2_OFF_AXIS);
@@ -673,7 +673,7 @@ fn force_path_refuses_inconsistent_rotation_requests() {
 /// Canary of `rotated_stress_equals_the_unrotated_stress_and_matches_fd`
 /// (weekly): unsplit H2 only, the walk and own-SCF anchors, every stress
 /// mutant, and FD of the zz and xy strains instead of all nine.
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn rotated_stress_anchor_canary() {
     rotated_stress_case(&[None], &[(2, 2), (0, 1)]);
@@ -682,7 +682,7 @@ fn rotated_stress_anchor_canary() {
 /// Canary of `identity_rotation_forces_and_stress_are_bitwise_unrotated`
 /// (weekly): the cheap cubic H2 cell, unsplit, every forward-transform
 /// mutant (the triclinic cell and the split run weekly).
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn identity_rotation_forces_and_stress_canary() {
     identity_rotation_forces_and_stress_case(vec![(h2_off_axis(&H2_OFF_AXIS), true, vec![None])]);
@@ -690,7 +690,7 @@ fn identity_rotation_forces_and_stress_canary() {
 
 /// Canary of `rotated_forces_and_stress_are_bitwise_across_thread_counts`
 /// (weekly): unsplit, 2 threads vs 1, and the frozen serial oracles.
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn rotated_forces_and_stress_threads_canary() {
     rotated_forces_and_stress_threads_case(&[None], &[2]);

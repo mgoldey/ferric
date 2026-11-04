@@ -63,7 +63,7 @@ fn big(pos: &[[f64; 3]]) -> Cell {
 
 /// EXACTNESS ANCHOR: the attenuated fit at `ω → ∞` (cut 24) is the plain
 /// Coulomb fit with K = 0 dropped (module doc).
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn attenuated_force_is_the_plain_fit_force_as_omega_goes_to_infinity() {
     let s = sys(tri2(&TRI2_ATOMS));
@@ -150,7 +150,7 @@ fn empty_and_negligible_attenuated_classes_contribute_nothing() {
 /// the forces sum to zero, and each production-wired mutant moves the force
 /// or stress far beyond the weekly FD floor (~3e-9; full ledger in the
 /// validation file), the `ω_0` one is refused by the rebuilt-B check.
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn zero_xc_rsh_force_and_stress_wiring_and_mutants() {
     use ferric_pbc::kstress::KStressMutation as SM;

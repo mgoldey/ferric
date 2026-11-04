@@ -355,7 +355,7 @@ fn check_reference(
     );
 }
 
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn uks_nh2_dispersion_frequencies() {
     check_reference(
@@ -367,7 +367,7 @@ fn uks_nh2_dispersion_frequencies() {
     );
 }
 
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn roks_hco_dispersion_frequencies() {
     check_reference(

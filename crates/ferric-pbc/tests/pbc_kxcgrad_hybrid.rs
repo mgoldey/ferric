@@ -35,7 +35,7 @@ use support::*;
 /// Artifact hypothesis: a leaked XC term, a dropped Madelung, a K scaled by
 /// anything but 1 would show as a nonzero difference; physics predicts 0 to
 /// roundoff (F is hermitised on one side only: ~1e-16).
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn a_equal_one_with_zero_xc_is_the_hf_force_per_part() {
     for jk in [Jk::Dense, Jk::Gdf] {
@@ -110,7 +110,7 @@ fn a_equal_one_with_zero_xc_is_the_hf_force_per_part() {
 /// factor.) Density: the PBE0 SCF's; the stored Fock is replaced by the
 /// rebuilt F(a) so the guard passes (the formula, not self-consistency, is
 /// under test).
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn force_is_affine_in_the_exchange_fraction_at_fixed_density() {
     for jk in [Jk::Dense, Jk::Gdf] {
@@ -199,7 +199,7 @@ fn force_is_affine_in_the_exchange_fraction_at_fixed_density() {
 /// scaled Madelung M-term is inside `overlap`). Independent construction: real
 /// lattice sums vs complex Bloch AOs and a separate SCF. Floor: the two SCFs
 /// converge to ~1e-10 in the density.
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn one_point_mesh_matches_the_gamma_hybrid_gradient_per_part() {
     for f in ["PBE0", "B3LYP"] {
@@ -231,7 +231,7 @@ fn one_point_mesh_matches_the_gamma_hybrid_gradient_per_part() {
 /// primitive-cell constant would differ). The k force on atom A is the Gamma
 /// force of the explicit supercell on ONE copy of A. Both sides use the same
 /// explicit `neighbour_cutoff`.
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn k_mesh_hybrid_force_is_the_gamma_supercell_force_per_part() {
     let grid = grid_cfg();
@@ -267,7 +267,7 @@ fn k_mesh_hybrid_force_is_the_gamma_supercell_force_per_part() {
 /// energy's FD, and the two analytic forces must agree (derived equal: the
 /// shift is a constant on the occupied space, the density does not change, and
 /// its force contribution cancels between K and the M-term).
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn pbe0_force_matches_fd_dense_and_rsgdf_both_exxdiv() {
     let mut by_mode: HashMap<(Jk, bool), Array2<f64>> = HashMap::new();
@@ -297,7 +297,7 @@ fn pbe0_force_matches_fd_dense_and_rsgdf_both_exxdiv() {
 
 /// A second global hybrid with a different a and a different semilocal
 /// remainder (B3LYP, a = 0.2): dense AFT, Ewald.
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn b3lyp_force_matches_fd() {
     let fx = fixture(&H2, [1, 1, 3], "B3LYP", Jk::Dense, ExxDiv::Ewald);
@@ -343,7 +343,7 @@ fn b3lyp_force_matches_fd() {
 /// Range-split RS-GDF (lambda = 1) with a hybrid: the exchange coefficients go
 /// through the same fit-gradient plumbing as the unsplit fit; FD of the
 /// hybrid energy on the split build decides.
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn pbe0_force_with_the_range_split_fit_matches_fd() {
     let fx = fixture(&H2, [1, 1, 3], "PBE0", Jk::GdfSplit, ExxDiv::Ewald);
@@ -368,7 +368,7 @@ fn pbe0_force_with_the_range_split_fit_matches_fd() {
 
 // -------------------------------------------------------------- bitwise etc.
 
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn hybrid_force_is_bit_identical_across_threads() {
     for jk in [Jk::Dense, Jk::Gdf] {
@@ -388,7 +388,7 @@ fn hybrid_force_is_bit_identical_across_threads() {
 
 // ---------------------------------------------------- refusals / Fock guard
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn refusals_and_the_hybrid_fock_guard() {
     let fx = fixture(&H2, [1, 1, 3], "PBE0", Jk::Dense, ExxDiv::Ewald);
@@ -474,7 +474,7 @@ fn refusals_and_the_hybrid_fock_guard() {
 /// chunk gate (>= 10 kB) always trips before that 1 kB charge could, so the
 /// charge itself is covered by the sizing arithmetic, not by a tripping budget
 /// (stated, not claimed).
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn budgets_either_reproduce_the_force_or_fail_typed() {
     let fx = fixture(&H2, [1, 1, 3], "PBE0", Jk::Dense, ExxDiv::Ewald);
@@ -533,7 +533,7 @@ fn pbe0_force_matches_fd_on_the_production_grid_and_a_2x2x2_mesh() {
 /// fit gradient is separate code, and scales J and K independently, so unlike
 /// the a = 1 anchor this one pins the fit's a-scaling. Floor: SCFs converge to
 /// ~1e-10 in the density.
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn one_point_rsgdf_hybrid_force_matches_the_gamma_rsgdf_gradient_per_part() {
     for f in ["PBE0", "B3LYP"] {
@@ -553,7 +553,7 @@ fn one_point_rsgdf_hybrid_force_matches_the_gamma_rsgdf_gradient_per_part() {
 /// The fit-side defects are caught by the Gamma anchor itself, not only by FD:
 /// `a` applied to the fit's Coulomb pieces and the fit exchange left unscaled
 /// both miss the Gamma gradient by far more than the anchor's floor.
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn gamma_rsgdf_anchor_catches_the_fit_scale_mutants() {
     use KGradMutation as G;
@@ -579,7 +579,7 @@ fn gamma_rsgdf_anchor_catches_the_fit_scale_mutants() {
 /// bar; the fit-only defect and the guard-skip control must be EXACTLY 0.
 /// The production force it is measured against is anchored per commit to the
 /// Gamma PBE0 gradient (`one_point_mesh_matches_the_gamma_hybrid_gradient_per_part`).
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn dense_exchange_scale_mutants_are_caught_on_the_one_point_mesh() {
     use KGradMutation as G;
@@ -616,7 +616,7 @@ fn dense_exchange_scale_mutants_are_caught_on_the_one_point_mesh() {
 /// RS-GDF. It covers the components FD never probes, and is BLIND to a
 /// dropped XC term on this cell (X1, X3, X4 each sum to zero over the atoms,
 /// PR A) and to a-scaling defects (all still translation invariant).
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn hybrid_net_force_vanishes() {
     for jk in [Jk::Dense, Jk::Gdf] {

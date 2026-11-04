@@ -196,7 +196,7 @@ fn kpoint_energy_1x1x1(l: Lat, f: &str, exxdiv: ExxDiv, aux: Option<&str>) -> f6
         .energy
 }
 
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn gamma_rsh_matches_pinned_pyscf() {
     for (l, f, x, e_ref) in PINS {
@@ -209,7 +209,7 @@ fn gamma_rsh_matches_pinned_pyscf() {
     }
 }
 
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn gamma_rsh_is_the_one_by_one_by_one_mesh() {
     for (l, f, x) in [
@@ -241,7 +241,7 @@ fn gamma_rsh_is_the_one_by_one_by_one_mesh() {
 /// RS-GDF Gamma RSH minus dense Gamma RSH must be the plain-Coulomb (PBE0)
 /// RS-GDF fit error of the same aux basis, to a fraction of it: the attenuated
 /// fit adds no error beyond the full-Coulomb fit's order.
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn gamma_rsgdf_rsh_is_dense_to_the_fit_error() {
     // Plain-Coulomb scale: PBE0 through the unchanged gamma_rks.
@@ -310,7 +310,7 @@ fn gamma_rsgdf_rsh_is_dense_to_the_fit_error() {
 }
 
 /// Every mutant must move the energy far above the pin bar (>= 1e6 x).
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn gamma_rsh_pins_see_the_defects() {
     let (l, x) = (Lat::Triclinic, ExxDiv::Ewald);
@@ -621,7 +621,7 @@ fn k_matrix_gap(aux: &str, rsh: RshParams, omega_fit_scale: f64) -> f64 {
 /// full-Coulomb kernel; an omega error of 1e-3 (relative) in the fit alone
 /// moves it to 7.1e-6. So the test resolves an attenuated-K fit defect down
 /// to ~1e-11 absolute (omega-equivalent ~1e-6 relative).
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn gamma_attenuated_k_fit_is_resolved_as_a_matrix() {
     let r = rsh_of("CAM_B3LYP");

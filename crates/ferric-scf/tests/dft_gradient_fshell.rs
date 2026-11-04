@@ -189,7 +189,7 @@ fn pbe_gradient_h2_augccpvtz_vs_fd() {
 
 /// H2O/def2-TZVP also exercises f-shells (one f-set on O), and exercises the
 /// Turbomole-convention contraction renormalization fix (P1.2.b).
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn pbe_gradient_h2o_def2_tzvp_vs_fd() {
     run_case(

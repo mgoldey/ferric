@@ -163,7 +163,7 @@ fn solve(case: &Case, touch_aurora: bool) -> (f64, usize, bool) {
     (r.energy, r.iterations, r.converged)
 }
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn aurora_disabled_reproduces_the_untouched_default_path() {
     // Belt and braces: the default must BE disabled, so that the two arms of

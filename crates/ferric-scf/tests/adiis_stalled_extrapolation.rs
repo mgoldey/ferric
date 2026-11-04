@@ -94,7 +94,7 @@ fn solve(
 /// Benzene/STO-3G in 600 and in 2000 charges (seed 11): EDIIS reaches the
 /// density-settled exit at iteration 5 with err_max 0.12 / 0.45. Without the
 /// fix it reported `converged` at a wrong energy; with it, it matches Pulay.
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn ediis_does_not_report_a_stalled_extrapolation_as_converged() {
     let mol = Molecule::load_xyz("../../testdata/molecules/benzene.xyz").unwrap();

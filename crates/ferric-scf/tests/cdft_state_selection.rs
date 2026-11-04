@@ -1037,7 +1037,7 @@ fn sweep_guesses_at(sys: &Sys, w: &Array2<f64>, target: f64, guesses: &[Guess]) 
 /// natural-target solution, and the post-descent state all land on the LOWER
 /// one. That is exactly the asymmetry the brief predicted from NWChem, whose
 /// default atomic guess reaches its own LOW member.
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn state_b_energy_is_multi_valued_across_guesses_at_the_integer_target() {
     let sys = build_sys();
@@ -1264,7 +1264,7 @@ fn state_b_energy_is_multi_valued_across_guesses_at_the_integer_target() {
 /// Reported for every target in 1.954484 → 2.000. `dc/dλ` is the driver's own
 /// finite-difference Jacobian, taken from the LAST outer step (the one nearest
 /// the solution).
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn constraint_jacobian_does_not_collapse_at_the_integer_target() {
     let sys = build_sys();
@@ -1378,7 +1378,7 @@ fn constraint_jacobian_does_not_collapse_at_the_integer_target() {
 /// Its REACHABILITY (that it fails on a deliberately λ-doubled gradient, rather
 /// than merely passing on the right one) is pinned by
 /// `lambda_nonzero_fd_check_rejects_a_doubled_constraint_term`.
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn augmented_gradient_matches_fd_at_large_negative_lambda() {
     let sys = build_sys();
@@ -1630,7 +1630,7 @@ fn hene_cfg_fixed() -> RhfConfig {
 /// claim is "the saddle is gone and the energy is 0.667 eV lower"; "this is the
 /// global minimum of the constrained manifold" is NOT established here and the
 /// assertion below does not pretend otherwise.
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn the_fixed_driver_reaches_the_lower_state_at_the_integer_target() {
     let sys = build_sys();
@@ -1844,7 +1844,7 @@ fn state_a_is_untouched_by_the_descent() {
 ///
 /// This test keeps the CROSS-partition offsets: ferric's descended state is
 /// below NWChem's native HIGH member and 0.563 eV above its native LOW member.
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn cross_partition_offsets_to_nwchems_native_states() {
     const NWCHEM_LOW: f64 = -130.447_402_218;
@@ -1948,7 +1948,7 @@ fn cross_partition_offsets_to_nwchems_native_states() {
 /// on a DIFFERENT state than the driver-default (hcore-guess) start. Either is a real change in what users
 /// get by default, and neither should be discovered by a baseline drifting
 /// silently in some other test.
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn the_default_minao_path_converges_to_the_same_state_as_hcore() {
     // Energies are compared at the exact target population, E + λ(N − N_target)

@@ -82,8 +82,8 @@ const BENZENE: &str = "../../testdata/molecules/benzene.xyz";
 #[test]
 fn mixed_vxc_twin_scf_matches_f64_and_converges() {
     let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let f = scf(WATER, "sto-3g", "PBE", (0, 1), 1e-10, false);
-    let t = scf(WATER, "sto-3g", "PBE", (0, 1), 1e-10, true);
+    let f = scf(WATER, "cc-pvdz", "PBE", (0, 1), 1e-10, false);
+    let t = scf(WATER, "cc-pvdz", "PBE", (0, 1), 1e-10, true);
     assert_eq!(f.mixed_builds, 0, "the f64 run used the mixed kernel");
     assert!(
         t.mixed_builds >= 2,
@@ -105,8 +105,8 @@ fn mixed_vxc_twin_scf_matches_f64_and_converges() {
 #[test]
 fn a_meta_gga_never_runs_mixed() {
     let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let f = scf(WATER, "sto-3g", "R2SCAN", (0, 1), 1e-8, false);
-    let t = scf(WATER, "sto-3g", "R2SCAN", (0, 1), 1e-8, true);
+    let f = scf(WATER, "cc-pvdz", "R2SCAN", (0, 1), 1e-8, false);
+    let t = scf(WATER, "cc-pvdz", "R2SCAN", (0, 1), 1e-8, true);
     assert_eq!(t.mixed_builds, 0);
     assert_eq!(t.energy.to_bits(), f.energy.to_bits());
 }
@@ -145,7 +145,7 @@ fn max_abs(a: &Array2<f64>) -> f64 {
 fn a_converged_rks_exit_returns_an_f64_fock_matrix() {
     let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mol = Molecule::load_xyz(WATER).unwrap();
-    let bs = basis::bundled("sto-3g").unwrap();
+    let bs = basis::bundled("cc-pvdz").unwrap();
     let prep = PreparedBasis::new(&mol, &bs).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
@@ -189,7 +189,7 @@ fn a_converged_rks_exit_returns_an_f64_fock_matrix() {
 fn a_converged_uks_exit_returns_f64_fock_matrices() {
     let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mol = Molecule::load_xyz_with_charge(WATER, 1, 2).unwrap();
-    let bs = basis::bundled("sto-3g").unwrap();
+    let bs = basis::bundled("cc-pvdz").unwrap();
     let prep = PreparedBasis::new(&mol, &bs).unwrap();
     let bounds = SchwarzBounds::compute(Operator::coulomb(), &prep).unwrap();
     let cfg = loose_cfg();
@@ -243,7 +243,7 @@ fn a_converged_uks_exit_returns_f64_fock_matrices() {
 fn the_exit_rebuild_restores_the_f64_spin_potentials() {
     let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mol = Molecule::load_xyz_with_charge(WATER, 1, 2).unwrap();
-    let bs = basis::bundled("sto-3g").unwrap();
+    let bs = basis::bundled("cc-pvdz").unwrap();
     let grid = AtomicGridConfig {
         n_radial: 30,
         n_angular: 50,
@@ -303,7 +303,7 @@ fn the_exit_rebuild_restores_the_f64_spin_potentials() {
 fn a_converged_roks_exit_returns_the_f64_spin_fock_matrices() {
     let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mol = Molecule::load_xyz_with_charge(WATER, 1, 2).unwrap();
-    let prep = PreparedBasis::new(&mol, &basis::bundled("sto-3g").unwrap()).unwrap();
+    let prep = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let cfg = RhfConfig {
@@ -355,7 +355,7 @@ fn a_converged_roks_exit_returns_the_f64_spin_fock_matrices() {
 fn start_scf_makes_the_next_build_a_first_build() {
     let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mol = Molecule::load_xyz(WATER).unwrap();
-    let bs = basis::bundled("sto-3g").unwrap();
+    let bs = basis::bundled("cc-pvdz").unwrap();
     let grid = AtomicGridConfig {
         n_radial: 30,
         n_angular: 50,
@@ -400,16 +400,16 @@ fn start_scf_makes_the_next_build_a_first_build() {
 fn measured_error_map() {
     let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let cases: &[(&str, &str, &str, &str, (i32, usize))] = &[
-        ("H2O", WATER, "sto-3g", "PBE", (0, 1)),
+        ("H2O", WATER, "cc-pvdz", "PBE", (0, 1)),
         ("H2O", WATER, "aug-cc-pvtz", "PBE", (0, 1)),
-        ("H2O", WATER, "sto-3g", "R2SCAN", (0, 1)),
-        ("H2O+ (UKS)", WATER, "sto-3g", "PBE", (1, 2)),
-        ("benzene", BENZENE, "sto-3g", "PBE", (0, 1)),
-        ("benzene", BENZENE, "sto-3g", "B3LYP", (0, 1)),
+        ("H2O", WATER, "cc-pvdz", "R2SCAN", (0, 1)),
+        ("H2O+ (UKS)", WATER, "cc-pvdz", "PBE", (1, 2)),
+        ("benzene", BENZENE, "cc-pvdz", "PBE", (0, 1)),
+        ("benzene", BENZENE, "cc-pvdz", "B3LYP", (0, 1)),
         (
             "n-octane",
             "../../testdata/molecules/alkane_8.xyz",
-            "sto-3g",
+            "cc-pvdz",
             "PBE",
             (0, 1),
         ),

@@ -74,7 +74,7 @@
 mod support;
 use support::*;
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn two_ecp_elements_masked_stencil_matches_unmasked_and_is_translation_invariant() {
     check_two_ecp_skeleton(false);
@@ -92,7 +92,7 @@ fn two_real_ecp_elements_uhf_hessian_matches_fd_of_analytic_gradient() {
     check_two_ecp_fd(true);
 }
 
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn ecp_with_point_charges_rhf_matches_fd() {
     if !has_deriv2() {
@@ -102,7 +102,7 @@ fn ecp_with_point_charges_rhf_matches_fd() {
     check_with_environment("HOI + point", false, HOI, 1, &point_environment(), &[4, 8]);
 }
 
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn ecp_with_smeared_charges_rhf_matches_fd() {
     if !has_deriv2() {
@@ -118,7 +118,7 @@ fn ecp_with_smeared_charges_rhf_matches_fd() {
     );
 }
 
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn ecp_with_uniform_field_rhf_matches_fd() {
     if !has_deriv2() {
@@ -169,7 +169,7 @@ fn charge_nuclear_hessian_uses_the_screened_nuclear_charge() {
     }
 }
 
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn ecp_with_all_environments_uhf_matches_fd() {
     if !has_deriv2() {
@@ -184,7 +184,7 @@ fn ecp_with_all_environments_uhf_matches_fd() {
     check_with_environment("HIH + all (UHF)", true, HIH, 2, &ext, &[1, 4]);
 }
 
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn empty_environment_is_bit_identical_to_none_and_zero_charge_is_1e10() {
     if !has_deriv2() {

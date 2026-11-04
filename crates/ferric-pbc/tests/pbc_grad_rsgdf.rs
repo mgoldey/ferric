@@ -63,7 +63,7 @@ use support::*;
 
 /// `build_for_gradient` changes no energy: B, W and the stats are bitwise
 /// those of `build`.
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn build_for_gradient_is_bitwise_build() {
     let cell = cell_at(&H2_ATOMS_G, cubic(4.0), 1);
@@ -92,7 +92,7 @@ fn build_for_gradient_is_bitwise_build() {
     }
 }
 
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn h2_rhf_force_matches_fd_of_own_rsgdf_energy() {
     let su = h2_setup();
@@ -122,7 +122,7 @@ fn h2_rhf_force_matches_fd_of_own_rsgdf_energy() {
     }
 }
 
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn h2_fd_anchor_catches_each_fit_mutant() {
     let su = h2_setup();
@@ -140,7 +140,7 @@ fn h2_fd_anchor_catches_each_fit_mutant() {
 }
 
 /// UHF(D/2, D/2) ≡ RHF(D) on one density (fit path).
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn closed_shell_uhf_rsgdf_gradient_is_the_rhf_gradient() {
     let su = h2_setup();
@@ -154,7 +154,7 @@ fn closed_shell_uhf_rsgdf_gradient_is_the_rhf_gradient() {
 
 /// UKS(D/2, D/2) ≡ RKS(D) on one density, PBE0 ewald (fit path; exercises
 /// the RKS entry point).
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn closed_shell_uks_rsgdf_gradient_is_the_rks_gradient() {
     let su = h2_setup();
@@ -195,7 +195,7 @@ fn closed_shell_uks_rsgdf_gradient_is_the_rks_gradient() {
     assert!(grks.net_force < NET_FORCE_BAR, "ΣF {:e}", grks.net_force);
 }
 
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn h3_uhf_force_matches_fd_and_catches_each_fit_mutant() {
     let su = h3_setup();
@@ -233,7 +233,7 @@ fn h3_uhf_force_matches_fd_and_catches_each_fit_mutant() {
 }
 
 /// F(ewald) ≡ F(none) on ONE open-shell density (fit path).
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn h3_uhf_rsgdf_ewald_and_none_forces_agree_on_one_density() {
     let su = h3_setup();
@@ -249,7 +249,7 @@ fn h3_uhf_rsgdf_ewald_and_none_forces_agree_on_one_density() {
     assert!(d < EWALD_NONE_BAR, "{d:e}");
 }
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn exact_aux_span_rsgdf_force_equals_dense_aft_force() {
     let cell = cell_at(&H2_ATOMS_G, cubic(4.0), 1);
@@ -334,7 +334,7 @@ fn exact_aux_span_rsgdf_force_equals_dense_aft_force() {
 /// H2 ET-40 at lindep 3e-3 (module doc): the Loewner form matches FD of the
 /// CUT energy, the textbook form does not, and the dropped count is the
 /// same at every displaced geometry.
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn active_eigenvalue_cut_needs_the_loewner_metric_term() {
     let su = setup(

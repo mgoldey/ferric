@@ -205,7 +205,7 @@ fn charges_are_invariant_to_translation() {
 /// molecule with atoms at general positions is a harder case than a linear one
 /// lying along an axis, so it is worth pinning even though the current default
 /// path handles it.
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn the_qm9_regression_molecule_has_equal_fluorines() {
     let xyz = "9\ngdb_133454\n\

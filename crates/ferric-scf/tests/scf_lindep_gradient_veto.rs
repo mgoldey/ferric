@@ -35,7 +35,7 @@ fn setup(charge: i32, mult: usize) -> (Molecule, PreparedBasis, SchwarzBounds) {
     (mol, prep, bounds)
 }
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn dropped_lindep_modes_do_not_trip_the_gradient_veto() {
     std::env::set_var("FERRIC_LINDEP_THRESH", "1e-3");

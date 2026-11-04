@@ -400,7 +400,7 @@ fn ks_coarse_grid_is_refused() {
 
 /// Beyond PBE: a meta-GGA (tau term, auto level shift) and a range-separated
 /// hybrid with VV10 (SR/LR fitted exchange, nonlocal grid) block exactly too.
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn ks_blocking_holds_for_scan_and_wb97x_v() {
     let mol = load("water.xyz");

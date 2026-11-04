@@ -515,7 +515,7 @@ fn hene_vacuous_constraint_is_still_accepted() {
 /// and the gap is asserted to be far above the floor. Both formulations are
 /// checked (N(He) = 2 and N(Ne) = 9 are the same state of the 11-electron
 /// cation); the `level_shift` sweep rules out an inner-solve stiffness artifact.
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn loose_tolerance_still_applies_the_constraint() {
     let (mol, bs, prep, bounds, gcfg) = setup_hene(2.0);
@@ -618,7 +618,7 @@ fn loose_tolerance_met_after_lambda_moved_is_accepted() {
 /// formulations reach λ = ±2.4390, E = −130.42671, agreeing to 7e-6 Ha (without
 /// the descent, the saddle at λ = ±2.7537, E = −130.40218); agreement is the
 /// physical consistency check, since they describe the same state.
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn cliff_side_targets_with_tight_tolerance_are_accepted() {
     let (mol, bs, prep, bounds, gcfg) = setup_hene(2.0);

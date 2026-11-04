@@ -53,7 +53,7 @@ const OMEGA: f64 = 0.3;
 /// Sizes from the shell structure alone: (n, band, nelec).
 fn dims(xyz: &str, mult: usize) -> (usize, usize, usize) {
     let mol = Molecule::parse_xyz(xyz, 0, mult).unwrap();
-    let obs = PreparedBasis::new(&mol, &basis::bundled("sto-3g").unwrap()).unwrap();
+    let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
     let aux = PreparedBasis::new(&mol, &basis::bundled("def2-universal-jkfit").unwrap()).unwrap();
     (obs.nbasis(), aux.nbasis(), mol.nelec() as usize)
 }
@@ -99,7 +99,7 @@ fn ready() -> bool {
 /// (erfc fitter, erf fitter, n) for one system.
 fn pair(xyz: &str, mult: usize) -> (DfK<'static>, DfK<'static>, usize) {
     let mol = Molecule::parse_xyz(xyz, 0, mult).unwrap();
-    let obs = PreparedBasis::new(&mol, &basis::bundled("sto-3g").unwrap()).unwrap();
+    let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
     let aux = PreparedBasis::new(&mol, &basis::bundled("def2-universal-jkfit").unwrap()).unwrap();
     let n = obs.nbasis();
     let mk = |op| DfK::new(op, &obs, &aux, usize::MAX).unwrap();

@@ -26,7 +26,7 @@ use ferric_scf::screening::{Bound, SchwarzBounds};
 #[test]
 fn qqr_equals_schwarz_on_every_diagonal_quartet() {
     let mol = Molecule::load_xyz("../../testdata/molecules/alkane_8.xyz").expect("alkane_8");
-    let bs = basis::bundled("sto-3g").expect("basis");
+    let bs = basis::bundled("cc-pvdz").expect("basis");
     let prep = PreparedBasis::new(&mol, &bs).expect("prepared basis");
     let op = Operator::coulomb();
 

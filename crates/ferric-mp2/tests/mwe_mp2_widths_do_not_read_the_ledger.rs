@@ -193,7 +193,7 @@ impl Fixture {
 /// against an implementation that reads the ledger, the RSS, or the phase of
 /// the moon. Pinning the operand as UNCLAMPED is what makes the rest
 /// measurements.
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn the_chosen_budget_puts_the_width_in_its_live_regime() {
     let f = fixture();
@@ -220,7 +220,7 @@ fn the_chosen_budget_puts_the_width_in_its_live_regime() {
 /// the 256 cap), then with a ballast that left `available_bytes()` still above
 /// the cliff. Only after both operands were placed in the live regime -- by
 /// the measured table in the module doc -- did it die.
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn the_ballast_moves_the_width_if_it_is_read() {
     let f = fixture();
@@ -252,7 +252,7 @@ fn the_ballast_moves_the_width_if_it_is_read() {
 /// The mutation SURVIVED the ample-pool anchor for exactly the reason the
 /// module doc gives, and only became detectable once the budget was calibrated
 /// to the measured cliff.
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn an_outstanding_reservation_does_not_move_the_energy() {
     let _s = CleanSlot::acquire();
@@ -315,7 +315,7 @@ fn an_outstanding_reservation_does_not_move_the_energy() {
 /// differ in the last digits" -- that is the designed, documented,
 /// reproducible-from-config behaviour. If this test ever fails, the width has
 /// stopped responding to the budget at all and the whole knob is decoration.
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn the_budget_is_still_a_live_knob() {
     let _s = CleanSlot::acquire();

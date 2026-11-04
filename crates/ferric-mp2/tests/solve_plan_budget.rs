@@ -117,7 +117,7 @@ fn case(xyz: &str, fc: usize, eps: f64, gate: Option<f64>) -> Case {
 /// The estimate equals the heap the plan holds. `SolvePlan::new` sizes
 /// every vector exactly, so the stated factor is 1 (asserted to 1%); the
 /// counting allocator is the independent measurement. Gate off and on.
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn solve_plan_bytes_for_matches_the_measured_allocation() {
     for gate in [None, Some(0.7)] {

@@ -80,7 +80,7 @@ use ferric_pbc::kpts::KPointMesh;
 /// scaling, Madelung, XC), not SCF freedom; `closed_h4_*` below has SCF
 /// freedom. Measured: bit-identical (0.0) on all four (functional, exxdiv)
 /// rows of this one cell.
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn gamma_closed_shell_h2_uks_is_rks() {
     closed_limit_case("HSE06", ExxDiv::Ewald);
@@ -89,7 +89,7 @@ fn gamma_closed_shell_h2_uks_is_rks() {
 
 /// H4 singlet in the triclinic cell: 4 AOs, 2 occupied orbitals not fixed by
 /// symmetry, so UKS and RKS can differ if the per-spin path is wrong.
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn closed_h4_singlet_uks_is_rks_at_gamma_and_on_a_mesh() {
     let c = cell_h4_singlet();
@@ -112,7 +112,7 @@ fn closed_h4_singlet_uks_is_rks_at_gamma_and_on_a_mesh() {
 
 // ------------------------------------------------ polarized pins
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn gamma_polarized_matches_pyscf_h3_doublet() {
     let cell = cell_named("h3d");
@@ -133,7 +133,7 @@ fn gamma_polarized_matches_pyscf_h3_doublet() {
 
 /// Multi-k per-spin assembly, the erf kernel at q != 0 and the mixed
 /// Madelung constant, against PySCF (CAM-B3LYP, whose erf weight is live).
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn kpoint_cam_b3lyp_1x1x2_doublet_matches_pyscf() {
     let cell = cell_named("h3d");
@@ -146,7 +146,7 @@ fn kpoint_cam_b3lyp_1x1x2_doublet_matches_pyscf() {
 
 /// Each is the unmutated polarized CAM-B3LYP energy minus the mutant's; a
 /// mutant must move E by more than `MUT_MIN`.
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn gamma_spin_mutants_fail_the_polarized_cam_pin() {
     let cell = cell_named("h3d");
@@ -166,7 +166,7 @@ fn gamma_spin_mutants_fail_the_polarized_cam_pin() {
     }
 }
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn one_point_mesh_is_gamma_uks_rsh() {
     let cell = cell_named("h3d");
@@ -193,7 +193,7 @@ fn one_point_mesh_is_gamma_uks_rsh() {
 /// the k-point UKS force and stress, which cover RSH on dense-AFT J/K
 /// (`pbc_kuks_rsh_force.rs`, `pbc_kuks_rsh_stress.rs`): each refuses a
 /// missing exxdiv and runs on the SCF's own exxdiv and grid.
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn open_shell_rsh_derivatives_refuse_by_name() {
     use ferric_pbc::kdense_aft::KDenseAftEri;

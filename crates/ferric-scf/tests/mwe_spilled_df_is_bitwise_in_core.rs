@@ -97,7 +97,7 @@ fn moved(a: &[f64], b: &[f64]) -> usize {
 
 /// The dressed tensor itself, across budgets that give different accumulator
 /// pieces, read-back widths and raw streams.
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn spilled_dressed_tensor_is_bitwise_the_in_core_one() {
     let _s = slot();
@@ -181,7 +181,7 @@ fn spilled_dressed_tensor_is_bitwise_in_core_at_an_odd_nao() {
 }
 
 /// K through the real DfK, at a binding width and two thread counts.
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn spilled_k_is_bitwise_in_core_and_thread_independent() {
     let _s = slot();
@@ -210,7 +210,7 @@ fn spilled_k_is_bitwise_in_core_and_thread_independent() {
 
 /// End to end, in the refused band: raw has the same backend either way, so only
 /// the dressed tensor's route differs, and the SCF must be bitwise unchanged.
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn scf_in_the_refused_band_is_bitwise_the_in_core_run() {
     let _s = slot();
@@ -245,7 +245,7 @@ fn scf_in_the_refused_band_is_bitwise_the_in_core_run() {
 
 /// Raw changing backend moves J by a few ulp, independently of this path: DF-J's
 /// unpacked and packed contractions sum differently. Bounded, not bitwise.
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn a_fully_spilled_scf_stays_within_the_df_j_backend_gap() {
     let _s = slot();
@@ -277,7 +277,7 @@ fn a_fully_spilled_scf_stays_within_the_df_j_backend_gap() {
 /// REVIEW F1: a hybrid's XC evaluator charges the pool `threads × worker` before
 /// DF is built, so the same pool can admit the dressed tensor at 1 thread and
 /// refuse it at 4. The bits must not care.
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn hybrid_ks_energy_ignores_threads_across_the_refused_band() {
     let _s = slot();

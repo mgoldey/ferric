@@ -486,7 +486,7 @@ fn one_point_vs_gamma(pos: &[[f64; 3]], f: Option<&str>, w_mutant: bool) {
 }
 
 /// (2a) 1x1x1 == the Gamma ROHF stress, per part, on the H3 doublet.
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn one_point_mesh_matches_the_gamma_rohf_stress_per_part() {
     one_point_vs_gamma(&H3, None, true);
@@ -533,7 +533,7 @@ fn hf_parts(p: &ferric_pbc::kstress::KStressParts) -> Vec<(&'static str, Mat3)> 
 /// hypothesis: a spin factor of 2 vs 1 or a wrong `W` normalisation breaks the
 /// equality; physics predicts agreement at the SCF-density floor. The same
 /// state is NOT blind to `RoWDropCross` (halves `W`): asserted visible.
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn closed_shell_rohf_equals_the_rhf_stress_per_part() {
     let m = G112;
@@ -705,7 +705,7 @@ fn assert_gate_refusal(label: &str, r: Result<KUksStress, ferric_core::FerricErr
 /// `RO_ORBITAL_GRADIENT_TOL` (1e-5); the refusal is the gate's, not the Fock
 /// guard's (the stored Fock is the density's own). Deleting the gate in
 /// `uks_stress_with` makes this test fail (the stress is returned).
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn loose_roks_scf_fires_the_orbital_gradient_gate_with_the_exact_message() {
     let loose = loose_fixture();
@@ -900,7 +900,7 @@ fn ro_stress_gate_probe_rank2() {
 /// Typed refusals (exact wording) of the ROKS/ROHF entries: unsupported
 /// functionals, a hybrid without exxdiv, the per-spin Fock guard from every
 /// side, a short MO set and an unconverged SCF.
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn refusals_and_the_fock_guard() {
     let fx = fixture(&H3, G111, Some("PBE"), ExxDiv::None);
@@ -1051,7 +1051,7 @@ fn charge_of(m: &str) -> usize {
 /// enumerable from the gate's code: 15 named arrays live at once plus one
 /// product temporary plus the six of the spectral-norm stage = 22. A charge of
 /// the old eight (or none) fails both checks.
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn the_gate_scratch_charge_is_read_from_the_production_error() {
     let fx = fixture(&H3, G111, None, ExxDiv::Ewald);
@@ -1114,7 +1114,7 @@ fn fd_case(f: Option<&str>, exxdiv: ExxDiv, m: Mesh, comps: &[(usize, usize)]) {
 /// fractional coordinates (fresh SCF per displaced cell, mesh rebuilt on the
 /// strained cell, shared cutoff 14), one component on a 1x1x2 mesh (default
 /// set; the stress of a closed-open-virtual H3 doublet, non-TRIM mesh).
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn rohf_stress_matches_fd_1x1x2() {
     fd_case(None, ExxDiv::Ewald, G112, &[(2, 2)]);

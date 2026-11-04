@@ -3909,7 +3909,7 @@ mod stage_c_tests {
     /// differ by O(κ·u). Measured (2026-10-30): Coulomb C4/C8 1.8e-12 /
     /// 2.9e-12 relative at κ(V_DD) = 9.9e5 / 1.7e6; erfc 2.3e-13 / 6.5e-13
     /// at κ = 4.2e4 / 4.8e4 — 0.8–6% of κ·u. A wrong W is an O(1) miss.
-    #[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+    #[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
     #[test]
     fn pair_fit_cholesky_matches_inverse_oracle() {
         let (mut worst, mut worst_pp) = (0.0f64, 0.0f64);

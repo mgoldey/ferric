@@ -2955,7 +2955,7 @@ mod tests {
         );
     }
 
-    #[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+    #[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
     #[test]
     fn spilled_dressed_tensor_stays_within_a_few_ulp_of_in_core() {
         let mol = Molecule::load_xyz("../../testdata/molecules/benzene.xyz").unwrap();

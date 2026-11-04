@@ -118,7 +118,7 @@ fn uks_grad_h_atom_ccpvdz_lda() {
     run_case("H/cc-pVDZ", "LDA", "1\nH\nH 0 0 0\n", 2, "cc-pvdz", 1e-3);
 }
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn uks_grad_oh_ccpvdz_lda() {
     run_case(
@@ -131,7 +131,7 @@ fn uks_grad_oh_ccpvdz_lda() {
     );
 }
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn uks_grad_oh_ccpvdz_pbe() {
     run_case(
@@ -144,7 +144,7 @@ fn uks_grad_oh_ccpvdz_pbe() {
     );
 }
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn uks_grad_oh_ccpvdz_b3lyp() {
     run_case(

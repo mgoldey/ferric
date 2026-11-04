@@ -99,7 +99,7 @@ use ferric_pbc::rsgdf::kpoint::{KPairSymMutant, KRsGdf, KRsGdfMutation};
 use ferric_pbc::rsgdf::RangeSplit;
 use support::*;
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn krsgdf_s2_split_bins_take_either_orientation() {
     let (cell, prep, aux) = tri_sp();
@@ -115,7 +115,7 @@ fn krsgdf_s2_split_bins_take_either_orientation() {
     );
 }
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn hcore_kpts_s2_is_the_ordered_loop_mirrored_and_conjugated() {
     let (cell, prep, _) = tri_sp();
@@ -173,7 +173,7 @@ fn hcore_kpts_s2_is_the_ordered_loop_mirrored_and_conjugated() {
     }
 }
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn hcore_kpts_s2_mutants_fail_and_no_conj_needs_a_non_trim_mesh() {
     let (cell, prep, _) = tri_sp();
@@ -215,7 +215,7 @@ fn hcore_kpts_s2_mutants_fail_and_no_conj_needs_a_non_trim_mesh() {
     }
 }
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn krhf_energy_matches_the_frozen_pre_s2_build_on_trim_and_non_trim_meshes() {
     let aux = basis::bundled("cc-pvdz-ri").unwrap();
@@ -225,7 +225,7 @@ fn krhf_energy_matches_the_frozen_pre_s2_build_on_trim_and_non_trim_meshes() {
     }
 }
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn kuhf_energy_matches_the_frozen_pre_s2_build() {
     let ks = ksys(
@@ -246,7 +246,7 @@ fn split_krhf_energy_matches_the_frozen_pre_s2_build() {
 /// The wrong-pair-bin mutant through the whole k-point RHF: the SAME energy
 /// bit for bit at 1×1×2 (its bins are bitwise production's), off by far more
 /// than `E_BAR` at 1×1×3.
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn wrong_pair_bin_mutant_moves_the_krhf_energy_only_on_a_non_trim_mesh() {
     let aux = basis::bundled("cc-pvdz-ri").unwrap();
@@ -354,7 +354,7 @@ fn kpoint_energy_builds_accept_the_column_rotation_and_oracles_refuse() {
 /// (weekly): the 2 H fixture, 1/2 threads, on the non-TRIM Gamma 1×1×3 mesh
 /// and on MP 1×2×2, whose pair-image moduli (2N = [1, 4, 4]) differ from the
 /// aux-image moduli (N), so a bin mix-up between the two dimensions fails.
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn krsgdf_s2_bins_canary() {
     let (cell, prep, aux) = tri2_sp();
@@ -371,7 +371,7 @@ fn krsgdf_s2_bins_canary() {
 
 /// Canary of `krsgdf_s2_bin_mutants_fail_and_wrong_pair_bin_needs_a_non_trim_mesh`
 /// (weekly): the same mutant sweep on the 2 H fixture.
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn krsgdf_s2_bin_mutants_canary() {
     let (cell, prep, aux) = tri2_sp();

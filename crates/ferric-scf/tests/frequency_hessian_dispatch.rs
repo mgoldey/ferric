@@ -377,13 +377,13 @@ fn auto_is_analytic_for_a_uhf_doublet_and_matches_fd() {
     );
 }
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn uhf_density_fitting_is_analytic_and_matches_fd() {
     density_fitting_is_analytic_and_matches_fd(FrequencyReference::Uhf);
 }
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn rohf_density_fitting_is_analytic_and_matches_fd() {
     density_fitting_is_analytic_and_matches_fd(FrequencyReference::Rohf);
@@ -527,7 +527,7 @@ fn auto_is_analytic_for_a_rohf_doublet_and_matches_fd() {
 
 /// ROKS and every other KS reference stay finite-difference: `Auto` falls back,
 /// `Analytic` refuses (before any SCF).
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn roks_stays_finite_difference_and_analytic_refuses_it() {
     let scf = RhfConfig {
@@ -699,7 +699,7 @@ fn probe_refuses_g_functions_and_unapplied_ecps_without_an_scf() {
     assert!(err.to_string().contains("apply_ecp"), "{err}");
 }
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn ri_j_with_an_ecp_is_analytic_and_matches_fd() {
     // RI-J combined with an ECP is analytic (#406): Auto takes the analytic
@@ -747,7 +747,7 @@ fn ri_j_with_an_ecp_is_analytic_and_matches_fd() {
     );
 }
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn ecp_molecule_is_analytic_and_matches_fd() {
     if !has_deriv2() {

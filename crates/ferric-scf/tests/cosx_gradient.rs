@@ -226,7 +226,7 @@ fn fd_restricted(mol: &Molecule, basis: &str, cfg: &RhfConfig, seed: &Array2<f64
 /// with O(0.1) if any of the three terms (AO, ESP-integral, weight response) is
 /// dropped or sign-flipped (prototype ablation 7e-2..9e-1), and with O(1) if the
 /// libint2 derivative blocks are mis-assigned (bra/ket/charge).
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn cosx_exchange_gradient_is_the_derivative_of_tr_dk_at_fixed_density() {
     for basis in ["sto-3g", "6-31g"] {
@@ -275,7 +275,7 @@ fn cosx_exchange_gradient_is_the_derivative_of_tr_dk_at_fixed_density() {
 /// and T by ~1e-9 on water (K error 1.6e-10 at t = 1e-7, `cosx_screen_sweep`),
 /// and a screen decision flipping between stencil points turns that into an FD
 /// error <= 1.5 x dT / h ~ 1e-5. Printed so the actual number is on record.
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn production_screens_move_the_fixed_density_derivative_by_less_than_their_bound() {
     let basis = "6-31g";
@@ -367,7 +367,7 @@ fn restricted_case(basis: &str, xc: Option<&str>, cosx: CosxConfig) {
     );
 }
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn rhf_cosx_gradient_matches_fd_sto3g() {
     restricted_case("sto-3g", None, cosx_exact());
@@ -905,7 +905,7 @@ fn fitted_restricted_case(basis: &str) {
     );
 }
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn fitted_rhf_cosx_gradient_matches_fd_sto3g() {
     fitted_restricted_case("sto-3g");

@@ -129,7 +129,7 @@ fn build_k(s: &Setup, ctx: &ParallelContext, cfg: CosxConfig, d: &Array2<f64>) -
 /// the two differ by 1.9e-8; bars 1e-7 / 1e-8 / 1e-7.
 /// The fit's own trivial limit is `Q -> I` on a dense grid, so both series
 /// must land on the SAME matrix.
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn cosx_matches_direct_k_in_the_dense_grid_limit() {
     let s = setup();
@@ -459,7 +459,7 @@ fn setup_butane() -> Setup {
 /// Mutation proof (applied by hand to `BatchScreen::keep`, recorded in the
 /// commit message): using `fmax[s2]` alone instead of `max(fmax[s1], fmax[s2])`
 /// drops blocks whose MIRROR contribution `G_{s2} += A F_{s1}` is significant.
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn cosx_density_driven_screen_butane_def2svp() {
     let s = setup_butane();

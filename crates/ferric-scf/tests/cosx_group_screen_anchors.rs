@@ -182,7 +182,7 @@ const GROUPS: [usize; 6] = [0, 256, 64, 32, 16, 8];
 ///
 /// This is the control that fails if grouping perturbs the kept set or the
 /// accumulation order even when it is asked to do nothing.
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn group_size_whole_subbatch_is_bitwise_todays_screen() {
     for s in [water(), butane()] {
@@ -244,7 +244,7 @@ fn group_size_whole_subbatch_is_bitwise_todays_screen() {
 /// is NOT evidence that the group/point alignment is right. If grouping is ever
 /// made to pay — if kept work actually falls — this anchor must be re-mutated
 /// before it is trusted as a guard on alignment.
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn grouped_screen_k_matches_unscreened_below_grid_error() {
     for s in [water(), butane()] {
@@ -307,7 +307,7 @@ fn grouped_screen_k_matches_unscreened_below_grid_error() {
 /// percentage point while the cost grows superlinearly. It is written to FAIL
 /// if a future change makes grouping actually pay, which is the point — the
 /// verdict is provisional and this is what would reopen it.
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn grouped_screen_gain_is_negligible_against_a_superlinear_bound_cost() {
     for s in [water(), butane()] {
@@ -371,7 +371,7 @@ fn grouped_screen_gain_is_negligible_against_a_superlinear_bound_cost() {
 /// The union-over-groups property, stated as a test: a finer group can only
 /// keep FEWER pairs than the unsplit test (its bound is never looser on any
 /// point it covers), never more.
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn grouped_screen_never_drops_what_the_unsplit_screen_keeps() {
     for s in [water(), butane()] {

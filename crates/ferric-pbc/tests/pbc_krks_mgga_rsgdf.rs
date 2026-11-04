@@ -125,7 +125,7 @@ fn anchor_sites(cell: &Cell, classes: &[usize]) -> Vec<[f64; 4]> {
 // k-RHF anchor bar of `pbc_krsgdf.rs`). Negative control (aux reduced to the
 // half-lattice class 0): misses by 2.3e-4 / 2.4e-4 Ha, >= 1e6 x the bar.
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn mgga_rsgdf_equals_dense_in_the_trivial_aux_limit() {
     let cell = h2_cell(4.0);
@@ -207,7 +207,7 @@ fn keep(
 // oracle off 1x1x1; it is printed alongside.
 const REL_BAR: f64 = 1e-2;
 
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn mgga_rsgdf_gap_is_the_fixed_density_coulomb_fit_error() {
     let cell = h2_cell(4.0);

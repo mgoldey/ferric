@@ -78,7 +78,7 @@ use support::*;
 /// scale other than 1) shows as O(1e-2) (ExchDropBeta: 4.1e-2). The pure
 /// spin-assignment defects are INVISIBLE here (`D_a = D_b`), asserted, which
 /// is why the remaining oracles run on polarized cells.
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn singlet_uks_is_the_rks_rsh_force() {
     let (rows, fx, u) = singlet_rows(CAM);
@@ -108,7 +108,7 @@ fn singlet_uks_is_the_rks_rsh_force() {
 /// doublet, 1x1x2, exxdiv ewald, two components. Physics: the h^2 floor
 /// (3.8e-9 / 2.1e-10 measured); artifact: every ledger mutant misses by
 /// >= 2.7e-4 (CAM-B3LYP ledger).
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn cam_b3lyp_polarized_force_matches_fd() {
     let fx = fixture(Kind::Tri(2), &H3D, [1, 1, 2], CAM, ExxDiv::Ewald);
@@ -145,7 +145,7 @@ fn cam_b3lyp_polarized_force_matches_fd() {
 /// plain Madelung, the M-term on the total density, or the alpha density in
 /// the beta exchange walk move it by >= 4e-3 (the Madelung ones are blind
 /// under exxdiv none by construction).
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn equal_fractions_is_the_global_hybrid_uks_force() {
     // exxdiv none (where the Madelung defects are blind) runs weekly.
@@ -162,7 +162,7 @@ fn equal_fractions_is_the_global_hybrid_uks_force() {
 /// O(1e-3) or fails the routed Fock guard. A glue check (the kernel is
 /// shared). Also the routed refusals: another grid (Fock guard), a
 /// restricted result.
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn gamma_uks_rsh_force_is_the_one_point_mesh_force() {
     let g = gamma_fixture(CAM, ExxDiv::Ewald);
@@ -248,7 +248,7 @@ fn gamma_uks_rsh_force_is_the_one_point_mesh_force() {
 /// 1x1x2, ewald; the full ledger for both functionals is weekly): each moves
 /// the FD-validated force by > 100 FD bars, and the erf piece is live on this
 /// K set (largest weight 0.172).
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn polarized_spin_and_erf_mutants_are_caught() {
     let cell = cell_of(Kind::Tri(2), &H3D);
@@ -274,7 +274,7 @@ fn polarized_spin_and_erf_mutants_are_caught() {
 /// dense kernels), and the Python / CLI derivative gate (UKS
 /// force wired on dense AFT; the UKS stress, the UKS force on RS-GDF and every
 /// ROKS derivative refused).
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn oshell_rsh_force_refusals() {
     use ferric_pbc::kuxcstress::{kpoint_uks_stress, KUksStressConfig};

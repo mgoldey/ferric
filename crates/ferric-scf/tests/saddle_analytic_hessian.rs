@@ -201,7 +201,7 @@ fn analytic_hessian_search_finds_the_same_saddle_for_fewer_gradients() {
     assert!(an.total_grad() < fd.total_grad());
 }
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn recalc_every_with_analytic_hessian_costs_no_extra_gradients() {
     if !has_deriv2() {

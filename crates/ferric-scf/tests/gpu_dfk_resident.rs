@@ -147,7 +147,7 @@ fn k_matches_cpu_within_the_two_stage_bound_and_both_mutants_exceed_it() {
         return;
     }
     for (label, xyz, obs_name, nocc) in [
-        ("water/cc-pVDZ", WATER.to_string(), "sto-3g", 5usize),
+        ("water/cc-pVDZ", WATER.to_string(), "cc-pvdz", 5usize),
         (
             "benzene/def2-SVP",
             std::fs::read_to_string("../../testdata/molecules/benzene.xyz").unwrap(),
@@ -220,7 +220,7 @@ fn b_is_uploaded_once_and_each_build_moves_exactly_the_documented_bytes() {
     if !ready() {
         return;
     }
-    let (mut dfk, n) = dfk_for(WATER, 1, "sto-3g");
+    let (mut dfk, n) = dfk_for(WATER, 1, "cc-pvdz");
     let nocc = 5;
     let c = c_occ(n, nocc, 2);
     let band = dfk.dressed_incore_flat_for_test().unwrap().nrows();
@@ -272,7 +272,7 @@ fn alpha_beta_reuse_does_not_accumulate_and_is_run_to_run_identical() {
     if !ready() {
         return;
     }
-    let (mut dfk, n) = dfk_for(OH, 2, "sto-3g");
+    let (mut dfk, n) = dfk_for(OH, 2, "cc-pvdz");
     let (ca, cb) = (c_occ(n, 5, 3), c_occ(n, 4, 4)); // α 5, β 4: the scratch is sized by α and reused
     let flat = dfk.dressed_incore_flat_for_test().unwrap().to_owned();
     let naux = flat.nrows();
@@ -326,7 +326,7 @@ fn chunking_by_pool_budget_changes_only_the_bound() {
     if !ready() {
         return;
     }
-    let (dfk, n) = dfk_for(WATER, 1, "sto-3g");
+    let (dfk, n) = dfk_for(WATER, 1, "cc-pvdz");
     let (nocc, flat) = (
         5usize,
         dfk.dressed_incore_flat_for_test().unwrap().to_owned(),
@@ -360,7 +360,7 @@ fn force_density_never_reaches_the_card() {
     if !ready() {
         return;
     }
-    let (mut dfk, n) = dfk_for(WATER, 1, "sto-3g");
+    let (mut dfk, n) = dfk_for(WATER, 1, "cc-pvdz");
     let c = c_occ(n, 5, 6);
     let a = stats();
     std::env::set_var("FERRIC_DFK_FORCE_DENSITY", "1");
@@ -382,7 +382,7 @@ fn device_build_with_zero_occupied_columns_is_exactly_zero() {
     if !ready() {
         return;
     }
-    let (mut dfk, n) = dfk_for(WATER, 1, "sto-3g");
+    let (mut dfk, n) = dfk_for(WATER, 1, "cc-pvdz");
     let a = stats();
     let mut k = Array2::from_elem((n, n), 1.0);
     dfk.build_from_occ(&Array2::zeros((n, 0)), &mut k).unwrap();
@@ -400,7 +400,7 @@ fn build_failure_after_upload_falls_back_once_and_stays_on_cpu() {
     if !ready() {
         return;
     }
-    let (mut dfk, n) = dfk_for(WATER, 1, "sto-3g");
+    let (mut dfk, n) = dfk_for(WATER, 1, "cc-pvdz");
     let c = c_occ(n, 5, 7);
     let k_cpu = cpu_k(&mut dfk, &c);
     let cap = pool().unwrap().capacity_bytes();
@@ -471,7 +471,7 @@ fn two_simulated_ranks_upload_only_their_band_and_their_sum_is_the_full_k() {
         return;
     }
     let mol = Molecule::parse_xyz(WATER, 0, 1).unwrap();
-    let obs = PreparedBasis::new(&mol, &basis::bundled("sto-3g").unwrap()).unwrap();
+    let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
     let aux = PreparedBasis::new(&mol, &basis::bundled("def2-universal-jkfit").unwrap()).unwrap();
     let (n, naux, nocc) = (obs.nbasis(), aux.nbasis(), 5usize);
     let op = Operator::coulomb();
@@ -529,7 +529,7 @@ fn device_k_checksum_child() {
         println!("CHILD skipped");
         return;
     }
-    let (mut dfk, n) = dfk_for(WATER, 1, "sto-3g");
+    let (mut dfk, n) = dfk_for(WATER, 1, "cc-pvdz");
     let mut k = Array2::zeros((n, n));
     dfk.build_from_occ(&c_occ(n, 5, 9), &mut k).unwrap();
     println!(

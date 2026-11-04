@@ -66,7 +66,7 @@ fn h3(pos: &[[f64; 3]]) -> ferric_pbc::lattice::Cell {
 /// (1) Singlet limit, per part, SCAN, 1x1x3 (complex Bloch AOs); r2SCAN
 /// in the validation file. Blind to every α/β mix-up by construction (module
 /// doc).
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn singlet_uks_force_and_stress_equal_rks_per_part() {
     let fx = fixture(cube_cell(&H2, 1), [1, 1, 3], "SCAN", atom_grid());
@@ -81,7 +81,7 @@ fn singlet_uks_force_and_stress_equal_rks_per_part() {
 /// (3) PBE through the tau path on the POLARIZED cell. Artifact hypothesis:
 /// a tau path that perturbs the non-tau terms (a stray accumulation, a
 /// mis-sized vector) moves the PBE numbers; physics predicts exactly 0.
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn null_tau_path_reproduces_the_pbe_force_and_stress_exactly() {
     let fx = fixture(h3(&H3), [1, 1, 2], "PBE", atom_grid());
@@ -102,7 +102,7 @@ fn null_tau_path_reproduces_the_pbe_force_and_stress_exactly() {
 
 /// (2) Force: X1 + X3 + X4 against the central FD of the fixed-density
 /// `E_xc[D_α, D_β]`, H3 doublet 1x1x3, r2SCAN, one component per atom.
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn polarized_fixed_density_xc_force_matches_fd() {
     let fx = fixture(h3(&H3), [1, 1, 3], "R2SCAN", atom_grid());
@@ -125,7 +125,7 @@ fn polarized_fixed_density_xc_force_matches_fd() {
 
 /// (2) Stress: `xc_ao + xc_weight` against the central FD of the
 /// fixed-density `E_xc` under cell strain, SCAN, four components.
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn polarized_fixed_density_xc_stress_matches_fd() {
     let fx = fixture(h3(&H3), [1, 1, 3], "SCAN", atom_grid());
@@ -145,7 +145,7 @@ fn polarized_fixed_density_xc_stress_matches_fd() {
 /// exist since #492, `pbc_kroks_mgga.rs`). Each refusal
 /// precedes the Fock guard, so a PBE state exercises it. (UKS SCAN / r2SCAN
 /// on the RS-GDF J/K is accepted since #492: `pbc_kuks_mgga_rsgdf.rs`.)
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn unvalidated_open_shell_meta_gga_derivatives_are_refused() {
     let fx = fixture(h3(&H3), [1, 1, 1], "SCAN", atom_grid());

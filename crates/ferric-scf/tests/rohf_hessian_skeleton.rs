@@ -869,7 +869,7 @@ fn rohf_state_and_gradient_match_pyscf_ho2() {
 /// reference describes ferric's state. 6N re-converged cc-pVDZ ROHF solves,
 /// 4.5 s measured; needs no second-derivative integrals. Measured max|d|
 /// 5.2e-7 (PySCF's own h-vs-2h truncation gap on NH2 is 6.7e-7).
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn ferric_fd_of_rohf_gradient_matches_pyscf_fd_hessian_nh2() {
     let r = reference("nh2", "cc-pvdz");

@@ -158,7 +158,7 @@ fn run(case: &Case) -> f64 {
 /// coincidence of the two contraction conventions spanning the same space. If
 /// this test breaks, the shipped data changed — investigate, but do not read a
 /// pass here as "ferric matches PySCF for these elements".
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn energy_coincidence_is_stable() {
     for case in ENERGY_COINCIDES {
@@ -183,7 +183,7 @@ fn energy_coincidence_is_stable() {
 /// away: a tightening (someone fixes it) or a widening (someone makes it worse)
 /// both fail the test and demand a look. Deliberately not `#[ignore]`d — an
 /// ignored test is one nobody reads.
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn known_divergent_second_row_stays_in_band() {
     for (case, expected) in KNOWN_DIVERGENT {

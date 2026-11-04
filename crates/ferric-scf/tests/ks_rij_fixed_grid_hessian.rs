@@ -257,7 +257,7 @@ const TOL_HESS_FD: f64 = 2e-7;
 /// A broken construction must miss by this multiple of the bar.
 const MUTANT_FACTOR: f64 = 10.0;
 
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn rij_gradient_matches_central_difference_of_the_fixed_grid_energy() {
     for (basis_name, xc) in [
@@ -278,7 +278,7 @@ fn rij_gradient_matches_central_difference_of_the_fixed_grid_energy() {
     }
 }
 
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn rij_hessian_matches_central_difference_of_the_df_gradient() {
     if !has_deriv2() {
@@ -300,7 +300,7 @@ fn rij_hessian_matches_central_difference_of_the_df_gradient() {
 /// DF-J vs exact-J: the Hessian differs by the fitting error (a few times the
 /// energy-level error), the exact-J Hessian misses the DF difference by that
 /// amount (negative control), and a richer auxiliary basis shrinks both (def2-universal-jkfit vs the cc-pVDZ-RI functions).
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn rij_vs_exact_j_is_the_fitting_error_and_shrinks_with_the_aux_basis() {
     if !has_deriv2() {
@@ -344,7 +344,7 @@ fn rij_vs_exact_j_is_the_fitting_error_and_shrinks_with_the_aux_basis() {
     }
 }
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn production_wired_rij_mutants_each_fail_the_hessian_anchor() {
     if !has_deriv2() {

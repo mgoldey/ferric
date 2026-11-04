@@ -502,7 +502,7 @@ fn full_hessian_matches_fd_of_df_gradient_sto3g() {
     check_full(&water(), "sto-3g", "", "def2-universal-jkfit", BAR_OWN);
 }
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn full_hessian_matches_fd_of_df_gradient_631g() {
     if !has_deriv2() {
@@ -822,7 +822,7 @@ fn all_mutants() -> Vec<(&'static str, RikMutants)> {
     ]
 }
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn cphf_kernel_mutants_fail_the_finite_difference_test() {
     // The kernel G of the CPHF is not touched by the skeleton or K^x tests; a
@@ -940,7 +940,7 @@ fn the_probe_that_auto_consults_is_stricter_than_the_hessian_itself() {
     }
 }
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn every_wired_mutant_misses_by_more_than_ten_bars() {
     if !has_deriv2() {

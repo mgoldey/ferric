@@ -104,21 +104,21 @@ fn gamma_roks_cam_b3lyp_energy_equals_the_library_bit_for_bit() {
 
 // ──────────────────────────────────────────────────────────────── forces ──
 
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn kpoint_rks_hse06_force_equals_the_library_bit_for_bit() {
     let cli = optimize("krks-hse-opt", "rhf", "HSE06", "[1, 1, 2]");
     force_anchor("krks-hse-opt", cli, lib_krks_force, "HSE06", "PBE0");
 }
 
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn gamma_rks_cam_b3lyp_force_equals_the_library_bit_for_bit() {
     let cli = optimize("grks-cam-opt", "rhf", CAM, "");
     force_anchor("grks-cam-opt", cli, lib_gamma_rks_rsh_force, CAM, "HSE06");
 }
 
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn kpoint_rks_cam_b3lyp_rsgdf_force_equals_the_library_bit_for_bit() {
     let cli = optimize_on("krks-cam-gdf-opt", "rhf", CAM, "[1, 1, 2]", RSGDF);
@@ -128,7 +128,7 @@ fn kpoint_rks_cam_b3lyp_rsgdf_force_equals_the_library_bit_for_bit() {
 /// CANARY of the weekly k-point UKS HSE06 force anchor: CLI == library bit
 /// for bit at the input geometry (no optimizer step, no sibling). The
 /// K-swap spin defect (`KUSpinMutation::PulayKSwap`) fails it on the bits.
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn kpoint_uks_hse06_force_at_the_input_geometry_equals_the_library() {
     let tag = "kuks-hse-f0";
@@ -139,7 +139,7 @@ fn kpoint_uks_hse06_force_at_the_input_geometry_equals_the_library() {
 /// CANARY of the weekly k-point UKS SCAN / r2SCAN force anchors (the
 /// open-shell meta-GGA tau terms): CLI == library bit for bit at the input
 /// geometry.
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn kpoint_uks_scan_force_at_the_input_geometry_equals_the_library() {
     let tag = "kuks-scan-f0";
@@ -153,7 +153,7 @@ fn kpoint_uks_scan_force_at_the_input_geometry_equals_the_library() {
 /// 2026-10-30; 1.4e-3 at the weekly test's two-step geometry). A CLI that routed "r2SCAN" to SCAN (the #355 swap
 /// class) would match `lib("SCAN")` and fail the sibling check, which the
 /// bit-equality alone cannot see when the library resolves the same name.
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn kpoint_uks_r2scan_force_at_the_input_geometry_differs_from_scan() {
     let tag = "kuks-r2scan-f0";
@@ -164,7 +164,7 @@ fn kpoint_uks_r2scan_force_at_the_input_geometry_differs_from_scan() {
 /// CANARY of the weekly Gamma UKS CAM-B3LYP force anchor (the Gamma UKS
 /// range-separated route, `gamma_uks_any_keep` + `gamma_uks_rsh_gradient`):
 /// CLI == library bit for bit at the input geometry.
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn gamma_uks_cam_b3lyp_force_at_the_input_geometry_equals_the_library() {
     let tag = "guks-cam-f0";

@@ -61,7 +61,7 @@ const CASES: &[(&str, &str, &str, f64, &str)] = &[
 fn print_ks_bits_table() {
     for &(solver, molecule, xc, ratio, storage) in CASES {
         let (xyz, basis) = match molecule {
-            "water" => ("../../testdata/molecules/water.xyz", "sto-3g"),
+            "water" => ("../../testdata/molecules/water.xyz", "cc-pvdz"),
             _ => ("../../testdata/molecules/alkane_4.xyz", "def2-svp"),
         };
         let small = molecule == "butane";

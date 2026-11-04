@@ -67,7 +67,7 @@ fn j_route(r: &ScfResult) -> Option<String> {
 /// End to end on water/STO-3G, ωB97X-V at ω = 0.4: the neutral RKS and the
 /// cation UKS record the same J route (exact J) under the resolved config,
 /// and different routes under the unresolved one.
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn neutral_and_cation_run_the_same_coulomb_route() {
     let ctx = ParallelContext::default();

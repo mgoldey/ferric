@@ -104,7 +104,7 @@ fn wb97xv_h2() {
     );
 }
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn wb97xv_water() {
     run_case(
@@ -114,7 +114,7 @@ fn wb97xv_water() {
     );
 }
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn wb97xv_methane() {
     let xyz = "5\nCH4\nC 0 0 0\n\
@@ -132,7 +132,7 @@ const NH3_XYZ: &str = "4\nNH3\n\
     H -0.813831 -0.469865 -0.271808\n";
 
 /// Fourth molecule (widens past H2/H2O/CH4): NH3, C3v.
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn wb97xv_nh3() {
     run_case("NH3", NH3_XYZ, "nh3_cc-pvdz_wb97x_v.json");
@@ -149,7 +149,7 @@ fn wb97xv_h2_def2svp() {
     );
 }
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn wb97xv_water_def2svp() {
     run_case_basis(
@@ -160,7 +160,7 @@ fn wb97xv_water_def2svp() {
     );
 }
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn wb97xv_methane_def2svp() {
     let xyz = "5\nCH4\nC 0 0 0\n\
@@ -171,7 +171,7 @@ fn wb97xv_methane_def2svp() {
     run_case_basis("CH4", xyz, "def2-svp", "methane_def2-svp_wb97x_v.json");
 }
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn wb97xv_nh3_def2svp() {
     run_case_basis("NH3", NH3_XYZ, "def2-svp", "nh3_def2-svp_wb97x_v.json");

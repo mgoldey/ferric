@@ -122,13 +122,13 @@ fn singlet_case(route: Route) {
     }
 }
 
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn singlet_uks_is_the_rks_rsh_stress_dense() {
     singlet_case(Route::Dense);
 }
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn singlet_uks_is_the_rks_rsh_stress_rsgdf() {
     singlet_case(Route::RsGdf);
@@ -158,19 +158,19 @@ pub fn equal_fraction_case(route: Route, spin: Spin) {
     assert!(d < ANCHOR_TOL, "{route:?} {spin:?}: {d:e}");
 }
 
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn equal_fractions_is_the_global_hybrid_stress_uks_dense() {
     equal_fraction_case(Route::Dense, Spin::Uks);
 }
 
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn equal_fractions_is_the_global_hybrid_stress_uks_rsgdf() {
     equal_fraction_case(Route::RsGdf, Spin::Uks);
 }
 
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn equal_fractions_is_the_global_hybrid_stress_roks_rsgdf() {
     equal_fraction_case(Route::RsGdf, Spin::Roks);
@@ -216,13 +216,13 @@ fn fd_case(route: Route) {
     assert!(mm > 100.0 * FD_BAR, "{route:?} {att:?}: {mm:e}");
 }
 
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn fd_zero_xc_polarized_uks_dense() {
     fd_case(Route::Dense);
 }
 
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn fd_zero_xc_polarized_uks_rsgdf() {
     fd_case(Route::RsGdf);
@@ -232,7 +232,7 @@ fn fd_zero_xc_polarized_uks_rsgdf() {
 /// kernels, kernels of another range separation, a global-hybrid name on
 /// range-separated kernels, a missing exxdiv; and the binding gate now
 /// accepts the open-shell RSH stress (wired, #498).
-#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn oshell_rsh_stress_refusals() {
     use ferric_pbc::kuxcstress::{kpoint_uks_stress, KUksStressConfig};
@@ -304,7 +304,7 @@ fn oshell_rsh_stress_refusals() {
 /// (dense J and exchange) through the 1x1x1 route equals the k-point UKS
 /// stress of an independent 1x1x1 KUKS SCF on the dense UKS force file's H3
 /// doublet fixtures. Also pins that the binding gate accepts the Gamma stress.
-#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn gamma_uks_rsh_stress_is_the_one_point_mesh() {
     use ferric_pbc::kuxcstress::{kpoint_uks_stress, KUksStressConfig};
