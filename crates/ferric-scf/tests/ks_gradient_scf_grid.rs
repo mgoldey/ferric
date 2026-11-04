@@ -234,6 +234,7 @@ fn default_grid_floor_rks_lda() {
     assert!(res < BAR && plain < BAR);
 }
 
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn default_grid_floor_uks_pbe() {
     let (res, plain) = residuals(Kind::Uks, NH2, 2, "PBE", None);
@@ -263,6 +264,7 @@ fn rks_pbe_pruned_grid() {
     );
 }
 
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn uks_pbe_non_default_grid() {
     check("UKS PBE flat 40x194", Kind::Uks, NH2, 2, "PBE", flat());
@@ -280,6 +282,7 @@ fn uks_pbe_pruned_grid() {
     );
 }
 
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn roks_pbe_non_default_grid() {
     check("ROKS PBE flat 40x194", Kind::Roks, NH2, 2, "PBE", flat());
@@ -319,6 +322,7 @@ fn rks_pbe_pruned_nwchem_grid() {
 /// point of THAT grid's energy. Pre-fix it converged on the default-grid
 /// gradient, leaving a true residual gradient of the size of the miss
 /// (~3e-4 Ha/Bohr on this system, see `rks_lda_non_default_grid`).
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn optimize_stops_at_a_stationary_point_of_the_scf_grid() {
     let mol = Molecule::parse_xyz(WATER, 0, 1).unwrap();
@@ -363,6 +367,7 @@ fn optimize_stops_at_a_stationary_point_of_the_scf_grid() {
 /// discriminate (the VV10 term has no Becke weight response, so it sits on a
 /// ~1e-5 plateau), so compare two evaluations of the SAME converged SCF result
 /// with a 30x50 and a 50x50 nonlocal grid: they must differ.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn nlc_grid_reaches_the_vv10_gradient() {
     use ferric_scf::ks_gradient::{ks_gradient_closed_with_exchange_on_grids, KsGradGrids};

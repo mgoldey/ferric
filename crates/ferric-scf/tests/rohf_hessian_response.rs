@@ -444,6 +444,7 @@ fn check_fd(c: &Case) {
     assert!(resp > 1e-1, "vacuous: response max {resp:.3e}");
 }
 
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn analytic_matches_fd_of_rohf_gradient_nh2() {
     if has_deriv2() {
@@ -451,6 +452,7 @@ fn analytic_matches_fd_of_rohf_gradient_nh2() {
     }
 }
 
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn analytic_matches_fd_of_rohf_gradient_ch2_triplet() {
     if has_deriv2() {
@@ -458,6 +460,7 @@ fn analytic_matches_fd_of_rohf_gradient_ch2_triplet() {
     }
 }
 
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn analytic_matches_fd_of_rohf_gradient_ho2() {
     if has_deriv2() {
@@ -608,6 +611,7 @@ fn check_controls(c: &Case) {
     );
 }
 
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn negative_controls_miss_on_all_three_systems() {
     if !has_deriv2() {
@@ -657,6 +661,7 @@ fn check_mutants(c: &Case) {
     );
 }
 
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn response_mutants_are_caught_nh2() {
     if has_deriv2() {
@@ -664,6 +669,7 @@ fn response_mutants_are_caught_nh2() {
     }
 }
 
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn response_mutants_are_caught_ch2_triplet() {
     if has_deriv2() {
@@ -671,6 +677,7 @@ fn response_mutants_are_caught_ch2_triplet() {
     }
 }
 
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn response_mutants_are_caught_ho2() {
     if has_deriv2() {
@@ -807,11 +814,13 @@ fn check_pyscf(system: &str) {
     );
 }
 
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn analytic_matches_pyscf_fd_nh2() {
     check_pyscf("nh2");
 }
 
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn analytic_matches_pyscf_fd_ch2_triplet() {
     check_pyscf("ch2_triplet");

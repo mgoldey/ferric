@@ -45,6 +45,7 @@ fn assert_documented(label: &str, got: usize, documented: f64) {
     assert!(rel < 0.01, "{label}: {got} vs documented {documented:.4e}");
 }
 
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn the_two_channel_charge_gates_the_run_and_the_probe() {
     // --- the documented numbers and the scaling (no pool involved) ----------

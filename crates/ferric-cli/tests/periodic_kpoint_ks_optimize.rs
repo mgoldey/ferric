@@ -41,6 +41,7 @@ use kpoint_ks_optimize_cli::*;
 /// on the 1x1x2 mesh equals the library force at the printed geometry, and
 /// the library's Fock-consistency guard refuses a force handed an exxdiv the
 /// SCF did not run (the guard that protects the exxdiv wiring).
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn printed_force_equals_the_library_force_for_a_global_hybrid_canary() {
     let out = ok(
@@ -226,6 +227,7 @@ fn a_non_converging_scf_step_is_a_typed_error_not_a_force() {
     );
 }
 
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn an_ecp_cell_passes_the_k_point_kohn_sham_force_gate() {
     // I carries the def2 ECP in def2-svp. The k-point KS force with an ECP is

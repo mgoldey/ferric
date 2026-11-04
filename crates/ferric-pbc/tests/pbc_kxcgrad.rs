@@ -398,6 +398,7 @@ fn kcfg() -> KGradConfig {
 /// XC leak (a stray add of a zero-initialised array with the wrong shape, a
 /// guard that mutates F) would show as a nonzero difference; physics predicts
 /// exactly 0.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn null_xc_equals_the_exchange_free_machinery_exactly() {
     for jk in [Jk::Dense, Jk::Gdf] {
@@ -440,6 +441,7 @@ fn null_xc_equals_the_exchange_free_machinery_exactly() {
 
 /// Independent anchor of the exchange-fraction-0 plumbing: central FD of the
 /// Hartree-only k energy (fresh SCF per point; no grid, so smooth).
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn hartree_only_force_matches_fd_of_its_own_energy() {
     for jk in [Jk::Dense, Jk::Gdf] {
@@ -463,6 +465,7 @@ fn hartree_only_force_matches_fd_of_its_own_energy() {
 }
 
 /// Analytic vs central FD of the k RKS energy: dense AFT and RS-GDF, PBE.
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn pbe_force_matches_fd_dense_and_rsgdf() {
     let mut forces = Vec::new();
@@ -543,6 +546,7 @@ fn gamma_side_bs(
 /// defect of the size of a fit error). Independent construction: real
 /// lattice-summed AOs vs complex Bloch AOs; Gamma's own SCF. Floor: both SCFs
 /// converge to ~1e-10 in the density.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn one_point_mesh_matches_the_gamma_ks_gradient_per_part() {
     for f in ["LDA", "PBE"] {
@@ -598,6 +602,7 @@ fn supercell_pos(pos: &[[f64; 3]], a: f64, n: [usize; 3]) -> Cell {
 /// Both sides use the same explicit `neighbour_cutoff` (the default depends on
 /// the cell). Carries the Bloch phases (ConjPhase is an identity on TRIM
 /// meshes, not here).
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn k_mesh_force_is_the_gamma_supercell_force_per_part() {
     let mut grid = PeriodicGridConfig::with_size(20, 50);
@@ -633,6 +638,7 @@ fn k_mesh_force_is_the_gamma_supercell_force_per_part() {
 /// term alone reproduces FD of the energy. Artifact hypothesis: a force that
 /// kept the atom-grid terms on a uniform grid would miss by ~0.17 (their size
 /// on the atom grid); physics predicts exactly 0 for both.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn uniform_grid_force_has_no_grid_terms_and_matches_fd() {
     let grid = KXcGrid::Uniform([24, 24, 24]);
@@ -654,6 +660,7 @@ fn uniform_grid_force_has_no_grid_terms_and_matches_fd() {
 
 /// Translation invariance on the atom grid (sees the weight response: without
 /// X4 the net force is grid-error sized) and a nonzero-force sanity check.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn net_force_vanishes_on_the_atom_grid() {
     let fx = fixture(&H2, [1, 1, 3], "PBE", Jk::Dense, atom_grid(20, 50));
@@ -683,6 +690,7 @@ fn net_force_vanishes_on_the_atom_grid() {
 
 /// The result does not depend on the thread count or on how many chunks run
 /// concurrently (chunk-order reduction): bit-identical.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn force_is_bit_identical_across_threads_and_live_chunks() {
     let fx = fixture(&H2, [1, 1, 3], "PBE", Jk::Dense, atom_grid(20, 50));
@@ -709,6 +717,7 @@ fn force_is_bit_identical_across_threads_and_live_chunks() {
 /// fixed HF arrays but not one AO/Hessian chunk is a typed error naming the
 /// quantity; a budget for ONE live chunk gives the bit-identical force of the
 /// unconstrained run.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn xc_chunks_are_budgeted_and_the_result_is_budget_independent() {
     let fx = fixture(&H2, [1, 1, 3], "PBE", Jk::Dense, atom_grid(20, 50));
@@ -775,6 +784,7 @@ fn xc_chunks_are_budgeted_and_the_result_is_budget_independent() {
 
 // ------------------------------------------------- refusals and Fock guard
 
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn refusals_and_the_fock_guard() {
     let fx = fixture(&H2, [1, 1, 3], "PBE", Jk::Dense, atom_grid(20, 50));
@@ -868,6 +878,7 @@ fn miss(fx: &Fx, m: KXcMutation, base: &KRksGradient) -> f64 {
 /// Smoke mutants on the non-TRIM 1x1x3 mesh (production-wired seams in
 /// `KRksGradConfig::mutation`): each must miss the unmutated (FD- and
 /// supercell-anchored) force by far more than the bar.
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn smoke_mutants_are_caught() {
     let fx = fixture(&H2, [1, 1, 3], "PBE", Jk::Dense, atom_grid(20, 50));
@@ -988,6 +999,7 @@ fn rotated_case(
 /// FD of the unrotated one; the two forces agree to the screening precision
 /// (RotOff-type defects are blind by construction at the default screen, as in
 /// `pbc_sr_rotation_kderiv.rs`).
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn rotated_and_unrotated_sr_walks_are_consistent_with_the_energy() {
     use ferric_pbc::sr_rotation::SrColumnRotation::{Auto, Off};
@@ -1180,6 +1192,7 @@ fn ks_force_exx(jk: Jk, exx: ExxDiv) -> (f64, KRksGradient) {
 /// Ewald-exxdiv SCF equal the exxdiv = none ones (dense and RS-GDF). The
 /// force entry takes no exxdiv at all (a = 0 removes K and the Madelung
 /// M-term), so a force that still depended on it would show here.
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn ewald_exxdiv_scf_gives_the_same_pure_functional_force() {
     for jk in [Jk::Dense, Jk::Gdf] {

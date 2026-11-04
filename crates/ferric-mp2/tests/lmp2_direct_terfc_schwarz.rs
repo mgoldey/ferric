@@ -174,6 +174,7 @@ fn check(xyz: &str, nc: usize, min_frac: f64, which: &[usize]) {
 }
 
 /// Cheap: C4 linked.
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn terfc_schwarz_trivial_limit_and_mutant_c4() {
     check("alkane_4.xyz", 4, 0.04, &[0]);

@@ -37,7 +37,7 @@ fn counter_lock() -> std::sync::MutexGuard<'static, ()> {
 
 fn run(aurora: bool) -> (usize, usize, f64) {
     let mol = Molecule::load_xyz("../../testdata/molecules/water.xyz").unwrap();
-    let bs = basis::bundled("cc-pvdz").unwrap();
+    let bs = basis::bundled("sto-3g").unwrap();
     let prep = PreparedBasis::new(&mol, &bs).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();

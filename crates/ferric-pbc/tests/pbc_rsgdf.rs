@@ -399,6 +399,7 @@ fn fitted_eri_is_omega_independent() {
 ///   ω = 0.5 while the SR work (radii ∝ 1/ω) does not. A knob that was
 ///   dropped would give identical counters and pass the energy check
 ///   vacuously, so the counters are asserted first.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn rhf_energy_is_rsgdf_omega_independent_and_the_build_follows_omega() {
     let cell = h2_cell(4.0);

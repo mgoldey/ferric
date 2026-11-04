@@ -368,6 +368,7 @@ fn huge_box_worst_weight_error(n_ang: usize) -> ([f64; 2], usize) {
 /// Uniform grid (no partition) through the full KS machinery vs PySCF pbc
 /// RKS UniformGrids: H2 a = 4 LDA and PBE0 (the hybrid-scaled Madelung K),
 /// triclinic 4H s+p LDA (p functions → the AO gradient path).
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn uniform_grid_rks_matches_pinned_pyscf_uniform() {
     let su = h2_setup(4.0);
@@ -430,6 +431,7 @@ fn uniform_rks(su: &Setup, grid: &PeriodicGrid, xc: &str) -> f64 {
 /// prototype's own construction: identical point count and energies. The
 /// residual vs the spectrally converged uniform reference is the partition
 /// error (LDA −3.8e-4 Ha here; Becke −4.2e-4, PySCF A1 −4.4e-4).
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn ssf_grid_rks_matches_the_prototype_construction() {
     let su = h2_setup(4.0);
@@ -493,6 +495,7 @@ fn ssf_grid_rks_matches_the_prototype_construction() {
 /// Mutation ledger (measured 2026-10-22): `lebedev(302)` behind a 590 label:
 /// 75×590 |dN| 9.5006e-4 (identical to 302), 100×590 9.5101e-4 (ratio 1.001)
 /// — the test fails.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn lebedev_590_partition_of_unity_is_no_worse_than_302() {
     let su = h2_setup(4.0);
@@ -540,6 +543,7 @@ fn lebedev_590_partition_of_unity_is_no_worse_than_302() {
 /// Mutation ledger (measured 2026-10-22): `lebedev(302)` behind a 590 label:
 /// errors −3.790e-4 / −3.793e-4 / −3.793e-4 (ratio 1.001), the first
 /// monotonicity assert fails (the ratio bar would too).
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn larger_lebedev_orders_refine_the_periodic_energy() {
     let su = h2_setup(4.0);

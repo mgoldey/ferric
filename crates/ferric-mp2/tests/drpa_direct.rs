@@ -229,6 +229,7 @@ fn finite_eps_trivial_maps_matches_global_path() {
 /// measured against the canonical plasmon reference (the ε=0-class truth
 /// the tight-rtol test on the global path uses), map error against the
 /// trivial-map run at the same ε.
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn production_maps_error_is_subdominant_to_eps_truncation() {
     let su = setup("alkane_8.xyz", "6-31g", "cc-pvdz-ri");

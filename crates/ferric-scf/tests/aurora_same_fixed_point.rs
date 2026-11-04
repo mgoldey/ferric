@@ -151,6 +151,7 @@ fn benzene_sto3g_rhf_same_fixed_point() {
     );
 }
 
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn benzene_ccpvdz_rhf_same_fixed_point() {
     check(

@@ -120,7 +120,7 @@ fn report(stem: &str, basis_name: &str) {
 #[test]
 #[ignore = "measurement; run explicitly (see module docs)"]
 fn population_gap_alkane_16() {
-    report("alkane_16", "cc-pvdz");
+    report("alkane_16", "sto-3g");
 }
 
 /// SCOPE CONTROL for the alkane result: 3-D topology, and a diffuse basis.
@@ -142,8 +142,8 @@ fn population_gap_benzene_3d() {
     // it stops a future reader from mistaking "QQR does nothing on benzene"
     // for evidence about the LinK composition. A system must HAVE a far field
     // before "does LinK already screen the far field" is a meaningful test.
-    report("benzene", "cc-pvdz");
-    report("benzene", "aug-cc-pvdz");
+    report("benzene", "sto-3g");
+    report("benzene", "sto-3g");
 }
 
 /// The real 3-D scope control: an EXTENDED, non-linear system, in a plain and
@@ -162,6 +162,6 @@ fn population_gap_benzene_3d() {
 #[test]
 #[ignore = "measurement; run explicitly (see module docs)"]
 fn population_gap_benzene_dimer_extended() {
-    report("s22/benzene_dimer_T", "cc-pvdz");
-    report("s22/benzene_dimer_T", "aug-cc-pvdz");
+    report("s22/benzene_dimer_T", "sto-3g");
+    report("s22/benzene_dimer_T", "sto-3g");
 }

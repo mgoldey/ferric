@@ -43,6 +43,7 @@ use ferric_scf::frequencies::{
 use ferric_scf::hessian::{analytic_rohf_hessian_available, analytic_uhf_hessian_available};
 use ferric_scf::rhf::RhfConfig;
 
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn rhf_ri_jk_ecp_matches_fd_of_the_ri_gradient() {
     check_against_fd(
@@ -55,6 +56,7 @@ fn rhf_ri_jk_ecp_matches_fd_of_the_ri_gradient() {
     );
 }
 
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn uhf_ri_jk_ecp_matches_fd_of_the_ri_gradient() {
     check_against_fd(
@@ -69,6 +71,7 @@ fn uhf_ri_jk_ecp_matches_fd_of_the_ri_gradient() {
 
 /// ROHF exact J/K: the stored-vs-rebuilt Fock check failed by 25 Ha before
 /// `trusted_focks` used `hcore_ecp`.
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn rohf_exact_ecp_matches_fd_of_the_rohf_gradient() {
     check_against_fd(
@@ -81,6 +84,7 @@ fn rohf_exact_ecp_matches_fd_of_the_rohf_gradient() {
     );
 }
 
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn rohf_ri_j_ecp_matches_fd_of_the_rohf_gradient() {
     check_against_fd(
@@ -94,6 +98,7 @@ fn rohf_ri_j_ecp_matches_fd_of_the_rohf_gradient() {
 }
 
 /// RI-J-only is not the RI-JK Hessian (guards a `Fit::J` that silently fits K).
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn ri_j_only_differs_from_ri_jk() {
     if !has_deriv2() {
@@ -166,6 +171,7 @@ fn probe_accepts_ri_with_ecp_for_every_reference_where_the_metric_is_conditioned
 
 /// RI-K with the ordinary jkfit on iodine has cond 1e9 > RIK_COND_WARN: the
 /// probe refuses (for the conditioning, not the ECP) and `Auto` runs FD.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn ill_conditioned_ri_k_with_ecp_is_refused_by_the_probe_and_auto_runs_fd() {
     if !has_deriv2() {

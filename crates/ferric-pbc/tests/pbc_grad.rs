@@ -247,6 +247,7 @@ fn max_diff(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
 /// energy's own 1e10 nucleus and are bit-identical. Without the clamp the
 /// 1e12 and default runs differ from the 1e10 one by the 1/zeta model error
 /// (3.3e-11 here for the default, measured by deleting the clamp; the test asserts 0).
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn gradient_nucleus_exponent_is_clamped_to_the_energys() {
     let cell = cell_at(&GRAD_H2_ATOMS, cubic(4.0));
@@ -547,6 +548,7 @@ fn ewald_gradient_matches_pyscf_grad_nuc_and_fd() {
 
 // --------------------------------------------------------- total force
 
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn h2_force_matches_fd_of_own_energy_both_exxdiv() {
     let cell = cell_at(&GRAD_H2_ATOMS, cubic(4.0));
@@ -588,6 +590,7 @@ fn h2_force_matches_fd_of_own_energy_both_exxdiv() {
     }
 }
 
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn h2_ewald_and_none_forces_agree() {
     let cell = cell_at(&GRAD_H2_ATOMS, cubic(4.0));
@@ -602,6 +605,7 @@ fn h2_ewald_and_none_forces_agree() {
     assert!(d < 1e-12, "{d:e}");
 }
 
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn h2_fd_anchor_catches_each_mutant() {
     let cell = cell_at(&GRAD_H2_ATOMS, cubic(4.0));

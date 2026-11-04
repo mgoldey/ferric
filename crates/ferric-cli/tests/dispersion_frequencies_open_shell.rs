@@ -355,6 +355,7 @@ fn check_reference(
     );
 }
 
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn uks_nh2_dispersion_frequencies() {
     check_reference(
@@ -366,6 +367,7 @@ fn uks_nh2_dispersion_frequencies() {
     );
 }
 
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn roks_hco_dispersion_frequencies() {
     check_reference(

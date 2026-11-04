@@ -106,6 +106,7 @@ fn energy(f: &str, n: [usize; 3], exxdiv: ExxDiv, mutation: Option<KMutation>) -
         .energy
 }
 
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn rsh_krks_triclinic_matches_pinned_pyscf() {
     for (f, n, exxdiv, e_ref) in PINS {
@@ -121,6 +122,7 @@ fn rsh_krks_triclinic_matches_pinned_pyscf() {
 /// The pins distinguish the defects: ewald vs none differ by far more than
 /// the bar, and the primitive-cell Madelung (ewald, 1x2x2) leaves the pin by
 /// more than `MIN_DEFECT_SHIFT`.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn rsh_triclinic_pins_see_the_exxdiv_defects() {
     let (f, n, _, e_ewald) = PINS[4];

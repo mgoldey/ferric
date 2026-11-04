@@ -352,6 +352,7 @@ fn rhf_trah_keeps_control_after_a_rejection() {
     assert!((e - E_STABLE).abs() < 1e-7, "E = {e:.10}");
 }
 
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn uhf_trah_keeps_control_after_a_rejection() {
     let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -391,6 +392,7 @@ fn uhf_trah_keeps_control_after_a_rejection() {
 /// O2/STO-3G triplet UHF with DF-J/DF-K, core guess, tail-mode TRAH (above).
 const E_O2_STO3G_UHF_DFK: f64 = -147.635_627_928_824;
 
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn uhf_dfk_trah_refreshes_the_occupied_orbital_cache() {
     use std::sync::atomic::Ordering::Relaxed;

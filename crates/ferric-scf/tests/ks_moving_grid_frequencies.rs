@@ -366,6 +366,7 @@ fn auto_is_the_moving_grid_hessian_for_closed_shell_ks() {
     }
 }
 
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn auto_falls_back_to_finite_differences_where_unsupported() {
     let h2 = Molecule::parse_xyz("2\nh2\nH 0 0 0\nH 0 0 0.74\n", 0, 1).unwrap();

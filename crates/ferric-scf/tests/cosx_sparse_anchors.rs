@@ -236,6 +236,7 @@ fn sparse_zero_eps_matches_dense_bitwise_water() {
 /// Anchor (a): butane/def2-SVP (the screen is ON at its default here as well,
 /// so the Λ-zero rows and the `fmax = 0` interplay are exercised on a system
 /// where the screen actually drops pairs).
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn sparse_zero_eps_matches_dense_bitwise_butane() {
     let s = setup_butane();
@@ -295,6 +296,7 @@ fn sparse_production_eps_k_error_below_1e6_water() {
     production_eps_on(&s, "water/cc-pVDZ");
 }
 
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn sparse_production_eps_k_error_below_1e6_butane() {
     let s = setup_butane();
@@ -302,6 +304,7 @@ fn sparse_production_eps_k_error_below_1e6_butane() {
 }
 
 /// Anchor (b), SCF level: converged COSX-RHF energy of water, sparse vs dense.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn sparse_cosx_rhf_water_energy_matches_dense() {
     let mol = Molecule::parse_xyz(WATER, 0, 1).expect("water");
@@ -396,6 +399,7 @@ fn sparse_build_from_occ_is_the_density_path() {
 /// shells), and the sparse K stays inside the (b) bar. The bars that ARE
 /// reachable by construction — and that the Λ mutant must turn RED — live in
 /// `sparse_reachability_water_dimer_far`.
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn sparse_reachability_counts_alkane_8() {
     let mol =

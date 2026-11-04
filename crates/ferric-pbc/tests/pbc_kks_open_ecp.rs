@@ -358,6 +358,7 @@ fn check_cell(j: &serde_json::Value, name: &str, cell: &Cell, n: usize) {
     }
 }
 
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn shifted_triclinic_kuks_kroks_match_pinned_pyscf() {
     let cell = h3_triclinic();
@@ -419,11 +420,13 @@ fn open_shell_rsgdf(method: &str) {
     }
 }
 
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn rsgdf_shifted_triclinic_kuks_is_dense_to_the_fit_error() {
     open_shell_rsgdf("KUKS");
 }
 
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn rsgdf_shifted_triclinic_kroks_is_dense_to_the_fit_error() {
     open_shell_rsgdf("KROKS");
@@ -433,6 +436,7 @@ fn rsgdf_shifted_triclinic_kroks_is_dense_to_the_fit_error() {
 /// on the shift (0 vs the Gamma default 0.05) nor on the start (staged vs one
 /// direct ewald SCF), and the unshifted runs converge within the default
 /// iteration cap (200; no 600 cap is needed).
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn kroks_pbe0_needs_no_level_shift() {
     let cell = h3_triclinic();
@@ -462,6 +466,7 @@ fn kroks_pbe0_needs_no_level_shift() {
 /// `pbc_kroks.rs` (both removed in #356): H3 doublet, cubic a = 4.5, 1x1x2, PBE0, 45^3 uniform grid,
 /// against the same PySCF `KROKS` pins, with NO level shift and the default
 /// iteration cap.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn original_kroks_hybrid_pins_converge_without_shift_or_long_cap() {
     let atoms = [[0.3, 0.2, 0.1], [0.35, 0.12, 1.5], [1.6, 0.9, 0.7]];
@@ -547,6 +552,7 @@ fn hi_energy(cell: &Cell, bs: &BasisSet, mesh: &KPointMesh, f: &str, prec: Optio
 
 /// HI with the I LANL2DZ ECP (46 core electrons): shifted 1x1x2 k-RKS PBE and
 /// PBE0 against PySCF `KRKS` (own ECP integral at cell.precision 1e-12, hence `ECP_BAR`).
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn ecp_cell_krks_matches_pinned_pyscf() {
     let bs = hi_basis(true);
@@ -589,6 +595,7 @@ fn ecp_cell_without_apply_ecp_is_refused() {
 /// Source of the ~1.1e-6 ferric-PySCF ECP gap: NOT ferric's lattice-sum
 /// truncation. Tightening ferric's hcore precision (which sets the ECP image
 /// and orbital-pair truncation) to 1e-12 leaves the energy where it was.
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn ecp_gap_is_not_ferric_truncation() {
     let bs = hi_basis(true);

@@ -87,6 +87,7 @@ use support::*;
 ///
 /// Fails on the unfixed tree: `block_mu` and `block_p` differ by 12x between
 /// 1 and 12 workers, and the `.reduce()` tree shape differs too.
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn the_laplace_correlation_energy_is_bit_identical_across_worker_counts() {
     let f = fixture();

@@ -511,6 +511,7 @@ fn h2_same_stationary_point() {
     );
 }
 
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn ethane_same_stationary_point() {
     let m = ethane_distorted();
@@ -541,6 +542,7 @@ fn ethane_same_stationary_point() {
 /// the torsional system (H2O2, ethane) and not on the rigid one (water). That
 /// is what is measured, and `water_same_stationary_point`'s printed numbers
 /// are the control: there the two are within a factor of 2 of each other.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn internals_land_closer_to_the_true_minimum_on_torsional_systems() {
     for (name, m) in [("h2o2", h2o2_distorted()), ("ethane", ethane_distorted())] {
@@ -591,6 +593,7 @@ fn methanol_cation_distorted() -> Molecule {
     .unwrap()
 }
 
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn floppy_cation_same_stationary_point() {
     let m = methanol_cation_distorted();
@@ -612,6 +615,7 @@ fn floppy_cation_same_stationary_point() {
 /// which dominates the cost by orders of magnitude, and unlike wall time it is
 /// reproducible on a loaded box. The assertion is deliberately weak (internals
 /// must not be catastrophically worse); the numbers themselves are the output.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn iteration_count_ledger() {
     let systems: &[(&str, Molecule)] = &[

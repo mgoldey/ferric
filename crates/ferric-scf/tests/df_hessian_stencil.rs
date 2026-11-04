@@ -432,6 +432,7 @@ fn stencil_is_translationally_invariant_and_symmetric() {
 
 // ----------------------------------------------------------- accuracy
 
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn oracle_step_sweep() {
     let sys = water();

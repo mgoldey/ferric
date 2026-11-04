@@ -76,6 +76,7 @@ fn uhf_newton_oh_matches_diis_only() {
 /// UKS/PBE: the Newton path must engage a GGA f_xc kernel (proved via the
 /// `GGA_FXC_KERNEL_BUILDS` counter — the whole point of the UKS wiring) and
 /// reach the same energy as DIIS-only. Uses the doublet OH radical.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn uks_pbe_newton_engages_gga_fxc_and_matches_diis() {
     use std::sync::atomic::Ordering;

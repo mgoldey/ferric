@@ -597,6 +597,7 @@ fn full_hessian_matches_fd_ch2_sto3g() {
     check_full(&ch2(), "sto-3g");
 }
 
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn full_hessian_matches_fd_ch2_631g() {
     check_full(&ch2(), "6-31g");

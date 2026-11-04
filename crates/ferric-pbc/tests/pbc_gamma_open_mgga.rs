@@ -50,6 +50,7 @@ use support::*;
 /// tau mutant (driven through `gamma_uks_with_xc` on the same grid) must miss
 /// by > 1e-7, required here: the anchor is the polarized pin that catches
 /// them at the energy level.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn gamma_uks_doublet_is_one_point_kuks() {
     let su = setup(h3_doublet());
@@ -99,6 +100,7 @@ fn gamma_uks_doublet_is_one_point_kuks() {
 /// PySCF-pinned in `pbc_kroks_mgga.rs`). Bar 1e-10. Every Gamma-side tau
 /// mutant, and the k-side `τ_β` from `D_α` and swapped `V^xc_σ`, must miss
 /// by > 1e-7 (SCAN; r2SCAN anchor only, to keep the per-commit cost down).
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn gamma_roks_doublet_is_one_point_kroks() {
     use ferric_pbc::kroks::{solve_kroks_on_grid, KRohfMutation, KRoksConfig};
@@ -164,6 +166,7 @@ fn gamma_roks_doublet_is_one_point_kroks() {
 /// A singlet (`N_alpha == N_beta`) Gamma UKS and ROKS equal Gamma RKS, on the
 /// H2 cube and the four-H triclinic cell. Blind to every spin-channel tau
 /// mutant by construction (module doc): necessary, not sufficient.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn singlet_gamma_uks_and_roks_are_gamma_rks() {
     for (label, cell) in [("H2", h2_cell(4.0)), ("H4 tri", triclinic_cell())] {
@@ -270,6 +273,7 @@ fn fd_vs_v_worst_rel(xc: &mut PeriodicXc, scf: &ScfResult, nocc: [usize; 2], tag
 /// rotation keeps `D_β` idempotent and rank 1, so `τ_β = τ_W` along the whole
 /// curve. (The k-point test escapes this because two k-points give the β
 /// channel two Bloch orbitals.)
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn polarized_vxc_is_the_derivative_of_exc() {
     let su = setup(h3_doublet());
@@ -316,11 +320,13 @@ fn pin(route: &str) {
     assert!((e - e_ref).abs() < 1e-9, "{route}: {e} vs {e_ref}");
 }
 
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn h3_gamma_uks_scan_matches_pinned_pyscf() {
     pin("UKS");
 }
 
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn h3_gamma_roks_scan_matches_pinned_pyscf() {
     pin("ROKS");

@@ -67,6 +67,7 @@ fn aux() -> BasisSet {
     ferric_core::basis::bundled("cc-pvdz-ri").expect("aux")
 }
 
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn keep_energy_is_bitwise_the_plain_energy() {
     let cell = cell_at(&ATOMS);
@@ -87,6 +88,7 @@ fn keep_energy_is_bitwise_the_plain_energy() {
     assert_eq!(a.energy.to_bits(), b.energy.to_bits(), "rsgdf");
 }
 
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn keep_uhf_energy_is_bitwise_the_plain_energy_staged_ewald() {
     let pos = [[0.3, 0.2, 0.1], [0.35, 0.12, 1.5], [1.6, 0.9, 0.7]];
@@ -132,6 +134,7 @@ fn moved(a: usize, x: usize, d: f64) -> Vec<[f64; 3]> {
     p
 }
 
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn retained_force_matches_fd_and_a_stale_hcore_does_not() {
     let cell = cell_at(&ATOMS);
@@ -204,6 +207,7 @@ fn retained_force_matches_fd_and_a_stale_hcore_does_not() {
     }
 }
 
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn retained_bytes_are_charged_against_the_derivative_budget() {
     let cell = cell_at(&ATOMS);

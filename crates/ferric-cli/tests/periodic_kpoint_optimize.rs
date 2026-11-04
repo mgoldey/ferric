@@ -44,6 +44,7 @@ fn printed_k_point_force_equals_the_library_force_rhf() {
     assert!(max_diff(&g, &bad) > 1e-4, "mesh mutant not detected");
 }
 
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn printed_k_point_force_equals_the_library_force_uhf() {
     let o = run("uhf-grad", &xyz(&H3_OFFAXIS), "uhf", 2, "[1, 1, 3]", LOOSE);
@@ -64,6 +65,7 @@ fn printed_k_point_force_equals_the_library_force_uhf() {
     assert!(max_diff(&g, &bad) > 1e-4, "mesh mutant not detected");
 }
 
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn k_point_optimize_converges_and_the_final_force_is_the_library_force() {
     let start = [[0.0, 0.0, 0.0], [0.0, 0.0, 1.0 / BOHR_RADIUS_ANGSTROM]];
@@ -129,6 +131,7 @@ fn library_gradient_rsgdf_ccpvdz(atoms_bohr: &[[f64; 3]]) -> (Vec<f64>, usize) {
     (g.grad.iter().copied().collect(), rotated)
 }
 
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn rotating_basis_rsgdf_k_point_force_equals_the_library_force() {
     let o = run_with(

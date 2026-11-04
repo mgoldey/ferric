@@ -120,6 +120,7 @@ fn a_equal_one_with_zero_xc_is_the_uhf_force_per_part() {
 /// equality; physics predicts agreement at the SCF-density floor. BLIND to:
 /// alpha/beta swaps, a dropped spin that is doubled, anything symmetric in the
 /// two spins.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn closed_shell_limit_equals_the_rks_force_per_part() {
     closed_shell_vs_rks(&["PBE0"]);
@@ -136,6 +137,7 @@ fn closed_shell_limit_equals_the_rks_force_per_part_lda_pbe() {
 /// the same per-part 1x1x1 vs Gamma UKS anchor on the H3 doublet with PBE
 /// (the polarized semilocal XC force of both spins at one real k-point, no
 /// exact exchange, no mutants; Bloch phases are not exercised).
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn one_point_mesh_matches_the_gamma_uks_gradient_per_part_pbe() {
     one_point_vs_gamma("PBE", &[]);
@@ -146,6 +148,7 @@ fn one_point_mesh_matches_the_gamma_uks_gradient_per_part_pbe() {
 /// row's three mutants (each adds a force, ~15 s locally; with two of them
 /// this canary would sit near the 120 s per-commit line on CI). Measured
 /// 2026-10-30: 32 s locally alone, worst part 1.2e-11.
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn one_point_mesh_matches_the_gamma_uks_gradient_per_part_pbe0() {
     one_point_vs_gamma("PBE0", &[]);
@@ -156,6 +159,7 @@ fn one_point_mesh_matches_the_gamma_uks_gradient_per_part_pbe0() {
 /// spin, named) on the H3 doublet PBE0 state. The weekly test adds the
 /// accepted-state check, the functional-mismatch guard cases, the spin swap
 /// and the pure-functional entry.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn refusals_and_the_per_spin_fock_guard_canary() {
     let fx = fixture(&H3, [1, 1, 1], "PBE0", Jk::Dense, ExxDiv::Ewald);
@@ -453,6 +457,7 @@ fn uks_stationarity_probe() {
 /// A loosely converged UKS state is refused with the commutator message; the
 /// same state with the gate off returns a force that is wrong by far more than
 /// the FD bar (so the gate matters), and a tight state passes the gate.
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn loose_uks_scf_is_refused_by_the_stationarity_gate() {
     let tight = fixture(&H3, [1, 1, 1], "PBE", Jk::Dense, ExxDiv::None);

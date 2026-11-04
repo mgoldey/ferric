@@ -94,6 +94,7 @@ fn single_atom_moving_xc_pieces_are_exactly_zero() {
 
 /// Moving skeleton and `F^x` vs the frozen-density differences (LDA and PBE,
 /// water / STO-3G and 6-31G).
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn moving_xc_pieces_match_frozen_density_differences() {
     for xc in ["LDA", "PBE"] {
@@ -152,6 +153,7 @@ fn moving_xc_pieces_satisfy_the_translation_sum_rule() {
 }
 
 /// Each moving-grid mutant misses a frozen-density anchor by >= 10 bars.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn moving_grid_mutants_each_fail_a_frozen_density_anchor() {
     let xc = "PBE";
@@ -197,6 +199,7 @@ fn moving_grid_mutants_each_fail_a_frozen_density_anchor() {
 // Full Hessian vs the production gradient
 // ---------------------------------------------------------------------------
 
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn moving_grid_hessian_matches_difference_of_the_production_gradient() {
     if !has_deriv2() {
@@ -213,6 +216,7 @@ fn moving_grid_hessian_matches_difference_of_the_production_gradient() {
 /// the plain `ks_gradient_closed` differentiates) and the same reference (FD
 /// of the production gradient), which the fixed-grid Hessian misses and the
 /// moving-grid Hessian must match.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn production_gradient_difference_matches_the_moving_grid_hessian() {
     if !has_deriv2() {

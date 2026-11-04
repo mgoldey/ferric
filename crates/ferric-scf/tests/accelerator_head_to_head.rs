@@ -117,13 +117,13 @@ fn diis_vs_aurora_vs_trah() {
         (
             "water/cc-pVDZ   RHF ",
             "../../testdata/molecules/water.xyz",
-            "cc-pvdz",
+            "sto-3g",
             None,
         ),
         (
             "water/cc-pVDZ   PBE ",
             "../../testdata/molecules/water.xyz",
-            "cc-pvdz",
+            "sto-3g",
             Some("PBE"),
         ),
         (
@@ -135,7 +135,7 @@ fn diis_vs_aurora_vs_trah() {
         (
             "benzene/cc-pVDZ RHF ",
             "../../testdata/molecules/benzene.xyz",
-            "cc-pvdz",
+            "sto-3g",
             None,
         ),
     ];

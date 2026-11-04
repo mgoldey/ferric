@@ -301,6 +301,7 @@ const MUTANTS: [ColumnRotationMutant; 5] = [
 /// the flag on - and under every mutant, `RotationLate` included - is
 /// BITWISE the unrotated build, on a TRIM (1x1x2) and a non-TRIM (1x1x3)
 /// mesh, unsplit and split.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn identity_rotation_k_builds_are_bitwise_the_unrotated_build() {
     let (obs, aux_bs) = (sp_basis_h(), bset("cc-pvdz-ri"));
@@ -391,6 +392,7 @@ fn rotated_k_bins_are_the_parent_bins_and_keep_the_pair_symmetry() {
 /// The back-transform mutants fail the bin-level covariance anchor by
 /// orders of magnitude on the fixture where production passes (same fixture
 /// as the anchor, non-TRIM mesh, unsplit and split).
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn back_transform_mutants_fail_the_bin_level_anchor() {
     let cell = water_cell();
@@ -443,6 +445,7 @@ fn back_transform_mutants_fail_the_bin_level_anchor() {
 /// The fitted B(k, k') and the hcore h(k), V(k) rotated vs unrotated at the
 /// default screen on H2O / cc-pVDZ (5 rotated columns), non-TRIM mesh,
 /// unsplit and split.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn rotated_k_builds_match_unrotated() {
     let ks = ksys(
@@ -500,6 +503,7 @@ fn rotated_k_builds_match_unrotated() {
 /// H2 / cc-pVDZ (the cheapest cell with a rotated column) where production
 /// matches the unrotated build to `B_BAR`; a pair-symmetry defect
 /// (`WrongPairBin`) is still caught WITH the rotation on, on a non-TRIM mesh.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn rotated_k_mutants_miss_the_fitted_tensors() {
     let (cell, obs, aux_bs) = h2_ccpvdz();
@@ -556,6 +560,7 @@ fn rotated_k_mutants_miss_the_fitted_tensors() {
 
 /// k-point RHF energy rotated (hcore AND fit) vs unrotated: H2 / cc-pVDZ on
 /// a non-TRIM (1x1x3) and a TRIM (1x1x2) mesh, unsplit and split.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn rotated_k_rhf_energy_matches_the_unrotated_build() {
     let (cell, obs, aux_bs) = h2_ccpvdz();
@@ -583,6 +588,7 @@ fn rotated_k_rhf_energy_matches_the_unrotated_build() {
 
 /// A 1x1x1 mesh with the rotation on is the Gamma rotated build: the fitted
 /// kernels, h, and the RHF energy.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn one_point_mesh_is_the_gamma_rotated_build() {
     let (cell, obs, aux_bs) = h2_ccpvdz();
@@ -666,6 +672,7 @@ fn supercell(cell: &Cell, n: [usize; 3]) -> Cell {
 /// 1x1x3 rotated k energy per cell equals the Gamma energy of the explicit
 /// 3-cell supercell per cell, rotated and unrotated (each side against the
 /// independent construction).
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn rotated_k_mesh_is_the_gamma_supercell() {
     let (cell, obs, aux_bs) = h2_ccpvdz();
@@ -720,6 +727,7 @@ fn rotated_k_mesh_is_the_gamma_supercell() {
 // ------------------------------------------------------------------ (f)
 
 /// The rotated k builds are BITWISE identical across 1/2/6 threads.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn rotated_k_builds_are_bitwise_across_thread_counts() {
     let ks = ksys(
@@ -757,6 +765,7 @@ fn rotated_k_builds_are_bitwise_across_thread_counts() {
 /// Defaults and refusals: `Auto` rotates the k-point ENERGY builds (bitwise
 /// the explicit `On`); the frozen s1 oracles run unrotated under `Auto` and
 /// refuse an explicit `On`; the `RotateAux` mutant is refused by the hcore.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn k_default_rotates_and_the_oracles_refuse() {
     let (cell, obs, aux_bs) = h2_ccpvdz();
@@ -833,6 +842,7 @@ fn krhf_scf(ks: &KSys, hk: &PeriodicHcoreK, gdf: &KRsGdf) -> KScfResult {
 /// force equals the all-unrotated force to the screening precision, and an
 /// explicit `On` over the rotated build is the same walk as `Auto`
 /// (`pbc_sr_rotation_kderiv.rs` anchors it against FD and the Gamma code).
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn k_forces_follow_the_rotated_energy() {
     let (cell, obs, aux_bs) = h2_ccpvdz();

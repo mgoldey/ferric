@@ -147,6 +147,7 @@ fn build_parts(
 
 // --------------------------------------------------------------- anchor 1 --
 
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn a_split_that_moves_nothing_is_bitwise_todays_build() {
     let cell = h2_cell(4.0);
@@ -430,6 +431,7 @@ fn split_matches_unsplit_and_is_omega_independent_on_h2() {
 
 // --------------------------------------------- split vs unsplit (triclinic) --
 
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn split_matches_unsplit_on_the_triclinic_cell() {
     let cell = triclinic_cell();

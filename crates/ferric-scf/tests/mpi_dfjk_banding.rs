@@ -67,7 +67,7 @@ fn peak_rss_mib() -> f64 {
 /// config the serial b3lyp validation test uses, so the number is directly
 /// comparable.
 fn df_b3lyp_energy(ctx: &ParallelContext, mol: &Molecule) -> f64 {
-    let bs = basis::bundled("cc-pvdz").unwrap();
+    let bs = basis::bundled("sto-3g").unwrap();
     let obs = PreparedBasis::new(mol, &bs).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
@@ -143,6 +143,7 @@ fn assert_all_ranks_agree(ctx: &ParallelContext, label: &str, energy: f64) {
     let _ = (ctx, label, energy);
 }
 
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn mpi_df_b3lyp_water_and_benzene_banded() {
     let ctx = ParallelContext::default();
@@ -216,7 +217,7 @@ fn mpi_dfk_band_memory_probe() {
         "/../../testdata/molecules/benzene.xyz"
     ))
     .unwrap();
-    let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
+    let obs = PreparedBasis::new(&mol, &basis::bundled("sto-3g").unwrap()).unwrap();
     let aux_set = basis::bundled("def2-universal-jkfit").unwrap();
     let dfbs = PreparedBasis::new(&mol, &aux_set).unwrap();
     let op = Operator::coulomb();

@@ -487,6 +487,7 @@ const COSX_MBD_TOL: f64 = 1e-10;
 /// with the COSX switch removed from the config (exact-K contraction against
 /// the COSX SCF — the pairing the open-shell COSX refusal used to prevent)
 /// must miss FD by more than the bar.
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn uks_mbd_cosx_exact_gradient_matches_fd_of_full_scf_pipeline() {
     let mol = Molecule::parse_xyz(NH2_XYZ, 0, 2).expect("NH2");

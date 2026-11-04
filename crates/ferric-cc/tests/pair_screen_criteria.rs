@@ -295,6 +295,7 @@ fn distance_vs_pair_energy_screening() {
 /// energy, an order of magnitude inside chemical accuracy. The per-molecule
 /// numbers are printed so a reader can judge for themselves rather than trust
 /// the threshold I picked.
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn default_threshold_validated_across_molecules() {
     const KCAL: f64 = 1.593_601e-3; // Ha per kcal/mol

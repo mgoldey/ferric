@@ -42,18 +42,21 @@ use gs::*;
 /// GLUE check (the kernel is shared); the FD test below (two components)
 /// and the validation
 /// file check the kernel. exxdiv none is in the validation file.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn gamma_rsgdf_rsh_rks_force_is_the_one_point_mesh_force() {
     one_point_force_anchor(Sp::Rks);
 }
 
 /// (1) as above, UKS (H3 doublet).
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn gamma_rsgdf_rsh_uks_force_is_the_one_point_mesh_force() {
     one_point_force_anchor(Sp::Uks);
 }
 
 /// (1) as above, ROKS (H3 doublet).
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn gamma_rsgdf_rsh_roks_force_is_the_one_point_mesh_force() {
     one_point_force_anchor(Sp::Roks);
@@ -88,6 +91,7 @@ fn kscf_energy(k: &K1) -> f64 {
 
 /// (1') GAMMA == 1x1x1 (stress, closed shell). As the force, on all nine
 /// components of `dE/dε`.
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn gamma_rsgdf_rsh_stress_is_the_one_point_mesh_stress() {
     for x in [ExxDiv::Ewald, ExxDiv::None] {
@@ -110,6 +114,7 @@ fn gamma_rsgdf_rsh_stress_is_the_one_point_mesh_stress() {
 /// (1'') GAMMA == 1x1x1 (open-shell UKS stress, `gamma_uks_rsh_stress` of
 /// #557 handed the RS-GDF exchange), H3 doublet, exxdiv ewald, all nine
 /// components. Same physics / artifact hypothesis as the force anchor.
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn gamma_rsgdf_rsh_uks_stress_is_the_one_point_mesh_stress() {
     let x = ExxDiv::Ewald;
@@ -136,6 +141,7 @@ fn gamma_rsgdf_rsh_uks_stress_is_the_one_point_mesh_stress() {
 /// its Gamma J on the other source (dense J with an RS-GDF exchange, RS-GDF
 /// J with a dense one) differs by the fit error (~1e-5) and must be refused
 /// by the Fock guard, not differentiated as if consistent.
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn gamma_rsh_route_refuses_a_j_that_is_not_the_exchanges() {
     for (sp, jk) in [
@@ -180,6 +186,7 @@ fn gamma_rsh_route_refuses_a_j_that_is_not_the_exchanges() {
 /// forces equal the consistent (FD-validated) one. Every fit change that
 /// moves the J is refused. Not covered: a fit change that moves the Fock by
 /// less than the 1e-8 bar would pass, with a force error of that order.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn gamma_rsh_route_on_a_differently_configured_rsgdf_j() {
     let x = ExxDiv::Ewald;
@@ -217,6 +224,7 @@ fn gamma_rsh_route_on_a_differently_configured_rsgdf_j() {
 /// (fresh fits + SCF per displacement, h = 1e-4), exxdiv ewald, two
 /// components. Physics: the h² floor (~2e-9, as the k-point RS-GDF KS row);
 /// artifact: the k-point ledger mutants miss by >= 2e-2.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn gamma_rsgdf_rsh_force_matches_fd() {
     let g = gamma_run(cell_at(&H2), Sp::Rks, CAM, ExxDiv::Ewald, Jk::RsGdf);

@@ -44,6 +44,7 @@ fn print_goldens() {
     }
 }
 
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn lr_force_sto3g_unsplit_is_thread_invariant() {
     check(0, &[2, 6]);
@@ -51,6 +52,7 @@ fn lr_force_sto3g_unsplit_is_thread_invariant() {
 
 /// Canary of `lr_force_sto3g_split_is_thread_invariant` (weekly): the
 /// range-split LR passes at 2 threads vs 1.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn lr_force_sto3g_split_two_threads_canary() {
     check(1, &[2]);

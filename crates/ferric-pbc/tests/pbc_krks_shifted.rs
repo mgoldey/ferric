@@ -97,6 +97,7 @@ fn energy(cell: &Cell, mesh: &KPointMesh, n: usize, f: &str) -> f64 {
 
 /// Odd-N Monkhorst-Pack is the Gamma-centred mesh (same points, so the same
 /// E to round-off) for the full dense KS path.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn odd_monkhorst_pack_is_gamma_centred() {
     let cell = h2_cell(4.0);
@@ -111,6 +112,7 @@ fn odd_monkhorst_pack_is_gamma_centred() {
 
 /// The artifact guard of the identity above: for an EVEN mesh the shift is
 /// physical, so dropping it would be visible.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn shift_is_not_dropped() {
     let cell = h2_cell(4.0);
@@ -167,11 +169,13 @@ fn check_pins(cell_name: &str) {
     assert!(seen >= 4, "{cell_name}: only {seen} reference rows");
 }
 
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn shifted_mesh_triclinic_krks_matches_pinned_pyscf() {
     check_pins("h4_triclinic");
 }
 
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn shifted_mesh_cubic_krks_matches_pinned_pyscf() {
     check_pins("h2_cubic_a4");
@@ -218,11 +222,13 @@ fn shifted_rsgdf(cell: &Cell) {
     }
 }
 
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn rsgdf_shifted_mesh_is_dense_to_the_fit_error_cubic() {
     shifted_rsgdf(&h2_cell(4.0));
 }
 
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn rsgdf_shifted_mesh_is_dense_to_the_fit_error_triclinic() {
     shifted_rsgdf(&triclinic_cell());

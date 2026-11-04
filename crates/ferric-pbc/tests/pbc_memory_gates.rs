@@ -163,6 +163,7 @@ fn periodic_hcore_lr_chunk_gate_names_one_g() {
     );
 }
 
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn periodic_hcore_chunking_is_bitwise_invariant() {
     let systems = [

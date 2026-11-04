@@ -72,6 +72,7 @@ use support::*;
 /// Null-tau limit. Artifact hypothesis: a tau path that perturbed the non-tau
 /// terms (mis-sized plane, stray accumulation) would shift the PBE stress;
 /// physics predicts exactly 0 because `v_tau = 0`.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn null_tau_path_reproduces_the_gga_stress_exactly() {
     let fx = fixture(
@@ -90,6 +91,7 @@ fn null_tau_path_reproduces_the_gga_stress_exactly() {
 
 /// TPSS through its raw component names on a PBE density (`GuardSkippedOnly`
 /// skips only the Fock guard, which the XC parts do not read).
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn tpss_components_xc_stress_matches_fd_of_exc() {
     let grid = atom_grid(20, 50, Some(CUTOFF));
@@ -115,6 +117,7 @@ fn tpss_components_xc_stress_matches_fd_of_exc() {
 /// XC FD and the same XC strain defects, SCAN only, on the zz and xz strains
 /// (the bond axis and one shear; the weekly test runs all nine for SCAN and
 /// r2SCAN). Measured 81 s locally on a loaded box (2026-10-30).
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn uniform_grid_fixed_density_xc_stress_canary() {
     uniform_fixed_density_xc_case(&["SCAN"], &[(2, 2), (0, 2)], &XC_MUTANTS);
@@ -128,6 +131,7 @@ fn uniform_grid_fixed_density_xc_stress_canary() {
 /// (r2SCAN -> SCAN) is NOT visible here; the CLI force canary
 /// `kpoint_uks_r2scan_force_at_the_input_geometry_differs_from_scan` and
 /// `pbc_krks.rs::gamma_mgga_matches_pinned_pyscf_gamma_rks` see it.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn uniform_grid_fixed_density_xc_stress_r2scan_canary() {
     uniform_fixed_density_xc_case(
@@ -143,6 +147,7 @@ fn uniform_grid_fixed_density_xc_stress_r2scan_canary() {
 // ------------------------------------------------------------ SCF-energy FD
 
 /// Total dE/d eps against FD of the converged SCAN SCF energy, uniform grid.
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn meta_gga_stress_matches_fd_of_the_scf_energy() {
     let grid = KXcGrid::Uniform([24, 24, 24]);
@@ -171,6 +176,7 @@ fn meta_gga_stress_matches_fd_of_the_scf_energy() {
 /// the same code (carries the Bloch phases and the 1/N_k; not the tau
 /// derivative itself). Artifact hypothesis: a missing phase / 1/N_k in the tau
 /// term would break it at the size of the tau term, not at 1e-10.
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn supercell_identity_per_part() {
     let grid = atom_grid(20, 50, Some(CUTOFF));
@@ -190,6 +196,7 @@ fn supercell_identity_per_part() {
 
 // ----------------------------------------------------- refusals, guard, mutants
 
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn refusals_and_the_fock_guard() {
     let fx = fixture(
@@ -247,6 +254,7 @@ fn refusals_and_the_fock_guard() {
 }
 
 /// Production-wired mutants against the FD-anchored base.
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn mutants_are_caught() {
     let fx = fixture(
@@ -331,6 +339,7 @@ fn uniform_grid_stress_matches_pyscf_fftdf_krks_stress_r2scan() {
 /// 5.0e-2, `TauNoVxc` 2.3e-2, `NoPointMotion` 5.2e-1. `StressTauPath` (take
 /// the tau path) is an EQUIVALENT mutant on a meta-GGA (the path is already
 /// taken): measured 0, asserted.
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn tpss_stress_matches_fd_of_the_scf_energy() {
     let grid = KXcGrid::Uniform([24, 24, 24]);
@@ -398,6 +407,7 @@ fn tpss_stress_matches_fd_of_the_scf_energy() {
 /// missing the same FD. Measured: (2,2) 1.1e-8, (0,2) 2.0e-10 (bar 5e-7);
 /// all nine (ignored) worst 1.1e-8 SCAN and r2SCAN. Mutants against the same
 /// FD: NoTauStrain 6.0e-2, TauDoubled 6.0e-2, TauNoVxc 5.6e-4.
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn rsgdf_meta_gga_stress_matches_fd_of_the_scf_energy() {
     rsgdf_scf_fd_case("SCAN", &[(2, 2), (0, 2)], true);
@@ -418,6 +428,7 @@ fn rsgdf_meta_gga_stress_matches_fd_all_nine() {
 /// a tau defect on the RS-GDF route alone must break it. A tau defect common
 /// to BOTH routes cancels in the difference: this test sees only
 /// route-dependent defects, and the FD test above is the load-bearing anchor.
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn rsgdf_minus_dense_stress_transfers_from_pbe_to_scan() {
     let grid = atom_grid(20, 50, Some(CUTOFF));

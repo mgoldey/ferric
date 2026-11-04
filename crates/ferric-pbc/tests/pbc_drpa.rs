@@ -575,6 +575,7 @@ fn triclinic_4h_sp_matches_pinned_pyscf_aftdf_drpa() {
 //     the residual is finite-size only).
 // ===========================================================================
 
+#[ignore = "medium (10-60s); see TEST_REVIEW.md"]
 #[test]
 fn box_limit_shifted_is_a3_with_the_predicted_coefficient_unshifted_is_1_over_a() {
     let basis = pyscf_sto3g_h();

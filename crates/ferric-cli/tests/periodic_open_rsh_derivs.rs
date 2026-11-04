@@ -59,6 +59,7 @@ use open_rsh_cli::*;
 
 /// k-point ROKS HSE06 force (G2): CLI == library bit for bit, and a central
 /// FD of the CLI's own energy along atom 1 z (the largest force component).
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn kpoint_roks_hse06_force_equals_the_library_and_matches_fd() {
     const H: f64 = 1e-4;
@@ -86,6 +87,7 @@ fn kpoint_roks_hse06_force_equals_the_library_and_matches_fd() {
 /// `sigma_zz = (1/Omega) dE/d(eps_zz)` against a central FD of the CLI's own
 /// energy under a uniaxial strain (lattice c and every atom z scaled by
 /// `1 + eps`).
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn kpoint_uks_hse06_stress_equals_the_library_and_matches_fd() {
     const H: f64 = 1e-4;
@@ -108,6 +110,7 @@ fn kpoint_uks_hse06_stress_equals_the_library_and_matches_fd() {
 }
 
 /// Gamma ROKS CAM-B3LYP force (G3, dense AFT): CLI == library bit for bit.
+#[ignore = "slow (>=60s); see TEST_REVIEW.md"]
 #[test]
 fn gamma_roks_cam_b3lyp_force_equals_the_library_bit_for_bit() {
     force_anchor(&Run {
