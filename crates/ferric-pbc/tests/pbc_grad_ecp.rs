@@ -454,7 +454,6 @@ fn big_box_ecp_force_term_is_the_molecular_ecp_gradient() {
 /// ECP term at a FIXED density vs central FD of `Σ D V_ECP(R)` (ferric's
 /// own lattice sum) on the 6×6×7 anchor cell, compact basis. Two
 /// components (one per atom) keep it fast; the SCF anchor covers all six.
-#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn ecp_term_matches_fd_of_its_energy_at_fixed_density() {
     let bs = hi_basis(false);
@@ -570,7 +569,6 @@ const STRAIN_TERM_BAR: f64 = 1e-8;
 /// Richardson of FD(1e-3, 5e-4). Each ECP-strain mutant must miss by > 10x
 /// the bar. The all-electron trivial limit is `pbc_stress.rs` (an ECP-free
 /// cell has `parts.ecp == 0` and its stress is unchanged).
-#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn ecp_strain_term_matches_fd_of_its_energy_at_fixed_density() {
     let bs = hi_basis(false);
@@ -693,7 +691,6 @@ fn hi_compact_rhf_stress_matches_fd_of_own_energy_and_catches_ecp_mutants() {
 /// over the hcore's own triples; the UHF path on the same density gives the
 /// same force; the stress carries `periodic_ecp_strain`; a hcore built at another ECP
 /// precision is refused.
-#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn gamma_forces_carry_the_ecp_term_and_stress_carries_its_strain() {
     let bs = hi_basis(false);
