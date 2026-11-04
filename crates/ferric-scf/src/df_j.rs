@@ -445,6 +445,30 @@ impl<'a> DfJ<'a> {
         Self::from_source_and_metric(source, v, budget_bytes, ctx)
     }
 
+    /// Would [`new_for_jk`](Self::new_for_jk) (single rank, full aux range)
+    /// hold its tensor in memory under `jk_storage = "auto"`, in any tier it
+    /// could pick: the f32 tier when `dfj-f32` is requested, then the
+    /// pair-screened, packed or dense f64 tiers? The same fit checks the
+    /// builders run, without building. `v` is the operator's aux metric.
+    pub(crate) fn stored_fits_in_memory(
+        op: Operator,
+        (obs, dfbs): (&PreparedBasis, &PreparedBasis),
+        budget_bytes: usize,
+        pair_thresh: f64,
+        v: &Array2<f64>,
+    ) -> bool {
+        let (nao, rows) = (obs.nbasis(), dfbs.nbasis());
+        if dfj_f32_requested() {
+            let screen = pair_screen_with(op, obs, v, pair_thresh, false);
+            if ThreeIndexSource::ri_j_f32_fits_in_memory(nao, rows, screen.as_deref(), budget_bytes)
+            {
+                return true;
+            }
+        }
+        let screen = pair_screen_for(op, obs, v, pair_thresh);
+        ThreeIndexSource::ri_j_fits_in_memory(nao, rows, screen.as_deref(), budget_bytes)
+    }
+
     /// The `dfj-f32` build of [`new_for_jk`](Self::new_for_jk): the tensor built
     /// straight into f32 (with the f64 exit armed), or the metric handed back
     /// (`Err`, counted, with a notice) when the f32 tier declines, so the caller

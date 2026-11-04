@@ -1907,6 +1907,15 @@ impl ThreeIndexSource {
         })
     }
 
+    /// True when the tensor is held in memory in any layout (dense, packed,
+    /// pair-screened or f32), i.e. neither spilled to disk nor recomputed.
+    pub fn is_resident(&self) -> bool {
+        !matches!(
+            self.backend,
+            Backend::DiskSpill { .. } | Backend::Recompute { .. }
+        )
+    }
+
     /// True when the whole band is resident (no disk spill).
     pub fn is_incore(&self) -> bool {
         matches!(self.backend, Backend::InCore(_))

@@ -146,6 +146,20 @@ const AUX_BLOCK: usize = 8;
 /// Relative error allowed per far-field term (see the module doc, "Far field").
 pub const FAR_EPS: f64 = 1e-14;
 
+/// Split-RI-J builders constructed in this process (test observable).
+static CONSTRUCTED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// How many Split-RI-J builders this process has constructed. Test hook: it
+/// shows which RI-J builder an SCF took, which its energy bits cannot (the
+/// free-atom guess SCFs take their own route).
+#[doc(hidden)]
+pub fn constructed_count() -> usize {
+    CONSTRUCTED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// The memory pool label of a Split-RI-J builder's footprint.
+const POOL_LABEL: &str = "Split-RI-J (metric factor, primitive pairs, per-build Hermite buffers)";
+
 /// `2 π^{5/2}`.
 const TWO_PI_52: f64 = 34.986_836_655_249_725;
 
@@ -952,6 +966,10 @@ pub struct SplitRiJ {
     kept_blocks: usize,
     total_blocks: usize,
     v_chol: CholeskyFactorized<OwnedRepr<f64>>,
+    /// The shared memory pool's record of [`Self::memory_bytes`], held for the
+    /// builder's lifetime (soft: inert when no pool is installed or it is full,
+    /// as for the stored tiers' last-resort planes).
+    _charge: ferric_core::memory::pool::Reservation,
 }
 
 impl std::fmt::Debug for SplitRiJ {
@@ -977,6 +995,17 @@ impl SplitRiJ {
     ) -> Result<Self, FerricError> {
         let v = coulomb_metric_2c(op, aux)?;
         Self::with_metric(op, obs, aux, v, integral_thresh)
+    }
+
+    /// Whether [`Self::new`] accepts this operator and these bases: the plain
+    /// Coulomb operator, orbital shells up to `l = MAX_L_OBS` and aux shells
+    /// up to `l = MAX_L_AUX`. `jk_storage = "auto"` checks this before it
+    /// picks Split-RI-J.
+    pub fn supports(op: Operator, obs: &PreparedBasis, aux: &PreparedBasis) -> bool {
+        op.kind == OperatorKind::Coulomb
+            && !op.is_composite()
+            && load_shells(obs, MAX_L_OBS, "orbital").is_ok()
+            && load_shells(aux, MAX_L_AUX, "auxiliary").is_ok()
     }
 
     /// [`Self::new`] with the `(naux, naux)` metric `v` already built (it is
@@ -1101,7 +1130,7 @@ impl SplitRiJ {
                  positive definite: the auxiliary basis is linearly dependent): {e}"
             ))
         })?;
-        Ok(SplitRiJ {
+        let mut me = SplitRiJ {
             obs: obs_sh,
             aux: aux_sh,
             nao,
@@ -1122,7 +1151,12 @@ impl SplitRiJ {
             kept_blocks,
             total_blocks,
             v_chol,
-        })
+            _charge: ferric_core::memory::pool::Reservation::inert(POOL_LABEL),
+        };
+        CONSTRUCTED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        me._charge = ferric_core::memory::pool::try_reserve_global(POOL_LABEL, me.memory_bytes())
+            .unwrap_or_else(|| ferric_core::memory::pool::Reservation::inert(POOL_LABEL));
+        Ok(me)
     }
 
     /// Switch the far-field terms off (`false`: every term on the exact

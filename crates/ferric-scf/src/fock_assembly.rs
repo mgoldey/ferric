@@ -127,9 +127,11 @@ fn build_df_jk_impl<'a>(
     // side, same as before).
     if let (Some(ja), Some(ka)) = (j_aux, k_aux) {
         if ja == ka {
-            warn_split_bypassed(
-                "J and K use the same auxiliary basis, so J reads DF-K's stored tensor",
-            );
+            // Several ranks: the shared tensor is striped for DF-K, and
+            // Split-RI-J runs on one rank only.
+            if ctx.size > 1 {
+                warn_split_bypassed("it runs on one rank only, and this run has several");
+            }
             let dfbs_set = ferric_core::basis::bundled(ja)?;
             let dfbs = PreparedBasis::new(mol, &dfbs_set)?;
             // Same aux basis on both sides: build the raw (P|μν) tensor ONCE and
@@ -165,13 +167,23 @@ fn build_df_jk_impl<'a>(
                     ooc_budget,
                     Some(ctx),
                 )?);
-                let mut df_j = Some(RiJ::Stored(DfJ::from_source(
-                    raw,
-                    op,
-                    &dfbs,
-                    ooc_budget,
-                    Some(ctx),
-                )?));
+                // DF-K has its dressed copy now. Split-RI-J for J when asked,
+                // or under `auto` when the raw tensor was spilled or is
+                // recomputed (J would pay that every pass): the raw tensor is
+                // then freed here instead of kept for J.
+                let mut df_j = Some(
+                    if split_j_for_shared_raw(op, prep, &dfbs, raw.is_resident()) {
+                        drop(raw);
+                        RiJ::Split(Box::new(crate::split_rij::SplitRiJ::new(
+                            op,
+                            prep,
+                            &dfbs,
+                            j_pair_thresh,
+                        )?))
+                    } else {
+                        RiJ::Stored(DfJ::from_source(raw, op, &dfbs, ooc_budget, Some(ctx))?)
+                    },
+                );
                 yield_device_to_k(&mut df_j, &df_k);
                 return Ok((df_j, df_k));
             }
@@ -191,33 +203,14 @@ fn build_df_jk_impl<'a>(
     let mut df_j = if let Some(aux_name) = j_aux {
         let dfbs_set = ferric_core::basis::bundled(aux_name)?;
         let dfbs = PreparedBasis::new(mol, &dfbs_set)?;
-        // `jk_storage = "split"`: Split-RI-J recomputes the three-centre
-        // integrals in contracted form every build, so no J tensor is stored.
-        // Single rank only (it does not stripe the aux band).
-        let use_split = ferric_integrals::three_index_source::jk_storage()
-            == ferric_integrals::three_index_source::JkStorage::Split
-            && ctx.size <= 1;
-        if ctx.size > 1 {
-            warn_split_bypassed("it runs on one rank only, and this run has several");
-        }
-        Some(if use_split {
-            RiJ::Split(Box::new(crate::split_rij::SplitRiJ::new(
-                op,
-                prep,
-                &dfbs,
-                j_pair_thresh,
-            )?))
-        } else {
-            RiJ::Stored(DfJ::new_for_jk(
-                op,
-                mol,
-                prep,
-                &dfbs,
-                ooc_budget,
-                Some(ctx),
-                j_pair_thresh,
-            )?)
-        })
+        Some(j_only_builder(
+            ctx,
+            mol,
+            op,
+            (prep, &dfbs),
+            ooc_budget,
+            j_pair_thresh,
+        )?)
     } else {
         None
     };
@@ -244,6 +237,95 @@ fn warn_split_bypassed(why: &str) {
              the RI-J tensor is stored as under \"auto\""
         );
     }
+}
+
+/// The RI-J builder when J has its own tensor (no DF-K sharing it).
+///
+/// Split-RI-J for `jk_storage = "split"`, and under `auto` when the stored
+/// tensor would not be held in memory in any tier (`DfJ::stored_fits_in_memory`,
+/// the builders' own fit checks), single rank, for an operator and bases Split-RI-J
+/// supports. Measured on danuglipron PBE/def2-SVP: Split-RI-J 81 s against
+/// 584 s recomputing and 600 s spilling the tensor (46 s held in memory).
+/// Otherwise the stored [`DfJ`], which picks its own tier.
+fn j_only_builder<'a>(
+    ctx: &'a ParallelContext,
+    mol: &Molecule,
+    op: Operator,
+    (prep, dfbs): (&PreparedBasis, &PreparedBasis),
+    ooc_budget: usize,
+    j_pair_thresh: f64,
+) -> Result<RiJ<'a>, FerricError> {
+    use crate::split_rij::SplitRiJ;
+    use ferric_integrals::three_index_source::{jk_storage, JkStorage};
+    let single = ctx.size <= 1;
+    match jk_storage() {
+        // Single rank only: it does not stripe the aux band.
+        JkStorage::Split if !single => {
+            warn_split_bypassed("it runs on one rank only, and this run has several");
+        }
+        JkStorage::Split => {
+            return Ok(RiJ::Split(Box::new(SplitRiJ::new(
+                op,
+                prep,
+                dfbs,
+                j_pair_thresh,
+            )?)));
+        }
+        JkStorage::Auto if single && SplitRiJ::supports(op, prep, dfbs) => {
+            let v = ferric_integrals::threeindex::coulomb_metric_2c(op, dfbs)?;
+            if !DfJ::stored_fits_in_memory(op, (prep, dfbs), ooc_budget, j_pair_thresh, &v) {
+                note_auto_split();
+                return Ok(RiJ::Split(Box::new(SplitRiJ::with_metric(
+                    op,
+                    prep,
+                    dfbs,
+                    v,
+                    j_pair_thresh,
+                )?)));
+            }
+        }
+        _ => {}
+    }
+    Ok(RiJ::Stored(DfJ::new_for_jk(
+        op,
+        mol,
+        prep,
+        dfbs,
+        ooc_budget,
+        Some(ctx),
+        j_pair_thresh,
+    )?))
+}
+
+/// Shared J/K raw tensor (single rank): J by Split-RI-J for `"split"`, or
+/// under `auto` when the raw tensor is not resident (spilled or recomputed)
+/// and Split-RI-J supports the operator and bases.
+fn split_j_for_shared_raw(
+    op: Operator,
+    prep: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    raw_resident: bool,
+) -> bool {
+    use ferric_integrals::three_index_source::{jk_storage, JkStorage};
+    match jk_storage() {
+        JkStorage::Split => true,
+        JkStorage::Auto => {
+            let split = !raw_resident && crate::split_rij::SplitRiJ::supports(op, prep, dfbs);
+            if split {
+                note_auto_split();
+            }
+            split
+        }
+        _ => false,
+    }
+}
+
+/// `auto` chose Split-RI-J: say so once per build (stderr).
+fn note_auto_split() {
+    eprintln!(
+        "[jk_storage] auto: the RI-J tensor does not fit the memory budget; \
+         J by Split-RI-J (recomputed in contracted form each build, no stored J tensor)"
+    );
 }
 
 /// RI-J is built before DF-K every iteration, so under `gpu = on` its device
