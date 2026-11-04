@@ -549,16 +549,17 @@ impl DftCfg {
         self.grid_radial.is_some() || self.grid_angular.is_some()
     }
 
-    /// `[dft] grid_weight_cut`, strictly checked: `Ok(None)` when unset or
-    /// `0` (off), `Ok(Some(cut))` for a finite `cut > 0`, and an error for a
-    /// negative, NaN or infinite value (never silently "off").
+    /// `[dft] grid_weight_cut`, strictly checked: `Ok(None)` when unset (the
+    /// caller then keeps the production cutoff) or `0` (off), `Ok(Some(cut))`
+    /// for a finite `cut > 0`, and an error for a negative, NaN or infinite
+    /// value (never silently "off").
     pub fn grid_weight_cut(&self) -> Result<Option<f64>, String> {
         match self.grid_weight_cut {
             None => Ok(None),
             Some(c) if c.is_finite() && c >= 0.0 => Ok((c > 0.0).then_some(c)),
             Some(c) => Err(format!(
                 "[dft] grid_weight_cut = {c} is invalid: it must be a finite number >= 0 \
-                 (e.g. 1e-14; 0 or omitted = no cutoff)"
+                 (e.g. 1e-14; omitted = the 1e-14 default, 0 = no cutoff)"
             )),
         }
     }
