@@ -919,6 +919,14 @@ pub fn run_pdep_rpa_from_intermediates(
     let eps_occ: Vec<f64> = rhf.eps_r()[first_occ..first_occ + nocc].to_vec();
     let eps_vir: Vec<f64> = rhf.eps_r()[nocc_total..nocc_total + nvir].to_vec();
 
+    if config.need_inv_dielectric_freq && !matches!(config.chi0_backend, Chi0Backend::Dense) {
+        return Err(FerricError::General(
+            "PDEP-RPA: need_inv_dielectric_freq is supported on the Dense chi0_backend only \
+             (the Laplace backend has no inverse-dielectric evaluator)"
+                .into(),
+        ));
+    }
+
     let stage = run_pdep_rpa_eigensolve(inter, mol, obs, dfbs, op, rhf, config)?;
     let eigenvectors = stage.eigenvectors;
     let quad_freqs = stage.quad_freqs;
@@ -1294,10 +1302,30 @@ pub fn run_pdep_rpa_from_parts(
 /// orbitals and orbital energies of its own Fock operator `F_σ`, diagonalized in
 /// its occupied and virtual blocks. A UHF reference is used as-is.
 ///
-/// First-land scope: Dense χ₀ backend, Davidson eigensolver, identity
-/// seed. Boys-localized seeding, Lanczos, Laplace-separable χ₀, and
-/// sparse screening are deferred to C8 — the open-shell merge with
-/// the scaling stack.
+/// # Supported options (the closed-shell `PdepRpaConfig` knobs)
+///
+/// * `eigensolver`: `Lanczos` (default; full-rank dense `eigh` of
+///   `ε̃_U(0)`) and `Davidson` (identity seed). Both are full rank, then
+///   truncated by `trunc_thresh`.
+/// * `chi0_backend`: `Dense` and `Laplace { n_quad }` (one Laplace
+///   quadrature per spin, each on that spin's own gap range).
+/// * `run_diagnostics`: fills `e_rpa_dft_diag` with the full-basis
+///   [`diagnostics::u_ri_drpa_energy`] (no eigensolver, no truncation).
+/// * `need_inv_dielectric_freq`: Dense backend only.
+///
+/// # Refused (config honesty: errors, never silent)
+///
+/// * `chi0_sparsity = BoysScreened`, and `Auto` whenever it resolves to
+///   `BoysScreened` for this molecule. The screened χ₀ representation
+///   ([`screen::build_screened_bov_boys`]) is built from a closed-shell
+///   reference (`mos_r`, `fock_r`, `nelec / 2` occupied); no per-spin
+///   version exists. `Auto` resolving to `Dense` runs the dense path.
+/// * `chi0_backend = Laplace` with `need_inv_dielectric_freq = true`: the
+///   inverse-dielectric stack is built on the Dense backend only.
+///
+/// `need_eigenvalues_freq = false` is accepted and has no effect:
+/// `eigenvalues_freq` is always populated on this path (no open-shell
+/// log-det evaluator).
 pub fn run_u_pdep_rpa(
     mol: &Molecule,
     obs: &PreparedBasis,
@@ -1313,6 +1341,17 @@ pub fn run_u_pdep_rpa(
         return Err(FerricError::General(
             "run_u_pdep_rpa: use run_pdep_rpa for closed-shell results".into(),
         ));
+    }
+    // Refuse the Boys-screened χ₀ before any integral work: the screened
+    // representation is closed-shell only (see the doc comment).
+    if let Chi0Sparsity::BoysScreened { .. } = config.chi0_sparsity.resolve(mol.atoms.len()) {
+        return Err(FerricError::General(format!(
+            "run_u_pdep_rpa: chi0_sparsity {:?} resolves to the Boys-screened χ₀ for this \
+             {}-atom molecule, which is implemented for closed-shell (RHF) references only; \
+             use chi0_sparsity = \"dense\" for an open-shell reference",
+            config.chi0_sparsity,
+            mol.atoms.len()
+        )));
     }
     // ROHF/ROKS -> per-spin semi-canonical orbitals and energies; UHF borrowed.
     let rhf_view = ferric_scf::semicanonical::unrestricted_reference(mol, rhf)?;
@@ -1593,6 +1632,14 @@ fn u_pdep_rpa_core(
 ) -> Result<PdepRpaResult, FerricError> {
     let naux = inter_a.naux;
 
+    if config.need_inv_dielectric_freq && !matches!(config.chi0_backend, Chi0Backend::Dense) {
+        return Err(FerricError::General(
+            "U-PDEP-RPA: need_inv_dielectric_freq is supported on the Dense chi0_backend only \
+             (the Laplace backend has no inverse-dielectric evaluator)"
+                .into(),
+        ));
+    }
+
     let max_vecs = if config.eigensolver_max_vecs == 0 {
         // Budget-derived default, capped at the historical 3·naux (see the
         // closed-shell path above).
@@ -1765,6 +1812,19 @@ fn u_pdep_rpa_core(
         _ => None,
     };
 
+    // Full-basis U-RI-dRPA diagnostic (spin-summed ε̃ assembled densely at
+    // every ω_k; no eigensolver, no truncation).
+    let e_rpa_dft_diag = if config.run_diagnostics {
+        Some(diagnostics::u_ri_drpa_energy(
+            &freq_chan_a,
+            &freq_chan_b,
+            &quad_freqs,
+            &quad_weights,
+        )?)
+    } else {
+        None
+    };
+
     Ok(PdepRpaResult {
         e_rpa,
         n_eigenpotentials: n_keep,
@@ -1775,7 +1835,7 @@ fn u_pdep_rpa_core(
         quad_weights,
         eigenvalues_freq,
         inv_dielectric_freq,
-        e_rpa_dft_diag: None,
+        e_rpa_dft_diag,
         eigensolver_converged: davidson_result.converged,
     })
 }

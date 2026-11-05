@@ -32,6 +32,16 @@ Instead of explicitly constructing and diagonalizing the large dense dielectric 
 
 This formulation avoids the $\mathcal{O}(N^6)$ cost and $\mathcal{O}(N^4)$ memory associated with forming and manipulating $\mathbf{\chi}_0(i\omega)$ across all frequencies.
 
+## Open-Shell (Spin-Summed) Dielectric
+
+`run_u_pdep_rpa` (`crates/ferric-rpa/src/lib.rs`) takes a UHF reference, or a ROHF reference semi-canonicalized per spin. Each spin $\sigma$ has its own RI tensor $B^P_{i_\sigma a_\sigma}$ and gaps $e_{ia}^\sigma = \epsilon_a^\sigma - \epsilon_i^\sigma$ in one shared aux basis, and the symmetrized dielectric is
+
+$$ \tilde{\mathbf{\epsilon}}_U(i\omega) = \mathbf{1} + \mathbf{\Pi}_\alpha(i\omega) + \mathbf{\Pi}_\beta(i\omega), \qquad \Pi^\sigma_{PQ}(i\omega) = 2 \sum_{ia} \frac{e^\sigma_{ia}}{\omega^2 + (e^\sigma_{ia})^2} B^P_{i_\sigma a_\sigma} B^Q_{i_\sigma a_\sigma}. $$
+
+The closed-shell $\mathbf{\Pi}$ carries the prefactor 4; with identical spin channels $\mathbf{\Pi}_\alpha + \mathbf{\Pi}_\beta$ equals it, so a UHF singlet reproduces `run_pdep_rpa`. The PDEP eigensolve, truncation, frequency projection and trace-log integration are those of the closed-shell path applied to $\tilde{\mathbf{\epsilon}}_U$; the matvec $\tilde{\mathbf{\epsilon}}_U \mathbf{V} = \mathbf{V} + \mathbf{\Pi}_\alpha \mathbf{V} + \mathbf{\Pi}_\beta \mathbf{V}$ is two closed-shell-shaped applications (`sternheimer::dielectric_apply_unrestricted`). The Laplace $\chi_0$ backend builds one Laplace quadrature per spin on that spin's gap range. `run_diagnostics` assembles $\tilde{\mathbf{\epsilon}}_U(i\omega_k)$ densely at every quadrature node (`diagnostics::u_ri_drpa_energy`).
+
+The Boys-screened $\chi_0$ is closed-shell only: its screened tiles and localized orbital energies are built from the restricted MOs and Fock matrix.
+
 ## Literature Citations
 
 1. **PDEP Eigenpotentials:** F. Gygi and G. Galli, *Phys. Rev. B* **65**, 220102(R) (2002).

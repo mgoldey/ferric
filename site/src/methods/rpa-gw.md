@@ -40,6 +40,11 @@ on an imaginary-frequency quadrature.
   reference, which it semi-canonicalizes first: each spin uses the orbitals and
   energies of its own Fock matrix, diagonalized in its occupied and virtual
   blocks (see the [anchors](../reference/validation.md#anchors)).
+  It runs the Lanczos (default) and Davidson eigensolvers, PDEP truncation
+  (`trunc_thresh`), the Dense and Laplace χ₀ backends and `run_diagnostics`
+  (full-basis U-RI-dRPA check). It refuses `chi0_sparsity = "boys"`, and
+  `"auto"` when that resolves to Boys for the molecule: the Boys-screened χ₀
+  is closed shell only.
 - **Attenuated RPA**: short-range correlation with an erfc operator.
 - **RS-MP2 + LR-RPA**: short-range MP2 plus long-range dRPA, on the
   [MP2 page](./mp2.md#rs-mp2--lr-rpa).
