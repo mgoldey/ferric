@@ -394,6 +394,57 @@ PySCF's. Measured on CO/cc-pVDZ: total and orbital energies agree with
 PySCF to 3e-12 and 8e-9 Ha, and the two AO density matrices differ element by
 element by up to 1.5. Compare invariant quantities, not raw AO matrices.
 
+## Building blocks
+
+`ferric.AoIntegrals(mol, basis_set)` exposes the integrals and J/K builds the
+drivers use, as numpy arrays, so a method can be written in numpy the way it
+is on top of PySCF's `get_hcore` / `get_jk` / `ao2mo`. Bohr and Hartree
+throughout; AOs are in ferric's shell order (`shell_offsets()`).
+
+| Block | Returns |
+|---|---|
+| `overlap()`, `kinetic()`, `nuclear()`, `ecp()`, `hcore()`, `dipole(origin)` | (nao, nao); `hcore()` includes the ECP; `dipole` is (3, nao, nao) |
+| `jk(D)` | (J, K) of the TOTAL density, direct and Schwarz-screened: the RHF Fock matrix is `hcore() + J - 0.5 * K` |
+| `df_jk(aux)` | a `DfJk` holding the RI-J/RI-K fit, reused for every `.jk(D)` |
+| `eri()` | dense (μν\|λσ), chemists' order, refused above `max_gb` (default 2 GiB) |
+| `eri3(aux)`, `eri2(aux)` | raw (P\|μν) as (naux, nao, nao) and the metric (P\|Q) |
+| `df_mo(aux, C1, C2)` | fitted B^P_pq, (naux, k1, k2), with (pq\|rs) ≈ Σ_P B^P_pq B^P_rs (the RI-MP2 fit) |
+| `ao2mo(C1, C2, C3, C4)` | exact (pq\|rs), integral-direct, never holding the nao⁴ AO tensor |
+| `grad_*`, `hess_*`, `cphf`, `xc_functional` | nuclear-derivative, response and XC pieces |
+| `ferric.einsum(spec, a, b)` | the contraction engine of ferric's correlation codes ([grammar](../reference/einsum.md)) |
+
+Every two-electron method takes `operator="coulomb" | "erf" | "erfc"` with
+`omega` in Bohr⁻¹. Orbitals come from the result objects
+(`mo_coefficients()`, `orbital_energies()`, `density()`) or from a numpy SCF on
+the blocks.
+
+<!-- doctest -->
+```python
+ints = ferric.AoIntegrals(water, bs)
+J, K = ints.jk(D)
+F = ints.hcore() + J - 0.5 * K
+E = 0.5 * np.sum(D * (ints.hcore() + F)) + ints.nuclear_repulsion()
+print(abs(E - rhf.energy) < 1e-8)
+B = ints.df_mo(aux, C[:, :5], C[:, 5:])    # (naux, nocc, nvir)
+print(B.shape)
+```
+
+```text
+True
+(84, 5, 2)
+```
+
+Three methods written this way are in `examples/python/` and are tested
+against the Rust drivers: `rhf_from_blocks.py` (DIIS RHF from `hcore()` and
+`jk()`, equal to `run_rhf` and PySCF to 1e-8 Ha), `rimp2_from_blocks.py`
+(RI-MP2 from `df_mo`, equal to `run_rimp2` and PySCF `DFMP2` to 1e-8 Ha) and
+`cis_from_blocks.py` (singlet CIS from `df_mo` or `ao2mo`, equal to
+`run_tddft(method="tda")` and PySCF `TDA`).
+
+Not exposed: the Rust-side structs (`PreparedBasis`, `Engine`, screening
+bounds), method intermediates (CC amplitudes, GW self-energies, PDEP
+eigenpairs) and periodic (PBC) integrals. Those stay behind the drivers.
+
 ## Memory, threads and MPI
 
 Most drivers accept `memory_budget_gb` (GiB). It sets the same per-allocation
@@ -636,6 +687,11 @@ These take `omega`/`r0` in raw Bohr units, unlike the `run_*` drivers.
 
 | Name | Purpose | CLI |
 |---|---|---|
+| `AoIntegrals` | One-electron matrices, ERIs (dense, 3- and 2-index, MO-transformed), J/K, gradient/Hessian/response/XC pieces for one molecule and basis; see [Building blocks](#building-blocks). | — |
+| `DfJk` | From `AoIntegrals.df_jk(aux)`: RI-J/RI-K `j(D)`, `k(D)`, `jk(D)` over a fit built once. | — |
+| `XcFunctional` | From `AoIntegrals.xc_functional(name)`: E_xc, V_xc, f_xc response and XC gradient/Hessian on `run_dft`'s grid. | — |
+| `Cphf`, `Ucphf` | From `AoIntegrals.cphf(...)` / `ucphf(...)`: orbital-Hessian `matvec`, CPHF/CPKS `solve`, response `density`. | — |
+| `einsum` | Two-operand contraction under ferric's einsum spec grammar. | — |
 | `compute_eri3` | Raw 3-centre Coulomb integrals (P\|μν), shape (naux, n_bf, n_bf). | — |
 | `compute_eri3_mo` | MO-basis 3-centre integrals (P\|pq) for any two coefficient matrices, built blockwise under a memory budget. | — |
 | `compute_metric_2c` | 2-centre metric (P\|w\|Q) over the auxiliary basis, Coulomb by default. | — |

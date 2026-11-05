@@ -70,6 +70,22 @@ Assume `import ferric` and, on the PySCF side, the matching `from pyscf import .
 | `df.incore.aux_e2(mol, auxbasis)` | `ferric.compute_eri3(mol, bs, aux)` |
 | `df.incore.fill_2c2e(mol, auxbasis)` | `ferric.compute_metric_2c(mol, bs, aux)` |
 
+### Integrals and building blocks
+
+With `ints = ferric.AoIntegrals(mol, bs)` (see [Building blocks](./python.md#building-blocks)).
+AO matrices follow libint2's basis-function conventions, not PySCF's, so raw AO matrices differ between the two codes; energies and other invariant quantities agree.
+
+| PySCF | ferric |
+|---|---|
+| `mol.intor("int1e_ovlp")`, `"int1e_kin"`, `"int1e_nuc"` | `ints.overlap()`, `ints.kinetic()`, `ints.nuclear()` |
+| `mf.get_hcore()` | `ints.hcore()` |
+| `mol.intor("int1e_r")` | `ints.dipole()` |
+| `mol.intor("int2e")` | `ints.eri()` |
+| `mf.get_jk(mol, dm)` | `ints.jk(dm)` |
+| `scf.RHF(mol).density_fit(auxbasis=...).get_jk(mol, dm)` | `ints.df_jk(aux).jk(dm)` |
+| `ao2mo.general(mol, (c1, c2, c3, c4), compact=False)` | `ints.ao2mo(c1, c2, c3, c4)` (4-index, not pair-packed) |
+| `lib.einsum(spec, a, b)` | `ferric.einsum(spec, a, b)` (two operands) |
+
 ## How ferric differs
 
 **Stateless calls, not mutable method objects.** PySCF builds an `mf`
