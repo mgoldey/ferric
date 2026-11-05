@@ -157,8 +157,11 @@ fn setup(refj: &Value, xc: Option<&str>) -> Setup {
 }
 
 /// The SCF and f_xc grid. The production (pruned) grid for every case but
-/// the meta-GGA, which runs on the reference's own flat (75, 110) grid: the
-/// τ-dependent kernel is more sensitive to angular pruning than LDA/GGA.
+/// the meta-GGA, which runs on the reference's own flat (75, 110) grid. The
+/// production scheme's radial thinning (H 50, O 66 shells) moves r2SCAN roots
+/// by up to 1.8e-3 eV (PBE: 1.6e-7). That is grid error, not a ferric defect:
+/// PySCF on ferric's own pruned coordinates and weights agrees to 6e-8 eV
+/// (site/src/methods/rpa-gw.md, "Meta-GGA response needs a finer grid").
 fn kernel_grid(xc: Option<&str>) -> AtomicGridConfig {
     match xc {
         Some("r2SCAN") => AtomicGridConfig {
