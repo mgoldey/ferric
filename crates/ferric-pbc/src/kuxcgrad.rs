@@ -1947,6 +1947,22 @@ mod gate_tests {
         )
     }
 
+    /// The densities must be nested orthogonal projectors to
+    /// `PROJECTOR_TOL = 1e-6` (element-wise, MO basis): scaling `D_alpha` by
+    /// `1 + delta` breaks idempotency and nesting by `delta`.
+    #[test]
+    fn projector_tolerance_is_one_micro() {
+        let mut t = toy(&[]);
+        let scale = |d: &Array2<C64>, f: f64| d.mapv(|z| z * f);
+        let (da, mos) = (t.da.clone(), t.mos.clone());
+        t.da = scale(&da, 1.0 + 5e-7);
+        new_gate(&t, None).expect("5e-7 is inside the gate");
+        t.da = scale(&da, 1.0 + 3e-6);
+        let e = new_gate(&t, None).expect_err("3e-6 is outside the gate");
+        assert!(e.to_string().contains("nested projectors"), "{e}");
+        t.mos = mos;
+    }
+
     /// An MO set of the wrong shape is a typed error, not an ndarray panic.
     #[test]
     fn wrong_shaped_mo_set_is_a_typed_error() {

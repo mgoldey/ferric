@@ -88,5 +88,11 @@ print(res.energy, res.stress())
   per-route support for forces and stress is listed in
   [the input reference](../reference/input.md#cell) and
   [Capabilities and validation](../reference/validation.md).
+- Open-shell forces and stress refuse a non-stationary SCF state rather than
+  return a number: ROHF/ROKS orbital gradient above 1e-5 Ha, UKS spin
+  commutator above 1e-5 Ha (k-point), a stored Fock that differs from the
+  rebuilt one by more than 1e-8 Ha, or SCF k-points that are not the mesh's.
+  Converge the SCF tighter (`density_conv` 1e-10 is FD-grade). Derivation and
+  the full list of tolerances: `crates/ferric-pbc/theory.md` section 6.
 - Gamma-point local MP2 is library-only and its default pair gate keeps
   every pair below a volume onset.

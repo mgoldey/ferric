@@ -305,3 +305,51 @@ The module doc of `stress.rs` lists the XC, ECP and RS-GDF terms.
 `h2_rhf_pressure_matches_isotropic_scaling`,
 `h2_fd_anchor_catches_each_mutant`; $k$-point stress in
 `tests/pbc_kstress.rs` and the `validation_*stress*.rs` files.
+
+## 6. Refusal gates and tolerances of the open-shell force and stress paths
+
+A force or stress is first order in the departure of the SCF state from
+stationarity, so the open-shell entry points (Gamma and $k$-point ROHF/ROKS/
+UHF/UKS) refuse a state instead of returning a number. Provenance is taken
+from the code and `git log -S`: **measured** = calibrated against a force
+error, **roundoff** = a decade or more above the observed matching-input
+residual, **arbitrary** = no derivation or measurement recorded, **definitional**
+= no tolerance. No threshold is a function of system size.
+
+| Gate | Value | Where | Provenance |
+|---|---|---|---|
+| ROHF/ROKS orbital gradient $g = \max(\lvert f^\beta_{co}\rvert,\lvert f^\alpha_{ov}\rvert,\lvert (f^\alpha{+}f^\beta)_{cv}\rvert)$ | $g \le 10^{-5}$ Ha (NaN refused) | `grad.rs` `RO_ORBITAL_GRADIENT_TOL`, `ro_gate`; Gamma force and stress | measured: force error $\approx 0.1$–$0.74\,g$ (first order), so $10^{-5}$ caps it near $7\times10^{-6}$ Ha/Bohr, below optimizer thresholds ($\sim 4.5\times10^{-4}$); not a precision guarantee |
+| Same, $k$-point | same number on the largest spectral norm per block, maximised over $k$ | `kuxcgrad.rs` `ro_orbital_gradient_k`, `kuxcstress.rs` | measured on H3/STO-3G 1x1x1 only (rank-1 blocks); the spectral norm is $\ge$ the Gamma max-element, so the $k$ gate can refuse a state the Gamma gate accepts. Constant deliberately shared |
+| UKS spin commutator $\max_{\sigma,k}\lvert F_\sigma D_\sigma S - S D_\sigma F_\sigma\rvert$ | $\le 10^{-5}$ Ha | `kuxcgrad.rs` `UKS_COMMUTATOR_TOL`; $k$-point UKS force and stress | measured: commutator $1.6\times10^{-3}\to$ force error $7.2\times10^{-4}$, $2.7\times10^{-5}\to1.4\times10^{-5}$, $2.6\times10^{-6}\to5\times10^{-7}$. Gamma UKS has no commutator gate (only `converged`) |
+| MO occupation classification (closed 1,1 / open 1,0 / virtual 0,0) | $\lvert n_i - \mathrm{round}(n_i)\rvert < 10^{-6}$ | `grad.rs` `RO_OCC_TOL`, `rohf_orbital_gradient` | arbitrary |
+| Class counts vs $\mathrm{tr}(D_\sigma S)$ | $\lvert\Delta\rvert \le 10^{-6}$ electrons | `grad.rs` `rohf_orbital_gradient` | arbitrary |
+| $\beta$-occupied, $\alpha$-empty MO | none | same | definitional |
+| $k$ densities nested orthogonal projectors in the MO space ($D_\alpha^2{=}D_\alpha$, $D_\beta^2{=}D_\beta$, $D_\beta D_\alpha{=}D_\beta$) | max element deviation $\le 10^{-6}$ | `kuxcgrad.rs` `PROJECTOR_TOL` | arbitrary |
+| Stored Fock $=$ Fock rebuilt from $D$ and the J/K source (all force/stress entries, per spin) | $\le 10^{-8}$ Ha (also for the Madelung-shift form) | `kgrad.rs` `FOCK_CONSISTENCY_BAR` | measured separation: matching inputs $2\times10^{-16}$; wrong `exxdiv` $0.79$; KS result to an HF entry $0.34$; wrong functional $5.9\times10^{-3}$ |
+| $k$ ECP: $\lvert h - T - V - V_{\mathrm{ECP}}\rvert$ (or $T{+}V$) | $\le 10^{-10}$ Ha | `kgrad.rs` `HK_ECP_CONSISTENCY_BAR` | roundoff ($h$ is assembled from exactly these pieces) |
+| ECP strain/force screen keeps the same triple count as hcore | exact integer equality | `stress.rs` (Gamma), `kgrad.rs` | definitional (same ECP precision/config and geometry) |
+| SCF $k$-points equal the mesh | $\max\lvert\Delta k\rvert \le 10^{-12}$ | `kgrad.rs` `check_inputs_rsh` | roundoff |
+| RS-GDF overlap equals `hc.s` (J3 $G{=}0$ term) | $\max\lvert\Delta S\rvert \le 10^{-12}\max(1,\max\lvert S\rvert)$ | `grad.rs` `check_rsgdf_inputs` | roundoff |
+| `hcore.omega == hcore_cfg.omega` | exact `f64` equality | `grad.rs`, `kgrad.rs`, `kstress.rs` | definitional (the strain differentiates the build's own partition) |
+| Range split on the RS-GDF stress | $\lambda \le 1$ | `kstress.rs` `refuse_split_mismatch` | measured: $\lambda\le1$ matches FD to $\sim10^{-11}$, $\lambda=2$ to $\sim10^{-8}$ (the Fock-guard bar); also refused: build/config disagreeing on whether a split ran |
+| Exact-exchange fraction | $\in[0,1]$ | every `*stress.rs`, `*grad.rs` entry | definitional |
+| SCF `converged` | boolean | every gradient entry (stress follows the force checks) | definitional |
+| Non-finite $E_{xc}$, $V_{xc}$, force, strain derivative | any NaN/Inf | each XC and total assembly | definitional |
+
+`gamma_rsh.rs` `IMAG_TOL = 10^{-9}` (imaginary part of the $k=0$ exchange of a
+real density) belongs to the Gamma range-separated energy, not to a force or
+stress gate. The memory pre-flights (`Ledger::check`) are budget refusals, not
+tolerances.
+
+Scope gates with no tolerance (functional and route allow-lists; each has a
+named-refusal test): VV10 and double hybrids on every derivative path;
+meta-GGA derivatives only for pure SCAN/r2SCAN (TPSS closed-shell dense only;
+ROKS meta-GGA on RS-GDF refused); range-separated hybrids only for the
+validated HSE06/CAM-B3LYP set; Gamma ROKS range-separated stress.
+
+**Tests.** `tests/pbc_gate_tolerances.rs` (Gamma occupation and count gates,
+bracketing each tolerance), `kuxcgrad.rs` `gate_tests::projector_tolerance_is_one_micro`,
+`tests/pbc_kuxcgrad_ro.rs` `scf_kpoints_displaced_from_the_mesh_are_refused`;
+the orbital-gradient, commutator, Fock-consistency, lambda and exchange-fraction
+gates are pinned by the existing `pbc_kuxcgrad*.rs`, `pbc_grad_ro.rs`,
+`pbc_kstress*.rs` and `validation_*stress*.rs` files.

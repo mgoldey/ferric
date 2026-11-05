@@ -589,3 +589,21 @@ fn short_mos_are_refused() {
         "{e}"
     );
 }
+
+/// The SCF's k-points must be the mesh's to `max |Δk| <= 1e-12` (kgrad.rs
+/// `check_inputs_rsh`): a displaced list names a different Bloch phase set, so
+/// the force would differentiate another density. 1e-11 sits one decade above
+/// the gate; the SCF itself is untouched.
+#[test]
+fn scf_kpoints_displaced_from_the_mesh_are_refused() {
+    let fx = fixture(&H3, [1, 1, 1], None, ExxDiv::None);
+    let mut t = fx.res.scf.clone();
+    t.kpts[0][0] += 1e-11;
+    let e = force_scf(&fx, &t, &gcfg(None, None))
+        .expect_err("displaced k-point")
+        .to_string();
+    assert!(
+        e.contains("kpoint_rohf_gradient:") && e.contains("the SCF's k-points are not this mesh's"),
+        "{e}"
+    );
+}
