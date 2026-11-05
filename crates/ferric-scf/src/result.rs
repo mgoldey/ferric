@@ -204,6 +204,36 @@ pub struct ConvergenceReport {
     /// (RHF and UHF orbital-gradient veto, `rhf::GradientVeto`); `None` when
     /// it never fired (always `None` for ROHF, whose F6 guard is separate).
     pub gradient_vetoes: Option<GradientVetoes>,
+    /// First-order energy change of one plain Roothaan step from the
+    /// converged density: `Tr[F[D] (D' - D)]` summed over spins, where `D'` is
+    /// the aufbau density of the final `F[D]` (RHF: `D' = 2 C_occ C_occᵀ`).
+    /// Aufbau minimizes `Tr[F D']` over idempotent `D'`, so it is `<= 0`, and
+    /// it is zero (to rounding) only when `D` is the aufbau state of its own
+    /// Fock matrix. A clearly negative value marks a non-stationary or
+    /// non-aufbau exit (a stalled ADIIS/EDIIS extrapolation was -0.14 Ha on
+    /// SO2/STO-3G). For HF the exact one-step change is this plus
+    /// `½ Tr[ΔD G(ΔD)]`. Costs one diagonalization per spin, no Fock build.
+    ///
+    /// Set at a converged RHF/UHF exit; `None` otherwise, and under MOM,
+    /// Fermi smearing, `fractional_occ` or `irrep_nelec` (non-aufbau by design).
+    /// Report only: nothing reads it back.
+    pub one_step_energy_drop: Option<f64>,
+}
+
+/// `Tr[F (D' - D)]` for one spin channel: `occ * sum_{i<nocc} eps_i - Tr[F D]`,
+/// with `eps` the eigenvalues of `F` (any order) and `occ` the orbital
+/// occupation (2 for RHF, 1 per UHF spin). See
+/// [`ConvergenceReport::one_step_energy_drop`].
+pub(crate) fn roothaan_model_drop(
+    eps: &[f64],
+    nocc: usize,
+    occ: f64,
+    f: &ndarray::Array2<f64>,
+    d: &ndarray::Array2<f64>,
+) -> f64 {
+    let mut e = eps.to_vec();
+    e.sort_by(f64::total_cmp);
+    occ * e[..nocc].iter().sum::<f64>() - (f * d).sum()
 }
 
 /// Running record of the RHF/UHF orbital-gradient veto: how many ΔP/ΔE-settled
@@ -481,6 +511,7 @@ mod convergence_report_tests {
             de_noise_floor: None,
             diis_fallback: None,
             gradient_vetoes: None,
+            one_step_energy_drop: None,
         }
     }
 

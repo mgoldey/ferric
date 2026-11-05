@@ -106,6 +106,9 @@ struct ConvergenceMeta {
     de_noise_floor: Option<f64>,
     diis_fallback: Option<FallbackMeta>,
     gradient_vetoes: Option<VetoesMeta>,
+    /// Absent in checkpoints written before the field existed.
+    #[serde(default, with = "opt_float_bits")]
+    one_step_energy_drop: Option<f64>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -283,6 +286,7 @@ fn convergence_to_meta(report: &ConvergenceReport) -> ConvergenceMeta {
         de_noise_floor,
         diis_fallback,
         gradient_vetoes,
+        one_step_energy_drop,
     } = *report;
     ConvergenceMeta {
         iteration,
@@ -321,6 +325,7 @@ fn convergence_to_meta(report: &ConvergenceReport) -> ConvergenceMeta {
                 bound,
             }
         }),
+        one_step_energy_drop,
     }
 }
 
@@ -363,6 +368,7 @@ fn convergence_from_meta(meta: ConvergenceMeta) -> Result<ConvergenceReport, Che
             last_orbital_gradient: v.last_orbital_gradient,
             bound: v.bound,
         }),
+        one_step_energy_drop: meta.one_step_energy_drop,
     })
 }
 

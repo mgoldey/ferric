@@ -916,6 +916,16 @@ fn veto_stalled_energy_diis(
     }
 }
 
+/// Whether the converged occupation is the aufbau state of the final Fock
+/// matrix by construction: false under MOM, Fermi smearing, `fractional_occ`
+/// and `irrep_nelec`, where `ConvergenceReport::one_step_energy_drop` is `None`.
+pub(crate) fn aufbau_by_design(config: &RhfConfig) -> bool {
+    config.mom_after_iter == 0
+        && !config.smearing_sigma.is_some_and(|s| s > 0.0)
+        && !config.fractional_occ
+        && config.irrep_nelec.is_none()
+}
+
 /// Lower limit of the orbital-gradient veto bound: ROHF F6's
 /// `ACCEPT_MAX_ORBITAL_GRADIENT`, so the three solvers refuse the same states.
 pub(crate) const VETO_MIN_ORBITAL_GRADIENT: f64 =
@@ -2855,6 +2865,7 @@ fn solve_rhf_impl(
             ),
             diis_fallback,
             gradient_vetoes: grad_veto.record(),
+            one_step_energy_drop: None,
         });
 
         if scf_trace() {
@@ -3021,6 +3032,10 @@ fn solve_rhf_impl(
                     x.refine_last_to_f64(&mut f);
                 }
                 let (orb_e, c) = diag.run(&f)?;
+                if let Some(rep) = last_report.as_mut() {
+                    rep.one_step_energy_drop = aufbau_by_design(config)
+                        .then(|| crate::result::roothaan_model_drop(&orb_e, nocc, 2.0, &f, &d));
+                }
                 let density_alpha = 0.5 * &d;
                 crate::driver::warn_if_rss_over_at_stage("RHF", "converged", ooc_budget);
 

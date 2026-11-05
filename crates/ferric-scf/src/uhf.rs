@@ -1415,6 +1415,7 @@ fn solve_uhf_impl(
             // UHF reads no `diis_flavor`: it always runs Pulay.
             diis_fallback: None,
             gradient_vetoes: exit_gate.record(),
+            one_step_energy_drop: None,
         });
 
         if crate::rhf::scf_trace() {
@@ -1519,6 +1520,16 @@ fn solve_uhf_impl(
             // aufbau state of F[D]; then the spin gets D's semicanonical
             // orbitals instead (`exit_mos_building_density`; not under MOM or
             // symmetry blocking, see `exit_eigenpairs`).
+            if crate::rhf::aufbau_by_design(config) {
+                let (ea, _) = diag_a.run(&f_a)?;
+                let (eb, _) = diag_b.run(&f_b)?;
+                if let Some(rep) = last_report.as_mut() {
+                    rep.one_step_energy_drop = Some(
+                        crate::result::roothaan_model_drop(&ea, nocc_a, 1.0, &f_a, &d_a)
+                            + crate::result::roothaan_model_drop(&eb, nocc_b, 1.0, &f_b, &d_b),
+                    );
+                }
+            }
             let mom = config.mom_after_iter > 0;
             let (eps_a, c_a_f) = exit_eigenpairs(
                 &diag_a,

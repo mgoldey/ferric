@@ -178,6 +178,7 @@ fn report() -> ConvergenceReport {
             last_orbital_gradient: 1e-3,
             bound: 1e-4,
         }),
+        one_step_energy_drop: Some(-3.5e-13),
     }
 }
 
@@ -2208,7 +2209,12 @@ fn golden_path() -> PathBuf {
 }
 
 fn golden_ck() -> Checkpoint {
-    final_ck(Spin::RestrictedOpen)
+    let mut ck = final_ck(Spin::RestrictedOpen);
+    // The v1 file predates `one_step_energy_drop`; it must read back as None.
+    if let Some(rep) = ck.final_state.as_mut().and_then(|f| f.convergence.as_mut()) {
+        rep.one_step_energy_drop = None;
+    }
+    ck
 }
 
 /// A file a v1 reader must keep reading, and which

@@ -27,6 +27,10 @@
 //! The evaluator is anchored: `E[D]` recomputed here must reproduce the SCF's
 //! own energy (`ANCHOR`), so `E[D'] - E[D]` compares like with like.
 //!
+//! The solver reports the first-order part of the same step at every
+//! converged exit (`ConvergenceReport::one_step_energy_drop`, no extra Fock
+//! build); each case also asserts that it reaches the same verdict.
+//!
 //! Mutation (recorded in the commit message): with the #411 guess veto, the
 //! #431 commutator veto and the orbital-gradient veto all disabled, SO2, CS2
 //! and benzene/2000 report `converged` at a false exit and this check fails.
@@ -169,9 +173,24 @@ fn check(label: &str, sys: &System, r: &ScfResult, c: &RhfConfig) -> Option<Stri
         return None;
     }
     let (drop, tol) = one_step_drop(sys, r, c);
+    // The solver's own first-order report (`one_step_energy_drop`) must
+    // reach the same verdict as the exact one-step energy.
+    let model = r
+        .convergence
+        .and_then(|c| c.one_step_energy_drop)
+        .expect("a converged aufbau RHF/UHF exit reports one_step_energy_drop");
     eprintln!(
-        "{label}: E={:.10} it={} one-step dE={drop:.3e} tol={tol:.3e}",
+        "{label}: E={:.10} it={} one-step dE={drop:.3e} model={model:.3e} tol={tol:.3e}",
         r.energy, r.iterations
+    );
+    assert!(
+        model <= 1e-12,
+        "{label}: first-order model drop {model} > 0"
+    );
+    assert_eq!(
+        model < -tol,
+        drop < -tol,
+        "{label}: report (model {model:.3e}) and exact one-step dE ({drop:.3e}) disagree at tol {tol:.1e}"
     );
     (drop < -tol).then(|| {
         format!(
