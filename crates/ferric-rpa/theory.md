@@ -18,9 +18,11 @@ Instead of explicitly constructing and diagonalizing the large dense dielectric 
    $$ \mathbf{\epsilon}(0) |V_\alpha\rangle = \lambda_\alpha(0) |V_\alpha\rangle $$
    Because the eigenvalues decay steeply, only a small number of eigenpotentials with eigenvalues $\lambda_\alpha(0) > \epsilon_{\text{trunc}}$ need to be retained. They form a compressed, system-adapted basis.
 
-2. **Sternheimer Linear Response:** The action of the dielectric matrix on a trial potential is computed without an explicit summation over all unoccupied (virtual) states. This is achieved by solving the Sternheimer linear response equation for each occupied orbital $i$:
+2. **Sternheimer Linear Response:** The action of the dielectric matrix on a trial potential is written in the Sternheimer form, which avoids an explicit sum over virtual states in a plane-wave or real-space implementation. The Sternheimer equation for each occupied orbital $i$ is the Sternheimer linear response equation for each occupied orbital $i$:
    $$ (\hat{H}_0 - \epsilon_i \mathbf{1} + i\omega \mathbf{1}) |\Delta \Psi_i(i\omega, V)\rangle = - P_{\text{virt}} \hat{V} |\Psi_i\rangle $$
    where $P_{\text{virt}}$ is the projector onto the virtual space.
+
+   ferric's RI-MO implementation does sum over every occupied-virtual pair: `sternheimer::chi_from_trial_potential` (`crates/ferric-rpa/src/sternheimer.rs:330`) evaluates $\chi_0$ as $-2\sum_{ia} e_{ia}/(\omega^2+e_{ia}^2)\,|\sum_P V_P B^P_{ia}|^2$. The Sternheimer form is the formulation; PDEP compresses the result of the sum.
 
 3. **Frequency-Dependent Eigenvalues:** Assuming the static eigenpotential basis $|V_\alpha\rangle$ is adequate for all frequencies, the frequency-dependent eigenvalues $\lambda_\alpha(i\omega)$ are evaluated by projecting the frequency-dependent dielectric operator onto the fixed static PDEP basis:
    $$ \lambda_\alpha(i\omega) = \langle V_\alpha | \mathbf{\epsilon}(i\omega) | V_\alpha \rangle $$

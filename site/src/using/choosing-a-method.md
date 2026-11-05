@@ -71,9 +71,10 @@ through `[basis] path` as a Gaussian-94 file (orbital basis only).
 
 - **Analytic Hessians** cover RHF, UHF and ROHF (exact J/K, or RI-J / RI-K with no
   external potential; an ECP is fine; basis up to f functions; RHF and UHF with
-  exact J/K also allow an external potential, ROHF allows none on any route); KS-DFT (ROKS
-  included) and correlated methods' frequencies are by finite differences of
-  the analytic gradient.
+  exact J/K also allow an external potential, ROHF allows none on any route), and closed-shell KS LDA/GGA (pure or global
+  hybrid, moving-grid Hessian). Other KS-DFT (UKS, ROKS, meta-GGA, range-separated
+  hybrids) and correlated methods' frequencies are by finite differences of the
+  analytic gradient.
 - **Open-shell coupled cluster and open-shell TS search** are not available
   (the one open-shell CC-type method, LinLCCD(hh), is library-only). Open-shell
   KS-DFT is available from the CLI: `ksdft` with `multiplicity > 1` runs UKS,

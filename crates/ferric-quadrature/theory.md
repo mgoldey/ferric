@@ -13,7 +13,7 @@ where $R$ is the ratio between the maximum and minimum orbital energy gaps.
 ### Point Selection & Scaling
 * The quadrature points $t_l$ and weights $w_l$ are pre-computed minimax coefficients.
 * `ferric` retrieves these parameters dynamically from literature tables (Takatsuka/Ten-no/Hackbusch 2008).
-* In PDEP-RPA, this allows the independent-particle polarizability matrix $\chi_0(i\omega)$ to be decomposed into occupied and virtual products, reducing the computational scaling from $\mathcal{O}(N^4)$ to $\mathcal{O}(N^3)$ (see `docs/pdep-boys-laplace-scaling.md`).
+* In imaginary-time RPA, this decomposes the independent-particle polarizability $\chi_0(i\omega)$ into occupied and virtual products. The formulation reaches $\mathcal{O}(N^3)$ only with AO sparsity; `crates/ferric-rpa/src/ao_rpa.rs` implements the MO-basis version, which has the dense $\mathcal{O}(N^4)$ scaling.
 
 ---
 
