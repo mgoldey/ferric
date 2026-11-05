@@ -83,31 +83,10 @@ pub fn mp2_polarizability_analytic(
     analytic_alpha_full(ctx, mol, obs, dfbs, op, bounds, rhf, mp2_config)
 }
 
-/// Solve (Δε + A) X = rhs by Jacobi-preconditioned CG. Reuses the production
-/// orbital-Hessian matvec `compute_az_product`. `rhs` and the return are shape
-/// (nvir, nocc). Returns (X, final_residual, iters, converged).
-///
-/// `budget_bytes` is the caller-resolved memory ceiling threaded into every
-/// `compute_az_product` call in the CG loop (up to `max_iter` calls) — see
-/// `solve_cphf_cg_scaled`'s doc.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn solve_cphf_cg(
-    c: &Array2<f64>,
-    rhs: &Array2<f64>,
-    prep: &PreparedBasis,
-    bounds: &SchwarzBounds,
-    orb: &OrbitalSpace,
-    eps: &[f64],
-    budget_bytes: usize,
-) -> Result<(Array2<f64>, f64, usize, bool), FerricError> {
-    // Default operator (Δε + 0.5 A) — the dipole-CPHF (HF α) convention.
-    solve_cphf_cg_scaled(c, rhs, prep, bounds, orb, eps, 0.5, budget_bytes)
-}
-
-/// As `solve_cphf_cg` but with an explicit A-coupling scale: the operator is
-/// `Δε + ascale·compute_az_product`. `ascale = 0.5` is the (A+B) Hessian, the
-/// operator `solve_zvector` uses (zvector.rs, `0.5 * compute_az_product`) and
-/// `solve_zvec_dense` builds. `ascale = 1.0` doubles the two-electron coupling.
+/// Solve `(Δε + ½·compute_az_product) X = rhs` by Jacobi-preconditioned CG.
+/// The operator is the (A+B) orbital Hessian, the one `solve_zvector`
+/// (`0.5 * compute_az_product`) and `solve_zvec_dense` use. `rhs` and the
+/// return are shape (nvir, nocc). Returns (X, final_residual, iters, converged).
 ///
 /// `budget_bytes` is the caller-resolved memory ceiling threaded into every
 /// `compute_az_product` call in the CG loop below (up to `max_iter=200`
@@ -116,14 +95,13 @@ pub(crate) fn solve_cphf_cg(
 /// resolved once at their own top; callers with no config in scope pass
 /// `resolve_budget_bytes(None)`, likewise resolved once, not per CG iteration.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn solve_cphf_cg_scaled(
+pub(crate) fn solve_cphf_cg(
     c: &Array2<f64>,
     rhs: &Array2<f64>,
     prep: &PreparedBasis,
     bounds: &SchwarzBounds,
     orb: &OrbitalSpace,
     eps: &[f64],
-    ascale: f64,
     budget_bytes: usize,
 ) -> Result<(Array2<f64>, f64, usize, bool), FerricError> {
     use crate::zvector::compute_az_product;
@@ -142,14 +120,13 @@ pub(crate) fn solve_cphf_cg_scaled(
     // bit-identical across thread counts.
     let pool = ferric_scf::engine_pool::EnginePool::new(bounds.op, prep, 1e-14)?;
 
-    // A-coupling scale: 0.5 for dipole-CPHF (compute_az_product's symmetric dz
-    // double-counts vs the CPHF-α Hessian — pinned vs FF-HF), 1.0 to match
-    // solve_zvector's full-A Z-vector operator.
+    // compute_az_product returns twice the (A+B − Δε) coupling (its D^z is the
+    // symmetric z density), hence the ½.
     let apply = |z: &Array2<f64>| -> Result<Array2<f64>, FerricError> {
         let mut mz = compute_az_product(c, z, prep, bounds, orb, &pool, budget_bytes)?;
         for a in 0..nvir {
             for i in 0..nocc {
-                mz[(a, i)] = ascale * mz[(a, i)] + de(a, i) * z[(a, i)];
+                mz[(a, i)] = 0.5 * mz[(a, i)] + de(a, i) * z[(a, i)];
             }
         }
         Ok(mz)
@@ -844,15 +821,16 @@ fn veff_vo_mo(
     Ok(out)
 }
 
-/// VALIDATED static relaxed MP2 1-PDM in AO (matches PySCF to machine precision —
-/// see scripts/cpks/mp2_alpha_pyscf.py). The recipe, pinned vs PySCF on water/STO-3G:
-///   • P_oo, P_vv from `build_mp2_density`, assembled as P + Pᵀ  (the ×2).
+/// Static relaxed RI-MP2 1-PDM in AO, `D = 2δ_core + (P+Pᵀ) + z`:
+///   • P_oo, P_vv from `build_mp2_density`, assembled as P + Pᵀ.
 ///   • `Xvo = L + (2J−K)[dm_P]_vo`   (L = build_lagrangian; dm_P = the P+Pᵀ density).
-///   • (Δε + A) z = −Xvo           (the sign! A = full orbital Hessian).
-///   • D = 2δ_core + (P_oo+P_ooᵀ) + (P_vv+P_vvᵀ) + z_vo/ov.
-/// NOTE: ferric's shared `build_relaxed_density_ao`/`solve_zvector` are BUGGY for this
-/// (single P, no veff, +l sign → water μ_z=−0.708 vs PySCF −0.653); this is the
-/// corrected path, kept local to cpks_polar (gradient code untouched).
+///   • `(Δε + ½·compute_az_product) z = −Xvo`, the (A+B) Hessian of `solve_zvector`
+///     (the two give the same z to the CG tolerance).
+///
+/// Its dipole equals `−∂E_MP2/∂F` from a finite-field difference of the RI-MP2
+/// energy (`cpks_static_relaxed_dipole_vs_pyscf`). `build_relaxed_density_ao`
+/// takes P one-sided, so feeding it `solve_zvector`'s z does NOT give this
+/// density; pass it `P + Pᵀ` instead.
 pub fn static_relaxed_density_ao(
     ctx: &ParallelContext,
     mol: &Molecule,
@@ -898,10 +876,8 @@ pub fn static_relaxed_density_ao(
     let veff = veff_vo_mo(ctx, obs, bounds, c, &dm_p, &orb)?;
     let xvo = &l + &veff;
 
-    // (Δε + 2·(A+B−Δε)) z = −Xvo: ascale = 1.0 doubles the (A+B) coupling
-    // (see solve_cphf_cg_scaled).
-    let (z, resid, iters, conv) =
-        solve_cphf_cg_scaled(c, &(-&xvo), obs, bounds, &orb, eps, 1.0, budget_bytes)?;
+    // (Δε + (A+B−Δε)) z = −Xvo, the solve_zvector operator.
+    let (z, resid, iters, conv) = solve_cphf_cg(c, &(-&xvo), obs, bounds, &orb, eps, budget_bytes)?;
     if !conv {
         return Err(FerricError::General(format!(
             "static_relaxed_density: z not converged (resid={resid:.2e}, iters={iters})"
@@ -1089,9 +1065,11 @@ fn db_full_from_u(
 
 /// Full analytic relaxed MP2 α (Layer 3, PySCF-mirrored). For each field axis x:
 ///   ∂dm1_relaxed = ∂P_oo + ∂P_vv (amplitude, from ∂t2) + ∂z (perturbed Z-vector),
-///   ∂z solves (Δε+0.5A) ∂z = ∂L − ∂Δε⊙z, with ∂L = directional derivative of
-///   build_lagrangian along (∂f_mo, ∂t2, ∂P_oo, ∂P_vv, ∂b_full) [ε central-diff,
-///   gauge-stable: inputs are smooth analytic responses, no orbital re-diag].
+///   ∂z solves (Δε + ½·compute_az_product) ∂z = −∂X − (∂M) z₀, the derivative of
+///   the `static_relaxed_density_ao` Z-vector equation M z₀ = −X along
+///   (∂f_mo, ∂t2, ∂P_oo, ∂P_vv, ∂b_full, ∂C) [ε central-diff].
+///   The amplitude response ∂t2 carries ∂ε but not the off-diagonal oo/vv Fock
+///   response, so α is approximate.
 ///   α_xy = −Tr[∂dm1_relaxed_AO · r_y].
 #[allow(clippy::too_many_arguments)]
 pub fn analytic_alpha_relaxed(
@@ -1112,7 +1090,7 @@ pub fn analytic_alpha_relaxed(
     let nmo = c.ncols();
     let orb = OrbitalSpace::new(nocc, nvir, nocc_total, first_occ);
     let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0])?;
-    // Resolved once (not per solve_zvector/solve_cphf_cg_scaled call below) —
+    // Resolved once (not per solve_zvector/solve_cphf_cg call below) —
     // this function's config-reachable memory ceiling for both CPHF solves.
     let budget_bytes = ferric_core::memory::resolve_budget_bytes(mp2_config.memory_budget_bytes);
 
@@ -1121,7 +1099,7 @@ pub fn analytic_alpha_relaxed(
     let b_full = crate::oo_rimp2::compute_b_full_mo(obs, dfbs, op, c)?;
     let (z0, _l0) =
         crate::zvector::solve_zvector(mol, obs, dfbs, op, bounds, rhf, &inter, budget_bytes)?;
-    let de = |a: usize, i: usize| eps[nocc_total + a] - eps[first_occ + i];
+    let pool = ferric_scf::engine_pool::EnginePool::new(bounds.op, obs, 1e-14)?;
 
     let mut tensor = [[0.0f64; 3]; 3];
     for x in 0..3 {
@@ -1130,11 +1108,31 @@ pub fn analytic_alpha_relaxed(
         let (dp_oo, dp_vv) = dmp2_density_response(&inter.t2, &dt2, nocc, nvir);
         let db_full = db_full_from_u(&b_full, &u, &orb);
 
-        // ∂L via directional central difference of build_lagrangian in ε along the
-        // analytic input derivatives (smooth → exact at small ε, no gauge issue).
-        let eps_step: f64 = cpks_weight("CPKS_EPS", 1e-4);
-        let lag_at = |s: f64| -> Array2<f64> {
-            let f = &f_mo0 + &(s * &df_mo);
+        // z₀ solves M z₀ = −X with M = Δε + ½·compute_az_product and
+        // X = L + (2J−K)[P+Pᵀ]_vo (static_relaxed_density_ao). Differentiating
+        // along the analytic input responses gives M ∂z = −∂X − (∂M) z₀; the
+        // right side is the directional central difference of the residual
+        // R(s) = −X(s) − M(s) z₀ (R(0) = 0 to the z₀ tolerance), with the orbitals
+        // rotated as C(s) = C + s·CΘ. The ov block of the total Fock response is
+        // zero (CPHF), so only the oo/vv blocks of ∂f_mo enter f(s).
+        let mut theta = Array2::<f64>::zeros((nmo, nmo)); // Θ_{q,p}: q mixes into p
+        for a in 0..nvir {
+            for i in 0..nocc {
+                theta[(nocc_total + a, first_occ + i)] = u[(a, i)];
+                theta[(first_occ + i, nocc_total + a)] = -u[(a, i)];
+            }
+        }
+        let dc = c.dot(&theta);
+        let mut df_ooovv = df_mo.clone();
+        for a in 0..nvir {
+            for i in 0..nocc {
+                df_ooovv[(nocc_total + a, first_occ + i)] = 0.0;
+                df_ooovv[(first_occ + i, nocc_total + a)] = 0.0;
+            }
+        }
+        let resid_at = |s: f64| -> Result<Array2<f64>, FerricError> {
+            let c_s = c + &(s * &dc);
+            let f = &f_mo0 + &(s * &df_ooovv);
             let t: Vec<f64> = inter
                 .t2
                 .iter()
@@ -1144,118 +1142,47 @@ pub fn analytic_alpha_relaxed(
             let poo = &inter.p_oo + &(s * &dp_oo);
             let pvv = &inter.p_vv + &(s * &dp_vv);
             let bf = &b_full + &(s * &db_full);
-            crate::zvector::build_lagrangian(&f, &t, &poo, &pvv, &orb, &bf)
-        };
-        let dl = (&lag_at(eps_step) - &lag_at(-eps_step)).mapv(|v| v / (2.0 * eps_step));
-
-        // Differentiating the Z-vector equation (Δε+A) z₀ = L:
-        //   (Δε+A) ∂z = ∂L − ∂Δε·z₀ − ∂A·z₀
-        // RHS = ∂L (above) − ∂Δε·z₀ − ∂A·z₀.
-        let mut rhs = dl.clone();
-        // − ∂Δε·z₀  (∂ε from df_mo diagonal).
-        for a in 0..nvir {
+            let l = crate::zvector::build_lagrangian(&f, &t, &poo, &pvv, &orb, &bf);
+            let mut dm_p = Array2::<f64>::zeros((nmo, nmo));
             for i in 0..nocc {
-                let ddenom =
-                    df_mo[(nocc_total + a, nocc_total + a)] - df_mo[(first_occ + i, first_occ + i)];
-                rhs[(a, i)] -= ddenom * z0[(a, i)];
-            }
-        }
-        // − ∂A·z₀ : first-order response of A·z₀ = Cᵀ G(D^{z₀}) C to the MO
-        // rotation Θ (Θ_{vir,occ}=U, Θ_{occ,vir}=−Uᵀ). Two contributions:
-        //   (i)  rotation of the z₀-density:  Cᵀ G(∂D^{z₀}) C
-        //   (ii) rotation of the outer projection: Σ_p Θ_pa (Az₀)_pi + Θ_pi (Az₀)_ap
-        // where Az₀_full = Cᵀ G(D^{z₀}) C in FULL MO. (Az₀ in vo only = A·z₀.)
-        let waz: f64 = cpks_weight("CPKS_WAZ", 1.0);
-        if waz != 0.0 {
-            // Full-MO Θ generator.
-            let mut theta = Array2::<f64>::zeros((nmo, nmo)); // Θ_{q,p}
-            for a in 0..nvir {
-                for i in 0..nocc {
-                    theta[(nocc_total + a, first_occ + i)] = u[(a, i)];
-                    theta[(first_occ + i, nocc_total + a)] = -u[(a, i)];
+                for j in 0..nocc {
+                    dm_p[(first_occ + i, first_occ + j)] = poo[(i, j)] + poo[(j, i)];
                 }
             }
-            // D^{z₀}_AO = Σ_ai z0_ai (C_a C_iᵀ + C_i C_aᵀ).
-            let c_occ = c
-                .slice(ndarray::s![.., first_occ..first_occ + nocc])
-                .to_owned();
-            let c_vir = c
-                .slice(ndarray::s![.., nocc_total..nocc_total + nvir])
-                .to_owned();
-            let nbas = obs.nbasis();
-            // (i) ∂D^{z₀}_AO from rotating C: ∂C_·p = Σ_q Θ_qp C_·q.
-            // ∂C_occ_i = Σ_a U_ai C_vir_a ; ∂C_vir_a = −Σ_i U_ai C_occ_i.
-            let dc_occ = c_vir.dot(&u); // (nbas,nocc): Σ_a C_vir_a U_ai
-            let dc_vir = c_occ.dot(&u.t()).mapv(|v| -v); // (nbas,nvir): −Σ_i C_occ_i U_ai
-            let mut dd_z = Array2::<f64>::zeros((nbas, nbas));
             for a in 0..nvir {
-                for i in 0..nocc {
-                    let zai = z0[(a, i)];
-                    if zai == 0.0 {
-                        continue;
-                    }
-                    for mu in 0..nbas {
-                        for nu in 0..nbas {
-                            // ∂ of (C_a C_iᵀ + C_i C_aᵀ)
-                            dd_z[(mu, nu)] += zai
-                                * (dc_vir[(mu, a)] * c_occ[(nu, i)]
-                                    + c_vir[(mu, a)] * dc_occ[(nu, i)]
-                                    + dc_occ[(mu, i)] * c_vir[(nu, a)]
-                                    + c_occ[(mu, i)] * dc_vir[(nu, a)]);
-                        }
-                    }
+                for b in 0..nvir {
+                    dm_p[(nocc_total + a, nocc_total + b)] = pvv[(a, b)] + pvv[(b, a)];
                 }
             }
-            let mut jz = Array2::<f64>::zeros((nbas, nbas));
-            let mut kz = Array2::<f64>::zeros((nbas, nbas));
-            ferric_scf::rhf::build_jk(ctx, obs, bounds, 1e-12, &dd_z, &mut jz, &mut kz)?;
-            let g_ddz = 4.0 * &jz - &kz - &kz.t();
-            let part_i = c.t().dot(&g_ddz).dot(c); // full MO; take vo block below
-                                                   // (ii) Az₀ in full MO = Cᵀ G(D^{z₀}) C.
-            let mut dz0_ao = Array2::<f64>::zeros((nbas, nbas));
+            let veff = veff_vo_mo(ctx, obs, bounds, &c_s, &dm_p, &orb)?;
+            let az = crate::zvector::compute_az_product(
+                &c_s,
+                &z0,
+                obs,
+                bounds,
+                &orb,
+                &pool,
+                budget_bytes,
+            )?;
+            let mut r = -(&l + &veff);
             for a in 0..nvir {
                 for i in 0..nocc {
-                    let zai = z0[(a, i)];
-                    if zai == 0.0 {
-                        continue;
-                    }
-                    for mu in 0..nbas {
-                        for nu in 0..nbas {
-                            dz0_ao[(mu, nu)] += zai
-                                * (c_vir[(mu, a)] * c_occ[(nu, i)]
-                                    + c_occ[(mu, i)] * c_vir[(nu, a)]);
-                        }
-                    }
+                    let de_s =
+                        f[(nocc_total + a, nocc_total + a)] - f[(first_occ + i, first_occ + i)];
+                    r[(a, i)] -= de_s * z0[(a, i)] + 0.5 * az[(a, i)];
                 }
             }
-            let mut jz0 = Array2::<f64>::zeros((nbas, nbas));
-            let mut kz0 = Array2::<f64>::zeros((nbas, nbas));
-            ferric_scf::rhf::build_jk(ctx, obs, bounds, 1e-12, &dz0_ao, &mut jz0, &mut kz0)?;
-            let g_z0 = 4.0 * &jz0 - &kz0 - &kz0.t();
-            let az0_full = c.t().dot(&g_z0).dot(c); // (nmo,nmo)
-                                                    // ∂(Az₀)_ai = part_i[a,i] + Σ_p Θ_pa az0_full[p,i] + Σ_p Θ_pi az0_full[a,p]
-            let theta_az = theta.t().dot(&az0_full); // Σ_p Θ_pa az0[p,i] → [a-row? careful]
-            let az_theta = az0_full.dot(&theta); // Σ_p az0[a,p] Θ_pi
-            for a in 0..nvir {
-                let a_mo = nocc_total + a;
-                for i in 0..nocc {
-                    let i_mo = first_occ + i;
-                    let daz0 =
-                        part_i[(a_mo, i_mo)] + theta_az[(a_mo, i_mo)] + az_theta[(a_mo, i_mo)];
-                    rhs[(a, i)] -= waz * daz0;
-                }
-            }
-        }
-        // Perturbed Z-vector with ascale = 1.0, twice the (A+B) coupling; z₀
-        // from solve_zvector uses the (A+B) operator (ascale = 0.5).
+            Ok(r)
+        };
+        let eps_step: f64 = cpks_weight("CPKS_EPS", 1e-4);
+        let rhs = (&resid_at(eps_step)? - &resid_at(-eps_step)?).mapv(|v| v / (2.0 * eps_step));
         let (dz, dresid, _it, dconv) =
-            solve_cphf_cg_scaled(c, &rhs, obs, bounds, &orb, eps, 1.0, budget_bytes)?;
+            solve_cphf_cg(c, &rhs, obs, bounds, &orb, eps, budget_bytes)?;
         if !dconv {
             return Err(FerricError::General(format!(
                 "analytic_alpha_relaxed: ∂z axis {x} not converged (resid={dresid:.2e})"
             )));
         }
-        let _ = de;
 
         // ∂dm1_mo: oo (∂P_oo sym) + vv (∂P_vv sym) + vo/ov (∂z).
         let mut ddm = Array2::<f64>::zeros((nmo, nmo));

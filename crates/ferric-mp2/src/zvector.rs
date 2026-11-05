@@ -18,7 +18,7 @@ use ferric_scf::ScfResult;
 use ndarray::{Array2, Array3};
 
 /// `FERRIC_ZVEC_TRACE` descriptor: Z-vector CPHF residual trace (env-only debug
-/// toggle). Read here and in ff_polar.rs via [`zvec_trace`].
+/// toggle), read via [`zvec_trace`].
 static ZVEC_TRACE: ferric_core::config::ConfigVar<bool> = ferric_core::config::ConfigVar {
     env_name: "FERRIC_ZVEC_TRACE",
     default: false,
@@ -154,8 +154,7 @@ pub fn solve_zvector(
         // symmetric response density D^z + D^z†), which is EXACTLY 2× PySCF's CPHF
         // fvind `2·get_veff(D^z+D^z†) = 2J−K` (verified numerically: the ratio is
         // 0.5). The MP2 Z-vector Hessian is `Δε·z + (2J−K)·z`, so the matvec must be
-        // scaled by ½ here (mirrors cpks_polar.rs's `ascale=0.5` for the same
-        // symmetric-density double-count).
+        // scaled by ½ here (the same ½ as `cpks_polar::solve_cphf_cg`).
         let az = 0.5 * &compute_az_product(c, &z, prep, bounds, &orb, &pool, budget_bytes)?;
 
         let mut residual = Array2::zeros((nvir, nocc));

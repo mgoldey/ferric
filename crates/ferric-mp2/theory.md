@@ -290,7 +290,8 @@ bracket above **[check 5]**.
 
 **Relaxed density** (`zvector.rs:519`): $2\delta_{ij} + P_{ij}$ on the
 occupied block, $P_{ab}$ on the virtual block, $z_{ai}$ on both off-diagonal
-blocks.
+blocks, for whatever $P$ the caller passes. The density whose dipole is
+$-\partial E/\partial F$ takes $P + P^{\mathsf T}$.
 
 **Gradient** (`gradient.rs:132` `rimp2_gradient_analytical`): overlap terms
 from $I$, the orbital-energy-weighted relaxed density and the
@@ -304,25 +305,27 @@ ranges: there is no frozen–active orbital-response block.
 
 ## 10. Static polarizability
 
-**Finite field** (`ff_polar.rs:523` `mp2_polarizability_static`). The core
+**Finite field** (`ff_polar.rs:390` `mp2_polarizability_static`). The core
 Hamiltonian gains $-\sum_d F_d\,r_d$; at each field the RHF is reconverged and
 the relaxed MP2 density $P^{\mathrm{rel}}(F)$ built. Then
 
 $$ \mu_d(F) = -\operatorname{Tr}[P^{\mathrm{rel}}(F)\,r_d] + \sum_A Z_AR_{A,d}, \qquad
 \alpha_{de} = -\frac{\mu_d(+F_e) - \mu_d(-F_e)}{2|F|} , $$
 
-symmetrized. Its Z-vector RHS is `build_lagrangian` and its CG operator is
-$\Delta\varepsilon + $ `compute_az_product` without the $\tfrac12$
-(`ff_polar.rs:409`), so the two-electron coupling is twice that of section 9.
-`DensityMode::Unrelaxed` sets $z = 0$.
+symmetrized. $P^{\mathrm{rel}}$ is `static_relaxed_density_ao`
+(`cpks_polar.rs:834`): $2\delta_{ij} + (P+P^{\mathsf T}) + z$ with
+$X_{ai} = L_{ai} + [(2J-K)[P+P^{\mathsf T}]]_{ai}$ ($L$ = `build_lagrangian`) and
+the section-9 operator, $(\Delta\varepsilon + \tfrac12$`compute_az_product`$)\,z = -X$.
+This $z$ equals `solve_zvector`'s, and $\mu_d(0) = -\partial E/\partial F_d$
+of the RI-MP2 energy. `DensityMode::Unrelaxed` sets $z = 0$.
 
 **Analytic** (`cpks_polar.rs:73` `mp2_polarizability_analytic`, delegating to
-`analytic_alpha_full`, `cpks_polar.rs:1578`) solves the dipole CPHF
+`analytic_alpha_full`, `cpks_polar.rs:1519`) solves the dipole CPHF
 $(A+B)\,U^x = -\mu^x_{vo}$ densely in the full MO basis, rotates the MO
 integrals with the generator $\Theta_{ai} = U_{ai}$, $\Theta_{ia} = -U_{ai}$,
 differentiates the relaxed density by central difference in that rotation,
 and contracts $\alpha_{pq} = -\sum \partial D\cdot r$. The singlet response
-matrices are (`cpks_polar.rs:1736` `build_apb_amb`)
+matrices are (`cpks_polar.rs:1677` `build_apb_amb`)
 
 $$ (A+B)_{ai,bj} = \Delta\varepsilon\,\delta + 4(ai|bj) - (ab|ij) - (aj|bi), \qquad
 (A-B)_{ai,bj} = \Delta\varepsilon\,\delta + (aj|bi) - (ab|ij), $$
@@ -330,9 +333,8 @@ $$ (A+B)_{ai,bj} = \Delta\varepsilon\,\delta + 4(ai|bj) - (ab|ij) - (aj|bi), \qq
 and the HF-level polarizabilities are
 $\alpha = 4\mu^{\mathsf T}(A+B)^{-1}\mu$ and
 $\alpha(i\omega) = 4\mu^{\mathsf T}(A-B)\left[(A-B)(A+B) + \omega^2\right]^{-1}\mu$
-(`cpks_polar.rs:1890` `dynamic_cphf_alpha_iw`). In `solve_cphf_cg_scaled`
-the operator is $\Delta\varepsilon + s\cdot$`compute_az_product`; $s = \tfrac12$
-is $(A+B)$.
+(`cpks_polar.rs:1831` `dynamic_cphf_alpha_iw`). `solve_cphf_cg` applies
+$(A+B) = \Delta\varepsilon + \tfrac12$`compute_az_product`.
 
 ## 11. CABS for F12
 

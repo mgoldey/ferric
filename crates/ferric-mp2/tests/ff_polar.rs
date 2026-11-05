@@ -85,6 +85,53 @@ fn mp2_alpha_water_positive_and_sane() {
     );
 }
 
+/// Finite-field relaxed MP2 α vs PySCF's `−d²E/dF²` of the DF-MP2 energy with
+/// the same auxiliary basis (`scripts/cpks/ff_dfmp2_dipole_alpha.py`,
+/// water/STO-3G, cc-pvdz-ri): diag α = [0.044329, 4.981096, 2.135441].
+/// ferric differences the relaxed dipole, PySCF the energy, so agreement tests
+/// that the relaxed density is the energy derivative. Measured |Δα_zz| = 3e-6;
+/// the bar is 1e-4. A relaxed density built with twice the (A+B) coupling, or
+/// without the (2J−K)[P+Pᵀ] term in the Z-vector right-hand side, misses
+/// α_zz by 0.13.
+#[test]
+fn ff_relaxed_alpha_matches_pyscf_energy_hessian() {
+    let xyz = "3\nh2o\nO 0 0 0.117790\nH 0 0.755453 -0.471161\nH 0 -0.755453 -0.471161\n";
+    let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
+    let obs = PreparedBasis::new(&mol, &basis::bundled("sto-3g").unwrap()).unwrap();
+    let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
+    let op = Operator::coulomb();
+    let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+    let ctx = ParallelContext::default();
+    let scf_cfg = RhfConfig {
+        energy_conv: 1e-12,
+        density_conv: 1e-10,
+        ..Default::default()
+    };
+    let a = mp2_polarizability_static(
+        &ctx,
+        &mol,
+        &obs,
+        &dfbs,
+        op,
+        &bounds,
+        &scf_cfg,
+        &RiMp2Config::default(),
+        1e-3,
+        DensityMode::Relaxed,
+    )
+    .unwrap();
+    let want = [0.044_329, 4.981_096, 2.135_441];
+    for d in 0..3 {
+        eprintln!("α[{d}{d}] = {:.6}  PySCF {:.6}", a.tensor[d][d], want[d]);
+        assert!(
+            (a.tensor[d][d] - want[d]).abs() < 1e-4,
+            "α[{d}{d}] = {} vs PySCF {}",
+            a.tensor[d][d],
+            want[d]
+        );
+    }
+}
+
 /// Cross-validation against the RPA static-α path: MP2 α should be in the same
 /// ballpark as RPA α (both are response polarizabilities on the same HF
 /// reference), and MP2 typically lands somewhat ABOVE dRPA for water (more

@@ -58,7 +58,7 @@ use ndarray::Array2;
 use ndarray_linalg::{Eigh, UPLO};
 
 use crate::rimp2::{compute_mp2_intermediates, RiMp2Config};
-use crate::zvector::{build_lagrangian, build_relaxed_density_ao};
+use crate::zvector::build_relaxed_density_ao;
 
 /// Which MP2 1-PDM to difference for the finite-field polarizability.
 ///
@@ -226,11 +226,14 @@ pub(crate) fn solve_rhf_with_external(
     })
 }
 
-/// Build the MP2 relaxed AO 1-PDM for an (already converged) RHF reference.
+/// The MP2 AO 1-PDM for an (already converged) RHF reference.
 ///
-/// This is exactly the relaxed density the analytic RI-MP2 gradient uses:
-/// SCF core (2δ_ij) + MP2 P_oo/P_vv + Z-vector occ-vir orbital relaxation.
+/// `Relaxed` is `cpks_polar::static_relaxed_density_ao` (SCF core + (P+Pᵀ) +
+/// the (A+B) Z-vector), whose dipole is `−∂E_MP2/∂F`. `Unrelaxed` is the same
+/// density with z = 0.
+#[allow(clippy::too_many_arguments)]
 fn mp2_relaxed_density_ao(
+    ctx: &ParallelContext,
     mol: &Molecule,
     obs: &PreparedBasis,
     dfbs: &PreparedBasis,
@@ -240,33 +243,22 @@ fn mp2_relaxed_density_ao(
     config: &RiMp2Config,
     density_mode: DensityMode,
 ) -> Result<Array2<f64>, FerricError> {
-    let inter = compute_mp2_intermediates(mol, obs, dfbs, op, rhf, config)?;
-    let orb = inter.orbital_space();
-    // Relaxed: build the CPHF Lagrangian RHS L via build_lagrangian, then re-solve
-    // (Δε+A)z=L by CG (its Jacobi-DIIS analog in solve_zvector plateaus/diverges
-    // here). Unrelaxed: z=0 (no orbital response → no near-singular 1/F mode for
-    // symmetric molecules). NOTE: this uses the finite-field-α Lagrangian
-    // (build_lagrangian), which is the CPHF RHS for the FF-α path specifically;
-    // the production analytic gradient's solve_zvector uses the PySCF Xvo RHS and
-    // returns the RI-MP2 Lagrangian matrix Imat instead — a different second
-    // return value, hence the direct build_lagrangian call here.
-    let z = match density_mode {
-        DensityMode::Unrelaxed => Array2::<f64>::zeros((orb.nvir, orb.nocc)),
-        DensityMode::Relaxed => {
-            let c = rhf.mos_r();
-            let f_mo = c.t().dot(rhf.fock_r()).dot(c);
-            let b_full = crate::oo_rimp2::compute_b_full_mo(obs, dfbs, op, c)?;
-            let l = build_lagrangian(&f_mo, &inter.t2, &inter.p_oo, &inter.p_vv, &orb, &b_full);
-            solve_zvector_cg(c, &l, obs, bounds, &orb, rhf.eps_r())?
+    match density_mode {
+        DensityMode::Relaxed => crate::cpks_polar::static_relaxed_density_ao(
+            ctx, mol, obs, dfbs, op, bounds, rhf, config,
+        ),
+        DensityMode::Unrelaxed => {
+            let inter = compute_mp2_intermediates(mol, obs, dfbs, op, rhf, config)?;
+            let orb = inter.orbital_space();
+            Ok(build_relaxed_density_ao(
+                rhf.mos_r(),
+                &(&inter.p_oo + &inter.p_oo.t()),
+                &(&inter.p_vv + &inter.p_vv.t()),
+                &Array2::<f64>::zeros((orb.nvir, orb.nocc)),
+                &orb,
+            ))
         }
-    };
-    Ok(build_relaxed_density_ao(
-        rhf.mos_r(),
-        &inter.p_oo,
-        &inter.p_vv,
-        &z,
-        &orb,
-    ))
+    }
 }
 
 /// DIAGNOSTIC: the MP2 relaxed μ_z for a single field F applied along z.
@@ -299,7 +291,7 @@ pub fn debug_perturbed_dipole_z(
     } else {
         DensityMode::Relaxed
     };
-    let p = mp2_relaxed_density_ao(mol, obs, dfbs, op, bounds, &rhf, mp2_config, mode)?;
+    let p = mp2_relaxed_density_ao(ctx, mol, obs, dfbs, op, bounds, &rhf, mp2_config, mode)?;
 
     if ff_trace() {
         // Electron count of the relaxed density and of the SCF reference, plus the
@@ -363,131 +355,6 @@ pub fn debug_scf_dipole_axis(
     }
     let rhf = solve_rhf_with_external(ctx, mol, obs, bounds, scf_config, &v)?;
     Ok(mp2_dipole(mol, &dip_ao, rhf.density_total()))
-}
-
-/// Solve the Z-vector / CPHF response equation (Δε + A) z = L by conjugate
-/// gradients. The orbital-Hessian response operator is symmetric
-/// positive-definite for a stable closed-shell HF reference, so CG converges
-/// monotonically — unlike the Jacobi-DIIS fixed-point in `solve_zvector`, which
-/// plateaus or diverges for some systems (nh3, co2). Reuses the production
-/// matvec `compute_az_product` (the A·z piece); the diagonal Δε·z is added here.
-///
-/// Returns z of shape (nvir, nocc), matching `solve_zvector`.
-fn solve_zvector_cg(
-    c: &Array2<f64>,
-    l: &Array2<f64>,
-    prep: &PreparedBasis,
-    bounds: &SchwarzBounds,
-    orb: &ferric_core::orbitals::OrbitalSpace,
-    eps: &[f64],
-) -> Result<Array2<f64>, FerricError> {
-    use crate::zvector::compute_az_product;
-    let ferric_core::orbitals::OrbitalSpace {
-        nocc,
-        nvir,
-        nocc_total,
-        first_occ,
-    } = *orb;
-
-    // EnginePool is geometry/basis-only (density-independent) — build ONCE
-    // here and reuse across every compute_az_product call in the CG loop
-    // below (up to max_iter=100 calls), instead of build_jk constructing a
-    // fresh pool per call. Reduction order is unchanged, so results stay
-    // bit-identical across thread counts.
-    let pool = ferric_scf::engine_pool::EnginePool::new(bounds.op, prep, 1e-14)?;
-
-    // No config reachable on this finite-field path (no RiMp2Config in scope)
-    // — hoist ONE resolve here (not per CG iteration) rather than
-    // re-resolving inside the `apply` closure on every call.
-    let budget_bytes = ferric_core::memory::resolve_budget_bytes(None);
-
-    // Δε_{ai} table (the SPD diagonal; also the Jacobi preconditioner).
-    let de = |a: usize, i: usize| eps[nocc_total + a] - eps[first_occ + i];
-
-    // Full operator M·z = Δε⊙z + A·z.
-    let apply = |z: &Array2<f64>| -> Result<Array2<f64>, FerricError> {
-        let mut mz = compute_az_product(c, z, prep, bounds, orb, &pool, budget_bytes)?;
-        for a in 0..nvir {
-            for i in 0..nocc {
-                mz[(a, i)] += de(a, i) * z[(a, i)];
-            }
-        }
-        Ok(mz)
-    };
-
-    let dot = |x: &Array2<f64>, y: &Array2<f64>| -> f64 {
-        let mut s = 0.0;
-        for a in 0..nvir {
-            for i in 0..nocc {
-                s += x[(a, i)] * y[(a, i)];
-            }
-        }
-        s
-    };
-
-    // Jacobi-preconditioned CG. x0 = L/Δε (the uncoupled guess).
-    let mut x = Array2::<f64>::zeros((nvir, nocc));
-    for a in 0..nvir {
-        for i in 0..nocc {
-            let d = de(a, i);
-            if d.abs() > 1e-12 {
-                x[(a, i)] = l[(a, i)] / d;
-            }
-        }
-    }
-
-    // r = L − M·x ; z_pc = M_diag^{-1} r ; p = z_pc
-    let mut r = l - &apply(&x)?;
-    let precond = |r: &Array2<f64>| -> Array2<f64> {
-        let mut z = Array2::<f64>::zeros((nvir, nocc));
-        for a in 0..nvir {
-            for i in 0..nocc {
-                let d = de(a, i);
-                if d.abs() > 1e-12 {
-                    z[(a, i)] = r[(a, i)] / d;
-                }
-            }
-        }
-        z
-    };
-    let mut z_pc = precond(&r);
-    let mut p = z_pc.clone();
-    let mut rz_old = dot(&r, &z_pc);
-
-    let max_iter = 100;
-    let tol = 1e-10; // tighter than the 1e-8 the FF dipole difference needs
-    let trace = crate::zvector::zvec_trace();
-    for it in 0..max_iter {
-        let resid_max = r.iter().map(|v| v.abs()).fold(0.0_f64, f64::max);
-        if trace {
-            eprintln!("  [zvec-cg] iter={it:3}  max_resid={resid_max:.3e}");
-        }
-        if resid_max < tol {
-            break;
-        }
-        let mp = apply(&p)?;
-        let denom = dot(&p, &mp);
-        if denom.abs() < 1e-30 {
-            break;
-        }
-        let alpha = rz_old / denom;
-        for a in 0..nvir {
-            for i in 0..nocc {
-                x[(a, i)] += alpha * p[(a, i)];
-                r[(a, i)] -= alpha * mp[(a, i)];
-            }
-        }
-        z_pc = precond(&r);
-        let rz_new = dot(&r, &z_pc);
-        let beta = rz_new / rz_old;
-        for a in 0..nvir {
-            for i in 0..nocc {
-                p[(a, i)] = z_pc[(a, i)] + beta * p[(a, i)];
-            }
-        }
-        rz_old = rz_new;
-    }
-    Ok(x)
 }
 
 /// MP2 dipole `μ_d = −Tr[P_relax · r_d] + Σ_A Z_A R_{A,d}` (a.u.), electronic
@@ -555,10 +422,28 @@ pub fn mp2_polarizability_static(
         let rhf_p = solve_rhf_with_external(ctx, mol, obs, bounds, scf_config, &v_plus)?;
         let rhf_m = solve_rhf_with_external(ctx, mol, obs, bounds, scf_config, &v_minus)?;
 
-        let p_p =
-            mp2_relaxed_density_ao(mol, obs, dfbs, op, bounds, &rhf_p, mp2_config, density_mode)?;
-        let p_m =
-            mp2_relaxed_density_ao(mol, obs, dfbs, op, bounds, &rhf_m, mp2_config, density_mode)?;
+        let p_p = mp2_relaxed_density_ao(
+            ctx,
+            mol,
+            obs,
+            dfbs,
+            op,
+            bounds,
+            &rhf_p,
+            mp2_config,
+            density_mode,
+        )?;
+        let p_m = mp2_relaxed_density_ao(
+            ctx,
+            mol,
+            obs,
+            dfbs,
+            op,
+            bounds,
+            &rhf_m,
+            mp2_config,
+            density_mode,
+        )?;
 
         let mu_p = mp2_dipole(mol, &dip_ao, &p_p);
         let mu_m = mp2_dipole(mol, &dip_ao, &p_m);
