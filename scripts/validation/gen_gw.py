@@ -74,10 +74,10 @@ the same object in the Cholesky-RI basis. What is left to match:
     Becke-1988 radii adjustment -- ferric's default, the KS-DFT row's recipe.
   * Basis and aux: ferric's bundled JSON for BOTH (common.py), AO and aux
     counts checked against ferric's parser.
-  * XC density floor: ferric zeroes e_xc/v_xc where rho <= 1e-10; the @PBE
-    reference applies the same floor (FERRIC_DENSITY_FLOOR). Without it the
-    h2o/aug-cc-pvdz diffuse virtuals differ by up to 5e-7 Ha; that shift is
-    recorded as `density_floor_mo_energy_shift_max`.
+  * XC density floor: ferric zeroes v_xc where rho <= its semilocal floor
+    (1e-14, ferric-dft vxc.rs `DensityFloor::SEMILOCAL`); the @PBE reference
+    applies the same floor (FERRIC_DENSITY_FLOOR). The unfloored MO-energy
+    shift is recorded as `density_floor_mo_energy_shift_max`.
   * Frozen core: none, except the explicit `g0w0_hf_fc1` block (PySCF
     frozen=1; ferric GwConfig.frozen_core = PdepRpaConfig.frozen_core = 1).
 
@@ -219,12 +219,11 @@ def rhf_exact(mol):
     return mf, bool(stable)
 
 
-# ferric zeroes e_xc and v_xc at grid points with rho <= 1e-10
-# (ferric-dft vxc.rs DENSITY_FLOOR); libxc's own PBE threshold is lower. The
-# floor only reaches the far tail, so it moves occupied eigenvalues ~1e-10 Ha
-# but diffuse virtuals up to 5e-7 Ha (h2o/aug-cc-pvdz MO 6). The reference
-# applies the same floor; the unfloored shift is recorded per block.
-FERRIC_DENSITY_FLOOR = 1e-10
+# ferric zeroes v_xc at grid points with rho <= 1e-14 for LDA/GGA/hybrid/RSH
+# (ferric-dft vxc.rs `DensityFloor::SEMILOCAL`; libxc's own PBE_X threshold is
+# 1e-15, PBE_C 1e-12). The reference applies the same floor; the unfloored
+# shift is recorded per block.
+FERRIC_DENSITY_FLOOR = 1e-14
 
 
 def _apply_density_floor(mf, floor):
