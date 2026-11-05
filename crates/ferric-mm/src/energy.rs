@@ -22,7 +22,7 @@ pub struct MmEnergy {
 }
 
 impl MmEnergy {
-    fn sum(self) -> Self {
+    pub(crate) fn sum(self) -> Self {
         Self {
             total: self.bond + self.angle + self.torsion + self.lj + self.coulomb,
             ..self
@@ -30,7 +30,7 @@ impl MmEnergy {
     }
 }
 
-fn check_coords(top: &MmTopology, coords: &Array2<f64>) -> Result<(), FerricError> {
+pub(crate) fn check_coords(top: &MmTopology, coords: &Array2<f64>) -> Result<(), FerricError> {
     let n = top.n_atoms();
     if coords.dim() != (n, 3) {
         return Err(FerricError::General(format!(
@@ -42,7 +42,7 @@ fn check_coords(top: &MmTopology, coords: &Array2<f64>) -> Result<(), FerricErro
 }
 
 #[inline]
-fn diff(coords: &Array2<f64>, i: usize, j: usize) -> [f64; 3] {
+pub(crate) fn diff(coords: &Array2<f64>, i: usize, j: usize) -> [f64; 3] {
     [
         coords[(i, 0)] - coords[(j, 0)],
         coords[(i, 1)] - coords[(j, 1)],
@@ -51,7 +51,7 @@ fn diff(coords: &Array2<f64>, i: usize, j: usize) -> [f64; 3] {
 }
 
 #[inline]
-fn norm(v: [f64; 3]) -> f64 {
+pub(crate) fn norm(v: [f64; 3]) -> f64 {
     (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt()
 }
 
@@ -70,7 +70,7 @@ fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
 }
 
 #[inline]
-fn add_row(g: &mut Array2<f64>, i: usize, v: [f64; 3]) {
+pub(crate) fn add_row(g: &mut Array2<f64>, i: usize, v: [f64; 3]) {
     g[(i, 0)] += v[0];
     g[(i, 1)] += v[1];
     g[(i, 2)] += v[2];
@@ -87,6 +87,14 @@ pub fn gradient(
     coords: &Array2<f64>,
 ) -> Result<(MmEnergy, Array2<f64>), FerricError> {
     check_coords(top, coords)?;
+    let (mut e, mut g) = bonded_terms(top, coords);
+    nonbonded_all_pairs(top, coords, &mut e, &mut g);
+    Ok((e.sum(), g))
+}
+
+/// Bond, angle and torsion energies and gradient (theory.md 1-4); the LJ and
+/// Coulomb fields of the returned [`MmEnergy`] are zero and `total` is unset.
+pub(crate) fn bonded_terms(top: &MmTopology, coords: &Array2<f64>) -> (MmEnergy, Array2<f64>) {
     let n = top.n_atoms();
     let mut g = Array2::<f64>::zeros((n, 3));
     let mut e = MmEnergy::default();
@@ -207,7 +215,18 @@ pub fn gradient(
         );
     }
 
-    // Nonbonded (theory.md 5, 6).
+    (e, g)
+}
+
+/// All-pairs nonbonded sum (theory.md 5, 6): every non-excluded `i < j` pair,
+/// no cutoff, accumulated into `e.lj`, `e.coulomb` and `g`.
+fn nonbonded_all_pairs(
+    top: &MmTopology,
+    coords: &Array2<f64>,
+    e: &mut MmEnergy,
+    g: &mut Array2<f64>,
+) {
+    let n = top.n_atoms();
     for i in 0..n {
         for j in (i + 1)..n {
             let pair = (i, j);
@@ -219,46 +238,53 @@ pub fn gradient(
             } else {
                 (1.0, 1.0)
             };
-
-            let rij = diff(coords, i, j);
-            let r = norm(rij);
-            let unit = [rij[0] / r, rij[1] / r, rij[2] / r];
-
-            let mixed = mix(top.lj[i], top.lj[j]);
-            if mixed.epsilon != 0.0 && scale_lj != 0.0 {
-                let sr6 = (mixed.sigma / r).powi(6);
-                let sr12 = sr6 * sr6;
-                let e_lj = scale_lj * 4.0 * mixed.epsilon * (sr12 - sr6);
-                e.lj += e_lj;
-                let dedr = scale_lj * 4.0 * mixed.epsilon * (-12.0 * sr12 + 6.0 * sr6) / r;
-                add_row(&mut g, i, [dedr * unit[0], dedr * unit[1], dedr * unit[2]]);
-                add_row(
-                    &mut g,
-                    j,
-                    [-dedr * unit[0], -dedr * unit[1], -dedr * unit[2]],
-                );
-            }
-
-            let qq = top.charges[i] * top.charges[j];
-            if qq != 0.0 && scale_coul != 0.0 {
-                e.coulomb += scale_coul * qq / r;
-                let dedr = -scale_coul * qq / (r * r);
-                add_row(&mut g, i, [dedr * unit[0], dedr * unit[1], dedr * unit[2]]);
-                add_row(
-                    &mut g,
-                    j,
-                    [-dedr * unit[0], -dedr * unit[1], -dedr * unit[2]],
-                );
-            }
+            plain_pair(top, coords, i, j, scale_lj, scale_coul, e, g);
         }
     }
+}
 
-    Ok((e.sum(), g))
+/// One plain (uncut, unshifted) nonbonded pair: scaled LJ then scaled
+/// Coulomb, theory.md 5. Shared by the all-pairs sum and by the 1-4 pairs of
+/// the cutoff path (`crate::cutoff`), so both evaluate the same operations.
+#[allow(clippy::too_many_arguments)]
+#[inline]
+pub(crate) fn plain_pair(
+    top: &MmTopology,
+    coords: &Array2<f64>,
+    i: usize,
+    j: usize,
+    scale_lj: f64,
+    scale_coul: f64,
+    e: &mut MmEnergy,
+    g: &mut Array2<f64>,
+) {
+    let rij = diff(coords, i, j);
+    let r = norm(rij);
+    let unit = [rij[0] / r, rij[1] / r, rij[2] / r];
+
+    let mixed = mix(top.lj[i], top.lj[j]);
+    if mixed.epsilon != 0.0 && scale_lj != 0.0 {
+        let sr6 = (mixed.sigma / r).powi(6);
+        let sr12 = sr6 * sr6;
+        let e_lj = scale_lj * 4.0 * mixed.epsilon * (sr12 - sr6);
+        e.lj += e_lj;
+        let dedr = scale_lj * 4.0 * mixed.epsilon * (-12.0 * sr12 + 6.0 * sr6) / r;
+        add_row(g, i, [dedr * unit[0], dedr * unit[1], dedr * unit[2]]);
+        add_row(g, j, [-dedr * unit[0], -dedr * unit[1], -dedr * unit[2]]);
+    }
+
+    let qq = top.charges[i] * top.charges[j];
+    if qq != 0.0 && scale_coul != 0.0 {
+        e.coulomb += scale_coul * qq / r;
+        let dedr = -scale_coul * qq / (r * r);
+        add_row(g, i, [dedr * unit[0], dedr * unit[1], dedr * unit[2]]);
+        add_row(g, j, [-dedr * unit[0], -dedr * unit[1], -dedr * unit[2]]);
+    }
 }
 
 /// Lorentz-Berthelot combining rules: sigma arithmetic mean, epsilon
 /// geometric mean.
-fn mix(a: LjParams, b: LjParams) -> LjParams {
+pub(crate) fn mix(a: LjParams, b: LjParams) -> LjParams {
     LjParams {
         sigma: 0.5 * (a.sigma + b.sigma),
         epsilon: (a.epsilon * b.epsilon).sqrt(),

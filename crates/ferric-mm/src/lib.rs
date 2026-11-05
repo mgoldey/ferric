@@ -15,16 +15,23 @@
 //! [`topology::MmTopology::from_amber_units`] converts once from the
 //! kcal/mol/Å/degree convention most force fields are published in.
 //!
+//! The nonbonded sum is all-pairs with no cutoff by default; an opt-in
+//! non-periodic reaction-field cutoff with a cell list (OpenMM
+//! `CutoffNonPeriodic`) is in [`cutoff`]. PME / Ewald and periodic images are
+//! not implemented.
+//!
 //! Equations and code map: `crates/ferric-mm/theory.md`.
 //!
 //! Validated against OpenMM's Reference platform on toy topologies built from
 //! the *same* explicit parameters (`tests/vs_openmm.rs`) — see the crate's
 //! parent plan doc for the measured per-term agreement.
 
+pub mod cutoff;
 pub mod energy;
 pub mod topology;
 pub mod units;
 
+pub use cutoff::{energy_with, gradient_with, neighbor_pairs, CutoffParams, NonbondedMethod};
 pub use energy::{
     energy, gradient, qm_mm_lj_energy_gradient, qm_mm_lj_energy_gradient_scaled, MmEnergy,
 };
