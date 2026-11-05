@@ -3035,6 +3035,15 @@ fn solve_rhf_impl(
                 if let Some(rep) = last_report.as_mut() {
                     rep.one_step_energy_drop = aufbau_by_design(config)
                         .then(|| crate::result::roothaan_model_drop(&orb_e, nocc, 2.0, &f, &d));
+                    if let Some(drop) = rep.one_step_energy_drop {
+                        let tol = crate::result::stationarity_tol(
+                            config.energy_conv,
+                            config.density_conv,
+                            f.nrows(),
+                            crate::result::eps_span(&orb_e),
+                        );
+                        crate::result::warn_if_non_stationary("RHF", drop, tol, ctx.is_root());
+                    }
                 }
                 let density_alpha = 0.5 * &d;
                 crate::driver::warn_if_rss_over_at_stage("RHF", "converged", ooc_budget);

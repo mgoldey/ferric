@@ -1528,6 +1528,16 @@ fn solve_uhf_impl(
                         crate::result::roothaan_model_drop(&ea, nocc_a, 1.0, &f_a, &d_a)
                             + crate::result::roothaan_model_drop(&eb, nocc_b, 1.0, &f_b, &d_b),
                     );
+                    if let Some(drop) = rep.one_step_energy_drop {
+                        let span = crate::result::eps_span(&ea).max(crate::result::eps_span(&eb));
+                        let tol = crate::result::stationarity_tol(
+                            config.energy_conv,
+                            config.density_conv,
+                            f_a.nrows(),
+                            span,
+                        );
+                        crate::result::warn_if_non_stationary("UHF", drop, tol, ctx.is_root());
+                    }
                 }
             }
             let mom = config.mom_after_iter > 0;

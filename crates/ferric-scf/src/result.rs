@@ -236,6 +236,69 @@ pub(crate) fn roothaan_model_drop(
     occ * e[..nocc].iter().sum::<f64>() - (f * d).sum()
 }
 
+/// Slack for [`ConvergenceReport::one_step_energy_drop`]: the most negative
+/// drop a stationary converged exit can show.
+///
+/// To second order in the occupied-virtual rotation `kappa` of a Roothaan
+/// step, `|dE| <= span(e) * |kappa|_F^2` with `span(e)` the eigenvalue range
+/// of `F`; at a converged exit `|kappa|_F <= n * density_conv`; the energy gate
+/// adds `energy_conv`. Hence `tol = energy_conv + span * (n * density_conv)^2`.
+/// Shared by the solvers' warning and `tests/scf_variational_invariant.rs`.
+pub fn stationarity_tol(energy_conv: f64, density_conv: f64, nbasis: usize, span: f64) -> f64 {
+    energy_conv + span * (nbasis as f64 * density_conv).powi(2)
+}
+
+/// Eigenvalue range `max - min` of a Fock spectrum (any order).
+pub(crate) fn eps_span(eps: &[f64]) -> f64 {
+    let (lo, hi) = eps
+        .iter()
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(l, h), &e| {
+            (l.min(e), h.max(e))
+        });
+    if eps.is_empty() {
+        0.0
+    } else {
+        hi - lo
+    }
+}
+
+std::thread_local! {
+    static NON_STATIONARY_WARNINGS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Number of non-stationary-exit warnings emitted by SCF solves on the
+/// calling thread (test hook; the warning itself goes to stderr).
+pub fn non_stationary_warnings_on_this_thread() -> usize {
+    NON_STATIONARY_WARNINGS.with(|c| c.get())
+}
+
+/// Warn (stderr + run log) when a converged exit's one-step energy drop is
+/// below `-tol`: the exit is not a stationary point. Never changes
+/// `converged`. Returns whether it fired.
+#[doc(hidden)]
+pub fn warn_if_non_stationary(label: &str, drop: f64, tol: f64, is_root: bool) -> bool {
+    if !(drop < -tol) {
+        return false;
+    }
+    NON_STATIONARY_WARNINGS.with(|c| c.set(c.get() + 1));
+    if is_root {
+        eprintln!(
+            "warning: [scf] {label} reported converged but is not a stationary point: one \
+             Roothaan step from the final density lowers the energy by {:.3e} Ha (first \
+             order; tolerance {tol:.1e}). Re-run with a plain Pulay DIIS / tighter \
+             thresholds before trusting this energy.",
+            -drop
+        );
+        if let Some(rl) = crate::runlog::log() {
+            rl.note(
+                "non_stationary_exit",
+                serde_json::json!({"one_step_energy_drop": drop, "tol": tol}),
+            );
+        }
+    }
+    true
+}
+
 /// Running record of the RHF/UHF orbital-gradient veto: how many ΔP/ΔE-settled
 /// exits were refused because the orbital gradient in the kept orthonormal
 /// basis exceeded the bound, and the most recent one.

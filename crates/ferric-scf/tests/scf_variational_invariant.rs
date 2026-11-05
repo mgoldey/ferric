@@ -43,7 +43,9 @@ use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::oneelectron;
 use ferric_integrals::operator::Operator;
 use ferric_scf::diis::DiisFlavor;
-use ferric_scf::result::ScfResult;
+use ferric_scf::result::{
+    non_stationary_warnings_on_this_thread, stationarity_tol, warn_if_non_stationary, ScfResult,
+};
 use ferric_scf::rhf::{build_jk, solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::uhf::solve_uhf;
@@ -143,7 +145,12 @@ fn one_step_drop(sys: &System, r: &ScfResult, cfg: &RhfConfig) -> (f64, f64) {
     let (db1, span_b) = roothaan_density(&fb, &s_mat, nb);
     let (e1, _, _) = sys.energy(&da1, &db1);
     let n = s_mat.nrows() as f64;
-    let tol = cfg.energy_conv + span_a.max(span_b) * (n * cfg.density_conv).powi(2);
+    let tol = stationarity_tol(
+        cfg.energy_conv,
+        cfg.density_conv,
+        n as usize,
+        span_a.max(span_b),
+    );
     (e1 - e0, tol)
 }
 
@@ -164,7 +171,7 @@ fn cfg(flavor: DiisFlavor, level_shift: f64, sad: bool, tight: bool) -> RhfConfi
 
 /// Check one result; returns the violation, if any. Unconverged runs are
 /// not claims and are skipped.
-fn check(label: &str, sys: &System, r: &ScfResult, c: &RhfConfig) -> Option<String> {
+fn check(label: &str, sys: &System, r: &ScfResult, c: &RhfConfig, warned: usize) -> Option<String> {
     if !r.converged {
         eprintln!(
             "{label}: not converged ({} iterations), skipped",
@@ -182,6 +189,12 @@ fn check(label: &str, sys: &System, r: &ScfResult, c: &RhfConfig) -> Option<Stri
     eprintln!(
         "{label}: E={:.10} it={} one-step dE={drop:.3e} model={model:.3e} tol={tol:.3e}",
         r.energy, r.iterations
+    );
+    // The solver's stationarity warning fires iff the model drop is below -tol.
+    assert_eq!(
+        warned,
+        usize::from(model < -tol),
+        "{label}: non-stationary-exit warnings emitted ({warned}) vs model {model:.3e}, tol {tol:.1e}"
     );
     assert!(
         model <= 1e-12,
@@ -202,6 +215,7 @@ fn check(label: &str, sys: &System, r: &ScfResult, c: &RhfConfig) -> Option<Stri
 }
 
 fn rhf_case(sys: &System, label: &str, c: &RhfConfig, failures: &mut Vec<String>) {
+    let w0 = non_stationary_warnings_on_this_thread();
     let r = solve_rhf(
         &ParallelContext::default(),
         &sys.mol,
@@ -211,7 +225,8 @@ fn rhf_case(sys: &System, label: &str, c: &RhfConfig, failures: &mut Vec<String>
         c,
     )
     .unwrap();
-    failures.extend(check(label, sys, &r, c));
+    let warned = non_stationary_warnings_on_this_thread() - w0;
+    failures.extend(check(label, sys, &r, c, warned));
 }
 
 /// SO2 and CS2 / STO-3G, SAD guess: ADIIS and EDIIS (level shift 0 or 0.5)
@@ -309,6 +324,7 @@ fn a_converged_uhf_is_a_fixed_point_of_one_roothaan_step() {
         for ls in SHIFTS {
             for sad in [true, false] {
                 let c = cfg(DiisFlavor::Pulay, ls, sad, true);
+                let w0 = non_stationary_warnings_on_this_thread();
                 let r = solve_uhf(
                     &ParallelContext::default(),
                     &sys.mol,
@@ -318,9 +334,48 @@ fn a_converged_uhf_is_a_fixed_point_of_one_roothaan_step() {
                 )
                 .unwrap();
                 let label = format!("{name} UHF level_shift={ls} sad={sad}");
-                failures.extend(check(&label, &sys, &r, &c));
+                let warned = non_stationary_warnings_on_this_thread() - w0;
+                failures.extend(check(&label, &sys, &r, &c, warned));
             }
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// The warning fires on a non-stationary density. `D` is the core-Hamiltonian
+/// aufbau density of water/STO-3G (far from the SCF minimum); the exact
+/// first-order drop `Tr[F[D] (D' - D)]` of one Roothaan step from it, against
+/// `stationarity_tol` at default thresholds, must trigger the warning, and the
+/// converged density must not.
+/// Mutation: `warn_if_non_stationary` with `drop < tol` (sign flipped) or with
+/// the tolerance scaled by 1e9 fails the first assert / the second.
+#[test]
+fn the_stationarity_warning_fires_on_a_non_stationary_density() {
+    let sys = System::load("water");
+    let c = RhfConfig::default();
+    let s_mat = oneelectron::overlap(&sys.prep);
+    let h = oneelectron::hcore_with_external(&sys.prep, None).unwrap();
+    let nocc = sys.mol.nelec() as usize / 2;
+    let (d0, _) = roothaan_density(&h, &s_mat, nocc);
+    let (_, f, _) = sys.energy(&d0, &d0);
+    let (d1, span) = roothaan_density(&f, &s_mat, nocc);
+    let drop = 2.0 * (&f * &(&d1 - &d0)).sum();
+    let tol = stationarity_tol(c.energy_conv, c.density_conv, h.nrows(), span);
+    assert!(drop < -1e-3, "construction is non-stationary: drop {drop}");
+    let w0 = non_stationary_warnings_on_this_thread();
+    assert!(warn_if_non_stationary("RHF", drop, tol, true));
+    assert_eq!(non_stationary_warnings_on_this_thread() - w0, 1);
+    // Trivial limit: the converged density is a fixed point and stays silent.
+    let r = solve_rhf(
+        &ParallelContext::default(),
+        &sys.mol,
+        &sys.prep,
+        Operator::coulomb(),
+        &sys.bounds,
+        &c,
+    )
+    .unwrap();
+    assert!(r.converged);
+    let (cd, ctol) = one_step_drop(&sys, &r, &c);
+    assert!(!warn_if_non_stationary("RHF", cd, ctol, true), "drop {cd}");
 }
