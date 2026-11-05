@@ -111,36 +111,15 @@ use ferric_integrals::ffi::{self, CAtom};
 use ndarray::{Array1, Array2};
 use ndarray_linalg::Solve;
 
+use ferric_pcm::cavity::switch_h;
+use ferric_pcm::matrices::gaussian_xi_table;
+
 /// COSMO self-term prefactor (Klamt & Schuurmann 1993, eq. 7): `S_kk = xi *
 /// sqrt(4*pi / a_k)`. This is the standard constant quoted throughout the
 /// COSMO literature for a segment modeled as a small circular disk. Retained
 /// as the bare-point-charge `S`-matrix formula (see [`SMatrixKind::PointCharge`]);
 /// superseded by default with [`SMatrixKind::GaussianSmeared`] below.
 const COSMO_XI: f64 = 3.8;
-
-/// Per-Lebedev-order Gaussian-charge-width prefactor `XI[ng]` (Table II, Li &
-/// Frisch/Scalmani, "Continuous Surface Charge Polarizable Continuum Models",
-/// J. Chem. Phys. 122, 194110 (2005), as used by PySCF's `pcm.py`). Each
-/// segment's Gaussian width is `xi_k = XI[ng] / (r_vdw_k * sqrt(w_k))`, `w_k`
-/// the segment's *unnormalized* Lebedev weight (PySCF convention: sums to
-/// `4*pi` over a sphere, i.e. `4*pi * ferric's normalized weight`). Only the
-/// six Lebedev orders this module supports (see [`CosmoConfig::validate`])
-/// are tabulated; an order outside this set is rejected by config
-/// validation before this table is ever consulted.
-fn gaussian_xi_table(lebedev_order: usize) -> f64 {
-    match lebedev_order {
-        6 => 4.84566077868,
-        14 => 4.86458714334,
-        26 => 4.85478226219,
-        50 => 4.89250673295,
-        110 => 4.90101060987,
-        302 => 4.90498088169,
-        _ => unreachable!(
-            "gaussian_xi_table: lebedev_order {lebedev_order} not in the validated set \
-             {{6,14,26,50,110,302}} -- CosmoConfig::validate should have rejected this earlier"
-        ),
-    }
-}
 
 /// Which `S`-matrix (segment-interaction) formulation to use.
 ///
@@ -165,21 +144,6 @@ pub enum SMatrixKind {
 impl Default for SMatrixKind {
     fn default() -> Self {
         SMatrixKind::GaussianSmeared
-    }
-}
-
-/// SWIG (switching/Gaussian) transition-zone shape parameter (Lange &
-/// Herbert, JCP 133, 244111 (2010), eq. 3.19): the quintic smoothstep
-/// `h(x) = x^3 (10 - 15x + 6x^2)`, `h(x)=0` for `x<=0`, `h(x)=1` for `x>=1`.
-/// This is a faithful port of PySCF's `pcm.py::switch_h` (same functional
-/// form; see the `switch_h_*` unit tests below for direct value checks).
-fn switch_h(x: f64) -> f64 {
-    if x <= 0.0 {
-        0.0
-    } else if x >= 1.0 {
-        1.0
-    } else {
-        x * x * x * (10.0 - 15.0 * x + 6.0 * x * x)
     }
 }
 
@@ -423,7 +387,9 @@ impl CosmoCavity {
             })
             .collect();
 
-        let xi_prefactor = gaussian_xi_table(config.lebedev_order);
+        let xi_prefactor = gaussian_xi_table(config.lebedev_order).unwrap_or_else(|e| {
+            unreachable!("CosmoConfig::validate should have rejected this earlier: {e}")
+        });
 
         let mut segments = Vec::new();
         for &(ia, center_a, r_a) in real_atoms.iter() {
@@ -759,29 +725,6 @@ mod tests {
 
     fn water() -> Molecule {
         Molecule::load_xyz("../../testdata/molecules/water.xyz").unwrap()
-    }
-
-    #[test]
-    fn switch_h_boundary_values() {
-        assert_eq!(switch_h(-0.5), 0.0);
-        assert_eq!(switch_h(0.0), 0.0);
-        assert_eq!(switch_h(1.0), 1.0);
-        assert_eq!(switch_h(1.5), 1.0);
-    }
-
-    #[test]
-    fn switch_h_midpoint_and_monotonic() {
-        // h(0.5) = 0.5^3 * (10 - 7.5 + 1.5) = 0.125 * 4.0 = 0.5 (symmetric
-        // quintic smoothstep is centered at x=0.5).
-        assert!((switch_h(0.5) - 0.5).abs() < 1e-12);
-        // Monotonically non-decreasing on [0,1].
-        let mut prev = switch_h(0.0);
-        for i in 1..=20 {
-            let x = i as f64 / 20.0;
-            let cur = switch_h(x);
-            assert!(cur >= prev - 1e-12, "switch_h not monotonic at x={x}");
-            prev = cur;
-        }
     }
 
     #[test]

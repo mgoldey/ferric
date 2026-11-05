@@ -63,10 +63,8 @@ use ferric_quadrature::lebedev;
 /// SWIG (switching/Gaussian) transition-zone shape parameter (Lange &
 /// Herbert, JCP 133, 244111 (2010), eq. 3.19): the quintic smoothstep
 /// `h(x) = x^3 (10 - 15x + 6x^2)`, `h(x)=0` for `x<=0`, `h(x)=1` for `x>=1`.
-/// Identical to `ferric_scf::cosmo::switch_h` (duplicated rather than shared
-/// across crates — see `lib.rs`'s "Naming note for a future COSMO merge" for
-/// why a dedup pass is deferred).
-fn switch_h(x: f64) -> f64 {
+/// Shared with `ferric_scf::cosmo`, which builds the same SWIG cavity.
+pub fn switch_h(x: f64) -> f64 {
     if x <= 0.0 {
         0.0
     } else if x >= 1.0 {
@@ -275,6 +273,28 @@ mod tests {
 
     fn water() -> Molecule {
         Molecule::load_xyz("../../testdata/molecules/water.xyz").unwrap()
+    }
+
+    #[test]
+    fn switch_h_boundary_values() {
+        assert_eq!(switch_h(-0.5), 0.0);
+        assert_eq!(switch_h(0.0), 0.0);
+        assert_eq!(switch_h(1.0), 1.0);
+        assert_eq!(switch_h(1.5), 1.0);
+    }
+
+    #[test]
+    fn switch_h_is_the_quintic_smoothstep_and_monotonic() {
+        // h(0.5) = 0.125 * (10 - 7.5 + 1.5) = 0.5; h(0.25) = x^3 (10 - 15x + 6x^2).
+        assert!((switch_h(0.5) - 0.5).abs() < 1e-15);
+        assert!((switch_h(0.25) - 0.015625 * (10.0 - 3.75 + 0.375)).abs() < 1e-15);
+        let mut prev = switch_h(0.0);
+        for i in 1..=20 {
+            let x = i as f64 / 20.0;
+            let cur = switch_h(x);
+            assert!(cur >= prev, "switch_h not monotonic at x={x}");
+            prev = cur;
+        }
     }
 
     #[test]

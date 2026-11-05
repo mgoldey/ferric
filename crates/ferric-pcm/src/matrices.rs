@@ -82,10 +82,10 @@ const XI_SELF: f64 = 1.0694;
 /// Per-Lebedev-order Gaussian-charge-width prefactor `XI[ng]` (Table II, Li &
 /// Frisch/Scalmani, J. Chem. Phys. 122, 194110 (2005), as used by PySCF's
 /// `pcm.py`). Only the six Lebedev orders `ferric_quadrature::lebedev` (and hence
-/// this crate's cavity construction) supports are tabulated — matches
-/// `ferric_scf::cosmo::gaussian_xi_table` exactly. Returns `Err` for any
-/// other order rather than silently guessing a value.
-pub(crate) fn gaussian_xi_table(lebedev_order: usize) -> Result<f64, FerricError> {
+/// this crate's cavity construction) supports are tabulated. Shared with
+/// `ferric_scf::cosmo`. Returns `Err` for any other order rather than
+/// silently guessing a value.
+pub fn gaussian_xi_table(lebedev_order: usize) -> Result<f64, FerricError> {
     match lebedev_order {
         6 => Ok(4.84566077868),
         14 => Ok(4.86458714334),
@@ -253,6 +253,23 @@ mod tests {
     use super::*;
     use crate::cavity::{build_cavity, CavityConfig};
     use ferric_core::mol::Molecule;
+
+    #[test]
+    fn gaussian_xi_table_pins_li_frisch_values_and_rejects_others() {
+        let want = [
+            (6, 4.84566077868),
+            (14, 4.86458714334),
+            (26, 4.85478226219),
+            (50, 4.89250673295),
+            (110, 4.90101060987),
+            (302, 4.90498088169),
+        ];
+        for (order, xi) in want {
+            assert_eq!(gaussian_xi_table(order).unwrap(), xi, "order {order}");
+        }
+        assert!(gaussian_xi_table(100).is_err());
+        assert!(gaussian_xi_table(0).is_err());
+    }
 
     #[test]
     fn s_matrix_is_symmetric() {
