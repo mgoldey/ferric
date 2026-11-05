@@ -1158,6 +1158,9 @@ fn energy_gradient_and_result(
             crate::gradient::preflight_cosx_restricted(config)?;
             let config = &*crate::gradient::gradient_task_config(config);
             let res = solve_rhf(ctx, mol, &prep, op, &bounds, config)?;
+            // `solve_rhf` returns an unconverged SCF as `Ok`; a displaced
+            // gradient from it would put noise straight into the Hessian.
+            crate::optimize::require_converged(&res)?;
             let grad = crate::gradient::restricted_scf_gradient(
                 mol, &prep, &bs, op, &bounds, config, &res,
             )?;
@@ -1220,6 +1223,35 @@ mod tests {
     /// noise floor is set by SCF convergence and the finite displacement
     /// rather than by machine epsilon.
     const ZERO_MODE_TOL_CM_SCF: f64 = 15.0;
+
+    /// The finite-difference route differentiates SCF gradients at displaced
+    /// geometries; an unconverged one (returned `Ok` by `solve_rhf`) must
+    /// raise instead of entering the Hessian.
+    #[test]
+    fn fd_frequencies_raise_on_unconverged_scf() {
+        let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 1.4\n", 0, 1).unwrap();
+        let scf = RhfConfig {
+            max_iter: 1,
+            energy_conv: 1e-12,
+            density_conv: 1e-12,
+            ..Default::default()
+        };
+        let fc = FrequencyConfig {
+            reference: FrequencyReference::Rhf,
+            hessian: HessianMethod::FiniteDifference,
+            ..Default::default()
+        };
+        let err = harmonic_frequencies(
+            &ParallelContext::default(),
+            &mol,
+            "sto-3g",
+            Operator::coulomb(),
+            &scf,
+            &fc,
+        )
+        .expect_err("a one-iteration SCF cannot converge");
+        assert!(matches!(err, FerricError::ScfConvergence { .. }), "{err:?}");
+    }
 
     // ---- projection unit tests (no SCF) ---------------------------------
 

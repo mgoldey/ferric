@@ -996,6 +996,34 @@ mod tests {
     use super::*;
     use ferric_core::mol::Molecule;
 
+    /// `solve_rhf` returns an unconverged SCF as `Ok`; the closed-shell
+    /// optimizer must refuse it, not step on its density. Trivial limit: the
+    /// same input with the default `max_iter` converges (test above).
+    #[test]
+    fn test_optimize_raises_on_unconverged_scf() {
+        let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 1.0\n", 0, 1).unwrap();
+        let rhf_config = RhfConfig {
+            max_iter: 1,
+            energy_conv: 1e-12,
+            density_conv: 1e-12,
+            ..Default::default()
+        };
+        let ctx = ParallelContext::default();
+        let err = optimize_geometry(
+            &ctx,
+            &mol,
+            "sto-3g",
+            Operator::coulomb(),
+            &rhf_config,
+            &OptimizeConfig::default(),
+        )
+        .expect_err("a one-iteration SCF cannot converge");
+        assert!(
+            matches!(err, FerricError::ScfConvergence { iterations: 1, .. }),
+            "{err:?}"
+        );
+    }
+
     #[test]
     fn test_optimize_h2_sto3g() {
         // Start from a stretched bond: 1.0 Angstrom = 1.89 Bohr
