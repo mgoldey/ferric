@@ -722,8 +722,8 @@ pub fn dlpno_linlccd_hh(
 /// `Σ_ijab <ij||ab> t[i,j,a,b]` over the full `no2²` grid, from PNO blocks.
 ///
 /// `basis.pairs` holds each pair once with `i <= j`; the dense sum runs over both
-/// orientations. Both `v` and `t` mirror with the same sign
-/// (`X[j,i,b,a] = −X[i,j,a,b]` for both, being antisymmetrized), so the mirror
+/// orientations. Both `v` and `t` flip sign under the occupied swap
+/// (`X[j,i,a,b] = −X[i,j,a,b]` for both, being antisymmetrized), so the mirror
 /// term equals the stored one and off-diagonal pairs count twice.
 fn pno_energy(v_pno: &[Array2<f64>], t_pno: &[Array2<f64>], basis: &PairPnoBasis) -> f64 {
     let mut e = 0.0;

@@ -123,8 +123,8 @@ impl LadderVariant {
 /// the ωB97X-L-V double hybrid is a parameter rather than a separate code path: pass
 /// [`Operator::erfc`] for short-range-only correlation.
 ///
-/// Closed-shell RHF reference only. Open-shell requires ROHF semi-canonicalization,
-/// which ferric does not yet have — see the design doc.
+/// Closed-shell RHF reference only. The open-shell (UHF, or semicanonicalized ROHF)
+/// solver is [`crate::linlccd_u::u_linlccd`].
 pub fn linlccd(
     mol: &Molecule,
     obs: &PreparedBasis,

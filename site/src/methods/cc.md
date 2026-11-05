@@ -156,6 +156,9 @@ comparison to a reference code yet.
 
 ## Implementation
 
+The equations each solver implements, with file and line, are in
+[`crates/ferric-cc/theory.md`](https://github.com/mgoldey/ferric/blob/main/crates/ferric-cc/theory.md).
+
 All contractions go through `einsum!`, a macro that maps tensor
 contractions onto BLAS3 GEMMs. The permutation copies that feed those GEMMs are
 parallelized, because for a strided permutation the copy can dominate the

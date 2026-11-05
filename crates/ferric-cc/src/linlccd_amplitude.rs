@@ -258,16 +258,6 @@ pub fn amplitude_linlccd_with_virtuals(
     })
 }
 
-/// Masked ragged CG on the LinLCCD linear system — the UNCHANGED solver
-/// shared by the global-B path ([`amplitude_linlccd_with_virtuals`]) and
-/// the integral-direct path ([`amplitude_linlccd_direct_with_virtuals`]),
-/// extracted verbatim (the `riccati_masked_solve` pattern from the dRPA
-/// port): F(t) + optional hh gather (coefficients via [`OoGram`]) +
-/// optional pp per-pair domain Grams from a whitened global Bvv, then the
-/// LINEAR energy form Σ (ia|jb)(2T − T̃) on the pattern (not the stationary
-/// Hylleraas functional: its solver error is first order in the residual).
-/// Non-convergence is a hard error, so
-/// `Ok` implies convergence.
 /// pp-ladder source for the shared solver.
 enum PpSource<'a> {
     /// No pp ladder (DriversOnly / Hh tiers).
@@ -296,6 +286,16 @@ fn apply_pp_block(rp: &mut Array2<f64>, m: &Array2<f64>, nda: usize, ndb: usize,
     }
 }
 
+/// Masked ragged CG on the LinLCCD linear system — the UNCHANGED solver
+/// shared by the global-B path ([`amplitude_linlccd_with_virtuals`]) and
+/// the integral-direct path ([`amplitude_linlccd_direct_with_virtuals`]),
+/// extracted verbatim (the `riccati_masked_solve` pattern from the dRPA
+/// port): F(t) + optional hh gather (coefficients via [`OoGram`]) +
+/// optional pp per-pair domain Grams from a whitened global Bvv, then the
+/// LINEAR energy form Σ (ia|jb)(2T − T̃) on the pattern (not the stationary
+/// Hylleraas functional: its solver error is first order in the residual).
+/// Non-convergence is a hard error, so
+/// `Ok` implies convergence.
 fn linlccd_masked_solve(
     rg: &Ragged,
     f_oo: &Array2<f64>,
