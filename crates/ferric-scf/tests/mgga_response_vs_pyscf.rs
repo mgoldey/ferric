@@ -178,6 +178,7 @@ fn builds() -> usize {
     MGGA_FXC_KERNEL_BUILDS.load(Ordering::Relaxed)
 }
 
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn nh2_uks_r2scan_hessian_matches_pyscf() {
     let _g = COUNTER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -401,6 +402,7 @@ fn rks_r2scan_newton_matches_diis() {
     );
 }
 
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn uks_r2scan_newton_matches_diis() {
     let r = reference("nh2");
