@@ -1185,8 +1185,8 @@ pub fn run(args: Vec<String>) {
     match method {
         "rhf" => run_rhf(&cfg, &bs, &prep, &result, &scf_cert),
         "ksdft" => run_ksdft(&cfg, &bs, &prep, &result, dispersion.as_ref(), &scf_cert),
-        "rimp2" => run_rimp2(&cfg, &mol, &bs, &prep, op, &result, budget_bytes),
-        "mp3" => run_mp3(&cfg, &mol, &bs, &prep, op, &result, budget_bytes),
+        "rimp2" => run_rimp2(&cfg, &mol, &bs, &prep, op, &result, budget_bytes, &scf_cert),
+        "mp3" => run_mp3(&cfg, &mol, &bs, &prep, op, &result, budget_bytes, &scf_cert),
         "oo-rimp2" => run_oo_rimp2(
             &cfg,
             &mol,
@@ -1197,19 +1197,26 @@ pub fn run(args: Vec<String>) {
             &result,
             budget_bytes,
             rhf_config.external_potential.as_ref(),
+            &scf_cert,
         ),
-        "att-rimp2" => run_att_rimp2(&cfg, &mol, &bs, &prep, &result, budget_bytes),
-        "mp2-v" => run_mp2_v(&cfg, &mol, &bs, &prep, &result, budget_bytes),
-        "rs-mp2-rpa" => run_rs_mp2_rpa(&cfg, &mol, &bs, &prep, &result, budget_bytes),
-        "scs-mp2" => run_scs_mp2(&cfg, &mol, &bs, &prep, &result, budget_bytes),
-        "scs-mp2-2terfc" => run_scs_mp2_2terfc(&cfg, &mol, &bs, &prep, &result, budget_bytes),
-        "ccsd" => run_ccsd(&cfg, &mol, &bs, &prep, op, &result, budget_bytes),
-        "linlccd" => run_linlccd(&cfg, &mol, &bs, &prep, op, &result, budget_bytes),
-        "ccd" => run_ccd(&cfg, &mol, &bs, &prep, op, &result, budget_bytes),
-        "ccsd(t)" => run_ccsd_t(&cfg, &mol, &bs, &prep, op, &result, budget_bytes),
-        "drpa" => run_drpa(&cfg, &mol, &bs, &prep, op, &result, budget_bytes),
-        "laplace-mp2" => run_laplace_mp2(&cfg, &mol, &bs, &prep, op, &result, budget_bytes),
-        "laplace-sos-mp2" => run_laplace_sos_mp2(&cfg, &mol, &bs, &prep, op, &result, budget_bytes),
+        "att-rimp2" => run_att_rimp2(&cfg, &mol, &bs, &prep, &result, budget_bytes, &scf_cert),
+        "mp2-v" => run_mp2_v(&cfg, &mol, &bs, &prep, &result, budget_bytes, &scf_cert),
+        "rs-mp2-rpa" => run_rs_mp2_rpa(&cfg, &mol, &bs, &prep, &result, budget_bytes, &scf_cert),
+        "scs-mp2" => run_scs_mp2(&cfg, &mol, &bs, &prep, &result, budget_bytes, &scf_cert),
+        "scs-mp2-2terfc" => {
+            run_scs_mp2_2terfc(&cfg, &mol, &bs, &prep, &result, budget_bytes, &scf_cert)
+        }
+        "ccsd" => run_ccsd(&cfg, &mol, &bs, &prep, op, &result, budget_bytes, &scf_cert),
+        "linlccd" => run_linlccd(&cfg, &mol, &bs, &prep, op, &result, budget_bytes, &scf_cert),
+        "ccd" => run_ccd(&cfg, &mol, &bs, &prep, op, &result, budget_bytes, &scf_cert),
+        "ccsd(t)" => run_ccsd_t(&cfg, &mol, &bs, &prep, op, &result, budget_bytes, &scf_cert),
+        "drpa" => run_drpa(&cfg, &mol, &bs, &prep, op, &result, budget_bytes, &scf_cert),
+        "laplace-mp2" => {
+            run_laplace_mp2(&cfg, &mol, &bs, &prep, op, &result, budget_bytes, &scf_cert)
+        }
+        "laplace-sos-mp2" => {
+            run_laplace_sos_mp2(&cfg, &mol, &bs, &prep, op, &result, budget_bytes, &scf_cert)
+        }
         "pdep-rpa" => run_pdep_rpa_arm(
             &cfg,
             &ctx,
@@ -1222,12 +1229,20 @@ pub fn run(args: Vec<String>) {
             result,
             budget_bytes,
             &proatom,
+            &scf_cert,
         ),
-        "gw" => run_gw(&cfg, &mol, &bs, &prep, op, &result, budget_bytes),
-        "bse-tda" => run_bse_tda(&cfg, &mol, &bs, &prep, op, &result, budget_bytes),
-        "tdhf-static-polarizability" => {
-            run_tdhf_static_polarizability(&cfg, &mol, &bs, &prep, op, &result, budget_bytes)
-        }
+        "gw" => run_gw(&cfg, &mol, &bs, &prep, op, &result, budget_bytes, &scf_cert),
+        "bse-tda" => run_bse_tda(&cfg, &mol, &bs, &prep, op, &result, budget_bytes, &scf_cert),
+        "tdhf-static-polarizability" => run_tdhf_static_polarizability(
+            &cfg,
+            &mol,
+            &bs,
+            &prep,
+            op,
+            &result,
+            budget_bytes,
+            &scf_cert,
+        ),
         "tda" | "tddft" => run_tddft_arm(
             &cfg,
             &mol,
@@ -2348,6 +2363,7 @@ fn run_rimp2_local(
     op: Operator,
     result: &ferric_scf::result::ScfResult,
     budget_bytes: Option<usize>,
+    scf_cert: &Certificate,
 ) {
     use ferric_mp2::lmp2_amplitude::{amplitude_lmp2, AmplitudeLmp2Config};
     use ferric_mp2::lmp2_direct::{amplitude_lmp2_direct, DirectConfig};
@@ -2438,6 +2454,13 @@ fn run_rimp2_local(
         println!("{line}");
     }
     println!("  total energy          = {:.10} Ha", r.e_total);
+    let mut unified = ferric_mp2::certificate::local_rimp2_certificate(&cert, scf_cert);
+    if op.kind != ferric_integrals::operator::OperatorKind::Coulomb {
+        unified = unified.with_approximation(
+            "operator",
+            ferric_mp2::lmp2_certificate::operator_label(&op),
+        );
+    }
     match &maps {
         None => println!(
             "  keep {:.4}  pairs {:.3}  dom(mean/max) {:.1}/{}  cg {}",
@@ -2473,6 +2496,7 @@ fn run_rimp2_local(
             );
         }
     }
+    let unified = print_certificate(&unified);
     if let Some(rl) = ferric_scf::runlog::log() {
         rl.result(
             cfg.method.kind.as_str(),
@@ -2485,6 +2509,7 @@ fn run_rimp2_local(
                 "scf_converged": result.converged,
                 "local": lmp2_local_json(&local, &cert),
                 "timings": lmp2_timings_json(&r.timings, maps.as_ref().map(|(_, st)| st)),
+                "certificate": unified,
             }),
         );
     }
@@ -2506,19 +2531,30 @@ fn run_rimp2(
     op: Operator,
     result: &ferric_scf::result::ScfResult,
     budget_bytes: Option<usize>,
+    scf_cert: &Certificate,
 ) {
     let model = cfg.local_model().unwrap_or_else(|e| {
         eprintln!("error: {e}");
         std::process::exit(1);
     });
     if let Some(model) = model {
-        run_rimp2_local(cfg, &model, mol, bs, prep, op, result, budget_bytes);
+        run_rimp2_local(
+            cfg,
+            &model,
+            mol,
+            bs,
+            prep,
+            op,
+            result,
+            budget_bytes,
+            scf_cert,
+        );
         return;
     }
     // An open-shell molecule arrives with a UHF reference (see
     // `solve_open_shell_reference`) and takes the unrestricted RI-MP2.
     if result.spin != ferric_scf::result::Spin::Restricted {
-        run_u_rimp2(cfg, mol, bs, prep, op, result, budget_bytes);
+        run_u_rimp2(cfg, mol, bs, prep, op, result, budget_bytes, scf_cert);
         return;
     }
     let aux_name = cfg
@@ -2534,20 +2570,13 @@ fn run_rimp2(
         eprintln!("error: {e}");
         std::process::exit(1);
     });
-    let mp2_result = ri_mp2(
-        mol,
-        prep,
-        &dfbs,
-        op,
-        result,
-        &RiMp2Config {
-            frozen_core: cfg.mp2.frozen_core.resolve(mol),
-            memory_budget_bytes: budget_bytes,
-            kappa: cfg.mp2.kappa,
-            ..Default::default()
-        },
-    )
-    .unwrap_or_else(|e| {
+    let mp2_config = RiMp2Config {
+        frozen_core: cfg.mp2.frozen_core.resolve(mol),
+        memory_budget_bytes: budget_bytes,
+        kappa: cfg.mp2.kappa,
+        ..Default::default()
+    };
+    let mp2_result = ri_mp2(mol, prep, &dfbs, op, result, &mp2_config).unwrap_or_else(|e| {
         eprintln!("error: {e}");
         std::process::exit(1);
     });
@@ -2579,6 +2608,13 @@ fn run_rimp2(
     );
     println!("  MP2 corr   = {:.10} Hartree", mp2_result.mp2_corr);
     println!("  Total      = {:.10} Hartree", mp2_result.total_energy);
+    let cert = print_certificate(&ferric_mp2::certificate::rimp2_certificate(
+        scf_cert,
+        aux_name,
+        &mp2_config,
+        &op,
+        &mp2_result.precision,
+    ));
     if let Some(rl) = ferric_scf::runlog::log() {
         // The ANSWER, not the SCF reference `run_end` carries. `scf_converged`
         // travels with it because an MP2 number built on an unconverged
@@ -2594,6 +2630,7 @@ fn run_rimp2(
                 "local": local_json(None),
                 "precision": mp2_result.precision.to_json(),
                 "timings": serde_json::Value::Null,
+                "certificate": cert,
             }),
         );
     }
@@ -2624,6 +2661,7 @@ fn run_u_rimp2(
     op: Operator,
     result: &ferric_scf::result::ScfResult,
     budget_bytes: Option<usize>,
+    scf_cert: &Certificate,
 ) {
     if let Some(k) = cfg.mp2.kappa {
         eprintln!(
@@ -2647,22 +2685,16 @@ fn run_u_rimp2(
         eprintln!("error: {e}");
         std::process::exit(1);
     });
-    let r = ferric_mp2::u_rimp2::u_ri_mp2(
-        mol,
-        prep,
-        &dfbs,
-        op,
-        result,
-        &RiMp2Config {
-            frozen_core: cfg.mp2.frozen_core.resolve(mol),
-            memory_budget_bytes: budget_bytes,
-            ..Default::default()
-        },
-    )
-    .unwrap_or_else(|e| {
-        eprintln!("error: {e}");
-        std::process::exit(1);
-    });
+    let mp2_config = RiMp2Config {
+        frozen_core: cfg.mp2.frozen_core.resolve(mol),
+        memory_budget_bytes: budget_bytes,
+        ..Default::default()
+    };
+    let r = ferric_mp2::u_rimp2::u_ri_mp2(mol, prep, &dfbs, op, result, &mp2_config)
+        .unwrap_or_else(|e| {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        });
     // Same layout as the closed-shell printout (the "MP2 corr" / "Total"
     // labels are what downstream parsers read), with the reference named and
     // the three spin blocks shown.
@@ -2688,6 +2720,13 @@ fn run_u_rimp2(
     println!("  E(ab)      = {:.10} Hartree", r.components.e_ab);
     println!("  MP2 corr   = {:.10} Hartree", r.mp2_corr);
     println!("  Total      = {:.10} Hartree", r.total_energy);
+    let cert = print_certificate(&ferric_mp2::certificate::rimp2_certificate(
+        scf_cert,
+        aux_name,
+        &mp2_config,
+        &op,
+        &r.precision,
+    ));
     if let Some(rl) = ferric_scf::runlog::log() {
         rl.result(
             "rimp2",
@@ -2703,6 +2742,7 @@ fn run_u_rimp2(
                 "local": local_json(None),
                 "precision": r.precision.to_json(),
                 "timings": serde_json::Value::Null,
+                "certificate": cert,
             }),
         );
     }
@@ -2725,6 +2765,7 @@ fn run_mp3(
     op: Operator,
     result: &ferric_scf::result::ScfResult,
     budget_bytes: Option<usize>,
+    scf_cert: &Certificate,
 ) {
     let aux_name = cfg
         .mp2
@@ -2762,6 +2803,12 @@ fn run_mp3(
     println!("  MP3 corr   = {:.10} Hartree", mp3_result.e_mp3);
     println!("  Total corr = {:.10} Hartree", mp3_result.e_corr);
     println!("  Total      = {:.10} Hartree", mp3_result.e_total);
+    let cert = print_certificate(&ferric_mp2::certificate::mp3_certificate(
+        scf_cert,
+        aux_name,
+        cfg.mp2.frozen_core.resolve(mol),
+        &op,
+    ));
     if let Some(rl) = ferric_scf::runlog::log() {
         // MP3 carries BOTH orders separately, not just their sum: the MP2->MP3
         // step is the thing a reader checks for convergence of the series, and
@@ -2775,6 +2822,7 @@ fn run_mp3(
                 "e_mp3": mp3_result.e_mp3,
                 "e_scf_reference": mp3_result.e_hf,
                 "scf_converged": result.converged,
+                "certificate": cert,
             }),
         );
     }
@@ -2793,11 +2841,23 @@ fn run_oo_rimp2(
     result: &ferric_scf::result::ScfResult,
     budget_bytes: Option<usize>,
     ext: Option<&ferric_core::external_potential::ExternalPotential>,
+    scf_cert: &Certificate,
 ) {
     // An open-shell molecule arrives with a UHF reference (see
     // `solve_open_shell_reference`) and takes the unrestricted OO-RI-MP2.
     if result.spin != ferric_scf::result::Spin::Restricted {
-        run_u_oo_rimp2(cfg, mol, bs, prep, op, bounds, result, budget_bytes, ext);
+        run_u_oo_rimp2(
+            cfg,
+            mol,
+            bs,
+            prep,
+            op,
+            bounds,
+            result,
+            budget_bytes,
+            ext,
+            scf_cert,
+        );
         return;
     }
     let aux_name = cfg
@@ -2842,6 +2902,15 @@ fn run_oo_rimp2(
     println!("  HF energy  = {:.10} Hartree", oo_result.hf_energy);
     println!("  MP2 corr   = {:.10} Hartree", oo_result.mp2_corr);
     println!("  Total      = {:.10} Hartree", oo_result.total_energy);
+    let cert = print_certificate(&ferric_mp2::certificate::oo_rimp2_certificate(
+        scf_cert,
+        aux_name,
+        oo_config.frozen_core,
+        &op,
+        oo_result.converged,
+        oo_result.iterations,
+        oo_result.grad_norm,
+    ));
     if let Some(rl) = ferric_scf::runlog::log() {
         rl.result(
             "oo-rimp2",
@@ -2850,6 +2919,7 @@ fn run_oo_rimp2(
                 "e_corr": oo_result.mp2_corr,
                 "e_scf_reference": result.energy,
                 "scf_converged": result.converged,
+                "certificate": cert,
             }),
         );
     }
@@ -2872,6 +2942,7 @@ fn run_u_oo_rimp2(
     result: &ferric_scf::result::ScfResult,
     budget_bytes: Option<usize>,
     ext: Option<&ferric_core::external_potential::ExternalPotential>,
+    scf_cert: &Certificate,
 ) {
     let aux_name = cfg
         .mp2
@@ -2918,6 +2989,15 @@ fn run_u_oo_rimp2(
     println!("  HF energy  = {:.10} Hartree", oo_result.hf_energy);
     println!("  MP2 corr   = {:.10} Hartree", oo_result.mp2_corr);
     println!("  Total      = {:.10} Hartree", oo_result.total_energy);
+    let cert = print_certificate(&ferric_mp2::certificate::oo_rimp2_certificate(
+        scf_cert,
+        aux_name,
+        oo_config.frozen_core,
+        &op,
+        oo_result.converged,
+        oo_result.iterations,
+        oo_result.grad_norm,
+    ));
     if let Some(rl) = ferric_scf::runlog::log() {
         rl.result(
             "oo-rimp2",
@@ -2928,6 +3008,7 @@ fn run_u_oo_rimp2(
                 "e_scf_reference": result.energy,
                 "scf_converged": result.converged,
                 "oo_converged": oo_result.converged,
+                "certificate": cert,
             }),
         );
     }
@@ -2944,6 +3025,7 @@ fn run_att_rimp2_local(
     prep: &PreparedBasis,
     result: &ferric_scf::result::ScfResult,
     budget_bytes: Option<usize>,
+    scf_cert: &Certificate,
 ) -> bool {
     let local_model = cfg.local_model().unwrap_or_else(|e| {
         eprintln!("error: {e}");
@@ -2965,6 +3047,7 @@ fn run_att_rimp2_local(
         att_operator,
         result,
         budget_bytes,
+        scf_cert,
     );
     true
 }
@@ -2978,8 +3061,9 @@ fn run_att_rimp2(
     prep: &PreparedBasis,
     result: &ferric_scf::result::ScfResult,
     budget_bytes: Option<usize>,
+    scf_cert: &Certificate,
 ) {
-    if run_att_rimp2_local(cfg, mol, bs, prep, result, budget_bytes) {
+    if run_att_rimp2_local(cfg, mol, bs, prep, result, budget_bytes, scf_cert) {
         return;
     }
     let aux_name = cfg
@@ -3002,7 +3086,17 @@ fn run_att_rimp2(
         std::process::exit(1);
     });
     if att_op == config::AttRimp2Op::Terfc {
-        run_att_rimp2_terfc(cfg, mol, bs, prep, &dfbs, aux_name, result, budget_bytes);
+        run_att_rimp2_terfc(
+            cfg,
+            mol,
+            bs,
+            prep,
+            &dfbs,
+            aux_name,
+            result,
+            budget_bytes,
+            scf_cert,
+        );
         return;
     }
     let omega_ang_inv = cfg.mp2.omega.unwrap_or(0.420);
@@ -3039,6 +3133,11 @@ fn run_att_rimp2(
         att_result.spin_components.e_ss
     );
     println!("  Total      = {:.10} Hartree", att_result.total_energy);
+    let cert = print_certificate(&ferric_mp2::certificate::att_rimp2_certificate(
+        scf_cert,
+        aux_name,
+        &att_config,
+    ));
     if let Some(rl) = ferric_scf::runlog::log() {
         rl.result(
             "att-rimp2",
@@ -3047,6 +3146,7 @@ fn run_att_rimp2(
                 "e_corr": att_result.mp2_corr,
                 "e_scf_reference": result.energy,
                 "scf_converged": result.converged,
+                "certificate": cert,
             }),
         );
     }
@@ -3069,6 +3169,7 @@ fn run_att_rimp2_terfc(
     aux_name: &str,
     result: &ferric_scf::result::ScfResult,
     budget_bytes: Option<usize>,
+    scf_cert: &Certificate,
 ) {
     let r0_ang = cfg
         .mp2
@@ -3106,6 +3207,13 @@ fn run_att_rimp2_terfc(
     println!("  E_OS       = {:.10} Hartree", sc.e_os);
     println!("  E_SS       = {:.10} Hartree", sc.e_ss);
     println!("  Total      = {:.10} Hartree", total);
+    let cert = print_certificate(&ferric_mp2::certificate::ri_correlation_certificate(
+        "att-rimp2",
+        scf_cert,
+        aux_name,
+        mp2_config.frozen_core,
+        &terfc_op,
+    ));
     if let Some(rl) = ferric_scf::runlog::log() {
         rl.result(
             "att-rimp2",
@@ -3117,6 +3225,7 @@ fn run_att_rimp2_terfc(
                 "e_corr": sc.e_total,
                 "e_scf_reference": result.energy,
                 "scf_converged": result.converged,
+                "certificate": cert,
             }),
         );
     }
@@ -3131,6 +3240,7 @@ fn run_rs_mp2_rpa(
     prep: &PreparedBasis,
     result: &ferric_scf::result::ScfResult,
     budget_bytes: Option<usize>,
+    scf_cert: &Certificate,
 ) {
     let aux_name = cfg
         .mp2
@@ -3259,6 +3369,7 @@ fn run_rs_mp2_rpa(
             &rs_cfg,
             omega_ang_inv,
             r0_ang_k,
+            scf_cert,
         );
     }
 }
@@ -3281,6 +3392,7 @@ fn emit_rs_mp2_rpa_point(
     rs_cfg: &ferric_rpa::rs_mp2_rpa::RsMp2RpaConfig,
     omega_ang_inv: f64,
     r0_ang: f64,
+    scf_cert: &Certificate,
 ) {
     let r = ferric_rpa::rs_mp2_rpa::rs_mp2_lr_rpa(mol, prep, dfbs, result, rs_cfg).unwrap_or_else(
         |e| {
@@ -3365,6 +3477,9 @@ fn emit_rs_mp2_rpa_point(
         }
     }
     println!("  Total energy         = {:>16.10} Hartree", r.total_energy);
+    let cert = print_certificate(&ferric_rpa::certificate::rs_mp2_rpa_certificate(
+        scf_cert, aux_name, rs_cfg,
+    ));
     if let Some(rl) = ferric_scf::runlog::log() {
         rl.result(
             "rs-mp2-rpa",
@@ -3375,6 +3490,7 @@ fn emit_rs_mp2_rpa_point(
                 "e_lr_mp2": r.e_lr_mp2,
                 "e_scf_reference": result.energy,
                 "scf_converged": result.converged,
+                "certificate": cert,
             }),
         );
     }
@@ -3389,6 +3505,7 @@ fn run_scs_mp2(
     prep: &PreparedBasis,
     result: &ferric_scf::result::ScfResult,
     budget_bytes: Option<usize>,
+    scf_cert: &Certificate,
 ) {
     let aux_name = cfg
         .mp2
@@ -3423,6 +3540,11 @@ fn run_scs_mp2(
     println!("  E_OS       = {:.10} Hartree", scs_result.e_os);
     println!("  E_SS       = {:.10} Hartree", scs_result.e_ss);
     println!("  Total      = {:.10} Hartree", scs_result.total_energy);
+    let cert = print_certificate(&ferric_mp2::certificate::scs_mp2_certificate(
+        scf_cert,
+        aux_name,
+        &scs_config,
+    ));
     if let Some(rl) = ferric_scf::runlog::log() {
         rl.result(
             "scs-mp2",
@@ -3433,6 +3555,7 @@ fn run_scs_mp2(
                 "e_ss": scs_result.e_ss,
                 "e_scf_reference": result.energy,
                 "scf_converged": result.converged,
+                "certificate": cert,
             }),
         );
     }
@@ -3447,6 +3570,7 @@ fn run_scs_mp2_2terfc(
     prep: &PreparedBasis,
     result: &ferric_scf::result::ScfResult,
     budget_bytes: Option<usize>,
+    scf_cert: &Certificate,
 ) {
     let aux_name = cfg
         .mp2
@@ -3498,6 +3622,11 @@ fn run_scs_mp2_2terfc(
     println!("  E_OS       = {:.10} Hartree", scs_result.e_os);
     println!("  E_SS       = {:.10} Hartree", scs_result.e_ss);
     println!("  Total      = {:.10} Hartree", scs_result.total_energy);
+    let cert = print_certificate(&ferric_mp2::certificate::scs_mp2_2terfc_certificate(
+        scf_cert,
+        aux_name,
+        &scs_config,
+    ));
     if let Some(rl) = ferric_scf::runlog::log() {
         rl.result(
             "scs-mp2-2terfc",
@@ -3508,6 +3637,7 @@ fn run_scs_mp2_2terfc(
                 "e_ss": scs_result.e_ss,
                 "e_scf_reference": result.energy,
                 "scf_converged": result.converged,
+                "certificate": cert,
             }),
         );
     }
@@ -3583,6 +3713,7 @@ fn run_mp2_v(
     prep: &PreparedBasis,
     result: &ferric_scf::result::ScfResult,
     budget_bytes: Option<usize>,
+    scf_cert: &Certificate,
 ) {
     let aux_name = cfg
         .mp2
@@ -3690,6 +3821,9 @@ fn run_mp2_v(
     println!("  VV10 E_nl  = {:.10} Hartree", mp2v.e_nl_vv10);
     println!("  NLC grid   = {} points", mp2v.n_nlc_points);
     println!("  Total      = {:.10} Hartree", mp2v.total);
+    let cert = print_certificate(&ferric_mp2::certificate::mp2_v_certificate(
+        scf_cert, aux_name, &att_cfg,
+    ));
     if let Some(rl) = ferric_scf::runlog::log() {
         rl.result(
             "mp2-v",
@@ -3698,6 +3832,7 @@ fn run_mp2_v(
                 "e_corr": mp2v.total - result.energy,
                 "e_scf_reference": result.energy,
                 "scf_converged": result.converged,
+                "certificate": cert,
             }),
         );
     }
@@ -3737,6 +3872,7 @@ fn run_ccsd(
     op: Operator,
     result: &ferric_scf::result::ScfResult,
     budget_bytes: Option<usize>,
+    scf_cert: &Certificate,
 ) {
     let aux_name = cfg
         .mp2
@@ -3798,6 +3934,9 @@ fn run_ccsd(
         "  Total      = {:.10} Hartree",
         result.energy + cc_result.correlation_energy
     );
+    let cert = print_certificate(&ferric_cc::certificate::cc_certificate(
+        "ccsd", scf_cert, aux_name, &cc_config, &cc_result,
+    ));
     if let Some(rl) = ferric_scf::runlog::log() {
         rl.result(
             "ccsd",
@@ -3807,6 +3946,7 @@ fn run_ccsd(
                 "ladder": ladder,
                 "e_scf_reference": result.energy,
                 "scf_converged": result.converged,
+                "certificate": cert,
             }),
         );
     }
@@ -3831,6 +3971,7 @@ fn run_linlccd(
     op: Operator,
     result: &ferric_scf::result::ScfResult,
     budget_bytes: Option<usize>,
+    scf_cert: &Certificate,
 ) {
     // `linlccd` is closed-shell (RHF-reference) only — it calls `eps_r()`/`mos_r()`,
     // which assert on `Spin::Restricted`. Reject an open-shell reference here with a
@@ -3847,7 +3988,7 @@ fn run_linlccd(
     let method = format!("LinLCCD({})", variant.as_str());
     let (aux_name, dfbs) = correlation_aux(cfg, mol);
     let frozen_core = cfg.mp2.frozen_core.resolve(mol);
-    let (e_corr, local) = match &model {
+    let (e_corr, local, cg_converged) = match &model {
         None => {
             let cc_config = CcConfig {
                 frozen_core,
@@ -3860,7 +4001,7 @@ fn run_linlccd(
                     std::process::exit(1);
                 });
             println!("{}", model_label(&method, None));
-            (cc.correlation_energy, None)
+            (cc.correlation_energy, None, true)
         }
         Some(m) => {
             use ferric_cc::linlccd_amplitude::{amplitude_linlccd, AmplitudeLinLccdConfig};
@@ -3901,7 +4042,7 @@ fn run_linlccd(
                     r.cg_relres, r.cg_iterations
                 );
             }
-            (r.e_corr, Some(local))
+            (r.e_corr, Some(local), r.cg_converged)
         }
     };
     // `[local] reference = true`: the exact LinLCCD of the same variant (the
@@ -3948,6 +4089,14 @@ fn run_linlccd(
     println!("  RHF energy = {:.10} Hartree", result.energy);
     println!("  LinLCCD corr = {e_corr:.10} Hartree");
     println!("  Total      = {:.10} Hartree", result.energy + e_corr);
+    let cert = print_certificate(&ferric_cc::certificate::linlccd_certificate(
+        scf_cert,
+        &aux_name,
+        frozen_core,
+        variant,
+        local.as_ref().map(|l| (l.eps, l.keep_fraction)),
+        cg_converged,
+    ));
     if let Some(rl) = ferric_scf::runlog::log() {
         rl.result(
             "linlccd",
@@ -3960,6 +4109,7 @@ fn run_linlccd(
                 "e_scf_reference": result.energy,
                 "scf_converged": result.converged,
                 "local": local_json(local.as_ref()),
+                "certificate": cert,
             }),
         );
     }
@@ -4008,6 +4158,7 @@ fn run_ccd(
     op: Operator,
     result: &ferric_scf::result::ScfResult,
     budget_bytes: Option<usize>,
+    scf_cert: &Certificate,
 ) {
     require_restricted(result, "ccd");
     let (aux_name, dfbs) = correlation_aux(cfg, mol);
@@ -4032,6 +4183,9 @@ fn run_ccd(
         cc_result.correlation_energy
     );
     println!("  Total      = {total:.10} Hartree");
+    let cert = print_certificate(&ferric_cc::certificate::cc_certificate(
+        "ccd", scf_cert, &aux_name, &cc_config, &cc_result,
+    ));
     if let Some(rl) = ferric_scf::runlog::log() {
         rl.result(
             "ccd",
@@ -4040,6 +4194,7 @@ fn run_ccd(
                 "e_corr": cc_result.correlation_energy,
                 "e_scf_reference": result.energy,
                 "scf_converged": result.converged,
+                "certificate": cert,
             }),
         );
     }
@@ -4061,6 +4216,7 @@ fn run_ccsd_t(
     op: Operator,
     result: &ferric_scf::result::ScfResult,
     budget_bytes: Option<usize>,
+    scf_cert: &Certificate,
 ) {
     require_restricted(result, "ccsd(t)");
     let (aux_name, dfbs) = correlation_aux(cfg, mol);
@@ -4088,6 +4244,9 @@ fn run_ccsd_t(
     println!("  CCSD corr  = {e_ccsd:.10} Hartree");
     println!("  (T) corr   = {e_t:.10} Hartree");
     println!("  Total      = {total:.10} Hartree");
+    let cert = print_certificate(&ferric_cc::certificate::cc_certificate(
+        "ccsd(t)", scf_cert, &aux_name, &cc_config, &cc_result,
+    ));
     if let Some(rl) = ferric_scf::runlog::log() {
         rl.result(
             "ccsd(t)",
@@ -4098,6 +4257,7 @@ fn run_ccsd_t(
                 "e_t": e_t,
                 "e_scf_reference": result.energy,
                 "scf_converged": result.converged,
+                "certificate": cert,
             }),
         );
     }
@@ -4132,6 +4292,7 @@ fn run_drpa(
     op: Operator,
     result: &ferric_scf::result::ScfResult,
     budget_bytes: Option<usize>,
+    scf_cert: &Certificate,
 ) {
     use ferric_mp2::drpa_amplitude::{
         amplitude_drpa, amplitude_drpa_scan_timed, AmplitudeDrpaConfig,
@@ -4216,6 +4377,16 @@ fn run_drpa(
                 r.relres, r.iterations
             );
         }
+        let cert = print_certificate(&ferric_mp2::certificate::drpa_certificate(
+            scf_cert,
+            &aux_name,
+            base.frozen_core,
+            &op,
+            local.as_ref().map(|l| (l.eps, l.keep_fraction)),
+            r.converged,
+            r.iterations,
+            r.relres,
+        ));
         if let Some(rl) = ferric_scf::runlog::log() {
             rl.result(
                 "drpa",
@@ -4229,6 +4400,7 @@ fn run_drpa(
                     "e_scf_reference": result.energy,
                     "scf_converged": result.converged,
                     "local": local_json(local.as_ref()),
+                    "certificate": cert,
                 }),
             );
         }
@@ -4475,6 +4647,7 @@ fn run_laplace_mp2(
     op: Operator,
     result: &ferric_scf::result::ScfResult,
     budget_bytes: Option<usize>,
+    scf_cert: &Certificate,
 ) {
     let aux_name = cfg
         .mp2
@@ -4514,6 +4687,13 @@ fn run_laplace_mp2(
     println!("  E_OS       = {:.10} Hartree", lap_result.e_os);
     println!("  E_SS       = {:.10} Hartree", lap_result.e_ss);
     println!("  Total      = {:.10} Hartree", lap_result.total_energy);
+    let cert = print_certificate(&ferric_mp2::certificate::laplace_mp2_certificate(
+        scf_cert,
+        aux_name,
+        cfg.mp2.frozen_core.resolve(mol),
+        &op,
+        n_quad,
+    ));
     if let Some(rl) = ferric_scf::runlog::log() {
         rl.result(
             "laplace-mp2",
@@ -4522,6 +4702,7 @@ fn run_laplace_mp2(
                 "e_corr": lap_result.mp2_corr,
                 "e_scf_reference": result.energy,
                 "scf_converged": result.converged,
+                "certificate": cert,
             }),
         );
     }
@@ -4542,6 +4723,7 @@ fn run_laplace_sos_mp2(
     op: Operator,
     result: &ferric_scf::result::ScfResult,
     budget_bytes: Option<usize>,
+    scf_cert: &Certificate,
 ) {
     let aux_name = cfg
         .mp2
@@ -4612,6 +4794,13 @@ fn run_laplace_sos_mp2(
     println!("  c_os       = {:.4}", sos.c_os);
     println!("  SOS corr   = {:.10} Hartree", sos.sos_corr);
     println!("  Total      = {:.10} Hartree", sos.total_energy);
+    let cert = print_certificate(&ferric_mp2::certificate::sos_mp2_certificate(
+        scf_cert,
+        aux_name,
+        &sos_cfg,
+        formulation,
+        &op,
+    ));
     if let Some(rl) = ferric_scf::runlog::log() {
         rl.result(
             "laplace-sos-mp2",
@@ -4620,6 +4809,7 @@ fn run_laplace_sos_mp2(
                 "e_corr": sos.sos_corr,
                 "e_scf_reference": result.energy,
                 "scf_converged": result.converged,
+                "certificate": cert,
             }),
         );
     }
@@ -4643,6 +4833,7 @@ fn run_pdep_rpa_arm(
     result: ferric_scf::result::ScfResult,
     budget_bytes: Option<usize>,
     proatom: &dyn Fn(i32, i32) -> Option<ferric_rpa::properties::RadialProatom>,
+    scf_cert: &Certificate,
 ) {
     let aux_name = cfg
         .rpa
@@ -4697,7 +4888,7 @@ fn run_pdep_rpa_arm(
     // the reference is converged, then dispatch to the unrestricted RPA.
     // Shadow `result` so the rest of the arm (NPZ export, properties) uses
     // the correct SCF density.
-    let (rpa_result, ref_label, result) = if mol.multiplicity > 1 {
+    let (rpa_result, ref_label, result, reference) = if mol.multiplicity > 1 {
         let mut uhf_cfg = rhf_config.clone();
         // MOM after 5 DIIS iters prevents orbital reordering on open-shell atoms.
         uhf_cfg.mom_after_iter = 5;
@@ -4710,13 +4901,14 @@ fn run_pdep_rpa_arm(
                 eprintln!("error (U-PDEP-RPA): {e}");
                 std::process::exit(1);
             });
-        (rr, "UHF", uhf_result)
+        let reference = scf_certificate_stamped(mol, &uhf_result, &uhf_cfg, None);
+        (rr, "UHF", uhf_result, reference)
     } else {
         let rr = run_pdep_rpa(mol, prep, &dfbs, op, &result, &rpa_cfg).unwrap_or_else(|e| {
             eprintln!("error: {e}");
             std::process::exit(1);
         });
-        (rr, "RHF", result)
+        (rr, "RHF", result, scf_cert.clone())
     };
     if !rpa_result.eigensolver_converged {
         eprintln!(
@@ -4746,6 +4938,12 @@ fn run_pdep_rpa_arm(
     if let Some(e_diag) = rpa_result.e_rpa_dft_diag {
         println!("RI-dRPA check:         {:>20.10} Hartree", e_diag);
     }
+    print_and_note_certificate(&ferric_rpa::certificate::pdep_rpa_certificate(
+        &reference,
+        aux_name,
+        &rpa_cfg,
+        &rpa_result,
+    ));
     if let Some(prefix) = cfg.rpa.export_eigpot_prefix.as_deref() {
         use ferric_export::cube::GridSpec;
         use ferric_export::export_basis_function_cube;
@@ -5559,6 +5757,7 @@ fn run_gw(
     op: Operator,
     result: &ferric_scf::result::ScfResult,
     budget_bytes: Option<usize>,
+    scf_cert: &Certificate,
 ) {
     let aux_name = cfg
         .rpa
@@ -5771,6 +5970,9 @@ fn run_gw(
                 );
             }
         }
+        print_and_note_certificate(&ferric_gw::certificate::u_gw_certificate(
+            scf_cert, aux_name, &rpa_cfg, &gw_cfg, &gw_result,
+        ));
         return;
     }
     // KS reference (RPA@PBE0-style): [rpa].xc set ⇒ `result` above is
@@ -5865,6 +6067,9 @@ fn run_gw(
                  those QP energies are best-effort"
         );
     }
+    print_and_note_certificate(&ferric_gw::certificate::gw_certificate(
+        scf_cert, aux_name, &rpa_cfg, &gw_cfg, &gw_result,
+    ));
 }
 
 /// `method.kind = "bse-tda"`. Extracted verbatim from the former `main()`
@@ -5878,6 +6083,7 @@ fn run_bse_tda(
     op: Operator,
     result: &ferric_scf::result::ScfResult,
     budget_bytes: Option<usize>,
+    scf_cert: &Certificate,
 ) {
     // Closed-shell (RHF) only — run_bse_tda itself hard-errors on a
     // non-restricted reference; the top-level `result` above is always
@@ -5976,6 +6182,9 @@ fn run_bse_tda(
         bse.lowest_ev(),
         bse.lowest_oscillator_strength()
     );
+    print_and_note_certificate(&ferric_gw::certificate::bse_tda_certificate(
+        scf_cert, aux_name, &rpa_cfg, &bse,
+    ));
 }
 
 /// `method.kind = "tdhf-static-polarizability"`. Extracted verbatim from the
@@ -5989,6 +6198,7 @@ fn run_tdhf_static_polarizability(
     op: Operator,
     result: &ferric_scf::result::ScfResult,
     budget_bytes: Option<usize>,
+    scf_cert: &Certificate,
 ) {
     // RPAx@KS static (omega=0) polarizability only. SCOPE: this method
     // is deliberately narrow -- static alpha, nothing else. Do not
@@ -6099,6 +6309,11 @@ fn run_tdhf_static_polarizability(
         println!("    {:>12.6} {:>12.6} {:>12.6}", row[0], row[1], row[2]);
     }
     println!("  alpha_iso (static) = {:.6} a.u.", res.iso);
+    print_and_note_certificate(
+        &ferric_gw::certificate::tdhf_static_polarizability_certificate(
+            scf_cert, aux_name, &rpa_cfg, scissor,
+        ),
+    );
 }
 
 /// The printed name of an open-shell SCF: `hf` ("UHF"/"ROHF") for plain
@@ -6178,6 +6393,13 @@ fn run_uhf(
     ));
     // task == "optimize" is handled by the top-level dispatch above
     // (optimize_geometry_uhf), which returns before reaching here.
+}
+
+/// Print a post-SCF method's certificate after its results and return its
+/// JSON for that method's `result` record (`components.certificate`).
+fn print_certificate(cert: &Certificate) -> serde_json::Value {
+    print!("{cert}");
+    cert.to_json()
 }
 
 /// Print an open-shell SCF certificate and write it as a `certificate` run-log
