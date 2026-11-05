@@ -4378,13 +4378,17 @@ def run_ksdft(
     guess_projection: str | None = None,
     grid_weight_cut: float | None = None,
 ) -> DftResult | SymmetricRhfResult: ...
-def d3bj_energy(mol: Molecule, functional: str) -> float:
-    """Grimme D3(BJ) dispersion energy in Hartree (two-body term).
+def d3bj_energy(mol: Molecule, functional: str, s9: float = 0.0) -> float:
+    """Grimme D3(BJ) dispersion energy in Hartree.
 
     `functional` names the XC functional whose published D3(BJ) damping
     parameters to use; the correction is fitted per functional, so this is
     required. Raises for an unknown functional or for an element outside the
     D3 parameterisation, rather than silently returning a smaller number.
+
+    `s9` scales the Axilrod-Teller-Muto three-body term: 0.0 (default, the
+    reference default for a named functional) is two-body only, 1.0 is
+    D3(BJ)-ATM. A non-finite `s9` raises ValueError.
     """
     ...
 

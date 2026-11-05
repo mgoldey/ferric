@@ -51,7 +51,7 @@ sentinel, so a C++ exception never unwinds across the FFI boundary.
 **Method crates** — `ferric-scf`, `ferric-mp2`, `ferric-dft`, `ferric-rpa`,
 `ferric-gw`, `ferric-cc`, `ferric-ci`, `ferric-tddft`, `ferric-pcm`,
 `ferric-mm`, `ferric-xtb`, `ferric-d3` (Grimme D3(BJ) dispersion energy and
-gradient).
+gradient, optional ATM three-body term).
 
 **Support** — `ferric-tensors` (the `einsum!` contraction macro),
 `ferric-quadrature` (Lebedev grids, minimax Laplace roots), `ferric-export`

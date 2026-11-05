@@ -51,6 +51,20 @@ def test_standalone_dispersion_is_attractive_and_functional_dependent(water):
     )
 
 
+def test_s9_switches_the_three_body_term(water):
+    """`s9=0` (the default) is the two-body energy bit for bit; `s9=1` adds
+    the ATM term, which for water is the simple-dftd3 value 2.3256505e-10 Ha
+    (crates/ferric-d3/testdata/d3bj_atm_reference.json; this geometry differs,
+    so only its sign and order of magnitude are asserted)."""
+    e2 = ferric.d3bj_energy(water, "PBE")
+    assert ferric.d3bj_energy(water, "PBE", s9=0.0) == e2
+    e3 = ferric.d3bj_energy(water, "PBE", s9=1.0) - e2
+    assert 1e-11 < e3 < 1e-8, f"water three-body term {e3:e} out of range"
+    assert ferric.d3bj_energy(water, "PBE", s9=2.0) - e2 == pytest.approx(2 * e3, rel=1e-6)
+    with pytest.raises(ValueError):
+        ferric.d3bj_energy(water, "PBE", s9=float("nan"))
+
+
 def test_single_atom_has_exactly_zero_dispersion():
     """The exactness anchor, through the Python surface: one atom has no pairs."""
     atom = ferric.Molecule.from_xyz_string("1\nne\nNe 0.0 0.0 0.0\n", 0, 1)

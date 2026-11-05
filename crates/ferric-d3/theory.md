@@ -1,13 +1,14 @@
 # D3(BJ) Dispersion: Energy and Analytic Gradient
 
-Two-body Grimme D3 with Becke-Johnson (rational) damping, as implemented in
-`src/lib.rs`. Zero damping, the three-body (ATM, $s_9$) term and periodic
-boundary conditions are not implemented. Coordinates are in Bohr, energies in
-Hartree.
+Grimme D3 with Becke-Johnson (rational) damping and the optional
+Axilrod-Teller-Muto (ATM) three-body term, as implemented in `src/lib.rs`.
+Zero damping of the two-body term and periodic boundary conditions are not
+implemented. Coordinates are in Bohr, energies in Hartree.
 
-The identities below are proved by
-`scripts/d3_cn_chain_rule_gradient_sympy.py` (exits nonzero on mismatch; one
-negative control per claim), and the full gradient is checked against finite
+The two-body identities below are proved by
+`scripts/d3_cn_chain_rule_gradient_sympy.py`, the three-body ones by
+`scripts/d3_atm_gradient_sympy.py` (both exit nonzero on mismatch, with
+negative controls), and the full gradient is checked against finite
 differences of the energy in `tests/gradient_vs_fd.rs`.
 
 ## Coordination number
@@ -105,6 +106,59 @@ explicit term and accumulates the $N$ scalars $\partial E/\partial \mathrm{CN}_A
 Moving atom $X$ changes $C_6^{AB}$ for pairs that do not contain $X$; the chain
 part carries that.
 
+## Three-body term (ATM)
+
+Enabled by $s_9 \neq 0$ (`D3Params::s9`, `src/params.rs:37`); named
+functionals load $s_9 = 0$ (`src/params.rs:64`), the reference default. With
+$s_9 = 0$ the triple sum is skipped (`src/lib.rs:363-367`, `src/lib.rs:501-506`),
+so energy and gradient are the two-body ones bit for bit.
+
+For atoms $i>j>k$ let $x = R_{ij}^2$, $y = R_{jk}^2$, $w = R_{ik}^2$ and
+$P = R_{ij}R_{jk}R_{ik}$. The angular factor (`atm_triple_factor`,
+`src/lib.rs:606`) is
+
+$$a_{ijk} = \frac{3}{8}\,\frac{(x+y-w)(x-y+w)(-x+y+w)}{P^5} + \frac{1}{P^3}
+= \frac{3\cos\theta_i\cos\theta_j\cos\theta_k + 1}{P^3},$$
+
+with $\theta$ the interior angles of the triangle. The damping is the zero
+damping simple-dftd3 uses for the three-body term of rational damping:
+
+$$f_{ijk} = \frac{1}{1 + 6\,(r_0/P)^{\alpha/3}},\qquad
+r_0 = \prod_{(ab)\in\{ij,jk,ik\}} r_s\,R^{\mathrm{vdW}}_{ab},\qquad
+r_s = \tfrac43,\quad \alpha = 16,$$
+
+$r_s$ = `ATM_RS9`, $\alpha$ = `ATM_ALPHA` ($=$ alp $+\,2$ with alp $= 14$;
+`src/lib.rs:125,128`), $R^{\mathrm{vdW}}_{ab}$ the tabulated pairwise radii
+(`vdw_rad`, `src/lib.rs:590`). The BJ $a_1, a_2$ do not enter. The energy
+(`atm_energy`, `src/lib.rs:657`) is
+
+$$E_{\mathrm{ATM}} = s_9 \sum_{i>j>k} \sqrt{C_6^{ij}C_6^{ik}C_6^{jk}}\; f_{ijk}\,a_{ijk},$$
+
+with the same CN-interpolated $C_6$ as the two-body term (upstream writes
+$C_9 = -s_9\sqrt{\cdots}$ and $E = -C_9 f a$).
+
+**Gradient** (`atm_gradient`, `src/lib.rs:683`). With $F = f\,a$ and
+$N = (x+y-w)(x-y+w)(-x+y+w)$, for $q \in \{x,y,w\}$ ($\partial P/\partial q = P/2q$):
+
+$$\frac{\partial a}{\partial q} = \frac{3}{8}\frac{\partial N/\partial q}{P^5}
+- \frac{15}{16}\frac{N}{q\,P^5} - \frac{3}{2\,q\,P^3},\qquad
+\frac{\partial f}{\partial q} = \frac{\alpha\,(r_0/P)^{\alpha/3} f^2}{q},$$
+
+and $\partial q/\partial \mathbf{R}_a = 2(\mathbf{R}_a - \mathbf{R}_b)$ for the
+pair $(a,b)$ that $q$ belongs to (`src/lib.rs:703-709`, `src/lib.rs:722-724`). The $C_6$ dependence is
+
+$$\frac{\partial E_{ijk}}{\partial C_6^{ab}} = \frac{E_{ijk}}{2\,C_6^{ab}},\qquad
+\frac{\partial E}{\partial \mathrm{CN}_i} \mathrel{+}= \frac{E_{ijk}}{2C_6^{ij}}\frac{\partial C_6^{ij}}{\partial \mathrm{CN}_i}
++ \frac{E_{ijk}}{2C_6^{ik}}\frac{\partial C_6^{ik}}{\partial \mathrm{CN}_i}$$
+
+and likewise for $j$, $k$ (`src/lib.rs:726-731`). These go into the same
+`de_dcn` as the two-body term before the contraction pass, so one
+$\sum_{A<B}(\partial E/\partial\mathrm{CN}_A + \partial E/\partial\mathrm{CN}_B)\,\partial g_{AB}/\partial R_{AB}$
+carries both chain rules.
+
+The triple sum is $O(N^3)$. Unlike simple-dftd3 there is no real-space
+cutoff (upstream skips triples with any distance above 40 Bohr).
+
 ## Verification
 
 | Claim | Check |
@@ -115,3 +169,8 @@ part carries that.
 | `d3bj_gradient` = central FD of `d3bj_energy` ($<10^{-7}$ Ha/Bohr) on Ar$_2$, water, a C/H cluster and a C/F/O/N/H fragment | `tests/gradient_vs_fd.rs::analytic_gradient_matches_finite_difference` |
 | dropping the chain term, or only its $\mathrm{CN}_B$ half, or halving $\partial W/\partial\mathrm{CN}$ fails that test (water: $1.3\times10^{-6}$, $5.3\times10^{-7}$, $4.0\times10^{-7}$ Ha/Bohr) | mutation |
 | energy vs simple-dftd3 1.6.0 ($<10^{-12}$ Ha, ATM off) | `tests/vs_reference_dftd3.rs` |
+| $a_{ijk}$ = cosine form; $\partial a/\partial q$, $\partial f/\partial q$, $\partial E/\partial C_6 = E/2C_6$; assembled Cartesian gradient = sympy $dE/d\mathbf{R}$ | `scripts/d3_atm_gradient_sympy.py` |
+| energy and gradient with $s_9 = 0$ and $s_9 = 1$ vs simple-dftd3 1.6.0, 9 systems × 3 functionals: totals $\le 1.2\times10^{-13}$ Ha, $5.5\times10^{-13}$ Ha/Bohr; three-body part $2.6\times10^{-15}$ Ha, $5.9\times10^{-16}$ Ha/Bohr | `tests/vs_reference_dftd3_atm.rs` |
+| three-body gradient alone = central FD to $<10^{-7}$ relative (measured $\le 4\times10^{-8}$) on Ar$_3$, water, C/H, C/F/O/N/H; full D3(BJ)-ATM to $10^{-7}$ Ha/Bohr | `tests/gradient_vs_fd.rs::atm_gradient_matches_finite_difference` |
+| $s_9 = 0$ energy and gradient bit-identical to the two-body code (4 functionals × 4 systems, checked against the pre-ATM build); linear in $s_9$; no effect on dimers | `tests/vs_reference_dftd3_atm.rs::three_body_term_is_linear_in_s9_and_absent_for_dimers` |
+| mutants: three-body CN chain dropped, $\partial E/\partial C_6 = E/C_6$, the $15/16$ term dropped, $\alpha/6$ in $\partial f/\partial q$ (each fails the FD test); $\alpha = 14$, $r_s = 1$ (each fails the reference test). Removing the $s_9 \neq 0$ guard is an equivalent mutant (adds $+0.0$) | mutation |

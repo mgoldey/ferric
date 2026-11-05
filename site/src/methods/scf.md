@@ -94,13 +94,17 @@ derived in [DFT derivations](./dft-derivations.md).
 ## Dispersion correction: D3(BJ)
 
 **What it is.** Grimme's D3 with Becke–Johnson damping, a post-SCF pairwise
-correction, implemented natively in Rust. The two-body term only; the
-three-body (ATM) term is not implemented.
+correction, implemented natively in Rust: the two-body term, plus the
+Axilrod–Teller–Muto three-body term when its scale `s9` is nonzero. `s9`
+defaults to 0 (off), the reference default for a named functional
+(simple-dftd3 without `--atm`).
 
 **Run it.** `[dft] dispersion = "d3bj"` on `method.kind = "ksdft"`
 (`examples/water-pbe-d3bj.toml`); `"d3bj(b3lyp)"` borrows another functional's
 fitted damping parameters. Python: `run_dft(..., dispersion="d3bj")`, or
-`ferric.d3bj_energy(mol, functional)` for the correction alone.
+`ferric.d3bj_energy(mol, functional, s9=0.0)` for the correction alone;
+`s9=1.0` adds the three-body term. The CLI and `run_dft(dispersion=...)` use
+`s9 = 0`.
 
 **Scope.** The damping parameters are fitted per functional, so the key is
 refused on any method other than `ksdft`. `task = "optimize"` works (the D3
@@ -108,10 +112,13 @@ gradient is implemented; `ferric-d3/tests/gradient_vs_fd.rs`), and so does
 `task = "frequencies"` on RKS, UKS and ROKS: see
 [Frequencies with dispersion](#frequencies-with-dispersion).
 
-**Accuracy.** Agrees with simple-dftd3 1.6.0 to below 1e-12 Ha on water,
-methane, benzene and an argon dimer with the three-body term off on both
-sides (`ferric-d3/tests/vs_reference_dftd3.rs`). The omitted three-body term
-is 0.1% of the two-body energy at benzene and grows with size.
+**Accuracy.** Energy and analytic gradient agree with simple-dftd3 1.6.0
+with the three-body term off and on, on nine molecules from water to benzene
+and CHBr3: 1.2e-13 Ha and 5.5e-13 Ha/Bohr on the totals, 2.6e-15 Ha on the
+three-body part (`ferric-d3/tests/vs_reference_dftd3_atm.rs`). The three-body
+term is 0.1% of the two-body energy at benzene and grows with size. Unlike
+simple-dftd3, no real-space cutoff is applied (it drops triples beyond
+40 Bohr), and the triple sum costs O(N³).
 
 ## Dispersion correction: MBD@rsSCS
 

@@ -2,7 +2,8 @@
 """Sympy proof of the D3 Axilrod-Teller-Muto (ATM) three-body term's gradient.
 
 Checks the closed forms ferric implements in crates/ferric-d3/src/lib.rs
-(`atm_triple_factor`, `atm_energy`, `atm_gradient`). With squared distances
+(`atm_triple_factor` lib.rs:606, `atm_energy` lib.rs:657, `atm_gradient`
+lib.rs:683; CN chain lib.rs:726-731). With squared distances
 x = R_ij^2, y = R_jk^2, w = R_ik^2 and P = R_ij R_jk R_ik:
 
   1. ang = 3/8 (x+y-w)(x-y+w)(-x+y+w)/P^5 + 1/P^3

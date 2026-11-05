@@ -9655,10 +9655,22 @@ fn run_ksdft(
 /// required, not a convenience. An unknown functional raises rather than
 /// falling back to a default, and an element outside the D3 parameterisation
 /// raises rather than being silently skipped.
+///
+/// `s9` scales the Axilrod-Teller-Muto three-body term. The default 0.0 (off)
+/// is the reference default for a named functional (simple-dftd3 without
+/// `--atm`); `s9=1.0` gives D3(BJ)-ATM. A non-finite `s9` raises.
 #[pyfunction]
-#[pyo3(signature = (mol, functional))]
-fn d3bj_energy(mol: &PyMolecule, functional: &str) -> PyResult<f64> {
-    let params = ferric_d3::d3bj_params_for_functional(functional).map_err(make_err)?;
+#[pyo3(signature = (mol, functional, s9 = 0.0))]
+fn d3bj_energy(mol: &PyMolecule, functional: &str, s9: f64) -> PyResult<f64> {
+    if !s9.is_finite() {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "d3bj_energy: s9 must be finite, got {s9}"
+        )));
+    }
+    let params = ferric_d3::D3Params {
+        s9,
+        ..ferric_d3::d3bj_params_for_functional(functional).map_err(make_err)?
+    };
     ferric_d3::d3bj_energy_for_molecule(&mol.inner, &params).map_err(make_err)
 }
 
