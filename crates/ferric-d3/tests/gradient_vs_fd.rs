@@ -91,9 +91,11 @@ fn water() -> (Vec<u8>, Vec<[f64; 3]>) {
     )
 }
 
-/// Isobutane-like branched carbon skeleton with hydrogens: a central carbon at
-/// CN ~4 and methyl carbons at CN ~4 but with different neighbour composition,
-/// plus hydrogens at CN ~1. This is the case that exercises dC6/dCN.
+/// Branched carbon skeleton with hydrogens (stretched bonds, not a chemical
+/// equilibrium geometry): coordination numbers spread from ~2 at the central
+/// carbon through ~1 at the outer carbons to ~0.5 at the hydrogens (printed by
+/// `the_test_systems_span_a_range_of_coordination_numbers`). This is the case
+/// that exercises dC6/dCN.
 fn branched() -> (Vec<u8>, Vec<[f64; 3]>) {
     (
         vec![6, 6, 6, 6, 1, 1, 1, 1],
