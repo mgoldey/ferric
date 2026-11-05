@@ -2011,6 +2011,57 @@ fn free_atom_indices(system: &QmmmSystem, move_mm: &MoveMm) -> Result<Vec<usize>
     Ok(free)
 }
 
+/// QM-region SCF energy, its nuclear gradient over the QM molecule (real atoms
+/// then link hydrogens) and the converged total density, for one QM/MM
+/// geometry. The embedding (`system.to_external_potential()`) overrides
+/// `scf.external_potential`; the gradient goes through the SCF dispatchers
+/// ([`crate::gradient::restricted_scf_gradient`] /
+/// [`crate::gradient::unrestricted_scf_gradient`]), so the IEF-PCM term
+/// (`scf.pcm`) is included and a COSMO SCF is refused. The MM-charge and
+/// boundary terms are NOT included (see [`mm_forces`], [`full_gradient`]).
+pub fn qmmm_qm_energy_and_gradient(
+    ctx: &ParallelContext,
+    system: &QmmmSystem,
+    bs: &ferric_core::basis::BasisSet,
+    method: &QmmmMethod,
+    scf: &crate::rhf::RhfConfig,
+) -> Result<(f64, Array2<f64>, Array2<f64>), FerricError> {
+    let op = Operator::coulomb();
+    let mol = system.to_qm_molecule();
+    let prep = PreparedBasis::new(&mol, bs)?;
+    let bounds = SchwarzBounds::compute(op, &prep)?;
+    // Geometry steps use the SCF-grid energy (a COSX final pass is energy-only).
+    let mut scf_cfg = crate::gradient::gradient_task_config(scf).into_owned();
+    scf_cfg.external_potential = system.to_external_potential();
+    match method {
+        QmmmMethod::Rhf | QmmmMethod::Rks(_) => {
+            if let QmmmMethod::Rks(xc) = method {
+                scf_cfg.xc = Some(xc.clone());
+                scf_cfg.df_j_aux = Some("def2-universal-jkfit".to_string());
+                scf_cfg.df_k_aux = Some("def2-universal-jkfit".to_string());
+            }
+            let r = crate::rhf::solve_rhf(ctx, &mol, &prep, op, &bounds, &scf_cfg)?;
+            crate::optimize::require_converged(&r)?;
+            let g = crate::gradient::restricted_scf_gradient(
+                &mol, &prep, bs, op, &bounds, &scf_cfg, &r,
+            )?;
+            Ok((r.energy, g, r.density_total().clone()))
+        }
+        QmmmMethod::Uhf | QmmmMethod::Uks(_) => {
+            if let QmmmMethod::Uks(xc) = method {
+                scf_cfg.xc = Some(xc.clone());
+                scf_cfg.df_j_aux = Some("def2-universal-jkfit".to_string());
+                scf_cfg.df_k_aux = Some("def2-universal-jkfit".to_string());
+            }
+            let r = crate::uhf::solve_uhf(ctx, &mol, &prep, &bounds, &scf_cfg)?;
+            let g = crate::gradient::unrestricted_scf_gradient(
+                &mol, &prep, bs, op, &bounds, &scf_cfg, &r,
+            )?;
+            Ok((r.energy, g, r.density_total().clone()))
+        }
+    }
+}
+
 /// Optimize a QM/MM system's geometry: real QM atoms always move, MM atoms
 /// move per `cfg.move_mm`. Every energy/gradient evaluation rebuilds the
 /// partition at the current geometry via [`QmmmSystem::with_coordinates`] (so
@@ -2093,7 +2144,6 @@ pub fn optimize_qmmm(
 
     let x0 = flatten_free(&coords0);
     let bs = ferric_core::basis::bundled(basis_name)?;
-    let op = Operator::coulomb();
 
     let mut energies: Vec<f64> = Vec::new();
 
@@ -2105,65 +2155,8 @@ pub fn optimize_qmmm(
 
             let mol = step_sys.to_qm_molecule();
             let prep = PreparedBasis::new(&mol, &bs)?;
-            let bounds = SchwarzBounds::compute(op, &prep)?;
-            let mut scf_cfg = cfg.scf.clone();
-            scf_cfg.external_potential = step_sys.to_external_potential();
-            let ext = scf_cfg.external_potential.clone();
-
-            let (scf_energy, qm_grad, density_total) = match &cfg.method {
-                QmmmMethod::Rhf => {
-                    let r = crate::rhf::solve_rhf(ctx, &mol, &prep, op, &bounds, &scf_cfg)?;
-                    crate::optimize::require_converged(&r)?;
-                    let g =
-                        crate::gradient::rhf_gradient(&mol, &prep, op, &bounds, &r, ext.as_ref())?;
-                    (r.energy, g, r.density_total().clone())
-                }
-                QmmmMethod::Uhf => {
-                    let r = crate::uhf::solve_uhf(ctx, &mol, &prep, &bounds, &scf_cfg)?;
-                    let g =
-                        crate::gradient::uhf_gradient(&mol, &prep, op, &bounds, &r, ext.as_ref())?;
-                    (r.energy, g, r.density_total().clone())
-                }
-                QmmmMethod::Rks(xc) => {
-                    scf_cfg.xc = Some(xc.clone());
-                    scf_cfg.df_j_aux = Some("def2-universal-jkfit".to_string());
-                    scf_cfg.df_k_aux = Some("def2-universal-jkfit".to_string());
-                    let r = crate::rhf::solve_rhf(ctx, &mol, &prep, op, &bounds, &scf_cfg)?;
-                    crate::optimize::require_converged(&r)?;
-                    let g = crate::ks_gradient::ks_gradient_closed_with_exchange_on_grids(
-                        &mol,
-                        &prep,
-                        &bs,
-                        op,
-                        &bounds,
-                        xc,
-                        &r,
-                        ext.as_ref(),
-                        None,
-                        &crate::ks_gradient::KsGradGrids::from_config(&scf_cfg),
-                    )?;
-                    (r.energy, g, r.density_total().clone())
-                }
-                QmmmMethod::Uks(xc) => {
-                    scf_cfg.xc = Some(xc.clone());
-                    scf_cfg.df_j_aux = Some("def2-universal-jkfit".to_string());
-                    scf_cfg.df_k_aux = Some("def2-universal-jkfit".to_string());
-                    let r = crate::uhf::solve_uhf(ctx, &mol, &prep, &bounds, &scf_cfg)?;
-                    let g = crate::ks_gradient::ks_gradient_uks_with_exchange_on_grids(
-                        &mol,
-                        &prep,
-                        &bs,
-                        op,
-                        &bounds,
-                        xc,
-                        &r,
-                        ext.as_ref(),
-                        None,
-                        &crate::ks_gradient::KsGradGrids::from_config(&scf_cfg),
-                    )?;
-                    (r.energy, g, r.density_total().clone())
-                }
-            };
+            let (scf_energy, qm_grad, density_total) =
+                qmmm_qm_energy_and_gradient(ctx, &step_sys, &bs, &cfg.method, &cfg.scf)?;
 
             let forces = mm_forces(&step_sys, &mol, &prep, &density_total)?;
 
