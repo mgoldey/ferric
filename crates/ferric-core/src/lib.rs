@@ -15,6 +15,7 @@ pub mod basis;
 mod basis_util;
 /// BLAS thread-count guard for safe OpenBLAS usage under rayon.
 pub mod blas_threads;
+pub mod certificate;
 /// Typed configuration descriptors (`ConfigVar`).
 pub mod config;
 /// Multi-geometry conformer ensembles and Boltzmann-weighted property averaging.

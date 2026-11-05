@@ -357,6 +357,49 @@ impl Lmp2Certificate {
     }
 }
 
+impl Lmp2Certificate {
+    /// This certificate as a [`ferric_core::certificate::Certificate`]: the
+    /// `rimp2` grade from the validation page, capped for the local scheme
+    /// (`Proven (narrow)` at ε = 0, the exactness anchor; `not graded` at
+    /// finite ε, where only a measured error map exists), the approximations
+    /// in effect, and both warning lists. The detail fields stay on this type.
+    pub fn certificate(&self) -> ferric_core::certificate::Certificate {
+        use ferric_core::certificate::{Certificate, Grade};
+        let mut c =
+            Certificate::for_method_kind("rimp2").with_approximation("ri", "density fitting");
+        c = c.with_approximation(
+            "local",
+            format!(
+                "{} eps = {:e}, keep_fraction = {}, pair_fraction = {}",
+                self.scheme, self.eps, self.keep_fraction, self.pair_fraction
+            ),
+        );
+        if let Some(m) = &self.maps {
+            c = c.with_approximation(
+                "integral-direct",
+                format!(
+                    "aux_radius = {}, ao_tail = {:e}, schwarz_skip = {:e}",
+                    m.aux_radius, m.ao_tail, m.schwarz_skip
+                ),
+            );
+        }
+        if self.frozen_core > 0 {
+            c = c.with_approximation("frozen-core", self.frozen_core.to_string());
+        }
+        if self.precision == "f64" {
+            c = c.with_precision(&ferric_core::gpu::provenance::PrecisionRecord::f64());
+        }
+        c = if self.eps == 0.0 {
+            c.cap_grade(Grade::ProvenNarrow, validation_grade(self.eps))
+        } else {
+            c.cap_grade(Grade::Ungraded, validation_grade(self.eps))
+        };
+        c.extend_warnings(self.warnings.iter().cloned());
+        c.extend_warnings(self.solver_warnings.iter().cloned());
+        c
+    }
+}
+
 fn validation_grade(eps: f64) -> String {
     if eps == 0.0 {
         "Proven (narrow): eps = 0 reproduces canonical RI-MP2 to CG tolerance (anchor <= 1e-9)"
@@ -553,6 +596,57 @@ mod tests {
             "{s1} {s2}"
         );
         assert!(MEASURED_SLOPE_C4.contains("1.22") && MEASURED_SLOPE_C4.contains("1.18"));
+    }
+
+    fn cert(eps: f64) -> Lmp2Certificate {
+        Lmp2Certificate {
+            scheme: "amplitude-threshold",
+            eps,
+            keep_fraction: 0.5,
+            pair_fraction: 0.75,
+            n_pairs_gated: 0,
+            gate_cal: None,
+            integral_direct: false,
+            maps: None,
+            pair_fit: None,
+            precision: "f64",
+            cg_rtol: 1e-6,
+            cg_rtol_source: "adaptive-default",
+            cg_tightened: false,
+            cg_energy_error_target: None,
+            cg_energy_target_met: None,
+            cg_relres: 1e-7,
+            cg_true_relres: 1e-7,
+            cg_energy_error_bound: 1e-14,
+            cg_converged: true,
+            frozen_core: 0,
+            operator: "coulomb".into(),
+            solve_plan_bytes: 0,
+            solve_resident_bytes: 0,
+            matvec_path: "planned",
+            validation_grade: validation_grade(eps),
+            eps_trust: eps_trust(eps, true),
+            warnings: vec!["w-record".into()],
+            solver_warnings: vec!["w-solver".into(), "w-record".into()],
+        }
+    }
+
+    /// The unified certificate caps the `rimp2` page grade for the local
+    /// scheme (never raises it) and carries both warning lists.
+    #[test]
+    fn unified_certificate_caps_the_grade_for_the_local_scheme() {
+        use ferric_core::certificate::Grade;
+        let exact = cert(0.0).certificate();
+        assert_eq!(exact.capability, "rimp2");
+        assert_eq!(exact.grade, Grade::ProvenNarrow);
+        let finite = cert(1e-5).certificate();
+        assert_eq!(finite.grade, Grade::Ungraded);
+        assert!(finite.warnings[0].starts_with("grade capped from Proven to not graded"));
+        assert_eq!(&finite.warnings[1..], ["w-record", "w-solver"]);
+        assert_eq!(finite.approximations[1].name, "local");
+        assert!(finite.approximations[1].detail.contains("eps = 1e-5"));
+        assert_eq!(finite.precision.as_ref().unwrap()["precision"], "f64");
+        assert!(finite.build.is_none(), "the library never stamps a build");
     }
 
     #[test]
