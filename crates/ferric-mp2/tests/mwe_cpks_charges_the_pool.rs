@@ -4,12 +4,14 @@
 //!
 //! `check_full_mo_eri_alloc` compared ~3 nmo⁴ f64 against the whole budget
 //! ceiling and charged nothing, so the nmo⁴ tensors held by
-//! `dynamic_cphf_alpha_iw`, `bse_gate0_residuals` and `analytic_alpha_full`
-//! were invisible to every other plane's gate. `guard_full_mo_eri` now checks
-//! the ceiling against AND charges the pool with the caller's true nmo⁴-phase
-//! peak (2 nmo⁴ + b_full for the TDHF/BSE pair, 5 nmo⁴ + b_full for the
-//! analytic axis loop), held to function end and so, conservatively, across
-//! the AO build too.
+//! `dynamic_cphf_alpha_iw` and `bse_gate0_residuals` were invisible to every
+//! other plane's gate. `guard_full_mo_eri` now checks the ceiling against AND
+//! charges the pool with the caller's true nmo⁴-phase peak (2 nmo⁴ + b_full),
+//! held to function end and so, conservatively, across the AO build too.
+//!
+//! The analytic relaxed MP2 α (`mp2_polarizability_analytic`) builds no nmo⁴
+//! tensor; it charges the pool through the RI-MP2 intermediates
+//! (b_ov + b_oo + b_vv, held while `compute_b_full_mo` builds its AO tensor).
 //!
 //! # Artifact hypothesis (stated before measuring)
 //!
@@ -28,7 +30,9 @@ use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
-use ferric_mp2::cpks_polar::{analytic_alpha_full, bse_gate0_residuals, dynamic_cphf_alpha_iw};
+use ferric_mp2::cpks_polar::{
+    bse_gate0_residuals, dynamic_cphf_alpha_iw, mp2_polarizability_analytic,
+};
 use ferric_mp2::rimp2::RiMp2Config;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
@@ -138,18 +142,19 @@ impl Fixture {
             OMEGA,
         )
     }
-    /// The analytic path's true peak: five nmo⁴ buffers + b_full.
-    fn analytic_peak(&self) -> usize {
-        5 * self.nmo4_bytes() + self.b_full_bytes()
+    /// The RI-MP2 intermediates the relaxed-α path charges, from the shapes:
+    /// b_ov + b_oo + b_vv (no frozen core).
+    fn intermediates_bytes(&self) -> usize {
+        let nocc = (self.mol.nelec() / 2) as usize;
+        let (nvir, naux) = (self.nmo() - nocc, self.dfbs.nbasis());
+        naux * (nocc * nvir + nocc * nocc + nvir * nvir) * 8
     }
     fn run_analytic(&self) -> Result<[[f64; 3]; 3], ferric_core::FerricError> {
-        self.run_analytic_with(RiMp2Config::default())
-    }
-    fn run_analytic_with(
-        &self,
-        cfg: RiMp2Config,
-    ) -> Result<[[f64; 3]; 3], ferric_core::FerricError> {
-        analytic_alpha_full(
+        let cfg = RiMp2Config {
+            frozen_core: 0,
+            ..Default::default()
+        };
+        mp2_polarizability_analytic(
             &ParallelContext::default(),
             &self.mol,
             &self.obs,
@@ -255,60 +260,13 @@ fn the_bse_gate0_path_refuses_just_under_its_peak() {
     assert!(err.contains("BSE gate-0 residuals"), "{err}");
 }
 
-/// No pool: the analytic path's CEILING now uses the true 5 nmo⁴ + b_full,
-/// so a budget between the old 3 nmo⁴ + b_full and 5 nmo⁴ + b_full refuses.
+/// The relaxed-α path charges its RI-MP2 intermediates at their true size and
+/// holds them across the AO build: the high-water is at least that charge PLUS
+/// the AO path's own peak (inter is alive while `compute_b_full_mo` runs). An
+/// inert or token charge peaks at the AO path alone. Every reservation is
+/// released on return, and an ample pool moves no bit of α.
 #[test]
-fn the_analytic_ceiling_refuses_between_three_and_five_nmo4() {
-    let _s = CleanSlot::acquire();
-    let f = fixture();
-    let budget = 4 * f.nmo4_bytes() + f.b_full_bytes();
-    assert!(3 * f.nmo4_bytes() + f.b_full_bytes() < budget && budget < f.analytic_peak());
-    let cfg = RiMp2Config {
-        memory_budget_bytes: Some(budget),
-        ..Default::default()
-    };
-    let err = match f.run_analytic_with(cfg) {
-        Ok(t) => panic!("ceiling {budget} B admitted the analytic path: {t:?}"),
-        Err(e) => e.to_string(),
-    };
-    assert!(
-        err.contains("relaxed-MP2 α") && err.contains("budget is"),
-        "{err}"
-    );
-    let ample = RiMp2Config {
-        memory_budget_bytes: Some(f.analytic_peak()),
-        ..Default::default()
-    };
-    f.run_analytic_with(ample)
-        .expect("a ceiling of exactly the peak must admit");
-}
-
-/// Released, charged at the true size (not a token), and HELD across the AO
-/// build: the high-water is the CPHF charge PLUS the AO path's own peak. A
-/// charge released early (before `compute_b_full_mo`) peaks at the max of the
-/// two instead.
-#[test]
-fn the_charge_is_the_true_peak_and_is_released_on_return() {
-    let _s = CleanSlot::acquire();
-    let f = fixture();
-    let pool = MemoryPool::with_capacity_bytes(AMPLE);
-    install_global(pool.clone());
-    f.run_dynamic().expect("ample pool");
-    let (outstanding, peak) = (pool.outstanding_bytes(), pool.peak_bytes());
-    clear_global();
-    assert_eq!(outstanding, 0, "a reservation outlived the call");
-    // Deterministic: the CPHF charge is outstanding across the AO build.
-    assert_eq!(
-        peak,
-        f.dynamic_peak() + f.ao_path_peak(),
-        "pool high-water != TDHF peak (2·nmo⁴ + b_full) + AO path peak"
-    );
-}
-
-/// The analytic axis loop holds five nmo⁴ buffers at once; the charge is
-/// exactly that (the old ceiling figure, 3 nmo⁴, undercounted).
-#[test]
-fn the_analytic_path_charges_five_nmo4_buffers() {
+fn the_relaxed_alpha_path_charges_its_intermediates() {
     let _s = CleanSlot::acquire();
     let f = fixture();
     let no_pool = f.run_analytic().expect("no pool must run");
@@ -319,9 +277,31 @@ fn the_analytic_path_charges_five_nmo4_buffers() {
     clear_global();
     assert_eq!(bits(&no_pool), bits(&with_pool));
     assert_eq!(outstanding, 0, "a reservation outlived the call");
-    assert_eq!(
-        peak,
-        f.analytic_peak() + f.ao_path_peak(),
-        "pool high-water != analytic peak (5·nmo⁴ + b_full) + AO path peak"
+    let floor = f.intermediates_bytes() + f.ao_path_peak();
+    assert!(
+        peak >= floor,
+        "pool high-water {peak} B < intermediates {} B + AO path peak {} B",
+        f.intermediates_bytes(),
+        f.ao_path_peak()
+    );
+}
+
+/// Reachability boundary: room for exactly the measured high-water admits;
+/// one byte less refuses, so the charge gates the path.
+#[test]
+fn the_relaxed_alpha_path_refuses_one_byte_under_its_peak() {
+    let _s = CleanSlot::acquire();
+    let f = fixture();
+    let pool = MemoryPool::with_capacity_bytes(AMPLE);
+    install_global(pool.clone());
+    f.run_analytic().expect("ample pool");
+    let peak = pool.peak_bytes();
+    clear_global();
+    with_room(peak, || f.run_analytic()).expect("room for the full peak must admit");
+    let refused = with_room(peak - 1, || f.run_analytic());
+    assert!(
+        refused.is_err(),
+        "{} B free admitted: {refused:?}",
+        peak - 1
     );
 }

@@ -146,110 +146,6 @@ fn diag_cpks_hf_full_tensor_vs_ff() {
     );
 }
 
-// WIP (Layer 2): analytic ∂E_MP2/∂F is 0.37× the FD oracle — stable across h, so a
-// deterministic missing-term bug in ∂ε_p (the perturbed-Fock-diagonal / orbital-
-// energy response), NOT the oracle (gauge-invariant energy FD is clean & linear).
-// Debugging the ∂F_pp = ∂h + ∂(2J−K)[∂D] structure. Marked ignore until green.
-#[test]
-#[ignore]
-fn cpks_dmp2_energy_matches_fd() {
-    // Layer 2 gate (gauge-invariant): analytic ∂E_MP2/∂F^z vs FD of E_MP2.
-    // Element-wise ∂t2 FD is contaminated by occ/vir orbital-rotation phase
-    // ambiguity in the perturbed RHF; the correlation ENERGY is rotation-immune.
-    use ferric_mp2::cpks_polar::{analytic_de_mp2_along, fd_de_mp2_along};
-    let (mol, obs, dfbs, op, bounds, ctx, rhf) = water_ccpvdz();
-    let mp2_cfg = ferric_mp2::rimp2::RiMp2Config {
-        frozen_core: 0,
-        memory_budget_bytes: None,
-        ..Default::default()
-    };
-    let scf_cfg = RhfConfig {
-        energy_conv: 1e-10,
-        ..Default::default()
-    };
-    let an =
-        analytic_de_mp2_along(&ctx, &mol, &obs, &dfbs, op, &bounds, &rhf, &mp2_cfg, 2).unwrap();
-    let fd = fd_de_mp2_along(
-        &ctx, &mol, &obs, &dfbs, op, &bounds, &scf_cfg, &mp2_cfg, 2, 1e-3,
-    )
-    .unwrap();
-    eprintln!(
-        "∂E_MP2/∂Fz: analytic={an:.8} fd={fd:.8} |Δ|={:.2e}",
-        (an - fd).abs()
-    );
-    assert!(
-        (an - fd).abs() < 1e-5,
-        "∂E_MP2/∂Fz analytic vs FD disagree by {:.2e}",
-        (an - fd).abs()
-    );
-}
-#[test]
-#[ignore]
-fn diag_dt2_distribution() {
-    use ferric_mp2::cpks_polar::{analytic_dt2_along, fd_dt2_along};
-    let (mol, obs, dfbs, op, bounds, ctx, rhf) = water_ccpvdz();
-    let mp2_cfg = ferric_mp2::rimp2::RiMp2Config {
-        frozen_core: 0,
-        memory_budget_bytes: None,
-        ..Default::default()
-    };
-    let scf_cfg = RhfConfig {
-        energy_conv: 1e-10,
-        ..Default::default()
-    };
-    let (an, _u) =
-        analytic_dt2_along(&ctx, &mol, &obs, &dfbs, op, &bounds, &rhf, &mp2_cfg, 2).unwrap();
-    // FD at two field strengths to check linearity (phase/degeneracy contamination
-    // would NOT scale linearly with h).
-    for &h in &[1e-3_f64, 1e-2] {
-        let fd = fd_dt2_along(
-            &ctx, &mol, &obs, &dfbs, op, &bounds, &scf_cfg, &mp2_cfg, 2, h,
-        )
-        .unwrap();
-        let fdn = fd.iter().map(|x| x * x).sum::<f64>().sqrt();
-        // largest 5 |fd| elements and their analytic counterparts
-        let mut idx: Vec<usize> = (0..fd.len()).collect();
-        idx.sort_by(|&a, &b| fd[b].abs().partial_cmp(&fd[a].abs()).unwrap());
-        eprintln!("h={h:.0e} ‖fd‖={fdn:.4} top elems (fd vs an):");
-        for &k in idx.iter().take(6) {
-            eprintln!("   [{k}] fd={:+.5} an={:+.5}", fd[k], an[k]);
-        }
-    }
-    let ann = an.iter().map(|x| x * x).sum::<f64>().sqrt();
-    eprintln!("‖analytic‖={ann:.5}");
-}
-
-#[test]
-#[ignore]
-fn diag_de_components() {
-    use ferric_mp2::cpks_polar::{analytic_de_mp2_along, analytic_dt2_along, fd_de_mp2_along};
-    let (mol, obs, dfbs, op, bounds, ctx, rhf) = water_ccpvdz();
-    let mp2_cfg = ferric_mp2::rimp2::RiMp2Config {
-        frozen_core: 0,
-        memory_budget_bytes: None,
-        ..Default::default()
-    };
-    let scf_cfg = RhfConfig {
-        energy_conv: 1e-10,
-        ..Default::default()
-    };
-    let an =
-        analytic_de_mp2_along(&ctx, &mol, &obs, &dfbs, op, &bounds, &rhf, &mp2_cfg, 2).unwrap();
-    for &h in &[1e-3_f64, 1e-2, 2e-2] {
-        let fd = fd_de_mp2_along(
-            &ctx, &mol, &obs, &dfbs, op, &bounds, &scf_cfg, &mp2_cfg, 2, h,
-        )
-        .unwrap();
-        eprintln!(
-            "h={h:.0e}: analytic={an:.8} fd={fd:.8} ratio an/fd={:.4}",
-            an / fd
-        );
-    }
-    let (dt2, _u) =
-        analytic_dt2_along(&ctx, &mol, &obs, &dfbs, op, &bounds, &rhf, &mp2_cfg, 2).unwrap();
-    eprintln!("‖dt2‖={:.5}", dt2.iter().map(|x| x * x).sum::<f64>().sqrt());
-}
-
 #[test]
 #[ignore]
 fn diag_dd_vs_fd() {
@@ -279,78 +175,6 @@ fn diag_dd_traces() {
     let (an, fd) = debug_dd_traces(&ctx, &mol, &obs, &bounds, &rhf, &scf_cfg, 2, 1e-3).unwrap();
     eprintln!("−Tr[∂D·r_y] (=α^HF_y,z):  analytic={:?}  fd={:?}", an, fd);
     eprintln!("(validated HF α_zz=5.109; α_xz=α_yz≈0)");
-}
-
-#[test]
-#[ignore]
-fn diag_emp2_parabola() {
-    use ferric_mp2::cpks_polar::{analytic_de_mp2_along, debug_emp2_at_field};
-    let (mol, obs, dfbs, op, bounds, ctx, rhf) = water_ccpvdz();
-    let mp2_cfg = ferric_mp2::rimp2::RiMp2Config {
-        frozen_core: 0,
-        memory_budget_bytes: None,
-        ..Default::default()
-    };
-    let scf_cfg = RhfConfig {
-        energy_conv: 1e-10,
-        ..Default::default()
-    };
-    for &f in &[-1e-2_f64, -1e-3, 0.0, 1e-3, 1e-2] {
-        let e = debug_emp2_at_field(
-            &ctx, &mol, &obs, &dfbs, op, &bounds, &scf_cfg, &mp2_cfg, 2, f,
-        )
-        .unwrap();
-        eprintln!("F={f:+.0e} E_MP2={e:.10}");
-    }
-    let an =
-        analytic_de_mp2_along(&ctx, &mol, &obs, &dfbs, op, &bounds, &rhf, &mp2_cfg, 2).unwrap();
-    eprintln!("analytic ∂E_MP2/∂Fz = {an:.10}");
-}
-
-#[test]
-#[ignore]
-fn diag_alpha_amplitude_only_vs_ff() {
-    // How much of the relaxed α does the amplitude part of ∂dm1 capture (before ∂z)?
-    use ferric_mp2::cpks_polar::analytic_alpha_amplitude_only;
-    use ferric_mp2::ff_polar::{mp2_polarizability_static, DensityMode};
-    let (mol, obs, dfbs, op, bounds, ctx, rhf) = water_ccpvdz();
-    let mp2_cfg = ferric_mp2::rimp2::RiMp2Config {
-        frozen_core: 0,
-        memory_budget_bytes: None,
-        ..Default::default()
-    };
-    let scf_cfg = RhfConfig {
-        energy_conv: 1e-10,
-        ..Default::default()
-    };
-    let amp = analytic_alpha_amplitude_only(&ctx, &mol, &obs, &dfbs, op, &bounds, &rhf, &mp2_cfg)
-        .unwrap();
-    let ff = mp2_polarizability_static(
-        &ctx,
-        &mol,
-        &obs,
-        &dfbs,
-        op,
-        &bounds,
-        &scf_cfg,
-        &mp2_cfg,
-        1e-3,
-        DensityMode::Relaxed,
-    )
-    .unwrap();
-    // Also HF α (the orbital-only part) for reference.
-    eprintln!(
-        "amplitude-only α_iso = {:.5}  (FF relaxed = {:.5})",
-        amp.iso, ff.iso
-    );
-    eprintln!(
-        "  amp diag: {:.4} {:.4} {:.4}",
-        amp.tensor[0][0], amp.tensor[1][1], amp.tensor[2][2]
-    );
-    eprintln!(
-        "  ff  diag: {:.4} {:.4} {:.4}",
-        ff.tensor[0][0], ff.tensor[1][1], ff.tensor[2][2]
-    );
 }
 
 #[test]
@@ -515,65 +339,21 @@ fn cpks_static_relaxed_dipole_vs_pyscf() {
     }
 }
 
-#[test]
-#[ignore]
-fn cpks_analytic_alpha_full_vs_oracle() {
-    // Rust analytic relaxed α vs the clean-room/energy-Hessian oracle
-    // (water/STO-3G [0.044, 4.981, 2.135]). ferric uses RI for the MO ERIs so
-    // allow RI slack (cc-pVDZ-RI on STO-3G is loose).
-    use ferric_core::basis;
-    use ferric_mp2::cpks_polar::analytic_alpha_full;
-    let xyz = "3\nh2o\nO 0 0 0.117790\nH 0 0.755453 -0.471161\nH 0 -0.755453 -0.471161\n";
-    let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
-    let obs = PreparedBasis::new(&mol, &basis::bundled("sto-3g").unwrap()).unwrap();
-    let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
-    let ctx = ParallelContext::default();
-    let op = Operator::coulomb();
-    let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-    let scf_cfg = RhfConfig {
-        energy_conv: 1e-10,
-        ..Default::default()
-    };
-    let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &scf_cfg).unwrap();
-    let mp2_cfg = ferric_mp2::rimp2::RiMp2Config {
-        frozen_core: 0,
-        memory_budget_bytes: None,
-        ..Default::default()
-    };
-    let a = analytic_alpha_full(&ctx, &mol, &obs, &dfbs, op, &bounds, &rhf, &mp2_cfg).unwrap();
-    eprintln!(
-        "Rust analytic α diag = [{:.5} {:.5} {:.5}]  iso {:.5}",
-        a.tensor[0][0], a.tensor[1][1], a.tensor[2][2], a.iso
-    );
-    eprintln!("oracle (clean-room) = [0.04433, 4.98104, 2.13546]  iso 2.38694");
-    // allow 5% RI slack
-    for (got, want) in [
-        (a.tensor[0][0], 0.04433),
-        (a.tensor[1][1], 4.98104),
-        (a.tensor[2][2], 2.13546),
-    ] {
-        assert!(
-            (got - want).abs() < 0.05 * want.abs() + 0.02,
-            "α component {got} vs {want}"
-        );
-    }
-}
-
-/// Attenuation sweep on the validated analytic relaxed-MP2 α.
+/// Attenuation sweep on the analytic relaxed-MP2 α (`mp2_polarizability_analytic`).
 ///
-/// The original goal of the whole CPKS arc: does the ω "sweet spot" from the
-/// finite-field experiment survive a *properly relaxed* analytic polarizability?
-/// FF α blew up (807, negative) on n2/co2/nh3 from 1/F round-off near the
-/// Z-vector singularity; the analytic path has no field-step, so it should be
-/// stable everywhere. Ansatz = att-MP2: full-Coulomb HF reference, erfc(ωr)
-/// attenuates only the correlation operator (the external dipole field is bare).
+/// Does the ω "sweet spot" from the finite-field experiment survive an
+/// analytic relaxed polarizability? FF α blew up (807, negative) on n2/co2/nh3
+/// from 1/F round-off near the Z-vector singularity; the analytic path does not
+/// re-converge an SCF. Ansatz = att-MP2: full-Coulomb HF reference and HF
+/// response (`cb_bounds`), erfc(ωr) attenuates only the correlation operator
+/// (the external dipole field is bare).
 ///
 /// Run: cargo test --release -p ferric-mp2 --test cpks_polar \
 ///        cpks_attenuation_sweep -- --ignored --nocapture
 #[test]
 #[ignore]
 fn cpks_attenuation_sweep() {
-    use ferric_mp2::cpks_polar::analytic_alpha_full;
+    use ferric_mp2::cpks_polar::mp2_polarizability_analytic;
     use ferric_mp2::rimp2::RiMp2Config;
 
     // (label, xyz). Water = clean baseline; n2/co2/nh3 = the FF blow-up cases.
@@ -620,9 +400,10 @@ fn cpks_attenuation_sweep() {
             } else {
                 Operator::erfc(w)
             };
-            let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-            let a =
-                analytic_alpha_full(&ctx, &mol, &obs, &dfbs, op, &bounds, &rhf, &mp2_cfg).unwrap();
+            let a = mp2_polarizability_analytic(
+                &ctx, &mol, &obs, &dfbs, op, &cb_bounds, &rhf, &mp2_cfg,
+            )
+            .unwrap();
             eprintln!(
                 "  {:>6.2}  {:>10.4}  {:>10.4}  {:>10.4}  {:>10.4}",
                 w, a.iso, a.tensor[0][0], a.tensor[1][1], a.tensor[2][2]
@@ -648,7 +429,7 @@ fn cpks_attenuation_sweep() {
 #[test]
 #[ignore]
 fn cpks_attenuation_aug_water() {
-    use ferric_mp2::cpks_polar::analytic_alpha_full;
+    use ferric_mp2::cpks_polar::mp2_polarizability_analytic;
     use ferric_mp2::rimp2::RiMp2Config;
 
     let xyz = "3\nh2o\nO 0 0 0.117790\nH 0 0.755453 -0.471161\nH 0 -0.755453 -0.471161\n";
@@ -680,8 +461,9 @@ fn cpks_attenuation_aug_water() {
         } else {
             Operator::erfc(w)
         };
-        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-        let a = analytic_alpha_full(&ctx, &mol, &obs, &dfbs, op, &bounds, &rhf, &mp2_cfg).unwrap();
+        let a =
+            mp2_polarizability_analytic(&ctx, &mol, &obs, &dfbs, op, &cb_bounds, &rhf, &mp2_cfg)
+                .unwrap();
         eprintln!(
             "  {:>6.2}  {:>10.4}  {:>10.4}  {:>10.4}  {:>10.4}",
             w, a.iso, a.tensor[0][0], a.tensor[1][1], a.tensor[2][2]
@@ -896,9 +678,8 @@ fn cpks_frozen_mp2_c6_sweep() {
             } else {
                 Operator::erfc(w)
             };
-            let bounds = SchwarzBounds::compute(op, &obs).unwrap();
             let (c6, _prof, a_mp2, a_hf) = frozen_mp2_c6_molecular(
-                &ctx, &mol, &obs, &dfbs, op, &bounds, &rhf, &mp2_cfg, &freqs, &weights,
+                &ctx, &mol, &obs, &dfbs, op, &cb_bounds, &rhf, &mp2_cfg, &freqs, &weights,
             )
             .unwrap();
             let err = 100.0 * (c6 - dosd) / dosd;
@@ -1018,5 +799,74 @@ fn relaxed_alpha_matches_pyscf_energy_hessian() {
                 );
             }
         }
+    }
+}
+
+/// Attenuated (att-MP2) relaxed α: `mp2_polarizability_analytic` with
+/// `op = erfc(ωr)` on the correlation and Coulomb `bounds` (Coulomb RHF
+/// reference and HF response) vs the 5-point finite-field second derivative
+/// `α_dd = −∂²E/∂F_d²` of `E = E_RHF(F) + E_MP2[erfc](F)`, each field point a
+/// re-converged RHF (`RhfConfig.external_potential`) plus `ri_mp2` at that
+/// reference. The oracle uses energies only: no density, Z-vector or
+/// first-order reference. water/STO-3G, cc-pvdz-ri, ω = 0.42 Bohr⁻¹.
+/// Bar: 1e-5 × max(|α_dd|, α_iso); measured ≤ 2.2e-8 rel. Building the HF
+/// response with the attenuated operator as well misses α_xx by 9.5e-3 rel.
+#[test]
+fn attenuated_relaxed_alpha_matches_energy_finite_field() {
+    use ferric_core::external_potential::ExternalPotential;
+    use ferric_mp2::cpks_polar::mp2_polarizability_analytic;
+    use ferric_mp2::rimp2::{ri_mp2, RiMp2Config};
+    let xyz = "3\nh2o\nO 0 0 0.117790\nH 0 0.755453 -0.471161\nH 0 -0.755453 -0.471161\n";
+    let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
+    let obs = PreparedBasis::new(&mol, &basis::bundled("sto-3g").unwrap()).unwrap();
+    let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
+    let ctx = ParallelContext::default();
+    let cb = Operator::coulomb();
+    let cb_bounds = SchwarzBounds::compute(cb, &obs).unwrap();
+    let op = Operator::erfc(0.42);
+    let mp2_cfg = RiMp2Config {
+        frozen_core: 0,
+        memory_budget_bytes: None,
+        ..Default::default()
+    };
+    let scf_cfg = |field: Option<[f64; 3]>| RhfConfig {
+        energy_conv: 1e-13,
+        density_conv: 1e-11,
+        external_potential: field.map(|f| ExternalPotential {
+            field: Some(f),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let energy = |field: Option<[f64; 3]>| -> f64 {
+        let rhf = solve_rhf(&ctx, &mol, &obs, cb, &cb_bounds, &scf_cfg(field)).unwrap();
+        ri_mp2(&mol, &obs, &dfbs, op, &rhf, &mp2_cfg)
+            .unwrap()
+            .total_energy
+    };
+    let rhf = solve_rhf(&ctx, &mol, &obs, cb, &cb_bounds, &scf_cfg(None)).unwrap();
+    let a = mp2_polarizability_analytic(&ctx, &mol, &obs, &dfbs, op, &cb_bounds, &rhf, &mp2_cfg)
+        .unwrap();
+    let h = 2e-3;
+    let e0 = energy(None);
+    for d in 0..3 {
+        let at = |s: f64| {
+            let mut f = [0.0; 3];
+            f[d] = s * h;
+            energy(Some(f))
+        };
+        let d2 =
+            (-at(2.0) + 16.0 * at(1.0) - 30.0 * e0 + 16.0 * at(-1.0) - at(-2.0)) / (12.0 * h * h);
+        let fd = -d2;
+        let rel = (a.tensor[d][d] - fd).abs() / fd.abs().max(a.iso);
+        eprintln!(
+            "att-MP2 α[{d}{d}] analytic {:.7} finite field {fd:.7} rel {rel:.1e}",
+            a.tensor[d][d]
+        );
+        assert!(
+            rel < 1e-5,
+            "α[{d}{d}] = {} vs finite field {fd}",
+            a.tensor[d][d]
+        );
     }
 }

@@ -38,8 +38,7 @@ it. Exits nonzero on the first failure.
      :159 with factor 1/2): the vo block of (4J - K - K^T)[D^z] with
      D^z = sum_ai z_ai (C_a C_i^T + C_i C_a^T) equals
      2 sum_bj [4(ai|bj) - (ab|ij) - (aj|bi)] z_bj, i.e. twice the coupling
-     of the (A+B) Hessian that cpks_polar.rs build_apb_amb and
-     solve_zvec_dense build. Control: the unhalved product is not (A+B)z.
+     of the (A+B) Hessian that cpks_polar.rs build_apb_amb builds. Control: the unhalved product is not (A+B)z.
   6  Cayley rotation (orbital_rotation.rs cayley_rotation :53):
      U = (I - k/2)^-1 (I + k/2) is orthogonal and U - expm(k) = O(|k|^3).
      Control: (I + k/2)^-1 (I - k/2) matches expm(-k), not expm(k).
