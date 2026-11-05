@@ -189,14 +189,32 @@ repository):
 | Emphasis inflation: scattered bold, ALL CAPS, "NOTE:" in prose | "build.rs warns that the fix is NOT applied" | "build.rs warns that the fix is not applied" |
 | Hedge stacking (a scope qualifier on every sentence) | "provisional, narrow, at this basis only, see ..." repeated per line | One scope statement per section, or a grade/system/basis column in a table. |
 | Duplicate caveats | The `OPENBLAS_NUM_THREADS=1` warning restated on several pages | State it once (see [Testing](#testing)) and link to it. |
+| Marketing adjectives: high-performance, blazing, massive, cutting-edge, state-of-the-art, seamless | "a high-performance quantum chemistry engine" | "a quantum chemistry engine"; give a measured number instead. |
+| ASCII `--` as a dash in prose | "Step 1b -- relax the pose" | "Step 1b: relax the pose" |
+
+Exceptions that stay:
+
+- "X, not Y" when Y is the likely wrong guess ("`delete-host`, not `keep`").
+  Say it once, in a plain sentence, without capitals.
+- Dates on measurements and provenance labels such as MEASURED or ESTIMATED.
+  They record when and how a number was obtained; they are not revision
+  history.
+- Bold run-in labels that start a step or paragraph ("**Run it.**"), and
+  capitals that are program output (`STABLE`/`UNSTABLE`) or acronyms (TRIM).
+- Dated contributor records under `site/src` (for example
+  `reference/ci-timing-analysis.md`). They have no current-facts form: keep
+  them as dated records, open with a line naming the date and the files that
+  take precedence, and write them in the declarative voice without first
+  person.
 
 Em-dashes in math ranges and table cells are fine; elsewhere use at most one
 dash pair per paragraph and prefer colons and periods. Keep warnings about real
 hazards (thread counts, memory), stated once and plainly. "Measured" and
 "validated against PySCF to 1e-8 Ha" are provenance, not tone, and stay.
 
-`scripts/check_doc_style.py` counts the listed words and em-dashes per file
-(report only, exit 0). Each hit is a prompt to reread the sentence; some are
+`scripts/check_doc_style.py` counts the listed words, em-dashes and ASCII
+`--` dashes per file (report only, exit 0). It skips "just" before a number or
+a comparison ("just above") and "note" used as a noun ("a note that"). Each hit is a prompt to reread the sentence; some are
 correct in context.
 
 ```bash

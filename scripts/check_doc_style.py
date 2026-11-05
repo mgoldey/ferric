@@ -59,7 +59,28 @@ PHRASES = [
     "here's",
     "this is the",
     "this means that",
+    # marketing adjectives
+    "high-performance",
+    "blazing",
+    "massive",
+    "massively",
+    "cutting-edge",
+    "state-of-the-art",
+    "seamless",
+    "seamlessly",
+    "world-class",
 ]
+
+# Context exemptions: a hit is skipped when the pattern also matches here.
+# "just" before a number or a comparison ("just above the cut-off") is
+# precise, and "a note that ..." uses "note" as a noun.
+EXEMPT = {
+    "just": re.compile(
+        r"\bjust\s+(?:[-+~]?\d|above|below|under|over|before|after)", re.IGNORECASE
+    ),
+    "note that": re.compile(r"\b(?:a|the|this)\s+note\s+that\b", re.IGNORECASE),
+}
+ASCII_DASH = re.compile(r"(?<=\s)--(?=\s)")
 
 PATTERNS = {p: re.compile(r"\b" + re.escape(p) + r"\b", re.IGNORECASE) for p in PHRASES}
 INLINE_CODE = re.compile(r"`[^`]*`")
@@ -82,9 +103,11 @@ def scan(path: Path) -> tuple[Counter, int, list[str]]:
     dashes = 0
     detail = []
     for n, line in prose_lines(path.read_text(encoding="utf-8")):
-        dashes += line.count("—")
+        dashes += line.count("—") + len(ASCII_DASH.findall(line))
         for phrase, pat in PATTERNS.items():
             k = len(pat.findall(line))
+            if k and phrase in EXEMPT:
+                k -= len(EXEMPT[phrase].findall(line))
             if k:
                 hits[phrase] += k
                 detail.append(f"    {n}: {phrase}: {line.strip()[:100]}")
