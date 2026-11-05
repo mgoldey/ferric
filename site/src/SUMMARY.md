@@ -14,6 +14,7 @@
 - [Choosing a method](./using/choosing-a-method.md)
 - [For PySCF users](./using/pyscf-users.md)
 - [QM/MM](./using/qmmm.md)
+- [Export: cube files and NPZ](./using/export.md)
 - [End-to-end applications](./using/applications.md)
 - [For automated agents](./using/agents.md)
 
@@ -24,6 +25,7 @@
 - [DFT derivations](./methods/dft-derivations.md)
 - [The MP2 family](./methods/mp2.md)
 - [Coupled cluster](./methods/cc.md)
+- [CAS-CI](./methods/ci.md)
 - [RPA and GW](./methods/rpa-gw.md)
 - [Constrained DFT](./methods/cdft.md)
 - [Periodic systems](./methods/pbc.md)
