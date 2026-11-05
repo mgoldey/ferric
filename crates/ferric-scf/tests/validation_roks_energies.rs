@@ -119,6 +119,7 @@ use std::path::{Path, PathBuf};
 use ferric_core::basis;
 use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
+use ferric_dft::grid::AtomicGridConfig;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_scf::rhf::RhfConfig;
@@ -227,6 +228,9 @@ fn roks_config(xc: &str) -> RhfConfig {
         energy_conv: 1e-10,
         // Same as the UKS half of the KS-DFT row (validation_ks_energies.rs).
         density_conv: 1e-7,
+        // The references are PySCF on the flat (75,110) grid (generator: prune=None),
+        // not the pruned KS default AtomicGridConfig::production().
+        dft_grid: Some(AtomicGridConfig::default()),
         ..Default::default()
     };
     // The F6 occupation guard is what makes OH converge to its ground state;

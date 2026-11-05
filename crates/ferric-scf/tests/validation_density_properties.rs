@@ -101,6 +101,7 @@ use std::path::{Path, PathBuf};
 use ferric_core::basis;
 use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
+use ferric_dft::grid::AtomicGridConfig;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_scf::properties::{
@@ -542,6 +543,9 @@ fn atom_row(symbol_lc: &str) {
         max_iter: 400,
         energy_conv: 1e-10,
         density_conv: 1e-8,
+        // The references are PySCF on the flat (75,110) grid (generator: prune=None),
+        // not the pruned KS default AtomicGridConfig::production().
+        dft_grid: Some(AtomicGridConfig::default()),
         ..Default::default()
     };
     let res = solve_uhf(&sys.ctx, &sys.mol, &sys.prep, &sys.bounds, &cfg)

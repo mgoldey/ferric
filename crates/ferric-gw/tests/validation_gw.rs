@@ -206,7 +206,9 @@ use std::path::{Path, PathBuf};
 use ferric_core::basis::{self, BasisSet};
 use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
-use ferric_gw::vxc_mo::vxc_diagonal_mo;
+use ferric_core::FerricError;
+use ferric_dft::grid::AtomicGridConfig;
+use ferric_gw::vxc_mo::vxc_diagonal_mo_on_grids;
 use ferric_gw::{run_gw, run_u_gw, GwConfig, GwMethod, GwResult, UGwResult};
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
@@ -778,6 +780,24 @@ fn g0w0_hf_n2_vs_pyscf_gw_ac() {
     g0w0_hf_row("n2");
 }
 
+/// V_xc on the SCF's grids: the flat (75,110) main grid the `*_pbe_config`
+/// SCFs pin (the reference's) and the default (50,50) VV10 grid.
+fn vxc_diagonal_mo(
+    mol: &Molecule,
+    bs: &BasisSet,
+    xc: &str,
+    scf: &ScfResult,
+) -> Result<(ndarray::Array1<f64>, ndarray::Array1<f64>), FerricError> {
+    vxc_diagonal_mo_on_grids(
+        mol,
+        bs,
+        xc,
+        scf,
+        &AtomicGridConfig::default(),
+        &AtomicGridConfig::default_nlc(),
+    )
+}
+
 fn pbe_config() -> RhfConfig {
     RhfConfig {
         xc: Some("pbe".into()),
@@ -786,6 +806,9 @@ fn pbe_config() -> RhfConfig {
         df_j_aux: Some(String::new()),
         // KS densities floor above 1e-10 on the grid (KS-DFT row uses 1e-8).
         density_conv: 1e-10,
+        // The references are PySCF on the flat (75,110) grid (gen_gw.py),
+        // not the pruned KS default AtomicGridConfig::production().
+        dft_grid: Some(AtomicGridConfig::default()),
         ..rhf_config()
     }
 }
@@ -1362,6 +1385,9 @@ fn uks_pbe_config() -> RhfConfig {
         // that choice is the fitting error, not what this row measures.
         df_j_aux: Some(String::new()),
         df_k_aux: Some(String::new()),
+        // The references are PySCF on the flat (75,110) grid (gen_gw.py),
+        // not the pruned KS default AtomicGridConfig::production().
+        dft_grid: Some(AtomicGridConfig::default()),
         ..uhf_config()
     }
 }
