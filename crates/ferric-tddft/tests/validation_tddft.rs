@@ -478,3 +478,79 @@ fn tda_matches_the_validated_library_tda_path() {
         }
     }
 }
+
+/// (d) The meta-GGA response default grid
+/// (`ferric_dft::grid::response_default_grid`, what the CLI and Python pick
+/// for a meta-GGA TDA run with no grid key) puts the five lowest r2SCAN TDA
+/// roots of water/6-31G within `META_GGA_TOL_EV` of a flat 150 x 590 grid.
+/// The reference is ferric on that grid: on a shared grid ferric and PySCF
+/// agree to 6e-8 eV (site/src/methods/rpa-gw.md), and 150 x 590 itself sits
+/// 2.4e-5 eV from flat 200 x 590 here. Negative control: the production
+/// grid misses the same bar (2.1e-3 eV), so the comparison can tell them
+/// apart.
+#[test]
+#[ignore = "validation: meta-GGA TDA grid (flat 150x590 reference SCF)"]
+fn water_631g_r2scan_default_grid_matches_fine_flat_grid() {
+    const META_GGA_TOL_EV: f64 = 1e-4;
+    let xyz = format!(
+        "{}/../../testdata/molecules/water.xyz",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let mol = Molecule::load_xyz(&xyz).unwrap();
+    let obs = PreparedBasis::new(&mol, &basis::bundled("6-31g").unwrap()).unwrap();
+    let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
+    let op = Operator::coulomb();
+    let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+    let ctx = ParallelContext::default();
+    let xc = "r2SCAN";
+    let roots = |grid: AtomicGridConfig| -> Vec<f64> {
+        let cfg = RhfConfig {
+            xc: Some(xc.to_string()),
+            dft_grid: Some(grid.clone()),
+            df_j_aux: Some(SCF_JK_AUX.to_string()),
+            df_k_aux: Some(SCF_JK_AUX.to_string()),
+            density_conv: 1e-8,
+            max_iter: 200,
+            ..Default::default()
+        };
+        let scf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &cfg).unwrap();
+        assert!(scf.converged, "{xc}: reference SCF did not converge");
+        let t = TddftConfig {
+            n_roots: N_CHECK,
+            method: TddftMethod::Tda,
+            grid,
+            xc: Some(xc.to_string()),
+            ..Default::default()
+        };
+        run_tddft(&mol, &obs, &dfbs, &scf, &t)
+            .unwrap()
+            .excitation_energies
+            .iter()
+            .map(|w| w * HARTREE_TO_EV)
+            .collect()
+    };
+    let max_dev = |a: &[f64], b: &[f64]| {
+        a.iter()
+            .zip(b)
+            .map(|(x, y)| (x - y).abs())
+            .fold(0.0_f64, f64::max)
+    };
+    let reference = roots(AtomicGridConfig {
+        n_radial: 150,
+        n_angular: 590,
+        ..Default::default()
+    });
+    let default_grid = ferric_dft::grid::response_default_grid(Some(xc))
+        .expect("r2SCAN is a meta-GGA: it must get the response grid");
+    let dev = max_dev(&roots(default_grid), &reference);
+    let dev_prod = max_dev(&roots(AtomicGridConfig::production()), &reference);
+    println!("r2SCAN water/6-31G TDA: default grid {dev:.2e} eV, production {dev_prod:.2e} eV");
+    assert!(
+        dev_prod > META_GGA_TOL_EV,
+        "negative control: the production grid ({dev_prod:.2e} eV) must miss the bar"
+    );
+    assert!(
+        dev < META_GGA_TOL_EV,
+        "meta-GGA response grid: {dev:.2e} eV from flat 150x590 (bar {META_GGA_TOL_EV:.0e})"
+    );
+}

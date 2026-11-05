@@ -11877,6 +11877,11 @@ struct PyTddftResult {
     /// reference, false only for an HF reference).
     #[pyo3(get)]
     fxc_included: bool,
+    /// The main grid the KS reference and the f_xc kernel shared, as
+    /// `(n_radial, n_angular, prune, weight_cut)` (`prune` is `None` for the
+    /// flat grid); `None` for an HF reference.
+    #[pyo3(get)]
+    grid: Option<(usize, usize, Option<String>, Option<f64>)>,
     excitation_energies: Vec<f64>,
     oscillator_strengths: Vec<f64>,
 }
@@ -11930,7 +11935,11 @@ impl PyTddftResult {
 /// `scf_max_iter`, `scf_energy_conv`, `scf_density_conv`: controls of the internal reference SCF,
 /// with the names and meaning of `run_rhf` (defaults unchanged when omitted).
 #[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, functional=None, n_roots=3, method="tda", scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None))]
+#[pyo3(signature = (
+    mol, basis_set, auxbasis, functional=None, n_roots=3, method="tda",
+    scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None,
+    grid_radial=None, grid_angular=None, grid_prune=None, grid_weight_cut=None,
+))]
 #[allow(clippy::too_many_arguments)]
 fn run_tddft(
     py: Python<'_>,
@@ -11943,6 +11952,10 @@ fn run_tddft(
     scf_max_iter: Option<usize>,
     scf_energy_conv: Option<f64>,
     scf_density_conv: Option<f64>,
+    grid_radial: Option<usize>,
+    grid_angular: Option<usize>,
+    grid_prune: Option<&str>,
+    grid_weight_cut: Option<f64>,
 ) -> PyResult<PyTddftResult> {
     use ferric_tddft::{TddftConfig, TddftMethod};
 
@@ -11971,12 +11984,28 @@ fn run_tddft(
         ferric_dft::lr_kernel::resolve_singlet_response_xc(xc_name, "run_tddft")
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("{e}")))?;
     }
+    if functional.is_none()
+        && (grid_radial.is_some()
+            || grid_angular.is_some()
+            || grid_prune.is_some()
+            || grid_weight_cut.is_some())
+    {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "run_tddft: grid_radial / grid_angular / grid_prune / grid_weight_cut size the \
+             Kohn-Sham grid, and functional=None (an HF reference) builds none",
+        ));
+    }
     let (scf, grid) = if let Some(xc_name) = functional {
         let mut cfg = rhf_config(None);
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv).apply(&mut cfg);
         cfg.xc = Some(xc_name.to_string());
         cfg.df_j_aux = Some("def2-universal-jkfit".to_string());
         cfg.df_k_aux = Some("def2-universal-jkfit".to_string());
+        // Explicit grid kwargs win; with none, a meta-GGA gets the finer
+        // response grid, everything else the production grid.
+        cfg.dft_grid =
+            resolve_dft_grid_with_cut(grid_radial, grid_angular, grid_prune, grid_weight_cut)?
+                .or_else(|| ferric_dft::grid::response_default_grid(Some(xc_name)));
         let grid = cfg
             .dft_grid
             .clone()
@@ -11999,6 +12028,30 @@ fn run_tddft(
         }));
     }
 
+    let grid_used = functional.map(|_| {
+        (
+            grid.n_radial,
+            grid.n_angular,
+            grid.prune.map(|p| {
+                use ferric_dft::prune::PruneScheme as P;
+                match p {
+                    P::NwchemLike => "nwchem".to_string(),
+                    P::NwchemRadial => "nwchem-radial".to_string(),
+                    P::Sgx => "sgx".to_string(),
+                    P::DefGrid(l) => {
+                        use ferric_dft::prune::DefGridLevel as L;
+                        let n = match l {
+                            L::One => 1,
+                            L::Two => 2,
+                            L::Three => 3,
+                        };
+                        format!("defgrid{n}")
+                    }
+                }
+            }),
+            grid.weight_cut,
+        )
+    });
     let config = TddftConfig {
         n_roots,
         method: tddft_method,
@@ -12019,6 +12072,7 @@ fn run_tddft(
         method: format!("{:?}", r.method),
         c_hf: r.c_hf,
         fxc_included: r.fxc_included,
+        grid: grid_used,
         excitation_energies: r.excitation_energies,
         oscillator_strengths: r.oscillator_strengths,
     })

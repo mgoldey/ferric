@@ -553,6 +553,12 @@ impl DftCfg {
         self.grid_radial.is_some() || self.grid_angular.is_some()
     }
 
+    /// Whether any main-grid key (`grid_radial`, `grid_angular`,
+    /// `grid_prune`, `grid_weight_cut`) is set.
+    pub fn sets_any_grid_key(&self) -> bool {
+        self.sets_grid_size() || self.grid_prune.is_some() || self.grid_weight_cut.is_some()
+    }
+
     /// `[dft] grid_weight_cut`, strictly checked: `Ok(None)` when unset (the
     /// caller then keeps the production cutoff) or `0` (off), `Ok(Some(cut))`
     /// for a finite `cut > 0`, and an error for a negative, NaN or infinite
@@ -588,7 +594,7 @@ impl DftCfg {
     ) -> Result<Option<ferric_dft::grid::AtomicGridConfig>, String> {
         let weight_cut = self.grid_weight_cut()?;
         self.refuse_sizes_with_defgrid(prune)?;
-        if !self.sets_grid_size() && self.grid_prune.is_none() && self.grid_weight_cut.is_none() {
+        if !self.sets_any_grid_key() {
             return Ok(None);
         }
         self.explicit_grid(prune, weight_cut).map(Some)
@@ -3650,6 +3656,24 @@ impl Config {
             || (matches!(kind, "tda" | "tddft") && self.tddft.xc.is_some())
     }
 
+    /// The run's main KS grid (`RhfConfig::dft_grid`): the `[dft]` grid keys
+    /// ([`DftCfg::grid_config`]) when any is set; otherwise, for
+    /// `kind = "tda" | "tddft"` on a meta-GGA `[tddft] xc`, the finer response
+    /// grid ([`ferric_dft::grid::response_default_grid`]), which the reference
+    /// SCF and the f_xc kernel share; otherwise `None` (the production grid).
+    pub fn main_dft_grid(
+        &self,
+        prune: Option<ferric_dft::prune::PruneScheme>,
+    ) -> Result<Option<ferric_dft::grid::AtomicGridConfig>, String> {
+        let explicit = self.dft.grid_config(prune)?;
+        if explicit.is_some() || !matches!(self.method.kind.as_str(), "tda" | "tddft") {
+            return Ok(explicit);
+        }
+        Ok(ferric_dft::grid::response_default_grid(
+            self.tddft.xc.as_deref(),
+        ))
+    }
+
     /// Refuse a `[dft]` key that the selected `method.kind` never reads.
     ///
     /// The case that motivated it: a `[dft] functional` on a kind that runs no
@@ -4353,6 +4377,97 @@ mod compat_guard_tests {
              [method]\nkind = \"{kind}\"\ntask = \"{task}\"\n{extra}"
         );
         toml::from_str::<Config>(&src).expect("test config must parse")
+    }
+
+    /// `(n_radial, n_angular, prune, weight_cut)` of the run's main KS grid.
+    type GridKey = (
+        usize,
+        usize,
+        Option<ferric_dft::prune::PruneScheme>,
+        Option<f64>,
+    );
+    fn main_grid_key(c: &Config) -> Option<GridKey> {
+        let prune = c
+            .dft
+            .grid_prune
+            .as_deref()
+            .and_then(|s| ferric_dft::prune::PruneScheme::parse_config_str(s).unwrap());
+        c.main_dft_grid(prune)
+            .unwrap()
+            .map(|g| (g.n_radial, g.n_angular, g.prune, g.weight_cut))
+    }
+
+    /// (a) A meta-GGA `tda`/`tddft` run with no grid key runs on the finer
+    /// response grid (150 x 434, nwchem-radial, default weight cut).
+    #[test]
+    fn meta_gga_tddft_defaults_to_the_finer_grid() {
+        use ferric_dft::prune::PruneScheme;
+        let fine = Some((
+            150,
+            434,
+            Some(PruneScheme::NwchemRadial),
+            Some(ferric_dft::grid::DEFAULT_WEIGHT_CUT),
+        ));
+        for kind in ["tda", "tddft"] {
+            for xc in ["r2SCAN", "SCAN", "TPSS"] {
+                let c = cfg(kind, "energy", &format!("[tddft]\nxc = \"{xc}\"\n"));
+                assert_eq!(main_grid_key(&c), fine, "{kind}/{xc}");
+            }
+        }
+    }
+
+    /// (b) Any one explicit grid key wins, exactly as on every other kind.
+    #[test]
+    fn explicit_grid_keys_override_the_meta_gga_tddft_default() {
+        use ferric_dft::prune::PruneScheme;
+        let cut = Some(ferric_dft::grid::DEFAULT_WEIGHT_CUT);
+        let cases = [
+            (
+                "grid_radial = 99\n",
+                (99, 110, Some(PruneScheme::NwchemRadial), cut),
+            ),
+            (
+                "grid_angular = 302\n",
+                (75, 302, Some(PruneScheme::NwchemRadial), cut),
+            ),
+            ("grid_prune = \"none\"\n", (75, 110, None, cut)),
+            (
+                "grid_weight_cut = 0\n",
+                (75, 110, Some(PruneScheme::NwchemRadial), None),
+            ),
+        ];
+        for (keys, want) in cases {
+            let c = cfg(
+                "tda",
+                "energy",
+                &format!("[tddft]\nxc = \"r2SCAN\"\n[dft]\n{keys}"),
+            );
+            assert_eq!(main_grid_key(&c), Some(want), "{keys}");
+        }
+    }
+
+    /// (c) Non-meta-GGA TDDFT, HF TDDFT and every non-TDDFT kind keep `None`
+    /// (the production grid), the same value as before the meta-GGA default.
+    #[test]
+    fn non_meta_gga_and_non_tddft_runs_keep_the_production_grid() {
+        let cases = [
+            ("tda", "[tddft]\nxc = \"PBE\"\n"),
+            ("tddft", "[tddft]\nxc = \"B3LYP\"\n"),
+            ("tddft", "[tddft]\nxc = \"LDA\"\n"),
+            ("tda", ""),
+            ("ksdft", "[dft]\nfunctional = \"r2SCAN\"\n"),
+            ("rhf", "[dft]\nfunctional = \"SCAN\"\n"),
+            ("pdep-rpa", "[rpa]\nxc = \"r2SCAN\"\n"),
+            // A stray [tddft] xc on a non-TDDFT kind must not reach its grid.
+            (
+                "ksdft",
+                "[dft]\nfunctional = \"r2SCAN\"\n[tddft]\nxc = \"r2SCAN\"\n",
+            ),
+        ];
+        for (kind, extra) in cases {
+            let c = cfg(kind, "energy", extra);
+            assert_eq!(main_grid_key(&c), None, "{kind} {extra}");
+        }
     }
 
     /// Pre-fix, every one of these ran and reported a result WITHOUT the key

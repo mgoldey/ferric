@@ -755,8 +755,10 @@ pub fn run(args: Vec<String>) {
         // the VV10/NLC grid keeps its flat 50x50 default, where pruning has no
         // valid table.
         // `[dft] grid_radial`/`grid_angular` size the same main grid (unset
-        // sizes keep the 75x110 default); all three keys unset is `None`.
-        dft_grid: cfg.dft.grid_config(grid_prune).unwrap_or_else(|e| {
+        // sizes keep the 75x110 default); all keys unset is `None`, except on
+        // a meta-GGA `tda`/`tddft` run, which defaults to the finer response
+        // grid (`Config::main_dft_grid`).
+        dft_grid: cfg.main_dft_grid(grid_prune).unwrap_or_else(|e| {
             eprintln!("error: {e}");
             std::process::exit(1);
         }),
@@ -7135,6 +7137,28 @@ fn refuse_tddft_xc_without_kernel(cfg: &Config, method: &str) {
     }
 }
 
+/// The grid line a KS `tda`/`tddft` run prints: the reference SCF and the
+/// f_xc kernel share this grid, and the line says why it was chosen.
+fn tddft_grid_line(xc: &str, g: &ferric_dft::grid::AtomicGridConfig, explicit: bool) -> String {
+    let prune = g
+        .prune
+        .map_or("flat".to_string(), |p| format!("{p:?}").to_lowercase());
+    let cut = g
+        .weight_cut
+        .map_or("no weight cut".to_string(), |w| format!("weight cut {w:e}"));
+    let why = if explicit {
+        "[dft] grid keys"
+    } else if ferric_dft::grid::response_default_grid(Some(xc)).is_some() {
+        "meta-GGA response default"
+    } else {
+        "default"
+    };
+    format!(
+        "TDDFT grid ({xc}, SCF and f_xc kernel): ({}, {}), {prune}, {cut} [{why}]",
+        g.n_radial, g.n_angular
+    )
+}
+
 fn run_tddft_arm(
     cfg: &Config,
     mol: &Molecule,
@@ -7186,6 +7210,12 @@ fn run_tddft_arm(
             .unwrap_or_else(ferric_dft::grid::AtomicGridConfig::production),
         c_hf_override: cfg.tddft.c_hf,
     };
+    if let Some(xc) = config.xc.as_deref() {
+        println!(
+            "{}",
+            tddft_grid_line(xc, &config.grid, cfg.dft.sets_any_grid_key())
+        );
+    }
 
     let r = ferric_tddft::run_tddft(mol, prep, &dfbs, result, &config).unwrap_or_else(|e| {
         eprintln!("error: TDDFT failed: {e}");

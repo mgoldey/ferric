@@ -248,6 +248,15 @@ impl AtomicGridConfig {
         }
     }
 
+    /// The default main grid of a meta-GGA TDA/TDDFT run (reference SCF and
+    /// f_xc kernel): [`production_sized`](Self::production_sized)`(150, 434)`,
+    /// i.e. `nwchem-radial` pruning and the default weight cutoff at 150 x 434.
+    /// See [`response_default_grid`] for when it applies.
+    #[must_use]
+    pub fn meta_gga_response() -> Self {
+        Self::production_sized(150, 434)
+    }
+
     /// The default VV10 nonlocal grid (50 x 50, unpruned): the one every SCF
     /// driver and the KS gradient use when `nlc_grid` is `None`.
     #[must_use]
@@ -428,6 +437,27 @@ fn flat_quadrature_points(mol: &Molecule, cfg: &AtomicGridConfig) -> Vec<(usize,
         }
     }
     pre
+}
+
+/// The main grid a TDA/TDDFT run on functional `xc` uses when the caller set
+/// no grid key: [`AtomicGridConfig::meta_gga_response`] when `xc` has a
+/// meta-GGA (τ-dependent, [`FunctionalFamily::MetaGga`]) component, else
+/// `None` (the caller's usual default, [`AtomicGridConfig::production`]).
+///
+/// The reference SCF and the f_xc kernel share it. On the production
+/// 75 x 110 grid the r2SCAN roots of water sit up to 2.1e-3 eV from a flat
+/// 150 x 590 grid; on this one, 9.2e-5 eV (6-31G) and 5.5e-6 eV (aug-cc-pVDZ).
+/// `None` for HF (`xc = None`), any non-meta-GGA functional, and a name that
+/// does not resolve (the TDDFT driver refuses that itself).
+///
+/// [`FunctionalFamily::MetaGga`]: crate::libxc::FunctionalFamily::MetaGga
+#[must_use]
+pub fn response_default_grid(xc: Option<&str>) -> Option<AtomicGridConfig> {
+    let def = crate::libxc::xc_def_from_name(xc?).ok()?;
+    def.funcs
+        .iter()
+        .any(|f| f.family() == crate::libxc::FunctionalFamily::MetaGga)
+        .then(AtomicGridConfig::meta_gga_response)
 }
 
 /// Build the molecular grid with **opt-in angular pruning**.
@@ -1608,6 +1638,32 @@ mod tests {
                 dropped > 0,
                 "{prune:?}: weight cut 1e-14 dropped nothing on benzene"
             );
+        }
+    }
+
+    /// Meta-GGA functionals (and only they) get the finer response grid.
+    #[test]
+    fn response_default_grid_is_finer_for_meta_gga_only() {
+        let key = |g: &AtomicGridConfig| (g.n_radial, g.n_angular, g.prune, g.weight_cut);
+        let fine = (
+            150,
+            434,
+            Some(PruneScheme::NwchemRadial),
+            Some(DEFAULT_WEIGHT_CUT),
+        );
+        assert_eq!(key(&AtomicGridConfig::meta_gga_response()), fine);
+        for xc in ["r2SCAN", "SCAN", "TPSS"] {
+            let g = response_default_grid(Some(xc)).unwrap_or_else(|| panic!("{xc}: no grid"));
+            assert_eq!(key(&g), fine, "{xc}");
+        }
+        for xc in [
+            None,
+            Some("LDA"),
+            Some("PBE"),
+            Some("B3LYP"),
+            Some("no-such-xc"),
+        ] {
+            assert!(response_default_grid(xc).is_none(), "{xc:?}");
         }
     }
 }

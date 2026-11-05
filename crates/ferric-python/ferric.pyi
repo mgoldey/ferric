@@ -2190,6 +2190,13 @@ class TddftResult:
         ...
 
     @property
+    def grid(self) -> tuple[int, int, str | None, float | None] | None:
+        """(n_radial, n_angular, prune, weight_cut) of the main grid the KS
+        reference and the f_xc kernel shared; prune is None for the flat grid.
+        None for an HF reference."""
+        ...
+
+    @property
     def fxc_included(self) -> bool:
         """True when the (ia|f_xc|jb) kernel block was included -- always for a
         KS reference; False only for an HF reference (CIS/TDHF)."""
@@ -4767,16 +4774,30 @@ def run_tddft(
     scf_max_iter: int | None = None,
     scf_energy_conv: float | None = None,
     scf_density_conv: float | None = None,
+    grid_radial: int | None = None,
+    grid_angular: int | None = None,
+    grid_prune: str | None = None,
+    grid_weight_cut: float | None = None,
 ) -> TddftResult:
     """Closed-shell singlet linear response. functional=None runs on an RHF
     reference (CIS for method="tda"/"cis", TDHF for "casida"/"rpa"/"tddft"/
     "tdhf"); a functional converges that KS reference (RI-JK,
-    def2-universal-jkfit, default 75x110 grid) and adds the (ia|f_xc|jb)
-    kernel block to A (and B for Casida) on the same grid. Meta-GGA, VV10 and
-    range-separated functionals raise ValueError (no complete kernel); there
-    is no kernel-less DFT result. Coulomb/exchange response integrals are RI
-    over `auxbasis`. `scf_max_iter`, `scf_energy_conv`, `scf_density_conv` set the
-    reference SCF as in `run_rhf` (defaults unchanged when omitted)."""
+    def2-universal-jkfit) and adds the (ia|f_xc|jb) kernel block to A (and B
+    for Casida) on the same grid.
+
+    Grid: the grid_* kwargs mean what they mean in run_dft. With none set, a
+    meta-GGA (SCAN, r2SCAN, TPSS) runs on 150x434 nwchem-radial (default
+    weight cut), every other functional on the production 75x110
+    nwchem-radial grid. On 75x110, r2SCAN water roots sit up to 2.1e-3 eV
+    from a flat 150x590 grid; on 150x434, within 1e-4 eV. Any grid_* kwarg
+    replaces that default. With functional=None a grid_* kwarg is a
+    ValueError. TddftResult.grid reports the grid used.
+
+    VV10 and range-separated functionals raise ValueError (no complete
+    kernel); there is no kernel-less DFT result. Coulomb/exchange response
+    integrals are RI over `auxbasis`. `scf_max_iter`, `scf_energy_conv`,
+    `scf_density_conv` set the reference SCF as in `run_rhf` (defaults unchanged
+    when omitted)."""
     ...
 
 def run_double_hybrid(
