@@ -42,6 +42,25 @@ XC grid, a level shift, ECPs, embedding, solvation) and warnings: a Plateau
 exit, a non-`Stable` stability verdict, and an unchecked UHF/UKS stability. An
 unconverged SCF is capped to not graded.
 
+Post-SCF kinds print a `certificate` block after their result: the MP2 family
+(`rimp2` exact, local and open-shell, `mp3`, `oo-rimp2`, `att-rimp2`, `mp2-v`,
+`scs-mp2`, `scs-mp2-2terfc`, `laplace-mp2`, `laplace-sos-mp2`), `rs-mp2-rpa`,
+`drpa`, `pdep-rpa`, `ccsd`, `ccd`, `ccsd(t)`, `linlccd`, `gw`, `bse-tda` and
+`tdhf-static-polarizability`. Kinds that write a `result` record carry it as
+`result.components.certificate`; `pdep-rpa`, `gw`, `bse-tda` and
+`tdhf-static-polarizability` write a `certificate` record. Python
+`RiMp2Result`, `CcResult`, `PdepRpaResult`, `GwResult` and `BseResult` carry
+it as `.certificate`. The grade is the kind's row, capped at the grade of the
+SCF reference's certificate, whose approximations and warnings it repeats as
+`scf <name>` and `scf reference: ...`. It records the auxiliary basis, frozen
+core, a non-Coulomb correlation operator and each method's settings (SCS
+scales, Laplace points, frequency quadrature, PDEP truncation, GW variant).
+Caps to not graded: an `[local]` amplitude threshold at finite `eps`, an
+unconverged orbital optimization (`oo-rimp2`), drCCD fixed point (`drpa`) or
+evGW eigenvalue loop. Warnings: GW and BSE-TDA runs at settings other than
+`n_quad = 100`, `trunc_thresh = 0`, unconverged quasiparticle roots, suspect
+quasiparticle energies, an unconverged PDEP eigensolver.
+
 | Grade | Meaning |
 |---|---|
 | **Proven** | Total energies (or the stated property) agree at a stated tolerance with an independent reference, pinned by tests. An independent reference is another code (PySCF, MOLGW), a numpy reference, a published value, or an exact limit the method must reduce to. The `[warning]` line treats "Proven" and "Proven (narrow)" alike; the certificate names the grade. |
