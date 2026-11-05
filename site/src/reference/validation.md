@@ -29,15 +29,26 @@ is graded separately in that row's Caveat. The CLI prints the Smoke and Spike
 grades as a `[warning]` line on stderr at run time; Proven kinds and the
 ungraded kind print nothing. The warning text is the
 `EPISTEMIC_WARNINGS` table in `crates/ferric-cli/src/lib.rs`, and the
-"Caveat" column of the matrix condenses it.
+"Caveat" column of the matrix condenses it. The grades themselves are
+`METHOD_KIND_GRADES` in `crates/ferric-core/src/certificate.rs`, a copy of the
+Grade column below that a test keeps equal to it.
+
+`rhf`, `uhf`, `rohf` and `ksdft` energy runs print a `certificate` block after
+the energy and write it to the JSON run log (`run_end.extra.certificate`; a
+`certificate` record for the open-shell runs); Python `RhfResult`,
+`UhfResult` and `DftResult` carry it as `.certificate`. It states the kind's
+grade, the build, the approximations in effect (RI-J / RI-K, LinK / COSX, the
+XC grid, a level shift, ECPs, embedding, solvation) and warnings: a Plateau
+exit, a non-`Stable` stability verdict, and an unchecked UHF/UKS stability. An
+unconverged SCF is capped to not graded.
 
 | Grade | Meaning |
 |---|---|
-| **Proven** | Total energies (or the stated property) agree at a stated tolerance with an independent reference, pinned by tests. An independent reference is another code (PySCF, MOLGW), a numpy reference, a published value, or an exact limit the method must reduce to. The CLI groups "Proven" and "Proven (narrow)" together and does not say which kinds are narrow. |
+| **Proven** | Total energies (or the stated property) agree at a stated tolerance with an independent reference, pinned by tests. An independent reference is another code (PySCF, MOLGW), a numpy reference, a published value, or an exact limit the method must reduce to. The `[warning]` line treats "Proven" and "Proven (narrow)" alike; the certificate names the grade. |
 | **Proven (narrow)** | As Proven, but only on the stated class of systems, or only against the stated kind of reference (for example exact limits only) |
 | **Smoke** | Runs end to end, and some pieces are checked, but there is no independent reference for the headline number, or only one loose one. The checks are range bands, internal consistency or limits rather than a tight external number. Do not quote a Smoke result as a reference value. |
 | **Spike** | Built on new infrastructure and not yet compared against any reference code; for exploration only |
-| **not graded** | Dispatched by the CLI but in neither its Proven list nor its warning table, so it prints no warning; treat it as unproven |
+| **not graded** | Dispatched by the CLI with no recorded grade, so it prints no warning; treat it as unproven |
 
 Symbols: ✓ = supported. — = not supported (the CLI refuses it with an error).
 **FD** = finite differences of the *analytic* gradient (6N gradient

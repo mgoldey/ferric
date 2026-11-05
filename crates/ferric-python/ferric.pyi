@@ -819,6 +819,16 @@ class RhfResult:
         (sequential runs are exact). An all-f64 run is
         ``{"precision": "f64", "counter_scope": "process", "kernels": []}``."""
         ...
+    @property
+    def certificate(self) -> dict[str, Any]:
+        """Validation certificate: ``capability`` (``"rhf"``, ``"ksdft"``,
+        ``"uhf"`` or ``"rohf"``), ``build`` (``{"version", "commit",
+        "dirty"}``), ``grade`` (``"proven"``, ``"proven_narrow"``,
+        ``"smoke"``, ``"spike"``, ``"stub"`` or ``"ungraded"``; an
+        unconverged SCF is ``"ungraded"``), ``grade_source``,
+        ``measured_error``, ``approximations`` (``[{"name", "detail"}]``),
+        ``precision`` and ``warnings`` (``list[str]``)."""
+        ...
 
     @property
     def energy(self) -> float:
@@ -933,6 +943,16 @@ class UhfResult:
         calculation running concurrently in this process is counted too
         (sequential runs are exact). An all-f64 run is
         ``{"precision": "f64", "counter_scope": "process", "kernels": []}``."""
+        ...
+    @property
+    def certificate(self) -> dict[str, Any]:
+        """Validation certificate: ``capability`` (``"rhf"``, ``"ksdft"``,
+        ``"uhf"`` or ``"rohf"``), ``build`` (``{"version", "commit",
+        "dirty"}``), ``grade`` (``"proven"``, ``"proven_narrow"``,
+        ``"smoke"``, ``"spike"``, ``"stub"`` or ``"ungraded"``; an
+        unconverged SCF is ``"ungraded"``), ``grade_source``,
+        ``measured_error``, ``approximations`` (``[{"name", "detail"}]``),
+        ``precision`` and ``warnings`` (``list[str]``)."""
         ...
 
     @property
@@ -1716,6 +1736,16 @@ class DftResult:
         calculation running concurrently in this process is counted too
         (sequential runs are exact). An all-f64 run is
         ``{"precision": "f64", "counter_scope": "process", "kernels": []}``."""
+        ...
+    @property
+    def certificate(self) -> dict[str, Any]:
+        """Validation certificate: ``capability`` (``"rhf"``, ``"ksdft"``,
+        ``"uhf"`` or ``"rohf"``), ``build`` (``{"version", "commit",
+        "dirty"}``), ``grade`` (``"proven"``, ``"proven_narrow"``,
+        ``"smoke"``, ``"spike"``, ``"stub"`` or ``"ungraded"``; an
+        unconverged SCF is ``"ungraded"``), ``grade_source``,
+        ``measured_error``, ``approximations`` (``[{"name", "detail"}]``),
+        ``precision`` and ``warnings`` (``list[str]``)."""
         ...
 
     @property

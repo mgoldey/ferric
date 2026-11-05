@@ -15,6 +15,7 @@ use ferric_cc::linlccd::linlccd;
 use ferric_cc::CcConfig;
 use ferric_core::basis;
 use ferric_core::basis::BasisSet;
+use ferric_core::certificate::Certificate;
 use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
 use ferric_integrals::basis_bridge::PreparedBasis;
@@ -110,48 +111,15 @@ pub fn libint_summary() -> String {
     )
 }
 
-/// The `method.kind`s graded Proven or Proven (narrow). They never appear in
-/// [`EPISTEMIC_WARNINGS`] and print no warning.
-///
-/// The published grades are the Grade column of the `method.kind` matrix on
-/// `site/src/reference/validation.md`; `tests/grades_match_cli_warnings.rs`
-/// checks this list and [`EPISTEMIC_WARNINGS`] against that column. A kind in
-/// neither list is "not graded": it also prints no warning.
-pub const PROVEN_METHOD_KINDS: &[&str] = &[
-    "rhf",
-    "uhf",
-    "rohf",
-    "ksdft",
-    "rimp2",
-    "mp3",
-    "att-rimp2",
-    "mp2-v",
-    "scs-mp2",
-    "scs-mp2-2terfc",
-    "laplace-mp2",
-    "pdep-rpa",
-    "ccsd",
-    "ccd",
-    "ccsd(t)",
-    "linlccd",
-    "drpa",
-    "tda",
-    "tddft",
-    "oo-rimp2",
-    "wb97x-l-v",
-];
-
 /// Epistemic-status warnings for `method.kind` values that are graded Smoke
 /// or Spike (i.e. NOT Proven / Proven (narrow)).
 ///
-/// SOURCE OF TRUTH: the Grade column of the `method.kind` matrix on
-/// `site/src/reference/validation.md` (the wiki's `VALIDATION.md` holds the
-/// full record). This table is a condensed, CLI-facing pointer into it, not a
-/// second grading system -- when a method's grade changes, update this table,
-/// [`PROVEN_METHOD_KINDS`] and the page together;
-/// `tests/grades_match_cli_warnings.rs` fails if they disagree. Proven /
-/// Proven (narrow) methods are listed in [`PROVEN_METHOD_KINDS`] and never
-/// print a warning.
+/// The grades come from one table,
+/// [`ferric_core::certificate::METHOD_KIND_GRADES`] (a copy of the Grade
+/// column of the `method.kind` matrix on `site/src/reference/validation.md`,
+/// checked against it by a ferric-core test). This table holds only the
+/// warning TEXT: `tests/grades_match_cli_warnings.rs` fails unless its kinds
+/// are exactly the Smoke / Spike kinds of that table.
 pub const EPISTEMIC_WARNINGS: &[(&str, &str)] = &[
     (
         "gw",
@@ -1038,6 +1006,10 @@ pub fn run(args: Vec<String>) {
         );
         return;
     }
+    // The config of the ladder rung that produced `result` (its smearing,
+    // level shift and J/K route are what the certificate must report);
+    // `None` off the ladder, where `rhf_config` is the config that ran.
+    let mut rung_config: Option<RhfConfig> = None;
     let result = if method == "rhf" || method == "ksdft" {
         // `[scf] df_guess` is not (yet) composed with the multi-rung
         // convergence ladder — the ladder's own escalation (level shift /
@@ -1081,6 +1053,7 @@ pub fn run(args: Vec<String>) {
                 lr.rung_outcomes.last().map(|o| o.exit)
             );
         }
+        rung_config = ladder.get(lr.rung_reached).map(|r| r.config.clone());
         lr.result
     } else if mol.multiplicity > 1 {
         // An open-shell molecule reaching here passed
@@ -1200,9 +1173,18 @@ pub fn run(args: Vec<String>) {
         None
     };
 
+    // The SCF certificate. Printed and logged only for the SCF kinds; a
+    // post-SCF method's result is not the SCF's.
+    let scf_cert = scf_certificate_stamped(
+        &mol,
+        &result,
+        rung_config.as_ref().unwrap_or(&rhf_config),
+        dispersion.as_ref(),
+    );
+
     match method {
-        "rhf" => run_rhf(&cfg, &bs, &prep, &result),
-        "ksdft" => run_ksdft(&cfg, &bs, &prep, &result, dispersion.as_ref()),
+        "rhf" => run_rhf(&cfg, &bs, &prep, &result, &scf_cert),
+        "ksdft" => run_ksdft(&cfg, &bs, &prep, &result, dispersion.as_ref(), &scf_cert),
         "rimp2" => run_rimp2(&cfg, &mol, &bs, &prep, op, &result, budget_bytes),
         "mp3" => run_mp3(&cfg, &mol, &bs, &prep, op, &result, budget_bytes),
         "oo-rimp2" => run_oo_rimp2(
@@ -1331,6 +1313,7 @@ pub fn run(args: Vec<String>) {
         // for an all-f64 run.
         extra["precision"] = run_precision_json(&run_probe);
         extra["scf_precision"] = scf_precision;
+        add_scf_certificate(&mut extra, method, &scf_cert);
         rl.run_end(energy, scf_converged, &format!("{scf_exit:?}"), extra);
     }
 }
@@ -1500,6 +1483,7 @@ fn run_rhf(
     bs: &BasisSet,
     prep: &PreparedBasis,
     result: &ferric_scf::result::ScfResult,
+    cert: &Certificate,
 ) {
     println!("RHF/{} on {}", bs.name, cfg.molecule.xyz);
     println!("  nbasis     = {}", prep.nbasis());
@@ -1507,6 +1491,40 @@ fn run_rhf(
     println!("  converged  = {}", result.converged);
     println!("  energy     = {:.10} Hartree", result.energy);
     print_cosx_final(result);
+    print!("{cert}");
+}
+
+/// The SCF certificate (`ferric_scf::certificate::scf_certificate`) stamped
+/// with this build, plus the `[dft] dispersion` correction when one was added
+/// to the energy.
+fn scf_certificate_stamped(
+    mol: &Molecule,
+    result: &ferric_scf::result::ScfResult,
+    config: &RhfConfig,
+    dispersion: Option<&DispersionCorrection>,
+) -> Certificate {
+    let c = ferric_scf::certificate::scf_certificate(mol, result, config).with_build(
+        ferric_core::certificate::BuildStamp::new(
+            ferric_build_info::VERSION,
+            ferric_build_info::COMMIT,
+            ferric_build_info::DIRTY,
+        ),
+    );
+    match dispersion {
+        Some(d) => c.with_approximation(
+            "dispersion",
+            format!("{} with {} parameters", d.model, d.params),
+        ),
+        None => c,
+    }
+}
+
+/// Add `"certificate"` to the `run_end` record of an SCF kind (`rhf`,
+/// `ksdft`); a post-SCF kind's record is left unchanged.
+fn add_scf_certificate(extra: &mut serde_json::Value, method: &str, cert: &Certificate) {
+    if matches!(method, "rhf" | "ksdft") {
+        extra["certificate"] = cert.to_json();
+    }
 }
 
 /// `[scf] symmetry = true`: closed-shell RHF or RKS blocked by point-group irrep
@@ -1560,6 +1578,15 @@ fn run_symmetric_rhf(
     if !scf.converged {
         eprintln!("warning: SCF did not fully converge (exit {:?})", scf.exit);
     }
+    let cert = scf_certificate_stamped(mol, scf, rhf_config, None).with_approximation(
+        "symmetry",
+        format!(
+            "point group {}, geometry symmetrized by up to {:.3e} Bohr",
+            sym.group(),
+            sym.max_symmetrization_shift()
+        ),
+    );
+    print!("{cert}");
     if let Some(rl) = ferric_scf::runlog::log() {
         let extra = serde_json::json!({
             "method": cfg.method.kind,
@@ -1577,6 +1604,7 @@ fn run_symmetric_rhf(
                     .collect::<serde_json::Map<_, _>>(),
                 "geometry": "symmetrized",
             },
+            "certificate": cert.to_json(),
         });
         rl.run_end(
             sym.energy(),
@@ -1595,6 +1623,7 @@ fn run_ksdft(
     prep: &PreparedBasis,
     result: &ferric_scf::result::ScfResult,
     dispersion: Option<&DispersionCorrection>,
+    cert: &Certificate,
 ) {
     let functional = cfg.dft.functional.as_deref().unwrap_or("LDA");
     println!("KS-DFT[{functional}]/{} on {}", bs.name, cfg.molecule.xyz);
@@ -1603,6 +1632,7 @@ fn run_ksdft(
     println!("  converged  = {}", result.converged);
     print_scf_energy(result.energy, dispersion);
     print_cosx_final(result);
+    print!("{cert}");
 }
 
 /// A `[dft] dispersion` correction evaluated at one geometry.
@@ -6140,8 +6170,23 @@ fn run_uhf(
         rl.note("cosx_final_pass", cosx_final_json(&f));
     }
     println!("  <S^2>      = {:.6} (ideal {:.6})", s2, s_ideal);
+    print_and_note_certificate(&scf_certificate_stamped(
+        mol,
+        &result,
+        rhf_config,
+        dispersion.as_ref(),
+    ));
     // task == "optimize" is handled by the top-level dispatch above
     // (optimize_geometry_uhf), which returns before reaching here.
+}
+
+/// Print an open-shell SCF certificate and write it as a `certificate` run-log
+/// note (these runs return before `run()`'s `run_end`).
+fn print_and_note_certificate(cert: &Certificate) {
+    print!("{cert}");
+    if let Some(rl) = ferric_scf::runlog::log() {
+        rl.note("certificate", cert.to_json());
+    }
 }
 
 /// `method.kind = "rohf"`, `task = "energy"`: ROHF, or ROKS when `[dft]
@@ -6186,6 +6231,12 @@ fn run_rohf(
     print_scf_energy(result.energy, dispersion.as_ref());
     log_scf_dispersion(result.energy, dispersion.as_ref());
     println!("  <S^2>      = {:.6} (exact by construction)", s_ideal);
+    print_and_note_certificate(&scf_certificate_stamped(
+        mol,
+        &result,
+        rhf_config,
+        dispersion.as_ref(),
+    ));
     // task == "optimize" is handled by the top-level dispatch above
     // (optimize_geometry_rohf), which returns before reaching here.
 }

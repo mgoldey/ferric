@@ -385,6 +385,34 @@ fn precision_dict(
         .unbind())
 }
 
+/// The SCF certificate (`ferric_scf::certificate::scf_certificate`) stamped
+/// with this build.
+fn stamped_scf_certificate(
+    mol: &Molecule,
+    r: &ScfResult,
+    config: &RhfConfig,
+) -> ferric_core::certificate::Certificate {
+    ferric_scf::certificate::scf_certificate(mol, r, config).with_build(
+        ferric_core::certificate::BuildStamp::new(
+            ferric_build_info::VERSION,
+            ferric_build_info::COMMIT,
+            ferric_build_info::DIRTY,
+        ),
+    )
+}
+
+/// A certificate as a Python dict, through the same JSON the CLI run log
+/// writes.
+fn certificate_dict(
+    py: Python<'_>,
+    c: &ferric_core::certificate::Certificate,
+) -> PyResult<PyObject> {
+    let json = py.import("json")?;
+    Ok(json
+        .call_method1("loads", (c.to_json().to_string(),))?
+        .unbind())
+}
+
 /// The COSX final-grid pass record as a dict, or `None` when no pass ran.
 fn cosx_final_dict(
     py: Python<'_>,
@@ -756,6 +784,7 @@ struct PyRhfResult {
     /// The SCF settings this result was solved with. `hirshfeld_charges`
     /// solves its free-atom proatoms with the same settings, as ferric-cli does.
     scf_config: RhfConfig,
+    certificate_data: ferric_core::certificate::Certificate,
 }
 
 #[pymethods]
@@ -799,6 +828,18 @@ impl PyRhfResult {
     #[getter]
     fn precision(&self, py: Python<'_>) -> PyResult<PyObject> {
         precision_dict(py, &self.scf_data.precision)
+    }
+    /// Validation certificate of this result (the dict form of
+    /// `ferric_core::certificate::Certificate`): `capability`, `build`,
+    /// `grade` (`"proven"`, `"proven_narrow"`, `"smoke"`, `"spike"`, `"stub"`
+    /// or `"ungraded"`, from the `method.kind` matrix of the validation page;
+    /// an unconverged SCF is `"ungraded"`), `grade_source`, `measured_error`,
+    /// `approximations` (`[{"name", "detail"}]`: RI-J/RI-K, LinK/COSX, XC
+    /// grid, level shift, ECP, embedding, solvation), `precision` and
+    /// `warnings`.
+    #[getter]
+    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
+        certificate_dict(py, &self.certificate_data)
     }
     /// SCF exit reason: the `ScfExit` variant name (`"Converged"`, `"Plateau"`,
     /// `"Stalled"`, `"Diverged"`, `"MaxIter"`). `converged=False` with
@@ -1202,7 +1243,7 @@ fn solve_rhf_outcome(
 ) -> PyResult<PyObject> {
     if let Some(hook) = fock_hook {
         let r = blocks::solve_rhf_hooked(py, ctx, mol, prep, op, bounds, &config, hook)?;
-        return wrap_rhf_result(py, r, config);
+        return wrap_rhf_result(py, mol, r, config);
     }
     if config.irrep_nelec.is_some() && !config.symmetry {
         return Err(pyo3::exceptions::PyValueError::new_err(
@@ -1215,12 +1256,18 @@ fn solve_rhf_outcome(
     let r = py
         .allow_threads(|| solve_rhf(ctx, mol, prep, op, bounds, &config))
         .map_err(make_err)?;
-    wrap_rhf_result(py, r, config)
+    wrap_rhf_result(py, mol, r, config)
 }
 
 /// Warn if unconverged and wrap a closed-shell solve as an `RhfResult`.
-fn wrap_rhf_result(py: Python<'_>, r: ScfResult, config: RhfConfig) -> PyResult<PyObject> {
+fn wrap_rhf_result(
+    py: Python<'_>,
+    mol: &Molecule,
+    r: ScfResult,
+    config: RhfConfig,
+) -> PyResult<PyObject> {
     warn_rhf_not_converged(py, &r, &config);
+    let certificate_data = stamped_scf_certificate(mol, &r, &config);
     let result = PyRhfResult {
         energy: r.energy,
         converged: r.converged,
@@ -1230,6 +1277,7 @@ fn wrap_rhf_result(py: Python<'_>, r: ScfResult, config: RhfConfig) -> PyResult<
         orbital_energies_data: r.eps_alpha.clone(),
         scf_data: r,
         scf_config: config,
+        certificate_data,
     };
     Ok(Py::new(py, result)?.into_any())
 }
@@ -3128,14 +3176,17 @@ struct PyUhfResult {
     cosx_final: Option<ferric_scf::cosx_k::CosxFinalPass>,
     guess_basis_report: Option<ferric_scf::basis2::GuessBasisReport>,
     precision: ferric_core::gpu::provenance::PrecisionRecord,
+    certificate_data: ferric_core::certificate::Certificate,
 }
 
 /// The open-shell result both `run_uhf` and `run_rohf` return. ROHF leaves
 /// `density_beta`/`eps_beta` unset only when the solve has no β channel, so
 /// the fallbacks keep the accessors total.
-impl From<ScfResult> for PyUhfResult {
-    fn from(r: ScfResult) -> Self {
+impl PyUhfResult {
+    fn from_scf(r: ScfResult, mol: &Molecule, config: &RhfConfig) -> Self {
+        let certificate_data = stamped_scf_certificate(mol, &r, config);
         PyUhfResult {
+            certificate_data,
             energy: r.energy,
             converged: r.converged,
             iterations: r.iterations,
@@ -3170,6 +3221,13 @@ impl PyUhfResult {
     #[getter]
     fn precision(&self, py: Python<'_>) -> PyResult<PyObject> {
         precision_dict(py, &self.precision)
+    }
+    /// Validation certificate of this result (see `RhfResult.certificate`).
+    /// A UHF/UKS result solved without `stability_descent=True` carries the
+    /// "internal stability not checked" warning.
+    #[getter]
+    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
+        certificate_dict(py, &self.certificate_data)
     }
     fn density_alpha<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
         PyArray2::from_array(py, &self.density_alpha_data)
@@ -3336,7 +3394,7 @@ fn run_uhf(
         &config,
         fock_hook,
     )?;
-    Ok(r.into())
+    Ok(PyUhfResult::from_scf(r, &emol, &config))
 }
 
 // ── ROHF (open-shell, spin-pure) ──
@@ -3435,7 +3493,7 @@ fn run_rohf(
         &config,
         fock_hook,
     )?;
-    Ok(r.into())
+    Ok(PyUhfResult::from_scf(r, &emol, &config))
 }
 
 // ── Constrained DFT (cDFT) ──
@@ -8390,6 +8448,18 @@ impl PyDftResult {
     #[getter]
     fn precision(&self, py: Python<'_>) -> PyResult<PyObject> {
         precision_dict(py, &self.scf_data.precision)
+    }
+    /// Validation certificate of this result (see `RhfResult.certificate`),
+    /// with a `dispersion` approximation when a correction was added to
+    /// `total_energy`.
+    #[getter]
+    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
+        let c = stamped_scf_certificate(&self.xc_mol, &self.scf_data, &self.scf_config);
+        let c = match self.dispersion_model.as_deref() {
+            Some(m) => c.with_approximation("dispersion", m),
+            None => c,
+        };
+        certificate_dict(py, &c)
     }
     /// Exchange-correlation potential V_xc[D] of the converged density `D`
     /// (`density()`), as an AO matrix (n_bf x n_bf), on the SCF's own XC grid.

@@ -65,6 +65,8 @@ const _: () = assert!(
      it) instead of ferric-core/mpi alone."
 );
 
+/// Validation certificate of an SCF / KS-DFT result.
+pub mod certificate;
 pub mod checkpoint;
 /// SCF convergence result types and spin-channel descriptor.
 pub mod result;
