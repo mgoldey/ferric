@@ -1738,7 +1738,10 @@ mod tests {
 
     /// Closed shell: the polarized kernel at (D/2, D/2) along (X/2, X/2) is
     /// the derivative of the CLOSED-shell production V_xc[D] along X (the
-    /// route `XcFunctional.response` and `cphf(xc=)` take), water/6-31G.
+    /// route `XcFunctional.response`, `cphf(xc=)` and the RKS Newton /
+    /// stability / Z-vector / TDDFT consumers take), water/6-31G, r2SCAN and
+    /// SCAN. SCAN's bar is the polarized test's (its iso-orbital switching
+    /// function makes the FD truncation larger).
     #[test]
     fn mgga_fxc_matches_finite_difference_of_production_vxc_closed() {
         let _env_guard = crate::TEST_BUDGET_ENV_LOCK
@@ -1747,41 +1750,46 @@ mod tests {
         let (mol, bs, d_a, d_b) = uhf_reference(WATER, 1);
         let d = &d_a + &d_b;
         let nbf = d.nrows();
-        let xc = crate::libxc::xc_def_from_name_nspin("r2SCAN", 1).unwrap();
-        let k = MggaFxcKernel::new(
-            &mol,
-            &bs,
-            crate::libxc::xc_def_from_name_nspin("r2SCAN", 2).unwrap(),
-            &small_grid(),
-        )
-        .unwrap();
-        let half = 0.5 * &d;
-        let r = k.reference(&half, &half).unwrap();
-        let vclosed = |dm: &Array2<f64>| {
-            let dens = eval_density_closed(dm, &k.chi, &k.dchi);
-            let tau = crate::density_on_grid::eval_tau_closed(dm, &k.dchi);
-            crate::vxc::semilocal_vxc_closed(&k.grid, &k.chi, &k.dchi, &dens, Some(&tau), &xc).1
-        };
-        let mut rng = Xorshift64(0x5DEECE66D);
-        let mut worst = 0.0_f64;
-        for _ in 0..3 {
-            let x = rand_sym(&mut rng, nbf, 2e-3);
-            let xh = 0.5 * &x;
-            let (va, vb) = k.apply_with_ref(&r, &xh, &xh);
-            assert!(
-                max_abs_diff2(&va, &vb) <= 1e-12 * max_abs(&va),
-                "α ≠ β at equal spins"
-            );
-            let mut ladder = Vec::new();
-            for eps in [1e-2, 5e-3, 2.5e-3] {
-                let fd =
-                    (vclosed(&(&d + &(eps * &x))) - vclosed(&(&d - &(eps * &x)))) * (0.5 / eps);
-                ladder.push(fro_diff(&va, &fd) / fro(&va));
+        for (name, bar) in [("r2SCAN", 1e-6), ("SCAN", 1e-5)] {
+            let xc = crate::libxc::xc_def_from_name_nspin(name, 1).unwrap();
+            let k = MggaFxcKernel::new(
+                &mol,
+                &bs,
+                crate::libxc::xc_def_from_name_nspin(name, 2).unwrap(),
+                &small_grid(),
+            )
+            .unwrap();
+            let half = 0.5 * &d;
+            let r = k.reference(&half, &half).unwrap();
+            let vclosed = |dm: &Array2<f64>| {
+                let dens = eval_density_closed(dm, &k.chi, &k.dchi);
+                let tau = crate::density_on_grid::eval_tau_closed(dm, &k.dchi);
+                crate::vxc::semilocal_vxc_closed(&k.grid, &k.chi, &k.dchi, &dens, Some(&tau), &xc).1
+            };
+            let mut rng = Xorshift64(0x5DEECE66D);
+            let mut worst = 0.0_f64;
+            for _ in 0..3 {
+                let x = rand_sym(&mut rng, nbf, 2e-3);
+                let xh = 0.5 * &x;
+                let (va, vb) = k.apply_with_ref(&r, &xh, &xh);
+                assert!(
+                    max_abs_diff2(&va, &vb) <= 1e-12 * max_abs(&va),
+                    "{name}: α ≠ β at equal spins"
+                );
+                let mut ladder = Vec::new();
+                for eps in [1e-2, 5e-3, 2.5e-3] {
+                    let fd =
+                        (vclosed(&(&d + &(eps * &x))) - vclosed(&(&d - &(eps * &x)))) * (0.5 / eps);
+                    ladder.push(fro_diff(&va, &fd) / fro(&va));
+                }
+                eprintln!("{name} closed kernel vs FD(V): ladder {ladder:?}");
+                worst = worst.max(ladder.iter().cloned().fold(f64::INFINITY, f64::min));
             }
-            eprintln!("r2SCAN closed kernel vs FD(V): ladder {ladder:?}");
-            worst = worst.max(ladder.iter().cloned().fold(f64::INFINITY, f64::min));
+            assert!(
+                worst < bar,
+                "closed {name} kernel vs FD worst {worst:e} (bar {bar:e})"
+            );
         }
-        assert!(worst < 1e-6, "closed r2SCAN kernel vs FD worst {worst:e}");
     }
 
     /// Exactness anchor: on functionals with NO τ dependence the meta-GGA

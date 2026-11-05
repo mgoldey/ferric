@@ -147,8 +147,28 @@ The LDA kernel (`LdaFxcKernel::apply_with_ref`, `fxc.rs:121`) is the
 $\sigma$-free case $u^\alpha = f_{\alpha\alpha}\delta\rho_\alpha + f_{\alpha\beta}\delta\rho_\beta$, $\mathbf{w}=0$.
 The $\tau$-only meta-GGA kernel (`MggaFxcKernel`, `fxc.rs:817`) extends the
 per-point Hessian to the 7 variables $(\rho_\alpha,\rho_\beta,\sigma_{\alpha\alpha},\sigma_{\alpha\beta},\sigma_{\beta\beta},\tau_\alpha,\tau_\beta)$
-(`point_hessians`, `fxc.rs:709`). None of these kernels contains the VV10
-response; that is `vv10_potential_tangent` (`src/vv10.rs:1555`).
+(`point_hessians`, `fxc.rs:709`; libxc `v2rhotau`, `v2sigmatau`, `v2tau2` fill the
+$\tau$ rows). With $\tau_\sigma = \tfrac12\sum_\kappa\sum_{\mu\nu} D^\sigma_{\mu\nu}\,\partial_\kappa\chi_\mu\,\partial_\kappa\chi_\nu$
+linear in $D$,
+$$\delta\tau_\sigma = \tfrac12\sum_\kappa\sum_{\mu\nu}\delta D^\sigma_{\mu\nu}\,\partial_\kappa\chi_\mu\,\partial_\kappa\chi_\nu,\qquad
+\delta v_{x_i} = \sum_j f_{x_i x_j}\,\delta x_j,$$
+and the response adds one back-projected term to $u$ and $\mathbf w$ (`linearize_point`,
+`fxc.rs:746`; `backproject`, `fxc.rs:960`):
+$$\delta V^\sigma_{\mu\nu} = \sum_g w_g\Big[u^\sigma\chi_\mu\chi_\nu + \mathbf w^\sigma\cdot\nabla(\chi_\mu\chi_\nu)
++ \tfrac12\, t^\sigma\,\nabla\chi_\mu\cdot\nabla\chi_\nu\Big],\qquad t^\sigma = \delta v_{\tau_\sigma}.$$
+$v_\tau$ itself does not appear (only $\delta v_\tau$), because $V^\tau$ is linear in $v_\tau$
+and $\tau$ is linear in $D$. Every term is zeroed at points where the reference
+$\rho_\sigma$ is below the production `DENSITY_FLOOR`, as $V^\sigma$ is. None of these
+kernels contains the VV10 response; that is `vv10_potential_tangent` (`src/vv10.rs:1555`).
+
+Consumers. `ferric_scf::rohf::FxcKernelStore` (`ferric-scf/src/rohf.rs:113`) dispatches
+LDA / GGA / meta-GGA for the orbital-Hessian users: RKS and UKS Newton steps,
+RKS/UKS internal stability, and the RKS/UKS/ROKS Z-vector
+(`zvector_ks`). `lr_kernel::SingletKernel` (`src/lr_kernel.rs:87`) does the same for
+the singlet $(ia|f_{\alpha\alpha}+f_{\alpha\beta}|jb)$ block of TDA / Casida TDDFT
+(`ferric_tddft::run_tddft`, `ferric_gw::tddft::run_tda_dft`). Refused for meta-GGA:
+ROKS Newton / augmented-Hessian and TRAH (DIIS is kept; not anchored) and the analytic nuclear Hessian (its $\tau$-dependent
+$V_{xc}$ nuclear derivatives are not implemented).
 
 - Proof: `scripts/dft_fxc_kernel_sympy.py` ($\delta\sigma$, $u$, $\mathbf w$ for a
   generic cubic $e$ whose first and second derivatives are independent symbols;
@@ -158,6 +178,13 @@ response; that is `vv10_potential_tangent` (`src/vv10.rs:1555`).
   `fxc::tests::mgga_fxc_matches_finite_difference_of_production_vxc_polarized` /
   `_closed`, `fxc::tests::mgga_kernel_on_gga_functional_equals_gga_kernel`,
   `ferric-scf/tests/uhf_newton_smoke.rs::uks_pbe_newton_engages_gga_fxc_and_matches_diis` (end to end: UKS/PBE Newton reaches the DIIS energy).
+- Meta-GGA consumers (r2SCAN, 6-31G, matched (75,110) grid, references from
+  `scripts/validation/gen_mgga_response.py` and `gen_tddft_refs.py`):
+  `ferric-scf/tests/mgga_response_vs_pyscf.rs` (UKS NH2 and RKS water dense orbital-Hessian
+  spectra and stability $\lambda_{\min}$ vs PySCF `gen_g_hop_uhf` / `gen_g_hop_rhf`; RKS/UKS
+  Newton vs DIIS energy), `ferric-rpa/tests/mbd_scf_gradient{,_uks,_roks}.rs::*_r2scan`
+  (Z-vector: MBD@rsSCS gradient vs FD of the full SCF pipeline),
+  `ferric-tddft/tests/validation_tddft.rs::water_631g_r2scan` (TDA / Casida vs PySCF `get_ab`).
 
 ## VV10 nonlocal correlation
 
