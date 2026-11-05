@@ -20,7 +20,7 @@
 //!
 //! xtb reports failures by queueing them on the environment object rather than
 //! returning a status code. Every FFI call here is followed by
-//! [`XtbEnv::check`], which drains the queue into a typed [`FerricError`]. No
+//! `XtbEnv::check`, which drains the queue into a typed [`FerricError`]. No
 //! call site panics on a library error.
 //!
 //! # Threading -- libxtb is NOT thread-safe (MEASURED)
@@ -33,7 +33,7 @@
 //! This was measured, not assumed: this crate's own test suite passes 8/8 under
 //! `--test-threads=1` and fails 3/8 under the default parallel harness, on
 //! energies and gradients that are exactly correct when run serially. That is
-//! why [`tests/xtb_singlepoint.rs`] must be run serially.
+//! why `tests/xtb_singlepoint.rs` must be run serially.
 //!
 //! Consequences for callers:
 //!
