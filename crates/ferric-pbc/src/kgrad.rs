@@ -119,7 +119,7 @@ use crate::ewald::{
     default_ewald_omega, ewald_nuclear_gradient_parts, madelung_constant, DEFAULT_EWALD_PRECISION,
 };
 use crate::grad::hcore_rotation_built;
-use crate::grad::{ao_atoms, GRAD_NUCLEUS_EXPONENT};
+use crate::grad::{ao_atoms, max_nan, GRAD_NUCLEUS_EXPONENT};
 use crate::hcore::kpoint::PeriodicHcoreK;
 use crate::hcore::{
     gvector_list_bytes, hcore_pair_images, lr_gcut, sr_attraction_deriv_visit, PeriodicHcoreConfig,
@@ -600,16 +600,17 @@ impl KSpins {
             let sdf = sk.dot(d).dot(f);
             fds.iter()
                 .zip(sdf.iter())
-                .fold(0.0_f64, |m, (a, b)| m.max((a - b).norm()))
+                .fold(0.0_f64, |m, (a, b)| max_nan(m, (a - b).norm()))
         };
         let mut w = 0.0_f64;
         for k in 0..self.nk() {
             match self {
-                Self::Restricted { d, f } => w = w.max(one(&f[k], &d[k], &s[k])),
+                Self::Restricted { d, f } => w = max_nan(w, one(&f[k], &d[k], &s[k])),
                 Self::Unrestricted { da, db, fa, fb } | Self::RestrictedOpen { da, db, fa, fb } => {
-                    w = w
-                        .max(one(&fa[k], &da[k], &s[k]))
-                        .max(one(&fb[k], &db[k], &s[k]));
+                    w = max_nan(
+                        w,
+                        max_nan(one(&fa[k], &da[k], &s[k]), one(&fb[k], &db[k], &s[k])),
+                    );
                 }
             }
         }
@@ -833,9 +834,9 @@ pub(crate) fn check_inputs_rsh(
     let dk = kpts
         .iter()
         .zip(mesh.kpts())
-        .map(|(a, b)| (0..3).map(|i| (a[i] - b[i]).abs()).fold(0.0_f64, f64::max))
-        .fold(0.0_f64, f64::max);
-    if kpts.len() != nk || dk > 1e-12 {
+        .map(|(a, b)| (0..3).map(|i| (a[i] - b[i]).abs()).fold(0.0_f64, max_nan))
+        .fold(0.0_f64, max_nan);
+    if kpts.len() != nk || !(dk <= 1e-12) {
         return Err(FerricError::General(format!(
             "{who}: the SCF's k-points are not this mesh's (max |Δk| {dk:.2e})"
         )));
@@ -1750,7 +1751,7 @@ pub(crate) fn check_fock(
             )));
         }
         for (x, y) in a.iter().zip(b.iter()) {
-            worst = worst.max((x - y).norm());
+            worst = max_nan(worst, (x - y).norm());
         }
     }
     if rebuilt.len() != stored.len() || !(worst <= FOCK_CONSISTENCY_BAR) {
@@ -1802,7 +1803,7 @@ pub(crate) fn check_fock_mod_madelung(
     for (_, rebuilt, stored, x) in groups {
         for ((a, b), xk) in rebuilt.iter().zip(stored.iter()).zip(x) {
             for ((ra, sb), xv) in a.iter().zip(b.iter()).zip(xk.iter()) {
-                worst = worst.max((sb - ra - xv * c).norm());
+                worst = max_nan(worst, (sb - ra - xv * c).norm());
             }
         }
     }
@@ -1863,7 +1864,7 @@ pub(crate) fn ecp_presence(
         if let Some(ve) = &hk.v_ecp {
             r -= &ve[k];
         }
-        worst = worst.max(r.iter().fold(0.0_f64, |m, z| m.max(z.norm())));
+        worst = max_nan(worst, r.iter().fold(0.0_f64, |m, z| max_nan(m, z.norm())));
     }
     match (&hk.v_ecp, kept) {
         (Some(_), Some(n)) => {
@@ -2326,4 +2327,86 @@ fn dense_two_electron(
         )?;
     }
     Ok((jao, kao, n_chunks, n_kv))
+}
+
+#[cfg(test)]
+mod gate_tests {
+    //! Crafted-input pins for [`ecp_presence`]: the count cross-check and the
+    //! `h = T + V (+ V_ECP)` bar (`HK_ECP_CONSISTENCY_BAR`), reached without an
+    //! SCF. 1x1 blocks, one k-point; `v_ecp` / `n_ecp_triples` are set by hand.
+    use super::*;
+
+    fn hk(v_ecp: Option<f64>, n_triples: usize, h_err: f64) -> PeriodicHcoreK {
+        let m = |x: f64| vec![Array2::from_elem((1, 1), C64::new(x, 0.0))];
+        let (t, v) = (0.5, -1.25);
+        let ve = v_ecp.unwrap_or(0.0);
+        PeriodicHcoreK {
+            s: m(1.0),
+            t: m(t),
+            v: m(v),
+            v_ecp: v_ecp.map(m),
+            h: m(t + v + ve + h_err),
+            enn: 0.0,
+            omega: 0.8,
+            n_images: 1,
+            n_sr_triplets: 0,
+            n_sr_triplets_ordered: 0,
+            n_ecp_triples: n_triples,
+            n_g_lr: 0,
+            sr_rotated_columns: 0,
+            budget_bytes: 0,
+        }
+    }
+
+    /// No ECP: `|h - T - V|` must be <= 1e-10 (roundoff bar).
+    #[test]
+    fn no_ecp_t_plus_v_bar_is_one_e_minus_ten() {
+        assert_eq!(ecp_presence("w", &hk(None, 0, 5e-11), None).unwrap(), 0);
+        let e = ecp_presence("w", &hk(None, 0, 2e-10), None)
+            .expect_err("2e-10 is outside the bar")
+            .to_string();
+        assert!(e.contains("differs from T + V by"), "{e}");
+        assert!(!e.contains("V_ECP"), "{e}");
+    }
+
+    /// With an ECP the same bar guards `T + V + V_ECP`.
+    #[test]
+    fn ecp_t_plus_v_plus_vecp_bar_is_one_e_minus_ten() {
+        assert_eq!(
+            ecp_presence("w", &hk(Some(0.3), 7, 5e-11), Some(7)).unwrap(),
+            7
+        );
+        let e = ecp_presence("w", &hk(Some(0.3), 7, 2e-10), Some(7))
+            .expect_err("2e-10 is outside the bar")
+            .to_string();
+        assert!(e.contains("differs from T + V + V_ECP by"), "{e}");
+    }
+
+    /// A NaN in `h` is refused (not swallowed by `f64::max`), with and
+    /// without an ECP.
+    #[test]
+    fn nan_in_h_is_refused() {
+        let e = ecp_presence("w", &hk(None, 0, f64::NAN), None)
+            .expect_err("NaN h, no ECP")
+            .to_string();
+        assert!(e.contains("differs from T + V by"), "{e}");
+        let e = ecp_presence("w", &hk(Some(0.3), 7, f64::NAN), Some(7))
+            .expect_err("NaN h, ECP")
+            .to_string();
+        assert!(e.contains("differs from T + V + V_ECP by"), "{e}");
+    }
+
+    /// The walk's kept-triple count must equal hcore's, exactly (integers).
+    #[test]
+    fn ecp_triple_count_mismatch_is_refused() {
+        let e = ecp_presence("k gradient", &hk(Some(0.3), 7, 0.0), Some(8))
+            .expect_err("8 kept vs 7 in hcore")
+            .to_string();
+        assert!(e.contains("keeps 8 triples"), "{e}");
+        assert!(e.contains("V_ECP kept 7"), "{e}");
+        let e = ecp_presence("k gradient", &hk(Some(0.3), 7, 0.0), Some(6))
+            .expect_err("6 kept vs 7 in hcore")
+            .to_string();
+        assert!(e.contains("keeps 6 triples"), "{e}");
+    }
 }

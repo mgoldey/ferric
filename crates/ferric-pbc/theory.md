@@ -352,4 +352,12 @@ bracketing each tolerance), `kuxcgrad.rs` `gate_tests::projector_tolerance_is_on
 `tests/pbc_kuxcgrad_ro.rs` `scf_kpoints_displaced_from_the_mesh_are_refused`;
 the orbital-gradient, commutator, Fock-consistency, lambda and exchange-fraction
 gates are pinned by the existing `pbc_kuxcgrad*.rs`, `pbc_grad_ro.rs`,
-`pbc_kstress*.rs` and `validation_*stress*.rs` files.
+`pbc_kstress*.rs` and `validation_*stress*.rs` files. Unit tests with crafted
+inputs reach three more refusals: `grad.rs` `gate_tests` (RS-GDF overlap,
+$\max\lvert\Delta S\rvert$ at $5\times10^{-13}$ accepted, $2\times10^{-12}$ and
+NaN refused), `kgrad.rs` `gate_tests` (`ecp_presence`: the $10^{-10}$ bar with
+and without an ECP at $5\times10^{-11}$ / $2\times10^{-10}$ / NaN, and the
+kept-triple count mismatch), and `tests/pbc_grad_ecp.rs` (Gamma force and
+stress triple-count mismatch). Every max-reduction feeding a refusal
+propagates NaN (`grad::max_nan`) and the gate is written `!(x <= bar)`, so a
+NaN is refused.

@@ -791,6 +791,21 @@ fn gamma_forces_carry_the_ecp_term_and_stress_carries_its_strain() {
     .expect_err("mismatched ECP screen must error")
     .to_string();
     assert!(err.contains("ECP force screen"), "{err}");
+
+    // Same refusal on the stress path (stress.rs `ecp_strain_term`).
+    let err = gamma_rhf_stress(
+        &cell,
+        &p,
+        &other,
+        &hc,
+        &eri,
+        &scf,
+        ExxDiv::None,
+        &GammaStressConfig::default(),
+    )
+    .expect_err("mismatched ECP screen must error on the stress")
+    .to_string();
+    assert!(err.contains("ECP strain screen"), "{err}");
 }
 
 // ============================================================ SCF FD anchor
