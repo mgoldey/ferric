@@ -42,6 +42,12 @@ mismatch.
      Kirkwood energy and the Gauss-law charge as the order goes 50 -> 110 ->
      302, with |E_302 - E_exact| <= |E_302 - E_110|. The Rust twin is
      crates/ferric-pcm/tests/ief_limits.rs.
+  8  Response gradient (gradient.rs response_term): for S(t), D(t), A(t)
+     depending on a nuclear coordinate t at fixed v, E = 1/2 v^T K^-1 R v has
+     dE/dt = 1/2 [ -z^T S' x + f/(2 pi) y^T D' u + f/(2 pi) sum_j (D^T y)_j
+     w_j A'_jj ] with x = K^-1 R v, y = K^-T v, w = S x + v, u = A w,
+     z = y - f/(2 pi) A D^T y (exact, n = 3). Controls: dropping the area
+     term, or using q_sym for x, breaks it.
 
 Run: python3 scripts/pcm_ief_sympy.py  (needs sympy, numpy, scipy >= 1.15)
 """
@@ -276,6 +282,54 @@ if lebedev_rule is not None:
     q = np.linalg.solve(K, Rm @ vv)
     rel = abs(0.5 * q @ vv - kirkwood_energy(78.4, rad, 0.0)) / abs(kirkwood_energy(78.4, rad, 0.0))
     check("7 control: f=(eps-1)/eps misses Born by > 1e-4", rel > 1e-4, f"rel {rel:.2e}")
+
+# ---------------------------------------------------------------- claim 8
+t = sp.symbols("t", real=True)
+n8 = 3
+rng8 = np.random.default_rng(47)
+M8 = rand_rat(rng8, (n8, n8))
+S8 = M8 * M8.T + 3 * sp.eye(n8)
+S8p = rand_rat(rng8, (n8, n8))
+S8p = S8p + S8p.T  # S stays symmetric
+D8 = rand_rat(rng8, (n8, n8))
+D8p = rand_rat(rng8, (n8, n8))
+A8 = sp.diag(*[sp.Rational(int(x), 5) for x in rng8.integers(1, 9, n8)])
+A8p = sp.diag(*[sp.Rational(int(x), 7) for x in rng8.integers(-5, 6, n8)])
+v8 = rand_rat(rng8, (n8, 1))
+f8 = sp.Rational(77, 79)
+# K = S - p DA S and R = -f I + p DA with p = f/(2 pi); the identity only uses
+# that the same p multiplies DA in both, so p is kept an exact rational
+# (pi itself makes the exact derivative far slower without changing it).
+p8 = sp.Rational(1, 7)
+I8 = sp.eye(n8)
+
+
+def e_of(St, Dt, At):
+    DA = Dt * At
+    K = St - p8 * DA * St
+    Rm = -f8 * I8 + p8 * DA
+    return ((v8.T * K.LUsolve(Rm * v8)) / 2)[0]
+
+
+e_t = e_of(S8 + t * S8p, D8 + t * D8p, A8 + t * A8p)
+de_exact = sp.diff(e_t, t).subs(t, 0)
+DA8 = D8 * A8
+K8 = S8 - p8 * DA8 * S8
+R8 = -f8 * I8 + p8 * DA8
+x8 = K8.LUsolve(R8 * v8)
+y8 = K8.T.LUsolve(v8)
+w8 = S8 * x8 + v8
+u8 = A8 * w8
+dty8 = D8.T * y8
+z8 = y8 - p8 * A8 * dty8
+pref8 = p8
+area_term = pref8 * sum(dty8[j] * w8[j] * A8p[j, j] for j in range(n8))
+formula = (-(z8.T * S8p * x8)[0] + pref8 * (y8.T * D8p * u8)[0] + area_term) / 2
+check("8 response gradient formula = d/dt (1/2 v^T K^-1 R v)", zero(formula - de_exact))
+check("8 control: dropping the area term breaks it", not zero(formula - area_term / 2 - de_exact))
+q8 = (x8 + R8.T * y8) / 2
+bad = (-(z8.T * S8p * q8)[0] + pref8 * (y8.T * D8p * u8)[0] + area_term) / 2
+check("8 control: q_sym in place of x breaks it", not zero(bad - de_exact))
 
 if FAILED:
     print(f"\n{len(FAILED)} claim(s) FAILED: {FAILED}")

@@ -851,8 +851,9 @@ impl PointChargeCfg {
 /// Which kinds/tasks honour it is decided by
 /// [`Config::validate_cli_wired_keys`]: the reaction field enters the SCF, so
 /// kinds whose reported number is the SCF (or, for `pdep-rpa`, an SCF-plus-
-/// correlation total on that reference) accept it; gradient tasks refuse it,
-/// because no gradient in the workspace has a PCM term.
+/// correlation total on that reference) accept it; `task = "optimize"` is
+/// accepted for the SCF kinds, whose gradients carry the analytic IEF-PCM
+/// term; every other task refuses it.
 #[derive(Deserialize, Default, Debug, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct PcmCfg {
@@ -3925,6 +3926,12 @@ const COSX_GRADIENT_KINDS: &[&str] = &["rhf", "ksdft", "uhf", "rohf"];
 /// response term).
 const PCM_KINDS: &[&str] = &["rhf", "uhf", "rohf", "ksdft", "pdep-rpa"];
 
+/// `method.kind`s whose `task = "optimize"` honours `[pcm]`: the SCF kinds,
+/// whose gradients (`restricted_scf_gradient` / `unrestricted_scf_gradient` /
+/// `restricted_open_scf_gradient`) add the analytic IEF-PCM term
+/// (`ferric_pcm::pcm_gradient`).
+const PCM_OPTIMIZE_KINDS: &[&str] = &["rhf", "uhf", "rohf", "ksdft"];
+
 impl Config {
     /// The typed `[gpu]` + `[precision]` request (call after
     /// `validate_loaded_values`; a malformed `[precision]` key reads as unset
@@ -4071,11 +4078,14 @@ impl Config {
                         .to_string(),
                 );
             }
-            if task != "energy" {
+            let optimize_ok = task == "optimize" && PCM_OPTIMIZE_KINDS.contains(&kind);
+            if task != "energy" && !optimize_ok {
                 return Err(format!(
-                    "[pcm] is not supported with method.task = \"{task}\": no gradient in \
-                     ferric has an IEF-PCM term, so the geometry/Hessian would be the vacuum \
-                     one while the energies are solvated. Use task = \"energy\"."
+                    "[pcm] is not supported with method.task = \"{task}\" for kind = \
+                     \"{kind}\": the IEF-PCM gradient term is wired into task = \"optimize\" \
+                     for kind = {} only, so this run would mix a vacuum gradient/Hessian with \
+                     solvated energies. Use task = \"energy\".",
+                    PCM_OPTIMIZE_KINDS.join(", ")
                 ));
             }
             if !PCM_KINDS.contains(&kind) {
@@ -11104,12 +11114,19 @@ mod cli_wired_keys_tests {
             &cfg("rimp2", "energy", 1, "[pcm]\nsolvent = \"water\"\n"),
             "wired for method.kind",
         );
-        for task in ["optimize", "frequencies"] {
-            refused(
-                &cfg("rhf", task, 1, "[pcm]\nsolvent = \"water\"\n"),
-                "no gradient",
-            );
+        for kind in ["rhf", "uhf", "rohf", "ksdft"] {
+            cfg(kind, "optimize", 1, "[pcm]\nsolvent = \"water\"\n")
+                .validate_cli_wired_keys()
+                .unwrap_or_else(|e| panic!("{kind} optimize: {e}"));
         }
+        refused(
+            &cfg("rhf", "frequencies", 1, "[pcm]\nsolvent = \"water\"\n"),
+            "gradient term is wired into task = \"optimize\"",
+        );
+        refused(
+            &cfg("pdep-rpa", "optimize", 1, "[pcm]\nsolvent = \"water\"\n"),
+            "gradient term is wired into task = \"optimize\"",
+        );
         refused(
             &cfg(
                 "rhf",

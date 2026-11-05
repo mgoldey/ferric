@@ -226,10 +226,122 @@ the $\tfrac12\operatorname{Tr}[P(h+F)]$ trace
 self-consistency between $q$ and $P$ is carried by the outer SCF/DIIS loop;
 the charge solve itself is direct.
 
-## 8. Scope
+## 8. Nuclear gradient
 
-No cavitation, dispersion or repulsion terms; no analytic nuclear gradient;
-no anisotropic or ionic-strength IEF variants. The cavity differs from
+The SCF energy is variational in the density, so its nuclear gradient is the
+solvent-free SCF gradient evaluated with the solvated orbitals and
+energy-weighted density (which already carry $V^{\mathrm{pcm}}$ through the
+Fock matrix) plus the derivative of $E_{\mathrm{pcm}}$ at fixed AO density $P$
+(`gradient.rs:71` `pcm_gradient_parts`; added to the SCF gradient in
+`ferric-scf/src/gradient.rs` `with_pcm_gradient` by
+`restricted_scf_gradient`, `unrestricted_scf_gradient` and
+`restricted_open_scf_gradient`). With
+
+$$ x = K^{-1}Rv, \qquad y = K^{-\mathsf T}v, \qquad q = \tfrac12\left(x + R^{\mathsf T}y\right) \quad (`gradient.rs:100`,\ `:106`), $$
+
+$$ \frac{\partial E_{\mathrm{pcm}}}{\partial R_{A\alpha}} = q^{\mathsf T}\frac{\partial v}{\partial R_{A\alpha}} + \tfrac12\, v^{\mathsf T}\frac{\partial (K^{-1}R)}{\partial R_{A\alpha}}\, v . $$
+
+Each tessera moves rigidly with its sphere's atom $A(k)$:
+$\partial \mathbf r_k/\partial \mathbf R_B = \delta_{A(k)B}\,I$. The normals
+$\hat{\mathbf n}_k$, the widths $\xi_k$ and the sphere radii are geometry
+independent; the areas and $S_{kk}$ depend on the geometry only through
+$\mathrm{swf}_k$.
+
+### 8.1 Potential term
+
+$q^{\mathsf T}\partial v$ is the gradient of the interaction of fixed charges
+$q_k$ at $\mathbf r_k$ with the solute's nuclei and electrons. For point
+probes (`gradient.rs:269` `potential_term_point`) the electronic part is
+$\sum_{\mu\nu}P_{\mu\nu}\,\partial V^{\mathrm{pcm}}_{\mu\nu}(q)$ from libint's
+nuclear-attraction derivative engine with the tesserae as the only charges:
+the two shell-centre blocks go to the AO atoms, the block of charge $k$
+(`gradient.rs:319`) to $A(k)$. The classical part
+$\sum_k q_k \sum_{B\ne A(k)} Z_B\,\phi(|\mathbf r_k-\mathbf R_B|)$,
+$\phi(r) = 1/r$, moves $A(k)$ against $B$ (`gradient.rs:403`
+`nuclear_tessera_term`). For Gaussian probes (`gradient.rs:336`
+`potential_term_smeared`) $\phi(r) = \operatorname{erf}(\xi_k r)/r$ and the
+electronic part uses the derivative 3-centre integrals
+$\partial(\mu\nu|g_k)/N_k$ (site block to $A(k)$).
+
+### 8.2 Response term
+
+With $f/2\pi$ written $p$, differentiating $K = (I - pDA)S$ and
+$R = -f(I - DA/2\pi)$ gives **[sympy 8]** (`gradient.rs:189` `response_term`)
+
+$$ \tfrac12 v^{\mathsf T}\partial(K^{-1}R)v = \tfrac12\Big[ -z^{\mathsf T}(\partial S)\,x + p\, y^{\mathsf T}(\partial D)\,u + p\sum_j (D^{\mathsf T}y)_j\, w_j\, \partial a_j \Big], $$
+
+$$ w = Sx + v, \qquad u = Aw, \qquad z = y - p\,A D^{\mathsf T} y . $$
+
+Off-diagonal elements depend on $\mathbf r_{ij}$. With $S_{ij} = S(r_{ij})$
+and $D_{ij} = h(r_{ij})\,\nu_{ij}$, $h(r) = -S'(r)/r$ (`gradient.rs:135`
+`sd_kernel`),
+
+$$ \nabla_{\mathbf r_i} S_{ij} = S'(r)\,\hat{\mathbf r}_{ij}, \qquad
+   \nabla_{\mathbf r_i} D_{ij} = h'(r)\,\nu_{ij}\,\hat{\mathbf r}_{ij} + h(r)\,\hat{\mathbf n}_j , $$
+
+and $\nabla_{\mathbf r_j} = -\nabla_{\mathbf r_i}$ (`gradient.rs:230`; pairs on
+one sphere cancel and are skipped). For `GaussianSmeared`
+($c = 2/\sqrt\pi$, $\xi = \xi_{ij}$):
+
+$$ S' = \frac{c\,\xi e^{-\xi^2r^2}}{r} - \frac{\operatorname{erf}(\xi r)}{r^2}, \qquad
+   h' = \frac{3c\,\xi e^{-\xi^2r^2}}{r^3} - \frac{3\operatorname{erf}(\xi r)}{r^4} + \frac{2c\,\xi^3 e^{-\xi^2r^2}}{r}, $$
+
+and for `PointCharge` $S' = -1/r^2$, $h = 1/r^3$, $h' = -3/r^4$.
+
+Diagonal and area terms are all proportional to
+$\partial\ln\mathrm{swf}_j$: $\partial a_j = a_j\,\partial\ln\mathrm{swf}_j$;
+`GaussianSmeared` $\partial S_{jj} = -S_{jj}\,\partial\ln\mathrm{swf}_j$ and
+$D_{jj}$ constant; `PointCharge` $\partial S_{jj} = -\tfrac12 S_{jj}\,\partial\ln\mathrm{swf}_j$
+and $\partial D_{jj} = -\tfrac12 D_{jj}\,\partial\ln\mathrm{swf}_j$ (`gradient.rs:243`,
+`:247`). The switching derivative is
+
+$$ \nabla_{\mathbf r_j}\ln\mathrm{swf}_j = \sum_{B\ne A(j)} \frac{h_{\mathrm{sw}}'(t_{jB})}{h_{\mathrm{sw}}(t_{jB})}\,\frac{1}{R^{\mathrm{sw}}_B}\,\hat{\mathbf r}_{jB},
+   \qquad t_{jB} = \frac{|\mathbf r_j-\mathbf R_B| - R^{\mathrm{in}}_B}{R^{\mathrm{sw}}_B}, $$
+
+with $h_{\mathrm{sw}}'(t) = 30t^2(1-t)^2$ (`cavity.rs:79` `switch_h_deriv`),
+$A(j)$ receiving $+$ and $B$ receiving $-$ (`gradient.rs:261`). $R^{\mathrm{sw}}$,
+$R^{\mathrm{in}}$ come from the shared `cavity.rs:100` `SphereGeometry::new`
+that `build_cavity` uses.
+
+### 8.3 Validation
+
+`tests/pcm_gradient.rs` (fixed $P$, FD of `pcm_step`'s energy; bar = the
+change between steps $h$ and $2h$ plus a round-off floor) and
+`ferric-scf/tests/pcm_gradient.rs` (SCF level, same bar plus $4\,\delta E/h$):
+
+| check | system | max \|analytic − reference\| (Ha/Bohr) |
+|---|---|---:|
+| FD, fixed $P$, default kinds, Lebedev 110 | water/STO-3G | 5.7e-8 |
+| FD, fixed $P$, point / Gaussian probes, Lebedev 50 | C1 methanol/STO-3G | 2.0e-7 / 2.0e-7 |
+| FD, fixed $P$, `PointCharge` S/D, $h = 2.5\times10^{-4}$ | water/STO-3G | 8.6e-7 |
+| FD of the solvated RHF energy | water/STO-3G | 1.4e-7 |
+| FD of the solvated RHF energy, Lebedev 50 | C1 methanol/STO-3G | 2.9e-7 |
+| FD of the solvated RKS (SVWN) energy, Gaussian probes | water/STO-3G | 1.4e-7 |
+| FD of the solvated UHF / ROHF energy | NH2/STO-3G | 1.3e-7 / 1.3e-7 |
+| torque vs FD rigid rotation (torque 1.36e-4), Lebedev 50 | C1 methanol/STO-3G | 8.0e-9 |
+| PySCF 2.13 `nuc_grad_method()`, IEF-PCM, 302 points, Gaussian probes | water / methanol, STO-3G | 4.2e-11 / 7.2e-11 |
+
+The PySCF comparison runs on ferric's own cavity at `lebedev_order = 302`,
+which reproduces PySCF's `gen_surface` (tessera count, total area and area
+centroid asserted to 1e-10). Each part of the gradient sums to zero over the
+atoms (translation, cavity included); the torque equals the finite-difference
+derivative under a rigid rotation (the Lebedev frame is fixed in the lab, so
+the torque is not zero in general). At $\varepsilon = 1 + 2\times10^{-9}$ the
+solvated gradient equals the vacuum gradient to 3.3e-12.
+
+`PointCharge` S/D energies are far rougher in the switching zone than
+`GaussianSmeared` ones: on C1 methanol at Lebedev 50 (fixed model density)
+components reach ~10 Ha/Bohr and central differences are not yet in their
+$O(h^2)$ regime at $h = 2.5\times10^{-4}$.
+
+`PcmConfig::cavity` (an injected tessera list) has no gradient: it carries no
+geometry dependence, and `pcm_gradient` refuses it.
+
+## 9. Scope
+
+No cavitation, dispersion or repulsion terms; no analytic nuclear Hessian
+(frequencies with PCM are refused by the CLI); no anisotropic or
+ionic-strength IEF variants. The cavity differs from
 PySCF's `gen_surface` in the default Lebedev order (110 vs 302), point vs
 Gaussian probes, and untabulated elements (ferric's 2.0 Å fallback);
 `ferric-scf/tests/validation_pcm.rs` measures ferric's own-cavity solvation

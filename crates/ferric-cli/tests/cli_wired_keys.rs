@@ -283,10 +283,10 @@ fn pcm_is_refused_where_it_is_not_honoured() {
         &["[pcm]", "rimp2"],
     );
     assert_refused(
-        "pcm_opt",
+        "pcm_freq",
         &body("water.xyz", 1, "sto-3g", "rhf", pcm)
-            .replace("task = \"energy\"", "task = \"optimize\""),
-        &["[pcm]", "no gradient"],
+            .replace("task = \"energy\"", "task = \"frequencies\""),
+        &["[pcm]", "task = \"optimize\""],
     );
     assert_refused(
         "pcm_bad_name",
@@ -298,6 +298,79 @@ fn pcm_is_refused_where_it_is_not_honoured() {
             "[pcm]\nsolvent = \"watr\"\n",
         ),
         &["not recognised"],
+    );
+}
+
+/// `task = "optimize"` with `[pcm]` on `rhf` (water/STO-3G): the run
+/// converges, and at the printed geometry the library's solvated analytic
+/// gradient (`restricted_scf_gradient`, PCM term included) is below the
+/// optimizer's `g_max_thresh`, while the same gradient WITHOUT the PCM term
+/// is not (negative control: a run that ignored the PCM gradient would have
+/// stopped elsewhere). The printed final energy is the library's solvated
+/// SCF energy at that geometry.
+#[test]
+fn pcm_rhf_optimize_reaches_a_solvated_stationary_point() {
+    let toml = body(
+        "water.xyz",
+        1,
+        "sto-3g",
+        "rhf",
+        &format!("{TIGHT}[pcm]\nsolvent = \"water\"\n"),
+    )
+    .replace("task = \"energy\"", "task = \"optimize\"");
+    let out = run_ok("pcm_optimize", &toml);
+    assert!(out.contains("converged  = true"), "not converged:\n{out}");
+    let e_cli = value(&out, "final E");
+
+    let mut l = lib("water.xyz", 1, "sto-3g");
+    let start = out
+        .find("Final Optimized Geometry (Bohr):")
+        .expect("geometry block");
+    for (atom, line) in l.mol.atoms.iter_mut().zip(out[start..].lines().skip(1)) {
+        let f: Vec<f64> = line
+            .split_whitespace()
+            .skip(2)
+            .map(|t| t.parse().unwrap())
+            .collect();
+        (atom.x, atom.y, atom.zpos) = (f[0], f[1], f[2]);
+    }
+    let bs = basis::bundled("sto-3g").unwrap();
+    l.prep = PreparedBasis::new(&l.mol, &bs).unwrap();
+    l.bounds = SchwarzBounds::compute_for_screening(
+        Operator::coulomb(),
+        &l.prep,
+        ScreeningKind::default(),
+    )
+    .unwrap();
+    let pcm = ferric_pcm::PcmConfig::for_solvent("water").unwrap();
+    let cfg = RhfConfig {
+        pcm: Some(pcm.clone()),
+        ..tight()
+    };
+    let r = rhf(&l, &cfg);
+    assert_close("optimize final E", e_cli, r.energy, 1e-8);
+    let g = ferric_scf::gradient::restricted_scf_gradient(
+        &l.mol,
+        &l.prep,
+        &bs,
+        Operator::coulomb(),
+        &l.bounds,
+        &cfg,
+        &r,
+    )
+    .unwrap();
+    let g_pcm = ferric_pcm::pcm_gradient(&l.mol, &l.prep, r.density_total(), &pcm).unwrap();
+    let gmax = |a: &ndarray::Array2<f64>| a.iter().fold(0.0_f64, |m, x| m.max(x.abs()));
+    let g_vacuum_form = &g - &g_pcm;
+    assert!(
+        gmax(&g) < 4.5e-4,
+        "solvated gradient at the optimum: {}",
+        gmax(&g)
+    );
+    assert!(
+        gmax(&g_vacuum_form) > 4.5e-4,
+        "control: without the PCM term the gradient is {} (must not look converged)",
+        gmax(&g_vacuum_form)
     );
 }
 

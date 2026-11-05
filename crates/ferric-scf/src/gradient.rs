@@ -724,13 +724,31 @@ pub fn restricted_scf_gradient(
     refuse_final_pass_result(result)?;
     let ext = config.external_potential.as_ref();
     let cosx = crate::cosx_gradient::scf_exchange_is_cosx(config, false)?.then_some(&config.cosx);
-    match (config.xc.as_deref(), cosx) {
+    let grad = match (config.xc.as_deref(), cosx) {
         (Some(xc), cosx) => {
             closed_ks_gradient_on_scf_grid(mol, prep, bs, op, bounds, xc, result, config, cosx)
         }
         (None, Some(c)) => rhf_gradient_cosx(mol, prep, op, bounds, result, ext, c),
         (None, None) => rhf_gradient(mol, prep, op, bounds, result, ext),
+    }?;
+    with_pcm_gradient(grad, mol, prep, config, result)
+}
+
+/// `grad + ∂E_pcm/∂R` ([`ferric_pcm::pcm_gradient`] at the converged total
+/// density) when `config.pcm` is set; `grad` unchanged otherwise. The rest
+/// of the gradient already sees the reaction field through the solvated
+/// orbitals and energy-weighted density.
+fn with_pcm_gradient(
+    mut grad: Array2<f64>,
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    config: &crate::rhf::RhfConfig,
+    result: &ScfResult,
+) -> Result<Array2<f64>, FerricError> {
+    if let Some(pcm) = config.pcm.as_ref() {
+        grad += &ferric_pcm::pcm_gradient(mol, prep, result.density_total(), pcm)?;
     }
+    Ok(grad)
 }
 
 /// The closed-shell KS gradient on the XC grids `config`'s SCF ran on.
@@ -778,7 +796,7 @@ pub fn unrestricted_scf_gradient(
     refuse_final_pass_result(result)?;
     let ext = config.external_potential.as_ref();
     let cosx = crate::cosx_gradient::scf_exchange_is_cosx(config, true)?;
-    match config.xc.as_deref() {
+    let grad = match config.xc.as_deref() {
         // `None` exchange config is exactly `ks_gradient_uks`.
         Some(xc) => crate::ks_gradient::ks_gradient_uks_with_exchange_on_grids(
             mol,
@@ -794,7 +812,8 @@ pub fn unrestricted_scf_gradient(
         ),
         None if cosx => uhf_gradient_cosx(mol, prep, op, bounds, result, ext, &config.cosx),
         None => uhf_gradient(mol, prep, op, bounds, result, ext),
-    }
+    }?;
+    with_pcm_gradient(grad, mol, prep, config, result)
 }
 
 /// Refuse to differentiate a result whose reported energy came from a COSX
@@ -965,7 +984,7 @@ pub fn restricted_open_scf_gradient(
     if cosx {
         check_cosx_restricted_open_fit(&config.cosx)?;
     }
-    match config.xc.as_deref() {
+    let grad = match config.xc.as_deref() {
         // `None` exchange config is exactly `ks_gradient_roks`.
         Some(xc) => crate::ks_gradient::ks_gradient_roks_with_exchange_on_grids(
             mol,
@@ -981,7 +1000,8 @@ pub fn restricted_open_scf_gradient(
         ),
         None if cosx => rohf_gradient_cosx(mol, prep, op, bounds, result, ext, &config.cosx),
         None => rohf_gradient(mol, prep, op, bounds, result, ext),
-    }
+    }?;
+    with_pcm_gradient(grad, mol, prep, config, result)
 }
 
 /// Closed-shell one- plus two-electron HF gradient of `result`'s energy: the

@@ -1,0 +1,133 @@
+{
+  "row": "IEF-PCM gradient",
+  "system": "ch3oh",
+  "basis": "sto-3g",
+  "epsilon": 78.4,
+  "energy": -113.55133553339044,
+  "e_pcm": -0.004666911035590427,
+  "gradient": [
+    [
+      -0.009640463498696523,
+      -0.00010223513478865832,
+      -7.795940484867628e-16
+    ],
+    [
+      0.04505788021994056,
+      0.00690897915375329,
+      3.3390247987733214e-16
+    ],
+    [
+      0.0014741048153222192,
+      -0.003138878842139014,
+      2.8718298911862713e-16
+    ],
+    [
+      0.00010104295348474577,
+      -0.001237659091720691,
+      0.0011518643758581504
+    ],
+    [
+      0.00010104295348433595,
+      -0.0012376590917219815,
+      -0.0011518643758577896
+    ],
+    [
+      -0.03709360744353121,
+      -0.0011925469933948148,
+      -5.051682572413538e-17
+    ]
+  ],
+  "cavity": {
+    "ng": 302,
+    "n_tesserae": 914,
+    "total_area": 252.45852996366816,
+    "area_centroid": [
+      0.028920833213732743,
+      0.31686778319299014,
+      1.2313406361820325e-17
+    ]
+  },
+  "provenance": {
+    "code": "PySCF",
+    "version": "2.13.1",
+    "keywords": {
+      "methods": [
+        "scf.RHF(mol).PCM()",
+        "nuc_grad_method()"
+      ],
+      "pcm_method": "IEF-PCM",
+      "lebedev_order": 29,
+      "vdw_scale": 1.2,
+      "radii": "pyscf.solvent.pcm.modified_Bondi (H = 1.1 A)",
+      "surface_discretization_method": "SWIG",
+      "conv_tol": 1e-12,
+      "conv_tol_grad": 1e-09,
+      "eri": "exact 4-index (no density fitting)",
+      "numpy": "1.26.4"
+    },
+    "grid": "PCM cavity: Lebedev 302 per sphere, SWIG",
+    "aux_basis": "none",
+    "frozen_core": "none",
+    "scf_convergence": {
+      "conv_tol": 1e-12,
+      "conv_tol_grad": 1e-09
+    },
+    "stability": null,
+    "basis": "sto-3g",
+    "basis_json": "crates/ferric-core/src/basis/bundled/sto-3g.json",
+    "basis_sha256": "fc10db84e56bf6623fde21a81e77c07474484b91135e6c9b9a8d85d432da538c",
+    "ecp_json": "none",
+    "ecp_sha256": "none",
+    "geometry_xyz": "testdata/molecules/ch3oh.xyz",
+    "geometry_xyz_sha256": "80a6bd7bbf8061a792a44ed3dccac7965b3c5d7293fdc36adc4ed0f6bf79ed86",
+    "geometry_bohr": [
+      [
+        "C",
+        -0.0884391826296449,
+        1.252888420586636,
+        0.0
+      ],
+      [
+        "O",
+        -0.0884391826296449,
+        -1.4324124024203169,
+        0.0
+      ],
+      [
+        "H",
+        -2.0647147636997865,
+        1.8311446147035448,
+        0.0
+      ],
+      [
+        "H",
+        0.8277000425594971,
+        2.0409042145302667,
+        1.6818562508629051
+      ],
+      [
+        "H",
+        0.8277000425594971,
+        2.0409042145302667,
+        -1.6818562508629051
+      ],
+      [
+        "H",
+        1.6270541932505183,
+        -2.0314555839074413,
+        0.0
+      ]
+    ],
+    "bohr_in_angstrom": 0.52917721092,
+    "generator": "scripts/validation/gen_pcm_grad.py",
+    "git_head": "c86a1335d7c016b13c402ca9ee824d11d219806d",
+    "generated_utc": "2026-11-05T21:12:35+00:00",
+    "basis_self_check": {
+      "nao": 14,
+      "replica_self_overlap_max_dev": 2.220446049250313e-16,
+      "pyscf_diag_max_dev": 4.440892098500626e-16,
+      "diag_checked": 14,
+      "diag_skipped_cartesian": 0
+    }
+  }
+}

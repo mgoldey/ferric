@@ -405,9 +405,11 @@ through `[external_potential]` with `width`.)
 
 IEF-PCM implicit solvent (`ferric-pcm`). Absent means vacuum. Honoured on
 `task = "energy"` by `rhf`, `uhf`, `rohf`, `ksdft` and `pdep-rpa` (for
-`pdep-rpa` the RPA correlation is evaluated on the solvated reference). Any
-other kind, a gradient task (no gradient has a PCM term), `[cosmo]` in the
-same file, or `pdep-rpa` with `[rpa] export_npz` is an error. The solvent
+`pdep-rpa` the RPA correlation is evaluated on the solvated reference), and on
+`task = "optimize"` by `rhf`, `uhf`, `rohf` and `ksdft` (their gradients carry
+the analytic IEF-PCM term). Any other kind, any other task (`frequencies`:
+there is no PCM Hessian), `[cosmo]` in the same file, or `pdep-rpa` with
+`[rpa] export_npz` is an error. The solvent
 table and checks are shared with Python `run_rhf(solvent=...)`. See
 `examples/water-pcm.toml`.
 

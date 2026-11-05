@@ -248,11 +248,20 @@ when unset.
 
 | Model | What it is | How to run it | Anchor |
 |---|---|---|---|
-| **IEF-PCM** (`ferric-pcm`) | Integral-equation PCM; modified Bondi radii (H 1.10 Å), atom-centred Lebedev spheres | CLI `[pcm] solvent = "water"` (or `epsilon`), energy runs of `rhf`, `uhf`, `rohf`, `ksdft` and `pdep-rpa` (`examples/water-pcm.toml`). Python `run_rhf(..., solvent=78.4)` or a solvent name; also `run_pdep_rpa`. | water / STO-3G, ε = 78.4: −3.813 vs PySCF IEF-PCM −3.8228 kcal/mol |
+| **IEF-PCM** (`ferric-pcm`) | Integral-equation PCM; modified Bondi radii (H 1.10 Å), atom-centred Lebedev spheres | CLI `[pcm] solvent = "water"` (or `epsilon`), energy runs of `rhf`, `uhf`, `rohf`, `ksdft` and `pdep-rpa` (`examples/water-pcm.toml`), and `task = "optimize"` for `rhf`, `uhf`, `rohf` and `ksdft`. Python `run_rhf(..., solvent=78.4)` or a solvent name; also `run_pdep_rpa`. | water / STO-3G, ε = 78.4: −3.813 vs PySCF IEF-PCM −3.8228 kcal/mol |
 | **COSMO** (`ferric_scf::cosmo`) | Conductor-like screening | CLI `[cosmo] epsilon = 78.39` | water / cc-pVDZ, ε = 78.39: −5.955 vs PySCF COSMO −5.94 kcal/mol (`ferric-scf/tests/cosmo_water.rs`) |
 
-Neither has cavitation, dispersion or repulsion terms, and neither has an
-analytic gradient. An unknown solvent name is an error, not a silent vacuum.
+Neither has cavitation, dispersion or repulsion terms. IEF-PCM has an
+analytic nuclear gradient (`ferric_pcm::pcm_gradient`: the tessera-charge
+potential term plus the S/D/area response term, switching-function
+derivatives included; equations in `crates/ferric-pcm/theory.md` §8), added
+to the RHF, UHF, ROHF and KS gradients whenever `RhfConfig.pcm` is set. It
+matches PySCF IEF-PCM `nuc_grad_method()` to 7e-11 Ha/Bohr on PySCF's
+302-point cavity and finite differences of the solvated SCF energy to
+3e-7 Ha/Bohr. It needs the cavity built from the molecule (an injected
+`PcmConfig::cavity` is refused). There is no PCM Hessian: frequencies with
+`[pcm]` are refused. COSMO has no gradient term. An unknown solvent name is an
+error, not a silent vacuum.
 
 ## Gradients, optimization, frequencies, transition states
 

@@ -27,6 +27,7 @@
 //! * [`solver`] — the K q = R v linear solve for apparent surface charges.
 //! * [`potential`] — solute ESP at tesserae, and the reaction-field
 //!   one-electron AO operator built from `q`.
+//! * [`gradient`] — analytic nuclear gradient `∂E_pcm/∂R` at fixed density.
 //! * [`config`] — [`config::PcmConfig`], the public config struct threaded
 //!   through the SCF configs.
 //!
@@ -43,6 +44,8 @@
 pub mod cavity;
 /// PCM configuration struct.
 pub mod config;
+/// Analytic nuclear gradient of the IEF-PCM energy.
+pub mod gradient;
 /// S/D boundary-element matrices and IEF-PCM K/R operators.
 pub mod matrices;
 /// Solute ESP at tesserae and the reaction-field AO operator.
@@ -59,6 +62,7 @@ use ndarray::Array2;
 
 pub use cavity::{build_cavity, CavityConfig, Tessera};
 pub use config::{solvent_epsilon, PcmConfig, ProbeKind, NAMED_SOLVENTS, SUPPORTED_LEBEDEV_ORDERS};
+pub use gradient::{pcm_gradient, pcm_gradient_parts, PcmGradient};
 pub use solver::PcmChargeResult;
 
 /// Geometry-only PCM state built ONCE before the SCF loop (cavity + S/D/K/R
