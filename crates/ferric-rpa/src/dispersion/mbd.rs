@@ -6,24 +6,10 @@
 
 use crate::dispersion::free_atom_ref::ts_free_atom;
 use crate::dispersion::DynamicPolarizability;
+use ferric_core::special::erf;
 use ferric_core::FerricError;
 use ndarray::Array2;
 use ndarray_linalg::Inverse;
-
-/// erf via a rational approximation (Abramowitz & Stegun 7.1.26, |err| < 1.5e-7).
-fn erf(x: f64) -> f64 {
-    let t = 1.0 / (1.0 + 0.327_591_1 * x.abs());
-    let y = 1.0
-        - (((((1.061_405_429 * t - 1.453_152_027) * t) + 1.421_413_741) * t - 0.284_496_736) * t
-            + 0.254_829_592)
-            * t
-            * (-x * x).exp();
-    if x >= 0.0 {
-        y
-    } else {
-        -y
-    }
-}
 
 /// 3N×3N Gaussian-damped dipole–dipole coupling tensor T_GG (full-range SCS).
 ///

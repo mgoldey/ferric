@@ -782,7 +782,8 @@ fn terfc_dispatch(r: f64, r0: f64, omega: Option<f64>) -> f64 {
 #[inline]
 fn terfc_scalar(r: f64, r0: f64) -> f64 {
     let s = r0 * std::f64::consts::SQRT_2;
-    let terf = 0.5 * (erf_scalar((r - r0) / s) + erf_scalar((r + r0) / s));
+    let terf =
+        0.5 * (ferric_core::special::erf((r - r0) / s) + ferric_core::special::erf((r + r0) / s));
     1.0 - terf
 }
 
@@ -793,77 +794,10 @@ fn terfc_scalar(r: f64, r0: f64) -> f64 {
 /// own arithmetic. Matches `Operator::terfc_with_omega`'s convention.
 #[inline]
 fn terfc_scalar_decoupled(r: f64, r0: f64, omega: f64) -> f64 {
-    let terf = 0.5 * (erf_scalar(omega * (r - r0)) + erf_scalar(omega * (r + r0)));
+    let terf = 0.5
+        * (ferric_core::special::erf(omega * (r - r0))
+            + ferric_core::special::erf(omega * (r + r0)));
     1.0 - terf
-}
-
-/// `erf(x) = 1 − erfc(x)`; see [`erfc_scalar`] for the underlying fit.
-#[inline]
-fn erf_scalar(x: f64) -> f64 {
-    1.0 - erfc_scalar(x)
-}
-
-/// Complementary error function via the Numerical Recipes 28-term Chebyshev
-/// fit `erfc(x) ≈ t·exp(−x² + P(t))`, `t = 2/(2+|x|)`, sign-extended to
-/// negative arguments through `erfc(−x) = 2 − erfc(x)`.
-///
-/// MEASURED against `scipy.special.erfc` on a 1201-point sweep of
-/// `x ∈ [−6, 6]`: maximum **relative** error 6.8e-15, i.e. essentially
-/// double-precision exact — the 28-coefficient set is the high-accuracy
-/// variant, not the 7-digit one. Well below any tolerance E_nl is asserted at.
-/// (Reproduce: the damping factor `1 − terfc²` built on this matched a scipy
-/// reference to all printed digits at r = 0…12 Bohr, r₀ = 1.00 Å.)
-///
-/// Hand-rolled because `f64::erfc` is not in stable Rust's core numerics and
-/// `ferric-dft` carries no special-function dependency.
-#[inline]
-fn erfc_scalar(x: f64) -> f64 {
-    let z = x.abs();
-    let t = 2.0 / (2.0 + z);
-    let ty = 4.0 * t - 2.0;
-    const COF: [f64; 28] = [
-        -1.3026537197817094,
-        6.419_697_923_564_902e-1,
-        1.9476473204185836e-2,
-        -9.561_514_786_808_631e-3,
-        -9.46595344482036e-4,
-        3.66839497852761e-4,
-        4.2523324806907e-5,
-        -2.0278578112534e-5,
-        -1.624290004647e-6,
-        1.303655835580e-6,
-        1.5626441722e-8,
-        -8.5238095915e-8,
-        6.529054439e-9,
-        5.059343495e-9,
-        -9.91364156e-10,
-        -2.27365122e-10,
-        9.6467911e-11,
-        2.394038e-12,
-        -6.886027e-12,
-        8.94487e-13,
-        3.13092e-13,
-        -1.12708e-13,
-        3.81e-16,
-        7.106e-15,
-        -1.523e-15,
-        -9.4e-17,
-        1.21e-16,
-        -2.8e-17,
-    ];
-    let mut d = 0.0_f64;
-    let mut dd = 0.0_f64;
-    for j in (1..COF.len()).rev() {
-        let tmp = d;
-        d = ty * d - dd + COF[j];
-        dd = tmp;
-    }
-    let ans = t * (-z * z + 0.5 * (COF[0] + ty * d) - dd).exp();
-    if x >= 0.0 {
-        ans
-    } else {
-        2.0 - ans
-    }
 }
 
 /// Everything the single VV10 pair-sum traversal yields.
@@ -1750,7 +1684,7 @@ mod damping_tests {
         ];
         let mut max_rel = 0.0_f64;
         for (x, expect) in REF {
-            let got = erfc_scalar(x);
+            let got = ferric_core::special::erfc(x);
             let rel = (got - expect).abs() / expect.abs();
             max_rel = max_rel.max(rel);
             assert!(
@@ -1758,7 +1692,7 @@ mod damping_tests {
                 "erfc({x}) = {got}, scipy = {expect}, rel = {rel:.2e}"
             );
         }
-        eprintln!("erfc_scalar vs scipy: max relative error {max_rel:.2e}");
+        eprintln!("special::erfc vs scipy: max relative error {max_rel:.2e}");
     }
 
     /// terfc against a 40-digit mpmath evaluation of

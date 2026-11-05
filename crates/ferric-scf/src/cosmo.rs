@@ -103,6 +103,7 @@
 //!   that earlier discrepancy.
 
 use ferric_core::mol::Molecule;
+use ferric_core::special::erf;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::engine::Engine;
@@ -534,7 +535,7 @@ impl CosmoCavity {
                         let r = (dx * dx + dy * dy + dz * dz).sqrt();
                         let xi_kl = xi_k * xi_l / (xi_k * xi_k + xi_l * xi_l).sqrt();
                         // SAFETY: erf is the C standard library error function; f64 input is always valid.
-                        let v = unsafe { erf(xi_kl * r) } / r;
+                        let v = erf(xi_kl * r) / r;
                         s[(k, l)] = v;
                         s[(l, k)] = v;
                     }
@@ -543,16 +544,6 @@ impl CosmoCavity {
         }
         s
     }
-}
-
-// libm's `erf` (C99) is already transitively linked into every ferric binary
-// (libint2/OpenBLAS both pull in libm), so bind it directly instead of
-// adding a new crate dependency or a lower-precision hand-rolled
-// approximation -- full ~1e-16 double precision, exactly matching what
-// PySCF's `scipy.special.erf` (itself backed by the same C library family)
-// produces to numerical noise.
-extern "C" {
-    fn erf(x: f64) -> f64;
 }
 
 /// Result of a single COSMO reaction-field evaluation for a given density.

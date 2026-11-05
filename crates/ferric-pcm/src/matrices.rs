@@ -69,6 +69,7 @@
 //! tessellation, S/D formulas, and linear-algebra plumbing below are an
 //! independent implementation.
 
+use ferric_core::special::erf;
 use ferric_core::FerricError;
 use ndarray::Array2;
 
@@ -111,13 +112,6 @@ impl Default for SdKind {
     fn default() -> Self {
         SdKind::GaussianSmeared
     }
-}
-
-// libm's `erf` (C99) is already transitively linked into every ferric binary
-// (libint2/OpenBLAS both pull in libm) — bind it directly rather than adding
-// a crate dependency, same convention as `ferric_scf::cosmo`.
-extern "C" {
-    fn erf(x: f64) -> f64;
 }
 
 /// Build the S (Coulomb) and D (normal-derivative Coulomb) matrices for a
@@ -185,7 +179,7 @@ pub fn build_s_d_kind(tess: &[Tessera], kind: SdKind) -> (Array2<f64>, Array2<f6
                     let xi_ij = xi_i * xi_j / (xi_i * xi_i + xi_j * xi_j).sqrt();
                     let xi_r = xi_ij * r;
                     // SAFETY: erf is the C standard math library function; xi_r is a finite f64.
-                    let s_ij = unsafe { erf(xi_r) } / r;
+                    let s_ij = erf(xi_r) / r;
                     s[(i, j)] = s_ij;
                     s[(j, i)] = s_ij; // S is symmetric.
 
@@ -315,7 +309,7 @@ mod tests {
             let xi_j = tj.charge_exp;
             let xi_ij = xi_i * xi_j / (xi_i * xi_i + xi_j * xi_j).sqrt();
             // SAFETY: erf is the C standard math library function; argument is finite.
-            let expected = unsafe { erf(xi_ij * r) } / r;
+            let expected = erf(xi_ij * r) / r;
             assert!((s[(0, 1)] - expected).abs() < 1e-12);
             // NOTE: for THIS specific well-separated tessera pair,
             // xi_ij*r ~ 31 so erf(xi_ij*r) saturates to exactly 1.0 in double

@@ -7,6 +7,7 @@
 //! comment for the libint sign-convention derivation this reuses
 //! (`⟨μ| −1/|r−R| |ν⟩` from a Z=+1 probe charge).
 
+use ferric_core::special::erf;
 use std::os::raw::c_int;
 
 use ferric_core::external_potential::{PointCharge, SmearedCharge};
@@ -239,11 +240,6 @@ pub fn build_reaction_field_operator(
     Ok(out)
 }
 
-// libm's C99 `erf`, bound directly (same convention as `matrices.rs`).
-extern "C" {
-    fn erf(x: f64) -> f64;
-}
-
 /// [`solute_potential_at_tesserae`] with each tessera a normalized Gaussian
 /// charge of exponent `ξ_k²` (`ξ_k` = [`Tessera::charge_exp`]) instead of a
 /// point — [`crate::config::ProbeKind::GaussianSmeared`]:
@@ -331,7 +327,7 @@ pub fn solute_potential_at_tesserae_smeared(
                 ));
             }
             // SAFETY: erf is the C standard math library function; argument is finite.
-            v_nuc += atom.effective_z() as f64 * unsafe { erf(xi * r) } / r;
+            v_nuc += atom.effective_z() as f64 * erf(xi * r) / r;
         }
 
         out.push(v_nuc - v_elec);

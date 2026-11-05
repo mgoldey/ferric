@@ -52,18 +52,6 @@ use ndarray_linalg::{Eigh, Inverse, UPLO};
 use crate::dispersion::free_atom_ref::{ts_free_atom, ts_free_atom_r_vdw};
 use crate::quadrature::gauss_legendre_nodes;
 
-// libm's `erf` (C99), already linked into every ferric binary through
-// libint2/OpenBLAS — full double precision, the same choice as
-// ferric-scf/src/cosmo.rs and ferric-pcm.
-extern "C" {
-    fn erf(x: f64) -> f64;
-}
-
-fn erf_exact(x: f64) -> f64 {
-    // SAFETY: `erf` is a pure C99 libm function of one double.
-    unsafe { erf(x) }
-}
-
 /// Fermi damping steepness a of MBD@rsSCS (Ambrosetti 2014; libMBD default).
 pub const MBD_FERMI_A_DEFAULT: f64 = 6.0;
 /// Number of Gauss–Legendre frequency nodes (libMBD default; the grid also
@@ -271,7 +259,7 @@ fn t_gg(d: &[f64; 3], r: f64, sigma_ab: f64) -> [[f64; 3]; 3] {
     let bare = t_bare(d, r);
     let zeta = r / sigma_ab;
     let theta = 2.0 * zeta / SQRT_PI * (-zeta * zeta).exp();
-    let erf_theta = erf_exact(zeta) - theta;
+    let erf_theta = ferric_core::special::erf(zeta) - theta;
     let extra = 2.0 * zeta * zeta * theta / r.powi(5);
     std::array::from_fn(|i| std::array::from_fn(|j| erf_theta * bare[i][j] + extra * d[i] * d[j]))
 }
@@ -597,7 +585,7 @@ fn t_gg_vjp(d: &[f64; 3], r: f64, sigma: f64, m: &[[f64; 3]; 3]) -> ([f64; 3], f
     let (lb, dlb, q, md) = t_bare_vjp(d, r, m);
     let zeta = r / sigma;
     let theta = 2.0 * zeta / SQRT_PI * (-zeta * zeta).exp();
-    let g1 = erf_exact(zeta) - theta;
+    let g1 = ferric_core::special::erf(zeta) - theta;
     let r5 = r.powi(5);
     let z2t = zeta * zeta * theta;
     let g2 = 2.0 * z2t / r5;
@@ -938,7 +926,7 @@ mod tests {
                 .collect();
             let zeta = r / (sig[0] * sig[0] + sig[1] * sig[1]).sqrt();
             let theta = 2.0 * zeta / std::f64::consts::PI.sqrt() * (-zeta * zeta).exp();
-            let e = erf_exact(zeta) - theta;
+            let e = ferric_core::special::erf(zeta) - theta;
             // T_GG on the z axis: perp = e/R³, par = (−2e + 2ζ²θ)/R³.
             let tp = sr * e / r.powi(3);
             let tz = sr * (-2.0 * e + 2.0 * zeta * zeta * theta) / r.powi(3);
