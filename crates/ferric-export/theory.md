@@ -12,8 +12,8 @@ When the RPA/export pipeline is executed (driven by the `export_npz` configurati
 | :--- | :--- | :--- | :--- | :--- |
 | `coords` | $(N_{\text{atoms}}, 3)$ | `float64` | Bohr | Cartesian coordinates of the atomic nuclei. |
 | `atomic_numbers` | $(N_{\text{atoms}},)$ | `int64` | - | Atomic numbers ($Z$) of the atoms. |
-| `mo_coeffs` | $(N_{\text{AO}}, N_{\text{AO}})$ | `float64` | a.u. | Molecular Orbital (MO) coefficient matrix in the Atomic Orbital (AO) basis. |
-| `orbital_energies` | $(N_{\text{AO}},)$ | `float64` | Hartree | Energies of the molecular orbitals. |
+| `mo_coeffs` | $(N_{\text{AO}}, N_{\text{MO}})$ | `float64` | a.u. | Molecular Orbital (MO) coefficient matrix in the Atomic Orbital (AO) basis. |
+| `orbital_energies` | $(N_{\text{MO}},)$ | `float64` | Hartree | Energies of the molecular orbitals. |
 | `density_matrix` | $(N_{\text{AO}}, N_{\text{AO}})$ | `float64` | a.u. | AO-basis density matrix $D_{\mu\nu}$. Used for charges and density-based property derivation. |
 | `boys_coeffs` | $(N_{\text{AO}}, N_{\text{occ}})$ | `float64` | a.u. | Coefficients of Boys-localized occupied molecular orbitals. |
 | `orbital_centers` | $(N_{\text{MO}}, 3)$ | `float64` | Bohr | Orbital centroids $\langle\phi_p\vert \vec r\vert\phi_p\rangle$ about the origin. Restricted references only. |
