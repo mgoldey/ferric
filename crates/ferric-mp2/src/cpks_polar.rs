@@ -73,6 +73,24 @@ pub(crate) fn solve_cphf_cg(
     eps: &[f64],
     budget_bytes: usize,
 ) -> Result<(Array2<f64>, f64, usize, bool), FerricError> {
+    solve_cphf_cg_to(c, rhs, prep, bounds, orb, eps, budget_bytes, CPHF_CG_TOL)
+}
+
+/// Max-abs residual at which [`solve_cphf_cg`] stops.
+const CPHF_CG_TOL: f64 = 1e-10;
+
+/// [`solve_cphf_cg`] at an explicit max-abs residual tolerance `tol`.
+#[allow(clippy::too_many_arguments)]
+fn solve_cphf_cg_to(
+    c: &Array2<f64>,
+    rhs: &Array2<f64>,
+    prep: &PreparedBasis,
+    bounds: &SchwarzBounds,
+    orb: &OrbitalSpace,
+    eps: &[f64],
+    budget_bytes: usize,
+    tol: f64,
+) -> Result<(Array2<f64>, f64, usize, bool), FerricError> {
     use crate::zvector::compute_az_product;
     let OrbitalSpace {
         nocc,
@@ -129,7 +147,6 @@ pub(crate) fn solve_cphf_cg(
     let mut rz_old = dot(&r, &z_pc);
 
     let max_iter = 200;
-    let tol = 1e-10;
     let trace = cpks_trace();
     let mut resid_max = r.iter().map(|v| v.abs()).fold(0.0_f64, f64::max);
     let mut converged = false;
@@ -1239,5 +1256,87 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// CH4/aug-cc-pVDZ (Coulomb RHF): the system whose MP2 Z-vector CG stalled
+    /// at a 1.98e-9 residual (erfc ω = 0.42 attenuation sweep).
+    fn ch4_aug() -> (PreparedBasis, SchwarzBounds, ScfResult) {
+        let xyz = "5\nch4\nC 0 0 0\nH 0.6276 0.6276 0.6276\nH -0.6276 -0.6276 0.6276\n\
+             H -0.6276 0.6276 -0.6276\nH 0.6276 -0.6276 -0.6276\n";
+        let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
+        let obs = PreparedBasis::new(&mol, &basis::bundled("aug-cc-pvdz").unwrap()).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+        let cfg = RhfConfig {
+            energy_conv: 1e-12,
+            density_conv: 1e-10,
+            ..Default::default()
+        };
+        let rhf = solve_rhf(&ParallelContext::default(), &mol, &obs, op, &bounds, &cfg).unwrap();
+        (obs, bounds, rhf)
+    }
+
+    /// −μ^y_vo, the dipole CPHF right-hand side, shape (nvir, nocc).
+    fn dipole_rhs(obs: &PreparedBasis, rhf: &ScfResult, nocc: usize) -> Array2<f64> {
+        let c = rhf.mos_r();
+        let dip = oneelectron::dipole(obs, [0.0; 3]).unwrap();
+        let cv = c.slice(ndarray::s![.., nocc..]);
+        let co = c.slice(ndarray::s![.., ..nocc]);
+        -cv.t().dot(&dip[1]).dot(&co)
+    }
+
+    /// The Hessian matvec is linear, so `A(2⁻³⁰·z) = 2⁻³⁰·A(z)` bit for bit
+    /// once the J/K screening sees a scale-free operand. With the absolute
+    /// `bound · max|D| < 1e-12` screen applied to the raw operand, the
+    /// 2⁻³⁰-scaled product misses by 1.1e-1 against `max|A(z)|` = 2.9e-1
+    /// (measured).
+    #[test]
+    fn az_product_is_homogeneous() {
+        let (obs, bounds, rhf) = ch4_aug();
+        let c = rhf.mos_r();
+        let nocc = 5;
+        let orb = OrbitalSpace::new(nocc, c.ncols() - nocc, nocc, 0);
+        let budget = ferric_core::memory::resolve_budget_bytes(None);
+        let pool = ferric_scf::engine_pool::EnginePool::new(bounds.op, &obs, 1e-14).unwrap();
+        let az = |z: &Array2<f64>| {
+            crate::zvector::compute_az_product(c, z, &obs, &bounds, &orb, &pool, budget).unwrap()
+        };
+        let z = dipole_rhs(&obs, &rhf, nocc);
+        let s = 2f64.powi(-30);
+        let full = az(&z);
+        let small = az(&(s * &z));
+        let amax = full.iter().fold(0.0_f64, |m, v| m.max(v.abs()));
+        let miss = (&small / s - &full)
+            .iter()
+            .fold(0.0_f64, |m, v| m.max(v.abs()));
+        assert!(
+            miss == 0.0,
+            "A(s·z)/s − A(z): max {miss:.3e} (max|A(z)| = {amax:.3e})"
+        );
+    }
+
+    /// Dipole CPHF on CH4/aug-cc-pVDZ to a 1e-12 max-abs residual, 100× below
+    /// the production tolerance, so the last CG operands are ~1e-13. The
+    /// preconditioned Hessian has κ = 2.36 (eigenvalues 0.593..1.400; the bare
+    /// Hessian's smallest is 0.411, dense build), so PCG converges
+    /// geometrically (rate (√κ−1)/(√κ+1) = 0.21, ~16 iterations from the
+    /// 1.3e-1 start; measured 12), so the bound is 40. With
+    /// the matvec's J/K screen on the raw operand, `A·p` loses its coupling as
+    /// `p` shrinks and the residual stalls at ~1e-10 (measured).
+    #[test]
+    fn cphf_cg_converges_past_the_production_tolerance() {
+        let (obs, bounds, rhf) = ch4_aug();
+        let c = rhf.mos_r();
+        let eps = rhf.eps_r();
+        let nocc = 5;
+        let orb = OrbitalSpace::new(nocc, c.ncols() - nocc, nocc, 0);
+        let budget = ferric_core::memory::resolve_budget_bytes(None);
+        let rhs = dipole_rhs(&obs, &rhf, nocc);
+        let (_, resid, iters, conv) =
+            solve_cphf_cg_to(c, &rhs, &obs, &bounds, &orb, eps, budget, 1e-12).unwrap();
+        assert!(
+            conv && iters <= 40,
+            "CPHF CG to 1e-12: converged {conv}, resid {resid:.3e}, iters {iters}"
+        );
     }
 }

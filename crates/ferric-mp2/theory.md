@@ -320,7 +320,7 @@ $$ \mu_d(F) = -\operatorname{Tr}[P^{\mathrm{rel}}(F)\,r_d] + \sum_A Z_AR_{A,d}, 
 \alpha_{de} = -\frac{\mu_d(+F_e) - \mu_d(-F_e)}{2|F|} , $$
 
 symmetrized. $P^{\mathrm{rel}}$ is `static_relaxed_density_ao`
-(`cpks_polar.rs:466`): $2\delta_{ij} + (P+P^{\mathsf T}) + z$ with
+(`cpks_polar.rs:483`): $2\delta_{ij} + (P+P^{\mathsf T}) + z$ with
 $X_{ai} = L_{ai} + [(2J-K)[P+P^{\mathsf T}]]_{ai}$ ($L$ = `build_lagrangian`) and
 the section-9 operator, $(\Delta\varepsilon + \tfrac12$`compute_az_product`$)\,z = -X$.
 This $z$ equals `solve_zvector`'s, and $\mu_d(0) = -\partial E/\partial F_d$
@@ -359,13 +359,13 @@ $E_{\mathrm{RHF}} + E_{\mathrm{MP2}}[\operatorname{erfc}]$ (att-MP2), checked
 against a 5-point finite field of that energy
 (`attenuated_relaxed_alpha_matches_energy_finite_field`).
 
-**Frozen-amplitude C6** (`cpks_polar.rs:1111` `frozen_mp2_c6_molecular`):
+**Frozen-amplitude C6** (`cpks_polar.rs:1128` `frozen_mp2_c6_molecular`):
 $\alpha^{\mathrm{MP2}}(i\omega) = \alpha^{\mathrm{MP2}}_{\mathrm{iso}}(0)\,
 \alpha^{\mathrm{HF}}_{\mathrm{iso}}(i\omega)/\alpha^{\mathrm{HF}}_{\mathrm{iso}}(0)$,
 the static magnitude from `analytic_alpha_relaxed` and the HF shape on
 `bounds.op`; $C_6 = \tfrac{3}{\pi}\sum_k w_k\,\alpha^{\mathrm{MP2}}(i\omega_k)^2$.
 
-The singlet response matrices are (`cpks_polar.rs:829` `build_apb_amb`)
+The singlet response matrices are (`cpks_polar.rs:846` `build_apb_amb`)
 
 $$ (A+B)_{ai,bj} = \Delta\varepsilon\,\delta + 4(ai|bj) - (ab|ij) - (aj|bi), \qquad
 (A-B)_{ai,bj} = \Delta\varepsilon\,\delta + (aj|bi) - (ab|ij), $$
@@ -373,7 +373,7 @@ $$ (A+B)_{ai,bj} = \Delta\varepsilon\,\delta + 4(ai|bj) - (ab|ij) - (aj|bi), \qq
 and the HF-level polarizabilities are
 $\alpha = 4\mu^{\mathsf T}(A+B)^{-1}\mu$ and
 $\alpha(i\omega) = 4\mu^{\mathsf T}(A-B)\left[(A-B)(A+B) + \omega^2\right]^{-1}\mu$
-(`cpks_polar.rs:983` `dynamic_cphf_alpha_iw`). `solve_cphf_cg` applies
+(`cpks_polar.rs:1000` `dynamic_cphf_alpha_iw`). `solve_cphf_cg` applies
 $(A+B) = \Delta\varepsilon + \tfrac12$`compute_az_product`.
 
 ## 11. CABS for F12

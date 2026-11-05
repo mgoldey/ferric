@@ -503,6 +503,18 @@ pub(crate) fn build_imat_ri(
 /// (`ferric_scf::reduce::resolve_band_bytes`) only — never affects the
 /// result. Callers with no solver-resolved budget in scope pass
 /// `ferric_core::memory::resolve_budget_bytes(None)`.
+///
+/// Homogeneous: `A(s·z) = s·A(z)` exactly for any power of two `s`. The J/K
+/// build screens quartets on the absolute `bound · max|D| < 1e-12`, so `z` is
+/// first scaled by the power of two `2^e` that brings `max|z|` into
+/// `(½, 1]` and the product is scaled back. Without this the screening
+/// discards a growing share of the coupling as the operand shrinks (CG search
+/// directions near convergence are `~|r|/Δε`): on CH4/aug-cc-pVDZ a
+/// 2⁻³⁰-scaled dipole operand misses `A·z` by 38% of its max element, and the
+/// CPHF CG stalls at a ~1e-10..2e-9 residual
+/// (`cpks_polar::tests::az_product_is_homogeneous`,
+/// `cphf_cg_converges_past_the_production_tolerance`). Operands with
+/// `max|z| ∈ (½, 1]` take the unscaled path bit for bit.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn compute_az_product(
     c: &Array2<f64>,
@@ -521,15 +533,24 @@ pub(crate) fn compute_az_product(
     } = *orb;
     let n = c.nrows();
 
+    let zmax = z.iter().fold(0.0_f64, |m, v| m.max(v.abs()));
+    if zmax == 0.0 {
+        return Ok(Array2::zeros((nvir, nocc)));
+    }
+    // Power-of-two scale: multiplying by 2^±e is exact, so the scaled operand
+    // carries the same mantissas and only the screening sees the new scale.
+    let e = zmax.log2().ceil() as i32;
+    let (scale, inv_scale) = (2f64.powi(e), 2f64.powi(-e));
+
     let mut dz = Array2::zeros((n, n));
     for a in 0..nvir {
         let a_mo = nocc_total + a;
         for i in 0..nocc {
             let i_mo = first_occ + i;
+            let zai = inv_scale * z[(a, i)];
             for mu in 0..n {
                 for nu in 0..n {
-                    let val =
-                        z[(a, i)] * (c[(mu, a_mo)] * c[(nu, i_mo)] + c[(mu, i_mo)] * c[(nu, a_mo)]);
+                    let val = zai * (c[(mu, a_mo)] * c[(nu, i_mo)] + c[(mu, i_mo)] * c[(nu, a_mo)]);
                     dz[(mu, nu)] += val;
                 }
             }
@@ -555,7 +576,7 @@ pub(crate) fn compute_az_product(
         let a_mo = nocc_total + a;
         for i in 0..nocc {
             let i_mo = first_occ + i;
-            result[(a, i)] = az_mo[(a_mo, i_mo)];
+            result[(a, i)] = scale * az_mo[(a_mo, i_mo)];
         }
     }
 
