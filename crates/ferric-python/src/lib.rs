@@ -7497,7 +7497,7 @@ impl PyOoRiMp2Result {
 /// rotations (level-shifted approximate Newton + DIIS + Cayley rotation).
 /// Starts from a converged RHF reference (same convention as `run_rimp2`).
 /// `max_iter`/`grad_conv`/`level_shift`/`diis_size` control the orbital
-/// rotation loop; the rest of `OoRiMp2Config` (energy_conv, step_size,
+/// rotation loop; the rest of `OoRiMp2Config` (energy_conv,
 /// use_diis) stays at its library default, matching the CLI's `oo-rimp2`
 /// arm which only threads `frozen_core` + `memory_budget_bytes` through.
 #[pyfunction]

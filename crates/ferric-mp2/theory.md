@@ -158,7 +158,7 @@ ring-term convention are derived in `wiki/sympy_derivations.md` §2b.
 **Functional.** `oo_ri_mp2` minimizes $E(C) = E_{\mathrm{HF}}(C) + E^{(2)}_{\mathrm{RI}}(C)$
 with $E^{(2)}$ evaluated in the semicanonical frame of $C$: the active
 occupied–occupied and virtual–virtual blocks of $C^{\mathsf T}F(C)C$ are
-diagonalized first (`oo_rimp2.rs:427` `semicanonical_rotation`). That is the
+diagonalized first (`oo_rimp2.rs:425` `semicanonical_rotation`). That is the
 full-Fock Hylleraas functional of OMP2 (Bozkaya et al., JCP 135, 104103
 (2011)); it is invariant to occupied–occupied and virtual–virtual rotations,
 so occupied–virtual stationarity is full stationarity.
@@ -171,7 +171,7 @@ $$ U(\kappa) = \left(I - \tfrac12\kappa\right)^{-1}\left(I + \tfrac12\kappa\righ
 which is exactly orthogonal and equals $e^{\kappa}$ to second order
 **[check 6]**. The gradient is $g_{ai} = +\partial E/\partial\kappa_{ai}$.
 
-**Gradient** (closed shell, `oo_rimp2.rs:1047`):
+**Gradient** (closed shell, `oo_rimp2.rs:1045`):
 
 $$ g_{ck} = 4F_{ck} + 2\sum_{ijab}\tilde T_{ij}^{ab}\,\frac{\partial (ia|jb)}{\partial\kappa_{ck}} + \sum_{pq} W_{pq}\frac{\partial F_{pq}}{\partial\kappa_{ck}}, \qquad \tilde T = 2t - t^{\mathrm{swap}}, $$
 
@@ -179,24 +179,23 @@ $$ \frac{\partial (ia|jb)}{\partial\kappa_{ck}} = \delta_{ik}(ca|jb) + \delta_{j
 
 at fixed denominators, with $W$ the unrelaxed MP2 density of section 9 and the
 last term the Fock (orbital-energy) response. The HF term is $+4F_{ai}$
-closed-shell (`oo_rimp2.rs:1238`) and $+2F^\sigma_{ai}$ per spin unrestricted
+closed-shell (`oo_rimp2.rs:1236`) and $+2F^\sigma_{ai}$ per spin unrestricted
 (`u_oo_rimp2.rs:333`). The gradient derivation is in
 `wiki/sympy_derivations.md` §3.
 
 **Step.** A level-shifted diagonal Newton step in the solver's frame
-(`oo_rimp2.rs:1563`):
+(`oo_rimp2.rs:1561`):
 
 $$ \kappa_{ai} = -\frac{g_{ai}}{\varepsilon_a - \varepsilon_i + \mu}, \qquad \mu = \texttt{level\_shift} = 0.1\ \mathrm{Ha}, $$
 
 with $\varepsilon = \operatorname{diag}(C^{\mathsf T}FC)$, uniformly rescaled
-so $\max|\kappa_{ai}| \le 0.3$ rad (`oo_rimp2.rs:1452`). DIIS extrapolates the
+so $\max|\kappa_{ai}| \le 0.3$ rad (`oo_rimp2.rs:1450`). DIIS extrapolates the
 MO coefficients with error vector $C\,G\,C^{\mathsf T}$, $G$ the
-antisymmetric matrix of $g$ (`oo_rimp2.rs:1613`), followed by Löwdin
+antisymmetric matrix of $g$ (`oo_rimp2.rs:1611`), followed by Löwdin
 reorthonormalization. A trial step that raises the energy by more than
-$10^{-4}$ Ha (`oo_rimp2.rs:1626`) is replaced by up to ten halvings of
+$10^{-4}$ Ha (`oo_rimp2.rs:1624`) is replaced by up to ten halvings of
 $\kappa$ without DIIS, the first with $E \le E_{\mathrm{old}} + 10^{-12}$ Ha
-accepted (`oo_rimp2.rs:1651`), and the DIIS subspace is reset.
-`OoRiMp2Config::step_size` is not read by the solver.
+accepted (`oo_rimp2.rs:1649`), and the DIIS subspace is reset.
 
 **Unrestricted** (`u_oo_rimp2.rs`) applies the same step per spin with
 independent $\kappa^\alpha, \kappa^\beta$ and the per-spin cap
@@ -260,7 +259,7 @@ of independent $(ia)$ and $(jb)$ contractions; the derivation is
 
 ## 9. Analytic RI-MP2 gradient and Z-vector
 
-**Unrelaxed density** (`oo_rimp2.rs:992` `build_mp2_density`), with
+**Unrelaxed density** (`oo_rimp2.rs:990` `build_mp2_density`), with
 $t_{ij}^{ab} = (ia|jb)/D_{ij}^{ab}$:
 
 $$ P_{ij} = -\sum_{kab} t_{ik}^{ab}\left(2t_{jk}^{ab} - t_{jk}^{ba}\right), \qquad

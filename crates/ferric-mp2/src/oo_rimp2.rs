@@ -58,7 +58,6 @@ pub struct OoRiMp2Config {
     pub max_iter: usize,
     pub grad_conv: f64,
     pub energy_conv: f64,
-    pub step_size: f64,
     pub frozen_core: usize,
     /// Level shift for the approximate diagonal Hessian (Ha).
     /// Regularizes the Newton step when orbital energy gaps are small.
@@ -85,7 +84,6 @@ impl Default for OoRiMp2Config {
             max_iter: 100,
             grad_conv: 1e-4,
             energy_conv: 1e-8,
-            step_size: 0.5,
             frozen_core: 0,
             level_shift: 0.1,
             diis_size: 6,
