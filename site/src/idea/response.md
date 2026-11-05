@@ -72,7 +72,7 @@ Even where the scaling payoff has not arrived, the response framing makes the
 *error* in one method diagnosable through another.
 
 MP2's dispersion is the clearest case. Its dispersion energy is built from an
-uncoupled (uncoupled Hartree–Fock) response, in which the density
+uncoupled Hartree–Fock response, in which the density
 fluctuation does not feel the field it creates. For systems with low-lying,
 highly polarizable excitations, such as π-stacked and other π systems, that
 uncoupled response over-polarizes, and MP2 overbinds. This is documented in the
