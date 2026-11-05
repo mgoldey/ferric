@@ -35,9 +35,9 @@
 //!   closed-shell case leaves it unset and asserts the SCF recorded RI-J, the
 //!   exact-J case sets `Some("")`. `solve_uhf` reads `df_j_aux` verbatim, so
 //!   UKS sets `Some(AUX)`. PySCF: `density_fit(aux)` / plain KS.
-//! * XC density floor: ferric zeroes every V_xc factor where ρ ≤ 1e-10 (total
-//!   ρ closed shell, ρ_σ per spin open shell) and sums E_xc unfloored
-//!   (vxc.rs / xc_batch.rs `DENSITY_FLOOR`); the generator applies the same
+//! * XC density floor: ferric zeroes every meta-GGA V_xc factor where
+//!   ρ ≤ 1e-10 (total ρ closed shell, ρ_σ per spin open shell) and sums E_xc
+//!   unfloored (vxc.rs `DensityFloor::META_GGA`); the generator applies the same
 //!   rule to PySCF's `eval_xc_eff`. Measured E(floored) − E(unfloored) on the
 //!   reference side: ≤ 1.6e-12 Ha, the SCF convergence noise at these bases.
 //! * ferric's default meta-GGA virtual-block level shift (0.5, ramped to 0 at

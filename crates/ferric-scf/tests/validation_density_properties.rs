@@ -131,13 +131,12 @@ const TOL_FIELD_CHAIN: f64 = 3e-8;
 const TOL_VOL_CHAIN_REL: f64 = 5e-8;
 const TOL_E_ATOM: f64 = 1e-10;
 const TOL_VOL_ATOM_CHAIN_REL: f64 = 5e-8;
-/// Atoms whose ferric-chain volume is moved by ferric's XC density floor
-/// (e_xc = v_xc = 0 where rho <= 1e-10, `ferric-dft` vxc.rs DENSITY_FLOOR), which
-/// the PySCF reference does not apply. The floor reshapes the diffuse tail, and the
-/// r^3 weight makes the volume far more tail-sensitive than the energy (which
-/// agrees to <= 3e-12 Ha for these atoms). Measured 2026-09-30: Li 1.2e-6, Na
-/// 1.5e-6, Be 1.2e-7, Al 7.8e-8 relative; with the floor lowered to 1e-14 the same
-/// four fall to 2.8e-11 .. 5.4e-9, so the floor is the whole effect.
+/// Atoms whose ferric-chain volume is moved by a semilocal XC density floor of
+/// 1e-10 (v_xc = 0 where rho <= 1e-10), which the PySCF reference does not
+/// apply. The floor reshapes the diffuse tail, and the r^3 weight makes the
+/// volume far more tail-sensitive than the energy. Measured 2026-09-30 at
+/// 1e-10: Li 1.2e-6, Na 1.5e-6, Be 1.2e-7, Al 7.8e-8 relative; at 1e-14 (the
+/// current `ferric-dft` vxc.rs `DensityFloor::SEMILOCAL`) 2.8e-11 .. 5.4e-9.
 const FLOOR_SENSITIVE_ATOMS: [&str; 4] = ["li", "be", "na", "al"];
 const TOL_VOL_ATOM_CHAIN_REL_FLOOR: f64 = 2e-6;
 const TOL_ENUC: f64 = 1e-9;

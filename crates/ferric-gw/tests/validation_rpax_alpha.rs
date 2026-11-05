@@ -29,7 +29,7 @@
 //! Shared: geometry, the orbital and aux basis JSONs, the DF Coulomb metric
 //! (both fit with the same aux, so the screened comparison is DF vs DF), the
 //! kernel FORMULAS (the generator was written from the bse.rs loop), and for
-//! PBE the grid recipe and the 1e-10 density floor. A conceptual error common
+//! PBE the grid recipe and the semilocal density floor. A conceptual error common
 //! to both formulas is therefore invisible to the screened comparison; the
 //! bare limit is what ties the convention to an independent response code.
 //! Not shared: integral engines, SCF solvers, the W construction (PDEP

@@ -181,7 +181,8 @@ functional the result is CIS/TDHF. τ-only meta-GGAs (SCAN, r2SCAN, TPSS)
 take the τ kernel; VV10 and range-separated functionals are refused. Grade:
 Proven (narrow, closed shell): water, formaldehyde and NH3 at 6-31G and
 aug-cc-pVDZ with HF, LDA, PBE and B3LYP match PySCF `TDA`/`TDDFT` to at most
-6.5e-4 eV, test bar 1e-3 eV, and water/6-31G r2SCAN matches on the flat
+8.1e-4 eV on the default pruned grid (2.8e-6 eV for B3LYP/aug-cc-pVDZ on the
+reference's flat grid), test bar 1e-3 eV, and water/6-31G r2SCAN matches on the flat
 75 × 110 grid (`ferric-tddft/tests/validation_tddft.rs`).
 
 **Meta-GGA response needs a finer grid.** A TDA/TDDFT run on a meta-GGA
