@@ -88,3 +88,40 @@ def test_default_max_iter_is_200_for_run_rhf_run_uhf_run_rohf():
     for fn in (ferric.run_uhf, ferric.run_rohf):
         with pytest.raises(Exception, match="after 200 iterations"):
             fn(_water(), _bs(), energy_conv=0.0)
+
+
+def _open_shell():
+    return ferric.Molecule.from_xyz_string("2\n\nH 0 0 0\nH 0 0 3.0\n", 0, 3)
+
+
+def test_converged_exit_reports_one_step_energy_drop_within_tolerance():
+    """RHF, UHF and KS results carry the solver's first-order stationarity
+    report: the drop is <= 0 (aufbau minimizes Tr[F D']) and above -tol."""
+    results = [
+        ferric.run_rhf(_water(), _bs()),
+        ferric.run_uhf(_open_shell(), _bs()),
+        ferric.run_ksdft(_water(), _bs(), functional="PBE"),
+    ]
+    for r in results:
+        assert r.converged
+        drop, tol = r.one_step_energy_drop, r.stationarity_tol
+        assert drop is not None and tol is not None
+        assert drop <= 1e-12, drop
+        assert drop >= -tol, (drop, tol)
+        assert tol > 0.0
+
+
+def test_stationarity_tol_follows_the_scf_thresholds():
+    """tol = energy_conv + span * (nbasis * density_conv)^2: loosening the
+    thresholds loosens it, and it never falls below energy_conv."""
+    tight = ferric.run_rhf(_water(), _bs(), energy_conv=1e-9, density_conv=1e-8)
+    loose = ferric.run_rhf(_water(), _bs(), energy_conv=1e-5, density_conv=1e-4)
+    assert tight.stationarity_tol >= 1e-9
+    assert loose.stationarity_tol >= 1e-5
+    assert loose.stationarity_tol > tight.stationarity_tol
+
+
+def test_unconverged_exit_has_no_stationarity_report():
+    r = ferric.run_rhf(_water(), _bs(), max_iter=1)
+    assert not r.converged
+    assert r.one_step_energy_drop is None

@@ -870,6 +870,33 @@ fn scf_exit_summary(r: &ScfResult) -> String {
     }
 }
 
+/// The stationarity tolerance the solver judged `one_step_energy_drop`
+/// against ([`ferric_scf::result::stationarity_tol`]): the energy and density
+/// thresholds the SCF ran with, the basis size and the widest orbital-energy
+/// span of either spin. `None` without a convergence record.
+fn scf_stationarity_tol(r: &ScfResult) -> Option<f64> {
+    let c = r.convergence?;
+    let span = |eps: &[f64]| {
+        if eps.is_empty() {
+            0.0
+        } else {
+            let (lo, hi) = eps
+                .iter()
+                .fold((f64::INFINITY, f64::NEG_INFINITY), |(l, h), &e| {
+                    (l.min(e), h.max(e))
+                });
+            hi - lo
+        }
+    };
+    let span = span(&r.eps_alpha).max(r.eps_beta.as_deref().map_or(0.0, span));
+    Some(ferric_scf::result::stationarity_tol(
+        c.energy_conv,
+        c.density_conv,
+        r.mos_alpha.nrows(),
+        span,
+    ))
+}
+
 /// Result of a closed-shell RHF (or `run_ksdft` KS-DFT) calculation.
 #[pyclass]
 #[pyo3(name = "RhfResult")]
@@ -949,6 +976,27 @@ impl PyRhfResult {
     #[getter]
     fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
         certificate_dict(py, &self.certificate_data)
+    }
+    /// First-order energy change (Hartree) of one plain Roothaan step from the
+    /// converged density, `Tr[F[D] (D' - D)]` with `D'` the aufbau density of
+    /// the final `F[D]`. It is `<= 0` and zero (to rounding) only at a
+    /// stationary aufbau state; a value below `-stationarity_tol` marks a
+    /// converged exit that is not a stationary point (the solver also warns).
+    /// `None` when the exit is not an aufbau convergence (not converged, MOM,
+    /// Fermi smearing, `fractional_occ`, `irrep_nelec`, or no record).
+    #[getter]
+    fn one_step_energy_drop(&self) -> Option<f64> {
+        self.scf_data
+            .convergence
+            .and_then(|c| c.one_step_energy_drop)
+    }
+    /// The tolerance `one_step_energy_drop` is judged against:
+    /// `energy_conv + span * (nbasis * density_conv)^2`, with `span` the
+    /// orbital-energy range of the final Fock matrix. `None` without a
+    /// convergence record.
+    #[getter]
+    fn stationarity_tol(&self) -> Option<f64> {
+        scf_stationarity_tol(&self.scf_data)
     }
     /// SCF exit reason: the `ScfExit` variant name (`"Converged"`, `"Plateau"`,
     /// `"Stalled"`, `"Diverged"`, `"MaxIter"`). `converged=False` with
@@ -3311,6 +3359,8 @@ struct PyUhfResult {
     guess_basis_report: Option<ferric_scf::basis2::GuessBasisReport>,
     precision: ferric_core::gpu::provenance::PrecisionRecord,
     certificate_data: ferric_core::certificate::Certificate,
+    one_step_energy_drop_data: Option<f64>,
+    stationarity_tol_data: Option<f64>,
 }
 
 /// The open-shell result both `run_uhf` and `run_rohf` return. ROHF leaves
@@ -3320,6 +3370,8 @@ impl PyUhfResult {
     fn from_scf(r: ScfResult, mol: &Molecule, config: &RhfConfig) -> Self {
         let certificate_data = stamped_scf_certificate(mol, &r, config);
         PyUhfResult {
+            one_step_energy_drop_data: r.convergence.and_then(|c| c.one_step_energy_drop),
+            stationarity_tol_data: scf_stationarity_tol(&r),
             certificate_data,
             energy: r.energy,
             converged: r.converged,
@@ -3362,6 +3414,19 @@ impl PyUhfResult {
     #[getter]
     fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
         certificate_dict(py, &self.certificate_data)
+    }
+    /// First-order energy change of one plain Roothaan step from the converged
+    /// density, summed over spins (see `RhfResult.one_step_energy_drop`), or
+    /// `None` when the exit is not an aufbau convergence.
+    #[getter]
+    fn one_step_energy_drop(&self) -> Option<f64> {
+        self.one_step_energy_drop_data
+    }
+    /// The tolerance `one_step_energy_drop` is judged against (see
+    /// `RhfResult.stationarity_tol`; the span is the wider of the two spins).
+    #[getter]
+    fn stationarity_tol(&self) -> Option<f64> {
+        self.stationarity_tol_data
     }
     fn density_alpha<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
         PyArray2::from_array(py, &self.density_alpha_data)
@@ -9609,6 +9674,27 @@ impl PyDftResult {
         self.scf_data.iterations
     }
 
+    /// First-order energy change (Hartree) of one plain Roothaan step from the
+    /// converged density, `Tr[F[D] (D' - D)]` with `D'` the aufbau density of
+    /// the final `F[D]`. It is `<= 0` and zero (to rounding) only at a
+    /// stationary aufbau state; a value below `-stationarity_tol` marks a
+    /// converged exit that is not a stationary point (the solver also warns).
+    /// `None` when the exit is not an aufbau convergence (not converged, MOM,
+    /// Fermi smearing, `fractional_occ`, `irrep_nelec`, or no record).
+    #[getter]
+    fn one_step_energy_drop(&self) -> Option<f64> {
+        self.scf_data
+            .convergence
+            .and_then(|c| c.one_step_energy_drop)
+    }
+    /// The tolerance `one_step_energy_drop` is judged against:
+    /// `energy_conv + span * (nbasis * density_conv)^2`, with `span` the
+    /// orbital-energy range of the final Fock matrix. `None` without a
+    /// convergence record.
+    #[getter]
+    fn stationarity_tol(&self) -> Option<f64> {
+        scf_stationarity_tol(&self.scf_data)
+    }
     /// SCF exit reason: one of `"Converged"`, `"Plateau"`, `"Stalled"`,
     /// `"Diverged"`, `"MaxIter"`, `"NotCertified"` (ROHF/ROKS only) — the
     /// `ScfExit` variant name. Strictly more

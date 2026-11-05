@@ -857,6 +857,24 @@ class RhfResult:
         ...
 
     @property
+    def one_step_energy_drop(self) -> float | None:
+        """First-order energy change (Hartree) of one plain Roothaan step from the
+        converged density, ``Tr[F[D] (D' - D)]``; ``<= 0``, and zero (to rounding)
+        only at a stationary aufbau state. A value below ``-stationarity_tol``
+        marks a converged exit that is not a stationary point. ``None`` when the
+        exit is not an aufbau convergence (not converged, MOM, Fermi smearing,
+        ``fractional_occ``, ``irrep_nelec``)."""
+        ...
+
+    @property
+    def stationarity_tol(self) -> float | None:
+        """The tolerance ``one_step_energy_drop`` is judged against:
+        ``energy_conv + span * (nbasis * density_conv)**2`` with ``span`` the
+        orbital-energy range of the final Fock matrix; ``None`` without a
+        convergence record."""
+        ...
+
+    @property
     def exit_reason(self) -> str:
         """ScfExit variant name: "Converged", "Stalled", "Diverged" or "MaxIter" (the
         iteration cap was reached). ("Plateau" is reserved: not produced by run_rhf today.)"""
@@ -959,6 +977,22 @@ class UhfResult:
         unconverged SCF is ``"ungraded"``), ``grade_source``,
         ``measured_error``, ``approximations`` (``[{"name", "detail"}]``),
         ``precision`` and ``warnings`` (``list[str]``)."""
+        ...
+    @property
+    def one_step_energy_drop(self) -> float | None:
+        """First-order energy change (Hartree) of one plain Roothaan step from the
+        converged density, ``Tr[F[D] (D' - D)]``; ``<= 0``, and zero (to rounding)
+        only at a stationary aufbau state. A value below ``-stationarity_tol``
+        marks a converged exit that is not a stationary point. ``None`` when the
+        exit is not an aufbau convergence (not converged, MOM, Fermi smearing,
+        ``fractional_occ``, ``irrep_nelec``)."""
+        ...
+    @property
+    def stationarity_tol(self) -> float | None:
+        """The tolerance ``one_step_energy_drop`` is judged against:
+        ``energy_conv + span * (nbasis * density_conv)**2`` with ``span`` the
+        orbital-energy range of the final Fock matrix; ``None`` without a
+        convergence record."""
         ...
 
     @property
@@ -1842,6 +1876,19 @@ class DftResult:
         unconverged SCF is ``"ungraded"``), ``grade_source``,
         ``measured_error``, ``approximations`` (``[{"name", "detail"}]``),
         ``precision`` and ``warnings`` (``list[str]``)."""
+        ...
+
+    @property
+    def one_step_energy_drop(self) -> float | None:
+        """First-order energy change of one plain Roothaan step from the converged
+        density (see ``RhfResult.one_step_energy_drop``); ``None`` when the exit is
+        not an aufbau convergence."""
+        ...
+
+    @property
+    def stationarity_tol(self) -> float | None:
+        """The tolerance ``one_step_energy_drop`` is judged against (see
+        ``RhfResult.stationarity_tol``)."""
         ...
 
     @property
