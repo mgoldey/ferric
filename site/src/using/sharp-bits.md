@@ -252,20 +252,11 @@ When a charged allocation does not fit, the result depends on the allocation:
   which, the run log records it,
   and the SCF may take more iterations. Very near that limit, repeat runs of one
   input have differed in whether this happens. `jk_storage = "memory"` with a VV10 functional is held to the
-  budget less the cache, so it refuses some budgets that an earlier build ran over.
+  budget less the cache, so it refuses budgets that cannot hold the cache and the tensors together.
 - An allocation with no fallback stops the job with an error naming it. For
   some methods this check comes after the SCF. Benzene RI-MP2/def2-SVP with
   `budget_gb = 0.001` completes the SCF, then exits with
   `RI-MP2 MO-side blocks ... requires 0.01 GB; budget is 0.00 GB`.
-
-**Changed once for spilled, recomputed and `jk_storage = "disk"` RI-JK runs:**
-adopting the widths above moved energies by at most 2.84e-13 Ha against the
-previous build (water/cc-pVDZ and butane/6-31G, `OPENBLAS_NUM_THREADS=1`, on one
-OpenBLAS kernel). `auto` runs that stayed in core, and exact runs, did not move.
-Iteration counts matched in every case but one, water/cc-pVDZ under
-`jk_storage = "direct"`, and that case is not a clean before and after: the
-previous build was not reproducible there with BLAS pinned, giving 13 iterations
-in 9 of 10 runs and 11 in the other, while this build gave 11 in 15 of 15.
 
 Some stages print a warning when resident memory passes 110% of the budget.
 The warning never stops the run.
