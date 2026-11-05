@@ -1,20 +1,7 @@
 //! Energies and analytic gradients for [`crate::topology::MmTopology`].
 //!
-//! Functional forms (AMBER convention, no leading 1/2 on the harmonic
-//! terms — see `topology.rs` docs):
-//!
-//! ```text
-//! E_bond    = sum_bonds     k (r - r0)^2
-//! E_angle   = sum_angles    k (theta - theta0)^2
-//! E_torsion = sum_torsions  k (1 + cos(n*phi - delta))
-//! E_lj      = sum_{i<j, not excluded} scale_ij * 4 eps_ij [(sigma_ij/r)^12 - (sigma_ij/r)^6]
-//! E_coul    = sum_{i<j, not excluded} scale_ij * q_i q_j / r
-//! ```
-//!
-//! where `scale_ij` is 1 for a normal pair, `scale_lj_14`/`scale_coul_14` for
-//! a 1-4 pair, and the pair is skipped entirely (both terms) if it is an
-//! exclusion. LJ mixing is Lorentz-Berthelot: `sigma_ij = (sigma_i+sigma_j)/2`,
-//! `eps_ij = sqrt(eps_i * eps_j)`.
+//! Functional forms (AMBER convention, no leading 1/2 on the harmonic terms),
+//! exclusions, 1-4 scaling and mixing rules: `crates/ferric-mm/theory.md`.
 //!
 //! Every gradient here is analytic and FD-verified in `tests/terms_fd.rs`
 //! (central difference, h = 1e-5, per-term tolerance 1e-9).
@@ -104,7 +91,7 @@ pub fn gradient(
     let mut g = Array2::<f64>::zeros((n, 3));
     let mut e = MmEnergy::default();
 
-    // Bonds: E = k (r - r0)^2, dE/dr = 2k(r-r0), force on i along r_ij/r.
+    // Bonds (theory.md 1).
     for b in &top.bonds {
         let rij = diff(coords, b.i, b.j);
         let r = norm(rij);
@@ -124,9 +111,9 @@ pub fn gradient(
         );
     }
 
-    // Angles: E = k(theta - theta0)^2 with theta the i-j-k bond angle at j.
+    // Angles (theory.md 2).
     for a in &top.angles {
-        let rji = diff(coords, a.i, a.j); // vector from j to i... actually i - j
+        let rji = diff(coords, a.i, a.j); // Ri - Rj
         let rjk = diff(coords, a.k, a.j);
         let rji_n = norm(rji);
         let rjk_n = norm(rjk);
@@ -136,14 +123,12 @@ pub fn gradient(
         e.angle += a.k_theta * dtheta * dtheta;
         let dedtheta = 2.0 * a.k_theta * dtheta;
 
-        // d(theta)/dR via standard bond-angle gradient formula.
         let sin_t = theta.sin();
         // Guard: sin_t -> 0 at theta = 0 or pi is a genuine coordinate
         // singularity of the angle gradient (not an FD tolerance issue); the
         // test geometries stay away from it.
         let inv_sin = 1.0 / sin_t;
 
-        // dtheta/dRi = -inv_sin * (rjk/(|rji||rjk|) - cos_t * rji/|rji|^2)
         let mut dti = [0.0; 3];
         let mut dtk = [0.0; 3];
         for c in 0..3 {
@@ -169,7 +154,7 @@ pub fn gradient(
         );
     }
 
-    // Torsions: E = k(1 + cos(n*phi - delta)), Blondel-Karplus gradient.
+    // Torsions: E = k(1 + cos(n*phi - delta)); chain rule through phi (theory.md 4).
     for t in &top.torsions {
         let (phi, grads) = dihedral_and_gradient(coords, t.i, t.j, t.k, t.l);
         let n = t.periodicity as f64;
@@ -214,7 +199,7 @@ pub fn gradient(
         );
     }
 
-    // Nonbonded: all pairs, minus exclusions, with 1-4 scaling.
+    // Nonbonded (theory.md 5, 6).
     for i in 0..n {
         for j in (i + 1)..n {
             let pair = (i, j);
@@ -237,7 +222,6 @@ pub fn gradient(
                 let sr12 = sr6 * sr6;
                 let e_lj = scale_lj * 4.0 * mixed.epsilon * (sr12 - sr6);
                 e.lj += e_lj;
-                // dE/dr = scale*4*eps*(-12 sr12 + 6 sr6)/r
                 let dedr = scale_lj * 4.0 * mixed.epsilon * (-12.0 * sr12 + 6.0 * sr6) / r;
                 add_row(&mut g, i, [dedr * unit[0], dedr * unit[1], dedr * unit[2]]);
                 add_row(
@@ -273,28 +257,9 @@ fn mix(a: LjParams, b: LjParams) -> LjParams {
     }
 }
 
-/// Dihedral angle `phi` (radians, signed) for atoms i-j-k-l, and `dphi/dR`
-/// for each of the four atom positions.
-///
-/// Bekker's formulation (as implemented in GROMACS `dih.c`; see also Blondel
-/// & Karplus, J. Comput. Chem. 17, 1132 (1996)):
-/// ```text
-/// r_ij = Ri - Rj,  r_kj = Rk - Rj,  r_kl = Rk - Rl
-/// m = r_ij x r_kj,  n = r_kj x r_kl
-/// cos(phi) = (m . n) / (|m| |n|)
-/// sign(phi) = sign(r_ij . n)         (right-handed convention)
-/// ```
-/// and the gradient (Bekker Eq. 28-31, sign-flipped from force to `dphi/dR`):
-/// ```text
-/// dphi/dRi =  (|r_kj| / |m|^2) m
-/// dphi/dRl = -(|r_kj| / |n|^2) n
-/// dphi/dRj = -dphi/dRi + (r_ij.r_kj)/|r_kj|^2 * dphi/dRi - (r_kl.r_kj)/|r_kj|^2 * dphi/dRl
-/// dphi/dRk = -dphi/dRl - (r_ij.r_kj)/|r_kj|^2 * dphi/dRi + (r_kl.r_kj)/|r_kj|^2 * dphi/dRl
-/// ```
-/// This `atan2`-free (acos + explicit sign) form is what GROMACS uses in
-/// production and is well-conditioned away from phi = 0/pi; the sign
-/// disambiguation via `r_ij . n` avoids the branch-cut issue an unsigned
-/// `acos` alone would have.
+/// Signed dihedral `phi` (radians) for atoms i-j-k-l and `dphi/dR` for each of
+/// the four atoms (Bekker form). Equations: `theory.md` section 4; checked by
+/// `scripts/mm_dihedral_gradient_sympy.py`.
 fn dihedral_and_gradient(
     coords: &Array2<f64>,
     i: usize,
@@ -313,16 +278,8 @@ fn dihedral_and_gradient(
     let n_sq = dot(n, n);
     let kj_norm = norm(r_kj);
 
-    // A collinear i-j-k (or j-k-l) valence angle makes r_ij parallel to
-    // r_kj (or r_kl to r_kj), so m (or n) vanishes -- the dihedral plane,
-    // and so phi itself, is undefined there (the true derivative is
-    // singular). Without this guard, dividing by m_sq.sqrt()*n_sq.sqrt()
-    // ~ 0 produces a NaN cos_phi that poisons BOTH the energy (via
-    // arg.cos() below) and the gradient, even though the gradient's own
-    // fallback guard further down looks defensive -- phi itself must be
-    // made finite first. phi = 0 is an arbitrary but well-defined choice
-    // (same convention as the zero-gradient fallback: the term contributes
-    // a finite, if physically meaningless, energy rather than NaN).
+    // Linear i-j-k or j-k-l: m or n vanishes, phi is undefined (theory.md 4.4);
+    // use phi = 0 so the energy stays finite.
     let mut phi = if m_sq > 1e-20 && n_sq > 1e-20 {
         let cos_phi = (dot(m, n) / (m_sq.sqrt() * n_sq.sqrt())).clamp(-1.0, 1.0);
         cos_phi.acos()
@@ -338,12 +295,7 @@ fn dihedral_and_gradient(
     let mut grad_k = [0.0; 3];
     let mut grad_l = [0.0; 3];
 
-    // m/n vanish only when i-j-k (resp. j-k-l) is LINEAR (r_ij parallel to
-    // r_kj), not when phi itself is 0 or 180 deg -- a linear valence angle
-    // makes the dihedral plane, and so phi, undefined; the true derivative
-    // is singular there, and returning a zero gradient is the intentional
-    // fallback (see collinear_valence_angle_torsion_gradient_is_finite_and_zero
-    // in tests/terms_fd.rs).
+    // Zero-gradient fallback when phi is undefined (theory.md 4.4).
     if m_sq > 1e-20 && n_sq > 1e-20 && kj_norm > 1e-20 {
         for c in 0..3 {
             grad_i[c] = (kj_norm / m_sq) * m[c];

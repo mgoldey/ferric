@@ -15,6 +15,8 @@
 //! [`topology::MmTopology::from_amber_units`] converts once from the
 //! kcal/mol/Å/degree convention most force fields are published in.
 //!
+//! Equations and code map: `crates/ferric-mm/theory.md`.
+//!
 //! Validated against OpenMM's Reference platform on toy topologies built from
 //! the *same* explicit parameters (`tests/vs_openmm.rs`) — see the crate's
 //! parent plan doc for the measured per-term agreement.
