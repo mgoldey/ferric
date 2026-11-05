@@ -123,10 +123,18 @@ pub fn gradient(
         e.angle += a.k_theta * dtheta * dtheta;
         let dedtheta = 2.0 * a.k_theta * dtheta;
 
+        // Linear i-j-k (theta = 0 or pi): |a x b| = 0, the angle gradient
+        // ~ 1/sin(theta) is singular and its direction undefined (theory.md
+        // 2). Same convention as the degenerate torsion (theory.md 4.4):
+        // the energy stays finite and this term contributes a zero gradient.
+        let cross_sq = {
+            let c = cross(rji, rjk);
+            dot(c, c)
+        };
+        if cross_sq <= 1e-20 {
+            continue;
+        }
         let sin_t = theta.sin();
-        // Guard: sin_t -> 0 at theta = 0 or pi is a genuine coordinate
-        // singularity of the angle gradient (not an FD tolerance issue); the
-        // test geometries stay away from it.
         let inv_sin = 1.0 / sin_t;
 
         let mut dti = [0.0; 3];

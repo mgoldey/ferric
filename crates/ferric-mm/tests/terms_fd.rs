@@ -290,6 +290,45 @@ fn torsion_gradient_vs_fd_near_phi_0_pi_and_near_linear_angle() {
     }
 }
 
+/// Exactly linear VALENCE angle (theta = pi and theta = 0): the angle
+/// gradient ~ 1/sin(theta) is singular, so the code returns a zero gradient
+/// for that term (theory.md 2), matching the degenerate-torsion convention.
+/// Energy is the exact harmonic value; gradient is finite and exactly zero.
+#[test]
+fn exactly_linear_valence_angle_gradient_is_finite_and_zero() {
+    let k_theta = 0.07;
+    let theta0 = 1.9;
+    let angles = vec![Angle {
+        i: 0,
+        j: 1,
+        k: 2,
+        k_theta,
+        theta0,
+    }];
+    let top = MmTopology::new(vec![0.0; 3], lj_zero(3), vec![], angles, vec![]).unwrap();
+    let pi = std::f64::consts::PI;
+    // theta = pi: i and k on opposite sides of j. theta = 0: same side.
+    let cases = [
+        (
+            array![[0.0, 0.0, -1.0], [0.0, 0.0, 0.0], [0.0, 0.0, 1.5]],
+            pi,
+        ),
+        (
+            array![[0.0, 0.0, 1.0], [0.0, 0.0, 0.0], [0.0, 0.0, 1.5]],
+            0.0,
+        ),
+    ];
+    for (coords, theta) in cases {
+        let (e, g) = gradient(&top, &coords).unwrap();
+        let want = k_theta * (theta - theta0) * (theta - theta0);
+        assert!((e.total - want).abs() < 1e-14, "{} vs {want}", e.total);
+        for v in g.iter() {
+            assert!(v.is_finite(), "non-finite gradient at theta={theta}: {v}");
+            assert_eq!(*v, 0.0, "linear-angle fallback must be exactly zero");
+        }
+    }
+}
+
 /// Genuinely degenerate case: i, j, k EXACTLY collinear, so r_ij is
 /// parallel to r_kj and m = r_ij x r_kj = 0 -- the dihedral plane through
 /// i-j-k is undefined, and so is phi itself (the true derivative is

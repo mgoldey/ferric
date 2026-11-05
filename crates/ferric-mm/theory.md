@@ -44,9 +44,17 @@ $$\frac{\partial\theta}{\partial\mathbf R_i} = -\frac{1}{\sin\theta}\Big(\frac{\
 \frac{\partial\theta}{\partial\mathbf R_k} = -\frac{1}{\sin\theta}\Big(\frac{\mathbf a}{|\mathbf a||\mathbf b|} - \cos\theta\,\frac{\mathbf b}{|\mathbf b|^2}\Big),\quad
 \frac{\partial\theta}{\partial\mathbf R_j} = -\frac{\partial\theta}{\partial\mathbf R_i}-\frac{\partial\theta}{\partial\mathbf R_k}$$
 
-(`energy.rs:130-137`). **[sympy 4]** The factor $1/\sin\theta$ is a genuine
-coordinate singularity at $\theta = 0,\pi$; the code does not guard it, and the
-tests keep the angle away from linear.
+(`energy.rs:138-147`). **[sympy 4]** The factor $1/\sin\theta$ is a genuine
+coordinate singularity at $\theta = 0,\pi$, where the force direction is
+undefined (for $\theta_0\ne\pi$, $E$ is a cone, not differentiable, in the
+perpendicular displacement). If $|\mathbf a\times\mathbf b|^2\le10^{-20}$ the
+code keeps the finite energy and adds no gradient for that angle, the same
+convention as the degenerate torsion (section 4.4). This is the symmetric
+subgradient, and agrees with OpenMM's reference angle kernel, which divides by
+a clamped $|\mathbf a\times\mathbf b|$ whose numerator vanishes at linear
+geometry. Pinned by `exactly_linear_valence_angle_gradient_is_finite_and_zero`
+(`tests/terms_fd.rs`); near-linear angles (0.6 deg) still match central
+differences (`torsion_gradient_vs_fd_near_phi_0_pi_and_near_linear_angle`).
 
 ## 3. Periodic torsions: proper and improper
 
