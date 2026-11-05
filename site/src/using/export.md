@@ -129,19 +129,22 @@ Keys written for water/cc-pVDZ with the input above (N atoms, nao = 24):
 | `mo_coeffs`, `density_matrix` | (nao, nao) |
 | `orbital_energies` | (nao,) |
 | `pdep_eigenvectors` | (naux, M), M retained eigenvalues |
-| `orbital_centers`, `orbital_spreads` | (nao, 3), (nao,) |
+| `orbital_centers`, `orbital_spreads` | (nmo, 3), (nmo,) |
 | `density_second_moment`, `dipole` | (3, 3), (3,) |
 | `esp_atoms`, `electric_field` | (N,), (N, 3) |
+| `esp_surface`, `esp_points` | (npts,), (npts, 3); `compute_esp_surface = true` only |
 | `alpha_tensor`, `alpha_ct` | (3, 3) |
 | `alpha_atomic` | (N, 3, 3) |
 | `hirshfeld_charges`, `lowdin_charges`, `mulliken_charges`, `chelpg_charges`, `resp_charges` | (N,) |
 | `c6_freqs`, `c6_weights` | (n_quad,) |
 | `alpha_atomic_dynamic` | (N, n_quad, 3, 3) |
+| `alpha_ct_dynamic` | (n_quad, 3, 3); `c6_source = "pdep"` only |
 | `c6_iso`, `c6_aniso` | (N, N), (N, N, 3, 3) |
 | `c6_molecular_iso` | (1,) |
 | `c6_partition`, `c6_source` | byte strings; decode with `.tobytes().decode()` |
 
-`c6_iso` and `c6_aniso` are per-atom pair tensors under a partition
+`mo_coeffs`, `orbital_energies`, `orbital_centers` and `orbital_spreads` are
+written for restricted references only. `c6_iso` and `c6_aniso` are per-atom pair tensors under a partition
 convention. They do not sum to the molecular C6; read `c6_molecular_iso`.
 `alpha_ct + alpha_atomic.sum(0) == alpha_tensor`. The definitions of
 `alpha_atomic` and `alpha_ct` are in the `compute_alpha_atomic` row of the
