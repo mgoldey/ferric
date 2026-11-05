@@ -106,8 +106,10 @@ pub struct AtomicGridConfig {
     pub n_angular: usize,
     /// Angular-order pruning scheme, or `None` for the flat (unpruned) grid.
     ///
-    /// `None` is the default and reproduces the historical grid exactly. Opting
-    /// into [`PruneScheme::NwchemLike`] cuts ~23% of grid points (measured on
+    /// `None` is the flat grid, and is what [`AtomicGridConfig::default`] builds.
+    /// It is NOT what a KS SCF runs on when no grid is set: that is
+    /// [`AtomicGridConfig::production`] (`Some(PruneScheme::NwchemRadial)`).
+    /// [`PruneScheme::NwchemLike`] cuts ~23% of grid points (measured on
     /// H2O/CH4/benzene at 75x110; 33.5% at 99x302) for a ΔE_xc of ~1e-10 Ha —
     /// roughly 10^5 inside the reference-test budget, i.e. effectively free.
     ///
@@ -115,10 +117,11 @@ pub struct AtomicGridConfig {
     /// honour their own setting), and settable from the CLI via
     /// `[dft] grid_prune = "nwchem"`.
     ///
-    /// NOT the default. See `crates/ferric-dft/tests/grid_prune_live_scf.rs`
-    /// for the live-SCF evidence behind that choice: the accuracy is fine, but
-    /// a pruned grid is not a free swap for the flat one everywhere (see the
-    /// two restrictions below), so it stays opt-in.
+    /// `NwchemLike` is not the KS default; `NwchemRadial` is (see
+    /// [`AtomicGridConfig::production`]). See
+    /// `crates/ferric-dft/tests/grid_prune_live_scf.rs` for the live-SCF
+    /// evidence for `NwchemLike`. A pruned grid is not a free swap for the flat
+    /// one everywhere (see the two restrictions below).
     ///
     /// CAUTION 1 — `n_angular = 50`: pruning ERRORS rather than silently
     /// returning a flat grid (NWChem's middle regions want order 74, which
@@ -128,7 +131,9 @@ pub struct AtomicGridConfig {
     /// `None`. They do: each is constructed with an explicit `..Default::
     /// default()` over a `Default` whose `prune` is `None`. This is also why
     /// flipping that `Default` is NOT a safe way to turn pruning on globally —
-    /// it would poison every 50x50 NLC grid in the workspace at once.
+    /// it would poison every 50x50 NLC grid in the workspace at once. The KS
+    /// default is therefore carried by `RhfConfig::dft_grid = None` resolving
+    /// to [`AtomicGridConfig::production`], not by `Default`.
     ///
     /// Gradients: [`build_atomic_grid_with_response`] honours a pruned config
     /// (it takes [`build_atomic_grid_with_response_pruned`]), so the analytic KS
@@ -172,8 +177,10 @@ pub struct AtomicGridConfig {
     /// Becke weight of every point (it is no longer the cheap closed-form
     /// count); see its doc.
     ///
-    /// Settable from the CLI via `[dft] grid_weight_cut = 1e-14` and from
-    /// Python via `grid_weight_cut=`. NOT the default.
+    /// Settable from the CLI via `[dft] grid_weight_cut` and from Python via
+    /// `grid_weight_cut=`. `None` here (and in [`AtomicGridConfig::default`]);
+    /// the KS default, [`AtomicGridConfig::production`], sets
+    /// [`DEFAULT_WEIGHT_CUT`].
     pub weight_cut: Option<f64>,
 }
 
@@ -183,14 +190,14 @@ pub const DEFAULT_WEIGHT_CUT: f64 = 1e-14;
 
 impl Default for AtomicGridConfig {
     fn default() -> Self {
-        // "Fine" production grid: 75 radial × 110 angular = 8250 pts/atom.
-        // Comparable to ORCA "GRID5" or PySCF (75, 302).
+        // Flat 75 radial × 110 angular = 8250 pts/atom: the analysis-quadrature
+        // grid (Hirshfeld volumes, partitions, property grids), NOT the KS
+        // default. A KS SCF with `dft_grid = None` runs on `production()`.
         Self {
             n_radial: 75,
             n_angular: 110,
-            // Flat grid: byte-identical to the historical behavior. See the
-            // field doc for why pruning is opt-in until it is validated
-            // through a live KS SCF against the reference suites.
+            // Flat grid. Pins flat-grid numbers in tests and analysis code;
+            // see the `prune` field doc and `production()`.
             prune: None,
             // No weight cutoff: every (shell, angular point) pair is kept.
             weight_cut: None,
@@ -253,9 +260,10 @@ impl AtomicGridConfig {
         }
     }
 
-    /// Opt-in pruned production grid: same 75×110 base as [`Self::default`],
-    /// but with [`PruneScheme::NwchemLike`] angular pruning enabled (~23% fewer
-    /// points). Not valid where a 50-point angular order is needed; see the
+    /// Angular-only pruned grid at 75×110 with no weight cutoff:
+    /// [`PruneScheme::NwchemLike`] (~23% fewer points than [`Self::default`]).
+    /// Not the KS default ([`Self::production`], which also thins light atoms'
+    /// radial shells and applies the weight cut). Not valid where a 50-point angular order is needed; see the
     /// `prune` field's CAUTION notes. A gradient taken on this grid must be
     /// built from the same config (see the field's "Gradients" note).
     #[must_use]

@@ -73,9 +73,11 @@ pub struct RhfConfig {
     /// (byte-identical path). Hard error via libxc if `xc` has no `_omega`
     /// parameter (never silently ignored).
     pub xc_omega: Option<f64>,
-    /// Main DFT grid spec. Default (75, 110) when xc.is_some().
+    /// Main DFT grid spec. `None` = `AtomicGridConfig::production()` (75x110,
+    /// `nwchem-radial` pruned, 1e-14 weight cut) on every KS path.
     pub dft_grid: Option<ferric_dft::grid::AtomicGridConfig>,
-    /// NLC (VV10) grid spec. Default (50, 50) when XC requires VV10.
+    /// NLC (VV10) grid spec. `None` = `AtomicGridConfig::default_nlc()` (flat
+    /// 50x50) when XC requires VV10.
     pub nlc_grid: Option<ferric_dft::grid::AtomicGridConfig>,
     /// Level shift (Ha) applied to the virtual–virtual block of the Fock
     /// matrix in MO basis. Defaults to 0 (no shift). Used to damp oscillations

@@ -66,7 +66,8 @@ use ndarray::Array2;
 /// The gradient is the derivative of the energy the SCF converged, which is a
 /// functional of the SCF's `dft_grid` (and, for VV10 functionals, its
 /// `nlc_grid`), including any angular pruning. `Default` is the SCF's own
-/// default pair (75x110 main, 50x50 nonlocal, both unpruned), so a caller that
+/// default pair (`AtomicGridConfig::production` main: 75x110 pruned with
+/// `nwchem-radial` and a 1e-14 weight cut; flat 50x50 nonlocal), so a caller that
 /// ran its SCF with no grid override gets identical bits from either entry
 /// point. A caller that set `dft_grid` / `nlc_grid` must pass
 /// [`KsGradGrids::from_config`]; the plain `ks_gradient_*` entry points always

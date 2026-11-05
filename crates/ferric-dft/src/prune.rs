@@ -1,4 +1,6 @@
-//! Radial-shell-dependent angular grid pruning (opt-in).
+//! Radial-shell-dependent angular grid pruning (`NwchemRadial` is the KS default via
+//! [`crate::grid::AtomicGridConfig::production`]; `NwchemLike` and the rest are
+//! selected explicitly).
 //!
 //! The unpruned Becke-Lebedev grid built by [`crate::grid::build_atomic_grid`]
 //! uses the SAME Lebedev order at every radial shell of every atom. That is

@@ -481,14 +481,18 @@ pub struct DftCfg {
     pub omega: Option<f64>,
     /// Angular-grid pruning scheme for the MAIN DFT grid.
     ///
-    ///   `"none"` (default) — flat grid, every radial shell at the full
-    ///                        Lebedev order. Byte-identical to the historical
-    ///                        behaviour.
-    ///   `"nwchem"`         — NWChem-style 5-region radial pruning. Removes
-    ///                        ~23% of grid points at the default 75x110 for a
-    ///                        live-SCF energy shift well inside the PySCF
-    ///                        reference tolerances (see
+    ///   omitted            — `nwchem-radial` (the production grid; see
+    ///                        `AtomicGridConfig::production`).
+    ///   `"none"`           — flat grid, every radial shell at the full
+    ///                        Lebedev order (with `grid_weight_cut = 0`, the
+    ///                        pre-production default exactly).
+    ///   `"nwchem"`         — NWChem-style 5-region angular pruning. Removes
+    ///                        ~23% of grid points at 75x110 for a live-SCF
+    ///                        energy shift well inside the PySCF reference
+    ///                        tolerances (see
     ///                        `ferric-dft/tests/grid_prune_live_scf.rs`).
+    ///   `"nwchem-radial"`  — `nwchem` plus fewer radial shells on H/He/Li-Ne.
+    ///   `"defgrid1"`..`"defgrid3"` — ORCA DEFGRIDs (fix their own sizes).
     ///
     /// Unknown values are a hard error (`PruneScheme::parse_config_str`).
     ///

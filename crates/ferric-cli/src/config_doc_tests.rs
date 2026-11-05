@@ -268,7 +268,7 @@ fn input_reference_documents_exactly_the_accepted_keys() {
 }
 
 /// Every Markdown file the docs build publishes, plus the README (which is
-/// also the PyPI description).
+/// also the PyPI description) and the CLI crate's README.
 fn published_markdown() -> Vec<PathBuf> {
     fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
         for entry in std::fs::read_dir(dir).unwrap() {
@@ -281,7 +281,10 @@ fn published_markdown() -> Vec<PathBuf> {
         }
     }
     let root = repo_root();
-    let mut out = vec![root.join("README.md")];
+    let mut out = vec![
+        root.join("README.md"),
+        root.join("crates/ferric-cli/README.md"),
+    ];
     walk(&root.join("site/src"), &mut out);
     out.sort();
     out
@@ -355,6 +358,44 @@ fn every_toml_block_in_the_docs_parses() {
         "TOML blocks in the docs that the CLI would reject (mark a deliberately \
          invalid block with `<!-- doctest: skip -->` on the line before it):\n  {}",
         failures.join("\n  ")
+    );
+}
+
+/// The CLI README's `[method]` table must name exactly the kinds and tasks the
+/// CLI dispatches, and none that it does not (it once said `dft` for `ksdft`
+/// and offered a `gradient` task).
+#[test]
+fn cli_readme_lists_the_dispatched_kinds_and_tasks() {
+    let readme = std::fs::read_to_string(repo_root().join("crates/ferric-cli/README.md")).unwrap();
+    let row = |key: &str| -> BTreeSet<String> {
+        let line = readme
+            .lines()
+            .find(|l| l.starts_with(&format!("| `{key}` |")))
+            .unwrap_or_else(|| panic!("README has no `| `{key}` |` row in its [method] table"));
+        let cell = line.split('|').nth(2).unwrap();
+        cell.split('`')
+            .skip(1)
+            .step_by(2)
+            .map(str::to_string)
+            .collect()
+    };
+    let kinds: BTreeSet<String> = crate::SUPPORTED_METHOD_KINDS
+        .iter()
+        .map(|k| k.to_string())
+        .collect();
+    assert_eq!(
+        row("kind"),
+        kinds,
+        "README `kind` row vs SUPPORTED_METHOD_KINDS"
+    );
+    let tasks: BTreeSet<String> = ["energy", "optimize", "frequencies"]
+        .iter()
+        .map(|k| k.to_string())
+        .collect();
+    assert_eq!(
+        row("task"),
+        tasks,
+        "README `task` row vs the dispatch in lib.rs"
     );
 }
 

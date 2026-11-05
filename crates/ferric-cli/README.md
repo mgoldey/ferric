@@ -1,116 +1,90 @@
-# ferric-cli Configuration Guide
+# ferric-cli
 
-This directory contains the CLI driver for `ferric`. Calculations are driven using TOML files. Below is a comprehensive reference of all blocks and parameters available in the TOML configuration.
+The `ferric` command-line driver. A calculation is one TOML file:
 
----
+```
+cargo run --release -- examples/water-rhf.toml
+```
 
-## 1. `[molecule]` Block
-Specifies the molecular geometry and chemical state.
+Every section and key is specified in the book's
+[Input reference](../../site/src/reference/input.md)
+(`site/src/reference/input.md`), which a test
+(`config_doc_tests.rs`) keeps in step with the config structs in
+`crates/ferric-cli/src/config.rs`. This README does not repeat those tables.
 
-| Key | Type | Default | Description |
-| :--- | :--- | :--- | :--- |
-| `xyz` | String | *Required* | Path to the input `.xyz` file. Coordinates in the file are parsed in Angstroms and converted internally to Bohr. |
-| `charge` | Integer | `0` | Total electronic charge of the system. |
-| `multiplicity` | Integer | `1` | Spin multiplicity ($2S + 1$). |
+**Unknown keys are a hard error.** Every config struct is
+`#[serde(deny_unknown_fields)]`, so a misspelled key or section aborts the run
+before anything is computed. Every ```` ```toml ```` block in this README is parsed
+against the real `Config` by the same test, so an example here cannot go stale.
 
----
+A minimal file:
 
-## 2. `[basis]` Block
-Configures the primary orbital basis set.
-
-| Key | Type | Default | Description |
-| :--- | :--- | :--- | :--- |
-| `name` | String | *Optional* | Name of a bundled basis set (e.g., `"sto-3g"`, `"6-31g"`, `"cc-pvdz"`, `"def2-svp"`). |
-| `path` | String | *Optional* | Path to a custom G94 or BSE-JSON format basis set file. |
-
----
-
-## 3. `[method]` Block
-Defines the method and task to run.
-
-| Key | Type | Default | Description |
-| :--- | :--- | :--- | :--- |
-| `kind` | String | *Required* | The chemistry method. Supported values:<br>- `"rhf"`: Restricted Hartree-Fock<br>- `"dft"`: Density Functional Theory<br>- `"rimp2"`: Resolution-of-Identity MP2<br>- `"att-rimp2"`: Attenuated RI-MP2<br>- `"scs-mp2"`: Spin-Component Scaled MP2<br>- `"laplace-mp2"`: Laplace-transformed RI-MP2<br>- `"ccd"` / `"ccsd"` / `"ccsd(t)"`: Coupled Cluster methods<br>- `"pdep-rpa"`: PDEP-RPA correlation energy |
-| `task` | String | `"energy"` | The task to perform: `"energy"` or `"gradient"`. |
+```toml
+[molecule]
+xyz = "testdata/molecules/water.xyz"
+[basis]
+name = "cc-pvdz"
+[method]
+kind = "rimp2"
+[mp2]
+auxbasis = "cc-pvdz-ri"
+```
 
 ---
 
-## 4. `[scf]` Block
-Configures the Self-Consistent Field (SCF) iterations.
+## `[method]`
 
-| Key | Type | Default | Description |
-| :--- | :--- | :--- | :--- |
-| `max_iter` | Integer | `100` | Maximum number of SCF iterations. |
-| `energy_conv` | Float | `1e-8` | Energy convergence threshold (Hartree). |
-| `density_conv` | Float | `1e-7` | Density matrix convergence threshold. |
-| `diis_size` | Integer | `8` | Subspace size for DIIS convergence acceleration. |
-| `integral_thresh`| Float | `1e-12` | Schwarz screening threshold for two-electron integrals. |
-| `k_builder` | String | *None* (= `"direct"`) | Exchange builder: `"direct"`, `"link"` (LinK, exact) or `"cosx"` (seminumerical COSX, Coulomb operator only, no gradients). Honoured by RHF, UHF and ROHF. Ignored with a warning when `df_k_aux` is set, when the functional uses no exact exchange, or for a range-separated functional. See the book's *Choosing how exchange is built*. |
-| `cosx_grid` | Table | `{ radial = 50, angular = 110 }` | COSX grid. The default is the coarsest grid meeting a 0.1 kcal/mol reaction-energy bar; `angular` must be a tabulated Lebedev order. Only with `k_builder = "cosx"`. |
-| `cosx_overlap_fit` | Boolean | `true` | Izsák–Neese overlap correction for COSX. Helps at the default grid; net-negative on coarser grids. Only with `k_builder = "cosx"`. |
-| `cosx_backend` | String | `"md3c1e"` | COSX 3c1e integral kernel: `"md3c1e"` (batched McMurchie–Davidson) or `"cosx-a"` (per-point libint2, ~3× slower; the cross-check backend). Only with `k_builder = "cosx"`. |
-| `cosx_screen_thresh` | Float | `1e-7` | COSX density-driven pair-screening threshold on bound(A) × max|F|. `0.0` = unscreened (bit-identical); negative/NaN, or a positive value with `cosx_backend = "cosx-a"`, are hard errors. Only with `k_builder = "cosx"`. |
-| `df_j_aux` | String | *None* | Auxiliary basis set for density-fitted Coulomb (J) build. |
-| `df_k_aux` | String | *None* | Auxiliary basis set for density-fitted Exchange (K) build. |
+`kind` is required; `task` defaults to `"energy"`.
 
----
+| Key | Allowed values |
+| :--- | :--- |
+| `kind` | `rhf` `uhf` `rohf` `ksdft` `rimp2` `mp3` `oo-rimp2` `att-rimp2` `mp2-v` `scs-mp2` `scs-mp2-2terfc` `laplace-mp2` `laplace-sos-mp2` `pdep-rpa` `rs-mp2-rpa` `gw` `bse-tda` `tdhf-static-polarizability` `ccsd` `ccd` `ccsd(t)` `linlccd` `drpa` `wb97x-l-v` `b2plyp` `dsd-pbep86` `tda` `tddft` |
+| `task` | `energy` `optimize` `frequencies` |
 
-## 5. `[mp2]` Block
-Configures MP2 correlation and variant calculations.
+* Density-functional calculations use `kind = "ksdft"` (or `rhf`/`uhf`/`rohf`
+  with `[dft] functional` set); there is no `kind = "dft"`.
+* There is no `task = "gradient"`. `optimize` runs for `rhf` `ksdft` `uhf`
+  `rohf` `rimp2` `pdep-rpa`; `frequencies` for `rhf` `ksdft` `uhf` `rohf`.
+* `rimp2`, `drpa` and `linlccd` are exact by default; a local approximation is
+  the `[local]` section, never a separate kind.
+* Any other `kind` or `task` is an error that lists the accepted values.
 
-| Key | Type | Default | Description |
-| :--- | :--- | :--- | :--- |
-| `auxbasis` | String | *None* | Name of auxiliary fitting basis set (e.g., `"cc-pvdz-ri"`). |
-| `frozen_core` | Integer or `"auto"` | `0` | Core orbitals to freeze (not correlated). `"auto"` derives the standard small-core count from the molecule — see [Frozen core](#frozen-core). Shared with the CC and double-hybrid methods. |
-| `omega` | Float | `0.420` | Range-separation parameter $\omega$ in Å⁻¹ (for `"att-rimp2"`); the operator is erfc($\omega r$)/$r$. |
-| `c_os` | Float | *None* | Opposite-spin scaling factor (for `"scs-mp2"`). |
-| `c_ss` | Float | *None* | Same-spin scaling factor (for `"scs-mp2"`). |
-| `n_quad` | Integer | *None* | Number of minimax quadrature points (for `"laplace-mp2"`). |
+## Sections
 
----
+All keys, types, defaults and allowed values for each table are in the
+[Input reference](../../site/src/reference/input.md).
 
-## 6. `[optimize]` Block
-Controls the BFGS geometry optimizer.
+| Section | Purpose |
+| :--- | :--- |
+| `[molecule]` `[basis]` `[method]` | Required: geometry, basis, method and task. |
+| `[scf]` `[[scf.ladder]]` | SCF convergence, exchange builder (`k_builder`), density fitting, convergence ladder. |
+| `[dft]` | Functional, XC grid (`grid_radial`, `grid_angular`, `grid_prune`, `grid_weight_cut`), dispersion. |
+| `[mp2]` `[cc]` `[local]` | MP2 family, coupled cluster, local-correlation approximation. |
+| `[rpa]` `[gw]` `[tddft]` | PDEP-RPA and property export, GW/BSE, TDA/TDDFT. |
+| `[optimize]` `[frequencies]` | Geometry optimizer, harmonic frequencies. |
+| `[memory]` `[gpu]` `[precision]` `[output]` | Resources, devices, mixed precision, JSON run log. |
+| `[qmmm]` `[pcm]` `[cosmo]` `[external_potential]` `[cell]` | Embedding, implicit solvent, point charges, periodic cell. |
 
-| Key | Type | Default | Description |
-| :--- | :--- | :--- | :--- |
-| `max_steps` | Integer | `100` | Maximum geometry optimization steps. |
-| `g_max_thresh` | Float | `1e-4` | Maximum force component convergence threshold (Hartree/Bohr). |
-| `g_rms_thresh` | Float | `1e-4` | Root-mean-square force convergence threshold (Hartree/Bohr). |
-| `e_conv` | Float | `1e-6` | Energy convergence threshold between optimization steps. |
-| `trust_radius` | Float | `0.1` | Initial trust radius (Bohr). |
+### XC grid
 
----
+A Kohn-Sham run with no grid key set uses the production grid: 75 radial x 110
+angular points per atom, pruned with `grid_prune = "nwchem-radial"`, with a
+`1e-14` weight cutoff. Setting only `grid_radial`/`grid_angular` keeps that
+scheme and cutoff at the new size. The flat grid is `grid_prune = "none"` with
+`grid_weight_cut = 0`:
 
-## 7. `[rpa]` Block
-Configures PDEP-RPA calculations, eigenvalues solvers, and exports.
-
-| Key | Type | Default | Description |
-| :--- | :--- | :--- | :--- |
-| `auxbasis` | String | *None* | Auxiliary basis set for RPA fitting (e.g., `"cc-pvdz-ri"`). |
-| `frozen_core` | Integer or `"auto"` | `0` | Core orbitals to freeze. `"auto"` derives the standard small-core count from the molecule — see [Frozen core](#frozen-core). |
-| `n_quad` | Integer | `40` | Number of quadrature points for imaginary frequency integration. |
-| `quadrature` | String | `"gauss-legendre"`| Quadrature scheme (`"gauss-legendre"` or `"minimax"`). |
-| `trunc_thresh` | Float | `1e-4` | Truncation threshold for static PDEP eigenvalues $|\lambda_\alpha(0) - 1|$. |
-| `davidson_conv_thresh` | Float | `1e-6` | Davidson/Lanczos solver convergence tolerance. |
-| `u0` | Float | `0.5` | Minimax frequency scaling parameter. |
-| `run_diagnostics` | Boolean | `false` | Run dense reference RI-dRPA calculations for validation. |
-| `export_eigpot_prefix` | String | *None* | File path prefix to save leading PDEP eigenpotentials as `.cube` files. |
-| `export_eigpot_count` | Integer | `10` | Number of leading eigenpotentials to export. |
-| `cube_spacing` | Float | `0.2` | Bounding box voxel spacing (Bohr) for Cube files. |
-| `cube_margin` | Float | `4.0` | Margin around molecular box (Bohr) for Cube files. |
-| `export_npz` | String | *None* | Output path to write compressed `.npz` feature bundle. |
-| `compute_esp` | Boolean | `true` | Compute nuclear electrostatic potential (in `.npz`). |
-| `compute_polarizability` | Boolean | `true` | Compute static polarizability tensor (in `.npz`). |
-| `compute_alpha_atomic` | Boolean | `true` | Compute Becke per-atom intrinsic polarizabilities (Krishtal–Senet–Van Alsenoy, JCP 125, 034312 (2006)) as `alpha_atomic`; with `compute_polarizability`, also the charge-transfer remainder `alpha_ct` (in `.npz`). |
-| `compute_electric_field` | Boolean | `true` | Compute nuclear electric field vectors (in `.npz`). |
-| `compute_density_matrix` | Boolean | `true` | Include AO-basis density matrix (in `.npz`). |
-| `compute_hirshfeld_charges`| Boolean | `true` | Include Hirshfeld atomic charges (in `.npz`). |
-| `compute_lowdin_charges` | Boolean | `true` | Include Löwdin atomic charges (in `.npz`). |
+```toml
+[dft]
+functional = "PBE"
+grid_radial = 99
+grid_angular = 302
+grid_prune = "none"
+grid_weight_cut = 0.0
+```
 
 ---
 
-## 8. Frozen core
+## Frozen core
 
 `frozen_core` appears in `[mp2]` (shared by the whole MP2 family and by the CC
 and double-hybrid methods), in `[rpa]`, and in `[gw]`. It takes either an
@@ -119,8 +93,8 @@ explicit orbital count or `"auto"`:
 ```toml
 [mp2]
 frozen_core = "auto"   # standard small-core count for THIS molecule
-frozen_core = 3        # exactly three orbitals, whatever the molecule is
-frozen_core = "none"   # correlate everything (the default, same as 0)
+# frozen_core = 3      # exactly three orbitals, whatever the molecule is
+# frozen_core = "none" # correlate everything (the default, same as 0)
 ```
 
 `true` and `false` are accepted as synonyms of `"auto"` and `"none"`.
