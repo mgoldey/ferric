@@ -6751,7 +6751,7 @@ fn run_optimize(
     }
 }
 
-/// TDA/TDDFT on a functional with no complete f_xc kernel (meta-GGA, VV10,
+/// TDA/TDDFT on a functional with no complete f_xc kernel (VV10,
 /// range-separated) is refused by `run_tddft`; check it before the reference
 /// SCF is spent on a run that cannot finish.
 fn refuse_tddft_xc_without_kernel(cfg: &Config, method: &str) {

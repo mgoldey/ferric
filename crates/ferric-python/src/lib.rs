@@ -10830,7 +10830,7 @@ fn run_tddft(
     // The f_xc kernel is built inside `run_tddft` from `functional` on the
     // SAME grid the KS reference is converged on (the ladder keeps
     // `dft_grid`), and the exact-exchange fraction comes from the same
-    // functional. A functional without a complete kernel (meta-GGA, VV10,
+    // functional. A functional without a complete kernel (VV10,
     // range-separated) is refused before the SCF is spent on it.
     if let Some(xc_name) = functional {
         ferric_dft::lr_kernel::resolve_singlet_response_xc(xc_name, "run_tddft")

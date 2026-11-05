@@ -57,6 +57,7 @@
 use ferric_core::basis;
 use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
+use ferric_dft::grid::AtomicGridConfig;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
@@ -135,6 +136,7 @@ fn setup(refj: &Value, xc: Option<&str>) -> Setup {
     // energy_conv stays at its default (a sanity bound, not a target).
     let cfg = RhfConfig {
         xc: xc.map(str::to_string),
+        dft_grid: Some(kernel_grid(xc)),
         df_j_aux: Some(SCF_JK_AUX.to_string()),
         df_k_aux: Some(SCF_JK_AUX.to_string()),
         density_conv: 1e-8,
@@ -154,10 +156,25 @@ fn setup(refj: &Value, xc: Option<&str>) -> Setup {
     }
 }
 
+/// The SCF and f_xc grid. The production (pruned) grid for every case but
+/// the meta-GGA, which runs on the reference's own flat (75, 110) grid: the
+/// τ-dependent kernel is more sensitive to angular pruning than LDA/GGA.
+fn kernel_grid(xc: Option<&str>) -> AtomicGridConfig {
+    match xc {
+        Some("r2SCAN") => AtomicGridConfig {
+            n_radial: 75,
+            n_angular: 110,
+            ..Default::default()
+        },
+        _ => AtomicGridConfig::production(),
+    }
+}
+
 fn run(s: &Setup, xc: Option<&str>, method: TddftMethod, n_roots: usize) -> TddftResult {
     let cfg = TddftConfig {
         n_roots,
         method,
+        grid: kernel_grid(xc),
         xc: xc.map(str::to_string),
         ..Default::default()
     };
@@ -230,7 +247,7 @@ fn compare(label: &str, r: &TddftResult, refm: &Value) -> f64 {
 /// Full check of one (molecule, basis, functional) case.
 ///
 /// `ferric_xc` is ferric's name (`None` = HF); `key` is the reference's case
-/// key (`"HF"`, `"LDA"`, `"PBE"`, `"B3LYP"`).
+/// key (`"HF"`, `"LDA"`, `"PBE"`, `"B3LYP"`, `"r2SCAN"`).
 fn check_case(mol: &str, basis: &str, key: &str, ferric_xc: Option<&str>) {
     let refj = load_ref(mol, basis);
     let case = &refj["cases"][key];
@@ -331,6 +348,14 @@ validation_case!(water_631g_hf, "water", "6-31g", "HF", None);
 validation_case!(water_631g_lda, "water", "6-31g", "LDA", Some("LDA"));
 validation_case!(water_631g_pbe, "water", "6-31g", "PBE", Some("PBE"));
 validation_case!(water_631g_b3lyp, "water", "6-31g", "B3LYP", Some("B3LYP"));
+// τ-only meta-GGA: the f_xc block comes from `MggaFxcKernel` (ρ×τ, σ×τ, τ×τ).
+validation_case!(
+    water_631g_r2scan,
+    "water",
+    "6-31g",
+    "r2SCAN",
+    Some("r2SCAN")
+);
 validation_case!(water_augdz_hf, "water", "aug-cc-pvdz", "HF", None);
 validation_case!(water_augdz_lda, "water", "aug-cc-pvdz", "LDA", Some("LDA"));
 validation_case!(water_augdz_pbe, "water", "aug-cc-pvdz", "PBE", Some("PBE"));
@@ -404,7 +429,7 @@ validation_case!(
 fn tda_matches_the_validated_library_tda_path() {
     use ferric_gw::tddft::{run_tda_dft, TdaDftConfig};
     let refj = load_ref("water", "6-31g");
-    for xc in [None, Some("PBE"), Some("B3LYP")] {
+    for xc in [None, Some("PBE"), Some("B3LYP"), Some("r2SCAN")] {
         let s = setup(&refj, xc);
         let ours = run(&s, xc, TddftMethod::Tda, 10);
         let lib = run_tda_dft(
@@ -414,7 +439,10 @@ fn tda_matches_the_validated_library_tda_path() {
             Operator::coulomb(),
             &s.scf,
             xc,
-            &TdaDftConfig::default(),
+            &TdaDftConfig {
+                grid: kernel_grid(xc),
+                ..Default::default()
+            },
         )
         .unwrap();
         assert_eq!(lib.fxc_included, xc.is_some());

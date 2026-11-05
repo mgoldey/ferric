@@ -15,8 +15,9 @@
 //! [`ferric_dft::lr_kernel::singlet_fxc_ov_block`] — the SAME code the
 //! PySCF-validated `ferric_gw::tddft::run_tda_dft` uses — and the functional
 //! gate [`ferric_dft::lr_kernel::resolve_singlet_response_xc`] hard-refuses
-//! every functional without a complete kernel (meta-GGA, VV10, range-separated
-//! hybrids). There is no kernel-less DFT path: a KS reference either gets its
+//! every functional without a complete kernel (VV10, range-separated hybrids);
+//! τ-only meta-GGAs (SCAN / r2SCAN / TPSS) take the τ kernel. There is no
+//! kernel-less DFT path: a KS reference either gets its
 //! f_xc term or an error.
 //!
 //! Scope: closed-shell (restricted) references, singlet excitations. An
@@ -26,10 +27,9 @@
 use ferric_core::memory::plan::{Lifetime, MemoryPlan};
 use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
-use ferric_dft::fxc::GgaFxcKernel;
 use ferric_dft::grid::AtomicGridConfig;
 use ferric_dft::lr_kernel::{
-    resolve_singlet_response_xc, singlet_fxc_ov_block, FXC_BLOCK_ASYMMETRY_TOL,
+    resolve_singlet_response_xc, singlet_fxc_ov_block, SingletKernel, FXC_BLOCK_ASYMMETRY_TOL,
 };
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::oneelectron;
@@ -72,7 +72,7 @@ pub struct TddftConfig {
     /// It selects BOTH the exact-exchange fraction and the f_xc kernel, so it
     /// must name the reference's functional: `run_tddft` cannot check that
     /// (an `ScfResult` does not record its functional). A functional without a
-    /// complete kernel (meta-GGA, VV10, range-separated) is refused.
+    /// complete kernel (VV10, range-separated) is refused.
     pub xc: Option<String>,
     /// Integration grid for the f_xc kernel. Must match the grid the reference
     /// SCF used (`RhfConfig::dft_grid`; `AtomicGridConfig::production()` when that
@@ -554,17 +554,19 @@ fn closed_shell_nocc(mol: &Molecule, scf: &ScfResult) -> Result<usize, FerricErr
 }
 
 /// The f_xc kernel for a KS reference (`None` for HF), on `grid` — which must
-/// be the reference SCF's grid. Its AO-on-grid cache is budget-checked inside
-/// `GgaFxcKernel::new`.
+/// be the reference SCF's grid — at the restricted reference D_α = D_β =
+/// `density_alpha`. Its AO-on-grid cache is budget-checked inside the kernel
+/// constructor.
 fn build_kernel(
     mol: &Molecule,
     obs: &PreparedBasis,
     xc_def: Option<ferric_dft::libxc::XcDef>,
     grid: &AtomicGridConfig,
-) -> Result<Option<GgaFxcKernel>, FerricError> {
+    scf: &ScfResult,
+) -> Result<Option<SingletKernel>, FerricError> {
     xc_def
         .map(|def| {
-            GgaFxcKernel::new(mol, obs.basis_set(), def, grid).map_err(|e| {
+            SingletKernel::new(mol, obs.basis_set(), def, grid, &scf.density_alpha).map_err(|e| {
                 FerricError::General(format!("run_tddft: f_xc kernel construction: {e}"))
             })
         })
@@ -579,7 +581,7 @@ fn build_kernel(
 /// K is built here and dropped on return, so it is live exactly as long as
 /// [`reserve_fxc_block`] assumes.
 fn add_fxc_block(
-    kernel: Option<&GgaFxcKernel>,
+    kernel: Option<&SingletKernel>,
     scf: &ScfResult,
     nocc: usize,
     nvir: usize,
@@ -588,10 +590,7 @@ fn add_fxc_block(
     let Some(kern) = kernel else {
         return Ok(());
     };
-    // Restricted reference: D_α = D_β = `density_alpha`.
-    let d_a = &scf.density_alpha;
-    let ref_dens = kern.reference_density(d_a, d_a);
-    let (k_fxc, asym_rel) = singlet_fxc_ov_block(kern, &ref_dens, scf.mos_r(), 0, nocc, nocc, nvir);
+    let (k_fxc, asym_rel) = singlet_fxc_ov_block(kern, scf.mos_r(), 0, nocc, nocc, nvir);
     // Symmetric by construction up to grid noise; a large asymmetry is an
     // adapter bug, and symmetrizing would hide it.
     if asym_rel > FXC_BLOCK_ASYMMETRY_TOL {
@@ -681,8 +680,8 @@ fn lowest_positive_roots(eigenvalues: &Array1<f64>, n_roots: usize) -> Vec<usize
 /// `−c_HF` terms and the `(ia|f_xc|jb)` kernel block added to A and B:
 ///
 ///   * HF reference: `c_HF = 1`, no kernel — CIS (TDA) or TDHF (Casida).
-///   * LDA / GGA / global hybrid: `c_HF` from the functional, kernel from
-///     [`ferric_dft::lr_kernel`] on `config.grid`.
+///   * LDA / GGA / global hybrid / τ-only meta-GGA: `c_HF` from the
+///     functional, kernel from [`ferric_dft::lr_kernel`] on `config.grid`.
 ///
 /// Coulomb and exchange integrals are RI (Coulomb metric) over `dfbs`.
 ///
@@ -697,8 +696,8 @@ fn lowest_positive_roots(eigenvalues: &Array1<f64>, n_roots: usize) -> Vec<usize
 /// # Errors
 ///
 /// Hard errors — never a warning plus a number — for: an unconverged or
-/// open-shell reference; a functional without a complete kernel (meta-GGA,
-/// VV10, range-separated hybrid); a `c_hf` override on an HF reference; an
+/// open-shell reference; a functional without a complete kernel (VV10,
+/// range-separated hybrid); a `c_hf` override on an HF reference; an
 /// empty `(ia)` space; an over-budget dense matrix; an f_xc block whose
 /// asymmetry exceeds the grid-noise tolerance; an RPA instability (Casida).
 pub fn run_tddft(
@@ -739,7 +738,7 @@ pub fn run_tddft(
     let budget = config.memory_budget_bytes;
     let (b_ov, b_oo, b_vv) = build_b_tensors(obs, dfbs, &c_occ, &c_vir, &mut plan, budget)?;
 
-    let kernel = build_kernel(mol, obs, xc_def, &config.grid)?;
+    let kernel = build_kernel(mol, obs, xc_def, &config.grid, scf)?;
     let mut a = build_a_matrix(eps, nocc, nvir, &b_ov, &b_oo, &b_vv, c_hf);
     // `amplitudes` column n: TDA → X_n; Casida → (X+Y)_n.
     let (eigenvalues, amplitudes) = match config.method {
@@ -804,15 +803,13 @@ mod tests {
     }
 
     #[test]
-    fn meta_gga_is_refused_with_an_error_not_a_number() {
-        let err = resolve_response_xc(Some("SCAN"), None)
-            .expect_err("meta-GGA has no tau f_xc kernel; it must be refused");
-        let msg = err.to_string();
-        assert!(msg.contains("meta-GGA"), "unhelpful refusal: {msg}");
-        assert!(
-            msg.contains("run_tddft"),
-            "refusal must name the driver: {msg}"
-        );
+    fn tau_only_meta_gga_is_accepted_with_its_kernel() {
+        for name in ["SCAN", "r2SCAN"] {
+            let (c_hf, def) = resolve_response_xc(Some(name), None)
+                .unwrap_or_else(|e| panic!("{name} has a tau f_xc kernel: {e}"));
+            assert!(def.is_some(), "{name}: accepted without an f_xc kernel");
+            assert_eq!(c_hf, 0.0, "{name}: c_HF must be 0");
+        }
     }
 
     #[test]

@@ -13,8 +13,6 @@
 //!     supply it),
 //!   * open-shell / spin-flip references (RKS only — UKS/ROKS are rejected),
 //!   * excited-state gradients or properties beyond the oscillator strength,
-//!   * meta-GGA functionals (no τ f_xc kernel — `GgaFxcKernel::new` rejects
-//!     them and that error propagates),
 //!   * VV10 nonlocal correlation response (silently absent from the kernel —
 //!     see `run_tda_dft`'s hard rejection of VV10-carrying functionals),
 //!   * range-separated hybrids (the long-range exchange kernel term is not
@@ -84,10 +82,9 @@
 
 use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
-use ferric_dft::fxc::GgaFxcKernel;
 use ferric_dft::grid::AtomicGridConfig;
 use ferric_dft::lr_kernel::{
-    resolve_singlet_response_xc, singlet_fxc_ov_block, FXC_BLOCK_ASYMMETRY_TOL,
+    resolve_singlet_response_xc, singlet_fxc_ov_block, SingletKernel, FXC_BLOCK_ASYMMETRY_TOL,
 };
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::blas_threads::{opt_in_blas_threads, with_blas_threads};
@@ -271,7 +268,7 @@ fn tda_oscillator_strengths(
 /// # Errors
 ///
 /// Hard-errors (never silently degrades) on: an open-shell reference, a
-/// meta-GGA functional (no τ f_xc kernel), a range-separated hybrid
+/// range-separated hybrid
 /// (`omega != 0` — the long-range exchange kernel term is not assembled), a
 /// VV10-carrying functional (its nonlocal response is not in the kernel), an
 /// empty (ia) space, or an over-budget dense matrix.
@@ -323,16 +320,22 @@ pub fn run_tda_dft(
     let (c_hf_from_xc, kernel) = match xc_name {
         None => (1.0, None), // pure HF reference → CIS
         Some(name) => {
-            // The functional gate (VV10 / range-separated / meta-GGA refusals)
+            // The functional gate (VV10 / range-separated refusals)
             // and the c_HF resolution are shared with `ferric_tddft` via
             // `ferric_dft::lr_kernel`, so the two drivers cannot disagree on
             // which functionals have a complete kernel.
             let spec = resolve_singlet_response_xc(name, "run_tda_dft")?;
             let kern = if cfg.include_fxc {
                 Some(
-                    GgaFxcKernel::new(mol, obs.basis_set(), spec.xc_kernel, &cfg.grid).map_err(
-                        |e| FerricError::General(format!("run_tda_dft: GgaFxcKernel::new: {e}")),
-                    )?,
+                    // Restricted reference: D_α = D_β = `density_alpha`.
+                    SingletKernel::new(
+                        mol,
+                        obs.basis_set(),
+                        spec.xc_kernel,
+                        &cfg.grid,
+                        &ks.density_alpha,
+                    )
+                    .map_err(|e| FerricError::General(format!("run_tda_dft: f_xc kernel: {e}")))?,
                 )
             } else {
                 None
@@ -406,14 +409,7 @@ pub fn run_tda_dft(
     // ── f_xc coupling block ─────────────────────────────────────────────────
     let fxc_included = kernel.is_some();
     if let Some(kern) = kernel.as_ref() {
-        // Reference density on the kernel grid. For a RESTRICTED reference
-        // D_α = D_β, and `density_alpha` is always populated (it is exactly
-        // D_α, i.e. half of `density_total`) — use it directly rather than
-        // re-deriving 0.5·D_total.
-        let d_a = &ks.density_alpha;
-        let ref_dens = kern.reference_density(d_a, d_a);
-        let (k_fxc, asym_rel) =
-            singlet_fxc_ov_block(kern, &ref_dens, c, first_act, nocc_total, nocc, nvir);
+        let (k_fxc, asym_rel) = singlet_fxc_ov_block(kern, c, first_act, nocc_total, nocc, nvir);
         // The kernel's AO operator is symmetric by construction, so the (ia)
         // block must be too. A large asymmetry would indicate an adapter bug
         // (wrong index order), not grid noise. Reject rather than symmetrize

@@ -18,13 +18,15 @@
 //! [`resolve_singlet_response_xc`](crate::lr_kernel::resolve_singlet_response_xc) decides whether a functional HAS a kernel
 //! ferric can apply, and what exact-exchange fraction goes on the `−c_HF` K-like
 //! terms. It hard-refuses (never silently degrades) every functional whose
-//! response would be incomplete: meta-GGA (no τ f_xc kernel), VV10-carrying
-//! functionals (the nonlocal response is not in the kernel), and
-//! range-separated hybrids (the long-range exchange term needs attenuated
-//! integrals the drivers do not build).
+//! response would be incomplete: VV10-carrying functionals (the nonlocal
+//! response is not in the kernel) and range-separated hybrids (the long-range
+//! exchange term needs attenuated integrals the drivers do not build).
+//! LDA, GGA, global hybrids and τ-only meta-GGAs (SCAN / r2SCAN / TPSS) pass.
 //!
-//! [`singlet_fxc_ov_block`](crate::lr_kernel::singlet_fxc_ov_block) builds `K_{ia,jb} = (ia| f_αα + f_αβ |jb)` from the
-//! validated [`GgaFxcKernel`](crate::fxc::GgaFxcKernel) AO operator. With real orbitals
+//! [`singlet_fxc_ov_block`](crate::lr_kernel::singlet_fxc_ov_block) builds `K_{ia,jb} = (ia| f_αα + f_αβ |jb)` from a
+//! [`SingletKernel`](crate::lr_kernel::SingletKernel): the validated
+//! [`GgaFxcKernel`](crate::fxc::GgaFxcKernel) AO operator, or the τ-only
+//! [`MggaFxcKernel`](crate::fxc::MggaFxcKernel) for a meta-GGA. With real orbitals
 //! `(ia|f_xc|jb) = (ia|f_xc|bj)`, so the SAME block enters A and B:
 //!
 //! ```text
@@ -38,7 +40,7 @@
 //!
 //! # The adapter
 //!
-//! `GgaFxcKernel` is an AO-density-matrix → AO-potential operator: given a
+//! Each kernel is an AO-density-matrix → AO-potential operator: given a
 //! spin-resolved perturbation (δD_α, δD_β) at a reference density it returns
 //! (δV_α, δV_β). Feeding δD_α = δD_β = the (symmetrized) AO transition density
 //! of pair `jb` makes δV_α = ∫(f_αα + f_αβ) δρ, the singlet combination, and
@@ -48,8 +50,11 @@
 //! `ferric-tddft/tests/validation_tddft.rs`.
 
 use crate::density_on_grid::UksDensityGrid;
-use crate::fxc::GgaFxcKernel;
+use crate::fxc::{GgaFxcKernel, MggaFxcKernel, MggaFxcReference};
+use crate::grid::AtomicGridConfig;
 use crate::libxc::{xc_def_from_name_nspin, FunctionalFamily, XcDef};
+use ferric_core::basis::BasisSet;
+use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
 use ndarray::{s, Array2};
 
@@ -62,7 +67,7 @@ use ndarray::{s, Array2};
 pub const FXC_BLOCK_ASYMMETRY_TOL: f64 = 1e-8;
 
 /// A functional that passed [`resolve_singlet_response_xc`]: its exact-exchange
-/// fraction and the (nspin = 2) XC definition for [`GgaFxcKernel::new`](crate::fxc::GgaFxcKernel::new).
+/// fraction and the (nspin = 2) XC definition for [`SingletKernel::new`].
 #[derive(Debug)]
 pub struct SingletResponseXc {
     /// Exact-exchange fraction for the `−c_HF (ij|ab)` (A) and `−c_HF (ib|aj)`
@@ -70,9 +75,59 @@ pub struct SingletResponseXc {
     /// short-range coefficient (ω = 0 is enforced, so it equals the long-range
     /// one), else the global-hybrid mix, else 0.
     pub c_hf: f64,
-    /// Spin-resolved XC definition, ready for [`GgaFxcKernel::new`](crate::fxc::GgaFxcKernel::new) (which
+    /// Spin-resolved XC definition, ready for [`SingletKernel::new`] (which
     /// consumes it).
     pub xc_kernel: XcDef,
+}
+
+/// The spin-resolved f_xc kernel of a restricted reference, with its
+/// reference state: GGA-family (LDA / GGA / global hybrid) or τ-only
+/// meta-GGA. Built at D_α = D_β = ½D.
+#[derive(Debug)]
+pub enum SingletKernel {
+    Gga {
+        kernel: GgaFxcKernel,
+        reference: Box<UksDensityGrid>,
+    },
+    Mgga {
+        kernel: MggaFxcKernel,
+        reference: Box<MggaFxcReference>,
+    },
+}
+
+impl SingletKernel {
+    /// Build the kernel for `def` (from [`resolve_singlet_response_xc`]) on
+    /// `grid` — the reference SCF's grid — at the restricted reference
+    /// `d_alpha` (= D_α = D_β).
+    pub fn new(
+        mol: &Molecule,
+        bs: &BasisSet,
+        def: XcDef,
+        grid: &AtomicGridConfig,
+        d_alpha: &Array2<f64>,
+    ) -> Result<Self, String> {
+        if def
+            .funcs
+            .iter()
+            .any(|f| f.family() == FunctionalFamily::MetaGga)
+        {
+            let kernel = MggaFxcKernel::new(mol, bs, def, grid)?;
+            let reference = Box::new(kernel.reference(d_alpha, d_alpha)?);
+            Ok(Self::Mgga { kernel, reference })
+        } else {
+            let kernel = GgaFxcKernel::new(mol, bs, def, grid)?;
+            let reference = Box::new(kernel.reference_density(d_alpha, d_alpha));
+            Ok(Self::Gga { kernel, reference })
+        }
+    }
+
+    /// (δV_α, δV_β) for the perturbation (δD_α, δD_β).
+    pub fn apply(&self, dd_a: &Array2<f64>, dd_b: &Array2<f64>) -> (Array2<f64>, Array2<f64>) {
+        match self {
+            Self::Gga { kernel, reference } => kernel.apply_with_ref(reference, dd_a, dd_b),
+            Self::Mgga { kernel, reference } => kernel.apply_with_ref(reference, dd_a, dd_b),
+        }
+    }
 }
 
 /// Decide whether `name` has a complete singlet response kernel in ferric, and
@@ -89,7 +144,7 @@ pub struct SingletResponseXc {
 ///     the kernel — the excitation energies would silently omit it);
 ///   * a range-separated hybrid (`omega != 0`) — the long-range exact-exchange
 ///     response needs erf-attenuated integrals no driver builds;
-///   * any meta-GGA component — ferric has no τ f_xc kernel.
+///   * a meta-GGA component libxc has no second derivative for.
 pub fn resolve_singlet_response_xc(
     name: &str,
     caller: &str,
@@ -120,12 +175,12 @@ pub fn resolve_singlet_response_xc(
     if probe
         .funcs
         .iter()
-        .any(|f| f.family() == FunctionalFamily::MetaGga)
+        .any(|f| f.family() == FunctionalFamily::MetaGga && !f.has_fxc())
     {
         return Err(FerricError::General(format!(
-            "{caller}: functional '{name}' is meta-GGA; ferric has no tau f_xc kernel, so \
-             the XC response term cannot be built. Refused rather than returning \
-             excitation energies without it."
+            "{caller}: functional '{name}' is a meta-GGA without a libxc second \
+             derivative, so the tau f_xc response term cannot be built. Refused rather \
+             than returning excitation energies without it."
         )));
     }
 
@@ -142,7 +197,7 @@ pub fn resolve_singlet_response_xc(
 }
 
 /// Build the singlet f_xc coupling block `K_{ia,jb} = (ia| f_αα + f_αβ |jb)` in
-/// the active `(ia)` space, via the validated `GgaFxcKernel` AO adapter.
+/// the active `(ia)` space, via the [`SingletKernel`] AO adapter.
 ///
 /// Index convention: row/column `ia = i*nvir + a` with `i` in
 /// `first_act..nocc_total` (local `0..nocc`) and `a` in
@@ -157,8 +212,7 @@ pub fn resolve_singlet_response_xc(
 /// already-validated kernel unmodified rather than re-deriving the grid-space
 /// contraction. Peak memory is two `(n, n)` matrices (raw + symmetrized).
 pub fn singlet_fxc_ov_block(
-    kernel: &GgaFxcKernel,
-    ref_dens: &UksDensityGrid,
+    kernel: &SingletKernel,
     mo_coeff: &Array2<f64>,
     first_act: usize,
     nocc_total: usize,
@@ -202,7 +256,7 @@ pub fn singlet_fxc_ov_block(
                 }
                 m
             };
-            let (dv_a, _dv_b) = kernel.apply_with_ref(ref_dens, &dd, &dd);
+            let (dv_a, _dv_b) = kernel.apply(&dd, &dd);
             // K[:, jb] = C_occ^T δV_α C_vir, flattened as ia = i*nvir + a.
             let block = orbo.t().dot(&dv_a).dot(&orbv); // (nocc, nvir)
             let jb = j * nvir + b;
@@ -253,14 +307,11 @@ mod tests {
     }
 
     #[test]
-    fn meta_gga_is_refused_not_approximated() {
-        for name in ["SCAN", "r2SCAN"] {
-            let err = resolve_singlet_response_xc(name, WHO)
-                .expect_err("meta-GGA has no tau f_xc kernel and must be refused");
-            assert!(
-                err.to_string().contains("meta-GGA"),
-                "{name}: refusal must name the reason, got: {err}"
-            );
+    fn tau_only_meta_ggas_resolve_with_no_exact_exchange() {
+        for name in ["SCAN", "r2SCAN", "TPSS"] {
+            let r = resolve_singlet_response_xc(name, WHO)
+                .unwrap_or_else(|e| panic!("{name} has a tau f_xc kernel: {e}"));
+            assert_eq!(r.c_hf, 0.0, "{name}: a pure meta-GGA has c_HF = 0");
         }
     }
 

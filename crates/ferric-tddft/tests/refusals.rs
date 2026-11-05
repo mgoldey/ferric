@@ -41,8 +41,10 @@ fn water_hf() -> (
     (mol, obs, dfbs, rhf)
 }
 
+/// A τ-only meta-GGA reference passes the functional gate (it has the τ
+/// f_xc kernel) and so reaches the memory gate under the starved budget.
 #[test]
-fn meta_gga_reference_is_refused_not_approximated() {
+fn meta_gga_reference_passes_the_functional_gate() {
     let (mol, obs, dfbs, rhf) = water_hf();
     for method in [TddftMethod::Tda, TddftMethod::Casida] {
         for xc in ["SCAN", "r2SCAN"] {
@@ -54,12 +56,12 @@ fn meta_gga_reference_is_refused_not_approximated() {
                 ..Default::default()
             };
             let err = run_tddft(&mol, &obs, &dfbs, &rhf, &cfg)
-                .expect_err("meta-GGA has no tau f_xc kernel; a number here is the F1 defect")
+                .expect_err("a 1 kB budget cannot hold the response matrices")
                 .to_string();
             assert!(
-                err.contains("meta-GGA"),
-                "{method:?}/{xc}: refusal must name the reason (and must come from the \
-                 functional gate, not the memory gate): {err}"
+                err.contains("memory plan"),
+                "{method:?}/{xc}: must be stopped by the memory gate, not refused by the \
+                 functional gate: {err}"
             );
         }
     }

@@ -44,6 +44,7 @@ the reference distinguishes the fixed code from the defect.
 Usage (from the repo root):
     OPENBLAS_NUM_THREADS=1 uv run --no-sync python scripts/validation/gen_tddft_refs.py
     OPENBLAS_NUM_THREADS=1 uv run --no-sync python scripts/validation/gen_tddft_refs.py water 6-31g
+    OPENBLAS_NUM_THREADS=1 uv run --no-sync python scripts/validation/gen_tddft_refs.py water 6-31g r2SCAN
 """
 
 import json
@@ -84,6 +85,7 @@ FUNCTIONALS = {
     "LDA": "LDA_X,LDA_C_VWN",
     "PBE": "GGA_X_PBE,GGA_C_PBE",
     "B3LYP": "HYB_GGA_XC_B3LYP",
+    "r2SCAN": "MGGA_X_R2SCAN,MGGA_C_R2SCAN",
 }
 
 MAIN_GRID = (75, 110)
@@ -271,7 +273,7 @@ def run_scf(mol, xc):
     return mf
 
 
-def run_case(mol_key, basis):
+def run_case(mol_key, basis, only=None):
     atoms = read_xyz(MOLDIR / MOLECULES[mol_key])
     mol = make_mol(atoms, basis)
     aux = BASES[basis]
@@ -292,6 +294,8 @@ def run_case(mol_key, basis):
         "cases": {},
     }
     for name, xc in FUNCTIONALS.items():
+        if only is not None and name not in only:
+            continue
         print(f"  {mol_key}/{basis}/{name}", file=sys.stderr)
         mf = run_scf(mol, xc)
         nocc = int((mf.mo_occ > 0).sum())
@@ -352,11 +356,18 @@ def run_case(mol_key, basis):
 def main(argv):
     mols = [argv[1]] if len(argv) > 1 else list(MOLECULES)
     bases = [argv[2]] if len(argv) > 2 else list(BASES)
+    # Optional comma-separated functional subset: regenerates only those cases
+    # and merges them into the existing JSON.
+    only = argv[3].split(",") if len(argv) > 3 else None
     OUTDIR.mkdir(parents=True, exist_ok=True)
     for m in mols:
         for bname in bases:
-            rec = run_case(m, bname)
+            rec = run_case(m, bname, only)
             path = OUTDIR / f"{m}_{bname}.json"
+            if only is not None and path.exists():
+                old = json.loads(path.read_text())
+                old["cases"].update(rec["cases"])
+                rec = old
             path.write_text(json.dumps(rec, indent=1) + "\n")
             print(f"wrote {path.relative_to(ROOT)}", file=sys.stderr)
 
