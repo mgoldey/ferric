@@ -12,10 +12,10 @@ Every section and key is specified in the book's
 (`config_doc_tests.rs`) keeps in step with the config structs in
 `crates/ferric-cli/src/config.rs`. This README does not repeat those tables.
 
-**Unknown keys are a hard error.** Every config struct is
+Unknown keys are a hard error. Every config struct is
 `#[serde(deny_unknown_fields)]`, so a misspelled key or section aborts the run
 before anything is computed. Every ```` ```toml ```` block in this README is parsed
-against the real `Config` by the same test, so an example here cannot go stale.
+against the real `Config` by the same test.
 
 A minimal file:
 
@@ -92,20 +92,20 @@ explicit orbital count or `"auto"`:
 
 ```toml
 [mp2]
-frozen_core = "auto"   # standard small-core count for THIS molecule
+frozen_core = "auto"   # standard small-core count for this molecule
 # frozen_core = 3      # exactly three orbitals, whatever the molecule is
 # frozen_core = "none" # correlate everything (the default, same as 0)
 ```
 
 `true` and `false` are accepted as synonyms of `"auto"` and `"none"`.
-Anything else — `"fc"`, `"core"`, a negative number — is a parse error, never
+Anything else (`"fc"`, `"core"`, a negative number) is a parse error, never
 a silent fall-through to 0.
 
-**The default is 0 (all-electron), not `"auto"`.** Freezing the core changes
-the correlation energy, so it stays opt-in: an input file that does not mention
-`frozen_core` computes today exactly what it computed before this key existed.
+The default is 0 (all-electron), not `"auto"`. Freezing the core changes
+the correlation energy, so it stays opt-in: an input file that omits
+`frozen_core` correlates all electrons.
 
-**What `"auto"` counts.** One orbital per core shell below the element's
+What `"auto"` counts: one orbital per core shell below the element's
 valence shell:
 
 | Elements | Core orbitals | Shells frozen |
@@ -118,20 +118,19 @@ valence shell:
 | Rb–Cd    | 18            | +4s4p |
 | In–Xe    | 23            | +4d |
 
-This is the small-core convention Psi4, ORCA and Q-Chem apply. The (n−1)d
-shell stays **correlated** across its own transition series and becomes core
+Psi4, ORCA and Q-Chem apply the same small-core convention. The (n−1)d
+shell stays correlated across its own transition series and becomes core
 only once the following p-block starts (3d is valence for Sc–Zn, core from Ga
-on): the d electrons of a transition metal are chemically active and freezing
+on). The d electrons of a transition metal are chemically active, and freezing
 them is a large, uncontrolled error.
 
-Two adjustments make the count match the calculation rather than the periodic
-table:
+Two adjustments apply:
 
 * **Ghost atoms count 0.** A basis-only center has no electrons, so it has no
   core to freeze.
 * **ECP atoms are counted on what is left.** An effective core potential has
   already removed core orbitals from the MO space, so only the remainder is
-  frozen — for iodine under a def2-ECP (`n_core = 28`, i.e. 14 orbitals),
+  frozen. For iodine under a def2-ECP (`n_core = 28`, i.e. 14 orbitals),
   23 − 14 = 9 orbitals (4s4p4d).
 
 A run that resolves an `"auto"` prints the number it picked:
@@ -144,6 +143,6 @@ A `frozen_core` that would freeze every occupied orbital of the minority spin
 (leaving nothing to correlate) is an error before the SCF starts, naming the
 section that set it.
 
-**`[gw] frozen_core` is the one that may be left unset**, in which case it
-follows `[rpa] frozen_core`; W and Σ must use the same frozen core for
-self-consistency. Setting it to `"none"` is *not* the same as omitting it.
+`[gw] frozen_core` may be left unset, in which case it follows
+`[rpa] frozen_core`; W and Σ must use the same frozen core for
+self-consistency. Setting it to `"none"` is not the same as omitting it.
