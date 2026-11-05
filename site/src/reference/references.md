@@ -10,8 +10,8 @@ If you publish a number computed with ferric, cite three things:
    > Goldey, M. *ferric: a Rust-native quantum chemistry engine.*
    > <https://github.com/mgoldey/ferric>. Licensed MIT OR Apache-2.0.
 
-   Give the commit hash you ran; the crates are at version 0.1.0 and there are
-   no tagged releases yet.
+   Give the version and commit hash you ran (`ferric.build_info()` reports
+   both); the only releases so far are pre-releases (`0.1.0rc*`).
 
 2. **The libraries every calculation goes through.**
    - libint2 (all Gaussian integrals): E. F. Valeev, *Libint: a library for the

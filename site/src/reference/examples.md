@@ -1,7 +1,9 @@
 # Examples
 
-This page indexes every input file in `examples/`. There are 81 TOML files
-and no Python scripts. Run one from the repository root:
+This page indexes every input file in `examples/`. There are 84 TOML files.
+Three Python scripts that build methods from `AoIntegrals` blocks are in
+`examples/python/` ([Python bindings](../using/python.md#building-blocks)).
+Run a TOML file from the repository root:
 
 ```bash
 OPENBLAS_NUM_THREADS=1 cargo run --release --bin ferric -- examples/water-rhf.toml

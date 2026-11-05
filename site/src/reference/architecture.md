@@ -38,26 +38,26 @@ integrals and core, not on each other.
 
 ## Layers
 
-**`ferric-core`** — molecular structure, basis sets, shells, elements, and the
+**`ferric-core`**: molecular structure, basis sets, shells, elements, and the
 BSE-JSON / Gaussian-94 parsers. Also the home of shared infrastructure:
 configuration (`ConfigVar`), memory budgets (`MemoryPlan`), the BLAS-thread
 hazard model, and MPI context.
 
-**`ferric-integrals`** — the libint2 FFI and its C++ shim. Coulomb, erf and erfc
+**`ferric-integrals`**: the libint2 FFI and its C++ shim. Coulomb, erf and erfc
 operators; 1-electron, 2-electron, 3-center and 2-center integrals; first
 derivatives. The shim wraps every libint2 call in `try`/`catch` and returns a
 sentinel, so a C++ exception never unwinds across the FFI boundary.
 
-**Method crates** — `ferric-scf`, `ferric-mp2`, `ferric-dft`, `ferric-rpa`,
+**Method crates**: `ferric-scf`, `ferric-mp2`, `ferric-dft`, `ferric-rpa`,
 `ferric-gw`, `ferric-cc`, `ferric-ci`, `ferric-tddft`, `ferric-pcm`,
 `ferric-mm`, `ferric-xtb`, `ferric-d3` (Grimme D3(BJ) dispersion energy and
 gradient, optional ATM three-body term).
 
-**Support** — `ferric-tensors` (the `einsum!` contraction macro),
+**Support**: `ferric-tensors` (the `einsum!` contraction macro),
 `ferric-quadrature` (Lebedev grids, minimax Laplace roots), `ferric-export`
 (cube files, NPZ, GTO evaluation).
 
-**Interfaces** — `ferric-cli` (TOML-driven) and `ferric-python` (pyo3).
+**Interfaces**: `ferric-cli` (TOML-driven) and `ferric-python` (pyo3).
 
 ## Cross-cutting conventions
 
