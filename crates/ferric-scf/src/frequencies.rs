@@ -510,6 +510,36 @@ pub fn harmonic_frequencies_with_scf_correction(
     Ok(res)
 }
 
+/// Harmonic frequencies on an arbitrary surface supplied as a gradient closure.
+///
+/// `gradient_at(mol)` returns `dE/dR` in Hartree/Bohr (`[natoms, 3]`) at a
+/// displaced geometry; `energy` is the energy at `mol` itself. The Hessian is
+/// the central difference of that gradient (`6N` evaluations, displacement
+/// `delta` in Bohr), followed by the same symmetrization, mass-weighting and
+/// translation/rotation projection as [`harmonic_frequencies`]. It is how a
+/// method outside `ferric-scf` (GFN-xTB in `ferric-xtb`) reuses the existing
+/// machinery. Errors from the closure abort and are returned.
+pub fn harmonic_frequencies_from_gradient(
+    mol: &Molecule,
+    delta: f64,
+    energy: f64,
+    gradient_at: impl FnMut(&Molecule) -> Result<Array2<f64>, FerricError>,
+) -> Result<FrequencyResult, FerricError> {
+    let natoms = mol.atoms.len();
+    if natoms < 2 {
+        return Err(FerricError::General(format!(
+            "harmonic frequencies require at least 2 atoms, got {natoms}"
+        )));
+    }
+    if !(delta.is_finite() && delta > 0.0) {
+        return Err(FerricError::General(format!(
+            "frequency displacement delta must be finite and positive, got {delta}"
+        )));
+    }
+    let masses = atom_masses(mol)?;
+    fd_hessian_frequencies(mol, &masses, delta, energy, gradient_at)
+}
+
 /// Steps 1-5 of the finite-difference pipeline: central-difference
 /// `gradient_at` over every Cartesian coordinate, symmetrize (recording the
 /// asymmetry), and hand the Hessian to [`frequencies_from_cartesian_hessian`].
@@ -1099,10 +1129,31 @@ pub(crate) fn translation_rotation_basis(
     // Modified Gram-Schmidt. The drop threshold is relative to the vector's
     // original norm so it is invariant to the overall mass/length scale.
     let mut basis: Vec<Array1<f64>> = Vec::with_capacity(6);
-    for v in raw.iter() {
+    // Absolute scale of a rotation vector, sqrt(sum m |R - R_com|^2). The
+    // axial rotation of a collinear molecule is not 0 but ROUNDOFF (atoms
+    // 1e-16 off the axis), and the relative test below cannot see that such a
+    // vector is pure noise: its norm and its projected norm are equal.
+    let scale: f64 = mol
+        .atoms
+        .iter()
+        .zip(mass_au.iter())
+        .map(|(a, m)| {
+            let r = [a.x - com[0], a.y - com[1], a.zpos - com[2]];
+            m * (r[0] * r[0] + r[1] * r[1] + r[2] * r[2])
+        })
+        .sum::<f64>()
+        .sqrt();
+    for (idx, v) in raw.iter().enumerate() {
         let mut w = v.clone();
         let norm0 = w.dot(&w).sqrt();
         if norm0 <= 0.0 {
+            continue;
+        }
+        // A rotation whose squared norm is below LINEARITY_THRESH of the
+        // geometry's scale is the axial rotation of a (numerically) linear
+        // molecule: the same criterion `detect_linear` applies to the inertia
+        // tensor, so the two cannot disagree about the rank.
+        if idx >= 3 && norm0 * norm0 < LINEARITY_THRESH * scale * scale {
             continue;
         }
         for b in basis.iter() {
@@ -1272,6 +1323,26 @@ mod tests {
             .map(|x| x * AMU_TO_ELECTRON_MASS)
             .collect::<Vec<_>>();
         assert!(detect_linear(&c, &cmass), "CO2 is linear");
+    }
+
+    /// A collinear molecule whose off-axis coordinates are roundoff (~1e-16),
+    /// as an optimizer leaves CO2, must still give a rank-5 subspace. The
+    /// axial rotation is then a vector of pure noise that the relative
+    /// Gram-Schmidt test alone keeps (rank 6, "expected 5").
+    #[test]
+    fn test_tr_basis_rank_5_for_collinear_with_roundoff() {
+        let mut c = co2();
+        c.atoms[0].x += 7.1e-17;
+        c.atoms[0].y -= 1.3e-16;
+        c.atoms[1].y += 5.2e-17;
+        c.atoms[2].x += 1.4e-16;
+        let mass = atom_masses(&c)
+            .unwrap()
+            .iter()
+            .map(|x| x * AMU_TO_ELECTRON_MASS)
+            .collect::<Vec<_>>();
+        assert!(detect_linear(&c, &mass));
+        assert_eq!(translation_rotation_basis(&c, &mass).unwrap().len(), 5);
     }
 
     #[test]

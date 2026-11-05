@@ -3678,6 +3678,54 @@ def run_optimize_uhf(
     """
     ...
 
+def run_xtb_energy_gradient(
+    mol: Molecule,
+    method: str = "gfn2",
+    accuracy: float | None = None,
+    scc_max_iter: int | None = None,
+    electronic_temp: float | None = None,
+) -> tuple[float, list[list[float]]]:
+    """GFN-xTB energy (Hartree) and gradient (Hartree/Bohr, one row per atom).
+
+    `method`: "gfn1", "gfn2" (default) or "gfnff". `scc_max_iter` bounds the SCC
+    iterations (ignored by GFN-FF); an unconverged SCC raises. Needs a build with
+    the `xtb` cargo feature (libxtb); otherwise raises RuntimeError.
+    """
+    ...
+
+def run_xtb_optimize(
+    mol: Molecule,
+    method: str = "gfn2",
+    max_steps: int | None = None,
+    e_conv: float | None = None,
+    g_max_thresh: float | None = None,
+    g_rms_thresh: float | None = None,
+    accuracy: float | None = None,
+    scc_max_iter: int | None = None,
+    electronic_temp: float | None = None,
+) -> OptimizeResult:
+    """Geometry optimization on a GFN-xTB surface with the `run_optimize` BFGS driver.
+
+    `max_steps` are geometry steps; `scc_max_iter` bounds the SCC at each geometry
+    and an unconverged SCC raises. The certificate is `not graded`. Needs the `xtb`
+    cargo feature.
+    """
+    ...
+
+def run_xtb_frequencies(
+    mol: Molecule,
+    method: str = "gfn2",
+    delta: float | None = None,
+    accuracy: float | None = None,
+    scc_max_iter: int | None = None,
+    electronic_temp: float | None = None,
+) -> FrequencyResult:
+    """Harmonic frequencies on a GFN-xTB surface (central differences of the xTB
+    gradient, `delta` in Bohr, default 5e-3). Input should be an xTB minimum;
+    check `.asymmetry`. Needs the `xtb` cargo feature.
+    """
+    ...
+
 def run_frequencies(
     mol: Molecule,
     basis_name: str,

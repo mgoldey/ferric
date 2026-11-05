@@ -550,6 +550,9 @@ See [Constrained DFT](../methods/cdft.md) for a worked example.
 |---|---|---|
 | `run_optimize` | RHF geometry optimization (basis by name). | `task = "optimize"` |
 | `run_frequencies` | Harmonic frequencies from the analytic Hessian (RHF, UHF, ROHF with exact J/K, or RI-J / RI-K) or finite differences of the analytic gradient; RHF/UHF/ROHF or their KS variants. Closed-shell KS (LDA/GGA, pure or global hybrid) uses the analytic moving-grid Hessian under the default `hessian="auto"` (explicitly: `hessian="analytic-moving-grid"`); other KS references use finite differences. | `task = "frequencies"` |
+| `run_xtb_energy_gradient` | GFN1/GFN2/GFN-FF energy and gradient (Hartree, Hartree/Bohr). Present in every build; raises `RuntimeError` unless the extension was built with the `xtb` cargo feature (libxtb on the loader path). | no CLI kind |
+| `run_xtb_optimize` | Geometry optimization on a GFN-xTB surface with the `run_optimize` BFGS driver; `max_steps` bounds geometry steps, `scc_max_iter` the SCC at each geometry, and an unconverged SCC raises. Certificate is `not graded`. | no CLI kind |
+| `run_xtb_frequencies` | Harmonic frequencies on a GFN-xTB surface: central differences of the xTB gradient (`6N` evaluations), shared mass-weighting and translation/rotation projection. | no CLI kind |
 | `run_saddle` | First-order saddle-point (transition-state) search by P-RFO; closed-shell. `hessian="fd"` (default) / `"analytic"` / `"auto"`; `.hessian_source` reports which ran. | — |
 | `run_irc` | Intrinsic reaction coordinate in both directions from a saddle; closed-shell. | — |
 | `OptimizeResult` | `energy`, `converged`, `steps`, `energy_trace`, `mol()`. | |

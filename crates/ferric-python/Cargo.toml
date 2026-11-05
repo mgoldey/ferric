@@ -47,6 +47,8 @@ ferric-pbc = { path = "../ferric-pbc" }
 ferric-cli = { path = "../ferric-cli" }
 # `eval_*_on_points` / `write_cube`: GTO-on-grid evaluation and the cube writer.
 ferric-export = { path = "../ferric-export" }
+# GFN-xTB (run_xtb_*): OFF by default; the `xtb` feature below links libxtb.
+ferric-xtb = { path = "../ferric-xtb", optional = true }
 pyo3 = { workspace = true }
 numpy = { workspace = true }
 ndarray = { workspace = true }
@@ -117,3 +119,8 @@ default = []
 # ferric-scf/src/lib.rs now rejects at compile time; do not shortcut it here.
 mpi = ["ferric-mp2/mpi", "ferric-scf/mpi", "ferric-core/mpi"]
 gpu = ["ferric-core/gpu", "ferric-cli/gpu"]
+# GFN-xTB geometry optimization / frequencies (run_xtb_optimize, run_xtb_frequencies,
+# run_xtb_energy_gradient). Needs libxtb (see ferric-xtb/build.rs). Without it the
+# functions exist and raise a RuntimeError naming the feature. libxtb is dynamic and
+# the cdylib carries no rpath: run with LD_LIBRARY_PATH=$HOME/.local/lib/x86_64-linux-gnu.
+xtb = ["dep:ferric-xtb", "ferric-xtb/xtb"]

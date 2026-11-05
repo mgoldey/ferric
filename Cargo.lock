@@ -656,6 +656,7 @@ dependencies = [
  "ferric-scf",
  "ferric-tddft",
  "ferric-tensors",
+ "ferric-xtb",
  "ndarray",
  "numpy",
  "pyo3",
@@ -762,6 +763,7 @@ name = "ferric-xtb"
 version = "0.1.0"
 dependencies = [
  "ferric-core",
+ "ferric-scf",
  "ndarray",
 ]
 

@@ -4918,6 +4918,186 @@ fn run_frequencies(
     })
 }
 
+/// Parse the xTB knobs shared by `run_xtb_*`. Method names go through
+/// `XtbMethod::parse_config_str` (strict: unknown names error).
+#[cfg(feature = "xtb")]
+fn xtb_config(
+    method: &str,
+    accuracy: Option<f64>,
+    scc_max_iter: Option<u32>,
+    electronic_temp: Option<f64>,
+) -> PyResult<ferric_xtb::XtbConfig> {
+    let mut cfg = ferric_xtb::XtbConfig {
+        method: ferric_xtb::XtbMethod::parse_config_str(method)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?,
+        ..Default::default()
+    };
+    if let Some(a) = accuracy {
+        cfg.accuracy = a;
+    }
+    if let Some(n) = scc_max_iter {
+        cfg.scc_max_iter = n;
+    }
+    if let Some(t) = electronic_temp {
+        cfg.electronic_temp = t;
+    }
+    Ok(cfg)
+}
+
+#[cfg(not(feature = "xtb"))]
+fn xtb_unavailable() -> PyErr {
+    pyo3::exceptions::PyRuntimeError::new_err(
+        "this ferric build was compiled without the `xtb` feature (libxtb); \
+         rebuild with `cargo build --release -p ferric-python --features xtb`",
+    )
+}
+
+/// GFN-xTB energy (Hartree) and gradient (Hartree/Bohr, one `[x, y, z]` row
+/// per atom) at the molecule's geometry. `method`: "gfn1", "gfn2" (default) or
+/// "gfnff". Charge and multiplicity come from the `Molecule`.
+///
+/// `accuracy` (xtb scale, 1.0 default), `scc_max_iter` (SCC iterations,
+/// default 250; ignored by GFN-FF) and `electronic_temp` (K, default 300)
+/// are xtb's own controls. An SCC that does not converge raises.
+#[pyfunction]
+#[pyo3(signature = (mol, method="gfn2", accuracy=None, scc_max_iter=None, electronic_temp=None))]
+#[cfg_attr(not(feature = "xtb"), allow(unused_variables))]
+fn run_xtb_energy_gradient(
+    py: Python<'_>,
+    mol: &PyMolecule,
+    method: &str,
+    accuracy: Option<f64>,
+    scc_max_iter: Option<u32>,
+    electronic_temp: Option<f64>,
+) -> PyResult<(f64, Vec<Vec<f64>>)> {
+    #[cfg(feature = "xtb")]
+    {
+        let cfg = xtb_config(method, accuracy, scc_max_iter, electronic_temp)?;
+        let m = mol.inner.clone();
+        let (e, g) = py
+            .allow_threads(|| ferric_xtb::xtb_energy_gradient(&m, cfg))
+            .map_err(make_err)?;
+        Ok((e, g.rows().into_iter().map(|r| r.to_vec()).collect()))
+    }
+    #[cfg(not(feature = "xtb"))]
+    Err(xtb_unavailable())
+}
+
+/// Geometry optimization on a GFN-xTB surface, using the same BFGS driver as
+/// `run_optimize` (`max_steps` geometry steps, `e_conv` energy criterion;
+/// `g_max_thresh` / `g_rms_thresh` gradient criteria in Hartree/Bohr).
+/// The SCC at every geometry is controlled by `scc_max_iter`; an unconverged
+/// SCC raises instead of continuing the search. Returns an `OptimizeResult`
+/// whose certificate is `not graded` (no validation grade exists for xTB).
+#[pyfunction]
+#[pyo3(signature = (
+    mol, method="gfn2", max_steps=None, e_conv=None, g_max_thresh=None, g_rms_thresh=None,
+    accuracy=None, scc_max_iter=None, electronic_temp=None,
+))]
+#[allow(clippy::too_many_arguments)]
+#[cfg_attr(not(feature = "xtb"), allow(unused_variables))]
+fn run_xtb_optimize(
+    py: Python<'_>,
+    mol: &PyMolecule,
+    method: &str,
+    max_steps: Option<usize>,
+    e_conv: Option<f64>,
+    g_max_thresh: Option<f64>,
+    g_rms_thresh: Option<f64>,
+    accuracy: Option<f64>,
+    scc_max_iter: Option<u32>,
+    electronic_temp: Option<f64>,
+) -> PyResult<PyOptimizeResult> {
+    #[cfg(feature = "xtb")]
+    {
+        let cfg = xtb_config(method, accuracy, scc_max_iter, electronic_temp)?;
+        let d = OptimizeConfig::default();
+        let opt_config = OptimizeConfig {
+            max_steps: max_steps.unwrap_or(d.max_steps),
+            e_conv: e_conv.unwrap_or(d.e_conv),
+            g_max_thresh: g_max_thresh.unwrap_or(d.g_max_thresh),
+            g_rms_thresh: g_rms_thresh.unwrap_or(d.g_rms_thresh),
+            ..d
+        };
+        let m = mol.inner.clone();
+        let r = py
+            .allow_threads(|| ferric_xtb::optimize_geometry_xtb(&m, cfg, &opt_config))
+            .map_err(make_err)?;
+        let certificate_data = ferric_core::certificate::Certificate::ungraded("optimize:xtb")
+            .warn("GFN-xTB is a semiempirical method with no validation grade in ferric");
+        Ok(PyOptimizeResult {
+            energy: r.energy,
+            converged: r.converged,
+            steps: r.steps,
+            energy_trace: r.energy_trace,
+            mol_data: r.mol,
+            certificate_data,
+        })
+    }
+    #[cfg(not(feature = "xtb"))]
+    Err(xtb_unavailable())
+}
+
+/// Harmonic frequencies on a GFN-xTB surface: central differences (`delta`,
+/// Bohr, default 5e-3) of the analytic xTB gradient (`6N` evaluations), then
+/// the mass-weighting and translation/rotation projection `run_frequencies`
+/// uses. Input should be an xTB minimum (e.g. from `run_xtb_optimize`);
+/// check `.asymmetry`. An unconverged SCC raises.
+#[pyfunction]
+#[pyo3(signature = (mol, method="gfn2", delta=None, accuracy=None, scc_max_iter=None, electronic_temp=None))]
+#[cfg_attr(not(feature = "xtb"), allow(unused_variables))]
+fn run_xtb_frequencies(
+    py: Python<'_>,
+    mol: &PyMolecule,
+    method: &str,
+    delta: Option<f64>,
+    accuracy: Option<f64>,
+    scc_max_iter: Option<u32>,
+    electronic_temp: Option<f64>,
+) -> PyResult<PyFrequencyResult> {
+    #[cfg(feature = "xtb")]
+    {
+        let cfg = xtb_config(method, accuracy, scc_max_iter, electronic_temp)?;
+        let delta = delta.unwrap_or(ferric_xtb::DEFAULT_HESSIAN_DELTA);
+        if !(delta.is_finite() && delta > 0.0) {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "delta must be finite and > 0 (got {delta})"
+            )));
+        }
+        let m = mol.inner.clone();
+        let r = py
+            .allow_threads(|| ferric_xtb::harmonic_frequencies_xtb(&m, cfg, delta))
+            .map_err(make_err)?;
+        let certificate_data = ferric_core::certificate::Certificate::ungraded("frequencies:xtb")
+            .warn("GFN-xTB is a semiempirical method with no validation grade in ferric");
+        Ok(PyFrequencyResult {
+            frequencies: r.frequencies,
+            trans_rot_frequencies: r.trans_rot_frequencies,
+            is_linear: r.is_linear,
+            asymmetry: r.asymmetry,
+            n_gradient_evaluations: r.n_gradient_evaluations,
+            hessian_source: r.hessian_source.label().to_string(),
+            cartesian_hessian: r
+                .cartesian_hessian
+                .rows()
+                .into_iter()
+                .map(|row| row.to_vec())
+                .collect(),
+            energy: r.energy,
+            e_dispersion: None,
+            normal_modes: r
+                .normal_modes
+                .rows()
+                .into_iter()
+                .map(|row| row.to_vec())
+                .collect(),
+            certificate_data,
+        })
+    }
+    #[cfg(not(feature = "xtb"))]
+    Err(xtb_unavailable())
+}
+
 /// `run_frequencies(dispersion=...)`, resolved BEFORE any SCF with
 /// `run_dft`'s strict parser. The parameters are fitted per functional, so
 /// there is no dispersion without `xc`; MBD@rsSCS needs its exact (Z-vector)
@@ -13273,6 +13453,9 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(run_qmmm, m)?)?;
     m.add_function(wrap_pyfunction!(run_optimize_qmmm, m)?)?;
     m.add_function(wrap_pyfunction!(run_frequencies, m)?)?;
+    m.add_function(wrap_pyfunction!(run_xtb_energy_gradient, m)?)?;
+    m.add_function(wrap_pyfunction!(run_xtb_optimize, m)?)?;
+    m.add_function(wrap_pyfunction!(run_xtb_frequencies, m)?)?;
     m.add_function(wrap_pyfunction!(run_saddle, m)?)?;
     m.add_function(wrap_pyfunction!(run_irc, m)?)?;
     m.add_class::<PySaddleResult>()?;

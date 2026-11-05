@@ -837,6 +837,22 @@ pub(crate) fn require_converged(res: &ScfResult) -> Result<(), FerricError> {
     }
 }
 
+/// Optimize a geometry on an arbitrary surface supplied as a closure.
+///
+/// `energy_and_gradient(mol)` returns `(E, dE/dR)` in Hartree and Hartree/Bohr
+/// (`[natoms, 3]`). This is the same BFGS driver, line search, convergence
+/// tests and coordinate systems the SCF optimizers use; only the surface
+/// differs. It is how a method that lives outside `ferric-scf` (GFN-xTB in
+/// `ferric-xtb`) reaches the existing optimizer without a second one.
+/// An error from the closure aborts the optimization and is returned.
+pub fn optimize_geometry_with_energy_gradient(
+    mol: &Molecule,
+    opt_config: &OptimizeConfig,
+    energy_and_gradient: impl FnMut(&Molecule) -> Result<(f64, Array2<f64>), FerricError>,
+) -> Result<OptimizeResult, FerricError> {
+    run_bfgs(mol, opt_config, energy_and_gradient)
+}
+
 /// Closed-shell SCF energy, its nuclear gradient, and the converged SCF
 /// result that produced both (handed to density-dependent corrections).
 fn compute_energy_gradient_and_result(

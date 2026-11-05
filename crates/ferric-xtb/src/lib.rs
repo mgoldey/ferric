@@ -72,7 +72,11 @@
 //! xtb's own energy on every component to <1e-6 Ha/Bohr
 //! (`gfn2_gradient_matches_finite_difference`), and this binding reproduces the
 //! CLI's own `gradient` file to <1e-10, so both the value and the FFI transfer
-//! are correct. Forces and xTB geometry optimisation are supported.
+//! are correct. Forces are supported, and the `driver` module runs geometry
+//! optimisation (`optimize_geometry_xtb`) and finite-difference harmonic
+//! frequencies (`harmonic_frequencies_xtb`) through ferric-scf's BFGS driver
+//! and Hessian pipeline. The SCC iteration cap is `XtbConfig::scc_max_iter`;
+//! geometry steps are `OptimizeConfig::max_steps`; an unconverged SCC is an error.
 //!
 //! ## Previously-documented gradient defect: RESOLVED (was a `-O3` miscompile)
 //!
@@ -132,11 +136,17 @@
 #[cfg(feature = "xtb")]
 pub mod calculator;
 #[cfg(feature = "xtb")]
+pub mod driver;
+#[cfg(feature = "xtb")]
 pub mod ffi;
 
 #[cfg(feature = "xtb")]
 pub use calculator::{
     gfn2_energy, xtb_singlepoint, XtbCalculator, XtbConfig, XtbMethod, XtbResult,
+};
+#[cfg(feature = "xtb")]
+pub use driver::{
+    harmonic_frequencies_xtb, optimize_geometry_xtb, xtb_energy_gradient, DEFAULT_HESSIAN_DELTA,
 };
 
 /// Whether this build was compiled with the `xtb` feature (and therefore linked

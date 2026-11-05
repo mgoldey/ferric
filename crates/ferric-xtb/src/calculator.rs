@@ -112,7 +112,7 @@ pub struct XtbConfig {
     /// xtb's own default is 1.0.
     pub accuracy: f64,
     /// Max SCC iterations (ignored by GFN-FF, which is not self-consistent).
-    pub max_iter: u32,
+    pub scc_max_iter: u32,
     /// Electronic (Fermi-smearing) temperature in Kelvin. xtb's default is 300.
     pub electronic_temp: f64,
     /// xtb console verbosity: 0 = muted (default here), 1 = minimal, 2 = full.
@@ -124,7 +124,7 @@ impl Default for XtbConfig {
         Self {
             method: XtbMethod::default(),
             accuracy: 1.0,
-            max_iter: 250,
+            scc_max_iter: 250,
             electronic_temp: 300.0,
             verbosity: 0,
         }
@@ -405,7 +405,7 @@ impl XtbCalculator {
         if config.method.is_self_consistent() {
             // SAFETY: live env/calc handles; scalars passed by value.
             unsafe {
-                ffi::xtb_setMaxIter(env.0, calc.0, config.max_iter as c_int);
+                ffi::xtb_setMaxIter(env.0, calc.0, config.scc_max_iter as c_int);
                 ffi::xtb_setElectronicTemp(env.0, calc.0, config.electronic_temp);
             }
             env.check("calculator configuration")?;
