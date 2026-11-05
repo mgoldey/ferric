@@ -4066,6 +4066,15 @@ impl Config {
         let mult = self.molecule.multiplicity;
         self.scf.scf_jk_choice(kind, task)?;
 
+        if self.cosmo.is_some() && task != "energy" {
+            return Err(format!(
+                "[cosmo] is not supported with method.task = \"{task}\": COSMO has no \
+                 analytic gradient, so this run would follow the vacuum-form gradient of a \
+                 solvated energy. Use [pcm] (IEF-PCM, which has one; task = \"optimize\"), \
+                 or task = \"energy\" with [cosmo]."
+            ));
+        }
+
         if let Some(pcm) = &self.pcm {
             pcm.to_pcm_config()?;
             if self.cosmo.is_some() {
@@ -11098,6 +11107,22 @@ mod cli_wired_keys_tests {
         let src = "[molecule]\nxyz = \"x.xyz\"\n[basis]\nname = \"sto-3g\"\n\
                    [method]\nkind = \"rhf\"\n[pcm]\nsolvnt = \"water\"\n";
         assert!(toml::from_str::<Config>(src).is_err());
+    }
+
+    /// COSMO has no analytic gradient: every gradient-consuming task refuses
+    /// it at load; energy stays accepted. Removing the `[cosmo]` guard in
+    /// `validate_cli_wired_keys` fails the `refused` calls.
+    #[test]
+    fn cosmo_has_no_gradient_so_only_energy_is_accepted() {
+        let body = "[cosmo]\nepsilon = 78.39\n";
+        for kind in ["rhf", "uhf", "rohf", "ksdft"] {
+            cfg(kind, "energy", 1, body)
+                .validate_cli_wired_keys()
+                .unwrap_or_else(|e| panic!("{kind} energy: {e}"));
+            for task in ["optimize", "frequencies"] {
+                refused(&cfg(kind, task, 1, body), "COSMO has no analytic gradient");
+            }
+        }
     }
 
     #[test]

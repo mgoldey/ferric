@@ -418,6 +418,28 @@ fn move_mm_without_topology_is_a_typed_error() {
     assert!(optimize_qmmm(&ctx, &system, "sto-3g", &cfg).is_err());
 }
 
+/// COSMO has no nuclear-gradient term, so `optimize_qmmm` would follow the
+/// vacuum-form gradient of a solvated energy; it refuses before any SCF.
+#[test]
+fn cosmo_scf_is_refused_before_the_first_step() {
+    let ctx = ParallelContext::default();
+    let cfg = QmmmOptimizeConfig {
+        method: QmmmMethod::Rhf,
+        move_mm: MoveMm::None,
+        opt: OptimizeConfig::default(),
+        mm_topology: None,
+        scf: RhfConfig {
+            cosmo: Some(ferric_scf::cosmo::CosmoConfig::default()),
+            ..Default::default()
+        },
+    };
+    let err = optimize_qmmm(&ctx, &capped_ethane(), "sto-3g", &cfg).unwrap_err();
+    assert!(
+        err.to_string().contains("COSMO has no analytic gradient"),
+        "{err}"
+    );
+}
+
 #[test]
 fn move_mm_residues_without_residue_ids_is_a_typed_error() {
     let ctx = ParallelContext::default();

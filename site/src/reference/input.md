@@ -422,7 +422,9 @@ table and checks are shared with Python `run_rhf(solvent=...)`. See
 ## `[cosmo]`
 
 Conductor-like implicit solvent, applied to every SCF variant. It cannot be
-combined with `[pcm]`.
+combined with `[pcm]`. `task = "energy"` only: COSMO has no analytic
+gradient, so `task = "optimize"` and `task = "frequencies"` with `[cosmo]` are
+errors. Use `[pcm]` (which has a gradient) for optimization.
 
 | Key | Type | Default | Allowed values | Notes |
 |---|---|---|---|---|

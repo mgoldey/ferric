@@ -114,33 +114,63 @@ fn auto_falls_back_for_unsupported_configurations() {
     };
     // Point charges, smeared charges and a uniform field are analytic (see
     // `embedded_point_charges_are_analytic`, `smeared_charges_are_analytic_and_match_fd`,
-    // `uniform_field_is_analytic_and_matches_fd`); implicit solvation is not.
+    // `uniform_field_is_analytic_and_matches_fd`).
+    let r = run(&ri, &FrequencyConfig::default());
+    assert_eq!(r.hessian_source, HessianSource::FiniteDifference);
+    assert_eq!(r.n_gradient_evaluations, 18);
+    let refused = harmonic_frequencies(
+        &ParallelContext::default(),
+        &water(),
+        "sto-3g",
+        Operator::coulomb(),
+        &ri,
+        &FrequencyConfig {
+            hessian: HessianMethod::Analytic,
+            ..Default::default()
+        },
+    );
+    assert!(
+        refused.is_err(),
+        "RI J/K with an external potential: Analytic must refuse, not fall back"
+    );
+}
+
+/// COSMO has neither an analytic Hessian nor an analytic gradient, and every
+/// finite-difference route here differentiates the analytic gradient (`6N`
+/// gradients), which would be the vacuum-form gradient of a solvated energy.
+/// All three `HessianMethod`s therefore refuse; none may fall back to FD of
+/// the gradient. (Implicit solvation by IEF-PCM has a gradient but no Hessian
+/// path wired here, so it is not asserted.)
+#[test]
+fn cosmo_frequencies_refuse_every_route() {
     let solvated = RhfConfig {
         cosmo: Some(ferric_scf::cosmo::CosmoConfig::default()),
         ..Default::default()
     };
-    for (what, scf) in [
-        ("RI J/K with an external potential", ri),
-        ("implicit solvation", solvated),
+    for hessian in [
+        HessianMethod::Auto,
+        HessianMethod::Analytic,
+        HessianMethod::FiniteDifference,
     ] {
-        let r = run(&scf, &FrequencyConfig::default());
-        assert_eq!(r.hessian_source, HessianSource::FiniteDifference, "{what}");
-        assert_eq!(r.n_gradient_evaluations, 18, "{what}");
-        let refused = harmonic_frequencies(
+        let err = harmonic_frequencies(
             &ParallelContext::default(),
             &water(),
             "sto-3g",
             Operator::coulomb(),
-            &scf,
+            &solvated,
             &FrequencyConfig {
-                hessian: HessianMethod::Analytic,
+                hessian,
                 ..Default::default()
             },
-        );
-        assert!(
-            refused.is_err(),
-            "{what}: Analytic must refuse, not fall back"
-        );
+        )
+        .expect_err("COSMO frequencies must be refused");
+        if hessian != HessianMethod::Analytic {
+            // Auto falls through to FD of the gradient, which is the refusal.
+            assert!(
+                err.to_string().contains("COSMO has no analytic gradient"),
+                "{hessian:?}: {err}"
+            );
+        }
     }
 }
 

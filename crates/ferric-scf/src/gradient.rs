@@ -703,6 +703,25 @@ pub fn twoelectron_j_gradient_with_response(
     })
 }
 
+/// Refuse a COSMO SCF: `ferric_scf::cosmo` has no nuclear-gradient term (the
+/// derivative of the screening-charge energy with respect to the cavity and
+/// nuclear positions), so every dispatcher here would return the vacuum-form
+/// gradient of a solvated energy. IEF-PCM (`config.pcm`) has one
+/// ([`ferric_pcm::pcm_gradient`]). Called by the gradient dispatchers and,
+/// before the SCF, by the `preflight_cosx_*` functions the geometry drivers use.
+pub fn refuse_cosmo_gradient(config: &crate::rhf::RhfConfig) -> Result<(), FerricError> {
+    if config.cosmo.is_some() {
+        return Err(FerricError::General(
+            "COSMO has no analytic gradient; use [pcm] (IEF-PCM, which has one) or finite \
+             differences of the energy. Geometry optimization, saddle/IRC and \
+             finite-difference-of-gradient frequencies on a COSMO SCF would otherwise follow \
+             the gradient of the vacuum surface."
+                .into(),
+        ));
+    }
+    Ok(())
+}
+
 /// Closed-shell (RHF / RKS) SCF gradient that differentiates the exchange the
 /// SCF ACTUALLY built.
 ///
@@ -721,6 +740,7 @@ pub fn restricted_scf_gradient(
     config: &crate::rhf::RhfConfig,
     result: &ScfResult,
 ) -> Result<Array2<f64>, FerricError> {
+    refuse_cosmo_gradient(config)?;
     refuse_final_pass_result(result)?;
     let ext = config.external_potential.as_ref();
     let cosx = crate::cosx_gradient::scf_exchange_is_cosx(config, false)?.then_some(&config.cosx);
@@ -793,6 +813,7 @@ pub fn unrestricted_scf_gradient(
     config: &crate::rhf::RhfConfig,
     result: &ScfResult,
 ) -> Result<Array2<f64>, FerricError> {
+    refuse_cosmo_gradient(config)?;
     refuse_final_pass_result(result)?;
     let ext = config.external_potential.as_ref();
     let cosx = crate::cosx_gradient::scf_exchange_is_cosx(config, true)?;
@@ -867,6 +888,7 @@ pub fn gradient_task_config(
 /// not implemented (pruned grid; overlap fit with a KS functional), so a geometry driver fails
 /// fast instead of after a full SCF. `Ok(())` when exchange is not COSX.
 pub fn preflight_cosx_restricted(config: &crate::rhf::RhfConfig) -> Result<(), FerricError> {
+    refuse_cosmo_gradient(config)?;
     if crate::cosx_gradient::scf_exchange_is_cosx(config, false)? {
         crate::cosx_gradient::check_gradient_supported(&config.cosx)?;
         crate::cosx_gradient::check_fitted_ks_supported(&config.cosx, config.xc.as_deref())?;
@@ -878,6 +900,7 @@ pub fn preflight_cosx_restricted(config: &crate::rhf::RhfConfig) -> Result<(), F
 /// SCF, a COSX setup whose open-shell gradient is not implemented (a grid
 /// the gradient cannot differentiate; the overlap fit with a functional).
 pub fn preflight_cosx_unrestricted(config: &crate::rhf::RhfConfig) -> Result<(), FerricError> {
+    refuse_cosmo_gradient(config)?;
     if crate::cosx_gradient::scf_exchange_is_cosx(config, true)? {
         crate::cosx_gradient::check_gradient_supported(&config.cosx)?;
         crate::cosx_gradient::check_fitted_ks_supported(&config.cosx, config.xc.as_deref())?;
@@ -893,6 +916,7 @@ pub fn preflight_cosx_unrestricted(config: &crate::rhf::RhfConfig) -> Result<(),
 /// need a ROHF Z-vector (Hartree-Fock) or the XC Fock nuclear derivative
 /// (Kohn-Sham), neither of which exists. `Ok(())` when exchange is not COSX.
 pub fn preflight_cosx_restricted_open(config: &crate::rhf::RhfConfig) -> Result<(), FerricError> {
+    refuse_cosmo_gradient(config)?;
     if crate::cosx_gradient::scf_exchange_is_cosx(config, true)? {
         crate::cosx_gradient::check_gradient_supported(&config.cosx)?;
         check_cosx_restricted_open_fit(&config.cosx)?;
@@ -978,6 +1002,7 @@ pub fn restricted_open_scf_gradient(
     config: &crate::rhf::RhfConfig,
     result: &ScfResult,
 ) -> Result<Array2<f64>, FerricError> {
+    refuse_cosmo_gradient(config)?;
     refuse_final_pass_result(result)?;
     let ext = config.external_potential.as_ref();
     let cosx = crate::cosx_gradient::scf_exchange_is_cosx(config, true)?;

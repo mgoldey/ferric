@@ -260,8 +260,13 @@ matches PySCF IEF-PCM `nuc_grad_method()` to 7e-11 Ha/Bohr on PySCF's
 302-point cavity and finite differences of the solvated SCF energy to
 3e-7 Ha/Bohr. It needs the cavity built from the molecule (an injected
 `PcmConfig::cavity` is refused). There is no PCM Hessian: frequencies with
-`[pcm]` are refused. COSMO has no gradient term. An unknown solvent name is an
-error, not a silent vacuum.
+`[pcm]` are refused. COSMO has no gradient term and no Hessian: every
+analytic-gradient entry (the SCF gradient dispatchers, `optimize_geometry*`,
+`optimize_qmmm`, finite-difference frequencies, and CLI `task = "optimize"` or
+`"frequencies"` with `[cosmo]`) refuses a COSMO SCF with "COSMO has no analytic
+gradient; use [pcm] ... or finite differences". COSMO is energy-only; use
+`[pcm]` for geometry work. An unknown solvent name is an error, not a silent
+vacuum.
 
 ## Gradients, optimization, frequencies, transition states
 

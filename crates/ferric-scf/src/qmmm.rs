@@ -2043,6 +2043,7 @@ pub fn optimize_qmmm(
                 .to_string(),
         ));
     }
+    crate::gradient::refuse_cosmo_gradient(&cfg.scf)?;
     if cfg.scf.polarizable.is_some() {
         return Err(FerricError::General(
             "optimize_qmmm: cfg.scf.polarizable is not supported yet (Lane B5 scope). Every \
