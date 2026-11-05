@@ -461,11 +461,15 @@ fn diag_ferric_static_relaxed_dipole() {
     eprintln!("pyscf (clean-room) μ_z = -0.652736 (STO-3G, RI-aux may differ slightly)");
 }
 
+/// Relaxed RI-MP2 dipole of `static_relaxed_density_ao` vs PySCF's
+/// finite-field `−dE/dF` of the DF-MP2 energy with the same auxiliary basis
+/// (`scripts/cpks/ff_dfmp2_dipole_alpha.py`, water/STO-3G, cc-pvdz-ri):
+/// μ = [0, 0, −0.65273929]. Measured |Δμ_z| = 3e-8 (FD truncation + SCF floor);
+/// the bar is 1e-6. The Z-vector with twice the (A+B) coupling gives
+/// μ_z = −0.63947 (miss 1.3e-2), so the bar separates the two by 1e4.
+/// Conventional (non-DF) MP2 gives −0.65273586, 3.4e-6 from the DF value.
 #[test]
-#[ignore]
 fn cpks_static_relaxed_dipole_vs_pyscf() {
-    // The VALIDATED static relaxed density must reproduce PySCF μ_z=-0.652736
-    // (water/STO-3G). ferric uses RI for correlation so allow ~1e-3 RI slack.
     use ferric_core::basis;
     use ferric_integrals::oneelectron;
     use ferric_mp2::cpks_polar::static_relaxed_density_ao;
@@ -499,15 +503,16 @@ fn cpks_static_relaxed_dipole_vs_pyscf() {
             .sum();
         mu[d] = nuc - elec;
     }
-    eprintln!(
-        "ferric VALIDATED static relaxed μ = {:?}  (pyscf μ_z=-0.652736)",
-        mu
-    );
-    assert!(
-        (mu[2].abs() - 0.652736).abs() < 2e-2,
-        "μ_z={} vs pyscf -0.652736",
-        mu[2]
-    );
+    let want = [0.0, 0.0, -0.652_739_29];
+    eprintln!("ferric static relaxed μ = {mu:?}  (PySCF DF-MP2 FD {want:?})");
+    for d in 0..3 {
+        assert!(
+            (mu[d] - want[d]).abs() < 1e-6,
+            "μ[{d}] = {} vs PySCF {}",
+            mu[d],
+            want[d]
+        );
+    }
 }
 
 #[test]
