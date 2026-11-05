@@ -67,8 +67,8 @@ across many jobs comes from many single-threaded processes, not one wide job.
 
 **Determinism.** Reductions fold in a fixed ascending order independent of
 thread count, so results are bit-identical across `RAYON_NUM_THREADS`. This is
-pinned by tests. A different-but-deterministic order — a tree-fold, say — would
-*not* be acceptable, because floating-point addition is not associative.
+pinned by tests. Another deterministic order, such as a tree-fold, would change
+the bits, because floating-point addition is not associative.
 
 **Memory.** `MemoryPlan` expresses what a path will allocate and when. An
 allocation that exceeds the budget and has no spill-to-disk or recompute

@@ -9,7 +9,7 @@ OPENBLAS_NUM_THREADS=1 cargo run --release --bin ferric -- examples/water-rhf.to
 
 ## What CI checks
 
-**CI parses every shipped example, but runs only the three listed below.** The test
+CI parses every shipped example and runs the three listed below. The test
 `all_shipped_examples_parse` (in `crates/ferric-cli/src/config.rs`) loads
 every `examples/*.toml` through the strict parser. It also checks that each
 file's `[molecule] xyz` path exists. It does not execute the calculation or
@@ -25,9 +25,8 @@ Three examples are also executed by integration tests in
 | `water-qmmm.toml` | `qmmm_reports_the_pqr_as_its_geometry.rs` | The embedded energy `-74.9653197421` appears in the output. |
 
 Every other number in the "Reference in header" column below is copied
-verbatim from that file's comment block. **Nothing in CI re-checks it.** Where
-the header cites a Rust test as the real reference, that test is the check,
-not the example.
+verbatim from that file's comment block, and CI does not re-check it. Where
+the header cites a Rust test as the reference, that test is the check.
 
 ## Examples that need extra setup
 
