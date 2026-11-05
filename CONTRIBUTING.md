@@ -164,6 +164,46 @@ Contributor-only analysis lives next to the book but outside its table of
 contents, for example `site/src/reference/ci-timing-analysis.md` (test sharding
 and CI timing).
 
+### Writing documentation
+
+Pages under `site/src`, the READMEs and the crate `theory.md` files are
+reference documents. State current facts in declarative present tense; use the
+imperative for instructions. Lead with a one-line summary. Keep sentences under
+about 25 words and paragraphs under about five sentences; put parameters,
+limits and grades in lists or tables. A measured claim gives the value, unit,
+system, basis and reference code, with no adjectives.
+
+Change tone, never content: every number, unit, limit, error condition, link
+and code block stays. Avoid these patterns (examples are real lines from this
+repository):
+
+| Pattern | Before | After |
+|---|---|---|
+| Intensifiers: genuinely, truly, honestly, actually, really, simply, just, deliberately, crucially | "leaves "the run failed" as the only remaining reading of a genuinely missing record" | "leaves "the run failed" as the only reading of a missing record" |
+| House jargon: load-bearing, lane, footgun, the trap, the catch, the real X, bites, fingerprint | "floating-point addition is not associative. The ascending order is load-bearing." | "floating-point addition is not associative, so the sum must run in ascending order." |
+| Contrast framing ("not X but Y", "X is NOT Y") | "converge to genuinely different SCF solutions — not a convergence failure but a different basin." | "converge to different SCF solutions, each in its own basin." |
+| Em-dash chains and parenthetical asides | "That measurement was unnecessary — **the CI log already contains it**, in every `finished in <N>s`" | "The CI log already records it: every step prints `finished in <N>s`." |
+| Revision history and narrative | "I originally called the compile-vs-run split "the load-bearing unknown" and proposed timing `cargo test --no-run` to get it." | Delete; state the current fact. History belongs in git log or the wiki. |
+| First person, reader-as-audience voice, signposting | "This is the finding that reframes the work. The fast tier is NOT one monolithic `cargo test`." | "The fast tier is six sequential `cargo test` invocations." |
+| Restating | "This is the middle tier of the funnel and skipping it is expensive. GFN2-xTB fixes a bad structure in seconds" | "GFN2-xTB fixes a bad structure in seconds" |
+| Emphasis inflation: scattered bold, ALL CAPS, "NOTE:" in prose | "build.rs warns that the fix is NOT applied" | "build.rs warns that the fix is not applied" |
+| Hedge stacking (a scope qualifier on every sentence) | "provisional, narrow, at this basis only, see ..." repeated per line | One scope statement per section, or a grade/system/basis column in a table. |
+| Duplicate caveats | The `OPENBLAS_NUM_THREADS=1` warning restated on several pages | State it once (see [Testing](#testing)) and link to it. |
+
+Em-dashes in math ranges and table cells are fine; elsewhere use at most one
+dash pair per paragraph and prefer colons and periods. Keep warnings about real
+hazards (thread counts, memory), stated once and plainly. "Measured" and
+"validated against PySCF to 1e-8 Ha" are provenance, not tone, and stay.
+
+`scripts/check_doc_style.py` counts the listed words and em-dashes per file
+(report only, exit 0). Each hit is a prompt to reread the sentence; some are
+correct in context.
+
+```bash
+python3 scripts/check_doc_style.py            # site/src, READMEs, theory.md
+python3 scripts/check_doc_style.py --verbose site/src/using/python.md
+```
+
 ## Code quality
 
 CI enforces several gates. Some block a PR, some only report; know which is
