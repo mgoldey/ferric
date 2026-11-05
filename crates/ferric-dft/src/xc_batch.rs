@@ -123,8 +123,8 @@ use crate::density_on_grid::{DensityGrid, UksDensityGrid};
 use crate::grid::GridPoint;
 use crate::libxc::{FunctionalFamily, XcDef};
 use crate::vxc::{
-    closed_kernel, deterministic_point_sum, polarized_kernel, ClosedKernel, PolarizedKernel,
-    DENSITY_FLOOR,
+    above_density_floor, closed_kernel, deterministic_point_sum, polarized_kernel, ClosedKernel,
+    PolarizedKernel,
 };
 
 /// Device offload of the per-batch GEMMs (feature `gpu`).
@@ -878,7 +878,7 @@ fn closed_point_factors(
     (vrho, vsigma, vtau): (f64, f64, f64),
     (has_gga, has_mgga): (bool, bool),
 ) {
-    if r > DENSITY_FLOOR {
+    if above_density_floor(r) {
         fac.s_half[j] = 0.5 * (w * vrho);
         if has_gga {
             for (ax, ga) in grad.iter().enumerate() {
@@ -903,7 +903,7 @@ fn polarized_point_factors(
     (vrho_s, vs_self, vc, vtau_s): (f64, f64, f64, f64),
     (has_gga, has_mgga): (bool, bool),
 ) {
-    if rho_s > DENSITY_FLOOR {
+    if above_density_floor(rho_s) {
         fac.s_half[j] = 0.5 * (w * vrho_s);
         if has_gga {
             for (ax, (gs, gc)) in g_self.iter().zip(&g_cross).enumerate() {

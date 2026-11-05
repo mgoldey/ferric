@@ -25,6 +25,16 @@ use rayon::prelude::*;
 /// to keep V_xc well-conditioned. Matches libxc's internal `dens_threshold` default.
 pub const DENSITY_FLOOR: f64 = 1e-10;
 
+/// The production V_xc density screen: a grid point contributes to a
+/// potential only where its gating density (total ρ closed shell, ρ_σ for the
+/// spin-σ block) is above [`DENSITY_FLOOR`]. Every V_xc builder and every
+/// f_xc kernel (`fxc.rs`) gates through this predicate, so the kernel is the
+/// derivative of the potential the SCF actually builds.
+#[inline]
+pub fn above_density_floor(rho: f64) -> bool {
+    rho > DENSITY_FLOOR
+}
+
 use crate::density_on_grid::{DensityGrid, UksDensityGrid};
 use crate::grid::GridPoint;
 use crate::libxc::{FunctionalFamily, XcDef};
@@ -301,7 +311,7 @@ pub fn semilocal_vxc_closed_scratch(
     let s: Array1<f64> = Zip::from(&w)
         .and(&dens.rho)
         .and(&vrho_total)
-        .map_collect(|&w, &r, &v| if r > DENSITY_FLOOR { w * v } else { 0.0 });
+        .map_collect(|&w, &r, &v| if above_density_floor(r) { w * v } else { 0.0 });
     scale_columns_into(chi.view(), &s, buf);
     // Digestion GEMM (nbf, npts)·(npts, nbf), outside any rayon region — this
     // whole function runs serially at the top level of one SCF/grid-response
@@ -334,7 +344,7 @@ pub fn semilocal_vxc_closed_scratch(
                 .and(&vsigma_total)
                 .and(&grad_axis)
                 .map_collect(|&w, &r, &v, &gr| {
-                    if r > DENSITY_FLOOR {
+                    if above_density_floor(r) {
                         2.0 * w * v * gr
                     } else {
                         0.0
@@ -364,15 +374,13 @@ pub fn semilocal_vxc_closed_scratch(
                 Zip::from(&w)
                     .and(&dens.rho)
                     .and(&vtau_total)
-                    .map_collect(
-                        |&w, &r, &vt| {
-                            if r > DENSITY_FLOOR {
-                                0.5 * w * vt
-                            } else {
-                                0.0
-                            }
-                        },
-                    );
+                    .map_collect(|&w, &r, &vt| {
+                        if above_density_floor(r) {
+                            0.5 * w * vt
+                        } else {
+                            0.0
+                        }
+                    });
             scale_columns_into(dchi_axis, &f_ax, buf);
             let m_axis: Array2<f64> =
                 with_blas_threads(opt_in_blas_threads(), || buf.dot(&dchi_axis.t()));
@@ -597,7 +605,7 @@ pub fn semilocal_vxc_polarized_scratch(
         let s: Array1<f64> = Zip::from(&w)
             .and(rho_floor_ref)
             .and(vrho_sigma)
-            .map_collect(|&w, &r, &v| if r > DENSITY_FLOOR { w * v } else { 0.0 });
+            .map_collect(|&w, &r, &v| if above_density_floor(r) { w * v } else { 0.0 });
         scale_columns_into(chi.view(), &s, buf);
         // Digestion GEMM, outside any rayon region — this whole function
         // runs serially at the top level of one UKS SCF/grid-response
@@ -625,7 +633,7 @@ pub fn semilocal_vxc_polarized_scratch(
                     .and(vsigma_self)
                     .and(&gs)
                     .for_each(|f, &w, &r, &vs, &g_self| {
-                        if r > DENSITY_FLOOR {
+                        if above_density_floor(r) {
                             *f = 2.0 * w * vs * g_self;
                         }
                     });
@@ -635,7 +643,7 @@ pub fn semilocal_vxc_polarized_scratch(
                     .and(vsigma_cross)
                     .and(&gc)
                     .for_each(|f, &w, &r, &vc, &g_cross| {
-                        if r > DENSITY_FLOOR {
+                        if above_density_floor(r) {
                             *f += w * vc * g_cross;
                         }
                     });
@@ -657,15 +665,13 @@ pub fn semilocal_vxc_polarized_scratch(
                 let f_ax: Array1<f64> = Zip::from(&w)
                     .and(rho_floor_ref)
                     .and(vtau_sigma)
-                    .map_collect(
-                        |&w, &r, &vt| {
-                            if r > DENSITY_FLOOR {
-                                0.5 * w * vt
-                            } else {
-                                0.0
-                            }
-                        },
-                    );
+                    .map_collect(|&w, &r, &vt| {
+                        if above_density_floor(r) {
+                            0.5 * w * vt
+                        } else {
+                            0.0
+                        }
+                    });
                 scale_columns_into(dchi_axis, &f_ax, buf);
                 // Same opt-in-raise digestion GEMM as the LDA piece above.
                 let m_axis: Array2<f64> =
