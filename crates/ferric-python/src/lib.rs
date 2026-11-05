@@ -9661,10 +9661,20 @@ struct PyDoubleHybridResult {
     c_os: f64,
     #[pyo3(get)]
     c_ss: f64,
+    certificate_data: ferric_core::certificate::Certificate,
 }
 
 #[pymethods]
 impl PyDoubleHybridResult {
+    /// Validation certificate (see `RhfResult.certificate`): capability
+    /// `"b2plyp"` or `"dsd-pbep86"`, `grade` `"spike"` (not compared with any
+    /// reference code) capped by the Kohn-Sham reference's, `approximations`
+    /// `scf ...` (the reference's), `ri`, `frozen-core` and
+    /// `spin-component-scaling`.
+    #[getter]
+    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
+        certificate_dict(py, &self.certificate_data)
+    }
     fn __repr__(&self) -> String {
         format!(
             "DoubleHybridResult(total_energy={:.10}, e_ks={:.10}, e_corr={:.10})",
@@ -9744,8 +9754,18 @@ fn run_double_hybrid(
     mp2_cfg.memory_budget_bytes = budget_bytes_from_gb(memory_budget_gb);
 
     let r = mp2_double_hybrid(&mol.inner, &prep, &dfbs, &ks, &mp2_cfg).map_err(make_err)?;
+    let certificate_data = ferric_mp2::certificate::mp2_double_hybrid_certificate(
+        match dh_kind {
+            DoubleHybridKind::B2plyp => "b2plyp",
+            DoubleHybridKind::DsdPbep86 => "dsd-pbep86",
+        },
+        &stamped_scf_certificate(&mol.inner, &ks, &cfg),
+        &auxbasis.inner.name,
+        &mp2_cfg,
+    );
 
     Ok(PyDoubleHybridResult {
+        certificate_data,
         total_energy: r.total_energy,
         e_ks: r.e_ks,
         e_corr_scaled: r.e_corr_scaled,
@@ -12064,10 +12084,21 @@ struct PyTddftResult {
     grid: Option<(usize, usize, Option<String>, Option<f64>)>,
     excitation_energies: Vec<f64>,
     oscillator_strengths: Vec<f64>,
+    certificate_data: ferric_core::certificate::Certificate,
 }
 
 #[pymethods]
 impl PyTddftResult {
+    /// Validation certificate (see `RhfResult.certificate`): capability
+    /// `"tda"` or `"tddft"`, `grade` `"proven_narrow"` capped by the SCF
+    /// reference's. A KS run records `response-grid` (the grid the reference
+    /// SCF and the f_xc kernel shared, equal to `grid`, and whether it was the
+    /// meta-GGA response default) and a meta-GGA run warns that its roots are
+    /// grid-sensitive.
+    #[getter]
+    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
+        certificate_dict(py, &self.certificate_data)
+    }
     #[getter]
     fn excitation_energies<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
         PyArray1::from_slice(py, &self.excitation_energies)
@@ -12175,9 +12206,10 @@ fn run_tddft(
              Kohn-Sham grid, and functional=None (an HF reference) builds none",
         ));
     }
+    let mut scf_cfg = rhf_config(None);
     let (scf, grid) = if let Some(xc_name) = functional {
-        let mut cfg = rhf_config(None);
-        ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv).apply(&mut cfg);
+        let cfg = &mut scf_cfg;
+        ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv).apply(cfg);
         cfg.xc = Some(xc_name.to_string());
         cfg.df_j_aux = Some("def2-universal-jkfit".to_string());
         cfg.df_k_aux = Some("def2-universal-jkfit".to_string());
@@ -12190,15 +12222,14 @@ fn run_tddft(
             .dft_grid
             .clone()
             .unwrap_or_else(ferric_dft::grid::AtomicGridConfig::production);
-        let ladder = ferric_scf::ladder::ksdft_ladder(&cfg);
+        let ladder = ferric_scf::ladder::ksdft_ladder(cfg);
         let lr =
             ferric_scf::ladder::solve_rhf_ladder(&ctx, &mol.inner, &prep, op, &bounds, &ladder)
                 .map_err(make_err)?;
         (lr.result, grid)
     } else {
-        let mut cfg = rhf_config(None);
-        ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv).apply(&mut cfg);
-        let scf = solve_rhf(&ctx, &mol.inner, &prep, op, &bounds, &cfg).map_err(make_err)?;
+        ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv).apply(&mut scf_cfg);
+        let scf = solve_rhf(&ctx, &mol.inner, &prep, op, &bounds, &scf_cfg).map_err(make_err)?;
         (scf, ferric_dft::grid::AtomicGridConfig::default())
     };
     if !scf.converged {
@@ -12246,6 +12277,15 @@ fn run_tddft(
     let r = py
         .allow_threads(|| ferric_tddft::run_tddft(&emol_tddft, &prep, &dfbs, &scf, &config))
         .map_err(make_err)?;
+    let certificate_data = ferric_tddft::certificate::tddft_certificate(
+        &stamped_scf_certificate(&mol.inner, &scf, &scf_cfg),
+        &auxbasis.inner.name,
+        &config,
+        grid_radial.is_some()
+            || grid_angular.is_some()
+            || grid_prune.is_some()
+            || grid_weight_cut.is_some(),
+    );
 
     Ok(PyTddftResult {
         n_roots: r.excitation_energies.len(),
@@ -12253,6 +12293,7 @@ fn run_tddft(
         c_hf: r.c_hf,
         fxc_included: r.fxc_included,
         grid: grid_used,
+        certificate_data,
         excitation_energies: r.excitation_energies,
         oscillator_strengths: r.oscillator_strengths,
     })

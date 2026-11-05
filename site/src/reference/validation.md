@@ -45,19 +45,23 @@ unconverged SCF is capped to not graded.
 Post-SCF kinds print a `certificate` block after their result: the MP2 family
 (`rimp2` exact, local and open-shell, `mp3`, `oo-rimp2`, `att-rimp2`, `mp2-v`,
 `scs-mp2`, `scs-mp2-2terfc`, `laplace-mp2`, `laplace-sos-mp2`), `rs-mp2-rpa`,
-`drpa`, `pdep-rpa`, `ccsd`, `ccd`, `ccsd(t)`, `linlccd`, `gw`, `bse-tda` and
+`drpa`, `pdep-rpa`, `ccsd`, `ccd`, `ccsd(t)`, `linlccd`, `wb97x-l-v`, `b2plyp`,
+`dsd-pbep86`, `tda`, `tddft`, `gw`, `bse-tda` and
 `tdhf-static-polarizability`. Kinds that write a `result` record carry it as
-`result.components.certificate`; `pdep-rpa`, `gw`, `bse-tda` and
+`result.components.certificate`; `pdep-rpa`, `wb97x-l-v`, `b2plyp`,
+`dsd-pbep86`, `tda`, `tddft`, `gw`, `bse-tda` and
 `tdhf-static-polarizability` write a `certificate` record. Python
 `RiMp2Result`, `Mp3Result`, `OoRiMp2Result`, `AttenuatedMp2Result`,
 `ScsMp2Result`, `Mp2VResult`, `LaplaceMp2Result`, `SosMp2Result`,
 `RsMp2RpaResult`, `CcResult`, `PdepRpaResult`, `GwResult`, `UGwResult`,
-`BseResult` and `TdhfStaticPolarizabilityResult` carry it as `.certificate`;
+`BseResult`, `TdhfStaticPolarizabilityResult`, `DoubleHybridResult` and
+`TddftResult` carry it as `.certificate`;
 the `run_drpa` and `run_linlccd` dicts carry a `"certificate"` key. The grade is the kind's row, capped at the grade of the
 SCF reference's certificate, whose approximations and warnings it repeats as
 `scf <name>` and `scf reference: ...`. It records the auxiliary basis, frozen
 core, a non-Coulomb correlation operator and each method's settings (SCS
-scales, Laplace points, frequency quadrature, PDEP truncation, GW variant).
+scales, Laplace points, frequency quadrature, PDEP truncation, GW variant,
+double-hybrid scaling or λ and ω, the TDDFT response grid).
 Caps to not graded: an `[local]` amplitude threshold at finite `eps`, an
 unconverged orbital optimization (`oo-rimp2`), drCCD fixed point (`drpa`) or
 evGW eigenvalue loop. Warnings: GW and BSE-TDA runs at settings other than

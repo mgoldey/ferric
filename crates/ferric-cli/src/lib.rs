@@ -1272,6 +1272,7 @@ pub fn run(args: Vec<String>) {
             budget_bytes,
             method,
             &rhf_config,
+            &scf_cert,
         ),
         _ => unreachable!(),
     }
@@ -4552,6 +4553,16 @@ fn run_wb97x_l_v_arm(
     println!("  E_c LinLCCD  = {:.10} Hartree", dh.e_c_wft);
     println!("  lambda*E_c   = {:.10} Hartree", dh.e_c_scaled);
     println!("  Total        = {:.10} Hartree", dh.total_energy);
+    // The reference config `run_wb97x_l_v` solved with: its own functional
+    // and the RI-JK default for an omitted aux key.
+    let mut ref_cfg = rhf_config.clone();
+    ref_cfg.xc = Some(ferric_cc::double_hybrid::WB97X_L_V_NAME.to_string());
+    ref_cfg.df_j_aux = config::jk_aux_or_default(&rhf_config.df_j_aux);
+    ref_cfg.df_k_aux = config::jk_aux_or_default(&rhf_config.df_k_aux);
+    let reference = scf_certificate_stamped(mol, &ks, &ref_cfg, None);
+    print_and_note_certificate(&ferric_cc::certificate::wb97x_l_v_certificate(
+        &reference, aux_name, &dh_cfg,
+    ));
 }
 
 /// `method.kind = "b2plyp"` or `"dsd-pbep86"`. MP2-based double hybrids.
@@ -4655,6 +4666,10 @@ fn run_mp2_double_hybrid_arm(
         r.e_corr_scaled, r.c_os, r.c_ss
     );
     println!("  Total        = {:.10} Hartree", r.total_energy);
+    let reference = scf_certificate_stamped(mol, &ks, &ks_cfg, None);
+    print_and_note_certificate(&ferric_mp2::certificate::mp2_double_hybrid_certificate(
+        method, &reference, aux_name, &mp2_cfg,
+    ));
 }
 
 /// `method.kind = "laplace-mp2"`. Extracted verbatim from the former
@@ -7140,22 +7155,9 @@ fn refuse_tddft_xc_without_kernel(cfg: &Config, method: &str) {
 /// The grid line a KS `tda`/`tddft` run prints: the reference SCF and the
 /// f_xc kernel share this grid, and the line says why it was chosen.
 fn tddft_grid_line(xc: &str, g: &ferric_dft::grid::AtomicGridConfig, explicit: bool) -> String {
-    let prune = g
-        .prune
-        .map_or("flat".to_string(), |p| format!("{p:?}").to_lowercase());
-    let cut = g
-        .weight_cut
-        .map_or("no weight cut".to_string(), |w| format!("weight cut {w:e}"));
-    let why = if explicit {
-        "[dft] grid keys"
-    } else if ferric_dft::grid::response_default_grid(Some(xc)).is_some() {
-        "meta-GGA response default"
-    } else {
-        "default"
-    };
     format!(
-        "TDDFT grid ({xc}, SCF and f_xc kernel): ({}, {}), {prune}, {cut} [{why}]",
-        g.n_radial, g.n_angular
+        "TDDFT grid ({xc}, SCF and f_xc kernel): {}",
+        ferric_tddft::certificate::response_grid_label(xc, g, explicit)
     )
 }
 
@@ -7168,6 +7170,7 @@ fn run_tddft_arm(
     budget_bytes: Option<usize>,
     method: &str,
     rhf_config: &RhfConfig,
+    scf_cert: &Certificate,
 ) {
     use ferric_tddft::{TddftConfig, TddftMethod};
 
@@ -7253,6 +7256,12 @@ fn run_tddft_arm(
             f
         );
     }
+    print_and_note_certificate(&ferric_tddft::certificate::tddft_certificate(
+        scf_cert,
+        auxbasis_name,
+        &config,
+        cfg.dft.sets_any_grid_key(),
+    ));
 }
 
 #[cfg(test)]

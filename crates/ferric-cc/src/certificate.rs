@@ -8,6 +8,7 @@ use ferric_core::certificate::Certificate;
 use ferric_mp2::certificate::with_amplitude_threshold;
 
 use crate::ccsd_closed_shell::LadderRoute;
+use crate::double_hybrid::DoubleHybridConfig;
 use crate::linlccd::LadderVariant;
 use crate::{CcConfig, CcResult};
 
@@ -54,6 +55,27 @@ pub fn linlccd_certificate(
         c.push_warning("local LinLCCD PCG did not converge");
     }
     c
+}
+
+/// ωB97X-L-V (`wb97x-l-v`) run with `cfg`: λ-scaled short-range LinLCCD on
+/// the functional's own Kohn-Sham `reference`. The long-range correlation is
+/// VV10 inside the functional, so the amplitudes see only erfc(ωr)/r.
+pub fn wb97x_l_v_certificate(
+    reference: &Certificate,
+    aux: &str,
+    cfg: &DoubleHybridConfig,
+) -> Certificate {
+    Certificate::for_post_scf("wb97x-l-v", reference)
+        .with_ri(aux)
+        .with_frozen_core(cfg.cc.frozen_core)
+        .with_approximation(
+            "double-hybrid",
+            format!(
+                "lambda = {}, omega = {} Bohr^-1, erfc-attenuated LinLCCD",
+                cfg.lambda, cfg.omega
+            ),
+        )
+        .with_approximation("variant", cfg.variant.as_str())
 }
 
 #[cfg(test)]
@@ -113,5 +135,28 @@ mod tests {
         assert_eq!(local.grade, Grade::Ungraded);
         assert_eq!(local.warnings.len(), 2, "{:?}", local.warnings);
         assert!(local.warnings[1].contains("PCG did not converge"));
+    }
+
+    #[test]
+    fn wb97x_l_v_is_proven_narrow_with_lambda_and_omega() {
+        let ks = Certificate::for_method_kind("ksdft");
+        let cfg = DoubleHybridConfig {
+            lambda: 0.5,
+            omega: 0.2,
+            ..Default::default()
+        };
+        let c = wb97x_l_v_certificate(&ks, "cc-pvdz-ri", &cfg);
+        assert_eq!(c.capability, "wb97x-l-v");
+        assert_eq!(c.grade, Grade::ProvenNarrow);
+        let names: Vec<&str> = c.approximations.iter().map(|a| a.name.as_str()).collect();
+        assert_eq!(names, ["ri", "double-hybrid", "variant"]);
+        assert!(c.approximations[1]
+            .detail
+            .starts_with("lambda = 0.5, omega = 0.2 Bohr^-1"));
+        let bad = ks.cap_grade(Grade::Ungraded, "SCF did not converge");
+        assert_eq!(
+            wb97x_l_v_certificate(&bad, "a", &cfg).grade,
+            Grade::Ungraded
+        );
     }
 }

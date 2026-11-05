@@ -12,6 +12,7 @@ use ferric_core::gpu::provenance::PrecisionRecord;
 use ferric_integrals::operator::{Operator, OperatorKind};
 
 use crate::attenuated::AttenuatedMp2Config;
+use crate::double_hybrid::Mp2DoubleHybridConfig;
 use crate::laplace::{SosFormulation, SosMp2Config};
 use crate::lmp2_certificate::{operator_label, Lmp2Certificate};
 use crate::rimp2::RiMp2Config;
@@ -266,6 +267,23 @@ pub fn mp3_certificate(
     ri_correlation_certificate("mp3", reference, aux, frozen_core, op)
 }
 
+/// MP2-based double hybrid (`kind` is `b2plyp` or `dsd-pbep86`) run with
+/// `cfg`: scaled RI-MP2 on the functional's own Kohn-Sham `reference`.
+pub fn mp2_double_hybrid_certificate(
+    kind: &str,
+    reference: &Certificate,
+    aux: &str,
+    cfg: &Mp2DoubleHybridConfig,
+) -> Certificate {
+    Certificate::for_post_scf(kind, reference)
+        .with_ri(aux)
+        .with_frozen_core(cfg.frozen_core)
+        .with_approximation(
+            "spin-component-scaling",
+            format!("c_os = {}, c_ss = {}", cfg.c_os, cfg.c_ss),
+        )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -432,5 +450,41 @@ mod tests {
         let bad = rhf().cap_grade(Grade::Ungraded, "SCF did not converge");
         let m = mp3_certificate(&bad, "a", 0, &op);
         assert_eq!(m.grade, Grade::Ungraded);
+    }
+
+    #[test]
+    fn double_hybrids_are_spike_with_their_scaling() {
+        use crate::double_hybrid::DoubleHybridKind;
+        let ks = Certificate::for_method_kind("ksdft")
+            .with_build(BuildStamp::new("v", "c", Some(false)))
+            .with_approximation("xc-grid", "(75, 302)");
+        for (kind, dk) in [
+            ("b2plyp", DoubleHybridKind::B2plyp),
+            ("dsd-pbep86", DoubleHybridKind::DsdPbep86),
+        ] {
+            let mut cfg = dk.mp2_config();
+            cfg.frozen_core = 1;
+            let c = mp2_double_hybrid_certificate(kind, &ks, "cc-pvdz-ri", &cfg);
+            assert_eq!(c.capability, kind);
+            assert_eq!(c.grade, Grade::Spike, "{kind}");
+            assert_eq!(c.grade, ferric_core::certificate::method_kind_grade(kind));
+            assert_eq!(
+                names(&c),
+                ["scf xc-grid", "ri", "frozen-core", "spin-component-scaling"]
+            );
+            assert_eq!(
+                c.approximations[3].detail,
+                format!("c_os = {}, c_ss = {}", cfg.c_os, cfg.c_ss)
+            );
+        }
+        // An unconverged reference caps the grade below Spike.
+        let bad = ks.cap_grade(Grade::Ungraded, "SCF did not converge");
+        let c = mp2_double_hybrid_certificate(
+            "b2plyp",
+            &bad,
+            "a",
+            &crate::double_hybrid::DoubleHybridKind::B2plyp.mp2_config(),
+        );
+        assert_eq!(c.grade, Grade::Ungraded);
     }
 }

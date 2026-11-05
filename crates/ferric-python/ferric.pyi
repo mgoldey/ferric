@@ -2250,6 +2250,17 @@ class BoysResult:
     @property
     def converged(self) -> bool: ...
     @property
+    def certificate(self) -> dict[str, Any]:
+        """Validation certificate (same fields as ``RhfResult.certificate``):
+        ``capability`` ``"tda"`` or ``"tddft"``, ``grade`` ``"proven_narrow"``
+        capped by the SCF reference's. A KS run lists ``response-grid`` in
+        ``approximations`` (the grid the reference SCF and the f_xc kernel
+        shared, equal to ``grid``, with whether it was the meta-GGA response
+        default 150 x 434 or an explicit ``grid_*`` choice); a meta-GGA run
+        also warns that its roots are grid-sensitive."""
+        ...
+
+    @property
     def iterations(self) -> int: ...
     def c_loc(self) -> NDArray[np.float64]:
         """Localized MO coefficients (n_bf, n_orb)."""
@@ -2290,6 +2301,14 @@ class GammaRhfResult:
     @property
     def iterations(self) -> int: ...
     @property
+    @property
+    def certificate(self) -> dict[str, Any]:
+        """Validation certificate (same fields as ``RhfResult.certificate``):
+        ``capability`` ``"b2plyp"`` or ``"dsd-pbep86"``, ``grade`` ``"spike"``
+        (not compared with any reference code), ``approximations`` the KS
+        reference's (``scf ...``), ``ri``, ``frozen-core`` and
+        ``spin-component-scaling`` (``c_os``, ``c_ss``)."""
+        ...
     def e_nuc(self) -> float:
         """Ewald nuclear repulsion per cell (Hartree)."""
         ...

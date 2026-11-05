@@ -216,3 +216,120 @@ fn unconverged_cell_certificate_warns() {
         .collect();
     assert_eq!(w, ["did not converge (1 iterations)"], "{c}");
 }
+
+fn certificate_note(records: &[serde_json::Value], capability: &str) -> serde_json::Value {
+    records
+        .iter()
+        .find(|r| r["record"] == "certificate" && r["capability"] == capability)
+        .unwrap_or_else(|| panic!("no {capability} certificate record in {records:?}"))
+        .clone()
+}
+
+#[test]
+fn double_hybrids_log_a_spike_certificate_with_their_scaling() {
+    for (kind, c_os, c_ss) in [("b2plyp", "0.27", "0.27"), ("dsd-pbep86", "0.56", "0.29")] {
+        let (stdout, records) = run(
+            kind,
+            &format!("{WATER}[method]\nkind = \"{kind}\"\n[mp2]\nauxbasis = \"cc-pvdz-ri\"\n"),
+        );
+        assert!(
+            stdout.contains(&format!("certificate\n  capability  = {kind}\n")),
+            "{stdout}"
+        );
+        let c = certificate_note(&records, kind);
+        assert_eq!(c["grade"], "spike", "{c}");
+        assert_eq!(c["build"]["commit"], ferric_build_info::COMMIT);
+        let n = names(&c);
+        assert!(n.contains(&"scf xc-grid".to_string()), "{n:?}");
+        assert!(n.contains(&"ri".to_string()), "{n:?}");
+        let scaling = c["approximations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|a| a["name"] == "spin-component-scaling")
+            .unwrap_or_else(|| panic!("no scaling entry: {c}"));
+        assert_eq!(scaling["detail"], format!("c_os = {c_os}, c_ss = {c_ss}"));
+    }
+}
+
+#[test]
+fn wb97x_l_v_logs_its_lambda_omega_and_ks_reference() {
+    let (stdout, records) = run(
+        "wb97x_l_v",
+        &format!(
+            "{WATER}[method]\nkind = \"wb97x-l-v\"\n[dft]\nlambda = 0.5\nomega = 0.2\n\
+             [mp2]\nauxbasis = \"cc-pvdz-ri\"\n"
+        ),
+    );
+    assert!(
+        stdout.contains("certificate\n  capability  = wb97x-l-v\n"),
+        "{stdout}"
+    );
+    let c = certificate_note(&records, "wb97x-l-v");
+    assert_eq!(c["grade"], "proven_narrow", "{c}");
+    let dh = c["approximations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["name"] == "double-hybrid")
+        .unwrap_or_else(|| panic!("no double-hybrid entry: {c}"));
+    assert!(
+        dh["detail"]
+            .as_str()
+            .unwrap()
+            .starts_with("lambda = 0.5, omega = 0.2 Bohr^-1"),
+        "{dh}"
+    );
+    assert!(names(&c).contains(&"scf xc-grid".to_string()), "{c}");
+}
+
+#[test]
+fn tda_and_tddft_log_the_grid_they_ran_on() {
+    // HF reference (CIS): no grid, no kernel.
+    let (_, records) = run(
+        "tda_hf",
+        &format!("{WATER}[method]\nkind = \"tda\"\n[tddft]\nn_roots = 2\n"),
+    );
+    let c = certificate_note(&records, "tda");
+    assert_eq!(c["grade"], "proven_narrow", "{c}");
+    assert!(!names(&c).contains(&"response-grid".to_string()), "{c}");
+
+    // KS TDDFT on the default grid.
+    let (stdout, records) = run(
+        "tddft_pbe",
+        &format!("{WATER}[method]\nkind = \"tddft\"\n[tddft]\nn_roots = 2\nxc = \"PBE\"\n"),
+    );
+    assert!(
+        stdout.contains("certificate\n  capability  = tddft\n"),
+        "{stdout}"
+    );
+    let c = certificate_note(&records, "tddft");
+    assert_eq!(c["grade"], "proven_narrow", "{c}");
+    let g = c["approximations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["name"] == "response-grid")
+        .unwrap_or_else(|| panic!("no response-grid: {c}"));
+    assert!(g["detail"].as_str().unwrap().ends_with("[default]"), "{g}");
+    assert!(c["warnings"].as_array().unwrap().is_empty(), "{c}");
+
+    // A meta-GGA defaults to the finer response grid and says so.
+    let (_, records) = run(
+        "tda_r2scan",
+        &format!("{WATER}[method]\nkind = \"tda\"\n[tddft]\nn_roots = 2\nxc = \"r2SCAN\"\n"),
+    );
+    let c = certificate_note(&records, "tda");
+    let g = c["approximations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["name"] == "response-grid")
+        .unwrap_or_else(|| panic!("no response-grid: {c}"));
+    let d = g["detail"].as_str().unwrap();
+    assert!(
+        d.starts_with("(150, 434)") && d.ends_with("[meta-GGA response default]"),
+        "{d}"
+    );
+    assert_eq!(c["warnings"].as_array().unwrap().len(), 1, "{c}");
+}

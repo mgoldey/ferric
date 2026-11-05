@@ -312,8 +312,11 @@ example `xc="pbe"`); by default it corrects HOMO−2 through LUMO+2. Check
 `run_u_gw` is the open-shell version.
 
 `run_tddft` is closed-shell only. With `functional=...` it includes the
-`(ia|f_xc|jb)` exchange-correlation kernel; meta-GGA, VV10 and range-separated
-functionals are refused because their kernel is not built. With no
+`(ia|f_xc|jb)` exchange-correlation kernel; VV10 and range-separated
+functionals are refused because their kernel is not built. A τ-only meta-GGA
+(SCAN, r2SCAN, TPSS) defaults to a 150 × 434 grid; `result.grid` reports the
+grid the reference SCF and the kernel shared, and `result.certificate` lists it
+as `response-grid`. With no
 `functional`, it is CIS (`method="tda"`) or TDHF (`method="casida"`). Both
 methods match PySCF `TDA`/`TDDFT` to 1e-3 eV on the systems listed in
 [Capabilities and validation](../reference/validation.md#anchors).
@@ -586,7 +589,7 @@ See [QM/MM](./qmmm.md) for a worked example.
 | `run_scs_mp2` | Spin-component-scaled MP2 (defaults c_OS = 6/5, c_SS = 1/3). | `scs-mp2` |
 | `run_scs_mp2_2terfc` | Dual-attenuated SCS-MP2(2terfc); needs the terfc tables. | `scs-mp2-2terfc` |
 | `run_mp2_v` | MP2-V: attenuated MP2 plus damped VV10 nonlocal correlation. | `mp2-v` |
-| `run_double_hybrid` | B2PLYP or DSD-PBEP86 double hybrid. | `b2plyp`, `dsd-pbep86` |
+| `run_double_hybrid` | B2PLYP or DSD-PBEP86 double hybrid; the result carries a `certificate` (Spike). | `b2plyp`, `dsd-pbep86` |
 | `run_laplace_mp2` | Laplace-transform RI-MP2 (default 7 quadrature points). | `laplace-mp2` |
 | `run_laplace_sos_mp2` | Laplace-transform SOS-MP2, `E = c_os · E_OS`; MO, AO or AO-sparse formulations. | `laplace-sos-mp2` |
 | `RiMp2Result` | Result of `run_rimp2` and `run_terfc_rimp2`: `total_energy`, `rhf_energy` (the reference SCF energy, RHF or UHF), `mp2_corr`, `reference`, and `local` (`None` for the exact method, else the local model dict). | |
@@ -597,7 +600,7 @@ See [QM/MM](./qmmm.md) for a worked example.
 | `Mp2VResult` | MP2-V total, attenuated MP2 part and VV10 part. | |
 | `LaplaceMp2Result` | Laplace MP2 total, correlation and spin components. | |
 | `SosMp2Result` | Scaled and unscaled OS energy, `c_os`, `n_quad` and `formulation` echoed back. | |
-| `DoubleHybridResult` | Result of `run_double_hybrid`: `total_energy`, `e_ks`, `e_corr_scaled`, `e_os`, `e_ss`, `c_os`, `c_ss`. | |
+| `DoubleHybridResult` | Result of `run_double_hybrid`: `total_energy`, `e_ks`, `e_corr_scaled`, `e_os`, `e_ss`, `c_os`, `c_ss`, `certificate`. | |
 
 `run_rimp2`, `run_oo_rimp2`, `run_attenuated_rimp2`, `run_terfc_rimp2`,
 `run_scs_mp2`, `run_scs_mp2_2terfc`, `run_mp2_v`, `run_laplace_mp2`,
@@ -672,7 +675,7 @@ reference.
 | `UGwResult` | α and β versions of the `GwResult` fields. | |
 | `BseResult` | Excitation energies and oscillator strengths. | |
 | `TdhfStaticPolarizabilityResult` | Polarizability `tensor` and its isotropic value `iso`. | |
-| `TddftResult` | `excitation_energies`, `oscillator_strengths`, `method`. | |
+| `TddftResult` | `excitation_energies`, `oscillator_strengths`, `method`, `grid`, `certificate`. | |
 
 ### Properties and charges
 
