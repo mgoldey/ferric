@@ -1,6 +1,6 @@
 # Methods overview
 
-What exists, grouped by family. **Maturity varies a great deal** between these.
+What exists, grouped by family. Maturity varies a great deal between these.
 Check the grade and its anchors on
 [Capabilities and validation](../reference/validation.md) before trusting a
 number. To go from a task to a method, start with
@@ -20,15 +20,15 @@ QM/MM embedding is on its own page: [QM/MM](../using/qmmm.md).
 
 ## Exact and local correlation
 
-A correlated calculation is two choices: the **method** (what is computed:
-RI-MP2, dRPA, LinLCCD) and the **approximation** (whether, and how, its
+A correlated calculation is two choices: the method (what is computed:
+RI-MP2, dRPA, LinLCCD) and the approximation (whether, and how, its
 amplitudes are truncated). ferric keeps them apart. `method.kind` (and the
 Python function) names the method, and the method is computed exactly. A
 local approximation is asked for explicitly, with the CLI's
 [`[local]`](../reference/input.md#local) section or the Python `local=` and
 `eps=` keywords, and only `rimp2`, `drpa` and `linlccd` have one.
 
-The one local scheme is the **amplitude threshold**: in the Boys-localized
+The one local scheme is the amplitude threshold: in the Boys-localized
 basis, a pair amplitude whose localized integral is at or below `eps` is
 dropped (single threshold, Wang et al. 2023). Three facts govern its use:
 
@@ -48,7 +48,7 @@ dropped (single threshold, Wang et al. 2023). Three facts govern its use:
   amplitudes and the one-sidedness is measured, not guaranteed.
 
 Riccati, plasmon and PDEP are not approximations of each other: they are
-**algorithms for the same exact dRPA**. The drCCD Riccati solve at `eps = 0`,
+algorithms for the same exact dRPA. The drCCD Riccati solve at `eps = 0`,
 the plasmon formula and full-rank PDEP agree to ≤ 2.6e-14 Ha (H2/STO-3G and
 water/6-31G, PDEP at 64 quadrature points). Which one to use is a cost
 question: see [RPA, GW and excited states](./rpa-gw.md#exact-and-local-drpa).
@@ -85,8 +85,7 @@ charges, density matrices, and NPZ export of ML-ready features.
 
 Known limits and measured negatives are kept in one place,
 [Capabilities and validation: known limits](../reference/validation.md#known-limits-and-negatives),
-so a correction has one row to change. Two are worth knowing before you pick a
-method:
+so a correction has one row to change. Two matter when picking a method:
 
 - **TDHF/RPAx \\( C_6 \\)** stays about 63% low regardless of gap. Use that
   kernel for static polarizabilities only.

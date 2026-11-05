@@ -5,14 +5,14 @@ follow from it.
 
 ## Run it
 
-**Python and the Rust library; there is no CLI section.**
+Python and the Rust library; there is no CLI section.
 
 - `run_cdft(mol, basis_set, constraints, functional=None, ...)` returns a
   `CdftResult`: a constrained UHF solve, or UKS when `functional` names a
   libxc functional other than `"HF"` (`None` and `"HF"`, any case, give UHF).
 - `CdftConstraint(atoms, target, kind="charge")` defines one fragment
   constraint. `atoms` are 0-based atom indices. `target` is the electron
-  **population** on the fragment, the Becke-weighted trace
+  population on the fragment, the Becke-weighted trace
   \\( \mathrm{Tr}[W D] \\), not a net charge: \\( N_\alpha + N_\beta \\) for
   `kind="charge"` and \\( N_\alpha - N_\beta \\) for `kind="spin"`. A neutral
   He atom has a charge population of 2.0; He⁺ has 1.0.
@@ -185,7 +185,7 @@ follows from a non-orthogonal determinant overlap, computed via Löwdin
 biorthogonalization. It is the matrix element governing electron-transfer
 rates in Marcus theory.
 
-## A caveat
+## Tolerance and coupling error
 
 The λ convergence tolerance (`lambda_tol` in Python, `cdft_lambda_tol` in
 Rust, default 1e-5 electrons) affects the coupling: a loosely converged
