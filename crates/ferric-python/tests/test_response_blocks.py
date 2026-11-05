@@ -392,9 +392,8 @@ def test_vv10_polarizability_matches_the_finite_field_dipole():
     # wB97X-V: range-separated exchange + VV10. CPKS gives the response of
     # the SCF density under the Fock map the SCF uses, so the anchor is the
     # finite-field derivative of the SCF dipole, alpha_zz = -d Tr[D z]/dF_z
-    # (H' = +F.r). The energy route -d2E/dF2 equals it only if V_nl were
-    # exactly dE_nl/dD, which it is not (the strict xfail in
-    # test_xc_blocks.py); it is checked loosely below as a magnitude check.
+    # (H' = +F.r). V_nl is exactly dE_nl/dD (test_xc_blocks.py), so the energy
+    # route -d2E/dF2 equals it too; both are checked.
     # ferric builds RSH exchange only via RI-K, so everything is RI-JK.
     mol, bs, ints = _ints(WATER, "6-31g")
     aux = ferric.BasisSet.bundled(AUX)
@@ -423,4 +422,10 @@ def test_vv10_polarizability_matches_the_finite_field_dipole():
     )
     assert abs(alpha_wo[2, 2] - ff) > 10 * abs(alpha[2, 2] - ff)
     energy = _alpha_zz_finite_field(lambda f: run(f).total_energy)
-    assert abs(alpha[2, 2] - energy) < 1e-3 * abs(alpha[2, 2])
+    # Bar 2e-8 relative: the Richardson pair (F, 2F) = (2e-3, 4e-3) a.u. is
+    # noise-limited, not truncation-limited. The same estimate at F = 1e-3
+    # misses by 1.2e-7 absolute and the noise scales as 1/F^2, so 3e-8 absolute
+    # (6.5e-9 relative) at F = 2e-3; the bar is 3x that. Measured 8.7e-10.
+    # With the sigma < 1e-8 gate on d(omega_0)/d(sigma) restored in vv10.rs the
+    # energy route misses by 5.1e-5 and the dipole route by 1.3e-5.
+    assert abs(alpha[2, 2] - energy) < 2e-8 * abs(alpha[2, 2])
