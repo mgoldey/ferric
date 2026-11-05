@@ -61,16 +61,6 @@ pub struct PcmConfig {
     /// 110, or 302). Default 110.
     #[serde(default = "default_lebedev_order")]
     pub lebedev_order: usize,
-    /// Maximum number of outer SCF-coupled PCM re-solves per SCF iteration.
-    /// PCM charges are solved exactly (LAPACK, not a fixed-point loop) from
-    /// the CURRENT density each SCF iteration, so a value of 1 (default) is
-    /// standard practice (PySCF/Psi4 default): the outer SCF/DIIS loop is
-    /// itself the self-consistency driver between q and D. A value > 1 is
-    /// accepted for experimentation but is not required for correctness in
-    /// the current implementation (see the per-iteration `pcm_ctx` hook in
-    /// `crates/ferric-scf/src/rhf.rs` and [`crate::solver::solve_pcm_charges`]).
-    #[serde(default = "default_inner_iters")]
-    pub inner_iters: usize,
     /// Boundary-element S/D matrix formulation. Default
     /// [`SdKind::GaussianSmeared`] (PySCF `pcm.py` convention, added
     /// 2026-07-19 -- see `matrices.rs`'s module doc). [`SdKind::PointCharge`]
@@ -121,9 +111,6 @@ fn default_vdw_scale() -> f64 {
 fn default_lebedev_order() -> usize {
     110
 }
-fn default_inner_iters() -> usize {
-    1
-}
 
 impl Default for PcmConfig {
     /// Defaults to water (ε = 78.4) — the most common PCM solvent.
@@ -139,7 +126,6 @@ impl PcmConfig {
             epsilon: 78.4,
             vdw_scale: default_vdw_scale(),
             lebedev_order: default_lebedev_order(),
-            inner_iters: default_inner_iters(),
             sd_kind: SdKind::default(),
             probe: ProbeKind::default(),
             cavity: None,
@@ -233,7 +219,6 @@ mod tests {
         assert_eq!(c.epsilon, 2.38);
         assert_eq!(c.vdw_scale, w.vdw_scale);
         assert_eq!(c.lebedev_order, w.lebedev_order);
-        assert_eq!(c.inner_iters, w.inner_iters);
     }
 
     #[test]
@@ -271,12 +256,19 @@ mod tests {
     }
 
     #[test]
+    fn removed_inner_iters_key_is_rejected() {
+        // PCM charges are solved exactly from the current density every SCF
+        // iteration; there is no inner loop to configure.
+        let r: Result<PcmConfig, _> = toml::from_str("epsilon = 78.4\ninner_iters = 3\n");
+        assert!(r.is_err(), "inner_iters must be an unknown field");
+    }
+
+    #[test]
     fn defaults_fill_in_when_omitted() {
         let toml_str = "epsilon = 78.4\n";
         let cfg: PcmConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(cfg.vdw_scale, 1.2);
         assert_eq!(cfg.lebedev_order, 110);
-        assert_eq!(cfg.inner_iters, 1);
         assert_eq!(cfg.probe, ProbeKind::Point);
         assert!(cfg.cavity.is_none());
     }

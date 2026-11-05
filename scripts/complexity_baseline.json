@@ -45111,10 +45111,6 @@
     "cc": 1.0,
     "mi": 160.0060069647112
   },
-  "crates/ferric-pcm/src/config.rs::default_inner_iters": {
-    "cc": 1.0,
-    "mi": 137.4860859464573
-  },
   "crates/ferric-pcm/src/config.rs::default_lebedev_order": {
     "cc": 1.0,
     "mi": 137.4860859464573
