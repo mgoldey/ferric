@@ -10932,7 +10932,7 @@ fn run_pdep_rpa(
         eigensolver_conv_thresh: lanczos_conv_thresh_or(eigensolver_conv_thresh, 1e-6),
         quadrature: QuadratureConfig {
             scheme,
-            n_points: n_quad.unwrap_or(40),
+            n_points: n_quad.unwrap_or(20),
             u0: u0.unwrap_or(0.5),
         },
         sternheimer: SternheimerConfig::default(),

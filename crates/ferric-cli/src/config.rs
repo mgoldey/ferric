@@ -1977,13 +1977,10 @@ pub struct RpaCfg {
     pub frozen_core: FrozenCore,
     /// Number of imaginary-frequency quadrature points.
     ///
-    /// NOTE: the fallback when unset is surface-dependent (historical drift,
-    /// kept to avoid silently changing published numbers): 20 for a pdep-rpa
-    /// energy run, 16 for `task = "optimize"` (finite-difference gradients
-    /// re-run the RPA energy 6·natoms times), 40 in the Python
-    /// `run_pdep_rpa` binding. Set it explicitly for reproducibility.
-    /// The scheme fallback is `gauss-legendre` on every surface (see `quadrature`);
-    /// the library `QuadratureConfig::default()` is `minimax` and is not used here.
+    /// The fallback when unset is 20 for a pdep-rpa energy run and 16 for
+    /// `task = "optimize"` (finite-difference gradients re-run the RPA energy
+    /// 6·natoms times). The scheme fallback is `gauss-legendre` on every surface
+    /// (see `quadrature`), matching the library `QuadratureConfig::default()`.
     pub n_quad: Option<usize>,
     /// Imaginary-frequency quadrature scheme. One of:
     ///   "gauss-legendre" | "gl"           — GL nodes mapped via ω = u₀(1+x)/(1−x) (default)

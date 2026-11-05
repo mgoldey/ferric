@@ -42,7 +42,7 @@ The finite maximum $\omega$ keeps $\omega\, t_{\max}$ in the safe range of the c
 
 ### Defaults
 
-$u_0 = 0.5$ Hartree and $n = 20$ points, except where an entry point overrides them. The default scheme depends on the entry point: the CLI and the Python bindings use Gauss-Legendre, the Rust `QuadratureConfig::default()` uses MiniMax. The table is in the `QuadratureConfig` doc comment (`config.rs:393`) and is pinned by the test `quadrature_defaults_by_entry_point`.
+$u_0 = 0.5$ Hartree and $n = 20$ points, except where an entry point overrides them. The default scheme is Gauss-Legendre on the CLI, the Python bindings and the Rust `QuadratureConfig::default()`; only the CLI optimize task (16 points) differs. The table is in the `QuadratureConfig` doc comment and is pinned by the test `quadrature_defaults_by_entry_point`.
 
 ---
 
