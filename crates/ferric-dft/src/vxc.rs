@@ -21,8 +21,19 @@ use ferric_integrals::blas_threads::{opt_in_blas_threads, with_blas_threads};
 use ndarray::{Array1, Array2, Array3, Axis, Zip};
 use rayon::prelude::*;
 
-/// Below this density, libxc-returned v_ρ / v_σ may diverge; skip grid points
-/// to keep V_xc well-conditioned. Matches libxc's internal `dens_threshold` default.
+/// Grid points with ρ at or below this density contribute nothing to V_xc
+/// (E_xc is summed unfloored).
+///
+/// This is NOT libxc's threshold: libxc's LDA/GGA potentials (B88, LYP, PBE,
+/// VWN) are non-zero down to ρ ≈ 1e-14 and vanish only below that. The
+/// slowly decaying B88 potential in the band (1e-14, 1e-10] shifts diffuse
+/// virtual orbitals: water/aug-cc-pVDZ B3LYP on the production grid has
+/// virtual orbital energies up to 3.5e-3 eV and TDA roots up to 2.5e-3 eV
+/// from PySCF on the same grid points; PySCF with this floor applied
+/// reproduces ferric to 1e-7 eV. At 1e-14 the TDA gap falls to 6e-5 eV, but
+/// SCAN's spin-polarized kernel is then no longer α/β-symmetric at equal
+/// spins (also at 1e-12), so the value stays until meta-GGA tails are
+/// handled.
 pub const DENSITY_FLOOR: f64 = 1e-10;
 
 /// The production V_xc density screen: a grid point contributes to a
