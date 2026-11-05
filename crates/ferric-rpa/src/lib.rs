@@ -30,6 +30,8 @@ pub mod ao_rpa;
 pub mod boys_localize;
 /// Memory budget estimation for PDEP-RPA stages.
 pub mod budget;
+/// Result certificates of PDEP-RPA and RS-MP2+RPA runs.
+pub mod certificate;
 /// Per-spin RPA channel (B_ov, orbital energies) for unrestricted dispatch.
 pub mod channel;
 /// PDEP-RPA configuration: eigensolver, quadrature, chi0 backend, sparsity.

@@ -213,6 +213,8 @@
 //! the staging plan.
 
 pub mod budget;
+/// Result certificates of periodic runs.
+pub mod certificate;
 pub mod dense_aft;
 pub mod dft;
 pub mod drpa;

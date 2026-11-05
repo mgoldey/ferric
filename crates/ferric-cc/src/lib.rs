@@ -46,6 +46,8 @@ pub mod ccsd_closed_shell;
 pub mod ccsd_t;
 /// Spin-adapted closed-shell CCSD(T) (spatial orbitals, ~10-40x faster).
 pub mod ccsd_t_closed_shell;
+/// Result certificates of the coupled-cluster methods.
+pub mod certificate;
 /// DLPNO-CCSD (domain-based local pair natural orbital CCSD).
 pub mod dlpno_ccsd;
 /// DLPNO-CCSD amplitude update kernel.

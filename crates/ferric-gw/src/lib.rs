@@ -26,6 +26,8 @@ pub mod bse;
 /// Plane sizes for ferric-gw's large tensors, shared by the pool gates and
 /// their tests so the two cannot drift.
 pub mod budget;
+/// Result certificates of GW, BSE-TDA and RPAx polarizability runs.
+pub mod certificate;
 /// Closed-shell COHSEX (static screened exchange + Coulomb hole).
 pub mod cohsex;
 /// GW method variants: G0W0, evGW0, evGW, COHSEX, sc-COHSEX.

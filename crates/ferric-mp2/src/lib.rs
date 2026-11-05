@@ -14,6 +14,8 @@
 
 /// Boys localization of occupied orbitals.
 pub mod boys;
+/// Result certificates of the MP2-family methods.
+pub mod certificate;
 /// DLPNO-MP2 pair screening on localized occupieds (Fock-coupled amplitude solve).
 pub mod dlpno_localized;
 /// DLPNO-MP2 (domain-based local pair natural orbital MP2).
