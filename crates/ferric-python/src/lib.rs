@@ -1489,6 +1489,21 @@ struct PyGammaRhfResult {
 
 #[pymethods]
 impl PyGammaRhfResult {
+    /// Validation certificate (see `GammaOpenShellResult.certificate`):
+    /// capability `"rhf-gamma"`, `grade` `"ungraded"`.
+    #[getter]
+    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
+        pbc::pbc_certificate_dict(
+            py,
+            "rhf-gamma",
+            &self.jk,
+            self.auxbasis.as_deref(),
+            &self.exxdiv,
+            None,
+            self.converged,
+            self.iterations,
+        )
+    }
     /// Analytic nuclear gradient `dE/dR` (natoms x 3, Hartree/Bohr per cell,
     /// rows in the Molecule's atom order); `None` unless `with_gradient=True`.
     fn gradient<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyArray2<f64>>> {
@@ -5902,10 +5917,20 @@ struct PyRiMp2Result {
     /// SCF; read through the `precision` / `scf_precision` getters.
     precision_rec: ferric_core::gpu::provenance::PrecisionRecord,
     scf_precision_rec: ferric_core::gpu::provenance::PrecisionRecord,
+    certificate_data: ferric_core::certificate::Certificate,
 }
 
 #[pymethods]
 impl PyRiMp2Result {
+    /// Validation certificate of this result (see `RhfResult.certificate`):
+    /// capability `"rimp2"` (`"att-rimp2"` for `run_terfc_rimp2`), the grade
+    /// capped by the reference SCF's, the auxiliary basis, frozen core and
+    /// correlation operator, the reference's approximations as `scf <name>`,
+    /// and for a local run the local-scheme cap and warnings.
+    #[getter]
+    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
+        certificate_dict(py, &self.certificate_data)
+    }
     /// Precision provenance of the MP2 correlation energy (the
     /// `rimp2-energy` kernel): `{"precision": "f64", "counter_scope": "process", "kernels": []}` for an
     /// all-f64 run. See `RhfResult.precision` for the schema.
@@ -6127,7 +6152,15 @@ fn rimp2_energies(
         let mp2 = ri_mp2(mol, &prep, &dfbs, op, &scf, mp2_config)?;
         (mp2.mp2_corr, mp2.total_energy, mp2.precision)
     };
+    let certificate = ferric_mp2::certificate::rimp2_certificate(
+        &stamped_scf_certificate(mol, &scf, rhf_config),
+        &auxbasis.name,
+        mp2_config,
+        &op,
+        &precision,
+    );
     Ok(Rimp2Energies {
+        certificate,
         scf_energy: scf.energy,
         mp2_corr,
         total_energy,
@@ -6143,6 +6176,7 @@ struct Rimp2Energies {
     total_energy: f64,
     precision: ferric_core::gpu::provenance::PrecisionRecord,
     scf_precision: ferric_core::gpu::provenance::PrecisionRecord,
+    certificate: ferric_core::certificate::Certificate,
 }
 
 /// The attenuated-correlation kwargs of `run_rimp2` as the CLI's `[mp2]`
@@ -6401,6 +6435,7 @@ fn run_rimp2_exact(
         jk_auxbasis: jk.aux,
         precision_rec: r.precision,
         scf_precision_rec: r.scf_precision,
+        certificate_data: r.certificate,
     })
 }
 
@@ -6577,6 +6612,16 @@ fn run_rimp2_local(
         &op,
     )
     .with_direct_stats(st.as_ref());
+    let mut certificate_data = ferric_mp2::certificate::local_rimp2_certificate(
+        &cert,
+        &stamped_scf_certificate(&mol.inner, &rhf, rhf_config),
+    );
+    if op.kind != ferric_integrals::operator::OperatorKind::Coulomb {
+        certificate_data = certificate_data.with_approximation(
+            "operator",
+            ferric_mp2::lmp2_certificate::operator_label(&op),
+        );
+    }
     let d = local_dict(py, eps, r.keep_fraction, model.direct.is_some())?;
     set_lmp2_counters(&d, &r, model.reference)?;
     set_certificate(py, &d, &cert)?;
@@ -6597,6 +6642,7 @@ fn run_rimp2_local(
         // `rimp2-energy`: nothing in it can run mixed.
         precision_rec: ferric_core::gpu::provenance::PrecisionRecord::f64(),
         scf_precision_rec: rhf.precision.clone(),
+        certificate_data,
     })
 }
 
@@ -7693,11 +7739,12 @@ fn run_terfc_rimp2(
     let rhf = converged_rhf(&mol.inner, &prep, &rhf_config)?;
     // r0 supplied in Å; convert to Bohr for the operator.
     let r0_bohr = r0.unwrap_or(1.05) * ANGSTROM_TO_BOHR;
+    let terfc_op = Operator::terfc(r0_bohr);
     let mp2 = ri_mp2(
         &mol.inner,
         &prep,
         &dfbs,
-        Operator::terfc(r0_bohr),
+        terfc_op,
         &rhf,
         &RiMp2Config {
             frozen_core: frozen_core.unwrap_or(0),
@@ -7706,6 +7753,14 @@ fn run_terfc_rimp2(
         },
     )
     .map_err(make_err)?;
+    let certificate_data = ferric_mp2::certificate::ri_correlation_certificate(
+        "att-rimp2",
+        &stamped_scf_certificate(&mol.inner, &rhf, &rhf_config),
+        &auxbasis.inner.name,
+        frozen_core.unwrap_or(0),
+        &terfc_op,
+    )
+    .with_precision(&mp2.precision);
     Ok(PyRiMp2Result {
         total_energy: mp2.total_energy,
         rhf_energy: rhf.energy,
@@ -7717,6 +7772,7 @@ fn run_terfc_rimp2(
         jk_auxbasis: jk.aux,
         precision_rec: mp2.precision,
         scf_precision_rec: rhf.precision.clone(),
+        certificate_data,
     })
 }
 
@@ -9353,6 +9409,7 @@ struct PyCcResult {
     /// The RI ladder's `a`-block width (`None` unless `ladder_route == "ri"`).
     #[pyo3(get)]
     ladder_block: Option<usize>,
+    certificate_data: ferric_core::certificate::Certificate,
 }
 
 /// `(ladder_route, ladder_block)` for the Python result.
@@ -9367,6 +9424,14 @@ fn py_ladder_route(r: &ferric_cc::CcResult) -> (Option<String>, Option<usize>) {
 
 #[pymethods]
 impl PyCcResult {
+    /// Validation certificate of this result (see `RhfResult.certificate`):
+    /// the method's grade from the validation page capped by the reference
+    /// SCF's, its settings as `approximations`, the reference's as
+    /// `scf <name>`, and its warnings.
+    #[getter]
+    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
+        certificate_dict(py, &self.certificate_data)
+    }
     fn __repr__(&self) -> String {
         match self.t_correction {
             Some(t) => format!(
@@ -9408,15 +9473,8 @@ fn run_ccd(
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
     let ctx = ParallelContext::default();
-    let rhf = solve_rhf(
-        &ctx,
-        &mol.inner,
-        &prep,
-        op,
-        &bounds,
-        &rhf_config_budgeted(k_builder, budget_bytes_from_gb(memory_budget_gb)),
-    )
-    .map_err(make_err)?;
+    let rhf_config = rhf_config_budgeted(k_builder, budget_bytes_from_gb(memory_budget_gb));
+    let rhf = solve_rhf(&ctx, &mol.inner, &prep, op, &bounds, &rhf_config).map_err(make_err)?;
     if !rhf.converged {
         return Err(make_err(ferric_core::FerricError::ScfConvergence {
             iterations: rhf.iterations,
@@ -9429,11 +9487,19 @@ fn run_ccd(
         ..Default::default()
     };
     let r = run_ccd_inner(&mol.inner, &prep, &dfbs, op, &rhf, &cfg).map_err(make_err)?;
+    let certificate_data = ferric_cc::certificate::cc_certificate(
+        "ccd",
+        &stamped_scf_certificate(&mol.inner, &rhf, &rhf_config),
+        &auxbasis.inner.name,
+        &cfg,
+        &r,
+    );
     Ok(PyCcResult {
         correlation_energy: r.correlation_energy,
         t_correction: None,
         ladder_route: None,
         ladder_block: None,
+        certificate_data,
     })
 }
 
@@ -9487,15 +9553,23 @@ fn run_ccsd(
                     last_energy: rhf.energy,
                 });
             }
-            run_ccsd_cs_inner(&emol, &prep, &dfbs, op, &rhf, &cfg)
+            let reference = stamped_scf_certificate(&emol, &rhf, &rhf_config);
+            Ok((
+                run_ccsd_cs_inner(&emol, &prep, &dfbs, op, &rhf, &cfg)?,
+                reference,
+            ))
         })
         .map_err(make_err)?;
+    let (r, reference) = r;
     let (ladder_route, ladder_block) = py_ladder_route(&r);
     Ok(PyCcResult {
         correlation_energy: r.correlation_energy,
         t_correction: None,
         ladder_route,
         ladder_block,
+        certificate_data: ferric_cc::certificate::cc_certificate(
+            "ccsd", &reference, &eaux.name, &cfg, &r,
+        ),
     })
 }
 
@@ -9541,7 +9615,7 @@ fn run_ccsd_t(
     // i.e. ~26.6 s -> under a second for the pair. The two (T) implementations
     // agree to 1.9e-16 when fed identical amplitudes, and to 7.8e-10..6.9e-7
     // against PySCF's `ccsd_t()` — inside the ~5e-6 Ha RI floor.
-    let (r_cs, e_t) = py
+    let (r_cs, e_t, reference) = py
         .allow_threads(|| -> Result<_, ferric_core::FerricError> {
             let prep = PreparedBasis::new(&emol, &ebasis)?;
             let dfbs = PreparedBasis::new(&emol, &eaux)?;
@@ -9557,7 +9631,8 @@ fn run_ccsd_t(
             }
             let r_cs = run_ccsd_cs_inner(&emol, &prep, &dfbs, op, &rhf, &cfg)?;
             let e_t = run_ccsd_t_cs_inner(&emol, &prep, &dfbs, op, &rhf, &r_cs, &cfg)?;
-            Ok((r_cs, e_t))
+            let reference = stamped_scf_certificate(&emol, &rhf, &rhf_config);
+            Ok((r_cs, e_t, reference))
         })
         .map_err(make_err)?;
     let (ladder_route, ladder_block) = py_ladder_route(&r_cs);
@@ -9566,6 +9641,9 @@ fn run_ccsd_t(
         t_correction: Some(e_t),
         ladder_route,
         ladder_block,
+        certificate_data: ferric_cc::certificate::cc_certificate(
+            "ccsd(t)", &reference, &eaux.name, &cfg, &r_cs,
+        ),
     })
 }
 
@@ -9595,10 +9673,19 @@ struct PyPdepRpaResult {
     quad_freqs: Vec<f64>,
     quad_weights: Vec<f64>,
     eigenvalues_freq: Array2<f64>,
+    certificate_data: ferric_core::certificate::Certificate,
 }
 
 #[pymethods]
 impl PyPdepRpaResult {
+    /// Validation certificate of this result (see `RhfResult.certificate`):
+    /// the method's grade from the validation page capped by the reference
+    /// SCF's, its settings as `approximations`, the reference's as
+    /// `scf <name>`, and its warnings.
+    #[getter]
+    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
+        certificate_dict(py, &self.certificate_data)
+    }
     /// Static dielectric eigenvalues λ_α(0), length M (sorted descending).
     /// Plot `λ - 1` vs α on a log scale for a scree plot of the PDEP basis.
     #[getter]
@@ -9773,7 +9860,14 @@ fn run_pdep_rpa(
              eigenvalues_static/eigenpotentials are not verified to residual tolerance)"
         );
     }
+    let certificate_data = ferric_rpa::certificate::pdep_rpa_certificate(
+        &stamped_scf_certificate(&mol.inner, &rhf, &scf_config),
+        &auxbasis.inner.name,
+        &cfg,
+        &r,
+    );
     Ok(PyPdepRpaResult {
+        certificate_data,
         rhf_energy: rhf.energy,
         e_rpa: r.e_rpa,
         total_energy: rhf.energy + r.e_rpa,
@@ -9826,10 +9920,19 @@ struct PyGwResult {
     /// `max_ev_iter`. Always `true` for G0W0/COHSEX.
     #[pyo3(get)]
     outer_converged: bool,
+    certificate_data: ferric_core::certificate::Certificate,
 }
 
 #[pymethods]
 impl PyGwResult {
+    /// Validation certificate of this result (see `RhfResult.certificate`):
+    /// the method's grade from the validation page capped by the reference
+    /// SCF's, its settings as `approximations`, the reference's as
+    /// `scf <name>`, and its warnings.
+    #[getter]
+    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
+        certificate_dict(py, &self.certificate_data)
+    }
     #[getter]
     fn eps_mf<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
         PyArray1::from_slice(py, &self.eps_mf)
@@ -9942,6 +10045,9 @@ fn run_gw(
         let lr =
             ferric_scf::ladder::solve_rhf_ladder(&ctx, &mol.inner, &prep, op, &bounds, &ladder)
                 .map_err(make_err)?;
+        if let Some(r) = ladder.get(lr.rung_reached) {
+            cfg = r.config.clone();
+        }
         let scf = lr.result;
         if !scf.converged {
             return Err(make_err(ferric_core::FerricError::ScfConvergence {
@@ -10050,7 +10156,15 @@ fn run_gw(
              those QP energies are best-effort"
         );
     }
+    let certificate_data = ferric_gw::certificate::gw_certificate(
+        &stamped_scf_certificate(&mol.inner, &scf, &cfg),
+        &auxbasis.inner.name,
+        &pdep_cfg,
+        &gw_cfg,
+        &r,
+    );
     Ok(PyGwResult {
+        certificate_data,
         ref_energy: scf.energy,
         mo_indices: r.mo_indices,
         eps_mf: r.eps_mf.to_vec(),
@@ -10414,10 +10528,19 @@ struct PyBseResult {
     /// unaffected, and the measured effect of these MOs on the lowest
     /// excitations is ~4 orders of magnitude below their own uncertainty.
     qp_suspect_mos: Vec<usize>,
+    certificate_data: ferric_core::certificate::Certificate,
 }
 
 #[pymethods]
 impl PyBseResult {
+    /// Validation certificate of this result (see `RhfResult.certificate`):
+    /// the method's grade from the validation page capped by the reference
+    /// SCF's, its settings as `approximations`, the reference's as
+    /// `scf <name>`, and its warnings.
+    #[getter]
+    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
+        certificate_dict(py, &self.certificate_data)
+    }
     #[getter]
     fn omega<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
         PyArray1::from_slice(py, &self.omega)
@@ -10550,7 +10673,14 @@ fn run_bse_tda(
 
     let r =
         run_bse_tda_inner(&mol.inner, &prep, &dfbs, op, &scf, &pdep_cfg, fc).map_err(make_err)?;
+    let certificate_data = ferric_gw::certificate::bse_tda_certificate(
+        &stamped_scf_certificate(&mol.inner, &scf, &cfg),
+        &auxbasis.inner.name,
+        &pdep_cfg,
+        &r,
+    );
     Ok(PyBseResult {
+        certificate_data,
         nocc: r.nocc,
         nvir: r.nvir,
         omega: r.omega,

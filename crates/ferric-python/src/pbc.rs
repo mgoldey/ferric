@@ -1016,6 +1016,22 @@ struct PyGammaOpenShellResult {
 
 #[pymethods]
 impl PyGammaOpenShellResult {
+    /// Validation certificate (schema of `RhfResult.certificate`). Periodic
+    /// capabilities have no validation-page row, so `grade` is `"ungraded"`;
+    /// `approximations` record the J/K route, `exxdiv` and the k-point mesh.
+    #[getter]
+    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
+        pbc_certificate_dict(
+            py,
+            &format!("{}-gamma", self.method),
+            &self.jk,
+            self.auxbasis.as_deref(),
+            &self.exxdiv,
+            None,
+            self.converged,
+            self.iterations,
+        )
+    }
     /// Analytic nuclear gradient `dE/dR` (natoms x 3, Hartree/Bohr per
     /// cell, rows in the Molecule's atom order) of the final SCF stage;
     /// `None` unless `with_gradient=True`.
@@ -1781,6 +1797,22 @@ struct PyGammaRksResult {
 
 #[pymethods]
 impl PyGammaRksResult {
+    /// Validation certificate (schema of `RhfResult.certificate`). Periodic
+    /// capabilities have no validation-page row, so `grade` is `"ungraded"`;
+    /// `approximations` record the J/K route, `exxdiv` and the k-point mesh.
+    #[getter]
+    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
+        pbc_certificate_dict(
+            py,
+            "rks-gamma",
+            &self.jk,
+            self.auxbasis.as_deref(),
+            &self.exxdiv,
+            None,
+            self.converged,
+            self.iterations,
+        )
+    }
     /// Analytic nuclear gradient `dE/dR` (natoms x 3, Hartree/Bohr per
     /// cell); `None` unless `with_gradient=True`.
     fn gradient<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyArray2<f64>>> {
@@ -2065,6 +2097,22 @@ struct PyGammaCorrelationResult {
 
 #[pymethods]
 impl PyGammaCorrelationResult {
+    /// Validation certificate (schema of `RhfResult.certificate`). Periodic
+    /// capabilities have no validation-page row, so `grade` is `"ungraded"`;
+    /// `approximations` record the J/K route, `exxdiv` and the k-point mesh.
+    #[getter]
+    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
+        pbc_certificate_dict(
+            py,
+            &format!("{}-gamma", self.method),
+            &self.jk,
+            self.auxbasis.as_deref(),
+            &self.exxdiv,
+            None,
+            self.converged,
+            self.iterations,
+        )
+    }
     /// Stage timings and counters (see `timings_dict`); the correlation
     /// step is the `"gamma MP2"` / `"gamma dRPA"` stage.
     #[getter]
@@ -2466,6 +2514,22 @@ struct PyKpointScfResult {
 
 #[pymethods]
 impl PyKpointScfResult {
+    /// Validation certificate (schema of `RhfResult.certificate`). Periodic
+    /// capabilities have no validation-page row, so `grade` is `"ungraded"`;
+    /// `approximations` record the J/K route, `exxdiv` and the k-point mesh.
+    #[getter]
+    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
+        pbc_certificate_dict(
+            py,
+            &format!("{}-kpts", self.method),
+            &self.jk,
+            self.auxbasis.as_deref(),
+            &self.exxdiv,
+            Some((self.mesh, self.centring.as_str())),
+            self.converged,
+            self.iterations,
+        )
+    }
     /// Analytic nuclear gradient `dE/dR` (natoms x 3, Hartree/Bohr per cell,
     /// rows in the Molecule's atom order; the force on ONE copy of each atom
     /// in the supercell of the mesh) of the converged SCF (UHF: the final
@@ -3159,6 +3223,22 @@ struct PyKpointRksResult {
 
 #[pymethods]
 impl PyKpointRksResult {
+    /// Validation certificate (schema of `RhfResult.certificate`). Periodic
+    /// capabilities have no validation-page row, so `grade` is `"ungraded"`;
+    /// `approximations` record the J/K route, `exxdiv` and the k-point mesh.
+    #[getter]
+    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
+        pbc_certificate_dict(
+            py,
+            "rks-kpts",
+            &self.jk,
+            self.auxbasis.as_deref(),
+            &self.exxdiv,
+            Some((self.mesh, self.centring.as_str())),
+            self.converged,
+            self.iterations,
+        )
+    }
     /// Analytic stress `σ_ab = (1/Ω) dE/dε_ab` (3 x 3, Hartree/Bohr³; strain
     /// of the lattice rows AND the atoms, fixed fractional coordinates;
     /// pressure = -tr(σ)/3), the XC term on the energy's own grid. Not
@@ -3896,6 +3976,22 @@ struct PyKpointCorrelationResult {
 
 #[pymethods]
 impl PyKpointCorrelationResult {
+    /// Validation certificate (schema of `RhfResult.certificate`). Periodic
+    /// capabilities have no validation-page row, so `grade` is `"ungraded"`;
+    /// `approximations` record the J/K route, `exxdiv` and the k-point mesh.
+    #[getter]
+    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
+        pbc_certificate_dict(
+            py,
+            &format!("{}-kpts", self.method),
+            &self.jk,
+            self.auxbasis.as_deref(),
+            &self.exxdiv,
+            Some((self.mesh, self.centring.as_str())),
+            self.converged,
+            self.iterations,
+        )
+    }
     /// Coarse stage timings (`"k hcore"`, `"k J/K build"`, `"k SCF"`,
     /// dense: `"k correlation pair tensors"`, then `"k MP2"` / `"k dRPA"`)
     /// and the RS-GDF counters (see `timings_dict`).
@@ -4359,4 +4455,28 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyKpointRksResult>()?;
     m.add_class::<PyKpointCorrelationResult>()?;
     Ok(())
+}
+
+/// The periodic certificate (`ferric_pbc::certificate::pbc_certificate`)
+/// stamped with this build, as a dict.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn pbc_certificate_dict(
+    py: Python<'_>,
+    capability: &str,
+    jk: &str,
+    auxbasis: Option<&str>,
+    exxdiv: &str,
+    mesh: Option<((usize, usize, usize), &str)>,
+    converged: bool,
+    iterations: usize,
+) -> PyResult<PyObject> {
+    let c = ferric_pbc::certificate::pbc_certificate(
+        capability, jk, auxbasis, exxdiv, mesh, converged, iterations,
+    )
+    .with_build(ferric_core::certificate::BuildStamp::new(
+        ferric_build_info::VERSION,
+        ferric_build_info::COMMIT,
+        ferric_build_info::DIRTY,
+    ));
+    crate::certificate_dict(py, &c)
 }

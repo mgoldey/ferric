@@ -1431,6 +1431,14 @@ class RiMp2Result:
     """Result of a run_rimp2 calculation."""
 
     @property
+    def certificate(self) -> dict[str, Any]:
+        """Validation certificate (schema of ``RhfResult.certificate``):
+        ``capability`` (``"rimp2"``; ``"att-rimp2"`` for ``run_terfc_rimp2``), its grade capped by the reference SCF's,
+        the method's settings in ``approximations`` and the reference's as
+        ``"scf <name>"``, and ``warnings``."""
+        ...
+
+    @property
     def precision(self) -> dict[str, Any]:
         """Precision provenance: ``{"precision": "f64" | "mixed",
         "counter_scope": "process", "kernels": [...]}``, one kernel entry per
@@ -1835,6 +1843,14 @@ class CcResult:
     """Result of a coupled-cluster calculation."""
 
     @property
+    def certificate(self) -> dict[str, Any]:
+        """Validation certificate (schema of ``RhfResult.certificate``):
+        ``capability`` (``"ccd"``, ``"ccsd"`` or ``"ccsd(t)"``), its grade capped by the reference SCF's,
+        the method's settings in ``approximations`` and the reference's as
+        ``"scf <name>"``, and ``warnings``."""
+        ...
+
+    @property
     def correlation_energy(self) -> float: ...
     @property
     def t_correction(self) -> float | None: ...
@@ -1849,6 +1865,14 @@ class CcResult:
 
 class PdepRpaResult:
     """Result of a PDEP-RPA calculation."""
+
+    @property
+    def certificate(self) -> dict[str, Any]:
+        """Validation certificate (schema of ``RhfResult.certificate``):
+        ``capability`` (``"pdep-rpa"``), its grade capped by the reference SCF's,
+        the method's settings in ``approximations`` and the reference's as
+        ``"scf <name>"``, and ``warnings``."""
+        ...
 
     @property
     def rhf_energy(self) -> float: ...
@@ -1896,6 +1920,14 @@ class PdepRpaResult:
 
 class GwResult:
     """Result of a closed-shell GW calculation."""
+
+    @property
+    def certificate(self) -> dict[str, Any]:
+        """Validation certificate (schema of ``RhfResult.certificate``):
+        ``capability`` (``"gw"``; a run off ``n_quad = 100``, ``trunc_thresh = 0`` warns), its grade capped by the reference SCF's,
+        the method's settings in ``approximations`` and the reference's as
+        ``"scf <name>"``, and ``warnings``."""
+        ...
 
     @property
     def ref_energy(self) -> float: ...
@@ -1982,6 +2014,14 @@ class UGwResult:
 
 class BseResult:
     """Result of a BSE-TDA calculation."""
+
+    @property
+    def certificate(self) -> dict[str, Any]:
+        """Validation certificate (schema of ``RhfResult.certificate``):
+        ``capability`` (``"bse-tda"``), its grade capped by the reference SCF's,
+        the method's settings in ``approximations`` and the reference's as
+        ``"scf <name>"``, and ``warnings``."""
+        ...
 
     @property
     def nocc(self) -> int: ...
@@ -2112,6 +2152,14 @@ class BoysResult:
 
 class GammaRhfResult:
     """Result of run_rhf_gamma (closed-shell Gamma-point periodic RHF)."""
+
+    @property
+    def certificate(self) -> dict[str, Any]:
+        """Validation certificate (schema of ``RhfResult.certificate``):
+        ``capability`` ``"<method>-gamma"`` or ``"<method>-kpts"``, ``grade``
+        ``"ungraded"`` (no periodic row on the validation page), and
+        ``approximations`` for the J/K route, ``exxdiv`` and the k-point mesh."""
+        ...
 
     @property
     def timings(self) -> dict[str, Any]:
@@ -2272,6 +2320,14 @@ class GammaOpenShellResult:
     """Result of run_uhf_gamma / run_rohf_gamma / run_uks_gamma / run_roks_gamma."""
 
     @property
+    def certificate(self) -> dict[str, Any]:
+        """Validation certificate (schema of ``RhfResult.certificate``):
+        ``capability`` ``"<method>-gamma"`` or ``"<method>-kpts"``, ``grade``
+        ``"ungraded"`` (no periodic row on the validation page), and
+        ``approximations`` for the J/K route, ``exxdiv`` and the k-point mesh."""
+        ...
+
+    @property
     def timings(self) -> dict[str, Any]:
         """Stage timings and counters (observation only; energies are unaffected):
         {"wall_s": float, "cpu_s": float | None, "unattributed_wall_s": float,
@@ -2353,6 +2409,14 @@ class GammaRksResult:
     """Result of run_rks_gamma (closed-shell Gamma-point periodic RKS)."""
 
     @property
+    def certificate(self) -> dict[str, Any]:
+        """Validation certificate (schema of ``RhfResult.certificate``):
+        ``capability`` ``"<method>-gamma"`` or ``"<method>-kpts"``, ``grade``
+        ``"ungraded"`` (no periodic row on the validation page), and
+        ``approximations`` for the J/K route, ``exxdiv`` and the k-point mesh."""
+        ...
+
+    @property
     def timings(self) -> dict[str, Any]:
         """Stage timings and counters (observation only; energies are unaffected):
         {"wall_s": float, "cpu_s": float | None, "unattributed_wall_s": float,
@@ -2409,6 +2473,14 @@ class GammaCorrelationResult:
     """Result of run_mp2_gamma / run_drpa_gamma (Gamma RHF + correlation)."""
 
     @property
+    def certificate(self) -> dict[str, Any]:
+        """Validation certificate (schema of ``RhfResult.certificate``):
+        ``capability`` ``"<method>-gamma"`` or ``"<method>-kpts"``, ``grade``
+        ``"ungraded"`` (no periodic row on the validation page), and
+        ``approximations`` for the J/K route, ``exxdiv`` and the k-point mesh."""
+        ...
+
+    @property
     def timings(self) -> dict[str, Any]:
         """Stage timings and counters (observation only; energies are unaffected):
         {"wall_s": float, "cpu_s": float | None, "unattributed_wall_s": float,
@@ -2460,6 +2532,14 @@ class GammaCorrelationResult:
 
 class KpointRksResult:
     """Result of run_rks_kpts (closed-shell k-point RKS, energies per cell)."""
+
+    @property
+    def certificate(self) -> dict[str, Any]:
+        """Validation certificate (schema of ``RhfResult.certificate``):
+        ``capability`` ``"<method>-gamma"`` or ``"<method>-kpts"``, ``grade``
+        ``"ungraded"`` (no periodic row on the validation page), and
+        ``approximations`` for the J/K route, ``exxdiv`` and the k-point mesh."""
+        ...
 
     @property
     def timings(self) -> dict[str, Any]: ...
@@ -2522,6 +2602,14 @@ class KpointScfResult:
     run_rohf_kpts (energies per cell). method is "rhf", "uhf", "uks", "roks"
     or "rohf"; functional, e_xc, exact_exchange_fraction, n_grid_points and
     electrons_on_grid are set for the Kohn-Sham methods (uks, roks) only."""
+
+    @property
+    def certificate(self) -> dict[str, Any]:
+        """Validation certificate (schema of ``RhfResult.certificate``):
+        ``capability`` ``"<method>-gamma"`` or ``"<method>-kpts"``, ``grade``
+        ``"ungraded"`` (no periodic row on the validation page), and
+        ``approximations`` for the J/K route, ``exxdiv`` and the k-point mesh."""
+        ...
 
     @property
     def functional(self) -> str | None: ...
@@ -2626,6 +2714,14 @@ class KpointScfResult:
 
 class KpointCorrelationResult:
     """Result of run_mp2_kpts / run_drpa_kpts (k-point RHF + correlation)."""
+
+    @property
+    def certificate(self) -> dict[str, Any]:
+        """Validation certificate (schema of ``RhfResult.certificate``):
+        ``capability`` ``"<method>-gamma"`` or ``"<method>-kpts"``, ``grade``
+        ``"ungraded"`` (no periodic row on the validation page), and
+        ``approximations`` for the J/K route, ``exxdiv`` and the k-point mesh."""
+        ...
 
     @property
     def timings(self) -> dict[str, Any]:
