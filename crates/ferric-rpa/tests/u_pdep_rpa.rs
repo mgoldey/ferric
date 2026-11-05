@@ -866,7 +866,7 @@ fn u_singlet_matches_closed_shell_for_each_option_h2o() {
             rc.e_rpa, ru.e_rpa
         );
         assert!(
-            de <= 1e-8,
+            de <= 1e-10,
             "{label}: closed {} vs open {} dev {de:.2e}",
             rc.e_rpa,
             ru.e_rpa
@@ -878,7 +878,7 @@ fn u_singlet_matches_closed_shell_for_each_option_h2o() {
         if cfg.run_diagnostics {
             let (dc, du) = (rc.e_rpa_dft_diag.unwrap(), ru.e_rpa_dft_diag.unwrap());
             assert!(
-                (dc - du).abs() <= 1e-8,
+                (dc - du).abs() <= 1e-10,
                 "diagnostic closed {dc} vs open {du}"
             );
         }
