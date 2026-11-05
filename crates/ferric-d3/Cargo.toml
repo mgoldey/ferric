@@ -11,3 +11,6 @@ workspace = true
 [dependencies]
 ferric-core = { path = "../ferric-core" }
 ndarray = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

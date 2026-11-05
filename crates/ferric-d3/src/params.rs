@@ -12,11 +12,17 @@
 
 use ferric_core::FerricError;
 
-/// The four Becke-Johnson rational-damping parameters.
+/// The four Becke-Johnson rational-damping parameters, plus the scale `s9`
+/// of the Axilrod-Teller-Muto three-body term.
 ///
 /// ```text
 /// E = - sum_{A<B} [ s6 C6/(R^6 + f^6) + s8 C8/(R^8 + f^8) ],  f = a1 R0 + a2
+///     + s9 * E_ATM
 /// ```
+///
+/// `s9 = 0.0` switches the three-body term off and reproduces the two-body
+/// energy and gradient bit for bit; `s9 = 1.0` is "D3(BJ)-ATM". The three-body
+/// damping does not use `a1`/`a2` (see the crate docs).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct D3Params {
     /// Scaling of the `C6/R^6` term. Almost always 1.0 for a non-double-hybrid.
@@ -27,6 +33,8 @@ pub struct D3Params {
     pub a1: f64,
     /// Offset of the BJ damping radius, in Bohr.
     pub a2: f64,
+    /// Scaling of the Axilrod-Teller-Muto three-body term. `0.0` = off.
+    pub s9: f64,
 }
 
 /// D3(BJ) parameters for a named exchange-correlation functional.
@@ -34,13 +42,28 @@ pub struct D3Params {
 /// The lookup is case-insensitive and tolerates the `-`/`_` spelling
 /// differences between ferric's functional names and the D3 literature's.
 ///
+/// The returned set has `s9 = 0.0` (three-body term OFF). That matches the
+/// reference implementations for a named functional: simple-dftd3's
+/// `load_rational_damping(method, atm=False)` (the Python
+/// `RationalDampingParam(method=...)` default), its CLI without `--atm`, and
+/// Grimme's original `dftd3` program without `-abc`. Set `s9 = 1.0` on the
+/// result for D3(BJ)-ATM.
+///
 /// Returns an error -- never a default or a zeroed parameter set -- for a
 /// functional that has no published D3(BJ) fit. Silently substituting some
 /// other functional's parameters would produce a plausible-looking number that
 /// is not the D3(BJ) correction for the functional the user asked for.
 pub fn d3bj_params_for_functional(name: &str) -> Result<D3Params, FerricError> {
     let key = name.to_ascii_lowercase().replace(['-', '_', ' '], "");
-    let p = |s6, s8, a1, a2| Some(D3Params { s6, s8, a1, a2 });
+    let p = |s6, s8, a1, a2| {
+        Some(D3Params {
+            s6,
+            s8,
+            a1,
+            a2,
+            s9: 0.0,
+        })
+    };
     let found = match key.as_str() {
         // Grimme, Ehrlich, Goerigk, JCC 32, 1456 (2011), Table 1.
         "blyp" => p(1.0, 2.6996, 0.4298, 4.2359),
@@ -126,6 +149,10 @@ mod tests {
                 p.a1 >= 0.0 && p.a1 < 1.0,
                 "{name}: a1 out of range: {}",
                 p.a1
+            );
+            assert_eq!(
+                p.s9, 0.0,
+                "{name}: a named functional must load with ATM off"
             );
             assert!(
                 p.a2 > 1.0 && p.a2 < 8.0,

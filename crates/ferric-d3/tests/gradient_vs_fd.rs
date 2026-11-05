@@ -40,6 +40,7 @@ fn params() -> D3Params {
         s8: 1.2177,
         a1: 0.4145,
         a2: 4.8593,
+        s9: 0.0,
     }
 }
 
@@ -431,4 +432,76 @@ fn an_all_ghost_molecule_is_refused() {
         err.to_string().contains("ghost"),
         "the error must name the cause, got: {err}"
     );
+}
+
+/// Compact argon trimer (equilateral, 7 Bohr): the three-body term with
+/// near-zero coordination, so it isolates the explicit triple derivative.
+fn ar3() -> (Vec<u8>, Vec<[f64; 3]>) {
+    (
+        vec![18, 18, 18],
+        vec![
+            [0.0, 0.0, 0.0],
+            [7.0, 0.0, 0.0],
+            [3.5, 6.062177826491071, 0.0],
+        ],
+    )
+}
+
+/// The Axilrod-Teller-Muto gradient, alone (`s6 = s8 = 0, s9 = 1`) and inside
+/// the full D3(BJ)-ATM energy, against central FD of `d3bj_energy`.
+///
+/// The three-body gradient is 1e-9..1e-6 Ha/Bohr here, so the full-energy
+/// 1e-7 bar of `analytic_gradient_matches_finite_difference` cannot see it;
+/// the pure three-body case is held to 1e-7 RELATIVE to its largest
+/// component instead (measured: <= 4e-8 relative). The mutation record for
+/// this bar is in `theory.md`.
+#[test]
+fn atm_gradient_matches_finite_difference() {
+    let pure = D3Params {
+        s6: 0.0,
+        s8: 0.0,
+        a1: 0.4145,
+        a2: 4.8593,
+        s9: 1.0,
+    };
+    let full = D3Params {
+        s9: 1.0,
+        ..params()
+    };
+    for (name, (numbers, coords)) in [
+        ("Ar3", ar3()),
+        ("water", water()),
+        ("branched C4H4", branched()),
+        ("mixed CF2ONH", mixed()),
+    ] {
+        for (label, p, rel) in [("ATM only", pure, true), ("D3(BJ)-ATM", full, false)] {
+            let analytic = d3bj_gradient(&numbers, &coords, &p).expect("analytic");
+            let h = 1e-4;
+            let mut numeric = vec![[0.0f64; 3]; numbers.len()];
+            for i in 0..numbers.len() {
+                for a in 0..3 {
+                    let (mut plus, mut minus) = (coords.clone(), coords.clone());
+                    plus[i][a] += h;
+                    minus[i][a] -= h;
+                    let ep = d3bj_energy(&numbers, &plus, &p).unwrap();
+                    let em = d3bj_energy(&numbers, &minus, &p).unwrap();
+                    numeric[i][a] = (ep - em) / (2.0 * h);
+                }
+            }
+            let d = max_abs_diff(&analytic, &numeric);
+            let gmax = analytic
+                .iter()
+                .flatten()
+                .fold(0.0f64, |m, v| m.max(v.abs()));
+            println!("{name:16} {label:11} max|g| = {gmax:.3e}  max|analytic - FD| = {d:.3e}");
+            let tol = if rel { 1e-7 * gmax } else { 1e-7 };
+            assert!(
+                d < tol,
+                "{name} {label}: analytic vs FD {d:.3e} > {tol:.3e}"
+            );
+            // Reachability: a vanishing three-body gradient would make the
+            // relative bar meaningless.
+            assert!(gmax > 1e-10, "{name} {label}: gradient {gmax:e} too small");
+        }
+    }
 }

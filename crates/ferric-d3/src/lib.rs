@@ -34,41 +34,50 @@
 //!
 //! `C8_AB = 3 * C6_AB * sqrt(Q_A * Q_B)` with `Q_A = sqrt(Z_A) * <r^4>/<r^2>_A / 2`.
 //!
-//! # Scope (be precise about what this does and does not do)
+//! # Three-body term (Axilrod-Teller-Muto, `s9`)
 //!
-//! Implemented and validated: the **two-body** D3(BJ) energy, for elements
-//! Z = 1..103, for any molecular geometry, and its **analytic nuclear
-//! gradient** ([`d3bj_gradient`], [`d3bj_gradient_for_molecule`]), including
-//! the coordination-number chain rule. The gradient is checked against central
-//! finite differences of [`d3bj_energy`] to 1e-7 Hartree/Bohr on Ar2, water, a
-//! branched hydrocarbon and a mixed-element system (`tests/gradient_vs_fd.rs`);
-//! it is NOT compared to an external code's gradient. The CLI uses it for
-//! `task = "optimize"` with `[dft] dispersion`; `task = "frequencies"` is
-//! refused (the finite-difference Hessian built from it is unvalidated).
-//!
-//! NOT implemented: the Axilrod-Teller-Muto three-body term (`s9`), second
-//! derivatives, and periodic boundary conditions. These are absent rather than
-//! approximated -- there is no `s9` knob that silently does nothing.
-//!
-//! ## Size of the omitted three-body term (MEASURED, not estimated)
-//!
-//! The ATM term GROWS with system size, so a single small-molecule number
-//! would understate it. Measured against simple-dftd3 1.6.0 as a fraction of
-//! the two-body energy (`tests/vs_reference_dftd3.rs`, worst functional of
-//! PBE/PBE0/BLYP/B3LYP per row):
+//! With `D3Params::s9 != 0` the energy gains the ATM term
 //!
 //! ```text
-//!   water        0.0001 %      argon dimer  0.0000 %
-//!   methane      0.0039 %      Br2          0.0000 %
-//!   water dimer  0.0458 %      benzene      0.1003 %
+//! E_ATM = s9 * sum_{A>B>C} sqrt(C6_AB C6_AC C6_BC) * fdmp * (3 cos(a) cos(b) cos(c) + 1) / (R_AB R_BC R_AC)^3
+//! fdmp  = 1 / (1 + 6 (r0 / (R_AB R_BC R_AC))^(16/3)),   r0 = prod over the 3 pairs of (4/3) R0vdw_pair
 //! ```
 //!
-//! So: negligible for an isolated small molecule, but already 0.1% at benzene
-//! and TRENDING UPWARD with atom count. Do not assume it stays negligible for
-//! a drug-sized ligand or a stacked complex -- that regime has NOT been
-//! measured here, and the trend above is the reason to doubt an extrapolation
-//! rather than to trust one. For ranking conformers of one molecule the term
-//! largely cancels; for absolute binding energies of large systems it may not.
+//! exactly as simple-dftd3 defines it for rational damping: zero damping with
+//! `rs9 = 4/3` ([`ATM_RS9`]), exponent `alp + 2 = 16` ([`ATM_ALPHA`]), the
+//! tabulated pairwise vdW radii (`tables::VDW_RAD`), and the CN-dependent
+//! `C6` of the two-body term. The BJ `a1`/`a2` do not enter. The gradient
+//! includes the CN chain rule through all three `C6`.
+//!
+//! **Default: off.** [`d3bj_params_for_functional`] returns `s9 = 0.0`, which
+//! is what the references use for a named functional (simple-dftd3 CLI without
+//! `--atm`, its API `load_rational_damping(atm=False)`, Grimme's `dftd3`
+//! without `-abc`). `s9 = 0.0` skips the triple sum entirely, so the two-body
+//! energy and gradient are bit-for-bit unchanged. Only simple-dftd3's
+//! explicit-parameter constructor defaults to `s9 = 1.0`.
+//!
+//! Differences from the reference: no real-space cutoff (simple-dftd3 drops
+//! triples with any distance > 40 Bohr and pairs > 60 Bohr; ferric sums all),
+//! and the triple sum is O(N^3).
+//!
+//! Measured size of the three-body term (simple-dftd3 1.6.0, independent of
+//! the functional's BJ parameters): water 2.3e-10 Ha, methane 3.6e-8, water
+//! dimer 5.1e-7, benzene 9.4e-6 Ha (0.10 % of the PBE0 two-body energy).
+//!
+//! # Scope
+//!
+//! Implemented and validated: the two-body D3(BJ) energy and, optionally, the
+//! ATM three-body term, for elements Z = 1..103, any molecular geometry, and
+//! the analytic nuclear gradient of both ([`d3bj_gradient`],
+//! [`d3bj_gradient_for_molecule`]) including the coordination-number chain
+//! rule. The CLI uses it for `task = "optimize"` with `[dft] dispersion`;
+//! `task = "frequencies"` is refused (the finite-difference Hessian built from
+//! it is unvalidated). The CLI and the DFT-path `dispersion=` option use the
+//! named-functional parameters and therefore `s9 = 0`; the standalone Python
+//! `d3bj_energy(mol, functional, s9=...)` exposes `s9`.
+//!
+//! NOT implemented: zero damping for the two-body term, second derivatives,
+//! and periodic boundary conditions.
 //!
 //! # Provenance of the reference data
 //!
@@ -81,10 +90,19 @@
 //! # Validation
 //!
 //! MEASURED against the `dftd3` Python package (simple-dftd3 1.6.0) -- an
-//! INDEPENDENT implementation, not the source of this code's arithmetic -- on
-//! water, methane, benzene and an argon dimer, agreeing to <1e-12 Ha with the
-//! three-body term switched off on both sides. See
-//! `tests/vs_reference_dftd3.rs` and the generated reference JSON.
+//! INDEPENDENT implementation, not the source of this code's arithmetic:
+//!
+//! - two-body energy on water, methane, water dimer, Br2, benzene and an argon
+//!   dimer, 4 functionals, < 1e-12 Ha (`tests/vs_reference_dftd3.rs`);
+//! - energy and gradient with `s9 = 0` and `s9 = 1` on those systems plus an
+//!   argon trimer, a C/F/O/N/H fragment and CHBr3, 3 functionals: worst
+//!   1.2e-13 Ha and 5.5e-13 Ha/Bohr on totals, 2.6e-15 Ha and 5.9e-16 Ha/Bohr
+//!   on the isolated three-body part (`tests/vs_reference_dftd3_atm.rs`,
+//!   reference written by `scripts/gen_d3_atm_reference.py`).
+//!
+//! The analytic gradient also matches central finite differences of
+//! [`d3bj_energy`]: two-body and full to 1e-7 Ha/Bohr, the three-body term
+//! alone to 1e-7 relative (`tests/gradient_vs_fd.rs`).
 
 pub mod params;
 pub mod tables;
@@ -102,6 +120,12 @@ const WF: f64 = 4.0;
 const AA_TO_AU: f64 = ferric_core::units::ANGSTROM_TO_BOHR;
 /// Upstream scales the 2009 covalent radii by 4/3 to build the D3 CN.
 const COV_SCALE: f64 = 4.0 / 3.0;
+/// Scale of the pairwise vdW radius in the three-body damping (upstream
+/// `rs9` in `damping/rational.f90`).
+pub const ATM_RS9: f64 = 4.0 / 3.0;
+/// Exponent of the three-body zero damping: upstream passes `alp + 2` with the
+/// rational-damping default `alp = 14`.
+pub const ATM_ALPHA: f64 = 16.0;
 
 /// Covalent radius used by the coordination-number counting function, in Bohr.
 fn rcov(z: usize) -> f64 {
@@ -245,7 +269,8 @@ fn c6_interpolated(zi: usize, zj: usize, cni: f64, cnj: f64) -> f64 {
     }
 }
 
-/// Two-body D3(BJ) dispersion energy, in Hartree.
+/// D3(BJ) dispersion energy, in Hartree: the two-body term, plus the ATM
+/// three-body term when `params.s9 != 0`.
 ///
 /// `numbers` are atomic numbers, `coords` are Cartesian coordinates in **Bohr**
 /// (ferric's internal convention -- see `ferric_core::Molecule`).
@@ -335,10 +360,16 @@ pub fn d3bj_energy(
             energy -= params.s6 * c6 / (r6 + f6) + params.s8 * c8 / (r8 + f8);
         }
     }
+    if params.s9 != 0.0 {
+        // Coincident atoms were rejected by the pair loop above, so every
+        // distance in the triple sum is nonzero.
+        energy += atm_energy(&z, coords, &cn, params.s9);
+    }
     Ok(energy)
 }
 
-/// Analytic nuclear gradient of the two-body D3(BJ) energy, `dE/dR` in
+/// Analytic nuclear gradient of [`d3bj_energy`] (two-body, plus three-body
+/// when `params.s9 != 0`), `dE/dR` in
 /// Hartree/Bohr, as `n_atoms` rows of `[x, y, z]`.
 ///
 /// # Why this is not just the pairwise derivative
@@ -467,6 +498,13 @@ pub fn d3bj_gradient(
         }
     }
 
+    if params.s9 != 0.0 {
+        // Adds the explicit three-body gradient into `grad` and banks the
+        // three-body dE/dCN into `de_dcn`, so the contraction below carries
+        // both terms' CN chain rule at once.
+        atm_gradient(&z, coords, &cn, params.s9, &mut grad, &mut de_dcn);
+    }
+
     // --- contract dE/dCN with dCN/dR ---------------------------------------
     //
     // CN_A = sum_{B != A} g(R_AB), and the SAME pair term appears in both CN_A
@@ -547,6 +585,160 @@ fn c6_interpolated_derivatives(zi: usize, zj: usize, cni: f64, cnj: f64) -> (f64
     }
 }
 
+/// Pairwise vdW radius for the three-body damping, in Bohr (upstream
+/// `get_vdw_rad`, packed like the C6 pair axis).
+fn vdw_rad(zi: usize, zj: usize) -> f64 {
+    AA_TO_AU * tables::VDW_RAD[pair_index(zi, zj).0]
+}
+
+/// Damped ATM geometry factor of one triple and its derivatives with respect
+/// to the three SQUARED distances.
+///
+/// `x = R_ij^2`, `y = R_jk^2`, `w = R_ik^2`; `r0` is the product of the three
+/// damping radii. Returns `(F, dF/dx, dF/dy, dF/dw)` with
+///
+/// ```text
+/// F    = fdmp * ang
+/// ang  = 3/8 (x+y-w)(x-y+w)(-x+y+w) / P^5 + 1/P^3,   P = R_ij R_jk R_ik
+///      = (3 cos(a) cos(b) cos(c) + 1) / P^3
+/// fdmp = 1 / (1 + 6 (r0/P)^(alpha/3))
+/// ```
+fn atm_triple_factor(x: f64, y: f64, w: f64, r0: f64) -> (f64, f64, f64, f64) {
+    let p2 = x * y * w;
+    let p = p2.sqrt();
+    let p3 = p2 * p;
+    let p5 = p3 * p2;
+    // u, v, t are the three law-of-cosines numerators.
+    let u = x + y - w;
+    let v = x - y + w;
+    let t = -x + y + w;
+    let num = u * v * t;
+    let ang = 0.375 * num / p5 + 1.0 / p3;
+    let rr = (r0 / p).powf(ATM_ALPHA / 3.0);
+    let fdmp = 1.0 / (1.0 + 6.0 * rr);
+    // d/dq of each factor, for q in {x, y, w}, with dP/dq = P/(2q):
+    //   d ang/dq  = 3/8 dN/dq / P^5 - 15/16 N/(q P^5) - 3/(2 q P^3)
+    //   d fdmp/dq = alpha rr fdmp^2 / q
+    let d = |q: f64, dnum: f64| {
+        let dang = 0.375 * dnum / p5 - 0.9375 * num / (q * p5) - 1.5 / (q * p3);
+        let dfdmp = ATM_ALPHA * rr * fdmp * fdmp / q;
+        dang * fdmp + ang * dfdmp
+    };
+    // dN/dq by the product rule over (u, v, t).
+    let dx = d(x, v * t + u * t - u * v);
+    let dy = d(y, v * t - u * t + u * v);
+    let dw = d(w, -v * t + u * t + u * v);
+    (fdmp * ang, dx, dy, dw)
+}
+
+/// Interpolated C6 for every atom pair, as a dense `n x n` matrix.
+fn c6_matrix(z: &[usize], cn: &[f64]) -> Vec<Vec<f64>> {
+    let n = z.len();
+    let mut c6 = vec![vec![0.0; n]; n];
+    for i in 0..n {
+        for j in 0..i {
+            let c = c6_interpolated(z[i], z[j], cn[i], cn[j]);
+            c6[i][j] = c;
+            c6[j][i] = c;
+        }
+    }
+    c6
+}
+
+/// Axilrod-Teller-Muto three-body energy, in Hartree, at scale `s9`.
+///
+/// ```text
+/// E_ATM = s9 * sum_{i>j>k} sqrt(C6_ij C6_ik C6_jk) * F(R_ij, R_jk, R_ik)
+/// ```
+///
+/// (upstream writes `C9 = -s9 sqrt(...)` and `E = -C9 F`). The damping radii
+/// are `ATM_RS9 * R0vdw`, independent of the BJ `a1`/`a2`. Callers guarantee
+/// every pair distance is nonzero.
+fn atm_energy(z: &[usize], coords: &[[f64; 3]], cn: &[f64], s9: f64) -> f64 {
+    let n = z.len();
+    let c6 = c6_matrix(z, cn);
+    let mut energy = 0.0;
+    for i in 0..n {
+        for j in 0..i {
+            let x = dist2(&coords[i], &coords[j]);
+            let r0ij = ATM_RS9 * vdw_rad(z[i], z[j]);
+            for k in 0..j {
+                let y = dist2(&coords[j], &coords[k]);
+                let w = dist2(&coords[i], &coords[k]);
+                let r0 = r0ij * ATM_RS9 * vdw_rad(z[j], z[k]) * ATM_RS9 * vdw_rad(z[i], z[k]);
+                let c9 = (c6[i][j] * c6[i][k] * c6[j][k]).abs().sqrt();
+                let (f, _, _, _) = atm_triple_factor(x, y, w, r0);
+                energy += s9 * c9 * f;
+            }
+        }
+    }
+    energy
+}
+
+/// Adds the three-body term's explicit gradient to `grad` and its
+/// `dE/dCN_A` to `de_dcn` (contracted with `dCN/dR` by the caller).
+///
+/// `E_t = s9 sqrt(C6_ij C6_ik C6_jk) F`, so `dE_t/dC6_ij = E_t / (2 C6_ij)`,
+/// and `C6_ij` depends on `CN_i` and `CN_j`.
+fn atm_gradient(
+    z: &[usize],
+    coords: &[[f64; 3]],
+    cn: &[f64],
+    s9: f64,
+    grad: &mut [[f64; 3]],
+    de_dcn: &mut [f64],
+) {
+    let n = z.len();
+    let c6 = c6_matrix(z, cn);
+    // dc6[a][b] = dC6_ab / dCN_a.
+    let mut dc6 = vec![vec![0.0; n]; n];
+    for i in 0..n {
+        for j in 0..i {
+            let (di, dj) = c6_interpolated_derivatives(z[i], z[j], cn[i], cn[j]);
+            dc6[i][j] = di;
+            dc6[j][i] = dj;
+        }
+    }
+    // dE/d(R_ab^2) * d(R_ab^2)/dR_a, with d(R^2)/dR_a = 2 (R_a - R_b).
+    let mut add_pair = |a: usize, b: usize, de_dq: f64| {
+        for c in 0..3 {
+            let comp = 2.0 * de_dq * (coords[a][c] - coords[b][c]);
+            grad[a][c] += comp;
+            grad[b][c] -= comp;
+        }
+    };
+    for i in 0..n {
+        for j in 0..i {
+            let x = dist2(&coords[i], &coords[j]);
+            let r0ij = ATM_RS9 * vdw_rad(z[i], z[j]);
+            for k in 0..j {
+                let y = dist2(&coords[j], &coords[k]);
+                let w = dist2(&coords[i], &coords[k]);
+                let r0 = r0ij * ATM_RS9 * vdw_rad(z[j], z[k]) * ATM_RS9 * vdw_rad(z[i], z[k]);
+                let (cij, cjk, cik) = (c6[i][j], c6[j][k], c6[i][k]);
+                let c9 = (cij * cik * cjk).abs().sqrt();
+                let (f, dfx, dfy, dfw) = atm_triple_factor(x, y, w, r0);
+                let scale = s9 * c9;
+                add_pair(i, j, scale * dfx);
+                add_pair(j, k, scale * dfy);
+                add_pair(i, k, scale * dfw);
+
+                // CN chain: dE_t/dC6_ab = E_t / (2 C6_ab).
+                let half_e = 0.5 * scale * f;
+                let (gij, gjk, gik) = (half_e / cij, half_e / cjk, half_e / cik);
+                de_dcn[i] += gij * dc6[i][j] + gik * dc6[i][k];
+                de_dcn[j] += gij * dc6[j][i] + gjk * dc6[j][k];
+                de_dcn[k] += gik * dc6[k][i] + gjk * dc6[k][j];
+            }
+        }
+    }
+}
+
+fn dist2(a: &[f64; 3], b: &[f64; 3]) -> f64 {
+    let (dx, dy, dz) = (a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+    dx * dx + dy * dy + dz * dz
+}
+
 /// Analytic D3(BJ) gradient for a [`ferric_core::mol::Molecule`], in
 /// Hartree/Bohr, with one row per atom **in the molecule's own order**.
 ///
@@ -589,7 +781,8 @@ pub fn d3bj_gradient_for_molecule(
     Ok(full)
 }
 
-/// Two-body D3(BJ) energy for a [`ferric_core::mol::Molecule`].
+/// D3(BJ) energy (two-body, plus ATM when `params.s9 != 0`) for a
+/// [`ferric_core::mol::Molecule`].
 ///
 /// Convenience wrapper: ferric molecules already carry atomic numbers and
 /// Bohr coordinates, so this is the form every caller inside ferric wants.
@@ -710,6 +903,7 @@ mod tests {
             s8: 0.7875,
             a1: 0.4289,
             a2: 4.4407,
+            s9: 0.0,
         };
         assert!(d3bj_energy(&[1, 1], &[[0.0, 0.0, 0.0]], &p).is_err());
     }
@@ -730,6 +924,7 @@ mod tests {
             s8: 0.7875,
             a1: 0.4289,
             a2: 4.4407,
+            s9: 0.0,
         };
         // Water alone.
         let water = "3\nwater\nO 0.0 0.0 0.0623\nH 0.0 0.7572 -0.4923\nH 0.0 -0.7572 -0.4923\n";
@@ -780,6 +975,7 @@ mod tests {
             s8: 0.7875,
             a1: 0.4289,
             a2: 4.4407,
+            s9: 0.0,
         };
         let all_ghost = "3\nall ghosts\n@O 0.0 0.0 0.0623\n@H 0.0 0.7572 -0.4923\n\
                          @H 0.0 -0.7572 -0.4923\n";
@@ -817,6 +1013,7 @@ mod tests {
             s8: 0.7875,
             a1: 0.4289,
             a2: 4.4407,
+            s9: 0.0,
         };
         let e = d3bj_energy(&[8], &[[0.0, 0.0, 0.0]], &p)
             .expect("one atom has no pairs; that is an exact zero, not an error");
@@ -838,6 +1035,7 @@ mod tests {
             s8: 0.7875,
             a1: 0.4289,
             a2: 4.4407,
+            s9: 0.0,
         };
         let coords = [[0.0, 0.0, 0.0], [0.0, 0.0, 3.0], [0.0, 3.0, 0.0]];
         // Bad element in each position in turn.
@@ -868,6 +1066,7 @@ mod tests {
             s8: 0.7875,
             a1: 0.4289,
             a2: 4.4407,
+            s9: 0.0,
         };
         let r = d3bj_energy(&[6, 6], &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]], &p);
         assert!(r.is_err(), "coincident atoms must error, got {r:?}");

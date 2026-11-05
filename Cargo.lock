@@ -499,6 +499,7 @@ version = "0.1.0"
 dependencies = [
  "ferric-core",
  "ndarray",
+ "serde_json",
 ]
 
 [[package]]
