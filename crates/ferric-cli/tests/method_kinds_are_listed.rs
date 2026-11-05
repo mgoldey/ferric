@@ -122,3 +122,17 @@ fn supported_kinds_match_the_dispatch_arms_in_run() {
         "SUPPORTED_METHOD_KINDS (left) and the kinds run() dispatches (right) differ"
     );
 }
+
+/// `SUPPORTED_TASKS` is the one list behind the accept check, the error text
+/// and the README row; the text is pinned verbatim so behaviour is unchanged.
+#[test]
+fn unknown_task_message_lists_every_supported_task() {
+    assert_eq!(
+        ferric_cli::SUPPORTED_TASKS,
+        &["energy", "optimize", "frequencies"]
+    );
+    assert_eq!(
+        ferric_cli::unsupported_task_message("minimize"),
+        "unsupported method.task = \"minimize\"; expected energy, optimize, or frequencies"
+    );
+}

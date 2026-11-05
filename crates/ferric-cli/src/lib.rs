@@ -227,6 +227,24 @@ pub fn unsupported_method_message(method: &str) -> String {
     )
 }
 
+/// Every `method.task` the CLI dispatches, in the order the unknown-task
+/// error lists them. SINGLE SOURCE for the accept check in [`run`], the
+/// error text ([`unsupported_task_message`]) and the README-row test in
+/// `config_doc_tests.rs`.
+pub const SUPPORTED_TASKS: &[&str] = &["energy", "optimize", "frequencies"];
+
+/// The error text for an unrecognised `method.task`, listing every entry of
+/// [`SUPPORTED_TASKS`] (`expected energy, optimize, or frequencies`).
+pub fn unsupported_task_message(task: &str) -> String {
+    let (last, rest) = SUPPORTED_TASKS
+        .split_last()
+        .expect("SUPPORTED_TASKS is non-empty");
+    format!(
+        "unsupported method.task = \"{task}\"; expected {}, or {last}",
+        rest.join(", ")
+    )
+}
+
 /// Print a one-line epistemic-status warning to stderr if `method` is a
 /// Smoke/Stub-grade `method.kind` per `docs/VALIDATION.md`. No-op (and no
 /// output) for Proven / Proven (narrow) methods.
@@ -485,8 +503,8 @@ pub fn run(args: Vec<String>) {
         std::process::exit(1);
     }
     warn_if_epistemically_unproven(method);
-    if !matches!(task, "energy" | "optimize" | "frequencies") {
-        eprintln!("error: unsupported method.task = \"{task}\"; expected energy, optimize, or frequencies");
+    if !SUPPORTED_TASKS.contains(&task) {
+        eprintln!("error: {}", unsupported_task_message(task));
         std::process::exit(1);
     }
     // [dft] dispersion on `optimize` / `frequencies`: the correction is

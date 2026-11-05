@@ -388,15 +388,11 @@ fn cli_readme_lists_the_dispatched_kinds_and_tasks() {
         kinds,
         "README `kind` row vs SUPPORTED_METHOD_KINDS"
     );
-    let tasks: BTreeSet<String> = ["energy", "optimize", "frequencies"]
+    let tasks: BTreeSet<String> = crate::SUPPORTED_TASKS
         .iter()
         .map(|k| k.to_string())
         .collect();
-    assert_eq!(
-        row("task"),
-        tasks,
-        "README `task` row vs the dispatch in lib.rs"
-    );
+    assert_eq!(row("task"), tasks, "README `task` row vs SUPPORTED_TASKS");
 }
 
 #[test]
