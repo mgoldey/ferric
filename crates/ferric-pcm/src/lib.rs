@@ -30,23 +30,14 @@
 //! * [`config`] — [`config::PcmConfig`], the public config struct threaded
 //!   through the SCF configs.
 //!
-//! # Naming note for a future COSMO merge
+//! # Relation to COSMO
 //!
-//! A parallel effort is implementing COSMO (the ε→∞ conductor-limit
-//! approximation to this same physics) in a separate worktree. The cavity
-//! representation here ([`cavity::Tessera`], [`cavity::CavityConfig`],
-//! [`cavity::build_cavity`], and the modified Bondi radii in [`radii`]) is
-//! model-agnostic — COSMO needs exactly the same atom-sphere-tessellation
-//! geometry, differing only in the K/R operator ([`matrices::build_k_r`]
-//! would become a single `f(ε) = (ε−1)/ε` conductor-scaled `S` solve with no
-//! `D` matrix at all) and the charge-symmetrization/solve step
-//! ([`solver::solve_pcm_charges`]). A future dedup pass should be able to
-//! hoist `radii.rs` and `cavity.rs` into a shared crate (or have one crate
-//! depend on the other for just those two modules) with `matrices.rs` /
-//! `solver.rs` staying model-specific. This crate is named `ferric-pcm`
-//! (not `ferric-solvation`) precisely so that split is easy later; if the
-//! other agent named their crate something COSMO-specific, no rename
-//! collision is expected.
+//! The conductor-limit COSMO model lives in `ferric_scf::cosmo`. It builds its
+//! own cavity and uses this crate's switching function ([`cavity::switch_h`])
+//! and Gaussian width table ([`matrices::gaussian_xi_table`]). The cavity
+//! construction here ([`cavity::build_cavity`], [`radii`]) does not depend on
+//! the dielectric model; [`matrices::build_k_r`] and
+//! [`solver::solve_pcm_charges`] are IEF-PCM specific.
 
 /// Molecular cavity construction (atom-sphere + Lebedev tessellation).
 pub mod cavity;
