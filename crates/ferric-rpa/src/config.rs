@@ -376,10 +376,24 @@ impl PdepRpaConfig {
 }
 
 /// Imaginary-frequency quadrature configuration.
+///
+/// Defaults by entry point (pinned by `quadrature_defaults_by_entry_point`):
+///
+/// | Entry point | Scheme | `n_points` | `u0` |
+/// |---|---|---|---|
+/// | `QuadratureConfig::default()` (library; `PdepRpaConfig::default()`) | `MiniMax` | 20 | 0.5 (ignored) |
+/// | CLI `[rpa]` unset (`pdep-rpa`, `gw`, `bse-tda`, `tdhf-static-polarizability`) | `GaussLegendre` | 20 | 0.5 |
+/// | CLI `task = "optimize"` with `pdep-rpa` | `GaussLegendre` | 16 | 0.5 |
+/// | Python `run_pdep_rpa` | `GaussLegendre` | 40 | 0.5 |
+/// | Python `run_gw`, `run_u_gw`, `run_bse_tda`, `run_tdhf_static_polarizability` | `GaussLegendre` | 20 | 0.5 |
+///
+/// The CLI and Python scheme comes from [`QuadratureScheme::parse_config_str`]
+/// with `None`; it does not read this `Default`.
 #[derive(Debug, Clone)]
 pub struct QuadratureConfig {
     pub scheme: QuadratureScheme,
-    /// Number of quadrature points (default 20).
+    /// Number of quadrature points (library default 20; the Python
+    /// `run_pdep_rpa` fallback is 40 and CLI `task = "optimize"` is 16).
     pub n_points: usize,
     /// Domain scale parameter u₀ in Eₕ (default 0.5).
     ///
@@ -419,7 +433,8 @@ impl QuadratureScheme {
     /// Parse a `[rpa] quadrature` TOML string / Python kwarg into a scheme.
     ///
     /// Accepted forms (case-insensitive, whitespace-trimmed):
-    ///   None                              → `GaussLegendre` (back-compat default)
+    ///   None                              → `GaussLegendre` (the CLI and Python default;
+    ///                                        `QuadratureConfig::default()` is `MiniMax`)
     ///   "gauss-legendre" | "gl"           → `GaussLegendre`
     ///   "minimax" | "mm"                  → `MiniMax`
     ///   "chebyshev-tan" | "chebyshev" | "ct" → `ChebyshevTan`
@@ -472,6 +487,34 @@ impl Default for SternheimerConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Pins the scheme each entry point resolves when the user names none, so
+    /// the docs (QuadratureConfig, site/src/reference/input.md) cannot drift.
+    /// The CLI (`RpaCfg::parse_quadrature`) and all Python bindings call
+    /// `parse_config_str(None)`; the library `Default` is a different scheme.
+    /// Mutation: changing the `None` arm of `parse_config_str` to `MiniMax`, or
+    /// the `Default` scheme to `GaussLegendre`, fails this test.
+    #[test]
+    fn quadrature_defaults_by_entry_point() {
+        assert_eq!(
+            QuadratureScheme::parse_config_str(None).unwrap(),
+            QuadratureScheme::GaussLegendre,
+            "CLI/Python unset scheme"
+        );
+        let lib = QuadratureConfig::default();
+        assert_eq!(lib.scheme, QuadratureScheme::MiniMax, "library Default");
+        assert_eq!(lib.n_points, 20);
+        assert_eq!(lib.u0, 0.5);
+        assert_eq!(PdepRpaConfig::default().quadrature.scheme, lib.scheme);
+        // Every documented spelling still maps to its scheme.
+        for (s, want) in [
+            ("gl", QuadratureScheme::GaussLegendre),
+            ("mm", QuadratureScheme::MiniMax),
+            ("ct", QuadratureScheme::ChebyshevTan),
+        ] {
+            assert_eq!(QuadratureScheme::parse_config_str(Some(s)).unwrap(), want);
+        }
+    }
 
     /// Full rank keeps an exact λ = 1 mode; a positive threshold still drops
     /// it. Mutation: the old `|λ − 1| > 0` filter returns 2 here, not 3.

@@ -17,10 +17,35 @@ where $R$ is the ratio between the maximum and minimum orbital energy gaps.
 
 ---
 
-## 2. Chebyshev-Tan (Eshuis) Frequency Mappings
+## 2. Imaginary-Frequency Grids for RPA
 
-For imaginary frequency integrations over the infinite domain $[0, \infty)$ in RPA:
-$$ E_c = \frac{1}{2\pi} \int_0^\infty f(\omega) d\omega $$
-`ferric` implements the Chebyshev-Tan coordinate transformation:
-$$ \omega = u_0 \tan\left( \frac{\pi}{2} y \right) $$
-which maps $y \in [0, 1)$ to $\omega \in [0, \infty)$. Gauss-Legendre or Chebyshev quadrature is then applied over the mapped domain. The parameter $u_0$ acts as a scaling factor, typically optimized to match the typical valence excitation gap of the molecular system (default: `0.5` Hartree).
+The grids are not in this crate. They are implemented in `ferric_rpa::quadrature` (`crates/ferric-rpa/src/quadrature.rs`) and selected by `build_quadrature` (`quadrature.rs:34`) from `QuadratureConfig.scheme`. Each returns frequencies $\omega_k$ and weights $w_k$ that already include the mapping Jacobian, for
+$$ E_c = \frac{1}{2\pi} \int_0^\infty f(\omega)\, d\omega \approx \frac{1}{2\pi} \sum_k w_k f(\omega_k). $$
+
+| Scheme (`[rpa] quadrature`) | Mapping | Code |
+|---|---|---|
+| Gauss-Legendre (`gauss-legendre`, `gl`) | $\omega = u_0 \dfrac{1+x}{1-x}$, $x_k$ Gauss-Legendre nodes on $(-1,1)$; $w_k = w_k^{GL}\, 2u_0/(1-x_k)^2$ | `gauss_legendre_nodes`, `quadrature.rs:89` |
+| MiniMax (`minimax`, `mm`) | Gauss-Legendre map with $u_0$ taken from a table in $n$ (0.3 for $n\le 8$, 0.4 for $n\le 16$, 0.5 above; Furche, JCP 122, 164106, 2005); the user $u_0$ is ignored | `optimized_u0`, `quadrature.rs:101` |
+| Chebyshev-Tan (`chebyshev-tan`, `chebyshev`, `ct`) | Eshuis-Yarkony-Furche (JCP 132, 234114, 2010), below | `chebyshev_tan_nodes`, `quadrature.rs:63` |
+
+Scheme strings are parsed by `QuadratureScheme::parse_config_str` (`crates/ferric-rpa/src/config.rs:445`); unknown strings are an error.
+
+### Chebyshev-Tan
+
+Chebyshev-2 nodes
+$$ x_k = \cos\frac{\pi k}{n+1}, \qquad k = 1,\dots,n, $$
+are mapped to the bounded range $\omega \in (0,\, u_0\tan(\pi/2))$ by
+$$ \omega_k = u_0 \tan\!\left(\frac{\pi(1+x_k)}{4}\right). $$
+The weight combines the Chebyshev-2 weight $\frac{\pi}{n+1}\sin^2\theta_k$ (with $\theta_k = \pi k/(n+1)$), the factor $1/\sqrt{1-x_k^2} = 1/\sin\theta_k$ and the Jacobian $\frac{u_0\pi}{4}\sec^2\!\left(\frac{\pi(1+x_k)}{4}\right)$:
+$$ w_k = \frac{\pi}{n+1}\, \sin\theta_k\, \frac{u_0 \pi}{4}\, \sec^2\!\left(\frac{\pi(1+x_k)}{4}\right). $$
+The finite maximum $\omega$ keeps $\omega\, t_{\max}$ in the safe range of the cosine-modulated Laplace $\chi_0$ backend. The recommended $u_0$ with that backend is `CHEBYSHEV_TAN_RECOMMENDED_U0` = 0.2.
+
+### Defaults
+
+$u_0 = 0.5$ Hartree and $n = 20$ points, except where an entry point overrides them. The default scheme depends on the entry point: the CLI and the Python bindings use Gauss-Legendre, the Rust `QuadratureConfig::default()` uses MiniMax. The table is in the `QuadratureConfig` doc comment (`config.rs:393`) and is pinned by the test `quadrature_defaults_by_entry_point`.
+
+---
+
+## 3. Lebedev Angular Grids
+
+`ferric_quadrature::lebedev` (`src/lebedev.rs`) holds the Lebedev angular quadrature rules used for DFT grids and the PCM cavity. `ferric_dft::lebedev` re-exports it.

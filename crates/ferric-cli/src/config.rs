@@ -1981,6 +1981,8 @@ pub struct RpaCfg {
     /// energy run, 16 for `task = "optimize"` (finite-difference gradients
     /// re-run the RPA energy 6·natoms times), 40 in the Python
     /// `run_pdep_rpa` binding. Set it explicitly for reproducibility.
+    /// The scheme fallback is `gauss-legendre` on every surface (see `quadrature`);
+    /// the library `QuadratureConfig::default()` is `minimax` and is not used here.
     pub n_quad: Option<usize>,
     /// Imaginary-frequency quadrature scheme. One of:
     ///   "gauss-legendre" | "gl"           — GL nodes mapped via ω = u₀(1+x)/(1−x) (default)
@@ -7843,6 +7845,26 @@ mod tests {
             1,
         )
         .unwrap()
+    }
+
+    /// CLI default scheme with no `[rpa] quadrature` key is Gauss-Legendre
+    /// (documented in site/src/reference/input.md). Mutation: a `MiniMax`
+    /// fallback in `QuadratureScheme::parse_config_str(None)` fails this.
+    #[test]
+    fn rpa_quadrature_unset_is_gauss_legendre() {
+        let cfg = RpaCfg::default();
+        assert_eq!(
+            cfg.parse_quadrature().unwrap(),
+            ferric_rpa::config::QuadratureScheme::GaussLegendre
+        );
+        let mm = RpaCfg {
+            quadrature: Some("minimax".into()),
+            ..RpaCfg::default()
+        };
+        assert_eq!(
+            mm.parse_quadrature().unwrap(),
+            ferric_rpa::config::QuadratureScheme::MiniMax
+        );
     }
 
     // ---- [output]: the JSON run log's config surface ----

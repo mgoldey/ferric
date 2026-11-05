@@ -2,11 +2,16 @@
 //!
 //! Three schemes:
 //! - `GaussLegendre`: standard GL nodes mapped to [0,∞) via ω = u₀(1+x)/(1−x).
-//!   Default; unbounded — max ω ~ 100 a.u. at n=20.
+//!   Unbounded — max ω ~ 100 a.u. at n=20. Scheme used when no scheme is named
+//!   (CLI `[rpa] quadrature` unset, Python `quadrature=None`).
 //! - `MiniMax`: same GL nodes with literature-optimized u₀ scale (Furche, JCP 2005).
 //! - `ChebyshevTan`: Eshuis-Yarkony-Furche (JCP 132, 234114, 2010) — Chebyshev-2
 //!   nodes mapped to [0, u₀·tan(π/2)] via ω = u₀ tan(π(1+x)/4). Bounded max ω;
 //!   recommended whenever the Laplace χ₀ backend is used (keeps ω·t_max safe).
+//!
+//! Defaults differ by entry point: see [`QuadratureConfig`]'s `Default` impl and
+//! `QuadratureScheme::parse_config_str`. The library `Default` is `MiniMax`; the
+//! CLI and every Python binding resolve an unset scheme to `GaussLegendre`.
 
 use crate::config::{QuadratureConfig, QuadratureScheme};
 

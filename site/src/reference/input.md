@@ -236,7 +236,7 @@ Read by `pdep-rpa`, `gw`, `bse-tda`, `tdhf-static-polarizability`, and, for
 | `frozen_core` | int, string or bool | `0` | as `[mp2]` | |
 | `xc` | string | none (HF reference) | XC name | Switches the reference to RKS, or to UKS when open shell. Required by `tdhf-static-polarizability`. `bse-tda` ignores it. `pdep-rpa` with `task = "optimize"` uses an RHF reference; `xc` applies only to `task = "energy"`. |
 | `n_quad` | integer | `20` (energy runs); `16` (`task = "optimize"`) | | The Python `run_pdep_rpa` uses 40. Set it explicitly for reproducibility. |
-| `quadrature` | string | `"gauss-legendre"` | `gauss-legendre` `gauss_legendre` `gl`; `minimax` `mini-max` `mm`; `chebyshev-tan` `chebyshev_tan` `chebyshev` `ct` | |
+| `quadrature` | string | `"gauss-legendre"` (CLI and Python; the Rust library `QuadratureConfig::default()` is `minimax`) | `gauss-legendre` `gauss_legendre` `gl`; `minimax` `mini-max` `mm`; `chebyshev-tan` `chebyshev_tan` `chebyshev` `ct` | |
 | `u0` | float | `0.5` | | **Warn-and-ignore** under `minimax`, which derives its own u₀. |
 | `trunc_thresh` | float | `1e-4`; `0.0` (full rank) for `rs-mp2-rpa` | | PDEP truncation. |
 | `eigensolver_conv_thresh` | float | `1e-6` (energy); `1e-8` (`optimize`) | | Alias: `davidson_conv_thresh`. |
