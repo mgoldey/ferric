@@ -3850,6 +3850,9 @@ def run_rimp2(
     att_omega: float | None = None,
     scf_jk: str | None = None,
     jk_auxbasis: str | None = None,
+    max_iter: int | None = None,
+    energy_conv: float | None = None,
+    density_conv: float | None = None,
 ) -> RiMp2Result:
     """Resolution-of-identity (density-fitted) MP2. Exact by default.
 
@@ -3915,6 +3918,9 @@ def run_mp3(
     frozen_core: int | None = None,
     k_builder: str | None = None,
     memory_budget_gb: float | None = None,
+    max_iter: int | None = None,
+    energy_conv: float | None = None,
+    density_conv: float | None = None,
 ) -> Mp3Result:
     """Spin-orbital MP3 via einsum."""
     ...
@@ -3929,6 +3935,9 @@ def run_laplace_mp2(
     memory_budget_gb: float | None = None,
     scf_jk: str | None = None,
     jk_auxbasis: str | None = None,
+    max_iter: int | None = None,
+    energy_conv: float | None = None,
+    density_conv: float | None = None,
 ) -> LaplaceMp2Result:
     """Laplace-transform RI-MP2."""
     ...
@@ -3946,6 +3955,9 @@ def run_laplace_sos_mp2(
     memory_budget_gb: float | None = None,
     scf_jk: str | None = None,
     jk_auxbasis: str | None = None,
+    max_iter: int | None = None,
+    energy_conv: float | None = None,
+    density_conv: float | None = None,
 ) -> SosMp2Result:
     """Laplace-transform SOS-MP2: E = c_os * E_OS."""
     ...
@@ -3960,6 +3972,9 @@ def run_attenuated_rimp2(
     memory_budget_gb: float | None = None,
     scf_jk: str | None = None,
     jk_auxbasis: str | None = None,
+    max_iter: int | None = None,
+    energy_conv: float | None = None,
+    density_conv: float | None = None,
 ) -> AttenuatedMp2Result:
     """Attenuated RI-MP2 (erfc(omega*r)/r). omega in Angstrom^-1."""
     ...
@@ -3974,6 +3989,9 @@ def run_terfc_rimp2(
     memory_budget_gb: float | None = None,
     scf_jk: str | None = None,
     jk_auxbasis: str | None = None,
+    max_iter: int | None = None,
+    energy_conv: float | None = None,
+    density_conv: float | None = None,
 ) -> RiMp2Result:
     """MP2(terfc): RI-MP2 with exact tempered-erfc operator. r0 in Angstrom."""
     ...
@@ -3989,6 +4007,9 @@ def run_scs_mp2(
     memory_budget_gb: float | None = None,
     scf_jk: str | None = None,
     jk_auxbasis: str | None = None,
+    max_iter: int | None = None,
+    energy_conv: float | None = None,
+    density_conv: float | None = None,
 ) -> ScsMp2Result:
     """Spin-component-scaled MP2."""
     ...
@@ -4006,6 +4027,9 @@ def run_scs_mp2_2terfc(
     memory_budget_gb: float | None = None,
     scf_jk: str | None = None,
     jk_auxbasis: str | None = None,
+    max_iter: int | None = None,
+    energy_conv: float | None = None,
+    density_conv: float | None = None,
 ) -> ScsMp2Result:
     """SCS-MP2(2terfc): dual-attenuated SCS-MP2 with exact terfc. r0 in Angstrom."""
     ...
@@ -4025,6 +4049,9 @@ def run_mp2_v(
     memory_budget_gb: float | None = None,
     scf_jk: str | None = None,
     jk_auxbasis: str | None = None,
+    max_iter: int | None = None,
+    energy_conv: float | None = None,
+    density_conv: float | None = None,
 ) -> Mp2VResult:
     """MP2-V: attenuated MP2 + Eq-11-damped VV10. r0 in Angstrom, omega in Angstrom^-1."""
     ...
@@ -4043,6 +4070,9 @@ def run_mp2_v_scan(
     k_builder: str | None = None,
     memory_budget_gb: float | None = None,
     include_coulomb_mp2: bool = False,
+    max_iter: int | None = None,
+    energy_conv: float | None = None,
+    density_conv: float | None = None,
 ) -> dict[str, Any]:
     """EXPERIMENTAL (research harness). MP2-V scan on ONE converged RHF reference:
     the attenuated-MP2 half for every `(r0, omega)` arm (Angstrom, Angstrom^-1;
@@ -4061,6 +4091,9 @@ def run_vv10_variants(
     nlc_grid: tuple[int, int] | None = None,
     df_j_aux: str | None = None,
     df_k_aux: str | None = None,
+    max_iter: int | None = None,
+    energy_conv: float | None = None,
+    density_conv: float | None = None,
 ) -> list[float]:
     """EXPERIMENTAL (research harness). Post-HF VV10 E_nl (Ha) for alternative
     short-range weights: each spec is `(kind, r0_angstrom, r0_times_omega_or_None,
@@ -4082,6 +4115,9 @@ def run_rs_mp2_rpa(
     memory_budget_gb: float | None = None,
     scf_jk: str | None = None,
     jk_auxbasis: str | None = None,
+    max_iter: int | None = None,
+    energy_conv: float | None = None,
+    density_conv: float | None = None,
 ) -> RsMp2RpaResult:
     """SR-MP2 + LR-dRPA. omega/terf_omega in Angstrom^-1, r0 in Angstrom.
 
@@ -4464,6 +4500,9 @@ def run_ccd(
     frozen_core: int | None = None,
     k_builder: str | None = None,
     memory_budget_gb: float | None = None,
+    max_iter: int | None = None,
+    energy_conv: float | None = None,
+    density_conv: float | None = None,
 ) -> CcResult:
     """Coupled-cluster doubles (CCD)."""
     ...
@@ -4476,6 +4515,9 @@ def run_ccsd(
     k_builder: str | None = None,
     memory_budget_gb: float | None = None,
     ladder: str = "auto",
+    max_iter: int | None = None,
+    energy_conv: float | None = None,
+    density_conv: float | None = None,
 ) -> CcResult:
     """Coupled-cluster singles and doubles (CCSD), spin-adapted.
 
@@ -4497,6 +4539,9 @@ def run_ccsd_t(
     k_builder: str | None = None,
     memory_budget_gb: float | None = None,
     ladder: str = "auto",
+    max_iter: int | None = None,
+    energy_conv: float | None = None,
+    density_conv: float | None = None,
 ) -> CcResult:
     """CCSD(T): CCSD plus perturbative triples correction, spin-adapted.
 
@@ -4528,6 +4573,9 @@ def run_pdep_rpa(
     external_field: tuple[float, float, float] | None = None,
     solvent: float | str | None = None,
     pcm_lebedev_order: int | None = None,
+    max_iter: int | None = None,
+    energy_conv: float | None = None,
+    density_conv: float | None = None,
 ) -> PdepRpaResult:
     """PDEP-RPA (dielectric eigendecomposition RPA).
 
@@ -4560,6 +4608,9 @@ def run_gw(
     k_builder: str | None = None,
     chi0_sparsity: str | None = None,
     memory_budget_gb: float | None = None,
+    max_iter: int | None = None,
+    energy_conv: float | None = None,
+    density_conv: float | None = None,
 ) -> GwResult:
     """Closed-shell G0W0/COHSEX/evGW0/evGW on an RHF or RKS reference."""
     ...
@@ -4585,6 +4636,9 @@ def run_u_gw(
     k_builder: str | None = None,
     chi0_sparsity: str | None = None,
     memory_budget_gb: float | None = None,
+    max_iter: int | None = None,
+    energy_conv: float | None = None,
+    density_conv: float | None = None,
 ) -> UGwResult:
     """Open-shell U-G0W0/U-COHSEX/U-evGW0/U-evGW on a UHF/ROHF reference."""
     ...
@@ -4602,6 +4656,9 @@ def run_bse_tda(
     k_builder: str | None = None,
     chi0_sparsity: str | None = None,
     memory_budget_gb: float | None = None,
+    max_iter: int | None = None,
+    energy_conv: float | None = None,
+    density_conv: float | None = None,
 ) -> BseResult:
     """BSE-TDA singlet excitation energies on a closed-shell RHF reference."""
     ...
@@ -4621,6 +4678,9 @@ def run_tdhf_static_polarizability(
     k_builder: str | None = None,
     chi0_sparsity: str | None = None,
     memory_budget_gb: float | None = None,
+    max_iter: int | None = None,
+    energy_conv: float | None = None,
+    density_conv: float | None = None,
 ) -> TdhfStaticPolarizabilityResult:
     """RPAx@KS static polarizability (omega=0). xc is REQUIRED.
 
@@ -4637,6 +4697,9 @@ def run_tddft(
     functional: str | None = None,
     n_roots: int = 3,
     method: str = "tda",
+    max_iter: int | None = None,
+    energy_conv: float | None = None,
+    density_conv: float | None = None,
 ) -> TddftResult:
     """Closed-shell singlet linear response. functional=None runs on an RHF
     reference (CIS for method="tda"/"cis", TDHF for "casida"/"rpa"/"tddft"/
@@ -4645,7 +4708,8 @@ def run_tddft(
     kernel block to A (and B for Casida) on the same grid. Meta-GGA, VV10 and
     range-separated functionals raise ValueError (no complete kernel); there
     is no kernel-less DFT result. Coulomb/exchange response integrals are RI
-    over `auxbasis`."""
+    over `auxbasis`. `max_iter`, `energy_conv`, `density_conv` set the
+    reference SCF as in `run_rhf` (defaults unchanged when omitted)."""
     ...
 
 def run_double_hybrid(
@@ -4656,6 +4720,9 @@ def run_double_hybrid(
     frozen_core: int | None = None,
     k_builder: str | None = None,
     memory_budget_gb: float | None = None,
+    max_iter: int | None = None,
+    energy_conv: float | None = None,
+    density_conv: float | None = None,
 ) -> DoubleHybridResult:
     """MP2-based double hybrid: kind="b2plyp" or "dsd-pbep86"."""
     ...
@@ -4672,6 +4739,9 @@ def run_drpa(
     compute_reference: bool | None = None,
     diis: int | None = None,
     eps_rtol_factor: float | None = None,
+    max_iter: int | None = None,
+    energy_conv: float | None = None,
+    density_conv: float | None = None,
 ) -> dict[str, object]:
     """Direct RPA (dRPA@HF) by the drCCD Riccati solve, closed-shell.
 
@@ -4697,6 +4767,9 @@ def run_drpa_scan(
     compute_reference: bool | None = None,
     diis: int | None = None,
     eps_rtol_factor: float | None = None,
+    max_iter: int | None = None,
+    energy_conv: float | None = None,
+    density_conv: float | None = None,
 ) -> list[dict[str, object]]:
     """The LOCAL (amplitude-threshold) dRPA over a list of eps values, one
     SCF and one localized assembly. Each dict carries "local"."""
@@ -4713,6 +4786,9 @@ def run_linlccd(
     frozen_core: int | None = None,
     k_builder: str | None = None,
     memory_budget_gb: float | None = None,
+    max_iter: int | None = None,
+    energy_conv: float | None = None,
+    density_conv: float | None = None,
 ) -> dict[str, object]:
     """Linearized ladder CCD, closed-shell. variant: "hh" (default),
     "drivers-only" or "full". Exact by default; local="amplitude-threshold"
