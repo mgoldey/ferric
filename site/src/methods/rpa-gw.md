@@ -179,27 +179,42 @@ aug-cc-pVDZ with HF, LDA, PBE and B3LYP match PySCF `TDA`/`TDDFT` to at most
 6.5e-4 eV, test bar 1e-3 eV, and water/6-31G r2SCAN matches on the flat
 75 × 110 grid (`ferric-tddft/tests/validation_tddft.rs`).
 
-**Meta-GGA response needs a finer grid.** On the same grid, ferric and PySCF
-agree: fed ferric's own coordinates and weights, PySCF reproduces ferric's
-r2SCAN excitation energies to 6e-8 eV and its SCF energy to 1e-12 Ha, on both
-the flat and the default grid. The grid itself is the error. Water/6-31G, five
-lowest TDA roots, largest deviation from a flat 150 × 590 grid:
+**Meta-GGA response needs a finer grid.** A TDA/TDDFT run on a meta-GGA
+(SCAN, r2SCAN, TPSS) with no `[dft]` grid key (Python: no `grid_*` kwarg)
+runs its reference SCF and its f_xc kernel on 150 × 434 with the default
+`nwchem-radial` pruning and 1e-14 weight cut. Every other functional keeps
+the production 75 × 110 grid. Any grid key replaces the meta-GGA default.
+The run prints the grid it used (CLI: the `TDDFT grid` line; Python:
+`TddftResult.grid`).
 
-| Grid | Points | PBE (eV) | r2SCAN (eV) |
-|---|---|---|---|
-| default (`nwchem-radial`, 75 × 110) | 13 914 | 4.4e-4 | 2.1e-3 |
-| `grid_prune = "nwchem"` (75 × 110, angular only) | 18 954 | 4.4e-4 | 1.2e-3 |
-| flat 75 × 110 | 24 750 | 4.4e-4 | 1.2e-3 |
-| default scheme at `grid_radial = 99`, `grid_angular = 302` | 43 044 | 3.1e-6 | 3.9e-4 |
+On the same grid, ferric and PySCF agree: fed ferric's own coordinates and
+weights, PySCF reproduces ferric's r2SCAN excitation energies to 6e-8 eV and
+its SCF energy to 1e-12 Ha. The grid itself is the error. Largest deviation
+of the five lowest TDA roots from a flat 150 × 590 grid (Casida roots follow the
+same pattern):
 
-Casida roots behave the same way. Pruning does not change PBE (1.6e-7 eV).
-For r2SCAN it moves the roots by up to 1.8e-3 eV while the ground-state energy
-moves by 4.8e-6 Ha. The radial shells the default removes from H (50) and
-O (66) cause this; angular-only pruning stays within 6e-8 eV of the flat grid.
-r2SCAN is not converged at 99 × 302 either (3.9e-4 eV from 150 × 590). For
-meta-GGA excitations meant to be accurate to better than about 2e-3 eV, use
-`grid_radial = 99`, `grid_angular = 302` or larger, and compare codes only on
-the same grid.
+| Grid (`nwchem-radial` unless noted) | Points (water) | r2SCAN water/6-31G | r2SCAN water/aug-cc-pVDZ | r2SCAN H2CO/6-31G | r2SCAN H2S/6-31G | SCAN water/6-31G |
+|---|---|---|---|---|---|---|
+| 75 × 110 (production) | 13 914 | 2.1e-3 | 1.0e-3 | 3.9e-3 | 5.5e-3 | 4.2e-2 |
+| 99 × 302 | 43 044 | 3.9e-4 | 2.0e-4 | 5.0e-4 | 3.9e-4 | 1.7e-2 |
+| 99 × 302, `nwchem` (angular only) | 58 720 | 3.5e-4 | 1.5e-4 | 3.5e-4 | 3.8e-4 | 1.2e-2 |
+| 99 × 434 | 60 102 | 8.4e-4 | 2.1e-4 | 3.2e-4 | 4.0e-4 | 3.5e-2 |
+| 150 × 302 | 65 326 | 1.6e-4 | 2.2e-5 | 2.8e-4 | 9.8e-5 | 4.2e-3 |
+| **150 × 434 (meta-GGA default)** | **91 216** | **9.2e-5** | **5.5e-6** | **1.0e-4** | **4.2e-5** | **3.6e-3** |
+| 150 × 590 | 105 186 | 9.9e-5 | 3.6e-6 | 6.7e-5 | 8.6e-6 | 3.5e-3 |
+| flat 200 × 590 (reference check) | 354 000 | 2.4e-5 | 4.2e-6 | 2.7e-5 | 4.1e-5 | 1.2e-3 |
+
+All values in eV. 150 × 434 is the smallest grid tested with every r2SCAN
+case at or below 1e-4 eV (H2CO: 9.96e-5 TDA, 1.02e-4 Casida); the margin is
+comparable to the reference's own distance from flat 200 × 590 (2-4e-5 eV).
+
+PBE on the production grid is 4.4e-4 eV from flat 150 × 590, and radial
+pruning moves it by 1.6e-7 eV. For r2SCAN the radial shells the production
+grid removes from H (50) and O (66) shift the roots; the radial count matters
+more than the angular order (99 × 434 is worse than 99 × 302). SCAN is not
+grid-converged even at flat 150 × 590 (1.2e-3 eV from 200 × 590), so no grid
+here gets its roots to 1e-4 eV; the 150 × 434 default is 3.6e-3 eV from
+flat 150 × 590. Compare codes only on the same grid.
 
 A separate, **library-only** TDA-DFT in `ferric-gw/src/tddft.rs` uses the same
 kernel (`ferric_dft::lr_kernel`) and is pinned against PySCF

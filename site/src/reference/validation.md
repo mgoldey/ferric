@@ -755,10 +755,13 @@ the laddered SCF energy against a bar derived from the f64 floor by
   f<sub>xc</sub> kernel (VV10, range-separated) are refused rather
   than run without it. B3LYP at aug-cc-pVDZ agrees with PySCF to 6.5e-4 eV,
   40× worse than PBE in the same basis; the cause is not yet identified.
-  Meta-GGA excitations carry XC-grid error: water / 6-31G r2SCAN TDA roots
-  sit up to 2.1e-3 eV from a flat 150 × 590 grid on the default grid and
-  3.9e-4 eV at `grid_radial = 99`, `grid_angular = 302` (PBE: 4.4e-4 and
-  3.1e-6 eV). See [TDDFT](../methods/rpa-gw.md).
+  Meta-GGA excitations carry XC-grid error, so meta-GGA TDA/TDDFT defaults
+  to a 150 × 434 grid: water r2SCAN TDA roots sit within 9.2e-5 eV (6-31G)
+  and 5.5e-6 eV (aug-cc-pVDZ) of a flat 150 × 590 grid there, against
+  2.1e-3 eV on the 75 × 110 production grid (PBE: 4.4e-4 eV). SCAN is not
+  grid-converged to 1e-4 eV on any grid tested: 3.6e-3 eV on the default,
+  and flat 150 × 590 itself is 1.2e-3 eV from flat 200 × 590. See
+  [TDDFT](../methods/rpa-gw.md).
 - **MP2 analytic polarizability** (library only): one analytic path,
   `mp2_polarizability_analytic` → `analytic_alpha_relaxed` (see
   [anchors](#anchors)); `frozen_mp2_c6_molecular` and the attenuation sweeps
