@@ -19,6 +19,7 @@
 //! order — and therefore the floating-point result — is identical to the
 //! serial code.
 
+use ferric_core::special::erf;
 use ferric_integrals::blas_threads::{opt_in_blas_threads, with_blas_threads};
 use ndarray::{Array1, Array2, Array3, Axis};
 use rayon::prelude::*;
@@ -782,8 +783,7 @@ fn terfc_dispatch(r: f64, r0: f64, omega: Option<f64>) -> f64 {
 #[inline]
 fn terfc_scalar(r: f64, r0: f64) -> f64 {
     let s = r0 * std::f64::consts::SQRT_2;
-    let terf =
-        0.5 * (ferric_core::special::erf((r - r0) / s) + ferric_core::special::erf((r + r0) / s));
+    let terf = 0.5 * (erf((r - r0) / s) + erf((r + r0) / s));
     1.0 - terf
 }
 
@@ -794,9 +794,7 @@ fn terfc_scalar(r: f64, r0: f64) -> f64 {
 /// own arithmetic. Matches `Operator::terfc_with_omega`'s convention.
 #[inline]
 fn terfc_scalar_decoupled(r: f64, r0: f64, omega: f64) -> f64 {
-    let terf = 0.5
-        * (ferric_core::special::erf(omega * (r - r0))
-            + ferric_core::special::erf(omega * (r + r0)));
+    let terf = 0.5 * (erf(omega * (r - r0)) + erf(omega * (r + r0)));
     1.0 - terf
 }
 
