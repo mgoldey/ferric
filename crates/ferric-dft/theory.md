@@ -17,6 +17,11 @@ negative controls (a mutated formula that must fail):
 
 Run any of them with `python3 scripts/<name>.py` (needs `sympy`).
 
+The second nuclear derivatives of $E_{xc}$ (the analytic KS Hessian's XC
+skeleton, first-order Fock matrix and CPHF kernel, fixed and moving grid) are
+in `crates/ferric-scf/theory.md` ("Kohn-Sham XC Hessian terms"), proved by
+`scripts/ks_fixed_grid_hessian_sympy.py`.
+
 ## Kohn-Sham Equations
 The DFT energy is:
 $$E_{DFT} = T_s + V_{ext} + J + E_{xc}$$
