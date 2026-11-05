@@ -108,7 +108,7 @@ What to know before using it:
 - **`cdft_coupling` has strict preconditions** and raises `ValueError` when
   one fails. Each state carries exactly one `kind="charge"` constraint, both
   are converged, and both come from the same molecule, geometry, basis,
-  charge and multiplicity **and the same Hamiltonian**: functional,
+  charge and multiplicity, and the same Hamiltonian: functional,
   `df_j_aux`/`df_k_aux`, `k_builder`, XC grid, point charges and external
   field. Two states that are the same determinant (\\( |S_{ab}| \to 1 \\))
   also raise. The sign of `h_ab` is a determinant-phase convention; compare
@@ -127,8 +127,8 @@ is stated for UHF-cDFT energies apart from the HeNe⁺ and LiH⁺ states in
 `validation_cdft_state.rs`. On HeNe⁺/def2-SVP at R = 2.0 Å the hole-on-Ne
 state (N_He = 2) is NWChem's lower state once NWChem's Becke partition is
 given ferric's He/Ne radius ratio (0.667; NWChem's own is 0.700). Against
-NWChem's native partition it sits 0.563 eV higher, and that offset is the
-partition difference, not a missing state: with NWChem's radii patched into
+NWChem's native partition it sits 0.563 eV higher. The offset comes from the
+partition: with NWChem's radii patched into
 ferric's radius table (a one-off measurement, not a test), ferric reaches
 −130.447404 Ha against NWChem's native −130.447401 Ha. The He₂⁺ coupling
 ingredients (determinant overlap, one- and two-electron transition elements,
@@ -144,7 +144,7 @@ matrices and He₂⁺ identities (`ferric-scf/tests/cdft_coupling.rs`). On HeNe�
 an asymmetric pair, the same file checks that both diabats carry the requested
 charge, that the hole-on-He state is reached through either fragment (3.9e-6
 Ha apart), that the hole prefers Ne, the lower-IP atom (gap 1.7646 eV with the
-default stability descent; the 1.0975 eV once reported came from a saddle),
+default stability descent; 1.0975 eV is a saddle point),
 and that H_ab is invariant under W → W − cS. These run at R = 2.0 Å only: from
 the hcore start, at 2.5, 3.5 and 4.0 Å the outer loop does not converge or
 returns the unconstrained state, and from MINAO at 2.5 Å the two routes to the
@@ -165,35 +165,32 @@ fragment-weighted density operator. The derivative
 
 \\[ \frac{\partial N}{\partial \lambda} \\]
 
-— how much charge moves per unit constraint potential — **is a susceptibility**.
-So cDFT probes the same object as [RPA and GW](./rpa-gw.md) and
+is the charge moved per unit constraint potential, a susceptibility.
+cDFT therefore probes the same object as [RPA and GW](./rpa-gw.md) and
 [attenuated MP2](./mp2.md), through a different coupling.
 
 ## Implementation
 
-- **Fragment charge and spin constraints** via a grid-Becke weight operator
-- A **nested Lagrange-multiplier solve** (Wu–Van Voorhis): an inner SCF at fixed
+- Fragment charge and spin constraints via a grid-Becke weight operator
+- A nested Lagrange-multiplier solve (Wu–Van Voorhis): an inner SCF at fixed
   \\( \lambda \\), an outer Newton iteration on \\( \lambda \\) itself
 
-The nesting is what makes cDFT more expensive than a plain SCF — each outer step
-is a full converged inner solve.
+Each outer step is a full converged inner solve, so cDFT costs several
+plain SCFs.
 
 ## Electron-transfer coupling
 
-Once you have two charge-localized diabatic states, the coupling
-\\( H_{ab} \\) between them follows from a **non-orthogonal determinant
-overlap**, computed via Löwdin biorthogonalization.
-
-That gives the matrix element governing electron-transfer rates in Marcus
-theory, from states that are constructed rather than guessed.
+The coupling \\( H_{ab} \\) between two charge-localized diabatic states
+follows from a non-orthogonal determinant overlap, computed via Löwdin
+biorthogonalization. It is the matrix element governing electron-transfer
+rates in Marcus theory.
 
 ## A caveat
 
 The λ convergence tolerance (`lambda_tol` in Python, `cdft_lambda_tol` in
-Rust, default 1e-5 electrons) interacts with the coupling calculation in a
-way worth checking: a loosely converged \\( \lambda \\) produces diabatic
-states that are not quite the ones you asked for, and \\( H_{ab} \\) inherits
-that error. Tighten it before trusting a coupling. The exception is a
+Rust, default 1e-5 electrons) affects the coupling: a loosely converged
+\\( \lambda \\) produces diabatic states that miss their targets, and
+\\( H_{ab} \\) inherits that error. Tighten it before trusting a coupling. The exception is a
 constraint whose population barely responds to \\( \lambda \\), such as He₂⁺
 at the localized-hole plateau with a UHF reference: on He₂⁺/def2-SVP UHF at
 2.5–3.5 Å the outer loop does not converge in 40 iterations at 1e-5, while at

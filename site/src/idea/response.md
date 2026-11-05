@@ -2,8 +2,8 @@
 
 `ferric` is organized around **electronic response**: how the electron density
 reacts to a perturbation. Standard quantum-chemistry codes are usually organized
-around a hierarchy of *wavefunction ansätze* (HF → MP2 → CCSD → CCSD(T)). That
-is a perfectly good organizing principle. It is not the one used here.
+around a hierarchy of *wavefunction ansätze* (HF → MP2 → CCSD → CCSD(T)).
+ferric uses response as the organizing principle instead.
 
 The central object appears under several names depending on which coupling you
 look at:
@@ -31,12 +31,12 @@ The premise behind the architecture is that response is:
 If both hold, organizing the computation around response should make it
 cheaper: *attenuate the operator, keep the dominant dielectric modes.*
 
-## What is actually demonstrated
+## What is demonstrated
 
-**Low rank: demonstrated, and narrower than it sounds.** PDEP compresses the
+**Low rank: demonstrated, with a narrower scope.** PDEP compresses the
 dielectric matrix to its dominant eigenpotentials in the RI auxiliary space,
 and that works in production paths; see [RPA and GW](../methods/rpa-gw.md).
-It does **not** remove the sum over empty states: ferric builds
+It does not remove the sum over empty states: ferric builds
 \\( \chi_0 \\) by summing over every occupied–virtual pair, and PDEP compresses
 what comes out of that sum.
 
@@ -47,8 +47,8 @@ what comes out of that sum.
   slowly than the molecule (chemical accuracy at 3 to 5 Bohr from ethane to
   dodecane, while radius/diameter falls from 0.52 to 0.17; within 0.05% at
   4 Bohr on a 71-atom drug molecule). The tensor algebra is
-  still dense, so **no timing gain is claimed**. This result is specific to
-  that formulation and does not carry over to the other locality lanes below.
+  still dense, so no timing gain is claimed. This result is specific to
+  that formulation and does not carry over to the other locality approaches below.
   The test `sos_ao_sparse_truncation_radius_is_transferable_across_sizes` pins the
   STO-3G butane/octane comparison (12 Bohr exact on both; octane worse at
   3 Bohr). The C2-C12 sweep and the drug-molecule figure are measurements,
@@ -72,7 +72,7 @@ Even where the scaling payoff has not arrived, the response framing makes the
 *error* in one method diagnosable through another.
 
 MP2's dispersion is the clearest case. Its dispersion energy is built from an
-**uncoupled** (uncoupled Hartree–Fock) response, in which the density
+uncoupled (uncoupled Hartree–Fock) response, in which the density
 fluctuation does not feel the field it creates. For systems with low-lying,
 highly polarizable excitations, such as π-stacked and other π systems, that
 uncoupled response over-polarizes, and MP2 overbinds. This is documented in the

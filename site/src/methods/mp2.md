@@ -38,7 +38,7 @@ every MP2-family Python driver (`[scf] jk` in the CLI, task `energy`):
 `"rijcosx"` (RI-J + COSX K). The fitted modes use `jk_auxbasis` (`[scf]
 jk_aux`), a JK-fit basis with default `def2-universal-jkfit`. It is never the
 MP2 `auxbasis`, because an MP2-fit set used for K costs mHa. `rs-mp2-rpa` is the
-exception: it has always run RI-JK, so its default is `"rijk"`. Every result
+exception: its default is `"rijk"`. Every result
 echoes `scf_jk` and `jk_auxbasis`. An unknown mode, `jk_auxbasis` with
 `"exact"`, or a `k_builder` the mode would override is an error (so is any
 `k_builder` on `rs-mp2-rpa`'s RI-JK default, in the CLI as in Python). A
@@ -65,11 +65,11 @@ PySCF DF-MP2 (frozen core, `aug-cc-pvXz-ri` for MP2) on the S66 water dimer:
 **Run it.** `method.kind = "rimp2"` (`examples/water-rimp2.toml`,
 `examples/water-rimp2-frozen-core.toml`); Python `ferric.run_rimp2(mol, bs, aux)`.
 
-**Accuracy.** Proven. RI-MP2 is size-extensive to **2e-12 Ha** for a
+**Accuracy.** Proven. RI-MP2 is size-extensive to 2e-12 Ha for a
 well-separated dimer against twice the monomer
 (`ferric-mp2/tests/rimp2_size_extensivity.rs`, which asserts 1e-7).
 
-**Knobs.** `frozen_core` defaults to **0** (all electrons correlated). Several
+**Knobs.** `frozen_core` defaults to 0 (all electrons correlated). Several
 published parameterizations below assume frozen core, so set it when you use
 them.
 
@@ -89,14 +89,13 @@ replaced by a short-range one. Two forms are implemented:
 **Why.** MP2's error for non-covalent interactions has two parts that partly
 cancel in small basis sets: basis-set superposition error, and an error in the
 long-range part of the correlation energy. Attenuation removes the long-range
-part. That also means attenuated MP2 has **no long-range dispersion at all**:
+part, so attenuated MP2 has no long-range dispersion:
 its asymptotic \\( C_6 \\) is zero. The method works in the basis and on the
 systems it was fitted for; MP2-V (below) adds long-range dispersion back
 through VV10.
 
-**Parameterization.** The attenuation parameters are **fitted**, not derived,
-and each fit belongs to one basis. The aug-cc-pVTZ sets that ferric ships as
-defaults were fitted on S66 **without counterpoise and with frozen core**
+**Parameterization.** The attenuation parameters are fitted, and each fit belongs to one basis. The aug-cc-pVTZ sets that ferric ships as
+defaults were fitted on S66 without counterpoise and with frozen core
 (stated in `crates/ferric-mp2/src/scs.rs`):
 
 | Variant | Parameters | Basis of the fit | Source |
@@ -133,7 +132,7 @@ density (the post-HF variant) on its own 50×50 grid rather than SG-1. Read the 
 
 **Robust fitting.** When the RI metric differs from the operator in the
 integrals, as it does for attenuated operators, robust (Dunlap) density fitting
-is required, not optional.
+is required.
 
 ## RS-MP2 + LR-RPA
 
@@ -167,14 +166,14 @@ third-order Møller–Plesset through the `einsum!` framework. Proven.
 
 **RI-Laplace MP2** (`laplace-mp2`, `examples/water-laplace-rimp2.toml`,
 `run_laplace_mp2`): MP2 through a Laplace transform of the energy denominator,
-using pseudo-density matrices in the AO basis. The implementation is **dense**.
-It is the correctness reference for that formulation, not a reduced-scaling
-path, and no reduced scaling has been measured.
+using pseudo-density matrices in the AO basis. The implementation is dense.
+It is the correctness reference for that formulation; no reduced scaling has
+been measured.
 
 **Laplace SOS-MP2** (`laplace-sos-mp2`, `examples/water-laplace-sos-mp2.toml`,
 `run_laplace_sos_mp2`): opposite-spin-only MP2 (Jung et al. 2004,
 c<sub>OS</sub> = 1.3 by default) with a minimax Laplace quadrature
-(`n_quad` must be 3, 5 or 7; anything else is an error). There is deliberately
+(`n_quad` must be 3, 5 or 7; anything else is an error). There is
 no c<sub>SS</sub>: dropping the same-spin term is what lets the denominator
 factorize. With c<sub>OS</sub> = 1.0 it reproduces the opposite-spin component
 of RI-MP2 to quadrature error, which is the test anchor. Three formulations
@@ -253,7 +252,7 @@ target needs more than the 1e-11 floor or the true residual drifted from the
 recursive one. The bound limits solver error
 only, not the truncation error of `eps`.
 
-The exact RI-MP2 reference that measures that error is **opt-in**. It is a
+The exact RI-MP2 reference that measures that error is opt-in. It is a
 full canonical RI-MP2 and forms the global `(naux, nocc·nvir)` tensor, so a
 run with it switched on is not reduced-cost. In the CLI, `[local] reference =
 true` computes it and prints the local error against it; without it the

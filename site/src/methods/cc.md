@@ -38,7 +38,7 @@ closed shell, and its open-shell (UHF) version is library-only
 
 **Aux basis.** The RI error is not negligible at CC accuracy: on water /
 cc-pVDZ with `cc-pvdz-ri`, RI-CCSD differs from exact-integral CCSD by about
-1.3e-4 Ha. Pick the aux for the accuracy you need, not by habit.
+1.3e-4 Ha. Choose the aux basis for the accuracy you need.
 
 **Accuracy.** `ccsd` is Proven.
 
@@ -65,7 +65,7 @@ of closed-shell CCSD can be evaluated two ways, chosen by `[cc] ladder`
   a<sub>blk</sub>·n<sub>v</sub>³ panels: at most one n<sub>v</sub>⁴-sized
   panel at full width (dense holds four n<sub>v</sub>⁴ buffers at its peak),
   and narrower panels when the budget requires. It is the same algebra over
-  the same tensors, not an approximation: on water/cc-pVDZ |ΔE| and
+  the same tensors, so it is exact: on water/cc-pVDZ |ΔE| and
   max|Δt| are ≲ 3e-17 (round-off), and the alkane energies below agree to
   all 10 printed digits.
 - **`auto`** (the default) runs `dense` whenever its memory plan fits the
@@ -74,14 +74,13 @@ of closed-shell CCSD can be evaluated two ways, chosen by `[cc] ladder`
   printed (`ladder = dense (auto)`), logged, and returned
   (`CcResult::ladder_route`; Python `CcResult.ladder_route`).
 
-**Behaviour change.** Before `[cc] ladder` existed, a closed-shell CCSD job
-whose dense plan exceeded the memory budget was refused; under `auto` it now
-runs on the RI ladder instead. And because `auto` decides against the
-budget, a run without an explicit `[memory] budget_gb` (which is then
-auto-detected as 0.8 × the RAM available at start-up) can take different
-routes on the same input from one run to the next. The energies agree to
-round-off either way, but the time does not. Set `ladder` explicitly, or
-fix the budget, for reproducible timings.
+**Reproducibility.** Under `auto`, a closed-shell CCSD job whose dense plan
+exceeds the memory budget runs on the RI ladder instead of being refused.
+Because `auto` decides against the budget, a run without an explicit
+`[memory] budget_gb` (auto-detected as 0.8 × the RAM available at start-up)
+can take different routes on the same input from one run to the next. The
+energies agree to round-off either way; the time does not. Set `ladder`
+explicitly, or fix the budget, for reproducible timings.
 
 Measured 2026-10-26, alkane/cc-pVDZ (cc-pvdz-ri), `OPENBLAS_NUM_THREADS=1`,
 `RAYON_NUM_THREADS=4`, routes interleaved one per process, load average 3–6
@@ -137,7 +136,7 @@ anchored. `[local] reference = true` also runs the exact
 LinLCCD and prints the local error. Closed shell and energy only.
 
 **ωB97X-L-V** is a double-hybrid functional that uses short-range LinLCCD(hh)
-instead of MP2 for its correlation term. It converges its **own** ωB97X-L
+instead of MP2 for its correlation term. It converges its own ωB97X-L
 Kohn–Sham reference (a non-converged reference is an error), then adds the
 LinLCCD(hh) correction on those orbitals. `method.kind = "wb97x-l-v"`
 (`examples/water-wb97xlv.toml`). `[dft] lambda` and `omega` override the
@@ -157,13 +156,12 @@ comparison to a reference code yet.
 
 ## Implementation
 
-All contractions go through **`einsum!`**, a macro that maps tensor
+All contractions go through `einsum!`, a macro that maps tensor
 contractions onto BLAS3 GEMMs. The permutation copies that feed those GEMMs are
 parallelized, because for a strided permutation the copy can dominate the
 contraction it feeds: measured at 47% at n<sub>v</sub> = 40 and 70% at
 n<sub>v</sub> = 80. The copies are bit-identical regardless of thread count,
-since a permutation writes each output element exactly once; a test pins this
-and has been checked to fail when deliberately broken.
+since a permutation writes each output element once; a test pins this.
 
 ## Memory
 
