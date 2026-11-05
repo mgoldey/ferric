@@ -320,19 +320,43 @@ $$ \mu_d(F) = -\operatorname{Tr}[P^{\mathrm{rel}}(F)\,r_d] + \sum_A Z_AR_{A,d}, 
 \alpha_{de} = -\frac{\mu_d(+F_e) - \mu_d(-F_e)}{2|F|} , $$
 
 symmetrized. $P^{\mathrm{rel}}$ is `static_relaxed_density_ao`
-(`cpks_polar.rs:834`): $2\delta_{ij} + (P+P^{\mathsf T}) + z$ with
+(`cpks_polar.rs:830`): $2\delta_{ij} + (P+P^{\mathsf T}) + z$ with
 $X_{ai} = L_{ai} + [(2J-K)[P+P^{\mathsf T}]]_{ai}$ ($L$ = `build_lagrangian`) and
 the section-9 operator, $(\Delta\varepsilon + \tfrac12$`compute_az_product`$)\,z = -X$.
 This $z$ equals `solve_zvector`'s, and $\mu_d(0) = -\partial E/\partial F_d$
 of the RI-MP2 energy. `DensityMode::Unrelaxed` sets $z = 0$.
 
-**Analytic** (`cpks_polar.rs:73` `mp2_polarizability_analytic`, delegating to
-`analytic_alpha_full`, `cpks_polar.rs:1519`) solves the dipole CPHF
-$(A+B)\,U^x = -\mu^x_{vo}$ densely in the full MO basis, rotates the MO
-integrals with the generator $\Theta_{ai} = U_{ai}$, $\Theta_{ia} = -U_{ai}$,
-differentiates the relaxed density by central difference in that rotation,
-and contracts $\alpha_{pq} = -\sum \partial D\cdot r$. The singlet response
-matrices are (`cpks_polar.rs:1677` `build_apb_amb`)
+**Analytic** (`mp2_polarizability_analytic`, delegating to
+`analytic_alpha_relaxed`). The field enters $h$ as $+F\,r$. Per axis $x$, the
+dipole CPHF $(A+B)\,U^x = -r^x_{vo}$ gives the first-order Fock response
+(`first_order_fock_response`)
+
+$$ \partial F = r^x + J[\partial D] - \tfrac12 K[\partial D], \qquad
+\partial D = 2\,(C_v U^x C_o^{\mathsf T} + C_o U^{x\mathsf T} C_v^{\mathsf T}) , $$
+
+and the first-order reference at field $s$ is the set of canonical orbitals of
+$F + s\,\partial F$ (`reference_at_field`). Its occupied space, orbital energies
+and oo/vv Fock blocks equal the field-$s$ SCF's to $O(s^2)$. Then
+
+$$ \alpha_{xy} = -\operatorname{Tr}\!\left[\frac{P^{\mathrm{rel}}(+h) - P^{\mathrm{rel}}(-h)}{2h}\, r_y\right],
+\qquad h = 10^{-4}, $$
+
+with $P^{\mathrm{rel}}$ = `static_relaxed_density_ao` on that reference. The
+same difference of the SCF density reproduces the CPHF
+$\alpha^{\mathrm{HF}} = 4\mu^{\mathsf T}(A+B)^{-1}\mu$ to $4\times10^{-9}$
+relative. A hand assembly $\partial P + \partial z + 2U$ with the
+canonical-denominator $\partial t_2$ omits the off-diagonal oo/vv Fock response
+and the rotation $\Theta D^{\mathrm{corr}} + D^{\mathrm{corr}}\Theta^{\mathsf T}$
+of the correlated density $D^{\mathrm{corr}} = P + P^{\mathsf T} + z$; on
+water/STO-3G these contribute 0.0009 and $-0.0054$ to $\alpha_{zz}$, and 0.048
+and $-0.040$ to $\alpha_{yy}$.
+
+`analytic_alpha_full` (dense, nmo⁴) rotates the RI MO integrals by
+$\Theta_{ai} = U_{ai}$, $\Theta_{ia} = -U_{ai}$ and differences the relaxed
+density at fixed $\varepsilon$. It omits $\partial\varepsilon$, the
+off-diagonal oo/vv Fock response and the rotation of the correlated density,
+and solves the HF response with RI integrals. The singlet response
+matrices are (`cpks_polar.rs:1640` `build_apb_amb`)
 
 $$ (A+B)_{ai,bj} = \Delta\varepsilon\,\delta + 4(ai|bj) - (ab|ij) - (aj|bi), \qquad
 (A-B)_{ai,bj} = \Delta\varepsilon\,\delta + (aj|bi) - (ab|ij), $$
@@ -340,7 +364,7 @@ $$ (A+B)_{ai,bj} = \Delta\varepsilon\,\delta + 4(ai|bj) - (ab|ij) - (aj|bi), \qq
 and the HF-level polarizabilities are
 $\alpha = 4\mu^{\mathsf T}(A+B)^{-1}\mu$ and
 $\alpha(i\omega) = 4\mu^{\mathsf T}(A-B)\left[(A-B)(A+B) + \omega^2\right]^{-1}\mu$
-(`cpks_polar.rs:1831` `dynamic_cphf_alpha_iw`). `solve_cphf_cg` applies
+(`cpks_polar.rs:1794` `dynamic_cphf_alpha_iw`). `solve_cphf_cg` applies
 $(A+B) = \Delta\varepsilon + \tfrac12$`compute_az_product`.
 
 ## 11. CABS for F12

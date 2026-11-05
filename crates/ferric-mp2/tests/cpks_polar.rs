@@ -946,3 +946,77 @@ fn bse_gate0_bare_v_collapses_to_tdhf() {
         "(A−B) screened bare-v limit must equal TDHF (A−B); ‖Δ‖∞ = {d_amb:.3e}"
     );
 }
+
+/// `mp2_polarizability_analytic` (→ `analytic_alpha_relaxed`) vs PySCF's
+/// finite-field `−d²E/dF²` of the RHF + DF-MP2 energy with the same auxiliary
+/// basis (`scripts/cpks/ff_dfmp2_dipole_alpha.py [basis] [mol] --full`,
+/// cc-pvdz-ri, no frozen core). Bar: 1e-5 × max(|α_ref|, α_iso) per element,
+/// so off-diagonals are held to the tensor's scale. Measured ≤ 2.2e-6 rel.
+/// Without the off-diagonal oo/vv Fock response the water/STO-3G α_yy misses
+/// by 1%; the previous hand-assembled path missed α_zz by 4%.
+#[test]
+fn relaxed_alpha_matches_pyscf_energy_hessian() {
+    use ferric_core::basis;
+    use ferric_mp2::cpks_polar::mp2_polarizability_analytic;
+    let water = "3\nh2o\nO 0 0 0.117790\nH 0 0.755453 -0.471161\nH 0 -0.755453 -0.471161\n";
+    let nh3 = "4\nnh3\nN 0.001600 -0.055708 0.103215\nH -0.560130 0.790564 0.124323\n\
+               H 0.928089 0.227984 -0.202386\nH -0.379098 -0.628661 -0.644480\n";
+    // (xyz, basis, diag, [xy, xz, yz])
+    let cases: [(&str, &str, [f64; 3], [f64; 3]); 3] = [
+        (water, "sto-3g", [0.044_329, 4.981_096, 2.135_441], [0.0; 3]),
+        (
+            water,
+            "cc-pvdz",
+            [3.163_135, 6.975_300, 5.270_607],
+            [0.0; 3],
+        ),
+        (
+            nh3,
+            "cc-pvdz",
+            [9.452_976, 8.816_308, 7.267_109],
+            [0.018_528, -0.033_926, 1.180_183],
+        ),
+    ];
+    for (xyz, bas, diag, off) in cases {
+        let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
+        let obs = PreparedBasis::new(&mol, &basis::bundled(bas).unwrap()).unwrap();
+        let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
+        let ctx = ParallelContext::default();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+        let scf_cfg = RhfConfig {
+            energy_conv: 1e-12,
+            density_conv: 1e-10,
+            ..Default::default()
+        };
+        let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &scf_cfg).unwrap();
+        let mp2_cfg = ferric_mp2::rimp2::RiMp2Config {
+            frozen_core: 0,
+            memory_budget_bytes: None,
+            ..Default::default()
+        };
+        let a = mp2_polarizability_analytic(&ctx, &mol, &obs, &dfbs, op, &bounds, &rhf, &mp2_cfg)
+            .unwrap();
+        let want = [
+            [diag[0], off[0], off[1]],
+            [off[0], diag[1], off[2]],
+            [off[1], off[2], diag[2]],
+        ];
+        let iso = (diag[0] + diag[1] + diag[2]) / 3.0;
+        for x in 0..3 {
+            for y in 0..3 {
+                let rel = (a.tensor[x][y] - want[x][y]).abs() / want[x][y].abs().max(iso);
+                eprintln!(
+                    "{bas} α[{x}{y}] = {:.6} PySCF {:.6} rel {rel:.1e}",
+                    a.tensor[x][y], want[x][y]
+                );
+                assert!(
+                    rel < 1e-5,
+                    "{bas} α[{x}][{y}] = {} vs PySCF {}",
+                    a.tensor[x][y],
+                    want[x][y]
+                );
+            }
+        }
+    }
+}

@@ -1,19 +1,16 @@
-//! Analytic coupled-perturbed (CPKS) relaxed MP2 static polarizability.
+//! Coupled-perturbed relaxed RI-MP2 static polarizability (closed shell).
 //!
-//! Replaces the finite-field `ff_polar` path, which fails on symmetric molecules
-//! (the orbital-relaxation/CPHF response is near-singular under a symmetry-axis
-//! field → 1/F divergence in the differenced dipole; see
-//! attenuated-mp2-alpha-experiment memory). Analytic CPKS solves the response
-//! ONCE per Cartesian direction against a smooth RHS — no finite difference, so
-//! the 1/F cancellation catastrophe is gone by construction.
+//! `analytic_alpha_relaxed` (production, via `mp2_polarizability_analytic`):
+//! dipole CPHF `U^x` → first-order Fock response → the first-order field-`±h`
+//! reference (canonical orbitals of `F ± h∂F`) → central difference of
+//! `static_relaxed_density_ao`. No SCF is re-converged, so the finite-field
+//! path's SCF noise is absent. `α_xy = −Tr[∂D/∂F_x · r_y]`.
 //!
-//! Three layers (2n+1 rule → first-order responses only):
-//!   1. CPHF orbital response U^x: (Δε+A) U^x = −μ^x_ov   (CG, reuse compute_az_product)
-//!   2. perturbed MP2 amplitudes ∂t2/∂F^x
-//!   3. perturbed relaxed density: perturbed Lagrangian L^x + second CG solve z^x
-//! Then α_xy = −2 Σ (∂P_relax/∂F^x)_pq μ^y_pq.
-//!
-//! Closed-shell (Restricted), static (ω=0). Attenuated operator via `op`.
+//! `analytic_alpha_full` is a dense full-MO (nmo⁴) variant that omits the
+//! orbital-energy and off-diagonal oo/vv Fock responses and the rotation of the
+//! correlated density, and builds the HF response from RI integrals; it is
+//! 1.3% low on water α_zz. Also here: HF-level CPHF α, dynamic CPHF α(iω) and
+//! Casimir–Polder C6, and amplitude-response diagnostics.
 
 use ferric_core::mol::Molecule;
 use ferric_core::orbitals::OrbitalSpace;
@@ -65,10 +62,8 @@ use ndarray::Array2;
 use crate::ff_polar::{eig3_sym_pub as eig3_sym, Mp2Polarizability};
 use crate::rimp2::RiMp2Config;
 
-/// Analytic relaxed MP2 static polarizability (closed-shell). Delegates to the
-/// clean-room-validated full-MO driver (`analytic_alpha_full`): matches the
-/// energy-Hessian / PySCF oracle to ~0.5% on water/STO-3G. Replaces the
-/// finite-field path, which is 1/F-unstable on symmetric molecules.
+/// Analytic relaxed RI-MP2 static polarizability (closed shell, no frozen
+/// core). Delegates to [`analytic_alpha_relaxed`].
 #[allow(clippy::too_many_arguments)]
 pub fn mp2_polarizability_analytic(
     ctx: &ParallelContext,
@@ -80,7 +75,7 @@ pub fn mp2_polarizability_analytic(
     rhf: &ScfResult,
     mp2_config: &RiMp2Config,
 ) -> Result<Mp2Polarizability, FerricError> {
-    analytic_alpha_full(ctx, mol, obs, dfbs, op, bounds, rhf, mp2_config)
+    analytic_alpha_relaxed(ctx, mol, obs, dfbs, op, bounds, rhf, mp2_config)
 }
 
 /// Solve `(Δε + ½·compute_az_product) X = rhs` by Jacobi-preconditioned CG.
@@ -307,7 +302,7 @@ pub fn mp2_polarizability_analytic_hf(
 //   ∂C_·i = Σ_c U_ci C_·c ;  ∂C_·a = −Σ_k U_ak C_·k
 // ⇒ ∂B^P_ia = Σ_c U_ci B^P_ca − Σ_k U_ak B^P_ik         (uses dressed b_vv, b_oo)
 //   ∂(ia|jb) = Σ_P [∂B^P_ia B^P_jb + B^P_ia ∂B^P_jb]
-//   ∂ε_p     = h^x_pp + Σ_ck U_ck [2(pp|ck) − (pc|pk)]   (h^x = −μ_x; perturbed-Fock diag)
+//   ∂ε_p     = r_pp + Σ_ck U_ck [4(pp|ck) − 2(pc|pk)]   (perturbed-Fock diag, field +F·r)
 //   ∂t2      = [∂(ia|jb) − t2·(∂εi+∂εj−∂εa−∂εb)] / Δε
 //
 // All B blocks come pre-dressed from compute_mp2_intermediates — no AO rebuild.
@@ -390,7 +385,7 @@ pub fn analytic_dt2_full(
         }
     }
 
-    // --- ∂ε_p = −μ_pp + Σ_ck U_ck [2(pp|ck) − (pc|pk)] ---
+    // --- ∂ε_p = r_pp + Σ_ck U_ck [4(pp|ck) − 2(pc|pk)] ---
     // Need full-MO dipole diagonal and the coupling integrals via dressed B.
     // μ in MO: μ_pq = Cᵀ D^x_AO C.
     let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0])?;
@@ -403,11 +398,12 @@ pub fn analytic_dt2_full(
     };
 
     // ∂ε_p = ∂F_pp = (Cᵀ ∂F_AO C)_pp, with the FIRST-ORDER Fock
-    //   ∂F_AO = ∂h_AO + G[∂D_AO],   ∂h_AO = −r_axis (uniform field),
+    //   ∂F_AO = ∂h_AO + G[∂D_AO],   ∂h_AO = +r_axis (the field convention of
+    //   the CPHF right-hand side −r_vo above),
     //   ∂D_AO = 2 Σ_ai U_ai (C_·a C_·iᵀ + C_·i C_·aᵀ)   (U-driven density response),
-    //   G[∂D] = 2 J[∂D] − K[∂D]   (closed-shell two-electron response).
-    // Textbook perturbed-Fock-diagonal form — replaces the ad-hoc (pp|ck)
-    // contractions. (Note: −r_axis sign convention is pinned by the FD oracle.)
+    //   G[∂D] = J[∂D] − ½K[∂D]   (the SCF Fock h + J[D] − ½K[D], D total).
+    // Pinned against `first_order_fock_response` (dt2_orbital_energy_response_
+    // matches_fock_response).
     let nbas = obs.nbasis();
     let c_occ = c
         .slice(ndarray::s![.., first_occ..first_occ + nocc])
@@ -436,9 +432,9 @@ pub fn analytic_dt2_full(
     let mut kdd = Array2::<f64>::zeros((nbas, nbas));
     ferric_scf::rhf::build_jk(ctx, obs, bounds, 1e-12, &dd_ao, &mut jdd, &mut kdd)?;
     let gscale: f64 = cpks_weight("CPKS_GSCALE", 1.0);
-    let g_ao = gscale * (2.0 * &jdd - &kdd);
-    // ∂F_AO = −r_axis + G[∂D];  ∂F_MO = Cᵀ ∂F_AO C
-    let df_ao = &(-&dip_ao[axis]) + &g_ao;
+    let g_ao = gscale * (&jdd - &(0.5 * &kdd));
+    // ∂F_AO = +r_axis + G[∂D];  ∂F_MO = Cᵀ ∂F_AO C
+    let df_ao = &dip_ao[axis] + &g_ao;
     let df_mo = c.t().dot(&df_ao).dot(c);
     let _ = &mu_mo; // (kept for reference; diagonal now from df_mo directly)
     let mut deps_o = vec![0.0f64; nocc];
@@ -906,18 +902,11 @@ pub fn static_relaxed_density_ao(
 }
 
 // ===========================================================================
-// Layer 3 (PySCF-mirrored): analytic ∂(relaxed dm1)/∂F^x, then
-//   α_xy = −Tr[(∂dm1_relaxed/∂F^x)_AO · r_y_AO].
-//
-// Mirrors pyscf/grad/mp2.py relaxed-dm1 assembly (~/qc/pyscf):
-//   dm1mo = [2δ+P_oo]_oo + [P_vv]_vv + z_vo  (z = _response_dm1 Z-vector)
-//   = exactly ferric build_relaxed_density_ao.
-// Its field derivative:
-//   ∂P_oo, ∂P_vv  : product rule on ∂t2 (build_mp2_density is bilinear in t2)
-//   ∂z            : perturbed Z-vector  (Δε+0.5A) ∂z = ∂L − ∂(Δε+0.5A)·z
-// The 2δ core is field-independent. Contract with the dipole for α.
-// Inner oracle: ff_polar finite-field RELAXED α on water/ch4 (FF-stable there);
-// outer gate: PySCF relaxed MP2 α.
+// Amplitude-response pieces (diagnostic): ∂P_oo, ∂P_vv by the product rule
+// on ∂t2, and ∂B from U. ∂t2 here is the canonical-denominator response
+// (∂ε on the diagonal only); it omits the off-diagonal oo/vv Fock response,
+// so these pieces do not sum to the relaxed α. `analytic_alpha_relaxed`
+// does not use them.
 // ===========================================================================
 
 /// ∂P_oo, ∂P_vv from ∂t2 via the product rule (build_mp2_density is bilinear:
@@ -1030,54 +1019,156 @@ pub fn analytic_alpha_amplitude_only(
     })
 }
 
-/// Full-MO B response ∂B^P_pq from the CPHF U^x (occ↔vir rotation):
-///   ∂C_·i = Σ_c U_ci C_·c ;  ∂C_·a = −Σ_k U_ak C_·k.
-/// For a full-MO index p, ∂(MO p) mixes the complementary space via U. Returns
-/// (naux, nmo, nmo). Mirrors the half-index rotation of compute_b_full_mo's B.
-fn db_full_from_u(
-    b_full: &ndarray::Array3<f64>,
-    u: &Array2<f64>,
+/// Field step of the [`analytic_alpha_relaxed`] central difference. The
+/// truncation error is `O(h²)`: 2.6e-6 at `h = 1e-3`, 2.6e-8 at `1e-4` on
+/// water/STO-3G α_yy; the CPHF/Z-vector CG tolerance (1e-10) enters as
+/// `≲ 1e-10 / h`.
+const LR_FIELD_STEP: f64 = 1e-4;
+
+/// First-order Fock response to a uniform field along one axis,
+/// `∂F = r + J[∂D] − ½K[∂D]` (AO), with `∂D = 2(C_v U C_oᵀ + C_o Uᵀ C_vᵀ)` and
+/// `U` the dipole CPHF solution `(A+B) U = −r_vo`. The field enters the core
+/// Hamiltonian as `+F·r` (electron charge −1); the SCF Fock is
+/// `h + J[D] − ½K[D]` with `D` the total density.
+#[allow(clippy::too_many_arguments)]
+fn first_order_fock_response(
+    ctx: &ParallelContext,
+    obs: &PreparedBasis,
+    bounds: &SchwarzBounds,
+    c: &Array2<f64>,
+    eps: &[f64],
     orb: &OrbitalSpace,
-) -> ndarray::Array3<f64> {
+    r_ao: &Array2<f64>,
+    budget_bytes: usize,
+) -> Result<Array2<f64>, FerricError> {
     let OrbitalSpace {
         nocc,
         nvir,
         nocc_total,
         first_occ,
     } = *orb;
-    let naux = b_full.shape()[0];
-    let nmo = b_full.shape()[1];
-    // U as a full-MO antisymmetric-ish generator Θ_pq: occ i ← vir c with +U_ci,
-    // vir a ← occ k with −U_ak. Θ_{c,i}=U_ci (vir,occ), Θ_{i,c}=? The orbital
-    // response C^(1)_p = Σ_q Θ_qp C_q with Θ_{vir,occ}=U, Θ_{occ,vir}=−Uᵀ.
-    let mut theta = Array2::<f64>::zeros((nmo, nmo)); // Θ_{q,p}: q mixes into p
-    for a in 0..nvir {
-        for i in 0..nocc {
-            theta[(nocc_total + a, first_occ + i)] = u[(a, i)]; // occ i gains vir a
-            theta[(first_occ + i, nocc_total + a)] = -u[(a, i)]; // vir a gains −occ i
-        }
+    let c_occ = c.slice(ndarray::s![.., first_occ..first_occ + nocc]);
+    let c_vir = c.slice(ndarray::s![.., nocc_total..nocc_total + nvir]);
+    let r_vo = c_vir.t().dot(r_ao).dot(&c_occ);
+    let (u, resid, iters, conv) = solve_cphf_cg(c, &(-&r_vo), obs, bounds, orb, eps, budget_bytes)?;
+    if !conv {
+        return Err(FerricError::General(format!(
+            "first_order_fock_response: CPHF not converged (resid={resid:.2e}, iters={iters})"
+        )));
     }
-    // ∂B^P_pq = Σ_r Θ_rp B^P_rq + Σ_r Θ_rq B^P_pr
-    let mut db = ndarray::Array3::<f64>::zeros((naux, nmo, nmo));
-    for p_aux in 0..naux {
-        let bslice = b_full.index_axis(ndarray::Axis(0), p_aux);
-        // term1[p,q] = Σ_r Θ_rp B_rq = (Θᵀ B)[p,q]; term2 = (B Θ)[p,q]
-        let t1 = theta.t().dot(&bslice);
-        let t2 = bslice.dot(&theta);
-        let mut dbp = db.index_axis_mut(ndarray::Axis(0), p_aux);
-        dbp.assign(&(&t1 + &t2));
-    }
-    db
+    let half = c_vir.dot(&u).dot(&c_occ.t());
+    let dd = 2.0 * (&half + &half.t());
+    let nbas = obs.nbasis();
+    let mut j = Array2::<f64>::zeros((nbas, nbas));
+    let mut k = Array2::<f64>::zeros((nbas, nbas));
+    ferric_scf::rhf::build_jk(ctx, obs, bounds, 1e-12, &dd, &mut j, &mut k)?;
+    Ok(r_ao + &j - &(0.5 * &k))
 }
 
-/// Full analytic relaxed MP2 α (Layer 3, PySCF-mirrored). For each field axis x:
-///   ∂dm1_relaxed = ∂P_oo + ∂P_vv (amplitude, from ∂t2) + ∂z (perturbed Z-vector),
-///   ∂z solves (Δε + ½·compute_az_product) ∂z = −∂X − (∂M) z₀, the derivative of
-///   the `static_relaxed_density_ao` Z-vector equation M z₀ = −X along
-///   (∂f_mo, ∂t2, ∂P_oo, ∂P_vv, ∂b_full, ∂C) [ε central-diff].
-///   The amplitude response ∂t2 carries ∂ε but not the off-diagonal oo/vv Fock
-///   response, so α is approximate.
-///   α_xy = −Tr[∂dm1_relaxed_AO · r_y].
+/// The RHF reference at field `s`, to first order: the canonical orbitals of
+/// `F(s) = F + s·∂F`, diagonalised in the unperturbed MO basis. Occupied space,
+/// orbital energies and Fock matrix equal those of the SCF converged at field
+/// `s` to `O(s²)`, including the off-diagonal oo/vv Fock response, which the
+/// diagonalisation re-canonicalises away.
+fn reference_at_field(
+    rhf: &ScfResult,
+    dfock_ao: &Array2<f64>,
+    s: f64,
+    nocc: usize,
+) -> Result<ScfResult, FerricError> {
+    use ndarray_linalg::{Eigh, UPLO};
+    let c = rhf.mos_r();
+    let fock = rhf.fock_r() + &(s * dfock_ao);
+    let f_mo = c.t().dot(&fock).dot(c);
+    let f_mo = 0.5 * (&f_mo + &f_mo.t());
+    let (w, v) = f_mo
+        .eigh(UPLO::Upper)
+        .map_err(|e| FerricError::Lapack(format!("reference_at_field: {e}")))?;
+    let c_s = c.dot(&v);
+    let d_alpha = {
+        let c_occ = c_s.slice(ndarray::s![.., ..nocc]);
+        c_occ.dot(&c_occ.t())
+    };
+    let mut out = rhf.clone();
+    out.mos_alpha = c_s;
+    out.eps_alpha = w.to_vec();
+    out.fock_alpha = fock;
+    out.density_total = 2.0 * &d_alpha;
+    out.density_alpha = d_alpha;
+    Ok(out)
+}
+
+/// `(α_HF, α_MP2)`, unsymmetrised, `[x][y] = −Tr[∂D/∂F_x · r_y]`, from the
+/// central difference in `h` of the SCF density and of
+/// [`static_relaxed_density_ao`] on [`reference_at_field`].
+#[allow(clippy::too_many_arguments)]
+fn relaxed_alpha_tensors(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    rhf: &ScfResult,
+    mp2_config: &RiMp2Config,
+    h: f64,
+) -> Result<([[f64; 3]; 3], [[f64; 3]; 3]), FerricError> {
+    if !matches!(rhf.spin, Spin::Restricted) {
+        return Err(FerricError::General(
+            "analytic_alpha_relaxed: Restricted only".into(),
+        ));
+    }
+    if mp2_config.frozen_core > 0 {
+        return Err(FerricError::General(format!(
+            "analytic_alpha_relaxed: frozen_core = {} is not supported (no core–active \
+             orbital-relaxation block); use frozen_core = 0",
+            mp2_config.frozen_core
+        )));
+    }
+    let c = rhf.mos_r();
+    let eps = rhf.eps_r();
+    let nocc = (mol.nelec() / 2) as usize;
+    let orb = OrbitalSpace::new(nocc, c.ncols() - nocc, nocc, 0);
+    let budget_bytes = ferric_core::memory::resolve_budget_bytes(mp2_config.memory_budget_bytes);
+    let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0])?;
+    let mut a_hf = [[0.0f64; 3]; 3];
+    let mut a_mp2 = [[0.0f64; 3]; 3];
+    for x in 0..3 {
+        let df =
+            first_order_fock_response(ctx, obs, bounds, c, eps, &orb, &dip_ao[x], budget_bytes)?;
+        let mut d_hf = Vec::with_capacity(2);
+        let mut d_rel = Vec::with_capacity(2);
+        for s in [h, -h] {
+            let r = reference_at_field(rhf, &df, s, nocc)?;
+            d_rel.push(static_relaxed_density_ao(
+                ctx, mol, obs, dfbs, op, bounds, &r, mp2_config,
+            )?);
+            d_hf.push(r.density_total);
+        }
+        let dd_hf = (&d_hf[0] - &d_hf[1]) / (2.0 * h);
+        let dd_rel = (&d_rel[0] - &d_rel[1]) / (2.0 * h);
+        for y in 0..3 {
+            a_hf[x][y] = -(&dd_hf * &dip_ao[y]).sum();
+            a_mp2[x][y] = -(&dd_rel * &dip_ao[y]).sum();
+        }
+    }
+    Ok((a_hf, a_mp2))
+}
+
+/// Analytic relaxed RI-MP2 static polarizability (closed shell, no frozen
+/// core). Per field axis `x`:
+///   1. the dipole CPHF `U^x` and the first-order Fock response `∂F`
+///      (`first_order_fock_response`);
+///   2. the first-order field-`±h` reference: canonical orbitals of `F ± h∂F`
+///      (`reference_at_field`);
+///   3. `α_xy = −Tr[(D(+h) − D(−h))/(2h) · r_y]` with `D` =
+///      `static_relaxed_density_ao`, whose dipole is `−∂E/∂F`.
+///
+/// No SCF is re-converged; the central difference is along the analytic
+/// first-order reference, so it carries none of the finite-field path's SCF
+/// noise. The SCF response terms use `bounds.op`, the MP2 terms `op`.
+/// Matches PySCF finite-field DF-MP2 (same aux basis) to ≤ 1e-6 relative
+/// (`relaxed_alpha_matches_pyscf_energy_hessian`).
 #[allow(clippy::too_many_arguments)]
 pub fn analytic_alpha_relaxed(
     ctx: &ParallelContext,
@@ -1089,147 +1180,17 @@ pub fn analytic_alpha_relaxed(
     rhf: &ScfResult,
     mp2_config: &RiMp2Config,
 ) -> Result<Mp2Polarizability, FerricError> {
-    if mp2_config.frozen_core > 0 {
-        return Err(FerricError::General(format!(
-            "{}: frozen_core = {} is not supported (no core–active orbital-relaxation \
-             block); use frozen_core = 0",
-            "analytic_alpha_relaxed", mp2_config.frozen_core
-        )));
-    }
-    let inter = compute_mp2_intermediates(mol, obs, dfbs, op, rhf, mp2_config)?;
-    let (nocc, nvir) = (inter.nocc, inter.nvir);
-    let (first_occ, nocc_total) = (inter.first_occ, inter.nocc_total);
-    let c = rhf.mos_r();
-    let eps = rhf.eps_r();
-    let nmo = c.ncols();
-    let orb = OrbitalSpace::new(nocc, nvir, nocc_total, first_occ);
-    let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0])?;
-    // Resolved once (not per solve_zvector/solve_cphf_cg call below) —
-    // this function's config-reachable memory ceiling for both CPHF solves.
-    let budget_bytes = ferric_core::memory::resolve_budget_bytes(mp2_config.memory_budget_bytes);
-
-    // Un-perturbed pieces (field-independent): base Lagrangian inputs + z.
-    let f_mo0 = c.t().dot(rhf.fock_r()).dot(c);
-    let b_full = crate::oo_rimp2::compute_b_full_mo(obs, dfbs, op, c)?;
-    let (z0, _l0) =
-        crate::zvector::solve_zvector(mol, obs, dfbs, op, bounds, rhf, &inter, budget_bytes)?;
-    let pool = ferric_scf::engine_pool::EnginePool::new(bounds.op, obs, 1e-14)?;
-
-    let mut tensor = [[0.0f64; 3]; 3];
-    for x in 0..3 {
-        let (dt2, u, df_mo) =
-            analytic_dt2_full(ctx, mol, obs, dfbs, op, bounds, rhf, mp2_config, x)?;
-        let (dp_oo, dp_vv) = dmp2_density_response(&inter.t2, &dt2, nocc, nvir);
-        let db_full = db_full_from_u(&b_full, &u, &orb);
-
-        // z₀ solves M z₀ = −X with M = Δε + ½·compute_az_product and
-        // X = L + (2J−K)[P+Pᵀ]_vo (static_relaxed_density_ao). Differentiating
-        // along the analytic input responses gives M ∂z = −∂X − (∂M) z₀; the
-        // right side is the directional central difference of the residual
-        // R(s) = −X(s) − M(s) z₀ (R(0) = 0 to the z₀ tolerance), with the orbitals
-        // rotated as C(s) = C + s·CΘ. The ov block of the total Fock response is
-        // zero (CPHF), so only the oo/vv blocks of ∂f_mo enter f(s).
-        let mut theta = Array2::<f64>::zeros((nmo, nmo)); // Θ_{q,p}: q mixes into p
-        for a in 0..nvir {
-            for i in 0..nocc {
-                theta[(nocc_total + a, first_occ + i)] = u[(a, i)];
-                theta[(first_occ + i, nocc_total + a)] = -u[(a, i)];
-            }
-        }
-        let dc = c.dot(&theta);
-        let mut df_ooovv = df_mo.clone();
-        for a in 0..nvir {
-            for i in 0..nocc {
-                df_ooovv[(nocc_total + a, first_occ + i)] = 0.0;
-                df_ooovv[(first_occ + i, nocc_total + a)] = 0.0;
-            }
-        }
-        let resid_at = |s: f64| -> Result<Array2<f64>, FerricError> {
-            let c_s = c + &(s * &dc);
-            let f = &f_mo0 + &(s * &df_ooovv);
-            let t: Vec<f64> = inter
-                .t2
-                .iter()
-                .zip(dt2.iter())
-                .map(|(a, b)| a + s * b)
-                .collect();
-            let poo = &inter.p_oo + &(s * &dp_oo);
-            let pvv = &inter.p_vv + &(s * &dp_vv);
-            let bf = &b_full + &(s * &db_full);
-            let l = crate::zvector::build_lagrangian(&f, &t, &poo, &pvv, &orb, &bf);
-            let mut dm_p = Array2::<f64>::zeros((nmo, nmo));
-            for i in 0..nocc {
-                for j in 0..nocc {
-                    dm_p[(first_occ + i, first_occ + j)] = poo[(i, j)] + poo[(j, i)];
-                }
-            }
-            for a in 0..nvir {
-                for b in 0..nvir {
-                    dm_p[(nocc_total + a, nocc_total + b)] = pvv[(a, b)] + pvv[(b, a)];
-                }
-            }
-            let veff = veff_vo_mo(ctx, obs, bounds, &c_s, &dm_p, &orb)?;
-            let az = crate::zvector::compute_az_product(
-                &c_s,
-                &z0,
-                obs,
-                bounds,
-                &orb,
-                &pool,
-                budget_bytes,
-            )?;
-            let mut r = -(&l + &veff);
-            for a in 0..nvir {
-                for i in 0..nocc {
-                    let de_s =
-                        f[(nocc_total + a, nocc_total + a)] - f[(first_occ + i, first_occ + i)];
-                    r[(a, i)] -= de_s * z0[(a, i)] + 0.5 * az[(a, i)];
-                }
-            }
-            Ok(r)
-        };
-        let eps_step: f64 = cpks_weight("CPKS_EPS", 1e-4);
-        let rhs = (&resid_at(eps_step)? - &resid_at(-eps_step)?).mapv(|v| v / (2.0 * eps_step));
-        let (dz, dresid, _it, dconv) =
-            solve_cphf_cg(c, &rhs, obs, bounds, &orb, eps, budget_bytes)?;
-        if !dconv {
-            return Err(FerricError::General(format!(
-                "analytic_alpha_relaxed: ∂z axis {x} not converged (resid={dresid:.2e})"
-            )));
-        }
-
-        // ∂dm1_mo: oo (∂P_oo sym) + vv (∂P_vv sym) + vo/ov (∂z).
-        let mut ddm = Array2::<f64>::zeros((nmo, nmo));
-        for i in 0..nocc {
-            for j in 0..nocc {
-                ddm[(first_occ + i, first_occ + j)] =
-                    (dp_oo[(i, j)] + dp_oo[(j, i)]) * cpks_weight("CPKS_WP", 1.0);
-            }
-        }
-        for a in 0..nvir {
-            for b in 0..nvir {
-                ddm[(nocc_total + a, nocc_total + b)] =
-                    (dp_vv[(a, b)] + dp_vv[(b, a)]) * cpks_weight("CPKS_WP", 1.0);
-            }
-        }
-        // vo/ov block: SCF reference orbital response (2·U, the ∂ of the 2δ core
-        // — the occupied orbitals rotate by U under the field; factor 2 =
-        // closed-shell occupancy; this is the dominant HF-α contribution) PLUS the
-        // MP2 orbital-relaxation ∂z.
-        for a in 0..nvir {
-            for i in 0..nocc {
-                let w2u: f64 = cpks_weight("CPKS_W2U", 1.0);
-                let wz: f64 = cpks_weight("CPKS_WZ", 1.0);
-                let vo = w2u * 2.0 * u[(a, i)] + wz * dz[(a, i)];
-                ddm[(nocc_total + a, first_occ + i)] += vo;
-                ddm[(first_occ + i, nocc_total + a)] += vo;
-            }
-        }
-        let ddm_ao = c.dot(&ddm).dot(&c.t());
-        for y in 0..3 {
-            tensor[x][y] = -(&ddm_ao * &dip_ao[y]).sum();
-        }
-    }
+    let (_, mut tensor) = relaxed_alpha_tensors(
+        ctx,
+        mol,
+        obs,
+        dfbs,
+        op,
+        bounds,
+        rhf,
+        mp2_config,
+        LR_FIELD_STEP,
+    )?;
     for i in 0..3 {
         for j in (i + 1)..3 {
             let avg = 0.5 * (tensor[i][j] + tensor[j][i]);
@@ -1247,10 +1208,9 @@ pub fn analytic_alpha_relaxed(
 }
 
 // ===========================================================================
-// PORTED analytic relaxed-MP2 α (clean-room-validated, scripts/cpks/mp2_alpha_clean.py).
-// Operates on the FULL-MO ERI tensor (pq|rs)=Σ_P B[P,p,q]B[P,r,s] so the field
-// perturbation (Θ-rotation of integrals) is direct. Non-RI in the response
-// (small systems). Recipe per axis q:
+// Dense full-MO relaxed-MP2 α (port of scripts/cpks/mp2_alpha_clean.py).
+// Operates on the FULL-MO RI ERI tensor (pq|rs)=Σ_P B[P,p,q]B[P,r,s]; the
+// response is RI too (small systems). Recipe per axis q:
 //   U^q : (Δε+A) U = −r^q_vo                          (CPHF)
 //   Θ_{vir,occ}=U, Θ_{occ,vir}=−U
 //   ∂Imo = Σ_idx Θ-rotate each of the 4 MO indices
@@ -1513,9 +1473,12 @@ fn solve_zvec_dense(
     x.into_shape_with_order((nvir, nocc)).unwrap()
 }
 
-/// Analytic relaxed MP2 static polarizability via the full-MO recipe (clean-room
-/// validated to ~0.5% vs energy-Hessian). Closed-shell. The proper public entry
-/// `mp2_polarizability_analytic` delegates here.
+/// Relaxed MP2 static polarizability from the dense full-MO (nmo⁴) RI ERI
+/// tensor. APPROXIMATE: it rotates the integrals by U but keeps ε fixed, drops
+/// the off-diagonal oo/vv Fock response and the rotation of the correlated
+/// density, and solves the HF response with RI integrals. Water α_zz is 1.3%
+/// (STO-3G) / 1.8% (cc-pVDZ) below [`analytic_alpha_relaxed`], which matches
+/// PySCF. Closed shell; ignores `frozen_core`.
 pub fn analytic_alpha_full(
     _ctx: &ParallelContext,
     mol: &Molecule,
@@ -2009,12 +1972,116 @@ mod tests {
             memory_budget_bytes: Some(ferric_core::memory::gib_to_bytes(1e-6)),
             ..Default::default()
         };
-        let err = mp2_polarizability_analytic(&ctx, &mol, &obs, &dfbs, op, &bounds, &rhf, &cfg)
-            .unwrap_err();
+        let err =
+            analytic_alpha_full(&ctx, &mol, &obs, &dfbs, op, &bounds, &rhf, &cfg).unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("MO-ERI") && msg.contains("budget is"),
             "unexpected: {msg}"
         );
+    }
+
+    fn water_sto3g() -> (
+        Molecule,
+        PreparedBasis,
+        PreparedBasis,
+        Operator,
+        SchwarzBounds,
+        ParallelContext,
+        ScfResult,
+    ) {
+        let xyz = "3\nh2o\nO 0 0 0.117790\nH 0 0.755453 -0.471161\nH 0 -0.755453 -0.471161\n";
+        let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
+        let obs = PreparedBasis::new(&mol, &basis::bundled("sto-3g").unwrap()).unwrap();
+        let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+        let ctx = ParallelContext::default();
+        let cfg = RhfConfig {
+            energy_conv: 1e-12,
+            density_conv: 1e-10,
+            ..Default::default()
+        };
+        let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &cfg).unwrap();
+        (mol, obs, dfbs, op, bounds, ctx, rhf)
+    }
+
+    /// Exactness anchor of the field-response construction: with the MP2
+    /// density switched off (the SCF density of `reference_at_field`), the
+    /// central difference must reproduce the CPHF HF α. Measured 4e-9 rel at
+    /// h = 1e-4. A doubled two-electron response (2J − K) or a flipped field
+    /// sign in `first_order_fock_response` misses by > 1e-2.
+    #[test]
+    fn field_response_reference_reproduces_cphf_hf_alpha() {
+        let (mol, obs, dfbs, op, bounds, ctx, rhf) = water_sto3g();
+        let cfg = RiMp2Config {
+            frozen_core: 0,
+            memory_budget_bytes: None,
+            ..Default::default()
+        };
+        let hf = mp2_polarizability_analytic_hf(&ctx, &mol, &obs, &op, &bounds, &rhf).unwrap();
+        let (a_hf, _) = relaxed_alpha_tensors(
+            &ctx,
+            &mol,
+            &obs,
+            &dfbs,
+            op,
+            &bounds,
+            &rhf,
+            &cfg,
+            LR_FIELD_STEP,
+        )
+        .unwrap();
+        for x in 0..3 {
+            for y in 0..3 {
+                let want = hf.tensor[x][y];
+                assert!(
+                    (a_hf[x][y] - want).abs() < 1e-7 * (1.0 + want.abs()),
+                    "α_HF[{x}][{y}] = {} vs CPHF {want}",
+                    a_hf[x][y]
+                );
+            }
+        }
+    }
+
+    /// `analytic_dt2_full`'s orbital-energy response equals the diagonal of
+    /// the first-order Fock response in the MO basis. The former
+    /// `−r + (2J − K)` form (sign and factor 2 wrong) misses by > 0.1 Ha.
+    #[test]
+    fn dt2_orbital_energy_response_matches_fock_response() {
+        let (mol, obs, dfbs, op, bounds, ctx, rhf) = water_sto3g();
+        let cfg = RiMp2Config {
+            frozen_core: 0,
+            memory_budget_bytes: None,
+            ..Default::default()
+        };
+        let c = rhf.mos_r();
+        let nocc = (mol.nelec() / 2) as usize;
+        let orb = OrbitalSpace::new(nocc, c.ncols() - nocc, nocc, 0);
+        let dip = oneelectron::dipole(&obs, [0.0; 3]).unwrap();
+        let budget = ferric_core::memory::resolve_budget_bytes(None);
+        let axis = 2;
+        let df = first_order_fock_response(
+            &ctx,
+            &obs,
+            &bounds,
+            c,
+            rhf.eps_r(),
+            &orb,
+            &dip[axis],
+            budget,
+        )
+        .unwrap();
+        let df_mo = c.t().dot(&df).dot(c);
+        let (_, _, df_an) =
+            analytic_dt2_full(&ctx, &mol, &obs, &dfbs, op, &bounds, &rhf, &cfg, axis).unwrap();
+        for p in 0..c.ncols() {
+            assert!(
+                (df_an[(p, p)] - df_mo[(p, p)]).abs() < 1e-8,
+                "∂ε[{p}] = {} vs Fock response {}",
+                df_an[(p, p)],
+                df_mo[(p, p)]
+            );
+        }
     }
 }
