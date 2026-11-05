@@ -31,7 +31,7 @@ source build. The wheel holds only the compiled library and that command. The
 | **GitHub nightly** | Built every night (`53 10 * * *` UTC) from `main`. It's a workflow-run artifact, not a PyPI upload. | Download it from the Wheels workflow run, then `pip install ./<wheel>` |
 
 Use the **nightly artifact** when you need a fix that has landed on `main` but
-hasn't been tagged. Don't build from source just to get an unreleased fix.
+hasn't been tagged, instead of building from source.
 
 Build from source when you are changing ferric or need MPI. MPI builds are
 source-only (see [Installation](installation.md)).
@@ -70,7 +70,7 @@ read the `result` record ([Run logs](run-logs.md)).
 1. **Charge/multiplicity parity.** An odd electron count needs an even
    multiplicity. The error message prints the arithmetic and the rule, and it
    means your `.xyz` or your charge is wrong. ferric can handle ions.
-2. **Debug instead of release.** A debug binary is far slower. MEASURED: a
+2. **Debug instead of release.** A debug binary is far slower. Measured: a
    27-atom cation didn't converge a single point in 34 minutes on one. If a job
    seems hung, check which binary is running. `cargo run --release --bin ferric`
    and the wheel are both release builds. `./target/debug/ferric` is not.
@@ -82,12 +82,12 @@ read the `result` record ([Run logs](run-logs.md)).
    honour an explicit value, and `cargo` sets it to 1 only when it is unset
    (an exported value wins). Multithreaded BLAS
    under ferric's rayon parallelism can crash (LU routines) or oversubscribe
-   the machine. It's a correctness setting, not a performance tip.
+   the machine, so the setting affects correctness as well as speed.
 5. **Under-converged density.** `energy_conv` alone doesn't converge the
    density. Correlation energies and properties inherit the full first-order
    density error. E_HF doesn't, because it's variational. Set `density_conv`.
-6. **Serialize QM jobs.** Two concurrent ferric runs don't just halve
-   throughput. MEASURED: a pair of them pushed a single point that normally
+6. **Serialize QM jobs.** Two concurrent ferric runs slow each other by more
+   than half. Measured: a pair of them pushed a single point that normally
    takes seconds past a 15-minute timeout. Each run wants all the cores and
    several GB. Run one at a time.
 
@@ -113,7 +113,7 @@ overhead aren't charged, so treat the printed number as a floor on what the
 process needs. Lowering `FERRIC_MEM_BUDGET_GB` changes how the charged work
 is split into blocks. It doesn't shrink the uncharged part.
 
-**Size the budget from a gradient, not a single point.** MEASURED on
+**Size the budget from a gradient run.** Measured on
 benzene/cc-pVDZ/PBE/RI-J: the SCF alone peaked at 0.616 GB, and the SCF plus
 gradient at 3.033 GB. The KS gradient holds the AO second derivatives on the
 grid. A budget sized from an energy run under-provisions a geometry
@@ -141,10 +141,10 @@ confirms a kill. A truncated log doesn't prove one. As a rule of thumb, plan on
   so watch it instead.
 - **`Terminated` usually means timeout(1), not the OOM killer.** Check whether
   a `timeout` wrapped the command before you look in `dmesg`.
-- **A grep filter that matches nothing** looks exactly like "the job produced
+- **A grep filter that matches nothing** looks the same as "the job produced
   nothing". Test the filter against known-good output first.
 
-## Honest scope
+## Scope
 
 ferric is a quantum chemistry engine: energies, gradients, finite-difference
 Hessians and properties. It isn't a protein-engineering tool, a docking

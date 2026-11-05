@@ -18,10 +18,9 @@ periodic boundary conditions.
 
 ## Before you start: relax the geometry with xtb
 
-**The single highest-value habit in this whole workflow.** DFT on an unrelaxed
-structure wastes hours and often simply fails.
+DFT on an unrelaxed structure wastes hours and often fails.
 
-Measured on this project, a 27-atom carbocation built by hand:
+Measured on a 27-atom carbocation built by hand:
 
 ```text
 hand-built    C7-H24 = 0.902 Å      SCF: Stalled@37, never converged
@@ -29,9 +28,8 @@ xtb GFN2      C7-H24 = 1.084 Å      SCF: converged
                                     545 kcal/mol lower
 ```
 
-A 0.9 Å C–H bond is not a slightly-off geometry; it is a structure whose SCF has
-no reason to converge. xtb finds that in **seconds** where DFT spends hours
-failing.
+An SCF has no reason to converge on a structure with a 0.9 Å C–H bond. xtb
+fixes it in seconds; DFT spends hours failing on it.
 
 ```bash
 xtb input.xyz --opt --gfn 2 --chrg 1        # seconds
@@ -39,7 +37,7 @@ ferric single_point.toml                     # then the expensive step
 ```
 
 Use it for the initial geometry of anything you did not get from a crystal
-structure or a previous optimization — hand-built ligands, docked poses,
+structure or a previous optimization: hand-built ligands, docked poses,
 edited residues, anything from a SMILES string.
 
 > **Build note:** xtb built with `-O3` miscompiles gradients on this platform.
@@ -70,7 +68,7 @@ full force-field charge set and let the selection decide.
 
 ## Selecting the QM region
 
-Three ways, and the choice matters more than it looks:
+Three ways:
 
 ```python
 # 1. Explicit indices — full control.
@@ -88,9 +86,8 @@ ferric.QmmmSystem(symbols, coords, charges,
                   residue_ids=residue_ids)
 ```
 
-`residue_ids` together with `qm_indices` is an **error**, not a silent
-no-op — an explicit index list and a residue expansion are contradictory
-instructions.
+`residue_ids` together with `qm_indices` is an error: an explicit index list
+and a residue expansion are contradictory instructions.
 
 ## Cutting a covalent bond
 
@@ -110,7 +107,7 @@ sys = (ferric.QmmmSystem(symbols, coords, charges, qm_indices=qm)
 | `rc` | Lin–Truhlar redistributed charge |
 | `rcd` | redistributed charge **and dipole** |
 
-The parser is strict: an unknown string is an error, never a silent default.
+The parser is strict: an unknown string is an error.
 
 ## Energies, forces, and optimization
 
@@ -129,8 +126,8 @@ opt = ferric.run_optimize_qmmm(sys, "cc-pvdz", method="rhf", move_mm="none")
 `move_mm` chooses which MM atoms relax: `"none"` (the default, where only QM
 atoms move), `("within", radius_angstrom)`, `("residues", [ids])` (the system
 must have been built with `residue_ids=`), or `"all"`. Any value other than
-`"none"` requires `mm_topology=`, because moving MM atoms without a force field
-to hold their own geometry together is meaningless.
+`"none"` requires `mm_topology=`: without a force field, nothing holds the
+moving MM atoms' geometry together.
 
 ## Polarizable embedding
 
@@ -147,14 +144,13 @@ res.induced_dipoles()
 
 ## What is validated, and how far
 
-Checked against `pyscf.qmmm.mm_charge`: **energy shift agrees to <1e-8 Ha, MM
-forces to 3e-10**. An empty or all-zero MM region is **bit-identical** to a gas
-phase calculation — the trivial limit is a genuine no-op, not an approximation
-that happens to be small.
+Checked against `pyscf.qmmm.mm_charge`: the energy shift agrees to <1e-8 Ha,
+MM forces to 3e-10. An empty or all-zero MM region is bit-identical to a gas
+phase calculation.
 
 The QM–MM Lennard-Jones term across a covalent cut is checked against OpenMM's
-own exclusion and 1-4 handling (ethanol cut at C–C, realistic LJ): **energy and
-gradient agree to ~1e-18 Ha**. With no bond path between the regions it is
+own exclusion and 1-4 handling (ethanol cut at C–C, realistic LJ): energy and
+gradient agree to ~1e-18 Ha. With no bond path between the regions it is
 bit-identical to the plain every-pair sum.
 
 Not validated: periodic boundary conditions (absent).
@@ -186,13 +182,12 @@ qm_indices = [0, 1, 2]            # zero-based; or: qm_seeds = [0], qm_radius_an
 # boundary_scheme = "delete-host" # default; also "keep", "rc", "rcd"
 ```
 
-MEASURED on that file (water QM, one Na⁺ 4 Å away as MM, STO-3G): vacuum
-−74.9629466809, embedded **−74.9653197421** Ha (−1.489 kcal/mol). That matches
+Measured on that file (water QM, one Na⁺ 4 Å away as MM, STO-3G): vacuum
+−74.9629466809, embedded −74.9653197421 Ha (−1.489 kcal/mol). That matches
 `ferric.run_rhf(point_charges=...)` to all ten printed digits.
 
 **The geometry and the MM charges both come from the PQR.** An xyz has no
-partial charges, and an MM region without charges is just a set of ignored
-coordinates. `[molecule] xyz` must still be present, because the parser
+partial charges, and an MM region without charges contributes nothing. `[molecule] xyz` must still be present, because the parser
 requires it, but it is not read when `[qmmm]` is present. That matters when
 you compute a vacuum reference: delete `[qmmm]` and ferric falls back to the
 xyz. If the xyz holds a different geometry, you are comparing two different
@@ -202,14 +197,13 @@ one geometry.
 
 **`boundary_scheme` defaults to `"delete-host"`, not `"keep"`.** Keeping the
 host charge across a covalent cut puts a bare point charge inside the link
-atom's bond length (MEASURED 0.443 Å on an ethane C–C cut). A geometry
+atom's bond length (measured 0.443 Å on an ethane C–C cut). A geometry
 optimization in that field diverges instead of failing with an error. `"keep"`
 is still available and is the right choice when the cut isn't covalent. An
 unknown scheme name is an error.
 
 **`[qmmm]` and `[external_potential]` together are refused.** The MM region
-*is* an external potential, so combining them would silently count a
-contribution twice.
+is an external potential, so combining them would count a contribution twice.
 
 **Scope of the CLI section.** It reads only a PQR, because it needs charges
 and geometry together. The CLI section does electrostatic embedding only.
@@ -231,11 +225,11 @@ Python-only.
 - **QM–MM Lennard-Jones follows the force field's exclusion rules across the
   cut.** Pairs 1-2 or 1-3 apart through the topology's bond list (the cut bond
   included) get no LJ, and 1-4 pairs are scaled by the topology's
-  `scale_lj_14` (AMBER default 0.5). This is the same bond graph the MM–MM
-  terms use, so the cut bond has to be in the topology's bonds. QM–MM
+  `scale_lj_14` (AMBER default 0.5). The MM–MM terms use the same bond
+  graph, so the cut bond has to be in the topology's bonds. QM–MM
   electrostatics do not use these exclusions or `scale_coul_14`. The
   embedding puts every MM charge in the QM Hamiltonian, and the boundary
-  scheme (`keep`/`delete-host`/`rc`/`rcd`) is what handles the charges next
-  to the cut.
+  scheme (`keep`/`delete-host`/`rc`/`rcd`) handles the charges next to the
+  cut.
 - The MM crate is AMBER-form (harmonic bonds and angles, periodic torsions,
   Lennard-Jones, Coulomb), validated against OpenMM.

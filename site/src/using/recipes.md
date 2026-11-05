@@ -1,9 +1,7 @@
 # ferric recipes
 
-Copy-paste workflows that end in a number. Each gives its **expected output**
-and **rough runtime**, so you can tell "still running" from "silently wrong".
-That confusion is the most common failure when you drive a QC code you haven't
-used before.
+Copy-paste workflows that end in a number. Each gives its expected output
+and rough runtime, so you can tell "still running" from "silently wrong".
 
 Recipes 1 and 3 were executed as written for this page, on 2026-09-23.
 Recipe 2's output is quoted from an earlier run. Numbers labelled MEASURED came
@@ -127,8 +125,7 @@ Expect seconds to about a minute at this size.
 
 ### The error you will hit first
 
-If the electron count and the multiplicity disagree, you get this error. It's
-worth learning to recognise:
+If the electron count and the multiplicity disagree, you get this error:
 
 ```
 error: inconsistent charge/multiplicity: 35 electrons with multiplicity 1
@@ -137,7 +134,7 @@ integer... An odd electron count needs an even multiplicity (2, 4, ...)
 and vice versa
 ```
 
-It means **your geometry, your charge or your multiplicity is wrong**. ferric
+It means your geometry, your charge or your multiplicity is wrong. ferric
 can handle ions and open shells. The message prints the arithmetic and the
 rule, so check the atom count in your `.xyz` against the first line of the
 file, then the `charge` and `multiplicity` you set.
@@ -210,7 +207,7 @@ df_j_aux="exact")` turns fitting off, or you can turn it on in the other code.
 
 **Grid.** ferric's KS-DFT default grid is `(75, 110)` (radial, angular), flat,
 with no pruning. PySCF's default `grid.level=3` is roughly `(75, 302)`. The
-difference is worth ~1e-5 Ha on water and grows with **atom count**, because
+difference is worth ~1e-5 Ha on water and grows with atom count, because
 grid error scales with the number of atoms, not the basis size. A small basis
 on a big molecule can be worse than a big basis on a small one. Match grids
 before you conclude anything.
@@ -218,7 +215,7 @@ before you conclude anything.
 **Convergence criteria.** Setting `energy_conv` alone can leave the density
 loosely converged. Variational quantities (E_HF) don't mind. Anything that
 depends linearly on the MO coefficients (correlation energies, properties) does.
-`density_conv` is the criterion that actually converges the density, so
+`density_conv` is the criterion that converges the density, so
 tighten it when you care about those quantities. Keep `energy_conv` loose: with
 density fitting, a very tight `energy_conv` may be unreachable
 ([Golden paths](applications.md), Step 2).

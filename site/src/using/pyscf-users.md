@@ -146,7 +146,7 @@ PySCF's default ε is 78.3553.
 
 **AO matrices do not match element by element.** ferric's AO basis-function
 conventions come from libint2 and are not the same as PySCF's (libcint).
-MEASURED on CO/cc-pVDZ: RHF total energies agree to 3e-12 Ha and orbital
+Measured on CO/cc-pVDZ: RHF total energies agree to 3e-12 Ha and orbital
 energies to 8e-9 Ha, while the two AO density matrices differ element by
 element by up to 1.5. Compare invariant quantities (energies, orbital
 energies, charges), not raw AO matrices. Axis order differs too:

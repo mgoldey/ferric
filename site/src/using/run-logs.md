@@ -3,9 +3,9 @@
 Every ferric CLI run writes a machine-readable JSON Lines log, without being
 asked.
 
-The format is ferric's own. It is **not QCSchema**, and there is no QCSchema
+The format is ferric's own; it is not QCSchema, and there is no QCSchema
 exporter. Each record's `schema` field (currently `1`, on `run_start`) versions
-this format. It is not a QCSchema version.
+this format.
 
 ```
 $ ferric water-rhf.toml
@@ -15,11 +15,9 @@ $ ferric water-rhf.toml
 
 ## Why it is on by default
 
-A result whose run left no artifact can't be checked. Stdout captures get
-truncated, and a claim such as "173 iterations, converged" that survives only
-in a truncated capture can be repeated but never checked. The run log keeps
-the record on disk whether or not anyone captured stdout, which is why it is
-on by default.
+A result whose run left no artifact can't be checked, and stdout captures get
+truncated. The run log keeps the record on disk whether or not anyone captured
+stdout.
 
 Opt out explicitly if you need to:
 
@@ -44,8 +42,8 @@ fills, ferric warns once on stderr and the run continues.
 
 ## Format
 
-One JSON object per line, written and flushed as it happens — not buffered to
-the end of the run. A job that is OOM-killed, hits a wall-clock limit, or is
+One JSON object per line, written and flushed as it happens rather than
+buffered to the end of the run. A job that is OOM-killed, hits a wall-clock limit, or is
 Ctrl-C'd at iteration 90 of 100 leaves those 90 iterations on disk. Only the
 final line may be truncated; everything before it parses.
 
@@ -61,8 +59,8 @@ missing record is detectable) and `t` (seconds since the run started).
 Written before any expensive work, so it survives a job killed in the first
 iteration. Carries the ferric version, the git SHA the binary was built from
 (`null` if the build had no checkout; a `-dirty` suffix means uncommitted
-changes were compiled in), a UTC timestamp, the resolved config — including the
-memory budget actually used, not the key as written — and the molecule.
+changes were compiled in), a UTC timestamp, the resolved config (including the
+memory budget in effect, not the key as written) and the molecule.
 
 ### `scf_iter`
 
@@ -72,27 +70,27 @@ iteration belongs to. `method` is `rhf`/`uhf`/`rohf` or their KS counterparts
 `rks`/`uks`/`roks`.
 
 These are the quantities the solver already computes for its convergence
-decision (see `scf_converged`) — the log reports them, it does not create them.
+decision (see `scf_converged`); the log only reports them.
 
 `dp_rms` and `dp_max` are `"inf"` on the first iteration of each SCF, before
 there is a previous density to compare against. JSON has no infinity, so
 non-finite values are written as the strings `"inf"`, `"-inf"` and `"NaN"`
 rather than as `null`, which would make a NaN indistinguishable from a field
-that was simply not reported.
+that was not reported.
 
 ### `guess_scf_iter`
 
 Identical shape, but for the free-atom SCFs the SAD/MINAO initial guess runs
-per element. They are real work and can fail, so they are logged — under a
+per element. They are real work and can fail, so they are logged, under a
 different record type so that free oxygen's energy is never mistaken for the
 molecule's.
 
 ### `ladder_rung`
 
 One per convergence-ladder rung: `rung`, `tricks` (which accelerators it
-enables), `iterations`, `exit`, `energy`, `converged` — and **`max_iter`**.
+enables), `iterations`, `exit`, `energy`, `converged` and `max_iter`.
 
-That last field matters more than it looks. In the CLI, `kind = "rhf"` and
+`max_iter` is the rung's own cap. In the CLI, `kind = "rhf"` and
 `kind = "ksdft"` run through a convergence ladder, and unless you define your
 own `[[scf.ladder]]` rungs, the default ladder sets its own per-rung iteration
 caps:
@@ -112,7 +110,7 @@ can't be misread that way.
 The terminal record: `energy`, `converged`, `exit`, `wall_s`, `cpu_s` and
 `peak_rss_bytes` (the high-water mark, not the RSS at exit).
 
-For a post-SCF method the `energy` is the **SCF reference**, not the method's
+For a post-SCF method the `energy` is the SCF reference, not the method's
 total. `extra.energy_is` says which. Per-iteration records for MP2/RPA/CC/GW
 are not implemented yet.
 
@@ -129,8 +127,8 @@ doesn't mean the run failed (MEASURED on `examples/h2-lda-opt.toml`,
 
 ### Precision provenance (`precision`)
 
-`run_end.extra.precision` records which mixed-precision kernels the **whole
-run** went through: every kernel, counted from the start of the run to
+`run_end.extra.precision` records which mixed-precision kernels the whole
+run went through: every kernel, counted from the start of the run to
 `run_end`, whichever code called it (the SCF, the method, and MP2 variants such
 as SCS-MP2, SCS-MP2(2terfc), terfc `att-rimp2` and the double hybrids, which
 carry no record of their own). `run_end.extra.scf_precision` is the SCF's own
@@ -192,9 +190,9 @@ everywhere in the log.
 
 ### `result`
 
-**The number a correlated run was launched to produce.** It's written once,
-after the method finishes. Plain SCF runs (`rhf`, `uhf`, `rohf`, `ksdft`) don't
-write one, because for them `run_end.energy` *is* the answer.
+The number a correlated run was launched to produce, written once after the
+method finishes. Plain SCF runs (`rhf`, `uhf`, `rohf`, `ksdft`) don't write
+one, because for them `run_end.energy` is the answer.
 
 | field | meaning |
 |---|---|
@@ -202,14 +200,13 @@ write one, because for them `run_end.energy` *is* the answer.
 | `total` | the headline number a user would quote |
 | `components` | the decomposition that makes `total` checkable — `e_corr`, `e_os`/`e_ss`, the reference energy, and whatever else the method defines |
 
-`total` and `run_end.energy` are **different numbers** for every post-SCF
+`total` and `run_end.energy` are different numbers for every post-SCF
 method. A `kind="rimp2"` run's `run_end.energy` is the RHF energy it was built
-on; its `result.total` is the RI-MP2 total. Reading the wrong one silently
-gives an uncorrelated answer.
+on; its `result.total` is the RI-MP2 total. Reading the wrong one gives an
+uncorrelated answer without any error.
 
 `components` exists because a total alone cannot be reconciled against a
-reference implementation — you need the pieces to see *where* a disagreement
-comes from.
+reference implementation; the pieces show where a disagreement comes from.
 
 ### `result_unlogged`
 
@@ -243,11 +240,9 @@ eval/scatter split is `null` unless it was measured, and `t_reference_s` is
 `t_assembly_s`, so do not add it to the other stages. Timings are not
 reproducible run to run.
 
-It exists because **silence is ambiguous**: a log with no `result` record could
-mean the method does not record one yet, or that the run died before producing
-one. Those demand opposite responses from whatever reads the log. This makes
-the first case explicit and leaves "the run failed" as the only remaining
-reading of a genuinely missing record.
+Without it, a log with no `result` record could mean the method does not
+record one yet, or that the run died before producing one. With it, a missing
+record means the run failed.
 
 ## Example
 
@@ -298,12 +293,11 @@ no `symmetry` field.
 
 ## Does it change the answer?
 
-No, and that is a regression test, not a claim: SCF energies are bit-identical
-(`f64::to_bits()`) with the log on and off, asserted across RHF, RKS, UHF and
-ROHF in `crates/ferric-scf/tests/runlog_bit_identity.rs`. Logging is
-observation, never participation — every value written is one the solver had
-already computed for its own convergence decision, and nothing is ever read
-back.
+No. SCF energies are bit-identical (`f64::to_bits()`) with the log on and
+off, asserted across RHF, RKS, UHF and ROHF in
+`crates/ferric-scf/tests/runlog_bit_identity.rs`. Every value written is one
+the solver had already computed for its own convergence decision, and nothing
+is read back.
 
 ## Does it cost anything?
 

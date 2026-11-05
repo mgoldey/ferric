@@ -200,7 +200,7 @@ The Python binding tests are pytest, not cargo; see
   iterating on Rust code. It catches `debug_assert!` violations and integer
   overflow that release builds silently allow.
 - **Release** (`cargo build --release`): slow to compile, fast to run. Use it
-  for anything you will actually wait on: real molecules, benchmarks, and any
+  for anything you will wait on: real molecules, benchmarks, and any
   RPA/GW/CC job.
 
 ### Python bindings from source
@@ -220,7 +220,7 @@ stale build keeps getting imported.
 Each release publishes an sdist next to the wheels, so
 `pip download ferric==<version> --no-binary :all:` succeeds. The sdist holds
 the Rust workspace crates the extension depends on, `Cargo.lock` and the
-vendored libecpint. It does **not** hold libint2, and it is not a
+vendored libecpint. It does not hold libint2, so it is not a
 self-contained build: `pip install` from it needs everything in
 [Prerequisites](#prerequisites) already present, with `LIBINT2_PREFIX` set to a
 libint2 install. The libint2 source is generated and too large to bundle (the
@@ -301,8 +301,8 @@ another checkout.
 
 ## MPI
 
-MPI is a **source build only**. There is no MPI wheel on PyPI: the wheels
-workflow deliberately does not publish one.
+MPI is a source build only. The wheels workflow publishes no MPI wheel to
+PyPI.
 
 ```bash
 sudo apt-get install -y libopenmpi-dev openmpi-bin libclang-dev
@@ -319,13 +319,13 @@ not supported: their `libmpi.so.12` ABI differs from OpenMPI 4.x's
 The CLI is SPMD by design: `mpirun -np N ferric input.toml` runs one rank per
 process.
 
-`mpirun -np N python script.py` is **not supported**. The bindings expose no
+`mpirun -np N python script.py` is not supported. The bindings expose no
 rank or world-size accessor, so `if rank == 0` cannot be written. Every rank
 runs the whole script, prints N times, and races on the same output files.
 
 ## GPU (CUDA)
 
-The CUDA backend is a **source build only** and is off by default even when built in.
+The CUDA backend is a source build only and is off by default even when built in.
 
 ```bash
 cargo build --release -p ferric-cli --features ferric-cli/gpu

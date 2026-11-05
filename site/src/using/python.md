@@ -29,7 +29,7 @@ H   0.000000  -0.755453  -0.471161
 bs = ferric.BasisSet.bundled("sto-3g")
 ```
 
-The string is standard XYZ: an atom count on the **first** line, a comment
+The string is standard XYZ: an atom count on the first line, a comment
 line, then one `symbol x y z` line per atom. The count must be the first line,
 so start the string with `"""3`. Starting it with `"""` and a newline gives an
 empty first line, and parsing fails with `bad atom count`. `Molecule.from_xyz(path)`
@@ -140,7 +140,7 @@ and normalisation.
 
 Most drivers take a `BasisSet` object. The drivers that move atoms
 (`run_optimize`, `run_frequencies`, `run_saddle`, `run_irc`, `run_qmmm`,
-`run_optimize_qmmm`) take the basis **name** as a string instead, because they
+`run_optimize_qmmm`) take the basis name as a string instead, because they
 rebuild the basis at every geometry.
 
 ## Ground state
@@ -203,11 +203,11 @@ IEF-PCM), point charges and a uniform field. See its docstring
 
 ### Check `.converged`, and know what it means
 
-`run_rhf`, `run_uhf`, `run_rohf` and `run_qmmm` **return a result whether or
-not the SCF converged**. A non-converged result is not an error; it is a result
-with `converged = False`, and its energy is a plausible, wrong number.
+`run_rhf`, `run_uhf`, `run_rohf` and `run_qmmm` return a result whether or
+not the SCF converged. A non-converged result has `converged = False`, and its
+energy is a plausible, wrong number.
 `run_dft`, `run_ksdft` and the correlated drivers (MP2, CC, RPA, GW, TDDFT)
-behave differently: they **raise** if their reference SCF does not converge.
+behave differently: they raise if their reference SCF does not converge.
 
 `converged = True` means the SCF reached a stationary point. It does not mean
 the lowest one. The O2 triplet above with `sto-3g` instead of `cc-pvdz` shows
@@ -360,7 +360,7 @@ arrays. `run_drpa`, `run_linlccd` and `tune_omega` return plain `dict`s, and
 `run_drpa_scan` returns a list of them.
 
 AO-basis matrices follow libint2's basis-function conventions, which are not
-PySCF's. MEASURED on CO/cc-pVDZ: total and orbital energies agree with
+PySCF's. Measured on CO/cc-pVDZ: total and orbital energies agree with
 PySCF to 3e-12 and 8e-9 Ha, and the two AO density matrices differ element by
 element by up to 1.5. Compare invariant quantities, not raw AO matrices.
 
@@ -377,7 +377,7 @@ and allow 90% of the remainder: the KS-DFT decision to store or recompute the
 grid AO cache, and the UKS Newton/TRAH f<sub>xc</sub> kernel's second grid
 cache. Because RSS includes everything already resident, those two see less
 than the full budget.
-It is **not** a cap on total process memory; see
+It does not cap total process memory; see
 [Sharp bits](./sharp-bits.md#memory-budget_gb-does-not-cap-the-whole-process).
 
 <!-- doctest -->
@@ -513,13 +513,13 @@ every orbital step. See
 ### Exact and local correlation
 
 `run_rimp2`, `run_drpa` and `run_linlccd` name a method and compute it
-**exactly** by default. The local approximation is asked for with keywords
+exactly by default. The local approximation is asked for with keywords
 that mirror the CLI's [`[local]`](../reference/input.md#local) section, under
 the same rules, raised as `ValueError` before any SCF:
 
 - `local=` is `None` (exact; `"none"` is the same) or `"amplitude-threshold"`;
   any other value is an error.
-- `eps=` is **required** with `local="amplitude-threshold"`: the threshold is
+- `eps=` is required with `local="amplitude-threshold"`: the threshold is
   part of the model and has no default. `eps=0` reproduces the exact method.
   `eps=` without `local=` is an error, not ignored.
 - `compute_reference=True` (local only) also computes the exact method and

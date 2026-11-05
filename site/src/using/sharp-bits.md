@@ -1,7 +1,6 @@
 # Sharp bits
 
-Things that behave differently from what you might expect, each of which has
-cost someone a run. This page follows the pattern of JAX's "Sharp Bits": each
+Behaviour that differs from what you might expect. This page follows the pattern of JAX's "Sharp Bits": each
 entry says what surprises people, why ferric does it that way, and what to do.
 
 ## Leave `OPENBLAS_NUM_THREADS` unset
@@ -89,8 +88,8 @@ was fitted on systems up to about 340 basis functions, and beyond that it is an
 extrapolation. With density-fitted J (and in the open-shell solvers, which
 rebuild J and K every iteration) only rounding remains, about
 `0.5 * eps * |E| * sqrt(nbf)`: measured 3e-13 for benzene/cc-pVDZ with RI-JK and
-1.3e-12 for alkane C20/6-31G with RI-JK. The CLI default is deliberately loose
-(`1e-3`).
+1.3e-12 for alkane C20/6-31G with RI-JK. The CLI default is loose
+(`1e-3`) by design.
 
 **What ferric tells you:** when you set `energy_conv` below 0.3 times the
 estimated floor, the CLI prints `warning: [scf] energy_conv ... is below the
@@ -107,7 +106,7 @@ from the nuclear charges (ECP cores removed, about 5 % for all-electron
 molecules, 3.7x high for an iodine ECP case); the point-charge or field energy
 of an embedding is not included.
 
-**A symptom of the same floor:** with a large point-charge field (`point_charges=` on `run_rhf`'s closed-shell direct-J/K path) the number of SCF iterations can differ between two orderings of the same charges, because a change of a few ulps in the one-electron potential decides which iteration the `dE` test happens to pass. On rc7 a 6458-charge field took 64 iterations nearest-first and 111 in file order at `energy_conv=1e-10`. The potential itself changes only by roundoff (3e-15 to 1e-14 relative) and the converged energy by about 1e-12 Ha. Main turns the incremental update off when `energy_conv < 1e4 * integral_thresh` or `density_conv < 1e3 * integral_thresh` (1e-8 and 1e-9 at the default `integral_thresh`), where all measured orders took 20 iterations; at the default `energy_conv` and `density_conv` every measured order took the same number (15 iterations on the field and orders tried; the tests do not assert iteration counts, so this is a measurement, not a guarantee for other fields). `run_uhf` and `run_rohf` use a separate open-shell incremental path and `run_dft`'s default RI-J does not use the direct incremental path: for those the order changes the potential by roundoff too, but iteration counts were not measured. ferric does not reorder the charges.
+**A symptom of the same floor:** with a large point-charge field (`point_charges=` on `run_rhf`'s closed-shell direct-J/K path) the number of SCF iterations can differ between two orderings of the same charges, because a change of a few ulps in the one-electron potential decides which iteration the `dE` test happens to pass. On rc7 a 6458-charge field took 64 iterations nearest-first and 111 in file order at `energy_conv=1e-10`. The potential itself changes only by roundoff (3e-15 to 1e-14 relative) and the converged energy by about 1e-12 Ha. ferric turns the incremental update off when `energy_conv < 1e4 * integral_thresh` or `density_conv < 1e3 * integral_thresh` (1e-8 and 1e-9 at the default `integral_thresh`), where all measured orders took 20 iterations; at the default `energy_conv` and `density_conv` every measured order took the same number (15 iterations on the field and orders tried; the tests do not assert iteration counts, so this is a measurement, not a guarantee for other fields). `run_uhf` and `run_rohf` use a separate open-shell incremental path and `run_dft`'s default RI-J does not use the direct incremental path: for those the order changes the potential by roundoff too, but iteration counts were not measured. ferric does not reorder the charges.
 
 **Do:** tighten `density_conv`, not `energy_conv`.
 
@@ -120,8 +119,7 @@ Coulomb gives a discrepancy that grows with molecule size.
 (RI-J) with `def2-universal-jkfit` by default, and, for functionals with exact
 exchange (hybrids and range-separated hybrids), exchange (RI-K) with the same
 basis. `run_rhf` builds exact four-centre J and K unless you pass `df_j_aux`/`df_k_aux`. The
-difference is the fitting error that density fitting always carries, not a
-bug. Against exact J at PBE/STO-3G it is 0.28 kcal/mol for water, 1.16 for
+difference is the fitting error that density fitting always carries. Against exact J at PBE/STO-3G it is 0.28 kcal/mol for water, 1.16 for
 benzene and 9.5 for a 71-atom drug molecule.
 
 **Do:**
@@ -294,7 +292,7 @@ The Kohn-Sham XC grid runs on the device only under `mode = "on"` (or `gpu = "on
 
 Device memory is a separate pool (`[gpu] memory_gb`); the host `[memory] budget_gb` is not reduced by it. A contraction that does not fit the device pool runs on the CPU and is counted, not refused. `FERRIC_GPU_TRACE=1` prints each fallback.
 
-`[precision] mode = "mixed"` (or its deprecated alias `[gpu] precision = "mixed"`) changes the numbers, not just the speed: the audit line, `ferric.gpu_status()["precision"]` and each result's precision provenance record (`run_end.extra.precision` in the run log, `result.precision` in Python) say which precision a run used, and the per-kernel error map is on the [validation page](../reference/validation.md#mixed-precision-gpu-kernels). The one shipped mixed kernel is `rimp2-energy` (f32-resident `B_ov`; closed-shell and unrestricted RI-MP2 under the Coulomb, erfc and terfc operators); its measured energy errors are 3e-11 to 7e-9 Eh closed-shell Coulomb (total, with the OS and SS parts up to 5e-9 Eh each), 5e-10 to 1.4e-8 Eh unrestricted Coulomb (total, with the αα, ββ and αβ blocks up to 1.1e-8 Eh each) and 7e-11 to 6e-9 Eh for erfc and terfc on the systems listed there, graded as a measured error map, not Proven; a mixed run prints `precision mixed` in its `[ferric] gpu:` line, and its energies are not interchangeable with f64 results in a convergence or reference comparison. A tiny problem still pays the device upload when the mode is on, whatever the precision. `gpu = "mixed"` (or `[gpu] preset = "mixed"`) is `mode = "on"` plus `precision = "mixed"`, so it carries the same change in the numbers; a `mode` or `precision` setting that contradicts the preset is an error, not an override. A `mixed_kernels` list given next to a preset is kept as given instead of the preset's set (it may narrow it); a name this build does not ship is refused, and the opt-in `xc-vxc` and `dfk-occ` are admitted only when the list names them and `mode` resolves to `"on"` (so `gpu = "mixed"` with the list works, `auto-mixed` with it is an error).
+`[precision] mode = "mixed"` (or its deprecated alias `[gpu] precision = "mixed"`) changes the numbers as well as the speed: the audit line, `ferric.gpu_status()["precision"]` and each result's precision provenance record (`run_end.extra.precision` in the run log, `result.precision` in Python) say which precision a run used, and the per-kernel error map is on the [validation page](../reference/validation.md#mixed-precision-gpu-kernels). The one shipped mixed kernel is `rimp2-energy` (f32-resident `B_ov`; closed-shell and unrestricted RI-MP2 under the Coulomb, erfc and terfc operators); its measured energy errors are 3e-11 to 7e-9 Eh closed-shell Coulomb (total, with the OS and SS parts up to 5e-9 Eh each), 5e-10 to 1.4e-8 Eh unrestricted Coulomb (total, with the αα, ββ and αβ blocks up to 1.1e-8 Eh each) and 7e-11 to 6e-9 Eh for erfc and terfc on the systems listed there, graded as a measured error map, not Proven; a mixed run prints `precision mixed` in its `[ferric] gpu:` line, and its energies are not interchangeable with f64 results in a convergence or reference comparison. A tiny problem still pays the device upload when the mode is on, whatever the precision. `gpu = "mixed"` (or `[gpu] preset = "mixed"`) is `mode = "on"` plus `precision = "mixed"`, so it carries the same change in the numbers; a `mode` or `precision` setting that contradicts the preset is an error, not an override. A `mixed_kernels` list given next to a preset is kept as given instead of the preset's set (it may narrow it); a name this build does not ship is refused, and the opt-in `xc-vxc` and `dfk-occ` are admitted only when the list names them and `mode` resolves to `"on"` (so `gpu = "mixed"` with the list works, `auto-mixed` with it is an error).
 
 ## Implemented is not validated
 

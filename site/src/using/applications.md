@@ -4,7 +4,7 @@ End-to-end workflows for real questions, written so an agent can execute them
 without reading the rest of the repo. Each one states **what it answers**,
 **what it cannot**, and **how to tell it went wrong**.
 
-Read [For agents](agents.md) first if you are automated — it has the failure
+Read [For agents](agents.md) first if you are automated. It lists the failure
 modes that cost the most time. Individual steps live in [Recipes](recipes.md).
 
 ---
@@ -37,8 +37,8 @@ error message.
 
 ### Step 1 — build the species, and check parity
 
-Generate starting geometries however you like (RDKit ETKDG + MMFF is fine —
-**force fields are for geometry seeds only, never for a reported energy**).
+Generate starting geometries however you like; RDKit ETKDG + MMFF is fine.
+Use force fields for geometry seeds only, never for a reported energy.
 
 Then, before any QM, verify electron parity for every species:
 
@@ -49,16 +49,15 @@ assert (n_elec % 2 == 0) == (multiplicity % 2 == 1), (
 )
 ```
 
-A cation is `charge=1, multiplicity=1`. Getting this wrong is the single most
-common first failure; ferric catches it with a clear message, but checking in
+A cation is `charge=1, multiplicity=1`. Getting this wrong is the most
+common first failure. ferric catches it with a clear message, but checking in
 your own loop fails faster and names the species.
 
-**The parity gate is NOT a geometry check, and you need both.** A structure can
-have a perfectly correct formula and still be physically impossible. MEASURED:
-a hand-built C10H17+ passed parity (76 electrons, singlet) while carrying a
-0.902 A C-H contact -- shorter than a real bond -- and a hydrogen sitting
-1.030 A from a *second* carbon. The SCF stalled at 37 iterations. That is the
-correct behaviour for overlapping nuclei, and it cost a run to discover.
+**Check geometry as well as parity.** A structure can have a correct formula
+and still be physically impossible. Measured: a hand-built C10H17+ passed
+parity (76 electrons, singlet) while carrying a 0.902 A C-H contact, shorter
+than a real bond, and a hydrogen 1.030 A from a second carbon. The SCF stalled
+at 37 iterations, which is the correct behaviour for overlapping nuclei.
 
 ```python
 # formula check and geometry check fail on DIFFERENT mistakes -- keep both
@@ -71,8 +70,8 @@ assert max_heavy_neighbours_of_hydrogen(xyz, cutoff=1.3) <= 1
 
 ### Step 1b -- relax with xtb before ANY DFT
 
-This is the middle tier of the funnel and skipping it is expensive. GFN2-xTB
-fixes a bad structure in seconds:
+xtb is the middle tier of the funnel. GFN2-xTB fixes a bad structure in
+seconds:
 
 ```bash
 LD_LIBRARY_PATH=~/.local/lib/x86_64-linux-gnu \
@@ -80,17 +79,16 @@ LD_LIBRARY_PATH=~/.local/lib/x86_64-linux-gnu \
 # -> xtbopt.xyz
 ```
 
-`LD_LIBRARY_PATH` is not optional on a local install: bare `xtb` fails with
-`libxtb.so.6: cannot open shared object file`, which reads like a broken
-install and is not one.
+A local install needs `LD_LIBRARY_PATH`. Without it, `xtb` fails with
+`libxtb.so.6: cannot open shared object file`; the install itself is fine.
 
-MEASURED on the same molecule, same method, same basis:
+Measured on the same molecule, method and basis:
 
     hand-built geometry : closest contact 0.902 A -> SCF Stalled @37, E = -389.5110690
     xtb-relaxed (54 its): closest contact 1.084 A -> SCF converged,   E = -390.3794234
 
-**0.868 Ha = 545 kcal/mol** lower, and the difference between a result and a
-failure. Seconds of xtb bought that.
+The relaxed structure is 0.868 Ha (545 kcal/mol) lower and converges; the
+hand-built one does not.
 
 ### Step 2 — optimize each intermediate
 
@@ -124,25 +122,23 @@ These settings follow from the measurements below. Don't raise the basis or
 tighten `energy_conv` without measuring one species first.
 
 **Delocalised cations need iterations, and a reachable `energy_conv`.**
-MEASURED on the same 27-atom cation, changing only these two knobs:
+Measured on the same 27-atom cation, changing only these two knobs:
 
     max_iter 100, energy_conv 1e-8  ->  MaxIter @100,  29 min, 3.30 GB, no result
     max_iter 400, energy_conv 1e-7  ->  CONVERGED @173, 4.9 min, 1.81 GB
 
-Two things to take from that. **173 iterations is normal** for a delocalised
-carbocation -- the default cap is not sized for this. And **`energy_conv: 1e-8`
-was unreachable**: under density fitting the energy change floors with `naux`,
-so a tighter dE than the RI noise floor can never be met and the run burns its
-whole iteration budget chasing it. `density_conv` is the criterion that does
-the real work in this codebase; leave the dE bound loose enough to be
-satisfiable.
+173 iterations is normal for a delocalised carbocation; the default cap of 200
+is not sized for this. `energy_conv = 1e-8` was unreachable: under density
+fitting the energy change floors with `naux`, so a dE bound tighter than the RI
+noise floor is never met and the run spends its whole iteration budget on it.
+`density_conv` is the criterion that converges the density. Leave the dE bound
+loose enough to be satisfiable.
 
-Note the failure MODE is diagnostic. `Stalled` means the SCF could not make
-progress -- suspect the geometry. `MaxIter` means it was progressing and ran
-out of room -- raise the cap. They are different problems and the exit reason
-names which one you have.
+The exit reason is diagnostic. `Stalled` means the SCF could not make
+progress: suspect the geometry. `MaxIter` means it was progressing and ran out
+of iterations: raise the cap.
 
-**Set `density_conv`, not just `energy_conv`.** E_HF is variational and
+**Set `density_conv` as well as `energy_conv`.** E_HF is variational and
 tolerates a loose density; anything depending linearly on the MO coefficients
 does not. A correlation energy computed from an unconverged density can look
 reproducible and still shift when anything upstream changes, because the
@@ -151,8 +147,8 @@ density was never converged.
 **Checkpoint every species as it finishes.** A crash at species 6 of 8 should
 cost one species, not the whole run.
 
-**The method and basis decide whether the study is possible at all.**
-MEASURED on the same 27-atom cation, single point (both the basis and the
+**The method and basis decide whether the study is feasible.**
+Measured on the same 27-atom cation, single point (both the basis and the
 functional differ between the two rows, so this does not isolate the cost of
 the basis):
 
@@ -163,43 +159,42 @@ the basis):
 cascade on a workstation without measuring one species first.
 
 **Treat the optimization time as an estimate.** An optimization takes tens of
-gradient steps. ESTIMATED: at ~5 min per 6-31G single point, 30–60 steps would
+gradient steps. Estimate: at ~5 min per 6-31G single point, 30–60 steps would
 take roughly 2.5–5 hours per species *if* each gradient step costs about as much
 as a single point. Neither a gradient step nor a full optimization of this
 system has been timed. Later steps start from the previous density and may
 converge faster than a cold start. Time one optimization before budgeting a
 cascade.
 
-**Use a release build.** MEASURED: the same cation at B3LYP/def2-SVP ran for
+**Use a release build.** Measured: the same cation at B3LYP/def2-SVP ran for
 more than 34 minutes on a *debug* binary, sharing the machine with one other
 job, without converging a single point. The wheel and `cargo build --release`
 are both release builds.
 
 **A 27-atom cation at def2-SVP needs ~6 GB.** Budget the study with that in
-mind. Running eight species of that size at once is an outage, not a plan.
+mind. Running eight species of that size at once exhausts a workstation.
 Always wrap the run in `scripts/ferric-limited --max=8G --high=7G --`.
 [For agents](agents.md#memory-the-budget-predicts-the-cgroup-enforces)
 explains why the in-process budget alone is not enough.
 
-**Size it before you start.** MEASURED: the tert-butyl cation (C4H9+, 101
+**Size it before you start.** Measured: the tert-butyl cation (C4H9+, 101
 basis functions at def2-SVP) is a single point that takes seconds. A C10
-cascade cation (C10H17+) has 225 basis functions. ESTIMATED at N^3.5 scaling,
-that is about **16x** the single-point cost. That's still cheap for an energy,
-but an optimization multiplies it by the step count. So the optimizations of
-the C10 species are the dominant cost of the whole study. Run one species end
+cascade cation (C10H17+) has 225 basis functions. Estimated at N^3.5 scaling,
+that is about 16x the single-point cost. That is cheap for an energy, but an
+optimization multiplies it by the step count, so the optimizations of the C10
+species dominate the cost of the study. Run one species end
 to end and time it before you queue eight.
 
 ### Step 3 — confirm the ordering survives the functional
 
 Run single points on the optimized geometries with at least two more
-functionals, for example **B3LYP** and **wB97X-V** (both available;
+functionals, for example B3LYP and wB97X-V (both available;
 `wB97X-V` resolves to libxc's `HYB_GGA_XC_WB97X_V`), at a basis that fitted in
 Step 2.
 
-If the functionals disagree on the *ordering* of intermediates, **report
-the disagreement**. Do not average them and do not pick the one that matches
-your hypothesis. A cascade whose ordering is functional-dependent is a finding
-about the system, not a number to be cleaned up.
+If the functionals disagree on the ordering of intermediates, report the
+disagreement. Do not average them or pick the one that matches your
+hypothesis. A functional-dependent ordering is a finding about the system.
 
 ### Step 4 — properties at the key intermediate
 
@@ -208,8 +203,7 @@ polarizability of the π-stabilized cation. From Python these are
 `ferric.hirshfeld_charges`, `ferric.lowdin_charges` and `ferric.esp_at_atoms`.
 
 **Cost warning:** the polarizability comes from `ferric-rpa` and is an
-RPA-level calculation, not a cheap add-on to the DFT run. Budget it
-separately. It can cost more than the optimization before it.
+RPA-level calculation. Budget it separately from the DFT run. It can cost more than the optimization before it.
 
 ### Step 5 (optional) — barriers
 
@@ -229,8 +223,7 @@ the two intermediates you meant.
 
 ### What this cannot tell you
 
-State these in any write-up. They aren't hedging. They define the scope of
-the claim.
+State these in any write-up. They define the scope of the claim.
 
 * **Gas-phase cluster models.** There's no enzyme environment unless you add
   QM/MM ([QM/MM](qmmm.md)).
@@ -241,7 +234,7 @@ the claim.
   use finite differences of analytic gradients (Step 5). That costs 6N
   gradients per Hessian, so a C10 cation Hessian is hundreds of gradient
   evaluations. Without Step 5 you
-  have intermediate energies, not barriers, and *kcat depends on barriers*.
+  have intermediate energies but no barriers, and kcat depends on barriers.
 * **No thermochemistry.** There's no entropy, enthalpy or free-energy
   correction anywhere, from the CLI or Python. You can compute a zero-point
   energy yourself from the frequencies (½Σhν over the real modes). Python's
@@ -256,12 +249,12 @@ the claim.
 | Signal | Meaning |
 |---|---|
 | `converged = true` | Trust the energy. Absence of this line is not success. |
-| `converged = false` | An energy is still printed. It is NOT a result. |
-| `exit Some(Stalled)` | The SCF could not progress. Suspect the GEOMETRY -- check the minimum interatomic distance and relax with xtb. |
-| `exit Some(MaxIter)` | It WAS progressing and ran out of iterations. Raise `max_iter` (173 is normal for a delocalised cation) and check `energy_conv` is reachable under DF. |
+| `converged = false` | An energy is still printed. It is not a result. |
+| `exit Some(Stalled)` | The SCF could not progress. Suspect the geometry: check the minimum interatomic distance and relax with xtb. |
+| `exit Some(MaxIter)` | It was progressing and ran out of iterations. Raise `max_iter` (173 is normal for a delocalised cation) and check `energy_conv` is reachable under DF. |
 | `exit Some(Diverged)` | The energy climbed for several iterations in a row. Suspect the geometry or the charge/multiplicity before the solver. |
 | charge/multiplicity error | Your `.xyz` atom count is wrong. Read the arithmetic it prints. |
-| Disagreement with another code ~1e-5 Ha | Check the grid: ferric `(75,110)` vs PySCF ~`(75,302)`. Scales with **atom count**. |
+| Disagreement with another code ~1e-5 Ha | Check the grid: ferric `(75,110)` vs PySCF ~`(75,302)`. Scales with atom count. |
 | Larger KS-DFT disagreement that grows with size | ferric density-fits Coulomb by default in KS-DFT. See [Recipes](recipes.md) §6. |
 | A correlation energy that moves when nothing physical changed | `density_conv` was never set. |
 
