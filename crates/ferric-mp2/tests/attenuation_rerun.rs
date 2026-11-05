@@ -185,7 +185,7 @@ fn attenuated_alpha_and_c6_match_coulomb_in_the_omega_zero_limit() {
 /// NH3/STO-3G at ω = 0.42 and 1.0 Bohr⁻¹. Same bar as
 /// `attenuated_relaxed_alpha_matches_energy_finite_field`.
 #[test]
-#[ignore]
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 fn attenuated_alpha_finite_field_nh3() {
     let s = setup("nh3g", "sto-3g");
     let cfg = mp2_cfg();
@@ -236,7 +236,7 @@ fn attenuated_alpha_finite_field_nh3() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "measurement: attenuation sweep driver (SWEEP_* env vars), not a regression test; see wiki/notes/attenuated-mp2-alpha-c6-rerun-2026-11-05.md"]
 fn attn_sweep() {
     let env = |k: &str, d: &str| std::env::var(k).unwrap_or_else(|_| d.to_string());
     let mols = env("SWEEP_MOLS", "h2o");
