@@ -37,8 +37,9 @@
 //!
 //! Relative to [`crate::ccd`], this module builds strictly fewer integral blocks: the
 //! `(2n_v)⁴` VVVV tensor that dominates CCD's memory is never formed for
-//! [`crate::linlccd::LadderVariant::Hh`], nor is OVVO. See
-//! `docs/superpowers/specs/2026-07-26-linlccd-hh-design.md`.
+//! [`crate::linlccd::LadderVariant::Hh`], nor is OVVO.
+//! `crates/ferric-cc/theory.md` (section "LinLCCD and LinLCCD(hh)") derives the
+//! working equations and the integral blocks each variant builds.
 
 use super::{CcConfig, CcResult};
 use ferric_core::memory::plan::{Lifetime, MemoryPlan};

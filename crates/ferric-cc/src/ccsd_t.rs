@@ -383,14 +383,14 @@ fn raw_v_block(
     out
 }
 
-/// Swap axes 0,1 of a `[nv2,nv2,nv2]` block: out[a,b,c] = x[b,a,c].
+/// Swap axes 0,1 of a `[nv2,nv2,nv2]` block: `out[a,b,c] = x[b,a,c]`.
 fn swap01(x: &Array3<f64>) -> Array3<f64> {
     x.view()
         .permuted_axes([1, 0, 2])
         .as_standard_layout()
         .into_owned()
 }
-/// Swap axes 0,2 of a `[nv2,nv2,nv2]` block: out[a,b,c] = x[c,b,a].
+/// Swap axes 0,2 of a `[nv2,nv2,nv2]` block: `out[a,b,c] = x[c,b,a]`.
 fn swap02(x: &Array3<f64>) -> Array3<f64> {
     x.view()
         .permuted_axes([2, 1, 0])

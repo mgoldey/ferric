@@ -41,5 +41,6 @@
 - [Python bindings](./using/python.md)
 - [Examples](./reference/examples.md)
 - [Run logs](./using/run-logs.md)
+- [Einsum spec grammar](./reference/einsum.md)
 - [Rust API](./reference/api.md)
 - [References and citing](./reference/references.md)

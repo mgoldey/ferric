@@ -67,7 +67,8 @@ pub struct PcmConfig {
     /// standard practice (PySCF/Psi4 default): the outer SCF/DIIS loop is
     /// itself the self-consistency driver between q and D. A value > 1 is
     /// accepted for experimentation but is not required for correctness in
-    /// the current implementation (see `pcm.rs`'s per-iteration hook).
+    /// the current implementation (see the per-iteration `pcm_ctx` hook in
+    /// `crates/ferric-scf/src/rhf.rs` and [`crate::solver::solve_pcm_charges`]).
     #[serde(default = "default_inner_iters")]
     pub inner_iters: usize,
     /// Boundary-element S/D matrix formulation. Default
