@@ -51,6 +51,21 @@ fn live_mask<'a>(rho: impl IntoIterator<Item = &'a f64>) -> Vec<bool> {
     rho.into_iter().map(|&r| above_density_floor(r)).collect()
 }
 
+/// Closed-shell (restricted-reference) screen for a spin-resolved kernel built
+/// at ρ_α = ρ_β: production closed-shell V_xc gates on the TOTAL density
+/// (`vxc.rs`, `above_density_floor(ρ)`), so both spin blocks of the kernel are
+/// live exactly where ρ_α + ρ_β is above the floor. Gating each spin on ρ/2
+/// instead would drop the band ρ ∈ (floor, 2·floor] that V_xc keeps.
+fn live_mask_restricted(rho_a: &[f64], rho_b: &[f64]) -> [Vec<bool>; 2] {
+    assert_eq!(rho_a.len(), rho_b.len());
+    let m: Vec<bool> = rho_a
+        .iter()
+        .zip(rho_b)
+        .map(|(&a, &b)| above_density_floor(a + b))
+        .collect();
+    [m.clone(), m]
+}
+
 /// Precomputed grid + AO data + libxc handle for an LDA f_xc response.
 /// Build once at SCF setup; reuse the closure across Newton iterations.
 #[derive(Debug)]
@@ -353,6 +368,22 @@ impl GgaFxcKernel {
         d_delta_b: &Array2<f64>,
     ) -> (Array2<f64>, Array2<f64>) {
         let live = [live_mask(&ref_dens.rho_a), live_mask(&ref_dens.rho_b)];
+        self.apply_with_mask(ref_dens, &live, d_delta_a, d_delta_b)
+    }
+
+    /// [`apply_with_ref`](Self::apply_with_ref) for a RESTRICTED reference
+    /// (D_α = D_β): the derivative of the closed-shell V_xc, which gates on the
+    /// total density, so both spin blocks are screened on ρ_α + ρ_β.
+    pub fn apply_with_ref_restricted(
+        &self,
+        ref_dens: &crate::density_on_grid::UksDensityGrid,
+        d_delta_a: &Array2<f64>,
+        d_delta_b: &Array2<f64>,
+    ) -> (Array2<f64>, Array2<f64>) {
+        let live = live_mask_restricted(
+            ref_dens.rho_a.as_slice().expect("contiguous"),
+            ref_dens.rho_b.as_slice().expect("contiguous"),
+        );
         self.apply_with_mask(ref_dens, &live, d_delta_a, d_delta_b)
     }
 
@@ -920,6 +951,25 @@ impl MggaFxcKernel {
         d_a: &Array2<f64>,
         d_b: &Array2<f64>,
     ) -> Result<MggaFxcReference, String> {
+        self.reference_gated(d_a, d_b, false)
+    }
+
+    /// [`reference`](Self::reference) for a RESTRICTED reference (D_α = D_β):
+    /// the density screen is the closed-shell V_xc one, on ρ_α + ρ_β.
+    pub fn reference_restricted(
+        &self,
+        d_a: &Array2<f64>,
+        d_b: &Array2<f64>,
+    ) -> Result<MggaFxcReference, String> {
+        self.reference_gated(d_a, d_b, true)
+    }
+
+    fn reference_gated(
+        &self,
+        d_a: &Array2<f64>,
+        d_b: &Array2<f64>,
+        restricted: bool,
+    ) -> Result<MggaFxcReference, String> {
         let dens = eval_density_uks(d_a, d_b, &self.chi, &self.dchi);
         let (tau_a, tau_b) = eval_tau_uks(d_a, d_b, &self.dchi);
         let npts = self.grid.len();
@@ -938,7 +988,14 @@ impl MggaFxcKernel {
             tau[2 * g + 1] = tau_b[g];
         }
         let (hess, vsigma) = point_hessians(&self.xc, &rho, &sigma, &tau)?;
-        let live = [live_mask(&dens.rho_a), live_mask(&dens.rho_b)];
+        let live = if restricted {
+            live_mask_restricted(
+                dens.rho_a.as_slice().expect("contiguous"),
+                dens.rho_b.as_slice().expect("contiguous"),
+            )
+        } else {
+            [live_mask(&dens.rho_a), live_mask(&dens.rho_b)]
+        };
         Ok(MggaFxcReference {
             grad_a: dens.grad_a,
             grad_b: dens.grad_b,
@@ -1931,6 +1988,85 @@ mod tests {
                 "{name}: negative control — the unfloored kernel must miss FD(V), \
                  best {best_unfloored:e}"
             );
+        }
+    }
+
+    /// The restricted-reference (singlet TDDFT / stability) kernel is the
+    /// derivative of the CLOSED-shell V_xc, which gates on the total density.
+    /// Gating each spin on ρ_σ = ρ/2 instead drops ρ ∈ (floor, 2·floor].
+    ///
+    /// Reference densities are overwritten on a block of points with totals
+    /// straddling the cut, [floor/2, 2·floor]; the points are made
+    /// gradient-free so libxc sees a physical (σ = 0) state.
+    #[test]
+    fn restricted_kernel_gate_is_the_closed_shell_total_density_gate() {
+        let _env_guard = crate::TEST_BUDGET_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let (mol, bs, d_a, _) = uhf_reference("2\n\nH 0 0 0\nH 0 0 1.4\n", 1);
+        let nbf = d_a.nrows();
+        let mut rng = Xorshift64(0xBADC0FFEE0DDF00D);
+        let dd = rand_sym(&mut rng, nbf, 1e-6);
+        let f = DENSITY_FLOOR;
+        let totals = [
+            0.5 * f,
+            0.9 * f,
+            1.1 * f,
+            1.5 * f,
+            1.9 * f,
+            2.1 * f,
+            3.0 * f,
+        ];
+        for name in ["PBE", "LDA"] {
+            let gk = GgaFxcKernel::new(
+                &mol,
+                &bs,
+                crate::libxc::xc_def_from_name_nspin(name, 2).unwrap(),
+                &small_grid(),
+            )
+            .unwrap();
+            let mut r = gk.reference_density(&d_a, &d_a);
+            // Closed-shell reference: ρ_α = ρ_β = ρ/2.
+            for (k, &t) in totals.iter().enumerate() {
+                let g = 3 * k + 1;
+                r.rho_a[g] = 0.5 * t;
+                r.rho_b[g] = 0.5 * t;
+                for c in 0..3 {
+                    r.grad_a[(c, g)] = 0.0;
+                    r.grad_b[(c, g)] = 0.0;
+                    r.sigma[(c, g)] = 0.0;
+                }
+            }
+            let n = r.rho_a.len();
+            // The closed-shell V_xc gate, applied pointwise to the total.
+            let vxc_live: Vec<bool> = (0..n)
+                .map(|g| above_density_floor(r.rho_a[g] + r.rho_b[g]))
+                .collect();
+            let restricted =
+                live_mask_restricted(r.rho_a.as_slice().unwrap(), r.rho_b.as_slice().unwrap());
+            assert_eq!(restricted[0], vxc_live, "{name}: α mask != V_xc gate");
+            assert_eq!(restricted[1], vxc_live, "{name}: β mask != V_xc gate");
+            // The per-spin mask disagrees with V_xc exactly on (floor, 2·floor].
+            let per_spin = live_mask(&r.rho_a);
+            let disagree: Vec<usize> = (0..n).filter(|&g| per_spin[g] != vxc_live[g]).collect();
+            assert!(
+                disagree.len() >= 3
+                    && disagree.iter().all(|&g| {
+                        let t = r.rho_a[g] + r.rho_b[g];
+                        t > f && t <= 2.0 * f
+                    }),
+                "{name}: per-spin vs total mask disagreement set {disagree:?}"
+            );
+
+            let got = gk.apply_with_ref_restricted(&r, &dd, &dd);
+            let want = gk.apply_with_mask(&r, &[vxc_live.clone(), vxc_live], &dd, &dd);
+            assert_eq!(max_abs_diff2(&got.0, &want.0), 0.0, "{name}: δV_α");
+            assert_eq!(max_abs_diff2(&got.1, &want.1), 0.0, "{name}: δV_β");
+            // The inconsistency was a real change of the kernel.
+            let old = gk.apply_with_ref(&r, &dd, &dd);
+            let change = max_abs_diff2(&got.0, &old.0);
+            eprintln!("{name}: per-spin vs total-gated δV_α max|Δ| = {change:.3e}");
+            assert!(change > 0.0, "{name}: band points did not move the kernel");
         }
     }
 }

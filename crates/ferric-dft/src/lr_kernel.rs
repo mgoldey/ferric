@@ -112,7 +112,7 @@ impl SingletKernel {
             .any(|f| f.family() == FunctionalFamily::MetaGga)
         {
             let kernel = MggaFxcKernel::new(mol, bs, def, grid)?;
-            let reference = Box::new(kernel.reference(d_alpha, d_alpha)?);
+            let reference = Box::new(kernel.reference_restricted(d_alpha, d_alpha)?);
             Ok(Self::Mgga { kernel, reference })
         } else {
             let kernel = GgaFxcKernel::new(mol, bs, def, grid)?;
@@ -124,7 +124,9 @@ impl SingletKernel {
     /// (δV_α, δV_β) for the perturbation (δD_α, δD_β).
     pub fn apply(&self, dd_a: &Array2<f64>, dd_b: &Array2<f64>) -> (Array2<f64>, Array2<f64>) {
         match self {
-            Self::Gga { kernel, reference } => kernel.apply_with_ref(reference, dd_a, dd_b),
+            Self::Gga { kernel, reference } => {
+                kernel.apply_with_ref_restricted(reference, dd_a, dd_b)
+            }
             Self::Mgga { kernel, reference } => kernel.apply_with_ref(reference, dd_a, dd_b),
         }
     }
