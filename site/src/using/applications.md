@@ -60,7 +60,7 @@ than a real bond, and a hydrogen 1.030 A from a second carbon. The SCF stalled
 at 37 iterations, which is the correct behaviour for overlapping nuclei.
 
 ```python
-# formula check and geometry check fail on DIFFERENT mistakes -- keep both
+# formula check and geometry check fail on different mistakes; keep both
 assert (n_elec % 2 == 0) == (multiplicity % 2 == 1)   # bad stoichiometry
 assert min_interatomic_distance(xyz) > 0.9            # gross overlap only (your own helper, Angstrom)
 # The failure above PASSES that screen (closest contact 0.902 A): its H sat
@@ -68,7 +68,7 @@ assert min_interatomic_distance(xyz) > 0.9            # gross overlap only (your
 assert max_heavy_neighbours_of_hydrogen(xyz, cutoff=1.3) <= 1
 ```
 
-### Step 1b -- relax with xtb before ANY DFT
+### Step 1b: relax with xtb before any DFT
 
 xtb is the middle tier of the funnel. GFN2-xTB fixes a bad structure in
 seconds:

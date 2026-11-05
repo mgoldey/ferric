@@ -125,8 +125,8 @@ section 3 needs for balancing.
 
 ## 6. Ranked options
 
-1. **`cargo-nextest`.** `cargo test` runs test BINARIES serially (each binary
-   parallelises only its own tests) -- a documented cargo limitation,
+1. **`cargo-nextest`.** `cargo test` runs test binaries serially (each binary
+   parallelises only its own tests), a documented cargo limitation,
    rust-lang/cargo#5609. ferric runs 344 binaries and most are tiny, so the
    short ones run one at a time with cores idle. nextest runs them
    concurrently. Estimated 63 -> ~25 min; the 13.4 min floor is measured.
@@ -230,9 +230,9 @@ The design therefore shards by binary (`--partition hash:i/4`), not by crate.
 
 ### With the five deferrals
 
-The five slowest integration binaries -- `cdft_coupling_hene` (13.4 min),
+The five slowest integration binaries are `cdft_coupling_hene` (13.4 min),
 `cdft_state_selection` (4.8), `rimp2_qqr3_screening` (4.1),
-`cosx_group_screen_anchors` (2.1), `cosx_sparse_anchors` (1.9) -- total
+`cosx_group_screen_anchors` (2.1), `cosx_sparse_anchors` (1.9). They total
 26.2 min. Deferring them leaves 26.1 min over 4 shards, ~6.5 min each.
 
 ### Memory budget under nextest

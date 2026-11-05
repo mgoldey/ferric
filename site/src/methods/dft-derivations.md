@@ -5,7 +5,7 @@ code's conventions and proved by a sympy script that exits nonzero on a
 mismatch. The full equations, function locations and test cross-references
 are in
 [`crates/ferric-dft/theory.md`](https://github.com/mgoldey/ferric/blob/main/crates/ferric-dft/theory.md).
-Each script also checks deliberately mutated formulas (a dropped factor of 2,
+Each script also checks mutated formulas (a dropped factor of 2,
 a wrong libxc packing slot) and requires them to fail.
 
 ## Conventions

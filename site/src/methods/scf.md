@@ -199,7 +199,7 @@ difference of the corrected analytic gradient: at each of the 6N displaced
 geometries the SCF of that reference is converged, the KS gradient and the dispersion gradient
 are evaluated there, and their sum is differenced. For MBD@rsSCS the
 dispersion gradient is the exact one above, with the Z-vector of the
-reference actually solved (RKS, UKS or ROKS), so the response of the Hirshfeld
+reference solved (RKS, UKS or ROKS), so the response of the Hirshfeld
 volumes to the displacement, through the SCF density, is in the Hessian.
 There is no analytic Hessian on this path: `[frequencies] hessian = "analytic"`
 is an error and `"auto"` runs finite differences.
@@ -421,7 +421,7 @@ LinK's cost is being re-measured, so no LinK timing is quoted here.
 `k_builder` is honoured by UHF and ROHF as well as RHF: the open-shell solvers
 build K_α and K_β from one builder instance, refreshing its density-dependent
 state per spin. Whether LinK is the faster choice for a given system is a
-separate question from whether it is honoured — see the cost note above, which
+separate question from whether it is honoured; see the cost note above, which
 is being re-measured. `link` is skipped with a warning, never silently,
 whenever density-fitted J/K is active; both `link` and `cosx` are skipped with
 a warning when the functional uses no exact exchange or is range-separated
@@ -509,9 +509,9 @@ most of the error (0.02 kcal/mol on an isodesmic alkane reaction at the flat
   measured. RHF/UHF and their Kohn–Sham variants; ROHF refuses it.
 - `cosx_overlap_fit = true` (default) applies the Izsák–Neese overlap
   correction. At the default grid it helps; on coarser grids it makes things
-  *worse*, and its benefit is strongly molecule-dependent — large on water,
-  nil to negative on ethane — so do not expect the factor quoted in the
-  literature.
+  worse, and its benefit depends strongly on the molecule (large on water,
+  nil to negative on ethane), so the factor quoted in the literature does
+  not carry over.
 - `cosx_backend = "md3c1e"` (default) is the batched McMurchie–Davidson
   integral kernel. `"cosx-a"` is the per-point libint2 path, about three times
   slower and kept only as the cross-check the kernel is anchored against.
@@ -559,7 +559,7 @@ What the table shows:
 - The pruned `sgx (35,194)` grid uses 0.65× the points of flat (50,110)
   and is more accurate on seven of the eight molecules, by 1.7× (benzene) to
   29× (ethane). On methane it is 1.15× worse (9.2e-6 against 8.0e-6 Ha).
-  This is the grid geometry tasks (optimize, frequencies) use, since they
+  Geometry tasks (optimize, frequencies) use this grid, since they
   run without the final pass.
 - The final pass on `sgx (50,302)` reproduces an SCF converged on that grid to
   4e-8 Ha on seven molecules and 1.5e-7 Ha on sulfamethoxazole, at 0.45–0.59×
@@ -593,7 +593,7 @@ run without the pass and a gradient of a final-pass result is refused (an
 ORCA-style gradient evaluated on the final grid misses finite differences of
 the final-grid energy by 4.6e-7–7.3e-7 Ha/Bohr on water/6-31G, so it is not
 used). Refused for gradient tasks before the SCF runs: fitted COSX with a
-Kohn–Sham functional (RKS, UKS, ROKS — the fitted energy's response needs the
+Kohn–Sham functional (RKS, UKS, ROKS; the fitted energy's response needs the
 nuclear derivative of the XC Fock matrix) and fitted COSX for ROHF (no
 restricted-open-shell response).
 
@@ -606,9 +606,9 @@ converged; a non-converged SCF is a result with `converged = false`, not an
 error. Downstream code that ignores the flag will happily consume a
 half-converged density.
 
-**Multiple solutions are real.** For systems like alkane chains, different
-initial guesses converge to genuinely different SCF solutions — not a
-convergence failure but a different basin. The guess picks the basin.
+**Multiple solutions.** For systems like alkane chains, different
+initial guesses converge to different SCF solutions, each in its own basin.
+The guess picks the basin.
 
 **Density-fitting has a noise floor.** DF-JK introduces an error floor that
 makes energy-based convergence criteria below roughly 1e-9 meaningless; SCF
@@ -642,7 +642,7 @@ orthogonalizer. A secondary basis missing an element, a mismatched ECP core
 count, or a projected occupied space that is near-singular in the target
 basis are errors. A secondary basis larger than the target is allowed, with
 a warning. The guess is refused with `symmetry = true` and on periodic
-systems. An explicit starting density or MOs take precedence, just as they
+systems. An explicit starting density or MOs take precedence, as they
 do over `guess = "minao"`. With `guess_basis` set, `guess = "minao" | "sad" |
 "hcore"` selects the starting point of the *secondary* SCF only; the target
 starts from the projection. The dual-basis energy correction (Q-Chem
@@ -727,12 +727,11 @@ own page: [QM/MM](../using/qmmm.md), including [its CLI section](../using/qmmm.m
 
 The Fock build's reduction folds partial matrices in a **strict ascending group
 order**, independent of thread count and of the memory band width. Results are
-bit-identical across `RAYON_NUM_THREADS` — a property pinned by tests, not just
-intended.
+bit-identical across `RAYON_NUM_THREADS`, a property pinned by tests.
 
-This matters more than it might seem: a tree-fold reduction would be equally
-*deterministic* but would produce *different* bits, since floating-point
-addition is not associative. The ascending order is load-bearing.
+A tree-fold reduction would be deterministic but would produce different
+bits, since floating-point addition is not associative, so the sum must run
+in ascending order.
 
 ## Cite
 
