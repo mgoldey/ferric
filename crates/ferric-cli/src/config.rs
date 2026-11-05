@@ -479,7 +479,7 @@ pub struct DftCfg {
     /// published value carried by `DoubleHybridConfig::default()` (0.1).
     /// Only read by `method.kind = "wb97x-l-v"`.
     pub omega: Option<f64>,
-    /// Angular-grid pruning scheme for the MAIN DFT grid.
+    /// Angular-grid pruning scheme for the main DFT grid.
     ///
     ///   omitted            — `nwchem-radial` (the production grid; see
     ///                        `AtomicGridConfig::production`).

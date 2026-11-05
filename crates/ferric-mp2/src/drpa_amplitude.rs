@@ -497,7 +497,7 @@ pub fn exact_drpa_peak_bytes(no: usize, nv: usize, diis: Option<usize>) -> usize
 }
 
 /// Masked Riccati fixed-point solve on an already-assembled ragged
-/// B = 2(ia|jb) — the UNCHANGED solver shared by the global-B path
+/// B = 2(ia|jb): the solver shared by the global-B path
 /// ([`amplitude_drpa_from_basis`]) and the integral-direct path
 /// ([`amplitude_drpa_direct_with_virtuals`]): pattern-projected damped
 /// fixed point, optional DIIS (with the post-hoc residual honesty check on

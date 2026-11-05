@@ -107,7 +107,7 @@ pub struct AtomicGridConfig {
     /// Angular-order pruning scheme, or `None` for the flat (unpruned) grid.
     ///
     /// `None` is the flat grid, and is what [`AtomicGridConfig::default`] builds.
-    /// It is NOT what a KS SCF runs on when no grid is set: that is
+    /// A KS SCF with no grid set runs on
     /// [`AtomicGridConfig::production`] (`Some(PruneScheme::NwchemRadial)`).
     /// [`PruneScheme::NwchemLike`] cuts ~23% of grid points (measured on
     /// H2O/CH4/benzene at 75x110; 33.5% at 99x302) for a ΔE_xc of ~1e-10 Ha —

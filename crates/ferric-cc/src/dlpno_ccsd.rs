@@ -2,17 +2,17 @@
 //!
 //! # Scope, stated up front
 //!
-//! This is the **pair-screening half** of DLPNO-CCSD, not the full method. It
+//! This is the pair-screening half of DLPNO-CCSD, not the full method. It
 //! screens which occupied pairs `(i,j)` carry amplitudes, which attacks the same
 //! n_o-order factor that [`ferric_mp2::pair_domains`] attacks for LinLCCD(hh).
 //!
-//! It does **not** yet rotate the t1/t2 amplitudes and all 59 residual
+//! It does not yet rotate the t1/t2 amplitudes and all 59 residual
 //! contractions into a per-pair PNO virtual basis. That is the other half, and it
 //! is a much larger change: `ccsd_closed_shell.rs`'s residual is a tightly coupled
 //! set of contractions over shared `oooo/ovov/oovv/ovvo/ovoo/ovvv/vvvv` blocks, so
 //! a per-pair virtual basis means re-deriving every one of them in a basis that
 //! differs per pair. Doing that behind an untested "DLPNO-CCSD" label would be
-//! worse than shipping the honest half — see the field notes in the module tests.
+//! worse than shipping the half that is validated; see the field notes in the module tests.
 //!
 //! # Why pair screening is the right first half
 //!

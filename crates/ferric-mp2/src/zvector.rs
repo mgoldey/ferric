@@ -32,7 +32,7 @@ pub(crate) fn zvec_trace() -> bool {
 /// Solve the Z-vector (CPHF) equation for the RI-MP2 orbital response.
 ///
 /// Returns `(z, imat)` where `z` is the (nvir, nocc_total) virtual-occupied block
-/// of the relaxed density in MO basis — over ALL occupied orbitals, frozen core
+/// of the relaxed density in MO basis — over all occupied orbitals, frozen core
 /// included — and `imat` is the (nmo, nmo) RI-MP2 Lagrangian matrix
 /// `build_imat_ri` (needed downstream for the overlap/Pulay term).
 ///

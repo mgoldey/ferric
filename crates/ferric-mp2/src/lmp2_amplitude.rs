@@ -1271,10 +1271,10 @@ where
     (keep, n_gated)
 }
 
-/// The LINEAR energy form E = Σ (2 t_iajb − t_ibja) J_iajb over the
+/// The linear energy form E = Σ (2 t_iajb − t_ibja) J_iajb over the
 /// retained pattern — t_ibja is read from the SAME pair block at swapped
 /// positions (zero outside the union domains). Exact at the converged
-/// amplitudes but NOT stationary: its error is first order in the CG
+/// amplitudes but not stationary: its error is first order in the CG
 /// residual. It was the molecular drivers' energy until perf Stage D and is
 /// kept, arithmetic unchanged, as the oracle of [`hylleraas_energy`]
 /// (`hylleraas_is_stationary`). ferric-pbc's Gamma LMP2 still uses it

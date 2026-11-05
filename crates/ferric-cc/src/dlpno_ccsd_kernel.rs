@@ -1,9 +1,8 @@
-//! DLPNO-CCSD — making truncation change the **cost of the iteration**.
+//! DLPNO-CCSD: making truncation change the cost of the iteration.
 //!
-//! [`crate::dlpno_ccsd_virtual`] built the exact per-pair PNO substrate and said
-//! plainly what it did not do: the 59 residual contractions of
-//! [`crate::ccsd_closed_shell`] are still dense, so raising `t_cut_pno` changes
-//! the *energy* and nothing else. This module is the attack on that gap.
+//! [`crate::dlpno_ccsd_virtual`] built the exact per-pair PNO substrate; the 59 residual
+//! contractions of [`crate::ccsd_closed_shell`] are still dense, so raising `t_cut_pno` changes
+//! the *energy* and nothing else. This module closes that gap.
 //!
 //! # The one structural difficulty, stated first
 //!

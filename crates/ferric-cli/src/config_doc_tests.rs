@@ -362,8 +362,8 @@ fn every_toml_block_in_the_docs_parses() {
 }
 
 /// The CLI README's `[method]` table must name exactly the kinds and tasks the
-/// CLI dispatches, and none that it does not (it once said `dft` for `ksdft`
-/// and offered a `gradient` task).
+/// CLI dispatches, and none that it does not (for example `dft` for `ksdft`,
+/// or a `gradient` task).
 #[test]
 fn cli_readme_lists_the_dispatched_kinds_and_tasks() {
     let readme = std::fs::read_to_string(repo_root().join("crates/ferric-cli/README.md")).unwrap();

@@ -17,7 +17,7 @@
 //! (see the tests, which compare to 40-digit mpmath values).
 //!
 //! Hand-rolled because `f64::erf` is not in stable Rust and `ferric-core`
-//! deliberately carries no special-function dependency (and no `unsafe`
+//! carries no special-function dependency (and no `unsafe`
 //! libm binding).
 
 /// Cody region 1 numerator (`|x| <= 0.46875`), in powers of `x²`.

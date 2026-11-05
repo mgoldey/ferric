@@ -461,7 +461,7 @@ fn veff_vo_mo(
 ///
 /// Its dipole equals `−∂E_MP2/∂F` from a finite-field difference of the RI-MP2
 /// energy (`cpks_static_relaxed_dipole_vs_pyscf`). `build_relaxed_density_ao`
-/// takes P one-sided, so feeding it `solve_zvector`'s z does NOT give this
+/// takes P one-sided, so feeding it `solve_zvector`'s z does not give this
 /// density; pass it `P + Pᵀ` instead.
 pub fn static_relaxed_density_ao(
     ctx: &ParallelContext,
