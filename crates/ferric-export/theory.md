@@ -25,7 +25,7 @@ When the RPA/export pipeline is executed (driven by the `export_npz` configurati
 | `alpha_atomic_dynamic` | $(N_{\text{atoms}}, N_\omega, 3, 3)$ | `float64` | Bohr$^3$ | Per-atom $\alpha^A(i\omega_k)$ at the C6 quadrature nodes `c6_freqs`; intrinsic definition for `c6_source = "pdep"`, the TS/MBD model otherwise (`c6_source`, `c6_partition` record which). |
 | `alpha_ct_dynamic` | $(N_\omega, 3, 3)$ | `float64` | Bohr$^3$ | Dynamic charge-transfer remainder $\alpha(i\omega_k) - \sum_A \alpha^A(i\omega_k)$; `c6_source = "pdep"` only. |
 | `hirshfeld_charges` | $(N_{\text{atoms}},)$ | `float64` | $e$ | Atomic charges computed via Hirshfeld population analysis relative to a spherical proatom baseline. |
-| `lowdin_charges` | $(N_{\text{atoms}},)$ | `float64` | $e$ | Atomic charges computed via Löwdin symmetric orthogonalization. recommended for CM5 charge models. |
+| `lowdin_charges` | $(N_{\text{atoms}},)$ | `float64` | $e$ | Atomic charges computed via Löwdin symmetric orthogonalization. Recommended as the CM5 charge-model baseline. |
 
 ---
 

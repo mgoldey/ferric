@@ -1,6 +1,6 @@
 # ferric-quadrature Mathematical Foundations
 
-This module provides high-accuracy numerical quadrature schemes for integration over real and imaginary frequency grids.
+This module provides numerical quadrature schemes for integration over real and imaginary frequency grids.
 
 ---
 

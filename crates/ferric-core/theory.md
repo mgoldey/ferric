@@ -7,9 +7,9 @@ This module implements the foundational structures of the `ferric` engine, handl
 ## 1. Molecular Representation & Coordinate Conventions
 
 ### Coordinates (Bohr)
-All chemical calculations in `ferric` (integrals, solvers, gradients) are executed using **atomic units (a.u.)**.
-* Molecular coordinates are stored internally in **Bohr**.
-* The external XYZ file parser expects coordinates in **Angstroms** and performs a conversion to Bohr using the conversion factor:
+All chemical calculations in `ferric` (integrals, solvers, gradients) use atomic units (a.u.).
+* Molecular coordinates are stored internally in Bohr.
+* The external XYZ file parser expects coordinates in Angstroms and converts them to Bohr using the conversion factor:
   $$ 1\,\text{Bohr} \approx 0.5291772109\,\text{Å} $$
 * Nuclear repulsion is calculated directly as:
   $$ E_{\text{nuc}} = \sum_{A < B} \frac{Z_A Z_B}{|R_A - R_B|} $$

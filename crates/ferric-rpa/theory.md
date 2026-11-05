@@ -12,13 +12,13 @@ where $\mathbf{\chi}_0(i\omega)$ is the independent-particle polarizability and 
 
 ## The PDEP Eigenpotential Approach
 
-Instead of explicitly constructing and diagonalizing the large dense dielectric matrix $\mathbf{\epsilon}(i\omega)$ at each frequency point, the PDEP approach exploits the fact that the spectrum of the dielectric operator decays rapidly.
+Instead of explicitly constructing and diagonalizing the large dense dielectric matrix $\mathbf{\epsilon}(i\omega)$ at each frequency point, the PDEP approach uses the rapid decay of the dielectric operator's spectrum.
 
 1. **Static Dielectric Eigenpotentials:** The static ($\omega=0$) dielectric operator $\mathbf{\epsilon}(0)$ is diagonalized iteratively using the Davidson algorithm to find the dominant eigenpotentials (often called plasmon density eigenpotentials) $|V_\alpha\rangle$:
    $$ \mathbf{\epsilon}(0) |V_\alpha\rangle = \lambda_\alpha(0) |V_\alpha\rangle $$
-   Because the eigenvalues decay steeply, only a small number of eigenpotentials with eigenvalues $\lambda_\alpha(0) > \epsilon_{\text{trunc}}$ need to be retained. This forms a highly compressed, system-adapted optimal basis.
+   Because the eigenvalues decay steeply, only a small number of eigenpotentials with eigenvalues $\lambda_\alpha(0) > \epsilon_{\text{trunc}}$ need to be retained. They form a compressed, system-adapted basis.
 
-2. **Sternheimer Linear Response:** The action of the dielectric matrix on a trial potential is computed efficiently without an explicit summation over all unoccupied (virtual) states. This is achieved by solving the Sternheimer linear response equation for each occupied orbital $i$:
+2. **Sternheimer Linear Response:** The action of the dielectric matrix on a trial potential is computed without an explicit summation over all unoccupied (virtual) states. This is achieved by solving the Sternheimer linear response equation for each occupied orbital $i$:
    $$ (\hat{H}_0 - \epsilon_i \mathbf{1} + i\omega \mathbf{1}) |\Delta \Psi_i(i\omega, V)\rangle = - P_{\text{virt}} \hat{V} |\Psi_i\rangle $$
    where $P_{\text{virt}}$ is the projector onto the virtual space.
 
@@ -28,7 +28,7 @@ Instead of explicitly constructing and diagonalizing the large dense dielectric 
 4. **Energy Integration:** The correlation energy trace is then evaluated via numerical quadrature (e.g., MiniMax or mapped Gauss-Legendre) over the imaginary frequency grid:
    $$ E_c^{\text{RPA}} = \frac{1}{2\pi} \sum_k w_k \sum_\alpha \left[ \ln(\lambda_\alpha(i\omega_k)) + (1 - \lambda_\alpha(i\omega_k)) \right] $$
 
-This low-scaling formulation avoids the heavy $\mathcal{O}(N^6)$ cost or massive $\mathcal{O}(N^4)$ memory overheads typically associated with forming and manipulating $\mathbf{\chi}_0(i\omega)$ across all frequencies.
+This formulation avoids the $\mathcal{O}(N^6)$ cost and $\mathcal{O}(N^4)$ memory associated with forming and manipulating $\mathbf{\chi}_0(i\omega)$ across all frequencies.
 
 ## Literature Citations
 

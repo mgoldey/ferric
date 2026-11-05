@@ -8,7 +8,7 @@ $$|\Psi_{CC}\rangle = e^{\hat{T}} |\Phi_0\rangle$$
 where $\hat{T} = \hat{T}_1 + \hat{T}_2 + \dots$.
 
 ## CCD Equations
-For CCD, we solve for $T_2$ amplitudes:
+CCD solves for the $T_2$ amplitudes:
 $$\langle ab | \hat{H}_N e^{\hat{T}_2} | ij \rangle_C = 0$$
 The correlation energy is:
 $$E_{corr} = \sum_{ijab} (ia|jb) (2 T_{ij}^{ab} - T_{ji}^{ab})$$
@@ -19,7 +19,7 @@ $$R_i^a = \langle a | \hat{H}_N e^{\hat{T}_1 + \hat{T}_2} | i \rangle_C = 0$$
 $$R_{ij}^{ab} = \langle ab | \hat{H}_N e^{\hat{T}_1 + \hat{T}_2} | ij \rangle_C = 0$$
 
 ### Particle-Hole Intermediates
-To implement CCSD efficiently, we use intermediates:
+CCSD is built from intermediates:
 - $F_{vv}, F_{oo}, F_{ov}$ (Effective Fock matrices)
 - $W_{oooo}, W_{vvvv}, W_{ovov}$ (Effective 2-electron integrals)
 

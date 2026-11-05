@@ -1,6 +1,6 @@
 # Molecular Integrals Theory
 
-This module provides the core integral engine for `ferric`, utilizing `libint2` for high-performance evaluation of Gaussian-type orbital (GTO) integrals.
+This module provides the core integral engine for `ferric`, using `libint2` to evaluate Gaussian-type orbital (GTO) integrals.
 
 ## Basis Sets
 Orbitals are expanded in a basis of Gaussian-type functions:
