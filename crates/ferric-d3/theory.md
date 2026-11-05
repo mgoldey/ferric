@@ -69,7 +69,10 @@ $$E = -\sum_{A<B}\left[\frac{s_6\,C_6^{AB}}{R_{AB}^6 + f_{AB}^6} + \frac{s_8\,C_
 \equiv \sum_{A<B} E_{AB}\!\left(R_{AB},\,C_6^{AB}(\mathrm{CN}_A,\mathrm{CN}_B)\right).$$
 
 Implemented in `d3bj_energy`; parameters $(s_6, s_8, a_1, a_2)$ per
-functional in `params.rs`. Fewer than two atoms gives exactly $0$.
+functional in `params.rs`, equal to simple-dftd3 1.6.0's rational-damping
+table: BLYP, BP86, B97-D, PBE, PBE0, revPBE, B3LYP, TPSS, TPSS0, B2PLYP,
+BHLYP, SCAN, r2SCAN, ωB97X. M06-2X has a zero-damping D3(0) fit only and is
+refused. Fewer than two atoms gives exactly $0$.
 
 ## Gradient
 
@@ -108,8 +111,8 @@ part carries that.
 
 ## Three-body term (ATM)
 
-Enabled by $s_9 \neq 0$ (`D3Params::s9`, `src/params.rs:37`); named
-functionals load $s_9 = 0$ (`src/params.rs:64`), the reference default. With
+Enabled by $s_9 \neq 0$ (`D3Params::s9`, `src/params.rs:39`); named
+functionals load $s_9 = 0$ (`src/params.rs:74`), the reference default. With
 $s_9 = 0$ the triple sum is skipped (`src/lib.rs:363-367`, `src/lib.rs:501-506`),
 so energy and gradient are the two-body ones bit for bit.
 
@@ -169,6 +172,7 @@ cutoff (upstream skips triples with any distance above 40 Bohr).
 | `d3bj_gradient` = central FD of `d3bj_energy` ($<10^{-7}$ Ha/Bohr) on Ar$_2$, water, a C/H cluster and a C/F/O/N/H fragment | `tests/gradient_vs_fd.rs::analytic_gradient_matches_finite_difference` |
 | dropping the chain term, or only its $\mathrm{CN}_B$ half, or halving $\partial W/\partial\mathrm{CN}$ fails that test (water: $1.3\times10^{-6}$, $5.3\times10^{-7}$, $4.0\times10^{-7}$ Ha/Bohr) | mutation |
 | energy vs simple-dftd3 1.6.0 ($<10^{-12}$ Ha, ATM off) | `tests/vs_reference_dftd3.rs` |
+| every tabulated name's $(s_6, s_8, a_1, a_2)$ bit-identical to simple-dftd3 1.6.0, name set equal, M06-2X refused; snapshot from `scripts/gen_d3bj_param_snapshot.py`, whose TOML values are cross-checked against the compiled library | `tests/params_snapshot.rs` |
 | $a_{ijk}$ = cosine form; $\partial a/\partial q$, $\partial f/\partial q$, $\partial E/\partial C_6 = E/2C_6$; assembled Cartesian gradient = sympy $dE/d\mathbf{R}$ | `scripts/d3_atm_gradient_sympy.py` |
 | energy and gradient with $s_9 = 0$ and $s_9 = 1$ vs simple-dftd3 1.6.0, 9 systems × 3 functionals: totals $\le 1.2\times10^{-13}$ Ha, $5.5\times10^{-13}$ Ha/Bohr; three-body part $2.6\times10^{-15}$ Ha, $5.9\times10^{-16}$ Ha/Bohr | `tests/vs_reference_dftd3_atm.rs` |
 | three-body gradient alone = central FD to $<10^{-7}$ relative (measured $\le 4\times10^{-8}$) on Ar$_3$, water, C/H, C/F/O/N/H; full D3(BJ)-ATM to $10^{-7}$ Ha/Bohr | `tests/gradient_vs_fd.rs::atm_gradient_matches_finite_difference` |

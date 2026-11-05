@@ -107,7 +107,10 @@ fitted damping parameters. Python: `run_dft(..., dispersion="d3bj")`, or
 `s9 = 0`.
 
 **Scope.** The damping parameters are fitted per functional, so the key is
-refused on any method other than `ksdft`. `task = "optimize"` works (the D3
+refused on any method other than `ksdft`. Tabulated functionals, each equal
+to simple-dftd3 1.6.0's rational-damping entry: BLYP, BP86, B97-D, PBE, PBE0,
+revPBE, B3LYP, TPSS, TPSS0, B2PLYP, BHLYP, SCAN, r2SCAN, ωB97X. M06-2X has no
+D3(BJ) fit (only zero-damping D3(0)) and is an error. `task = "optimize"` works (the D3
 gradient is implemented; `ferric-d3/tests/gradient_vs_fd.rs`), and so does
 `task = "frequencies"` on RKS, UKS and ROKS: see
 [Frequencies with dispersion](#frequencies-with-dispersion).

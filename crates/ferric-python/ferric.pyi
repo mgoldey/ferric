@@ -4383,7 +4383,8 @@ def d3bj_energy(mol: Molecule, functional: str, s9: float = 0.0) -> float:
 
     `functional` names the XC functional whose published D3(BJ) damping
     parameters to use; the correction is fitted per functional, so this is
-    required. Raises for an unknown functional or for an element outside the
+    required. Raises for an unknown functional, for one with no published
+    D3(BJ) fit (M06-2X, which has D3(0) only), or for an element outside the
     D3 parameterisation, rather than silently returning a smaller number.
 
     `s9` scales the Axilrod-Teller-Muto three-body term: 0.0 (default, the

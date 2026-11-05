@@ -107,7 +107,7 @@
 pub mod params;
 pub mod tables;
 
-pub use params::{d3bj_params_for_functional, D3Params};
+pub use params::{d3bj_params_for_functional, d3bj_tabulated_functionals, D3Params};
 
 use ferric_core::FerricError;
 

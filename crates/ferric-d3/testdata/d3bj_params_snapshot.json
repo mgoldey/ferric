@@ -1,0 +1,138 @@
+{
+ "generator": "scripts/gen_d3bj_param_snapshot.py",
+ "no_upstream_bj": [
+  "m062x"
+ ],
+ "note": "rational damping (s6, s8, a1, a2), keyed by ferric's normalised functional name; s9 is not recorded (ferric loads named functionals with ATM off, as load_rational_damping(atm=False) does)",
+ "params": {
+  "b2plyp": {
+   "a1": 0.3065,
+   "a2": 5.057,
+   "doi": "10.1039/c0cp02984j",
+   "s6": 0.64,
+   "s8": 0.9147,
+   "upstream_key": "b2plyp"
+  },
+  "b3lyp": {
+   "a1": 0.3981,
+   "a2": 4.4211,
+   "doi": "10.1002/jcc.21759",
+   "s6": 1.0,
+   "s8": 1.9889,
+   "upstream_key": "b3lyp"
+  },
+  "b97d": {
+   "a1": 0.5545,
+   "a2": 3.2297,
+   "doi": "10.1002/jcc.21759",
+   "s6": 1.0,
+   "s8": 2.2609,
+   "upstream_key": "b97d"
+  },
+  "bhandhlyp": {
+   "a1": 0.2793,
+   "a2": 4.9615,
+   "doi": "10.1039/c0cp02984j",
+   "s6": 1.0,
+   "s8": 1.0354,
+   "upstream_key": "bhlyp"
+  },
+  "bhlyp": {
+   "a1": 0.2793,
+   "a2": 4.9615,
+   "doi": "10.1039/c0cp02984j",
+   "s6": 1.0,
+   "s8": 1.0354,
+   "upstream_key": "bhlyp"
+  },
+  "blyp": {
+   "a1": 0.4298,
+   "a2": 4.2359,
+   "doi": "10.1002/jcc.21759",
+   "s6": 1.0,
+   "s8": 2.6996,
+   "upstream_key": "blyp"
+  },
+  "bp": {
+   "a1": 0.3946,
+   "a2": 4.8516,
+   "doi": "10.1002/jcc.21759",
+   "s6": 1.0,
+   "s8": 3.2822,
+   "upstream_key": "bp"
+  },
+  "bp86": {
+   "a1": 0.3946,
+   "a2": 4.8516,
+   "doi": "10.1002/jcc.21759",
+   "s6": 1.0,
+   "s8": 3.2822,
+   "upstream_key": "bp"
+  },
+  "pbe": {
+   "a1": 0.4289,
+   "a2": 4.4407,
+   "doi": "10.1002/jcc.21759",
+   "s6": 1.0,
+   "s8": 0.7875,
+   "upstream_key": "pbe"
+  },
+  "pbe0": {
+   "a1": 0.4145,
+   "a2": 4.8593,
+   "doi": "10.1002/jcc.21759",
+   "s6": 1.0,
+   "s8": 1.2177,
+   "upstream_key": "pbe0"
+  },
+  "r2scan": {
+   "a1": 0.49484001,
+   "a2": 5.73083694,
+   "doi": "10.1063/5.0041008",
+   "s6": 1.0,
+   "s8": 0.78981345,
+   "upstream_key": "r2scan"
+  },
+  "revpbe": {
+   "a1": 0.5238,
+   "a2": 3.5016,
+   "doi": "10.1002/jcc.21759",
+   "s6": 1.0,
+   "s8": 2.355,
+   "upstream_key": "revpbe"
+  },
+  "scan": {
+   "a1": 0.538,
+   "a2": 5.42,
+   "doi": "10.1103/physrevb.94.115144",
+   "s6": 1.0,
+   "s8": 0.0,
+   "upstream_key": "scan"
+  },
+  "tpss": {
+   "a1": 0.4535,
+   "a2": 4.4752,
+   "doi": "10.1002/jcc.21759",
+   "s6": 1.0,
+   "s8": 1.9435,
+   "upstream_key": "tpss"
+  },
+  "tpss0": {
+   "a1": 0.3768,
+   "a2": 4.5865,
+   "doi": "10.1002/jcc.21759",
+   "s6": 1.0,
+   "s8": 1.2576,
+   "upstream_key": "tpss0"
+  },
+  "wb97x": {
+   "a1": 0.0,
+   "a2": 5.4959,
+   "doi": null,
+   "s6": 1.0,
+   "s8": 0.2641,
+   "upstream_key": "wb97x"
+  }
+ },
+ "source": "simple-dftd3 (dftd3 python package) 1.6.0"
+}

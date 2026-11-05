@@ -80,6 +80,15 @@ def test_unknown_functional_raises_rather_than_defaulting(water):
     )
 
 
+def test_m06_2x_has_no_d3bj_fit_and_is_refused(water, sto3g):
+    """M06-2X has only a zero-damping D3(0) fit; D3(BJ) for it must raise in
+    the standalone call and in run_dft, never return invented numbers."""
+    with pytest.raises(Exception, match="D3\\(0\\)"):
+        ferric.d3bj_energy(water, "M06-2X")
+    with pytest.raises(ValueError, match="(?i)m06-2x.*D3\\(0\\)"):
+        ferric.run_dft(water, sto3g, functional="PBE", dispersion="d3bj(M06-2X)")
+
+
 def test_run_dft_without_dispersion_is_unchanged(water, sto3g):
     """`dispersion=None` must not perturb the energy at all, and must report
     UNEVALUATED rather than a zero correction."""
