@@ -87,7 +87,9 @@ multiplicity > 1), and in Python through
 (`ferric-scf/tests/dft_scan.rs`); the SCAN/r2SCAN closed-shell gradients against
 PySCF with grid response (`dft_gradient_mgga.rs`). TPSS gradients have no
 PySCF pin. Other meta-GGA variants
-(deorbitalized, +VV10, hybrid meta-GGA) are refused, not approximated.
+(deorbitalized, +VV10, hybrid meta-GGA) are refused, not approximated. The
+\\( V_{xc} \\), \\( f_{xc} \\), VV10, Becke-weight and gradient formulas are
+derived in [DFT derivations](./dft-derivations.md).
 
 ## Dispersion correction: D3(BJ)
 

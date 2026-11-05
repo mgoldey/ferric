@@ -21,6 +21,7 @@
 
 - [Overview](./methods/index.md)
 - [SCF and DFT](./methods/scf.md)
+- [DFT derivations](./methods/dft-derivations.md)
 - [The MP2 family](./methods/mp2.md)
 - [Coupled cluster](./methods/cc.md)
 - [RPA and GW](./methods/rpa-gw.md)
