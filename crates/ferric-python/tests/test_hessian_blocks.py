@@ -23,6 +23,7 @@ import ferric
 WATER = "3\n\nO 0 0 0.117\nH 0 0.757 -0.467\nH 0 -0.757 -0.467\n"
 HI = "2\n\nH 0 0 0\nI 0 0 1.609\n"
 TIGHT = {"energy_conv": 1e-11, "density_conv": 1e-10}
+FREQ_TIGHT = {f"scf_{k}": v for k, v in TIGHT.items()}  # run_frequencies spelling
 
 
 def _ints(xyz: str, basis: str):
@@ -305,7 +306,7 @@ def test_numpy_rhf_hessian_from_pieces_matches_run_frequencies():
     mol, bs, ints = _ints(WATER, "6-31g")
     r = _scf(mol, bs)
     got = _numpy_rhf_hessian(ints, r)
-    ref = ferric.run_frequencies(mol, "6-31g", hessian="analytic", **TIGHT)
+    ref = ferric.run_frequencies(mol, "6-31g", hessian="analytic", **FREQ_TIGHT)
     assert ref.hessian_source == "analytic"
     ref = np.array(ref.cartesian_hessian)
     np.testing.assert_allclose(got, got.T, atol=1e-8)
@@ -317,7 +318,7 @@ def test_numpy_ri_jk_rhf_hessian_from_pieces_matches_run_frequencies():
     fits = {"df_j_aux": AUX, "df_k_aux": AUX}
     r = ferric.run_rhf(mol, bs, **fits, **TIGHT)
     got = _numpy_rhf_hessian(ints, r, aux=ferric.BasisSet.bundled(AUX))
-    ref = ferric.run_frequencies(mol, "6-31g", hessian="analytic", **fits, **TIGHT)
+    ref = ferric.run_frequencies(mol, "6-31g", hessian="analytic", **fits, **FREQ_TIGHT)
     assert ref.hessian_source == "analytic"
     ref = np.array(ref.cartesian_hessian)
     np.testing.assert_allclose(got, got.T, atol=1e-8)

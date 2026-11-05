@@ -108,7 +108,7 @@ def test_mp2_family_certificates_carry_table_grades():
 
 def test_oo_rimp2_unconverged_is_not_graded():
     mol, bs, aux = _setup()
-    r = ferric.run_oo_rimp2(mol, bs, aux, max_iter=1)
+    r = ferric.run_oo_rimp2(mol, bs, aux, oo_max_iter=1)
     assert not r.converged
     c = r.certificate
     assert c["grade"] == "ungraded"

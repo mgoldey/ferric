@@ -187,7 +187,7 @@ read nothing else from it (plus `linlccd_variant` for `linlccd`); any other
 | `oo_max_iter` | integer | `100` | ≥ 1 | `oo-rimp2` only (closed and open shell). Orbital-optimization iterations. |
 | `oo_grad_conv` | float | `1e-4` | > 0 | `oo-rimp2` only. Convergence threshold on the orbital-gradient norm. |
 | `oo_level_shift` | float | `0.1` | Hartree, ≥ 0 | `oo-rimp2` only. Level shift on the approximate diagonal orbital Hessian. |
-| `oo_diis_size` | integer | `6` | ≥ 1 | `oo-rimp2` only. DIIS subspace for the orbital rotations. The four `oo_*` keys match Python `run_oo_rimp2(max_iter=, grad_conv=, level_shift=, diis_size=)`; on any other kind they are an error. |
+| `oo_diis_size` | integer | `6` | ≥ 1 | `oo-rimp2` only. DIIS subspace for the orbital rotations. The four `oo_*` keys match Python `run_oo_rimp2(oo_max_iter=, grad_conv=, level_shift=, diis_size=)`; on any other kind they are an error. |
 
 ## `[cc]`
 

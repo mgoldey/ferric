@@ -16,7 +16,7 @@ import ferric
 WATER = "3\n\nO 0 0 0.117\nH 0 0.757 -0.467\nH 0 -0.757 -0.467\n"
 NH2 = "3\n\nN 0 0 0\nH 0 0.802 0.597\nH 0 -0.802 0.597\n"
 AUX = "cc-pvdz-ri"
-TIGHT = {"energy_conv": 1e-10, "density_conv": 1e-9}
+TIGHT = {"scf_energy_conv": 1e-10, "scf_density_conv": 1e-9}
 
 
 def _freq(xyz, multiplicity=1, **kw):

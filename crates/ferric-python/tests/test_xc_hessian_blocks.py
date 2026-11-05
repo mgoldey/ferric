@@ -33,6 +33,7 @@ import ferric
 
 WATER = "3\n\nO 0 0 0.117\nH 0 0.757 -0.467\nH 0 -0.757 -0.467\n"
 TIGHT = {"energy_conv": 1e-11, "density_conv": 1e-10}
+FREQ_TIGHT = {f"scf_{k}": v for k, v in TIGHT.items()}  # run_frequencies spelling
 EXACT_JK = {"df_j_aux": "none", "df_k_aux": "none"}
 COORDS = [(0, 2), (1, 1), (2, 2), (1, 0)]
 FUNCTIONALS = ["LDA", "PBE", "B3LYP"]
@@ -223,7 +224,7 @@ def test_numpy_rks_hessian_from_pieces_matches_run_frequencies(functional):
         xc=functional,
         hessian="analytic-moving-grid",
         **EXACT_JK,
-        **TIGHT,
+        **FREQ_TIGHT,
     )
     assert ref.hessian_source == "analytic-moving-grid"
     ref = np.array(ref.cartesian_hessian)

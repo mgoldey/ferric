@@ -126,7 +126,7 @@ def test_hene_plus_reproduces_the_rust_pinned_constrained_solution():
         [ferric.CdftConstraint([0], 2.0, kind="charge")],
         guess="hcore",
         level_shift=0.5,
-        max_iter=400,
+        scf_max_iter=400,
         lambda_tol=1e-5,
         max_outer=40,
         stability_descent=False,

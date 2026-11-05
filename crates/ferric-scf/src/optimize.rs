@@ -822,6 +822,21 @@ pub fn optimize_coordinates(
     Ok((x.to_vec(), energy, step_idx, converged))
 }
 
+/// `solve_rhf` returns an unconverged result as `Ok` (the UHF and ROHF solvers
+/// raise instead), so a geometry driver must refuse it itself: an energy and a
+/// gradient from a density that never settled are not points on the surface,
+/// and the search would walk on noise while reporting ordinary-looking steps.
+pub(crate) fn require_converged(res: &ScfResult) -> Result<(), FerricError> {
+    if res.converged {
+        Ok(())
+    } else {
+        Err(FerricError::ScfConvergence {
+            iterations: res.iterations,
+            last_energy: res.energy,
+        })
+    }
+}
+
 /// Closed-shell SCF energy, its nuclear gradient, and the converged SCF
 /// result that produced both (handed to density-dependent corrections).
 fn compute_energy_gradient_and_result(
@@ -851,6 +866,7 @@ fn compute_energy_gradient_and_result(
     crate::gradient::preflight_cosx_restricted(rhf_config)?;
     let rhf_config = &*crate::gradient::gradient_task_config(rhf_config);
     let res = solve_rhf(ctx, mol, &prep, op, &bounds, rhf_config)?;
+    require_converged(&res)?;
     // Differentiates the exchange the SCF actually built: exactly
     // `ks_gradient_closed` / `rhf_gradient` unless `k_builder = "cosx"` is in
     // effect, in which case the exchange term is the COSX derivative.

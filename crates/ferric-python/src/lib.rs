@@ -260,8 +260,12 @@ fn budget_bytes_from_gb(memory_budget_gb: Option<f64>) -> Option<usize> {
 }
 
 /// The SCF convergence keywords shared by every `run_*` driver that solves a
-/// reference SCF internally: `max_iter`, `energy_conv`, `density_conv`, with
-/// the names and meaning of `run_rhf`. `None` leaves the `RhfConfig` default
+/// reference SCF internally, with the meaning of `run_rhf`'s `max_iter`,
+/// `energy_conv`, `density_conv`. Naming rule: a driver whose method IS the SCF
+/// (`run_rhf`/`run_uhf`/`run_rohf`/`run_dft`/`run_qmmm`, ...) spells them bare;
+/// every other driver (post-SCF methods, geometry/path drivers) spells them
+/// `scf_max_iter`, `scf_energy_conv`, `scf_density_conv`, so `max_iter` never
+/// has to guess which stage it caps. `None` leaves the `RhfConfig` default
 /// untouched, so omitting all three is byte-identical to a call that never
 /// had them.
 #[derive(Clone, Copy, Default)]
@@ -797,6 +801,39 @@ fn emit_runtime_warning(py: Python<'_>, msg: String) {
         &msg,
         1,
     );
+}
+
+/// Resolve a renamed keyword that is kept as a deprecated alias: the old name
+/// (`old_name`, a released spelling) still works but warns; passing both is a
+/// `ValueError`. Returns the effective value.
+fn alias_kwarg<T>(
+    py: Python<'_>,
+    driver: &str,
+    old_name: &str,
+    new_name: &str,
+    old: Option<T>,
+    new: Option<T>,
+) -> PyResult<Option<T>> {
+    match (old, new) {
+        (Some(_), Some(_)) => Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "{driver}: `{old_name}` is a deprecated alias of `{new_name}`; pass only `{new_name}`"
+        ))),
+        (Some(v), None) => {
+            let msg = std::ffi::CString::new(format!(
+                "{driver}: `{old_name}` is deprecated, use `{new_name}`"
+            ))
+            .expect("no NUL in a formatted name");
+            // Not swallowed: under `-W error` the deprecation must raise.
+            PyErr::warn(
+                py,
+                &py.get_type::<pyo3::exceptions::PyDeprecationWarning>(),
+                &msg,
+                2,
+            )?;
+            Ok(Some(v))
+        }
+        (None, v) => Ok(v),
+    }
 }
 
 /// Warn, once and before the SCF starts, when a USER-SUPPLIED `energy_conv` is
@@ -3128,7 +3165,7 @@ impl PyQmmmOptimizeResult {
 /// `method`/`xc` follow `run_qmmm`'s convention: `"rhf"` (default), `"uhf"`,
 /// `"rks"`, `"uks"`; `xc` required for the KS variants, rejected otherwise.
 #[pyfunction]
-#[pyo3(signature = (system, basis_name, method=None, xc=None, move_mm=None, mm_topology=None, max_steps=None, e_conv=None))]
+#[pyo3(signature = (system, basis_name, method=None, xc=None, move_mm=None, mm_topology=None, max_steps=None, e_conv=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None))]
 #[allow(clippy::too_many_arguments)]
 fn run_optimize_qmmm(
     py: Python<'_>,
@@ -3140,6 +3177,9 @@ fn run_optimize_qmmm(
     mm_topology: Option<&PyMmTopology>,
     max_steps: Option<usize>,
     e_conv: Option<f64>,
+    scf_max_iter: Option<usize>,
+    scf_energy_conv: Option<f64>,
+    scf_density_conv: Option<f64>,
 ) -> PyResult<PyQmmmOptimizeResult> {
     use ferric_scf::qmmm::{optimize_qmmm, QmmmMethod, QmmmOptimizeConfig};
 
@@ -3169,7 +3209,8 @@ fn run_optimize_qmmm(
 
     let move_mm = parse_move_mm(py, move_mm)?;
 
-    let scf = RhfConfig::default();
+    let mut scf = RhfConfig::default();
+    ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv).apply(&mut scf);
     let opt = OptimizeConfig {
         max_steps: max_steps.unwrap_or(100),
         e_conv: e_conv.unwrap_or(1e-6),
@@ -3925,9 +3966,12 @@ fn cdft_hamiltonian_key(emol: &Molecule, config: &RhfConfig) -> String {
 ///                     99 / 302. The weight quadrature must resolve
 ///                     populations below lambda_tol (75 x 110 floors at ~1e-4).
 ///
-/// The SCF knobs (`max_iter` .. `guess`) mean what they do in `run_uhf`; unset
-/// ones take the Rust `RhfConfig` defaults the cDFT suite is validated with
-/// (so `max_iter` defaults to 200 here, as in `run_uhf`). `df_j_aux` /
+/// The SCF knobs (`scf_max_iter`, `scf_energy_conv`, `scf_density_conv`,
+/// `diis_size` .. `guess`) mean what they do in `run_uhf`; unset ones take the
+/// Rust `RhfConfig` defaults the cDFT suite is validated with (so
+/// `scf_max_iter` defaults to 200 here, as in `run_uhf`). `max_iter`,
+/// `energy_conv`, `density_conv` are deprecated aliases (they warn) of the
+/// `scf_` spellings; `max_outer` is the multiplier loop. `df_j_aux` /
 /// `df_k_aux` unset = exact J/K, as in `run_uhf`.
 #[pyfunction]
 #[pyo3(signature = (
@@ -3938,6 +3982,7 @@ fn cdft_hamiltonian_key(emol: &Molecule, config: &RhfConfig) -> String {
     level_shift=None, mom_after_iter=None,
     point_charges=None, external_field=None, memory_budget_gb=None,
     guess=None, grid_radial=None, grid_angular=None,
+    scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_cdft(
@@ -3965,9 +4010,38 @@ fn run_cdft(
     guess: Option<&str>,
     grid_radial: Option<usize>,
     grid_angular: Option<usize>,
+    scf_max_iter: Option<usize>,
+    scf_energy_conv: Option<f64>,
+    scf_density_conv: Option<f64>,
 ) -> PyResult<PyCdftResult> {
     use ferric_dft::cdft::{Constraint, SpinChannel};
     let value_err = |msg: String| pyo3::exceptions::PyValueError::new_err(msg);
+    // `max_outer` is this driver's own iteration; the bare SCF spellings are
+    // deprecated aliases of the `scf_`-prefixed ones.
+    let max_iter = alias_kwarg(
+        py,
+        "run_cdft",
+        "max_iter",
+        "scf_max_iter",
+        max_iter,
+        scf_max_iter,
+    )?;
+    let energy_conv = alias_kwarg(
+        py,
+        "run_cdft",
+        "energy_conv",
+        "scf_energy_conv",
+        energy_conv,
+        scf_energy_conv,
+    )?;
+    let density_conv = alias_kwarg(
+        py,
+        "run_cdft",
+        "density_conv",
+        "scf_density_conv",
+        density_conv,
+        scf_density_conv,
+    )?;
 
     let use_sad_guess = parse_guess(guess)?;
     let mut emol = mol.inner.clone();
@@ -4400,7 +4474,8 @@ fn optimize_result_certificate(
 }
 
 #[pyfunction]
-#[pyo3(signature = (mol, basis_name, max_steps=None, e_conv=None, point_charges=None, external_field=None))]
+#[pyo3(signature = (mol, basis_name, max_steps=None, e_conv=None, point_charges=None, external_field=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None))]
+#[allow(clippy::too_many_arguments)]
 fn run_optimize(
     py: Python<'_>,
     mol: &PyMolecule,
@@ -4409,12 +4484,16 @@ fn run_optimize(
     e_conv: Option<f64>,
     point_charges: Option<Vec<(f64, f64, f64, f64)>>,
     external_field: Option<(f64, f64, f64)>,
+    scf_max_iter: Option<usize>,
+    scf_energy_conv: Option<f64>,
+    scf_density_conv: Option<f64>,
 ) -> PyResult<PyOptimizeResult> {
     let ctx = ParallelContext::default();
-    let rhf_config = RhfConfig {
+    let mut rhf_config = RhfConfig {
         external_potential: build_external_potential(point_charges, external_field),
         ..Default::default()
     };
+    ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv).apply(&mut rhf_config);
     // Apply the ECP before optimizing: each SCF derives its occupations from
     // `Molecule::nelec()`, which counts ALL electrons until `apply_ecp` has
     // run. Without this an ECP basis (aug-cc-pvdz-pp, Z >= 37) would optimize
@@ -4466,7 +4545,8 @@ fn run_optimize(
 /// doublet would be forced into a closed-shell density. Use this for any
 /// molecule with unpaired electrons.
 #[pyfunction]
-#[pyo3(signature = (mol, basis_name, max_steps=None, e_conv=None, point_charges=None, external_field=None))]
+#[pyo3(signature = (mol, basis_name, max_steps=None, e_conv=None, point_charges=None, external_field=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None))]
+#[allow(clippy::too_many_arguments)]
 fn run_optimize_uhf(
     py: Python<'_>,
     mol: &PyMolecule,
@@ -4475,12 +4555,16 @@ fn run_optimize_uhf(
     e_conv: Option<f64>,
     point_charges: Option<Vec<(f64, f64, f64, f64)>>,
     external_field: Option<(f64, f64, f64)>,
+    scf_max_iter: Option<usize>,
+    scf_energy_conv: Option<f64>,
+    scf_density_conv: Option<f64>,
 ) -> PyResult<PyOptimizeResult> {
     let ctx = ParallelContext::default();
-    let uhf_config = RhfConfig {
+    let mut uhf_config = RhfConfig {
         external_potential: build_external_potential(point_charges, external_field),
         ..Default::default()
     };
+    ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv).apply(&mut uhf_config);
     // Apply the ECP before optimizing: each SCF derives its occupations from
     // `Molecule::nelec()`, which counts ALL electrons until `apply_ecp` has
     // run. Without this an ECP basis (aug-cc-pvdz-pp, Z >= 37) would optimize
@@ -4654,8 +4738,9 @@ impl PyFrequencyResult {
 /// `reference` selects the SCF: "rhf" (default), "uhf", or "rohf". Setting
 /// `xc` promotes it to the matching KS variant (RKS/UKS/ROKS).
 ///
-/// `max_iter`, `energy_conv`, `density_conv`: SCF controls of every SCF the
-/// run does (defaults 200, 1e-3, 1e-6, as in `run_rhf`). A finite-difference
+/// `scf_max_iter`, `scf_energy_conv`, `scf_density_conv`: SCF controls of every
+/// SCF the run does (defaults 200, 1e-3, 1e-6, as in `run_rhf`'s `max_iter`,
+/// `energy_conv`, `density_conv`; those bare names are deprecated aliases). A finite-difference
 /// Hessian differentiates SCF gradients, so its noise floor is the SCF's.
 ///
 /// `delta` is the central-difference displacement in Bohr (default 5e-3). It is
@@ -4679,9 +4764,11 @@ impl PyFrequencyResult {
     point_charges=None, external_field=None, hessian="auto", dispersion=None,
     max_iter=None, energy_conv=None, density_conv=None,
     df_j_aux=None, df_k_aux=None,
+    scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_frequencies(
+    py: Python<'_>,
     mol: &PyMolecule,
     basis_name: &str,
     reference: Option<&str>,
@@ -4697,8 +4784,35 @@ fn run_frequencies(
     density_conv: Option<f64>,
     df_j_aux: Option<&str>,
     df_k_aux: Option<&str>,
+    scf_max_iter: Option<usize>,
+    scf_energy_conv: Option<f64>,
+    scf_density_conv: Option<f64>,
 ) -> PyResult<PyFrequencyResult> {
     use ferric_scf::frequencies::{FrequencyConfig, FrequencyReference, HessianMethod};
+    let max_iter = alias_kwarg(
+        py,
+        "run_frequencies",
+        "max_iter",
+        "scf_max_iter",
+        max_iter,
+        scf_max_iter,
+    )?;
+    let energy_conv = alias_kwarg(
+        py,
+        "run_frequencies",
+        "energy_conv",
+        "scf_energy_conv",
+        energy_conv,
+        scf_energy_conv,
+    )?;
+    let density_conv = alias_kwarg(
+        py,
+        "run_frequencies",
+        "density_conv",
+        "scf_density_conv",
+        density_conv,
+        scf_density_conv,
+    )?;
 
     // Strict, like the CLI: an unrecognized reference must ERROR rather than
     // silently running RHF and handing back frequencies for the wrong system.
@@ -6687,10 +6801,10 @@ fn local_correlation_operator(
 /// ("RHF" or "UHF") and `local` (`None` for the exact method, else the
 /// local model dict).
 ///
-/// `max_iter`, `energy_conv`, `density_conv`: controls of the internal reference SCF,
+/// `scf_max_iter`, `scf_energy_conv`, `scf_density_conv`: controls of the internal reference SCF,
 /// with the names and meaning of `run_rhf` (defaults unchanged when omitted).
 #[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None, memory_budget_gb=None, kappa=None, local=None, eps=None, compute_reference=None, integral_direct=None, aux_radius=None, virt_radius=None, ao_tail=None, schwarz_skip=None, batch_merge=None, gate_cal=None, virt_schwarz_kappa=None, att_operator=None, omega=None, att_r0=None, att_omega=None, scf_jk=None, jk_auxbasis=None, max_iter=None, energy_conv=None, density_conv=None))]
+#[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None, memory_budget_gb=None, kappa=None, local=None, eps=None, compute_reference=None, integral_direct=None, aux_radius=None, virt_radius=None, ao_tail=None, schwarz_skip=None, batch_merge=None, gate_cal=None, virt_schwarz_kappa=None, att_operator=None, omega=None, att_r0=None, att_omega=None, scf_jk=None, jk_auxbasis=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None))]
 #[allow(clippy::too_many_arguments)]
 fn run_rimp2(
     py: Python<'_>,
@@ -6718,9 +6832,9 @@ fn run_rimp2(
     att_omega: Option<f64>,
     scf_jk: Option<&str>,
     jk_auxbasis: Option<&str>,
-    max_iter: Option<usize>,
-    energy_conv: Option<f64>,
-    density_conv: Option<f64>,
+    scf_max_iter: Option<usize>,
+    scf_energy_conv: Option<f64>,
+    scf_density_conv: Option<f64>,
 ) -> PyResult<PyRiMp2Result> {
     let (att_keys, sets_att) = att_keys_from_kwargs(att_operator, omega, att_r0, att_omega);
     let (rhf_config, jk) = mp2_exact_default_config(
@@ -6729,7 +6843,7 @@ fn run_rimp2(
         memory_budget_gb,
         scf_jk,
         jk_auxbasis,
-        ScfConv::new(max_iter, energy_conv, density_conv),
+        ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
     )?;
     let model = local_model_from_kwargs(
         "run_rimp2",
@@ -7139,10 +7253,10 @@ fn drpa_result_to_dict(
 /// and `local` (None for the exact method, else scheme/eps/keep_fraction/
 /// integral_direct).
 ///
-/// `max_iter`, `energy_conv`, `density_conv`: controls of the internal reference SCF,
+/// `scf_max_iter`, `scf_energy_conv`, `scf_density_conv`: controls of the internal reference SCF,
 /// with the names and meaning of `run_rhf` (defaults unchanged when omitted).
 #[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None, memory_budget_gb=None, local=None, eps=None, compute_reference=None, diis=None, eps_rtol_factor=None, max_iter=None, energy_conv=None, density_conv=None))]
+#[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None, memory_budget_gb=None, local=None, eps=None, compute_reference=None, diis=None, eps_rtol_factor=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None))]
 #[allow(clippy::too_many_arguments)]
 fn run_drpa(
     py: Python<'_>,
@@ -7157,9 +7271,9 @@ fn run_drpa(
     compute_reference: Option<bool>,
     diis: Option<usize>,
     eps_rtol_factor: Option<f64>,
-    max_iter: Option<usize>,
-    energy_conv: Option<f64>,
-    density_conv: Option<f64>,
+    scf_max_iter: Option<usize>,
+    scf_energy_conv: Option<f64>,
+    scf_density_conv: Option<f64>,
 ) -> PyResult<Py<pyo3::types::PyDict>> {
     use ferric_mp2::drpa_amplitude::{amplitude_drpa, exact_drpa_peak_bytes};
     let model = local_model_from_kwargs(
@@ -7214,7 +7328,7 @@ fn run_drpa(
         &prep,
         k_builder,
         memory_budget_gb,
-        ScfConv::new(max_iter, energy_conv, density_conv),
+        ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
     )?;
     let cfg = drpa_config(
         Some(eps),
@@ -7246,7 +7360,7 @@ fn run_drpa(
             &rhf_config_conv(
                 k_builder,
                 budget_bytes_from_gb(memory_budget_gb),
-                ScfConv::new(max_iter, energy_conv, density_conv),
+                ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
             ),
         ),
         &auxbasis.inner.name,
@@ -7277,10 +7391,10 @@ fn run_drpa(
 /// re-paid per point). Per-point energies are byte-identical (<1e-12) to
 /// calling `run_drpa` separately at each eps with the same kwargs.
 ///
-/// `max_iter`, `energy_conv`, `density_conv`: controls of the internal reference SCF,
+/// `scf_max_iter`, `scf_energy_conv`, `scf_density_conv`: controls of the internal reference SCF,
 /// with the names and meaning of `run_rhf` (defaults unchanged when omitted).
 #[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, eps_list, frozen_core=None, k_builder=None, memory_budget_gb=None, compute_reference=None, diis=None, eps_rtol_factor=None, max_iter=None, energy_conv=None, density_conv=None))]
+#[pyo3(signature = (mol, basis_set, auxbasis, eps_list, frozen_core=None, k_builder=None, memory_budget_gb=None, compute_reference=None, diis=None, eps_rtol_factor=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None))]
 #[allow(clippy::too_many_arguments)]
 fn run_drpa_scan(
     py: Python<'_>,
@@ -7294,9 +7408,9 @@ fn run_drpa_scan(
     compute_reference: Option<bool>,
     diis: Option<usize>,
     eps_rtol_factor: Option<f64>,
-    max_iter: Option<usize>,
-    energy_conv: Option<f64>,
-    density_conv: Option<f64>,
+    scf_max_iter: Option<usize>,
+    scf_energy_conv: Option<f64>,
+    scf_density_conv: Option<f64>,
 ) -> PyResult<Py<pyo3::types::PyList>> {
     use ferric_mp2::drpa_amplitude::amplitude_drpa_scan_timed;
     // The same eps_sweep rules as the CLI's [local] eps_sweep (non-empty,
@@ -7325,7 +7439,7 @@ fn run_drpa_scan(
         &rhf_config_conv(
             k_builder,
             budget_bytes_from_gb(memory_budget_gb),
-            ScfConv::new(max_iter, energy_conv, density_conv),
+            ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
         ),
     )
     .map_err(make_err)?;
@@ -7399,10 +7513,10 @@ fn run_drpa_scan(
 /// (None for the exact method, else scheme/eps/keep_fraction/integral_direct
 /// plus cg_iterations, converged and e_corr_exact).
 ///
-/// `max_iter`, `energy_conv`, `density_conv`: controls of the internal reference SCF,
+/// `scf_max_iter`, `scf_energy_conv`, `scf_density_conv`: controls of the internal reference SCF,
 /// with the names and meaning of `run_rhf` (defaults unchanged when omitted).
 #[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, variant=None, local=None, eps=None, compute_reference=None, frozen_core=None, k_builder=None, memory_budget_gb=None, max_iter=None, energy_conv=None, density_conv=None))]
+#[pyo3(signature = (mol, basis_set, auxbasis, variant=None, local=None, eps=None, compute_reference=None, frozen_core=None, k_builder=None, memory_budget_gb=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None))]
 #[allow(clippy::too_many_arguments)]
 fn run_linlccd(
     py: Python<'_>,
@@ -7416,9 +7530,9 @@ fn run_linlccd(
     frozen_core: Option<usize>,
     k_builder: Option<&str>,
     memory_budget_gb: Option<f64>,
-    max_iter: Option<usize>,
-    energy_conv: Option<f64>,
-    density_conv: Option<f64>,
+    scf_max_iter: Option<usize>,
+    scf_energy_conv: Option<f64>,
+    scf_density_conv: Option<f64>,
 ) -> PyResult<Py<pyo3::types::PyDict>> {
     use ferric_cc::linlccd::{linlccd, LadderVariant};
     use ferric_cc::linlccd_amplitude::{amplitude_linlccd, AmplitudeLinLccdConfig};
@@ -7451,7 +7565,7 @@ fn run_linlccd(
         &prep,
         k_builder,
         memory_budget_gb,
-        ScfConv::new(max_iter, energy_conv, density_conv),
+        ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
     )?;
     let op = Operator::coulomb();
     let fc = frozen_core.unwrap_or(0);
@@ -7522,7 +7636,7 @@ fn run_linlccd(
             &rhf_config_conv(
                 k_builder,
                 budget,
-                ScfConv::new(max_iter, energy_conv, density_conv),
+                ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
             ),
         ),
         &auxbasis.inner.name,
@@ -7740,14 +7854,21 @@ impl PyOoRiMp2Result {
 /// rotation loop; the rest of `OoRiMp2Config` (energy_conv,
 /// use_diis) stays at its library default, matching the CLI's `oo-rimp2`
 /// arm which only threads `frozen_core` + `memory_budget_bytes` through.
+/// `oo_max_iter` is the orbital-optimization iteration cap; the bare
+/// `max_iter` is a deprecated alias of it. `scf_max_iter`, `scf_energy_conv`,
+/// `scf_density_conv` control the internal reference RHF (names and defaults of
+/// `run_rhf`'s `max_iter`, `energy_conv`, `density_conv`; 200, 1e-3, 1e-6).
 #[pyfunction]
 #[pyo3(signature = (
     mol, basis_set, auxbasis, frozen_core=None, k_builder=None,
     max_iter=None, grad_conv=None, level_shift=None, diis_size=None,
     memory_budget_gb=None, scf_jk=None, jk_auxbasis=None,
+    scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None,
+    oo_max_iter=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_oo_rimp2(
+    py: Python<'_>,
     mol: &PyMolecule,
     basis_set: &PyBasisSet,
     auxbasis: &PyBasisSet,
@@ -7760,14 +7881,26 @@ fn run_oo_rimp2(
     memory_budget_gb: Option<f64>,
     scf_jk: Option<&str>,
     jk_auxbasis: Option<&str>,
+    scf_max_iter: Option<usize>,
+    scf_energy_conv: Option<f64>,
+    scf_density_conv: Option<f64>,
+    oo_max_iter: Option<usize>,
 ) -> PyResult<PyOoRiMp2Result> {
+    let max_iter = alias_kwarg(
+        py,
+        "run_oo_rimp2",
+        "max_iter",
+        "oo_max_iter",
+        max_iter,
+        oo_max_iter,
+    )?;
     let (rhf_config, jk) = mp2_exact_default_config(
         "run_oo_rimp2",
         k_builder,
         memory_budget_gb,
         scf_jk,
         jk_auxbasis,
-        ScfConv::default(),
+        ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
     )?;
     // OO-MP2 rebuilds exact four-centre J/K at every orbital step (and takes
     // its HF energy from those builds), so a fitted reference would only
@@ -7866,10 +7999,10 @@ impl PyMp3Result {
     }
 }
 
-/// `max_iter`, `energy_conv`, `density_conv`: controls of the internal reference SCF,
+/// `scf_max_iter`, `scf_energy_conv`, `scf_density_conv`: controls of the internal reference SCF,
 /// with the names and meaning of `run_rhf` (defaults unchanged when omitted).
 #[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None, memory_budget_gb=None, max_iter=None, energy_conv=None, density_conv=None))]
+#[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None, memory_budget_gb=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None))]
 #[allow(clippy::too_many_arguments)]
 fn run_mp3(
     mol: &PyMolecule,
@@ -7878,9 +8011,9 @@ fn run_mp3(
     frozen_core: Option<usize>,
     k_builder: Option<&str>,
     memory_budget_gb: Option<f64>,
-    max_iter: Option<usize>,
-    energy_conv: Option<f64>,
-    density_conv: Option<f64>,
+    scf_max_iter: Option<usize>,
+    scf_energy_conv: Option<f64>,
+    scf_density_conv: Option<f64>,
 ) -> PyResult<PyMp3Result> {
     let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
     let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
@@ -7891,7 +8024,7 @@ fn run_mp3(
     let rhf_config = rhf_config_conv(
         k_builder,
         budget,
-        ScfConv::new(max_iter, energy_conv, density_conv),
+        ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
     );
     let rhf = solve_rhf(&ctx, &mol.inner, &prep, op, &bounds, &rhf_config).map_err(make_err)?;
     if !rhf.converged {
@@ -7978,10 +8111,10 @@ impl PyLaplaceMp2Result {
     }
 }
 
-/// `max_iter`, `energy_conv`, `density_conv`: controls of the internal reference SCF,
+/// `scf_max_iter`, `scf_energy_conv`, `scf_density_conv`: controls of the internal reference SCF,
 /// with the names and meaning of `run_rhf` (defaults unchanged when omitted).
 #[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, n_quad=None, frozen_core=None, k_builder=None, memory_budget_gb=None, scf_jk=None, jk_auxbasis=None, max_iter=None, energy_conv=None, density_conv=None))]
+#[pyo3(signature = (mol, basis_set, auxbasis, n_quad=None, frozen_core=None, k_builder=None, memory_budget_gb=None, scf_jk=None, jk_auxbasis=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None))]
 #[allow(clippy::too_many_arguments)]
 fn run_laplace_mp2(
     mol: &PyMolecule,
@@ -7993,9 +8126,9 @@ fn run_laplace_mp2(
     memory_budget_gb: Option<f64>,
     scf_jk: Option<&str>,
     jk_auxbasis: Option<&str>,
-    max_iter: Option<usize>,
-    energy_conv: Option<f64>,
-    density_conv: Option<f64>,
+    scf_max_iter: Option<usize>,
+    scf_energy_conv: Option<f64>,
+    scf_density_conv: Option<f64>,
 ) -> PyResult<PyLaplaceMp2Result> {
     let (rhf_config, jk) = mp2_exact_default_config(
         "run_laplace_mp2",
@@ -8003,7 +8136,7 @@ fn run_laplace_mp2(
         memory_budget_gb,
         scf_jk,
         jk_auxbasis,
-        ScfConv::new(max_iter, energy_conv, density_conv),
+        ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
     )?;
     let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
     let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
@@ -8123,12 +8256,12 @@ impl PySosMp2Result {
 /// elsewhere in this module; the AO path fails fast with a clear error rather
 /// than overshooting it.
 ///
-/// `max_iter`, `energy_conv`, `density_conv`: controls of the internal reference SCF,
+/// `scf_max_iter`, `scf_energy_conv`, `scf_density_conv`: controls of the internal reference SCF,
 /// with the names and meaning of `run_rhf` (defaults unchanged when omitted).
 #[pyfunction]
 #[pyo3(signature = (mol, basis_set, auxbasis, c_os=None, n_quad=None, frozen_core=None,
                     formulation=None, domain_cutoff_bohr=None, k_builder=None,
-                    memory_budget_gb=None, scf_jk=None, jk_auxbasis=None, max_iter=None, energy_conv=None, density_conv=None))]
+                    memory_budget_gb=None, scf_jk=None, jk_auxbasis=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None))]
 #[allow(clippy::too_many_arguments)]
 fn run_laplace_sos_mp2(
     mol: &PyMolecule,
@@ -8143,9 +8276,9 @@ fn run_laplace_sos_mp2(
     memory_budget_gb: Option<f64>,
     scf_jk: Option<&str>,
     jk_auxbasis: Option<&str>,
-    max_iter: Option<usize>,
-    energy_conv: Option<f64>,
-    density_conv: Option<f64>,
+    scf_max_iter: Option<usize>,
+    scf_energy_conv: Option<f64>,
+    scf_density_conv: Option<f64>,
 ) -> PyResult<PySosMp2Result> {
     let (rhf_config, jk) = mp2_exact_default_config(
         "run_laplace_sos_mp2",
@@ -8153,7 +8286,7 @@ fn run_laplace_sos_mp2(
         memory_budget_gb,
         scf_jk,
         jk_auxbasis,
-        ScfConv::new(max_iter, energy_conv, density_conv),
+        ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
     )?;
     let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
     let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
@@ -8247,10 +8380,10 @@ impl PyAttenuatedMp2Result {
     }
 }
 
-/// `max_iter`, `energy_conv`, `density_conv`: controls of the internal reference SCF,
+/// `scf_max_iter`, `scf_energy_conv`, `scf_density_conv`: controls of the internal reference SCF,
 /// with the names and meaning of `run_rhf` (defaults unchanged when omitted).
 #[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, omega=None, frozen_core=None, k_builder=None, memory_budget_gb=None, scf_jk=None, jk_auxbasis=None, max_iter=None, energy_conv=None, density_conv=None))]
+#[pyo3(signature = (mol, basis_set, auxbasis, omega=None, frozen_core=None, k_builder=None, memory_budget_gb=None, scf_jk=None, jk_auxbasis=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None))]
 #[allow(clippy::too_many_arguments)]
 fn run_attenuated_rimp2(
     mol: &PyMolecule,
@@ -8262,9 +8395,9 @@ fn run_attenuated_rimp2(
     memory_budget_gb: Option<f64>,
     scf_jk: Option<&str>,
     jk_auxbasis: Option<&str>,
-    max_iter: Option<usize>,
-    energy_conv: Option<f64>,
-    density_conv: Option<f64>,
+    scf_max_iter: Option<usize>,
+    scf_energy_conv: Option<f64>,
+    scf_density_conv: Option<f64>,
 ) -> PyResult<PyAttenuatedMp2Result> {
     let (rhf_config, jk) = mp2_exact_default_config(
         "run_attenuated_rimp2",
@@ -8272,7 +8405,7 @@ fn run_attenuated_rimp2(
         memory_budget_gb,
         scf_jk,
         jk_auxbasis,
-        ScfConv::new(max_iter, energy_conv, density_conv),
+        ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
     )?;
     let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
     let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
@@ -8311,10 +8444,10 @@ fn run_attenuated_rimp2(
 /// the MP2 correlation is attenuated. Requires the terfc tables on disk
 /// (FERRIC_TERF_TABLE_DIR). Paper aDZ-optimal r0 = 1.05 Å.
 ///
-/// `max_iter`, `energy_conv`, `density_conv`: controls of the internal reference SCF,
+/// `scf_max_iter`, `scf_energy_conv`, `scf_density_conv`: controls of the internal reference SCF,
 /// with the names and meaning of `run_rhf` (defaults unchanged when omitted).
 #[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, r0=None, frozen_core=None, k_builder=None, memory_budget_gb=None, scf_jk=None, jk_auxbasis=None, max_iter=None, energy_conv=None, density_conv=None))]
+#[pyo3(signature = (mol, basis_set, auxbasis, r0=None, frozen_core=None, k_builder=None, memory_budget_gb=None, scf_jk=None, jk_auxbasis=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None))]
 #[allow(clippy::too_many_arguments)]
 fn run_terfc_rimp2(
     mol: &PyMolecule,
@@ -8326,9 +8459,9 @@ fn run_terfc_rimp2(
     memory_budget_gb: Option<f64>,
     scf_jk: Option<&str>,
     jk_auxbasis: Option<&str>,
-    max_iter: Option<usize>,
-    energy_conv: Option<f64>,
-    density_conv: Option<f64>,
+    scf_max_iter: Option<usize>,
+    scf_energy_conv: Option<f64>,
+    scf_density_conv: Option<f64>,
 ) -> PyResult<PyRiMp2Result> {
     let (rhf_config, jk) = mp2_exact_default_config(
         "run_terfc_rimp2",
@@ -8336,7 +8469,7 @@ fn run_terfc_rimp2(
         memory_budget_gb,
         scf_jk,
         jk_auxbasis,
-        ScfConv::new(max_iter, energy_conv, density_conv),
+        ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
     )?;
     let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
     let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
@@ -8432,10 +8565,10 @@ impl PyScsMp2Result {
     }
 }
 
-/// `max_iter`, `energy_conv`, `density_conv`: controls of the internal reference SCF,
+/// `scf_max_iter`, `scf_energy_conv`, `scf_density_conv`: controls of the internal reference SCF,
 /// with the names and meaning of `run_rhf` (defaults unchanged when omitted).
 #[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, c_os=None, c_ss=None, frozen_core=None, k_builder=None, memory_budget_gb=None, scf_jk=None, jk_auxbasis=None, max_iter=None, energy_conv=None, density_conv=None))]
+#[pyo3(signature = (mol, basis_set, auxbasis, c_os=None, c_ss=None, frozen_core=None, k_builder=None, memory_budget_gb=None, scf_jk=None, jk_auxbasis=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None))]
 #[allow(clippy::too_many_arguments)]
 fn run_scs_mp2(
     mol: &PyMolecule,
@@ -8448,9 +8581,9 @@ fn run_scs_mp2(
     memory_budget_gb: Option<f64>,
     scf_jk: Option<&str>,
     jk_auxbasis: Option<&str>,
-    max_iter: Option<usize>,
-    energy_conv: Option<f64>,
-    density_conv: Option<f64>,
+    scf_max_iter: Option<usize>,
+    scf_energy_conv: Option<f64>,
+    scf_density_conv: Option<f64>,
 ) -> PyResult<PyScsMp2Result> {
     let (rhf_config, jk) = mp2_exact_default_config(
         "run_scs_mp2",
@@ -8458,7 +8591,7 @@ fn run_scs_mp2(
         memory_budget_gb,
         scf_jk,
         jk_auxbasis,
-        ScfConv::new(max_iter, energy_conv, density_conv),
+        ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
     )?;
     let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
     let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
@@ -8493,10 +8626,10 @@ fn run_scs_mp2(
 /// (Å). E = c_OS·E_OS(r0_1) + c_SS·[E_SS(r0_2) − E_SS(r0_1)]. Requires the terfc
 /// tables (FERRIC_TERF_TABLE_DIR). Paper defaults: r0=0.75/1.05 Å, c_OS=1.27, c_SS=4.05.
 ///
-/// `max_iter`, `energy_conv`, `density_conv`: controls of the internal reference SCF,
+/// `scf_max_iter`, `scf_energy_conv`, `scf_density_conv`: controls of the internal reference SCF,
 /// with the names and meaning of `run_rhf` (defaults unchanged when omitted).
 #[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, r0_bonded=None, r0_nonbonded=None, c_os=None, c_ss=None, frozen_core=None, k_builder=None, memory_budget_gb=None, scf_jk=None, jk_auxbasis=None, max_iter=None, energy_conv=None, density_conv=None))]
+#[pyo3(signature = (mol, basis_set, auxbasis, r0_bonded=None, r0_nonbonded=None, c_os=None, c_ss=None, frozen_core=None, k_builder=None, memory_budget_gb=None, scf_jk=None, jk_auxbasis=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None))]
 #[allow(clippy::too_many_arguments)]
 fn run_scs_mp2_2terfc(
     mol: &PyMolecule,
@@ -8511,9 +8644,9 @@ fn run_scs_mp2_2terfc(
     memory_budget_gb: Option<f64>,
     scf_jk: Option<&str>,
     jk_auxbasis: Option<&str>,
-    max_iter: Option<usize>,
-    energy_conv: Option<f64>,
-    density_conv: Option<f64>,
+    scf_max_iter: Option<usize>,
+    scf_energy_conv: Option<f64>,
+    scf_density_conv: Option<f64>,
 ) -> PyResult<PyScsMp2Result> {
     let (rhf_config, jk) = mp2_exact_default_config(
         "run_scs_mp2_2terfc",
@@ -8521,7 +8654,7 @@ fn run_scs_mp2_2terfc(
         memory_budget_gb,
         scf_jk,
         jk_auxbasis,
-        ScfConv::new(max_iter, energy_conv, density_conv),
+        ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
     )?;
     let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
     let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
@@ -8636,10 +8769,10 @@ impl PyMp2VResult {
 /// `vv10_damping`: "terfc" (published Eq. 11) or "none" (bare VV10 —
 /// double-counts short range, measurement-only). b defaults 11.0, c 0.0089.
 ///
-/// `max_iter`, `energy_conv`, `density_conv`: controls of the internal reference SCF,
+/// `scf_max_iter`, `scf_energy_conv`, `scf_density_conv`: controls of the internal reference SCF,
 /// with the names and meaning of `run_rhf` (defaults unchanged when omitted).
 #[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, r0=None, b=None, c=None, omega=None, attenuator=None, vv10_damping=None, frozen_core=None, k_builder=None, memory_budget_gb=None, scf_jk=None, jk_auxbasis=None, max_iter=None, energy_conv=None, density_conv=None))]
+#[pyo3(signature = (mol, basis_set, auxbasis, r0=None, b=None, c=None, omega=None, attenuator=None, vv10_damping=None, frozen_core=None, k_builder=None, memory_budget_gb=None, scf_jk=None, jk_auxbasis=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None))]
 #[allow(clippy::too_many_arguments)]
 fn run_mp2_v(
     mol: &PyMolecule,
@@ -8656,9 +8789,9 @@ fn run_mp2_v(
     memory_budget_gb: Option<f64>,
     scf_jk: Option<&str>,
     jk_auxbasis: Option<&str>,
-    max_iter: Option<usize>,
-    energy_conv: Option<f64>,
-    density_conv: Option<f64>,
+    scf_max_iter: Option<usize>,
+    scf_energy_conv: Option<f64>,
+    scf_density_conv: Option<f64>,
 ) -> PyResult<PyMp2VResult> {
     let (rhf_config, jk) = mp2_exact_default_config(
         "run_mp2_v",
@@ -8666,7 +8799,7 @@ fn run_mp2_v(
         memory_budget_gb,
         scf_jk,
         jk_auxbasis,
-        ScfConv::new(max_iter, energy_conv, density_conv),
+        ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
     )?;
     let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
     let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
@@ -8759,10 +8892,10 @@ fn run_mp2_v(
 /// grid convention); "exact" selects four-centre J/K. `include_coulomb_mp2=True`
 /// adds `mp2_coulomb_corr` (plain RI-MP2 correlation, same SCF/aux/frozen core).
 ///
-/// `max_iter`, `energy_conv`, `density_conv`: controls of the internal reference SCF,
+/// `scf_max_iter`, `scf_energy_conv`, `scf_density_conv`: controls of the internal reference SCF,
 /// with the names and meaning of `run_rhf` (defaults unchanged when omitted).
 #[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, arms, bs, c=None, frozen_core=None, nlc_grid=None, df_j_aux=None, df_k_aux=None, k_builder=None, memory_budget_gb=None, include_coulomb_mp2=false, max_iter=None, energy_conv=None, density_conv=None))]
+#[pyo3(signature = (mol, basis_set, auxbasis, arms, bs, c=None, frozen_core=None, nlc_grid=None, df_j_aux=None, df_k_aux=None, k_builder=None, memory_budget_gb=None, include_coulomb_mp2=false, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None))]
 #[allow(clippy::too_many_arguments)]
 fn run_mp2_v_scan(
     py: Python<'_>,
@@ -8779,9 +8912,9 @@ fn run_mp2_v_scan(
     k_builder: Option<&str>,
     memory_budget_gb: Option<f64>,
     include_coulomb_mp2: bool,
-    max_iter: Option<usize>,
-    energy_conv: Option<f64>,
-    density_conv: Option<f64>,
+    scf_max_iter: Option<usize>,
+    scf_energy_conv: Option<f64>,
+    scf_density_conv: Option<f64>,
 ) -> PyResult<Py<pyo3::types::PyDict>> {
     use pyo3::types::{PyDict, PyList};
     for (r0, _) in &arms {
@@ -8799,7 +8932,7 @@ fn run_mp2_v_scan(
     let mut rcfg = rhf_config_conv(
         k_builder,
         budget_bytes_from_gb(memory_budget_gb),
-        ScfConv::new(max_iter, energy_conv, density_conv),
+        ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
     );
     rcfg.df_j_aux = resolve_df_aux(df_j_aux, "def2-universal-jkfit");
     rcfg.df_k_aux = resolve_df_aux(df_k_aux, "def2-universal-jkfit");
@@ -8883,10 +9016,10 @@ fn run_mp2_v_scan(
 /// terf = 1 - terfc). `r0_times_omega=None` is the linked width. Returns one E_nl
 /// (Ha) per spec. Closed shell, post-HF; no MP2 is run.
 ///
-/// `max_iter`, `energy_conv`, `density_conv`: controls of the internal reference SCF,
+/// `scf_max_iter`, `scf_energy_conv`, `scf_density_conv`: controls of the internal reference SCF,
 /// with the names and meaning of `run_rhf` (defaults unchanged when omitted).
 #[pyfunction]
-#[pyo3(signature = (mol, basis_set, specs, b=11.0, c=0.0089, nlc_grid=None, df_j_aux=None, df_k_aux=None, max_iter=None, energy_conv=None, density_conv=None))]
+#[pyo3(signature = (mol, basis_set, specs, b=11.0, c=0.0089, nlc_grid=None, df_j_aux=None, df_k_aux=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None))]
 #[allow(clippy::too_many_arguments)]
 fn run_vv10_variants(
     mol: &PyMolecule,
@@ -8897,9 +9030,9 @@ fn run_vv10_variants(
     nlc_grid: Option<(usize, usize)>,
     df_j_aux: Option<&str>,
     df_k_aux: Option<&str>,
-    max_iter: Option<usize>,
-    energy_conv: Option<f64>,
-    density_conv: Option<f64>,
+    scf_max_iter: Option<usize>,
+    scf_energy_conv: Option<f64>,
+    scf_density_conv: Option<f64>,
 ) -> PyResult<Vec<f64>> {
     use ferric_dft::vv10::{Vv10Damping, Vv10Weight};
     let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
@@ -8909,7 +9042,7 @@ fn run_vv10_variants(
     let mut rcfg = rhf_config_conv(
         None,
         None,
-        ScfConv::new(max_iter, energy_conv, density_conv),
+        ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
     );
     rcfg.df_j_aux = resolve_df_aux(df_j_aux, "def2-universal-jkfit");
     rcfg.df_k_aux = resolve_df_aux(df_k_aux, "def2-universal-jkfit");
@@ -9043,10 +9176,10 @@ impl PyRsMp2RpaResult {
 /// be ignored with a warning). The mode actually used is echoed as
 /// `result.scf_jk` / `result.jk_auxbasis`.
 ///
-/// `max_iter`, `energy_conv`, `density_conv`: controls of the internal reference SCF,
+/// `scf_max_iter`, `scf_energy_conv`, `scf_density_conv`: controls of the internal reference SCF,
 /// with the names and meaning of `run_rhf` (defaults unchanged when omitted).
 #[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, omega=None, frozen_core=None, k_builder=None, formulation=None, attenuator=None, r0=None, terf_omega=None, memory_budget_gb=None, scf_jk=None, jk_auxbasis=None, max_iter=None, energy_conv=None, density_conv=None))]
+#[pyo3(signature = (mol, basis_set, auxbasis, omega=None, frozen_core=None, k_builder=None, formulation=None, attenuator=None, r0=None, terf_omega=None, memory_budget_gb=None, scf_jk=None, jk_auxbasis=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None))]
 #[allow(clippy::too_many_arguments)]
 fn run_rs_mp2_rpa(
     mol: &PyMolecule,
@@ -9062,9 +9195,9 @@ fn run_rs_mp2_rpa(
     memory_budget_gb: Option<f64>,
     scf_jk: Option<&str>,
     jk_auxbasis: Option<&str>,
-    max_iter: Option<usize>,
-    energy_conv: Option<f64>,
-    density_conv: Option<f64>,
+    scf_max_iter: Option<usize>,
+    scf_energy_conv: Option<f64>,
+    scf_density_conv: Option<f64>,
 ) -> PyResult<PyRsMp2RpaResult> {
     // The default differs from the other MP2 entry points: this one has
     // always used RI-JK on def2-universal-jkfit (same convention as pdep-rpa).
@@ -9075,7 +9208,7 @@ fn run_rs_mp2_rpa(
         scf_jk,
         jk_auxbasis,
         ferric_scf::scf_jk::ScfJkMode::RiJk,
-        ScfConv::new(max_iter, energy_conv, density_conv),
+        ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
     )?;
     let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
     let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
@@ -9371,10 +9504,10 @@ impl PyDoubleHybridResult {
 /// `kind`: "b2plyp" or "dsd-pbep86".
 /// Converges the appropriate DFT reference, then adds scaled MP2 correlation.
 ///
-/// `max_iter`, `energy_conv`, `density_conv`: controls of the internal reference SCF,
+/// `scf_max_iter`, `scf_energy_conv`, `scf_density_conv`: controls of the internal reference SCF,
 /// with the names and meaning of `run_rhf` (defaults unchanged when omitted).
 #[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, kind="b2plyp", frozen_core=None, k_builder=None, memory_budget_gb=None, max_iter=None, energy_conv=None, density_conv=None))]
+#[pyo3(signature = (mol, basis_set, auxbasis, kind="b2plyp", frozen_core=None, k_builder=None, memory_budget_gb=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None))]
 #[allow(clippy::too_many_arguments)]
 fn run_double_hybrid(
     mol: &PyMolecule,
@@ -9384,9 +9517,9 @@ fn run_double_hybrid(
     frozen_core: Option<usize>,
     k_builder: Option<&str>,
     memory_budget_gb: Option<f64>,
-    max_iter: Option<usize>,
-    energy_conv: Option<f64>,
-    density_conv: Option<f64>,
+    scf_max_iter: Option<usize>,
+    scf_energy_conv: Option<f64>,
+    scf_density_conv: Option<f64>,
 ) -> PyResult<PyDoubleHybridResult> {
     let dh_kind = match kind.to_lowercase().replace(['-', '_'], "").as_str() {
         "b2plyp" => DoubleHybridKind::B2plyp,
@@ -9407,7 +9540,7 @@ fn run_double_hybrid(
     let mut cfg = rhf_config_conv(
         k_builder,
         budget_bytes_from_gb(memory_budget_gb),
-        ScfConv::new(max_iter, energy_conv, density_conv),
+        ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
     );
     cfg.xc = Some(dh_kind.xc_name().to_string());
     cfg.df_j_aux = Some("def2-universal-jkfit".to_string());
@@ -10202,10 +10335,10 @@ impl PyCcResult {
     }
 }
 
-/// `max_iter`, `energy_conv`, `density_conv`: controls of the internal reference SCF,
+/// `scf_max_iter`, `scf_energy_conv`, `scf_density_conv`: controls of the internal reference SCF,
 /// with the names and meaning of `run_rhf` (defaults unchanged when omitted).
 #[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None, memory_budget_gb=None, max_iter=None, energy_conv=None, density_conv=None))]
+#[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None, memory_budget_gb=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None))]
 #[allow(clippy::too_many_arguments)]
 fn run_ccd(
     mol: &PyMolecule,
@@ -10214,9 +10347,9 @@ fn run_ccd(
     frozen_core: Option<usize>,
     k_builder: Option<&str>,
     memory_budget_gb: Option<f64>,
-    max_iter: Option<usize>,
-    energy_conv: Option<f64>,
-    density_conv: Option<f64>,
+    scf_max_iter: Option<usize>,
+    scf_energy_conv: Option<f64>,
+    scf_density_conv: Option<f64>,
 ) -> PyResult<PyCcResult> {
     let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
     let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
@@ -10226,7 +10359,7 @@ fn run_ccd(
     let rhf_config = rhf_config_conv(
         k_builder,
         budget_bytes_from_gb(memory_budget_gb),
-        ScfConv::new(max_iter, energy_conv, density_conv),
+        ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
     );
     let rhf = solve_rhf(&ctx, &mol.inner, &prep, op, &bounds, &rhf_config).map_err(make_err)?;
     if !rhf.converged {
@@ -10257,10 +10390,10 @@ fn run_ccd(
     })
 }
 
-/// `max_iter`, `energy_conv`, `density_conv`: controls of the internal reference SCF,
+/// `scf_max_iter`, `scf_energy_conv`, `scf_density_conv`: controls of the internal reference SCF,
 /// with the names and meaning of `run_rhf` (defaults unchanged when omitted).
 #[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None, memory_budget_gb=None, ladder="auto", max_iter=None, energy_conv=None, density_conv=None))]
+#[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None, memory_budget_gb=None, ladder="auto", scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None))]
 #[allow(clippy::too_many_arguments)]
 fn run_ccsd(
     py: Python<'_>,
@@ -10271,9 +10404,9 @@ fn run_ccsd(
     k_builder: Option<&str>,
     memory_budget_gb: Option<f64>,
     ladder: &str,
-    max_iter: Option<usize>,
-    energy_conv: Option<f64>,
-    density_conv: Option<f64>,
+    scf_max_iter: Option<usize>,
+    scf_energy_conv: Option<f64>,
+    scf_density_conv: Option<f64>,
 ) -> PyResult<PyCcResult> {
     let emol = mol.inner.clone();
     let ebasis = basis_set.inner.clone();
@@ -10281,7 +10414,7 @@ fn run_ccsd(
     let rhf_config = rhf_config_conv(
         k_builder,
         budget_bytes_from_gb(memory_budget_gb),
-        ScfConv::new(max_iter, energy_conv, density_conv),
+        ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
     );
     let cfg = CcConfig {
         frozen_core: frozen_core.unwrap_or(0),
@@ -10336,10 +10469,10 @@ fn run_ccsd(
     })
 }
 
-/// `max_iter`, `energy_conv`, `density_conv`: controls of the internal reference SCF,
+/// `scf_max_iter`, `scf_energy_conv`, `scf_density_conv`: controls of the internal reference SCF,
 /// with the names and meaning of `run_rhf` (defaults unchanged when omitted).
 #[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None, memory_budget_gb=None, ladder="auto", max_iter=None, energy_conv=None, density_conv=None))]
+#[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None, memory_budget_gb=None, ladder="auto", scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None))]
 #[allow(clippy::too_many_arguments)]
 fn run_ccsd_t(
     py: Python<'_>,
@@ -10350,9 +10483,9 @@ fn run_ccsd_t(
     k_builder: Option<&str>,
     memory_budget_gb: Option<f64>,
     ladder: &str,
-    max_iter: Option<usize>,
-    energy_conv: Option<f64>,
-    density_conv: Option<f64>,
+    scf_max_iter: Option<usize>,
+    scf_energy_conv: Option<f64>,
+    scf_density_conv: Option<f64>,
 ) -> PyResult<PyCcResult> {
     let emol = mol.inner.clone();
     let ebasis = basis_set.inner.clone();
@@ -10360,7 +10493,7 @@ fn run_ccsd_t(
     let rhf_config = rhf_config_conv(
         k_builder,
         budget_bytes_from_gb(memory_budget_gb),
-        ScfConv::new(max_iter, energy_conv, density_conv),
+        ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
     );
     let cfg = CcConfig {
         frozen_core: frozen_core.unwrap_or(0),
@@ -10540,7 +10673,7 @@ impl PyPdepRpaResult {
     }
 }
 
-/// `max_iter`, `energy_conv`, `density_conv`: controls of the internal reference SCF,
+/// `scf_max_iter`, `scf_energy_conv`, `scf_density_conv`: controls of the internal reference SCF,
 /// with the names and meaning of `run_rhf` (defaults unchanged when omitted).
 #[pyfunction]
 #[pyo3(signature = (
@@ -10550,7 +10683,7 @@ impl PyPdepRpaResult {
     run_diagnostics=false, k_builder=None, chi0_sparsity=None,
     memory_budget_gb=None, point_charges=None, external_field=None,
     solvent=None, pcm_lebedev_order=None,
-    max_iter=None, energy_conv=None, density_conv=None,
+    scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_pdep_rpa(
@@ -10571,9 +10704,9 @@ fn run_pdep_rpa(
     external_field: Option<(f64, f64, f64)>,
     solvent: Option<&Bound<'_, PyAny>>,
     pcm_lebedev_order: Option<usize>,
-    max_iter: Option<usize>,
-    energy_conv: Option<f64>,
-    density_conv: Option<f64>,
+    scf_max_iter: Option<usize>,
+    scf_energy_conv: Option<f64>,
+    scf_density_conv: Option<f64>,
 ) -> PyResult<PyPdepRpaResult> {
     use ferric_rpa::config::{QuadratureConfig, QuadratureScheme, SternheimerConfig};
     use ferric_rpa::{run_pdep_rpa as run_pdep_rpa_inner, PdepRpaConfig};
@@ -10590,7 +10723,7 @@ fn run_pdep_rpa(
     let mut scf_config = rhf_config_conv(
         k_builder,
         budget_bytes_from_gb(memory_budget_gb),
-        ScfConv::new(max_iter, energy_conv, density_conv),
+        ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
     );
     scf_config.external_potential = build_external_potential(point_charges, external_field);
     scf_config.pcm = build_pcm_config(solvent, pcm_lebedev_order)?;
@@ -10762,7 +10895,7 @@ impl PyGwResult {
 /// KS-DFT solver first and folds Σx−vxc into the QP self-consistency (see
 /// `ferric_gw::vxc_mo::vxc_diagonal_mo`).
 ///
-/// `max_iter`, `energy_conv`, `density_conv`: controls of the internal reference SCF,
+/// `scf_max_iter`, `scf_energy_conv`, `scf_density_conv`: controls of the internal reference SCF,
 /// with the names and meaning of `run_rhf` (defaults unchanged when omitted).
 #[pyfunction]
 #[pyo3(signature = (
@@ -10772,7 +10905,7 @@ impl PyGwResult {
     frozen_core=None, n_quad=None, quadrature=None, u0=None,
     trunc_thresh=None, eigensolver_conv_thresh=None,
     k_builder=None, chi0_sparsity=None, memory_budget_gb=None,
-    max_iter=None, energy_conv=None, density_conv=None,
+    scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_gw(
@@ -10796,9 +10929,9 @@ fn run_gw(
     k_builder: Option<&str>,
     chi0_sparsity: Option<&str>,
     memory_budget_gb: Option<f64>,
-    max_iter: Option<usize>,
-    energy_conv: Option<f64>,
-    density_conv: Option<f64>,
+    scf_max_iter: Option<usize>,
+    scf_energy_conv: Option<f64>,
+    scf_density_conv: Option<f64>,
 ) -> PyResult<PyGwResult> {
     use ferric_gw::{run_gw as run_gw_inner, vxc_mo::vxc_diagonal_mo_on_grids, GwConfig, GwMethod};
     use ferric_rpa::config::{QuadratureConfig, QuadratureScheme, SternheimerConfig};
@@ -10825,7 +10958,7 @@ fn run_gw(
     let mut cfg = rhf_config_conv(
         k_builder,
         budget_bytes_from_gb(memory_budget_gb),
-        ScfConv::new(max_iter, energy_conv, density_conv),
+        ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
     );
     let vxc_diag = if let Some(xc_name) = xc {
         // KS reference: RI-J/RI-K default (matches run_dft/run_ksdft), run
@@ -11089,7 +11222,7 @@ impl PyUGwResult {
 /// passes the per-spin v_xc diagonals to `ferric_gw::run_u_gw`, which puts
 /// Σx−vxc inside each spin channel's QP equation (same contract as `run_gw`).
 ///
-/// `max_iter`, `energy_conv`, `density_conv`: controls of the internal reference SCF,
+/// `scf_max_iter`, `scf_energy_conv`, `scf_density_conv`: controls of the internal reference SCF,
 /// with the names and meaning of `run_rhf` (defaults unchanged when omitted).
 #[pyfunction]
 #[pyo3(signature = (
@@ -11099,7 +11232,7 @@ impl PyUGwResult {
     frozen_core=None, n_quad=None, quadrature=None, u0=None,
     trunc_thresh=None, eigensolver_conv_thresh=None,
     k_builder=None, chi0_sparsity=None, memory_budget_gb=None,
-    max_iter=None, energy_conv=None, density_conv=None,
+    scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_u_gw(
@@ -11123,9 +11256,9 @@ fn run_u_gw(
     k_builder: Option<&str>,
     chi0_sparsity: Option<&str>,
     memory_budget_gb: Option<f64>,
-    max_iter: Option<usize>,
-    energy_conv: Option<f64>,
-    density_conv: Option<f64>,
+    scf_max_iter: Option<usize>,
+    scf_energy_conv: Option<f64>,
+    scf_density_conv: Option<f64>,
 ) -> PyResult<PyUGwResult> {
     use ferric_gw::{
         run_u_gw as run_u_gw_inner, vxc_mo::vxc_diagonal_mo_on_grids, GwConfig, GwMethod,
@@ -11164,7 +11297,7 @@ fn run_u_gw(
     let mut cfg = rhf_config_conv(
         k_builder,
         budget_bytes_from_gb(memory_budget_gb),
-        ScfConv::new(max_iter, energy_conv, density_conv),
+        ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
     );
     // MOM after 5 DIIS iters prevents orbital reordering on open-shell atoms
     // (same precedent as the CLI's "pdep-rpa"/"gw" open-shell dispatch).
@@ -11429,7 +11562,7 @@ impl PyBseResult {
 /// threaded to both the PDEP (W) build and the internal GW self-energy build
 /// for consistency, exactly like the CLI's `"bse-tda"` dispatch arm.
 ///
-/// `max_iter`, `energy_conv`, `density_conv`: controls of the internal reference SCF,
+/// `scf_max_iter`, `scf_energy_conv`, `scf_density_conv`: controls of the internal reference SCF,
 /// with the names and meaning of `run_rhf` (defaults unchanged when omitted).
 #[pyfunction]
 #[pyo3(signature = (
@@ -11437,7 +11570,7 @@ impl PyBseResult {
     frozen_core=None, n_quad=None, quadrature=None, u0=None,
     trunc_thresh=None, eigensolver_conv_thresh=None,
     k_builder=None, chi0_sparsity=None, memory_budget_gb=None,
-    max_iter=None, energy_conv=None, density_conv=None,
+    scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_bse_tda(
@@ -11453,9 +11586,9 @@ fn run_bse_tda(
     k_builder: Option<&str>,
     chi0_sparsity: Option<&str>,
     memory_budget_gb: Option<f64>,
-    max_iter: Option<usize>,
-    energy_conv: Option<f64>,
-    density_conv: Option<f64>,
+    scf_max_iter: Option<usize>,
+    scf_energy_conv: Option<f64>,
+    scf_density_conv: Option<f64>,
 ) -> PyResult<PyBseResult> {
     use ferric_gw::bse::run_bse_tda as run_bse_tda_inner;
     use ferric_rpa::config::{QuadratureConfig, QuadratureScheme, SternheimerConfig};
@@ -11470,7 +11603,7 @@ fn run_bse_tda(
     let cfg = rhf_config_conv(
         k_builder,
         budget_bytes_from_gb(memory_budget_gb),
-        ScfConv::new(max_iter, energy_conv, density_conv),
+        ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
     );
     let scf = solve_rhf(&ctx, &mol.inner, &prep, op, &bounds, &cfg).map_err(make_err)?;
     if !scf.converged {
@@ -11610,7 +11743,7 @@ impl PyTdhfStaticPolarizabilityResult {
 /// quadrature/u0/trunc_thresh/eigensolver_conv_thresh/k_builder/
 /// chi0_sparsity/memory_budget_gb) plus `frozen_core`.
 ///
-/// `max_iter`, `energy_conv`, `density_conv`: controls of the internal reference SCF,
+/// `scf_max_iter`, `scf_energy_conv`, `scf_density_conv`: controls of the internal reference SCF,
 /// with the names and meaning of `run_rhf` (defaults unchanged when omitted).
 #[pyfunction]
 #[pyo3(signature = (
@@ -11618,7 +11751,7 @@ impl PyTdhfStaticPolarizabilityResult {
     scissor=None, frozen_core=None, n_quad=None, quadrature=None, u0=None,
     trunc_thresh=None, eigensolver_conv_thresh=None,
     k_builder=None, chi0_sparsity=None, memory_budget_gb=None,
-    max_iter=None, energy_conv=None, density_conv=None,
+    scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_tdhf_static_polarizability(
@@ -11636,9 +11769,9 @@ fn run_tdhf_static_polarizability(
     k_builder: Option<&str>,
     chi0_sparsity: Option<&str>,
     memory_budget_gb: Option<f64>,
-    max_iter: Option<usize>,
-    energy_conv: Option<f64>,
-    density_conv: Option<f64>,
+    scf_max_iter: Option<usize>,
+    scf_energy_conv: Option<f64>,
+    scf_density_conv: Option<f64>,
 ) -> PyResult<PyTdhfStaticPolarizabilityResult> {
     use ferric_gw::bse::run_rpax_static_polarizability;
     use ferric_rpa::config::{QuadratureConfig, QuadratureScheme, SternheimerConfig};
@@ -11655,7 +11788,7 @@ fn run_tdhf_static_polarizability(
     let mut cfg = rhf_config_conv(
         k_builder,
         budget_bytes_from_gb(memory_budget_gb),
-        ScfConv::new(max_iter, energy_conv, density_conv),
+        ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
     );
     cfg.xc = Some(xc.to_string());
     cfg.df_j_aux = Some("def2-universal-jkfit".to_string());
@@ -11794,10 +11927,10 @@ impl PyTddftResult {
     }
 }
 
-/// `max_iter`, `energy_conv`, `density_conv`: controls of the internal reference SCF,
+/// `scf_max_iter`, `scf_energy_conv`, `scf_density_conv`: controls of the internal reference SCF,
 /// with the names and meaning of `run_rhf` (defaults unchanged when omitted).
 #[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, functional=None, n_roots=3, method="tda", max_iter=None, energy_conv=None, density_conv=None))]
+#[pyo3(signature = (mol, basis_set, auxbasis, functional=None, n_roots=3, method="tda", scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None))]
 #[allow(clippy::too_many_arguments)]
 fn run_tddft(
     py: Python<'_>,
@@ -11807,9 +11940,9 @@ fn run_tddft(
     functional: Option<&str>,
     n_roots: usize,
     method: &str,
-    max_iter: Option<usize>,
-    energy_conv: Option<f64>,
-    density_conv: Option<f64>,
+    scf_max_iter: Option<usize>,
+    scf_energy_conv: Option<f64>,
+    scf_density_conv: Option<f64>,
 ) -> PyResult<PyTddftResult> {
     use ferric_tddft::{TddftConfig, TddftMethod};
 
@@ -11840,7 +11973,7 @@ fn run_tddft(
     }
     let (scf, grid) = if let Some(xc_name) = functional {
         let mut cfg = rhf_config(None);
-        ScfConv::new(max_iter, energy_conv, density_conv).apply(&mut cfg);
+        ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv).apply(&mut cfg);
         cfg.xc = Some(xc_name.to_string());
         cfg.df_j_aux = Some("def2-universal-jkfit".to_string());
         cfg.df_k_aux = Some("def2-universal-jkfit".to_string());
@@ -11855,7 +11988,7 @@ fn run_tddft(
         (lr.result, grid)
     } else {
         let mut cfg = rhf_config(None);
-        ScfConv::new(max_iter, energy_conv, density_conv).apply(&mut cfg);
+        ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv).apply(&mut cfg);
         let scf = solve_rhf(&ctx, &mol.inner, &prep, op, &bounds, &cfg).map_err(make_err)?;
         (scf, ferric_dft::grid::AtomicGridConfig::default())
     };
@@ -12601,6 +12734,7 @@ fn parse_saddle_hessian(
     mol, basis_name, xc=None, multiplicity=None,
     max_steps=None, trust_radius=None, follow_mode=None, delta=None,
     point_charges=None, external_field=None, hessian="fd",
+    scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_saddle(
@@ -12615,6 +12749,9 @@ fn run_saddle(
     point_charges: Option<Vec<(f64, f64, f64, f64)>>,
     external_field: Option<(f64, f64, f64)>,
     hessian: &str,
+    scf_max_iter: Option<usize>,
+    scf_energy_conv: Option<f64>,
+    scf_density_conv: Option<f64>,
 ) -> PyResult<PySaddleResult> {
     use ferric_scf::frequencies::{harmonic_frequencies, FrequencyConfig, FrequencyReference};
     use ferric_scf::gradient::rhf_gradient;
@@ -12669,11 +12806,12 @@ fn run_saddle(
     // charge pair makes planar NH3 non-stationary), so searching in vacuum and
     // hoping the barrier transfers is not an approximation, it is a different
     // question.
-    let scf_cfg = RhfConfig {
+    let mut scf_cfg = RhfConfig {
         xc: xc.map(|s| s.to_string()),
         external_potential: build_external_potential(point_charges, external_field),
         ..Default::default()
     };
+    ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv).apply(&mut scf_cfg);
     let mut cfg = SaddleConfig::default();
     if let Some(v) = max_steps {
         cfg.max_steps = v;
@@ -12704,7 +12842,7 @@ fn run_saddle(
             return Err(ferric_core::FerricError::General(
                 "saddle search: the SCF did not converge at this geometry, so \
                  its energy and gradient are not points on the potential \
-                 surface. Loosen the geometry, raise max_iter, or start closer \
+                 surface. Loosen the geometry, raise scf_max_iter, or start closer \
                  to the barrier."
                     .to_string(),
             ));
@@ -12820,6 +12958,7 @@ fn run_saddle(
     mol, basis_name, mode, xc=None, multiplicity=None,
     step=None, max_steps=None, g_max_thresh=None, initial_displacement=None,
     point_charges=None, external_field=None,
+    scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_irc(
@@ -12834,6 +12973,9 @@ fn run_irc(
     initial_displacement: Option<f64>,
     point_charges: Option<Vec<(f64, f64, f64, f64)>>,
     external_field: Option<(f64, f64, f64)>,
+    scf_max_iter: Option<usize>,
+    scf_energy_conv: Option<f64>,
+    scf_density_conv: Option<f64>,
 ) -> PyResult<PyIrcResult> {
     use ferric_scf::gradient::rhf_gradient;
     use ferric_scf::irc::{follow_irc, IrcConfig};
@@ -12865,11 +13007,12 @@ fn run_irc(
     // saddle MUST be walked in the same field: the path is a property of the
     // surface, and a gas-phase walk from an embedded saddle descends a
     // different surface than the one the saddle sits on.
-    let scf_cfg = RhfConfig {
+    let mut scf_cfg = RhfConfig {
         xc: xc.map(|s| s.to_string()),
         external_potential: build_external_potential(point_charges, external_field),
         ..Default::default()
     };
+    ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv).apply(&mut scf_cfg);
     let mut cfg = IrcConfig::default();
     if let Some(v) = step {
         cfg.step = v;

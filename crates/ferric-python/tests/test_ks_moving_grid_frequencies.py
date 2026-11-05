@@ -82,7 +82,7 @@ def _cli_binary():
 
 
 # Tight SCF for the comparisons below (the run_frequencies kwargs).
-TIGHT = {"max_iter": 200, "energy_conv": 1e-13, "density_conv": 1e-11}
+TIGHT = {"scf_max_iter": 200, "scf_energy_conv": 1e-13, "scf_density_conv": 1e-11}
 
 
 @pytest.mark.validation

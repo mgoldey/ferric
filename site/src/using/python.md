@@ -201,6 +201,21 @@ IEF-PCM), point charges and a uniform field. See its docstring
 (`help(ferric.run_rhf)`) for the full SCF knob set, which matches the CLI
 `[scf]` section.
 
+### Naming the convergence keywords
+
+A bare `max_iter`, `energy_conv` or `density_conv` belongs to a driver whose
+method is the SCF itself (`run_rhf`, `run_uhf`, `run_rohf`, `run_dft`,
+`run_ksdft`, `run_qmmm`). Every other driver solves a reference SCF as one stage
+among others (MP2, CC, RPA, GW, TDDFT, orbital optimization, constrained DFT,
+frequencies, geometry optimizers, saddle and IRC searches), so its SCF knobs are
+`scf_max_iter`, `scf_energy_conv` and `scf_density_conv`, with the meaning and
+defaults of `run_rhf`'s. Another stage's iteration knob is stage-named
+(`oo_max_iter`, `max_outer`, `max_steps`, `eigensolver_*`). The bare spellings
+that older releases accepted on `run_cdft`, `run_frequencies` and
+`run_oo_rimp2` (`max_iter` there) still work, warn with a
+`DeprecationWarning`, and raise if combined with the prefixed one. The CLI keeps
+each key in its own section (`[scf]`, `[optimize]`, `[gw]`, `[rpa]`, `[mp2] oo_*`).
+
 ### Check `.converged`, and know what it means
 
 `run_rhf`, `run_uhf`, `run_rohf` and `run_qmmm` return a result whether or
