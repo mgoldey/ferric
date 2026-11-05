@@ -118,6 +118,11 @@ struct Setup {
 /// The reference SCF exactly as the CLI/Python `run_tddft` builds it: RI-J/K
 /// with def2-universal-jkfit, default (75, 110) grid, the named functional.
 fn setup(refj: &Value, xc: Option<&str>) -> Setup {
+    setup_on(refj, xc, kernel_grid(xc))
+}
+
+/// [`setup`] on an explicit SCF grid.
+fn setup_on(refj: &Value, xc: Option<&str>, grid: AtomicGridConfig) -> Setup {
     let xyz = format!(
         "{}/../../{}",
         env!("CARGO_MANIFEST_DIR"),
@@ -136,7 +141,7 @@ fn setup(refj: &Value, xc: Option<&str>) -> Setup {
     // energy_conv stays at its default (a sanity bound, not a target).
     let cfg = RhfConfig {
         xc: xc.map(str::to_string),
-        dft_grid: Some(kernel_grid(xc)),
+        dft_grid: Some(grid),
         df_j_aux: Some(SCF_JK_AUX.to_string()),
         df_k_aux: Some(SCF_JK_AUX.to_string()),
         density_conv: 1e-8,
@@ -174,10 +179,21 @@ fn kernel_grid(xc: Option<&str>) -> AtomicGridConfig {
 }
 
 fn run(s: &Setup, xc: Option<&str>, method: TddftMethod, n_roots: usize) -> TddftResult {
+    run_on(s, xc, method, n_roots, kernel_grid(xc))
+}
+
+/// [`run`] with an explicit f_xc grid (the one the reference SCF used).
+fn run_on(
+    s: &Setup,
+    xc: Option<&str>,
+    method: TddftMethod,
+    n_roots: usize,
+    grid: AtomicGridConfig,
+) -> TddftResult {
     let cfg = TddftConfig {
         n_roots,
         method,
-        grid: kernel_grid(xc),
+        grid,
         xc: xc.map(str::to_string),
         ..Default::default()
     };
@@ -417,6 +433,68 @@ validation_case!(
     "B3LYP",
     Some("B3LYP")
 );
+
+/// Max |dΩ| (eV) of the lowest `N_CHECK` B3LYP TDA roots against the
+/// reference, with ferric's SCF and f_xc on the reference's OWN flat
+/// (75, 110) grid, so grid error cancels and what is left is the potential
+/// ferric builds.
+fn same_grid_b3lyp_tda_dev(mol: &str) -> f64 {
+    let refj = load_ref(mol, "aug-cc-pvdz");
+    let flat = || AtomicGridConfig {
+        n_radial: 75,
+        n_angular: 110,
+        ..Default::default()
+    };
+    let xc = Some("B3LYP");
+    let s = setup_on(&refj, xc, flat());
+    let tda = run_on(&s, xc, TddftMethod::Tda, N_CHECK, flat());
+    let w_ref = f64s(&refj["cases"]["B3LYP"]["tda"]["omega_ev"]);
+    let max_dev = (0..N_CHECK)
+        .map(|k| (tda.excitation_energies[k] * HARTREE_TO_EV - w_ref[k]).abs())
+        .fold(0.0_f64, f64::max);
+    println!("{mol}/aug-cc-pvdz/B3LYP flat-grid TDA: max |dOmega| = {max_dev:.3e} eV");
+    max_dev
+}
+
+/// Bar for [`same_grid_b3lyp_tda_dev`]. Measured on the reference grid
+/// (2026-11-05), max |dΩ| over the lowest five roots:
+///
+/// | aug-cc-pVDZ / B3LYP | semilocal floor 1e-10 | floor 1e-14 |
+/// |---|---|---|
+/// | water        | 6.810e-4 eV | 5.7e-7 eV |
+/// | formaldehyde | 8.499e-4 eV | 2.8e-6 eV |
+///
+/// 2e-5 eV is 7x above the worst fixed value and 34x below the smallest
+/// floor-defect value. (On the production pruned grid formaldehyde sits at
+/// 8.1e-4 eV: grid error, which this comparison removes.)
+const SAME_GRID_BAR_EV: f64 = 2e-5;
+
+/// XC density-floor regression, water/aug-cc-pVDZ/B3LYP on the reference's
+/// grid. The diffuse virtuals sit in the low-density tail where B88 exchange
+/// is still non-zero; a semilocal floor that drops that tail moves the roots
+/// while PySCF (libxc's own thresholds only) does not.
+#[test]
+#[ignore = "validation: TDA-DFT / TDDFT"]
+fn water_augdz_b3lyp_same_grid_tda_keeps_the_density_tail() {
+    let max_dev = same_grid_b3lyp_tda_dev("water");
+    assert!(
+        max_dev < SAME_GRID_BAR_EV,
+        "water/aug-cc-pvdz/B3LYP on the reference grid: max |dOmega| {max_dev:.3e} eV >= \
+         {SAME_GRID_BAR_EV:.0e} eV — the V_xc density floor is cutting the diffuse tail"
+    );
+}
+
+/// Formaldehyde twin of the water case.
+#[test]
+#[ignore = "validation: TDA-DFT / TDDFT"]
+fn h2co_augdz_b3lyp_same_grid_tda_keeps_the_density_tail() {
+    let max_dev = same_grid_b3lyp_tda_dev("formaldehyde");
+    assert!(
+        max_dev < SAME_GRID_BAR_EV,
+        "formaldehyde/aug-cc-pvdz/B3LYP on the reference grid: max |dOmega| {max_dev:.3e} eV \
+         >= {SAME_GRID_BAR_EV:.0e} eV — the V_xc density floor is cutting the diffuse tail"
+    );
+}
 
 /// (a) Anchor against the PySCF-validated library path, independent of any
 /// external reference: `run_tddft` TDA must reproduce
