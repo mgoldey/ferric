@@ -4539,7 +4539,7 @@ fn optimize_result_certificate(
 }
 
 #[pyfunction]
-#[pyo3(signature = (mol, basis_name, max_steps=None, e_conv=None, point_charges=None, external_field=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None))]
+#[pyo3(signature = (mol, basis_name, max_steps=None, e_conv=None, point_charges=None, external_field=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None, solvent=None, pcm_lebedev_order=None))]
 #[allow(clippy::too_many_arguments)]
 fn run_optimize(
     py: Python<'_>,
@@ -4552,10 +4552,13 @@ fn run_optimize(
     scf_max_iter: Option<usize>,
     scf_energy_conv: Option<f64>,
     scf_density_conv: Option<f64>,
+    solvent: Option<&Bound<'_, PyAny>>,
+    pcm_lebedev_order: Option<usize>,
 ) -> PyResult<PyOptimizeResult> {
     let ctx = ParallelContext::default();
     let mut rhf_config = RhfConfig {
         external_potential: build_external_potential(point_charges, external_field),
+        pcm: build_pcm_config(solvent, pcm_lebedev_order)?,
         ..Default::default()
     };
     ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv).apply(&mut rhf_config);
@@ -4610,7 +4613,7 @@ fn run_optimize(
 /// doublet would be forced into a closed-shell density. Use this for any
 /// molecule with unpaired electrons.
 #[pyfunction]
-#[pyo3(signature = (mol, basis_name, max_steps=None, e_conv=None, point_charges=None, external_field=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None))]
+#[pyo3(signature = (mol, basis_name, max_steps=None, e_conv=None, point_charges=None, external_field=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None, solvent=None, pcm_lebedev_order=None))]
 #[allow(clippy::too_many_arguments)]
 fn run_optimize_uhf(
     py: Python<'_>,
@@ -4623,10 +4626,13 @@ fn run_optimize_uhf(
     scf_max_iter: Option<usize>,
     scf_energy_conv: Option<f64>,
     scf_density_conv: Option<f64>,
+    solvent: Option<&Bound<'_, PyAny>>,
+    pcm_lebedev_order: Option<usize>,
 ) -> PyResult<PyOptimizeResult> {
     let ctx = ParallelContext::default();
     let mut uhf_config = RhfConfig {
         external_potential: build_external_potential(point_charges, external_field),
+        pcm: build_pcm_config(solvent, pcm_lebedev_order)?,
         ..Default::default()
     };
     ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv).apply(&mut uhf_config);

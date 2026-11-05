@@ -2250,6 +2250,17 @@ class TddftResult:
         ...
 
     @property
+    def certificate(self) -> dict[str, Any]:
+        """Validation certificate (same fields as ``RhfResult.certificate``):
+        ``capability`` ``"tda"`` or ``"tddft"``, ``grade`` ``"proven_narrow"``
+        capped by the SCF reference's. A KS run lists ``response-grid`` in
+        ``approximations`` (the grid the reference SCF and the f_xc kernel
+        shared, equal to ``grid``, with whether it was the meta-GGA response
+        default 150 x 434 or an explicit ``grid_*`` choice); a meta-GGA run
+        also warns that its roots are grid-sensitive."""
+        ...
+
+    @property
     def excitation_energies(self) -> NDArray[np.float64]:
         """Singlet excitation energies (Hartree), ascending."""
         ...
@@ -2290,23 +2301,20 @@ class DoubleHybridResult:
     def c_os(self) -> float: ...
     @property
     def c_ss(self) -> float: ...
+    @property
+    def certificate(self) -> dict[str, Any]:
+        """Validation certificate (same fields as ``RhfResult.certificate``):
+        ``capability`` ``"b2plyp"`` or ``"dsd-pbep86"``, ``grade`` ``"spike"``
+        (not compared with any reference code), ``approximations`` the KS
+        reference's (``scf ...``), ``ri``, ``frozen-core`` and
+        ``spin-component-scaling`` (``c_os``, ``c_ss``)."""
+        ...
 
 class BoysResult:
     """Result of Boys localization."""
 
     @property
     def converged(self) -> bool: ...
-    @property
-    def certificate(self) -> dict[str, Any]:
-        """Validation certificate (same fields as ``RhfResult.certificate``):
-        ``capability`` ``"tda"`` or ``"tddft"``, ``grade`` ``"proven_narrow"``
-        capped by the SCF reference's. A KS run lists ``response-grid`` in
-        ``approximations`` (the grid the reference SCF and the f_xc kernel
-        shared, equal to ``grid``, with whether it was the meta-GGA response
-        default 150 x 434 or an explicit ``grid_*`` choice); a meta-GGA run
-        also warns that its roots are grid-sensitive."""
-        ...
-
     @property
     def iterations(self) -> int: ...
     def c_loc(self) -> NDArray[np.float64]:
@@ -2348,14 +2356,6 @@ class GammaRhfResult:
     @property
     def iterations(self) -> int: ...
     @property
-    @property
-    def certificate(self) -> dict[str, Any]:
-        """Validation certificate (same fields as ``RhfResult.certificate``):
-        ``capability`` ``"b2plyp"`` or ``"dsd-pbep86"``, ``grade`` ``"spike"``
-        (not compared with any reference code), ``approximations`` the KS
-        reference's (``scf ...``), ``ri``, ``frozen-core`` and
-        ``spin-component-scaling`` (``c_os``, ``c_ss``)."""
-        ...
     def e_nuc(self) -> float:
         """Ewald nuclear repulsion per cell (Hartree)."""
         ...
@@ -3715,8 +3715,15 @@ def run_optimize(
     scf_max_iter: int | None = None,
     scf_energy_conv: float | None = None,
     scf_density_conv: float | None = None,
+    solvent: float | str | None = None,
+    pcm_lebedev_order: int | None = None,
 ) -> OptimizeResult:
     """Geometry optimization (RHF).
+
+    `solvent`, `pcm_lebedev_order`: IEF-PCM implicit solvation, as in `run_rhf`. The
+    optimizer follows the analytic IEF-PCM gradient (cavity and reaction-field terms),
+    and the certificate lists an `scf pcm` approximation. COSMO has no analytic gradient and
+    is refused by the gradient dispatchers.
 
     `scf_max_iter`, `scf_energy_conv`, `scf_density_conv`: controls of the SCF run at
     every geometry (names and defaults of `run_rhf`'s `max_iter`, `energy_conv`,
@@ -3734,8 +3741,12 @@ def run_optimize_uhf(
     scf_max_iter: int | None = None,
     scf_energy_conv: float | None = None,
     scf_density_conv: float | None = None,
+    solvent: float | str | None = None,
+    pcm_lebedev_order: int | None = None,
 ) -> OptimizeResult:
     """Geometry optimization (UHF) -- for open-shell systems.
+
+    `solvent`, `pcm_lebedev_order`: IEF-PCM implicit solvation, as in `run_optimize`.
 
     The spin state comes from the `Molecule`'s multiplicity, as in `run_uhf`.
     `run_optimize` uses an RHF reference and cannot relax a radical.
