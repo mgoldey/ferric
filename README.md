@@ -149,7 +149,7 @@ at your option.
 ferric links against external libraries with their own licenses, notably
 libint2 (LGPL-3.0-or-later), libxc (MPL-2.0), OpenBLAS/LAPACK (BSD), and
 optionally xtb (LGPL-3.0), which govern redistribution of binaries built
-against them. libint2 is a required dependency, not an optional one:
+against them. libint2 is a required dependency, so
 distributing a compiled ferric binary means distributing LGPL-linked code, which
 carries obligations (relinking, source availability) beyond ferric's own MIT/
 Apache-2.0 terms. Building from source for your own use is unaffected.

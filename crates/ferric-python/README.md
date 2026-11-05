@@ -1,6 +1,6 @@
 # ferric Python Bindings API Guide
 
-This directory contains the PyO3 Python bindings for the `ferric` quantum chemistry engine. The compiled library exposes high-performance Rust kernels to Python, returning inputs and outputs as native Python types and `numpy` arrays.
+This directory contains the PyO3 Python bindings for the `ferric` quantum chemistry engine. The compiled library exposes the Rust kernels to Python, returning inputs and outputs as native Python types and `numpy` arrays.
 
 ---
 
@@ -70,7 +70,7 @@ Returned by PDEP-RPA calculations.
 The optional `k_builder` argument accepted by the RHF-based solvers takes
 `"direct"` (default), `"link"` (LinK, exact) or `"cosx"` (seminumerical
 exchange, Coulomb operator only; uses the CLI defaults for grid, overlap fit
-and kernel — those knobs are not exposed in Python yet). All three are
+and kernel; those knobs are not exposed in Python). All three are
 honoured by the RHF, UHF and ROHF solvers. See the book's *Choosing how
 exchange is built* for when each pays.
 
