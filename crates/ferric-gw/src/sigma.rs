@@ -1193,6 +1193,112 @@ mod tests {
         );
     }
 
+    /// Shared single-mode fixture for the two closed-form anchors below:
+    /// 2 occupied + 2 virtual active MOs, one PDEP mode, an arbitrary dense
+    /// symmetric M[0, m, n], and ferric's own scaled-Legendre W grid.
+    fn one_mode_fixture() -> (ndarray::Array3<f64>, Vec<f64>, usize, Vec<f64>, Vec<f64>) {
+        let eps_act = vec![-0.9_f64, -0.55, 0.25, 0.7];
+        let n_occ = 2;
+        let row = [0.3_f64, 0.5, -0.4, 0.2, -0.1, 0.35, 0.15, -0.25];
+        let mut m_proj = ndarray::Array3::<f64>::zeros((1, 4, 4));
+        let mut c = 0;
+        for m in 0..4 {
+            for n in m..4 {
+                m_proj[(0, m, n)] = row[c % row.len()];
+                m_proj[(0, n, m)] = row[c % row.len()];
+                c += 1;
+            }
+        }
+        let (freqs, weights) = ferric_rpa::quadrature::gauss_legendre_nodes(100, 0.5);
+        (m_proj, eps_act, n_occ, freqs, weights)
+    }
+
+    /// Single-pole W(iω) = −2Ωs/(ω² + Ω²) (the exact W of one RPA pair,
+    /// theory.md §3): the imaginary-axis integral in `sigma_c_at_z` must equal
+    /// the closed-form residue result Σ_n M²_mn s/(z − ε_n ± Ω), + for
+    /// occupied n, − for virtual n (scripts/gw_self_energy_sympy.py claim 2).
+    /// Independent construction: no quadrature, no Padé on the reference side.
+    #[test]
+    fn sigma_c_single_pole_w_matches_closed_form_residues() {
+        let (m_proj, eps_act, n_occ, freqs, weights) = one_mode_fixture();
+        let (big_omega, s) = (0.8_f64, 0.15_f64);
+        let inv_diel_freq: Vec<Array2<f64>> = freqs
+            .iter()
+            .map(|&w| {
+                Array2::from_elem(
+                    (1, 1),
+                    -2.0 * big_omega * s / (w * w + big_omega * big_omega),
+                )
+            })
+            .collect();
+        let ef = fermi_level(&eps_act, n_occ);
+        let mut max_err = 0.0_f64;
+        for m in 0..4 {
+            for &im in &[0.0_f64, 0.1, 0.6, 2.0] {
+                let z = Complex64::new(ef, im);
+                let got = sigma_c_at_z(m, z, &m_proj, &inv_diel_freq, &weights, &freqs, &eps_act);
+                let mut want = Complex64::new(0.0, 0.0);
+                for (n, &eps_n) in eps_act.iter().enumerate() {
+                    let pole = if n < n_occ { big_omega } else { -big_omega };
+                    let m2 = m_proj[(0, m, n)].powi(2);
+                    want += Complex64::new(m2 * s, 0.0) / (z - eps_n + pole);
+                }
+                max_err = max_err.max((got - want).norm());
+            }
+        }
+        // MEASURED 2.3e-9: the 100-point W-quadrature error. A wrong prefactor
+        // or pole side moves Σc by O(|Σc|) ~ 1e-2.
+        assert!(
+            max_err < 1e-8,
+            "single-pole Σc: imaginary-axis quadrature vs closed-form residues, max |Δ| = {max_err:.3e}"
+        );
+    }
+
+    /// Static W (W(iω) = w₀ at every node), z real in the gap: the same
+    /// integral gives −½ Σ_n w₀ M²_mn sgn(z − ε_n) = ΔΣ_SEX + Σ_COH, i.e.
+    /// `sigma_c_at_z` must reproduce `cohsex::cohsex_pieces` (theory.md §5,
+    /// sympy claim 3). Pins the two modules against each other.
+    #[test]
+    fn sigma_c_static_w_in_gap_equals_cohsex_pieces() {
+        let (m_proj, eps_act, n_occ, freqs, weights) = one_mode_fixture();
+        let w0 = -0.3_f64;
+        let inv_diel_freq: Vec<Array2<f64>> = freqs
+            .iter()
+            .map(|_| Array2::from_elem((1, 1), w0))
+            .collect();
+        let mo_b = MoB::from_parts(
+            m_proj.clone(),
+            Array2::<f64>::eye(1),
+            1,
+            4,
+            0,
+            n_occ,
+            eps_act.clone(),
+        )
+        .expect("synthetic MoB (no pool installed in unit tests)");
+        let (dsex, coh) = crate::cohsex::cohsex_pieces(&mo_b, &m_proj, &[w0]);
+        let ef = fermi_level(&eps_act, n_occ);
+        let mut max_err = 0.0_f64;
+        for m in 0..4 {
+            let got = sigma_c_at_z(
+                m,
+                Complex64::new(ef, 0.0),
+                &m_proj,
+                &inv_diel_freq,
+                &weights,
+                &freqs,
+                &eps_act,
+            );
+            max_err = max_err
+                .max((got.re - (dsex[m] + coh[m])).abs())
+                .max(got.im.abs());
+        }
+        assert!(
+            max_err < 1e-9,
+            "static-W Σc(ε_F) vs COHSEX ΔΣ_SEX + Σ_COH, max |Δ| = {max_err:.3e}"
+        );
+    }
+
     // The degenerate-Padé-node guard (repeated support point -> Err instead
     // of silent NaN/Inf) is exercised directly on `PadeCF::fit` in
     // `pade::tests::fit_errors_on_repeated_support_node` — `solve_qp_for_mo`

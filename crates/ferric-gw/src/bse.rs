@@ -703,7 +703,7 @@ pub struct BseC6Result {
 /// ```text
 ///   (A+B)_W = Δε^GW δ + 4(ia|jb)_v − (ab|W|ij) − (ib|W|aj)
 ///   (A−B)_W = Δε^GW δ            + (ib|W|aj) − (ab|W|ij)
-///   α(iω)   = 4 μᵀ (A−B)_W [ (A−B)_W (A+B)_W + ω² ]⁻¹ μ
+///   α(iω)   = 4 μᵀ [ (A−B)_W (A+B)_W + ω² ]⁻¹ (A−B)_W μ
 ///   C6      = (3/π) Σ_k w_k α_iso(iω_k)²        (Casimir–Polder)
 /// ```
 ///
@@ -888,7 +888,7 @@ pub fn run_bse_c6(
         }
     }
 
-    // α(iω) = 4 μᵀ (A−B)[(A−B)(A+B)+ω²]⁻¹ μ, isotropic average over axes.
+    // α(iω) = 4 μᵀ [(A−B)(A+B)+ω²]⁻¹ (A−B) μ, isotropic average over axes.
     // Frequencies are independent (each does a full n×n GEMM + solve) — par
     // over freqs, order-preserving collect (energy.rs pattern), BLAS pinned
     // to 1 inside the rayon region to avoid nested-thread oversubscription /
@@ -1322,7 +1322,7 @@ pub struct RpaxStaticPolarizabilityResult {
 /// ```text
 ///   (A+B) = Δε^KS δ + 4(ia|jb)_v − (ab|W|ij) − (ib|W|aj)
 ///   (A−B) = Δε^KS δ            + (ib|W|aj) − (ab|W|ij)
-///   α_ij(0) = 4 μ_iᵀ (A−B) [(A−B)(A+B)]⁻¹ μ_j
+///   α_ij(0) = 4 μ_iᵀ [(A−B)(A+B)]⁻¹ (A−B) μ_j = 4 μ_iᵀ (A+B)⁻¹ μ_j
 /// ```
 ///
 /// # Scope — READ BEFORE USING FOR ANYTHING BEYOND α(0)
@@ -1586,7 +1586,7 @@ pub fn rpax_static_polarizability_with_screening(
     // ω=0 ONLY: a single dense solve, no frequency loop. sysm = (A−B)(A+B)
     // (the ω²·I shift vanishes at ω=0).
     let sysm = amb.dot(&apb);
-    // α_ij(0) = 4 μ_iᵀ (A−B) sysm⁻¹ μ_j, full 3×3 tensor (not just the
+    // α_ij(0) = 4 μ_iᵀ sysm⁻¹ (A−B) μ_j, full 3×3 tensor (not just the
     // isotropic average run_bse_c6_ks reports).
     let mut t: [Array1<f64>; 3] = std::array::from_fn(|_| Array1::zeros(n));
     for d in 0..3 {

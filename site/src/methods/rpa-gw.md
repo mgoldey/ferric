@@ -104,6 +104,12 @@ range. **No speedup over PDEP is claimed for local dRPA.**
 
 ## GW
 
+The equations and conventions of this section, the BSE-TDA and the RPAx
+polarizability, with the code paths and tests behind each, are in
+[`crates/ferric-gw/theory.md`](https://github.com/mgoldey/ferric/blob/main/crates/ferric-gw/theory.md);
+the identities it relies on are checked by
+[`scripts/gw_self_energy_sympy.py`](https://github.com/mgoldey/ferric/blob/main/scripts/gw_self_energy_sympy.py).
+
 **What it is.** Quasiparticle energies from the GW self-energy: **G0W0**,
 **COHSEX**, **evGW0** and **evGW**, closed shell, plus unrestricted **U-GW**.
 The starting point is HF by default or a KS functional (`[rpa] xc`). From a
