@@ -1,4 +1,4 @@
-//! The [`Certificate`] of an SCF / KS-DFT result: capability and grade from
+//! The [`Certificate`](ferric_core::certificate::Certificate) of an SCF / KS-DFT result: capability and grade from
 //! `ferric_core::certificate::METHOD_KIND_GRADES`, the approximations the
 //! solve actually ran with, and warnings for conditions the solver already
 //! detected (non-convergence, plateau exits, stability verdicts).
