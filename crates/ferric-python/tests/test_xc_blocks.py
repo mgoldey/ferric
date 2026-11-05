@@ -91,21 +91,11 @@ def test_numpy_ks_on_eval_reproduces_run_dft(functional):
         "PBE",
         "SCAN",
         WB97X,
-        pytest.param(
-            "wB97X-V",
-            marks=pytest.mark.xfail(
-                strict=True,
-                reason="pre-existing: ferric's VV10 V_nl is not the exact derivative "
-                "of E_nl. Measured 2026-10-29, NH2/6-31G, random symmetric X: "
-                "FD(E) - Tr[V X] = -1.31e-7 (3.6e-6 relative), constant over "
-                "h = 4e-4..2.5e-5; wB97X without VV10 agrees to 8.6e-14",
-            ),
-        ),
+        "wB97X-V",
     ],
 )
 def test_vxc_is_the_derivative_of_exc(functional):
-    # Own RNG: the direction must not depend on which tests ran first (the
-    # VV10 defect's size depends on it, which once let the xfail pass).
+    # Own RNG: the direction must not depend on which tests ran first.
     rng = np.random.default_rng(5)
     mol, bs, ints = _ints(NH2_ASYM, "6-31g", multiplicity=2)
     xc = ints.xc_functional(functional)

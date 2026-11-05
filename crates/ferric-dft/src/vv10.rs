@@ -898,9 +898,10 @@ fn vv10_internal_screened(
         p.kp = k_vv * r.powf(1.0 / 6.0);
         p.dk_dr = p.kp / 6.0;
         p.dw0_dr = (0.5 * pi43 * r - 2.0 * w0tmp) / p.w0;
-        if s > RHO_THRESH {
-            p.dw0_dg = w0tmp * r / (s * p.w0);
-        }
+        // ρ·∂ω₀/∂σ = C·σ/(ρ³ω₀) (PySCF's `W0tmp·R/(G·W0)` without the 1/σ),
+        // for EVERY active point: ω₀ depends on σ wherever ρ is active, so
+        // gating this on σ would leave E_nl's σ-dependence out of V_nl.
+        p.dw0_dg = c_vv * s / (r * r * r * p.w0);
         p
     };
     let setup = map_rows(npts, setup_point);
@@ -1484,8 +1485,7 @@ struct DualSetup {
 /// derivatives along `(drho, dsigma)`: the same active set, pair set (dense
 /// below `CELL_LIST_MIN_PTS`, the `NLC_CUTOFF_BOHR` cell list above) and
 /// guards as [`vv10_internal`], so the tangent is the exact derivative of the
-/// V_nl the SCF uses (which is not exactly δE_nl/δρ; see the module tests).
-/// The active mask and the `σ > RHO_THRESH` branch are held at the reference.
+/// V_nl the SCF uses. The active mask is held at the reference.
 fn vv10_potential_tangent(
     grid: &[GridPoint],
     dens: &DensityGrid,
@@ -1525,11 +1525,7 @@ fn vv10_potential_tangent(
         let w0tmp = c_vv * (s / (r * r)).sq();
         let w0 = (w0tmp + pi43 * r).sqrt();
         let kp = k_vv * r.powf(1.0 / 6.0);
-        let dw0_dg = if s.v > RHO_THRESH {
-            w0tmp * r / (s * w0)
-        } else {
-            Dual::c(0.0)
-        };
+        let dw0_dg = Dual::c(c_vv) * s / (r * r * r * w0);
         DualSetup {
             w0,
             kp,
@@ -2242,6 +2238,48 @@ mod cutoff_tests {
                 );
             }
         }
+    }
+
+    /// `vsig` is ∂E_nl/∂σ (÷ w) at active points with σ < RHO_THRESH too:
+    /// ω₀ depends on σ at every active point, so a σ-gated ∂ω₀/∂σ leaves
+    /// that dependence out of V_nl (3.6e-6 relative in Tr[V_nl X] on
+    /// NH2/6-31G). Exact dense pair sum; direction δσ_g = σ_g on exactly
+    /// those points (relative, so none crosses a branch). The bar is ~20x
+    /// the measured Richardson-FD error (5.3e-7 at t = 1e-2); a gated vsig
+    /// gives relative error 1.
+    #[test]
+    fn vsig_is_the_sigma_derivative_at_low_gradient_points() {
+        let mol = Molecule::parse_xyz("2\n\nH 0 0 0\nH 0 0 0.74\n", 0, 1).unwrap();
+        let (params, grid, dens) = synthetic_density_on_grid(&mol, 20, 26);
+        let base = vv10_internal_cutoff(&grid, &dens, &params, None, Vv10Damping::None);
+        let low: Vec<usize> = (0..grid.len())
+            .filter(|&g| base.active[g] && dens.sigma[g] < RHO_THRESH && dens.sigma[g] > 0.0)
+            .collect();
+        assert!(low.len() >= 10, "{} active low-sigma points", low.len());
+        let e_at = |t: f64| {
+            let mut d = dens.clone();
+            for &g in &low {
+                d.sigma[g] *= 1.0 + t;
+            }
+            vv10_internal_cutoff(&grid, &d, &params, None, Vv10Damping::None).e_nl
+        };
+        let c = |h: f64| (e_at(h) - e_at(-h)) / (2.0 * h);
+        let h = 1e-2;
+        let fd = (4.0 * c(0.5 * h) - c(h)) / 3.0;
+        let an: f64 = low
+            .iter()
+            .map(|&g| grid[g].weight * base.vsig[g] * dens.sigma[g])
+            .sum();
+        eprintln!(
+            "{} points: fd {fd:.10e} an {an:.10e} rel {:.2e}",
+            low.len(),
+            (fd - an) / fd
+        );
+        assert!(fd.abs() > 1e-12, "E_nl must depend on sigma there: {fd:e}");
+        assert!(
+            (fd - an).abs() <= 1e-5 * fd.abs(),
+            "fd {fd:e} vs analytic {an:e}"
+        );
     }
 
     /// The anchor's complement: a cut INSIDE the molecule must actually drop
