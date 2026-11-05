@@ -50,9 +50,7 @@ undefined (for $\theta_0\ne\pi$, $E$ is a cone, not differentiable, in the
 perpendicular displacement). If $|\mathbf a\times\mathbf b|^2\le10^{-20}$ the
 code keeps the finite energy and adds no gradient for that angle, the same
 convention as the degenerate torsion (section 4.4). This is the symmetric
-subgradient, and agrees with OpenMM's reference angle kernel, which divides by
-a clamped $|\mathbf a\times\mathbf b|$ whose numerator vanishes at linear
-geometry. Pinned by `exactly_linear_valence_angle_gradient_is_finite_and_zero`
+subgradient (ferric's convention; not claimed to match any other code). Pinned by `exactly_linear_valence_angle_gradient_is_finite_and_zero`
 (`tests/terms_fd.rs`); near-linear angles (0.6 deg) still match central
 differences (`torsion_gradient_vs_fd_near_phi_0_pi_and_near_linear_angle`).
 
