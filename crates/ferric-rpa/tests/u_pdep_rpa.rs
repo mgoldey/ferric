@@ -785,6 +785,44 @@ fn assert_full_rank_solvers_agree(label: &str, s: &System, scf: &ferric_scf::Scf
         "{label}: Lanczos vs full-basis diagnostic {d_ldiag:.2e}"
     );
     assert!(d_ld <= 1e-10, "{label}: Lanczos vs Davidson {d_ld:.2e}");
+
+    // The full-rank energy is invariant to the static basis, so it cannot see
+    // the ω=0 matvec. The static spectrum and a truncated energy can: the
+    // two eigensolvers build ε̃_U(0) through independent closures.
+    let d_lam = rl
+        .eigenvalues_static
+        .iter()
+        .zip(&rd.eigenvalues_static)
+        .map(|(a, b)| (a - b).abs())
+        .fold(0.0f64, f64::max);
+    assert!(
+        d_lam <= 1e-8,
+        "{label}: static spectra differ by {d_lam:.2e}"
+    );
+    let mut tl = cfg_l.clone();
+    tl.trunc_thresh = 1e-2;
+    let mut td = cfg_d.clone();
+    td.trunc_thresh = 1e-2;
+    let rtl = run_u_pdep_rpa(&s.mol, &s.obs, &s.dfbs, op, scf, &tl).unwrap();
+    let rtd = run_u_pdep_rpa(&s.mol, &s.obs, &s.dfbs, op, scf, &td).unwrap();
+    assert!(
+        rtl.n_eigenpotentials < s.dfbs.nbasis(),
+        "{label}: truncation inactive"
+    );
+    assert_eq!(
+        rtl.n_eigenpotentials, rtd.n_eigenpotentials,
+        "{label}: kept modes"
+    );
+    let d_t = (rtl.e_rpa - rtd.e_rpa).abs();
+    eprintln!(
+        "{label}: |dλ(0)| {d_lam:.2e}; trunc 1e-2 keeps {}/{} modes, |L-D| {d_t:.2e}",
+        rtl.n_eigenpotentials,
+        s.dfbs.nbasis()
+    );
+    assert!(
+        d_t <= 1e-10,
+        "{label}: truncated Lanczos vs Davidson {d_t:.2e}"
+    );
 }
 
 #[test]
