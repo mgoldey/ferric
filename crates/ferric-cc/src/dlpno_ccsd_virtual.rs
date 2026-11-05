@@ -14,7 +14,8 @@
 //! # Scope, stated up front — what this does NOT do
 //!
 //! **It does not rewrite the CCSD residual in the PNO basis.** The iteration in
-//! [`crate::ccsd_closed_shell`] is 74 `einsum!` contractions over *shared*
+//! [`crate::ccsd_closed_shell`] is 59 `einsum!` contractions in the residual
+//! body (plus the vvvv ladder helpers) over *shared*
 //! `oooo/ovov/oovv/ovvo/ovoo/ovvv/vvvv` blocks. A per-pair virtual basis means
 //! every one of those has to be re-derived in a basis that differs per pair,
 //! with pair-pair overlap matrices `S^{ij,kl} = Q_ijᵀ Q_kl` inserted wherever a

@@ -6,7 +6,7 @@
 //! screens which occupied pairs `(i,j)` carry amplitudes, which attacks the same
 //! n_o-order factor that [`ferric_mp2::pair_domains`] attacks for LinLCCD(hh).
 //!
-//! It does **not** yet rotate the t1/t2 amplitudes and all ~40 residual
+//! It does **not** yet rotate the t1/t2 amplitudes and all 59 residual
 //! contractions into a per-pair PNO virtual basis. That is the other half, and it
 //! is a much larger change: `ccsd_closed_shell.rs`'s residual is a tightly coupled
 //! set of contractions over shared `oooo/ovov/oovv/ovvo/ovoo/ovvv/vvvv` blocks, so
