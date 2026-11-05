@@ -31,9 +31,16 @@ pub(crate) fn zvec_trace() -> bool {
 
 /// Solve the Z-vector (CPHF) equation for the RI-MP2 orbital response.
 ///
-/// Returns `(z, imat)` where `z` is the (nvir, nocc) occupied-virtual block of the
-/// relaxed density in MO basis, and `imat` is the (nmo, nmo) RI-MP2 Lagrangian
-/// matrix `build_imat_ri` (needed downstream for the overlap/Pulay term).
+/// Returns `(z, imat)` where `z` is the (nvir, nocc_total) virtual-occupied block
+/// of the relaxed density in MO basis — over ALL occupied orbitals, frozen core
+/// included — and `imat` is the (nmo, nmo) RI-MP2 Lagrangian matrix
+/// `build_imat_ri` (needed downstream for the overlap/Pulay term).
+///
+/// With a frozen core the correlation density also carries the core–active
+/// block [`frozen_core_block`] (PySCF `grad/mp2.py` `dco`), which enters the
+/// `vhf` term of `Xvo`; the CPHF then rotates every occupied orbital, core
+/// included, into the virtuals. Without a frozen core both reduce to the
+/// all-electron equations.
 ///
 /// The right-hand side is PySCF's `Xvo` (`grad/mp2.py::grad_elec` lines 138-140):
 /// `Xvo = C_vir^T · vhf · C_occ + Imat[occ,vir]^T − Imat[vir,occ]`, with
@@ -84,7 +91,14 @@ pub fn solve_zvector(
     // Unrelaxed correlation density (MO): doo+doo^T on occ-occ, dvv+dvv^T on
     // vir-vir. inter.p_oo == PySCF doo, inter.p_vv == PySCF dvv (see
     // build_mp2_density / rimp2 doc: doo returned negated, matching PySCF).
+    let dco = frozen_core_block(&imat, eps, &orb)?;
     let mut dm1mo_corr = Array2::<f64>::zeros((nmo, nmo));
+    for k in 0..first_occ {
+        for i in 0..nocc {
+            dm1mo_corr[(k, first_occ + i)] = dco[(k, i)];
+            dm1mo_corr[(first_occ + i, k)] = dco[(k, i)];
+        }
+    }
     for i in 0..nocc {
         let i_mo = first_occ + i;
         for j in 0..nocc {
@@ -120,19 +134,21 @@ pub fn solve_zvector(
     // returned `dm1[vir,occ] = z` has the opposite sign of the naive Xvo/Δε).
     // ferric's solve loop below uses `(ε_a−ε_i) z + A·z = rhs`, so `rhs = −Xvo`
     // reproduces PySCF's z element-for-element (verified against pyscf grad/mp2).
-    let mut rhs = Array2::<f64>::zeros((nvir, nocc));
+    // The response spans every occupied orbital (core included): `zorb`.
+    let zorb = OrbitalSpace::new(nocc_total, nvir, nocc_total, 0);
+    let mut rhs = Array2::<f64>::zeros((nvir, nocc_total));
     for a in 0..nvir {
         let a_mo = nocc_total + a;
-        for i in 0..nocc {
-            let i_mo = first_occ + i;
-            rhs[(a, i)] = -(veff_corr_mo[(a_mo, i_mo)] + imat[(i_mo, a_mo)] - imat[(a_mo, i_mo)]);
+        for i_mo in 0..nocc_total {
+            rhs[(a, i_mo)] =
+                -(veff_corr_mo[(a_mo, i_mo)] + imat[(i_mo, a_mo)] - imat[(a_mo, i_mo)]);
         }
     }
 
-    let mut z = Array2::zeros((nvir, nocc));
+    let mut z = Array2::zeros((nvir, nocc_total));
     for a in 0..nvir {
-        for i in 0..nocc {
-            let denom = eps[nocc_total + a] - eps[first_occ + i];
+        for i in 0..nocc_total {
+            let denom = eps[nocc_total + a] - eps[i];
             if denom.abs() > 1e-12 {
                 z[(a, i)] = rhs[(a, i)] / denom;
             }
@@ -155,13 +171,13 @@ pub fn solve_zvector(
         // fvind `2·get_veff(D^z+D^z†) = 2J−K` (verified numerically: the ratio is
         // 0.5). The MP2 Z-vector Hessian is `Δε·z + (2J−K)·z`, so the matvec must be
         // scaled by ½ here (the same ½ as `cpks_polar::solve_cphf_cg`).
-        let az = 0.5 * &compute_az_product(c, &z, prep, bounds, &orb, &pool, budget_bytes)?;
+        let az = 0.5 * &compute_az_product(c, &z, prep, bounds, &zorb, &pool, budget_bytes)?;
 
-        let mut residual = Array2::zeros((nvir, nocc));
+        let mut residual = Array2::zeros((nvir, nocc_total));
         let mut max_resid = 0.0f64;
         for a in 0..nvir {
-            for i in 0..nocc {
-                let denom = eps[nocc_total + a] - eps[first_occ + i];
+            for i in 0..nocc_total {
+                let denom = eps[nocc_total + a] - eps[i];
                 residual[(a, i)] = rhs[(a, i)] - denom * z[(a, i)] - az[(a, i)];
                 max_resid = max_resid.max(residual[(a, i)].abs());
             }
@@ -175,10 +191,10 @@ pub fn solve_zvector(
             return Ok((z, imat));
         }
 
-        let mut z_new = Array2::zeros((nvir, nocc));
+        let mut z_new = Array2::zeros((nvir, nocc_total));
         for a in 0..nvir {
-            for i in 0..nocc {
-                let denom = eps[nocc_total + a] - eps[first_occ + i];
+            for i in 0..nocc_total {
+                let denom = eps[nocc_total + a] - eps[i];
                 if denom.abs() > 1e-12 {
                     z_new[(a, i)] = (rhs[(a, i)] - az[(a, i)]) / denom;
                 }
@@ -199,6 +215,37 @@ pub fn solve_zvector(
     }
 
     Ok((z, imat))
+}
+
+/// Frozen-core–active block of the relaxed MP2 1-PDM, shape (first_occ, nocc):
+///
+/// `D_{kI} = Imat[k, I] / (ε_k − ε_I)`, k frozen core, I active occupied
+/// (PySCF `grad/mp2.py` `dco`). The MP2 energy is not stationary under
+/// core–active rotations, and because both are occupied the response is
+/// diagonal: it needs no CPHF. Empty when nothing is frozen.
+pub(crate) fn frozen_core_block(
+    imat: &Array2<f64>,
+    eps: &[f64],
+    orb: &OrbitalSpace,
+) -> Result<Array2<f64>, FerricError> {
+    let OrbitalSpace {
+        nocc, first_occ, ..
+    } = *orb;
+    let mut dco = Array2::<f64>::zeros((first_occ, nocc));
+    for k in 0..first_occ {
+        for i in 0..nocc {
+            let i_mo = first_occ + i;
+            let denom = eps[k] - eps[i_mo];
+            if denom.abs() < 1e-8 {
+                return Err(FerricError::General(format!(
+                    "frozen core: core orbital {k} and active orbital {i_mo} are degenerate \
+                     (ε gap {denom:.1e}); the frozen-core gradient is undefined"
+                )));
+            }
+            dco[(k, i)] = imat[(k, i_mo)] / denom;
+        }
+    }
+    Ok(dco)
 }
 
 /// Build the MP2 Lagrangian L_ai (RHS of the Z-vector equation).
@@ -382,9 +429,10 @@ pub(crate) fn build_x_ov(
 ///
 /// The factor `2` reflects the closed-shell 2-PDM weight `Γ2 = 2·(2t−t^T)`
 /// (PySCF `part_dm2 = 4·t − 2·t^T`, lines 61-62). `Imat` is deliberately NOT
-/// symmetric (PySCF: "matrix im1 is not hermitian", line 173). Only occupied and
-/// virtual columns are filled (frozen-core rows/cols stay zero — frozen-core
-/// gradients are out of scope here, matching the rest of this pipeline).
+/// symmetric (PySCF: "matrix im1 is not hermitian", line 173). Only active
+/// occupied and virtual columns are filled; frozen-core columns are zero (the
+/// core is absent from Γ2), frozen-core ROWS are not and feed
+/// [`frozen_core_block`] and the core rows of `Xvo`.
 ///
 /// Verified element-by-element against a brute-force conventional-Imat build (RI
 /// integrals + explicit 4-index `Γ2_AO` contraction) in

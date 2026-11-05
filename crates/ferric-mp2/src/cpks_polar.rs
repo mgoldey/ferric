@@ -841,6 +841,13 @@ pub fn static_relaxed_density_ao(
     rhf: &ScfResult,
     mp2_config: &RiMp2Config,
 ) -> Result<Array2<f64>, FerricError> {
+    if mp2_config.frozen_core > 0 {
+        return Err(FerricError::General(format!(
+            "{}: frozen_core = {} is not supported (no core–active orbital-relaxation \
+             block); use frozen_core = 0",
+            "static_relaxed_density_ao", mp2_config.frozen_core
+        )));
+    }
     let inter = compute_mp2_intermediates(mol, obs, dfbs, op, rhf, mp2_config)?;
     let (nocc, nvir, first_occ, nocc_total) =
         (inter.nocc, inter.nvir, inter.first_occ, inter.nocc_total);
@@ -1082,6 +1089,13 @@ pub fn analytic_alpha_relaxed(
     rhf: &ScfResult,
     mp2_config: &RiMp2Config,
 ) -> Result<Mp2Polarizability, FerricError> {
+    if mp2_config.frozen_core > 0 {
+        return Err(FerricError::General(format!(
+            "{}: frozen_core = {} is not supported (no core–active orbital-relaxation \
+             block); use frozen_core = 0",
+            "analytic_alpha_relaxed", mp2_config.frozen_core
+        )));
+    }
     let inter = compute_mp2_intermediates(mol, obs, dfbs, op, rhf, mp2_config)?;
     let (nocc, nvir) = (inter.nocc, inter.nvir);
     let (first_occ, nocc_total) = (inter.first_occ, inter.nocc_total);

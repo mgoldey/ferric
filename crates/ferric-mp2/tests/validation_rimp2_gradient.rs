@@ -10,9 +10,11 @@
 //! # What is compared
 //!
 //! ferric's analytic RI-MP2 nuclear gradient (`rimp2_gradient_analytical`,
-//! closed-shell RHF reference, all electrons correlated) against two
-//! independent references, on three systems whose geometries are distorted so
-//! that every Cartesian gradient component is nonzero:
+//! closed-shell RHF reference, all electrons correlated, and with ORCA's
+//! frozen core) against two independent references, on three systems whose
+//! geometries are distorted so that every Cartesian gradient component is
+//! nonzero. The frozen-core gradient is compared with ORCA only (PySCF FD
+//! covers the all-electron case):
 //!
 //! | system | basis | aux (/C) |
 //! |---|---|---|
@@ -330,9 +332,39 @@ fn check_system(system: &str, basis_name: &str, aux_name: &str) {
     check_grad(&ctx, "MP2 grad vs PySCF FD", &g, &g_fd, TOL_G_FD);
     check_grad(&ctx, "MP2 grad vs ORCA", &g, &g_orca, TOL_G_ORCA);
 
-    // ---- negative controls ----
+    // ---- frozen-core RI-MP2 gradient vs ORCA (same aux basis) ----
+    let n_frozen = r
+        .pointer("/orca_frozen_core/n_frozen")
+        .and_then(Value::as_u64)
+        .unwrap_or_else(|| panic!("{ctx}: /orca_frozen_core/n_frozen missing"))
+        as usize;
+    let fc_cfg = RiMp2Config {
+        frozen_core: n_frozen,
+        ..Default::default()
+    };
+    let mp2_fc = ri_mp2(&mol, &obs, &dfbs, op, &rhf, &fc_cfg).unwrap();
+    check_close(
+        &ctx,
+        "E_corr(fc) vs ORCA",
+        mp2_fc.mp2_corr,
+        num(&r, "/orca_frozen_core/e_corr", &ctx),
+        TOL_E_CORR,
+    );
+    let g_fc_ferric =
+        rimp2_gradient_analytical(&mol, &obs, &dfbs, op, &bounds, &rhf, &fc_cfg, None)
+            .unwrap_or_else(|e| panic!("{ctx}: frozen-core gradient failed: {e:?}"));
     let g_fc = grad(&r, "/orca_frozen_core/gradient", natm, &ctx);
+    check_grad(
+        &ctx,
+        "MP2(fc) grad vs ORCA",
+        &g_fc_ferric,
+        &g_fc,
+        TOL_G_ORCA,
+    );
+
+    // ---- negative controls ----
     check_miss(&ctx, "MP2 vs ORCA frozen-core", &g, &g_fc);
+    check_miss(&ctx, "MP2(fc) vs ORCA all-e", &g_fc_ferric, &g_orca);
     check_miss(&ctx, "MP2 vs PySCF RHF grad", &g, &g_rhf_ref);
     check_miss(&ctx, "ferric RHF vs MP2 ref", &g_rhf, &g_fd);
 }

@@ -126,6 +126,12 @@ pub fn rimp2_gradient_fd(
 ///    `−2·(V^{-1}b_ov)·y_ov^T·dV` (the extra 2 vs 3-center from the metric
 ///    contracting both fitting legs).
 ///
+/// **Frozen core** (`config.frozen_core > 0`): the correlation density gains the
+/// core–active block `D_{kI} = Imat[k,I]/(ε_k − ε_I)`
+/// (`crate::zvector::frozen_core_block`, PySCF lines 125-129), and the
+/// Z-vector, `zeta` and `im1` span every occupied orbital, core included
+/// (PySCF lines 137-145).
+///
 /// Cross-checked block-by-block against `pyscf/grad/mp2.py::grad_elec`: blocks 1-5
 /// match to ≤1e-4, block 6 to PySCF's `part_dm2·int2e_ip1`, for H2/cc-pVDZ AND
 /// H2O/STO-3G. Both H2 (nocc=1) and H2O (nocc>1) are exact overall (~1e-9 vs FD).
@@ -202,12 +208,20 @@ fn mp2_relaxed_lagrangian_gradient(
             dm1mo[(a_mo, b_mo)] = inter.p_vv[(a, b)] + inter.p_vv[(b, a)];
         }
     }
+    // Frozen core–active block (PySCF lines 125-129; empty without a frozen core).
+    let dco = crate::zvector::frozen_core_block(imat, eps, &inter.orbital_space())?;
+    for k in 0..first_occ {
+        for i in 0..nocc {
+            dm1mo[(k, first_occ + i)] = dco[(k, i)];
+            dm1mo[(first_occ + i, k)] = dco[(k, i)];
+        }
+    }
+    // z spans every occupied orbital, frozen core included.
     for a in 0..nvir {
         let a_mo = nocc_total + a;
-        for i in 0..nocc {
-            let i_mo = first_occ + i;
-            dm1mo[(a_mo, i_mo)] = z[(a, i)];
-            dm1mo[(i_mo, a_mo)] = z[(a, i)];
+        for i_mo in 0..nocc_total {
+            dm1mo[(a_mo, i_mo)] = z[(a, i_mo)];
+            dm1mo[(i_mo, a_mo)] = z[(a, i_mo)];
         }
     }
 
@@ -223,8 +237,7 @@ fn mp2_relaxed_lagrangian_gradient(
     let mut imat_pulay = imat.clone();
     for a in 0..nvir {
         let a_mo = nocc_total + a;
-        for i in 0..nocc {
-            let i_mo = first_occ + i;
+        for i_mo in 0..nocc_total {
             imat_pulay[(a_mo, i_mo)] = imat[(i_mo, a_mo)];
         }
     }
@@ -244,8 +257,7 @@ fn mp2_relaxed_lagrangian_gradient(
     }
     for a in 0..nvir {
         let a_mo = nocc_total + a;
-        for i in 0..nocc {
-            let i_mo = first_occ + i;
+        for i_mo in 0..nocc_total {
             zeta_mo[(a_mo, i_mo)] = eps[i_mo] * dm1mo[(a_mo, i_mo)];
             zeta_mo[(i_mo, a_mo)] = eps[i_mo] * dm1mo[(i_mo, a_mo)];
         }
@@ -1178,6 +1190,51 @@ mod tests {
             max_diff < 1e-6,
             "H2O analytical vs FD max diff = {:.2e} (expected < 1e-6)",
             max_diff
+        );
+    }
+
+    /// Frozen-core analytic gradient vs FD of ferric's own frozen-core RI-MP2
+    /// energy, H2O/STO-3G, O 1s frozen. Without the core–active density block
+    /// and the core rows of the Z-vector the miss is ~1e-4 Ha/Bohr (H2O/cc-pVDZ:
+    /// 9.8e-5); with them it is the FD floor of the all-electron test (<1e-6).
+    #[test]
+    fn test_analytical_vs_fd_h2o_frozen_core() {
+        let xyz = "3\nwater\nO 0.000000 0.000000 0.117790\nH 0.000000 0.755453 -0.471161\nH 0.000000 -0.755453 -0.471161\n";
+        let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
+        let obs_bs = basis::bundled("sto-3g").unwrap();
+        let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
+        let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
+        let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+        let rhf = solve_rhf(
+            &ferric_core::parallel::ParallelContext::default(),
+            &mol,
+            &obs,
+            op,
+            &bounds,
+            &RhfConfig {
+                density_conv: 1e-9,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let config = RiMp2Config {
+            frozen_core: 1,
+            ..Default::default()
+        };
+        let analytical =
+            rimp2_gradient_analytical(&mol, &obs, &dfbs, op, &bounds, &rhf, &config, None).unwrap();
+        let fd = rimp2_gradient_fd(&mol, &obs_bs, &aux_bs, op, &config, 1e-4).unwrap();
+        let max_diff = (&analytical - &fd)
+            .iter()
+            .map(|v| v.abs())
+            .fold(0.0f64, f64::max);
+        eprintln!("H2O/STO-3G frozen-core analytic vs FD: max |d| = {max_diff:.2e}");
+        eprintln!("  analytic {analytical:?}\n  fd       {fd:?}");
+        assert!(
+            max_diff < 1e-6,
+            "H2O frozen-core analytical vs FD max diff = {max_diff:.2e} (expected < 1e-6)"
         );
     }
 

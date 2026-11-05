@@ -265,43 +265,50 @@ $t_{ij}^{ab} = (ia|jb)/D_{ij}^{ab}$:
 $$ P_{ij} = -\sum_{kab} t_{ik}^{ab}\left(2t_{jk}^{ab} - t_{jk}^{ba}\right), \qquad
 P_{ab} = \sum_{ijc} t_{ij}^{ac}\left(2t_{ij}^{bc} - t_{ij}^{cb}\right). $$
 
-**Lagrangian matrix** (`zvector.rs:393`), with
-$x^P_{ia} = \sum_{jb}(2t_{ij}^{ab} - t_{ij}^{ba})B^P_{jb}$ (`zvector.rs:335`)
+**Lagrangian matrix** (`zvector.rs:440`), with
+$x^P_{ia} = \sum_{jb}(2t_{ij}^{ab} - t_{ij}^{ba})B^P_{jb}$ (`zvector.rs:381`)
 and the full-MO factor $B^P_{pq}$:
 
 $$ I_{qi} = -2\sum_{Pa} x^P_{ia}B^P_{qa}, \qquad I_{qa} = -2\sum_{Pi} x^P_{ia}B^P_{qi}. $$
 
-Frozen-core rows and columns stay zero (`zvector.rs:387`).
+Frozen-core columns are zero; frozen-core rows are not.
 
-**Z-vector** (`zvector.rs:58` `solve_zvector`). The right-hand side follows
+**Frozen core.** With core orbitals $k$ frozen, the correlation density gains
+the core–active block (`zvector.rs:226` `frozen_core_block`, PySCF `dco`)
+
+$$ D^{\mathrm{corr}}_{kI} = D^{\mathrm{corr}}_{Ik} = \frac{I_{kI}}{\varepsilon_k - \varepsilon_I}, $$
+
+which enters $D^{\mathrm{corr}}$ below, and $X$, $z$, the $\varepsilon$-weighted
+density and the $I$ overlap term span every occupied orbital, core included.
+
+**Z-vector** (`zvector.rs:65` `solve_zvector`). The right-hand side follows
 PySCF `grad/mp2.py`:
 
-$$ X_{ai} = \left[C^{\mathsf T}(2J - K)[D^{\mathrm{corr}}]\,C\right]_{ai} + I_{ia} - I_{ai}, \qquad D^{\mathrm{corr}} = C\,(P + P^{\mathsf T})\,C^{\mathsf T}, $$
+$$ X_{ai} = \left[C^{\mathsf T}(2J - K)[D^{\mathrm{corr}}]\,C\right]_{ai} + I_{ia} - I_{ai}, \qquad D^{\mathrm{corr}} = C\,(P + P^{\mathsf T} + D_{kI})\,C^{\mathsf T}, $$
 
 and the CPHF equation is
 
 $$ (\varepsilon_a - \varepsilon_i)\,z_{ai} + \sum_{bj}\left[4(ai|bj) - (ab|ij) - (aj|bi)\right] z_{bj} = -X_{ai}, $$
 
 solved by Jacobi-preconditioned DIIS to $\max|r| < 10^{-8}$. The coupling is
-$\tfrac12$ of `compute_az_product` (`zvector.rs:159`), which returns the vo
+$\tfrac12$ of `compute_az_product` (`zvector.rs:174`), which returns the vo
 block of $(4J - K - K^{\mathsf T})[D^z]$ with
 $D^z = \sum_{ai}z_{ai}(C_aC_i^{\mathsf T} + C_iC_a^{\mathsf T})$, twice the
 bracket above **[check 5]**.
 
-**Relaxed density** (`zvector.rs:519`): $2\delta_{ij} + P_{ij}$ on the
+**Relaxed density** (`zvector.rs:566`): $2\delta_{ij} + P_{ij}$ on the
 occupied block, $P_{ab}$ on the virtual block, $z_{ai}$ on both off-diagonal
 blocks, for whatever $P$ the caller passes. The density whose dipole is
 $-\partial E/\partial F$ takes $P + P^{\mathsf T}$.
 
-**Gradient** (`gradient.rs:132` `rimp2_gradient_analytical`): overlap terms
+**Gradient** (`gradient.rs:138` `rimp2_gradient_analytical`): overlap terms
 from $I$, the orbital-energy-weighted relaxed density and the
 $J - \tfrac12K$ potential of the correlation density; the core-Hamiltonian
 term with the full relaxed density; the bilinear two-electron term
 $\Gamma(D^{\mathrm{HF}}, D^{\mathrm{HF}} + 2D^{\mathrm{corr}})$; and the RI
 3-centre/2-centre response with the closed-shell 2-PDM weight
 $\Gamma_2 = 2(2t - t^{\mathsf T})$ (`gradient.rs:93`–`:127` lists each block
-with its PySCF line). Frozen core enters only through the active-orbital
-ranges: there is no frozen–active orbital-response block.
+with its PySCF line).
 
 ## 10. Static polarizability
 
