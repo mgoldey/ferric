@@ -253,14 +253,16 @@ def test_unsupported_functionals_raise(functional, what):
             method(d)
 
 
-def test_pruned_grid_and_bad_densities_raise():
+def test_pruned_grid_is_supported_and_bad_densities_raise():
     _, _, ints = _ints(WATER, "sto-3g")
     n = ints.nao
     pruned = ints.xc_functional("PBE", grid_prune="nwchem")
-    with pytest.raises(ValueError, match="pruned"):
-        pruned.hess(np.eye(n))
-    with pytest.raises(ValueError, match="pruned"):
-        pruned.vxc_deriv(np.eye(n))
+    # A pruned grid is supported: every point still rides its home atom
+    # (48225518c made nwchem-radial pruning the KS default).
+    h = pruned.hess(np.eye(n))
+    assert h.shape == (9, 9) and np.all(np.isfinite(h))
+    v = pruned.vxc_deriv(np.eye(n))
+    assert v.shape == (9, n, n) and np.all(np.isfinite(v))
     xc = ints.xc_functional("PBE")
     with pytest.raises(ValueError, match="shape"):
         xc.hess(np.eye(n + 1))
