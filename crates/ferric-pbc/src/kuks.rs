@@ -76,7 +76,7 @@ use crate::uhf::{nocc_ab, EwaldStart, SpinGapReport};
 use ferric_core::FerricError;
 use ferric_dft::density_on_grid::UksDensityGrid;
 use ferric_dft::libxc::{xc_def_from_name_nspin, XcDef};
-use ferric_dft::vxc::{polarized_kernel, PolarizedKernel, DENSITY_FLOOR};
+use ferric_dft::vxc::{above_density_floor, polarized_kernel, PolarizedKernel};
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ndarray::{Array1, Array2, Axis};
 use num_complex::Complex64;
@@ -443,7 +443,13 @@ impl KPeriodicXcPolarized {
                 &dens.grad_a,
             )
         };
-        let gated = |g: usize, v: f64| if rho[g] > DENSITY_FLOOR { v } else { 0.0 };
+        let gated = |g: usize, v: f64| {
+            if above_density_floor(rho[g], kern.floor) {
+                v
+            } else {
+                0.0
+            }
+        };
         let w = |g: usize| c.points[g].weight;
         let a: Vec<f64> = (0..np).map(|g| gated(g, w(g) * vrho[g])).collect();
         let f_ax: Vec<Vec<f64>> = if x.gga {

@@ -40,7 +40,7 @@
 //! two spins, each with its own `v_ρσ`, `c^σ` (the `v_σαβ` cross term feeds
 //! the OTHER spin's gradient into `c^σ`). Gates are the energy's
 //! ([`crate::kuks::KPeriodicXcPolarized`]): spin `σ`'s `v_ρσ` and `c^σ` are
-//! zeroed where `ρ_σ ≤ DENSITY_FLOOR` (each spin on its own density).
+//! zeroed where `ρ_σ` is at or below the functional's `DensityFloor` (each spin on its own density).
 //! X3 (`dE/dR_{H(g)} −= Σ_A a_{g,A}`) and X4 (`Σ_g (ρ_α+ρ_β) ε dw_g/dR_A`,
 //! k-independent `crate::dft::build_response_grid`) are spin-summed
 //! quantities and are unchanged. A uniform grid has neither.
@@ -63,7 +63,7 @@
 //! ```
 //!
 //! (the `½` of `τ` cancels the `μ↔ν` doubling: half the density-like `−2`).
-//! `v_τσ` is gated on `ρ_σ > DENSITY_FLOOR` like the energy's `V^τ_σ`. `a^τ`
+//! `v_τσ` is gated on `ρ_σ` above the functional's `DensityFloor` like the energy's `V^τ_σ`. `a^τ`
 //! joins `a` in X1 and therefore in the point motion X3; X4 carries `ε` with
 //! `(τ_α, τ_β)` unchanged; the Fock guard rebuilds `F_σ` with `V^τ_σ`. No new
 //! derivative algebra: it is the closed-shell kernel per spin (which is why
@@ -247,7 +247,7 @@ use ferric_core::FerricError;
 use ferric_dft::density_on_grid::UksDensityGrid;
 use ferric_dft::grid::GridPoint;
 use ferric_dft::libxc::{xc_def_from_name_nspin, FunctionalFamily, XcDef};
-use ferric_dft::vxc::{polarized_kernel, PolarizedKernel, DENSITY_FLOOR};
+use ferric_dft::vxc::{above_density_floor, polarized_kernel, PolarizedKernel};
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ndarray::{Array1, Array2, Array3, Axis};
 use num_complex::Complex64 as C64;
@@ -705,7 +705,7 @@ pub(crate) fn spin_kernel(
             &dens.grad_a,
         )
     };
-    let live = |g: usize| rho[g] > DENSITY_FLOOR;
+    let live = |g: usize| above_density_floor(rho[g], kern.floor);
     let vr = (0..np)
         .map(|g| if live(g) { vrho[g] } else { 0.0 })
         .collect();

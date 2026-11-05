@@ -26,7 +26,7 @@
 //!
 //! All three differentiate V_xc as `vxc.rs` builds it, density floor
 //! included: δV^σ is zero at points where the reference ρ_σ fails
-//! [`above_density_floor`] (`lda_and_gga_fxc_are_the_derivative_of_floored_production_vxc`).
+//! [`above_density_floor`](crate::vxc::above_density_floor) (`lda_and_gga_fxc_are_the_derivative_of_floored_production_vxc`).
 //!
 //! The GGA response is validated by a finite-difference cross-check against the
 //! (already-validated) first-derivative GGA V_xc builder in `vxc.rs` — see the
@@ -36,7 +36,7 @@ use crate::ao_grid::eval_basis_and_grad_on_points;
 use crate::density_on_grid::{eval_density_closed, eval_density_uks, eval_tau_uks};
 use crate::grid::{build_atomic_grid_pruned, AtomicGridConfig, GridPoint};
 use crate::libxc::{FunctionalFamily, XcDef};
-use crate::vxc::{above_density_floor, scale_columns_into, VxcScratch};
+use crate::vxc::{above_density_floor, scale_columns_into, DensityFloor, VxcScratch};
 use ferric_core::basis::BasisSet;
 use ferric_core::mol::Molecule;
 use ferric_integrals::blas_threads::{opt_in_blas_threads, with_blas_threads};
@@ -47,8 +47,10 @@ use std::sync::Mutex;
 /// ([`above_density_floor`]): production V^σ drops every term at a point
 /// where the reference ρ_σ is at or below the floor, so its derivative there
 /// is zero. All three kernels mask with this.
-fn live_mask<'a>(rho: impl IntoIterator<Item = &'a f64>) -> Vec<bool> {
-    rho.into_iter().map(|&r| above_density_floor(r)).collect()
+fn live_mask<'a>(rho: impl IntoIterator<Item = &'a f64>, floor: DensityFloor) -> Vec<bool> {
+    rho.into_iter()
+        .map(|&r| above_density_floor(r, floor))
+        .collect()
 }
 
 /// Closed-shell (restricted-reference) screen for a spin-resolved kernel built
@@ -56,12 +58,12 @@ fn live_mask<'a>(rho: impl IntoIterator<Item = &'a f64>) -> Vec<bool> {
 /// (`vxc.rs`, `above_density_floor(ρ)`), so both spin blocks of the kernel are
 /// live exactly where ρ_α + ρ_β is above the floor. Gating each spin on ρ/2
 /// instead would drop the band ρ ∈ (floor, 2·floor] that V_xc keeps.
-fn live_mask_restricted(rho_a: &[f64], rho_b: &[f64]) -> [Vec<bool>; 2] {
+fn live_mask_restricted(rho_a: &[f64], rho_b: &[f64], floor: DensityFloor) -> [Vec<bool>; 2] {
     assert_eq!(rho_a.len(), rho_b.len());
     let m: Vec<bool> = rho_a
         .iter()
         .zip(rho_b)
-        .map(|(&a, &b)| above_density_floor(a + b))
+        .map(|(&a, &b)| above_density_floor(a + b, floor))
         .collect();
     [m.clone(), m]
 }
@@ -152,7 +154,8 @@ impl LdaFxcKernel {
         d_delta_a: &Array2<f64>,
         d_delta_b: &Array2<f64>,
     ) -> (Array2<f64>, Array2<f64>) {
-        let live = [live_mask(rho_a0), live_mask(rho_b0)];
+        let floor = DensityFloor::for_xc(&self.xc);
+        let live = [live_mask(rho_a0, floor), live_mask(rho_b0, floor)];
         self.apply_with_mask(rho_a0, rho_b0, &live, d_delta_a, d_delta_b)
     }
 
@@ -367,7 +370,11 @@ impl GgaFxcKernel {
         d_delta_a: &Array2<f64>,
         d_delta_b: &Array2<f64>,
     ) -> (Array2<f64>, Array2<f64>) {
-        let live = [live_mask(&ref_dens.rho_a), live_mask(&ref_dens.rho_b)];
+        let floor = DensityFloor::for_xc(&self.xc);
+        let live = [
+            live_mask(&ref_dens.rho_a, floor),
+            live_mask(&ref_dens.rho_b, floor),
+        ];
         self.apply_with_mask(ref_dens, &live, d_delta_a, d_delta_b)
     }
 
@@ -383,6 +390,7 @@ impl GgaFxcKernel {
         let live = live_mask_restricted(
             ref_dens.rho_a.as_slice().expect("contiguous"),
             ref_dens.rho_b.as_slice().expect("contiguous"),
+            DensityFloor::for_xc(&self.xc),
         );
         self.apply_with_mask(ref_dens, &live, d_delta_a, d_delta_b)
     }
@@ -890,7 +898,7 @@ pub struct MggaFxcReference {
     grad_b: Array2<f64>,
     hess: Vec<PointHessian>,
     vsigma: Vec<[f64; 3]>,
-    /// `ρ_σ > DENSITY_FLOOR` per spin: production V^σ drops every term at a
+    /// `ρ_σ` above the functional's `DensityFloor` per spin: production V^σ drops every term at a
     /// point below it, so its derivative there is zero.
     live: [Vec<bool>; 2],
 }
@@ -899,7 +907,7 @@ pub struct MggaFxcReference {
 /// (SCAN / r2SCAN / TPSS, as ferric's SCF evaluates them: no Laplacian).
 ///
 /// It differentiates the polarized semilocal V_xc of `vxc.rs` as implemented,
-/// INCLUDING its per-spin `DENSITY_FLOOR` mask: δV^σ is zero at points where
+/// INCLUDING its per-spin `DensityFloor` mask: δV^σ is zero at points where
 /// the reference ρ_σ ≤ 1e-10. LDA and GGA sub-functionals are accepted too
 /// (their τ blocks are zero), so a mixed definition evaluates correctly; that
 /// is also the exactness anchor (`mgga_kernel_on_gga_functional_equals_gga_kernel`).
@@ -988,13 +996,15 @@ impl MggaFxcKernel {
             tau[2 * g + 1] = tau_b[g];
         }
         let (hess, vsigma) = point_hessians(&self.xc, &rho, &sigma, &tau)?;
+        let floor = DensityFloor::for_xc(&self.xc);
         let live = if restricted {
             live_mask_restricted(
                 dens.rho_a.as_slice().expect("contiguous"),
                 dens.rho_b.as_slice().expect("contiguous"),
+                floor,
             )
         } else {
-            [live_mask(&dens.rho_a), live_mask(&dens.rho_b)]
+            [live_mask(&dens.rho_a, floor), live_mask(&dens.rho_b, floor)]
         };
         Ok(MggaFxcReference {
             grad_a: dens.grad_a,
@@ -1128,7 +1138,7 @@ fn backproject_loop_reference(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::vxc::DENSITY_FLOOR;
+    use crate::vxc::DensityFloor;
 
     /// Deterministic xorshift64 PRNG — no external `rand` dependency in the
     /// workspace, and we only need reproducible values in [-1, 1).
@@ -1216,7 +1226,7 @@ mod tests {
     /// Floor-free polarized GGA V_xc oracle for the FD check.
     ///
     /// This reproduces `vxc.rs::semilocal_vxc_polarized`'s math EXACTLY but
-    /// WITHOUT its `DENSITY_FLOOR` masking. At this test's perturbation size
+    /// WITHOUT its `DensityFloor` masking. At this test's perturbation size
     /// the floor flips on/off between the ±ε evaluations at tail points,
     /// injecting discontinuity noise into the central difference, so this
     /// test checks the kernel's semilocal algebra against a floor-free oracle.
@@ -1405,7 +1415,7 @@ mod tests {
         // the clean quadratic (truncation-dominated) regime rather than a
         // round-off / density-floor-masking regime: the FD truncation error is
         // ∝ ε²·‖δD‖³·V''', so an over-large δD both inflates that error and
-        // pushes many grid points across the vxc DENSITY_FLOOR between the ±
+        // pushes many grid points across the vxc density floor between the ±
         // evaluations, producing the noisy non-monotone ladder a raw O(1) δD
         // gives.
         let ref_dens = kernel.reference_density(&d_a, &d_b);
@@ -1904,24 +1914,26 @@ mod tests {
 
     /// LDA and GGA kernels are the derivative of the production polarized
     /// V_xc INCLUDING its per-spin density floor, on a reference whose tail
-    /// has many points below it: the Li doublet (6-31G UHF), where ρ_β (1s
-    /// only) drops under 1e-10 while ρ_α (2s) and the diffuse basis
-    /// functions are still alive — 880 of 5500 β points (440 α) are dead.
+    /// has points below it: the Li doublet (6-31G UHF), where ρ_β (1s only)
+    /// decays while ρ_α (2s) and the diffuse basis functions are still alive
+    /// (440 of 5500 β points at or below the 1e-14 semilocal floor, 880 below
+    /// the 1e-10 meta-GGA floor).
     ///
     /// FD of a floored V is only defined away from the floor, so δD is kept
     /// small enough (‖δD‖∞ = 1e-6) that NO point crosses it at any ladder ε
     /// (asserted, the precondition that makes the comparison meaningful).
     ///
-    /// Hypotheses. Real inconsistency (kernel unfloored): residual falls as
-    /// ε² until it meets the dead-point contribution, then PLATEAUS there
-    /// (measured 2.0e-5 PBE, 1.76e-4 LDA = exactly the floored-vs-unfloored
-    /// kernel difference). Consistent kernel: residual keeps falling ε² to the
-    /// round-off floor (measured 4.0e-8 PBE, 5.4e-8 LDA at ε = 3e-5). Broken
-    /// test (points crossing the floor, or none dead): both kernels show the
-    /// same O(1) noise, or the same small residual — ruled out by the crossing
-    /// and dead-count asserts and by the unfloored negative control below.
-    /// Bar 1e-6: ≥ 18x above the floored measurement, ≥ 20x below the
-    /// unfloored plateau.
+    /// Hypotheses. Kernel masked at the functional's floor: residual keeps
+    /// falling ε² to the round-off floor (measured 4.0e-8 PBE at ε = 3e-5).
+    /// Kernel masked at another family's floor (the meta-GGA 1e-10): the
+    /// band (1e-14, 1e-10], where libxc's PBE/LDA kernels are non-zero, is
+    /// live in the kernel but dead in V, so the residual PLATEAUS at that
+    /// band's contribution — the negative control below. A fully unmasked
+    /// kernel is no control at this floor: libxc's own thresholds (1e-15 for
+    /// LDA_X/PBE_X, 1e-12 PBE_C) already zero it below 1e-14, so it agrees
+    /// with the floored one (measured 3.98e-8 both).
+    /// Bar 1e-6: ≥ 18x above the floored measurement and ≥ 10x below the
+    /// wrong-floor plateau (measured 2.0e-5 PBE, 1.76e-4 LDA; asserted).
     #[test]
     fn lda_and_gga_fxc_are_the_derivative_of_floored_production_vxc() {
         let _env_guard = crate::TEST_BUDGET_ENV_LOCK
@@ -1936,11 +1948,18 @@ mod tests {
         for name in ["PBE", "LDA"] {
             let def = || crate::libxc::xc_def_from_name_nspin(name, 2).unwrap();
             let xc = def();
+            let floor = DensityFloor::for_xc(&xc);
             let gk = GgaFxcKernel::new(&mol, &bs, def(), &small_grid()).unwrap();
             let r = gk.reference_density(&d_a, &d_b);
             let n = r.rho_a.len();
-            let dead_b = r.rho_b.iter().filter(|&&x| x <= DENSITY_FLOOR).count();
-            assert!(dead_b > n / 10, "{name}: only {dead_b}/{n} dead β points");
+            let dead_b = r
+                .rho_b
+                .iter()
+                .filter(|&&x| !above_density_floor(x, floor))
+                .count();
+            // Precondition: the reference has β points below the floor.
+            eprintln!("{name}: {dead_b}/{n} β points at or below the floor");
+            assert!(dead_b > 0, "{name}: no β point below the floor");
             let floored = if name == "LDA" {
                 let lk = LdaFxcKernel::new(&mol, &bs, def(), &small_grid()).unwrap();
                 let (ra, rb) = lk.reference_density(&d_a, &d_b);
@@ -1948,17 +1967,30 @@ mod tests {
             } else {
                 gk.apply_with_ref(&r, &dd_a, &dd_b)
             };
-            let unfloored = gk.apply_with_mask(&r, &[vec![true; n], vec![true; n]], &dd_a, &dd_b);
+            let other = DensityFloor::META_GGA;
+            assert!(other.value() > floor.value());
+            let in_band = r
+                .rho_b
+                .iter()
+                .filter(|&&x| above_density_floor(x, floor) && !above_density_floor(x, other))
+                .count();
+            assert!(in_band > 0, "{name}: no β point between the two floors");
+            let wrong_floor = gk.apply_with_mask(
+                &r,
+                &[live_mask(&r.rho_a, other), live_mask(&r.rho_b, other)],
+                &dd_a,
+                &dd_b,
+            );
             let dd = eval_density_uks(&dd_a, &dd_b, &gk.chi, &gk.dchi);
-            let (mut best, mut best_unfloored) = (f64::INFINITY, f64::INFINITY);
+            let (mut best, mut best_wrong) = (f64::INFINITY, f64::INFINITY);
             for eps in [1e-3, 3e-4, 1e-4, 3e-5] {
                 let crossings = [(&r.rho_a, &dd.rho_a), (&r.rho_b, &dd.rho_b)]
                     .iter()
                     .flat_map(|(rho, drho)| rho.iter().zip(drho.iter()))
                     .filter(|(&x, &d)| {
-                        let live = above_density_floor(x);
-                        above_density_floor(x + eps * d) != live
-                            || above_density_floor(x - eps * d) != live
+                        let live = above_density_floor(x, floor);
+                        above_density_floor(x + eps * d, floor) != live
+                            || above_density_floor(x - eps * d, floor) != live
                     })
                     .count();
                 assert_eq!(crossings, 0, "{name}: eps {eps:e} crosses the floor");
@@ -1977,16 +2009,16 @@ mod tests {
                 let ((pa, pb), (ma, mb)) = (v(1.0), v(-1.0));
                 let fd = ((&pa - &ma) * (0.5 / eps), (&pb - &mb) * (0.5 / eps));
                 let rel = rel_pair((&floored.0, &floored.1), (&fd.0, &fd.1));
-                let rel_u = rel_pair((&unfloored.0, &unfloored.1), (&fd.0, &fd.1));
-                eprintln!("{name}: eps {eps:.1e} floored {rel:.3e} unfloored {rel_u:.3e}");
+                let rel_w = rel_pair((&wrong_floor.0, &wrong_floor.1), (&fd.0, &fd.1));
+                eprintln!("{name}: eps {eps:.1e} floored {rel:.3e} meta-GGA floor {rel_w:.3e}");
                 best = best.min(rel);
-                best_unfloored = best_unfloored.min(rel_u);
+                best_wrong = best_wrong.min(rel_w);
             }
             assert!(best < BAR, "{name}: floored kernel vs FD(V) best {best:e}");
             assert!(
-                best_unfloored > 10.0 * BAR,
-                "{name}: negative control — the unfloored kernel must miss FD(V), \
-                 best {best_unfloored:e}"
+                best_wrong > 10.0 * BAR,
+                "{name}: negative control — a kernel masked at the meta-GGA floor must \
+                 miss FD(V), best {best_wrong:e}"
             );
         }
     }
@@ -2007,7 +2039,8 @@ mod tests {
         let nbf = d_a.nrows();
         let mut rng = Xorshift64(0xBADC0FFEE0DDF00D);
         let dd = rand_sym(&mut rng, nbf, 1e-6);
-        let f = DENSITY_FLOOR;
+        let floor = DensityFloor::SEMILOCAL;
+        let f = floor.value();
         let totals = [
             0.5 * f,
             0.9 * f,
@@ -2040,14 +2073,17 @@ mod tests {
             let n = r.rho_a.len();
             // The closed-shell V_xc gate, applied pointwise to the total.
             let vxc_live: Vec<bool> = (0..n)
-                .map(|g| above_density_floor(r.rho_a[g] + r.rho_b[g]))
+                .map(|g| above_density_floor(r.rho_a[g] + r.rho_b[g], floor))
                 .collect();
-            let restricted =
-                live_mask_restricted(r.rho_a.as_slice().unwrap(), r.rho_b.as_slice().unwrap());
+            let restricted = live_mask_restricted(
+                r.rho_a.as_slice().unwrap(),
+                r.rho_b.as_slice().unwrap(),
+                floor,
+            );
             assert_eq!(restricted[0], vxc_live, "{name}: α mask != V_xc gate");
             assert_eq!(restricted[1], vxc_live, "{name}: β mask != V_xc gate");
             // The per-spin mask disagrees with V_xc exactly on (floor, 2·floor].
-            let per_spin = live_mask(&r.rho_a);
+            let per_spin = live_mask(&r.rho_a, floor);
             let disagree: Vec<usize> = (0..n).filter(|&g| per_spin[g] != vxc_live[g]).collect();
             assert!(
                 disagree.len() >= 3

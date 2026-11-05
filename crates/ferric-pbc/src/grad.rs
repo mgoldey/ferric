@@ -90,7 +90,7 @@
 //!
 //! The per-spin XC kernels and `V_σ` are ferric-dft's unchanged
 //! `closed_kernel` / `polarized_kernel` / `semilocal_vxc_*` (the SCF's own),
-//! with the same `ρ_σ > DENSITY_FLOOR` gates on the potential-like terms.
+//! with the same `ρ_σ` above the functional's `DensityFloor` gates on the potential-like terms.
 //!
 //! # Consistency with the energy
 //!
@@ -222,7 +222,8 @@ use ferric_dft::density_on_grid::{eval_density_closed, eval_density_uks};
 use ferric_dft::grid::GridPoint;
 use ferric_dft::libxc::{xc_def_from_name_nspin, FunctionalFamily};
 use ferric_dft::vxc::{
-    closed_kernel, polarized_kernel, semilocal_vxc_closed, semilocal_vxc_polarized, DENSITY_FLOOR,
+    above_density_floor, closed_kernel, polarized_kernel, semilocal_vxc_closed,
+    semilocal_vxc_polarized,
 };
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::engine::Engine;
@@ -2610,7 +2611,7 @@ fn xc_gradient(
                 let dens = eval_density_closed(d, &chi, &dchi);
                 let k = closed_kernel(&dens, None, &xc_def);
                 let (e, v) = semilocal_vxc_closed(&pts, &chi, &dchi, &dens, None, &xc_def);
-                let live = |g: usize| dens.rho[g] > DENSITY_FLOOR;
+                let live = |g: usize| above_density_floor(dens.rho[g], k.floor);
                 let vr: Vec<f64> = (0..np)
                     .map(|g| if live(g) { k.vrho[g] } else { 0.0 })
                     .collect();
@@ -2638,7 +2639,13 @@ fn xc_gradient(
                 let (e, va, vb) = semilocal_vxc_polarized(&pts, &chi, &dchi, &dens, None, xp);
                 let gate = |rho: &ndarray::Array1<f64>, v: &ndarray::Array1<f64>| -> Vec<f64> {
                     (0..np)
-                        .map(|g| if rho[g] > DENSITY_FLOOR { v[g] } else { 0.0 })
+                        .map(|g| {
+                            if above_density_floor(rho[g], k.floor) {
+                                v[g]
+                            } else {
+                                0.0
+                            }
+                        })
                         .collect()
                 };
                 let vr_a = gate(&dens.rho_a, &k.vrho_a);
@@ -2646,7 +2653,7 @@ fn xc_gradient(
                 // c^α = 2 v_σαα ∇ρ_α + v_σαβ ∇ρ_β (gated on ρ_α), and α↔β.
                 let (c_a, c_b) = if gga {
                     let ca = Array2::from_shape_fn((3, np), |(i, g)| {
-                        if dens.rho_a[g] > DENSITY_FLOOR {
+                        if above_density_floor(dens.rho_a[g], k.floor) {
                             2.0 * k.vsigma_aa[g] * dens.grad_a[(i, g)]
                                 + k.vsigma_ab[g] * dens.grad_b[(i, g)]
                         } else {
@@ -2654,7 +2661,7 @@ fn xc_gradient(
                         }
                     });
                     let cb = Array2::from_shape_fn((3, np), |(i, g)| {
-                        if dens.rho_b[g] > DENSITY_FLOOR {
+                        if above_density_floor(dens.rho_b[g], k.floor) {
                             2.0 * k.vsigma_bb[g] * dens.grad_b[(i, g)]
                                 + k.vsigma_ab[g] * dens.grad_a[(i, g)]
                         } else {

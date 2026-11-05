@@ -134,7 +134,7 @@
 //! taken after the contraction and a `1/N_k`; GGA needs the AO Hessian
 //! (`∂_i∂_jφ`), which is NOT cached (the energy cache holds `φ, ∇φ`), so it is
 //! recomputed chunk by chunk (`LatticeAoHess::eval_bloch`) with
-//! all k inside the chunk. The kernel gates (`ρ > DENSITY_FLOOR`) are the
+//! all k inside the chunk. The kernel gates (`ρ` above the functional's `DensityFloor`) are the
 //! energy's.
 //!
 //! # Meta-GGA: the tau term
@@ -147,7 +147,7 @@
 //! ```
 //!
 //! with `v_τ = ∂ε/∂τ` from libxc (gated like the other kernel pieces by
-//! `ρ > DENSITY_FLOOR`). The force reuses everything above unchanged
+//! `ρ` above the `DensityFloor`). The force reuses everything above unchanged
 //! (`ρ`/`σ` terms, X3, X4, the Fock guard with `V_xc` now including `V^τ`) and
 //! adds one AO-derivative term. An atom move shifts `φ_μ → φ_μ(r − R_A)` for
 //! `μ ∈ A`, hence `∂_iφ_μ` moves by `−∂_j∂_iφ_μ` (the AO Hessian, already
@@ -291,7 +291,7 @@ use ferric_core::FerricError;
 use ferric_dft::density_on_grid::DensityGrid;
 use ferric_dft::grid::GridPoint;
 use ferric_dft::libxc::{FunctionalFamily, XcDef};
-use ferric_dft::vxc::{closed_kernel, DENSITY_FLOOR};
+use ferric_dft::vxc::{above_density_floor, closed_kernel};
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ndarray::{Array1, Array2, Array3, Axis};
 use num_complex::Complex64 as C64;
@@ -727,7 +727,7 @@ impl KXcResponse for GridXc<'_> {
             let dens = chunk_density(d, &bl.chi, &bl.dchi, self.gga);
             let tau = self.mgga.then(|| chunk_tau(d, &bl.dchi));
             let kern = closed_kernel(&dens, tau.as_ref(), &self.xc);
-            let live = |g: usize| dens.rho[g] > DENSITY_FLOOR;
+            let live = |g: usize| above_density_floor(dens.rho[g], kern.floor);
             let mut e = 0.0;
             let mut ne = 0.0;
             for g in 0..np {
@@ -745,7 +745,7 @@ impl KXcResponse for GridXc<'_> {
                     0.0
                 }
             });
-            // v_tau, gated like the energy's V^tau (ρ > DENSITY_FLOOR).
+            // v_tau, gated like the energy's V^tau (ρ above the `DensityFloor`).
             let vt: Vec<f64> = (0..np)
                 .map(|g| {
                     if self.mgga && live(g) {

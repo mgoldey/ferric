@@ -1203,9 +1203,9 @@ fn gga_closed_batch(
     //   t_sig[g]  = w_g · 2 · v_σ          (multiplied by ∇ρ at inner-loop time)
     let mut t_rho = vec![0.0_f64; npts];
     let mut t_sig = vec![0.0_f64; npts];
-    const RHO_FLOOR: f64 = 1e-10;
+    let floor = crate::vxc::DensityFloor::for_xc(xc);
     for g in 0..npts {
-        if dens.rho[g] > RHO_FLOOR {
+        if crate::vxc::above_density_floor(dens.rho[g], floor) {
             t_rho[g] = weights[g] * vrho_total[g];
             t_sig[g] = weights[g] * 2.0 * vsigma_total[g];
         }
@@ -1270,7 +1270,7 @@ fn gga_closed_batch(
         })
     });
     for (gi, gp) in grid.iter().enumerate() {
-        if dens.rho[gi] <= RHO_FLOOR {
+        if !crate::vxc::above_density_floor(dens.rho[gi], floor) {
             continue;
         }
         let a = gp.home_atom;
@@ -1444,12 +1444,12 @@ fn mgga_closed_batch(
         }
     }
 
-    const RHO_FLOOR: f64 = 1e-10;
+    let floor = crate::vxc::DensityFloor::for_xc(xc);
     let mut t_rho = vec![0.0_f64; npts];
     let mut t_sig = vec![0.0_f64; npts];
     let mut t_tau = vec![0.0_f64; npts];
     for g in 0..npts {
-        if dens.rho[g] > RHO_FLOOR {
+        if crate::vxc::above_density_floor(dens.rho[g], floor) {
             t_rho[g] = weights[g] * vrho_total[g];
             t_sig[g] = weights[g] * 2.0 * vsigma_total[g];
             t_tau[g] = weights[g] * vtau_total[g];
@@ -1494,7 +1494,7 @@ fn mgga_closed_batch(
     });
     let dtau = tau_spatial_grad(&mdchi, &ddchi);
     for (gi, gp) in grid.iter().enumerate() {
-        if dens.rho[gi] <= RHO_FLOOR {
+        if !crate::vxc::above_density_floor(dens.rho[gi], floor) {
             continue;
         }
         let a = gp.home_atom;
@@ -1659,7 +1659,7 @@ fn uks_gga_batch(
         }
     }
 
-    const RHO_FLOOR: f64 = 1e-10;
+    let floor = crate::vxc::DensityFloor::for_xc(xc);
     let mut grad = Array2::<f64>::zeros((natoms, 3));
 
     // Inner kernel per spin σ.
@@ -1677,7 +1677,7 @@ fn uks_gga_batch(
         // the LDA weight t_rho carries no extra factor — matching the original.)
         let mut c = Array2::<f64>::zeros((3, npts));
         for g in 0..npts {
-            if rho_sigma[g] > RHO_FLOOR {
+            if crate::vxc::above_density_floor(rho_sigma[g], floor) {
                 t_rho[g] = weights[g] * vrho_sigma[g];
                 let w = weights[g];
                 for b in 0..3 {
@@ -1796,7 +1796,7 @@ fn uks_gga_batch(
     }
     // (2) home-translation of the integrand.
     for (gi, gp) in grid.iter().enumerate() {
-        if dens.rho_a[gi] + dens.rho_b[gi] <= RHO_FLOOR {
+        if !crate::vxc::above_density_floor(dens.rho_a[gi] + dens.rho_b[gi], floor) {
             continue;
         }
         let a = gp.home_atom;
@@ -1988,7 +1988,7 @@ fn uks_mgga_batch(
         }
     }
 
-    const RHO_FLOOR: f64 = 1e-10;
+    let floor = crate::vxc::DensityFloor::for_xc(xc);
     let mut grad = Array2::<f64>::zeros((natoms, 3));
 
     // Per-spin (D_σ χ) and (D_σ ∂_b χ), reused by both the AO-derivative sum and
@@ -2013,7 +2013,7 @@ fn uks_mgga_batch(
         let mut t_tau = vec![0.0_f64; npts];
         let mut c = Array2::<f64>::zeros((3, npts));
         for g in 0..npts {
-            if rho_sigma[g] > RHO_FLOOR {
+            if crate::vxc::above_density_floor(rho_sigma[g], floor) {
                 let w = weights[g];
                 t_rho[g] = w * vrho_sigma[g];
                 t_tau[g] = w * vtau_sigma[g];
@@ -2088,7 +2088,7 @@ fn uks_mgga_batch(
 
     // (2) home-translation of the integrand.
     for (gi, gp) in grid.iter().enumerate() {
-        if dens.rho_a[gi] + dens.rho_b[gi] <= RHO_FLOOR {
+        if !crate::vxc::above_density_floor(dens.rho_a[gi] + dens.rho_b[gi], floor) {
             continue;
         }
         let a = gp.home_atom;

@@ -2096,7 +2096,7 @@ mod anchor_tests {
     /// partition that drops/duplicates points or detaches weights; a wrong
     /// factor in the merged A·Bᵀ (½s, f_a, ½t — the symmetrization doubling);
     /// a missing or transposed GGA axis; τ not halved or τ blocks misaligned;
-    /// the DENSITY_FLOOR gate applied to the wrong ρ; a scatter into the wrong
+    /// the density-floor gate applied to the wrong ρ; a scatter into the wrong
     /// (μ,ν) or a lost Vᵀ half; a wrong column block in the stored AO layout.
     #[test]
     fn batched_matches_dense_in_the_trivial_limit_closed_shell() {

@@ -124,7 +124,7 @@ use crate::grid::GridPoint;
 use crate::libxc::{FunctionalFamily, XcDef};
 use crate::vxc::{
     above_density_floor, closed_kernel, deterministic_point_sum, polarized_kernel, ClosedKernel,
-    PolarizedKernel,
+    DensityFloor, PolarizedKernel,
 };
 
 /// Device offload of the per-batch GEMMs (feature `gpu`).
@@ -877,8 +877,9 @@ fn closed_point_factors(
     (w, r, grad): (f64, f64, [f64; 3]),
     (vrho, vsigma, vtau): (f64, f64, f64),
     (has_gga, has_mgga): (bool, bool),
+    floor: DensityFloor,
 ) {
-    if above_density_floor(r) {
+    if above_density_floor(r, floor) {
         fac.s_half[j] = 0.5 * (w * vrho);
         if has_gga {
             for (ax, ga) in grad.iter().enumerate() {
@@ -902,8 +903,9 @@ fn polarized_point_factors(
     (w, rho_s, g_self, g_cross): (f64, f64, [f64; 3], [f64; 3]),
     (vrho_s, vs_self, vc, vtau_s): (f64, f64, f64, f64),
     (has_gga, has_mgga): (bool, bool),
+    floor: DensityFloor,
 ) {
-    if above_density_floor(rho_s) {
+    if above_density_floor(rho_s, floor) {
         fac.s_half[j] = 0.5 * (w * vrho_s);
         if has_gga {
             for (ax, (gs, gc)) in g_self.iter().zip(&g_cross).enumerate() {
@@ -1601,6 +1603,7 @@ impl ScreenedGrid {
         exec: Exec,
     ) -> Result<(f64, Array2<f64>), GtoEvalError> {
         let serial = exec.serial;
+        let floor = DensityFloor::for_xc(xc);
         // Meta-GGA τ is on the never-f32 list, as in `potential_pass`.
         let mixed = exec.mixed_vxc && !has_mgga;
         if mixed && host_twin_active() {
@@ -1646,6 +1649,7 @@ impl ScreenedGrid {
                             (grid[gi as usize].weight, dens.rho[j], gv),
                             (k.vrho[j], k.vsigma[j], k.vtau[j]),
                             (has_gga, has_mgga),
+                            floor,
                         );
                     }
                     batch_vxc_one(
@@ -1674,6 +1678,7 @@ impl ScreenedGrid {
         exec: Exec,
     ) -> Result<(f64, Array2<f64>, Array2<f64>), GtoEvalError> {
         let serial = exec.serial;
+        let floor = DensityFloor::for_xc(xc);
         let mixed = exec.mixed_vxc && !has_mgga;
         if mixed && host_twin_active() {
             note_mixed_vxc_pass();
@@ -1760,6 +1765,7 @@ impl ScreenedGrid {
                                 ),
                                 (vrho_s[j], vs_self[j], k.vsigma_ab[j], vtau_s[j]),
                                 (has_gga, has_mgga),
+                                floor,
                             );
                         }
                         batch_vxc_one(&ao, &b.funcs, nb, &fac, (has_gga, has_mgga, mixed), acc);
@@ -1813,6 +1819,7 @@ impl ScreenedGrid {
         exec: Exec,
     ) -> Result<(f64, Array2<f64>), GtoEvalError> {
         let serial = exec.serial;
+        let floor = DensityFloor::for_xc(xc);
         let npts = self.npts;
         assert_eq!(grid.len(), npts, "grid does not match the screened grid");
         assert!(d.nbf() == self.nbf && d.is_square(), "density matrix shape");
@@ -1874,6 +1881,7 @@ impl ScreenedGrid {
                     (grid[g].weight, dens.rho[g], gv),
                     (k.vrho[g], k.vsigma[g], k.vtau[g]),
                     (has_gga, has_mgga),
+                    floor,
                 );
             }
             fac
@@ -1906,6 +1914,7 @@ impl ScreenedGrid {
         exec: Exec,
     ) -> Result<(f64, Array2<f64>, Array2<f64>), GtoEvalError> {
         let serial = exec.serial;
+        let floor = DensityFloor::for_xc(xc);
         let npts = self.npts;
         assert_eq!(grid.len(), npts, "grid does not match the screened grid");
         assert!(
@@ -2025,6 +2034,7 @@ impl ScreenedGrid {
                     ),
                     (vrho_s[g], vs_self[g], k.vsigma_ab[g], vtau_s[g]),
                     (has_gga, has_mgga),
+                    floor,
                 );
             }
             fac

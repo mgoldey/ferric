@@ -75,7 +75,7 @@ use ferric_dft::becke::becke_weights_and_grad;
 use ferric_dft::becke_hessian::becke_home_weight_hess;
 use ferric_dft::grid::{atomic_quadrature_points, build_atomic_grid_pruned, AtomicGridConfig};
 use ferric_dft::libxc::{k_mix_from_xc_def, xc_def_from_name, FunctionalFamily, XcDef};
-use ferric_dft::vxc::DENSITY_FLOOR;
+use ferric_dft::vxc::{above_density_floor, DensityFloor};
 use ferric_integrals::ao_grid::{
     eval_basis_and_grad_on_points, eval_basis_grad_hess_on_points, eval_basis_on_points,
 };
@@ -637,8 +637,9 @@ impl FixedGridKs {
                 k.fss[g] += wi * fss[g];
             }
         }
+        let floor = DensityFloor::for_xc(&self.xc);
         for (g, &rg) in r.iter().enumerate() {
-            if rg < DENSITY_FLOOR {
+            if !above_density_floor(rg, floor) {
                 k.exc[g] = 0.0;
                 k.fr[g] = 0.0;
                 k.fs[g] = 0.0;
