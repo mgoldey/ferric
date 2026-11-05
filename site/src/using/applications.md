@@ -27,7 +27,7 @@ ferric examples/water-rhf.toml    # expect converged = true, energy = -74.963146
 ```
 
 Don't skip this, and **don't build from source first**. The wheel installs in
-about a minute, and a source build takes ~30 minutes. If the install is broken,
+about a minute, and a source build takes about 10 minutes. If the install is broken,
 every later failure will look like a chemistry problem. The clone is needed
 because the wheel doesn't ship `examples/`, `testdata/` or `scripts/`.
 

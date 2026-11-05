@@ -7,7 +7,7 @@ most time. The linked pages hold the details.
 ## Start here
 
 **Don't build from source unless you need to.** The prebuilt wheel installs in
-about a minute. A source build takes ~30 minutes, most of it libint2.
+about a minute. A source build takes about 10 minutes, mostly compiling ferric.
 
 ```bash
 pip install ferric
@@ -30,7 +30,7 @@ source build. The wheel holds only the compiled library and that command. The
 | **PyPI** | Built by the Wheels workflow on a `v*` tag. So far only pre-releases (`0.1.0rc*`) exist, and pip and uv pick them when there's no final release. | `pip install ferric` |
 | **GitHub nightly** | Built every night (`53 10 * * *` UTC) from `main`. It's a workflow-run artifact, not a PyPI upload. | Download it from the Wheels workflow run, then `pip install ./<wheel>` |
 
-Use the **nightly artifact** when you need a fix that has landed on `main` but
+Use the nightly artifact when you need a fix that has landed on `main` but
 hasn't been tagged, instead of building from source.
 
 Build from source when you are changing ferric or need MPI. MPI builds are
@@ -106,20 +106,20 @@ recomputed on demand, or refused with an error naming it, depending on the
 allocation (see
 [Sharp bits](sharp-bits.md#memory-budget_gb-does-not-cap-the-whole-process)).
 
-**The budget isn't a cap on process memory (RSS).** It covers the dominant
+The budget isn't a cap on process memory (RSS). It covers the dominant
 tensors, not every allocation. Basis-sized matrices, integral engines (for
 example libint2's C++-side pools), BLAS and per-thread scratch and allocator
 overhead aren't charged, so treat the printed number as a floor on what the
 process needs. Lowering `FERRIC_MEM_BUDGET_GB` changes how the charged work
 is split into blocks. It doesn't shrink the uncharged part.
 
-**Size the budget from a gradient run.** Measured on
+Size the budget from a gradient run. Measured on
 benzene/cc-pVDZ/PBE/RI-J: the SCF alone peaked at 0.616 GB, and the SCF plus
 gradient at 3.033 GB. The KS gradient holds the AO second derivatives on the
 grid. A budget sized from an energy run under-provisions a geometry
 optimization by roughly 4x, and the first optimization step is where it fails.
 
-**The cgroup is the only hard ceiling.** On Linux with systemd:
+The cgroup is the only hard ceiling. On Linux with systemd:
 
 ```bash
 scripts/ferric-limited --max=8G --high=7G -- ferric input.toml
@@ -128,7 +128,7 @@ scripts/ferric-limited --max=8G --high=7G -- ferric input.toml
 An unbounded overshoot triggers the system-wide OOM killer, which can kill
 unrelated processes. Inside a cgroup, only the job dies. `dmesg | grep -i oom`
 confirms a kill. A truncated log doesn't prove one. As a rule of thumb, plan on
-**~6 GB for 27 atoms at def2-SVP**.
+~6 GB for 27 atoms at def2-SVP.
 
 ### Telling a running job from a dead one
 

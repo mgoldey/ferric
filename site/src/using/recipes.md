@@ -3,12 +3,12 @@
 Copy-paste workflows that end in a number. Each gives its expected output
 and rough runtime, so you can tell "still running" from "silently wrong".
 
-Recipes 1 and 3 were executed as written for this page, on 2026-09-23.
-Recipe 2's output is quoted from an earlier run. Numbers labelled MEASURED came
-out of the program.
+Outputs for recipes 1 and 3 come from running them as written (2026-09-23);
+recipe 2's output is from an earlier run. MEASURED marks numbers that came out
+of the program.
 
-**Prerequisite:** a working `ferric`. The fast path is the prebuilt wheel
-(about a minute). A source build takes ~30 minutes, most of it libint2:
+Prerequisite: a working `ferric`. The fast path is the prebuilt wheel
+(about a minute). A source build takes about 10 minutes, mostly compiling ferric:
 
 ```bash
 pip install ferric
@@ -17,7 +17,7 @@ pip install ferric
 See [Installation](installation.md). Build from source only if you are changing
 ferric itself or need MPI.
 
-**Which recipes need a git clone.** The wheel contains the compiled library and
+Which recipes need a git clone: the wheel contains the compiled library and
 the `ferric` command, nothing else. `examples/`, `testdata/` and `scripts/`
 live in the repository
 ([what the wheel does not contain](installation.md#what-the-wheel-does-not-contain)).
@@ -29,12 +29,11 @@ Run those recipes from the repository root:
 | 2. Ions and radicals | no | — |
 | 3. Optimize | only for `examples/h2-lda-opt.toml` | — |
 
-**On a shared machine, run anything real under a memory cap.** ferric's
-memory budget charges only the large, size-dependent tensors; basis-sized
-matrices, integral engines, BLAS scratch and allocator overhead are not
-charged, so a job's resident memory can exceed the budget. Only a cgroup puts
-a hard ceiling on the process, and without one an overshoot can trigger the
-system-wide OOM killer, which may kill unrelated processes. The details are in
+On a shared machine, run anything real under a memory cap. ferric's
+memory budget charges only the large, size-dependent tensors, so a job's
+resident memory can exceed it. Only a cgroup puts a hard ceiling on the
+process; without one, an overshoot can trigger the system-wide OOM killer,
+which may kill unrelated processes. Details are in
 [Sharp bits](sharp-bits.md#memory-budget_gb-does-not-cap-the-whole-process)
 and [For agents](agents.md#memory-the-budget-predicts-the-cgroup-enforces).
 `scripts/ferric-limited` (repository, Linux with systemd) wraps a command in a
@@ -87,7 +86,7 @@ every TOML key, see the [input reference](../reference/input.md).
 
 ## 2. Charged and open-shell species
 
-**Read this before you run any ion, radical or metal center.** `charge` and
+Read this before running any ion, radical or metal center. `charge` and
 `multiplicity` are `[molecule]` keys. Most files in `examples/` leave them at
 their defaults (0 and 1). The open-shell exceptions are `examples/h_uhf.toml`
 and `examples/oh-ugw.toml`.
@@ -108,7 +107,7 @@ kind = "ksdft"
 functional = "B3LYP"
 ```
 
-**Relax the geometry with xtb first.** A correct formula doesn't guarantee a
+Relax the geometry with xtb first. A correct formula doesn't guarantee a
 physical structure, and the parity check below can't tell the difference.
 MEASURED: a hand-built C10H17+ with a 0.902 Å C–H contact stalled the SCF.
 After `xtb mol.xyz --opt --chrg 1 --uhf 0 --gfn 2` it converged, 545 kcal/mol
@@ -181,7 +180,7 @@ max_steps = 30
 gradients. Harmonic frequencies use `task = "frequencies"` (the analytic Hessian
 where it applies, otherwise finite differences of the analytic gradient; see `examples/water-frequencies.toml`).
 
-**Runtime depends on the system, so measure before you plan.** A whole
+Runtime depends on the system, so measure before you plan. A whole
 optimization at drug-like size has not been timed on this page. For scale,
 two single-point measurements:
 

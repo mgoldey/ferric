@@ -29,13 +29,13 @@ no clear trend. None of these runs crashed.
 
 Three effects matter beyond speed:
 
-- **Oversubscription can stall a run.** Once BLAS threads × rayon threads
+- Oversubscription can stall a run. Once BLAS threads × rayon threads
   exceed the physical cores, a job can slow by orders of magnitude, as the
   12-thread RI-JK run shows.
-- **Results change slightly.** The BLAS thread count changes the order of
+- Results change slightly. The BLAS thread count changes the order of
   floating-point summation. The RI-JK energy at 6 threads differs from the
   1-thread energy by 6e-6 Ha; expect differences at the 1e-6 to 1e-5 Ha level.
-- **LU routines can crash.** Threaded OpenBLAS LU factorization (`dgetrf`)
+- LU routines can crash. Threaded OpenBLAS LU factorization (`dgetrf`)
   can overflow the 2 MB stacks of rayon's worker threads. ferric calls LU
   solves in BSE, PCM, COSMO, MBD and orbital-rotation steps, among others.
 
@@ -106,7 +106,7 @@ from the nuclear charges (ECP cores removed, about 5 % for all-electron
 molecules, 3.7x high for an iodine ECP case); the point-charge or field energy
 of an embedding is not included.
 
-**A symptom of the same floor:** with a large point-charge field (`point_charges=` on `run_rhf`'s closed-shell direct-J/K path) the number of SCF iterations can differ between two orderings of the same charges, because a change of a few ulps in the one-electron potential decides which iteration the `dE` test happens to pass. On rc7 a 6458-charge field took 64 iterations nearest-first and 111 in file order at `energy_conv=1e-10`. The potential itself changes only by roundoff (3e-15 to 1e-14 relative) and the converged energy by about 1e-12 Ha. ferric turns the incremental update off when `energy_conv < 1e4 * integral_thresh` or `density_conv < 1e3 * integral_thresh` (1e-8 and 1e-9 at the default `integral_thresh`), where all measured orders took 20 iterations; at the default `energy_conv` and `density_conv` every measured order took the same number (15 iterations on the field and orders tried; the tests do not assert iteration counts, so this is a measurement, not a guarantee for other fields). `run_uhf` and `run_rohf` use a separate open-shell incremental path and `run_dft`'s default RI-J does not use the direct incremental path: for those the order changes the potential by roundoff too, but iteration counts were not measured. ferric does not reorder the charges.
+A symptom of the same floor: with a large point-charge field (`point_charges=` on `run_rhf`'s closed-shell direct-J/K path) the number of SCF iterations can differ between two orderings of the same charges, because a change of a few ulps in the one-electron potential decides which iteration the `dE` test happens to pass. On rc7 a 6458-charge field took 64 iterations nearest-first and 111 in file order at `energy_conv=1e-10`. The potential itself changes only by roundoff (3e-15 to 1e-14 relative) and the converged energy by about 1e-12 Ha. ferric turns the incremental update off when `energy_conv < 1e4 * integral_thresh` or `density_conv < 1e3 * integral_thresh` (1e-8 and 1e-9 at the default `integral_thresh`), where all measured orders took 20 iterations; at the default `energy_conv` and `density_conv` every measured order took the same number (15 iterations on the field and orders tried; the tests do not assert iteration counts, so this is a measurement, not a guarantee for other fields). `run_uhf` and `run_rohf` use a separate open-shell incremental path and `run_dft`'s default RI-J does not use the direct incremental path: for those the order changes the potential by roundoff too, but iteration counts were not measured. ferric does not reorder the charges.
 
 **Do:** tighten `density_conv`, not `energy_conv`.
 
@@ -146,12 +146,12 @@ benzene and 9.5 for a 71-atom drug molecule.
 | Molecule geometry input (`from_xyz`, `from_xyz_string`, `.xyz` files) | Python, CLI | Ångström |
 | Coordinates inside the Rust library | Rust | Bohr |
 | Attenuation ω: `[mp2] omega` (`att-rimp2`, `rs-mp2-rpa`), `[mp2] mp2v_omega` (`mp2-v`); `omega=` of `run_attenuated_rimp2`, `run_rs_mp2_rpa`, `run_mp2_v`, and `terf_omega=` of `run_rs_mp2_rpa` | CLI TOML, Python | Å⁻¹ |
-| Double-hybrid ω: `[dft] omega` (`wb97x-l-v`) | CLI TOML | **Bohr⁻¹** |
-| `tune_omega` (bracket and result); `omega=` of `compute_eri3_mo` and `compute_metric_2c` | Python | **Bohr⁻¹** |
+| Double-hybrid ω: `[dft] omega` (`wb97x-l-v`) | CLI TOML | Bohr⁻¹ |
+| `tune_omega` (bracket and result); `omega=` of `compute_eri3_mo` and `compute_metric_2c` | Python | Bohr⁻¹ |
 | Range-separation ω | Rust configs | Bohr⁻¹ |
 | `QmmmSystem(...)` coordinates | Python | Ångström |
-| `QmmmSystem.point_charges()` | Python | **Bohr** |
-| `QmmmSystem.link_atom_positions()` | Python | **Ångström** |
+| `QmmmSystem.point_charges()` | Python | Bohr |
+| `QmmmSystem.link_atom_positions()` | Python | Ångström |
 | Energies | everywhere | Hartree |
 
 **Do:** check the docstring of any coordinate accessor before converting it.

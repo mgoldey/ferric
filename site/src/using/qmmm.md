@@ -5,13 +5,13 @@ pocket, a reacting site in an enzyme, a solute in explicit solvent. The QM
 atoms get a real wavefunction; everything else becomes point charges that
 polarize it.
 
-**What you get:** QM region selection (by index, by radius, or by whole
+What you get: QM region selection (by index, by radius, or by whole
 residue), link atoms across covalent cuts with four boundary-charge schemes,
 Gaussian-smeared charges, Thole polarizable embedding, an AMBER-form MM crate,
 analytic QM and MM forces, a full-structure gradient across the cut, geometry
 optimization.
 
-**What is missing:** no AMBER `prmtop` reader (go through OpenMM), and no
+What is missing: no AMBER `prmtop` reader (go through OpenMM), and no
 periodic boundary conditions.
 
 ---
@@ -40,7 +40,7 @@ Use it for the initial geometry of anything you did not get from a crystal
 structure or a previous optimization: hand-built ligands, docked poses,
 edited residues, anything from a SMILES string.
 
-> **Build note:** xtb built with `-O3` miscompiles gradients on this platform.
+> Build note: xtb built with `-O3` miscompiles gradients on this platform.
 > Build with `-Doptimization=2`.
 
 ---
@@ -50,7 +50,7 @@ edited residues, anything from a SMILES string.
 ```python
 import ferric
 
-# The FULL structure: every atom, QM and MM alike.
+# The full structure: every atom, QM and MM alike.
 symbols = ["O", "H", "H",   "O", "H", "H"]     # two waters
 coords  = [[0.0, 0.0, 0.0], [0.76, 0.59, 0.0], [-0.76, 0.59, 0.0],
            [0.0, 0.0, 3.0], [0.76, 0.59, 3.0], [-0.76, 0.59, 3.0]]
@@ -78,7 +78,7 @@ ferric.QmmmSystem(symbols, coords, charges, qm_indices=[0, 1, 2])
 ferric.QmmmSystem(symbols, coords, charges,
                   qm_seeds=[0], qm_radius_angstrom=5.0)
 
-# 3. Whole residues — a residue joins if ANY of its atoms is in range.
+# 3. Whole residues — a residue joins if any of its atoms is in range.
 #    Prefer this for proteins: a radius cut alone will slice through a
 #    residue and leave you with a chemically meaningless fragment.
 ferric.QmmmSystem(symbols, coords, charges,
@@ -105,7 +105,7 @@ sys = (ferric.QmmmSystem(symbols, coords, charges, qm_indices=qm)
 | `keep` | leave the host charge in place |
 | `delete-host` | Z1 — delete it |
 | `rc` | Lin–Truhlar redistributed charge |
-| `rcd` | redistributed charge **and dipole** |
+| `rcd` | redistributed charge and dipole |
 
 The parser is strict: an unknown string is an error.
 
@@ -113,7 +113,7 @@ The parser is strict: an unknown string is an error.
 
 ```python
 res = ferric.run_qmmm(sys, "cc-pvdz", method="uhf")
-# KS-DFT: method="rks" or "uks" AND xc, e.g. method="rks", xc="PBE".
+# KS-DFT: method="rks" or "uks" and xc, e.g. method="rks", xc="PBE".
 # xc without rks/uks (or rks/uks without xc) raises ValueError.
 res.energy
 res.qm_gradient()      # dE/dR on the QM atoms
@@ -164,7 +164,7 @@ external potential it is solved in. A complete, runnable input is
 
 ```toml
 [molecule]
-xyz = "testdata/molecules/water.xyz"   # required by the parser, NOT read with [qmmm]
+xyz = "testdata/molecules/water.xyz"   # required by the parser, not read with [qmmm]
 charge = 0                             # apply to the QM region
 multiplicity = 1
 
@@ -186,7 +186,7 @@ Measured on that file (water QM, one Na⁺ 4 Å away as MM, STO-3G): vacuum
 −74.9629466809, embedded −74.9653197421 Ha (−1.489 kcal/mol). That matches
 `ferric.run_rhf(point_charges=...)` to all ten printed digits.
 
-**The geometry and the MM charges both come from the PQR.** An xyz has no
+The geometry and the MM charges both come from the PQR. An xyz has no
 partial charges, and an MM region without charges contributes nothing. `[molecule] xyz` must still be present, because the parser
 requires it, but it is not read when `[qmmm]` is present. That matters when
 you compute a vacuum reference: delete `[qmmm]` and ferric falls back to the
@@ -195,22 +195,22 @@ molecules. In the example above, the xyz is an optimized water that gives
 −74.9631468000, which is 0.13 kcal/mol of error in the difference. Compare at
 one geometry.
 
-**`boundary_scheme` defaults to `"delete-host"`, not `"keep"`.** Keeping the
+`boundary_scheme` defaults to `"delete-host"`, not `"keep"`. Keeping the
 host charge across a covalent cut puts a bare point charge inside the link
 atom's bond length (measured 0.443 Å on an ethane C–C cut). A geometry
 optimization in that field diverges instead of failing with an error. `"keep"`
 is still available and is the right choice when the cut isn't covalent. An
 unknown scheme name is an error.
 
-**`[qmmm]` and `[external_potential]` together are refused.** The MM region
+`[qmmm]` and `[external_potential]` together are refused. The MM region
 is an external potential, so combining them would count a contribution twice.
 
-**Scope of the CLI section.** It reads only a PQR, because it needs charges
-and geometry together. The CLI section does electrostatic embedding only.
+Scope of the CLI section: it reads only a PQR, because it needs charges
+and geometry together, and does electrostatic embedding only.
 Polarizable sites, smeared charges, the MM force field and MM relaxation are
 Python-only.
 
-## Known limits, stated plainly
+## Known limits
 
 - **No AMBER `prmtop` reader.** Go through OpenMM, or build the arrays.
 - **No periodic boundary conditions.**

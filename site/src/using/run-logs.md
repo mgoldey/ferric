@@ -37,7 +37,7 @@ ferric --json runs/benzene.jsonl input.toml
 The default path is the input file's name with `.ferric.jsonl` in place of its
 extension, written beside the input.
 
-**A log never fails a calculation.** If the path cannot be opened or the disk
+A log never fails a calculation. If the path cannot be opened or the disk
 fills, ferric warns once on stderr and the run continues.
 
 ## Format
@@ -114,7 +114,7 @@ For a post-SCF method the `energy` is the SCF reference, not the method's
 total. `extra.energy_is` says which. Per-iteration records for MP2/RPA/CC/GW
 are not implemented yet.
 
-**Only `task = "energy"` and periodic `task = "optimize"` write `run_end`.**
+Only `task = "energy"` and periodic `task = "optimize"` write `run_end`.
 A molecular `task = "optimize"` and `task = "frequencies"` currently write
 `run_start` and the SCF iteration records, but no `run_end`, `ladder_rung` or
 `result`. A periodic `[cell]` optimization writes `run_end` (see below), also

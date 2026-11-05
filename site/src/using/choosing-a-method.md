@@ -32,18 +32,18 @@ has no validated option for a task, the row says so.
 
 Notes on the table:
 
-- **"Proven" for an attenuated MP2 method means the implementation reproduces
-  its reference**, not that the method is accurate on your system. Its
+- "Proven" for an attenuated MP2 method means the implementation reproduces
+  its reference, not that the method is accurate on your system. Its
   parameters are fitted to interaction-energy benchmarks in one basis (the
   aug-cc-pVTZ sets without counterpoise, with frozen core); in another basis,
   with counterpoise correction, or with `frozen_core = 0` (the default), you
   are extrapolating. See
   [The MP2 family](../methods/mp2.md#attenuated-mp2).
-- **KS-DFT uses density fitting by default** (`def2-universal-jkfit`), and the
+- KS-DFT uses density fitting by default (`def2-universal-jkfit`), and the
   fitting error grows with system size. Turn it off or match it before
   comparing with an exact-Coulomb code; see
   [SCF and DFT](../methods/scf.md#kohnsham-dft).
-- **CC results are sensitive to the aux basis**: at CC accuracy the RI error
+- CC results are sensitive to the aux basis: at CC accuracy the RI error
   depends on the auxiliary set. See [Coupled cluster](../methods/cc.md).
 
 ## Pairing an orbital basis with its auxiliary basis

@@ -140,7 +140,7 @@ and ferric's low-level `compute_eri3_mo` and `compute_metric_2c`, take Bohr⁻¹
 it. `ferric.QmmmSystem` takes Ångström coordinates, and its `point_charges()`
 accessor returns Bohr, ready to pass to `run_rhf`.
 
-**An unconverged SCF can raise.** PySCF's `kernel()` returns the energy
+**Only some drivers raise on an unconverged SCF.** PySCF's `kernel()` returns the energy
 either way. ferric's `run_rhf`, `run_uhf`, `run_rohf` and `run_qmmm` do the
 same, so check `.converged`. `run_dft` and every correlated driver raise
 instead when their SCF does not converge.
