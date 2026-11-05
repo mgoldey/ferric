@@ -6831,7 +6831,23 @@ fn run_drpa(
         None => None,
         Some(_) => Some(local_dict(py, eps, r.keep_fraction, false)?),
     };
+    let certificate = ferric_mp2::certificate::drpa_certificate(
+        &stamped_scf_certificate(
+            &mol.inner,
+            &rhf,
+            &rhf_config_budgeted(k_builder, budget_bytes_from_gb(memory_budget_gb)),
+        ),
+        &auxbasis.inner.name,
+        fc,
+        &Operator::coulomb(),
+        model.as_ref().map(|_| (eps, r.keep_fraction)),
+        r.converged,
+        r.iterations,
+        r.relres,
+    );
     d.bind(py).set_item("local", local_v)?;
+    d.bind(py)
+        .set_item("certificate", certificate_dict(py, &certificate)?)?;
     Ok(d)
 }
 
@@ -7007,6 +7023,8 @@ fn run_linlccd(
         Ok(cc.correlation_energy)
     };
     let d = pyo3::types::PyDict::new(py);
+    let mut local_cert = None;
+    let mut cg_converged = true;
     let e_corr = match &model {
         None => {
             let e = exact(var)?;
@@ -7034,6 +7052,8 @@ fn run_linlccd(
             let l = local_dict(py, eps, r.keep_fraction, false)?;
             l.set_item("cg_iterations", r.cg_iterations)?;
             l.set_item("converged", r.cg_converged)?;
+            local_cert = Some((eps, r.keep_fraction));
+            cg_converged = r.cg_converged;
             let e_ref = if m.reference { Some(exact(var)?) } else { None };
             l.set_item("e_corr_exact", e_ref)?;
             d.set_item("local", l)?;
@@ -7044,6 +7064,15 @@ fn run_linlccd(
     d.set_item("total_energy", rhf.energy + e_corr)?;
     d.set_item("rhf_energy", rhf.energy)?;
     d.set_item("variant", var.as_str())?;
+    let certificate = ferric_cc::certificate::linlccd_certificate(
+        &stamped_scf_certificate(&mol.inner, &rhf, &rhf_config_budgeted(k_builder, budget)),
+        &auxbasis.inner.name,
+        fc,
+        var,
+        local_cert,
+        cg_converged,
+    );
+    d.set_item("certificate", certificate_dict(py, &certificate)?)?;
     Ok(d.into())
 }
 
@@ -7217,10 +7246,19 @@ struct PyOoRiMp2Result {
     /// The SCF's JK-fitting basis (`None` for "exact").
     #[pyo3(get)]
     jk_auxbasis: Option<String>,
+    certificate_data: ferric_core::certificate::Certificate,
 }
 
 #[pymethods]
 impl PyOoRiMp2Result {
+    /// Validation certificate of this result (see `RhfResult.certificate`):
+    /// the method's grade from the validation page capped by the reference
+    /// SCF's, its settings as `approximations`, the reference's as
+    /// `scf <name>`, and its warnings.
+    #[getter]
+    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
+        certificate_dict(py, &self.certificate_data)
+    }
     fn __repr__(&self) -> String {
         format!(
             "OoRiMp2Result(total_energy={:.10}, converged={}, iterations={})",
@@ -7303,6 +7341,15 @@ fn run_oo_rimp2(
     // this binding is out of Lane F1's scope; this just keeps behavior
     // unchanged after `oo_ri_mp2`'s hcore-bug fix.
     let r = oo_ri_mp2(&mol.inner, &prep, &dfbs, op, &bounds, &rhf, &cfg, None).map_err(make_err)?;
+    let certificate_data = ferric_mp2::certificate::oo_rimp2_certificate(
+        &stamped_scf_certificate(&mol.inner, &rhf, &rhf_config),
+        &auxbasis.inner.name,
+        cfg.frozen_core,
+        &op,
+        r.converged,
+        r.iterations,
+        r.grad_norm,
+    );
     Ok(PyOoRiMp2Result {
         total_energy: r.total_energy,
         hf_energy: r.hf_energy,
@@ -7313,6 +7360,7 @@ fn run_oo_rimp2(
         scf_jk: jk.mode.as_str().to_string(),
         jk_label: jk.label(),
         jk_auxbasis: jk.aux,
+        certificate_data,
     })
 }
 
@@ -7331,10 +7379,19 @@ struct PyMp3Result {
     e_corr: f64,
     #[pyo3(get)]
     e_total: f64,
+    certificate_data: ferric_core::certificate::Certificate,
 }
 
 #[pymethods]
 impl PyMp3Result {
+    /// Validation certificate of this result (see `RhfResult.certificate`):
+    /// the method's grade from the validation page capped by the reference
+    /// SCF's, its settings as `approximations`, the reference's as
+    /// `scf <name>`, and its warnings.
+    #[getter]
+    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
+        certificate_dict(py, &self.certificate_data)
+    }
     fn __repr__(&self) -> String {
         format!(
             "Mp3Result(e_total={:.10}, e_corr={:.10})",
@@ -7365,15 +7422,8 @@ fn run_mp3(
     let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
     let ctx = ParallelContext::default();
     let budget = budget_bytes_from_gb(memory_budget_gb);
-    let rhf = solve_rhf(
-        &ctx,
-        &mol.inner,
-        &prep,
-        op,
-        &bounds,
-        &rhf_config_budgeted(k_builder, budget),
-    )
-    .map_err(make_err)?;
+    let rhf_config = rhf_config_budgeted(k_builder, budget);
+    let rhf = solve_rhf(&ctx, &mol.inner, &prep, op, &bounds, &rhf_config).map_err(make_err)?;
     if !rhf.converged {
         return Err(make_err(ferric_core::FerricError::ScfConvergence {
             iterations: rhf.iterations,
@@ -7399,6 +7449,12 @@ fn run_mp3(
         e_mp3: mp3.e_mp3,
         e_corr: mp3.e_corr,
         e_total: mp3.e_total,
+        certificate_data: ferric_mp2::certificate::mp3_certificate(
+            &stamped_scf_certificate(&mol.inner, &rhf, &rhf_config),
+            &auxbasis.inner.name,
+            frozen_core.unwrap_or(0),
+            &op,
+        ),
     })
 }
 
@@ -7424,10 +7480,19 @@ struct PyLaplaceMp2Result {
     /// The SCF's JK-fitting basis (`None` for "exact").
     #[pyo3(get)]
     jk_auxbasis: Option<String>,
+    certificate_data: ferric_core::certificate::Certificate,
 }
 
 #[pymethods]
 impl PyLaplaceMp2Result {
+    /// Validation certificate of this result (see `RhfResult.certificate`):
+    /// the method's grade from the validation page capped by the reference
+    /// SCF's, its settings as `approximations`, the reference's as
+    /// `scf <name>`, and its warnings.
+    #[getter]
+    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
+        certificate_dict(py, &self.certificate_data)
+    }
     fn __repr__(&self) -> String {
         format!(
             "LaplaceMp2Result(total_energy={:.10}, mp2_corr={:.10})",
@@ -7479,6 +7544,13 @@ fn run_laplace_mp2(
         budget,
     )
     .map_err(make_err)?;
+    let certificate_data = ferric_mp2::certificate::laplace_mp2_certificate(
+        &stamped_scf_certificate(&mol.inner, &rhf, &rhf_config),
+        &auxbasis.inner.name,
+        frozen_core.unwrap_or(0),
+        &op,
+        n_quad.unwrap_or(7),
+    );
     Ok(PyLaplaceMp2Result {
         total_energy: r.total_energy,
         mp2_corr: r.mp2_corr,
@@ -7487,6 +7559,7 @@ fn run_laplace_mp2(
         scf_jk: jk.mode.as_str().to_string(),
         jk_label: jk.label(),
         jk_auxbasis: jk.aux,
+        certificate_data,
     })
 }
 
@@ -7524,10 +7597,19 @@ struct PySosMp2Result {
     /// The SCF's JK-fitting basis (`None` for "exact").
     #[pyo3(get)]
     jk_auxbasis: Option<String>,
+    certificate_data: ferric_core::certificate::Certificate,
 }
 
 #[pymethods]
 impl PySosMp2Result {
+    /// Validation certificate of this result (see `RhfResult.certificate`):
+    /// the method's grade from the validation page capped by the reference
+    /// SCF's, its settings as `approximations`, the reference's as
+    /// `scf <name>`, and its warnings.
+    #[getter]
+    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
+        certificate_dict(py, &self.certificate_data)
+    }
     fn __repr__(&self) -> String {
         format!(
             "SosMp2Result(total_energy={:.10}, sos_corr={:.10}, formulation=\"{}\")",
@@ -7603,6 +7685,13 @@ fn run_laplace_sos_mp2(
         domain_cutoff_bohr,
     };
     let r = laplace_sos_mp2(&mol.inner, &prep, &dfbs, op, &rhf, &cfg, form).map_err(make_err)?;
+    let certificate_data = ferric_mp2::certificate::sos_mp2_certificate(
+        &stamped_scf_certificate(&mol.inner, &rhf, &rhf_config),
+        &auxbasis.inner.name,
+        &cfg,
+        form,
+        &op,
+    );
     Ok(PySosMp2Result {
         total_energy: r.total_energy,
         rhf_energy: rhf.energy,
@@ -7618,6 +7707,7 @@ fn run_laplace_sos_mp2(
         scf_jk: jk.mode.as_str().to_string(),
         jk_label: jk.label(),
         jk_auxbasis: jk.aux,
+        certificate_data,
     })
 }
 
@@ -7645,10 +7735,19 @@ struct PyAttenuatedMp2Result {
     /// The SCF's JK-fitting basis (`None` for "exact").
     #[pyo3(get)]
     jk_auxbasis: Option<String>,
+    certificate_data: ferric_core::certificate::Certificate,
 }
 
 #[pymethods]
 impl PyAttenuatedMp2Result {
+    /// Validation certificate of this result (see `RhfResult.certificate`):
+    /// the method's grade from the validation page capped by the reference
+    /// SCF's, its settings as `approximations`, the reference's as
+    /// `scf <name>`, and its warnings.
+    #[getter]
+    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
+        certificate_dict(py, &self.certificate_data)
+    }
     fn __repr__(&self) -> String {
         format!(
             "AttenuatedMp2Result(total_energy={:.10}, mp2_corr={:.10})",
@@ -7696,6 +7795,11 @@ fn run_attenuated_rimp2(
         memory_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
     };
     let r = attenuated_ri_mp2(&mol.inner, &prep, &dfbs, &rhf, &cfg).map_err(make_err)?;
+    let certificate_data = ferric_mp2::certificate::att_rimp2_certificate(
+        &stamped_scf_certificate(&mol.inner, &rhf, &rhf_config),
+        &auxbasis.inner.name,
+        &cfg,
+    );
     Ok(PyAttenuatedMp2Result {
         total_energy: r.total_energy,
         rhf_energy: rhf.energy,
@@ -7705,6 +7809,7 @@ fn run_attenuated_rimp2(
         scf_jk: jk.mode.as_str().to_string(),
         jk_label: jk.label(),
         jk_auxbasis: jk.aux,
+        certificate_data,
     })
 }
 
@@ -7800,10 +7905,19 @@ struct PyScsMp2Result {
     /// The SCF's JK-fitting basis (`None` for "exact").
     #[pyo3(get)]
     jk_auxbasis: Option<String>,
+    certificate_data: ferric_core::certificate::Certificate,
 }
 
 #[pymethods]
 impl PyScsMp2Result {
+    /// Validation certificate of this result (see `RhfResult.certificate`):
+    /// the method's grade from the validation page capped by the reference
+    /// SCF's, its settings as `approximations`, the reference's as
+    /// `scf <name>`, and its warnings.
+    #[getter]
+    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
+        certificate_dict(py, &self.certificate_data)
+    }
     fn __repr__(&self) -> String {
         format!(
             "ScsMp2Result(total_energy={:.10}, scs_corr={:.10})",
@@ -7850,6 +7964,11 @@ fn run_scs_mp2(
         memory_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
     };
     let r = scs_mp2(&mol.inner, &prep, &dfbs, &rhf, &cfg).map_err(make_err)?;
+    let certificate_data = ferric_mp2::certificate::scs_mp2_certificate(
+        &stamped_scf_certificate(&mol.inner, &rhf, &rhf_config),
+        &auxbasis.inner.name,
+        &cfg,
+    );
     Ok(PyScsMp2Result {
         total_energy: r.total_energy,
         rhf_energy: rhf.energy,
@@ -7859,6 +7978,7 @@ fn run_scs_mp2(
         scf_jk: jk.mode.as_str().to_string(),
         jk_label: jk.label(),
         jk_auxbasis: jk.aux,
+        certificate_data,
     })
 }
 
@@ -7908,6 +8028,11 @@ fn run_scs_mp2_2terfc(
         ));
     }
     let r = scs_mp2_2terfc(&mol.inner, &prep, &dfbs, &rhf, &cfg).map_err(make_err)?;
+    let certificate_data = ferric_mp2::certificate::scs_mp2_2terfc_certificate(
+        &stamped_scf_certificate(&mol.inner, &rhf, &rhf_config),
+        &auxbasis.inner.name,
+        &cfg,
+    );
     Ok(PyScsMp2Result {
         total_energy: r.total_energy,
         rhf_energy: rhf.energy,
@@ -7917,6 +8042,7 @@ fn run_scs_mp2_2terfc(
         scf_jk: jk.mode.as_str().to_string(),
         jk_label: jk.label(),
         jk_auxbasis: jk.aux,
+        certificate_data,
     })
 }
 
@@ -7956,10 +8082,19 @@ struct PyMp2VResult {
     /// The SCF's JK-fitting basis (`None` for "exact").
     #[pyo3(get)]
     jk_auxbasis: Option<String>,
+    certificate_data: ferric_core::certificate::Certificate,
 }
 
 #[pymethods]
 impl PyMp2VResult {
+    /// Validation certificate of this result (see `RhfResult.certificate`):
+    /// the method's grade from the validation page capped by the reference
+    /// SCF's, its settings as `approximations`, the reference's as
+    /// `scf <name>`, and its warnings.
+    #[getter]
+    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
+        certificate_dict(py, &self.certificate_data)
+    }
     fn __repr__(&self) -> String {
         format!(
             "Mp2VResult(total_energy={:.10}, att_mp2_corr={:.10}, vv10_e_nl={:.10})",
@@ -8070,6 +8205,11 @@ fn run_mp2_v(
         AttVv10SpinComponents::Restricted(s) => (s.e_os, s.e_ss),
         AttVv10SpinComponents::Unrestricted(_) => unreachable!("closed-shell entry point"),
     };
+    let certificate_data = ferric_mp2::certificate::mp2_v_certificate(
+        &stamped_scf_certificate(&mol.inner, &rhf, &rhf_config),
+        &auxbasis.inner.name,
+        &cfg,
+    );
     Ok(PyMp2VResult {
         total_energy: r.total,
         rhf_energy: r.e_hf,
@@ -8081,6 +8221,7 @@ fn run_mp2_v(
         scf_jk: jk.mode.as_str().to_string(),
         jk_label: jk.label(),
         jk_auxbasis: jk.aux,
+        certificate_data,
     })
 }
 
@@ -8305,10 +8446,19 @@ struct PyRsMp2RpaResult {
     /// The SCF's JK-fitting basis (`None` for "exact").
     #[pyo3(get)]
     jk_auxbasis: Option<String>,
+    certificate_data: ferric_core::certificate::Certificate,
 }
 
 #[pymethods]
 impl PyRsMp2RpaResult {
+    /// Validation certificate of this result (see `RhfResult.certificate`):
+    /// the method's grade from the validation page capped by the reference
+    /// SCF's, its settings as `approximations`, the reference's as
+    /// `scf <name>`, and its warnings.
+    #[getter]
+    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
+        certificate_dict(py, &self.certificate_data)
+    }
     fn __repr__(&self) -> String {
         format!(
             "RsMp2RpaResult(total_energy={:.10}, e_corr={:.10})",
@@ -8403,6 +8553,11 @@ fn run_rs_mp2_rpa(
     };
     cfg.drpa.memory_budget_bytes = budget_bytes_from_gb(memory_budget_gb);
     let r = ferric_rpa::rs_mp2_lr_rpa(&mol.inner, &prep, &dfbs, &rhf, &cfg).map_err(make_err)?;
+    let certificate_data = ferric_rpa::certificate::rs_mp2_rpa_certificate(
+        &stamped_scf_certificate(&mol.inner, &rhf, &cfg_rhf),
+        &auxbasis.inner.name,
+        &cfg,
+    );
     Ok(PyRsMp2RpaResult {
         total_energy: r.total_energy,
         rhf_energy: rhf.energy,
@@ -8418,6 +8573,7 @@ fn run_rs_mp2_rpa(
         scf_jk: jk.mode.as_str().to_string(),
         jk_label: jk.label(),
         jk_auxbasis: jk.aux,
+        certificate_data,
     })
 }
 
@@ -10217,10 +10373,19 @@ struct PyUGwResult {
     /// `max_ev_iter`. Always `true` for U-G0W0/U-COHSEX.
     #[pyo3(get)]
     outer_converged: bool,
+    certificate_data: ferric_core::certificate::Certificate,
 }
 
 #[pymethods]
 impl PyUGwResult {
+    /// Validation certificate of this result (see `RhfResult.certificate`):
+    /// the method's grade from the validation page capped by the reference
+    /// SCF's, its settings as `approximations`, the reference's as
+    /// `scf <name>`, and its warnings.
+    #[getter]
+    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
+        certificate_dict(py, &self.certificate_data)
+    }
     #[getter]
     fn eps_mf_a<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
         PyArray1::from_slice(py, &self.eps_mf_a)
@@ -10371,6 +10536,9 @@ fn run_u_gw(
                 last_energy: scf.energy,
             }));
         }
+        // The certificate's reference is the SCF as solved (a ROKS reference
+        // is graded `rohf`), before the semi-canonical conversion below.
+        let ref_cert = stamped_scf_certificate(&mol.inner, &scf, &cfg);
         // ROKS -> semi-canonical per-spin orbitals (what run_u_gw uses
         // internally), so v_xc is diagonalized in the QP equation's own basis;
         // UKS is unchanged.
@@ -10390,7 +10558,7 @@ fn run_u_gw(
             )
             .map_err(make_err)?
         };
-        (scf, Some((diag_a, diag_b)))
+        (scf, Some((diag_a, diag_b)), ref_cert)
     } else {
         let scf = if reference == "rohf" {
             solve_rohf(&ctx, &mol.inner, &prep, op, &bounds, &cfg).map_err(make_err)?
@@ -10403,9 +10571,10 @@ fn run_u_gw(
                 last_energy: scf.energy,
             }));
         }
-        (scf, None)
+        let ref_cert = stamped_scf_certificate(&mol.inner, &scf, &cfg);
+        (scf, None, ref_cert)
     };
-    let (scf, vxc_diag) = vxc_diag;
+    let (scf, vxc_diag, reference_cert) = vxc_diag;
 
     let scheme = QuadratureScheme::parse_config_str(quadrature)
         .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("quadrature: {e}")))?;
@@ -10476,7 +10645,15 @@ fn run_u_gw(
             );
         }
     }
+    let certificate_data = ferric_gw::certificate::u_gw_certificate(
+        &reference_cert,
+        &auxbasis.inner.name,
+        &pdep_cfg,
+        &gw_cfg,
+        &r,
+    );
     Ok(PyUGwResult {
+        certificate_data,
         ref_energy: scf.energy,
         mo_indices: r.mo_indices,
         eps_mf_a: r.eps_mf_a.to_vec(),
@@ -10710,10 +10887,19 @@ struct PyTdhfStaticPolarizabilityResult {
     #[pyo3(get)]
     iso: f64,
     tensor: [[f64; 3]; 3],
+    certificate_data: ferric_core::certificate::Certificate,
 }
 
 #[pymethods]
 impl PyTdhfStaticPolarizabilityResult {
+    /// Validation certificate of this result (see `RhfResult.certificate`):
+    /// the method's grade from the validation page capped by the reference
+    /// SCF's, its settings as `approximations`, the reference's as
+    /// `scf <name>`, and its warnings.
+    #[getter]
+    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
+        certificate_dict(py, &self.certificate_data)
+    }
     /// Cartesian alpha_ij(0) tensor (3x3, a.u.), i,j in {x,y,z}.
     #[getter]
     fn tensor<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
@@ -10807,6 +10993,9 @@ fn run_tdhf_static_polarizability(
     let ladder = ferric_scf::ladder::ksdft_ladder(&cfg);
     let lr = ferric_scf::ladder::solve_rhf_ladder(&ctx, &mol.inner, &prep, op, &bounds, &ladder)
         .map_err(make_err)?;
+    if let Some(r) = ladder.get(lr.rung_reached) {
+        cfg = r.config.clone();
+    }
     let scf = lr.result;
     if !scf.converged {
         return Err(make_err(ferric_core::FerricError::ScfConvergence {
@@ -10854,7 +11043,14 @@ fn run_tdhf_static_polarizability(
         scissor.unwrap_or(0.0),
     )
     .map_err(make_err)?;
+    let certificate_data = ferric_gw::certificate::tdhf_static_polarizability_certificate(
+        &stamped_scf_certificate(&mol.inner, &scf, &cfg),
+        &auxbasis.inner.name,
+        &pdep_cfg,
+        scissor.unwrap_or(0.0),
+    );
     Ok(PyTdhfStaticPolarizabilityResult {
+        certificate_data,
         nocc: r.nocc,
         nvir: r.nvir,
         iso: r.iso,

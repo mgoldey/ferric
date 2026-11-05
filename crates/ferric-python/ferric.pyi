@@ -1500,6 +1500,14 @@ class OoRiMp2Result:
     """Result of an orbital-optimized RI-MP2 calculation."""
 
     @property
+    def certificate(self) -> dict[str, Any]:
+        """Validation certificate (schema of ``RhfResult.certificate``):
+        ``capability`` (``"oo-rimp2"``), its grade from the validation page capped
+        by the reference SCF's, the method's settings in ``approximations``
+        and the reference's as ``"scf <name>"``, and ``warnings``."""
+        ...
+
+    @property
     def total_energy(self) -> float: ...
     @property
     def hf_energy(self) -> float: ...
@@ -1525,6 +1533,14 @@ class Mp3Result:
     """Result of an MP3 calculation."""
 
     @property
+    def certificate(self) -> dict[str, Any]:
+        """Validation certificate (schema of ``RhfResult.certificate``):
+        ``capability`` (``"mp3"``), its grade from the validation page capped
+        by the reference SCF's, the method's settings in ``approximations``
+        and the reference's as ``"scf <name>"``, and ``warnings``."""
+        ...
+
+    @property
     def e_hf(self) -> float: ...
     @property
     def e_mp2(self) -> float: ...
@@ -1537,6 +1553,14 @@ class Mp3Result:
 
 class LaplaceMp2Result:
     """Result of a Laplace RI-MP2 calculation."""
+
+    @property
+    def certificate(self) -> dict[str, Any]:
+        """Validation certificate (schema of ``RhfResult.certificate``):
+        ``capability`` (``"laplace-mp2"``), its grade from the validation page capped
+        by the reference SCF's, the method's settings in ``approximations``
+        and the reference's as ``"scf <name>"``, and ``warnings``."""
+        ...
 
     @property
     def total_energy(self) -> float: ...
@@ -1558,6 +1582,14 @@ class LaplaceMp2Result:
 
 class SosMp2Result:
     """Result of a Laplace SOS-MP2 calculation."""
+
+    @property
+    def certificate(self) -> dict[str, Any]:
+        """Validation certificate (schema of ``RhfResult.certificate``):
+        ``capability`` (``"laplace-sos-mp2"``), its grade from the validation page capped
+        by the reference SCF's, the method's settings in ``approximations``
+        and the reference's as ``"scf <name>"``, and ``warnings``."""
+        ...
 
     @property
     def total_energy(self) -> float: ...
@@ -1602,6 +1634,14 @@ class AttenuatedMp2Result:
     """Result of an attenuated RI-MP2 calculation."""
 
     @property
+    def certificate(self) -> dict[str, Any]:
+        """Validation certificate (schema of ``RhfResult.certificate``):
+        ``capability`` (``"att-rimp2"``), its grade from the validation page capped
+        by the reference SCF's, the method's settings in ``approximations``
+        and the reference's as ``"scf <name>"``, and ``warnings``."""
+        ...
+
+    @property
     def total_energy(self) -> float: ...
     @property
     def rhf_energy(self) -> float: ...
@@ -1625,6 +1665,14 @@ class ScsMp2Result:
     """Result of a spin-component-scaled MP2 calculation."""
 
     @property
+    def certificate(self) -> dict[str, Any]:
+        """Validation certificate (schema of ``RhfResult.certificate``):
+        ``capability`` (``"scs-mp2"`` (``"scs-mp2-2terfc"`` for ``run_scs_mp2_2terfc``)), its grade from the validation page capped
+        by the reference SCF's, the method's settings in ``approximations``
+        and the reference's as ``"scf <name>"``, and ``warnings``."""
+        ...
+
+    @property
     def total_energy(self) -> float: ...
     @property
     def rhf_energy(self) -> float: ...
@@ -1646,6 +1694,14 @@ class ScsMp2Result:
 
 class Mp2VResult:
     """Result of an MP2-V (attenuated MP2 + VV10) calculation."""
+
+    @property
+    def certificate(self) -> dict[str, Any]:
+        """Validation certificate (schema of ``RhfResult.certificate``):
+        ``capability`` (``"mp2-v"``), its grade from the validation page capped
+        by the reference SCF's, the method's settings in ``approximations``
+        and the reference's as ``"scf <name>"``, and ``warnings``."""
+        ...
 
     @property
     def total_energy(self) -> float:
@@ -1685,6 +1741,14 @@ class Mp2VResult:
 
 class RsMp2RpaResult:
     """Result of an RS-MP2-RPA (SR-MP2 + LR-dRPA) calculation."""
+
+    @property
+    def certificate(self) -> dict[str, Any]:
+        """Validation certificate (schema of ``RhfResult.certificate``):
+        ``capability`` (``"rs-mp2-rpa"``), its grade from the validation page capped
+        by the reference SCF's, the method's settings in ``approximations``
+        and the reference's as ``"scf <name>"``, and ``warnings``."""
+        ...
 
     @property
     def total_energy(self) -> float: ...
@@ -1980,6 +2044,14 @@ class UGwResult:
     """Result of an open-shell U-GW calculation."""
 
     @property
+    def certificate(self) -> dict[str, Any]:
+        """Validation certificate (schema of ``RhfResult.certificate``):
+        ``capability`` (``"gw"``), its grade from the validation page capped
+        by the reference SCF's, the method's settings in ``approximations``
+        and the reference's as ``"scf <name>"``, and ``warnings``."""
+        ...
+
+    @property
     def ref_energy(self) -> float: ...
     @property
     def mo_indices(self) -> list[int]: ...
@@ -2052,6 +2124,14 @@ class BseResult:
 
 class TdhfStaticPolarizabilityResult:
     """Result of an RPAx@KS static polarizability calculation."""
+
+    @property
+    def certificate(self) -> dict[str, Any]:
+        """Validation certificate (schema of ``RhfResult.certificate``):
+        ``capability`` (``"tdhf-static-polarizability"``), its grade from the validation page capped
+        by the reference SCF's, the method's settings in ``approximations``
+        and the reference's as ``"scf <name>"``, and ``warnings``."""
+        ...
 
     @property
     def nocc(self) -> int: ...
@@ -4595,7 +4675,9 @@ def run_drpa(
     run_pdep_rpa(..., trunc_thresh=0) instead). local="amplitude-threshold"
     with eps (required) runs the local approximation; compute_reference and
     eps_rtol_factor are local-only. The dict carries "local": None (exact)
-    or the local model dict.
+    or the local model dict, and "certificate": the validation certificate
+    dict (capability "drpa"; schema of ``RhfResult.certificate``; a finite eps
+    or an unconverged fixed point is not graded).
     """
     ...
 
@@ -4630,7 +4712,8 @@ def run_linlccd(
     """Linearized ladder CCD, closed-shell. variant: "hh" (default),
     "drivers-only" or "full". Exact by default; local="amplitude-threshold"
     with eps (required) runs the local approximation (compute_reference adds
-    the exact energy as local["e_corr_exact"]). The dict carries "local"."""
+    the exact energy as local["e_corr_exact"]). The dict carries "local" and
+    "certificate" (capability "linlccd"; schema of ``RhfResult.certificate``)."""
     ...
 
 def tune_omega(

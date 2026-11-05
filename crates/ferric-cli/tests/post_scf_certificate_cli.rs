@@ -158,3 +158,61 @@ fn gw_logs_a_certificate_record_with_the_matched_settings_caveat() {
     });
     assert!(warned, "{c}");
 }
+
+fn example(name: &str) -> String {
+    std::fs::read_to_string(workspace_root().join("examples").join(name))
+        .unwrap_or_else(|e| panic!("read examples/{name}: {e}"))
+}
+
+fn periodic_certificate(records: &[serde_json::Value]) -> &serde_json::Value {
+    records
+        .iter()
+        .find(|r| r["record"] == "certificate")
+        .unwrap_or_else(|| panic!("no certificate record in {records:?}"))
+}
+
+#[test]
+fn gamma_cell_logs_an_ungraded_periodic_certificate() {
+    let (stdout, records) = run("cell_gamma", &example("h2-cell-rhf.toml"));
+    assert!(
+        stdout.contains("certificate\n  capability  = rhf-gamma\n"),
+        "{stdout}"
+    );
+    let c = periodic_certificate(&records);
+    assert_eq!(c["capability"], "rhf-gamma");
+    assert_eq!(c["grade"], "ungraded");
+    assert!(c["grade_source"].is_null(), "{c}");
+    assert_eq!(names(c), ["jk", "exxdiv", "kpoints"]);
+    assert_eq!(c["approximations"][0]["detail"], "dense");
+    assert_eq!(c["approximations"][1]["detail"], "ewald");
+    assert_eq!(c["approximations"][2]["detail"], "Gamma point only");
+    assert!(c["warnings"].as_array().unwrap().is_empty(), "{c}");
+    assert!(c["build"]["commit"].is_string(), "{c}");
+}
+
+#[test]
+fn kpoint_cell_logs_its_mesh_in_the_certificate() {
+    let (stdout, records) = run("cell_kpts", &example("h2-cell-kpts-rhf.toml"));
+    assert!(
+        stdout.contains("certificate\n  capability  = rhf-kpts\n"),
+        "{stdout}"
+    );
+    let c = periodic_certificate(&records);
+    assert_eq!(c["capability"], "rhf-kpts");
+    assert_eq!(c["grade"], "ungraded");
+    assert_eq!(c["approximations"][2]["detail"], "2x2x2 mesh, gamma");
+}
+
+#[test]
+fn unconverged_cell_certificate_warns() {
+    let body = example("h2-cell-rhf.toml") + "\n[scf]\nmax_iter = 1\n";
+    let (_stdout, records) = run("cell_unconverged", &body);
+    let c = periodic_certificate(&records);
+    let w: Vec<&str> = c["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|w| w.as_str().unwrap())
+        .collect();
+    assert_eq!(w, ["did not converge (1 iterations)"], "{c}");
+}

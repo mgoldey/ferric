@@ -70,6 +70,9 @@ struct Outcome {
     converged: bool,
     /// `"total"` for SCF routes, `"correlated_total"` for MP2/dRPA.
     energy_is: &'static str,
+    /// SCF iterations of the route; `None` where the handler does not
+    /// report one (optimization, stress).
+    iterations: Option<usize>,
 }
 
 /// Entry point from `run()`: `cfg.periodic` must be `Some`.
@@ -156,6 +159,7 @@ pub fn run_periodic(cfg: &Config) {
             PeriodicRoute::Mp2 | PeriodicRoute::Drpa => run_gamma_corr(cfg, plan, &s),
         }
     };
+    crate::print_and_note_certificate(&periodic_certificate(plan, &out));
     if let Some(rl) = ferric_scf::runlog::log() {
         rl.run_end(
             out.energy,
@@ -168,6 +172,55 @@ pub fn run_periodic(cfg: &Config) {
             run_end_extra(cfg, &out, stress.as_ref(), opt.as_ref()),
         );
     }
+}
+
+/// The periodic certificate of a finished run: capability `<route>-gamma` /
+/// `<route>-kpts` (`ferric_pbc::certificate`, ungraded), the J/K route, the
+/// exchange-divergence treatment and the k-point mesh.
+fn periodic_certificate(
+    plan: &PeriodicPlan,
+    out: &Outcome,
+) -> ferric_core::certificate::Certificate {
+    let capability = format!(
+        "{}-{}",
+        plan.route.label().to_lowercase(),
+        if plan.kmesh.is_some() {
+            "kpts"
+        } else {
+            "gamma"
+        }
+    );
+    let (jk, aux) = match &plan.jk {
+        PeriodicJk::Dense { .. } => ("dense", None),
+        PeriodicJk::RsGdf { auxbasis, .. } => ("rsgdf", Some(auxbasis.as_str())),
+    };
+    let mesh = plan.kmesh.map(|([a, b, c], centring)| {
+        let name = match centring {
+            MeshCentring::Gamma => "gamma",
+            MeshCentring::MonkhorstPack => "mp",
+        };
+        ((a, b, c), name)
+    });
+    // Handlers that do not report an iteration count (optimization, stress)
+    // build the certificate converged and add the warning here.
+    let mut c = ferric_pbc::certificate::pbc_certificate(
+        &capability,
+        jk,
+        aux,
+        exx_name(plan.exxdiv),
+        mesh,
+        out.converged || out.iterations.is_none(),
+        out.iterations.unwrap_or(0),
+    )
+    .with_build(ferric_core::certificate::BuildStamp::new(
+        ferric_build_info::VERSION,
+        ferric_build_info::COMMIT,
+        ferric_build_info::DIRTY,
+    ));
+    if !out.converged && out.iterations.is_none() {
+        c.push_warning("did not converge (iteration count not reported on this route)");
+    }
+    c
 }
 
 /// The `run_end` record's `extra`; a `[cell] stress = true` run adds the
@@ -808,6 +861,7 @@ fn run_gamma_rhf(cfg: &Config, plan: &PeriodicPlan, s: &Setup) -> Outcome {
         energy: r.energy,
         converged: r.converged,
         energy_is: "total",
+        iterations: Some(r.iterations),
     }
 }
 
@@ -936,6 +990,7 @@ fn run_gamma_rks(cfg: &Config, plan: &PeriodicPlan, s: &Setup) -> Outcome {
         energy: r.scf.energy,
         converged: r.scf.converged,
         energy_is: "total",
+        iterations: Some(r.scf.iterations),
     }
 }
 
@@ -1137,6 +1192,7 @@ fn run_gamma_open(cfg: &Config, plan: &PeriodicPlan, s: &Setup) -> Outcome {
         energy: p.scf.energy,
         converged: p.scf.converged,
         energy_is: "total",
+        iterations: Some(p.scf.iterations),
     }
 }
 
@@ -1265,6 +1321,7 @@ fn run_gamma_corr(cfg: &Config, plan: &PeriodicPlan, s: &Setup) -> Outcome {
         energy: c.total,
         converged: rhf.converged,
         energy_is: "correlated_total",
+        iterations: Some(rhf.iterations),
     }
 }
 
@@ -1386,6 +1443,7 @@ fn run_krhf(cfg: &Config, plan: &PeriodicPlan, s: &Setup) -> Outcome {
         energy: r.energy,
         converged: r.converged,
         energy_is: "total",
+        iterations: Some(r.iterations),
     }
 }
 
@@ -1445,6 +1503,7 @@ fn run_krks(cfg: &Config, plan: &PeriodicPlan, s: &Setup) -> Outcome {
         energy: r.scf.energy,
         converged: r.scf.converged,
         energy_is: "total",
+        iterations: Some(r.scf.iterations),
     }
 }
 
@@ -1849,6 +1908,7 @@ fn run_kstress(cfg: &Config, plan: &PeriodicPlan, s: &Setup) -> (Outcome, Stress
         energy: r.energy,
         converged: r.converged,
         energy_is: "total",
+        iterations: r.iterations,
     };
     (
         out,
@@ -2170,6 +2230,7 @@ fn print_kopen(cfg: &Config, plan: &PeriodicPlan, s: &Setup, r: &KOpenReport<'_>
         energy: r.energy,
         converged: r.converged,
         energy_is: "total",
+        iterations: Some(r.iterations),
     }
 }
 
@@ -2292,6 +2353,7 @@ fn run_kuhf(cfg: &Config, plan: &PeriodicPlan, s: &Setup) -> Outcome {
         energy: u.energy,
         converged: u.converged,
         energy_is: "total",
+        iterations: Some(u.iterations),
     }
 }
 
@@ -2494,6 +2556,7 @@ fn run_kcorr(cfg: &Config, plan: &PeriodicPlan, s: &Setup) -> Outcome {
         energy: k.total,
         converged: r.converged,
         energy_is: "correlated_total",
+        iterations: Some(r.iterations),
     }
 }
 
@@ -2858,6 +2921,7 @@ fn run_periodic_optimize(
             energy,
             converged,
             energy_is: "total",
+            iterations: None,
         },
         info,
     )
