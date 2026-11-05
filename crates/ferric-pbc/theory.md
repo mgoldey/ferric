@@ -123,7 +123,7 @@ $$
 
 Low orders: $E^{00}_0 = 1$; $E^{10} = (X_{PA},\,1/2p)$;
 $E^{11} = (X_{PA}X_{PB} + 1/2p,\,(X_{PA}+X_{PB})/2p,\,1/4p^2)$;
-$E^{20} = (X_{PA}^2 + 1/2p,\,X_{PA}/p,\,1/4p^2)$ — asserted against
+$E^{20} = (X_{PA}^2 + 1/2p,\,X_{PA}/p,\,1/4p^2)$, asserted against
 quadrature of the complex 1-D integral in S2. Code: prefactor and overlap
 Gaussian `pair_ft/plan.rs:883-884`, $E$-tables and the
 $\sum_t E_t(-iG)^t$ rows `pair_ft/plan.rs:1336` `f_rows` (E from
@@ -319,7 +319,7 @@ residual, **arbitrary** = no derivation or measurement recorded, **definitional*
 | Gate | Value | Where | Provenance |
 |---|---|---|---|
 | ROHF/ROKS orbital gradient $g = \max(\lvert f^\beta_{co}\rvert,\lvert f^\alpha_{ov}\rvert,\lvert (f^\alpha{+}f^\beta)_{cv}\rvert)$ | $g \le 10^{-5}$ Ha (NaN refused) | `grad.rs` `RO_ORBITAL_GRADIENT_TOL`, `ro_gate`; Gamma force and stress | measured: force error $\approx 0.1$–$0.74\,g$ (first order), so $10^{-5}$ caps it near $7\times10^{-6}$ Ha/Bohr, below optimizer thresholds ($\sim 4.5\times10^{-4}$); not a precision guarantee |
-| Same, $k$-point | same number on the largest spectral norm per block, maximised over $k$ | `kuxcgrad.rs` `ro_orbital_gradient_k`, `kuxcstress.rs` | measured on H3/STO-3G 1x1x1 only (rank-1 blocks); the spectral norm is $\ge$ the Gamma max-element, so the $k$ gate can refuse a state the Gamma gate accepts. Constant deliberately shared |
+| Same, $k$-point | same number on the largest spectral norm per block, maximised over $k$ | `kuxcgrad.rs` `ro_orbital_gradient_k`, `kuxcstress.rs` | measured on H3/STO-3G 1x1x1 only (rank-1 blocks); the spectral norm is $\ge$ the Gamma max-element, so the $k$ gate can refuse a state the Gamma gate accepts. Constant shared |
 | UKS spin commutator $\max_{\sigma,k}\lvert F_\sigma D_\sigma S - S D_\sigma F_\sigma\rvert$ | $\le 10^{-5}$ Ha | `kuxcgrad.rs` `UKS_COMMUTATOR_TOL`; $k$-point UKS force and stress | measured: commutator $1.6\times10^{-3}\to$ force error $7.2\times10^{-4}$, $2.7\times10^{-5}\to1.4\times10^{-5}$, $2.6\times10^{-6}\to5\times10^{-7}$. Gamma UKS has no commutator gate (only `converged`) |
 | MO occupation classification (closed 1,1 / open 1,0 / virtual 0,0) | $\lvert n_i - \mathrm{round}(n_i)\rvert < 10^{-6}$ | `grad.rs` `RO_OCC_TOL`, `rohf_orbital_gradient` | arbitrary |
 | Class counts vs $\mathrm{tr}(D_\sigma S)$ | $\lvert\Delta\rvert \le 10^{-6}$ electrons | `grad.rs` `rohf_orbital_gradient` | arbitrary |

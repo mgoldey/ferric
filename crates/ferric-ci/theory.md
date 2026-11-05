@@ -25,8 +25,8 @@ a_P\,|s\rangle = (-1)^{\#\{Q<P\,:\,Q\in s\}}\,|s\setminus P\rangle ,
 a^\dagger_P\,|s\rangle = (-1)^{\#\{Q<P\,:\,Q\in s\}}\,|s\cup P\rangle .
 $$
 
-`strings::phase_below(s, p)` evaluates $(-1)^{\#\{q<p\,:\,q\in s\}}$ on ONE
-spin channel's string. For an α operator this is the full JW sign. For a β
+`strings::phase_below(s, p)` evaluates $(-1)^{\#\{q<p\,:\,q\in s\}}$ on one
+spin channel's string. For an α operator it is the full JW sign. For a β
 operator the full sign carries an extra $(-1)^{N_\alpha}$; every term of $H$
 contains β operators in annihilator/creator pairs, so the factor appears an
 even number of times and cancels. The code therefore never counts α
