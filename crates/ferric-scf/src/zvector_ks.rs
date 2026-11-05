@@ -51,9 +51,9 @@
 //!
 //! # Scope
 //!
-//! Closed-shell KS (LDA, GGA, global hybrid, range-separated hybrid GGA) on a
-//! converged `Spin::Restricted` result. Refused, with a reason, rather than
-//! answered approximately: HF (no `xc`), meta-GGA (no τ f_xc kernel), VV10
+//! Closed-shell KS (LDA, GGA, global hybrid, range-separated hybrid GGA,
+//! τ-only meta-GGA) on a converged `Spin::Restricted` result. Refused, with a
+//! reason, rather than answered approximately: HF (no `xc`), VV10
 //! (no nonlocal kernel), an `xc_omega` override, COSMO/PCM/polarizable
 //! embedding and cDFT constraints (their response is not in H), fractional
 //! occupation and smearing (not a closed-shell idempotent density).
@@ -257,11 +257,6 @@ pub fn unsupported_reason(config: &RhfConfig) -> Option<String> {
         }
         Some(x) => x,
     };
-    if crate::rohf::xc_is_metagga(Some(xc)) {
-        return Some(format!(
-            "'{xc}' is a meta-GGA: there is no tau f_xc kernel for the orbital Hessian"
-        ));
-    }
     match ferric_dft::libxc::xc_def_from_name(xc) {
         Err(e) => return Some(format!("unknown functional '{xc}': {e:?}")),
         Ok(def) if def.vv10.is_some() => {

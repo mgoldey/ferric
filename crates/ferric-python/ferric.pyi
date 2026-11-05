@@ -4557,7 +4557,7 @@ def tune_omega(
     "marginal", "indeterminate", "not_analysed", "not_checked") and
     ``cation_stability_skip``; the result gains ``stability_warning``. A tuned
     omega whose cation is an internal saddle raises RuntimeError. Functionals
-    without an orbital-Hessian kernel (VV10, meta-GGA) are reported
+    without an orbital-Hessian kernel (VV10) are reported
     "not_analysed", never stable. False reproduces earlier results bit for bit.
     """
     ...

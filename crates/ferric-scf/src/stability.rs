@@ -1025,10 +1025,6 @@ pub enum StabilitySkip {
     /// VV10 gap, which is a SEPARATE missing term in the XC response rather
     /// than a wrong exchange kernel.
     Vv10Kernel,
-    /// Meta-GGA functional. There is no τ-dependent f_xc kernel in this
-    /// workspace (`xc_is_metagga` gates the Newton f_xc path for the same
-    /// reason), so the XC response term of the Hessian cannot be formed.
-    MetaGga,
     /// A per-iteration Fock modifier was active (the cDFT path,
     /// `solve_uhf_fockmod` with `fock_mod = Some(..)`). Such a run converges
     /// the CONSTRAINED Fock, so the Brillouin condition that holds at its exit
@@ -1070,11 +1066,6 @@ impl StabilitySkip {
                  functional's own energy contains (the range-separated exchange response \
                  itself IS now built, from the converged Fock's own SR/LR fitters)"
             }
-            StabilitySkip::MetaGga => {
-                "the functional is a meta-GGA and no tau-dependent f_xc kernel exists in \
-                 this workspace, so the XC response term of the orbital Hessian cannot \
-                 be formed"
-            }
             StabilitySkip::FockModified => {
                 "a per-iteration Fock modifier (cDFT constraint) was active, so the converged \
                  state is stationary for the CONSTRAINED Fock and not for the bare UHF one that \
@@ -1091,14 +1082,12 @@ impl StabilitySkip {
     }
 }
 
-/// Decide whether a KS/HF reference can be analysed at all, given the
-/// functional's range-separation and meta-GGA status.
+/// Decide whether a KS/HF reference can be analysed at all.
 ///
 /// Returns `Ok(())` when the reference is analysable with the operators that
-/// exist, or `Err(skip)` naming the precondition that failed. Mirrors EXACTLY
-/// the gates the Newton paths use (`k_mix.omega == 0.0` and
-/// `!rohf::xc_is_metagga(xc)`), because the stability analysis drives the same
-/// `hessian_matvec` those gates protect.
+/// exist, or `Err(skip)` naming the precondition that failed. LDA, GGA,
+/// hybrid, range-separated and τ-only meta-GGA references are analysable
+/// (`rohf::FxcKernelStore` builds their f_xc); VV10 is not.
 ///
 /// It deliberately does NOT gate on `xc.is_some()`: an LDA/GGA/hybrid KS
 /// reference IS analysable, provided the caller threads the same `fxc`
@@ -1116,9 +1105,6 @@ pub fn ks_reference_is_analysable(xc: Option<&str>, omega: f64) -> Result<(), St
     // see the note there — and because removing it would silently change every
     // caller's argument list.
     let _ = omega;
-    if crate::rohf::xc_is_metagga(xc) {
-        return Err(StabilitySkip::MetaGga);
-    }
     // VV10 nonlocal correlation has NO response kernel anywhere in this
     // workspace: `ferric_dft::fxc` does not mention it, so
     // `rohf::FxcKernelStore` silently omits it, and `zvector_ks` and

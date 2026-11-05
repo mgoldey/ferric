@@ -337,12 +337,30 @@ const FD_FULL_TOL: f64 = 5e-10;
 /// FD_full − FD_orth.
 #[test]
 fn uks_mbd_exact_gradient_matches_fd_of_full_scf_pipeline() {
-    let mol = Molecule::parse_xyz(OH_XYZ, 0, 2).expect("OH");
+    uks_full_pipeline_fd_check(
+        "OH",
+        OH_XYZ,
+        "PBE",
+        &MbdRsscsConfig::for_functional("PBE").expect("beta"),
+    );
+}
+
+/// The same check on a τ-only meta-GGA (NH2 doublet, r2SCAN; OH is avoided:
+/// its β-HOMO is near-degenerate under SCAN-family functionals): the coupled
+/// α/β Z-vector applies the τ f_xc kernel. β is PBE's (no published r2SCAN
+/// value; this checks the derivative, not the dispersion model).
+#[test]
+fn uks_mbd_exact_gradient_matches_fd_of_full_scf_pipeline_r2scan() {
+    uks_full_pipeline_fd_check("NH2", NH2_XYZ, "r2SCAN", &MbdRsscsConfig::with_beta(0.83));
+}
+
+fn uks_full_pipeline_fd_check(name: &str, xyz: &str, xc: &str, mbd_cfg: &MbdRsscsConfig) {
+    let mol = Molecule::parse_xyz(xyz, 0, 2).expect("doublet");
     let bs = basis::bundled("sto-3g").expect("sto-3g");
     let op = Operator::coulomb();
     let ctx = ParallelContext::default();
-    let cfg = ks("PBE");
-    let mbd_cfg = MbdRsscsConfig::for_functional("PBE").expect("beta");
+    let cfg = ks(xc);
+    let mbd_cfg = *mbd_cfg;
     let cache = MbdFreeAtomCache::build(&ctx, &mol, &bs, op, &cfg).expect("cache");
     let r = uks(&mol, &bs, &cfg, None);
     let out = mbd_rsscs_for_scf(&ctx, &cache, &mol, &bs, op, &cfg, &r, &mbd_cfg).expect("mbd");
@@ -355,7 +373,7 @@ fn uks_mbd_exact_gradient_matches_fd_of_full_scf_pipeline() {
     let diff = max_abs(&(&g - &fd));
     let diff_relax = max_abs(&(&relax - &relax_fd));
     println!(
-        "OH/STO-3G PBE: max|FD| = {:.3e}, max|relax| = {:.3e}, max|exact - FD| = {diff:.3e}, \
+        "{name}/STO-3G {xc}: max|FD| = {:.3e}, max|relax| = {:.3e}, max|exact - FD| = {diff:.3e}, \
          max|relax(Z) - relax(FD)| = {diff_relax:.3e}",
         max_abs(&fd),
         max_abs(&relax)

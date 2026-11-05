@@ -497,9 +497,9 @@ fn run_uks(system: &str, xc: &str) {
         );
         assert_j_route(&res, "rij", &ctx);
 
-        // State first: ⟨S²⟩ (ferric skips meta-GGA stability analysis,
-        // StabilitySkip::MetaGga, so the state is pinned by matching the
-        // stability-followed reference).
+        // State first: ⟨S²⟩ (this config does not request ferric's stability
+        // analysis, so the state is pinned by matching the stability-followed
+        // reference).
         let s2 = s_squared(&res, &s, na, nb);
         check_close(
             &ctx,

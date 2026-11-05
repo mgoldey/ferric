@@ -356,7 +356,7 @@ fn functional_refusal(name: &str, xc: &ferric_dft::libxc::XcDef) -> Result<(), F
     {
         return Err(unsupported(
             &format!("a meta-GGA ('{name}')"),
-            "tau-dependent XC kernel",
+            "tau-dependent XC nuclear derivatives (V_xc^x and the XC skeleton)",
         ));
     }
     if mix.sr != mix.lr {

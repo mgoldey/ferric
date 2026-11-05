@@ -497,12 +497,33 @@ const FD_FULL_TOL: f64 = 5e-9;
 /// relaxation term fails.
 #[test]
 fn mbd_exact_gradient_matches_fd_of_full_scf_pipeline() {
+    full_pipeline_fd_check(
+        "PBE",
+        &rks_pbe(),
+        &MbdRsscsConfig::for_functional("PBE").expect("beta"),
+    );
+}
+
+/// The same check on a τ-only meta-GGA: the Z-vector solve applies the τ
+/// f_xc kernel (`FxcKernelStore::Mgga`) and the contraction differentiates
+/// the meta-GGA gradient expression. β is PBE's (r2SCAN has no published
+/// MBD@rsSCS β; the check is of the derivative, not of the dispersion model).
+/// Without the τ kernel blocks in the Z-vector Hessian it fails (mutation).
+#[test]
+fn mbd_exact_gradient_matches_fd_of_full_scf_pipeline_r2scan() {
+    let cfg = RhfConfig {
+        xc: Some("r2SCAN".to_string()),
+        ..rks_pbe()
+    };
+    full_pipeline_fd_check("r2SCAN", &cfg, &MbdRsscsConfig::with_beta(0.83));
+}
+
+fn full_pipeline_fd_check(label: &str, cfg: &RhfConfig, mbd_cfg: &MbdRsscsConfig) {
     let mol = Molecule::parse_xyz(H2O_XYZ, 0, 1).expect("h2o");
     let bs = basis::bundled("sto-3g").expect("sto-3g");
     let op = Operator::coulomb();
     let ctx = ParallelContext::default();
-    let cfg = rks_pbe();
-    let mbd_cfg = MbdRsscsConfig::for_functional("PBE").expect("beta");
+    let (cfg, mbd_cfg) = (cfg.clone(), *mbd_cfg);
     let cache = MbdFreeAtomCache::build(&ctx, &mol, &bs, op, &cfg).expect("cache");
     let r = scf(&mol, &bs, &cfg);
     let out = mbd_rsscs_for_scf(&ctx, &cache, &mol, &bs, op, &cfg, &r, &mbd_cfg).expect("mbd");
@@ -513,7 +534,7 @@ fn mbd_exact_gradient_matches_fd_of_full_scf_pipeline() {
     });
     let diff = max_abs(&(&g - &fd));
     println!(
-        "PBE/STO-3G water: max|FD| = {:.3e}, max|relax| = {:.3e}, max|exact - FD| = {diff:.3e}",
+        "{label}/STO-3G water: max|FD| = {:.3e}, max|relax| = {:.3e}, max|exact - FD| = {diff:.3e}",
         max_abs(&fd),
         max_abs(&relax)
     );

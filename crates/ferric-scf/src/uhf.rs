@@ -1916,20 +1916,19 @@ fn solve_uhf_impl(
         // #292 lists the lift as optional and as a separate commit; it is not
         // a correctness blocker any more, and stability analysis — which drives
         // the same matvec through Davidson — is already unblocked.
-        // Meta-GGA (SCAN / r2SCAN) has no τ-dependent f_xc kernel in Phase A —
-        // exclude it from the Newton path so it falls back to DIIS (energy-only).
+        // Meta-GGA takes the τ kernel (`FxcKernelStore::Mgga`).
         let use_newton = config.newton_trigger > 0.0
             && iter > 3
             && err_max < config.newton_trigger
             && k_mix.omega == 0.0
-            && !crate::rohf::xc_is_metagga(config.xc.as_deref())
             && !fractional_blocks_second_order;
         if use_newton {
             let f_a_mo = c_a.t().dot(&f_a).dot(&c_a);
             let f_b_mo = c_b.t().dot(&f_b).dot(&c_b);
 
-            // Build the f_xc kernel (LDA or GGA) + reference density once per
-            // Newton step (None for pure UHF). The response closure borrows it.
+            // Build the f_xc kernel (LDA, GGA or meta-GGA) + reference density
+            // once per Newton step (None for pure UHF). The response closure
+            // borrows it.
             //
             // `FxcKernelStore::build` -> `GgaFxcKernel::new`/`LdaFxcKernel::new`
             // (ferric-dft/src/fxc.rs) calls `eval_basis_and_grad_on_points` on
@@ -2151,9 +2150,9 @@ fn solve_uhf_impl(
 /// λ_min for an operator nobody asked about, presented with the same
 /// confidence as a correct one. So for `xc.is_some()` this builds the SAME
 /// [`crate::rohf::FxcKernelStore`] the UKS Newton branch a few hundred lines
-/// above builds at the same (d_α, d_β) reference, and where that kernel cannot
-/// be built — range-separated or meta-GGA — it SKIPS with a printed reason.
-/// Those are exactly the gates the UKS Newton branch itself uses.
+/// above builds at the same (d_α, d_β) reference (LDA, GGA, hybrid, RSH and
+/// τ-only meta-GGA); where the reference is not analysable (VV10, a Fock
+/// modifier) it SKIPS with a printed reason.
 #[allow(clippy::too_many_arguments)]
 fn stability_uhf<'r>(
     ctx: &ParallelContext,

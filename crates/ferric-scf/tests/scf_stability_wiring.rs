@@ -425,19 +425,12 @@ fn unrepresentable_ks_references_are_refused_not_silently_downgraded() {
         ks_reference_is_analysable(Some("wB97X-V"), 0.3),
         Err(StabilitySkip::Vv10Kernel)
     );
-    // Meta-GGA: no tau f_xc kernel, so refuse.
-    assert_eq!(
-        ks_reference_is_analysable(Some("SCAN"), 0.0),
-        Err(StabilitySkip::MetaGga)
-    );
-    assert_eq!(
-        ks_reference_is_analysable(Some("r2SCAN"), 0.0),
-        Err(StabilitySkip::MetaGga)
-    );
+    // τ-only meta-GGA: analysable with the τ kernel (FxcKernelStore::Mgga).
+    assert_eq!(ks_reference_is_analysable(Some("SCAN"), 0.0), Ok(()));
+    assert_eq!(ks_reference_is_analysable(Some("r2SCAN"), 0.0), Ok(()));
     eprintln!(
-        "KS GATE  HF/PBE/B3LYP analysable; wB97X-V -> {:?}; SCAN -> {:?}",
+        "KS GATE  HF/PBE/B3LYP/SCAN/r2SCAN analysable; wB97X-V -> {:?}",
         ks_reference_is_analysable(Some("wB97X-V"), 0.3).unwrap_err(),
-        ks_reference_is_analysable(Some("SCAN"), 0.0).unwrap_err()
     );
 }
 

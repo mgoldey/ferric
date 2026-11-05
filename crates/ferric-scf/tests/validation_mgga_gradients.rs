@@ -58,9 +58,9 @@
 //!   control sets `df_j_aux = Some("")` (explicit four-centre J) against plain
 //!   PySCF. The open-shell solvers do NOT auto-default (uhf.rs/rohf.rs read
 //!   `df_j_aux` verbatim), so UKS/ROKS set `Some(AUX)` explicitly.
-//! * State: ferric's stability analysis SKIPS meta-GGAs
-//!   (`StabilitySkip::MetaGga`: no τ-dependent f_xc). The UKS state is pinned
-//!   by the energy and ⟨S²⟩ matching PySCF's stability-followed reference.
+//! * State: the UKS state is pinned by the energy and ⟨S²⟩ matching PySCF's
+//!   stability-followed reference (this row does not run ferric's stability
+//!   analysis).
 //!
 //! # Physics hypothesis vs artifact hypothesis (per the Experimental Protocol)
 //!

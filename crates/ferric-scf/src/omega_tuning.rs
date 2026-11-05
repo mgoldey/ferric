@@ -63,7 +63,7 @@
 //!   unconverged verdict anywhere, is reported in
 //!   [`OmegaTuneResult::stability_warning`](crate::omega_tuning::OmegaTuneResult::stability_warning).
 //! * `NotAnalysed(skip)` — the Hessian cannot be built for this functional
-//!   (VV10 such as ωB97X-V: [`StabilitySkip::Vv10Kernel`](crate::stability::StabilitySkip::Vv10Kernel); meta-GGA). This is
+//!   (VV10 such as ωB97X-V: [`StabilitySkip::Vv10Kernel`](crate::stability::StabilitySkip::Vv10Kernel)). This is
 //!   NEVER read as stable: it is recorded per eval, summarised in
 //!   `stability_warning` and printed to stderr.
 //!

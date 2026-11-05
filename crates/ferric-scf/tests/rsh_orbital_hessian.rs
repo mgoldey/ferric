@@ -422,11 +422,8 @@ fn wb97xv_is_still_refused_but_for_the_vv10_reason() {
         "the skip reason still blames the plain-Coulomb kernel, which is no longer \
          what happens: {reason}"
     );
-    // And the meta-GGA arm is untouched.
-    assert_eq!(
-        ks_reference_is_analysable(Some("SCAN"), 0.0),
-        Err(StabilitySkip::MetaGga)
-    );
+    // A τ-only meta-GGA is analysable (FxcKernelStore::Mgga).
+    assert_eq!(ks_reference_is_analysable(Some("SCAN"), 0.0), Ok(()));
 }
 
 /// **#292's exactness anchor (a).** With `c_SR = c_LR = c` the RSH exchange

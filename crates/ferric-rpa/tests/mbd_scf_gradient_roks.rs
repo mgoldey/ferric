@@ -372,11 +372,23 @@ const FD_FULL_TOL: f64 = 5e-10;
 /// FD_full − FD_orth, and that every FD point stayed on the reference state.
 #[test]
 fn roks_mbd_exact_gradient_matches_fd_of_full_scf_pipeline() {
+    roks_full_pipeline_fd_check("PBE", &MbdRsscsConfig::for_functional("PBE").expect("beta"));
+}
+
+/// The same check on a τ-only meta-GGA (r2SCAN): the ROKS Z-vector applies
+/// the τ f_xc kernel in all three rotation blocks. β is PBE's (no published
+/// r2SCAN value; this checks the derivative, not the dispersion model).
+#[test]
+fn roks_mbd_exact_gradient_matches_fd_of_full_scf_pipeline_r2scan() {
+    roks_full_pipeline_fd_check("r2SCAN", &MbdRsscsConfig::with_beta(0.83));
+}
+
+fn roks_full_pipeline_fd_check(xc: &str, mbd_cfg: &MbdRsscsConfig) {
     let bs = basis::bundled("sto-3g").expect("sto-3g");
     let op = Operator::coulomb();
     let ctx = ParallelContext::default();
-    let cfg = ks("PBE");
-    let mbd_cfg = MbdRsscsConfig::for_functional("PBE").expect("beta");
+    let cfg = ks(xc);
+    let mbd_cfg = *mbd_cfg;
     for (name, xyz, mult) in FAST_CASES {
         let mol = Molecule::parse_xyz(xyz, 0, mult).expect("mol");
         let cache = MbdFreeAtomCache::build(&ctx, &mol, &bs, op, &cfg).expect("cache");
@@ -394,7 +406,7 @@ fn roks_mbd_exact_gradient_matches_fd_of_full_scf_pipeline() {
             .map(|k| g.column(k).sum().abs())
             .fold(0.0_f64, f64::max);
         println!(
-            "{name}/STO-3G PBE ROKS: max|FD| = {:.3e}, max|relax| = {:.3e}, max|exact - FD| = \
+            "{name}/STO-3G {xc} ROKS: max|FD| = {:.3e}, max|relax| = {:.3e}, max|exact - FD| = \
              {diff:.3e}, max|relax(Z) - relax(FD)| = {diff_relax:.3e}, max|sum_B g| = \
              {tsum:.1e}, max|dD|/h = {jump:.3}",
             max_abs(&fd),
@@ -425,14 +437,15 @@ fn roks_mbd_exact_gradient_matches_fd_of_full_scf_pipeline() {
 }
 
 /// The ROKS Z-vector refuses what it cannot answer exactly, with a reason:
-/// meta-GGA (no τ kernel), VV10, overlap-fitted COSX exchange (its response
+/// VV10, overlap-fitted COSX exchange (its response
 /// needs the XC Fock nuclear derivative), an xc_omega override, solvation and
-/// cDFT; and a plain GGA/hybrid/RSH, and fit-off COSX, are accepted.
+/// cDFT; and a plain GGA/hybrid/RSH/τ-only meta-GGA, and fit-off COSX, are
+/// accepted.
 /// `mbd_rsscs_for_scf` surfaces the same reason.
 #[test]
 fn roks_zvector_refuses_unsupported_references() {
     use ferric_scf::zvector_ks::unsupported_reason_roks;
-    for xc in ["PBE", "PBE0", "HSE06", "B3LYP"] {
+    for xc in ["PBE", "PBE0", "HSE06", "B3LYP", "SCAN", "r2SCAN"] {
         assert_eq!(unsupported_reason_roks(&ks(xc)), None, "{xc}");
     }
     let fit_off = RhfConfig {
@@ -445,7 +458,6 @@ fn roks_zvector_refuses_unsupported_references() {
     };
     assert_eq!(unsupported_reason_roks(&fit_off), None, "fit-off COSX");
     let cases: Vec<(&str, RhfConfig, &str)> = vec![
-        ("SCAN", ks("SCAN"), "meta-GGA"),
         ("wB97X-V", ks("wB97X-V"), "VV10"),
         (
             "PBE0 fitted cosx",

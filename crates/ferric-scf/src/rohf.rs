@@ -68,6 +68,13 @@ pub type RohfConfig = RhfConfig;
 pub static GGA_FXC_KERNEL_BUILDS: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
 
+/// Test-only instrumentation: counts τ-only meta-GGA f_xc kernel builds
+/// ([`FxcKernelStore::Mgga`]), so the meta-GGA Newton / stability tests can
+/// prove the τ kernel was the one applied.
+#[doc(hidden)]
+pub static MGGA_FXC_KERNEL_BUILDS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
 /// Test-only override of the F6 swap witness's restart budget
 /// (`crate::rohf_occupation::MAX_AUFBAU_RESTARTS`); `usize::MAX` (the
 /// default) means no override. Process-global, so a test that sets it must
@@ -113,10 +120,9 @@ pub enum FxcKernelStore {
         kernel: Box<ferric_dft::fxc::GgaFxcKernel>,
         ref_dens: Box<ferric_dft::density_on_grid::UksDensityGrid>,
     },
-    /// τ-only meta-GGA (SCAN / r2SCAN / TPSS). Reachable through `build`, but
-    /// every SCF consumer (Newton, stability, Z-vector) still refuses
-    /// meta-GGA with its own `xc_is_metagga` gate before building; today the
-    /// Python response blocks are the only caller that applies it.
+    /// τ-only meta-GGA (SCAN / r2SCAN / TPSS): the RKS/UKS Newton steps,
+    /// RKS/UKS internal stability, the RKS/UKS/ROKS Z-vector and the Python
+    /// response blocks apply it. ROKS Newton/AH and TRAH keep meta-GGA on DIIS.
     Mgga {
         kernel: Box<ferric_dft::fxc::MggaFxcKernel>,
         reference: Box<ferric_dft::fxc::MggaFxcReference>,
@@ -124,10 +130,9 @@ pub enum FxcKernelStore {
 }
 
 impl FxcKernelStore {
-    /// Build the appropriate f_xc kernel for `xc_name` (LDA vs GGA-family) at
-    /// the given reference densities. `xc_name` is the functional string that
-    /// already produced a live `xc_contrib` upstream, so it is guaranteed
-    /// LDA/GGA/hybrid/RSH (meta-GGA rejected at KsXcUks::new).
+    /// Build the appropriate f_xc kernel for `xc_name` (LDA, GGA-family or
+    /// τ-only meta-GGA) at the given reference densities. `xc_name` is the
+    /// functional string that already produced a live `xc_contrib` upstream.
     ///
     /// `omega_override` is `RhfConfig::xc_omega`, and threading it is NOT
     /// cosmetic. The SCF's own `xc_contrib` is built with the override (see
@@ -200,6 +205,7 @@ impl FxcKernelStore {
         let kernel =
             ferric_dft::fxc::MggaFxcKernel::new(mol, prep.basis_set(), xc_def, cfg).map_err(err)?;
         let reference = kernel.reference(d_a, d_b).map_err(err)?;
+        MGGA_FXC_KERNEL_BUILDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Ok(FxcKernelStore::Mgga {
             kernel: Box::new(kernel),
             reference: Box::new(reference),
@@ -1382,14 +1388,15 @@ fn solve_rohf_impl(
         //     RSH exact-exchange fraction is folded in via `k_mix_sr`/the K
         //     builders exactly as in the Fock build, so the fxc kernel only
         //     ever supplies the semilocal DFT second-derivative response.
-        //     Meta-GGA is still excluded (rejected upstream — no τ kernel).
+        //   - τ-only meta-GGA ROKS keeps DIIS. The τ kernel exists
+        //     (`FxcKernelStore::Mgga`, used by the ROKS Z-vector), but the ROKS
+        //     Newton step on it is not anchored: NH2/6-31G r2SCAN with
+        //     newton_trigger 1e-2 does not converge in 200 iterations (DIIS: 10;
+        //     PBE Newton on the same system: 185 vs DIIS 8).
         //
         // `xc_supports_newton_fxc` gates whether an f_xc-accelerated Newton/AH
-        // step is available for this functional at all. LDA/GGA/hybrid/RSH all
-        // have an f_xc kernel (LdaFxcKernel / GgaFxcKernel). Meta-GGA (SCAN /
-        // r2SCAN) is energy-only in Phase A — there is no τ-dependent f_xc
-        // kernel — so it falls back to plain DIIS here. Pure ROHF (xc=None)
-        // keeps the HF-only Hessian path.
+        // step is taken for this functional. Pure ROHF (xc=None) keeps the
+        // HF-only Hessian path.
         let xc_supports_newton_fxc = xc_contrib.is_some() && !xc_is_metagga(config.xc.as_deref());
         // Augmented-Hessian Newton — used when err_max is below ah_trigger.
         // Handles vanishing Hessian eigenvalues (e.g., doublet OH at LDA with

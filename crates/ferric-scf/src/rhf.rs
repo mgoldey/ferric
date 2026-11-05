@@ -386,9 +386,8 @@ pub struct RhfConfig {
     /// `solve_uhf`/`solve_uks` (UHF-internal, independent α/β rotations).
     /// `solve_rohf`/`solve_roks` SKIP it with a printed reason — the Roothaan
     /// Hessian is a third operator, and analysing a UHF or RHF one there would
-    /// be a wrong-operator verdict. Range-separated and meta-GGA functionals
-    /// are likewise skipped with a reason (see
-    /// [`crate::stability::ks_reference_is_analysable`]).
+    /// be a wrong-operator verdict. VV10 functionals are likewise skipped with
+    /// a reason (see [`crate::stability::ks_reference_is_analysable`]).
     pub check_stability: bool,
     /// Opt-in point-group symmetry blocking (closed-shell RHF, UHF and ROHF;
     /// no Kohn-Sham). `false`
@@ -607,10 +606,9 @@ impl RhfConfig {
 /// confidence as a correct one. So for `xc.is_some()` this function builds the
 /// SAME [`crate::rohf::FxcKernelStore`] the RKS Newton path builds at the same
 /// restricted reference (`d_α = d_β = ½·D`), and where that kernel cannot be
-/// built — range-separated (the matvec's K is plain-Coulomb) or meta-GGA (no τ
-/// f_xc kernel exists in this workspace) — it SKIPS with a printed reason
-/// rather than checking the wrong operator. Those are exactly the gates
-/// `solve_rhf`'s own Newton branch uses. Proven, not asserted, by
+/// built or does not cover the functional (VV10) it SKIPS with a printed
+/// reason rather than checking the wrong operator. τ-only meta-GGA takes
+/// `FxcKernelStore::Mgga`. Proven, not asserted, by
 /// `ks_reference_is_analysed_with_the_xc_kernel_not_the_hf_hessian`.
 #[allow(clippy::too_many_arguments)]
 fn stability_rhf<'r>(
@@ -3116,8 +3114,8 @@ fn solve_rhf_impl(
         //
         // The gates match the Newton path exactly (iter > 3 so `last_c` is a
         // real MO set; ω = 0 because the Hessian matvec's K comes from the
-        // plain Coulomb `build_jk`; no meta-GGA because there is no τ f_xc
-        // kernel in this workspace). Anything outside those gates keeps DIIS,
+        // plain Coulomb `build_jk`; no meta-GGA: TRAH's auxiliary curvature
+        // model is not anchored for the τ kernel). Anything outside those gates keeps DIIS,
         // for the same reasons documented on the Newton branch below.
         //
         // # The two-phase structure
@@ -3473,20 +3471,20 @@ fn solve_rhf_impl(
         // `d` (set at the tail of the previous iteration; zeros before iter 2),
         // so the branch is gated to `iter > 3`, matching solve_uhf. For RKS this
         // reuses the SAME LDA/GGA f_xc kernel (via FxcKernelStore) that the
-        // ROKS/UKS Newton paths use. Gated to the non-RSH case (ω = 0), since
-        // the Newton matvec's K comes from the plain Coulomb `build_jk`; RSH and
-        // meta-GGA (no τ f_xc) keep the DIIS path. Default newton_trigger = 0
-        // ⇒ this branch never fires and existing RHF/RKS results are unchanged.
+        // ROKS/UKS Newton paths use (LDA, GGA or τ-only meta-GGA). Gated to
+        // the non-RSH case (ω = 0), since the Newton matvec's K comes from the
+        // plain Coulomb `build_jk`; RSH keeps the DIIS path. Default
+        // newton_trigger = 0 ⇒ this branch never fires and existing RHF/RKS
+        // results are unchanged.
         let use_newton = config.newton_trigger > 0.0
             && iter > 3
             && err_max < config.newton_trigger
-            && k_mix.omega == 0.0
-            && !crate::rohf::xc_is_metagga(config.xc.as_deref());
+            && k_mix.omega == 0.0;
         if use_newton {
             let c_cur = &last_c;
             let f_mo = c_cur.t().dot(&f).dot(c_cur);
 
-            // Build the f_xc kernel (LDA or GGA) at the current restricted
+            // Build the f_xc kernel (LDA, GGA or meta-GGA) at the current restricted
             // reference (d_α = d_β = ½·d) once per Newton step; None for pure HF.
             let fxc_store = if xc_contrib.is_some() {
                 let main = config
