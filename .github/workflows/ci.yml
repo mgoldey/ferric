@@ -1573,8 +1573,11 @@ jobs:
           set -euo pipefail
           TIER="$(python3 scripts/ci_test_tiers.py filter)"
           SLOW="$(scripts/ci-shard-plan.sh slow-filter)"
+          # ci-tiered profile: 30 min per-test cap, no retries, 2 at a time
+          # (see .config/nextest.toml for why the ci profile's 480 s cap
+          # killed these).
           cargo nextest run --workspace --all-targets --locked \
-            --profile ci \
+            --profile ci-tiered \
             --no-tests=pass \
             --run-ignored only \
             -E "($TIER) & ($SLOW)"
