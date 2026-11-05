@@ -37,7 +37,7 @@ pub(crate) fn zvec_trace() -> bool {
 /// `build_imat_ri` (needed downstream for the overlap/Pulay term).
 ///
 /// With a frozen core the correlation density also carries the core–active
-/// block [`frozen_core_block`] (PySCF `grad/mp2.py` `dco`), which enters the
+/// block `frozen_core_block` (PySCF `grad/mp2.py` `dco`), which enters the
 /// `vhf` term of `Xvo`; the CPHF then rotates every occupied orbital, core
 /// included, into the virtuals. Without a frozen core both reduce to the
 /// all-electron equations.
