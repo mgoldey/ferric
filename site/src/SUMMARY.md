@@ -26,6 +26,7 @@
 - [Coupled cluster](./methods/cc.md)
 - [RPA and GW](./methods/rpa-gw.md)
 - [Constrained DFT](./methods/cdft.md)
+- [Periodic systems](./methods/pbc.md)
 
 # Background
 

@@ -13,6 +13,7 @@ number. To go from a task to a method, start with
 | Coupled cluster | CCD, CCSD, CCSD(T), LinLCCD (hh, drivers-only, full; exact or local); double hybrids B2PLYP, DSD-PBEP86, ωB97X-L-V | [Coupled cluster](./cc.md) |
 | Response | PDEP-RPA, dRPA by the Riccati solve (exact or local), G0W0, COHSEX, evGW0, evGW, BSE-TDA, TDA/TDDFT, polarizabilities and \\( C_6 \\) | [RPA, GW and excited states](./rpa-gw.md) |
 | Electron transfer | cDFT, \\( H_{ab} \\) couplings (Python and Rust, no CLI) | [Constrained DFT](./cdft.md) |
+| Periodic systems | Gamma-point and k-point RHF/UHF/ROHF, RKS/UKS/ROKS, MP2, dRPA; analytic forces and stress; dense AFT or RS-GDF J/K | [Periodic systems](./pbc.md) |
 
 QM/MM embedding is on its own page: [QM/MM](../using/qmmm.md).
 

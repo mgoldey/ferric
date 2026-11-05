@@ -21,7 +21,9 @@ use ferric_core::elements::symbol_to_z;
 use ferric_core::mol::{Atom, Molecule};
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::oneelectron::overlap;
-use ferric_pbc::ewald::{ewald_nuclear_repulsion, madelung_constant};
+use ferric_pbc::ewald::{
+    ewald_nuclear_repulsion, ewald_point_charges, madelung_constant, DEFAULT_EWALD_PRECISION,
+};
 use ferric_pbc::lattice::Cell;
 use ferric_pbc::pair_ft::pair_ft;
 use serde_json::Value;
@@ -319,6 +321,57 @@ fn madelung_matches_pyscf() {
         (got - 2.837_297_479_480_619_6).abs() < 1e-11,
         "sc madelung*a = {got}"
     );
+}
+
+/// Mixed-sign point charges (the nuclear tests only see positive charges):
+/// rock salt, 4 Na⁺ + 4 Cl⁻ in the conventional cubic cell of edge `a`, has
+/// Ewald energy `−8 M / a` with the textbook Madelung constant
+/// `M = 1.747564594633182` (nearest-neighbour convention, `r₀ = a/2`). The cell is
+/// neutral, so the background term is zero and the anchor isolates the
+/// SR/LR/self terms; ω-independence is checked across a 4× range of ω.
+/// Derivation: crates/ferric-pbc/theory.md §1,
+/// scripts/pbc_ewald_pairft_stress_sympy.py S1 (same anchor in pure Python).
+#[test]
+fn ewald_rock_salt_madelung_is_textbook_and_omega_independent() {
+    let mol = Molecule {
+        atoms: vec![atom("H", [0.0; 3], false)],
+        charge: 0,
+        multiplicity: 2,
+    };
+    let a = 5.0;
+    let cell = Cell::new(mol, [[a, 0.0, 0.0], [0.0, a, 0.0], [0.0, 0.0, a]]).unwrap();
+    let fcc = [
+        [0.0, 0.0, 0.0],
+        [0.0, 0.5, 0.5],
+        [0.5, 0.0, 0.5],
+        [0.5, 0.5, 0.0],
+    ];
+    let mut pos = Vec::new();
+    let mut q = Vec::new();
+    for f in fcc {
+        pos.push([a * f[0], a * f[1], a * f[2]]);
+        q.push(1.0);
+    }
+    for f in fcc {
+        pos.push([a * (f[0] + 0.5), a * f[1], a * f[2]]);
+        q.push(-1.0);
+    }
+    let ms: Vec<f64> = [0.4, 0.9, 1.6]
+        .iter()
+        .map(|&w| {
+            -ewald_point_charges(&cell, &q, &pos, w, DEFAULT_EWALD_PRECISION).unwrap() * a / 8.0
+        })
+        .collect();
+    let spread = ms.iter().cloned().fold(f64::NEG_INFINITY, f64::max)
+        - ms.iter().cloned().fold(f64::INFINITY, f64::min);
+    eprintln!("rock salt M(ω=0.4,0.9,1.6) = {ms:?}, spread {spread:.2e}");
+    assert!(spread < 1e-12, "rock-salt Ewald ω-dependence {spread:.3e}");
+    for m in &ms {
+        assert!(
+            (m - 1.747_564_594_633_182).abs() < 1e-11,
+            "rock-salt Madelung {m} vs 1.747564594633182"
+        );
+    }
 }
 
 #[test]
