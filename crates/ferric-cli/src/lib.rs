@@ -6547,7 +6547,13 @@ fn run_frequencies(
         std::process::exit(1);
     });
 
-    log_frequencies(&res);
+    let cert = match task_reference_certificate(method, cfg, ctx, bs, op, rhf_config, mol) {
+        Ok(reference) => {
+            ferric_scf::certificate::frequencies_certificate(method, &reference, &res, &fcfg)
+        }
+        Err(why) => Certificate::ungraded(format!("frequencies:{method}")).warn(why),
+    };
+    log_frequencies(&res, &cert);
     println!("Harmonic frequencies/{} on {}", bs.name, cfg.molecule.xyz);
     print_frequency_energy(&res, at_reference.as_ref());
     println!("  Hessian           = {}", res.hessian_source.label());
@@ -6570,16 +6576,18 @@ fn run_frequencies(
             .map(|v| (v * 100.0).round() / 100.0)
             .collect::<Vec<_>>()
     );
+    print!("{cert}");
 }
 
 /// The `frequencies` record of the JSON run log: the full-precision numbers
 /// the printout rounds (wavenumbers to 0.01 cm^-1), so a consumer or a test
 /// can compare a run with the library. `energy` is the total the printout
 /// reports (with `[dft] dispersion`, KS + dispersion; `correction_energy` is
-/// the dispersion part, 0 without one). `cartesian_hessian` is row-major,
+/// the dispersion part, 0 without one). `certificate` is the result
+/// certificate. `cartesian_hessian` is row-major,
 /// Hartree/Bohr^2. Floats use the run log's non-finite convention
 /// ([`ferric_scf::runlog::json_f64`]). No-op without a log.
-fn log_frequencies(res: &ferric_scf::frequencies::FrequencyResult) {
+fn log_frequencies(res: &ferric_scf::frequencies::FrequencyResult, cert: &Certificate) {
     use ferric_scf::runlog::json_f64;
     let floats = |v: &mut dyn Iterator<Item = f64>| v.map(json_f64).collect::<Vec<_>>();
     if let Some(rl) = ferric_scf::runlog::log() {
@@ -6594,6 +6602,7 @@ fn log_frequencies(res: &ferric_scf::frequencies::FrequencyResult) {
                 "asymmetry": json_f64(res.asymmetry),
                 "n_gradient_evaluations": res.n_gradient_evaluations,
                 "cartesian_hessian": floats(&mut res.cartesian_hessian.iter().copied()),
+                "certificate": cert.to_json(),
             }),
         );
     }
@@ -6693,6 +6702,65 @@ fn print_frequency_energy(
     }
 }
 
+/// The certificate of a finished geometry optimization: the SCF at the
+/// returned geometry (re-solved; the optimizers do not return their last SCF)
+/// is the reference, printed after the result and written as a `certificate`
+/// run-log record. `outcome` is `(converged, steps, final energy)`.
+#[allow(clippy::too_many_arguments)]
+fn certify_optimization(
+    method: &str,
+    cfg: &Config,
+    ctx: &ParallelContext,
+    bs: &BasisSet,
+    op: Operator,
+    rhf_config: &RhfConfig,
+    opt_config: &OptimizeConfig,
+    final_mol: &Molecule,
+    outcome: (bool, usize, f64),
+    gradient: &str,
+) {
+    let (converged, steps, energy) = outcome;
+    let capability = format!("optimize:{method}");
+    let cert = match task_reference_certificate(method, cfg, ctx, bs, op, rhf_config, final_mol) {
+        Ok(reference) => ferric_scf::certificate::optimize_certificate(
+            method, &reference, converged, steps, energy, opt_config, gradient,
+        ),
+        Err(why) => Certificate::ungraded(capability).warn(why),
+    };
+    print_and_note_certificate(&cert);
+}
+
+/// The stamped SCF certificate at `mol` for a `task = "optimize"` /
+/// `"frequencies"` run of `method`, with the `[dft] dispersion` correction
+/// when one is configured. `Err` carries the warning text when the SCF fails.
+fn task_reference_certificate(
+    method: &str,
+    cfg: &Config,
+    ctx: &ParallelContext,
+    bs: &BasisSet,
+    op: Operator,
+    rhf_config: &RhfConfig,
+    mol: &Molecule,
+) -> Result<Certificate, String> {
+    let spin = match method {
+        "uhf" => ferric_scf::Spin::Unrestricted,
+        "rohf" => ferric_scf::Spin::RestrictedOpen,
+        _ => ferric_scf::Spin::Restricted,
+    };
+    let (scf, used) =
+        ferric_scf::certificate::final_point_scf(ctx, mol, &bs.name, op, rhf_config, spin)
+            .map_err(|e| format!("the final-point SCF for this certificate failed: {e}"))?;
+    let dispersion = matches!(method, "rhf" | "ksdft" | "uhf" | "rohf")
+        .then(|| dispersion_correction(cfg, ctx, mol, bs, op, &used, scf.density_total()))
+        .flatten();
+    Ok(scf_certificate_stamped(
+        mol,
+        &scf,
+        &used,
+        dispersion.as_ref(),
+    ))
+}
+
 /// `task.method = "optimize"` dispatch. Extracted verbatim from the former
 /// `main()` `if task == "optimize" { ... }` block; each `method` sub-arm below
 /// is byte-for-byte the original match-arm body.
@@ -6774,6 +6842,18 @@ fn run_optimize(
             println!("  converged  = {}", opt_result.converged);
             println!("  steps      = {}", opt_result.steps);
             println!("  final E    = {:.10} Hartree", opt_result.energy);
+            certify_optimization(
+                method,
+                cfg,
+                ctx,
+                bs,
+                op,
+                rhf_config,
+                &opt_config,
+                &opt_result.mol,
+                (opt_result.converged, opt_result.steps, opt_result.energy),
+                "analytic",
+            );
         }
         "pdep-rpa" => {
             let aux_name = cfg
@@ -6844,6 +6924,18 @@ fn run_optimize(
                 "  final E    = {:.10} Hartree (RHF + RPA)",
                 opt_result.energy
             );
+            certify_optimization(
+                method,
+                cfg,
+                ctx,
+                bs,
+                op,
+                rhf_config,
+                &opt_config,
+                &opt_result.mol,
+                (opt_result.converged, opt_result.steps, opt_result.energy),
+                "analytic SCF + finite-difference correlation (h = 5e-4 Bohr)",
+            );
         }
         "rimp2" => {
             let aux_name = cfg
@@ -6886,6 +6978,18 @@ fn run_optimize(
             println!(
                 "  final E    = {:.10} Hartree (RHF + MP2)",
                 opt_result.energy
+            );
+            certify_optimization(
+                method,
+                cfg,
+                ctx,
+                bs,
+                op,
+                rhf_config,
+                &opt_config,
+                &opt_result.mol,
+                (opt_result.converged, opt_result.steps, opt_result.energy),
+                "analytic (Z-vector)",
             );
         }
         "uhf" => {
@@ -6936,6 +7040,18 @@ fn run_optimize(
             println!("  converged  = {}", opt_result.converged);
             println!("  steps      = {}", opt_result.steps);
             println!("  final E    = {:.10} Hartree", opt_result.energy);
+            certify_optimization(
+                method,
+                cfg,
+                ctx,
+                bs,
+                op,
+                rhf_config,
+                &opt_config,
+                &opt_result.mol,
+                (opt_result.converged, opt_result.steps, opt_result.energy),
+                "analytic",
+            );
         }
         "rohf" => {
             // ROKS (`ks_gradient_roks`) when `[dft] functional` is set.
@@ -6983,6 +7099,18 @@ fn run_optimize(
             println!("  converged  = {}", opt_result.converged);
             println!("  steps      = {}", opt_result.steps);
             println!("  final E    = {:.10} Hartree", opt_result.energy);
+            certify_optimization(
+                method,
+                cfg,
+                ctx,
+                bs,
+                op,
+                rhf_config,
+                &opt_config,
+                &opt_result.mol,
+                (opt_result.converged, opt_result.steps, opt_result.energy),
+                "analytic",
+            );
         }
         _ => {
             eprintln!("error: geometry optimization is currently only supported for method.kind = \"rhf\", \"ksdft\", \"uhf\", \"rohf\", \"pdep-rpa\", or \"rimp2\"");

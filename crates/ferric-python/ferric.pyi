@@ -1189,8 +1189,26 @@ class OptimizeResult:
         """
         ...
 
+    @property
+    def certificate(self) -> dict[str, Any]:
+        """Validation certificate (same keys as ``RhfResult.certificate``).
+        ``capability`` is ``"optimize:<kind>"``; the grade is that method.kind's row of
+        validation.md, capped at the grade of the SCF at the returned geometry (re-solved: the
+        driver does not return its own), whose approximations and warnings are
+        inherited. The gradient and optimizer settings are approximations; ``converged = False`` is ``"ungraded"``; a failed final-point SCF is ``"ungraded"`` with the reason as a warning."""
+        ...
+
 class FrequencyResult:
     """Result of a harmonic vibrational frequency calculation."""
+
+    @property
+    def certificate(self) -> dict[str, Any]:
+        """Validation certificate (same keys as ``RhfResult.certificate``).
+        ``capability`` is ``"frequencies:<kind>"``; the grade is that method.kind's row of
+        validation.md, capped at the grade of the SCF at the input geometry (re-solved: the
+        driver does not return its own), whose approximations and warnings are
+        inherited. The Hessian construction (analytic, analytic-moving-grid, finite-difference with delta and gradient count) and its asymmetry are approximations; each imaginary frequency count is a warning."""
+        ...
 
     @property
     def frequencies(self) -> list[float]:
@@ -4078,8 +4096,10 @@ def run_mp2_v_scan(
     the attenuated-MP2 half for every `(r0, omega)` arm (Angstrom, Angstrom^-1;
     omega None = the published linked width) and the Eq-11-damped VV10 half for
     every arm x `b`. Returns `{rhf_energy, n_nlc_points, arms: [{r0, omega,
-    att_mp2_corr, e_os, e_ss, vv10_e_nl: [per b]}]}`; `total(arm, k) = rhf_energy
-    + att_mp2_corr + vv10_e_nl[k]`. Closed shell, terfc only."""
+    att_mp2_corr, e_os, e_ss, vv10_e_nl: [per b], certificate}]}`; `total(arm, k) =
+    rhf_energy + att_mp2_corr + vv10_e_nl[k]`. Each arm's `certificate` is the
+    `run_mp2_v` certificate of that arm's config (one covers its `b` list).
+    Closed shell, terfc only."""
     ...
 
 def run_vv10_variants(
@@ -4772,7 +4792,8 @@ def run_drpa_scan(
     density_conv: float | None = None,
 ) -> list[dict[str, object]]:
     """The LOCAL (amplitude-threshold) dRPA over a list of eps values, one
-    SCF and one localized assembly. Each dict carries "local"."""
+    SCF and one localized assembly. Each dict carries "local" and the
+    "certificate" `run_drpa(local=..., eps=...)` returns at that point."""
     ...
 
 def run_linlccd(

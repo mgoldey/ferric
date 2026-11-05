@@ -179,6 +179,25 @@ pub fn method_kind_grade(kind: &str) -> Grade {
         .map_or(Grade::Ungraded, |&(_, g)| g)
 }
 
+/// The `(task, method.kind)` pairs of the `method.kind` matrix on
+/// [`GRADE_SOURCE_PAGE`] whose `task = "optimize"` / `task = "frequencies"`
+/// cell is not `—`. A pair outside this table has no validation row, so its
+/// certificate is [`Grade::Ungraded`]. The
+/// `task_kind_rows_match_the_page` test fails if the table and the page
+/// disagree.
+pub const TASK_KIND_ROWS: &[(&str, &str)] = &[
+    ("optimize", "rhf"),
+    ("optimize", "uhf"),
+    ("optimize", "rohf"),
+    ("optimize", "ksdft"),
+    ("optimize", "rimp2"),
+    ("optimize", "pdep-rpa"),
+    ("frequencies", "rhf"),
+    ("frequencies", "uhf"),
+    ("frequencies", "rohf"),
+    ("frequencies", "ksdft"),
+];
+
 /// The build that produced a result. Filled by the top-level artifact from
 /// `ferric-build-info` (`VERSION`, `COMMIT`, `DIRTY`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -315,6 +334,28 @@ impl Certificate {
     /// [`Self::for_method_kind`]`(kind)`, then [`Self::with_reference`].
     pub fn for_post_scf(kind: &str, reference: &Certificate) -> Self {
         Self::for_method_kind(kind).with_reference(reference)
+    }
+
+    /// The certificate of a `task` (`"optimize"`, `"frequencies"`) run with
+    /// `method.kind = kind`, whose final point is certified by `reference`.
+    ///
+    /// The capability is `"<task>:<kind>"`. The grade is the `kind` row's when
+    /// [`TASK_KIND_ROWS`] has the pair, [`Grade::Ungraded`] (with a warning
+    /// saying so) when it does not, and in both cases capped at the
+    /// reference's grade by [`Self::with_reference`].
+    pub fn for_task(task: &str, kind: &str, reference: &Certificate) -> Self {
+        let mut c = Self::ungraded(format!("{task}:{kind}"));
+        if TASK_KIND_ROWS.contains(&(task, kind)) {
+            let base = Self::for_method_kind(kind);
+            c.grade = base.grade;
+            c.grade_source = base.grade_source;
+        } else {
+            c.push_warning(format!(
+                "{GRADE_SOURCE_PAGE} has no row for task = \"{task}\" with method.kind = \
+                 \"{kind}\""
+            ));
+        }
+        c.with_reference(reference)
     }
 
     /// Fold in the certificate of the SCF reference this result is built on.
@@ -703,6 +744,72 @@ mod tests {
             assert!(out.insert(kind.clone(), g).is_none(), "`{kind}` twice");
         }
         out
+    }
+
+    /// `(task, kind)` pairs whose task cell of the matrix is not `—`.
+    fn page_task_rows(page: &str) -> std::collections::BTreeSet<(String, String)> {
+        let start = page.find(GRADE_SOURCE_HEADING).expect("matrix heading");
+        let cells = |row: &str| -> Vec<String> {
+            row.trim()
+                .trim_matches('|')
+                .replace("\\|", "\u{0}")
+                .split('|')
+                .map(|c| c.replace('\u{0}', "|").trim().to_string())
+                .collect()
+        };
+        let table: Vec<&str> = page[start..]
+            .lines()
+            .skip_while(|l| !l.trim_start().starts_with('|'))
+            .take_while(|l| l.trim_start().starts_with('|'))
+            .collect();
+        let header = cells(table[0]);
+        let mut out = std::collections::BTreeSet::new();
+        for task in ["optimize", "frequencies"] {
+            let head = format!("`task = \"{task}\"`");
+            let col = header
+                .iter()
+                .position(|h| *h == head)
+                .unwrap_or_else(|| panic!("{head} column"));
+            for row in &table[2..] {
+                let c = cells(row);
+                if c[col] != "\u{2014}" {
+                    out.insert((task.to_string(), c[0].trim_matches('`').to_string()));
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn task_kind_rows_match_the_page() {
+        let path = workspace_root().join(GRADE_SOURCE_PAGE);
+        let page =
+            std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+        let ours: std::collections::BTreeSet<(String, String)> = TASK_KIND_ROWS
+            .iter()
+            .map(|&(t, k)| (t.to_string(), k.to_string()))
+            .collect();
+        assert_eq!(ours, page_task_rows(&page));
+    }
+
+    #[test]
+    fn for_task_caps_at_the_reference_and_flags_ungraded_pairs() {
+        let proven = Certificate::for_method_kind("rhf");
+        let c = Certificate::for_task("optimize", "rhf", &proven);
+        assert_eq!(c.capability, "optimize:rhf");
+        assert_eq!(c.grade, Grade::Proven);
+        assert_eq!(c.grade_source.as_deref(), Some(GRADE_SOURCE_PAGE));
+        // A reference below the kind's grade lowers it.
+        let weak = Certificate::for_method_kind("rhf").cap_grade(Grade::Smoke, "test");
+        assert_eq!(
+            Certificate::for_task("frequencies", "rhf", &weak).grade,
+            Grade::Smoke
+        );
+        // No row for the pair: ungraded, with the reason, even on a Proven reference.
+        let n = Certificate::for_task("frequencies", "rimp2", &proven);
+        assert_eq!(n.grade, Grade::Ungraded);
+        assert!(n.grade_source.is_none());
+        assert!(n.warnings.iter().any(|w| w.contains("has no row")), "{n}");
     }
 
     #[test]

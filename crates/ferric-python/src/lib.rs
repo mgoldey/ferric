@@ -441,6 +441,38 @@ fn stamped_scf_certificate(
     )
 }
 
+/// The method.kind a geometry/frequency run on `spin` with `config` is graded
+/// under, and the stamped certificate of the SCF at `mol` (one extra SCF: the
+/// geometry and frequency drivers do not return theirs). `Err` carries the
+/// warning text when that SCF fails; the run itself is not failed by it.
+fn task_reference_certificate(
+    mol: &Molecule,
+    basis_name: &str,
+    config: &RhfConfig,
+    spin: ferric_scf::Spin,
+) -> (
+    &'static str,
+    Result<ferric_core::certificate::Certificate, String>,
+) {
+    let kind = match (spin, config.xc.is_some()) {
+        (ferric_scf::Spin::Restricted, false) => "rhf",
+        (ferric_scf::Spin::Restricted, true) => "ksdft",
+        (ferric_scf::Spin::Unrestricted, _) => "uhf",
+        (ferric_scf::Spin::RestrictedOpen, _) => "rohf",
+    };
+    let r = ferric_scf::certificate::final_point_scf(
+        &ParallelContext::default(),
+        mol,
+        basis_name,
+        Operator::coulomb(),
+        config,
+        spin,
+    )
+    .map(|(scf, used)| stamped_scf_certificate(mol, &scf, &used))
+    .map_err(|e| format!("the final-point SCF for this certificate failed: {e}"));
+    (kind, r)
+}
+
 /// A certificate as a Python dict, through the same JSON the CLI run log
 /// writes.
 fn certificate_dict(
@@ -4304,10 +4336,22 @@ struct PyOptimizeResult {
     #[pyo3(get)]
     energy_trace: Vec<f64>,
     mol_data: Molecule,
+    certificate_data: ferric_core::certificate::Certificate,
 }
 
 #[pymethods]
 impl PyOptimizeResult {
+    /// Validation certificate of this result (dict form of
+    /// `ferric_core::certificate::Certificate`; see `RhfResult.certificate`).
+    /// `capability` is `"optimize:<kind>"`; the final-point SCF (re-solved at
+    /// the returned geometry) is the reference whose grade, approximations and
+    /// warnings it inherits, `gradient` and `optimizer` are recorded as
+    /// approximations, and a run with `converged = False` is `not graded`.
+    #[getter]
+    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
+        certificate_dict(py, &self.certificate_data)
+    }
+
     /// The optimized geometry as a new `Molecule`.
     fn mol(&self) -> PyMolecule {
         PyMolecule {
@@ -4325,6 +4369,33 @@ impl PyOptimizeResult {
             "Optimized Energy: {:.10} Ha (converged: {}, {} steps)",
             self.energy, self.converged, self.steps
         )
+    }
+}
+
+/// Certificate of a finished `run_optimize*`: the SCF at the returned
+/// geometry is the reference; a failure of that SCF gives a `not graded`
+/// certificate carrying the reason.
+fn optimize_result_certificate(
+    r: &ferric_scf::optimize::OptimizeResult,
+    opt_config: &OptimizeConfig,
+    basis_name: &str,
+    config: &RhfConfig,
+    spin: ferric_scf::Spin,
+) -> ferric_core::certificate::Certificate {
+    let (kind, reference) = task_reference_certificate(&r.mol, basis_name, config, spin);
+    match reference {
+        Ok(reference) => ferric_scf::certificate::optimize_certificate(
+            kind,
+            &reference,
+            r.converged,
+            r.steps,
+            r.energy,
+            opt_config,
+            "analytic",
+        ),
+        Err(why) => {
+            ferric_core::certificate::Certificate::ungraded(format!("optimize:{kind}")).warn(why)
+        }
     }
 }
 
@@ -4351,6 +4422,11 @@ fn run_optimize(
     let bs = basis::bundled(basis_name).map_err(make_err)?;
     let mut emol = mol.inner.clone();
     emol.apply_ecp(&bs);
+    let opt_config = OptimizeConfig {
+        max_steps: max_steps.unwrap_or(100),
+        e_conv: e_conv.unwrap_or(1e-6),
+        ..Default::default()
+    };
     let r = py
         .allow_threads(|| {
             optimize_geometry(
@@ -4359,20 +4435,24 @@ fn run_optimize(
                 basis_name,
                 Operator::coulomb(),
                 &rhf_config,
-                &OptimizeConfig {
-                    max_steps: max_steps.unwrap_or(100),
-                    e_conv: e_conv.unwrap_or(1e-6),
-                    ..Default::default()
-                },
+                &opt_config,
             )
         })
         .map_err(make_err)?;
+    let certificate_data = optimize_result_certificate(
+        &r,
+        &opt_config,
+        basis_name,
+        &rhf_config,
+        ferric_scf::Spin::Restricted,
+    );
     Ok(PyOptimizeResult {
         energy: r.energy,
         converged: r.converged,
         steps: r.steps,
         energy_trace: r.energy_trace,
         mol_data: r.mol,
+        certificate_data,
     })
 }
 
@@ -4408,6 +4488,11 @@ fn run_optimize_uhf(
     let bs = basis::bundled(basis_name).map_err(make_err)?;
     let mut emol = mol.inner.clone();
     emol.apply_ecp(&bs);
+    let opt_config = OptimizeConfig {
+        max_steps: max_steps.unwrap_or(100),
+        e_conv: e_conv.unwrap_or(1e-6),
+        ..Default::default()
+    };
     let r = py
         .allow_threads(|| {
             optimize_geometry_uhf(
@@ -4416,20 +4501,24 @@ fn run_optimize_uhf(
                 basis_name,
                 Operator::coulomb(),
                 &uhf_config,
-                &OptimizeConfig {
-                    max_steps: max_steps.unwrap_or(100),
-                    e_conv: e_conv.unwrap_or(1e-6),
-                    ..Default::default()
-                },
+                &opt_config,
             )
         })
         .map_err(make_err)?;
+    let certificate_data = optimize_result_certificate(
+        &r,
+        &opt_config,
+        basis_name,
+        &uhf_config,
+        ferric_scf::Spin::Unrestricted,
+    );
     Ok(PyOptimizeResult {
         energy: r.energy,
         converged: r.converged,
         steps: r.steps,
         energy_trace: r.energy_trace,
         mol_data: r.mol,
+        certificate_data,
     })
 }
 
@@ -4486,10 +4575,22 @@ struct PyFrequencyResult {
     /// atoms along the reaction coordinate, which requires the vector.
     #[pyo3(get)]
     normal_modes: Vec<Vec<f64>>,
+    certificate_data: ferric_core::certificate::Certificate,
 }
 
 #[pymethods]
 impl PyFrequencyResult {
+    /// Validation certificate of this result (dict form of
+    /// `ferric_core::certificate::Certificate`; see `RhfResult.certificate`).
+    /// `capability` is `"frequencies:<kind>"`; the SCF at the input geometry
+    /// is the reference whose grade, approximations and warnings it inherits,
+    /// the Hessian construction is recorded as the `hessian` approximation,
+    /// and each imaginary frequency count is a warning.
+    #[getter]
+    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
+        certificate_dict(py, &self.certificate_data)
+    }
+
     fn __repr__(&self) -> String {
         format!(
             "FrequencyResult(energy={:.10}, n_modes={}, is_linear={})",
@@ -4652,6 +4753,29 @@ fn run_frequencies(
 
     let (r, e_dispersion) =
         frequencies_with_dispersion(&m, basis_name, &scf_cfg, &fcfg, dispersion, xc)?;
+    let spin = match refr {
+        FrequencyReference::Rhf => ferric_scf::Spin::Restricted,
+        FrequencyReference::Uhf => ferric_scf::Spin::Unrestricted,
+        FrequencyReference::Rohf => ferric_scf::Spin::RestrictedOpen,
+    };
+    let mut m_ecp = m.clone();
+    m_ecp.apply_ecp(&basis::bundled(basis_name).map_err(make_err)?);
+    let (kind, reference) = task_reference_certificate(&m_ecp, basis_name, &scf_cfg, spin);
+    let certificate_data = match reference {
+        Ok(reference) => {
+            let c = ferric_scf::certificate::frequencies_certificate(kind, &reference, &r, &fcfg);
+            match (dispersion, e_dispersion) {
+                (Some(spec), Some(_)) => c.with_approximation(
+                    "dispersion",
+                    format!("{spec} in the Hessian (central differences of the KS + dispersion gradient)"),
+                ),
+                _ => c,
+            }
+        }
+        Err(why) => {
+            ferric_core::certificate::Certificate::ungraded(format!("frequencies:{kind}")).warn(why)
+        }
+    };
     Ok(PyFrequencyResult {
         frequencies: r.frequencies,
         trans_rot_frequencies: r.trans_rot_frequencies,
@@ -4676,6 +4800,7 @@ fn run_frequencies(
             .into_iter()
             .map(|row| row.to_vec())
             .collect(),
+        certificate_data,
     })
 }
 
@@ -7230,11 +7355,28 @@ fn run_drpa_scan(
     )
     .map_err(make_err)?;
     let out = pyo3::types::PyList::empty(py);
+    let scf_certificate = stamped_scf_certificate(
+        &mol.inner,
+        &rhf,
+        &rhf_config_budgeted(k_builder, budget_bytes_from_gb(memory_budget_gb)),
+    );
     for ((r, eps), wall_s) in results.iter().zip(&eps_list).zip(&per_point_walls) {
         let d = drpa_result_to_dict(py, r, rhf.energy, compute_reference)?;
         let d_ref = d.bind(py);
         d_ref.set_item("eps", *eps)?;
         d_ref.set_item("local", local_dict(py, *eps, r.keep_fraction, false)?)?;
+        // Same builder as `run_drpa(local=..., eps=...)` at this point.
+        let certificate = ferric_mp2::certificate::drpa_certificate(
+            &scf_certificate,
+            &auxbasis.inner.name,
+            frozen_core.unwrap_or(0),
+            &Operator::coulomb(),
+            Some((*eps, r.keep_fraction)),
+            r.converged,
+            r.iterations,
+            r.relres,
+        );
+        d_ref.set_item("certificate", certificate_dict(py, &certificate)?)?;
         d_ref.set_item("wall_s", *wall_s)?;
         d_ref.set_item("prefix_wall_s", prefix_wall_s)?;
         out.append(d_ref)?;
@@ -8702,8 +8844,26 @@ fn run_mp2_v_scan(
     out.set_item("n_nlc_points", r.n_nlc_points)?;
     out.set_item("mp2_coulomb_corr", r.e_c_mp2_coulomb)?;
     let lst = PyList::empty(py);
-    for (arm, res) in arms.iter().zip(r.arms.iter()) {
+    let scf_certificate = stamped_scf_certificate(&mol.inner, &rhf, &rcfg);
+    for ((arm, res), scan_arm) in arms.iter().zip(r.arms.iter()).zip(&scan_arms) {
         let d = PyDict::new(py);
+        // The config this arm ran with, as `att_mp2_vv10_scan` builds it; the
+        // same builder as `run_mp2_v`. The scanned `b` values change only the
+        // VV10 energies of the arm, so one certificate covers its `b` list.
+        let mut arm_cfg = base.clone();
+        arm_cfg.r0_bohr = scan_arm.r0_bohr;
+        arm_cfg.omega = scan_arm.omega;
+        arm_cfg.vv10_damping = ferric_dft::vv10::Vv10Damping::Terfc {
+            r0_bohr: scan_arm.r0_bohr,
+            omega_bohr_inv: None,
+        };
+        let certificate = ferric_mp2::certificate::mp2_v_certificate(
+            &scf_certificate,
+            &auxbasis.inner.name,
+            &arm_cfg,
+        )
+        .with_approximation("vv10-b-scan", format!("b in {bs:?}, c = {}", base.vv10.c));
+        d.set_item("certificate", certificate_dict(py, &certificate)?)?;
         d.set_item("r0", arm.0)?;
         d.set_item("omega", arm.1)?;
         d.set_item("att_mp2_corr", res.e_c_att_mp2)?;

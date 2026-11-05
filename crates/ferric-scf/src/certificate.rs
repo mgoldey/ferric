@@ -10,10 +10,19 @@
 
 use ferric_core::certificate::{Certificate, Grade};
 use ferric_core::mol::Molecule;
+use ferric_core::parallel::ParallelContext;
+use ferric_core::FerricError;
+use ferric_integrals::basis_bridge::PreparedBasis;
+use ferric_integrals::operator::Operator;
 
+use crate::frequencies::{FrequencyConfig, FrequencyResult, HessianSource};
+use crate::optimize::OptimizeConfig;
 use crate::result::{ScfExit, ScfResult, Spin};
-use crate::rhf::RhfConfig;
+use crate::rhf::{solve_rhf, RhfConfig};
+use crate::rohf::solve_rohf;
+use crate::screening::SchwarzBounds;
 use crate::stability::{StabilityResult, StabilityVerdict};
+use crate::uhf::solve_uhf;
 
 /// The CLI `method.kind` a result is graded under, as `Config::dispatch_kind`
 /// routes it: RHF and RKS (`xc` set) are `rhf` / `ksdft`; UHF and UKS run
@@ -207,4 +216,103 @@ fn stability_warnings(c: &mut Certificate, result: &ScfResult) {
              can be a saddle point of the orbital Hessian",
         );
     }
+}
+
+/// Solve the SCF of `spin` at `mol`, for the certificate of a geometry
+/// optimization or frequency run whose drivers do not return their final
+/// [`ScfResult`]. One SCF, no gradient; the config is the one the geometry
+/// drivers use ([`crate::gradient::gradient_task_config`]). Returns the result
+/// with the config it was solved with, the pair [`scf_certificate`] takes.
+pub fn final_point_scf(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    basis_name: &str,
+    op: Operator,
+    config: &RhfConfig,
+    spin: Spin,
+) -> Result<(ScfResult, RhfConfig), FerricError> {
+    let bs = ferric_core::basis::bundled(basis_name)?;
+    let prep = PreparedBasis::new(mol, &bs)?;
+    let bounds = SchwarzBounds::compute_for_screening(op, &prep, config.screening)?;
+    let cfg = crate::gradient::gradient_task_config(config).into_owned();
+    let r = match spin {
+        Spin::Restricted => solve_rhf(ctx, mol, &prep, op, &bounds, &cfg)?,
+        Spin::Unrestricted => solve_uhf(ctx, mol, &prep, &bounds, &cfg)?,
+        Spin::RestrictedOpen => solve_rohf(ctx, mol, &prep, op, &bounds, &cfg)?,
+    };
+    Ok((r, cfg))
+}
+
+/// Certificate of a geometry optimization (`task = "optimize"`) of
+/// `method.kind = kind`.
+///
+/// `final_point` is the certificate of the SCF at the returned geometry (its
+/// grade, approximations and warnings are inherited; see
+/// [`Certificate::for_task`]). `gradient` names how the gradient was formed
+/// (`"analytic"`, `"analytic SCF + finite-difference correlation"`). A run
+/// that did not converge is capped to [`Grade::Ungraded`].
+pub fn optimize_certificate(
+    kind: &str,
+    final_point: &Certificate,
+    converged: bool,
+    steps: usize,
+    energy: f64,
+    config: &OptimizeConfig,
+    gradient: &str,
+) -> Certificate {
+    let mut c = Certificate::for_task("optimize", kind, final_point)
+        .with_approximation("gradient", gradient)
+        .with_approximation(
+            "optimizer",
+            format!(
+                "BFGS, {:?} coordinates, at most {} steps; thresholds g_max {:e}, \
+                 g_rms {:e} Ha/Bohr, e_conv {:e} Ha",
+                config.coord_system,
+                config.max_steps,
+                config.g_max_thresh,
+                config.g_rms_thresh,
+                config.e_conv
+            ),
+        );
+    if !converged {
+        c = c.cap_grade(
+            Grade::Ungraded,
+            format!("the optimizer did not converge ({steps} steps, final energy {energy:.10} Ha)"),
+        );
+    }
+    c
+}
+
+/// Certificate of a harmonic frequency run (`task = "frequencies"`) of
+/// `method.kind = kind`, with `reference_point` the certificate of the SCF at
+/// the input geometry. Records which Hessian construction ran; an imaginary
+/// frequency is a warning (the geometry is not a minimum of this surface).
+pub fn frequencies_certificate(
+    kind: &str,
+    reference_point: &Certificate,
+    result: &FrequencyResult,
+    config: &FrequencyConfig,
+) -> Certificate {
+    let hessian = match result.hessian_source {
+        HessianSource::FiniteDifference => format!(
+            "finite-difference, central differences of the analytic gradient, delta {} Bohr, \
+             {} gradient evaluation(s)",
+            config.delta, result.n_gradient_evaluations
+        ),
+        s => s.label().to_string(),
+    };
+    let mut c = Certificate::for_task("frequencies", kind, reference_point)
+        .with_approximation("hessian", hessian)
+        .with_approximation(
+            "hessian-asymmetry",
+            format!("{:.3e} Ha/Bohr^2 before symmetrization", result.asymmetry),
+        );
+    let n_imag = result.frequencies.iter().filter(|w| **w < 0.0).count();
+    if n_imag > 0 {
+        c.push_warning(format!(
+            "{n_imag} imaginary frequenc{}: the geometry is not a minimum of this surface",
+            if n_imag == 1 { "y" } else { "ies" }
+        ));
+    }
+    c
 }
