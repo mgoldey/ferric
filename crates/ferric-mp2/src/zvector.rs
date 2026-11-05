@@ -442,8 +442,11 @@ pub(crate) fn build_imat_ri(
 
 /// Compute the A*z product via J/K builds in the AO basis.
 ///
-/// A_{ai,bj} z_{bj} = [4(ai|bj) - (ab|ij) - (aj|bi)] z_{bj}
-/// In AO basis: form D^z, build J(D^z) and K(D^z), project back to MO.
+/// Returns `(4J − K − Kᵀ)[D^z]` in the vo block, with the symmetric
+/// `D^z = Σ_ai z_ai (C_a C_iᵀ + C_i C_aᵀ)`. That is
+/// `2 Σ_bj [4(ai|bj) − (ab|ij) − (aj|bi)] z_bj`, twice the coupling of the
+/// closed-shell (A+B) Hessian; `solve_zvector` applies the `½`
+/// (scripts/mp2_variant_identities.py claim 5).
 ///
 /// `pub(crate)` so the finite-field α driver (`ff_polar`) can reuse this exact
 /// matvec inside a CG solver — the production gradient's `solve_zvector` is

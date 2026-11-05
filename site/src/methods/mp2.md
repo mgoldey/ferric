@@ -5,7 +5,12 @@ needs an orbital basis and a matching RI auxiliary basis (`[mp2] auxbasis`, or
 the `auxbasis` argument in Python). Formal cost is O(N⁵) for the RI-MP2
 transformation. Grades per `method.kind` are on
 [Capabilities and validation](../reference/validation.md). The `[mp2]` keys are in
-[Input file](../reference/input.md#mp2).
+[Input file](../reference/input.md#mp2). The working equations of every
+variant on this page (spin factors, frozen core, operator and unit
+conventions), with the code path behind each, are in
+[`crates/ferric-mp2/theory.md`](https://github.com/mgoldey/ferric/blob/main/crates/ferric-mp2/theory.md);
+the identities it relies on are checked by
+[`scripts/mp2_variant_identities.py`](https://github.com/mgoldey/ferric/blob/main/scripts/mp2_variant_identities.py).
 
 ## RI-MP2
 
@@ -130,9 +135,15 @@ parameterization is unbenchmarked: there is no published MP2-V total energy to
 compare with, only an aug-cc-pVTZ S66 subset run (n=5, H-bonded/mixed, S66x8 geometry, no CP-anchored reference), and ferric evaluates the VV10 term on the converged HF
 density (the post-HF variant) on its own 50×50 grid rather than SG-1. Read the header of `examples/water-mp2v.toml` before quoting a number.
 
-**Robust fitting.** When the RI metric differs from the operator in the
-integrals, as it does for attenuated operators, robust (Dunlap) density fitting
-is required.
+**Fitting metric.** Each attenuated energy fits its integrals in the metric
+of the same operator, \\( (P|\hat w|Q) \\), so the fit is variational for
+that operator. Robust (Dunlap) fitting is required only when the metric
+operator differs from the integral operator.
+
+**The range split is not additive.** MP2 is quadratic in the integrals, so
+the erfc and erf energies at the same ω do not sum to the Coulomb MP2 energy;
+the difference is the short-range × long-range cross term. RS-MP2 + LR-RPA
+(below) is built on it.
 
 ## RS-MP2 + LR-RPA
 

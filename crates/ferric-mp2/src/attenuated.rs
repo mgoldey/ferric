@@ -210,9 +210,12 @@ pub fn erfc_attenuated_ri_mp2(
 ///
 /// Useful for range-separated hybrid decompositions where the short-range
 /// part is treated by DFT and the long-range part by MP2 correlation.
-/// erf(ω·r)/r + erfc(ω·r)/r = 1/r exactly, so
-///   `attenuated_ri_mp2(erfc) + attenuated_ri_mp2_long_range(erf) ≈ ri_mp2(Coulomb)`
-/// up to integral roundoff.
+/// erf(ω·r)/r + erfc(ω·r)/r = 1/r splits the operator, not the energy: MP2 is
+/// quadratic in `(ia|jb)`, so
+///   `attenuated_ri_mp2(erfc) + attenuated_ri_mp2_long_range(erf) = ri_mp2(Coulomb) − X`
+/// with `X = Σ (4 s l − s lˣ − l sˣ)/D` the short×long cross term
+/// (`s`, `l` the erfc and erf `(ia|jb)`, `ˣ` the `(ib|ja)` exchange), plus the
+/// per-operator RI fit error. See `test_rs_mp2_decomposition_sums_approximately_to_full`.
 pub fn attenuated_ri_mp2_long_range(
     mol: &Molecule,
     obs: &PreparedBasis,
@@ -339,7 +342,8 @@ fn attenuated_spin_components_screened(
 }
 
 /// Helper for range-separated MP2: returns (E_erfc_sr, E_erf_lr, E_full).
-/// Should satisfy E_erfc_sr + E_erf_lr ≈ E_full (range-separation identity).
+/// `E_full − (E_erfc_sr + E_erf_lr)` is the short×long cross-range correlation
+/// (see [`attenuated_ri_mp2_long_range`]); the two parts do not sum to `E_full`.
 pub fn rs_mp2_decomposition(
     mol: &Molecule,
     obs: &PreparedBasis,

@@ -6,13 +6,15 @@
 //! resolved without double-counting what OBS already spans — the device that
 //! lets F12 recover the Coulomb cusp instead of just re-expressing OBS.
 //!
-//! Standard Valeev (2004) recipe:
-//!   1. S_OO = ⟨OBS|OBS⟩,  S_OR = ⟨OBS|RIBS⟩,  S_RR = ⟨RIBS|RIBS⟩
-//!   2. Projector onto OBS, in the RIBS metric:  P = S_OR^T S_OO^{-1} S_OR
-//!   3. Complement:  Q = S_RR − P   ( = ⟨RIBS|(1−P_OBS)|RIBS⟩ )
-//!   4. Canonical-orthogonalize Q, dropping eigenvalues < δ (the OBS-spanned,
-//!      now-null directions). Survivors, scaled by λ^{-1/2}, are the CABS
-//!      vectors expressed in the RIBS AO basis:  C_cabs (nri × ncabs).
+//! Valeev (2004) recipe, with RIBS = OBS ∪ aux ordered [OBS | aux]:
+//!   1. S_OO = ⟨OBS|OBS⟩,  S_Oa = ⟨OBS|aux⟩,  S_aa = ⟨aux|aux⟩
+//!   2. Schur complement of the aux block:  Q = S_aa − S_Oaᵀ S_OO⁻¹ S_Oa
+//!      ( = ⟨aux|(1−P_OBS)|aux⟩ )
+//!   3. Eigendecompose Q = V w Vᵀ, dropping w < δ (directions OBS already
+//!      spans, and union linear dependencies).
+//!   4. CABS vector k in the RIBS AO basis: [−S_OO⁻¹ S_Oa v_k ; v_k] / √w_k.
+//!      The OBS rows project the OBS component out; the eigenvector alone is
+//!      not orthogonal to OBS (scripts/mp2_variant_identities.py claim 7).
 //!
 //! The RIBS coefficients of a CABS vector k are `C_cabs[:,k]`; ⟨CABS_k|CABS_l⟩ in
 //! the RIBS metric S_RR is δ_kl, and ⟨CABS_k|OBS_p⟩ = 0 by construction.

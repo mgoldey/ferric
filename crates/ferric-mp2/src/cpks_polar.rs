@@ -104,10 +104,10 @@ pub(crate) fn solve_cphf_cg(
     solve_cphf_cg_scaled(c, rhs, prep, bounds, orb, eps, 0.5, budget_bytes)
 }
 
-/// As `solve_cphf_cg` but with an explicit A-coupling scale. Use 0.5 for the
-/// dipole-CPHF (HF α) path; use 1.0 to MATCH `solve_zvector`'s full-A operator
-/// when solving the PERTURBED Z-vector ∂z (so ∂z and the un-perturbed z0 from
-/// solve_zvector share the same operator — required for the relaxed-α response).
+/// As `solve_cphf_cg` but with an explicit A-coupling scale: the operator is
+/// `Δε + ascale·compute_az_product`. `ascale = 0.5` is the (A+B) Hessian, the
+/// operator `solve_zvector` uses (zvector.rs, `0.5 * compute_az_product`) and
+/// `solve_zvec_dense` builds. `ascale = 1.0` doubles the two-electron coupling.
 ///
 /// `budget_bytes` is the caller-resolved memory ceiling threaded into every
 /// `compute_az_product` call in the CG loop below (up to `max_iter=200`
@@ -898,7 +898,8 @@ pub fn static_relaxed_density_ao(
     let veff = veff_vo_mo(ctx, obs, bounds, c, &dm_p, &orb)?;
     let xvo = &l + &veff;
 
-    // (Δε + A) z = −Xvo  (full-A operator, ascale=1.0).
+    // (Δε + 2·(A+B−Δε)) z = −Xvo: ascale = 1.0 doubles the (A+B) coupling
+    // (see solve_cphf_cg_scaled).
     let (z, resid, iters, conv) =
         solve_cphf_cg_scaled(c, &(-&xvo), obs, bounds, &orb, eps, 1.0, budget_bytes)?;
     if !conv {
@@ -1245,7 +1246,8 @@ pub fn analytic_alpha_relaxed(
                 }
             }
         }
-        // Perturbed Z-vector: (Δε+A) ∂z = rhs  (full A to match z₀'s operator).
+        // Perturbed Z-vector with ascale = 1.0, twice the (A+B) coupling; z₀
+        // from solve_zvector uses the (A+B) operator (ascale = 0.5).
         let (dz, dresid, _it, dconv) =
             solve_cphf_cg_scaled(c, &rhs, obs, bounds, &orb, eps, 1.0, budget_bytes)?;
         if !dconv {
