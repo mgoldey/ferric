@@ -155,7 +155,8 @@ def test_configure_precision_after_install_is_a_runtime_error():
 
 
 def test_cpu_only_mixed_names_the_device_kernels():
-    # No kernel this build admits has a CPU mixed path, so CPU-only mixed is
+    # The only CPU mixed path this build admits is the opt-in dfj-f32; the
+    # shipped kernel (rimp2-energy) is device-only, so CPU-only mixed is
     # refused with the reason when the settings are installed.
     msg = _refusal(
         "import ferric; ferric.configure_precision(mode='mixed'); ferric.configure_gpu()"
@@ -163,7 +164,7 @@ def test_cpu_only_mixed_names_the_device_kernels():
     assert msg == (
         "[precision] mode = mixed requires mode = auto or on (FERRIC_GPU / [gpu] mode "
         "is off): rimp2-energy runs only on a device; CPU mixed-precision kernels in "
-        "this build: none"
+        "this build: dfj-f32"
     )
 
 
