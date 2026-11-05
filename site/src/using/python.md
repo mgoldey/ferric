@@ -338,6 +338,36 @@ restrained fit, not the multi-stage, multi-conformer RESP procedure. `esp_at_ato
 potential at each nucleus. `hirshfeld_polarizability` returns per-atom 3×3
 polarizability tensors (Bohr³) and needs an RI basis.
 
+### Orbitals, density and cube files
+
+`eval_ao_on_points`, `eval_density_on_points` and `eval_mo_on_points` evaluate
+basis functions, the total electron density and restricted MOs at an (N, 3)
+array of points. **Points and cube grids are in Bohr**, like `esp_at_points`.
+`eval_ao_on_points` returns an (N, nbasis) array (PySCF `eval_gto` layout);
+`eval_mo_on_points` takes 0-based `mo_indices` into `mo_coefficients` and
+returns (N, len(mo_indices)). Orbital signs are the SCF's arbitrary phase.
+`write_cube` writes the density (e/Bohr³) or one MO (`what="mo"`, `mo_index=`)
+on an axis-aligned grid, from the atoms' bounding box plus `padding` unless
+`origin` and `shape` are given, and returns the `(origin, shape)` used.
+
+<!-- doctest -->
+```python
+import numpy as np
+
+rhf = ferric.run_rhf(water, bs)
+pts = np.array([[0.0, 0.0, 0.0], [0.0, 0.0, 1.0]])    # Bohr
+print(np.round(ferric.eval_density_on_points(water, bs, rhf, pts), 4))
+
+origin, shape = ferric.write_cube("homo.cube", water, bs, rhf,
+                                  what="mo", mo_index=4, spacing=0.3)
+print(shape)
+```
+
+```text
+[10.2392  0.8103]
+[28, 38, 32]
+```
+
 For NPZ export of ML-ready features (MO coefficients, PDEP eigenvectors, ESP,
 charges, polarizabilities, C6 coefficients) in one run, use the CLI's
 `[rpa] export_npz` section; see [Input file (TOML)](../reference/input.md).
@@ -593,6 +623,10 @@ Each takes `(mol, basis_set, result)` with a converged closed-shell
 | `hirshfeld_polarizability` | Per-atom Hirshfeld-partitioned static polarizability tensors (Bohr³) from PDEP-RPA. | — |
 | `orbital_moments` | Per-orbital centroids and spatial spreads (Bohr) of the restricted MOs. | — |
 | `density_second_moment` | 3×3 second-moment tensor of the electron density (Bohr²). | — |
+| `eval_ao_on_points` | AO values at (N, 3) points in Bohr, shape (N, nbasis). | — |
+| `eval_density_on_points` | Total electron density (e/Bohr³) at points in Bohr. | — |
+| `eval_mo_on_points` | Restricted MO values at points in Bohr, for chosen 0-based MO indices. | — |
+| `write_cube` | Gaussian cube file of the density or one restricted MO; all lengths in Bohr. | — |
 
 The `[rpa] compute_*` keys write into the CLI's NPZ export.
 

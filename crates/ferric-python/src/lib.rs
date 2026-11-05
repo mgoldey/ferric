@@ -5759,6 +5759,225 @@ fn density_second_moment(
         .map_err(make_err)
 }
 
+/// Validate an (N, 3) points array (Bohr) into a point list.
+fn points_to_vec(points: &numpy::PyReadonlyArray2<f64>) -> PyResult<Vec<[f64; 3]>> {
+    let arr = points.as_array();
+    if arr.ncols() != 3 {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "points must have shape (N, 3); got (_, {})",
+            arr.ncols()
+        )));
+    }
+    Ok(arr.rows().into_iter().map(|r| [r[0], r[1], r[2]]).collect())
+}
+
+/// AO values chi[mu, g] on `pts`, with the memory budget checked first.
+fn ao_values_checked(
+    mol: &ferric_core::mol::Molecule,
+    bs: &ferric_core::basis::BasisSet,
+    pts: &[[f64; 3]],
+) -> PyResult<Array2<f64>> {
+    let nbf = ferric_integrals::ao_grid::nbasis(mol, bs).map_err(make_err)?;
+    ferric_core::memory::check_alloc(
+        &format!("AO-on-points (nbf={nbf}, npts={})", pts.len()),
+        nbf.saturating_mul(pts.len()).saturating_mul(8),
+        ferric_core::memory::resolve_budget_bytes(None),
+    )
+    .map_err(make_err)?;
+    ferric_integrals::ao_grid::eval_basis_on_points(mol, bs, pts).map_err(make_err)
+}
+
+/// rho[g] = sum_{mu nu} D[mu, nu] chi[mu, g] chi[nu, g] from AO values `chi` (nbf, npts).
+fn density_from_ao_values(d: &Array2<f64>, chi: &Array2<f64>) -> Vec<f64> {
+    let dchi = d.dot(chi);
+    (0..chi.ncols())
+        .map(|g| chi.column(g).dot(&dchi.column(g)))
+        .collect()
+}
+
+/// Atomic orbital values chi_mu(r) at arbitrary points, as an (N, nbasis)
+/// array (PySCF `eval_gto(...)` layout, transposed from ferric's internal
+/// (nbasis, N)). `points` is an (N, 3) array of Cartesian positions in
+/// **Bohr**; values are in Bohr^(-3/2). Column order is the basis-function
+/// order of the SCF (`result.mo_coefficients` rows).
+#[pyfunction]
+fn eval_ao_on_points<'py>(
+    py: Python<'py>,
+    mol: &PyMolecule,
+    basis_set: &PyBasisSet,
+    points: numpy::PyReadonlyArray2<f64>,
+) -> PyResult<Bound<'py, PyArray2<f64>>> {
+    let pts = points_to_vec(&points)?;
+    let chi = ao_values_checked(&mol.inner, &basis_set.inner, &pts)?;
+    Ok(PyArray2::from_array(py, &chi.t().to_owned()))
+}
+
+/// Electron density rho(r) = sum_{mu nu} D_{mu nu} chi_mu(r) chi_nu(r)
+/// (total, alpha + beta) at arbitrary points, in e/Bohr^3. `points` is an
+/// (N, 3) array in **Bohr**. `result` is an `RhfResult` or `DftResult`.
+#[pyfunction]
+fn eval_density_on_points(
+    mol: &PyMolecule,
+    basis_set: &PyBasisSet,
+    result: DensitySource,
+    points: numpy::PyReadonlyArray2<f64>,
+) -> PyResult<Vec<f64>> {
+    let pts = points_to_vec(&points)?;
+    let chi = ao_values_checked(&mol.inner, &basis_set.inner, &pts)?;
+    Ok(density_from_ao_values(result.density(), &chi))
+}
+
+/// Restricted molecular orbital psi_i(r) = sum_mu C_{mu i} chi_mu(r) at
+/// arbitrary points: returns an (N, len(mo_indices)) array in Bohr^(-3/2).
+/// `mo_indices` are 0-based columns of `result.mo_coefficients` (energy
+/// order). `points` is an (N, 3) array in **Bohr**. Restricted (RHF/RKS)
+/// results only; orbital signs are the SCF's arbitrary phase.
+#[pyfunction]
+fn eval_mo_on_points<'py>(
+    py: Python<'py>,
+    mol: &PyMolecule,
+    basis_set: &PyBasisSet,
+    result: DensitySource,
+    mo_indices: Vec<usize>,
+    points: numpy::PyReadonlyArray2<f64>,
+) -> PyResult<Bound<'py, PyArray2<f64>>> {
+    let scf = result.scf();
+    if scf.spin != ferric_scf::result::Spin::Restricted {
+        return Err(make_err(
+            "eval_mo_on_points: restricted (RHF/RKS) results only",
+        ));
+    }
+    let c = scf.mos_r();
+    if let Some(&bad) = mo_indices.iter().find(|&&i| i >= c.ncols()) {
+        return Err(pyo3::exceptions::PyIndexError::new_err(format!(
+            "MO index {bad} out of range (result has {} MOs)",
+            c.ncols()
+        )));
+    }
+    let pts = points_to_vec(&points)?;
+    let chi = ao_values_checked(&mol.inner, &basis_set.inner, &pts)?;
+    let mut out = Array2::<f64>::zeros((pts.len(), mo_indices.len()));
+    for (k, &i) in mo_indices.iter().enumerate() {
+        let psi = c.column(i).dot(&chi);
+        out.column_mut(k).assign(&psi);
+    }
+    Ok(PyArray2::from_array(py, &out))
+}
+
+/// Write a Gaussian cube file of the total electron density or one
+/// restricted MO on an axis-aligned regular grid.
+///
+/// `what` is `"density"` (e/Bohr^3) or `"mo"` (psi_i, Bohr^(-3/2); needs
+/// `mo_index`, 0-based, restricted results only). All lengths are **Bohr**,
+/// matching the cube format (positive voxel counts mean Bohr). The grid is
+/// `shape = (nx, ny, nz)` points starting at `origin` with isotropic
+/// `spacing`; when `origin`/`shape` are omitted they are derived from the
+/// atoms' bounding box plus `padding`. Returns `(origin, shape)` actually
+/// used. `result` is an `RhfResult` or `DftResult`.
+#[pyfunction]
+#[pyo3(signature = (path, mol, basis_set, result, what="density", mo_index=None, spacing=0.3, padding=4.0, origin=None, shape=None))]
+#[allow(clippy::too_many_arguments)]
+fn write_cube(
+    path: &str,
+    mol: &PyMolecule,
+    basis_set: &PyBasisSet,
+    result: DensitySource,
+    what: &str,
+    mo_index: Option<usize>,
+    spacing: f64,
+    padding: f64,
+    origin: Option<[f64; 3]>,
+    shape: Option<[usize; 3]>,
+) -> PyResult<([f64; 3], [usize; 3])> {
+    if !(spacing.is_finite() && spacing > 0.0) {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "spacing must be a positive number of Bohr",
+        ));
+    }
+    let atoms = &mol.inner.atoms;
+    if atoms.is_empty() {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "molecule has no atoms",
+        ));
+    }
+    let origin = origin.unwrap_or_else(|| {
+        let mut lo = [f64::INFINITY; 3];
+        for a in atoms {
+            for (k, v) in [a.x, a.y, a.zpos].iter().enumerate() {
+                lo[k] = lo[k].min(*v);
+            }
+        }
+        [lo[0] - padding, lo[1] - padding, lo[2] - padding]
+    });
+    let shape = shape.unwrap_or_else(|| {
+        let mut hi = [f64::NEG_INFINITY; 3];
+        for a in atoms {
+            for (k, v) in [a.x, a.y, a.zpos].iter().enumerate() {
+                hi[k] = hi[k].max(*v);
+            }
+        }
+        let n = |k: usize| (((hi[k] + padding) - origin[k]) / spacing).ceil() as usize + 1;
+        [n(0), n(1), n(2)]
+    });
+    if shape.contains(&0) {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "shape entries must be >= 1",
+        ));
+    }
+    let grid = ferric_integrals::ao_grid::GridSpec {
+        origin,
+        n_x: shape[0],
+        n_y: shape[1],
+        n_z: shape[2],
+        step_x: [spacing, 0.0, 0.0],
+        step_y: [0.0, spacing, 0.0],
+        step_z: [0.0, 0.0, spacing],
+    };
+    let (vals, comment): (Vec<f64>, String) = match what {
+        "density" => {
+            let chi = ferric_export::eval_basis_on_grid(&mol.inner, &basis_set.inner, &grid)
+                .map_err(make_err)?;
+            (
+                density_from_ao_values(result.density(), &chi),
+                "total electron density (e/Bohr^3), lengths in Bohr".to_string(),
+            )
+        }
+        "mo" => {
+            let i = mo_index.ok_or_else(|| {
+                pyo3::exceptions::PyValueError::new_err("what=\"mo\" requires mo_index")
+            })?;
+            let scf = result.scf();
+            if scf.spin != ferric_scf::result::Spin::Restricted {
+                return Err(make_err(
+                    "write_cube: MO cubes need a restricted (RHF/RKS) result",
+                ));
+            }
+            let c = scf.mos_r();
+            if i >= c.ncols() {
+                return Err(pyo3::exceptions::PyIndexError::new_err(format!(
+                    "MO index {i} out of range (result has {} MOs)",
+                    c.ncols()
+                )));
+            }
+            let chi = ferric_export::eval_basis_on_grid(&mol.inner, &basis_set.inner, &grid)
+                .map_err(make_err)?;
+            (
+                c.column(i).dot(&chi).to_vec(),
+                format!("MO {i} (psi, Bohr^-3/2), lengths in Bohr"),
+            )
+        }
+        other => {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "unknown what {other:?}: expected \"density\" or \"mo\""
+            )))
+        }
+    };
+    let data =
+        ndarray::Array3::from_shape_vec((shape[0], shape[1], shape[2]), vals).map_err(make_err)?;
+    ferric_export::export_cube(path, &mol.inner, &grid, &data, &comment).map_err(make_err)?;
+    Ok((origin, shape))
+}
+
 /// Löwdin (symmetric-orthogonalization) partial charges (units of e).
 /// Closed-shell only. `result` is an `RhfResult` or `DftResult` from a
 /// converged SCF.
@@ -12414,6 +12633,10 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(tune_omega, m)?)?;
     m.add_function(wrap_pyfunction!(orbital_moments, m)?)?;
     m.add_function(wrap_pyfunction!(density_second_moment, m)?)?;
+    m.add_function(wrap_pyfunction!(eval_ao_on_points, m)?)?;
+    m.add_function(wrap_pyfunction!(eval_density_on_points, m)?)?;
+    m.add_function(wrap_pyfunction!(eval_mo_on_points, m)?)?;
+    m.add_function(wrap_pyfunction!(write_cube, m)?)?;
     m.add_function(wrap_pyfunction!(mulliken_charges, m)?)?;
     m.add_function(wrap_pyfunction!(chelpg_charges, m)?)?;
     m.add_function(wrap_pyfunction!(resp_charges, m)?)?;

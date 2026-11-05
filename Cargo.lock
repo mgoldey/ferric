@@ -644,6 +644,7 @@ dependencies = [
  "ferric-core",
  "ferric-d3",
  "ferric-dft",
+ "ferric-export",
  "ferric-gw",
  "ferric-integrals",
  "ferric-mm",

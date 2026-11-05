@@ -45,6 +45,8 @@ ferric-pbc = { path = "../ferric-pbc" }
 # code (TOML parsing, dispatch) and the small pure-Rust toml/serde deps it
 # needs.
 ferric-cli = { path = "../ferric-cli" }
+# `eval_*_on_points` / `write_cube`: GTO-on-grid evaluation and the cube writer.
+ferric-export = { path = "../ferric-export" }
 pyo3 = { workspace = true }
 numpy = { workspace = true }
 ndarray = { workspace = true }

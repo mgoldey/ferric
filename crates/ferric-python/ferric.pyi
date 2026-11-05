@@ -4862,6 +4862,53 @@ def density_second_moment(
     """Density second-moment tensor (3x3, Bohr^2) about the origin."""
     ...
 
+def eval_ao_on_points(
+    mol: Molecule,
+    basis_set: BasisSet,
+    points: NDArray[np.float64],
+) -> NDArray[np.float64]:
+    """AO values chi_mu(r) at arbitrary points: (N, nbasis) array, Bohr^-3/2.
+    `points` is (N, 3) in Bohr."""
+    ...
+
+def eval_density_on_points(
+    mol: Molecule,
+    basis_set: BasisSet,
+    result: RhfResult | DftResult,
+    points: NDArray[np.float64],
+) -> list[float]:
+    """Total electron density at arbitrary points (N,3) in Bohr; e/Bohr^3."""
+    ...
+
+def eval_mo_on_points(
+    mol: Molecule,
+    basis_set: BasisSet,
+    result: RhfResult | DftResult,
+    mo_indices: list[int],
+    points: NDArray[np.float64],
+) -> NDArray[np.float64]:
+    """Restricted MO values at points (N,3) in Bohr: (N, len(mo_indices)),
+    Bohr^-3/2. mo_indices are 0-based columns of mo_coefficients."""
+    ...
+
+def write_cube(
+    path: str,
+    mol: Molecule,
+    basis_set: BasisSet,
+    result: RhfResult | DftResult,
+    what: Literal["density", "mo"] = "density",
+    mo_index: int | None = None,
+    spacing: float = 0.3,
+    padding: float = 4.0,
+    origin: tuple[float, float, float] | None = None,
+    shape: tuple[int, int, int] | None = None,
+) -> tuple[list[float], list[int]]:
+    """Write a Gaussian cube file of the density (e/Bohr^3) or a restricted MO
+    (what="mo", needs mo_index). All lengths in Bohr. Grid is axis-aligned with
+    isotropic `spacing`; omitted origin/shape come from the atoms' bounding box
+    plus `padding`. Returns the (origin, shape) used."""
+    ...
+
 def boltzmann_weights(
     energies: list[float],
     temperature_k: float = ...,
