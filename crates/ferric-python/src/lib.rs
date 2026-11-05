@@ -1267,19 +1267,25 @@ fn wrap_rhf_result(
     config: RhfConfig,
 ) -> PyResult<PyObject> {
     warn_rhf_not_converged(py, &r, &config);
-    let certificate_data = stamped_scf_certificate(mol, &r, &config);
-    let result = PyRhfResult {
-        energy: r.energy,
-        converged: r.converged,
-        iterations: r.iterations,
-        computed_quartets: r.computed_quartets,
-        density_data: r.density_total.clone(),
-        orbital_energies_data: r.eps_alpha.clone(),
-        scf_data: r,
-        scf_config: config,
-        certificate_data,
-    };
-    Ok(Py::new(py, result)?.into_any())
+    Ok(Py::new(py, PyRhfResult::from_scf(mol, r, config))?.into_any())
+}
+
+impl PyRhfResult {
+    /// Wrap a closed-shell solve, with its certificate.
+    fn from_scf(mol: &Molecule, r: ScfResult, config: RhfConfig) -> Self {
+        let certificate_data = stamped_scf_certificate(mol, &r, &config);
+        PyRhfResult {
+            energy: r.energy,
+            converged: r.converged,
+            iterations: r.iterations,
+            computed_quartets: r.computed_quartets,
+            density_data: r.density_total.clone(),
+            orbital_energies_data: r.eps_alpha.clone(),
+            scf_data: r,
+            scf_config: config,
+            certificate_data,
+        }
+    }
 }
 
 /// Register the two `run_rhf` result types.
