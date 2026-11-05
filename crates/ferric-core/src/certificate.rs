@@ -310,6 +310,59 @@ impl Certificate {
         c
     }
 
+    /// The certificate of a post-SCF `kind` (MP2, CC, RPA, GW, ...) computed
+    /// on the SCF result that `reference` certifies:
+    /// [`Self::for_method_kind`]`(kind)`, then [`Self::with_reference`].
+    pub fn for_post_scf(kind: &str, reference: &Certificate) -> Self {
+        Self::for_method_kind(kind).with_reference(reference)
+    }
+
+    /// Fold in the certificate of the SCF reference this result is built on.
+    ///
+    /// * The grade is capped at the reference's grade (an unconverged
+    ///   reference is [`Grade::Ungraded`], so its post-SCF result is too).
+    /// * Each reference approximation is kept with its name prefixed
+    ///   `scf ` (`scf ri-j`, `scf xc-grid`, ...).
+    /// * Each reference warning is kept, prefixed `scf reference: `.
+    /// * The reference's build stamp is taken when this one has none.
+    ///
+    /// The reference's precision record is not copied: it describes the
+    /// SCF, not this result.
+    pub fn with_reference(mut self, reference: &Certificate) -> Self {
+        if self.build.is_none() {
+            self.build = reference.build.clone();
+        }
+        for a in &reference.approximations {
+            self.approximations.push(Approximation {
+                name: format!("scf {}", a.name),
+                detail: a.detail.clone(),
+            });
+        }
+        for w in &reference.warnings {
+            self.push_warning(format!("scf reference: {w}"));
+        }
+        let why = format!(
+            "the SCF reference ({}) is {}",
+            reference.capability, reference.grade
+        );
+        self.cap_grade(reference.grade, why)
+    }
+
+    /// Record density fitting with auxiliary basis `aux` (approximation `ri`).
+    pub fn with_ri(self, aux: &str) -> Self {
+        self.with_approximation("ri", format!("aux {aux}"))
+    }
+
+    /// Record `n` frozen core orbitals (approximation `frozen-core`); `0`
+    /// records nothing.
+    pub fn with_frozen_core(self, n: usize) -> Self {
+        if n == 0 {
+            self
+        } else {
+            self.with_approximation("frozen-core", format!("{n} core orbital(s) frozen"))
+        }
+    }
+
     pub fn with_build(mut self, build: BuildStamp) -> Self {
         self.build = Some(build);
         self
@@ -516,6 +569,45 @@ mod tests {
         assert_eq!(low.warnings, ["grade capped from Proven to Smoke: because"]);
         let still = low.cap_grade(Grade::Proven, "try to raise");
         assert_eq!(still.grade, Grade::Smoke, "cap_grade must never raise");
+    }
+
+    #[test]
+    fn post_scf_inherits_the_reference() {
+        let stamp = BuildStamp::new("0.5.0", "abc", Some(false));
+        let scf = Certificate::for_method_kind("rhf")
+            .with_build(stamp.clone())
+            .with_approximation("ri-j", "aux def2-universal-jkfit")
+            .warn("w");
+        let c = Certificate::for_post_scf("ccsd(t)", &scf)
+            .with_ri("cc-pvdz-ri")
+            .with_frozen_core(0)
+            .with_frozen_core(1);
+        assert_eq!(c.capability, "ccsd(t)");
+        assert_eq!(c.grade, Grade::ProvenNarrow, "Proven reference: no cap");
+        assert_eq!(c.build, Some(stamp));
+        let names: Vec<&str> = c.approximations.iter().map(|a| a.name.as_str()).collect();
+        assert_eq!(names, ["scf ri-j", "ri", "frozen-core"]);
+        assert_eq!(c.approximations[1].detail, "aux cc-pvdz-ri");
+        assert_eq!(c.warnings, ["scf reference: w"]);
+        assert_eq!(c.precision, None);
+
+        // An unconverged (ungraded) reference caps the post-SCF grade.
+        let bad = Certificate::for_method_kind("rhf").cap_grade(Grade::Ungraded, "not converged");
+        let c = Certificate::for_post_scf("rimp2", &bad);
+        assert_eq!(c.grade, Grade::Ungraded);
+        assert_eq!(
+            c.warnings,
+            [
+                "scf reference: grade capped from Proven to not graded: not converged",
+                "grade capped from Proven to not graded: the SCF reference (rhf) is not graded",
+            ]
+        );
+        // An own build stamp is kept over the reference's.
+        let own = BuildStamp::new("x", "own", None);
+        let c = Certificate::ungraded("gw")
+            .with_build(own.clone())
+            .with_reference(&scf);
+        assert_eq!(c.build, Some(own));
     }
 
     #[test]
