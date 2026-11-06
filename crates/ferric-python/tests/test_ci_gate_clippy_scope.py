@@ -24,7 +24,27 @@ import pytest
 REPO = Path(__file__).resolve().parents[3]
 SCRIPTS = REPO / "scripts"
 SELECTOR = SCRIPTS / "ci_gate_clippy_scope.py"
-REAL_CARGO = shutil.which("cargo")
+
+
+def _real_cargo():
+    """The first cargo on PATH that is not the ferric cargo shim.
+
+    The stub below sits FIRST on PATH and execs this path for everything but
+    clippy. If it were the shim (~/.local/share/ferric-cargo-shim/cargo, first
+    on PATH on the dev box), the shim would resolve its "real" cargo as the
+    first non-shim cargo on PATH, i.e. the stub, and the two would exec each
+    other until the selector's cargo-metadata timeout, which reads as
+    "cargo metadata failed" and silently widens every scope to the workspace.
+    """
+    path = os.pathsep.join(
+        d
+        for d in os.environ.get("PATH", "").split(os.pathsep)
+        if "ferric-cargo-shim" not in d
+    )
+    return shutil.which("cargo", path=path)
+
+
+REAL_CARGO = _real_cargo()
 
 pytestmark = pytest.mark.skipif(not REAL_CARGO, reason="needs cargo")
 
