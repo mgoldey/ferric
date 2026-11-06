@@ -72,7 +72,9 @@ Implemented in `d3bj_energy`; parameters $(s_6, s_8, a_1, a_2)$ per
 functional in `params.rs`, equal to simple-dftd3 1.6.0's rational-damping
 table: BLYP, BP86, B97-D, PBE, PBE0, revPBE, B3LYP, TPSS, TPSS0, B2PLYP,
 BHLYP, SCAN, r2SCAN, ωB97X. M06-2X has a zero-damping D3(0) fit only and is
-refused. Fewer than two atoms gives exactly $0$.
+refused. The ωB97X row is ωB97X-D3(BJ) of Najibi and Goerigk, JCTC 14, 5725
+(2018), doi 10.1021/acs.jctc.8b00842 (D3(BJ) in place of ωB97X-V's VV10), not
+the zero-damping ωB97X-D3 of Lin, Li, Mao and Chai, JCTC 9, 263 (2013). Fewer than two atoms gives exactly $0$.
 
 ## Gradient
 
