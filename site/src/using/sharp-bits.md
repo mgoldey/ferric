@@ -279,7 +279,7 @@ its own cgroup, for example with `scripts/ferric-limited -- ferric input.toml`
 
 The CUDA backend is not in the PyPI wheel; it needs a source build with the `gpu` feature (see [GPU (CUDA)](installation.md#gpu-cuda)), and even then it is off by default (`FERRIC_GPU=auto` or `[gpu] mode` turns it on). Consumer GeForce cards run FP64 at 1/32 of their FP32 rate or less, so offloading f64 contractions may be slower than the CPU once transfer time is counted; whether it helps depends on the card and the problem, and has to be measured on your own hardware.
 
-The Kohn-Sham XC grid runs on the device only under `mode = "on"` (or `gpu = "on"` / `"mixed"`), never under `auto`: on a GTX 1080 every device XC build took 2.2-3x the CPU time and whole PBE SCFs ran about 2x slower, so `auto` keeps it on the CPU rather than slowing every DFT run on a GPU box.
+The Kohn-Sham XC grid runs on the device only under `mode = "on"` (or `gpu = "on"` / `"mixed"`), never under `auto`: on a GTX 1080 with a 6-core host, a PBE/cc-pVDZ n-octane SCF loop took 1.9x as long with the device XC grid (whole run 4.83 s against 2.91 s, one run each; [measured timings](installation.md#measured-timings-gtx-1080)), so `auto` keeps it on the CPU rather than slowing every DFT run on a GPU box.
 
 Device memory is a separate pool (`[gpu] memory_gb`); the host `[memory] budget_gb` is not reduced by it. A contraction that does not fit the device pool runs on the CPU and is counted, not refused. `FERRIC_GPU_TRACE=1` prints each fallback.
 
