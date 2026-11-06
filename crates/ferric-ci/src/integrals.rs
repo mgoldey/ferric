@@ -378,9 +378,8 @@ mod tests {
             }
         }
         let mut t2 = vec![0.0f64; n_needed * n_needed * nbas * nbas];
-        let t2idx = |p: usize, q: usize, la: usize, sg: usize| {
-            ((p * n_needed + q) * nbas + la) * nbas + sg
-        };
+        let t2idx =
+            |p: usize, q: usize, la: usize, sg: usize| ((p * n_needed + q) * nbas + la) * nbas + sg;
         for p in 0..n_needed {
             for nu in 0..nbas {
                 for la in 0..nbas {
@@ -463,8 +462,7 @@ mod tests {
         (mol, prep, rhf)
     }
 
-    const WATER: &str =
-        "3\nH2O\nO 0.0 0.0 0.1173\nH 0.0 0.7572 -0.4692\nH 0.0 -0.7572 -0.4692\n";
+    const WATER: &str = "3\nH2O\nO 0.0 0.0 0.1173\nH 0.0 0.7572 -0.4692\nH 0.0 -0.7572 -0.4692\n";
 
     fn water(basis_name: &str) -> (Molecule, PreparedBasis, ScfResult) {
         rhf_on(Molecule::parse_xyz(WATER, 0, 1).unwrap(), basis_name)
@@ -552,9 +550,12 @@ mod tests {
                 t_old.push(t.elapsed().as_secs_f64());
                 let ao_copy = ao.clone();
                 let t = Instant::now();
-                let new =
-                    transform_eri_quarter_gemm(ao_copy, nbas, c.slice(ndarray::s![.., 0..n_needed]))
-                        .unwrap();
+                let new = transform_eri_quarter_gemm(
+                    ao_copy,
+                    nbas,
+                    c.slice(ndarray::s![.., 0..n_needed]),
+                )
+                .unwrap();
                 t_new.push(t.elapsed().as_secs_f64());
                 d = d.max(max_abs_diff(&old, &new));
             }
