@@ -11315,7 +11315,7 @@ fn run_gw(
         eigensolver_conv_thresh: lanczos_conv_thresh_or(eigensolver_conv_thresh, 1e-6),
         quadrature: QuadratureConfig {
             scheme,
-            n_points: n_quad.unwrap_or(20),
+            n_points: n_quad.unwrap_or(ferric_gw::DEFAULT_N_QUAD),
             u0: u0.unwrap_or(0.5),
         },
         sternheimer: SternheimerConfig::default(),
@@ -11665,7 +11665,7 @@ fn run_u_gw(
         eigensolver_conv_thresh: lanczos_conv_thresh_or(eigensolver_conv_thresh, 1e-6),
         quadrature: QuadratureConfig {
             scheme,
-            n_points: n_quad.unwrap_or(20),
+            n_points: n_quad.unwrap_or(ferric_gw::DEFAULT_N_QUAD),
             u0: u0.unwrap_or(0.5),
         },
         sternheimer: SternheimerConfig::default(),
@@ -11730,6 +11730,7 @@ fn run_u_gw(
         &pdep_cfg,
         &gw_cfg,
         &r,
+        vxc_diag.is_some(),
     );
     Ok(PyUGwResult {
         certificate_data,

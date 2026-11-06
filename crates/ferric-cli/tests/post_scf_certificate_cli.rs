@@ -133,7 +133,7 @@ fn ccsd_t_result_carries_its_table_grade() {
 }
 
 #[test]
-fn gw_logs_a_certificate_record_with_the_matched_settings_caveat() {
+fn gw_logs_a_certificate_record_with_the_calibrated_envelope_caveat() {
     let (stdout, records) = run(
         "gw",
         &format!(
@@ -150,11 +150,11 @@ fn gw_logs_a_certificate_record_with_the_matched_settings_caveat() {
         .find(|r| r["record"] == "certificate")
         .unwrap_or_else(|| panic!("no certificate record in {records:?}"));
     assert_eq!(c["capability"], "gw");
-    assert_eq!(c["grade"], "smoke");
+    assert_eq!(c["grade"], "proven_narrow");
     let warned = c["warnings"].as_array().unwrap().iter().any(|w| {
         w.as_str()
             .unwrap()
-            .contains("this run uses n_quad = 16, trunc_thresh = 1e-4")
+            .contains("u0 = 0.5, n_quad = 16, trunc_thresh = 1e-4")
     });
     assert!(warned, "{c}");
 }

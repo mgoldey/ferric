@@ -122,15 +122,6 @@ pub fn libint_summary() -> String {
 /// are exactly the Smoke / Spike kinds of that table.
 pub const EPISTEMIC_WARNINGS: &[(&str, &str)] = &[
     (
-        "gw",
-        "method.kind = \"gw\" is Smoke-grade (see site/src/reference/validation.md): QP energies \
-         (G0W0@HF/@PBE, frozen core, ECP, U-G0W0@UHF, COHSEX, evGW0, evGW) are compared with PySCF \
-         gw_ac/ugw_ac in crates/ferric-gw/tests/validation_gw.rs only at MATCHED settings \
-         ([rpa] n_quad = 100, trunc_thresh = 0); the measured agreement is on that page. The CLI \
-         defaults (n_quad = 20, trunc_thresh = 1e-4) are coarser: the 20-point frequency grid \
-         alone moves the H2O/cc-pVDZ G0W0@PBE HOMO by 13 meV, and truncation is not validated.",
-    ),
-    (
         "bse-tda",
         "method.kind = \"bse-tda\" is Smoke-grade (see site/src/reference/validation.md): the lowest \
          five singlets match an independent numpy BSE-TDA to 2e-10 Ha given the same \
@@ -5834,7 +5825,9 @@ fn run_gw(
         eigensolver_conv_thresh: cfg.rpa.eigensolver_conv_thresh_or(1e-6),
         quadrature: QuadratureConfig {
             scheme,
-            n_points: cfg.rpa.n_quad.unwrap_or(20),
+            // GW's own default (40), not pdep-rpa's 20: see
+            // ferric_gw::DEFAULT_N_QUAD for the calibration.
+            n_points: cfg.rpa.n_quad.unwrap_or(ferric_gw::DEFAULT_N_QUAD),
             u0: cfg.rpa.u0.unwrap_or(0.5),
         },
         sternheimer: SternheimerConfig::default(),
@@ -6009,7 +6002,12 @@ fn run_gw(
             }
         }
         print_and_note_certificate(&ferric_gw::certificate::u_gw_certificate(
-            scf_cert, aux_name, &rpa_cfg, &gw_cfg, &gw_result,
+            scf_cert,
+            aux_name,
+            &rpa_cfg,
+            &gw_cfg,
+            &gw_result,
+            vxc_diag.is_some(),
         ));
         return;
     }

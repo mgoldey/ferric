@@ -4821,7 +4821,13 @@ def run_gw(
     scf_energy_conv: float | None = None,
     scf_density_conv: float | None = None,
 ) -> GwResult:
-    """Closed-shell G0W0/COHSEX/evGW0/evGW on an RHF or RKS reference."""
+    """Closed-shell G0W0/COHSEX/evGW0/evGW on an RHF or RKS reference.
+
+    Defaults: n_quad = 40 Gauss-Legendre points for W (GW's own default; the
+    RPA energy paths use 20), trunc_thresh = 1e-4, ev_conv_thresh = 1e-4 Ha.
+    Calibrated against the validated settings (n_quad = 100, trunc_thresh = 0):
+    HOMO/LUMO within 10 meV (G0W0@PBE worst 5.7 meV; @HF starts < 0.1 meV).
+    """
     ...
 
 def run_u_gw(
@@ -4849,7 +4855,10 @@ def run_u_gw(
     scf_energy_conv: float | None = None,
     scf_density_conv: float | None = None,
 ) -> UGwResult:
-    """Open-shell U-G0W0/U-COHSEX/U-evGW0/U-evGW on a UHF/ROHF reference."""
+    """Open-shell U-G0W0/U-COHSEX/U-evGW0/U-evGW on a UHF/ROHF reference.
+
+    Same defaults as run_gw (n_quad = 40, trunc_thresh = 1e-4).
+    """
     ...
 
 def run_bse_tda(
