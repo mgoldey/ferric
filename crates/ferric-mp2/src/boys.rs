@@ -8,7 +8,7 @@
 //! union of domains for a given μ index gives the sparsity pattern of the
 //! Laplace pseudo-densities P(t) and Q(t).
 
-use ndarray::Array2;
+use ndarray::{s, Array2};
 
 /// Result of Boys localization.
 #[derive(Debug, Clone)]
@@ -32,10 +32,9 @@ pub struct BoysResult {
 ///
 /// Returns localized orbitals and Boys centers.
 pub fn boys_localize(c_occ: &Array2<f64>, dip: &[Array2<f64>; 3], max_iter: usize) -> BoysResult {
-    let nbas = c_occ.nrows();
     let nocc = c_occ.ncols();
 
-    // Working copy of the coefficient matrix.
+    // Output buffer, same layout as the input copy (filled at the end).
     let mut c = c_occ.to_owned();
 
     // Compute MO dipole matrices in the occupied subspace: d[alpha]_ij = C^T @ dip_alpha @ C
@@ -45,6 +44,12 @@ pub fn boys_localize(c_occ: &Array2<f64>, dip: &[Array2<f64>; 3], max_iter: usiz
         let dip_c: Array2<f64> = dip[alpha].dot(&c); // (nbas, nocc)
         c.t().dot(&dip_c) // (nocc, nocc)
     });
+
+    // Working copy TRANSPOSED, (nocc, nbas) row-major: a Jacobi rotation of
+    // orbitals i, j then sweeps two contiguous rows instead of two
+    // stride-nocc columns. Every element sees the same two-term update as
+    // before, so the result is bitwise the column-major sweep's.
+    let mut ct: Array2<f64> = c.t().as_standard_layout().into_owned();
 
     let mut converged = false;
     let mut iterations = 0;
@@ -97,12 +102,15 @@ pub fn boys_localize(c_occ: &Array2<f64>, dip: &[Array2<f64>; 3], max_iter: usiz
                 let cos_t = theta.cos();
                 let sin_t = theta.sin();
 
-                // Rotate coefficient columns i and j.
-                for mu in 0..nbas {
-                    let ci = c[(mu, i)];
-                    let cj = c[(mu, j)];
-                    c[(mu, i)] = cos_t * ci - sin_t * cj;
-                    c[(mu, j)] = sin_t * ci + cos_t * cj;
+                // Rotate coefficient columns i and j (rows of `ct`).
+                {
+                    let (mut ri, mut rj) = ct.multi_slice_mut((s![i, ..], s![j, ..]));
+                    for (x, y) in ri.iter_mut().zip(rj.iter_mut()) {
+                        let ci = *x;
+                        let cj = *y;
+                        *x = cos_t * ci - sin_t * cj;
+                        *y = sin_t * ci + cos_t * cj;
+                    }
                 }
 
                 // Update MO dipole matrices for all alpha.
@@ -134,6 +142,8 @@ pub fn boys_localize(c_occ: &Array2<f64>, dip: &[Array2<f64>; 3], max_iter: usiz
             break 'outer;
         }
     }
+
+    c.assign(&ct.t());
 
     // Extract Boys centers: ⟨i|r_alpha|i⟩ = d[alpha][i,i]
     let mut centers = Array2::zeros((nocc, 3));
