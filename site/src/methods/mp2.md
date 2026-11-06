@@ -288,7 +288,10 @@ cc-pVDZ-RI, a quiet machine, 2026-09-07; benchmark
 The run froze the carbon cores (`frozen_core` = number of carbons) and
 calibrated the pair gate (0.7 Coulomb, 0.02 erfc with ω = 1.0) at
 `eps = 1e-4`; the defaults are all-electron with no pair gate. Timings are the correlation
-stage (assembly + solve) and exclude the canonical reference:
+stage (assembly + solve) and exclude the canonical reference. They also
+exclude the VV-HV virtual-space build (`t_spaces_s` in the JSON log and the
+Python `local` dict), a dense O(N³) step whose cost the fitted exponents
+below do not cover:
 
 - Correlation-stage cost grows as about N<sup>1.24</sup> with the erfc
   kernel and N<sup>1.4</sup> with Coulomb, fitted to the last three sizes.

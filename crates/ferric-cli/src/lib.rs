@@ -2502,13 +2502,16 @@ fn run_rimp2_local(
             );
             println!(
                 "  strips rows {:.0}/{} cols {:.0}/{}  eri3 {:.1}M evald / {:.1}M skipped  \
-                 t maps/eri3/metric/pairs/solve {:.2}/{:.2}/{:.2}/{:.2}/{:.2} s",
+                 t spaces/loc/maps/eri3/metric/pairs/solve \
+                 {:.2}/{:.2}/{:.2}/{:.2}/{:.2}/{:.2}/{:.2} s",
                 st.strip_rows_mean,
                 st.strip_rows_max,
                 st.strip_cols_mean,
                 st.strip_cols_max,
                 st.n_eri3_shell_triples as f64 / 1e6,
                 st.n_eri3_skipped as f64 / 1e6,
+                r.timings.t_spaces_s,
+                st.t_loc_s,
                 st.t_maps_s,
                 st.t_eri3_s,
                 st.t_metric_s,

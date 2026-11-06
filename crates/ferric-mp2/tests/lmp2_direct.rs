@@ -909,8 +909,13 @@ fn bench_direct_alkane_series() {
     };
     println!(
         "sys        op     eps    E_corr        dE_vs_can  keep    npair/gated dom(mn/mx) \
-         strips(r mn/mx | c mn/mx) eri3_Mtriples t_maps t_eri3 t_metric t_pairs | t_asm t_solve t_ref(ri_mp2)"
+         strips(r mn/mx | c mn/mx) eri3_Mtriples t_maps t_eri3 t_metric t_pairs | t_asm t_solve t_ref(ri_mp2) \
+         | t_spaces t_loc t_corr"
     );
+    // t_asm INCLUDES t_loc (same start instant); t_spaces (VV-HV build +
+    // check) is OUTSIDE t_asm, so the correlation wall is
+    // t_corr = t_spaces + t_asm + t_solve. Exponents fitted to t_asm+t_solve
+    // alone omit the O(N^3) VV-HV stage (wiki/notes/t018-cubic-ops-audit-2026-11-06.md M0).
     for nc in [4usize, 8, 12, 16, 20, 32, 48] {
         if nc < min_c {
             continue;
@@ -945,7 +950,7 @@ fn bench_direct_alkane_series() {
                 }
                 println!(
                     "alkane_{:<3} {:6} {:6.0e} {:.8} {:+.3e} {:.4} {:5}/{:<5} {:4.0}/{:<4} {:5.0}/{:<5} {:4.0}/{:<4} \
-                     {:8.2} {:6.2} {:6.2} {:8.2} {:7.2} | {:6.2} {:7.2} {:7.2}",
+                     {:8.2} {:6.2} {:6.2} {:8.2} {:7.2} | {:6.2} {:7.2} {:7.2} | {:8.3} {:5.3} {:6.2}",
                     nc,
                     opname,
                     eps,
@@ -969,6 +974,9 @@ fn bench_direct_alkane_series() {
                     r.timings.t_assembly_s,
                     r.timings.t_solve_s,
                     r.timings.t_reference_s,
+                    r.timings.t_spaces_s,
+                    st.t_loc_s,
+                    r.timings.t_spaces_s + r.timings.t_assembly_s + r.timings.t_solve_s,
                 );
                 println!(
                     "ERI3 c={nc} op={opname} eps={eps:.0e} wall={:.4} setup={:.4} fill={:.4} eval={:.4} \
@@ -1393,8 +1401,11 @@ fn bench_scaling_decisive() {
 
     println!(
         "# DECISIVE rows: sys op eps rep E_corr t_method wall_s cpu_s \
-         t_maps t_eri3 t_metric t_pairs t_asm t_solve Mtriples dom_mx strip_r_mx strip_c_mx pairs_per_occ"
+         t_maps t_eri3 t_metric t_pairs t_asm t_solve Mtriples dom_mx strip_r_mx strip_c_mx pairs_per_occ \
+         t_spaces t_loc t_corr"
     );
+    // t_method = t_asm + t_solve (t_asm includes t_loc) EXCLUDES t_spaces, the
+    // VV-HV build + check, which is O(N^3); t_corr = t_spaces + t_method.
     for nc in &sizes {
         let nc = *nc;
         let su = setup(&format!("alkane_{nc}.xyz"));
@@ -1426,7 +1437,8 @@ fn bench_scaling_decisive() {
                     let no = 3 * nc + 1;
                     println!(
                         "DEC alkane_{:<3} {:6} {:6.0e} {} {:.10} {:8.3} {:8.3} {:9.3} \
-                         {:6.2} {:7.2} {:7.2} {:7.2} {:7.2} {:7.2} {:8.2} {:4.0} {:5.0} {:4.0} {:6.2}",
+                         {:6.2} {:7.2} {:7.2} {:7.2} {:7.2} {:7.2} {:8.2} {:4.0} {:5.0} {:4.0} {:6.2} \
+                         {:8.3} {:7.3} {:8.3}",
                         nc, opname, eps, rep,
                         r.e_corr, t_method, wall, cpu,
                         st.t_maps_s, st.t_eri3_s, st.t_metric_s, st.t_pairs_s,
@@ -1434,6 +1446,7 @@ fn bench_scaling_decisive() {
                         st.n_eri3_shell_triples as f64 / 1e6,
                         r.dom_max, st.strip_rows_max, st.strip_cols_max,
                         r.pair_fraction * (no * no) as f64 / no as f64,
+                        r.timings.t_spaces_s, st.t_loc_s, r.timings.t_spaces_s + t_method,
                     );
                 }
             }
