@@ -193,11 +193,15 @@ fn check_stagnated(xyz: &str, charge: i32, nocc: (usize, usize)) {
 #[test]
 fn sh_uks_lda_exit_mos_build_the_density() {
     // Whether DIIS settles on the stagnated state (rather than cycling to
-    // max_iter) depends on the trajectory. Under the 1e-14 semilocal density
-    // floor, MEASURED settle iterations: r = 1.30/1.32/1.36/1.40 Å -> 45/28/197/145;
-    // 1.3409 and 1.38 cycle past 200. 1.32 has the widest margin. check_stagnated
-    // asserts the state is the non-aufbau one (Hessian eigenvalue refusal).
-    check_stagnated("2\nSH\nS 0 0 0\nH 0 0 1.32\n", 0, (9, 8));
+    // max_iter) depends on the trajectory, which here depends on which vector
+    // of the degenerate pi pair the Fock eigensolver hands back first (the
+    // beta hole splits that block). MEASURED settle iterations, 1e-14 semilocal
+    // density floor, r = 1.30/1.32/1.3409/1.36/1.38/1.40 Å:
+    //   dsyev  (QR, before 2026-11-06): 45/28/>200/197/>200/145
+    //   dsyevd (divide and conquer):    198/>200/49/133/181/46
+    // 1.40 has the widest margin under dsyevd. check_stagnated asserts the
+    // state is the non-aufbau one (Hessian eigenvalue refusal).
+    check_stagnated("2\nSH\nS 0 0 0\nH 0 0 1.40\n", 0, (9, 8));
 }
 
 #[test]

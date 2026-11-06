@@ -43,14 +43,18 @@
 //!   and consumers that build a **symmetric matrix function** `U f(Λ) Uᵀ`
 //!   (S^{±1/2}, V^{-1/2}) whose result is invariant to degenerate-subspace
 //!   rotation.
-//! - **NOT safe:** consumers that feed the raw eigenvectors forward in a way
-//!   that must reproduce a specific basis — most importantly the
-//!   every-iteration SCF **Fock diagonalization** (`ferric-scf`
-//!   `driver::diagonalize_rect`). There, the dsyevd eigenvector choice on a
-//!   symmetric molecule (methane/Td degenerate MOs) shifts the SCF fixed point
-//!   just enough that the density-change ΔP limit-cycles above the 1e-8
-//!   convergence gate (the *energy* stays correct to ~1e-8 Ha, but the run is
-//!   reported non-converged). That call site is deliberately left on `.eigh()`.
+//! - **Safe:** consumers of eigenvectors that only use whole degenerate
+//!   blocks, such as the SCF **Fock diagonalization** (`ferric-scf`
+//!   `driver::diagonalize_rect`), whose density and occupied factors are
+//!   invariant to a rotation inside a block that is wholly occupied or wholly
+//!   virtual. It moved to `eigh_dc` on 2026-11-06. The 2026-07-24 rejection
+//!   (methane/Td ΔP limit-cycling above the 1e-8 gate) was the RI-J explicit
+//!   metric inverse amplifying a rounding-level density change, not the
+//!   eigenvector choice; see `driver::FockEigensolver`.
+//! - **NOT safe:** consumers that feed individual eigenvectors forward in a
+//!   way that must reproduce a specific basis inside a degenerate subspace
+//!   (e.g. anything that splits a degenerate block, or tracks single vectors
+//!   across calls by index).
 
 use std::os::raw::{c_char, c_int};
 
