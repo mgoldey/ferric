@@ -4,8 +4,10 @@
 //! [`einsum_binary`] is the no-batch, unit-scale special case. Given two
 //! operands and the positions of their batch / free / contracted axes, the
 //! engine permutes each operand so those axis groups are contiguous, reshapes,
-//! calls GEMM (`general_mat_mul` — one call, or one per batch slice when there
-//! are batch axes), applies the scale factor, and reshapes the result to the
+//! calls the k-blocked GEMM engine (one call, or one per batch slice when
+//! there are batch axes — each slice rounds exactly as the unbatched call
+//! would; slices with no free extent are a vectorized batched dot instead),
+//! applies the scale factor, and reshapes the result to the
 //! requested output shape. Any required permutation copy is logged at debug
 //! level so hot transposes are discoverable.
 
@@ -162,12 +164,8 @@ pub fn einsum_dyn(
         .chain(s.out_from_left.iter().map(|&p| left.shape()[p]))
         .chain(s.out_from_right.iter().map(|&p| right.shape()[p]))
         .collect();
-    // A zero-extent axis: every output element is an empty sum (or the
-    // output itself is empty), so the result is zeros. The GEMM lowering
-    // below cannot reshape empty permuted views and would panic.
-    if left.is_empty() || right.is_empty() {
-        return Ok(ArrayD::zeros(IxDyn(&out_shape)));
-    }
+    // Zero-extent axes are handled inside `einsum_binary_batched` (shared
+    // with the macro path).
     einsum_binary_batched(
         left,
         &s.left_batch,
@@ -208,6 +206,28 @@ pub fn einsum_binary_batched(
     out_shape: &[usize],
     scale: f64,
 ) -> Result<ArrayD<f64>, TensorError> {
+    // Shared-axis extents first, so the empty shortcut below cannot hide a
+    // mismatch (the macro path has no other run-time extent check).
+    let pairs = left_batch
+        .iter()
+        .zip(right_batch)
+        .chain(left_contr.iter().zip(right_contr));
+    for (&lp, &rp) in pairs {
+        let (ln, rn) = (left.shape()[lp], right.shape()[rp]);
+        if ln != rn {
+            return Err(TensorError::ContractedDimMismatch {
+                left: ln,
+                right: rn,
+            });
+        }
+    }
+    // A zero-extent axis: every output element is an empty sum (or the output
+    // is itself empty). The reshapes below cannot take empty views (`.max(1)`
+    // turns a 0 extent into 1) and would panic, on the macro path as well.
+    if left.is_empty() || right.is_empty() {
+        return Ok(ArrayD::zeros(IxDyn(out_shape)));
+    }
+
     // Fast path: no batch axes -> one GEMM, then scale.
     if left_batch.is_empty() {
         let mut out = einsum_binary(
@@ -225,52 +245,48 @@ pub fn einsum_binary_batched(
         return Ok(out);
     }
 
-    // Batched path. Reshape each operand to (batch, free, contr): a 3D view
-    // where index 0 walks the (flattened) batch space. Then for each batch
-    // slice do one GEMM of (free x contr)·(contr x rfree) -> (free x rfree).
-    let l3 = to_3d(left, left_batch, left_free, left_contr, "left");
-    let r3 = to_3d(right, right_batch, right_contr, right_free, "right");
+    // Batched path. Every batch slice is an independent
+    // (free x contr)·(contr x rfree) product, and it must round EXACTLY like
+    // the unbatched engine would for that slice: the same k-blocked GEMM, and
+    // `scale` applied AFTER the product (not folded into alpha).
+    // `batched_is_bit_identical_to_loop_of_unbatched` pins this.
+    let extent = |op: &ArrayViewD<f64>, axes: &[usize]| -> usize {
+        axes.iter().map(|&ax| op.shape()[ax]).product::<usize>()
+    };
+    let nb = extent(&left, left_batch);
+    let (lf, lc, rf) = (
+        extent(&left, left_free),
+        extent(&left, left_contr),
+        extent(&right, right_free),
+    );
 
-    let nb = l3.shape()[0];
-    let (lf, lc) = (l3.shape()[1], l3.shape()[2]);
-    let (rc, rf) = (r3.shape()[1], r3.shape()[2]);
-    if nb != r3.shape()[0] {
-        // Batch extents disagree: treat as a contracted-dim style mismatch.
-        return Err(TensorError::ContractedDimMismatch {
-            left: nb,
-            right: r3.shape()[0],
-        });
-    }
-    if lc != rc {
-        return Err(TensorError::ContractedDimMismatch {
-            left: lc,
-            right: rc,
-        });
-    }
-
-    let mut out3 = ArrayD::<f64>::zeros(IxDyn(&[nb, lf, rf]));
-    {
-        let l3m = l3.view().into_dimensionality::<ndarray::Ix3>().unwrap();
-        let r3m = r3.view().into_dimensionality::<ndarray::Ix3>().unwrap();
-        let mut o3m = out3
-            .view_mut()
-            .into_dimensionality::<ndarray::Ix3>()
-            .unwrap();
-        // Opt-in multi-threaded BLAS for every batch-slice GEMM in this loop
-        // (default resolves to 1 — a no-op — unless FERRIC_BLAS_THREADS is
-        // set). This is a plain sequential `for`, not a par_iter; the
-        // runtime rayon-worker guard inside opt_in_blas_threads still forces
-        // 1 if a caller ever nests this inside a rayon region, so the wrap
-        // is safe either way. One resolve+set/restore for the whole loop
-        // rather than per-slice.
-        with_blas_threads(opt_in_blas_threads(), || {
-            for b in 0..nb {
-                let lb = l3m.index_axis(ndarray::Axis(0), b);
-                let rb = r3m.index_axis(ndarray::Axis(0), b);
-                let mut ob = o3m.index_axis_mut(ndarray::Axis(0), b);
-                general_mat_mul(scale, &lb, &rb, 0.0, &mut ob);
-            }
-        });
+    let mut out = if lf == 1 && rf == 1 {
+        // Every slice is a 1 x k x 1 "GEMM" (a dot; a product when k == 1:
+        // `ij,ij->ij`, `kij,kij->ij`). One GEMM call per OUTPUT ELEMENT was
+        // 43x (Hadamard) / 8x (k-dot) slower than a vectorized loop — see
+        // `bench_batched_vs_unbatched`. Not routed through GEMM, so for k > 1
+        // the sum order is this function's own, not dgemm's.
+        batched_dot(
+            &left,
+            left_batch,
+            left_contr,
+            &right,
+            right_batch,
+            right_contr,
+            nb,
+            lc,
+        )
+    } else {
+        // Reshape each operand to (batch, free, contr): index 0 walks the
+        // (flattened) batch space. No copy when already in that order.
+        let l3 = to_3d(left, left_batch, left_free, left_contr, "left");
+        let r3 = to_3d(right, right_batch, right_contr, right_free, "right");
+        let mut out3 = ndarray::Array3::<f64>::zeros((nb, lf, rf));
+        batched_gemm(&l3.view(), &r3.view(), &mut out3.view_mut());
+        out3.into_dyn()
+    };
+    if scale != 1.0 {
+        out.mapv_inplace(|x| x * scale);
     }
 
     let want: usize = out_shape.iter().product::<usize>().max(1);
@@ -278,10 +294,144 @@ pub fn einsum_binary_batched(
     if got != want {
         return Err(TensorError::OutputReshape { got, want });
     }
-    let out = out3
+    let out = out
         .into_shape_with_order(IxDyn(out_shape))
         .map_err(|_| TensorError::OutputReshape { got, want })?;
     Ok(out)
+}
+
+/// One GEMM per batch slice, through the same engine as the unbatched path.
+///
+/// - A slice large enough to band (>= [`PAR_GEMM_MIN_FLOPS`]) goes through
+///   [`gemm_row_banded`], exactly what [`einsum_binary`] calls for it: device
+///   GEMM when configured, rayon row bands otherwise, serial k-blocked below.
+/// - Small slices: rayon over the BATCH axis when the whole product clears the
+///   same threshold, each slice the serial [`gemm_kblocked`] with BLAS pinned
+///   to 1 — disjoint output slices, no cross-slice accumulation, so
+///   bit-identical to the serial loop. Otherwise the serial loop with the
+///   caller's opt-in BLAS count (the pre-existing behaviour).
+fn batched_gemm(
+    l3: &ndarray::ArrayView3<f64>,
+    r3: &ndarray::ArrayView3<f64>,
+    o3: &mut ndarray::ArrayViewMut3<f64>,
+) {
+    use ndarray::Axis;
+    use rayon::prelude::*;
+    let (nb, m, k) = l3.dim();
+    let n = r3.dim().2;
+    let slice_flops = 2usize.saturating_mul(m).saturating_mul(n).saturating_mul(k);
+    if slice_flops >= PAR_GEMM_MIN_FLOPS {
+        for b in 0..nb {
+            let mut ob = o3.index_axis_mut(Axis(0), b);
+            gemm_row_banded(
+                &l3.index_axis(Axis(0), b),
+                &r3.index_axis(Axis(0), b),
+                &mut ob,
+            );
+        }
+        return;
+    }
+    let parallel = nb >= 2
+        && slice_flops.saturating_mul(nb) >= PAR_GEMM_MIN_FLOPS
+        && rayon::current_num_threads() >= 2
+        && rayon::current_thread_index().is_none();
+    if parallel {
+        // Literal 1, evaluated on the caller before the fan-out (see
+        // `gemm_row_banded` for why it must not be `opt_in_blas_threads()`).
+        // ndarray's own `rayon` feature is off in this workspace (see
+        // `gemm_row_banded`): drive rayon over a Vec of disjoint slice views.
+        let mut slices: Vec<ndarray::ArrayViewMut2<f64>> = o3.axis_iter_mut(Axis(0)).collect();
+        with_blas_threads(1, || {
+            slices.par_iter_mut().enumerate().for_each(|(b, ob)| {
+                gemm_kblocked(&l3.index_axis(Axis(0), b), &r3.index_axis(Axis(0), b), ob);
+            });
+        });
+        return;
+    }
+    // One resolve + set/restore for the whole loop rather than per slice.
+    with_blas_threads(opt_in_blas_threads(), || {
+        for b in 0..nb {
+            let mut ob = o3.index_axis_mut(Axis(0), b);
+            gemm_kblocked(
+                &l3.index_axis(Axis(0), b),
+                &r3.index_axis(Axis(0), b),
+                &mut ob,
+            );
+        }
+    });
+}
+
+/// `out[b] = Σ_k left[b, k] · right[b, k]` over the flattened batch `b`, for
+/// the batched case where both operands have no free extent (lf = rf = 1).
+///
+/// Operands are viewed as `(contr, batch)` so the inner loop runs over the
+/// batch with unit stride (zero-copy for the common `kij,kij->ij` layout).
+/// Accumulated in [`GEMM_K_BLOCK`]-wide k-blocks (a partial sum per block,
+/// then added) — the same coarse pairwise summation as [`gemm_kblocked`].
+/// For k == 1 this is a plain product, bit-identical to the 1x1x1 GEMM.
+#[allow(clippy::too_many_arguments)]
+fn batched_dot(
+    left: &ArrayViewD<f64>,
+    left_batch: &[usize],
+    left_contr: &[usize],
+    right: &ArrayViewD<f64>,
+    right_batch: &[usize],
+    right_contr: &[usize],
+    nb: usize,
+    k: usize,
+) -> ArrayD<f64> {
+    use ndarray::{Axis, Zip};
+    // (contr, batch ++ free) as a matrix; the free axes all have extent 1, so
+    // appending them to the batch group changes no index. Zero-copy whenever
+    // the operand is already laid out that way (or exactly transposed).
+    fn as_kb<'a>(
+        op: &ArrayViewD<'a, f64>,
+        contr: &[usize],
+        batch: &[usize],
+        which: &str,
+    ) -> Operand2d<'a> {
+        let rest = (0..op.ndim()).filter(|ax| !contr.contains(ax) && !batch.contains(ax));
+        let second: Vec<usize> = batch.iter().copied().chain(rest).collect();
+        to_2d_or_transpose(op.clone(), contr, &second, which)
+    }
+    let l2 = as_kb(left, left_contr, left_batch, "left");
+    let r2 = as_kb(right, right_contr, right_batch, "right");
+    let (l2, r2) = (l2.view(), r2.view());
+    debug_assert_eq!(l2.dim(), (k, nb));
+    debug_assert_eq!(r2.dim(), (k, nb));
+
+    let mut out = ndarray::Array1::<f64>::zeros(nb);
+    let blocked = k > GEMM_K_BLOCK;
+    let mut part = if blocked {
+        ndarray::Array1::<f64>::zeros(nb)
+    } else {
+        ndarray::Array1::<f64>::zeros(0)
+    };
+    let mut k0 = 0;
+    while k0 < k {
+        let k1 = (k0 + GEMM_K_BLOCK).min(k);
+        let acc = if blocked { &mut part } else { &mut out };
+        // First row assigns (so k == 1 is exactly x*y, like the 1x1x1 GEMM).
+        Zip::from(&mut *acc)
+            .and(l2.index_axis(Axis(0), k0))
+            .and(r2.index_axis(Axis(0), k0))
+            .for_each(|o, &x, &y| *o = x * y);
+        for kk in k0 + 1..k1 {
+            Zip::from(&mut *acc)
+                .and(l2.index_axis(Axis(0), kk))
+                .and(r2.index_axis(Axis(0), kk))
+                .for_each(|o, &x, &y| *o += x * y);
+        }
+        if blocked {
+            if k0 == 0 {
+                out.assign(&part);
+            } else {
+                out += &part;
+            }
+        }
+        k0 = k1;
+    }
+    out.into_dyn()
 }
 
 /// Contraction-axis block size for `gemm_kblocked`. Matches
@@ -738,14 +888,15 @@ pub fn permute_to_owned(permuted: ndarray::ArrayViewD<f64>) -> ArrayD<f64> {
 
 /// Permute `op` to (batch, second, third) axis order and reshape to the 3D
 /// shape (prod(batch), prod(second), prod(third)), copying to contiguous when
-/// the permutation is non-trivial.
-fn to_3d(
-    op: ArrayViewD<f64>,
+/// the permutation is non-trivial. Borrowed (no copy) when `op` is already
+/// standard-layout in that order — the previous version copied even then.
+fn to_3d<'a>(
+    op: ArrayViewD<'a, f64>,
     batch: &[usize],
     second: &[usize],
     third: &[usize],
     which: &str,
-) -> ArrayD<f64> {
+) -> ndarray::CowArray<'a, f64, ndarray::Ix3> {
     let order: Vec<usize> = batch
         .iter()
         .chain(second.iter())
@@ -774,10 +925,16 @@ fn to_3d(
         .map(|&ax| op.shape()[ax])
         .product::<usize>()
         .max(1);
+    if is_identity && op.is_standard_layout() {
+        if let Ok(v) = op.clone().into_shape_with_order(ndarray::Ix3(nb, d1, d2)) {
+            return ndarray::CowArray::from(v);
+        }
+    }
     let permuted = op.permuted_axes(order);
-    permute_to_owned(permuted.view())
-        .into_shape_with_order(IxDyn(&[nb, d1, d2]))
-        .expect("einsum: 3D reshape after permutation")
+    let owned = permute_to_owned(permuted.view())
+        .into_shape_with_order(ndarray::Ix3(nb, d1, d2))
+        .expect("einsum: 3D reshape after permutation");
+    ndarray::CowArray::from(owned)
 }
 
 /// A 2D operand for GEMM: either a borrowed view onto the caller's data (no
