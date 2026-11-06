@@ -7,18 +7,18 @@
 //! the fully-occupied inactive (frozen-core) orbitals contribute a constant
 //! plus an effective one-electron potential folded into `h_pq`.
 //!
-//! The AO ERIs are built densely (`nbas^4`, every shell quartet, no
-//! permutational symmetry), then transformed to MOs `0 .. active_start +
-//! n_active` (the inactive block is needed for the core energy and the
-//! effective potential) by four BLAS3 quarter transforms
-//! ([`transform_eri_quarter_gemm`]), O(n_needed·nbas^4) flops for the first.
+//! The AO ERIs are built densely (`nbas^4`; unique shell quartets under
+//! 8-fold symmetry, in parallel, by [`ferric_mp2::canonical::dense_ao_eri`]),
+//! then transformed to MOs `0 .. active_start + n_active` (the inactive block
+//! is needed for the core energy and the effective potential) by four BLAS3
+//! quarter transforms ([`transform_eri_quarter_gemm`]), O(n_needed·nbas^4)
+//! flops for the first.
 //! The dense AO block limits this to small bases.
 
 use ferric_core::memory::plan::{Lifetime, MemoryPlan};
 use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
-use ferric_integrals::engine::Engine;
 use ferric_integrals::oneelectron::hcore;
 use ferric_integrals::operator::Operator;
 use ferric_scf::ScfResult;
@@ -72,47 +72,14 @@ pub fn active_space_integral_elems(nbas: usize, n_needed: usize) -> usize {
 }
 
 /// Dense chemist-notation AO ERIs `(mu nu|la sg)`, flat-indexed
-/// `[((mu*nbas+nu)*nbas+la)*nbas+sg]`, from the full shell-quartet loop.
+/// `[((mu*nbas+nu)*nbas+la)*nbas+sg]`.
 ///
-/// Every quartet is computed (no permutational symmetry); the caller charges
-/// the `nbas^4` allocation to a memory plan.
+/// Delegates to [`ferric_mp2::canonical::dense_ao_eri`]: unique shell quartets
+/// only (8-fold permutational symmetry, each scattered to its images),
+/// parallel over shell pairs with per-thread libint engines. No Schwarz
+/// screening. The caller charges the `nbas^4` allocation to a memory plan.
 fn dense_ao_eri(prep: &PreparedBasis) -> Result<Vec<f64>, FerricError> {
-    let nbas = prep.nbasis();
-    let nsh = prep.nshells();
-    let dims = prep.shell_dims();
-    let offs = prep.shell_offsets();
-    let mut eng = Engine::new_2e(Operator::coulomb(), prep, 1e-14)?;
-    let mut ao_eri = vec![0.0f64; nbas * nbas * nbas * nbas];
-    let idx4 = |mu: usize, nu: usize, la: usize, sg: usize| -> usize {
-        ((mu * nbas + nu) * nbas + la) * nbas + sg
-    };
-    for s1 in 0..nsh {
-        for s2 in 0..nsh {
-            for s3 in 0..nsh {
-                for s4 in 0..nsh {
-                    if let Some(q) = eng.compute_quartet(prep, s1, s2, s3, s4) {
-                        let (n1, n2, n3, nn4) = (dims[s1], dims[s2], dims[s3], dims[s4]);
-                        let (o1, o2, o3, o4) = (offs[s1], offs[s2], offs[s3], offs[s4]);
-                        for a in 0..n1 {
-                            let mu = o1 + a;
-                            for b in 0..n2 {
-                                let nu = o2 + b;
-                                for cc in 0..n3 {
-                                    let la = o3 + cc;
-                                    for dd in 0..nn4 {
-                                        let sg = o4 + dd;
-                                        ao_eri[idx4(mu, nu, la, sg)] =
-                                            q[((a * n2 + b) * n3 + cc) * nn4 + dd];
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-    Ok(ao_eri)
+    ferric_mp2::canonical::dense_ao_eri(prep, Operator::coulomb())
 }
 
 /// One quarter transform: contract the LAST index of `x` (viewed as an
@@ -336,6 +303,7 @@ pub fn build_active_space_integrals(
 mod tests {
     use super::*;
     use ferric_core::basis;
+    use ferric_integrals::engine::Engine;
     use ferric_scf::rhf::{solve_rhf, RhfConfig};
     use ferric_scf::screening::SchwarzBounds;
     use std::time::Instant;
@@ -441,6 +409,48 @@ mod tests {
         mo_eri
     }
 
+    /// The serial all-quartets AO ERI fill this module used before delegating
+    /// to the 8-fold-symmetric parallel builder, kept verbatim (only renamed) as
+    /// the independent construction the fill anchor compares against.
+    fn dense_ao_eri_all_quartets(prep: &PreparedBasis) -> Result<Vec<f64>, FerricError> {
+        let nbas = prep.nbasis();
+        let nsh = prep.nshells();
+        let dims = prep.shell_dims();
+        let offs = prep.shell_offsets();
+        let mut eng = Engine::new_2e(Operator::coulomb(), prep, 1e-14)?;
+        let mut ao_eri = vec![0.0f64; nbas * nbas * nbas * nbas];
+        let idx4 = |mu: usize, nu: usize, la: usize, sg: usize| -> usize {
+            ((mu * nbas + nu) * nbas + la) * nbas + sg
+        };
+        for s1 in 0..nsh {
+            for s2 in 0..nsh {
+                for s3 in 0..nsh {
+                    for s4 in 0..nsh {
+                        if let Some(q) = eng.compute_quartet(prep, s1, s2, s3, s4) {
+                            let (n1, n2, n3, nn4) = (dims[s1], dims[s2], dims[s3], dims[s4]);
+                            let (o1, o2, o3, o4) = (offs[s1], offs[s2], offs[s3], offs[s4]);
+                            for a in 0..n1 {
+                                let mu = o1 + a;
+                                for b in 0..n2 {
+                                    let nu = o2 + b;
+                                    for cc in 0..n3 {
+                                        let la = o3 + cc;
+                                        for dd in 0..nn4 {
+                                            let sg = o4 + dd;
+                                            ao_eri[idx4(mu, nu, la, sg)] =
+                                                q[((a * n2 + b) * n3 + cc) * nn4 + dd];
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Ok(ao_eri)
+    }
+
     fn rhf_on(mol: Molecule, basis_name: &str) -> (Molecule, PreparedBasis, ScfResult) {
         let bs = basis::bundled(basis_name).unwrap();
         let prep = PreparedBasis::new(&mol, &bs).unwrap();
@@ -516,6 +526,134 @@ mod tests {
             eprintln!("H2O/cc-pVDZ nbas={nbas} n={n_needed}: max|d|={d:.2e} (max|g|={scale:.2})");
             assert!(d < 1e-12, "H2O/cc-pVDZ n={n_needed}: max|d| = {d:.3e}");
         }
+    }
+
+    /// EXACTNESS ANCHOR for the fill: the 8-fold-symmetric parallel AO ERI
+    /// build equals the serial every-quartet build element for element.
+    /// H2O/cc-pVDZ carries pure d shells (the scatter must permute within
+    /// non-trivial shell blocks); benzene/STO-3G has many equal-dimension
+    /// shells, so a transposed scatter index cannot hide behind shape.
+    #[test]
+    fn symmetric_fill_matches_all_quartet_fill() {
+        type Fixture = fn(&str) -> (Molecule, PreparedBasis, ScfResult);
+        let cases: [(&str, Fixture, &str); 3] = [
+            ("H2O", water, "sto-3g"),
+            ("H2O", water, "cc-pvdz"),
+            ("benzene", benzene, "sto-3g"),
+        ];
+        for (name, fixture, basis_name) in cases {
+            let (_, prep, _) = fixture(basis_name);
+            let old = dense_ao_eri_all_quartets(&prep).unwrap();
+            let new = dense_ao_eri(&prep).unwrap();
+            let d = max_abs_diff(&old, &new);
+            let scale = old.iter().fold(0.0f64, |m, x| m.max(x.abs()));
+            let nonzero = old.iter().filter(|x| **x != 0.0).count();
+            eprintln!(
+                "CIFILL {name}/{basis_name} nbas={} max|d|={d:.2e} max|g|={scale:.3} \
+                 nonzero={nonzero}/{}",
+                prep.nbasis(),
+                old.len()
+            );
+            assert!(
+                scale > 0.1 && nonzero > old.len() / 10,
+                "{name}: vacuous fill"
+            );
+            assert!(d <= 1e-14, "{name}/{basis_name}: fill max|d| = {d:.3e}");
+        }
+    }
+
+    fn median_range(t: &mut [f64]) -> (f64, f64, f64) {
+        t.sort_by(|a, b| a.total_cmp(b));
+        (t[t.len() / 2], t[0], t[t.len() - 1])
+    }
+
+    /// Old (serial, every quartet) vs new (8-fold, parallel) AO ERI fill,
+    /// `reps` times each, per case, plus the fraction of unique shell
+    /// quartets a Schwarz bound would drop at 1e-12 / 1e-10.
+    ///
+    /// Release, OPENBLAS_NUM_THREADS=1, RAYON_NUM_THREADS set by the caller:
+    /// `cargo test --release -p ferric-ci --lib timing_fill -- --ignored --nocapture`
+    #[test]
+    #[ignore = "quiet box: timing"]
+    fn timing_fill_old_vs_new() {
+        let reps = 3;
+        type Fixture = fn(&str) -> (Molecule, PreparedBasis, ScfResult);
+        let cases: [(&str, Fixture, &str); 4] = [
+            ("H2O", water, "cc-pvdz"),
+            ("benzene", benzene, "sto-3g"),
+            ("benzene", benzene, "6-31g"),
+            ("benzene", benzene, "cc-pvdz"),
+        ];
+        for (name, fixture, basis_name) in cases {
+            let (_, prep, _) = fixture(basis_name);
+            let nsh = prep.nshells();
+            let sb = SchwarzBounds::compute(Operator::coulomb(), &prep).unwrap();
+            let (mut n_unique, mut below12, mut below10) = (0usize, 0usize, 0usize);
+            for s1 in 0..nsh {
+                for s2 in 0..=s1 {
+                    for s3 in 0..=s1 {
+                        let s4_max = if s3 == s1 { s2 } else { s3 };
+                        for s4 in 0..=s4_max {
+                            n_unique += 1;
+                            let b = sb.estimate(s1, s2, s3, s4);
+                            below12 += usize::from(b < 1e-12);
+                            below10 += usize::from(b < 1e-10);
+                        }
+                    }
+                }
+            }
+            let mut t_old = Vec::new();
+            let mut t_new = Vec::new();
+            let mut d = 0.0f64;
+            for _ in 0..reps {
+                let t = Instant::now();
+                let old = dense_ao_eri_all_quartets(&prep).unwrap();
+                t_old.push(t.elapsed().as_secs_f64());
+                let t = Instant::now();
+                let new = dense_ao_eri(&prep).unwrap();
+                t_new.push(t.elapsed().as_secs_f64());
+                d = d.max(max_abs_diff(&old, &new));
+            }
+            let (om, olo, ohi) = median_range(&mut t_old);
+            let (nm, nlo, nhi) = median_range(&mut t_new);
+            eprintln!(
+                "CIFILLT {name}/{basis_name} nbas={} rayon={} old median={om:.3}s \
+                 [{olo:.3},{ohi:.3}] new median={nm:.3}s [{nlo:.3},{nhi:.3}] \
+                 speedup={:.1}x max|d|={d:.2e} schwarz<1e-12 {below12}/{n_unique} \
+                 <1e-10 {below10}/{n_unique}",
+                prep.nbasis(),
+                rayon_threads(),
+                om / nm
+            );
+        }
+    }
+
+    fn rayon_threads() -> String {
+        std::env::var("RAYON_NUM_THREADS").unwrap_or_else(|_| "unset".to_string())
+    }
+
+    /// Peak-RSS rise of ONE fill path (VmHWM never resets, so one path per
+    /// process): `CIFILL_PATH=old|new`, benzene/cc-pVDZ.
+    #[test]
+    #[ignore = "quiet box: timing"]
+    fn memory_fill_one_path() {
+        let path = std::env::var("CIFILL_PATH").unwrap_or_else(|_| "new".to_string());
+        let (_, prep, _) = benzene("cc-pvdz");
+        let before = vm_hwm_kib();
+        let ao = if path == "old" {
+            dense_ao_eri_all_quartets(&prep).unwrap()
+        } else {
+            dense_ao_eri(&prep).unwrap()
+        };
+        let after = vm_hwm_kib();
+        eprintln!(
+            "CIFILL-MEM path={path} rayon={} nbas={} VmHWM before={before} kB after={after} kB \
+             rise={} kB (nbas^4 f64 = {} kB)",
+            rayon_threads(),
+            prep.nbasis(),
+            after.saturating_sub(before),
+            ao.len() * 8 / 1024
+        );
     }
 
     /// Old vs new transform on the same AO ERIs, `reps` times each, per case.

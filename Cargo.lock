@@ -444,6 +444,7 @@ version = "0.1.0"
 dependencies = [
  "ferric-core",
  "ferric-integrals",
+ "ferric-mp2",
  "ferric-scf",
  "ndarray",
  "ndarray-linalg",
