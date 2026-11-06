@@ -11,7 +11,7 @@
 //! 8-fold symmetry, in parallel, by [`ferric_mp2::canonical::dense_ao_eri`]),
 //! then transformed to MOs `0 .. active_start + n_active` (the inactive block
 //! is needed for the core energy and the effective potential) by four BLAS3
-//! quarter transforms ([`transform_eri_quarter_gemm`]), O(n_needed·nbas^4)
+//! quarter transforms (`transform_eri_quarter_gemm`), O(n_needed·nbas^4)
 //! flops for the first.
 //! The dense AO block limits this to small bases.
 
@@ -59,7 +59,7 @@ impl ActiveSpaceIntegrals {
 ///   first quarter out    n_needed·nbas^3
 /// ```
 ///
-/// [`transform_eri_quarter_gemm`] consumes `ao_eri` and drops each quarter's
+/// `transform_eri_quarter_gemm` consumes `ao_eri` and drops each quarter's
 /// input once its output exists, so the later pairs
 /// (`n·nbas^3 + n²·nbas²`, `n²·nbas² + n³·nbas`, `n³·nbas + n^4`) are never
 /// larger than the first when `n_needed <= nbas`. `n_needed = active_start +
