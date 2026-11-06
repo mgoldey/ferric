@@ -110,7 +110,15 @@ manifest-path = "crates/ferric-python/Cargo.toml"
 features = ["pyo3/extension-module"]
 # maturin lists LICENSE-APACHE / LICENSE-MIT in the sdist's PKG-INFO but only
 # packs them when told to; without this line the sdist ships no license text.
-include = [{ path = "LICENSE-*", format = "sdist" }]
+#
+# crates/ferric-xtb is an OPTIONAL path dependency of ferric-python (feature
+# `xtb`, off by default), so maturin leaves it out of the sdist's dependency
+# closure. cargo still reads every path dependency's manifest when it loads the
+# workspace, so without it the unpacked sdist fails `cargo metadata`.
+include = [
+    { path = "LICENSE-*", format = "sdist" },
+    { path = "crates/ferric-xtb/**/*", format = "sdist" },
+]
 
 [tool.uv]
 # Prevent uv from rebuilding the Rust extension on every `uv run`.
