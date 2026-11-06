@@ -74,6 +74,24 @@ fn with_inv_dielectric(cfg: &PdepRpaConfig) -> PdepRpaConfig {
     c
 }
 
+/// Default number of Gauss–Legendre points (u₀ = 0.5) of the W frequency
+/// grid for GW and U-GW, as the CLI `gw` kind and Python `run_gw` /
+/// `run_u_gw` use it when `n_quad` is unset. GW has its own default because it
+/// needs more points than PDEP-RPA correlation energies (20 points there).
+///
+/// Calibrated 2026-11-06 against the validated settings (n_quad = 100,
+/// trunc_thresh = 0) on H2O, NH3, CH4, CO, N2, HF, C2H4 and CH2O at cc-pVDZ
+/// (H2O, NH3 and N2 also at aug-cc-pVDZ), plus OH and NH2. The HOMO/LUMO
+/// error depends on the starting point. From @HF, evGW₀@HF, evGW@HF and
+/// U-G0W0@UHF it is ≤ 0.08 meV at any n_quad ≥ 20. From G0W0@PBE it is
+/// 21.5 meV at 20 points (NH3/cc-pVDZ HOMO), 9.3 meV at 30 and 5.7 meV at 40,
+/// and it does not fall monotonically with n_quad (3.3 meV at 60, 1.5 at 50).
+/// The bar is 10 meV on HOMO and LUMO, and
+/// `tests/validation_gw_defaults.rs` pins it. U-G0W0 on a UKS reference is
+/// outside it: OH and NH2 (UKS/PBE) are not converged in n_quad even
+/// between 80 and 100 points, and their certificate says so.
+pub const DEFAULT_N_QUAD: usize = 40;
+
 /// Top-level GW configuration.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GwConfig {
@@ -85,8 +103,10 @@ pub struct GwConfig {
     pub max_ev_iter: usize,
     /// evGW convergence threshold on |Δε^QP|_max (Ha).
     pub ev_conv_thresh: f64,
-    /// Number of Padé continued-fraction coefficients (must equal N_quad).
-    /// 0 → use N_quad from PdepRpaConfig.
+    /// Number of Padé (Thiele) nodes, picked with PySCF's `_get_ac_idx` rule
+    /// from a fixed {0} ∪ 100-point Gauss–Legendre grid (u₀ = 0.5) that does
+    /// not depend on the W quadrature. 0 → 18 nodes (`sigma::solve_qp_for_mo`),
+    /// the PySCF `gw_ac` default.
     pub pade_npts: usize,
     /// Newton-step damping for QP solver.
     pub qp_newton_damp: f64,

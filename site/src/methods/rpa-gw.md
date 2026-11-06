@@ -130,7 +130,20 @@ static, add it to the quasiparticle energy.
 instead, or ROKS with `[rpa] xc` (`examples/oh-ugw-rohf.toml`), semi-canonicalized
 per spin as for U-PDEP-RPA.
 
-**Accuracy.** Smoke; treat results as about ±0.3 eV.
+**Accuracy.** Proven (narrow). At matched settings (`[rpa] n_quad = 100`,
+`trunc_thresh = 0`) ferric matches PySCF `gw_ac`/`ugw_ac` to ≤1.3e-7 Ha
+(table below). The defaults are Gauss–Legendre `n_quad = 40` (GW has its
+own default; `pdep-rpa` and the other RPA energy kinds use 20),
+`trunc_thresh = 1e-4` and, for evGW₀/evGW, `ev_conv_thresh = 1e-4` Ha. At the
+defaults the HOMO and LUMO stay within 10 meV of the matched settings: the
+worst case is 5.7 meV (G0W0@PBE, NH3/cc-pVDZ HOMO), and HF and UHF starts
+stay below 0.13 meV. The bar does not cover deeper states at a KS start:
+there, HOMO−1 can move by 0.1–0.4 eV with `n_quad` even near 100 points.
+It does not cover U-G0W0 on a UKS reference either: on OH and NH2 the
+frontier states are not converged in `n_quad` even between 80 and 100
+points, and such runs carry a warning.
+These are numerical errors against ferric's own matched-settings result,
+not the method's error against experiment.
 
 | Quantity | System / basis | Reference | Pinned by |
 |---|---|---|---|

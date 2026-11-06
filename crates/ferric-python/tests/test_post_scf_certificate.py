@@ -55,8 +55,14 @@ def test_pdep_gw_bse_certificates():
     assert "frequency-quadrature" in _names(p)
     g = ferric.run_gw(mol, bs, aux).certificate
     assert g["capability"] == "gw"
-    assert g["grade"] == "smoke"
-    assert any("this run uses n_quad = 20" in w for w in g["warnings"]), g
+    assert g["grade"] == "proven_narrow"
+    # The GW defaults (n_quad = 40, trunc_thresh = 1e-4) are inside the
+    # calibrated envelope: no settings caveat, and the run used 40 points.
+    assert not any("n_quad" in w for w in g["warnings"]), g
+    quad = [
+        a["detail"] for a in g["approximations"] if a["name"] == "frequency-quadrature"
+    ]
+    assert quad == ["gausslegendre, 40 points"], quad
     b = ferric.run_bse_tda(mol, bs, aux).certificate
     assert b["capability"] == "bse-tda"
     assert b["grade"] == "smoke"
@@ -152,8 +158,15 @@ def test_u_gw_certificate_is_graded_on_the_open_shell_reference():
     bs, aux = ferric.BasisSet.bundled("sto-3g"), ferric.BasisSet.bundled("cc-pvdz-ri")
     c = ferric.run_u_gw(oh, bs, aux, qp_mos=(3, 6), n_quad=8).certificate
     assert c["capability"] == "gw"
-    assert c["grade"] == "smoke"
-    assert any("n_quad" in w for w in c["warnings"]), c
+    assert c["grade"] == "proven_narrow"
+    assert any("n_quad = 8" in w for w in c["warnings"]), c
+    assert not any("open-shell KS reference" in w for w in c["warnings"]), c
+    # A UKS reference is outside the calibration and says so, even at the
+    # default quadrature.
+    k = ferric.run_u_gw(oh, bs, aux, xc="pbe", qp_mos=(3, 6)).certificate
+    assert k["grade"] == "proven_narrow"
+    assert any("open-shell KS reference" in w for w in k["warnings"]), k
+    assert not any("n_quad = " in w for w in k["warnings"]), k
     assert c["build"]["commit"] == ferric.build_info()["commit"]
     # A ROHF reference is accepted and carries the same method row.
     r = ferric.run_u_gw(

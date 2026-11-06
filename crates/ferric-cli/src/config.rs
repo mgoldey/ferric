@@ -1982,9 +1982,11 @@ pub struct RpaCfg {
     pub frozen_core: FrozenCore,
     /// Number of imaginary-frequency quadrature points.
     ///
-    /// The fallback when unset is 20 for a pdep-rpa energy run and 16 for
+    /// The fallback when unset is 20 for a pdep-rpa energy run, 16 for
     /// `task = "optimize"` (finite-difference gradients re-run the RPA energy
-    /// 6·natoms times). The scheme fallback is `gauss-legendre` on every surface
+    /// 6·natoms times), and `ferric_gw::DEFAULT_N_QUAD` (40) for `gw`, whose
+    /// KS-started QP energies need more points (see that constant's
+    /// calibration). The scheme fallback is `gauss-legendre` on every surface
     /// (see `quadrature`), matching the library `QuadratureConfig::default()`.
     pub n_quad: Option<usize>,
     /// Imaginary-frequency quadrature scheme. One of:
