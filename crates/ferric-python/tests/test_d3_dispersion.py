@@ -60,7 +60,9 @@ def test_s9_switches_the_three_body_term(water):
     assert ferric.d3bj_energy(water, "PBE", s9=0.0) == e2
     e3 = ferric.d3bj_energy(water, "PBE", s9=1.0) - e2
     assert 1e-11 < e3 < 1e-8, f"water three-body term {e3:e} out of range"
-    assert ferric.d3bj_energy(water, "PBE", s9=2.0) - e2 == pytest.approx(2 * e3, rel=1e-6)
+    assert ferric.d3bj_energy(water, "PBE", s9=2.0) - e2 == pytest.approx(
+        2 * e3, rel=1e-6
+    )
     with pytest.raises(ValueError):
         ferric.d3bj_energy(water, "PBE", s9=float("nan"))
 

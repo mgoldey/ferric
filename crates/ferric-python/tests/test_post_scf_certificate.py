@@ -30,7 +30,9 @@ def test_rimp2_certificate():
 
 def test_local_rimp2_certificate_is_capped():
     mol, bs, aux = _setup()
-    c = ferric.run_rimp2(mol, bs, aux, local="amplitude-threshold", eps=1e-4).certificate
+    c = ferric.run_rimp2(
+        mol, bs, aux, local="amplitude-threshold", eps=1e-4
+    ).certificate
     assert c["capability"] == "rimp2"
     assert c["grade"] == "ungraded"
     assert "local" in _names(c)
@@ -86,7 +88,12 @@ def _row(c, cap, grade, approx):
 def test_mp2_family_certificates_carry_table_grades():
     mol, bs, aux = _setup()
     _row(ferric.run_mp3(mol, bs, aux).certificate, "mp3", "proven", ["ri"])
-    _row(ferric.run_oo_rimp2(mol, bs, aux).certificate, "oo-rimp2", "proven_narrow", ["ri"])
+    _row(
+        ferric.run_oo_rimp2(mol, bs, aux).certificate,
+        "oo-rimp2",
+        "proven_narrow",
+        ["ri"],
+    )
     lap = ferric.run_laplace_mp2(mol, bs, aux, n_quad=3).certificate
     _row(lap, "laplace-mp2", "proven", ["ri", "laplace"])
     assert [a["detail"] for a in lap["approximations"] if a["name"] == "laplace"] == [
@@ -134,7 +141,9 @@ def test_rs_mp2_rpa_certificate_names_its_split():
     mol, bs, aux = _setup()
     c = ferric.run_rs_mp2_rpa(mol, bs, aux, omega=0.42).certificate
     _row(c, "rs-mp2-rpa", "smoke", ["ri", "range-separation", "frequency-quadrature"])
-    detail = [a["detail"] for a in c["approximations"] if a["name"] == "range-separation"]
+    detail = [
+        a["detail"] for a in c["approximations"] if a["name"] == "range-separation"
+    ]
     assert detail and detail[0].startswith("erf/erfc split"), detail
 
 
@@ -147,13 +156,17 @@ def test_u_gw_certificate_is_graded_on_the_open_shell_reference():
     assert any("n_quad" in w for w in c["warnings"]), c
     assert c["build"]["commit"] == ferric.build_info()["commit"]
     # A ROHF reference is accepted and carries the same method row.
-    r = ferric.run_u_gw(oh, bs, aux, reference="rohf", qp_mos=(3, 6), n_quad=8).certificate
+    r = ferric.run_u_gw(
+        oh, bs, aux, reference="rohf", qp_mos=(3, 6), n_quad=8
+    ).certificate
     assert r["capability"] == "gw"
 
 
 def test_tdhf_static_polarizability_certificate():
     mol, bs, aux = _setup()
-    r = ferric.run_tdhf_static_polarizability(mol, bs, aux, "pbe", scissor=0.36, n_quad=8)
+    r = ferric.run_tdhf_static_polarizability(
+        mol, bs, aux, "pbe", scissor=0.36, n_quad=8
+    )
     c = r.certificate
     assert c["capability"] == "tdhf-static-polarizability"
     assert c["grade"] == "smoke"
@@ -215,6 +228,8 @@ def test_tddft_certificate_reports_the_grid_it_ran_on():
 
     # An explicit grid choice is recorded as such.
     e = ferric.run_tddft(mol, bs, aux, functional="r2SCAN", n_roots=2, grid_angular=194)
-    grid = next(a for a in e.certificate["approximations"] if a["name"] == "response-grid")
+    grid = next(
+        a for a in e.certificate["approximations"] if a["name"] == "response-grid"
+    )
     assert grid["detail"].startswith("(75, 194)")
     assert grid["detail"].endswith("[explicit grid keys]")

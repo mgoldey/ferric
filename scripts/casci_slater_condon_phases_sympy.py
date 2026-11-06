@@ -364,8 +364,16 @@ def claim4():
     gnum = rng.standard_normal((n,) * 4)
     gnum = sum(
         np.transpose(gnum, perm)
-        for perm in [(0, 1, 2, 3), (1, 0, 2, 3), (0, 1, 3, 2), (1, 0, 3, 2),
-                     (2, 3, 0, 1), (3, 2, 0, 1), (2, 3, 1, 0), (3, 2, 1, 0)]
+        for perm in [
+            (0, 1, 2, 3),
+            (1, 0, 2, 3),
+            (0, 1, 3, 2),
+            (1, 0, 3, 2),
+            (2, 3, 0, 1),
+            (3, 2, 0, 1),
+            (2, 3, 1, 0),
+            (3, 2, 1, 0),
+        ]
     )
     subs = {}
     for p, q in itertools.product(range(n), repeat=2):

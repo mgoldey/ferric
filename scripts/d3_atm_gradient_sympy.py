@@ -69,7 +69,11 @@ dnum = {
 
 
 def impl_d(q, dn, k15=sp.Rational(15, 16), kalpha=alpha):
-    dang = sp.Rational(3, 8) * dn / P**5 - k15 * N / (q * P**5) - sp.Rational(3, 2) / (q * P**3)
+    dang = (
+        sp.Rational(3, 8) * dn / P**5
+        - k15 * N / (q * P**5)
+        - sp.Rational(3, 2) / (q * P**3)
+    )
     dfd = kalpha * rr * fdmp**2 / q
     return dang * fdmp + ang * dfd
 
@@ -84,7 +88,10 @@ for q, name in [(x, "x=R_ij^2"), (y, "y=R_jk^2"), (w, "w=R_ik^2")]:
 
 # --- 4. C6 dependence --------------------------------------------------------
 E_t = s9 * sp.sqrt(cij * cik * cjk) * F
-check("4. dE_t/dC_ij == E_t/(2 C_ij)", sp.simplify(sp.diff(E_t, cij) - E_t / (2 * cij)) == 0)
+check(
+    "4. dE_t/dC_ij == E_t/(2 C_ij)",
+    sp.simplify(sp.diff(E_t, cij) - E_t / (2 * cij)) == 0,
+)
 
 # --- 5. assembled Cartesian gradient at a random triangle -------------------
 R = [sp.Matrix(sp.symbols(f"X{i} Y{i} Z{i}")) for i in range(3)]
@@ -110,7 +117,9 @@ worst = max(
     for i in range(3)
     for k in range(3)
 )
-scale = max(abs(sp.N(sp.diff(E_cart, R[i][k]).subs(pt), 40)) for i in range(3) for k in range(3))
+scale = max(
+    abs(sp.N(sp.diff(E_cart, R[i][k]).subs(pt), 40)) for i in range(3) for k in range(3)
+)
 check(
     "5. assembled Cartesian gradient == sympy dE/dR",
     worst < 1e-30 * scale,
@@ -122,15 +131,25 @@ num_pt = {x: 7.3, y: 9.1, w: 11.7, r0: 30.0, alpha: 16}
 
 
 def num_zero(expr):
-    return abs(float(expr.subs(num_pt))) < 1e-14 * abs(float(sp.diff(F, x).subs(num_pt)))
+    return abs(float(expr.subs(num_pt))) < 1e-14 * abs(
+        float(sp.diff(F, x).subs(num_pt))
+    )
 
 
 control("dropped 15/16 term", num_zero(sp.diff(F, x) - impl_d(x, dnum[x], k15=0)))
-control("alpha/6 in dfdmp", num_zero(sp.diff(F, x) - impl_d(x, dnum[x], kalpha=alpha / 6)))
+control(
+    "alpha/6 in dfdmp", num_zero(sp.diff(F, x) - impl_d(x, dnum[x], kalpha=alpha / 6))
+)
 control("w-component of dN with x signs", num_zero(sp.diff(F, w) - impl_d(w, dnum[x])))
 control(
     "dE/dC = E/C (no 1/2)",
-    abs(float((sp.diff(E_t, cij) - E_t / cij).subs({**num_pt, s9: 1, cij: 2, cik: 3, cjk: 5})))
+    abs(
+        float(
+            (sp.diff(E_t, cij) - E_t / cij).subs(
+                {**num_pt, s9: 1, cij: 2, cik: 3, cjk: 5}
+            )
+        )
+    )
     < 1e-30,
 )
 

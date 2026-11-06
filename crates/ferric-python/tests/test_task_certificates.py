@@ -49,7 +49,8 @@ def test_open_shell_optimize_is_graded_under_uhf():
     c = ferric.run_optimize_uhf(oh, "sto-3g", max_steps=3).certificate
     assert c["capability"] == "optimize:uhf"
     assert any(
-        w.startswith("scf reference: internal stability not checked") for w in c["warnings"]
+        w.startswith("scf reference: internal stability not checked")
+        for w in c["warnings"]
     )
 
 
@@ -110,6 +111,7 @@ def test_mp2_v_scan_has_a_certificate_per_arm_equal_to_run_mp2_v():
         assert c["capability"] == "mp2-v"
         assert c["grade"] == "proven_narrow"
         single = ferric.run_mp2_v(h2, bs, aux, r0=r0).certificate
+
         # The scan's SCF is density-fitted by default (run_mp2_v's is exact), so
         # compare the correlation-side records only.
         def own(cert):

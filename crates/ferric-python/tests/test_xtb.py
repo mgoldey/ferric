@@ -31,7 +31,9 @@ def _need_xtb():
 
 
 def test_optimize_converges_and_gradient_is_small():
-    r = ferric.run_xtb_optimize(_mol(WATER), g_max_thresh=1e-4, g_rms_thresh=5e-5, e_conv=1e-8)
+    r = ferric.run_xtb_optimize(
+        _mol(WATER), g_max_thresh=1e-4, g_rms_thresh=5e-5, e_conv=1e-8
+    )
     assert r.converged
     e, g = ferric.run_xtb_energy_gradient(r.mol())
     assert e == pytest.approx(r.energy, abs=1e-9)
@@ -41,14 +43,26 @@ def test_optimize_converges_and_gradient_is_small():
 
 
 def test_frequencies_water_and_co2_zero_mode_counts():
-    w = ferric.run_xtb_optimize(_mol(WATER), g_max_thresh=1e-4, g_rms_thresh=5e-5, e_conv=1e-8)
+    w = ferric.run_xtb_optimize(
+        _mol(WATER), g_max_thresh=1e-4, g_rms_thresh=5e-5, e_conv=1e-8
+    )
     f = ferric.run_xtb_frequencies(w.mol())
-    assert (len(f.trans_rot_frequencies), len(f.frequencies), f.is_linear) == (6, 3, False)
+    assert (len(f.trans_rot_frequencies), len(f.frequencies), f.is_linear) == (
+        6,
+        3,
+        False,
+    )
     assert all(abs(t) < 30 for t in f.trans_rot_frequencies)
     assert f.hessian_source == "finite-difference"
-    c = ferric.run_xtb_optimize(_mol(CO2), g_max_thresh=1e-4, g_rms_thresh=5e-5, e_conv=1e-8)
+    c = ferric.run_xtb_optimize(
+        _mol(CO2), g_max_thresh=1e-4, g_rms_thresh=5e-5, e_conv=1e-8
+    )
     fc = ferric.run_xtb_frequencies(c.mol())
-    assert (len(fc.trans_rot_frequencies), len(fc.frequencies), fc.is_linear) == (5, 4, True)
+    assert (len(fc.trans_rot_frequencies), len(fc.frequencies), fc.is_linear) == (
+        5,
+        4,
+        True,
+    )
 
 
 def test_unconverged_scc_raises_in_optimize_and_frequencies():

@@ -93,7 +93,9 @@ def test_optimize_with_solvent_follows_the_pcm_gradient(water):
     below the vacuum geometry's solvated energy, differs from the vacuum
     minimum, and the certificate names the scf pcm approximation."""
     mol, _ = water
-    vac = ferric.run_optimize(mol, "sto-3g", scf_energy_conv=1e-9, scf_density_conv=1e-8)
+    vac = ferric.run_optimize(
+        mol, "sto-3g", scf_energy_conv=1e-9, scf_density_conv=1e-8
+    )
     aq = ferric.run_optimize(
         mol, "sto-3g", solvent="water", scf_energy_conv=1e-9, scf_density_conv=1e-8
     )

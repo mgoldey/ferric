@@ -93,15 +93,22 @@ d_kern = -R * (1 - c) / (2 * R**2 * (1 - c)) ** sp.Rational(3, 2)
 check("1 D kernel = -S kernel/(2R)", zero(sp.simplify(d_kern + s_kern / (2 * R))))
 # Control: the field-point normal n gives (r - r').n = +R(1 - n.n'), the
 # opposite sign; D^T (field normal) would be +S/(2R).
-check("1 control: field-point normal flips the sign", zero(sp.simplify(dvec.dot(n1) - R * (1 - cosg))))
+check(
+    "1 control: field-point normal flips the sign",
+    zero(sp.simplify(dvec.dot(n1) - R * (1 - cosg))),
+)
 
 # ---------------------------------------------------------------- claim 2
 # Funk-Hecke: int K(n.n') Y_l(n') dOmega' = 2 pi int_{-1}^{1} K(c) P_l(c) dc Y_l(n).
 for ell in range(0, 7):
     P = sp.legendre(ell, c)
-    s_l = sp.simplify(2 * sp.pi * R**2 * sp.integrate(P / sp.sqrt(2 * R**2 * (1 - c)), (c, -1, 1)))
+    s_l = sp.simplify(
+        2 * sp.pi * R**2 * sp.integrate(P / sp.sqrt(2 * R**2 * (1 - c)), (c, -1, 1))
+    )
     d_l = sp.simplify(-s_l / (2 * R))
-    ok = zero(s_l - 4 * sp.pi * R / (2 * ell + 1)) and zero(d_l + 2 * sp.pi / (2 * ell + 1))
+    ok = zero(s_l - 4 * sp.pi * R / (2 * ell + 1)) and zero(
+        d_l + 2 * sp.pi / (2 * ell + 1)
+    )
     check(f"2 S_l = 4piR/(2l+1), D_l = -2pi/(2l+1) at l={ell}", ok, f"S_l={s_l}")
 
 # ---------------------------------------------------------------- claim 3
@@ -113,27 +120,46 @@ K_l = S_l - f / (2 * sp.pi) * D_l * S_l
 R_l = -f * (1 - D_l / (2 * sp.pi))
 k_l = sp.simplify(-R_l / K_l * S_l)  # q_l = -k_l v_l / S_l
 kirkwood = (eps - 1) * (l + 1) / ((l + 1) * eps + l)
-check("3 IEF channel factor = Kirkwood (l+1)(eps-1)/((l+1)eps+l), all l", zero(k_l - kirkwood))
-check("3 l=0: Gauss law total charge -(eps-1)/eps", zero(k_l.subs(l, 0) - (eps - 1) / eps))
+check(
+    "3 IEF channel factor = Kirkwood (l+1)(eps-1)/((l+1)eps+l), all l",
+    zero(k_l - kirkwood),
+)
+check(
+    "3 l=0: Gauss law total charge -(eps-1)/eps", zero(k_l.subs(l, 0) - (eps - 1) / eps)
+)
 # Born: v = Q/R uniform -> q_0 = -k_0 v/S_0 per unit-sphere density; total
 # charge 4 pi R^2 sigma = -k_0 Q; potential at the centre = -k_0 Q/R.
 Q = sp.symbols("Q", real=True)
 E_born = sp.Rational(1, 2) * Q * (-k_l.subs(l, 0) * Q / R)
-check("3 Born energy -(eps-1)/(2 eps R) Q^2", zero(E_born + (eps - 1) / (2 * eps * R) * Q**2))
+check(
+    "3 Born energy -(eps-1)/(2 eps R) Q^2",
+    zero(E_born + (eps - 1) / (2 * eps * R) * Q**2),
+)
 f_wrong = (eps - 1) / eps
 k_wrong = sp.simplify(
-    -(-f_wrong * (1 - D_l / (2 * sp.pi))) / (S_l - f_wrong / (2 * sp.pi) * D_l * S_l) * S_l
+    -(-f_wrong * (1 - D_l / (2 * sp.pi)))
+    / (S_l - f_wrong / (2 * sp.pi) * D_l * S_l)
+    * S_l
 )
 check("3 control: f=(eps-1)/eps is not Kirkwood", not zero(k_wrong - kirkwood))
-for name, fc in (("C-PCM (eps-1)/eps", (eps - 1) / eps), ("COSMO (eps-1)/(eps+1/2)", (eps - 1) / (eps + sp.Rational(1, 2)))):
+for name, fc in (
+    ("C-PCM (eps-1)/eps", (eps - 1) / eps),
+    ("COSMO (eps-1)/(eps+1/2)", (eps - 1) / (eps + sp.Rational(1, 2))),
+):
     at0 = zero(fc - kirkwood.subs(l, 0))
     at1 = zero(fc - kirkwood.subs(l, 1))
-    check(f"3 control: {name} is not Kirkwood at every l", not (at0 and at1), f"l=0 match={at0}, l=1 match={at1}")
+    check(
+        f"3 control: {name} is not Kirkwood at every l",
+        not (at0 and at1),
+        f"l=0 match={at0}, l=1 match={at1}",
+    )
 
 
 # ---------------------------------------------------------------- claims 4-6
 def rand_rat(rng, shape, lo=-9, hi=9, den=7):
-    return sp.Matrix(*shape, lambda i, j: sp.Rational(int(rng.integers(lo, hi + 1)), den))
+    return sp.Matrix(
+        *shape, lambda i, j: sp.Rational(int(rng.integers(lo, hi + 1)), den)
+    )
 
 
 rng = np.random.default_rng(20261105)
@@ -153,10 +179,15 @@ def k_r(fv, Dmat):
 
 
 K1, R1 = k_r(1, Dm)
-check("4 f=1: K^-1 R = -S^-1 exactly", zero(sp.simplify(K1.inv() * R1 + S.inv()).norm()))
+check(
+    "4 f=1: K^-1 R = -S^-1 exactly", zero(sp.simplify(K1.inv() * R1 + S.inv()).norm())
+)
 fr = sp.Rational(77, 79)
 Kf, Rf = k_r(fr, Dm)
-check("4 control: f<1 is not the conductor equation", not zero(sp.simplify(Kf.inv() * Rf + S.inv()).norm()))
+check(
+    "4 control: f<1 is not the conductor equation",
+    not zero(sp.simplify(Kf.inv() * Rf + S.inv()).norm()),
+)
 
 Qm = Kf.inv() * Rf
 q_raw = Qm * v
@@ -164,8 +195,14 @@ q_sym = (q_raw + Rf.T * (Kf.T).inv() * v) / 2
 q_bad = (q_raw + (Kf.T).inv() * Rf.T * v) / 2
 e_raw = (q_raw.T * v)[0] / 2
 check("5 E(q_sym) = E(Q v)", zero((q_sym.T * v)[0] / 2 - e_raw))
-check("5 control: reversed order (K^T)^-1 R^T v changes E", not zero((q_bad.T * v)[0] / 2 - e_raw))
-check("5 control: generic D gives q_sym != Q v", not zero(sp.simplify(q_sym - q_raw).norm()))
+check(
+    "5 control: reversed order (K^T)^-1 R^T v changes E",
+    not zero((q_bad.T * v)[0] / 2 - e_raw),
+)
+check(
+    "5 control: generic D gives q_sym != Q v",
+    not zero(sp.simplify(q_sym - q_raw).norm()),
+)
 # Calderon-consistent D: choose D A S = N symmetric, i.e. D = N S^-1 A^-1.
 Nm = rand_rat(rng, (n, n))
 Nm = Nm + Nm.T
@@ -173,7 +210,10 @@ Dc = Nm * S.inv() * A.inv()
 Kc, Rc = k_r(fr, Dc)
 qc_raw = Kc.inv() * Rc * v
 qc_sym = (qc_raw + Rc.T * (Kc.T).inv() * v) / 2
-check("5 D A S symmetric => q_sym = Q v exactly", zero(sp.simplify(qc_sym - qc_raw).norm()))
+check(
+    "5 D A S symmetric => q_sym = Q v exactly",
+    zero(sp.simplify(qc_sym - qc_raw).norm()),
+)
 
 # Claim 6: two basis functions, symbolic symmetric density.
 nb = 2
@@ -182,7 +222,12 @@ Dden = sp.Matrix([[d00, d01], [d01, d11]])
 Bk = [rand_rat(rng, (nb, nb)) for _ in range(n)]
 Bk = [b + b.T for b in Bk]  # one-electron integrals are symmetric in (m, n)
 vnuc = rand_rat(rng, (n, 1))
-vD = sp.Matrix([vnuc[k] + sum(Dden[a, b] * Bk[k][a, b] for a in range(nb) for b in range(nb)) for k in range(n)])
+vD = sp.Matrix(
+    [
+        vnuc[k] + sum(Dden[a, b] * Bk[k][a, b] for a in range(nb) for b in range(nb))
+        for k in range(n)
+    ]
+)
 Qsym = (Qm + Qm.T) / 2
 E = sp.expand((vD.T * Qsym * vD)[0] / 2)
 qv = Qsym * vD
@@ -192,9 +237,14 @@ qv_raw = Qm * vD
 for sym, (a, b), mult in ((d00, (0, 0), 1), (d11, (1, 1), 1), (d01, (0, 1), 2)):
     V_ab = sum(qv[k] * Bk[k][a, b] for k in range(n))
     V_raw = sum(qv_raw[k] * Bk[k][a, b] for k in range(n))
-    check(f"6 dE/dD[{a}{b}] = sum_k q_k B^k (V_pcm)", zero(sp.diff(E, sym) - mult * V_ab))
+    check(
+        f"6 dE/dD[{a}{b}] = sum_k q_k B^k (V_pcm)", zero(sp.diff(E, sym) - mult * V_ab)
+    )
     if (a, b) == (0, 0):
-        check("6 control: q_raw is not the gradient", not zero(sp.diff(E, sym) - mult * V_raw))
+        check(
+            "6 control: q_raw is not the gradient",
+            not zero(sp.diff(E, sym) - mult * V_raw),
+        )
 
 # ---------------------------------------------------------------- claim 7
 try:
@@ -204,7 +254,11 @@ except ImportError as exc:  # pragma: no cover
     check("7 scipy.integrate.lebedev_rule available (scipy >= 1.15)", False, str(exc))
     lebedev_rule = None
 
-XI = {50: 4.89250673295, 110: 4.90101060987, 302: 4.90498088169}  # matrices.rs gaussian_xi_table
+XI = {
+    50: 4.89250673295,
+    110: 4.90101060987,
+    302: 4.90498088169,
+}  # matrices.rs gaussian_xi_table
 DEG = {50: 11, 110: 17, 302: 29}
 
 
@@ -240,7 +294,11 @@ def ief_charges(S, D, area, ev):
 
 def kirkwood_energy(ev, rad, d):
     ls = np.arange(400)
-    return -0.5 / rad * np.sum((ls + 1) * (ev - 1) / ((ls + 1) * ev + ls) * (d / rad) ** (2 * ls))
+    return (
+        -0.5
+        / rad
+        * np.sum((ls + 1) * (ev - 1) / ((ls + 1) * ev + ls) * (d / rad) ** (2 * ls))
+    )
 
 
 if lebedev_rule is not None:
@@ -257,13 +315,19 @@ if lebedev_rule is not None:
                 vv = 1 / np.linalg.norm(pos - centre, axis=1)
                 S7, D7 = s_d_gaussian(pos, nrm, area, xi, rad)
                 Rm, K = ief_charges(S7, D7, area, ev)
-                q = 0.5 * (np.linalg.solve(K, Rm @ vv) + Rm.T @ np.linalg.solve(K.T, vv))
+                q = 0.5 * (
+                    np.linalg.solve(K, Rm @ vv) + Rm.T @ np.linalg.solve(K.T, vv)
+                )
                 res.append((0.5 * q @ vv, q.sum()))
             err = [abs(e - e_ex) for e, _ in res]
             est_e = abs(res[2][0] - res[1][0])
             est_q = abs(res[2][1] - res[1][1])
             qg = -(ev - 1) / ev
-            ok = err[2] < err[1] < err[0] and err[2] <= est_e and abs(res[2][1] - qg) <= est_q
+            ok = (
+                err[2] < err[1] < err[0]
+                and err[2] <= est_e
+                and abs(res[2][1] - qg) <= est_q
+            )
             check(
                 f"7 sphere eps={ev} d/R={frac}: Kirkwood + Gauss law within discretization estimate",
                 ok,
@@ -280,8 +344,12 @@ if lebedev_rule is not None:
     K = S7 - fw / (2 * np.pi) * DA @ S7
     Rm = -fw * (np.eye(len(area)) - DA / (2 * np.pi))
     q = np.linalg.solve(K, Rm @ vv)
-    rel = abs(0.5 * q @ vv - kirkwood_energy(78.4, rad, 0.0)) / abs(kirkwood_energy(78.4, rad, 0.0))
-    check("7 control: f=(eps-1)/eps misses Born by > 1e-4", rel > 1e-4, f"rel {rel:.2e}")
+    rel = abs(0.5 * q @ vv - kirkwood_energy(78.4, rad, 0.0)) / abs(
+        kirkwood_energy(78.4, rad, 0.0)
+    )
+    check(
+        "7 control: f=(eps-1)/eps misses Born by > 1e-4", rel > 1e-4, f"rel {rel:.2e}"
+    )
 
 # ---------------------------------------------------------------- claim 8
 t = sp.symbols("t", real=True)
@@ -326,7 +394,10 @@ pref8 = p8
 area_term = pref8 * sum(dty8[j] * w8[j] * A8p[j, j] for j in range(n8))
 formula = (-(z8.T * S8p * x8)[0] + pref8 * (y8.T * D8p * u8)[0] + area_term) / 2
 check("8 response gradient formula = d/dt (1/2 v^T K^-1 R v)", zero(formula - de_exact))
-check("8 control: dropping the area term breaks it", not zero(formula - area_term / 2 - de_exact))
+check(
+    "8 control: dropping the area term breaks it",
+    not zero(formula - area_term / 2 - de_exact),
+)
 q8 = (x8 + R8.T * y8) / 2
 bad = (-(z8.T * S8p * q8)[0] + pref8 * (y8.T * D8p * u8)[0] + area_term) / 2
 check("8 control: q_sym in place of x breaks it", not zero(bad - de_exact))

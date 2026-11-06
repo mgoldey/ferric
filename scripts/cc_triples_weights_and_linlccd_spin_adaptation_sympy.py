@@ -135,7 +135,9 @@ def f_triple(i, j, k, drop_cyclic=False):
     if not drop_cyclic:
         wt += np.transpose(w, [1, 2, 0]) + np.transpose(w, [2, 0, 1])
     wt -= 2.0 * (
-        np.transpose(w, [2, 1, 0]) + np.transpose(w, [0, 2, 1]) + np.transpose(w, [1, 0, 2])
+        np.transpose(w, [2, 1, 0])
+        + np.transpose(w, [0, 2, 1])
+        + np.transpose(w, [1, 0, 2])
     )
     d = (
         eps_o[i]
@@ -159,7 +161,11 @@ for i in range(no):
             vals = [f[tuple((i, j, k)[q] for q in p)] for p in PERMS3]
             dev2 = max(dev2, max(vals) - min(vals))
 scale = max(abs(z) for z in f.values())
-check("claim 2: f invariant over the 6 orderings", dev2 < 1e-13 * scale, f"(max spread {dev2:.2e})")
+check(
+    "claim 2: f invariant over the 6 orderings",
+    dev2 < 1e-13 * scale,
+    f"(max spread {dev2:.2e})",
+)
 
 # ---------------------------------------------------------------- claim 3
 unrestricted = sum(f.values())
@@ -260,17 +266,24 @@ check(
 
 # ---------------------------------------------------------------- claim 5
 distinct_x6 = sum(
-    6 * f[(i, j, k)] for i in range(no) for j in range(i + 1, no) for k in range(j + 1, no)
+    6 * f[(i, j, k)]
+    for i in range(no)
+    for j in range(i + 1, no)
+    for k in range(j + 1, no)
 )
 control("i<j<k band x6 (spin-orbital banding)", distinct_x6 / 3.0, e_so, 1e-3)
 control("divisor 6", banded / 6.0, e_so, 1e-3)
 control(
     "unit weights",
-    sum(f[(i, j, k)] for i in range(no) for j in range(i, no) for k in range(j, no)) / 3.0,
+    sum(f[(i, j, k)] for i in range(no) for j in range(i, no) for k in range(j, no))
+    / 3.0,
     e_so,
     1e-3,
 )
-no_cyc = sum(f_triple(i, j, k, drop_cyclic=True) for i, j, k in itertools.product(range(no), repeat=3))
+no_cyc = sum(
+    f_triple(i, j, k, drop_cyclic=True)
+    for i, j, k in itertools.product(range(no), repeat=3)
+)
 control("Wt without W(bca)+W(cab)", no_cyc / 3.0, e_so, 1e-3)
 
 # ---------------------------------------------------------------- claim 6
@@ -308,13 +321,22 @@ def spinorbital_linlccd(variant, hh_coeff=0.5):
     vvvv = asym_block(vir, vir, vir, vir)
     e_o = eo[occ[0]]
     e_v = ev[vir[0] - no_l]
-    d = e_o[:, None, None, None] + e_o[None, :, None, None] - e_v[None, None, :, None] - e_v[None, None, None, :]
+    d = (
+        e_o[:, None, None, None]
+        + e_o[None, :, None, None]
+        - e_v[None, None, :, None]
+        - e_v[None, None, None, :]
+    )
     nn = n2o * n2o * n2v * n2v
     A = np.diag(d.reshape(nn))
     if variant in ("hh", "full"):
-        A -= hh_coeff * np.einsum("klij,ac,bd->ijabklcd", oooo, np.eye(n2v), np.eye(n2v)).reshape(nn, nn)
+        A -= hh_coeff * np.einsum(
+            "klij,ac,bd->ijabklcd", oooo, np.eye(n2v), np.eye(n2v)
+        ).reshape(nn, nn)
     if variant == "full":
-        A -= 0.5 * np.einsum("abcd,ik,jl->ijabklcd", vvvv, np.eye(n2o), np.eye(n2o)).reshape(nn, nn)
+        A -= 0.5 * np.einsum(
+            "abcd,ik,jl->ijabklcd", vvvv, np.eye(n2o), np.eye(n2o)
+        ).reshape(nn, nn)
     t = np.linalg.solve(A, voovv.reshape(nn)).reshape(d.shape)
     return 0.25 * float(np.sum(voovv * t)), t
 
@@ -322,19 +344,30 @@ def spinorbital_linlccd(variant, hh_coeff=0.5):
 def spatial_linlccd(variant, hh_exchange_bug=False):
     """linlccd_amplitude.rs:316-357 (operator) and :391-407 (energy)."""
     iajb = g[ol, vl, ol, vl]
-    d = eo[:, None, None, None] - ev[None, :, None, None] + eo[None, None, :, None] - ev[None, None, None, :]
+    d = (
+        eo[:, None, None, None]
+        - ev[None, :, None, None]
+        + eo[None, None, :, None]
+        - ev[None, None, None, :]
+    )
     nn = no_l * nv_l * no_l * nv_l
     A = np.diag(d.reshape(nn))
     if variant in ("hh", "full"):
         if hh_exchange_bug:
             coef = g[ol, ol, ol, ol]  # (ij|kl) at [i,j,k,l]: wrong pairing
-            A -= np.einsum("ijkl,ac,bd->iajbkcld", coef, np.eye(nv_l), np.eye(nv_l)).reshape(nn, nn)
+            A -= np.einsum(
+                "ijkl,ac,bd->iajbkcld", coef, np.eye(nv_l), np.eye(nv_l)
+            ).reshape(nn, nn)
         else:
             ikjl = g[ol, ol, ol, ol]  # (ik|jl) at [i,k,j,l]
-            A -= np.einsum("ikjl,ac,bd->iajbkcld", ikjl, np.eye(nv_l), np.eye(nv_l)).reshape(nn, nn)
+            A -= np.einsum(
+                "ikjl,ac,bd->iajbkcld", ikjl, np.eye(nv_l), np.eye(nv_l)
+            ).reshape(nn, nn)
     if variant == "full":
         acbd = g[vl, vl, vl, vl]  # (ac|bd) at [a,c,b,d]
-        A -= np.einsum("acbd,ik,jl->iajbkcld", acbd, np.eye(no_l), np.eye(no_l)).reshape(nn, nn)
+        A -= np.einsum(
+            "acbd,ik,jl->iajbkcld", acbd, np.eye(no_l), np.eye(no_l)
+        ).reshape(nn, nn)
     T = np.linalg.solve(A, iajb.reshape(nn)).reshape(iajb.shape)
     e = float(np.sum(iajb * (2.0 * T - T.transpose(0, 3, 2, 1))))
     return e, T
@@ -351,12 +384,26 @@ for variant in ("drivers-only", "hh", "full"):
     # T_iajb = t[i alpha, j beta, a alpha, b beta] (even = alpha, odd = beta)
     t_ab = t_so[0::2, 1::2, 0::2, 1::2]  # [i,j,a,b]
     dev = np.max(np.abs(t_ab.transpose(0, 2, 1, 3) - T_sp))
-    check(f"claim 6: LinLCCD {variant} T_iajb == t(i a, j b, a a, b b)", dev < 1e-12, f"(max dev {dev:.1e})")
+    check(
+        f"claim 6: LinLCCD {variant} T_iajb == t(i a, j b, a a, b b)",
+        dev < 1e-12,
+        f"(max dev {dev:.1e})",
+    )
 
 # ---------------------------------------------------------------- claim 7
 e_ref, _ = spatial_linlccd("hh")
-control("spin-orbital hh coefficient 1 (not 1/2)", spinorbital_linlccd("hh", hh_coeff=1.0)[0], e_ref, 1e-6)
-control("spatial hh with (ij|kl) for (ik|jl)", spatial_linlccd("hh", hh_exchange_bug=True)[0], e_ref, 1e-6)
+control(
+    "spin-orbital hh coefficient 1 (not 1/2)",
+    spinorbital_linlccd("hh", hh_coeff=1.0)[0],
+    e_ref,
+    1e-6,
+)
+control(
+    "spatial hh with (ij|kl) for (ik|jl)",
+    spatial_linlccd("hh", hh_exchange_bug=True)[0],
+    e_ref,
+    1e-6,
+)
 
 if FAILS:
     print(f"\n{len(FAILS)} FAILED: {FAILS}")

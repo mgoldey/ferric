@@ -64,15 +64,37 @@ for ax in range(3):
     alpha[ax, ax] = -(-e[4] + 16 * e[3] - 30 * e[2] + 16 * e[1] - e[0]) / (12 * h2 * h2)
 if full:
     # 4th-order mixed second derivative (16-point stencil).
-    w = {(1, -2): 8, (2, -1): 8, (-2, 1): 8, (-1, 2): 8,
-         (-1, -2): -8, (-2, -1): -8, (1, 2): -8, (2, 1): -8,
-         (2, -2): -1, (-2, 2): -1, (-2, -2): 1, (2, 2): 1,
-         (-1, -1): 64, (1, 1): 64, (1, -1): -64, (-1, 1): -64}
+    w = {
+        (1, -2): 8,
+        (2, -1): 8,
+        (-2, 1): 8,
+        (-1, 2): 8,
+        (-1, -2): -8,
+        (-2, -1): -8,
+        (1, 2): -8,
+        (2, 1): -8,
+        (2, -2): -1,
+        (-2, 2): -1,
+        (-2, -2): 1,
+        (2, 2): 1,
+        (-1, -1): 64,
+        (1, 1): 64,
+        (1, -1): -64,
+        (-1, 1): -64,
+    }
     for a in range(3):
         for b in range(a + 1, 3):
-            s = sum(c * energy(unit(a, i * h2) + unit(b, j * h2)) for (i, j), c in w.items())
+            s = sum(
+                c * energy(unit(a, i * h2) + unit(b, j * h2)) for (i, j), c in w.items()
+            )
             alpha[a, b] = alpha[b, a] = -s / (144 * h2 * h2)
-print(f"{name}/{basis}: relaxed DF-MP2 dipole (a.u.) = [{mu[0]:+.8f} {mu[1]:+.8f} {mu[2]:+.8f}]")
-print(f"{name}/{basis}: alpha diag (a.u.)            = [{alpha[0,0]:.6f} {alpha[1,1]:.6f} {alpha[2,2]:.6f}]")
+print(
+    f"{name}/{basis}: relaxed DF-MP2 dipole (a.u.) = [{mu[0]:+.8f} {mu[1]:+.8f} {mu[2]:+.8f}]"
+)
+print(
+    f"{name}/{basis}: alpha diag (a.u.)            = [{alpha[0, 0]:.6f} {alpha[1, 1]:.6f} {alpha[2, 2]:.6f}]"
+)
 if full:
-    print(f"{name}/{basis}: alpha xy xz yz (a.u.)        = [{alpha[0,1]:.6f} {alpha[0,2]:.6f} {alpha[1,2]:.6f}]")
+    print(
+        f"{name}/{basis}: alpha xy xz yz (a.u.)        = [{alpha[0, 1]:.6f} {alpha[0, 2]:.6f} {alpha[1, 2]:.6f}]"
+    )

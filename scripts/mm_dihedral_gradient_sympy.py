@@ -21,6 +21,7 @@ the first mismatch.
      theta = acos(r_ji . r_jk / (|r_ji||r_jk|)). Control: dropping the
      cos(theta) term.
 """
+
 import sys
 
 import sympy as sp
@@ -77,9 +78,34 @@ def code_gradient(vals, flip_i=False, swap_pq=False):
 
 geoms = [
     [1, 0, -1, 0, 0, 0, 0, 0, 1, sp.Rational(1, 2), sp.Rational(87, 100), 2],
-    [sp.Rational(3, 2), sp.Rational(-1, 3), -1, 0, sp.Rational(1, 7), 0,
-     sp.Rational(1, 5), 0, sp.Rational(6, 5), -1, sp.Rational(-2, 3), sp.Rational(5, 2)],
-    [1, sp.Rational(1, 100), -1, 0, 0, 0, 0, 0, 1, 1, sp.Rational(-1, 200), 2],  # near phi = 0
+    [
+        sp.Rational(3, 2),
+        sp.Rational(-1, 3),
+        -1,
+        0,
+        sp.Rational(1, 7),
+        0,
+        sp.Rational(1, 5),
+        0,
+        sp.Rational(6, 5),
+        -1,
+        sp.Rational(-2, 3),
+        sp.Rational(5, 2),
+    ],
+    [
+        1,
+        sp.Rational(1, 100),
+        -1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        1,
+        sp.Rational(-1, 200),
+        2,
+    ],  # near phi = 0
 ]
 worst_ok = 0
 ctrl = {"flip_i": 0, "swap_pq": 0}
@@ -97,7 +123,9 @@ for g in geoms:
 for key, val in ctrl.items():
     if val < sp.Float("1e-3"):
         fail(f"claim 2 control {key} not detected (max diff {val})")
-print(f"2 ok: max |code - exact| = {float(worst_ok):.1e}; controls {[(k, sp.N(v, 3)) for k, v in ctrl.items()]}")
+print(
+    f"2 ok: max |code - exact| = {float(worst_ok):.1e}; controls {[(k, sp.N(v, 3)) for k, v in ctrl.items()]}"
+)
 
 # Claim 3: invariances, symbolic in gi, gl, p, q
 gi_s, gl_s = vec("gi"), vec("gl")
@@ -113,8 +141,8 @@ g = geoms[1]
 cd = code_gradient(g)
 tot = sp.zeros(3, 1)
 for a in range(4):
-    R = sp.Matrix(g[3 * a:3 * a + 3])
-    tot += R.cross(sp.Matrix(cd[3 * a:3 * a + 3]))
+    R = sp.Matrix(g[3 * a : 3 * a + 3])
+    tot += R.cross(sp.Matrix(cd[3 * a : 3 * a + 3]))
 if max(abs(sp.N(x, PREC)) for x in tot) > TOL:
     fail("claim 3: rotation invariance")
 print("3 ok: sum_a R_a x grad_a = 0 at a generic geometry")
@@ -125,9 +153,22 @@ a_, b_ = ri - rj, rk - rj
 cos_t = a_.dot(b_) / (sp.sqrt(a_.dot(a_)) * sp.sqrt(b_.dot(b_)))
 theta = sp.acos(cos_t)
 av = list(ri) + list(rj) + list(rk)
-pt = dict(zip(av, [sp.Rational(9, 10), sp.Rational(2, 5), sp.Rational(1, 5),
-                   sp.Rational(1, 10), sp.Rational(-1, 5), sp.Rational(1, 20),
-                   sp.Rational(-3, 10), sp.Rational(11, 10), sp.Rational(3, 5)]))
+pt = dict(
+    zip(
+        av,
+        [
+            sp.Rational(9, 10),
+            sp.Rational(2, 5),
+            sp.Rational(1, 5),
+            sp.Rational(1, 10),
+            sp.Rational(-1, 5),
+            sp.Rational(1, 20),
+            sp.Rational(-3, 10),
+            sp.Rational(11, 10),
+            sp.Rational(3, 5),
+        ],
+    )
+)
 A, B = a_.subs(pt), b_.subs(pt)
 an, bn = sp.sqrt(A.dot(A)), sp.sqrt(B.dot(B))
 ct = A.dot(B) / (an * bn)
@@ -140,9 +181,15 @@ ex = [sp.N(sp.diff(theta, v).subs(pt), PREC) for v in av]
 err = max(abs(sp.N(c, PREC) - e) for c, e in zip(code, ex))
 if err > TOL:
     fail(f"claim 4: angle gradient err {err}")
-bad = list(-(1 / sin_t) * (B / (an * bn))) + [0] * 3 + list(-(1 / sin_t) * (A / (an * bn)))
+bad = (
+    list(-(1 / sin_t) * (B / (an * bn)))
+    + [0] * 3
+    + list(-(1 / sin_t) * (A / (an * bn)))
+)
 cerr = max(abs(sp.N(c, PREC) - e) for c, e in zip(bad, ex))
 if cerr < sp.Float("1e-3"):
     fail("claim 4 control not detected")
-print(f"4 ok: angle gradient err {float(err):.1e}; control (no cos term) err {sp.N(cerr, 3)}")
+print(
+    f"4 ok: angle gradient err {float(err):.1e}; control (no cos term) err {sp.N(cerr, 3)}"
+)
 print("all claims passed")

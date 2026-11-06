@@ -64,7 +64,9 @@ FAILED = []
 def check(name, got, want, tol=TOL):
     err = abs(got - want) / max(1.0, abs(want))
     ok = err <= tol
-    print(f"  {'ok  ' if ok else 'FAIL'} {name}: got {got:.15e} want {want:.15e} rel {err:.1e}")
+    print(
+        f"  {'ok  ' if ok else 'FAIL'} {name}: got {got:.15e} want {want:.15e} rel {err:.1e}"
+    )
     if not ok:
         FAILED.append(name)
 
@@ -82,7 +84,9 @@ def check_arrays(name, got, want, tol=TOL):
 def check_differs(name, got, want, min_rel=1e-6):
     err = abs(got - want) / max(1e-300, abs(want))
     ok = err >= min_rel
-    print(f"  {'ok  ' if ok else 'FAIL'} control {name}: rel diff {err:.1e} (must be >= {min_rel:.0e})")
+    print(
+        f"  {'ok  ' if ok else 'FAIL'} control {name}: rel diff {err:.1e} (must be >= {min_rel:.0e})"
+    )
     if not ok:
         FAILED.append("control " + name)
 
@@ -106,7 +110,12 @@ def orbital_energies(no, nv):
 
 def denom(eo, ev):
     """D_ijab = e_i + e_j - e_a - e_b (negative), the code's sign."""
-    return eo[:, None, None, None] + eo[None, :, None, None] - ev[None, None, :, None] - ev[None, None, None, :]
+    return (
+        eo[:, None, None, None]
+        + eo[None, :, None, None]
+        - ev[None, None, :, None]
+        - ev[None, None, None, :]
+    )
 
 
 # ---------------------------------------------------------------- claim 1
@@ -139,7 +148,12 @@ def claim1():
     asym = phys[np.ix_(occ, occ, vir, vir)]
     eos_ = np.concatenate([eo, ev])
     e_so = eos_[spat]
-    dso = e_so[occ][:, None, None, None] + e_so[occ][None, :, None, None] - e_so[vir][None, None, :, None] - e_so[vir][None, None, None, :]
+    dso = (
+        e_so[occ][:, None, None, None]
+        + e_so[occ][None, :, None, None]
+        - e_so[vir][None, None, :, None]
+        - e_so[vir][None, None, None, :]
+    )
     terms = 0.25 * asym**2 / dso
     si, sj = spin[occ][:, None], spin[occ][None, :]
     so_os = np.sum(terms[(si != sj)])
@@ -155,7 +169,9 @@ def claim1():
             for j in range(i, no):
                 fac = 1.0 if i == j else off_weight
                 tot_os += fac * np.sum(giajb[i, j] ** 2 / d[i, j])
-                tot_ss += fac * np.sum(giajb[i, j] * (giajb[i, j] - gibja[i, j]) / d[i, j])
+                tot_ss += fac * np.sum(
+                    giajb[i, j] * (giajb[i, j] - gibja[i, j]) / d[i, j]
+                )
         return tot_os, tot_ss
 
     p_os, p_ss = pair_sum(2.0)
@@ -194,7 +210,12 @@ def claim2():
 
     def opposite_spin(b1, e1o, e1v, b2, e2o, e2v):
         g = np.einsum("Pia,PJB->iJaB", b1, b2)
-        d = e1o[:, None, None, None] + e2o[None, :, None, None] - e1v[None, None, :, None] - e2v[None, None, None, :]
+        d = (
+            e1o[:, None, None, None]
+            + e2o[None, :, None, None]
+            - e1v[None, None, :, None]
+            - e2v[None, None, None, :]
+        )
         return np.sum(g**2 / d)
 
     e_aa = same_spin(ba, ea_o, ea_v)
@@ -202,8 +223,12 @@ def claim2():
 
     # Spin-orbital reference with separate alpha/beta MO sets.
     def so_parts():
-        orbs = [(ca[:, p], 0, e) for p, e in zip(range(nbf), np.concatenate([ea_o, ea_v]))]
-        orbs += [(cb[:, p], 1, e) for p, e in zip(range(nbf), np.concatenate([eb_o, eb_v]))]
+        orbs = [
+            (ca[:, p], 0, e) for p, e in zip(range(nbf), np.concatenate([ea_o, ea_v]))
+        ]
+        orbs += [
+            (cb[:, p], 1, e) for p, e in zip(range(nbf), np.concatenate([eb_o, eb_v]))
+        ]
         occ = [k for k in range(nbf)][:no_a] + [nbf + k for k in range(no_b)]
         vir = [k for k in range(no_a, nbf)] + [nbf + k for k in range(no_b, nbf)]
         cmat = np.stack([o[0] for o in orbs], axis=1)
@@ -216,7 +241,12 @@ def claim2():
         phys = chem.transpose(0, 2, 1, 3) - chem.transpose(0, 2, 3, 1)
         asym = phys[np.ix_(occ, occ, vir, vir)]
         eo, ev = eps[occ], eps[vir]
-        d = eo[:, None, None, None] + eo[None, :, None, None] - ev[None, None, :, None] - ev[None, None, None, :]
+        d = (
+            eo[:, None, None, None]
+            + eo[None, :, None, None]
+            - ev[None, None, :, None]
+            - ev[None, None, None, :]
+        )
         t = 0.25 * asym**2 / d
         si, sj = spin[occ][:, None], spin[occ][None, :]
         return np.sum(t[(si == 0) & (sj == 0)]), np.sum(t[si != sj])
@@ -231,8 +261,14 @@ def claim2():
     d = denom(ea_o, ea_v)
     e_os = np.sum(g**2 / d)
     e_ss = np.sum(g * (g - g.transpose(0, 1, 3, 2)) / d)
-    check("restricted limit: e_aa + e_bb == E_SS", 2.0 * same_spin(ba, ea_o, ea_v), e_ss)
-    check("restricted limit: e_ab == E_OS", opposite_spin(ba, ea_o, ea_v, ba, ea_o, ea_v), e_os)
+    check(
+        "restricted limit: e_aa + e_bb == E_SS", 2.0 * same_spin(ba, ea_o, ea_v), e_ss
+    )
+    check(
+        "restricted limit: e_ab == E_OS",
+        opposite_spin(ba, ea_o, ea_v, ba, ea_o, ea_v),
+        e_os,
+    )
 
 
 # ---------------------------------------------------------------- claim 3
@@ -281,7 +317,10 @@ def claim4():
     def e(g):
         return np.sum(g * (2.0 * g - g.transpose(0, 1, 3, 2)) / d)
 
-    x = np.sum((4.0 * gs * gl - gs * gl.transpose(0, 1, 3, 2) - gl * gs.transpose(0, 1, 3, 2)) / d)
+    x = np.sum(
+        (4.0 * gs * gl - gs * gl.transpose(0, 1, 3, 2) - gl * gs.transpose(0, 1, 3, 2))
+        / d
+    )
     check("E[s+l] == E[s] + E[l] + X", e(gs + gl), e(gs) + e(gl) + x)
     check_differs("E[s] + E[l] as E[s+l] (X = 0)", e(gs) + e(gl), e(gs + gl))
 
@@ -299,7 +338,7 @@ def claim5():
     dz = np.einsum("ai,ma,ni->mn", z, cv, co) + np.einsum("ai,mi,na->mn", z, co, cv)
     jz = np.einsum("mnls,ls->mn", eri_ao, dz)
     kz = np.einsum("mlns,ls->mn", eri_ao, dz)
-    az = (cv.T @ (4.0 * jz - kz - kz.T) @ co)  # vo block, compute_az_product
+    az = cv.T @ (4.0 * jz - kz - kz.T) @ co  # vo block, compute_az_product
 
     eri_mo = np.einsum("pqrs,pi,qj,rk,sl->ijkl", eri_ao, c, c, c, c)
     o, v = slice(0, no), slice(no, nbf)
@@ -328,11 +367,23 @@ def claim6():
     errs = []
     for s in (1e-2, 5e-3):
         errs.append(np.linalg.norm(cayley(s * k0) - expm(s * k0)) / s**3)
-    check("|U(sk) - expm(sk)| / s^3 constant (O(k^3) error)", errs[1], errs[0], tol=2e-2)
+    check(
+        "|U(sk) - expm(sk)| / s^3 constant (O(k^3) error)", errs[1], errs[0], tol=2e-2
+    )
     s = 1e-2
     rev = np.linalg.solve(eye + 0.5 * s * k0, eye - 0.5 * s * k0)
-    check("reversed Cayley == expm(-k) to O(k^3)", np.linalg.norm(rev - expm(-s * k0)) / s**3, errs[0], tol=2e-2)
-    check_differs("reversed Cayley as expm(+k)", np.linalg.norm(rev - expm(s * k0)), np.linalg.norm(cayley(s * k0) - expm(s * k0)), min_rel=10.0)
+    check(
+        "reversed Cayley == expm(-k) to O(k^3)",
+        np.linalg.norm(rev - expm(-s * k0)) / s**3,
+        errs[0],
+        tol=2e-2,
+    )
+    check_differs(
+        "reversed Cayley as expm(+k)",
+        np.linalg.norm(rev - expm(s * k0)),
+        np.linalg.norm(cayley(s * k0) - expm(s * k0)),
+        min_rel=10.0,
+    )
 
 
 # ---------------------------------------------------------------- claim 7
@@ -356,8 +407,16 @@ def claim7():
     wf, vf = np.linalg.eigh(q_full)
     kf = wf > 1e-8
     naive = vf[:, kf] / np.sqrt(wf[kf])
-    check_differs("unprojected eigenvectors orthogonal to OBS", np.max(np.abs(s[o, :] @ naive)) + 1.0, 1.0)
-    check_differs("unprojected eigenvectors orthonormal in S_RR", np.max(np.abs(naive.T @ s @ naive - np.eye(naive.shape[1]))) + 1.0, 1.0)
+    check_differs(
+        "unprojected eigenvectors orthogonal to OBS",
+        np.max(np.abs(s[o, :] @ naive)) + 1.0,
+        1.0,
+    )
+    check_differs(
+        "unprojected eigenvectors orthonormal in S_RR",
+        np.max(np.abs(naive.T @ s @ naive - np.eye(naive.shape[1]))) + 1.0,
+        1.0,
+    )
 
 
 def main():
