@@ -182,6 +182,11 @@ fn cases() -> Vec<(&'static str, Vec<usize>, Vec<usize>)> {
         ("bij,bjk->bik", vec![5, 1, 200], vec![5, 200, 1]),
         ("bij,bjk->bik", vec![5, 4, 1], vec![5, 1, 3]),
         ("bij,bjk->bik", vec![5, 1, 1], vec![5, 1, 1]),
+        // above PAR_GEMM_MIN_FLOPS (4 Mi) in total but not per slice: the
+        // rayon-over-batch branch (needs >= 2 rayon workers)
+        ("bij,bjk->bik", vec![64, 40, 150], vec![64, 150, 40]),
+        // each slice above it: per-slice gemm_row_banded
+        ("bij,bjk->bik", vec![2, 120, 200], vec![2, 200, 120]),
     ]
 }
 
@@ -192,11 +197,20 @@ fn batched_matches_loop_of_unbatched_and_naive() {
         let got = einsum_dyn(spec, a.view(), b.view(), -0.5).unwrap();
         let mac = macro_style(spec, a.view(), b.view(), -0.5);
         let lp = loop_of_unbatched(spec, a.view(), b.view(), -0.5);
-        let nv = naive(spec, a.view(), b.view(), -0.5);
         let what = format!("{spec} {sa:?} {sb:?}");
         assert_close(&got, &lp, 1e-13, &format!("{what} dyn vs loop"));
         assert_close(&mac, &lp, 1e-13, &format!("{what} batched vs loop"));
-        assert_close(&lp, &nv, 1e-13, &format!("{what} loop vs naive"));
+        // The naive reference is ~1 µs per term; keep it to the small cases.
+        let (ins, _) = spec.split_once("->").unwrap();
+        let (la, lb) = ins.split_once(',').unwrap();
+        let mut ext = BTreeMap::new();
+        for (c, &n) in la.chars().zip(&sa).chain(lb.chars().zip(&sb)) {
+            ext.insert(c, n);
+        }
+        if ext.values().product::<usize>() <= 1 << 20 {
+            let nv = naive(spec, a.view(), b.view(), -0.5);
+            assert_close(&lp, &nv, 1e-13, &format!("{what} loop vs naive"));
+        }
     }
 }
 
