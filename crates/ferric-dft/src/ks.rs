@@ -1143,6 +1143,16 @@ impl XcContribution for KsXc {
         self.ladder.reset();
     }
 
+    fn adds_single_potential(&self) -> bool {
+        // `add_xc_input` adds V_xc once; the VV10 term is a SECOND add into
+        // `f` (`add_vv10_scratch`), so a functional that carries it is not
+        // a single potential. Same condition as the `e_nl` branch there.
+        !(self.nlc_grid.is_some()
+            && self.nlc_chi.is_some()
+            && self.nlc_dchi.is_some()
+            && self.xc.vv10.is_some())
+    }
+
     fn refine_last_to_f64(&self, f: &mut Array2<f64>) -> bool {
         let Some(b) = self.ladder.take_mixed() else {
             return false;

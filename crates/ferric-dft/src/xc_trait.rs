@@ -94,6 +94,17 @@ pub trait XcContribution: XcStorage + Send + Sync {
         self.add_xc(d, f)
     }
 
+    /// Whether `add_xc` / `add_xc_occ` change `f` by exactly ONE elementwise
+    /// `*f += &v` with a `v` that does not depend on `f`. When true, calling
+    /// them on a zeroed buffer `b` and then doing `f += &b` is bitwise
+    /// identical to calling them on `f` (`0.0 + v == v`), which lets the SCF
+    /// run the XC digest concurrently with the J build and fold the potential
+    /// in afterwards at the same point. The default `false` keeps the SCF on
+    /// the sequential path.
+    fn adds_single_potential(&self) -> bool {
+        false
+    }
+
     /// How to build the exact-exchange contribution for this functional.
     fn k_mix(&self) -> KMix;
 
