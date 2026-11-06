@@ -372,15 +372,15 @@ fn unsupported_functionals_are_rejected_not_silently_approximated() {
     );
     eprintln!("RSH rejected: {msg}");
 
-    // Meta-GGA: no tau f_xc kernel.
-    let err = run_tda_dft(&mol, &obs, &dfbs, op, &rhf, Some("SCAN"), &cfg)
-        .expect_err("meta-GGA must be rejected");
-    let msg = err.to_string();
+    // tau-only meta-GGA (SCAN) is supported: the tau f_xc kernel is in the
+    // response (anchored vs PySCF get_ab in ferric-tddft validation_tddft).
+    // Guard that it is accepted WITH the kernel, not silently without it.
+    let res = run_tda_dft(&mol, &obs, &dfbs, op, &rhf, Some("SCAN"), &cfg)
+        .expect("tau-only meta-GGA must be accepted");
     assert!(
-        msg.to_lowercase().contains("meta-gga") || msg.contains("mgga"),
-        "unexpected meta-GGA rejection message: {msg}"
+        res.fxc_included,
+        "SCAN TDA must include the f_xc response kernel"
     );
-    eprintln!("meta-GGA rejected: {msg}");
 }
 
 /// An open-shell reference must be rejected outright (singlet closed-shell
