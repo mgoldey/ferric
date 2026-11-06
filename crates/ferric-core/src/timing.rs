@@ -101,11 +101,40 @@ struct PhaseTotal {
 #[derive(Debug, Default)]
 pub struct PhaseAccumulator {
     phases: Vec<PhaseTotal>,
+    /// Phases that ran CONCURRENTLY inside another timed phase (e.g. the RI-J
+    /// build and the XC digest inside the SCF's `jk_xc_wall`). Reported below
+    /// the table and kept out of `TOTAL`, which would otherwise count the
+    /// overlapped wall time twice.
+    overlapped: Vec<PhaseTotal>,
 }
 
 impl PhaseAccumulator {
     pub fn new() -> Self {
-        Self { phases: Vec::new() }
+        Self {
+            phases: Vec::new(),
+            overlapped: Vec::new(),
+        }
+    }
+
+    /// Fold `dt` (measured by the caller, e.g. inside one arm of a
+    /// `rayon::join`) into `label`'s OVERLAPPED total: shown in the report,
+    /// excluded from [`PhaseAccumulator::total_secs`]. No-op when timing is off.
+    pub fn add_overlapped(&mut self, label: &'static str, dt: std::time::Duration) {
+        if !enabled() {
+            return;
+        }
+        let secs = dt.as_secs_f64();
+        match self.overlapped.iter_mut().find(|p| p.label == label) {
+            Some(p) => {
+                p.secs += secs;
+                p.calls += 1;
+            }
+            None => self.overlapped.push(PhaseTotal {
+                label,
+                secs,
+                calls: 1,
+            }),
+        }
     }
 
     /// Run `f`, adding its elapsed time to `label`'s running total. Returns
@@ -222,6 +251,16 @@ impl PhaseAccumulator {
             "[timing]   {:<32} {:>10.3}",
             "TOTAL (timed phases)", total
         );
+        if !self.overlapped.is_empty() {
+            let _ = writeln!(out, "[timing]   overlapped (concurrent, not in TOTAL):");
+            for p in &self.overlapped {
+                let _ = writeln!(
+                    out,
+                    "[timing]   ~{:<31} {:>10.3} {:>8}",
+                    p.label, p.secs, p.calls
+                );
+            }
+        }
         let _ = std::io::stderr().lock().write_all(out.as_bytes());
     }
     /// Wrap this accumulator in a guard that prints its table (via

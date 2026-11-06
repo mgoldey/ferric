@@ -2573,6 +2573,27 @@ fn solve_rhf_impl(
         dfk_sr.is_some(),
         dfk_lr.is_some(),
     ]);
+    // J ∥ XC: on the RI-J-only path (no K into `k_buf`: pure functional or
+    // RSH, whose K comes later from its own fitters) the J build and the XC
+    // digest both read only D, so they run under one `rayon::join`. J streams
+    // the 3-index tensor and stops scaling at ~4 threads (memory bandwidth);
+    // XC fills the idle cores. XC writes into `vxc_buf` and is folded into F
+    // at the same point and with the same single `+=` as the sequential
+    // path, so F and E are bitwise unchanged (`adds_single_potential`, which
+    // rules out VV10). Off under MPI: J's all-reduce must stay on the main
+    // thread. The rayon-worker BLAS self-guard keeps both arms at 1 BLAS thread.
+    let jxc_overlap = SCF_JXC_OVERLAP.toggle()
+        && ctx.size == 1
+        && inj_jk.is_none()
+        && inj_xc.is_none()
+        && df_j.is_some()
+        && df_k.is_none()
+        && direct_k.is_none()
+        && k_builder.is_none()
+        && xc_contrib
+            .as_ref()
+            .is_some_and(|x| x.adds_single_potential());
+    let mut vxc_buf = Array2::<f64>::zeros(if jxc_overlap { (n, n) } else { (0, 0) });
 
     for iter in 1..=config.max_iter {
         ctx.check_interrupted()?;
@@ -2612,7 +2633,13 @@ fn solve_rhf_impl(
         // The rayon fan-out lives INSIDE the builders and has fully returned
         // before `stop`.
         let jk_scope = jk_ladder.begin_build(&[&d]);
-        let jk_t = phases.begin("jk_build");
+        let jk_t = phases.begin(if jxc_overlap {
+            "jk_xc_wall"
+        } else {
+            "jk_build"
+        });
+        // The overlapped XC's energy; `None` on the sequential path.
+        let mut e_xc_joined: Option<f64> = None;
         if let Some((ij, ik)) = inj_jk.as_mut() {
             total_quartets += ij.build(&d, &mut j_buf)?;
             if inj_k_consumed {
@@ -2621,7 +2648,36 @@ fn solve_rhf_impl(
             }
         } else if df_any {
             if let Some(dfj) = df_j.as_mut() {
-                dfj.build(&d, &mut j_buf)?;
+                if jxc_overlap {
+                    let x = xc_contrib
+                        .as_deref()
+                        .expect("jxc_overlap implies xc_contrib");
+                    let c_occ = d_occ.as_ref();
+                    let (d_ref, j_out, v_out) = (&d, &mut j_buf, &mut vxc_buf);
+                    let ((rj, tj), (e, tx)) = rayon::join(
+                        || {
+                            let t0 = std::time::Instant::now();
+                            (dfj.build(d_ref, j_out), t0.elapsed())
+                        },
+                        || {
+                            let t0 = std::time::Instant::now();
+                            v_out.fill(0.0);
+                            // Same dispatch as the sequential XC stage below.
+                            let e = match c_occ {
+                                Some(c) => x.add_xc_occ(d_ref, c, v_out),
+                                None => x.add_xc(d_ref, v_out),
+                            };
+                            (e, t0.elapsed())
+                        },
+                    );
+                    rj?;
+                    phases.add_overlapped("jk_build", tj);
+                    phases.add_overlapped("xc_digest", tx);
+                    e_xc_joined = Some(e);
+                    JXC_OVERLAP_BUILDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                } else {
+                    dfj.build(&d, &mut j_buf)?;
+                }
             } else {
                 let dj = direct_j.as_mut().expect("DirectJ built before loop");
                 total_quartets += dj.build(&d, &mut j_buf)?;
@@ -2762,8 +2818,17 @@ fn solve_rhf_impl(
         let energy_t = phases.begin("energy_trace");
         let e_elec_no_xc: f64 = 0.5 * (&d * &(&h + &f)).sum();
         phases.stop(energy_t);
-        let xc_t = phases.begin("xc_digest");
-        let e_xc = if let Some(x) = xc_contrib.as_ref() {
+        let xc_t = phases.begin(if e_xc_joined.is_some() {
+            "xc_fold"
+        } else {
+            "xc_digest"
+        });
+        let e_xc = if let Some(e) = e_xc_joined {
+            // V_xc was digested alongside J (see `jxc_overlap`); this is the
+            // `*f += &vxc` the sequential `add_xc*` would do here.
+            f += &vxc_buf;
+            e
+        } else if let Some(x) = xc_contrib.as_ref() {
             // Occupied-factored density pass when `d_occ` caches the C_occ of
             // the current D = 2·C_occ·C_occᵀ (None under smearing / on the
             // first iteration); the XC side re-checks the pair and falls back
@@ -3944,6 +4009,24 @@ static SCF_TRACE: ferric_core::config::ConfigVar<bool> = ferric_core::config::Co
 pub(crate) fn scf_trace() -> bool {
     SCF_TRACE.toggle()
 }
+
+/// `FERRIC_SCF_JXC_OVERLAP` descriptor: run the RI-J build and the XC digest
+/// concurrently in the closed-shell SCF (default on; `0` forces the sequential
+/// order). Bitwise identical either way; the switch exists for the
+/// equivalence test and for timing the two stages separately.
+static SCF_JXC_OVERLAP: ferric_core::config::ConfigVar<bool> = ferric_core::config::ConfigVar {
+    env_name: "FERRIC_SCF_JXC_OVERLAP",
+    default: true,
+    parse: ferric_core::config::parse_toggle,
+    validate: ferric_core::config::accept_any,
+};
+
+/// Count of closed-shell SCF iterations whose J build and XC digest ran
+/// overlapped (`FERRIC_SCF_JXC_OVERLAP`). Process-global; for tests, which
+/// compare deltas around a single solve to prove the overlapped arm ran.
+#[doc(hidden)]
+pub static JXC_OVERLAP_BUILDS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
 
 /// Effective linear-dependence threshold, overridable via `FERRIC_LINDEP_THRESH`.
 ///
