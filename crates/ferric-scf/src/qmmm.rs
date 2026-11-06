@@ -2026,6 +2026,21 @@ pub fn qmmm_qm_energy_and_gradient(
     method: &QmmmMethod,
     scf: &crate::rhf::RhfConfig,
 ) -> Result<(f64, Array2<f64>, Array2<f64>), FerricError> {
+    let mut cold = crate::warm_start::ScfWarmStart::new(false);
+    qmmm_qm_energy_and_gradient_warm(ctx, system, bs, method, scf, &mut cold)
+}
+
+/// [`qmmm_qm_energy_and_gradient`] whose SCF goes through a geometry
+/// driver's warm-start carrier ([`crate::warm_start`]); a disabled carrier is
+/// exactly the cold solve.
+pub(crate) fn qmmm_qm_energy_and_gradient_warm(
+    ctx: &ParallelContext,
+    system: &QmmmSystem,
+    bs: &ferric_core::basis::BasisSet,
+    method: &QmmmMethod,
+    scf: &crate::rhf::RhfConfig,
+    warm: &mut crate::warm_start::ScfWarmStart,
+) -> Result<(f64, Array2<f64>, Array2<f64>), FerricError> {
     let op = Operator::coulomb();
     let mol = system.to_qm_molecule();
     let prep = PreparedBasis::new(&mol, bs)?;
@@ -2040,7 +2055,8 @@ pub fn qmmm_qm_energy_and_gradient(
                 scf_cfg.df_j_aux = Some("def2-universal-jkfit".to_string());
                 scf_cfg.df_k_aux = Some("def2-universal-jkfit".to_string());
             }
-            let r = crate::rhf::solve_rhf(ctx, &mol, &prep, op, &bounds, &scf_cfg)?;
+            let r =
+                crate::warm_start::solve_rhf_warm(ctx, &mol, &prep, op, &bounds, &scf_cfg, warm)?;
             crate::optimize::require_converged(&r)?;
             let g = crate::gradient::restricted_scf_gradient(
                 &mol, &prep, bs, op, &bounds, &scf_cfg, &r,
@@ -2053,7 +2069,7 @@ pub fn qmmm_qm_energy_and_gradient(
                 scf_cfg.df_j_aux = Some("def2-universal-jkfit".to_string());
                 scf_cfg.df_k_aux = Some("def2-universal-jkfit".to_string());
             }
-            let r = crate::uhf::solve_uhf(ctx, &mol, &prep, &bounds, &scf_cfg)?;
+            let r = crate::warm_start::solve_uhf_warm(ctx, &mol, &prep, &bounds, &scf_cfg, warm)?;
             let g = crate::gradient::unrestricted_scf_gradient(
                 &mol, &prep, bs, op, &bounds, &scf_cfg, &r,
             )?;
@@ -2146,6 +2162,7 @@ pub fn optimize_qmmm(
     let bs = ferric_core::basis::bundled(basis_name)?;
 
     let mut energies: Vec<f64> = Vec::new();
+    let mut warm = crate::warm_start::ScfWarmStart::new(cfg.opt.scf_warm_start);
 
     let (x_final, _energy_final, steps, converged) =
         crate::optimize::optimize_coordinates(&x0, &cfg.opt, |x| {
@@ -2155,8 +2172,14 @@ pub fn optimize_qmmm(
 
             let mol = step_sys.to_qm_molecule();
             let prep = PreparedBasis::new(&mol, &bs)?;
-            let (scf_energy, qm_grad, density_total) =
-                qmmm_qm_energy_and_gradient(ctx, &step_sys, &bs, &cfg.method, &cfg.scf)?;
+            let (scf_energy, qm_grad, density_total) = qmmm_qm_energy_and_gradient_warm(
+                ctx,
+                &step_sys,
+                &bs,
+                &cfg.method,
+                &cfg.scf,
+                &mut warm,
+            )?;
 
             let forces = mm_forces(&step_sys, &mol, &prep, &density_total)?;
 
@@ -2187,6 +2210,9 @@ pub fn optimize_qmmm(
             }
             Ok((total_energy, grad_free))
         })?;
+    if let Some(line) = warm.summary() {
+        println!("{line}");
+    }
 
     let mut coords_final = coords0;
     unflatten_free(&x_final, &mut coords_final);

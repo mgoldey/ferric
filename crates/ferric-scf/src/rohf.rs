@@ -282,6 +282,22 @@ pub fn solve_rohf_best_effort(
     solve_rohf_routed(ctx, mol, prep, bounds, config, None)
 }
 
+/// [`solve_rohf_best_effort`] started from caller-supplied MOs `c0`
+/// (`(n, n)`, columns doubly occupied | singly occupied | virtual) instead of
+/// the default guess; the secondary-basis guess does not apply. The geometry
+/// drivers' warm start (`crate::warm_start`) is the caller.
+pub(crate) fn solve_rohf_best_effort_with_guess(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    bounds: &SchwarzBounds,
+    config: &RohfConfig,
+    c0: &Array2<f64>,
+) -> Result<ScfResult, FerricError> {
+    crate::symmetric::require_symmetry_off(config, "solve_rohf")?;
+    solve_rohf_impl_recorded(ctx, mol, prep, bounds, config, Some(c0), None, None, None)
+}
+
 /// The molecular ROHF solve, started from the secondary-basis guess MOs when
 /// [`RhfConfig::guess_basis`] applies. A Fock `hook` acts on the target solve
 /// only, never on the secondary-basis SCF or the Fock projection (see

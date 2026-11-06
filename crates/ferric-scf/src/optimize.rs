@@ -6,10 +6,9 @@
 //! coordinates ([`CoordSystem`](crate::optimize::CoordSystem)).
 
 use crate::result::ScfResult;
-use crate::rhf::{solve_rhf, RhfConfig};
-use crate::rohf::solve_rohf;
+use crate::rhf::RhfConfig;
 use crate::screening::SchwarzBounds;
-use crate::uhf::solve_uhf;
+use crate::warm_start::{solve_rhf_warm, solve_rohf_warm, solve_uhf_warm, ScfWarmStart};
 use ferric_core::internal_coords::{
     generalized_inverse, gradient_to_internal, step_to_cartesian, InternalCoords, Primitive,
 };
@@ -67,6 +66,13 @@ pub struct OptimizeConfig {
     /// [`CoordSystem::Cartesian`], which is bit-identical to the behaviour
     /// before internals existed.
     pub coord_system: CoordSystem,
+    /// Start each geometry's SCF from the previous geometry's converged MOs
+    /// (re-orthonormalized in the new overlap) instead of the default guess.
+    /// See [`crate::warm_start`] for the construction, the cold-guess
+    /// fallbacks and the retry on a failed warm start. Default `true`; the
+    /// SCF energies it reaches agree with a cold start to within the SCF's own
+    /// convergence tolerance, not bitwise.
+    pub scf_warm_start: bool,
 }
 
 impl Default for OptimizeConfig {
@@ -78,6 +84,7 @@ impl Default for OptimizeConfig {
             e_conv: 1.0e-6,
             trust_radius: 0.1,
             coord_system: CoordSystem::Cartesian,
+            scf_warm_start: true,
         }
     }
 }
@@ -212,14 +219,26 @@ pub fn optimize_geometry_with_scf_correction(
     opt_config: &OptimizeConfig,
     mut correction: impl FnMut(&Molecule, &ScfResult) -> Result<(f64, Option<Array2<f64>>), FerricError>,
 ) -> Result<OptimizeResult, FerricError> {
-    run_bfgs(mol, opt_config, |m| {
+    let mut warm = ScfWarmStart::new(opt_config.scf_warm_start);
+    let out = run_bfgs(mol, opt_config, |m| {
         let t = Stage::start("opt-step:eval-total");
-        let (e, g, scf) = compute_energy_gradient_and_result(ctx, m, basis_name, op, rhf_config)?;
+        let (e, g, scf) =
+            compute_energy_gradient_and_result(ctx, m, basis_name, op, rhf_config, &mut warm)?;
         let (de, dg) = correction(m, &scf)?;
         let out = add_correction(e, g, de, dg);
         t.end();
         out
-    })
+    });
+    print_warm_start_summary(&warm);
+    out
+}
+
+/// Print the [`ScfWarmStart::summary`] line after an optimization (nothing
+/// when warm start is off).
+fn print_warm_start_summary(warm: &ScfWarmStart) {
+    if let Some(line) = warm.summary() {
+        println!("{line}");
+    }
 }
 
 /// Combine an SCF (energy, gradient) with an additive correction under the
@@ -295,11 +314,15 @@ pub fn optimize_geometry_uhf_with_scf_correction(
     opt_config: &OptimizeConfig,
     mut correction: impl FnMut(&Molecule, &ScfResult) -> Result<(f64, Option<Array2<f64>>), FerricError>,
 ) -> Result<OptimizeResult, FerricError> {
-    run_bfgs(mol, opt_config, |m| {
-        let (e, g, scf) = compute_energy_and_gradient_uhf(ctx, m, basis_name, op, uhf_config)?;
+    let mut warm = ScfWarmStart::new(opt_config.scf_warm_start);
+    let out = run_bfgs(mol, opt_config, |m| {
+        let (e, g, scf) =
+            compute_energy_and_gradient_uhf(ctx, m, basis_name, op, uhf_config, &mut warm)?;
         let (de, dg) = correction(m, &scf)?;
         add_correction(e, g, de, dg)
-    })
+    });
+    print_warm_start_summary(&warm);
+    out
 }
 
 /// Optimize the molecular geometry using ROHF analytical gradients.
@@ -337,11 +360,15 @@ pub fn optimize_geometry_rohf_with_scf_correction(
     opt_config: &OptimizeConfig,
     mut correction: impl FnMut(&Molecule, &ScfResult) -> Result<(f64, Option<Array2<f64>>), FerricError>,
 ) -> Result<OptimizeResult, FerricError> {
-    run_bfgs(mol, opt_config, |m| {
-        let (e, g, scf) = compute_energy_and_gradient_rohf(ctx, m, basis_name, op, rohf_config)?;
+    let mut warm = ScfWarmStart::new(opt_config.scf_warm_start);
+    let out = run_bfgs(mol, opt_config, |m| {
+        let (e, g, scf) =
+            compute_energy_and_gradient_rohf(ctx, m, basis_name, op, rohf_config, &mut warm)?;
         let (de, dg) = correction(m, &scf)?;
         add_correction(e, g, de, dg)
-    })
+    });
+    print_warm_start_summary(&warm);
+    out
 }
 
 /// Shared BFGS driver: minimizes `energy_and_gradient(mol)` over nuclear
@@ -865,6 +892,7 @@ fn compute_energy_gradient_and_result(
     basis_name: &str,
     op: Operator,
     rhf_config: &RhfConfig,
+    warm: &mut ScfWarmStart,
 ) -> Result<(f64, Array2<f64>, ScfResult), FerricError> {
     let t = Stage::start("opt-step:basis+prep");
     let bs = ferric_core::basis::bundled(basis_name)?;
@@ -890,7 +918,7 @@ fn compute_energy_gradient_and_result(
     crate::gradient::preflight_cosx_restricted(rhf_config)?;
     let rhf_config = &*crate::gradient::gradient_task_config(rhf_config);
     let t = Stage::start("opt-step:scf");
-    let res = solve_rhf(ctx, mol, &prep, op, &bounds, rhf_config)?;
+    let res = solve_rhf_warm(ctx, mol, &prep, op, &bounds, rhf_config, warm)?;
     t.end();
     require_converged(&res)?;
     // Differentiates the exchange the SCF actually built: exactly
@@ -909,6 +937,7 @@ fn compute_energy_and_gradient_uhf(
     basis_name: &str,
     op: Operator,
     uhf_config: &RhfConfig,
+    warm: &mut ScfWarmStart,
 ) -> Result<(f64, Array2<f64>, ScfResult), FerricError> {
     // `uhf_gradient` is HF-only (no XC term), so an `xc` run must route to
     // `ks_gradient_uks` instead. That function IS implemented (LDA/GGA/hybrid/
@@ -932,7 +961,7 @@ fn compute_energy_and_gradient_uhf(
     let bounds = SchwarzBounds::compute_for_screening(op, &prep, uhf_config.screening)?;
     crate::gradient::preflight_cosx_unrestricted(uhf_config)?;
     let uhf_config = &*crate::gradient::gradient_task_config(uhf_config);
-    let res = solve_uhf(ctx, mol, &prep, &bounds, uhf_config)?;
+    let res = solve_uhf_warm(ctx, mol, &prep, &bounds, uhf_config, warm)?;
     // Exactly `ks_gradient_uks` / `uhf_gradient` unless the SCF's exchange
     // came from COSX (then the COSX derivative; a fitted setup is refused).
     let grad =
@@ -946,6 +975,7 @@ fn compute_energy_and_gradient_rohf(
     basis_name: &str,
     op: Operator,
     rohf_config: &RhfConfig,
+    warm: &mut ScfWarmStart,
 ) -> Result<(f64, Array2<f64>, ScfResult), FerricError> {
     // `restricted_open_scf_gradient` routes HF to `rohf_gradient` and an `xc`
     // run to `ks_gradient_roks` (FD-validated by tests/roks_gradient.rs,
@@ -971,7 +1001,7 @@ fn compute_energy_and_gradient_rohf(
     // exchange the SCF actually built.
     crate::gradient::preflight_cosx_restricted_open(rohf_config)?;
     let rohf_config = &*crate::gradient::gradient_task_config(rohf_config);
-    let res = solve_rohf(ctx, mol, &prep, op, &bounds, rohf_config)?;
+    let res = solve_rohf_warm(ctx, mol, &prep, op, &bounds, rohf_config, warm)?;
     let grad = crate::gradient::restricted_open_scf_gradient(
         mol,
         &prep,
@@ -1193,9 +1223,16 @@ mod tests {
         };
 
         let ctx = ParallelContext::default();
-        let e0 = compute_energy_and_gradient_uhf(&ctx, &mol, "sto-3g", op, &uhf_config)
-            .unwrap()
-            .0;
+        let e0 = compute_energy_and_gradient_uhf(
+            &ctx,
+            &mol,
+            "sto-3g",
+            op,
+            &uhf_config,
+            &mut ScfWarmStart::new(false),
+        )
+        .unwrap()
+        .0;
 
         let result =
             optimize_geometry_uhf(&ctx, &mol, "sto-3g", op, &uhf_config, &opt_config).unwrap();
@@ -1240,8 +1277,15 @@ mod tests {
         // Final gradient norm must be below the configured convergence
         // thresholds -- re-derive it directly rather than trusting the
         // driver's internal bookkeeping.
-        let (_, grad_arr, _) =
-            compute_energy_and_gradient_uhf(&ctx, &result.mol, "sto-3g", op, &uhf_config).unwrap();
+        let (_, grad_arr, _) = compute_energy_and_gradient_uhf(
+            &ctx,
+            &result.mol,
+            "sto-3g",
+            op,
+            &uhf_config,
+            &mut ScfWarmStart::new(false),
+        )
+        .unwrap();
         let grad = flatten_gradient(&grad_arr);
         let g_max = grad.iter().map(|g| g.abs()).fold(0.0f64, f64::max);
         assert!(
@@ -1267,9 +1311,16 @@ mod tests {
         };
 
         let ctx = ParallelContext::default();
-        let e0 = compute_energy_and_gradient_rohf(&ctx, &mol, "sto-3g", op, &rohf_config)
-            .unwrap()
-            .0;
+        let e0 = compute_energy_and_gradient_rohf(
+            &ctx,
+            &mol,
+            "sto-3g",
+            op,
+            &rohf_config,
+            &mut ScfWarmStart::new(false),
+        )
+        .unwrap()
+        .0;
 
         let result =
             optimize_geometry_rohf(&ctx, &mol, "sto-3g", op, &rohf_config, &opt_config).unwrap();
@@ -1323,9 +1374,15 @@ mod tests {
             result.energy
         );
 
-        let (_, grad_arr, _) =
-            compute_energy_and_gradient_rohf(&ctx, &result.mol, "sto-3g", op, &rohf_config)
-                .unwrap();
+        let (_, grad_arr, _) = compute_energy_and_gradient_rohf(
+            &ctx,
+            &result.mol,
+            "sto-3g",
+            op,
+            &rohf_config,
+            &mut ScfWarmStart::new(false),
+        )
+        .unwrap();
         let grad = flatten_gradient(&grad_arr);
         let g_max = grad.iter().map(|g| g.abs()).fold(0.0f64, f64::max);
         assert!(
@@ -1581,5 +1638,133 @@ mod tests {
             s2[bond_idx]
         );
         let _ = &mut qb;
+    }
+
+    /// One optimization with the warm start on or off, keeping the
+    /// per-evaluation warm-start records (the public drivers print them).
+    fn optimize_recorded(
+        mol: &Molecule,
+        basis: &str,
+        cfg: &RhfConfig,
+        spin: crate::result::Spin,
+        warm_on: bool,
+    ) -> (OptimizeResult, Vec<crate::warm_start::WarmStartRecord>) {
+        let ctx = ParallelContext::default();
+        let op = Operator::coulomb();
+        let opt = OptimizeConfig {
+            scf_warm_start: warm_on,
+            ..Default::default()
+        };
+        let mut warm = ScfWarmStart::new(warm_on);
+        let r = run_bfgs(mol, &opt, |m| {
+            let (e, g, _) = match spin {
+                crate::result::Spin::Restricted => {
+                    compute_energy_gradient_and_result(&ctx, m, basis, op, cfg, &mut warm)?
+                }
+                crate::result::Spin::Unrestricted => {
+                    compute_energy_and_gradient_uhf(&ctx, m, basis, op, cfg, &mut warm)?
+                }
+                crate::result::Spin::RestrictedOpen => {
+                    compute_energy_and_gradient_rohf(&ctx, m, basis, op, cfg, &mut warm)?
+                }
+            };
+            Ok((e, g))
+        })
+        .unwrap();
+        (r, warm.records().to_vec())
+    }
+
+    /// Warm vs cold optimization: same minimum within the optimizer's own
+    /// tolerances, warm start actually used after the first evaluation, and
+    /// fewer SCF iterations in total.
+    ///
+    /// Geometry bound: the optimizer stops once `g_max < g_max_thresh`
+    /// (4.5e-4 Ha/Bohr); with the softest force constant of these molecules
+    /// above ~0.2 Ha/Bohr² (bends), a converged geometry is determined only
+    /// to `g_max_thresh / 0.2 ≈ 2.3e-3` Bohr per coordinate, so two converged
+    /// runs may differ by at most twice that.
+    fn warm_and_cold_optimizations_agree(
+        xyz: &str,
+        mult: usize,
+        basis: &str,
+        cfg: RhfConfig,
+        spin: crate::result::Spin,
+    ) {
+        let mol = Molecule::parse_xyz(xyz, 0, mult).unwrap();
+        let (rw, recw) = optimize_recorded(&mol, basis, &cfg, spin, true);
+        let (rc, recc) = optimize_recorded(&mol, basis, &cfg, spin, false);
+        let it = |r: &[crate::warm_start::WarmStartRecord]| -> Vec<usize> {
+            r.iter()
+                .map(|x| x.iterations + x.wasted_iterations)
+                .collect()
+        };
+        let dx = rw
+            .mol
+            .atoms
+            .iter()
+            .zip(&rc.mol.atoms)
+            .flat_map(|(a, b)| [a.x - b.x, a.y - b.y, a.zpos - b.zpos])
+            .fold(0.0f64, |m, d| m.max(d.abs()));
+        let de = (rw.energy - rc.energy).abs();
+        eprintln!(
+            "{basis} {spin:?}: steps warm {} cold {}; |dE| {de:.2e}; max|dx| {dx:.2e} Bohr; \
+             SCF iterations warm {:?} (sum {}) cold {:?} (sum {})",
+            rw.steps,
+            rc.steps,
+            it(&recw),
+            it(&recw).iter().sum::<usize>(),
+            it(&recc),
+            it(&recc).iter().sum::<usize>(),
+        );
+        assert!(rw.converged && rc.converged);
+        let opt = OptimizeConfig::default();
+        assert!(de < opt.e_conv, "|dE| {de:e} >= e_conv");
+        assert!(dx < 2.0 * opt.g_max_thresh / 0.2, "max|dx| {dx:e}");
+        assert!(recw.iter().skip(1).all(|r| r.cold.is_none()), "{recw:?}");
+        assert!(recc
+            .iter()
+            .all(|r| r.cold == Some(crate::warm_start::ColdReason::Disabled)));
+        assert!(
+            it(&recw).iter().sum::<usize>() < it(&recc).iter().sum::<usize>(),
+            "warm start did not save SCF iterations"
+        );
+    }
+
+    const DISTORTED_WATER: &str = "3\nH2O\nO 0 0 0\nH 0 0.9 0\nH 0 -0.3 0.85\n";
+
+    #[test]
+    fn warm_start_rhf_optimization_matches_cold() {
+        warm_and_cold_optimizations_agree(
+            DISTORTED_WATER,
+            1,
+            "6-31g",
+            RhfConfig::default(),
+            crate::result::Spin::Restricted,
+        );
+    }
+
+    #[test]
+    fn warm_start_uhf_radical_optimization_matches_cold() {
+        warm_and_cold_optimizations_agree(
+            "3\nNH2\nN 0 0 0\nH 0 0.95 0.2\nH 0 -0.6 0.85\n",
+            2,
+            "6-31g",
+            RhfConfig::default(),
+            crate::result::Spin::Unrestricted,
+        );
+    }
+
+    #[test]
+    fn warm_start_pbe_optimization_matches_cold() {
+        warm_and_cold_optimizations_agree(
+            DISTORTED_WATER,
+            1,
+            "6-31g",
+            RhfConfig {
+                xc: Some("PBE".to_string()),
+                ..Default::default()
+            },
+            crate::result::Spin::Restricted,
+        );
     }
 }

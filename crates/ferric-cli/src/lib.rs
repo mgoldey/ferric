@@ -6918,7 +6918,18 @@ fn run_optimize(
                 std::process::exit(1);
             }),
         },
+        scf_warm_start: cfg.optimize.scf_warm_start.unwrap_or(true),
     };
+    if matches!(method, "rimp2" | "pdep-rpa") && cfg.optimize.scf_warm_start.is_some() {
+        // The correlated optimizers run their own step loop and solve every
+        // geometry's SCF from the default guess; the key would be a no-op.
+        eprintln!(
+            "error in [optimize]: scf_warm_start applies to the SCF optimizers (rhf, ksdft, \
+             uhf, rohf); the {method} optimizer solves each geometry's SCF from the default \
+             guess. Remove the key."
+        );
+        std::process::exit(1);
+    }
     match method {
         "rhf" | "ksdft" => {
             // Dispersion (D3(BJ) or MBD@rsSCS) as an ADDITIVE correction on

@@ -359,6 +359,7 @@ fn tight_reference(mol: &Molecule) -> OptimizeResult {
             g_rms_thresh: 1e-6,
             e_conv: 1e-12,
             coord_system: CoordSystem::Cartesian,
+            ..Default::default()
         },
     )
 }
