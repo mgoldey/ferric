@@ -3213,7 +3213,7 @@ impl PyQmmmOptimizeResult {
 /// `method`/`xc` follow `run_qmmm`'s convention: `"rhf"` (default), `"uhf"`,
 /// `"rks"`, `"uks"`; `xc` required for the KS variants, rejected otherwise.
 #[pyfunction]
-#[pyo3(signature = (system, basis_name, method=None, xc=None, move_mm=None, mm_topology=None, max_steps=None, e_conv=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None))]
+#[pyo3(signature = (system, basis_name, method=None, xc=None, move_mm=None, mm_topology=None, max_steps=None, e_conv=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None, scf_warm_start=None))]
 #[allow(clippy::too_many_arguments)]
 fn run_optimize_qmmm(
     py: Python<'_>,
@@ -3228,6 +3228,7 @@ fn run_optimize_qmmm(
     scf_max_iter: Option<usize>,
     scf_energy_conv: Option<f64>,
     scf_density_conv: Option<f64>,
+    scf_warm_start: Option<bool>,
 ) -> PyResult<PyQmmmOptimizeResult> {
     use ferric_scf::qmmm::{optimize_qmmm, QmmmMethod, QmmmOptimizeConfig};
 
@@ -3262,6 +3263,7 @@ fn run_optimize_qmmm(
     let opt = OptimizeConfig {
         max_steps: max_steps.unwrap_or(100),
         e_conv: e_conv.unwrap_or(1e-6),
+        scf_warm_start: scf_warm_start.unwrap_or(true),
         ..Default::default()
     };
     let cfg = QmmmOptimizeConfig {
@@ -4539,7 +4541,7 @@ fn optimize_result_certificate(
 }
 
 #[pyfunction]
-#[pyo3(signature = (mol, basis_name, max_steps=None, e_conv=None, point_charges=None, external_field=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None, solvent=None, pcm_lebedev_order=None))]
+#[pyo3(signature = (mol, basis_name, max_steps=None, e_conv=None, point_charges=None, external_field=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None, solvent=None, pcm_lebedev_order=None, scf_warm_start=None))]
 #[allow(clippy::too_many_arguments)]
 fn run_optimize(
     py: Python<'_>,
@@ -4554,6 +4556,7 @@ fn run_optimize(
     scf_density_conv: Option<f64>,
     solvent: Option<&Bound<'_, PyAny>>,
     pcm_lebedev_order: Option<usize>,
+    scf_warm_start: Option<bool>,
 ) -> PyResult<PyOptimizeResult> {
     let ctx = ParallelContext::default();
     let mut rhf_config = RhfConfig {
@@ -4572,6 +4575,7 @@ fn run_optimize(
     let opt_config = OptimizeConfig {
         max_steps: max_steps.unwrap_or(100),
         e_conv: e_conv.unwrap_or(1e-6),
+        scf_warm_start: scf_warm_start.unwrap_or(true),
         ..Default::default()
     };
     let r = py
@@ -4613,7 +4617,7 @@ fn run_optimize(
 /// doublet would be forced into a closed-shell density. Use this for any
 /// molecule with unpaired electrons.
 #[pyfunction]
-#[pyo3(signature = (mol, basis_name, max_steps=None, e_conv=None, point_charges=None, external_field=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None, solvent=None, pcm_lebedev_order=None))]
+#[pyo3(signature = (mol, basis_name, max_steps=None, e_conv=None, point_charges=None, external_field=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None, solvent=None, pcm_lebedev_order=None, scf_warm_start=None))]
 #[allow(clippy::too_many_arguments)]
 fn run_optimize_uhf(
     py: Python<'_>,
@@ -4628,6 +4632,7 @@ fn run_optimize_uhf(
     scf_density_conv: Option<f64>,
     solvent: Option<&Bound<'_, PyAny>>,
     pcm_lebedev_order: Option<usize>,
+    scf_warm_start: Option<bool>,
 ) -> PyResult<PyOptimizeResult> {
     let ctx = ParallelContext::default();
     let mut uhf_config = RhfConfig {
@@ -4646,6 +4651,7 @@ fn run_optimize_uhf(
     let opt_config = OptimizeConfig {
         max_steps: max_steps.unwrap_or(100),
         e_conv: e_conv.unwrap_or(1e-6),
+        scf_warm_start: scf_warm_start.unwrap_or(true),
         ..Default::default()
     };
     let r = py

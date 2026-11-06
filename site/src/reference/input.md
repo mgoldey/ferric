@@ -306,6 +306,7 @@ Read when `task = "optimize"`.
 | `e_conv` | float | `1e-6` | Hartree | |
 | `trust_radius` | float | `0.1` | | Initial step size. |
 | `coordinates` | string | `"cartesian"` | `cartesian` `cart`; `internal` `internals` `redundant-internal` `redundant_internal` | |
+| `scf_warm_start` | bool | `true` | | Start each geometry's SCF from the previous geometry's converged orbitals, Löwdin re-orthonormalized in the new overlap, instead of the MINAO guess. The cold guess is used on the first geometry, when the occupied-orbital metric `C_occᵀ S C_occ` at the new geometry has an eigenvalue more than 0.1 from 1 (a large step), and as a retry after a warm-started SCF that does not converge. Energies agree with a cold start to the SCF convergence tolerance, not bitwise. Molecular SCF routes only (RHF/RKS, UHF/UKS, ROHF/ROKS, and the Python QM/MM optimizer); `true` with `[cell]` is an error. |
 
 ## `[frequencies]`
 

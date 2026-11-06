@@ -228,6 +228,7 @@ pub mod irc;
 /// Geometry optimization via L-BFGS with energy/gradient convergence.
 pub mod optimize;
 pub mod saddle;
+pub mod warm_start;
 pub use frequencies::{harmonic_frequencies, FrequencyConfig, FrequencyReference, FrequencyResult};
 /// Continuous Fast Multipole Method (CFMM) for long-range Coulomb.
 ///

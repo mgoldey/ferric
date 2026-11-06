@@ -922,6 +922,11 @@ pub struct OptimizeCfg {
     /// `"internals"` asked for internals and must be told they did not get
     /// them.
     pub coordinates: Option<String>,
+    /// Start each geometry's SCF from the previous geometry's converged MOs
+    /// (`ferric_scf::warm_start`) instead of the default guess. Default
+    /// `true`; `false` re-guesses every geometry from scratch (the behaviour
+    /// before warm start existed).
+    pub scf_warm_start: Option<bool>,
 }
 
 /// Parse the `[optimize] coordinates` key into a
@@ -6588,6 +6593,14 @@ pub fn periodic_plan(cfg: &Config, raw: &toml::Value) -> Result<Option<PeriodicP
                     );
                 }
             }
+            if cfg.optimize.scf_warm_start == Some(true) {
+                return Err(
+                    "[optimize] scf_warm_start: periodic optimization solves each step's SCF \
+                     from its own guess (no warm start is implemented for [cell]); remove the \
+                     key or set it to false"
+                        .into(),
+                );
+            }
             true
         }
         other => {
@@ -10751,6 +10764,15 @@ max_iter = 42
             cfg_with("[optimize]\ncoordinate = \"internal\"\n").is_err(),
             "a typo'd key must be rejected by deny_unknown_fields"
         );
+    }
+
+    #[test]
+    fn optimize_scf_warm_start_key_parses_and_defaults_to_unset() {
+        let cfg = cfg_with("[optimize]\nscf_warm_start = false\n").unwrap();
+        assert_eq!(cfg.optimize.scf_warm_start, Some(false));
+        let cfg = cfg_with("[optimize]\nmax_steps = 10\n").unwrap();
+        assert_eq!(cfg.optimize.scf_warm_start, None);
+        assert!(cfg_with("[optimize]\nscf_warm_start = \"yes\"\n").is_err());
     }
 }
 

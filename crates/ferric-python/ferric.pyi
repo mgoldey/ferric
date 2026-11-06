@@ -419,6 +419,7 @@ def run_optimize_qmmm(
     scf_max_iter: int | None = None,
     scf_energy_conv: float | None = None,
     scf_density_conv: float | None = None,
+    scf_warm_start: bool | None = None,
 ) -> QmmmOptimizeResult:
     """Optimize a QmmmSystem's geometry. Real QM atoms always move; MM atoms move per move_mm.
 
@@ -433,6 +434,7 @@ def run_optimize_qmmm(
 
     `scf_max_iter`, `scf_energy_conv`, `scf_density_conv`: controls of the SCF at every
     step (names and defaults of `run_rhf`'s `max_iter`, `energy_conv`, `density_conv`).
+    `scf_warm_start`: as in `run_optimize` (default True).
     """
     ...
 
@@ -3717,6 +3719,7 @@ def run_optimize(
     scf_density_conv: float | None = None,
     solvent: float | str | None = None,
     pcm_lebedev_order: int | None = None,
+    scf_warm_start: bool | None = None,
 ) -> OptimizeResult:
     """Geometry optimization (RHF).
 
@@ -3728,6 +3731,12 @@ def run_optimize(
     `scf_max_iter`, `scf_energy_conv`, `scf_density_conv`: controls of the SCF run at
     every geometry (names and defaults of `run_rhf`'s `max_iter`, `energy_conv`,
     `density_conv`). `max_steps` / `e_conv` are the geometry steps and energy criterion.
+
+    `scf_warm_start` (default True): start each geometry's SCF from the previous
+    geometry's converged orbitals, re-orthonormalized in the new overlap, instead of the
+    MINAO guess. Falls back to the cold guess on the first step, on a poor orbital overlap
+    (large step) and after a failed warm-started SCF. Energies agree with a cold start to
+    SCF convergence tolerance, not bitwise; False restores the from-scratch guess.
     """
     ...
 
@@ -3743,6 +3752,7 @@ def run_optimize_uhf(
     scf_density_conv: float | None = None,
     solvent: float | str | None = None,
     pcm_lebedev_order: int | None = None,
+    scf_warm_start: bool | None = None,
 ) -> OptimizeResult:
     """Geometry optimization (UHF) -- for open-shell systems.
 
@@ -3751,7 +3761,7 @@ def run_optimize_uhf(
     The spin state comes from the `Molecule`'s multiplicity, as in `run_uhf`.
     `run_optimize` uses an RHF reference and cannot relax a radical.
     `scf_max_iter`, `scf_energy_conv`, `scf_density_conv` control the SCF at every
-    geometry, as in `run_optimize`.
+    geometry, and `scf_warm_start` the guess, as in `run_optimize`.
     """
     ...
 

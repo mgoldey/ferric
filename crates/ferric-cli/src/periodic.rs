@@ -2848,6 +2848,9 @@ fn run_periodic_optimize(
         trust_radius: cfg.optimize.trust_radius.unwrap_or(0.1),
         // Cartesian only; `periodic_plan` refused anything else.
         coord_system: CoordSystem::Cartesian,
+        // Read only by the molecular SCF drivers; the closure below solves
+        // each periodic SCF itself (`periodic_plan` refuses `true`).
+        scf_warm_start: false,
     };
     let base = s.cell.mol().clone();
     let x0: Vec<f64> = base.atoms.iter().flat_map(|a| [a.x, a.y, a.zpos]).collect();
