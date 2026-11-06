@@ -1985,7 +1985,7 @@ pub struct RpaCfg {
     /// Imaginary-frequency quadrature scheme. One of:
     ///   "gauss-legendre" | "gl"           — GL nodes mapped via ω = u₀(1+x)/(1−x) (default)
     ///   "minimax" | "mm"                  — GL nodes with literature-optimized u₀(n_quad)
-    ///   "chebyshev-tan" | "chebyshev" | "ct" — Eshuis-Yarkony-Furche tan-map (bounded ω)
+    ///   "chebyshev-tan" | "chebyshev" | "ct" — Eshuis-Yarkony-Furche Chebyshev-2 nodes, ω = u₀ tan(π(1+x)/4)
     ///
     /// Unknown values are a hard error. `u0` is honoured by "gauss-legendre" and
     /// "chebyshev-tan"; "minimax" derives u₀ from `n_quad` and ignores it.

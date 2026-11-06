@@ -418,10 +418,11 @@ impl Default for QuadratureConfig {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum QuadratureScheme {
-    /// Eshuis-Yarkony-Furche modified Gauss-Chebyshev (JCP 2010): bounded
-    /// ω-range via the tan-map. Recommended whenever `Chi0Backend::Laplace`
-    /// is used so the cosine-modulated Laplace quadrature stays in its safe
-    /// regime (ω·t_max < π/2).
+    /// Eshuis-Yarkony-Furche modified Gauss-Chebyshev (JCP 2010): Chebyshev-2
+    /// nodes tan-mapped to [0,∞), largest node about 0.4 of Gauss-Legendre's
+    /// at equal (n, u₀). Recommended with `Chi0Backend::Laplace`, which uses
+    /// the dense kernel at nodes with ω·t_max > π/2; this grid has fewer of
+    /// them. See [`crate::quadrature::chebyshev_tan_nodes`].
     ChebyshevTan,
     /// GL nodes with literature-optimized u₀ scale (Furche, JCP 2005).
     MiniMax,
