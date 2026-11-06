@@ -20,6 +20,18 @@ for d in "${path_dirs[@]}"; do
   if [ -x "$d/cargo" ]; then REAL=$d/cargo; break; fi
 done
 [ -n "$REAL" ] || { echo "cargo shim: no real cargo on PATH" >&2; exit 127; }
+# Recursion guard. A `cargo` wrapper earlier on PATH that calls this shim back by absolute path is
+# picked as REAL, so the two exec each other forever (a test stub did, 2026-11-06: a silent hang
+# until a 120 s timeout). Every pass counts itself; real nesting (lease -> cargo -> a test that runs
+# cargo) stays far below the limit.
+depth=${FERRIC_CARGO_SHIM_DEPTH:-0}
+case "$depth" in ""|*[!0-9]*) depth=0;; esac
+if [ "$depth" -ge 4 ]; then
+  echo "cargo shim: recursion: re-entered $((depth + 1)) times; the real cargo it found, $REAL," \
+       "leads back to this shim. Remove that wrapper from PATH, or make it exec a real cargo." >&2
+  exit 126
+fi
+export FERRIC_CARGO_SHIM_DEPTH=$((depth + 1))
 # The subcommand, skipping global options and their values. Anything not known to be trivial is
 # heavy, so an alias (`b`, `t`), `install` or a plugin (`llvm-cov`) waits rather than slipping past.
 sub=""; skip=0
