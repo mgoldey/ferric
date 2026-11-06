@@ -313,6 +313,26 @@ def test_einsum_matches_numpy(spec, sa, sb):
     )
 
 
+# Batched shapes past the engine's thresholds (crates/ferric-tensors/src/einsum.rs:
+# GEMM_K_BLOCK 128, PAR_GEMM_MIN_FLOPS 4M), so the binding reaches each batched
+# branch rewritten in 2cb03e07f, not only the small serial one above.
+EINSUM_BATCHED_LARGE = [
+    ("kij,kij->ij", (300, 4, 3), (300, 4, 3)),  # batched dot, long contraction
+    ("bij,bjk->bik", (64, 40, 150), (64, 150, 40)),  # rayon over the batch axis
+    ("bij,bjk->bik", (2, 120, 200), (2, 200, 120)),  # banded GEMM per slice
+    ("ibj,bjk->bik", (6, 3, 140), (3, 140, 5)),  # batch axis not leading
+]
+
+
+@pytest.mark.parametrize("spec, sa, sb", EINSUM_BATCHED_LARGE)
+def test_einsum_batched_large_matches_numpy(spec, sa, sb):
+    a, b = _RNG.standard_normal(sa), _RNG.standard_normal(sb)
+    ref = -0.5 * np.einsum(spec, a, b)
+    got = ferric.einsum(spec, a, b, scale=-0.5)
+    # Summation order differs from numpy over up to 300 terms of O(1): 1e-12.
+    np.testing.assert_allclose(got, ref, rtol=1e-12, atol=1e-12)
+
+
 def test_einsum_scalar_spec_returns_a_float():
     a, b = _RNG.standard_normal((3, 4)), _RNG.standard_normal((3, 4))
     got = ferric.einsum("ij,ij->", a, b)
@@ -356,6 +376,9 @@ def test_einsum_errors_are_value_errors(spec, sa, sb, match):
         ("ij,jk->ik", (2, 0), (0, 4)),
         ("kij,kij->ij", (0, 2, 3), (0, 2, 3)),
         ("ij,ij->", (0, 3), (0, 3)),
+        ("bij,bjk->bik", (0, 3, 4), (0, 4, 5)),  # empty batch
+        ("bij,bjk->bik", (2, 0, 4), (2, 4, 5)),  # empty left free
+        ("bij,bjk->bik", (2, 3, 0), (2, 0, 5)),  # empty contraction
     ],
 )
 def test_einsum_zero_extent_operands_give_zeros(spec, sa, sb):
