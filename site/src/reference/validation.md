@@ -719,7 +719,8 @@ the laddered SCF energy against a bar derived from the f64 floor by
   integral_direct = true`) has its correlation stage measured at about
   N<sup>1.24</sup> (erfc) and N<sup>1.4</sup> (Coulomb) on n-alkanes C20–C48
   (6-31G / cc-pVDZ-RI, ε = 1e-4, frozen carbon cores, a calibrated pair gate;
-  fitted to three points). That is one family of molecules in one basis: not
+  fitted to three points; the fit excludes the dense O(N³) VV-HV
+  virtual-space build, `t_spaces_s`). That is one family of molecules in one basis: not
   shown to be linear, and not measured on 3-D or diffuse systems. Local MP2
   without `integral_direct` still builds the global 3-index tensor and makes
   no scaling claim. See [The MP2 family](../methods/mp2.md#exact-and-local-mp2).
