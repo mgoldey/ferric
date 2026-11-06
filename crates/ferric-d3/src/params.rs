@@ -140,11 +140,23 @@ const TABLE: &[Entry] = &[
     // Ehlert, Huniar, Ning, Furness, Sun, Grimme, JCP 154, 061101 (2021),
     // doi 10.1063/5.0041008 (the r2SCAN-D4 paper's D3(BJ) fit).
     row(&["r2scan"], 1.0, 0.78981345, 0.49484001, 5.73083694),
-    // simple-dftd3's `wb97x` rational-damping entry, which upstream carries
-    // without a DOI ("TODO: find reference" in src/dftd3/param.f90). The
-    // values match the omegaB97X-D3BJ of Najibi, Goerigk, JCTC 14, 5725
-    // (2018), doi 10.1021/acs.jctc.8b00842. Not omegaB97X-D3 (Chai,
-    // Head-Gordon), which uses zero damping.
+    // omegaB97X-D3(BJ): Najibi, Goerigk, JCTC 14, 5725 (2018),
+    // doi 10.1021/acs.jctc.8b00842. That paper fitted D3(BJ) to replace the
+    // VV10 term of omegaB97X-V (Mardirossian, Head-Gordon, PCCP 16, 9904
+    // (2014)), so this row belongs to the semilocal + exact-exchange part of
+    // omegaB97X-V (libxc HYB_GGA_XC_WB97X_V without VV10), NOT to the 2008
+    // omegaB97X of libxc HYB_GGA_XC_WB97X. Najibi, Goerigk, JCC 41, 2562
+    // (2020), doi 10.1002/jcc.26411, cites the 2018 paper for omegaB97X-D3(BJ)
+    // (its ref. 11). The numbers are simple-dftd3 1.6.0's `wb97x` d3.bj entry,
+    // which upstream carries without a DOI ("TODO: find reference" in
+    // src/dftd3/param.f90); its two neighbours from the same fit, `wb97m` and
+    // `b97m`, carry 10.1021/acs.jctc.8b00842. The 2018 SI table itself was not
+    // read here (paywalled), so the numbers rest on upstream.
+    // Distinct from omegaB97X-D3 = omegaB97X-D3(0): Lin, Li, Mao, Chai, JCTC
+    // 9, 263 (2013), doi 10.1021/ct300715s, a reparametrised functional fitted
+    // with ZERO damping (upstream `wb97x` d3.zero: rs6 1.281, s8 1.0, rs8
+    // 1.094), and from omegaB97X-D (Chai, Head-Gordon, PCCP 10, 6615 (2008)),
+    // whose dispersion term is not D3 at all.
     row(&["wb97x"], 1.0, 0.2641, 0.0000, 5.4959),
 ];
 
