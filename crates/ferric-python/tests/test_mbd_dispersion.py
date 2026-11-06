@@ -169,15 +169,15 @@ def test_gradient_includes_the_mbd_gradient(water, sto3g, mbd):
     )
 
 
-def test_mbd_gradient_unsupported_by_the_z_vector_raises_before_the_scf(water, sto3g):
-    # SCAN is a meta-GGA: the Z-vector relaxation term has no tau f_xc kernel,
-    # so the exact MBD gradient is refused -- as a ValueError, up front, not
-    # as a RuntimeError after a full SCF.
-    with pytest.raises(ValueError, match="meta-GGA"):
-        ferric.run_dft(
-            water,
-            sto3g,
-            functional="SCAN",
-            dispersion="mbd(pbe)",
-            with_gradient=True,
-        )
+def test_meta_gga_mbd_gradient_includes_the_tau_z_vector(water, sto3g):
+    # SCAN is a meta-GGA: the MBD gradient's Z-vector relaxation needs the tau
+    # f_xc kernel, which is wired (Rust MBD gradient vs FD, ferric-scf). The
+    # binding must return a finite gradient that differs from the plain one.
+    np = pytest.importorskip("numpy")
+    g_plain = ferric.run_dft(water, sto3g, functional="SCAN", with_gradient=True)
+    g_mbd = ferric.run_dft(
+        water, sto3g, functional="SCAN", dispersion="mbd(pbe)", with_gradient=True
+    )
+    diff = np.asarray(g_mbd.gradient()) - np.asarray(g_plain.gradient())
+    assert np.all(np.isfinite(diff))
+    assert np.max(np.abs(diff)) > 0.0, "the MBD gradient was not added"
