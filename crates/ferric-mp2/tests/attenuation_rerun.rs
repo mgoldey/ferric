@@ -8,7 +8,9 @@
 //!   SWEEP_MOLS=h2o,n2 SWEEP_BASIS=aug-cc-pvdz SWEEP_C6=1 \
 //!   SWEEP_OMEGAS=0,0.1,0.42 OPENBLAS_NUM_THREADS=1 cargo test --release \
 //!   -p ferric-mp2 --test attenuation_rerun attn_sweep -- --ignored --nocapture
-//! `ω = 0` means `Operator::coulomb()`. The auxiliary basis is the basis's
+//! `ω = 0` means `Operator::coulomb()`. `SWEEP_FROZEN_CORE=n` (default 0) sets
+//! `RiMp2Config::frozen_core`; the relaxed α refuses n > 0, so a nonzero value
+//! only demonstrates that refusal. The auxiliary basis is the basis's
 //! RI fit (`cc-pvdz-ri`, `aug-cc-pvdz-rifit`, ...). With `SWEEP_C6=1` each row
 //! comes from `frozen_mp2_c6_molecular` on the 12-point Casimir-Polder grid
 //! (u0 = 0.6, the grid of `cpks_frozen_mp2_c6_sweep`); otherwise from
@@ -246,7 +248,8 @@ fn attn_sweep() {
         .split(',')
         .map(|x| x.trim().parse().unwrap())
         .collect();
-    let cfg = mp2_cfg();
+    let mut cfg = mp2_cfg();
+    cfg.frozen_core = env("SWEEP_FROZEN_CORE", "0").parse().unwrap();
     let (freqs, weights) = cp_grid(0.6);
     eprintln!("ROW\tmol\tbasis\tomega\ta_iso\ta_xx\ta_yy\ta_zz\tc6\ta_hf0");
     for label in mols.split(',') {
