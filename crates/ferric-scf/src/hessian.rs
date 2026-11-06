@@ -2356,12 +2356,15 @@ impl<'a> TwoElectronBuilder<'a> {
         self
     }
 
-    /// Exact `(J(D), K(D))` for a symmetric `D`.
+    /// Exact `(J(D), K(D))` for a symmetric `D`, homogeneous in `D`
+    /// ([`crate::rhf::build_jk_with_pool_homogeneous`]): the CPHF search
+    /// directions shrink with the residual, and the absolute J/K screen would
+    /// otherwise drop a growing share of their coupling.
     fn jk(&self, d: &Array2<f64>) -> Result<(Array2<f64>, Array2<f64>), FerricError> {
         let n = d.nrows();
         let mut j = Array2::<f64>::zeros((n, n));
         let mut k = Array2::<f64>::zeros((n, n));
-        crate::rhf::build_jk_with_pool(
+        crate::rhf::build_jk_with_pool_homogeneous(
             self.ctx,
             self.prep,
             self.bounds,
@@ -2639,10 +2642,7 @@ fn solve_cphf_one(
     let s1_oo = s1.slice(s![..frame.nocc(), ..]).to_owned();
     let g_oo = g.g_rhf(&frame.occupied_density(&s1_oo))?;
     let rhs = cphf_rhs(frame, h1, s1, &g_oo);
-    let matvec = |u: &Array2<f64>| -> Result<Array2<f64>, FerricError> {
-        let gu = g.g_rhf(&frame.response_density(u))?;
-        Ok(&frame.denom * u + frame.vo(&gu))
-    };
+    let matvec = |u: &Array2<f64>| cphf_matvec(g, frame, u);
     let (u_vo, iterations, residual) = pcg(matvec, &rhs, &frame.denom)?;
     let g_tot = g_oo + g.g_rhf(&frame.response_density(&u_vo))?;
     Ok(finish_cphf(
@@ -2653,6 +2653,16 @@ fn solve_cphf_one(
         &g_tot,
         (iterations, residual),
     ))
+}
+
+/// The RHF/RKS CPHF operator `A·U = Δε ∘ U + G(D¹[U])_vo` on a vo block.
+fn cphf_matvec(
+    g: &TwoElectronBuilder<'_>,
+    frame: &MoFrame<'_>,
+    u: &Array2<f64>,
+) -> Result<Array2<f64>, FerricError> {
+    let gu = g.g_rhf(&frame.response_density(u))?;
+    Ok(&frame.denom * u + frame.vo(&gu))
 }
 
 /// PySCF `ucphf.solve_withs1` for one perturbation: the α and β rotations
@@ -2756,9 +2766,22 @@ fn unpack(x: &Array2<f64>, frames: &[MoFrame<'_>; 2]) -> [Array2<f64>; 2] {
 /// max |residual|)`; a non-positive curvature `pᵀAp` or `CPHF_MAX_ITER`
 /// iterations without reaching `CPHF_TOL` is a typed error.
 fn pcg<F>(
+    apply: F,
+    rhs: &Array2<f64>,
+    precond: &Array2<f64>,
+) -> Result<(Array2<f64>, usize, f64), FerricError>
+where
+    F: FnMut(&Array2<f64>) -> Result<Array2<f64>, FerricError>,
+{
+    pcg_to(apply, rhs, precond, CPHF_TOL)
+}
+
+/// [`pcg`] to an explicit max-abs residual tolerance `tol`.
+fn pcg_to<F>(
     mut apply: F,
     rhs: &Array2<f64>,
     precond: &Array2<f64>,
+    tol: f64,
 ) -> Result<(Array2<f64>, usize, f64), FerricError>
 where
     F: FnMut(&Array2<f64>) -> Result<Array2<f64>, FerricError>,
@@ -2767,7 +2790,7 @@ where
     let mut x = rhs / precond;
     let mut r = rhs - &apply(&x)?;
     let mut res = max_abs(&r);
-    if res < CPHF_TOL {
+    if res < tol {
         return Ok((x, 0, res));
     }
     let mut z = &r / precond;
@@ -2786,7 +2809,7 @@ where
         x.scaled_add(alpha, &p);
         r.scaled_add(-alpha, &ap);
         res = max_abs(&r);
-        if res < CPHF_TOL {
+        if res < tol {
             return Ok((x, it, res));
         }
         z = &r / precond;
@@ -2796,7 +2819,7 @@ where
     }
     Err(FerricError::Convergence(format!(
         "CPHF did not converge in {CPHF_MAX_ITER} iterations (max |residual| {res:.3e} > \
-         {CPHF_TOL:.0e})"
+         {tol:.0e})"
     )))
 }
 
@@ -3152,6 +3175,81 @@ mod tests {
 
     fn h2() -> Molecule {
         Molecule::parse_xyz("2\nH2\nH 0.0 0.0 0.0\nH 0.0 0.0 0.74\n", 0, 1).unwrap()
+    }
+
+    /// CH4/aug-cc-pVDZ RHF: diffuse functions give many small-bound quartets,
+    /// the case where the absolute J/K screen bites hardest.
+    fn ch4_aug() -> (PreparedBasis, SchwarzBounds, ScfResult) {
+        let xyz = "5\nch4\nC 0 0 0\nH 0.6276 0.6276 0.6276\nH -0.6276 -0.6276 0.6276\n\
+                   H -0.6276 0.6276 -0.6276\nH 0.6276 -0.6276 -0.6276\n";
+        let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
+        let prep =
+            PreparedBasis::new(&mol, &ferric_core::basis::bundled("aug-cc-pvdz").unwrap()).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+        let cfg = RhfConfig {
+            energy_conv: 1e-12,
+            density_conv: 1e-10,
+            ..Default::default()
+        };
+        let rhf =
+            crate::rhf::solve_rhf(&ParallelContext::default(), &mol, &prep, op, &bounds, &cfg)
+                .unwrap();
+        (prep, bounds, rhf)
+    }
+
+    /// −μ^y_vo, a CPHF right-hand side with an O(0.1) scale, nvir × nocc.
+    fn dipole_rhs(prep: &PreparedBasis, rhf: &ScfResult, nocc: usize) -> Array2<f64> {
+        let c = rhf.mos_r();
+        let dip = ferric_integrals::oneelectron::dipole(prep, [0.0; 3]).unwrap();
+        let (cv, co) = (c.slice(s![.., nocc..]), c.slice(s![.., ..nocc]));
+        -cv.t().dot(&dip[1]).dot(&co)
+    }
+
+    /// The CPHF operator is linear, so `A(2⁻³⁰·U) = 2⁻³⁰·A(U)` bit for bit
+    /// once the J/K screen sees a scale-free density. Also prints the relative
+    /// miss over `s = 1e-2 .. 1e-9`. With the screen on the raw density the
+    /// 2⁻³⁰ miss is 1.1e-4 relative (5.2e-6 at s = 1e-8; measured).
+    #[test]
+    fn cphf_matvec_is_homogeneous() {
+        let (prep, bounds, rhf) = ch4_aug();
+        let ctx = ParallelContext::default();
+        let nocc = 5;
+        let frame = MoFrame::new(rhf.mos_r(), rhf.eps_r(), nocc, 2.0);
+        let g = TwoElectronBuilder::new(&ctx, &prep, &bounds).unwrap();
+        let u = dipole_rhs(&prep, &rhf, nocc) / &frame.denom;
+        let full = cphf_matvec(&g, &frame, &u).unwrap();
+        let amax = max_abs(&full);
+        let miss = |s: f64| {
+            let small = cphf_matvec(&g, &frame, &(s * &u)).unwrap();
+            max_abs(&(&small / s - &full)) / amax
+        };
+        for k in 2..=9 {
+            let s = 10f64.powi(-k);
+            eprintln!("CPHF A(sU)/s − A(U): s = {s:.0e}  rel {:.3e}", miss(s));
+        }
+        let exact = miss(2f64.powi(-30));
+        assert!(exact == 0.0, "CPHF A(2^-30 U) rel miss {exact:.3e}");
+    }
+
+    /// Dipole CPHF on CH4/aug-cc-pVDZ to a 1e-13 max-abs residual, 1000×
+    /// below [`CPHF_TOL`], so the last search directions are ~1e-14. The
+    /// Jacobi-preconditioned operator is well conditioned (CG converges
+    /// geometrically; measured 13 iterations), so the bound is 40. With the
+    /// J/K screen on the raw search direction PCG stalls at 4.8e-13 and fails
+    /// after 200 iterations (measured).
+    #[test]
+    fn cphf_pcg_converges_past_the_production_tolerance() {
+        let (prep, bounds, rhf) = ch4_aug();
+        let ctx = ParallelContext::default();
+        let nocc = 5;
+        let frame = MoFrame::new(rhf.mos_r(), rhf.eps_r(), nocc, 2.0);
+        let g = TwoElectronBuilder::new(&ctx, &prep, &bounds).unwrap();
+        let rhs = dipole_rhs(&prep, &rhf, nocc);
+        let result = pcg_to(|u| cphf_matvec(&g, &frame, u), &rhs, &frame.denom, 1e-13);
+        let (_, iters, resid) = result.unwrap();
+        eprintln!("CPHF PCG to 1e-13: {iters} iterations, resid {resid:.3e}");
+        assert!(iters <= 40, "CPHF PCG to 1e-13: {iters} iterations");
     }
 
     #[test]

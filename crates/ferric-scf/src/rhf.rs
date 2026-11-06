@@ -3864,6 +3864,67 @@ pub fn build_jk_with_pool(
     Ok(computed_quartets.load(Ordering::SeqCst))
 }
 
+/// The power of two `2^e` that brings `max_abs` into `(½, 1]`, as
+/// `(2^e, 2^-e)`; `None` for `max_abs == 0`.
+///
+/// Scaling by a power of two is exact in floating point, so a linear operator
+/// whose implementation screens on an ABSOLUTE threshold (the J/K builds skip
+/// quartets with `bound · max|D| < thresh`) becomes exactly homogeneous when
+/// applied to `2^-e · x` and scaled back by `2^e`. Response solvers need this:
+/// their trial vectors shrink with the residual, and an absolute screen then
+/// drops a growing share of the coupling (see [`build_jk_with_pool_homogeneous`]).
+pub fn pow2_normalizer(max_abs: f64) -> Option<(f64, f64)> {
+    if max_abs == 0.0 {
+        return None;
+    }
+    let e = max_abs.log2().ceil() as i32;
+    Some((2f64.powi(e), 2f64.powi(-e)))
+}
+
+/// [`build_jk_with_pool`] made homogeneous in `d`: `J(s·D) = s·J(D)` and
+/// `K(s·D) = s·K(D)` exactly for any power of two `s`, for the response
+/// matvecs (CPHF/CPKS, Newton, stability) whose trial densities shrink with
+/// the residual.
+///
+/// `d` is scaled by the [`pow2_normalizer`] of `max|d|` before the build and
+/// the matrices by its inverse after, so the absolute `bound · max|D| < thresh`
+/// screen always sees a density with `max|D| ∈ (½, 1]`. A density already in
+/// that range takes [`build_jk_with_pool`] directly, bit for bit; a zero `d`
+/// adds nothing. Accumulates onto `j`/`k` like [`build_jk_with_pool`].
+///
+/// Use it only where `d` is a linear-response operand. An SCF Fock build
+/// (incremental or not) wants the absolute screen: there the dropped
+/// integrals bound an absolute Fock error.
+#[allow(clippy::too_many_arguments)]
+pub fn build_jk_with_pool_homogeneous(
+    ctx: &ParallelContext,
+    prep: &PreparedBasis,
+    bounds: &SchwarzBounds,
+    thresh: f64,
+    d: &Array2<f64>,
+    j: &mut Array2<f64>,
+    k: &mut Array2<f64>,
+    pool: &crate::engine_pool::EnginePool,
+    band_bytes: usize,
+) -> Result<usize, FerricError> {
+    let dmax = d.iter().fold(0.0_f64, |m, v| m.max(v.abs()));
+    let Some((scale, inv_scale)) = pow2_normalizer(dmax) else {
+        return Ok(0);
+    };
+    if scale == 1.0 {
+        return build_jk_with_pool(ctx, prep, bounds, thresh, d, j, k, pool, band_bytes);
+    }
+    let unit = inv_scale * d;
+    let mut ju = Array2::<f64>::zeros(j.dim());
+    let mut ku = Array2::<f64>::zeros(k.dim());
+    let n = build_jk_with_pool(
+        ctx, prep, bounds, thresh, &unit, &mut ju, &mut ku, pool, band_bytes,
+    )?;
+    j.scaled_add(scale, &ju);
+    k.scaled_add(scale, &ku);
+    Ok(n)
+}
+
 /// Default linear-dependence threshold for canonical orthogonalization:
 /// eigenvectors of the overlap matrix with eigenvalue below this are dropped from
 /// the variational space. PySCF's default is ~1e-6 to 1e-7; 1e-6 is conservative.

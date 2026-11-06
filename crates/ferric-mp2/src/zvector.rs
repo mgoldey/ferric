@@ -534,13 +534,11 @@ pub(crate) fn compute_az_product(
     let n = c.nrows();
 
     let zmax = z.iter().fold(0.0_f64, |m, v| m.max(v.abs()));
-    if zmax == 0.0 {
-        return Ok(Array2::zeros((nvir, nocc)));
-    }
     // Power-of-two scale: multiplying by 2^±e is exact, so the scaled operand
     // carries the same mantissas and only the screening sees the new scale.
-    let e = zmax.log2().ceil() as i32;
-    let (scale, inv_scale) = (2f64.powi(e), 2f64.powi(-e));
+    let Some((scale, inv_scale)) = ferric_scf::rhf::pow2_normalizer(zmax) else {
+        return Ok(Array2::zeros((nvir, nocc)));
+    };
 
     let mut dz = Array2::zeros((n, n));
     for a in 0..nvir {

@@ -44,7 +44,7 @@
 //! be able to pick up the triplet operator by accident.
 
 use crate::engine_pool::EnginePool;
-use crate::rhf::build_jk_with_pool;
+use crate::rhf::build_jk_with_pool_homogeneous;
 use crate::rohf_newton::FxcResponse;
 use crate::screening::SchwarzBounds;
 use ferric_core::parallel::ParallelContext;
@@ -182,7 +182,7 @@ pub fn hessian_matvec(
     let mut dj = Array2::<f64>::zeros((n, n));
     let mut dk = Array2::<f64>::zeros((n, n));
     let band_bytes = crate::reduce::resolve_band_bytes(inp.ooc_budget);
-    build_jk_with_pool(
+    build_jk_with_pool_homogeneous(
         ctx, inp.prep, inp.bounds, inp.thresh, &dd_ao, &mut dj, &mut dk, pool, band_bytes,
     )?;
 
@@ -307,7 +307,7 @@ pub fn triplet_hessian_matvec(
     let mut dj = Array2::<f64>::zeros((n, n));
     let mut dk = Array2::<f64>::zeros((n, n));
     let band_bytes = crate::reduce::resolve_band_bytes(inp.ooc_budget);
-    build_jk_with_pool(
+    build_jk_with_pool_homogeneous(
         ctx, inp.prep, inp.bounds, inp.thresh, &dd_ao, &mut dj, &mut dk, pool, band_bytes,
     )?;
     // `dj` is deliberately dropped: see the Cost section. The triplet response

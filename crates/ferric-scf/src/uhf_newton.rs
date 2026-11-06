@@ -26,7 +26,7 @@
 //! `rohf_newton.rs` (κ = −g/(gap+μ); C ← C·U).
 
 use crate::engine_pool::EnginePool;
-use crate::rhf::build_jk_with_pool;
+use crate::rhf::build_jk_with_pool_homogeneous;
 use crate::rohf_newton::FxcResponse;
 use crate::screening::SchwarzBounds;
 use ferric_core::parallel::ParallelContext;
@@ -190,7 +190,7 @@ pub fn hessian_matvec(
     let dd_tot = &dd_a_ao + &dd_b_ao;
     let mut dj = Array2::<f64>::zeros((n, n));
     let mut dk_dum = Array2::<f64>::zeros((n, n));
-    build_jk_with_pool(
+    build_jk_with_pool_homogeneous(
         ctx,
         inp.prep,
         inp.bounds,
@@ -216,12 +216,12 @@ pub fn hessian_matvec(
         let mut dk_a = Array2::<f64>::zeros((n, n));
         let mut dk_b = Array2::<f64>::zeros((n, n));
         let mut j_dum = Array2::<f64>::zeros((n, n));
-        build_jk_with_pool(
+        build_jk_with_pool_homogeneous(
             ctx, inp.prep, inp.bounds, inp.thresh, &dd_a_ao, &mut j_dum, &mut dk_a, pool,
             band_bytes,
         )?;
         j_dum.fill(0.0);
-        build_jk_with_pool(
+        build_jk_with_pool_homogeneous(
             ctx, inp.prep, inp.bounds, inp.thresh, &dd_b_ao, &mut j_dum, &mut dk_b, pool,
             band_bytes,
         )?;

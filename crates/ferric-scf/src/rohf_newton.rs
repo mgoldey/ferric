@@ -15,7 +15,7 @@
 //! which exactly preserves orthonormality.
 
 use crate::engine_pool::EnginePool;
-use crate::rhf::build_jk_with_pool;
+use crate::rhf::build_jk_with_pool_homogeneous;
 use crate::screening::SchwarzBounds;
 use ferric_core::parallel::ParallelContext;
 use ferric_core::FerricError;
@@ -378,7 +378,7 @@ pub fn hessian_matvec(
     let mut dj = Array2::<f64>::zeros((n, n));
     let mut dk_dum = Array2::<f64>::zeros((n, n)); // discarded — we want J only here
                                                    // Build J on δD_total. We re-use build_jk but only keep J; K is rebuilt per-spin below.
-    build_jk_with_pool(
+    build_jk_with_pool_homogeneous(
         ctx,
         inp.prep,
         inp.bounds,
@@ -402,12 +402,12 @@ pub fn hessian_matvec(
         let mut dk_a = Array2::<f64>::zeros((n, n));
         let mut dk_b = Array2::<f64>::zeros((n, n));
         let mut j_dum = Array2::<f64>::zeros((n, n));
-        build_jk_with_pool(
+        build_jk_with_pool_homogeneous(
             ctx, inp.prep, inp.bounds, inp.thresh, &dd_a_ao, &mut j_dum, &mut dk_a, pool,
             band_bytes,
         )?;
         j_dum.fill(0.0);
-        build_jk_with_pool(
+        build_jk_with_pool_homogeneous(
             ctx, inp.prep, inp.bounds, inp.thresh, &dd_b_ao, &mut j_dum, &mut dk_b, pool,
             band_bytes,
         )?;
