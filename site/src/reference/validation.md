@@ -774,7 +774,10 @@ the laddered SCF energy against a bar derived from the f64 floor by
   [anchors](#anchors)); `frozen_mp2_c6_molecular` and the attenuation sweeps
   use it. It and the relaxed dipole (`static_relaxed_density_ao`) refuse a
   frozen core. The frozen-amplitude C6 takes its frequency shape from HF
-  α(iω), not from an MP2 dynamic response.
+  α(iω), not from an MP2 dynamic response. Measured, not pinned
+  (aug-cc-pVDZ, aug-cc-pvdz-rifit, all electrons, 12-point Casimir-Polder
+  grid, `attenuation_rerun.rs` `attn_sweep` at ω = 0): H2O 47.75, N2 72.38,
+  CO2 172.82 a.u. against DOSD 45.3, 73.3, 158.7 (+5.4%, −1.3%, +8.9%).
 - **Periodic open-shell forces and stress** refuse a non-stationary SCF
   state: a ROHF/ROKS orbital gradient or a k-point UKS spin commutator above
   1e-5 Ha, a stored Fock more than 1e-8 Ha from the rebuilt one, or SCF
