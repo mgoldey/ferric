@@ -517,40 +517,74 @@ pub(crate) fn warn_if_rss_over_at_stage(variant: &str, stage: &str, ooc_budget: 
 /// dropped near-singular modes. Shared by RHF and UHF (per spin). ROHF keeps
 /// its symmetric S^{-1/2} transform — a distinct orthogonalization policy.
 ///
-/// Runs under the opt-in BLAS raise (`FERRIC_BLAS_THREADS`, default 1 →
+/// The eigensolver is LAPACK `dsyevd_` (divide and conquer); see
+/// [`FockEigensolver`] for why that is safe here. Runs under the opt-in BLAS raise (`FERRIC_BLAS_THREADS`, default 1 →
 /// byte-identical to a bare call; the rayon-worker self-guard protects the
 /// SAD/free-atom path, see the blas_threads docs).
 pub(crate) fn diagonalize_rect(
     f: &Array2<f64>,
     x: &Array2<f64>,
 ) -> Result<(Vec<f64>, Array2<f64>), FerricError> {
+    diagonalize_rect_with(f, x, FockEigensolver::DivideConquer)
+}
+
+/// LAPACK driver for the Fock eigenproblem in [`diagonalize_rect_with`].
+///
+/// The SCF uses divide and conquer. The two drivers return the same
+/// eigenvalues but may pick different (equally valid) eigenvectors inside a
+/// degenerate subspace. Every consumer of the SCF's C (the density, the DF-K
+/// and XC occupied factors, the level-shift projector, MOM) is invariant to a
+/// rotation inside a block that is wholly occupied or wholly virtual, so the
+/// choice only reaches the SCF at rounding level: the `fock_eigensolver_tests`
+/// anchor pins the occupied density of CH4 (t2) and benzene (e1g) to 1e-12.
+///
+/// History: dsyevd was first rejected here on 2026-07-24 (09961c814) because
+/// `b3lyp_methane` stopped converging at rung 0. That was the explicit
+/// LU inverse of the RI-J metric (fixed by a Cholesky solve in 2d23e9ed2),
+/// whose forward error amplified any bit-level change into 1e-5 Ha energy
+/// jitter: with dsyevd patched onto f66652b96 (just before that fix), the
+/// CH4 cases climb to ladder rungs 2 and 3, while on the fixed code both
+/// solvers converge at rung 0 in the same iteration count.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FockEigensolver {
+    /// `dsyev_` (QR algorithm), via `ndarray_linalg::Eigh`. Kept as the
+    /// reference the anchor test compares against.
+    #[cfg_attr(not(test), allow(dead_code))]
+    Qr,
+    /// `dsyevd_` (divide and conquer), via `ferric_core::linalg::eigh_dc`.
+    DivideConquer,
+}
+
+/// [`diagonalize_rect`] with an explicit eigensolver.
+pub(crate) fn diagonalize_rect_with(
+    f: &Array2<f64>,
+    x: &Array2<f64>,
+    solver: FockEigensolver,
+) -> Result<(Vec<f64>, Array2<f64>), FerricError> {
     let n = x.nrows();
     let m = x.ncols();
     let (evals, c_kept) = with_blas_threads(opt_in_blas_threads(), || {
         let f_prime = x.t().dot(f).dot(x);
-        // NOTE: this every-SCF-iteration Fock diagonalization deliberately keeps
-        // the QR-algorithm `.eigh()` (dsyev_) rather than the faster
-        // divide-and-conquer `ferric_core::linalg::eigh_dc` (dsyevd_). Both give
-        // identical eigenvalues, but they pick DIFFERENT (equally valid)
-        // eigenvectors inside degenerate subspaces (e.g. methane/Td triply-
-        // degenerate MOs). Those eigenvectors feed the density matrix, and the
-        // dsyevd choice pushes symmetric molecules into a fixed point where ΔP
-        // limit-cycles just above the 1e-8 density-convergence gate (B3LYP/CH4:
-        // energy still correct to 1.1e-8 Ha, but ladder_converged=false). The
-        // eigenvector-consuming SCF convergence path is therefore NOT a safe
-        // place to swap eigensolvers; eigenvalue-only consumers (RPA dielectric
-        // sweeps) are, and use eigh_dc/eigvalsh_dc. See the linalg module doc.
-        let (evals, evecs) = f_prime.eigh(ndarray_linalg::UPLO::Upper)?;
+        let (evals, evecs) = match solver {
+            FockEigensolver::Qr => {
+                let (e, v) = f_prime
+                    .eigh(ndarray_linalg::UPLO::Upper)
+                    .map_err(|e| FerricError::Lapack(format!("F diag: {e}")))?;
+                (e.to_vec(), v)
+            }
+            FockEigensolver::DivideConquer => {
+                ferric_core::linalg::eigh_dc(&f_prime, ferric_core::linalg::Uplo::Upper)?
+            }
+        };
         let c_kept = x.dot(&evecs); // (n × m)
-        Ok::<_, ndarray_linalg::error::LinalgError>((evals, c_kept))
-    })
-    .map_err(|e| FerricError::Lapack(format!("F diag: {e}")))?;
+        Ok::<_, FerricError>((evals, c_kept))
+    })?;
     if m == n {
-        return Ok((evals.to_vec(), c_kept));
+        return Ok((evals, c_kept));
     }
     let mut c = Array2::<f64>::zeros((n, n));
     c.slice_mut(ndarray::s![.., ..m]).assign(&c_kept);
-    let mut eps = evals.to_vec();
+    let mut eps = evals;
     eps.resize(n, 1e6);
     Ok((eps, c))
 }
@@ -851,5 +885,141 @@ mod raw_budget_tests {
         let all = guess_block_lost_text(&block, true);
         assert!(all.contains("first Fock matrix is hcore"), "{all}");
         assert!(!all.contains("partial"), "{all}");
+    }
+}
+
+#[cfg(test)]
+mod fock_eigensolver_tests {
+    //! Exactness anchor for the dsyevd (divide-and-conquer) Fock
+    //! diagonalization: on a FIXED Fock matrix with a degenerate, fully
+    //! occupied block, dsyevd and dsyev must give the same eigenvalues and the
+    //! same occupied density, even though the eigenvectors inside the block
+    //! differ. The split check (an occupation that cuts the block) is the
+    //! built-in mutation: it must see the two eigenvector choices disagree,
+    //! or the density assertion is not testing the invariance at all.
+    use super::{diagonalize_rect_with, FockEigensolver};
+    use crate::rhf::{canonical_orthogonalizer, solve_rhf, RhfConfig};
+    use crate::screening::SchwarzBounds;
+    use ferric_core::basis;
+    use ferric_core::mol::Molecule;
+    use ferric_core::parallel::ParallelContext;
+    use ferric_integrals::basis_bridge::PreparedBasis;
+    use ferric_integrals::oneelectron;
+    use ferric_integrals::operator::Operator;
+    use ndarray::{s, Array2};
+
+    /// Converged AO Fock matrix, the canonical orthogonalizer and nocc.
+    fn fixed_fock(
+        xyz: &str,
+        basis_name: &str,
+        cfg: RhfConfig,
+    ) -> (Array2<f64>, Array2<f64>, usize) {
+        let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
+        let bs = basis::bundled(basis_name).unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+        let res = solve_rhf(&ParallelContext::default(), &mol, &prep, op, &bounds, &cfg).unwrap();
+        let x = canonical_orthogonalizer(&oneelectron::overlap(&prep)).unwrap();
+        (res.fock_alpha, x, mol.nelec() as usize / 2)
+    }
+
+    fn density(c: &Array2<f64>, nocc: usize) -> Array2<f64> {
+        let co = c.slice(s![.., ..nocc]);
+        2.0 * co.dot(&co.t())
+    }
+
+    fn max_abs_diff(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
+        a.iter()
+            .zip(b.iter())
+            .map(|(p, q)| (p - q).abs())
+            .fold(0.0, f64::max)
+    }
+
+    /// `block` = first orbital of the degenerate occupied block (0-based; the
+    /// block ends at nocc); `split` = an occupation count that cuts the block.
+    fn check(
+        label: &str,
+        f: &Array2<f64>,
+        x: &Array2<f64>,
+        nocc: usize,
+        block: usize,
+        split: usize,
+    ) {
+        let (e_qr, c_qr) = diagonalize_rect_with(f, x, FockEigensolver::Qr).unwrap();
+        let (e_dc, c_dc) = diagonalize_rect_with(f, x, FockEigensolver::DivideConquer).unwrap();
+        // The case under test really is degenerate and fully occupied.
+        let spread = e_qr[nocc - 1] - e_qr[block];
+        let gap = e_qr[nocc] - e_qr[nocc - 1];
+        assert!(
+            spread < 1e-10,
+            "{label}: block not degenerate (spread {spread:.2e})"
+        );
+        assert!(gap > 1e-2, "{label}: no HOMO-LUMO gap ({gap:.2e})");
+
+        let de = e_qr
+            .iter()
+            .zip(&e_dc)
+            .map(|(a, b)| (a - b).abs() / a.abs().max(1.0))
+            .fold(0.0, f64::max);
+        let dd = max_abs_diff(&density(&c_qr, nocc), &density(&c_dc, nocc));
+        let dd_split = max_abs_diff(&density(&c_qr, split), &density(&c_dc, split));
+        eprintln!(
+            "[{label}] spread {spread:.2e}, max rel d_eps = {de:.2e}, max |dD| = {dd:.2e}, \
+             split max |dD| = {dd_split:.2e}"
+        );
+        assert!(de <= 1e-12, "{label}: eigenvalues differ by {de:.2e}");
+        assert!(dd <= 1e-12, "{label}: occupied density differs by {dd:.2e}");
+        assert!(
+            dd_split > 1e-6,
+            "{label}: the two solvers chose the same vectors inside the block \
+             (split |dD| {dd_split:.2e}), so the density check is vacuous"
+        );
+    }
+
+    /// CH4/cc-pVDZ B3LYP with RI-JK: the system whose `b3lyp_methane`
+    /// convergence check failed when dsyevd was first tried (2026-07-24).
+    /// Occupied: 1a1, 2a1, 1t2 (indices 2..5).
+    #[test]
+    fn dsyevd_matches_dsyev_density_on_methane_t2() {
+        let xyz = "5\nCH4\nC 0 0 0\nH 0.6276 0.6276 0.6276\nH -0.6276 -0.6276 0.6276\n\
+                   H -0.6276 0.6276 -0.6276\nH 0.6276 -0.6276 -0.6276\n";
+        let cfg = RhfConfig {
+            xc: Some("B3LYP".into()),
+            df_j_aux: Some("def2-universal-jkfit".into()),
+            df_k_aux: Some("def2-universal-jkfit".into()),
+            energy_conv: 1e-10,
+            density_conv: 1e-8,
+            ..Default::default()
+        };
+        let (f, x, nocc) = fixed_fock(xyz, "cc-pvdz", cfg);
+        assert_eq!(nocc, 5);
+        check("CH4/cc-pVDZ B3LYP", &f, &x, nocc, 2, 4);
+    }
+
+    /// Benzene (exact D6h) def2-SVP HF with RI-JK: the HOMO is the doubly
+    /// degenerate 1e1g pair (occupied indices 19, 20). HF, not a functional:
+    /// the XC grid is not D6h-invariant and splits the pair by ~1e-4 Ha.
+    #[test]
+    fn dsyevd_matches_dsyev_density_on_benzene_e1g() {
+        let mut xyz = String::from("12\nbenzene\n");
+        for (sym, r) in [("C", 1.396_f64), ("H", 2.479)] {
+            for k in 0..6 {
+                let t = std::f64::consts::FRAC_PI_3 * k as f64;
+                xyz.push_str(&format!(
+                    "{sym} {:.15} {:.15} 0\n",
+                    r * t.sin(),
+                    r * t.cos()
+                ));
+            }
+        }
+        let cfg = RhfConfig {
+            df_j_aux: Some("def2-universal-jkfit".into()),
+            df_k_aux: Some("def2-universal-jkfit".into()),
+            ..Default::default()
+        };
+        let (f, x, nocc) = fixed_fock(&xyz, "def2-svp", cfg);
+        assert_eq!(nocc, 21);
+        check("benzene/def2-SVP HF", &f, &x, nocc, 19, 20);
     }
 }
