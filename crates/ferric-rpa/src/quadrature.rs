@@ -9,7 +9,7 @@
 //!   nodes mapped to [0, u₀·tan(π/2)] via ω = u₀ tan(π(1+x)/4). Bounded max ω;
 //!   recommended whenever the Laplace χ₀ backend is used (keeps ω·t_max safe).
 //!
-//! Defaults differ by entry point: see [`QuadratureConfig`]'s `Default` impl and
+//! Defaults differ by entry point: see [`QuadratureConfig`](crate::config::QuadratureConfig)'s `Default` impl and
 //! `QuadratureScheme::parse_config_str`. The library `Default` is `MiniMax`; the
 //! CLI and every Python binding resolve an unset scheme to `GaussLegendre`.
 
