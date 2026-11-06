@@ -226,17 +226,44 @@ fn production_gradient_difference_matches_the_moving_grid_hessian() {
         dft_grid: None,
         ..config("LDA")
     };
-    full_hessian_case(&cfg, "LDA", "6-31g", TOL_HESS_FD_PRODUCTION_GRID);
+    full_hessian_case(&cfg, "LDA", "6-31g", TOL_HESS_FD);
 }
 
-/// The 6-31G / default-grid case's bar. MEASURED moving-grid miss: 8.4e-11 on
-/// an i7-6800K (unchanged across libxc 5.1.7 / 5.2.3, rayon 2/4/6 threads,
-/// OpenBLAS Haswell/Zen/Sandybridge kernels and SCF density_conv 1e-10..1e-12)
-/// and a deterministic 2.3e-9 on the ubuntu-22.04 CI runners once the
-/// semilocal density floor went to 1e-14; the CI-only cause is not found. The
-/// fixed-grid Hessian misses the same reference by 1.1e-3, so the
-/// MUTANT_FACTOR control (1e-7) keeps a 1e4 margin.
-const TOL_HESS_FD_PRODUCTION_GRID: f64 = 1e-8;
+/// The gradient-difference reference's SCF precondition (`FD_SCF_ERR_MAX`,
+/// see `fd_reference_config`) is a real gate in both directions: an SCF
+/// stopped at a loose threshold is above it, and the reference
+/// configuration reaches below it. Without the precondition, one displaced
+/// SCF taking one more iteration than its neighbours moved the 6-31G /
+/// default-grid case from 7e-11 to 2.3e-9 on the ubuntu-22.04 stack.
+#[test]
+fn the_fd_reference_scf_precondition_separates_loose_from_reference_scfs() {
+    let base = RhfConfig {
+        dft_grid: None,
+        ..config("LDA")
+    };
+    let err_max = |cfg: &RhfConfig| {
+        scf(&water(), "6-31g", cfg)
+            .res
+            .convergence
+            .expect("a converged SCF reports its convergence signals")
+            .err_max
+    };
+    let loose = err_max(&RhfConfig {
+        density_conv: 1e-8,
+        energy_conv: 1e-10,
+        ..base.clone()
+    });
+    let reference = err_max(&fd_reference_config(&base));
+    eprintln!("err_max: loose {loose:.2e}, reference {reference:.2e} (gate {FD_SCF_ERR_MAX:e})");
+    assert!(
+        loose > FD_SCF_ERR_MAX,
+        "loose SCF passes the gate: {loose:.2e}"
+    );
+    assert!(
+        reference < FD_SCF_ERR_MAX,
+        "reference SCF fails the gate: {reference:.2e}"
+    );
+}
 
 /// The grid of the moving Hessian must be the one the SCF ran on: a grid
 /// from explicit points (no home atoms) is refused.
