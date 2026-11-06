@@ -110,7 +110,7 @@ impl Fixture {
         let ms = self.config(None).max_subspace.max(2);
         225 * (2 * ms + 7) * 8
     }
-    /// The transform chain's peak (ao_eri + mo_eri + t1 + t2 + t3).
+    /// The transform chain's peak (ao_eri + first quarter-transform output).
     fn transform_peak(&self) -> usize {
         active_space_integral_elems(self.prep.nbasis(), 1 + 6) * 8
     }
