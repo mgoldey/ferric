@@ -804,6 +804,69 @@ impl RohfOrbitalModel for InjectedRohfModel<'_> {
     }
 }
 
+/// The exact-exchange coefficient of the injected ROHF/ROKS energy: 1 for
+/// ROHF (no `xc`), the builder's global fraction for ROKS. Errors when the
+/// builder cannot evaluate spin-polarized densities or its fraction is not
+/// in `[0, 1]`.
+fn injected_exchange_fraction(
+    who: &str,
+    xc: Option<&(dyn XcBuilder + '_)>,
+) -> Result<f64, FerricError> {
+    let Some(x) = xc else {
+        return Ok(1.0);
+    };
+    if !x.supports_polarized() {
+        return Err(FerricError::General(format!(
+            "{who}: PeriodicInjection.xc does not support spin-polarized evaluation \
+             (XcBuilder::supports_polarized() is false)"
+        )));
+    }
+    let a = x.exact_exchange_fraction();
+    if !(a.is_finite() && (0.0..=1.0).contains(&a)) {
+        return Err(FerricError::General(format!(
+            "{who}: XcBuilder exact-exchange fraction must be in [0, 1], got {a}"
+        )));
+    }
+    Ok(a)
+}
+
+/// TEST HOOK: the [`RohfOrbitalModel`] that
+/// [`solve_rohf_injected_second_order`] builds from `inj` (the same energy,
+/// spin Focks and response; `δV_xc` by central FD with step
+/// `fxc_fd_step / max|δD|`), so a caller can apply the production Hessian
+/// product — [`rohf_exact_hessian_matvec`] with this model's `response` at a
+/// [`RohfPoint`], exactly the uncached product [`rohf_second_order`] forms —
+/// without running the solver. Checks the injection shapes and the XC
+/// builder like the solver.
+#[doc(hidden)]
+pub fn injected_rohf_model<'a>(
+    inj: PeriodicInjection<'a>,
+    fxc_fd_step: f64,
+) -> Result<Box<dyn RohfOrbitalModel + 'a>, FerricError> {
+    let who = "injected_rohf_model";
+    crate::rhf::check_injection_shapes(who, &inj, inj.s.nrows())?;
+    let c_k = injected_exchange_fraction(who, inj.xc.as_deref())?;
+    let PeriodicInjection {
+        s,
+        h,
+        vnn,
+        j,
+        k,
+        xc,
+    } = inj;
+    Ok(Box::new(InjectedRohfModel {
+        s,
+        h,
+        vnn,
+        j: RefCell::new(j),
+        k: RefCell::new(k),
+        xc: xc.map(RefCell::new),
+        c_k,
+        fxc_step: fxc_fd_step,
+        quartets: Cell::new(0),
+    }))
+}
+
 /// Second-order ROHF/ROKS on caller-supplied `(S, h, V_nn)` and J/K (+ XC)
 /// builders: the injected-path counterpart of
 /// [`crate::rohf::solve_rohf_injected`] with the SAME energy functional,
@@ -852,24 +915,7 @@ pub fn solve_rohf_injected_second_order<'a>(
         mut k,
         xc,
     } = inj;
-    let c_k = match xc.as_ref() {
-        Some(x) => {
-            if !x.supports_polarized() {
-                return Err(FerricError::General(format!(
-                    "{who}: PeriodicInjection.xc does not support spin-polarized evaluation \
-                     (XcBuilder::supports_polarized() is false)"
-                )));
-            }
-            let a = x.exact_exchange_fraction();
-            if !(a.is_finite() && (0.0..=1.0).contains(&a)) {
-                return Err(FerricError::General(format!(
-                    "{who}: XcBuilder exact-exchange fraction must be in [0, 1], got {a}"
-                )));
-            }
-            a
-        }
-        None => 1.0,
-    };
+    let c_k = injected_exchange_fraction(who, xc.as_deref())?;
 
     let nelec = mol.nelec() as i64;
     let mult = mol.multiplicity as i64;
