@@ -10,6 +10,9 @@ workspace = true
 [dependencies]
 ferric-core = { path = "../ferric-core" }
 ferric-integrals = { path = "../ferric-integrals" }
+# Reuses ferric_mp2::canonical::dense_ao_eri (8-fold-symmetric, parallel dense
+# AO ERI fill). No cycle: ferric-mp2 does not depend on ferric-ci.
+ferric-mp2 = { path = "../ferric-mp2" }
 ferric-scf = { path = "../ferric-scf" }
 ndarray = { workspace = true }
 ndarray-linalg = { workspace = true }
