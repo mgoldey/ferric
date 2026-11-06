@@ -33,8 +33,8 @@
 //!
 //! # Like-for-like recipe (read from ferric's code)
 //!
-//! * Grid: ferric's defaults, (75,110) unpruned Becke + VV10 on (50,50)
-//!   unpruned (`rhf.rs`/`rohf.rs`/`XcSpec::build` all default to these); the
+//! * Grid: (75,110) unpruned Becke (`ks_config` / the `XcSpec` pin
+//!   `AtomicGridConfig::default()`) + VV10 on the default (50,50) unpruned; the
 //!   reference uses Becke-1988 radii adjust on BOTH grids. Pre-measured on
 //!   water RI-J: Treutler adjust on PySCF's NLC grid moves E_KS by 3.3e-7.
 //! * Exchange: ferric builds range-separated K ONLY by DF (K[erfc] and K[erf]
@@ -326,7 +326,10 @@ fn dh_tight() -> DoubleHybridConfig {
     cfg
 }
 
-/// Tight KS config with ferric's default grids ((75,110) / VV10 (50,50)).
+/// Tight KS config on the reference's grids: the flat (75,110) main grid
+/// (`AtomicGridConfig::default()`; the reference is PySCF with prune=None,
+/// gen_wb97xlv.py, not the pruned KS default `AtomicGridConfig::production()`)
+/// and the default VV10 (50,50) grid.
 /// `exact_j`: explicit conventional J (`Some("")`); K stays RI in the
 /// attenuated metrics with def2-universal-jkfit (the only RSH-K path).
 fn ks_config(exact_j: bool) -> RhfConfig {
@@ -334,13 +337,12 @@ fn ks_config(exact_j: bool) -> RhfConfig {
         max_iter: 300,
         energy_conv: 1e-11,
         density_conv: 1e-9,
+        // `Default` of `AtomicGridConfig` is the flat (75,110) grid.
+        dft_grid: Some(Default::default()),
         ..Default::default()
     };
     cfg.xc = Some(WB97X_L_V_NAME.to_string());
-    assert!(
-        cfg.dft_grid.is_none() && cfg.nlc_grid.is_none(),
-        "default grids expected"
-    );
+    assert!(cfg.nlc_grid.is_none(), "default VV10 grid expected");
     if exact_j {
         cfg.df_j_aux = Some(String::new());
     }
@@ -696,8 +698,11 @@ fn wb97xlv_oh_def2svp_components_vs_pyscf() {
         num(r, "/rohf_control/energy", ctx),
     );
 
-    // ---- semicanonicalisation against the KS Fock (default grids) ----
-    let spec = XcSpec::new(WB97X_L_V_NAME);
+    // ---- semicanonicalisation against the KS Fock (the SCF's grids) ----
+    let spec = XcSpec {
+        grid: ks_config(false).dft_grid,
+        ..XcSpec::new(WB97X_L_V_NAME)
+    };
     let sc = semicanonicalize(
         &pctx,
         &sys.mol,

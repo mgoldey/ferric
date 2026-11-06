@@ -123,9 +123,14 @@ use std::path::{Path, PathBuf};
 use ferric_core::basis::{self, BasisSet};
 use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
+use ferric_core::FerricError;
+use ferric_dft::grid::AtomicGridConfig;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
-use ferric_scf::ks_gradient::{ks_gradient_closed, ks_gradient_roks, ks_gradient_uks};
+use ferric_scf::ks_gradient::{
+    ks_gradient_closed_with_exchange_on_grids, ks_gradient_roks_with_exchange_on_grids,
+    ks_gradient_uks_with_exchange_on_grids, KsGradGrids,
+};
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::rohf::solve_rohf;
 use ferric_scf::screening::SchwarzBounds;
@@ -300,6 +305,93 @@ fn load_system(system: &str, basis_name: &str, reference: &Value) -> System {
     }
 }
 
+/// The grids the SCFs here run on (`rks_config` / `open_config` pin
+/// `dft_grid` to the reference's flat (75,110) grid; default VV10 grid).
+fn ref_grids() -> KsGradGrids {
+    KsGradGrids {
+        main: AtomicGridConfig::default(),
+        nlc: AtomicGridConfig::default_nlc(),
+    }
+}
+
+/// `ks_gradient_closed` differentiated on [`ref_grids`], the SCF's grid.
+#[allow(clippy::too_many_arguments)]
+fn ks_gradient_closed(
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    bs: &BasisSet,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    xc: &str,
+    res: &ScfResult,
+    ext: Option<&ferric_core::external_potential::ExternalPotential>,
+) -> Result<Array2<f64>, FerricError> {
+    ks_gradient_closed_with_exchange_on_grids(
+        mol,
+        prep,
+        bs,
+        op,
+        bounds,
+        xc,
+        res,
+        ext,
+        None,
+        &ref_grids(),
+    )
+}
+
+/// `ks_gradient_uks` differentiated on [`ref_grids`], the SCF's grid.
+#[allow(clippy::too_many_arguments)]
+fn ks_gradient_uks(
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    bs: &BasisSet,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    xc: &str,
+    res: &ScfResult,
+    ext: Option<&ferric_core::external_potential::ExternalPotential>,
+) -> Result<Array2<f64>, FerricError> {
+    ks_gradient_uks_with_exchange_on_grids(
+        mol,
+        prep,
+        bs,
+        op,
+        bounds,
+        xc,
+        res,
+        ext,
+        None,
+        &ref_grids(),
+    )
+}
+
+/// `ks_gradient_roks` differentiated on [`ref_grids`], the SCF's grid.
+#[allow(clippy::too_many_arguments)]
+fn ks_gradient_roks(
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    bs: &BasisSet,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    xc: &str,
+    res: &ScfResult,
+    ext: Option<&ferric_core::external_potential::ExternalPotential>,
+) -> Result<Array2<f64>, FerricError> {
+    ks_gradient_roks_with_exchange_on_grids(
+        mol,
+        prep,
+        bs,
+        op,
+        bounds,
+        xc,
+        res,
+        ext,
+        None,
+        &ref_grids(),
+    )
+}
+
 /// Closed-shell config. `j = "rij"` leaves `df_j_aux` UNSET on purpose: that
 /// is ferric's default KS path (auto RI-J with def2-universal-jkfit), and the
 /// caller asserts the SCF recorded it. `j = "exact"` opts out explicitly.
@@ -315,6 +407,9 @@ fn rks_config(xc: &str, j: &str) -> RhfConfig {
         energy_conv: 1e-10,
         density_conv: 1e-8,
         max_iter: 500,
+        // The references are PySCF on the flat (75,110) grid (gen_mgga_gradients.py:
+        // prune=None), not the pruned KS default AtomicGridConfig::production().
+        dft_grid: Some(AtomicGridConfig::default()),
         ..Default::default()
     }
 }
@@ -328,6 +423,9 @@ fn open_config(xc: &str) -> RhfConfig {
         energy_conv: 1e-10,
         density_conv: 1e-8,
         max_iter: 500,
+        // The references are PySCF on the flat (75,110) grid (gen_mgga_gradients.py:
+        // prune=None), not the pruned KS default AtomicGridConfig::production().
+        dft_grid: Some(AtomicGridConfig::default()),
         ..Default::default()
     }
 }

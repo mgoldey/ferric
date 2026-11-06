@@ -48,6 +48,7 @@ use std::path::{Path, PathBuf};
 use ferric_core::basis;
 use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
+use ferric_dft::grid::AtomicGridConfig;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_scf::omega_tuning::{eval_j, tune_omega, CationStability, OmegaTuneConfig};
@@ -137,6 +138,10 @@ fn config(functional: &str, lo: f64, hi: f64, check: bool) -> OmegaTuneConfig {
             max_iter: 500,
             energy_conv: 1e-10,
             density_conv: 1e-7,
+            // The references are PySCF on the flat (75,110) grid
+            // (gen_rsh_cation_stability.py: prune=None), not the pruned KS
+            // default AtomicGridConfig::production().
+            dft_grid: Some(AtomicGridConfig::default()),
             ..Default::default()
         },
         check_cation_stability: check,

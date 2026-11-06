@@ -98,10 +98,11 @@ use ferric_core::basis::{self, BasisSet};
 use ferric_core::elements;
 use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
+use ferric_dft::grid::AtomicGridConfig;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_scf::gradient::rhf_gradient;
-use ferric_scf::ks_gradient::ks_gradient_closed;
+use ferric_scf::ks_gradient::{ks_gradient_closed_with_exchange_on_grids, KsGradGrids};
 use ferric_scf::qmmm::{mm_forces, QmSelection, QmmmAtom, QmmmSystem};
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
@@ -302,6 +303,9 @@ fn config(
             energy_conv: 1e-10,
             density_conv: 1e-8,
             max_iter: 300,
+            // The references are PySCF on the flat (75,110) grid (gen_qmmm.py:
+            // prune=None), not the pruned KS default AtomicGridConfig::production().
+            dft_grid: Some(AtomicGridConfig::default()),
             ..Default::default()
         },
     }
@@ -338,7 +342,7 @@ fn gradient(qm: &Qm, res: &ScfResult, sys: Option<&QmmmSystem>, xc: Option<&str>
             ext.as_ref(),
         )
         .unwrap(),
-        Some(xc) => ks_gradient_closed(
+        Some(xc) => ks_gradient_closed_with_exchange_on_grids(
             &qm.mol,
             &qm.prep,
             &qm.bs,
@@ -347,6 +351,9 @@ fn gradient(qm: &Qm, res: &ScfResult, sys: Option<&QmmmSystem>, xc: Option<&str>
             ferric_xc(xc),
             res,
             ext.as_ref(),
+            None,
+            // The grid `config` ran the SCF on.
+            &KsGradGrids::from_config(&config(Some(xc), None)),
         )
         .unwrap(),
     }

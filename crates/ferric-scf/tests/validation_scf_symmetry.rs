@@ -7,6 +7,7 @@
 use ferric_core::basis;
 use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
+use ferric_dft::grid::AtomicGridConfig;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_scf::rhf::RhfConfig;
@@ -131,8 +132,8 @@ fn matches_pyscf_symmetry_references() {
     eprintln!("max |E_ferric - E_pyscf| = {worst:e}");
 }
 
-/// Blocked RKS PBE on ferric's KS defaults (75x110 grid, RI-J with
-/// def2-universal-jkfit) against PySCF `dft.RKS` with symmetry on the same
+/// Blocked RKS PBE on the flat 75x110 grid and RI-J with
+/// def2-universal-jkfit against PySCF `dft.RKS` with symmetry on the same
 /// recipe (`rks_pbe` blocks of the references).
 fn ks_cfg(irrep_nelec: Option<Vec<(String, usize)>>) -> RhfConfig {
     RhfConfig {
@@ -141,6 +142,9 @@ fn ks_cfg(irrep_nelec: Option<Vec<(String, usize)>>) -> RhfConfig {
         density_conv: 1e-10,
         energy_conv: 1e-8,
         max_iter: 200,
+        // The references are PySCF on the flat (75,110) grid (gen_scf_symmetry.py:
+        // prune=None), not the pruned KS default AtomicGridConfig::production().
+        dft_grid: Some(AtomicGridConfig::default()),
         irrep_nelec,
         ..RhfConfig::default()
     }

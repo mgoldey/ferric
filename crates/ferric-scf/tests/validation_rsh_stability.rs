@@ -80,6 +80,7 @@ use std::path::{Path, PathBuf};
 use ferric_core::basis;
 use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
+use ferric_dft::grid::AtomicGridConfig;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_scf::rhf::RhfConfig;
@@ -209,6 +210,9 @@ fn rsh_config(omega: f64) -> RhfConfig {
         df_k_aux: Some(AUX.into()),
         energy_conv: 1e-10,
         density_conv: 1e-7,
+        // The references are PySCF on the flat (75,110) grid (gen_scf_stability.py rsh:
+        // prune=None), not the pruned KS default AtomicGridConfig::production().
+        dft_grid: Some(AtomicGridConfig::default()),
         max_iter: 500,
         ..Default::default()
     }

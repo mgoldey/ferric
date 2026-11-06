@@ -119,6 +119,7 @@ use std::path::{Path, PathBuf};
 use ferric_core::basis;
 use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
+use ferric_dft::grid::AtomicGridConfig;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_scf::gradient::{restricted_scf_gradient, rohf_gradient, unrestricted_scf_gradient};
@@ -389,6 +390,10 @@ fn scf_config(m: &Method) -> RhfConfig {
         // ROHF-stable, so a ferric saddle shows as an energy/geometry miss.
         check_stability: unrestricted,
         scf_stability_descent: unrestricted,
+        // The KS references are PySCF on the flat (75,110) grid
+        // (gen_geometry_optimization.py: prune=None), not the pruned KS default
+        // AtomicGridConfig::production(). Unused by the HF methods.
+        dft_grid: Some(AtomicGridConfig::default()),
         ..Default::default()
     }
 }

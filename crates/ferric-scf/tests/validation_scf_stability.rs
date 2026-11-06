@@ -140,6 +140,7 @@ use std::path::{Path, PathBuf};
 use ferric_core::basis;
 use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
+use ferric_dft::grid::AtomicGridConfig;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_scf::engine_pool::EnginePool;
@@ -349,6 +350,9 @@ fn uks_pbe_config() -> RhfConfig {
         energy_conv: 1e-10,
         density_conv: 1e-9,
         check_stability: true,
+        // The references are PySCF on the flat (75,110) grid (gen_scf_stability.py:
+        // prune=None), not the pruned KS default AtomicGridConfig::production().
+        dft_grid: Some(AtomicGridConfig::default()),
         scf_stability_descent: true,
         ..Default::default()
     }
