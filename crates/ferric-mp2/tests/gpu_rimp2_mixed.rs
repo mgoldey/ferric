@@ -909,7 +909,9 @@ fn a_mid_loop_failure_leaves_the_counters_honest_on_both_fallback_paths() {
         f64dev.e_total.to_bits(),
         "the energy is the f64 device energy"
     );
-    // (b) a Cuda-class failure mid-loop: straight to the CPU, counters clean
+    // (b) a Cuda-class failure mid-loop: straight to the CPU, no device work
+    // counted; the mixed-allowed call that ran in f64 on the CPU is recorded
+    // once as a `MixedFallback::CpuF64` (precision provenance, #603)
     FAIL_AS_KERNEL.store(false, Ordering::Relaxed);
     let s3 = stats();
     let via = dispatch();
@@ -921,7 +923,7 @@ fn a_mid_loop_failure_leaves_the_counters_honest_on_both_fallback_paths() {
             s4.gemm_offloaded - s3.gemm_offloaded,
             s4.mixed_fallback_f64 - s3.mixed_fallback_f64
         ),
-        (0, 0, 0, 0)
+        (0, 0, 0, 1)
     );
     assert_eq!(s4.gemm_cpu_cuda_error - s3.gemm_cpu_cuda_error, 1);
     assert_eq!(via.e_total.to_bits(), cpu.e_total.to_bits());
