@@ -55,7 +55,7 @@
 //!   attaches; the measured record (C16/erfc/ε=1e-3 crossover, aux-domain
 //!   saturation) is in `wiki/amplitude-threshold-lmp2.md` §§23–26.
 
-use ndarray::{s, Array2};
+use ndarray::{s, Array2, Axis};
 use std::collections::HashMap;
 
 use ferric_core::basis::BasisSet;
@@ -405,6 +405,14 @@ fn eigh(m: &Array2<f64>) -> Result<(Vec<f64>, Array2<f64>), FerricError> {
     Ok((w.to_vec(), v))
 }
 
+/// Ascending eigenvalues of a symmetric matrix, no eigenvectors (LAPACK
+/// `dsyevd` with `jobz = 'N'`, reading the same lower triangle as [`eigh`]).
+/// Not `ndarray_linalg::EigValsh`: in ndarray-linalg 0.17 it calls lax's
+/// `eigh(calc_eigenvec = true, ..)` and so computes the eigenvectors anyway.
+fn eigvalsh(m: &Array2<f64>) -> Result<Vec<f64>, FerricError> {
+    ferric_core::linalg::eigvalsh_dc(m, ferric_core::linalg::Uplo::Lower)
+}
+
 /// Symmetric (Löwdin) orthonormalization of the columns of `c` w.r.t. `s`.
 ///
 /// `pub` (visibility only, 2026-09-24) so ferric-pbc's Gamma LMP2 builds its
@@ -721,20 +729,22 @@ fn build_vvhv_traced(
             parents.push(a2a[c]);
         }
         // spread-weighted pivots (matches the Python rig): compact candidates
-        // first, via w = 1/spread with spread = ⟨r²⟩ − |⟨r⟩|² per candidate
+        // first, via w = 1/spread with spread = ⟨r²⟩ − |⟨r⟩|² per candidate.
+        // One GEMM per moment operator (column_expectations), not four nao²
+        // matvecs per candidate.
         let r2 = r2_moment(obs, [0.0; 3])?;
         let ncand = xn.ncols();
-        let mut w = vec![0.0f64; ncand];
-        for k in 0..ncand {
-            let col = xn.column(k);
-            let r2v = col.dot(&r2.dot(&col));
-            let mut c2 = 0.0;
-            for dm in dip.iter() {
-                let d = col.dot(&dm.dot(&col));
-                c2 += d * d;
-            }
-            w[k] = 1.0 / (r2v - c2).max(1e-6);
-        }
+        let r2v = column_expectations(&r2, &xn);
+        let dv: Vec<Vec<f64>> = dip.iter().map(|dm| column_expectations(dm, &xn)).collect();
+        let w: Vec<f64> = (0..ncand)
+            .map(|k| {
+                let mut c2 = 0.0;
+                for d in &dv {
+                    c2 += d[k] * d[k];
+                }
+                1.0 / (r2v[k] - c2).max(1e-6)
+            })
+            .collect();
         let wmax2 = w.iter().fold(0.0f64, |m, &x| m.max(x)).powi(2);
         let mut ov = xn.t().dot(&s.dot(&xn));
         for r in 0..ncand {
@@ -753,20 +763,18 @@ fn build_vvhv_traced(
         let mut ch = lowdin(&sel, &s)?;
         // per-atom pseudo-canonicalization (block-diagonal — cannot
         // delocalize, unlike full semicanonicalization)
+        // Only the ATOM-DIAGONAL blocks F^h_AA = C_{h,A}ᵀ F C_{h,A} are read
+        // (the block gather below is the only use), so form F·C_h once and
+        // contract each atom's columns against it: Σ_A nao·m_A² instead of
+        // the full n_h × n_h product C_hᵀ (F C_h).
         let f_ao = rhf.fock_r();
-        let fh = ch.t().dot(&f_ao.dot(&ch));
+        let fch = f_ao.dot(&ch);
         let mut by_atom: HashMap<usize, Vec<usize>> = HashMap::new();
         for (k, &a) in sel_parents.iter().enumerate() {
             by_atom.entry(a).or_default().push(k);
         }
         for idx in by_atom.values() {
-            let m = idx.len();
-            let mut blk = Array2::<f64>::zeros((m, m));
-            for (r, &ir) in idx.iter().enumerate() {
-                for (c, &ic) in idx.iter().enumerate() {
-                    blk[(r, c)] = fh[(ir, ic)];
-                }
-            }
+            let blk = ch.select(Axis(1), idx).t().dot(&fch.select(Axis(1), idx));
             let (_, u) = eigh(&blk)?;
             let cols: Vec<ndarray::Array1<f64>> =
                 idx.iter().map(|&ic| ch.column(ic).to_owned()).collect();
@@ -794,22 +802,43 @@ fn build_vvhv_traced(
     Ok((v, hard_aos))
 }
 
-/// `S⁻¹·B` for SPD `S`: ONE Cholesky factorization, then a forward/back
-/// triangular solve per right-hand side (the previous version LU-factorized
-/// S once per column — nmin factorizations of an nao² matrix).
+/// `S⁻¹·B` for SPD `S`: ONE Cholesky factorization `S = L Lᵀ`, then two
+/// multi-right-hand-side triangular solves (`L Y = B`, `Lᵀ X = Y`; LAPACK
+/// trtrs → BLAS3 trsm). The version before 2026-11-06 did one BLAS2
+/// forward/back pair per column of `B` (nmin of them), and the one before
+/// that LU-factorized S once per column.
 fn solve_spd(a: &Array2<f64>, b: &Array2<f64>) -> Result<Array2<f64>, FerricError> {
-    use ndarray_linalg::{FactorizeC, SolveC, UPLO};
-    let f = a
-        .factorizec(UPLO::Lower)
+    use ndarray_linalg::{Cholesky, Diag, SolveTriangular, UPLO};
+    let l = a
+        .cholesky(UPLO::Lower)
         .map_err(|e| FerricError::General(format!("lmp2_amplitude Cholesky of S: {e}")))?;
-    let mut out = Array2::<f64>::zeros((a.nrows(), b.ncols()));
-    for (c, mut oc) in out.columns_mut().into_iter().enumerate() {
-        let col = f
-            .solvec(&b.column(c))
-            .map_err(|e| FerricError::General(format!("lmp2_amplitude solve: {e}")))?;
-        oc.assign(&col);
+    let y = l
+        .solve_triangular(UPLO::Lower, Diag::NonUnit, b)
+        .map_err(|e| FerricError::General(format!("lmp2_amplitude solve (L): {e}")))?;
+    let lt = l.t().as_standard_layout().into_owned();
+    lt.solve_triangular(UPLO::Upper, Diag::NonUnit, &y)
+        .map_err(|e| FerricError::General(format!("lmp2_amplitude solve (Lᵀ): {e}")))
+}
+
+/// Column-wise `diag(Aᵀ B)`: `out[k] = Σ_r a[r,k]·b[r,k]`, accumulated in row
+/// order (one contiguous pass over two row-major arrays).
+fn column_dots(a: &Array2<f64>, b: &Array2<f64>) -> Vec<f64> {
+    assert_eq!(a.dim(), b.dim(), "column_dots: shape mismatch");
+    let mut out = vec![0.0f64; a.ncols()];
+    for (ra, rb) in a.rows().into_iter().zip(b.rows()) {
+        for ((o, x), y) in out.iter_mut().zip(ra.iter()).zip(rb.iter()) {
+            *o += x * y;
+        }
     }
-    Ok(out)
+    out
+}
+
+/// `⟨c_k|M|c_k⟩` for every column `c_k` of `c`: ONE GEMM `M·C` and a
+/// column-wise dot. Replaces per-column `c_k·(M·c_k)` matvec loops (BLAS2,
+/// one nao² pass per column); the quantity is the same and only the
+/// summation order differs (rounding level).
+fn column_expectations(m: &Array2<f64>, c: &Array2<f64>) -> Vec<f64> {
+    column_dots(c, &m.dot(c))
 }
 
 /// Orthonormality + span check against the canonical virtuals (the
@@ -870,9 +899,93 @@ pub fn amplitude_lmp2(
     Ok(r)
 }
 
-/// `build_vvhv` + the orthonormality/span check (both under the 1e-8 bar),
+/// Number of probe vectors [`probe_vvhv`] applies.
+pub const VVHV_PROBE_VECTORS: usize = 4;
+
+/// Deterministic pseudo-random `(n, k)` probe block, entries in [-1, 1)
+/// (splitmix64; fixed seed, so a run is reproducible).
+fn probe_block(n: usize, k: usize) -> Array2<f64> {
+    let mut state: u64 = 0x9E37_79B9_7F4A_7C15;
+    Array2::from_shape_simple_fn((n, k), || {
+        state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^= z >> 31;
+        (z >> 11) as f64 / (1u64 << 52) as f64 - 1.0
+    })
+}
+
+/// Largest `‖y_k‖ / ‖z_k‖` over the columns of a probe block.
+fn max_column_ratio(y: &Array2<f64>, z: &Array2<f64>) -> f64 {
+    let yy = column_dots(y, y);
+    let zz = column_dots(z, z);
+    yy.iter()
+        .zip(&zz)
+        .map(|(a, b)| (a / b).sqrt())
+        .fold(0.0f64, f64::max)
+}
+
+/// Randomized form of [`check_vvhv`]: applies `O − I` (`O = Cᵀ S C`) and
+/// `UᵀU − I`, `UUᵀ − I` (`U = C_canᵀ S C`) to [`VVHV_PROBE_VECTORS`] fixed
+/// pseudo-random vectors and returns the largest `‖(M − I) z‖ / ‖z‖` for the
+/// orthonormality and the span pair. Cost O(nao²·k) instead of the full
+/// check's four O(nao²·nv) products.
+///
+/// It is an ESTIMATE, not a bound: for a deviation `E = M − I`,
+/// `‖E z‖/‖z‖ ≈ ‖E‖_F/√n` for a random `z`, while the full check reports
+/// `max|E_rs|`. A single bad element δ shows up as ≈ δ·√(2/n) (n = 435 at
+/// C48: a δ = 1e-6 defect still reads ≈ 7e-8, over the 1e-8 bar), and a
+/// construction error, which spoils whole columns, reads at its own size.
+/// The full check stays available ([`FULL_VVHV_CHECK_ENV`], and always in
+/// debug builds).
+pub fn probe_vvhv(
+    obs: &PreparedBasis,
+    rhf: &ScfResult,
+    nocc_total: usize,
+    c_vloc: &Array2<f64>,
+) -> (f64, f64) {
+    let s = overlap(obs);
+    let c_vcan = rhf.mos_r().slice(s![.., nocc_total..]).to_owned();
+    let k = VVHV_PROBE_VECTORS;
+    // orthonormality: Cᵀ S C z − z
+    let z = probe_block(c_vloc.ncols(), k);
+    let scz = s.dot(&c_vloc.dot(&z));
+    let dev_orth = max_column_ratio(&(c_vloc.t().dot(&scz) - &z), &z);
+    // span: Uᵀ U z − z and U Uᵀ z' − z'
+    let uz = c_vcan.t().dot(&scz);
+    let utuz = c_vloc.t().dot(&s.dot(&c_vcan.dot(&uz)));
+    let d1 = max_column_ratio(&(utuz - &z), &z);
+    let z2 = probe_block(c_vcan.ncols(), k);
+    let utz2 = c_vloc.t().dot(&s.dot(&c_vcan.dot(&z2)));
+    let uutz2 = c_vcan.t().dot(&s.dot(&c_vloc.dot(&utz2)));
+    let d2 = max_column_ratio(&(uutz2 - &z2), &z2);
+    (dev_orth, d1.max(d2))
+}
+
+/// Env knob selecting the FULL [`check_vvhv`] inside [`checked_vvhv`]:
+/// `1` = full check, `0` = randomized [`probe_vvhv`]; unset = full in debug
+/// builds, probe in release. Any other value is an error.
+pub const FULL_VVHV_CHECK_ENV: &str = "FERRIC_LMP2_FULL_VVHV_CHECK";
+
+/// Parse [`FULL_VVHV_CHECK_ENV`]'s raw value (strict).
+pub fn full_vvhv_check_requested(raw: Option<&str>) -> Result<bool, FerricError> {
+    match raw {
+        None => Ok(cfg!(debug_assertions)),
+        Some("1") => Ok(true),
+        Some("0") => Ok(false),
+        Some(other) => Err(FerricError::General(format!(
+            "{FULL_VVHV_CHECK_ENV}={other:?}: expected 0 or 1"
+        ))),
+    }
+}
+
+/// `build_vvhv` + the orthonormality/span check (under the 1e-8 bar),
 /// returning the space and the wall seconds both took. `who` names the
-/// driver in the error.
+/// driver in the error. The check is the full O(nao²·nv) [`check_vvhv`] in
+/// debug builds or with [`FULL_VVHV_CHECK_ENV`]`=1`, else the O(nao²)
+/// randomized [`probe_vvhv`] (the check is an anchor-type guard; it never
+/// changes the space or the energy).
 pub fn checked_vvhv(
     mol: &Molecule,
     obs: &PreparedBasis,
@@ -880,16 +993,43 @@ pub fn checked_vvhv(
     rhf: &ScfResult,
     who: &str,
 ) -> Result<(VvHv, f64), FerricError> {
+    let full = match std::env::var(FULL_VVHV_CHECK_ENV) {
+        Ok(raw) => full_vvhv_check_requested(Some(&raw))?,
+        Err(std::env::VarError::NotPresent) => full_vvhv_check_requested(None)?,
+        Err(e) => return Err(FerricError::General(format!("{FULL_VVHV_CHECK_ENV}: {e}"))),
+    };
     let t0 = std::time::Instant::now();
     let vvhv = build_vvhv(mol, obs, obs_bs, rhf)?;
     let nocc_total = (mol.nelec() as usize) / 2;
-    let (dev_orth, dev_span) = check_vvhv(obs, rhf, nocc_total, &vvhv.c_vloc);
-    if dev_orth > 1e-8 || dev_span > 1e-8 {
+    verify_vvhv(obs, rhf, nocc_total, &vvhv.c_vloc, full, who)?;
+    Ok((vvhv, t0.elapsed().as_secs_f64()))
+}
+
+/// The pass/fail half of [`checked_vvhv`]: the full check (`full`) or the
+/// probe, against the 1e-8 bar.
+pub fn verify_vvhv(
+    obs: &PreparedBasis,
+    rhf: &ScfResult,
+    nocc_total: usize,
+    c_vloc: &Array2<f64>,
+    full: bool,
+    who: &str,
+) -> Result<(), FerricError> {
+    let (dev_orth, dev_span, kind) = if full {
+        let (o, s) = check_vvhv(obs, rhf, nocc_total, c_vloc);
+        (o, s, "full")
+    } else {
+        let (o, s) = probe_vvhv(obs, rhf, nocc_total, c_vloc);
+        (o, s, "probe")
+    };
+    // `!(x <= bar)` also fails a NaN deviation
+    if !(dev_orth <= 1e-8 && dev_span <= 1e-8) {
         return Err(FerricError::General(format!(
-            "{who}: VV-HV construction check failed (orth {dev_orth:.2e}, span {dev_span:.2e})"
+            "{who}: VV-HV construction check ({kind}) failed (orth {dev_orth:.2e}, span \
+             {dev_span:.2e})"
         )));
     }
-    Ok((vvhv, t0.elapsed().as_secs_f64()))
+    Ok(())
 }
 
 /// The assembled localized-basis problem: everything the solver consumes.
@@ -984,21 +1124,22 @@ pub fn localized_spaces(
     let boys = boys_localize(&c_occ_can, &dip, 200);
     let c_locc = boys.c_loc;
     let occ_centers = boys.centers;
+    // ⟨i|r²|i⟩ and the virtual dipole centroids: one GEMM per operator
+    // (column_expectations), not one nao² matvec per orbital and component
     let r2 = r2_moment(obs, [0.0; 3])?;
-    let mut occ_spreads = Vec::with_capacity(no);
-    for i in 0..no {
-        let col = c_locc.column(i);
-        let r2v = col.dot(&r2.dot(&col));
-        let c2: f64 = (0..3).map(|x| occ_centers[(i, x)].powi(2)).sum();
-        occ_spreads.push((r2v - c2).max(1e-10).sqrt());
-    }
+    let r2v = column_expectations(&r2, &c_locc);
+    let occ_spreads: Vec<f64> = (0..no)
+        .map(|i| {
+            let c2: f64 = (0..3).map(|x| occ_centers[(i, x)].powi(2)).sum();
+            (r2v[i] - c2).max(1e-10).sqrt()
+        })
+        .collect();
     let c_vloc = vvhv.c_vloc.clone();
     let nv = c_vloc.ncols();
     let mut virt_centers = Array2::<f64>::zeros((nv, 3));
-    for a in 0..nv {
-        let col = c_vloc.column(a);
-        for (x, dm) in dip.iter().enumerate() {
-            virt_centers[(a, x)] = col.dot(&dm.dot(&col));
+    for (x, dm) in dip.iter().enumerate() {
+        for (a, v) in column_expectations(dm, &c_vloc).into_iter().enumerate() {
+            virt_centers[(a, x)] = v;
         }
     }
     let f_ao = rhf.fock_r();
@@ -1406,12 +1547,19 @@ pub fn pattern_rhs_norm(rg: &Ragged) -> f64 {
 /// compression, so by Cauchy interlacing its λ_min is no smaller. (The CG
 /// Lanczos Ritz values are NOT used: the smallest Ritz value is an UPPER
 /// bound on λ_min, and of the preconditioned operator.) NaN if not positive.
+///
+/// Only the two extreme eigenvalues are read, so the spectra come from an
+/// eigenvalues-only solve (LAPACK `dsyevd` with `jobz = 'N'`:
+/// tridiagonalization + root-free QR, no eigenvector accumulation) — the same
+/// eigenvalues as the former full `eigh` to rounding. An iterative (Lanczos/LOBPCG) λ_min was
+/// rejected: its Ritz value is an UPPER bound on the smallest eigenvalue,
+/// which would void this function's rigor.
 pub fn operator_lambda_min_lower_bound(
     f_oo: &Array2<f64>,
     f_vv: &Array2<f64>,
 ) -> Result<f64, FerricError> {
-    let (eo, _) = eigh(f_oo)?;
-    let (ev, _) = eigh(f_vv)?;
+    let eo = eigvalsh(f_oo)?;
+    let ev = eigvalsh(f_vv)?;
     let (Some(&homo), Some(&lumo)) = (eo.last(), ev.first()) else {
         return Ok(f64::NAN);
     };
@@ -2213,5 +2361,498 @@ mod tests {
             seen_partial,
             "no threshold gated a strict subset; the test is vacuous"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // T018 constant-factor fixes (2026-11-06): FROZEN pre-fix oracles. Each is
+    // a verbatim copy of the code the fix replaced, so every new path is
+    // compared against the old one in the same process (no golden numbers).
+    // -----------------------------------------------------------------------
+
+    /// FROZEN pre-2026-11-06 `solve_spd`: one Cholesky, then one BLAS2
+    /// forward/back solve per right-hand side.
+    fn solve_spd_percol_oracle(
+        a: &Array2<f64>,
+        b: &Array2<f64>,
+    ) -> Result<Array2<f64>, FerricError> {
+        use ndarray_linalg::{FactorizeC, SolveC, UPLO};
+        let f = a
+            .factorizec(UPLO::Lower)
+            .map_err(|e| FerricError::General(format!("oracle Cholesky: {e}")))?;
+        let mut out = Array2::<f64>::zeros((a.nrows(), b.ncols()));
+        for (c, mut oc) in out.columns_mut().into_iter().enumerate() {
+            let col = f
+                .solvec(&b.column(c))
+                .map_err(|e| FerricError::General(format!("oracle solve: {e}")))?;
+            oc.assign(&col);
+        }
+        Ok(out)
+    }
+
+    /// FROZEN pre-2026-11-06 `boys_localize`: the Jacobi sweep rotating two
+    /// stride-nocc COLUMNS of a row-major (nbas, nocc) array.
+    fn boys_column_oracle(
+        c_occ: &Array2<f64>,
+        dip: &[Array2<f64>; 3],
+        max_iter: usize,
+    ) -> crate::boys::BoysResult {
+        let nbas = c_occ.nrows();
+        let nocc = c_occ.ncols();
+        let mut c = c_occ.to_owned();
+        let mut d: [Array2<f64>; 3] = std::array::from_fn(|alpha| {
+            let dip_c: Array2<f64> = dip[alpha].dot(&c);
+            c.t().dot(&dip_c)
+        });
+        let mut converged = false;
+        let mut iterations = 0;
+        'outer: for _sweep in 0..max_iter {
+            iterations += 1;
+            let mut max_theta: f64 = 0.0;
+            for i in 0..nocc {
+                for j in (i + 1)..nocc {
+                    let mut big_a = 0.0_f64;
+                    let mut big_b = 0.0_f64;
+                    for dm in d.iter() {
+                        let da = dm[(i, i)] - dm[(j, j)];
+                        let oa = dm[(i, j)];
+                        big_a += da * da / 4.0 - oa * oa;
+                        big_b += oa * da;
+                    }
+                    let theta = f64::atan2(-big_b, big_a) / 4.0;
+                    if theta.abs() > max_theta {
+                        max_theta = theta.abs();
+                    }
+                    if theta.abs() < 1e-12 {
+                        continue;
+                    }
+                    let cos_t = theta.cos();
+                    let sin_t = theta.sin();
+                    for mu in 0..nbas {
+                        let ci = c[(mu, i)];
+                        let cj = c[(mu, j)];
+                        c[(mu, i)] = cos_t * ci - sin_t * cj;
+                        c[(mu, j)] = sin_t * ci + cos_t * cj;
+                    }
+                    for dm in d.iter_mut() {
+                        for p in 0..nocc {
+                            let dpi = dm[(p, i)];
+                            let dpj = dm[(p, j)];
+                            dm[(p, i)] = cos_t * dpi - sin_t * dpj;
+                            dm[(p, j)] = sin_t * dpi + cos_t * dpj;
+                        }
+                        for p in 0..nocc {
+                            let dip_val = dm[(i, p)];
+                            let djp = dm[(j, p)];
+                            dm[(i, p)] = cos_t * dip_val - sin_t * djp;
+                            dm[(j, p)] = sin_t * dip_val + cos_t * djp;
+                        }
+                    }
+                }
+            }
+            if max_theta < 1e-8 {
+                converged = true;
+                break 'outer;
+            }
+        }
+        let mut centers = Array2::zeros((nocc, 3));
+        for i in 0..nocc {
+            for alpha in 0..3 {
+                centers[(i, alpha)] = d[alpha][(i, i)];
+            }
+        }
+        crate::boys::BoysResult {
+            c_loc: c,
+            centers,
+            iterations,
+            converged,
+        }
+    }
+
+    /// FROZEN pre-2026-11-06 `build_vvhv_traced` (with the frozen per-column
+    /// solve and Boys): per-candidate BLAS2 spread weights and the FULL
+    /// n_h × n_h hard-virtual Fock.
+    fn build_vvhv_pre_fix_oracle(
+        mol: &Molecule,
+        obs: &PreparedBasis,
+        obs_bs: &BasisSet,
+        rhf: &ScfResult,
+    ) -> Result<(VvHv, Vec<usize>), FerricError> {
+        let s = overlap(obs);
+        let nao = obs.nbasis();
+        let nocc_total = (mol.nelec() as usize) / 2;
+        let c_occ_all = rhf.mos_r().slice(s![.., ..nocc_total]).to_owned();
+        let (s_x, nmin) = cross_overlap_with_minimal(mol, obs, obs_bs)?;
+        let t = solve_spd_percol_oracle(&s, &s_x)?;
+        let q_occ = c_occ_all.dot(&c_occ_all.t().dot(&s));
+        let tv = &t - &q_occ.dot(&t);
+        let n_l = nmin - nocc_total;
+        let dip = dipole(obs, [0.0, 0.0, 0.0])?;
+        let c_l = if n_l > 0 {
+            let cl = canonical_orth(&tv, &s, n_l)?;
+            boys_column_oracle(&cl, &dip, 200).c_loc
+        } else {
+            Array2::<f64>::zeros((nao, 0))
+        };
+        let n_h = nao - nocc_total - n_l;
+        let mut hard_aos = Vec::with_capacity(n_h);
+        let c_h = if n_h > 0 {
+            let mut c_e = Array2::<f64>::zeros((nao, nocc_total + n_l));
+            c_e.slice_mut(s![.., ..nocc_total]).assign(&c_occ_all);
+            c_e.slice_mut(s![.., nocc_total..]).assign(&c_l);
+            let proj = c_e.dot(&c_e.t().dot(&s));
+            let mut x = Array2::<f64>::eye(nao);
+            x -= &proj;
+            let sx = s.dot(&x);
+            let mut keep_cols = Vec::new();
+            for c in 0..nao {
+                let nrm2 = x.column(c).dot(&sx.column(c));
+                if nrm2 > 1e-8 {
+                    keep_cols.push((c, nrm2.sqrt()));
+                }
+            }
+            let mut xn = Array2::<f64>::zeros((nao, keep_cols.len()));
+            let mut parents = Vec::with_capacity(keep_cols.len());
+            let a2a = ao_to_atom(obs);
+            for (k, &(c, nrm)) in keep_cols.iter().enumerate() {
+                xn.column_mut(k).assign(&(x.column(c).mapv(|v| v / nrm)));
+                parents.push(a2a[c]);
+            }
+            let r2 = r2_moment(obs, [0.0; 3])?;
+            let ncand = xn.ncols();
+            let mut w = vec![0.0f64; ncand];
+            for (k, wk) in w.iter_mut().enumerate() {
+                let col = xn.column(k);
+                let r2v = col.dot(&r2.dot(&col));
+                let mut c2 = 0.0;
+                for dm in dip.iter() {
+                    let d = col.dot(&dm.dot(&col));
+                    c2 += d * d;
+                }
+                *wk = 1.0 / (r2v - c2).max(1e-6);
+            }
+            let wmax2 = w.iter().fold(0.0f64, |m, &x| m.max(x)).powi(2);
+            let mut ov = xn.t().dot(&s.dot(&xn));
+            for r in 0..ncand {
+                for c in 0..ncand {
+                    ov[(r, c)] *= w[r] * w[c] / wmax2;
+                }
+            }
+            let piv = pivoted_cholesky_order(&ov, n_h)?;
+            let mut sel = Array2::<f64>::zeros((nao, n_h));
+            let mut sel_parents = Vec::with_capacity(n_h);
+            for (k, &p) in piv.iter().enumerate() {
+                sel.column_mut(k).assign(&xn.column(p));
+                sel_parents.push(parents[p]);
+                hard_aos.push(keep_cols[p].0);
+            }
+            let mut ch = lowdin(&sel, &s)?;
+            let f_ao = rhf.fock_r();
+            let fh = ch.t().dot(&f_ao.dot(&ch));
+            let mut by_atom: HashMap<usize, Vec<usize>> = HashMap::new();
+            for (k, &a) in sel_parents.iter().enumerate() {
+                by_atom.entry(a).or_default().push(k);
+            }
+            for idx in by_atom.values() {
+                let m = idx.len();
+                let mut blk = Array2::<f64>::zeros((m, m));
+                for (r, &ir) in idx.iter().enumerate() {
+                    for (c, &ic) in idx.iter().enumerate() {
+                        blk[(r, c)] = fh[(ir, ic)];
+                    }
+                }
+                let (_, u) = eigh(&blk)?;
+                let cols: Vec<ndarray::Array1<f64>> =
+                    idx.iter().map(|&ic| ch.column(ic).to_owned()).collect();
+                for (cnew, &ic) in idx.iter().enumerate() {
+                    let mut acc = ndarray::Array1::<f64>::zeros(nao);
+                    for (r, col) in cols.iter().enumerate() {
+                        acc.scaled_add(u[(r, cnew)], col);
+                    }
+                    ch.column_mut(ic).assign(&acc);
+                }
+            }
+            ch
+        } else {
+            Array2::<f64>::zeros((nao, 0))
+        };
+        let mut c_vloc = Array2::<f64>::zeros((nao, n_l + n_h));
+        c_vloc.slice_mut(s![.., ..n_l]).assign(&c_l);
+        c_vloc.slice_mut(s![.., n_l..]).assign(&c_h);
+        Ok((
+            VvHv {
+                c_vloc,
+                n_valence: n_l,
+                n_hard: n_h,
+            },
+            hard_aos,
+        ))
+    }
+
+    /// FROZEN pre-2026-11-06 `localized_spaces`: per-orbital BLAS2 spreads
+    /// and centroids, column-sweep Boys.
+    fn localized_spaces_pre_fix_oracle(
+        mol: &Molecule,
+        obs: &PreparedBasis,
+        rhf: &ScfResult,
+        frozen_core: usize,
+        vvhv: &VvHv,
+    ) -> LocalizedSpaces {
+        let nocc_total = (mol.nelec() as usize) / 2;
+        let no = nocc_total - frozen_core;
+        let c_occ_can = rhf
+            .mos_r()
+            .slice(s![.., frozen_core..nocc_total])
+            .to_owned();
+        let dip = dipole(obs, [0.0, 0.0, 0.0]).unwrap();
+        let boys = boys_column_oracle(&c_occ_can, &dip, 200);
+        let c_locc = boys.c_loc;
+        let occ_centers = boys.centers;
+        let r2 = r2_moment(obs, [0.0; 3]).unwrap();
+        let mut occ_spreads = Vec::with_capacity(no);
+        for i in 0..no {
+            let col = c_locc.column(i);
+            let r2v = col.dot(&r2.dot(&col));
+            let c2: f64 = (0..3).map(|x| occ_centers[(i, x)].powi(2)).sum();
+            occ_spreads.push((r2v - c2).max(1e-10).sqrt());
+        }
+        let c_vloc = vvhv.c_vloc.clone();
+        let nv = c_vloc.ncols();
+        let mut virt_centers = Array2::<f64>::zeros((nv, 3));
+        for a in 0..nv {
+            let col = c_vloc.column(a);
+            for (x, dm) in dip.iter().enumerate() {
+                virt_centers[(a, x)] = col.dot(&dm.dot(&col));
+            }
+        }
+        let f_ao = rhf.fock_r();
+        let f_oo = c_locc.t().dot(&f_ao.dot(&c_locc));
+        let f_vv = c_vloc.t().dot(&f_ao.dot(&c_vloc));
+        LocalizedSpaces {
+            c_locc,
+            c_vloc,
+            f_oo,
+            f_vv,
+            occ_centers,
+            occ_spreads,
+            virt_centers,
+            no,
+            nv,
+        }
+    }
+
+    fn max_abs_dev(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
+        assert_eq!(a.dim(), b.dim());
+        a.iter()
+            .zip(b.iter())
+            .fold(0.0f64, |m, (x, y)| m.max((x - y).abs()))
+    }
+
+    fn bits(a: &Array2<f64>) -> Vec<u64> {
+        a.iter().map(|x| x.to_bits()).collect()
+    }
+
+    /// Fixes (a) spread-weight GEMMs + multi-RHS `solve_spd` and (c) the
+    /// atom-diagonal hard-virtual Fock blocks reproduce the frozen pre-fix
+    /// VV-HV space: the SAME hard-virtual subset in the same pivot order and
+    /// the same columns (sign-fixed, ≤ 1e-10, none reordered), on an alkane
+    /// (C8) and on molecules with exact symmetry ties (water, benzene).
+    #[test]
+    fn vvhv_matches_the_pre_cubic_fix_oracle() {
+        for xyz in ["alkane_8.xyz", "water.xyz", "benzene.xyz"] {
+            let (mol, obs, bs, rhf) = rhf_631g(xyz);
+            let (v_new, h_new) = build_vvhv_traced(&mol, &obs, &bs, &rhf, solve_spd).unwrap();
+            let (v_old, h_old) = build_vvhv_pre_fix_oracle(&mol, &obs, &bs, &rhf).unwrap();
+            assert!(v_new.n_hard > 0 && v_new.n_valence > 0, "{xyz}: vacuous");
+            assert_eq!(
+                (v_new.n_valence, v_new.n_hard),
+                (v_old.n_valence, v_old.n_hard)
+            );
+            assert_eq!(h_new, h_old, "{xyz}: hard-virtual subset/order differs");
+            let (matched, permuted) =
+                match_columns_up_to_sign_and_order(&v_new.c_vloc, &v_old.c_vloc);
+            assert!(
+                matched && permuted == 0,
+                "{xyz}: c_vloc is not the pre-fix columns ({permuted} reordered)"
+            );
+        }
+    }
+
+    /// Fix (a) in `localized_spaces` (GEMM spreads/centroids) and the
+    /// row-major Boys sweep, on the SAME VV-HV input: Boys orbitals,
+    /// centroids and both Fock blocks are BITWISE the pre-fix ones (Boys is
+    /// a pure layout change; the Fock GEMMs are untouched), the spreads and
+    /// virtual centroids agree to ≤ 1e-12 (summation order only).
+    #[test]
+    fn localized_spaces_match_the_pre_cubic_fix_oracle() {
+        let (mol, obs, bs, rhf) = rhf_631g("alkane_8.xyz");
+        let vvhv = build_vvhv(&mol, &obs, &bs, &rhf).unwrap();
+        let new = localized_spaces(&mol, &obs, &rhf, 8, &vvhv).unwrap();
+        let old = localized_spaces_pre_fix_oracle(&mol, &obs, &rhf, 8, &vvhv);
+        assert_eq!(bits(&new.c_locc), bits(&old.c_locc), "Boys orbitals");
+        assert_eq!(new.c_locc.strides(), old.c_locc.strides(), "Boys layout");
+        assert_eq!(bits(&new.occ_centers), bits(&old.occ_centers));
+        assert_eq!(bits(&new.f_oo), bits(&old.f_oo));
+        assert_eq!(bits(&new.f_vv), bits(&old.f_vv));
+        let ds = new
+            .occ_spreads
+            .iter()
+            .zip(&old.occ_spreads)
+            .fold(0.0f64, |m, (a, b)| m.max((a - b).abs()));
+        let dc = max_abs_dev(&new.virt_centers, &old.virt_centers);
+        eprintln!("spreads dev {ds:.2e} virt_centers dev {dc:.2e}");
+        assert!(
+            ds <= 1e-12 && dc <= 1e-12,
+            "spreads {ds:.2e} centers {dc:.2e}"
+        );
+    }
+
+    /// The row-major Boys sweep is bitwise the column sweep (orbitals,
+    /// centers, sweep count) on the canonical occupieds and on a canonical
+    /// virtual block (VV-HV's valence virtuals are already Boys-localized
+    /// and would converge in one sweep, which tests nothing).
+    #[test]
+    fn boys_row_sweep_is_bitwise_the_column_sweep() {
+        let (mol, obs, _bs, rhf) = rhf_631g("alkane_8.xyz");
+        let nocc = (mol.nelec() as usize) / 2;
+        let dip = dipole(&obs, [0.0; 3]).unwrap();
+        let occ = rhf.mos_r().slice(s![.., ..nocc]).to_owned();
+        let virt = rhf.mos_r().slice(s![.., nocc..nocc + 24]).to_owned();
+        for c in [occ, virt] {
+            let a = boys_localize(&c, &dip, 200);
+            let b = boys_column_oracle(&c, &dip, 200);
+            assert!(a.iterations > 1, "no rotation happened: vacuous");
+            assert_eq!(a.iterations, b.iterations);
+            assert_eq!(a.converged, b.converged);
+            assert_eq!(bits(&a.c_loc), bits(&b.c_loc));
+            assert_eq!(bits(&a.centers), bits(&b.centers));
+        }
+    }
+
+    /// Fix (d): the eigenvalues-only λ_min bound equals the former full-eigh
+    /// one to ≤ 1e-13 relative on a real C8 Fock pair (and is positive).
+    #[test]
+    fn lambda_bound_from_eigvalsh_matches_full_eigh() {
+        let (mol, obs, bs, rhf) = rhf_631g("alkane_8.xyz");
+        let vvhv = build_vvhv(&mol, &obs, &bs, &rhf).unwrap();
+        let sp = localized_spaces(&mol, &obs, &rhf, 8, &vvhv).unwrap();
+        let new = operator_lambda_min_lower_bound(&sp.f_oo, &sp.f_vv).unwrap();
+        let (eo, _) = eigh(&sp.f_oo).unwrap();
+        let (ev, _) = eigh(&sp.f_vv).unwrap();
+        let old = 2.0 * (ev[0] - eo[eo.len() - 1]);
+        eprintln!("lambda new {new:.17e} old {old:.17e}");
+        assert!(old > 0.0);
+        assert!(
+            ((new - old) / old).abs() <= 1e-13,
+            "lambda {new:.17e} vs {old:.17e}"
+        );
+    }
+
+    /// End to end: the integral-direct LMP2 energy through every fix
+    /// (`amplitude_lmp2_direct`) equals the pre-fix pipeline (frozen VV-HV,
+    /// frozen localized spaces, same assembly and solve) to ≤ 1e-12 Ha on C8
+    /// at production maps, Coulomb, eps = 1e-3.
+    #[test]
+    fn direct_lmp2_energy_matches_the_pre_cubic_fix_pipeline() {
+        use crate::lmp2_direct::{
+            amplitude_lmp2_direct, assemble_ragged_direct_local, DirectConfig,
+        };
+        let (mol, obs, bs, rhf) = rhf_631g("alkane_8.xyz");
+        let aux_bs = ferric_core::basis::bundled("cc-pvdz-ri").unwrap();
+        let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
+        let op = Operator::coulomb();
+        let cfg = AmplitudeLmp2Config {
+            eps: 1e-3,
+            frozen_core: 8,
+            pair_gate_cal: Some(0.7),
+            ..Default::default()
+        };
+        let dcfg = DirectConfig {
+            aux_radius_bohr: 10.0,
+            virt_radius_bohr: Some(12.0),
+            ao_tail: 1e-3,
+            schwarz_skip: 1e-5,
+            batch_merge: 4,
+            ..Default::default()
+        };
+        let (r_new, _) =
+            amplitude_lmp2_direct(&mol, &obs, &bs, &dfbs, op, &rhf, &cfg, &dcfg).unwrap();
+        let (v_old, _) = build_vvhv_pre_fix_oracle(&mol, &obs, &bs, &rhf).unwrap();
+        let sp_old = localized_spaces_pre_fix_oracle(&mol, &obs, &rhf, 8, &v_old);
+        let (rg, _, _) = assemble_ragged_direct_local(
+            &mol,
+            &obs,
+            &dfbs,
+            op,
+            &sp_old,
+            cfg.eps,
+            1.0,
+            cfg.pair_gate_cal,
+            &dcfg,
+        )
+        .unwrap();
+        let r_old = solve_and_count(
+            &rg,
+            &sp_old.f_oo,
+            &sp_old.f_vv,
+            rhf.energy,
+            &cfg,
+            &v_old,
+            sp_old.no,
+            sp_old.nv,
+            "oracle",
+        )
+        .unwrap();
+        let de = r_new.e_corr - r_old.e_corr;
+        eprintln!(
+            "E_corr new {:.15} old {:.15} dE {de:+.3e}",
+            r_new.e_corr, r_old.e_corr
+        );
+        assert!(r_new.e_corr < -0.1, "vacuous energy");
+        assert!(de.abs() <= 1e-12, "dE {de:+.3e}");
+    }
+
+    /// Fix (b): the randomized probe passes the real space far below the
+    /// bar, and FAILS (as does the full check) a space with one column
+    /// rescaled by 1+1e-6 (orthonormality) or one hard virtual rotated
+    /// towards an occupied orbital (span); the env knob parses strictly.
+    #[test]
+    fn vvhv_probe_passes_the_real_space_and_catches_defects() {
+        let (mol, obs, bs, rhf) = c4_631g();
+        let nocc = (mol.nelec() as usize) / 2;
+        let v = build_vvhv(&mol, &obs, &bs, &rhf).unwrap();
+        let (po, ps) = probe_vvhv(&obs, &rhf, nocc, &v.c_vloc);
+        let (fo, fs) = check_vvhv(&obs, &rhf, nocc, &v.c_vloc);
+        eprintln!("probe {po:.2e}/{ps:.2e} full {fo:.2e}/{fs:.2e}");
+        assert!(po <= 1e-11 && ps <= 1e-11, "probe {po:.2e} {ps:.2e}");
+        for full in [false, true] {
+            verify_vvhv(&obs, &rhf, nocc, &v.c_vloc, full, "t").unwrap();
+        }
+        let k = v.n_valence + 1; // a hard virtual
+        let mut scaled = v.c_vloc.clone();
+        scaled.column_mut(k).mapv_inplace(|x| x * (1.0 + 1e-6));
+        let occ = rhf.mos_r().column(nocc - 1).to_owned();
+        let mut leaked = v.c_vloc.clone();
+        let (c, s_) = (1e-3f64.cos(), 1e-3f64.sin());
+        let col = &leaked.column(k).to_owned() * c + &occ * s_;
+        leaked.column_mut(k).assign(&col);
+        for (name, bad) in [("scaled", &scaled), ("leaked", &leaked)] {
+            let (o, s) = probe_vvhv(&obs, &rhf, nocc, bad);
+            eprintln!("{name}: probe orth {o:.2e} span {s:.2e}");
+            for full in [false, true] {
+                assert!(
+                    verify_vvhv(&obs, &rhf, nocc, bad, full, "t").is_err(),
+                    "{name} (full={full}) passed"
+                );
+            }
+        }
+        assert!(full_vvhv_check_requested(Some("1")).unwrap());
+        assert!(!full_vvhv_check_requested(Some("0")).unwrap());
+        assert_eq!(
+            full_vvhv_check_requested(None).unwrap(),
+            cfg!(debug_assertions)
+        );
+        for bad in ["", "true", " 1", "2"] {
+            assert!(full_vvhv_check_requested(Some(bad)).is_err(), "{bad:?}");
+        }
     }
 }
