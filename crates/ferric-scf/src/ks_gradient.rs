@@ -247,10 +247,13 @@ pub fn ks_gradient_closed_for_density(
     let d = d.clone();
 
     // 1e + nuclear repulsion gradient — identical to HF.
+    let t = ferric_core::timing::Stage::start("ks-grad:1e+ecp");
     let mut grad = oneelectron_gradient(mol, prep, &d, w, ext)?;
     // ECP term Σ D dV_ECP/dR (zero for an all-electron basis): V_ECP is in
     // the KS hcore (driver::prepare), so its derivative belongs here too.
     grad += &crate::gradient::ecp_gradient(mol, prep, &d)?;
+    t.end();
+    let t = ferric_core::timing::Stage::start("ks-grad:2e");
 
     // 2e gradient. When the SCF density-fitted J and/or K (RI-J is the
     // default for every functional; RSH exchange is ALWAYS fitted), the
@@ -315,7 +318,11 @@ pub fn ks_gradient_closed_for_density(
         grad += &twoelectron_gradient_scaled_k(prep, op, bounds, &d, k_mix.sr)?;
     }
 
+    t.end();
+
+    let t = ferric_core::timing::Stage::start("ks-grad:xc");
     add_xc_gradient_closed(&mut grad, mol, prep, bs, xc_name, &d, grids)?;
+    t.end();
 
     Ok(grad)
 }
