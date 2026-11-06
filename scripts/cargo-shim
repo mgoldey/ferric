@@ -27,7 +27,7 @@ done
 depth=${FERRIC_CARGO_SHIM_DEPTH:-0}
 case "$depth" in ""|*[!0-9]*) depth=0;; esac
 if [ "$depth" -ge 4 ]; then
-  echo "cargo shim: recursion: re-entered $((depth + 1)) times; the real cargo it found, $REAL," \
+  echo "cargo shim: recursion: pass $((depth + 1)) refused after $depth nested passes; the real cargo it found, $REAL," \
        "leads back to this shim. Remove that wrapper from PATH, or make it exec a real cargo." >&2
   exit 126
 fi
