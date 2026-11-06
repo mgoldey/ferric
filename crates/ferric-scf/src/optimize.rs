@@ -15,6 +15,7 @@ use ferric_core::internal_coords::{
 };
 use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
+use ferric_core::timing::Stage;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
@@ -212,9 +213,12 @@ pub fn optimize_geometry_with_scf_correction(
     mut correction: impl FnMut(&Molecule, &ScfResult) -> Result<(f64, Option<Array2<f64>>), FerricError>,
 ) -> Result<OptimizeResult, FerricError> {
     run_bfgs(mol, opt_config, |m| {
+        let t = Stage::start("opt-step:eval-total");
         let (e, g, scf) = compute_energy_gradient_and_result(ctx, m, basis_name, op, rhf_config)?;
         let (de, dg) = correction(m, &scf)?;
-        add_correction(e, g, de, dg)
+        let out = add_correction(e, g, de, dg);
+        t.end();
+        out
     })
 }
 
@@ -862,8 +866,10 @@ fn compute_energy_gradient_and_result(
     op: Operator,
     rhf_config: &RhfConfig,
 ) -> Result<(f64, Array2<f64>, ScfResult), FerricError> {
+    let t = Stage::start("opt-step:basis+prep");
     let bs = ferric_core::basis::bundled(basis_name)?;
     let prep = PreparedBasis::new(mol, &bs)?;
+    t.end();
     // Honour `[scf] screening` here too: geometry optimization rebuilds the
     // bound at every step, and a step that silently dropped back to plain
     // Schwarz would make the optimizer's energies inconsistent with a
@@ -876,18 +882,24 @@ fn compute_energy_gradient_and_result(
     // `csb_m`, so the GRADIENT stays on plain Schwarz regardless. That is
     // sound (plain Schwarz is still a rigorous bound, just looser) and is
     // recorded as a known gap rather than silently assumed to be covered.
+    let t = Stage::start("opt-step:schwarz");
     let bounds = SchwarzBounds::compute_for_screening(op, &prep, rhf_config.screening)?;
+    t.end();
     // Fail before the SCF if the exchange will come from a COSX setup whose
     // gradient is refused (pruned grid, or overlap fit with a KS functional) — not after it.
     crate::gradient::preflight_cosx_restricted(rhf_config)?;
     let rhf_config = &*crate::gradient::gradient_task_config(rhf_config);
+    let t = Stage::start("opt-step:scf");
     let res = solve_rhf(ctx, mol, &prep, op, &bounds, rhf_config)?;
+    t.end();
     require_converged(&res)?;
     // Differentiates the exchange the SCF actually built: exactly
     // `ks_gradient_closed` / `rhf_gradient` unless `k_builder = "cosx"` is in
     // effect, in which case the exchange term is the COSX derivative.
+    let t = Stage::start("opt-step:gradient");
     let grad =
         crate::gradient::restricted_scf_gradient(mol, &prep, &bs, op, &bounds, rhf_config, &res)?;
+    t.end();
     Ok((res.energy, grad, res))
 }
 
