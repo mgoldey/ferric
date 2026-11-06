@@ -6719,10 +6719,96 @@ fn print_frequency_energy(
     }
 }
 
+/// The last converged SCF an SCF optimizer evaluated, with the geometry it
+/// was solved at.
+///
+/// Every SCF optimizer ends on a geometry it has ALREADY solved: the
+/// Cartesian driver returns the `x` of its last evaluation and the internal
+/// driver its `current` (see `ferric_scf::optimize`). Re-solving that SCF for
+/// the certificate repeated one full SCF per run -- measured on
+/// sulfamethoxazole/def2-SVP RHF, 63 s of a 490 s, 5-evaluation run (T017).
+/// The per-step correction closure already receives each converged
+/// `ScfResult`, so it records the latest one here and the certificate reuses
+/// it when -- and only when -- the final geometry is bitwise the recorded one.
+struct LastScf<T = ferric_scf::result::ScfResult>(Option<(Vec<f64>, T)>);
+
+impl<T> Default for LastScf<T> {
+    fn default() -> Self {
+        Self(None)
+    }
+}
+
+impl<T: Clone> LastScf<T> {
+    /// Every coordinate and nuclear charge, compared bit for bit.
+    fn key(mol: &Molecule) -> Vec<f64> {
+        mol.atoms
+            .iter()
+            .flat_map(|a| [a.x, a.y, a.zpos, f64::from(a.z)])
+            .collect()
+    }
+
+    fn record(&mut self, mol: &Molecule, scf: &T) {
+        self.0 = Some((Self::key(mol), scf.clone()));
+    }
+
+    /// The recorded SCF if it was solved at exactly `mol`'s geometry.
+    fn take_for(self, mol: &Molecule) -> Option<T> {
+        let want = Self::key(mol);
+        self.0.and_then(|(at, scf)| {
+            let same = at.len() == want.len()
+                && at
+                    .iter()
+                    .zip(&want)
+                    .all(|(a, b)| a.to_bits() == b.to_bits());
+            same.then_some(scf)
+        })
+    }
+}
+
+#[cfg(test)]
+mod last_scf_tests {
+    use super::LastScf;
+    use ferric_core::mol::Molecule;
+
+    fn water() -> Molecule {
+        Molecule::parse_xyz(
+            "3\n\nO 0 0 0.1173\nH 0 0.7572 -0.4692\nH 0 -0.7572 -0.4692\n",
+            0,
+            1,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn reused_only_at_the_bitwise_identical_geometry() {
+        let mol = water();
+        assert_eq!(LastScf::<u32>::default().take_for(&mol), None);
+
+        let mut last = LastScf::<u32>::default();
+        last.record(&mol, &7);
+        assert_eq!(last.take_for(&mol), Some(7));
+
+        // One ulp on one coordinate is a different geometry: re-solve.
+        let mut moved = mol.clone();
+        moved.atoms[1].y = f64::from_bits(moved.atoms[1].y.to_bits() + 1);
+        let mut last = LastScf::<u32>::default();
+        last.record(&mol, &7);
+        assert_eq!(last.take_for(&moved), None);
+
+        // The LATEST record wins (the optimizer's last evaluation).
+        let mut last = LastScf::<u32>::default();
+        last.record(&moved, &1);
+        last.record(&mol, &2);
+        assert_eq!(last.take_for(&mol), Some(2));
+    }
+}
+
 /// The certificate of a finished geometry optimization: the SCF at the
-/// returned geometry (re-solved; the optimizers do not return their last SCF)
-/// is the reference, printed after the result and written as a `certificate`
-/// run-log record. `outcome` is `(converged, steps, final energy)`.
+/// returned geometry is the reference, printed after the result and written
+/// as a `certificate` run-log record. `outcome` is `(converged, steps, final
+/// energy)`. `final_scf` is the optimizer's own last SCF at `final_mol`
+/// ([`LastScf::take_for`]); `None` re-solves it (the correlated optimizers do
+/// not expose theirs).
 #[allow(clippy::too_many_arguments)]
 fn certify_optimization(
     method: &str,
@@ -6733,12 +6819,26 @@ fn certify_optimization(
     rhf_config: &RhfConfig,
     opt_config: &OptimizeConfig,
     final_mol: &Molecule,
+    final_scf: Option<ferric_scf::result::ScfResult>,
     outcome: (bool, usize, f64),
     gradient: &str,
 ) {
     let (converged, steps, energy) = outcome;
     let capability = format!("optimize:{method}");
-    let cert = match task_reference_certificate(method, cfg, ctx, bs, op, rhf_config, final_mol) {
+    let reference = match final_scf {
+        Some(scf) => Ok(task_reference_certificate_from(
+            method,
+            cfg,
+            ctx,
+            bs,
+            op,
+            final_mol,
+            scf,
+            ferric_scf::gradient::gradient_task_config(rhf_config).into_owned(),
+        )),
+        None => task_reference_certificate(method, cfg, ctx, bs, op, rhf_config, final_mol),
+    };
+    let cert = match reference {
         Ok(reference) => ferric_scf::certificate::optimize_certificate(
             method, &reference, converged, steps, energy, opt_config, gradient,
         ),
@@ -6767,15 +6867,28 @@ fn task_reference_certificate(
     let (scf, used) =
         ferric_scf::certificate::final_point_scf(ctx, mol, &bs.name, op, rhf_config, spin)
             .map_err(|e| format!("the final-point SCF for this certificate failed: {e}"))?;
+    Ok(task_reference_certificate_from(
+        method, cfg, ctx, bs, op, mol, scf, used,
+    ))
+}
+
+/// [`task_reference_certificate`] from an SCF already solved at `mol` with
+/// `used` (the geometry drivers' config, `gradient_task_config`).
+#[allow(clippy::too_many_arguments)]
+fn task_reference_certificate_from(
+    method: &str,
+    cfg: &Config,
+    ctx: &ParallelContext,
+    bs: &BasisSet,
+    op: Operator,
+    mol: &Molecule,
+    scf: ferric_scf::result::ScfResult,
+    used: RhfConfig,
+) -> Certificate {
     let dispersion = matches!(method, "rhf" | "ksdft" | "uhf" | "rohf")
         .then(|| dispersion_correction(cfg, ctx, mol, bs, op, &used, scf.density_total()))
         .flatten();
-    Ok(scf_certificate_stamped(
-        mol,
-        &scf,
-        &used,
-        dispersion.as_ref(),
-    ))
+    scf_certificate_stamped(mol, &scf, &used, dispersion.as_ref())
 }
 
 /// `task.method = "optimize"` dispatch. Extracted verbatim from the former
@@ -6829,6 +6942,7 @@ fn run_optimize(
                 "optimize",
                 ferric_scf::Spin::Restricted,
             );
+            let mut last_scf = LastScf::default();
             let opt_result = optimize_geometry_with_scf_correction(
                 ctx,
                 mol,
@@ -6836,12 +6950,15 @@ fn run_optimize(
                 op,
                 rhf_config,
                 &opt_config,
-                |m, scf| match &model {
-                    Some(d) => {
-                        let (c, g) = d.evaluate(ctx, m, bs, op, rhf_config, scf)?;
-                        Ok((c.energy, Some(g)))
+                |m, scf| {
+                    last_scf.record(m, scf);
+                    match &model {
+                        Some(d) => {
+                            let (c, g) = d.evaluate(ctx, m, bs, op, rhf_config, scf)?;
+                            Ok((c.energy, Some(g)))
+                        }
+                        None => Ok((0.0, None)),
                     }
-                    None => Ok((0.0, None)),
                 },
             )
             .unwrap_or_else(|e| {
@@ -6868,6 +6985,7 @@ fn run_optimize(
                 rhf_config,
                 &opt_config,
                 &opt_result.mol,
+                last_scf.take_for(&opt_result.mol),
                 (opt_result.converged, opt_result.steps, opt_result.energy),
                 "analytic",
             );
@@ -6950,6 +7068,7 @@ fn run_optimize(
                 rhf_config,
                 &opt_config,
                 &opt_result.mol,
+                None,
                 (opt_result.converged, opt_result.steps, opt_result.energy),
                 "analytic SCF + finite-difference correlation (h = 5e-4 Bohr)",
             );
@@ -7005,6 +7124,7 @@ fn run_optimize(
                 rhf_config,
                 &opt_config,
                 &opt_result.mol,
+                None,
                 (opt_result.converged, opt_result.steps, opt_result.energy),
                 "analytic (Z-vector)",
             );
@@ -7027,6 +7147,7 @@ fn run_optimize(
                 "optimize",
                 ferric_scf::Spin::Unrestricted,
             );
+            let mut last_scf = LastScf::default();
             let opt_result = optimize_geometry_uhf_with_scf_correction(
                 ctx,
                 mol,
@@ -7034,12 +7155,15 @@ fn run_optimize(
                 op,
                 rhf_config,
                 &opt_config,
-                |m, scf| match &model {
-                    Some(d) => {
-                        let (c, g) = d.evaluate(ctx, m, bs, op, rhf_config, scf)?;
-                        Ok((c.energy, Some(g)))
+                |m, scf| {
+                    last_scf.record(m, scf);
+                    match &model {
+                        Some(d) => {
+                            let (c, g) = d.evaluate(ctx, m, bs, op, rhf_config, scf)?;
+                            Ok((c.energy, Some(g)))
+                        }
+                        None => Ok((0.0, None)),
                     }
-                    None => Ok((0.0, None)),
                 },
             )
             .unwrap_or_else(|e| {
@@ -7066,6 +7190,7 @@ fn run_optimize(
                 rhf_config,
                 &opt_config,
                 &opt_result.mol,
+                last_scf.take_for(&opt_result.mol),
                 (opt_result.converged, opt_result.steps, opt_result.energy),
                 "analytic",
             );
@@ -7086,6 +7211,7 @@ fn run_optimize(
                 "optimize",
                 ferric_scf::Spin::RestrictedOpen,
             );
+            let mut last_scf = LastScf::default();
             let opt_result = optimize_geometry_rohf_with_scf_correction(
                 ctx,
                 mol,
@@ -7093,12 +7219,15 @@ fn run_optimize(
                 op,
                 rhf_config,
                 &opt_config,
-                |m, scf| match &model {
-                    Some(d) => {
-                        let (c, g) = d.evaluate(ctx, m, bs, op, rhf_config, scf)?;
-                        Ok((c.energy, Some(g)))
+                |m, scf| {
+                    last_scf.record(m, scf);
+                    match &model {
+                        Some(d) => {
+                            let (c, g) = d.evaluate(ctx, m, bs, op, rhf_config, scf)?;
+                            Ok((c.energy, Some(g)))
+                        }
+                        None => Ok((0.0, None)),
                     }
-                    None => Ok((0.0, None)),
                 },
             )
             .unwrap_or_else(|e| {
@@ -7125,6 +7254,7 @@ fn run_optimize(
                 rhf_config,
                 &opt_config,
                 &opt_result.mol,
+                last_scf.take_for(&opt_result.mol),
                 (opt_result.converged, opt_result.steps, opt_result.energy),
                 "analytic",
             );
