@@ -48,6 +48,7 @@ use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
+use ferric_scf::result::{stationarity_tol, ScfResult};
 use ferric_scf::rhf::RhfConfig;
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::uhf::solve_uhf;
@@ -194,41 +195,71 @@ fn omega_zero_matvec_is_deterministic_through_the_none_path() {
     );
 }
 
-/// The ω = 0 SCF energy of a **global hybrid** (B3LYP, `k_mix.sr == k_mix.lr`,
-/// ω = 0) with Newton acceleration engaged must be EXACTLY what it was before
-/// #314, to the last printed digit and in the same iteration count.
+/// End to end at ω = 0: UKS/B3LYP (a **global hybrid**, `k_mix.sr == k_mix.lr`)
+/// with Newton engaged exits at the SAME SCF solution as plain DIIS.
 ///
-/// Complements the matvec-level anchor above by pinning the end-to-end numbers.
-/// The pinned values were MEASURED on `origin/main` @ af833f6c, before this
-/// branch's change, by running the identical configuration in a detached
-/// worktree:
+/// # Why DIIS vs Newton, not pinned energies
+///
+/// This test used to pin both absolute energies and both iteration counts as
+/// measured on one box (DIIS −75.7319378517 / 23 it, Newton −75.7319382227 /
+/// 19 it, recorded on `origin/main` @ af833f6c), and was `#[ignore]`d because
+/// those numbers only held there: CI's DIIS landed at −75.7319390095. After
+/// c4b398d4d (the DF-K metric `dsyevd`, which reaches this exact-K run only
+/// through the SAD guess's DF-K free-atom SCFs) the dev box's DIIS and Newton
+/// both land at −75.7319390077 and agree to ~1e-11. The old doc read the
+/// 3.71e-7 Ha DIIS-vs-Newton gap as "two trajectories to the same
+/// `energy_conv = 1e-9` stationary point". The bound below says that is not
+/// possible: a gap ~170× the bound means two DIFFERENT exits (OH is a ²Π
+/// radical with a near-degenerate SOMO), which is the failure this test now
+/// reports instead of recording it as a golden number.
+///
+/// # The bound, from the thresholds this test sets
+///
+/// The per-run stationarity slack is [`ferric_scf::result::stationarity_tol`],
+/// the same one the solvers' non-stationary-exit warning and
+/// `tests/scf_variational_invariant.rs` use. At a converged exit the residual
+/// occupied-virtual rotation obeys `|κ|_F ≤ n·density_conv`, the energy error
+/// is second order, `|E − E*| ≤ span(ε)·|κ|_F²` with `span(ε)` the Fock
+/// eigenvalue range, and the energy gate adds `energy_conv`:
 ///
 /// ```text
-///   DIIS   E = -75.7319378517   23 iterations
-///   Newton E = -75.7319382227   19 iterations
+///   tol_run = energy_conv + span · (n · density_conv)²
 /// ```
 ///
-/// Pinning both energies and both iteration counts is deliberately stricter
-/// than comparing them to each other. The pre-existing DIIS-vs-Newton gap on
-/// this system is 3.71e-7 Ha — larger than one might guess, because the two
-/// paths take different trajectories to the same `energy_conv = 1e-9`
-/// stationary point — so a "DIIS ≈ Newton" assertion would have to be loosened
-/// to ~1e-6 and would then no longer be able to see a small regression. Pinning
-/// the two absolute values at 1e-9 can: a dispatch that took the RSH arm for a
-/// global hybrid, or any perturbation of the ω = 0 Coulomb expression, moves
-/// at least one of these four numbers.
+/// Two runs that reach the SAME stationary point E* therefore differ by at
+/// most `tol_run(DIIS) + tol_run(Newton)` (triangle inequality). For
+/// OH/cc-pVDZ (n = 19) at energy_conv = 1e-9, density_conv = 1e-7 that is
+/// about 2.2e-9 Ha (the test computes `span` from each run's own eigenvalues and
+/// prints the bound). No machine-measured number goes into it.
 ///
-/// **These pins are machine-dependent, so this test runs only on the box that
-/// measured them.** OH is a ²Π radical with a near-degenerate SOMO, so its SCF
-/// endpoint moves with the floating-point environment. On CI the DIIS path,
-/// which #314 does not touch, lands at −75.7319390095, 1.16e-6 Ha from the value
-/// measured here. CI's machine-independent guards on the ω = 0 path are
-/// `omega_zero_matvec_matches_the_pre_292_reference` (the matvec equals the
-/// pre-#292 code on fixed inputs) and
-/// `omega_zero_production_stability_takes_the_coulomb_arm` (the solver feeds it
-/// `rsh: None`).
+/// # Also asserted
+///
+/// * both runs converge (an unconverged run is not a claim);
+/// * **reachability**: Newton really engaged. If the `use_newton` dispatch
+///   excluded global hybrids, the second run would execute the identical DIIS
+///   path and the comparison would be vacuous. That shows up as a bit-identical
+///   energy AND iteration count within one process, which the test rejects
+///   (mutation-tested: `newton_trigger = 0.0` trips it; shifting the Newton
+///   energy by 1e-8 trips the bound).
+///
+/// No independent absolute reference is used: `testdata/reference` has no
+/// OH/cc-pVDZ B3LYP UKS file, and a cross-code DFT energy would differ at the
+/// grid level (~1e-6 Ha), far above the property tested here.
+///
+/// # What it sees, and what it cannot
+///
+/// Newton's fixed point is `F_ov = 0` whatever Hessian the PCG uses, so this
+/// test sees a Hessian error only when the error breaks convergence or sends
+/// the run to a different state. On this system that is very sensitive.
+/// Mutation-tested in `uhf_newton::hessian_matvec`'s ω = 0 arm: dropping the
+/// `c_k·δK` term (B3LYP's 20% exchange) and scaling it by 0.9 BOTH stop the
+/// Newton run from converging within `max_iter = 300` (unmutated: ~16 iterations),
+/// so the test fails. A Hessian error small enough to still converge would only
+/// change the trajectory. Those are left to
+/// `omega_zero_matvec_matches_the_pre_292_reference` (equivalence to the
+/// pre-#292 matvec on fixed inputs) and
+/// `omega_zero_production_stability_takes_the_coulomb_arm` (wiring).
 #[test]
-#[ignore = "pins absolute OH/B3LYP energies and iteration counts measured on the dev box; machine-dependent (CI's DIIS lands 1.2e-6 Ha away), so run it locally with --ignored. The CI guards are omega_zero_matvec_matches_the_pre_292_reference and omega_zero_production_stability_takes_the_coulomb_arm."]
 fn omega_zero_hybrid_newton_still_matches_diis() {
     let mol = oh_doublet();
     let bs = basis::bundled("cc-pvdz").unwrap();
@@ -248,42 +279,53 @@ fn omega_zero_hybrid_newton_still_matches_diis() {
         newton_trigger: 1e-2,
         ..cfg_diis.clone()
     };
-    // Measured on origin/main @ af833f6c (see the doc comment).
-    const E_DIIS_MAIN: f64 = -75.7319378517;
-    const E_NEWTON_MAIN: f64 = -75.7319382227;
-    const IT_DIIS_MAIN: usize = 23;
-    const IT_NEWTON_MAIN: usize = 19;
+    let r_diis = solve_uhf(&ctx, &mol, &prep, &bounds, &cfg_diis)
+        .unwrap_or_else(|e| panic!("DIIS SCF failed: {e:?}"));
+    let r_newton = solve_uhf(&ctx, &mol, &prep, &bounds, &cfg_newton).unwrap_or_else(|e| {
+        panic!("omega = 0 hybrid Newton SCF failed where DIIS converged: {e:?}")
+    });
+    assert!(r_diis.converged, "DIIS did not converge: {:?}", r_diis.exit);
+    assert!(
+        r_newton.converged,
+        "Newton did not converge: {:?}",
+        r_newton.exit
+    );
 
-    let r_diis = solve_uhf(&ctx, &mol, &prep, &bounds, &cfg_diis).unwrap();
-    let r_newton = solve_uhf(&ctx, &mol, &prep, &bounds, &cfg_newton).unwrap();
-    assert!(r_diis.converged && r_newton.converged);
+    // Per-run stationarity slack from the thresholds in force (see the doc).
+    let n = prep.nbasis();
+    let tol_run = |r: &ScfResult| {
+        let (lo, hi) = r
+            .eps_alpha
+            .iter()
+            .chain(r.eps_beta.iter().flatten())
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(l, h), &e| {
+                (l.min(e), h.max(e))
+            });
+        stationarity_tol(cfg_diis.energy_conv, cfg_diis.density_conv, n, hi - lo)
+    };
+    let bound = tol_run(&r_diis) + tol_run(&r_newton);
+    let gap = (r_diis.energy - r_newton.energy).abs();
     eprintln!(
-        "UKS/B3LYP OH  DIIS {:.10} ({} it)  Newton {:.10} ({} it)  |dE| {:.2e}",
+        "UKS/B3LYP OH  DIIS {:.10} ({} it)  Newton {:.10} ({} it)  |dE| {gap:.2e}  bound {bound:.2e}",
+        r_diis.energy, r_diis.iterations, r_newton.energy, r_newton.iterations,
+    );
+
+    // Reachability: Newton must have changed the trajectory.
+    assert!(
+        r_diis.energy.to_bits() != r_newton.energy.to_bits()
+            || r_diis.iterations != r_newton.iterations,
+        "the Newton run is bit-identical to DIIS ({:.12}, {} it): Newton never engaged, \
+         so the comparison is vacuous",
         r_diis.energy,
-        r_diis.iterations,
-        r_newton.energy,
-        r_newton.iterations,
-        (r_diis.energy - r_newton.energy).abs()
+        r_diis.iterations
     );
     assert!(
-        (r_diis.energy - E_DIIS_MAIN).abs() < 1e-9,
-        "DIIS energy moved from the pre-#314 value: {:.10} vs {E_DIIS_MAIN:.10}",
-        r_diis.energy
-    );
-    assert!(
-        (r_newton.energy - E_NEWTON_MAIN).abs() < 1e-9,
-        "Newton energy moved from the pre-#314 value: {:.10} vs {E_NEWTON_MAIN:.10}. \
-         The Newton path is the one #314 changed, so this is the assertion that sees a \
-         regression in the omega = 0 dispatch.",
+        gap <= bound,
+        "omega = 0 hybrid Newton and DIIS exited at different SCF solutions: |dE| = {gap:.3e} \
+         > two-run stationarity bound {bound:.3e} (DIIS {:.10}, Newton {:.10}); two exits at \
+         the same stationary point cannot differ by more than that",
+        r_diis.energy,
         r_newton.energy
-    );
-    assert_eq!(
-        r_diis.iterations, IT_DIIS_MAIN,
-        "DIIS iteration count moved from the pre-#314 value"
-    );
-    assert_eq!(
-        r_newton.iterations, IT_NEWTON_MAIN,
-        "Newton iteration count moved from the pre-#314 value"
     );
 }
 
