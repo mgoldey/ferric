@@ -188,6 +188,7 @@ pub(crate) fn assert_reached(st: &LocalVvhvStats) {
     assert!(st.ns_iterations_hard > 0, "A7 hard Löwdin not reached: {st:?}");
     assert!(st.n_fock_atom_blocks > 0, "A8 Fock blocks not reached: {st:?}");
     assert!(st.boys_sweeps > 0 && st.boys_pairs_evaluated > 0, "F not reached: {st:?}");
+    assert!(st.ns_iterations_guard > 0, "A9 guard not reached: {st:?}");
 }
 
 /// The SCF's returned density lags its returned MOs by one
