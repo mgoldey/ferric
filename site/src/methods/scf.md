@@ -115,7 +115,13 @@ D3(BJ) fit (only zero-damping D3(0)) and is an error. The `wb97x` row is
 replace the VV10 term of ωB97X-V, so it belongs to ωB97X-V's functional
 without VV10, not to the 2008 ωB97X (libxc `HYB_GGA_XC_WB97X`). It is not
 ωB97X-D3 (Lin, Li, Mao and Chai, JCTC 9, 263 (2013)), a separate functional
-fitted with zero damping, nor ωB97X-D (Chai and Head-Gordon, 2008). `task = "optimize"` works (the D3
+fitted with zero damping, nor ωB97X-D (Chai and Head-Gordon, 2008).
+ferric cannot run ωB97X-D3(BJ) as published: `functional = "wB97X-V"` with
+`dispersion = "d3bj"` finds no `wb97x` row (the lookup uses the functional's
+own name), and `dispersion = "d3bj(wb97x)"` adds D3(BJ) on top of the VV10
+term instead of replacing it. ferric has no ωB97X-V-without-VV10 functional,
+so the `wb97x` row is tabulated for comparison with simple-dftd3 only.
+`task = "optimize"` works (the D3
 gradient is implemented; `ferric-d3/tests/gradient_vs_fd.rs`), and so does
 `task = "frequencies"` on RKS, UKS and ROKS: see
 [Frequencies with dispersion](#frequencies-with-dispersion).

@@ -351,8 +351,10 @@ correlation time went into building the localized spaces. The run log and
 the Python `local` dict carry the same fields (`virtual_space`,
 `virtual_space_log`, `virtual_space_local`).
 
-**Exactness.** With every threshold at zero and the dense build's valence
-starting basis, the local build reproduces the dense build. Measured on
+**Exactness.** With every threshold at zero, one global projected-minimal
+solve (no `virtual_solve_radius` cut) and the dense build's valence starting
+basis, the local build reproduces the dense build. The dense valence start is
+a library-only option; the CLI and Python always use the local start. Measured on
 water, C4 and C8 (6-31G):
 
 - the same hard-virtual pivot sequence;

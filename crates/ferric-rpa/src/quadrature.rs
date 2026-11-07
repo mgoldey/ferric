@@ -9,7 +9,8 @@
 //!   nodes mapped to [0,∞) via ω = u₀ tan(π(1+x)/4). Its largest node is about
 //!   0.4 of the Gauss-Legendre one at equal (n, u₀); both grow as n². Used with
 //!   the Laplace χ₀ backend, which falls back to the dense kernel at any node
-//!   with ω·t_max > π/2, so fewer large nodes means fewer fallbacks.
+//!   with ω·t_max > π/2; at equal (n, u₀) the fallback count is within one of
+//!   Gauss-Legendre's, and u₀ moves it more than the scheme does.
 //!
 //! Defaults differ by entry point only in `n_points`: see
 //! [`QuadratureConfig`](crate::config::QuadratureConfig). The library `Default`,
@@ -44,7 +45,8 @@ pub fn build_quadrature(cfg: &QuadratureConfig) -> (Vec<f64>, Vec<f64>) {
 /// Recommended u₀ for ChebyshevTan when paired with Laplace χ₀: smaller
 /// u₀ pushes more quadrature points into the Laplace-safe regime (ω·t_max
 /// < π/2). On H2O/cc-pVDZ with t_max ≈ 1.5, u₀ = 0.2 keeps 16/20 points on
-/// the cheap Laplace path; u₀ = 0.5 keeps only 13/20. Smaller still means
+/// the cheap Laplace path; u₀ = 0.5 keeps only 13/20 (Gauss-Legendre: 15 and
+/// 12). Calibrated for the Laplace backend only. Smaller still means
 /// the high-ω tail is undersampled, so 0.2 balances safe-fraction vs
 /// integrand coverage.
 pub const CHEBYSHEV_TAN_RECOMMENDED_U0: f64 = 0.2;
@@ -61,7 +63,11 @@ pub const CHEBYSHEV_TAN_RECOMMENDED_U0: f64 = 0.2;
 /// finite at every n, growing as n², and about 0.4 of the Gauss-Legendre
 /// map's largest node at equal (n, u₀) (57 vs 145 at n = 20, u₀ = 0.5).
 /// The Laplace χ₀ backend falls back to the dense kernel at any node with
-/// ω·t_max > π/2, so this grid sends fewer nodes to that fallback.
+/// ω·t_max > π/2. At equal (n, u₀) this grid sends about as many nodes to that
+/// fallback as Gauss-Legendre, one fewer or one more depending on t_max (n = 20,
+/// u₀ = 0.5: 13 safe nodes to Gauss-Legendre's 12 at t_max ≈ 1.5, but 13 dense
+/// nodes to its 12 at t_max = 2π).
+/// Lowering u₀ moves more nodes onto the Laplace path than the scheme choice does.
 pub fn chebyshev_tan_nodes(n: usize, u0: f64) -> (Vec<f64>, Vec<f64>) {
     let mut freqs = Vec::with_capacity(n);
     let mut weights = Vec::with_capacity(n);
