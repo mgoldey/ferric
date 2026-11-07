@@ -122,14 +122,18 @@ pub struct LocalVvhvConfig {
 /// imprint at the ~1e-10..1e-9 level even when two starts reach the same
 /// maximum (measured C4/6-31G: purified vs canonical start, same span to
 /// 5e-14, columns 5.5e-10 apart, energy 1.7e-13 apart at eps = 1e-4). The
-/// column-exact anchor therefore needs the dense build's own start.
+/// trivial-limit anchor compares only what is fixed to rounding (valence
+/// span and Boys functional, hard columns), so it does not NEED the dense
+/// start; [`LocalVvhvConfig::trivial`] keeps it so that the anchor isolates
+/// the sparse stages from the start choice (the purified start is anchored
+/// separately, test T-A2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ValenceStart {
     /// Spectral projector (purification) + column-normalized pivoted
     /// Cholesky + Newton-Schulz Löwdin: the local route (production).
     Purified,
     /// The dense build's start: a global eigh of the projected-minimal Gram
-    /// (`canonical_orth`), O(n_min³). The column-exact anchor configuration.
+    /// (`canonical_orth`), O(n_min³). The trivial-limit anchor configuration.
     Canonical,
 }
 
@@ -149,8 +153,9 @@ impl Default for LocalVvhvConfig {
 
 impl LocalVvhvConfig {
     /// Every threshold at its no-op limit and the dense build's valence
-    /// start: the local build must then reproduce the dense build column by
-    /// column (the exactness anchor).
+    /// start: the local build must then reproduce the dense build (hard
+    /// columns, valence span and Boys functional, energies: the exactness
+    /// anchor).
     pub fn trivial() -> Self {
         Self {
             tau: 0.0,

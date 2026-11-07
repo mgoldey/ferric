@@ -1,13 +1,15 @@
 //! The trivial-limit anchor harness of the local VV-HV build (design T-A):
-//! the local build against the dense build on the same SCF, column by column
-//! and in the energy. Test-only (`#[cfg(test)]` module of
+//! the local build against the dense build on the same SCF, in the
+//! quantities each block is determined by to rounding (hard-virtual pivots
+//! and columns; valence span and Boys functional,
+//! [`compare_vvhv_spaces`]) and in the energy. Test-only (`#[cfg(test)]` module of
 //! [`crate::vvhv_local`]).
 
 use super::ValenceStart;
 use super::*;
 use crate::lmp2_amplitude::{
-    build_vvhv_traced_dense, check_vvhv, match_columns_up_to_sign_and_order, AmplitudeLmp2Config,
-    LMP2_CG_RTOL_STRICT,
+    boys_functional as boys_functional_dip, build_vvhv_traced_dense, check_vvhv,
+    compare_vvhv_spaces, AmplitudeLmp2Config, VvhvSpaceDiff, LMP2_CG_RTOL_STRICT,
 };
 use crate::lmp2_direct::{amplitude_lmp2_direct_with_virtuals, DirectConfig};
 use ferric_core::parallel::ParallelContext;
@@ -110,7 +112,11 @@ pub(crate) fn max_column_distance(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
 pub(crate) struct AnchorReport {
     pub same_counts: bool,
     pub same_pivots: bool,
-    pub columns_match: bool,
+    /// Hard columns strict, valence span and Boys functional
+    /// ([`compare_vvhv_spaces`]; valence COLUMNS are fixed only to Boys's
+    /// 1e-8 stopping angle, so they are not compared at 1e-10).
+    pub space: VvhvSpaceDiff,
+    /// Reported only (includes the valence columns, see `space`).
     pub max_col_dist: f64,
     pub dev_orth: f64,
     pub dev_span: f64,
@@ -123,11 +129,11 @@ pub(crate) struct AnchorReport {
 }
 
 impl AnchorReport {
-    /// Every T-A condition at the 1e-10 bars.
+    /// Every T-A condition at the 1e-10 bars (Boys functional 1e-12 rel).
     pub fn passes(&self) -> bool {
         self.same_counts
             && self.same_pivots
-            && self.columns_match
+            && self.space.matches()
             && self.dev_orth <= 1e-10
             && self.dev_span <= 1e-10
             && self.occ_leak <= 1e-10
@@ -160,8 +166,7 @@ pub(crate) fn compare_built(
     eps: &[f64],
 ) -> AnchorReport {
     let same_counts = (loc.vv.n_valence, loc.vv.n_hard) == (dense.n_valence, dense.n_hard);
-    let columns_match = loc.vv.c_vloc.dim() == dense.c_vloc.dim()
-        && match_columns_up_to_sign_and_order(&loc.vv.c_vloc, &dense.c_vloc).0;
+    let space = compare_vvhv_spaces(&su.obs, &loc.vv, dense);
     let max_col_dist = max_column_distance(&loc.vv.c_vloc, &dense.c_vloc);
     let (dev_orth, dev_span) = check_vvhv(&su.obs, &su.rhf, su.nocc, &loc.vv.c_vloc);
     let occ_leak = occupied_leak(su, &loc.vv.c_vloc);
@@ -176,7 +181,7 @@ pub(crate) fn compare_built(
     AnchorReport {
         same_counts,
         same_pivots: loc.hard_aos == dense_hard,
-        columns_match,
+        space,
         max_col_dist,
         dev_orth,
         dev_span,
@@ -232,9 +237,13 @@ fn density_alpha_lags_the_mos() {
 }
 
 /// T-A: in the trivial limit the local build reproduces the dense build
-/// (counts, hard-virtual pivot sequence, columns up to sign/order <= 1e-10,
-/// the construction check <= 1e-10, and the energy <= 1e-10 at eps = 0 and
-/// 1e-4 with production maps and strict CG) on water, C4 and C8.
+/// (counts, hard-virtual pivot sequence, hard columns up to sign <= 1e-10,
+/// valence span <= 1e-10 and Boys functional <= 1e-12 relative, the
+/// construction check <= 1e-10, and the energy <= 1e-10 at eps = 0 and
+/// 1e-4 with production maps and strict CG) on water, C4 and C8. The
+/// valence COLUMNS are not compared: Boys fixes them only to its 1e-8
+/// stopping angle, so a 1e-10 column match holds only by bit coincidence
+/// and breaks whenever the SCF's rounding changes (it did with dsyevd).
 #[test]
 fn local_vvhv_trivial_limit_reproduces_build_vvhv_columns_and_energies() {
     for xyz in ["water.xyz", "alkane_4.xyz", "alkane_8.xyz"] {
@@ -321,14 +330,7 @@ fn basis_choice_truncation_leaves_the_eps0_energy_fixed() {
 /// The Boys functional Σ_k |⟨k|r|k⟩|² of the columns of `c`.
 fn boys_functional(su: &Su, c: &Array2<f64>) -> f64 {
     let dip = ferric_integrals::oneelectron::dipole(&su.obs, [0.0; 3]).unwrap();
-    let mut f = 0.0;
-    for dm in &dip {
-        let dc = dm.dot(c);
-        for k in 0..c.ncols() {
-            f += c.column(k).dot(&dc.column(k)).powi(2);
-        }
-    }
-    f
+    boys_functional_dip(c, &dip)
 }
 
 /// T-A2: the LOCAL valence route (purification + column-normalized pivots +
