@@ -33,7 +33,6 @@ use rayon::prelude::*;
 
 use ferric_integrals::oneelectron::{dipole, overlap, r2_moment};
 
-use crate::boys::boys_localize;
 use crate::lmp2_amplitude::{
     ao_to_atom, canonical_orth, cross_overlap_with_minimal_atoms, eigh, solve_spd, StageTimings,
     VvHv,
@@ -546,6 +545,100 @@ fn projected_minimal(
     Ok(t.drop_below(cfg.tau_loose, cnt))
 }
 
+/// Screened Boys localization (design candidate F): the Jacobi sweep of
+/// [`crate::boys::boys_localize`] (same pair order, same angle, same skip
+/// and stop rules) with a pair screen: pair (i, j) is not rotated when
+/// `|q_ij| < boys_tau · |R_i − R_j|`, q_ij = (⟨i|x|j⟩, ⟨i|y|j⟩, ⟨i|z|j⟩) and
+/// R the current centroids. For a screened pair `A ≈ Σ_α (q_ii − q_jj)²/4`
+/// and `|θ| ≈ |B|/(4A) ≤ |q_ij| / |R_i − R_j| < boys_tau`, so with
+/// `boys_tau <= 1e-8` the screened fixed point meets the unscreened stopping
+/// test. `boys_tau = 0` screens nothing and is bitwise `boys_localize` given
+/// the same `d`.
+///
+/// `c` (nbas, n) is rotated in place; `d` are the MO dipole matrices
+/// `Cᵀ dip_α C` (n, n). Returns (sweeps, pairs evaluated, pairs screened,
+/// converged).
+pub(crate) fn boys_screened(
+    c: &mut Array2<f64>,
+    d: &mut [Array2<f64>; 3],
+    boys_tau: f64,
+    max_iter: usize,
+) -> (usize, u64, u64, bool) {
+    let n = c.ncols();
+    let mut ct: Array2<f64> = c.t().as_standard_layout().into_owned();
+    let (mut evaluated, mut screened) = (0u64, 0u64);
+    let mut converged = false;
+    let mut iterations = 0;
+    'outer: for _sweep in 0..max_iter {
+        iterations += 1;
+        let mut max_theta: f64 = 0.0;
+        for i in 0..n {
+            for j in (i + 1)..n {
+                if boys_tau > 0.0 {
+                    let mut q2 = 0.0;
+                    let mut r2 = 0.0;
+                    for dm in d.iter() {
+                        q2 += dm[(i, j)] * dm[(i, j)];
+                        r2 += (dm[(i, i)] - dm[(j, j)]).powi(2);
+                    }
+                    if q2 < boys_tau * boys_tau * r2 {
+                        screened += 1;
+                        continue;
+                    }
+                }
+                evaluated += 1;
+                let mut big_a = 0.0_f64;
+                let mut big_b = 0.0_f64;
+                for dm in d.iter() {
+                    let da = dm[(i, i)] - dm[(j, j)];
+                    let oa = dm[(i, j)];
+                    big_a += da * da / 4.0 - oa * oa;
+                    big_b += oa * da;
+                }
+                let theta = f64::atan2(-big_b, big_a) / 4.0;
+                if theta.abs() > max_theta {
+                    max_theta = theta.abs();
+                }
+                if theta.abs() < 1e-12 {
+                    continue;
+                }
+                let cos_t = theta.cos();
+                let sin_t = theta.sin();
+                {
+                    let (mut ri, mut rj) =
+                        ct.multi_slice_mut((ndarray::s![i, ..], ndarray::s![j, ..]));
+                    for (x, y) in ri.iter_mut().zip(rj.iter_mut()) {
+                        let ci = *x;
+                        let cj = *y;
+                        *x = cos_t * ci - sin_t * cj;
+                        *y = sin_t * ci + cos_t * cj;
+                    }
+                }
+                for dm in d.iter_mut() {
+                    for p in 0..n {
+                        let dpi = dm[(p, i)];
+                        let dpj = dm[(p, j)];
+                        dm[(p, i)] = cos_t * dpi - sin_t * dpj;
+                        dm[(p, j)] = sin_t * dpi + cos_t * dpj;
+                    }
+                    for p in 0..n {
+                        let dip_val = dm[(i, p)];
+                        let djp = dm[(j, p)];
+                        dm[(i, p)] = cos_t * dip_val - sin_t * djp;
+                        dm[(j, p)] = sin_t * dip_val + cos_t * djp;
+                    }
+                }
+            }
+        }
+        if max_theta < 1e-8 {
+            converged = true;
+            break 'outer;
+        }
+    }
+    c.assign(&ct.t());
+    (iterations, evaluated, screened, converged)
+}
+
 /// Build the VV-HV space with the local construction.
 pub fn build_vvhv_local(
     mol: &Molecule,
@@ -615,8 +708,7 @@ pub(crate) fn build_vvhv_local_with(
             "local VV-HV: minimal basis ({nmin}) smaller than nocc ({nocc_total})"
         ))
     })?;
-    let dip = dipole(obs, [0.0, 0.0, 0.0])?;
-    let dip_b: Vec<Bsr> = dip
+    let dip_b: Vec<Bsr> = dipole(obs, [0.0, 0.0, 0.0])?
         .iter()
         .map(|m| Bsr::from_dense(m, aop.clone(), aop.clone(), cfg.tau, &mut cnt))
         .collect();
@@ -627,9 +719,10 @@ pub(crate) fn build_vvhv_local_with(
     // by greedy pivoted Cholesky on their COLUMN-NORMALIZED Gram (step 0:
     // the unnormalized selection's κ jumps 22/108/285 with size, normalized
     // stays 6-11) and Löwdin-orthonormalized by Newton-Schulz (tau).
-    let c_l = if n_l > 0 && cfg.valence_start == ValenceStart::Canonical {
+    let cl0_b = if n_l > 0 && cfg.valence_start == ValenceStart::Canonical {
         let cl = canonical_orth(&tv_b.to_dense(), &s, n_l)?;
-        boys_localize(&cl, &dip, 200).c_loc
+        let hp = home_partition(&cl, &aop);
+        Some(Bsr::from_dense(&cl, aop.clone(), hp, cfg.tau, &mut cnt))
     } else if n_l > 0 {
         let stv = s_b.mul(&tv_b, cfg.tau, &mut cnt);
         let ot = tv_b.transpose().mul(&stv, cfg.tau_loose, &mut cnt);
@@ -665,10 +758,30 @@ pub(crate) fn build_vvhv_local_with(
             "valence Löwdin",
         )?;
         stats.ns_iterations_valence = nit;
-        let cl0 = psel.mul(&z, cfg.tau, &mut cnt).to_dense();
-        boys_localize(&cl0, &dip, 200).c_loc
+        Some(psel.mul(&z, cfg.tau, &mut cnt))
     } else {
-        Array2::<f64>::zeros((nao, 0))
+        None
+    };
+    // F (basis choice): screened Boys of the valence virtuals. The MO dipole
+    // matrices come from the block-sparse dipole integrals; pairs whose
+    // dipole coupling is below boys_tau·|R_i − R_j| are not rotated.
+    let c_l = match cl0_b {
+        Some(cl0_b) => {
+            let mut d: [Array2<f64>; 3] = Default::default();
+            for (x, m) in dip_b.iter().enumerate() {
+                d[x] = cl0_b
+                    .transpose()
+                    .mul(&m.mul(&cl0_b, cfg.tau, &mut cnt), cfg.tau, &mut cnt)
+                    .to_dense();
+            }
+            let mut cl = cl0_b.to_dense();
+            let (sweeps, ev, sc, _converged) = boys_screened(&mut cl, &mut d, cfg.boys_tau, 200);
+            stats.boys_sweeps = sweeps;
+            stats.boys_pairs_evaluated = ev;
+            stats.boys_pairs_screened = sc;
+            cl
+        }
+        None => Array2::<f64>::zeros((nao, 0)),
     };
     let n_h = nao - nocc_total - n_l;
     let mut hard_aos = Vec::with_capacity(n_h);

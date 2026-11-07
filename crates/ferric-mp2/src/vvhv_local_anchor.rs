@@ -187,6 +187,7 @@ pub(crate) fn assert_reached(st: &LocalVvhvStats) {
     assert!(st.heap_pops > 0, "A6 heap pivots not reached: {st:?}");
     assert!(st.ns_iterations_hard > 0, "A7 hard Löwdin not reached: {st:?}");
     assert!(st.n_fock_atom_blocks > 0, "A8 Fock blocks not reached: {st:?}");
+    assert!(st.boys_sweeps > 0 && st.boys_pairs_evaluated > 0, "F not reached: {st:?}");
 }
 
 /// The SCF's returned density lags its returned MOs by one
@@ -339,4 +340,44 @@ fn purified_valence_start_reaches_the_same_space_and_boys_maximum() {
         assert!(loc.stats.purification_iterations > 0 && loc.stats.ns_iterations_valence > 0);
         assert!(loc.stats.heap_pops > 0 && loc.stats.blocks_dropped == 0);
     }
+}
+
+/// T-F (screened Boys alone), on C8's canonical occupieds: boys_tau = 0 is
+/// BITWISE `boys_localize` (same d); boys_tau = 1e-8 screens pairs, reaches
+/// the same functional to 1e-12 relative and the same columns to 1e-8; a
+/// coarse screen (1e-2) is seen (functional lower by > 1e-10 relative).
+#[test]
+fn screened_boys_is_boys_in_the_trivial_limit_and_screens_safely() {
+    use crate::boys::boys_localize;
+    let su = setup("alkane_8.xyz");
+    let c = su.rhf.mos_r().slice(ndarray::s![.., ..su.nocc]).to_owned();
+    let dip = ferric_integrals::oneelectron::dipole(&su.obs, [0.0; 3]).unwrap();
+    let d0: [Array2<f64>; 3] = std::array::from_fn(|x| c.t().dot(&dip[x].dot(&c)));
+    let reference = boys_localize(&c, &dip, 200);
+    let run = |tau: f64| {
+        let (mut cc, mut d) = (c.clone(), d0.clone());
+        let r = boys_screened(&mut cc, &mut d, tau, 200);
+        (cc, r)
+    };
+    let (c0, (_, ev0, sc0, conv0)) = run(0.0);
+    assert!(conv0 && sc0 == 0 && ev0 > 0);
+    assert!(
+        c0.iter().zip(reference.c_loc.iter()).all(|(a, b)| a.to_bits() == b.to_bits()),
+        "boys_tau = 0 is not bitwise boys_localize"
+    );
+    let f_ref = boys_functional(&su, &reference.c_loc);
+    let (c8, (_, _, sc8, conv8)) = run(1e-8);
+    let f8 = boys_functional(&su, &c8);
+    let dist = max_column_distance(&c8, &reference.c_loc);
+    eprintln!(
+        "T-F C8 occ: screened {sc8} pairs at 1e-8, functional rel {:.2e}, columns {dist:.2e}",
+        ((f8 - f_ref) / f_ref).abs()
+    );
+    assert!(conv8 && sc8 > 0, "the 1e-8 screen skipped nothing");
+    assert!(((f8 - f_ref) / f_ref).abs() <= 1e-12);
+    assert!(dist <= 1e-8);
+    let (c2, _) = run(1e-2);
+    let f2 = boys_functional(&su, &c2);
+    eprintln!("T-F C8 occ: functional rel at 1e-2 {:.2e}", (f_ref - f2) / f_ref);
+    assert!((f_ref - f2) / f_ref > 1e-10, "a coarse screen is not seen");
 }
