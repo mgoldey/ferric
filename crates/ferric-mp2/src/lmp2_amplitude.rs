@@ -2337,10 +2337,10 @@ mod tests {
     /// B1 anchor: the one-Cholesky multi-RHS `solve_spd` reproduces the
     /// frozen per-column-LU oracle on C4/6-31G's projected-minimal system
     /// (≤ 1e-10 relative), and the VV-HV space built on it matches the
-    /// oracle-built space column by column (sign-fixed, ≤ 1e-10, same
-    /// hard-virtual subset in the same order — before the near-tie pivot
-    /// rule, four tied columns swapped order here) and passes the
-    /// orthonormality/span check.
+    /// oracle-built space ([`assert_vvhv_spaces_match`]: same hard-virtual
+    /// subset in the same order — before the near-tie pivot rule, four tied
+    /// columns swapped order here — same hard columns, same valence span and
+    /// Boys functional) and passes the orthonormality/span check.
     #[test]
     fn solve_spd_cholesky_matches_lu_oracle_and_vvhv_is_unchanged() {
         let (mol, obs, bs, rhf) = c4_631g();
@@ -2355,11 +2355,87 @@ mod tests {
         assert_vvhv_matches_lu_oracle(&mol, &obs, &bs, &rhf);
     }
 
+    /// Boys functional `Σ_i |⟨i|r|i⟩|²` of the columns of `c`.
+    fn boys_functional(c: &Array2<f64>, dip: &[Array2<f64>; 3]) -> f64 {
+        dip.iter()
+            .map(|dm| {
+                column_expectations(dm, c)
+                    .iter()
+                    .map(|x| x * x)
+                    .sum::<f64>()
+            })
+            .sum()
+    }
+
+    /// Two VV-HV spaces from the SAME RHF built by two code paths agree.
+    ///
+    /// The HARD block is compared column by column (sign-fixed, <= 1e-10,
+    /// none reordered) after the hard-virtual subset/pivot order: it depends
+    /// on the valence block only through its span, so it is determined to
+    /// rounding.
+    ///
+    /// The VALENCE block is NOT compared column by column. Its columns are
+    /// the output of `boys_localize`, which stops once every Jacobi angle is
+    /// below 1e-8, so they are fixed only to the Boys stopping tolerance,
+    /// not to rounding. On benzene/6-31G (15 valence virtuals, 26 sweeps) two
+    /// paths whose inputs differ in the last bits stop at iterates that
+    /// differ by 6.7e-9 (|C|max 8.3). The 1e-10 column comparison passed
+    /// before e45466457 (dsyevd SCF eigensolver) only because those bits
+    /// happened to line up; the change of RHF bits made it fail without any
+    /// lmp2 change. What the valence block IS determined to rounding is
+    /// compared instead: (i) its span, as the AO projector `C_l C_lᵀ`
+    /// (<= 1e-10; measured 1.4e-13), which catches a leaked, missing or
+    /// mis-projected valence direction; and (ii) the Boys functional,
+    /// stationary at the optimum, so its error is second order in the 1e-8
+    /// orbital error (<= 1e-12 relative; measured 3e-15), which catches a
+    /// missing, unconverged or wrong-branch localization.
+    fn assert_vvhv_spaces_match(
+        obs: &PreparedBasis,
+        new: (&VvHv, &[usize]),
+        old: (&VvHv, &[usize]),
+        what: &str,
+    ) {
+        let ((v_new, h_new), (v_old, h_old)) = (new, old);
+        assert_eq!(v_new.c_vloc.dim(), v_old.c_vloc.dim(), "{what}: shape");
+        assert_eq!(
+            (v_new.n_valence, v_new.n_hard),
+            (v_old.n_valence, v_old.n_hard),
+            "{what}: block sizes"
+        );
+        assert!(
+            v_new.n_hard > 0 && v_new.n_valence > 0,
+            "{what}: an empty block makes the test vacuous"
+        );
+        assert_eq!(h_new, h_old, "{what}: hard-virtual subset/order differs");
+
+        let nl = v_new.n_valence;
+        let hard = |v: &VvHv| v.c_vloc.slice(s![.., nl..]).to_owned();
+        let (matched, permuted) = match_columns_up_to_sign_and_order(&hard(v_new), &hard(v_old));
+        assert!(
+            matched && permuted == 0,
+            "{what}: hard virtuals are not the reference columns (<= 1e-10, sign; {permuted} reordered)"
+        );
+
+        let val = |v: &VvHv| v.c_vloc.slice(s![.., ..nl]).to_owned();
+        let (cl_new, cl_old) = (val(v_new), val(v_old));
+        let dp = max_abs_dev(&cl_new.dot(&cl_new.t()), &cl_old.dot(&cl_old.t()));
+        assert!(dp <= 1e-10, "{what}: valence span differs ({dp:.2e})");
+        let dip = dipole(obs, [0.0; 3]).unwrap();
+        let (f_new, f_old) = (
+            boys_functional(&cl_new, &dip),
+            boys_functional(&cl_old, &dip),
+        );
+        let df = ((f_new - f_old) / f_old).abs();
+        assert!(
+            df <= 1e-12,
+            "{what}: valence Boys functional {f_new:.15} vs {f_old:.15} (rel {df:.2e})"
+        );
+    }
+
     /// The VV-HV space built on the Cholesky `solve_spd` against the one
-    /// built on the frozen LU oracle: the SAME hard-virtual subset in the
-    /// same pivot order (AO indices of the selected candidates), the same
-    /// columns (sign-fixed, <= 1e-10, no reordering), and the
-    /// orthonormality/span check.
+    /// built on the frozen LU oracle ([`assert_vvhv_spaces_match`]: same
+    /// hard-virtual subset in the same pivot order, same hard columns, same
+    /// valence span and Boys functional), plus the orthonormality/span check.
     fn assert_vvhv_matches_lu_oracle(
         mol: &Molecule,
         obs: &PreparedBasis,
@@ -2368,21 +2444,7 @@ mod tests {
     ) {
         let (v_new, h_new) = build_vvhv_traced(mol, obs, bs, rhf, solve_spd).unwrap();
         let (v_old, h_old) = build_vvhv_traced(mol, obs, bs, rhf, solve_spd_lu_oracle).unwrap();
-        assert_eq!(v_new.c_vloc.dim(), v_old.c_vloc.dim());
-        assert_eq!(
-            (v_new.n_valence, v_new.n_hard),
-            (v_old.n_valence, v_old.n_hard)
-        );
-        assert!(v_new.n_hard > 0, "no hard virtuals: the test is vacuous");
-        assert_eq!(
-            h_new, h_old,
-            "hard-virtual subset/order differs from the oracle"
-        );
-        let (matched, permuted) = match_columns_up_to_sign_and_order(&v_new.c_vloc, &v_old.c_vloc);
-        assert!(
-            matched && permuted == 0,
-            "c_vloc is not the oracle's columns (<= 1e-10, sign; {permuted} reordered)"
-        );
+        assert_vvhv_spaces_match(obs, (&v_new, &h_new), (&v_old, &h_old), "LU oracle");
         let nocc = (mol.nelec() as usize) / 2;
         let (o, sp) = check_vvhv(obs, rhf, nocc, &v_new.c_vloc);
         assert!(
@@ -2738,27 +2800,17 @@ mod tests {
 
     /// Fixes (a) spread-weight GEMMs + multi-RHS `solve_spd` and (c) the
     /// atom-diagonal hard-virtual Fock blocks reproduce the frozen pre-fix
-    /// VV-HV space: the SAME hard-virtual subset in the same pivot order and
-    /// the same columns (sign-fixed, ≤ 1e-10, none reordered), on an alkane
-    /// (C8) and on molecules with exact symmetry ties (water, benzene).
+    /// VV-HV space ([`assert_vvhv_spaces_match`]: the SAME hard-virtual
+    /// subset in the same pivot order, the same hard columns to ≤ 1e-10, and
+    /// the same valence span and Boys functional), on an alkane (C8) and on
+    /// molecules with exact symmetry ties (water, benzene).
     #[test]
     fn vvhv_matches_the_pre_cubic_fix_oracle() {
         for xyz in ["alkane_8.xyz", "water.xyz", "benzene.xyz"] {
             let (mol, obs, bs, rhf) = rhf_631g(xyz);
             let (v_new, h_new) = build_vvhv_traced(&mol, &obs, &bs, &rhf, solve_spd).unwrap();
             let (v_old, h_old) = build_vvhv_pre_fix_oracle(&mol, &obs, &bs, &rhf).unwrap();
-            assert!(v_new.n_hard > 0 && v_new.n_valence > 0, "{xyz}: vacuous");
-            assert_eq!(
-                (v_new.n_valence, v_new.n_hard),
-                (v_old.n_valence, v_old.n_hard)
-            );
-            assert_eq!(h_new, h_old, "{xyz}: hard-virtual subset/order differs");
-            let (matched, permuted) =
-                match_columns_up_to_sign_and_order(&v_new.c_vloc, &v_old.c_vloc);
-            assert!(
-                matched && permuted == 0,
-                "{xyz}: c_vloc is not the pre-fix columns ({permuted} reordered)"
-            );
+            assert_vvhv_spaces_match(&obs, (&v_new, &h_new), (&v_old, &h_old), xyz);
         }
     }
 
