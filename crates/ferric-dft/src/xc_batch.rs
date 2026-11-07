@@ -261,15 +261,15 @@ pub(crate) struct OwnedShell {
     pure: bool,
     exponents: Vec<f64>,
     coefficients: Vec<f64>,
-    center: [f64; 3],
+    pub(crate) center: [f64; 3],
     /// Number of basis functions in this shell.
-    nfunc: usize,
+    pub(crate) nfunc: usize,
     /// Global index of this shell's first basis function.
-    offset: usize,
+    pub(crate) offset: usize,
 }
 
 impl OwnedShell {
-    fn located(&self) -> LocatedShell<'_> {
+    pub(crate) fn located(&self) -> LocatedShell<'_> {
         LocatedShell {
             l: self.l,
             pure: self.pure,
@@ -381,7 +381,7 @@ const ANGULAR_GRAD_BOUND: [f64; 5] = [0.0, 1.0, 2.0, 6.0, 16.0];
 /// primitives adds under `1e-12`.
 const SCREEN_RADIUS_MARGIN: f64 = 1e-6;
 /// Takes the rounding of the box distance and of `r²` out of the comparison.
-const SCREEN_DIST2_MARGIN: f64 = 1e-12;
+pub(crate) const SCREEN_DIST2_MARGIN: f64 = 1e-12;
 /// Below this a term of the evaluator can lose all its precision to underflow.
 const SCREEN_MIN_THRESH: f64 = 1e-290;
 
@@ -412,6 +412,43 @@ fn shell_bound_at(sh: &OwnedShell, r: f64) -> f64 {
     value.max(2.0 * ANGULAR_VALUE_BOUND[l] * rl * r * drad + lower)
 }
 
+/// Upper bound at distance `r` on `|χ|`, `|∂χ|` AND every `|∂_i∂_jχ|` of `sh`
+/// — the AO-Hessian twin of [`shell_bound_at`], for the XC nuclear gradient,
+/// which contracts `∂²χ` and so cannot screen on value + gradient alone (a
+/// tight shell's Hessian outruns its gradient by `~2 a r` in the tail).
+///
+/// With `D2 = Σ|c N a² e^(-a r²)|`, `∂_i∂_jχ = 4 rad'' d_i d_j A + 2 rad' δ_ij A
+/// + 2 rad' (d_i ∂_jA + d_j ∂_iA) + rad ∂_i∂_jA` gives
+/// `|∂²χ| <= 4 K_v r^(l+2) D2 + 2 K_v r^l D + 4 K_g r^l D + K_h r^(l-2) R`.
+/// `K_h = l(l-1) K_v`: a degree-`l` monomial's second derivative carries a
+/// factor of at most `l(l-1)` and degree `l-2`, so `Σ|coef|` times that bounds
+/// every second derivative of the angular polynomial.
+fn shell_hess_bound_at(sh: &OwnedShell, r: f64) -> f64 {
+    let l = sh.l as usize;
+    let pi = std::f64::consts::PI;
+    let dbl_fact: f64 = [1.0, 1.0, 3.0, 15.0, 105.0][l];
+    let (mut rad, mut drad, mut d2rad) = (0.0_f64, 0.0_f64, 0.0_f64);
+    for (a, c) in sh.exponents.iter().zip(&sh.coefficients) {
+        let n = (2.0 * a / pi).powf(0.75) * (4.0 * a).powi(sh.l).sqrt() / dbl_fact.sqrt();
+        let t = c.abs() * n * (-a * r * r).exp().max(f64::MIN_POSITIVE);
+        rad += t;
+        drad += a * t;
+        d2rad += a * a * t;
+    }
+    let kv = ANGULAR_VALUE_BOUND[l];
+    let kg = ANGULAR_GRAD_BOUND[l];
+    let kh = (l * l.saturating_sub(1)) as f64 * kv;
+    let rl = r.powi(sh.l);
+    let hess_low = if l >= 2 {
+        kh * r.powi(sh.l - 2) * rad
+    } else {
+        0.0
+    };
+    let hess =
+        4.0 * kv * rl * r * r * d2rad + 2.0 * kv * rl * drad + 4.0 * kg * rl * drad + hess_low;
+    shell_bound_at(sh, r).max(hess)
+}
+
 /// A distance beyond which no value or gradient component of `sh`, as
 /// `eval_shell_and_grad` computes it, exceeds `thresh`. `INFINITY` says nothing
 /// is known, so the shell is always evaluated.
@@ -422,6 +459,33 @@ fn shell_bound_at(sh: &OwnedShell, r: f64) -> f64 {
 /// distances. Below that floor it may still rise, which is why the search never
 /// goes there.
 fn shell_screen_radius(sh: &OwnedShell, thresh: f64) -> f64 {
+    screen_radius_with(sh, thresh, 1, shell_bound_at)
+}
+
+/// [`shell_screen_radius`] for [`shell_hess_bound_at`]: beyond it no value,
+/// gradient or Hessian component exceeds `thresh`. Its terms reach `r^(l+2)`,
+/// hence the `l + 2` monotonicity floor.
+fn shell_screen_radius_hess(sh: &OwnedShell, thresh: f64) -> f64 {
+    screen_radius_with(sh, thresh, 2, shell_hess_bound_at)
+}
+
+/// Squared [`shell_screen_radius_hess`] of each shell: the prefilter of the XC
+/// gradient's Hessian-aware batch screen.
+pub(crate) fn shell_screen_radii2_hess(shells: &[OwnedShell], thresh: f64) -> Vec<f64> {
+    shells
+        .iter()
+        .map(|sh| shell_screen_radius_hess(sh, thresh).powi(2))
+        .collect()
+}
+
+/// The radius search shared by the value/gradient and Hessian bounds: `extra`
+/// is the largest power of `r` above `l` among the bound's terms.
+fn screen_radius_with(
+    sh: &OwnedShell,
+    thresh: f64,
+    extra: i32,
+    bound: fn(&OwnedShell, f64) -> f64,
+) -> f64 {
     let valid = (0..=4).contains(&sh.l)
         && thresh >= SCREEN_MIN_THRESH
         && thresh.is_finite()
@@ -432,12 +496,12 @@ fn shell_screen_radius(sh: &OwnedShell, thresh: f64) -> f64 {
     }
     let target = thresh * (1.0 - SCREEN_RADIUS_MARGIN);
     let a_min = sh.exponents.iter().copied().fold(f64::INFINITY, f64::min);
-    let floor = (f64::from(sh.l + 1) / (2.0 * a_min)).sqrt();
-    if shell_bound_at(sh, floor) <= target {
+    let floor = (f64::from(sh.l + extra) / (2.0 * a_min)).sqrt();
+    if bound(sh, floor) <= target {
         return floor;
     }
     let (mut lo, mut hi) = (floor, floor * 2.0);
-    while shell_bound_at(sh, hi) > target {
+    while bound(sh, hi) > target {
         (lo, hi) = (hi, hi * 2.0);
         if !hi.is_finite() || hi > 1e9 {
             return f64::INFINITY;
@@ -445,7 +509,7 @@ fn shell_screen_radius(sh: &OwnedShell, thresh: f64) -> f64 {
     }
     for _ in 0..60 {
         let mid = 0.5 * (lo + hi);
-        if shell_bound_at(sh, mid) <= target {
+        if bound(sh, mid) <= target {
             hi = mid;
         } else {
             lo = mid;
@@ -502,7 +566,7 @@ fn shell_significant(sh: &OwnedShell, pts: &[[f64; 3]], thresh: f64) -> Result<b
 
 /// Bounding box of `pts`. NaN coordinates are ignored, as `f64::max` ignores them
 /// in the screening value.
-fn points_box(pts: &[[f64; 3]]) -> ([f64; 3], [f64; 3]) {
+pub(crate) fn points_box(pts: &[[f64; 3]]) -> ([f64; 3], [f64; 3]) {
     let (mut lo, mut hi) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
     for p in pts {
         for a in 0..3 {
@@ -601,7 +665,7 @@ pub(crate) fn eval_batch_ao(
 }
 
 /// `D[funcs, funcs]` as a dense `(nact, nact)` matrix.
-fn gather_sub(d: &Array2<f64>, funcs: &[u32]) -> Array2<f64> {
+pub(crate) fn gather_sub(d: &Array2<f64>, funcs: &[u32]) -> Array2<f64> {
     let n = funcs.len();
     Array2::from_shape_fn((n, n), |(i, j)| d[(funcs[i] as usize, funcs[j] as usize)])
 }
@@ -687,7 +751,7 @@ pub(crate) fn n_groups(nbatches: usize, nbf: usize, nmats: usize) -> usize {
 }
 
 /// Contiguous `[b0, b1)` batch ranges for `ngroups` groups over `nbatches`.
-fn group_ranges(nbatches: usize, ngroups: usize) -> Vec<(usize, usize)> {
+pub(crate) fn group_ranges(nbatches: usize, ngroups: usize) -> Vec<(usize, usize)> {
     if nbatches == 0 {
         return Vec::new();
     }
@@ -2183,6 +2247,67 @@ mod tests {
         }
         eprintln!("true / bound radius over all kinds: {widest:.3} .. {tightest:.4}");
         assert!(tightest > 0.99, "the bound is loose everywhere: {tightest}");
+    }
+
+    /// [`largest_on_sphere`] including every AO second derivative.
+    fn largest_on_sphere_hess(sh: &OwnedShell, r: f64, dirs: &[[f64; 3]]) -> f64 {
+        let mut m = 0.0_f64;
+        for d in dirs {
+            let (mut buf, mut gbuf, mut hbuf) =
+                ([0.0f64; 15], [[0.0f64; 15]; 3], [[0.0f64; 15]; 9]);
+            crate::ao_grid::eval_shell_grad_hess(
+                &sh.located(),
+                r * d[0],
+                r * d[1],
+                r * d[2],
+                &mut buf,
+                &mut gbuf,
+                &mut hbuf,
+            )
+            .unwrap();
+            for i in 0..sh.nfunc {
+                m = m.max(buf[i].abs());
+                for row in &gbuf {
+                    m = m.max(row[i].abs());
+                }
+                for row in &hbuf {
+                    m = m.max(row[i].abs());
+                }
+            }
+        }
+        m
+    }
+
+    /// The Hessian-aware radius the XC gradient's screen prefilters with: no
+    /// value, gradient OR second derivative exceeds the threshold beyond it, for
+    /// every shell kind. Also checks it is not vacuous (finite) and that it really
+    /// is wider than the value/gradient radius somewhere — else the gradient
+    /// would not need its own bound.
+    #[test]
+    fn nothing_exceeds_the_threshold_beyond_the_hessian_screen_radius() {
+        let dirs = directions();
+        let mut wider_somewhere = false;
+        for (name, sh) in all_shell_kinds() {
+            for thresh in SCREEN_THRESHOLDS {
+                let r = shell_screen_radius_hess(&sh, thresh);
+                assert!(r.is_finite() && r > 0.0, "{name} at {thresh:e}: radius {r}");
+                for factor in [1.0, 1.0001, 1.001, 1.01, 1.05, 1.2, 1.5, 2.0, 4.0, 16.0] {
+                    let m = largest_on_sphere_hess(&sh, r * factor, &dirs);
+                    assert!(
+                        m <= thresh,
+                        "{name} at {thresh:e}: {m:e} at {factor} of radius {r}"
+                    );
+                }
+                let r_vg = shell_screen_radius(&sh, thresh);
+                if largest_on_sphere_hess(&sh, r_vg * 1.0001, &dirs) > thresh {
+                    wider_somewhere = true;
+                }
+            }
+        }
+        assert!(
+            wider_somewhere,
+            "the value/gradient radius already bounds the Hessian everywhere"
+        );
     }
 
     /// The anchor: the keep list with the prefilter is the keep list without it, on
