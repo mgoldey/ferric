@@ -212,6 +212,8 @@ pub struct LocalVvhvStats {
     pub ns_iterations_guard: usize,
     /// Pivoted-Cholesky pivots taken (valence + hard) and heap pops.
     pub heap_pops: u64,
+    /// Per-atom Fock blocks diagonalized (hard-virtual pseudo-canonicalization).
+    pub n_fock_atom_blocks: usize,
     /// Boys sweeps, and pair rotations evaluated / skipped by the screen.
     pub boys_sweeps: usize,
     pub boys_pairs_evaluated: u64,
@@ -341,6 +343,7 @@ impl VirtualSpaceReport {
                 ("ns_iterations_hard", V::Usize(stats.ns_iterations_hard)),
                 ("ns_iterations_guard", V::Usize(stats.ns_iterations_guard)),
                 ("heap_pops", V::Usize(stats.heap_pops as usize)),
+                ("n_fock_atom_blocks", V::Usize(stats.n_fock_atom_blocks)),
                 ("boys_sweeps", V::Usize(stats.boys_sweeps)),
                 (
                     "boys_pairs_evaluated",
@@ -751,31 +754,43 @@ pub(crate) fn build_vvhv_local_with(
             "hard-virtual Löwdin",
         )?;
         stats.ns_iterations_hard = nit;
-        let ch_b = sel_b.mul(&z, cfg.tau, &mut cnt);
-        let mut ch = ch_b.to_dense();
-        let f_ao = rhf.fock_r();
-        let fch = f_ao.dot(&ch);
-        let mut by_atom: std::collections::BTreeMap<usize, Vec<usize>> = Default::default();
-        for (k, &a) in sel_parents.iter().enumerate() {
-            by_atom.entry(a).or_default().push(k);
-        }
-        for idx in by_atom.values() {
-            let blk = ch
-                .select(ndarray::Axis(1), idx)
-                .t()
-                .dot(&fch.select(ndarray::Axis(1), idx));
-            let (_, u) = eigh(&blk)?;
-            let cols: Vec<ndarray::Array1<f64>> =
-                idx.iter().map(|&ic| ch.column(ic).to_owned()).collect();
-            for (cnew, &ic) in idx.iter().enumerate() {
-                let mut acc = ndarray::Array1::<f64>::zeros(nao);
-                for (r, col) in cols.iter().enumerate() {
-                    acc.scaled_add(u[(r, cnew)], col);
+        let mut ch_b = sel_b.mul(&z, cfg.tau, &mut cnt);
+        // A8 (basis choice): per-atom pseudo-canonicalization from the
+        // atom-diagonal blocks F^h_AA = C_{h,A}ᵀ F C_{h,A} only (a
+        // block-diagonal rotation: span and orthonormality unchanged). The
+        // columns of one atom are a subset of one atom-group column block.
+        let f_b = Bsr::from_dense(&rhf.fock_r(), aop.clone(), aop.clone(), cfg.tau, &mut cnt);
+        let fc = f_b.mul(&ch_b, cfg.tau, &mut cnt);
+        for (g, cols) in hardp.groups.iter().enumerate() {
+            if cols.is_empty() {
+                continue;
+            }
+            let mut fgg = Array2::<f64>::zeros((cols.len(), cols.len()));
+            for gi in 0..ng {
+                if let (Some(a), Some(b)) = (ch_b.get(gi, g), fc.get(gi, g)) {
+                    ndarray::linalg::general_mat_mul(1.0, &a.t(), b, 1.0, &mut fgg);
                 }
-                ch.column_mut(ic).assign(&acc);
+            }
+            let mut by_atom: std::collections::BTreeMap<usize, Vec<usize>> = Default::default();
+            for (q, &k) in cols.iter().enumerate() {
+                by_atom.entry(sel_parents[k]).or_default().push(q);
+            }
+            for pos in by_atom.values() {
+                let blk =
+                    Array2::from_shape_fn((pos.len(), pos.len()), |(r, c)| fgg[(pos[r], pos[c])]);
+                let (_, u) = eigh(&blk)?;
+                stats.n_fock_atom_blocks += 1;
+                for gi in 0..ng {
+                    if let Some(b) = ch_b.get_mut(gi, g) {
+                        let rot = b.select(ndarray::Axis(1), pos).dot(&u);
+                        for (c, &q) in pos.iter().enumerate() {
+                            b.column_mut(q).assign(&rot.column(c));
+                        }
+                    }
+                }
             }
         }
-        ch
+        ch_b.to_dense()
     } else {
         Array2::<f64>::zeros((nao, 0))
     };
