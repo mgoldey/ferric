@@ -2450,4 +2450,78 @@ mod tests {
              mask is inert and this test is vacuous"
         );
     }
+
+    /// EXACTNESS ANCHOR for the domain-truncated AO path, against the MO path.
+    ///
+    /// A cutoff larger than any interatomic distance makes every domain the
+    /// whole basis (a vacuous mask), so `AoSparse` must reproduce
+    /// `compute_sos_mo`, a different algebra for the same quantity, to
+    /// round-off. The older tests compare `AoSparse` with `Ao` only, so a defect
+    /// shared by both AO routes would pass them. This one compares across the
+    /// AO/MO construction boundary.
+    ///
+    /// Butane (10.5 Bohr across) as well as water: on butane the Boys rotation
+    /// is far from the identity, so `exp(t F_loc)` in the localized basis has
+    /// to equal the canonical `exp(t eps)`. An index-mismatch bug of the
+    /// 2026-07-27 kind breaks exactly that.
+    #[test]
+    fn sos_ao_sparse_infinite_cutoff_reproduces_mo() {
+        let cases: [(&str, &str); 2] = [("water", "6-31g"), ("alkane_4", "sto-3g")];
+        for (name, basis_name) in cases {
+            let (mol, obs, dfbs, rhf) = if name == "water" {
+                setup_sos(basis_name)
+            } else {
+                let mol = Molecule::load_xyz(&format!(
+                    "{}/../../testdata/molecules/{name}.xyz",
+                    env!("CARGO_MANIFEST_DIR")
+                ))
+                .unwrap();
+                let obs = PreparedBasis::new(&mol, &basis::bundled(basis_name).unwrap()).unwrap();
+                let dfbs =
+                    PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
+                let op = Operator::coulomb();
+                let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+                let rhf = solve_rhf(
+                    &ferric_core::parallel::ParallelContext::default(),
+                    &mol,
+                    &obs,
+                    op,
+                    &bounds,
+                    &RhfConfig {
+                        energy_conv: 1e-10,
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+                (mol, obs, dfbs, rhf)
+            };
+            let op = Operator::coulomb();
+            let cfg = SosMp2Config {
+                c_os: 1.0,
+                ..Default::default()
+            };
+            let mo = laplace_sos_mp2(&mol, &obs, &dfbs, op, &rhf, &cfg, SosFormulation::Mo)
+                .unwrap()
+                .e_os;
+            let sparse = laplace_sos_mp2(
+                &mol,
+                &obs,
+                &dfbs,
+                op,
+                &rhf,
+                &cfg,
+                SosFormulation::AoSparse(1.0e6),
+            )
+            .unwrap()
+            .e_os;
+            let d = (sparse - mo).abs();
+            eprintln!("{name}/{basis_name}: MO {mo:.12}  AoSparse(inf) {sparse:.12}  |d| {d:.3e}");
+            assert!(mo.abs() > 1e-3, "{name}: E_OS ~0, the anchor would be vacuous");
+            assert!(
+                d <= 1e-9,
+                "{name}/{basis_name}: AoSparse with a vacuous cutoff must reproduce \
+                 compute_sos_mo to 1e-9, got |d| = {d:.3e}"
+            );
+        }
+    }
 }
