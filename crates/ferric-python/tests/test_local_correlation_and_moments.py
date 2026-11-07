@@ -189,6 +189,62 @@ def test_rimp2_integral_direct_production_defaults(water_631g):
     assert r.local["t_eri3_s"] >= 0.0 and r.local["t_pairs_s"] >= 0.0
 
 
+def test_rimp2_virtual_space_kwargs_are_strict(h2_sto):
+    mol, obs = h2_sto
+    with pytest.raises(ValueError, match="virtual_space"):
+        ferric.run_rimp2(
+            mol, obs, obs, local="amplitude-threshold", eps=1e-4, virtual_space="sparse"
+        )
+    with pytest.raises(ValueError, match='virtual_space = "local"'):
+        ferric.run_rimp2(
+            mol, obs, obs, local="amplitude-threshold", eps=1e-4, virtual_tau=1e-9
+        )
+    with pytest.raises(ValueError, match="virtual_space"):
+        ferric.run_rimp2(mol, obs, obs, virtual_space="local")
+    with pytest.raises(ValueError, match="virtual_solve_radius"):
+        ferric.run_rimp2(
+            mol,
+            obs,
+            obs,
+            local="amplitude-threshold",
+            eps=1e-4,
+            virtual_space="local",
+            virtual_solve_radius=0.0,
+        )
+
+
+def test_rimp2_virtual_space_dense_and_local_report_the_build(water_631g):
+    # eps=0 + trivial maps: both builds reproduce canonical RI-MP2, and the
+    # local dict names the build, carries the log line, and (local) the
+    # thresholds + counters
+    mol, obs, aux = water_631g
+    kw = dict(
+        frozen_core=1,
+        local="amplitude-threshold",
+        eps=0.0,
+        compute_reference=True,
+        integral_direct=True,
+        aux_radius=1e6,
+        virt_radius=1e6,
+        ao_tail=0.0,
+        schwarz_skip=0.0,
+        batch_merge=1,
+    )
+    dense = ferric.run_rimp2(mol, obs, aux, **kw)
+    local = ferric.run_rimp2(mol, obs, aux, virtual_space="local", **kw)
+    assert dense.local["virtual_space"] == "dense"
+    assert dense.local["virtual_space_local"] is None
+    assert "dense VV-HV build" in dense.local["virtual_space_log"]
+    assert local.local["virtual_space"] == "local"
+    assert "LOCAL VV-HV build" in local.local["virtual_space_log"]
+    stats = local.local["virtual_space_local"]
+    assert stats["tau"] == 1e-9 and stats["tau_loose"] == 1e-6
+    assert stats["n_products"] > 0 and stats["ns_iterations_hard"] > 0
+    for r in (dense, local):
+        assert abs(r.mp2_corr - r.local["e_corr_canonical_ri"]) < 1e-9
+    assert abs(dense.mp2_corr - local.mp2_corr) < 1e-9
+
+
 def test_drpa_is_exact_by_default(h2_sto):
     mol, obs = h2_sto
     d = ferric.run_drpa(mol, obs, obs)
