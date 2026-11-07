@@ -2171,6 +2171,22 @@ fn lmp2_local_json(
     j
 }
 
+/// [`lmp2_local_json`] plus the virtual-space build report
+/// (`ferric_mp2::vvhv_local::VirtualSpaceReport::fields`).
+fn lmp2_local_json_with_vs(
+    local: &LocalPrint,
+    cert: &ferric_mp2::lmp2_certificate::Lmp2Certificate,
+    r: &ferric_mp2::lmp2_amplitude::AmplitudeLmp2Result,
+) -> serde_json::Value {
+    let mut j = lmp2_local_json(local, cert);
+    if let Some(obj) = j.as_object_mut() {
+        for (k, v) in r.virtual_space.fields(&r.timings) {
+            obj.insert(k.to_string(), cert_value_json(&v));
+        }
+    }
+    j
+}
+
 /// The model certificate of an LMP2 run, with the integral-direct stage-5
 /// counters when `maps` carries the direct stats.
 fn lmp2_certificate<T>(
@@ -2204,6 +2220,7 @@ fn lmp2_timings_json(
 ) -> serde_json::Value {
     let ferric_mp2::lmp2_amplitude::StageTimings {
         t_spaces_s,
+        t_loc_s: stage_t_loc_s,
         t_assembly_s,
         t_solve_s,
         t_reference_s,
@@ -2294,6 +2311,7 @@ fn lmp2_timings_json(
     });
     serde_json::json!({
         "t_spaces_s": t_spaces_s,
+        "t_loc_s": stage_t_loc_s,
         "t_assembly_s": t_assembly_s,
         "t_solve_s": t_solve_s,
         "t_reference_s": t_reference_s,
@@ -2389,6 +2407,7 @@ fn run_rimp2_local(
         eri3_budget_bytes: budget_bytes,
         compute_reference: want_ref,
         pair_gate_cal: model.direct.as_ref().and_then(|d| d.gate_cal),
+        virtual_space: model.virtual_space.clone(),
         ..Default::default()
     };
     let dcfg = model.direct.as_ref().map(|d| DirectConfig {
@@ -2522,7 +2541,7 @@ fn run_rimp2_local(
                 "e_corr_canonical_ri": e_ref,
                 "e_scf_reference": result.energy,
                 "scf_converged": result.converged,
-                "local": lmp2_local_json(&local, &cert),
+                "local": lmp2_local_json_with_vs(&local, &cert, &r),
                 "timings": lmp2_timings_json(&r.timings, maps.as_ref().map(|(_, st)| st)),
                 "certificate": unified,
             }),
@@ -7494,6 +7513,7 @@ mod local_printout_tests {
         use ferric_mp2::lmp2_direct::DirectStats;
         let t = StageTimings {
             t_spaces_s: 1.5,
+            t_loc_s: 5.5,
             t_assembly_s: 2.5,
             t_solve_s: 3.5,
             t_reference_s: 4.5,
@@ -7541,6 +7561,7 @@ mod local_printout_tests {
         };
         let stage: &[(&str, f64)] = &[
             ("t_spaces_s", 1.5),
+            ("t_loc_s", 5.5),
             ("t_assembly_s", 2.5),
             ("t_solve_s", 3.5),
             ("t_reference_s", 4.5),

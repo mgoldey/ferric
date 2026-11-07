@@ -4052,6 +4052,11 @@ def run_rimp2(
     scf_max_iter: int | None = None,
     scf_energy_conv: float | None = None,
     scf_density_conv: float | None = None,
+    virtual_space: str | None = None,
+    virtual_tau: float | None = None,
+    virtual_tau_loose: float | None = None,
+    virtual_solve_radius: float | None = None,
+    virtual_boys_tau: float | None = None,
 ) -> RiMp2Result:
     """Resolution-of-identity (density-fitted) MP2. Exact by default.
 
@@ -4077,6 +4082,17 @@ def run_rimp2(
     `integral_direct=True` it takes the same `schwarz_skip` cut as the other
     operators (`schwarz_skip=0.0` evaluates every triple). These four are a ValueError on the exact
     method (use `run_terfc_rimp2` / `run_attenuated_rimp2` there).
+
+    Local runs only: `virtual_space="dense"` (default) or `"local"` selects
+    the VV-HV localized-virtual build. `"local"` is the opt-in
+    threshold-sparse build, exact as its thresholds go to zero, with
+    `virtual_tau` (span-critical, default 1e-9), `virtual_tau_loose`
+    (basis-choice, default 1e-6), `virtual_solve_radius` (Bohr, default 30)
+    and `virtual_boys_tau` (default 1e-8); the thresholds are a ValueError
+    without `virtual_space="local"`. `result.local["virtual_space"]` names the
+    build, `["virtual_space_log"]` is the line the run prints, and
+    `["virtual_space_local"]` holds the local build's thresholds and sparsity
+    counters (None for the dense build).
 
     `scf_jk` sets how the reference SCF builds J/K: "exact" (default,
     four-centre), "rijk" (RI-J + RI-K) or "rijcosx" (RI-J + COSX K), fitted on

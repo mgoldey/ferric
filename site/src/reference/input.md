@@ -224,6 +224,11 @@ scheme, `eps` and kept fraction. See
 | `batch_merge` | integer | `4` | ≥ 1 | Integral-direct only. |
 | `gate_cal` | float | none (gate off) | > 0 | Integral-direct only. Pair-gate calibration (~0.7 Coulomb, ~0.02 erfc ω = 1). |
 | `virt_schwarz_kappa` | float | none (off) | > 0 | Integral-direct only. ε-linked Schwarz virtual-candidate screen. |
+| `virtual_space` | string | `"dense"` | `dense` `local` | `rimp2` / `att-rimp2` only (an error on `drpa` / `linlccd`, which always use the dense build). Which VV-HV localized-virtual build to use: `dense` is the O(N³) build; `local` is the opt-in threshold-sparse build, exact as its thresholds go to zero. Every run prints one line naming the build. See [local VV-HV build](../methods/mp2.md#local-vv-hv-build). |
+| `virtual_tau` | float | `1e-9` | ≥ 0 | `virtual_space = "local"` only (an error otherwise). Block threshold of the span-critical steps (occupied projector, the Newton-Schulz Löwdins, the final guard). `0` drops nothing. |
+| `virtual_tau_loose` | float | `1e-6` | ≥ 0 | `virtual_space = "local"` only. Block threshold of the basis-choice steps (projected-minimal functions, valence projector, pivot Gram and Cholesky rows). `0` drops nothing. |
+| `virtual_solve_radius` | float | `30.0` | Bohr, > 0 | `virtual_space = "local"` only. Neighbourhood radius of the domain-local projected-minimal solves; a radius larger than the molecule is one global solve. |
+| `virtual_boys_tau` | float | `1e-8` | ≥ 0 | `virtual_space = "local"` only. Boys pair screen; `0` rotates every pair. |
 
 ## `[rpa]`
 
