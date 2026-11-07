@@ -35,8 +35,8 @@ use ferric_integrals::oneelectron::{dipole, overlap, r2_moment};
 
 use crate::boys::boys_localize;
 use crate::lmp2_amplitude::{
-    ao_to_atom, canonical_orth, column_expectations, cross_overlap_with_minimal_atoms, eigh,
-    lowdin, pivoted_cholesky_order, solve_spd, StageTimings, VvHv,
+    ao_to_atom, canonical_orth, cross_overlap_with_minimal_atoms, eigh, lowdin, solve_spd,
+    StageTimings, VvHv,
 };
 use crate::lmp2_certificate::CertValue;
 use crate::vvhv_bsr::{
@@ -399,6 +399,24 @@ impl Default for Knobs {
     }
 }
 
+/// Per column, the atom group of its largest-magnitude AO coefficient (a
+/// bookkeeping partition of an orbital space; any partition is exact).
+fn home_partition(c: &Array2<f64>, aop: &Arc<Partition>) -> Arc<Partition> {
+    let labels: Vec<usize> = c
+        .columns()
+        .into_iter()
+        .map(|col| {
+            let mu = col
+                .iter()
+                .enumerate()
+                .fold((0usize, -1.0f64), |b, (i, x)| if x.abs() > b.1 { (i, x.abs()) } else { b })
+                .0;
+            aop.place[mu].0
+        })
+        .collect();
+    Partition::from_labels(&labels, aop.ngroups())
+}
+
 /// Atom groups: every heavy atom with the hydrogens nearest to it (each
 /// atom its own group when there is no heavy atom). Returns the group of
 /// every atom and the group count.
@@ -586,7 +604,7 @@ pub(crate) fn build_vvhv_local_with(
     let s_b = Bsr::from_dense(&s, aop.clone(), aop.clone(), cfg.tau, &mut cnt);
     let st = s_b.mul(&t_b, cfg.tau, &mut cnt);
     let tv_b = t_b.axpby(1.0, &d_occ.mul(&st, cfg.tau, &mut cnt), -1.0, cfg.tau, &mut cnt);
-    let ds = d_occ.mul(&s_b, cfg.tau, &mut cnt).to_dense();
+    let ds_b = d_occ.mul(&s_b, cfg.tau, &mut cnt);
 
     // ---- remaining stages: the dense construction (oracle copy) ----
     let n_l = nmin.checked_sub(nocc_total).ok_or_else(|| {
@@ -595,6 +613,10 @@ pub(crate) fn build_vvhv_local_with(
         ))
     })?;
     let dip = dipole(obs, [0.0, 0.0, 0.0])?;
+    let dip_b: Vec<Bsr> = dip
+        .iter()
+        .map(|m| Bsr::from_dense(m, aop.clone(), aop.clone(), cfg.tau, &mut cnt))
+        .collect();
     // A3 (basis choice): the valence space is the top-n_l eigenspace of
     // O^T = T_vᵀ S T_v, taken as its spectral projector Π (trace-correcting
     // purification, tau_loose) instead of a global eigh; n_l columns of the
@@ -648,28 +670,50 @@ pub(crate) fn build_vvhv_local_with(
     let n_h = nao - nocc_total - n_l;
     let mut hard_aos = Vec::with_capacity(n_h);
     let c_h = if n_h > 0 {
-        let proj = &ds + &c_l.dot(&c_l.t().dot(&s));
-        let mut x = Array2::<f64>::eye(nao);
-        x -= &proj;
-        let sx = s.dot(&x);
-        let mut keep_cols = Vec::new();
-        for c in 0..nao {
-            let nrm2 = x.column(c).dot(&sx.column(c));
-            if nrm2 > 1e-8 {
-                keep_cols.push((c, nrm2.sqrt()));
-            }
-        }
-        let mut xn = Array2::<f64>::zeros((nao, keep_cols.len()));
-        let mut parents = Vec::with_capacity(keep_cols.len());
-        for (k, &(c, nrm)) in keep_cols.iter().enumerate() {
-            xn.column_mut(k).assign(&(x.column(c).mapv(|v| v / nrm)));
-            parents.push(a2a[c]);
-        }
-        let r2 = r2_moment(obs, [0.0; 3])?;
-        let ncand = xn.ncols();
-        let r2v = column_expectations(&r2, &xn);
-        let dv: Vec<Vec<f64>> = dip.iter().map(|dm| column_expectations(dm, &xn)).collect();
-        let w: Vec<f64> = (0..ncand)
+        // A4 (span-critical): one candidate per AO,
+        // x_μ = e_μ − D S e_μ − C_l (C_lᵀ S e_μ), kept when ‖x_μ‖²_S > 1e-8
+        // (the dense build's rule), normalized; parent = the AO's atom.
+        let cl_b = Bsr::from_dense(
+            &c_l,
+            aop.clone(),
+            home_partition(&c_l, &aop),
+            cfg.tau,
+            &mut cnt,
+        );
+        let cls = cl_b.mul(&cl_b.transpose().mul(&s_b, cfg.tau, &mut cnt), cfg.tau, &mut cnt);
+        let x_b = Bsr::identity(aop.clone())
+            .axpby(1.0, &ds_b, -1.0, cfg.tau, &mut cnt)
+            .axpby(1.0, &cls, -1.0, cfg.tau, &mut cnt);
+        let sx_b = s_b.mul(&x_b, cfg.tau, &mut cnt);
+        let nrm2 = x_b.col_dots(&sx_b);
+        let keep: Vec<usize> = (0..nao).filter(|&c| nrm2[c] > 1e-8).collect();
+        let candp = Partition::from_labels(
+            &keep.iter().map(|&c| aop.place[c].0).collect::<Vec<_>>(),
+            ng,
+        );
+        let inv: Vec<f64> = keep.iter().map(|&c| 1.0 / nrm2[c].sqrt()).collect();
+        let mut xn = x_b.select_cols(&keep, candp.clone());
+        xn.scale_cols(&inv);
+        let mut sxn = sx_b.select_cols(&keep, candp.clone());
+        sxn.scale_cols(&inv);
+        // A5 (basis choice): spread weights w = 1/max(⟨r²⟩ − |⟨r⟩|², 1e-6)
+        // about the ORIGIN, as the dense build (a different origin would move
+        // near-tied pivots for an arithmetic reason), and the weighted Gram
+        // M = W X̂ᵀ S X̂ W / w_max² truncated at tau_loose. The exact Gram
+        // X̂ᵀ S X̂ (tau) is kept for the Löwdin step.
+        let r2_b = Bsr::from_dense(
+            &r2_moment(obs, [0.0; 3])?,
+            aop.clone(),
+            aop.clone(),
+            cfg.tau,
+            &mut cnt,
+        );
+        let r2v = xn.col_dots(&r2_b.mul(&xn, cfg.tau, &mut cnt));
+        let dv: Vec<Vec<f64>> = dip_b
+            .iter()
+            .map(|m| xn.col_dots(&m.mul(&xn, cfg.tau, &mut cnt)))
+            .collect();
+        let w: Vec<f64> = (0..keep.len())
             .map(|k| {
                 let mut c2 = 0.0;
                 for d in &dv {
@@ -678,21 +722,25 @@ pub(crate) fn build_vvhv_local_with(
                 1.0 / (r2v[k] - c2).max(1e-6)
             })
             .collect();
-        let wmax2 = w.iter().fold(0.0f64, |m, &x| m.max(x)).powi(2);
-        let mut ov = xn.t().dot(&s.dot(&xn));
-        for r in 0..ncand {
-            for c in 0..ncand {
-                ov[(r, c)] *= w[r] * w[c] / wmax2;
-            }
-        }
-        let piv = pivoted_cholesky_order(&ov, n_h)?;
-        let mut sel = Array2::<f64>::zeros((nao, n_h));
-        let mut sel_parents = Vec::with_capacity(n_h);
-        for (k, &p) in piv.iter().enumerate() {
-            sel.column_mut(k).assign(&xn.column(p));
-            sel_parents.push(parents[p]);
-            hard_aos.push(keep_cols[p].0);
-        }
+        let wmax = w.iter().fold(0.0f64, |m, &x| m.max(x));
+        let wr: Vec<f64> = w.iter().map(|x| x / wmax).collect();
+        let gx = xn.transpose().mul(&sxn, cfg.tau, &mut cnt);
+        let mut m = gx.clone();
+        m.scale_rows(&wr);
+        m.scale_cols(&wr);
+        let m = m.drop_below(cfg.tau_loose, &mut cnt);
+        // A6 (basis choice, reproduced exactly at tau_loose = 0): greedy
+        // pivoted Cholesky by max-heap, the dense build's tie rule.
+        let (piv, pops) = heap_pivoted_cholesky(&m, n_h, cfg.tau_loose, knobs.tie)?;
+        stats.heap_pops += pops;
+        hard_aos = piv.iter().map(|&p| keep[p]).collect();
+        let hardp = Partition::from_labels(
+            &piv.iter().map(|&p| candp.place[p].0).collect::<Vec<_>>(),
+            ng,
+        );
+        let sel_b = xn.select_cols(&piv, hardp.clone());
+        let sel_parents: Vec<usize> = piv.iter().map(|&p| a2a[keep[p]]).collect();
+        let sel = sel_b.to_dense();
         let mut ch = lowdin(&sel, &s)?;
         let f_ao = rhf.fock_r();
         let fch = f_ao.dot(&ch);
