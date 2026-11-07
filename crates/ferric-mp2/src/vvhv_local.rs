@@ -388,6 +388,9 @@ pub(crate) struct Knobs {
     pub tie: TieRule,
     /// Skip the final re-projection / re-orthonormalization guard.
     pub skip_guard: bool,
+    /// Add `δ · c_occ[:, j mod nocc]` to every virtual column j before the
+    /// guard (an occupied leak of known size the guard must remove).
+    pub occ_leak: Option<f64>,
 }
 
 impl Default for Knobs {
@@ -397,6 +400,7 @@ impl Default for Knobs {
             ns_stop_early: false,
             tie: TieRule::Lowest,
             skip_guard: false,
+            occ_leak: None,
         }
     }
 }
@@ -910,6 +914,11 @@ pub(crate) fn build_vvhv_local_with(
     let mut c_v = Array2::<f64>::zeros((nao, n_l + n_h));
     c_v.slice_mut(ndarray::s![.., ..n_l]).assign(&c_l);
     c_v.slice_mut(ndarray::s![.., n_l..]).assign(&c_h);
+    if let Some(delta) = knobs.occ_leak {
+        for (j, mut col) in c_v.columns_mut().into_iter().enumerate() {
+            col.scaled_add(delta, &c_occ_all.column(j % nocc_total));
+        }
+    }
     // A9 (span-critical guard): C_v ← Löwdin((1 − D S) C_v) over the whole
     // set, at tau. In exact arithmetic the identity on an orthonormal set in
     // the virtual space (so the anchor holds); at finite tau it removes the

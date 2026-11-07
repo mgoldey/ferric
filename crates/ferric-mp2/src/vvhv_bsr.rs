@@ -53,14 +53,6 @@ pub(crate) struct BlockCount {
     pub products: usize,
 }
 
-impl BlockCount {
-    pub fn add(&mut self, o: BlockCount) {
-        self.kept += o.kept;
-        self.dropped += o.dropped;
-        self.products += o.products;
-    }
-}
-
 /// Block-sparse matrix: `blk[gi]` = the kept blocks of row group `gi`, as
 /// `(column group, dense block)` sorted by column group.
 #[derive(Debug, Clone)]
@@ -187,10 +179,6 @@ impl Bsr {
             .flatten()
             .flat_map(|(_, b)| b.iter())
             .fold(0.0f64, |m, x| m.max(x.abs()))
-    }
-
-    pub fn nnz_blocks(&self) -> usize {
-        self.blk.iter().map(Vec::len).sum()
     }
 
     /// Mean and max of (kept blocks in a block row) / (column groups).
