@@ -66,6 +66,18 @@ Defaults: `conv_thresh = 1e-9`, `max_subspace = 50`, `max_iter = 200`.
   `n_exc = k(n-k)+k`, parallel over α strings. It never visits determinant
   pairs. The `O(N_det²)` pair loop (`hamiltonian::sigma_naive`) and the
   dense Hamiltonian remain as test oracles.
+- Measured on N2/cc-pVDZ valence active spaces (release, one process per
+  run, `OPENBLAS_NUM_THREADS=1`, median of 3):
+
+  | Active space | N_det | sigma, pair loop | sigma, direct (1 / 6 threads) | CAS-CI wall, direct (1 / 6 threads) | CAS-CI wall, pair loop |
+  |---|---:|---:|---:|---:|---:|
+  | 6e in 8 orbitals | 3,136 | 0.054 s | 0.0020 / 0.0026 s | 0.10 / 0.10 s | 0.77 s |
+  | 8e in 8 | 4,900 | 0.127 s | 0.0025 / 0.0028 s | 0.11 / 0.11 s | 1.93 s |
+  | 10e in 10 | 63,504 | 17.2 s | 0.035 / 0.015 s | 0.71 / 0.37 s | 274 s |
+  | 12e in 12 | 853,776 | not run | 0.83 / 0.18 s | 15.4 / 5.0 s | not run |
+
+  The CAS-CI wall includes the integral transform; peak RSS at 12e in 12
+  is 0.31 GB. Raw logs: `wiki/notes/t020-sigma-2026-11-06/`.
 - The Davidson subspace needs `2 * max_subspace * N_det * 8` bytes.
   `memory_budget_bytes` bounds the integral transform and the subspace;
   `None` resolves through `FERRIC_MEM_BUDGET_GB`, then 0.8 of available RAM,
