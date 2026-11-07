@@ -167,6 +167,20 @@ impl Bsr {
         d
     }
 
+    /// The block (row group `gi`, column group `gj`), if kept.
+    pub fn get(&self, gi: usize, gj: usize) -> Option<&Array2<f64>> {
+        let row = &self.blk[gi];
+        row.binary_search_by_key(&gj, |x| x.0).ok().map(|p| &row[p].1)
+    }
+
+    pub fn get_mut(&mut self, gi: usize, gj: usize) -> Option<&mut Array2<f64>> {
+        let row = &mut self.blk[gi];
+        match row.binary_search_by_key(&gj, |x| x.0) {
+            Ok(p) => Some(&mut row[p].1),
+            Err(_) => None,
+        }
+    }
+
     pub fn max_abs(&self) -> f64 {
         self.blk
             .iter()

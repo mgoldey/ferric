@@ -186,6 +186,7 @@ pub(crate) fn assert_reached(st: &LocalVvhvStats) {
     assert!(st.n_products >= 3, "A2 products not reached: {st:?}");
     assert!(st.heap_pops > 0, "A6 heap pivots not reached: {st:?}");
     assert!(st.ns_iterations_hard > 0, "A7 hard Löwdin not reached: {st:?}");
+    assert!(st.n_fock_atom_blocks > 0, "A8 Fock blocks not reached: {st:?}");
 }
 
 /// The SCF's returned density lags its returned MOs by one
