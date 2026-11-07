@@ -255,9 +255,9 @@ impl<'a> DirectSigma<'a> {
                 }
             });
             let cp = &cp;
-            sig.par_chunks_mut(nb).enumerate().for_each_init(
-                || Vec::<f64>::new(),
-                |v, (ia, srow)| {
+            sig.par_chunks_mut(nb)
+                .enumerate()
+                .for_each_init(Vec::<f64>::new, |v, (ia, srow)| {
                     v.clear();
                     v.resize(len, 0.0);
                     let mut any = false;
@@ -279,8 +279,7 @@ impl<'a> DirectSigma<'a> {
                             srow[e.target as usize] += vm;
                         }
                     }
-                },
-            );
+                });
         }
     }
 }
