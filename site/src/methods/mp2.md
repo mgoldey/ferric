@@ -375,6 +375,43 @@ construction check stays at 7e-10 or below.
 shift comes from the 30 Bohr solve radius; with a global solve it is 4e-11
 at C24.
 
+**What it costs, measured** (2026-11-06; integral-direct local MP2 on
+n-alkanes, 6-31G/cc-pVDZ-RI, Coulomb, `eps` = 1e-3, production maps, carbon
+cores frozen; benchmark `bench_scaling_decisive` with
+`FERRIC_LMP2_VIRTUAL_SPACE`; release build, OPENBLAS_NUM_THREADS=1,
+RAYON_NUM_THREADS=6; 3 repeats, median [range]; each repeat started only
+with at most 1.5 busy cores on the box):
+
+| C | build | t_spaces s | t_loc s | t_corr s | peak RSS GiB |
+|---|---|---|---|---|---|
+| 32 | dense | 0.35 [0.34–0.36] | 0.19 | 9.8 [9.6–10.5] | 3.2 |
+| 32 | local | 0.74 [0.72–0.83] | 0.20 | 9.6 [9.6–10.0] | 3.2 |
+| 48 | dense | 1.36 [1.34–1.36] | 0.71 | 15.9 [15.5–16.6] | 3.7 |
+| 48 | local | 1.78 [1.73–1.81] | 0.71 | 16.2 [15.7–16.4] | 3.6 |
+| 64 | dense | 3.13 [3.10–3.14] | 1.63 | 23.5 [23.4–23.6] | 4.2 |
+| 64 | local | 2.89 [2.88–2.97] | 1.68 | 23.8 [23.2–24.4] | 4.3 |
+| 96 | dense | 9.58 [9.53–9.74] | 5.16 | 44.5 [44.0–44.6] | 5.3 |
+| 96 | local | 5.58 [5.57–5.62] | 4.95 | 40.1 [39.9–40.2] | 4.7 |
+
+`t_spaces` is the VV-HV build and its check; `t_loc` (the occupied Boys
+and the localized Fock blocks) does not change with the build. The two
+builds' energies agree to within 4.1e-9 Ha. The local build multiplies its block
+products over 6 rayon threads, while the dense build's BLAS calls run on
+one thread here: compare the single-thread figures below before reading
+these wall times as a per-core speed-up. With RAYON_NUM_THREADS=1 (one
+run each), `t_spaces` is 3.36 s (dense) against 3.54 s (local) at C64, and
+10.3 s against 6.5 s at C96.
+
+Counters of the local build, C32 → C96:
+
+- Newton-Schulz (9/10/2), purification (12-14) and Boys (9 sweeps)
+  iteration counts are flat.
+- Kept blocks per atom group are still rising (4.7k, 5.9k, 6.6k, 7.4k).
+- The C_v block-row fill only starts to fall (mean 1.00, 0.99, 0.89, 0.69).
+
+So these sizes are at the onset of sparsity, not past it. They support no
+scaling order.
+
 **Local MP2 without `integral_direct` makes no scaling claim.** Its assembly
 is pair-local (no dense J is formed), but it still builds the global 3-index
 tensor. Use it as the reference implementation and for small systems.
