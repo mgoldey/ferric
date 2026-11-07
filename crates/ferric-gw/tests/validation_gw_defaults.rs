@@ -262,20 +262,8 @@ fn assert_defaults_within_bar(ctx: &str, e: [[f64; 2]; 3]) -> f64 {
     w
 }
 
-/// The calibrated values this file pins; changing a default without
-/// re-running the calibration fails here first.
-#[test]
-fn gw_defaults_are_the_calibrated_values() {
-    assert_eq!(DEFAULT_N_QUAD, 40);
-    let p = PdepRpaConfig::default();
-    assert_eq!(p.trunc_thresh, 1e-4);
-    assert_eq!(p.quadrature.scheme, QuadratureScheme::GaussLegendre);
-    assert_eq!(p.quadrature.u0, 0.5);
-    let g = GwConfig::default();
-    assert_eq!(g.ev_conv_thresh, 1e-4);
-    assert_eq!(g.max_ev_iter, 20);
-    assert_eq!(g.pade_npts, 0);
-}
+// The default values themselves are pinned in `gw_defaults_pinned.rs`, which
+// runs in every shard; every test here is validation tier.
 
 /// The worst case of the calibration (NH3 HOMO, 5.7 meV at 40 points) and
 /// the negative control (21.5 meV at the old 20 points).
