@@ -250,7 +250,13 @@ fn rimp2_and_linlccd_state_their_model() {
 /// Keys of the run-log `timings` object (`StageTimings` fields) and of its
 /// `direct` sub-object (`DirectStats` fields). Written out here, not derived
 /// from the serializer, so a dropped key fails.
-const STAGE_KEYS: &[&str] = &["t_spaces_s", "t_assembly_s", "t_solve_s", "t_reference_s"];
+const STAGE_KEYS: &[&str] = &[
+    "t_spaces_s",
+    "t_loc_s",
+    "t_assembly_s",
+    "t_solve_s",
+    "t_reference_s",
+];
 const DIRECT_KEYS: &[&str] = &[
     "strip_rows_mean",
     "strip_rows_max",

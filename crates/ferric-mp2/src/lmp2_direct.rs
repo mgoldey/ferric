@@ -60,7 +60,7 @@ use ferric_integrals::operator::Operator;
 use ferric_scf::result::ScfResult;
 
 use crate::lmp2_amplitude::{
-    checked_vvhv, localized_spaces, pair_gate_keep, solve_and_count, AmplitudeLmp2Config,
+    checked_vvhv_with, localized_spaces, pair_gate_keep, solve_and_count, AmplitudeLmp2Config,
     AmplitudeLmp2Result, LocalizedSpaces, StageTimings, VvHv,
 };
 use crate::ragged::{pair_block_from_g_cand, PairBlock, Ragged};
@@ -2825,10 +2825,13 @@ pub fn amplitude_lmp2_direct(
     cfg: &AmplitudeLmp2Config,
     dcfg: &DirectConfig,
 ) -> Result<(AmplitudeLmp2Result, DirectStats), FerricError> {
-    let (vvhv, t_spaces_s) = checked_vvhv(mol, obs, obs_bs, rhf, "lmp2_direct")?;
+    let (vvhv, t_spaces_s, report) =
+        checked_vvhv_with(mol, obs, obs_bs, rhf, "lmp2_direct", &cfg.virtual_space)?;
     let (mut r, st) =
         amplitude_lmp2_direct_with_virtuals(mol, obs, dfbs, op, rhf, cfg, dcfg, &vvhv)?;
     r.timings.t_spaces_s = t_spaces_s;
+    r.virtual_space = report;
+    eprintln!("lmp2_direct: {}", r.virtual_space.log_line(&r.timings));
     Ok((r, st))
 }
 
@@ -2905,6 +2908,7 @@ pub fn amplitude_lmp2_direct_with_virtuals(
     r.aux_dom_max = dstats.strip_rows_max;
     r.timings = StageTimings {
         t_spaces_s: 0.0,
+        t_loc_s,
         t_assembly_s,
         t_solve_s: t0.elapsed().as_secs_f64(),
         t_reference_s,

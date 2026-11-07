@@ -148,6 +148,10 @@ pub struct AmplitudeLmp2Config {
     /// keeps every block dense — byte-identical to the pre-switch path.
     /// The crossover ρ* is not measured yet (benchmark pending).
     pub fvv_sparse_rho: f64,
+    /// Which VV-HV build the drivers that build the space use
+    /// ([`crate::vvhv_local::VirtualSpace`]): the dense default, or the
+    /// opt-in local build. Ignored by the `*_with_virtuals` entry points.
+    pub virtual_space: crate::vvhv_local::VirtualSpace,
 }
 
 impl Default for AmplitudeLmp2Config {
@@ -163,6 +167,7 @@ impl Default for AmplitudeLmp2Config {
             compute_reference: false,
             fit_radius_bohr: None,
             fvv_sparse_rho: 0.0,
+            virtual_space: crate::vvhv_local::VirtualSpace::Dense,
         }
     }
 }
@@ -237,6 +242,8 @@ pub struct AmplitudeLmp2Result {
     /// otherwise the plan-free indexed one (bitwise the same result).
     pub matvec_path: MatvecPath,
     pub timings: StageTimings,
+    /// Which VV-HV build produced the virtual space, with its counters.
+    pub virtual_space: crate::vvhv_local::VirtualSpaceReport,
 }
 
 /// Where a solve's PCG tolerance came from.
@@ -379,6 +386,9 @@ pub struct StageTimings {
     /// `lmp2_direct::amplitude_lmp2_direct`); 0 on the `*_with_virtuals`
     /// entry points, whose caller built it.
     pub t_spaces_s: f64,
+    /// Occupied Boys localization + localized-space setup
+    /// (`localized_spaces`): part of `t_assembly_s`, reported on its own.
+    pub t_loc_s: f64,
     pub t_assembly_s: f64,
     pub t_solve_s: f64,
     pub t_reference_s: f64,
@@ -397,7 +407,7 @@ pub struct VvHv {
 // small dense-linear-algebra helpers (nao-scale eigh via ndarray-linalg)
 // ---------------------------------------------------------------------------
 
-fn eigh(m: &Array2<f64>) -> Result<(Vec<f64>, Array2<f64>), FerricError> {
+pub(crate) fn eigh(m: &Array2<f64>) -> Result<(Vec<f64>, Array2<f64>), FerricError> {
     use ndarray_linalg::Eigh;
     let (w, v) = m
         .eigh(ndarray_linalg::UPLO::Lower)
@@ -562,6 +572,16 @@ fn cross_overlap_with_minimal(
     obs: &PreparedBasis,
     obs_bs: &BasisSet,
 ) -> Result<(Array2<f64>, usize), FerricError> {
+    cross_overlap_with_minimal_atoms(mol, obs, obs_bs).map(|(s_x, nmin, _)| (s_x, nmin))
+}
+
+/// [`cross_overlap_with_minimal`] that also returns the parent atom of every
+/// minimal function (the local build partitions the minimal space by atom).
+pub(crate) fn cross_overlap_with_minimal_atoms(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    obs_bs: &BasisSet,
+) -> Result<(Array2<f64>, usize, Vec<usize>), FerricError> {
     refuse_ecp_atoms(mol, obs_bs)?;
     let min_bs = ferric_core::basis::bundled("sto-3g")
         .map_err(|e| FerricError::General(format!("lmp2_amplitude: bundled sto-3g: {e}")))?;
@@ -594,6 +614,7 @@ fn cross_overlap_with_minimal(
     // classify each combined AO as obs or minimal by walking shells per atom
     let mut obs_idx = Vec::new();
     let mut min_idx = Vec::new();
+    let mut min_atom = Vec::new();
     let mut atom_shell_count: Vec<usize> = vec![0; mol.atoms.len()];
     for (sh, &ai) in comb.shell_to_atom().iter().enumerate() {
         let z = mol.atoms[ai].z;
@@ -606,6 +627,7 @@ fn cross_overlap_with_minimal(
                 obs_idx.push(off + f);
             } else {
                 min_idx.push(off + f);
+                min_atom.push(ai);
             }
         }
         atom_shell_count[ai] += 1;
@@ -624,11 +646,11 @@ fn cross_overlap_with_minimal(
             s_x[(r, c)] = s_comb[(ir, ic)];
         }
     }
-    Ok((s_x, nmin))
+    Ok((s_x, nmin, min_atom))
 }
 
 /// Per-AO parent-atom map for the orbital basis.
-fn ao_to_atom(prep: &PreparedBasis) -> Vec<usize> {
+pub(crate) fn ao_to_atom(prep: &PreparedBasis) -> Vec<usize> {
     let mut out = vec![0usize; prep.nbasis()];
     for (sh, &ai) in prep.shell_to_atom().iter().enumerate() {
         let off = prep.shell_offsets()[sh];
@@ -671,6 +693,17 @@ fn build_vvhv_with(
 /// [`build_vvhv_with`] that also returns the AO index of every selected
 /// hard-virtual candidate, in pivot order (the hard-virtual SUBSET, which
 /// tests compare across solvers).
+/// The dense build with its hard-virtual trace (the oracle of the local
+/// build, [`crate::vvhv_local`]).
+pub(crate) fn build_vvhv_traced_dense(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    obs_bs: &BasisSet,
+    rhf: &ScfResult,
+) -> Result<(VvHv, Vec<usize>), FerricError> {
+    build_vvhv_traced(mol, obs, obs_bs, rhf, solve_spd)
+}
+
 fn build_vvhv_traced(
     mol: &Molecule,
     obs: &PreparedBasis,
@@ -807,7 +840,7 @@ fn build_vvhv_traced(
 /// trtrs → BLAS3 trsm). The version before 2026-11-06 did one BLAS2
 /// forward/back pair per column of `B` (nmin of them), and the one before
 /// that LU-factorized S once per column.
-fn solve_spd(a: &Array2<f64>, b: &Array2<f64>) -> Result<Array2<f64>, FerricError> {
+pub(crate) fn solve_spd(a: &Array2<f64>, b: &Array2<f64>) -> Result<Array2<f64>, FerricError> {
     use ndarray_linalg::{Cholesky, Diag, SolveTriangular, UPLO};
     let l = a
         .cholesky(UPLO::Lower)
@@ -893,9 +926,12 @@ pub fn amplitude_lmp2(
     rhf: &ScfResult,
     cfg: &AmplitudeLmp2Config,
 ) -> Result<AmplitudeLmp2Result, FerricError> {
-    let (vvhv, t_spaces_s) = checked_vvhv(mol, obs, obs_bs, rhf, "lmp2_amplitude")?;
+    let (vvhv, t_spaces_s, report) =
+        checked_vvhv_with(mol, obs, obs_bs, rhf, "lmp2_amplitude", &cfg.virtual_space)?;
     let mut r = amplitude_lmp2_with_virtuals(mol, obs, dfbs, op, rhf, cfg, &vvhv)?;
     r.timings.t_spaces_s = t_spaces_s;
+    r.virtual_space = report;
+    eprintln!("lmp2_amplitude: {}", r.virtual_space.log_line(&r.timings));
     Ok(r)
 }
 
@@ -1005,6 +1041,43 @@ pub fn checked_vvhv(
     Ok((vvhv, t0.elapsed().as_secs_f64()))
 }
 
+/// [`checked_vvhv`] with the build selected by `vs`: the dense default or
+/// the opt-in local build ([`crate::vvhv_local`]). Both pass the same
+/// construction check under the same 1e-8 bar. Returns the space, the wall
+/// seconds (build + check) and the report naming the build.
+pub fn checked_vvhv_with(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    obs_bs: &BasisSet,
+    rhf: &ScfResult,
+    who: &str,
+    vs: &crate::vvhv_local::VirtualSpace,
+) -> Result<(VvHv, f64, crate::vvhv_local::VirtualSpaceReport), FerricError> {
+    use crate::vvhv_local::{build_vvhv_local, VirtualSpace, VirtualSpaceReport};
+    match vs {
+        VirtualSpace::Dense => {
+            let (v, t) = checked_vvhv(mol, obs, obs_bs, rhf, who)?;
+            Ok((v, t, VirtualSpaceReport::Dense))
+        }
+        VirtualSpace::Local(lc) => {
+            let full = match std::env::var(FULL_VVHV_CHECK_ENV) {
+                Ok(raw) => full_vvhv_check_requested(Some(&raw))?,
+                Err(std::env::VarError::NotPresent) => full_vvhv_check_requested(None)?,
+                Err(e) => return Err(FerricError::General(format!("{FULL_VVHV_CHECK_ENV}: {e}"))),
+            };
+            let t0 = std::time::Instant::now();
+            let loc = build_vvhv_local(mol, obs, obs_bs, rhf, lc)?;
+            let nocc_total = (mol.nelec() as usize) / 2;
+            verify_vvhv(obs, rhf, nocc_total, &loc.vv.c_vloc, full, who)?;
+            let report = VirtualSpaceReport::Local {
+                config: lc.clone(),
+                stats: loc.stats,
+            };
+            Ok((loc.vv, t0.elapsed().as_secs_f64(), report))
+        }
+    }
+}
+
 /// The pass/fail half of [`checked_vvhv`]: the full check (`full`) or the
 /// probe, against the 1e-8 bar.
 pub fn verify_vvhv(
@@ -1086,6 +1159,8 @@ pub struct LocalizedBasis {
     pub b_flat: Array2<f64>,
     /// 2-center metric (P|Q).
     pub v2c: Array2<f64>,
+    /// Wall seconds of `localized_spaces` inside [`assemble_basis`].
+    pub t_loc_s: f64,
 }
 
 /// Everything the correlation stage needs about the LOCALIZED spaces, with
@@ -1168,7 +1243,9 @@ pub fn assemble_basis(
     cfg: &AmplitudeLmp2Config,
     vvhv: &VvHv,
 ) -> Result<LocalizedBasis, FerricError> {
+    let t_loc0 = std::time::Instant::now();
     let sp = localized_spaces(mol, obs, rhf, cfg.frozen_core, vvhv)?;
+    let t_loc_s = t_loc0.elapsed().as_secs_f64();
     let LocalizedSpaces {
         c_locc,
         f_oo,
@@ -1197,6 +1274,7 @@ pub fn assemble_basis(
         nv,
         b_flat,
         v2c,
+        t_loc_s,
     })
 }
 
@@ -2081,6 +2159,7 @@ pub fn amplitude_lmp2_with_virtuals(
     r.aux_dom_max = aux_dom_max;
     r.timings = StageTimings {
         t_spaces_s: 0.0,
+        t_loc_s: lb.t_loc_s,
         t_assembly_s,
         t_solve_s: t0.elapsed().as_secs_f64(),
         t_reference_s,
@@ -2173,7 +2252,41 @@ pub(crate) fn solve_and_count(
         cg_rtol_outcome: outcome,
         matvec_path: plan.path,
         timings: StageTimings::default(),
+        virtual_space: crate::vvhv_local::VirtualSpaceReport::CallerSupplied,
     })
+}
+
+#[cfg(test)]
+/// Every column of `a` equals a DISTINCT column of `b` up to sign within
+/// 1e-10 (a bijection), and the number of columns whose partner is not
+/// at the same index. Symmetry-equivalent hard-virtual candidates tie
+/// exactly in the pivoted Cholesky, so a last-bit change may swap their
+/// ORDER; a reordering of the virtual set leaves every energy invariant,
+/// while any genuinely different column fails here.
+pub(crate) fn match_columns_up_to_sign_and_order(
+    a: &Array2<f64>,
+    b: &Array2<f64>,
+) -> (bool, usize) {
+    let mut used = vec![false; b.ncols()];
+    let mut permuted = 0;
+    for (k, ca) in a.columns().into_iter().enumerate() {
+        let hit = b.columns().into_iter().enumerate().find(|(j, cb)| {
+            let sign = if ca.dot(cb) < 0.0 { -1.0 } else { 1.0 };
+            !used[*j]
+                && ca
+                    .iter()
+                    .zip(cb.iter())
+                    .all(|(x, y)| (x - sign * y).abs() <= 1e-10)
+        });
+        match hit {
+            Some((j, _)) => {
+                used[j] = true;
+                permuted += usize::from(j != k);
+            }
+            None => return (false, permuted),
+        }
+    }
+    (true, permuted)
 }
 
 #[cfg(test)]
@@ -2218,35 +2331,6 @@ mod tests {
 
     fn c4_631g() -> (Molecule, PreparedBasis, BasisSet, ScfResult) {
         rhf_631g("alkane_4.xyz")
-    }
-
-    /// Every column of `a` equals a DISTINCT column of `b` up to sign within
-    /// 1e-10 (a bijection), and the number of columns whose partner is not
-    /// at the same index. Symmetry-equivalent hard-virtual candidates tie
-    /// exactly in the pivoted Cholesky, so a last-bit change may swap their
-    /// ORDER; a reordering of the virtual set leaves every energy invariant,
-    /// while any genuinely different column fails here.
-    fn match_columns_up_to_sign_and_order(a: &Array2<f64>, b: &Array2<f64>) -> (bool, usize) {
-        let mut used = vec![false; b.ncols()];
-        let mut permuted = 0;
-        for (k, ca) in a.columns().into_iter().enumerate() {
-            let hit = b.columns().into_iter().enumerate().find(|(j, cb)| {
-                let sign = if ca.dot(cb) < 0.0 { -1.0 } else { 1.0 };
-                !used[*j]
-                    && ca
-                        .iter()
-                        .zip(cb.iter())
-                        .all(|(x, y)| (x - sign * y).abs() <= 1e-10)
-            });
-            match hit {
-                Some((j, _)) => {
-                    used[j] = true;
-                    permuted += usize::from(j != k);
-                }
-                None => return (false, permuted),
-            }
-        }
-        (true, permuted)
     }
 
     /// B1 anchor: the one-Cholesky multi-RHS `solve_spd` reproduces the

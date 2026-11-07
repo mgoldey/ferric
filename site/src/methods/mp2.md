@@ -323,6 +323,20 @@ At `1e-5` the cut skips 55% of the shell triples at C12 and 67% at C16 (51% and 
 (`gate_cal = 0.7`) leaves the C12 result unchanged. At `1e-6` the energy changes by
 1e-10 (C12 linked) to 1.8e-9 (C16 NCP).
 
+### Local VV-HV build
+
+Both local MP2 paths build the VV-HV localized virtuals the same way by
+default (`[local] virtual_space = "dense"`): a dense O(N³) construction.
+`virtual_space = "local"` (Python `virtual_space="local"`) selects an opt-in
+threshold-sparse build of the same construction, with thresholds
+`virtual_tau`, `virtual_tau_loose`, `virtual_solve_radius` and
+`virtual_boys_tau` (see [`[local]`](../reference/input.md#local)). With every
+threshold at zero it reproduces the dense build. Every run prints one line
+that names the build, its thresholds and sparsity counters (local) and the
+share of the correlation time spent building the localized spaces, and the
+run log and Python `local` dict carry the same fields (`virtual_space`,
+`virtual_space_log`, `virtual_space_local`).
+
 **Local MP2 without `integral_direct` makes no scaling claim.** Its assembly
 is pair-local (no dense J is formed), but it still builds the global 3-index
 tensor. Use it as the reference implementation and for small systems.

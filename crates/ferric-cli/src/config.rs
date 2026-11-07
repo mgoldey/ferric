@@ -1210,6 +1210,22 @@ pub struct LocalCfg {
     /// Integral-direct only: ε-linked Schwarz virtual-candidate screen κ.
     /// Omitted = off.
     pub virt_schwarz_kappa: Option<f64>,
+    /// `kind = "rimp2"` / `"att-rimp2"` only: which VV-HV virtual-space build
+    /// to use, `"dense"` (default, O(N³)) or `"local"` (the opt-in
+    /// threshold-sparse build, `ferric_mp2::vvhv_local`).
+    pub virtual_space: Option<String>,
+    /// `virtual_space = "local"` only: span-critical block threshold.
+    /// Default 1e-9; 0 drops nothing.
+    pub virtual_tau: Option<f64>,
+    /// `virtual_space = "local"` only: basis-choice block threshold.
+    /// Default 1e-6; 0 drops nothing.
+    pub virtual_tau_loose: Option<f64>,
+    /// `virtual_space = "local"` only: radius (Bohr) of the domain-local
+    /// projected-minimal solves. Default 30.
+    pub virtual_solve_radius: Option<f64>,
+    /// `virtual_space = "local"` only: Boys pair-screen threshold. Default
+    /// 1e-8; 0 rotates every pair.
+    pub virtual_boys_tau: Option<f64>,
 }
 
 /// The integral-direct locality knobs of a local MP2 run, with their
@@ -1239,6 +1255,8 @@ pub struct LocalModel {
     pub reference: bool,
     /// `Some` exactly when `integral_direct = true`.
     pub direct: Option<LocalDirectKnobs>,
+    /// `[local] virtual_space` with its thresholds (default dense).
+    pub virtual_space: ferric_mp2::vvhv_local::VirtualSpace,
 }
 
 impl LocalCfg {
@@ -1250,6 +1268,58 @@ impl LocalCfg {
             || self.batch_merge.is_some()
             || self.gate_cal.is_some()
             || self.virt_schwarz_kappa.is_some()
+    }
+
+    fn sets_virtual_thresholds(&self) -> bool {
+        self.virtual_tau.is_some()
+            || self.virtual_tau_loose.is_some()
+            || self.virtual_solve_radius.is_some()
+            || self.virtual_boys_tau.is_some()
+    }
+
+    /// `[local] virtual_space` and its thresholds, strict: an unknown
+    /// selector, a bad value, or a threshold without `virtual_space =
+    /// "local"` (which would silently ignore it) is an error.
+    fn virtual_space(&self) -> Result<ferric_mp2::vvhv_local::VirtualSpace, String> {
+        use ferric_mp2::vvhv_local::{LocalVvhvConfig, VirtualSpace};
+        let d = LocalVvhvConfig::default();
+        let nonneg = |k: &str, v: Option<f64>, dflt: f64| -> Result<f64, String> {
+            let x = v.unwrap_or(dflt);
+            if x.is_finite() && x >= 0.0 {
+                Ok(x)
+            } else {
+                Err(format!("[local] {k} must be finite and >= 0 (got {x})"))
+            }
+        };
+        let radius = match self.virtual_solve_radius {
+            None => d.solve_radius_bohr,
+            Some(r) if r.is_finite() && r > 0.0 => Some(r),
+            Some(r) => {
+                return Err(format!(
+                    "[local] virtual_solve_radius must be finite and > 0 (got {r})"
+                ))
+            }
+        };
+        let lc = LocalVvhvConfig {
+            tau: nonneg("virtual_tau", self.virtual_tau, d.tau)?,
+            tau_loose: nonneg("virtual_tau_loose", self.virtual_tau_loose, d.tau_loose)?,
+            solve_radius_bohr: radius,
+            boys_tau: nonneg("virtual_boys_tau", self.virtual_boys_tau, d.boys_tau)?,
+        };
+        let vs = match self.virtual_space.as_deref() {
+            None => VirtualSpace::Dense,
+            Some(s) => VirtualSpace::parse_config_str(s, lc).map_err(|e| format!("[local] {e}"))?,
+        };
+        if vs == VirtualSpace::Dense && self.sets_virtual_thresholds() {
+            return Err(
+                "[local] virtual_tau / virtual_tau_loose / virtual_solve_radius / \
+                 virtual_boys_tau are the thresholds of the local VV-HV build and are read \
+                 only with virtual_space = \"local\"; with the dense build they would be \
+                 silently ignored"
+                    .to_string(),
+            );
+        }
+        Ok(vs)
     }
 
     /// The kind-independent rules of `[local]`: values, and which keys go
@@ -1272,6 +1342,11 @@ impl LocalCfg {
                 ("batch_merge", self.batch_merge.is_some()),
                 ("gate_cal", self.gate_cal.is_some()),
                 ("virt_schwarz_kappa", self.virt_schwarz_kappa.is_some()),
+                ("virtual_space", self.virtual_space.is_some()),
+                ("virtual_tau", self.virtual_tau.is_some()),
+                ("virtual_tau_loose", self.virtual_tau_loose.is_some()),
+                ("virtual_solve_radius", self.virtual_solve_radius.is_some()),
+                ("virtual_boys_tau", self.virtual_boys_tau.is_some()),
             ]
             .into_iter()
             .filter_map(|(k, set)| set.then_some(k))
@@ -1384,11 +1459,13 @@ impl LocalCfg {
             }
             None
         };
+        let virtual_space = self.virtual_space()?;
         Ok(Some(LocalModel {
             eps,
             is_sweep,
             reference: self.reference.unwrap_or(false),
             direct,
+            virtual_space,
         }))
     }
 }
@@ -3987,6 +4064,20 @@ impl Config {
                  method.kind = \"rimp2\" or \"att-rimp2\" only (got \"{kind}\")"
             ));
         }
+        if self
+            .local
+            .as_ref()
+            .and_then(|l| l.virtual_space.as_ref())
+            .is_some()
+            && kind != "rimp2"
+            && kind != "att-rimp2"
+        {
+            return Err(format!(
+                "[local] virtual_space selects the VV-HV build of the local MP2 and applies \
+                 to method.kind = \"rimp2\" or \"att-rimp2\" only (got \"{kind}\", which \
+                 always uses the dense build)"
+            ));
+        }
         if kind == "att-rimp2"
             && model.direct.as_ref().is_some_and(|d| d.schwarz_skip > 0.0)
             && self.mp2.att_rimp2_op()? == AttRimp2Op::Terfc
@@ -5193,6 +5284,75 @@ mod compat_guard_tests {
                 "{bad}"
             );
         }
+        // virtual_space: dense by default, strict selector, thresholds only
+        // with "local", refused under scheme = "none"
+        use ferric_mp2::vvhv_local::{LocalVvhvConfig, VirtualSpace};
+        let at = "scheme = \"amplitude-threshold\"\neps = 1e-4\n";
+        assert_eq!(
+            model(at).unwrap().unwrap().virtual_space,
+            VirtualSpace::Dense
+        );
+        assert_eq!(
+            model(&format!("{at}virtual_space = \"dense\""))
+                .unwrap()
+                .unwrap()
+                .virtual_space,
+            VirtualSpace::Dense
+        );
+        assert_eq!(
+            model(&format!("{at}virtual_space = \"local\""))
+                .unwrap()
+                .unwrap()
+                .virtual_space,
+            VirtualSpace::Local(LocalVvhvConfig::default())
+        );
+        assert_eq!(
+            model(&format!(
+                "{at}virtual_space = \"local\"\nvirtual_tau = 0.0\nvirtual_tau_loose = 0.0\n\
+                 virtual_solve_radius = 1e6\nvirtual_boys_tau = 0.0"
+            ))
+            .unwrap()
+            .unwrap()
+            .virtual_space,
+            VirtualSpace::Local(LocalVvhvConfig {
+                tau: 0.0,
+                tau_loose: 0.0,
+                solve_radius_bohr: Some(1e6),
+                boys_tau: 0.0,
+            })
+        );
+        for bad in ["\"Local\"", "\"sparse\"", "\"\""] {
+            let e = model(&format!("{at}virtual_space = {bad}")).unwrap_err();
+            assert!(e.contains("virtual_space"), "{bad}: {e}");
+        }
+        for (key, val) in [
+            ("virtual_tau", "1e-9"),
+            ("virtual_tau_loose", "1e-6"),
+            ("virtual_solve_radius", "30.0"),
+            ("virtual_boys_tau", "1e-8"),
+        ] {
+            for vs in ["", "virtual_space = \"dense\"\n"] {
+                let e = model(&format!("{at}{vs}{key} = {val}")).unwrap_err();
+                assert!(e.contains("virtual_space = \"local\""), "{key}: {e}");
+            }
+            for scheme in ["scheme = \"none\"\n", ""] {
+                let e = model(&format!("{scheme}{key} = {val}")).unwrap_err();
+                assert!(e.contains(key) && e.contains("scheme = \"none\""), "{e}");
+            }
+        }
+        for bad in [
+            "virtual_tau = -1e-9",
+            "virtual_tau_loose = nan",
+            "virtual_solve_radius = 0.0",
+            "virtual_boys_tau = inf",
+        ] {
+            assert!(
+                model(&format!("{at}virtual_space = \"local\"\n{bad}")).is_err(),
+                "{bad}"
+            );
+        }
+        let e = model("virtual_space = \"local\"").unwrap_err();
+        assert!(e.contains("virtual_space"), "{e}");
         // a typo'd [local] key is a parse error
         let src = "[molecule]\nxyz = \"w.xyz\"\n[basis]\nname = \"sto-3g\"\n[method]\n\
                    kind = \"drpa\"\n[local]\nscheme = \"amplitude-threshold\"\nepsilon = 1e-4\n";
@@ -5252,6 +5412,15 @@ mod compat_guard_tests {
             for kind in ["drpa", "linlccd"] {
                 let e = ok(kind, &direct).expect_err(kind);
                 assert!(e.contains("integral_direct") && e.contains("rimp2"), "{e}");
+            }
+        }
+        // virtual_space: rimp2 / att-rimp2 only (drpa / linlccd always dense)
+        for vs in ["dense", "local"] {
+            let body = format!("{at}virtual_space = \"{vs}\"\n");
+            assert_eq!(ok("rimp2", &body), Ok(()));
+            for kind in ["drpa", "linlccd"] {
+                let e = ok(kind, &body).expect_err(kind);
+                assert!(e.contains("virtual_space") && e.contains("rimp2"), "{e}");
             }
         }
         // local is energy-only
