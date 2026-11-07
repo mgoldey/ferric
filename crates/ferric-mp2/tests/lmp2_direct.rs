@@ -1386,6 +1386,12 @@ fn bench_scaling_decisive() {
         .and_then(|s| s.parse().ok())
         .unwrap_or(6.0);
     let budget = (budget_gb * (1u64 << 30) as f64) as usize;
+    // FERRIC_LMP2_VIRTUAL_SPACE = dense (default) | local (default thresholds)
+    let virtual_space = ferric_mp2::vvhv_local::VirtualSpace::parse_config_str(
+        &std::env::var("FERRIC_LMP2_VIRTUAL_SPACE").unwrap_or_else(|_| "dense".into()),
+        ferric_mp2::vvhv_local::LocalVvhvConfig::default(),
+    )
+    .unwrap();
 
     let prod = DirectConfig {
         aux_radius_bohr: 10.0,
@@ -1402,7 +1408,7 @@ fn bench_scaling_decisive() {
     println!(
         "# DECISIVE rows: sys op eps rep E_corr t_method wall_s cpu_s \
          t_maps t_eri3 t_metric t_pairs t_asm t_solve Mtriples dom_mx strip_r_mx strip_c_mx pairs_per_occ \
-         t_spaces t_loc t_corr"
+         t_spaces t_loc t_corr vs rss_peak_gb"
     );
     // t_method = t_asm + t_solve (t_asm includes t_loc) EXCLUDES t_spaces, the
     // VV-HV build + check, which is O(N^3); t_corr = t_spaces + t_method.
@@ -1423,8 +1429,10 @@ fn bench_scaling_decisive() {
                         pair_gate_cal: Some(cal),
                         eri3_budget_bytes: Some(budget),
                         compute_reference: false,
+                        virtual_space: virtual_space.clone(),
                         ..Default::default()
                     };
+                    reset_peak_rss();
                     let w0 = std::time::Instant::now();
                     let c0 = cpu_time_s();
                     let (r, st) = amplitude_lmp2_direct(
@@ -1433,12 +1441,13 @@ fn bench_scaling_decisive() {
                     .unwrap();
                     let wall = w0.elapsed().as_secs_f64();
                     let cpu = cpu_time_s() - c0;
+                    let rss_gb = peak_rss_gb();
                     let t_method = r.timings.t_assembly_s + r.timings.t_solve_s;
                     let no = 3 * nc + 1;
                     println!(
                         "DEC alkane_{:<3} {:6} {:6.0e} {} {:.10} {:8.3} {:8.3} {:9.3} \
                          {:6.2} {:7.2} {:7.2} {:7.2} {:7.2} {:7.2} {:8.2} {:4.0} {:5.0} {:4.0} {:6.2} \
-                         {:8.3} {:7.3} {:8.3}",
+                         {:8.3} {:7.3} {:8.3} {} {:.3}",
                         nc, opname, eps, rep,
                         r.e_corr, t_method, wall, cpu,
                         st.t_maps_s, st.t_eri3_s, st.t_metric_s, st.t_pairs_s,
@@ -1447,11 +1456,33 @@ fn bench_scaling_decisive() {
                         r.dom_max, st.strip_rows_max, st.strip_cols_max,
                         r.pair_fraction * (no * no) as f64 / no as f64,
                         r.timings.t_spaces_s, st.t_loc_s, r.timings.t_spaces_s + t_method,
+                        r.virtual_space.build(), rss_gb,
                     );
+                    if let ferric_mp2::vvhv_local::VirtualSpaceReport::Local { stats, .. } =
+                        &r.virtual_space
+                    {
+                        println!("LVV alkane_{nc} {opname} rep {rep} {stats:?}");
+                    }
                 }
             }
         }
     }
+}
+
+/// Reset the process's peak-RSS mark (`VmHWM`) so the next reading covers
+/// only what follows (Linux >= 4.0: write 5 to /proc/self/clear_refs).
+fn reset_peak_rss() {
+    let _ = std::fs::write("/proc/self/clear_refs", "5");
+}
+
+/// Peak RSS (`VmHWM`) since the last [`reset_peak_rss`], GiB.
+fn peak_rss_gb() -> f64 {
+    let s = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
+    s.lines()
+        .find(|l| l.starts_with("VmHWM:"))
+        .and_then(|l| l.split_whitespace().nth(1))
+        .and_then(|k| k.parse::<f64>().ok())
+        .map_or(f64::NAN, |kb| kb / (1u64 << 20) as f64)
 }
 
 /// Process CPU seconds (user+sys, all threads) via /proc/self/stat.

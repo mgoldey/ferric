@@ -382,6 +382,41 @@ fn rimp2_local_logs_every_stage_timing() {
     }
 }
 
+/// `[local] virtual_space`: the default dense build and the opt-in local
+/// build both run through the binary, print the one virtual-space line on
+/// stderr, and log the build in the `local` object (with the local build's
+/// thresholds and counters); eps = 0 energies agree.
+#[test]
+fn rimp2_local_logs_the_virtual_space_build() {
+    let mut e = Vec::new();
+    for (tag, vs) in [
+        ("rimp2_vs_default", ""),
+        ("rimp2_vs_local", "virtual_space = \"local\"\n"),
+    ] {
+        let lo = ok_run(
+            tag,
+            "rimp2",
+            &local(&format!("eps = 0.0\nintegral_direct = true\n{vs}")),
+        );
+        let l = &lo.results[0]["components"]["local"];
+        let line = l["virtual_space_log"].as_str().unwrap().to_string();
+        assert!(lo.stderr.contains(&line), "the line is not printed: {}", lo.stderr);
+        if vs.is_empty() {
+            assert_eq!(l["virtual_space"], "dense", "{l}");
+            assert!(l["virtual_space_local"].is_null(), "{l}");
+            assert!(line.contains("dense VV-HV build"), "{line}");
+        } else {
+            assert_eq!(l["virtual_space"], "local", "{l}");
+            let st = &l["virtual_space_local"];
+            assert_eq!(st["tau"], 1e-9, "{st}");
+            assert!(st["n_products"].as_u64().unwrap() > 0, "{st}");
+            assert!(line.contains("LOCAL VV-HV build"), "{line}");
+        }
+        e.push(lo.results[0]["components"]["e_corr"].as_f64().unwrap());
+    }
+    assert!((e[0] - e[1]).abs() < 1e-9, "{e:?}");
+}
+
 /// Refused configurations fail through the binary, before any SCF output:
 /// the removed kinds and keys, `[local]` without `eps`, and an exact `drpa`
 /// whose Riccati solve cannot fit the budget (pointing at `pdep-rpa`).

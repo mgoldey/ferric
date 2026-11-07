@@ -328,14 +328,52 @@ At `1e-5` the cut skips 55% of the shell triples at C12 and 67% at C16 (51% and 
 Both local MP2 paths build the VV-HV localized virtuals the same way by
 default (`[local] virtual_space = "dense"`): a dense O(N³) construction.
 `virtual_space = "local"` (Python `virtual_space="local"`) selects an opt-in
-threshold-sparse build of the same construction, with thresholds
-`virtual_tau`, `virtual_tau_loose`, `virtual_solve_radius` and
-`virtual_boys_tau` (see [`[local]`](../reference/input.md#local)). With every
-threshold at zero it reproduces the dense build. Every run prints one line
-that names the build, its thresholds and sparsity counters (local) and the
-share of the correlation time spent building the localized spaces, and the
-run log and Python `local` dict carry the same fields (`virtual_space`,
+threshold-sparse build of the same construction (`ferric_mp2::vvhv_local`).
+Atom-group block-sparse products replace each dense global step:
+
+- domain-local solves for the projected minimal functions;
+- the occupied projector from the block-sparse density;
+- a purified spectral projector for the valence space;
+- heap-ordered pivoted Cholesky and Newton-Schulz Löwdin;
+- per-atom Fock blocks and screened Boys;
+- a final re-projection and re-orthonormalization.
+
+Thresholds (see [`[local]`](../reference/input.md#local)):
+
+- `virtual_tau` (span-critical steps): default 1e-9;
+- `virtual_tau_loose` (basis-choice steps): default 1e-6;
+- `virtual_solve_radius`: default 30 Bohr;
+- `virtual_boys_tau`: default 1e-8.
+
+Every run prints one line that names the build, gives its thresholds and
+sparsity counters (local build only), and states what share of the
+correlation time went into building the localized spaces. The run log and
+the Python `local` dict carry the same fields (`virtual_space`,
 `virtual_space_log`, `virtual_space_local`).
+
+**Exactness.** With every threshold at zero and the dense build's valence
+starting basis, the local build reproduces the dense build. Measured on
+water, C4 and C8 (6-31G):
+
+- the same hard-virtual pivot sequence;
+- columns within 1e-12;
+- energies within 1e-14 at `eps` 0 and 1e-4.
+
+Each stage has a mutation test that breaks this. The local valence start
+(purification) reaches the same Boys maximum, but its columns differ from
+the dense build's by up to 7e-10, the imprint of Boys's convergence
+tolerance. That changes energies by 1e-13.
+
+**Defaults (n-alkanes C8–C32, 6-31G/cc-pVDZ-RI, `eps` = 1e-4, production
+maps).** The local build moves the energy by 4e-13 (C8), 3e-10 (C16),
+1.6e-7 (C24) and 5.8e-8 (C32) Ha against the dense build. That is at most
+1.6e-5 of the `eps` truncation error itself (2.5e-3 to 1.4e-2 Ha). The
+construction check stays at 7e-10 or below.
+
+`virtual_tau` = 1e-8 fails the 1e-8 construction check at C16 and C24
+(1.3e-7 and 2.2e-7), which is why the default is 1e-9. Most of the C24/C32
+shift comes from the 30 Bohr solve radius; with a global solve it is 4e-11
+at C24.
 
 **Local MP2 without `integral_direct` makes no scaling claim.** Its assembly
 is pair-local (no dense J is formed), but it still builds the global 3-index
