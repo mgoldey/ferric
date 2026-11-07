@@ -24,7 +24,7 @@ use ferric_core::memory::plan::{Lifetime, MemoryPlan};
 use ferric_core::mol::Molecule;
 use rayon::prelude::*;
 
-use crate::becke::{becke_weights_all, becke_weights_and_grad, BeckeScratch, BeckeTable};
+use crate::becke::{BeckeGradScratch, BeckeScratch, BeckeTable};
 use crate::lebedev::lebedev;
 use crate::prune::{angular_orders_for_atom, PruneScheme};
 use crate::radial::treutler_ahlrichs_m4;
@@ -750,35 +750,50 @@ pub fn build_atomic_grid_with_response_pruned(
 
     let pre = response_staging(mol, cfg, npts)?;
 
-    // Per-point work is O(natoms³) via becke_weights_and_grad and independent
-    // across points — same order-preserving parallel map as build_atomic_grid
-    // (bit-identical to the serial loop; no reduction).
+    // Per-point work is O(natoms²) and independent across points — same
+    // order-preserving parallel map as build_atomic_grid (bit-identical to the
+    // serial loop; no reduction). Both Becke pieces go through one
+    // `BeckeTable` (pair geometry hoisted out of the per-point work) with
+    // per-thread scratch, and each returns the bits of the per-point function
+    // it replaced: `weight` those of `becke_weights_all(mol, xyz)[home]`,
+    // `home_weight_grad` those of `becke_weights_and_grad(mol, xyz).1[home]`
+    // (`home_weight_grad_is_becke_weights_and_grad_bit_for_bit`). That was
+    // ~2·natoms heap allocations and a full natoms² `dw` per point, measured at
+    // ~1 s of a 1.8 s XC gradient on sulfamethoxazole (28 atoms).
     //
     // `None` = dropped by the weight cutoff (never, when `cut` is `None`).
-    let build_point =
-        |&(a_idx, xyz, scale): &(usize, [f64; 3], f64)| -> Option<(GridPoint, Vec<[f64; 3]>)> {
-            // The weight VALUE comes from the same `becke_weights_all` the
-            // energy grids use, so this grid is the energy grid bit for bit
-            // (`becke_weights_and_grad`'s own value differs by ulps), and the
-            // cutoff decision below is the energy builders' decision.
-            let weight = scale * becke_weights_all(mol, xyz)[a_idx];
-            if let Some(cut) = cut {
-                if !survives_weight_cut(weight, cut) {
-                    return None;
-                }
+    let table = BeckeTable::new(mol);
+    let build_point = |sc: &mut (BeckeScratch, BeckeGradScratch, Vec<[f64; 3]>),
+                       &(a_idx, xyz, scale): &(usize, [f64; 3], f64)|
+     -> Option<(GridPoint, Vec<[f64; 3]>)> {
+        // The weight VALUE is the energy grids' `becke_weights_all` value, so
+        // this grid is the energy grid bit for bit (`becke_weights_and_grad`'s
+        // own value differs by ulps), and the cutoff decision below is the
+        // energy builders' decision.
+        let weight = scale * table.weight(xyz, a_idx, &mut sc.0);
+        if let Some(cut) = cut {
+            if !survives_weight_cut(weight, cut) {
+                return None;
             }
-            let (_, dw_lab) = becke_weights_and_grad(mol, xyz);
-            let gp = GridPoint {
-                xyz,
-                weight,
-                home_atom: a_idx,
-            };
-
-            let row = home_weight_row(&dw_lab, a_idx, natoms, scale);
-            Some((gp, row))
+        }
+        table.home_weight_grad(xyz, a_idx, &mut sc.1, &mut sc.2);
+        let gp = GridPoint {
+            xyz,
+            weight,
+            home_atom: a_idx,
         };
+        let row = home_weight_row(&sc.2, a_idx, natoms, scale);
+        Some((gp, row))
+    };
+    let init = || {
+        (
+            table.scratch(),
+            table.grad_scratch(),
+            vec![[0.0; 3]; natoms],
+        )
+    };
 
-    let (grid, weight1) = map_response_points(&pre, cut.is_some(), build_point);
+    let (grid, weight1) = map_response_points(&pre, cut.is_some(), init, build_point);
     Ok((grid, weight1))
 }
 
@@ -825,28 +840,23 @@ fn response_staging(
 /// Row `a_idx` of `weight1` for one point: the lab-fixed partition derivative
 /// of the home atom's Becke weight, plus `∇_r w` on the home row (PySCF's
 /// `weight1`), times the radial-angular Jacobian `scale`.
-fn home_weight_row(
-    dw_lab: &[Vec<[f64; 3]>],
-    a_idx: usize,
-    natoms: usize,
-    scale: f64,
-) -> Vec<[f64; 3]> {
+fn home_weight_row(dw_home: &[[f64; 3]], a_idx: usize, natoms: usize, scale: f64) -> Vec<[f64; 3]> {
     // Lab-fixed partition derivative for the HOME atom's weight:
-    // dw_lab[a_idx][c][k] is ∂w_becke^{a_idx}/∂R_c^k at fixed r.
+    // dw_home[c][k] is ∂w_becke^{a_idx}/∂R_c^k at fixed r.
     // PySCF's weight1 adds ∇_r w_becke to the home-atom row, then
     // multiplies through by the radial-angular Jacobian.
-    let mut grad_r = [0.0_f64; 3]; // = -Σ_c dw_lab[a_idx][c]
+    let mut grad_r = [0.0_f64; 3]; // = -Σ_c dw_home[c]
     for c in 0..natoms {
-        grad_r[0] -= dw_lab[a_idx][c][0];
-        grad_r[1] -= dw_lab[a_idx][c][1];
-        grad_r[2] -= dw_lab[a_idx][c][2];
+        grad_r[0] -= dw_home[c][0];
+        grad_r[1] -= dw_home[c][1];
+        grad_r[2] -= dw_home[c][2];
     }
     let mut row = Vec::with_capacity(natoms);
     for b in 0..natoms {
         let mut entry = [
-            scale * dw_lab[a_idx][b][0],
-            scale * dw_lab[a_idx][b][1],
-            scale * dw_lab[a_idx][b][2],
+            scale * dw_home[b][0],
+            scale * dw_home[b][1],
+            scale * dw_home[b][2],
         ];
         if b == a_idx {
             entry[0] += scale * grad_r[0];
@@ -862,32 +872,42 @@ fn home_weight_row(
 /// cutoff can drop a point (the historical path), `filter_map` otherwise;
 /// parallel above [`PAR_WORK_THRESHOLD`]. rayon's `filter_map(..).unzip()`
 /// keeps the input order, like the serial one.
-fn map_response_points<F>(
+fn map_response_points<S, I, F>(
     pre: &[(usize, [f64; 3], f64)],
     has_cut: bool,
+    init: I,
     build_point: F,
 ) -> (Vec<GridPoint>, Vec<Vec<[f64; 3]>>)
 where
-    F: Fn(&(usize, [f64; 3], f64)) -> Option<(GridPoint, Vec<[f64; 3]>)> + Sync + Send,
+    I: Fn() -> S + Sync + Send,
+    F: Fn(&mut S, &(usize, [f64; 3], f64)) -> Option<(GridPoint, Vec<[f64; 3]>)> + Sync + Send,
 {
     let par = pre.len() >= PAR_WORK_THRESHOLD;
+    let keep = |s: &mut S, p: &(usize, [f64; 3], f64)| {
+        build_point(s, p).expect("no weight cutoff: every point is kept")
+    };
     match (has_cut, par) {
-        (false, true) => pre
+        (false, true) => pre.par_iter().map_init(&init, keep).unzip(),
+        (false, false) => {
+            let mut s = init();
+            pre.iter().map(|p| keep(&mut s, p)).unzip()
+        }
+        (true, true) => pre
             .par_iter()
-            .map(|p| build_point(p).expect("no weight cutoff: every point is kept"))
+            .map_init(&init, |s, p| build_point(s, p))
+            .flatten_iter()
             .unzip(),
-        (false, false) => pre
-            .iter()
-            .map(|p| build_point(p).expect("no weight cutoff: every point is kept"))
-            .unzip(),
-        (true, true) => pre.par_iter().filter_map(build_point).unzip(),
-        (true, false) => pre.iter().filter_map(build_point).unzip(),
+        (true, false) => {
+            let mut s = init();
+            pre.iter().filter_map(|p| build_point(&mut s, p)).unzip()
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::becke::{becke_weights_all, becke_weights_and_grad};
     use ferric_core::mol::{Atom, Molecule};
 
     /// Distorted water (Bohr) for the grid-identity anchors.

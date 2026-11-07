@@ -359,14 +359,43 @@ fn an_incumbent_charge_narrows_what_the_gradient_may_take() {
          it, else the narrowing below is not about composition. Got {alone:?}"
     );
 
+    // The production XC gradient is the screened, spatially batched one: its
+    // batchable working set is one 128-point batch per CONCURRENTLY LIVE
+    // reduction group, so "narrower" now means fewer groups in flight (the
+    // result does not depend on it). The floor is one live group — what a
+    // one-thread pool takes — and the non-batchable grid + weight1 dominates
+    // the peak at this size, so the old "leave half of `needed`" squeeze no
+    // longer leaves room for even that floor. Leave room for the floor plus
+    // half of the batchable remainder instead: enough to complete, not enough
+    // for every worker's batch at once.
+    let needed_min = {
+        install_global(MemoryPool::with_capacity_bytes(8_000_000_000));
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(1)
+            .build()
+            .unwrap()
+            .install(|| fx.ks_gradient())
+            .expect("ample pool must admit the one-worker gradient");
+        let p = global().expect("pool").peak_bytes();
+        clear_global();
+        p
+    };
+    if rayon::current_num_threads() < 2 || needed_min >= needed {
+        eprintln!(
+            "SKIP narrowing: one rayon thread (or no batchable headroom: \
+             {needed_min} vs {needed} B), so there is nothing to narrow"
+        );
+        return;
+    }
+
     // The same pool, but another subsystem is already holding most of it.
     // Against a re-readable ceiling (`MemoryPlan::resolve`) the gradient would
-    // see the full capacity and take its full-width batch, because a ceiling
+    // see the full capacity and run every group at once, because a ceiling
     // does not know what is outstanding. Against the pool it must see only
     // what is left and narrow accordingly.
     let pool = MemoryPool::with_capacity_bytes(needed * 2);
     install_global(pool.clone());
-    let incumbent_bytes = needed * 2 - needed / 2;
+    let incumbent_bytes = needed * 2 - (needed_min + (needed - needed_min) / 2);
     let _incumbent = pool
         .reserve("pretend DF 3-index tensor", incumbent_bytes)
         .expect("incumbent fits");

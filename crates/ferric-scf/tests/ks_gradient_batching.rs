@@ -171,8 +171,12 @@ fn a_full_width_batch_is_bit_identical_to_the_unbatched_gradient() {
         );
     }
 
-    // And against the production entry point when the pool is ample, which is
-    // the same one-batch decision arrived at by the sizing rather than by hand.
+    // And against the production entry point when the pool is ample. The
+    // ample-pool sizing still picks one batch for this whole-grid path; the
+    // production entry point is now the screened, spatially batched gradient
+    // (`ks_gradient_screened.rs` anchors it per path), which re-associates
+    // every grid sum, so it is held to the re-association floor rather than to
+    // the bit.
     install_global(MemoryPool::with_capacity_bytes(AMPLE));
     let width = grad_batch_pts_for_test(case.nbf, case.npts, case.mol.atoms.len(), false);
     let production = xc_gradient_closed_gga_from_density(
@@ -193,13 +197,11 @@ fn a_full_width_batch_is_bit_identical_to_the_unbatched_gradient() {
         "an AMPLE pool must take the whole grid in one batch, not {width} of {}",
         case.npts
     );
-    for (a, b) in whole.iter().zip(production.iter()) {
-        assert_eq!(
-            a.to_bits(),
-            b.to_bits(),
-            "the production path at an ample budget must be the one-batch path"
-        );
-    }
+    let d = max_abs_diff(&whole, &production);
+    assert!(
+        d < 1e-12,
+        "the screened production gradient misses the one-batch whole-grid one by {d:.3e}"
+    );
 }
 
 /// THE RISK, MEASURED. Batching re-associates `row_dot`'s sum over grid points,

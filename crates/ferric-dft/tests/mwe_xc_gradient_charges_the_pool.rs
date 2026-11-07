@@ -79,7 +79,18 @@ fn h2o() -> Molecule {
 /// `dft_gradient_mgga.rs` and the PySCF reference tests). What matters is that
 /// the call allocates the full χ + ∇χ + ∇∇χ working set, which it does for any
 /// density.
+///
+/// This drives the WHOLE-GRID path (`_batched`, width sized by the pool), the
+/// one that holds χ/∇χ/∇∇χ as `(nbf, npts)` planes and that this file was
+/// written to account for. The production entry point is now the screened,
+/// spatially batched gradient, whose charge (grid + one 128-point batch per
+/// live worker) is pinned separately by
+/// `the_screened_xc_gradient_charges_far_less_and_still_refuses_a_tight_pool`.
 fn run_gga_xc_gradient() -> Result<Array2<f64>, ferric_dft::gradient::KsGradError> {
+    run_gga(true)
+}
+
+fn run_gga(whole_grid: bool) -> Result<Array2<f64>, ferric_dft::gradient::KsGradError> {
     let mol = h2o();
     let bs = basis::bundled("6-31g").unwrap();
     let prep = PreparedBasis::new(&mol, &bs).unwrap();
@@ -92,16 +103,72 @@ fn run_gga_xc_gradient() -> Result<Array2<f64>, ferric_dft::gradient::KsGradErro
         d[(i, i)] = nelec / nbf as f64;
     }
     let grid_cfg = AtomicGridConfig::default();
-    ferric_dft::gradient::xc_gradient_closed_gga_from_density(
-        &mol,
-        &bs,
-        &d,
-        "PBE",
-        &grid_cfg,
-        prep.shell_to_atom(),
-        prep.shell_offsets(),
-        prep.shell_dims(),
-    )
+    if whole_grid {
+        ferric_dft::gradient::xc_gradient_closed_gga_from_density_batched(
+            &mol,
+            &bs,
+            &d,
+            "PBE",
+            &grid_cfg,
+            prep.shell_to_atom(),
+            prep.shell_offsets(),
+            prep.shell_dims(),
+            None,
+        )
+    } else {
+        ferric_dft::gradient::xc_gradient_closed_gga_from_density(
+            &mol,
+            &bs,
+            &d,
+            "PBE",
+            &grid_cfg,
+            prep.shell_to_atom(),
+            prep.shell_offsets(),
+            prep.shell_dims(),
+        )
+    }
+}
+
+/// The production (screened) path charges the pool too — grid + `weight1`
+/// plus one batch per concurrently live worker — releases it, costs far less
+/// than the whole-grid planes, and still refuses a pool that cannot hold the
+/// grid. Reachability: the ample-pool control must admit before the tight pool
+/// is asked to refuse.
+#[test]
+fn the_screened_xc_gradient_charges_far_less_and_still_refuses_a_tight_pool() {
+    let _s = CleanSlot::acquire();
+
+    install_global(MemoryPool::with_capacity_bytes(8_000_000_000));
+    run_gga(false).expect("ample pool must admit the screened gradient");
+    let screened_peak = global().expect("pool").peak_bytes();
+    let outstanding = global().expect("pool").outstanding_bytes();
+    clear_global();
+
+    install_global(MemoryPool::with_capacity_bytes(8_000_000_000));
+    run_gga(true).expect("ample pool must admit the whole-grid gradient");
+    let whole_peak = global().expect("pool").peak_bytes();
+    clear_global();
+
+    assert!(screened_peak > 0, "the screened gradient charged nothing");
+    assert_eq!(
+        outstanding, 0,
+        "the screened gradient leaked {outstanding} B"
+    );
+    assert!(
+        screened_peak * 2 < whole_peak,
+        "screened peak {screened_peak} B is not well below the whole-grid {whole_peak} B"
+    );
+
+    install_global(MemoryPool::with_capacity_bytes(1_000_000));
+    let tight = run_gga(false);
+    clear_global();
+    let msg = tight
+        .expect_err("a 1 MB pool cannot hold the grid + weight1 and must refuse")
+        .to_string();
+    assert!(
+        msg.contains("GGA XC gradient"),
+        "refusal must name the plane: {msg}"
+    );
 }
 
 #[test]

@@ -32,6 +32,10 @@ use crate::grid::{
 };
 use crate::libxc::{xc_def_from_name, xc_def_from_name_nspin, FunctionalFamily, LibxcError, XcDef};
 
+mod screened;
+use screened::{screened_xc_gradient, ClosedKind, SpinDensity};
+pub use screened::{GradScreenConfig, DEFAULT_GRAD_SCREEN_THRESH};
+
 /// Total element-count (`nbf·npts`) below which the row/column contractions stay
 /// serial — rayon spawn/join overhead dwarfs the reduction on tiny grids (the
 /// free-atom SCF case). Mirrors the `PAR_MIN_PTS` guard in `vv10`/`ao_grid`.
@@ -48,6 +52,15 @@ const PAR_MIN_ELEMS: usize = 128 * 128;
 /// bit-identical to the serial reduction regardless of thread count.
 #[inline]
 fn row_dot(a: &ArrayView2<'_, f64>, b: &ArrayView2<'_, f64>) -> ndarray::Array1<f64> {
+    row_dot_p(a, b, true)
+}
+
+/// [`row_dot`] with the rayon fan-out made explicit: `par = false` always runs
+/// the serial fold (bit-identical to the parallel one — every row is its own
+/// fixed-order reduction). The screened gradient calls this from inside its own
+/// per-batch rayon workers, where a nested fan-out only adds overhead.
+#[inline]
+fn row_dot_p(a: &ArrayView2<'_, f64>, b: &ArrayView2<'_, f64>, par: bool) -> ndarray::Array1<f64> {
     debug_assert_eq!(a.dim(), b.dim());
     let (nbf, npts) = a.dim();
     // Per-row deterministic left-to-right fold: row μ of `a` · row μ of `b`.
@@ -60,7 +73,7 @@ fn row_dot(a: &ArrayView2<'_, f64>, b: &ArrayView2<'_, f64>) -> ndarray::Array1<
             .and(br)
             .fold(0.0_f64, |acc, &x, &y| acc + x * y)
     };
-    let out: Vec<f64> = if nbf.saturating_mul(npts) >= PAR_MIN_ELEMS {
+    let out: Vec<f64> = if par && nbf.saturating_mul(npts) >= PAR_MIN_ELEMS {
         (0..nbf).into_par_iter().map(reduce).collect()
     } else {
         (0..nbf).map(reduce).collect()
@@ -75,6 +88,11 @@ fn row_dot(a: &ArrayView2<'_, f64>, b: &ArrayView2<'_, f64>) -> ndarray::Array1<
 /// grid-point columns; each column's μ-reduction is an independent, fixed-order
 /// left-to-right fold, so the output is bit-identical across thread counts.
 fn col_dot(a: &ArrayView2<'_, f64>, b: &ArrayView2<'_, f64>) -> ndarray::Array1<f64> {
+    col_dot_p(a, b, true)
+}
+
+/// [`col_dot`] with the rayon fan-out made explicit (see [`row_dot_p`]).
+fn col_dot_p(a: &ArrayView2<'_, f64>, b: &ArrayView2<'_, f64>, par: bool) -> ndarray::Array1<f64> {
     debug_assert_eq!(a.dim(), b.dim());
     let (nbf, npts) = a.dim();
     let mut out = ndarray::Array1::<f64>::zeros(npts);
@@ -85,7 +103,7 @@ fn col_dot(a: &ArrayView2<'_, f64>, b: &ArrayView2<'_, f64>) -> ndarray::Array1<
         }
         acc
     };
-    if nbf.saturating_mul(npts) >= PAR_MIN_ELEMS {
+    if par && nbf.saturating_mul(npts) >= PAR_MIN_ELEMS {
         out.as_slice_mut()
             .expect("contiguous")
             .par_iter_mut()
@@ -153,6 +171,7 @@ fn gga_ao_partials(
     ddchi: &ndarray::Array4<f64>,
     c: &Array2<f64>, // (3, npts) per-direction GGA weight column
     t_rho: &[f64],
+    par: bool,
 ) -> [ndarray::Array1<f64>; 3] {
     let t_rho_v = ArrayView1::from(t_rho);
     // LDA-like operand: mt[μ,g] = m[μ,g] · t_rho[g].
@@ -160,17 +179,17 @@ fn gga_ao_partials(
     std::array::from_fn(|axis| {
         let dchi_axis = dchi.index_axis(Axis(0), axis);
         // LDA piece.
-        let mut partial = row_dot(&mt.view(), &dchi_axis);
+        let mut partial = row_dot_p(&mt.view(), &dchi_axis, par);
         for b in 0..3 {
             let cb_v = c.index_axis(Axis(0), b);
             // term1: ∂_axis χ · (mdchi_b · c_b)
             let mdchi_b_scaled = scale_cols(&mdchi.index_axis(Axis(0), b), &cb_v);
-            partial = partial + row_dot(&dchi_axis, &mdchi_b_scaled.view());
+            partial = partial + row_dot_p(&dchi_axis, &mdchi_b_scaled.view(), par);
             // term2: ∂²_{axis,b} χ · (m · c_b)
             let m_scaled = scale_cols(&m.view(), &cb_v);
             let ddchi_a = ddchi.index_axis(Axis(0), axis);
             let ddchi_ab = ddchi_a.index_axis(Axis(0), b);
-            partial = partial + row_dot(&ddchi_ab, &m_scaled.view());
+            partial = partial + row_dot_p(&ddchi_ab, &m_scaled.view(), par);
         }
         partial
     })
@@ -233,6 +252,7 @@ fn mgga_tau_partials(
     mdchi: &Array3<f64>,          // (3, nbf, npts): (D ∂_b χ)_μ
     ddchi: &ndarray::Array4<f64>, // (3, 3, nbf, npts)
     t_tau: &[f64],                // w_g · v_τ(g)
+    par: bool,
 ) -> [ndarray::Array1<f64>; 3] {
     let t_tau_v = ArrayView1::from(t_tau);
     std::array::from_fn(|axis| {
@@ -241,7 +261,7 @@ fn mgga_tau_partials(
         for b in 0..3 {
             let mdchi_b_scaled = scale_cols(&mdchi.index_axis(Axis(0), b), &t_tau_v);
             let ddchi_ab = ddchi_a.index_axis(Axis(0), b);
-            let term = row_dot(&ddchi_ab, &mdchi_b_scaled.view());
+            let term = row_dot_p(&ddchi_ab, &mdchi_b_scaled.view(), par);
             partial = Some(match partial {
                 None => term,
                 Some(p) => p + term,
@@ -266,6 +286,7 @@ fn mgga_tau_partials(
 fn tau_spatial_grad(
     mdchi: &Array3<f64>,
     ddchi: &ndarray::Array4<f64>,
+    par: bool,
 ) -> [ndarray::Array1<f64>; 3] {
     std::array::from_fn(|axis| {
         let ddchi_a = ddchi.index_axis(Axis(0), axis);
@@ -273,7 +294,7 @@ fn tau_spatial_grad(
         for b in 0..3 {
             let mdchi_b = mdchi.index_axis(Axis(0), b);
             let ddchi_ab = ddchi_a.index_axis(Axis(0), b);
-            let term = col_dot(&ddchi_ab, &mdchi_b);
+            let term = col_dot_p(&ddchi_ab, &mdchi_b, par);
             acc = Some(match acc {
                 None => term,
                 Some(a) => a + term,
@@ -784,6 +805,35 @@ pub fn xc_gradient_closed_lda_from_density(
     shell_offsets: &[usize],
     shell_dims: &[usize],
 ) -> Result<Array2<f64>, KsGradError> {
+    xc_gradient_screened_with(
+        mol,
+        bs,
+        d_total,
+        None,
+        xc_name,
+        XcGradPath::ClosedLda,
+        grid_cfg,
+        shell_to_atom,
+        shell_offsets,
+        shell_dims,
+        GradScreenConfig::default(),
+    )
+}
+
+/// The whole-grid (unbatched, unscreened) LDA gradient — the pre-screening
+/// production path, kept as the reference the screened path is anchored to.
+#[doc(hidden)]
+#[allow(clippy::too_many_arguments)]
+pub fn xc_gradient_closed_lda_from_density_dense(
+    mol: &Molecule,
+    bs: &ferric_core::basis::BasisSet,
+    d_total: &Array2<f64>,
+    xc_name: &str,
+    grid_cfg: &AtomicGridConfig,
+    shell_to_atom: &[usize],
+    shell_offsets: &[usize],
+    shell_dims: &[usize],
+) -> Result<Array2<f64>, KsGradError> {
     let nbf = d_total.nrows();
     let (grid, weight1) = build_atomic_grid_with_response(mol, grid_cfg)?;
     // Gate the AO tensors (and everything allocated on top of them) against
@@ -932,7 +982,7 @@ pub fn gga_gradient_from_potentials(
 
     let mut grad = Array2::<f64>::zeros((natoms, 3));
     let c = gga_weight_columns(&t_sig, grad_rho);
-    let partials = gga_ao_partials(&m, &mdchi, dchi, ddchi, &c, &t_rho);
+    let partials = gga_ao_partials(&m, &mdchi, dchi, ddchi, &c, &t_rho, true);
     scatter_partials(&partials, bf_to_atom_map, &mut grad);
     grad
 }
@@ -1041,22 +1091,26 @@ pub fn xc_gradient_closed_gga_from_density(
     shell_offsets: &[usize],
     shell_dims: &[usize],
 ) -> Result<Array2<f64>, KsGradError> {
-    xc_gradient_closed_gga_from_density_batched(
+    xc_gradient_screened_with(
         mol,
         bs,
         d_total,
+        None,
         xc_name,
+        XcGradPath::ClosedGga,
         grid_cfg,
         shell_to_atom,
         shell_offsets,
         shell_dims,
-        None,
+        GradScreenConfig::default(),
     )
 }
 
-/// [`xc_gradient_closed_gga_from_density`] with the grid batch width forced.
+/// The whole-grid GGA gradient (the pre-screening production path) with the
+/// contiguous grid batch width forced — the reference the screened
+/// [`xc_gradient_closed_gga_from_density`] is anchored to.
 ///
-/// `batch_pts = None` is production: the width comes from
+/// `batch_pts = None` sizes the width
 /// [`resolve_grad_batch_size`] against the pool ledger. `Some(w)` pins it.
 ///
 /// # Why this hook exists
@@ -1092,7 +1146,9 @@ pub fn xc_gradient_closed_gga_from_density_batched(
     // LDA family also accepted — falls back to vsigma=0.
 
     let nbf = d_total.nrows();
+    let t_ = ferric_core::timing::Stage::start("xcg:grid+weight1");
     let (grid, weight1) = build_atomic_grid_with_response(mol, grid_cfg)?;
+    t_.end();
     let natoms = mol.atoms.len();
     let map = bf_to_atom(shell_to_atom, shell_offsets, shell_dims, nbf);
 
@@ -1159,8 +1215,10 @@ fn gga_closed_batch(
     // `batch_pts` against it, then COMMITTED that charge. Re-resolving here
     // would read a ceiling that has moved since, which protects nothing — the
     // same argument `ks.rs`'s batched V_xc makes for its own `_unchecked` call.
+    let t_ = ferric_core::timing::Stage::start("xcg:ao-eval(hess)");
     let (chi, dchi, ddchi) =
         crate::ao_grid::eval_basis_grad_hess_on_points_unchecked(shells, nbf, &pts)?;
+    t_.end();
     let weights: Vec<f64> = grid.iter().map(|g| g.weight).collect();
 
     let npts = chi.ncols();
@@ -1168,7 +1226,10 @@ fn gga_closed_batch(
     debug_assert_eq!(ddchi.dim(), (3, 3, nbf, npts));
 
     // Evaluate ρ, ∇ρ, σ, then v_ρ and v_σ per grid point.
+    let t_ = ferric_core::timing::Stage::start("xcg:density");
     let dens = crate::density_on_grid::eval_density_closed(d_total, &chi, &dchi);
+    t_.end();
+    let t_ = ferric_core::timing::Stage::start("xcg:libxc");
     let rho_slice = dens.rho.as_slice().expect("rho is contiguous");
     let sigma_slice = dens.sigma.as_slice().expect("sigma is contiguous");
 
@@ -1198,6 +1259,7 @@ fn gga_closed_batch(
         }
     }
 
+    t_.end();
     // Pre-scale per-point quantities for tight inner loops.
     //   t_rho[g]  = w_g · v_ρ
     //   t_sig[g]  = w_g · 2 · v_σ          (multiplied by ∇ρ at inner-loop time)
@@ -1215,6 +1277,7 @@ fn gga_closed_batch(
     // via matrix products. Both run before the rayon-gated ao-partial
     // reductions below start. Opt-in BLAS raise via FERRIC_BLAS_THREADS
     // (default 1, unchanged behavior).
+    let t_ = ferric_core::timing::Stage::start("xcg:gemm D.chi/D.dchi");
     let m: Array2<f64> = with_blas_threads(opt_in_blas_threads(), || d_total.dot(&chi)); // (nbf, npts)
     let mut mdchi = ndarray::Array3::<f64>::zeros((3, nbf, npts));
     for b in 0..3 {
@@ -1222,12 +1285,16 @@ fn gga_closed_batch(
         let prod: Array2<f64> = with_blas_threads(opt_in_blas_threads(), || d_total.dot(&slice));
         mdchi.index_axis_mut(ndarray::Axis(0), b).assign(&prod);
     }
+    t_.end();
 
     let mut grad = Array2::<f64>::zeros((natoms, 3));
 
+    let t_ = ferric_core::timing::Stage::start("xcg:ao-partials");
     let c = gga_weight_columns(&t_sig, &dens.grad);
-    let partials = gga_ao_partials(&m, &mdchi, &dchi, &ddchi, &c, &t_rho);
+    let partials = gga_ao_partials(&m, &mdchi, &dchi, &ddchi, &c, &t_rho, true);
     scatter_partials(&partials, map, &mut grad);
+    t_.end();
+    let t_ = ferric_core::timing::Stage::start("xcg:weight-response");
 
     // ── Grid-response correction (P2.1, PySCF convention) ──
     //
@@ -1253,6 +1320,8 @@ fn gga_closed_batch(
             grad[(b, 2)] += w1[b][2] * f;
         }
     }
+    t_.end();
+    let t_ = ferric_core::timing::Stage::start("xcg:grid-coord-response");
     // ∂²_{αb} ρ(r_g) = 2 Σ_μ [ ∂_α χ_μ · (D ∂_b χ)_μ + m_μ · ∂²_{αb} χ_μ ].
     // Precompute the per-(axis,b) column over the batch (reduction over μ) so the
     // per-point scatter below is a short serial pass. `hess_col[axis][b]` is a
@@ -1290,6 +1359,7 @@ fn gga_closed_batch(
             grad[(a, axis)] += w * 2.0 * vs * sum_b;
         }
     }
+    t_.end();
 
     Ok(grad)
 }
@@ -1310,6 +1380,35 @@ fn gga_closed_batch(
 /// `tau_spatial_grad` for the second.
 #[allow(clippy::too_many_arguments)]
 pub fn xc_gradient_closed_mgga_from_density(
+    mol: &Molecule,
+    bs: &ferric_core::basis::BasisSet,
+    d_total: &Array2<f64>,
+    xc_name: &str,
+    grid_cfg: &AtomicGridConfig,
+    shell_to_atom: &[usize],
+    shell_offsets: &[usize],
+    shell_dims: &[usize],
+) -> Result<Array2<f64>, KsGradError> {
+    xc_gradient_screened_with(
+        mol,
+        bs,
+        d_total,
+        None,
+        xc_name,
+        XcGradPath::ClosedMgga,
+        grid_cfg,
+        shell_to_atom,
+        shell_offsets,
+        shell_dims,
+        GradScreenConfig::default(),
+    )
+}
+
+/// The whole-grid meta-GGA gradient (the pre-screening production path), kept
+/// as the reference the screened path is anchored to.
+#[doc(hidden)]
+#[allow(clippy::too_many_arguments)]
+pub fn xc_gradient_closed_mgga_from_density_dense(
     mol: &Molecule,
     bs: &ferric_core::basis::BasisSet,
     d_total: &Array2<f64>,
@@ -1463,10 +1562,10 @@ fn mgga_closed_batch(
 
     // ρ + σ AO-derivative terms (identical to the GGA path).
     let c = gga_weight_columns(&t_sig, &dens.grad);
-    let partials = gga_ao_partials(&m, &mdchi, &dchi, &ddchi, &c, &t_rho);
+    let partials = gga_ao_partials(&m, &mdchi, &dchi, &ddchi, &c, &t_rho, true);
     scatter_partials(&partials, map, &mut grad);
     // τ AO-derivative term.
-    let tau_partials = mgga_tau_partials(&mdchi, &ddchi, &t_tau);
+    let tau_partials = mgga_tau_partials(&mdchi, &ddchi, &t_tau, true);
     scatter_partials(&tau_partials, map, &mut grad);
 
     // ── Grid-response correction (same convention as the GGA path) ──
@@ -1492,7 +1591,7 @@ fn mgga_closed_batch(
             hb
         })
     });
-    let dtau = tau_spatial_grad(&mdchi, &ddchi);
+    let dtau = tau_spatial_grad(&mdchi, &ddchi, true);
     for (gi, gp) in grid.iter().enumerate() {
         if !crate::vxc::above_density_floor(dens.rho[gi], floor) {
             continue;
@@ -1532,6 +1631,36 @@ fn mgga_closed_batch(
 ///   `G^β_b = 2 v_σββ · ∇ρ_β_b + v_σαβ · ∇ρ_α_b`
 #[allow(clippy::too_many_arguments)]
 pub fn xc_gradient_uks_from_density(
+    mol: &Molecule,
+    bs: &ferric_core::basis::BasisSet,
+    d_a: &Array2<f64>,
+    d_b: &Array2<f64>,
+    xc_name: &str,
+    grid_cfg: &AtomicGridConfig,
+    shell_to_atom: &[usize],
+    shell_offsets: &[usize],
+    shell_dims: &[usize],
+) -> Result<Array2<f64>, KsGradError> {
+    xc_gradient_screened_with(
+        mol,
+        bs,
+        d_a,
+        Some(d_b),
+        xc_name,
+        XcGradPath::Uks,
+        grid_cfg,
+        shell_to_atom,
+        shell_offsets,
+        shell_dims,
+        GradScreenConfig::default(),
+    )
+}
+
+/// The whole-grid UKS gradient (the pre-screening production path), kept as
+/// the reference the screened path is anchored to.
+#[doc(hidden)]
+#[allow(clippy::too_many_arguments)]
+pub fn xc_gradient_uks_from_density_dense(
     mol: &Molecule,
     bs: &ferric_core::basis::BasisSet,
     d_a: &Array2<f64>,
@@ -1699,7 +1828,7 @@ fn uks_gga_batch(
                 with_blas_threads(opt_in_blas_threads(), || d_sigma.dot(&slice));
             mdchi.index_axis_mut(ndarray::Axis(0), b).assign(&prod);
         }
-        let partials = gga_ao_partials(&m, &mdchi, &dchi, &ddchi, &c, &t_rho);
+        let partials = gga_ao_partials(&m, &mdchi, &dchi, &ddchi, &c, &t_rho, true);
         scatter_partials(&partials, map, grad_out);
     };
 
@@ -1842,6 +1971,36 @@ fn uks_gga_batch(
 /// See `mgga_tau_partials` for the derivation (with D → D_σ, τ → τ_σ).
 #[allow(clippy::too_many_arguments)]
 pub fn xc_gradient_uks_mgga_from_density(
+    mol: &Molecule,
+    bs: &ferric_core::basis::BasisSet,
+    d_a: &Array2<f64>,
+    d_b: &Array2<f64>,
+    xc_name: &str,
+    grid_cfg: &AtomicGridConfig,
+    shell_to_atom: &[usize],
+    shell_offsets: &[usize],
+    shell_dims: &[usize],
+) -> Result<Array2<f64>, KsGradError> {
+    xc_gradient_screened_with(
+        mol,
+        bs,
+        d_a,
+        Some(d_b),
+        xc_name,
+        XcGradPath::UksMgga,
+        grid_cfg,
+        shell_to_atom,
+        shell_offsets,
+        shell_dims,
+        GradScreenConfig::default(),
+    )
+}
+
+/// The whole-grid UKS meta-GGA gradient (the pre-screening production path),
+/// kept as the reference the screened path is anchored to.
+#[doc(hidden)]
+#[allow(clippy::too_many_arguments)]
+pub fn xc_gradient_uks_mgga_from_density_dense(
     mol: &Molecule,
     bs: &ferric_core::basis::BasisSet,
     d_a: &Array2<f64>,
@@ -2024,9 +2183,9 @@ fn uks_mgga_batch(
                 }
             }
         }
-        let partials = gga_ao_partials(m_s, mdchi_s, &dchi, &ddchi, &c, &t_rho);
+        let partials = gga_ao_partials(m_s, mdchi_s, &dchi, &ddchi, &c, &t_rho, true);
         scatter_partials(&partials, map, grad_out);
-        let tau_partials = mgga_tau_partials(mdchi_s, &ddchi, &t_tau);
+        let tau_partials = mgga_tau_partials(mdchi_s, &ddchi, &t_tau, true);
         scatter_partials(&tau_partials, map, grad_out);
     };
 
@@ -2083,8 +2242,8 @@ fn uks_mgga_batch(
     };
     let hess_a = hess_cols(&m_a, &mdchi_a);
     let hess_b = hess_cols(&m_b, &mdchi_b);
-    let dtau_a = tau_spatial_grad(&mdchi_a, &ddchi);
-    let dtau_b = tau_spatial_grad(&mdchi_b, &ddchi);
+    let dtau_a = tau_spatial_grad(&mdchi_a, &ddchi, true);
+    let dtau_b = tau_spatial_grad(&mdchi_b, &ddchi, true);
 
     // (2) home-translation of the integrand.
     for (gi, gp) in grid.iter().enumerate() {
@@ -2118,6 +2277,93 @@ fn uks_mgga_batch(
     }
 
     Ok(grad)
+}
+
+/// Which XC-gradient formula a call evaluates — the dispatch
+/// `ferric_scf::ks_gradient` makes on the functional family and spin.
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum XcGradPath {
+    /// [`xc_gradient_closed_lda_from_density`] (LDA components only).
+    ClosedLda,
+    /// [`xc_gradient_closed_gga_from_density`].
+    ClosedGga,
+    /// [`xc_gradient_closed_mgga_from_density`].
+    ClosedMgga,
+    /// [`xc_gradient_uks_from_density`].
+    Uks,
+    /// [`xc_gradient_uks_mgga_from_density`].
+    UksMgga,
+}
+
+/// Every production `xc_gradient_*_from_density` entry point, with the screen
+/// (threshold, batch size) exposed. `d_b` is `Some` exactly for the open-shell
+/// paths. Production passes [`GradScreenConfig::default`]; tests pin
+/// `screen_thresh = 0.0` (every shell kept) for the exactness anchor.
+#[doc(hidden)]
+#[allow(clippy::too_many_arguments)]
+pub fn xc_gradient_screened_with(
+    mol: &Molecule,
+    bs: &ferric_core::basis::BasisSet,
+    d_a: &Array2<f64>,
+    d_b: Option<&Array2<f64>>,
+    xc_name: &str,
+    path: XcGradPath,
+    grid_cfg: &AtomicGridConfig,
+    shell_to_atom: &[usize],
+    shell_offsets: &[usize],
+    shell_dims: &[usize],
+    cfg: GradScreenConfig,
+) -> Result<Array2<f64>, KsGradError> {
+    let open = |mgga: bool| -> Result<(XcDef, SpinDensity<'_>), KsGradError> {
+        let d_b = d_b.expect("an open-shell XC gradient needs D_beta");
+        Ok((
+            xc_def_from_name_nspin(xc_name, 2)?,
+            SpinDensity::Open(d_a, d_b, mgga),
+        ))
+    };
+    let (label, (xc, dens)) = match path {
+        XcGradPath::ClosedLda => {
+            let xc = xc_def_from_name(xc_name)?;
+            for f in &xc.funcs {
+                if !matches!(f.family(), FunctionalFamily::Lda) {
+                    return Err(KsGradError::UnsupportedFamily(f.family()));
+                }
+            }
+            (
+                "KS-DFT LDA XC gradient",
+                (xc, SpinDensity::Closed(d_a, ClosedKind::Lda)),
+            )
+        }
+        XcGradPath::ClosedGga => (
+            "KS-DFT GGA XC gradient",
+            (
+                xc_def_from_name(xc_name)?,
+                SpinDensity::Closed(d_a, ClosedKind::Gga),
+            ),
+        ),
+        XcGradPath::ClosedMgga => (
+            "KS-DFT meta-GGA XC gradient",
+            (
+                xc_def_from_name(xc_name)?,
+                SpinDensity::Closed(d_a, ClosedKind::Mgga),
+            ),
+        ),
+        XcGradPath::Uks => ("KS-DFT UKS GGA XC gradient", open(false)?),
+        XcGradPath::UksMgga => ("KS-DFT UKS meta-GGA XC gradient", open(true)?),
+    };
+    screened_xc_gradient(
+        label,
+        mol,
+        bs,
+        dens,
+        &xc,
+        grid_cfg,
+        shell_to_atom,
+        shell_offsets,
+        shell_dims,
+        cfg,
+    )
 }
 
 #[cfg(test)]

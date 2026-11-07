@@ -327,6 +327,155 @@ impl BeckeTable {
     }
 }
 
+/// Per-thread work space of [`BeckeTable::home_weight_grad`].
+pub(crate) struct BeckeGradScratch {
+    rd: Vec<f64>,
+    unit: Vec<[f64; 3]>,
+    s_pair: Vec<f64>,
+    ds_dra: Vec<[f64; 3]>,
+    ds_drb: Vec<[f64; 3]>,
+    p_cell: Vec<f64>,
+    dp: Vec<[f64; 3]>,
+    dt: Vec<[f64; 3]>,
+}
+
+impl BeckeTable {
+    pub(crate) fn grad_scratch(&self) -> BeckeGradScratch {
+        let n = self.n;
+        BeckeGradScratch {
+            rd: vec![0.0; n],
+            unit: vec![[0.0; 3]; n],
+            s_pair: vec![1.0; n * n],
+            ds_dra: vec![[0.0; 3]; n * n],
+            ds_drb: vec![[0.0; 3]; n * n],
+            p_cell: vec![1.0; n],
+            dp: vec![[0.0; 3]; n * n],
+            dt: vec![[0.0; 3]; n],
+        }
+    }
+
+    /// `becke_weights_and_grad(mol, r).1[home]` — the lab-fixed derivative of the
+    /// HOME atom's weight with respect to every nucleus — bit for bit, written
+    /// into `out` (length `natoms`).
+    ///
+    /// Same expressions on the same inputs in the same order as
+    /// [`becke_weights_and_grad`] (the pair geometry `R_AB` and `a_AB` come from
+    /// the table, which computes them with that function's exact expressions),
+    /// but with the pair geometry hoisted out of the per-point work, flat scratch
+    /// reused across points instead of ~`2·natoms` allocations per point, and
+    /// only the one `dw` row the grid response reads assembled. Pinned by
+    /// `home_weight_grad_is_becke_weights_and_grad_bit_for_bit`.
+    pub(crate) fn home_weight_grad(
+        &self,
+        r: [f64; 3],
+        home: usize,
+        s: &mut BeckeGradScratch,
+        out: &mut [[f64; 3]],
+    ) {
+        let n = self.n;
+        out.iter_mut().for_each(|o| *o = [0.0; 3]);
+        if n <= 1 {
+            return;
+        }
+        for x in 0..n {
+            let dx = r[0] - self.xyz[x][0];
+            let dy = r[1] - self.xyz[x][1];
+            let dz = r[2] - self.xyz[x][2];
+            let rx = (dx * dx + dy * dy + dz * dz).sqrt();
+            s.rd[x] = rx;
+            let inv = if rx > 1e-30 { 1.0 / rx } else { 0.0 };
+            s.unit[x] = [dx * inv, dy * inv, dz * inv];
+        }
+        s.s_pair.iter_mut().for_each(|v| *v = 1.0);
+        s.ds_dra.iter_mut().for_each(|v| *v = [0.0; 3]);
+        s.ds_drb.iter_mut().for_each(|v| *v = [0.0; 3]);
+        for a in 0..n {
+            for b in 0..n {
+                if a == b {
+                    continue;
+                }
+                let r_ab = self.r_ab[a * n + b];
+                if r_ab < 1e-12 {
+                    continue;
+                }
+                let inv_r_ab = 1.0 / r_ab;
+                let r_ab_vec = [
+                    self.xyz[a][0] - self.xyz[b][0],
+                    self.xyz[a][1] - self.xyz[b][1],
+                    self.xyz[a][2] - self.xyz[b][2],
+                ];
+                let mu = (s.rd[a] - s.rd[b]) * inv_r_ab;
+                let a_corr = self.a_corr[a * n + b];
+                let nu = mu + a_corr * (1.0 - mu * mu);
+                let dnu_dmu = 1.0 - 2.0 * a_corr * mu;
+                let f0 = nu;
+                let f0p = 1.5 * (1.0 - f0 * f0);
+                let f1 = 0.5 * f0 * (3.0 - f0 * f0);
+                let f1p = 1.5 * (1.0 - f1 * f1);
+                let f2 = 0.5 * f1 * (3.0 - f1 * f1);
+                let f2p = 1.5 * (1.0 - f2 * f2);
+                let f3 = 0.5 * f2 * (3.0 - f2 * f2);
+                let df3_dnu = f2p * f1p * f0p;
+                let ds_dmu = -0.5 * df3_dnu * dnu_dmu;
+                s.s_pair[a * n + b] = 0.5 * (1.0 - f3);
+                for k in 0..3 {
+                    let ab_term = mu * inv_r_ab * inv_r_ab * r_ab_vec[k];
+                    let dmu_dra = -s.unit[a][k] * inv_r_ab - ab_term;
+                    let dmu_drb = s.unit[b][k] * inv_r_ab + ab_term;
+                    s.ds_dra[a * n + b][k] = ds_dmu * dmu_dra;
+                    s.ds_drb[a * n + b][k] = ds_dmu * dmu_drb;
+                }
+            }
+        }
+        for a in 0..n {
+            let mut p = 1.0_f64;
+            for b in 0..n {
+                if a == b {
+                    continue;
+                }
+                p *= s.s_pair[a * n + b];
+            }
+            s.p_cell[a] = p;
+        }
+        let t: f64 = s.p_cell.iter().sum();
+        if t < 1e-30 {
+            return;
+        }
+        let inv_t = 1.0 / t;
+        s.dp.iter_mut().for_each(|v| *v = [0.0; 3]);
+        for a in 0..n {
+            for b in 0..n {
+                if a == b {
+                    continue;
+                }
+                let sv = s.s_pair[a * n + b];
+                if sv.abs() < 1e-30 {
+                    continue;
+                }
+                let ratio = s.p_cell[a] / sv;
+                for k in 0..3 {
+                    s.dp[a * n + a][k] += ratio * s.ds_dra[a * n + b][k];
+                    s.dp[a * n + b][k] += ratio * s.ds_drb[a * n + b][k];
+                }
+            }
+        }
+        s.dt.iter_mut().for_each(|v| *v = [0.0; 3]);
+        for a in 0..n {
+            for c in 0..n {
+                for k in 0..3 {
+                    s.dt[c][k] += s.dp[a * n + c][k];
+                }
+            }
+        }
+        let ph = s.p_cell[home];
+        for c in 0..n {
+            for k in 0..3 {
+                out[c][k] = inv_t * s.dp[home * n + c][k] - ph * inv_t * inv_t * s.dt[c][k];
+            }
+        }
+    }
+}
+
 /// See [`BeckeTable`]: `2^30`, the point-to-atom over atom-to-atom distance ratio
 /// below which a cell may stop at an exact zero.
 const BECKE_STOP_RATIO: f64 = 1_073_741_824.0;
@@ -1185,6 +1334,75 @@ mod tests {
         let w = becke_weights_all(&mol, [0.0, 0.0, 0.0]);
         assert!((w[0] - 0.5).abs() < 1e-12, "Becke w midpoint H2: {:?}", w);
         assert!((w[1] - 0.5).abs() < 1e-12, "Becke w midpoint H2: {:?}", w);
+    }
+
+    /// `BeckeTable::home_weight_grad` is the home row of `becke_weights_and_grad`
+    /// bit for bit (it replaced that call in the gradient's response grid), over
+    /// points near, between and far from the atoms of a heteronuclear molecule
+    /// with unequal Bragg-Slater radii, plus a coincident-atom pair (the
+    /// `R_AB < 1e-12` skip).
+    #[test]
+    fn home_weight_grad_is_becke_weights_and_grad_bit_for_bit() {
+        let at = |symbol: &str, z: i32, x: f64, y: f64, zpos: f64| Atom {
+            symbol: symbol.into(),
+            z,
+            x,
+            y,
+            zpos,
+            ghost: false,
+            n_core_ecp: 0,
+        };
+        let mols = [
+            Molecule {
+                atoms: vec![
+                    at("O", 8, 0.0, 0.0, 0.2),
+                    at("H", 1, 0.0, 1.43, -0.9),
+                    at("H", 1, 0.1, -1.4, -0.95),
+                    at("S", 16, 2.9, 0.3, 1.1),
+                ],
+                charge: 0,
+                multiplicity: 1,
+            },
+            Molecule {
+                atoms: vec![
+                    at("C", 6, 0.0, 0.0, 0.0),
+                    at("C", 6, 0.0, 0.0, 0.0),
+                    at("N", 7, 1.2, 0.0, 0.0),
+                ],
+                charge: 0,
+                multiplicity: 1,
+            },
+        ];
+        let mut checked = 0usize;
+        for mol in &mols {
+            let table = BeckeTable::new(mol);
+            let mut s = table.grad_scratch();
+            let n = mol.atoms.len();
+            let mut out = vec![[0.0; 3]; n];
+            for i in 0..400 {
+                let t = i as f64;
+                let r = [
+                    3.0 * (0.37 * t).sin(),
+                    2.5 * (0.71 * t).cos(),
+                    1.5 + 4.0 * (0.13 * t).sin() * (0.29 * t).cos(),
+                ];
+                let (_, dw) = becke_weights_and_grad(mol, r);
+                for home in 0..n {
+                    table.home_weight_grad(r, home, &mut s, &mut out);
+                    for c in 0..n {
+                        for k in 0..3 {
+                            assert_eq!(
+                                out[c][k].to_bits(),
+                                dw[home][c][k].to_bits(),
+                                "point {i} home {home} atom {c} axis {k}"
+                            );
+                        }
+                    }
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked > 1000);
     }
 
     #[test]
