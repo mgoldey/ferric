@@ -11,8 +11,10 @@
 //!    effective potential and core energy) — see [`integrals`].
 //! 2. Enumerates the α- and β-strings and forms the full determinant list as
 //!    their outer product — see [`strings`].
-//! 3. Applies the Slater–Condon rules to build `sigma = H c` (and, for the
-//!    tiny spike systems, a dense H) — see [`hamiltonian`].
+//! 3. Builds `sigma = H c` by the string-driven direct algorithm
+//!    (Knowles–Handy / Olsen σ1/σ2/σ3 over single-excitation string lists) —
+//!    see [`sigma`]. The Slater–Condon rules in [`hamiltonian`] give the
+//!    diagonal and an `O(N_det²)` pair-loop oracle used by the tests.
 //! 4. Diagonalizes for the lowest root via a CI-native Davidson solver (with a
 //!    dense-eigensolve fallback used as an independent cross-check in tests) —
 //!    see [`davidson`].
@@ -34,18 +36,14 @@
 //! * **CLI / Python wiring** — Phase C. Phase A is a library-only spike with
 //!   `#[test]` validation against PySCF FCI/CASCI.
 //!
-//! ## Known scaling limitation
+//! ## Scaling
 //!
-//! The sigma build ([`hamiltonian::sigma`]) and the dense-H build
-//! ([`hamiltonian::dense_hamiltonian`]) are both **O(N_det²)** naive pair loops
-//! over the determinant list. This is correct and simple but does not scale:
-//! the determinant count grows combinatorially with the active space. A
-//! production FCI needs the string-based *direct* sigma algorithm
-//! (Knowles–Handy / Olsen: the `sigma1`/`sigma2`/`sigma3` α/β-string
-//! contractions). Replacing the pair loop with that algorithm is the first item
-//! for Phase B/C. For the STO-3G spike systems here (≤441 determinants) the
-//! O(N_det²) loop is fast and unambiguously correct, which is what Phase A is
-//! meant to prove.
+//! One sigma call costs `O(N_det · n_exc_α · n_exc_β)` (σ3) with
+//! `n_exc = k(n−k) + k` single replacements per string; it never visits
+//! determinant pairs. The production memory peak is the Davidson subspace,
+//! `2 · max_subspace · N_det` doubles. The dense Hamiltonian
+//! ([`hamiltonian::dense_hamiltonian`]) and [`hamiltonian::sigma_naive`] are
+//! `O(N_det²)` and are reached only from tests and benchmarks.
 
 /// CI-native Davidson eigensolver for the lowest root.
 pub mod davidson;
@@ -53,6 +51,8 @@ pub mod davidson;
 pub mod hamiltonian;
 /// Active-space MO integral transform.
 pub mod integrals;
+/// String-driven direct sigma build (σ1/σ2/σ3).
+pub mod sigma;
 /// Determinant-string enumeration (bitmask α/β strings).
 pub mod strings;
 
@@ -249,6 +249,31 @@ pub fn run_cas_ci(
         ndet.saturating_mul(7),
         Lifetime::Resident,
     );
+    // Direct sigma (`sigma::DirectSigma::apply`): the output vector, the
+    // transposed C and its σ1 image, and the σ3 gather C' (at most
+    // n_alpha_str x n_beta_str) are live together at worst.
+    plan.reserve(
+        "direct sigma output/transpose/sigma1/gather vectors",
+        ndet.saturating_mul(4),
+        Lifetime::Resident,
+    );
+    // Excitation lists: `n_str * (k(n-k) + k)` 16-byte entries per channel,
+    // the β list stored twice (per string and grouped by pair).
+    let n_exc = |k: usize| k * (n_active - k) + k;
+    let na_str = space.alpha_strings.len();
+    let nb_str = space.beta_strings.len();
+    plan.reserve(
+        "direct sigma excitation lists",
+        2usize.saturating_mul(
+            na_str
+                .saturating_mul(n_exc(n_alpha))
+                .saturating_add(nb_str.saturating_mul(n_exc(n_beta)).saturating_mul(2)),
+        ),
+        Lifetime::Resident,
+    );
+    // Not charged: per-rayon-worker scratch of `O(n_str)` doubles (σ1/σ2
+    // row coefficients, the σ3 accumulator), under 0.3 MB per worker even at
+    // CAS(14,16) where the subspace above is 105 GB.
     // Held for the whole solve below: both bases and the work vectors are
     // live for davidson_lowest's entire call, and are dropped when it
     // returns, so the guard's scope matches exactly.
@@ -262,7 +287,8 @@ pub fn run_cas_ci(
 
     // ---- Diagonal + Davidson solve ------------------------------------
     let diag = hamiltonian::hamiltonian_diagonal(&ints, &space);
-    let matvec = |c: &[f64]| hamiltonian::sigma(&ints, &space, c);
+    let direct = sigma::DirectSigma::new(&ints, &space);
+    let matvec = |c: &[f64]| direct.apply(c);
     let dav = davidson::davidson_lowest(
         ndet,
         matvec,

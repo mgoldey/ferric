@@ -1,21 +1,14 @@
-//! CAS-CI Hamiltonian: Slater–Condon matrix elements and the sigma-vector
-//! (`sigma = H c`) build over the α/β-string determinant list.
+//! CAS-CI Hamiltonian: Slater–Condon matrix elements, the diagonal, the
+//! dense matrix (test-scale), and the sigma-vector (`sigma = H c`) entry
+//! points over the α/β-string determinant list.
 //!
-//! ## Scaling note (read before extending to Phase B/C)
-//!
-//! This spike computes `sigma = H c` via a **naive O(N_det^2)** double loop over
-//! determinant pairs, applying the Slater–Condon rules to each pair. That is
-//! correct and simple but does **not** scale: the number of determinants grows
-//! combinatorially with the active space, and a real FCI code uses the
-//! string-based *direct* sigma algorithm (Knowles–Handy / Olsen), which
-//! organizes the work as `sigma1 (β-β)`, `sigma2 (α-α)`, and `sigma3 (α-β)`
-//! contributions and never touches the full pair list. Phase B/C should replace
-//! this `dense_hamiltonian` / `sigma` pair-loop with that string-based build.
-//!
-//! For the STO-3G spike systems (H2: 4 determinants; H2O full FCI:
-//! C(7,5)^2 = 441 determinants; H2O CAS(6,8): C(6,4)^2 = 225 determinants) the
-//! O(N_det^2) pair loop is trivially fast and unambiguously correct, which is
-//! exactly what Phase A needs to prove.
+//! [`sigma`](crate::hamiltonian::sigma) is the production matvec: the
+//! string-driven direct build in [`crate::sigma`] (Knowles–Handy / Olsen
+//! σ1/σ2/σ3), never `O(N_det²)`. [`crate::hamiltonian::sigma_naive`] and
+//! [`crate::hamiltonian::dense_hamiltonian`] apply
+//! [`crate::hamiltonian::general_element`] to every
+//! determinant pair (`O(N_det²)`); they are kept as independent oracles for
+//! tests and benchmarks and are not called by [`crate::run_cas_ci`].
 
 use crate::integrals::ActiveSpaceIntegrals;
 use crate::strings::phase_below;
@@ -305,7 +298,7 @@ pub fn dense_hamiltonian_bytes(n_det: usize) -> usize {
 }
 
 /// Build the dense CI Hamiltonian matrix `H` (n_det x n_det), including
-/// `e_core` on the diagonal. O(N_det^2) — spike-scale only (see module doc).
+/// `e_core` on the diagonal. O(N_det^2) — a test oracle, not called by the driver (see module doc).
 ///
 /// # Memory
 ///
@@ -387,10 +380,21 @@ fn dense_hamiltonian_impl(
     hmat
 }
 
-/// Sigma-vector build `sigma = H c` over the determinant list, without forming
-/// H densely. Currently the naive O(N_det^2) pair loop (see module doc). `c`
-/// and the returned `sigma` are indexed `d = ia * n_beta + ib`.
+/// Sigma-vector build `sigma = H c` (including `e_core` on the diagonal) by
+/// the string-driven direct algorithm, [`crate::sigma::DirectSigma`]. `c` and
+/// the returned `sigma` are indexed `d = ia * n_beta + ib`.
+///
+/// Rebuilds the string excitation lists on every call; an iterative solver
+/// should build one [`crate::sigma::DirectSigma`] and call `apply`.
 pub fn sigma(ints: &ActiveSpaceIntegrals, space: &DeterminantSpace, c: &[f64]) -> Vec<f64> {
+    crate::sigma::DirectSigma::new(ints, space).apply(c)
+}
+
+/// Reference oracle for [`sigma`]: the naive `O(N_det²)` loop applying
+/// [`general_element`] to every determinant pair. Not used by the driver;
+/// kept for the anchor tests (`tests/direct_sigma_vs_naive.rs`) and the
+/// timing comparison.
+pub fn sigma_naive(ints: &ActiveSpaceIntegrals, space: &DeterminantSpace, c: &[f64]) -> Vec<f64> {
     let na = space.alpha_strings.len();
     let nb = space.beta_strings.len();
     let ndet = na * nb;

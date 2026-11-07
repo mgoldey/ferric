@@ -60,8 +60,12 @@ Defaults: `conv_thresh = 1e-9`, `max_subspace = 50`, `max_iter = 200`.
 
 - The active-space integrals come from a dense AO ERI tensor, `O(nbasis⁴)`
   memory. Use it on minimal and double-zeta basis sets.
-- The sigma build is an `O(N_det²)` loop over determinant pairs. It does not
-  use the string-based Knowles-Handy/Olsen algorithm.
+- The sigma build $\sigma = Hc$ is the string-driven direct algorithm
+  (Knowles-Handy/Olsen): β-β, α-α and α-β contractions over per-string
+  single-excitation lists, `O(N_det · n_exc_α · n_exc_β)` per call with
+  `n_exc = k(n-k)+k`, parallel over α strings. It never visits determinant
+  pairs. The `O(N_det²)` pair loop (`hamiltonian::sigma_naive`) and the
+  dense Hamiltonian remain as test oracles.
 - The Davidson subspace needs `2 * max_subspace * N_det * 8` bytes.
   `memory_budget_bytes` bounds the integral transform and the subspace;
   `None` resolves through `FERRIC_MEM_BUDGET_GB`, then 0.8 of available RAM,
@@ -86,8 +90,8 @@ use the symmetric state.
 The sign convention is checked three ways, because energy comparisons cannot
 detect a diagonal $\pm1$ similarity of $H$:
 
-1. `tests/slater_condon_brute_force.rs` compares `general_element`, `sigma`
-   and the diagonal with an independent bit-loop second-quantized $H$ on
+1. `tests/slater_condon_brute_force.rs` compares `general_element`, the
+   direct `sigma` and the diagonal with an independent bit-loop second-quantized $H$ on
    random asymmetric integrals, CAS(4,4) to CAS(6,6), odd and even $N_\alpha$.
    The largest difference is 8.9e-15.
 2. `scripts/casci_slater_condon_phases_sympy.py` builds the
@@ -96,7 +100,16 @@ detect a diagonal $\pm1$ similarity of $H$:
    the explicit $H$ as an exact linear form in $h_{pq}$ and $(pq|rs)$ for four
    $(n, N_\alpha, N_\beta)$ sectors. Four sign mutations and the interleaved
    orbital order each fail.
-3. The PySCF energies above fix the spectrum.
+3. `tests/direct_sigma_vs_naive.rs` compares the direct sigma with the
+   pair-loop `sigma_naive` on random vectors: ten random-integral sectors
+   (unequal $N_\alpha, N_\beta$, empty and full channels) and real
+   H2O/STO-3G integrals (full CI, 441 determinants; 8 electrons in 6
+   orbitals, 225; four unequal-spin sectors). The largest difference is
+   9.9e-14 Ha on vectors with $|\sigma| \approx 74$ Ha. Dropping one phase
+   factor, the α-β term, the β-β term, the ½ on same-spin products, the
+   $-\tfrac12\sum_r (pr|rq)$ one-body correction, or the β sign in the
+   α-β gather each fail it.
+4. The PySCF energies above fix the spectrum.
 
 The grade is on [Capabilities and validation](../reference/validation.md).
 Sources: `crates/ferric-ci/tests/validation_casci.rs` and
