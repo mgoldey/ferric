@@ -4825,6 +4825,13 @@ impl PyFrequencyResult {
 /// error, too small amplifies SCF noise. Check `.asymmetry` rather than
 /// assuming.
 ///
+/// `scf_warm_start` (default True): a finite-difference Hessian starts every
+/// displaced SCF from the undisplaced geometry's converged orbitals (anchored
+/// at the reference, never chained from the previous displacement); False
+/// re-guesses each one (`[frequencies] scf_warm_start`). The two Hessians
+/// differ at the SCF convergence level amplified by 1/delta. No effect on an
+/// analytic Hessian.
+///
 /// `dispersion`: the same strict spellings as `run_dft` ("d3bj", "d3(bj)",
 /// "d3bj(<functional>)", "mbd", "mbd(<functional>)"). Requires `xc`; any
 /// reference ("rhf", "uhf", "rohf", i.e. RKS, UKS or ROKS). The Hessian is
@@ -4842,6 +4849,7 @@ impl PyFrequencyResult {
     max_iter=None, energy_conv=None, density_conv=None,
     df_j_aux=None, df_k_aux=None,
     scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None,
+    scf_warm_start=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_frequencies(
@@ -4864,6 +4872,7 @@ fn run_frequencies(
     scf_max_iter: Option<usize>,
     scf_energy_conv: Option<f64>,
     scf_density_conv: Option<f64>,
+    scf_warm_start: Option<bool>,
 ) -> PyResult<PyFrequencyResult> {
     use ferric_scf::frequencies::{FrequencyConfig, FrequencyReference, HessianMethod};
     let max_iter = alias_kwarg(
@@ -4941,6 +4950,7 @@ fn run_frequencies(
     if let Some(d) = delta {
         fcfg.delta = d;
     }
+    fcfg.scf_warm_start = scf_warm_start.unwrap_or(true);
 
     let (r, e_dispersion) =
         frequencies_with_dispersion(&m, basis_name, &scf_cfg, &fcfg, dispersion, xc)?;
@@ -13117,12 +13127,18 @@ fn parse_saddle_hessian(
 /// which ran.
 /// `delta` is only meaningful with "fd": combining it with "auto" or
 /// "analytic" raises rather than being silently ignored.
+///
+/// `scf_warm_start` (default True): each step's SCF starts from the previous
+/// step's converged orbitals, and each finite-difference Hessian's displaced
+/// SCFs from that Hessian's reference geometry (`ferric_scf::warm_start`);
+/// False re-guesses every SCF.
 #[pyfunction]
 #[pyo3(signature = (
     mol, basis_name, xc=None, multiplicity=None,
     max_steps=None, trust_radius=None, follow_mode=None, delta=None,
     point_charges=None, external_field=None, hessian="fd",
     scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None,
+    scf_warm_start=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_saddle(
@@ -13140,12 +13156,13 @@ fn run_saddle(
     scf_max_iter: Option<usize>,
     scf_energy_conv: Option<f64>,
     scf_density_conv: Option<f64>,
+    scf_warm_start: Option<bool>,
 ) -> PyResult<PySaddleResult> {
     use ferric_scf::frequencies::{harmonic_frequencies, FrequencyConfig, FrequencyReference};
     use ferric_scf::gradient::rhf_gradient;
-    use ferric_scf::rhf::solve_rhf;
     use ferric_scf::saddle::{find_saddle, SaddleConfig};
     use ferric_scf::screening::SchwarzBounds;
+    use ferric_scf::warm_start::solve_rhf_warm;
 
     if let Some(t) = trust_radius {
         if !(t.is_finite() && t > 0.0) {
@@ -13217,11 +13234,16 @@ fn run_saddle(
 
     let scf_g = scf_cfg.clone();
     let basis_g = basis.clone();
+    // Each step's SCF starts from the previous step's converged orbitals
+    // (`ferric_scf::warm_start`); the Hessians warm-start their displaced
+    // SCFs from their own reference geometry.
+    let warm_on = scf_warm_start.unwrap_or(true);
+    let mut warm = ferric_scf::warm_start::ScfWarmStart::new(warm_on);
     let energy_gradient = move |mm: &ferric_core::mol::Molecule| {
         let bs = ferric_core::basis::bundled(&basis_g)?;
         let prep = PreparedBasis::new(mm, &bs)?;
         let bounds = SchwarzBounds::compute(op, &prep)?;
-        let res = solve_rhf(&ctx, mm, &prep, op, &bounds, &scf_g)?;
+        let res = solve_rhf_warm(&ctx, mm, &prep, op, &bounds, &scf_g, &mut warm)?;
         // An unconverged SCF is not a point on any surface. Letting one
         // through hands the optimizer an energy and a gradient from a density
         // that never settled, and the search walks on noise while reporting
@@ -13286,6 +13308,7 @@ fn run_saddle(
         let mut fc = FrequencyConfig {
             reference: FrequencyReference::Rhf,
             hessian: hessian_method,
+            scf_warm_start: warm_on,
             ..Default::default()
         };
         if let Some(d) = delta {
@@ -13341,12 +13364,17 @@ fn run_saddle(
 /// Closed-shell only, matching `run_saddle`: the callbacks here are the same
 /// restricted ones, so an open-shell request is refused rather than answered
 /// with the wrong reference.
+///
+/// `scf_warm_start` (default True): each point's SCF starts from the previous
+/// point's converged orbitals (`ferric_scf::warm_start`); False re-guesses
+/// every SCF.
 #[pyfunction]
 #[pyo3(signature = (
     mol, basis_name, mode, xc=None, multiplicity=None,
     step=None, max_steps=None, g_max_thresh=None, initial_displacement=None,
     point_charges=None, external_field=None,
     scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None,
+    scf_warm_start=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_irc(
@@ -13364,11 +13392,12 @@ fn run_irc(
     scf_max_iter: Option<usize>,
     scf_energy_conv: Option<f64>,
     scf_density_conv: Option<f64>,
+    scf_warm_start: Option<bool>,
 ) -> PyResult<PyIrcResult> {
     use ferric_scf::gradient::rhf_gradient;
     use ferric_scf::irc::{follow_irc, IrcConfig};
-    use ferric_scf::rhf::solve_rhf;
     use ferric_scf::screening::SchwarzBounds;
+    use ferric_scf::warm_start::{solve_rhf_warm, ScfWarmStart};
 
     let mut m = mol.inner.clone();
     if let Some(mult) = multiplicity {
@@ -13417,17 +13446,22 @@ fn run_irc(
 
     let op = Operator::coulomb();
     let basis = basis_name.to_string();
+    // Each point's SCF starts from the previous point's converged orbitals
+    // (`ferric_scf::warm_start`). The jump from the end of the forward branch
+    // back to the saddle region is caught by its overlap test (cold guess).
+    let mut warm = ScfWarmStart::new(scf_warm_start.unwrap_or(true));
     let eg = move |mm: &ferric_core::mol::Molecule| {
         let bs = ferric_core::basis::bundled(&basis)?;
         let prep = PreparedBasis::new(mm, &bs)?;
         let bounds = SchwarzBounds::compute(op, &prep)?;
-        let res = solve_rhf(
+        let res = solve_rhf_warm(
             &ParallelContext::default(),
             mm,
             &prep,
             op,
             &bounds,
             &scf_cfg,
+            &mut warm,
         )?;
         if !res.converged {
             return Err(ferric_core::FerricError::General(

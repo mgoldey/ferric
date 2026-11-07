@@ -925,7 +925,10 @@ pub struct OptimizeCfg {
     /// Start each geometry's SCF from the previous geometry's converged MOs
     /// (`ferric_scf::warm_start`) instead of the default guess. Default
     /// `true`; `false` re-guesses every geometry from scratch (the behaviour
-    /// before warm start existed).
+    /// before warm start existed). Covers the SCF optimizers and the RI-MP2 /
+    /// PDEP-RPA optimizers (the RHF under each step; for PDEP-RPA also the
+    /// displaced RHFs of its finite-difference gradient, each started from
+    /// that step's reference RHF).
     pub scf_warm_start: Option<bool>,
 }
 
@@ -991,6 +994,12 @@ pub struct FrequenciesCfg {
     /// arithmetic, so a large value means `delta` or the SCF thresholds are
     /// badly chosen for the system.
     pub delta: Option<f64>,
+    /// Finite-difference Hessians: start every displaced SCF from the
+    /// undisplaced reference geometry's converged orbitals
+    /// (`FrequencyConfig::scf_warm_start`; anchored at the reference, never
+    /// chained from the previous displacement). Default `true`; `false`
+    /// re-guesses every displaced SCF. No effect on an analytic Hessian.
+    pub scf_warm_start: Option<bool>,
 }
 
 /// The `frozen_core` key of a correlation section (`[mp2]`, `[rpa]`, `[gw]`):
@@ -10946,6 +10955,15 @@ max_iter = 42
         let cfg = cfg_with("[optimize]\nmax_steps = 10\n").unwrap();
         assert_eq!(cfg.optimize.scf_warm_start, None);
         assert!(cfg_with("[optimize]\nscf_warm_start = \"yes\"\n").is_err());
+    }
+
+    #[test]
+    fn frequencies_scf_warm_start_key_parses_and_defaults_to_unset() {
+        let cfg = cfg_with("[frequencies]\nscf_warm_start = false\n").unwrap();
+        assert_eq!(cfg.frequencies.scf_warm_start, Some(false));
+        let cfg = cfg_with("[frequencies]\ndelta = 0.005\n").unwrap();
+        assert_eq!(cfg.frequencies.scf_warm_start, None);
+        assert!(cfg_with("[frequencies]\nscf_warm_start = 1\n").is_err());
     }
 }
 

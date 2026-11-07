@@ -91,6 +91,47 @@
 //! subspace has rank 5 — [`crate::frequencies::detect_linear`] and the rank found by
 //! orthonormalization are cross-checked against each other.
 //!
+//! # SCF warm start
+//!
+//! With [`FrequencyConfig::scf_warm_start`] (default on) every displaced SCF
+//! of a finite-difference Hessian starts from the converged orbitals of the
+//! UNDISPLACED reference geometry, Löwdin re-orthonormalized in the displaced
+//! overlap ([`crate::warm_start`]). It is anchored, not chained: displacement
+//! `k` never starts from displacement `k - 1`, so the guess is always one
+//! `delta` from its geometry and no SCF residual is carried along the
+//! stencil. The fallbacks (cold guess, cold retry of a failed warm SCF) are
+//! those of the geometry optimizer.
+//!
+//! A warm start changes WHERE each SCF stops within its convergence window,
+//! and the stencil amplifies that. Each converged exit has a density residual
+//! `|δD|_F <= n * density_conv` (`dp_rms < density_conv` over `n²`
+//! elements). The analytic gradient is first order in the density (unlike the
+//! energy, it is not stationary in the orbitals), so a gradient component
+//! moves by at most `K * |δD|_F`, `K` the gradient's density sensitivity.
+//! Warm and cold exits are independent, so they differ by at most
+//! `2 K n density_conv`, and the central difference `(g(+δ) - g(-δ)) / 2δ`
+//! turns that into a Hessian difference of at most
+//!
+//! ```text
+//! |H_warm - H_cold|_max  <=  2 K n density_conv / delta
+//! ```
+//!
+//! (symmetrization does not increase it). At the defaults (`density_conv`
+//! 1e-6, `delta` 5e-3) that is `4e-4 K n` Hartree/Bohr². The unit test
+//! `warm_fd_hessian_matches_cold_within_the_scf_noise_bound` measures `K` at
+//! the reference geometry and asserts the bound on two molecules.
+//!
+//! MEASURED (that test, default thresholds): water/6-31G RHF
+//! `|H_warm - H_cold|_max` 1.4e-4 against a bound of 1.2e-3 (`K` 0.235,
+//! `n` 13), largest wavenumber change 0.05 cm^-1; NH3/STO-3G PBE 3.8e-6
+//! against 4.3e-4, 0.05 cm^-1. The warm Hessian can be the NOISIER one:
+//! its [`FrequencyResult::asymmetry`] was 1.4e-4 on water/6-31G against 7.4e-6
+//! cold (NH3: 1.6e-5 against 1.4e-5). A cold SCF typically overshoots
+//! `density_conv` on its last iteration, while a warm one starting a few
+//! iterations from convergence stops closer to the threshold, so its exits
+//! use more of the window the bound allows. Where the asymmetry matters,
+//! tighten `density_conv` (it bounds both runs) or switch the warm start off.
+//!
 //! # Mass convention
 //!
 //! Masses are the isotope-averaged IUPAC 2013 standard atomic weights from
@@ -115,6 +156,9 @@ use crate::rhf::{solve_rhf, RhfConfig};
 use crate::rohf::solve_rohf;
 use crate::screening::SchwarzBounds;
 use crate::uhf::solve_uhf;
+use crate::warm_start::{
+    solve_rhf_warm, solve_rohf_warm, solve_uhf_warm, ScfWarmStart, WarmStartRecord,
+};
 
 /// Electron masses per unified atomic mass unit (u).
 ///
@@ -251,6 +295,15 @@ pub struct FrequencyConfig {
     pub reference: FrequencyReference,
     /// Analytic Hessian or finite differences. See [`HessianMethod`].
     pub hessian: HessianMethod,
+    /// Finite-difference Hessians: start every displaced SCF from the
+    /// converged orbitals of the UNDISPLACED reference geometry
+    /// ([`crate::warm_start::ScfWarmStart::anchored`]), not from MINAO.
+    /// Each displacement starts from the reference, never from the previous
+    /// displacement, so SCF residuals do not accumulate along the stencil.
+    /// The warm and cold Hessians differ only at the SCF convergence level,
+    /// amplified by the stencil's `1/delta` (see the module docs, "SCF warm
+    /// start"). Default `true`; unused by the analytic Hessians (one SCF).
+    pub scf_warm_start: bool,
 }
 
 impl Default for FrequencyConfig {
@@ -259,6 +312,7 @@ impl Default for FrequencyConfig {
             delta: DEFAULT_DELTA,
             reference: FrequencyReference::Rhf,
             hessian: HessianMethod::Auto,
+            scf_warm_start: true,
         }
     }
 }
@@ -304,6 +358,10 @@ pub struct FrequencyResult {
     /// Hartree, already included in [`Self::energy`]. Zero from every entry
     /// point except [`harmonic_frequencies_with_scf_correction`].
     pub correction_energy: f64,
+    /// Per-SCF warm-start records of a finite-difference Hessian, reference
+    /// geometry first, then the displacements in stencil order (empty for an
+    /// analytic Hessian and for [`harmonic_frequencies_from_gradient`]).
+    pub scf_warm_start: Vec<WarmStartRecord>,
 }
 
 impl FrequencyResult {
@@ -377,13 +435,27 @@ pub fn harmonic_frequencies(
 
     // Energy at the undisplaced geometry, and an early check that the method
     // combination actually produces a gradient at all.
+    // The reference SCF is the anchor every displaced SCF warm-starts from.
+    let mut warm = ScfWarmStart::anchored(freq_config.scf_warm_start);
+    let reference = freq_config.reference;
     let (energy, _, _) =
-        energy_gradient_and_result(ctx, mol, basis_name, op, scf_config, freq_config.reference)?;
+        energy_gradient_and_result(ctx, mol, basis_name, op, scf_config, reference, &mut warm)?;
 
-    fd_hessian_frequencies(mol, &masses, freq_config.delta, energy, |m| {
-        energy_gradient_and_result(ctx, m, basis_name, op, scf_config, freq_config.reference)
+    let mut res = fd_hessian_frequencies(mol, &masses, freq_config.delta, energy, |m| {
+        energy_gradient_and_result(ctx, m, basis_name, op, scf_config, reference, &mut warm)
             .map(|(_, g, _)| g)
-    })
+    })?;
+    attach_warm_start(&mut res, warm);
+    Ok(res)
+}
+
+/// Print the warm-start summary of a finite-difference Hessian (nothing when
+/// it is off) and keep its records on the result.
+fn attach_warm_start(res: &mut FrequencyResult, warm: ScfWarmStart) {
+    if let Some(line) = warm.summary() {
+        println!("{line}");
+    }
+    res.scf_warm_start = warm.records().to_vec();
 }
 
 /// Why an analytic Hessian cannot serve a corrected surface, or `None` for
@@ -482,9 +554,17 @@ pub fn harmonic_frequencies_with_scf_correction(
     check_scf_correction_config(freq_config)?;
     let masses = atom_masses(mol)?;
 
+    let mut warm = ScfWarmStart::anchored(freq_config.scf_warm_start);
     let mut corrected = |m: &Molecule| -> Result<(f64, f64, Array2<f64>), FerricError> {
-        let (e, mut g, scf) =
-            energy_gradient_and_result(ctx, m, basis_name, op, scf_config, freq_config.reference)?;
+        let (e, mut g, scf) = energy_gradient_and_result(
+            ctx,
+            m,
+            basis_name,
+            op,
+            scf_config,
+            freq_config.reference,
+            &mut warm,
+        )?;
         let (de, dg) = correction(m, &scf)?;
         if de != 0.0 || dg.is_some() {
             let dg = dg.ok_or_else(|| {
@@ -513,6 +593,7 @@ pub fn harmonic_frequencies_with_scf_correction(
         corrected(m).map(|(_, _, g)| g)
     })?;
     res.correction_energy = correction_energy;
+    attach_warm_start(&mut res, warm);
     Ok(res)
 }
 
@@ -1019,6 +1100,7 @@ pub fn frequencies_from_cartesian_hessian(
         hessian_source: HessianSource::FiniteDifference,
         energy: 0.0,
         correction_energy: 0.0,
+        scf_warm_start: Vec::new(),
     })
 }
 
@@ -1200,6 +1282,7 @@ fn energy_gradient_and_result(
     op: Operator,
     config: &RhfConfig,
     reference: FrequencyReference,
+    warm: &mut ScfWarmStart,
 ) -> Result<(f64, Array2<f64>, ScfResult), FerricError> {
     let bs = ferric_core::basis::bundled(basis_name)?;
     let prep = PreparedBasis::new(mol, &bs)?;
@@ -1214,7 +1297,7 @@ fn energy_gradient_and_result(
         FrequencyReference::Rhf => {
             crate::gradient::preflight_cosx_restricted(config)?;
             let config = &*crate::gradient::gradient_task_config(config);
-            let res = solve_rhf(ctx, mol, &prep, op, &bounds, config)?;
+            let res = solve_rhf_warm(ctx, mol, &prep, op, &bounds, config, warm)?;
             // `solve_rhf` returns an unconverged SCF as `Ok`; a displaced
             // gradient from it would put noise straight into the Hessian.
             crate::optimize::require_converged(&res)?;
@@ -1226,7 +1309,7 @@ fn energy_gradient_and_result(
         FrequencyReference::Uhf => {
             crate::gradient::preflight_cosx_unrestricted(config)?;
             let config = &*crate::gradient::gradient_task_config(config);
-            let res = solve_uhf(ctx, mol, &prep, &bounds, config)?;
+            let res = solve_uhf_warm(ctx, mol, &prep, &bounds, config, warm)?;
             let grad = crate::gradient::unrestricted_scf_gradient(
                 mol, &prep, &bs, op, &bounds, config, &res,
             )?;
@@ -1235,7 +1318,7 @@ fn energy_gradient_and_result(
         FrequencyReference::Rohf => {
             crate::gradient::preflight_cosx_restricted_open(config)?;
             let config = &*crate::gradient::gradient_task_config(config);
-            let res = solve_rohf(ctx, mol, &prep, op, &bounds, config)?;
+            let res = solve_rohf_warm(ctx, mol, &prep, op, &bounds, config, warm)?;
             let grad = crate::gradient::restricted_open_scf_gradient(
                 mol, &prep, &bs, op, &bounds, config, &res,
             )?;
@@ -1262,6 +1345,132 @@ mod tests {
 
     fn co2() -> Molecule {
         Molecule::load_xyz("../../testdata/molecules/co2.xyz").unwrap()
+    }
+
+    /// The gradient's density sensitivity `K` (Hartree/Bohr per unit
+    /// `|δD|_F`) at `mol`, measured along the SCF's own convergence
+    /// direction: the cold gradient of a loosely converged SCF
+    /// (`density_conv` 1e-4) minus that of a tightly converged one (1e-10),
+    /// over the Frobenius norm of their density difference. The gradient is
+    /// first order in the density, so this ratio is the `K` of the module
+    /// docs' bound, measured rather than assumed.
+    fn gradient_density_sensitivity(
+        mol: &Molecule,
+        basis: &str,
+        scf: &RhfConfig,
+        reference: FrequencyReference,
+    ) -> f64 {
+        let ctx = ParallelContext::default();
+        let at = |dc: f64| {
+            let cfg = RhfConfig {
+                density_conv: dc,
+                ..scf.clone()
+            };
+            let mut cold = ScfWarmStart::new(false);
+            energy_gradient_and_result(
+                &ctx,
+                mol,
+                basis,
+                Operator::coulomb(),
+                &cfg,
+                reference,
+                &mut cold,
+            )
+            .unwrap()
+        };
+        let (_, g_loose, r_loose) = at(1e-4);
+        let (_, g_tight, r_tight) = at(1e-10);
+        let dg = (&g_loose - &g_tight)
+            .mapv(f64::abs)
+            .fold(0.0f64, |a, &b| a.max(b));
+        let dd = (&r_loose.density_total - &r_tight.density_total)
+            .mapv(|v| v * v)
+            .sum()
+            .sqrt();
+        assert!(dd > 0.0, "loose and tight SCFs landed on the same density");
+        dg / dd
+    }
+
+    /// Warm vs cold finite-difference Hessian on one system, against the
+    /// module docs' bound `2 K n density_conv / delta`.
+    fn warm_fd_hessian_matches_cold(mol: &Molecule, basis: &str, scf: RhfConfig) {
+        let ctx = ParallelContext::default();
+        let fc = |warm: bool| FrequencyConfig {
+            hessian: HessianMethod::FiniteDifference,
+            scf_warm_start: warm,
+            ..Default::default()
+        };
+        let run = |warm: bool| {
+            harmonic_frequencies(&ctx, mol, basis, Operator::coulomb(), &scf, &fc(warm)).unwrap()
+        };
+        let (rw, rc) = (run(true), run(false));
+        let n = {
+            let bs = ferric_core::basis::bundled(basis).unwrap();
+            PreparedBasis::new(mol, &bs).unwrap().nbasis()
+        };
+        let k = gradient_density_sensitivity(mol, basis, &scf, FrequencyReference::Rhf);
+        let delta = fc(true).delta;
+        let bound = 2.0 * k * n as f64 * scf.density_conv / delta;
+        let dh = (&rw.cartesian_hessian - &rc.cartesian_hessian)
+            .mapv(f64::abs)
+            .fold(0.0f64, |a, &b| a.max(b));
+        let dnu = rw
+            .frequencies
+            .iter()
+            .zip(&rc.frequencies)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0f64, f64::max);
+        let it = |r: &FrequencyResult| r.scf_warm_start.iter().map(|x| x.iterations).sum::<usize>();
+        eprintln!(
+            "{basis}: |H_warm - H_cold|_max {dh:.2e} (bound {bound:.2e}, K {k:.3}, n {n}); \
+             max |dnu| {dnu:.2e} cm-1; asymmetry warm {:.2e} cold {:.2e}; \
+             SCF iterations warm {} cold {}",
+            rw.asymmetry,
+            rc.asymmetry,
+            it(&rw),
+            it(&rc)
+        );
+        assert!(dh <= bound, "|H_warm - H_cold| {dh:e} > bound {bound:e}");
+        // Not a vacuum test: the warm run really started every displaced SCF
+        // from the reference, and changed the Hessian (an identical Hessian
+        // would mean the warm path was never taken).
+        let n_disp = 6 * mol.atoms.len();
+        assert_eq!(rw.scf_warm_start.len(), n_disp + 1);
+        assert_eq!(
+            rw.scf_warm_start[0].cold,
+            Some(crate::warm_start::ColdReason::FirstGeometry)
+        );
+        assert!(
+            rw.scf_warm_start[1..]
+                .iter()
+                .all(|r| r.cold.is_none() && !r.retried_cold),
+            "{:?}",
+            rw.scf_warm_start
+        );
+        assert!(rc
+            .scf_warm_start
+            .iter()
+            .all(|r| r.cold == Some(crate::warm_start::ColdReason::Disabled)));
+        assert!(dh > 0.0, "warm and cold Hessians are bit-identical");
+        assert!(it(&rw) < it(&rc), "warm start saved no SCF iterations");
+    }
+
+    #[test]
+    fn warm_fd_hessian_matches_cold_within_the_scf_noise_bound() {
+        // Two molecules, HF and KS: water/6-31G RHF, pyramidal NH3/STO-3G PBE.
+        warm_fd_hessian_matches_cold(&water(), "6-31g", RhfConfig::default());
+        let nh3 = Molecule::parse_xyz(
+            "4\nNH3\nN 0 0 0.1120\nH 0 0.9377 -0.2613\nH 0.8121 -0.4689 -0.2613\n\
+             H -0.8121 -0.4689 -0.2613\n",
+            0,
+            1,
+        )
+        .unwrap();
+        let pbe = RhfConfig {
+            xc: Some("PBE".to_string()),
+            ..Default::default()
+        };
+        warm_fd_hessian_matches_cold(&nh3, "sto-3g", pbe);
     }
 
     /// Tolerance (cm^-1) for a projected-out translation/rotation mode built

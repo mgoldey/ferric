@@ -11,6 +11,7 @@ use ferric_integrals::blas_threads::{opt_in_blas_threads, with_blas_threads};
 use ferric_integrals::operator::Operator;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
+use ferric_scf::warm_start::{solve_rhf_warm, ScfWarmStart};
 use ferric_scf::ScfResult;
 use ndarray::Array2;
 
@@ -760,6 +761,31 @@ pub fn total_rimp2_gradient(
     mp2_config: &RiMp2Config,
     ext: Option<&ExternalPotential>,
 ) -> Result<(f64, Array2<f64>), FerricError> {
+    total_rimp2_gradient_warm(
+        mol,
+        obs_basis,
+        aux_basis,
+        op,
+        mp2_config,
+        ext,
+        &mut ScfWarmStart::new(false),
+    )
+}
+
+/// [`total_rimp2_gradient`] with its RHF solved through `warm`
+/// ([`ferric_scf::warm_start::solve_rhf_warm`]): started from the carried
+/// orbitals of the previous geometry when the carrier allows it, retried cold
+/// if that fails, and recorded for the next geometry. A disabled carrier is
+/// exactly [`total_rimp2_gradient`].
+pub fn total_rimp2_gradient_warm(
+    mol: &Molecule,
+    obs_basis: &BasisSet,
+    aux_basis: &BasisSet,
+    op: Operator,
+    mp2_config: &RiMp2Config,
+    ext: Option<&ExternalPotential>,
+    warm: &mut ScfWarmStart,
+) -> Result<(f64, Array2<f64>), FerricError> {
     let ctx = ferric_core::parallel::ParallelContext::default();
     let obs = PreparedBasis::new(mol, obs_basis)?;
     let dfbs = PreparedBasis::new(mol, aux_basis)?;
@@ -771,7 +797,7 @@ pub fn total_rimp2_gradient(
         external_potential: ext.cloned(),
         ..Default::default()
     };
-    let rhf = solve_rhf(&ctx, mol, &obs, op, &bounds, &rhf_cfg)?;
+    let rhf = solve_rhf_warm(&ctx, mol, &obs, op, &bounds, &rhf_cfg, warm)?;
     if !rhf.converged {
         return Err(FerricError::ScfConvergence {
             iterations: rhf.iterations,

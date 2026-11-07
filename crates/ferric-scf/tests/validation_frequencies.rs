@@ -418,6 +418,7 @@ fn check_method(system: &str, basis_name: &str, method: &str) -> FrequencyResult
         delta: DEFAULT_DELTA,
         reference: reference_kind,
         hessian: HessianMethod::FiniteDifference,
+        ..Default::default()
     };
     let ctxp = ParallelContext::default();
     let res = harmonic_frequencies(
