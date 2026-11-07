@@ -18,7 +18,8 @@
 //! well past C100. The local build is therefore an opt-in
 //! (`VirtualSpace::Local`, CLI `[local] virtual_space = "local"`).
 //!
-//! Every run reports which build it used ([`VirtualSpaceReport`]).
+//! Every run reports which build it used
+//! ([`VirtualSpaceReport`](crate::vvhv_local::VirtualSpaceReport)).
 
 use ferric_core::basis::BasisSet;
 use ferric_core::error::FerricError;
@@ -415,7 +416,13 @@ fn home_partition(c: &Array2<f64>, aop: &Arc<Partition>) -> Arc<Partition> {
             let mu = col
                 .iter()
                 .enumerate()
-                .fold((0usize, -1.0f64), |b, (i, x)| if x.abs() > b.1 { (i, x.abs()) } else { b })
+                .fold((0usize, -1.0f64), |b, (i, x)| {
+                    if x.abs() > b.1 {
+                        (i, x.abs())
+                    } else {
+                        b
+                    }
+                })
                 .0;
             aop.place[mu].0
         })
@@ -442,9 +449,7 @@ fn atom_groups(mol: &Molecule) -> (Vec<usize>, usize) {
             let near = heavy
                 .iter()
                 .enumerate()
-                .min_by(|(_, &p), (_, &q)| {
-                    atom_dist(mol, a, p).total_cmp(&atom_dist(mol, a, q))
-                })
+                .min_by(|(_, &p), (_, &q)| atom_dist(mol, a, p).total_cmp(&atom_dist(mol, a, q)))
                 .map(|(g, _)| g)
                 .expect("heavy atoms exist");
             gid[a] = near;
@@ -499,7 +504,13 @@ fn projected_minimal(
         let t = solve_spd(s, s_x)?;
         stats.solve_domain_aos_mean = nao as f64;
         stats.solve_domain_aos_max = nao;
-        return Ok(Bsr::from_dense(&t, aop.clone(), minp.clone(), cfg.tau_loose, cnt));
+        return Ok(Bsr::from_dense(
+            &t,
+            aop.clone(),
+            minp.clone(),
+            cfg.tau_loose,
+            cnt,
+        ));
     };
     // per minimal group: its neighbourhood solve, as blocks (row group h, g)
     let per_group: Vec<Result<(usize, Vec<(usize, Array2<f64>)>), FerricError>> = (0..ng)
@@ -513,8 +524,10 @@ fn projected_minimal(
                 .iter()
                 .flat_map(|&h| aop.groups[h].iter().copied())
                 .collect();
-            let sdd = Array2::from_shape_fn((rows.len(), rows.len()), |(i, j)| s[(rows[i], rows[j])]);
-            let rhs = Array2::from_shape_fn((rows.len(), mcols.len()), |(i, j)| s_x[(rows[i], mcols[j])]);
+            let sdd =
+                Array2::from_shape_fn((rows.len(), rows.len()), |(i, j)| s[(rows[i], rows[j])]);
+            let rhs =
+                Array2::from_shape_fn((rows.len(), mcols.len()), |(i, j)| s_x[(rows[i], mcols[j])]);
             let x = solve_spd(&sdd, &rhs)?;
             let mut out = Vec::new();
             let mut off = 0;
@@ -683,7 +696,15 @@ pub(crate) fn build_vvhv_local_with(
 
     // A1: projected minimal functions (domain-local solves)
     let t_b = projected_minimal(
-        mol, &s, &s_x, &aop, &minp, &atom_group, cfg, &mut cnt, &mut stats,
+        mol,
+        &s,
+        &s_x,
+        &aop,
+        &minp,
+        &atom_group,
+        cfg,
+        &mut cnt,
+        &mut stats,
     )?;
 
     // A2 (span-critical): the occupied projector from the density
@@ -703,7 +724,13 @@ pub(crate) fn build_vvhv_local_with(
     );
     let s_b = Bsr::from_dense(&s, aop.clone(), aop.clone(), cfg.tau, &mut cnt);
     let st = s_b.mul(&t_b, cfg.tau, &mut cnt);
-    let tv_b = t_b.axpby(1.0, &d_occ.mul(&st, cfg.tau, &mut cnt), -1.0, cfg.tau, &mut cnt);
+    let tv_b = t_b.axpby(
+        1.0,
+        &d_occ.mul(&st, cfg.tau, &mut cnt),
+        -1.0,
+        cfg.tau,
+        &mut cnt,
+    );
     let ds_b = d_occ.mul(&s_b, cfg.tau, &mut cnt);
 
     // ---- remaining stages: the dense construction (oracle copy) ----
@@ -739,7 +766,13 @@ pub(crate) fn build_vvhv_local_with(
         let dmax = dg.iter().copied().fold(0.0f64, f64::max);
         let inv: Vec<f64> = dg
             .iter()
-            .map(|&x| if x > 1e-10 * dmax { 1.0 / x.sqrt() } else { 0.0 })
+            .map(|&x| {
+                if x > 1e-10 * dmax {
+                    1.0 / x.sqrt()
+                } else {
+                    0.0
+                }
+            })
             .collect();
         g.scale_rows(&inv);
         g.scale_cols(&inv);
@@ -800,7 +833,11 @@ pub(crate) fn build_vvhv_local_with(
             cfg.tau,
             &mut cnt,
         );
-        let cls = cl_b.mul(&cl_b.transpose().mul(&s_b, cfg.tau, &mut cnt), cfg.tau, &mut cnt);
+        let cls = cl_b.mul(
+            &cl_b.transpose().mul(&s_b, cfg.tau, &mut cnt),
+            cfg.tau,
+            &mut cnt,
+        );
         let x_b = Bsr::identity(aop.clone())
             .axpby(1.0, &ds_b, -1.0, cfg.tau, &mut cnt)
             .axpby(1.0, &cls, -1.0, cfg.tau, &mut cnt);
@@ -876,7 +913,7 @@ pub(crate) fn build_vvhv_local_with(
         // atom-diagonal blocks F^h_AA = C_{h,A}ᵀ F C_{h,A} only (a
         // block-diagonal rotation: span and orthonormality unchanged). The
         // columns of one atom are a subset of one atom-group column block.
-        let f_b = Bsr::from_dense(&rhf.fock_r(), aop.clone(), aop.clone(), cfg.tau, &mut cnt);
+        let f_b = Bsr::from_dense(rhf.fock_r(), aop.clone(), aop.clone(), cfg.tau, &mut cnt);
         let fc = f_b.mul(&ch_b, cfg.tau, &mut cnt);
         for (g, cols) in hardp.groups.iter().enumerate() {
             if cols.is_empty() {
@@ -923,7 +960,13 @@ pub(crate) fn build_vvhv_local_with(
     // set, at tau. In exact arithmetic the identity on an orthonormal set in
     // the virtual space (so the anchor holds); at finite tau it removes the
     // occupied leak and the non-orthogonality the truncated steps left.
-    let mut cv_b = Bsr::from_dense(&c_v, aop.clone(), home_partition(&c_v, &aop), cfg.tau, &mut cnt);
+    let mut cv_b = Bsr::from_dense(
+        &c_v,
+        aop.clone(),
+        home_partition(&c_v, &aop),
+        cfg.tau,
+        &mut cnt,
+    );
     if !knobs.skip_guard && n_l + n_h > 0 {
         let leak = d_occ.mul(&s_b.mul(&cv_b, cfg.tau, &mut cnt), cfg.tau, &mut cnt);
         let p = cv_b.axpby(1.0, &leak, -1.0, cfg.tau, &mut cnt);
