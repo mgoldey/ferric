@@ -26,8 +26,20 @@ use ferric_core::mol::Molecule;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_scf::result::ScfResult;
 
-use crate::lmp2_amplitude::{StageTimings, VvHv};
+use std::sync::Arc;
+
+use ndarray::Array2;
+use rayon::prelude::*;
+
+use ferric_integrals::oneelectron::{dipole, overlap, r2_moment};
+
+use crate::boys::boys_localize;
+use crate::lmp2_amplitude::{
+    ao_to_atom, canonical_orth, column_expectations, cross_overlap_with_minimal_atoms, eigh,
+    lowdin, pivoted_cholesky_order, solve_spd, StageTimings, VvHv,
+};
 use crate::lmp2_certificate::CertValue;
+use crate::vvhv_bsr::{BlockCount, Bsr, Partition, TieRule};
 
 /// Which VV-HV virtual-space build a local MP2 run uses.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -337,10 +349,158 @@ pub struct LocalVvhv {
     pub stats: LocalVvhvStats,
 }
 
+/// Deliberate defects for the mutation tests (design T-B′). Production uses
+/// [`Knobs::default`], which changes nothing.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Knobs {
+    /// Truncate the occupied density projector at this τ instead of `tau`.
+    pub density_tau: Option<f64>,
+    /// Stop every Newton-Schulz iteration one step before convergence.
+    pub ns_stop_early: bool,
+    /// The pivot tie rule.
+    pub tie: TieRule,
+    /// Skip the final re-projection / re-orthonormalization guard.
+    pub skip_guard: bool,
+}
+
+impl Default for Knobs {
+    fn default() -> Self {
+        Self {
+            density_tau: None,
+            ns_stop_early: false,
+            tie: TieRule::Lowest,
+            skip_guard: false,
+        }
+    }
+}
+
+/// Atom groups: every heavy atom with the hydrogens nearest to it (each
+/// atom its own group when there is no heavy atom). Returns the group of
+/// every atom and the group count.
+fn atom_groups(mol: &Molecule) -> (Vec<usize>, usize) {
+    let heavy: Vec<usize> = (0..mol.atoms.len())
+        .filter(|&a| mol.atoms[a].z > 1)
+        .collect();
+    if heavy.is_empty() {
+        return ((0..mol.atoms.len()).collect(), mol.atoms.len());
+    }
+    let mut gid = vec![usize::MAX; mol.atoms.len()];
+    for (g, &a) in heavy.iter().enumerate() {
+        gid[a] = g;
+    }
+    for a in 0..mol.atoms.len() {
+        if gid[a] == usize::MAX {
+            let near = heavy
+                .iter()
+                .enumerate()
+                .min_by(|(_, &p), (_, &q)| {
+                    atom_dist(mol, a, p).total_cmp(&atom_dist(mol, a, q))
+                })
+                .map(|(g, _)| g)
+                .expect("heavy atoms exist");
+            gid[a] = near;
+        }
+    }
+    (gid, heavy.len())
+}
+
+fn atom_dist(mol: &Molecule, a: usize, b: usize) -> f64 {
+    let (p, q) = (&mol.atoms[a], &mol.atoms[b]);
+    ((p.x - q.x).powi(2) + (p.y - q.y).powi(2) + (p.zpos - q.zpos).powi(2)).sqrt()
+}
+
+/// A1 (basis choice): the projected minimal functions `T = S⁻¹ S_x`. With a
+/// radius, the functions of each atom group are solved in the AOs of the
+/// groups within `radius` of it (`T[D, g] = S_DD⁻¹ S_x[D, g]`, zero outside
+/// `D`); without one (or when every neighbourhood is the whole molecule), one
+/// global solve. Blocks below `tau_loose` are dropped.
+#[allow(clippy::too_many_arguments)]
+fn projected_minimal(
+    mol: &Molecule,
+    s: &Array2<f64>,
+    s_x: &Array2<f64>,
+    aop: &Arc<Partition>,
+    minp: &Arc<Partition>,
+    atom_group: &[usize],
+    cfg: &LocalVvhvConfig,
+    cnt: &mut BlockCount,
+    stats: &mut LocalVvhvStats,
+) -> Result<Bsr, FerricError> {
+    let ng = aop.ngroups();
+    let mut group_atoms = vec![Vec::new(); ng];
+    for (a, &g) in atom_group.iter().enumerate() {
+        group_atoms[g].push(a);
+    }
+    let gdist = |g: usize, h: usize| -> f64 {
+        group_atoms[g]
+            .iter()
+            .flat_map(|&a| group_atoms[h].iter().map(move |&b| (a, b)))
+            .map(|(a, b)| atom_dist(mol, a, b))
+            .fold(f64::INFINITY, f64::min)
+    };
+    let domains: Option<Vec<Vec<usize>>> = cfg.solve_radius_bohr.and_then(|r| {
+        let d: Vec<Vec<usize>> = (0..ng)
+            .map(|g| (0..ng).filter(|&h| gdist(g, h) <= r).collect())
+            .collect();
+        // every neighbourhood the whole molecule: the global solve is the same
+        (!d.iter().all(|x| x.len() == ng)).then_some(d)
+    });
+    let nao = aop.n();
+    let Some(domains) = domains else {
+        let t = solve_spd(s, s_x)?;
+        stats.solve_domain_aos_mean = nao as f64;
+        stats.solve_domain_aos_max = nao;
+        return Ok(Bsr::from_dense(&t, aop.clone(), minp.clone(), cfg.tau_loose, cnt));
+    };
+    // per minimal group: its neighbourhood solve, as blocks (row group h, g)
+    let per_group: Vec<Result<(usize, Vec<(usize, Array2<f64>)>), FerricError>> = (0..ng)
+        .into_par_iter()
+        .map(|g| {
+            let mcols = &minp.groups[g];
+            if mcols.is_empty() {
+                return Ok((0, Vec::new()));
+            }
+            let rows: Vec<usize> = domains[g]
+                .iter()
+                .flat_map(|&h| aop.groups[h].iter().copied())
+                .collect();
+            let sdd = Array2::from_shape_fn((rows.len(), rows.len()), |(i, j)| s[(rows[i], rows[j])]);
+            let rhs = Array2::from_shape_fn((rows.len(), mcols.len()), |(i, j)| s_x[(rows[i], mcols[j])]);
+            let x = solve_spd(&sdd, &rhs)?;
+            let mut out = Vec::new();
+            let mut off = 0;
+            for &h in &domains[g] {
+                let nh = aop.groups[h].len();
+                if nh > 0 {
+                    out.push((h, x.slice(ndarray::s![off..off + nh, ..]).to_owned()));
+                }
+                off += nh;
+            }
+            Ok((rows.len(), out))
+        })
+        .collect();
+    let mut t = Bsr::zeros(aop.clone(), minp.clone());
+    let (mut sum, mut max, mut n) = (0usize, 0usize, 0usize);
+    for (g, res) in per_group.into_iter().enumerate() {
+        let (dim, blocks) = res?;
+        if dim > 0 {
+            sum += dim;
+            max = max.max(dim);
+            n += 1;
+        }
+        for (h, b) in blocks {
+            t.blk[h].push((g, b));
+        }
+    }
+    stats.solve_domain_aos_mean = sum as f64 / n.max(1) as f64;
+    stats.solve_domain_aos_max = max;
+    for row in &mut t.blk {
+        row.sort_by_key(|(g, _)| *g);
+    }
+    Ok(t.drop_below(cfg.tau_loose, cnt))
+}
+
 /// Build the VV-HV space with the local construction.
-///
-/// STATUS (step a): delegates to the dense build; the sparse stages replace
-/// it one at a time, each against the trivial-limit anchor.
 pub fn build_vvhv_local(
     mol: &Molecule,
     obs: &PreparedBasis,
@@ -348,15 +508,150 @@ pub fn build_vvhv_local(
     rhf: &ScfResult,
     cfg: &LocalVvhvConfig,
 ) -> Result<LocalVvhv, FerricError> {
+    build_vvhv_local_with(mol, obs, obs_bs, rhf, cfg, Knobs::default())
+}
+
+/// [`build_vvhv_local`] with the mutation knobs.
+pub(crate) fn build_vvhv_local_with(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    obs_bs: &BasisSet,
+    rhf: &ScfResult,
+    cfg: &LocalVvhvConfig,
+    _knobs: Knobs,
+) -> Result<LocalVvhv, FerricError> {
     cfg.validate()?;
-    let t0 = std::time::Instant::now();
-    let (vv, hard_aos) = crate::lmp2_amplitude::build_vvhv_traced_dense(mol, obs, obs_bs, rhf)?;
-    let stats = LocalVvhvStats {
-        t_build_s: t0.elapsed().as_secs_f64(),
-        ..Default::default()
+    let t_start = std::time::Instant::now();
+    let mut stats = LocalVvhvStats::default();
+    let mut cnt = BlockCount::default();
+
+    let s = overlap(obs);
+    let nao = obs.nbasis();
+    let nocc_total = (mol.nelec() as usize) / 2;
+    let (atom_group, ng) = atom_groups(mol);
+    stats.n_groups = ng;
+    let a2a = ao_to_atom(obs);
+    let aop = Partition::from_labels(&a2a.iter().map(|&a| atom_group[a]).collect::<Vec<_>>(), ng);
+    let (s_x, nmin, min_atom) = cross_overlap_with_minimal_atoms(mol, obs, obs_bs)?;
+    let minp = Partition::from_labels(
+        &min_atom.iter().map(|&a| atom_group[a]).collect::<Vec<_>>(),
+        ng,
+    );
+
+    // A1: projected minimal functions (domain-local solves)
+    let t_b = projected_minimal(
+        mol, &s, &s_x, &aop, &minp, &atom_group, cfg, &mut cnt, &mut stats,
+    )?;
+    let t = t_b.to_dense();
+
+    // ---- remaining stages: the dense construction (oracle copy) ----
+    let c_occ_all = rhf.mos_r().slice(ndarray::s![.., ..nocc_total]).to_owned();
+    let q_occ = c_occ_all.dot(&c_occ_all.t().dot(&s));
+    let tv = &t - &q_occ.dot(&t);
+    let n_l = nmin.checked_sub(nocc_total).ok_or_else(|| {
+        FerricError::General(format!(
+            "local VV-HV: minimal basis ({nmin}) smaller than nocc ({nocc_total})"
+        ))
+    })?;
+    let dip = dipole(obs, [0.0, 0.0, 0.0])?;
+    let c_l = if n_l > 0 {
+        let cl = canonical_orth(&tv, &s, n_l)?;
+        boys_localize(&cl, &dip, 200).c_loc
+    } else {
+        Array2::<f64>::zeros((nao, 0))
     };
+    let n_h = nao - nocc_total - n_l;
+    let mut hard_aos = Vec::with_capacity(n_h);
+    let c_h = if n_h > 0 {
+        let mut c_e = Array2::<f64>::zeros((nao, nocc_total + n_l));
+        c_e.slice_mut(ndarray::s![.., ..nocc_total]).assign(&c_occ_all);
+        c_e.slice_mut(ndarray::s![.., nocc_total..]).assign(&c_l);
+        let proj = c_e.dot(&c_e.t().dot(&s));
+        let mut x = Array2::<f64>::eye(nao);
+        x -= &proj;
+        let sx = s.dot(&x);
+        let mut keep_cols = Vec::new();
+        for c in 0..nao {
+            let nrm2 = x.column(c).dot(&sx.column(c));
+            if nrm2 > 1e-8 {
+                keep_cols.push((c, nrm2.sqrt()));
+            }
+        }
+        let mut xn = Array2::<f64>::zeros((nao, keep_cols.len()));
+        let mut parents = Vec::with_capacity(keep_cols.len());
+        for (k, &(c, nrm)) in keep_cols.iter().enumerate() {
+            xn.column_mut(k).assign(&(x.column(c).mapv(|v| v / nrm)));
+            parents.push(a2a[c]);
+        }
+        let r2 = r2_moment(obs, [0.0; 3])?;
+        let ncand = xn.ncols();
+        let r2v = column_expectations(&r2, &xn);
+        let dv: Vec<Vec<f64>> = dip.iter().map(|dm| column_expectations(dm, &xn)).collect();
+        let w: Vec<f64> = (0..ncand)
+            .map(|k| {
+                let mut c2 = 0.0;
+                for d in &dv {
+                    c2 += d[k] * d[k];
+                }
+                1.0 / (r2v[k] - c2).max(1e-6)
+            })
+            .collect();
+        let wmax2 = w.iter().fold(0.0f64, |m, &x| m.max(x)).powi(2);
+        let mut ov = xn.t().dot(&s.dot(&xn));
+        for r in 0..ncand {
+            for c in 0..ncand {
+                ov[(r, c)] *= w[r] * w[c] / wmax2;
+            }
+        }
+        let piv = pivoted_cholesky_order(&ov, n_h)?;
+        let mut sel = Array2::<f64>::zeros((nao, n_h));
+        let mut sel_parents = Vec::with_capacity(n_h);
+        for (k, &p) in piv.iter().enumerate() {
+            sel.column_mut(k).assign(&xn.column(p));
+            sel_parents.push(parents[p]);
+            hard_aos.push(keep_cols[p].0);
+        }
+        let mut ch = lowdin(&sel, &s)?;
+        let f_ao = rhf.fock_r();
+        let fch = f_ao.dot(&ch);
+        let mut by_atom: std::collections::BTreeMap<usize, Vec<usize>> = Default::default();
+        for (k, &a) in sel_parents.iter().enumerate() {
+            by_atom.entry(a).or_default().push(k);
+        }
+        for idx in by_atom.values() {
+            let blk = ch
+                .select(ndarray::Axis(1), idx)
+                .t()
+                .dot(&fch.select(ndarray::Axis(1), idx));
+            let (_, u) = eigh(&blk)?;
+            let cols: Vec<ndarray::Array1<f64>> =
+                idx.iter().map(|&ic| ch.column(ic).to_owned()).collect();
+            for (cnew, &ic) in idx.iter().enumerate() {
+                let mut acc = ndarray::Array1::<f64>::zeros(nao);
+                for (r, col) in cols.iter().enumerate() {
+                    acc.scaled_add(u[(r, cnew)], col);
+                }
+                ch.column_mut(ic).assign(&acc);
+            }
+        }
+        ch
+    } else {
+        Array2::<f64>::zeros((nao, 0))
+    };
+    let mut c_vloc = Array2::<f64>::zeros((nao, n_l + n_h));
+    c_vloc.slice_mut(ndarray::s![.., ..n_l]).assign(&c_l);
+    c_vloc.slice_mut(ndarray::s![.., n_l..]).assign(&c_h);
+
+    stats.n_products = cnt.products;
+    stats.blocks_kept = cnt.kept;
+    stats.blocks_dropped = cnt.dropped;
+    stats.t_build_s = t_start.elapsed().as_secs_f64();
     Ok(LocalVvhv {
-        vv,
+        vv: VvHv {
+            c_vloc,
+            n_valence: n_l,
+            n_hard: n_h,
+        },
         hard_aos,
         stats,
     })

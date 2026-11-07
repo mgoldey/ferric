@@ -870,7 +870,7 @@ fn column_dots(a: &Array2<f64>, b: &Array2<f64>) -> Vec<f64> {
 /// column-wise dot. Replaces per-column `c_k·(M·c_k)` matvec loops (BLAS2,
 /// one nao² pass per column); the quantity is the same and only the
 /// summation order differs (rounding level).
-fn column_expectations(m: &Array2<f64>, c: &Array2<f64>) -> Vec<f64> {
+pub(crate) fn column_expectations(m: &Array2<f64>, c: &Array2<f64>) -> Vec<f64> {
     column_dots(c, &m.dot(c))
 }
 

@@ -197,3 +197,72 @@ fn local_vvhv_trivial_limit_reproduces_build_vvhv_columns_and_energies() {
         assert_reached(&r.stats);
     }
 }
+
+/// E_corr at eps = 0 with every integral-direct map at its trivial limit
+/// (strict CG), and the canonical RI-MP2 on the same inputs: on these maps
+/// the eps = 0 energy depends only on the SPAN of the virtual space.
+pub(crate) fn energy_span(su: &Su, vv: &VvHv) -> (f64, f64) {
+    let cfg = AmplitudeLmp2Config {
+        eps: 0.0,
+        frozen_core: 0,
+        cg_rtol: Some(LMP2_CG_RTOL_STRICT),
+        compute_reference: true,
+        ..Default::default()
+    };
+    let dcfg = DirectConfig {
+        aux_radius_bohr: 1e6,
+        virt_radius_bohr: None,
+        ao_tail: 0.0,
+        ..Default::default()
+    };
+    let (r, _) = amplitude_lmp2_direct_with_virtuals(
+        &su.mol,
+        &su.obs,
+        &su.dfbs,
+        Operator::coulomb(),
+        &su.rhf,
+        &cfg,
+        &dcfg,
+        vv,
+    )
+    .unwrap();
+    (r.e_corr, r.e_corr_canonical_ri)
+}
+
+/// T-B (classification, non-vacuous): loose settings on the BASIS-CHOICE
+/// steps only (span-critical steps exact) rotate the columns (> 1e-6 from
+/// the dense build: the knob did something) but leave the span exact
+/// (check <= 1e-10) and so the eps = 0 energy fixed: <= 1e-10 vs the dense
+/// build and <= 1e-9 vs canonical RI-MP2, C8.
+#[test]
+fn basis_choice_truncation_leaves_the_eps0_energy_fixed() {
+    let su = setup("alkane_8.xyz");
+    let cfg = LocalVvhvConfig {
+        solve_radius_bohr: Some(6.0),
+        ..LocalVvhvConfig::trivial()
+    };
+    let (d, _) = dense(&su);
+    let loc = build_vvhv_local(&su.mol, &su.obs, &su.obs_bs, &su.rhf, &cfg).unwrap();
+    let dist = max_column_distance(&loc.vv.c_vloc, &d.c_vloc);
+    let (o, sp) = check_vvhv(&su.obs, &su.rhf, su.nocc, &loc.vv.c_vloc);
+    let (e_d, e_can) = energy_span(&su, &d);
+    let (e_l, _) = energy_span(&su, &loc.vv);
+    eprintln!(
+        "T-B C8: column distance {dist:.2e}, orth {o:.2e} span {sp:.2e}, |dE| vs dense \
+         {:.2e}, vs canonical {:.2e}; {:?}",
+        (e_l - e_d).abs(),
+        (e_l - e_can).abs(),
+        loc.stats
+    );
+    assert!(
+        dist > 1e-6,
+        "the basis-choice knobs changed nothing ({dist:.2e})"
+    );
+    assert!(
+        loc.stats.solve_domain_aos_max < su.obs.nbasis(),
+        "domain solve not reached"
+    );
+    assert!(o <= 1e-10 && sp <= 1e-10, "orth {o:.2e} span {sp:.2e}");
+    assert!((e_l - e_d).abs() <= 1e-10, "{:.2e}", (e_l - e_d).abs());
+    assert!((e_l - e_can).abs() <= 1e-9, "{:.2e}", (e_l - e_can).abs());
+}

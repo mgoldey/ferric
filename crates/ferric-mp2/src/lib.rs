@@ -87,6 +87,8 @@ pub mod spinorbital_u;
 pub mod u_oo_rimp2;
 /// Unrestricted RI-MP2 (α/β spin channels).
 pub mod u_rimp2;
+/// Atom-group block-sparse matrices of the local VV-HV build.
+pub(crate) mod vvhv_bsr;
 /// Opt-in local (threshold-sparse) build of the VV-HV localized virtuals.
 pub mod vvhv_local;
 /// Z-vector response equations for MP2 relaxed density and gradients.
