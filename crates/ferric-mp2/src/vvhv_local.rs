@@ -39,7 +39,10 @@ use crate::lmp2_amplitude::{
     lowdin, pivoted_cholesky_order, solve_spd, StageTimings, VvHv,
 };
 use crate::lmp2_certificate::CertValue;
-use crate::vvhv_bsr::{BlockCount, Bsr, Partition, TieRule};
+use crate::vvhv_bsr::{
+    heap_pivoted_cholesky, newton_schulz_inv_sqrt, tc2_projector, BlockCount, Bsr, Partition,
+    TieRule,
+};
 
 /// Which VV-HV virtual-space build a local MP2 run uses.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -109,6 +112,25 @@ pub struct LocalVvhvConfig {
     /// centroids); every skipped rotation then has `|θ| ≤ boys_tau`. 0 rotates
     /// every pair.
     pub boys_tau: f64,
+    /// Starting basis of the valence-virtual Boys localization.
+    pub valence_start: ValenceStart,
+}
+
+/// Starting basis of the valence-virtual Boys localization.
+///
+/// Boys stops at a sweep max |θ| < 1e-8, so its columns carry the start's
+/// imprint at the ~1e-10..1e-9 level even when two starts reach the same
+/// maximum (measured C4/6-31G: purified vs canonical start, same span to
+/// 5e-14, columns 5.5e-10 apart, energy 1.7e-13 apart at eps = 1e-4). The
+/// column-exact anchor therefore needs the dense build's own start.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ValenceStart {
+    /// Spectral projector (purification) + column-normalized pivoted
+    /// Cholesky + Newton-Schulz Löwdin: the local route (production).
+    Purified,
+    /// The dense build's start: a global eigh of the projected-minimal Gram
+    /// (`canonical_orth`), O(n_min³). The column-exact anchor configuration.
+    Canonical,
 }
 
 impl Default for LocalVvhvConfig {
@@ -120,19 +142,22 @@ impl Default for LocalVvhvConfig {
             tau_loose: 1e-6,
             solve_radius_bohr: Some(30.0),
             boys_tau: 1e-8,
+            valence_start: ValenceStart::Purified,
         }
     }
 }
 
 impl LocalVvhvConfig {
-    /// Every threshold at its no-op limit: the local build must then
-    /// reproduce the dense build (the exactness anchor).
+    /// Every threshold at its no-op limit and the dense build's valence
+    /// start: the local build must then reproduce the dense build column by
+    /// column (the exactness anchor).
     pub fn trivial() -> Self {
         Self {
             tau: 0.0,
             tau_loose: 0.0,
             solve_radius_bohr: None,
             boys_tau: 0.0,
+            valence_start: ValenceStart::Canonical,
         }
     }
 
@@ -561,7 +586,6 @@ pub(crate) fn build_vvhv_local_with(
     let s_b = Bsr::from_dense(&s, aop.clone(), aop.clone(), cfg.tau, &mut cnt);
     let st = s_b.mul(&t_b, cfg.tau, &mut cnt);
     let tv_b = t_b.axpby(1.0, &d_occ.mul(&st, cfg.tau, &mut cnt), -1.0, cfg.tau, &mut cnt);
-    let tv = tv_b.to_dense();
     let ds = d_occ.mul(&s_b, cfg.tau, &mut cnt).to_dense();
 
     // ---- remaining stages: the dense construction (oracle copy) ----
@@ -571,9 +595,53 @@ pub(crate) fn build_vvhv_local_with(
         ))
     })?;
     let dip = dipole(obs, [0.0, 0.0, 0.0])?;
-    let c_l = if n_l > 0 {
-        let cl = canonical_orth(&tv, &s, n_l)?;
+    // A3 (basis choice): the valence space is the top-n_l eigenspace of
+    // O^T = T_vᵀ S T_v, taken as its spectral projector Π (trace-correcting
+    // purification, tau_loose) instead of a global eigh; n_l columns of the
+    // redundant set T_v Π (tau, so they stay in the virtual space) are picked
+    // by greedy pivoted Cholesky on their COLUMN-NORMALIZED Gram (step 0:
+    // the unnormalized selection's κ jumps 22/108/285 with size, normalized
+    // stays 6-11) and Löwdin-orthonormalized by Newton-Schulz (tau).
+    let c_l = if n_l > 0 && cfg.valence_start == ValenceStart::Canonical {
+        let cl = canonical_orth(&tv_b.to_dense(), &s, n_l)?;
         boys_localize(&cl, &dip, 200).c_loc
+    } else if n_l > 0 {
+        let stv = s_b.mul(&tv_b, cfg.tau, &mut cnt);
+        let ot = tv_b.transpose().mul(&stv, cfg.tau_loose, &mut cnt);
+        let (pi, it) = tc2_projector(&ot, n_l, cfg.tau_loose, &mut cnt)?;
+        stats.purification_iterations = it;
+        let p = tv_b.mul(&pi, cfg.tau, &mut cnt);
+        let sp = s_b.mul(&p, cfg.tau, &mut cnt);
+        let mut g = p.transpose().mul(&sp, cfg.tau_loose, &mut cnt);
+        let dg = g.diag();
+        let dmax = dg.iter().copied().fold(0.0f64, f64::max);
+        let inv: Vec<f64> = dg
+            .iter()
+            .map(|&x| if x > 1e-10 * dmax { 1.0 / x.sqrt() } else { 0.0 })
+            .collect();
+        g.scale_rows(&inv);
+        g.scale_cols(&inv);
+        let (vpiv, pops) = heap_pivoted_cholesky(&g, n_l, cfg.tau_loose, knobs.tie)?;
+        stats.heap_pops += pops;
+        let valp = Partition::from_labels(
+            &vpiv.iter().map(|&m| minp.place[m].0).collect::<Vec<_>>(),
+            ng,
+        );
+        let mut psel = p.select_cols(&vpiv, valp);
+        psel.scale_cols(&vpiv.iter().map(|&m| inv[m]).collect::<Vec<_>>());
+        let oval = psel
+            .transpose()
+            .mul(&s_b.mul(&psel, cfg.tau, &mut cnt), cfg.tau, &mut cnt);
+        let (z, nit) = newton_schulz_inv_sqrt(
+            &oval,
+            cfg.tau,
+            knobs.ns_stop_early,
+            &mut cnt,
+            "valence Löwdin",
+        )?;
+        stats.ns_iterations_valence = nit;
+        let cl0 = psel.mul(&z, cfg.tau, &mut cnt).to_dense();
+        boys_localize(&cl0, &dip, 200).c_loc
     } else {
         Array2::<f64>::zeros((nao, 0))
     };
