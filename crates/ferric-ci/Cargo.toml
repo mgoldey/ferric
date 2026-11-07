@@ -16,6 +16,7 @@ ferric-mp2 = { path = "../ferric-mp2" }
 ferric-scf = { path = "../ferric-scf" }
 ndarray = { workspace = true }
 ndarray-linalg = { workspace = true }
+rayon = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }
