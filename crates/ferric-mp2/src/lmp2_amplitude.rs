@@ -694,7 +694,8 @@ fn build_vvhv_with(
 /// hard-virtual candidate, in pivot order (the hard-virtual SUBSET, which
 /// tests compare across solvers).
 /// The dense build with its hard-virtual trace (the oracle of the local
-/// build, [`crate::vvhv_local`]).
+/// build's anchor tests, [`crate::vvhv_local`]).
+#[cfg(test)]
 pub(crate) fn build_vvhv_traced_dense(
     mol: &Molecule,
     obs: &PreparedBasis,
