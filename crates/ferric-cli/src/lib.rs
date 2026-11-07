@@ -25,7 +25,9 @@ use ferric_mp2::att_vv10::{
 };
 use ferric_mp2::attenuated::{attenuated_ri_mp2, AttenuatedMp2Config};
 use ferric_mp2::double_hybrid::{mp2_double_hybrid, DoubleHybridKind};
-use ferric_mp2::laplace::{laplace_ri_mp2, laplace_sos_mp2, SosFormulation, SosMp2Config};
+use ferric_mp2::laplace::{
+    laplace_ri_mp2, laplace_sos_mp2_with_basis, SosFormulation, SosMp2Config,
+};
 use ferric_mp2::mp3::mp3_energy;
 use ferric_mp2::oo_rimp2::{oo_ri_mp2, OoRiMp2Config};
 use ferric_mp2::rimp2::{ri_mp2, RiMp2Config};
@@ -4813,8 +4815,8 @@ fn run_laplace_sos_mp2(
         memory_budget_bytes: budget_bytes,
         domain_cutoff_bohr: cfg.mp2.domain_cutoff_bohr,
     };
-    let sos =
-        laplace_sos_mp2(mol, prep, &dfbs, op, result, &sos_cfg, formulation).unwrap_or_else(|e| {
+    let sos = laplace_sos_mp2_with_basis(mol, prep, bs, &dfbs, op, result, &sos_cfg, formulation)
+        .unwrap_or_else(|e| {
             eprintln!("error: {e}");
             std::process::exit(1);
         });
@@ -4824,6 +4826,9 @@ fn run_laplace_sos_mp2(
         SosFormulation::AoSparse(r) => {
             format!("AO sparse, domain cutoff {r} Bohr — APPROXIMATE")
         }
+        SosFormulation::Local(r) => {
+            format!("local (Boys LMO x VV-HV LVO), domain cutoff {r} Bohr — APPROXIMATE")
+        }
     };
     println!(
         "Laplace SOS-MP2/{} (aux: {}, n_quad={}, {}) on {}",
@@ -4831,7 +4836,7 @@ fn run_laplace_sos_mp2(
     );
     println!("  nbasis     = {}", prep.nbasis());
     println!("  RHF energy = {:.10} Hartree", result.energy);
-    if let SosFormulation::AoSparse(r) = formulation {
+    if let SosFormulation::AoSparse(r) | SosFormulation::Local(r) = formulation {
         println!(
             "  NOTE: domain-restricted AO path (cutoff {r} Bohr) — this is an \
              APPROXIMATION to the exact AO/MO result, converging to it as the \

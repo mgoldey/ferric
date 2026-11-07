@@ -173,6 +173,10 @@ pub fn sos_mp2_certificate(
             "ao-domain",
             format!("AO pseudo-densities restricted to {r} Bohr Boys domains"),
         ),
+        SosFormulation::Local(r) => c.with_approximation(
+            "local-domain",
+            format!("Boys LMO x VV-HV LVO with {r} Bohr virtual domains"),
+        ),
     }
 }
 

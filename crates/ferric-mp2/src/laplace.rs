@@ -1373,6 +1373,44 @@ impl LaplaceMp2 {
     }
 }
 
+impl LaplaceMp2 {
+    /// Laplace SOS-MP2, `local` formulation (see [`crate::laplace_local`]):
+    /// Boys LMOs x VV-HV localized virtuals with orbital domains of the given
+    /// radii. Returns the UNSCALED `E_OS` and the structural counters/timings.
+    #[allow(clippy::too_many_arguments)]
+    pub fn compute_sos_local(
+        &mut self,
+        mol: &Molecule,
+        obs: &PreparedBasis,
+        obs_bs: &ferric_core::basis::BasisSet,
+        dfbs: &PreparedBasis,
+        op: Operator,
+        rhf: &ScfResult,
+        frozen_core: usize,
+        radii: crate::laplace_local::LocalRadii,
+    ) -> Result<(f64, crate::laplace_local::LocalStats), FerricError> {
+        let nocc_total = mol.nelec() as usize / 2;
+        active_occ(nocc_total, frozen_core)?;
+        let eps = rhf.eps_r();
+        let ymin = 2.0 * (eps[nocc_total] - eps[nocc_total - 1]);
+        let ymax = 2.0 * (eps[eps.len() - 1] - eps[0]);
+        self.init_quadrature(ymin, ymax)?;
+        crate::laplace_local::sos_local_energy(
+            mol,
+            obs,
+            obs_bs,
+            dfbs,
+            op,
+            rhf,
+            frozen_core,
+            radii,
+            &self.points,
+            &self.weights,
+            self.memory_budget_bytes,
+        )
+    }
+}
+
 /// Which Laplace SOS-MP2 formulation to evaluate.
 ///
 /// Not `Eq`: the `AoSparse` payload is an `f64` cutoff. `PartialEq` is enough
@@ -1394,6 +1432,13 @@ pub enum SosFormulation {
     /// See [`SosMp2Config::domain_cutoff_bohr`] for why this is exposed as a
     /// separate variant rather than an option on `Ao`.
     AoSparse(f64),
+    /// Boys LMOs x VV-HV localized virtuals, with per-LMO virtual domains of
+    /// the given radius (Bohr); see [`crate::laplace_local`]. APPROXIMATE,
+    /// exact as the radius grows. Unlike [`Self::AoSparse`], the radius sets
+    /// the inner dimension of the dense Gram GEMM, so it changes the cost and
+    /// the memory, not only the energy. Needs the orbital `BasisSet` (for the
+    /// VV-HV minimal-basis projection): use [`laplace_sos_mp2_with_basis`].
+    Local(f64),
 }
 
 impl SosFormulation {
@@ -1411,37 +1456,42 @@ impl SosFormulation {
         let form = match s {
             None | Some("mo") => Self::Mo,
             Some("ao") => Self::Ao,
-            Some("ao-sparse") => {
+            Some(name @ ("ao-sparse" | "local")) => {
                 let r = cutoff.ok_or_else(|| {
-                    FerricError::General(
-                        "SOS-MP2 formulation \"ao-sparse\" requires a domain cutoff \
+                    FerricError::General(format!(
+                        "SOS-MP2 formulation \"{name}\" requires a domain cutoff \
                          (CLI: [mp2] domain_cutoff_bohr; Python: domain_cutoff_bohr=). \
                          There is no safe default: the right radius depends on the \
                          system and basis, and a wrong one silently changes the energy."
-                            .to_string(),
-                    )
+                    ))
                 })?;
                 if !(r.is_finite() && r > 0.0) {
                     return Err(FerricError::General(format!(
                         "SOS-MP2 domain_cutoff_bohr must be finite and > 0 (got {r})"
                     )));
                 }
-                Self::AoSparse(r)
+                if name == "ao-sparse" {
+                    Self::AoSparse(r)
+                } else {
+                    Self::Local(r)
+                }
             }
             Some(other) => {
                 return Err(FerricError::General(format!(
                     "unknown SOS-MP2 formulation \"{other}\"; expected \"mo\" (default, \
                      tau-weighted (P|ia) amplitudes), \"ao\" (occupied/virtual \
-                     pseudo-densities) or \"ao-sparse\" (domain-restricted AO, \
+                     pseudo-densities), \"ao-sparse\" (domain-restricted AO, \
+                     APPROXIMATE — needs domain_cutoff_bohr) or \"local\" \
+                     (Boys LMOs x VV-HV localized virtuals with orbital domains, \
                      APPROXIMATE — needs domain_cutoff_bohr)"
                 )));
             }
         };
-        if cutoff.is_some() && !matches!(form, Self::AoSparse(_)) {
+        if cutoff.is_some() && !matches!(form, Self::AoSparse(_) | Self::Local(_)) {
             return Err(FerricError::General(format!(
                 "domain_cutoff_bohr is only meaningful with formulation \
-                 \"ao-sparse\" (got formulation {:?}). Set formulation = \
-                 \"ao-sparse\" or drop the cutoff — silently ignoring it would \
+                 \"ao-sparse\" or \"local\" (got formulation {:?}). Set formulation = \
+                 \"ao-sparse\"/\"local\" or drop the cutoff — silently ignoring it would \
                  hand back a different (exact) method than the one configured.",
                 s.unwrap_or("mo")
             )));
@@ -1458,9 +1508,42 @@ impl SosFormulation {
 /// With `c_os = 1.0` the returned `e_os` reproduces
 /// [`crate::rimp2::ri_mp2_spin_components`]'s `e_os` to the Laplace quadrature
 /// error, which is the hard internal reference for this method.
+///
+/// [`SosFormulation::Local`] needs the orbital `BasisSet` and is rejected
+/// here with a pointer to [`laplace_sos_mp2_with_basis`].
 pub fn laplace_sos_mp2(
     mol: &Molecule,
     obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    rhf: &ScfResult,
+    config: &SosMp2Config,
+    formulation: SosFormulation,
+) -> Result<SosMp2Result, FerricError> {
+    sos_mp2_dispatch(mol, obs, None, dfbs, op, rhf, config, formulation)
+}
+
+/// [`laplace_sos_mp2`] with the orbital `BasisSet`, which every formulation
+/// accepts and [`SosFormulation::Local`] requires.
+#[allow(clippy::too_many_arguments)]
+pub fn laplace_sos_mp2_with_basis(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    obs_bs: &ferric_core::basis::BasisSet,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    rhf: &ScfResult,
+    config: &SosMp2Config,
+    formulation: SosFormulation,
+) -> Result<SosMp2Result, FerricError> {
+    sos_mp2_dispatch(mol, obs, Some(obs_bs), dfbs, op, rhf, config, formulation)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn sos_mp2_dispatch(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    obs_bs: Option<&ferric_core::basis::BasisSet>,
     dfbs: &PreparedBasis,
     op: Operator,
     rhf: &ScfResult,
@@ -1484,6 +1567,27 @@ pub fn laplace_sos_mp2(
         }
         SosFormulation::AoSparse(cutoff) => {
             laplace.compute_sos_ao(mol, obs, dfbs, op, rhf, config.frozen_core, Some(cutoff))?
+        }
+        SosFormulation::Local(cutoff) => {
+            let obs_bs = obs_bs.ok_or_else(|| {
+                FerricError::General(
+                    "SOS-MP2 formulation \"local\" needs the orbital BasisSet (VV-HV \
+                     localized virtuals); call laplace_sos_mp2_with_basis"
+                        .to_string(),
+                )
+            })?;
+            let (e, stats) = laplace.compute_sos_local(
+                mol,
+                obs,
+                obs_bs,
+                dfbs,
+                op,
+                rhf,
+                config.frozen_core,
+                crate::laplace_local::LocalRadii::from_cutoff(cutoff),
+            )?;
+            eprintln!("{stats}");
+            e
         }
     };
     let sos_corr = config.c_os * e_os;
@@ -2185,6 +2289,15 @@ mod tests {
             p(Some("ao-sparse"), Some(8.0)).unwrap(),
             SosFormulation::AoSparse(8.0)
         );
+        assert_eq!(
+            p(Some("local"), Some(6.0)).unwrap(),
+            SosFormulation::Local(6.0)
+        );
+        let msg = p(Some("local"), None).unwrap_err().to_string();
+        assert!(
+            msg.contains("\"local\" requires a domain cutoff"),
+            "got: {msg}"
+        );
 
         for bad in [
             "MO",
@@ -2516,12 +2629,161 @@ mod tests {
             .e_os;
             let d = (sparse - mo).abs();
             eprintln!("{name}/{basis_name}: MO {mo:.12}  AoSparse(inf) {sparse:.12}  |d| {d:.3e}");
-            assert!(mo.abs() > 1e-3, "{name}: E_OS ~0, the anchor would be vacuous");
+            assert!(
+                mo.abs() > 1e-3,
+                "{name}: E_OS ~0, the anchor would be vacuous"
+            );
             assert!(
                 d <= 1e-9,
                 "{name}/{basis_name}: AoSparse with a vacuous cutoff must reproduce \
                  compute_sos_mo to 1e-9, got |d| = {d:.3e}"
             );
         }
+    }
+
+    /// RHF on a bundled test molecule (Coulomb, cc-pVDZ-RI aux).
+    fn setup_named(
+        name: &str,
+        basis_name: &str,
+    ) -> (Molecule, PreparedBasis, PreparedBasis, ScfResult) {
+        if name == "water" {
+            return setup_sos(basis_name);
+        }
+        let mol = Molecule::load_xyz(&format!(
+            "{}/../../testdata/molecules/{name}.xyz",
+            env!("CARGO_MANIFEST_DIR")
+        ))
+        .unwrap();
+        let obs = PreparedBasis::new(&mol, &basis::bundled(basis_name).unwrap()).unwrap();
+        let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+        let rhf = solve_rhf(
+            &ferric_core::parallel::ParallelContext::default(),
+            &mol,
+            &obs,
+            op,
+            &bounds,
+            &RhfConfig {
+                energy_conv: 1e-10,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        (mol, obs, dfbs, rhf)
+    }
+
+    fn sos_local(
+        sys: &(Molecule, PreparedBasis, PreparedBasis, ScfResult),
+        basis_name: &str,
+        radii: crate::laplace_local::LocalRadii,
+        frozen_core: usize,
+    ) -> (f64, crate::laplace_local::LocalStats) {
+        let (mol, obs, dfbs, rhf) = sys;
+        let bs = basis::bundled(basis_name).unwrap();
+        let mut lp = LaplaceMp2::new(7);
+        lp.compute_sos_local(
+            mol,
+            obs,
+            &bs,
+            dfbs,
+            Operator::coulomb(),
+            rhf,
+            frozen_core,
+            radii,
+        )
+        .unwrap()
+    }
+
+    fn radii(vir: f64, pair_tau: f64, occ: f64) -> crate::laplace_local::LocalRadii {
+        crate::laplace_local::LocalRadii { vir, pair_tau, occ }
+    }
+
+    fn sos_mo(
+        sys: &(Molecule, PreparedBasis, PreparedBasis, ScfResult),
+        frozen_core: usize,
+    ) -> f64 {
+        let (mol, obs, dfbs, rhf) = sys;
+        let mut lp = LaplaceMp2::new(7);
+        lp.compute_sos_mo(mol, obs, dfbs, Operator::coulomb(), rhf, frozen_core)
+            .unwrap()
+    }
+
+    /// EXACTNESS ANCHOR for `local`: with every radius larger than the
+    /// molecule, the four truncations (see `laplace_local`) are vacuous and the
+    /// LMO x LVO construction must reproduce `compute_sos_mo` to round-off.
+    /// Butane/6-31G is the case where both rotations (Boys, VV-HV) are far
+    /// from the identity and the basis has split valence; the frozen-core case
+    /// checks the active-space slicing.
+    #[test]
+    fn sos_local_infinite_cutoff_reproduces_mo() {
+        for (name, basis_name, fc) in [
+            ("water", "6-31g", 0usize),
+            ("alkane_4", "sto-3g", 0),
+            ("alkane_4", "6-31g", 0),
+            ("alkane_4", "6-31g", 4),
+        ] {
+            let sys = setup_named(name, basis_name);
+            let mo = sos_mo(&sys, fc);
+            let (loc, st) = sos_local(&sys, basis_name, radii(1e6, 0.0, 1e6), fc);
+            let d = (loc - mo).abs();
+            eprintln!(
+                "{name}/{basis_name} fc={fc}: MO {mo:.12} local(inf) {loc:.12} |d| {d:.3e}  {st}"
+            );
+            assert!(mo.abs() > 1e-3, "E_OS ~0: vacuous anchor");
+            assert_eq!(
+                st.t_size,
+                st.n_lmo * st.n_lvo,
+                "r=inf must keep every (i,a)"
+            );
+            assert!(
+                d <= 1e-9,
+                "{name}/{basis_name} fc={fc}: local with vacuous radii must reproduce \
+                 compute_sos_mo to 1e-9, got {d:.3e}"
+            );
+        }
+    }
+
+    /// TEETH for `local`: on octane/6-31G (19.9 Bohr long; 6-31G, because
+    /// STO-3G hid the AO-virtual failure recorded in `laplace_local`'s doc)
+    /// each radius must be a GENUINE restriction (fewer inner columns, a
+    /// nonzero error) and the error must shrink as the virtual radius grows.
+    /// Without the restriction assertions a mask that does nothing would pass
+    /// the anchor and this test alike.
+    #[test]
+    fn sos_local_radius_restricts_cost_and_converges() {
+        let sys = setup_named("alkane_8", "6-31g");
+        let mo = sos_mo(&sys, 0);
+        let mut rels = Vec::new();
+        let mut prev_t = 0usize;
+        for r in [4.0, 6.0, 9.0] {
+            let (e, st) = sos_local(
+                &sys,
+                "6-31g",
+                crate::laplace_local::LocalRadii::from_cutoff(r),
+                0,
+            );
+            let rel = (e - mo).abs() / mo.abs();
+            eprintln!("octane/6-31G r={r}: rel err {rel:.3e}  {st}");
+            assert!(
+                st.t_size < st.n_lmo * st.n_lvo,
+                "r={r} must truncate the inner index"
+            );
+            assert!(rel > 0.0, "r={r}: a real truncation cannot be bit-exact");
+            assert!(st.t_size > prev_t, "|T| must grow with r");
+            prev_t = st.t_size;
+            rels.push(rel);
+        }
+        assert!(
+            rels[2] < rels[0],
+            "the error must shrink from r=4 to r=9: {rels:?}"
+        );
+        // T1 alone (vir vacuous, occ = 6 Bohr on a 20 Bohr chain) must be a real
+        // restriction with a small error. (Schwarz TA at 1e-10 keeps every shell
+        // pair on a molecule this short, so it is not what is restricted here.)
+        let (e_ao, st) = sos_local(&sys, "6-31g", radii(1e6, 1e-10, 6.0), 0);
+        let rel_ao = (e_ao - mo).abs() / mo.abs();
+        eprintln!("octane/6-31G vir=inf occ=6 tau=1e-10: rel err {rel_ao:.3e}  {st}");
+        assert!(rel_ao > 0.0 && rel_ao < 1e-3, "occ=6 alone: {rel_ao:.3e}");
     }
 }
