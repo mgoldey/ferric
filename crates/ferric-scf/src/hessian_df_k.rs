@@ -14,7 +14,10 @@
 //!
 //! # Scope: no dropped metric modes
 //!
-//! `DfK` drops metric modes below `DFK_LINDEP_THRESH`. With none dropped,
+//! `DfK` drops metric modes below the cut of `crate::df_k::metric_lindep_cut`
+//! (nominally 1e-10; the Hessian counts dropped modes with the same rule, on
+//! its own `dsyev` spectrum, which that rule classifies solver-independently
+//! by construction). With none dropped,
 //! `M = V⁻¹` exactly (the product of the two `V^{-1/2}` factors), so every
 //! derivative below follows from `∂M = −M V_x M`. A metric with a dropped mode
 //! is refused with a typed error naming the count (the energy is then a
@@ -125,8 +128,9 @@
 //!
 //! ## Factorization
 //!
-//! `M` is built as `W·W` with `W = U Λ^{-1/2} Uᵀ` from the same `eigh` as
-//! `DfK::v_inv_sqrt_lindep`, i.e. the SCF's own construction (no explicit
+//! `M` is built as `W·W` with `W = U Λ^{-1/2} Uᵀ`, the construction of
+//! `DfK::v_inv_sqrt_lindep` (which uses `dsyevd`; this uses `dsyev`, the two
+//! agreeing to rounding when nothing is dropped), i.e. the SCF's own construction (no explicit
 //! `V⁻¹` from LU). With nothing dropped it agrees with `V⁻¹` to `~ε·cond(V)`.
 //!
 //! ## What the tests establish (and what they cannot see)
@@ -409,8 +413,8 @@ impl Fit {
             op
         };
         let v = coulomb_metric_2c(metric_op, &dfbs)?;
-        // ONE eigendecomposition, the (BLAS-thread-wrapped) call DfK makes, so
-        // the dropped-mode classification and M come from the same numbers.
+        // ONE eigendecomposition, so the dropped-mode classification (DfK's
+        // rule, `metric_lindep_cut`) and M come from the same numbers.
         let (lam, u) = with_blas_threads(opt_in_blas_threads(), || v.eigh(UPLO::Upper))
             .map_err(|e| FerricError::Lapack(format!("analytic RI-K Hessian: eigh: {e}")))?;
         if !mutants.allow_ill_conditioned {

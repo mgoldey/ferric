@@ -108,7 +108,7 @@
 //! metric). Between cond 2e8 and the refusal threshold (about 3e12 for
 //! `λ_max` ~ 3e2) a generic density is unmeasured, hence a warning below
 //! `RIJ_METRIC_WARN`. A metric whose smallest eigenvalue is below the DF-K cut
-//! (`crate::df_k::DFK_LINDEP_THRESH`) is numerically singular for this
+//! (`crate::df_k::metric_lindep_cut`, nominally 1e-10) is numerically singular for this
 //! purpose and is refused with a typed error naming the count of such modes.
 //!
 //! ## Cost
@@ -129,7 +129,7 @@
 //! (about three more `3N · nbf²` matrices), which are not charged here.
 
 use crate::df_gradient::aux_basis;
-use crate::df_k::DFK_LINDEP_THRESH;
+use crate::df_k::metric_lindep_cut;
 use crate::hessian_df_stencil::{
     eri2_deriv2_contract, eri3_deriv2_contract, weight_c_times_d, weight_matrix, StencilConfig,
 };
@@ -300,7 +300,7 @@ pub(crate) fn check_metric_conditioning_for(
     what: MetricUse,
 ) -> Result<(), FerricError> {
     let label = metric_label(what);
-    // The same (BLAS-thread-wrapped) eigh DfK classifies its modes with.
+    // Classified by DfK's rule (`metric_lindep_cut`) in check_metric_spectrum.
     let (lam, _) = with_blas_threads(opt_in_blas_threads(), || v.eigh(UPLO::Upper))
         .map_err(|e| FerricError::Lapack(format!("analytic {label} Hessian: V eigh: {e}")))?;
     check_metric_spectrum(&lam, what)
@@ -318,17 +318,18 @@ fn metric_label(what: MetricUse) -> &'static str {
 /// eigenvectors too classifies the modes with the SAME eigendecomposition).
 pub(crate) fn check_metric_spectrum(lam: &Array1<f64>, what: MetricUse) -> Result<(), FerricError> {
     let label = metric_label(what);
-    let modes = lam.iter().filter(|&&l| l < DFK_LINDEP_THRESH).count();
+    let cut = metric_lindep_cut(&lam.to_vec());
+    let (modes, c) = (cut.n_dropped, cut.describe());
     if modes > 0 {
         return Err(FerricError::General(match what {
             MetricUse::CoulombFit => format!(
                 "analytic RI-J Hessian: the Coulomb metric of the fitting basis has {modes} \
-                 eigenvalue(s) below {DFK_LINDEP_THRESH:.0e}; the full inverse the energy uses is \
+                 eigenvalue(s) below {c}; the full inverse the energy uses is \
                  numerically singular, so its second derivative is refused (use finite differences)"
             ),
             MetricUse::ExchangeFit => format!(
                 "analytic RI-K Hessian: the exchange metric of the fitting basis has {modes} \
-                 dropped mode(s) (eigenvalue below {DFK_LINDEP_THRESH:.0e}); DfK's truncated \
+                 dropped mode(s) (eigenvalue below {c}); DfK's truncated \
                  pseudo-inverse is differentiated only when no mode is dropped, so the second \
                  derivative of the truncated energy is refused (use finite differences)"
             ),
@@ -372,8 +373,8 @@ pub fn probe_metric(dfbs: &PreparedBasis, op: Operator) -> Result<(), FerricErro
 /// runs, with a warning): this probe is what `Auto` consults, so it also
 /// refuses a metric the RI-K Hessian can differentiate but not reliably,
 /// namely cond(V) above [`crate::hessian_df_k::RIK_COND_WARN`] (measured error
-/// grows there) and any kept mode in `[DFK_LINDEP_THRESH,
-/// DFK_GRADIENT_NOISE_FLOOR)` (the analytic DF-K gradient treats such a mode as
+/// grows there) and any kept mode in `[cut, DFK_GRADIENT_NOISE_FLOOR)`, cut by
+/// `crate::df_k::metric_lindep_cut` (the analytic DF-K gradient treats such a mode as
 /// dropped, so the Hessian would differentiate a different function than the
 /// gradient). `Auto` then runs finite differences of the gradient.
 #[doc(hidden)]
@@ -381,18 +382,19 @@ pub fn probe_exchange_metric(dfbs: &PreparedBasis, op: Operator) -> Result<(), F
     let v = coulomb_metric_2c(op, dfbs)?;
     let (lam, _) = with_blas_threads(opt_in_blas_threads(), || v.eigh(UPLO::Upper))
         .map_err(|e| FerricError::Lapack(format!("analytic RI-K Hessian: V eigh: {e}")))?;
-    let dropped = lam.iter().filter(|&&l| l < DFK_LINDEP_THRESH).count();
-    if dropped > 0 {
+    let cut = metric_lindep_cut(&lam.to_vec());
+    if cut.n_dropped > 0 {
         return check_metric_spectrum(&lam, MetricUse::ExchangeFit);
     }
     let floor = crate::df_gradient::DFK_GRADIENT_NOISE_FLOOR;
     let band = lam.iter().filter(|&&l| l < floor).count();
     if band > 0 {
         return Err(FerricError::General(format!(
-            "analytic RI-K Hessian: {band} metric mode(s) lie in [{DFK_LINDEP_THRESH:.0e}, \
+            "analytic RI-K Hessian: {band} metric mode(s) lie in [{}, \
              {floor:.0e}): DfK keeps them but the analytic DF-K gradient treats them as dropped, \
              so the Hessian would differentiate a different function than the gradient \
-             (use finite differences)"
+             (use finite differences)",
+            cut.describe()
         )));
     }
     let cond = lam[lam.len() - 1] / lam[0];

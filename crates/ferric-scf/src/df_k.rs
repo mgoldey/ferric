@@ -117,13 +117,169 @@ impl<'a> std::fmt::Debug for DfK<'a> {
     }
 }
 
-/// Metric eigenvalue below which [`DfK`] drops a mode from V^{-1/2}.
+/// Nominal metric eigenvalue below which [`DfK`] drops a mode from V^{-1/2}.
 ///
-/// Shared with [`crate::df_gradient`], which must differentiate the SAME
-/// truncated exchange energy: it recomputes the identical `eigh` of the
-/// identical metric and applies this same cut to decide which modes the
-/// energy kept.
+/// The cut actually applied is [`metric_lindep_cut`], which keeps this
+/// nominal value whenever no eigenvalue lies within rounding of it and
+/// otherwise moves the cut into a spectral gap. Every consumer of the
+/// truncated metric ([`crate::df_gradient`], the DF Hessians) classifies modes
+/// through that one function, never by comparing against this constant.
 pub(crate) const DFK_LINDEP_THRESH: f64 = 1e-10;
+
+/// Required distance of every eigenvalue from the applied cut, in units of
+/// the eigenvalue rounding scale `δ = ε · max|λ|` (see [`metric_lindep_cut`]).
+///
+/// MEASURED between `dsyev` and `dsyevd` on the def2-universal-jkfit metrics
+/// of water, sulfamethoxazole and danuglipron (Coulomb, erfc(0.33),
+/// erf(0.33)): `|Δλ|` at most 3.2 δ over the whole spectrum, p95 at most
+/// 1.5 δ for the eigenvalues in `[1e-12, 1e-8]`. The erf spectra there are
+/// dense (median spacing 8.8 δ for sulfamethoxazole, 1.8 δ for danuglipron),
+/// so a cut needs a margin well beyond one spacing for its CHOICE to be stable.
+/// Under independent `N(0, σ²)` noise on every eigenvalue (1000 draws), with
+/// 100 the cut classifies identically in 1000/1000 draws at σ = 1 δ on both
+/// erf spectra (the old 1e-10 cut: 525/1000 on danuglipron). Smaller values
+/// are not monotonically safer: at 5, 10, 20, 30 it flips in 26, 68, 0, 96
+/// (sulfamethoxazole) and 73, 102, 8, 0 (danuglipron) of 200 draws, because a
+/// small margin leaves gaps right at the safe/unsafe boundary (wiki notes
+/// df-gap-cut-2026-11-07).
+pub(crate) const LINDEP_CUT_MARGIN_ROUNDINGS: f64 = 100.0;
+
+/// The cut may move at most this factor either side of [`DFK_LINDEP_THRESH`].
+/// The DF-K gradient already treats every mode below
+/// `crate::df_gradient::DFK_GRADIENT_NOISE_FLOOR` (1e-7) as dropped, so a cut
+/// moved up to 1e-8 stays below that floor.
+pub(crate) const LINDEP_CUT_WINDOW: f64 = 100.0;
+
+/// How [`metric_lindep_cut`] placed its cut.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LindepCutKind {
+    /// Every eigenvalue is at least the margin from [`DFK_LINDEP_THRESH`]:
+    /// the cut is that value, and the kept set is the one the plain absolute
+    /// cut gives.
+    Nominal,
+    /// An eigenvalue lay within the margin of [`DFK_LINDEP_THRESH`]; the cut
+    /// is the nearest point (in log distance) that is at least the margin
+    /// from every eigenvalue.
+    Gap,
+    /// An eigenvalue lay within the margin of [`DFK_LINDEP_THRESH`] and no
+    /// point of the window is the margin from every eigenvalue: the cut stays
+    /// at the nominal value and the classification of the modes next to it
+    /// is rounding-dependent ([`warn_if_no_safe_gap`] says so).
+    NoSafeGap,
+}
+
+/// The eigenvalue cut of the truncated auxiliary metric: mode `k` is kept
+/// iff `λ_k >= cut` ([`LindepCut::keeps`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct LindepCut {
+    pub cut: f64,
+    pub n_dropped: usize,
+    pub kind: LindepCutKind,
+    /// `δ = ε · max|λ|`, the eigenvalue rounding scale.
+    pub rounding: f64,
+    /// Distance from the cut of the nearest eigenvalue (`+∞` if none).
+    pub margin: f64,
+}
+
+impl LindepCut {
+    #[inline]
+    pub fn keeps(&self, lambda: f64) -> bool {
+        lambda >= self.cut
+    }
+
+    /// The cut for a message: `1e-10` when nominal, else the moved value.
+    pub fn describe(&self) -> String {
+        match self.kind {
+            LindepCutKind::Gap => format!(
+                "{:.4e} (moved from {DFK_LINDEP_THRESH:.0e} into a spectral gap)",
+                self.cut
+            ),
+            LindepCutKind::Nominal | LindepCutKind::NoSafeGap => format!("{:.0e}", self.cut),
+        }
+    }
+}
+
+/// Where to cut the spectrum of an auxiliary metric (`evals` in any order).
+///
+/// A fixed absolute cut is arbitrary for a mode whose eigenvalue lies within
+/// rounding of it: two correct eigensolvers then keep or drop it differently.
+/// On the erf(0.33) metric of danuglipron the nearest eigenvalue sat 0.04 δ
+/// from 1e-10 and `dsyev` dropped 1020 modes where `dsyevd` dropped 1019.
+///
+/// With `δ = ε · max|λ|`, `m` = [`LINDEP_CUT_MARGIN_ROUNDINGS`] · δ and
+/// `τ` = [`DFK_LINDEP_THRESH`], a point `c` is SAFE when every eigenvalue is
+/// at least `m` from it; the safe set is the union over the gaps between
+/// consecutive eigenvalues (and the two unbounded ends) of
+/// `[λ_i + m, λ_{i+1} − m]`. The cut is the safe point in the window
+/// `[τ / W, W τ]` (`W` = [`LINDEP_CUT_WINDOW`]) nearest to `τ` in log
+/// distance, the lower one on an exact tie:
+///
+/// * `τ` itself when it is safe ([`LindepCutKind::Nominal`]): such a
+///   spectrum keeps exactly what the plain absolute cut kept, so every metric
+///   whose spectrum is not crowded at `τ` is unchanged (the Coulomb and erfc
+///   metrics above all have no eigenvalue below 7e-7);
+/// * else an end of a safe interval ([`LindepCutKind::Gap`]);
+/// * `τ` if the window holds no safe point ([`LindepCutKind::NoSafeGap`]).
+///
+/// Nearest-safe-point rather than largest-gap-ratio: the cut is continuous
+/// in the spectrum where `τ` stops being safe (it slides from `τ` to the end
+/// of the same interval, so the classification does not change at that
+/// boundary), and it moves the cut least. On the dense erf spectra the
+/// largest ratios are near-tied (1.067 / 1.060 / 1.059 for sulfamethoxazole),
+/// which makes a ratio argmax a rounding-sensitive choice at small margins.
+///
+/// No deterministic rule removes the arbitrariness entirely: with the rest
+/// of the spectrum fixed, sweeping one eigenvalue through the window must
+/// flip its classification somewhere. Here the flips sit where two safe
+/// points are equidistant from `τ`, or where a gap's half-width crosses `m`;
+/// the measured flip rates are in [`LINDEP_CUT_MARGIN_ROUNDINGS`].
+pub(crate) fn metric_lindep_cut(evals: &[f64]) -> LindepCut {
+    let tau = DFK_LINDEP_THRESH;
+    let lmax = evals.iter().fold(0.0f64, |a, &l| a.max(l.abs()));
+    let rounding = f64::EPSILON * lmax;
+    let m = LINDEP_CUT_MARGIN_ROUNDINGS * rounding;
+    let mut sorted = evals.to_vec();
+    sorted.sort_by(f64::total_cmp);
+    let (lo_w, hi_w) = (tau / LINDEP_CUT_WINDOW, tau * LINDEP_CUT_WINDOW);
+    let n = sorted.len();
+    // (log distance to τ, cut); gaps visited in ascending order, so a strict
+    // `<` keeps the lower of two equidistant safe points.
+    let mut best: Option<(f64, f64)> = None;
+    for i in 0..=n {
+        let lo = if i == 0 {
+            f64::NEG_INFINITY
+        } else {
+            sorted[i - 1] + m
+        };
+        let hi = if i == n { f64::INFINITY } else { sorted[i] - m };
+        let (a, b) = (lo.max(lo_w), hi.min(hi_w));
+        if !matches!(
+            a.partial_cmp(&b),
+            Some(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)
+        ) {
+            continue;
+        }
+        let c = tau.clamp(a, b);
+        let d = (c / tau).ln().abs();
+        if best.is_none_or(|(bd, _)| d < bd) {
+            best = Some((d, c));
+        }
+    }
+    let (cut, kind) = match best {
+        Some((0.0, _)) => (tau, LindepCutKind::Nominal),
+        Some((_, c)) => (c, LindepCutKind::Gap),
+        None => (tau, LindepCutKind::NoSafeGap),
+    };
+    LindepCut {
+        cut,
+        n_dropped: evals.len() - evals.iter().filter(|&&l| l >= cut).count(),
+        kind,
+        rounding,
+        margin: evals
+            .iter()
+            .fold(f64::INFINITY, |a, &l| a.min((l - cut).abs())),
+    }
+}
 
 /// V^{-1/2} via symmetric eigendecomposition with canonical orthogonalization.
 /// The 2-center metric `(P|w(r12)|Q)` is positive-definite analytically, but
@@ -175,6 +331,25 @@ fn density_factor(d: &Array2<f64>) -> Option<(Array2<f64>, Array2<f64>)> {
     Some((columns(&pos), columns(&neg)))
 }
 
+/// The report [`metric_lindep_cut`]'s fallback promises: with no safe gap the
+/// modes next to the nominal cut are classified by rounding.
+pub(crate) fn warn_if_no_safe_gap(cut: &LindepCut, who: &str) {
+    if cut.kind == LindepCutKind::NoSafeGap {
+        eprintln!(
+            "[ferric] warning: {who}: an auxiliary-metric eigenvalue lies {:.1} roundings \
+             (eps*max|lambda| = {:.2e}) from the {DFK_LINDEP_THRESH:.0e} cut and no spectral gap \
+             of half-width >= {LINDEP_CUT_MARGIN_ROUNDINGS} roundings exists in [{:.0e}, {:.0e}]; \
+             cutting at {DFK_LINDEP_THRESH:.0e} ({} mode(s) dropped), so whether that mode is kept \
+             depends on eigensolver rounding",
+            cut.margin / cut.rounding.max(f64::MIN_POSITIVE),
+            cut.rounding,
+            DFK_LINDEP_THRESH / LINDEP_CUT_WINDOW,
+            DFK_LINDEP_THRESH * LINDEP_CUT_WINDOW,
+            cut.n_dropped,
+        );
+    }
+}
+
 fn v_inv_sqrt_lindep(v: &Array2<f64>) -> Result<Array2<f64>, FerricError> {
     let naux = v.nrows();
     // One-time (naux, naux) setup factorization, called once per SCF
@@ -184,9 +359,10 @@ fn v_inv_sqrt_lindep(v: &Array2<f64>) -> Result<Array2<f64>, FerricError> {
     // against 0.65 s for this call. V^{-1/2} is a symmetric matrix function,
     // invariant to the eigenbasis chosen inside a degenerate block, so the
     // solvers differ only in rounding — except for a mode whose eigenvalue
-    // lies within rounding of DFK_LINDEP_THRESH, which one could keep and the
-    // other drop. `crate::df_gradient` decomposes the same metric with the
-    // same solver, so energy and gradient classify every mode identically.
+    // lies within rounding of the cut, which one could keep and the other
+    // drop; `metric_lindep_cut` places the cut so that none does.
+    // `crate::df_gradient` decomposes the same metric with the same solver and
+    // the same cut rule, so energy and gradient classify every mode identically.
     // Opt-in BLAS raise via FERRIC_BLAS_THREADS (default 1, unchanged
     // behavior); opt_in_blas_threads()'s rayon-worker self-guard also covers
     // any caller reached from a single-thread rayon pool (e.g. free-atom SAD),
@@ -197,17 +373,16 @@ fn v_inv_sqrt_lindep(v: &Array2<f64>) -> Result<Array2<f64>, FerricError> {
     })
     .map_err(|e| FerricError::Lapack(format!("V eigh in DfK: {e}")))?;
     t_st.end();
-    const LINDEP_THRESH: f64 = DFK_LINDEP_THRESH;
+    let cut = metric_lindep_cut(&evals);
+    warn_if_no_safe_gap(&cut, "DF-K");
     let mut u_scaled = evecs.clone();
-    let mut n_dropped: usize = 0;
     for k in 0..naux {
-        if evals[k] < LINDEP_THRESH {
+        if !cut.keeps(evals[k]) {
             // Zero out this column so its (column-vector outer product) contributes
             // nothing to V^{-1/2}.
             for r in 0..naux {
                 u_scaled[(r, k)] = 0.0;
             }
-            n_dropped += 1;
         } else {
             let s = 1.0 / evals[k].sqrt();
             for r in 0..naux {
@@ -215,9 +390,8 @@ fn v_inv_sqrt_lindep(v: &Array2<f64>) -> Result<Array2<f64>, FerricError> {
             }
         }
     }
-    // Silent on n_dropped: this is expected for range-separated operators
-    // (erf, erfc) with JK-fit aux on heavy atoms and is benign.
-    let _ = n_dropped;
+    // Silent on cut.n_dropped: dropped modes are expected for range-separated
+    // operators (erf, erfc) with JK-fit aux on heavy atoms and are benign.
     // O(naux³) (7.3 GFLOP at naux = 1538): fixed column blocks over the rayon
     // pool, one-thread BLAS each, bit-identical across thread counts. NOT
     // under the opt-in BLAS raise, which would multiply every block's threads.
@@ -1218,5 +1392,205 @@ mod tests {
             .map(|v| v.abs())
             .fold(0.0, f64::max);
         assert!(maxdiff < 1e-10, "spill K != in-core K, maxdiff={maxdiff}");
+    }
+
+    // ---- metric_lindep_cut ----
+
+    const TAU: f64 = DFK_LINDEP_THRESH;
+
+    /// The plain absolute cut, for the comparisons below.
+    fn old_drop(evals: &[f64]) -> usize {
+        evals.iter().filter(|&&l| l < TAU).count()
+    }
+
+    /// `m` for a spectrum whose largest eigenvalue is `lmax`.
+    fn margin_for(lmax: f64) -> f64 {
+        LINDEP_CUT_MARGIN_ROUNDINGS * f64::EPSILON * lmax
+    }
+
+    /// Catches: a rule that moves a nominal cut that already has its margin
+    /// (a gap of LARGER ratio, 25 against 6, sits in the window below τ, so
+    /// "largest ratio wins" would move the cut and drop one mode fewer), and
+    /// a lost `Nominal` classification.
+    #[test]
+    fn lindep_cut_keeps_a_nominal_cut_that_has_its_margin() {
+        let evals = [2.0, -1e-14, 2e-12, 5e-11, 3e-10, 1.0];
+        let c = metric_lindep_cut(&evals);
+        assert_eq!(c.kind, LindepCutKind::Nominal);
+        assert_eq!(c.cut, TAU);
+        assert_eq!(c.n_dropped, 3);
+        assert_eq!(c.n_dropped, old_drop(&evals));
+        assert!((c.margin - 5e-11).abs() < 1e-24, "margin {}", c.margin);
+        // A Coulomb-like spectrum (nothing in the window) and an empty one.
+        let c = metric_lindep_cut(&[7.3e-7, 1e-3, 3.0e3]);
+        assert_eq!(
+            (c.kind, c.cut, c.n_dropped),
+            (LindepCutKind::Nominal, TAU, 0)
+        );
+        let c = metric_lindep_cut(&[]);
+        assert_eq!(
+            (c.kind, c.cut, c.n_dropped),
+            (LindepCutKind::Nominal, TAU, 0)
+        );
+    }
+
+    /// `base` plus one eigenvalue at `τ ± 0.15 δ` (danuglipron's sat at
+    /// 0.04 δ): the old cut keeps it for `+` and drops it for `−`, the rule
+    /// must give both spectra the same kept count, `want_drop`, with the cut
+    /// at `want_cut` (to rounding) and every eigenvalue at least `m` from it.
+    fn assert_same_either_side(base: &[f64], want_drop: usize, want_cut: f64) {
+        let lmax = base.iter().fold(0.0f64, |a, &l| a.max(l.abs()));
+        let (delta, m) = (f64::EPSILON * lmax, margin_for(lmax));
+        let mut seen = Vec::new();
+        for s in [0.15, -0.15] {
+            let mut evals = base.to_vec();
+            evals.push(TAU + s * delta);
+            let c = metric_lindep_cut(&evals);
+            assert_eq!(c.kind, LindepCutKind::Gap, "s={s}");
+            assert!(
+                c.margin >= m * (1.0 - 1e-9),
+                "s={s}: margin {}",
+                c.margin / delta
+            );
+            assert!(
+                (c.cut - want_cut).abs() <= delta,
+                "s={s}: cut {} want {want_cut}",
+                c.cut
+            );
+            seen.push((c.n_dropped, old_drop(&evals)));
+        }
+        assert_eq!(seen[0].0, want_drop);
+        assert_eq!(seen[0].0, seen[1].0, "the rule follows the rounding");
+        assert_ne!(
+            seen[0].1, seen[1].1,
+            "the old cut did not flip: vacuous construction"
+        );
+    }
+
+    /// Catches: no margin (`m = 0` is the old cut), a cut chosen by any
+    /// criterion but the nearest safe point (the second layout has a far
+    /// wider-ratio safe gap above the crowding), a cut at a gap midpoint, and
+    /// a wrong `keeps` side.
+    #[test]
+    fn lindep_cut_classifies_an_eigenvalue_at_the_nominal_cut_the_same_either_side() {
+        // m = 6.7e-11: nothing safe below τ in the window, the nearest safe
+        // point is τ + m and the crowding eigenvalue drops.
+        assert_same_either_side(
+            &[1e-14, 2e-11, 4e-10, 1e-9, 3.0e3],
+            3,
+            TAU + margin_for(3.0e3),
+        );
+        // m = 6.7e-12: eigenvalues crowd (τ, 3e-10] at spacing 5e-12 < 2m, the
+        // safe interval (3e-11 + m, τ − m) is nearest, the cut is τ − m and
+        // the crowding eigenvalue is kept.
+        let mut base = vec![1e-14, 3e-11, 1e-8, 300.0];
+        base.extend((1..=40).map(|k| TAU + 5e-12 * f64::from(k)));
+        assert_same_either_side(&base, 2, TAU - margin_for(300.0));
+    }
+
+    /// Crowding at τ with no safe point inside `[τ/W, Wτ]` (λ_max = 1e6 makes
+    /// m = 2.2e-8, more than the window allows): the cut stays at τ and the
+    /// kind says the classification is rounding-dependent.
+    ///
+    /// Catches: a window that is not enforced (the safe point at 2.2e-8 would
+    /// be taken) and a fallback other than the nominal cut.
+    #[test]
+    fn lindep_cut_falls_back_to_the_nominal_cut_without_a_safe_gap() {
+        let c = metric_lindep_cut(&[1e-14, TAU * (1.0 + 1e-9), 1e6]);
+        assert_eq!(c.kind, LindepCutKind::NoSafeGap);
+        assert_eq!(c.cut, TAU);
+        assert_eq!(c.n_dropped, 1);
+        // With a safe point inside the window the same crowding moves the cut.
+        let c = metric_lindep_cut(&[1e-14, TAU * (1.0 + 1e-9), 1e4]);
+        assert_eq!(c.kind, LindepCutKind::Gap);
+    }
+
+    /// No seam where τ stops being safe: an eigenvalue just outside and just
+    /// inside `τ + m` is kept both times (the cut slides from τ to `λ − m`,
+    /// the end of the same safe interval).
+    ///
+    /// Catches: a two-branch rule ("nominal if safe, else the best gap")
+    /// whose second branch picks another gap at that boundary (the safe gaps
+    /// above, (λ + 1e-11, 2e-9) and (2e-9, 1.5e-8), have the larger ratios).
+    #[test]
+    fn lindep_cut_has_no_seam_where_the_nominal_cut_stops_being_safe() {
+        let lmax = 3.0e3;
+        let m = margin_for(lmax);
+        let mut kinds = Vec::new();
+        for f in [1.0 + 1e-6, 1.0 - 1e-6] {
+            let lj = TAU + f * m;
+            let c = metric_lindep_cut(&[1e-14, 1e-12, lj, lj + 1e-11, 2e-9, 1.5e-8, lmax]);
+            assert_eq!(c.n_dropped, 2, "f={f}: cut {}", c.cut);
+            assert!(c.keeps(lj));
+            kinds.push(c.kind);
+        }
+        assert_eq!(kinds, [LindepCutKind::Nominal, LindepCutKind::Gap]);
+    }
+
+    /// The real erf(0.33) metric of sulfamethoxazole / def2-universal-jkfit,
+    /// whose nearest eigenvalue sits 1.9 δ (`dsyev`) / 2.7 δ (`dsyevd`) from
+    /// 1e-10: both solvers must give the rule the same kept count with every
+    /// eigenvalue at least `m` from the cut. The old cut's margin is asserted
+    /// to be below 5 δ, so the test cannot pass on a metric that was never
+    /// tight. (Danuglipron, where the two solvers' old cuts DO disagree, 1020
+    /// against 1019, is the ignored companion below.)
+    fn assert_solver_independent_on(rel_xyz: &str) {
+        let p = format!(
+            "{}/../../testdata/molecules/{rel_xyz}",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let mol = Molecule::load_xyz_with_charge(&p, 0, 1).unwrap();
+        let set = basis::bundled("def2-universal-jkfit").unwrap();
+        let dfbs = PreparedBasis::new(&mol, &set).unwrap();
+        let v = coulomb_metric_2c(Operator::erf(0.33), &dfbs).unwrap();
+        let (l_qr, _) = v.eigh(UPLO::Upper).unwrap();
+        let (l_dc, _) = ferric_core::linalg::eigh_dc(&v, ferric_core::linalg::Uplo::Upper).unwrap();
+        let l_qr = l_qr.to_vec();
+        let (c_qr, c_dc) = (metric_lindep_cut(&l_qr), metric_lindep_cut(&l_dc));
+        let delta = c_dc.rounding;
+        let old_margin = l_dc
+            .iter()
+            .fold(f64::INFINITY, |a, &l| a.min((l - TAU).abs()));
+        assert!(
+            old_margin < 5.0 * delta,
+            "not tight: {} delta",
+            old_margin / delta
+        );
+        eprintln!(
+            "{rel_xyz}: old drops {}/{} (margin {:.2} delta); rule drops {}/{} at {:.4e} \
+             (margin {:.1}/{:.1} delta)",
+            old_drop(&l_qr),
+            old_drop(&l_dc),
+            old_margin / delta,
+            c_qr.n_dropped,
+            c_dc.n_dropped,
+            c_dc.cut,
+            c_qr.margin / delta,
+            c_dc.margin / delta
+        );
+        assert_eq!(c_qr.n_dropped, c_dc.n_dropped);
+        assert_eq!(
+            (c_qr.kind, c_dc.kind),
+            (LindepCutKind::Gap, LindepCutKind::Gap)
+        );
+        for c in [&c_qr, &c_dc] {
+            let m = LINDEP_CUT_MARGIN_ROUNDINGS * c.rounding;
+            assert!(
+                c.margin >= m * (1.0 - 1e-9),
+                "margin {} delta",
+                c.margin / c.rounding
+            );
+        }
+    }
+
+    #[test]
+    fn lindep_cut_is_solver_independent_on_the_sulfamethoxazole_erf_metric() {
+        assert_solver_independent_on("sulfamethoxazole.xyz");
+    }
+
+    #[test]
+    #[ignore = "danuglipron def2-universal-jkfit metric (naux 3635): dsyev alone ~50 s in release"]
+    fn lindep_cut_is_solver_independent_on_the_danuglipron_erf_metric() {
+        assert_solver_independent_on("c9_systems/danuglipron/conf_01_pubchem.xyz");
     }
 }

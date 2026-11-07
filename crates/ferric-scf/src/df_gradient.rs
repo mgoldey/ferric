@@ -38,7 +38,9 @@
 //! ## The truncated exchange metric
 //!
 //! `DfK` builds `V^{-1/2}` from `eigh(V)` and DROPS modes with eigenvalue
-//! below `crate::df_k::DFK_LINDEP_THRESH` (1e-10); the long-range erf metric
+//! below the cut of `crate::df_k::metric_lindep_cut` (nominally 1e-10, moved
+//! into a spectral gap when an eigenvalue lies within rounding of it; this
+//! gradient applies the same rule to the same `eigh`); the long-range erf metric
 //! with a JK-fit basis always has such modes (17 of 113 for water /
 //! def2-universal-jkfit at ω = 0.3). The energy is then `E(M)` with the
 //! spectral function `M = f(V)`, `f(λ) = 1/λ` above the cut, `0` below. Its
@@ -92,7 +94,7 @@
 //! iteration), so it is correct under MPI but its memory does not shrink with
 //! rank count.
 
-use crate::df_k::DFK_LINDEP_THRESH;
+use crate::df_k::metric_lindep_cut;
 use crate::result::DfJkRoute;
 use crate::screening::SchwarzBounds;
 use ferric_core::linalg::par_gemm;
@@ -109,13 +111,13 @@ use ndarray_linalg::{Eigh, UPLO};
 use rayon::prelude::*;
 
 /// Metric eigenvalue below which the exchange GRADIENT treats a mode as
-/// dropped, even when the energy (cut at `DFK_LINDEP_THRESH`) kept it. See
+/// dropped, even when the energy (cut by `crate::df_k::metric_lindep_cut`) kept it. See
 /// the module doc: the modes in `[1e-10, 1e-7)` are noise-dominated in the
 /// derivative but hold ~1e-9 Ha of energy.
 pub const DFK_GRADIENT_NOISE_FLOOR: f64 = 1e-7;
 
 /// Warn when the exchange energy held by metric modes in the noise band
-/// `[DFK_LINDEP_THRESH, DFK_GRADIENT_NOISE_FLOOR)` exceeds this (Ha): the
+/// `[energy cut, DFK_GRADIENT_NOISE_FLOOR)` exceeds this (Ha): the
 /// gradient's residual against the energy is the derivative of that band.
 pub const NOISE_BAND_ENERGY_WARN: f64 = 1e-6;
 
@@ -433,9 +435,10 @@ pub fn df_jk_gradient(
         // `v_inv_sqrt_lindep` (`dsyev` MEASURED 3.5 s on one core against
         // 0.65 s for this call at naux = 1538, sulfamethoxazole,
         // def2-universal-jkfit). The gradient depends on the eigenbasis only
-        // through which modes sit above or below DFK_LINDEP_THRESH /
-        // DFK_GRADIENT_NOISE_FLOOR, and the 1e-10 cut enters the gradient only
-        // through the band-energy diagnostic.
+        // through which modes sit above or below the energy's cut /
+        // DFK_GRADIENT_NOISE_FLOOR, and the energy's cut (at most
+        // LINDEP_CUT_WINDOW · 1e-10 = 1e-8, below the floor) enters the
+        // gradient only through the band-energy diagnostic.
         let t_e = ferric_core::timing::Stage::start("dfg:metric-eigh");
         let (lam, u) = with_blas_threads(opt_in_blas_threads(), || {
             ferric_core::linalg::eigh_dc(&v, ferric_core::linalg::Uplo::Upper)
@@ -443,8 +446,10 @@ pub fn df_jk_gradient(
         .map_err(|e| FerricError::Lapack(format!("DF-K gradient: V eigh failed: {e}")))?;
         t_e.end();
         let t_e = ferric_core::timing::Stage::start("dfg:metric-gemms");
-        let tau_g = DFK_LINDEP_THRESH.max(DFK_GRADIENT_NOISE_FLOOR);
-        let keep_e: Vec<bool> = lam.iter().map(|&l| l >= DFK_LINDEP_THRESH).collect();
+        // The energy's cut, by the rule DfK applies (`metric_lindep_cut`).
+        let cut_e = metric_lindep_cut(&lam);
+        let tau_g = cut_e.cut.max(DFK_GRADIENT_NOISE_FLOOR);
+        let keep_e: Vec<bool> = lam.iter().map(|&l| cut_e.keeps(l)).collect();
         let keep_g: Vec<bool> = lam.iter().map(|&l| l >= tau_g).collect();
 
         // These four products are O(naux² m²) and O(naux³) (~76 GFLOP for a
@@ -478,10 +483,11 @@ pub fn df_jk_gradient(
         if band_energy.abs() > NOISE_BAND_ENERGY_WARN {
             eprintln!(
                 "[ferric] warning: DF-K gradient: {band_energy:.3e} Ha of fitted exchange sits in \
-                 auxiliary-metric modes with eigenvalue in [{DFK_LINDEP_THRESH:.0e}, \
+                 auxiliary-metric modes with eigenvalue in [{:.2e}, \
                  {DFK_GRADIENT_NOISE_FLOOR:.0e}); the gradient treats them as dropped, so it \
                  differs from the derivative of the reported energy by the derivative of that \
-                 band"
+                 band",
+                cut_e.cut
             );
         }
         // H_K = U (F ∘ Ỹ) Uᵀ
