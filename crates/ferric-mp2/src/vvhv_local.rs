@@ -518,7 +518,7 @@ pub(crate) fn build_vvhv_local_with(
     obs_bs: &BasisSet,
     rhf: &ScfResult,
     cfg: &LocalVvhvConfig,
-    _knobs: Knobs,
+    knobs: Knobs,
 ) -> Result<LocalVvhv, FerricError> {
     cfg.validate()?;
     let t_start = std::time::Instant::now();
@@ -542,12 +542,29 @@ pub(crate) fn build_vvhv_local_with(
     let t_b = projected_minimal(
         mol, &s, &s_x, &aop, &minp, &atom_group, cfg, &mut cnt, &mut stats,
     )?;
-    let t = t_b.to_dense();
+
+    // A2 (span-critical): the occupied projector from the density
+    // D = C_o C_oᵀ, truncated at tau: T_v = T − D (S T). ONE dense GEMM forms
+    // D; ScfResult::density_alpha is NOT used, because the SCF returns the
+    // density of its last iteration and the MOs of one more diagonalization,
+    // so the two differ at the convergence level (measured on C8:
+    // see `density_alpha_lags_the_mos` in the anchor tests), which would put
+    // the span check at that level instead of 1e-13.
+    let c_occ_all = rhf.mos_r().slice(ndarray::s![.., ..nocc_total]).to_owned();
+    let d_occ = Bsr::from_dense(
+        &c_occ_all.dot(&c_occ_all.t()),
+        aop.clone(),
+        aop.clone(),
+        knobs.density_tau.unwrap_or(cfg.tau),
+        &mut cnt,
+    );
+    let s_b = Bsr::from_dense(&s, aop.clone(), aop.clone(), cfg.tau, &mut cnt);
+    let st = s_b.mul(&t_b, cfg.tau, &mut cnt);
+    let tv_b = t_b.axpby(1.0, &d_occ.mul(&st, cfg.tau, &mut cnt), -1.0, cfg.tau, &mut cnt);
+    let tv = tv_b.to_dense();
+    let ds = d_occ.mul(&s_b, cfg.tau, &mut cnt).to_dense();
 
     // ---- remaining stages: the dense construction (oracle copy) ----
-    let c_occ_all = rhf.mos_r().slice(ndarray::s![.., ..nocc_total]).to_owned();
-    let q_occ = c_occ_all.dot(&c_occ_all.t().dot(&s));
-    let tv = &t - &q_occ.dot(&t);
     let n_l = nmin.checked_sub(nocc_total).ok_or_else(|| {
         FerricError::General(format!(
             "local VV-HV: minimal basis ({nmin}) smaller than nocc ({nocc_total})"
@@ -563,10 +580,7 @@ pub(crate) fn build_vvhv_local_with(
     let n_h = nao - nocc_total - n_l;
     let mut hard_aos = Vec::with_capacity(n_h);
     let c_h = if n_h > 0 {
-        let mut c_e = Array2::<f64>::zeros((nao, nocc_total + n_l));
-        c_e.slice_mut(ndarray::s![.., ..nocc_total]).assign(&c_occ_all);
-        c_e.slice_mut(ndarray::s![.., nocc_total..]).assign(&c_l);
-        let proj = c_e.dot(&c_e.t().dot(&s));
+        let proj = &ds + &c_l.dot(&c_l.t().dot(&s));
         let mut x = Array2::<f64>::eye(nao);
         x -= &proj;
         let sx = s.dot(&x);
