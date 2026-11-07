@@ -907,9 +907,29 @@ pub(crate) fn build_vvhv_local_with(
     } else {
         Array2::<f64>::zeros((nao, 0))
     };
-    let mut c_vloc = Array2::<f64>::zeros((nao, n_l + n_h));
-    c_vloc.slice_mut(ndarray::s![.., ..n_l]).assign(&c_l);
-    c_vloc.slice_mut(ndarray::s![.., n_l..]).assign(&c_h);
+    let mut c_v = Array2::<f64>::zeros((nao, n_l + n_h));
+    c_v.slice_mut(ndarray::s![.., ..n_l]).assign(&c_l);
+    c_v.slice_mut(ndarray::s![.., n_l..]).assign(&c_h);
+    // A9 (span-critical guard): C_v ← Löwdin((1 − D S) C_v) over the whole
+    // set, at tau. In exact arithmetic the identity on an orthonormal set in
+    // the virtual space (so the anchor holds); at finite tau it removes the
+    // occupied leak and the non-orthogonality the truncated steps left.
+    let mut cv_b = Bsr::from_dense(&c_v, aop.clone(), home_partition(&c_v, &aop), cfg.tau, &mut cnt);
+    if !knobs.skip_guard && n_l + n_h > 0 {
+        let leak = d_occ.mul(&s_b.mul(&cv_b, cfg.tau, &mut cnt), cfg.tau, &mut cnt);
+        let p = cv_b.axpby(1.0, &leak, -1.0, cfg.tau, &mut cnt);
+        let o = p
+            .transpose()
+            .mul(&s_b.mul(&p, cfg.tau, &mut cnt), cfg.tau, &mut cnt);
+        let (z, nit) =
+            newton_schulz_inv_sqrt(&o, cfg.tau, knobs.ns_stop_early, &mut cnt, "guard Löwdin")?;
+        stats.ns_iterations_guard = nit;
+        cv_b = p.mul(&z, cfg.tau, &mut cnt);
+    }
+    let (fill_mean, fill_max) = cv_b.row_fill();
+    stats.cv_row_fill_mean = fill_mean;
+    stats.cv_row_fill_max = fill_max;
+    let c_vloc = cv_b.to_dense();
 
     stats.n_products = cnt.products;
     stats.blocks_kept = cnt.kept;
