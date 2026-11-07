@@ -343,8 +343,8 @@ fn u_ri_drpa_diagnostic_h_atom_matches_pyscf() {
 
 #[test]
 fn closed_shell_rpa_laplace_chebyshev_matches_dense_h2o() {
-    // ChebyshevTan places fewer nodes above the Laplace limit ω·t_max = π/2
-    // than GL; the dense fallback runs at those nodes.
+    // Nodes above the Laplace limit ω·t_max = π/2 take the dense fallback; at
+    // equal (n, u₀) ChebyshevTan has within one of GL's count.
     // This validates the actual Laplace path under the Eshuis quadrature.
     use ferric_rpa::config::{Chi0Backend, QuadratureConfig, QuadratureScheme};
     use ferric_rpa::run_pdep_rpa;

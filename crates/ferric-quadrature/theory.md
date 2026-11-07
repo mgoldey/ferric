@@ -44,7 +44,9 @@ The largest node is at $k = 1$:
 $$ \omega_{\max} = u_0 \cot\!\left(\frac{\pi}{2}\sin^2\frac{\pi}{2(n+1)}\right). $$
 It is finite at every $n$ and grows as $n^2$, as the Gauss-Legendre map's largest node does. At equal $(n, u_0)$ it is about 0.4 of the Gauss-Legendre value: 57 vs 145 Hartree at $n = 20$, $u_0 = 0.5$.
 
-The Laplace $\chi_0$ backend (`crates/ferric-rpa/src/laplace_chi0.rs`) uses the dense kernel at any node with $\omega\, t_{\max} > \pi/2$. Chebyshev-Tan sends fewer nodes to that fallback than Gauss-Legendre. That backend is a library option (`Chi0Backend::Laplace`); the CLI and the Python bindings always use `Chi0Backend::Dense`, where the scheme choice changes only quadrature error. The recommended $u_0$ with that backend is `CHEBYSHEV_TAN_RECOMMENDED_U0` = 0.2.
+The Laplace $\chi_0$ backend (`crates/ferric-rpa/src/laplace_chi0.rs`) is a library option (`Chi0Backend::Laplace`). It uses the dense kernel at any node with $\omega\, t_{\max} > \pi/2$. At equal $(n, u_0)$, Chebyshev-Tan and Gauss-Legendre send about the same number of nodes to that fallback, and which grid sends more depends on $t_{\max}$. At $n = 20$, Chebyshev-Tan keeps one more node on the Laplace path at $t_{\max} \approx 1.5$ (H2O/cc-pVDZ: 16 vs 15 at $u_0 = 0.2$, 13 vs 12 at $u_0 = 0.5$) and sends one more node to the fallback at $t_{\max} = 2\pi$ (13 vs 12 at $u_0 = 0.5$). Lowering $u_0$ moves more nodes onto the Laplace path than the choice of scheme does. For that backend the recommended value is `CHEBYSHEV_TAN_RECOMMENDED_U0` = 0.2, at the cost of a coarser high-frequency tail.
+
+The CLI and the Python bindings always use `Chi0Backend::Dense`. There the scheme choice changes only the quadrature error, and no $u_0$ other than the 0.5 default has been calibrated.
 
 Tests in `crates/ferric-rpa/src/quadrature.rs`:
 

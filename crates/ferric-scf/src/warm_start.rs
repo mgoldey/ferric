@@ -481,6 +481,13 @@ pub(crate) fn solve_with_warm_start(
                     (r, rec)
                 }
                 failed => {
+                    // A user interrupt is not a warm-guess failure: stop here
+                    // instead of paying for a cold SCF the user asked to cancel.
+                    if failed.is_err()
+                        && ferric_core::INTERRUPT.load(std::sync::atomic::Ordering::Relaxed)
+                    {
+                        return failed;
+                    }
                     let wasted = match &failed {
                         Ok(r) => r.iterations,
                         Err(FerricError::ScfConvergence { iterations, .. }) => *iterations,
