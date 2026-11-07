@@ -4,6 +4,7 @@
 //! [`crate::vvhv_local`]).
 
 use super::*;
+use super::ValenceStart;
 use crate::lmp2_amplitude::{
     build_vvhv_traced_dense, check_vvhv, match_columns_up_to_sign_and_order, AmplitudeLmp2Config,
     LMP2_CG_RTOL_STRICT,
@@ -282,4 +283,57 @@ fn basis_choice_truncation_leaves_the_eps0_energy_fixed() {
     assert!(o <= 1e-10 && sp <= 1e-10, "orth {o:.2e} span {sp:.2e}");
     assert!((e_l - e_d).abs() <= 1e-10, "{:.2e}", (e_l - e_d).abs());
     assert!((e_l - e_can).abs() <= 1e-9, "{:.2e}", (e_l - e_can).abs());
+}
+
+/// The Boys functional Σ_k |⟨k|r|k⟩|² of the columns of `c`.
+fn boys_functional(su: &Su, c: &Array2<f64>) -> f64 {
+    let dip = ferric_integrals::oneelectron::dipole(&su.obs, [0.0; 3]).unwrap();
+    let mut f = 0.0;
+    for dm in &dip {
+        let dc = dm.dot(c);
+        for k in 0..c.ncols() {
+            f += c.column(k).dot(&dc.column(k)).powi(2);
+        }
+    }
+    f
+}
+
+/// T-A2: the LOCAL valence route (purification + column-normalized pivots +
+/// Newton-Schulz Löwdin) at zero thresholds. The span is the dense build's
+/// (check <= 1e-10), the Boys functional of the valence block is equal to
+/// 1e-12 relative (same maximum), the hard-virtual pivot sequence and counts
+/// are unchanged and the energies agree to 1e-10 at eps 0 and 1e-4 with
+/// production maps. The COLUMNS differ at Boys's stopping tolerance (the
+/// start's imprint; REPORTED, bounded loosely at 1e-8 so that a different
+/// maximum, which moves columns at O(1), still fails).
+#[test]
+fn purified_valence_start_reaches_the_same_space_and_boys_maximum() {
+    let cfg = LocalVvhvConfig {
+        valence_start: ValenceStart::Purified,
+        ..LocalVvhvConfig::trivial()
+    };
+    for xyz in ["water.xyz", "alkane_4.xyz", "alkane_8.xyz"] {
+        let su = setup(xyz);
+        let (d, dh) = dense(&su);
+        let loc = build_vvhv_local(&su.mol, &su.obs, &su.obs_bs, &su.rhf, &cfg).unwrap();
+        let r = compare_built(&su, &d, &dh, &loc, &[0.0, 1e-4]);
+        let nl = d.n_valence;
+        let fd = boys_functional(&su, &d.c_vloc.slice(ndarray::s![.., ..nl]).to_owned());
+        let fl = boys_functional(&su, &loc.vv.c_vloc.slice(ndarray::s![.., ..nl]).to_owned());
+        eprintln!(
+            "T-A2 {xyz}: column distance {:.2e}, Boys functional rel diff {:.2e}; {r:?}",
+            r.max_col_dist,
+            ((fl - fd) / fd).abs()
+        );
+        assert!(r.same_counts && r.same_pivots, "{xyz}: {r:?}");
+        assert!(r.dev_orth <= 1e-10 && r.dev_span <= 1e-10, "{xyz}: {r:?}");
+        assert!(((fl - fd) / fd).abs() <= 1e-12, "{xyz}: Boys maximum differs");
+        assert!(r.max_col_dist <= 1e-8, "{xyz}: columns at a different maximum");
+        assert!(
+            r.energies.iter().all(|&(_, de, k)| de <= 1e-10 && k),
+            "{xyz}: {r:?}"
+        );
+        assert!(loc.stats.purification_iterations > 0 && loc.stats.ns_iterations_valence > 0);
+        assert!(loc.stats.heap_pops > 0 && loc.stats.blocks_dropped == 0);
+    }
 }

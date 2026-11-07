@@ -1305,6 +1305,7 @@ impl LocalCfg {
             tau_loose: nonneg("virtual_tau_loose", self.virtual_tau_loose, d.tau_loose)?,
             solve_radius_bohr: radius,
             boys_tau: nonneg("virtual_boys_tau", self.virtual_boys_tau, d.boys_tau)?,
+            ..d
         };
         let vs = match self.virtual_space.as_deref() {
             None => VirtualSpace::Dense,
@@ -5319,6 +5320,7 @@ mod compat_guard_tests {
                 tau_loose: 0.0,
                 solve_radius_bohr: Some(1e6),
                 boys_tau: 0.0,
+                ..LocalVvhvConfig::default()
             })
         );
         for bad in ["\"Local\"", "\"sparse\"", "\"\""] {

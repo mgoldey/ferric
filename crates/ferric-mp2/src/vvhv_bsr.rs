@@ -167,6 +167,14 @@ impl Bsr {
         d
     }
 
+    pub fn max_abs(&self) -> f64 {
+        self.blk
+            .iter()
+            .flatten()
+            .flat_map(|(_, b)| b.iter())
+            .fold(0.0f64, |m, x| m.max(x.abs()))
+    }
+
     pub fn nnz_blocks(&self) -> usize {
         self.blk.iter().map(Vec::len).sum()
     }
@@ -548,6 +556,68 @@ pub(crate) fn newton_schulz_inv_sqrt(
     Err(FerricError::General(format!(
         "local VV-HV {who}: Newton-Schulz inverse square root did not converge in {MAX_ITER} \
          iterations (near-singular set)"
+    )))
+}
+
+/// Spectral projector onto the `n` largest eigenvalues of a symmetric PSD
+/// block-sparse `h`, by trace-correcting purification (TC2, Niklasson, PRB
+/// 66, 155115 (2002)): `X₀ = h/c` (c = Gershgorin bound, so the spectrum lies
+/// in [0, 1]), then per step `X ← X²` or `X ← 2X − X²`, whichever trace is
+/// closer to `n`, until `max|X² − X| < 1e-10`; two more steps then take the
+/// (quadratically converging) idempotency error to rounding. Products are
+/// truncated at `tau`; with `tau > 0` an idempotency error that stops falling
+/// below 1e-4 also ends the iteration. Exact at `tau = 0`: the result is the
+/// projector `canonical_orth`'s top-`n` eigenvectors span.
+///
+/// Errors when no gap separates the n-th from the (n+1)-th eigenvalue
+/// (no convergence in 200 steps). Returns the projector and the steps.
+pub(crate) fn tc2_projector(
+    h: &Bsr,
+    n: usize,
+    tau: f64,
+    cnt: &mut BlockCount,
+) -> Result<(Bsr, usize), FerricError> {
+    const MAX_ITER: usize = 200;
+    let c = h.gershgorin_upper();
+    if !(c.is_finite() && c > 0.0) {
+        return Err(FerricError::General(format!(
+            "local VV-HV purification: Gershgorin bound {c:.3e}"
+        )));
+    }
+    let mut x = h.clone();
+    x.scale(1.0 / c);
+    let nf = n as f64;
+    let mut polish = 0usize;
+    let mut best = f64::INFINITY;
+    for it in 0..MAX_ITER {
+        let x2 = x.mul(&x, tau, cnt);
+        let idem = x2.axpby(1.0, &x, -1.0, 0.0, cnt).max_abs();
+        let tr = x.trace();
+        let tr2 = x2.trace();
+        let up = 2.0 * tr - tr2; // trace of 2X − X²
+        if polish > 0 {
+            polish += 1;
+        } else if idem < 1e-10 || (tau > 0.0 && idem < 1e-4 && idem >= 0.5 * best) {
+            polish = 1;
+        }
+        best = best.min(idem);
+        if polish > 2 {
+            if (tr - nf).abs() > 1e-6 {
+                return Err(FerricError::General(format!(
+                    "local VV-HV purification converged to trace {tr:.8} instead of {n}"
+                )));
+            }
+            return Ok((x, it));
+        }
+        x = if (tr2 - nf).abs() < (up - nf).abs() {
+            x2
+        } else {
+            x.axpby(2.0, &x2, -1.0, 0.0, cnt)
+        };
+    }
+    Err(FerricError::General(format!(
+        "local VV-HV purification did not converge in {MAX_ITER} steps (no gap at the \
+         valence rank {n})"
     )))
 }
 
