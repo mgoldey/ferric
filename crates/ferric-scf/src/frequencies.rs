@@ -93,7 +93,7 @@
 //!
 //! # SCF warm start
 //!
-//! With [`FrequencyConfig::scf_warm_start`] (default on) every displaced SCF
+//! With [`FrequencyConfig::scf_warm_start`] (OPT-IN, default off) every displaced SCF
 //! of a finite-difference Hessian starts from the converged orbitals of the
 //! UNDISPLACED reference geometry, Löwdin re-orthonormalized in the displaced
 //! overlap ([`crate::warm_start`]). It is anchored, not chained: displacement
@@ -129,8 +129,18 @@
 //! cold (NH3: 1.6e-5 against 1.4e-5). A cold SCF typically overshoots
 //! `density_conv` on its last iteration, while a warm one starting a few
 //! iterations from convergence stops closer to the threshold, so its exits
-//! use more of the window the bound allows. Where the asymmetry matters,
-//! tighten `density_conv` (it bounds both runs) or switch the warm start off.
+//! use more of the window the bound allows.
+//!
+//! That is why the knob is OFF by default. MEASURED (2026-11-07, propane
+//! C3H8 at its unoptimized testdata geometry, RHF/def2-SVP, `delta` 5e-3, 67
+//! SCF + gradient evaluations, release, 6 rayon threads; reference = cold FD at
+//! `density_conv` 1e-10): cold at the default 1e-6 is 0.03 cm^-1 from the
+//! reference (asymmetry 8.2e-6, 84.6 s); warm at 1e-6 is 9.4 cm^-1 off on the
+//! soft imaginary torsion (-158.5 vs -167.9) and up to 2.2 cm^-1 on real modes
+//! (asymmetry 1.8e-4, 57.8 s); warm at 1e-8 is 0.29 cm^-1 off (asymmetry
+//! 8.1e-6, 76.5 s); cold at 1e-8 is 0.00 (100.8 s). At matched ACCURACY the
+//! warm start saves ~10% at best, so it is opt-in: turn it on together with a
+//! `density_conv` about 100x tighter than the cold run would use.
 //!
 //! # Mass convention
 //!
@@ -302,7 +312,9 @@ pub struct FrequencyConfig {
     /// displacement, so SCF residuals do not accumulate along the stencil.
     /// The warm and cold Hessians differ only at the SCF convergence level,
     /// amplified by the stencil's `1/delta` (see the module docs, "SCF warm
-    /// start"). Default `true`; unused by the analytic Hessians (one SCF).
+    /// start"). Default `false` (OPT-IN): at equal `density_conv` the warm
+    /// Hessian is measurably noisier than the cold one (module docs); unused
+    /// by the analytic Hessians (one SCF).
     pub scf_warm_start: bool,
 }
 
@@ -312,7 +324,7 @@ impl Default for FrequencyConfig {
             delta: DEFAULT_DELTA,
             reference: FrequencyReference::Rhf,
             hessian: HessianMethod::Auto,
-            scf_warm_start: true,
+            scf_warm_start: false,
         }
     }
 }

@@ -1,9 +1,11 @@
 """`scf_warm_start` on run_saddle, run_irc and run_frequencies.
 
-The default (True) starts each SCF from converged orbitals nearby: the
-previous step's (saddle search, IRC) or, for a finite-difference Hessian, the
-undisplaced reference geometry's. False re-guesses every SCF. Warm and cold
-runs must agree within each driver's OWN tolerance, not bitwise:
+run_saddle / run_irc default to True: each step's (point's) SCF starts from
+the previous one's converged orbitals. run_frequencies defaults to False
+(opt-in): True starts each displaced SCF of a finite-difference Hessian from
+the undisplaced geometry's orbitals, which is noisier at equal convergence
+(see `ferric_scf::frequencies`, "SCF warm start"). Warm and cold runs must
+agree within each driver's OWN tolerance, not bitwise:
 
 * saddle: gradient-convergence-limited, the same bars the analytic-vs-FD
   saddle test uses (energy 1e-6 Ha, coordinates 5e-3 Bohr, lowest eigenvalue
@@ -56,19 +58,19 @@ def _max_dx_bohr(a, b):
 
 def test_saddle_warm_start_matches_cold(capfd):
     warm = ferric.run_saddle(_near_planar_ammonia(), "sto-3g", max_steps=40)
-    out_warm = capfd.readouterr().out
     cold = ferric.run_saddle(
         _near_planar_ammonia(), "sto-3g", max_steps=40, scf_warm_start=False
     )
-    out_cold = capfd.readouterr().out
+    out = capfd.readouterr().out
     assert warm.is_transition_state() and cold.is_transition_state()
     assert warm.energy == pytest.approx(cold.energy, abs=1e-6)
     assert _max_dx_bohr(warm.coords, cold.coords) < 5e-3
     assert warm.lowest_eigenvalue == pytest.approx(cold.lowest_eigenvalue, rel=1e-2)
-    # The kwarg reaches the Hessian callback: only the warm run's FD Hessians
-    # report warm starts (printed by the Rust driver when the knob is on).
-    assert "SCF warm start" in out_warm
-    assert "SCF warm start" not in out_cold
+    # The FD Hessians stay cold in both runs (no warm-start summary printed),
+    # while the kwarg reaches the step SCFs: the warm search ran different
+    # SCFs, so its result differs bitwise from the cold one.
+    assert "SCF warm start" not in out
+    assert (warm.energy, warm.coords) != (cold.energy, cold.coords)
 
 
 def test_irc_warm_start_matches_cold():
@@ -107,9 +109,9 @@ def test_fd_frequencies_warm_start_matches_cold(capfd):
     water = ferric.Molecule.from_xyz_string(
         "3\nwater\nO 0 0 0.1173\nH 0 0.7572 -0.4692\nH 0 -0.7572 -0.4692\n", 0, 1
     )
-    warm = ferric.run_frequencies(water, "6-31g", hessian="fd")
+    warm = ferric.run_frequencies(water, "6-31g", hessian="fd", scf_warm_start=True)
     out_warm = capfd.readouterr().out
-    cold = ferric.run_frequencies(water, "6-31g", hessian="fd", scf_warm_start=False)
+    cold = ferric.run_frequencies(water, "6-31g", hessian="fd")  # default: cold
     out_cold = capfd.readouterr().out
     assert "18 of 19 evaluations warm-started" in out_warm
     assert "SCF warm start" not in out_cold
