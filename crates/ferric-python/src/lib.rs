@@ -27,7 +27,9 @@ use ferric_mp2::att_vv10::{
 };
 use ferric_mp2::attenuated::{attenuated_ri_mp2, AttenuatedMp2Config};
 use ferric_mp2::double_hybrid::{mp2_double_hybrid, DoubleHybridKind};
-use ferric_mp2::laplace::{laplace_ri_mp2, laplace_sos_mp2, SosFormulation, SosMp2Config};
+use ferric_mp2::laplace::{
+    laplace_ri_mp2, laplace_sos_mp2_with_basis, SosFormulation, SosMp2Config,
+};
 use ferric_mp2::mp3::mp3_energy;
 use ferric_mp2::oo_rimp2::{oo_ri_mp2, OoRiMp2Config};
 use ferric_mp2::rimp2::{ri_mp2, RiMp2Config};
@@ -8583,7 +8585,17 @@ fn run_laplace_sos_mp2(
         memory_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
         domain_cutoff_bohr,
     };
-    let r = laplace_sos_mp2(&mol.inner, &prep, &dfbs, op, &rhf, &cfg, form).map_err(make_err)?;
+    let r = laplace_sos_mp2_with_basis(
+        &mol.inner,
+        &prep,
+        &basis_set.inner,
+        &dfbs,
+        op,
+        &rhf,
+        &cfg,
+        form,
+    )
+    .map_err(make_err)?;
     let certificate_data = ferric_mp2::certificate::sos_mp2_certificate(
         &stamped_scf_certificate(&mol.inner, &rhf, &rhf_config),
         &auxbasis.inner.name,
@@ -8602,6 +8614,7 @@ fn run_laplace_sos_mp2(
             SosFormulation::Mo => "mo".to_string(),
             SosFormulation::Ao => "ao".to_string(),
             SosFormulation::AoSparse(_) => "ao-sparse".to_string(),
+            SosFormulation::Local(_) => "local".to_string(),
         },
         scf_jk: jk.mode.as_str().to_string(),
         jk_label: jk.label(),

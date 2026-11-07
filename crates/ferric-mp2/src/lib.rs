@@ -50,6 +50,8 @@ pub mod ff_polar;
 pub mod gradient;
 /// Laplace-transform SOS-MP2 (MO, AO, and AO-sparse formulations).
 pub mod laplace;
+/// Laplace SOS-MP2 `local`: Boys LMOs x VV-HV localized virtuals with orbital domains.
+pub mod laplace_local;
 pub mod lmp2_direct;
 /// Pair natural orbital (PNO) construction and truncation.
 pub mod local_pno;
