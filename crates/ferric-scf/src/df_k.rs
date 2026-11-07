@@ -178,13 +178,25 @@ fn density_factor(d: &Array2<f64>) -> Option<(Array2<f64>, Array2<f64>)> {
 fn v_inv_sqrt_lindep(v: &Array2<f64>) -> Result<Array2<f64>, FerricError> {
     let naux = v.nrows();
     // One-time (naux, naux) setup factorization, called once per SCF
-    // construction outside any rayon region. Opt-in BLAS raise via
-    // FERRIC_BLAS_THREADS (default 1, unchanged behavior);
-    // opt_in_blas_threads()'s rayon-worker self-guard also covers any caller
-    // reached from a single-thread rayon pool (e.g. free-atom SAD), resolving
-    // to 1 there regardless of the env var.
-    let (evals, evecs) = with_blas_threads(opt_in_blas_threads(), || v.eigh(UPLO::Upper))
-        .map_err(|e| FerricError::Lapack(format!("V eigh in DfK: {e}")))?;
+    // construction outside any rayon region. Divide and conquer (`dsyevd`):
+    // the QR `dsyev` behind `Eigh::eigh` took 3.5 s of a 6.0 s DF-K setup on
+    // one core at naux = 1538 (sulfamethoxazole, def2-universal-jkfit),
+    // against 0.65 s for this call. V^{-1/2} is a symmetric matrix function,
+    // invariant to the eigenbasis chosen inside a degenerate block, so the
+    // solvers differ only in rounding — except for a mode whose eigenvalue
+    // lies within rounding of DFK_LINDEP_THRESH, which one could keep and the
+    // other drop. `crate::df_gradient` decomposes the same metric with the
+    // same solver, so energy and gradient classify every mode identically.
+    // Opt-in BLAS raise via FERRIC_BLAS_THREADS (default 1, unchanged
+    // behavior); opt_in_blas_threads()'s rayon-worker self-guard also covers
+    // any caller reached from a single-thread rayon pool (e.g. free-atom SAD),
+    // resolving to 1 there regardless of the env var.
+    let t_st = ferric_core::timing::Stage::start("dfk:metric-eigh");
+    let (evals, evecs) = with_blas_threads(opt_in_blas_threads(), || {
+        ferric_core::linalg::eigh_dc(v, ferric_core::linalg::Uplo::Upper)
+    })
+    .map_err(|e| FerricError::Lapack(format!("V eigh in DfK: {e}")))?;
+    t_st.end();
     const LINDEP_THRESH: f64 = DFK_LINDEP_THRESH;
     let mut u_scaled = evecs.clone();
     let mut n_dropped: usize = 0;
@@ -206,10 +218,14 @@ fn v_inv_sqrt_lindep(v: &Array2<f64>) -> Result<Array2<f64>, FerricError> {
     // Silent on n_dropped: this is expected for range-separated operators
     // (erf, erfc) with JK-fit aux on heavy atoms and is benign.
     let _ = n_dropped;
-    // Same one-time-setup opt-in raise as the eigh above.
-    Ok(with_blas_threads(opt_in_blas_threads(), || {
-        u_scaled.dot(&evecs.t())
-    })) // (naux, naux)
+    // O(naux³) (7.3 GFLOP at naux = 1538): fixed column blocks over the rayon
+    // pool, one-thread BLAS each, bit-identical across thread counts. NOT
+    // under the opt-in BLAS raise, which would multiply every block's threads.
+    let t_st = ferric_core::timing::Stage::start("dfk:metric-inv-sqrt-gemm");
+    let mut m = Array2::<f64>::zeros((naux, naux));
+    ferric_core::linalg::par_gemm(1.0, &u_scaled.view(), &evecs.t(), 0.0, &mut m);
+    t_st.end();
+    Ok(m) // (naux, naux)
 }
 
 impl<'a> DfK<'a> {
@@ -297,6 +313,7 @@ impl<'a> DfK<'a> {
         p1: usize,
     ) -> Result<Self, FerricError> {
         let naux = dfbs.nbasis();
+        let t_st = ferric_core::timing::Stage::start("dfk:dress");
         let dressed = if p0 == 0 && p1 == naux {
             // Full band: identical call to the serial path (byte-identical B).
             ThreeIndexSource::build_dressed(raw, &v_inv_sqrt, budget_bytes)?
@@ -307,6 +324,7 @@ impl<'a> DfK<'a> {
         // is the one streaming pass over `raw`; a packed `raw` that moves on
         // into DfJ must not keep its unpacked scratch block for the whole SCF.
         raw.release_scratch();
+        t_st.end();
 
         let ctx = ctx.filter(|c| c.size > 1);
         Ok(DfK {

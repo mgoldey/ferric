@@ -59,7 +59,7 @@
 use std::os::raw::{c_char, c_int};
 
 use crate::error::FerricError;
-use ndarray::Array2;
+use ndarray::{Array2, ArrayView2, Axis};
 
 /// Which triangle of the (symmetric) input holds the data. Mirrors
 /// `ndarray_linalg::UPLO` so call sites read the same.
@@ -282,6 +282,41 @@ pub fn eigvalsh_dc(a: &Array2<f64>, uplo: Uplo) -> Result<Vec<f64>, FerricError>
     }
 
     Ok(evals)
+}
+
+/// Output-column width of one [`par_gemm`] task. Fixed (not derived from the
+/// thread count) so the blocking, and hence every bit of the result, is the
+/// same on any number of threads.
+pub const PAR_GEMM_COL_BLOCK: usize = 128;
+
+/// `c = alpha · a · b + beta · c`, with `c` (and `b`) split into fixed-width
+/// column blocks computed in place, in parallel on the rayon pool, one
+/// single-threaded BLAS GEMM per block (no temporary beyond BLAS's own).
+///
+/// For large one-off products (metric functions, gradient weights) that run
+/// outside any rayon region and would otherwise use one core under ferric's
+/// one-thread-BLAS convention. Every element comes from one block's GEMM over
+/// a full row of `a` and a column of `b`, so the result does not depend on
+/// the thread count. Do not call it under a raised BLAS thread count
+/// (`with_blas_threads(n > 1, ..)`): each block expects one-thread BLAS.
+pub fn par_gemm(
+    alpha: f64,
+    a: &ArrayView2<'_, f64>,
+    b: &ArrayView2<'_, f64>,
+    beta: f64,
+    c: &mut Array2<f64>,
+) {
+    use rayon::prelude::*;
+    assert_eq!(a.ncols(), b.nrows(), "par_gemm: inner dimensions differ");
+    assert_eq!(c.dim(), (a.nrows(), b.ncols()), "par_gemm: output shape");
+    let c_blocks: Vec<_> = c
+        .axis_chunks_iter_mut(Axis(1), PAR_GEMM_COL_BLOCK)
+        .collect();
+    let b_blocks: Vec<_> = b.axis_chunks_iter(Axis(1), PAR_GEMM_COL_BLOCK).collect();
+    c_blocks
+        .into_par_iter()
+        .zip(b_blocks.into_par_iter())
+        .for_each(|(mut cb, bb)| ndarray::linalg::general_mat_mul(alpha, a, &bb, beta, &mut cb));
 }
 
 /// `ln det(A)` for a real matrix with a **positive** determinant, via LU
