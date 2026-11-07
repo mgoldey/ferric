@@ -233,6 +233,39 @@ fn truncated_inverse_divided_difference(lk: f64, kk: bool, ll: f64, kl: bool) ->
     }
 }
 
+/// Output-column width of one [`par_gemm`] task. Fixed (not derived from the
+/// thread count) so the blocking, and hence every bit of the result, is the
+/// same on any number of threads.
+const PAR_GEMM_COL_BLOCK: usize = 128;
+
+/// `c = alpha · a · b + beta · c`, with `c` (and `b`) split into fixed-width
+/// column blocks computed in place, in parallel on the rayon pool, one
+/// single-threaded BLAS GEMM per block (no temporary beyond BLAS's own).
+///
+/// For the large products of the exchange metric weight, which run outside
+/// any rayon region and would otherwise use one core under ferric's
+/// one-thread-BLAS convention. Every element comes from one block's GEMM over
+/// a full row of `a` and a column of `b`, so the result does not depend on
+/// the thread count.
+fn par_gemm(
+    alpha: f64,
+    a: &ndarray::ArrayView2<'_, f64>,
+    b: &ndarray::ArrayView2<'_, f64>,
+    beta: f64,
+    c: &mut Array2<f64>,
+) {
+    assert_eq!(a.ncols(), b.nrows(), "par_gemm: inner dimensions differ");
+    assert_eq!(c.dim(), (a.nrows(), b.ncols()), "par_gemm: output shape");
+    let c_blocks: Vec<_> = c
+        .axis_chunks_iter_mut(Axis(1), PAR_GEMM_COL_BLOCK)
+        .collect();
+    let b_blocks: Vec<_> = b.axis_chunks_iter(Axis(1), PAR_GEMM_COL_BLOCK).collect();
+    c_blocks
+        .into_par_iter()
+        .zip(b_blocks.into_par_iter())
+        .for_each(|(mut cb, bb)| ndarray::linalg::general_mat_mul(alpha, a, &bb, beta, &mut cb));
+}
+
 /// Gradient of `E_J^DF(D_J) + Σ_s α_s E_K^DF(D_s)` with respect to the nuclei,
 /// at FIXED AO densities (the orbital response is the caller's Pulay term).
 ///
@@ -282,7 +315,10 @@ pub fn df_jk_gradient(
         k_bytes.saturating_add(5 * naux * naux * 8),
     )?;
 
+    let t_st = ferric_core::timing::Stage::start("dfg:metric2c");
     let v = coulomb_metric_2c(op, dfbs)?;
+    t_st.end();
+    let t_st = ferric_core::timing::Stage::start("dfg:3c-pass");
 
     // ---- one streamed pass over the raw (P|μν): d_P for J, L^s for K ----
     let mut source = ThreeIndexSource::build(op, obs, dfbs, budget_bytes)?;
@@ -332,6 +368,8 @@ pub fn df_jk_gradient(
         Ok(())
     })?;
     drop(source);
+    t_st.end();
+    let t_st = ferric_core::timing::Stage::start("dfg:metric-weights");
 
     // ---- two-centre weight H (Σ_PQ H_PQ ∂V_PQ) and J coefficients ----
     let mut h2 = Array2::<f64>::zeros((naux, naux));
@@ -359,19 +397,35 @@ pub fn df_jk_gradient(
     // Exchange: Γ^s (naux, m²) in the ORIGINAL aux basis, plus the metric term.
     let mut gammas: Vec<Array2<f64>> = Vec::with_capacity(factors.len());
     if !factors.is_empty() {
-        // Identical call to DfK's `v_inv_sqrt_lindep`, so the same modes are
-        // classified as kept/dropped.
-        let (lam, u) = with_blas_threads(opt_in_blas_threads(), || v.eigh(UPLO::Upper))
-            .map_err(|e| FerricError::Lapack(format!("DF-K gradient: V eigh failed: {e}")))?;
+        // Divide and conquer (`dsyevd`): DfK's `v_inv_sqrt_lindep` uses `dsyev`,
+        // which MEASURED 3.5 s on one core against 0.65 s for this call at
+        // naux = 1538 (sulfamethoxazole, def2-universal-jkfit).
+        // The gradient depends on the eigenbasis only through which modes sit
+        // above or below DFK_LINDEP_THRESH / DFK_GRADIENT_NOISE_FLOOR; the two
+        // solvers' eigenvalues agree to ~1e-16·‖V‖, so the classification can
+        // differ only for a mode within that of a threshold, and the 1e-10 cut
+        // enters the gradient only through the band-energy diagnostic.
+        let t_e = ferric_core::timing::Stage::start("dfg:metric-eigh");
+        let (lam, u) = with_blas_threads(opt_in_blas_threads(), || {
+            ferric_core::linalg::eigh_dc(&v, ferric_core::linalg::Uplo::Upper)
+        })
+        .map_err(|e| FerricError::Lapack(format!("DF-K gradient: V eigh failed: {e}")))?;
+        t_e.end();
+        let t_e = ferric_core::timing::Stage::start("dfg:metric-gemms");
         let tau_g = DFK_LINDEP_THRESH.max(DFK_GRADIENT_NOISE_FLOOR);
         let keep_e: Vec<bool> = lam.iter().map(|&l| l >= DFK_LINDEP_THRESH).collect();
         let keep_g: Vec<bool> = lam.iter().map(|&l| l >= tau_g).collect();
 
+        // These four products are O(naux² m²) and O(naux³) (~76 GFLOP for a
+        // 28-atom def2-SVP hybrid) and run outside any rayon region, so they
+        // are column-blocked over the rayon pool (`par_gemm`), one-thread BLAS
+        // per block.
         let mut y_t = Array2::<f64>::zeros((naux, naux));
         let mut band_energy = 0.0f64;
         for ((_, alpha), l) in factors.iter().zip(ls.drain(..)) {
             // Lt = Uᵀ L: the fitted integrals in the metric eigenbasis.
-            let lt = with_blas_threads(opt_in_blas_threads(), || u.t().dot(&l));
+            let mut lt = Array2::<f64>::zeros(l.dim());
+            par_gemm(1.0, &u.t(), &l.view(), 0.0, &mut lt);
             drop(l);
             for k in 0..naux {
                 if keep_e[k] && !keep_g[k] {
@@ -379,16 +433,16 @@ pub fn df_jk_gradient(
                 }
             }
             // Ỹ += α Lt Ltᵀ
-            with_blas_threads(opt_in_blas_threads(), || {
-                ndarray::linalg::general_mat_mul(*alpha, &lt, &lt.t(), 1.0, &mut y_t)
-            });
+            par_gemm(*alpha, &lt.view(), &lt.t(), 1.0, &mut y_t);
             // Γ = U diag(w) Lt, w_k = 1/λ_k on gradient-kept modes, else 0.
             let mut wlt = lt;
             for k in 0..naux {
                 let w = if keep_g[k] { 1.0 / lam[k] } else { 0.0 };
                 wlt.row_mut(k).mapv_inplace(|v| v * w);
             }
-            gammas.push(with_blas_threads(opt_in_blas_threads(), || u.dot(&wlt)));
+            let mut gam = Array2::<f64>::zeros(wlt.dim());
+            par_gemm(1.0, &u.view(), &wlt.view(), 0.0, &mut gam);
+            gammas.push(gam);
         }
         if band_energy.abs() > NOISE_BAND_ENERGY_WARN {
             eprintln!(
@@ -406,10 +460,16 @@ pub fn df_jk_gradient(
                     truncated_inverse_divided_difference(lam[k], keep_g[k], lam[l], keep_g[l]);
             }
         }
-        let hk = with_blas_threads(opt_in_blas_threads(), || u.dot(&y_t).dot(&u.t()));
-        h2 += &hk;
+        let mut uy = Array2::<f64>::zeros((naux, naux));
+        par_gemm(1.0, &u.view(), &y_t.view(), 0.0, &mut uy);
+        drop(y_t);
+        // h2 += (U F̃) Uᵀ, accumulated in place.
+        par_gemm(1.0, &uy.view(), &u.t(), 1.0, &mut h2);
+        t_e.end();
     }
 
+    t_st.end();
+    let t_st = ferric_core::timing::Stage::start("dfg:3c-deriv-pass");
     // ---- three-centre derivative pass, one auxiliary shell per task ----
     let nsh_obs = obs.nshells();
     let nsh_df = dfbs.nshells();
@@ -507,6 +567,8 @@ pub fn df_jk_gradient(
     for p in &partials {
         grad += p;
     }
+    t_st.end();
+    let t_st = ferric_core::timing::Stage::start("dfg:2c-deriv-pass");
 
     // ---- two-centre metric derivative pass ----
     Engine::new_2center_deriv(op, dfbs, 1e-14)?;
@@ -555,6 +617,7 @@ pub fn df_jk_gradient(
     for p in &partials {
         grad += p;
     }
+    t_st.end();
     Ok(grad)
 }
 
@@ -815,6 +878,49 @@ mod tests {
         assert_eq!(
             truncated_inverse_divided_difference(1.0, false, 2.0, false),
             0.0
+        );
+    }
+
+    /// `par_gemm` is one GEMM computed in column blocks: it must agree with a
+    /// single `general_mat_mul` (to rounding) for a width that is not a
+    /// multiple of the block, with `beta = 0` and `beta = 1`, plain and
+    /// transposed operands — and be bit-identical on 1 and 4 threads.
+    /// FAILS if a block is paired with the wrong columns of `b`, if `beta` or
+    /// `alpha` is dropped, or if the last partial block is skipped.
+    #[test]
+    fn par_gemm_matches_one_gemm_and_ignores_thread_count() {
+        let (m, k, n) = (37, 53, 2 * PAR_GEMM_COL_BLOCK + 19);
+        let a = Array2::from_shape_fn((m, k), |(i, j)| ((i * 7 + j * 3) as f64).sin());
+        let b = Array2::from_shape_fn((k, n), |(i, j)| ((i * 5 + j * 11) as f64).cos());
+        let at = a.t().to_owned();
+        let bt = b.t().to_owned();
+        let c0 = Array2::from_shape_fn((m, n), |(i, j)| (i + 2 * j) as f64 * 1e-2);
+        let max_diff = |x: &Array2<f64>, y: &Array2<f64>| {
+            (x - y).iter().fold(0.0f64, |acc, v| acc.max(v.abs()))
+        };
+        for &(alpha, beta) in &[(1.0, 0.0), (-0.75, 1.0)] {
+            let mut want = c0.clone();
+            ndarray::linalg::general_mat_mul(alpha, &a, &b, beta, &mut want);
+            let mut got = c0.clone();
+            par_gemm(alpha, &a.view(), &b.view(), beta, &mut got);
+            assert!(max_diff(&got, &want) < 1e-12, "plain, beta {beta}");
+            let mut got_t = c0.clone();
+            par_gemm(alpha, &at.t(), &bt.t(), beta, &mut got_t);
+            assert!(max_diff(&got_t, &want) < 1e-12, "transposed, beta {beta}");
+        }
+        let run_on = |threads: usize| {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .unwrap();
+            let mut c = c0.clone();
+            pool.install(|| par_gemm(0.5, &a.view(), &bt.t(), 1.0, &mut c));
+            c
+        };
+        assert_eq!(
+            run_on(1),
+            run_on(4),
+            "par_gemm must not depend on the thread count"
         );
     }
 }
