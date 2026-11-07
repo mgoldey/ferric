@@ -3,8 +3,8 @@
 //! and in the energy. Test-only (`#[cfg(test)]` module of
 //! [`crate::vvhv_local`]).
 
-use super::*;
 use super::ValenceStart;
+use super::*;
 use crate::lmp2_amplitude::{
     build_vvhv_traced_dense, check_vvhv, match_columns_up_to_sign_and_order, AmplitudeLmp2Config,
     LMP2_CG_RTOL_STRICT,
@@ -201,9 +201,18 @@ pub(crate) fn assert_reached(st: &LocalVvhvStats) {
     assert!(st.solve_domain_aos_max > 0, "A1 not reached: {st:?}");
     assert!(st.n_products >= 3, "A2 products not reached: {st:?}");
     assert!(st.heap_pops > 0, "A6 heap pivots not reached: {st:?}");
-    assert!(st.ns_iterations_hard > 0, "A7 hard Löwdin not reached: {st:?}");
-    assert!(st.n_fock_atom_blocks > 0, "A8 Fock blocks not reached: {st:?}");
-    assert!(st.boys_sweeps > 0 && st.boys_pairs_evaluated > 0, "F not reached: {st:?}");
+    assert!(
+        st.ns_iterations_hard > 0,
+        "A7 hard Löwdin not reached: {st:?}"
+    );
+    assert!(
+        st.n_fock_atom_blocks > 0,
+        "A8 Fock blocks not reached: {st:?}"
+    );
+    assert!(
+        st.boys_sweeps > 0 && st.boys_pairs_evaluated > 0,
+        "F not reached: {st:?}"
+    );
     assert!(st.ns_iterations_guard > 0, "A9 guard not reached: {st:?}");
 }
 
@@ -231,7 +240,10 @@ fn local_vvhv_trivial_limit_reproduces_build_vvhv_columns_and_energies() {
     for xyz in ["water.xyz", "alkane_4.xyz", "alkane_8.xyz"] {
         let su = setup(xyz);
         let r = compare(&su, &LocalVvhvConfig::trivial(), &[0.0, 1e-4]);
-        eprintln!("T-A {xyz}: max column distance {:.2e}; {r:?}", r.max_col_dist);
+        eprintln!(
+            "T-A {xyz}: max column distance {:.2e}; {r:?}",
+            r.max_col_dist
+        );
         assert!(r.passes(), "{xyz}: {r:?}");
         assert_reached(&r.stats);
     }
@@ -348,8 +360,14 @@ fn purified_valence_start_reaches_the_same_space_and_boys_maximum() {
         );
         assert!(r.same_counts && r.same_pivots, "{xyz}: {r:?}");
         assert!(r.dev_orth <= 1e-10 && r.dev_span <= 1e-10, "{xyz}: {r:?}");
-        assert!(((fl - fd) / fd).abs() <= 1e-12, "{xyz}: Boys maximum differs");
-        assert!(r.max_col_dist <= 1e-8, "{xyz}: columns at a different maximum");
+        assert!(
+            ((fl - fd) / fd).abs() <= 1e-12,
+            "{xyz}: Boys maximum differs"
+        );
+        assert!(
+            r.max_col_dist <= 1e-8,
+            "{xyz}: columns at a different maximum"
+        );
         assert!(
             r.energies.iter().all(|&(_, de, k)| de <= 1e-10 && k),
             "{xyz}: {r:?}"
@@ -379,7 +397,9 @@ fn screened_boys_is_boys_in_the_trivial_limit_and_screens_safely() {
     let (c0, (_, ev0, sc0, conv0)) = run(0.0);
     assert!(conv0 && sc0 == 0 && ev0 > 0);
     assert!(
-        c0.iter().zip(reference.c_loc.iter()).all(|(a, b)| a.to_bits() == b.to_bits()),
+        c0.iter()
+            .zip(reference.c_loc.iter())
+            .all(|(a, b)| a.to_bits() == b.to_bits()),
         "boys_tau = 0 is not bitwise boys_localize"
     );
     let f_ref = boys_functional(&su, &reference.c_loc);
@@ -395,7 +415,10 @@ fn screened_boys_is_boys_in_the_trivial_limit_and_screens_safely() {
     assert!(dist <= 1e-8);
     let (c2, _) = run(1e-2);
     let f2 = boys_functional(&su, &c2);
-    eprintln!("T-F C8 occ: functional rel at 1e-2 {:.2e}", (f_ref - f2) / f_ref);
+    eprintln!(
+        "T-F C8 occ: functional rel at 1e-2 {:.2e}",
+        (f_ref - f2) / f_ref
+    );
     assert!((f_ref - f2) / f_ref > 1e-10, "a coarse screen is not seen");
 }
 
@@ -679,6 +702,9 @@ fn mutation_skipped_guard_fails_the_anchor() {
         skipped.max_col_dist,
         skipped.passes()
     );
-    assert!(guarded.passes(), "the guard did not remove the leak: {guarded:?}");
+    assert!(
+        guarded.passes(),
+        "the guard did not remove the leak: {guarded:?}"
+    );
     assert!(!skipped.passes() && skipped.occ_leak > 1e-8, "{skipped:?}");
 }

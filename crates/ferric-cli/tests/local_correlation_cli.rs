@@ -400,7 +400,11 @@ fn rimp2_local_logs_the_virtual_space_build() {
         );
         let l = &lo.results[0]["components"]["local"];
         let line = l["virtual_space_log"].as_str().unwrap().to_string();
-        assert!(lo.stderr.contains(&line), "the line is not printed: {}", lo.stderr);
+        assert!(
+            lo.stderr.contains(&line),
+            "the line is not printed: {}",
+            lo.stderr
+        );
         if vs.is_empty() {
             assert_eq!(l["virtual_space"], "dense", "{l}");
             assert!(l["virtual_space_local"].is_null(), "{l}");
