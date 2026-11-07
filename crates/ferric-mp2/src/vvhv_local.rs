@@ -35,8 +35,8 @@ use ferric_integrals::oneelectron::{dipole, overlap, r2_moment};
 
 use crate::boys::boys_localize;
 use crate::lmp2_amplitude::{
-    ao_to_atom, canonical_orth, cross_overlap_with_minimal_atoms, eigh, lowdin, solve_spd,
-    StageTimings, VvHv,
+    ao_to_atom, canonical_orth, cross_overlap_with_minimal_atoms, eigh, solve_spd, StageTimings,
+    VvHv,
 };
 use crate::lmp2_certificate::CertValue;
 use crate::vvhv_bsr::{
@@ -740,8 +740,19 @@ pub(crate) fn build_vvhv_local_with(
         );
         let sel_b = xn.select_cols(&piv, hardp.clone());
         let sel_parents: Vec<usize> = piv.iter().map(|&p| a2a[keep[p]]).collect();
-        let sel = sel_b.to_dense();
-        let mut ch = lowdin(&sel, &s)?;
+        // A7 (span-critical): Löwdin of the selected set, by Newton-Schulz
+        // on its exact Gram (tau): C_h⁰ = Sel (Selᵀ S Sel)^{-1/2}.
+        let o_sel = gx.select(&piv, hardp.clone(), &piv, hardp.clone());
+        let (z, nit) = newton_schulz_inv_sqrt(
+            &o_sel,
+            cfg.tau,
+            knobs.ns_stop_early,
+            &mut cnt,
+            "hard-virtual Löwdin",
+        )?;
+        stats.ns_iterations_hard = nit;
+        let ch_b = sel_b.mul(&z, cfg.tau, &mut cnt);
+        let mut ch = ch_b.to_dense();
         let f_ao = rhf.fock_r();
         let fch = f_ao.dot(&ch);
         let mut by_atom: std::collections::BTreeMap<usize, Vec<usize>> = Default::default();
