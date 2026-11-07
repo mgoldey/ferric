@@ -175,7 +175,13 @@ pub enum HessianMethod {
     /// returned, never retried with finite differences.
     #[default]
     Auto,
-    /// The analytic Hessian; an unsupported configuration is an error.
+    /// The analytic Hessian; an unsupported configuration is an error. It is
+    /// the Hartree-Fock (RHF/UHF/ROHF) Hessian only: a Kohn-Sham `xc` is
+    /// refused before the SCF, pointing a closed-shell request at
+    /// [`HessianMethod::AnalyticMovingGrid`] and stating for UKS/ROKS that no
+    /// analytic spin-polarized Kohn-Sham Hessian exists (their frequencies are
+    /// central differences of the analytic gradient under `Auto` or
+    /// `FiniteDifference`).
     Analytic,
     /// Central differences of the analytic gradient (`6N` gradients).
     FiniteDifference,

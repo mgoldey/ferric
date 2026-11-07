@@ -66,6 +66,26 @@ over the atoms $B,C\neq h$. The first-order Fock matrix of a home-$h$ batch is t
 point-fixed derivative for $x\notin h$, including the weight term
 $V[W'_x f_\rho,\,2W'_x f_\sigma\mathbf g]$, and $V^{(h,\alpha)} = -\sum_{B\neq h}V^{(B,\alpha)}$.
 
+**Open shell: not implemented.** There is no analytic UKS or ROKS Hessian,
+fixed or moving grid. Open-shell KS frequencies are central differences of
+the analytic UKS/ROKS gradient; `HessianMethod::Analytic` and
+`AnalyticMovingGrid` refuse an open-shell `xc` before the SCF
+(`hessian.rs::xc_refusal`, `frequencies.rs::harmonic_frequencies_ks_moving_grid`;
+tests `frequency_hessian_dispatch.rs::analytic_kohn_sham_requests_name_the_open_shell_gap`,
+`ks_moving_grid_frequencies.rs::every_refusal_is_named`). Building it means
+running every expression above once per spin with $D\to D^\sigma$
+($\rho^\sigma_x$, $\mathbf g^\sigma_x$, $\rho^\sigma_{xy}$, $\mathbf g^\sigma_{xy}$ keep their form
+exactly, with $P^\sigma=D^\sigma\chi$, $Q^\sigma=D^\sigma\partial\chi$: the factors 2 come from the
+$\mu\leftrightarrow\nu$ symmetry of $D$, not from spin),
+$f(\rho_\alpha,\rho_\beta,\sigma_{\alpha\alpha},\sigma_{\alpha\beta},\sigma_{\beta\beta})$,
+$F^\sigma=Wf_{\rho_\sigma}$, $\mathbf G^\sigma=W(2f_{\sigma_{\sigma\sigma}}\mathbf g^\sigma+f_{\sigma_{\alpha\beta}}\mathbf g^{\bar\sigma})$,
+and a $\delta F^\sigma,\delta\mathbf G^\sigma$ that couple both spins' $\rho_1,\mathbf g_1$
+(the polarized `v2rho2`/`v2rhosigma`/`v2sigma2` that `fxc.rs::GgaFxcKernel`
+already evaluates for UKS Newton and stability). The UKS CPHF is the UHF one
+(`ucphf_response`) with $G^\sigma[D_1]=J[D_1^\alpha+D_1^\beta]-aK[D_1^\sigma]+V^{(1)\sigma}_{xc}[D_1^\alpha,D_1^\beta]$;
+the moving-grid $T\,G_h\,T^{\mathsf T}$ fill and the weight terms are
+spin-blind apart from $\partial_x f=\sum_\sigma(F^\sigma\rho^\sigma_x+\mathbf G^\sigma\cdot\mathbf g^\sigma_x)/W$.
+
 | Equation | Rust | Numerical test |
 |---|---|---|
 | $g$, $\rho_x$, $\mathbf g_x$ | `gradient_densities`, `rho_derivative`, `grad_rho_derivative` | `ks_fixed_grid_hessian.rs::gradient_matches_central_difference_of_the_fixed_grid_energy` |
