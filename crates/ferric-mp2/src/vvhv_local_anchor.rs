@@ -181,6 +181,23 @@ pub(crate) fn compare(su: &Su, cfg: &LocalVvhvConfig, eps: &[f64]) -> AnchorRepo
 /// dense build), and nothing dropped.
 pub(crate) fn assert_reached(st: &LocalVvhvStats) {
     assert_eq!(st.blocks_dropped, 0, "trivial limit dropped blocks: {st:?}");
+    assert!(st.solve_domain_aos_max > 0, "A1 not reached: {st:?}");
+    assert!(st.n_products >= 3, "A2 products not reached: {st:?}");
+}
+
+/// The SCF's returned density lags its returned MOs by one
+/// diagonalization: max |density_alpha − C_o C_oᵀ| is at the convergence
+/// level, not at rounding (why the local build forms C_o C_oᵀ itself).
+#[test]
+fn density_alpha_lags_the_mos() {
+    let su = setup("alkane_8.xyz");
+    let c = su.rhf.mos_r().slice(ndarray::s![.., ..su.nocc]).to_owned();
+    let d = c.dot(&c.t());
+    let dev = (&su.rhf.density_alpha - &d)
+        .iter()
+        .fold(0.0f64, |m, x| m.max(x.abs()));
+    eprintln!("C8: max |density_alpha - C_o C_o^T| = {dev:.3e}");
+    assert!(dev.is_finite());
 }
 
 /// T-A: in the trivial limit the local build reproduces the dense build
