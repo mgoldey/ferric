@@ -1,7 +1,10 @@
-//! SCF warm start across nearby geometries (geometry optimization).
+//! SCF warm start across nearby geometries (geometry optimization, saddle
+//! searches, IRC, finite-difference Hessians and gradients).
 //!
 //! A geometry driver solves one SCF per evaluated geometry, and consecutive
-//! geometries differ by at most the optimizer's trust radius. Re-guessing each
+//! geometries differ by at most the optimizer's trust radius (or, in a
+//! finite-difference stencil, by one displacement from the reference: see
+//! [`ScfWarmStart::anchored`]). Re-guessing each
 //! one from MINAO throws away a solution that is already within a small
 //! orbital rotation of the new one. [`ScfWarmStart`] keeps the previous
 //! converged MOs and turns them into a guess at the next geometry.
@@ -174,9 +177,19 @@ struct Snapshot {
 }
 
 /// Carries the last converged SCF of a geometry driver to the next geometry.
+///
+/// Two modes. [`ScfWarmStart::new`] CHAINS: every converged SCF replaces the
+/// carried one, which is what a path (optimizer steps, an IRC branch) wants —
+/// each geometry is closest to the one before it. [`ScfWarmStart::anchored`]
+/// keeps the FIRST converged SCF and never replaces it, which is what a
+/// finite-difference stencil wants: every displaced geometry is within one
+/// step of the reference, so each starts from the reference solution, and the
+/// SCF exits of different displacements do not inherit each other's residual
+/// (no accumulation along the stencil's evaluation order).
 #[derive(Debug, Clone, Default)]
 pub struct ScfWarmStart {
     enabled: bool,
+    anchored: bool,
     prev: Option<Snapshot>,
     records: Vec<WarmStartRecord>,
 }
@@ -288,9 +301,46 @@ impl ScfWarmStart {
     pub fn new(enabled: bool) -> Self {
         Self {
             enabled,
+            anchored: false,
             prev: None,
             records: Vec::new(),
         }
+    }
+
+    /// A carrier that keeps the FIRST converged SCF it sees (the reference
+    /// geometry of a finite-difference stencil) and warm-starts every later
+    /// geometry from it; see the type docs. `enabled = false` is the cold
+    /// path, as for [`ScfWarmStart::new`].
+    pub fn anchored(enabled: bool) -> Self {
+        Self {
+            anchored: true,
+            ..Self::new(enabled)
+        }
+    }
+
+    /// An [`ScfWarmStart::anchored`] carrier already holding this carrier's
+    /// last converged SCF (when it has one), with no records: the displaced
+    /// SCFs of a stencil around the geometry this carrier just solved start
+    /// from that solution. Without a carried SCF the fork anchors on the
+    /// first one it converges itself.
+    pub fn fork_anchored(&self) -> Self {
+        Self {
+            enabled: self.enabled,
+            anchored: true,
+            prev: self.prev.clone(),
+            records: Vec::new(),
+        }
+    }
+
+    /// Append `other`'s records (e.g. a [`ScfWarmStart::fork_anchored`]
+    /// stencil's) to this carrier's, so one summary covers every SCF.
+    pub fn extend_records(&mut self, other: &ScfWarmStart) {
+        self.records.extend_from_slice(&other.records);
+    }
+
+    /// Whether warm starts are switched on.
+    pub fn enabled(&self) -> bool {
+        self.enabled
     }
 
     /// Per-evaluation record, in order.
@@ -370,9 +420,10 @@ impl ScfWarmStart {
     }
 
     /// Record the converged SCF at `mol` as the next geometry's starting point.
-    /// An unconverged result is never recorded (the previous one is kept).
+    /// An unconverged result is never recorded (the previous one is kept), and
+    /// an anchored carrier keeps its first recorded SCF.
     pub(crate) fn remember(&mut self, mol: &Molecule, prep: &PreparedBasis, res: &ScfResult) {
-        if !self.enabled || !res.converged {
+        if !self.enabled || !res.converged || (self.anchored && self.prev.is_some()) {
             return;
         }
         self.prev = Some(Snapshot {
@@ -525,10 +576,12 @@ fn wrong_guess(kind: &str) -> FerricError {
     ))
 }
 
-/// [`crate::rhf::solve_rhf`] (RHF/RKS) through [`solve_with_warm_start`]: the
-/// warm attempt sets `init_guess_density` to the re-orthonormalized occupied
-/// density. Returns an unconverged `Ok` exactly when `solve_rhf` would.
-pub(crate) fn solve_rhf_warm(
+/// [`crate::rhf::solve_rhf`] (RHF/RKS) through the warm start: the warm
+/// attempt sets `init_guess_density` to the re-orthonormalized occupied
+/// density, a failed warm attempt is retried from the cold guess, and a
+/// converged result is recorded in `warm`. Returns an unconverged `Ok`
+/// exactly when `solve_rhf` would. With `warm` disabled this IS `solve_rhf`.
+pub fn solve_rhf_warm(
     ctx: &ParallelContext,
     mol: &Molecule,
     prep: &PreparedBasis,
@@ -555,10 +608,10 @@ pub(crate) fn solve_rhf_warm(
     )
 }
 
-/// [`crate::uhf::solve_uhf`] (UHF/UKS) through [`solve_with_warm_start`]: the
-/// warm attempt passes the carried α/β MOs as `initial_mos`. Errors on an
+/// [`crate::uhf::solve_uhf`] (UHF/UKS) through the warm start: the warm
+/// attempt passes the carried α/β MOs as `initial_mos`. Errors on an
 /// unconverged SCF exactly as `solve_uhf` does (after the cold retry).
-pub(crate) fn solve_uhf_warm(
+pub fn solve_uhf_warm(
     ctx: &ParallelContext,
     mol: &Molecule,
     prep: &PreparedBasis,
@@ -582,10 +635,10 @@ pub(crate) fn solve_uhf_warm(
     )
 }
 
-/// [`crate::rohf::solve_rohf`] (ROHF/ROKS) through [`solve_with_warm_start`]:
-/// the warm attempt starts from the carried docc | socc | virtual MOs. Errors
-/// on an unconverged SCF exactly as `solve_rohf` does (after the cold retry).
-pub(crate) fn solve_rohf_warm(
+/// [`crate::rohf::solve_rohf`] (ROHF/ROKS) through the warm start: the warm
+/// attempt starts from the carried docc | socc | virtual MOs. Errors on an
+/// unconverged SCF exactly as `solve_rohf` does (after the cold retry).
+pub fn solve_rohf_warm(
     ctx: &ParallelContext,
     mol: &Molecule,
     prep: &PreparedBasis,
@@ -836,6 +889,36 @@ mod tests {
             ..Default::default()
         };
         warm_matches_cold_along_a_path(WATER, 1, "6-31g", Spin::Restricted, cfg);
+    }
+
+    #[test]
+    fn an_anchored_carrier_keeps_the_reference_solution() {
+        // A finite-difference stencil: +d and -d around the reference. The
+        // anchored carrier must hand BOTH the reference's orbitals (the -d
+        // SCF starts from the reference, not from +d), the chained one the
+        // previous geometry's; fork_anchored inherits the chained carrier's
+        // current solution and then keeps it.
+        let mol = Molecule::parse_xyz(WATER, 0, 1).unwrap();
+        let cfg = RhfConfig::default();
+        let mut anchored = ScfWarmStart::anchored(true);
+        let mut chained = ScfWarmStart::new(true);
+        let r0 = solve(&mol, "sto-3g", Spin::Restricted, &cfg, &mut anchored);
+        let rc0 = solve(&mol, "sto-3g", Spin::Restricted, &cfg, &mut chained);
+        let fork = chained.fork_anchored();
+        assert_eq!(fork.prev.as_ref().unwrap().mos_alpha, rc0.mos_alpha);
+        assert!(fork.records().is_empty());
+        let plus = moved(&mol, 1, 2, 5e-3);
+        let minus = moved(&mol, 1, 2, -5e-3);
+        let rp = solve(&plus, "sto-3g", Spin::Restricted, &cfg, &mut anchored);
+        let _ = solve(&plus, "sto-3g", Spin::Restricted, &cfg, &mut chained);
+        assert_ne!(rp.mos_alpha, r0.mos_alpha);
+        assert_eq!(anchored.prev.as_ref().unwrap().mos_alpha, r0.mos_alpha);
+        assert_eq!(chained.prev.as_ref().unwrap().mos_alpha, rp.mos_alpha);
+        let _ = solve(&minus, "sto-3g", Spin::Restricted, &cfg, &mut anchored);
+        assert_eq!(anchored.prev.as_ref().unwrap().mos_alpha, r0.mos_alpha);
+        assert!(anchored.records()[1..].iter().all(|r| r.cold.is_none()));
+        // A disabled fork stays disabled.
+        assert!(!ScfWarmStart::new(false).fork_anchored().enabled());
     }
 
     #[test]

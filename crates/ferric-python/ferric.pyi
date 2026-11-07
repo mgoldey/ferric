@@ -3832,12 +3832,18 @@ def run_frequencies(
     scf_max_iter: int | None = None,
     scf_energy_conv: float | None = None,
     scf_density_conv: float | None = None,
+    scf_warm_start: bool | None = None,
 ) -> FrequencyResult:
     """Harmonic vibrational frequencies.
 
     `scf_max_iter`, `scf_energy_conv`, `scf_density_conv` control every SCF of the run
     (`run_rhf`'s `max_iter`, `energy_conv`, `density_conv`); the bare spellings are
     deprecated aliases that warn.
+
+    `scf_warm_start` (default True): a finite-difference Hessian starts every
+    displaced SCF from the undisplaced geometry's converged orbitals (anchored,
+    never chained from the previous displacement); False re-guesses each one.
+    The Hessians differ at the SCF convergence level amplified by `1/delta`.
 
     `df_j_aux` / `df_k_aux` density-fit every SCF of the
     run as in `run_rhf`. Unset means exact J/K for HF, but for KS (`xc=`) the
@@ -3979,6 +3985,7 @@ def run_saddle(
     scf_max_iter: int | None = None,
     scf_energy_conv: float | None = None,
     scf_density_conv: float | None = None,
+    scf_warm_start: bool | None = None,
 ) -> SaddleResult:
     """Partitioned rational function optimization to a first-order saddle.
 
@@ -3994,6 +4001,9 @@ def run_saddle(
     falls back to FD. `delta=` with `"analytic"` or `"auto"` raises. The result's
     `hessian_source` reports which ran. `scf_max_iter`, `scf_energy_conv`,
     `scf_density_conv` control every SCF of the search (gradients and Hessians).
+    `scf_warm_start` (default True) starts each step's SCF from the previous
+    step's orbitals and each FD Hessian's displaced SCFs from its reference
+    geometry; False re-guesses every SCF.
     """
     ...
 
@@ -4012,6 +4022,7 @@ def run_irc(
     scf_max_iter: int | None = None,
     scf_energy_conv: float | None = None,
     scf_density_conv: float | None = None,
+    scf_warm_start: bool | None = None,
 ) -> IrcResult:
     """Follow the intrinsic reaction coordinate both ways from a saddle.
 
@@ -4020,7 +4031,9 @@ def run_irc(
     gas-phase walk from an embedded saddle descends a different surface.
 
     `scf_max_iter`, `scf_energy_conv`, `scf_density_conv` control the SCF at every
-    point (as in `run_optimize`); an unconverged SCF raises.
+    point (as in `run_optimize`); an unconverged SCF raises. `scf_warm_start`
+    (default True) starts each point's SCF from the previous point's orbitals;
+    False re-guesses every SCF.
     """
     ...
 

@@ -10,13 +10,14 @@
 //! a circular dependency (ferric-scf does not currently depend on
 //! ferric-rpa).
 
-use crate::gradient::total_rpa_gradient;
+use crate::gradient::total_rpa_gradient_warm;
 use crate::PdepRpaConfig;
 use ferric_core::basis::BasisSet;
 use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
 use ferric_integrals::operator::Operator;
 use ferric_scf::optimize::OptimizeConfig;
+use ferric_scf::warm_start::{ScfWarmStart, WarmStartRecord};
 use ndarray::{Array1, Array2};
 
 /// Result of an RPA geometry optimization.
@@ -27,6 +28,10 @@ pub struct RpaOptimizeResult {
     pub energy: f64,
     pub steps: usize,
     pub converged: bool,
+    /// Per-SCF warm-start records in evaluation order: each step's reference
+    /// RHF followed by its `6N` displaced RHFs (see `ferric_scf::warm_start`;
+    /// all cold `Disabled` when `OptimizeConfig::scf_warm_start` is off).
+    pub scf_warm_start: Vec<WarmStartRecord>,
 }
 
 /// Optimize a molecular geometry on the RPA PES using
@@ -48,8 +53,14 @@ pub fn optimize_geometry_rpa(
     let natoms = current_mol.atoms.len();
     let n_coord = natoms * 3;
 
-    let (mut energy, mut grad_arr) =
-        total_rpa_gradient(&current_mol, obs_basis, aux_basis, op, rpa_config, h_fd)?;
+    // Each step's reference RHF starts from the previous step's, and the
+    // displaced RHFs of its finite-difference gradient from that reference
+    // (`opt_config.scf_warm_start`, see `ferric_scf::warm_start`).
+    let mut warm = ScfWarmStart::new(opt_config.scf_warm_start);
+    let mut eval = |m: &Molecule| {
+        total_rpa_gradient_warm(m, obs_basis, aux_basis, op, rpa_config, h_fd, &mut warm)
+    };
+    let (mut energy, mut grad_arr) = eval(&current_mol)?;
     let mut grad = flatten(&grad_arr);
 
     let mut h_inv = Array2::<f64>::eye(n_coord);
@@ -97,8 +108,7 @@ pub fn optimize_geometry_rpa(
         let prev_grad = grad.clone();
         prev_energy = energy;
 
-        let (e_new, g_new) =
-            total_rpa_gradient(&current_mol, obs_basis, aux_basis, op, rpa_config, h_fd)?;
+        let (e_new, g_new) = eval(&current_mol)?;
         energy = e_new;
         grad_arr = g_new;
         grad = flatten(&grad_arr);
@@ -124,11 +134,15 @@ pub fn optimize_geometry_rpa(
         step_idx += 1;
     }
 
+    if let Some(line) = warm.summary() {
+        println!("{line}");
+    }
     Ok(RpaOptimizeResult {
         mol: current_mol,
         energy,
         steps: step_idx,
         converged,
+        scf_warm_start: warm.records().to_vec(),
     })
 }
 

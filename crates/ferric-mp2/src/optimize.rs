@@ -13,7 +13,7 @@
 //! and matches the precedent `ferric-rpa` already set for its own
 //! energy/gradient pair.
 
-use crate::gradient::total_rimp2_gradient;
+use crate::gradient::total_rimp2_gradient_warm;
 use crate::rimp2::RiMp2Config;
 use ferric_core::basis::BasisSet;
 use ferric_core::external_potential::ExternalPotential;
@@ -21,6 +21,7 @@ use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
 use ferric_integrals::operator::Operator;
 use ferric_scf::optimize::OptimizeConfig;
+use ferric_scf::warm_start::ScfWarmStart;
 use ndarray::{Array1, Array2};
 
 /// Result of an RI-MP2 geometry optimization.
@@ -31,6 +32,10 @@ pub struct RiMp2OptimizeResult {
     pub energy: f64,
     pub steps: usize,
     pub converged: bool,
+    /// Per-evaluation SCF warm-start records, in order (see
+    /// `ferric_scf::warm_start`; every record is cold `Disabled` when
+    /// `OptimizeConfig::scf_warm_start` is off).
+    pub scf_warm_start: Vec<ferric_scf::warm_start::WarmStartRecord>,
 }
 
 /// Optimize a molecular geometry on the RI-MP2 PES using
@@ -49,8 +54,13 @@ pub fn optimize_geometry_rimp2(
     let natoms = current_mol.atoms.len();
     let n_coord = natoms * 3;
 
-    let (mut energy, mut grad_arr) =
-        total_rimp2_gradient(&current_mol, obs_basis, aux_basis, op, mp2_config, ext)?;
+    // Each step's RHF starts from the previous step's converged orbitals
+    // (`opt_config.scf_warm_start`, see `ferric_scf::warm_start`).
+    let mut warm = ScfWarmStart::new(opt_config.scf_warm_start);
+    let mut eval = |m: &Molecule| {
+        total_rimp2_gradient_warm(m, obs_basis, aux_basis, op, mp2_config, ext, &mut warm)
+    };
+    let (mut energy, mut grad_arr) = eval(&current_mol)?;
     let mut grad = flatten(&grad_arr);
 
     let mut h_inv = Array2::<f64>::eye(n_coord);
@@ -98,8 +108,7 @@ pub fn optimize_geometry_rimp2(
         let prev_grad = grad.clone();
         prev_energy = energy;
 
-        let (e_new, g_new) =
-            total_rimp2_gradient(&current_mol, obs_basis, aux_basis, op, mp2_config, ext)?;
+        let (e_new, g_new) = eval(&current_mol)?;
         energy = e_new;
         grad_arr = g_new;
         grad = flatten(&grad_arr);
@@ -125,11 +134,15 @@ pub fn optimize_geometry_rimp2(
         step_idx += 1;
     }
 
+    if let Some(line) = warm.summary() {
+        println!("{line}");
+    }
     Ok(RiMp2OptimizeResult {
         mol: current_mol,
         energy,
         steps: step_idx,
         converged,
+        scf_warm_start: warm.records().to_vec(),
     })
 }
 
@@ -199,5 +212,71 @@ mod tests {
             (0.8..2.5).contains(&dist),
             "dist = {dist}, expected a reasonable H2 bond length"
         );
+    }
+
+    /// Warm vs cold RI-MP2 optimization: the same optimization within the
+    /// optimizer's own tolerances (same step count, final energies within
+    /// `e_conv`, final geometries within the optimizer's step resolution),
+    /// warm start used after the first evaluation, and fewer SCF iterations.
+    #[test]
+    fn warm_start_rimp2_optimization_matches_cold() {
+        let mol = Molecule::parse_xyz(
+            "3\ndistorted water\nO 0 0 0\nH 0 0.9 0\nH 0 -0.3 0.85\n",
+            0,
+            1,
+        )
+        .unwrap();
+        let obs = basis::bundled("sto-3g").unwrap();
+        let aux = basis::bundled("cc-pvdz-ri").unwrap();
+        let mp2 = RiMp2Config::default();
+        let run = |warm: bool| {
+            let opt = OptimizeConfig {
+                scf_warm_start: warm,
+                ..Default::default()
+            };
+            optimize_geometry_rimp2(&mol, &obs, &aux, Operator::coulomb(), &mp2, &opt, None)
+                .unwrap()
+        };
+        let (w, c) = (run(true), run(false));
+        let it = |r: &RiMp2OptimizeResult| {
+            r.scf_warm_start
+                .iter()
+                .map(|x| x.iterations)
+                .collect::<Vec<_>>()
+        };
+        let dx = w
+            .mol
+            .atoms
+            .iter()
+            .zip(&c.mol.atoms)
+            .map(|(a, b)| {
+                (a.x - b.x)
+                    .abs()
+                    .max((a.y - b.y).abs())
+                    .max((a.zpos - b.zpos).abs())
+            })
+            .fold(0.0f64, f64::max);
+        let de = (w.energy - c.energy).abs();
+        eprintln!(
+            "RI-MP2 optimize: steps warm {} cold {}; |dE| {de:.2e}; max|dx| {dx:.2e} Bohr; \
+             SCF iterations warm {:?} cold {:?}",
+            w.steps,
+            c.steps,
+            it(&w),
+            it(&c)
+        );
+        let opt = OptimizeConfig::default();
+        assert!(w.converged && c.converged);
+        assert_eq!(w.steps, c.steps);
+        assert!(de < opt.e_conv, "|dE| {de:e}");
+        // Converged geometries agree to well inside one step of the size the
+        // gradient threshold allows (|dx| ~ g_max / k, k ~ 0.5 Ha/Bohr^2).
+        assert!(dx < opt.g_max_thresh, "max|dx| {dx:e}");
+        assert_eq!(
+            w.scf_warm_start[0].cold,
+            Some(ferric_scf::warm_start::ColdReason::FirstGeometry)
+        );
+        assert!(w.scf_warm_start[1..].iter().all(|r| r.cold.is_none()));
+        assert!(it(&w).iter().sum::<usize>() < it(&c).iter().sum::<usize>());
     }
 }
