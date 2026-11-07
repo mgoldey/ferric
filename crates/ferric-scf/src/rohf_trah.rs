@@ -916,6 +916,7 @@ pub fn solve_rohf_injected_second_order<'a>(
         xc,
     } = inj;
     let c_k = injected_exchange_fraction(who, xc.as_deref())?;
+    let xc_tag = crate::result::xc_record(config.xc.as_deref(), xc.is_some());
 
     let nelec = mol.nelec() as i64;
     let mult = mol.multiplicity as i64;
@@ -1028,6 +1029,7 @@ pub fn solve_rohf_injected_second_order<'a>(
         cosx_schedule: None,
         convergence: None,
         rohf_spin_focks: Some((pt.f_a.clone(), pt.f_b.clone())),
+        xc: xc_tag,
         precision: Default::default(),
     };
     Ok((result, info))

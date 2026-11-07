@@ -948,7 +948,26 @@ fn stored_focks_are_checked_against_the_rebuilt_ones() {
         "perturbed Focks too close"
     );
     hessian_of(c, &loose, &default_cfg).expect("default-tolerance result must be accepted");
-    for (what, res) in [("perturbed", &bad), ("ROKS result, HF config", &roks)] {
+    // The ROKS result as solve_rohf returns it is refused earlier, by the
+    // functional it records (ScfResult::xc); with that record cleared (as on a
+    // hand-built result) the Fock comparison is what catches it.
+    let err = hessian_of(c, &roks, &cfg).expect_err("ROKS result, HF config");
+    assert!(
+        err.to_string()
+            .contains("converged with the functional \"PBE\""),
+        "ROKS result, HF config: {err}"
+    );
+    let unrecorded = ferric_scf::result::ScfResult {
+        xc: None,
+        ..roks.clone()
+    };
+    for (what, res) in [
+        ("perturbed", &bad),
+        (
+            "ROKS result without its functional record, HF config",
+            &unrecorded,
+        ),
+    ] {
         let err = hessian_of(c, res, &cfg).expect_err(what);
         eprintln!("{what}: {err}");
         assert!(

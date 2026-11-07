@@ -500,8 +500,13 @@ fn solve_rohf_impl_recorded(
     hook: Option<crate::fock::SpinFockHook<'_>>,
 ) -> Result<ScfResult, FerricError> {
     let probe = ferric_core::gpu::provenance::PrecisionProbe::start();
+    let xc = crate::result::xc_record(
+        config.xc.as_deref(),
+        inj.as_ref().is_some_and(|i| i.xc.is_some()),
+    );
     let mut r = solve_rohf_impl(ctx, mol, prep, bounds, config, initial_mos, inj, sym, hook)?;
     r.precision = probe.finish(ferric_core::gpu::provenance::SCF_KERNELS);
+    r.xc = xc;
     Ok(r)
 }
 
@@ -1380,6 +1385,7 @@ fn solve_rohf_impl(
                 stability_external: None,
                 df_jk: df_jk_route.clone(),
                 rohf_spin_focks: spin_focks_last.clone(),
+                xc: None,
                 cosx_final: None,
                 cosx_schedule: None,
                 convergence: None,
@@ -1638,6 +1644,7 @@ fn solve_rohf_impl(
         stability_external: None,
         df_jk: df_jk_route,
         rohf_spin_focks: spin_focks_last,
+        xc: None,
         cosx_final: None,
         cosx_schedule: None,
         convergence: None,

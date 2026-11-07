@@ -1001,7 +1001,57 @@ fn refusal(reference: Reference, what: &str) -> FerricError {
     ))
 }
 
+/// Refuse an SCF result whose recorded functional ([`ScfResult::xc`]) is not
+/// the one `config` states. `config` is otherwise the only record of the
+/// Hamiltonian a Hessian differentiates, so a Kohn-Sham result handed in with
+/// an `xc = None` configuration would pass every Hartree-Fock check and be
+/// differentiated as the HF energy at KS orbitals. `hessian` names the Hessian
+/// in the message. (The Kohn-Sham Hessian does not use this: it rebuilds the
+/// KS Fock matrix and refuses a result it does not reproduce, which also covers
+/// results from the injected fixed-grid route, recorded as
+/// [`crate::result::INJECTED_XC`].)
+fn scf_functional_mismatch(
+    hessian: &str,
+    res: &ScfResult,
+    config: &RhfConfig,
+) -> Result<(), FerricError> {
+    if res.xc == config.xc {
+        return Ok(());
+    }
+    let say = |x: &Option<String>| match x {
+        Some(name) => format!("the functional {name:?}"),
+        None => "Hartree-Fock (no functional)".to_string(),
+    };
+    Err(FerricError::General(format!(
+        "{hessian}: the SCF result was converged with {} but the configuration states {}; \
+         pass the configuration the SCF ran with (the Hessian differentiates the energy that \
+         configuration defines)",
+        say(&res.xc),
+        say(&config.xc)
+    )))
+}
+
+/// The Hartree-Fock Hessians' result/configuration checks:
+/// [`scf_functional_mismatch`] and then [`check_supported_except_functional`].
 fn check_supported(
+    reference: Reference,
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    res: &ScfResult,
+    config: &RhfConfig,
+) -> Result<(), FerricError> {
+    let hessian = format!("analytic {} Hessian", reference.label());
+    scf_functional_mismatch(&hessian, res, config)?;
+    check_supported_except_functional(reference, mol, prep, op, bounds, res, config)
+}
+
+/// [`check_supported`] without the recorded-functional check: for the
+/// Kohn-Sham Hessian, which runs the closed-shell checklist on a copy of its
+/// configuration with `xc` cleared and checks the functional through its Fock
+/// residual.
+fn check_supported_except_functional(
     reference: Reference,
     mol: &Molecule,
     prep: &PreparedBasis,

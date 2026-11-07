@@ -97,15 +97,21 @@ fn ascending(e: &[f64]) -> bool {
 /// Why the analytic UHF Hessian refuses this result's STATE.
 ///
 /// The Hessian refuses Kohn-Sham and a MOM config outright (config checks that
-/// run first), so the result is handed over with a plain HF config: what is
-/// exercised is `uhf_state_refusal`, the backstop that inspects the RESULT —
-/// the only guard when a MOM or reordered state arrives with a config that
-/// does not say so (the ferric-cli MOM references, free-atom proatoms).
+/// run first), so the result is handed over with a plain HF config, and with
+/// its recorded functional (`ScfResult::xc`, refused against an HF config)
+/// cleared: what is exercised is `uhf_state_refusal`, the backstop that
+/// inspects the RESULT's orbitals — the only guard when a MOM or reordered
+/// state arrives with a config that does not say so (the ferric-cli MOM
+/// references, free-atom proatoms).
 fn hessian_state_refusal(sys: &Oh, r: &ScfResult, cfg: &RhfConfig) -> String {
     let hf = RhfConfig {
         xc: None,
         mom_after_iter: 0,
         ..cfg.clone()
+    };
+    let r = &ScfResult {
+        xc: None,
+        ..r.clone()
     };
     uhf_hessian(
         &ParallelContext::default(),

@@ -78,9 +78,9 @@
 //! [`HessianMethod::AnalyticMovingGrid`]: crate::frequencies::HessianMethod::AnalyticMovingGrid
 
 use super::{
-    check_supported, cpks_response_with, first_order_ao, has_ecp, max_abs, nuclear_term,
-    parts_from_terms, skeleton_hess_1e, skeleton_hess_2e, skeleton_hess_overlap, FockSpec,
-    Reference, RhfHessianParts, TwoElectronBuilder,
+    check_supported_except_functional, cpks_response_with, first_order_ao, has_ecp, max_abs,
+    nuclear_term, parts_from_terms, skeleton_hess_1e, skeleton_hess_2e, skeleton_hess_overlap,
+    FockSpec, Reference, RhfHessianParts, TwoElectronBuilder,
 };
 use crate::gradient::build_energy_weighted_density;
 use crate::hessian_df::RijMutants;
@@ -724,7 +724,7 @@ fn ks_hessian_parts_in_mode(
     let j_fit = resolve_j_fit(rks, config);
     let k_fit = resolve_k_fit(rks, config, exx);
     let hf_config = checklist_config(rks, config, exx)?;
-    check_supported(Reference::Rhf, mol, prep, op, bounds, rks, &hf_config)?;
+    check_supported_except_functional(Reference::Rhf, mol, prep, op, bounds, rks, &hf_config)?;
     let aux = |name: String| move || crate::df_gradient::aux_basis(mol, &name);
     let j_factory = j_fit.clone().map(|(n, _)| aux(n));
     let k_factory = k_fit.clone().map(|(n, _)| aux(n));
@@ -786,7 +786,7 @@ pub fn rks_fixed_grid_hessian_parts_with_aux(
         df_k_aux: None,
         ..config.clone()
     };
-    check_supported(Reference::Rhf, mol, prep, op, bounds, rks, &hf_config)?;
+    check_supported_except_functional(Reference::Rhf, mol, prep, op, bounds, rks, &hf_config)?;
     rks_fixed_grid_hessian_core(
         ctx,
         mol,

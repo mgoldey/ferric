@@ -871,3 +871,68 @@ fn ecp_molecule_is_analytic_and_matches_fd() {
         "analytic and FD HI frequencies differ by {dev} cm^-1"
     );
 }
+
+/// A Kohn-Sham result handed to a Hartree-Fock Hessian with an `xc = None`
+/// configuration (a library caller's slip: the configuration was the only
+/// record of the functional, so every HF check passed) is refused by the
+/// functional the SCF recorded (`ScfResult::xc`), not differentiated as the
+/// HF energy at KS orbitals. UKS -> `uhf_hessian`, ROKS -> `rohf_hessian`,
+/// RKS -> `rhf_hessian`. The solvers stamp the field (PBE results say "PBE",
+/// HF results say `None`). The converse (an HF result handed to the KS
+/// Hessian) is the KS Hessian's Fock-residual guard, tested in
+/// `ks_fixed_grid_hessian.rs`. No refusal needs second
+/// derivatives; the accepted HF paths are covered by the tests above.
+///
+/// The test asserts the recorded-functional MESSAGE, not just an error: with
+/// the check removed (mutation-tested 2026-11-07) these cases still erred, but
+/// only incidentally and misleadingly — UKS in the CPHF ("orbital Hessian is
+/// not positive definite ... not a stable minimum", on NH2/CH3/OH/H2O+ at
+/// STO-3G and 6-31G; CH3/STO-3G only at pᵀAp = -1.5e-9, so nothing guarantees
+/// it), RKS by its default RI-J route (and, with exact J, again in the CPHF),
+/// and ROKS by `rohf_hessian`'s stored-vs-rebuilt spin-Fock check.
+#[test]
+fn kohn_sham_result_with_a_hartree_fock_config_is_refused() {
+    use ferric_scf::hessian::rhf_hessian;
+    let ctx = ParallelContext::default();
+    let op = Operator::coulomb();
+    let hf = RhfConfig::default();
+    let ks = RhfConfig {
+        xc: Some("PBE".into()),
+        ..Default::default()
+    };
+    let expect_refused = |what: &str, err: ferric_core::error::FerricError| {
+        let msg = err.to_string();
+        eprintln!("{what}: {msg}");
+        assert!(
+            msg.contains("converged with the functional \"PBE\"")
+                && msg.contains("configuration states Hartree-Fock"),
+            "{what}: refused for another reason: {msg}"
+        );
+    };
+    let mol = nh2();
+    let prep = PreparedBasis::new(&mol, &basis::bundled("sto-3g").unwrap()).unwrap();
+    let bounds = ferric_scf::screening::SchwarzBounds::compute(op, &prep).unwrap();
+    let uks = ferric_scf::uhf::solve_uhf(&ctx, &mol, &prep, &bounds, &ks).unwrap();
+    assert_eq!(uks.xc.as_deref(), Some("PBE"), "UKS result not stamped");
+    let err = uhf_hessian(&ctx, &mol, &prep, op, &bounds, &uks, &hf)
+        .expect_err("UKS result + HF config must be refused by uhf_hessian");
+    expect_refused("UKS -> uhf_hessian", err);
+    let roks = ferric_scf::rohf::solve_rohf(&ctx, &mol, &prep, op, &bounds, &ks).unwrap();
+    assert_eq!(roks.xc.as_deref(), Some("PBE"), "ROKS result not stamped");
+    let err = rohf_hessian(&ctx, &mol, &prep, op, &bounds, &roks, &hf)
+        .expect_err("ROKS result + HF config must be refused by rohf_hessian");
+    expect_refused("ROKS -> rohf_hessian", err);
+    let uhf = ferric_scf::uhf::solve_uhf(&ctx, &mol, &prep, &bounds, &hf).unwrap();
+    assert_eq!(uhf.xc, None, "a UHF result must record no functional");
+
+    let water = water();
+    let wprep = PreparedBasis::new(&water, &basis::bundled("sto-3g").unwrap()).unwrap();
+    let wbounds = ferric_scf::screening::SchwarzBounds::compute(op, &wprep).unwrap();
+    let rks = ferric_scf::rhf::solve_rhf(&ctx, &water, &wprep, op, &wbounds, &ks).unwrap();
+    assert_eq!(rks.xc.as_deref(), Some("PBE"), "RKS result not stamped");
+    let err = rhf_hessian(&ctx, &water, &wprep, op, &wbounds, &rks, &hf)
+        .expect_err("RKS result + HF config must be refused by rhf_hessian");
+    expect_refused("RKS -> rhf_hessian", err);
+    let rhf = ferric_scf::rhf::solve_rhf(&ctx, &water, &wprep, op, &wbounds, &hf).unwrap();
+    assert_eq!(rhf.xc, None, "an RHF result must record no functional");
+}
