@@ -623,6 +623,10 @@ fn solve_uhf_impl_recorded(
     hook: Option<crate::fock::SpinFockHook<'_>>,
 ) -> Result<ScfResult, FerricError> {
     let probe = ferric_core::gpu::provenance::PrecisionProbe::start();
+    let xc = crate::result::xc_record(
+        config.xc.as_deref(),
+        inj.as_ref().is_some_and(|i| i.xc.is_some()),
+    );
     let mut r = solve_uhf_impl(
         ctx,
         mol,
@@ -636,6 +640,7 @@ fn solve_uhf_impl_recorded(
         hook,
     )?;
     r.precision = probe.finish(ferric_core::gpu::provenance::SCF_KERNELS);
+    r.xc = xc;
     Ok(r)
 }
 
@@ -1653,6 +1658,7 @@ fn solve_uhf_impl(
                 stability_external: None,
                 df_jk: df_jk_route.clone(),
                 rohf_spin_focks: None,
+                xc: None,
                 cosx_final,
                 cosx_schedule: crate::cosx_schedule::record(&cosx_sched),
                 convergence: last_report,
@@ -2149,6 +2155,7 @@ fn solve_uhf_impl(
         stability_external: None,
         df_jk: df_jk_route,
         rohf_spin_focks: None,
+        xc: None,
         cosx_final: None,
         cosx_schedule: crate::cosx_schedule::record(&cosx_sched),
         convergence: last_report,

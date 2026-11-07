@@ -107,12 +107,16 @@ fn ascending(e: &[f64]) -> bool {
 }
 
 /// The analytic UHF Hessian's refusal of this result's STATE, handed a plain
-/// HF config so the KS config check does not fire first (as in
-/// `uhf_degenerate_swap.rs`).
+/// HF config and the result with its recorded functional (`ScfResult::xc`)
+/// cleared, so neither KS check fires first (as in `uhf_degenerate_swap.rs`).
 fn hessian_state_refusal(sys: &Sys, r: &ScfResult, cfg: &RhfConfig) -> String {
     let hf = RhfConfig {
         xc: None,
         ..cfg.clone()
+    };
+    let r = &ScfResult {
+        xc: None,
+        ..r.clone()
     };
     uhf_hessian(
         &ParallelContext::default(),

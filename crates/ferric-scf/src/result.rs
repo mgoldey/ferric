@@ -39,6 +39,18 @@ pub enum ScfExit {
     NotCertified,
 }
 
+/// [`ScfResult::xc`] of an SCF whose functional came through
+/// `PeriodicInjection::xc` (an `XcBuilder` carries no name).
+pub const INJECTED_XC: &str = "<injected XcBuilder>";
+
+/// [`ScfResult::xc`] for an SCF run with `config_xc` (`RhfConfig::xc`) and,
+/// on the injected path, `injected` = whether an `XcBuilder` was supplied.
+pub(crate) fn xc_record(config_xc: Option<&str>, injected: bool) -> Option<String> {
+    config_xc
+        .map(str::to_string)
+        .or_else(|| injected.then(|| INJECTED_XC.to_string()))
+}
+
 /// Converged self-consistent field solution: total energy, MO coefficients, orbital energies, and density matrices.
 #[derive(Debug, Clone)]
 #[must_use = "SCF result contains computed energies and orbitals"]
@@ -126,6 +138,20 @@ pub struct ScfResult {
     /// the consumption gates), and a re-derivation that drifts from the
     /// solver pairs an RI energy with an exact-integral gradient.
     pub df_jk: Option<DfJkRoute>,
+    /// The exchange-correlation functional this SCF converged with:
+    /// `RhfConfig::xc` as given (`None` = Hartree-Fock), or [`INJECTED_XC`]
+    /// when the functional came through `PeriodicInjection::xc`. Stamped by
+    /// `solve_rhf`/`solve_uhf`/`solve_rohf` (every entry point, KS and
+    /// injected forms included) from the configuration they ran; a result
+    /// built by hand says `None`.
+    ///
+    /// Read by the analytic Hartree-Fock Hessians (`rhf_hessian`,
+    /// `uhf_hessian`, `rohf_hessian`), which refuse a `Some` result: their
+    /// own KS refusal reads only the configuration passed alongside, so a
+    /// Kohn-Sham result paired with an `xc = None` configuration would
+    /// otherwise be differentiated as the Hartree-Fock energy at KS orbitals
+    /// and return a wrong Hessian silently.
+    pub xc: Option<String>,
     /// ROHF/ROKS only: the converged SPIN Fock matrices `(F_α, F_β)` (AO
     /// basis, including XC and solvent terms). `fock_alpha` holds the Roothaan
     /// EFFECTIVE Fock for ROHF, whose diagonal blocks mix `F_α` and `F_β` by a

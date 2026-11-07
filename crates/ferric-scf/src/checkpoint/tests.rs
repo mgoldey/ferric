@@ -449,6 +449,7 @@ fn scf_result(spin: Spin) -> crate::result::ScfResult {
         stability_external: None,
         df_jk: s.df_jk,
         rohf_spin_focks: s.rohf_spin_focks,
+        xc: None,
         cosx_final: None,
         cosx_schedule: None,
         convergence: s.convergence,

@@ -207,6 +207,7 @@ pub(crate) fn solve_rhf_with_external(
                 stability_external: None,
                 df_jk: None,
                 rohf_spin_focks: None,
+                xc: None,
                 cosx_final: None,
                 cosx_schedule: None,
                 convergence: None,

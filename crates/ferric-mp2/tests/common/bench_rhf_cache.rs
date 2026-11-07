@@ -343,6 +343,7 @@ pub fn decode(bytes: &[u8], key: &str, nbasis: usize) -> Result<ScfResult, Strin
         stability_external: None,
         df_jk: None,
         rohf_spin_focks: None,
+        xc: None,
         cosx_final: None,
         cosx_schedule: None,
         convergence: None,
