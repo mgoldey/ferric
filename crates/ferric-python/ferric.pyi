@@ -3840,10 +3840,10 @@ def run_frequencies(
     (`run_rhf`'s `max_iter`, `energy_conv`, `density_conv`); the bare spellings are
     deprecated aliases that warn.
 
-    `scf_warm_start` (default True): a finite-difference Hessian starts every
-    displaced SCF from the undisplaced geometry's converged orbitals (anchored,
-    never chained from the previous displacement); False re-guesses each one.
-    The Hessians differ at the SCF convergence level amplified by `1/delta`.
+    `scf_warm_start` (default False, opt-in): a finite-difference Hessian
+    starts every displaced SCF from the undisplaced geometry's converged
+    orbitals (anchored, never chained). At equal `scf_density_conv` the warm
+    Hessian is noisier, so pair it with a ~100x tighter `scf_density_conv`.
 
     `df_j_aux` / `df_k_aux` density-fit every SCF of the
     run as in `run_rhf`. Unset means exact J/K for HF, but for KS (`xc=`) the
@@ -4002,8 +4002,7 @@ def run_saddle(
     `hessian_source` reports which ran. `scf_max_iter`, `scf_energy_conv`,
     `scf_density_conv` control every SCF of the search (gradients and Hessians).
     `scf_warm_start` (default True) starts each step's SCF from the previous
-    step's orbitals and each FD Hessian's displaced SCFs from its reference
-    geometry; False re-guesses every SCF.
+    step's orbitals; False re-guesses them. The FD Hessians stay cold.
     """
     ...
 

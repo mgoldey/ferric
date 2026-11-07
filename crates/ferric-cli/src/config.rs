@@ -997,8 +997,9 @@ pub struct FrequenciesCfg {
     /// Finite-difference Hessians: start every displaced SCF from the
     /// undisplaced reference geometry's converged orbitals
     /// (`FrequencyConfig::scf_warm_start`; anchored at the reference, never
-    /// chained from the previous displacement). Default `true`; `false`
-    /// re-guesses every displaced SCF. No effect on an analytic Hessian.
+    /// chained from the previous displacement). Default `false` (opt-in): at
+    /// equal `[scf] density_conv` the warm Hessian is noisier, so pair `true`
+    /// with a ~100x tighter `density_conv`. No effect on an analytic Hessian.
     pub scf_warm_start: Option<bool>,
 }
 

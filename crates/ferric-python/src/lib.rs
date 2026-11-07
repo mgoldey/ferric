@@ -4825,12 +4825,13 @@ impl PyFrequencyResult {
 /// error, too small amplifies SCF noise. Check `.asymmetry` rather than
 /// assuming.
 ///
-/// `scf_warm_start` (default True): a finite-difference Hessian starts every
-/// displaced SCF from the undisplaced geometry's converged orbitals (anchored
-/// at the reference, never chained from the previous displacement); False
-/// re-guesses each one (`[frequencies] scf_warm_start`). The two Hessians
-/// differ at the SCF convergence level amplified by 1/delta. No effect on an
-/// analytic Hessian.
+/// `scf_warm_start` (default False, opt-in): a finite-difference Hessian
+/// starts every displaced SCF from the undisplaced geometry's converged
+/// orbitals (anchored at the reference, never chained from the previous
+/// displacement; `[frequencies] scf_warm_start`). At equal `scf_density_conv`
+/// the warm Hessian is noisier (warm SCFs stop nearer the threshold; propane
+/// def2-SVP: 9.4 cm^-1 on a soft mode at 1e-6 against 0.03 cold), so pair it
+/// with a ~100x tighter `scf_density_conv`. No effect on an analytic Hessian.
 ///
 /// `dispersion`: the same strict spellings as `run_dft` ("d3bj", "d3(bj)",
 /// "d3bj(<functional>)", "mbd", "mbd(<functional>)"). Requires `xc`; any
@@ -4950,7 +4951,7 @@ fn run_frequencies(
     if let Some(d) = delta {
         fcfg.delta = d;
     }
-    fcfg.scf_warm_start = scf_warm_start.unwrap_or(true);
+    fcfg.scf_warm_start = scf_warm_start.unwrap_or(false);
 
     let (r, e_dispersion) =
         frequencies_with_dispersion(&m, basis_name, &scf_cfg, &fcfg, dispersion, xc)?;
@@ -13129,9 +13130,9 @@ fn parse_saddle_hessian(
 /// "analytic" raises rather than being silently ignored.
 ///
 /// `scf_warm_start` (default True): each step's SCF starts from the previous
-/// step's converged orbitals, and each finite-difference Hessian's displaced
-/// SCFs from that Hessian's reference geometry (`ferric_scf::warm_start`);
-/// False re-guesses every SCF.
+/// step's converged orbitals (`ferric_scf::warm_start`); False re-guesses
+/// every step's SCF. The finite-difference Hessians stay cold (as in
+/// `run_frequencies`, warm FD Hessians are noisier at equal convergence).
 #[pyfunction]
 #[pyo3(signature = (
     mol, basis_name, xc=None, multiplicity=None,
@@ -13235,10 +13236,10 @@ fn run_saddle(
     let scf_g = scf_cfg.clone();
     let basis_g = basis.clone();
     // Each step's SCF starts from the previous step's converged orbitals
-    // (`ferric_scf::warm_start`); the Hessians warm-start their displaced
-    // SCFs from their own reference geometry.
-    let warm_on = scf_warm_start.unwrap_or(true);
-    let mut warm = ferric_scf::warm_start::ScfWarmStart::new(warm_on);
+    // (`ferric_scf::warm_start`). The Hessians below stay cold
+    // (`FrequencyConfig::scf_warm_start` default): a warm FD Hessian is
+    // noisier at equal convergence, and the final one decides n_imaginary.
+    let mut warm = ferric_scf::warm_start::ScfWarmStart::new(scf_warm_start.unwrap_or(true));
     let energy_gradient = move |mm: &ferric_core::mol::Molecule| {
         let bs = ferric_core::basis::bundled(&basis_g)?;
         let prep = PreparedBasis::new(mm, &bs)?;
@@ -13308,7 +13309,6 @@ fn run_saddle(
         let mut fc = FrequencyConfig {
             reference: FrequencyReference::Rhf,
             hessian: hessian_method,
-            scf_warm_start: warm_on,
             ..Default::default()
         };
         if let Some(d) = delta {
