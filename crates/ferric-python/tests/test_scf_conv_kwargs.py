@@ -27,6 +27,7 @@ AUX = ferric.BasisSet.bundled("cc-pvdz-ri")
 # RhfConfig defaults, as run_rhf documents them.
 DEFAULTS = dict(scf_energy_conv=1e-3, scf_density_conv=1e-6)
 TIGHT = dict(scf_density_conv=1e-10)
+LOOSE = dict(scf_density_conv=1e-4)
 ULTRA = dict(scf_energy_conv=1e-13, scf_density_conv=1e-12)
 RHF_ULTRA = dict(energy_conv=1e-13, density_conv=1e-12)
 
@@ -45,14 +46,18 @@ def test_rimp2_omitted_is_bit_identical_to_explicit_defaults():
 
 def test_rimp2_tighter_density_conv_moves_scf_toward_tight_run_rhf():
     e_ref = _ref_energy(**RHF_ULTRA)
-    loose = ferric.run_rimp2(MOL, BS, AUX)
+    # An explicitly loose SCF, not the default: the default can already land on
+    # the converged energy to rounding, which would make err_tight < err_loose
+    # a coin flip rather than a check that the knob reaches the SCF.
+    loose = ferric.run_rimp2(MOL, BS, AUX, **LOOSE)
     tight = ferric.run_rimp2(MOL, BS, AUX, **TIGHT)
     err_loose = abs(loose.rhf_energy - e_ref)
     err_tight = abs(tight.rhf_energy - e_ref)
     assert err_tight < err_loose
     assert err_tight < 1e-9
     # The default SCF is already good to well inside the old tolerance.
-    assert abs(tight.total_energy - loose.total_energy) < 1e-5
+    default = ferric.run_rimp2(MOL, BS, AUX)
+    assert abs(tight.total_energy - default.total_energy) < 1e-5
 
 
 def test_rimp2_max_iter_reaches_the_scf():
@@ -203,11 +208,13 @@ def test_optimize_scf_max_iter_reaches_the_per_step_scf():
 
 
 def test_optimize_tighter_scf_density_conv_differs_by_less_than_the_default_tolerance():
-    loose = ferric.run_optimize(STRETCHED, "sto-3g", max_steps=2)
+    loose = ferric.run_optimize(STRETCHED, "sto-3g", max_steps=2, **LOOSE)
     tight = ferric.run_optimize(STRETCHED, "sto-3g", max_steps=2, **TIGHT)
     # The SCF energy is variational: tightening the density criterion moves it
-    # only by the old tolerance's residual, never more than the default
-    # density_conv. It must move at all, or the knob never reached the SCF.
+    # only by the loose tolerance's residual. It must move at all, or the knob
+    # never reached the SCF. LOOSE, not the default: the default can already
+    # land on the converged energy to rounding (it does with warm start and
+    # dsyevd), which makes "moved at all" unobservable.
     d = abs(loose.energy - tight.energy)
     assert 0.0 < d < 1e-6
 
