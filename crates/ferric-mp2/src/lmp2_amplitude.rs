@@ -2291,6 +2291,102 @@ pub(crate) fn match_columns_up_to_sign_and_order(
 }
 
 #[cfg(test)]
+/// Boys functional `Σ_i |⟨i|r|i⟩|²` of the columns of `c` (`dip` the AO
+/// dipole matrices).
+pub(crate) fn boys_functional(c: &Array2<f64>, dip: &[Array2<f64>; 3]) -> f64 {
+    dip.iter()
+        .map(|dm| {
+            column_expectations(dm, c)
+                .iter()
+                .map(|x| x * x)
+                .sum::<f64>()
+        })
+        .sum()
+}
+
+#[cfg(test)]
+/// What [`compare_vvhv_spaces`] measured between two VV-HV spaces.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct VvhvSpaceDiff {
+    /// Every hard column equals a distinct reference hard column up to
+    /// sign within 1e-10 ([`match_columns_up_to_sign_and_order`]).
+    pub hard_columns_match: bool,
+    /// Hard columns whose partner is at a different index.
+    pub hard_reordered: usize,
+    /// max-abs deviation of the valence AO projectors `C_l C_lᵀ`.
+    pub valence_span_dev: f64,
+    /// Relative deviation of the valence Boys functionals.
+    pub valence_boys_rel_dev: f64,
+}
+
+#[cfg(test)]
+impl VvhvSpaceDiff {
+    /// Hard columns strict (<= 1e-10, sign, none reordered), valence span
+    /// <= 1e-10 and valence Boys functional <= 1e-12 relative.
+    pub(crate) fn matches(&self) -> bool {
+        self.hard_columns_match
+            && self.hard_reordered == 0
+            && self.valence_span_dev <= 1e-10
+            && self.valence_boys_rel_dev <= 1e-12
+    }
+}
+
+#[cfg(test)]
+/// Compare two VV-HV spaces from the SAME RHF built by two code paths, on
+/// the quantities each block is determined by to rounding. The caller
+/// checks shapes, block sizes and the hard-virtual subset/pivot order; a
+/// shape or block-size mismatch here reports a non-match.
+///
+/// The HARD block is compared column by column (sign-fixed, <= 1e-10,
+/// none reordered): it depends on the valence block only through its span,
+/// so it is determined to rounding.
+///
+/// The VALENCE block is NOT compared column by column. Its columns are the
+/// output of Boys localization, which stops once every Jacobi angle is
+/// below 1e-8, so they are fixed only to the Boys stopping tolerance, not
+/// to rounding. On benzene/6-31G (15 valence virtuals, 26 sweeps) two paths
+/// whose inputs differ in the last bits stop at iterates that differ by
+/// 6.7e-9 (|C|max 8.3). A 1e-10 column comparison passed before e45466457
+/// (dsyevd SCF eigensolver) only because those bits happened to line up;
+/// the change of RHF bits made it fail without any lmp2 change. What the
+/// valence block IS determined to rounding is compared instead: (i) its
+/// span, as the AO projector `C_l C_lᵀ` (<= 1e-10; measured 1.4e-13),
+/// which catches a leaked, missing or mis-projected valence direction; and
+/// (ii) the Boys functional, stationary at the optimum, so its error is
+/// second order in the 1e-8 orbital error (<= 1e-12 relative; measured
+/// 3e-15), which catches a missing, unconverged or wrong-branch
+/// localization.
+pub(crate) fn compare_vvhv_spaces(obs: &PreparedBasis, a: &VvHv, b: &VvHv) -> VvhvSpaceDiff {
+    if a.c_vloc.dim() != b.c_vloc.dim() || (a.n_valence, a.n_hard) != (b.n_valence, b.n_hard) {
+        return VvhvSpaceDiff {
+            hard_columns_match: false,
+            hard_reordered: 0,
+            valence_span_dev: f64::INFINITY,
+            valence_boys_rel_dev: f64::INFINITY,
+        };
+    }
+    let nl = a.n_valence;
+    let hard = |v: &VvHv| v.c_vloc.slice(s![.., nl..]).to_owned();
+    let (hard_columns_match, hard_reordered) =
+        match_columns_up_to_sign_and_order(&hard(a), &hard(b));
+    let val = |v: &VvHv| v.c_vloc.slice(s![.., ..nl]).to_owned();
+    let (cl_a, cl_b) = (val(a), val(b));
+    let valence_span_dev = cl_a
+        .dot(&cl_a.t())
+        .iter()
+        .zip(cl_b.dot(&cl_b.t()).iter())
+        .fold(0.0f64, |m, (x, y)| m.max((x - y).abs()));
+    let dip = dipole(obs, [0.0; 3]).expect("AO dipole integrals");
+    let (f_a, f_b) = (boys_functional(&cl_a, &dip), boys_functional(&cl_b, &dip));
+    VvhvSpaceDiff {
+        hard_columns_match,
+        hard_reordered,
+        valence_span_dev,
+        valence_boys_rel_dev: ((f_a - f_b) / f_b).abs(),
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -2355,40 +2451,10 @@ mod tests {
         assert_vvhv_matches_lu_oracle(&mol, &obs, &bs, &rhf);
     }
 
-    /// Boys functional `Σ_i |⟨i|r|i⟩|²` of the columns of `c`.
-    fn boys_functional(c: &Array2<f64>, dip: &[Array2<f64>; 3]) -> f64 {
-        dip.iter()
-            .map(|dm| {
-                column_expectations(dm, c)
-                    .iter()
-                    .map(|x| x * x)
-                    .sum::<f64>()
-            })
-            .sum()
-    }
-
-    /// Two VV-HV spaces from the SAME RHF built by two code paths agree.
-    ///
-    /// The HARD block is compared column by column (sign-fixed, <= 1e-10,
-    /// none reordered) after the hard-virtual subset/pivot order: it depends
-    /// on the valence block only through its span, so it is determined to
-    /// rounding.
-    ///
-    /// The VALENCE block is NOT compared column by column. Its columns are
-    /// the output of `boys_localize`, which stops once every Jacobi angle is
-    /// below 1e-8, so they are fixed only to the Boys stopping tolerance,
-    /// not to rounding. On benzene/6-31G (15 valence virtuals, 26 sweeps) two
-    /// paths whose inputs differ in the last bits stop at iterates that
-    /// differ by 6.7e-9 (|C|max 8.3). The 1e-10 column comparison passed
-    /// before e45466457 (dsyevd SCF eigensolver) only because those bits
-    /// happened to line up; the change of RHF bits made it fail without any
-    /// lmp2 change. What the valence block IS determined to rounding is
-    /// compared instead: (i) its span, as the AO projector `C_l C_lᵀ`
-    /// (<= 1e-10; measured 1.4e-13), which catches a leaked, missing or
-    /// mis-projected valence direction; and (ii) the Boys functional,
-    /// stationary at the optimum, so its error is second order in the 1e-8
-    /// orbital error (<= 1e-12 relative; measured 3e-15), which catches a
-    /// missing, unconverged or wrong-branch localization.
+    /// Two VV-HV spaces from the SAME RHF built by two code paths agree:
+    /// same shape, block sizes and hard-virtual subset/pivot order, and
+    /// [`compare_vvhv_spaces`] matches (strict hard columns; valence span and
+    /// Boys functional, see there for why not valence columns).
     fn assert_vvhv_spaces_match(
         obs: &PreparedBasis,
         new: (&VvHv, &[usize]),
@@ -2407,29 +2473,8 @@ mod tests {
             "{what}: an empty block makes the test vacuous"
         );
         assert_eq!(h_new, h_old, "{what}: hard-virtual subset/order differs");
-
-        let nl = v_new.n_valence;
-        let hard = |v: &VvHv| v.c_vloc.slice(s![.., nl..]).to_owned();
-        let (matched, permuted) = match_columns_up_to_sign_and_order(&hard(v_new), &hard(v_old));
-        assert!(
-            matched && permuted == 0,
-            "{what}: hard virtuals are not the reference columns (<= 1e-10, sign; {permuted} reordered)"
-        );
-
-        let val = |v: &VvHv| v.c_vloc.slice(s![.., ..nl]).to_owned();
-        let (cl_new, cl_old) = (val(v_new), val(v_old));
-        let dp = max_abs_dev(&cl_new.dot(&cl_new.t()), &cl_old.dot(&cl_old.t()));
-        assert!(dp <= 1e-10, "{what}: valence span differs ({dp:.2e})");
-        let dip = dipole(obs, [0.0; 3]).unwrap();
-        let (f_new, f_old) = (
-            boys_functional(&cl_new, &dip),
-            boys_functional(&cl_old, &dip),
-        );
-        let df = ((f_new - f_old) / f_old).abs();
-        assert!(
-            df <= 1e-12,
-            "{what}: valence Boys functional {f_new:.15} vs {f_old:.15} (rel {df:.2e})"
-        );
+        let d = compare_vvhv_spaces(obs, v_new, v_old);
+        assert!(d.matches(), "{what}: {d:?}");
     }
 
     /// The VV-HV space built on the Cholesky `solve_spd` against the one
