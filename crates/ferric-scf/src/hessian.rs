@@ -945,10 +945,40 @@ fn preflight_problem(
     if let Some(what) = operator_refusal(op) {
         return Ok(Some(what));
     }
+    if config.xc.is_some() {
+        return Ok(Some(xc_refusal(reference).to_string()));
+    }
     if let Some(what) = config_refusal(config)? {
         return Ok(Some(what.to_string()));
     }
     Ok(reference_config_refusal(reference, config).map(str::to_string))
+}
+
+/// Why a Hartree-Fock Hessian refuses a Kohn-Sham configuration, naming where
+/// the KS Hessian lives for that reference. Closed shell: the analytic
+/// moving-grid KS Hessian (`rks_moving_grid_hessian`). Open shell: there is no
+/// analytic spin-polarized KS Hessian at all (UKS and ROKS frequencies are
+/// central differences of the analytic gradient), so the refusal says so
+/// rather than letting a UKS/ROKS request be read as merely misrouted. Without
+/// this refusal the UHF/ROHF Hessian would differentiate the Hartree-Fock
+/// energy at the KS orbitals and return a wrong Hessian silently.
+fn xc_refusal(reference: Reference) -> &'static str {
+    match reference {
+        Reference::Rhf => {
+            "Kohn-Sham DFT (xc; the closed-shell Kohn-Sham Hessian is the analytic \
+             moving-grid one, hessian = \"analytic-moving-grid\", which \"auto\" selects)"
+        }
+        Reference::Uhf => {
+            "open-shell Kohn-Sham DFT (UKS xc; no analytic spin-polarized Kohn-Sham Hessian \
+             exists: not yet implemented, next unit: spin-polarized XC kernel; UKS frequencies \
+             are central differences of the analytic UKS gradient, hessian = \"auto\" or \"fd\")"
+        }
+        Reference::Rohf => {
+            "open-shell Kohn-Sham DFT (ROKS xc; no analytic spin-polarized Kohn-Sham Hessian \
+             exists: not yet implemented, next unit: spin-polarized XC kernel; ROKS frequencies \
+             are central differences of the analytic ROKS gradient, hessian = \"auto\" or \"fd\")"
+        }
+    }
 }
 
 /// Configuration refusals that depend on the reference: the ROHF Hessian is
@@ -1356,7 +1386,6 @@ fn operator_refusal(op: Operator) -> Option<String> {
 fn config_refusal(config: &RhfConfig) -> Result<Option<&'static str>, FerricError> {
     let named = |s: &Option<String>| s.as_deref().is_some_and(|v| !v.is_empty());
     let checks = [
-        (config.xc.is_some(), "Kohn-Sham DFT (xc)"),
         (
             crate::cosx_gradient::scf_exchange_is_cosx(config, false)?,
             "COSX seminumerical exchange",
