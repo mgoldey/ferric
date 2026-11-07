@@ -464,7 +464,8 @@ pub struct DfJkRoute {
     /// Operator of the RI-J and ω = 0 RI-K fits (the SCF's Coulomb operator).
     pub op: Operator,
     /// Resolved three-index memory budget of the SCF, reused to bound the
-    /// gradient's own three-index source.
+    /// gradient's transient three-index block (a quarter of it, at most
+    /// `df_gradient::GRADIENT_3C_BLOCK_CAP_BYTES`).
     pub budget_bytes: usize,
 }
 

@@ -74,13 +74,15 @@
 //!
 //! ## Memory
 //!
-//! The raw `(P|μν)` tensor is streamed through a budget-bounded
-//! `ThreeIndexSource` (in core, or spilled / recomputed). Resident on top of
-//! it: the `(naux, m_s²)` exchange intermediates per channel (`m_s` = density
-//! rank, i.e. the occupied count), a handful of `(naux, naux)` metric
-//! matrices, and per rayon worker one `(n_P, nao, nao)` weight slab for the
-//! current auxiliary shell. All are charged to the global memory pool before
-//! allocation.
+//! The raw `(P|μν)` tensor is read once, so it is never stored: it is
+//! computed one aux-shell-aligned block at a time (at most
+//! [`GRADIENT_3C_BLOCK_CAP_BYTES`](crate::df_gradient::GRADIENT_3C_BLOCK_CAP_BYTES)
+//! and a quarter of the budget), contracted into `d_P` / `L^s`, and freed.
+//! Resident beside that block: the `(naux, m_s²)` exchange intermediates per
+//! channel (`m_s` = density rank, i.e. the occupied count), a handful of
+//! `(naux, naux)` metric matrices, and per rayon worker one `(n_P, nao, nao)`
+//! weight slab for the current auxiliary shell. All are charged to the global
+//! memory pool before allocation.
 //!
 //! ## MPI
 //!
@@ -99,7 +101,6 @@ use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::blas_threads::{opt_in_blas_threads, with_blas_threads};
 use ferric_integrals::engine::Engine;
 use ferric_integrals::operator::Operator;
-use ferric_integrals::three_index_source::ThreeIndexSource;
 use ferric_integrals::threeindex::coulomb_metric_2c;
 use ndarray::{Array1, Array2, Array3, Axis};
 use ndarray_linalg::cholesky::{FactorizeC, SolveC};
@@ -221,6 +222,46 @@ pub fn df_k_gradient_any(
     df_jk_gradient(natoms, obs, dfbs, op, None, &ch, budget_bytes)
 }
 
+/// Largest raw `(P|μν)` block the gradient's one-pass contraction holds.
+///
+/// The block is transient (computed, contracted, freed), so width only trades
+/// load balance across the aux shells of one `eri3_block` call against
+/// memory; the values do not depend on it. 512 MiB is 127 aux rows at
+/// nao = 724.
+pub const GRADIENT_3C_BLOCK_CAP_BYTES: usize = 512 * 1024 * 1024;
+
+/// Aux rows per one-pass block: [`GRADIENT_3C_BLOCK_CAP_BYTES`] or a quarter
+/// of the budget, whichever is smaller, and at least one row (a whole shell
+/// is always admitted by [`aux_shell_blocks`]).
+fn gradient_block_rows(nao: usize, budget_bytes: usize) -> usize {
+    let row = nao.saturating_mul(nao).saturating_mul(8).max(1);
+    ((budget_bytes / 4).min(GRADIENT_3C_BLOCK_CAP_BYTES) / row).max(1)
+}
+
+/// Split the aux functions into contiguous `[p0, p1)` blocks of whole shells,
+/// each at most `max_rows` rows unless a single shell is wider. Never splitting
+/// a shell keeps `eri3_block` from computing a straddling shell twice.
+fn aux_shell_blocks(offsets: &[usize], dims: &[usize], max_rows: usize) -> Vec<(usize, usize)> {
+    let mut blocks = Vec::new();
+    let mut start: Option<usize> = None;
+    let mut end = 0;
+    for (&off, &dim) in offsets.iter().zip(dims) {
+        match start {
+            Some(p0) if off + dim - p0 > max_rows => {
+                blocks.push((p0, end));
+                start = Some(off);
+            }
+            None => start = Some(off),
+            _ => {}
+        }
+        end = off + dim;
+    }
+    if let Some(p0) = start {
+        blocks.push((p0, end));
+    }
+    blocks
+}
+
 /// Divided difference of the truncated inverse `f(λ) = 1/λ` (λ kept), `0`
 /// (dropped) — the Daleckii–Krein kernel of `∂M` (see the module doc).
 #[inline]
@@ -320,17 +361,41 @@ pub fn df_jk_gradient(
     t_st.end();
     let t_st = ferric_core::timing::Stage::start("dfg:3c-pass");
 
-    // ---- one streamed pass over the raw (P|μν): d_P for J, L^s for K ----
-    let mut source = ThreeIndexSource::build(op, obs, dfbs, budget_bytes)?;
+    // ---- one pass over the raw (P|μν): d_P for J, L^s for K ----
+    // The tensor is read exactly once, so it is computed one aux-shell-aligned
+    // block at a time and never stored: storing it (the old
+    // `ThreeIndexSource`, in core when it fit the budget) cost the same
+    // integrals plus a resident copy of the whole tensor — 7.6 GB packed for
+    // danuglipron/def2-SVP (nao 724, naux 3635), the job's peak. Each row's
+    // values are the same `eri3_block` writes (write-once per element), and
+    // every row is contracted independently, so the result does not depend
+    // on the blocking.
+    let blocks = aux_shell_blocks(
+        dfbs.shell_offsets(),
+        dfbs.shell_dims(),
+        gradient_block_rows(n, budget_bytes),
+    );
+    let block_bytes = blocks
+        .iter()
+        .map(|&(p0, p1)| p1 - p0)
+        .max()
+        .unwrap_or(0)
+        .saturating_mul(n)
+        .saturating_mul(n)
+        .saturating_mul(8);
+    let block_charge = ferric_core::memory::pool::reserve_global(
+        "DF-JK gradient 3-index block (computed once, not stored)",
+        block_bytes,
+    )?;
     let mut d_p = Array1::<f64>::zeros(naux);
     let mut ls: Vec<Array2<f64>> = factors
         .iter()
         .map(|(x, _)| Array2::<f64>::zeros((naux, x.ncols() * x.ncols())))
         .collect();
-    source.for_each_block(|blk| {
-        let b = blk.data.shape()[0];
-        let p0 = blk.p0;
-        let data = &blk.data;
+    for &(p0, p1) in &blocks {
+        let block = ferric_integrals::threeindex::eri3_block(op, obs, dfbs, p0, p1)?;
+        let b = p1 - p0;
+        let data = &block;
         if let Some(dj) = j_density {
             // Disjoint writes per aux row: order-independent, bit-identical.
             let vals: Vec<f64> = (0..b)
@@ -365,9 +430,8 @@ pub fn df_jk_gradient(
                 }
             }
         }
-        Ok(())
-    })?;
-    drop(source);
+    }
+    drop(block_charge);
     t_st.end();
     let t_st = ferric_core::timing::Stage::start("dfg:metric-weights");
 
@@ -922,5 +986,42 @@ mod tests {
             run_on(4),
             "par_gemm must not depend on the thread count"
         );
+    }
+
+    /// Blocks tile `[0, naux)` exactly, in order, never split a shell, and stay
+    /// within `max_rows` except for a single shell wider than it. FAILS if a
+    /// boundary row is dropped or duplicated (the gradient would then miss or
+    /// double-count `d_P` rows) or if a shell is split.
+    #[test]
+    fn aux_shell_blocks_tile_whole_shells() {
+        let dims = [1usize, 3, 5, 1, 7, 9, 3, 1];
+        let offsets: Vec<usize> = dims
+            .iter()
+            .scan(0, |acc, &d| {
+                let o = *acc;
+                *acc += d;
+                Some(o)
+            })
+            .collect();
+        let naux: usize = dims.iter().sum();
+        for max_rows in [1, 4, 8, 9, 10, 16, naux, usize::MAX] {
+            let blocks = aux_shell_blocks(&offsets, &dims, max_rows);
+            assert_eq!(blocks.first().unwrap().0, 0, "max_rows {max_rows}");
+            assert_eq!(blocks.last().unwrap().1, naux, "max_rows {max_rows}");
+            for w in blocks.windows(2) {
+                assert_eq!(w[0].1, w[1].0, "gap/overlap at max_rows {max_rows}");
+            }
+            for &(p0, p1) in &blocks {
+                assert!(offsets.contains(&p0), "block starts mid-shell");
+                assert!(p1 == naux || offsets.contains(&p1), "block ends mid-shell");
+                let one_shell = offsets.iter().filter(|&&o| o >= p0 && o < p1).count() == 1;
+                assert!(p1 - p0 <= max_rows || one_shell, "oversized block");
+            }
+        }
+        assert_eq!(
+            aux_shell_blocks(&offsets, &dims, usize::MAX),
+            vec![(0, naux)]
+        );
+        assert!(aux_shell_blocks(&[], &[], 4).is_empty());
     }
 }
