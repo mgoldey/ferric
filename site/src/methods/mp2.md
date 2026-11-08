@@ -187,13 +187,14 @@ c<sub>OS</sub> = 1.3 by default) with a minimax Laplace quadrature
 (`n_quad` must be 3, 5 or 7; anything else is an error). There is
 no c<sub>SS</sub>: dropping the same-spin term is what lets the denominator
 factorize. With c<sub>OS</sub> = 1.0 it reproduces the opposite-spin component
-of RI-MP2 to quadrature error, which is the test anchor. Three formulations
+of RI-MP2 to quadrature error, which is the test anchor. Four formulations
 (`sos_formulation`):
 
 - `mo` (default) and `ao` are both exact and agree to round-off.
 - `ao-sparse` restricts each Boys-localized orbital's pseudo-density to an AO
-  domain of radius `domain_cutoff_bohr` (required, no default). It is the one
-  approximate variant.
+  domain of radius `domain_cutoff_bohr` (required, no default). Approximate.
+- `local` keeps, for each Boys-localized orbital, the localized virtuals within
+  `domain_cutoff_bohr` (required, no default). Approximate; see below.
 
 **What is measured for `ao-sparse`:**
 
@@ -219,8 +220,46 @@ comment) are measurements, not assertions. The alkane sweep is kept in the proje
 than the molecule. That points to a finite decay length rather than strict
 saturation: no single radius is shown to suffice at every size.
 
-**What is not claimed:** any speedup. The domains discard contributions but
-the tensor algebra is still dense, so there are no timings to report.
+**What is not claimed for `ao-sparse`:** any speedup. The domains discard
+contributions, but every tensor and loop stays `naux·nbas²`, so the cutoff
+changes the energy and not the cost. Measured on C20H42/6-31G at 8 Bohr: 44-47 s
+for the SOS stage and 12.6 GB peak, against 5.4 s and 2.0 GB for `mo`.
+
+**`local`** (`sos_formulation = "local"`, `domain_cutoff_bohr` required) is the
+approximate variant whose radius sets the cost. Boys-localized occupied
+orbitals are paired with VV-HV localized virtuals (the space the amplitude-
+threshold local MP2 uses). Each occupied orbital keeps the virtuals whose
+centroid lies within the radius. That sets the inner dimension of the dense
+`naux × |T| × naux` Gram product per quadrature point (`|T|` instead of
+`nocc·nvir`), and the memory, `naux·|T|`. The aux metric stays the global
+Coulomb metric, so the cost is still cubic. A vacuous radius reproduces `mo`
+to 1e-15 (`sos_local_infinite_cutoff_reproduces_mo`).
+
+Measured on n-alkanes (6-31G / cc-pVDZ-RI, frozen core, `n_quad` = 7,
+2026-11-08, one run per point):
+
+| | C20 | C32 | C40 | C48 |
+|---|---|---|---|---|
+| `local` 8 Bohr, relative error | 9.9e-4 | 1.07e-3 | 1.09e-3 | 1.11e-3 |
+| `local` 10 Bohr, relative error | 1.6e-4 | 1.7e-4 | 1.8e-4 | 1.8e-4 |
+| `local` 8 Bohr, `|T|`/(`nocc·nvir`) | 0.28 | 0.18 | 0.15 | 0.12 |
+| `local` 8 Bohr, SOS stage (s) / peak RSS (GB) | 5.2 / 1.1 | 19.0 / 2.0 | 37.4 / 2.9 | 72.4 / 3.8 |
+| `mo`, SOS stage (s) / peak RSS (GB) | 5.4 / 2.0 | 88.9 / 5.9 | 71.6 / 11.0 | killed above 15 GB |
+
+The relative error at a fixed radius stays flat with size, and the per-orbital
+virtual domain is saturated (about 54 virtuals at 8 Bohr from C20 on). `|T|`
+falls relative to `nocc·nvir` roughly as 1/N. The timings are single runs on a
+shared machine (the `mo` C32 run is slower than C40, so at least one of those
+runs is disturbed), so no exponent is quoted here. At C48 the `mo` path did
+not fit in 15 GB, while `local` peaked at 3.8 GB.
+
+Two constructions were measured to FAIL and are not used. Keeping the virtual
+side in AOs and cutting its index by distance overestimated |E_OS| by 8.6% to
+0.6% at 6 to 10 Bohr (C12H26/6-31G). Cutting any orbital's AO expansion by
+distance breaks occupied/virtual orthogonality, and the resulting charge
+couples through the Coulomb tail. `local` therefore drops only whole
+(occupied, virtual) pairs, and chooses the AO neighbourhood of the integrals by
+Schwarz significance. STO-3G hid the failure.
 
 ## Exact and local MP2
 
