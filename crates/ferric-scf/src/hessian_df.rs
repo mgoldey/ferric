@@ -145,7 +145,7 @@ use ferric_integrals::three_index_source::ThreeIndexSource;
 use ferric_integrals::threeindex::coulomb_metric_2c;
 use ndarray::{s, Array1, Array2};
 use ndarray_linalg::cholesky::{CholeskyFactorized, FactorizeC, SolveC};
-use ndarray_linalg::{Eigh, Inverse, UPLO};
+use ndarray_linalg::{Inverse, UPLO};
 use rayon::prelude::*;
 
 /// Largest number of auxiliary shells whose per-shell partials are alive at
@@ -301,10 +301,23 @@ pub(crate) fn check_metric_conditioning_for(
     what: MetricUse,
 ) -> Result<(), FerricError> {
     let label = metric_label(what);
-    // Classified by DfK's rule (`metric_lindep_cut`) in check_metric_spectrum.
-    let (lam, _) = with_blas_threads(opt_in_blas_threads(), || v.eigh(UPLO::Upper))
+    // Classified by DfK's rule (`metric_lindep_cut`) in check_metric_spectrum,
+    // on the spectrum of the same divide-and-conquer solver DfK uses.
+    let lam = metric_spectrum(v)
         .map_err(|e| FerricError::Lapack(format!("analytic {label} Hessian: V eigh: {e}")))?;
     check_metric_spectrum(&lam, what)
+}
+
+/// Ascending spectrum of the metric by divide and conquer (`dsyevd`), the solver
+/// `DfK::v_inv_sqrt_lindep` and the DF gradient use, so every consumer of the
+/// metric classifies its modes from the same eigenvalues (and
+/// `metric_lindep_cut` places its cut where no solver's rounding moves one).
+/// The QR `dsyev` it replaced took 3.5 s on one core at naux = 1538.
+pub(crate) fn metric_spectrum(v: &Array2<f64>) -> Result<Array1<f64>, FerricError> {
+    with_blas_threads(opt_in_blas_threads(), || {
+        ferric_core::linalg::eigvalsh_dc(v, ferric_core::linalg::Uplo::Upper)
+    })
+    .map(Array1::from)
 }
 
 fn metric_label(what: MetricUse) -> &'static str {
@@ -381,7 +394,7 @@ pub fn probe_metric(dfbs: &PreparedBasis, op: Operator) -> Result<(), FerricErro
 #[doc(hidden)]
 pub fn probe_exchange_metric(dfbs: &PreparedBasis, op: Operator) -> Result<(), FerricError> {
     let v = coulomb_metric_2c(op, dfbs)?;
-    let (lam, _) = with_blas_threads(opt_in_blas_threads(), || v.eigh(UPLO::Upper))
+    let lam = metric_spectrum(&v)
         .map_err(|e| FerricError::Lapack(format!("analytic RI-K Hessian: V eigh: {e}")))?;
     let cut = metric_lindep_cut(&lam.to_vec());
     if cut.n_dropped > 0 {
@@ -802,4 +815,34 @@ fn shell_partial_2c(
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ferric_core::basis;
+    use ferric_core::mol::Molecule;
+
+    /// The RI-K Hessian's probe classifies the exchange metric's modes exactly
+    /// as `DfK` does (`v_inv_sqrt_lindep`: `eigh_dc` + `metric_lindep_cut`), on
+    /// the long-range erf metric of water / def2-universal-jkfit, which drops
+    /// modes. Catches: a probe with another cut rule or on another matrix, and
+    /// a miscounted refusal.
+    #[test]
+    fn the_rik_probe_drops_the_modes_dfk_drops() {
+        let xyz = "3\nwater\nO 0 0 0.117790\nH 0 0.755453 -0.471161\nH 0 -0.755453 -0.471161\n";
+        let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
+        let dfbs =
+            PreparedBasis::new(&mol, &basis::bundled("def2-universal-jkfit").unwrap()).unwrap();
+        let op = Operator::erf(0.33);
+        let v = coulomb_metric_2c(op, &dfbs).unwrap();
+        let (lam, _) = ferric_core::linalg::eigh_dc(&v, ferric_core::linalg::Uplo::Upper).unwrap();
+        let want = metric_lindep_cut(&lam).n_dropped;
+        assert!(want > 0, "fixture must drop modes");
+        let err = probe_exchange_metric(&dfbs, op).unwrap_err().to_string();
+        assert!(
+            err.contains(&format!("has {want} dropped mode(s)")),
+            "DfK drops {want}; the probe says: {err}"
+        );
+    }
 }
