@@ -20,6 +20,12 @@
 //! FD tolerance: central differences at `h` and `2h` differ by three times
 //! the `O(h²)` truncation error at `h`; the bar is that difference plus
 //! `4·δE/h`, `δE` the SCF energy convergence (1e-11 Ha).
+// RI-J pinned to the f64 tensor (`ri_j_precision: Some(F64)` in every config
+// here): these tests validate f64 implementation code against finite
+// differences, another tier or f64 reference values at bars below the f32
+// default's effect (its energy shift is ~1e-6 Ha, and its energy surface jitters
+// by ~1e-7..1e-6 Ha between nearby geometries; site/src/methods/scf.md, "RI-J
+// tensor precision").
 
 use std::path::PathBuf;
 
@@ -86,6 +92,7 @@ fn nh2() -> Molecule {
 
 fn config(pcm: Option<PcmConfig>, xc: Option<&str>) -> RhfConfig {
     RhfConfig {
+        ri_j_precision: Some(ferric_scf::df_j::RiJPrecision::F64),
         max_iter: 300,
         energy_conv: E_CONV,
         density_conv: 1e-9,

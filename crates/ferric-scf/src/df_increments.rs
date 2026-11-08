@@ -318,6 +318,10 @@ pub fn solve_rhf_with_df_increments(
         Some(aux),
         ooc_budget,
         0.0,
+        // The increments correct an EXACT reference Fock matrix, so their DF
+        // error is what the scheme measures: f64 unless asked otherwise.
+        base.ri_j_precision
+            .unwrap_or(crate::df_j::RiJPrecision::F64),
     )?;
     let mut df_j = df_j_opt.ok_or_else(|| {
         FerricError::General(

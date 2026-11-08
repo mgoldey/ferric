@@ -123,12 +123,20 @@ struct OperatorMeta {
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct RouteMeta {
+pub(super) struct RouteMeta {
     j_aux: Option<String>,
     k_aux: Option<String>,
     rsh_k: Option<(String, f64)>,
     op: OperatorMeta,
     budget_bytes: usize,
+    /// `"f32"` / `"f64"`. Absent in a checkpoint written before the field
+    /// existed, whose RI-J tensor was f64.
+    #[serde(default = "f64_spelling")]
+    ri_j_precision: String,
+}
+
+fn f64_spelling() -> String {
+    crate::df_j::RiJPrecision::F64.as_str().to_string()
 }
 
 #[derive(Serialize, Deserialize)]
@@ -247,13 +255,14 @@ fn operator_from_meta(meta: OperatorMeta) -> Result<Operator, CheckpointError> {
     Ok(op)
 }
 
-fn route_to_meta(route: &DfJkRoute) -> RouteMeta {
+pub(super) fn route_to_meta(route: &DfJkRoute) -> RouteMeta {
     let DfJkRoute {
         j_aux,
         k_aux,
         rsh_k,
         op,
         budget_bytes,
+        ri_j_precision,
     } = route;
     RouteMeta {
         j_aux: j_aux.clone(),
@@ -261,16 +270,19 @@ fn route_to_meta(route: &DfJkRoute) -> RouteMeta {
         rsh_k: rsh_k.clone(),
         op: operator_to_meta(op),
         budget_bytes: *budget_bytes,
+        ri_j_precision: ri_j_precision.as_str().to_string(),
     }
 }
 
-fn route_from_meta(meta: RouteMeta) -> Result<DfJkRoute, CheckpointError> {
+pub(super) fn route_from_meta(meta: RouteMeta) -> Result<DfJkRoute, CheckpointError> {
     Ok(DfJkRoute {
         j_aux: meta.j_aux,
         k_aux: meta.k_aux,
         rsh_k: meta.rsh_k,
         op: operator_from_meta(meta.op)?,
         budget_bytes: meta.budget_bytes,
+        ri_j_precision: crate::df_j::RiJPrecision::parse_config_str(&meta.ri_j_precision)
+            .map_err(|e| CheckpointError::Format(e.to_string()))?,
     })
 }
 

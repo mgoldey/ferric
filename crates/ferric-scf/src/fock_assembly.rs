@@ -25,7 +25,7 @@
 //! are convergence-critical — folding them into one spin-generic driver is a
 //! separate, carefully-validated refactor, not a drive-by extraction.
 
-use crate::df_j::DfJ;
+use crate::df_j::{DfJ, RiJPrecision};
 use crate::df_k::DfK;
 use crate::fock::KBuilder;
 use crate::split_rij::RiJ;
@@ -65,6 +65,12 @@ pub(crate) const DEFAULT_JK_AUX: &str = "def2-universal-jkfit";
 /// pairs whose rows can exceed it, see
 /// [`PairScreen`](ferric_integrals::three_index_source::PairScreen). `<= 0`
 /// keeps every pair. A source shared with DF-K is never screened.
+///
+/// `j_precision` is the RESOLVED [`RiJPrecision`] of the RI-J tensor
+/// (`RiJPrecision::resolve(config.ri_j_precision)`); the builder's own
+/// [`RiJ::precision`](crate::split_rij::RiJ::precision) says what was used
+/// (an f32 request falls back to f64 when the f32 tier declines, and
+/// Split-RI-J has no tensor).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn build_df_jk<'a>(
     ctx: &'a ParallelContext,
@@ -75,9 +81,30 @@ pub(crate) fn build_df_jk<'a>(
     k_aux: Option<&str>,
     ooc_budget: usize,
     j_pair_thresh: f64,
+    j_precision: RiJPrecision,
 ) -> Result<(Option<RiJ<'a>>, Option<DfK<'a>>), FerricError> {
-    let out = build_df_jk_impl(ctx, mol, op, prep, j_aux, k_aux, ooc_budget, j_pair_thresh)?;
+    let out = build_df_jk_impl(
+        ctx,
+        mol,
+        op,
+        prep,
+        j_aux,
+        k_aux,
+        ooc_budget,
+        j_pair_thresh,
+        j_precision,
+    )?;
     note_df_k_built(out.1.is_some());
+    if let (Some(j), Some(rl)) = (out.0.as_ref(), crate::runlog::log()) {
+        rl.note(
+            "ri_j_tensor",
+            serde_json::json!({
+                "aux": j_aux,
+                "precision_requested": j_precision.as_str(),
+                "precision": j.precision().as_str(),
+            }),
+        );
+    }
     Ok(out)
 }
 
@@ -113,6 +140,7 @@ fn build_df_jk_impl<'a>(
     k_aux: Option<&str>,
     ooc_budget: usize,
     j_pair_thresh: f64,
+    j_precision: RiJPrecision,
 ) -> Result<(Option<RiJ<'a>>, Option<DfK<'a>>), FerricError> {
     // `Some("")` is the explicit "do not density-fit" sentinel (see
     // `solve_rhf`); UHF/ROHF pass the config straight through, so honour it
@@ -181,7 +209,14 @@ fn build_df_jk_impl<'a>(
                             j_pair_thresh,
                         )?))
                     } else {
-                        RiJ::Stored(DfJ::from_source(raw, op, &dfbs, ooc_budget, Some(ctx))?)
+                        RiJ::Stored(DfJ::from_source(
+                            raw,
+                            op,
+                            &dfbs,
+                            ooc_budget,
+                            Some(ctx),
+                            j_precision,
+                        )?)
                     },
                 );
                 yield_device_to_k(&mut df_j, &df_k);
@@ -195,6 +230,7 @@ fn build_df_jk_impl<'a>(
                 ooc_budget,
                 Some(ctx),
                 j_pair_thresh,
+                j_precision,
             )?));
             let df_k = Some(DfK::new_banded(op, prep, &dfbs, ooc_budget, Some(ctx))?);
             return Ok((df_j, df_k));
@@ -210,6 +246,7 @@ fn build_df_jk_impl<'a>(
             (prep, &dfbs),
             ooc_budget,
             j_pair_thresh,
+            j_precision,
         )?)
     } else {
         None
@@ -254,6 +291,7 @@ fn j_only_builder<'a>(
     (prep, dfbs): (&PreparedBasis, &PreparedBasis),
     ooc_budget: usize,
     j_pair_thresh: f64,
+    j_precision: RiJPrecision,
 ) -> Result<RiJ<'a>, FerricError> {
     use crate::split_rij::SplitRiJ;
     use ferric_integrals::three_index_source::{jk_storage, JkStorage};
@@ -273,7 +311,14 @@ fn j_only_builder<'a>(
         }
         JkStorage::Auto if single && SplitRiJ::supports(op, prep, dfbs) => {
             let v = ferric_integrals::threeindex::coulomb_metric_2c(op, dfbs)?;
-            if !DfJ::stored_fits_in_memory(op, (prep, dfbs), ooc_budget, j_pair_thresh, &v) {
+            if !DfJ::stored_fits_in_memory(
+                op,
+                (prep, dfbs),
+                ooc_budget,
+                j_pair_thresh,
+                &v,
+                j_precision,
+            ) {
                 note_auto_split();
                 return Ok(RiJ::Split(Box::new(SplitRiJ::with_metric(
                     op,
@@ -294,6 +339,7 @@ fn j_only_builder<'a>(
         ooc_budget,
         Some(ctx),
         j_pair_thresh,
+        j_precision,
     )?))
 }
 

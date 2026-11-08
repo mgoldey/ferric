@@ -428,6 +428,10 @@ pub struct KsFit<'a> {
     pub aux: &'a dyn Fn() -> Result<PreparedBasis, FerricError>,
     /// Resident three-index budget handed to the fitters, bytes.
     pub budget_bytes: usize,
+    /// Storage precision of the SCF's RI-J tensor, which the RI-J terms and
+    /// the response J follow (unused for the RI-K fit; f64 for the injected
+    /// fixed-grid SCF, whose `DfJ` is f64).
+    pub precision: crate::df_j::RiJPrecision,
 }
 
 /// The RI-J fit (the same type as the RI-K one).
@@ -448,14 +452,22 @@ pub struct KsFits<'a> {
 /// The RI-J auxiliary basis name and budget of the SCF, or `None` for exact J:
 /// the recorded route when the SCF ran the production path, else the name the
 /// configuration states (the injected fixed-grid SCF records no route).
-fn resolve_j_fit(rks: &ScfResult, config: &RhfConfig) -> Option<(String, usize)> {
+fn resolve_j_fit(
+    rks: &ScfResult,
+    config: &RhfConfig,
+) -> Option<(String, usize, crate::df_j::RiJPrecision)> {
     if let Some(r) = crate::gradient::active_df_route(rks) {
-        return r.j_aux.clone().map(|n| (n, r.budget_bytes));
+        return r
+            .j_aux
+            .clone()
+            .map(|n| (n, r.budget_bytes, r.ri_j_precision));
     }
+    // No route: the injected fixed-grid SCF, whose `DfJ::new` is f64.
     let name = config.df_j_aux.clone().filter(|v| !v.is_empty())?;
     Some((
         name,
         crate::rhf::resolve_three_index_budget(config.three_index_budget_bytes),
+        crate::df_j::RiJPrecision::F64,
     ))
 }
 
@@ -533,7 +545,14 @@ pub fn rks_fixed_grid_fock_residual(
     if let Some(fit) = fits.j {
         j.fill(0.0);
         let dfbs = (fit.aux)()?;
-        crate::df_j::DfJ::new(bounds.op, prep, &dfbs, fit.budget_bytes)?.build(d, &mut j)?;
+        crate::df_j::DfJ::new_with_precision(
+            bounds.op,
+            prep,
+            &dfbs,
+            fit.budget_bytes,
+            fit.precision,
+        )?
+        .build(d, &mut j)?;
     }
     if let Some(fit) = fits.k {
         k.fill(0.0);
@@ -726,14 +745,15 @@ fn ks_hessian_parts_in_mode(
     let hf_config = checklist_config(rks, config, exx)?;
     check_supported_except_functional(Reference::Rhf, mol, prep, op, bounds, rks, &hf_config)?;
     let aux = |name: String| move || crate::df_gradient::aux_basis(mol, &name);
-    let j_factory = j_fit.clone().map(|(n, _)| aux(n));
+    let j_factory = j_fit.clone().map(|(n, _, _)| aux(n));
     let k_factory = k_fit.clone().map(|(n, _)| aux(n));
     let jf = j_factory
         .as_ref()
         .zip(j_fit)
-        .map(|(f, (_, budget_bytes))| KsFit {
+        .map(|(f, (_, budget_bytes, precision))| KsFit {
             aux: f,
             budget_bytes,
+            precision,
         });
     let kf = k_factory
         .as_ref()
@@ -741,6 +761,7 @@ fn ks_hessian_parts_in_mode(
         .map(|(f, (_, budget_bytes))| KsFit {
             aux: f,
             budget_bytes,
+            precision: crate::df_j::RiJPrecision::F64,
         });
     let fits = KsFits {
         j: jf.as_ref(),
@@ -832,7 +853,7 @@ fn fitted_terms(
     let mut skeleton = Array2::<f64>::zeros((n3, n3));
     let mut first_order = vec![Array2::<f64>::zeros(d.dim()); n3];
     if let Some(fit) = fits.j {
-        let rij = crate::hessian_df::rij_terms_with_aux(
+        let rij = crate::hessian_df::rij_terms_with_aux_at_precision(
             natoms,
             prep,
             (fit.aux)()?,
@@ -840,6 +861,7 @@ fn fitted_terms(
             fit.budget_bytes,
             d,
             &mutants.rij,
+            fit.precision,
         )?;
         if !mutants.exact_j_skeleton {
             skeleton += &rij.skeleton;
@@ -911,11 +933,12 @@ fn cphf_fitters(
     FerricError,
 > {
     let df_j = match fits.j {
-        Some(fit) if !mutants.exact_j_response => Some(crate::df_j::DfJ::new(
+        Some(fit) if !mutants.exact_j_response => Some(crate::df_j::DfJ::new_with_precision(
             op,
             prep,
             &(fit.aux)()?,
             fit.budget_bytes,
+            fit.precision,
         )?),
         _ => None,
     };

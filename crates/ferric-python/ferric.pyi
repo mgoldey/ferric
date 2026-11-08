@@ -363,6 +363,7 @@ def run_qmmm(
     guess: str | None = None,
     mm_topology: MmTopology | None = None,
     thole_a: float | None = None,
+    ri_j_precision: str | None = None,
 ) -> QmmmResult:
     """Embedded SCF ("rhf" default, "uhf", "rks" or "uks") energy + QM gradient + MM forces + full gradient.
 
@@ -420,6 +421,7 @@ def run_optimize_qmmm(
     scf_energy_conv: float | None = None,
     scf_density_conv: float | None = None,
     scf_warm_start: bool | None = None,
+    scf_ri_j_precision: str | None = None,
 ) -> QmmmOptimizeResult:
     """Optimize a QmmmSystem's geometry. Real QM atoms always move; MM atoms move per move_mm.
 
@@ -815,6 +817,13 @@ class SymmetricRhfResult:
 class RhfResult:
     """Result of a closed-shell RHF (or run_ksdft KS-DFT) calculation."""
 
+    @property
+    def ri_j_precision(self) -> str | None:
+        """Storage precision of the RI-J tensor the SCF actually used:
+        ``"f32"`` (the default; f64 accumulation) or ``"f64"`` (the
+        ``ri_j_precision="f64"`` opt-out, or an f32 request whose tensor did
+        not fit). ``None`` when J was not density-fitted."""
+        ...
     @property
     def precision(self) -> dict[str, Any]:
         """Precision provenance: ``{"precision": "f64" | "mixed",
@@ -1857,6 +1866,13 @@ class RsMp2RpaResult:
 class DftResult:
     """Result of a KS-DFT calculation."""
 
+    @property
+    def ri_j_precision(self) -> str | None:
+        """Storage precision of the RI-J tensor the SCF actually used:
+        ``"f32"`` (the default; f64 accumulation) or ``"f64"`` (the
+        ``ri_j_precision="f64"`` opt-out, or an f32 request whose tensor did
+        not fit). ``None`` when J was not density-fitted."""
+        ...
     @property
     def precision(self) -> dict[str, Any]:
         """Precision provenance: ``{"precision": "f64" | "mixed",
@@ -3477,6 +3493,7 @@ def run_rhf(
     fock_hook: FockHook | None = None,
     guess_basis: str | None = None,
     guess_projection: str | None = None,
+    ri_j_precision: str | None = None,
 ) -> RhfResult:
     """Closed-shell Restricted Hartree-Fock.
 
@@ -3522,6 +3539,16 @@ def run_rhf(
     df_j_aux / df_k_aux: an aux basis name selects RI-J / RI-K; "" / "exact" /
     "none" / "off" / "conventional" select conventional four-centre integrals
     (the same spellings run_dft accepts, also for run_uhf / run_rohf).
+
+    ri_j_precision: storage of the RI-J three-index tensor, "f32" (the default:
+    half the memory, f64 accumulation) or "f64" (bit-identical to the default
+    before 2026-11-07); any other value raises ValueError, and it is ignored
+    without RI-J. The same setting is ``ri_j_precision`` on run_uhf / run_rohf /
+    run_dft / run_ksdft / run_qmmm and ``scf_ri_j_precision`` on drivers with
+    more than one iterative stage (run_cdft, run_frequencies, the MP2 family,
+    GW, TDDFT, ...). Gradients, Hessians, optimisation and frequencies follow
+    the SCF's value; ``result.ri_j_precision`` and the certificate's ``ri-j``
+    entry say what was used.
 
     solvent: IEF-PCM implicit solvation, as a dielectric constant (> 1.0) or a
     solvent name (water, dmso, methanol, ethanol, acetone, dichloromethane,
@@ -3585,6 +3612,7 @@ def run_rhf(
     fock_hook: None = None,
     guess_basis: str | None = None,
     guess_projection: str | None = None,
+    ri_j_precision: str | None = None,
 ) -> SymmetricRhfResult: ...
 def run_uhf(
     mol: Molecule,
@@ -3612,6 +3640,7 @@ def run_uhf(
     fock_hook: SpinFockHook | None = None,
     guess_basis: str | None = None,
     guess_projection: str | None = None,
+    ri_j_precision: str | None = None,
 ) -> UhfResult:
     """Unrestricted Hartree-Fock (open-shell). fock_hook=hook adds one
     density-dependent term: hook(D_a, D_b) gets the per-spin densities every
@@ -3653,6 +3682,7 @@ def run_rohf(
     fock_hook: SpinFockHook | None = None,
     guess_basis: str | None = None,
     guess_projection: str | None = None,
+    ri_j_precision: str | None = None,
 ) -> UhfResult:
     """Restricted Open-Shell Hartree-Fock. fock_hook: as for run_uhf; V_a and
     V_b enter before the Roothaan effective-Fock combination. Note: the exit report (final_* residuals, unmet_criteria, non-convergence RuntimeWarning) is RHF-only today. A user-set energy_conv below the estimated (rounding-level) noise floor of dE emits one RuntimeWarning before the SCF starts."""
@@ -3685,6 +3715,7 @@ def run_cdft(
     scf_max_iter: int | None = None,
     scf_energy_conv: float | None = None,
     scf_density_conv: float | None = None,
+    scf_ri_j_precision: str | None = None,
 ) -> CdftResult:
     """Constrained UHF/UKS (Wu-Van Voorhis cDFT) with Becke fragment populations.
 
@@ -3833,6 +3864,7 @@ def run_frequencies(
     scf_energy_conv: float | None = None,
     scf_density_conv: float | None = None,
     scf_warm_start: bool | None = None,
+    scf_ri_j_precision: str | None = None,
 ) -> FrequencyResult:
     """Harmonic vibrational frequencies.
 
@@ -4061,6 +4093,7 @@ def run_rimp2(
     att_omega: float | None = None,
     scf_jk: str | None = None,
     jk_auxbasis: str | None = None,
+    scf_ri_j_precision: str | None = None,
     scf_max_iter: int | None = None,
     scf_energy_conv: float | None = None,
     scf_density_conv: float | None = None,
@@ -4129,6 +4162,7 @@ def run_oo_rimp2(
     memory_budget_gb: float | None = None,
     scf_jk: str | None = None,
     jk_auxbasis: str | None = None,
+    scf_ri_j_precision: str | None = None,
     scf_max_iter: int | None = None,
     scf_energy_conv: float | None = None,
     scf_density_conv: float | None = None,
@@ -4170,6 +4204,7 @@ def run_laplace_mp2(
     memory_budget_gb: float | None = None,
     scf_jk: str | None = None,
     jk_auxbasis: str | None = None,
+    scf_ri_j_precision: str | None = None,
     scf_max_iter: int | None = None,
     scf_energy_conv: float | None = None,
     scf_density_conv: float | None = None,
@@ -4190,6 +4225,7 @@ def run_laplace_sos_mp2(
     memory_budget_gb: float | None = None,
     scf_jk: str | None = None,
     jk_auxbasis: str | None = None,
+    scf_ri_j_precision: str | None = None,
     scf_max_iter: int | None = None,
     scf_energy_conv: float | None = None,
     scf_density_conv: float | None = None,
@@ -4207,6 +4243,7 @@ def run_attenuated_rimp2(
     memory_budget_gb: float | None = None,
     scf_jk: str | None = None,
     jk_auxbasis: str | None = None,
+    scf_ri_j_precision: str | None = None,
     scf_max_iter: int | None = None,
     scf_energy_conv: float | None = None,
     scf_density_conv: float | None = None,
@@ -4224,6 +4261,7 @@ def run_terfc_rimp2(
     memory_budget_gb: float | None = None,
     scf_jk: str | None = None,
     jk_auxbasis: str | None = None,
+    scf_ri_j_precision: str | None = None,
     scf_max_iter: int | None = None,
     scf_energy_conv: float | None = None,
     scf_density_conv: float | None = None,
@@ -4242,6 +4280,7 @@ def run_scs_mp2(
     memory_budget_gb: float | None = None,
     scf_jk: str | None = None,
     jk_auxbasis: str | None = None,
+    scf_ri_j_precision: str | None = None,
     scf_max_iter: int | None = None,
     scf_energy_conv: float | None = None,
     scf_density_conv: float | None = None,
@@ -4262,6 +4301,7 @@ def run_scs_mp2_2terfc(
     memory_budget_gb: float | None = None,
     scf_jk: str | None = None,
     jk_auxbasis: str | None = None,
+    scf_ri_j_precision: str | None = None,
     scf_max_iter: int | None = None,
     scf_energy_conv: float | None = None,
     scf_density_conv: float | None = None,
@@ -4284,6 +4324,7 @@ def run_mp2_v(
     memory_budget_gb: float | None = None,
     scf_jk: str | None = None,
     jk_auxbasis: str | None = None,
+    scf_ri_j_precision: str | None = None,
     scf_max_iter: int | None = None,
     scf_energy_conv: float | None = None,
     scf_density_conv: float | None = None,
@@ -4308,6 +4349,7 @@ def run_mp2_v_scan(
     scf_max_iter: int | None = None,
     scf_energy_conv: float | None = None,
     scf_density_conv: float | None = None,
+    scf_ri_j_precision: str | None = None,
 ) -> dict[str, Any]:
     """EXPERIMENTAL (research harness). MP2-V scan on ONE converged RHF reference:
     the attenuated-MP2 half for every `(r0, omega)` arm (Angstrom, Angstrom^-1;
@@ -4331,6 +4373,7 @@ def run_vv10_variants(
     scf_max_iter: int | None = None,
     scf_energy_conv: float | None = None,
     scf_density_conv: float | None = None,
+    scf_ri_j_precision: str | None = None,
 ) -> list[float]:
     """EXPERIMENTAL (research harness). Post-HF VV10 E_nl (Ha) for alternative
     short-range weights: each spec is `(kind, r0_angstrom, r0_times_omega_or_None,
@@ -4352,6 +4395,7 @@ def run_rs_mp2_rpa(
     memory_budget_gb: float | None = None,
     scf_jk: str | None = None,
     jk_auxbasis: str | None = None,
+    scf_ri_j_precision: str | None = None,
     scf_max_iter: int | None = None,
     scf_energy_conv: float | None = None,
     scf_density_conv: float | None = None,
@@ -4396,6 +4440,7 @@ def run_dft(
     guess_basis: str | None = None,
     guess_projection: str | None = None,
     grid_weight_cut: float | None = None,
+    ri_j_precision: str | None = None,
 ) -> DftResult:
     """Kohn-Sham DFT (closed-shell). fock_hook: as for run_rhf; with a
     hook only the first convergence-ladder rung runs, and with_gradient,
@@ -4496,6 +4541,7 @@ def run_dft(
     guess_basis: str | None = None,
     guess_projection: str | None = None,
     grid_weight_cut: float | None = None,
+    ri_j_precision: str | None = None,
 ) -> SymmetricRhfResult: ...
 @overload
 def run_dft(
@@ -4528,6 +4574,7 @@ def run_dft(
     guess_basis: str | None = None,
     guess_projection: str | None = None,
     grid_weight_cut: float | None = None,
+    ri_j_precision: str | None = None,
 ) -> DftResult | SymmetricRhfResult: ...
 def dft_grid_point_count(
     mol: Molecule,
@@ -4577,6 +4624,7 @@ def run_ksdft(
     guess_basis: str | None = None,
     guess_projection: str | None = None,
     grid_weight_cut: float | None = None,
+    ri_j_precision: str | None = None,
 ) -> DftResult:
     """Kohn-Sham DFT (closed-shell). Alias of run_dft (same grid_* kwargs,
     grid_weight_cut included).
@@ -4623,6 +4671,7 @@ def run_ksdft(
     guess_basis: str | None = None,
     guess_projection: str | None = None,
     grid_weight_cut: float | None = None,
+    ri_j_precision: str | None = None,
 ) -> SymmetricRhfResult: ...
 @overload
 def run_ksdft(
@@ -4650,6 +4699,7 @@ def run_ksdft(
     guess_basis: str | None = None,
     guess_projection: str | None = None,
     grid_weight_cut: float | None = None,
+    ri_j_precision: str | None = None,
 ) -> DftResult | SymmetricRhfResult: ...
 def d3bj_energy(mol: Molecule, functional: str, s9: float = 0.0) -> float:
     """Grimme D3(BJ) dispersion energy in Hartree.
@@ -4848,6 +4898,7 @@ def run_gw(
     scf_max_iter: int | None = None,
     scf_energy_conv: float | None = None,
     scf_density_conv: float | None = None,
+    scf_ri_j_precision: str | None = None,
 ) -> GwResult:
     """Closed-shell G0W0/COHSEX/evGW0/evGW on an RHF or RKS reference.
 
@@ -4882,6 +4933,7 @@ def run_u_gw(
     scf_max_iter: int | None = None,
     scf_energy_conv: float | None = None,
     scf_density_conv: float | None = None,
+    scf_ri_j_precision: str | None = None,
 ) -> UGwResult:
     """Open-shell U-G0W0/U-COHSEX/U-evGW0/U-evGW on a UHF/ROHF reference.
 
@@ -4927,6 +4979,7 @@ def run_tdhf_static_polarizability(
     scf_max_iter: int | None = None,
     scf_energy_conv: float | None = None,
     scf_density_conv: float | None = None,
+    scf_ri_j_precision: str | None = None,
 ) -> TdhfStaticPolarizabilityResult:
     """RPAx@KS static polarizability (omega=0). xc is REQUIRED.
 
@@ -4950,6 +5003,7 @@ def run_tddft(
     grid_angular: int | None = None,
     grid_prune: str | None = None,
     grid_weight_cut: float | None = None,
+    scf_ri_j_precision: str | None = None,
 ) -> TddftResult:
     """Closed-shell singlet linear response. functional=None runs on an RHF
     reference (CIS for method="tda"/"cis", TDHF for "casida"/"rpa"/"tddft"/
@@ -4983,6 +5037,7 @@ def run_double_hybrid(
     scf_max_iter: int | None = None,
     scf_energy_conv: float | None = None,
     scf_density_conv: float | None = None,
+    scf_ri_j_precision: str | None = None,
 ) -> DoubleHybridResult:
     """MP2-based double hybrid: kind="b2plyp" or "dsd-pbep86"."""
     ...

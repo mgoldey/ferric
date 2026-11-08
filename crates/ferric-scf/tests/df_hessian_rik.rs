@@ -34,6 +34,12 @@
 //!   while every analytic-piece test is green; the systems here have a clean
 //!   spectral gap (no metric mode between the cut and the gradient's noise
 //!   floor), checked by `clean_gap`.
+// RI-J pinned to the f64 tensor (`ri_j_precision: Some(F64)` in every config
+// here): these tests validate f64 implementation code against finite
+// differences, another tier or f64 reference values at bars below the f32
+// default's effect (its energy shift is ~1e-6 Ha, and its energy surface jitters
+// by ~1e-7..1e-6 Ha between nearby geometries; site/src/methods/scf.md, "RI-J
+// tensor precision").
 
 use ferric_core::basis;
 use ferric_core::mol::Molecule;
@@ -81,6 +87,7 @@ fn water() -> Molecule {
 /// SCF with RI-K in `k_aux`; RI-J in `j_aux` ("" = exact J).
 fn scf_config(j_aux: &str, k_aux: &str) -> RhfConfig {
     RhfConfig {
+        ri_j_precision: Some(ferric_scf::df_j::RiJPrecision::F64),
         max_iter: 200,
         energy_conv: 1e-14,
         density_conv: 1e-12,
@@ -1069,6 +1076,7 @@ fn unsupported_exchange_fitting_configurations_are_refused() {
     uhf_hessian_preflight(op, &s.cfg).expect("UHF RI-K preflight");
     // External potential next to RI-K.
     let with_field = RhfConfig {
+        ri_j_precision: Some(ferric_scf::df_j::RiJPrecision::F64),
         external_potential: Some(ferric_core::external_potential::ExternalPotential {
             point_charges: vec![ferric_core::external_potential::PointCharge {
                 q: 0.3,
@@ -1118,6 +1126,7 @@ fn df_off_configurations_are_unchanged_by_the_exchange_branch() {
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let hess = |df_k: Option<String>| {
         let cfg = RhfConfig {
+            ri_j_precision: Some(ferric_scf::df_j::RiJPrecision::F64),
             max_iter: 200,
             energy_conv: 1e-12,
             density_conv: 1e-10,

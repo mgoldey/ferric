@@ -24,7 +24,10 @@ WATER = "3\n\nO 0 0 0.117\nH 0 0.757 -0.467\nH 0 -0.757 -0.467\n"
 NH2_ASYM = "3\n\nN 0 0 0\nH 0.12 0.80 0.60\nH -0.05 -0.74 0.52\n"
 # Range-separated: erfc AND erf exact exchange, mix (0.158, 1.0, 0.3).
 WB97X = "HYB_GGA_XC_WB97X"
-TIGHT = {"energy_conv": 1e-11, "density_conv": 1e-9}
+# RI-J pinned to the f64 tensor: these compare against finite differences or
+# f64 references at bars below the f32 default's effect (site/src/methods/scf.md,
+# "RI-J tensor precision").
+TIGHT = {"energy_conv": 1e-11, "density_conv": 1e-9, "ri_j_precision": "f64"}
 EXACT_JK = {"df_j_aux": "none", "df_k_aux": "none"}
 _RNG = np.random.default_rng(5)
 

@@ -11,6 +11,12 @@
 //!
 //! Own binary: these set the process-global `jk_storage` override and read a
 //! process-wide counter.
+// RI-J pinned to the f64 tensor (`ri_j_precision: Some(F64)` in every config
+// here): these tests validate f64 implementation code against finite
+// differences, another tier or f64 reference values at bars below the f32
+// default's effect (its energy shift is ~1e-6 Ha, and its energy surface jitters
+// by ~1e-7..1e-6 Ha between nearby geometries; site/src/methods/scf.md, "RI-J
+// tensor precision").
 
 use ferric_core::basis;
 use ferric_core::mol::Molecule;
@@ -38,6 +44,7 @@ fn run(xc: &str, storage: JkStorage, budget: usize) -> (f64, usize) {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
     let cfg = RhfConfig {
+        ri_j_precision: Some(ferric_scf::df_j::RiJPrecision::F64),
         xc: Some(xc.into()),
         three_index_budget_bytes: budget,
         energy_conv: 1e-10,

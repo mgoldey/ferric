@@ -1016,6 +1016,10 @@ mod fock_eigensolver_tests {
         let cfg = RhfConfig {
             df_j_aux: Some("def2-universal-jkfit".into()),
             df_k_aux: Some("def2-universal-jkfit".into()),
+            // f64: f32 storage rounds symmetry-equivalent integrals (equal to
+            // ~1e-15) to different f32 neighbours and splits this e1g block by
+            // 9.5e-9 (measured), which is not what this eigensolver test probes.
+            ri_j_precision: Some(crate::df_j::RiJPrecision::F64),
             ..Default::default()
         };
         let (f, x, nocc) = fixed_fock(&xyz, "def2-svp", cfg);

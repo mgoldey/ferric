@@ -152,7 +152,21 @@ fn route() -> DfJkRoute {
         rsh_k: Some(("cc-pvdz-jkfit".to_string(), 0.3)),
         op: Operator::erfc(0.4),
         budget_bytes: 123_456_789,
+        // The frozen v1 file predates the field, which reads back as f64.
+        ri_j_precision: crate::df_j::RiJPrecision::F64,
     }
+}
+
+/// An f32 RI-J route survives the write/read round trip (the fixture above is
+/// f64, the value a file without the key reads back as).
+#[test]
+fn an_f32_ri_j_route_round_trips() {
+    let route = DfJkRoute {
+        ri_j_precision: crate::df_j::RiJPrecision::F32,
+        ..route()
+    };
+    let back = format::route_from_meta(format::route_to_meta(&route)).unwrap();
+    assert_eq!(back, route);
 }
 
 fn report() -> ConvergenceReport {
@@ -921,6 +935,9 @@ fn identity_table() -> Vec<(&'static str, FieldClass, Mutator)> {
         }),
         ("df_k_aux", Route, |s| {
             s.config.df_k_aux = Some("cc-pvdz-jkfit".to_string())
+        }),
+        ("ri_j_precision", Route, |s| {
+            s.config.ri_j_precision = Some(crate::df_j::RiJPrecision::F64)
         }),
         ("integral_thresh", Route, |s| {
             s.config.integral_thresh = 1e-11

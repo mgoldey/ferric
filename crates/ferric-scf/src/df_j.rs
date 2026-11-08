@@ -30,18 +30,23 @@
 //! `for_each_block`, exactly as DF-K; only the in-memory contraction of the
 //! current block fans out over chunks.
 //!
-//! # f32 tensor storage (`dfj-f32`, opt-in, OFF by default)
+//! # f32 tensor storage (`[scf] ri_j_precision`, DEFAULT `"f32"`)
 //!
-//! With `[precision] mode = "mixed"` and `mixed_kernels` naming `dfj-f32` (a CPU
-//! kernel: any `[gpu] mode`), the raw tensor is STORED as f32
-//! (`ferric_integrals::three_index_source::f32_store`): the packed triangle, or
-//! the Schwarz pair-screened columns when the screen drops pairs, at 4 bytes
-//! per element, half the f64 tier. Both passes multiply the f32 entries by the
-//! f64 vectors `w`, `c` and accumulate in f64; `w`, `d_P`, `c`, the metric
-//! solve and `J` are never rounded. The device RI-J is not used for such a
-//! tensor (it would need the f64 one), and the build is not behind the SCF
-//! precision ladder (`crate::jk_ladder`): there is no f64 copy to fall back to,
-//! so EVERY build is f32-stored.
+//! The SCF RI-J raw tensor is STORED as f32 by default ([`RiJPrecision`](crate::df_j::RiJPrecision):
+//! `RhfConfig::ri_j_precision`, CLI `[scf] ri_j_precision`, Python
+//! `ri_j_precision=`; `"f64"` is the explicit opt-out and reproduces the
+//! former f64 default bit for bit). The f32 tier
+//! (`ferric_integrals::three_index_source::f32_store`) holds the packed
+//! triangle, or the Schwarz pair-screened columns when the screen drops pairs,
+//! at 4 bytes per element, half the f64 tier. Both passes multiply the f32
+//! entries by the f64 vectors `w`, `c` and accumulate in f64; `w`, `d_P`, `c`,
+//! the metric solve and `J` are never rounded. The device RI-J is not used for
+//! such a tensor (it would need the f64 one), and the build is not behind the
+//! SCF precision ladder (`crate::jk_ladder`): there is no f64 copy to fall back
+//! to, so EVERY build is f32-stored. With the precision UNSET and a `[gpu]`
+//! mode that may take J on the device, the default resolves to f64 (the device
+//! RI-J path); an explicit `"f32"` still wins. The kernel's provenance name is
+//! `dfj-f32`.
 //!
 //! Per-build contract, elementwise (Higham, ASNA 2nd ed., §2.2, §3.1, §3.5;
 //! u32 = 2⁻²⁴, u64 = 2⁻⁵³, γ_k(u) = ku/(1−ku), η = 2⁻¹⁵⁰ the f32 underflow
@@ -199,12 +204,73 @@ seam_flag!(
     accumulate_dfj_f32_in_f32
 );
 
+/// How the SCF's RI-J raw 3-index tensor is stored: `[scf] ri_j_precision`
+/// (CLI), `ri_j_precision=` (Python), `RhfConfig::ri_j_precision` (library).
+///
+/// Only the STORAGE of the tensor changes: both passes accumulate in f64
+/// against f64 vectors, and `d_P`, the metric solve and `J` stay f64 (module
+/// docs, "f32 tensor storage"). The SCF's gradient, Hessian, optimize and
+/// frequency paths follow the precision the SCF actually used
+/// ([`crate::result::DfJkRoute::ri_j_precision`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum RiJPrecision {
+    /// One round-to-nearest f32 per stored integral (the default): half the
+    /// resident tensor (measured error: `site/src/methods/scf.md`).
+    F32,
+    /// The f64 tensor (the explicit opt-out; the default before 2026-11-07).
+    F64,
+}
+
+impl RiJPrecision {
+    /// The default for an unset precision on a CPU path.
+    pub const DEFAULT: Self = Self::F32;
+
+    /// Strict parse of the TOML / Python spelling: `"f32"` or `"f64"`.
+    pub fn parse_config_str(s: &str) -> Result<Self, FerricError> {
+        match s {
+            "f32" => Ok(Self::F32),
+            "f64" => Ok(Self::F64),
+            other => Err(FerricError::General(format!(
+                "unknown ri_j_precision {other:?} (expected \"f32\" or \"f64\")"
+            ))),
+        }
+    }
+
+    /// The TOML / Python spelling.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::F32 => "f32",
+            Self::F64 => "f64",
+        }
+    }
+
+    /// The precision an SCF requests for `requested`: an explicit value wins;
+    /// unset is [`Self::DEFAULT`], except that a `[gpu]` mode that may build J
+    /// on the device keeps the f64 tensor the device path needs.
+    pub fn resolve(requested: Option<Self>) -> Self {
+        requested.unwrap_or_else(|| {
+            if device_may_take_j() {
+                Self::F64
+            } else {
+                Self::DEFAULT
+            }
+        })
+    }
+}
+
+impl std::fmt::Display for RiJPrecision {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 const F32_UNSET: u8 = u8::MAX;
 static DFJ_F32_OVERRIDE: AtomicU8 = AtomicU8::new(F32_UNSET);
 
-/// Force the `dfj-f32` decision of every DfJ built from now on (`Some(true)`
-/// on, `Some(false)` off) or return it to the installed precision settings
-/// (`None`). Test hook: process-wide, so tests that use it serialise.
+/// Force the f32/f64 decision of every DfJ built from now on (`Some(true)`
+/// f32, `Some(false)` f64), whatever precision its caller passes, or return
+/// to the caller's precision (`None`). Test hook: process-wide, so tests that
+/// use it serialise.
 #[doc(hidden)]
 pub fn set_dfj_f32_for_test(on: Option<bool>) {
     let v = match on {
@@ -215,16 +281,13 @@ pub fn set_dfj_f32_for_test(on: Option<bool>) {
     DFJ_F32_OVERRIDE.store(v, Ordering::SeqCst);
 }
 
-/// Is f32 storage of the RI-J tensor requested: `[precision] mode = "mixed"`
-/// with `dfj-f32` in `mixed_kernels`, in the INSTALLED settings (read without
-/// initialising them, as the precision provenance record reads them; with
-/// nothing installed it is off).
-pub fn dfj_f32_requested() -> bool {
+/// Is f32 storage wanted for a builder asked for `precision`? The test hook
+/// [`set_dfj_f32_for_test`] overrides it.
+pub fn dfj_f32_wanted(precision: RiJPrecision) -> bool {
     match DFJ_F32_OVERRIDE.load(Ordering::SeqCst) {
         0 => false,
         1 => true,
-        _ => ferric_core::gpu::installed_settings()
-            .is_some_and(|s| s.mixed_allows(MixedKernel::DfjF32)),
+        _ => precision == RiJPrecision::F32,
     }
 }
 
@@ -240,7 +303,7 @@ fn f32_rounding() -> F32Rounding {
 /// count it in the precision provenance (`f32_range` for a value beyond the
 /// f32 range, `cpu_f64` otherwise).
 fn note_f32_declined(why: &F32Declined) {
-    eprintln!("[ferric] RI-J: dfj-f32 requested but the tensor stays f64 ({why})");
+    eprintln!("[ferric] RI-J: ri_j_precision = \"f32\" but the tensor stays f64 ({why})");
     let reason = match why {
         F32Declined::OutOfRange { .. } => MixedFallback::F32Range,
         _ => MixedFallback::CpuF64,
@@ -369,6 +432,53 @@ impl<'a> DfJ<'a> {
         Self::new_banded(op, obs, dfbs, budget_bytes, None)
     }
 
+    /// [`DfJ::new`] storing the tensor at `precision`: the response J builds of
+    /// a Hessian or a CPKS solve use it so that they read the same rounded
+    /// integrals as the SCF whose [`RiJPrecision`] they follow. f32 is the
+    /// unscreened packed f32 tier (one rounding to nearest of each integral of
+    /// the f64 packed tier); when it does not fit, the f64 tier is used and the
+    /// notice is printed. No f64 exit pass is enabled.
+    pub fn new_with_precision(
+        op: Operator,
+        obs: &PreparedBasis,
+        dfbs: &PreparedBasis,
+        budget_bytes: usize,
+        precision: RiJPrecision,
+    ) -> Result<Self, FerricError> {
+        if !dfj_f32_wanted(precision) {
+            return Self::new(op, obs, dfbs, budget_bytes);
+        }
+        let naux = dfbs.nbasis();
+        let built = ThreeIndexSource::build_ri_j_f32(
+            op,
+            obs,
+            dfbs,
+            budget_bytes,
+            (0, naux),
+            None,
+            f32_rounding(),
+        )?;
+        match built {
+            Ok(source) => {
+                let v = coulomb_metric_2c(op, dfbs)?;
+                Self::from_source_and_metric(source, v, budget_bytes, None)
+            }
+            Err(why) => {
+                note_f32_declined(&why);
+                Self::new(op, obs, dfbs, budget_bytes)
+            }
+        }
+    }
+
+    /// The precision this builder's tensor is actually stored at.
+    pub fn precision(&self) -> RiJPrecision {
+        if self.source.is_ri_j_f32() {
+            RiJPrecision::F32
+        } else {
+            RiJPrecision::F64
+        }
+    }
+
     /// Build the DF-J cache, striping the aux band across the MPI ranks of `ctx`.
     /// When `ctx` is `None` or `ctx.size == 1`, this is exactly [`DfJ::new`]
     /// (full band, no reduction). Otherwise this rank builds/holds only its band
@@ -404,7 +514,7 @@ impl<'a> DfJ<'a> {
     /// upload expects the full packed triangle) and for an operator without a
     /// Schwarz table.
     ///
-    /// With `dfj-f32` requested ([`dfj_f32_requested`]) the tensor is built
+    /// With `precision` f32 ([`dfj_f32_wanted`]) the tensor is built
     /// straight into the f32 tier (pair-screened when the screen drops pairs,
     /// else packed; the device path is then not used, so the screen is not
     /// skipped for it), sized at 4 bytes per element, and the f64 exit pass is
@@ -419,6 +529,7 @@ impl<'a> DfJ<'a> {
         budget_bytes: usize,
         ctx: Option<&'a ParallelContext>,
         pair_thresh: f64,
+        precision: RiJPrecision,
     ) -> Result<Self, FerricError> {
         let naux = dfbs.nbasis();
         let band = match ctx {
@@ -426,7 +537,7 @@ impl<'a> DfJ<'a> {
             None => (0, naux),
         };
         let mut v = coulomb_metric_2c(op, dfbs)?;
-        if dfj_f32_requested() {
+        if dfj_f32_wanted(precision) {
             match Self::try_new_f32(
                 op,
                 mol,
@@ -447,7 +558,7 @@ impl<'a> DfJ<'a> {
 
     /// Would [`new_for_jk`](Self::new_for_jk) (single rank, full aux range)
     /// hold its tensor in memory under `jk_storage = "auto"`, in any tier it
-    /// could pick: the f32 tier when `dfj-f32` is requested, then the
+    /// could pick: the f32 tier when `precision` asks for it, then the
     /// pair-screened, packed or dense f64 tiers? The same fit checks the
     /// builders run, without building. `v` is the operator's aux metric.
     pub(crate) fn stored_fits_in_memory(
@@ -456,9 +567,10 @@ impl<'a> DfJ<'a> {
         budget_bytes: usize,
         pair_thresh: f64,
         v: &Array2<f64>,
+        precision: RiJPrecision,
     ) -> bool {
         let (nao, rows) = (obs.nbasis(), dfbs.nbasis());
-        if dfj_f32_requested() {
+        if dfj_f32_wanted(precision) {
             let screen = pair_screen_with(op, obs, v, pair_thresh, false);
             if ThreeIndexSource::ri_j_f32_fits_in_memory(nao, rows, screen.as_deref(), budget_bytes)
             {
@@ -524,7 +636,7 @@ impl<'a> DfJ<'a> {
     /// case where DfJ's band and DfK's full range coincide; `build_df_jk` gates
     /// the sharing on exactly that.
     ///
-    /// With `dfj-f32` requested the adopted f64 tensor is converted to the f32
+    /// With `precision` f32 the adopted f64 tensor is converted to the f32
     /// tier (`ThreeIndexSource::into_ri_j_f32`) and dropped; a conversion that
     /// does not fit keeps the f64 tensor and is reported. No f64 exit is
     /// enabled here (the orbital basis is not passed): call
@@ -535,8 +647,9 @@ impl<'a> DfJ<'a> {
         dfbs: &PreparedBasis,
         budget_bytes: usize,
         ctx: Option<&'a ParallelContext>,
+        precision: RiJPrecision,
     ) -> Result<Self, FerricError> {
-        let source = if dfj_f32_requested() {
+        let source = if dfj_f32_wanted(precision) {
             let (s, declined) = source.into_ri_j_f32(budget_bytes, f32_rounding())?;
             if let Some(why) = declined {
                 note_f32_declined(&why);
@@ -1363,7 +1476,8 @@ mod tests {
 
         let src = ThreeIndexSource::build_band(op, &obs, &dfbs, usize::MAX, p0, naux).unwrap();
         assert!(!src.supports_packed_stream(), "not the unpacked path");
-        let mut band = DfJ::from_source(src, op, &dfbs, usize::MAX, None).unwrap();
+        let mut band =
+            DfJ::from_source(src, op, &dfbs, usize::MAX, None, RiJPrecision::F64).unwrap();
         let mut j = Array2::<f64>::zeros((n, n));
         band.build(&d, &mut j).unwrap();
         let worst = j
@@ -1683,7 +1797,7 @@ mod tests {
         )
         .unwrap();
         assert!(src.is_recompute_for_test());
-        let mut rj = DfJ::from_source(src, op, &dfbs, tiny, None).unwrap();
+        let mut rj = DfJ::from_source(src, op, &dfbs, tiny, None, RiJPrecision::F64).unwrap();
         let mut j_re = Array2::zeros((n, n));
         rj.build(&d, &mut j_re).unwrap();
         assert_eq!(j_packed, j_re, "recompute packed J != packed in-core J");
@@ -2019,7 +2133,14 @@ mod tests {
     impl PairFixture {
         fn dfj(&self, budget: usize, thresh: f64) -> DfJ<'static> {
             DfJ::new_for_jk(
-                self.op, &self.mol, &self.obs, &self.dfbs, budget, None, thresh,
+                self.op,
+                &self.mol,
+                &self.obs,
+                &self.dfbs,
+                budget,
+                None,
+                thresh,
+                RiJPrecision::F64,
             )
             .unwrap()
         }

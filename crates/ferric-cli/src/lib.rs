@@ -729,6 +729,11 @@ pub fn run(args: Vec<String>) {
         // Shared spelling parser: "exact"/"none"/"off"/"conventional" mean
         // the same "" (no density fitting) as in the Python bindings.
         df_j_aux: cfg.scf.df_j_aux_resolved().or(df_j_default),
+        // Validated in `load_config`; `None` = the library default (f32).
+        ri_j_precision: cfg.scf.ri_j_precision_resolved().unwrap_or_else(|e| {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }),
         // RIJCOSX: `k_builder = "cosx"` replaces RI-K, so the RI-K default
         // is not applied under it (an explicit `df_k_aux` next to COSX is
         // refused by the SCF as a conflict).
@@ -872,6 +877,9 @@ pub fn run(args: Vec<String>) {
                 "density_conv": cfg.scf.density_conv,
                 "df_j_aux": rhf_config.df_j_aux,
                 "df_k_aux": rhf_config.df_k_aux,
+                // As requested (`null` = default); the run's `ri_j_tensor`
+                // note records the precision the tensor was stored at.
+                "ri_j_precision": rhf_config.ri_j_precision.map(|p| p.as_str()),
                 // The EFFECTIVE J/K route (what the SCF builds), not the
                 // raw `[scf] jk` key: rs-mp2-rpa with no `jk` is "rijk", and
                 // a `k_builder` that density fitting overrides is null.

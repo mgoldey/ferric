@@ -20,7 +20,10 @@ import pytest
 import ferric
 
 WATER = "3\n\nO 0 0 0.117\nH 0 0.757 -0.467\nH 0 -0.757 -0.467\n"
-TIGHT = {"energy_conv": 1e-11, "density_conv": 1e-9}
+# RI-J pinned to the f64 tensor: these compare against finite differences or
+# f64 references at bars below the f32 default's effect (site/src/methods/scf.md,
+# "RI-J tensor precision").
+TIGHT = {"energy_conv": 1e-11, "density_conv": 1e-9, "ri_j_precision": "f64"}
 
 
 def _water(basis: str):

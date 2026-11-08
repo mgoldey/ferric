@@ -14,6 +14,12 @@
 //! assertion of `check` takes the plain `ks_gradient_*` entry points (which
 //! differentiate the default grid by construction, i.e. the pre-fix pairing) and
 //! requires them to miss by >= 10x the bar, so the anchor can discriminate.
+// RI-J pinned to the f64 tensor (`ri_j_precision: Some(F64)` in every config
+// here): these tests validate f64 implementation code against finite
+// differences, another tier or f64 reference values at bars below the f32
+// default's effect (its energy shift is ~1e-6 Ha, and its energy surface jitters
+// by ~1e-7..1e-6 Ha between nearby geometries; site/src/methods/scf.md, "RI-J
+// tensor precision").
 
 use ferric_core::basis;
 use ferric_core::mol::Molecule;
@@ -49,6 +55,7 @@ enum Kind {
 
 fn config(xc: &str, grid: Option<AtomicGridConfig>) -> RhfConfig {
     RhfConfig {
+        ri_j_precision: Some(ferric_scf::df_j::RiJPrecision::F64),
         xc: Some(xc.into()),
         dft_grid: grid,
         energy_conv: 1e-11,

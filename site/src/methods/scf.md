@@ -91,6 +91,78 @@ PySCF pin. Other meta-GGA variants
 \\( V_{xc} \\), \\( f_{xc} \\), VV10, Becke-weight and gradient formulas are
 derived in [DFT derivations](./dft-derivations.md).
 
+### RI-J tensor precision
+
+The RI-J three-index tensor is stored as **f32 by default**
+(`[scf] ri_j_precision = "f32"`; Python `ri_j_precision=`, or
+`scf_ri_j_precision=` on drivers with more than one iterative stage;
+library `RhfConfig::ri_j_precision`). Each integral is rounded to the
+nearest f32 once; both RI-J contractions multiply the stored values by f64
+vectors and accumulate in f64, and the fitted density, the metric solve and
+J itself stay f64. The tensor takes half the memory. `"f64"` stores the
+tensor in f64 and reproduces the former default bit for bit (measured:
+identical energies, gradients and iteration counts for water and
+sulfamethoxazole, PBE and B3LYP, and RHF with RI-J). An explicit value
+always wins; omitted, the default is f32 except under a `[gpu]` mode that may
+build J on the device, which needs the f64 tensor. An f32 request falls back
+to f64 (with a notice) when the f32 tensor does not fit in memory or
+`jk_storage` is `disk`/`direct`; Split-RI-J has no tensor. The free-atom
+SCFs of the MINAO guess always use f64.
+
+The SCF converges on the operator built from the rounded tensor, so the
+energy carries a first-order error. Gradients, optimisation, Hessians and
+frequencies **follow the SCF's precision**: they form the fitted density
+from the same rounded integrals (derivative integrals stay f64), so they
+are the gradient of the rounded-tensor energy with each integral's rounding
+held fixed. The rounding itself is not a smooth function of the geometry:
+moving an atom re-rounds every integral, so the f32 energy surface carries a
+small jitter that no analytic gradient can follow. Measured by central finite
+differences of the PBE/def2-SVP energy (SCF converged to 1e-10 Ha): at a
+2e-3 Bohr step the f32 FD-minus-analytic gradient was up to 4.9e-5 Ha/Bohr
+on water and 2.1e-4 Ha/Bohr on sulfamethoxazole, against 5e-7 and 9.5e-7 with
+f64, i.e. an energy jitter of about 2e-7 Ha (water) and 9e-7 Ha
+(sulfamethoxazole) between nearby geometries; at a 5e-3 Bohr step the f32
+residual fell to 3.6e-6 and 2.2e-5 Ha/Bohr. Use `ri_j_precision = "f64"` for
+finite-difference work on energies and for geometry optimisations whose
+energy-change criterion is at or below 1e-6 Ha on drug-sized molecules. The
+precision used is recorded in the certificate (`ri-j` entry: "aux …, f32
+tensor storage"), the run log (`ri_j_tensor` record, plus a `dfj-f32` entry
+in the precision record) and `result.ri_j_precision` in Python.
+
+Measured, def2-SVP, `def2-universal-jkfit`, default grid and thresholds,
+f32 minus f64 (2026-11-07):
+
+| system | atoms | ΔE (Ha) | ΔE / atom | max \|Δg\| (Ha/Bohr) | rms Δg | SCF iterations f64 / f32 |
+|---|---|---|---|---|---|---|
+| water, PBE | 3 | −1.00e-6 | −3.3e-7 | 6.7e-8 | 3.4e-8 | 9 / 9 |
+| water, B3LYP | 3 | −1.00e-6 | −3.3e-7 | 6.7e-8 | 3.4e-8 | 8 / 8 |
+| H2O⁺ doublet, UKS PBE | 3 | −1.09e-6 | −3.6e-7 | 8.5e-8 | 4.9e-8 | 8 / 8 |
+| sulfamethoxazole, PBE | 28 | +2.57e-6 | +9.2e-8 | 3.0e-6 | 5.3e-7 | 15 / 15 |
+| sulfamethoxazole, B3LYP | 28 | +2.51e-6 | +9.0e-8 | 3.1e-6 | 5.6e-7 | 13 / 13 |
+| sulfamethoxazole⁺ doublet, UKS PBE | 28 | +2.50e-6 | +8.9e-8 | 2.6e-6 | 5.1e-7 | 20 / 20 |
+| danuglipron, PBE | 71 | +5.37e-6 | +7.6e-8 | 2.2e-6 | 5.4e-7 | 16 / 16 |
+| danuglipron, B3LYP (RIJCOSX, energy only) | 71 | +5.09e-6 | +7.2e-8 | — | — | 15 / 18 |
+
+Δg is f32 minus f64 of the analytic gradient (each at its own converged
+density). Cost, danuglipron PBE/def2-SVP, CLI, 6 threads, 3 runs each on a
+quiet box: the SCF peak RSS fell from 6.44 to 4.50 GB and its wall time from
+24.1 to 23.7 s (CPU time 110 to 102 s); a one-step optimisation (SCF +
+gradient) peaked at 4.68 against 6.55 GB, with the same wall time (122 s). For danuglipron B3LYP the RI-JK tensors do not fit a 14 GB memory
+cap, so it was run as RIJCOSX (`k_builder = "cosx"`), energy only.
+
+The error is µEh-scale and roughly size-extensive (≈1e-7 Ha per atom on the
+drug-sized molecules), two or more orders of magnitude below the RI-J
+fitting error against exact Coulomb quoted above (4.5e-4 Ha for water,
+1.5e-2 Ha for a 71-atom drug, PBE/STO-3G). At a fixed geometry it is
+deterministic (reproduced bit for bit across runs). The SCF iteration count
+was unchanged in seven of the eight runs; danuglipron B3LYP/RIJCOSX took 18
+instead of 15. f32 rounding also breaks exact point-group degeneracy at the
+1e-8 level (benzene/def2-SVP HF with RI-J: the e1g orbital pair split by
+9.5e-9 Ha). Compare f32 and f64 results with each other only at this level,
+and use `"f64"` when validating against an f64 reference code at tighter
+bars, for finite differences of energies, and for symmetry-blocked work that
+needs exact degeneracies.
+
 ## Dispersion correction: D3(BJ)
 
 **What it is.** Grimme's D3 with Becke–Johnson damping, a post-SCF pairwise

@@ -65,8 +65,14 @@ def test_f64_results_carry_the_explicit_f64_record():
 
 
 def test_a_dft_result_carries_the_record():
-    r = ferric.run_dft(_water(), ferric.BasisSet.bundled("sto-3g"), "LDA")
+    bs = ferric.BasisSet.bundled("sto-3g")
+    r = ferric.run_dft(_water(), bs, "LDA", ri_j_precision="f64")
     assert r.precision == F64_RECORD
+    # The default RI-J tensor is f32 (dfj-f32, CPU), and the record says so.
+    r = ferric.run_dft(_water(), bs, "LDA")
+    assert r.precision["precision"] == "mixed"
+    (k,) = r.precision["kernels"]
+    assert (k["kernel"], k["requested"], k["mode"]) == ("dfj-f32", "mixed", "mixed")
 
 
 def test_reading_the_record_does_not_freeze_the_gpu_settings():

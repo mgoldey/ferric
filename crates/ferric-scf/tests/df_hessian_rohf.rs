@@ -38,6 +38,12 @@
 //!   exact-integral ROHF Hessian (validated against PySCF) in the trivial
 //!   limit of the shared per-spin DF code (the UHF tests) and the negative
 //!   controls.
+// RI-J pinned to the f64 tensor (`ri_j_precision: Some(F64)` in every config
+// here): these tests validate f64 implementation code against finite
+// differences, another tier or f64 reference values at bars below the f32
+// default's effect (its energy shift is ~1e-6 Ha, and its energy surface jitters
+// by ~1e-7..1e-6 Ha between nearby geometries; site/src/methods/scf.md, "RI-J
+// tensor precision").
 
 use ferric_core::basis;
 use ferric_core::mol::Molecule;
@@ -89,6 +95,7 @@ fn has_deriv2() -> bool {
 
 fn scf_config(j_aux: &str, k_aux: &str) -> RhfConfig {
     RhfConfig {
+        ri_j_precision: Some(ferric_scf::df_j::RiJPrecision::F64),
         max_iter: 500,
         energy_conv: 1e-14,
         density_conv: 1e-12,

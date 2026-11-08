@@ -460,7 +460,14 @@ fn df_j_builder(
         FerricError::General("analytic RI-J Hessian: the SCF route has no RI-J basis".into())
     })?;
     let dfbs = crate::df_gradient::aux_basis(mol, name)?;
-    crate::df_j::DfJ::new(route.op, prep, &dfbs, route.budget_bytes)
+    // The CPHF response J reads the integrals at the SCF's RI-J precision.
+    crate::df_j::DfJ::new_with_precision(
+        route.op,
+        prep,
+        &dfbs,
+        route.budget_bytes,
+        route.ri_j_precision,
+    )
 }
 
 /// The `DfK` the SCF used (same auxiliary basis, operator and budget), for the

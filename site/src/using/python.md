@@ -188,7 +188,14 @@ print(f"B3LYP {dft.total_energy:.10f}")
 `run_dft` is closed-shell only, and its default functional is LDA. It uses
 density fitting for Coulomb by default (`def2-universal-jkfit`); `run_rhf`
 does not. Pass `df_j_aux="exact"` for conventional four-centre Coulomb when you
-compare against an exact-Coulomb code. `dispersion="d3bj"` adds Grimme D3(BJ);
+compare against an exact-Coulomb code. The RI-J tensor is stored as f32 by
+default (half the memory; about 1e-7 Ha per atom of energy shift, see
+[RI-J tensor precision](../methods/scf.md#ri-j-tensor-precision));
+`ri_j_precision="f64"` restores the f64 tensor bit for bit, any other value
+than `"f32"`/`"f64"` raises `ValueError`, and `dft.ri_j_precision` says which
+was used. Drivers with more than one iterative stage (`run_frequencies`,
+`run_cdft`, the MP2 family, GW, TDDFT, ...) spell it `scf_ri_j_precision`.
+`dispersion="d3bj"` adds Grimme D3(BJ);
 the result then carries `e_scf`, `e_dispersion` and their sum in
 `total_energy`. `with_gradient=True` also returns the analytic nuclear gradient
 from `dft.gradient()`. There is no open-shell `run_dft`. Unrestricted

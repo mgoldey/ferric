@@ -35,6 +35,12 @@
 //! exact): `H_DF == H_exact` exactly, and the FD of the DF gradient is missed
 //! by the fitting error. These differ by more than 10x the bar, so the test
 //! distinguishes them.
+// RI-J pinned to the f64 tensor (`ri_j_precision: Some(F64)` in every config
+// here): these tests validate f64 implementation code against finite
+// differences, another tier or f64 reference values at bars below the f32
+// default's effect (its energy shift is ~1e-6 Ha, and its energy surface jitters
+// by ~1e-7..1e-6 Ha between nearby geometries; site/src/methods/scf.md, "RI-J
+// tensor precision").
 
 use ferric_core::basis;
 use ferric_core::mol::Molecule;
@@ -82,6 +88,7 @@ fn water() -> Molecule {
 /// exact J), exact K.
 fn hessian_config(xc: &str, aux: Option<&str>) -> RhfConfig {
     RhfConfig {
+        ri_j_precision: Some(ferric_scf::df_j::RiJPrecision::F64),
         xc: Some(xc.into()),
         df_j_aux: Some(aux.unwrap_or("").into()),
         df_k_aux: Some(String::new()),
@@ -108,6 +115,7 @@ fn scf(grid: &FixedGridKs, mol: &Molecule, basis_name: &str, aux: Option<&str>) 
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let dfbs = aux.map(|a| PreparedBasis::new(mol, &basis::bundled(a).unwrap()).unwrap());
     let cfg = RhfConfig {
+        ri_j_precision: Some(ferric_scf::df_j::RiJPrecision::F64),
         use_sad_guess: false,
         max_iter: 200,
         energy_conv: 1e-13,
@@ -415,6 +423,7 @@ fn production_ri_j_scf_result_gives_the_same_hessian() {
     let r = reference("6-31g", "PBE", Some(AUX));
     let ctx = ParallelContext::default();
     let cfg = RhfConfig {
+        ri_j_precision: Some(ferric_scf::df_j::RiJPrecision::F64),
         max_iter: 200,
         energy_conv: 1e-13,
         density_conv: 1e-11,
@@ -487,6 +496,7 @@ fn inconsistent_fits_are_refused() {
     // exchange fitting error.
     let msg = run(
         &RhfConfig {
+            ri_j_precision: Some(ferric_scf::df_j::RiJPrecision::F64),
             df_k_aux: Some(AUX.into()),
             ..hessian_config("PBE0", Some(AUX))
         },
@@ -512,6 +522,7 @@ fn the_same_default_config_serves_the_scf_and_the_hessian() {
     let r = reference("sto-3g", "PBE", Some("def2-universal-jkfit"));
     let ctx = ParallelContext::default();
     let cfg = RhfConfig {
+        ri_j_precision: Some(ferric_scf::df_j::RiJPrecision::F64),
         xc: Some("PBE".into()),
         dft_grid: Some(grid_cfg()),
         max_iter: 200,

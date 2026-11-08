@@ -109,6 +109,10 @@ fn scf_config(case: &Case) -> RhfConfig {
         max_iter: 400,
         df_j_aux: df.clone(),
         df_k_aux: df,
+        // f64 RI-J tensor: PySCF's DF-HF reference is f64, and the f32
+        // default moves these energies by up to 1.1e-6 Ha (measured), above
+        // the bar.
+        ri_j_precision: Some(ferric_scf::df_j::RiJPrecision::F64),
         ..Default::default()
     }
 }

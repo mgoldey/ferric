@@ -38,6 +38,12 @@
 //!   crossing the DF-K cut): the full test fails column-wise while the
 //!   analytic-piece tests stay green; the systems here have a clean metric gap
 //!   (`clean_gap`) and the SCF states are basin-checked.
+// RI-J pinned to the f64 tensor (`ri_j_precision: Some(F64)` in every config
+// here): these tests validate f64 implementation code against finite
+// differences, another tier or f64 reference values at bars below the f32
+// default's effect (its energy shift is ~1e-6 Ha, and its energy surface jitters
+// by ~1e-7..1e-6 Ha between nearby geometries; site/src/methods/scf.md, "RI-J
+// tensor precision").
 
 use ferric_core::basis;
 use ferric_core::mol::Molecule;
@@ -120,6 +126,7 @@ fn water() -> Molecule {
 /// SCF with RI-J in `j_aux` and RI-K in `k_aux` ("" = exact).
 fn scf_config(j_aux: &str, k_aux: &str) -> RhfConfig {
     RhfConfig {
+        ri_j_precision: Some(ferric_scf::df_j::RiJPrecision::F64),
         max_iter: 300,
         energy_conv: 1e-14,
         density_conv: 1e-12,
@@ -1429,11 +1436,13 @@ fn rohf_ri_is_accepted_and_other_unsupported_configurations_are_refused() {
     eprintln!("UHF RI + external potential: {e}");
     assert!(e.contains("external potential"), "{e}");
     let ks = RhfConfig {
+        ri_j_precision: Some(ferric_scf::df_j::RiJPrecision::F64),
         xc: Some("pbe".into()),
         ..ri("def2-universal-jkfit", "def2-universal-jkfit")
     };
     assert!(uhf_hessian_preflight(op, &ks).is_err());
     let cosmo = RhfConfig {
+        ri_j_precision: Some(ferric_scf::df_j::RiJPrecision::F64),
         cosmo: Some(ferric_scf::cosmo::CosmoConfig::default()),
         ..ri("def2-universal-jkfit", "def2-universal-jkfit")
     };
@@ -1596,6 +1605,7 @@ fn an_unset_and_an_empty_fitting_name_give_the_same_exact_uhf_hessian() {
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let hess = |aux: Option<String>| {
         let cfg = RhfConfig {
+            ri_j_precision: Some(ferric_scf::df_j::RiJPrecision::F64),
             max_iter: 300,
             energy_conv: 1e-12,
             density_conv: 1e-10,

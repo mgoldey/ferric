@@ -50,7 +50,7 @@ use ferric_integrals::oneelectron;
 use ferric_integrals::operator::Operator;
 use ferric_integrals::three_index_source::ThreeIndexSource;
 use ferric_integrals::threeindex::{coulomb_metric_2c, eri3_tensor};
-use ferric_scf::df_j::DfJ;
+use ferric_scf::df_j::{DfJ, RiJPrecision};
 use ferric_scf::df_k::DfK;
 use ferric_scf::fock::{JBuilder, KBuilder};
 use ferric_scf::screening::SchwarzBounds;
@@ -1184,7 +1184,10 @@ impl PyAoIntegrals {
                 // RI-J needs a Cholesky of the metric, which the erf metric of
                 // a Coulomb-fitting basis does not admit (DfK regularizes
                 // instead): keep K usable and report J's failure on use.
-                let j = DfJ::from_source(raw, op, &dfbs, budget, None).map_err(|e| e.to_string());
+                // f64: these building blocks are contracted by the f64
+                // gradient blocks and compared against f64 references.
+                let j = DfJ::from_source(raw, op, &dfbs, budget, None, RiJPrecision::F64)
+                    .map_err(|e| e.to_string());
                 Ok((j, k))
             })
             .map_err(make_err)?;
@@ -1628,7 +1631,14 @@ impl DfResponse {
                 &mut raw, obs, dfbs, coulomb, budget, None,
             )?));
         }
-        let j = std::sync::Mutex::new(DfJ::from_source(raw, coulomb, dfbs, budget, None)?);
+        let j = std::sync::Mutex::new(DfJ::from_source(
+            raw,
+            coulomb,
+            dfbs,
+            budget,
+            None,
+            RiJPrecision::F64,
+        )?);
         Ok(DfResponse { j, k })
     }
 

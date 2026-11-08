@@ -2628,6 +2628,13 @@ pub struct ScfCfg {
     /// machine. `memory` errors when it does not fit; `disk` always spills;
     /// `direct` always recomputes. Omitted: `FERRIC_JK_STORAGE` if set.
     pub jk_storage: Option<String>,
+    /// Storage precision of the RI-J three-index tensor: `"f32"` (default:
+    /// half the memory, f64 accumulation; measured converged-energy shift
+    /// +5.4e-6 Ha on danuglipron PBE/def2-SVP) or `"f64"` (bit-identical to
+    /// the default before 2026-11-07). Omitted = f32, or f64 when a `[gpu]`
+    /// mode may build J on the device. Gradients, optimize, Hessians and
+    /// frequencies follow the SCF's value. Ignored without RI-J.
+    pub ri_j_precision: Option<String>,
     /// Exchange builder: "direct" (default), "link", or "cosx" (seminumerical
     /// COSX exchange). Honoured by RHF, UHF and ROHF. Ignored with a warning
     /// when DF-J/DF-K is active, when the functional uses no exact exchange, or
@@ -2943,6 +2950,7 @@ impl Default for ScfCfg {
             integral_thresh: 1e-12,
             eri_precision: None,
             jk_storage: None,
+            ri_j_precision: None,
             k_builder: None,
             screening: None,
             cosx_grid: None,
@@ -3371,6 +3379,16 @@ impl ScfCfg {
             .transpose()
             .map_err(|e| format!("[scf] {e}"))
     }
+    /// The `[scf] ri_j_precision` value, strictly parsed (`None` = default).
+    pub fn ri_j_precision_resolved(
+        &self,
+    ) -> Result<Option<ferric_scf::df_j::RiJPrecision>, String> {
+        self.ri_j_precision
+            .as_deref()
+            .map(ferric_scf::df_j::RiJPrecision::parse_config_str)
+            .transpose()
+            .map_err(|e| format!("[scf] {e}"))
+    }
     /// Post-parse validation of the `[scf]` string knobs whose resolution is
     /// otherwise deferred to the point of use. Called from [`load_config`] so
     /// every entry point (CLI and `ferric-batch`) fails before any integral is
@@ -3386,6 +3404,7 @@ impl ScfCfg {
                 .map_err(|e| format!("[scf] eri_precision {p:e}: {e}"))?;
         }
         self.jk_storage_policy()?;
+        self.ri_j_precision_resolved()?;
         for (i, rung) in self.ladder.iter().enumerate() {
             rung.use_sad_guess()
                 .map_err(|e| format!("[[scf.ladder]] rung {i}: {e}"))?;
@@ -4043,6 +4062,32 @@ impl Config {
     /// Value checks on `[external_potential]` smeared-charge widths and the
     /// `[pcm]` section, run by [`load_config`] so a bad value fails at load
     /// time on every entry point.
+    /// `dfj-f32` in `[precision] mixed_kernels` asks for the f32 RI-J tensor
+    /// (the default since `[scf] ri_j_precision` exists); naming it next to
+    /// `ri_j_precision = "f64"` asks for both precisions and is refused.
+    fn check_ri_j_precision_against_mixed_kernels(&self) -> Result<(), String> {
+        let gpu_kernels = match &self.gpu {
+            GpuSection::Table(t) => t.mixed_kernels.as_ref(),
+            GpuSection::Preset(_) => None,
+        };
+        let names_dfj_f32 = self
+            .precision
+            .mixed_kernels
+            .iter()
+            .chain(gpu_kernels)
+            .flatten()
+            .any(|k| k.trim() == ferric_core::gpu::MixedKernel::DfjF32.name());
+        if names_dfj_f32
+            && self.scf.ri_j_precision_resolved()? == Some(ferric_scf::df_j::RiJPrecision::F64)
+        {
+            return Err(
+                "[scf] ri_j_precision = \"f64\" contradicts \"dfj-f32\" in mixed_kernels \
+                 (which asks for the f32 RI-J tensor); drop one of them"
+                    .into(),
+            );
+        }
+        Ok(())
+    }
     /// Every post-parse value check `load_config` runs, in order: memory,
     /// SCF, `[mp2] linlccd_variant` and the `[local]` values, then the
     /// CLI-wired keys.
@@ -4052,6 +4097,7 @@ impl Config {
         self.precision.validate()?;
         self.gpu_explicit().check_precision_aliases()?;
         self.scf.validate()?;
+        self.check_ri_j_precision_against_mixed_kernels()?;
         self.validate_guess_basis_keys()?;
         self.mp2.linlccd_variant()?;
         self.cc_ladder()?;
@@ -8637,6 +8683,41 @@ json = [1, 2]
             err.contains("jk_storage") && err.contains("\"direct\""),
             "{err}"
         );
+    }
+
+    /// `[scf] ri_j_precision` is strict: `"f32"` and `"f64"` parse to the
+    /// library values, omitted is `None` (the library default, f32), anything
+    /// else errors at load; `"f64"` next to `dfj-f32` in `mixed_kernels` is
+    /// refused as a contradiction.
+    #[test]
+    fn scf_ri_j_precision_is_strict_and_reaches_the_library() {
+        use ferric_scf::df_j::RiJPrecision;
+        assert_eq!(scf_cfg("").ri_j_precision_resolved().unwrap(), None);
+        for (v, want) in [("f32", RiJPrecision::F32), ("f64", RiJPrecision::F64)] {
+            let cfg = scf_cfg(&format!("ri_j_precision = \"{v}\""));
+            assert!(cfg.validate().is_ok(), "{v}");
+            assert_eq!(cfg.ri_j_precision_resolved().unwrap(), Some(want));
+        }
+        for bad in ["F32", "single", "fp64", ""] {
+            let err = scf_cfg(&format!("ri_j_precision = {bad:?}"))
+                .validate()
+                .unwrap_err();
+            assert!(
+                err.contains("ri_j_precision") && err.contains("\"f64\""),
+                "{bad}: {err}"
+            );
+        }
+        let both = |prec: &str| {
+            parse(&format!(
+                "{MINIMAL}[precision]\nmode = \"mixed\"\nmixed_kernels = [\"dfj-f32\"]\n\
+                 [scf]\nri_j_precision = \"{prec}\"\n"
+            ))
+            .unwrap()
+            .check_ri_j_precision_against_mixed_kernels()
+        };
+        assert!(both("f32").is_ok());
+        let err = both("f64").unwrap_err();
+        assert!(err.contains("contradicts"), "{err}");
     }
 
     /// `[scf] guess` used to accept ANY string: everything but "hcore" silently
