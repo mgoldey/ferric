@@ -2,6 +2,12 @@
 //! `validation_ecp_df_hessian.rs` (validation tier): ECP + density-fitted
 //! analytic Hessians against central FD of ferric's analytic gradient.
 #![allow(dead_code)]
+// RI-J pinned to the f64 tensor (`ri_j_precision: Some(F64)` in every config
+// here): these tests validate f64 implementation code against finite
+// differences, another tier or f64 reference values at bars below the f32
+// default's effect (its energy shift is ~1e-6 Ha, and its energy surface jitters
+// by ~1e-7..1e-6 Ha between nearby geometries; site/src/methods/scf.md, "RI-J
+// tensor precision").
 
 use ferric_core::basis::{self, BasisSet};
 use ferric_core::mol::Molecule;
@@ -80,6 +86,7 @@ pub fn config(fit: Fit) -> RhfConfig {
         Fit::Jk(a) => (aux(a), aux(a)),
     };
     RhfConfig {
+        ri_j_precision: Some(ferric_scf::df_j::RiJPrecision::F64),
         max_iter: 300,
         energy_conv: 1e-12,
         density_conv: 1e-10,

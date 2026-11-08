@@ -66,6 +66,16 @@ pub struct RhfConfig {
     /// Should be a JK-fit basis (e.g. `def2-universal-jkfit`), not an RI/MP2-fit
     /// basis, which would introduce mHa-scale error in K.
     pub df_k_aux: Option<String>,
+    /// Storage precision of the RI-J raw 3-index tensor (`[scf]
+    /// ri_j_precision`, Python `ri_j_precision=`): `None` = the default
+    /// ([`RiJPrecision::resolve`](crate::df_j::RiJPrecision::resolve): f32,
+    /// or f64 when a `[gpu]` mode may build J on the device),
+    /// `Some(F64)` the f64 tensor (bit-identical to the pre-2026-11-07
+    /// default), `Some(F32)` f32 storage with f64 accumulation. Ignored
+    /// without RI-J. What was used is recorded in
+    /// [`DfJkRoute::ri_j_precision`](crate::result::DfJkRoute::ri_j_precision),
+    /// which the gradient and Hessian follow.
+    pub ri_j_precision: Option<crate::df_j::RiJPrecision>,
     /// XC functional name (None = pure HF; e.g. "LDA", "PBE", "B3LYP", "wB97X-V").
     pub xc: Option<String>,
     /// Range-separation ω override (Bohr⁻¹) for a range-separated `xc` —
@@ -484,6 +494,7 @@ impl Default for RhfConfig {
             cosx: crate::cosx_k::CosxConfig::default(),
             df_j_aux: None,
             df_k_aux: None,
+            ri_j_precision: None,
             xc: None,
             xc_omega: None,
             dft_grid: None,
@@ -2260,6 +2271,7 @@ fn solve_rhf_impl(
         df_k_aux_eff.as_deref(),
         ooc_budget,
         config.integral_thresh,
+        crate::df_j::RiJPrecision::resolve(config.ri_j_precision),
     )?;
     phases.stop(df_fitters_t);
     // Record the builders that actually produced the energy, from the SAME
@@ -2279,6 +2291,9 @@ fn solve_rhf_impl(
         }),
         op,
         ooc_budget,
+        df_j
+            .as_ref()
+            .map_or(crate::df_j::RiJPrecision::F64, |j| j.precision()),
     );
 
     // A pluggable K builder ("link" / "cosx") is only consumed on the

@@ -36,6 +36,12 @@
 //! build and BOTH planes are admitted, exactly as before the pool existed.
 //! Those predictions differ (outstanding > 0 vs == 0; refused vs admitted),
 //! so this test distinguishes them.
+// RI-J pinned to the f64 tensor (`ri_j_precision: Some(F64)` in every config
+// here): these tests validate f64 implementation code against finite
+// differences, another tier or f64 reference values at bars below the f32
+// default's effect (its energy shift is ~1e-6 Ha, and its energy surface jitters
+// by ~1e-7..1e-6 Ha between nearby geometries; site/src/methods/scf.md, "RI-J
+// tensor precision").
 
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
@@ -84,6 +90,7 @@ fn try_ksdft(basis: &str) -> Result<f64, String> {
     let bounds = SchwarzBounds::compute(op, &obs).expect("schwarz");
     let ctx = ParallelContext::default();
     let cfg = RhfConfig {
+        ri_j_precision: Some(ferric_scf::df_j::RiJPrecision::F64),
         xc: Some("PBE".into()),
         df_j_aux: Some("def2-universal-jkfit".into()),
         ..Default::default()

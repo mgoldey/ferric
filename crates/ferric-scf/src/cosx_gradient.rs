@@ -1045,13 +1045,24 @@ pub fn fitted_exchange_response_routed(
     let mut jb: Box<dyn JBuilder + '_> = match j_aux {
         Some((aux, route)) => {
             let dfbs = PreparedBasis::new(mol, &ferric_core::basis::bundled(aux)?)?;
-            Box::new(crate::df_j::DfJ::new_banded(
-                route.op,
-                prep,
-                &dfbs,
-                route.budget_bytes,
-                Some(&ctx),
-            )?)
+            // The response J reads the integrals at the SCF's RI-J precision.
+            if route.ri_j_precision == crate::df_j::RiJPrecision::F32 {
+                Box::new(crate::df_j::DfJ::new_with_precision(
+                    route.op,
+                    prep,
+                    &dfbs,
+                    route.budget_bytes,
+                    route.ri_j_precision,
+                )?)
+            } else {
+                Box::new(crate::df_j::DfJ::new_banded(
+                    route.op,
+                    prep,
+                    &dfbs,
+                    route.budget_bytes,
+                    Some(&ctx),
+                )?)
+            }
         }
         None => Box::new(crate::direct_j::DirectJ::new(
             &ctx,

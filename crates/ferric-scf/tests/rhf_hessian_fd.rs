@@ -488,7 +488,14 @@ fn unsupported_configurations_are_refused() {
     };
 
     let mut ri = s.rhf.clone();
-    ri.df_jk = DfJkRoute::from_scf(Some("cc-pvdz-ri"), None, None, op, 0);
+    ri.df_jk = DfJkRoute::from_scf(
+        Some("cc-pvdz-ri"),
+        None,
+        None,
+        op,
+        0,
+        ferric_scf::df_j::RiJPrecision::F64,
+    );
     assert!(ri.df_jk.is_some());
     refused(
         &ri,

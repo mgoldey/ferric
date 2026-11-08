@@ -3,6 +3,12 @@
 //! analytic KS Hessian and its pieces against finite differences of the
 //! production (moving-grid) gradient and `V_xc`.
 #![allow(dead_code)]
+// RI-J pinned to the f64 tensor (`ri_j_precision: Some(F64)` in every config
+// here): these tests validate f64 implementation code against finite
+// differences, another tier or f64 reference values at bars below the f32
+// default's effect (its energy shift is ~1e-6 Ha, and its energy surface jitters
+// by ~1e-7..1e-6 Ha between nearby geometries; site/src/methods/scf.md, "RI-J
+// tensor precision").
 
 use ferric_core::basis;
 use ferric_core::mol::Molecule;
@@ -48,6 +54,7 @@ pub fn water() -> Molecule {
 /// test grid.
 pub fn config(xc: &str) -> RhfConfig {
     RhfConfig {
+        ri_j_precision: Some(ferric_scf::df_j::RiJPrecision::F64),
         xc: Some(xc.into()),
         df_j_aux: Some(String::new()),
         df_k_aux: Some(String::new()),
@@ -250,6 +257,7 @@ pub const MUTANT_FACTOR: f64 = 10.0;
 /// that container.
 pub fn fd_reference_config(cfg: &RhfConfig) -> RhfConfig {
     RhfConfig {
+        ri_j_precision: Some(ferric_scf::df_j::RiJPrecision::F64),
         density_conv: cfg.density_conv.min(1e-13),
         energy_conv: cfg.energy_conv.min(1e-14),
         ..cfg.clone()

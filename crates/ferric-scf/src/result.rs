@@ -467,6 +467,12 @@ pub struct DfJkRoute {
     /// gradient's transient three-index block (a quarter of it, at most
     /// `df_gradient::GRADIENT_3C_BLOCK_CAP_BYTES`).
     pub budget_bytes: usize,
+    /// Precision the RI-J tensor was ACTUALLY stored at (after any f32
+    /// fallback; f64 for Split-RI-J and when there is no RI-J). The analytic
+    /// gradient and Hessian contract the same rounded integrals into the
+    /// fitted density `d_P`, so they differentiate the energy this SCF
+    /// computed.
+    pub ri_j_precision: crate::df_j::RiJPrecision,
 }
 
 impl DfJkRoute {
@@ -480,6 +486,7 @@ impl DfJkRoute {
         rsh_k: Option<(&str, f64)>,
         op: Operator,
         budget_bytes: usize,
+        ri_j_precision: crate::df_j::RiJPrecision,
     ) -> Option<Self> {
         let clean = |s: Option<&str>| s.filter(|s| !s.is_empty()).map(str::to_string);
         let route = DfJkRoute {
@@ -490,6 +497,11 @@ impl DfJkRoute {
                 .map(|(s, w)| (s.to_string(), w)),
             op,
             budget_bytes,
+            ri_j_precision: if j_aux.is_some_and(|s| !s.is_empty()) {
+                ri_j_precision
+            } else {
+                crate::df_j::RiJPrecision::F64
+            },
         };
         route.is_active().then_some(route)
     }
@@ -501,6 +513,15 @@ impl DfJkRoute {
 }
 
 impl ScfResult {
+    /// Storage precision of the RI-J tensor this SCF's energy was built from,
+    /// or `None` when J was not density-fitted (exact four-centre J).
+    pub fn ri_j_precision(&self) -> Option<crate::df_j::RiJPrecision> {
+        self.df_jk
+            .as_ref()
+            .filter(|r| r.j_aux.is_some())
+            .map(|r| r.ri_j_precision)
+    }
+
     /// Restricted accessor: panics if spin != Restricted.
     pub fn mos_r(&self) -> &Array2<f64> {
         assert!(

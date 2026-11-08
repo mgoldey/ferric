@@ -22,7 +22,10 @@ import ferric
 
 WATER = "3\n\nO 0 0 0.117\nH 0 0.757 -0.467\nH 0 -0.757 -0.467\n"
 HI = "2\n\nH 0 0 0\nI 0 0 1.609\n"
-TIGHT = {"energy_conv": 1e-11, "density_conv": 1e-10}
+# RI-J pinned to the f64 tensor: these compare against finite differences or
+# f64 references at bars below the f32 default's effect (site/src/methods/scf.md,
+# "RI-J tensor precision").
+TIGHT = {"energy_conv": 1e-11, "density_conv": 1e-10, "ri_j_precision": "f64"}
 FREQ_TIGHT = {f"scf_{k}": v for k, v in TIGHT.items()}  # run_frequencies spelling
 
 

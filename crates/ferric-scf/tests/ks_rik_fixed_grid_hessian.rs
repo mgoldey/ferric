@@ -464,6 +464,7 @@ fn ri_k_adds_nothing_to_a_pure_functional() {
     let fit = KsFit {
         aux: &aux,
         budget_bytes: usize::MAX,
+        precision: ferric_scf::df_j::RiJPrecision::F64,
     };
     let run = |fits: KsFits<'_>, m: &KsFixedGridMutants| {
         rks_fixed_grid_hessian_parts_with_aux(
@@ -647,6 +648,11 @@ fn production_ri_jk_scf_result_gives_the_same_hessian() {
         max_iter: 200,
         energy_conv: 1e-13,
         density_conv: 1e-11,
+        // The injected reference builds an f64 `DfJ`; the production SCF must
+        // store the same f64 tensor for the two Hessians to agree to 5e-10.
+        // (With the f32 default the production Hessian follows its f32 SCF
+        // and moves by 6.5e-7, measured.)
+        ri_j_precision: Some(ferric_scf::df_j::RiJPrecision::F64),
         ..Default::default()
     };
     assert!(cfg.df_j_aux.is_none() && cfg.df_k_aux.is_none());

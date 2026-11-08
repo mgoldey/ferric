@@ -1,8 +1,9 @@
 //! `dfj-f32`: the CPU RI-J raw tensor STORED as f32 (one nearest rounding per
 //! integral), both passes accumulated in f64 against f64 vectors. CPU only, no
-//! device. The kernel is opt-in (`[precision] mode = "mixed"`,
-//! `mixed_kernels = "dfj-f32"`); the tests switch it per builder with the
-//! `set_dfj_f32_for_test` hook and hold `LOCK` (the hook is process-wide).
+//! device. The DEFAULT since 2026-11-07 (`RiJPrecision`, `[scf]
+//! ri_j_precision`); the tests pass the precision per builder and hold `LOCK`
+//! (the `set_dfj_f32_for_test` override hook and the mutation seams are
+//! process-wide).
 //!
 //! WHAT IS DERIVED (module docs of `ferric_scf::df_j`, "f32 tensor storage";
 //! u32 = 2⁻²⁴, u64 = 2⁻⁵³, γ_k = ku64/(1−ku64), η = 2⁻¹⁵⁰):
@@ -41,9 +42,9 @@
 //!    is not sharp for an ill-conditioned jkfit metric; the measured smoothness
 //!    of `E_J` is ~1e-13, `df_j_energy_is_smooth_in_the_density`). Not vacuous:
 //!    `|ΔE| > bar`. The 2·|dE_exit| termination terms follow `gpu_jk_ladder.rs`.
-//!  * Off by default: an unset request builds the f64 tiers, bit-identical to an
-//!    explicit off, and moves no `dfj-f32` counter; the default resolved settings
-//!    do not allow `dfj-f32`; `mode = mixed` + `dfj-f32` resolves with the GPU off.
+//!  * f32 by default: an unset precision resolves to f32 (CPU build) and builds
+//!    the f32 tier; an explicit f64 is bit-identical to the forced-off f64 path and
+//!    moves no `dfj-f32` counter; the parser is strict.
 use ferric_core::basis;
 use ferric_core::gpu::config::{GpuSettings, GpuSettingsExplicit, PrecisionExplicit};
 use ferric_core::gpu::mixed_host::{gamma, U32, U64};
@@ -58,8 +59,8 @@ use ferric_integrals::operator::Operator;
 use ferric_integrals::three_index_source::{ThreeIndexSource, F32_UNDERFLOW_ABS};
 use ferric_integrals::threeindex::coulomb_metric_2c;
 use ferric_scf::df_j::{
-    dfj_f32_d_error_factor, dfj_f32_energy_error_factor, dfj_f32_j_error_factor, dfj_f32_requested,
-    ri_j_pair_screen_for_test, set_dfj_f32_for_test, DfJ,
+    dfj_f32_d_error_factor, dfj_f32_energy_error_factor, dfj_f32_j_error_factor, dfj_f32_wanted,
+    ri_j_pair_screen_for_test, set_dfj_f32_for_test, DfJ, RiJPrecision,
 };
 use ferric_scf::fock::JBuilder;
 use ferric_scf::result::ScfResult;
@@ -123,9 +124,8 @@ impl System {
     fn naux(&self) -> usize {
         self.dfbs.nbasis()
     }
-    /// `DfJ::new_for_jk` (the SCF RI-J constructor), with `dfj-f32` on or off.
+    /// `DfJ::new_for_jk` (the SCF RI-J constructor) at f32 or f64.
     fn dfj(&self, f32: bool, budget: usize, pair_thresh: f64) -> DfJ<'static> {
-        let _r = Request::set(Some(f32));
         let j = DfJ::new_for_jk(
             Operator::coulomb(),
             &self.mol,
@@ -134,10 +134,19 @@ impl System {
             budget,
             None,
             pair_thresh,
+            precision(f32),
         )
         .unwrap();
         assert_eq!(j.is_f32_storage(), f32, "{}: wrong storage", self.label);
         j
+    }
+}
+
+fn precision(f32: bool) -> RiJPrecision {
+    if f32 {
+        RiJPrecision::F32
+    } else {
+        RiJPrecision::F64
     }
 }
 
@@ -581,8 +590,8 @@ fn the_f32_tier_charges_half_the_f64_bytes() {
         ] {
             let raw =
                 ThreeIndexSource::build_band(op, &sys.obs, &sys.dfbs, raw_budget, 0, naux).unwrap();
-            let _r = Request::set(Some(true));
-            let mut conv = DfJ::from_source(raw, op, &sys.dfbs, usize::MAX, None).unwrap();
+            let mut conv =
+                DfJ::from_source(raw, op, &sys.dfbs, usize::MAX, None, RiJPrecision::F32).unwrap();
             assert!(conv.is_f32_storage(), "{what}: not converted");
             assert_eq!(
                 conv.source_mut_for_test().charged_bytes(),
@@ -608,11 +617,15 @@ fn the_f32_tier_charges_half_the_f64_bytes() {
     }
 }
 
-/// Off by default: the default request is off, builds the f64 tier, is
-/// bit-identical to an explicit off and moves no `dfj-f32` counter; the
-/// default settings do not allow it; it resolves (opt-in, CPU) with the GPU off.
+/// f32 by default since 2026-11-07: an unset precision resolves to f32 on a
+/// CPU build and builds the f32 tier (one `dfj-f32` count per build); an
+/// explicit f64 builds the f64 tier and is bit-identical to the forced-off
+/// test hook (the pre-change default code path) and moves no `dfj-f32`
+/// counter. The `[precision]` settings no longer gate it (their default still
+/// does not name `dfj-f32`; naming it with `mode = mixed` still resolves, GPU
+/// off), and the parser is strict.
 #[test]
-fn off_by_default_and_opt_in_resolves_on_the_cpu() {
+fn f32_by_default_and_f64_opt_out_is_the_old_path() {
     let _g = lock();
     let none = |_: &str| None::<String>;
     let (s, _) = GpuSettings::resolve(GpuSettingsExplicit::default(), none).unwrap();
@@ -636,33 +649,81 @@ fn off_by_default_and_opt_in_resolves_on_the_cpu() {
     }
 
     set_dfj_f32_for_test(None);
-    assert!(!dfj_f32_requested(), "dfj-f32 is on without a request");
+    #[cfg(not(feature = "gpu"))]
+    assert_eq!(RiJPrecision::resolve(None), RiJPrecision::F32);
+    assert_eq!(RiJPrecision::DEFAULT, RiJPrecision::F32);
+    for p in [RiJPrecision::F32, RiJPrecision::F64] {
+        assert_eq!(RiJPrecision::resolve(Some(p)), p, "explicit {p} wins");
+        assert_eq!(RiJPrecision::parse_config_str(p.as_str()).unwrap(), p);
+    }
+    for bad in ["F32", "fp32", "single", "", "f16"] {
+        let e = RiJPrecision::parse_config_str(bad).unwrap_err();
+        assert!(e.to_string().contains("ri_j_precision"), "{bad}: {e}");
+    }
+    assert!(dfj_f32_wanted(RiJPrecision::F32));
+    assert!(!dfj_f32_wanted(RiJPrecision::F64));
+
     let sys = benzene();
     let n = sys.n();
     let d = density(n);
-    let k0 = kernel_counters()[MixedKernel::DfjF32.index()];
-    let mut by_default = DfJ::new_for_jk(
-        Operator::coulomb(),
-        &sys.mol,
-        &sys.obs,
-        &sys.dfbs,
-        usize::MAX,
-        None,
-        0.0,
-    )
-    .unwrap();
-    assert!(!by_default.is_f32_storage());
-    let mut off = sys.dfj(false, usize::MAX, 0.0);
-    let (mut j1, mut j2) = (Array2::zeros((n, n)), Array2::zeros((n, n)));
-    by_default.build(&d, &mut j1).unwrap();
-    off.build(&d, &mut j2).unwrap();
+    let new = |p: RiJPrecision| {
+        DfJ::new_for_jk(
+            Operator::coulomb(),
+            &sys.mol,
+            &sys.obs,
+            &sys.dfbs,
+            usize::MAX,
+            None,
+            0.0,
+            p,
+        )
+        .unwrap()
+    };
     let bits = |m: &Array2<f64>| m.iter().map(|v| v.to_bits()).collect::<Vec<_>>();
+
+    // The default builds f32.
+    let k0 = kernel_counters()[MixedKernel::DfjF32.index()];
+    let mut by_default = new(RiJPrecision::resolve(None));
+    let mut j0 = Array2::zeros((n, n));
+    by_default.build(&d, &mut j0).unwrap();
+    #[cfg(not(feature = "gpu"))]
+    {
+        assert!(by_default.is_f32_storage());
+        assert_eq!(by_default.precision(), RiJPrecision::F32);
+        let k1 = kernel_counters()[MixedKernel::DfjF32.index()];
+        assert_eq!(
+            k1.since(&k0).mixed,
+            1,
+            "a default build is one dfj-f32 call"
+        );
+    }
+
+    // Explicit f64 == the forced-off hook, bit for bit, and counts nothing.
+    let k0 = kernel_counters()[MixedKernel::DfjF32.index()];
+    let mut explicit = new(RiJPrecision::F64);
+    assert!(!explicit.is_f32_storage());
+    assert_eq!(explicit.precision(), RiJPrecision::F64);
+    let mut forced_off = {
+        let _r = Request::set(Some(false));
+        new(RiJPrecision::F32)
+    };
+    assert!(
+        !forced_off.is_f32_storage(),
+        "the hook overrides the caller"
+    );
+    let (mut j1, mut j2) = (Array2::zeros((n, n)), Array2::zeros((n, n)));
+    explicit.build(&d, &mut j1).unwrap();
+    forced_off.build(&d, &mut j2).unwrap();
     assert!(
         bits(&j1) == bits(&j2),
-        "the default differs from an explicit off"
+        "explicit f64 differs from the f64 path"
+    );
+    assert!(
+        bits(&j0) != bits(&j1),
+        "the f32 default left J bit-identical"
     );
     let k1 = kernel_counters()[MixedKernel::DfjF32.index()];
-    assert_eq!(k1.since(&k0).mixed, 0, "a default build counted dfj-f32");
+    assert_eq!(k1.since(&k0).mixed, 0, "an f64 build counted dfj-f32");
 }
 
 // ------------------------------------------------------------------ mutants
@@ -698,7 +759,7 @@ fn mutants_fail_the_per_build_check() {
         assert!(!r.passes());
 
         let mut clean = sys.dfj(true, usize::MAX, 0.0);
-        let _r = Request::set(Some(true));
+        let _r = Request::set(None);
         ACCUMULATE_DFJ_F32_IN_F32.store(true, Ordering::SeqCst);
         let r = ratios(&mut clean, &b64, &cols, &d, &c);
         ACCUMULATE_DFJ_F32_IN_F32.store(false, Ordering::SeqCst);
@@ -725,9 +786,10 @@ fn scf(sys: &System, f32: bool) -> ScfResult {
         df_j_aux: Some(AUX.into()),
         df_k_aux: Some(AUX.into()),
         three_index_budget_bytes: 3 << 30,
+        ri_j_precision: Some(precision(f32)),
         ..Default::default()
     };
-    let _r = Request::set(Some(f32));
+    let _r = Request::set(None);
     let k0 = kernel_counters()[MixedKernel::DfjF32.index()];
     let res = solve_rhf(
         &ParallelContext::default(),

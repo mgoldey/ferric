@@ -2208,6 +2208,15 @@ pub enum RiJ<'a> {
 }
 
 impl<'a> RiJ<'a> {
+    /// The precision of the integrals J is built from: the stored tensor's,
+    /// or f64 for Split-RI-J (no tensor; its integrals are f64).
+    pub fn precision(&self) -> crate::df_j::RiJPrecision {
+        match self {
+            RiJ::Stored(s) => s.precision(),
+            RiJ::Split(_) => crate::df_j::RiJPrecision::F64,
+        }
+    }
+
     /// The stored builder, for DfJ-only hooks (e.g. `reserve_device_for_k`).
     pub fn as_stored_mut(&mut self) -> Option<&mut crate::df_j::DfJ<'a>> {
         match self {

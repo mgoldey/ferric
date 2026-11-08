@@ -96,7 +96,8 @@ def test_rijk_reference_is_run_rhf_with_both_fits(water, name):
 
 def test_rijk_rimp2_matches_pyscf_density_fit_dfmp2(water):
     ref = json.loads(REF.read_text())
-    r = ferric.run_rimp2(*water, scf_jk="rijk")
+    # f64 RI-J: PySCF's DF reference is f64; the f32 default is ~1e-6 Ha away.
+    r = ferric.run_rimp2(*water, scf_jk="rijk", scf_ri_j_precision="f64")
     assert abs(r.rhf_energy - ref["rhf_energy"]) <= 1e-8, (r.rhf_energy, ref)
     assert abs(r.mp2_corr - ref["mp2_corr"]) <= 1e-8, (r.mp2_corr, ref)
     assert abs(r.total_energy - ref["total_energy"]) <= 1e-8

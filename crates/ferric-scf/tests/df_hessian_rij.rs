@@ -38,6 +38,12 @@
 //! * An integral artifact common to the stencil and the oracle cannot be seen
 //!   by the fixed-density pieces; the displaced-geometry gradient FD and the
 //!   PySCF comparison are what see it.
+// RI-J pinned to the f64 tensor (`ri_j_precision: Some(F64)` in every config
+// here): these tests validate f64 implementation code against finite
+// differences, another tier or f64 reference values at bars below the f32
+// default's effect (its energy shift is ~1e-6 Ha, and its energy surface jitters
+// by ~1e-7..1e-6 Ha between nearby geometries; site/src/methods/scf.md, "RI-J
+// tensor precision").
 
 use ferric_core::basis;
 use ferric_core::mol::Molecule;
@@ -88,6 +94,7 @@ fn water() -> Molecule {
 
 fn scf_config(aux: &str) -> RhfConfig {
     RhfConfig {
+        ri_j_precision: Some(ferric_scf::df_j::RiJPrecision::F64),
         max_iter: 200,
         energy_conv: 1e-14,
         density_conv: 1e-12,
@@ -983,6 +990,7 @@ fn unsupported_density_fitted_configurations_are_refused() {
     // (tests/df_hessian_rik.rs), UHF (tests/df_hessian_uhf.rs) and ROHF
     // (tests/df_hessian_rohf.rs).
     let ri_k = RhfConfig {
+        ri_j_precision: Some(ferric_scf::df_j::RiJPrecision::F64),
         df_k_aux: Some("def2-universal-jkfit".into()),
         ..scf_config("def2-universal-jkfit")
     };
@@ -1017,6 +1025,7 @@ fn unsupported_density_fitted_configurations_are_refused() {
     assert!(e.contains("differs from the configuration"), "{e}");
     // RI-J with an external potential is untested and refused.
     let with_field = RhfConfig {
+        ri_j_precision: Some(ferric_scf::df_j::RiJPrecision::F64),
         external_potential: Some(ferric_core::external_potential::ExternalPotential {
             point_charges: vec![ferric_core::external_potential::PointCharge {
                 q: 0.3,
@@ -1057,6 +1066,7 @@ fn df_off_configurations_take_the_exact_path() {
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let hess = |df_j: Option<String>| {
         let cfg = RhfConfig {
+            ri_j_precision: Some(ferric_scf::df_j::RiJPrecision::F64),
             max_iter: 200,
             energy_conv: 1e-12,
             density_conv: 1e-10,
@@ -1136,6 +1146,7 @@ fn the_fitting_error_is_visible_to_the_exact_j_hessian() {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let cfg = RhfConfig {
+        ri_j_precision: Some(ferric_scf::df_j::RiJPrecision::F64),
         max_iter: 200,
         energy_conv: 1e-12,
         density_conv: 1e-10,

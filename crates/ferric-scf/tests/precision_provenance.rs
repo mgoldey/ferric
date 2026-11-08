@@ -65,6 +65,21 @@ fn f64_scf_results_carry_the_explicit_f64_record() {
         serde_json::json!({"precision": "f64", "counter_scope": "process", "kernels": []})
     );
 
+    // RKS with RI-J at the explicit f64 opt-out: all f64.
+    let ks = rhf(
+        WATER,
+        "sto-3g",
+        &RhfConfig {
+            xc: Some("LDA".into()),
+            ri_j_precision: Some(ferric_scf::df_j::RiJPrecision::F64),
+            ..Default::default()
+        },
+    );
+    assert!(ks.converged);
+    assert_eq!(ks.precision, PrecisionRecord::f64(), "RKS, f64 RI-J");
+
+    // The default RI-J tensor is f32: the record says so (requested and run
+    // mixed, on the CPU), with no `[precision]` settings installed.
     let ks = rhf(
         WATER,
         "sto-3g",
@@ -74,7 +89,12 @@ fn f64_scf_results_carry_the_explicit_f64_record() {
         },
     );
     assert!(ks.converged);
-    assert_eq!(ks.precision, PrecisionRecord::f64(), "RKS");
+    let j = ks.precision.to_json();
+    assert_eq!(j["precision"], "mixed", "{j}");
+    let k = &j["kernels"][0];
+    assert_eq!(k["kernel"], "dfj-f32", "{j}");
+    assert_eq!(k["requested"], "mixed", "{j}");
+    assert_eq!(k["mode"], "mixed", "{j}");
 
     let mol = Molecule::parse_xyz(OH, 0, 2).unwrap();
     let prep = PreparedBasis::new(&mol, &bundled("sto-3g").unwrap()).unwrap();

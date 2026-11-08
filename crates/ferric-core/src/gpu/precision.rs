@@ -97,8 +97,12 @@ pub enum MixedKernel {
     /// Schwarz pair-screened columns, `ferric_integrals::three_index_source::
     /// f32_store`) and both passes accumulated in f64 against f64 vectors
     /// (`ferric_scf::df_j`): half the resident RI-J tensor. A CPU kernel
-    /// ([`Self::runs_on_cpu`]), so `[gpu] mode = "off"` admits it; opt-in
-    /// ([`MixedKernelSet::OPT_IN`]), never in `SHIPPED`.
+    /// ([`Self::runs_on_cpu`]), so `[gpu] mode = "off"` admits it. Since
+    /// 2026-11-07 it is the DEFAULT SCF RI-J storage, chosen per SCF by
+    /// `RhfConfig::ri_j_precision` (`[scf] ri_j_precision`), not by these
+    /// settings: it stays in [`MixedKernelSet::OPT_IN`] (a `mixed_kernels`
+    /// list may still name it) and out of `SHIPPED`, and the provenance
+    /// record lists it whenever it ran.
     ///
     /// Not `dfj-pack`: that is the device kernel, behind the SCF precision
     /// ladder with an f64 exit (the host keeps the f64 tensor for it). This one
@@ -191,9 +195,10 @@ impl MixedKernelSet {
     /// same card, where a mixed SCF saved about 4% against the f64 device
     /// DF-K and was 3-6% slower with diffuse basis sets. `DfjF32`: a CPU kernel
     /// that trades a first-order (µEh-scale) energy error for half the RI-J
-    /// tensor memory, a trade the user must ask for (`ferric_scf::df_j`, tests
-    /// `dfj_f32_storage.rs`). An opt-in kernel that runs on the CPU needs no
-    /// device mode.
+    /// tensor memory; its request comes from `[scf] ri_j_precision` (f32 by
+    /// default), so naming it here only restates the default
+    /// (`ferric_scf::df_j`, tests `dfj_f32_storage.rs`). An opt-in kernel that
+    /// runs on the CPU needs no device mode.
     pub const OPT_IN: Self = Self::EMPTY
         .with(MixedKernel::XcVxc)
         .with(MixedKernel::DfkOcc)

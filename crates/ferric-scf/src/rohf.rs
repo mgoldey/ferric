@@ -854,6 +854,7 @@ fn solve_rohf_impl(
         k_aux_eff,
         ooc_budget,
         config.integral_thresh,
+        crate::df_j::RiJPrecision::resolve(config.ri_j_precision),
     )?;
     // Record the builders that produced the energy (same effective names as
     // `build_df_jk` above and `driver::prepare`'s RSH pair) so the analytic
@@ -872,6 +873,9 @@ fn solve_rohf_impl(
         }),
         coulomb_op,
         ooc_budget,
+        df_j
+            .as_ref()
+            .map_or(crate::df_j::RiJPrecision::F64, |j| j.precision()),
     );
     // Combined open-shell direct J+K + incremental Fock — identical scheme and
     // identical gating to `solve_uhf`; see the block comments there (and on

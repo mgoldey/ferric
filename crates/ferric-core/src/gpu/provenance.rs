@@ -305,7 +305,11 @@ impl PrecisionProbe {
         let mut kernels = Vec::new();
         for &k in stage {
             let d = now[k.index()].since(&self.before[k.index()]);
-            let allowed = settings.is_some_and(|s| s.mixed_allows(k));
+            // `dfj-f32` is requested per SCF by `ri_j_precision` (f32 by
+            // default), not by the `[precision]` settings: a build that ran
+            // it was asked for it.
+            let allowed = settings.is_some_and(|s| s.mixed_allows(k))
+                || (k == MixedKernel::DfjF32 && d.mixed > 0);
             if !allowed && !d.any() {
                 continue;
             }

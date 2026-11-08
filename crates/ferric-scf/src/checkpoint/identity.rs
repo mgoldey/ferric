@@ -298,6 +298,7 @@ fn config_fields(config: &RhfConfig, out: &mut Vec<IdentityField>) -> (f64, f64)
         cosx,
         df_j_aux,
         df_k_aux,
+        ri_j_precision,
         integral_thresh,
         screening,
         // Which converged state the iteration lands in: see `StateSelecting`. Only
@@ -367,6 +368,7 @@ fn config_fields(config: &RhfConfig, out: &mut Vec<IdentityField>) -> (f64, f64)
         ("cosx", format!("{cosx:?}")),
         ("df_j_aux", format!("{df_j_aux:?}")),
         ("df_k_aux", format!("{df_k_aux:?}")),
+        ("ri_j_precision", format!("{ri_j_precision:?}")),
         ("integral_thresh", format!("{integral_thresh:?}")),
         ("screening", format!("{screening:?}")),
     ];

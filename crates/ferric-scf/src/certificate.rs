@@ -103,8 +103,12 @@ fn approximations(
     let mut out = Vec::new();
     // Density fitting: what the solver recorded it ran, not what was asked.
     let route = result.df_jk.as_ref();
-    if let Some(a) = route.and_then(|r| r.j_aux.as_deref()) {
-        out.push(("ri-j", format!("aux {a}")));
+    if let Some(r) = route.filter(|r| r.j_aux.is_some()) {
+        let a = r.j_aux.as_deref().unwrap_or_default();
+        out.push((
+            "ri-j",
+            format!("aux {a}, {} tensor storage", r.ri_j_precision),
+        ));
     }
     if let Some(a) = route.and_then(|r| r.k_aux.as_deref()) {
         out.push(("ri-k", format!("aux {a}")));

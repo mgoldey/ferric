@@ -94,6 +94,7 @@
 //! iteration), so it is correct under MPI but its memory does not shrink with
 //! rank count.
 
+use crate::df_j::RiJPrecision;
 use crate::df_k::metric_lindep_cut;
 use crate::result::DfJkRoute;
 use crate::screening::SchwarzBounds;
@@ -288,6 +289,10 @@ fn truncated_inverse_divided_difference(lk: f64, kk: bool, ll: f64, kl: bool) ->
 /// Deterministic: both derivative passes map over auxiliary shells, collect in
 /// shell order, and fold serially, so the result is bit-identical across
 /// thread counts.
+///
+/// The RI-J fitted density `d_P` is formed from f64 integrals: the gradient of
+/// an SCF whose RI-J tensor was f64 ([`df_jk_gradient_at_precision`] with
+/// `RiJPrecision::F64`, bit-identical).
 #[allow(clippy::too_many_arguments)]
 pub fn df_jk_gradient(
     natoms: usize,
@@ -298,6 +303,41 @@ pub fn df_jk_gradient(
     k_channels: &[DfKChannel<'_>],
     budget_bytes: usize,
 ) -> Result<Array2<f64>, FerricError> {
+    df_jk_gradient_at_precision(
+        natoms,
+        obs,
+        dfbs,
+        op,
+        j_density,
+        k_channels,
+        budget_bytes,
+        RiJPrecision::F64,
+    )
+}
+
+/// [`df_jk_gradient`] for an SCF whose RI-J tensor was stored at
+/// `j_precision`. With f32 the RI-J fitted density `d̂_P = Σ f64(fl32(B))·D`
+/// is formed from the SAME rounded integrals the SCF's `DfJ` stored (each
+/// f64 integral rounded to nearest, then contracted in f64), so `ĉ = V⁻¹d̂`
+/// is the SCF's own fit coefficient vector and the gradient is that of the
+/// rounded-B functional `E'_J = ½d̂ᵀV⁻¹d̂` the SCF minimised (derivative
+/// integrals and the metric derivative stay f64: `fl32(B(R))` is treated as
+/// `B(R)(1+δ)` with `δ` fixed, so its derivative is `∂B` to `u32` relative).
+/// Exchange channels are unaffected (DF-K is always f64). The pair screen of
+/// the SCF tensor is not reproduced (it drops pairs below `integral_thresh`,
+/// as for an f64 tensor).
+#[allow(clippy::too_many_arguments)]
+pub fn df_jk_gradient_at_precision(
+    natoms: usize,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    j_density: Option<&Array2<f64>>,
+    k_channels: &[DfKChannel<'_>],
+    budget_bytes: usize,
+    j_precision: RiJPrecision,
+) -> Result<Array2<f64>, FerricError> {
+    let j_f32 = j_precision == RiJPrecision::F32;
     let n = obs.nbasis();
     let naux = dfbs.nbasis();
     let mut grad = Array2::<f64>::zeros((natoms, 3));
@@ -371,11 +411,15 @@ pub fn df_jk_gradient(
             let vals: Vec<f64> = (0..b)
                 .into_par_iter()
                 .map(|q| {
-                    data.index_axis(Axis(0), q)
-                        .iter()
-                        .zip(dj.iter())
-                        .map(|(a, c)| a * c)
-                        .sum::<f64>()
+                    let row = data.index_axis(Axis(0), q);
+                    if j_f32 {
+                        row.iter()
+                            .zip(dj.iter())
+                            .map(|(&a, c)| f64::from(a as f32) * c)
+                            .sum::<f64>()
+                    } else {
+                        row.iter().zip(dj.iter()).map(|(a, c)| a * c).sum::<f64>()
+                    }
                 })
                 .collect();
             for (q, val) in vals.into_iter().enumerate() {
@@ -736,7 +780,7 @@ pub(crate) fn df_j_gradient(
         FerricError::General("df_j_gradient: the SCF route has no RI-J aux basis".into())
     })?;
     let dfbs = aux_basis(mol, ja)?;
-    df_jk_gradient(
+    df_jk_gradient_at_precision(
         mol.atoms.len(),
         prep,
         &dfbs,
@@ -744,6 +788,7 @@ pub(crate) fn df_j_gradient(
         Some(d),
         &[],
         route.budget_bytes,
+        route.ri_j_precision,
     )
 }
 
@@ -815,7 +860,7 @@ pub fn routed_two_electron_gradient(
     match (j_df, k0_df) {
         (Some(ja), Some(ka)) if ja == ka => {
             let dfbs = aux_basis(mol, ja)?;
-            grad += &df_jk_gradient(
+            grad += &df_jk_gradient_at_precision(
                 natoms,
                 prep,
                 &dfbs,
@@ -823,13 +868,22 @@ pub fn routed_two_electron_gradient(
                 Some(&d_total),
                 &channels(mix.c_k),
                 budget,
+                route.ri_j_precision,
             )?;
         }
         _ => {
             if let Some(ja) = j_df {
                 let dfbs = aux_basis(mol, ja)?;
-                grad +=
-                    &df_jk_gradient(natoms, prep, &dfbs, route.op, Some(&d_total), &[], budget)?;
+                grad += &df_jk_gradient_at_precision(
+                    natoms,
+                    prep,
+                    &dfbs,
+                    route.op,
+                    Some(&d_total),
+                    &[],
+                    budget,
+                    route.ri_j_precision,
+                )?;
             }
             if let Some(ka) = k0_df {
                 let dfbs = aux_basis(mol, ka)?;

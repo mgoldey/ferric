@@ -129,6 +129,7 @@
 //! (about three more `3N · nbf²` matrices), which are not charged here.
 
 use crate::df_gradient::aux_basis;
+use crate::df_j::RiJPrecision;
 use crate::df_k::metric_lindep_cut;
 use crate::hessian_df_stencil::{
     eri2_deriv2_contract, eri3_deriv2_contract, weight_c_times_d, weight_matrix, StencilConfig,
@@ -428,7 +429,7 @@ pub fn rij_terms(
         FerricError::General("analytic RI-J Hessian: the SCF route has no RI-J basis".into())
     })?;
     let dfbs = aux_basis(mol, name)?;
-    rij_terms_with_aux(
+    rij_terms_with_aux_at_precision(
         mol.atoms.len(),
         obs,
         dfbs,
@@ -436,6 +437,7 @@ pub fn rij_terms(
         route.budget_bytes,
         d,
         mutants,
+        route.ri_j_precision,
     )
 }
 
@@ -451,6 +453,28 @@ pub fn rij_terms_with_aux(
     d: &Array2<f64>,
     mutants: &RijMutants,
 ) -> Result<RijTerms, FerricError> {
+    rij_terms_with_aux_at_precision(natoms, obs, dfbs, op, budget, d, mutants, RiJPrecision::F64)
+}
+
+/// [`rij_terms_with_aux`] for an SCF whose RI-J tensor was stored at
+/// `j_precision`. With f32 the two contractions of the UNDIFFERENTIATED
+/// integrals (`d_P = Σ B D` and the fit-response `Σ_P y_P B_P`) read every
+/// integral rounded to nearest f32 then contracted in f64, as the SCF's `DfJ`
+/// did; derivative integrals and the metric stay f64 (`fl32(B(R))` treated
+/// as `B(R)(1+δ)` with `δ` fixed, see `df_gradient::df_jk_gradient_at_precision`).
+#[doc(hidden)]
+#[allow(clippy::too_many_arguments)]
+pub fn rij_terms_with_aux_at_precision(
+    natoms: usize,
+    obs: &PreparedBasis,
+    dfbs: PreparedBasis,
+    op: Operator,
+    budget: usize,
+    d: &Array2<f64>,
+    mutants: &RijMutants,
+    j_precision: RiJPrecision,
+) -> Result<RijTerms, FerricError> {
+    let j_f32 = j_precision == RiJPrecision::F32;
     let fit = Fit::new(dfbs, op, budget, mutants)?;
     let n3 = 3 * natoms;
     let nbf = obs.nbasis();
@@ -468,13 +492,13 @@ pub fn rij_terms_with_aux(
             .saturating_add(8 * (3 * n3 * naux + 2 * naux * naux)),
     )?;
     let mut source = ThreeIndexSource::build(fit.op, obs, &fit.dfbs, fit.budget)?;
-    let d_p = d_vector(&mut source, d, fit.dfbs.nbasis())?;
+    let d_p = d_vector(&mut source, d, fit.dfbs.nbasis(), j_f32)?;
     let c = fit.solve(&d_p)?;
     let (dx, j1) = first_derivative_3c(obs, &fit, natoms, d, &c)?;
     let vc = first_derivative_2c(&fit, natoms, &c)?;
     let z = &dx - &vc;
     let y = solve_rows(&fit, &z)?;
-    let j2 = aux_weighted_ao(&mut source, &y, nbf)?;
+    let j2 = aux_weighted_ao(&mut source, &y, nbf, j_f32)?;
 
     let (z_skel, y_skel) = if mutants.drop_cross {
         (dx.clone(), solve_rows(&fit, &dx)?)
@@ -549,7 +573,8 @@ pub fn rij_first(
     )?;
     let natoms = mol.atoms.len();
     let mut source = ThreeIndexSource::build(fit.op, obs, &fit.dfbs, fit.budget)?;
-    let d_p = d_vector(&mut source, d, fit.dfbs.nbasis())?;
+    let j_f32 = route.ri_j_precision == RiJPrecision::F32;
+    let d_p = d_vector(&mut source, d, fit.dfbs.nbasis(), j_f32)?;
     let c = fit.solve(&d_p)?;
     let (dx, _) = first_derivative_3c(obs, &fit, natoms, d, &c)?;
     let vc = first_derivative_2c(&fit, natoms, c_fixed.unwrap_or(&c))?;
@@ -557,22 +582,26 @@ pub fn rij_first(
     Ok(RijFirst { c, dx, vc, y })
 }
 
-/// `d_P = Σ (P|μν) D_μν`.
+/// `d_P = Σ (P|μν) D_μν`; with `f32` each integral is first rounded to
+/// nearest f32 (the SCF's f32 RI-J tensor).
 fn d_vector(
     source: &mut ThreeIndexSource,
     d: &Array2<f64>,
     naux: usize,
+    f32: bool,
 ) -> Result<Array1<f64>, FerricError> {
     let mut d_p = Array1::<f64>::zeros(naux);
     source.for_each_block(|blk| {
         for q in 0..blk.data.shape()[0] {
-            d_p[blk.p0 + q] = blk
-                .data
-                .index_axis(ndarray::Axis(0), q)
-                .iter()
-                .zip(d.iter())
-                .map(|(a, b)| a * b)
-                .sum::<f64>();
+            let row = blk.data.index_axis(ndarray::Axis(0), q);
+            d_p[blk.p0 + q] = if f32 {
+                row.iter()
+                    .zip(d.iter())
+                    .map(|(&a, b)| f64::from(a as f32) * b)
+                    .sum::<f64>()
+            } else {
+                row.iter().zip(d.iter()).map(|(a, b)| a * b).sum::<f64>()
+            };
         }
         Ok(())
     })?;
@@ -589,11 +618,13 @@ fn solve_rows(fit: &Fit, z: &Array2<f64>) -> Result<Array2<f64>, FerricError> {
 }
 
 /// `Σ_P y[x, P] (P|μν)` as a `3N × nbf²` matrix: the `DfJ` contraction with
-/// every row of `y` in place of `c`.
+/// every row of `y` in place of `c`. With `f32` the integrals are rounded to
+/// nearest f32 first (the SCF's f32 RI-J tensor), the product stays f64.
 fn aux_weighted_ao(
     source: &mut ThreeIndexSource,
     y: &Array2<f64>,
     nbf: usize,
+    f32: bool,
 ) -> Result<Array2<f64>, FerricError> {
     let mut out = Array2::<f64>::zeros((y.nrows(), nbf * nbf));
     source.for_each_block(|blk| {
@@ -602,7 +633,12 @@ fn aux_weighted_ao(
             .data
             .to_shape((b, nbf * nbf))
             .map_err(|e| FerricError::General(format!("3c block reshape: {e}")))?;
-        out += &y.slice(s![.., blk.p0..blk.p0 + b]).dot(&flat);
+        if f32 {
+            let rounded = flat.mapv(|v| f64::from(v as f32));
+            out += &y.slice(s![.., blk.p0..blk.p0 + b]).dot(&rounded);
+        } else {
+            out += &y.slice(s![.., blk.p0..blk.p0 + b]).dot(&flat);
+        }
         Ok(())
     })?;
     Ok(out)

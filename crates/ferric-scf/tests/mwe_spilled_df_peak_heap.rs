@@ -77,7 +77,15 @@ fn spilled_dressing_and_one_fock_build_stay_inside_the_budget() {
         0,
         "dressing must leave raw's block cold"
     );
-    let mut dfj = DfJ::from_source(raw, op, &aux, budget, Some(&ctx)).unwrap();
+    let mut dfj = DfJ::from_source(
+        raw,
+        op,
+        &aux,
+        budget,
+        Some(&ctx),
+        ferric_scf::df_j::RiJPrecision::F64,
+    )
+    .unwrap();
     let d = Array2::from_shape_fn((nao, nao), |(i, j)| {
         0.5 / ((i as f64 - j as f64).abs() + 1.0)
     });

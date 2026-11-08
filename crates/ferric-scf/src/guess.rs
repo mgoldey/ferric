@@ -363,6 +363,11 @@ fn free_atom_density(
                 // serial time; with RI-JK the whole MINAO guess is 59 ms.
                 df_j_aux: Some(crate::fock_assembly::DEFAULT_JK_AUX.to_string()),
                 df_k_aux: Some(crate::fock_assembly::DEFAULT_JK_AUX.to_string()),
+                // f64 tensor: an atom's RI-J tensor is tiny, and a guess that
+                // follows the f32 default would make an explicit
+                // `ri_j_precision = "f64"` SCF start elsewhere than the f64
+                // default it replaces.
+                ri_j_precision: Some(crate::df_j::RiJPrecision::F64),
                 ..Default::default()
             };
             solve_rhf(&ctx, &amol, &aprep, op, &abounds, &acfg)
@@ -379,6 +384,11 @@ fn free_atom_density(
                 // RI-JK for the same reason as the closed-shell branch above.
                 df_j_aux: Some(crate::fock_assembly::DEFAULT_JK_AUX.to_string()),
                 df_k_aux: Some(crate::fock_assembly::DEFAULT_JK_AUX.to_string()),
+                // f64 tensor: an atom's RI-J tensor is tiny, and a guess that
+                // follows the f32 default would make an explicit
+                // `ri_j_precision = "f64"` SCF start elsewhere than the f64
+                // default it replaces.
+                ri_j_precision: Some(crate::df_j::RiJPrecision::F64),
                 ..Default::default()
             };
             // SPHERICALLY SYMMETRIZE the converged block before returning it.

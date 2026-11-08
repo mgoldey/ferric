@@ -34,7 +34,10 @@ WATER = REPO / "testdata" / "molecules" / "water.xyz"
 # ~70x below the smallest broken-table value.
 PRUNE_TOL = 1e-7
 
-SCF = dict(energy_conv=1e-10, density_conv=1e-8)
+# RI-J pinned to the f64 tensor: these compare against finite differences or
+# f64 references at bars below the f32 default's effect (site/src/methods/scf.md,
+# "RI-J tensor precision").
+SCF = dict(energy_conv=1e-10, density_conv=1e-8, ri_j_precision="f64")
 
 # The flat 75 x 110 grid: no pruning and no weight cutoff.
 FLAT = dict(grid_prune="none", grid_weight_cut=0.0)

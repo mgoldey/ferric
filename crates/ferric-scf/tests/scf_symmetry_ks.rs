@@ -23,6 +23,12 @@
 //! the blocked energy (symmetry frame) differs from the unblocked input-frame
 //! energy at the grid-error level, so it is bounded loosely, not to 1e-9.
 //! The PySCF comparison is `validation_scf_symmetry.rs` (ignored per-commit).
+// RI-J pinned to the f64 tensor (`ri_j_precision: Some(F64)` in every config
+// here): these tests validate f64 implementation code against finite
+// differences, another tier or f64 reference values at bars below the f32
+// default's effect (its energy shift is ~1e-6 Ha, and its energy surface jitters
+// by ~1e-7..1e-6 Ha between nearby geometries; site/src/methods/scf.md, "RI-J
+// tensor precision").
 
 use ferric_core::basis;
 use ferric_core::mol::Molecule;
@@ -74,6 +80,7 @@ fn run_sym(mol: &Molecule, basis_name: &str, cfg: &RhfConfig) -> Result<Symmetri
 /// `energy_conv` is only a sanity bound under RI-J; the density gate decides.
 fn ks(symmetry: bool) -> RhfConfig {
     RhfConfig {
+        ri_j_precision: Some(ferric_scf::df_j::RiJPrecision::F64),
         symmetry,
         xc: Some("PBE".into()),
         density_conv: 1e-9,

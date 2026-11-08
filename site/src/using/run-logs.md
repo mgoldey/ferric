@@ -105,6 +105,15 @@ So for `rhf`, `[scf] max_iter` does not set the per-rung cap. A run that reports
 hundred-iteration SCF. The cap and the count are recorded together so the log
 can't be misread that way.
 
+### `ri_j_tensor`
+
+One per SCF that builds an RI-J tensor: `aux` (the auxiliary basis),
+`precision_requested` (`"f32"` or `"f64"`, the resolved `[scf] ri_j_precision`)
+and `precision` (what the tensor was actually stored at: an f32 request falls
+back to f64 when the f32 tensor does not fit or `jk_storage` keeps it out of
+core, and Split-RI-J reports f64). See
+[RI-J tensor precision](../methods/scf.md#ri-j-tensor-precision).
+
 ### `run_end`
 
 The terminal record: `energy`, `converged`, `exit`, `wall_s`, `cpu_s` and
@@ -141,7 +150,9 @@ shell and unrestricted). The Python results carry
 the same object as `RhfResult.precision`, `UhfResult.precision`,
 `DftResult.precision`, `RiMp2Result.precision` and
 `RiMp2Result.scf_precision`. An all-f64 run, which is every run that does not
-set `[precision] mode = "mixed"`, says so explicitly:
+set `[precision] mode = "mixed"` and builds no f32 RI-J tensor (the default for
+RI-J since 2026-11-07, see `[scf] ri_j_precision`; set it to `"f64"` for an
+all-f64 run), says so explicitly:
 
 ```json
 {"precision": "f64", "counter_scope": "process", "kernels": []}
@@ -152,8 +163,8 @@ for that result, or that ran mixed:
 
 | field | meaning |
 |---|---|
-| `kernel` | the kernel name (`rimp2-energy`, `xc-vxc`, `dfj-pack`, `dfk-occ`, `cosx-kern`) |
-| `requested` | `mixed` when `[precision]` allowed it, `f64` when only a test seam ran it |
+| `kernel` | the kernel name (`rimp2-energy`, `xc-vxc`, `dfj-pack`, `dfk-occ`, `cosx-kern`, `dfj-f32`) |
+| `requested` | `mixed` when `[precision]` allowed it (for `dfj-f32`: whenever it ran, since `[scf] ri_j_precision` requests it), `f64` when only a test seam ran it |
 | `mode` | `mixed` when at least one call ran mixed, else `f64` (allowed, but nothing ran mixed) |
 | `device` | where the mixed calls ran: `"cpu"`, or `{"ordinal", "name", "cc"}` of the CUDA device; `null` when `calls_mixed` is 0 |
 | `calls_mixed` | calls that ran mixed: one RI-MP2 energy (per spin block when unrestricted), one XC potential pass, one RI-J or DF-K build, one COSX K build with f32 units |
