@@ -220,13 +220,18 @@ pub enum HessianMethod {
     /// with `RhfConfig::xc` set) the analytic moving-grid KS Hessian (the
     /// [`HessianMethod::AnalyticMovingGrid`] route) when
     /// [`crate::hessian::rks_moving_grid_hessian_available`] accepts the
-    /// system; otherwise central differences of the analytic gradient (always
-    /// for UKS, ROKS, meta-GGA, VV10, range-separated hybrids, ECPs, external
-    /// potentials, a response AO table above its size cap (large
-    /// basis times grid) and every other configuration that predicate
-    /// refuses). The choice is made before the SCF; an error the chosen
-    /// analytic path raises after it (a non-converged SCF included) is
-    /// returned, never retried with finite differences.
+    /// system, and for UKS (`FrequencyReference::Uhf` with `xc` set) the
+    /// analytic moving-grid UKS Hessian when
+    /// [`crate::hessian::uks_moving_grid_hessian_available`] accepts it, at
+    /// every size (measured faster than finite differences from 3 atoms up);
+    /// otherwise central differences of the analytic gradient (always for
+    /// ROKS, meta-GGA, VV10, range-separated hybrids, ECPs, external
+    /// potentials, a response AO table above its size cap (large basis times
+    /// grid) and every other configuration those predicates refuse). The
+    /// choice is made before the SCF; an error the chosen analytic path raises
+    /// after it (a non-converged SCF included) is returned, never retried with
+    /// finite differences, except that a failed UKS response solve (CPHF) runs
+    /// the finite-difference route instead, with a warning.
     #[default]
     Auto,
     /// The analytic Hessian; an unsupported configuration is an error. It is
@@ -755,7 +760,14 @@ fn is_uks(scf_config: &RhfConfig, reference: FrequencyReference) -> bool {
 /// [`crate::hessian::uks_moving_grid_hessian_available`] accepts the system
 /// (the predicate the explicit [`HessianMethod::AnalyticMovingGrid`] route
 /// refuses on), `None` (finite differences) otherwise; as for
-/// [`auto_moving_grid`], an error after that decision is returned.
+/// [`auto_moving_grid`], an error after that decision is returned, EXCEPT a
+/// failure of the coupled-perturbed response solve
+/// ([`crate::hessian::is_response_failure`]), which runs the finite-difference
+/// route instead with a warning. MEASURED (2026-11-08): OH / STO-3G PBE, a
+/// ²Π radical whose β π hole can rotate about the bond at no energy cost (an
+/// exact zero mode of the UKS orbital Hessian), meets `pᵀAp = −1.9e-10` in the
+/// CPHF: the response of a singular orbital Hessian is not defined there,
+/// while the finite-difference Hessian of the gradient is (one O-H stretch).
 fn auto_uks_moving_grid(
     ctx: &ParallelContext,
     mol: &Molecule,
@@ -771,7 +783,16 @@ fn auto_uks_moving_grid(
     if supported.is_err() {
         return Ok(None);
     }
-    harmonic_frequencies_uks_moving_grid(ctx, mol, basis_name, op, scf_config).map(Some)
+    match harmonic_frequencies_uks_moving_grid(ctx, mol, basis_name, op, scf_config) {
+        Err(e) if crate::hessian::is_response_failure(&e) => {
+            eprintln!(
+                "warning: the analytic UKS Hessian's response solve failed ({e}); \
+                 hessian = \"auto\" falls back to finite differences of the gradient"
+            );
+            Ok(None)
+        }
+        r => r.map(Some),
+    }
 }
 
 /// `Auto` for a closed-shell KS reference: the analytic moving-grid KS

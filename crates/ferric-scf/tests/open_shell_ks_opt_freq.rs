@@ -233,3 +233,52 @@ fn uks_frequencies_run_and_give_one_vibrational_mode_for_a_diatomic() {
         );
     }
 }
+
+/// `hessian = "auto"` answers a failed UKS response solve with the
+/// finite-difference Hessian. OH / STO-3G PBE is the measured case: its β π
+/// hole can rotate about the bond at no energy cost, an exact zero mode of the
+/// UKS orbital Hessian, and the CPHF meets a `pᵀAp` of about −2e-10 there. The
+/// explicit analytic route must still report that failure (it is a refusal of
+/// the analytic method, not noise to hide), and `Auto` must return the
+/// finite-difference result bit for bit.
+///
+/// MUTATION-CHECKED: with the fallback arm of `auto_uks_moving_grid` removed,
+/// `Auto` returns the CPHF error and this test (and the diatomic test above)
+/// fails.
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
+#[test]
+fn auto_falls_back_to_finite_differences_when_the_uks_response_solve_fails() {
+    use ferric_scf::frequencies::{HessianMethod, HessianSource};
+    let ctx = ParallelContext::default();
+    let mol = Molecule::parse_xyz(OH, 0, 2).unwrap();
+    let cfg = freq_config("pbe");
+    let run = |hessian| {
+        harmonic_frequencies(
+            &ctx,
+            &mol,
+            "sto-3g",
+            Operator::coulomb(),
+            &cfg,
+            &FrequencyConfig {
+                reference: FrequencyReference::Uhf,
+                hessian,
+                ..Default::default()
+            },
+        )
+    };
+    let err = run(HessianMethod::AnalyticMovingGrid)
+        .expect_err("the analytic UKS route must fail on the OH pi-hole zero mode");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("CPHF for nuclear coordinate"),
+        "the explicit route must name the response failure: {msg}"
+    );
+    let auto = run(HessianMethod::Auto).expect("Auto must fall back to finite differences");
+    let fd = run(HessianMethod::FiniteDifference).unwrap();
+    assert_eq!(auto.hessian_source, HessianSource::FiniteDifference);
+    assert_eq!(
+        auto.cartesian_hessian, fd.cartesian_hessian,
+        "Auto's fallback must be the finite-difference route itself"
+    );
+    assert_eq!(auto.frequencies.len(), 1);
+}

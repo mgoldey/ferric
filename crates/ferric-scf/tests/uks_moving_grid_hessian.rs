@@ -277,7 +277,11 @@ fn uks_hessian_matches_fd_at_6_31g() {
 
 /// `harmonic_frequencies` with `AnalyticMovingGrid` and with `Auto` (which
 /// must pick it) vs the finite-difference route, NH2 / 6-31G PBE and the O2
-/// triplet B3LYP.
+/// triplet B3LYP. `Auto` picks the analytic UKS Hessian at every size: it was
+/// measured faster than the finite-difference route from 3 atoms up (NH2 3.5x
+/// to C9H11 3.4x, def2-SVP PBE/B3LYP, wiki/notes/uks-hessian-auto-2026-11-08).
+/// MUTATION-CHECKED: `Auto` routed to finite differences for UKS fails the
+/// `hessian_source` assertion below.
 #[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn uks_frequencies_match_the_finite_difference_route() {
