@@ -67,15 +67,25 @@ pub struct RhfConfig {
     /// basis, which would introduce mHa-scale error in K.
     pub df_k_aux: Option<String>,
     /// Storage precision of the RI-J raw 3-index tensor (`[scf]
-    /// ri_j_precision`, Python `ri_j_precision=`): `None` = the default
-    /// ([`RiJPrecision::resolve`](crate::df_j::RiJPrecision::resolve): f32,
-    /// or f64 when a `[gpu]` mode may build J on the device),
-    /// `Some(F64)` the f64 tensor (bit-identical to the pre-2026-11-07
-    /// default), `Some(F32)` f32 storage with f64 accumulation. Ignored
-    /// without RI-J. What was used is recorded in
+    /// ri_j_precision`, Python `ri_j_precision=`): `None` = the default for
+    /// [`Self::ri_j_task`]
+    /// ([`resolve_ri_j_precision`](crate::df_j::resolve_ri_j_precision): f32
+    /// for a single point, f64 for a geometry/frequency task or when a
+    /// `[gpu]` mode may build J on the device), `Some(F64)` the f64 tensor
+    /// (bit-identical to the pre-2026-11-07 default), `Some(F32)` f32 storage
+    /// with f64 accumulation; an explicit value always wins. Ignored without
+    /// RI-J. What was used is recorded in
     /// [`DfJkRoute::ri_j_precision`](crate::result::DfJkRoute::ri_j_precision),
     /// which the gradient and Hessian follow.
     pub ri_j_precision: Option<crate::df_j::RiJPrecision>,
+    /// What this SCF's energy is used for, which picks the default of an
+    /// unset [`Self::ri_j_precision`]: [`RiJTask::Energy`](crate::df_j::RiJTask)
+    /// (default, f32) or `Geometry` (f64). The geometry and frequency drivers
+    /// (`optimize_geometry*`, `harmonic_frequencies*`, `optimize_qmmm`, the
+    /// CLI `task = "optimize"`/`"frequencies"`, Python `run_optimize*`,
+    /// `run_frequencies`, `run_saddle`, `run_irc`) set `Geometry` through
+    /// [`Self::for_geometry_task`].
+    pub ri_j_task: crate::df_j::RiJTask,
     /// XC functional name (None = pure HF; e.g. "LDA", "PBE", "B3LYP", "wB97X-V").
     pub xc: Option<String>,
     /// Range-separation ω override (Bohr⁻¹) for a range-separated `xc` —
@@ -495,6 +505,7 @@ impl Default for RhfConfig {
             df_j_aux: None,
             df_k_aux: None,
             ri_j_precision: None,
+            ri_j_task: crate::df_j::RiJTask::Energy,
             xc: None,
             xc_omega: None,
             dft_grid: None,
@@ -535,6 +546,24 @@ impl Default for RhfConfig {
 }
 
 impl RhfConfig {
+    /// The RI-J storage precision this config's SCF requests, and why
+    /// ([`resolve_ri_j_precision`](crate::df_j::resolve_ri_j_precision) of
+    /// [`Self::ri_j_task`] and [`Self::ri_j_precision`]).
+    pub fn resolved_ri_j_precision(&self) -> crate::df_j::ResolvedRiJPrecision {
+        crate::df_j::resolve_ri_j_precision(self.ri_j_task, self.ri_j_precision)
+    }
+
+    /// This config marked as a geometry/frequency task
+    /// ([`RiJTask::Geometry`](crate::df_j::RiJTask)): an unset
+    /// `ri_j_precision` then resolves to f64, an explicit one is kept. The
+    /// one call every geometry driver makes on the config it was handed.
+    pub fn for_geometry_task(&self) -> Self {
+        Self {
+            ri_j_task: crate::df_j::RiJTask::Geometry,
+            ..self.clone()
+        }
+    }
+
     /// Set the maximum number of SCF iterations.
     pub fn with_max_iter(mut self, max_iter: usize) -> Self {
         self.max_iter = max_iter;
@@ -2271,7 +2300,7 @@ fn solve_rhf_impl(
         df_k_aux_eff.as_deref(),
         ooc_budget,
         config.integral_thresh,
-        crate::df_j::RiJPrecision::resolve(config.ri_j_precision),
+        config.resolved_ri_j_precision(),
     )?;
     phases.stop(df_fitters_t);
     // Record the builders that actually produced the energy, from the SAME

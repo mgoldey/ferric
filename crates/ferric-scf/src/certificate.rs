@@ -105,9 +105,17 @@ fn approximations(
     let route = result.df_jk.as_ref();
     if let Some(r) = route.filter(|r| r.j_aux.is_some()) {
         let a = r.j_aux.as_deref().unwrap_or_default();
+        // What ran, then what was requested and why (`explicit`, or the
+        // default for the config's task: f64 for geometry/frequency tasks).
+        let req = config.resolved_ri_j_precision();
         out.push((
             "ri-j",
-            format!("aux {a}, {} tensor storage", r.ri_j_precision),
+            format!(
+                "aux {a}, {} tensor storage (requested {}: {})",
+                r.ri_j_precision,
+                req.precision,
+                req.source.as_str()
+            ),
         ));
     }
     if let Some(a) = route.and_then(|r| r.k_aux.as_deref()) {

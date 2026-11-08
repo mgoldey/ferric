@@ -2163,6 +2163,9 @@ pub fn optimize_qmmm(
 
     let mut energies: Vec<f64> = Vec::new();
     let mut warm = crate::warm_start::ScfWarmStart::new(cfg.opt.scf_warm_start);
+    // Geometry task: an unset `ri_j_precision` resolves to f64
+    // (`RhfConfig::ri_j_task`), an explicit one is kept.
+    let scf = cfg.scf.for_geometry_task();
 
     let (x_final, _energy_final, steps, converged) =
         crate::optimize::optimize_coordinates(&x0, &cfg.opt, |x| {
@@ -2177,7 +2180,7 @@ pub fn optimize_qmmm(
                 &step_sys,
                 &bs,
                 &cfg.method,
-                &cfg.scf,
+                &scf,
                 &mut warm,
             )?;
 

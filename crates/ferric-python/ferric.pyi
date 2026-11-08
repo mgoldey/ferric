@@ -448,6 +448,9 @@ def run_optimize_qmmm(
     `scf_max_iter`, `scf_energy_conv`, `scf_density_conv`: controls of the SCF at every
     step (names and defaults of `run_rhf`'s `max_iter`, `energy_conv`, `density_conv`).
     `scf_warm_start`: as in `run_optimize` (default True).
+    `scf_ri_j_precision`: RI-J tensor storage, "f32" or "f64"; unset is "f64" here
+    (geometry task: the f32 surface jitters between nearby geometries), an explicit
+    "f32" is honoured.
     """
     ...
 
@@ -3559,7 +3562,10 @@ def run_rhf(
     more than one iterative stage (run_cdft, run_frequencies, the MP2 family,
     GW, TDDFT, ...). Gradients, Hessians, optimisation and frequencies follow
     the SCF's value; ``result.ri_j_precision`` and the certificate's ``ri-j``
-    entry say what was used.
+    entry say what was used and why. The geometry and frequency drivers
+    (run_optimize, run_optimize_uhf, run_optimize_qmmm, run_frequencies,
+    run_saddle, run_irc) default to "f64" instead (the f32 energy surface
+    jitters between nearby geometries); an explicit "f32" is honoured there.
 
     solvent: IEF-PCM implicit solvation, as a dielectric constant (> 1.0) or a
     solvent name (water, dmso, methanol, ethanol, acetone, dichloromethane,
@@ -3779,6 +3785,9 @@ def run_optimize(
     MINAO guess. Falls back to the cold guess on the first step, on a poor orbital overlap
     (large step) and after a failed warm-started SCF. Energies agree with a cold start to
     SCF convergence tolerance, not bitwise; False restores the from-scratch guess.
+
+    J/K are exact here (no `xc`), so the RI-J storage default of geometry tasks
+    (f64, see `run_rhf`'s `ri_j_precision`) does not come into play.
     """
     ...
 
@@ -3882,6 +3891,11 @@ def run_frequencies(
     `scf_max_iter`, `scf_energy_conv`, `scf_density_conv` control every SCF of the run
     (`run_rhf`'s `max_iter`, `energy_conv`, `density_conv`); the bare spellings are
     deprecated aliases that warn.
+
+    `scf_ri_j_precision`: RI-J tensor storage, "f32" or "f64"; unset is "f64" here
+    (frequency task: the f32 surface jitters between nearby geometries, which a
+    finite-difference Hessian differences), an explicit "f32" is honoured. The
+    certificate's `ri-j` entry records which and why.
 
     `scf_warm_start` (default False, opt-in): a finite-difference Hessian
     starts every displaced SCF from the undisplaced geometry's converged
@@ -4029,6 +4043,7 @@ def run_saddle(
     scf_energy_conv: float | None = None,
     scf_density_conv: float | None = None,
     scf_warm_start: bool | None = None,
+    scf_ri_j_precision: str | None = None,
 ) -> SaddleResult:
     """Partitioned rational function optimization to a first-order saddle.
 
@@ -4046,6 +4061,8 @@ def run_saddle(
     `scf_density_conv` control every SCF of the search (gradients and Hessians).
     `scf_warm_start` (default True) starts each step's SCF from the previous
     step's orbitals; False re-guesses them. The FD Hessians stay cold.
+    `scf_ri_j_precision` ("f32" or "f64"; RI-J runs with `xc`): unset is "f64",
+    as for every geometry task; an explicit "f32" is honoured.
     """
     ...
 
@@ -4065,6 +4082,7 @@ def run_irc(
     scf_energy_conv: float | None = None,
     scf_density_conv: float | None = None,
     scf_warm_start: bool | None = None,
+    scf_ri_j_precision: str | None = None,
 ) -> IrcResult:
     """Follow the intrinsic reaction coordinate both ways from a saddle.
 
@@ -4075,7 +4093,9 @@ def run_irc(
     `scf_max_iter`, `scf_energy_conv`, `scf_density_conv` control the SCF at every
     point (as in `run_optimize`); an unconverged SCF raises. `scf_warm_start`
     (default True) starts each point's SCF from the previous point's orbitals;
-    False re-guesses every SCF.
+    False re-guesses every SCF. `scf_ri_j_precision` ("f32" or "f64"; RI-J runs
+    with `xc`): unset is "f64", as for every geometry task; an explicit "f32" is
+    honoured.
     """
     ...
 

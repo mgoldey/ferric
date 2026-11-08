@@ -267,6 +267,9 @@ fn the_route_reaches_the_moving_grid_hessian() {
     let bs = basis::bundled("sto-3g").unwrap();
     let prep = ferric_integrals::basis_bridge::PreparedBasis::new(&water, &bs).unwrap();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+    // The frequency driver is a geometry task (an unset RI-J precision is
+    // f64 there), so the direct pieces run on the same config.
+    let cfg = cfg.for_geometry_task();
     let res = solve_rhf(&ctx, &water, &prep, op, &bounds, &cfg).unwrap();
     let direct = rks_moving_grid_hessian(&ctx, &water, &prep, op, &bounds, &res, &cfg).unwrap();
     assert_eq!(routed.energy.to_bits(), res.energy.to_bits(), "energy");

@@ -219,6 +219,9 @@ pub fn optimize_geometry_with_scf_correction(
     opt_config: &OptimizeConfig,
     mut correction: impl FnMut(&Molecule, &ScfResult) -> Result<(f64, Option<Array2<f64>>), FerricError>,
 ) -> Result<OptimizeResult, FerricError> {
+    // Geometry task: an unset `ri_j_precision` resolves to f64 (jagged f32
+    // surface; `RhfConfig::ri_j_task`), an explicit one is kept.
+    let rhf_config = &rhf_config.for_geometry_task();
     let mut warm = ScfWarmStart::new(opt_config.scf_warm_start);
     let out = run_bfgs(mol, opt_config, |m| {
         let t = Stage::start("opt-step:eval-total");
@@ -314,6 +317,9 @@ pub fn optimize_geometry_uhf_with_scf_correction(
     opt_config: &OptimizeConfig,
     mut correction: impl FnMut(&Molecule, &ScfResult) -> Result<(f64, Option<Array2<f64>>), FerricError>,
 ) -> Result<OptimizeResult, FerricError> {
+    // Geometry task: an unset `ri_j_precision` resolves to f64 (jagged f32
+    // surface; `RhfConfig::ri_j_task`), an explicit one is kept.
+    let uhf_config = &uhf_config.for_geometry_task();
     let mut warm = ScfWarmStart::new(opt_config.scf_warm_start);
     let out = run_bfgs(mol, opt_config, |m| {
         let (e, g, scf) =
@@ -360,6 +366,9 @@ pub fn optimize_geometry_rohf_with_scf_correction(
     opt_config: &OptimizeConfig,
     mut correction: impl FnMut(&Molecule, &ScfResult) -> Result<(f64, Option<Array2<f64>>), FerricError>,
 ) -> Result<OptimizeResult, FerricError> {
+    // Geometry task: an unset `ri_j_precision` resolves to f64 (jagged f32
+    // surface; `RhfConfig::ri_j_task`), an explicit one is kept.
+    let rohf_config = &rohf_config.for_geometry_task();
     let mut warm = ScfWarmStart::new(opt_config.scf_warm_start);
     let out = run_bfgs(mol, opt_config, |m| {
         let (e, g, scf) =

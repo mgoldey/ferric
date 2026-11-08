@@ -991,7 +991,7 @@ fn solve_uhf_impl(
         k_aux_eff,
         ooc_budget,
         config.integral_thresh,
-        crate::df_j::RiJPrecision::resolve(config.ri_j_precision),
+        config.resolved_ri_j_precision(),
     )?;
     // Record the builders that produced the energy (same effective names as
     // `build_df_jk` above and `driver::prepare`'s RSH pair) so the analytic
