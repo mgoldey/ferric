@@ -16,6 +16,7 @@ use ferric_core::parallel::ParallelContext;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_integrals::three_index_source::ThreeIndexSource;
+use ferric_scf::df_j::RiJPrecision;
 use ferric_scf::df_k::DfK;
 use ferric_scf::fock::KBuilder;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
@@ -245,6 +246,9 @@ fn scf_in_the_refused_band_is_bitwise_the_in_core_run() {
 
 /// Raw changing backend moves J by a few ulp, independently of this path: DF-J's
 /// unpacked and packed contractions sum differently. Bounded, not bitwise.
+/// Both runs pin the f64 RI-J tensor: a spilled tensor is always f64, so under
+/// the f32 default the in-core run would measure the f32 storage error
+/// (~1.2e-6 Ha here), not the backend gap this test is about.
 #[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn a_fully_spilled_scf_stays_within_the_df_j_backend_gap() {
@@ -261,6 +265,7 @@ fn a_fully_spilled_scf_stays_within_the_df_j_backend_gap() {
             df_j_aux: Some(aux.into()),
             df_k_aux: Some(aux.into()),
             three_index_budget_bytes: budget,
+            ri_j_precision: Some(RiJPrecision::F64),
             ..Default::default()
         };
         solve_rhf(&ctx, &s.mol, &s.obs, op, &bounds, &cfg).unwrap()
