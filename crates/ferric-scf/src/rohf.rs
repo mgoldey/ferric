@@ -873,8 +873,7 @@ fn solve_rohf_impl(
         }),
         coulomb_op,
         ooc_budget,
-        df_j
-            .as_ref()
+        df_j.as_ref()
             .map_or(crate::df_j::RiJPrecision::F64, |j| j.precision()),
     );
     // Combined open-shell direct J+K + incremental Fock — identical scheme and

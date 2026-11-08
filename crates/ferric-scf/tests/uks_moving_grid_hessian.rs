@@ -91,9 +91,13 @@ fn singlet_uks_hessian_equals_the_rks_hessian() {
     let ctx = ParallelContext::default();
     let op = Operator::coulomb();
     // UKS fits only a named auxiliary basis (unset = exact), so name it.
+    // f64 RI-J tensor: the f32 default's energy surface jitters (~1e-7 Ha
+    // between nearby geometries), which a gradient difference amplifies; the
+    // analytic Hessian follows whichever precision the SCF recorded.
     let ri = |xc: &str| RhfConfig {
         df_j_aux: Some("def2-universal-jkfit".into()),
         df_k_aux: Some("def2-universal-jkfit".into()),
+        ri_j_precision: Some(ferric_scf::df_j::RiJPrecision::F64),
         ..config(xc)
     };
     let cases: Vec<(&str, RhfConfig)> = vec![
@@ -102,6 +106,14 @@ fn singlet_uks_hessian_equals_the_rks_hessian() {
         ("B3LYP", config("B3LYP")),
         ("PBE", ri("PBE")),
         ("B3LYP", ri("B3LYP")),
+        // The default f32 RI-J tensor: both Hessians follow the recorded route.
+        (
+            "B3LYP",
+            RhfConfig {
+                ri_j_precision: None,
+                ..ri("B3LYP")
+            },
+        ),
     ];
     for (xc, cfg) in cases {
         let cfg = fd_reference_config(&cfg);
@@ -198,9 +210,13 @@ fn uks_hessian_matches_fd_of_the_production_gradient() {
         }
     }
     // UKS fits only a named auxiliary basis (unset = exact), so name it.
+    // f64 RI-J tensor: the f32 default's energy surface jitters (~1e-7 Ha
+    // between nearby geometries), which a gradient difference amplifies; the
+    // analytic Hessian follows whichever precision the SCF recorded.
     let ri = |xc: &str| RhfConfig {
         df_j_aux: Some("def2-universal-jkfit".into()),
         df_k_aux: Some("def2-universal-jkfit".into()),
+        ri_j_precision: Some(ferric_scf::df_j::RiJPrecision::F64),
         ..config(xc)
     };
     for (label, cfg) in [("NH2 RI-J", ri("PBE")), ("NH2 RI-J/RI-K", ri("B3LYP"))] {
@@ -228,9 +244,13 @@ fn uks_hessian_matches_fd_at_6_31g() {
         }
     }
     // UKS fits only a named auxiliary basis (unset = exact), so name it.
+    // f64 RI-J tensor: the f32 default's energy surface jitters (~1e-7 Ha
+    // between nearby geometries), which a gradient difference amplifies; the
+    // analytic Hessian follows whichever precision the SCF recorded.
     let ri = |xc: &str| RhfConfig {
         df_j_aux: Some("def2-universal-jkfit".into()),
         df_k_aux: Some("def2-universal-jkfit".into()),
+        ri_j_precision: Some(ferric_scf::df_j::RiJPrecision::F64),
         ..config(xc)
     };
     for (label, cfg) in [
