@@ -82,6 +82,7 @@ pub(crate) fn build_df_jk<'a>(
     ooc_budget: usize,
     j_pair_thresh: f64,
     resolved: ResolvedRiJPrecision,
+    k_precision: crate::df_k::RiKPrecision,
 ) -> Result<(Option<RiJ<'a>>, Option<DfK<'a>>), FerricError> {
     let j_precision = resolved.precision;
     let out = build_df_jk_impl(
@@ -94,6 +95,7 @@ pub(crate) fn build_df_jk<'a>(
         ooc_budget,
         j_pair_thresh,
         j_precision,
+        k_precision,
     )?;
     note_df_k_built(out.1.is_some());
     if let (Some(j), Some(rl)) = (out.0.as_ref(), crate::runlog::log()) {
@@ -143,6 +145,7 @@ fn build_df_jk_impl<'a>(
     ooc_budget: usize,
     j_pair_thresh: f64,
     j_precision: RiJPrecision,
+    k_precision: crate::df_k::RiKPrecision,
 ) -> Result<(Option<RiJ<'a>>, Option<DfK<'a>>), FerricError> {
     // `Some("")` is the explicit "do not density-fit" sentinel (see
     // `solve_rhf`); UHF/ROHF pass the config straight through, so honour it
@@ -180,22 +183,28 @@ fn build_df_jk_impl<'a>(
             // Multi-rank keeps the independent builds below.
             if ctx.size <= 1 {
                 let naux = dfbs.nbasis();
-                let mut raw = ferric_integrals::three_index_source::ThreeIndexSource::build_for_jk(
-                    op,
-                    mol,
-                    prep,
-                    &dfbs,
-                    ooc_budget,
-                    (0, naux),
-                    true,
-                )?;
-                let df_k = Some(DfK::from_full_raw(
+                // Leave room for the packed dressed band DF-K will hold beside
+                // the raw tensor (`DfK::packed_band_bytes`).
+                let beside = DfK::packed_band_bytes(naux, prep.nbasis(), k_precision);
+                let mut raw =
+                    ferric_integrals::three_index_source::ThreeIndexSource::build_for_jk_beside(
+                        op,
+                        mol,
+                        prep,
+                        &dfbs,
+                        ooc_budget,
+                        (0, naux),
+                        true,
+                        beside,
+                    )?;
+                let df_k = Some(DfK::from_full_raw_with_precision(
                     &mut raw,
                     prep,
                     &dfbs,
                     op,
                     ooc_budget,
                     Some(ctx),
+                    k_precision,
                 )?);
                 // DF-K has its dressed copy now. Split-RI-J for J when asked,
                 // or under `auto` when the raw tensor was spilled or is
@@ -234,7 +243,14 @@ fn build_df_jk_impl<'a>(
                 j_pair_thresh,
                 j_precision,
             )?));
-            let df_k = Some(DfK::new_banded(op, prep, &dfbs, ooc_budget, Some(ctx))?);
+            let df_k = Some(DfK::new_banded_with_precision(
+                op,
+                prep,
+                &dfbs,
+                ooc_budget,
+                Some(ctx),
+                k_precision,
+            )?);
             return Ok((df_j, df_k));
         }
     }
@@ -256,7 +272,14 @@ fn build_df_jk_impl<'a>(
     let df_k = if let Some(aux_name) = k_aux {
         let dfbs_set = ferric_core::basis::bundled(aux_name)?;
         let dfbs = PreparedBasis::new(mol, &dfbs_set)?;
-        Some(DfK::new_banded(op, prep, &dfbs, ooc_budget, Some(ctx))?)
+        Some(DfK::new_banded_with_precision(
+            op,
+            prep,
+            &dfbs,
+            ooc_budget,
+            Some(ctx),
+            k_precision,
+        )?)
     } else {
         None
     };
@@ -399,24 +422,27 @@ pub(crate) fn build_rsh_dfk_pair<'a>(
     df_k_aux: Option<&str>,
     omega: f64,
     ooc_budget: usize,
+    k_precision: crate::df_k::RiKPrecision,
 ) -> Result<(DfK<'a>, DfK<'a>), FerricError> {
     let aux_name = df_k_aux.unwrap_or(DEFAULT_JK_AUX);
     let dfbs_set = ferric_core::basis::bundled(aux_name)?;
     let dfbs_prep = PreparedBasis::new(mol, &dfbs_set)?;
     Ok((
-        DfK::new_banded(
+        DfK::new_banded_with_precision(
             Operator::erfc(omega),
             prep,
             &dfbs_prep,
             ooc_budget,
             Some(ctx),
+            k_precision,
         )?,
-        DfK::new_banded(
+        DfK::new_banded_with_precision(
             Operator::erf(omega),
             prep,
             &dfbs_prep,
             ooc_budget,
             Some(ctx),
+            k_precision,
         )?,
     ))
 }

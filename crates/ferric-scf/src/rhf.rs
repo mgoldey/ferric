@@ -86,6 +86,14 @@ pub struct RhfConfig {
     /// `run_frequencies`, `run_saddle`, `run_irc`) set `Geometry` through
     /// [`Self::for_geometry_task`].
     pub ri_j_task: crate::df_j::RiJTask,
+    /// Storage precision of the RI-K (DF-K) dressed 3-index tensor (`[scf]
+    /// ri_k_precision`, Python `ri_k_precision=`): `None` = the default
+    /// ([`RiKPrecision::resolve`](crate::df_k::RiKPrecision::resolve)),
+    /// `Some(F64)` the f64 tensor (K bit-identical to the square f64 tensor
+    /// of the pre-2026-11-08 default), `Some(F32)` f32 storage with f64
+    /// contraction. Ignored without RI-K. What was used is recorded in
+    /// [`DfJkRoute::ri_k_precision`](crate::result::DfJkRoute::ri_k_precision).
+    pub ri_k_precision: Option<crate::df_k::RiKPrecision>,
     /// XC functional name (None = pure HF; e.g. "LDA", "PBE", "B3LYP", "wB97X-V").
     pub xc: Option<String>,
     /// Range-separation ω override (Bohr⁻¹) for a range-separated `xc` —
@@ -506,6 +514,7 @@ impl Default for RhfConfig {
             df_k_aux: None,
             ri_j_precision: None,
             ri_j_task: crate::df_j::RiJTask::Energy,
+            ri_k_precision: None,
             xc: None,
             xc_omega: None,
             dft_grid: None,
@@ -2301,6 +2310,7 @@ fn solve_rhf_impl(
         ooc_budget,
         config.integral_thresh,
         config.resolved_ri_j_precision(),
+        crate::df_k::RiKPrecision::resolve(config.ri_k_precision),
     )?;
     phases.stop(df_fitters_t);
     // Record the builders that actually produced the energy, from the SAME
@@ -2322,7 +2332,17 @@ fn solve_rhf_impl(
         ooc_budget,
         df_j.as_ref()
             .map_or(crate::df_j::RiJPrecision::F64, |j| j.precision()),
-    );
+    )
+    .map(|r| {
+        // The precision the K tensor(s) were ACTUALLY stored at: the ω = 0
+        // DfK, else the SR fitter of a range-separated pair.
+        let stored = df_k
+            .as_ref()
+            .map(|k| k.precision())
+            .or_else(|| dfk_sr.as_ref().map(|k| k.borrow().precision()))
+            .unwrap_or(crate::df_k::RiKPrecision::F64);
+        r.with_ri_k_precision(stored)
+    });
 
     // A pluggable K builder ("link" / "cosx") is only consumed on the
     // non-DF path (see the iteration branch structure below): when DF-J or

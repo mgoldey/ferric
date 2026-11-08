@@ -133,10 +133,18 @@ pub(super) struct RouteMeta {
     /// existed, whose RI-J tensor was f64.
     #[serde(default = "f64_spelling")]
     ri_j_precision: String,
+    /// Absent in checkpoints written before the field existed: those SCFs
+    /// stored the f64 tensor.
+    #[serde(default = "default_ri_k_precision")]
+    ri_k_precision: String,
 }
 
 fn f64_spelling() -> String {
     crate::df_j::RiJPrecision::F64.as_str().to_string()
+}
+
+fn default_ri_k_precision() -> String {
+    "f64".to_string()
 }
 
 #[derive(Serialize, Deserialize)]
@@ -263,6 +271,7 @@ pub(super) fn route_to_meta(route: &DfJkRoute) -> RouteMeta {
         op,
         budget_bytes,
         ri_j_precision,
+        ri_k_precision,
     } = route;
     RouteMeta {
         j_aux: j_aux.clone(),
@@ -271,6 +280,7 @@ pub(super) fn route_to_meta(route: &DfJkRoute) -> RouteMeta {
         op: operator_to_meta(op),
         budget_bytes: *budget_bytes,
         ri_j_precision: ri_j_precision.as_str().to_string(),
+        ri_k_precision: ri_k_precision.as_str().to_string(),
     }
 }
 
@@ -282,6 +292,8 @@ pub(super) fn route_from_meta(meta: RouteMeta) -> Result<DfJkRoute, CheckpointEr
         op: operator_from_meta(meta.op)?,
         budget_bytes: meta.budget_bytes,
         ri_j_precision: crate::df_j::RiJPrecision::parse_config_str(&meta.ri_j_precision)
+            .map_err(|e| CheckpointError::Format(e.to_string()))?,
+        ri_k_precision: crate::df_k::RiKPrecision::parse_config_str(&meta.ri_k_precision)
             .map_err(|e| CheckpointError::Format(e.to_string()))?,
     })
 }

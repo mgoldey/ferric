@@ -181,6 +181,87 @@ and use `"f64"` when validating against an f64 reference code at tighter
 bars, for finite differences of energies, and for symmetry-blocked work that
 needs exact degeneracies.
 
+### RI-K tensor storage
+
+The RI-K (DF-K) builder keeps the V^{-1/2}-dressed three-index tensor for
+the whole SCF. That tensor is symmetric in its two orbital indices, and it is
+now held as the **packed symmetric half** (`n_aux × n_bf(n_bf+1)/2`
+elements) rather than the full square: half the memory at f64. Both K
+contractions read only one triangle (the occupied path unpacks each
+auxiliary row into the triangle its symmetric matrix product reads; the
+density path unpacks a few rows at a time), so K is bit-for-bit the square
+tensor's. `[scf] ri_k_precision` (Python `ri_k_precision=`, or
+`scf_ri_k_precision=` on drivers with more than one iterative stage;
+library `RhfConfig::ri_k_precision`) chooses the stored precision:
+
+- `"f64"` (default): the packed f64 tensor. Energies, iteration counts and
+  gradients are those of the former default bit for bit
+  (`ferric-scf/tests/dfk_packed_storage.rs`).
+- `"f32"`: each stored element rounded once to the nearest f32, a quarter of
+  the former memory; the K contractions still run in f64. The SCF converges
+  on the rounded operator, so the energy carries a first-order error,
+  bracketed by the variational sandwich the tests check.
+
+When J and K share one auxiliary basis, the raw tensor RI-J keeps is held
+packed instead of unpacked whenever the unpacked one would not leave room
+for the dressed band beside it. A `[gpu]` mode that may build K on the
+device keeps the square f64 tensor (the device upload reads it). A band that
+does not fit in memory is still spilled (packed f64 on disk), with a notice
+when `"f32"` was asked for.
+
+Measured, def2-SVP, `def2-universal-jkfit`, `density_conv = 1e-8`, CLI,
+f32 minus f64 RI-K storage (2026-11-08; RI-J f64 in both):
+
+| system | ΔE (Ha) | SCF iterations f64 / f32 |
+|---|---|---|
+| water, B3LYP | −7.7e-9 | 10 / 10 |
+| water, PBE0 | −9.6e-9 | 10 / 10 |
+| water, CAM-B3LYP | +2.6e-9 | 11 / 11 |
+| H2O⁺ doublet, UKS B3LYP | −6.5e-9 | 10 / 10 |
+| sulfamethoxazole, B3LYP | +8.6e-8 | 19 / 19 |
+| sulfamethoxazole, PBE0 | +1.08e-7 | 19 / 19 |
+| sulfamethoxazole, CAM-B3LYP | +1.0e-8 | 19 / 19 |
+| sulfamethoxazole triplet, UKS B3LYP | +8.6e-8 | 45 / 45 |
+| water, HF / cc-pVDZ (RI-JK) | 2.1e-7 | — |
+
+The error is an order of magnitude below the RI-J f32 error above, but it
+has the same character: the rounding is re-drawn at every geometry, so the
+f32 energy is not smooth at that level. The analytic gradient recomputes the
+f64 integrals, so it is the gradient of the f64 functional at the f32 SCF's
+density: 7.5e-9 Ha/Bohr from the f64 SCF's gradient on HF water/cc-pVDZ,
+while a central finite difference of the f32 energy at h = 1e-3 Bohr missed it
+by 2.0e-4 Ha/Bohr (f64: 1.3e-7). Removing that jitter needs an f64 energy
+exit (the f64 functional evaluated once at the f32 density), which is not
+implemented; this is why `"f32"` is opt-in. Use it for single points and
+analytic-gradient work where the memory matters; keep `"f64"` for finite
+differences of energies, energy-based line searches and tight scans. The
+precision used is recorded in the certificate (`ri-k` entry: "aux …, f32
+tensor storage"), the precision record (`dfk-f32`), the checkpoint route
+and `result.ri_k_precision` in Python.
+
+Memory and wall time, B3LYP, `[memory] budget_gb = 12` (12.88 GB), RI-J
+f64 in every run, CLI, 6 threads, each run started with ≤ 1.5 busy cores
+(2026-11-08; "before" is the square tensor, from the 2026-11-07 scaling
+runs). "spills" means the dressed tensor was written to disk and the run was
+stopped there (each iteration then re-reads it, about a minute of IO per
+iteration for danuglipron):
+
+| system (n_bf) | before: peak RSS, wall | `"f64"`: peak RSS, wall | `"f32"`: peak RSS, wall |
+|---|---|---|---|
+| C32H66 / 6-31G (420) | 11.3 GB, 61 s | 9.3 GB, 49-55 s | 8.1 GB, 48-75 s |
+| C40H82 / 6-31G (524) | spills | 11.9 GB, 106-111 s | 12.9 GB, 116-129 s |
+| C48H98 / 6-31G (628) | spills | spills | 13.4 GB, 224 s |
+| C20H42 / def2-SVP (490) | 9.8 GB, 31 s | 8.2 GB, 30 s | 7.1 GB, 30 s |
+| C24H50 / def2-SVP (586) | spills | 13.0 GB, 74 s | 11.2 GB, 56-65 s |
+| C32H66 / def2-SVP (778) | spills | spills | spills |
+| danuglipron / def2-SVP (724) | spills | spills | 12.1 GB, 174-177 s |
+
+With `"f32"` the raw tensor may stay unpacked where `"f64"` packs it (the
+smaller dressed band leaves room), which is why C40 / 6-31G peaks higher at
+f32. Two runs peaked 0.1-0.5 GB above the 12.88 GB budget (C24 / def2-SVP
+f64, C48 / 6-31G f32): the budget bounds the three-index tensors and their
+scratch, not the whole process.
+
 ## Dispersion correction: D3(BJ)
 
 **What it is.** Grimme's D3 with Becke–Johnson damping, a post-SCF pairwise

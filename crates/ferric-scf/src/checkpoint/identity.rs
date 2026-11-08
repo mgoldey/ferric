@@ -300,6 +300,7 @@ fn config_fields(config: &RhfConfig, out: &mut Vec<IdentityField>) -> (f64, f64)
         df_k_aux,
         ri_j_precision,
         ri_j_task,
+        ri_k_precision,
         integral_thresh,
         screening,
         // Which converged state the iteration lands in: see `StateSelecting`. Only
@@ -372,6 +373,9 @@ fn config_fields(config: &RhfConfig, out: &mut Vec<IdentityField>) -> (f64, f64)
         ("ri_j_precision", format!("{ri_j_precision:?}")),
         // Picks the default of an unset `ri_j_precision` (f64 for geometry).
         ("ri_j_task", format!("{ri_j_task:?}")),
+        // As requested (like the aux names): resolving it would read the GPU
+        // mode, which has its own field.
+        ("ri_k_precision", format!("{ri_k_precision:?}")),
         ("integral_thresh", format!("{integral_thresh:?}")),
         ("screening", format!("{screening:?}")),
     ];

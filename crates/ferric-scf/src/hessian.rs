@@ -481,6 +481,8 @@ fn df_j_builder(
 /// The `DfK` the SCF used (same auxiliary basis, operator and budget), for the
 /// exchange part of the CPHF `G`. Its density path (`KBuilder::build`) takes any
 /// symmetric matrix, as the response densities are not positive semidefinite.
+/// Stored at the precision the SCF's DF-K was (`route.ri_k_precision`), so the
+/// CPHF exchange response is the SCF's own exchange operator.
 fn df_k_builder(
     mol: &Molecule,
     prep: &PreparedBasis,
@@ -490,7 +492,13 @@ fn df_k_builder(
         FerricError::General("analytic RI-K Hessian: the SCF route has no RI-K basis".into())
     })?;
     let dfbs = crate::df_gradient::aux_basis(mol, name)?;
-    crate::df_k::DfK::new(route.op, prep, &dfbs, route.budget_bytes)
+    crate::df_k::DfK::new_with_precision(
+        route.op,
+        prep,
+        &dfbs,
+        route.budget_bytes,
+        route.ri_k_precision,
+    )
 }
 
 /// Compute the full analytic UHF Hessian, (3N, 3N) in Hartree/Bohr².

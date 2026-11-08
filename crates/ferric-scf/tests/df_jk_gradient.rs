@@ -335,6 +335,61 @@ fn hf_ri_jk_gradient_matches_fd_of_ri_energy() {
     );
 }
 
+/// RI-K stored as f32 (`ri_k_precision = "f32"`). The gradient recomputes the
+/// f64 integrals, so it is the gradient of the f64 functional at the f32
+/// SCF's density; the f32 ENERGY carries a rounding offset `E' − E` whose
+/// rounding pattern is re-drawn at every geometry (each dressed element moves
+/// by ~1e-3 relative per 1e-3 Bohr, far beyond its 6e-8 rounding), so FD of
+/// the f32 energy has noise ~`|E' − E|/h` that no analytic gradient can
+/// follow. What is pinned (MEASURED, see the printout):
+/// * the f32 SCF's analytic gradient is the f64 SCF's to the first-order
+///   density change, far below the FD floor `TOL`;
+/// * the f32 energy's FD misses the analytic gradient by at most
+///   `2·max|E' − E|/(2h)`, the jitter bound, measured `E' − E` at the
+///   reference geometry standing in for its size at the displaced ones
+///   (plus `TOL`).
+#[test]
+fn hf_ri_jk_f32_gradient_is_the_f64_one_and_bounds_the_fd_jitter() {
+    use ferric_scf::df_k::RiKPrecision;
+    let mol = Molecule::parse_xyz(WATER, 0, 1).unwrap();
+    let bs = basis::bundled("cc-pvdz").unwrap();
+    let with = |p| RhfConfig {
+        ri_k_precision: Some(p),
+        ..df(true, true)
+    };
+    let r64 = solve(Kind::Rhf, &mol, &bs, &with(RiKPrecision::F64));
+    let r32 = solve(Kind::Rhf, &mol, &bs, &with(RiKPrecision::F32));
+    assert_eq!(
+        r32.df_jk.as_ref().unwrap().ri_k_precision,
+        RiKPrecision::F32
+    );
+    let g64 = analytic(Kind::Rhf, None, &mol, &bs, &r64);
+    let g32 = analytic(Kind::Rhf, None, &mol, &bs, &r32);
+    let dg = max_abs_diff(&g32, &g64);
+    let de = (r32.energy - r64.energy).abs();
+    let fd32 = fd(
+        Kind::Rhf,
+        &mol,
+        &bs,
+        &with(RiKPrecision::F32),
+        r32.density_total(),
+    );
+    let fd_err = max_abs_diff(&g32, &fd32);
+    let jitter = 2.0 * de / (2.0 * FD_STEP);
+    eprintln!(
+        "f32 RI-K water/cc-pVDZ: |E32 − E64| {de:.3e}; max|g32 − g64| {dg:.3e}; \
+         max|g32 − FD(E32)| {fd_err:.3e} (jitter bound {jitter:.3e} + TOL)"
+    );
+    assert!(
+        dg < 0.1 * TOL,
+        "f32 SCF gradient moved {dg:.3e} off the f64 one"
+    );
+    assert!(
+        fd_err <= jitter + TOL,
+        "FD of the f32 energy misses the analytic gradient by {fd_err:.3e}"
+    );
+}
+
 #[test]
 fn uhf_ri_jk_gradient_matches_fd_of_ri_energy() {
     // Open shell: per-spin exchange channels. Predicted defect 1.59e-5.

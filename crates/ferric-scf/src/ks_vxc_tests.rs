@@ -83,9 +83,16 @@ fn fock_residual(xc: &str, mutate_d: impl Fn(&Array2<f64>) -> Array2<f64>) -> (f
         .build(d, &mut j, &mut k)
         .unwrap();
     let half_kmix = if let Some(cam) = mix.cam {
-        let (mut sr, mut lr) =
-            crate::fock_assembly::build_rsh_dfk_pair(&ctx, &mol, &prep, None, cam.omega, BUDGET)
-                .unwrap();
+        let (mut sr, mut lr) = crate::fock_assembly::build_rsh_dfk_pair(
+            &ctx,
+            &mol,
+            &prep,
+            None,
+            cam.omega,
+            BUDGET,
+            crate::df_k::RiKPrecision::F64,
+        )
+        .unwrap();
         let (mut ksr, mut klr) = (Array2::zeros((n, n)), Array2::zeros((n, n)));
         sr.build(d, &mut ksr).unwrap();
         lr.build(d, &mut klr).unwrap();

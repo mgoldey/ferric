@@ -4,9 +4,11 @@
 //! budget. In-core when the full tensor fits the budget; disk-spill otherwise.
 //! Consumers apply their own metric (V^{-1} for J, V^{-1/2} for K).
 
+pub mod dressed_packed;
 pub mod f32_store;
 pub mod jk_storage;
 pub mod pair_screen;
+pub use dressed_packed::{DressedLayout, DressedRows, PackedDressOutcome};
 pub use f32_store::{F32Declined, F32Outcome, F32Rounding, F32_UNDERFLOW_ABS};
 pub use jk_storage::{jk_storage, set_jk_storage, validate_jk_storage, JkStorage};
 pub use pair_screen::PairScreen;

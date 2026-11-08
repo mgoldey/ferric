@@ -118,13 +118,17 @@ fn approximations(
             ),
         ));
     }
+    // As for RI-J: the stored precision of the dressed tensor(s).
+    let k_storage = route
+        .map(|r| format!(", {} tensor storage", r.ri_k_precision))
+        .unwrap_or_default();
     if let Some(a) = route.and_then(|r| r.k_aux.as_deref()) {
-        out.push(("ri-k", format!("aux {a}")));
+        out.push(("ri-k", format!("aux {a}{k_storage}")));
     }
     if let Some((a, w)) = route.and_then(|r| r.rsh_k.as_ref()) {
         out.push((
             "ri-k",
-            format!("range-separated SR/LR pair, aux {a}, omega {w}"),
+            format!("range-separated SR/LR pair, aux {a}, omega {w}{k_storage}"),
         ));
     }
     let (k_used, rsh) = exchange_used(config);

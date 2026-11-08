@@ -154,6 +154,8 @@ fn route() -> DfJkRoute {
         budget_bytes: 123_456_789,
         // The frozen v1 file predates the field, which reads back as f64.
         ri_j_precision: crate::df_j::RiJPrecision::F64,
+        // The frozen v1 file predates the field, which reads back as f64.
+        ri_k_precision: crate::df_k::RiKPrecision::F64,
     }
 }
 
@@ -941,6 +943,9 @@ fn identity_table() -> Vec<(&'static str, FieldClass, Mutator)> {
         }),
         ("ri_j_task", Route, |s| {
             s.config.ri_j_task = crate::df_j::RiJTask::Geometry
+        }),
+        ("ri_k_precision", Route, |s| {
+            s.config.ri_k_precision = Some(crate::df_k::RiKPrecision::F64)
         }),
         ("integral_thresh", Route, |s| {
             s.config.integral_thresh = 1e-11
@@ -2286,4 +2291,16 @@ fn a_fresh_file_has_the_frozen_files_member_structure() {
         out
     };
     assert_eq!(members(&dir.file()), members(&golden_path()));
+}
+
+/// The RI-K storage precision survives a write and a read (the frozen v1 file
+/// covers its absence, which reads as f64).
+#[test]
+fn an_f32_ri_k_route_round_trips() {
+    let mut ck = final_ck(Spin::Restricted);
+    let fin = ck.final_state.as_mut().unwrap();
+    let mut r = route();
+    r.ri_k_precision = crate::df_k::RiKPrecision::F32;
+    fin.df_jk = Some(r.clone());
+    assert_eq!(round_trip(&ck).final_state.unwrap().df_jk, Some(r));
 }

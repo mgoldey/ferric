@@ -467,13 +467,35 @@ impl ThreeIndexSource {
         obs: &PreparedBasis,
         dfbs: &PreparedBasis,
         budget_bytes: usize,
+        band: (usize, usize),
+        dressed_for_k: bool,
+    ) -> Result<Self, FerricError> {
+        Self::build_for_jk_beside(op, mol, obs, dfbs, budget_bytes, band, dressed_for_k, 0)
+    }
+
+    /// [`Self::build_for_jk`] for a raw tensor that DF-K will dress into a
+    /// band of `dressed_beside` bytes held in core beside it (0: no such
+    /// band, identical to `build_for_jk`). The unpacked in-core tier is taken
+    /// only when the raw tensor AND that band fit the budget and the pool;
+    /// otherwise the raw tensor is held packed (when that fits), so the
+    /// dressed band is not pushed to disk by a raw tensor that could have been
+    /// half its size. A run whose unpacked raw tensor and dressed band both fit
+    /// is unchanged.
+    #[allow(clippy::too_many_arguments)]
+    pub fn build_for_jk_beside(
+        op: Operator,
+        mol: &ferric_core::mol::Molecule,
+        obs: &PreparedBasis,
+        dfbs: &PreparedBasis,
+        budget_bytes: usize,
         (band_p0, band_p1): (usize, usize),
         dressed_for_k: bool,
+        dressed_beside: usize,
     ) -> Result<Self, FerricError> {
         let policy = jk_storage();
         let nao = obs.nbasis();
         let band = band_p1 - band_p0;
-        let (tier, cal) = decide(
+        let (mut tier, cal) = decide(
             policy,
             (nao, band, budget_bytes),
             || {
@@ -486,6 +508,21 @@ impl ThreeIndexSource {
             },
             dressed_for_k,
         )?;
+        if tier == Tier::InCore && dressed_beside > 0 {
+            let full = band
+                .saturating_mul(nao)
+                .saturating_mul(nao)
+                .saturating_mul(8);
+            let packed = band.saturating_mul(packed_pair_len(nao)).saturating_mul(8);
+            let pool_free =
+                ferric_core::memory::pool::global_available_bytes().unwrap_or(usize::MAX);
+            let both = full.saturating_add(dressed_beside);
+            if (both > budget_bytes || both > pool_free)
+                && super::packed_in_core_fits(packed, nao, budget_bytes)
+            {
+                tier = Tier::InCorePacked;
+            }
+        }
         if super::ooc_trace() {
             let c = cal.map_or(String::new(), |c| {
                 format!(

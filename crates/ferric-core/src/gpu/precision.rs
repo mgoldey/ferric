@@ -112,10 +112,21 @@ pub enum MixedKernel {
     /// unless the caller applies the f64 energy exit pass. A separate name keeps
     /// the precision provenance record from claiming the ladder's f64 exit.
     DfjF32 = 64,
+    /// CPU DF-K with the V^{-1/2}-dressed 3-index tensor STORED as f32 (the
+    /// packed lower triangle, `ferric_integrals::three_index_source::
+    /// dressed_packed`), each row widened to f64 for the f64 DSYMM/DSYRK or
+    /// GEMMs (`ferric_scf::df_k`): a quarter of the square f64 tensor. Chosen
+    /// per SCF by `[scf] ri_k_precision` (`RhfConfig::ri_k_precision`), NOT by
+    /// `mixed_kernels`: in neither [`MixedKernelSet::SHIPPED`] nor
+    /// [`MixedKernelSet::OPT_IN`]; the name exists so the precision provenance
+    /// record counts the builds that read the f32 tensor. A CPU kernel
+    /// ([`Self::runs_on_cpu`]). Not behind the SCF ladder, no f64 copy, no f64
+    /// exit.
+    DfkF32 = 128,
 }
 
 impl MixedKernel {
-    pub const ALL: [MixedKernel; 7] = [
+    pub const ALL: [MixedKernel; 8] = [
         MixedKernel::RiMp2Energy,
         MixedKernel::CcsdAmplitudes,
         MixedKernel::DfkOcc,
@@ -123,6 +134,7 @@ impl MixedKernel {
         MixedKernel::DfjPack,
         MixedKernel::XcVxc,
         MixedKernel::DfjF32,
+        MixedKernel::DfkF32,
     ];
 
     /// Whether this kernel's mixed path runs on the CPU. Only such a kernel
@@ -131,7 +143,10 @@ impl MixedKernel {
     /// CPU `md3c1e` f32 block (`Md3c1e::pair_block_f32`); `dfj-f32` the CPU
     /// RI-J with f32 tensor storage.
     pub const fn runs_on_cpu(self) -> bool {
-        matches!(self, MixedKernel::CosxKern | MixedKernel::DfjF32)
+        matches!(
+            self,
+            MixedKernel::CosxKern | MixedKernel::DfjF32 | MixedKernel::DfkF32
+        )
     }
 
     /// Bit position of this kernel in [`MixedKernelSet`] (0-based), the index
@@ -149,6 +164,7 @@ impl MixedKernel {
             MixedKernel::DfjPack => "dfj-pack",
             MixedKernel::XcVxc => "xc-vxc",
             MixedKernel::DfjF32 => "dfj-f32",
+            MixedKernel::DfkF32 => "dfk-f32",
         }
     }
 }
@@ -347,7 +363,24 @@ mod tests {
         );
         assert!(MixedKernel::ALL.contains(&MixedKernel::CosxKern));
         assert!(!MixedKernelSet::SHIPPED.contains(MixedKernel::CosxKern));
-        assert_eq!(MixedKernel::ALL.len(), 7);
+        assert_eq!(MixedKernel::ALL.len(), 8);
+    }
+
+    /// Catches: `dfk-f32` in a `mixed_kernels` set (it is chosen by `[scf]
+    /// ri_k_precision`, not by the allowlist), not a CPU kernel, or sharing a
+    /// name with the device `dfk-occ`.
+    #[test]
+    fn dfk_f32_is_a_cpu_kernel_outside_both_allowlists() {
+        assert_eq!(MixedKernel::DfkF32 as u8, 128);
+        assert_eq!(MixedKernel::DfkF32.name(), "dfk-f32");
+        assert_eq!(
+            "dfk-f32".parse::<MixedKernel>().unwrap(),
+            MixedKernel::DfkF32
+        );
+        assert_ne!(MixedKernel::DfkF32.name(), MixedKernel::DfkOcc.name());
+        assert!(MixedKernel::DfkF32.runs_on_cpu());
+        assert!(!MixedKernelSet::SHIPPED.contains(MixedKernel::DfkF32));
+        assert!(!MixedKernelSet::OPT_IN.contains(MixedKernel::DfkF32));
     }
 
     #[test]
@@ -388,7 +421,10 @@ mod tests {
         for (i, k) in MixedKernel::ALL.into_iter().enumerate() {
             assert_eq!(k.index(), i, "{}", k.name());
             assert_eq!(1u8 << k.index(), k as u8);
-            let cpu = matches!(k, MixedKernel::CosxKern | MixedKernel::DfjF32);
+            let cpu = matches!(
+                k,
+                MixedKernel::CosxKern | MixedKernel::DfjF32 | MixedKernel::DfkF32
+            );
             assert_eq!(k.runs_on_cpu(), cpu, "{}", k.name());
         }
     }

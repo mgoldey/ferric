@@ -278,6 +278,7 @@ pub fn semicanonicalize(
             None,
             k_mix.omega,
             ooc_budget,
+            crate::df_k::RiKPrecision::F64,
         )?;
         // occ_factor/scale = 1.0: these are per-spin Focks built from per-spin
         // densities, matching how solve_uhf calls this (uhf.rs:314-319).

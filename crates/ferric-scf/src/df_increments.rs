@@ -330,6 +330,7 @@ pub fn solve_rhf_with_df_increments(
                 source: crate::df_j::RiJPrecisionSource::PathDefault,
             },
         },
+        crate::df_k::RiKPrecision::resolve(base.ri_k_precision),
     )?;
     let mut df_j = df_j_opt.ok_or_else(|| {
         FerricError::General(

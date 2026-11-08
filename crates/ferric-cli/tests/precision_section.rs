@@ -166,7 +166,7 @@ fn the_precision_section_is_parsed_strictly() {
         (
             "bad_kernel",
             "[precision]\nmode = \"mixed\"\nmixed_kernels = [\"diis\"]\n",
-            "[precision] mixed_kernels: unknown mixed-precision kernel \"diis\" (valid: rimp2-energy, ccsd-amplitudes, dfk-occ, cosx-kern, dfj-pack, xc-vxc, dfj-f32)",
+            "[precision] mixed_kernels: unknown mixed-precision kernel \"diis\" (valid: rimp2-energy, ccsd-amplitudes, dfk-occ, cosx-kern, dfj-pack, xc-vxc, dfj-f32, dfk-f32)",
         ),
         (
             "empty_list",

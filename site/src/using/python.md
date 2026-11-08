@@ -200,6 +200,12 @@ The geometry and frequency drivers (`run_optimize`, `run_optimize_uhf`,
 the f64 tensor instead, because the f32 energy surface jitters between nearby
 geometries; `scf_ri_j_precision="f32"` there is still honoured, and the
 certificate's `ri-j` entry says which was requested and why.
+The RI-K tensor (hybrids, HF with `df_k_aux`) is held as its packed
+symmetric half; `ri_k_precision="f32"` (opt-in; `scf_ri_k_precision` on
+`run_cdft` and `run_frequencies`) stores it in f32 for another factor of
+two, at a cost described in
+[RI-K tensor storage](../methods/scf.md#ri-k-tensor-storage);
+`dft.ri_k_precision` says which was used.
 `dispersion="d3bj"` adds Grimme D3(BJ);
 the result then carries `e_scf`, `e_dispersion` and their sum in
 `total_energy`. `with_gradient=True` also returns the analytic nuclear gradient
