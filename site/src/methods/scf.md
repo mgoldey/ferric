@@ -389,7 +389,7 @@ translations and rotations projected out. The Hessian is:
   the Hessian of the surface the KS gradient differentiates. One SCF plus a
   coupled-perturbed KS solve.
 - **Central finite differences of the analytic gradient** everywhere else
-  (UKS, ROKS, meta-GGA, VV10, range-separated hybrids, KS with an ECP or an
+  (ROKS, meta-GGA, VV10, range-separated hybrids, KS with an ECP or an
   external potential, pruned grids, `[dft] dispersion`, RI J/K with an
   external potential or an ill-conditioned fitting metric, solvent, polarizable
   embedding, g functions, ROHF with an external potential): 6N gradient
@@ -398,10 +398,11 @@ translations and rotations projected out. The Hessian is:
   is the check that it and the SCF thresholds suit the system.
 
 `[frequencies] hessian` (Python `hessian=`) selects it: `"auto"` (default,
-analytic where it applies, the moving-grid Hessian for closed-shell KS),
+analytic where it applies, the moving-grid Hessian for closed-shell KS
+and UKS),
 `"analytic"` (the Hartree-Fock analytic Hessian; an error where it does not
 apply, including every KS reference), `"analytic-moving-grid"` (the
-closed-shell KS one; an error where it does not apply) or `"fd"`. The output
+KS one, RKS or UKS; an error where it does not apply) or `"fd"`. The output
 names the one that ran (`Hessian = analytic`, `analytic-moving-grid` or
 `finite-difference`; Python `.hessian_source`).
 
@@ -411,7 +412,7 @@ error: ≤ 5e-7 cm⁻¹ against Richardson-extrapolated FD at a tight SCF
 coupled-perturbed KS solve instead of 6N gradients. Against the default
 `"fd"` (step 5e-3 Bohr, default SCF), which `"auto"` ran for KS before, the
 wavenumbers move by ≤ 0.071 cm⁻¹ (water / STO-3G, LDA, PBE, B3LYP). Under
-`"auto"`, open-shell KS, meta-GGA, VV10, range-separated hybrids, ECPs,
+`"auto"`, ROKS, meta-GGA, VV10, range-separated hybrids, ECPs,
 external potentials, pruned grids, `[dft] dispersion`, COSX, implicit solvent,
 fractional occupations, MOM, and systems whose response AO table (basis
 functions × grid points × 4 for a GGA, 8 bytes each) exceeds 2 GiB (on the

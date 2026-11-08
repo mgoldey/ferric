@@ -21,7 +21,7 @@
 //!   gives the `analytic-moving-grid` record bit for bit for a closed-shell
 //!   KS reference (water, LDA and PBE).
 //! * `cli_auto_falls_back_to_fd_where_unsupported`: `auto` gives the `fd`
-//!   record bit for bit for meta-GGA (SCAN), an open-shell UKS reference and
+//!   record bit for bit for meta-GGA (SCAN, closed shell and UKS) and
 //!   `[dft] dispersion` (H2).
 //! * `cli_fd_stays_selectable_for_ks`: `hessian = "fd"` still differences
 //!   gradients for a supported KS reference.
@@ -140,7 +140,7 @@ fn cli_auto_falls_back_to_fd_where_unsupported() {
     // (label, method kind, functional, extra [dft] lines)
     let cases = [
         ("mgga", "ksdft", "SCAN", ""),
-        ("uks", "uhf", "LDA", ""),
+        ("uks-mgga", "uhf", "SCAN", ""),
         ("disp", "ksdft", "B3LYP", "dispersion = \"d3bj\"\n"),
     ];
     for (label, kind, xc, extra) in cases {
@@ -175,13 +175,13 @@ fn cli_refusals_are_named() {
             "Hartree-Fock has no XC grid",
         ),
         (
-            "uks",
+            "uks-mgga",
             H2,
             "uhf",
-            "LDA",
+            "SCAN",
             "",
             "sto-3g",
-            "open-shell (Uhf, i.e. UKS/ROKS) reference",
+            "a meta-GGA ('SCAN')",
         ),
         (
             "roks",
@@ -190,7 +190,7 @@ fn cli_refusals_are_named() {
             "LDA",
             "",
             "sto-3g",
-            "open-shell (Rohf, i.e. UKS/ROKS) reference",
+            "open-shell (Rohf, i.e. ROKS) reference",
         ),
         (
             "mgga",

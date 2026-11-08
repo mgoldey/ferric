@@ -17,7 +17,7 @@ and its CLI wiring in `crates/ferric-cli/tests/ks_moving_grid_frequencies.rs`
 * `test_auto_is_the_moving_grid_hessian_for_ks`: `"auto"` equals
   `"analytic-moving-grid"` bit for bit (water, LDA and PBE).
 * `test_auto_falls_back_to_fd_where_unsupported`: `"auto"` equals `"fd"` bit
-  for bit for meta-GGA (SCAN), an open-shell UKS reference and `dispersion=`.
+  for bit for meta-GGA (SCAN, closed shell and UKS) and `dispersion=`.
 * the refusals, each named.
 
 Mutation ledger (each measured to fail): the moving-grid route sent to the
@@ -180,10 +180,10 @@ def test_auto_is_the_moving_grid_hessian_for_ks(xc):
     "kwargs",
     [
         {"xc": "SCAN"},
-        {"xc": "LDA", "reference": "uhf"},
+        {"xc": "SCAN", "reference": "uhf"},
         {"xc": "B3LYP", "dispersion": "d3bj"},
     ],
-    ids=["meta-gga", "uks", "dispersion"],
+    ids=["meta-gga", "uks-meta-gga", "dispersion"],
 )
 def test_auto_falls_back_to_fd_where_unsupported(kwargs):
     mol = _mol(H2)
@@ -210,7 +210,7 @@ def _hi(tmp_path):
     "mol, basis, kwargs, fragment",
     [
         (WATER, "sto-3g", {}, "Hartree-Fock has no XC grid"),
-        (H2, "sto-3g", {"xc": "LDA", "reference": "uhf"}, "open-shell (Uhf"),
+        (H2, "sto-3g", {"xc": "SCAN", "reference": "uhf"}, "a meta-GGA ('SCAN')"),
         (H2, "sto-3g", {"xc": "LDA", "reference": "rohf"}, "open-shell (Rohf"),
         (WATER, "sto-3g", {"xc": "SCAN"}, "a meta-GGA ('SCAN')"),
         (WATER, "sto-3g", {"xc": "wB97X-V"}, "VV10 nonlocal correlation"),

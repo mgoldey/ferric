@@ -716,12 +716,18 @@ fn analytic_route(
 ) -> Result<Option<FrequencyResult>, FerricError> {
     let reference = freq_config.reference;
     match freq_config.hessian {
+        HessianMethod::AnalyticMovingGrid if reference == FrequencyReference::Uhf => {
+            harmonic_frequencies_uks_moving_grid(ctx, mol, basis_name, op, scf_config).map(Some)
+        }
         HessianMethod::AnalyticMovingGrid => {
             harmonic_frequencies_ks_moving_grid(ctx, mol, basis_name, op, scf_config, reference)
                 .map(Some)
         }
         HessianMethod::Auto if is_closed_shell_ks(scf_config, reference) => {
             auto_moving_grid(ctx, mol, basis_name, op, scf_config)
+        }
+        HessianMethod::Auto if is_uks(scf_config, reference) => {
+            auto_uks_moving_grid(ctx, mol, basis_name, op, scf_config)
         }
         _ => analytic_if_selected(ctx, mol, basis_name, op, scf_config, freq_config),
     }
@@ -731,6 +737,35 @@ fn analytic_route(
 /// moving-grid KS Hessian (UKS/ROKS and Hartree-Fock keep their dispatch).
 fn is_closed_shell_ks(scf_config: &RhfConfig, reference: FrequencyReference) -> bool {
     reference == FrequencyReference::Rhf && scf_config.xc.is_some()
+}
+
+/// A UKS reference: `Auto` sends it to the analytic moving-grid UKS Hessian
+/// where [`crate::hessian::uks_moving_grid_hessian_available`] accepts it.
+fn is_uks(scf_config: &RhfConfig, reference: FrequencyReference) -> bool {
+    reference == FrequencyReference::Uhf && scf_config.xc.is_some()
+}
+
+/// `Auto` for a UKS reference: the analytic moving-grid UKS Hessian when
+/// [`crate::hessian::uks_moving_grid_hessian_available`] accepts the system
+/// (the predicate the explicit [`HessianMethod::AnalyticMovingGrid`] route
+/// refuses on), `None` (finite differences) otherwise; as for
+/// [`auto_moving_grid`], an error after that decision is returned.
+fn auto_uks_moving_grid(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    basis_name: &str,
+    op: Operator,
+    scf_config: &RhfConfig,
+) -> Result<Option<FrequencyResult>, FerricError> {
+    let supported = ferric_core::basis::bundled(basis_name)
+        .and_then(|bs| PreparedBasis::new(mol, &bs))
+        .and_then(|prep| {
+            crate::hessian::uks_moving_grid_hessian_available(mol, &prep, op, scf_config)
+        });
+    if supported.is_err() {
+        return Ok(None);
+    }
+    harmonic_frequencies_uks_moving_grid(ctx, mol, basis_name, op, scf_config).map(Some)
 }
 
 /// `Auto` for a closed-shell KS reference: the analytic moving-grid KS
@@ -936,11 +971,15 @@ pub fn harmonic_frequencies_ks_moving_grid(
             "harmonic frequencies require at least 2 atoms, got {natoms}"
         )));
     }
+    if reference == FrequencyReference::Uhf {
+        return harmonic_frequencies_uks_moving_grid(ctx, mol, basis_name, op, scf_config);
+    }
     if reference != FrequencyReference::Rhf {
         return Err(FerricError::General(format!(
-            "hessian = \"analytic-moving-grid\": the analytic moving-grid Kohn-Sham Hessian does \
-             not support an open-shell ({reference:?}, i.e. UKS/ROKS) reference (not yet \
-             implemented; next unit: spin-polarized XC kernel); use \"fd\""
+            "hessian = \"analytic-moving-grid\": the analytic moving-grid Kohn-Sham Hessian \
+             supports RKS and UKS (LDA/GGA, pure or global hybrid), not an open-shell \
+             ({reference:?}, i.e. ROKS) reference (not yet implemented; next unit: the ROKS \
+             Roothaan-coupled response with the spin-polarized XC kernel); use \"fd\" or \"auto\""
         )));
     }
     let bs = ferric_core::basis::bundled(basis_name)?;
@@ -950,6 +989,39 @@ pub fn harmonic_frequencies_ks_moving_grid(
     let bounds = SchwarzBounds::compute(op, &prep)?;
     let res = solve_rhf(ctx, mol, &prep, op, &bounds, scf_config)?;
     crate::hessian::analytic_frequencies_ks_moving_grid(
+        ctx, mol, &prep, op, &bounds, &res, scf_config,
+    )
+}
+
+/// Harmonic frequencies from the analytic moving-grid UKS Hessian
+/// ([`crate::hessian::uks_moving_grid_hessian`]): one UKS SCF
+/// ([`solve_uhf`] with `scf_config.xc` set) and the analytic Hessian of the
+/// surface the production UKS gradient differentiates. Refused BEFORE the SCF
+/// with the typed errors of [`crate::hessian::uks_moving_grid_hessian_available`]
+/// (no `xc`, meta-GGA, VV10, range-separated or double hybrids, ECPs,
+/// external potentials, the UHF Hessian's configuration refusals); the
+/// recorded fitting route and the Fock consistency are checked after it.
+/// `hessian_source` is [`HessianSource::AnalyticMovingGrid`].
+pub fn harmonic_frequencies_uks_moving_grid(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    basis_name: &str,
+    op: Operator,
+    scf_config: &RhfConfig,
+) -> Result<FrequencyResult, FerricError> {
+    let natoms = mol.atoms.len();
+    if natoms < 2 {
+        return Err(FerricError::General(format!(
+            "harmonic frequencies require at least 2 atoms, got {natoms}"
+        )));
+    }
+    let bs = ferric_core::basis::bundled(basis_name)?;
+    let prep = PreparedBasis::new(mol, &bs)?;
+    crate::hessian::uks_moving_grid_hessian_available(mol, &prep, op, scf_config)?;
+    atom_masses(mol)?;
+    let bounds = SchwarzBounds::compute(op, &prep)?;
+    let res = solve_uhf(ctx, mol, &prep, &bounds, scf_config)?;
+    crate::hessian::analytic_frequencies_uks_moving_grid(
         ctx, mol, &prep, op, &bounds, &res, scf_config,
     )
 }
