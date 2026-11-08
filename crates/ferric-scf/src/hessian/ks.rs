@@ -971,7 +971,10 @@ fn rks_fixed_grid_hessian_core(
     fits: KsFits<'_>,
     mutants: &KsFixedGridMutants,
 ) -> Result<RhfHessianParts, FerricError> {
+    let mut phases = ferric_core::timing::PhaseAccumulator::new().report_on_drop("RKS Hessian");
+    let t = phases.begin("Fock consistency check");
     fock_consistency(ctx, mol, prep, bounds, rks, grid, fits)?;
+    phases.stop(t);
 
     let natoms = mol.atoms.len();
     let nocc = (mol.nelec() / 2) as usize;
@@ -981,8 +984,11 @@ fn rks_fixed_grid_hessian_core(
     let exx = grid.exact_exchange();
 
     let nuclear = nuclear_term(mol, config);
+    let t = phases.begin("1e + overlap skeleton");
     let one_electron = skeleton_hess_1e(prep, natoms, &[], d)?;
     let overlap = skeleton_hess_overlap(prep, natoms, &w)?;
+    phases.stop(t);
+    let t = phases.begin("2e skeleton + J/K first-order");
     // Mutants: the RI-K pieces or the CPHF DfK fitted over the RI-J basis.
     let j_for_k = |on: bool| match (on, fits.j, fits.k) {
         (true, Some(j), Some(_)) => KsFits {
@@ -1019,8 +1025,12 @@ fn rks_fixed_grid_hessian_core(
         };
         skeleton_hess_2e(prep, op, bounds, natoms, max_abs(d), &gam)?
     };
+    phases.stop(t);
+    let t = phases.begin("XC skeleton (2nd derivative)");
     two_electron += &grid.skeleton_hessian_for(mode, &geo, d, &mutants.xc)?;
+    phases.stop(t);
     two_electron += &fitted.skeleton;
+    let t = phases.begin("2e skeleton + J/K first-order");
 
     let no_density = Array2::<f64>::zeros(d.dim());
     let fitted_j_first = fits.j.is_some() && !mutants.exact_j_first_order;
@@ -1034,20 +1044,26 @@ fn rks_fixed_grid_hessian_core(
     for (f, g) in first.f1[0].iter_mut().zip(&fitted.first_order) {
         *f += g;
     }
-    for (f, v) in
-        first.f1[0]
-            .iter_mut()
-            .zip(grid.first_order_fock_for(mode, &geo, d, &mutants.xc)?)
-    {
+    phases.stop(t);
+    let t = phases.begin("XC first-order Fock");
+    let vx = grid.first_order_fock_for(mode, &geo, d, &mutants.xc)?;
+    phases.stop(t);
+    for (f, v) in first.f1[0].iter_mut().zip(vx) {
         *f += &v;
     }
+    let t = phases.begin("XC response kernel build");
     let kernel = grid.response(&geo, d, mutants.response_fxc, mutants.response_gradient)?;
+    phases.stop(t);
     let kernel_fn = |d1: &Array2<f64>| kernel.apply(d1);
     let (df_j, df_k) = cphf_fitters(prep, op, j_for_k(mutants.cphf_dfk_from_j_aux), mutants)?;
     let g = TwoElectronBuilder::new(ctx, prep, bounds)?
         .fitted(df_j, df_k, false)
         .with_xc_response(Some(&kernel_fn), exx * mutants.response_exx);
+    let t = phases.begin("CPKS");
     let resp = cpks_response_with(&g, rks, nocc, &first)?;
+    phases.stop(t);
+    g.report_phases("RKS CPKS G builds");
+    super::report_cphf_iterations("RKS", &resp);
     Ok(parts_from_terms(
         [nuclear, one_electron, overlap, two_electron],
         resp,

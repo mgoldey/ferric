@@ -33,7 +33,7 @@
 
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::engine::Engine;
-use ndarray::Array2;
+use ndarray::{Array2, Array3};
 
 /// What a single quartet-scatter pass accumulates. Each variant carries a
 /// zeroed `nbf×nbf` local partial for exactly the matrices this mode needs —
@@ -67,6 +67,48 @@ pub(crate) enum JkMode<'d> {
         &'d Array2<f64>,
         &'d Array2<f64>,
     ),
+    /// MANY densities in one pass (the block CPHF/CPKS): J of every `jd`
+    /// density and K of every `kd` density, each stored interleaved as
+    /// `(nbf, nbf, m)` so the per-integral loop over densities is contiguous.
+    /// The `d` argument of the scatter is ignored.
+    Multi(Box<MultiJk<'d>>),
+}
+
+/// The buffers of [`JkMode::Multi`].
+#[derive(Debug)]
+pub(crate) struct MultiJk<'d> {
+    /// `J[μ, ν, i] = Σ (μν|λσ) jd[λ, σ, i]`.
+    pub(crate) j: Array3<f64>,
+    /// `K[μ, λ, i] = Σ (μν|λσ) kd[ν, σ, i]`.
+    pub(crate) k: Array3<f64>,
+    pub(crate) jd: &'d Array3<f64>,
+    pub(crate) kd: &'d Array3<f64>,
+}
+
+/// `dst[i] += src[i] * v` over the `m` densities of one `(row, col)` lane.
+///
+/// # Safety
+/// `dst` and `src` must be standard-layout `(nbf, nbf, m)` arrays with the same
+/// `m`, and `row, col, la, sg < nbf`.
+#[inline(always)]
+unsafe fn add_lane(
+    dst: &mut Array3<f64>,
+    row: usize,
+    col: usize,
+    src: &Array3<f64>,
+    la: usize,
+    sg: usize,
+    v: f64,
+) {
+    let (n, m) = (dst.dim().1, dst.dim().2);
+    if m == 0 {
+        return;
+    }
+    let d = dst.as_mut_ptr().add((row * n + col) * m);
+    let s = src.as_ptr().add((la * n + sg) * m);
+    for i in 0..m {
+        *d.add(i) += *s.add(i) * v;
+    }
 }
 
 impl<'d> JkMode<'d> {
@@ -89,6 +131,17 @@ impl<'d> JkMode<'d> {
         )
     }
 
+    /// A [`JkMode::Multi`] for the interleaved `(nbf, nbf, m)` density stacks
+    /// `jd` (Coulomb) and `kd` (exchange; `m = 0` builds none).
+    pub(crate) fn new_multi(jd: &'d Array3<f64>, kd: &'d Array3<f64>) -> Self {
+        JkMode::Multi(Box::new(MultiJk {
+            j: Array3::zeros(jd.dim()),
+            k: Array3::zeros(kd.dim()),
+            jd,
+            kd,
+        }))
+    }
+
     /// Whether this mode accumulates a Coulomb matrix.
     ///
     /// Single source of truth for the `FourPairK` validity invariant (see the
@@ -101,6 +154,7 @@ impl<'d> JkMode<'d> {
     pub(crate) fn accumulates_j(&self) -> bool {
         match self {
             JkMode::JOnly(_) | JkMode::Both(..) | JkMode::Uhf(..) => true,
+            JkMode::Multi(m) => m.jd.dim().2 > 0,
             JkMode::KOnly(_) => false,
         }
     }
@@ -114,6 +168,7 @@ impl<'d> JkMode<'d> {
             JkMode::KOnly(_) => "KOnly",
             JkMode::Both(..) => "Both",
             JkMode::Uhf(..) => "Uhf",
+            JkMode::Multi(..) => "Multi",
         }
     }
 
@@ -126,6 +181,8 @@ impl<'d> JkMode<'d> {
             JkMode::JOnly(j) | JkMode::Both(j, _) | JkMode::Uhf(j, _, _, _, _) => unsafe {
                 *j.uget_mut((row, col)) += d.uget((la, sg)) * v;
             },
+            // SAFETY: as above; both stacks are standard-layout (nbf, nbf, m).
+            JkMode::Multi(m) => unsafe { add_lane(&mut m.j, row, col, m.jd, la, sg, v) },
             JkMode::KOnly(_) => {}
         }
     }
@@ -147,6 +204,8 @@ impl<'d> JkMode<'d> {
                 *k_a.uget_mut((row, col)) += d_a.uget((la, sg)) * v;
                 *k_b.uget_mut((row, col)) += d_b.uget((la, sg)) * v;
             },
+            // SAFETY: as above; both stacks are standard-layout (nbf, nbf, m).
+            JkMode::Multi(m) => unsafe { add_lane(&mut m.k, row, col, m.kd, la, sg, v) },
             JkMode::JOnly(_) => {}
         }
     }
@@ -711,18 +770,23 @@ mod tests {
         let d = Array2::<f64>::from_elem((1, 1), 1.0);
         let d_a = Array2::<f64>::zeros((1, 1));
         let d_b = Array2::<f64>::zeros((1, 1));
+        let stack = ndarray::Array3::<f64>::from_elem((1, 1, 2), 1.0);
+        let none = ndarray::Array3::<f64>::zeros((1, 1, 0));
 
         for mut mode in [
             JkMode::new_j(1),
             JkMode::new_k(1),
             JkMode::new_both(1),
             JkMode::new_uhf(1, &d_a, &d_b),
+            JkMode::new_multi(&stack, &stack),
+            JkMode::new_multi(&none, &stack),
         ] {
             let flag = mode.accumulates_j();
             let label = mode.label();
             mode.add_j(0, 0, &d, 0, 0, 1.0);
             let wrote_j = match &mode {
                 JkMode::JOnly(j) | JkMode::Both(j, _) | JkMode::Uhf(j, ..) => j[(0, 0)] != 0.0,
+                JkMode::Multi(m) => m.j.iter().any(|&x| x != 0.0),
                 JkMode::KOnly(_) => false,
             };
             assert_eq!(
