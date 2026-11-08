@@ -140,8 +140,10 @@ pub fn blocked_dressing_overshoot_report_for_test(
     blocked_dressing_overshoot_report(budget_bytes, in_core, band, block_naux, nao)
 }
 
-/// Output aux rows per dressing GEMM in `build_dressed_band`'s parallel fast
-/// path.
+/// The aux-row grid of the dressing: a spilled dressing's passes (and DF-K's
+/// read-back) start on it. The in-core dressing's GEMMs span the whole band
+/// (see [`DRESS_COL_BLOCK`]); a pass-wise GEMM reproduces it bitwise because
+/// every pass but the last has a multiple of this many rows.
 ///
 /// A COMPILE-TIME constant, and an EVEN one, on purpose. Splitting a GEMM's
 /// output rows is only bit-identical to the unsplit product when the row count
@@ -155,8 +157,8 @@ pub fn blocked_dressing_overshoot_report_for_test(
 /// exact — a 2-wide SIMD accumulation effect, not a k-blocking effect as first
 /// assumed. So a thread-derived block count (`band / nthreads`) would silently
 /// change the dressed tensor, and hence the SCF energy, whenever it landed on an
-/// odd value. 64 is even, keeps each GEMM wide enough for BLAS3 efficiency, and
-/// gives ~9 blocks at benzene/aTZ (naux = 558) — enough to fill a 12-core box.
+/// odd value. 64 is even (and was the in-core GEMM height until the dressing
+/// moved to band-tall column tiles).
 ///
 /// `dressed_tensor_bitidentical_across_thread_counts` pins this; it deliberately
 /// forces an ODD split to stay mutation-sensitive.
@@ -403,41 +405,41 @@ pub fn spilled_dressing_report_for_test(
 /// `Σ_Q m[P,Q] raw[Q,μν]` for `P` in `[p0, p1)`, returned as the packed lower
 /// triangle `(p1 - p0, pair)`.
 ///
-/// The GEMMs are the in-core fast path's: [`DRESS_ROW_BLOCK`] output rows by
-/// [`DRESS_K_BLOCK`] Q rows, on the same grids, accumulated in ascending Q. Each
-/// element therefore sees the identical term sequence, so at one BLAS thread the
-/// spilled tensor is bitwise the in-core one (with OpenBLAS threaded, splitting
-/// a GEMM moves bits, and that holds for either path).
+/// The GEMMs are the in-core fast path's ([`dress_tile`]: [`DRESS_COL_BLOCK`]
+/// packed columns by [`DRESS_K_BLOCK`] Q rows, accumulated in ascending Q, on
+/// the same grids), so each element sees the identical term sequence and the
+/// spilled tensor is bitwise the in-core one at one BLAS thread (only the GEMM's
+/// row count differs, which does not move a bit: see [`DRESS_COL_BLOCK`]).
 fn dress_rows_packed(
     raw: &mut ThreeIndexSource,
     m: &Array2<f64>,
     (p0, p1): (usize, usize),
     band_p0: usize,
 ) -> Result<Array2<f64>, FerricError> {
-    let nao = raw.nao();
-    let pair = packed_pair_len(nao);
+    let pair = packed_pair_len(raw.nao());
     let mut accum = Array2::<f64>::zeros((p1 - p0, pair));
-    let edges = dress_row_edges(p1 - p0, DRESS_ROW_BLOCK);
     debug_assert_eq!((p0 - band_p0) % DRESS_ROW_BLOCK, 0);
-    raw.for_each_dress_k_block(|q0, flat| {
-        let q1 = q0 + flat.nrows();
-        for &(r0, r1) in &edges {
-            let msub = m.slice(ndarray::s![p0 + r0..p0 + r1, q0..q1]);
-            let mut dst = accum.slice_mut(ndarray::s![r0..r1, ..]);
-            dress_lower_accumulate(&msub, &flat, &mut dst, nao, TriOut::Packed);
-        }
+    raw.for_each_dress_k_block_packed(|q0, rblk| {
+        dress_packed_q_block(m, (p0, q0), &rblk, accum.view_mut());
         Ok(())
     })?;
     Ok(accum)
 }
 
-/// Can the in-core fast path hold the band plus its per-worker `contrib`? The
-/// dressing now accumulates in place ([`dress_lower_accumulate`]) and holds no
-/// `contrib`, so this charge is an overestimate, kept so the choice of path
-/// (and of storage tier, which shares these figures) does not move. Reads
-/// the thread count, which is safe only because the choice it steers does not
-/// move a bit at one BLAS thread: see [`dress_rows_packed`].
-fn fast_path_plan(budget_bytes: usize, band: usize, n_blocks: usize, nao: usize) -> MemoryPlan {
+/// Can the in-core fast path hold the band plus its per-worker scratch? The
+/// dressing accumulates in place, so its real per-worker scratch is the
+/// gathered Q panel of a dense `raw` (`naux × DRESS_COL_BLOCK`). The charge is
+/// the larger of that and the `DRESS_ROW_BLOCK × nao²` `contrib` an earlier
+/// dressing held, an overestimate kept so the choice of path (and of storage
+/// tier, which shares these figures) does not move. Reads the thread count,
+/// which is safe only because the choice it steers does not move a bit at one
+/// BLAS thread: see [`dress_rows_packed`].
+fn fast_path_plan(
+    budget_bytes: usize,
+    (band, naux): (usize, usize),
+    n_blocks: usize,
+    nao: usize,
+) -> MemoryPlan {
     // Concurrency is bounded by the number of blocks as well as by the pool:
     // charging `nthreads` copies when there are only 3 blocks would over-count.
     let workers = rayon::current_num_threads().max(1).min(n_blocks.max(1));
@@ -447,58 +449,162 @@ fn fast_path_plan(budget_bytes: usize, band: usize, n_blocks: usize, nao: usize)
         band * nao * nao,
         Lifetime::Resident,
     );
-    // Each worker holds one `contrib` GEMM result: `b × nao²`, `b ≤ DRESS_ROW_BLOCK`.
+    let contrib = DRESS_ROW_BLOCK.min(band.max(1)) * nao * nao;
+    let panel = naux * DRESS_COL_BLOCK.min(packed_pair_len(nao));
     plan.reserve_per_worker(
-        "dressing GEMM contrib (per worker)",
-        DRESS_ROW_BLOCK.min(band.max(1)) * nao * nao,
+        "dressing GEMM scratch (per worker)",
+        contrib.max(panel),
         workers,
     );
     plan
 }
 
-/// Where row μ's lower-triangle segment `ν ∈ 0..=μ` starts in an output row:
-/// the full square (`μ·nao`, the same column as in the raw row) or the packed
-/// triangle (`μ(μ+1)/2`).
-#[derive(Clone, Copy)]
-enum TriOut {
-    Square,
-    Packed,
+/// Packed μν columns per dressing GEMM, and per parallel task.
+///
+/// The dressing works on the packed lower μν triangle (`(P|μν)` is exactly
+/// symmetric). A task owns `DRESS_COL_BLOCK` packed columns of every output row
+/// and sweeps Q in ascending [`DRESS_K_BLOCK`] blocks, one GEMM
+/// `rows × DRESS_K_BLOCK × DRESS_COL_BLOCK` per block accumulated straight into
+/// the output (`β = 1`). Every route (in-core fast path, blocked in-core output,
+/// spill) issues these GEMMs on these column and Q grids, and the grids are
+/// compile-time constants, so no thread count or budget can move a bit.
+///
+/// The GEMM's row count is the band (in core) or a spill pass's rows, so it is
+/// NOT the same across routes. MEASURED not to matter: on sulfamethoxazole /
+/// def2-SVP (naux 1538, nao 297) the dressed tensor is bitwise identical for
+/// GEMM row counts 64..1538 and column widths 128..1024, and bitwise identical
+/// to the earlier dressing (one GEMM per 64 rows and per μ over `ν ∈ 0..=μ`);
+/// `spilled_dressed_tensor_is_bitwise_the_in_core_one` (several pass heights)
+/// and `dressed_tensor_bitidentical_across_thread_counts` pin it. Even, as
+/// [`DRESS_ROW_BLOCK`] is.
+///
+/// 512 is the measured knee (6 threads, same system): the per-μ dressing it
+/// replaced took 1.74 s (narrow GEMMs re-reading the whole raw tensor once per
+/// 64 output rows); band-tall GEMMs take 1.25 s at 256 columns, 1.16 s at 512,
+/// and 1.21 s at 1024 with 1024-row tiles; see wiki/notes/dfk-dress-2026-11-07.
+const DRESS_COL_BLOCK: usize = 512;
+
+/// `out += m_rows · panel` as ONE GEMM (see [`DRESS_COL_BLOCK`] for why its row
+/// count is free).
+fn dress_tile(
+    m_rows: &ndarray::ArrayView2<'_, f64>,
+    panel: &ndarray::ArrayView2<'_, f64>,
+    out: &mut ndarray::ArrayViewMut2<'_, f64>,
+) {
+    ndarray::linalg::general_mat_mul(1.0, m_rows, panel, 1.0, out);
 }
 
-/// `out[:, seg(μ)] += msub · flat[:, μ·nao ..= μ·nao + μ]` for every μ: the
-/// dressing GEMM over the LOWER μν triangle only (`(P|μν)` is exactly symmetric,
-/// `eri3_block` writes both halves from one value), accumulated straight into
-/// `out` (`β = 1`), with no per-block temporary.
-///
-/// NOT bit-identical to the full-square `contrib = msub·flat; out += contrib`
-/// it replaces. ndarray's `blas` feature is on workspace-wide (through
-/// `ndarray-linalg`), so these GEMMs are OpenBLAS, which forms an element's
-/// k-sum differently for narrow GEMMs (here `nao × (μ+1)` segments; an
-/// even-width variant still moved 9 elements of water / cc-pVDZ) than for the
-/// full row; and `β = 1` rounds `out + ab` once where `+=` rounded the product
-/// first. Both are within the k-block summation bound the tests derive, the
-/// result is still independent of the thread count (the blocks are fixed), and
-/// the tensor is now exactly symmetric. Half the FLOPs and none of the
-/// temporary's bytes. A full-square `out` needs [`mirror_lower_to_upper`] once
-/// every Q block has been added.
-fn dress_lower_accumulate(
-    msub: &ndarray::ArrayView2<'_, f64>,
-    flat: &ndarray::ArrayView2<'_, f64>,
-    out: &mut ndarray::ArrayViewMut2<'_, f64>,
-    nao: usize,
-    layout: TriOut,
-) {
-    use ndarray::linalg::general_mat_mul;
-    for mu in 0..nao {
-        let src = mu * nao;
-        let dst = match layout {
-            TriOut::Square => src,
-            TriOut::Packed => mu * (mu + 1) / 2,
-        };
-        let rseg = flat.slice(ndarray::s![.., src..=src + mu]);
-        let mut oseg = out.slice_mut(ndarray::s![.., dst..=dst + mu]);
-        general_mat_mul(1.0, msub, &rseg, 1.0, &mut oseg);
+/// Split a packed accumulator `(rows, pair)` into disjoint column tiles of
+/// [`DRESS_COL_BLOCK`] packed columns over all its rows, each with its first
+/// column.
+fn packed_tiles(
+    acc: ndarray::ArrayViewMut2<'_, f64>,
+) -> Vec<(usize, ndarray::ArrayViewMut2<'_, f64>)> {
+    let mut tiles = Vec::new();
+    let (mut col_rest, mut c0) = (acc, 0usize);
+    while col_rest.ncols() > 0 && col_rest.nrows() > 0 {
+        let w = DRESS_COL_BLOCK.min(col_rest.ncols());
+        let (tile, rest) = col_rest.split_at(ndarray::Axis(1), w);
+        col_rest = rest;
+        tiles.push((c0, tile));
+        c0 += w;
     }
+    tiles
+}
+
+/// `acc += m[p0.., q0..q1] · rblk` for one packed Q block `rblk` `(q, pair)`,
+/// tile-parallel over the rayon pool (one-thread BLAS per tile). `acc` row 0 is
+/// global aux row `p0`. The routes
+/// that stream `raw` (spilled, recomputed or packed) call this once per Q block
+/// in ascending Q.
+fn dress_packed_q_block(
+    m: &Array2<f64>,
+    (p0, q0): (usize, usize),
+    rblk: &ndarray::ArrayView2<'_, f64>,
+    acc: ndarray::ArrayViewMut2<'_, f64>,
+) {
+    use rayon::prelude::*;
+    let q1 = q0 + rblk.nrows();
+    packed_tiles(acc).into_par_iter().for_each(|(c0, mut t)| {
+        let (h, w) = t.dim();
+        let m_rows = m.slice(ndarray::s![p0..p0 + h, q0..q1]);
+        dress_tile(&m_rows, &rblk.slice(ndarray::s![.., c0..c0 + w]), &mut t);
+    });
+}
+
+/// The contiguous runs `(square offset, panel offset, length)` of packed columns
+/// `[c0, c1)` within a square `nao × nao` row: one run per μ the range touches.
+fn packed_column_runs(c0: usize, c1: usize, nao: usize) -> Vec<(usize, usize, usize)> {
+    let mut runs = Vec::new();
+    let mut mu = 0usize;
+    while packed_pair_len(mu + 1) <= c0 {
+        mu += 1;
+    }
+    let mut c = c0;
+    while c < c1 && mu < nao {
+        let row_start = packed_pair_len(mu);
+        let row_end = packed_pair_len(mu + 1).min(c1);
+        let nu = c - row_start;
+        runs.push((mu * nao + nu, c - c0, row_end - c));
+        c = row_end;
+        mu += 1;
+    }
+    runs
+}
+
+/// The fast path: `raw` resident (dense or packed) and the output's packed
+/// accumulator `acc` `(band, pair)` resident, so each tile sweeps all Q in
+/// ascending [`DRESS_K_BLOCK`] blocks with its Q panel held once: from a packed
+/// `raw` a view, from a dense one gathered into a per-worker buffer. Tiles are
+/// independent, so this runs over the rayon pool; every element sees the same
+/// GEMMs as on the streamed routes ([`dress_packed_q_block`]).
+fn dress_resident_into_packed(
+    raw: &ThreeIndexSource,
+    m: &Array2<f64>,
+    band_p0: usize,
+    acc: ndarray::ArrayViewMut2<'_, f64>,
+) -> Result<(), FerricError> {
+    use rayon::prelude::*;
+    let (naux, nao) = (raw.band_naux(), raw.nao());
+    let dense = raw.incore_flat();
+    let packed = raw.packed_flat();
+    if dense.is_none() && packed.is_none() {
+        return Err(FerricError::General(
+            "dress: the fast path needs a dense or packed in-core raw".into(),
+        ));
+    }
+    packed_tiles(acc)
+        .into_par_iter()
+        .for_each_init(Vec::<f64>::new, |buf, (c0, mut t)| {
+            let (h, w) = t.dim();
+            let panel = match (&packed, &dense) {
+                (Some(p), _) => p.slice(ndarray::s![.., c0..c0 + w]),
+                (None, Some(d)) => {
+                    buf.resize(naux * w, 0.0);
+                    let runs = packed_column_runs(c0, c0 + w, nao);
+                    for (q, dst) in buf.chunks_exact_mut(w).enumerate() {
+                        let src = d.row(q);
+                        let src = src.as_slice().expect("dense raw rows are contiguous");
+                        for &(s0, d0, len) in &runs {
+                            dst[d0..d0 + len].copy_from_slice(&src[s0..s0 + len]);
+                        }
+                    }
+                    ndarray::ArrayView2::from_shape((naux, w), &buf[..])
+                        .expect("panel buffer sized naux x w")
+                }
+                (None, None) => unreachable!("checked above"),
+            };
+            let m_rows = m.slice(ndarray::s![band_p0..band_p0 + h, ..]);
+            for qa in (0..naux).step_by(DRESS_K_BLOCK) {
+                let qb = (qa + DRESS_K_BLOCK).min(naux);
+                dress_tile(
+                    &m_rows.slice(ndarray::s![.., qa..qb]),
+                    &panel.slice(ndarray::s![qa..qb, ..]),
+                    &mut t,
+                );
+            }
+        });
+    Ok(())
 }
 
 /// Copy the lower μν triangle of each `nao × nao` row of `rows` onto its upper
@@ -518,42 +624,56 @@ fn mirror_lower_to_upper(rows: &mut [f64], nao: usize) {
     }
 }
 
-/// One fast-path block: an ascending Q sweep, sub-blocked to [`DRESS_K_BLOCK`]. The
-/// outer edges follow the source's own blocks; the inner split is a fixed constant,
-/// which both pins the summation order and improves accuracy (see
-/// [`DRESS_K_BLOCK`]). `dst` starts at zero and each sub-block is accumulated
-/// into it ([`dress_lower_accumulate`]) in ascending Q order; the upper triangle
-/// is mirrored last.
-fn dress_block_in_place(
-    dst: &mut [f64],
-    (l0, l1): (usize, usize),
-    band_p0: usize,
-    q_edges: &[(usize, usize)],
-    (m, raw_flat, raw_p0): (&Array2<f64>, &ndarray::ArrayView2<'_, f64>, usize),
-) -> Result<(), FerricError> {
-    let b = l1 - l0;
-    let p0 = band_p0 + l0;
-    let row_elems = raw_flat.ncols();
-    let nao = (row_elems as f64).sqrt().round() as usize;
-    if nao * nao != row_elems {
-        return Err(FerricError::General(format!(
-            "dress: raw row of {row_elems} is not a square"
-        )));
-    }
-    let mut acc = ndarray::ArrayViewMut2::from_shape((b, row_elems), &mut *dst)
-        .map_err(|e| FerricError::General(format!("dress out reshape: {e}")))?;
-    for &(q0, q1) in q_edges {
-        let mut qa = q0;
-        while qa < q1 {
-            let qb = (qa + DRESS_K_BLOCK).min(q1);
-            let msub = m.slice(ndarray::s![p0..p0 + b, qa..qb]);
-            let rblk = raw_flat.slice(ndarray::s![qa - raw_p0..qb - raw_p0, ..]);
-            dress_lower_accumulate(&msub, &rblk, &mut acc, nao, TriOut::Square);
-            qa = qb;
-        }
+/// One packed lower-triangle row `src` into the full symmetric square `dst`.
+fn expand_packed_row(src: &[f64], dst: &mut [f64], nao: usize) {
+    for mu in 0..nao {
+        let s = packed_pair_len(mu);
+        dst[mu * nao..=mu * nao + mu].copy_from_slice(&src[s..=s + mu]);
     }
     mirror_lower_to_upper(dst, nao);
-    Ok(())
+}
+
+/// Expand `rows` packed rows held at the FRONT of `buf` (row `P` at `P·pair`)
+/// into full symmetric squares (row `P` at `P·nao²`), in place, so the dressing
+/// can accumulate packed in the output's own storage and needs no second band.
+///
+/// A row's square slot never starts below its packed one, so rows move from the
+/// last down. They move in waves `[lo, hi)` with `lo·nao² ≥ hi·pair`: every
+/// source of the wave then lies below its first destination, and no unmoved
+/// row's source lies at or above it, so a wave's rows run over the rayon pool.
+/// Each wave roughly halves `hi`; the last few rows go one at a time through a
+/// copy of the row.
+fn expand_packed_front_in_place(buf: &mut [f64], rows: usize, nao: usize) {
+    use rayon::prelude::*;
+    let (pair, sq) = (packed_pair_len(nao), nao * nao);
+    if rows == 0 || nao == 0 {
+        return;
+    }
+    assert!(
+        buf.len() >= rows * sq,
+        "expand: buffer holds fewer than {rows} squares"
+    );
+    let mut hi = rows;
+    while hi > 0 {
+        let lo = (hi * pair).div_ceil(sq);
+        if lo >= hi {
+            break;
+        }
+        let (src, dst) = buf.split_at_mut(lo * sq);
+        dst[..(hi - lo) * sq]
+            .par_chunks_mut(sq)
+            .enumerate()
+            .for_each(|(i, row)| {
+                let p = lo + i;
+                expand_packed_row(&src[p * pair..(p + 1) * pair], row, nao);
+            });
+        hi = lo;
+    }
+    let mut tmp = vec![0.0; pair];
+    for p in (0..hi).rev() {
+        tmp.copy_from_slice(&buf[p * pair..(p + 1) * pair]);
+        expand_packed_row(&tmp, &mut buf[p * sq..(p + 1) * sq], nao);
+    }
 }
 
 /// Memory is why a refused band is spilling at all, so when the disk then refuses
@@ -602,38 +722,44 @@ fn admit_dressed_in_core(
     (charge, refused)
 }
 
-/// The in-core output of a source that is not itself in core, on the fast path's
-/// GEMM grid: every element sees the same term sequence as there and as in
-/// [`dress_rows_packed`], so at one BLAS thread the three routes agree bitwise.
-/// One pass over `raw`, since all the output rows are already resident.
-fn dress_band_in_core_blocked(
+/// Dress `raw` into the zeroed in-core output band `arr` `(band, nao, nao)`.
+///
+/// The packed accumulator `(band, pair)` lives at the front of `arr`'s own
+/// storage and is expanded to full squares in place at the end, so no second
+/// band is ever held. A resident `raw` (dense or packed) takes the tile-parallel
+/// fast path ([`dress_resident_into_packed`]); a spilled or recomputed one is
+/// streamed once, each Q block tile-parallel ([`dress_packed_q_block`]). Both
+/// issue the same GEMMs as [`dress_rows_packed`], so at one BLAS thread the
+/// routes agree bitwise, and the fixed tiles make each independent of the
+/// thread count.
+fn dress_band_in_core(
     raw: &mut ThreeIndexSource,
     m: &Array2<f64>,
     arr: &mut Array3<f64>,
-    (band_p0, band_p1): (usize, usize),
+    band_p0: usize,
 ) -> Result<(), FerricError> {
-    let nao = raw.nao();
-    let edges = dress_row_edges(band_p1 - band_p0, DRESS_ROW_BLOCK);
-    raw.for_each_dress_k_block(|q0, flat| {
-        let q1 = q0 + flat.nrows();
-        for &(l0, l1) in &edges {
-            let msub = m.slice(ndarray::s![band_p0 + l0..band_p0 + l1, q0..q1]);
-            let mut dst = arr
-                .slice_mut(ndarray::s![l0..l1, .., ..])
-                .into_shape_with_order((l1 - l0, nao * nao))
-                .map_err(|e| FerricError::General(format!("dress out reshape: {e}")))?;
-            dress_lower_accumulate(&msub, &flat, &mut dst, nao, TriOut::Square);
-        }
-        Ok(())
-    })?;
+    let (band, nao) = (arr.shape()[0], raw.nao());
+    let pair = packed_pair_len(nao);
     let rows = arr
         .as_slice_mut()
         .ok_or_else(|| FerricError::General("dress out: non-contiguous output band".into()))?;
     {
-        use rayon::prelude::*;
-        rows.par_chunks_mut(nao * nao)
-            .for_each(|sq| mirror_lower_to_upper(sq, nao));
+        let mut acc = ndarray::ArrayViewMut2::from_shape((band, pair), &mut rows[..band * pair])
+            .map_err(|e| FerricError::General(format!("dress accumulator: {e}")))?;
+        let t_st = ferric_core::timing::Stage::start("dfk:dress-gemm");
+        if raw.incore_flat().is_some() || raw.packed_flat().is_some() {
+            dress_resident_into_packed(raw, m, band_p0, acc)?;
+        } else {
+            raw.for_each_dress_k_block_packed(|q0, rblk| {
+                dress_packed_q_block(m, (band_p0, q0), &rblk, acc.view_mut());
+                Ok(())
+            })?;
+        }
+        t_st.end();
     }
+    let t_st = ferric_core::timing::Stage::start("dfk:dress-expand");
+    expand_packed_front_in_place(rows, band, nao);
+    t_st.end();
     Ok(())
 }
 
@@ -1603,9 +1729,14 @@ impl ThreeIndexSource {
         // charge. Every run this reroutes used to die there, so no result moves;
         // with no pool the reservation is inert and this is the budget test.
         let fast_path_fits = !raw.is_incore()
-            || fast_path_plan(budget_bytes, band, band.div_ceil(DRESS_ROW_BLOCK), nao)
-                .check()
-                .is_ok();
+            || fast_path_plan(
+                budget_bytes,
+                (band, naux),
+                band.div_ceil(DRESS_ROW_BLOCK),
+                nao,
+            )
+            .check()
+            .is_ok();
         let (in_core_charge, memory_refused) =
             admit_dressed_in_core(needed, budget_bytes, fast_path_fits);
         let in_core = in_core_charge.is_some();
@@ -1643,95 +1774,20 @@ impl ThreeIndexSource {
             preflight_spill(spill_bytes).map_err(|e| spill_refusal(e, memory_refused))?;
             Some(tempfile::tempfile().map_err(|e| FerricError::General(format!("tempfile: {e}")))?)
         };
-        // FAST PATH: raw and output both fully in core. Each output block is an
-        // independent linear combination over Q, so the blocks can be computed
-        // concurrently — but ONLY with the SAME boundaries the sequential loop
-        // below uses.
-        //
-        // Bit-identity depends on the block boundaries, not on execution order.
-        // Within a block, each output element accumulates over Q-blocks in
-        // ascending order; BLAS additionally chooses its internal k-blocking from
-        // the operand's row count, so re-chunking the output rows (e.g. into
-        // `nthreads` even pieces) changes the summation order and perturbs the
-        // result — measured 3.6e-15 elementwise, which moved the benzene/aTZ SCF
-        // energy by 2.9e-6 Ha and made it vary with RAYON_NUM_THREADS. Reusing
-        // the identical `block_naux` boundaries and identical per-block Q loop
-        // makes every output element see the exact same addition sequence, so
-        // this is bit-identical to the sequential path at any thread count
-        // (df_k.rs's `df_k_bit_identical_across_thread_counts` covers it).
-        //
-        // Why it matters: the dressing is ~107 GFLOP at benzene/aug-cc-pVTZ and
-        // ran entirely on ONE core (BLAS is pinned to 1 thread under rayon per
-        // the project convention), so DfK::new scaled only 1.35x across 12 cores.
+        // FAST PATH: raw and output both fully in core. The dressing is
+        // ~107 GFLOP at benzene/aug-cc-pVTZ and BLAS is pinned to one thread
+        // under rayon, so it runs tile-parallel over the pool
+        // ([`dress_band_in_core`]). Every GEMM column and Q boundary is a
+        // compile-time constant (`DRESS_COL_BLOCK`, `DRESS_K_BLOCK`), never
+        // `block_naux` (budget-derived) or the thread count: re-chunking
+        // the output rows by `nthreads` once moved the benzene/aTZ SCF energy
+        // by 2.9e-6 Ha and made it vary with RAYON_NUM_THREADS
+        // (`dressed_tensor_bitidentical_across_thread_counts` pins it). Peak
+        // residency is the one output band (the packed accumulator lives in
+        // its storage) plus a Q panel per worker, both charged above.
         if in_core && raw.is_incore() {
-            use rayon::prelude::*;
-            let raw_flat = raw.incore_flat().expect("is_incore checked");
-            let raw_p0 = raw.band().0;
             let arr = out_incore.as_mut().expect("in_core implies Some");
-            let q_edges = raw.block_edges();
-            // Output-block boundaries from a COMPILE-TIME CONSTANT, never from
-            // `block_naux` (budget-derived) or the thread count. This is what
-            // makes the result reproducible: BLAS picks its internal k-blocking
-            // from the operand's row count, so the boundaries fix the summation
-            // order, and holding them constant fixes the result for every thread
-            // count, memory budget, and execution order. Deriving them from
-            // `nthreads` was the bug that perturbed the benzene/aTZ SCF energy by
-            // 2.9e-6 Ha and made it vary with RAYON_NUM_THREADS.
-            // Memory accounting for this path. Historically NOTHING here was
-            // charged: the `in_core` decision above gates only `out_incore`
-            // (one `band·nao²·8` copy), yet this path used to `collect()` every
-            // output block into a `Vec<(usize, Array2)>` BEFORE scattering, so
-            // a full SECOND copy of the dressed band (another `band·nao²·8`)
-            // was co-resident with `out_incore` at the moment the collect
-            // finished. At benzene/aug-cc-pVTZ (naux=1512, nao=414) that is
-            // 2.1 GB charged as 1.05 GB — the classic under-count that OOMs.
-            // The per-worker `acc`/`contrib` scratch was unaccounted too.
-            //
-            // Two independent fixes, both applied:
-            //  1. The second copy is GONE, not merely charged for. Each block
-            //     now accumulates into its own destination rows of `arr`
-            //     directly via rayon's slice `par_chunks_mut`, so peak
-            //     residency is one copy of the band plus per-worker scratch.
-            //     This is a pure removal of a copy: the GEMM boundaries
-            //     (`DRESS_ROW_BLOCK`), the Q sweep, and the accumulation order
-            //     are byte-for-byte what they were, so the dressed tensor is
-            //     bit-identical (pinned by
-            //     `dressed_tensor_bitidentical_across_thread_counts`).
-            //  2. What genuinely remains resident is now DECLARED, so an
-            //     over-budget job fails fast with a breakdown instead of
-            //     walking into the allocation. `contrib` is the only real
-            //     per-worker term left (`acc` is gone with the copy).
-            //
-            // Note the asymmetry this repairs: the RAW spill path sizes blocks
-            // with `spill_block_naux_for` = `block_naux_for(budget/2, nao)`,
-            // HALVED because two blocks are live at once. This dressing path
-            // used the UN-halved `block_naux_for` while `accum` and `contrib`
-            // coexist on the sequential path below — see the guard there.
-            let mut out_edges: Vec<(usize, usize)> = Vec::new();
-            let mut l = 0usize;
-            while l < band {
-                let r = (l + DRESS_ROW_BLOCK).min(band);
-                out_edges.push((l, r));
-                l = r;
-            }
-            // Scatter-free: each block writes its OWN disjoint rows of `arr`.
-            // `arr` is a freshly-allocated contiguous `Array3`, so its backing
-            // slice is row-major and output row `l` occupies exactly
-            // `[l·nao², (l+1)·nao²)`. `par_chunks_mut(DRESS_ROW_BLOCK·nao²)`
-            // therefore yields precisely the `out_edges` blocks, in order, as
-            // disjoint mutable slices — the same partition the collect used,
-            // without ever materialising a second copy of the band.
-            let row_elems = nao * nao;
-            let arr_slice = arr.as_slice_mut().ok_or_else(|| {
-                FerricError::General("dress out: non-contiguous output band".into())
-            })?;
-            arr_slice
-                .par_chunks_mut(DRESS_ROW_BLOCK * row_elems)
-                .enumerate()
-                .try_for_each(|(bi, dst)| {
-                    let edge = out_edges[bi];
-                    dress_block_in_place(dst, edge, band_p0, &q_edges, (m, &raw_flat, raw_p0))
-                })?;
+            dress_band_in_core(raw, m, arr, band_p0)?;
             return Ok(Self {
                 naux,
                 nao,
@@ -1766,7 +1822,7 @@ impl ThreeIndexSource {
                      budget:\n{report}"
                 );
             }
-            dress_band_in_core_blocked(raw, m, arr, (band_p0, band_p1))?;
+            dress_band_in_core(raw, m, arr, band_p0)?;
         } else if let Some(f) = file.as_mut() {
             let overhead = dressing_overhead_bytes(
                 raw_resident.saturating_add(raw_stream),
@@ -1871,37 +1927,43 @@ impl ThreeIndexSource {
         self.packed_stream_bytes(self.packed_stream_rows(df_chunk_width(self.nao)))
     }
 
-    /// Stream the tensor as unpacked `(q, nao²)` blocks of [`DRESS_K_BLOCK`] rows
-    /// on the grid the in-core fast path uses, whatever the backend. Holds one
-    /// unpacked block plus a short read-ahead, not this source's own full block.
-    fn for_each_dress_k_block(
+    /// Stream the tensor as PACKED `(q, pair)` blocks of [`DRESS_K_BLOCK`] rows
+    /// on the dressing's Q grid, whatever the backend: a dense in-core source
+    /// packs each block into one reused scratch block, the packed, spilled and
+    /// recomputed ones hand out their own rows (plus a short read-ahead).
+    fn for_each_dress_k_block_packed(
         &mut self,
         mut f: impl FnMut(usize, ndarray::ArrayView2<'_, f64>) -> Result<(), FerricError>,
     ) -> Result<(), FerricError> {
         let (nao, band) = (self.nao, self.band_naux());
+        let pair = packed_pair_len(nao);
         if let Some(flat) = self.incore_flat() {
+            use rayon::prelude::*;
+            let mut scratch = vec![0.0f64; DRESS_K_BLOCK.min(band) * pair];
             for q0 in (0..band).step_by(DRESS_K_BLOCK) {
-                let q1 = (q0 + DRESS_K_BLOCK).min(band);
-                f(q0, flat.slice(ndarray::s![q0..q1, ..]))?;
+                let b = DRESS_K_BLOCK.min(band - q0);
+                scratch[..b * pair]
+                    .par_chunks_mut(pair.max(1))
+                    .enumerate()
+                    .for_each(|(l, dst)| {
+                        let src = flat.row(q0 + l);
+                        let src = src.as_slice().expect("dense raw rows are contiguous");
+                        for mu in 0..nao {
+                            let s = packed_pair_len(mu);
+                            dst[s..=s + mu].copy_from_slice(&src[mu * nao..=mu * nao + mu]);
+                        }
+                    });
+                let blk = ndarray::ArrayView2::from_shape((b, pair), &scratch[..b * pair])
+                    .map_err(|e| FerricError::General(format!("raw pack: {e}")))?;
+                f(q0, blk)?;
             }
             return Ok(());
         }
-        let pair = packed_pair_len(nao);
-        let mut scratch = Array3::<f64>::zeros((DRESS_K_BLOCK.min(band.max(1)), nao, nao));
         self.for_each_packed_rows(DRESS_K_BLOCK, |blk| {
             let rows = blk.data.nrows();
-            let src = blk
-                .data
-                .as_slice()
-                .ok_or_else(|| FerricError::General("packed block: non-contiguous".into()))?;
             for l in (0..rows).step_by(DRESS_K_BLOCK) {
                 let b = DRESS_K_BLOCK.min(rows - l);
-                unpack_lower_triangle(&src[l * pair..(l + b) * pair], nao, b, &mut scratch);
-                let flat = scratch
-                    .slice(ndarray::s![0..b, .., ..])
-                    .into_shape_with_order((b, nao * nao))
-                    .map_err(|e| FerricError::General(format!("raw reshape: {e}")))?;
-                f(blk.p0 + l, flat)?;
+                f(blk.p0 + l, blk.data.slice(ndarray::s![l..l + b, ..]))?;
             }
             Ok(())
         })
@@ -2604,6 +2666,34 @@ mod tests {
         expect
     }
 
+    /// The in-place expansion against an out-of-place unpack of a copy, on
+    /// every row count up to 40 and on `nao` 1 (packed = square, serial tail
+    /// only), 2, 3, 7 and 24 (waves): bitwise, since both only move values.
+    /// Catches: a wave whose destinations overlap an unmoved row's source (a
+    /// `lo` rounded down), rows moved in ascending order, a tail row expanded
+    /// from its own half-overwritten source, and a missing mirror.
+    #[test]
+    fn packed_rows_expand_in_place_to_the_squares_an_out_of_place_unpack_gives() {
+        for nao in [1usize, 2, 3, 7, 24] {
+            let (pair, sq) = (packed_pair_len(nao), nao * nao);
+            for rows in 0..=40usize {
+                let packed: Vec<f64> = (0..rows * pair)
+                    .map(|i| (i as f64 + 0.25) * if i % 3 == 0 { -1.0 } else { 1.0 })
+                    .collect();
+                let mut want = Array3::<f64>::zeros((rows, nao, nao));
+                unpack_lower_triangle(&packed, nao, rows, &mut want);
+                let mut buf = vec![f64::NAN; rows * sq];
+                buf[..rows * pair].copy_from_slice(&packed);
+                expand_packed_front_in_place(&mut buf, rows, nao);
+                let want = want.as_slice().unwrap();
+                let moved = (0..rows * sq)
+                    .filter(|&i| buf[i].to_bits() != want[i].to_bits())
+                    .count();
+                assert_eq!(moved, 0, "nao {nao}, rows {rows}: {moved} elements differ");
+            }
+        }
+    }
+
     /// The triangle dressing against the full-square one it replaced, on odd and
     /// even `nao` and on band sizes that leave a partial last row block, for both
     /// raw constructors the SCF uses: the tensor is EXACTLY symmetric in μν, and
@@ -2613,9 +2703,11 @@ mod tests {
     /// `γ_{kb+nb}·S` of the exact value (Higham §3.1, `S = Σ_Q |m_PQ||raw_Q,μν|`,
     /// `nb` blocks) and the two within `2·γ_{kb+nb}·S` of each other. Not
     /// bitwise: OpenBLAS (ndarray's `blas` feature is on workspace-wide) forms a
-    /// narrow GEMM's k-sum differently from the full row's. Catches: a missing
-    /// mirror, a segment of the wrong length or offset, a dropped Q block, and an
-    /// upper triangle computed separately (not mirrored).
+    /// GEMM's k-sum differently for different operand shapes, and the packed
+    /// tiles are not the full rows. Catches: a missing mirror, a tile or panel
+    /// of the wrong length or offset (the water cases span 2 and 4 column
+    /// blocks), a dropped Q block, and an upper triangle computed separately
+    /// (not mirrored).
     #[test]
     fn triangle_dressing_is_symmetric_and_within_the_bound_of_the_full_square_one() {
         let water = "3\nH2O\nO 0 0 0\nH 0 0 0.96\nH 0.93 0 -0.26\n";
@@ -2686,14 +2778,13 @@ mod tests {
 
     /// The dressed tensor must not depend on RAYON_NUM_THREADS.
     ///
-    /// `build_dressed_band`'s parallel fast path splits OUTPUT aux rows across
-    /// workers. BLAS chooses its internal k-blocking from the operand's row
-    /// count, so the row-block boundaries fix the floating-point summation
-    /// order — deriving them from the thread count (or from the budget-derived
-    /// `block_naux`) silently changes the result per machine. That regression
-    /// shifted the benzene/aug-cc-pVTZ SCF energy by 2.9e-6 Ha and only appeared
-    /// at RAYON=2 and 12. `DRESS_ROW_BLOCK` is a compile-time constant to
-    /// prevent it; this test pins that.
+    /// `build_dressed_band`'s parallel fast path splits the work across workers
+    /// (now by packed column tiles of the compile-time `DRESS_COL_BLOCK`). An
+    /// odd split of the OUTPUT aux rows changes OpenBLAS's accumulation, so
+    /// deriving row boundaries from the thread count (or from the
+    /// budget-derived `block_naux`) silently changes the result per machine.
+    /// That regression shifted the benzene/aug-cc-pVTZ SCF energy by 2.9e-6 Ha
+    /// and only appeared at RAYON=2 and 12; this test pins that it stays gone.
     #[test]
     fn dressed_tensor_bitidentical_across_thread_counts() {
         // Benzene/def2-SVP with the JK-fit aux: naux = 558, so DRESS_ROW_BLOCK

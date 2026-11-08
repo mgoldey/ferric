@@ -42,7 +42,6 @@ use ferric_integrals::three_index_source::ThreeIndexSource;
 use ferric_integrals::threeindex::coulomb_metric_2c;
 use ndarray::linalg::general_mat_mul;
 use ndarray::{Array2, Array3};
-use ndarray_linalg::{Eigh, UPLO};
 
 // Direct BLAS bindings for the occupied-path exchange build. OpenBLAS is already
 // linked via openblas-src; these avoid a cblas/blas-sys dep for two calls.
@@ -309,7 +308,16 @@ fn density_factor(d: &Array2<f64>) -> Option<(Array2<f64>, Array2<f64>)> {
     if !scale.is_finite() || asym > 1e-12 * scale.max(f64::MIN_POSITIVE) {
         return None;
     }
-    let (evals, evecs) = with_blas_threads(opt_in_blas_threads(), || d.eigh(UPLO::Lower)).ok()?;
+    // Divide and conquer (`dsyevd`), not the QR `dsyev`: `D` enters K only through
+    // `X₊X₊ᵀ` and `X₋X₋ᵀ`, sums of `λ v vᵀ` over the kept eigenvalues of one
+    // sign, which do not depend on the basis chosen inside a degenerate block
+    // (a guess density's spectrum is full of them), so the solvers differ only in
+    // rounding. The cut sits two orders above the rounding floor (see
+    // `DENSITY_FACTOR_REL_CUT`), so no mode changes side between them.
+    let (evals, evecs) = with_blas_threads(opt_in_blas_threads(), || {
+        ferric_core::linalg::eigh_dc(d, ferric_core::linalg::Uplo::Lower)
+    })
+    .ok()?;
     let lmax = evals.iter().fold(0.0f64, |m, v| m.max(v.abs()));
     if lmax == 0.0 {
         return Some((Array2::zeros((n, 0)), Array2::zeros((n, 0))));
@@ -912,6 +920,7 @@ mod tests {
     use ferric_core::basis;
     use ferric_core::mol::Molecule;
     use ferric_core::parallel::ParallelContext;
+    use ndarray_linalg::{Eigh, UPLO};
 
     /// Catches: a factor of the wrong rank or sign (a dropped negative part, a
     /// missing √λ, a wrong cut), a factored K that differs from the density

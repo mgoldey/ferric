@@ -129,8 +129,7 @@
 //! ## Factorization
 //!
 //! `M` is built as `W·W` with `W = U Λ^{-1/2} Uᵀ`, the construction of
-//! `DfK::v_inv_sqrt_lindep` (which uses `dsyevd`; this uses `dsyev`, the two
-//! agreeing to rounding when nothing is dropped), i.e. the SCF's own construction (no explicit
+//! `DfK::v_inv_sqrt_lindep` (both `dsyevd`), i.e. the SCF's own construction (no explicit
 //! `V⁻¹` from LU). With nothing dropped it agrees with `V⁻¹` to `~ε·cond(V)`.
 //!
 //! ## What the tests establish (and what they cannot see)
@@ -242,7 +241,7 @@ use ferric_integrals::operator::Operator;
 use ferric_integrals::three_index_source::ThreeIndexSource;
 use ferric_integrals::threeindex::coulomb_metric_2c;
 use ndarray::{s, Array1, Array2, Array3, Axis};
-use ndarray_linalg::{Eigh, Inverse, UPLO};
+use ndarray_linalg::Inverse;
 use rayon::prelude::*;
 
 /// Condition number of the exchange metric above which the Hessian warns and
@@ -415,8 +414,14 @@ impl Fit {
         let v = coulomb_metric_2c(metric_op, &dfbs)?;
         // ONE eigendecomposition, so the dropped-mode classification (DfK's
         // rule, `metric_lindep_cut`) and M come from the same numbers.
-        let (lam, u) = with_blas_threads(opt_in_blas_threads(), || v.eigh(UPLO::Upper))
-            .map_err(|e| FerricError::Lapack(format!("analytic RI-K Hessian: eigh: {e}")))?;
+        // Divide and conquer, as DfK: M is a matrix function of V (invariant to
+        // the basis inside a degenerate block) and the gap cut keeps the kept
+        // set solver-independent.
+        let (lam, u) = with_blas_threads(opt_in_blas_threads(), || {
+            ferric_core::linalg::eigh_dc(&v, ferric_core::linalg::Uplo::Upper)
+        })
+        .map_err(|e| FerricError::Lapack(format!("analytic RI-K Hessian: eigh: {e}")))?;
+        let lam = Array1::from(lam);
         if !mutants.allow_ill_conditioned {
             check_metric_spectrum(&lam, MetricUse::ExchangeFit)?;
         }
@@ -431,8 +436,14 @@ impl Fit {
                 let sc = 1.0 / lam[k].sqrt();
                 us.column_mut(k).mapv_inplace(|x| x * sc);
             }
-            let w = us.dot(&u.t());
-            w.dot(&w)
+            // Two O(naux³) GEMMs over the rayon pool (fixed column blocks,
+            // one-thread BLAS each), as DfK forms its V^{-1/2}.
+            let n = lam.len();
+            let mut w = Array2::<f64>::zeros((n, n));
+            ferric_core::linalg::par_gemm(1.0, &us.view(), &u.t(), 0.0, &mut w);
+            let mut m = Array2::<f64>::zeros((n, n));
+            ferric_core::linalg::par_gemm(1.0, &w.view(), &w.view(), 0.0, &mut m);
+            m
         };
         let m_cut = mutants.channel_metric_cut.map(|(channel, cut)| {
             let mut us = u.clone();
