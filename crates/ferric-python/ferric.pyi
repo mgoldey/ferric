@@ -839,6 +839,10 @@ class RhfResult:
         not fit). ``None`` when J was not density-fitted."""
         ...
     @property
+    def ri_k_precision(self) -> str | None:
+        """RI-K dressed-tensor storage the SCF used ("f64"/"f32"), None without RI-K."""
+        ...
+    @property
     def precision(self) -> dict[str, Any]:
         """Precision provenance: ``{"precision": "f64" | "mixed",
         "counter_scope": "process", "kernels": [...]}``, one kernel entry per
@@ -1886,6 +1890,10 @@ class DftResult:
         ``"f32"`` (the default; f64 accumulation) or ``"f64"`` (the
         ``ri_j_precision="f64"`` opt-out, or an f32 request whose tensor did
         not fit). ``None`` when J was not density-fitted."""
+        ...
+    @property
+    def ri_k_precision(self) -> str | None:
+        """RI-K dressed-tensor storage the SCF used ("f64"/"f32"), None without RI-K."""
         ...
     @property
     def precision(self) -> dict[str, Any]:
@@ -3483,6 +3491,7 @@ def run_rhf(
     k_builder: str | None = None,
     df_j_aux: str | None = None,
     df_k_aux: str | None = None,
+    ri_k_precision: str | None = None,
     level_shift: float | None = None,
     mom_after_iter: int | None = None,
     guess: str | None = None,
@@ -3567,6 +3576,15 @@ def run_rhf(
     run_saddle, run_irc) default to "f64" instead (the f32 energy surface
     jitters between nearby geometries); an explicit "f32" is honoured there.
 
+    ri_k_precision: storage of the RI-K (DF-K) V^{-1/2}-dressed three-index
+    tensor, "f64" (default) or "f32" (strict). Both hold
+    the packed lower triangle and contract K in f64; "f64" gives K bit-for-bit
+    the former square f64 tensor, "f32" rounds each stored element once (a
+    quarter of the square tensor's memory). Also accepted by run_uhf,
+    run_rohf, run_dft and run_ksdft, and as ``scf_ri_k_precision`` by run_cdft and
+    run_frequencies. Ignored
+    without RI-K.
+
     solvent: IEF-PCM implicit solvation, as a dielectric constant (> 1.0) or a
     solvent name (water, dmso, methanol, ethanol, acetone, dichloromethane,
     thf, chloroform, toluene, hexane). None = vacuum.
@@ -3604,6 +3622,7 @@ def run_rhf(
     k_builder: str | None = None,
     df_j_aux: str | None = None,
     df_k_aux: str | None = None,
+    ri_k_precision: str | None = None,
     level_shift: float | None = None,
     mom_after_iter: int | None = None,
     guess: str | None = None,
@@ -3642,6 +3661,7 @@ def run_uhf(
     k_builder: str | None = None,
     df_j_aux: str | None = None,
     df_k_aux: str | None = None,
+    ri_k_precision: str | None = None,
     level_shift: float | None = None,
     mom_after_iter: int | None = None,
     point_charges: list[tuple[float, float, float, float]] | None = None,
@@ -3691,6 +3711,7 @@ def run_rohf(
     k_builder: str | None = None,
     df_j_aux: str | None = None,
     df_k_aux: str | None = None,
+    ri_k_precision: str | None = None,
     level_shift: float | None = None,
     mom_after_iter: int | None = None,
     point_charges: list[tuple[float, float, float, float]] | None = None,
@@ -3721,6 +3742,7 @@ def run_cdft(
     k_builder: str | None = None,
     df_j_aux: str | None = None,
     df_k_aux: str | None = None,
+    scf_ri_k_precision: str | None = None,
     level_shift: float | None = None,
     mom_after_iter: int | None = None,
     point_charges: list[tuple[float, float, float, float]] | None = None,
@@ -3880,6 +3902,7 @@ def run_frequencies(
     density_conv: float | None = None,
     df_j_aux: str | None = None,
     df_k_aux: str | None = None,
+    scf_ri_k_precision: str | None = None,
     scf_max_iter: int | None = None,
     scf_energy_conv: float | None = None,
     scf_density_conv: float | None = None,
@@ -4458,6 +4481,7 @@ def run_dft(
     dispersion: str | None = None,
     df_j_aux: str | None = None,
     df_k_aux: str | None = None,
+    ri_k_precision: str | None = None,
     grid_radial: int | None = None,
     grid_angular: int | None = None,
     grid_prune: str | None = None,
@@ -4558,6 +4582,7 @@ def run_dft(
     dispersion: str | None = None,
     df_j_aux: str | None = None,
     df_k_aux: str | None = None,
+    ri_k_precision: str | None = None,
     grid_radial: int | None = None,
     grid_angular: int | None = None,
     grid_prune: str | None = None,
@@ -4592,6 +4617,7 @@ def run_dft(
     dispersion: str | None = None,
     df_j_aux: str | None = None,
     df_k_aux: str | None = None,
+    ri_k_precision: str | None = None,
     grid_radial: int | None = None,
     grid_angular: int | None = None,
     grid_prune: str | None = None,
@@ -4647,6 +4673,7 @@ def run_ksdft(
     dispersion: str | None = None,
     df_j_aux: str | None = None,
     df_k_aux: str | None = None,
+    ri_k_precision: str | None = None,
     grid_radial: int | None = None,
     grid_angular: int | None = None,
     grid_prune: str | None = None,
@@ -4693,6 +4720,7 @@ def run_ksdft(
     dispersion: str | None = None,
     df_j_aux: str | None = None,
     df_k_aux: str | None = None,
+    ri_k_precision: str | None = None,
     grid_radial: int | None = None,
     grid_angular: int | None = None,
     grid_prune: str | None = None,
@@ -4722,6 +4750,7 @@ def run_ksdft(
     dispersion: str | None = None,
     df_j_aux: str | None = None,
     df_k_aux: str | None = None,
+    ri_k_precision: str | None = None,
     grid_radial: int | None = None,
     grid_angular: int | None = None,
     grid_prune: str | None = None,

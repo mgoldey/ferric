@@ -2671,6 +2671,14 @@ pub struct ScfCfg {
     /// mode may build J on the device. Gradients, optimize, Hessians and
     /// frequencies follow the SCF's value. Ignored without RI-J.
     pub ri_j_precision: Option<String>,
+    /// Storage precision of the RI-K (DF-K) V^{-1/2}-dressed three-index
+    /// tensor: `"f64"` or `"f32"` (strict). Both store the packed μν
+    /// triangle and contract K in f64; `"f64"` gives K bit-for-bit the f64
+    /// square tensor of the pre-2026-11-08 default, `"f32"` rounds each stored
+    /// element once (a quarter of the square tensor). Omitted = the library
+    /// default (`ferric_scf::df_k::RiKPrecision::DEFAULT`). Ignored without
+    /// RI-K.
+    pub ri_k_precision: Option<String>,
     /// Exchange builder: "direct" (default), "link", or "cosx" (seminumerical
     /// COSX exchange). Honoured by RHF, UHF and ROHF. Ignored with a warning
     /// when DF-J/DF-K is active, when the functional uses no exact exchange, or
@@ -2987,6 +2995,7 @@ impl Default for ScfCfg {
             eri_precision: None,
             jk_storage: None,
             ri_j_precision: None,
+            ri_k_precision: None,
             k_builder: None,
             screening: None,
             cosx_grid: None,
@@ -3425,6 +3434,16 @@ impl ScfCfg {
             .transpose()
             .map_err(|e| format!("[scf] {e}"))
     }
+    /// The `[scf] ri_k_precision` value, strictly parsed (`None` = default).
+    pub fn ri_k_precision_resolved(
+        &self,
+    ) -> Result<Option<ferric_scf::df_k::RiKPrecision>, String> {
+        self.ri_k_precision
+            .as_deref()
+            .map(ferric_scf::df_k::RiKPrecision::parse_config_str)
+            .transpose()
+            .map_err(|e| format!("[scf] {e}"))
+    }
     /// Post-parse validation of the `[scf]` string knobs whose resolution is
     /// otherwise deferred to the point of use. Called from [`load_config`] so
     /// every entry point (CLI and `ferric-batch`) fails before any integral is
@@ -3441,6 +3460,7 @@ impl ScfCfg {
         }
         self.jk_storage_policy()?;
         self.ri_j_precision_resolved()?;
+        self.ri_k_precision_resolved()?;
         for (i, rung) in self.ladder.iter().enumerate() {
             rung.use_sad_guess()
                 .map_err(|e| format!("[[scf.ladder]] rung {i}: {e}"))?;
@@ -8707,6 +8727,22 @@ json = [1, 2]
 
     /// `[scf] jk_storage` is strict: the four spellings parse, anything else
     /// errors at load and lists them.
+    #[test]
+    fn scf_ri_k_precision_is_strict() {
+        assert_eq!(scf_cfg("").ri_k_precision_resolved().unwrap(), None);
+        for v in ["f32", "f64"] {
+            let cfg = scf_cfg(&format!("ri_k_precision = \"{v}\""));
+            assert_eq!(cfg.ri_k_precision_resolved().unwrap().unwrap().as_str(), v);
+        }
+        let err = scf_cfg("ri_k_precision = \"single\"")
+            .validate()
+            .unwrap_err();
+        assert!(
+            err.contains("ri_k_precision") && err.contains("\"f64\""),
+            "{err}"
+        );
+    }
+
     #[test]
     fn scf_jk_storage_is_strict() {
         assert_eq!(scf_cfg("").jk_storage_policy().unwrap(), None);

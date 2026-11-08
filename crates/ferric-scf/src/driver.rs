@@ -375,6 +375,7 @@ pub(crate) fn prepare<'a>(
             config.df_k_aux.as_deref(),
             k_mix.omega,
             ooc_budget,
+            crate::df_k::RiKPrecision::resolve(config.ri_k_precision),
         )?;
         (Some(RefCell::new(sr)), Some(RefCell::new(lr)))
     } else {

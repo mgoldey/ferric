@@ -473,6 +473,15 @@ pub struct DfJkRoute {
     /// fitted density `d_P`, so they differentiate the energy this SCF
     /// computed.
     pub ri_j_precision: crate::df_j::RiJPrecision,
+    /// Storage precision of the RI-K dressed tensor(s) (`[scf]
+    /// ri_k_precision`) the SCF's exchange was ACTUALLY built from, after any
+    /// fallback: the ω = 0 `DfK`, or the SR/LR pair of a range-separated
+    /// functional; `F64` when K was not density-fitted. The DF Hessians'
+    /// response `DfK` follows it. The analytic gradient does NOT read stored
+    /// values: it recomputes the f64 integrals, so under `F32` it is the
+    /// gradient of the f64 functional at the f32 SCF's density (the bound is in
+    /// `crate::df_k`'s module docs).
+    pub ri_k_precision: crate::df_k::RiKPrecision,
 }
 
 impl DfJkRoute {
@@ -502,8 +511,15 @@ impl DfJkRoute {
             } else {
                 crate::df_j::RiJPrecision::F64
             },
+            ri_k_precision: crate::df_k::RiKPrecision::F64,
         };
         route.is_active().then_some(route)
+    }
+
+    /// This route with the RI-K storage precision the SCF actually used.
+    pub fn with_ri_k_precision(mut self, precision: crate::df_k::RiKPrecision) -> Self {
+        self.ri_k_precision = precision;
+        self
     }
 
     /// Whether any two-electron term was density-fitted.
@@ -513,6 +529,15 @@ impl DfJkRoute {
 }
 
 impl ScfResult {
+    /// Storage precision of the RI-K dressed tensor(s) this SCF's exchange was
+    /// built from, or `None` when K was not density-fitted.
+    pub fn ri_k_precision(&self) -> Option<crate::df_k::RiKPrecision> {
+        self.df_jk
+            .as_ref()
+            .filter(|r| r.k_aux.is_some() || r.rsh_k.is_some())
+            .map(|r| r.ri_k_precision)
+    }
+
     /// Storage precision of the RI-J tensor this SCF's energy was built from,
     /// or `None` when J was not density-fitted (exact four-centre J).
     pub fn ri_j_precision(&self) -> Option<crate::df_j::RiJPrecision> {

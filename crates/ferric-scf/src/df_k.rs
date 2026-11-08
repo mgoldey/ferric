@@ -31,6 +31,55 @@
 //!
 //! Accuracy of DF-K depends critically on the auxiliary basis: use a JK-fit
 //! basis (e.g. `def2-universal-jkfit`), not an RI/MP2-fit basis.
+//!
+//! # Storage of the dressed tensor (`[scf] ri_k_precision`)
+//!
+//! `B[P,μν]` is exactly symmetric in μν (the dressing computes the lower
+//! triangle and mirrors it), and both contractions read only that triangle or
+//! can be handed it unpacked one aux chunk at a time, so on the CPU the band
+//! is held as the packed lower triangle
+//! (`ferric_integrals::three_index_source::dressed_packed`): half the square
+//! tensor at f64, a quarter at f32 ([`RiKPrecision`]). The square f64 tensor is
+//! kept when a `[gpu]` mode may build K on the device (its upload reads it);
+//! a band that does not fit in core is spilled as before.
+//!
+//! **f64** (the default) is bit-identical to the square tensor: the occupied
+//! path unpacks each `B_P` into the lower triangle of an `n × n` buffer, exactly
+//! the triangle DSYMM (`UPLO = 'U'` on the row-major data) reads, and the
+//! density path unpacks each chunk to the full square; chunks, GEMMs and the
+//! fold are those of the square tier (`tests/dfk_packed_storage.rs`).
+//!
+//! **f32 storage** (opt-in, `ri_k_precision = "f32"`): each stored element is
+//! the nearest f32 of the f64 value, `|B̂ − B| ≤ u32|B| + η` (`u32 = 2⁻²⁴`,
+//! `η = 2⁻¹⁵⁰`), widened to f64 before the same f64 GEMMs, so with
+//! `A_P = |B_P||C|`, `ε = u32 + γ_n(1+u32)`, elementwise
+//! `|K̂ − K| ≤ ((2ε + ε²) + 2γ_{n+naux·nocc}(1+ε)²)·Σ_P A_P A_Pᵀ` (tested, with
+//! a twin check against the test's own sums over the f32 values). No f64 copy
+//! is kept, so there is no ladder and no f64 exit: the SCF converges to the
+//! stationary point of the rounded-`B̂` functional `E'`, and with `D*` / `D'`
+//! the f64 / f32 minima, `E'_K(D') − E_K(D') ≤ E_f32 − E_f64 ≤ E'_K(D*) −
+//! E_K(D*)`, both sides first order in `u32` (tested on water). MEASURED (CLI,
+//! def2-SVP, def2-universal-jkfit, density_conv 1e-8): `|E_f32 − E_f64|` 2.6e-9
+//! to 9.6e-9 Ha for water (B3LYP, PBE0, CAM-B3LYP, UKS B3LYP cation) and 1.0e-8
+//! to 1.08e-7 Ha for sulfamethoxazole (same functionals, UKS triplet), same
+//! iteration counts; 2.1e-7 Ha for HF water / cc-pVDZ (wiki notes
+//! dfk-memory-2026-11-08).
+//!
+//! Why f32 is not the default: the rounding pattern is re-drawn at every
+//! geometry (an element moves by far more than its rounding when an atom moves
+//! 1e-3 Bohr), so the f32 ENERGY is not a smooth function of the geometry at the
+//! `|E_f32 − E_f64|` level. MEASURED, HF water / cc-pVDZ, h = 1e-3 Bohr: central
+//! FD of the f32 energy misses the analytic gradient by 2.0e-4 Ha/Bohr (f64:
+//! 1.3e-7), against a jitter bound `|E_f32 − E_f64|/h` = 2.1e-4. The analytic
+//! gradient (`crate::df_gradient`) recomputes the f64 integrals: it is the
+//! gradient of the f64 functional at the f32 SCF's density, 7.5e-9 Ha/Bohr from
+//! the f64 SCF's gradient there (`tests/df_jk_gradient.rs`,
+//! `hf_ri_jk_f32_gradient_*`). So f32 suits single points and analytic-gradient
+//! work; anything that differences energies across geometries (FD gradients or
+//! Hessians, energy line searches, tight scans) sees noise of `|E_f32 −
+//! E_f64|`. Removing it needs an f64 energy exit (the f64 functional evaluated
+//! once at the f32 density, which is second order in `u32`); that is not
+//! implemented.
 
 use crate::fock::KBuilder;
 use ferric_core::parallel::ParallelContext;
@@ -38,10 +87,12 @@ use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::blas_threads::{opt_in_blas_threads, with_blas_threads};
 use ferric_integrals::operator::Operator;
-use ferric_integrals::three_index_source::ThreeIndexSource;
+use ferric_integrals::three_index_source::{
+    DressedLayout, DressedRows, F32Rounding, PackedDressOutcome, ThreeIndexSource,
+};
 use ferric_integrals::threeindex::coulomb_metric_2c;
 use ndarray::linalg::general_mat_mul;
-use ndarray::{Array2, Array3};
+use ndarray::{Array2, Array3, ArrayView3};
 
 // Direct BLAS bindings for the occupied-path exchange build. OpenBLAS is already
 // linked via openblas-src; these avoid a cblas/blas-sys dep for two calls.
@@ -77,6 +128,147 @@ extern "C" {
     );
 }
 
+/// How the SCF's DF-K (RI-K) V^{-1/2}-dressed 3-index tensor is stored:
+/// `[scf] ri_k_precision` (CLI), `ri_k_precision=` (Python),
+/// `RhfConfig::ri_k_precision` (library).
+///
+/// Both values hold the tensor as the packed lower μν triangle on the CPU
+/// (`ferric_integrals::three_index_source::dressed_packed`), and K is
+/// contracted in f64 throughout (each stored row is widened to f64 and fed to
+/// the same DSYMM/DSYRK or GEMMs). Only the STORAGE precision differs:
+///
+/// * `F64` (the default): the packed f64 tensor, half the square one this
+///   builder held before 2026-11-08. K is bit-for-bit the square tensor's, so
+///   an f64 SCF reproduces the former default bit for bit.
+/// * `F32` (opt-in): one round-to-nearest f32 per stored element, a quarter of
+///   the square tensor; a first-order energy change and an energy that is not
+///   smooth in the geometry at that level (module docs, "f32 storage").
+///
+/// With a `[gpu]` mode that may build K on the device, the square f64 tensor
+/// the device upload reads is kept. A tensor that does not fit in core is
+/// spilled (packed f64 on disk) as before, whatever this says. What was used
+/// is recorded in [`crate::result::DfJkRoute::ri_k_precision`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum RiKPrecision {
+    /// One round-to-nearest f32 per stored element of the dressed tensor.
+    F32,
+    /// The f64 tensor (packed; K bit-identical to the square f64 tensor).
+    F64,
+}
+
+impl RiKPrecision {
+    /// The default for an unset precision on a CPU path.
+    pub const DEFAULT: Self = Self::F64;
+
+    /// Strict parse of the TOML / Python spelling: `"f32"` or `"f64"`.
+    pub fn parse_config_str(s: &str) -> Result<Self, FerricError> {
+        match s {
+            "f32" => Ok(Self::F32),
+            "f64" => Ok(Self::F64),
+            other => Err(FerricError::General(format!(
+                "unknown ri_k_precision {other:?} (expected \"f32\" or \"f64\")"
+            ))),
+        }
+    }
+
+    /// The TOML / Python spelling.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::F32 => "f32",
+            Self::F64 => "f64",
+        }
+    }
+
+    /// The precision an SCF requests for `requested`: an explicit value wins;
+    /// unset is [`Self::DEFAULT`], except that a `[gpu]` mode that may build K
+    /// on the device keeps the f64 tensor the device path needs.
+    pub fn resolve(requested: Option<Self>) -> Self {
+        requested.unwrap_or_else(|| {
+            if device_may_take_k() {
+                Self::F64
+            } else {
+                Self::DEFAULT
+            }
+        })
+    }
+}
+
+impl std::fmt::Display for RiKPrecision {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Could the device path build this K? Its upload reads the square in-core
+/// f64 tensor, so a packed tensor would only make it decline.
+fn device_may_take_k() -> bool {
+    #[cfg(feature = "gpu")]
+    {
+        ferric_core::gpu::settings().mode != ferric_core::gpu::GpuMode::Off
+    }
+    #[cfg(not(feature = "gpu"))]
+    {
+        false
+    }
+}
+
+const RIK_UNSET: u8 = u8::MAX;
+static DFK_F32_OVERRIDE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(RIK_UNSET);
+
+/// Force the f32/f64 storage of every DfK built from now on (`Some(true)`
+/// f32, `Some(false)` f64), whatever precision its caller passes, or return
+/// to the caller's precision (`None`). Test hook: process-wide, so tests that
+/// use it serialise.
+#[doc(hidden)]
+pub fn set_dfk_f32_for_test(on: Option<bool>) {
+    let v = match on {
+        None => RIK_UNSET,
+        Some(false) => 0,
+        Some(true) => 1,
+    };
+    DFK_F32_OVERRIDE.store(v, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// What a builder asked for `precision` stores at, after the test hook.
+fn effective_precision(precision: RiKPrecision) -> RiKPrecision {
+    match DFK_F32_OVERRIDE.load(std::sync::atomic::Ordering::SeqCst) {
+        0 => RiKPrecision::F64,
+        1 => RiKPrecision::F32,
+        _ => precision,
+    }
+}
+
+const LAYOUT_UNSET: u8 = u8::MAX;
+static DFK_SQUARE_OVERRIDE: std::sync::atomic::AtomicU8 =
+    std::sync::atomic::AtomicU8::new(LAYOUT_UNSET);
+
+/// Force the square f64 tensor (the layout before 2026-11-08) for every f64
+/// DfK built from now on (`true`), or return to the packed layout (`false`).
+/// Test hook for the bit-identity tests: process-wide, so tests that use it
+/// serialise.
+#[doc(hidden)]
+pub fn set_dfk_square_for_test(on: bool) {
+    DFK_SQUARE_OVERRIDE.store(u8::from(on), std::sync::atomic::Ordering::SeqCst);
+}
+
+fn square_forced() -> bool {
+    DFK_SQUARE_OVERRIDE.load(std::sync::atomic::Ordering::SeqCst) == 1
+}
+
+seam_flag!(
+    /// Test seam (`test-seams` feature, mutation): the f32 tier rounds the
+    /// dressed tensor toward zero instead of to nearest.
+    TRUNCATE_DFK_F32,
+    truncate_dfk_f32
+);
+seam_flag!(
+    /// Test seam (`test-seams` feature, mutation): the packed tiers' occupied
+    /// path unpacks each row's lower triangle shifted by one column within the
+    /// row (a wrong packed index map).
+    SKEW_DFK_PACKED_UNPACK,
+    skew_dfk_packed_unpack
+);
+
 /// DF-K exchange builder. Caches the V^{-1/2}-dressed 3-center source; the
 /// per-chunk repack/GEMM scratch in `build` is allocated per rayon task
 /// (O(chunk·n²), negligible against the O(chunk·n³) GEMM it feeds).
@@ -102,6 +294,9 @@ pub struct DfK<'a> {
     /// The memory budget this source was built under — also caps the K
     /// reduction band scratch via `resolve_band_bytes`.
     budget_bytes: usize,
+    /// The storage precision the dressed tensor actually has (after any
+    /// fallback): `F32` only for the packed f32 tier.
+    precision: RiKPrecision,
     /// Device-resident copy state (feature `gpu`); `Untried` until the first
     /// occupied-path build asks for it. See `crate::df_k_gpu`.
     #[cfg(feature = "gpu")]
@@ -417,13 +612,27 @@ impl<'a> DfK<'a> {
     /// Computes V^{-1/2} = U · diag(λ^{-1/2}) · U^T from the symmetric eigendecomp
     /// of the (P|Q) Coulomb metric, then forms `B[P,μ,ν] = Σ_Q V^{-1/2}_{PQ} (Q|μν)`
     /// via ThreeIndexSource::build_dressed, honouring `budget_bytes`.
+    ///
+    /// Stores the tensor at [`RiKPrecision::F64`]; [`DfK::new_with_precision`]
+    /// chooses.
     pub fn new(
         op: Operator,
         obs: &PreparedBasis,
         dfbs: &PreparedBasis,
         budget_bytes: usize,
     ) -> Result<Self, FerricError> {
-        Self::new_banded(op, obs, dfbs, budget_bytes, None)
+        Self::new_with_precision(op, obs, dfbs, budget_bytes, RiKPrecision::F64)
+    }
+
+    /// [`DfK::new`] storing the dressed tensor at `precision`.
+    pub fn new_with_precision(
+        op: Operator,
+        obs: &PreparedBasis,
+        dfbs: &PreparedBasis,
+        budget_bytes: usize,
+        precision: RiKPrecision,
+    ) -> Result<Self, FerricError> {
+        Self::new_banded_with_precision(op, obs, dfbs, budget_bytes, None, precision)
     }
 
     /// Build the DF-K cache, striping the aux band across the MPI ranks of `ctx`.
@@ -436,6 +645,18 @@ impl<'a> DfK<'a> {
         dfbs: &PreparedBasis,
         budget_bytes: usize,
         ctx: Option<&'a ParallelContext>,
+    ) -> Result<Self, FerricError> {
+        Self::new_banded_with_precision(op, obs, dfbs, budget_bytes, ctx, RiKPrecision::F64)
+    }
+
+    /// [`DfK::new_banded`] storing the dressed tensor at `precision`.
+    pub fn new_banded_with_precision(
+        op: Operator,
+        obs: &PreparedBasis,
+        dfbs: &PreparedBasis,
+        budget_bytes: usize,
+        ctx: Option<&'a ParallelContext>,
+        precision: RiKPrecision,
     ) -> Result<Self, FerricError> {
         let naux = dfbs.nbasis();
         let (p0, p1) = match ctx {
@@ -450,7 +671,15 @@ impl<'a> DfK<'a> {
         let mut raw = ThreeIndexSource::build(op, obs, dfbs, budget_bytes)?;
         let v = coulomb_metric_2c(op, dfbs)?;
         let v_inv_sqrt = v_inv_sqrt_lindep(&v)?;
-        Self::from_raw(&mut raw, dfbs, v_inv_sqrt, budget_bytes, ctx, p0, p1)
+        Self::from_raw(
+            &mut raw,
+            dfbs,
+            v_inv_sqrt,
+            budget_bytes,
+            ctx,
+            (p0, p1),
+            precision,
+        )
     }
 
     /// Same as [`DfK::new_banded`] but dresses an ALREADY-BUILT full raw
@@ -473,6 +702,19 @@ impl<'a> DfK<'a> {
         budget_bytes: usize,
         ctx: Option<&'a ParallelContext>,
     ) -> Result<Self, FerricError> {
+        Self::from_full_raw_with_precision(raw, obs, dfbs, op, budget_bytes, ctx, RiKPrecision::F64)
+    }
+
+    /// [`DfK::from_full_raw`] storing the dressed tensor at `precision`.
+    pub fn from_full_raw_with_precision(
+        raw: &mut ThreeIndexSource,
+        obs: &PreparedBasis,
+        dfbs: &PreparedBasis,
+        op: Operator,
+        budget_bytes: usize,
+        ctx: Option<&'a ParallelContext>,
+        precision: RiKPrecision,
+    ) -> Result<Self, FerricError> {
         let _ = obs;
         let v = coulomb_metric_2c(op, dfbs)?;
         let v_inv_sqrt = v_inv_sqrt_lindep(&v)?;
@@ -481,26 +723,104 @@ impl<'a> DfK<'a> {
             Some(c) => c.aux_band(naux),
             None => (0, naux),
         };
-        Self::from_raw(raw, dfbs, v_inv_sqrt, budget_bytes, ctx, p0, p1)
+        Self::from_raw(
+            raw,
+            dfbs,
+            v_inv_sqrt,
+            budget_bytes,
+            ctx,
+            (p0, p1),
+            precision,
+        )
     }
 
-    /// Shared tail of both constructors: dress `raw` into this rank's band.
+    /// Shared tail of both constructors: dress `raw` into this rank's band,
+    /// held packed at `precision` when the packed tier takes it (CPU, raw
+    /// resident, band fits), else in the square / spilled layouts.
     fn from_raw(
         raw: &mut ThreeIndexSource,
         dfbs: &PreparedBasis,
         v_inv_sqrt: Array2<f64>,
         budget_bytes: usize,
         ctx: Option<&'a ParallelContext>,
-        p0: usize,
-        p1: usize,
+        (p0, p1): (usize, usize),
+        precision: RiKPrecision,
     ) -> Result<Self, FerricError> {
         let naux = dfbs.nbasis();
+        let requested = effective_precision(precision);
         let t_st = ferric_core::timing::Stage::start("dfk:dress");
-        let dressed = if p0 == 0 && p1 == naux {
-            // Full band: identical call to the serial path (byte-identical B).
-            ThreeIndexSource::build_dressed(raw, &v_inv_sqrt, budget_bytes)?
-        } else {
-            ThreeIndexSource::build_dressed_band(raw, &v_inv_sqrt, budget_bytes, p0, p1)?
+        let mut packed = None;
+        if !device_may_take_k() && !(requested == RiKPrecision::F64 && square_forced()) {
+            let layout = match requested {
+                RiKPrecision::F32 => DressedLayout::PackedF32,
+                RiKPrecision::F64 => DressedLayout::PackedF64,
+            };
+            let rounding = if truncate_dfk_f32() {
+                F32Rounding::TowardZero
+            } else {
+                F32Rounding::Nearest
+            };
+            match ThreeIndexSource::build_dressed_band_packed(
+                raw,
+                &v_inv_sqrt,
+                budget_bytes,
+                (p0, p1),
+                layout,
+                rounding,
+            )? {
+                PackedDressOutcome::Built(src) => packed = Some((*src, requested)),
+                PackedDressOutcome::F32OutOfRange { row, col, value } => {
+                    ferric_core::gpu::stats::note_mixed_fallback(
+                        ferric_core::gpu::MixedKernel::DfkF32,
+                        ferric_core::gpu::stats::MixedFallback::F32Range,
+                    );
+                    eprintln!(
+                        "[ferric] RI-K: ri_k_precision = \"f32\" but the dressed tensor stays \
+                         f64 (B[{row}, {col}] = {value:e} is beyond the f32 range)"
+                    );
+                    if let PackedDressOutcome::Built(src) =
+                        ThreeIndexSource::build_dressed_band_packed(
+                            raw,
+                            &v_inv_sqrt,
+                            budget_bytes,
+                            (p0, p1),
+                            DressedLayout::PackedF64,
+                            rounding,
+                        )?
+                    {
+                        packed = Some((*src, RiKPrecision::F64));
+                    }
+                }
+                PackedDressOutcome::NotTaken => {}
+            }
+        } else if requested == RiKPrecision::F32 {
+            eprintln!(
+                "[ferric] RI-K: ri_k_precision = \"f32\" but the dressed tensor stays f64 \
+                 (a [gpu] mode that may build K on the device needs the f64 square tensor)"
+            );
+        }
+        let (dressed, stored) = match packed {
+            Some(p) => p,
+            None => {
+                if requested == RiKPrecision::F32 && !device_may_take_k() {
+                    ferric_core::gpu::stats::note_mixed_fallback(
+                        ferric_core::gpu::MixedKernel::DfkF32,
+                        ferric_core::gpu::stats::MixedFallback::CpuF64,
+                    );
+                    eprintln!(
+                        "[ferric] RI-K: ri_k_precision = \"f32\" but the dressed tensor stays \
+                         f64 (it is not held in memory as a packed band: the raw tensor is not \
+                         resident, or the band does not fit the budget and the pool)"
+                    );
+                }
+                let d = if p0 == 0 && p1 == naux {
+                    // Full band: identical call to the serial path (byte-identical B).
+                    ThreeIndexSource::build_dressed(raw, &v_inv_sqrt, budget_bytes)?
+                } else {
+                    ThreeIndexSource::build_dressed_band(raw, &v_inv_sqrt, budget_bytes, p0, p1)?
+                };
+                (d, RiKPrecision::F64)
+            }
         };
         // The caller owns `raw`; DfK retains only the dressed tensor. Dressing
         // is the one streaming pass over `raw`; a packed `raw` that moves on
@@ -513,9 +833,47 @@ impl<'a> DfK<'a> {
             dressed,
             ctx,
             budget_bytes,
+            precision: stored,
             #[cfg(feature = "gpu")]
             device: crate::df_k_gpu::DeviceSlot::default(),
         })
+    }
+
+    /// Bytes of the packed dressed band of `band` aux rows at `precision`
+    /// that [`DfK`] would hold in core on the CPU, or 0 when it would keep the
+    /// square tensor (a `[gpu]` mode that may build K on the device).
+    pub fn packed_band_bytes(band: usize, nao: usize, precision: RiKPrecision) -> usize {
+        let precision = effective_precision(precision);
+        if device_may_take_k() || (precision == RiKPrecision::F64 && square_forced()) {
+            return 0;
+        }
+        let layout = match precision {
+            RiKPrecision::F32 => DressedLayout::PackedF32,
+            RiKPrecision::F64 => DressedLayout::PackedF64,
+        };
+        ThreeIndexSource::dressed_band_bytes(band, nao, layout)
+    }
+
+    /// The storage precision of the dressed tensor (after any fallback).
+    pub fn precision(&self) -> RiKPrecision {
+        self.precision
+    }
+
+    /// Bytes of the dressed tensor resident in core (0 when spilled).
+    pub fn resident_tensor_bytes(&self) -> usize {
+        self.dressed.resident_tensor_bytes()
+    }
+
+    /// Is the dressed tensor held as the packed lower triangle (f64 or f32)?
+    pub fn is_packed(&self) -> bool {
+        self.dressed.dressed_packed().is_some()
+    }
+
+    /// The packed dressed band (rows band-local); `None` for the square and
+    /// spilled tiers. Test hook.
+    #[doc(hidden)]
+    pub fn dressed_rows_for_test(&self) -> Option<DressedRows<'_>> {
+        self.dressed.dressed_packed()
     }
 }
 
@@ -586,6 +944,38 @@ impl DfK<'_> {
         // below runs at BLAS3 efficiency even for small n, capped so per-task
         // scratch (3·c·n² doubles) stays modest for large n.
         let chunk = ferric_integrals::three_index_source::df_chunk_width(n);
+        let budget_bytes = self.budget_bytes;
+        // Packed tiers: the band is one resident block whose chunks are
+        // unpacked to the square one at a time (one more c·n² per worker).
+        // The chunks are the square tier's chunks (same width, from row 0 of
+        // the band), so K is the square tier's bit for bit at f64.
+        if let Some(rows) = self.dressed.dressed_packed() {
+            if matches!(rows, DressedRows::F32(_)) {
+                ferric_core::gpu::stats::note_kernel_mixed(ferric_core::gpu::MixedKernel::DfkF32);
+            }
+            let b = rows.nrows();
+            let n_chunks = b.div_ceil(chunk);
+            let workers = rayon::current_num_threads().max(1).min(n_chunks.max(1));
+            let band_bytes = crate::reduce::band_bytes_after_worker_scratch(
+                crate::reduce::resolve_band_bytes(budget_bytes),
+                4 * chunk * n * n,
+                workers,
+            );
+            crate::reduce::grouped_deterministic_sum(k, n_chunks, n, band_bytes, |ci| {
+                let q0 = ci * chunk;
+                let q1 = (q0 + chunk).min(b);
+                let mut sq = Array3::<f64>::zeros((q1 - q0, n, n));
+                for (p, mut dst) in sq.outer_iter_mut().enumerate() {
+                    let dst = dst
+                        .as_slice_mut()
+                        .ok_or_else(|| FerricError::General("DfK: non-contiguous unpack".into()))?;
+                    rows.unpack_square_into(q0 + p, dst, n);
+                }
+                density_chunk_k(n, d, sq.view())
+            })?;
+            self.reduce_k_across_ranks(k);
+            return Ok(0);
+        }
         self.dressed.for_each_block(|blk| {
             let b = blk.data.shape()[0];
             // Contract this block in rayon-parallel aux-chunks, each collapsing
@@ -616,7 +1006,7 @@ impl DfK<'_> {
             // band, so the one knob covers the whole live set.
             let workers = rayon::current_num_threads().max(1).min(n_chunks.max(1));
             let band_bytes = crate::reduce::band_bytes_after_worker_scratch(
-                crate::reduce::resolve_band_bytes(self.budget_bytes),
+                crate::reduce::resolve_band_bytes(budget_bytes),
                 3 * chunk * n * n,
                 workers,
             );
@@ -628,34 +1018,7 @@ impl DfK<'_> {
                 |ci| -> Result<Array2<f64>, FerricError> {
                     let q0 = ci * chunk;
                     let q1 = (q0 + chunk).min(b);
-                    let c = q1 - q0;
-                    let bchunk = blk.data.slice(ndarray::s![q0..q1, .., ..]);
-
-                    // Zt[μ,P,σ] = Σ_λ B[P,μ,λ] · D[λ,σ] as one (c·n, n)×(n, n)
-                    // GEMM on the (μ,P,λ)-repacked chunk, so (P,σ) comes out as
-                    // the contiguous trailing axis pair needed below.
-                    let mut bswap = Array3::<f64>::zeros((n, c, n));
-                    bswap.assign(&bchunk.permuted_axes([1, 0, 2]));
-                    let bswap_flat = bswap
-                        .into_shape_with_order((n * c, n))
-                        .map_err(|e| FerricError::General(format!("B repack reshape: {e}")))?;
-                    let mut zt = Array2::<f64>::zeros((n * c, n));
-                    general_mat_mul(1.0, &bswap_flat, d, 0.0, &mut zt);
-                    let zt_wide = zt
-                        .into_shape_with_order((n, c * n))
-                        .map_err(|e| FerricError::General(format!("Z reshape: {e}")))?;
-
-                    // K_chunk[μ,ν] = Σ_{P,σ} Zt[μ,(P,σ)] · Bt[(P,σ),ν] with
-                    // Bt[P,σ,ν] = B[P,ν,σ]: one wide (n, c·n)×(c·n, n) GEMM
-                    // instead of c separate (n,n)×(n,n) ones.
-                    let mut bt = Array3::<f64>::zeros((c, n, n));
-                    bt.assign(&bchunk.permuted_axes([0, 2, 1]));
-                    let bt_flat = bt
-                        .into_shape_with_order((c * n, n))
-                        .map_err(|e| FerricError::General(format!("Bt reshape: {e}")))?;
-                    let mut kc = Array2::<f64>::zeros((n, n));
-                    general_mat_mul(1.0, &zt_wide, &bt_flat, 0.0, &mut kc);
-                    Ok(kc)
+                    density_chunk_k(n, d, blk.data.slice(ndarray::s![q0..q1, .., ..]))
                 },
             )?;
             Ok(())
@@ -688,7 +1051,6 @@ impl DfK<'_> {
     /// as in [`build`] (the grouped ascending-chunk fold pins the fold order
     /// across thread counts; the outer-product `M Mᵀ` is symmetric by
     /// construction).
-    #[allow(clippy::manual_c_str_literals)] // b"R\0" byte literals match dsymm_'s *const u8 args; c".." would be *const i8
     fn build_from_occ_impl(
         &mut self,
         c_occ: &Array2<f64>,
@@ -736,6 +1098,31 @@ impl DfK<'_> {
         // `build`, but the half-transform scratch scales with nocc, not n, so the
         // trailing GEMM operand is (c·nocc) wide.
         let chunk = ferric_integrals::three_index_source::df_chunk_width(n);
+        let budget_bytes = self.budget_bytes;
+        // Packed tiers: the band is one resident block; each P is unpacked into
+        // the lower triangle of one n×n buffer per task (the triangle DSYMM
+        // reads), so the chunks, their GEMMs and the fold are the square
+        // tier's, bit for bit at f64.
+        if let Some(rows) = self.dressed.dressed_packed() {
+            if matches!(rows, DressedRows::F32(_)) {
+                ferric_core::gpu::stats::note_kernel_mixed(ferric_core::gpu::MixedKernel::DfkF32);
+            }
+            let b = rows.nrows();
+            let n_chunks = b.div_ceil(chunk);
+            let workers = rayon::current_num_threads().max(1).min(n_chunks.max(1));
+            let band_bytes = crate::reduce::band_bytes_after_worker_scratch(
+                crate::reduce::resolve_band_bytes(budget_bytes),
+                n * chunk * nocc + n * n,
+                workers,
+            );
+            crate::reduce::grouped_deterministic_sum(k, n_chunks, n, band_bytes, |ci| {
+                let q0 = ci * chunk;
+                let q1 = (q0 + chunk).min(b);
+                occ_chunk_k(n, c_occ, OccChunk::Packed(rows, q0, q1))
+            })?;
+            self.reduce_k_across_ranks(k);
+            return Ok(0);
+        }
         self.dressed.for_each_block(|blk| {
             let b = blk.data.shape()[0];
             let n_chunks = b.div_ceil(chunk);
@@ -746,7 +1133,7 @@ impl DfK<'_> {
             // collected partial and is already covered by `band_width`.
             let workers = rayon::current_num_threads().max(1).min(n_chunks.max(1));
             let band_bytes = crate::reduce::band_bytes_after_worker_scratch(
-                crate::reduce::resolve_band_bytes(self.budget_bytes),
+                crate::reduce::resolve_band_bytes(budget_bytes),
                 n * chunk * nocc,
                 workers,
             );
@@ -758,109 +1145,11 @@ impl DfK<'_> {
                 |ci| -> Result<Array2<f64>, FerricError> {
                     let q0 = ci * chunk;
                     let q1 = (q0 + chunk).min(b);
-                    let c = q1 - q0;
-                    let bchunk = blk.data.slice(ndarray::s![q0..q1, .., ..]);
-
-                    // Per-aux-row, repack-free (the shape PySCF uses —
-                    // nr_ao2mo.c:1016 / df_jk.py:371): B[P] is already a
-                    // contiguous, SYMMETRIC (n,n) slice, so
-                    //   M_P[μ,i] = Σ_λ B[P,μ,λ]·C[λ,i]   via DSYMM
-                    //   K      += Σ_P M_P · M_Pᵀ         via DSYRK
-                    // needs no permuted copy at all. The previous formulation
-                    // repacked B to [μ,P,λ] so both contractions could be single
-                    // wide GEMMs; measured at benzene/aTZ (n=414, nocc=21) that
-                    // repack was 35% of this function's entire runtime — the
-                    // density path amortizes it over an n-wide contraction, but
-                    // the occ path's is only nocc-wide, so it cannot. Dropping
-                    // the repack and taking both symmetries measured 147→66.5 ms
-                    // per build at benzene/aTZ (2.2x), lifting this path from 55
-                    // to 121 GFLOP/s (benchmarks/harness/examples/dfk_mwe.rs).
-                    //
-                    // BLAS layout: ndarray is row-major, BLAS is column-major, so
-                    // a row-major (r,c) buffer is the Fortran (c,r) matrix.
-                    //  - DSYMM with SIDE='R' computes the Fortran (nocc,n)
-                    //    product Cᵀ·B, which IS the row-major (n,nocc) M we want.
-                    //    B symmetric ⇒ UPLO is immaterial to the result.
-                    //  - DSYRK with TRANS='T' on the Fortran (nocc,n) view of M
-                    //    gives Mᵀ_F·M_F = the row-major M·Mᵀ. UPLO='L' fills the
-                    //    Fortran lower triangle = the row-major UPPER triangle,
-                    //    so the mirror below copies upper→lower. (Getting that
-                    //    direction backwards yields a silently wrong K — it is
-                    //    covered by dfk_occ_symmetry_matches_reference.)
-                    let ni = n as i32;
-                    let no = nocc as i32;
-                    let one = 1.0f64;
-                    let zero = 0.0f64;
-                    // Half-transform every P of this chunk into one wide
-                    // (n, c·nocc) buffer, then reduce with a SINGLE
-                    // DSYRK of k = c·nocc. Accumulating one rank-nocc DSYRK per P
-                    // instead (beta=1) is the obvious variant but is measurably
-                    // LESS accurate: on water/cc-pVDZ it moved the converged SCF
-                    // energy 1.6e-8 off the density path, versus 4e-10 for a wide
-                    // reduction, because a sequential f64 sum over c updates lacks
-                    // the blocking BLAS applies along a long k axis.
-                    // W[μ, (P,i)] row-major (n, c·nocc): M_P occupies COLUMNS
-                    // [p·nocc, (p+1)·nocc), so each DSYMM writes a strided
-                    // sub-block (ldc = c·nocc, column offset p·nocc) — not a
-                    // contiguous row range.
-                    let ldw = (c * nocc) as i32;
-                    let mut m_chunk = Array2::<f64>::zeros((n, c * nocc));
-                    for p in 0..c {
-                        let bp = bchunk.slice(ndarray::s![p, .., ..]);
-                        // `blk.data` is standard-layout, so this row slice is
-                        // contiguous; `to_slice` therefore never falls back.
-                        let bp_slice = bp.to_slice().ok_or_else(|| {
-                            FerricError::General("DfK occ: non-contiguous B row".into())
-                        })?;
-                        // M_P as the (nocc, n)-Fortran block at column offset
-                        // p·nocc of W.
-                        let off = p * nocc;
-                        // SAFETY: dimensions match the buffers above; the
-                        // strided (nocc, n) write at column offset p·nocc with
-                        // ldc = c·nocc stays inside the (n, c·nocc) buffer.
-                        unsafe {
-                            dsymm_(
-                                b"R\0".as_ptr(),
-                                b"U\0".as_ptr(),
-                                &no,
-                                &ni,
-                                &one,
-                                bp_slice.as_ptr(),
-                                &ni,
-                                c_occ.as_ptr(),
-                                &no,
-                                &zero,
-                                m_chunk.as_mut_ptr().add(off),
-                                &ldw,
-                            );
-                        }
-                    }
-                    let mut kc = Array2::<f64>::zeros((n, n));
-                    let k_dim = (c * nocc) as i32;
-                    // SAFETY: m_chunk is (n, c·nocc) row-major = Fortran
-                    // (c·nocc, n) with lda = c·nocc; kc is (n, n). TRANS='T'
-                    // gives W_Fᵀ·W_F = the row-major W·Wᵀ = Σ_P M_P·M_Pᵀ.
-                    unsafe {
-                        dsyrk_(
-                            b"L\0".as_ptr(),
-                            b"T\0".as_ptr(),
-                            &ni,
-                            &k_dim,
-                            &one,
-                            m_chunk.as_ptr(),
-                            &ldw,
-                            &zero,
-                            kc.as_mut_ptr(),
-                            &ni,
-                        );
-                    }
-                    // DSYRK wrote only one triangle (see the layout note above).
-                    for i in 0..n {
-                        for j in (i + 1)..n {
-                            kc[[j, i]] = kc[[i, j]];
-                        }
-                    }
-                    Ok(kc)
+                    occ_chunk_k(
+                        n,
+                        c_occ,
+                        OccChunk::Square(blk.data.slice(ndarray::s![q0..q1, .., ..])),
+                    )
                 },
             )?;
             Ok(())
@@ -892,6 +1181,186 @@ impl DfK<'_> {
         #[cfg(not(feature = "mpi"))]
         let _ = k;
     }
+}
+
+/// One aux chunk's density-path K partial: `Σ_{P∈chunk} B_P D B_Pᵀ` as two
+/// wide GEMMs on repacked operands ([`DfK::build`](KBuilder::build)).
+fn density_chunk_k(
+    n: usize,
+    d: &Array2<f64>,
+    bchunk: ArrayView3<'_, f64>,
+) -> Result<Array2<f64>, FerricError> {
+    let c = bchunk.shape()[0];
+    // Zt[μ,P,σ] = Σ_λ B[P,μ,λ] · D[λ,σ] as one (c·n, n)×(n, n)
+    // GEMM on the (μ,P,λ)-repacked chunk, so (P,σ) comes out as
+    // the contiguous trailing axis pair needed below.
+    let mut bswap = Array3::<f64>::zeros((n, c, n));
+    bswap.assign(&bchunk.permuted_axes([1, 0, 2]));
+    let bswap_flat = bswap
+        .into_shape_with_order((n * c, n))
+        .map_err(|e| FerricError::General(format!("B repack reshape: {e}")))?;
+    let mut zt = Array2::<f64>::zeros((n * c, n));
+    general_mat_mul(1.0, &bswap_flat, d, 0.0, &mut zt);
+    let zt_wide = zt
+        .into_shape_with_order((n, c * n))
+        .map_err(|e| FerricError::General(format!("Z reshape: {e}")))?;
+
+    // K_chunk[μ,ν] = Σ_{P,σ} Zt[μ,(P,σ)] · Bt[(P,σ),ν] with
+    // Bt[P,σ,ν] = B[P,ν,σ]: one wide (n, c·n)×(c·n, n) GEMM
+    // instead of c separate (n,n)×(n,n) ones.
+    let mut bt = Array3::<f64>::zeros((c, n, n));
+    bt.assign(&bchunk.permuted_axes([0, 2, 1]));
+    let bt_flat = bt
+        .into_shape_with_order((c * n, n))
+        .map_err(|e| FerricError::General(format!("Bt reshape: {e}")))?;
+    let mut kc = Array2::<f64>::zeros((n, n));
+    general_mat_mul(1.0, &zt_wide, &bt_flat, 0.0, &mut kc);
+    Ok(kc)
+}
+
+/// Where an occupied-path chunk's `B_P` come from.
+enum OccChunk<'a> {
+    /// `(c, n, n)` square rows (in-core square tier or a streamed block).
+    Square(ArrayView3<'a, f64>),
+    /// Rows `[q0, q1)` of a packed band (f64 or f32), unpacked per P.
+    Packed(DressedRows<'a>, usize, usize),
+}
+
+/// One aux chunk's occupied-path K partial `Σ_{P∈chunk} M_P M_Pᵀ`,
+/// `M_P = B_P C_occ` ([`DfK::build_from_occ`](KBuilder::build_from_occ)).
+#[allow(clippy::manual_c_str_literals)] // b"R\0" byte literals match dsymm_'s *const u8 args; c".." would be *const i8
+fn occ_chunk_k(
+    n: usize,
+    c_occ: &Array2<f64>,
+    src: OccChunk<'_>,
+) -> Result<Array2<f64>, FerricError> {
+    let nocc = c_occ.ncols();
+    let c = match &src {
+        OccChunk::Square(v) => v.shape()[0],
+        OccChunk::Packed(_, q0, q1) => q1 - q0,
+    };
+    // Per-aux-row, repack-free (the shape PySCF uses —
+    // nr_ao2mo.c:1016 / df_jk.py:371): B[P] is already a
+    // contiguous, SYMMETRIC (n,n) slice, so
+    //   M_P[μ,i] = Σ_λ B[P,μ,λ]·C[λ,i]   via DSYMM
+    //   K      += Σ_P M_P · M_Pᵀ         via DSYRK
+    // needs no permuted copy at all. The previous formulation
+    // repacked B to [μ,P,λ] so both contractions could be single
+    // wide GEMMs; measured at benzene/aTZ (n=414, nocc=21) that
+    // repack was 35% of this function's entire runtime — the
+    // density path amortizes it over an n-wide contraction, but
+    // the occ path's is only nocc-wide, so it cannot. Dropping
+    // the repack and taking both symmetries measured 147→66.5 ms
+    // per build at benzene/aTZ (2.2x), lifting this path from 55
+    // to 121 GFLOP/s (benchmarks/harness/examples/dfk_mwe.rs).
+    //
+    // BLAS layout: ndarray is row-major, BLAS is column-major, so
+    // a row-major (r,c) buffer is the Fortran (c,r) matrix.
+    //  - DSYMM with SIDE='R' computes the Fortran (nocc,n)
+    //    product Cᵀ·B, which IS the row-major (n,nocc) M we want.
+    //    B symmetric ⇒ UPLO is immaterial to the result. UPLO='U'
+    //    reads the Fortran upper triangle = the row-major LOWER
+    //    triangle, which is exactly what a packed row holds: the
+    //    packed tiers unpack only that triangle.
+    //  - DSYRK with TRANS='T' on the Fortran (nocc,n) view of M
+    //    gives Mᵀ_F·M_F = the row-major M·Mᵀ. UPLO='L' fills the
+    //    Fortran lower triangle = the row-major UPPER triangle,
+    //    so the mirror below copies upper→lower. (Getting that
+    //    direction backwards yields a silently wrong K — it is
+    //    covered by dfk_occ_symmetry_matches_reference.)
+    let ni = n as i32;
+    let no = nocc as i32;
+    let one = 1.0f64;
+    let zero = 0.0f64;
+    // Half-transform every P of this chunk into one wide
+    // (n, c·nocc) buffer, then reduce with a SINGLE
+    // DSYRK of k = c·nocc. Accumulating one rank-nocc DSYRK per P
+    // instead (beta=1) is the obvious variant but is measurably
+    // LESS accurate: on water/cc-pVDZ it moved the converged SCF
+    // energy 1.6e-8 off the density path, versus 4e-10 for a wide
+    // reduction, because a sequential f64 sum over c updates lacks
+    // the blocking BLAS applies along a long k axis.
+    // W[μ, (P,i)] row-major (n, c·nocc): M_P occupies COLUMNS
+    // [p·nocc, (p+1)·nocc), so each DSYMM writes a strided
+    // sub-block (ldc = c·nocc, column offset p·nocc) — not a
+    // contiguous row range.
+    let ldw = (c * nocc) as i32;
+    let mut m_chunk = Array2::<f64>::zeros((n, c * nocc));
+    // The packed tiers' unpack buffer: only its lower triangle is written
+    // (and read, by DSYMM); the upper stays zero.
+    let mut unpacked = match &src {
+        OccChunk::Square(_) => Vec::new(),
+        OccChunk::Packed(..) => vec![0.0f64; n * n],
+    };
+    for p in 0..c {
+        let bp_slice: &[f64] = match &src {
+            OccChunk::Square(v) => {
+                // `blk.data` is standard-layout, so this row slice is
+                // contiguous; `to_slice` therefore never falls back.
+                v.slice_move(ndarray::s![p, .., ..])
+                    .to_slice()
+                    .ok_or_else(|| FerricError::General("DfK occ: non-contiguous B row".into()))?
+            }
+            OccChunk::Packed(rows, q0, _) => {
+                rows.unpack_lower_into(q0 + p, &mut unpacked, n);
+                if skew_dfk_packed_unpack() && n > 1 {
+                    // Mutation: every lower-triangle row read one column late.
+                    for mu in 1..n {
+                        unpacked.copy_within(mu * n..mu * n + mu, mu * n + 1);
+                    }
+                }
+                &unpacked
+            }
+        };
+        // M_P as the (nocc, n)-Fortran block at column offset
+        // p·nocc of W.
+        let off = p * nocc;
+        // SAFETY: dimensions match the buffers above; the
+        // strided (nocc, n) write at column offset p·nocc with
+        // ldc = c·nocc stays inside the (n, c·nocc) buffer.
+        unsafe {
+            dsymm_(
+                b"R\0".as_ptr(),
+                b"U\0".as_ptr(),
+                &no,
+                &ni,
+                &one,
+                bp_slice.as_ptr(),
+                &ni,
+                c_occ.as_ptr(),
+                &no,
+                &zero,
+                m_chunk.as_mut_ptr().add(off),
+                &ldw,
+            );
+        }
+    }
+    let mut kc = Array2::<f64>::zeros((n, n));
+    let k_dim = (c * nocc) as i32;
+    // SAFETY: m_chunk is (n, c·nocc) row-major = Fortran
+    // (c·nocc, n) with lda = c·nocc; kc is (n, n). TRANS='T'
+    // gives W_Fᵀ·W_F = the row-major W·Wᵀ = Σ_P M_P·M_Pᵀ.
+    unsafe {
+        dsyrk_(
+            b"L\0".as_ptr(),
+            b"T\0".as_ptr(),
+            &ni,
+            &k_dim,
+            &one,
+            m_chunk.as_ptr(),
+            &ldw,
+            &zero,
+            kc.as_mut_ptr(),
+            &ni,
+        );
+    }
+    // DSYRK wrote only one triangle (see the layout note above).
+    for i in 0..n {
+        for j in (i + 1)..n {
+            kc[[j, i]] = kc[[i, j]];
+        }
+    }
+    Ok(kc)
 }
 
 impl KBuilder for DfK<'_> {

@@ -765,6 +765,11 @@ pub fn run(args: Vec<String>) {
         // RIJCOSX: `k_builder = "cosx"` replaces RI-K, so the RI-K default
         // is not applied under it (an explicit `df_k_aux` next to COSX is
         // refused by the SCF as a conflict).
+        // Validated in `load_config`; `None` = the library default.
+        ri_k_precision: cfg.scf.ri_k_precision_resolved().unwrap_or_else(|e| {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }),
         df_k_aux: cfg
             .scf
             .df_k_aux_resolved()
@@ -913,6 +918,8 @@ pub fn run(args: Vec<String>) {
                 "ri_j_precision_resolved": rhf_config.resolved_ri_j_precision().precision.as_str(),
                 "ri_j_precision_source": rhf_config.resolved_ri_j_precision().source.as_str(),
                 "ri_j_task": rhf_config.ri_j_task.as_str(),
+                // As requested (`null` = default).
+                "ri_k_precision": rhf_config.ri_k_precision.map(|p| p.as_str()),
                 // The EFFECTIVE J/K route (what the SCF builds), not the
                 // raw `[scf] jk` key: rs-mp2-rpa with no `jk` is "rijk", and
                 // a `k_builder` that density fitting overrides is null.

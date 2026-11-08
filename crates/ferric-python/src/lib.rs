@@ -1002,6 +1002,13 @@ impl PyRhfResult {
     fn ri_j_precision(&self) -> Option<&'static str> {
         self.scf_data.ri_j_precision().map(|p| p.as_str())
     }
+    /// Storage precision of the RI-K dressed tensor the SCF actually used:
+    /// `"f64"` (the default) or `"f32"`, or `None` when K was not
+    /// density-fitted.
+    #[getter]
+    fn ri_k_precision(&self) -> Option<&'static str> {
+        self.scf_data.ri_k_precision().map(|p| p.as_str())
+    }
     #[getter]
     fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
         certificate_dict(py, &self.certificate_data)
@@ -1197,6 +1204,11 @@ fn warn_rhf_not_converged(py: Python<'_>, r: &ferric_scf::result::ScfResult, con
 ///                   `[scf] ri_j_precision`; drivers with more than one
 ///                   iterative stage spell it `scf_ri_j_precision`. The
 ///                   geometry/frequency drivers default to "f64".
+///   ri_k_precision  storage of the RI-K dressed three-index tensor: "f64" or
+///                   "f32" (strict; None = "f64"). Both keep the
+///                   packed triangle and contract K in f64; "f64" is bit-for-bit
+///                   the former square f64 tensor, "f32" rounds each stored
+///                   element once. Same as the CLI `[scf] ri_k_precision`.
 /// External perturbation:
 ///   point_charges   list of (q, x, y, z) classical point charges (Hartree
 ///                   atomic units; coordinates in Bohr) added to the one-electron
@@ -1257,11 +1269,19 @@ fn warn_rhf_not_converged(py: Python<'_>, r: &ferric_scf::result::ScfResult, con
 ///                   from the triplet eigenvector. Stretched geometries are
 ///                   routinely internally stable and externally unstable
 ///                   (water at r(OH) = 2.0 Å / 6-31G: +1.97e-2 vs −3.07e-1).
+/// Parse the `ri_k_precision` kwarg (strict: `"f32"` or `"f64"`; `None` =
+/// the library default, `ferric_scf::df_k::RiKPrecision::DEFAULT`).
+fn parse_ri_k_precision(s: Option<&str>) -> PyResult<Option<ferric_scf::df_k::RiKPrecision>> {
+    s.map(ferric_scf::df_k::RiKPrecision::parse_config_str)
+        .transpose()
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
+}
+
 #[pyfunction]
 #[pyo3(signature = (
     mol, basis_set,
     max_iter=None, energy_conv=None, density_conv=None, diis_size=None,
-    integral_thresh=None, k_builder=None, df_j_aux=None, df_k_aux=None,
+    integral_thresh=None, k_builder=None, df_j_aux=None, df_k_aux=None, ri_k_precision=None,
     level_shift=None, mom_after_iter=None,
     guess=None, diis=None, smearing_sigma=None, soscf=None,
     point_charges=None, external_field=None, smeared_charges=None,
@@ -1285,6 +1305,7 @@ fn run_rhf(
     k_builder: Option<&str>,
     df_j_aux: Option<&str>,
     df_k_aux: Option<&str>,
+    ri_k_precision: Option<&str>,
     level_shift: Option<f64>,
     mom_after_iter: Option<usize>,
     guess: Option<&str>,
@@ -1342,6 +1363,7 @@ fn run_rhf(
         df_j_aux: df_j_aux.map(ferric_scf::rhf::normalize_df_aux),
         df_k_aux: df_k_aux.map(ferric_scf::rhf::normalize_df_aux),
         ri_j_precision: parse_ri_j_precision(ri_j_precision)?,
+        ri_k_precision: parse_ri_k_precision(ri_k_precision)?,
         level_shift: level_shift.unwrap_or(0.0),
         mom_after_iter: mom_after_iter.unwrap_or(0),
         diis_flavor: parse_diis_flavor(diis)?,
@@ -3533,7 +3555,7 @@ impl PyUhfResult {
 #[pyo3(signature = (
     mol, basis_set,
     max_iter=None, energy_conv=None, density_conv=None, diis_size=None,
-    integral_thresh=None, k_builder=None, df_j_aux=None, df_k_aux=None,
+    integral_thresh=None, k_builder=None, df_j_aux=None, df_k_aux=None, ri_k_precision=None,
     level_shift=None, mom_after_iter=None,
     point_charges=None, external_field=None, memory_budget_gb=None,
     guess=None, stability_descent=None,
@@ -3553,6 +3575,7 @@ fn run_uhf(
     k_builder: Option<&str>,
     df_j_aux: Option<&str>,
     df_k_aux: Option<&str>,
+    ri_k_precision: Option<&str>,
     level_shift: Option<f64>,
     mom_after_iter: Option<usize>,
     point_charges: Option<Vec<(f64, f64, f64, f64)>>,
@@ -3603,6 +3626,7 @@ fn run_uhf(
         df_j_aux: df_j_aux.map(ferric_scf::rhf::normalize_df_aux),
         df_k_aux: df_k_aux.map(ferric_scf::rhf::normalize_df_aux),
         ri_j_precision: parse_ri_j_precision(ri_j_precision)?,
+        ri_k_precision: parse_ri_k_precision(ri_k_precision)?,
         level_shift: level_shift.unwrap_or(0.0),
         mom_after_iter: mom_after_iter.unwrap_or(0),
         external_potential: build_external_potential(point_charges, external_field),
@@ -3662,7 +3686,7 @@ fn run_uhf(
 #[pyo3(signature = (
     mol, basis_set,
     max_iter=None, energy_conv=None, density_conv=None, diis_size=None,
-    integral_thresh=None, k_builder=None, df_j_aux=None, df_k_aux=None,
+    integral_thresh=None, k_builder=None, df_j_aux=None, df_k_aux=None, ri_k_precision=None,
     level_shift=None, mom_after_iter=None,
     point_charges=None, external_field=None, memory_budget_gb=None, fock_hook=None,
     guess_basis=None, guess_projection=None, ri_j_precision=None,
@@ -3680,6 +3704,7 @@ fn run_rohf(
     k_builder: Option<&str>,
     df_j_aux: Option<&str>,
     df_k_aux: Option<&str>,
+    ri_k_precision: Option<&str>,
     level_shift: Option<f64>,
     mom_after_iter: Option<usize>,
     point_charges: Option<Vec<(f64, f64, f64, f64)>>,
@@ -3708,6 +3733,7 @@ fn run_rohf(
         df_j_aux: df_j_aux.map(ferric_scf::rhf::normalize_df_aux),
         df_k_aux: df_k_aux.map(ferric_scf::rhf::normalize_df_aux),
         ri_j_precision: parse_ri_j_precision(ri_j_precision)?,
+        ri_k_precision: parse_ri_k_precision(ri_k_precision)?,
         level_shift: level_shift.unwrap_or(0.0),
         mom_after_iter: mom_after_iter.unwrap_or(0),
         external_potential: build_external_potential(point_charges, external_field),
@@ -4092,7 +4118,7 @@ fn cdft_hamiltonian_key(emol: &Molecule, config: &RhfConfig) -> String {
     mol, basis_set, constraints,
     functional=None, lambda_tol=None, max_outer=None, stability_descent=None,
     max_iter=None, energy_conv=None, density_conv=None, diis_size=None,
-    integral_thresh=None, k_builder=None, df_j_aux=None, df_k_aux=None,
+    integral_thresh=None, k_builder=None, df_j_aux=None, df_k_aux=None, scf_ri_k_precision=None,
     level_shift=None, mom_after_iter=None,
     point_charges=None, external_field=None, memory_budget_gb=None,
     guess=None, grid_radial=None, grid_angular=None,
@@ -4116,6 +4142,7 @@ fn run_cdft(
     k_builder: Option<&str>,
     df_j_aux: Option<&str>,
     df_k_aux: Option<&str>,
+    scf_ri_k_precision: Option<&str>,
     level_shift: Option<f64>,
     mom_after_iter: Option<usize>,
     point_charges: Option<Vec<(f64, f64, f64, f64)>>,
@@ -4293,6 +4320,7 @@ fn run_cdft(
         df_j_aux: df_j_aux.map(ferric_scf::rhf::normalize_df_aux),
         df_k_aux: df_k_aux.map(ferric_scf::rhf::normalize_df_aux),
         ri_j_precision: parse_ri_j_precision(scf_ri_j_precision)?,
+        ri_k_precision: parse_ri_k_precision(scf_ri_k_precision)?,
         level_shift: level_shift.unwrap_or(defaults.level_shift),
         mom_after_iter: mom_after_iter.unwrap_or(defaults.mom_after_iter),
         external_potential: build_external_potential(point_charges, external_field),
@@ -4903,7 +4931,7 @@ impl PyFrequencyResult {
     mol, basis_name, reference=None, xc=None, delta=None, multiplicity=None,
     point_charges=None, external_field=None, hessian="auto", dispersion=None,
     max_iter=None, energy_conv=None, density_conv=None,
-    df_j_aux=None, df_k_aux=None,
+    df_j_aux=None, df_k_aux=None, scf_ri_k_precision=None,
     scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None,
     scf_warm_start=None, scf_ri_j_precision=None,
 ))]
@@ -4925,6 +4953,7 @@ fn run_frequencies(
     density_conv: Option<f64>,
     df_j_aux: Option<&str>,
     df_k_aux: Option<&str>,
+    scf_ri_k_precision: Option<&str>,
     scf_max_iter: Option<usize>,
     scf_energy_conv: Option<f64>,
     scf_density_conv: Option<f64>,
@@ -4999,6 +5028,7 @@ fn run_frequencies(
     scf_cfg.df_j_aux = df_j_aux.map(ferric_scf::rhf::normalize_df_aux);
     scf_cfg.df_k_aux = df_k_aux.map(ferric_scf::rhf::normalize_df_aux);
     geometry_task_scf(&mut scf_cfg, scf_ri_j_precision)?;
+    scf_cfg.ri_k_precision = parse_ri_k_precision(scf_ri_k_precision)?;
     let mut fcfg = FrequencyConfig {
         reference: refr,
         hessian: HessianMethod::parse_config_str(hessian)
@@ -9756,6 +9786,13 @@ impl PyDftResult {
     fn ri_j_precision(&self) -> Option<&'static str> {
         self.scf_data.ri_j_precision().map(|p| p.as_str())
     }
+    /// Storage precision of the RI-K dressed tensor the SCF actually used:
+    /// `"f64"` (the default) or `"f32"`, or `None` when K was not
+    /// density-fitted.
+    #[getter]
+    fn ri_k_precision(&self) -> Option<&'static str> {
+        self.scf_data.ri_k_precision().map(|p| p.as_str())
+    }
     #[getter]
     fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
         let c = stamped_scf_certificate(&self.xc_mol, &self.scf_data, &self.scf_config);
@@ -10024,7 +10061,7 @@ fn run_double_hybrid(
     max_iter=None, energy_conv=None, density_conv=None,
     level_shift=None, mom_after_iter=None,
     point_charges=None, external_field=None, memory_budget_gb=None,
-    dispersion=None, df_j_aux=None, df_k_aux=None,
+    dispersion=None, df_j_aux=None, df_k_aux=None, ri_k_precision=None,
     grid_radial=None, grid_angular=None, grid_prune=None,
     cosx_grid=None, cosx_final_pass=None, cosx_final_grid=None, cosx_overlap_fit=None,
     symmetry=false, irrep_nelec=None, fock_hook=None,
@@ -10049,6 +10086,7 @@ fn run_dft(
     dispersion: Option<&str>,
     df_j_aux: Option<&str>,
     df_k_aux: Option<&str>,
+    ri_k_precision: Option<&str>,
     grid_radial: Option<usize>,
     grid_angular: Option<usize>,
     grid_prune: Option<&str>,
@@ -10104,6 +10142,7 @@ fn run_dft(
     // RIJCOSX: with k_builder="cosx", COSX replaces RI-K, so the RI-K
     // default is not applied (an explicit df_k_aux next to COSX is a conflict
     // the SCF refuses); RI-J stays on by default.
+    cfg.ri_k_precision = parse_ri_k_precision(ri_k_precision)?;
     cfg.df_k_aux = if k_builder == Some("cosx") && df_k_aux.is_none() {
         None
     } else {
@@ -10501,7 +10540,7 @@ fn evaluate_dispersion(
     max_iter=None, energy_conv=None, density_conv=None,
     level_shift=None, mom_after_iter=None,
     point_charges=None, external_field=None, memory_budget_gb=None,
-    dispersion=None, df_j_aux=None, df_k_aux=None,
+    dispersion=None, df_j_aux=None, df_k_aux=None, ri_k_precision=None,
     grid_radial=None, grid_angular=None, grid_prune=None,
     symmetry=false, irrep_nelec=None, guess_basis=None, guess_projection=None,
     grid_weight_cut=None, ri_j_precision=None,
@@ -10525,6 +10564,7 @@ fn run_ksdft(
     dispersion: Option<&str>,
     df_j_aux: Option<&str>,
     df_k_aux: Option<&str>,
+    ri_k_precision: Option<&str>,
     grid_radial: Option<usize>,
     grid_angular: Option<usize>,
     grid_prune: Option<&str>,
@@ -10553,6 +10593,7 @@ fn run_ksdft(
         dispersion,
         df_j_aux,
         df_k_aux,
+        ri_k_precision,
         grid_radial,
         grid_angular,
         grid_prune,

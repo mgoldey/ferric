@@ -709,6 +709,7 @@ the laddered SCF energy against a bar derived from the f64 floor by
 
 ## Known limits and negatives
 
+- **RI-K f32 storage** (`[scf] ri_k_precision = "f32"`, opt-in; the default `"f64"` is bit-identical to the former square f64 tensor): a measured error map, not Proven. Energy change against f64 at most 1.1e-7 Ha on sulfamethoxazole/def2-SVP (B3LYP, PBE0, CAM-B3LYP, UKS B3LYP), 2.1e-7 Ha for HF water/cc-pVDZ, with unchanged iteration counts; the stored values, a K bound and a variational energy sandwich are tested (`ferric-scf/tests/dfk_packed_storage.rs`). The f32 energy is not smooth in the geometry at that level (central FD at h = 1e-3 Bohr misses the analytic gradient by 2.0e-4 Ha/Bohr on HF water/cc-pVDZ, against 1.3e-7 at f64), while the analytic gradient, which recomputes f64 integrals, moves only 7.5e-9 Ha/Bohr; no f64 energy exit is implemented. See [SCF: RI-K tensor storage](../methods/scf.md#ri-k-tensor-storage).
 - **Analytic Hessians**: closed-shell RHF, UHF and ROHF only (exact J/K, basis
   up to f functions, no solvent, no polarizable embedding; ECPs for RHF, UHF and ROHF (also with RI-J and/or RI-K) and external
   potentials for RHF and UHF but not ROHF; RI-J and/or RI-K for RHF, UHF and

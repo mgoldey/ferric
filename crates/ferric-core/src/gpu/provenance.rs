@@ -34,6 +34,7 @@ pub const SCF_KERNELS: &[MixedKernel] = &[
     MixedKernel::DfkOcc,
     MixedKernel::CosxKern,
     MixedKernel::DfjF32,
+    MixedKernel::DfkF32,
 ];
 
 /// Kernels that can run inside an RI-MP2 energy (closed shell and
@@ -260,6 +261,13 @@ fn no_bound_reason(k: MixedKernel) -> &'static str {
              DfJ::f64_exit_coulomb_energy was applied); \
              per-build first-order energy error <= (u32+gamma_pair+gamma_naux)*|c|^T|B||w| \
              (ferric_scf::df_j)"
+        }
+        MixedKernel::DfkF32 => {
+            "no per-run bound is computed; each mixed call is an SCF RI-K build that read the \
+             f32-stored dressed tensor ([scf] ri_k_precision = \"f32\"; not behind the SCF \
+             ladder, no f64 exit; the analytic gradient recomputes f64 integrals). Element \
+             bound |B32 - B| <= u32|B|; measured error map on the validation page \
+             (ferric_scf::df_k)"
         }
         MixedKernel::XcVxc => {
             "no per-run bound is computed; ladder.exit_rebuilt_f64 counts the SCF exits \

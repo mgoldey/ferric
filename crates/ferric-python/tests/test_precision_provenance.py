@@ -110,11 +110,13 @@ def test_configure_precision_is_strict():
         "import ferric; ferric.configure_precision(mixed_kernels=['diis'])"
     ) == (
         '[precision] mixed_kernels: unknown mixed-precision kernel "diis" '
-        "(valid: rimp2-energy, ccsd-amplitudes, dfk-occ, cosx-kern, dfj-pack, xc-vxc, dfj-f32)"
+        "(valid: rimp2-energy, ccsd-amplitudes, dfk-occ, cosx-kern, dfj-pack, xc-vxc, dfj-f32, "
+        "dfk-f32)"
     )
     assert _refusal("import ferric; ferric.configure_precision(mixed_kernels=[])") == (
         '[precision] mixed_kernels: unknown mixed-precision kernel "" '
-        "(valid: rimp2-energy, ccsd-amplitudes, dfk-occ, cosx-kern, dfj-pack, xc-vxc, dfj-f32)"
+        "(valid: rimp2-energy, ccsd-amplitudes, dfk-occ, cosx-kern, dfj-pack, xc-vxc, dfj-f32, "
+        "dfk-f32)"
     )
     assert _refusal(
         "import ferric; ferric.configure_precision(mixed_kernels=['rimp2-energy,xc-vxc'])"

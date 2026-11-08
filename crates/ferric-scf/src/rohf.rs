@@ -855,6 +855,7 @@ fn solve_rohf_impl(
         ooc_budget,
         config.integral_thresh,
         config.resolved_ri_j_precision(),
+        crate::df_k::RiKPrecision::resolve(config.ri_k_precision),
     )?;
     // Record the builders that produced the energy (same effective names as
     // `build_df_jk` above and `driver::prepare`'s RSH pair) so the analytic
@@ -875,7 +876,17 @@ fn solve_rohf_impl(
         ooc_budget,
         df_j.as_ref()
             .map_or(crate::df_j::RiJPrecision::F64, |j| j.precision()),
-    );
+    )
+    .map(|r| {
+        // The precision the K tensor(s) were ACTUALLY stored at: the ω = 0
+        // DfK, else the SR fitter of a range-separated pair.
+        let stored = df_k
+            .as_ref()
+            .map(|k| k.precision())
+            .or_else(|| dfk_sr.as_ref().map(|k| k.borrow().precision()))
+            .unwrap_or(crate::df_k::RiKPrecision::F64);
+        r.with_ri_k_precision(stored)
+    });
     // Combined open-shell direct J+K + incremental Fock — identical scheme and
     // identical gating to `solve_uhf`; see the block comments there (and on
     // `DirectJK::build_uhf` / `build_uhf_incremental`) for the rationale and for
