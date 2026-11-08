@@ -760,6 +760,8 @@ pub fn rohf_hessian_parts_df_mutated(
                     beta: &dens.d_beta,
                     total: &dens.d_total,
                     nocc: [na, nb],
+                    k_skeleton: 1.0,
+                    k_fock: 1.0,
                 },
                 config,
                 || rohf_occupied_factors(rohf, [na, nb], [&dens.d_alpha, &dens.d_beta]),

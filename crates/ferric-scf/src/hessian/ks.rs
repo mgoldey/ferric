@@ -169,7 +169,7 @@ impl Default for KsFixedGridMutants {
     }
 }
 
-fn unsupported(what: &str, next: &str) -> FerricError {
+pub(super) fn unsupported(what: &str, next: &str) -> FerricError {
     FerricError::General(format!(
         "the analytic Kohn-Sham Hessian (fixed or moving grid) does not support {what} (not yet \
          implemented; next unit: {next}); use the finite-difference Hessian"
@@ -196,8 +196,9 @@ fn ks_refusal(
     functional_refusal(name, &xc)?;
     if rks.spin != Spin::Restricted {
         return Err(unsupported(
-            "an open-shell (UKS/ROKS) reference",
-            "spin-polarized XC kernel",
+            "an open-shell (UKS/ROKS) reference (a UKS result is differentiated by \
+             uks_moving_grid_hessian)",
+            "the ROKS Roothaan-coupled response",
         ));
     }
     let route = crate::gradient::active_df_route(rks);
@@ -210,7 +211,7 @@ fn ks_refusal(
     ecp_or_embedding_refusal(mol, prep.basis_set(), config)
 }
 
-fn ecp_or_embedding_refusal(
+pub(super) fn ecp_or_embedding_refusal(
     mol: &Molecule,
     bs: &BasisSet,
     config: &RhfConfig,
@@ -329,7 +330,10 @@ pub fn rks_moving_grid_hessian_available(
     })
 }
 
-fn functional_refusal(name: &str, xc: &ferric_dft::libxc::XcDef) -> Result<(), FerricError> {
+pub(super) fn functional_refusal(
+    name: &str,
+    xc: &ferric_dft::libxc::XcDef,
+) -> Result<(), FerricError> {
     let mix = k_mix_from_xc_def(xc);
     if xc.vv10.is_some() {
         return Err(unsupported(
@@ -373,7 +377,7 @@ fn functional_refusal(name: &str, xc: &ferric_dft::libxc::XcDef) -> Result<(), F
 /// over the default basis), so the SAME `RhfConfig` serves the SCF and the
 /// Hessian. A stated basis that differs from the recorded route is refused here
 /// with a Kohn-Sham message.
-fn checklist_config(
+pub(super) fn checklist_config(
     rks: &ScfResult,
     config: &RhfConfig,
     exx: f64,
@@ -495,7 +499,7 @@ fn resolve_k_fit(rks: &ScfResult, config: &RhfConfig, exx: f64) -> Option<(Strin
 /// SCF at 1e-11 and at the library default 1e-6). The bar is 1e-8, seven
 /// orders above that; the wrong-reference scenarios sit at 0.14 (a point charge
 /// of 0.5 the configuration lacks), 0.17 (a PBE result) and 2.0 (an HF result).
-const FOCK_CONSISTENCY_TOL: f64 = 1e-8;
+pub(super) const FOCK_CONSISTENCY_TOL: f64 = 1e-8;
 
 /// The Fock matrix rebuilt from `rks.density_r()` with the (exact or RI-J) J,
 /// (exact or RI-K) K and fixed-grid KS energy this Hessian differentiates must

@@ -68,6 +68,8 @@
 //! GGA skeleton only (`ferric_integrals::ao_grid_third`).
 
 use crate::rhf::XcBuilder;
+
+mod polarized;
 use ferric_core::basis::BasisSet;
 use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
@@ -82,6 +84,7 @@ use ferric_integrals::ao_grid::{
 use ferric_integrals::ao_grid_third::{eval_basis_third_on_points, THIRD_ORDER};
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ndarray::{s, Array1, Array2, Array3, Array4, ArrayView2, Axis};
+pub use polarized::{PolarizedKs, PolarizedXcResponse, SpinMutants};
 use rayon::prelude::*;
 
 /// Grid points per batch (AO planes are `nbf × BATCH`; the Hessian-level
@@ -171,6 +174,8 @@ pub struct XcMutants {
     pub gradient_terms: f64,
     /// The moving-grid constructions (read only by the `*_moving` entry points).
     pub moving: MovingMutants,
+    /// The spin-polarized constructions (read only by [`PolarizedKs`]).
+    pub spin: SpinMutants,
 }
 
 impl Default for XcMutants {
@@ -182,6 +187,7 @@ impl Default for XcMutants {
             fock_vxc: 1.0,
             gradient_terms: 1.0,
             moving: MovingMutants::default(),
+            spin: SpinMutants::default(),
         }
     }
 }
@@ -277,6 +283,8 @@ pub enum GridMode {
 /// A frozen XC grid with its functional (closed-shell LDA or GGA, pure or
 /// global hybrid).
 pub struct FixedGridKs {
+    /// The functional's name (the spin-polarized definition is built from it).
+    name: String,
     xc: XcDef,
     /// Global-hybrid fraction of exact exchange `a` (0 for a pure functional).
     exx: f64,
@@ -382,7 +390,8 @@ struct GradPart {
 }
 
 struct Batch {
-    ao: Ao,
+    /// Shared by the two spin views of a polarized batch.
+    ao: std::sync::Arc<Ao>,
     p: Array2<f64>,
     rho: Array1<f64>,
     w: Array1<f64>,
@@ -561,6 +570,7 @@ impl FixedGridKs {
         }
         let gga = xc.funcs.iter().any(|f| f.family() != FunctionalFamily::Lda);
         Ok(FixedGridKs {
+            name: xc_name.to_string(),
             xc,
             exx: mix.sr,
             gga,
@@ -681,7 +691,7 @@ impl FixedGridKs {
             (false, Level::Third) => Level::Hess,
             (false, l) => l,
         };
-        let ao = eval_ao(geo, &self.pts[g0..g1], level)?;
+        let ao = std::sync::Arc::new(eval_ao(geo, &self.pts[g0..g1], level)?);
         let p = d.dot(&ao.chi);
         let rho = (&ao.chi * &p).sum_axis(Axis(0));
         let gdens = self.gga.then(|| Self::gradient_densities(d, &ao, &p));

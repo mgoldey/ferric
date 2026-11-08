@@ -210,6 +210,14 @@ pub use ks::{
     rks_moving_grid_hessian_available, rks_moving_grid_hessian_parts,
     rks_moving_grid_hessian_preflight,
 };
+mod uks;
+pub use uks::{
+    analytic_frequencies_uks_moving_grid, uks_moving_grid_hessian,
+    uks_moving_grid_hessian_available, uks_moving_grid_hessian_parts,
+    uks_moving_grid_hessian_preflight,
+};
+#[doc(hidden)]
+pub use uks::{uks_fock_residual, uks_hessian_parts_with, uks_response_operator};
 mod uhf_df;
 use uhf_df::{
     open_shell_two_electron, rohf_occupied_factors, uhf_hessian_parts_with, OpenShellDensities,
@@ -976,14 +984,15 @@ fn xc_refusal(reference: Reference) -> &'static str {
              moving-grid one, hessian = \"analytic-moving-grid\", which \"auto\" selects)"
         }
         Reference::Uhf => {
-            "open-shell Kohn-Sham DFT (UKS xc; no analytic spin-polarized Kohn-Sham Hessian \
-             exists: not yet implemented, next unit: spin-polarized XC kernel; UKS frequencies \
-             are central differences of the analytic UKS gradient, hessian = \"auto\" or \"fd\")"
+            "open-shell Kohn-Sham DFT (UKS xc; the UKS Hessian is the analytic moving-grid one, \
+             uks_moving_grid_hessian, hessian = \"analytic-moving-grid\", which \"auto\" selects \
+             for LDA/GGA pure or global hybrids; other functionals fall back to \"fd\")"
         }
         Reference::Rohf => {
-            "open-shell Kohn-Sham DFT (ROKS xc; no analytic spin-polarized Kohn-Sham Hessian \
-             exists: not yet implemented, next unit: spin-polarized XC kernel; ROKS frequencies \
-             are central differences of the analytic ROKS gradient, hessian = \"auto\" or \"fd\")"
+            "open-shell Kohn-Sham DFT (ROKS xc; no analytic ROKS Hessian exists: not yet \
+             implemented, next unit: the ROKS Roothaan-coupled response with the spin-polarized \
+             XC kernel; ROKS frequencies are central differences of the analytic ROKS gradient, \
+             hessian = \"auto\" or \"fd\")"
         }
     }
 }
@@ -2370,6 +2379,11 @@ struct TwoElectronBuilder<'a> {
     /// Mutation tests only (UHF): the UHF channel defects of [`UhfDfMutants`]
     /// that act inside the CPHF kernel.
     uhf_mutants: UhfDfMutants,
+    /// Spin-polarized Kohn-Sham (UKS): the spin-coupled XC kernel response and
+    /// the global-hybrid fraction `a`, so the UHF `v_σ` becomes
+    /// `J(D1_α + D1_β) − a K(D1_σ) + V1^σ_xc[D1_α, D1_β]`; `None` for every
+    /// Hartree-Fock path.
+    uks_xc: Option<(&'a UksXcResponseFn<'a>, f64)>,
 }
 
 /// RHF-only options of the CPHF `G`.
@@ -2387,6 +2401,10 @@ struct RhfG<'a> {
 
 /// The XC potential response to a symmetric AO density change.
 type XcResponseFn<'a> = dyn Fn(&Array2<f64>) -> Array2<f64> + 'a;
+
+/// The spin-coupled XC potential responses `(V1^α, V1^β)` to symmetric spin
+/// density changes `(D1_α, D1_β)`.
+type UksXcResponseFn<'a> = dyn Fn([&Array2<f64>; 2]) -> [Array2<f64>; 2] + 'a;
 
 impl<'a> TwoElectronBuilder<'a> {
     fn new(
@@ -2408,7 +2426,15 @@ impl<'a> TwoElectronBuilder<'a> {
             df_k: None,
             rhf_g: RhfG::default(),
             uhf_mutants: UhfDfMutants::default(),
+            uks_xc: None,
         })
+    }
+
+    /// Spin-polarized Kohn-Sham: add the spin-coupled XC kernel response to the
+    /// UHF `v_σ` and scale its exchange by `exx` (0 for a pure functional).
+    fn with_uks_xc_response(mut self, xc: &'a UksXcResponseFn<'a>, exx: f64) -> Self {
+        self.uks_xc = Some((xc, exx));
+        self
     }
 
     /// Add the Kohn-Sham XC kernel response to the RHF `G`, which is then
@@ -2526,8 +2552,50 @@ impl<'a> TwoElectronBuilder<'a> {
     /// UHF spin potentials `v_σ = J(D_α + D_β) − K(D_σ)` for spin densities
     /// `d = [D_α, D_β]` (PySCF `gen_response` of a UHF object, `hermi = 1`).
     fn g_uhf(&self, d: &[Array2<f64>; 2]) -> Result<[Array2<f64>; 2], FerricError> {
+        if let Some((xc, exx)) = self.uks_xc {
+            return self.g_uks(d, xc, exx);
+        }
         let (j, [ka, kb]) = self.uhf_jk(d)?;
         Ok([&j - &ka, j - &kb])
+    }
+
+    /// The UKS `v_σ = J(D1_α + D1_β) − a K(D1_σ) + V1^σ_xc`. The exact quartet
+    /// loop runs only for what the SCF did not fit; a pure functional builds
+    /// no exchange (and an exact J from the total density, one build).
+    fn g_uks(
+        &self,
+        d: &[Array2<f64>; 2],
+        xc: &UksXcResponseFn<'_>,
+        exx: f64,
+    ) -> Result<[Array2<f64>; 2], FerricError> {
+        let zero = || Array2::<f64>::zeros(d[0].dim());
+        let (mut j, mut k) = if exx == 0.0 {
+            let j = match &self.df_j {
+                Some(_) => zero(),
+                None => self.jk(&(&d[0] + &d[1]))?.0,
+            };
+            (j, [zero(), zero()])
+        } else if self.df_j.is_some() && self.df_k.is_some() {
+            (zero(), [zero(), zero()])
+        } else {
+            self.exact_spin_jk(d)?
+        };
+        if let Some(df) = &self.df_j {
+            j = self.fitted_coulomb(df, d)?;
+        }
+        if exx != 0.0 {
+            if let Some(df) = &self.df_k {
+                k = self.fitted_exchange(df, d)?;
+            }
+        }
+        let v = xc([&d[0], &d[1]]);
+        let [va, vb] = v;
+        let [ka, kb] = k;
+        let mut ga = &j + &va;
+        ga.scaled_add(-exx, &ka);
+        let mut gb = j + &vb;
+        gb.scaled_add(-exx, &kb);
+        Ok([ga, gb])
     }
 
     /// The Coulomb matrix of the TOTAL response density and the exchange matrix
@@ -2661,6 +2729,20 @@ fn ucphf_response(
     ),
     mutants: &UhfDfMutants,
 ) -> Result<ResponseTerm, FerricError> {
+    let g = TwoElectronBuilder::new(ctx, prep, bounds)?
+        .fitted(fitted.0, fitted.1, false)
+        .with_uhf_mutants(*mutants);
+    ucphf_response_with(&g, uhf, nocc, first)
+}
+
+/// [`ucphf_response`] with the caller's `G` builder (the UKS path adds the
+/// spin-coupled XC kernel response to it).
+fn ucphf_response_with(
+    g: &TwoElectronBuilder<'_>,
+    uhf: &ScfResult,
+    nocc: [usize; 2],
+    first: &FirstOrderAo,
+) -> Result<ResponseTerm, FerricError> {
     let frames = [
         MoFrame::new(uhf.mos_a(), uhf.eps_a(), nocc[0], 1.0),
         MoFrame::new(uhf.mos_b(), uhf.eps_b(), nocc[1], 1.0),
@@ -2673,14 +2755,10 @@ fn ucphf_response(
         frames[0].to_mo_all(&first.s1),
         frames[1].to_mo_all(&first.s1),
     ];
-
-    let g = TwoElectronBuilder::new(ctx, prep, bounds)?
-        .fitted(fitted.0, fitted.1, false)
-        .with_uhf_mutants(*mutants);
     let mut sols: [Vec<CphfSolution>; 2] = [Vec::new(), Vec::new()];
     for x in 0..first.s1.len() {
         let [sa, sb] = solve_ucphf_one(
-            &g,
+            g,
             &frames,
             [&h1_mo[0][x], &h1_mo[1][x]],
             [&s1_mo[0][x], &s1_mo[1][x]],

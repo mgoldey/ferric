@@ -587,14 +587,15 @@ fn roks_stays_finite_difference_and_analytic_refuses_it() {
     assert!(msg.contains("ROHF") && msg.contains("Kohn-Sham"), "{msg}");
 }
 
-/// There is no analytic spin-polarized Kohn-Sham Hessian (T014): an explicit
-/// `Analytic` request on a UKS or ROKS reference is refused BEFORE any SCF, by
-/// the probe and by `harmonic_frequencies` alike, with a message that names
-/// the open-shell KS gap and the finite-difference route; a closed-shell KS
-/// request is pointed at the moving-grid KS Hessian instead. No SCF runs, so
-/// this needs no second-derivative libint2.
+/// The Hartree-Fock `Analytic` route refuses a Kohn-Sham reference BEFORE any
+/// SCF, by the probe and by `harmonic_frequencies` alike, naming where the KS
+/// Hessian lives: a UKS request is pointed at the analytic moving-grid UKS
+/// Hessian (`analytic-moving-grid`, which `auto` selects); a ROKS request is
+/// told that no analytic ROKS Hessian exists and to use the finite-difference
+/// route; a closed-shell KS request is pointed at the moving-grid KS Hessian.
+/// No SCF runs, so this needs no second-derivative libint2.
 #[test]
-fn analytic_kohn_sham_requests_name_the_open_shell_gap() {
+fn analytic_kohn_sham_requests_name_the_open_shell_route() {
     let ks = RhfConfig {
         xc: Some("PBE".into()),
         ..Default::default()
@@ -602,14 +603,15 @@ fn analytic_kohn_sham_requests_name_the_open_shell_gap() {
     let mol = nh2();
     let prep = PreparedBasis::new(&mol, &basis::bundled("sto-3g").unwrap()).unwrap();
     let op = Operator::coulomb();
-    let gap = ["no analytic spin-polarized", "spin-polarized XC kernel"];
     let uks_probe = analytic_uhf_hessian_available(&mol, &prep, op, &ks)
         .expect_err("the UHF probe must refuse UKS");
     let roks_probe = analytic_rohf_hessian_available(&mol, &prep, op, &ks)
         .expect_err("the ROHF probe must refuse ROKS");
-    for (label, reference, probe, word) in [
-        ("UKS", FrequencyReference::Uhf, uks_probe, "UKS"),
-        ("ROKS", FrequencyReference::Rohf, roks_probe, "ROKS"),
+    let uks_needs: &[&str] = &["UKS", "uks_moving_grid_hessian", "\"analytic-moving-grid\""];
+    let roks_needs: &[&str] = &["ROKS", "no analytic ROKS Hessian", "\"fd\""];
+    for (label, reference, probe, needs) in [
+        ("UKS", FrequencyReference::Uhf, uks_probe, uks_needs),
+        ("ROKS", FrequencyReference::Rohf, roks_probe, roks_needs),
     ] {
         let entry = harmonic_frequencies(
             &ParallelContext::default(),
@@ -626,8 +628,7 @@ fn analytic_kohn_sham_requests_name_the_open_shell_gap() {
         .expect_err(&format!("{label} with Analytic must be refused"));
         for msg in [probe.to_string(), entry.to_string()] {
             eprintln!("{label}: {msg}");
-            assert!(msg.contains(word), "{label}: {msg}");
-            for fragment in gap.iter().chain(&["\"fd\""]) {
+            for fragment in needs {
                 assert!(msg.contains(fragment), "{label} lacks {fragment:?}: {msg}");
             }
         }
@@ -639,7 +640,7 @@ fn analytic_kohn_sham_requests_name_the_open_shell_gap() {
         .to_string();
     eprintln!("RKS: {rks}");
     assert!(rks.contains("analytic-moving-grid"), "{rks}");
-    assert!(!rks.contains("spin-polarized"), "{rks}");
+    assert!(!rks.contains("UKS"), "{rks}");
 }
 
 /// The probe and the entry point agree on what ROHF refuses, with no SCF for
