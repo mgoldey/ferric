@@ -126,6 +126,30 @@ feeds this W through `sigma_c_at_z` on the 100-point grid and asserts the
 closed form to 1e-8 Ha at $z = \epsilon_F + i\{0, 0.1, 0.6, 2\}$ (measured
 2.3e-9, the quadrature error of that grid).
 
+**Product integration (open shell).** On the continuation line
+$z = \epsilon_F + i\omega$ the kernel $a/(a^2+\omega'^2)$, $a = z - \epsilon_n$,
+peaks at $\omega' = \omega$ with width $|\epsilon_F - \epsilon_n|$. When a
+state sits close to $\epsilon_F$ the plain Gauss–Legendre sum cannot resolve
+that ridge; the per-spin mid-gap $\epsilon_{F,\sigma}$ of a UKS radical is the
+extreme case (OH/cc-pVDZ@PBE: β HOMO and LUMO 0.015 Ha either side). Against
+the grid-free U-dRPA pole sum the plain sum misses Σc at the Padé nodes by
+0.11 Ha at 100 points and 0.02 Ha at 400, and the QP energies wander by
+0.1–2 eV with $n_{\rm quad}$. The open-shell drivers therefore use
+`sigma::sigma_c_at_z_product`: with $\omega' = u_0(1+x)/(1-x)$, exactly
+$a/(a^2+\omega'^2)\,d\omega' = \tfrac{i}{2}[1/(x-x_1) - 1/(x-x_2)]\,dx$,
+$x_1 = (a - iu_0)/(a + iu_0)$, $x_2 = 1/x_1$, and each Cauchy integral is done
+exactly for the degree-$(n-1)$ interpolant $P$ of $W_{mn}$ through the GL nodes,
+$\int_{-1}^{1} P/(x-x_0) = P(x_0)\ln\frac{1-x_0}{-1-x_0} + \sum_k w_k\frac{P_k - P(x_0)}{x_k - x_0}$
+(the plain rule where $x_0$ is far from $[-1,1]$, $n\ln\rho(x_0) > \ln 10^6$,
+whose error there is $\rho^{-2n}$). The only error left is W's interpolation
+error. Measured (OH, NH2 / cc-pVDZ@PBE): node error vs the pole sum 2e-8 Ha at
+40 points, 2e-13 at 100; frontier QP energies converged to 0.005 meV at 40.
+`u0` is recovered from the nodes; a non-GL rule (Chebyshev tan-map) keeps the
+plain sum. Tests: `sigma::tests::product_rule_*`; `tests/validation_gw.rs`
+`u_g0w0_uks_pbe_*`; `tests/validation_gw_defaults.rs` `u_g0w0_uks_*`. The
+closed-shell drivers still use the plain sum (its @PBE HOMO−1 non-convergence
+in $n_{\rm quad}$ is plausibly the same ridge; not measured).
+
 Further checks: `sigma::tests::sigma_c_blas3_matches_scalar_reference`
 (GEMM vs scalar loop); `tests/validation_gw.rs`
 `sigma_c_imag_axis_h2o_pbe_and_hf_vs_pyscf`, `sigma_c_imag_axis_n2_pbe_vs_pyscf`
@@ -215,8 +239,15 @@ SCF's KS Fock).
   $d = $ `qp_newton_damp` clamped to $[0.1, 1]$ (`sigma.rs:412`); at most 30
   steps; converged when $|\text{step}| < 10^{-7}$ Ha (`sigma.rs:429`); stops
   unconverged if $|f'| < 10^{-3}$ (`sigma.rs:424`, a root near a pole of
-  $C_N$). Non-convergence is reported in `GwResult.qp_converged` and warned
-  (`lib.rs:491` `warn_gw_unconverged`).
+  $C_N$).
+- **Fallback** (`sigma::qp_root_by_weight`, only when Newton fails): every
+  root of $f$ within $\epsilon_m + \Delta_m \pm 1$ Ha (4001 samples, sign
+  changes with $|f| < 0.5$ on both sides, bisection) and the one of largest
+  weight $Z \in (0, 1]$ is returned. NH2/cc-pVDZ U-G0W0@UKS α HOMO: Newton
+  fails at every $n_{\rm quad}$ (roots −11.80 eV, Z 0.62, and −10.09 eV, Z 0.24,
+  on the exact real axis); the fallback gives −11.802 eV at every
+  $n_{\rm quad} \ge 30$. No root with $Z \in (0,1]$ leaves the state unsolved:
+  reported in `GwResult.qp_converged` and warned (`lib.rs:491` `warn_gw_unconverged`).
 
 At a root $\omega^*$, $Z(\omega^*) = 1/(1-\Sigma'(\omega^*))$ is the residue of
 the QP pole of $G(\omega) = [\omega - \epsilon - \Delta - \Sigma(\omega)]^{-1}$;
@@ -340,7 +371,7 @@ Grades as published on the site (`site/src/reference/validation.md`):
 
 | Capability | Grade | What is established |
 |---|---|---|
-| G0W0, evGW₀, evGW, COHSEX (closed shell), U-G0W0, U-COHSEX | Smoke | Implementation matches PySCF `gw_ac`/`ugw_ac` or a numpy build at **matched settings** (`n_quad = 100`, `trunc_thresh = 0`): G0W0@HF ≤1.3e-7 Ha, @PBE ≤6.2e-8, ECP ≤2.5e-6, U-G0W0@UHF ≤8.7e-7 (OH/cc-pVDZ 7.0e-6), U-G0W0@UKS ≤2.6e-8, COHSEX ≤1.2e-9, evGW ≤5.7e-7, U-COHSEX ≤3.3e-9. CLI defaults are coarser (the 20-point grid moves the H₂O@PBE HOMO by 13 meV); truncated PDEP is not validated. |
+| G0W0, evGW₀, evGW, COHSEX (closed shell), U-G0W0, U-COHSEX | Smoke | Implementation matches PySCF `gw_ac`/`ugw_ac` or a numpy build at **matched settings** (`n_quad = 100`, `trunc_thresh = 0`): G0W0@HF ≤1.3e-7 Ha, @PBE ≤6.2e-8, ECP ≤2.5e-6, U-G0W0@UHF ≤3.8e-8 (OH/cc-pVDZ β LUMO+2 1.2e-5) and U-G0W0@UKS ≤2.7e-8 against the grid-free U-dRPA pole sum (§4, product integration), COHSEX ≤1.2e-9, evGW ≤5.7e-7, U-COHSEX ≤3.3e-9. CLI defaults are coarser (the 20-point grid moves the H₂O@PBE HOMO by 13 meV); truncated PDEP is not validated. |
 | BSE-TDA | Smoke | Lowest five singlets match a numpy BSE-TDA to 1.8e-10 Ha given the same QP energies (H₂O, NH₃, CH₂O). |
 | RPAx static α | Smoke | Matches an independent numpy kernel to 5.3e-9 relative; the physics is not established (water/cc-pVDZ@PBE, scissor 0.36 Ha: 5.20 vs DOSD 9.64 a.u.); C6 from the dynamic kernel is ~63% low. |
 

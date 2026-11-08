@@ -87,9 +87,10 @@ fn with_inv_dielectric(cfg: &PdepRpaConfig) -> PdepRpaConfig {
 /// 21.5 meV at 20 points (NH3/cc-pVDZ HOMO), 9.3 meV at 30 and 5.7 meV at 40,
 /// and it does not fall monotonically with n_quad (3.3 meV at 60, 1.5 at 50).
 /// The bar is 10 meV on HOMO and LUMO, and
-/// `tests/validation_gw_defaults.rs` pins it. U-G0W0 on a UKS reference is
-/// outside it: OH and NH2 (UKS/PBE) are not converged in n_quad even
-/// between 80 and 100 points, and their certificate says so.
+/// `tests/validation_gw_defaults.rs` pins it. U-G0W0 on a UKS reference
+/// (OH, NH2 / UKS-PBE) has its own 1 meV bar between 40 and 100 points
+/// (measured ≤ 0.005 meV), which holds because the open-shell drivers
+/// integrate the Σc kernel exactly (`sigma::sigma_c_at_z_product`).
 pub const DEFAULT_N_QUAD: usize = 40;
 
 /// Top-level GW configuration.

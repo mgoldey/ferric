@@ -139,9 +139,16 @@ defaults the HOMO and LUMO stay within 10 meV of the matched settings: the
 worst case is 5.7 meV (G0W0@PBE, NH3/cc-pVDZ HOMO), and HF and UHF starts
 stay below 0.13 meV. The bar does not cover deeper states at a KS start:
 there, HOMO−1 can move by 0.1–0.4 eV with `n_quad` even near 100 points.
-It does not cover U-G0W0 on a UKS reference either: on OH and NH2 the
-frontier states are not converged in `n_quad` even between 80 and 100
-points, and such runs carry a warning.
+U-G0W0 on a UKS reference is covered with a tighter bar: on OH and NH2 the
+HOMO and LUMO move ≤0.005 meV between `n_quad` 40 and 100. The open-shell
+drivers integrate the Σc frequency kernel exactly against the interpolated W
+(product integration). The plain Gauss–Legendre sum cannot resolve the kernel
+when a state sits close to the per-spin Fermi level, as the OH β HOMO and LUMO
+do (0.015 Ha away). With the plain sum those runs never converged in `n_quad`,
+in ferric or in PySCF `ugw_ac`. When the quasiparticle equation has several
+roots near the solution and Newton fails (NH2 α HOMO), ferric returns the root
+with the largest spectral weight. U-evGW₀, U-evGW and U-COHSEX on a KS
+reference, and any ROKS reference, are not compared, and such runs warn.
 These are numerical errors against ferric's own matched-settings result,
 not the method's error against experiment.
 
@@ -149,7 +156,7 @@ not the method's error against experiment.
 |---|---|---|---|
 | G0W0@HF, G0W0@PBE, U-G0W0@UHF, ECP, COHSEX, evGW₀, evGW quasiparticle energies (HOMO−2 to LUMO+2) | H2O, NH3, N2, OH, CH3, NH2, O2, CH2, I2, Xe, Ag2 / cc-pVDZ, aug-cc-pVDZ(-PP) | PySCF `gw_ac`/`ugw_ac` at matched settings (`[rpa] n_quad = 100`, `trunc_thresh = 0`); see [What is validated](../reference/validation.md) | `ferric-gw/tests/validation_gw.rs` |
 | G0W0@PBE HOMO IP | H2O / cc-pVDZ | PySCF `gw_ac`, 11.1714 eV; asserted to <0.1 eV | `ferric-gw/tests/g0w0_pbe_h2o.rs` |
-| U-G0W0@UKS/PBE quasiparticle energies, Σx − v_xc inside each spin's equation | OH, CH3, NH2 / cc-pVDZ | PySCF `ugw_ac` Σc(ef + iω), quasiparticle equation solved in numpy: ≤2.6e-8 Ha on orbitals whose quasiparticle equation has a single root | `ferric-gw/tests/validation_gw.rs` |
+| U-G0W0@UKS/PBE quasiparticle energies, Σx − v_xc inside each spin's equation | OH, CH3, NH2 / cc-pVDZ | grid-free U-dRPA pole sum at the Padé nodes, continued and solved in numpy with ferric's root rule: ≤2.7e-8 Ha on every orbital; the U-G0W0@UHF rows use the same reference (≤1.2e-5 Ha) | `ferric-gw/tests/validation_gw.rs`, `validation_gw_defaults.rs` |
 | Σx − v_xc placement in U-GW (inside the quasiparticle equation; none for a UHF reference) | OH / STO-3G | internal: shifted residual, bit-identity of the no-shift path | `ferric-gw/tests/u_gw_ks_shift.rs` |
 | U-G0W0@UHF α-HOMO IP | OH / cc-pVDZ | ~13–14 eV window, brackets experiment 13.02 eV | `ferric-gw/tests/oh_u_g0w0.rs` |
 
