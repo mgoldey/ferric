@@ -2696,7 +2696,12 @@ mod tests {
     }
 
     fn radii(vir: f64, pair_tau: f64, occ: f64) -> crate::laplace_local::LocalRadii {
-        crate::laplace_local::LocalRadii { vir, pair_tau, occ }
+        crate::laplace_local::LocalRadii {
+            vir,
+            pair_tau,
+            occ,
+            energy_tau: 0.0,
+        }
     }
 
     fn sos_mo(
@@ -2742,6 +2747,39 @@ mod tests {
                  compute_sos_mo to 1e-9, got {d:.3e}"
             );
         }
+    }
+
+    /// EXACTNESS ANCHOR for the energy cut (TE): a positive but negligible
+    /// threshold runs the selection/re-indexing code (0.0 skips it) and must
+    /// keep every column and reproduce the MO energy; a real threshold must
+    /// drop columns and change the energy. (Not asserted: a sign. With the
+    /// non-diagonal E(t), Q(t) of localized bases, dropping columns is not
+    /// term-wise monotone, even though every measured cut so far lowered |E_OS|.)
+    #[test]
+    fn sos_local_energy_cut_trivial_limit_and_teeth() {
+        let sys = setup_named("alkane_4", "6-31g");
+        let mo = sos_mo(&sys, 0);
+        let mut rd = radii(1e6, 0.0, 1e6);
+        rd.energy_tau = 1e-300;
+        let (e, st) = sos_local(&sys, "6-31g", rd, 0);
+        eprintln!("butane/6-31G tau=1e-300: |d| {:.3e}  {st}", (e - mo).abs());
+        assert_eq!(
+            st.t_size, st.t_size_geom,
+            "a negligible tau must keep every column"
+        );
+        assert!(
+            (e - mo).abs() <= 1e-9,
+            "TE trivial limit: |d| = {:.3e}",
+            (e - mo).abs()
+        );
+        rd.energy_tau = 1e-4;
+        let (e, st) = sos_local(&sys, "6-31g", rd, 0);
+        eprintln!(
+            "butane/6-31G tau=1e-4: rel {:.3e}  {st}",
+            (e - mo).abs() / mo.abs()
+        );
+        assert!(st.t_size < st.t_size_geom, "tau=1e-4 must drop columns");
+        assert!((e - mo).abs() > 0.0, "a real cut cannot be bit-exact");
     }
 
     /// TEETH for `local`: on octane/6-31G (19.9 Bohr long; 6-31G, because
