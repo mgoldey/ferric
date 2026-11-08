@@ -125,7 +125,8 @@ pub fn uks_moving_grid_hessian_preflight(
 /// THE pre-SCF support predicate of [`uks_moving_grid_hessian`] (the UKS
 /// counterpart of [`super::rks_moving_grid_hessian_available`]):
 /// [`uks_moving_grid_hessian_preflight`] plus the UHF Hessian's molecule- and
-/// basis-level checks on the fitting bases the SCF will use and the size of
+/// basis-level checks on the fitting bases the SCF will use (`solve_uhf` fits
+/// only a named basis) and the size of
 /// the response's resident AO table. `HessianMethod::AnalyticMovingGrid` (which
 /// returns the error) and `HessianMethod::Auto` for a UKS reference (which runs
 /// finite differences instead) both consult it.
@@ -146,19 +147,20 @@ pub fn uks_moving_grid_hessian_available(
             .unwrap_or_else(ferric_dft::grid::AtomicGridConfig::production),
     )?;
     grid.check_response_table(prep.nbasis())?;
-    let resolve = |requested: &Option<String>, needed: bool| match requested.as_deref() {
-        None if needed => Some(crate::fock_assembly::DEFAULT_JK_AUX.to_string()),
+    // `solve_uhf` fits J (K) only over a NAMED auxiliary basis: unset means
+    // exact (unlike the closed-shell KS SCF, which defaults to RI-J).
+    let resolve = |requested: &Option<String>| match requested.as_deref() {
         None | Some("") => Some(String::new()),
         Some(n) => Some(n.to_string()),
     };
     let exx = grid.exact_exchange();
     let hf = RhfConfig {
         xc: None,
-        df_j_aux: resolve(&config.df_j_aux, true),
+        df_j_aux: resolve(&config.df_j_aux),
         df_k_aux: if exx == 0.0 {
             Some(String::new())
         } else {
-            resolve(&config.df_k_aux, true)
+            resolve(&config.df_k_aux)
         },
         ..config.clone()
     };

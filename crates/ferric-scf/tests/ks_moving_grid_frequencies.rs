@@ -20,8 +20,9 @@
 //! `auto_is_the_moving_grid_hessian_for_closed_shell_ks`: `Auto` ==
 //! `AnalyticMovingGrid` bit for bit (water/STO-3G, LDA and PBE).
 //! `auto_falls_back_to_finite_differences_where_unsupported`: `Auto` ==
-//! `FiniteDifference` bit for bit for meta-GGA (SCAN) and an open-shell UKS
-//! reference (H2/STO-3G). The default (pruned, weight-cut) grid takes the
+//! `FiniteDifference` bit for bit for meta-GGA (SCAN), closed shell and UKS
+//! (H2 singlet and triplet / STO-3G; an LDA/GGA UKS reference takes the
+//! analytic UKS Hessian, `uks_moving_grid_hessian.rs`). The default (pruned, weight-cut) grid takes the
 //! moving-grid route. The dispersion surface is a
 //! separate driver (`harmonic_frequencies_with_scf_correction`, always finite
 //! differences); its `Auto` is pinned through the CLI and Python.
@@ -146,9 +147,9 @@ fn every_refusal_is_named() {
             vec!["Hartree-Fock has no XC grid"],
         ),
         (
-            "UKS",
-            run(&h2_triplet, "sto-3g", ks("LDA"), FrequencyReference::Uhf),
-            vec!["open-shell (Uhf", "spin-polarized XC kernel"],
+            "UKS meta-GGA",
+            run(&h2_triplet, "sto-3g", ks("SCAN"), FrequencyReference::Uhf),
+            vec![PREFIX, "a meta-GGA ('SCAN')"],
         ),
         (
             "ROKS",
@@ -372,11 +373,21 @@ fn auto_falls_back_to_finite_differences_where_unsupported() {
     let h2 = Molecule::parse_xyz("2\nh2\nH 0 0 0\nH 0 0 0.74\n", 0, 1).unwrap();
     let cases = [
         ("meta-GGA (SCAN)", ks("SCAN"), FrequencyReference::Rhf),
-        ("open-shell UKS", ks("LDA"), FrequencyReference::Uhf),
+        (
+            "open-shell UKS meta-GGA",
+            ks("SCAN"),
+            FrequencyReference::Uhf,
+        ),
     ];
+    let h2_triplet = Molecule::parse_xyz("2\nh2\nH 0 0 0\nH 0 0 0.74\n", 0, 3).unwrap();
     for (label, cfg, reference) in cases {
-        let auto = freq(&h2, &cfg, reference, HessianMethod::Auto);
-        let fd = freq(&h2, &cfg, reference, HessianMethod::FiniteDifference);
+        let mol = if reference == FrequencyReference::Uhf {
+            &h2_triplet
+        } else {
+            &h2
+        };
+        let auto = freq(mol, &cfg, reference, HessianMethod::Auto);
+        let fd = freq(mol, &cfg, reference, HessianMethod::FiniteDifference);
         assert_eq!(
             auto.hessian_source,
             HessianSource::FiniteDifference,
