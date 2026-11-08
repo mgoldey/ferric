@@ -233,8 +233,8 @@ impl LdaFxcKernel {
         // Digestion GEMM (nbf, npts)·(npts, nbf), outside any rayon region —
         // apply_with_ref is called once per matvec from the serial ROHF
         // AH-Newton solver (rohf_newton.rs/rohf_ah.rs; neither uses rayon).
-        // Opt-in BLAS raise via FERRIC_BLAS_THREADS (default 1, unchanged
-        // behavior); mirrors vxc.rs's semilocal_vxc_closed_scratch idiom.
+        // Opt-in BLAS raise via FERRIC_BLAS_THREADS (default: the rayon pool size; 1 on a rayon
+        // worker); mirrors vxc.rs's semilocal_vxc_closed_scratch idiom.
         let dvxc_a: Array2<f64> =
             with_blas_threads(opt_in_blas_threads(), || buf.dot(&self.chi.t()));
 

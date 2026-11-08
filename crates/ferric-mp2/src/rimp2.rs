@@ -716,9 +716,13 @@ pub fn stream_dressed_mo_band_budgeted(
                 }
             } else {
                 use rayon::prelude::*;
-                ndarray::Zip::indexed(mo_blk.axis_iter_mut(ndarray::Axis(0)))
-                    .into_par_iter()
-                    .for_each(|(q, row)| mo_transform_row(q, row));
+                // Pin BLAS to 1 for the fan-out: a caller may have raised the
+                // serial-section count around this whole function (gw mo_b).
+                ferric_integrals::blas_threads::with_blas_threads(1, || {
+                    ndarray::Zip::indexed(mo_blk.axis_iter_mut(ndarray::Axis(0)))
+                        .into_par_iter()
+                        .for_each(|(q, row)| mo_transform_row(q, row));
+                });
             }
             // Dress into only the requested output band, accumulating in place
             // (beta=1): b_flat[P-band_p0, pq] += V^{-1/2}[band, Qchunk] · mo_blk.
@@ -1975,7 +1979,7 @@ fn compute_mp2_intermediates_impl(
 pub fn cholesky_inverse_sqrt(v: &Array2<f64>) -> Result<Array2<f64>, FerricError> {
     // One-time (naux, naux) setup factorization, called once per RI-MP2/RPA/GW
     // intermediates build, outside any rayon region. Opt-in BLAS raise via
-    // FERRIC_BLAS_THREADS (default 1, unchanged behavior);
+    // FERRIC_BLAS_THREADS (default: the rayon pool size; 1 on a rayon worker);
     // opt_in_blas_threads()'s rayon-worker self-guard also covers any caller
     // reached from inside a rayon pool. The forward-substitution triangular
     // solve below stays untouched (scalar, deliberately serial — see
@@ -2177,7 +2181,7 @@ pub fn ri_mp2_einsum(
 
     // B^P_{ia} = V^{-1/2} (Q|ia); same b_flat as the scalar path. Outside any
     // rayon region (einsum! runs after this returns). Opt-in BLAS raise via
-    // FERRIC_BLAS_THREADS (default 1, unchanged behavior).
+    // FERRIC_BLAS_THREADS (default: the rayon pool size; 1 on a rayon worker).
     let flat = eri3_mo.into_shape_with_order((naux, nocc * nvir)).unwrap();
     let b_flat = with_blas_threads(opt_in_blas_threads(), || v_inv_sqrt.dot(&flat)); // (naux, nocc*nvir)
     let b_3d = b_flat

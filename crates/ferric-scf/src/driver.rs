@@ -518,9 +518,10 @@ pub(crate) fn warn_if_rss_over_at_stage(variant: &str, stage: &str, ooc_budget: 
 /// its symmetric S^{-1/2} transform — a distinct orthogonalization policy.
 ///
 /// The eigensolver is LAPACK `dsyevd_` (divide and conquer); see
-/// [`FockEigensolver`] for why that is safe here. Runs under the opt-in BLAS raise (`FERRIC_BLAS_THREADS`, default 1 →
-/// byte-identical to a bare call; the rayon-worker self-guard protects the
-/// SAD/free-atom path, see the blas_threads docs).
+/// [`FockEigensolver`] for why that is safe here. A serial section: runs at the
+/// serial BLAS thread count (`ferric_core::blas_threads::opt_in_blas_threads`,
+/// default = the rayon pool size; 1 on a rayon worker such as the SAD
+/// free-atom path).
 pub(crate) fn diagonalize_rect(
     f: &Array2<f64>,
     x: &Array2<f64>,
@@ -564,6 +565,7 @@ pub(crate) fn diagonalize_rect_with(
     let n = x.nrows();
     let m = x.ncols();
     let (evals, c_kept) = with_blas_threads(opt_in_blas_threads(), || {
+        crate::blas_probe::record(&crate::blas_probe::FOCK_DIAG);
         let f_prime = x.t().dot(f).dot(x);
         let (evals, evecs) = match solver {
             FockEigensolver::Qr => {

@@ -556,13 +556,12 @@ fn qr_orthonormalize(mat: Array2<f64>) -> Result<Array2<f64>, FerricError> {
 /// inside a rayon worker, where nested OpenBLAS threads are the documented
 /// segfault/oversubscription mode.
 ///
-/// Precedence: `FERRIC_LANCZOS_BLAS_THREADS` (this var, back-compat) >
-/// `FERRIC_BLAS_THREADS` (umbrella, see `ferric_integrals::blas_threads::
-/// opt_in_blas_threads`) > `1`. Falls back to the umbrella resolver when this
-/// var is unset, so the umbrella's rayon-worker guard (return 1 if
-/// `rayon::current_thread_index().is_some()`) still applies on that path;
-/// replicated here too so a caller who sets ONLY the Lanczos-specific var
-/// gets the same belt-and-suspenders protection.
+/// Precedence: `FERRIC_LANCZOS_BLAS_THREADS` (this var, back-compat) > the
+/// umbrella serial setting when one was given (`[parallel] blas_threads`,
+/// `ferric.set_blas_threads`, `FERRIC_BLAS_THREADS`; see
+/// `ferric_integrals::blas_threads::opt_in_blas_threads`) > `1`. Not the
+/// umbrella's rayon-pool-size default: this raise encloses the caller's
+/// `matvec`, which may open rayon regions. On a rayon worker it returns 1.
 ///
 /// Shared with Davidson (`davidson.rs::davidson_blas_threads`): the two are
 /// alternative eigensolvers for the same call site (`config.eigensolver` in
@@ -595,9 +594,17 @@ pub(crate) fn solver_blas_threads_with(get: impl Fn(&str) -> Option<String> + Co
             return n.max(1);
         }
     }
-    // Unset (or unparseable): fall back to the umbrella convention (itself
-    // defaulting to 1, and itself re-checking the rayon-worker guard).
-    ferric_integrals::blas_threads::opt_in_blas_threads_with(get)
+    // Unset (or unparseable): the umbrella setting when one was GIVEN
+    // (`[parallel] blas_threads`, `ferric.set_blas_threads`,
+    // `FERRIC_BLAS_THREADS`), else 1. Unlike the SCF's serial sections, these
+    // solvers do not take the umbrella's rayon-pool-size default: their raise
+    // encloses the caller's `matvec` closure, which may open rayon regions of
+    // its own (see `run_lanczos_seeded`).
+    ferric_integrals::blas_threads::resolve_serial_blas_threads(
+        ferric_integrals::blas_threads::explicit_serial_blas_threads(),
+        get,
+        1,
+    )
 }
 
 /// Block Lanczos with full reorthogonalization.

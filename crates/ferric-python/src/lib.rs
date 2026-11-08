@@ -13050,7 +13050,38 @@ fn add_build_stamp(m: &Bound<'_, PyModule>) -> PyResult<()> {
 fn add_build_identity(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("__version__", ferric_build_info::VERSION)?;
     add_build_stamp(m)?;
-    m.add_function(wrap_pyfunction!(build_info, m)?)
+    m.add_function(wrap_pyfunction!(build_info, m)?)?;
+    m.add_function(wrap_pyfunction!(set_blas_threads, m)?)?;
+    m.add_function(wrap_pyfunction!(blas_threads, m)?)
+}
+
+/// Set the OpenBLAS thread count for serial sections (the per-iteration Fock
+/// diagonalization, DIIS commutator and the other dense linear algebra that
+/// runs outside ferric's parallel regions) for the rest of the process.
+///
+/// ``None`` returns to the default: ``FERRIC_BLAS_THREADS`` if set, else the
+/// rayon thread count (``RAYON_NUM_THREADS``, default every logical CPU).
+/// ``1`` makes results bit-identical across thread counts; any other value
+/// lets OpenBLAS split reductions by thread count, which moves results at the
+/// last bit (about 1e-14 relative). Parallel regions always run OpenBLAS at 1
+/// thread unless ``OPENBLAS_NUM_THREADS`` was set before ``import ferric``.
+#[pyfunction]
+#[pyo3(signature = (n=None))]
+fn set_blas_threads(n: Option<usize>) -> PyResult<()> {
+    if n == Some(0) {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "set_blas_threads(0): use a positive thread count, or None for the default",
+        ));
+    }
+    ferric_integrals::blas_threads::set_serial_blas_threads(n);
+    Ok(())
+}
+
+/// The OpenBLAS thread count serial sections use now (see
+/// :func:`set_blas_threads`).
+#[pyfunction]
+fn blas_threads() -> usize {
+    ferric_integrals::blas_threads::opt_in_blas_threads()
 }
 
 // ── Module ──
@@ -13661,10 +13692,10 @@ fn register_mp2v_research(m: &Bound<'_, PyModule>) -> PyResult<()> {
 
 #[pymodule]
 fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    // Safe-by-default threading: pin OpenBLAS to 1 thread (rayon owns ferric's
-    // parallelism) unless the host set OPENBLAS_NUM_THREADS. Without this, an
-    // `import ferric` in a host process inherits OpenBLAS's nproc default and
-    // oversubscribes rayon × BLAS (3–5× slowdown, possible stack overflow).
+    // Threading model (see ferric_core::blas_threads): thread stacks large
+    // enough for threaded LAPACK on any thread, and OpenBLAS pinned to 1
+    // thread in parallel regions unless the host set OPENBLAS_NUM_THREADS.
+    // Serial sections raise it per `ferric.set_blas_threads`.
     ferric_integrals::blas_threads::init_threading();
     // Register global signal handler for Ctrl+C
     let _ = ctrlc::set_handler(move || {

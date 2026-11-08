@@ -1,188 +1,255 @@
-//! Scoped OpenBLAS thread control. Inside rayon-parallel regions we pin BLAS to
-//! 1 thread so nested OpenBLAS threads don't oversubscribe (and don't overflow
-//! the 2 MB rayon worker stack via dgetrf/eigh — see openblas-rayon-dgetrf-crash).
-//! Outside rayon, large GEMMs can use N BLAS threads. This guard sets the count
-//! for a scope and restores it after.
+//! OpenBLAS thread control: the process baseline, the serial-section thread
+//! count (a user setting), scoped raises, and the thread stack size that makes
+//! threaded LAPACK safe off the main thread.
+//!
+//! # The model
+//!
+//! * **Parallel regions** (rayon) run OpenBLAS at the process *baseline*, which
+//!   [`init_threading`](crate::blas_threads::init_threading) pins to 1 unless the user set `OPENBLAS_NUM_THREADS`.
+//!   rayon owns the cores there; a baseline above 1 multiplies rayon threads by
+//!   BLAS threads. That oversubscription is a user configuration choice, not
+//!   something ferric designs around.
+//! * **Serial sections** (the per-iteration Fock diagonalization, the DIIS
+//!   commutator, orthogonalizer and density GEMMs, and the other sites that
+//!   wrap their work in `with_blas_threads(opt_in_blas_threads(), ..)`) run
+//!   outside any rayon region, where the cores would otherwise sit idle. They
+//!   use [`opt_in_blas_threads`](crate::blas_threads::opt_in_blas_threads) threads: by default the size of the global
+//!   rayon pool (so `RAYON_NUM_THREADS` is the one thread count a user sets),
+//!   overridable by `[parallel] blas_threads` (CLI), `ferric.set_blas_threads`
+//!   (Python) or `FERRIC_BLAS_THREADS`. `1` gives results that are
+//!   bit-identical across thread counts; any other value lets OpenBLAS split
+//!   reductions by thread count, which moves results at the last bit.
+//!
+//! # Why threaded LAPACK used to crash (resolved 2026-11-08)
+//!
+//! OpenBLAS's threaded LU (`getrf_parallel`, reached by `.inv()`, `.det()`,
+//! `.solve()`) needs more than 2 MiB of C stack from 2 BLAS threads up. Rust
+//! gives every spawned thread — rayon workers, `std::thread::spawn`, and the
+//! test harness's threads — a 2 MiB stack; only the main thread gets
+//! `ulimit -s` (8 MiB). The earlier "LU is not reentrant / crashes even on a
+//! plain 8 MB thread" diagnosis was a 2 MiB *test-harness* thread. With
+//! [`THREAD_STACK_BYTES`](crate::blas_threads::THREAD_STACK_BYTES) stacks, LU / eigh / Cholesky / GEMM at any BLAS
+//! thread count run correctly on any thread, including several threads at
+//! once (crash matrix in `wiki/notes/blas-threads-2026-11-08/`).
+//! [`init_threading`](crate::blas_threads::init_threading) applies that size to every thread spawned afterwards.
 //!
 //! Canonical home: this module lives in `ferric-core` (dependency-free, so any
 //! crate in the workspace can reach it without a new dependency edge).
-//! `ferric_integrals::blas_threads` re-exports everything from here so
-//! existing `ferric_integrals::blas_threads::*` call sites keep working
-//! unchanged — add new call sites via either path.
+//! `ferric_integrals::blas_threads` re-exports everything from here.
 
+use std::cell::Cell;
 use std::os::raw::c_int;
+use std::sync::atomic::{AtomicI32, AtomicUsize, Ordering};
 
 // OpenBLAS runtime API. Present in the OpenBLAS we link (verified: `nm -D`
 // shows openblas_set_num_threads / openblas_get_num_threads as T). The `#[link]`
-// is implicit — the binary already links openblas. NOT weakly linked: this
-// `extern "C"` block has no weak-linkage attribute, so a build against a
-// reference-LAPACK/BLAS (lacking these symbols) fails at link time with an
-// undefined-symbol error, not a runtime no-op. If ferric ever needs to
-// support a non-OpenBLAS backend, this file's calls would need to become
-// truly optional (e.g. via a cfg-gated feature or `dlsym`-based lookup), not
-// just documented as such.
+// is implicit — the binary already links openblas. NOT weakly linked: a build
+// against a reference-LAPACK/BLAS (lacking these symbols) fails at link time
+// with an undefined-symbol error, not a runtime no-op.
 extern "C" {
     fn openblas_get_num_threads() -> c_int;
     fn openblas_set_num_threads(n: c_int);
 }
 
-/// Establish ferric's safe default threading model at program startup.
+/// Stack size for every thread the process spawns (rayon workers,
+/// `std::thread` workers), applied by [`init_threading`].
 ///
-/// ferric **owns its parallelism through rayon** (ERI batches, frequency
-/// quadrature, …) and calls OpenBLAS for the inner GEMM/SYRK/EIGH. If OpenBLAS
-/// also spins up its own pool (its default = `nproc` threads), the result is a
-/// *product* of threads (rayon × OpenBLAS) that oversubscribes the machine —
-/// 3–5× slowdown — and can overflow the 2 MB rayon worker stack on big
-/// dgetrf/eigh (see `openblas-rayon-dgetrf-crash`). The standard discipline is
-/// to pin OpenBLAS to **1 thread per process** and let rayon do the threading;
-/// the few large GEMMs outside rayon opt back into N threads via
-/// [`with_blas_threads`].
+/// Measured 2026-11-08 (OpenBLAS 0.3.26 pthread, `MAX_THREADS=64`): each
+/// `dgetrf_parallel` frame takes about 527 KiB of stack and the routine
+/// recurses (4 frames deep at n = 113), so `.inv()` / `.det()` at 2 or more
+/// BLAS threads overflows a 2 MiB or 3 MiB stack and runs clean from 4 MiB up
+/// at every size (to n = 2000) and thread count tried. 64 MiB leaves room for
+/// deeper recursion at large n and for an OpenBLAS built with a larger
+/// `NUM_THREADS` (the frame grows with its square). Stack memory is reserved,
+/// not committed, until touched, so idle workers cost address space only.
+pub const THREAD_STACK_BYTES: usize = 64 << 20;
+
+/// The OpenBLAS thread count parallel regions run at, as recorded by
+/// [`init_threading`] (or, if that never ran, by the first outermost
+/// [`with_blas_threads`] scope). `0` = not recorded yet.
+static BASELINE: AtomicI32 = AtomicI32::new(0);
+
+/// Serial-section BLAS threads set explicitly by the program (CLI
+/// `[parallel] blas_threads`, Python `ferric.set_blas_threads`). `0` = unset.
+static EXPLICIT_SERIAL: AtomicUsize = AtomicUsize::new(0);
+
+thread_local! {
+    /// (nesting depth of [`with_blas_threads`] scopes on this thread, the count
+    /// the innermost one set) — what a nested scope restores on exit.
+    static SCOPE: Cell<(usize, c_int)> = const { Cell::new((0, 0)) };
+}
+
+/// Establish ferric's threading model at program startup.
 ///
-/// Historically this was set via `.cargo/config.toml [env]`, which only applies
-/// to `cargo`-invoked processes — the **release binary run directly** and the
-/// **Python extension imported into a host process** inherited nothing and hit
-/// the footgun. This function fixes that by setting the baseline in-code.
+/// 1. **Thread stacks.** If `RUST_MIN_STACK` is unset, set it to
+///    [`THREAD_STACK_BYTES`], so every `std::thread` and rayon worker spawned
+///    afterwards (including pools built with `ThreadPoolBuilder` and no
+///    explicit `stack_size`) can run threaded LAPACK; and build the global
+///    rayon pool with at least that stack (a no-op if the pool already exists).
+/// 2. **BLAS baseline.** Pin OpenBLAS to 1 thread for parallel regions, unless
+///    the user set `OPENBLAS_NUM_THREADS` (respected as given). Serial sections
+///    raise above this baseline per [`opt_in_blas_threads`].
 ///
-/// Idempotent and override-friendly: if the user has explicitly set
-/// `OPENBLAS_NUM_THREADS` in the environment, that value is respected (we do not
-/// override an explicit choice). Call once, early, from every entry point
-/// (CLI `main`, Python module init). Calling it from a library function is fine
-/// too — it is cheap and idempotent.
+/// Historically the baseline was set via `.cargo/config.toml [env]`, which only
+/// applies to `cargo`-invoked processes — the release binary run directly and
+/// the Python extension inherited nothing. Call once, early, from every entry
+/// point (CLI `main`, Python module init), before any thread is spawned: Rust
+/// reads `RUST_MIN_STACK` once, at the first spawn. Idempotent.
 pub fn init_threading() {
+    if std::env::var_os("RUST_MIN_STACK").is_none() {
+        std::env::set_var("RUST_MIN_STACK", THREAD_STACK_BYTES.to_string());
+    }
+    let stack = std::env::var("RUST_MIN_STACK")
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .unwrap_or(THREAD_STACK_BYTES)
+        .max(THREAD_STACK_BYTES);
+    // Err = the global pool already exists (an earlier rayon call, or a host
+    // that configured it); its workers then carry whatever stack size the
+    // first spawn read, which is why this function must run first.
+    let _ = rayon::ThreadPoolBuilder::new()
+        .stack_size(stack)
+        .build_global();
+
     // Respect an explicit user override (any value, including >1 for a caller
-    // who deliberately wants multi-threaded BLAS and manages rayon themselves).
+    // who deliberately wants multi-threaded BLAS inside rayon regions).
     if let Ok(v) = std::env::var("OPENBLAS_NUM_THREADS") {
         if let Ok(n) = v.trim().parse::<usize>() {
-            unsafe { openblas_set_num_threads(n.max(1) as c_int) };
+            let n = n.max(1) as c_int;
+            unsafe { openblas_set_num_threads(n) };
+            BASELINE.store(n, Ordering::SeqCst);
             return;
         }
     }
-    // No explicit override → ferric's safe default: 1 BLAS thread, rayon owns
-    // the parallelism. Mirror it into the env so any child processes / late
-    // OpenBLAS initialization observe the same baseline.
+    // No explicit override → 1 BLAS thread in parallel regions. Mirror it into
+    // the env so child processes / late OpenBLAS initialization observe it.
     unsafe { openblas_set_num_threads(1) };
+    BASELINE.store(1, Ordering::SeqCst);
     std::env::set_var("OPENBLAS_NUM_THREADS", "1");
 }
 
-/// Umbrella opt-in BLAS thread count for call sites *outside* any rayon
-/// parallel region.
+/// Set the serial-section BLAS thread count for the rest of the process
+/// (`Some(n)`, floored at 1), or return to the env/default resolution
+/// (`None`). The CLI calls this from `[parallel] blas_threads`; Python exposes
+/// it as `ferric.set_blas_threads`.
+pub fn set_serial_blas_threads(n: Option<usize>) {
+    EXPLICIT_SERIAL.store(n.map_or(0, |n| n.max(1)), Ordering::SeqCst);
+}
+
+/// The value last given to [`set_serial_blas_threads`], if any.
+pub fn explicit_serial_blas_threads() -> Option<usize> {
+    let n = EXPLICIT_SERIAL.load(Ordering::SeqCst);
+    (n > 0).then_some(n)
+}
+
+/// BLAS thread count for serial sections — call sites *outside* any rayon
+/// parallel region (see the module doc).
 ///
-/// Defaults to **1** (matches [`init_threading`]'s process-wide default; a
-/// caller who does nothing gets byte-identical behavior to before this
-/// function existed). Raising it is opt-in via the `FERRIC_BLAS_THREADS`
-/// environment variable, parsed the same way as the longstanding
-/// `FERRIC_LANCZOS_BLAS_THREADS` (see `lanczos::lanczos_blas_threads`, the
-/// precedent this generalizes): non-numeric/absent → default, present →
-/// `.max(1)`.
+/// Precedence: [`set_serial_blas_threads`] (TOML / Python) >
+/// `FERRIC_BLAS_THREADS` > the size of the global rayon pool. `0` from the env
+/// means "the default". Called on a rayon worker it returns 1: a serial
+/// section that runs inside a parallel region (the free-atom SCFs of the SAD
+/// guess run in a one-thread pool; tests run whole SCFs inside
+/// `pool.install`) is one of the pool's tasks and stays on one BLAS thread.
 ///
-/// ## Hazard model — read before wrapping a new call site
-///
-/// A raise here is safe **only** at call sites with a call-path proof that no
-/// enclosing rayon parallel region is active when the wrapped closure runs.
-/// Two independent hazards fire when that proof doesn't hold:
-///
-///  1. **Oversubscription.** rayon workers × OpenBLAS threads multiplies —
-///     3–5× slowdown (see [`init_threading`]'s doc comment).
-///  2. **Stack overflow.** A multi-threaded OpenBLAS `eigh`/`dgetrf` running
-///     on a 2 MB rayon worker stack can overflow it outright (this is what
-///     78bc70b reverted — see `openblas-rayon-dgetrf-crash`). This is not a
-///     slowdown, it's a crash.
-///
-/// A raise must **never** reach the SAD / free-atom solve paths. Those run
-/// inside `run_serial` — a single-thread rayon pool used specifically to
-/// avoid the 18× per-atom-SCF regression rayon causes there (see
-/// `rayon-penalty-on-free-atom-scf`). A single-thread rayon pool is still a
-/// rayon pool: any BLAS call inside it is, by definition, "inside a rayon
-/// parallel region" for purposes of hazard (2) above, so it is exactly the
-/// rayon-adjacent hazard this doc warns about — even though only one worker
-/// is active. Sites reachable from SAD/free-atom code must gate the raise
-/// off with an explicit config flag (never a bare env read that fires
-/// unconditionally), or must not call this function at all.
-///
-/// ## Precedence
-///
-/// `FERRIC_LANCZOS_BLAS_THREADS` (Lanczos-specific, kept for back-compat) >
-/// `FERRIC_BLAS_THREADS` (this umbrella) > `1` (safe default). Lanczos's own
-/// resolver (`lanczos::lanczos_blas_threads`) implements this by falling back
-/// to this function when its own var is unset.
-///
-/// ## Runtime rayon-worker guard
-///
-/// Belt-and-suspenders on top of the call-path proof: if this function is
-/// itself invoked from a rayon worker thread (`rayon::current_thread_index()
-/// .is_some()`), it returns `1` regardless of the env var. A correct
-/// call-path proof means this branch never fires in practice, but a future
-/// refactor that accidentally moves a wrapped site inside a `par_iter` (or
-/// runs it under `run_serial`'s single-thread pool — see the hazard note
-/// above) degrades to today's safe default instead of silently reintroducing
-/// the 78bc70b stack-overflow class of bug.
+/// `FERRIC_LANCZOS_BLAS_THREADS` (Lanczos/Davidson only, kept for back-compat)
+/// takes precedence over this in those solvers.
 pub fn opt_in_blas_threads() -> usize {
     opt_in_blas_threads_with(|k| std::env::var(k).ok())
 }
 
-/// The umbrella BLAS-thread descriptor. Routed through [`ConfigVar`] for the
-/// same uniform parse/validate/audit as every other ferric setting.
+/// The serial BLAS-thread descriptor (`FERRIC_BLAS_THREADS`), routed through
+/// [`ConfigVar`](crate::config::ConfigVar) for the uniform parse/audit.
 ///
-/// A thread count is a *performance* knob, not a result-affecting one, so a
-/// malformed value must degrade to the safe default (`1`) rather than abort a
-/// run (the [`ConfigVar<bool>::toggle`] exception class — see that method's
-/// doc). Both hazards are handled *outside* the descriptor: the rayon-worker
-/// guard is a pre-check in the resolver, and the `.max(1)` floor is applied to
-/// the resolved value. The `validate` here is therefore `accept_any` and the
-/// `parse` maps garbage to the default (an `Err` here would only be swallowed
-/// by the wrapper anyway).
+/// A thread count is a performance knob, so a malformed value degrades to the
+/// default (`0` = the rayon pool size) rather than aborting a run.
 pub(crate) const BLAS_THREADS: crate::config::ConfigVar<usize> = crate::config::ConfigVar {
     env_name: "FERRIC_BLAS_THREADS",
-    default: 1,
-    // Garbage → default; the wrapper floors the result at 1 regardless.
-    parse: |s| Ok(s.trim().parse::<usize>().unwrap_or(1)),
+    default: 0,
+    parse: |s| Ok(s.trim().parse::<usize>().unwrap_or(0)),
     validate: crate::config::accept_any,
 };
 
 /// [`opt_in_blas_threads`] with an injected env lookup — the testable core.
 ///
-/// Why injection instead of `set_var` in tests: `FERRIC_BLAS_THREADS` (and the
-/// OpenBLAS thread count it drives through [`with_blas_threads`]) is
-/// process-global, and the default test harness runs tests on parallel
-/// threads. A test that raises the global count while any other test in the
-/// same binary does BLAS work concurrently hits OpenBLAS's documented
-/// non-thread-safety in multi-threaded mode — observed as silently corrupted
-/// GEMM output, not a crash. Injecting the lookup lets precedence/guard tests
-/// run with zero global mutation. Real-env raise tests live in dedicated
-/// integration-test binaries (their own process) where nothing else runs.
+/// Injection instead of `set_var` in tests: the env is process-global and the
+/// test harness runs tests on parallel threads.
 #[doc(hidden)]
 pub fn opt_in_blas_threads_with(get: impl Fn(&str) -> Option<String>) -> usize {
-    // Hazard (2) pre-check: inside a rayon worker, force 1 regardless of env —
-    // this must happen BEFORE consulting the descriptor (see the doc comment on
-    // [`opt_in_blas_threads`]).
     if rayon::current_thread_index().is_some() {
         return 1;
     }
-    // Resolve value through the shared descriptor (no TOML/explicit path here —
-    // this is a pure env knob), then floor at 1. A malformed value degrades to
-    // the default via the descriptor's lenient parse.
-    BLAS_THREADS
-        .resolve(None, get)
-        .map(|r| r.value)
-        .unwrap_or(1)
-        .max(1)
+    let explicit = EXPLICIT_SERIAL.load(Ordering::SeqCst);
+    resolve_serial_blas_threads(
+        (explicit > 0).then_some(explicit),
+        get,
+        rayon::current_num_threads(),
+    )
 }
 
-/// Run `f` with OpenBLAS pinned to `n` threads, restoring the previous count
-/// afterward (including on panic). `n` is clamped to >= 1.
+/// The precedence rule behind [`opt_in_blas_threads`], free of process state:
+/// `explicit` > env > `auto`; a `0` falls through; the result is at least 1.
+#[doc(hidden)]
+pub fn resolve_serial_blas_threads(
+    explicit: Option<usize>,
+    get: impl Fn(&str) -> Option<String>,
+    auto: usize,
+) -> usize {
+    let v = BLAS_THREADS
+        .resolve(explicit.filter(|&n| n > 0), get)
+        .map(|r| r.value)
+        .unwrap_or(0);
+    if v == 0 {
+        auto.max(1)
+    } else {
+        v
+    }
+}
+
+/// The OpenBLAS thread count in effect right now (process-global).
+pub fn current_blas_threads() -> usize {
+    unsafe { openblas_get_num_threads() }.max(1) as usize
+}
+
+/// Run `f` with OpenBLAS at `n` threads (clamped to >= 1), then restore.
+///
+/// A nested scope restores the count its enclosing scope on the same thread
+/// set; the outermost scope restores the process baseline (see
+/// [`init_threading`]). Restoring the baseline, not "whatever the count was on
+/// entry", matters when two threads open scopes at once (parallel tests, a
+/// host calling ferric from several threads): OpenBLAS's count is
+/// process-global, and an interleaved save/restore of entry values can leave a
+/// raised count behind for every later parallel region.
+///
+/// `n > 1` must not be requested on a rayon worker (debug-asserted): that is a
+/// parallel region, which runs at the baseline. [`opt_in_blas_threads`]
+/// already returns 1 there.
 pub fn with_blas_threads<R>(n: usize, f: impl FnOnce() -> R) -> R {
     let n = n.max(1) as c_int;
-    // Save + set. If the symbols are absent the build fails to link; we accept
-    // that for the OpenBLAS build path (the project's standard). A guard struct
-    // restores on drop so early-return/panic still restores.
-    struct Restore(c_int);
+    debug_assert!(
+        n == 1 || rayon::current_thread_index().is_none(),
+        "with_blas_threads({n}) on a rayon worker: serial-section BLAS threads \
+         are raised outside parallel regions only"
+    );
+    struct Restore(c_int, (usize, c_int));
     impl Drop for Restore {
         fn drop(&mut self) {
+            SCOPE.with(|s| s.set(self.1));
             unsafe { openblas_set_num_threads(self.0) }
         }
     }
-    let prev = unsafe { openblas_get_num_threads() };
-    let _restore = Restore(prev.max(1));
+    let outer = SCOPE.with(|s| s.get());
+    let restore_to = if outer.0 > 0 {
+        outer.1
+    } else {
+        let now = unsafe { openblas_get_num_threads() }.max(1);
+        match BASELINE.compare_exchange(0, now, Ordering::SeqCst, Ordering::SeqCst) {
+            Ok(_) => now,
+            Err(b) => b,
+        }
+    };
+    let _restore = Restore(restore_to, outer);
+    SCOPE.with(|s| s.set((outer.0 + 1, n)));
     unsafe { openblas_set_num_threads(n) };
     f()
 }
@@ -219,6 +286,8 @@ mod tests {
         init_threading();
         assert_eq!(unsafe { openblas_get_num_threads() }, 1);
         assert_eq!(std::env::var("OPENBLAS_NUM_THREADS").as_deref(), Ok("1"));
+        // Thread stacks: RUST_MIN_STACK is set (or kept) for every later spawn.
+        assert!(std::env::var("RUST_MIN_STACK").is_ok());
     }
 
     #[test]
@@ -230,50 +299,76 @@ mod tests {
         std::env::set_var("OPENBLAS_NUM_THREADS", "3");
         init_threading();
         assert_eq!(unsafe { openblas_get_num_threads() }, 3);
+        // An outermost scope restores that baseline.
+        with_blas_threads(2, || ());
+        assert_eq!(unsafe { openblas_get_num_threads() }, 3);
+        // Back to the default baseline for the other tests in this binary.
         std::env::remove_var("OPENBLAS_NUM_THREADS");
+        init_threading();
+        assert_eq!(unsafe { openblas_get_num_threads() }, 1);
     }
 
-    // The opt_in resolver tests use the injected-lookup variant so they never
-    // mutate the real (process-global) env — see opt_in_blas_threads_with's
-    // doc comment for why set_var-based tests are a data race here.
+    // The resolver tests use the injected-lookup / pure variants so they never
+    // mutate the real (process-global) env.
 
-    #[test]
-    fn opt_in_blas_threads_defaults_to_one() {
-        assert_eq!(opt_in_blas_threads_with(|_| None), 1);
-    }
-
-    #[test]
-    fn opt_in_blas_threads_respects_umbrella_env() {
-        let get = |k: &str| (k == "FERRIC_BLAS_THREADS").then(|| "3".to_string());
-        assert_eq!(opt_in_blas_threads_with(get), 3);
+    fn env(v: &'static str) -> impl Fn(&str) -> Option<String> {
+        move |k: &str| (k == "FERRIC_BLAS_THREADS").then(|| v.to_string())
     }
 
     #[test]
-    fn opt_in_blas_threads_clamps_to_at_least_one() {
-        let get = |k: &str| (k == "FERRIC_BLAS_THREADS").then(|| "0".to_string());
-        assert_eq!(opt_in_blas_threads_with(get), 1);
+    fn serial_blas_threads_default_is_the_rayon_pool_size() {
+        assert_eq!(resolve_serial_blas_threads(None, |_| None, 6), 6);
+        assert_eq!(resolve_serial_blas_threads(None, |_| None, 0), 1);
+        // The live resolver, off any rayon worker, with nothing set, follows
+        // the global pool. (EXPLICIT_SERIAL is only written by
+        // `explicit_setting_wins_over_env`, which holds the lock.)
+        let _g = GLOBAL_THREAD_STATE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        assert_eq!(
+            opt_in_blas_threads_with(|_| None),
+            rayon::current_num_threads()
+        );
     }
 
     #[test]
-    fn opt_in_blas_threads_ignores_garbage() {
-        let get = |k: &str| (k == "FERRIC_BLAS_THREADS").then(|| "not-a-number".to_string());
-        assert_eq!(opt_in_blas_threads_with(get), 1);
+    fn serial_blas_threads_respects_env() {
+        assert_eq!(resolve_serial_blas_threads(None, env("3"), 6), 3);
+        assert_eq!(resolve_serial_blas_threads(None, env("1"), 6), 1);
+    }
+
+    #[test]
+    fn serial_blas_threads_zero_or_garbage_env_means_default() {
+        assert_eq!(resolve_serial_blas_threads(None, env("0"), 6), 6);
+        assert_eq!(resolve_serial_blas_threads(None, env("not-a-number"), 6), 6);
+    }
+
+    #[test]
+    fn explicit_setting_wins_over_env() {
+        assert_eq!(resolve_serial_blas_threads(Some(2), env("5"), 6), 2);
+        assert_eq!(resolve_serial_blas_threads(Some(1), env("5"), 6), 1);
+        let _g = GLOBAL_THREAD_STATE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        set_serial_blas_threads(Some(1));
+        let got = opt_in_blas_threads_with(env("5"));
+        set_serial_blas_threads(None);
+        assert_eq!(got, 1, "set_serial_blas_threads(Some(1)) must win over env");
+        assert_eq!(opt_in_blas_threads_with(env("5")), 5);
     }
 
     #[test]
     fn opt_in_blas_threads_forces_one_inside_rayon_worker() {
-        let get = |k: &str| (k == "FERRIC_BLAS_THREADS").then(|| "4".to_string());
         // Outside rayon: honors the (injected) env var.
-        assert_eq!(opt_in_blas_threads_with(get), 4);
-        // Inside a rayon worker: the runtime guard overrides the env var to 1,
-        // even though it is set — this is the belt-and-suspenders check that
-        // a wrapped call site accidentally moved inside a par_iter (or run
-        // under run_serial's single-thread pool) still degrades safely.
+        assert_eq!(opt_in_blas_threads_with(env("4")), 4);
+        // Inside a rayon worker: 1, whatever is set — a parallel region runs
+        // at the baseline (this is how the SAD free-atom SCFs, which run in a
+        // one-thread pool, stay single-threaded).
         let inside = rayon::ThreadPoolBuilder::new()
             .num_threads(1)
             .build()
             .unwrap()
-            .install(|| opt_in_blas_threads_with(get));
+            .install(|| opt_in_blas_threads_with(env("4")));
         assert_eq!(
             inside, 1,
             "rayon-worker guard must force 1 regardless of env"
@@ -294,5 +389,55 @@ mod tests {
             // restored to 4 after the inner scope
             assert_eq!(unsafe { openblas_get_num_threads() }, 4);
         });
+    }
+
+    /// Two threads whose scopes interleave A-enter, B-enter, A-exit, B-exit
+    /// must leave the process at the baseline. Restoring "the count on entry"
+    /// (the pre-2026-11-08 rule) leaves B's entry value — A's raised 3 —
+    /// behind for every later parallel region.
+    #[test]
+    fn interleaved_scopes_on_two_threads_leave_the_baseline() {
+        use std::sync::mpsc::channel;
+        let _g = GLOBAL_THREAD_STATE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let base = unsafe { openblas_get_num_threads() };
+        let (a_in_tx, a_in_rx) = channel::<()>();
+        let (b_in_tx, b_in_rx) = channel::<()>();
+        let (a_out_tx, a_out_rx) = channel::<()>();
+        let a = std::thread::spawn(move || {
+            with_blas_threads(3, || {
+                a_in_tx.send(()).unwrap();
+                b_in_rx.recv().unwrap();
+            });
+            a_out_tx.send(()).unwrap();
+        });
+        let b = std::thread::spawn(move || {
+            a_in_rx.recv().unwrap();
+            with_blas_threads(2, || {
+                b_in_tx.send(()).unwrap();
+                a_out_rx.recv().unwrap();
+            });
+        });
+        a.join().unwrap();
+        b.join().unwrap();
+        assert_eq!(
+            unsafe { openblas_get_num_threads() },
+            base,
+            "interleaved scopes leaked a raised BLAS count"
+        );
+    }
+
+    /// The debug assertion: raising BLAS threads on a rayon worker is a bug at
+    /// the call site.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "on a rayon worker")]
+    fn raising_on_a_rayon_worker_is_a_debug_assertion() {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(1)
+            .build()
+            .unwrap()
+            .install(|| with_blas_threads(2, || ()));
     }
 }

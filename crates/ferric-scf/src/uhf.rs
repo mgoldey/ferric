@@ -1396,9 +1396,17 @@ fn solve_uhf_impl(
 
         let energy = e_elec_no_xc + e_xc + e_hook + e_cosmo + e_pcm + e_pol + vnn;
 
-        // DIIS errors per spin: F_σ D_σ S − S D_σ F_σ
-        let err_a = f_a.dot(&d_a).dot(&s) - s.dot(&d_a).dot(&f_a);
-        let err_b = f_b.dot(&d_b).dot(&s) - s.dot(&d_b).dot(&f_b);
+        // DIIS errors per spin: F_σ D_σ S − S D_σ F_σ. Serial section (outside
+        // any rayon region): runs at the serial BLAS thread count.
+        let (err_a, err_b) = ferric_integrals::blas_threads::with_blas_threads(
+            ferric_integrals::blas_threads::opt_in_blas_threads(),
+            || {
+                (
+                    f_a.dot(&d_a).dot(&s) - s.dot(&d_a).dot(&f_a),
+                    f_b.dot(&d_b).dot(&s) - s.dot(&d_b).dot(&f_b),
+                )
+            },
+        );
 
         let sig = mon.signals(energy);
         let de = sig.de;

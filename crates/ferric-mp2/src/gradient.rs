@@ -615,7 +615,7 @@ pub(crate) fn integral_response_gradient_3c2c(
     // between two rayon regions (the 3c-derivative fan-out above has already
     // collected/returned; the 2c-derivative fan-out below hasn't started) —
     // outside any rayon region itself. Opt-in BLAS raise via
-    // FERRIC_BLAS_THREADS (default 1, unchanged behavior).
+    // FERRIC_BLAS_THREADS (default: the rayon pool size; 1 on a rayon worker).
     // 2-center metric-derivative weight Γ2c for V^{-1/2} fitting. Deriving the RI
     // energy `E = Σ Γ_ia,jb (ia|P) V^{-1}_PQ (Q|jb)` w.r.t. R gives the 2-center
     // term `Σ_PQ Γ2c_PQ dV_PQ` with base weight `−½·C·y_ov^T`, where

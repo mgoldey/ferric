@@ -75,8 +75,8 @@ pub fn build_weight_matrix(
         }
     }
     // Digestion GEMM, after the rayon-gated scale_for map above has already
-    // collected. Opt-in BLAS raise via FERRIC_BLAS_THREADS (default 1,
-    // unchanged behavior); mirrors vxc.rs's semilocal_vxc_closed idiom.
+    // collected. Opt-in BLAS raise via FERRIC_BLAS_THREADS (default: the rayon pool size;
+    // 1 on a rayon worker); mirrors vxc.rs's semilocal_vxc_closed idiom.
     let w: Array2<f64> = with_blas_threads(opt_in_blas_threads(), || chi_scaled.dot(&chi.t()));
     // Symmetrize (defends against grid asymmetry).
     0.5 * (&w + &w.t())

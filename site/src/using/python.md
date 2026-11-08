@@ -494,8 +494,16 @@ It does not cap total process memory; see
 mp2 = ferric.run_rimp2(water, bs_dz, aux, memory_budget_gb=8.0)
 ```
 
-`import ferric` pins OpenBLAS to one thread unless `OPENBLAS_NUM_THREADS` is
-already set. ferric parallelizes with rayon instead. `run_rhf`, `run_uhf`,
+`import ferric` runs OpenBLAS at one thread inside ferric's parallel regions
+unless `OPENBLAS_NUM_THREADS` is already set; ferric parallelizes with rayon
+(`RAYON_NUM_THREADS`). Serial sections such as the per-iteration Fock
+diagonalization use `ferric.blas_threads()` OpenBLAS threads, by default the
+rayon thread count; `ferric.set_blas_threads(1)` makes results bit-identical
+across thread counts. The OpenBLAS thread count is process-wide, so when you
+run several jobs at once from Python threads, call `ferric.set_blas_threads(1)`
+first: otherwise one job's serial section raises the count under the other
+jobs' parallel regions, which oversubscribes the machine and makes their
+results vary at the last bit from run to run. `run_rhf`, `run_uhf`,
 `run_rohf`, `run_dft`, `run_rimp2`, `run_ccsd`, `run_ccsd_t`, `run_gw` and
 `run_tddft` release the GIL, so independent jobs submitted from a
 `ThreadPoolExecutor` run in parallel. The other drivers hold it. For throughput

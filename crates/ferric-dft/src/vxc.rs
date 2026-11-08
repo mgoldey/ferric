@@ -384,8 +384,8 @@ pub fn semilocal_vxc_closed_scratch(
     scale_columns_into(chi.view(), &s, buf);
     // Digestion GEMM (nbf, npts)·(npts, nbf), outside any rayon region — this
     // whole function runs serially at the top level of one SCF/grid-response
-    // iteration. Opt-in BLAS raise via FERRIC_BLAS_THREADS (default 1,
-    // unchanged behavior); opt_in_blas_threads()'s rayon-worker self-guard
+    // iteration. Opt-in BLAS raise via FERRIC_BLAS_THREADS (default: the rayon pool size;
+    // 1 on a rayon worker); opt_in_blas_threads()'s rayon-worker self-guard
     // also protects any caller reached from inside a rayon pool (e.g.
     // free-atom SAD grid builds under run_serial_pool).
     let mut vxc: Array2<f64> = with_blas_threads(opt_in_blas_threads(), || buf.dot(&chi.t()));
@@ -690,8 +690,8 @@ pub fn semilocal_vxc_polarized_scratch(
         // Digestion GEMM, outside any rayon region — this whole function
         // runs serially at the top level of one UKS SCF/grid-response
         // iteration (the `build` closure below is called twice, sequentially,
-        // for α and β). Opt-in BLAS raise via FERRIC_BLAS_THREADS (default 1,
-        // unchanged behavior); opt_in_blas_threads()'s rayon-worker self-guard
+        // for α and β). Opt-in BLAS raise via FERRIC_BLAS_THREADS (default: the rayon pool size;
+        // 1 on a rayon worker); opt_in_blas_threads()'s rayon-worker self-guard
         // also protects any caller reached from inside a rayon pool (e.g.
         // free-atom SAD grid builds under run_serial_pool).
         let mut v: Array2<f64> = with_blas_threads(opt_in_blas_threads(), || buf.dot(&chi.t()));

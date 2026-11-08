@@ -65,6 +65,26 @@ const _: () = assert!(
      it) instead of ferric-core/mpi alone."
 );
 
+/// The OpenBLAS thread count the SCF serial sections last ran at, for tests
+/// that pin the serial-BLAS setting (`tests/serial_blas_threads.rs`).
+#[doc(hidden)]
+pub mod blas_probe {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// Thread count seen inside the last Fock diagonalization
+    /// (`driver::diagonalize_rect_with`, RHF/RKS/UHF/UKS).
+    pub static FOCK_DIAG: AtomicUsize = AtomicUsize::new(0);
+    /// Thread count seen inside the last RHF/RKS DIIS commutator.
+    pub static DIIS_COMMUTATOR: AtomicUsize = AtomicUsize::new(0);
+
+    pub(crate) fn record(slot: &AtomicUsize) {
+        slot.store(
+            ferric_integrals::blas_threads::current_blas_threads(),
+            Ordering::Relaxed,
+        );
+    }
+}
+
 /// Validation certificate of an SCF / KS-DFT result.
 pub mod certificate;
 pub mod checkpoint;

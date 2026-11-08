@@ -77,12 +77,12 @@ read the `result` record ([Run logs](run-logs.md)).
 3. **MPI is a workspace feature, not a CLI one.** `ferric-cli` has no `mpi`
    feature of its own, so `-p ferric-cli --features mpi` fails. The working
    build is `cargo build --release --workspace --features mpi`.
-4. **Threading.** Don't set `OPENBLAS_NUM_THREADS` above 1. The CLI and
-   `import ferric` pin OpenBLAS to one thread when the variable is unset and
-   honour an explicit value, and `cargo` sets it to 1 only when it is unset
-   (an exported value wins). Multithreaded BLAS
-   under ferric's rayon parallelism can crash (LU routines) or oversubscribe
-   the machine, so the setting affects correctness as well as speed.
+4. **Threading.** Set the thread count with `RAYON_NUM_THREADS` and leave
+   `OPENBLAS_NUM_THREADS` unset: above 1 it threads BLAS inside every rayon
+   region and oversubscribes the machine. Serial sections (Fock
+   diagonalization, DIIS) already use the rayon thread count for BLAS;
+   `[parallel] blas_threads = 1` (Python `ferric.set_blas_threads(1)`) makes
+   results bit-identical across thread counts.
 5. **Under-converged density.** `energy_conv` alone doesn't converge the
    density. Correlation energies and properties inherit the full first-order
    density error. E_HF doesn't, because it's variational. Set `density_conv`.

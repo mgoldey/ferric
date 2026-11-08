@@ -51,7 +51,7 @@ pub fn eval_density_closed(
 
     // Phi_{μg} = Σ_ν D_μν χ_νg  (one GEMM; runs before the point-parallel rayon
     // region below starts, never overlapping it). Opt-in BLAS raise via
-    // FERRIC_BLAS_THREADS (default 1, unchanged behavior) — see blas_threads.rs.
+    // FERRIC_BLAS_THREADS (default: the rayon pool size; 1 on a rayon worker) — see blas_threads.rs.
     let phi: Array2<f64> = with_blas_threads(opt_in_blas_threads(), || d.dot(chi));
 
     // ρ_g = Σ_μ χ_μg · Φ_μg, and ∇ρ_ag = 2 Σ_μ Φ_μg · ∂_a χ_μg.
@@ -144,8 +144,8 @@ pub fn eval_density_uks(
     debug_assert_eq!(dchi.dim(), (3, nbf, npts));
 
     // Two GEMMs, both before the point-parallel rayon region below starts.
-    // Opt-in BLAS raise via FERRIC_BLAS_THREADS (default 1, unchanged
-    // behavior) — same reasoning as eval_density_closed above.
+    // Opt-in BLAS raise via FERRIC_BLAS_THREADS (default: the rayon pool size; 1 on a rayon
+    // worker) — same reasoning as eval_density_closed above.
     let phi_a: Array2<f64> = with_blas_threads(opt_in_blas_threads(), || d_a.dot(chi));
     let phi_b: Array2<f64> = with_blas_threads(opt_in_blas_threads(), || d_b.dot(chi));
 

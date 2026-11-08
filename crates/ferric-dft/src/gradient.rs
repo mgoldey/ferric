@@ -770,7 +770,7 @@ pub fn xc_gradient_closed_lda(
     // M = D · χ as a matrix product (D is (nbf, nbf), χ is (nbf, npts)). FD-verified
     // against H2/STO-3G LDA — see tests/dft_gradient_lda.rs. Runs before the
     // rayon-gated row_dot contraction below starts. Opt-in BLAS raise via
-    // FERRIC_BLAS_THREADS (default 1, unchanged behavior).
+    // FERRIC_BLAS_THREADS (default: the rayon pool size; 1 on a rayon worker).
     let m: Array2<f64> = with_blas_threads(opt_in_blas_threads(), || d_total.dot(chi));
 
     let natoms = mol.atoms.len();
@@ -970,7 +970,7 @@ pub fn gga_gradient_from_potentials(
 
     // M_μ(g) = Σ_ν D_μν · χ_ν(r_g). Runs before the rayon-gated ao-partial
     // reductions below start. Opt-in BLAS raise via FERRIC_BLAS_THREADS
-    // (default 1, unchanged behavior).
+    // (default: the rayon pool size; 1 on a rayon worker).
     let m: Array2<f64> = with_blas_threads(opt_in_blas_threads(), || d_total.dot(chi));
     // Mdχ[b, μ, g] = Σ_ν D_μν · ∂_b χ_ν(r_g)
     let mut mdchi = ndarray::Array3::<f64>::zeros((3, nbf, npts));
@@ -1276,7 +1276,7 @@ fn gga_closed_batch(
     // Precompute Σ_ν D_μν · χ_ν (= M_μ) and Σ_ν D_μν · ∂_b χ_ν (= Mdχ[b, μ, g])
     // via matrix products. Both run before the rayon-gated ao-partial
     // reductions below start. Opt-in BLAS raise via FERRIC_BLAS_THREADS
-    // (default 1, unchanged behavior).
+    // (default: the rayon pool size; 1 on a rayon worker).
     let t_ = ferric_core::timing::Stage::start("xcg:gemm D.chi/D.dchi");
     let m: Array2<f64> = with_blas_threads(opt_in_blas_threads(), || d_total.dot(&chi)); // (nbf, npts)
     let mut mdchi = ndarray::Array3::<f64>::zeros((3, nbf, npts));
@@ -1819,7 +1819,7 @@ fn uks_gga_batch(
         // Both GEMMs run before the rayon-gated ao-partial reductions below
         // start; add_spin_contribution itself is called sequentially (twice),
         // never from inside rayon. Opt-in BLAS raise via FERRIC_BLAS_THREADS
-        // (default 1, unchanged behavior).
+        // (default: the rayon pool size; 1 on a rayon worker).
         let m: Array2<f64> = with_blas_threads(opt_in_blas_threads(), || d_sigma.dot(&chi));
         let mut mdchi = ndarray::Array3::<f64>::zeros((3, nbf, npts));
         for b in 0..3 {
@@ -1878,7 +1878,7 @@ fn uks_gga_batch(
 
     // Precompute per-spin (D · χ) and (D · ∂χ). Runs before the rayon-gated
     // hess_col reduction below starts. Opt-in BLAS raise via
-    // FERRIC_BLAS_THREADS (default 1, unchanged behavior).
+    // FERRIC_BLAS_THREADS (default: the rayon pool size; 1 on a rayon worker).
     let m_a: Array2<f64> = with_blas_threads(opt_in_blas_threads(), || d_a.dot(&chi));
     let m_b: Array2<f64> = with_blas_threads(opt_in_blas_threads(), || d_b.dot(&chi));
 

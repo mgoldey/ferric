@@ -42,6 +42,9 @@ pub struct Config {
     pub dft: DftCfg,
     #[serde(default)]
     pub memory: MemoryCfg,
+    /// Optional `[parallel]` section: thread settings (see [`ParallelCfg`]).
+    #[serde(default)]
+    pub parallel: ParallelCfg,
     #[serde(default)]
     pub gpu: GpuSection,
     /// Optional `[precision]` section: which kernels may run in mixed
@@ -460,6 +463,39 @@ impl MemoryCfg {
                  and replaces with 0.8 x available RAM — the opposite of what you asked for. \
                  Use a value of at least 1e-9 GiB, or remove the key to request auto-detection."
             ));
+        }
+        Ok(())
+    }
+}
+
+/// `[parallel]` — thread settings.
+///
+/// The rayon thread count (parallel regions: integrals, J/K, XC, quadrature)
+/// is `RAYON_NUM_THREADS` (default: every logical CPU). Parallel regions run
+/// OpenBLAS at 1 thread unless `OPENBLAS_NUM_THREADS` says otherwise — rayon x
+/// BLAS threads above the core count oversubscribes, which is the user's call.
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct ParallelCfg {
+    /// OpenBLAS threads for serial sections: the per-iteration Fock
+    /// diagonalization, DIIS commutator, orthogonalizer and density GEMMs,
+    /// and the other dense linear algebra that runs outside parallel regions.
+    /// Absent: `FERRIC_BLAS_THREADS` if set, else the rayon thread count.
+    /// `1` makes results bit-identical across thread counts; any other value
+    /// lets OpenBLAS split reductions by thread count, which moves results at
+    /// the last bit (about 1e-14 relative).
+    pub blas_threads: Option<usize>,
+}
+
+impl ParallelCfg {
+    /// `blas_threads = 0` is refused: omit the key for the default.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.blas_threads == Some(0) {
+            return Err(
+                "[parallel] blas_threads = 0: use a positive thread count, or remove \
+                        the key for the default (the rayon thread count)"
+                    .to_string(),
+            );
         }
         Ok(())
     }
@@ -4093,6 +4129,7 @@ impl Config {
     /// CLI-wired keys.
     fn validate_loaded_values(&self) -> Result<(), String> {
         self.memory.validate()?;
+        self.parallel.validate()?;
         self.gpu.validate()?;
         self.precision.validate()?;
         self.gpu_explicit().check_precision_aliases()?;

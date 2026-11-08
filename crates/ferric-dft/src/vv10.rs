@@ -1346,7 +1346,7 @@ pub fn add_vv10_scratch(
     // Digestion GEMM (nbf, npts)·(npts, nbf), outside any rayon region — this
     // whole function runs once per KS iteration at the top level (called from
     // ks.rs, never from inside map_rows' rayon fan-out above). Opt-in BLAS
-    // raise via FERRIC_BLAS_THREADS (default 1, unchanged behavior); mirrors
+    // raise via FERRIC_BLAS_THREADS (default: the rayon pool size; 1 on a rayon worker); mirrors
     // vxc.rs's semilocal_vxc_closed_scratch idiom exactly.
     let mut v_nl: Array2<f64> = with_blas_threads(opt_in_blas_threads(), || buf.dot(&chi.t()));
 

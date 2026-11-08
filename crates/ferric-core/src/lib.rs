@@ -13,7 +13,8 @@
 /// Gaussian basis sets: [`BasisSet`](basis::BasisSet), [`Shell`](basis::Shell), BSE-JSON/G94 parsers, 21 bundled sets.
 pub mod basis;
 mod basis_util;
-/// BLAS thread-count guard for safe OpenBLAS usage under rayon.
+/// OpenBLAS thread counts (parallel-region baseline, serial sections) and
+/// thread stack sizes.
 pub mod blas_threads;
 pub mod certificate;
 /// Typed configuration descriptors (`ConfigVar`).

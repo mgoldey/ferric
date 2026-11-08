@@ -55,6 +55,17 @@ class BuildInfo(TypedDict):
 def build_info() -> BuildInfo:
     """Which build of ferric is loaded. All values are fixed at compile time."""
 
+def set_blas_threads(n: int | None = None) -> None:
+    """OpenBLAS threads for serial sections (Fock diagonalization, DIIS, dense
+    linear algebra outside parallel regions), for the rest of the process.
+
+    ``None``: ``FERRIC_BLAS_THREADS`` if set, else the rayon thread count.
+    ``1`` gives results bit-identical across thread counts; other values move
+    results at the last bit (about 1e-14 relative)."""
+
+def blas_threads() -> int:
+    """The OpenBLAS thread count serial sections use now."""
+
 class GpuDevice(TypedDict):
     ordinal: int
     name: str

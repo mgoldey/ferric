@@ -106,4 +106,4 @@ The contraction is one binary product, not a loop over indices.
 
 An outer product (`i,j->ij`) is a GEMM with inner dimension 1. Contractions run on the CPU unless the crate is built with the `gpu` feature.
 
-Set `OPENBLAS_NUM_THREADS=1` as described in [Installation](../using/installation.md).
+Leave `OPENBLAS_NUM_THREADS` unset (one BLAS thread inside rayon regions), as described in [Installation](../using/installation.md#threading).
